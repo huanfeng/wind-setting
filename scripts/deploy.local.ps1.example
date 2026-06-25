@@ -1,0 +1,11 @@
+# 本地部署配置 —— 复制此文件为 deploy.local.ps1 并填写实际路径
+# 此文件已加入 .gitignore，不会提交到仓库
+
+# Release exe 复制目标目录 (dev.ps1 p / copy)
+$WIND_DIR_RELEASE = "C:\Path\To\WindInput"
+
+# Debug exe 复制目标目录 (dev.ps1 dp / dcopy)
+$WIND_DIR_DEBUG = "C:\Path\To\WindInputDebug"
+
+# 可选：run 命令注入的管道后缀
+$WIND_PIPE_SUFFIX = ""
