@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target/
+
+# Local deployment config (contains SSH credentials)
+scripts/deploy.local
+
+# Agent / tooling state (not source)
+.omc/
+.remember/
+.claude/
+
+# Screenshots / scratch output
+/out.png
+*.screenshot.png
+/artifacts/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
