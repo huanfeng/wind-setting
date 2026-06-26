@@ -212,8 +212,10 @@ fn diff_value(prefix: &str, base: &Value, current: &Value, items: &mut Vec<Confi
         let bv = b.and_then(|m| m.get(key)).unwrap_or(&Value::Null);
 
         // 两者都是对象且 current 没有删除 base 的子键 → 递归
+        // 注意：用本层子节点的 base（bv）比对，而非父级 base map（b），
+        // 否则会误判为「删除了键」而把整个子对象当叶子产出（key 退化为父路径）。
         let both_objects = cv.is_object() && bv.is_object();
-        let has_removed_keys = if let (Value::Object(co), Some(bo)) = (cv, b) {
+        let has_removed_keys = if let (Value::Object(co), Value::Object(bo)) = (cv, bv) {
             bo.keys().any(|bk| !co.contains_key(bk))
         } else {
             false
