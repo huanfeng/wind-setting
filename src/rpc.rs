@@ -10,16 +10,10 @@ use wind_ipc::rpc::{PROTOCOL_VERSION, Request, Response};
 
 const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
-/// 编译期后缀：debug_variant 特性 → "_debug"，否则空 (release)。
-const COMPILED_SUFFIX: &str = if cfg!(feature = "debug_variant") {
-    "_debug"
-} else {
-    ""
-};
-
-/// 管道/socket 后缀。优先级：WIND_PIPE_SUFFIX 环境变量 > 编译期。
+/// 管道/socket 后缀。优先级：WIND_PIPE_SUFFIX 环境变量 > 运行时模式。
 fn endpoint_suffix() -> String {
-    std::env::var("WIND_PIPE_SUFFIX").unwrap_or_else(|_| COMPILED_SUFFIX.to_string())
+    std::env::var("WIND_PIPE_SUFFIX")
+        .unwrap_or_else(|_| crate::mode::pipe_suffix().to_string())
 }
 
 /// 控制通道端点路径。与 wind-rpc 的 ctrl_endpoint 一致。

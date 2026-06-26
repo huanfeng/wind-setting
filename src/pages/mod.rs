@@ -263,7 +263,7 @@ fn about_page(state: &AppState) -> Element {
                     Element::label(if version.is_empty() {
                         "原生设置 (wind_setting_native)".to_string()
                     } else {
-                        format!("版本 {version}")
+                        format!("版本 {version}{}", crate::mode::version_suffix())
                     })
                     .font_size(12.0)
                     .fg_role(Role::TextMuted)

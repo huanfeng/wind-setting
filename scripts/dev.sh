@@ -103,8 +103,7 @@ do_build() {
         flags="--release"
         say "▶ Release 构建 ($TARGET)"
     else
-        flags="--features debug_variant"
-        say "▶ Debug 构建 ($TARGET, debug_variant)"
+        say "▶ Debug 构建 ($TARGET)"
     fi
 
     cargo build --target "$TARGET" $flags 2>&1

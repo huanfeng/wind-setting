@@ -124,8 +124,8 @@ function Do-Build {
         Say "▶ Release 构建"
         cargo build --release
     } else {
-        Say "▶ Debug 构建 (debug_variant)"
-        cargo build --features debug_variant
+        Say "▶ Debug 构建"
+        cargo build
     }
 
     if ($LASTEXITCODE -ne 0) {

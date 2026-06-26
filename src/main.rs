@@ -8,6 +8,7 @@
 mod config;
 mod dialogs;
 mod manifest;
+mod mode;
 mod pages;
 mod rpc;
 mod shell;
@@ -23,12 +24,14 @@ use windui::prelude::*;
 fn main() {
     let app_state = Rc::new(RefCell::new(state::AppState::load()));
 
-    // 调试参数（主要用于截图核对，不影响正常使用）：
+    // 参数解析（最先执行，后续逻辑依赖运行时模式）：
+    //   --mode dev/debug   开发/调试模式（影响管道名称与版本显示）
     //   --light / --dark   覆盖初始主题（默认随系统）
     //   --tab N            指定初始 Tab（0 起）
     {
-        let st = app_state.borrow();
         let args: Vec<String> = std::env::args().collect();
+        mode::init(&args);
+        let st = app_state.borrow();
         if args.iter().any(|a| a == "--light") {
             st.dark.set(false);
         } else if args.iter().any(|a| a == "--dark") {
