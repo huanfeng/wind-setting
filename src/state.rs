@@ -93,7 +93,8 @@ impl AppState {
             fonts,
             fields: Rc::new(FieldRegistry::default()),
             tab: signal(0),
-            dark: signal(false),
+            // 默认主题随系统（不持久化用户切换，后续外观设置项另行处理）。
+            dark: signal(crate::theme_def::system_dark()),
             status: signal(String::from("就绪")),
             schema_mgr: SchemaManagerState::new(),
         }

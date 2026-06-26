@@ -1,0 +1,125 @@
+{
+ "schema": {
+  "primary_codetable": "",
+  "primary_pinyin": ""
+ },
+ "input": {
+  "auto_pair": {
+   "chinese": true,
+   "english": true
+  },
+  "punct_follow_mode": false,
+  "smart_punct_after_digit": true,
+  "smart_punct_list": ".,:",
+  "smart_symbol_mode": false,
+  "smart_symbol_timeout_ms": 500,
+  "smart_symbol_chars": "。，？！：；、～￥·……——",
+  "punct_custom": {
+   "enabled": false
+  },
+  "enter_behavior": "commit",
+  "space_on_empty_behavior": "commit",
+  "code_commit": {
+   "auto_commit_at_full": false,
+   "auto_commit_block_on_pinyin": true,
+   "auto_commit_min_len": 0,
+   "top_code_commit": false,
+   "clear_on_empty_max": false
+  },
+  "shift_temp_english": {
+   "enabled": true,
+   "show_english_candidates": true,
+   "shift_behavior": "temp_english",
+   "allow_symbols": false,
+   "space_as_input": false
+  },
+  "capslock": {
+   "cancel_on_mode_switch": false
+  },
+  "filter_mode": "smart",
+  "pinyin_separator": "auto",
+  "numpad_behavior": "",
+  "phrase": {
+   "min_prefix_length": 2,
+   "max_display_chars": 30
+  },
+  "url_input": {
+   "enabled": false
+  }
+ },
+ "hotkeys": {
+  "commit_on_switch": true,
+  "switch_engine": "",
+  "toggle_full_width": "",
+  "toggle_punct": "",
+  "toggle_s2t": "",
+  "toggle_toolbar": "",
+  "open_settings": "",
+  "add_word": "",
+  "pin_candidate": "",
+  "delete_candidate": ""
+ },
+ "ui": {
+  "candidate": {
+   "per_page": 7,
+   "layout": "horizontal",
+   "preedit_display": "app_inline",
+   "hide_window": false,
+   "font_size": 0,
+   "max_chars": 0,
+   "index_labels": "",
+   "flip_when_above": false
+  },
+  "mode_indicator": {
+   "style": "short"
+  },
+  "tooltip": {
+   "delay": 100,
+   "code": {
+    "enabled": true
+   },
+   "pinyin": {
+    "enabled": true,
+    "heteronyms": true,
+    "max_readings": 0
+   },
+   "chaizi": {
+    "enabled": false
+   },
+   "debug": {
+    "enabled": false
+   }
+  },
+  "status_tip": {
+   "offset_x": 0,
+   "offset_y": 0,
+   "schema_name_style": "full"
+  }
+ },
+ "general": {
+  "default_chinese_mode": true,
+  "default_chinese_punct": true,
+  "default_full_width": false,
+  "remember_last_state": false
+ },
+ "features": {
+  "stats": {
+   "enabled": true,
+   "track_english": false
+  },
+  "s2t": {
+   "enabled": false,
+   "variant": ""
+  },
+  "quick_input": {
+   "enabled": false,
+   "decimal_places": 6
+  },
+  "cmdbar": {
+   "enabled": false
+  }
+ },
+ "debug": {
+  "log_level": "info"
+ }
+}

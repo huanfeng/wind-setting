@@ -168,15 +168,40 @@ mod tests {
     }
 }
 
-/// Mock 模式：返回形状合理的空默认值。
+/// 内置真实 manifest / config（由 core 的 data/settings/manifest.toml 转换而来），
+/// 仅在 WIND_RPC_MOCK=1 时使用，使无 core 截图/预览贴近真实界面。
+const MOCK_MANIFEST: &str = include_str!("mockdata/manifest.json");
+const MOCK_CONFIG: &str = include_str!("mockdata/config.json");
+
+/// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
+/// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str) -> Value {
     match method {
-        "schema.list" | "phrase.list" | "shadow.list" | "dict.stats" | "temp.list"
-        | "theme.list" | "stats.daily" | "system.fonts" => json!([]),
-        "config.get" | "config.getDefaults" | "schema.getConfig" | "schema.references"
-        | "system.manifest" | "theme.preview" => json!({}),
-        "system.status" => json!({ "running": false }),
-        "system.info" => json!({ "version": "", "platform": "", "dataDir": "", "running": false }),
+        "system.manifest" => serde_json::from_str(MOCK_MANIFEST).unwrap_or_else(|_| json!({})),
+        "config.get" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
+        "schema.list" => json!([
+            { "id": "wubi86", "name": "五笔 86", "kind": "codetable" },
+            { "id": "wubi98", "name": "五笔 98", "kind": "codetable" },
+            { "id": "pinyin_simp", "name": "全拼·简", "kind": "pinyin" },
+            { "id": "double_pinyin", "name": "自然码双拼", "kind": "pinyin" }
+        ]),
+        "theme.list" => json!([
+            { "id": "default_light", "name": "清风·浅" },
+            { "id": "default_dark", "name": "清风·深" },
+            { "id": "mono", "name": "墨" }
+        ]),
+        "system.fonts" => json!([
+            { "name": "微软雅黑" }, { "name": "思源黑体" }, { "name": "等线" }
+        ]),
+        "system.info" => json!({
+            "version": "3.2.1", "platform": "windows", "arch": "x86_64",
+            "build": "release", "dataDir": "C:/Users/.../WindInput", "running": true
+        }),
+        "phrase.list" | "shadow.list" | "dict.stats" | "temp.list" | "stats.daily" => json!([]),
+        "config.getDefaults" | "schema.getConfig" | "schema.references" | "theme.preview" => {
+            json!({})
+        }
+        "system.status" => json!({ "running": true }),
         "stats.summary" => json!({ "today": 0, "week": 0, "month": 0, "total": 0, "streak": 0 }),
         "dict.listPaged" | "freq.listPaged" => json!({ "items": [], "total": 0 }),
         "dict.search" => json!([]),

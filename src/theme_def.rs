@@ -52,3 +52,41 @@ pub fn dark_theme() -> Theme {
 pub fn theme_for(dark: bool) -> Theme {
     if dark { dark_theme() } else { light_theme() }
 }
+
+/// 检测系统是否为暗色（窗口默认主题随系统，不持久化用户切换）。
+///
+/// Windows：读注册表 `AppsUseLightTheme`（0=暗 / 1=亮）。
+/// 失败或非 Windows：回退暗色（与 ime.rs 一致，暗色效果最佳）。
+pub fn system_dark() -> bool {
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let out = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "/v",
+                "AppsUseLightTheme",
+            ])
+            .output();
+        if let Ok(o) = out {
+            let s = String::from_utf8_lossy(&o.stdout);
+            // 形如 "AppsUseLightTheme    REG_DWORD    0x0"
+            if let Some(pos) = s.find("0x") {
+                let hex = s[pos + 2..]
+                    .trim_start()
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .collect::<String>();
+                if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                    return v == 0; // 0 = 暗色
+                }
+            }
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}

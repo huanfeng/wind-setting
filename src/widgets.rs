@@ -20,13 +20,14 @@ pub fn flat_panel() -> Element {
 }
 
 /// 分组小标题（11px 弱化大写感，上下留白）。对齐 ime.rs settings_section_header。
+/// 置于卡片上方，左侧微缩进与卡片内容对齐。
 pub fn section_header(title: &str) -> Element {
     Element::label(title)
-        .font_size(11.0)
+        .font_size(11.5)
         .font_weight(600)
         .fg_role(Role::TextMuted)
-        .height(16)
-        .margin_xy(0, 9)
+        .height(18)
+        .margin_xy(4, 4)
 }
 
 /// 设置行：左标签（+可选副标题）+ 右控件。对齐 ime.rs setting_row。
@@ -55,27 +56,37 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
         .child(control)
 }
 
-/// 分组：分组小标题 + 各行（行间自动插 1px 分隔线）。
-/// `rows` 为已构建好的设置行（如 `setting_row(...)` 或清单引擎 `field(...)`）。
-pub fn section(title: &str, rows: Vec<Element>) -> Element {
-    let mut col = Element::col().width_match().child(section_header(title));
+/// 卡片容器：圆角 surface + 边框，承载分区内的若干设置行（行间自动插分隔线）。
+/// 卡片内置水平/垂直内边距，分隔线随之内缩（iOS/macOS 分组列表观感）。
+pub fn card(rows: Vec<Element>) -> Element {
+    let mut card = flat_panel().corner(10.0).width_match().padding_xy(16, 2);
     let last = rows.len().saturating_sub(1);
     for (i, row) in rows.into_iter().enumerate() {
-        col = col.child(row);
+        card = card.child(row);
         if i != last {
-            col = col.child(Element::divider());
+            card = card.child(Element::divider());
         }
     }
-    col
+    card
 }
 
-/// 页面内容外层：纵向滚动 + 内边距，承载多个 section。
+/// 分组 = 分区小标题（卡片上方）+ 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。
+/// `rows` 为已构建好的设置行（如 `setting_row(...)` 或清单引擎 `field(...)`）。
+pub fn section(title: &str, rows: Vec<Element>) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(6)
+        .child(section_header(title))
+        .child(card(rows))
+}
+
+/// 页面内容外层：纵向滚动 + 内边距 + 分区间距，承载多个 section 卡片，浮于深色 bg 上。
 pub fn page(body: Element) -> Element {
-    Element::scroll().fill().child(
+    Element::scroll().fill().bg_role(Role::Bg).child(
         Element::col()
             .width_match()
-            .padding_xy(22, 14)
-            .spacing(6)
+            .padding_xy(20, 16)
+            .spacing(18)
             .child(body),
     )
 }

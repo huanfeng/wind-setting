@@ -37,8 +37,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(tabs);
 
     Element::stack()
+        // 整体深色 bg 衬托内容区的 surface 卡片，形成层次（对齐 ime.rs）。
         .fill()
-        .bg_role(Role::Surface)
+        .bg_role(Role::Bg)
         .child(main_col)
         .child(dialog)
 }
@@ -71,15 +72,29 @@ fn build_titlebar(
                 .text_align(Align::Center),
         );
 
-    // 明/暗切换：翻转 dark 并换肤。
-    let theme_btn = Element::button("明 / 暗")
+    // 明/暗切换：用随状态更新的 emoji 图标（暗色显示 ☀ 点击转亮；亮色显示 🌙 点击转暗）。
+    // 两个按钮经 visible_when 互斥，套 stack 重叠占位避免布局抖动。
+    let th_to_light = th.clone();
+    let d_to_light = dark;
+    let to_light = Element::button("☀")
         .small()
         .neutral()
         .on_click(move |_| {
-            let d = !dark.get();
-            dark.set(d);
-            th.set(theme_for(d));
-        });
+            d_to_light.set(false);
+            th_to_light.set(theme_for(false));
+        })
+        .visible_when(move || d_to_light.get());
+    let th_to_dark = th.clone();
+    let d_to_dark = dark;
+    let to_dark = Element::button("🌙")
+        .small()
+        .neutral()
+        .on_click(move |_| {
+            d_to_dark.set(true);
+            th_to_dark.set(theme_for(true));
+        })
+        .visible_when(move || !d_to_dark.get());
+    let theme_btn = Element::stack().child(to_light).child(to_dark);
 
     // 保存：借 mut 跑写回器 + diff + setItems。
     let app_save = app.clone();
@@ -91,10 +106,12 @@ fn build_titlebar(
 
     Element::row()
         .width_match()
-        .height(40)
+        .height(44)
         .cross(Align::Center)
-        .padding_xy(12, 0)
+        .padding_xy(14, 0)
         .spacing(10)
+        // 标题栏作为窗口 chrome 置于 surface 上，与下方 bg 内容区分层。
+        .bg_role(Role::Surface)
         .window_drag()
         .child(logo)
         .child(
@@ -113,7 +130,8 @@ fn build_titlebar(
         .child(theme_btn)
         .child(save_btn)
         .child(Element::leaf().width(8))
-        .child(Element::window_button(WindowButtonKind::Minimize))
-        .child(Element::window_button(WindowButtonKind::Maximize))
-        .child(Element::window_button(WindowButtonKind::Close))
+        // 图标随主题明暗（否则默认深色字在暗色标题栏上不可见）。
+        .child(Element::window_button(WindowButtonKind::Minimize).fg_role(Role::Text))
+        .child(Element::window_button(WindowButtonKind::Maximize).fg_role(Role::Text))
+        .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text))
 }

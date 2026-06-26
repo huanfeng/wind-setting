@@ -44,16 +44,54 @@ pub struct MOption {
     pub label: String,
 }
 
-/// 清单：key → 项。
+/// 一个分组（→ Tab）。来自 manifest 的 `groups`，按 order 排序。
+/// 当前 Tab 集为「manifest 分组 + 自定义页」的精选混排（标签亦本地化，如 hotkeys→按键），
+/// 故暂不直接消费 groups 派生 Tab；保留完整解析以备后续完全清单驱动。
+#[allow(dead_code)]
+#[derive(Clone, Default)]
+pub struct MGroup {
+    pub key: String,
+    pub label: String,
+    pub order: i64,
+}
+
+/// 清单：key → 项（含 manifest 原始顺序与分组，便于 (group, section) 聚合渲染）。
 #[derive(Default)]
 pub struct Manifest {
     pub items: HashMap<String, MItem>,
+    /// 项 key 的 manifest 出现顺序（HashMap 无序，渲染需按此还原）。
+    pub order: Vec<String>,
+    /// 分组列表（已按 order 升序）。保留备用，见 [`MGroup`] 说明。
+    #[allow(dead_code)]
+    pub groups: Vec<MGroup>,
 }
 
 impl Manifest {
     /// 从 system.manifest 返回的 JSON 解析。容错：缺字段回退默认。
     pub fn from_value(v: &Value) -> Self {
         let mut items = HashMap::new();
+        let mut order = Vec::new();
+        let mut groups: Vec<MGroup> = v
+            .get("groups")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|g| {
+                        let key = g.get("key").and_then(|x| x.as_str())?.to_string();
+                        Some(MGroup {
+                            label: g
+                                .get("label")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or(&key)
+                                .to_string(),
+                            order: g.get("order").and_then(|x| x.as_i64()).unwrap_or(999),
+                            key,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        groups.sort_by_key(|g| g.order);
         if let Some(arr) = v.get("items").and_then(|x| x.as_array()) {
             for it in arr {
                 let key = it.get("key").and_then(|x| x.as_str()).unwrap_or("");
@@ -94,13 +132,37 @@ impl Manifest {
                     enabled_when: opt_str(it, "enabled_when"),
                 };
                 items.insert(key.to_string(), item);
+                order.push(key.to_string());
             }
         }
-        Self { items }
+        Self {
+            items,
+            order,
+            groups,
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&MItem> {
         self.items.get(key)
+    }
+
+    /// 取某分组下、按 manifest 顺序聚合的 (分区名, 该分区项 key 列表)。
+    /// 同一 section 的项归到一张卡片；section 首次出现的次序即卡片次序。
+    pub fn sections_of(&self, group: &str) -> Vec<(String, Vec<String>)> {
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        for key in &self.order {
+            let Some(it) = self.items.get(key) else {
+                continue;
+            };
+            if it.group != group {
+                continue;
+            }
+            match out.iter_mut().find(|(s, _)| *s == it.section) {
+                Some((_, keys)) => keys.push(key.clone()),
+                None => out.push((it.section.clone(), vec![key.clone()])),
+            }
+        }
+        out
     }
 }
 
