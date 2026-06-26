@@ -16,9 +16,10 @@ pub fn light_theme() -> Theme {
     p.accent_hover = Color::hex(0x60A5FA);
     p.accent_active = Color::hex(0x2563EB);
     p.on_accent = Color::WHITE;
-    p.bg = Color::hex(0xEEF1F5);
+    // 左栏(Bg)=#F9F8F8、右内容(SurfaceAlt)=#FFFEFE、卡片(Surface)=#FFFFFF（高一档 + 边框分隔）。
+    p.bg = Color::hex(0xF9F8F8);
     p.surface = Color::hex(0xFFFFFF);
-    p.surface_alt = Color::hex(0xF4F6F9);
+    p.surface_alt = Color::hex(0xFFFEFE);
     p.text = Color::hex(0x1A1F2A);
     p.text_muted = Color::hex(0x6B7280);
     p.text_disabled = Color::hex(0xB7BECA);
@@ -36,9 +37,10 @@ pub fn dark_theme() -> Theme {
     p.accent_hover = Color::hex(0x60A5FA);
     p.accent_active = Color::hex(0x2563EB);
     p.on_accent = Color::WHITE;
-    p.bg = Color::hex(0x0F1626);
-    p.surface = Color::hex(0x141C2B);
-    p.surface_alt = Color::hex(0x1B2436);
+    // 左栏(Bg)=#161925、右内容(SurfaceAlt)=#1A202E、卡片(Surface)=#232C3D（高一档，便于卡片浮起）。
+    p.bg = Color::hex(0x161925);
+    p.surface = Color::hex(0x232C3D);
+    p.surface_alt = Color::hex(0x1A202E);
     p.text = Color::hex(0xE8EAED);
     p.text_muted = Color::hex(0x8B94A7);
     p.text_disabled = Color::hex(0x5A6377);

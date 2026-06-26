@@ -80,9 +80,10 @@ pub fn section(title: &str, rows: Vec<Element>) -> Element {
         .child(card(rows))
 }
 
-/// 页面内容外层：纵向滚动 + 内边距 + 分区间距，承载多个 section 卡片，浮于深色 bg 上。
+/// 页面内容外层：纵向滚动 + 内边距 + 分区间距，承载多个 section 卡片。
+/// 内容区背景用 SurfaceAlt（右栏色），卡片用 Surface（高一档）浮于其上。
 pub fn page(body: Element) -> Element {
-    Element::scroll().fill().bg_role(Role::Bg).child(
+    Element::scroll().fill().bg_role(Role::SurfaceAlt).child(
         Element::col()
             .width_match()
             .padding_xy(20, 16)

@@ -228,6 +228,12 @@ fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .getters
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::Bool(sig.get())));
+    let kl = key.to_string();
+    let def = item.default.as_bool().unwrap_or(false);
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| sig.set(c.get_bool(&kl).unwrap_or(def))),
+    );
     Element::switch(sig)
 }
 
@@ -260,6 +266,20 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
                 c.set_path(&kw, Value::String(v.clone()));
             }
         }));
+    let vals_l = values.clone();
+    let kl = key.to_string();
+    let def_str = item.default.as_str().unwrap_or("").to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur = c
+                .get_str(&kl)
+                .map(str::to_string)
+                .unwrap_or_else(|| def_str.clone());
+            let idx = vals_l.iter().position(|v| *v == cur).unwrap_or(0);
+            sig.set(idx);
+        }),
+    );
     let vals_g = values;
     state.fields.getters.borrow_mut().insert(
         key.to_string(),
@@ -302,6 +322,12 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .getters
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::from(sig.get())));
+    let kl = key.to_string();
+    let def = item.default.as_f64().unwrap_or(0.0);
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| sig.set(c.get_f64(&kl).unwrap_or(def))),
+    );
     Element::stepper(sig, min, max, step).width(CTRL_W)
 }
 
@@ -324,6 +350,18 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .getters
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::String(sig.get())));
+    let kl = key.to_string();
+    let def = item.default.as_str().unwrap_or("").to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            sig.set(
+                c.get_str(&kl)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| def.clone()),
+            )
+        }),
+    );
     Element::text_input(sig, item.hint.clone().unwrap_or_default()).width(200)
 }
 

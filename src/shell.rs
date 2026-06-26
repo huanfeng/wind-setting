@@ -1,11 +1,14 @@
-//! 应用外壳 — 无边框窗口 + 自定义标题栏 + 8 Tab 导航 + 运行时明暗换肤。
+//! 应用外壳 — 无边框窗口 + 标题栏 + 左侧栏导航 + 底部操作栏 + 运行时明暗换肤。
 //!
-//! 标题栏：渐变 Logo + 标题（可拖动）+ 状态 + 明/暗切换 + 保存 + 窗口按钮。
+//! 标题栏：渐变 Logo + 标题（可拖动）+ 窗口按钮。
+//! 左侧栏：分区导航（pill 选中）。
+//! 底部操作栏（搜狗式）：左=连接状态 + 明暗切换；右=恢复本页 / 重新加载 / 应用设置 / 保存并退出。
 //! 明暗切换通过 `ThemeHandle::set(theme_for(dark))` 整窗换肤（`*_role` 节点自动跟随）。
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::dialogs::schema_manager::build_schema_manager_dialog;
@@ -16,7 +19,7 @@ use crate::theme_def::{ACCENT, theme_for};
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog) = {
+    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, connected) = {
         let st = app.borrow();
         (
             pages::all_tabs(&st),
@@ -24,33 +27,62 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.dark,
             st.status,
             build_schema_manager_dialog(&st.schema_mgr),
+            st.reload_confirm,
+            st.reset_confirm,
+            st.connected,
         )
     };
 
-    let titlebar = build_titlebar(app, th, dark, status);
-    let tabs = Element::tabs(tab_sig, tabs_vec).weight(1.0);
+    let titlebar = build_titlebar();
+
+    // 左侧栏：仅分区导航（pill 选中）；动作下移到底部操作栏。
+    let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
+    let nav = Element::list_pill(names, tab_sig).width_match().fill();
+    // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
+    let sidebar = Element::col()
+        .width(156)
+        .height_match()
+        .bg_role(Role::Bg)
+        .padding_xy(8, 10)
+        .child(nav);
+    let vdivider = Element::leaf()
+        .width(1)
+        .height_match()
+        .bg_role(Role::Divider);
+
+    // 内容区：各分区页叠放，按选中索引切换显示。
+    let mut content = Element::stack().fill().weight(1.0);
+    for (i, page) in pages.into_iter().enumerate() {
+        content = content.child(page.fill().visible_when(move || tab_sig.get() == i));
+    }
+    let body = Element::row()
+        .fill()
+        .weight(1.0)
+        .child(sidebar)
+        .child(vdivider)
+        .child(content);
+
+    let footer = build_footer(app, th, dark, status, connected);
 
     let main_col = Element::col()
         .fill()
         .child(titlebar)
         .child(Element::divider())
-        .child(tabs);
+        .child(body)
+        .child(Element::divider())
+        .child(footer);
 
     Element::stack()
-        // 整体深色 bg 衬托内容区的 surface 卡片，形成层次（对齐 ime.rs）。
         .fill()
         .bg_role(Role::Bg)
         .child(main_col)
         .child(dialog)
+        .child(build_reload_dialog(app, reload_confirm))
+        .child(build_reset_dialog(app, reset_confirm))
 }
 
-/// 自定义标题栏（无边框窗口的可拖动区 + 操作 + 窗口按钮）。
-fn build_titlebar(
-    app: &Rc<RefCell<AppState>>,
-    th: ThemeHandle,
-    dark: Signal<bool>,
-    status: Signal<String>,
-) -> Element {
+/// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。
+fn build_titlebar() -> Element {
     // 渐变 Logo（圆角块 + 白字）。
     let logo = Element::stack()
         .size(26, 26)
@@ -72,46 +104,13 @@ fn build_titlebar(
                 .text_align(Align::Center),
         );
 
-    // 明/暗切换：用随状态更新的 emoji 图标（暗色显示 ☀ 点击转亮；亮色显示 🌙 点击转暗）。
-    // 两个按钮经 visible_when 互斥，套 stack 重叠占位避免布局抖动。
-    let th_to_light = th.clone();
-    let d_to_light = dark;
-    let to_light = Element::button("☀")
-        .small()
-        .neutral()
-        .on_click(move |_| {
-            d_to_light.set(false);
-            th_to_light.set(theme_for(false));
-        })
-        .visible_when(move || d_to_light.get());
-    let th_to_dark = th.clone();
-    let d_to_dark = dark;
-    let to_dark = Element::button("🌙")
-        .small()
-        .neutral()
-        .on_click(move |_| {
-            d_to_dark.set(true);
-            th_to_dark.set(theme_for(true));
-        })
-        .visible_when(move || !d_to_dark.get());
-    let theme_btn = Element::stack().child(to_light).child(to_dark);
-
-    // 保存：借 mut 跑写回器 + diff + setItems。
-    let app_save = app.clone();
-    let save_btn = Element::button("保存").small().on_click(move |_| {
-        if let Ok(mut s) = app_save.try_borrow_mut() {
-            s.save();
-        }
-    });
-
     Element::row()
         .width_match()
         .height(44)
         .cross(Align::Center)
         .padding_xy(14, 0)
         .spacing(10)
-        // 标题栏作为窗口 chrome 置于 surface 上，与下方 bg 内容区分层。
-        .bg_role(Role::Surface)
+        .bg_role(Role::SurfaceAlt)
         .window_drag()
         .child(logo)
         .child(
@@ -121,17 +120,202 @@ fn build_titlebar(
                 .fg_role(Role::Text),
         )
         .child(Element::leaf().weight(1.0))
-        .child(
-            Element::label_rc(status)
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
-                .max_lines(1),
-        )
-        .child(theme_btn)
-        .child(save_btn)
-        .child(Element::leaf().width(8))
         // 图标随主题明暗（否则默认深色字在暗色标题栏上不可见）。
         .child(Element::window_button(WindowButtonKind::Minimize).fg_role(Role::Text))
         .child(Element::window_button(WindowButtonKind::Maximize).fg_role(Role::Text))
         .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text))
+}
+
+/// 底部操作栏（搜狗式）：左=连接状态点 + 文字 + 明暗切换；右=恢复本页/重新加载/应用设置/保存并退出。
+fn build_footer(
+    app: &Rc<RefCell<AppState>>,
+    th: ThemeHandle,
+    dark: Signal<bool>,
+    status: Signal<String>,
+    connected: bool,
+) -> Element {
+    // 连接状态点：绿=已连接，琥珀=未连接。
+    let dot_color = if connected {
+        Color::hex(0x22C55E)
+    } else {
+        Color::hex(0xF59E0B)
+    };
+    let status_dot = Element::leaf().size(8, 8).corner(4.0).bg(dot_color);
+
+    // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
+    let th_l = th.clone();
+    let d_l = dark;
+    let to_light = Element::button("☀ 浅色")
+        .small()
+        .neutral()
+        .on_click(move |_| {
+            d_l.set(false);
+            th_l.set(theme_for(false));
+        })
+        .visible_when(move || d_l.get());
+    let th_d = th;
+    let d_d = dark;
+    let to_dark = Element::button("🌙 深色")
+        .small()
+        .neutral()
+        .on_click(move |_| {
+            d_d.set(true);
+            th_d.set(theme_for(true));
+        })
+        .visible_when(move || !d_d.get());
+    let theme_btn = Element::stack().child(to_light).child(to_dark);
+
+    // 恢复本页：本页改默认值；有未保存改动先弹确认。
+    let app_reset = app.clone();
+    let reset_btn = Element::button("恢复本页")
+        .small()
+        .neutral()
+        .on_click(move |_| {
+            if let Ok(s) = app_reset.try_borrow() {
+                if s.is_dirty() {
+                    s.reset_confirm.set(true);
+                } else {
+                    s.reset_current_page();
+                }
+            }
+        });
+
+    // 重新加载：从服务端重读，丢弃改动——二次确认。
+    let app_reload = app.clone();
+    let reload_btn = Element::button("重新加载")
+        .small()
+        .neutral()
+        .on_click(move |_| {
+            if let Ok(s) = app_reload.try_borrow() {
+                s.reload_confirm.set(true);
+            }
+        });
+
+    // 应用设置：保存当前改动（不退出）。
+    let app_apply = app.clone();
+    let apply_btn = Element::button("应用设置")
+        .small()
+        .neutral()
+        .on_click(move |_| {
+            if let Ok(mut s) = app_apply.try_borrow_mut() {
+                s.save();
+            }
+        });
+
+    // 保存并退出：保存成功（无报错）才退出。
+    let app_save_exit = app.clone();
+    let save_exit_btn = Element::button("保存并退出").small().on_click(move |ctx| {
+        if let Ok(mut s) = app_save_exit.try_borrow_mut()
+            && s.save()
+        {
+            ctx.request_close();
+        }
+    });
+
+    Element::row()
+        .width_match()
+        .height(48)
+        .cross(Align::Center)
+        .padding_xy(14, 0)
+        .spacing(8)
+        .bg_role(Role::Surface)
+        .child(status_dot)
+        .child(
+            Element::label_rc(status)
+                .font_size(11.5)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
+        )
+        .child(Element::leaf().width(6))
+        .child(theme_btn)
+        .child(Element::leaf().weight(1.0))
+        .child(reset_btn)
+        .child(reload_btn)
+        .child(apply_btn)
+        .child(save_exit_btn)
+}
+
+/// 「重新加载」二次确认对话框。
+fn build_reload_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Element {
+    let app_c = app.clone();
+    confirm_dialog(
+        visible,
+        "重新加载",
+        "将丢弃所有未保存的修改，从服务端重新读取配置。确定继续？",
+        "重新加载",
+        move |_| {
+            if let Ok(mut s) = app_c.try_borrow_mut() {
+                s.reload();
+            }
+            visible.set(false);
+        },
+    )
+}
+
+/// 「恢复本页」确认对话框（仅在有未保存改动时弹出）。
+fn build_reset_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Element {
+    let app_c = app.clone();
+    confirm_dialog(
+        visible,
+        "恢复本页为默认值",
+        "本页存在未保存的修改，恢复默认会丢弃这些修改。确定恢复为系统默认值？",
+        "恢复默认",
+        move |_| {
+            if let Ok(s) = app_c.try_borrow() {
+                s.reset_current_page();
+            }
+            visible.set(false);
+        },
+    )
+}
+
+/// 通用二次确认对话框：标题 + 说明 + [取消][确认]。`on_confirm` 执行后请自行关闭。
+fn confirm_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    message: &str,
+    confirm_label: &str,
+    on_confirm: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
+    let cancel = visible;
+    let frame = Element::col()
+        .width(360)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(22)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label(message)
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(4)
+                .padding_xy(18, 16),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .neutral()
+                        .on_click(move |_| cancel.set(false)),
+                )
+                .child(Element::button(confirm_label).on_click(on_confirm)),
+        );
+    Element::dialog(visible, frame)
 }

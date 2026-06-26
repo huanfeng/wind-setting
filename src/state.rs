@@ -30,14 +30,19 @@ pub struct SchemaInfo {
 pub type FieldWriter = Box<dyn Fn(&mut Config)>;
 /// 当前值取值器：供 enabled_when 联动读取某 key 的当前值。
 pub type ValueGetter = Box<dyn Fn() -> Value>;
+/// 字段加载器：把某 Config（或空 Config→取默认值）灌回对应 Signal。
+/// 供「重新加载」（从服务端配置回填）与「恢复本页」（空 Config→manifest 默认值）使用。
+pub type FieldLoader = Box<dyn Fn(&Config)>;
 
-/// 字段注册表 — 清单引擎登记的保存写回器与联动取值器。
+/// 字段注册表 — 清单引擎登记的保存写回器、联动取值器与回填加载器。
 #[derive(Default)]
 pub struct FieldRegistry {
     /// 保存时把各 Signal 值写回 Config。
     pub writers: RefCell<Vec<FieldWriter>>,
     /// key → 当前值取值器（供 enabled_when 联动）。
     pub getters: RefCell<HashMap<String, ValueGetter>>,
+    /// key → 加载器（把给定 Config 的值灌回 Signal；空 Config 时回落 manifest 默认）。
+    pub loaders: RefCell<HashMap<String, FieldLoader>>,
 }
 
 /// 应用全局状态。
@@ -66,6 +71,12 @@ pub struct AppState {
     pub status: Signal<String>,
     /// 方案管理对话框状态。
     pub schema_mgr: SchemaManagerState,
+    /// 「重新加载」二次确认对话框可见标志。
+    pub reload_confirm: Signal<bool>,
+    /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
+    pub reset_confirm: Signal<bool>,
+    /// 启动时是否成功连接到输入法服务（core）。未连接则设置只读、保存会失败。
+    pub connected: bool,
 }
 
 impl AppState {
@@ -82,6 +93,13 @@ impl AppState {
         let schemas = load_schemas();
         let theme_names = load_theme_names();
         let fonts = load_fonts();
+        // 探测 core 连接：未连接时明确提示（设置仅预览，保存将失败）。
+        let connected = rpc::probe_core_running();
+        let init_status = if connected {
+            "已连接".to_string()
+        } else {
+            "未连接到输入法服务 · 设置仅供预览".to_string()
+        };
 
         Self {
             base_config: Config::from_value(config_value.clone()),
@@ -95,13 +113,79 @@ impl AppState {
             tab: signal(0),
             // 默认主题随系统（不持久化用户切换，后续外观设置项另行处理）。
             dark: signal(crate::theme_def::system_dark()),
-            status: signal(String::from("就绪")),
+            status: signal(init_status),
             schema_mgr: SchemaManagerState::new(),
+            reload_confirm: signal(false),
+            reset_confirm: signal(false),
+            connected,
         }
     }
 
+    /// 是否存在未保存改动：跑写回器到 current 的副本上，与 base 比对有无差异。
+    pub fn is_dirty(&self) -> bool {
+        let mut probe = self.current_config.clone();
+        for w in self.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        !diff_config(&self.base_config, &probe).is_empty()
+    }
+
+    /// 当前 Tab 对应的 manifest 分组（用于「恢复本页」定位 key 集合）。
+    /// 与 `pages::all_tabs` 顺序一致；自定义页（方案/词库/统计/关于）无清单分组。
+    fn current_tab_groups(&self) -> &'static [&'static str] {
+        match self.tab.get() {
+            0 => &["schema"],
+            1 => &["input", "general"],
+            2 => &["hotkeys"],
+            3 => &["ui"],
+            6 => &["advanced"],
+            _ => &[],
+        }
+    }
+
+    /// 恢复本页为系统默认值：用空 Config 跑当前页各 key 的加载器（回落 manifest 默认）。
+    /// 仅改 Signal（控件即时显示默认值），不落盘——用户再「应用设置」持久化。
+    pub fn reset_current_page(&self) {
+        let empty = Config::from_value(Value::Object(serde_json::Map::new()));
+        let loaders = self.fields.loaders.borrow();
+        let mut n = 0usize;
+        for g in self.current_tab_groups() {
+            for (_sec, keys) in self.manifest.sections_of(g) {
+                for k in keys {
+                    if let Some(l) = loaders.get(&k) {
+                        l(&empty);
+                        n += 1;
+                    }
+                }
+            }
+        }
+        self.status.set(if n == 0 {
+            "本页无可恢复的默认项".to_string()
+        } else {
+            format!("已恢复本页 {n} 项为默认值（未保存）")
+        });
+    }
+
+    /// 从服务端重新加载配置：丢弃未保存改动，重新读取并灌回所有 Signal。
+    pub fn reload(&mut self) {
+        let fresh = rpc::call_core("config.get", &serde_json::json!({}))
+            .unwrap_or(Value::Object(serde_json::Map::new()));
+        let cfg = Config::from_value(fresh);
+        {
+            let loaders = self.fields.loaders.borrow();
+            for l in loaders.values() {
+                l(&cfg);
+            }
+        }
+        self.base_config = cfg.clone();
+        self.current_config = cfg;
+        self.status.set("已从服务端重新加载".to_string());
+    }
+
     /// 跑所有写回器把 Signal 值写回 current_config，再 diff 保存。
-    pub fn save(&mut self) {
+    /// 返回是否「可视为成功」（无错误）：无变更与保存成功均为 true，仅 RPC 报错为 false。
+    /// 供「保存&退出」据此决定是否真的退出。
+    pub fn save(&mut self) -> bool {
         let reg = self.fields.clone();
         {
             let writers = reg.writers.borrow();
@@ -112,7 +196,7 @@ impl AppState {
         let items = diff_config(&self.base_config, &self.current_config);
         if items.is_empty() {
             self.status.set("没有变更".to_string());
-            return;
+            return true;
         }
         let items_json: Vec<Value> = items
             .iter()
@@ -124,8 +208,12 @@ impl AppState {
                 self.base_config = self.current_config.clone();
                 self.status
                     .set(format!("已保存 {} 项变更", items_json.len()));
+                true
             }
-            Err(e) => self.status.set(format!("保存失败: {e}")),
+            Err(e) => {
+                self.status.set(format!("保存失败: {e}"));
+                false
+            }
         }
     }
 }
