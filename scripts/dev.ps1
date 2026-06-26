@@ -17,7 +17,7 @@
 #   clean           清理构建产物
 #   run             本机运行 (WIND_PIPE_SUFFIX=xxx .\scripts\dev.ps1 run)
 #
-# 部署配置 scripts\deploy.local.ps1:
+# 部署配置 scripts\deploy_win.local:
 #   $WIND_DIR_RELEASE  = "C:\...\WindInput"       (p 复制目标)
 #   $WIND_DIR_DEBUG    = "C:\...\WindInputDebug"  (dp 复制目标)
 #   $WIND_PIPE_SUFFIX  = ""                        (可选, run 时注入)
@@ -32,7 +32,7 @@ $ProjectRoot = Split-Path $ScriptDir -Parent
 $BinaryName  = "wind_setting_native.exe"
 
 # 加载本地部署配置
-$DeployLocal = Join-Path $ScriptDir "deploy.local.ps1"
+$DeployLocal = Join-Path $ScriptDir "deploy_win.local"
 $WIND_DIR_RELEASE  = ""
 $WIND_DIR_DEBUG    = ""
 $WIND_PIPE_SUFFIX  = ""
@@ -51,13 +51,13 @@ function Resolve-DeployDir {
     param([string]$Profile)
     if ($Profile -eq "debug") {
         if (-not $WIND_DIR_DEBUG) {
-            Err "未配置 WIND_DIR_DEBUG（deploy.local.ps1）"
+            Err "未配置 WIND_DIR_DEBUG（deploy_win.local）"
             return $null
         }
         return $WIND_DIR_DEBUG.TrimEnd('\')
     } else {
         if (-not $WIND_DIR_RELEASE) {
-            Err "未配置 WIND_DIR_RELEASE（deploy.local.ps1）"
+            Err "未配置 WIND_DIR_RELEASE（deploy_win.local）"
             return $null
         }
         return $WIND_DIR_RELEASE.TrimEnd('\')

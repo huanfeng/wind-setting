@@ -2,7 +2,7 @@
 /target/
 
 # Local deployment config (contains SSH credentials)
-scripts/deploy.local
+scripts/*.local
 
 # Agent / tooling state (not source)
 .omc/
@@ -13,6 +13,7 @@ scripts/deploy.local
 /out.png
 *.screenshot.png
 /artifacts/
+/temp/
 
 # Editor/IDE
 .vscode/
