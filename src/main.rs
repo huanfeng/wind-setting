@@ -7,6 +7,7 @@
 
 mod config;
 mod dialogs;
+mod logger;
 mod manifest;
 mod mode;
 mod pages;
@@ -22,15 +23,14 @@ use std::rc::Rc;
 use windui::prelude::*;
 
 fn main() {
-    let app_state = Rc::new(RefCell::new(state::AppState::load()));
+    // mode::init 必须最先执行：logger 的目录路径和 RPC 管道名均依赖它。
+    let args: Vec<String> = std::env::args().collect();
+    mode::init(&args);
+    logger::init();
 
-    // 参数解析（最先执行，后续逻辑依赖运行时模式）：
-    //   --mode dev/debug   开发/调试模式（影响管道名称与版本显示）
-    //   --light / --dark   覆盖初始主题（默认随系统）
-    //   --tab N            指定初始 Tab（0 起）
+    // 快速初始化：仅读系统主题（~86µs），不阻塞任何 RPC，UI 立即可显示。
+    let app_state = Rc::new(RefCell::new(state::AppState::empty()));
     {
-        let args: Vec<String> = std::env::args().collect();
-        mode::init(&args);
         let st = app_state.borrow();
         if args.iter().any(|a| a == "--light") {
             st.dark.set(false);
@@ -51,13 +51,24 @@ fn main() {
     let mut app = App::new("清风输入法设置", 820, 640)
         .frameless()
         .centered()
-        // 默认 GPU(Direct2D) 加速；离屏截图/无 GPU/远程会话会自动回退软渲染。
-        // 可用 `--no-accel` 关闭（对比/排障）。
         .accelerated(!std::env::args().any(|a| a == "--no-accel"))
-        // 最小窗口尺寸：防止缩到操作不到标题栏按钮 / Tab。
         .min_size(560, 440)
         .theme(theme_def::theme_for(start_dark));
     let th = app.theme_handle();
+
+    // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
+    let app_state_cb = app_state.clone();
+    let tx = app.channel::<state::LoadedState>(move |data| {
+        app_state_cb.borrow_mut().apply_loaded(data);
+    });
+
+    // 后台线程并行执行全部 RPC（fast-fail，管道不存在时几乎立即返回）。
+    std::thread::spawn(move || {
+        let data = state::LoadedState::fetch();
+        if tx.send(data).is_err() {
+            tracing::warn!("窗口已关闭，后台数据发送取消");
+        }
+    });
 
     let ui = shell::build(&app_state, th);
 

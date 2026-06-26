@@ -82,10 +82,13 @@ pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
         return Ok(mock_reply(method));
     }
     let endpoint = ctrl_endpoint();
-    call_core_inner(&endpoint, method, params).map_err(|e| {
-        eprintln!("[rpc] method={method} endpoint={endpoint} 失败: {e}");
-        e
-    })
+    let t = std::time::Instant::now();
+    let result = call_core_inner(&endpoint, method, params);
+    match &result {
+        Ok(_)  => tracing::debug!("rpc {} ok ({:?})", method, t.elapsed()),
+        Err(e) => tracing::warn!("rpc {} err ({:?}): {}", method, t.elapsed(), e),
+    }
+    result
 }
 
 fn call_core_inner(endpoint: &str, method: &str, params: &Value) -> Result<Value, String> {
@@ -117,7 +120,9 @@ fn connect_pipe(endpoint: &str, max_attempts: u32) -> std::io::Result<std::fs::F
             Ok(s) => return Ok(s),
             Err(e) => {
                 let code = e.raw_os_error().unwrap_or(0);
-                if (code == 231 || code == 2 || code == 3) && attempt < max_attempts {
+                // 231 = ERROR_PIPE_BUSY：服务存在但繁忙，重试有意义。
+                // 2/3 = 管道/路径不存在：服务未启动，立即失败，勿重试浪费 2s。
+                if code == 231 && attempt < max_attempts {
                     attempt += 1;
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 } else {

@@ -80,45 +80,56 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// 从 core 加载配置、清单与各列表。
-    pub fn load() -> Self {
-        let config_value = rpc::call_core("config.get", &serde_json::json!({}))
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let system_info = rpc::call_core("system.info", &serde_json::json!({}))
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let manifest_value = rpc::call_core("system.manifest", &serde_json::json!({}))
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let manifest = Manifest::from_value(&manifest_value);
-
-        let schemas = load_schemas();
-        let theme_names = load_theme_names();
-        let fonts = load_fonts();
-        // 探测 core 连接：未连接时明确提示（设置仅预览，保存将失败）。
-        let connected = rpc::probe_core_running();
-        let init_status = if connected {
-            "已连接".to_string()
-        } else {
-            "未连接到输入法服务 · 设置仅供预览".to_string()
-        };
-
+    /// 快速初始化：仅读系统主题，其余字段置空。
+    /// UI 可立即显示；真实数据由后台线程通过 [`AppState::apply_loaded`] 写入。
+    pub fn empty() -> Self {
         Self {
-            base_config: Config::from_value(config_value.clone()),
-            current_config: Config::from_value(config_value),
-            manifest,
-            system_info,
-            schemas,
-            theme_names,
-            fonts,
+            base_config: Config::from_value(Value::Object(serde_json::Map::new())),
+            current_config: Config::from_value(Value::Object(serde_json::Map::new())),
+            manifest: Manifest::from_value(&Value::Object(serde_json::Map::new())),
+            system_info: Value::Object(serde_json::Map::new()),
+            schemas: vec![],
+            theme_names: vec![],
+            fonts: vec![],
             fields: Rc::new(FieldRegistry::default()),
             tab: signal(0),
-            // 默认主题随系统（不持久化用户切换，后续外观设置项另行处理）。
             dark: signal(crate::theme_def::system_dark()),
-            status: signal(init_status),
+            status: signal("正在连接服务...".to_string()),
             schema_mgr: SchemaManagerState::new(),
             reload_confirm: signal(false),
             reset_confirm: signal(false),
-            connected,
+            connected: false,
         }
+    }
+
+    /// 后台数据就绪后在 UI 线程调用：更新非 Signal 字段，并通过 Signal 通知界面刷新。
+    ///
+    /// 局限：manifest 驱动页与下拉列表在 `shell::build()` 时已静态构建，
+    /// 本方法仅能更新 `status` Signal 和已注册的字段加载器（重连后有效）。
+    /// manifest/下拉 的动态化属于后续重构范围。
+    pub fn apply_loaded(&mut self, data: LoadedState) {
+        let cfg = Config::from_value(data.config_value);
+        // 重新填充已注册字段的 Signal（首次加载时 manifest 为空、无 loader，是空循环）。
+        {
+            let loaders = self.fields.loaders.borrow();
+            for l in loaders.values() {
+                l(&cfg);
+            }
+        }
+        self.base_config = cfg.clone();
+        self.current_config = cfg;
+        self.manifest = Manifest::from_value(&data.manifest_value);
+        self.system_info = data.system_info;
+        self.schemas = data.schemas;
+        self.theme_names = data.theme_names;
+        self.fonts = data.fonts;
+        self.connected = data.connected;
+        self.status.set(if data.connected {
+            "已连接".to_string()
+        } else {
+            "未连接到输入法服务 · 设置仅供预览".to_string()
+        });
+        tracing::info!("apply_loaded 完成, connected={}", data.connected);
     }
 
     /// 是否存在未保存改动：跑写回器到 current 的副本上，与 base 比对有无差异。
@@ -215,6 +226,56 @@ impl AppState {
                 false
             }
         }
+    }
+}
+
+/// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
+pub struct LoadedState {
+    pub config_value: Value,
+    pub system_info: Value,
+    pub manifest_value: Value,
+    pub schemas: Vec<SchemaInfo>,
+    pub theme_names: Vec<String>,
+    pub fonts: Vec<String>,
+    pub connected: bool,
+}
+
+impl LoadedState {
+    fn empty_obj() -> Value {
+        Value::Object(serde_json::Map::new())
+    }
+
+    /// 并行发起全部 RPC 调用（各自独立短连接），wall-clock = max(各调用延迟)。
+    /// 管道不存在时 fast-fail（无重试），整体几乎立即返回。
+    pub fn fetch() -> Self {
+        let t0 = std::time::Instant::now();
+
+        // 6 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
+        let h_config   = std::thread::spawn(|| rpc::call_core("config.get",      &serde_json::json!({})));
+        let h_info     = std::thread::spawn(|| rpc::call_core("system.info",     &serde_json::json!({})));
+        let h_manifest = std::thread::spawn(|| rpc::call_core("system.manifest", &serde_json::json!({})));
+        let h_schemas  = std::thread::spawn(load_schemas);
+        let h_themes   = std::thread::spawn(load_theme_names);
+        let h_fonts    = std::thread::spawn(load_fonts);
+
+        let config_res   = h_config.join().ok().and_then(|r| r.ok());
+        let system_info  = h_info.join().ok().and_then(|r| r.ok()).unwrap_or_else(Self::empty_obj);
+        let manifest_res = h_manifest.join().ok().and_then(|r| r.ok());
+        let schemas      = h_schemas.join().unwrap_or_default();
+        let theme_names  = h_themes.join().unwrap_or_default();
+        let fonts        = h_fonts.join().unwrap_or_default();
+
+        // config_value 是否为 Some 直接反映管道连接是否成功。
+        let connected      = config_res.is_some();
+        let config_value   = config_res.unwrap_or_else(Self::empty_obj);
+        let manifest_value = manifest_res.unwrap_or_else(Self::empty_obj);
+
+        tracing::info!(
+            "LoadedState::fetch 完成 (connected={connected}, 并行耗时: {:?})",
+            t0.elapsed()
+        );
+
+        Self { config_value, system_info, manifest_value, schemas, theme_names, fonts, connected }
     }
 }
 

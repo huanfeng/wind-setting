@@ -102,14 +102,14 @@ mod tests {
             "input": {
                 "enter_behavior": "commit",
                 "filter_mode": "smart",
-                "shift_temp_english": {
+                "temp_english": {
                     "enabled": true
                 }
             }
         }));
         assert_eq!(cfg.get_str("input.enter_behavior"), Some("commit"));
         assert_eq!(cfg.get_str("input.filter_mode"), Some("smart"));
-        assert_eq!(cfg.get_bool("input.shift_temp_english.enabled"), Some(true));
+        assert_eq!(cfg.get_bool("input.temp_english.enabled"), Some(true));
         assert_eq!(cfg.get_str("nonexistent.path"), None);
     }
 

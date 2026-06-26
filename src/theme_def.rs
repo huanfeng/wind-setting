@@ -62,27 +62,14 @@ pub fn theme_for(dark: bool) -> Theme {
 pub fn system_dark() -> bool {
     #[cfg(windows)]
     {
-        use std::process::Command;
-        let out = Command::new("reg")
-            .args([
-                "query",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-                "/v",
-                "AppsUseLightTheme",
-            ])
-            .output();
-        if let Ok(o) = out {
-            let s = String::from_utf8_lossy(&o.stdout);
-            // 形如 "AppsUseLightTheme    REG_DWORD    0x0"
-            if let Some(pos) = s.find("0x") {
-                let hex = s[pos + 2..]
-                    .trim_start()
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .collect::<String>();
-                if let Ok(v) = u32::from_str_radix(&hex, 16) {
-                    return v == 0; // 0 = 暗色
-                }
+        // 直接调用 winreg API，避免原先启动 reg.exe 子进程带来的 50-200ms 开销。
+        use winreg::{RegKey, enums::HKEY_CURRENT_USER};
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(key) = hkcu.open_subkey(
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) {
+            if let Ok(v) = key.get_value::<u32, _>("AppsUseLightTheme") {
+                return v == 0; // 0 = 暗色
             }
         }
         true

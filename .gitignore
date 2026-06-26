@@ -1,8 +1,9 @@
 # Rust build artifacts
 /target/
 
-# Local deployment config (contains SSH credentials)
+# Local deployment config (contains SSH credentials / local paths)
 scripts/*.local
+scripts/deploy.local.ps1
 
 # Agent / tooling state (not source)
 .omc/
