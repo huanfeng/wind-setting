@@ -17,7 +17,7 @@
 #   clean           清理构建产物
 #   run             本机运行 (WIND_PIPE_SUFFIX=xxx .\scripts\dev.ps1 run)
 #
-# 部署配置 scripts\deploy_win.local:
+# 部署配置 scripts\deploy.local.ps1:
 #   $WIND_DIR_RELEASE  = "C:\...\WindInput"       (p 复制目标)
 #   $WIND_DIR_DEBUG    = "C:\...\WindInputDebug"  (dp 复制目标)
 #   $WIND_PIPE_SUFFIX  = ""                        (可选, run 时注入)
@@ -32,7 +32,7 @@ $ProjectRoot = Split-Path $ScriptDir -Parent
 $BinaryName  = "wind_setting_native.exe"
 
 # 加载本地部署配置
-$DeployLocal = Join-Path $ScriptDir "deploy_win.local"
+$DeployLocal = Join-Path $ScriptDir "deploy.local.ps1"
 $WIND_DIR_RELEASE  = ""
 $WIND_DIR_DEBUG    = ""
 $WIND_PIPE_SUFFIX  = ""
@@ -51,13 +51,13 @@ function Resolve-DeployDir {
     param([string]$Profile)
     if ($Profile -eq "debug") {
         if (-not $WIND_DIR_DEBUG) {
-            Err "未配置 WIND_DIR_DEBUG（deploy_win.local）"
+            Err "未配置 WIND_DIR_DEBUG（deploy.local.ps1）"
             return $null
         }
         return $WIND_DIR_DEBUG.TrimEnd('\')
     } else {
         if (-not $WIND_DIR_RELEASE) {
-            Err "未配置 WIND_DIR_RELEASE（deploy_win.local）"
+            Err "未配置 WIND_DIR_RELEASE（deploy.local.ps1）"
             return $null
         }
         return $WIND_DIR_RELEASE.TrimEnd('\')
@@ -72,14 +72,28 @@ function Test-IsAdmin {
 }
 
 # 以管理员身份重新运行本脚本并传入命令，等待完成后返回退出码
+# -WindowStyle Hidden 消除闪窗；子进程将全部输出写入临时日志，父进程读回展示
 function Invoke-Elevated {
     param([string]$ElevatedCmd)
     Warn "目标目录需要管理员权限，正在提权..."
+    $TmpLog = Join-Path $env:TEMP "wind_deploy.log"
+    Remove-Item $TmpLog -ErrorAction SilentlyContinue
+
+    # *> 捕获所有流（含 Write-Host 的 stream 6）；EncodedCommand 避免路径转义问题
+    $innerCmd    = "& `"$PSCommandPath`" -Cmd `"$ElevatedCmd`" *> `"$TmpLog`""
+    $encodedCmd  = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($innerCmd))
     $proc = Start-Process pwsh -Verb RunAs -Wait -PassThru -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", $PSCommandPath,
-        "-Cmd", $ElevatedCmd
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+        "-EncodedCommand", $encodedCmd
     )
+
+    if (Test-Path $TmpLog) {
+        Get-Content $TmpLog | ForEach-Object { Write-Host $_ }
+        Remove-Item $TmpLog -ErrorAction SilentlyContinue
+    }
+    if ($proc.ExitCode -ne 0) {
+        Err "✗ 提权操作失败 (退出码: $($proc.ExitCode))"
+    }
     return $proc.ExitCode
 }
 
@@ -180,15 +194,14 @@ function Do-Copy {
         Move-Item -Force $DestPath $OldPath -ErrorAction SilentlyContinue
     }
 
-    # 复制新 exe
+    # 复制新 exe（Copy-Item 是 cmdlet，用 try/catch 而非 $LASTEXITCODE 判断成败）
     Say "▶ 复制 $SrcPath → $DestDir\"
-    Copy-Item -Force $SrcPath $DestDir
-
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $DestPath)) {
+    try {
+        Copy-Item -Force $SrcPath $DestDir -ErrorAction Stop
         Say "✓ 复制成功: $DestPath"
         return 0
-    } else {
-        Err "✗ 复制失败"
+    } catch {
+        Err "✗ 复制失败: $_"
         return 1
     }
 }
