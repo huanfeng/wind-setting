@@ -28,7 +28,7 @@ impl Capabilities {
         Self::from_value(&v)
     }
 
-    pub fn from_value(v: &Value) -> Self {
+    pub(crate) fn from_value(v: &Value) -> Self {
         let mut entries = HashMap::new();
         if let Some(arr) = v.get("configKeys").and_then(|x| x.as_array()) {
             for it in arr {
@@ -112,12 +112,30 @@ mod tests {
 
     #[test]
     fn control_type_matrix() {
+        // 正例：每种控件 → 兼容类型
         assert!(control_type_compatible("toggle", "bool"));
-        assert!(control_type_compatible("checkbox_group", "strlist"));
-        assert!(control_type_compatible("dialog_button", "map"));
+        assert!(control_type_compatible("select", "str"));
+        assert!(control_type_compatible("select", "enum"));
+        assert!(control_type_compatible("segmented", "str"));
+        assert!(control_type_compatible("segmented", "enum"));
+        assert!(control_type_compatible("slider", "int"));
+        assert!(control_type_compatible("slider", "float"));
+        assert!(control_type_compatible("number", "int"));
         assert!(control_type_compatible("number", "float"));
+        assert!(control_type_compatible("string", "str"));
+        assert!(control_type_compatible("checkbox_group", "strlist"));
+        assert!(control_type_compatible("dialog_button", "str"));
+        assert!(control_type_compatible("dialog_button", "strlist"));
+        assert!(control_type_compatible("dialog_button", "map"));
+        // 反例：不兼容组合
         assert!(!control_type_compatible("toggle", "str"));
         assert!(!control_type_compatible("checkbox_group", "bool"));
+        assert!(!control_type_compatible("string", "int"));
+        assert!(!control_type_compatible("dialog_button", "bool"));
+        assert!(!control_type_compatible("slider", "str"));
+        assert!(!control_type_compatible("select", "int"));
+        // 未知控件恒不兼容
+        assert!(!control_type_compatible("mystery", "str"));
     }
 
     /// 守护：内嵌清单每个 key ∈ 快照，且控件与类型兼容。失败时打印全部不一致项。

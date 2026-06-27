@@ -48,6 +48,7 @@ pub fn build_spaced_text_dialog(
         .child(
             Element::text_input(text, "按空格分隔")
                 .multiline()
+                .wrap(true)
                 .width_match()
                 .height(96)
                 .margin_xy(18, 6),
@@ -77,6 +78,9 @@ pub fn build_spaced_text_dialog(
 }
 
 /// map → multi-line text（每行一对 `原符号=替换`）。
+///
+/// 不变量：键不含 `=`——`=` 是行内键值分隔符，含 `=` 的键经 [`rows_to_map`]
+/// 回读会被错误截断；故此降级编辑器仅适用于键无 `=` 的映射（标点映射满足）。
 pub fn map_to_rows(map: &Map<String, Value>) -> String {
     let mut pairs: Vec<String> = map
         .iter()
@@ -87,6 +91,9 @@ pub fn map_to_rows(map: &Map<String, Value>) -> String {
 }
 
 /// multi-line text → map（去空白、跳过无 `=` 行）。
+///
+/// 不变量：键不含 `=`——按首个 `=` 切分（`split_once`），故键侧出现 `=` 会被
+/// 截断到分隔符前；与 [`map_to_rows`] 对称，仅适用于键无 `=` 的映射。
 pub fn rows_to_map(text: &str) -> Map<String, Value> {
     let mut m = Map::new();
     for line in text.lines() {

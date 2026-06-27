@@ -23,9 +23,9 @@ use std::rc::Rc;
 
 use windui::prelude::*;
 
-/// 启动一条后台线程拉取数据并在 UI 线程 apply。重连复用此入口。
+/// 同步拉取数据并 apply；连接不存在时 fast-fail 立即返回。重连复用此入口。
 ///
-/// 重连直接同步 fetch（设置操作低频，连接不存在时 fast-fail 几乎立即返回）；
+/// 设置操作低频，故直接在调用线程同步 fetch（无后台线程）；
 /// 若重连后仍失败，`apply_loaded` 会再次把 `conn_failed` 置 true，对话框保持。
 pub fn main_reconnect(app: &Rc<RefCell<state::AppState>>) {
     let data = state::LoadedState::fetch();
