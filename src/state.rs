@@ -331,6 +331,8 @@ fn load_theme_names() -> Vec<String> {
         .unwrap_or_default()
 }
 
+// 测试模块后仍有 load_schemas 等私有辅助函数；局部豁免 toolchain 新增的风格 lint。
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

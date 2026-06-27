@@ -91,6 +91,9 @@ pub fn diff_config(base: &Config, current: &Config) -> Vec<ConfigItem> {
     items
 }
 
+// 测试模块后仍有 diff_value 等私有辅助函数；toolchain 升级新增的 items_after_test_module
+// lint 仅为风格性约束，此处局部豁免以保持函数就近声明。
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

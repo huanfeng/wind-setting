@@ -65,12 +65,11 @@ pub fn system_dark() -> bool {
         // 直接调用 winreg API，避免原先启动 reg.exe 子进程带来的 50-200ms 开销。
         use winreg::{RegKey, enums::HKEY_CURRENT_USER};
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(key) = hkcu.open_subkey(
-            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-        ) {
-            if let Ok(v) = key.get_value::<u32, _>("AppsUseLightTheme") {
-                return v == 0; // 0 = 暗色
-            }
+        if let Ok(key) =
+            hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            && let Ok(v) = key.get_value::<u32, _>("AppsUseLightTheme")
+        {
+            return v == 0; // 0 = 暗色
         }
         true
     }

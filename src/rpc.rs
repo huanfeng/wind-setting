@@ -134,6 +134,7 @@ fn connect_pipe(endpoint: &str, max_attempts: u32) -> std::io::Result<std::fs::F
 }
 
 /// 探测核心是否在运行。
+#[allow(dead_code)]
 pub fn probe_core_running() -> bool {
     call_core("system.status", &json!({})).is_ok()
 }
@@ -143,6 +144,8 @@ pub fn is_mock() -> bool {
     std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1")
 }
 
+// 测试模块后仍有 mock_reply 等离线实现；局部豁免 toolchain 新增的风格 lint。
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

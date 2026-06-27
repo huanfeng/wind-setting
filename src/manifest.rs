@@ -446,7 +446,7 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
         .iter()
-        .map(|o| (o.value.clone(), signal(cur.iter().any(|c| *c == o.value))))
+        .map(|o| (o.value.clone(), signal(cur.contains(&o.value))))
         .collect();
 
     // writer：收集勾选 → strlist（经 collect_checked 单一真相源）
@@ -646,7 +646,7 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
         .iter()
-        .map(|o| (o.value.clone(), signal(cur.iter().any(|c| *c == o.value))))
+        .map(|o| (o.value.clone(), signal(cur.contains(&o.value))))
         .collect();
     let visible = signal(false);
 

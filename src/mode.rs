@@ -56,14 +56,14 @@ fn detect(args: &[String]) -> AppMode {
     }
 
     // 2. 程序目录文件检测
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.join("wind_input_dev.exe").exists() {
-                return AppMode::Dev;
-            }
-            if dir.join("wind_input_debug.exe").exists() {
-                return AppMode::Debug;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        if dir.join("wind_input_dev.exe").exists() {
+            return AppMode::Dev;
+        }
+        if dir.join("wind_input_debug.exe").exists() {
+            return AppMode::Debug;
         }
     }
 
