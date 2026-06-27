@@ -18,3 +18,12 @@ winreg = "0.52"
 
 [features]
 default = []
+
+[build-dependencies]
+# 仅 Windows 目标嵌入图标 / 版本信息 / manifest（DPI 感知），参考 core
+winresource = "0.1"
+
+[profile.dev]
+# 设置应用在 debug 构建下渲染/布局也需流畅（避免 dev 版卡顿）；
+# d2d 加速的是 GPU 呈现，CPU 侧布局/合成靠此优化档。编译稍慢、运行顺滑。
+opt-level = 1
