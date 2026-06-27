@@ -1,125 +1,233 @@
 {
  "schema": {
+  "active": "",
+  "available": [],
   "primary_codetable": "",
-  "primary_pinyin": ""
+  "primary_pinyin": "",
+  "pinyin": {
+   "show_code_hint": true,
+   "use_smart_compose": true,
+   "candidate_order": "smart",
+   "separator": "auto",
+   "fuzzy": {
+    "enabled": false,
+    "zh_z": false,
+    "ch_c": false,
+    "sh_s": false,
+    "n_l": false,
+    "f_h": false,
+    "r_l": false,
+    "an_ang": false,
+    "en_eng": false,
+    "in_ing": false,
+    "ian_iang": false,
+    "uan_uang": false
+   }
+  },
+  "quick_input": {
+   "enabled": true,
+   "decimal_places": 6,
+   "force_vertical": false
+  },
+  "special_modes": [],
+  "mix_modes": [
+   {
+    "id": "quick_mix",
+    "members": [
+     "quick_input",
+     "pinyin",
+     "english"
+    ],
+    "name": "快捷",
+    "short_name": "快",
+    "trigger_keys": [
+     "semicolon"
+    ]
+   }
+  ]
  },
  "input": {
-  "auto_pair": {
-   "chinese": true,
-   "english": true
-  },
-  "punct_follow_mode": false,
-  "smart_punct_after_digit": true,
-  "smart_punct_list": ".,:",
-  "smart_symbol_mode": false,
-  "smart_symbol_timeout_ms": 500,
-  "smart_symbol_chars": "。，？！：；、～￥·……——",
-  "punct_custom": {
-   "enabled": false
-  },
+  "filter_mode": "smart",
   "enter_behavior": "commit",
   "space_on_empty_behavior": "commit",
-  "code_commit": {
-   "auto_commit_at_full": false,
-   "auto_commit_block_on_pinyin": true,
-   "auto_commit_min_len": 0,
-   "top_code_commit": false,
-   "clear_on_empty_max": false
+  "numpad_behavior": "direct",
+  "default": {
+   "remember_last_state": false,
+   "chinese_mode": true,
+   "full_width": false,
+   "chinese_punct": true
   },
-  "shift_temp_english": {
+  "punct": {
+   "follow_mode": false,
+   "smart_after_digit": true,
+   "smart_list": ".,:",
+   "custom_enabled": false,
+   "custom_mappings": {}
+  },
+  "symbol": {
+   "smart_mode": false,
+   "smart_timeout_ms": 500,
+   "smart_chars": "。，？！：；、～￥·……——"
+  },
+  "auto_pair": {
+   "chinese": false,
+   "english": false,
+   "chinese_pairs": [
+    "（）",
+    "【】",
+    "｛｝",
+    "《》",
+    "〈〉",
+    "「」",
+    "『』"
+   ],
+   "english_pairs": [
+    "()",
+    "[]",
+    "{}"
+   ]
+  },
+  "temp_english": {
    "enabled": true,
-   "show_english_candidates": true,
+   "show_candidates": true,
    "shift_behavior": "temp_english",
+   "trigger_keys": [],
    "allow_symbols": false,
    "space_as_input": false
   },
   "capslock": {
    "cancel_on_mode_switch": false
   },
-  "filter_mode": "smart",
-  "pinyin_separator": "auto",
-  "numpad_behavior": "",
-  "phrase": {
-   "min_prefix_length": 2,
-   "max_display_chars": 30
+  "temp_pinyin": {
+   "trigger_keys": [
+    "backtick"
+   ]
   },
-  "url_input": {
-   "enabled": false
+  "url": {
+   "enabled": false,
+   "prefixes": [
+    "www.",
+    "http",
+    "https",
+    "ftp.",
+    "bbs."
+   ]
+  },
+  "code_commit": {
+   "auto_commit_at_full": false,
+   "auto_commit_min_len": 0,
+   "clear_on_empty_max": false,
+   "top_code_commit": false,
+   "auto_commit_block_on_pinyin": true
+  },
+  "s2t": {
+   "enabled": false,
+   "variant": "s2t"
+  },
+  "cmdbar": {
+   "enabled": false,
+   "candidate_prefix": "⚡"
+  },
+  "phrase": {
+   "min_prefix": 2,
+   "max_display_chars": 30
   }
  },
- "hotkeys": {
+ "keys": {
+  "toggle_mode_keys": [
+   "lshift",
+   "rshift"
+  ],
   "commit_on_switch": true,
-  "switch_engine": "",
-  "toggle_full_width": "",
-  "toggle_punct": "",
-  "toggle_s2t": "",
-  "toggle_toolbar": "",
-  "open_settings": "",
-  "add_word": "",
-  "pin_candidate": "",
-  "delete_candidate": ""
+  "switch_engine": "ctrl+shift+e",
+  "toggle_full_width": "shift+space",
+  "toggle_punct": "ctrl+.",
+  "toggle_toolbar": "ctrl+shift+\\",
+  "open_settings": "ctrl+shift+]",
+  "add_word": "ctrl+equal",
+  "toggle_s2t": "ctrl+shift+j",
+  "activate_ime": "ctrl+shift+[",
+  "pin_candidate": "ctrl+number",
+  "delete_candidate": "ctrl+shift+number",
+  "global_hotkeys": [],
+  "select_key_groups": [
+   "semicolon_quote"
+  ],
+  "page_keys": [
+   "pageupdown",
+   "minus_equal"
+  ],
+  "highlight_keys": [
+   "arrows",
+   "tab"
+  ],
+  "select_char_keys": [],
+  "overflow": {
+   "number_key": "ignore",
+   "select_key": "ignore",
+   "select_char_key": "ignore"
+  }
  },
  "ui": {
   "candidate": {
    "per_page": 7,
+   "per_page_extended": 0,
    "layout": "horizontal",
    "preedit_display": "app_inline",
    "hide_window": false,
-   "font_size": 0,
-   "max_chars": 0,
+   "font_size": 18.0,
+   "font_size_follow_theme": true,
+   "pager_bar_display": "",
+   "page_number_display": "",
+   "max_chars": 16,
    "index_labels": "",
    "flip_when_above": false
+  },
+  "font": {
+   "family": "",
+   "path": "",
+   "render_mode": ""
+  },
+  "theme": {
+   "name": "default",
+   "style": "system"
   },
   "mode_indicator": {
    "style": "short"
   },
   "tooltip": {
-   "delay": 100,
-   "code": {
-    "enabled": true
-   },
-   "pinyin": {
-    "enabled": true,
-    "heteronyms": true,
-    "max_readings": 0
-   },
-   "chaizi": {
-    "enabled": false
-   },
-   "debug": {
-    "enabled": false
-   }
+   "delay": 200,
+   "code_enabled": true,
+   "pinyin_enabled": true,
+   "pinyin_heteronyms": true,
+   "pinyin_max_readings": 0,
+   "chaizi_enabled": false,
+   "debug_enabled": false
   },
-  "status_tip": {
+  "status": {
+   "enabled": true,
+   "duration": 800,
+   "display_mode": "temp",
+   "schema_name_style": "full",
+   "position_mode": "follow_caret",
    "offset_x": 0,
    "offset_y": 0,
-   "schema_name_style": "full"
+   "custom_x": 0,
+   "custom_y": 0
+  },
+  "toolbar": {
+   "visible": true,
+   "hide_in_fullscreen": true
   }
  },
- "general": {
-  "default_chinese_mode": true,
-  "default_chinese_punct": true,
-  "default_full_width": false,
-  "remember_last_state": false
+ "stats": {
+  "enabled": true,
+  "track_english": true
  },
- "features": {
-  "stats": {
-   "enabled": true,
-   "track_english": false
-  },
-  "s2t": {
-   "enabled": false,
-   "variant": ""
-  },
-  "quick_input": {
-   "enabled": false,
-   "decimal_places": 6
-  },
-  "cmdbar": {
-   "enabled": false
-  }
+ "compat": {
+  "host_render_processes": []
  },
  "debug": {
-  "log_level": "info"
+  "log_level": ""
  }
 }

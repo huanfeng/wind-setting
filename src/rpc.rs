@@ -133,12 +133,6 @@ fn connect_pipe(endpoint: &str, max_attempts: u32) -> std::io::Result<std::fs::F
     }
 }
 
-/// 探测核心是否在运行。
-#[allow(dead_code)]
-pub fn probe_core_running() -> bool {
-    call_core("system.status", &json!({})).is_ok()
-}
-
 /// 是否处于离线 mock 模式。
 pub fn is_mock() -> bool {
     std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1")

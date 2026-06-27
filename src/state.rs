@@ -92,7 +92,7 @@ impl AppState {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
             manifest: Manifest::from_embedded(),
-            capabilities: Capabilities::default(),
+            capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
             schemas: vec![],
             theme_names: vec![],

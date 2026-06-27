@@ -442,7 +442,7 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
     let cur: Vec<String> = cfg
         .get_array(key)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+        .unwrap_or_else(|| default_strlist(state, key));
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
         .iter()
@@ -475,16 +475,17 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         }),
     );
 
-    // loader：从 Config 回填各 signal
+    // loader：从 Config 回填各 signal（缺省回落 capability 默认）
     let sigs_l = sigs.clone();
     let kl = key.to_string();
+    let def_l = default_strlist(state, key);
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
             let cur: Vec<String> = c
                 .get_array(&kl)
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
+                .unwrap_or_else(|| def_l.clone());
             for (v, s) in &sigs_l {
                 s.set(cur.iter().any(|c| c == v));
             }
@@ -498,6 +499,21 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         .map(|((_, s), o)| Element::checkbox(&o.label, *s).fg_role(Role::Text))
         .collect();
     Element::grid(2, 10, cells)
+}
+
+/// 读 capability 默认值并解析为字符串数组（strlist 类型回落用）。
+fn default_strlist(state: &AppState, key: &str) -> Vec<String> {
+    state
+        .capabilities
+        .default_for(key)
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// 读 capability 默认值并解析为键值对 map（map 类型回落用）。
+fn default_map(state: &AppState, key: &str) -> serde_json::Map<String, Value> {
+    state.capabilities.default_for(key).as_object().cloned().unwrap_or_default()
 }
 
 /// 按声明顺序收集被勾选的选项值（写回 strlist 用）。
@@ -589,11 +605,11 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
 fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     use crate::dialogs::field_dialogs::{build_spaced_text_dialog, spaced_to_strlist, strlist_to_spaced};
 
-    // 读当前值播种文本框 signal
+    // 读当前值播种文本框 signal（缺省回落 capability 默认）
     let cur: Vec<String> = cfg
         .get_array(key)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+        .unwrap_or_else(|| default_strlist(state, key));
     let text = signal(strlist_to_spaced(&cur));
     let visible = signal(false);
 
@@ -607,15 +623,16 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
         c.set_path(&kw, Value::Array(arr));
     }));
 
-    // loader：从 Config 回填文本框
+    // loader：从 Config 回填文本框（缺省回落 capability 默认）
     let kl = key.to_string();
+    let def_l = default_strlist(state, key);
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
             let cur: Vec<String> = c
                 .get_array(&kl)
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
+                .unwrap_or_else(|| def_l.clone());
             text.set(strlist_to_spaced(&cur));
         }),
     );
@@ -639,10 +656,11 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
 fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
 
+    let defaults = default_strlist(state, key);
     let cur: Vec<String> = cfg
         .get_array(key)
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
+        .unwrap_or_else(|| defaults.clone());
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
         .iter()
@@ -663,29 +681,22 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
             c.set_path(&kw, Value::Array(arr));
         }));
 
-    // loader
+    // loader（缺省回落 capability 默认）
     let sigs_l = sigs.clone();
     let kl = key.to_string();
+    let def_l = defaults.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
             let cur: Vec<String> = c
                 .get_array(&kl)
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default();
+                .unwrap_or_else(|| def_l.clone());
             for (v, s) in &sigs_l {
                 s.set(cur.iter().any(|c| c == v));
             }
         }),
     );
-
-    // 恢复默认
-    let defaults: Vec<String> = {
-        let d = state.capabilities.default_for(key);
-        d.as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-            .unwrap_or_default()
-    };
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
@@ -696,11 +707,12 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
 fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     use crate::dialogs::field_dialogs::{build_map_dialog, map_to_rows, rows_to_map};
 
+    let def_map = default_map(state, key);
     let cur_map = cfg
         .get_path(key)
         .and_then(|v| v.as_object())
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_else(|| def_map.clone());
     let text = signal(map_to_rows(&cur_map));
     let visible = signal(false);
 
@@ -715,8 +727,9 @@ fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Conf
             c.set_path(&kw, Value::Object(m));
         }));
 
-    // loader
+    // loader（缺省回落 capability 默认）
     let kl = key.to_string();
+    let def_l = def_map.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
@@ -724,17 +737,13 @@ fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Conf
                 .get_path(&kl)
                 .and_then(|v| v.as_object())
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| def_l.clone());
             text.set(map_to_rows(&m));
         }),
     );
 
     // 恢复默认
-    let def_text = {
-        let d = state.capabilities.default_for(key);
-        let m = d.as_object().cloned().unwrap_or_default();
-        map_to_rows(&m)
-    };
+    let def_text = map_to_rows(&def_map);
 
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_map_dialog(visible, &item.label, &hint, text, def_text);
