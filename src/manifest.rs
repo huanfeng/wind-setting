@@ -537,8 +537,57 @@ fn schema_options(state: &AppState, kind: Option<&str>) -> (Vec<String>, Vec<Str
     (values, labels)
 }
 
-/// dialog_button 控件：外层「设置…」按钮（受 gate_key 联动），点开空格分隔文本对话框。
+/// 门控按钮包装：有 gate_key 时用 visible_when 双按钮；无则单按钮。对话框放在 stack 内。
+fn wrap_gate_btn(state: &AppState, item: &MItem, visible: Signal<bool>, dlg: Element) -> Element {
+    if let Some(gate) = &item.gate_key {
+        let reg_on = state.fields.clone();
+        let gk_on = gate.clone();
+        let reg_off = state.fields.clone();
+        let gk_off = gate.clone();
+        let active_btn = Element::button("设置…")
+            .small()
+            .neutral()
+            .on_click(move |_| visible.set(true))
+            .visible_when(move || {
+                let g = reg_on.getters.borrow();
+                g.get(&gk_on)
+                    .map(|get| get().as_bool() == Some(true))
+                    .unwrap_or(true)
+            });
+        let inactive_btn = Element::button("设置…")
+            .small()
+            .neutral()
+            .disabled(true)
+            .visible_when(move || {
+                let g = reg_off.getters.borrow();
+                g.get(&gk_off)
+                    .map(|get| get().as_bool() != Some(true))
+                    .unwrap_or(false)
+            });
+        Element::stack().child(active_btn).child(inactive_btn).child(dlg)
+    } else {
+        let btn = Element::button("设置…")
+            .small()
+            .neutral()
+            .on_click(move |_| visible.set(true));
+        Element::stack().child(btn).child(dlg)
+    }
+}
+
+/// dialog_button 控件：按 capability 类型分派到具体构建器。
 fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
+    if cap_ty == "map" {
+        build_dialog_button_map(state, key, item, cfg)
+    } else if !item.options.is_empty() {
+        build_dialog_button_pairs(state, key, item, cfg)
+    } else {
+        build_dialog_button_spaced(state, key, item, cfg)
+    }
+}
+
+/// dialog_button（strlist，无 options）：空格分隔文本编辑。
+fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     use crate::dialogs::field_dialogs::{build_spaced_text_dialog, spaced_to_strlist, strlist_to_spaced};
 
     // 读当前值播种文本框 signal
@@ -582,45 +631,115 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
         strlist_to_spaced(&v)
     };
 
-    // 对话框面板
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_spaced_text_dialog(visible, &item.label, &hint, text, def_text);
+    wrap_gate_btn(state, item, visible, dlg)
+}
 
-    // 外层按钮 + 门控联动：windui 无 disabled_when，用 visible_when 双按钮实现
-    // 启用态按钮（gate 开或无 gate 时可见）；禁用态占位（gate 关时可见）
-    if let Some(gate) = &item.gate_key {
-        let reg_on = state.fields.clone();
-        let gk_on = gate.clone();
-        let reg_off = state.fields.clone();
-        let gk_off = gate.clone();
-        let active_btn = Element::button("设置…")
-            .small()
-            .neutral()
-            .on_click(move |_| visible.set(true))
-            .visible_when(move || {
-                let g = reg_on.getters.borrow();
-                g.get(&gk_on)
-                    .map(|get| get().as_bool() == Some(true))
-                    .unwrap_or(true)
-            });
-        let inactive_btn = Element::button("设置…")
-            .small()
-            .neutral()
-            .disabled(true)
-            .visible_when(move || {
-                let g = reg_off.getters.borrow();
-                g.get(&gk_off)
-                    .map(|get| get().as_bool() != Some(true))
-                    .unwrap_or(false)
-            });
-        Element::stack().child(active_btn).child(inactive_btn).child(dlg)
-    } else {
-        let btn = Element::button("设置…")
-            .small()
-            .neutral()
-            .on_click(move |_| visible.set(true));
-        Element::stack().child(btn).child(dlg)
-    }
+/// dialog_button（strlist with options）：勾选配对清单。
+fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::build_pairs_dialog;
+
+    let cur: Vec<String> = cfg
+        .get_array(key)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let opts = item.options.clone();
+    let sigs: Vec<(String, Signal<bool>)> = opts
+        .iter()
+        .map(|o| (o.value.clone(), signal(cur.iter().any(|c| *c == o.value))))
+        .collect();
+    let visible = signal(false);
+
+    // writer
+    let sigs_w = sigs.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let pairs: Vec<(&str, bool)> = sigs_w.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
+            let arr: Vec<Value> = collect_checked(&pairs).into_iter().map(Value::String).collect();
+            c.set_path(&kw, Value::Array(arr));
+        }));
+
+    // loader
+    let sigs_l = sigs.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur: Vec<String> = c
+                .get_array(&kl)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            for (v, s) in &sigs_l {
+                s.set(cur.iter().any(|c| c == v));
+            }
+        }),
+    );
+
+    // 恢复默认
+    let defaults: Vec<String> = {
+        let d = state.capabilities.default_for(key);
+        d.as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
+    wrap_gate_btn(state, item, visible, dlg)
+}
+
+/// dialog_button（map）：键值对 text_input 降级实现。
+fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::{build_map_dialog, map_to_rows, rows_to_map};
+
+    let cur_map = cfg
+        .get_path(key)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let text = signal(map_to_rows(&cur_map));
+    let visible = signal(false);
+
+    // writer
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let m = rows_to_map(&text.get());
+            c.set_path(&kw, Value::Object(m));
+        }));
+
+    // loader
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let m = c
+                .get_path(&kl)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            text.set(map_to_rows(&m));
+        }),
+    );
+
+    // 恢复默认
+    let def_text = {
+        let d = state.capabilities.default_for(key);
+        let m = d.as_object().cloned().unwrap_or_default();
+        map_to_rows(&m)
+    };
+
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_map_dialog(visible, &item.label, &hint, text, def_text);
+    wrap_gate_btn(state, item, visible, dlg)
 }
 
 /// 解析 `enabled_when`，仅支持 `key == value`（manifest 现有用法均为 `== true`）。
