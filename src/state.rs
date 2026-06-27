@@ -12,6 +12,7 @@ use std::rc::Rc;
 use serde_json::Value;
 use windui::prelude::*;
 
+use crate::capabilities::Capabilities;
 use crate::config::{Config, diff_config};
 use crate::dialogs::schema_manager::SchemaManagerState;
 use crate::manifest::Manifest;
@@ -51,8 +52,10 @@ pub struct AppState {
     pub base_config: Config,
     /// 当前编辑中的配置（保存时由写回器填充）。
     pub current_config: Config,
-    /// 设置清单（system.manifest）。
+    /// 设置清单（内嵌清单，启动即就位）。
     pub manifest: Manifest,
+    /// core 能力契约（system.capabilities，异步加载后就位）。
+    pub capabilities: Capabilities,
     /// 系统信息（system.info）。
     pub system_info: Value,
     /// 方案列表（schema.list）。
@@ -86,7 +89,8 @@ impl AppState {
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
-            manifest: Manifest::from_value(&Value::Object(serde_json::Map::new())),
+            manifest: Manifest::from_embedded(),
+            capabilities: Capabilities::default(),
             system_info: Value::Object(serde_json::Map::new()),
             schemas: vec![],
             theme_names: vec![],
@@ -118,7 +122,7 @@ impl AppState {
         }
         self.base_config = cfg.clone();
         self.current_config = cfg;
-        self.manifest = Manifest::from_value(&data.manifest_value);
+        self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
         self.schemas = data.schemas;
         self.theme_names = data.theme_names;
@@ -233,7 +237,7 @@ impl AppState {
 pub struct LoadedState {
     pub config_value: Value,
     pub system_info: Value,
-    pub manifest_value: Value,
+    pub capabilities_value: Value,
     pub schemas: Vec<SchemaInfo>,
     pub theme_names: Vec<String>,
     pub fonts: Vec<String>,
@@ -251,31 +255,31 @@ impl LoadedState {
         let t0 = std::time::Instant::now();
 
         // 6 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
-        let h_config   = std::thread::spawn(|| rpc::call_core("config.get",      &serde_json::json!({})));
-        let h_info     = std::thread::spawn(|| rpc::call_core("system.info",     &serde_json::json!({})));
-        let h_manifest = std::thread::spawn(|| rpc::call_core("system.manifest", &serde_json::json!({})));
-        let h_schemas  = std::thread::spawn(load_schemas);
-        let h_themes   = std::thread::spawn(load_theme_names);
-        let h_fonts    = std::thread::spawn(load_fonts);
+        let h_config  = std::thread::spawn(|| rpc::call_core("config.get",          &serde_json::json!({})));
+        let h_info    = std::thread::spawn(|| rpc::call_core("system.info",         &serde_json::json!({})));
+        let h_caps    = std::thread::spawn(|| rpc::call_core("system.capabilities", &serde_json::json!({})));
+        let h_schemas = std::thread::spawn(load_schemas);
+        let h_themes  = std::thread::spawn(load_theme_names);
+        let h_fonts   = std::thread::spawn(load_fonts);
 
-        let config_res   = h_config.join().ok().and_then(|r| r.ok());
-        let system_info  = h_info.join().ok().and_then(|r| r.ok()).unwrap_or_else(Self::empty_obj);
-        let manifest_res = h_manifest.join().ok().and_then(|r| r.ok());
-        let schemas      = h_schemas.join().unwrap_or_default();
-        let theme_names  = h_themes.join().unwrap_or_default();
-        let fonts        = h_fonts.join().unwrap_or_default();
+        let config_res  = h_config.join().ok().and_then(|r| r.ok());
+        let system_info = h_info.join().ok().and_then(|r| r.ok()).unwrap_or_else(Self::empty_obj);
+        let caps_res    = h_caps.join().ok().and_then(|r| r.ok());
+        let schemas     = h_schemas.join().unwrap_or_default();
+        let theme_names = h_themes.join().unwrap_or_default();
+        let fonts       = h_fonts.join().unwrap_or_default();
 
         // config_value 是否为 Some 直接反映管道连接是否成功。
-        let connected      = config_res.is_some();
-        let config_value   = config_res.unwrap_or_else(Self::empty_obj);
-        let manifest_value = manifest_res.unwrap_or_else(Self::empty_obj);
+        let connected         = config_res.is_some();
+        let config_value      = config_res.unwrap_or_else(Self::empty_obj);
+        let capabilities_value = caps_res.unwrap_or_else(Self::empty_obj);
 
         tracing::info!(
             "LoadedState::fetch 完成 (connected={connected}, 并行耗时: {:?})",
             t0.elapsed()
         );
 
-        Self { config_value, system_info, manifest_value, schemas, theme_names, fonts, connected }
+        Self { config_value, system_info, capabilities_value, schemas, theme_names, fonts, connected }
     }
 }
 
@@ -317,6 +321,22 @@ fn load_theme_names() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loaded_state_uses_embedded_manifest_in_mock() {
+        // 启用 mock，fetch 不依赖真实 core
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let data = LoadedState::fetch();
+        assert!(data.connected, "mock 下应视为已连接");
+        // capabilities 从 mock 的 system.capabilities 返回，非空
+        let caps = Capabilities::from_value(&data.capabilities_value);
+        assert!(caps.entries.len() >= 114, "mock capabilities 应含全部 key");
+    }
 }
 
 /// 加载系统字体列表（system.fonts）。

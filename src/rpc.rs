@@ -167,16 +167,15 @@ mod tests {
     }
 }
 
-/// 内置真实 manifest / config（由 core 的 data/settings/manifest.toml 转换而来），
-/// 仅在 WIND_RPC_MOCK=1 时使用，使无 core 截图/预览贴近真实界面。
-const MOCK_MANIFEST: &str = include_str!("mockdata/manifest.json");
+/// 内置 capability 快照（与 src/assets 同一文件），mock 模式离线提供能力契约。
+const MOCK_CAPABILITIES: &str = include_str!("assets/capabilities.snapshot.json");
 const MOCK_CONFIG: &str = include_str!("mockdata/config.json");
 
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str) -> Value {
     match method {
-        "system.manifest" => serde_json::from_str(MOCK_MANIFEST).unwrap_or_else(|_| json!({})),
+        "system.capabilities" => serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({})),
         "config.get" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
         "schema.list" => json!([
             { "id": "wubi86", "name": "五笔 86", "kind": "codetable" },
