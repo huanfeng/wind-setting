@@ -23,6 +23,15 @@ use std::rc::Rc;
 
 use windui::prelude::*;
 
+/// 启动一条后台线程拉取数据并在 UI 线程 apply。重连复用此入口。
+///
+/// 重连直接同步 fetch（设置操作低频，连接不存在时 fast-fail 几乎立即返回）；
+/// 若重连后仍失败，`apply_loaded` 会再次把 `conn_failed` 置 true，对话框保持。
+pub fn main_reconnect(app: &Rc<RefCell<state::AppState>>) {
+    let data = state::LoadedState::fetch();
+    app.borrow_mut().apply_loaded(data);
+}
+
 fn main() {
     // mode::init 必须最先执行：logger 的目录路径和 RPC 管道名均依赖它。
     let args: Vec<String> = std::env::args().collect();

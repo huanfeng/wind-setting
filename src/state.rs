@@ -80,6 +80,8 @@ pub struct AppState {
     pub reset_confirm: Signal<bool>,
     /// 启动时是否成功连接到输入法服务（core）。未连接则设置只读、保存会失败。
     pub connected: bool,
+    /// 正式模式下连接失败标志：true 时显示阻断对话框；mock 模式始终 false。
+    pub conn_failed: Signal<bool>,
 }
 
 impl AppState {
@@ -103,6 +105,7 @@ impl AppState {
             reload_confirm: signal(false),
             reset_confirm: signal(false),
             connected: false,
+            conn_failed: signal(false),
         }
     }
 
@@ -128,11 +131,16 @@ impl AppState {
         self.theme_names = data.theme_names;
         self.fonts = data.fonts;
         self.connected = data.connected;
-        self.status.set(if data.connected {
-            "已连接".to_string()
+        if data.connected {
+            self.status.set("已连接".to_string());
+            self.conn_failed.set(false);
+        } else if rpc::is_mock() {
+            self.status.set("离线预览（mock）".to_string());
+            self.conn_failed.set(false);
         } else {
-            "未连接到输入法服务 · 设置仅供预览".to_string()
-        });
+            self.status.set("未连接到输入法服务".to_string());
+            self.conn_failed.set(true);
+        }
         tracing::info!("apply_loaded 完成, connected={}", data.connected);
     }
 
@@ -327,8 +335,12 @@ fn load_theme_names() -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// 所有涉及 WIND_RPC_MOCK 环境变量的测试必须持有此锁，防止并行 race。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn loaded_state_uses_embedded_manifest_in_mock() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // 启用 mock，fetch 不依赖真实 core
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let data = LoadedState::fetch();
@@ -336,6 +348,45 @@ mod tests {
         // capabilities 从 mock 的 system.capabilities 返回，非空
         let caps = Capabilities::from_value(&data.capabilities_value);
         assert!(caps.entries.len() >= 114, "mock capabilities 应含全部 key");
+        // 测试结束前恢复现场
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    #[test]
+    fn non_mock_disconnect_sets_conn_failed() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let mut st = AppState::empty();
+        let data = LoadedState {
+            config_value: Value::Object(Default::default()),
+            system_info: Value::Object(Default::default()),
+            capabilities_value: Value::Object(Default::default()),
+            schemas: vec![],
+            theme_names: vec![],
+            fonts: vec![],
+            connected: false,
+        };
+        st.apply_loaded(data);
+        assert!(st.conn_failed.get(), "非 mock 未连接应置 conn_failed");
+    }
+
+    #[test]
+    fn mock_disconnect_does_not_block() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let data = LoadedState {
+            config_value: Value::Object(Default::default()),
+            system_info: Value::Object(Default::default()),
+            capabilities_value: Value::Object(Default::default()),
+            schemas: vec![],
+            theme_names: vec![],
+            fonts: vec![],
+            connected: false,
+        };
+        st.apply_loaded(data);
+        assert!(!st.conn_failed.get(), "mock 模式不应阻断");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 }
 

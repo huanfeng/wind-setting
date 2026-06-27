@@ -19,7 +19,7 @@ use crate::theme_def::{ACCENT, theme_for};
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, connected) = {
+    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, connected, conn_failed) = {
         let st = app.borrow();
         (
             pages::all_tabs(&st),
@@ -30,6 +30,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.reload_confirm,
             st.reset_confirm,
             st.connected,
+            st.conn_failed,
         )
     };
 
@@ -79,6 +80,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(dialog)
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
+        .child(build_conn_failed_dialog(app, conn_failed))
 }
 
 /// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。
@@ -267,6 +269,52 @@ fn build_reset_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Ele
             visible.set(false);
         },
     )
+}
+
+/// 连接失败阻断对话框：[重连] 重跑后台加载；[退出] 关闭应用。无取消项（阻断）。
+fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Element {
+    let app_retry = app.clone();
+    let frame = Element::col()
+        .width(360)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("无法连接输入法服务")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(22)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label("设置应用需要输入法服务在运行。请确认服务已启动后重连，或退出。")
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3)
+                .padding_xy(18, 16),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(Element::button("退出").neutral().on_click(|ctx| ctx.request_close()))
+                .child(Element::button("重连").on_click(move |_| {
+                    if let Ok(s) = app_retry.try_borrow() {
+                        s.status.set("正在重连...".to_string());
+                    }
+                    crate::main_reconnect(&app_retry);
+                })),
+        );
+    Element::dialog(visible, frame)
 }
 
 /// 通用二次确认对话框：标题 + 说明 + [取消][确认]。`on_confirm` 执行后请自行关闭。
