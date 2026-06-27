@@ -159,7 +159,7 @@ impl AppState {
         match self.tab.get() {
             0 => &["schema"],
             1 => &["input", "general"],
-            2 => &["hotkeys"],
+            2 => &["keys"],
             3 => &["ui"],
             6 => &["advanced"],
             _ => &[],

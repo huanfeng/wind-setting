@@ -446,7 +446,7 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         .map(|o| (o.value.clone(), signal(cur.iter().any(|c| *c == o.value))))
         .collect();
 
-    // writer：收集勾选 → strlist
+    // writer：收集勾选 → strlist（经 collect_checked 单一真相源）
     let sigs_w = sigs.clone();
     let kw = key.to_string();
     state
@@ -454,13 +454,23 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
-            let arr: Vec<Value> = sigs_w
-                .iter()
-                .filter(|(_, s)| s.get())
-                .map(|(v, _)| Value::String(v.clone()))
-                .collect();
+            let pairs: Vec<(&str, bool)> =
+                sigs_w.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
+            let arr: Vec<Value> = collect_checked(&pairs).into_iter().map(Value::String).collect();
             c.set_path(&kw, Value::Array(arr));
         }));
+
+    // getter：当前勾选值的 Value::Array（供其它项 enabled_when 联动读取）
+    let sigs_g = sigs.clone();
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || {
+            let pairs: Vec<(&str, bool)> =
+                sigs_g.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
+            let arr: Vec<Value> = collect_checked(&pairs).into_iter().map(Value::String).collect();
+            Value::Array(arr)
+        }),
+    );
 
     // loader：从 Config 回填各 signal
     let sigs_l = sigs.clone();
