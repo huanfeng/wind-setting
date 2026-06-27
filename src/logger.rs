@@ -39,7 +39,7 @@ pub fn init() {
     Box::leak(Box::new(guard));
 
     tracing::info!(
-        "wind_setting_native v{} 启动，日志目录: {}",
+        "wind_setting v{} 启动，日志目录: {}",
         env!("CARGO_PKG_VERSION"),
         log_dir.display()
     );
@@ -48,8 +48,7 @@ pub fn init() {
 fn resolve_log_dir() -> PathBuf {
     let app_dir = match crate::mode::get() {
         crate::mode::AppMode::Release => "WindInput",
-        crate::mode::AppMode::Dev    => "WindInputDev",
-        crate::mode::AppMode::Debug  => "WindInputDebug",
+        crate::mode::AppMode::Dev => "WindInputDev",
     };
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(local).join(app_dir).join("logs");

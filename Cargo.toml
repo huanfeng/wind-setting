@@ -1,5 +1,5 @@
 [package]
-name = "wind_setting_native"
+name = "wind_setting"
 version = "0.1.0"
 edition = "2024"
 

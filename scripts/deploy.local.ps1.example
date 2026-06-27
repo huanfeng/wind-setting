@@ -4,8 +4,8 @@
 # Release exe 复制目标目录 (dev.ps1 p / copy)
 $WIND_DIR_RELEASE = "C:\Path\To\WindInput"
 
-# Debug exe 复制目标目录 (dev.ps1 dp / dcopy)
-$WIND_DIR_DEBUG = "C:\Path\To\WindInputDebug"
+# Dev exe 复制目标目录 (dev.ps1 dp / dcopy)，部署为 wind_setting_dev.exe
+$WIND_DIR_DEV = "C:\Path\To\WindInputDev"
 
 # 可选：run 命令注入的管道后缀
 $WIND_PIPE_SUFFIX = ""

@@ -21,10 +21,13 @@ pub fn ctrl_endpoint() -> String {
     let suffix = endpoint_suffix();
     #[cfg(windows)]
     {
-        format!(r"\\.\pipe\wind_input{suffix}_ctrl")
+        // 末尾化，对齐 core wind-rpc::server::ctrl_endpoint
+        // （release: wind_input_ctrl，dev: wind_input_ctrl_dev）。
+        format!(r"\\.\pipe\wind_input_ctrl{suffix}")
     }
     #[cfg(unix)]
     {
+        // unix 侧 core 用中间化 wind_input{suffix}_ctrl.sock，保持一致。
         let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{dir}/wind_input{suffix}_ctrl.sock")
     }

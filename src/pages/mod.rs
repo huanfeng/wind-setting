@@ -200,7 +200,7 @@ fn about_page(state: &AppState) -> Element {
                 )
                 .child(
                     Element::label(if version.is_empty() {
-                        "原生设置 (wind_setting_native)".to_string()
+                        "清风输入法设置".to_string()
                     } else {
                         format!("版本 {version}{}", crate::mode::version_suffix())
                     })
