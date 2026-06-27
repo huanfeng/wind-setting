@@ -27,6 +27,9 @@ pub struct MItem {
     pub typ: String, // toggle / select / slider / number / string
     pub label: String,
     pub hint: Option<String>,
+    /// 默认值已归 capability（core 权威，见 [`crate::capabilities::Capabilities::default_for`]）；
+    /// 清单不再声明 default，此字段仅为 JSON 解析兼容保留。
+    #[allow(dead_code)]
     pub default: Value,
     pub options: Vec<MOption>,
     pub options_source: Option<String>,
@@ -69,6 +72,9 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// 内嵌设置清单源文本（随二进制发布，core 退役 manifest.toml 后由 setting 维护）。
+    const EMBEDDED: &'static str = include_str!("assets/settings_manifest.toml");
+
     /// 从 system.manifest 返回的 JSON 解析。容错：缺字段回退默认。
     pub fn from_value(v: &Value) -> Self {
         let mut items = HashMap::new();
@@ -149,9 +155,6 @@ impl Manifest {
         self.items.get(key)
     }
 
-    /// 内嵌设置清单源文本（随二进制发布，core 退役 manifest.toml 后由 setting 维护）。
-    const EMBEDDED: &'static str = include_str!("assets/settings_manifest.toml");
-
     /// 从内嵌 TOML 清单构建。TOML 先反序列化为 serde_json::Value（与 system.manifest
     /// 旧 JSON 同形：groups + 扁平 items），复用 [`Manifest::from_value`]。
     pub fn from_embedded() -> Self {
@@ -231,10 +234,9 @@ pub fn field(state: &AppState, key: &str) -> Element {
     row
 }
 
-fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
-    let cur = cfg
-        .get_bool(key)
-        .unwrap_or_else(|| item.default.as_bool().unwrap_or(false));
+fn build_toggle(state: &AppState, key: &str, _item: &MItem, cfg: &Config) -> Element {
+    let def = state.capabilities.default_for(key).as_bool().unwrap_or(false);
+    let cur = cfg.get_bool(key).unwrap_or(def);
     let sig = signal(cur);
     let kw = key.to_string();
     state
@@ -250,7 +252,6 @@ fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::Bool(sig.get())));
     let kl = key.to_string();
-    let def = item.default.as_bool().unwrap_or(false);
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| sig.set(c.get_bool(&kl).unwrap_or(def))),
@@ -270,10 +271,11 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     if values.is_empty() {
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
+    let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
     let cur = cfg
         .get_str(key)
         .map(str::to_string)
-        .unwrap_or_else(|| item.default.as_str().unwrap_or("").to_string());
+        .unwrap_or_else(|| def_str.clone());
     let idx = values.iter().position(|v| *v == cur).unwrap_or(0);
     let sig = signal(idx);
     let kw = key.to_string();
@@ -289,7 +291,6 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         }));
     let vals_l = values.clone();
     let kl = key.to_string();
-    let def_str = item.default.as_str().unwrap_or("").to_string();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
@@ -315,9 +316,8 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 }
 
 fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
-    let cur = cfg
-        .get_f64(key)
-        .unwrap_or_else(|| item.default.as_f64().unwrap_or(0.0));
+    let def = state.capabilities.default_for(key).as_f64().unwrap_or(0.0);
+    let cur = cfg.get_f64(key).unwrap_or(def);
     let sig = signal(cur);
     let (min, max, step) = (
         item.min.unwrap_or(0.0),
@@ -344,7 +344,6 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::from(sig.get())));
     let kl = key.to_string();
-    let def = item.default.as_f64().unwrap_or(0.0);
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| sig.set(c.get_f64(&kl).unwrap_or(def))),
@@ -353,10 +352,11 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 }
 
 fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let def = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
     let cur = cfg
         .get_str(key)
         .map(str::to_string)
-        .unwrap_or_else(|| item.default.as_str().unwrap_or("").to_string());
+        .unwrap_or_else(|| def.clone());
     let sig = signal(cur);
     let kw = key.to_string();
     state
@@ -372,7 +372,6 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::String(sig.get())));
     let kl = key.to_string();
-    let def = item.default.as_str().unwrap_or("").to_string();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
@@ -395,10 +394,11 @@ fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> E
     if values.is_empty() {
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
+    let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
     let cur = cfg
         .get_str(key)
         .map(str::to_string)
-        .unwrap_or_else(|| item.default.as_str().unwrap_or("").to_string());
+        .unwrap_or_else(|| def_str.clone());
     let idx = values.iter().position(|v| *v == cur).unwrap_or(0);
     let sig = signal(idx);
     let kw = key.to_string();
@@ -414,7 +414,6 @@ fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> E
         }));
     let vals_l = values.clone();
     let kl = key.to_string();
-    let def_str = item.default.as_str().unwrap_or("").to_string();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
@@ -579,7 +578,7 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
     let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
     if cap_ty == "map" {
         build_dialog_button_map(state, key, item, cfg)
-    } else if !item.options.is_empty() {
+    } else if cap_ty == "strlist" && !item.options.is_empty() {
         build_dialog_button_pairs(state, key, item, cfg)
     } else {
         build_dialog_button_spaced(state, key, item, cfg)

@@ -128,7 +128,8 @@ fn dict_page(_state: &AppState) -> Element {
     sections_page(vec![section(
         "词库管理",
         vec![todo_hint(
-            "词库管理（搜索/增删改/导入导出）待实现。缺口：wind-ui-rust 暂无「可编辑/可搜索表格」控件。\
+            "词库管理本期占位，后续作为独立功能实现。\
+             缺口：wind-ui-rust 暂无「可编辑/可搜索表格」控件；\
              core 侧 dict.* RPC 已就绪（search/add/remove/update/import/export）。",
         )],
     )])
@@ -140,7 +141,8 @@ fn stats_page(_state: &AppState) -> Element {
     sections_page(vec![section(
         "输入统计",
         vec![todo_hint(
-            "统计面板待实现。core 侧 stats.* RPC 已就绪（summary/daily/clear/pruneBefore）。",
+            "统计面板本期占位，后续作为独立功能实现。\
+             core 侧 stats.* RPC 已就绪（summary/daily/clear/pruneBefore）。",
         )],
     )])
 }

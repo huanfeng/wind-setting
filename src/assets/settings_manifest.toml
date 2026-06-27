@@ -1,6 +1,7 @@
 # 统一声明式设置清单（core/setting/web 共用真相源）
 # core 解析后注入 app/engine/variant，经 system.manifest 暴露为 JSON（items 原样透传）。
-# 字段：key(点路径,对应 Config)/group/section/type/label/hint/default/since/options/min/max/step/unit/enabled_when
+# 字段：key(点路径,对应 Config)/group/section/type/label/hint/since/options/min/max/step/unit/enabled_when
+# 注：默认值不在此声明，统一取自 core capability 快照（capabilities.snapshot.json）。
 #
 # 【对照来源】wind-config/src/config.rs（权威）。key 必须与真实配置点路径逐字一致。
 # 【分组】group → Tab（方案/输入/快捷键/外观/常规/高级）；section → Tab 内子卡片。
@@ -52,7 +53,6 @@ type = "select"
 options_source = "codetableSchemas"   # 选项运行时来自 schema.list（码表类）
 label = "主码表方案"
 hint = "主力码表方案 id（如 wubi86）"
-default = ""
 
 [[items]]
 key = "schema.primary_pinyin"
@@ -62,7 +62,6 @@ type = "select"
 options_source = "pinyinSchemas"      # 选项运行时来自 schema.list（拼音类）
 label = "主拼音方案"
 hint = "混输/临时拼音使用的拼音方案 id"
-default = ""
 
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 标点与符号 ──
@@ -73,7 +72,6 @@ section = "标点与符号"
 type = "toggle"
 label = "中文标点自动配对"
 hint = "输入左括号自动补右括号"
-default = true
 
 [[items]]
 key = "input.auto_pair.english"
@@ -81,7 +79,6 @@ group = "input"
 section = "标点与符号"
 type = "toggle"
 label = "英文标点自动配对"
-default = true
 
 [[items]]
 key = "input.auto_pair.chinese_pairs"
@@ -138,7 +135,6 @@ section = "标点与符号"
 type = "toggle"
 label = "标点跟随中英模式"
 hint = "英文模式下自动用英文标点"
-default = false
 
 [[items]]
 key = "input.punct.smart_after_digit"
@@ -147,7 +143,6 @@ section = "标点与符号"
 type = "toggle"
 label = "数字后智能标点"
 hint = "数字后输入 . , : 保持英文"
-default = true
 
 [[items]]
 key = "input.punct.smart_list"
@@ -156,7 +151,6 @@ section = "标点与符号"
 type = "string"
 label = "数字后保持英文的标点"
 hint = "默认 .,:"
-default = ".,:"
 
 [[items]]
 key = "input.symbol.smart_mode"
@@ -165,7 +159,6 @@ section = "标点与符号"
 type = "toggle"
 label = "智能符号模式"
 hint = "同一中文标点限时内连按两次，替换为英文"
-default = false
 
 [[items]]
 key = "input.symbol.smart_timeout_ms"
@@ -173,7 +166,6 @@ group = "input"
 section = "标点与符号"
 type = "slider"
 label = "智能符号判定时限"
-default = 500
 min = 100
 max = 2000
 step = 50
@@ -187,7 +179,6 @@ section = "标点与符号"
 type = "string"
 label = "智能符号字符集"
 hint = "参与智能符号转换的中文标点集合"
-default = "。，？！：；、～￥·……——"
 enabled_when = "input.symbol.smart_mode == true"
 
 [[items]]
@@ -197,7 +188,6 @@ section = "标点与符号"
 type = "toggle"
 label = "启用自定义标点映射"
 hint = "映射表在「标点映射」对话框中编辑"
-default = false
 
 [[items]]
 key = "input.punct.custom_mappings"
@@ -215,7 +205,6 @@ group = "input"
 section = "上屏控制"
 type = "select"
 label = "有编码时回车行为"
-default = "commit"
 options = [
   { value = "commit", label = "上屏编码" },
   { value = "clear", label = "清空编码" },
@@ -229,7 +218,6 @@ group = "input"
 section = "上屏控制"
 type = "select"
 label = "空码时空格行为"
-default = "commit"
 options = [
   { value = "commit", label = "上屏编码" },
   { value = "clear", label = "清空编码" },
@@ -244,7 +232,6 @@ section = "上屏控制"
 type = "toggle"
 label = "全码自动上屏"
 hint = "唯一精确且无更长后继时直接上屏"
-default = false
 
 [[items]]
 key = "input.code_commit.auto_commit_block_on_pinyin"
@@ -252,7 +239,6 @@ group = "input"
 section = "上屏控制"
 type = "toggle"
 label = "有拼音候选时否决全码上屏"
-default = true
 enabled_when = "input.code_commit.auto_commit_at_full == true"
 
 [[items]]
@@ -262,7 +248,6 @@ section = "上屏控制"
 type = "number"
 label = "自动上屏最短码长"
 hint = "0 跟随方案 max_code_length"
-default = 0
 min = 0
 max = 10
 enabled_when = "input.code_commit.auto_commit_at_full == true"
@@ -273,7 +258,6 @@ group = "input"
 section = "上屏控制"
 type = "toggle"
 label = "超长时取前 N 码顶字上屏"
-default = false
 
 [[items]]
 key = "input.code_commit.clear_on_empty_max"
@@ -281,7 +265,6 @@ group = "input"
 section = "上屏控制"
 type = "toggle"
 label = "满码无候选时清空缓冲"
-default = false
 
 # ── 临时英文与大小写 ──
 [[items]]
@@ -290,7 +273,6 @@ group = "input"
 section = "临时英文与大小写"
 type = "toggle"
 label = "Shift 临时英文"
-default = true
 
 [[items]]
 key = "input.temp_english.show_candidates"
@@ -298,7 +280,6 @@ group = "input"
 section = "临时英文与大小写"
 type = "toggle"
 label = "临时英文显示候选"
-default = true
 enabled_when = "input.temp_english.enabled == true"
 
 [[items]]
@@ -307,7 +288,6 @@ group = "input"
 section = "临时英文与大小写"
 type = "select"
 label = "Shift 行为"
-default = "temp_english"
 enabled_when = "input.temp_english.enabled == true"
 options = [
   { value = "temp_english", label = "进入临时英文模式" },
@@ -320,7 +300,6 @@ group = "input"
 section = "临时英文与大小写"
 type = "toggle"
 label = "临时英文允许符号"
-default = false
 enabled_when = "input.temp_english.enabled == true"
 
 [[items]]
@@ -329,7 +308,6 @@ group = "input"
 section = "临时英文与大小写"
 type = "toggle"
 label = "临时英文空格作输入"
-default = false
 enabled_when = "input.temp_english.enabled == true"
 
 [[items]]
@@ -338,7 +316,6 @@ group = "input"
 section = "临时英文与大小写"
 type = "toggle"
 label = "切换模式时取消大写锁定"
-default = false
 
 # ── 拼音与编码 ──
 [[items]]
@@ -348,7 +325,6 @@ section = "拼音与编码"
 type = "select"
 label = "字符集过滤"
 hint = "限制候选字符集范围"
-default = "smart"
 options = [
   { value = "smart", label = "智能" },
   { value = "general", label = "通用" },
@@ -361,7 +337,6 @@ group = "input"
 section = "拼音与编码"
 type = "select"
 label = "拼音分隔符"
-default = "auto"
 options = [
   { value = "auto", label = "自动（' 被选择键占用时改用 `）" },
   { value = "quote", label = "单引号 ( ' )" },
@@ -375,7 +350,6 @@ group = "input"
 section = "拼音与编码"
 type = "select"
 label = "小键盘行为"
-default = ""                     # core 默认未设；"" 时引擎用内部默认，UI 回落首项显示
 options = [
   { value = "direct", label = "直接输入数字" },
   { value = "follow_main", label = "同主键盘区数字" },
@@ -388,7 +362,6 @@ group = "input"
 section = "短语"
 type = "number"
 label = "短语前缀触发最小长度"
-default = 2
 min = 1
 max = 5
 
@@ -399,7 +372,6 @@ section = "短语"
 type = "number"
 label = "短语候选最大显示字数"
 hint = "0 表示不限制"
-default = 30
 min = 0
 max = 200
 
@@ -407,16 +379,15 @@ max = 200
 [[items]]
 key = "input.url.enabled"
 group = "input"
-section = "网址"
+section = "网址输入"
 type = "toggle"
 label = "网址输入模式"
 hint = "输入 www./http 等前缀进入网址直通模式"
-default = false
 
 [[items]]
 key = "input.url.prefixes"
 group = "input"
-section = "网址"
+section = "网址输入"
 type = "dialog_button"
 label = "网址前缀"
 hint = "识别为网址的前缀，按空格分隔"
@@ -430,7 +401,6 @@ group = "keys"
 section = "开关"
 type = "toggle"
 label = "切换中英时上屏当前编码"
-default = true
 
 [[items]]
 key = "keys.switch_engine"
@@ -438,7 +408,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "切换方案"
-default = ""
 
 [[items]]
 key = "keys.toggle_full_width"
@@ -446,7 +415,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "切换全/半角"
-default = ""
 
 [[items]]
 key = "keys.toggle_punct"
@@ -454,7 +422,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "切换中/英标点"
-default = ""
 
 [[items]]
 key = "keys.toggle_s2t"
@@ -462,7 +429,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "切换简/繁"
-default = ""
 
 [[items]]
 key = "keys.toggle_toolbar"
@@ -470,7 +436,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "显示/隐藏工具栏"
-default = ""
 
 [[items]]
 key = "keys.open_settings"
@@ -478,7 +443,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "打开设置"
-default = ""
 
 [[items]]
 key = "keys.add_word"
@@ -486,7 +450,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "造词"
-default = ""
 
 [[items]]
 key = "keys.pin_candidate"
@@ -494,7 +457,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "置顶候选"
-default = ""
 
 [[items]]
 key = "keys.delete_candidate"
@@ -502,7 +464,6 @@ group = "keys"
 section = "键位"
 type = "string"
 label = "删除候选"
-default = ""
 
 [[items]]
 key = "keys.toggle_mode_keys"
@@ -536,7 +497,6 @@ section = "候选窗"
 type = "slider"
 label = "每页候选数"
 hint = "候选窗每页显示的候选项数量"
-default = 7
 min = 3
 max = 9
 step = 1
@@ -548,7 +508,6 @@ section = "候选窗"
 type = "segmented"
 label = "候选窗排列"
 hint = "候选项横向或纵向排列"
-default = "horizontal"
 [[items.options]]
 value = "horizontal"
 label = "横排"
@@ -562,10 +521,9 @@ group = "ui"
 section = "候选窗"
 type = "select"
 label = "编码显示方式"
-hint = "编码（组合区）的显示位置"
-default = "app_inline"
+hint = "编码（组合区）的显示位置；「内嵌应用光标处」时候选窗不显示编码栏"
 options = [
-  { value = "app_inline", label = "内嵌应用光标处", description = "候选窗不显示编码栏" },
+  { value = "app_inline", label = "内嵌应用光标处" },
   { value = "candidate_top", label = "候选窗顶部独立栏" },
   { value = "candidate_inline", label = "候选窗首单元内联" },
 ]
@@ -577,7 +535,6 @@ section = "候选窗"
 type = "toggle"
 label = "隐藏候选窗"
 hint = "盲打/自动上屏场景；隐藏后仍可输入"
-default = false
 
 [[items]]
 key = "ui.candidate.font_size"
@@ -586,7 +543,6 @@ section = "候选窗"
 type = "number"
 label = "候选字号"
 hint = "0 = 跟随主题"
-default = 0
 min = 0
 max = 72
 
@@ -597,7 +553,6 @@ section = "候选窗"
 type = "number"
 label = "候选文本最大字数"
 hint = "超出截断；0 = 不限"
-default = 0
 min = 0
 max = 64
 
@@ -608,7 +563,6 @@ section = "候选窗"
 type = "string"
 label = "自定义序号标签"
 hint = "每字符一个槽位，如 asdfg；空 = 默认 1-9"
-default = ""
 
 [[items]]
 key = "ui.candidate.flip_when_above"
@@ -617,7 +571,6 @@ section = "候选窗"
 type = "toggle"
 label = "候选窗在上方时反转顺序"
 hint = "候选窗显示在光标上方时，反转候选排列方向"
-default = false
 
 # ── 模式指示 ──
 [[items]]
@@ -626,10 +579,9 @@ group = "ui"
 section = "模式指示"
 type = "select"
 label = "模式指示样式"
-hint = "进入临拼/双拼/快符/英文等模式时的标识"
-default = "short"
+hint = "进入临拼/双拼/快符/英文等模式时的标识；短称即 拼/双/快/英/符"
 options = [
-  { value = "short", label = "短称", description = "拼/双/快/英/符" },
+  { value = "short", label = "短称" },
   { value = "full", label = "全称" },
   { value = "none", label = "不显示" },
 ]
@@ -642,7 +594,6 @@ section = "悬停提示"
 type = "number"
 label = "提示延迟（毫秒）"
 hint = "鼠标悬停候选多久后显示提示"
-default = 100
 min = 0
 max = 2000
 
@@ -652,7 +603,6 @@ group = "ui"
 section = "悬停提示"
 type = "toggle"
 label = "显示编码"
-default = true
 
 [[items]]
 key = "ui.tooltip.pinyin_enabled"
@@ -660,7 +610,6 @@ group = "ui"
 section = "悬停提示"
 type = "toggle"
 label = "显示拼音"
-default = true
 
 [[items]]
 key = "ui.tooltip.pinyin_heteronyms"
@@ -669,7 +618,6 @@ section = "悬停提示"
 type = "toggle"
 label = "显示多音字所有读音"
 hint = "关闭则仅显示首音"
-default = true
 enabled_when = "ui.tooltip.pinyin_enabled == true"
 
 [[items]]
@@ -679,7 +627,6 @@ section = "悬停提示"
 type = "number"
 label = "每字最多读音数"
 hint = "0 = 不限"
-default = 0
 min = 0
 max = 8
 enabled_when = "ui.tooltip.pinyin_enabled == true"
@@ -691,7 +638,6 @@ section = "悬停提示"
 type = "toggle"
 label = "显示拆字"
 hint = "字根分解 + 编码"
-default = false
 
 [[items]]
 key = "ui.tooltip.debug_enabled"
@@ -700,7 +646,6 @@ section = "悬停提示"
 type = "toggle"
 label = "显示调试信息"
 hint = "候选权重/来源等（排查用）"
-default = false
 
 # 注：字体/颜色由主题（theme.toml）控制，ui.font.* 当前未接入 UI，故不在此暴露——
 # 待实装“候选窗字体覆盖”特性后再加回（family/path/render_mode）。
@@ -712,7 +657,6 @@ group = "general"
 section = "启动状态"
 type = "toggle"
 label = "启动默认中文模式"
-default = true
 
 [[items]]
 key = "input.default.chinese_punct"
@@ -720,7 +664,6 @@ group = "general"
 section = "启动状态"
 type = "toggle"
 label = "启动默认中文标点"
-default = true
 
 [[items]]
 key = "input.default.full_width"
@@ -728,7 +671,6 @@ group = "general"
 section = "启动状态"
 type = "toggle"
 label = "启动默认全角"
-default = false
 
 [[items]]
 key = "input.default.remember_last_state"
@@ -736,7 +678,6 @@ group = "general"
 section = "启动状态"
 type = "toggle"
 label = "记住上次中英/标点状态"
-default = false
 
 # ═══════════════════════════ 高级 ═══════════════════════════
 # ── 输入统计 ──
@@ -746,7 +687,6 @@ group = "advanced"
 section = "输入统计"
 type = "toggle"
 label = "启用输入统计"
-default = true
 
 [[items]]
 key = "stats.track_english"
@@ -754,7 +694,6 @@ group = "advanced"
 section = "输入统计"
 type = "toggle"
 label = "统计英文输入"
-default = false
 enabled_when = "stats.enabled == true"
 
 # ── 简繁转换 ──
@@ -764,7 +703,6 @@ group = "advanced"
 section = "简繁转换"
 type = "toggle"
 label = "简繁转换"
-default = false
 
 [[items]]
 key = "input.s2t.variant"
@@ -772,7 +710,6 @@ group = "advanced"
 section = "简繁转换"
 type = "select"
 label = "简繁变体"
-default = ""                     # core 默认未设；启用后引擎按标准繁体(s2t)处理
 enabled_when = "input.s2t.enabled == true"
 options = [
   { value = "s2t", label = "标准繁体" },
@@ -788,7 +725,6 @@ group = "advanced"
 section = "快捷输入"
 type = "toggle"
 label = "快捷输入（日期/计算）"
-default = false
 
 [[items]]
 key = "schema.quick_input.decimal_places"
@@ -796,7 +732,6 @@ group = "advanced"
 section = "快捷输入"
 type = "number"
 label = "计算结果小数位数"
-default = 6
 min = 0
 max = 12
 enabled_when = "schema.quick_input.enabled == true"
@@ -808,7 +743,6 @@ group = "advanced"
 section = "命令栏"
 type = "toggle"
 label = "命令栏"
-default = false
 
 # ── 调试 ──
 [[items]]
@@ -817,7 +751,6 @@ group = "advanced"
 section = "调试"
 type = "select"
 label = "日志级别"
-default = "info"
 options = [
   { value = "error", label = "error" },
   { value = "warn", label = "warn" },
@@ -834,7 +767,6 @@ section = "状态提示"
 type = "number"
 label = "状态气泡水平偏移"
 hint = "相对光标下方居中的水平偏移（像素，正=右）"
-default = 0
 min = -400
 max = 400
 
@@ -845,7 +777,6 @@ section = "状态提示"
 type = "number"
 label = "状态气泡垂直偏移"
 hint = "相对光标下方的垂直偏移（像素，正=下）"
-default = 0
 min = -400
 max = 400
 
@@ -855,29 +786,8 @@ group = "ui"
 section = "状态提示"
 type = "select"
 label = "方案名显示样式"
-hint = "状态气泡里方案名用全名或图标短称"
-default = "full"
+hint = "状态气泡里方案名用全名或图标短称；图标短称取方案 icon_label，无则回退全名"
 options = [
   { value = "full", label = "全名" },
-  { value = "short", label = "图标短称", description = "用方案 icon_label，无则回退全名" },
+  { value = "short", label = "图标短称" },
 ]
-
-# ── 特性可用性（模块 + 子特性两层；web 据此显示/隐藏/禁用）──
-# 保留另一会话约定；随各命名空间深化(temp/freq/shadow/stats/phrase/theme)逐步开启。
-[features.dict]
-enabled = true
-paged = true
-import = false
-
-[features.freq]
-enabled = true
-
-[features.phrase]
-enabled = true
-
-[features.stats]
-enabled = true
-
-[features.theme]
-enabled = true
-import_url = false
