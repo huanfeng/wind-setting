@@ -161,5 +161,7 @@ mod tests {
             .filter(|k| !covered.contains(k))
             .collect();
         println!("未覆盖 capability key 数: {} / {}", uncovered.len(), caps.entries.len());
+        // 本期目标：未覆盖仅剩方案级深度项（structlist/fuzzy/方案管理/compat），约 ≤ 22。
+        assert!(uncovered.len() <= 22, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
     }
 }
