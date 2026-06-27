@@ -4,12 +4,11 @@
 //! 一张卡片，卡片次序为 section 首次出现序，行序为 manifest 原始序——key 永远与 core 一致，
 //! core 加字段自动出现，彻底消除硬编码 key 漂移。复杂页（方案管理/词库/统计/关于）手写。
 
-use serde_json::Value;
 use windui::prelude::*;
 
 use crate::manifest::field;
 use crate::state::AppState;
-use crate::widgets::{page, section, section_header, setting_row, todo_hint};
+use crate::widgets::{page, section, setting_row, todo_hint};
 
 /// Tab：(标题, 内容)。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
 pub fn all_tabs(state: &AppState) -> Vec<(String, Element)> {
@@ -95,69 +94,7 @@ fn scheme_page(state: &AppState) -> Element {
 // ───────────────────────── 按键 ─────────────────────────
 
 fn keys_page(state: &AppState) -> Element {
-    let mut secs = manifest_sections(state, "hotkeys");
-    // 「切换中英修饰键」是多选键组（keys.toggle_mode_keys），未进清单，专用多选卡片承载。
-    secs.push(modifier_keys_section(state));
-    sections_page(secs)
-}
-
-/// 切换中英的"多选修饰键"集合 → keys.toggle_mode_keys（StrList）。
-/// 缺口：暂用多个 checkbox 顶替（待"多选组"控件）。
-fn modifier_keys_section(state: &AppState) -> Element {
-    let cur: Vec<String> = state
-        .current_config
-        .get_array("keys.toggle_mode_keys")
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let has = |k: &str| cur.iter().any(|x| x == k);
-
-    let lshift = signal(has("lshift"));
-    let rshift = signal(has("rshift"));
-    let lctrl = signal(has("lctrl"));
-    let rctrl = signal(has("rctrl"));
-    let caps = signal(has("capslock"));
-
-    state.fields.writers.borrow_mut().push(Box::new(move |c| {
-        let mut v: Vec<Value> = Vec::new();
-        if lshift.get() {
-            v.push(Value::String("lshift".into()));
-        }
-        if rshift.get() {
-            v.push(Value::String("rshift".into()));
-        }
-        if lctrl.get() {
-            v.push(Value::String("lctrl".into()));
-        }
-        if rctrl.get() {
-            v.push(Value::String("rctrl".into()));
-        }
-        if caps.get() {
-            v.push(Value::String("capslock".into()));
-        }
-        c.set_path("keys.toggle_mode_keys", Value::Array(v));
-    }));
-
-    // 复选框文字显式跟随主题文本色（否则暗色下用默认深色 fg，几乎不可见）。
-    let cb = |label: &str, sig| Element::checkbox(label, sig).fg_role(Role::Text);
-    let checks = Element::col()
-        .width_match()
-        .spacing(10)
-        .padding_xy(0, 10)
-        .child(cb("左 Shift", lshift))
-        .child(cb("右 Shift", rshift))
-        .child(cb("左 Ctrl", lctrl))
-        .child(cb("右 Ctrl", rctrl))
-        .child(cb("Caps Lock", caps));
-
-    Element::col()
-        .width_match()
-        .spacing(6)
-        .child(section_header("切换中英修饰键"))
-        .child(crate::widgets::card(vec![checks]))
+    sections_page(manifest_sections(state, "keys"))
 }
 
 // ───────────────────────── 外观 ─────────────────────────

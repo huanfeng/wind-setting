@@ -208,6 +208,8 @@ pub fn field(state: &AppState, key: &str) -> Element {
     let control = match item.typ.as_str() {
         "toggle" => build_toggle(state, key, item, cfg),
         "select" => build_select(state, key, item, cfg),
+        "segmented" => build_segmented(state, key, item, cfg),
+        "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
         "string" => build_string(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
@@ -380,6 +382,120 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     Element::text_input(sig, item.hint.clone().unwrap_or_default()).width(200)
 }
 
+fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let (values, labels): (Vec<String>, Vec<String>) = item
+        .options
+        .iter()
+        .map(|o| (o.value.clone(), o.label.clone()))
+        .unzip();
+    if values.is_empty() {
+        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+    }
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| item.default.as_str().unwrap_or("").to_string());
+    let idx = values.iter().position(|v| *v == cur).unwrap_or(0);
+    let sig = signal(idx);
+    let kw = key.to_string();
+    let vals_w = values.clone();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            if let Some(v) = vals_w.get(sig.get()) {
+                c.set_path(&kw, Value::String(v.clone()));
+            }
+        }));
+    let vals_l = values.clone();
+    let kl = key.to_string();
+    let def_str = item.default.as_str().unwrap_or("").to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur = c
+                .get_str(&kl)
+                .map(str::to_string)
+                .unwrap_or_else(|| def_str.clone());
+            let idx = vals_l.iter().position(|v| *v == cur).unwrap_or(0);
+            sig.set(idx);
+        }),
+    );
+    let vals_g = values;
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || {
+            vals_g
+                .get(sig.get())
+                .map(|v| Value::String(v.clone()))
+                .unwrap_or(Value::Null)
+        }),
+    );
+    Element::segmented(labels, sig)
+}
+
+fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let cur: Vec<String> = cfg
+        .get_array(key)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let opts = item.options.clone();
+    let sigs: Vec<(String, Signal<bool>)> = opts
+        .iter()
+        .map(|o| (o.value.clone(), signal(cur.iter().any(|c| *c == o.value))))
+        .collect();
+
+    // writer：收集勾选 → strlist
+    let sigs_w = sigs.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let arr: Vec<Value> = sigs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(v, _)| Value::String(v.clone()))
+                .collect();
+            c.set_path(&kw, Value::Array(arr));
+        }));
+
+    // loader：从 Config 回填各 signal
+    let sigs_l = sigs.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur: Vec<String> = c
+                .get_array(&kl)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            for (v, s) in &sigs_l {
+                s.set(cur.iter().any(|c| c == v));
+            }
+        }),
+    );
+
+    // 控件：grid 复选（2 列）
+    let cells: Vec<Element> = sigs
+        .iter()
+        .zip(opts.iter())
+        .map(|((_, s), o)| Element::checkbox(&o.label, *s).fg_role(Role::Text))
+        .collect();
+    Element::grid(2, 10, cells)
+}
+
+/// 按声明顺序收集被勾选的选项值（写回 strlist 用）。
+pub(crate) fn collect_checked(pairs: &[(&str, bool)]) -> Vec<String> {
+    pairs
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(v, _)| v.to_string())
+        .collect()
+}
+
 /// 动态选项来源（方案/字体）：从已加载的 schema/font 列表填充。
 fn dynamic_options(state: &AppState, src: &str) -> (Vec<String>, Vec<String>) {
     match src {
@@ -425,6 +541,14 @@ fn cond_matches(cur: &Value, expect: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkbox_group_collects_checked_values() {
+        // 纯逻辑：勾选集合 → strlist
+        let checked = [("lshift", true), ("rshift", false), ("capslock", true)];
+        let arr = collect_checked(&checked);
+        assert_eq!(arr, vec!["lshift".to_string(), "capslock".to_string()]);
+    }
 
     #[test]
     fn from_embedded_parses_groups_and_items() {

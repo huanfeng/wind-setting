@@ -438,6 +438,29 @@ type = "string"
 label = "删除候选"
 default = ""
 
+[[items]]
+key = "keys.toggle_mode_keys"
+group = "keys"
+section = "中英切换"
+type = "checkbox_group"
+label = "切换中英修饰键"
+hint = "勾选用于切换中英文的修饰键"
+[[items.options]]
+value = "lshift"
+label = "左 Shift"
+[[items.options]]
+value = "rshift"
+label = "右 Shift"
+[[items.options]]
+value = "lctrl"
+label = "左 Ctrl"
+[[items.options]]
+value = "rctrl"
+label = "右 Ctrl"
+[[items.options]]
+value = "capslock"
+label = "Caps Lock"
+
 # ═══════════════════════════ 外观 ═══════════════════════════
 # ── 候选窗 ──
 [[items]]
@@ -456,14 +479,16 @@ step = 1
 key = "ui.candidate.layout"
 group = "ui"
 section = "候选窗"
-type = "select"
+type = "segmented"
 label = "候选窗排列"
 hint = "候选项横向或纵向排列"
 default = "horizontal"
-options = [
-  { value = "horizontal", label = "横排" },
-  { value = "vertical", label = "竖排" },
-]
+[[items.options]]
+value = "horizontal"
+label = "横排"
+[[items.options]]
+value = "vertical"
+label = "竖排"
 
 [[items]]
 key = "ui.candidate.preedit_display"
