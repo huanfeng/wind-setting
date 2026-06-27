@@ -146,6 +146,21 @@ impl Manifest {
         self.items.get(key)
     }
 
+    /// 内嵌设置清单源文本（随二进制发布，core 退役 manifest.toml 后由 setting 维护）。
+    const EMBEDDED: &'static str = include_str!("assets/settings_manifest.toml");
+
+    /// 从内嵌 TOML 清单构建。TOML 先反序列化为 serde_json::Value（与 system.manifest
+    /// 旧 JSON 同形：groups + 扁平 items），复用 [`Manifest::from_value`]。
+    pub fn from_embedded() -> Self {
+        match toml::from_str::<Value>(Self::EMBEDDED) {
+            Ok(v) => Self::from_value(&v),
+            Err(e) => {
+                tracing::error!("内嵌 settings_manifest.toml 解析失败: {e}");
+                Self::default()
+            }
+        }
+    }
+
     /// 取某分组下、按 manifest 顺序聚合的 (分区名, 该分区项 key 列表)。
     /// 同一 section 的项归到一张卡片；section 首次出现的次序即卡片次序。
     pub fn sections_of(&self, group: &str) -> Vec<(String, Vec<String>)> {
@@ -404,5 +419,24 @@ fn cond_matches(cur: &Value, expect: &str) -> bool {
         "true" => cur.as_bool() == Some(true),
         "false" => cur.as_bool() == Some(false),
         s => cur.as_str() == Some(s),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_embedded_parses_groups_and_items() {
+        let m = Manifest::from_embedded();
+        // 6 个分组：schema/input/keys/ui/general/advanced
+        assert_eq!(m.groups.len(), 6, "应解析出 6 个分组");
+        // 代表性 key 存在且类型/标签正确
+        let it = m.get("input.auto_pair.chinese").expect("应含 input.auto_pair.chinese");
+        assert_eq!(it.typ, "toggle");
+        assert_eq!(it.group, "input");
+        assert!(!it.label.is_empty(), "label 不应为空");
+        // 至少 70 个配置项
+        assert!(m.order.len() >= 70, "items 数量应 >= 70，实际 {}", m.order.len());
     }
 }
