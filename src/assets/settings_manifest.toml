@@ -350,6 +350,7 @@ group = "input"
 section = "拼音与编码"
 type = "select"
 label = "小键盘行为"
+# core 默认未设；留空时引擎用内部默认
 options = [
   { value = "direct", label = "直接输入数字" },
   { value = "follow_main", label = "同主键盘区数字" },
@@ -647,8 +648,7 @@ type = "toggle"
 label = "显示调试信息"
 hint = "候选权重/来源等（排查用）"
 
-# 注：字体/颜色由主题（theme.toml）控制，ui.font.* 当前未接入 UI，故不在此暴露——
-# 待实装“候选窗字体覆盖”特性后再加回（family/path/render_mode）。
+# 注：颜色由主题（theme.toml）控制；ui.font.* 已在本文件「本期补全」节暴露（family/path/render_mode）。
 
 # ═══════════════════════════ 常规 ═══════════════════════════
 [[items]]
@@ -711,6 +711,7 @@ section = "简繁转换"
 type = "select"
 label = "简繁变体"
 enabled_when = "input.s2t.enabled == true"
+# core 默认未设；留空时引擎用内部默认
 options = [
   { value = "s2t", label = "标准繁体" },
   { value = "s2tw", label = "台湾繁体" },
