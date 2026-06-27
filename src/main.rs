@@ -5,6 +5,7 @@
 //! 通过 JSON-RPC over named pipe 与核心服务通信，不改动 core 接口。
 //! 无边框窗口 + 自定义标题栏，9 Tab 清单驱动（manifest 分组），运行时明暗换肤。
 
+mod capabilities;
 mod config;
 mod dialogs;
 mod logger;

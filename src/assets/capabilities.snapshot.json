@@ -1,0 +1,747 @@
+{
+  "appVersion": "0.1.0",
+  "configKeys": [
+    {
+      "default": "",
+      "key": "schema.active",
+      "type": "str"
+    },
+    {
+      "default": [],
+      "key": "schema.available",
+      "type": "strlist"
+    },
+    {
+      "default": "",
+      "key": "schema.primary_codetable",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "schema.primary_pinyin",
+      "type": "str"
+    },
+    {
+      "default": true,
+      "key": "schema.pinyin.show_code_hint",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.pinyin.use_smart_compose",
+      "type": "bool"
+    },
+    {
+      "default": "smart",
+      "key": "schema.pinyin.candidate_order",
+      "type": "str"
+    },
+    {
+      "default": "auto",
+      "key": "schema.pinyin.separator",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.enabled",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.zh_z",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.ch_c",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.sh_s",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.n_l",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.f_h",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.r_l",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.an_ang",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.en_eng",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.in_ing",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.ian_iang",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.uan_uang",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.quick_input.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 6,
+      "key": "schema.quick_input.decimal_places",
+      "type": "int"
+    },
+    {
+      "default": false,
+      "key": "schema.quick_input.force_vertical",
+      "type": "bool"
+    },
+    {
+      "default": [],
+      "key": "schema.special_modes",
+      "type": "structlist"
+    },
+    {
+      "default": [
+        {
+          "id": "quick_mix",
+          "members": [
+            "quick_input",
+            "pinyin",
+            "english"
+          ],
+          "name": "快捷",
+          "short_name": "快",
+          "trigger_keys": [
+            "semicolon"
+          ]
+        }
+      ],
+      "key": "schema.mix_modes",
+      "type": "structlist"
+    },
+    {
+      "default": "smart",
+      "key": "input.filter_mode",
+      "type": "str"
+    },
+    {
+      "default": "commit",
+      "key": "input.enter_behavior",
+      "type": "str"
+    },
+    {
+      "default": "commit",
+      "key": "input.space_on_empty_behavior",
+      "type": "str"
+    },
+    {
+      "default": "direct",
+      "key": "input.numpad_behavior",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "key": "input.default.remember_last_state",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.default.chinese_mode",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.default.full_width",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.default.chinese_punct",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.punct.follow_mode",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.punct.smart_after_digit",
+      "type": "bool"
+    },
+    {
+      "default": ".,:",
+      "key": "input.punct.smart_list",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "key": "input.punct.custom_enabled",
+      "type": "bool"
+    },
+    {
+      "default": {},
+      "key": "input.punct.custom_mappings",
+      "type": "map"
+    },
+    {
+      "default": false,
+      "key": "input.symbol.smart_mode",
+      "type": "bool"
+    },
+    {
+      "default": 500,
+      "key": "input.symbol.smart_timeout_ms",
+      "type": "int"
+    },
+    {
+      "default": "。，？！：；、～￥·……——",
+      "key": "input.symbol.smart_chars",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "key": "input.auto_pair.chinese",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.auto_pair.english",
+      "type": "bool"
+    },
+    {
+      "default": [
+        "（）",
+        "【】",
+        "｛｝",
+        "《》",
+        "〈〉",
+        "「」",
+        "『』"
+      ],
+      "key": "input.auto_pair.chinese_pairs",
+      "type": "strlist"
+    },
+    {
+      "default": [
+        "()",
+        "[]",
+        "{}"
+      ],
+      "key": "input.auto_pair.english_pairs",
+      "type": "strlist"
+    },
+    {
+      "default": true,
+      "key": "input.temp_english.enabled",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.temp_english.show_candidates",
+      "type": "bool"
+    },
+    {
+      "default": "temp_english",
+      "key": "input.temp_english.shift_behavior",
+      "type": "enum",
+      "values": [
+        "temp_english",
+        "direct_commit"
+      ]
+    },
+    {
+      "default": [],
+      "key": "input.temp_english.trigger_keys",
+      "type": "strlist"
+    },
+    {
+      "default": false,
+      "key": "input.temp_english.allow_symbols",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.temp_english.space_as_input",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.capslock.cancel_on_mode_switch",
+      "type": "bool"
+    },
+    {
+      "default": [
+        "backtick"
+      ],
+      "key": "input.temp_pinyin.trigger_keys",
+      "type": "strlist"
+    },
+    {
+      "default": false,
+      "key": "input.url.enabled",
+      "type": "bool"
+    },
+    {
+      "default": [
+        "www.",
+        "http",
+        "https",
+        "ftp.",
+        "bbs."
+      ],
+      "key": "input.url.prefixes",
+      "type": "strlist"
+    },
+    {
+      "default": false,
+      "key": "input.code_commit.auto_commit_at_full",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "input.code_commit.auto_commit_min_len",
+      "type": "int"
+    },
+    {
+      "default": false,
+      "key": "input.code_commit.clear_on_empty_max",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.code_commit.top_code_commit",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.code_commit.auto_commit_block_on_pinyin",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.s2t.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "s2t",
+      "key": "input.s2t.variant",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "key": "input.cmdbar.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "⚡",
+      "key": "input.cmdbar.candidate_prefix",
+      "type": "str"
+    },
+    {
+      "default": 2,
+      "key": "input.phrase.min_prefix",
+      "type": "int"
+    },
+    {
+      "default": 30,
+      "key": "input.phrase.max_display_chars",
+      "type": "int"
+    },
+    {
+      "default": [
+        "lshift",
+        "rshift"
+      ],
+      "key": "keys.toggle_mode_keys",
+      "type": "strlist"
+    },
+    {
+      "default": true,
+      "key": "keys.commit_on_switch",
+      "type": "bool"
+    },
+    {
+      "default": "ctrl+shift+e",
+      "key": "keys.switch_engine",
+      "type": "str"
+    },
+    {
+      "default": "shift+space",
+      "key": "keys.toggle_full_width",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+.",
+      "key": "keys.toggle_punct",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+shift+\\",
+      "key": "keys.toggle_toolbar",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+shift+]",
+      "key": "keys.open_settings",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+equal",
+      "key": "keys.add_word",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+shift+j",
+      "key": "keys.toggle_s2t",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+shift+[",
+      "key": "keys.activate_ime",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+number",
+      "key": "keys.pin_candidate",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+shift+number",
+      "key": "keys.delete_candidate",
+      "type": "str"
+    },
+    {
+      "default": [],
+      "key": "keys.global_hotkeys",
+      "type": "strlist"
+    },
+    {
+      "default": [
+        "semicolon_quote"
+      ],
+      "key": "keys.select_key_groups",
+      "type": "strlist"
+    },
+    {
+      "default": [
+        "pageupdown",
+        "minus_equal"
+      ],
+      "key": "keys.page_keys",
+      "type": "strlist"
+    },
+    {
+      "default": [
+        "arrows",
+        "tab"
+      ],
+      "key": "keys.highlight_keys",
+      "type": "strlist"
+    },
+    {
+      "default": [],
+      "key": "keys.select_char_keys",
+      "type": "strlist"
+    },
+    {
+      "default": "ignore",
+      "key": "keys.overflow.number_key",
+      "type": "enum",
+      "values": [
+        "ignore",
+        "commit",
+        "commit_and_input"
+      ]
+    },
+    {
+      "default": "ignore",
+      "key": "keys.overflow.select_key",
+      "type": "enum",
+      "values": [
+        "ignore",
+        "commit",
+        "commit_and_input"
+      ]
+    },
+    {
+      "default": "ignore",
+      "key": "keys.overflow.select_char_key",
+      "type": "enum",
+      "values": [
+        "ignore",
+        "commit",
+        "commit_and_input"
+      ]
+    },
+    {
+      "default": 7,
+      "key": "ui.candidate.per_page",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.per_page_extended",
+      "type": "int"
+    },
+    {
+      "default": "horizontal",
+      "key": "ui.candidate.layout",
+      "type": "enum",
+      "values": [
+        "horizontal",
+        "vertical"
+      ]
+    },
+    {
+      "default": "app_inline",
+      "key": "ui.candidate.preedit_display",
+      "type": "enum",
+      "values": [
+        "app_inline",
+        "candidate_top",
+        "candidate_inline"
+      ]
+    },
+    {
+      "default": false,
+      "key": "ui.candidate.hide_window",
+      "type": "bool"
+    },
+    {
+      "default": 18.0,
+      "key": "ui.candidate.font_size",
+      "type": "float"
+    },
+    {
+      "default": true,
+      "key": "ui.candidate.font_size_follow_theme",
+      "type": "bool"
+    },
+    {
+      "default": "",
+      "key": "ui.candidate.pager_bar_display",
+      "type": "enum",
+      "values": [
+        "",
+        "hide",
+        "auto",
+        "always"
+      ]
+    },
+    {
+      "default": "",
+      "key": "ui.candidate.page_number_display",
+      "type": "enum",
+      "values": [
+        "",
+        "show",
+        "hide"
+      ]
+    },
+    {
+      "default": 16,
+      "key": "ui.candidate.max_chars",
+      "type": "int"
+    },
+    {
+      "default": "",
+      "key": "ui.candidate.index_labels",
+      "type": "str"
+    },
+    {
+      "default": false,
+      "key": "ui.candidate.flip_when_above",
+      "type": "bool"
+    },
+    {
+      "default": "",
+      "key": "ui.font.family",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "ui.font.path",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "ui.font.render_mode",
+      "type": "enum",
+      "values": [
+        "directwrite",
+        "gdi"
+      ]
+    },
+    {
+      "default": "default",
+      "key": "ui.theme.name",
+      "type": "str"
+    },
+    {
+      "default": "system",
+      "key": "ui.theme.style",
+      "type": "str"
+    },
+    {
+      "default": "short",
+      "key": "ui.mode_indicator.style",
+      "type": "enum",
+      "values": [
+        "short",
+        "full",
+        "none"
+      ]
+    },
+    {
+      "default": 200,
+      "key": "ui.tooltip.delay",
+      "type": "int"
+    },
+    {
+      "default": true,
+      "key": "ui.tooltip.code_enabled",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "ui.tooltip.pinyin_enabled",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "ui.tooltip.pinyin_heteronyms",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "ui.tooltip.pinyin_max_readings",
+      "type": "int"
+    },
+    {
+      "default": false,
+      "key": "ui.tooltip.chaizi_enabled",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "ui.tooltip.debug_enabled",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "ui.status.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 800,
+      "key": "ui.status.duration",
+      "type": "int"
+    },
+    {
+      "default": "temp",
+      "key": "ui.status.display_mode",
+      "type": "enum",
+      "values": [
+        "temp",
+        "always"
+      ]
+    },
+    {
+      "default": "full",
+      "key": "ui.status.schema_name_style",
+      "type": "enum",
+      "values": [
+        "full",
+        "short"
+      ]
+    },
+    {
+      "default": "follow_caret",
+      "key": "ui.status.position_mode",
+      "type": "enum",
+      "values": [
+        "follow_caret",
+        "fixed"
+      ]
+    },
+    {
+      "default": 0,
+      "key": "ui.status.offset_x",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.status.offset_y",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.status.custom_x",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.status.custom_y",
+      "type": "int"
+    },
+    {
+      "default": true,
+      "key": "ui.toolbar.visible",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "ui.toolbar.hide_in_fullscreen",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "stats.enabled",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "stats.track_english",
+      "type": "bool"
+    },
+    {
+      "default": [],
+      "key": "compat.host_render_processes",
+      "type": "strlist"
+    },
+    {
+      "default": "",
+      "key": "debug.log_level",
+      "type": "enum",
+      "values": [
+        "trace",
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ]
+    }
+  ]
+}
