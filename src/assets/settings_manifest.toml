@@ -356,6 +356,15 @@ label = "网址输入模式"
 hint = "输入 www./http 等前缀进入网址直通模式"
 default = false
 
+[[items]]
+key = "input.url.prefixes"
+group = "input"
+section = "网址"
+type = "dialog_button"
+label = "网址前缀"
+hint = "识别为网址的前缀，按空格分隔"
+gate_key = "input.url.enabled"
+
 # ═══════════════════════════ 快捷键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。
 [[items]]

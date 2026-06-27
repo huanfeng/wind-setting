@@ -35,6 +35,8 @@ pub struct MItem {
     pub step: Option<f64>,
     pub unit: Option<String>,
     pub enabled_when: Option<String>,
+    /// dialog_button 专用：门控开关 key（该 toggle 关时按钮置灰不可点）。
+    pub gate_key: Option<String>,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -130,6 +132,7 @@ impl Manifest {
                     step: it.get("step").and_then(|x| x.as_f64()),
                     unit: opt_str(it, "unit"),
                     enabled_when: opt_str(it, "enabled_when"),
+                    gate_key: opt_str(it, "gate_key"),
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -212,6 +215,7 @@ pub fn field(state: &AppState, key: &str) -> Element {
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
         "string" => build_string(state, key, item, cfg),
+        "dialog_button" => build_dialog_button(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     };
     let mut row = setting_row(&item.label, item.hint.as_deref(), control);
@@ -531,6 +535,92 @@ fn schema_options(state: &AppState, kind: Option<&str>) -> (Vec<String>, Vec<Str
         labels.push(s.name.clone());
     }
     (values, labels)
+}
+
+/// dialog_button 控件：外层「设置…」按钮（受 gate_key 联动），点开空格分隔文本对话框。
+fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::{build_spaced_text_dialog, spaced_to_strlist, strlist_to_spaced};
+
+    // 读当前值播种文本框 signal
+    let cur: Vec<String> = cfg
+        .get_array(key)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let text = signal(strlist_to_spaced(&cur));
+    let visible = signal(false);
+
+    // writer：把文本框内容（空格分隔）写回 strlist
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        let arr: Vec<Value> = spaced_to_strlist(&text.get())
+            .into_iter()
+            .map(Value::String)
+            .collect();
+        c.set_path(&kw, Value::Array(arr));
+    }));
+
+    // loader：从 Config 回填文本框
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur: Vec<String> = c
+                .get_array(&kl)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            text.set(strlist_to_spaced(&cur));
+        }),
+    );
+
+    // 恢复默认文本：读 capability 默认值
+    let def_text = {
+        let d = state.capabilities.default_for(key);
+        let v: Vec<String> = d
+            .as_array()
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        strlist_to_spaced(&v)
+    };
+
+    // 对话框面板
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_spaced_text_dialog(visible, &item.label, &hint, text, def_text);
+
+    // 外层按钮 + 门控联动：windui 无 disabled_when，用 visible_when 双按钮实现
+    // 启用态按钮（gate 开或无 gate 时可见）；禁用态占位（gate 关时可见）
+    if let Some(gate) = &item.gate_key {
+        let reg_on = state.fields.clone();
+        let gk_on = gate.clone();
+        let reg_off = state.fields.clone();
+        let gk_off = gate.clone();
+        let active_btn = Element::button("设置…")
+            .small()
+            .neutral()
+            .on_click(move |_| visible.set(true))
+            .visible_when(move || {
+                let g = reg_on.getters.borrow();
+                g.get(&gk_on)
+                    .map(|get| get().as_bool() == Some(true))
+                    .unwrap_or(true)
+            });
+        let inactive_btn = Element::button("设置…")
+            .small()
+            .neutral()
+            .disabled(true)
+            .visible_when(move || {
+                let g = reg_off.getters.borrow();
+                g.get(&gk_off)
+                    .map(|get| get().as_bool() != Some(true))
+                    .unwrap_or(false)
+            });
+        Element::stack().child(active_btn).child(inactive_btn).child(dlg)
+    } else {
+        let btn = Element::button("设置…")
+            .small()
+            .neutral()
+            .on_click(move |_| visible.set(true));
+        Element::stack().child(btn).child(dlg)
+    }
 }
 
 /// 解析 `enabled_when`，仅支持 `key == value`（manifest 现有用法均为 `== true`）。
