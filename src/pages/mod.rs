@@ -18,7 +18,7 @@ pub fn all_tabs(state: &AppState) -> Vec<(String, Element)> {
         ("按键".into(), keys_page(state)),
         ("外观".into(), appearance_page(state)),
         ("词库".into(), dict_page(state)),
-        ("统计".into(), stats_page(state)),
+        // 统计页未实现，暂从导航隐藏（功能完成后恢复）。
         ("高级".into(), manifest_page(state, "advanced")),
         ("关于".into(), about_page(state)),
     ]
@@ -97,26 +97,9 @@ fn keys_page(state: &AppState) -> Element {
 // ───────────────────────── 外观 ─────────────────────────
 
 fn appearance_page(state: &AppState) -> Element {
-    let mut secs = vec![theme_section(state)];
-    secs.extend(manifest_sections(state, "ui"));
-    sections_page(secs)
-}
-
-/// 主题选择：用主题**名称**（theme.list）而非 id。
-/// 注：主题应用路径（config key / 专用 RPC）尚不明确，此处先展示名称下拉，
-/// 暂不登记保存写回（避免写入未知 key 被 core 校验拒绝）——见说明。
-fn theme_section(state: &AppState) -> Element {
-    let control: Element = if state.theme_names.is_empty() {
-        Element::label("（无可用主题）").fg_role(Role::TextMuted)
-    } else {
-        let names = state.theme_names.clone();
-        let sig = signal(0usize);
-        Element::dropdown(names, sig).width(180)
-    };
-    section(
-        "主题",
-        vec![setting_row("候选窗主题", Some("按主题名称选择"), control)],
-    )
+    // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
+    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。整页纯清单驱动。
+    sections_page(manifest_sections(state, "ui"))
 }
 
 // ───────────────────────── 词库 ─────────────────────────
@@ -128,18 +111,6 @@ fn dict_page(_state: &AppState) -> Element {
             "词库管理本期占位，后续作为独立功能实现。\
              缺口：wind-ui-rust 暂无「可编辑/可搜索表格」控件；\
              core 侧 dict.* RPC 已就绪（search/add/remove/update/import/export）。",
-        )],
-    )])
-}
-
-// ───────────────────────── 统计 ─────────────────────────
-
-fn stats_page(_state: &AppState) -> Element {
-    sections_page(vec![section(
-        "输入统计",
-        vec![todo_hint(
-            "统计面板本期占位，后续作为独立功能实现。\
-             core 侧 stats.* RPC 已就绪（summary/daily/clear/pruneBefore）。",
         )],
     )])
 }

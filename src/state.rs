@@ -64,8 +64,8 @@ pub struct AppState {
     pub system_info: Value,
     /// 方案列表（schema.list）。
     pub schemas: Vec<SchemaInfo>,
-    /// 主题名称列表（theme.list）。
-    pub theme_names: Vec<String>,
+    /// 主题列表（theme.list）：(id/slug, 显示名)。下拉显示名、保存 id 到 `ui.theme.name`。
+    pub theme_names: Vec<(String, String)>,
     /// 系统字体列表（system.fonts）。
     pub fonts: Vec<String>,
     /// 字段注册表（清单引擎登记）。
@@ -158,14 +158,15 @@ impl AppState {
     }
 
     /// 当前 Tab 对应的 manifest 分组（用于「恢复本页」定位 key 集合）。
-    /// 与 `pages::all_tabs` 顺序一致；自定义页（方案/词库/统计/关于）无清单分组。
+    /// 与 `pages::all_tabs` 顺序一致（统计页已隐藏）：方案0/输入1/按键2/外观3/词库4/高级5/关于6。
+    /// 自定义页（词库/关于）无清单分组。
     fn current_tab_groups(&self) -> &'static [&'static str] {
         match self.tab.get() {
             0 => &["schema"],
             1 => &["input", "general"],
             2 => &["keys"],
             3 => &["ui"],
-            6 => &["advanced"],
+            5 => &["advanced"],
             _ => &[],
         }
     }
@@ -251,7 +252,7 @@ pub struct LoadedState {
     pub system_info: Value,
     pub capabilities_value: Value,
     pub schemas: Vec<SchemaInfo>,
-    pub theme_names: Vec<String>,
+    pub theme_names: Vec<(String, String)>,
     pub fonts: Vec<String>,
     pub connected: bool,
 }
@@ -323,13 +324,27 @@ fn load_schemas() -> Vec<SchemaInfo> {
         .unwrap_or_default()
 }
 
-/// 加载主题名称列表（theme.list）。
-fn load_theme_names() -> Vec<String> {
+/// 加载主题列表（theme.list）：返回 (id/slug, 显示名) 对。
+/// id 取 `id`/`slug`（保存到 `ui.theme.name`），显示名取 `name`/`display_name`（缺省回退 id）。
+fn load_theme_names() -> Vec<(String, String)> {
     let list = rpc::call_core("theme.list", &serde_json::json!({})).unwrap_or(Value::Array(vec![]));
     list.as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(String::from))
+                .filter_map(|t| {
+                    let id = t
+                        .get("id")
+                        .or_else(|| t.get("slug"))
+                        .and_then(|v| v.as_str())?
+                        .to_string();
+                    let name = t
+                        .get("name")
+                        .or_else(|| t.get("display_name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&id)
+                        .to_string();
+                    Some((id, name))
+                })
                 .collect()
         })
         .unwrap_or_default()

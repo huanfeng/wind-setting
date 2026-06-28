@@ -582,6 +582,8 @@ fn dynamic_options(state: &AppState, src: &str) -> (Vec<String>, Vec<String>) {
             let v: Vec<String> = state.fonts.clone();
             (v.clone(), v)
         }
+        // 主题：值=id/slug（写回 ui.theme.name），标签=显示名。
+        "themes" => state.theme_names.iter().cloned().unzip(),
         _ => (vec![], vec![]),
     }
 }

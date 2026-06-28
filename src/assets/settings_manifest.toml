@@ -1,20 +1,19 @@
-# 统一声明式设置清单（core/setting/web 共用真相源）
-# core 解析后注入 app/engine/variant，经 system.manifest 暴露为 JSON（items 原样透传）。
-# 字段：key(点路径,对应 Config)/group/section/type/label/hint/since/options/min/max/step/unit/enabled_when
+# 统一声明式设置清单（native 内置真相源；core 已退役 manifest.toml）。
+# 字段：key(点路径,对应 Config)/group/section/type/label/hint/options/min/max/step/unit/enabled_when/gate_key
 # 注：默认值不在此声明，统一取自 core capability 快照（capabilities.snapshot.json）。
 #
-# 【对照来源】wind-config/src/config.rs（权威）。key 必须与真实配置点路径逐字一致。
-# 【分组】group → Tab（方案/输入/快捷键/外观/常规/高级）；section → Tab 内子卡片。
+# 【对照来源】参考项目 WindInput/wind_setting（web 配置页）的页面/分区/字段组织与文案；
+#   key 必须与本项目 core 的真实配置点路径逐字一致（见 capabilities.snapshot.json）。
+# 【分组】group → 页面主体；section → 页内子卡片。
 #   前端按 (group, section) 聚合：同 section 的项渲染为一张卡片，section 首次出现序为卡片序，
 #   卡片内项序即 items 出现序——故同 section 的项务必相邻声明，且按「基础/开关在前、细节在后」排列。
-# 【未进清单·待对话框承载】hotkeys 键位合成(目前以 string 暴露)、
-#   schema.active/available（方案管理）、features.special_modes/mix_modes、
-#   各 *.trigger_keys / *_keys 键组、compat.host_render_processes。
-# 【动态可选值】select 项可用 options_source（如 codetableSchemas/pinyinSchemas/fonts）声明选项来源，
-#   选项由前端运行时从 schema.list / system.fonts 填充；此类项恒渲染为下拉。
+# 【布局对照表】docs/redesign/settings-layout-correspondence.md
+# 【方案页引擎设置】分两级：①全局级（本文件 schema 组「上屏行为/候选行为」，常用通用设置，快捷配置）；
+#   ②per-schema 级（方案设置弹窗，后续实现）。
+# 【动态可选值】select 项可用 options_source（codetableSchemas/pinyinSchemas/fonts/themes）声明选项来源。
 
 
-# ── 分组（→ web 页面/Tab、setting 导航）──
+# ── 分组（→ 页面主体）──
 [[groups]]
 key = "schema"
 label = "方案"
@@ -27,7 +26,7 @@ order = 2
 
 [[groups]]
 key = "keys"
-label = "快捷键"
+label = "按键"
 order = 3
 
 [[groups]]
@@ -46,45 +45,304 @@ label = "高级"
 order = 6
 
 # ═══════════════════════════ 方案 ═══════════════════════════
+# ── 主方案设置 ──
 [[items]]
 key = "schema.primary_codetable"
 group = "schema"
-section = "默认方案"
+section = "主方案设置"
 type = "select"
 options_source = "codetableSchemas"   # 选项运行时来自 schema.list（码表类）
 label = "主码表方案"
-hint = "主力码表方案 id（如 wubi86）"
+hint = "主力码表方案 id（如 wubi86）；拼音方案的反查/编码提示基于此方案的码表"
 
 [[items]]
 key = "schema.primary_pinyin"
 group = "schema"
-section = "默认方案"
+section = "主方案设置"
 type = "select"
 options_source = "pinyinSchemas"      # 选项运行时来自 schema.list（拼音类）
 label = "主拼音方案"
-hint = "混输/临时拼音使用的拼音方案 id"
+hint = "混输/临时拼音使用的拼音方案 id；码表方案的临时拼音使用此方案"
+
+# ── 上屏行为（全局级，常用快捷配置；per-schema 细调待方案设置弹窗）──
+[[items]]
+key = "input.code_commit.auto_commit_at_full"
+group = "schema"
+section = "上屏行为"
+type = "toggle"
+label = "全码自动上屏"
+hint = "唯一精确且无更长后继时直接上屏"
+
+[[items]]
+key = "input.code_commit.auto_commit_block_on_pinyin"
+group = "schema"
+section = "上屏行为"
+type = "toggle"
+label = "有拼音候选时否决全码上屏"
+hint = "全码上屏前若仍有拼音候选则不自动上屏"
+enabled_when = "input.code_commit.auto_commit_at_full == true"
+
+[[items]]
+key = "input.code_commit.auto_commit_min_len"
+group = "schema"
+section = "上屏行为"
+type = "number"
+label = "自动上屏最短码长"
+hint = "0 跟随方案 max_code_length"
+min = 0
+max = 10
+enabled_when = "input.code_commit.auto_commit_at_full == true"
+
+[[items]]
+key = "input.code_commit.top_code_commit"
+group = "schema"
+section = "上屏行为"
+type = "toggle"
+label = "超长时取前 N 码顶字上屏"
+hint = "编码超过最大码长时自动顶字上屏首选"
+
+[[items]]
+key = "input.code_commit.clear_on_empty_max"
+group = "schema"
+section = "上屏行为"
+type = "toggle"
+label = "满码无候选时清空缓冲"
+hint = "编码达到最大码长且无候选时自动清空缓冲"
+
+# ── 候选行为（全局级）──
+[[items]]
+key = "schema.pinyin.candidate_order"
+group = "schema"
+section = "候选行为"
+type = "select"
+label = "候选排序模式"
+hint = "单字优先 / 词组优先 / 智能混排"
+options = [
+  { value = "smart", label = "智能混排" },
+  { value = "char_first", label = "单字优先" },
+  { value = "phrase_first", label = "词组优先" },
+]
+
+[[items]]
+key = "schema.pinyin.show_code_hint"
+group = "schema"
+section = "候选行为"
+type = "toggle"
+label = "显示编码提示"
+hint = "拼音候选旁显示对应编码"
+
+[[items]]
+key = "schema.pinyin.use_smart_compose"
+group = "schema"
+section = "候选行为"
+type = "toggle"
+label = "智能组词"
+hint = "根据上下文智能拼接候选"
 
 # ═══════════════════════════ 输入 ═══════════════════════════
-# ── 标点与符号 ──
+# ── 字符与标点 ──
+[[items]]
+key = "input.filter_mode"
+group = "input"
+section = "字符与标点"
+type = "select"
+label = "候选检索范围"
+hint = "过滤候选词中的生僻字"
+options = [
+  { value = "smart", label = "智能" },
+  { value = "general", label = "常用字" },
+  { value = "gb18030", label = "全部字符" },
+]
+
+[[items]]
+key = "input.punct.follow_mode"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "标点随中英文切换"
+hint = "切换到中文模式时自动切换中文标点"
+
+[[items]]
+key = "input.punct.smart_after_digit"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "数字后智能标点"
+hint = "数字后句号输出点号、逗号输出英文逗号，可配置参与的标点"
+
+[[items]]
+key = "input.punct.smart_list"
+group = "input"
+section = "字符与标点"
+type = "string"
+label = "数字后保持英文的标点"
+hint = "数字后保持英文形态的标点集合，默认 .,:"
+
+[[items]]
+key = "input.symbol.smart_mode"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "智能符号模式"
+hint = "连按两次同一中文标点自动转英文，可配置参与的符号集合"
+
+[[items]]
+key = "input.symbol.smart_timeout_ms"
+group = "input"
+section = "字符与标点"
+type = "slider"
+label = "智能符号时限"
+hint = "两次按键的最大间隔（毫秒）"
+min = 100
+max = 2000
+step = 50
+unit = "ms"
+enabled_when = "input.symbol.smart_mode == true"
+
+[[items]]
+key = "input.symbol.smart_chars"
+group = "input"
+section = "字符与标点"
+type = "string"
+label = "智能符号字符集"
+hint = "参与智能符号转换的中文标点集合"
+enabled_when = "input.symbol.smart_mode == true"
+
+[[items]]
+key = "input.punct.custom_enabled"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "启用自定义标点映射"
+hint = "自定义英文标点的中文/全角替换；映射表在「自定义标点映射」对话框中编辑"
+
+[[items]]
+key = "input.punct.custom_mappings"
+group = "input"
+section = "字符与标点"
+type = "dialog_button"
+label = "自定义标点映射"
+hint = "每行一对：原符号=替换符号"
+gate_key = "input.punct.custom_enabled"
+
+# ── 按键行为 ──
+[[items]]
+key = "input.enter_behavior"
+group = "input"
+section = "按键行为"
+type = "select"
+label = "回车键功能"
+hint = "有编码时按回车键的处理方式"
+options = [
+  { value = "commit", label = "上屏编码" },
+  { value = "clear", label = "清空编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+  { value = "ignore", label = "忽略" },
+]
+
+[[items]]
+key = "input.space_on_empty_behavior"
+group = "input"
+section = "按键行为"
+type = "select"
+label = "空码时空格键功能"
+hint = "无候选词时按空格键的处理方式"
+options = [
+  { value = "commit", label = "上屏编码" },
+  { value = "clear", label = "清空编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+  { value = "ignore", label = "忽略" },
+]
+
+[[items]]
+key = "input.numpad_behavior"
+group = "input"
+section = "按键行为"
+type = "select"
+label = "数字小键盘功能"
+hint = "控制小键盘数字键的行为，选择「同主键盘区数字」后可用于候选选择和快捷输入"
+options = [
+  { value = "direct", label = "直接输入数字" },
+  { value = "follow_main", label = "同主键盘区数字" },
+]
+
+# ── 候选无效按键 ──
+[[items]]
+key = "keys.overflow.number_key"
+group = "input"
+section = "候选无效按键"
+type = "select"
+label = "数字键无效时"
+hint = "按的数字超出当前页候选数量时的处理方式"
+options = [
+  { value = "ignore", label = "忽略" },
+  { value = "commit", label = "上屏编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
+
+[[items]]
+key = "keys.overflow.select_key"
+group = "input"
+section = "候选无效按键"
+type = "select"
+label = "次选三选键无效时"
+hint = "候选数量不足时按次选或三选键的处理方式"
+options = [
+  { value = "ignore", label = "忽略" },
+  { value = "commit", label = "上屏编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
+
+[[items]]
+key = "keys.overflow.select_char_key"
+group = "input"
+section = "候选无效按键"
+type = "select"
+label = "以词定字键无效时"
+hint = "候选词长度不足时按以词定字键的处理方式"
+options = [
+  { value = "ignore", label = "忽略" },
+  { value = "commit", label = "上屏编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
+
+# ── 简入繁出 ──
+[[items]]
+key = "input.s2t.enabled"
+group = "input"
+section = "简入繁出"
+type = "toggle"
+label = "启用简入繁出"
+hint = "候选与上屏均输出繁体（基于 OpenCC 词典）"
+
+[[items]]
+key = "input.s2t.variant"
+group = "input"
+section = "简入繁出"
+type = "select"
+label = "转换变体"
+hint = "选择目标繁体字形与词汇风格"
+enabled_when = "input.s2t.enabled == true"
+options = [
+  { value = "s2t", label = "标准繁体" },
+  { value = "s2tw", label = "台湾繁体" },
+  { value = "s2twp", label = "台湾繁体（含词汇）" },
+  { value = "s2hk", label = "香港繁体" },
+]
+
+# ── 标点配对 ──
 [[items]]
 key = "input.auto_pair.chinese"
 group = "input"
-section = "标点与符号"
+section = "标点配对"
 type = "toggle"
 label = "中文标点自动配对"
-hint = "输入左括号自动补右括号"
-
-[[items]]
-key = "input.auto_pair.english"
-group = "input"
-section = "标点与符号"
-type = "toggle"
-label = "英文标点自动配对"
+hint = "输入左括号类标点时自动补全右标点"
 
 [[items]]
 key = "input.auto_pair.chinese_pairs"
 group = "input"
-section = "标点与符号"
+section = "标点配对"
 type = "dialog_button"
 label = "中文配对字符"
 hint = "勾选参与自动配对的中文标点对"
@@ -112,9 +370,17 @@ value = "『』"
 label = "『 』双引号（台）"
 
 [[items]]
+key = "input.auto_pair.english"
+group = "input"
+section = "标点配对"
+type = "toggle"
+label = "英文标点自动配对"
+hint = "英文模式或英文标点下自动配对括号"
+
+[[items]]
 key = "input.auto_pair.english_pairs"
 group = "input"
-section = "标点与符号"
+section = "标点配对"
 type = "dialog_button"
 label = "英文配对字符"
 hint = "勾选参与自动配对的英文括号对"
@@ -129,224 +395,43 @@ label = "[ ] 方括号"
 value = "{}"
 label = "{ } 花括号"
 
+# ── 快捷输入 ──
 [[items]]
-key = "input.punct.follow_mode"
+key = "schema.quick_input.enabled"
 group = "input"
-section = "标点与符号"
+section = "快捷输入"
 type = "toggle"
-label = "标点跟随中英模式"
-hint = "英文模式下自动用英文标点"
+label = "快捷输入（日期/计算）"
+hint = "支持数字转大小写/金额、计算器、日期等快捷输入"
 
 [[items]]
-key = "input.punct.smart_after_digit"
+key = "schema.quick_input.force_vertical"
 group = "input"
-section = "标点与符号"
+section = "快捷输入"
 type = "toggle"
-label = "数字后智能标点"
-hint = "数字后输入 . , : 保持英文"
+label = "强制竖排显示"
+hint = "快捷输入时候选窗口强制使用竖排布局，退出后恢复原布局"
+enabled_when = "schema.quick_input.enabled == true"
 
 [[items]]
-key = "input.punct.smart_list"
+key = "schema.quick_input.decimal_places"
 group = "input"
-section = "标点与符号"
-type = "string"
-label = "数字后保持英文的标点"
-hint = "默认 .,:"
-
-[[items]]
-key = "input.symbol.smart_mode"
-group = "input"
-section = "标点与符号"
-type = "toggle"
-label = "智能符号模式"
-hint = "同一中文标点限时内连按两次，替换为英文"
-
-[[items]]
-key = "input.symbol.smart_timeout_ms"
-group = "input"
-section = "标点与符号"
-type = "slider"
-label = "智能符号判定时限"
-min = 100
-max = 2000
-step = 50
-unit = "ms"
-enabled_when = "input.symbol.smart_mode == true"
-
-[[items]]
-key = "input.symbol.smart_chars"
-group = "input"
-section = "标点与符号"
-type = "string"
-label = "智能符号字符集"
-hint = "参与智能符号转换的中文标点集合"
-enabled_when = "input.symbol.smart_mode == true"
-
-[[items]]
-key = "input.punct.custom_enabled"
-group = "input"
-section = "标点与符号"
-type = "toggle"
-label = "启用自定义标点映射"
-hint = "映射表在「标点映射」对话框中编辑"
-
-[[items]]
-key = "input.punct.custom_mappings"
-group = "input"
-section = "标点与符号"
-type = "dialog_button"
-label = "自定义标点映射"
-hint = "每行一对：原符号=替换符号"
-gate_key = "input.punct.custom_enabled"
-
-# ── 上屏控制 ──
-[[items]]
-key = "input.enter_behavior"
-group = "input"
-section = "上屏控制"
-type = "select"
-label = "有编码时回车行为"
-options = [
-  { value = "commit", label = "上屏编码" },
-  { value = "clear", label = "清空编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-  { value = "ignore", label = "忽略" },
-]
-
-[[items]]
-key = "input.space_on_empty_behavior"
-group = "input"
-section = "上屏控制"
-type = "select"
-label = "空码时空格行为"
-options = [
-  { value = "commit", label = "上屏编码" },
-  { value = "clear", label = "清空编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-  { value = "ignore", label = "忽略" },
-]
-
-[[items]]
-key = "input.code_commit.auto_commit_at_full"
-group = "input"
-section = "上屏控制"
-type = "toggle"
-label = "全码自动上屏"
-hint = "唯一精确且无更长后继时直接上屏"
-
-[[items]]
-key = "input.code_commit.auto_commit_block_on_pinyin"
-group = "input"
-section = "上屏控制"
-type = "toggle"
-label = "有拼音候选时否决全码上屏"
-enabled_when = "input.code_commit.auto_commit_at_full == true"
-
-[[items]]
-key = "input.code_commit.auto_commit_min_len"
-group = "input"
-section = "上屏控制"
+section = "快捷输入"
 type = "number"
-label = "自动上屏最短码长"
-hint = "0 跟随方案 max_code_length"
+label = "小数保留位数"
+hint = "计算结果最多保留的小数位数（0 表示取整）"
 min = 0
-max = 10
-enabled_when = "input.code_commit.auto_commit_at_full == true"
+max = 12
+enabled_when = "schema.quick_input.enabled == true"
 
-[[items]]
-key = "input.code_commit.top_code_commit"
-group = "input"
-section = "上屏控制"
-type = "toggle"
-label = "超长时取前 N 码顶字上屏"
-
-[[items]]
-key = "input.code_commit.clear_on_empty_max"
-group = "input"
-section = "上屏控制"
-type = "toggle"
-label = "满码无候选时清空缓冲"
-
-# ── 临时英文与大小写 ──
-[[items]]
-key = "input.temp_english.enabled"
-group = "input"
-section = "临时英文与大小写"
-type = "toggle"
-label = "Shift 临时英文"
-
-[[items]]
-key = "input.temp_english.show_candidates"
-group = "input"
-section = "临时英文与大小写"
-type = "toggle"
-label = "临时英文显示候选"
-enabled_when = "input.temp_english.enabled == true"
-
-[[items]]
-key = "input.temp_english.shift_behavior"
-group = "input"
-section = "临时英文与大小写"
-type = "select"
-label = "Shift 行为"
-enabled_when = "input.temp_english.enabled == true"
-options = [
-  { value = "temp_english", label = "进入临时英文模式" },
-  { value = "direct_commit", label = "直接上屏大写字母" },
-]
-
-[[items]]
-key = "input.temp_english.allow_symbols"
-group = "input"
-section = "临时英文与大小写"
-type = "toggle"
-label = "临时英文允许符号"
-enabled_when = "input.temp_english.enabled == true"
-
-[[items]]
-key = "input.temp_english.space_as_input"
-group = "input"
-section = "临时英文与大小写"
-type = "toggle"
-label = "临时英文空格作输入"
-enabled_when = "input.temp_english.enabled == true"
-
-[[items]]
-key = "input.temp_english.trigger_keys"
-group = "input"
-section = "临时英文与大小写"
-type = "dialog_button"
-label = "临时英文触发键"
-hint = "进入临时英文的触发键名，按空格分隔"
-gate_key = "input.temp_english.enabled"
-
-[[items]]
-key = "input.capslock.cancel_on_mode_switch"
-group = "input"
-section = "临时英文与大小写"
-type = "toggle"
-label = "切换模式时取消大写锁定"
-
-# ── 拼音与编码 ──
-[[items]]
-key = "input.filter_mode"
-group = "input"
-section = "拼音与编码"
-type = "select"
-label = "字符集过滤"
-hint = "限制候选字符集范围"
-options = [
-  { value = "smart", label = "智能" },
-  { value = "general", label = "通用" },
-  { value = "gb18030", label = "GB18030" },
-]
-
+# ── 临时拼音 ──
 [[items]]
 key = "schema.pinyin.separator"
 group = "input"
-section = "拼音与编码"
+section = "临时拼音"
 type = "select"
 label = "拼音分隔符"
+hint = "拼音模式下用于消歧的分隔符，如输入 xi'an 得到「西安」"
 options = [
   { value = "auto", label = "自动（' 被选择键占用时改用 `）" },
   { value = "quote", label = "单引号 ( ' )" },
@@ -355,178 +440,107 @@ options = [
 ]
 
 [[items]]
-key = "schema.pinyin.candidate_order"
-group = "input"
-section = "拼音与编码"
-type = "select"
-label = "候选排序模式"
-hint = "单字优先 / 词组优先 / 智能混排"
-options = [
-  { value = "smart", label = "智能混排" },
-  { value = "char_first", label = "单字优先" },
-  { value = "phrase_first", label = "词组优先" },
-]
-
-[[items]]
-key = "schema.pinyin.show_code_hint"
-group = "input"
-section = "拼音与编码"
-type = "toggle"
-label = "显示编码提示"
-hint = "拼音候选旁显示对应编码"
-
-[[items]]
-key = "schema.pinyin.use_smart_compose"
-group = "input"
-section = "拼音与编码"
-type = "toggle"
-label = "智能组词"
-hint = "根据上下文智能拼接候选"
-
-[[items]]
-key = "input.numpad_behavior"
-group = "input"
-section = "拼音与编码"
-type = "select"
-label = "小键盘行为"
-# core 默认未设；留空时引擎用内部默认
-options = [
-  { value = "direct", label = "直接输入数字" },
-  { value = "follow_main", label = "同主键盘区数字" },
-]
-
-[[items]]
 key = "input.temp_pinyin.trigger_keys"
 group = "input"
-section = "拼音与编码"
+section = "临时拼音"
 type = "dialog_button"
-label = "临时拼音触发键"
-hint = "进入临时拼音的触发键名，按空格分隔（如 backtick）"
+label = "触发键"
+hint = "按触发键临时切换拼音输入；触发键名按空格分隔（如 backtick）"
 
-# ── 短语 ──
+# ── 临时英文 ──
 [[items]]
-key = "input.phrase.min_prefix"
+key = "input.temp_english.enabled"
 group = "input"
-section = "短语"
-type = "number"
-label = "短语前缀触发最小长度"
-min = 1
-max = 5
+section = "临时英文"
+type = "toggle"
+label = "Shift 临时英文"
+hint = "中文模式下用 Shift/触发键临时输入英文"
 
 [[items]]
-key = "input.phrase.max_display_chars"
+key = "input.temp_english.shift_behavior"
 group = "input"
-section = "短语"
-type = "number"
-label = "短语候选最大显示字数"
-hint = "0 表示不限制"
-min = 0
-max = 200
+section = "临时英文"
+type = "select"
+label = "Shift+字母行为"
+hint = "中文模式下按 Shift+字母时的行为"
+enabled_when = "input.temp_english.enabled == true"
+options = [
+  { value = "temp_english", label = "进入临时英文模式" },
+  { value = "direct_commit", label = "直接上屏大写字母" },
+]
 
-# ── 网址 ──
+[[items]]
+key = "input.temp_english.show_candidates"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "显示英文候选"
+hint = "临时英文模式下查询英文词库显示候选词"
+enabled_when = "input.temp_english.enabled == true"
+
+[[items]]
+key = "input.temp_english.allow_symbols"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "允许输入符号与数字"
+hint = "可输入下划线、点号等符号，便于书写标识符或代码"
+enabled_when = "input.temp_english.enabled == true"
+
+[[items]]
+key = "input.temp_english.space_as_input"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "空格作为输入字符"
+hint = "空格不再上屏，可连续输入多个单词，回车上屏"
+enabled_when = "input.temp_english.enabled == true"
+
+[[items]]
+key = "input.temp_english.trigger_keys"
+group = "input"
+section = "临时英文"
+type = "dialog_button"
+label = "触发键"
+hint = "按触发键进入临时英文模式；触发键名按空格分隔"
+gate_key = "input.temp_english.enabled"
+
+[[items]]
+key = "input.capslock.cancel_on_mode_switch"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "切换模式时取消大写锁定"
+hint = "切换中英文模式时自动取消大写锁定状态"
+
+# ── 网址输入 ──
 [[items]]
 key = "input.url.enabled"
 group = "input"
 section = "网址输入"
 type = "toggle"
-label = "网址输入模式"
-hint = "输入 www./http 等前缀进入网址直通模式"
+label = "启用网址输入模式"
+hint = "打出完整前缀（如 http、www.）即进入网址输入模式，可自由输入网址，空格或回车上屏"
 
 [[items]]
 key = "input.url.prefixes"
 group = "input"
 section = "网址输入"
 type = "dialog_button"
-label = "网址前缀"
-hint = "识别为网址的前缀，按空格分隔"
+label = "触发前缀"
+hint = "识别为网址的前缀（如 www. http https ftp.），按空格分隔"
 gate_key = "input.url.enabled"
 
-# ═══════════════════════════ 快捷键 ═══════════════════════════
+# ═══════════════════════════ 按键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。
-[[items]]
-key = "keys.commit_on_switch"
-group = "keys"
-section = "开关"
-type = "toggle"
-label = "切换中英时上屏当前编码"
-
-[[items]]
-key = "keys.switch_engine"
-group = "keys"
-section = "键位"
-type = "string"
-label = "切换方案"
-
-[[items]]
-key = "keys.toggle_full_width"
-group = "keys"
-section = "键位"
-type = "string"
-label = "切换全/半角"
-
-[[items]]
-key = "keys.toggle_punct"
-group = "keys"
-section = "键位"
-type = "string"
-label = "切换中/英标点"
-
-[[items]]
-key = "keys.toggle_s2t"
-group = "keys"
-section = "键位"
-type = "string"
-label = "切换简/繁"
-
-[[items]]
-key = "keys.toggle_toolbar"
-group = "keys"
-section = "键位"
-type = "string"
-label = "显示/隐藏工具栏"
-
-[[items]]
-key = "keys.open_settings"
-group = "keys"
-section = "键位"
-type = "string"
-label = "打开设置"
-
-[[items]]
-key = "keys.add_word"
-group = "keys"
-section = "键位"
-type = "string"
-label = "造词"
-
-[[items]]
-key = "keys.pin_candidate"
-group = "keys"
-section = "键位"
-type = "string"
-label = "置顶候选"
-
-[[items]]
-key = "keys.delete_candidate"
-group = "keys"
-section = "键位"
-type = "string"
-label = "删除候选"
-
-[[items]]
-key = "keys.activate_ime"
-group = "keys"
-section = "键位"
-type = "string"
-label = "切换到本输入法（全局）"
-
+# ── 中英文切换 ──
 [[items]]
 key = "keys.toggle_mode_keys"
 group = "keys"
-section = "中英切换"
+section = "中英文切换"
 type = "checkbox_group"
-label = "切换中英修饰键"
-hint = "勾选用于切换中英文的修饰键"
+label = "切换按键"
+hint = "勾选用于切换中英文的修饰键（可多选，按下任意一个即切换）"
 [[items.options]]
 value = "lshift"
 label = "左 Shift"
@@ -543,54 +557,39 @@ label = "右 Ctrl"
 value = "capslock"
 label = "Caps Lock"
 
-# ── 满码溢出处理 ──
 [[items]]
-key = "keys.overflow.number_key"
+key = "keys.commit_on_switch"
 group = "keys"
-section = "满码溢出处理"
-type = "select"
-label = "满码后按数字键"
-hint = "编码已满时再按数字键的处理方式"
-options = [
-  { value = "ignore", label = "忽略" },
-  { value = "commit", label = "上屏编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-]
+section = "中英文切换"
+type = "toggle"
+label = "切换时编码上屏"
+hint = "中文切换为英文时，将已输入的编码直接上屏"
+
+# ── 候选词管理 ──
+[[items]]
+key = "keys.pin_candidate"
+group = "keys"
+section = "候选词管理"
+type = "string"
+label = "置顶词条"
+hint = "将候选词固定到首位"
 
 [[items]]
-key = "keys.overflow.select_key"
+key = "keys.delete_candidate"
 group = "keys"
-section = "满码溢出处理"
-type = "select"
-label = "满码后按选择键"
-hint = "编码已满时再按选择键的处理方式"
-options = [
-  { value = "ignore", label = "忽略" },
-  { value = "commit", label = "上屏编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-]
+section = "候选词管理"
+type = "string"
+label = "删除词条"
+hint = "隐藏候选词（单字不可删除）"
 
-[[items]]
-key = "keys.overflow.select_char_key"
-group = "keys"
-section = "满码溢出处理"
-type = "select"
-label = "满码后按以词定字键"
-hint = "编码已满时再按以词定字键的处理方式"
-options = [
-  { value = "ignore", label = "忽略" },
-  { value = "commit", label = "上屏编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-]
-
-# ── 候选键组（多选）──
+# ── 候选操作 ──
 [[items]]
 key = "keys.select_key_groups"
 group = "keys"
-section = "候选键组"
+section = "候选操作"
 type = "checkbox_group"
-label = "选词键组（2/3 候选）"
-hint = "勾选用于选择第 2/3 候选的按键组"
+label = "次选/三选快捷键"
+hint = "选中第 2、3 位候选词的快捷键"
 [[items.options]]
 value = "semicolon_quote"
 label = "分号/引号 ; '"
@@ -605,12 +604,26 @@ value = "lrctrl"
 label = "左/右 Ctrl"
 
 [[items]]
+key = "keys.highlight_keys"
+group = "keys"
+section = "候选操作"
+type = "checkbox_group"
+label = "高亮移动按键"
+hint = "在候选列表中移动选中项"
+[[items.options]]
+value = "arrows"
+label = "方向键 ↑ ↓"
+[[items.options]]
+value = "tab"
+label = "Tab / Shift+Tab"
+
+[[items]]
 key = "keys.page_keys"
 group = "keys"
-section = "候选键组"
+section = "候选操作"
 type = "checkbox_group"
-label = "翻页键组"
-hint = "勾选用于候选翻页的按键组"
+label = "翻页快捷键"
+hint = "同时启用多组翻页键"
 [[items.options]]
 value = "pageupdown"
 label = "PageUp / PageDown"
@@ -628,26 +641,12 @@ value = "comma_period"
 label = "逗号/句号 , ."
 
 [[items]]
-key = "keys.highlight_keys"
-group = "keys"
-section = "候选键组"
-type = "checkbox_group"
-label = "移动高亮键组"
-hint = "勾选用于移动候选高亮的按键组"
-[[items.options]]
-value = "arrows"
-label = "方向键 ↑ ↓"
-[[items.options]]
-value = "tab"
-label = "Tab / Shift+Tab"
-
-[[items]]
 key = "keys.select_char_keys"
 group = "keys"
-section = "候选键组"
+section = "候选操作"
 type = "checkbox_group"
-label = "以词定字键组"
-hint = "勾选用于以词定字的按键组"
+label = "以词定字"
+hint = "输入词组后按指定键只取第 1 或第 2 个字"
 [[items.options]]
 value = "comma_period"
 label = "逗号/句号 , ."
@@ -657,6 +656,71 @@ label = "减号/等号 - ="
 [[items.options]]
 value = "brackets"
 label = "方括号 [ ]"
+
+# ── 功能快捷键 ──
+[[items]]
+key = "keys.switch_engine"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "切换输入方案"
+hint = "在已启用的输入方案间循环切换"
+
+[[items]]
+key = "keys.toggle_full_width"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "切换全角/半角"
+hint = "切换字符宽度模式"
+
+[[items]]
+key = "keys.toggle_punct"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "切换中/英文标点"
+hint = "切换标点符号类型"
+
+[[items]]
+key = "keys.toggle_s2t"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "切换简入繁出"
+hint = "开关简体输入→繁体输出（变体在「输入 → 简入繁出」中选择）"
+
+[[items]]
+key = "keys.toggle_toolbar"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "显示/隐藏工具栏"
+hint = "切换工具栏的显示状态"
+
+[[items]]
+key = "keys.open_settings"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "打开设置"
+hint = "打开设置窗口"
+
+[[items]]
+key = "keys.add_word"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "快捷加词"
+hint = "快速将输入的内容加入用户词库"
+
+[[items]]
+key = "keys.activate_ime"
+group = "keys"
+section = "功能快捷键"
+type = "string"
+label = "切换到本输入法"
+hint = "在任意应用中一键切换到本输入法"
 
 # ── 全局热键 ──
 [[items]]
@@ -668,14 +732,112 @@ label = "全局热键"
 hint = "全局热键定义列表，按空格分隔"
 
 # ═══════════════════════════ 外观 ═══════════════════════════
-# ── 候选窗 ──
+# ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──
+[[items]]
+key = "ui.theme.name"
+group = "ui"
+section = "主题"
+type = "select"
+options_source = "themes"
+label = "主题选择"
+hint = "候选窗与工具栏的主题样式"
+
+[[items]]
+key = "ui.theme.style"
+group = "ui"
+section = "主题"
+type = "select"
+label = "主题风格"
+hint = "选择亮色、暗色或跟随系统设置"
+options = [
+  { value = "system", label = "跟随系统" },
+  { value = "light", label = "浅色" },
+  { value = "dark", label = "深色" },
+]
+
+[[items]]
+key = "ui.candidate.pager_bar_display"
+group = "ui"
+section = "主题"
+type = "select"
+label = "翻页栏显示"
+hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染"
+options = [
+  { value = "", label = "默认（主题配置）" },
+  { value = "hide", label = "隐藏" },
+  { value = "auto", label = "大于一页时显示" },
+  { value = "always", label = "总是显示" },
+]
+
+[[items]]
+key = "ui.candidate.page_number_display"
+group = "ui"
+section = "主题"
+type = "select"
+label = "显示页码"
+hint = "翻页栏可见时，是否显示页码文字"
+options = [
+  { value = "", label = "默认（主题配置）" },
+  { value = "show", label = "显示" },
+  { value = "hide", label = "隐藏" },
+]
+
+# ── 候选窗口 ──
+[[items]]
+key = "ui.candidate.font_size"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "候选字号"
+hint = "候选词字体大小（0 或开启「跟随主题」时由主题决定）"
+min = 0
+max = 72
+
+[[items]]
+key = "ui.candidate.font_size_follow_theme"
+group = "ui"
+section = "候选窗口"
+type = "toggle"
+label = "候选字号跟随主题"
+hint = "开启后候选字号由主题决定；关闭可在上方自定义"
+
+[[items]]
+key = "ui.font.family"
+group = "ui"
+section = "候选窗口"
+type = "select"
+options_source = "fonts"
+label = "候选窗字体"
+hint = "自定义候选窗字体，留空跟随主题字体"
+
+[[items]]
+key = "ui.font.path"
+group = "ui"
+section = "候选窗口"
+type = "string"
+label = "自定义字体文件"
+hint = "自定义字体文件绝对路径；留空用已安装字体"
+
+[[items]]
+key = "ui.font.render_mode"
+group = "ui"
+section = "候选窗口"
+type = "select"
+label = "字体渲染方式"
+hint = "DirectWrite 更平滑，GDI 更锐利；留空跟随默认"
+options = [
+  { value = "", label = "跟随默认" },
+  { value = "directwrite", label = "DirectWrite" },
+  { value = "gdi", label = "GDI" },
+]
+
 [[items]]
 key = "ui.candidate.per_page"
 group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "slider"
 label = "每页候选数"
-hint = "候选窗每页显示的候选项数量"
+hint = "每页显示的候选词数量"
 min = 3
 max = 9
 step = 1
@@ -683,31 +845,25 @@ step = 1
 [[items]]
 key = "ui.candidate.per_page_extended"
 group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "number"
 label = "扩展档每页候选数"
-hint = "临拼/快捷/短语等场景的每页候选数；0 = 禁用扩展档"
+hint = "临拼/快捷/短语等场景的每页候选数；0 = 与上面相同（关闭分档），最多 10"
 min = 0
 max = 10
 
 [[items]]
-key = "ui.candidate.layout"
+key = "ui.candidate.hide_window"
 group = "ui"
-section = "候选窗"
-type = "segmented"
-label = "候选窗排列"
-hint = "候选项横向或纵向排列"
-[[items.options]]
-value = "horizontal"
-label = "横排"
-[[items.options]]
-value = "vertical"
-label = "竖排"
+section = "候选窗口"
+type = "toggle"
+label = "隐藏候选窗"
+hint = "盲打/自动上屏场景不显示候选窗口；隐藏后仍可输入"
 
 [[items]]
 key = "ui.candidate.preedit_display"
 group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "select"
 label = "编码显示方式"
 hint = "编码（组合区）的显示位置；「内嵌应用光标处」时候选窗不显示编码栏"
@@ -718,100 +874,94 @@ options = [
 ]
 
 [[items]]
-key = "ui.candidate.hide_window"
+key = "ui.candidate.layout"
 group = "ui"
-section = "候选窗"
-type = "toggle"
-label = "隐藏候选窗"
-hint = "盲打/自动上屏场景；隐藏后仍可输入"
+section = "候选窗口"
+type = "segmented"
+label = "候选窗排列"
+hint = "候选词的排列方式"
+[[items.options]]
+value = "horizontal"
+label = "横排"
+[[items.options]]
+value = "vertical"
+label = "竖排"
 
 [[items]]
-key = "ui.candidate.font_size"
+key = "ui.candidate.flip_when_above"
 group = "ui"
-section = "候选窗"
-type = "number"
-label = "候选字号"
-hint = "0 = 跟随主题"
-min = 0
-max = 72
-
-[[items]]
-key = "ui.candidate.font_size_follow_theme"
-group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "toggle"
-label = "候选字号跟随主题"
-hint = "开启后忽略上面的候选字号，使用主题字号"
+label = "候选窗在上方时反转顺序"
+hint = "候选窗显示在光标上方时，反转候选排列方向使最相关内容靠近光标"
 
 [[items]]
 key = "ui.candidate.max_chars"
 group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "number"
 label = "候选文本最大字数"
-hint = "超出截断；0 = 不限"
+hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
 min = 0
 max = 64
 
 [[items]]
 key = "ui.candidate.index_labels"
 group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "string"
 label = "自定义序号标签"
 hint = "每字符一个槽位，如 asdfg；空 = 默认 1-9"
 
 [[items]]
-key = "ui.candidate.flip_when_above"
+key = "input.cmdbar.enabled"
 group = "ui"
-section = "候选窗"
+section = "候选窗口"
 type = "toggle"
-label = "候选窗在上方时反转顺序"
-hint = "候选窗显示在光标上方时，反转候选排列方向"
+label = "命令栏"
+hint = "空码时输入命令直通车前缀触发命令候选"
 
-# ── 模式指示 ──
 [[items]]
-key = "ui.mode_indicator.style"
+key = "input.cmdbar.candidate_prefix"
 group = "ui"
-section = "模式指示"
-type = "select"
-label = "模式指示样式"
-hint = "进入临拼/双拼/快符/英文等模式时的标识；短称即 拼/双/快/英/符"
-options = [
-  { value = "short", label = "短称" },
-  { value = "full", label = "全称" },
-  { value = "none", label = "不显示" },
-]
+section = "候选窗口"
+type = "string"
+label = "命令栏候选前缀"
+hint = "命令候选前的提示符号"
+enabled_when = "input.cmdbar.enabled == true"
 
-# ── 悬停提示 ──
+# ── 候选项提示信息 ──
 [[items]]
 key = "ui.tooltip.delay"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "number"
-label = "提示延迟（毫秒）"
-hint = "鼠标悬停候选多久后显示提示"
+label = "悬停延时"
+hint = "鼠标停留在候选上多久后弹出提示框（毫秒）；越大越不易误触"
 min = 0
 max = 2000
+unit = "ms"
 
 [[items]]
 key = "ui.tooltip.code_enabled"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "toggle"
-label = "显示编码"
+label = "编码反查"
+hint = "悬停候选时在主码表中反查该词的标准编码并显示"
 
 [[items]]
 key = "ui.tooltip.pinyin_enabled"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "toggle"
-label = "显示拼音"
+label = "拼音反查"
+hint = "悬停候选词时显示拼音读音（多音字全部列出）"
 
 [[items]]
 key = "ui.tooltip.pinyin_heteronyms"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "toggle"
 label = "显示多音字所有读音"
 hint = "关闭则仅显示首音"
@@ -820,7 +970,7 @@ enabled_when = "ui.tooltip.pinyin_enabled == true"
 [[items]]
 key = "ui.tooltip.pinyin_max_readings"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "number"
 label = "每字最多读音数"
 hint = "0 = 不限"
@@ -831,47 +981,35 @@ enabled_when = "ui.tooltip.pinyin_enabled == true"
 [[items]]
 key = "ui.tooltip.chaizi_enabled"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "toggle"
-label = "显示拆字"
-hint = "字根分解 + 编码"
+label = "拆字反查"
+hint = "悬停候选词时显示字根拆字信息（需方案支持）"
 
 [[items]]
 key = "ui.tooltip.debug_enabled"
 group = "ui"
-section = "悬停提示"
+section = "候选项提示信息"
 type = "toggle"
-label = "显示调试信息"
-hint = "候选权重/来源等（排查用）"
+label = "调试信息"
+hint = "悬停候选词时显示编码来源、权重等调试元数据"
 
-# ── 状态提示（基础开关在前、位置/坐标细节在后）──
-# 注：颜色由主题（theme.toml）控制；ui.font.* 见下「字体」节（family/path/render_mode）。
+# ── 状态提示（行为/位置类；纯视觉如颜色/字号/透明度/圆角由主题 theme.toml 处理，不在此）──
 [[items]]
 key = "ui.status.enabled"
 group = "ui"
 section = "状态提示"
 type = "toggle"
 label = "启用状态提示气泡"
-hint = "切换中英/方案等时弹出状态气泡"
-
-[[items]]
-key = "ui.status.duration"
-group = "ui"
-section = "状态提示"
-type = "number"
-label = "状态气泡显示时长"
-hint = "临时显示模式下气泡停留时间"
-min = 0
-max = 5000
-unit = "ms"
-enabled_when = "ui.status.enabled == true"
+hint = "切换输入状态时显示提示气泡"
 
 [[items]]
 key = "ui.status.display_mode"
 group = "ui"
 section = "状态提示"
 type = "select"
-label = "状态气泡显示模式"
+label = "显示模式"
+hint = "临时显示在切换时闪现后自动消失，常驻显示在有输入焦点时始终显示"
 enabled_when = "ui.status.enabled == true"
 options = [
   { value = "temp", label = "临时显示" },
@@ -879,11 +1017,36 @@ options = [
 ]
 
 [[items]]
+key = "ui.status.duration"
+group = "ui"
+section = "状态提示"
+type = "number"
+label = "显示时长"
+hint = "临时显示模式下气泡停留时间"
+min = 0
+max = 5000
+unit = "ms"
+enabled_when = "ui.status.enabled == true"
+
+[[items]]
+key = "ui.status.schema_name_style"
+group = "ui"
+section = "状态提示"
+type = "select"
+label = "方案名显示样式"
+hint = "状态气泡里方案名用全名或图标短称；图标短称取方案 icon_label，无则回退全名"
+options = [
+  { value = "full", label = "全名" },
+  { value = "short", label = "图标短称" },
+]
+
+[[items]]
 key = "ui.status.position_mode"
 group = "ui"
 section = "状态提示"
 type = "select"
-label = "状态气泡定位方式"
+label = "定位方式"
+hint = "跟随光标或固定在自定义位置"
 enabled_when = "ui.status.enabled == true"
 options = [
   { value = "follow_caret", label = "跟随光标" },
@@ -895,7 +1058,7 @@ key = "ui.status.offset_x"
 group = "ui"
 section = "状态提示"
 type = "number"
-label = "状态气泡水平偏移"
+label = "水平偏移"
 hint = "相对光标下方居中的水平偏移（像素，正=右）"
 min = -400
 max = 400
@@ -905,7 +1068,7 @@ key = "ui.status.offset_y"
 group = "ui"
 section = "状态提示"
 type = "number"
-label = "状态气泡垂直偏移"
+label = "垂直偏移"
 hint = "相对光标下方的垂直偏移（像素，正=下）"
 min = -400
 max = 400
@@ -932,69 +1095,18 @@ min = -4000
 max = 4000
 enabled_when = "ui.status.position_mode == fixed"
 
+# ── 模式指示 ──
 [[items]]
-key = "ui.status.schema_name_style"
+key = "ui.mode_indicator.style"
 group = "ui"
-section = "状态提示"
+section = "模式指示"
 type = "select"
-label = "方案名显示样式"
-hint = "状态气泡里方案名用全名或图标短称；图标短称取方案 icon_label，无则回退全名"
+label = "模式指示样式"
+hint = "进入临拼/双拼/快符/英文等模式时的标识；短称即 拼/双/快/英/符"
 options = [
-  { value = "full", label = "全名" },
-  { value = "short", label = "图标短称" },
-]
-
-# ── 字体 ──
-[[items]]
-key = "ui.font.family"
-group = "ui"
-section = "字体"
-type = "select"
-options_source = "fonts"
-label = "候选窗字体"
-hint = "留空跟随主题字体"
-
-[[items]]
-key = "ui.font.path"
-group = "ui"
-section = "字体"
-type = "string"
-label = "自定义字体文件"
-hint = "自定义字体文件绝对路径；留空用已安装字体"
-
-[[items]]
-key = "ui.font.render_mode"
-group = "ui"
-section = "字体"
-type = "select"
-label = "字体渲染方式"
-hint = "DirectWrite 更平滑，GDI 更锐利；留空跟随默认"
-options = [
-  { value = "", label = "跟随默认" },
-  { value = "directwrite", label = "DirectWrite" },
-  { value = "gdi", label = "GDI" },
-]
-
-# ── 主题 ──
-[[items]]
-key = "ui.theme.name"
-group = "ui"
-section = "主题"
-type = "string"
-label = "主题名称"
-hint = "主题包名称（theme.toml）；default 为内置主题"
-
-[[items]]
-key = "ui.theme.style"
-group = "ui"
-section = "主题"
-type = "select"
-label = "主题明暗"
-hint = "跟随系统或固定浅色/深色"
-options = [
-  { value = "system", label = "跟随系统" },
-  { value = "light", label = "浅色" },
-  { value = "dark", label = "深色" },
+  { value = "short", label = "短称" },
+  { value = "full", label = "全称" },
+  { value = "none", label = "不显示" },
 ]
 
 # ── 工具栏 ──
@@ -1004,6 +1116,7 @@ group = "ui"
 section = "工具栏"
 type = "toggle"
 label = "显示工具栏"
+hint = "在屏幕上显示可拖动的输入法状态栏"
 
 [[items]]
 key = "ui.toolbar.hide_in_fullscreen"
@@ -1011,44 +1124,50 @@ group = "ui"
 section = "工具栏"
 type = "toggle"
 label = "全屏时隐藏工具栏"
+hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏"
 
-# ═══════════════════════════ 常规 ═══════════════════════════
+# ═══════════════════════════ 常规（并入「输入」页尾「默认状态」）═══════════════════════════
+[[items]]
+key = "input.default.remember_last_state"
+group = "general"
+section = "默认状态"
+type = "toggle"
+label = "记忆前次状态"
+hint = "启用后恢复上次的中英文、全半角和标点状态"
+
 [[items]]
 key = "input.default.chinese_mode"
 group = "general"
-section = "启动状态"
+section = "默认状态"
 type = "toggle"
-label = "启动默认中文模式"
-
-[[items]]
-key = "input.default.chinese_punct"
-group = "general"
-section = "启动状态"
-type = "toggle"
-label = "启动默认中文标点"
+label = "初始语言模式"
+hint = "每次激活输入法时的默认语言（关=英文）"
 
 [[items]]
 key = "input.default.full_width"
 group = "general"
-section = "启动状态"
+section = "默认状态"
 type = "toggle"
-label = "启动默认全角"
+label = "初始字符宽度"
+hint = "每次激活输入法时的默认字符宽度（开=全角）"
 
 [[items]]
-key = "input.default.remember_last_state"
+key = "input.default.chinese_punct"
 group = "general"
-section = "启动状态"
+section = "默认状态"
 type = "toggle"
-label = "记住上次中英/标点状态"
+label = "初始标点模式"
+hint = "每次激活输入法时的默认标点类型（开=中文标点）"
 
 # ═══════════════════════════ 高级 ═══════════════════════════
-# ── 输入统计 ──
+# ── 输入统计（统计页未实现期间，开关暂置高级）──
 [[items]]
 key = "stats.enabled"
 group = "advanced"
 section = "输入统计"
 type = "toggle"
 label = "启用输入统计"
+hint = "开关输入统计功能"
 
 [[items]]
 key = "stats.track_english"
@@ -1056,81 +1175,17 @@ group = "advanced"
 section = "输入统计"
 type = "toggle"
 label = "统计英文输入"
+hint = "是否统计英文模式下的输入"
 enabled_when = "stats.enabled == true"
 
-# ── 简繁转换 ──
-[[items]]
-key = "input.s2t.enabled"
-group = "advanced"
-section = "简繁转换"
-type = "toggle"
-label = "简繁转换"
-
-[[items]]
-key = "input.s2t.variant"
-group = "advanced"
-section = "简繁转换"
-type = "select"
-label = "简繁变体"
-enabled_when = "input.s2t.enabled == true"
-# core 默认未设；留空时引擎用内部默认
-options = [
-  { value = "s2t", label = "标准繁体" },
-  { value = "s2tw", label = "台湾繁体" },
-  { value = "s2twp", label = "台湾繁体（含词汇）" },
-  { value = "s2hk", label = "香港繁体" },
-]
-
-# ── 快捷输入 ──
-[[items]]
-key = "schema.quick_input.enabled"
-group = "advanced"
-section = "快捷输入"
-type = "toggle"
-label = "快捷输入（日期/计算）"
-
-[[items]]
-key = "schema.quick_input.decimal_places"
-group = "advanced"
-section = "快捷输入"
-type = "number"
-label = "计算结果小数位数"
-min = 0
-max = 12
-enabled_when = "schema.quick_input.enabled == true"
-
-[[items]]
-key = "schema.quick_input.force_vertical"
-group = "advanced"
-section = "快捷输入"
-type = "toggle"
-label = "快捷输入候选强制竖排"
-enabled_when = "schema.quick_input.enabled == true"
-
-# ── 命令栏 ──
-[[items]]
-key = "input.cmdbar.enabled"
-group = "advanced"
-section = "命令栏"
-type = "toggle"
-label = "命令栏"
-
-[[items]]
-key = "input.cmdbar.candidate_prefix"
-group = "advanced"
-section = "命令栏"
-type = "string"
-label = "命令栏候选前缀"
-hint = "命令栏候选前的提示符号"
-enabled_when = "input.cmdbar.enabled == true"
-
-# ── 调试 ──
+# ── 日志设置 ──
 [[items]]
 key = "debug.log_level"
 group = "advanced"
-section = "调试"
+section = "日志设置"
 type = "select"
-label = "日志级别"
+label = "服务日志级别"
+hint = "重启输入法服务后生效"
 options = [
   { value = "error", label = "error" },
   { value = "warn", label = "warn" },
