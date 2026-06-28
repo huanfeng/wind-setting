@@ -14,15 +14,19 @@ use windui::prelude::*;
 use crate::dialogs::schema_manager::build_schema_manager_dialog;
 use crate::pages;
 use crate::state::AppState;
-use crate::theme_def::{ACCENT, theme_for};
+use crate::theme_def::theme_for;
 
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, connected, conn_failed) = {
+    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, connected, conn_failed, field_dialogs) = {
         let st = app.borrow();
+        // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
+        // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
+        let tabs_vec = pages::all_tabs(&st);
+        let field_dialogs = std::mem::take(&mut *st.fields.dialogs.borrow_mut());
         (
-            pages::all_tabs(&st),
+            tabs_vec,
             st.tab,
             st.dark,
             st.status,
@@ -31,6 +35,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.reset_confirm,
             st.connected,
             st.conn_failed,
+            field_dialogs,
         )
     };
 
@@ -73,38 +78,25 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(Element::divider())
         .child(footer);
 
-    Element::stack()
+    let mut root = Element::stack()
         .fill()
         .bg_role(Role::Bg)
         .child(main_col)
         .child(dialog)
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
-        .child(build_conn_failed_dialog(app, conn_failed))
+        .child(build_conn_failed_dialog(app, conn_failed));
+    // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
+    for dlg in field_dialogs {
+        root = root.child(dlg);
+    }
+    root
 }
 
 /// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。
 fn build_titlebar() -> Element {
-    // 渐变 Logo（圆角块 + 白字）。
-    let logo = Element::stack()
-        .size(26, 26)
-        .child(
-            Element::leaf()
-                .fill()
-                .corner(7.0)
-                .bg_gradient(Gradient::linear(
-                    (0.0, 0.0),
-                    (1.0, 1.0),
-                    vec![(0.0, Color::hex(0x2563EB)), (1.0, Color::hex(ACCENT))],
-                )),
-        )
-        .child(
-            Element::label("清")
-                .fill()
-                .font_size(13.0)
-                .fg(Color::WHITE)
-                .text_align(Align::Center),
-        );
+    // 应用图标（与 exe/任务栏同一张图，PNG 由 build 期从 .ico 提取的 256px 帧）。
+    let logo = crate::widgets::app_icon(26);
 
     Element::row()
         .width_match()

@@ -155,6 +155,15 @@ impl Manifest {
         self.items.get(key)
     }
 
+    /// 返回以 `gate_key` 为门控开关的 dialog_button 项（用于「开关 + 设置」合并成一行）。
+    /// 按 manifest 顺序取第一个匹配。
+    pub fn dialog_for_gate(&self, gate_key: &str) -> Option<&MItem> {
+        self.order
+            .iter()
+            .filter_map(|k| self.items.get(k))
+            .find(|it| it.typ == "dialog_button" && it.gate_key.as_deref() == Some(gate_key))
+    }
+
     /// 从内嵌 TOML 清单构建。TOML 先反序列化为 serde_json::Value（与 system.manifest
     /// 旧 JSON 同形：groups + 扁平 items），复用 [`Manifest::from_value`]。
     pub fn from_embedded() -> Self {
@@ -200,6 +209,39 @@ fn opt_str(v: &Value, k: &str) -> Option<String> {
 /// 控件标准宽度（右侧对齐区）。
 const CTRL_W: i32 = 150;
 
+/// 构建一个 section 的全部设置行，处理「开关 + 设置」合并：
+/// - 某 toggle 被某 dialog_button 用作 `gate_key` → 渲染为合并行（开关 + 设置…），
+///   并跳过该 dialog_button 的独立行（其内容已并入合并行）。
+/// - 其余项各自 [`field`] 独立成行。
+///
+/// 合并行渲染在 **gate toggle 的原始位置**（保持特性原有排序）。
+pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
+    let cfg = &state.current_config;
+    let mut rows = Vec::with_capacity(keys.len());
+    for k in keys {
+        let Some(item) = state.manifest.get(k) else {
+            rows.push(field(state, k));
+            continue;
+        };
+        // 被 gate 合并的 dialog_button：跳过独立行（gate 存在才跳，避免误吞）。
+        if item.typ == "dialog_button"
+            && let Some(g) = &item.gate_key
+            && state.manifest.get(g).is_some()
+        {
+            continue;
+        }
+        // 作为某 dialog_button 门控开关的 toggle：渲染合并行。
+        if item.typ == "toggle"
+            && let Some(dlg_item) = state.manifest.dialog_for_gate(k)
+        {
+            rows.push(build_gated_dialog_row(state, k, item, dlg_item, cfg));
+            continue;
+        }
+        rows.push(field(state, k));
+    }
+    rows
+}
+
 /// 按 key 构建一行设置项（label + 控件），并登记保存写回器与联动取值器。
 /// 清单缺失该 key 时返回占位行（便于发现 key 漂移）。
 pub fn field(state: &AppState, key: &str) -> Element {
@@ -235,6 +277,12 @@ pub fn field(state: &AppState, key: &str) -> Element {
 }
 
 fn build_toggle(state: &AppState, key: &str, _item: &MItem, cfg: &Config) -> Element {
+    Element::switch(register_toggle(state, key, cfg))
+}
+
+/// 为某 bool key 建 Signal 并登记 writer/getter/loader，返回该 Signal。
+/// 独立出来便于「开关 + 设置」合并行直接复用同一开关（见 [`build_gated_dialog_row`]）。
+fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     let def = state.capabilities.default_for(key).as_bool().unwrap_or(false);
     let cur = cfg.get_bool(key).unwrap_or(def);
     let sig = signal(cur);
@@ -256,7 +304,7 @@ fn build_toggle(state: &AppState, key: &str, _item: &MItem, cfg: &Config) -> Ele
         key.to_string(),
         Box::new(move |c: &Config| sig.set(c.get_bool(&kl).unwrap_or(def))),
     );
-    Element::switch(sig)
+    sig
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -552,45 +600,28 @@ fn schema_options(state: &AppState, kind: Option<&str>) -> (Vec<String>, Vec<Str
     (values, labels)
 }
 
-/// 门控按钮包装：有 gate_key 时用 visible_when 双按钮；无则单按钮。对话框放在 stack 内。
-fn wrap_gate_btn(state: &AppState, item: &MItem, visible: Signal<bool>, dlg: Element) -> Element {
-    if let Some(gate) = &item.gate_key {
-        let reg_on = state.fields.clone();
-        let gk_on = gate.clone();
-        let reg_off = state.fields.clone();
-        let gk_off = gate.clone();
-        let active_btn = Element::button("设置…")
-            .small()
-            .neutral()
-            .on_click(move |_| visible.set(true))
-            .visible_when(move || {
-                let g = reg_on.getters.borrow();
-                g.get(&gk_on)
-                    .map(|get| get().as_bool() == Some(true))
-                    .unwrap_or(true)
-            });
-        let inactive_btn = Element::button("设置…")
-            .small()
-            .neutral()
-            .disabled(true)
-            .visible_when(move || {
-                let g = reg_off.getters.borrow();
-                g.get(&gk_off)
-                    .map(|get| get().as_bool() != Some(true))
-                    .unwrap_or(false)
-            });
-        Element::stack().child(active_btn).child(inactive_btn).child(dlg)
-    } else {
-        let btn = Element::button("设置…")
-            .small()
-            .neutral()
-            .on_click(move |_| visible.set(true));
-        Element::stack().child(btn).child(dlg)
-    }
+/// 把对话框主体挂到根（登记到注册表，`shell::build` 取出挂到根窗口 stack 实现全窗模态）。
+fn register_dialog(state: &AppState, dlg: Element) {
+    state.fields.dialogs.borrow_mut().push(dlg);
 }
 
-/// dialog_button 控件：按 capability 类型分派到具体构建器。
+/// 普通「设置…」按钮（无门控）：点击打开 `visible` 绑定的对话框。
+fn open_dialog_button(visible: Signal<bool>) -> Element {
+    Element::button("设置…")
+        .small()
+        .neutral()
+        .on_click(move |_| visible.set(true))
+}
+
+/// dialog_button 控件（无 gate_key）：单个「设置…」按钮；对话框已挂根。
+/// 有 gate_key 者不走此路，由 [`build_gated_dialog_row`] 合并成「开关 + 设置」整行。
 fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let visible = build_dialog_body(state, key, item, cfg);
+    open_dialog_button(visible)
+}
+
+/// 按 capability 类型分派构建对话框主体，挂到根，返回控制其显隐的 `visible` Signal。
+fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
     if cap_ty == "map" {
         build_dialog_button_map(state, key, item, cfg)
@@ -601,8 +632,40 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
     }
 }
 
-/// dialog_button（strlist，无 options）：空格分隔文本编辑。
-fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+/// 「开关 + 设置」合并行：`[gate 标签 / 提示] ······ [启用开关] [设置…]`。
+///
+/// 复刻旧 webview：一个特性既有「启用」开关、又有需要细调的设置，合并为一行更紧凑。
+/// 行标签/提示取自 **gate 开关项**（特性名），「设置…」打开 dialog_button 项的对话框，
+/// 仅在开关开启时可点。dialog_button 项自身的标签/提示用作对话框标题/说明。
+fn build_gated_dialog_row(
+    state: &AppState,
+    gate_key: &str,
+    gate_item: &MItem,
+    dlg_item: &MItem,
+    cfg: &Config,
+) -> Element {
+    let gate_sig = register_toggle(state, gate_key, cfg);
+    let visible = build_dialog_body(state, &dlg_item.key, dlg_item, cfg);
+
+    // 开关开启才可点「设置…」；用 visible_when 在可点/置灰两态间切换（windui 无响应式 disabled）。
+    let active = open_dialog_button(visible).visible_when(move || gate_sig.get());
+    let inactive = Element::button("设置…")
+        .small()
+        .neutral()
+        .disabled(true)
+        .visible_when(move || !gate_sig.get());
+    let btn = Element::stack().child(active).child(inactive);
+
+    let control = Element::row()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(Element::switch(gate_sig))
+        .child(btn);
+    setting_row(&gate_item.label, gate_item.hint.as_deref(), control)
+}
+
+/// dialog_button（strlist，无 options）：空格分隔文本编辑。挂对话框到根，返回 visible。
+fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::{build_spaced_text_dialog, spaced_to_strlist, strlist_to_spaced};
 
     // 读当前值播种文本框 signal（缺省回落 capability 默认）
@@ -649,11 +712,12 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
 
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_spaced_text_dialog(visible, &item.label, &hint, text, def_text);
-    wrap_gate_btn(state, item, visible, dlg)
+    register_dialog(state, dlg);
+    visible
 }
 
-/// dialog_button（strlist with options）：勾选配对清单。
-fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+/// dialog_button（strlist with options）：勾选配对清单。挂对话框到根，返回 visible。
+fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
 
     let defaults = default_strlist(state, key);
@@ -700,11 +764,12 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
-    wrap_gate_btn(state, item, visible, dlg)
+    register_dialog(state, dlg);
+    visible
 }
 
-/// dialog_button（map）：键值对 text_input 降级实现。
-fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+/// dialog_button（map）：键值对 text_input 降级实现。挂对话框到根，返回 visible。
+fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::{build_map_dialog, map_to_rows, rows_to_map};
 
     let def_map = default_map(state, key);
@@ -747,7 +812,8 @@ fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Conf
 
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_map_dialog(visible, &item.label, &hint, text, def_text);
-    wrap_gate_btn(state, item, visible, dlg)
+    register_dialog(state, dlg);
+    visible
 }
 
 /// 解析 `enabled_when`，仅支持 `key == value`（manifest 现有用法均为 `== true`）。

@@ -5,6 +5,12 @@
 
 use windui::prelude::*;
 
+/// 应用图标（嵌入 PNG，与 exe/任务栏图标同源）。`px` 为逻辑边长。
+/// 资源 `res/wind_setting_icon.png` 由 build 期从 `wind_setting.ico` 的 256px 帧提取。
+pub fn app_icon(px: i32) -> Element {
+    Element::image_bytes(include_bytes!("../res/wind_setting_icon.png")).size(px, px)
+}
+
 /// 浮层面板：圆角 surface + 边框 + 投影（对话框等浮窗用）。
 #[allow(dead_code)]
 pub fn panel() -> Element {
@@ -21,22 +27,34 @@ pub fn flat_panel() -> Element {
 
 /// 分组小标题（11px 弱化大写感，上下留白）。对齐 ime.rs settings_section_header。
 /// 置于卡片上方，左侧微缩进与卡片内容对齐。
+///
+/// `width_match()` + `max_lines(1)`：windui 的 Label 在「无显式宽度」时，measure 收敛到
+/// 文字紧贴宽，draw 再按该窄宽折行（见 ui/mod.rs 注释），导致明明有空间也换行、甚至
+/// 2 字标题也折。给足整行宽度并锁单行即可根治。
 pub fn section_header(title: &str) -> Element {
     Element::label(title)
         .font_size(11.5)
         .font_weight(600)
         .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(1)
         .height(18)
         .margin_xy(4, 4)
 }
 
 /// 设置行：左标签（+可选副标题）+ 右控件。对齐 ime.rs setting_row。
+///
+/// 标签 `width_match()` + `max_lines(1)`：占满左列可用宽，避免 windui Label 在紧贴宽下
+/// 误折行（详见 [`section_header`]）。副标题同样占满宽，单行省略。
 pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element {
     let mut left = Element::col().weight(1.0).spacing(2).child(
         Element::label(label)
             .font_size(13.0)
             .font_weight(500)
             .fg_role(Role::Text)
+            .width_match()
+            .max_lines(1)
+            .truncate(Truncate::End)
             .height(18),
     );
     if let Some(s) = sub {
@@ -44,6 +62,9 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
             Element::label(s)
                 .font_size(11.0)
                 .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(1)
+                .truncate(Truncate::End)
                 .height(15),
         );
     }

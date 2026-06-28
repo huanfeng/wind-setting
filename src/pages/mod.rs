@@ -6,7 +6,7 @@
 
 use windui::prelude::*;
 
-use crate::manifest::field;
+use crate::manifest::section_rows;
 use crate::state::AppState;
 use crate::widgets::{page, section, setting_row, todo_hint};
 
@@ -39,10 +39,7 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
         .manifest
         .sections_of(group)
         .into_iter()
-        .map(|(sec, keys)| {
-            let rows: Vec<Element> = keys.iter().map(|k| field(state, k)).collect();
-            section(&sec, rows)
-        })
+        .map(|(sec, keys)| section(&sec, section_rows(state, &keys)))
         .collect()
 }
 
@@ -159,29 +156,8 @@ fn about_page(state: &AppState) -> Element {
     };
     let version = get("version");
 
-    // 头部：渐变 logo + 名称 + 版本（对齐 ime.rs 设置卡片头部）。
-    let logo = Element::stack()
-        .size(40, 40)
-        .child(
-            Element::leaf()
-                .fill()
-                .corner(10.0)
-                .bg_gradient(Gradient::linear(
-                    (0.0, 0.0),
-                    (1.0, 1.0),
-                    vec![
-                        (0.0, Color::hex(0x2563EB)),
-                        (1.0, Color::hex(crate::theme_def::ACCENT)),
-                    ],
-                )),
-        )
-        .child(
-            Element::label("清")
-                .fill()
-                .font_size(20.0)
-                .fg(Color::WHITE)
-                .text_align(Align::Center),
-        );
+    // 头部：应用图标 + 名称 + 版本（对齐 ime.rs 设置卡片头部）。
+    let logo = crate::widgets::app_icon(48);
     let header = Element::row()
         .width_match()
         .cross(Align::Center)

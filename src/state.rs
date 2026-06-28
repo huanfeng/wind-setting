@@ -44,6 +44,10 @@ pub struct FieldRegistry {
     pub getters: RefCell<HashMap<String, ValueGetter>>,
     /// key → 加载器（把给定 Config 的值灌回 Signal；空 Config 时回落 manifest 默认）。
     pub loaders: RefCell<HashMap<String, FieldLoader>>,
+    /// dialog_button 的对话框主体。须挂到**根窗口** stack 才能正确全窗模态遮罩；
+    /// 若内联在设置行的小 stack 内，`Element::dialog` 的遮罩只填满那一格，表现为
+    /// 「显示在行下方」而非居中模态。构建页面时登记，由 `shell::build` 取出挂到根。
+    pub dialogs: RefCell<Vec<Element>>,
 }
 
 /// 应用全局状态。
