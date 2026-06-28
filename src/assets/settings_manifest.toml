@@ -584,17 +584,29 @@ hint = "中文切换为英文时，将已输入的编码直接上屏"
 key = "keys.pin_candidate"
 group = "keys"
 section = "候选词管理"
-type = "string"
+type = "select"
 label = "置顶词条"
 hint = "将候选词固定到首位"
+width = 180
+options = [
+  { value = "ctrl+number", label = "Ctrl + 数字" },
+  { value = "ctrl+shift+number", label = "Ctrl + Shift + 数字" },
+  { value = "none", label = "不使用" },
+]
 
 [[items]]
 key = "keys.delete_candidate"
 group = "keys"
 section = "候选词管理"
-type = "string"
+type = "select"
 label = "删除词条"
 hint = "隐藏候选词（单字不可删除）"
+width = 180
+options = [
+  { value = "ctrl+number", label = "Ctrl + 数字" },
+  { value = "ctrl+shift+number", label = "Ctrl + Shift + 数字" },
+  { value = "none", label = "不使用" },
+]
 
 # ── 候选操作 ──
 [[items]]

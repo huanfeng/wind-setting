@@ -14,7 +14,7 @@ use windui::prelude::*;
 
 use crate::config::Config;
 use crate::state::AppState;
-use crate::widgets::setting_row;
+use crate::widgets::{setting_row, setting_row_checks};
 
 /// 单个清单项（来自 manifest.toml 经 system.manifest 暴露的 JSON）。
 /// 部分字段（key/group/section/unit）暂未消费，保留以备分组/单位展示。
@@ -266,7 +266,12 @@ pub fn field(state: &AppState, key: &str) -> Element {
         "dialog_button" => build_dialog_button(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     };
-    let mut row = setting_row(&item.label, item.hint.as_deref(), control);
+    // 多选键组用专用行（固定宽标签 + 占满网格），避免宽网格把组名挤掉。
+    let mut row = if item.typ == "checkbox_group" {
+        setting_row_checks(&item.label, item.hint.as_deref(), control)
+    } else {
+        setting_row(&item.label, item.hint.as_deref(), control)
+    };
     if let Some((ck, expect)) = item.enabled_when.as_deref().and_then(parse_cond) {
         let reg = state.fields.clone();
         // 联动用「置灰整行」而非隐藏：保留占位，避免分隔线残留与高度抖动。
@@ -587,11 +592,11 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         }),
     );
 
-    // 控件：grid 复选（2 列）
+    // 控件：grid 复选（2 列，小号 checkbox 省空间）。网格占满右侧由 setting_row_checks 控制。
     let cells: Vec<Element> = sigs
         .iter()
         .zip(opts.iter())
-        .map(|((_, s), o)| Element::checkbox(&o.label, *s).fg_role(Role::Text))
+        .map(|((_, s), o)| Element::checkbox(&o.label, *s).small().fg_role(Role::Text))
         .collect();
     Element::grid(2, 10, cells)
 }
