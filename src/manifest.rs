@@ -266,7 +266,8 @@ pub fn field(state: &AppState, key: &str) -> Element {
     let mut row = setting_row(&item.label, item.hint.as_deref(), control);
     if let Some((ck, expect)) = item.enabled_when.as_deref().and_then(parse_cond) {
         let reg = state.fields.clone();
-        row = row.visible_when(move || {
+        // 联动用「置灰整行」而非隐藏：保留占位，避免分隔线残留与高度抖动。
+        row = row.enabled_when(move || {
             let g = reg.getters.borrow();
             g.get(&ck)
                 .map(|get| cond_matches(&get(), &expect))
@@ -607,11 +608,12 @@ fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
-/// 普通「设置…」按钮（无门控）：点击打开 `visible` 绑定的对话框。
+/// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。
 fn open_dialog_button(visible: Signal<bool>) -> Element {
-    Element::button("设置…")
+    Element::button("设置")
         .small()
         .neutral()
+        .outline()
         .on_click(move |_| visible.set(true))
 }
 
@@ -649,14 +651,8 @@ fn build_gated_dialog_row(
     let gate_sig = register_toggle(state, gate_key, cfg);
     let visible = build_dialog_body(state, &dlg_item.key, dlg_item, cfg);
 
-    // 开关开启才可点「设置…」；用 visible_when 在可点/置灰两态间切换（windui 无响应式 disabled）。
-    let active = open_dialog_button(visible).visible_when(move || gate_sig.get());
-    let inactive = Element::button("设置…")
-        .small()
-        .neutral()
-        .disabled(true)
-        .visible_when(move || !gate_sig.get());
-    let btn = Element::stack().child(active).child(inactive);
+    // 开关开启才可点「设置」：用响应式 enabled_when 置灰（windui 0.4.x 起支持闭包启用条件）。
+    let btn = open_dialog_button(visible).enabled_when(move || gate_sig.get());
 
     let control = Element::row()
         .cross(Align::Center)

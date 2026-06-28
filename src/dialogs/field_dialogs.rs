@@ -46,12 +46,14 @@ pub fn build_spaced_text_dialog(
                 .padding_xy(18, 10),
         )
         .child(
-            Element::text_input(text, "按空格分隔")
-                .multiline()
-                .wrap(true)
-                .width_match()
-                .height(96)
-                .margin_xy(18, 6),
+            // padding 包裹：text_input 用 width_match 填满内边距后的宽，避免 margin 外推溢出对话框。
+            Element::col().width_match().padding_xy(18, 6).child(
+                Element::text_input(text, "按空格分隔")
+                    .multiline()
+                    .wrap(true)
+                    .width_match()
+                    .height(96),
+            ),
         )
         .child(Element::divider())
         .child(
@@ -64,15 +66,21 @@ pub fn build_spaced_text_dialog(
                     Element::button("恢复默认")
                         .small()
                         .neutral()
+                        .outline()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
                         .neutral()
+                        .outline()
                         .on_click(move |_| visible.set(false)),
                 )
-                .child(Element::button("确认").on_click(move |_| visible.set(false))),
+                .child(
+                    Element::button("确认")
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                ),
         );
     Element::dialog(visible, frame)
 }
@@ -146,11 +154,12 @@ pub fn build_map_dialog(
                 .padding_xy(18, 10),
         )
         .child(
-            Element::text_input(text, "，=，")
-                .multiline()
-                .width_match()
-                .height(120)
-                .margin_xy(18, 6),
+            Element::col().width_match().padding_xy(18, 6).child(
+                Element::text_input(text, "，=，")
+                    .multiline()
+                    .width_match()
+                    .height(120),
+            ),
         )
         .child(Element::divider())
         .child(
@@ -163,15 +172,21 @@ pub fn build_map_dialog(
                     Element::button("恢复默认")
                         .small()
                         .neutral()
+                        .outline()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
                         .neutral()
+                        .outline()
                         .on_click(move |_| visible.set(false)),
                 )
-                .child(Element::button("确认").on_click(move |_| visible.set(false))),
+                .child(
+                    Element::button("确认")
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                ),
         );
     Element::dialog(visible, frame)
 }
@@ -229,6 +244,7 @@ pub fn build_pairs_dialog(
                     Element::button("恢复默认")
                         .small()
                         .neutral()
+                        .outline()
                         .on_click(move |_| {
                             for (v, s) in &sigs_reset {
                                 s.set(defaults.iter().any(|d| d == v));
@@ -239,9 +255,14 @@ pub fn build_pairs_dialog(
                 .child(
                     Element::button("取消")
                         .neutral()
+                        .outline()
                         .on_click(move |_| visible.set(false)),
                 )
-                .child(Element::button("确认").on_click(move |_| visible.set(false))),
+                .child(
+                    Element::button("确认")
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                ),
         );
     Element::dialog(visible, frame)
 }

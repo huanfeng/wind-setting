@@ -44,8 +44,9 @@ pub fn dark_theme() -> Theme {
     p.text = Color::hex(0xE8EAED);
     p.text_muted = Color::hex(0x8B94A7);
     p.text_disabled = Color::hex(0x5A6377);
-    p.border = Color::hex(0x28324A);
-    p.divider = Color::hex(0x222C40);
+    p.border = Color::hex(0x2E3A54);
+    // 分割线在暗色卡片(0x232C3D)上需足够对比，原 0x222C40 几乎同色不可见，提亮。
+    p.divider = Color::hex(0x37425D);
     p.track = Color::hex(0x2B3550);
     t
 }

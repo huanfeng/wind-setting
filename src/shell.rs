@@ -19,7 +19,7 @@ use crate::theme_def::theme_for;
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, connected, conn_failed, field_dialogs) = {
+    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, conn_ok, conn_failed, field_dialogs) = {
         let st = app.borrow();
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
@@ -33,7 +33,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             build_schema_manager_dialog(&st.schema_mgr),
             st.reload_confirm,
             st.reset_confirm,
-            st.connected,
+            st.conn_ok,
             st.conn_failed,
             field_dialogs,
         )
@@ -68,7 +68,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(vdivider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, status, connected);
+    let footer = build_footer(app, th, dark, status, conn_ok);
 
     let main_col = Element::col()
         .fill()
@@ -126,15 +126,21 @@ fn build_footer(
     th: ThemeHandle,
     dark: Signal<bool>,
     status: Signal<String>,
-    connected: bool,
+    conn_ok: Signal<bool>,
 ) -> Element {
-    // 连接状态点：绿=已连接，琥珀=未连接。
-    let dot_color = if connected {
-        Color::hex(0x22C55E)
-    } else {
-        Color::hex(0xF59E0B)
-    };
-    let status_dot = Element::leaf().size(8, 8).corner(4.0).bg(dot_color);
+    // 连接状态点：绿=已连接，琥珀=未连接。响应式（连接在异步加载后才确定，构建期总为未连接）：
+    // 用两点 visible_when 切换，连接成功后自动转绿（同明暗切换按钮的双态模式）。
+    let dot_green = Element::leaf()
+        .size(8, 8)
+        .corner(4.0)
+        .bg(Color::hex(0x22C55E))
+        .visible_when(move || conn_ok.get());
+    let dot_amber = Element::leaf()
+        .size(8, 8)
+        .corner(4.0)
+        .bg(Color::hex(0xF59E0B))
+        .visible_when(move || !conn_ok.get());
+    let status_dot = Element::stack().child(dot_green).child(dot_amber);
 
     // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
     let th_l = th.clone();
@@ -142,6 +148,7 @@ fn build_footer(
     let to_light = Element::button("☀ 浅色")
         .small()
         .neutral()
+        .outline()
         .on_click(move |_| {
             d_l.set(false);
             th_l.set(theme_for(false));
@@ -152,6 +159,7 @@ fn build_footer(
     let to_dark = Element::button("🌙 深色")
         .small()
         .neutral()
+        .outline()
         .on_click(move |_| {
             d_d.set(true);
             th_d.set(theme_for(true));
@@ -164,6 +172,7 @@ fn build_footer(
     let reset_btn = Element::button("恢复本页")
         .small()
         .neutral()
+        .outline()
         .on_click(move |_| {
             if let Ok(s) = app_reset.try_borrow() {
                 if s.is_dirty() {
@@ -179,6 +188,7 @@ fn build_footer(
     let reload_btn = Element::button("重新加载")
         .small()
         .neutral()
+        .outline()
         .on_click(move |_| {
             if let Ok(s) = app_reload.try_borrow() {
                 s.reload_confirm.set(true);
@@ -190,6 +200,7 @@ fn build_footer(
     let apply_btn = Element::button("应用设置")
         .small()
         .neutral()
+        .outline()
         .on_click(move |_| {
             if let Ok(mut s) = app_apply.try_borrow_mut() {
                 s.save();
@@ -198,7 +209,7 @@ fn build_footer(
 
     // 保存并退出：保存成功（无报错）才退出。
     let app_save_exit = app.clone();
-    let save_exit_btn = Element::button("保存并退出").small().on_click(move |ctx| {
+    let save_exit_btn = Element::button("保存并退出").small().outline().on_click(move |ctx| {
         if let Ok(mut s) = app_save_exit.try_borrow_mut()
             && s.save()
         {
@@ -206,13 +217,14 @@ fn build_footer(
         }
     });
 
+    // 底栏与标题栏同色(SurfaceAlt)，与内容区卡片(Surface)区分；上方分割线由 main_col 提供层次。
     Element::row()
         .width_match()
         .height(48)
         .cross(Align::Center)
         .padding_xy(14, 0)
         .spacing(8)
-        .bg_role(Role::Surface)
+        .bg_role(Role::SurfaceAlt)
         .child(status_dot)
         .child(
             Element::label_rc(status)
@@ -298,8 +310,8 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(Element::leaf().weight(1.0))
-                .child(Element::button("退出").neutral().on_click(|ctx| ctx.request_close()))
-                .child(Element::button("重连").on_click(move |_| {
+                .child(Element::button("退出").neutral().outline().on_click(|ctx| ctx.request_close()))
+                .child(Element::button("重连").outline().on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
                         s.status.set("正在重连...".to_string());
                     }
@@ -353,9 +365,10 @@ fn confirm_dialog(
                 .child(
                     Element::button("取消")
                         .neutral()
+                        .outline()
                         .on_click(move |_| cancel.set(false)),
                 )
-                .child(Element::button(confirm_label).on_click(on_confirm)),
+                .child(Element::button(confirm_label).outline().on_click(on_confirm)),
         );
     Element::dialog(visible, frame)
 }

@@ -86,6 +86,9 @@ pub struct AppState {
     pub connected: bool,
     /// 正式模式下连接失败标志：true 时显示阻断对话框；mock 模式始终 false。
     pub conn_failed: Signal<bool>,
+    /// 连接成功的响应式标志（异步加载后置位）。底栏状态圆点据此响应式着色——
+    /// 构建时尚未连接（empty），故圆点必须用 Signal 而非构建期 bool 才能在连接后转绿。
+    pub conn_ok: Signal<bool>,
 }
 
 impl AppState {
@@ -110,6 +113,7 @@ impl AppState {
             reset_confirm: signal(false),
             connected: false,
             conn_failed: signal(false),
+            conn_ok: signal(false),
         }
     }
 
@@ -135,6 +139,7 @@ impl AppState {
         self.theme_names = data.theme_names;
         self.fonts = data.fonts;
         self.connected = data.connected;
+        self.conn_ok.set(data.connected); // 响应式：底栏圆点连接后转绿
         if data.connected {
             self.status.set("已连接".to_string());
             self.conn_failed.set(false);

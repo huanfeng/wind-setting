@@ -81,7 +81,7 @@ fn scheme_page(state: &AppState) -> Element {
         vec![setting_row(
             "输入方案",
             Some(&format!("当前活动方案：{active}")),
-            Element::button("管理方案…").on_click(move |_| mgr_visible.set(true)),
+            Element::button("管理方案…").outline().on_click(move |_| mgr_visible.set(true)),
         )],
     )];
     secs.extend(manifest_sections(state, "schema"));
