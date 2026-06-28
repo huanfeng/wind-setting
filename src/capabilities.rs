@@ -80,7 +80,9 @@ impl Capabilities {
 pub fn control_type_compatible(control: &str, ty: &str) -> bool {
     match control {
         "toggle" => ty == "bool",
-        "select" | "segmented" => ty == "str" || ty == "enum",
+        "select" => ty == "str" || ty == "enum",
+        // segmented 既可承载枚举，也可承载二态 bool（如「初始语言模式」分段）。
+        "segmented" => ty == "str" || ty == "enum" || ty == "bool",
         "number" | "slider" => ty == "int" || ty == "float",
         "string" => ty == "str",
         "checkbox_group" => ty == "strlist",
@@ -118,6 +120,7 @@ mod tests {
         assert!(control_type_compatible("select", "enum"));
         assert!(control_type_compatible("segmented", "str"));
         assert!(control_type_compatible("segmented", "enum"));
+        assert!(control_type_compatible("segmented", "bool"));
         assert!(control_type_compatible("slider", "int"));
         assert!(control_type_compatible("slider", "float"));
         assert!(control_type_compatible("number", "int"));

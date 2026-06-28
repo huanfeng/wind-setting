@@ -37,6 +37,8 @@ pub struct MItem {
     pub max: Option<f64>,
     pub step: Option<f64>,
     pub unit: Option<String>,
+    /// 控件显式宽度（select/dropdown 选项文本较长时加宽，覆盖默认 CTRL_W）。
+    pub width: Option<f64>,
     pub enabled_when: Option<String>,
     /// dialog_button 专用：门控开关 key（该 toggle 关时按钮置灰不可点）。
     pub gate_key: Option<String>,
@@ -137,6 +139,7 @@ impl Manifest {
                     max: it.get("max").and_then(|x| x.as_f64()),
                     step: it.get("step").and_then(|x| x.as_f64()),
                     unit: opt_str(it, "unit"),
+                    width: it.get("width").and_then(|x| x.as_f64()),
                     enabled_when: opt_str(it, "enabled_when"),
                     gate_key: opt_str(it, "gate_key"),
                 };
@@ -361,7 +364,7 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
                 .unwrap_or(Value::Null)
         }),
     );
-    Element::dropdown(labels, sig).width(CTRL_W)
+    Element::dropdown(labels, sig).width(item.width.map(|w| w as i32).unwrap_or(CTRL_W))
 }
 
 fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -443,6 +446,11 @@ fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> E
     if values.is_empty() {
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
+    // bool 键的分段控制器（两段映射 false/true，值 "false"/"true"）：用于「初始语言模式」等二态项。
+    let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
+    if cap_ty == "bool" {
+        return build_segmented_bool(state, key, cfg, values, labels);
+    }
     let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
     let cur = cfg
         .get_str(key)
@@ -483,6 +491,44 @@ fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> E
                 .map(|v| Value::String(v.clone()))
                 .unwrap_or(Value::Null)
         }),
+    );
+    Element::segmented(labels, sig)
+}
+
+/// bool 键的分段控制器：两段，值 "false"/"true" 映射 bool。idx→对应 value=="true"。
+fn build_segmented_bool(
+    state: &AppState,
+    key: &str,
+    cfg: &Config,
+    values: Vec<String>,
+    labels: Vec<String>,
+) -> Element {
+    let def = state.capabilities.default_for(key).as_bool().unwrap_or(false);
+    let cur = cfg.get_bool(key).unwrap_or(def);
+    let pos_of = |on: bool, vals: &[String]| -> usize {
+        let s = if on { "true" } else { "false" };
+        vals.iter().position(|v| v == s).unwrap_or(usize::from(on))
+    };
+    let sig = signal(pos_of(cur, &values));
+
+    let vals_w = values.clone();
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        let on = vals_w.get(sig.get()).map(|v| v == "true").unwrap_or(false);
+        c.set_path(&kw, Value::Bool(on));
+    }));
+
+    let vals_g = values.clone();
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::Bool(vals_g.get(sig.get()).map(|v| v == "true").unwrap_or(false))),
+    );
+
+    let vals_l = values;
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| sig.set(pos_of(c.get_bool(&kl).unwrap_or(def), &vals_l))),
     );
     Element::segmented(labels, sig)
 }
@@ -631,6 +677,8 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
         build_dialog_button_map(state, key, item, cfg)
     } else if cap_ty == "strlist" && !item.options.is_empty() {
         build_dialog_button_pairs(state, key, item, cfg)
+    } else if cap_ty == "str" {
+        build_dialog_button_string(state, key, item, cfg)
     } else {
         build_dialog_button_spaced(state, key, item, cfg)
     }
@@ -710,6 +758,36 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
 
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_spaced_text_dialog(visible, &item.label, &hint, text, def_text);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// dialog_button（str）：单行字符串编辑对话框（如智能标点字符集/数字后保留英文标点）。
+/// 走对话框是为了带「恢复默认」操作。挂对话框到根，返回 visible。
+fn build_dialog_button_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_text_dialog;
+
+    let def = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
+    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+    let text = signal(cur);
+    let visible = signal(false);
+
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        c.set_path(&kw, Value::String(text.get()))
+    }));
+
+    let kl = key.to_string();
+    let def_l = def.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            text.set(c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone()));
+        }),
+    );
+
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_text_dialog(visible, &item.label, &hint, text, def, "输入字符…");
     register_dialog(state, dlg);
     visible
 }

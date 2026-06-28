@@ -174,9 +174,10 @@ hint = "数字后句号输出点号、逗号输出英文逗号，可配置参与
 key = "input.punct.smart_list"
 group = "input"
 section = "字符与标点"
-type = "string"
+type = "dialog_button"
 label = "数字后保持英文的标点"
 hint = "数字后保持英文形态的标点集合，默认 .,:"
+gate_key = "input.punct.smart_after_digit"
 
 [[items]]
 key = "input.symbol.smart_mode"
@@ -203,10 +204,10 @@ enabled_when = "input.symbol.smart_mode == true"
 key = "input.symbol.smart_chars"
 group = "input"
 section = "字符与标点"
-type = "string"
+type = "dialog_button"
 label = "智能符号字符集"
 hint = "参与智能符号转换的中文标点集合"
-enabled_when = "input.symbol.smart_mode == true"
+gate_key = "input.symbol.smart_mode"
 
 [[items]]
 key = "input.punct.custom_enabled"
@@ -275,7 +276,7 @@ type = "select"
 label = "数字键无效时"
 hint = "按的数字超出当前页候选数量时的处理方式"
 options = [
-  { value = "ignore", label = "忽略" },
+  { value = "ignore", label = "不起作用" },
   { value = "commit", label = "上屏编码" },
   { value = "commit_and_input", label = "上屏并继续输入" },
 ]
@@ -288,7 +289,7 @@ type = "select"
 label = "次选三选键无效时"
 hint = "候选数量不足时按次选或三选键的处理方式"
 options = [
-  { value = "ignore", label = "忽略" },
+  { value = "ignore", label = "不起作用" },
   { value = "commit", label = "上屏编码" },
   { value = "commit_and_input", label = "上屏并继续输入" },
 ]
@@ -301,7 +302,7 @@ type = "select"
 label = "以词定字键无效时"
 hint = "候选词长度不足时按以词定字键的处理方式"
 options = [
-  { value = "ignore", label = "忽略" },
+  { value = "ignore", label = "不起作用" },
   { value = "commit", label = "上屏编码" },
   { value = "commit_and_input", label = "上屏并继续输入" },
 ]
@@ -368,6 +369,12 @@ label = "「 」引号（台）"
 [[items.options]]
 value = "『』"
 label = "『 』双引号（台）"
+[[items.options]]
+value = "“”"
+label = "“ ” 双引号"
+[[items.options]]
+value = "‘’"
+label = "‘ ’ 单引号"
 
 [[items]]
 key = "input.auto_pair.english"
@@ -394,6 +401,12 @@ label = "[ ] 方括号"
 [[items.options]]
 value = "{}"
 label = "{ } 花括号"
+[[items.options]]
+value = '""'
+label = '" " 双引号'
+[[items.options]]
+value = "''"
+label = "' ' 单引号"
 
 # ── 快捷输入 ──
 [[items]]
@@ -421,7 +434,7 @@ type = "number"
 label = "小数保留位数"
 hint = "计算结果最多保留的小数位数（0 表示取整）"
 min = 0
-max = 12
+max = 6
 enabled_when = "schema.quick_input.enabled == true"
 
 # ── 临时拼音 ──
@@ -431,9 +444,9 @@ group = "input"
 section = "临时拼音"
 type = "select"
 label = "拼音分隔符"
-hint = "拼音模式下用于消歧的分隔符，如输入 xi'an 得到「西安」"
+hint = "拼音模式下用于消歧的分隔符，如输入 xi'an 得到「西安」；自动模式默认用 '，当 ' 被选择键占用时改用 `"
 options = [
-  { value = "auto", label = "自动（' 被选择键占用时改用 `）" },
+  { value = "auto", label = "自动 ( ' / ` )" },
   { value = "quote", label = "单引号 ( ' )" },
   { value = "backtick", label = "反引号 ( ` )" },
   { value = "none", label = "不使用" },
@@ -453,8 +466,8 @@ key = "input.temp_english.enabled"
 group = "input"
 section = "临时英文"
 type = "toggle"
-label = "Shift 临时英文"
-hint = "中文模式下用 Shift/触发键临时输入英文"
+label = "临时英文触发键"
+hint = "中文模式下用 Shift/触发键临时输入英文；勾选启用并设置触发键"
 
 [[items]]
 key = "input.temp_english.shift_behavior"
@@ -463,6 +476,7 @@ section = "临时英文"
 type = "select"
 label = "Shift+字母行为"
 hint = "中文模式下按 Shift+字母时的行为"
+width = 210
 enabled_when = "input.temp_english.enabled == true"
 options = [
   { value = "temp_english", label = "进入临时英文模式" },
@@ -1139,25 +1153,37 @@ hint = "启用后恢复上次的中英文、全半角和标点状态"
 key = "input.default.chinese_mode"
 group = "general"
 section = "默认状态"
-type = "toggle"
+type = "segmented"
 label = "初始语言模式"
-hint = "每次激活输入法时的默认语言（关=英文）"
+hint = "每次激活输入法时的默认语言"
+options = [
+  { value = "false", label = "英文" },
+  { value = "true", label = "中文" },
+]
 
 [[items]]
 key = "input.default.full_width"
 group = "general"
 section = "默认状态"
-type = "toggle"
+type = "segmented"
 label = "初始字符宽度"
-hint = "每次激活输入法时的默认字符宽度（开=全角）"
+hint = "每次激活输入法时的默认字符宽度"
+options = [
+  { value = "false", label = "半角" },
+  { value = "true", label = "全角" },
+]
 
 [[items]]
 key = "input.default.chinese_punct"
 group = "general"
 section = "默认状态"
-type = "toggle"
+type = "segmented"
 label = "初始标点模式"
-hint = "每次激活输入法时的默认标点类型（开=中文标点）"
+hint = "每次激活输入法时的默认标点类型"
+options = [
+  { value = "false", label = "英文标点" },
+  { value = "true", label = "中文标点" },
+]
 
 # ═══════════════════════════ 高级 ═══════════════════════════
 # ── 输入统计（统计页未实现期间，开关暂置高级）──

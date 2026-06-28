@@ -85,6 +85,74 @@ pub fn build_spaced_text_dialog(
     Element::dialog(visible, frame)
 }
 
+/// 单行字符串编辑对话框：提示 + 单行 text_input + [恢复默认 | 取消 确认]。
+/// 用于 str 类型的「启用 + 设置」项（如智能标点字符集），需要「恢复默认」故走对话框。
+pub fn build_text_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    hint: &str,
+    text: Signal<String>,
+    default_text: String,
+    placeholder: &str,
+) -> Element {
+    let frame = Element::col()
+        .width(420)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label(hint)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3)
+                .padding_xy(18, 10),
+        )
+        .child(
+            Element::col().width_match().padding_xy(18, 6).child(
+                Element::text_input(text, placeholder).width_match().height(36),
+            ),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(
+                    Element::button("恢复默认")
+                        .small()
+                        .neutral()
+                        .outline()
+                        .on_click(move |_| text.set(default_text.clone())),
+                )
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .neutral()
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                )
+                .child(
+                    Element::button("确认")
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
+}
+
 /// map → multi-line text（每行一对 `原符号=替换`）。
 ///
 /// 不变量：键不含 `=`——`=` 是行内键值分隔符，含 `=` 的键经 [`rows_to_map`]
