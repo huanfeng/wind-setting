@@ -48,6 +48,10 @@ pub struct FieldRegistry {
     /// 若内联在设置行的小 stack 内，`Element::dialog` 的遮罩只填满那一格，表现为
     /// 「显示在行下方」而非居中模态。构建页面时登记，由 `shell::build` 取出挂到根。
     pub dialogs: RefCell<Vec<Element>>,
+    /// 全局热键收集器：(功能短名, 是否全局 Signal)。支持全局的功能键各登记一项，
+    /// 由 `register_global_hotkeys_collector` 汇总成 `keys.global_hotkeys` strlist 写回/回填
+    /// （多个功能键写同一 key，故需单一收集器，模式同 checkbox_group）。
+    pub global_flags: RefCell<Vec<(String, Signal<bool>)>>,
 }
 
 /// 应用全局状态。
@@ -191,6 +195,13 @@ impl AppState {
                     }
                 }
             }
+        }
+        // keys.global_hotkeys 非清单项（由功能键「全局」勾选经收集器登记），手动纳入「按键」页恢复。
+        if self.current_tab_groups().contains(&"keys")
+            && let Some(l) = loaders.get("keys.global_hotkeys")
+        {
+            l(&empty);
+            n += 1;
         }
         self.status.set(if n == 0 {
             "本页无可恢复的默认项".to_string()

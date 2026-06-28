@@ -335,6 +335,112 @@ pub fn build_pairs_dialog(
     Element::dialog(visible, frame)
 }
 
+/// 热键编辑对话框：修饰键勾选 + 主键下拉（+ 可选「全局」）+ [恢复默认 | 取消 确认]。
+/// 确认时合成 "ctrl+shift+e" 写回 `raw`（并更新行内显示 `disp`）；恢复默认从 `default` 反填。
+#[allow(clippy::too_many_arguments)]
+pub fn build_hotkey_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    raw: Signal<String>,
+    disp: Signal<String>,
+    default: String,
+    mods: [Signal<bool>; 4],
+    key_idx: Signal<usize>,
+    key_values: Vec<String>,
+    key_labels: Vec<String>,
+    global: Option<Signal<bool>>,
+) -> Element {
+    use crate::manifest::{compose_hotkey, format_hotkey, parse_hotkey};
+    let [mc, ms, ma, mw] = mods;
+
+    let mod_row = Element::row()
+        .spacing(16)
+        .child(Element::checkbox("Ctrl", mc).small().fg_role(Role::Text))
+        .child(Element::checkbox("Shift", ms).small().fg_role(Role::Text))
+        .child(Element::checkbox("Alt", ma).small().fg_role(Role::Text))
+        .child(Element::checkbox("Win", mw).small().fg_role(Role::Text));
+
+    let mut body = Element::col()
+        .width_match()
+        .spacing(10)
+        .padding_xy(18, 12)
+        .child(Element::label("修饰键").font_size(12.0).fg_role(Role::TextMuted))
+        .child(mod_row)
+        .child(Element::label("主键").font_size(12.0).fg_role(Role::TextMuted))
+        .child(Element::dropdown(key_labels, key_idx).width(160));
+    if let Some(g) = global {
+        body = body.child(
+            Element::checkbox("注册为全局热键（其它程序中也生效）", g)
+                .small()
+                .fg_role(Role::Text),
+        );
+    }
+
+    let kv_ok = key_values.clone();
+    let confirm = Element::button("确认").outline().on_click(move |_| {
+        let m = [mc.get(), ms.get(), ma.get(), mw.get()];
+        let k = kv_ok.get(key_idx.get()).cloned().unwrap_or_default();
+        let v = compose_hotkey(m, &k);
+        disp.set(format_hotkey(&v));
+        raw.set(v);
+        visible.set(false);
+    });
+    let kv_def = key_values;
+    let reset = Element::button("恢复默认")
+        .small()
+        .neutral()
+        .outline()
+        .on_click(move |_| {
+            let (m, k) = parse_hotkey(&default);
+            mc.set(m[0]);
+            ms.set(m[1]);
+            ma.set(m[2]);
+            mw.set(m[3]);
+            key_idx.set(kv_def.iter().position(|v| *v == k).unwrap_or(0));
+            disp.set(format_hotkey(&default));
+            raw.set(default.clone());
+            // 全局热键默认为空（无功能全局），恢复默认同步取消全局勾选。
+            if let Some(g) = global {
+                g.set(false);
+            }
+        });
+
+    let frame = Element::col()
+        .width(380)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(reset)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .neutral()
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                )
+                .child(confirm),
+        );
+    Element::dialog(visible, frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

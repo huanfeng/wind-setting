@@ -42,6 +42,8 @@ pub struct MItem {
     pub enabled_when: Option<String>,
     /// dialog_button 专用：门控开关 key（该 toggle 关时按钮置灰不可点）。
     pub gate_key: Option<String>,
+    /// hotkey 专用：该功能是否支持「全局热键」（编辑对话框显示「全局」勾选）。
+    pub global: bool,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -142,6 +144,7 @@ impl Manifest {
                     width: it.get("width").and_then(|x| x.as_f64()),
                     enabled_when: opt_str(it, "enabled_when"),
                     gate_key: opt_str(it, "gate_key"),
+                    global: it.get("global").and_then(|x| x.as_bool()).unwrap_or(false),
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -263,6 +266,7 @@ pub fn field(state: &AppState, key: &str) -> Element {
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
         "string" => build_string(state, key, item, cfg),
+        "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     };
@@ -440,6 +444,219 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         }),
     );
     Element::text_input(sig, item.hint.clone().unwrap_or_default()).width(200)
+}
+
+/// hotkey 主键候选 (value, 显示名)。idx 0 = 未设置（值为空 → 合成 "none"）。
+fn hotkey_keys() -> Vec<(String, String)> {
+    let mut v = vec![(String::new(), "（未设置）".to_string())];
+    for c in 'a'..='z' {
+        v.push((c.to_string(), c.to_ascii_uppercase().to_string()));
+    }
+    for d in '0'..='9' {
+        v.push((d.to_string(), d.to_string()));
+    }
+    for n in 1..=12 {
+        v.push((format!("f{n}"), format!("F{n}")));
+    }
+    // 注：core 对 = / - 用命名键 equal / minus（见快照默认 "ctrl+equal"），其余标点用字面符号。
+    for (val, lbl) in [
+        ("space", "Space"), ("tab", "Tab"), ("enter", "Enter"),
+        (".", "."), (",", ","), ("/", "/"), (";", ";"), ("'", "'"),
+        ("[", "["), ("]", "]"), ("minus", "-"), ("equal", "="), ("`", "`"), ("\\", "\\"),
+    ] {
+        v.push((val.to_string(), lbl.to_string()));
+    }
+    v
+}
+
+/// 修饰键 (值, 显示名)，顺序即合成顺序（与 core 既有默认 "ctrl+shift+e" 一致）。
+const HOTKEY_MODS: [(&str, &str); 4] =
+    [("ctrl", "Ctrl"), ("shift", "Shift"), ("alt", "Alt"), ("win", "Win")];
+
+/// 解析 "ctrl+shift+e" → (修饰位 [ctrl,shift,alt,win], 主键值)。"none"/空 → 全 false + 空键。
+pub(crate) fn parse_hotkey(s: &str) -> ([bool; 4], String) {
+    let mut mods = [false; 4];
+    let mut key = String::new();
+    if s.is_empty() || s == "none" {
+        return (mods, key);
+    }
+    for part in s.split('+') {
+        match part.trim() {
+            "ctrl" => mods[0] = true,
+            "shift" => mods[1] = true,
+            "alt" => mods[2] = true,
+            "win" | "super" | "meta" | "cmd" => mods[3] = true,
+            "" => {}
+            other => key = other.to_string(),
+        }
+    }
+    (mods, key)
+}
+
+/// 合成 "ctrl+shift+e"；无主键 → "none"。
+pub(crate) fn compose_hotkey(mods: [bool; 4], key: &str) -> String {
+    if key.is_empty() {
+        return "none".to_string();
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, (name, _)) in HOTKEY_MODS.iter().enumerate() {
+        if mods[i] {
+            parts.push(name);
+        }
+    }
+    parts.push(key);
+    parts.join("+")
+}
+
+/// 显示用格式化 "Ctrl+Shift+E"；none/空 → "未设置"。
+pub(crate) fn format_hotkey(s: &str) -> String {
+    if s.is_empty() || s == "none" {
+        return "未设置".to_string();
+    }
+    s.split('+')
+        .map(|p| match p.trim() {
+            "ctrl" => "Ctrl".to_string(),
+            "shift" => "Shift".to_string(),
+            "alt" => "Alt".to_string(),
+            "win" | "super" | "meta" | "cmd" => "Win".to_string(),
+            "equal" => "=".to_string(),
+            "minus" => "-".to_string(),
+            "space" => "Space".to_string(),
+            "tab" => "Tab".to_string(),
+            "enter" => "Enter".to_string(),
+            "number" => "数字".to_string(),
+            other => {
+                let mut c = other.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// hotkey 控件：行右侧 = 当前绑定文本（响应式）+「设置」按钮（打开编辑对话框）。
+/// 值为 "ctrl+shift+e" 形式或 "none"；支持全局者登记进 global_flags 收集器。
+fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::build_hotkey_dialog;
+
+    let def = state.capabilities.default_for(key).as_str().unwrap_or("none").to_string();
+    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+
+    // 候选键表：确保当前绑定的主键一定在列表内（否则打开对话框 idx 回退 0，确认即丢绑定）。
+    let mut keys = hotkey_keys();
+    let (_, cur_key) = parse_hotkey(&cur);
+    if !cur_key.is_empty() && !keys.iter().any(|(v, _)| *v == cur_key) {
+        keys.push((cur_key.clone(), format_hotkey(&cur_key)));
+    }
+    let key_vals: Vec<String> = keys.iter().map(|(v, _)| v.clone()).collect();
+    let key_labels: Vec<String> = keys.iter().map(|(_, l)| l.clone()).collect();
+    let disp = signal(format_hotkey(&cur));
+    let raw = signal(cur);
+    let visible = signal(false);
+
+    // 对话框工作态：修饰位 + 主键 idx（打开时从 raw 播种、确认时合成回 raw/disp）。
+    let mods = [signal(false), signal(false), signal(false), signal(false)];
+    let key_idx = signal(0usize);
+
+    // writer：raw 即最终值
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        c.set_path(&kw, Value::String(raw.get()))
+    }));
+    // loader：回填 raw + disp（disp 供行内响应式显示）
+    let kl = key.to_string();
+    let def_l = def.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let v = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
+            disp.set(format_hotkey(&v));
+            raw.set(v);
+        }),
+    );
+    // getter（一致性：供潜在 enabled_when 读取）
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::String(raw.get())),
+    );
+
+    // 全局勾选（可选）：登记进收集器，由 register_global_hotkeys_collector 汇总写回
+    let global_sig = if item.global {
+        let field = key.strip_prefix("keys.").unwrap_or(key).to_string();
+        let in_global = cfg
+            .get_array("keys.global_hotkeys")
+            .map(|a| a.iter().any(|v| v.as_str() == Some(field.as_str())))
+            .unwrap_or(false);
+        let g = signal(in_global);
+        state.fields.global_flags.borrow_mut().push((field, g));
+        Some(g)
+    } else {
+        None
+    };
+
+    let dlg = build_hotkey_dialog(
+        visible, &item.label, raw, disp, def, mods, key_idx,
+        key_vals.clone(), key_labels, global_sig,
+    );
+    register_dialog(state, dlg);
+
+    // 行控件：当前绑定（响应式）+ 设置按钮（打开前从 raw 播种工作态）。
+    let kv = key_vals;
+    let open = Element::button("设置").small().neutral().outline().on_click(move |_| {
+        let (m, k) = parse_hotkey(&raw.get());
+        for (i, s) in mods.iter().enumerate() {
+            s.set(m[i]);
+        }
+        key_idx.set(kv.iter().position(|v| *v == k).unwrap_or(0));
+        visible.set(true);
+    });
+    Element::row()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(
+            Element::label_rc(disp)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
+        )
+        .child(open)
+}
+
+/// 汇总全局热键收集器为 `keys.global_hotkeys` strlist 的 writer + loader。
+/// 须在 `pages::all_tabs` 之后调用（此时各支持全局的功能键已登记进 global_flags）。
+pub fn register_global_hotkeys_collector(state: &AppState) {
+    let flags = state.fields.global_flags.borrow();
+    if flags.is_empty() {
+        return;
+    }
+    let pairs: Vec<(String, Signal<bool>)> = flags.clone();
+
+    let pairs_w = pairs.clone();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        // 排序使输出确定（数组按值相等比对，避免顺序差异误判 dirty / 每次保存重排）。
+        let mut names: Vec<String> =
+            pairs_w.iter().filter(|(_, s)| s.get()).map(|(f, _)| f.clone()).collect();
+        names.sort();
+        let arr: Vec<Value> = names.into_iter().map(Value::String).collect();
+        c.set_path("keys.global_hotkeys", Value::Array(arr));
+    }));
+
+    let pairs_l = pairs;
+    state.fields.loaders.borrow_mut().insert(
+        "keys.global_hotkeys".to_string(),
+        Box::new(move |c: &Config| {
+            let set: Vec<String> = c
+                .get_array("keys.global_hotkeys")
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            for (f, s) in &pairs_l {
+                s.set(set.iter().any(|x| x == f));
+            }
+        }),
+    );
 }
 
 fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -922,6 +1139,22 @@ mod tests {
         let checked = [("lshift", true), ("rshift", false), ("capslock", true)];
         let arr = collect_checked(&checked);
         assert_eq!(arr, vec!["lshift".to_string(), "capslock".to_string()]);
+    }
+
+    #[test]
+    fn hotkey_parse_compose_roundtrip() {
+        // core 实际默认值需原样往返（注意 = 用命名 equal、标点 . \ 用字面）。
+        for s in ["ctrl+shift+e", "shift+space", "ctrl+.", "ctrl+shift+\\", "ctrl+equal", "ctrl+shift+["] {
+            let (m, k) = parse_hotkey(s);
+            assert_eq!(compose_hotkey(m, &k), s, "round-trip 失败: {s}");
+        }
+        // 无主键 → none；none/空 → 全 false 空键
+        assert_eq!(compose_hotkey([true, true, false, false], ""), "none");
+        let (m, k) = parse_hotkey("none");
+        assert_eq!((m, k.as_str()), ([false; 4], ""));
+        // 显示格式：命名键映射回符号
+        assert_eq!(format_hotkey("ctrl+equal"), "Ctrl+=");
+        assert_eq!(format_hotkey("none"), "未设置");
     }
 
     #[test]

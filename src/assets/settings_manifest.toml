@@ -683,12 +683,13 @@ label = "减号/等号 - ="
 value = "brackets"
 label = "方括号 [ ]"
 
-# ── 功能快捷键 ──
+# ── 功能快捷键（hotkey 控件：修饰键+主键编辑对话框；部分支持「全局」）──
+# 注：全局开关汇总写入 keys.global_hotkeys（strlist），不再有独立「全局热键」项。
 [[items]]
 key = "keys.switch_engine"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "切换输入方案"
 hint = "在已启用的输入方案间循环切换"
 
@@ -696,7 +697,7 @@ hint = "在已启用的输入方案间循环切换"
 key = "keys.toggle_full_width"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "切换全角/半角"
 hint = "切换字符宽度模式"
 
@@ -704,7 +705,7 @@ hint = "切换字符宽度模式"
 key = "keys.toggle_punct"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "切换中/英文标点"
 hint = "切换标点符号类型"
 
@@ -712,7 +713,7 @@ hint = "切换标点符号类型"
 key = "keys.toggle_s2t"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "切换简入繁出"
 hint = "开关简体输入→繁体输出（变体在「输入 → 简入繁出」中选择）"
 
@@ -720,7 +721,7 @@ hint = "开关简体输入→繁体输出（变体在「输入 → 简入繁出�
 key = "keys.toggle_toolbar"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "显示/隐藏工具栏"
 hint = "切换工具栏的显示状态"
 
@@ -728,15 +729,16 @@ hint = "切换工具栏的显示状态"
 key = "keys.open_settings"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "打开设置"
 hint = "打开设置窗口"
+global = true
 
 [[items]]
 key = "keys.add_word"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "快捷加词"
 hint = "快速将输入的内容加入用户词库"
 
@@ -744,18 +746,10 @@ hint = "快速将输入的内容加入用户词库"
 key = "keys.activate_ime"
 group = "keys"
 section = "功能快捷键"
-type = "string"
+type = "hotkey"
 label = "切换到本输入法"
 hint = "在任意应用中一键切换到本输入法"
-
-# ── 全局热键 ──
-[[items]]
-key = "keys.global_hotkeys"
-group = "keys"
-section = "全局热键"
-type = "dialog_button"
-label = "全局热键"
-hint = "全局热键定义列表，按空格分隔"
+global = true
 
 # ═══════════════════════════ 外观 ═══════════════════════════
 # ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──

@@ -85,6 +85,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "segmented" => ty == "str" || ty == "enum" || ty == "bool",
         "number" | "slider" => ty == "int" || ty == "float",
         "string" => ty == "str",
+        // hotkey:功能键绑定字符串（如 "ctrl+shift+e"），编辑对话框承载。
+        "hotkey" => ty == "str",
         "checkbox_group" => ty == "strlist",
         "dialog_button" => ty == "str" || ty == "strlist" || ty == "map",
         _ => false,
@@ -126,6 +128,7 @@ mod tests {
         assert!(control_type_compatible("number", "int"));
         assert!(control_type_compatible("number", "float"));
         assert!(control_type_compatible("string", "str"));
+        assert!(control_type_compatible("hotkey", "str"));
         assert!(control_type_compatible("checkbox_group", "strlist"));
         assert!(control_type_compatible("dialog_button", "str"));
         assert!(control_type_compatible("dialog_button", "strlist"));
@@ -168,6 +171,7 @@ mod tests {
         //   ①方案级深度项：schema.pinyin.fuzzy.*（模糊音）、schema.active/available/special_modes/
         //     mix_modes（方案管理）、compat.host_render_processes —— 待方案设置弹窗承载。
         //   ②input.phrase.*（短语）—— 开关暂无作用，待 core 决定后再处理。
+        //   ③keys.global_hotkeys —— 非独立清单项，由功能键的「全局」勾选经收集器汇总写回。
         // 注：ui.status.*（行为/位置类）与 ui.theme.name 已纳入清单；状态气泡的纯视觉项
         //   （颜色/字号/透明度/圆角）由主题 theme.toml 处理，core 快照本就无对应 key。
         assert!(uncovered.len() <= 20, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
