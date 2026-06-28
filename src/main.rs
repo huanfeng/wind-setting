@@ -6,12 +6,14 @@
 //! 无边框窗口 + 自定义标题栏，9 Tab 清单驱动（manifest 分组），运行时明暗换肤。
 
 mod capabilities;
+mod cli;
 mod config;
 mod dialogs;
 mod logger;
 mod manifest;
 mod mode;
 mod pages;
+mod protocol;
 mod rpc;
 mod shell;
 mod state;
