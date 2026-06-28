@@ -659,7 +659,7 @@ fn build_gated_dialog_row(
     let control = Element::row()
         .cross(Align::Center)
         .spacing(10)
-        .child(Element::switch(gate_sig))
+        .child(Element::checkbox("启用", gate_sig).fg_role(Role::Text))
         .child(btn);
     setting_row(&gate_item.label, gate_item.hint.as_deref(), control)
 }
