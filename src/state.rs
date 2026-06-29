@@ -93,6 +93,12 @@ pub struct AppState {
     /// 连接成功的响应式标志（异步加载后置位）。底栏状态圆点据此响应式着色——
     /// 构建时尚未连接（empty），故圆点必须用 Signal 而非构建期 bool 才能在连接后转绿。
     pub conn_ok: Signal<bool>,
+    /// 主题下拉的响应式选项：显示名列表 + 对应 id/slug 值列表（异步加载后填充）。
+    /// 下拉构建于异步数据到达前，故必须经 Signal 驱动响应式下拉，数据到达即填充。
+    pub theme_label_sig: Signal<Vec<String>>,
+    pub theme_value_sig: Signal<Vec<String>>,
+    /// 候选窗字体下拉的响应式选项（system.fonts，值=显示名=字体族名）。
+    pub font_sig: Signal<Vec<String>>,
 }
 
 impl AppState {
@@ -118,17 +124,30 @@ impl AppState {
             connected: false,
             conn_failed: signal(false),
             conn_ok: signal(false),
+            theme_label_sig: signal(vec![]),
+            theme_value_sig: signal(vec![]),
+            font_sig: signal(vec![]),
         }
     }
 
     /// 后台数据就绪后在 UI 线程调用：更新非 Signal 字段，并通过 Signal 通知界面刷新。
     ///
-    /// 局限：manifest 驱动页与下拉列表在 `shell::build()` 时已静态构建，
-    /// 本方法仅能更新 `status` Signal 和已注册的字段加载器（重连后有效）。
-    /// manifest/下拉 的动态化属于后续重构范围。
+    /// 主题/字体下拉经响应式选项信号（theme_label_sig/font_sig 等）填充，异步数据到达即刷新；
+    /// 其余 manifest 字段经已注册加载器回填 Signal。
     pub fn apply_loaded(&mut self, data: LoadedState) {
         let cfg = Config::from_value(data.config_value);
-        // 重新填充已注册字段的 Signal（首次加载时 manifest 为空、无 loader，是空循环）。
+        // 先填充列表数据与响应式下拉选项 —— 必须早于 loader：themes 的 loader 需按配置值在
+        // 选项列表中定位选中索引，故选项信号要在 loader 跑之前就位。
+        self.schemas = data.schemas;
+        self.theme_names = data.theme_names;
+        self.fonts = data.fonts;
+        self.theme_label_sig.set(self.theme_names.iter().map(|(_, n)| n.clone()).collect());
+        self.theme_value_sig.set(self.theme_names.iter().map(|(id, _)| id.clone()).collect());
+        self.font_sig.set(self.fonts.clone());
+        // 注：选项变更后下拉的宽度 re-measure 依赖"数据到达帧为整窗重绘"——本方法在 pump 内
+        // set 信号会请求整窗重绘，启动场景(无进行中的局部动画)该帧即整窗重排，宽度正常刷新；
+        // 这是 windui pump→signal→repaint 既有性质（现有字段 loader 的文本刷新同此机制）。
+        // 再重新填充已注册字段的 Signal（首次加载时 manifest 为空、无 loader，是空循环）。
         {
             let loaders = self.fields.loaders.borrow();
             for l in loaders.values() {
@@ -139,9 +158,6 @@ impl AppState {
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
-        self.schemas = data.schemas;
-        self.theme_names = data.theme_names;
-        self.fonts = data.fonts;
         self.connected = data.connected;
         self.conn_ok.set(data.connected); // 响应式：底栏圆点连接后转绿
         if data.connected {

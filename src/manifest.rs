@@ -321,6 +321,13 @@ fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    // 响应式动态源（异步加载的主题/字体）：选项绑定 Signal，数据到达即填充下拉，
+    // 避免静态构建在数据到达前拿到空列表显示「（无可选项）」。schemas 仍走下方静态路径。
+    if let Some(src) = item.options_source.as_deref()
+        && let Some((val_sig, lab_sig)) = reactive_option_signals(state, src)
+    {
+        return build_select_reactive(state, key, item, cfg, val_sig, lab_sig);
+    }
     let (values, labels): (Vec<String>, Vec<String>) = if let Some(src) = &item.options_source {
         dynamic_options(state, src)
     } else {
@@ -374,6 +381,68 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         }),
     );
     Element::dropdown(labels, sig).width(item.width.map(|w| w as i32).unwrap_or(CTRL_W))
+}
+
+/// 响应式动态选项信号对：(值列表信号, 标签列表信号)。
+type OptionSignals = (Signal<Vec<String>>, Signal<Vec<String>>);
+
+/// 响应式动态源 → (值列表信号, 标签列表信号)。仅主题/字体异步加载需要响应式；
+/// 字体的值即标签（字体族名）。schemas 等返回 None（走静态路径）。
+fn reactive_option_signals(state: &AppState, src: &str) -> Option<OptionSignals> {
+    match src {
+        "themes" => Some((state.theme_value_sig, state.theme_label_sig)),
+        "fonts" => Some((state.font_sig, state.font_sig)),
+        _ => None,
+    }
+}
+
+/// 响应式 select：选项随 `lab_sig` 变更刷新；index↔value 映射读 `val_sig`（异步数据到达后就位）。
+fn build_select_reactive(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+    val_sig: Signal<Vec<String>>,
+    lab_sig: Signal<Vec<String>>,
+) -> Element {
+    let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
+    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def_str.clone());
+    // 初始索引：在当前（可能为空）值列表中定位；空则 0，待 loader 在数据到达后重定位。
+    let idx = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
+    let sig = signal(idx);
+
+    // writer：按当前索引取值；列表为空（未加载）时不写，避免清空配置。
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        if let Some(v) = val_sig.with(|vs| vs.get(sig.get()).cloned()) {
+            c.set_path(&kw, Value::String(v));
+        }
+    }));
+    // loader：按配置值在（已就位的）值列表中重定位索引。
+    let kl = key.to_string();
+    let def_l = def_str.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
+            let i = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
+            sig.set(i);
+        }),
+    );
+    // getter（一致性）：返回当前选中值；列表未就位/越界时返回 Null（与静态 select 路径一致，
+    // 避免潜在 enabled_when 对空值的判定分歧）。仅供联动读取，不代表 writer 写回值。
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || {
+            val_sig.with(|vs| vs.get(sig.get()).cloned()).map(Value::String).unwrap_or(Value::Null)
+        }),
+    );
+
+    let el = Element::dropdown_reactive(lab_sig, sig);
+    match item.width {
+        Some(w) => el.width(w as i32),
+        None => el.width(CTRL_W),
+    }
 }
 
 fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
