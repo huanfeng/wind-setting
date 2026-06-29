@@ -77,13 +77,12 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
         .child(control)
 }
 
-/// 多选键组专用行：左侧固定宽标签（顶对齐）+ 右侧占满的复选网格。
+/// 多选键组专用行：左侧弹性标签 + 右侧固定宽网格（靠右对齐）。
 ///
-/// 普通 [`setting_row`] 用 label(weight 1)+控件(measure 宽)，但复选网格很宽会把 weight-1
-/// 标签挤成 0 宽而消失（用户反馈「组名被挤掉」）。此处给标签**固定宽**、网格 weight(1) 占满右侧，
-/// 配合小号 checkbox，既保证组名常显、又让选项名不被截断。
+/// 网格固定 300px（两列各 ~145），不会撑宽；左侧 weight(1) 自由伸展，
+/// 窗口变宽时标签获得更多空间，与 hotkey 行的控件组视觉一致靠右。
 pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Element {
-    let mut left = Element::col().width(132).spacing(2).child(
+    let mut left = Element::col().weight(1.0).spacing(2).child(
         Element::label(label)
             .font_size(13.0)
             .font_weight(500)
@@ -108,16 +107,7 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
         .padding_xy(0, 11)
         .spacing(12)
         .child(left)
-        // 网格限宽 + 左对齐：2 列等宽若填满整行会把列距拉得很开（右侧大片留白在列间）。
-        // 限宽 300（每列 ~145）使复选项紧凑成对，尾部 flex_spacer 把多余空间收到最右。
-        .child(
-            Element::row()
-                .weight(1.0)
-                .width_match()
-                .cross(Align::Start)
-                .child(grid.width(300))
-                .child(Element::flex_spacer()),
-        )
+        .child(grid.width(300))
 }
 
 /// 卡片容器：圆角 surface + 边框，承载分区内的若干设置行（行间自动插分隔线）。
