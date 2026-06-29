@@ -149,7 +149,6 @@ fn build_footer(
     let d_l = dark;
     let to_light = Element::button("☀ 浅色")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| {
             d_l.set(false);
@@ -160,7 +159,6 @@ fn build_footer(
     let d_d = dark;
     let to_dark = Element::button("🌙 深色")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| {
             d_d.set(true);
@@ -173,7 +171,6 @@ fn build_footer(
     let app_reset = app.clone();
     let reset_btn = Element::button("恢复本页")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| {
             if let Ok(s) = app_reset.try_borrow() {
@@ -189,7 +186,6 @@ fn build_footer(
     let app_reload = app.clone();
     let reload_btn = Element::button("重新加载")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| {
             if let Ok(s) = app_reload.try_borrow() {
@@ -201,7 +197,6 @@ fn build_footer(
     let app_apply = app.clone();
     let apply_btn = Element::button("应用设置")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| {
             if let Ok(mut s) = app_apply.try_borrow_mut() {
@@ -211,7 +206,7 @@ fn build_footer(
 
     // 保存并退出：保存成功（无报错）才退出。
     let app_save_exit = app.clone();
-    let save_exit_btn = Element::button("保存并退出").small().outline().on_click(move |ctx| {
+    let save_exit_btn = Element::button("保存并退出").small().on_click(move |ctx| {
         if let Ok(mut s) = app_save_exit.try_borrow_mut()
             && s.save()
         {
@@ -312,8 +307,8 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(Element::leaf().weight(1.0))
-                .child(Element::button("退出").neutral().outline().on_click(|ctx| ctx.request_close()))
-                .child(Element::button("重连").outline().on_click(move |_| {
+                .child(Element::button("退出").outline().on_click(|ctx| ctx.request_close()))
+                .child(Element::button("重连").on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
                         s.status.set("正在重连...".to_string());
                     }
@@ -366,11 +361,10 @@ fn confirm_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
-                        .neutral()
                         .outline()
                         .on_click(move |_| cancel.set(false)),
                 )
-                .child(Element::button(confirm_label).outline().on_click(on_confirm)),
+                .child(Element::button(confirm_label).on_click(on_confirm)),
         );
     Element::dialog(visible, frame)
 }

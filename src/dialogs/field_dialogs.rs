@@ -65,20 +65,17 @@ pub fn build_spaced_text_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .neutral()
                         .outline()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
-                        .neutral()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
-                        .outline()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -133,20 +130,17 @@ pub fn build_text_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .neutral()
                         .outline()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
-                        .neutral()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
-                        .outline()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -239,20 +233,17 @@ pub fn build_map_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .neutral()
                         .outline()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
-                        .neutral()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
-                        .outline()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -311,7 +302,6 @@ pub fn build_pairs_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .neutral()
                         .outline()
                         .on_click(move |_| {
                             for (v, s) in &sigs_reset {
@@ -322,13 +312,11 @@ pub fn build_pairs_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
-                        .neutral()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
-                        .outline()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -420,7 +408,7 @@ pub fn build_hotkey_dialog(
     }
 
     let kv_ok = key_values.clone();
-    let confirm = Element::button("确认").outline().on_click(move |_| {
+    let confirm = Element::button("确认").on_click(move |_| {
         let m = [mc.get(), ms.get(), ma.get(), mw.get()];
         let k = kv_ok.get(key_idx.get()).cloned().unwrap_or_default();
         let v = compose_hotkey(m, &k);
@@ -431,7 +419,6 @@ pub fn build_hotkey_dialog(
     let kv_def = key_values;
     let reset = Element::button("恢复默认")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| {
             let (m, k) = parse_hotkey(&default);
@@ -475,7 +462,6 @@ pub fn build_hotkey_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
-                        .neutral()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )

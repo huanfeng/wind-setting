@@ -605,7 +605,7 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 
     // 行控件：当前绑定（响应式）+ 设置按钮（打开前从 raw 播种工作态）。
     let kv = key_vals;
-    let open = Element::button("设置").small().neutral().outline().on_click(move |_| {
+    let open = Element::button("设置").small().outline().on_click(move |_| {
         let (m, k) = parse_hotkey(&raw.get());
         for (i, s) in mods.iter().enumerate() {
             s.set(m[i]);
@@ -938,7 +938,6 @@ pub fn build_scheme_config_button(
     register_dialog(state, dlg);
     Element::button("设置")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| visible.set(true))
 }
@@ -957,7 +956,6 @@ pub fn build_scheme_placeholder_button(state: &AppState, label: &str, msg: &str)
     register_dialog(state, dlg);
     Element::button("设置")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| visible.set(true))
 }
@@ -966,7 +964,6 @@ pub fn build_scheme_placeholder_button(state: &AppState, label: &str, msg: &str)
 fn open_dialog_button(visible: Signal<bool>) -> Element {
     Element::button("设置")
         .small()
-        .neutral()
         .outline()
         .on_click(move |_| visible.set(true))
 }
