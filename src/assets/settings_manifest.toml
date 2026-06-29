@@ -139,6 +139,92 @@ type = "toggle"
 label = "智能组词"
 hint = "根据上下文智能拼接候选"
 
+# ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
+[[items]]
+key = "schema.pinyin.fuzzy.enabled"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "启用模糊音"
+hint = "勾选下方拼音对，使其互不区分"
+
+[[items]]
+key = "schema.pinyin.fuzzy.zh_z"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "zh ↔ z"
+
+[[items]]
+key = "schema.pinyin.fuzzy.ch_c"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "ch ↔ c"
+
+[[items]]
+key = "schema.pinyin.fuzzy.sh_s"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "sh ↔ s"
+
+[[items]]
+key = "schema.pinyin.fuzzy.n_l"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "n ↔ l"
+
+[[items]]
+key = "schema.pinyin.fuzzy.r_l"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "r ↔ l"
+
+[[items]]
+key = "schema.pinyin.fuzzy.f_h"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "f ↔ h"
+
+[[items]]
+key = "schema.pinyin.fuzzy.an_ang"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "an ↔ ang"
+
+[[items]]
+key = "schema.pinyin.fuzzy.en_eng"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "en ↔ eng"
+
+[[items]]
+key = "schema.pinyin.fuzzy.in_ing"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "in ↔ ing"
+
+[[items]]
+key = "schema.pinyin.fuzzy.ian_iang"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "ian ↔ iang"
+
+[[items]]
+key = "schema.pinyin.fuzzy.uan_uang"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "uan ↔ uang"
+
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
 [[items]]
@@ -440,8 +526,8 @@ enabled_when = "schema.quick_input.enabled == true"
 # ── 临时拼音 ──
 [[items]]
 key = "schema.pinyin.separator"
-group = "input"
-section = "临时拼音"
+group = "schema"
+section = "候选行为"
 type = "select"
 label = "拼音分隔符"
 hint = "拼音模式下用于消歧的分隔符，如输入 xi'an 得到「西安」；自动模式默认用 '，当 ' 被选择键占用时改用 `"

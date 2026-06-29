@@ -167,13 +167,12 @@ mod tests {
             .filter(|k| !covered.contains(k))
             .collect();
         println!("未覆盖 capability key 数: {} / {}", uncovered.len(), caps.entries.len());
-        // 未覆盖项（均为有意不入清单）：
-        //   ①方案级深度项：schema.pinyin.fuzzy.*（模糊音）、schema.active/available/special_modes/
-        //     mix_modes（方案管理）、compat.host_render_processes —— 待方案设置弹窗承载。
-        //   ②input.phrase.*（短语）—— 开关暂无作用，待 core 决定后再处理。
-        //   ③keys.global_hotkeys —— 非独立清单项，由功能键的「全局」勾选经收集器汇总写回。
-        // 注：ui.status.*（行为/位置类）与 ui.theme.name 已纳入清单；状态气泡的纯视觉项
-        //   （颜色/字号/透明度/圆角）由主题 theme.toml 处理，core 快照本就无对应 key。
-        assert!(uncovered.len() <= 20, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
+        // 未覆盖项（均为有意不入清单，当前 8 项）：
+        //   ①方案管理：schema.active/available/special_modes/mix_modes —— 方案列表本身，由方案管理弹窗承载。
+        //   ②compat.host_render_processes —— 兼容渲染进程名单，暂不开放。
+        //   ③input.phrase.*（短语）—— 开关暂无作用，待 core 决定后再处理。
+        //   ④keys.global_hotkeys —— 非独立清单项，由功能键的「全局」勾选经收集器汇总写回。
+        // 注：模糊音 schema.pinyin.fuzzy.*、ui.status.*、ui.theme.name 均已纳入清单（方案/拼音对话框等）。
+        assert!(uncovered.len() <= 10, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
     }
 }

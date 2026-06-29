@@ -876,6 +876,92 @@ fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
+/// 模糊音紧凑组：启用开关 + 11 对小号 checkbox（2 列），随启用置灰。
+/// 各项经 register_toggle 登记 writer/loader（key 在清单 schema/模糊音，受「恢复本页」覆盖）。
+fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
+    let en = register_toggle(state, "schema.pinyin.fuzzy.enabled", cfg);
+    let pairs = [
+        ("schema.pinyin.fuzzy.zh_z", "zh ↔ z"),
+        ("schema.pinyin.fuzzy.ch_c", "ch ↔ c"),
+        ("schema.pinyin.fuzzy.sh_s", "sh ↔ s"),
+        ("schema.pinyin.fuzzy.n_l", "n ↔ l"),
+        ("schema.pinyin.fuzzy.r_l", "r ↔ l"),
+        ("schema.pinyin.fuzzy.f_h", "f ↔ h"),
+        ("schema.pinyin.fuzzy.an_ang", "an ↔ ang"),
+        ("schema.pinyin.fuzzy.en_eng", "en ↔ eng"),
+        ("schema.pinyin.fuzzy.in_ing", "in ↔ ing"),
+        ("schema.pinyin.fuzzy.ian_iang", "ian ↔ iang"),
+        ("schema.pinyin.fuzzy.uan_uang", "uan ↔ uang"),
+    ];
+    let cells: Vec<Element> = pairs
+        .iter()
+        .map(|(k, lbl)| {
+            let s = register_toggle(state, k, cfg);
+            Element::checkbox(*lbl, s).small().fg_role(Role::Text)
+        })
+        .collect();
+    let grid = Element::grid(2, 10, cells).width_match().enabled_when(move || en.get());
+    Element::col()
+        .width_match()
+        .padding_xy(0, 11)
+        .spacing(10)
+        .child(setting_row(
+            "启用模糊音",
+            Some("勾选下方拼音对，使其互不区分"),
+            Element::switch(en),
+        ))
+        .child(grid)
+}
+
+/// 「全局方案配置」某引擎的 [设置] 按钮 + 对话框（含该 schema-group section 的设置行）。
+/// `with_fuzzy`=true 在末尾追加模糊音紧凑组（拼音引擎用）。对话框挂根。
+pub fn build_scheme_config_button(
+    state: &AppState,
+    label: &str,
+    section: &str,
+    with_fuzzy: bool,
+) -> Element {
+    use crate::dialogs::field_dialogs::build_group_dialog;
+    let visible = signal(false);
+    let keys: Vec<String> = state
+        .manifest
+        .sections_of("schema")
+        .into_iter()
+        .find(|(s, _)| s == section)
+        .map(|(_, k)| k)
+        .unwrap_or_default();
+    let mut rows = section_rows(state, &keys);
+    if with_fuzzy {
+        rows.push(build_fuzzy_group(state, &state.current_config));
+    }
+    let dlg = build_group_dialog(visible, label, rows);
+    register_dialog(state, dlg);
+    Element::button("设置")
+        .small()
+        .neutral()
+        .outline()
+        .on_click(move |_| visible.set(true))
+}
+
+/// 占位 [设置] 按钮 + 提示对话框（如混输引擎待 core 暴露相关键）。
+pub fn build_scheme_placeholder_button(state: &AppState, label: &str, msg: &str) -> Element {
+    use crate::dialogs::field_dialogs::build_group_dialog;
+    let visible = signal(false);
+    let row = Element::label(msg)
+        .font_size(13.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(4)
+        .padding_xy(0, 12);
+    let dlg = build_group_dialog(visible, label, vec![row]);
+    register_dialog(state, dlg);
+    Element::button("设置")
+        .small()
+        .neutral()
+        .outline()
+        .on_click(move |_| visible.set(true))
+}
+
 /// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。
 fn open_dialog_button(visible: Signal<bool>) -> Element {
     Element::button("设置")
@@ -1155,6 +1241,19 @@ mod tests {
         // 显示格式：命名键映射回符号
         assert_eq!(format_hotkey("ctrl+equal"), "Ctrl+=");
         assert_eq!(format_hotkey("none"), "未设置");
+    }
+
+    #[test]
+    fn scheme_sections_present_and_nonempty() {
+        // 守护：方案页内联/对话框依赖这些硬编码 section 名（pages::scheme_page）。
+        // 改名 TOML section 会让 find() 落空→静默空对话框，此测试把失败前移到 CI。
+        let m = Manifest::from_embedded();
+        let secs = m.sections_of("schema");
+        for name in ["主方案设置", "上屏行为", "候选行为", "模糊音"] {
+            let found = secs.iter().find(|(s, _)| s == name);
+            assert!(found.is_some(), "schema 组缺少 section「{name}」");
+            assert!(!found.unwrap().1.is_empty(), "section「{name}」为空");
+        }
     }
 
     #[test]

@@ -335,6 +335,49 @@ pub fn build_pairs_dialog(
     Element::dialog(visible, frame)
 }
 
+/// 设置组对话框：标题 + 若干设置行（行间分隔线）+ [关闭]。
+/// 用于「全局方案配置」码表/拼音对话框：内部控件经各自 writer 随主保存提交，无需独立保存。
+pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>) -> Element {
+    let mut content = Element::col().width_match().padding_xy(16, 2);
+    let last = rows.len().saturating_sub(1);
+    for (i, r) in rows.into_iter().enumerate() {
+        content = content.child(r);
+        if i != last {
+            content = content.child(Element::divider());
+        }
+    }
+    let frame = Element::col()
+        .width(460)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(content)
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("关闭")
+                        .outline()
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
+}
+
 /// 热键编辑对话框：修饰键勾选 + 主键下拉（+ 可选「全局」）+ [恢复默认 | 取消 确认]。
 /// 确认时合成 "ctrl+shift+e" 写回 `raw`（并更新行内显示 `disp`）；恢复默认从 `default` 反填。
 #[allow(clippy::too_many_arguments)]
