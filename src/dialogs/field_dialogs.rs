@@ -366,6 +366,168 @@ pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>
     Element::dialog(visible, frame)
 }
 
+/// 自定义标点 5 列可编辑表格对话框（原字符 / 英文半角 / 英文全角 / 中文半角 / 中文全角）。
+/// 复刻 examples/settings.rs 的表格 + 单元格编辑子对话框：点单元格弹文本框编辑，确认写回。
+/// - `src_labels`：每行第 0 列「原字符」展示（只读，点击不弹编辑）；
+/// - `cells_data`：每行 4 个可编辑单元格信号（英半/英全/中半/中全，与 core 数组序一致），
+///   这些信号由调用方注册到 writer/loader，编辑即改它们，随主保存提交；
+/// - `defaults`：每行 4 列默认值（单元格清空时回落 + 「恢复默认」用）。
+///
+/// 返回一个含「表格对话框 + 单元格编辑子对话框」两层的 stack，整体挂根。
+pub fn build_punct_table_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    src_labels: Vec<String>,
+    cells_data: Vec<[Signal<String>; 4]>,
+    defaults: Vec<[String; 4]>,
+) -> Element {
+    // 单元格编辑子对话框状态
+    let edit_show = signal(false);
+    let edit_buf = signal(String::new());
+    let edit_row = signal(0usize);
+    let edit_col = signal(0usize); // 0..3，对应 cells_data 行内列
+
+    // 表格单元格：第 0 列为原字符（只读展示），第 1..4 列为可编辑信号。
+    let src_sigs: Vec<Signal<String>> = src_labels.iter().map(|s| signal(s.clone())).collect();
+    let table_cells: Vec<Vec<Signal<String>>> = src_sigs
+        .iter()
+        .zip(cells_data.iter())
+        .map(|(src, row)| vec![*src, row[0], row[1], row[2], row[3]])
+        .collect();
+
+    // 点单元格：第 0 列只读跳过；其余载入缓冲并弹编辑子对话框。
+    let cells_for_edit = cells_data.clone();
+    let table = Element::table_editable(
+        vec![
+            ("原字符", 0.8f32),
+            ("英文半角", 1.0),
+            ("英文全角", 1.0),
+            ("中文半角", 1.0),
+            ("中文全角", 1.0),
+        ],
+        table_cells,
+        move |_ctx, r, c| {
+            if c == 0 {
+                return;
+            }
+            let ci = c - 1;
+            edit_buf.set(cells_for_edit[r][ci].get());
+            edit_row.set(r);
+            edit_col.set(ci);
+            edit_show.set(true);
+        },
+    )
+    .height(420);
+
+    // 恢复默认：全部单元格回落默认值。
+    let cells_reset = cells_data.clone();
+    let defaults_reset = defaults.clone();
+    let frame = Element::col()
+        .width(720)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label("点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会被保存。")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2)
+                .padding_xy(18, 10),
+        )
+        .child(Element::col().width_match().padding_xy(18, 6).child(table))
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(
+                    Element::button("恢复默认").small().outline().on_click(move |_| {
+                        for (row, def) in cells_reset.iter().zip(defaults_reset.iter()) {
+                            for i in 0..4 {
+                                row[i].set(def[i].clone());
+                            }
+                        }
+                    }),
+                )
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("关闭")
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    let table_dialog = Element::dialog(visible, frame);
+
+    // 单元格编辑子对话框。
+    let cells_commit = cells_data.clone();
+    let defaults_commit = defaults.clone();
+    let edit_frame = Element::col()
+        .width(360)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("编辑标点映射")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::col().width_match().padding_xy(18, 10).child(
+                Element::text_input(edit_buf, "替换字符（留空恢复默认）")
+                    .width_match(),
+            ),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .outline()
+                        .on_click(move |_| edit_show.set(false)),
+                )
+                .child(Element::button("确认").on_click(move |_| {
+                    let r = edit_row.get();
+                    let ci = edit_col.get();
+                    let raw = edit_buf.get();
+                    // 半角/全角空格为合法映射值，不可 trim 掉；其余去空白后若空则回落默认。
+                    let is_space = raw == " " || raw == "\u{3000}";
+                    let trimmed = if is_space { raw.clone() } else { raw.trim().to_string() };
+                    let val = if trimmed.is_empty() {
+                        defaults_commit[r][ci].clone()
+                    } else {
+                        trimmed
+                    };
+                    cells_commit[r][ci].set(val);
+                    edit_show.set(false);
+                })),
+        );
+    let edit_dialog = Element::dialog(edit_show, edit_frame);
+
+    Element::stack().fill().child(table_dialog).child(edit_dialog)
+}
+
 /// 热键编辑对话框：修饰键勾选 + 主键下拉（+ 可选「全局」）+ [恢复默认 | 取消 确认]。
 /// 确认时合成 "ctrl+shift+e" 写回 `raw`（并更新行内显示 `disp`）；恢复默认从 `default` 反填。
 #[allow(clippy::too_many_arguments)]

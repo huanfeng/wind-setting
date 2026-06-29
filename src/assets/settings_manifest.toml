@@ -309,7 +309,7 @@ group = "input"
 section = "字符与标点"
 type = "dialog_button"
 label = "自定义标点映射"
-hint = "每行一对：原符号=替换符号"
+hint = "按英文半角/全角、中文半角/全角四态自定义标点替换；在表格对话框中逐格编辑"
 gate_key = "input.punct.custom_enabled"
 
 # ── 按键行为 ──

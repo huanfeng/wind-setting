@@ -978,7 +978,10 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
 /// 按 capability 类型分派构建对话框主体，挂到根，返回控制其显隐的 `visible` Signal。
 fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
-    if cap_ty == "map" {
+    // 自定义标点映射：map 值为 [英半,英全,中半,中全] 四元数组，专用 5 列表格对话框。
+    if key == "input.punct.custom_mappings" {
+        build_dialog_button_punct(state, key, cfg)
+    } else if cap_ty == "map" {
         build_dialog_button_map(state, key, item, cfg)
     } else if cap_ty == "strlist" && !item.options.is_empty() {
         build_dialog_button_pairs(state, key, item, cfg)
@@ -1193,6 +1196,118 @@ fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Conf
 
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_map_dialog(visible, &item.label, &hint, text, def_text);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// 自定义标点默认表：(原字符展示, map 键 token, [英半, 英全, 中半, 中全])。
+/// 取自参考 webview；键 token 与其一致（空格=" "、双引号首/次=\"1/\"2、单引号首/次='1/'2）；
+/// 数组序与 core 一致（[英文半角, 英文全角, 中文半角, 中文全角]）。全角空格用 \u{3000}。
+///
+/// Directive：本表是「展示基线」，必须逐格等同 core 内建标点默认 —— 因 writer 只保存与默认
+/// 不同的行，未改动行不落盘、运行时由 core 内建默认决定行为；若 core 默认变更须同步此表，
+/// 否则 UI 展示与实际行为不符且用户无从察觉。
+#[rustfmt::skip]
+const PUNCT_DEFAULTS: &[(&str, &str, [&str; 4])] = &[
+    ("空格",      " ",  ["",   "\u{3000}", "",   "\u{3000}"]),
+    ("!",         "!",  ["!",  "！", "！", "！"]),
+    ("@",         "@",  ["@",  "＠", "@",  "＠"]),
+    ("#",         "#",  ["#",  "＃", "#",  "＃"]),
+    ("$",         "$",  ["$",  "＄", "￥", "￥"]),
+    ("%",         "%",  ["%",  "％", "%",  "％"]),
+    ("^",         "^",  ["^",  "＾", "……", "……"]),
+    ("&",         "&",  ["&",  "＆", "&",  "＆"]),
+    ("*",         "*",  ["*",  "＊", "*",  "＊"]),
+    ("(",         "(",  ["(",  "（", "（", "（"]),
+    (")",         ")",  [")",  "）", "）", "）"]),
+    ("_",         "_",  ["_",  "＿", "——", "——"]),
+    ("-",         "-",  ["-",  "－", "-",  "－"]),
+    ("+",         "+",  ["+",  "＋", "+",  "＋"]),
+    ("=",         "=",  ["=",  "＝", "=",  "＝"]),
+    ("[",         "[",  ["[",  "［", "【", "【"]),
+    ("]",         "]",  ["]",  "］", "】", "】"]),
+    ("{",         "{",  ["{",  "｛", "｛", "｛"]),
+    ("}",         "}",  ["}",  "｝", "｝", "｝"]),
+    ("\\",        "\\", ["\\", "＼", "、", "、"]),
+    ("|",         "|",  ["|",  "｜", "|",  "｜"]),
+    (";",         ";",  [";",  "；", "；", "；"]),
+    (":",         ":",  [":",  "：", "：", "："]),
+    ("\" 第一次", "\"1", ["\"", "＂", "“", "“"]),
+    ("\" 第二次", "\"2", ["\"", "＂", "”", "”"]),
+    ("' 第一次",  "'1", ["'",  "＇", "‘", "‘"]),
+    ("' 第二次",  "'2", ["'",  "＇", "’", "’"]),
+    (",",         ",",  [",",  "，", "，", "，"]),
+    (".",         ".",  [".",  "．", "。", "。"]),
+    ("<",         "<",  ["<",  "＜", "《", "《"]),
+    (">",         ">",  [">",  "＞", "》", "》"]),
+    ("/",         "/",  ["/",  "／", "/",  "／"]),
+    ("?",         "?",  ["?",  "？", "？", "？"]),
+    ("~",         "~",  ["~",  "～", "～", "～"]),
+    ("`",         "`",  ["`",  "｀", "·", "·"]),
+];
+
+/// 取某行第 i 格的展示值：有覆盖值用覆盖、否则回落默认（seed 与 loader 共用，避免逻辑漂移）。
+fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String {
+    ov.and_then(|a| a.get(i))
+        .and_then(|x| x.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| def.to_string())
+}
+
+/// dialog_button（input.punct.custom_mappings）：5 列可编辑标点表格。
+/// 仅把「与默认不同」的行写回 custom_mappings（map：键=原字符 token，值=[英半,英全,中半,中全]）。
+fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_punct_table_dialog;
+
+    let cur_map = cfg.get_path(key).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+
+    // 每行 4 个可编辑信号，从「覆盖值或默认值」播种。
+    let cells: Vec<[Signal<String>; 4]> = PUNCT_DEFAULTS
+        .iter()
+        .map(|(_, tok, defs)| {
+            let ov = cur_map.get(*tok).and_then(|v| v.as_array());
+            std::array::from_fn(|i| signal(seed_cell(ov, i, defs[i])))
+        })
+        .collect();
+    let visible = signal(false);
+
+    // writer：仅存与默认不同的行 → custom_mappings 对象。
+    let cells_w = cells.clone();
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        let mut m = serde_json::Map::new();
+        for (row, (_, tok, defs)) in cells_w.iter().zip(PUNCT_DEFAULTS.iter()) {
+            let vals: [String; 4] = std::array::from_fn(|i| row[i].get());
+            if (0..4).any(|i| vals[i].as_str() != defs[i]) {
+                let arr: Vec<Value> = vals.iter().cloned().map(Value::String).collect();
+                m.insert((*tok).to_string(), Value::Array(arr));
+            }
+        }
+        c.set_path(&kw, Value::Object(m));
+    }));
+
+    // loader：config 覆盖叠加到默认，回填各信号。
+    let cells_l = cells.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let m = c.get_path(&kl).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            for (row, (_, tok, defs)) in cells_l.iter().zip(PUNCT_DEFAULTS.iter()) {
+                let ov = m.get(*tok).and_then(|v| v.as_array());
+                for i in 0..4 {
+                    row[i].set(seed_cell(ov, i, defs[i]));
+                }
+            }
+        }),
+    );
+
+    let src_labels: Vec<String> = PUNCT_DEFAULTS.iter().map(|(s, _, _)| s.to_string()).collect();
+    let defaults: Vec<[String; 4]> = PUNCT_DEFAULTS
+        .iter()
+        .map(|(_, _, d)| std::array::from_fn(|i| d[i].to_string()))
+        .collect();
+    let dlg = build_punct_table_dialog(visible, "自定义标点映射", src_labels, cells, defaults);
     register_dialog(state, dlg);
     visible
 }
