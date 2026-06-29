@@ -26,6 +26,8 @@ pub fn light_theme() -> Theme {
     p.border = Color::hex(0xE3E7EC);
     p.divider = Color::hex(0xECEEF2);
     p.track = Color::hex(0xD7DCE3);
+    t.metrics.border_width = Len::Physical { px: 1.0 };
+    t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t
 }
 
@@ -48,6 +50,8 @@ pub fn dark_theme() -> Theme {
     // 分割线在暗色卡片(0x232C3D)上需足够对比，原 0x222C40 几乎同色不可见，提亮。
     p.divider = Color::hex(0x37425D);
     p.track = Color::hex(0x2B3550);
+    t.metrics.border_width = Len::Physical { px: 1.0 };
+    t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t
 }
 
