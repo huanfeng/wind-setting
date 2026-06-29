@@ -598,7 +598,13 @@ pub fn build_punct_table_dialog(
         );
     let edit_dialog = Element::dialog(edit_show, edit_frame);
 
-    Element::stack().fill().child(table_dialog).child(edit_dialog)
+    // 外层 stack 必须带 visible_when：否则它无 visible_when 恒铺满全窗，而 hit_test 在子节点
+    // 都不可见时会把容器自身判为命中目标，吞掉全窗指针事件导致鼠标失灵。仅在任一对话框打开时挂载。
+    Element::stack()
+        .fill()
+        .visible_when(move || visible.get() || edit_show.get())
+        .child(table_dialog)
+        .child(edit_dialog)
 }
 
 /// 热键编辑对话框：修饰键勾选 + 主键下拉（+ 可选「全局」）+ [恢复默认 | 取消 确认]。
