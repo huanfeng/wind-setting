@@ -366,6 +366,79 @@ pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>
     Element::dialog(visible, frame)
 }
 
+/// 自定义序号标签对话框：10 个文本框对应序号 1-10（每框一个字符），2 列排布。
+/// `inputs` 为 10 个单字符信号（由调用方注册 writer/loader），编辑随主保存提交；
+/// 「恢复默认」清空全部（空 = 默认 1-9）。
+pub fn build_index_labels_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    inputs: Vec<Signal<String>>,
+) -> Element {
+    let cells: Vec<Element> = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::label(format!("序号 {}", i + 1))
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted)
+                        .width(48),
+                )
+                .child(Element::text_input(*s, "").width(64))
+        })
+        .collect();
+    let grid = Element::grid(2, 12, cells);
+    let inputs_reset = inputs.clone();
+    let frame = Element::col()
+        .width(420)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label("从序号 1 起依次填写自定义标签（每框一个字符，如 a s d f g）；整体留空用默认 1-9。")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2)
+                .padding_xy(18, 10),
+        )
+        .child(grid.width_match().margin_xy(18, 8))
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(
+                    Element::button("恢复默认").small().outline().on_click(move |_| {
+                        for s in &inputs_reset {
+                            s.set(String::new());
+                        }
+                    }),
+                )
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("关闭")
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
+}
+
 /// 自定义标点 5 列可编辑表格对话框（原字符 / 英文半角 / 英文全角 / 中文半角 / 中文全角）。
 /// 复刻 examples/settings.rs 的表格 + 单元格编辑子对话框：点单元格弹文本框编辑，确认写回。
 /// - `src_labels`：每行第 0 列「原字符」展示（只读，点击不弹编辑）；

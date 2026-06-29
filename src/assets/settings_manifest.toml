@@ -1032,9 +1032,9 @@ max = 64
 key = "ui.candidate.index_labels"
 group = "ui"
 section = "候选窗口"
-type = "string"
+type = "dialog_button"
 label = "自定义序号标签"
-hint = "每字符一个槽位，如 asdfg；空 = 默认 1-9"
+hint = "为序号 1-10 自定义标签字符（如 asdfg）；在对话框中逐框填写，留空用默认 1-9"
 
 # 注：input.cmdbar.enabled（命令栏开关）不在设置端暴露——命令栏始终开启（core 默认 true），
 # 不提供关闭入口；故仅保留前缀配置。
@@ -1153,8 +1153,9 @@ group = "ui"
 section = "状态提示"
 type = "select"
 label = "定位方式"
-hint = "跟随光标或固定在自定义位置"
+hint = "跟随光标或固定在自定义位置；偏移与固定坐标在「扩展设置」中调整"
 enabled_when = "ui.status.enabled == true"
+opens_dialog = "status_position"
 options = [
   { value = "follow_caret", label = "跟随光标" },
   { value = "fixed", label = "固定位置" },
@@ -1169,6 +1170,7 @@ label = "水平偏移"
 hint = "相对光标下方居中的水平偏移（像素，正=右）"
 min = -400
 max = 400
+dialog_group = "status_position"
 
 [[items]]
 key = "ui.status.offset_y"
@@ -1179,6 +1181,7 @@ label = "垂直偏移"
 hint = "相对光标下方的垂直偏移（像素，正=下）"
 min = -400
 max = 400
+dialog_group = "status_position"
 
 [[items]]
 key = "ui.status.custom_x"
@@ -1190,6 +1193,7 @@ hint = "固定定位时气泡屏幕横坐标（像素）"
 min = -4000
 max = 4000
 enabled_when = "ui.status.position_mode == fixed"
+dialog_group = "status_position"
 
 [[items]]
 key = "ui.status.custom_y"
@@ -1201,6 +1205,7 @@ hint = "固定定位时气泡屏幕纵坐标（像素）"
 min = -4000
 max = 4000
 enabled_when = "ui.status.position_mode == fixed"
+dialog_group = "status_position"
 
 # ── 模式指示 ──
 [[items]]

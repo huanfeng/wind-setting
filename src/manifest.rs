@@ -44,6 +44,10 @@ pub struct MItem {
     pub gate_key: Option<String>,
     /// hotkey 专用：该功能是否支持「全局热键」（编辑对话框显示「全局」勾选）。
     pub global: bool,
+    /// 子对话框分组：成员项标记同一 id，收进对话框渲染、不在分区内独立成行。
+    pub dialog_group: Option<String>,
+    /// 子对话框开启项：宿主控件旁挂「扩展设置」按钮，打开 dialog_group==此 id 的成员对话框。
+    pub opens_dialog: Option<String>,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -145,6 +149,8 @@ impl Manifest {
                     enabled_when: opt_str(it, "enabled_when"),
                     gate_key: opt_str(it, "gate_key"),
                     global: it.get("global").and_then(|x| x.as_bool()).unwrap_or(false),
+                    dialog_group: opt_str(it, "dialog_group"),
+                    opens_dialog: opt_str(it, "opens_dialog"),
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -229,6 +235,15 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
             rows.push(field(state, k));
             continue;
         };
+        // 子对话框成员：不在分区内独立成行（由 opens_dialog 宿主的「扩展设置」对话框承载）。
+        if item.dialog_group.is_some() {
+            continue;
+        }
+        // 子对话框宿主：渲染 [宿主控件][扩展设置] 行，按钮打开成员对话框。
+        if item.opens_dialog.is_some() {
+            rows.push(build_dialog_group_row(state, k, item, cfg));
+            continue;
+        }
         // 被 gate 合并的 dialog_button：跳过独立行（gate 存在才跳，避免误吞）。
         if item.typ == "dialog_button"
             && let Some(g) = &item.gate_key
@@ -249,17 +264,9 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
 }
 
 /// 按 key 构建一行设置项（label + 控件），并登记保存写回器与联动取值器。
-/// 清单缺失该 key 时返回占位行（便于发现 key 漂移）。
-pub fn field(state: &AppState, key: &str) -> Element {
-    let Some(item) = state.manifest.get(key) else {
-        return setting_row(
-            key,
-            Some("（清单缺失此项）"),
-            Element::label("—").fg_role(Role::TextMuted),
-        );
-    };
-    let cfg = &state.current_config;
-    let control = match item.typ.as_str() {
+/// 按 item.typ 构建控件本体（不含行包裹/标签/enabled_when）。field() 与子对话框宿主行共用。
+fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    match item.typ.as_str() {
         "toggle" => build_toggle(state, key, item, cfg),
         "select" => build_select(state, key, item, cfg),
         "segmented" => build_segmented(state, key, item, cfg),
@@ -270,7 +277,20 @@ pub fn field(state: &AppState, key: &str) -> Element {
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
+    }
+}
+
+/// 清单缺失该 key 时返回占位行（便于发现 key 漂移）。
+pub fn field(state: &AppState, key: &str) -> Element {
+    let Some(item) = state.manifest.get(key) else {
+        return setting_row(
+            key,
+            Some("（清单缺失此项）"),
+            Element::label("—").fg_role(Role::TextMuted),
+        );
     };
+    let cfg = &state.current_config;
+    let control = build_control(state, key, item, cfg);
     // 多选键组用专用行（固定宽标签 + 占满网格），避免宽网格把组名挤掉。
     let mut row = if item.typ == "checkbox_group" {
         setting_row_checks(&item.label, item.hint.as_deref(), control)
@@ -285,6 +305,44 @@ pub fn field(state: &AppState, key: &str) -> Element {
             g.get(&ck)
                 .map(|get| cond_matches(&get(), &expect))
                 .unwrap_or(true)
+        });
+    }
+    row
+}
+
+/// 子对话框宿主行：[宿主控件][扩展设置] —— 按钮打开承载 dialog_group 成员的分组对话框。
+/// 成员经各自 field() 登记 writer/loader/getter（与独立成行时一致），随主保存提交。
+/// 宿主自身的 enabled_when 仍作用于整行（如 position_mode 随状态提示开关置灰）。
+fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::build_group_dialog;
+    let group = item.opens_dialog.clone().unwrap_or_default();
+    // 宿主控件本体（与 field() 共用 build_control，避免分派漂移）。
+    let control = build_control(state, key, item, cfg);
+    // 成员项（按 manifest 顺序；group id 约定全局唯一以免跨 section 误吸）→ field() 行 → 分组对话框。
+    let member_keys: Vec<String> = state
+        .manifest
+        .order
+        .iter()
+        .filter(|k| state.manifest.get(k).and_then(|i| i.dialog_group.as_deref()) == Some(group.as_str()))
+        .cloned()
+        .collect();
+    let rows: Vec<Element> = member_keys.iter().map(|k| field(state, k)).collect();
+    let visible = signal(false);
+    let dlg = build_group_dialog(visible, &format!("{} · 扩展设置", item.label), rows);
+    register_dialog(state, dlg);
+
+    let btn = Element::button("扩展设置")
+        .small()
+        .outline()
+        .on_click(move |_| visible.set(true));
+    let row_control = Element::row().cross(Align::Center).spacing(10).child(control).child(btn);
+    let mut row = setting_row(&item.label, item.hint.as_deref(), row_control);
+    // 宿主 enabled_when 作用于整行（含扩展按钮）。
+    if let Some((ck, expect)) = item.enabled_when.as_deref().and_then(parse_cond) {
+        let reg = state.fields.clone();
+        row = row.enabled_when(move || {
+            let g = reg.getters.borrow();
+            g.get(&ck).map(|get| cond_matches(&get(), &expect)).unwrap_or(true)
         });
     }
     row
@@ -1122,6 +1180,9 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
     // 自定义标点映射：map 值为 [英半,英全,中半,中全] 四元数组，专用 5 列表格对话框。
     if key == "input.punct.custom_mappings" {
         build_dialog_button_punct(state, key, cfg)
+    } else if key == "ui.candidate.index_labels" {
+        // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
+        build_dialog_button_index_labels(state, key, cfg)
     } else if cap_ty == "map" {
         build_dialog_button_map(state, key, item, cfg)
     } else if cap_ty == "strlist" && !item.options.is_empty() {
@@ -1395,6 +1456,65 @@ fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String {
         .unwrap_or_else(|| def.to_string())
 }
 
+/// 自定义序号标签槽位数（序号 1-10）。
+const INDEX_LABEL_SLOTS: usize = 10;
+
+/// 序号标签拼接：从序号 1 起取各框首字符，**遇到第一个空框即停止**（前缀语义，
+/// 避免「中间留空、后面有值」时把后续标签向前位移）。writer 与 getter 共用，保持一致。
+fn collect_labels(inputs: &[Signal<String>]) -> String {
+    inputs
+        .iter()
+        .map(|s| s.get())
+        .take_while(|s| !s.is_empty())
+        .filter_map(|s| s.chars().next())
+        .collect()
+}
+
+/// dialog_button（ui.candidate.index_labels）：10 框对话框，每框一个字符，连续拼成标签串。
+/// 字符串语义为前缀（char[i] = 序号 i+1 的标签），整体留空 = 默认 1-9。
+fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_index_labels_dialog;
+
+    let def = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
+    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+    let cur_chars: Vec<char> = cur.chars().collect();
+    let inputs: Vec<Signal<String>> = (0..INDEX_LABEL_SLOTS)
+        .map(|i| signal(cur_chars.get(i).map(|c| c.to_string()).unwrap_or_default()))
+        .collect();
+    let visible = signal(false);
+
+    // writer：各框首字符拼接（遇空即停）→ 前缀串。
+    let inputs_w = inputs.clone();
+    let kw = key.to_string();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        c.set_path(&kw, Value::String(collect_labels(&inputs_w)));
+    }));
+    // loader：字符串按字符回填各框（多余截断、不足留空）。
+    let inputs_l = inputs.clone();
+    let kl = key.to_string();
+    let def_l = def.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
+            let chars: Vec<char> = cur.chars().collect();
+            for (i, sig) in inputs_l.iter().enumerate() {
+                sig.set(chars.get(i).map(|c| c.to_string()).unwrap_or_default());
+            }
+        }),
+    );
+    // getter（一致性，与 writer 同拼接逻辑）。
+    let inputs_g = inputs.clone();
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::String(collect_labels(&inputs_g))),
+    );
+
+    let dlg = build_index_labels_dialog(visible, "自定义序号标签", inputs);
+    register_dialog(state, dlg);
+    visible
+}
+
 /// dialog_button（input.punct.custom_mappings）：5 列可编辑标点表格。
 /// 仅把「与默认不同」的行写回 custom_mappings（map：键=原字符 token，值=[英半,英全,中半,中全]）。
 fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
@@ -1478,6 +1598,32 @@ mod tests {
         let checked = [("lshift", true), ("rshift", false), ("capslock", true)];
         let arr = collect_checked(&checked);
         assert_eq!(arr, vec!["lshift".to_string(), "capslock".to_string()]);
+    }
+
+    /// 守护：子对话框分组配对一致 —— 每个 dialog_group 必有恰好一个 opens_dialog 宿主，
+    /// 每个宿主至少一个成员。防止失配导致成员 key 静默丢失三件套注册（覆盖守护查不出）。
+    #[test]
+    fn dialog_group_pairing_is_consistent() {
+        use std::collections::HashMap;
+        let m = Manifest::from_embedded();
+        let mut openers: HashMap<String, usize> = HashMap::new();
+        let mut members: HashMap<String, usize> = HashMap::new();
+        for k in &m.order {
+            let it = m.get(k).unwrap();
+            if let Some(g) = &it.opens_dialog {
+                *openers.entry(g.clone()).or_default() += 1;
+            }
+            if let Some(g) = &it.dialog_group {
+                *members.entry(g.clone()).or_default() += 1;
+            }
+        }
+        for (g, cnt) in &members {
+            let hosts = openers.get(g).copied().unwrap_or(0);
+            assert_eq!(hosts, 1, "dialog_group `{g}`（{cnt} 成员）应恰好 1 个宿主，实际 {hosts}");
+        }
+        for g in openers.keys() {
+            assert!(members.contains_key(g), "opens_dialog `{g}` 无任何成员(dialog_group)");
+        }
     }
 
     #[test]
