@@ -543,17 +543,42 @@ key = "input.temp_pinyin.trigger_keys"
 group = "input"
 section = "临时拼音"
 type = "dialog_button"
-label = "触发键"
-hint = "按触发键临时切换拼音输入；触发键名按空格分隔（如 backtick）"
+label = "临时拼音触发键"
+hint = "码表模式下按触发键临时切换拼音输入；可多选"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "open_bracket", label = "左方括号 ( [ )" },
+  { value = "close_bracket", label = "右方括号 ( ] )" },
+  { value = "z", label = "z 键" },
+]
 
 # ── 临时英文 ──
+# 注：临时英文不再设独立「启用」开关——Shift+字母 始终可进入，触发键可留空。
+# input.temp_english.enabled 由 core 维持默认（不在设置端暴露）。
 [[items]]
-key = "input.temp_english.enabled"
+key = "input.temp_english.trigger_keys"
 group = "input"
 section = "临时英文"
-type = "toggle"
+type = "dialog_button"
 label = "临时英文触发键"
-hint = "中文模式下用 Shift/触发键临时输入英文；勾选启用并设置触发键"
+hint = "中文模式下按触发键进入临时英文模式；可多选，也可留空（仍可用 Shift+字母进入）"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "open_bracket", label = "左方括号 ( [ )" },
+  { value = "close_bracket", label = "右方括号 ( ] )" },
+]
 
 [[items]]
 key = "input.temp_english.shift_behavior"
@@ -563,7 +588,6 @@ type = "select"
 label = "Shift+字母行为"
 hint = "中文模式下按 Shift+字母时的行为"
 width = 210
-enabled_when = "input.temp_english.enabled == true"
 options = [
   { value = "temp_english", label = "进入临时英文模式" },
   { value = "direct_commit", label = "直接上屏大写字母" },
@@ -576,7 +600,6 @@ section = "临时英文"
 type = "toggle"
 label = "显示英文候选"
 hint = "临时英文模式下查询英文词库显示候选词"
-enabled_when = "input.temp_english.enabled == true"
 
 [[items]]
 key = "input.temp_english.allow_symbols"
@@ -585,7 +608,6 @@ section = "临时英文"
 type = "toggle"
 label = "允许输入符号与数字"
 hint = "可输入下划线、点号等符号，便于书写标识符或代码"
-enabled_when = "input.temp_english.enabled == true"
 
 [[items]]
 key = "input.temp_english.space_as_input"
@@ -594,16 +616,6 @@ section = "临时英文"
 type = "toggle"
 label = "空格作为输入字符"
 hint = "空格不再上屏，可连续输入多个单词，回车上屏"
-enabled_when = "input.temp_english.enabled == true"
-
-[[items]]
-key = "input.temp_english.trigger_keys"
-group = "input"
-section = "临时英文"
-type = "dialog_button"
-label = "触发键"
-hint = "按触发键进入临时英文模式；触发键名按空格分隔"
-gate_key = "input.temp_english.enabled"
 
 [[items]]
 key = "input.capslock.cancel_on_mode_switch"
@@ -1247,7 +1259,8 @@ group = "general"
 section = "默认状态"
 type = "segmented"
 label = "初始语言模式"
-hint = "每次激活输入法时的默认语言"
+hint = "每次激活输入法时的默认语言（开启「记忆前次状态」后此项不生效）"
+enabled_when = "input.default.remember_last_state == false"
 options = [
   { value = "false", label = "英文" },
   { value = "true", label = "中文" },
@@ -1259,7 +1272,8 @@ group = "general"
 section = "默认状态"
 type = "segmented"
 label = "初始字符宽度"
-hint = "每次激活输入法时的默认字符宽度"
+hint = "每次激活输入法时的默认字符宽度（开启「记忆前次状态」后此项不生效）"
+enabled_when = "input.default.remember_last_state == false"
 options = [
   { value = "false", label = "半角" },
   { value = "true", label = "全角" },
@@ -1271,7 +1285,8 @@ group = "general"
 section = "默认状态"
 type = "segmented"
 label = "初始标点模式"
-hint = "每次激活输入法时的默认标点类型"
+hint = "每次激活输入法时的默认标点类型（开启「记忆前次状态」后此项不生效）"
+enabled_when = "input.default.remember_last_state == false"
 options = [
   { value = "false", label = "英文标点" },
   { value = "true", label = "中文标点" },
