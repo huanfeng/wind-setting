@@ -97,8 +97,10 @@ pub struct AppState {
     /// 下拉构建于异步数据到达前，故必须经 Signal 驱动响应式下拉，数据到达即填充。
     pub theme_label_sig: Signal<Vec<String>>,
     pub theme_value_sig: Signal<Vec<String>>,
-    /// 候选窗字体下拉的响应式选项（system.fonts，值=显示名=字体族名）。
+    /// 候选窗字体下拉的响应式选项（system.fonts）。
+    /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
     pub font_sig: Signal<Vec<String>>,
+    pub font_label_sig: Signal<Vec<String>>,
 }
 
 impl AppState {
@@ -127,6 +129,7 @@ impl AppState {
             theme_label_sig: signal(vec![]),
             theme_value_sig: signal(vec![]),
             font_sig: signal(vec![]),
+            font_label_sig: signal(vec![]),
         }
     }
 
@@ -143,7 +146,17 @@ impl AppState {
         self.fonts = data.fonts;
         self.theme_label_sig.set(self.theme_names.iter().map(|(_, n)| n.clone()).collect());
         self.theme_value_sig.set(self.theme_names.iter().map(|(id, _)| id.clone()).collect());
-        self.font_sig.set(self.fonts.clone());
+        // value：空字符串 = 使用默认字体；label：首项显示"默认"。
+        self.font_sig.set(
+            std::iter::once(String::new())
+                .chain(self.fonts.iter().cloned())
+                .collect(),
+        );
+        self.font_label_sig.set(
+            std::iter::once("默认".to_string())
+                .chain(self.fonts.iter().cloned())
+                .collect(),
+        );
         // 注：选项变更后下拉的宽度 re-measure 依赖"数据到达帧为整窗重绘"——本方法在 pump 内
         // set 信号会请求整窗重绘，启动场景(无进行中的局部动画)该帧即整窗重排，宽度正常刷新；
         // 这是 windui pump→signal→repaint 既有性质（现有字段 loader 的文本刷新同此机制）。
@@ -359,22 +372,34 @@ fn load_schemas() -> Vec<SchemaInfo> {
 /// 加载主题列表（theme.list）：返回 (id/slug, 显示名) 对。
 /// id 取 `id`/`slug`（保存到 `ui.theme.name`），显示名取 `name`/`display_name`（缺省回退 id）。
 fn load_theme_names() -> Vec<(String, String)> {
-    let list = rpc::call_core("theme.list", &serde_json::json!({})).unwrap_or(Value::Array(vec![]));
+    let result = rpc::call_core("theme.list", &serde_json::json!({}));
+    match &result {
+        Ok(v) => tracing::info!("theme.list RPC 返回: {v}"),
+        Err(e) => tracing::warn!("theme.list RPC 失败: {e}"),
+    }
+    let list = result.unwrap_or(Value::Array(vec![]));
     list.as_array()
         .map(|arr| {
             arr.iter()
                 .filter_map(|t| {
+                    // core 协议：name = slug/id，display_name = 界面显示名
                     let id = t
                         .get("id")
                         .or_else(|| t.get("slug"))
+                        .or_else(|| t.get("name"))
                         .and_then(|v| v.as_str())?
                         .to_string();
-                    let name = t
-                        .get("name")
-                        .or_else(|| t.get("display_name"))
+                    let display = t
+                        .get("display_name")
+                        .or_else(|| t.get("name"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or(&id)
-                        .to_string();
+                        .unwrap_or(&id);
+                    let ver = t.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = if ver.is_empty() {
+                        display.to_string()
+                    } else {
+                        format!("{display} v{ver}")
+                    };
                     Some((id, name))
                 })
                 .collect()
@@ -443,8 +468,46 @@ mod tests {
     }
 }
 
-/// 加载系统字体列表（system.fonts）。
+/// GDI 字体枚举所需的 LOGFONTW 结构（与 Windows SDK 内存布局一致）。
+#[cfg(windows)]
+#[repr(C)]
+struct GdiLogFontW {
+    lf_height: i32, lf_width: i32, lf_escapement: i32, lf_orientation: i32,
+    lf_weight: i32, lf_italic: u8, lf_underline: u8, lf_strike_out: u8,
+    lf_char_set: u8, lf_out_precision: u8, lf_clip_precision: u8,
+    lf_quality: u8, lf_pitch_and_family: u8,
+    lf_face_name: [u16; 32],
+}
+
+#[cfg(windows)]
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn GetDC(hwnd: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn ReleaseDC(hwnd: *mut core::ffi::c_void, hdc: *mut core::ffi::c_void) -> i32;
+    fn EnumFontFamiliesExW(
+        hdc: *mut core::ffi::c_void,
+        lplf: *const GdiLogFontW,
+        lpproc: unsafe extern "system" fn(
+            *const GdiLogFontW,
+            *const core::ffi::c_void,
+            u32,
+            isize,
+        ) -> i32,
+        l_param: isize,
+        dw_flags: u32,
+    ) -> i32;
+}
+
+/// 加载系统字体列表：Windows 用 GDI EnumFontFamiliesExW 获取本地化字体名；
+/// 非 Windows 或 GDI 不可用时回退 system.fonts RPC。
 fn load_fonts() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let gdi = load_fonts_from_gdi();
+        if !gdi.is_empty() {
+            return gdi;
+        }
+    }
     let list =
         rpc::call_core("system.fonts", &serde_json::json!({})).unwrap_or(Value::Array(vec![]));
     list.as_array()
@@ -460,4 +523,57 @@ fn load_fonts() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Windows GDI 字体族枚举：EnumFontFamiliesExW（DEFAULT_CHARSET）直接返回系统
+/// 当前 locale 的字体显示名，中文系统得"微软雅黑"而非注册表英文键名。
+/// 跳过 '@' 开头的竖排 CJK 变体字体，HashSet 去重后排序。
+#[cfg(windows)]
+fn load_fonts_from_gdi() -> Vec<String> {
+    use std::collections::HashSet;
+
+    unsafe extern "system" fn font_enum_cb(
+        lplf: *const GdiLogFontW,
+        _ntm: *const core::ffi::c_void,
+        _font_type: u32,
+        lp: isize,
+    ) -> i32 {
+        unsafe {
+            let lf = &*lplf;
+            let families = &mut *(lp as *mut HashSet<String>);
+            let len = lf.lf_face_name.iter().position(|&c| c == 0).unwrap_or(32);
+            let name = String::from_utf16_lossy(&lf.lf_face_name[..len]).to_string();
+            if !name.starts_with('@') && !name.is_empty() {
+                families.insert(name);
+            }
+        }
+        1
+    }
+
+    unsafe {
+        let hdc = GetDC(std::ptr::null_mut());
+        if hdc.is_null() {
+            return vec![];
+        }
+        let lf = GdiLogFontW {
+            lf_height: 0, lf_width: 0, lf_escapement: 0, lf_orientation: 0,
+            lf_weight: 0, lf_italic: 0, lf_underline: 0, lf_strike_out: 0,
+            lf_char_set: 1, // DEFAULT_CHARSET — 枚举所有字体族
+            lf_out_precision: 0, lf_clip_precision: 0, lf_quality: 0,
+            lf_pitch_and_family: 0,
+            lf_face_name: [0u16; 32],
+        };
+        let mut families: HashSet<String> = HashSet::new();
+        EnumFontFamiliesExW(
+            hdc,
+            &lf,
+            font_enum_cb,
+            &mut families as *mut _ as isize,
+            0,
+        );
+        ReleaseDC(std::ptr::null_mut(), hdc);
+        let mut v: Vec<String> = families.into_iter().collect();
+        v.sort();
+        v
+    }
 }

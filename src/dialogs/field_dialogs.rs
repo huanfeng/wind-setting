@@ -71,11 +71,13 @@ pub fn build_spaced_text_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
+                        .small()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -136,11 +138,13 @@ pub fn build_text_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
+                        .small()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -239,11 +243,13 @@ pub fn build_map_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
+                        .small()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -312,11 +318,13 @@ pub fn build_pairs_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
                     Element::button("确认")
+                        .small()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -359,6 +367,7 @@ pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("关闭")
+                        .small()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 ),
@@ -433,6 +442,7 @@ pub fn build_index_labels_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("关闭")
+                        .small()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -538,6 +548,7 @@ pub fn build_punct_table_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("关闭")
+                        .small()
                         .on_click(move |_| visible.set(false)),
                 ),
         );
@@ -577,10 +588,11 @@ pub fn build_punct_table_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| edit_show.set(false)),
                 )
-                .child(Element::button("确认").on_click(move |_| {
+                .child(Element::button("确认").small().on_click(move |_| {
                     let r = edit_row.get();
                     let ci = edit_col.get();
                     let raw = edit_buf.get();
@@ -650,7 +662,7 @@ pub fn build_hotkey_dialog(
     }
 
     let kv_ok = key_values.clone();
-    let confirm = Element::button("确认").on_click(move |_| {
+    let confirm = Element::button("确认").small().on_click(move |_| {
         let m = [mc.get(), ms.get(), ma.get(), mw.get()];
         let k = kv_ok.get(key_idx.get()).cloned().unwrap_or_default();
         let v = compose_hotkey(m, &k);
@@ -708,6 +720,7 @@ pub fn build_hotkey_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| visible.set(false)),
                 )

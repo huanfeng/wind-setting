@@ -446,11 +446,11 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 type OptionSignals = (Signal<Vec<String>>, Signal<Vec<String>>);
 
 /// 响应式动态源 → (值列表信号, 标签列表信号)。仅主题/字体异步加载需要响应式；
-/// 字体的值即标签（字体族名）。schemas 等返回 None（走静态路径）。
+/// 字体 value 为字体族名（空字符串=默认），label 首项为"默认"其余同值。
 fn reactive_option_signals(state: &AppState, src: &str) -> Option<OptionSignals> {
     match src {
         "themes" => Some((state.theme_value_sig, state.theme_label_sig)),
-        "fonts" => Some((state.font_sig, state.font_sig)),
+        "fonts" => Some((state.font_sig, state.font_label_sig)),
         _ => None,
     }
 }
@@ -815,10 +815,12 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .spacing(10)
         .child(Element::checkbox("启用", enabled_sig).small().fg_role(Role::Text))
         .child(
+            // 固定宽度：防止长热键文本（如 "Ctrl+Shift+\"）撑宽右侧，挤压左侧功能名标签。
             Element::label_rc(disp)
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
                 .max_lines(1)
+                .width(114)
                 .enabled_when(move || enabled_sig.get()),
         )
         .child(open)

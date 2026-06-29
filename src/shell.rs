@@ -307,8 +307,8 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(Element::leaf().weight(1.0))
-                .child(Element::button("退出").outline().on_click(|ctx| ctx.request_close()))
-                .child(Element::button("重连").on_click(move |_| {
+                .child(Element::button("退出").small().outline().on_click(|ctx| ctx.request_close()))
+                .child(Element::button("重连").small().on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
                         s.status.set("正在重连...".to_string());
                     }
@@ -361,10 +361,11 @@ fn confirm_dialog(
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
+                        .small()
                         .outline()
                         .on_click(move |_| cancel.set(false)),
                 )
-                .child(Element::button(confirm_label).on_click(on_confirm)),
+                .child(Element::button(confirm_label).small().on_click(on_confirm)),
         );
     Element::dialog(visible, frame)
 }
