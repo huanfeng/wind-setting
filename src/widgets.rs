@@ -108,7 +108,16 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
         .padding_xy(0, 11)
         .spacing(12)
         .child(left)
-        .child(grid.weight(1.0).width_match())
+        // 网格限宽 + 左对齐：2 列等宽若填满整行会把列距拉得很开（右侧大片留白在列间）。
+        // 限宽 300（每列 ~145）使复选项紧凑成对，尾部 flex_spacer 把多余空间收到最右。
+        .child(
+            Element::row()
+                .weight(1.0)
+                .width_match()
+                .cross(Align::Start)
+                .child(grid.width(300))
+                .child(Element::flex_spacer()),
+        )
 }
 
 /// 卡片容器：圆角 surface + 边框，承载分区内的若干设置行（行间自动插分隔线）。

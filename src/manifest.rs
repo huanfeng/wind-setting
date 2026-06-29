@@ -539,48 +539,65 @@ pub(crate) fn format_hotkey(s: &str) -> String {
 
 /// hotkey 控件：行右侧 = 当前绑定文本（响应式）+「设置」按钮（打开编辑对话框）。
 /// 值为 "ctrl+shift+e" 形式或 "none"；支持全局者登记进 global_flags 收集器。
+/// 拆分热键绑定值：返回 (是否启用, 用于展示/编辑的绑定)。
+/// 禁用（"none"/空）时以默认绑定回填，便于置灰展示与重新启用。
+fn split_binding(v: &str, def: &str) -> (bool, String) {
+    let on = !v.is_empty() && v != "none";
+    (on, if on { v.to_string() } else { def.to_string() })
+}
+
+/// 热键有效写回值：启用→绑定，禁用→"none"（core 未绑定 sentinel）。
+fn effective_hotkey(enabled: bool, raw: &str) -> String {
+    if enabled { raw.to_string() } else { "none".to_string() }
+}
+
 fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     use crate::dialogs::field_dialogs::build_hotkey_dialog;
 
     let def = state.capabilities.default_for(key).as_str().unwrap_or("none").to_string();
     let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+    // 启用 = 有实际绑定；禁用（"none"/空）时以默认绑定填充 raw（置灰展示，重新启用即用默认）。
+    let (on, binding) = split_binding(&cur, &def);
+    let enabled_sig = signal(on);
 
     // 候选键表：确保当前绑定的主键一定在列表内（否则打开对话框 idx 回退 0，确认即丢绑定）。
     let mut keys = hotkey_keys();
-    let (_, cur_key) = parse_hotkey(&cur);
+    let (_, cur_key) = parse_hotkey(&binding);
     if !cur_key.is_empty() && !keys.iter().any(|(v, _)| *v == cur_key) {
         keys.push((cur_key.clone(), format_hotkey(&cur_key)));
     }
     let key_vals: Vec<String> = keys.iter().map(|(v, _)| v.clone()).collect();
     let key_labels: Vec<String> = keys.iter().map(|(_, l)| l.clone()).collect();
-    let disp = signal(format_hotkey(&cur));
-    let raw = signal(cur);
+    let disp = signal(format_hotkey(&binding));
+    let raw = signal(binding);
     let visible = signal(false);
 
     // 对话框工作态：修饰位 + 主键 idx（打开时从 raw 播种、确认时合成回 raw/disp）。
     let mods = [signal(false), signal(false), signal(false), signal(false)];
     let key_idx = signal(0usize);
 
-    // writer：raw 即最终值
+    // writer：启用时写 raw 绑定，禁用时写 "none"（core 未绑定 sentinel）。
     let kw = key.to_string();
     state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        c.set_path(&kw, Value::String(raw.get()))
+        c.set_path(&kw, Value::String(effective_hotkey(enabled_sig.get(), &raw.get())))
     }));
-    // loader：回填 raw + disp（disp 供行内响应式显示）
+    // loader：回填启用态 + raw + disp（禁用时以默认绑定填充，置灰展示）。
     let kl = key.to_string();
     let def_l = def.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
             let v = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
-            disp.set(format_hotkey(&v));
-            raw.set(v);
+            let (on, binding) = split_binding(&v, &def_l);
+            enabled_sig.set(on);
+            disp.set(format_hotkey(&binding));
+            raw.set(binding);
         }),
     );
-    // getter（一致性：供潜在 enabled_when 读取）
+    // getter（一致性：供潜在 enabled_when 读取）——返回实际写回的有效值。
     state.fields.getters.borrow_mut().insert(
         key.to_string(),
-        Box::new(move || Value::String(raw.get())),
+        Box::new(move || Value::String(effective_hotkey(enabled_sig.get(), &raw.get()))),
     );
 
     // 全局勾选（可选）：登记进收集器，由 register_global_hotkeys_collector 汇总写回
@@ -599,28 +616,35 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 
     let dlg = build_hotkey_dialog(
         visible, &item.label, raw, disp, def, mods, key_idx,
-        key_vals.clone(), key_labels, global_sig,
+        key_vals.clone(), key_labels, global_sig, enabled_sig,
     );
     register_dialog(state, dlg);
 
-    // 行控件：当前绑定（响应式）+ 设置按钮（打开前从 raw 播种工作态）。
+    // 行控件：[启用] 复选 + 当前绑定（响应式）+ 设置按钮（打开前从 raw 播种工作态）。
+    // 禁用时绑定文本与设置按钮一并置灰（enabled_when），写回 "none"。
     let kv = key_vals;
-    let open = Element::button("设置").small().outline().on_click(move |_| {
-        let (m, k) = parse_hotkey(&raw.get());
-        for (i, s) in mods.iter().enumerate() {
-            s.set(m[i]);
-        }
-        key_idx.set(kv.iter().position(|v| *v == k).unwrap_or(0));
-        visible.set(true);
-    });
+    let open = Element::button("设置")
+        .small()
+        .outline()
+        .enabled_when(move || enabled_sig.get())
+        .on_click(move |_| {
+            let (m, k) = parse_hotkey(&raw.get());
+            for (i, s) in mods.iter().enumerate() {
+                s.set(m[i]);
+            }
+            key_idx.set(kv.iter().position(|v| *v == k).unwrap_or(0));
+            visible.set(true);
+        });
     Element::row()
         .cross(Align::Center)
         .spacing(10)
+        .child(Element::checkbox("启用", enabled_sig).small().fg_role(Role::Text))
         .child(
             Element::label_rc(disp)
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
-                .max_lines(1),
+                .max_lines(1)
+                .enabled_when(move || enabled_sig.get()),
         )
         .child(open)
 }

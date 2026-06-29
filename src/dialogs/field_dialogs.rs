@@ -542,6 +542,7 @@ pub fn build_hotkey_dialog(
     key_values: Vec<String>,
     key_labels: Vec<String>,
     global: Option<Signal<bool>>,
+    enabled: Signal<bool>,
 ) -> Element {
     use crate::manifest::{compose_hotkey, format_hotkey, parse_hotkey};
     let [mc, ms, ma, mw] = mods;
@@ -574,6 +575,8 @@ pub fn build_hotkey_dialog(
         let m = [mc.get(), ms.get(), ma.get(), mw.get()];
         let k = kv_ok.get(key_idx.get()).cloned().unwrap_or_default();
         let v = compose_hotkey(m, &k);
+        // 同步启用态：对话框选「（未设置）」合成 "none" 即视为禁用，避免与行内复选漂移。
+        enabled.set(v != "none");
         disp.set(format_hotkey(&v));
         raw.set(v);
         visible.set(false);
@@ -591,6 +594,8 @@ pub fn build_hotkey_dialog(
             key_idx.set(kv_def.iter().position(|v| *v == k).unwrap_or(0));
             disp.set(format_hotkey(&default));
             raw.set(default.clone());
+            // 同步启用态：默认绑定为 "none" 则视为禁用。
+            enabled.set(default != "none");
             // 全局热键默认为空（无功能全局），恢复默认同步取消全局勾选。
             if let Some(g) = global {
                 g.set(false);
