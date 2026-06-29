@@ -1,5 +1,6 @@
 # 统一声明式设置清单（native 内置真相源；core 已退役 manifest.toml）。
-# 字段：key(点路径,对应 Config)/group/section/type/label/hint/options/min/max/step/unit/enabled_when/gate_key
+# 字段：key(点路径,对应 Config)/group/section/type/label/hint/options/options_source/min/max/step/unit/width/enabled_when/gate_key/global
+#   width：select 下拉像素宽；options_source：动态选项来源（themes/fonts/codetableSchemas/pinyinSchemas）
 # 注：默认值不在此声明，统一取自 core capability 快照（capabilities.snapshot.json）。
 #
 # 【对照来源】参考项目 WindInput/wind_setting（web 配置页）的页面/分区/字段组织与文案；
@@ -880,6 +881,7 @@ section = "主题"
 type = "select"
 label = "翻页栏显示"
 hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染"
+width = 200
 options = [
   { value = "", label = "默认（主题配置）" },
   { value = "hide", label = "隐藏" },
@@ -894,6 +896,7 @@ section = "主题"
 type = "select"
 label = "显示页码"
 hint = "翻页栏可见时，是否显示页码文字"
+width = 200
 options = [
   { value = "", label = "默认（主题配置）" },
   { value = "show", label = "显示" },
@@ -902,22 +905,23 @@ options = [
 
 # ── 候选窗口 ──
 [[items]]
-key = "ui.candidate.font_size"
-group = "ui"
-section = "候选窗口"
-type = "number"
-label = "候选字号"
-hint = "候选词字体大小（0 或开启「跟随主题」时由主题决定）"
-min = 0
-max = 72
-
-[[items]]
 key = "ui.candidate.font_size_follow_theme"
 group = "ui"
 section = "候选窗口"
 type = "toggle"
 label = "候选字号跟随主题"
-hint = "开启后候选字号由主题决定；关闭可在上方自定义"
+hint = "开启后候选字号由主题决定；关闭可在下方自定义"
+
+[[items]]
+key = "ui.candidate.font_size"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "候选字号"
+hint = "候选词字体大小（0 表示由主题决定）；开启「候选字号跟随主题」时此项不可用"
+min = 0
+max = 72
+enabled_when = "ui.candidate.font_size_follow_theme == false"
 
 [[items]]
 key = "ui.font.family"
@@ -928,26 +932,8 @@ options_source = "fonts"
 label = "候选窗字体"
 hint = "自定义候选窗字体，留空跟随主题字体"
 
-[[items]]
-key = "ui.font.path"
-group = "ui"
-section = "候选窗口"
-type = "string"
-label = "自定义字体文件"
-hint = "自定义字体文件绝对路径；留空用已安装字体"
-
-[[items]]
-key = "ui.font.render_mode"
-group = "ui"
-section = "候选窗口"
-type = "select"
-label = "字体渲染方式"
-hint = "DirectWrite 更平滑，GDI 更锐利；留空跟随默认"
-options = [
-  { value = "", label = "跟随默认" },
-  { value = "directwrite", label = "DirectWrite" },
-  { value = "gdi", label = "GDI" },
-]
+# 注：ui.font.path（自定义字体文件）当前平台不支持，已隐藏（由 core 维持默认）。
+# 注：ui.font.render_mode（字体渲染方式）当前不支持，已移除（由 core 维持默认）。
 
 [[items]]
 key = "ui.candidate.per_page"
@@ -1085,16 +1071,7 @@ label = "显示多音字所有读音"
 hint = "关闭则仅显示首音"
 enabled_when = "ui.tooltip.pinyin_enabled == true"
 
-[[items]]
-key = "ui.tooltip.pinyin_max_readings"
-group = "ui"
-section = "候选项提示信息"
-type = "number"
-label = "每字最多读音数"
-hint = "0 = 不限"
-min = 0
-max = 8
-enabled_when = "ui.tooltip.pinyin_enabled == true"
+# 注：ui.tooltip.pinyin_max_readings（每字最多读音数）当前不支持，已移除（由 core 维持默认）。
 
 [[items]]
 key = "ui.tooltip.chaizi_enabled"

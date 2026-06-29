@@ -167,14 +167,17 @@ mod tests {
             .filter(|k| !covered.contains(k))
             .collect();
         println!("未覆盖 capability key 数: {} / {}", uncovered.len(), caps.entries.len());
-        // 未覆盖项（均为有意不入清单，当前 9 项）：
+        // 未覆盖项（均为有意不入清单，当前 12 项）：
         //   ①方案管理：schema.active/available/special_modes/mix_modes —— 方案列表本身，由方案管理弹窗承载。
         //   ②compat.host_render_processes —— 兼容渲染进程名单，暂不开放。
         //   ③input.phrase.*（短语）—— 开关暂无作用，待 core 决定后再处理。
         //   ④keys.global_hotkeys —— 非独立清单项，由功能键的「全局」勾选经收集器汇总写回。
         //   ⑤input.temp_english.enabled —— 临时英文不再设独立启用开关（Shift+字母 始终可进入、
         //     触发键可留空），由 core 维持默认值，不在设置端暴露。
+        //   ⑥外观不支持/平台限制项：ui.font.path（自定义字体文件，当前平台不支持）、
+        //     ui.font.render_mode（字体渲染方式，不支持）、ui.tooltip.pinyin_max_readings（每字最多
+        //     读音数，暂不支持）—— 均由 core 维持默认值，不在设置端暴露。
         // 注：模糊音 schema.pinyin.fuzzy.*、ui.status.*、ui.theme.name 均已纳入清单（方案/拼音对话框等）。
-        assert!(uncovered.len() <= 10, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
+        assert!(uncovered.len() <= 13, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
     }
 }
