@@ -939,22 +939,41 @@ hint = "自定义候选窗字体，留空跟随主题字体"
 key = "ui.candidate.per_page"
 group = "ui"
 section = "候选窗口"
-type = "slider"
+type = "number_select"
 label = "每页候选数"
 hint = "每页显示的候选词数量"
-min = 3
-max = 9
-step = 1
+width = 120
+options = [
+  { value = "3", label = "3" },
+  { value = "4", label = "4" },
+  { value = "5", label = "5" },
+  { value = "6", label = "6" },
+  { value = "7", label = "7" },
+  { value = "8", label = "8" },
+  { value = "9", label = "9" },
+]
 
 [[items]]
 key = "ui.candidate.per_page_extended"
 group = "ui"
 section = "候选窗口"
-type = "number"
+type = "number_select"
 label = "扩展档每页候选数"
-hint = "临拼/快捷/短语等场景的每页候选数；0 = 与上面相同（关闭分档），最多 10"
-min = 0
-max = 10
+hint = "临拼/快捷/短语等场景的每页候选数；0 = 与上面相同（关闭分档）"
+width = 180
+options = [
+  { value = "0", label = "0（与每页相同）" },
+  { value = "1", label = "1" },
+  { value = "2", label = "2" },
+  { value = "3", label = "3" },
+  { value = "4", label = "4" },
+  { value = "5", label = "5" },
+  { value = "6", label = "6" },
+  { value = "7", label = "7" },
+  { value = "8", label = "8" },
+  { value = "9", label = "9" },
+  { value = "10", label = "10" },
+]
 
 [[items]]
 key = "ui.candidate.hide_window"
@@ -1017,14 +1036,8 @@ type = "string"
 label = "自定义序号标签"
 hint = "每字符一个槽位，如 asdfg；空 = 默认 1-9"
 
-[[items]]
-key = "input.cmdbar.enabled"
-group = "ui"
-section = "候选窗口"
-type = "toggle"
-label = "命令栏"
-hint = "空码时输入命令直通车前缀触发命令候选"
-
+# 注：input.cmdbar.enabled（命令栏开关）不在设置端暴露——命令栏始终开启（core 默认 true），
+# 不提供关闭入口；故仅保留前缀配置。
 [[items]]
 key = "input.cmdbar.candidate_prefix"
 group = "ui"
@@ -1032,7 +1045,6 @@ section = "候选窗口"
 type = "string"
 label = "命令栏候选前缀"
 hint = "命令候选前的提示符号"
-enabled_when = "input.cmdbar.enabled == true"
 
 # ── 候选项提示信息 ──
 [[items]]

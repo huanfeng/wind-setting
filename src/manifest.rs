@@ -265,6 +265,7 @@ pub fn field(state: &AppState, key: &str) -> Element {
         "segmented" => build_segmented(state, key, item, cfg),
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
+        "number_select" => build_number_select(state, key, item, cfg),
         "string" => build_string(state, key, item, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
@@ -443,6 +444,53 @@ fn build_select_reactive(
         Some(w) => el.width(w as i32),
         None => el.width(CTRL_W),
     }
+}
+
+/// 离散数值下拉（int 键，如每页候选数）：options 的 value 为整数字符串，显示 label，写回整数。
+fn build_number_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let (values, labels): (Vec<String>, Vec<String>) =
+        item.options.iter().map(|o| (o.value.clone(), o.label.clone())).unzip();
+    if values.is_empty() {
+        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+    }
+    let def = state.capabilities.default_for(key).as_i64().unwrap_or(0);
+    // 越界/缺失回落到「默认值对应索引」（而非首项），避免显示与保存偏离 capability 默认。
+    let def_idx = values.iter().position(|v| *v == def.to_string()).unwrap_or(0);
+    let cur = cfg.get_f64(key).map(|f| f as i64).unwrap_or(def);
+    let idx = values.iter().position(|v| *v == cur.to_string()).unwrap_or(def_idx);
+    let sig = signal(idx);
+
+    // writer：取选中项的整数值写回。
+    let kw = key.to_string();
+    let vals_w = values.clone();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        if let Some(n) = vals_w.get(sig.get()).and_then(|v| v.parse::<i64>().ok()) {
+            c.set_path(&kw, Value::from(n));
+        }
+    }));
+    // loader：配置整数 → 在 values 中定位索引（越界回落默认值索引）。
+    let kl = key.to_string();
+    let vals_l = values.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur = c.get_f64(&kl).map(|f| f as i64).unwrap_or(def);
+            sig.set(vals_l.iter().position(|v| *v == cur.to_string()).unwrap_or(def_idx));
+        }),
+    );
+    // getter：当前选中整数值。
+    let vals_g = values;
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || {
+            vals_g
+                .get(sig.get())
+                .and_then(|v| v.parse::<i64>().ok())
+                .map(Value::from)
+                .unwrap_or(Value::Null)
+        }),
+    );
+    Element::dropdown(labels, sig).width(item.width.map(|w| w as i32).unwrap_or(CTRL_W))
 }
 
 fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
