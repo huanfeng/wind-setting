@@ -389,8 +389,10 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
 
 /// 构建单个方案复合行。
 ///
-/// 已启用行：复选框 · 信息列 · [↑][↓] · 设置 · [删除]
-/// 未启用行：复选框 · 信息列（弱化） · 设置 · [删除]（visible_when 配合 hide_disabled）
+/// 所有元素（复选框·名称·徽章·版本·↑↓·设置·删除）均为外层 row 的直接子节点，
+/// 由 `cross(Align::Center)` 统一垂直居中，避免徽章因内嵌层级偏高的问题。
+///
+/// 描述文字置于名称列内部（col: name + desc），不影响外层对齐。
 fn build_compound_row(
     entry: SchemaEntry,
     idx: usize,    // 在已启用列表中的位置（未启用行传 0）
@@ -413,55 +415,17 @@ fn build_compound_row(
             mgr_toggle.toggle_schema_enabled(&toggle_id, new_val);
         });
 
-    // ── 类型徽章（outline 风格：描边 + Accent 文字，无填充背景） ──
-    let type_badge = Element::label(engine_label(&entry.engine_type))
-        .font_size(10.5)
-        .fg_role(Role::Accent)
-        .height(18)
-        .padding_xy(6, 0)
-        .corner(4.0)
-        .border_role(Role::Accent, 1);
-
-    // ── 来源徽章（内置 / 用户）──
-    let source_badge = Element::label(if entry.source == "user" { "用户" } else { "内置" })
-        .font_size(10.5)
-        .fg_role(Role::TextMuted)
-        .height(18)
-        .padding_xy(5, 0)
-        .corner(4.0)
-        .bg_role(Role::SurfaceAlt)
-        .border_role(Role::Border, 1);
-
-    // ── 名称行：名称(weight-1) · 类型徽章 · 来源徽章 · 版本 ──
+    // ── 名称列（weight-1）：名称 + 可选描述 ──
     let name_text = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
     let name_fg   = if is_enabled { Role::Text } else { Role::TextMuted };
-    let mut top_row = Element::row()
+    let name_label = Element::label(name_text)
+        .font_size(13.0)
+        .font_weight(600)
+        .fg_role(name_fg)
         .width_match()
-        .cross(Align::Center)
-        .spacing(5)
-        .child(
-            Element::col().weight(1.0).child(
-                Element::label(name_text)
-                    .font_size(13.0)
-                    .font_weight(600)
-                    .fg_role(name_fg)
-                    .width_match()
-                    .max_lines(1)
-                    .truncate(Truncate::End),
-            ),
-        )
-        .child(type_badge)
-        .child(source_badge);
+        .max_lines(1)
+        .truncate(Truncate::End);
 
-    if !entry.version.is_empty() {
-        top_row = top_row.child(
-            Element::label(entry.version.clone())
-                .font_size(10.5)
-                .fg_role(Role::TextMuted),
-        );
-    }
-
-    // ── 副标题：描述 > 作者 ──
     let sub_text = if !entry.description.is_empty() {
         entry.description.clone()
     } else if !entry.author.is_empty() {
@@ -470,13 +434,13 @@ fn build_compound_row(
         String::new()
     };
 
-    let info_col = if sub_text.is_empty() {
-        Element::col().weight(1.0).child(top_row)
+    let name_col = if sub_text.is_empty() {
+        Element::col().weight(1.0).child(name_label)
     } else {
         Element::col()
             .weight(1.0)
             .spacing(2)
-            .child(top_row)
+            .child(name_label)
             .child(
                 Element::label(sub_text)
                     .font_size(11.0)
@@ -487,8 +451,25 @@ fn build_compound_row(
             )
     };
 
-    // ── 右侧操作 ──
-    let is_user = entry.source == "user";
+    // ── 类型徽章（outline 风格）—— 与外层 row 同层，受 cross:Center 统一居中 ──
+    let type_badge = Element::label(engine_label(&entry.engine_type))
+        .font_size(10.5)
+        .fg_role(Role::Accent)
+        .padding_xy(6, 2)
+        .corner(4.0)
+        .border_role(Role::Accent, 1);
+
+    // ── 来源徽章 ──
+    let source_badge = Element::label(if entry.source == "user" { "用户" } else { "内置" })
+        .font_size(10.5)
+        .fg_role(Role::TextMuted)
+        .padding_xy(5, 2)
+        .corner(4.0)
+        .bg_role(Role::SurfaceAlt)
+        .border_role(Role::Border, 1);
+
+    // ── 操作按钮 ──
+    let is_user   = entry.source == "user";
     let schema_id = entry.id.clone();
     let del_id    = entry.id.clone();
 
@@ -498,16 +479,32 @@ fn build_compound_row(
         .outline()
         .on_click(move |_| st_set.open_settings_at_id(&schema_id));
 
-    let mut actions = Element::row().cross(Align::Center).spacing(4);
+    // ── 整行：所有子节点平铺，cross:Center 统一垂直居中 ──
+    let mut row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(10, 8)
+        .spacing(6)
+        .child(checkbox)
+        .child(name_col)     // weight:1，决定行高
+        .child(type_badge)   // 直接子节点 → 与名称列垂直居中对齐
+        .child(source_badge);
 
-    // ↑/↓ 仅已启用行显示
+    if !entry.version.is_empty() {
+        row = row.child(
+            Element::label(entry.version.clone())
+                .font_size(10.5)
+                .fg_role(Role::TextMuted),
+        );
+    }
+
+    // ↑/↓ 仅已启用行
     if is_enabled {
         let up_id  = entry.id.clone();
         let dn_id  = entry.id.clone();
         let mgr_up = mgr.clone();
         let mgr_dn = mgr.clone();
-
-        actions = actions
+        row = row
             .child(
                 Element::button("↑")
                     .small()
@@ -524,10 +521,10 @@ fn build_compound_row(
             );
     }
 
-    actions = actions.child(settings_btn);
+    row = row.child(settings_btn);
     if is_user {
         let st_del = mgr.clone();
-        actions = actions.child(
+        row = row.child(
             Element::button("删除")
                 .small()
                 .danger()
@@ -535,17 +532,7 @@ fn build_compound_row(
         );
     }
 
-    // ── 整行 ──
-    let mut row = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(10, 10)
-        .spacing(10)
-        .child(checkbox)
-        .child(info_col)
-        .child(actions);
-
-    // 未启用行：配合 hide_disabled 和当前 enabled 信号联合控制可见性
+    // 未启用行：配合 hide_disabled 联合 enabled_sig 控制可见性
     if !is_enabled {
         let hide_sig = mgr.hide_disabled;
         row = row.visible_when(move || !hide_sig.get() || enabled_sig.get());
@@ -594,12 +581,14 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
                 .spacing(8)
                 .child(
                     Element::button("取消")
+                        .small()
                         .weight(1.0)
                         .outline()
                         .on_click(move |_| st_cancel.confirm_visible.set(false)),
                 )
                 .child(
                     Element::button("删除")
+                        .small()
                         .weight(1.0)
                         .danger()
                         .on_click(move |_| st_confirm.do_delete()),
