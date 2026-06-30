@@ -107,6 +107,20 @@ impl AppState {
     /// 快速初始化：仅读系统主题，其余字段置空。
     /// UI 可立即显示；真实数据由后台线程通过 [`AppState::apply_loaded`] 写入。
     pub fn empty() -> Self {
+        let schema_mgr = SchemaManagerState::new();
+        let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
+
+        // 注册 schema.available 写回器：把 enabled_order 序列化为有序字符串数组
+        {
+            let eo = schema_mgr.enabled_order.clone();
+            fields.writers.borrow_mut().push(Box::new(move |cfg| {
+                let ids: Vec<Value> = eo.borrow().iter()
+                    .map(|id| Value::String(id.clone()))
+                    .collect();
+                cfg.set_path("schema.available", Value::Array(ids));
+            }));
+        }
+
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
@@ -116,11 +130,11 @@ impl AppState {
             schemas: vec![],
             theme_names: vec![],
             fonts: vec![],
-            fields: Rc::new(FieldRegistry::default()),
+            fields,
             tab: signal(0),
             dark: signal(crate::theme_def::system_dark()),
             status: signal("正在连接服务...".to_string()),
-            schema_mgr: SchemaManagerState::new(),
+            schema_mgr,
             reload_confirm: signal(false),
             reset_confirm: signal(false),
             connected: false,
@@ -167,6 +181,8 @@ impl AppState {
                 l(&cfg);
             }
         }
+        // 方案启用状态从 schema.available 驱动，同步各行 Signal（build 后才有注册项）
+        self.schema_mgr.apply_config(&cfg);
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
@@ -356,7 +372,9 @@ fn load_schemas() -> Vec<SchemaInfo> {
                         .unwrap_or(&id)
                         .to_string();
                     let kind = s
-                        .get("kind")
+                        .get("engineType")
+                        .or_else(|| s.get("engine_type"))
+                        .or_else(|| s.get("kind"))
                         .or_else(|| s.get("type"))
                         .or_else(|| s.get("category"))
                         .and_then(|v| v.as_str())

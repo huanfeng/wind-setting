@@ -1,7 +1,7 @@
 {
  "schema": {
-  "active": "",
-  "available": [],
+  "active": "wubi86",
+  "available": ["wubi86", "pinyin_simp"],
   "primary_codetable": "",
   "primary_pinyin": "",
   "pinyin": {

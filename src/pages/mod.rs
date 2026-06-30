@@ -6,6 +6,7 @@
 
 use windui::prelude::*;
 
+use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{build_scheme_config_button, build_scheme_placeholder_button, section_rows};
 use crate::state::AppState;
 use crate::widgets::{page, section, setting_row, todo_hint};
@@ -69,23 +70,43 @@ fn input_page(state: &AppState) -> Element {
 // ───────────────────────── 方案 ─────────────────────────
 
 fn scheme_page(state: &AppState) -> Element {
-    let mgr_visible = state.schema_mgr.visible;
-    let active = state
-        .current_config
-        .get_str("schema.active")
-        .unwrap_or("（未设置）")
-        .to_string();
+    let mgr = &state.schema_mgr;
+    let status = mgr.status;
 
-    let mut secs = vec![section(
-        "方案管理",
-        vec![setting_row(
-            "输入方案",
-            Some(&format!("当前活动方案：{active}")),
-            Element::button("管理方案…").small().outline().on_click(move |_| mgr_visible.set(true)),
-        )],
-    )];
+    // 工具栏：左侧「隐藏未启用」复选框 · 右侧 刷新/导入
+    let st_refresh = mgr.clone();
+    let st_import  = mgr.clone();
+    let toolbar = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::checkbox("隐藏未启用", mgr.hide_disabled).small())
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("刷新")
+                .small()
+                .outline()
+                .on_click(move |_| st_refresh.refresh()),
+        )
+        .child(
+            Element::button("导入…")
+                .small()
+                .outline()
+                .on_click(move |_| st_import.status.set("导入功能开发中".into())),
+        );
 
-    // 主方案设置：仅此 section 内联渲染（上屏行为/候选行为/模糊音 收进对话框，避免重复渲染/重复登记）。
+    // 复合行列表（已启用在前 · 未启用在后 · ↑/↓ · outline 类型徽章）
+    let list_el = build_schema_inline_list(mgr);
+
+    let status_label = Element::label_rc(status)
+        .font_size(12.0)
+        .fg_role(Role::TextMuted)
+        .height(16)
+        .width_match();
+
+    let mut secs = vec![section("输入方案", vec![toolbar, list_el, status_label])];
+
+    // 主方案设置（manifest schema 分组中的"主方案设置" section）。
     if let Some((_, keys)) = state
         .manifest
         .sections_of("schema")
