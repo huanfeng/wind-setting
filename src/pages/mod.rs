@@ -73,15 +73,29 @@ fn scheme_page(state: &AppState) -> Element {
     let mgr = &state.schema_mgr;
     let status = mgr.status;
 
-    // 工具栏：左侧「隐藏未启用」复选框 · 右侧 刷新/导入
+    // 工具栏：左侧「隐藏未启用」· 中间状态文字 · 右侧 刷新/导入
+    // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距
     let st_refresh = mgr.clone();
     let st_import  = mgr.clone();
     let toolbar = Element::row()
         .width_match()
         .cross(Align::Center)
+        .padding_xy(0, 4)
         .spacing(8)
-        .child(Element::checkbox("隐藏未启用", mgr.hide_disabled).small())
-        .child(Element::leaf().weight(1.0))
+        .child(
+            // fg_role(Text) 确保暗色模式下标签文字跟随主题色
+            Element::checkbox("隐藏未启用", mgr.hide_disabled)
+                .small()
+                .fg_role(Role::Text),
+        )
+        .child(
+            Element::label_rc(status)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .text_align(Align::Center)
+                .weight(1.0)
+                .max_lines(1),
+        )
         .child(
             Element::button("刷新")
                 .small()
@@ -98,13 +112,7 @@ fn scheme_page(state: &AppState) -> Element {
     // 复合行列表（已启用在前 · 未启用在后 · ↑/↓ · outline 类型徽章）
     let list_el = build_schema_inline_list(mgr);
 
-    let status_label = Element::label_rc(status)
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
-        .height(16)
-        .width_match();
-
-    let mut secs = vec![section("输入方案", vec![toolbar, list_el, status_label])];
+    let mut secs = vec![section("输入方案", vec![toolbar, list_el])];
 
     // 主方案设置（manifest schema 分组中的"主方案设置" section）。
     if let Some((_, keys)) = state

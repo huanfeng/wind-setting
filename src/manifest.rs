@@ -449,8 +449,10 @@ type OptionSignals = (Signal<Vec<String>>, Signal<Vec<String>>);
 /// 字体 value 为字体族名（空字符串=默认），label 首项为"默认"其余同值。
 fn reactive_option_signals(state: &AppState, src: &str) -> Option<OptionSignals> {
     match src {
-        "themes" => Some((state.theme_value_sig, state.theme_label_sig)),
-        "fonts" => Some((state.font_sig, state.font_label_sig)),
+        "themes"           => Some((state.theme_value_sig,          state.theme_label_sig)),
+        "fonts"            => Some((state.font_sig,                  state.font_label_sig)),
+        "codetableSchemas" => Some((state.codetable_schema_val_sig,  state.codetable_schema_lab_sig)),
+        "pinyinSchemas"    => Some((state.pinyin_schema_val_sig,     state.pinyin_schema_lab_sig)),
         _ => None,
     }
 }

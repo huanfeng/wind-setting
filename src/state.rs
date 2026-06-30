@@ -101,6 +101,13 @@ pub struct AppState {
     /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
     pub font_sig: Signal<Vec<String>>,
     pub font_label_sig: Signal<Vec<String>>,
+    /// 主码表方案下拉的响应式选项（schema.list 码表类，apply_loaded 后填充）。
+    /// value 首项为空字符串（"自动"），其余为方案 id；label 对应。
+    pub codetable_schema_val_sig: Signal<Vec<String>>,
+    pub codetable_schema_lab_sig: Signal<Vec<String>>,
+    /// 主拼音方案下拉的响应式选项（schema.list 拼音类，apply_loaded 后填充）。
+    pub pinyin_schema_val_sig: Signal<Vec<String>>,
+    pub pinyin_schema_lab_sig: Signal<Vec<String>>,
 }
 
 impl AppState {
@@ -144,6 +151,10 @@ impl AppState {
             theme_value_sig: signal(vec![]),
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
+            codetable_schema_val_sig: signal(vec![]),
+            codetable_schema_lab_sig: signal(vec![]),
+            pinyin_schema_val_sig: signal(vec![]),
+            pinyin_schema_lab_sig: signal(vec![]),
         }
     }
 
@@ -171,6 +182,20 @@ impl AppState {
                 .chain(self.fonts.iter().cloned())
                 .collect(),
         );
+        // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"，其余为 id/name。
+        // 必须在 loaders 跑之前就位，否则 loader 无法在选项列表中定位当前配置值。
+        {
+            let (ct_vals, ct_labs): (Vec<String>, Vec<String>) = std::iter::once((String::new(), "（自动）".to_string()))
+                .chain(self.schemas.iter().filter(|s| s.kind == "codetable").map(|s| (s.id.clone(), s.name.clone())))
+                .unzip();
+            self.codetable_schema_val_sig.set(ct_vals);
+            self.codetable_schema_lab_sig.set(ct_labs);
+            let (py_vals, py_labs): (Vec<String>, Vec<String>) = std::iter::once((String::new(), "（自动）".to_string()))
+                .chain(self.schemas.iter().filter(|s| s.kind == "pinyin").map(|s| (s.id.clone(), s.name.clone())))
+                .unzip();
+            self.pinyin_schema_val_sig.set(py_vals);
+            self.pinyin_schema_lab_sig.set(py_labs);
+        }
         // 注：选项变更后下拉的宽度 re-measure 依赖"数据到达帧为整窗重绘"——本方法在 pump 内
         // set 信号会请求整窗重绘，启动场景(无进行中的局部动画)该帧即整窗重排，宽度正常刷新；
         // 这是 windui pump→signal→repaint 既有性质（现有字段 loader 的文本刷新同此机制）。
@@ -266,6 +291,8 @@ impl AppState {
                 l(&cfg);
             }
         }
+        // 方案启用排序也需要从配置恢复，否则未保存的列表变更不会撤销。
+        self.schema_mgr.apply_config(&cfg);
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.status.set("已从服务端重新加载".to_string());
