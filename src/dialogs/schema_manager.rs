@@ -3,11 +3,10 @@
 //! 布局策略：
 //! - 已启用方案（schema.available 中的 ID）按序显示在列表上方，可用 ↑/↓ 调整顺序
 //! - 未启用方案在下方，可通过「隐藏未启用」开关收起
-//! - 启用/禁用/排序变更在「应用设置」时写入 schema.available（经 FieldRegistry writer）
-//! - windui 缺口 A：列表视觉顺序固定在 build 时；↑/↓ 修改内存 Vec，下次启动生效
+//! - 启用/禁用/排序变更**即时刷新列表**（Element::list_signal 驱动）
+//! - 「应用设置」时写入 schema.available（经 FieldRegistry writer）
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -31,17 +30,32 @@ pub struct SchemaEntry {
     pub error: Option<String>,
 }
 
+/// `list_signal` 的数据项：行/分节标题/行间分隔线。
+#[derive(Clone)]
+pub enum SchemaListItem {
+    Row {
+        entry: SchemaEntry,
+        idx: usize,    // 在已启用列表中的位置（未启用行传 0）
+        total: usize,  // 已启用方案总数（未启用行传 0）
+        is_enabled: bool,
+    },
+    /// 未启用区分节标题（自带上方分隔线，visible_when !hide_disabled）。
+    SectionHeader { count: usize },
+    /// 行间分隔线；hidden_with_disabled=true 时随 hide_disabled 一起隐藏。
+    Divider { hidden_with_disabled: bool },
+}
+
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
 pub struct SchemaManagerState {
-    /// 方案列表数据。
+    /// 方案列表原始数据。
     pub schemas: Rc<RefCell<Vec<SchemaEntry>>>,
     /// 已启用方案的有序 ID 列表（对应 schema.available 配置键）。
-    /// 空 vec 表示"全部启用"（首次加载前的默认状态）。
+    /// 空 vec 表示"全部启用"（首次加载且配置为空时的默认状态）。
     pub enabled_order: Rc<RefCell<Vec<String>>>,
-    /// ID → 行的启用 Signal（build 时注册，apply_config 时批量更新）。
-    pub enabled_signals: Rc<RefCell<HashMap<String, Signal<bool>>>>,
-    /// 是否隐藏未启用方案行（响应式，immediate 生效）。
+    /// 驱动 list_signal 的数据信号；任何启用/排序变更后调 rebuild_list() 更新。
+    pub list_data: Signal<Vec<SchemaListItem>>,
+    /// 是否隐藏未启用方案行（响应式，立即生效）。
     pub hide_disabled: Signal<bool>,
     pub selected: Signal<usize>,
     pub status: Signal<String>,
@@ -54,12 +68,11 @@ pub struct SchemaManagerState {
 
 impl SchemaManagerState {
     pub fn new() -> Self {
-        // 同步读取 schema.available 初始化排序（与 schema.list 同属启动期快速加载）
         let available = Self::read_available();
         let state = Self {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
-            enabled_signals: Rc::new(RefCell::new(HashMap::new())),
+            list_data: signal(vec![]),
             hide_disabled: signal(false),
             selected: signal(0),
             status: signal(String::new()),
@@ -86,25 +99,67 @@ impl SchemaManagerState {
             .unwrap_or_default()
     }
 
-    /// apply_loaded 时调用：从配置更新启用排序，并同步已注册的行 Signal。
+    /// 根据当前 schemas + enabled_order 重建 list_data 信号（即时刷新列表）。
+    fn rebuild_list(&self) {
+        let entries = self.schemas.borrow().clone();
+        let order = self.enabled_order.borrow().clone();
+        let is_all_enabled = order.is_empty();
+
+        let mut enabled_entries: Vec<SchemaEntry> = Vec::new();
+        if is_all_enabled {
+            enabled_entries = entries.clone();
+        } else {
+            for id in &order {
+                if let Some(e) = entries.iter().find(|e| &e.id == id) {
+                    enabled_entries.push(e.clone());
+                }
+            }
+        }
+
+        let disabled_entries: Vec<SchemaEntry> = if is_all_enabled {
+            vec![]
+        } else {
+            entries.into_iter().filter(|e| !order.contains(&e.id)).collect()
+        };
+
+        let n_enabled = enabled_entries.len();
+        let n_disabled = disabled_entries.len();
+        let mut items: Vec<SchemaListItem> = Vec::new();
+
+        // 已启用区
+        for (i, entry) in enabled_entries.into_iter().enumerate() {
+            if i > 0 {
+                items.push(SchemaListItem::Divider { hidden_with_disabled: false });
+            }
+            items.push(SchemaListItem::Row { entry, idx: i, total: n_enabled, is_enabled: true });
+        }
+
+        // 未启用区（SectionHeader 自带上方分隔线，随 hide_disabled 一起隐藏）
+        if n_disabled > 0 {
+            items.push(SchemaListItem::SectionHeader { count: n_disabled });
+            for (j, entry) in disabled_entries.into_iter().enumerate() {
+                if j > 0 {
+                    items.push(SchemaListItem::Divider { hidden_with_disabled: true });
+                }
+                items.push(SchemaListItem::Row { entry, idx: 0, total: 0, is_enabled: false });
+            }
+        }
+
+        self.list_data.set(items);
+    }
+
+    /// apply_loaded 时调用：从配置更新启用排序，并重建列表。
     pub fn apply_config(&self, cfg: &Config) {
         let available: Vec<String> = cfg
             .get_array("schema.available")
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
 
+        // available 为空表示全部启用：展开为全部方案 ID，使后续 toggle 逻辑无歧义。
         let all_ids: Vec<String> = self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
-        let (new_order, is_all) = if available.is_empty() {
-            (all_ids, true)
-        } else {
-            (available, false)
-        };
-        *self.enabled_order.borrow_mut() = new_order.clone();
-
-        // 同步各行 Signal（build 后才会有注册项）
-        for (id, sig) in self.enabled_signals.borrow().iter() {
-            sig.set(is_all || new_order.contains(id));
-        }
+        let new_order = if available.is_empty() { all_ids } else { available };
+        *self.enabled_order.borrow_mut() = new_order;
+        self.rebuild_list();
     }
 
     /// 刷新方案列表（调用 schema.list RPC）。
@@ -158,42 +213,51 @@ impl SchemaManagerState {
             self.selected.set(count - 1);
         }
         self.status.set(format!("共 {count} 个已安装方案"));
+        self.rebuild_list();
     }
 
-    /// 上移指定方案在 enabled_order 中的位置（下次保存后生效）。
+    /// 上移指定方案在 enabled_order 中的位置（立即刷新列表）。
     pub fn move_schema_up(&self, schema_id: &str) {
-        let mut order = self.enabled_order.borrow_mut();
-        if let Some(idx) = order.iter().position(|id| id == schema_id) {
-            if idx > 0 {
-                order.swap(idx, idx - 1);
-                self.status.set("排序已调整（保存后生效）".into());
+        {
+            let mut order = self.enabled_order.borrow_mut();
+            if let Some(idx) = order.iter().position(|id| id == schema_id) {
+                if idx > 0 { order.swap(idx, idx - 1); }
             }
         }
+        self.status.set("排序已调整（保存后生效）".into());
+        self.rebuild_list();
     }
 
-    /// 下移指定方案在 enabled_order 中的位置（下次保存后生效）。
+    /// 下移指定方案在 enabled_order 中的位置（立即刷新列表）。
     pub fn move_schema_down(&self, schema_id: &str) {
-        let mut order = self.enabled_order.borrow_mut();
-        if let Some(idx) = order.iter().position(|id| id == schema_id) {
-            if idx + 1 < order.len() {
-                order.swap(idx, idx + 1);
-                self.status.set("排序已调整（保存后生效）".into());
+        {
+            let mut order = self.enabled_order.borrow_mut();
+            if let Some(idx) = order.iter().position(|id| id == schema_id) {
+                if idx + 1 < order.len() { order.swap(idx, idx + 1); }
             }
         }
+        self.status.set("排序已调整（保存后生效）".into());
+        self.rebuild_list();
     }
 
-    /// 切换方案启用状态（更新 enabled_order，下次保存后生效）。
+    /// 切换方案启用状态（更新 enabled_order，立即刷新列表）。
     pub fn toggle_schema_enabled(&self, schema_id: &str, new_enabled: bool) {
-        let mut order = self.enabled_order.borrow_mut();
         if new_enabled {
+            let mut order = self.enabled_order.borrow_mut();
             if !order.contains(&schema_id.to_string()) {
                 order.push(schema_id.to_string());
             }
-            self.status.set("已启用（保存后生效）".into());
         } else {
+            let mut order = self.enabled_order.borrow_mut();
+            // 若当前全部启用（order 为空），需先展开为全部 ID 再逐一 retain
+            if order.is_empty() {
+                let all_ids: Vec<String> = self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
+                *order = all_ids;
+            }
             order.retain(|id| id != schema_id);
-            self.status.set("已禁用（保存后生效）".into());
         }
+        self.status.set(if new_enabled { "已启用（保存后生效）" } else { "已禁用（保存后生效）" }.into());
+        self.rebuild_list();
     }
 
     /// 打开指定 ID 方案的设置对话框。
@@ -237,9 +301,7 @@ impl SchemaManagerState {
 
     pub fn open_settings_at(&self, idx: usize) {
         let id_opt = self.schemas.borrow().get(idx).map(|e| e.id.clone());
-        if let Some(id) = id_opt {
-            self.open_settings_at_id(&id);
-        }
+        if let Some(id) = id_opt { self.open_settings_at_id(&id); }
     }
 
     pub fn request_delete_at(&self, idx: usize) {
@@ -250,25 +312,19 @@ impl SchemaManagerState {
     pub fn open_settings(&self) {
         let idx = self.selected.get();
         let id_opt = self.schemas.borrow().get(idx).map(|e| e.id.clone());
-        if let Some(id) = id_opt {
-            self.open_settings_at_id(&id);
-        }
+        if let Some(id) = id_opt { self.open_settings_at_id(&id); }
     }
 
     pub fn request_delete(&self) {
         let idx = self.selected.get();
         let id_opt = self.schemas.borrow().get(idx).map(|e| e.id.clone());
-        if let Some(id) = id_opt {
-            self.request_delete_at_id(&id);
-        }
+        if let Some(id) = id_opt { self.request_delete_at_id(&id); }
     }
 
     pub fn do_delete(&self) {
         let id = self.confirm_id.borrow().clone();
         self.confirm_visible.set(false);
-        if id.is_empty() {
-            return;
-        }
+        if id.is_empty() { return; }
         match rpc::call_core("schema.delete", &json!({ "id": id })) {
             Ok(_) => {
                 self.refresh();
@@ -294,115 +350,63 @@ pub fn engine_label(t: &str) -> &'static str {
 
 /// 构建内联方案列表，供 `scheme_page` 直接嵌入卡片。
 ///
-/// 列表按 schema.available 排序：已启用在上（含 ↑/↓ 按钮），未启用在下（可隐藏）。
-/// 视觉顺序在 build 时固定（windui 缺口 A）；↑/↓ 修改内存排序，保存后下次生效。
+/// 使用 `Element::list_signal` 驱动：启用/禁用/排序变更后 list_data 更新，列表即时刷新。
 pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
-    let entries: Vec<SchemaEntry> = state.schemas.borrow().clone();
+    let mgr = state.clone();
+    let hide_sig = state.hide_disabled;
 
-    if entries.is_empty() {
-        return Element::col()
-            .width_match()
-            .padding_xy(0, 8)
-            .child(
-                Element::label("暂无方案（核心未运行或无可用方案）")
-                    .font_size(13.0)
-                    .fg_role(Role::TextMuted)
-                    .width_match()
-                    .height(28),
-            );
-    }
-
-    // 按 enabled_order 分组：已启用（有序）/ 未启用
-    let order = state.enabled_order.borrow().clone();
-    let is_all_enabled = order.is_empty();
-
-    let mut enabled_entries: Vec<SchemaEntry> = Vec::new();
-    // 按 order 中的 ID 顺序排列已启用方案
-    for id in &order {
-        if let Some(e) = entries.iter().find(|e| &e.id == id) {
-            enabled_entries.push(e.clone());
-        }
-    }
-    // 若 order 为空（全部启用默认态），所有方案都视为已启用
-    if is_all_enabled {
-        enabled_entries = entries.clone();
-    }
-
-    let disabled_entries: Vec<SchemaEntry> = if is_all_enabled {
-        vec![]
-    } else {
-        entries.into_iter().filter(|e| !order.contains(&e.id)).collect()
-    };
-
-    let n_enabled = enabled_entries.len();
-    let mut list_col = Element::col().width_match();
-
-    // ── 已启用区 ──
-    for (i, entry) in enabled_entries.into_iter().enumerate() {
-        if i > 0 {
-            list_col = list_col.child(Element::divider());
-        }
-        list_col = list_col.child(build_compound_row(entry, i, n_enabled, true, state));
-    }
-
-    // ── 未启用区（含隐藏逻辑） ──
-    if !disabled_entries.is_empty() {
-        let hide_sig = state.hide_disabled;
-        let n_dis = disabled_entries.len();
-
-        let mut dis_col = Element::col().width_match();
-        for (j, entry) in disabled_entries.into_iter().enumerate() {
-            if j > 0 {
-                dis_col = dis_col.child(Element::divider());
+    Element::list_signal(
+        state.list_data,
+        |_| (),
+        move |item| match item {
+            SchemaListItem::Row { entry, idx, total, is_enabled } => {
+                build_compound_row(entry, idx, total, is_enabled, &mgr)
             }
-            dis_col = dis_col.child(build_compound_row(entry, 0, 0, false, state));
-        }
-
-        // 段落标题 + 分隔线
-        let section_hdr = Element::col()
-            .width_match()
-            .child(Element::divider())
-            .child(
-                Element::row()
+            SchemaListItem::SectionHeader { count } => {
+                Element::col()
                     .width_match()
-                    .padding_xy(8, 5)
+                    .child(Element::divider())
                     .child(
-                        Element::label(format!("其他已安装方案（共 {n_dis} 个）"))
-                            .font_size(10.5)
-                            .fg_role(Role::TextMuted)
+                        Element::row()
                             .width_match()
-                            .max_lines(1),
-                    ),
-            );
-
-        let dis_section = Element::col()
-            .width_match()
-            .child(section_hdr)
-            .child(dis_col)
-            .visible_when(move || !hide_sig.get());
-
-        list_col = list_col.child(dis_section);
-    }
-
-    Element::scroll().width_match().height(280).child(list_col)
+                            .padding_xy(8, 5)
+                            .child(
+                                Element::label(format!("其他已安装方案（共 {count} 个）"))
+                                    .font_size(10.5)
+                                    .fg_role(Role::TextMuted)
+                                    .width_match()
+                                    .max_lines(1),
+                            ),
+                    )
+                    .visible_when(move || !hide_sig.get())
+            }
+            SchemaListItem::Divider { hidden_with_disabled } => {
+                let d = Element::divider();
+                if hidden_with_disabled {
+                    d.visible_when(move || !hide_sig.get())
+                } else {
+                    d
+                }
+            }
+        },
+    )
+    .height(280)
+    .width_match()
 }
 
 /// 构建单个方案复合行。
 ///
 /// 所有元素（复选框·名称·徽章·版本·↑↓·设置·删除）均为外层 row 的直接子节点，
-/// 由 `cross(Align::Center)` 统一垂直居中，避免徽章因内嵌层级偏高的问题。
-///
-/// 描述文字置于名称列内部（col: name + desc），不影响外层对齐。
+/// 由 `cross(Align::Center)` 统一垂直居中。`idx/total` 由 rebuild_list 在每次重建时
+/// 传入正确值，↑/↓ 的 enabled_when 无需关心历史状态。
 fn build_compound_row(
     entry: SchemaEntry,
-    idx: usize,    // 在已启用列表中的位置（未启用行传 0）
-    total: usize,  // 已启用方案总数（未启用行传 0）
+    idx: usize,
+    total: usize,
     is_enabled: bool,
     mgr: &SchemaManagerState,
 ) -> Element {
-    // 创建并注册该行的启用 Signal，供 apply_config 批量更新
     let enabled_sig = signal(is_enabled);
-    mgr.enabled_signals.borrow_mut().insert(entry.id.clone(), enabled_sig);
 
     // ── Checkbox ──
     let mgr_toggle = mgr.clone();
@@ -451,7 +455,7 @@ fn build_compound_row(
             )
     };
 
-    // ── 类型徽章（outline 风格）—— 与外层 row 同层，受 cross:Center 统一居中 ──
+    // ── 类型徽章（outline 风格，直接子节点保证垂直居中）──
     let type_badge = Element::label(engine_label(&entry.engine_type))
         .font_size(10.5)
         .fg_role(Role::Accent)
@@ -486,8 +490,8 @@ fn build_compound_row(
         .padding_xy(10, 8)
         .spacing(6)
         .child(checkbox)
-        .child(name_col)     // weight:1，决定行高
-        .child(type_badge)   // 直接子节点 → 与名称列垂直居中对齐
+        .child(name_col)
+        .child(type_badge)
         .child(source_badge);
 
     if !entry.version.is_empty() {
@@ -498,7 +502,7 @@ fn build_compound_row(
         );
     }
 
-    // ↑/↓ 仅已启用行
+    // ↑/↓ 仅已启用行；idx/total 由 rebuild_list 保证正确
     if is_enabled {
         let up_id  = entry.id.clone();
         let dn_id  = entry.id.clone();
@@ -532,10 +536,10 @@ fn build_compound_row(
         );
     }
 
-    // 未启用行：配合 hide_disabled 联合 enabled_sig 控制可见性
+    // 未启用行随 hide_disabled 隐藏（list_signal 重建后无需 enabled_sig 联动）
     if !is_enabled {
         let hide_sig = mgr.hide_disabled;
-        row = row.visible_when(move || !hide_sig.get() || enabled_sig.get());
+        row = row.visible_when(move || !hide_sig.get());
     }
 
     row
@@ -544,8 +548,6 @@ fn build_compound_row(
 // ──────────────────────── UI 构建 ────────────────────────
 
 /// 构建方案相关浮层对话框：删除确认 + 方案详情/设置。
-///
-/// 须作为 `fill()` 的子节点挂到根窗口 stack，才能正确实现全窗模态遮罩。
 pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
     let confirm_dlg  = build_confirm_dialog(state);
     let settings_dlg = build_schema_settings_dialog(state);
