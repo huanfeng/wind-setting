@@ -48,6 +48,10 @@ pub struct MItem {
     pub dialog_group: Option<String>,
     /// 子对话框开启项：宿主控件旁挂「扩展设置」按钮，打开 dialog_group==此 id 的成员对话框。
     pub opens_dialog: Option<String>,
+    /// 对话框内子分区（如"词频调整"/"自动造词"），同值的项聚合在同一子标题下。
+    pub subsection: Option<String>,
+    /// 隐藏此项（未完全实现或不对最终用户开放），不渲染也不注册 writer/loader。
+    pub hidden: bool,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -151,6 +155,8 @@ impl Manifest {
                     global: it.get("global").and_then(|x| x.as_bool()).unwrap_or(false),
                     dialog_group: opt_str(it, "dialog_group"),
                     opens_dialog: opt_str(it, "opens_dialog"),
+                    subsection: opt_str(it, "subsection"),
+                    hidden: it.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -235,6 +241,10 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
             rows.push(field(state, k));
             continue;
         };
+        // 隐藏项：不渲染也不注册 writer/loader（功能未完成或不对用户开放）。
+        if item.hidden {
+            continue;
+        }
         // 子对话框成员：不在分区内独立成行（由 opens_dialog 宿主的「扩展设置」对话框承载）。
         if item.dialog_group.is_some() {
             continue;
@@ -328,7 +338,7 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         .collect();
     let rows: Vec<Element> = member_keys.iter().map(|k| field(state, k)).collect();
     let visible = signal(false);
-    let dlg = build_group_dialog(visible, &format!("{} · 扩展设置", item.label), rows);
+    let dlg = build_group_dialog(visible, &format!("{} · 扩展设置", item.label), rows, None);
     register_dialog(state, dlg);
 
     let btn = Element::button("扩展设置")
@@ -1116,8 +1126,19 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         .child(grid)
 }
 
+/// 对话框内分组标题（section/subsection 同一层级，主题色强调，不额外缩进）。
+fn dialog_group_header(name: &str) -> Element {
+    Element::label(name)
+        .font_size(11.5)
+        .font_weight(600)
+        .fg_role(Role::Accent)
+        .width_match()
+        .padding_xy(0, 5)
+}
+
 /// 「全局方案配置」某引擎的 [设置] 按钮 + 对话框（含该 schema-group section 的设置行）。
-/// `with_fuzzy`=true 在末尾追加模糊音紧凑组（拼音引擎用）。对话框挂根。
+/// 对话框内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
+/// `with_fuzzy`=true 在末尾追加"模糊音"子组（拼音引擎用）。对话框挂根。
 pub fn build_scheme_config_button(
     state: &AppState,
     label: &str,
@@ -1133,29 +1154,68 @@ pub fn build_scheme_config_button(
         .find(|(s, _)| s == section)
         .map(|(_, k)| k)
         .unwrap_or_default();
-    let mut rows = section_rows(state, &keys);
+
+    let mut rows: Vec<Element> = Vec::new();
+
+    // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
+    rows.push(dialog_group_header(section));
+
+    // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
+    let mut cur_subsec: Option<String> = None;
+    for k in &keys {
+        let Some(item) = state.manifest.get(k) else { continue };
+        if item.hidden { continue; }
+        let subsec = item.subsection.clone();
+        if subsec != cur_subsec {
+            if let Some(ref name) = subsec {
+                rows.push(dialog_group_header(name));
+            }
+            cur_subsec = subsec;
+        }
+        let row = if item.typ == "toggle"
+            && let Some(_dlg_item) = state.manifest.dialog_for_gate(k)
+        {
+            let mut tmp = section_rows(state, &[k.clone()]);
+            tmp.pop().unwrap_or_else(|| field(state, k))
+        } else if item.typ == "dialog_button"
+            && let Some(g) = &item.gate_key
+            && state.manifest.get(g).is_some()
+        {
+            continue;
+        } else {
+            field(state, k)
+        };
+        rows.push(row);
+    }
     if with_fuzzy {
+        rows.push(dialog_group_header("模糊音"));
         rows.push(build_fuzzy_group(state, &state.current_config));
     }
-    let dlg = build_group_dialog(visible, label, rows);
-    register_dialog(state, dlg);
-    Element::button("设置")
-        .small()
-        .outline()
-        .on_click(move |_| visible.set(true))
-}
 
-/// 占位 [设置] 按钮 + 提示对话框（如混输引擎待 core 暴露相关键）。
-pub fn build_scheme_placeholder_button(state: &AppState, label: &str, msg: &str) -> Element {
-    use crate::dialogs::field_dialogs::build_group_dialog;
-    let visible = signal(false);
-    let row = Element::label(msg)
-        .font_size(13.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .max_lines(4)
-        .padding_xy(0, 12);
-    let dlg = build_group_dialog(visible, label, vec![row]);
+    // 恢复默认：调用 config.getDefaults RPC 取 core 权威默认值，灌回各字段 loader。
+    // 若 core 未连接或接口返回错误，则回落空对象（等效 capability fallback）。
+    let fields = state.fields.clone();
+    let mut reset_keys = keys.clone();
+    if with_fuzzy {
+        for k in state.manifest.order.iter() {
+            if k.starts_with("schema.pinyin.fuzzy.") {
+                reset_keys.push(k.clone());
+            }
+        }
+    }
+    let reset_fn: Box<dyn Fn() + 'static> = Box::new(move || {
+        let defaults = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
+            .unwrap_or(Value::Object(serde_json::Map::new()));
+        let def_cfg = Config::from_value(defaults);
+        let ld = fields.loaders.borrow();
+        for k in &reset_keys {
+            if let Some(loader) = ld.get(k) {
+                loader(&def_cfg);
+            }
+        }
+    });
+
+    let dlg = build_group_dialog(visible, label, rows, Some(reset_fn));
     register_dialog(state, dlg);
     Element::button("设置")
         .small()

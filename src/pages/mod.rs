@@ -7,7 +7,7 @@
 use windui::prelude::*;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
-use crate::manifest::{build_scheme_config_button, build_scheme_placeholder_button, section_rows};
+use crate::manifest::{build_scheme_config_button, section_rows};
 use crate::state::AppState;
 use crate::widgets::{page, section, setting_row, todo_hint};
 
@@ -124,20 +124,16 @@ fn scheme_page(state: &AppState) -> Element {
         secs.push(section("主方案设置", section_rows(state, &keys)));
     }
 
-    // 全局方案配置：码表 / 混输(占位) / 拼音 三个 [设置] 对话框。
-    let codetable = build_scheme_config_button(state, "码表方案全局配置", "上屏行为", false);
-    let mixed = build_scheme_placeholder_button(
-        state,
-        "混输方案全局配置",
-        "混输引擎的全局配置待核心暴露相关键（engine.mixed.*）后提供。",
-    );
-    let pinyin = build_scheme_config_button(state, "拼音方案全局配置", "候选行为", true);
+    // 全局方案配置：码表 / 混输 / 拼音 三个 [设置] 对话框。
+    let codetable = build_scheme_config_button(state, "码表方案配置", "上屏行为", false);
+    let mixed = build_scheme_config_button(state, "混输方案配置", "混输行为", false);
+    let pinyin = build_scheme_config_button(state, "拼音方案配置", "候选行为", true);
     secs.push(section(
         "全局方案配置",
         vec![
-            setting_row("码表方案全局配置", Some("码表引擎的全局默认配置"), codetable),
-            setting_row("混输方案全局配置", Some("混输引擎的全局默认配置（待核心支持）"), mixed),
-            setting_row("拼音方案全局配置", Some("拼音引擎的全局默认配置"), pinyin),
+            setting_row("码表方案配置", Some("码表引擎的全局默认配置"), codetable),
+            setting_row("混输方案配置", Some("混输引擎的全局默认配置"), mixed),
+            setting_row("拼音方案配置", Some("拼音引擎的全局默认配置"), pinyin),
         ],
     ));
 

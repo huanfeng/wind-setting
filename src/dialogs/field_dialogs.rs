@@ -333,7 +333,13 @@ pub fn build_pairs_dialog(
 
 /// 设置组对话框：标题 + 若干设置行（行间分隔线）+ [关闭]。
 /// 用于「全局方案配置」码表/拼音对话框：内部控件经各自 writer 随主保存提交，无需独立保存。
-pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>) -> Element {
+/// `reset_fn`：传 Some 时底栏左侧显示「恢复默认」按钮，调用后各字段回落 capability 默认值。
+pub fn build_group_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    rows: Vec<Element>,
+    reset_fn: Option<Box<dyn Fn() + 'static>>,
+) -> Element {
     let mut content = Element::col().width_match().padding_xy(16, 2);
     let last = rows.len().saturating_sub(1);
     for (i, r) in rows.into_iter().enumerate() {
@@ -342,6 +348,31 @@ pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>
             content = content.child(Element::divider());
         }
     }
+    // 内容超长时中间区域可滚动；固定视口高度确保标题栏和关闭按钮始终可见。
+    let body = Element::scroll().width_match().height(380).child(content);
+
+    let mut bottom = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 12)
+        .spacing(8);
+    if let Some(reset) = reset_fn {
+        bottom = bottom.child(
+            Element::button("恢复默认")
+                .small()
+                .outline()
+                .on_click(move |_| reset()),
+        );
+    }
+    bottom = bottom
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("关闭")
+                .small()
+                .outline()
+                .on_click(move |_| visible.set(false)),
+        );
+
     let frame = Element::col()
         .width(460)
         .bg_role(Role::Surface)
@@ -357,21 +388,9 @@ pub fn build_group_dialog(visible: Signal<bool>, title: &str, rows: Vec<Element>
                 .padding_xy(18, 14),
         )
         .child(Element::divider())
-        .child(content)
+        .child(body)
         .child(Element::divider())
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .padding_xy(16, 12)
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("关闭")
-                        .small()
-                        .outline()
-                        .on_click(move |_| visible.set(false)),
-                ),
-        );
+        .child(bottom);
     Element::dialog(visible, frame)
 }
 

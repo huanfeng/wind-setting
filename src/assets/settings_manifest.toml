@@ -52,7 +52,7 @@ key = "schema.primary_codetable"
 group = "schema"
 section = "主方案设置"
 type = "select"
-options_source = "codetableSchemas"   # 选项运行时来自 schema.list（码表类）
+options_source = "codetableSchemas"               # 选项运行时来自 schema.list（码表类）
 label = "主码表方案"
 hint = "主力码表方案 id（如 wubi86）；拼音方案的反查/编码提示基于此方案的码表"
 
@@ -61,30 +61,21 @@ key = "schema.primary_pinyin"
 group = "schema"
 section = "主方案设置"
 type = "select"
-options_source = "pinyinSchemas"      # 选项运行时来自 schema.list（拼音类）
+options_source = "pinyinSchemas"          # 选项运行时来自 schema.list（拼音类）
 label = "主拼音方案"
 hint = "混输/临时拼音使用的拼音方案 id；码表方案的临时拼音使用此方案"
 
-# ── 上屏行为（全局级，常用快捷配置；per-schema 细调待方案设置弹窗）──
+# ── 上屏行为（码表全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
-key = "input.code_commit.auto_commit_at_full"
+key = "schema.codetable.auto_commit_at_full"
 group = "schema"
 section = "上屏行为"
 type = "toggle"
-label = "全码自动上屏"
+label = "全码唯一自动上屏"
 hint = "唯一精确且无更长后继时直接上屏"
 
 [[items]]
-key = "input.code_commit.auto_commit_block_on_pinyin"
-group = "schema"
-section = "上屏行为"
-type = "toggle"
-label = "有拼音候选时否决全码上屏"
-hint = "全码上屏前若仍有拼音候选则不自动上屏"
-enabled_when = "input.code_commit.auto_commit_at_full == true"
-
-[[items]]
-key = "input.code_commit.auto_commit_min_len"
+key = "schema.codetable.auto_commit_min_len"
 group = "schema"
 section = "上屏行为"
 type = "number"
@@ -92,38 +83,150 @@ label = "自动上屏最短码长"
 hint = "0 跟随方案 max_code_length"
 min = 0
 max = 10
-enabled_when = "input.code_commit.auto_commit_at_full == true"
+enabled_when = "schema.codetable.auto_commit_at_full == true"
+hidden = true
 
 [[items]]
-key = "input.code_commit.top_code_commit"
+key = "schema.codetable.clear_on_empty_max"
 group = "schema"
 section = "上屏行为"
 type = "toggle"
-label = "超长时取前 N 码顶字上屏"
+label = "满码空码清空"
+hint = "编码达到最大码长且无候选时自动清空缓冲"
+
+[[items]]
+key = "schema.codetable.top_code_commit"
+group = "schema"
+section = "上屏行为"
+type = "toggle"
+label = "顶码上屏"
 hint = "编码超过最大码长时自动顶字上屏首选"
 
 [[items]]
-key = "input.code_commit.clear_on_empty_max"
+key = "schema.codetable.punct_commit"
 group = "schema"
 section = "上屏行为"
 type = "toggle"
-label = "满码无候选时清空缓冲"
-hint = "编码达到最大码长且无候选时自动清空缓冲"
+label = "标点顶码上屏"
+hint = "输入标点时自动上屏首选"
 
-# ── 候选行为（全局级）──
 [[items]]
-key = "schema.pinyin.candidate_order"
+key = "schema.codetable.show_code_hint"
 group = "schema"
-section = "候选行为"
-type = "select"
-label = "候选排序模式"
-hint = "单字优先 / 词组优先 / 智能混排"
-options = [
-  { value = "smart", label = "智能混排" },
-  { value = "char_first", label = "单字优先" },
-  { value = "phrase_first", label = "词组优先" },
-]
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "显示编码提示"
+hint = "候选旁显示对应编码"
 
+[[items]]
+key = "schema.codetable.single_code_input"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "精确匹配模式"
+hint = "仅显示精确匹配的候选，不显示前缀匹配"
+
+[[items]]
+key = "schema.codetable.single_code_complete"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "精确匹配空码补全"
+hint = "精确匹配模式下无候选时，自动从更长编码中取首个候选"
+enabled_when = "schema.codetable.single_code_input == true"
+
+[[items]]
+key = "schema.codetable.z_key_repeat"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "z 键重复输入"
+hint = "输入z时首选为上一次上屏的内容，快速重复输入"
+
+# 词频调整
+[[items]]
+key = "schema.codetable.frequency.enabled"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "toggle"
+label = "启用词频调整"
+hint = "根据使用频次动态调整候选排序"
+
+[[items]]
+key = "schema.codetable.frequency.strategy"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "select"
+label = "调频策略"
+hint = "置顶：高频词固定首位；步进：每次使用逐步上升"
+enabled_when = "schema.codetable.frequency.enabled == true"
+options = [{ value = "top", label = "置顶" }, { value = "step", label = "步进" }]
+
+[[items]]
+key = "schema.codetable.frequency.protect_top_n"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "number"
+label = "保护前 N 个词条"
+hint = "词典前 N 个词条不参与调频（0 = 不保护）"
+min = 0
+max = 100
+enabled_when = "schema.codetable.frequency.enabled == true"
+
+# 自动造词
+[[items]]
+key = "schema.codetable.auto_phrase.enabled"
+group = "schema"
+section = "上屏行为"
+subsection = "自动造词"
+type = "toggle"
+label = "启用自动造词"
+hint = "连续选字后自动将词组加入用户词库"
+
+[[items]]
+key = "schema.codetable.auto_phrase.min_phrase_len"
+group = "schema"
+section = "上屏行为"
+subsection = "自动造词"
+type = "number"
+label = "最短造词长度"
+hint = "至少连续选几个字才记为词组"
+min = 2
+max = 10
+enabled_when = "schema.codetable.auto_phrase.enabled == true"
+
+[[items]]
+key = "schema.codetable.auto_phrase.max_phrase_len"
+group = "schema"
+section = "上屏行为"
+subsection = "自动造词"
+type = "number"
+label = "最长造词长度"
+hint = "最多记录几个字的词组"
+min = 2
+max = 20
+enabled_when = "schema.codetable.auto_phrase.enabled == true"
+
+[[items]]
+key = "schema.codetable.auto_phrase.count_threshold"
+group = "schema"
+section = "上屏行为"
+subsection = "自动造词"
+type = "number"
+label = "造词阈值"
+hint = "连续选字达到此次数后才正式加入词库"
+min = 1
+max = 20
+enabled_when = "schema.codetable.auto_phrase.enabled == true"
+
+# ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
 key = "schema.pinyin.show_code_hint"
 group = "schema"
@@ -139,6 +242,50 @@ section = "候选行为"
 type = "toggle"
 label = "智能组词"
 hint = "根据上下文智能拼接候选"
+
+# 词频调整
+[[items]]
+key = "schema.pinyin.frequency.enabled"
+group = "schema"
+section = "候选行为"
+subsection = "词频调整"
+type = "toggle"
+label = "启用词频调整"
+hint = "根据使用频次动态调整候选排序"
+
+# 自动学习
+[[items]]
+key = "schema.pinyin.auto_learn.enabled"
+group = "schema"
+section = "候选行为"
+subsection = "自动学习"
+type = "toggle"
+label = "启用自动学习"
+hint = "连续选词后自动将词组加入用户词库"
+
+[[items]]
+key = "schema.pinyin.auto_learn.count_threshold"
+group = "schema"
+section = "候选行为"
+subsection = "自动学习"
+type = "number"
+label = "学习阈值"
+hint = "连续选词达到此次数后才正式加入词库"
+min = 1
+max = 20
+enabled_when = "schema.pinyin.auto_learn.enabled == true"
+
+[[items]]
+key = "schema.pinyin.auto_learn.min_word_length"
+group = "schema"
+section = "候选行为"
+subsection = "自动学习"
+type = "number"
+label = "最短学习词长"
+hint = "至少几个字的词组才记录"
+min = 2
+max = 10
+enabled_when = "schema.pinyin.auto_learn.enabled == true"
 
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
 [[items]]
@@ -225,6 +372,57 @@ group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "uan ↔ uang"
+
+# ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
+[[items]]
+key = "schema.mix.show_source_hint"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "显示候选来源标记"
+hint = "混输模式下在候选旁显示来源标识（码表/拼音）"
+
+[[items]]
+key = "schema.mix.enable_english"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "启用英文候选"
+hint = "混输模式下同时查询英文词库并显示英文候选"
+
+[[items]]
+key = "schema.mix.pinyin_only_overflow"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "超码长时仅查拼音"
+hint = "编码超过最大码长时只显示拼音候选，不再查码表"
+
+[[items]]
+key = "schema.mix.top_code_override_pinyin"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "顶码优先（覆盖拼音）"
+hint = "顶码上屏时优先选择码表词条而非拼音候选"
+
+[[items]]
+key = "schema.mix.auto_commit_block_on_pinyin"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "有拼音候选时否决满码上屏"
+hint = "满码自动上屏前若仍有拼音候选则不自动上屏"
+
+[[items]]
+key = "schema.mix.min_pinyin_length"
+group = "schema"
+section = "混输行为"
+type = "number"
+label = "拼音最小触发长度"
+hint = "编码达到此长度才开始查拼音候选（0 表示跟随方案默认值 2）"
+min = 0
+max = 10
 
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
@@ -1255,10 +1453,7 @@ type = "segmented"
 label = "初始语言模式"
 hint = "每次激活输入法时的默认语言（开启「记忆前次状态」后此项不生效）"
 enabled_when = "input.default.remember_last_state == false"
-options = [
-  { value = "false", label = "英文" },
-  { value = "true", label = "中文" },
-]
+options = [{ value = "false", label = "英文" }, { value = "true", label = "中文" }]
 
 [[items]]
 key = "input.default.full_width"
@@ -1268,10 +1463,7 @@ type = "segmented"
 label = "初始字符宽度"
 hint = "每次激活输入法时的默认字符宽度（开启「记忆前次状态」后此项不生效）"
 enabled_when = "input.default.remember_last_state == false"
-options = [
-  { value = "false", label = "半角" },
-  { value = "true", label = "全角" },
-]
+options = [{ value = "false", label = "半角" }, { value = "true", label = "全角" }]
 
 [[items]]
 key = "input.default.chinese_punct"
