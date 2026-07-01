@@ -16,6 +16,7 @@ use crate::capabilities::Capabilities;
 use crate::config::{Config, diff_config};
 use crate::dialogs::schema_manager::SchemaManagerState;
 use crate::manifest::Manifest;
+use crate::pages::dict::state::DictManagerState;
 use crate::rpc;
 
 /// 一个方案条目（schema.list 返回）。
@@ -82,6 +83,8 @@ pub struct AppState {
     pub status: Signal<String>,
     /// 方案管理对话框状态。
     pub schema_mgr: SchemaManagerState,
+    /// 词库管理页状态（导航/数据加载/写操作）。
+    pub dict_mgr: DictManagerState,
     /// 「重新加载」二次确认对话框可见标志。
     pub reload_confirm: Signal<bool>,
     /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
@@ -142,6 +145,7 @@ impl AppState {
             dark: signal(crate::theme_def::system_dark()),
             status: signal("正在连接服务...".to_string()),
             schema_mgr,
+            dict_mgr: DictManagerState::new(),
             reload_confirm: signal(false),
             reset_confirm: signal(false),
             connected: false,
@@ -208,6 +212,8 @@ impl AppState {
         }
         // 方案启用状态从 schema.available 驱动，同步各行 Signal（build 后才有注册项）
         self.schema_mgr.apply_config(&cfg);
+        // 词库页注入方案列表并加载当前类别数据（默认短语域）。
+        self.dict_mgr.set_schemas(&self.schemas);
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);

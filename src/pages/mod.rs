@@ -6,7 +6,7 @@
 
 use windui::prelude::*;
 
-mod dict;
+pub mod dict;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{build_scheme_config_button, section_rows};
@@ -158,15 +158,8 @@ fn appearance_page(state: &AppState) -> Element {
 
 // ───────────────────────── 词库 ─────────────────────────
 
-fn dict_page(_state: &AppState) -> Element {
-    sections_page(vec![section(
-        "词库管理",
-        vec![todo_hint(
-            "词库管理本期占位，后续作为独立功能实现。\
-             缺口：wind-ui-rust 暂无「可编辑/可搜索表格」控件；\
-             core 侧 dict.* RPC 已就绪（search/add/remove/update/import/export）。",
-        )],
-    )])
+fn dict_page(state: &AppState) -> Element {
+    dict::build_page(state)
 }
 
 // ───────────────────────── 关于 ─────────────────────────

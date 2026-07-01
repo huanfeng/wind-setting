@@ -22,9 +22,11 @@ use super::spec::{CategorySpec, SCHEMA_SUB_CATEGORIES, WordCategory, WordRow, sp
 /// 分页类别每页条数（对齐旧版 webview）。
 pub const PAGE_SIZE: usize = 100;
 
-/// `list_signal` 的数据项：一行词条，或空态提示。
+/// `list_signal` 的数据项：表头、一行词条，或空态提示。
 #[derive(Clone)]
 pub enum DictListItem {
+    /// 列表头（列名随当前类别 spec 变化）。
+    Header,
     /// 一行词条 + 页内序号（0 基）。
     Row(WordRow, usize),
     /// 空态提示文本（无数据/未连接/无方案）。
@@ -38,6 +40,8 @@ pub struct DictManagerState {
     pub domain: Signal<usize>,
     /// 方案域下的子标签：0=用户词库 1=临时词库 2=词频 3=候选调整。
     pub sub_tab: Signal<usize>,
+    /// 数据域下拉的响应式选项（首项"快捷短语"，其后各方案；set_schemas 后填充）。
+    pub domain_items: Signal<Vec<String>>,
     /// 可选方案列表（来自 `AppState.schemas`）。
     pub schemas: Rc<RefCell<Vec<SchemaInfo>>>,
 
@@ -51,6 +55,8 @@ pub struct DictManagerState {
     pub offset: Rc<RefCell<usize>>,
     /// 分页总数（状态/翻页按钮用）。
     pub total: Signal<usize>,
+    /// 分页/计数状态文字（如"第 1-100 / 共 250 条"）。
+    pub page_status: Signal<String>,
     /// 状态文字（操作反馈）。
     pub status: Signal<String>,
 }
@@ -66,12 +72,14 @@ impl DictManagerState {
         Self {
             domain: signal(0),
             sub_tab: signal(0),
+            domain_items: signal(vec!["快捷短语".to_string()]),
             schemas: Rc::new(RefCell::new(Vec::new())),
             rows: Rc::new(RefCell::new(Vec::new())),
             list_data: signal(vec![]),
             search: signal(String::new()),
             offset: Rc::new(RefCell::new(0)),
             total: signal(0),
+            page_status: signal(String::new()),
             status: signal(String::new()),
         }
     }
@@ -163,10 +171,25 @@ impl DictManagerState {
         self.rebuild_list();
     }
 
-    /// 重建 `list_data`（rows → 行项；空则空态项）。
+    /// 重建 `list_data`（表头 + rows → 行项；空则空态项）并刷新分页状态文字。
     pub fn rebuild_list(&self) {
         let rows = self.rows.borrow();
-        let mut items = Vec::with_capacity(rows.len().max(1));
+        let total = self.total.get();
+        let spec = self.current_spec();
+
+        // 分页/计数状态文字
+        let page_status = if spec.paged {
+            let off = *self.offset.borrow();
+            let start = if rows.is_empty() { 0 } else { off + 1 };
+            let end = off + rows.len();
+            format!("第 {start}-{end} / 共 {total} 条")
+        } else {
+            format!("共 {total} 条")
+        };
+        self.page_status.set(page_status);
+
+        let mut items = Vec::with_capacity(rows.len() + 2);
+        items.push(DictListItem::Header);
         if rows.is_empty() {
             items.push(DictListItem::Empty(self.empty_hint()));
         } else {
@@ -213,9 +236,18 @@ impl DictManagerState {
     /// 注入方案列表（`AppState.apply_loaded` 后调用）。domain 越界则收敛回短语域。
     pub fn set_schemas(&self, schemas: &[SchemaInfo]) {
         *self.schemas.borrow_mut() = schemas.to_vec();
+        self.domain_items.set(self.domain_labels());
         if self.domain.get() > schemas.len() {
             self.domain.set(0);
         }
+        self.reload();
+    }
+
+    /// 导航（数据域/子标签）变化后：归零分页、清空搜索、重载。
+    /// 由 view 侧的响应式 effect 在 domain/sub_tab 信号变化时调用。
+    pub fn on_nav_changed(&self) {
+        *self.offset.borrow_mut() = 0;
+        self.search.set(String::new());
         self.reload();
     }
 
@@ -237,6 +269,12 @@ impl DictManagerState {
     /// 设置搜索词并刷新（可搜类别；view 侧做防抖）。
     pub fn set_search(&self, q: String) {
         self.search.set(q);
+        *self.offset.borrow_mut() = 0;
+        self.reload();
+    }
+
+    /// 应用当前搜索框内容（归零分页 + 重载）。由"搜索"按钮触发。
+    pub fn apply_search(&self) {
         *self.offset.borrow_mut() = 0;
         self.reload();
     }
@@ -354,10 +392,13 @@ mod tests {
         st.apply_rows(&v);
         assert_eq!(st.rows.borrow().len(), 2);
         assert_eq!(st.total.get(), 120);
-        // list_data 两行
+        // list_data = 表头 + 两行
         let items = st.list_data.get();
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], DictListItem::Row(_, 0)));
+        assert_eq!(items.len(), 3);
+        assert!(matches!(items[0], DictListItem::Header));
+        assert!(matches!(items[1], DictListItem::Row(_, 0)));
+        // 分页状态文字
+        assert_eq!(st.page_status.get(), "第 1-2 / 共 120 条");
     }
 
     #[test]
@@ -365,9 +406,12 @@ mod tests {
         let st = DictManagerState::new(); // 短语（非分页）
         st.apply_rows(&json!([]));
         assert!(st.rows.borrow().is_empty());
+        // 表头 + 空态项
         let items = st.list_data.get();
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], DictListItem::Empty(_)));
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], DictListItem::Header));
+        assert!(matches!(items[1], DictListItem::Empty(_)));
+        assert_eq!(st.page_status.get(), "共 0 条");
     }
 
     #[test]
