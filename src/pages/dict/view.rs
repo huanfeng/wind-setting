@@ -18,7 +18,7 @@ use super::spec::{ColumnSpec, WordField, WordRow};
 use super::state::{DictListItem, DictManagerState};
 
 /// 操作列固定宽度（表头与行需一致）。
-const ACTION_W: i32 = 150;
+const ACTION_W: i32 = 168;
 
 /// 构建词库页。
 pub fn build_page(state: &AppState) -> Element {
@@ -103,6 +103,14 @@ pub fn build_page(state: &AppState) -> Element {
 
 /// 工具栏：批量操作按钮（按 ops 可见）+ 搜索框（可搜类别）。
 fn build_toolbar(mgr: &DictManagerState) -> Element {
+    // 添加（dict/phrase）
+    let m_add = mgr.clone();
+    let v_add = mgr.clone();
+    let add = Element::button("+ 添加")
+        .small()
+        .on_click(move |_| m_add.open_add())
+        .visible_when(move || v_add.current_spec().ops.add);
+
     // 批量：全部转正（temp）/ 清空（dict/temp/freq/shadow）/ 恢复默认（phrase）
     let m_pa = mgr.clone();
     let v_pa = mgr.clone();
@@ -159,6 +167,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .cross(Align::Center)
         .spacing(8)
         .padding_xy(0, 2)
+        .child(add)
         .child(promote_all)
         .child(clear)
         .child(reset_default)
@@ -255,6 +264,18 @@ fn build_row(mgr: &DictManagerState, row: &WordRow, _idx: usize) -> Element {
 fn build_actions(mgr: &DictManagerState, row: &WordRow) -> Element {
     let spec = mgr.current_spec();
     let mut r = Element::row().width(ACTION_W).cross(Align::Center).spacing(6);
+
+    // 编辑（用户词库/短语）
+    if spec.ops.edit {
+        let m = mgr.clone();
+        let (c, t, w) = (row.code.clone(), row.text.clone(), row.weight);
+        r = r.child(
+            Element::button("编辑")
+                .small()
+                .outline()
+                .on_click(move |_| m.open_edit(&c, &t, w)),
+        );
+    }
 
     if spec.ops.promote {
         let m = mgr.clone();

@@ -66,6 +66,19 @@ pub struct DictManagerState {
     pub confirm_msg: Signal<String>,
     /// 待确认的操作（确认后执行）。
     pending: Rc<RefCell<Option<PendingAction>>>,
+
+    // ── 加/改词对话框（用户词库 / 短语）──
+    pub edit_visible: Signal<bool>,
+    pub edit_title: Signal<String>,
+    /// 编码/缩写字段的标签（随类别）。
+    pub edit_l_code: Signal<String>,
+    /// 词条/短语字段的标签（随类别）。
+    pub edit_l_text: Signal<String>,
+    pub edit_code: Signal<String>,
+    pub edit_text: Signal<String>,
+    pub edit_weight: Signal<String>,
+    /// 编辑模式的原始键 (code, text)；None = 新增模式。
+    editing_orig: Rc<RefCell<Option<(String, String)>>>,
 }
 
 /// 待确认的破坏性操作。
@@ -102,6 +115,14 @@ impl DictManagerState {
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
             pending: Rc::new(RefCell::new(None)),
+            edit_visible: signal(false),
+            edit_title: signal(String::new()),
+            edit_l_code: signal("编码".to_string()),
+            edit_l_text: signal("词条".to_string()),
+            edit_code: signal(String::new()),
+            edit_text: signal(String::new()),
+            edit_weight: signal("0".to_string()),
+            editing_orig: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -450,6 +471,167 @@ impl DictManagerState {
         self.confirm_visible.set(false);
     }
 
+    // ── 加/改词对话框（用户词库 / 短语）─────────────────────
+
+    /// 打开"添加"对话框（清空字段，按类别设标签与默认权重）。
+    pub fn open_add(&self) {
+        let (title, lc, lt, w) = match self.current_category() {
+            WordCategory::UserDict => ("添加词条", "编码", "词条", "0"),
+            WordCategory::Phrase => ("添加短语", "缩写", "短语", "1"),
+            _ => return,
+        };
+        *self.editing_orig.borrow_mut() = None;
+        self.edit_code.set(String::new());
+        self.edit_text.set(String::new());
+        self.edit_weight.set(w.into());
+        self.edit_title.set(title.into());
+        self.edit_l_code.set(lc.into());
+        self.edit_l_text.set(lt.into());
+        self.edit_visible.set(true);
+    }
+
+    /// 打开"编辑"对话框（回填字段，记录原始键）。
+    pub fn open_edit(&self, code: &str, text: &str, weight: i64) {
+        let (title, lc, lt) = match self.current_category() {
+            WordCategory::UserDict => ("编辑词条", "编码", "词条"),
+            WordCategory::Phrase => ("编辑短语", "缩写", "短语"),
+            _ => return,
+        };
+        *self.editing_orig.borrow_mut() = Some((code.into(), text.into()));
+        self.edit_code.set(code.into());
+        self.edit_text.set(text.into());
+        self.edit_weight.set(weight.to_string());
+        self.edit_title.set(title.into());
+        self.edit_l_code.set(lc.into());
+        self.edit_l_text.set(lt.into());
+        self.edit_visible.set(true);
+    }
+
+    pub fn cancel_edit(&self) {
+        self.edit_visible.set(false);
+    }
+
+    /// 由"出码"按钮触发：用户词库下按词条反查编码填入编码框。
+    pub fn encode_current(&self) {
+        if self.current_category() != WordCategory::UserDict {
+            return;
+        }
+        let text = self.edit_text.get();
+        if text.trim().is_empty() {
+            self.status.set("请先填写词条".into());
+            return;
+        }
+        let mut p = self.scoped_params();
+        p.insert("text".into(), json!(text));
+        match rpc::call_core("dict.encode", &Value::Object(p)) {
+            Ok(v) => {
+                if let Some(code) = v.as_str() {
+                    self.edit_code.set(code.to_string());
+                }
+            }
+            Err(e) => self.status.set(format!("出码失败: {e}")),
+        }
+    }
+
+    /// 计算"保存"要执行的 RPC 调用序列（纯函数，便于单测）。
+    /// 用户词库：改键走删旧+加新，仅权重变走 update；短语：走 add / update。
+    pub fn save_calls(&self) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
+        let cat = self.current_category();
+        let code = self.edit_code.get();
+        let text = self.edit_text.get();
+        let weight: i64 = self.edit_weight.get().trim().parse().unwrap_or(0);
+        let orig = self.editing_orig.borrow().clone();
+        match cat {
+            WordCategory::UserDict => {
+                if text.trim().is_empty() {
+                    return Err("词条不能为空".into());
+                }
+                if code.trim().is_empty() {
+                    return Err("编码不能为空".into());
+                }
+                match orig {
+                    // 仅权重变更 → update（upsert 改权重）
+                    Some((oc, ot)) if oc == code && ot == text => {
+                        let mut p = self.scoped_params();
+                        p.insert("code".into(), json!(code));
+                        p.insert("text".into(), json!(text));
+                        p.insert("weight".into(), json!(weight));
+                        Ok((vec![("dict.update", Value::Object(p))], "已更新"))
+                    }
+                    // 编码/词条变更 → 删旧 + 加新
+                    Some((oc, ot)) => {
+                        let mut rem = self.scoped_params();
+                        rem.insert("code".into(), json!(oc));
+                        rem.insert("text".into(), json!(ot));
+                        let mut add = self.scoped_params();
+                        add.insert("code".into(), json!(code));
+                        add.insert("text".into(), json!(text));
+                        add.insert("weight".into(), json!(weight));
+                        Ok((
+                            vec![
+                                ("dict.remove", Value::Object(rem)),
+                                ("dict.add", Value::Object(add)),
+                            ],
+                            "已更新",
+                        ))
+                    }
+                    None => {
+                        let mut p = self.scoped_params();
+                        p.insert("code".into(), json!(code));
+                        p.insert("text".into(), json!(text));
+                        p.insert("weight".into(), json!(weight));
+                        Ok((vec![("dict.add", Value::Object(p))], "已添加"))
+                    }
+                }
+            }
+            WordCategory::Phrase => {
+                if code.trim().is_empty() {
+                    return Err("缩写不能为空".into());
+                }
+                if text.trim().is_empty() {
+                    return Err("短语不能为空".into());
+                }
+                match orig {
+                    Some((oc, ot)) => {
+                        let p = json!({
+                            "code": oc, "text": ot,
+                            "newCode": code, "newText": text, "weight": weight
+                        });
+                        Ok((vec![("phrase.update", p)], "已更新"))
+                    }
+                    None => {
+                        let p = json!({ "code": code, "text": text, "position": 0, "weight": weight });
+                        Ok((vec![("phrase.add", p)], "已添加"))
+                    }
+                }
+            }
+            _ => Err("该类别不支持编辑".into()),
+        }
+    }
+
+    /// 顺序执行一组写调用；全部成功才刷新并置反馈，任一失败即停并报错。
+    fn run_calls(&self, calls: Vec<(&str, Value)>, ok_msg: &str) {
+        for (m, p) in &calls {
+            if let Err(e) = rpc::call_core(m, p) {
+                self.status.set(format!("操作失败: {e}"));
+                return;
+            }
+        }
+        self.reload();
+        self.status.set(ok_msg.into());
+    }
+
+    /// 提交加/改词对话框。
+    pub fn submit_word(&self) {
+        match self.save_calls() {
+            Ok((calls, ok)) => {
+                self.edit_visible.set(false);
+                self.run_calls(calls, ok);
+            }
+            Err(e) => self.status.set(e),
+        }
+    }
+
     pub fn prev_page(&self) {
         if self.has_prev() {
             let cur = *self.offset.borrow();
@@ -654,6 +836,83 @@ mod tests {
 
         st.request_reset_default();
         assert!(matches!(*st.pending.borrow(), Some(PendingAction::ResetDefault)));
+    }
+
+    #[test]
+    fn save_calls_dict_add() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0); // 用户词库
+        st.edit_code.set("aaaa".into());
+        st.edit_text.set("工".into());
+        st.edit_weight.set("5".into());
+        // 新增（editing_orig = None）
+        let (calls, msg) = st.save_calls().unwrap();
+        assert_eq!(msg, "已添加");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "dict.add");
+        assert_eq!(calls[0].1["schemaId"], json!("wb"));
+        assert_eq!(calls[0].1["weight"], json!(5));
+    }
+
+    #[test]
+    fn save_calls_dict_edit_weight_only_uses_update() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        st.open_edit("aaaa", "工", 0);
+        st.edit_weight.set("9".into()); // 仅改权重
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "dict.update");
+        assert_eq!(calls[0].1["weight"], json!(9));
+    }
+
+    #[test]
+    fn save_calls_dict_edit_changed_key_removes_then_adds() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        st.open_edit("aaaa", "工", 0);
+        st.edit_text.set("工人".into()); // 词条变更
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "dict.remove");
+        assert_eq!(calls[0].1["text"], json!("工")); // 删旧
+        assert_eq!(calls[1].0, "dict.add");
+        assert_eq!(calls[1].1["text"], json!("工人")); // 加新
+    }
+
+    #[test]
+    fn save_calls_phrase_add_and_edit() {
+        let st = DictManagerState::new(); // domain 0 = 短语
+        st.edit_code.set("bj".into());
+        st.edit_text.set("北京".into());
+        st.edit_weight.set("1".into());
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls[0].0, "phrase.add");
+        assert!(calls[0].1.get("schemaId").is_none());
+
+        st.open_edit("bj", "北京", 1);
+        st.edit_text.set("北京市".into());
+        let (calls2, _) = st.save_calls().unwrap();
+        assert_eq!(calls2[0].0, "phrase.update");
+        assert_eq!(calls2[0].1["newText"], json!("北京市"));
+        assert_eq!(calls2[0].1["text"], json!("北京")); // 原键
+    }
+
+    #[test]
+    fn save_calls_validates_empty() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        st.edit_code.set(String::new());
+        st.edit_text.set(String::new());
+        assert!(st.save_calls().is_err(), "空词条应校验失败");
     }
 
     #[test]

@@ -9,9 +9,101 @@ use crate::widgets::flat_panel;
 
 use super::state::DictManagerState;
 
-/// 构建词库页所有浮层对话框（当前：确认对话框）。
+/// 构建词库页所有浮层对话框：确认对话框 + 加/改词对话框（叠在一个 stack）。
 pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
-    build_confirm_dialog(mgr)
+    Element::stack()
+        .fill()
+        .child(build_confirm_dialog(mgr))
+        .child(build_edit_dialog(mgr))
+}
+
+/// 加/改词对话框（用户词库 / 短语）：编码/缩写（+出码）· 词条/短语 · 权重。
+/// 标签与标题随类别经 `label_rc` 响应式切换；保存逻辑见 `DictManagerState::submit_word`。
+fn build_edit_dialog(mgr: &DictManagerState) -> Element {
+    let submit = mgr.clone();
+    let cancel = mgr.clone();
+    let encode = mgr.clone();
+    let enc_vis = mgr.clone();
+
+    let field = |label: Signal<String>, input: Element| {
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(
+                Element::label_rc(label)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .width(48),
+            )
+            .child(input)
+    };
+
+    let code_input = Element::row()
+        .weight(1.0)
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::text_input(mgr.edit_code, "").height(34).weight(1.0))
+        .child(
+            Element::button("出码")
+                .small()
+                .outline()
+                .on_click(move |_| encode.encode_current())
+                .visible_when(move || enc_vis.current_spec().ops.encode),
+        );
+
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 12)
+        .spacing(10)
+        .child(field(mgr.edit_l_code, code_input))
+        .child(field(mgr.edit_l_text, Element::text_input(mgr.edit_text, "").height(34).weight(1.0)))
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::label("权重").font_size(12.5).fg_role(Role::TextMuted).width(48))
+                .child(Element::text_input(mgr.edit_weight, "").width(100).height(34)),
+        );
+
+    let footer = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 12)
+        .spacing(8)
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("取消")
+                .small()
+                .outline()
+                .on_click(move |_| cancel.cancel_edit()),
+        )
+        .child(
+            Element::button("确定")
+                .small()
+                .on_click(move |_| submit.submit_word()),
+        );
+
+    let frame = Element::col()
+        .width(420)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label_rc(mgr.edit_title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(footer);
+    Element::dialog(mgr.edit_visible, frame)
 }
 
 /// 破坏性操作二次确认：正文由 `confirm_msg` 驱动，确认执行 `confirm_pending`。
