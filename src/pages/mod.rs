@@ -6,6 +6,8 @@
 
 use windui::prelude::*;
 
+mod dict;
+
 use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{build_scheme_config_button, section_rows};
 use crate::state::AppState;
