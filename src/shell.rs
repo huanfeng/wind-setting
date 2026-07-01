@@ -19,7 +19,7 @@ use crate::theme_def::theme_for;
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog, reload_confirm, reset_confirm, conn_ok, conn_failed, field_dialogs) = {
+    let (tabs_vec, tab_sig, dark, status, dialog, dict_dialog, reload_confirm, reset_confirm, conn_ok, conn_failed, field_dialogs) = {
         let st = app.borrow();
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
@@ -33,6 +33,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.dark,
             st.status,
             build_schema_manager_dialog(&st.schema_mgr),
+            pages::dict::build_dict_dialogs(&st.dict_mgr),
             st.reload_confirm,
             st.reset_confirm,
             st.conn_ok,
@@ -85,6 +86,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .bg_role(Role::Bg)
         .child(main_col)
         .child(dialog)
+        .child(dict_dialog)
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
         .child(build_conn_failed_dialog(app, conn_failed));

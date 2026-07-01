@@ -59,6 +59,24 @@ pub struct DictManagerState {
     pub page_status: Signal<String>,
     /// 状态文字（操作反馈）。
     pub status: Signal<String>,
+
+    /// 确认对话框可见标志（清空/删除/恢复默认等破坏性操作）。
+    pub confirm_visible: Signal<bool>,
+    /// 确认对话框正文。
+    pub confirm_msg: Signal<String>,
+    /// 待确认的操作（确认后执行）。
+    pending: Rc<RefCell<Option<PendingAction>>>,
+}
+
+/// 待确认的破坏性操作。
+#[derive(Clone)]
+enum PendingAction {
+    /// 删除一行（code, text/word）。
+    DeleteRow(String, String),
+    /// 清空当前类别。
+    Clear,
+    /// 恢复默认（短语）。
+    ResetDefault,
 }
 
 impl Default for DictManagerState {
@@ -81,6 +99,9 @@ impl DictManagerState {
             total: signal(0),
             page_status: signal(String::new()),
             status: signal(String::new()),
+            confirm_visible: signal(false),
+            confirm_msg: signal(String::new()),
+            pending: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -201,8 +222,11 @@ impl DictManagerState {
     }
 
     fn empty_hint(&self) -> String {
-        let s = self.status.get();
-        if s.is_empty() { "暂无数据".to_string() } else { s }
+        if self.current_spec().scoped_by_schema && self.current_schema_id().is_none() {
+            "暂无已启用方案".to_string()
+        } else {
+            "暂无数据".to_string()
+        }
     }
 
     /// 拉取当前类别数据（走真实/mock RPC），刷新列表。
@@ -218,10 +242,8 @@ impl DictManagerState {
         }
         let params = self.build_list_params();
         match rpc::call_core(spec.rpc.list, &params) {
-            Ok(v) => {
-                self.status.set(String::new());
-                self.apply_rows(&v);
-            }
+            // 成功不动 status：保留调用方（写操作）设置的反馈文字。
+            Ok(v) => self.apply_rows(&v),
             Err(e) => {
                 self.rows.borrow_mut().clear();
                 self.total.set(0);
@@ -248,6 +270,7 @@ impl DictManagerState {
     pub fn on_nav_changed(&self) {
         *self.offset.borrow_mut() = 0;
         self.search.set(String::new());
+        self.status.set(String::new());
         self.reload();
     }
 
@@ -284,6 +307,147 @@ impl DictManagerState {
             *self.offset.borrow_mut() += PAGE_SIZE;
             self.reload();
         }
+    }
+
+    // ── 写操作（直接 RPC 即时生效 + 刷新）─────────────────────
+
+    /// 作用域基参数（按方案类别带 schemaId，短语为空）。
+    fn scoped_params(&self) -> serde_json::Map<String, Value> {
+        let mut m = serde_json::Map::new();
+        if let Some(id) = self.current_schema_id() {
+            m.insert("schemaId".into(), json!(id));
+        }
+        m
+    }
+
+    /// 统一写入：调 RPC，成功刷新并置反馈，失败置错误（纯 method/params，副作用集中于此）。
+    fn write(&self, method: &str, params: Value, ok_msg: &str) {
+        if method.is_empty() {
+            self.status.set("该操作不可用".into());
+            return;
+        }
+        match rpc::call_core(method, &params) {
+            Ok(_) => {
+                self.reload();
+                self.status.set(ok_msg.into());
+            }
+            Err(e) => self.status.set(format!("操作失败: {e}")),
+        }
+    }
+
+    /// 删除一行要调用的 (方法, 参数)。候选调整走 removeRule（word 键），其余走 remove（text 键）。
+    /// 纯函数，便于单测路由/键名。
+    pub fn delete_call(&self, code: &str, text: &str) -> (&'static str, Value) {
+        let spec = self.current_spec();
+        let mut p = self.scoped_params();
+        p.insert("code".into(), json!(code));
+        if spec.ops.remove_rule {
+            p.insert("word".into(), json!(text));
+            (spec.rpc.remove_rule, Value::Object(p))
+        } else {
+            p.insert("text".into(), json!(text));
+            (spec.rpc.remove, Value::Object(p))
+        }
+    }
+
+    /// 删除/撤销一行（候选调整为撤销规则，其余为删除词条）。
+    pub fn do_delete_row(&self, code: &str, text: &str) {
+        let (method, params) = self.delete_call(code, text);
+        let msg = if self.current_spec().ops.remove_rule { "已撤销" } else { "已删除" };
+        self.write(method, params, msg);
+    }
+
+    /// 临时词转正到用户词库。
+    pub fn do_promote(&self, code: &str, text: &str) {
+        let spec = self.current_spec();
+        let mut p = self.scoped_params();
+        p.insert("code".into(), json!(code));
+        p.insert("text".into(), json!(text));
+        self.write(spec.rpc.promote, Value::Object(p), "已转正到用户词库");
+    }
+
+    /// 临时词全部转正。
+    pub fn do_promote_all(&self) {
+        let spec = self.current_spec();
+        self.write(spec.rpc.promote_all, Value::Object(self.scoped_params()), "已全部转正");
+    }
+
+    /// 短语启用/停用开关。
+    pub fn do_set_enabled(&self, code: &str, text: &str, enabled: bool) {
+        let spec = self.current_spec();
+        let mut p = self.scoped_params();
+        p.insert("code".into(), json!(code));
+        p.insert("text".into(), json!(text));
+        p.insert("enabled".into(), json!(enabled));
+        let msg = if enabled { "已启用" } else { "已停用" };
+        self.write(spec.rpc.set_enabled, Value::Object(p), msg);
+    }
+
+    /// 清空当前类别：有 clear RPC 走之；候选调整无 clear，循环撤销所有规则。
+    pub fn do_clear(&self) {
+        let spec = self.current_spec();
+        if !spec.rpc.clear.is_empty() {
+            self.write(spec.rpc.clear, Value::Object(self.scoped_params()), "已清空");
+        } else if spec.ops.remove_rule {
+            let rows = self.rows.borrow().clone();
+            let mut n = 0usize;
+            for r in &rows {
+                let mut p = self.scoped_params();
+                p.insert("code".into(), json!(r.code));
+                p.insert("word".into(), json!(r.text));
+                if rpc::call_core(spec.rpc.remove_rule, &Value::Object(p)).is_ok() {
+                    n += 1;
+                }
+            }
+            self.reload();
+            self.status.set(format!("已撤销 {n} 条规则"));
+        } else {
+            self.status.set("该类别不支持清空".into());
+        }
+    }
+
+    /// 恢复默认短语。
+    pub fn do_reset_default(&self) {
+        let spec = self.current_spec();
+        self.write(spec.rpc.reset_default, json!({}), "已恢复默认短语");
+    }
+
+    // ── 破坏性操作确认 ───────────────────────────────────────
+
+    pub fn request_delete_row(&self, code: &str, text: &str) {
+        *self.pending.borrow_mut() = Some(PendingAction::DeleteRow(code.into(), text.into()));
+        self.confirm_msg.set(format!("确定删除「{text}」？此操作不可恢复。"));
+        self.confirm_visible.set(true);
+    }
+
+    pub fn request_clear(&self) {
+        *self.pending.borrow_mut() = Some(PendingAction::Clear);
+        let n = self.total.get();
+        self.confirm_msg.set(format!("确定清空当前 {n} 条数据？此操作不可恢复。"));
+        self.confirm_visible.set(true);
+    }
+
+    pub fn request_reset_default(&self) {
+        *self.pending.borrow_mut() = Some(PendingAction::ResetDefault);
+        self.confirm_msg.set("确定恢复为默认短语？将丢弃自定义短语的改动。".into());
+        self.confirm_visible.set(true);
+    }
+
+    /// 执行待确认操作。
+    pub fn confirm_pending(&self) {
+        let act = self.pending.borrow_mut().take();
+        self.confirm_visible.set(false);
+        match act {
+            Some(PendingAction::DeleteRow(c, t)) => self.do_delete_row(&c, &t),
+            Some(PendingAction::Clear) => self.do_clear(),
+            Some(PendingAction::ResetDefault) => self.do_reset_default(),
+            None => {}
+        }
+    }
+
+    pub fn cancel_confirm(&self) {
+        *self.pending.borrow_mut() = None;
+        self.confirm_visible.set(false);
     }
 
     pub fn prev_page(&self) {
@@ -430,6 +594,66 @@ mod tests {
         *st.offset.borrow_mut() = 200;
         assert!(st.has_prev());
         assert!(!st.has_next(), "200+100 不小于 250");
+    }
+
+    #[test]
+    fn delete_call_dict_uses_remove_with_text_and_schema() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0); // 用户词库
+        let (method, params) = st.delete_call("aaaa", "工");
+        assert_eq!(method, "dict.remove");
+        assert_eq!(params["schemaId"], json!("wb"));
+        assert_eq!(params["code"], json!("aaaa"));
+        assert_eq!(params["text"], json!("工"));
+        assert!(params.get("word").is_none());
+    }
+
+    #[test]
+    fn delete_call_shadow_uses_remove_rule_with_word() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3); // 候选调整
+        let (method, params) = st.delete_call("wm", "我们");
+        assert_eq!(method, "shadow.removeRule");
+        assert_eq!(params["word"], json!("我们"), "shadow 用 word 键");
+        assert!(params.get("text").is_none());
+    }
+
+    #[test]
+    fn delete_call_phrase_has_no_schema() {
+        let st = DictManagerState::new(); // domain 0 = 短语
+        let (method, params) = st.delete_call("bj", "北京");
+        assert_eq!(method, "phrase.remove");
+        assert!(params.get("schemaId").is_none(), "短语全局无 schemaId");
+        assert_eq!(params["text"], json!("北京"));
+    }
+
+    #[test]
+    fn request_delete_sets_pending_and_shows_dialog() {
+        let st = DictManagerState::new();
+        st.request_delete_row("bj", "北京");
+        assert!(st.confirm_visible.get());
+        assert!(st.confirm_msg.get().contains("北京"));
+        assert!(matches!(*st.pending.borrow(), Some(PendingAction::DeleteRow(_, _))));
+        // 取消清空待办
+        st.cancel_confirm();
+        assert!(!st.confirm_visible.get());
+        assert!(st.pending.borrow().is_none());
+    }
+
+    #[test]
+    fn request_clear_and_reset_set_pending() {
+        let st = DictManagerState::new();
+        st.total.set(42);
+        st.request_clear();
+        assert!(st.confirm_msg.get().contains("42"));
+        assert!(matches!(*st.pending.borrow(), Some(PendingAction::Clear)));
+
+        st.request_reset_default();
+        assert!(matches!(*st.pending.borrow(), Some(PendingAction::ResetDefault)));
     }
 
     #[test]

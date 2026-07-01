@@ -6,9 +6,11 @@
 //! - （后续）`view`：两级导航 + 工具栏 + 表格 + 分页。
 //! - （后续）`dialogs`：加/改词、确认对话框。
 
+pub mod dialogs;
 pub mod reactive;
 pub mod spec;
 pub mod state;
 pub mod view;
 
+pub use dialogs::build_dict_dialogs;
 pub use view::build_page;
