@@ -48,7 +48,7 @@ pub struct DictManagerState {
     pub rows: Rc<RefCell<Vec<WordRow>>>,
     /// 驱动 `list_signal` 的数据信号。
     pub list_data: Signal<Vec<DictListItem>>,
-    /// 搜索框文本（可搜类别，防抖后触发 reload）。
+    /// 搜索框文本（可搜类别，由"搜索"按钮触发 reload，见 [`Self::apply_search`]）。
     pub search: Signal<String>,
     /// 分页偏移（分页类别）。
     pub offset: Rc<RefCell<usize>>,
@@ -262,8 +262,22 @@ impl DictManagerState {
         }
         let params = self.build_list_params();
         match rpc::call_core(spec.rpc.list, &params) {
-            // 成功不动 status：保留调用方（写操作）设置的反馈文字。
-            Ok(v) => self.apply_rows(&v),
+            Ok(v) => {
+                // 分页越界回收：末页删空后 offset 超出有效范围时回退到末页再取一次。
+                if spec.paged {
+                    let total = v.get("total").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                    let off = *self.offset.borrow();
+                    if off > 0 && total <= off {
+                        let max_off =
+                            if total == 0 { 0 } else { (total - 1) / PAGE_SIZE * PAGE_SIZE };
+                        *self.offset.borrow_mut() = max_off;
+                        self.reload();
+                        return;
+                    }
+                }
+                // 成功不动 status：保留调用方（写操作）设置的反馈文字。
+                self.apply_rows(&v);
+            }
             Err(e) => {
                 self.rows.borrow_mut().clear();
                 self.total.set(0);
@@ -329,7 +343,11 @@ impl DictManagerState {
                 self.reload();
                 self.status.set(ok_msg.into());
             }
-            Err(e) => self.status.set(format!("操作失败: {e}")),
+            Err(e) => {
+                // 失败也刷新：把乐观改动（如启用开关翻转）回退到服务端真实状态。
+                self.status.set(format!("操作失败: {e}"));
+                self.reload();
+            }
         }
     }
 
@@ -388,6 +406,7 @@ impl DictManagerState {
             self.write(spec.rpc.clear, Value::Object(self.scoped_params()), "已清空");
         } else if spec.ops.remove_rule {
             let rows = self.rows.borrow().clone();
+            let total = rows.len();
             let mut n = 0usize;
             for r in &rows {
                 let mut p = self.scoped_params();
@@ -398,7 +417,11 @@ impl DictManagerState {
                 }
             }
             self.reload();
-            self.status.set(format!("已撤销 {n} 条规则"));
+            if n == total {
+                self.status.set(format!("已撤销 {n} 条规则"));
+            } else {
+                self.status.set(format!("已撤销 {n} 条，{} 条失败", total - n));
+            }
         } else {
             self.status.set("该类别不支持清空".into());
         }
@@ -517,7 +540,10 @@ impl DictManagerState {
         let cat = spec.category;
         let code = self.edit_code.get();
         let text = self.edit_text.get();
-        let weight: i64 = self.edit_weight.get().trim().parse().unwrap_or(0);
+        let weight: i64 = match self.edit_weight.get().trim().parse() {
+            Ok(w) => w,
+            Err(_) => return Err("权重需为整数".into()),
+        };
         let orig = self.editing_orig.borrow().clone();
         match cat {
             WordCategory::UserDict => {
@@ -545,10 +571,12 @@ impl DictManagerState {
                         add.insert("code".into(), json!(code));
                         add.insert("text".into(), json!(text));
                         add.insert("weight".into(), json!(weight));
+                        // 先加新再删旧：add 失败则旧词条完好（避免删成功/加失败丢词）；
+                        // 最坏 add 成功、remove 失败仅留一条重复，可再删。
                         Ok((
                             vec![
-                                (spec.rpc.remove, Value::Object(rem)),
                                 (spec.rpc.add, Value::Object(add)),
+                                (spec.rpc.remove, Value::Object(rem)),
                             ],
                             "已更新",
                         ))
@@ -858,10 +886,11 @@ mod tests {
         st.edit_text.set("工人".into()); // 词条变更
         let (calls, _) = st.save_calls().unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].0, "dict.remove");
-        assert_eq!(calls[0].1["text"], json!("工")); // 删旧
-        assert_eq!(calls[1].0, "dict.add");
-        assert_eq!(calls[1].1["text"], json!("工人")); // 加新
+        // 先加新、再删旧（避免删成功/加失败丢词）
+        assert_eq!(calls[0].0, "dict.add");
+        assert_eq!(calls[0].1["text"], json!("工人")); // 加新
+        assert_eq!(calls[1].0, "dict.remove");
+        assert_eq!(calls[1].1["text"], json!("工")); // 删旧
     }
 
     #[test]
@@ -891,6 +920,18 @@ mod tests {
         st.edit_code.set(String::new());
         st.edit_text.set(String::new());
         assert!(st.save_calls().is_err(), "空词条应校验失败");
+    }
+
+    #[test]
+    fn save_calls_rejects_non_numeric_weight() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        st.edit_code.set("aaaa".into());
+        st.edit_text.set("工".into());
+        st.edit_weight.set("abc".into()); // 非数字
+        assert!(st.save_calls().is_err(), "非数字权重应校验失败");
     }
 
     #[test]
