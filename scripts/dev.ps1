@@ -290,20 +290,20 @@ function Show-Menu {
 function Dispatch {
     param([string]$cmd)
     switch ($cmd) {
-        { $_ -in '1','b','build','b1' }  { return Do-Build release }
-        { $_ -in 'd1','db','dbuild' }    { return Do-Build dev     }
-        { $_ -in 'p1','p','copy' }       { return Do-Copy  release }
-        { $_ -in 'pd1','dp','dcopy' }    { return Do-Copy  dev     }
-        { $_ -in 't','test' }            { return Do-Test           }
-        { $_ -in 'c','check' }           { return Do-Check          }
-        { $_ -in 'l','clippy' }          { return Do-Clippy         }
-        { $_ -in 'f','fmt' }             { return Do-Fmt            }
-        'fmt-check'                       { return Do-FmtCheck       }
-        'ci'                              { return Do-CI             }
-        'clean'                           { return Do-Clean          }
-        'run'                             { return Do-Run release    }
-        { $_ -in 'dr','drun' }           { return Do-Run dev        }
-        default                           { Err "未知命令: $cmd"; return 1 }
+        { $_ -in @('1','b','build','b1') }  { return Do-Build release }
+        { $_ -in @('d1','db','dbuild') }    { return Do-Build dev     }
+        { $_ -in @('p1','p','copy') }       { return Do-Copy  release }
+        { $_ -in @('pd1','dp','dcopy') }    { return Do-Copy  dev     }
+        { $_ -in @('t','test') }            { return Do-Test           }
+        { $_ -in @('c','check') }           { return Do-Check          }
+        { $_ -in @('l','clippy') }          { return Do-Clippy         }
+        { $_ -in @('f','fmt') }             { return Do-Fmt            }
+        'fmt-check'                          { return Do-FmtCheck       }
+        'ci'                                 { return Do-CI             }
+        'clean'                              { return Do-Clean          }
+        'run'                                { return Do-Run release    }
+        { $_ -in @('dr','drun') }           { return Do-Run dev        }
+        default                              { Err "未知命令: $cmd"; return 1 }
     }
 }
 
@@ -312,10 +312,12 @@ function Menu-Loop {
         Show-Menu
         $raw = (Read-Host "选择命令").Trim()
         if (-not $raw) { continue }
-        if ($raw.ToLower() -in 'q','quit','exit') { Say "再见"; break }
+        $lo = $raw.ToLower()
+        if ($lo -eq 'q' -or $lo -eq 'quit' -or $lo -eq 'exit') { Say "再见"; break }
 
         # 支持空格分隔的连续命令: "d1 pd1" → 依次执行, 前者失败则停止
-        $tokens = $raw.ToLower() -split '\s+' | Where-Object { $_ -ne "" }
+        # @() 强制包装: 单 token 时 Where-Object 返回标量字符串, foreach 会逐字符迭代
+        $tokens = @($raw.ToLower() -split '\s+' | Where-Object { $_ -ne "" })
         $anyFailed = $false
         foreach ($token in $tokens) {
             if ($anyFailed) { break }
@@ -339,18 +341,18 @@ if ($allCmds.Count -eq 0) { Menu-Loop; return }
 $firstCmd = $allCmds[0].Trim().ToLower()
 
 # help
-if ($firstCmd -in "-h", "--help", "help") {
+if ($firstCmd -eq "-h" -or $firstCmd -eq "--help" -or $firstCmd -eq "help") {
     Get-Content $PSCommandPath | Where-Object { $_ -match '^#' } | ForEach-Object { $_ -replace '^# ?', '' }
     return
 }
 
 # menu (显式)
-if ($firstCmd -in "menu") { Menu-Loop; return }
+if ($firstCmd -eq "menu") { Menu-Loop; return }
 
 # 按序执行所有命令; 前者失败则停止
 foreach ($c in $allCmds) {
     $cmd = $c.Trim().ToLower()
-    if ($cmd -in 'q','quit','exit') { exit 0 }
+    if ($cmd -eq 'q' -or $cmd -eq 'quit' -or $cmd -eq 'exit') { exit 0 }
     $rc = Dispatch $cmd
     if ($rc -ne 0) { exit $rc }
 }
