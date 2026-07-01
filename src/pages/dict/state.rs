@@ -4,8 +4,7 @@
 //! `Rc<RefCell<>>` 存原始数据 + `Signal` 驱动响应式 + `list_signal` 即时刷新。
 //! 挂进 `AppState`（与 `schema_mgr` 平级）以便对话框挂根、状态跨页重建存活。
 //!
-//! 所有写操作走直接 RPC 即时生效（阶段 4/5 接入），不进入设置页的批量保存通道。
-#![allow(dead_code)]
+//! 所有写操作走直接 RPC 即时生效，不进入设置页的批量保存通道。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -295,28 +294,6 @@ impl DictManagerState {
         self.reload();
     }
 
-    pub fn set_domain(&self, i: usize) {
-        self.domain.set(i);
-        self.sub_tab.set(0);
-        *self.offset.borrow_mut() = 0;
-        self.search.set(String::new());
-        self.reload();
-    }
-
-    pub fn set_sub_tab(&self, i: usize) {
-        self.sub_tab.set(i);
-        *self.offset.borrow_mut() = 0;
-        self.search.set(String::new());
-        self.reload();
-    }
-
-    /// 设置搜索词并刷新（可搜类别；view 侧做防抖）。
-    pub fn set_search(&self, q: String) {
-        self.search.set(q);
-        *self.offset.borrow_mut() = 0;
-        self.reload();
-    }
-
     /// 应用当前搜索框内容（归零分页 + 重载）。由"搜索"按钮触发。
     pub fn apply_search(&self) {
         *self.offset.borrow_mut() = 0;
@@ -536,7 +513,8 @@ impl DictManagerState {
     /// 计算"保存"要执行的 RPC 调用序列（纯函数，便于单测）。
     /// 用户词库：改键走删旧+加新，仅权重变走 update；短语：走 add / update。
     pub fn save_calls(&self) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
-        let cat = self.current_category();
+        let spec = self.current_spec();
+        let cat = spec.category;
         let code = self.edit_code.get();
         let text = self.edit_text.get();
         let weight: i64 = self.edit_weight.get().trim().parse().unwrap_or(0);
@@ -556,7 +534,7 @@ impl DictManagerState {
                         p.insert("code".into(), json!(code));
                         p.insert("text".into(), json!(text));
                         p.insert("weight".into(), json!(weight));
-                        Ok((vec![("dict.update", Value::Object(p))], "已更新"))
+                        Ok((vec![(spec.rpc.update, Value::Object(p))], "已更新"))
                     }
                     // 编码/词条变更 → 删旧 + 加新
                     Some((oc, ot)) => {
@@ -569,8 +547,8 @@ impl DictManagerState {
                         add.insert("weight".into(), json!(weight));
                         Ok((
                             vec![
-                                ("dict.remove", Value::Object(rem)),
-                                ("dict.add", Value::Object(add)),
+                                (spec.rpc.remove, Value::Object(rem)),
+                                (spec.rpc.add, Value::Object(add)),
                             ],
                             "已更新",
                         ))
@@ -580,7 +558,7 @@ impl DictManagerState {
                         p.insert("code".into(), json!(code));
                         p.insert("text".into(), json!(text));
                         p.insert("weight".into(), json!(weight));
-                        Ok((vec![("dict.add", Value::Object(p))], "已添加"))
+                        Ok((vec![(spec.rpc.add, Value::Object(p))], "已添加"))
                     }
                 }
             }
@@ -597,11 +575,11 @@ impl DictManagerState {
                             "code": oc, "text": ot,
                             "newCode": code, "newText": text, "weight": weight
                         });
-                        Ok((vec![("phrase.update", p)], "已更新"))
+                        Ok((vec![(spec.rpc.update, p)], "已更新"))
                     }
                     None => {
                         let p = json!({ "code": code, "text": text, "position": 0, "weight": weight });
-                        Ok((vec![("phrase.add", p)], "已添加"))
+                        Ok((vec![(spec.rpc.add, p)], "已添加"))
                     }
                 }
             }

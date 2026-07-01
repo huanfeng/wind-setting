@@ -4,8 +4,6 @@
 //! 每类由一份静态 `CategorySpec` 描述（列/可用操作/RPC 方法名/作用域），
 //! 各自 RPC 返回的 json 经 [`WordRow::from_json`] 归一到同一个 [`WordRow`]。
 //! 新增或调整类别只改本文件，不动视图/状态框架。
-// 分阶段构建：视图/状态尚未接入前，部分 spec 字段暂未被消费——收尾阶段移除本 allow。
-#![allow(dead_code)]
 
 use serde_json::Value;
 
@@ -51,11 +49,6 @@ pub struct WordRow {
 }
 
 impl WordRow {
-    /// 行身份键（多数写操作以 code+text 定位）。
-    pub fn key(&self) -> (String, String) {
-        (self.code.clone(), self.text.clone())
-    }
-
     /// 按类别把单条 RPC json 映射为 `WordRow`。字段缺失回落默认值。
     pub fn from_json(cat: WordCategory, v: &Value) -> Self {
         let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
