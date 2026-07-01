@@ -190,6 +190,7 @@ type = "toggle"
 label = "启用自动造词"
 hint = "连续选字后自动将词组加入用户词库"
 
+# 造词字数上下限（core 有默认 2/10）：隐藏，不对用户开放。
 [[items]]
 key = "schema.codetable.auto_phrase.min_phrase_len"
 group = "schema"
@@ -200,6 +201,7 @@ label = "最短造词长度"
 hint = "至少连续选几个字才记为词组"
 min = 2
 max = 10
+hidden = true
 enabled_when = "schema.codetable.auto_phrase.enabled == true"
 
 [[items]]
@@ -212,18 +214,7 @@ label = "最长造词长度"
 hint = "最多记录几个字的词组"
 min = 2
 max = 20
-enabled_when = "schema.codetable.auto_phrase.enabled == true"
-
-[[items]]
-key = "schema.codetable.auto_phrase.count_threshold"
-group = "schema"
-section = "上屏行为"
-subsection = "自动造词"
-type = "number"
-label = "造词阈值"
-hint = "连续选字达到此次数后才正式加入词库"
-min = 1
-max = 20
+hidden = true
 enabled_when = "schema.codetable.auto_phrase.enabled == true"
 
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
@@ -262,18 +253,6 @@ subsection = "自动学习"
 type = "toggle"
 label = "启用自动学习"
 hint = "连续选词后自动将词组加入用户词库"
-
-[[items]]
-key = "schema.pinyin.auto_learn.count_threshold"
-group = "schema"
-section = "候选行为"
-subsection = "自动学习"
-type = "number"
-label = "学习阈值"
-hint = "连续选词达到此次数后才正式加入词库"
-min = 1
-max = 20
-enabled_when = "schema.pinyin.auto_learn.enabled == true"
 
 [[items]]
 key = "schema.pinyin.auto_learn.min_word_length"
@@ -390,6 +369,7 @@ type = "toggle"
 label = "启用英文候选"
 hint = "混输模式下同时查询英文词库并显示英文候选"
 
+# 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
 key = "schema.mix.pinyin_only_overflow"
 group = "schema"
@@ -397,7 +377,9 @@ section = "混输行为"
 type = "toggle"
 label = "超码长时仅查拼音"
 hint = "编码超过最大码长时只显示拼音候选，不再查码表"
+hidden = true
 
+# 顶码歧义裁决（core 默认 false，保护拼音）：隐藏，不对用户开放。
 [[items]]
 key = "schema.mix.top_code_override_pinyin"
 group = "schema"
@@ -405,6 +387,7 @@ section = "混输行为"
 type = "toggle"
 label = "顶码优先（覆盖拼音）"
 hint = "顶码上屏时优先选择码表词条而非拼音候选"
+hidden = true
 
 [[items]]
 key = "schema.mix.auto_commit_block_on_pinyin"

@@ -2,12 +2,15 @@
   "appVersion": "0.1.0",
   "configKeys": [
     {
-      "default": "",
+      "default": "wubi86",
       "key": "schema.active",
       "type": "str"
     },
     {
-      "default": [],
+      "default": [
+        "wubi86",
+        "wubi86_pinyin"
+      ],
       "key": "schema.available",
       "type": "strlist"
     },
@@ -23,6 +26,90 @@
     },
     {
       "default": true,
+      "key": "schema.codetable.top_code_commit",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.codetable.clear_on_empty_max",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.codetable.auto_commit_at_full",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "schema.codetable.auto_commit_min_len",
+      "type": "int"
+    },
+    {
+      "default": true,
+      "key": "schema.codetable.punct_commit",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.codetable.show_code_hint",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.codetable.single_code_input",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.codetable.single_code_complete",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.codetable.z_key_repeat",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.codetable.frequency.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 1,
+      "key": "schema.codetable.frequency.protect_top_n",
+      "type": "int"
+    },
+    {
+      "default": "top",
+      "key": "schema.codetable.frequency.strategy",
+      "type": "enum",
+      "values": [
+        "top",
+        "step"
+      ]
+    },
+    {
+      "default": false,
+      "key": "schema.codetable.auto_phrase.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 2,
+      "key": "schema.codetable.auto_phrase.min_phrase_len",
+      "type": "int"
+    },
+    {
+      "default": 10,
+      "key": "schema.codetable.auto_phrase.max_phrase_len",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "schema.codetable.auto_phrase.promote_count",
+      "type": "int"
+    },
+    {
+      "default": true,
       "key": "schema.pinyin.show_code_hint",
       "type": "bool"
     },
@@ -30,11 +117,6 @@
       "default": true,
       "key": "schema.pinyin.use_smart_compose",
       "type": "bool"
-    },
-    {
-      "default": "smart",
-      "key": "schema.pinyin.candidate_order",
-      "type": "str"
     },
     {
       "default": "auto",
@@ -103,6 +185,71 @@
     },
     {
       "default": true,
+      "key": "schema.pinyin.frequency.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 0.0,
+      "key": "schema.pinyin.frequency.half_life",
+      "type": "float"
+    },
+    {
+      "default": 0.0,
+      "key": "schema.pinyin.frequency.base_scale",
+      "type": "float"
+    },
+    {
+      "default": 0.0,
+      "key": "schema.pinyin.frequency.recency_peak",
+      "type": "float"
+    },
+    {
+      "default": true,
+      "key": "schema.pinyin.auto_learn.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "schema.pinyin.auto_learn.min_word_length",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "schema.pinyin.auto_learn.promote_count",
+      "type": "int"
+    },
+    {
+      "default": false,
+      "key": "schema.mix.show_source_hint",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.mix.enable_english",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.mix.pinyin_only_overflow",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.mix.top_code_override_pinyin",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.mix.auto_commit_block_on_pinyin",
+      "type": "bool"
+    },
+    {
+      "default": 2,
+      "key": "schema.mix.min_pinyin_length",
+      "type": "int"
+    },
+    {
+      "default": true,
       "key": "schema.quick_input.enabled",
       "type": "bool"
     },
@@ -112,7 +259,7 @@
       "type": "int"
     },
     {
-      "default": false,
+      "default": true,
       "key": "schema.quick_input.force_vertical",
       "type": "bool"
     },
@@ -221,6 +368,15 @@
       "type": "str"
     },
     {
+      "default": "hold_composition",
+      "key": "input.symbol.smart_method",
+      "type": "enum",
+      "values": [
+        "delete_replace",
+        "hold_composition"
+      ]
+    },
+    {
       "default": false,
       "key": "input.auto_pair.chinese",
       "type": "bool"
@@ -236,9 +392,7 @@
         "【】",
         "｛｝",
         "《》",
-        "〈〉",
-        "「」",
-        "『』"
+        "〈〉"
       ],
       "key": "input.auto_pair.chinese_pairs",
       "type": "strlist"
@@ -247,7 +401,8 @@
       "default": [
         "()",
         "[]",
-        "{}"
+        "{}",
+        "<>"
       ],
       "key": "input.auto_pair.english_pairs",
       "type": "strlist"
@@ -292,6 +447,16 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "input.temp_pinyin.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "pinyin",
+      "key": "input.temp_pinyin.schema",
+      "type": "str"
+    },
+    {
       "default": [
         "backtick"
       ],
@@ -308,36 +473,10 @@
         "www.",
         "http",
         "https",
-        "ftp.",
-        "bbs."
+        "ftp."
       ],
       "key": "input.url.prefixes",
       "type": "strlist"
-    },
-    {
-      "default": false,
-      "key": "input.code_commit.auto_commit_at_full",
-      "type": "bool"
-    },
-    {
-      "default": 0,
-      "key": "input.code_commit.auto_commit_min_len",
-      "type": "int"
-    },
-    {
-      "default": false,
-      "key": "input.code_commit.clear_on_empty_max",
-      "type": "bool"
-    },
-    {
-      "default": false,
-      "key": "input.code_commit.top_code_commit",
-      "type": "bool"
-    },
-    {
-      "default": true,
-      "key": "input.code_commit.auto_commit_block_on_pinyin",
-      "type": "bool"
     },
     {
       "default": false,
@@ -430,6 +569,11 @@
     {
       "default": "ctrl+shift+number",
       "key": "keys.delete_candidate",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+shift+f11",
+      "key": "keys.take_screenshot",
       "type": "str"
     },
     {
@@ -530,7 +674,7 @@
       "type": "bool"
     },
     {
-      "default": 18.0,
+      "default": 18,
       "key": "ui.candidate.font_size",
       "type": "float"
     },
@@ -586,7 +730,7 @@
       "type": "str"
     },
     {
-      "default": "",
+      "default": "directwrite",
       "key": "ui.font.render_mode",
       "type": "enum",
       "values": [
@@ -727,12 +871,14 @@
       "type": "bool"
     },
     {
-      "default": [],
+      "default": [
+        "SearchHost.exe"
+      ],
       "key": "compat.host_render_processes",
       "type": "strlist"
     },
     {
-      "default": "",
+      "default": "info",
       "key": "debug.log_level",
       "type": "enum",
       "values": [
@@ -742,6 +888,16 @@
         "warn",
         "error"
       ]
+    },
+    {
+      "default": 10,
+      "key": "debug.log_max_size_mb",
+      "type": "int"
+    },
+    {
+      "default": 5,
+      "key": "debug.log_max_files",
+      "type": "int"
     }
   ]
 }
