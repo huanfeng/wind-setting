@@ -7,3 +7,4 @@
 //! - （后续）`dialogs`：加/改词、确认对话框。
 
 pub mod spec;
+pub mod state;

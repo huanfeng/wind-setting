@@ -206,14 +206,40 @@ fn mock_reply(method: &str) -> Value {
             "version": "3.2.1", "platform": "windows", "arch": "x86_64",
             "build": "release", "dataDir": "C:/Users/.../WindInput", "running": true
         }),
-        "phrase.list" | "shadow.list" | "dict.stats" | "temp.list" | "stats.daily" => json!([]),
+        "dict.stats" | "stats.daily" => json!([]),
+        // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。
+        "phrase.list" => json!([
+            { "code": "bj", "text": "北京", "position": 0, "weight": 1, "enabled": true },
+            { "code": "yx", "text": "example@example.com", "position": 0, "weight": 2, "enabled": true },
+            { "code": "dd", "text": "（＾＿＾）", "position": 0, "weight": 1, "enabled": false }
+        ]),
+        "temp.list" => json!([
+            { "code": "nihao", "text": "你好", "count": 3 },
+            { "code": "women", "text": "我们", "count": 7 }
+        ]),
+        "shadow.list" => json!([
+            { "code": "wm", "word": "我们", "candId": "c1", "type": "pin", "position": 0 },
+            { "code": "nh", "word": "你好", "candId": null, "type": "delete" }
+        ]),
         "config.getDefaults" | "schema.getConfig" | "schema.references" | "theme.preview" => {
             json!({})
         }
         "system.status" => json!({ "running": true }),
         "stats.summary" => json!({ "today": 0, "week": 0, "month": 0, "total": 0, "streak": 0 }),
-        "dict.listPaged" | "freq.listPaged" => json!({ "items": [], "total": 0 }),
-        "dict.search" => json!([]),
+        "dict.listPaged" => json!({ "items": [
+            { "code": "aaaa", "text": "工", "weight": 0 },
+            { "code": "ggkg", "text": "王中", "weight": 5 },
+            { "code": "wghg", "text": "程序", "weight": 3 }
+        ], "total": 3 }),
+        "freq.listPaged" => json!({ "items": [
+            { "code": "nihao", "text": "你好", "count": 12, "lastUsed": "2026-06-30" },
+            { "code": "women", "text": "我们", "count": 5, "lastUsed": "2026-06-28" }
+        ], "total": 2 }),
+        "dict.search" => json!([
+            { "code": "aaaa", "text": "工", "weight": 0 }
+        ]),
+        // 加词自动出码：mock 返回占位码，便于对话框演示。
+        "dict.encode" => json!("aaaa"),
         _ => Value::Null,
     }
 }
