@@ -3,12 +3,13 @@
 # 用法:
 #   .\scripts\dev.ps1            # 交互式菜单
 #   .\scripts\dev.ps1 <命令>     # 非交互直调
+#   .\scripts\dev.ps1 d1 pd1     # 连续命令（前者失败则停止）
 #
 # 命令:
-#   b  / build      Release 构建（产物 wind_setting.exe）
-#   db / dbuild     Dev 构建（debug profile，产物仍为 wind_setting.exe）
-#   p  / copy       复制 release exe → WIND_DIR_RELEASE\wind_setting.exe
-#   dp / dcopy      复制 dev exe → WIND_DIR_DEV\wind_setting_dev.exe（改名带 _dev）
+#   1/b/b1/build    Release 构建（产物 wind_setting.exe）
+#   d1/db/dbuild    Dev 构建（debug profile，产物仍为 wind_setting.exe）
+#   p1/p/copy       复制 release exe → WIND_DIR_RELEASE\wind_setting.exe
+#   pd1/dp/dcopy    复制 dev exe → WIND_DIR_DEV\wind_setting_dev.exe（改名带 _dev）
 #   t  / test       测试 (编译验证)
 #   c  / check      cargo check
 #   l  / clippy     cargo clippy
@@ -29,7 +30,8 @@
 #   $WIND_PIPE_SUFFIX  = ""                       (可选, run 时注入)
 
 param(
-    [string]$Cmd = ""
+    # 支持连续命令: .\dev.ps1 d1 pd1 (前者失败则后者不执行)
+    [Parameter(Position = 0, ValueFromRemainingArguments)] [string[]]$Commands = @()
 )
 
 # ---------- 路径 ----------
@@ -95,7 +97,7 @@ function Invoke-Elevated {
     Remove-Item $TmpLog -ErrorAction SilentlyContinue
 
     # *> 捕获所有流（含 Write-Host 的 stream 6）；EncodedCommand 避免路径转义问题
-    $innerCmd    = "& `"$PSCommandPath`" -Cmd `"$ElevatedCmd`" *> `"$TmpLog`""
+    $innerCmd    = "& `"$PSCommandPath`" `"$ElevatedCmd`" *> `"$TmpLog`""
     $encodedCmd  = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($innerCmd))
     $proc = Start-Process pwsh -Verb RunAs -Wait -PassThru -ArgumentList @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
@@ -178,7 +180,7 @@ function Do-Copy {
 
     # 目标目录需要写权限时自动提权（如 Program Files）
     if (-not (Test-IsAdmin)) {
-        $elevatedCmd = if ($Variant -eq "dev") { "dp" } else { "p" }
+        $elevatedCmd = if ($Variant -eq "dev") { "pd1" } else { "p1" }
         return Invoke-Elevated $elevatedCmd
     }
 
@@ -266,10 +268,10 @@ function Show-Menu {
     Write-Host ""
     Write-Host "wind_setting 开发菜单" -ForegroundColor Cyan
     Write-Host "─────────────────────────────────"
-    Write-Host "  b  / build      Release 构建"
-    Write-Host "  db / dbuild     Dev 构建 (debug profile)"
-    Write-Host "  p  / copy       复制 release → WIND_DIR_RELEASE (wind_setting.exe)"
-    Write-Host "  dp / dcopy      复制 dev → WIND_DIR_DEV (wind_setting_dev.exe)"
+    Write-Host "  1/b/build/b1    Release 构建"
+    Write-Host "  d1/db/dbuild    Dev 构建 (debug profile)"
+    Write-Host "  p1/p/copy       复制 release → WIND_DIR_RELEASE (wind_setting.exe)"
+    Write-Host "  pd1/dp/dcopy    复制 dev → WIND_DIR_DEV (wind_setting_dev.exe)"
     Write-Host "  t  / test       测试 (编译验证)"
     Write-Host "  c  / check      cargo check"
     Write-Host "  l  / clippy     cargo clippy"
@@ -279,29 +281,49 @@ function Show-Menu {
     Write-Host "  run             本机运行 release"
     Write-Host "  dr / drun       本机运行 dev (WIND_VARIANT=dev)"
     Write-Host "  q  / quit       退出"
+    Write-Host "  (支持空格分隔连续命令, 如: d1 pd1)"
     Write-Host ""
 }
 
-# ---------- 命令分发 ----------
+# ---------- 命令分发 / 菜单 ----------
 
-function Run-Cmd {
+function Dispatch {
     param([string]$cmd)
     switch ($cmd) {
-        { $_ -in 'b','build'   } { return Do-Build release }
-        { $_ -in 'db','dbuild' } { return Do-Build dev     }
-        { $_ -in 'p','copy'    } { return Do-Copy  release }
-        { $_ -in 'dp','dcopy'  } { return Do-Copy  dev     }
-        { $_ -in 't','test'    } { return Do-Test           }
-        { $_ -in 'c','check'   } { return Do-Check          }
-        { $_ -in 'l','clippy'  } { return Do-Clippy         }
-        { $_ -in 'f','fmt'     } { return Do-Fmt            }
-        'fmt-check'              { return Do-FmtCheck        }
-        'ci'                     { return Do-CI              }
-        'clean'                  { return Do-Clean           }
-        'run'                    { return Do-Run release     }
-        { $_ -in 'dr','drun'   } { return Do-Run dev         }
-        { $_ -in 'q','quit','exit' } { exit 0 }
-        default { Err "未知命令: $cmd"; return 1 }
+        { $_ -in '1','b','build','b1' }  { return Do-Build release }
+        { $_ -in 'd1','db','dbuild' }    { return Do-Build dev     }
+        { $_ -in 'p1','p','copy' }       { return Do-Copy  release }
+        { $_ -in 'pd1','dp','dcopy' }    { return Do-Copy  dev     }
+        { $_ -in 't','test' }            { return Do-Test           }
+        { $_ -in 'c','check' }           { return Do-Check          }
+        { $_ -in 'l','clippy' }          { return Do-Clippy         }
+        { $_ -in 'f','fmt' }             { return Do-Fmt            }
+        'fmt-check'                       { return Do-FmtCheck       }
+        'ci'                              { return Do-CI             }
+        'clean'                           { return Do-Clean          }
+        'run'                             { return Do-Run release    }
+        { $_ -in 'dr','drun' }           { return Do-Run dev        }
+        default                           { Err "未知命令: $cmd"; return 1 }
+    }
+}
+
+function Menu-Loop {
+    while ($true) {
+        Show-Menu
+        $raw = (Read-Host "选择命令").Trim()
+        if (-not $raw) { continue }
+        if ($raw.ToLower() -in 'q','quit','exit') { Say "再见"; break }
+
+        # 支持空格分隔的连续命令: "d1 pd1" → 依次执行, 前者失败则停止
+        $tokens = $raw.ToLower() -split '\s+' | Where-Object { $_ -ne "" }
+        $anyFailed = $false
+        foreach ($token in $tokens) {
+            if ($anyFailed) { break }
+            $rc = Dispatch $token
+            if ($rc -ne 0) { $anyFailed = $true }
+        }
+        Write-Host ""
+        if ($anyFailed) { Write-Host "按回车继续..." -NoNewline; Read-Host | Out-Null }
     }
 }
 
@@ -309,18 +331,27 @@ function Run-Cmd {
 
 Set-Location $ProjectRoot
 
-# 非交互模式
-if ($Cmd) {
-    $code = Run-Cmd $Cmd
-    exit $code
+$allCmds = @($Commands | Where-Object { $_ -ne "" })
+
+# 无参数 → 交互菜单
+if ($allCmds.Count -eq 0) { Menu-Loop; return }
+
+$firstCmd = $allCmds[0].Trim().ToLower()
+
+# help
+if ($firstCmd -in "-h", "--help", "help") {
+    Get-Content $PSCommandPath | Where-Object { $_ -match '^#' } | ForEach-Object { $_ -replace '^# ?', '' }
+    return
 }
 
-# 交互模式
-while ($true) {
-    Show-Menu
-    $choice = Read-Host "选择命令"
-    if (-not $choice) { continue }
-    if ($choice -in 'q','quit','exit') { Say "再见"; break }
-    Run-Cmd $choice
-    Write-Host ""
+# menu (显式)
+if ($firstCmd -in "menu") { Menu-Loop; return }
+
+# 按序执行所有命令; 前者失败则停止
+foreach ($c in $allCmds) {
+    $cmd = $c.Trim().ToLower()
+    if ($cmd -in 'q','quit','exit') { exit 0 }
+    $rc = Dispatch $cmd
+    if ($rc -ne 0) { exit $rc }
 }
+exit 0
