@@ -58,6 +58,9 @@ pub struct DictManagerState {
     pub page_status: Signal<String>,
     /// 状态文字（操作反馈）。
     pub status: Signal<String>,
+    /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
+    /// (是否成功, 文案)。
+    pub feedback: Signal<Option<(bool, String)>>,
 
     /// 确认对话框可见标志（清空/删除/恢复默认等破坏性操作）。
     pub confirm_visible: Signal<bool>,
@@ -121,6 +124,7 @@ impl DictManagerState {
             total: signal(0),
             page_status: signal(String::new()),
             status: signal(String::new()),
+            feedback: signal(None),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
             pending: Rc::new(RefCell::new(None)),
@@ -133,6 +137,15 @@ impl DictManagerState {
             edit_weight: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
         }
+    }
+
+    /// 成功反馈（toast 绿）。
+    pub fn notify_ok(&self, msg: &str) {
+        self.feedback.set(Some((true, msg.to_string())));
+    }
+    /// 失败反馈（toast 红）。
+    pub fn notify_err(&self, msg: &str) {
+        self.feedback.set(Some((false, msg.to_string())));
     }
 
     // ── 导航解析 ─────────────────────────────────────────────
@@ -418,11 +431,11 @@ impl DictManagerState {
         match rpc::call_core(method, &params) {
             Ok(_) => {
                 self.reload();
-                self.status.set(ok_msg.into());
+                self.notify_ok(ok_msg);
             }
             Err(e) => {
                 // 失败也刷新：把乐观改动（如启用开关翻转）回退到服务端真实状态。
-                self.status.set(format!("操作失败: {e}"));
+                self.notify_err(&format!("操作失败: {e}"));
                 self.reload();
             }
         }
@@ -495,12 +508,12 @@ impl DictManagerState {
             }
             self.reload();
             if n == total {
-                self.status.set(format!("已撤销 {n} 条规则"));
+                self.notify_ok(&format!("已撤销 {n} 条规则"));
             } else {
-                self.status.set(format!("已撤销 {n} 条，{} 条失败", total - n));
+                self.notify_ok(&format!("已撤销 {n} 条，{} 条失败", total - n));
             }
         } else {
-            self.status.set("该类别不支持清空".into());
+            self.notify_err("该类别不支持清空");
         }
     }
 
@@ -606,7 +619,7 @@ impl DictManagerState {
                     self.edit_code.set(code.to_string());
                 }
             }
-            Err(e) => self.status.set(format!("出码失败: {e}")),
+            Err(e) => self.notify_err(&format!("出码失败: {e}")),
         }
     }
 
@@ -696,12 +709,12 @@ impl DictManagerState {
     fn run_calls(&self, calls: Vec<(&str, Value)>, ok_msg: &str) {
         for (m, p) in &calls {
             if let Err(e) = rpc::call_core(m, p) {
-                self.status.set(format!("操作失败: {e}"));
+                self.notify_err(&format!("操作失败: {e}"));
                 return;
             }
         }
         self.reload();
-        self.status.set(ok_msg.into());
+        self.notify_ok(ok_msg);
     }
 
     /// 提交加/改词对话框。
@@ -711,7 +724,7 @@ impl DictManagerState {
                 self.edit_visible.set(false);
                 self.run_calls(calls, ok);
             }
-            Err(e) => self.status.set(e),
+            Err(e) => self.notify_err(&e),
         }
     }
 
@@ -1092,6 +1105,15 @@ mod tests {
         // 匹配词条也命中
         st.search.set("你".into());
         assert_eq!(st.visible_rows()[0].code, "nihao");
+    }
+
+    #[test]
+    fn notify_sets_feedback_signal() {
+        let st = DictManagerState::new();
+        st.notify_ok("已添加");
+        assert_eq!(st.feedback.get(), Some((true, "已添加".to_string())));
+        st.notify_err("失败了");
+        assert_eq!(st.feedback.get(), Some((false, "失败了".to_string())));
     }
 
     #[test]

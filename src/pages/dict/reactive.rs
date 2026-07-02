@@ -24,6 +24,35 @@ impl Widget for ReactiveEffect {
     }
 }
 
+/// toast 反馈叶子：监听 feedback 信号版本变化，在 on_update 里取值并 ctx.toast。
+struct ToastSink {
+    feedback: Signal<Option<(bool, String)>>,
+    last: u64,
+}
+
+impl Widget for ToastSink {
+    fn on_update(&mut self, ctx: &mut EventCtx) {
+        let cur = self.feedback.version();
+        if cur != self.last {
+            self.last = cur;
+            if let Some((ok, msg)) = self.feedback.get() {
+                if ok {
+                    ctx.toast_ok(msg);
+                } else {
+                    ctx.toast_err(msg);
+                }
+            }
+        }
+    }
+}
+
+/// 构造不可见的 toast 反馈节点：feedback 变化即弹 toast。
+pub fn toast_sink(feedback: Signal<Option<(bool, String)>>) -> Element {
+    let last = feedback.version();
+    let w = ToastSink { feedback, last };
+    Element::leaf().widget(w).reactive().width(0).height(0)
+}
+
 /// 构造一个不可见的响应式 effect 节点。
 ///
 /// - `version_of`：把所监视信号的 `.version()` 组合成一个 u64（任一变则整体变）。
