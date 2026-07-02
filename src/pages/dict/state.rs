@@ -81,6 +81,14 @@ pub struct DictManagerState {
     pub edit_weight: Signal<String>,
     /// 编辑模式的原始键 (code, text)；None = 新增模式。
     editing_orig: Rc<RefCell<Option<(String, String)>>>,
+
+    // ── 候选调整手动添加对话框 ──
+    pub shadow_add_visible: Signal<bool>,
+    pub shadow_code: Signal<String>,
+    pub shadow_word: Signal<String>,
+    /// 0 = 固定位置(pin)，1 = 隐藏(hide)。
+    pub shadow_type: Signal<usize>,
+    pub shadow_pos: Signal<String>,
 }
 
 /// 待确认的破坏性操作。
@@ -136,6 +144,11 @@ impl DictManagerState {
             edit_text: signal(String::new()),
             edit_weight: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
+            shadow_add_visible: signal(false),
+            shadow_code: signal(String::new()),
+            shadow_word: signal(String::new()),
+            shadow_type: signal(0),
+            shadow_pos: signal("0".into()),
         }
     }
 
@@ -567,7 +580,7 @@ impl DictManagerState {
     pub fn open_add(&self) {
         let (title, lc, lt, w) = match self.current_category() {
             WordCategory::UserDict => ("添加词条", "编码", "词条", "0"),
-            WordCategory::Phrase => ("添加短语", "缩写", "短语", "1"),
+            WordCategory::Phrase => ("添加短语", "缩写", "短语", "1000"),
             _ => return,
         };
         *self.editing_orig.borrow_mut() = None;
@@ -733,6 +746,55 @@ impl DictManagerState {
             let cur = *self.offset.borrow();
             *self.offset.borrow_mut() = cur.saturating_sub(PAGE_SIZE);
             self.reload();
+        }
+    }
+
+    // ── 候选调整手动添加 ─────────────────────────────────────
+
+    /// 打开候选调整添加对话框（清空字段）。
+    pub fn open_shadow_add(&self) {
+        self.shadow_code.set(String::new());
+        self.shadow_word.set(String::new());
+        self.shadow_type.set(0);
+        self.shadow_pos.set("0".into());
+        self.shadow_add_visible.set(true);
+    }
+
+    pub fn cancel_shadow_add(&self) {
+        self.shadow_add_visible.set(false);
+    }
+
+    /// 构建候选调整添加的 (方法, 参数)（纯函数，便于单测）。
+    pub fn shadow_add_call(&self) -> Result<(&'static str, Value), String> {
+        let code = self.shadow_code.get();
+        let word = self.shadow_word.get();
+        if code.trim().is_empty() {
+            return Err("编码不能为空".into());
+        }
+        if word.trim().is_empty() {
+            return Err("词条不能为空".into());
+        }
+        let mut p = self.scoped_params();
+        p.insert("code".into(), json!(code));
+        p.insert("word".into(), json!(word));
+        if self.shadow_type.get() == 0 {
+            let pos: i64 = self.shadow_pos.get().trim().parse().map_err(|_| "位置需为整数")?;
+            p.insert("type".into(), json!("pin"));
+            p.insert("position".into(), json!(pos));
+        } else {
+            p.insert("type".into(), json!("hide"));
+        }
+        Ok(("shadow.addRule", Value::Object(p)))
+    }
+
+    /// 提交候选调整添加。
+    pub fn submit_shadow(&self) {
+        match self.shadow_add_call() {
+            Ok((m, p)) => {
+                self.shadow_add_visible.set(false);
+                self.write(m, p, "已添加规则");
+            }
+            Err(e) => self.notify_err(&e),
         }
     }
 }
@@ -1114,6 +1176,58 @@ mod tests {
         assert_eq!(st.feedback.get(), Some((true, "已添加".to_string())));
         st.notify_err("失败了");
         assert_eq!(st.feedback.get(), Some((false, "失败了".to_string())));
+    }
+
+    #[test]
+    fn shadow_add_call_pin_carries_position() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3); // 候选调整
+        st.shadow_code.set("wm".into());
+        st.shadow_word.set("我们".into());
+        st.shadow_type.set(0); // 固定位置
+        st.shadow_pos.set("2".into());
+        let (m, p) = st.shadow_add_call().unwrap();
+        assert_eq!(m, "shadow.addRule");
+        assert_eq!(p["schemaId"], json!("wb"));
+        assert_eq!(p["code"], json!("wm"));
+        assert_eq!(p["word"], json!("我们"));
+        assert_eq!(p["type"], json!("pin"));
+        assert_eq!(p["position"], json!(2));
+    }
+
+    #[test]
+    fn shadow_add_call_hide_omits_position() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3);
+        st.shadow_code.set("nh".into());
+        st.shadow_word.set("你好".into());
+        st.shadow_type.set(1); // 隐藏
+        let (m, p) = st.shadow_add_call().unwrap();
+        assert_eq!(m, "shadow.addRule");
+        assert_eq!(p["type"], json!("hide"));
+        assert!(p.get("position").is_none(), "隐藏不带 position");
+    }
+
+    #[test]
+    fn shadow_add_call_validates_empty() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3);
+        st.shadow_code.set(String::new());
+        assert!(st.shadow_add_call().is_err());
+    }
+
+    #[test]
+    fn open_add_phrase_default_weight_1000() {
+        let st = DictManagerState::new(); // domain 0 = 短语
+        st.sub_tab.set(1); // 用户短语（add 仅用户页可见，但 open_add 不校验 scope）
+        st.open_add();
+        assert_eq!(st.edit_weight.get(), "1000");
     }
 
     #[test]
