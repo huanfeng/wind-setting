@@ -188,22 +188,26 @@ impl DictManagerState {
 
     /// 从 schemas 构建折叠后的方案域列表（不含短语域）。
     /// 拼音族（engineType=="pinyin"）聚合为单一"拼音"项；代表取非 shuangpin 优先（全拼/未标注）。
+    /// 只在当前代表还是双拼时才升级为全拼，使代表确定为第一个全拼/非双拼。
     pub fn folded_domains(&self) -> Vec<DomainEntry> {
         let schemas = self.schemas.borrow();
         let mut out: Vec<DomainEntry> = Vec::new();
         let mut pinyin_seen = false;
+        let mut pinyin_rep_is_shuangpin = false; // 当前代表是否还是双拼
         for s in schemas.iter() {
             if s.kind == "pinyin" {
                 if pinyin_seen {
-                    // 已有拼音域：若当前方案 scheme != "shuangpin"（全拼或未标注），升级代表
-                    if s.scheme != "shuangpin" {
+                    // 已有拼音域：只在当前代表是双拼且新方案非双拼时，才升级代表
+                    if pinyin_rep_is_shuangpin && s.scheme != "shuangpin" {
                         if let Some(py) = out.iter_mut().find(|d| d.kind == "pinyin") {
                             py.rep_schema_id = s.id.clone();
+                            pinyin_rep_is_shuangpin = false; // 代表已升级为非双拼
                         }
                     }
                     continue;
                 }
                 pinyin_seen = true;
+                pinyin_rep_is_shuangpin = s.scheme == "shuangpin";
                 out.push(DomainEntry {
                     label: "拼音".to_string(),
                     kind: "pinyin".to_string(),
@@ -1447,5 +1451,19 @@ mod tests {
         st.domain.set(1);
         // 无全拼时代表取该双拼
         assert_eq!(st.current_schema_id().as_deref(), Some("double_pinyin"));
+    }
+
+    #[test]
+    fn shuangpin_before_full_upgrades_rep() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![
+            schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin"),
+            schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
+        ]);
+        st.domain.set(1);
+        // 双拼在前、全拼在后 → 代表应升级为全拼
+        assert_eq!(st.current_schema_id().as_deref(), Some("pinyin_simp"));
+        // 仍折叠为一个"拼音"域
+        assert_eq!(st.domain_labels(), vec!["快捷短语".to_string(), "拼音".to_string()]);
     }
 }
