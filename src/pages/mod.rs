@@ -180,6 +180,18 @@ const ICON_ISSUES: &str = include_str!("../../res/icons/issues.svg");
 const ICON_RELEASES: &str = include_str!("../../res/icons/releases.svg");
 const ICON_QQ: &str = include_str!("../../res/icons/qq.svg");
 
+/// 域名 chip（官网横幅右侧）：淡蓝底 + 蓝字 + pill 圆角，**普通字重**
+/// （区别于 `badge` 的 600 加粗）。蓝色与官网图标方块同源，观感协调。
+fn url_chip(text: &str) -> Element {
+    let blue = Color::hex(0x3B82F6);
+    Element::row()
+        .cross(Align::Center)
+        .padding_xy(9, 3)
+        .corner(999.0)
+        .bg(blue.scale_alpha(0.14))
+        .child(Element::label(text).font_size(12.0).fg(blue))
+}
+
 /// 彩色圆角图标方块 + 居中白色 SVG 图标（品牌色固定、不随主题；SVG 走 `svg` feature）。
 /// `target_width` 取 2× 显示像素求 HiDPI 清晰度。
 fn about_icon_box(bg: Color, svg: &str, size: i32) -> Element {
@@ -306,7 +318,7 @@ fn about_page(state: &AppState) -> Element {
         ICON_WEBSITE,
         "官方网站",
         "文档、下载与最新动态",
-        Some(Element::badge("windinput.com")),
+        Some(url_chip("windinput.com")),
         |ctx| ctx.open_url(WEBSITE_URL),
     );
 
