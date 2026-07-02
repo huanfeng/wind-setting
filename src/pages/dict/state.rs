@@ -110,6 +110,8 @@ pub struct DictManagerState {
     /// 0 = 固定位置(pin)，1 = 隐藏(hide)。
     pub shadow_type: Signal<usize>,
     pub shadow_pos: Signal<String>,
+    /// 候选调整编辑模式的原始键 (code, word)；None = 新增模式。
+    shadow_orig: Rc<RefCell<Option<(String, String)>>>,
 }
 
 /// 待确认的破坏性操作。
@@ -165,6 +167,7 @@ impl DictManagerState {
             edit_text: signal(String::new()),
             edit_weight: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
+            shadow_orig: Rc::new(RefCell::new(None)),
             view_visible: signal(false),
             view_code: signal(String::new()),
             view_text: signal(String::new()),
@@ -838,18 +841,21 @@ impl DictManagerState {
         self.shadow_word.set(String::new());
         self.shadow_type.set(0);
         self.shadow_pos.set("0".into());
+        *self.shadow_orig.borrow_mut() = None;
         self.shadow_add_visible.set(true);
     }
 
-    /// 打开候选调整编辑对话框（预填该行现值）。
+    /// 打开候选调整编辑对话框（预填该行现值，记录原始键）。
     /// kind 为 "delete" 映射到隐藏(1)，其余（"pin"）映射到固定位置(0)。
-    /// 提交仍走 `submit_shadow` → `shadow.addRule`，对同 code+word 是 upsert（覆盖）。
+    /// 提交走 `submit_shadow` → `shadow_save_calls`：键不变 addRule upsert 覆盖，
+    /// 改了 code/word 则加新 + 删旧原子替换。
     pub fn open_shadow_edit(&self, code: &str, word: &str, kind: &str, position: i64) {
         self.shadow_title.set("编辑候选调整".into());
         self.shadow_code.set(code.into());
         self.shadow_word.set(word.into());
         self.shadow_type.set(if kind == "delete" { 1 } else { 0 });
         self.shadow_pos.set(position.to_string());
+        *self.shadow_orig.borrow_mut() = Some((code.into(), word.into()));
         self.shadow_add_visible.set(true);
     }
 
@@ -941,12 +947,34 @@ impl DictManagerState {
         Ok(("shadow.addRule", Value::Object(p)))
     }
 
-    /// 提交候选调整添加。
+    /// 候选调整保存调用序列（纯函数，便于单测）。
+    /// 新增/键不变编辑：单 addRule（同 code+word upsert 覆盖）；
+    /// 编辑改了 code/word：先加新再删旧（加失败则旧规则完好，避免删成功/加失败丢规则）。
+    pub fn shadow_save_calls(&self) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
+        let (m, p) = self.shadow_add_call()?;
+        let orig = self.shadow_orig.borrow().clone();
+        let mut calls = vec![(m, p)];
+        let msg = match orig {
+            None => "已添加规则",
+            Some((oc, ow)) => {
+                if oc != self.shadow_code.get() || ow != self.shadow_word.get() {
+                    let mut rem = self.scoped_params();
+                    rem.insert("code".into(), json!(oc));
+                    rem.insert("word".into(), json!(ow));
+                    calls.push(("shadow.removeRule", Value::Object(rem)));
+                }
+                "已更新规则"
+            }
+        };
+        Ok((calls, msg))
+    }
+
+    /// 提交候选调整添加/编辑。
     pub fn submit_shadow(&self) {
-        match self.shadow_add_call() {
-            Ok((m, p)) => {
+        match self.shadow_save_calls() {
+            Ok((calls, msg)) => {
                 self.shadow_add_visible.set(false);
-                self.write(m, p, "已添加规则");
+                self.run_calls(calls, msg);
             }
             Err(e) => self.notify_err(&e),
         }
@@ -1381,6 +1409,59 @@ mod tests {
         st.sub_tab.set(3);
         st.shadow_code.set(String::new());
         assert!(st.shadow_add_call().is_err());
+    }
+
+    #[test]
+    fn shadow_save_calls_add_mode_single_call() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3); // 候选调整
+        st.open_shadow_add();
+        st.shadow_code.set("wm".into());
+        st.shadow_word.set("我们".into());
+        st.shadow_type.set(0);
+        st.shadow_pos.set("2".into());
+        let (calls, msg) = st.shadow_save_calls().unwrap();
+        assert_eq!(msg, "已添加规则");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "shadow.addRule");
+        assert_eq!(calls[0].1["code"], json!("wm"));
+    }
+
+    #[test]
+    fn shadow_save_calls_edit_same_key_single_upsert() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3);
+        st.open_shadow_edit("wm", "我们", "pin", 2);
+        st.shadow_pos.set("5".into()); // 仅改位置，键不变
+        let (calls, msg) = st.shadow_save_calls().unwrap();
+        assert_eq!(msg, "已更新规则");
+        assert_eq!(calls.len(), 1, "键不变时 addRule upsert 覆盖即可");
+        assert_eq!(calls[0].0, "shadow.addRule");
+        assert_eq!(calls[0].1["position"], json!(5));
+    }
+
+    #[test]
+    fn shadow_save_calls_edit_changed_key_adds_then_removes_old() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3);
+        st.open_shadow_edit("wm", "我们", "pin", 2);
+        st.shadow_word.set("我门".into()); // 改词条 → 键变更
+        let (calls, msg) = st.shadow_save_calls().unwrap();
+        assert_eq!(msg, "已更新规则");
+        assert_eq!(calls.len(), 2, "键变更需替换：加新 + 删旧");
+        // 先加新、再删旧（加失败则旧规则完好）
+        assert_eq!(calls[0].0, "shadow.addRule");
+        assert_eq!(calls[0].1["word"], json!("我门"));
+        assert_eq!(calls[1].0, "shadow.removeRule");
+        assert_eq!(calls[1].1["code"], json!("wm"));
+        assert_eq!(calls[1].1["word"], json!("我们"));
+        assert_eq!(calls[1].1["schemaId"], json!("wb"));
     }
 
     #[test]
