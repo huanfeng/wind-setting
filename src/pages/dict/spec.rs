@@ -30,6 +30,47 @@ pub const SCHEMA_SUB_CATEGORIES: [WordCategory; 4] = [
     WordCategory::Shadow,
 ];
 
+/// 导航子标签的逻辑单元：短语两级 + 方案内四类。映射到 (标题, 类别, 短语系统标志)。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LogicalTab {
+    PhraseSystem,
+    PhraseUser,
+    UserDict,
+    Temp,
+    Freq,
+    Shadow,
+}
+
+impl LogicalTab {
+    pub fn title(self) -> &'static str {
+        match self {
+            LogicalTab::PhraseSystem => "系统短语",
+            LogicalTab::PhraseUser => "用户短语",
+            LogicalTab::UserDict => "用户词库",
+            LogicalTab::Temp => "临时词库",
+            LogicalTab::Freq => "词频",
+            LogicalTab::Shadow => "候选调整",
+        }
+    }
+    pub fn category(self) -> WordCategory {
+        match self {
+            LogicalTab::PhraseSystem | LogicalTab::PhraseUser => WordCategory::Phrase,
+            LogicalTab::UserDict => WordCategory::UserDict,
+            LogicalTab::Temp => WordCategory::Temp,
+            LogicalTab::Freq => WordCategory::Freq,
+            LogicalTab::Shadow => WordCategory::Shadow,
+        }
+    }
+    /// 短语两级：Some(true)=系统，Some(false)=用户；非短语=None。
+    pub fn phrase_system(self) -> Option<bool> {
+        match self {
+            LogicalTab::PhraseSystem => Some(true),
+            LogicalTab::PhraseUser => Some(false),
+            _ => None,
+        }
+    }
+}
+
 /// 统一行模型：五类 RPC 返回都归一到此，视图按 [`ColumnSpec::field`] 取字段。
 ///
 /// 字段复用规则：
@@ -46,6 +87,8 @@ pub struct WordRow {
     pub enabled: bool,
     pub kind: String,
     pub last_used: String,
+    /// 短语专用：是否系统内置（phrase from_json 读 isSystem，其余类别恒 false）。
+    pub is_system: bool,
 }
 
 impl WordRow {
@@ -61,6 +104,7 @@ impl WordRow {
                 weight: i("weight"),
                 position: i("position"),
                 enabled: b("enabled"),
+                is_system: b("isSystem"),
                 ..Default::default()
             },
             WordCategory::UserDict => WordRow {
@@ -235,6 +279,8 @@ pub struct CategorySpec {
     pub paged: bool,
     /// 是否支持服务端搜索。
     pub searchable: bool,
+    /// 是否走客户端搜索过滤（非分页类：临时/候选调整/短语）。分页类走服务端。
+    pub client_search: bool,
     pub columns: &'static [ColumnSpec],
     pub ops: OpFlags,
     pub rpc: RpcNames,
@@ -279,6 +325,7 @@ const SPEC_PHRASE: CategorySpec = CategorySpec {
     scoped_by_schema: false,
     paged: false,
     searchable: false,
+    client_search: true,
     columns: COLS_PHRASE,
     ops: OpFlags {
         add: true,
@@ -305,6 +352,7 @@ const SPEC_USERDICT: CategorySpec = CategorySpec {
     scoped_by_schema: true,
     paged: true,
     searchable: true,
+    client_search: false,
     columns: COLS_USERDICT,
     ops: OpFlags {
         add: true,
@@ -331,6 +379,7 @@ const SPEC_TEMP: CategorySpec = CategorySpec {
     scoped_by_schema: true,
     paged: false,
     searchable: false,
+    client_search: true,
     columns: COLS_TEMP,
     ops: OpFlags {
         remove: true,
@@ -355,6 +404,7 @@ const SPEC_FREQ: CategorySpec = CategorySpec {
     scoped_by_schema: true,
     paged: true,
     searchable: true,
+    client_search: false,
     columns: COLS_FREQ,
     ops: OpFlags {
         remove: true,
@@ -375,14 +425,17 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
     scoped_by_schema: true,
     paged: false,
     searchable: false,
+    client_search: true,
     columns: COLS_SHADOW,
     ops: OpFlags {
+        add: true,
         remove_rule: true,
         clear: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
         list: "shadow.list",
+        add: "shadow.addRule",
         remove_rule: "shadow.removeRule",
         // clear 无单独 RPC：视图侧循环 remove_rule 实现。
         ..RpcNames::EMPTY
@@ -479,10 +532,10 @@ mod tests {
         assert!(temp.ops.promote);
         assert!(temp.ops.promote_all);
 
-        // 候选调整只有 remove_rule + clear。
+        // 候选调整有 remove_rule + clear + add（shadow.addRule）。
         let shadow = spec_for(WordCategory::Shadow);
         assert!(shadow.ops.remove_rule);
-        assert!(!shadow.ops.add);
+        assert!(shadow.ops.add);
         assert!(!shadow.ops.remove);
 
         // 用户词库支持加词自动出码。
@@ -504,5 +557,34 @@ mod tests {
         assert_eq!(SCHEMA_SUB_CATEGORIES[3], WordCategory::Shadow);
         // 标题与顺序对齐
         assert_eq!(spec_for(SCHEMA_SUB_CATEGORIES[2]).title, "词频");
+    }
+
+    #[test]
+    fn logical_tab_maps_title_category_and_phrase_scope() {
+        assert_eq!(LogicalTab::PhraseSystem.title(), "系统短语");
+        assert_eq!(LogicalTab::PhraseUser.title(), "用户短语");
+        assert_eq!(LogicalTab::UserDict.category(), WordCategory::UserDict);
+        assert_eq!(LogicalTab::Shadow.category(), WordCategory::Shadow);
+        // 短语两级都映射到 Phrase 类别，靠 phrase_system 区分
+        assert_eq!(LogicalTab::PhraseSystem.category(), WordCategory::Phrase);
+        assert_eq!(LogicalTab::PhraseSystem.phrase_system(), Some(true));
+        assert_eq!(LogicalTab::PhraseUser.phrase_system(), Some(false));
+        assert_eq!(LogicalTab::UserDict.phrase_system(), None);
+    }
+
+    #[test]
+    fn phrase_from_json_reads_is_system() {
+        let sys = json!({ "code": "bj", "text": "北京", "isSystem": true });
+        assert!(WordRow::from_json(WordCategory::Phrase, &sys).is_system);
+        let usr = json!({ "code": "me", "text": "自定义" });
+        assert!(!WordRow::from_json(WordCategory::Phrase, &usr).is_system, "缺省 false");
+    }
+
+    #[test]
+    fn shadow_spec_supports_add() {
+        let s = spec_for(WordCategory::Shadow);
+        assert!(s.ops.add);
+        assert_eq!(s.rpc.add, "shadow.addRule");
+        assert!(s.client_search, "候选调整走客户端搜索");
     }
 }
