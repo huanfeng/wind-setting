@@ -170,6 +170,19 @@ mod tests {
         assert!(paged.get("items").is_some());
         assert!(paged.get("total").is_some());
     }
+
+    #[test]
+    fn mock_phrase_list_has_is_system() {
+        let list = mock_reply("phrase.list");
+        let arr = list.as_array().unwrap();
+        assert!(arr.iter().any(|p| p.get("isSystem") == Some(&json!(true))));
+        assert!(arr.iter().any(|p| p.get("isSystem") == Some(&json!(false))));
+    }
+
+    #[test]
+    fn mock_shadow_add_rule_ok() {
+        assert_eq!(mock_reply("shadow.addRule").get("ok"), Some(&json!(true)));
+    }
 }
 
 /// 内置 capability 快照（与 src/assets 同一文件），mock 模式离线提供能力契约。
@@ -209,9 +222,9 @@ fn mock_reply(method: &str) -> Value {
         "dict.stats" | "stats.daily" => json!([]),
         // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。
         "phrase.list" => json!([
-            { "code": "bj", "text": "北京", "position": 0, "weight": 1, "enabled": true },
-            { "code": "yx", "text": "example@example.com", "position": 0, "weight": 2, "enabled": true },
-            { "code": "dd", "text": "（＾＿＾）", "position": 0, "weight": 1, "enabled": false }
+            { "code": "bj", "text": "北京", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
+            { "code": "yx", "text": "example@example.com", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
+            { "code": "dd", "text": "（＾＿＾）", "position": 0, "weight": 1000, "enabled": false, "isSystem": false }
         ]),
         "temp.list" => json!([
             { "code": "nihao", "text": "你好", "count": 3 },
@@ -240,6 +253,7 @@ fn mock_reply(method: &str) -> Value {
         ]),
         // 加词自动出码：mock 返回占位码，便于对话框演示。
         "dict.encode" => json!("aaaa"),
+        "shadow.addRule" | "shadow.removeRule" => json!({ "ok": true }),
         _ => Value::Null,
     }
 }
