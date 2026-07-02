@@ -4,6 +4,7 @@
 //! 一张卡片，卡片次序为 section 首次出现序，行序为 manifest 原始序——key 永远与 core 一致，
 //! core 加字段自动出现，彻底消除硬编码 key 漂移。复杂页（方案管理/词库/统计/关于）手写。
 
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 pub mod dict;
@@ -164,69 +165,229 @@ fn dict_page(state: &AppState) -> Element {
 
 // ───────────────────────── 关于 ─────────────────────────
 
-fn about_page(state: &AppState) -> Element {
-    let info = &state.system_info;
-    let get = |k: &str| {
-        info.get(k)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-    let version = get("version");
+/// 仓库地址（issues/releases 在其后拼段）。与 Vue 版 `App.vue` 的 repoUrl 一致。
+const REPO_URL: &str = "https://github.com/huanfeng/WindInput";
+/// 官网。
+const WEBSITE_URL: &str = "https://windinput.com";
+/// QQ 交流群号。
+const QQ_GROUP: &str = "1085293418";
 
-    // 头部：应用图标 + 名称 + 版本（对齐 ime.rs 设置卡片头部）。
-    let logo = crate::widgets::app_icon(48);
-    let header = Element::row()
+// 品牌图标 SVG（白色填充，24×24 viewBox），从 res/icons 嵌入。图标数据取自 Vue 版
+// AboutPage，保证与网页版逐像素一致；改图标只改 .svg 文件即可，无需动代码。
+const ICON_WEBSITE: &str = include_str!("../../res/icons/website.svg");
+const ICON_GITHUB: &str = include_str!("../../res/icons/github.svg");
+const ICON_ISSUES: &str = include_str!("../../res/icons/issues.svg");
+const ICON_RELEASES: &str = include_str!("../../res/icons/releases.svg");
+const ICON_QQ: &str = include_str!("../../res/icons/qq.svg");
+
+/// 彩色圆角图标方块 + 居中白色 SVG 图标（品牌色固定、不随主题；SVG 走 `svg` feature）。
+/// `target_width` 取 2× 显示像素求 HiDPI 清晰度。
+fn about_icon_box(bg: Color, svg: &str, size: i32) -> Element {
+    let icon = (size as f32 * 0.56) as i32;
+    Element::stack().size(size, size).corner(10.0).bg(bg).child(
+        Element::image_svg(svg.as_bytes(), Some((icon * 2) as u32))
+            .size(icon, icon)
+            .align(Align::Center),
+    )
+}
+
+/// 可点击链接卡片：品牌图标 + 标题 + 描述，点击执行 `action`。
+/// 表面/文字走角色化主题（明暗自适应），仅图标方块用品牌固定色。
+/// `trailing` 为右侧可选挂件（如官网横幅的域名 chip）。
+fn about_link_card(
+    icon_bg: Color,
+    svg_path: &str,
+    title: &str,
+    desc: &str,
+    trailing: Option<Element>,
+    action: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
+    let mut row = Element::row()
+        .clickable()
+        .on_click(action)
         .width_match()
         .cross(Align::Center)
-        .spacing(14)
-        .child(logo)
+        .spacing(12)
+        .padding(14)
+        .corner(12.0)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .child(about_icon_box(icon_bg, svg_path, 36))
         .child(
             Element::col()
                 .weight(1.0)
-                .spacing(3)
+                .spacing(2)
                 .child(
-                    Element::label("清风输入法")
-                        .font_size(18.0)
+                    Element::label(title)
+                        .font_size(14.0)
                         .font_weight(600)
                         .fg_role(Role::Text)
-                        .height(24),
+                        .width_match()
+                        .max_lines(1)
+                        .truncate(Truncate::End)
+                        .height(19),
                 )
                 .child(
-                    Element::label(if version.is_empty() {
-                        "清风输入法设置".to_string()
-                    } else {
-                        format!("版本 {version}{}", crate::mode::version_suffix())
-                    })
-                    .font_size(12.0)
-                    .fg_role(Role::TextMuted)
-                    .height(16),
+                    Element::label(desc)
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .max_lines(1)
+                        .truncate(Truncate::End)
+                        .height(16),
+                ),
+        );
+    if let Some(t) = trailing {
+        row = row.child(t);
+    }
+    row
+}
+
+/// 关于页 — 复刻品牌关于卡（对齐截图 / Vue AboutPage）：
+/// 头部（图标+名称+版本徽章+检查更新）· 官网横幅 · 2×2 链接网格 · 版权页脚。
+fn about_page(state: &AppState) -> Element {
+    let version = state
+        .system_info
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let version = if version.is_empty() {
+        env!("CARGO_PKG_VERSION").to_string()
+    } else {
+        version
+    };
+    let ver_badge = format!("v{version}{}", crate::mode::version_suffix());
+
+    // 头部：大图标 + 名称 + 版本徽章 / 检查更新 + 副标题。
+    let header = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(18)
+        .child(crate::widgets::app_icon(72))
+        .child(
+            Element::col()
+                .weight(1.0)
+                .spacing(8)
+                .child(
+                    Element::label("清风输入法")
+                        .font_size(22.0)
+                        .font_weight(700)
+                        .fg_role(Role::Text)
+                        .width_match()
+                        .max_lines(1)
+                        .height(30),
+                )
+                .child(
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(Element::badge(ver_badge))
+                        .child(
+                            Element::button("检查更新")
+                                .small()
+                                .outline()
+                                .on_click(|ctx| ctx.toast("检查更新功能开发中")),
+                        ),
+                )
+                .child(
+                    Element::label("轻量、快速、可定制的开源中文输入法")
+                        .font_size(13.0)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .max_lines(1)
+                        .height(19),
                 ),
         );
 
-    // 系统信息的其它字符串字段（os/arch/build 等）→ 信息卡片。
-    let mut info_rows: Vec<Element> = Vec::new();
-    if let Some(obj) = info.as_object() {
-        for (k, v) in obj {
-            if k == "version" {
-                continue;
-            }
-            if let Some(s) = v.as_str() {
-                if s.is_empty() {
-                    continue;
-                }
-                info_rows.push(setting_row(
-                    k,
-                    None,
-                    Element::label(s).fg_role(Role::TextMuted),
-                ));
-            }
-        }
-    }
+    // 官网横幅：整行可点击 + 右侧域名 chip。
+    let banner = about_link_card(
+        Color::hex(0x3B82F6),
+        ICON_WEBSITE,
+        "官方网站",
+        "文档、下载与最新动态",
+        Some(Element::badge("windinput.com")),
+        |ctx| ctx.open_url(WEBSITE_URL),
+    );
 
-    let mut secs = vec![crate::widgets::card(vec![header])];
-    if !info_rows.is_empty() {
-        secs.push(section("系统信息", info_rows));
-    }
-    sections_page(secs)
+    // 2×2 链接网格：GitHub / 问题反馈 / 版本发布 / QQ 交流群。
+    let github = about_link_card(
+        Color::hex(0x24292F),
+        ICON_GITHUB,
+        "GitHub",
+        "源码与文档",
+        None,
+        |ctx| ctx.open_url(REPO_URL),
+    );
+    let issues = about_link_card(
+        Color::hex(0xF59E0B),
+        ICON_ISSUES,
+        "问题反馈",
+        "报告 Bug 或建议",
+        None,
+        |ctx| ctx.open_url(&format!("{REPO_URL}/issues")),
+    );
+    let releases = about_link_card(
+        Color::hex(0x22C55E),
+        ICON_RELEASES,
+        "版本发布",
+        "更新日志",
+        None,
+        |ctx| ctx.open_url(&format!("{REPO_URL}/releases")),
+    );
+    // QQ 卡：点击复制群号 + toast 反馈（脱离布局树，无需额外接线）。
+    let qq = about_link_card(
+        Color::hex(0x12B7F5),
+        ICON_QQ,
+        "QQ 交流群",
+        QQ_GROUP,
+        None,
+        |ctx| {
+            ctx.clipboard_set(QQ_GROUP);
+            ctx.toast_ok(format!("已复制群号 {QQ_GROUP}"));
+        },
+    );
+
+    // 每行两列等宽（stack + weight 撑满半宽，对齐示例网格）。
+    let half = |el: Element| Element::stack().weight(1.0).child(el);
+    let grid = Element::col()
+        .width_match()
+        .spacing(10)
+        .child(
+            Element::row()
+                .width_match()
+                .spacing(10)
+                .cross(Align::Stretch)
+                .child(half(github))
+                .child(half(issues)),
+        )
+        .child(
+            Element::row()
+                .width_match()
+                .spacing(10)
+                .cross(Align::Stretch)
+                .child(half(releases))
+                .child(half(qq)),
+        );
+
+    let footer = Element::label("© 2026 WindInput Contributors · MIT License")
+    .font_size(12.0)
+    .fg_role(Role::TextMuted)
+    .width_match()
+    .max_lines(1)
+    .height(18)
+    .text_align(Align::Center);
+
+    // 外层品牌卡：承载全部内容，浮于内容区 SurfaceAlt 之上。
+    let panel = crate::widgets::flat_panel()
+        .corner(16.0)
+        .width_match()
+        .padding(24)
+        .spacing(20)
+        .child(header)
+        .child(banner)
+        .child(grid)
+        .child(footer);
+
+    crate::widgets::page(panel)
 }
