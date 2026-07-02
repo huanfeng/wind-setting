@@ -190,7 +190,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
     Element::dialog(mgr.shadow_add_visible, frame)
 }
 
-/// 系统短语只读查看对话框：展示缩写 / 内容 / 权重，仅"关闭"按钮，不写任何数据。
+/// 系统短语只读查看对话框：缩写 / 内容 / 权重用 text_input 展示（可选中复制），仅"关闭"按钮，不写任何数据。
 fn build_view_dialog(mgr: &DictManagerState) -> Element {
     let cancel = mgr.clone();
 
@@ -209,28 +209,19 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
         .spacing(10)
         .child(field(
             "缩写",
-            Element::label_rc(mgr.edit_code)
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .weight(1.0)
-                .width_match()
-                .max_lines(1),
+            Element::text_input(mgr.view_code, "").weight(1.0),
         ))
         .child(field(
             "内容",
-            Element::label_rc(mgr.edit_text)
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .weight(1.0)
-                .width_match()
-                .max_lines(20),
+            Element::text_input(mgr.view_text, "")
+                .multiline()
+                .wrap(true)
+                .height(88)
+                .weight(1.0),
         ))
         .child(field(
             "权重",
-            Element::label_rc(mgr.edit_weight)
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .width(100),
+            Element::text_input(mgr.view_weight, "").width(100),
         ));
 
     let footer = Element::row()

@@ -84,6 +84,12 @@ pub struct DictManagerState {
 
     // ── 系统短语只读查看对话框 ──
     pub view_visible: Signal<bool>,
+    /// 查看对话框：缩写（独立于 edit_*，避免交叉污染）。
+    pub view_code: Signal<String>,
+    /// 查看对话框：内容。
+    pub view_text: Signal<String>,
+    /// 查看对话框：权重。
+    pub view_weight: Signal<String>,
 
     // ── 候选调整手动添加对话框 ──
     pub shadow_add_visible: Signal<bool>,
@@ -148,6 +154,9 @@ impl DictManagerState {
             edit_weight: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
             view_visible: signal(false),
+            view_code: signal(String::new()),
+            view_text: signal(String::new()),
+            view_weight: signal(String::new()),
             shadow_add_visible: signal(false),
             shadow_code: signal(String::new()),
             shadow_word: signal(String::new()),
@@ -619,11 +628,11 @@ impl DictManagerState {
         self.edit_visible.set(false);
     }
 
-    /// 打开系统短语只读查看对话框（复用 edit_code/edit_text/edit_weight 存值，不写 editing_orig）。
+    /// 打开系统短语只读查看对话框（写入独立 view_* 信号，不污染 edit_*）。
     pub fn open_view(&self, code: &str, text: &str, weight: i64) {
-        self.edit_code.set(code.into());
-        self.edit_text.set(text.into());
-        self.edit_weight.set(weight.to_string());
+        self.view_code.set(code.into());
+        self.view_text.set(text.into());
+        self.view_weight.set(weight.to_string());
         self.view_visible.set(true);
     }
 
@@ -1308,9 +1317,13 @@ mod tests {
         let st = DictManagerState::new();
         st.open_view("bj", "北京", 1000);
         assert!(st.view_visible.get(), "open_view 后 view_visible=true");
-        assert_eq!(st.edit_code.get(), "bj");
-        assert_eq!(st.edit_text.get(), "北京");
-        assert_eq!(st.edit_weight.get(), "1000");
+        // 写入独立 view_* 信号，不污染 edit_*
+        assert_eq!(st.view_code.get(), "bj");
+        assert_eq!(st.view_text.get(), "北京");
+        assert_eq!(st.view_weight.get(), "1000");
+        // edit_* 信号不受影响
+        assert_eq!(st.edit_code.get(), "", "open_view 不写 edit_code");
+        assert_eq!(st.edit_text.get(), "", "open_view 不写 edit_text");
         // editing_orig 不写，仍为 None
         assert!(st.editing_orig.borrow().is_none(), "查看不设 editing_orig");
         st.cancel_view();
