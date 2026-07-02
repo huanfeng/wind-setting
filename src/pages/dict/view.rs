@@ -33,6 +33,14 @@ pub fn build_page(state: &AppState) -> Element {
         move || mgr_eff.on_nav_changed(),
     );
 
+    // ── 响应式 effect：搜索内容变化 → 输入即搜 ──
+    let search_v = mgr.search;
+    let mgr_se = mgr.clone();
+    let search_effect = reactive_effect(
+        move || search_v.version(),
+        move || mgr_se.on_search_changed(),
+    );
+
     // ── 数据域选择器（+ 状态文字 + 刷新）──
     let mgr_refresh = mgr.clone();
     let domain_row = Element::row()
@@ -113,6 +121,7 @@ pub fn build_page(state: &AppState) -> Element {
         .fill()
         .child(main_col)
         .child(effect)
+        .child(search_effect)
         .child(toast_sink(mgr.feedback))
 }
 
@@ -152,8 +161,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .on_click(move |_| m_reset.request_reset_default())
         .visible_when(move || v_reset.current_spec().ops.reset_default);
 
-    // 搜索
-    let m_search = mgr.clone();
+    // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
     let m_clr_s = mgr.clone();
     let v_search = mgr.clone();
     let search = Element::row()
@@ -161,21 +169,14 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .spacing(8)
         .child(Element::text_input(mgr.search, "搜索编码或词条…").width(240).height(30))
         .child(
-            Element::button("搜索")
-                .small()
-                .outline()
-                .on_click(move |_| m_search.apply_search()),
-        )
-        .child(
             Element::button("清除")
                 .small()
                 .outline()
                 .on_click(move |_| {
                     m_clr_s.search.set(String::new());
-                    m_clr_s.apply_search();
                 }),
         )
-        .visible_when(move || v_search.current_spec().searchable);
+        .visible_when(move || v_search.current_spec().searchable || v_search.current_spec().client_search);
 
     Element::row()
         .width_match()
