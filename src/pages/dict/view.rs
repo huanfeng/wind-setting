@@ -20,6 +20,9 @@ use super::state::{DictListItem, DictManagerState, DomainKind};
 /// 操作列固定宽度（表头与行需一致）。
 const ACTION_W: i32 = 168;
 
+/// 子标签单段固定宽度（各数据域分段等宽，总宽 = 段数 × 此值）。
+const SUB_TAB_SEG_W: i32 = 104;
+
 /// 构建词库页。
 pub fn build_page(state: &AppState) -> Element {
     let mgr = state.dict_mgr.clone();
@@ -71,8 +74,10 @@ pub fn build_page(state: &AppState) -> Element {
     let k_mx = mgr.clone();
     let seg = |titles: Vec<&str>, mgr: DictManagerState, kind: DomainKind| {
         let m = mgr.clone();
+        // 每段固定宽、总宽随段数变化：避免 1/3/4 段被均分导致各域分段宽度不一致。
+        let seg_w = titles.len() as i32 * SUB_TAB_SEG_W;
         Element::segmented(titles.iter().map(|s| s.to_string()).collect::<Vec<_>>(), mgr.sub_tab)
-            .width(380)
+            .width(seg_w)
             .visible_when(move || m.domain_kind() == kind)
     };
     let sub_tabs = Element::row()
@@ -144,19 +149,23 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     // 批量：全部转正（temp）/ 清空（dict/temp/freq/shadow）/ 恢复默认（phrase）
     let m_pa = mgr.clone();
     let v_pa = mgr.clone();
+    let e_pa = mgr.clone();
     let promote_all = Element::button("全部转正")
         .small()
         .outline()
         .on_click(move |_| m_pa.do_promote_all())
+        .enabled_when(move || e_pa.total.get() > 0)
         .visible_when(move || v_pa.current_spec().ops.promote_all);
 
     let m_clear = mgr.clone();
     let v_clear = mgr.clone();
+    let e_clear = mgr.clone();
     let clear = Element::button("清空")
         .small()
         .outline()
         .danger()
         .on_click(move |_| m_clear.request_clear())
+        .enabled_when(move || e_clear.total.get() > 0)
         .visible_when(move || v_clear.current_spec().ops.clear);
 
     let m_reset = mgr.clone();
@@ -169,6 +178,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
 
     // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
     let m_clr_s = mgr.clone();
+    let e_clr_s = mgr.clone();
     let v_search = mgr.clone();
     let search = Element::row()
         .cross(Align::Center)
@@ -180,7 +190,8 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
                 .outline()
                 .on_click(move |_| {
                     m_clr_s.search.set(String::new());
-                }),
+                })
+                .enabled_when(move || !e_clr_s.search.get().is_empty()),
         )
         .visible_when(move || v_search.current_spec().searchable || v_search.current_spec().client_search);
 
