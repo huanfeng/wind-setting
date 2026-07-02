@@ -183,6 +183,20 @@ mod tests {
     fn mock_shadow_add_rule_ok() {
         assert_eq!(mock_reply("shadow.addRule").get("ok"), Some(&json!(true)));
     }
+
+    #[test]
+    fn mock_phrase_system_and_user() {
+        let sys = mock_reply("phrase.listSystem");
+        assert!(sys.as_array().unwrap().iter().all(|p| p.get("isSystem")==Some(&json!(true))));
+        let usr = mock_reply("phrase.listUser");
+        assert!(usr.get("items").is_some() && usr.get("total").is_some());
+    }
+
+    #[test]
+    fn mock_phrase_export_import() {
+        assert!(mock_reply("phrase.export").get("content").is_some());
+        assert_eq!(mock_reply("phrase.import").get("imported"), Some(&json!(0)));
+    }
 }
 
 /// 内置 capability 快照（与 src/assets 同一文件），mock 模式离线提供能力契约。
@@ -226,6 +240,17 @@ fn mock_reply(method: &str) -> Value {
             { "code": "yx", "text": "example@example.com", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
             { "code": "dd", "text": "（＾＿＾）", "position": 0, "weight": 1000, "enabled": false, "isSystem": false }
         ]),
+        "phrase.listSystem" => json!([
+            { "code": "rq", "text": "$date", "weight": 1000, "position": 0, "enabled": true, "isSystem": true },
+            { "code": "dd", "text": "（＾＿＾）", "weight": 1000, "position": 0, "enabled": false, "isSystem": true }
+        ]),
+        "phrase.listUser" => json!({ "items": [
+            { "code": "bj", "text": "北京", "weight": 1000, "position": 0, "enabled": true, "isSystem": false },
+            { "code": "yx", "text": "example@example.com", "weight": 1000, "position": 0, "enabled": true, "isSystem": false }
+        ], "total": 2 }),
+        "phrase.export" => json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n\n--- !phrases\nbj\t北京\t1000\t0\t1\n" }),
+        "phrase.import" => json!({ "imported": 0, "skipped": 0 }),
+        "phrase.resetSystem" => json!({ "ok": true, "changed": 0 }),
         "temp.list" => json!([
             { "code": "nihao", "text": "你好", "count": 3 },
             { "code": "women", "text": "我们", "count": 7 }
