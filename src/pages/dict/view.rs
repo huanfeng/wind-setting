@@ -328,16 +328,28 @@ fn build_actions(mgr: &DictManagerState, row: &WordRow) -> Element {
         );
     }
 
-    // 编辑（用户词库/短语）
+    // 编辑（候选调整走 open_shadow_edit，用户词库/短语走 open_edit）
     if spec.ops.edit {
         let m = mgr.clone();
-        let (c, t, w) = (row.code.clone(), row.text.clone(), row.weight);
-        r = r.child(
-            Element::button("编辑")
-                .small()
-                .outline()
-                .on_click(move |_| m.open_edit(&c, &t, w)),
-        );
+        if spec.ops.remove_rule {
+            // Shadow 类别：预填现值打开 shadow 对话框
+            let (c, t, k, pos) =
+                (row.code.clone(), row.text.clone(), row.kind.clone(), row.position);
+            r = r.child(
+                Element::button("编辑")
+                    .small()
+                    .outline()
+                    .on_click(move |_| m.open_shadow_edit(&c, &t, &k, pos)),
+            );
+        } else {
+            let (c, t, w) = (row.code.clone(), row.text.clone(), row.weight);
+            r = r.child(
+                Element::button("编辑")
+                    .small()
+                    .outline()
+                    .on_click(move |_| m.open_edit(&c, &t, w)),
+            );
+        }
     }
 
     if spec.ops.promote {

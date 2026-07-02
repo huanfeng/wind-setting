@@ -452,6 +452,7 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
     columns: COLS_SHADOW,
     ops: OpFlags {
         add: true,
+        edit: true,
         remove_rule: true,
         clear: true,
         ..OpFlags::NONE

@@ -176,7 +176,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .corner(12.0)
         .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
         .child(
-            Element::label("添加候选调整")
+            Element::label_rc(mgr.shadow_title)
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)

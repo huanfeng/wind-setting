@@ -101,8 +101,10 @@ pub struct DictManagerState {
     /// 查看对话框：权重。
     pub view_weight: Signal<String>,
 
-    // ── 候选调整手动添加对话框 ──
+    // ── 候选调整手动添加/编辑对话框 ──
     pub shadow_add_visible: Signal<bool>,
+    /// 对话框标题（"添加候选调整" / "编辑候选调整"）。
+    pub shadow_title: Signal<String>,
     pub shadow_code: Signal<String>,
     pub shadow_word: Signal<String>,
     /// 0 = 固定位置(pin)，1 = 隐藏(hide)。
@@ -168,6 +170,7 @@ impl DictManagerState {
             view_text: signal(String::new()),
             view_weight: signal(String::new()),
             shadow_add_visible: signal(false),
+            shadow_title: signal("添加候选调整".to_string()),
             shadow_code: signal(String::new()),
             shadow_word: signal(String::new()),
             shadow_type: signal(0),
@@ -830,10 +833,23 @@ impl DictManagerState {
 
     /// 打开候选调整添加对话框（清空字段）。
     pub fn open_shadow_add(&self) {
+        self.shadow_title.set("添加候选调整".into());
         self.shadow_code.set(String::new());
         self.shadow_word.set(String::new());
         self.shadow_type.set(0);
         self.shadow_pos.set("0".into());
+        self.shadow_add_visible.set(true);
+    }
+
+    /// 打开候选调整编辑对话框（预填该行现值）。
+    /// kind 为 "delete" 映射到隐藏(1)，其余（"pin"）映射到固定位置(0)。
+    /// 提交仍走 `submit_shadow` → `shadow.addRule`，对同 code+word 是 upsert（覆盖）。
+    pub fn open_shadow_edit(&self, code: &str, word: &str, kind: &str, position: i64) {
+        self.shadow_title.set("编辑候选调整".into());
+        self.shadow_code.set(code.into());
+        self.shadow_word.set(word.into());
+        self.shadow_type.set(if kind == "delete" { 1 } else { 0 });
+        self.shadow_pos.set(position.to_string());
         self.shadow_add_visible.set(true);
     }
 
@@ -1365,6 +1381,36 @@ mod tests {
         st.sub_tab.set(3);
         st.shadow_code.set(String::new());
         assert!(st.shadow_add_call().is_err());
+    }
+
+    #[test]
+    fn open_shadow_edit_prefills_signals_and_sets_visible() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3); // 候选调整
+
+        // pin 类型 → 固定位置(0)
+        st.open_shadow_edit("ab", "阿", "pin", 2);
+        assert!(st.shadow_add_visible.get(), "编辑后 shadow_add_visible=true");
+        assert_eq!(st.shadow_code.get(), "ab");
+        assert_eq!(st.shadow_word.get(), "阿");
+        assert_eq!(st.shadow_type.get(), 0, "pin → 固定位置(0)");
+        assert_eq!(st.shadow_pos.get(), "2");
+        assert_eq!(st.shadow_title.get(), "编辑候选调整");
+
+        // delete 类型 → 隐藏(1)
+        st.shadow_add_visible.set(false);
+        st.open_shadow_edit("cd", "屏", "delete", 0);
+        assert!(st.shadow_add_visible.get());
+        assert_eq!(st.shadow_type.get(), 1, "delete → 隐藏(1)");
+        assert_eq!(st.shadow_word.get(), "屏");
+        assert_eq!(st.shadow_title.get(), "编辑候选调整");
+
+        // 添加后标题恢复
+        st.open_shadow_add();
+        assert_eq!(st.shadow_title.get(), "添加候选调整");
+        assert_eq!(st.shadow_code.get(), "", "open_shadow_add 清空字段");
     }
 
     #[test]
