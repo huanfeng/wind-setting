@@ -176,6 +176,22 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .on_click(move |_| m_reset.request_reset_default())
         .visible_when(move || v_reset.current_spec().ops.reset_default);
 
+    let m_imp = mgr.clone();
+    let v_imp = mgr.clone();
+    let import_btn = Element::button("导入")
+        .small()
+        .outline()
+        .on_click(move |_| m_imp.do_import_phrases())
+        .visible_when(move || v_imp.current_spec().ops.import);
+
+    let m_exp = mgr.clone();
+    let v_exp = mgr.clone();
+    let export_btn = Element::button("导出")
+        .small()
+        .outline()
+        .on_click(move |_| m_exp.do_export_phrases())
+        .visible_when(move || v_exp.current_spec().ops.export);
+
     // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
     let m_clr_s = mgr.clone();
     let e_clr_s = mgr.clone();
@@ -203,6 +219,8 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(add)
         .child(promote_all)
         .child(clear)
+        .child(import_btn)
+        .child(export_btn)
         .child(reset_default)
         .child(Element::leaf().weight(1.0))
         .child(search)

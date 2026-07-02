@@ -776,6 +776,57 @@ impl DictManagerState {
         json!({ "content": content })
     }
 
+    /// 导出用户短语到文件（native save 对话框）。
+    pub fn do_export_phrases(&self) {
+        let path = match PickDialog::new()
+            .title("导出短语")
+            .file_name("phrases.wdict.yaml")
+            .filter("WindDict", &["yaml"])
+            .save_file()
+        {
+            Some(p) => p,
+            None => return, // 用户取消
+        };
+        match rpc::call_core(self.export_method(), &json!({})) {
+            Ok(v) => {
+                let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                match std::fs::write(&path, content) {
+                    Ok(_) => self.notify_ok("已导出"),
+                    Err(e) => self.notify_err(&format!("写文件失败: {e}")),
+                }
+            }
+            Err(e) => self.notify_err(&format!("导出失败: {e}")),
+        }
+    }
+
+    /// 从文件导入用户短语（native open 对话框 + 合并）。
+    pub fn do_import_phrases(&self) {
+        let path = match PickDialog::new()
+            .title("导入短语")
+            .filter("WindDict", &["yaml"])
+            .pick_file()
+        {
+            Some(p) => p,
+            None => return,
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                self.notify_err(&format!("读文件失败: {e}"));
+                return;
+            }
+        };
+        match rpc::call_core("phrase.import", &self.import_params(&content)) {
+            Ok(v) => {
+                let n = v.get("imported").and_then(|x| x.as_u64()).unwrap_or(0);
+                let m = v.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0);
+                self.reload();
+                self.notify_ok(&format!("已导入 {n}（跳过 {m}）"));
+            }
+            Err(e) => self.notify_err(&format!("导入失败: {e}")),
+        }
+    }
+
     /// 构建候选调整添加的 (方法, 参数)（纯函数，便于单测）。
     pub fn shadow_add_call(&self) -> Result<(&'static str, Value), String> {
         let code = self.shadow_code.get();
