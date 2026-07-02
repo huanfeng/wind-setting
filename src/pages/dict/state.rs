@@ -766,6 +766,16 @@ impl DictManagerState {
         self.shadow_add_visible.set(false);
     }
 
+    /// 导出调用（用户短语）。返回 RPC 方法名（内容由 view 层拿到后写文件）。
+    pub fn export_method(&self) -> &'static str {
+        "phrase.export"
+    }
+
+    /// 导入调用参数（内容来自文件）。
+    pub fn import_params(&self, content: &str) -> Value {
+        json!({ "content": content })
+    }
+
     /// 构建候选调整添加的 (方法, 参数)（纯函数，便于单测）。
     pub fn shadow_add_call(&self) -> Result<(&'static str, Value), String> {
         let code = self.shadow_code.get();
@@ -1241,6 +1251,26 @@ mod tests {
         assert_eq!(st.current_category(), WordCategory::PhraseUser);
         st.open_add();
         assert_eq!(st.edit_weight.get(), "1000");
+    }
+
+    #[test]
+    fn phrase_user_list_params_paged() {
+        let st = DictManagerState::new();
+        st.domain.set(0);
+        st.sub_tab.set(1); // 用户短语（分页）
+        let p = st.build_list_params();
+        assert_eq!(p["offset"], serde_json::json!(0));
+        assert_eq!(p["limit"], serde_json::json!(PAGE_SIZE));
+        assert!(p.get("schemaId").is_none(), "短语全局无 schemaId");
+    }
+
+    #[test]
+    fn phrase_system_list_params_bare() {
+        let st = DictManagerState::new();
+        st.domain.set(0);
+        st.sub_tab.set(0); // 系统短语（不分页）
+        let p = st.build_list_params();
+        assert!(p.get("offset").is_none(), "系统短语不分页");
     }
 
     #[test]
