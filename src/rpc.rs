@@ -219,16 +219,16 @@ fn mock_reply(method: &str) -> Value {
         "system.capabilities" => serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({})),
         "config.get" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
         "schema.list" => json!([
-            { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "builtin": true,
-              "version": "2.1.0", "description": "标准五笔 86 版码表方案", "author": "王永民" },
-            { "id": "wubi98", "name": "五笔 98", "engineType": "codetable", "builtin": true,
-              "version": "1.0.0", "description": "标准五笔 98 版码表方案" },
-            { "id": "wubi_mixed", "name": "五笔拼音混输", "engineType": "mixed", "builtin": true,
-              "version": "1.2.0", "description": "五笔 86 + 拼音混合输入" },
-            { "id": "pinyin_simp", "name": "全拼·简", "engineType": "pinyin", "builtin": true,
-              "description": "简体全拼方案" },
-            { "id": "double_pinyin", "name": "自然码双拼", "engineType": "pinyin", "builtin": false,
-              "version": "0.5.0", "description": "自然码双拼布局" }
+            { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "scheme": "",
+              "builtin": true, "version": "2.1.0", "description": "标准五笔 86 版码表方案", "author": "王永民" },
+            { "id": "wubi98", "name": "五笔 98", "engineType": "codetable", "scheme": "",
+              "builtin": true, "version": "1.0.0", "description": "标准五笔 98 版码表方案" },
+            { "id": "wubi_mixed", "name": "五笔拼音混输", "engineType": "mixed", "scheme": "",
+              "builtin": true, "version": "1.2.0", "description": "五笔 86 + 拼音混合输入" },
+            { "id": "pinyin_simp", "name": "全拼·简", "engineType": "pinyin", "scheme": "full",
+              "builtin": true, "description": "简体全拼方案" },
+            { "id": "double_pinyin", "name": "自然码双拼", "engineType": "pinyin", "scheme": "shuangpin",
+              "builtin": false, "version": "0.5.0", "description": "自然码双拼布局" }
         ]),
         "theme.list" => json!([
             { "id": "default_light", "name": "清风·浅" },
