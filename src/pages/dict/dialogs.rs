@@ -60,11 +60,11 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .wrap(true)
         .height(88)
         .weight(1.0)
-        .visible_when(move || is_phrase.current_category() == super::spec::WordCategory::Phrase);
+        .visible_when(move || matches!(is_phrase.current_category(), super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser));
     let text_single = Element::text_input(mgr.edit_text, "")
         .height(34)
         .weight(1.0)
-        .visible_when(move || is_word.current_category() != super::spec::WordCategory::Phrase);
+        .visible_when(move || !matches!(is_word.current_category(), super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser));
     let text_field = Element::row()
         .weight(1.0)
         .cross(Align::Center)

@@ -7,11 +7,13 @@
 
 use serde_json::Value;
 
-/// 五类词库数据。
+/// 六类词库数据（短语拆为系统短语 / 用户短语两类）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WordCategory {
-    /// 短语（全局，无 schemaId）。
-    Phrase,
+    /// 系统短语（全局只读；可开关 / 恢复默认）。
+    PhraseSystem,
+    /// 用户短语（全局可增删改；支持导入导出）。
+    PhraseUser,
     /// 用户词库（按方案·分页）。
     UserDict,
     /// 临时词库（按方案）。
@@ -46,7 +48,8 @@ impl LogicalTab {
     }
     pub fn category(self) -> WordCategory {
         match self {
-            LogicalTab::PhraseSystem | LogicalTab::PhraseUser => WordCategory::Phrase,
+            LogicalTab::PhraseSystem => WordCategory::PhraseSystem,
+            LogicalTab::PhraseUser => WordCategory::PhraseUser,
             LogicalTab::UserDict => WordCategory::UserDict,
             LogicalTab::Temp => WordCategory::Temp,
             LogicalTab::Freq => WordCategory::Freq,
@@ -90,7 +93,7 @@ impl WordRow {
         let i = |k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
         let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
         match cat {
-            WordCategory::Phrase => WordRow {
+            WordCategory::PhraseSystem | WordCategory::PhraseUser => WordRow {
                 code: s("code"),
                 text: s("text"),
                 weight: i("weight"),
@@ -210,6 +213,10 @@ pub struct OpFlags {
     pub set_enabled: bool,
     pub reset_default: bool,
     pub encode: bool,
+    /// 是否支持导入（用户短语）。
+    pub import: bool,
+    /// 是否支持导出（用户短语）。
+    pub export: bool,
 }
 
 impl OpFlags {
@@ -224,6 +231,8 @@ impl OpFlags {
         set_enabled: false,
         reset_default: false,
         encode: false,
+        import: false,
+        export: false,
     };
 }
 
@@ -311,29 +320,48 @@ const COLS_SHADOW: &[ColumnSpec] = &[
     ColumnSpec { header: "位置", weight: 0.7, field: WordField::Position },
 ];
 
-const SPEC_PHRASE: CategorySpec = CategorySpec {
-    category: WordCategory::Phrase,
-    title: "快捷短语",
+const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
+    category: WordCategory::PhraseSystem,
+    title: "系统短语",
     scoped_by_schema: false,
     paged: false,
     searchable: false,
     client_search: true,
     columns: COLS_PHRASE,
+    ops: OpFlags { set_enabled: true, reset_default: true, ..OpFlags::NONE },
+    rpc: RpcNames {
+        list: "phrase.listSystem",
+        set_enabled: "phrase.setEnabled",
+        reset_default: "phrase.resetSystem",
+        ..RpcNames::EMPTY
+    },
+};
+
+const SPEC_PHRASE_USER: CategorySpec = CategorySpec {
+    category: WordCategory::PhraseUser,
+    title: "用户短语",
+    scoped_by_schema: false,
+    paged: true,
+    searchable: true,
+    client_search: false,
+    columns: COLS_PHRASE,
     ops: OpFlags {
         add: true,
         edit: true,
         remove: true,
+        clear: true,
         set_enabled: true,
-        reset_default: true,
+        import: true,
+        export: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
-        list: "phrase.list",
+        list: "phrase.listUser",
         add: "phrase.add",
         update: "phrase.update",
         remove: "phrase.remove",
+        clear: "phrase.resetDefault",
         set_enabled: "phrase.setEnabled",
-        reset_default: "phrase.resetDefault",
         ..RpcNames::EMPTY
     },
 };
@@ -437,7 +465,8 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
 /// 取某类别的静态描述。
 pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
     match cat {
-        WordCategory::Phrase => &SPEC_PHRASE,
+        WordCategory::PhraseSystem => &SPEC_PHRASE_SYSTEM,
+        WordCategory::PhraseUser => &SPEC_PHRASE_USER,
         WordCategory::UserDict => &SPEC_USERDICT,
         WordCategory::Temp => &SPEC_TEMP,
         WordCategory::Freq => &SPEC_FREQ,
@@ -453,7 +482,7 @@ mod tests {
     #[test]
     fn phrase_from_json_maps_all_fields() {
         let v = json!({ "code": "bj", "text": "北京", "position": 2, "weight": 5, "enabled": true });
-        let r = WordRow::from_json(WordCategory::Phrase, &v);
+        let r = WordRow::from_json(WordCategory::PhraseUser, &v);
         assert_eq!(r.code, "bj");
         assert_eq!(r.text, "北京");
         assert_eq!(r.weight, 5);
@@ -536,11 +565,19 @@ mod tests {
         assert_eq!(dict.rpc.encode, "dict.encode");
         assert!(dict.paged && dict.searchable && dict.scoped_by_schema);
 
-        // 短语全局、不分页、可开关。
-        let phrase = spec_for(WordCategory::Phrase);
-        assert!(!phrase.scoped_by_schema);
-        assert!(phrase.ops.set_enabled);
-        assert!(phrase.ops.reset_default);
+        // 系统短语全局、不分页、可开关/恢复默认，无增删。
+        let sys = spec_for(WordCategory::PhraseSystem);
+        assert!(!sys.scoped_by_schema);
+        assert!(sys.ops.set_enabled);
+        assert!(sys.ops.reset_default);
+        assert!(!sys.ops.add && !sys.ops.remove);
+
+        // 用户短语支持增删改、导入导出、分页。
+        let usr = spec_for(WordCategory::PhraseUser);
+        assert!(!usr.scoped_by_schema);
+        assert!(usr.ops.add && usr.ops.edit && usr.ops.remove && usr.ops.clear);
+        assert!(usr.ops.import && usr.ops.export);
+        assert!(usr.paged);
     }
 
     #[test]
@@ -549,8 +586,9 @@ mod tests {
         assert_eq!(LogicalTab::PhraseUser.title(), "用户短语");
         assert_eq!(LogicalTab::UserDict.category(), WordCategory::UserDict);
         assert_eq!(LogicalTab::Shadow.category(), WordCategory::Shadow);
-        // 短语两级都映射到 Phrase 类别，靠 phrase_system 区分
-        assert_eq!(LogicalTab::PhraseSystem.category(), WordCategory::Phrase);
+        // 短语两级分别映射到对应 WordCategory
+        assert_eq!(LogicalTab::PhraseSystem.category(), WordCategory::PhraseSystem);
+        assert_eq!(LogicalTab::PhraseUser.category(), WordCategory::PhraseUser);
         assert_eq!(LogicalTab::PhraseSystem.phrase_system(), Some(true));
         assert_eq!(LogicalTab::PhraseUser.phrase_system(), Some(false));
         assert_eq!(LogicalTab::UserDict.phrase_system(), None);
@@ -559,9 +597,9 @@ mod tests {
     #[test]
     fn phrase_from_json_reads_is_system() {
         let sys = json!({ "code": "bj", "text": "北京", "isSystem": true });
-        assert!(WordRow::from_json(WordCategory::Phrase, &sys).is_system);
+        assert!(WordRow::from_json(WordCategory::PhraseSystem, &sys).is_system);
         let usr = json!({ "code": "me", "text": "自定义" });
-        assert!(!WordRow::from_json(WordCategory::Phrase, &usr).is_system, "缺省 false");
+        assert!(!WordRow::from_json(WordCategory::PhraseUser, &usr).is_system, "缺省 false");
     }
 
     #[test]
@@ -570,5 +608,28 @@ mod tests {
         assert!(s.ops.add);
         assert_eq!(s.rpc.add, "shadow.addRule");
         assert!(s.client_search, "候选调整走客户端搜索");
+    }
+
+    #[test]
+    fn phrase_system_vs_user_specs() {
+        let sys = spec_for(WordCategory::PhraseSystem);
+        assert!(sys.ops.set_enabled);
+        assert!(sys.ops.reset_default);
+        assert!(!sys.ops.add && !sys.ops.remove && !sys.ops.clear);
+        assert!(!sys.paged);
+        assert_eq!(sys.rpc.list, "phrase.listSystem");
+        assert_eq!(sys.rpc.reset_default, "phrase.resetSystem");
+
+        let usr = spec_for(WordCategory::PhraseUser);
+        assert!(usr.ops.add && usr.ops.edit && usr.ops.remove && usr.ops.clear);
+        assert!(usr.ops.import && usr.ops.export);
+        assert!(usr.paged);
+        assert_eq!(usr.rpc.list, "phrase.listUser");
+    }
+
+    #[test]
+    fn logical_tab_maps_to_split_phrase_categories() {
+        assert_eq!(LogicalTab::PhraseSystem.category(), WordCategory::PhraseSystem);
+        assert_eq!(LogicalTab::PhraseUser.category(), WordCategory::PhraseUser);
     }
 }

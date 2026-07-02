@@ -581,7 +581,7 @@ impl DictManagerState {
     pub fn open_add(&self) {
         let (title, lc, lt, w) = match self.current_category() {
             WordCategory::UserDict => ("添加词条", "编码", "词条", "0"),
-            WordCategory::Phrase => ("添加短语", "缩写", "短语", "1000"),
+            WordCategory::PhraseUser => ("添加短语", "缩写", "短语", "1000"),
             _ => return,
         };
         *self.editing_orig.borrow_mut() = None;
@@ -598,7 +598,7 @@ impl DictManagerState {
     pub fn open_edit(&self, code: &str, text: &str, weight: i64) {
         let (title, lc, lt) = match self.current_category() {
             WordCategory::UserDict => ("编辑词条", "编码", "词条"),
-            WordCategory::Phrase => ("编辑短语", "缩写", "短语"),
+            WordCategory::PhraseUser => ("编辑短语", "缩写", "短语"),
             _ => return,
         };
         *self.editing_orig.borrow_mut() = Some((code.into(), text.into()));
@@ -695,7 +695,7 @@ impl DictManagerState {
                     }
                 }
             }
-            WordCategory::Phrase => {
+            WordCategory::PhraseUser => {
                 if code.trim().is_empty() {
                     return Err("缩写不能为空".into());
                 }
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn default_domain_is_phrase_global() {
         let st = DictManagerState::new();
-        assert_eq!(st.current_category(), WordCategory::Phrase);
+        assert_eq!(st.current_category(), WordCategory::PhraseSystem);
         assert!(st.current_schema_id().is_none());
         assert!(!st.current_spec().scoped_by_schema);
     }
@@ -967,6 +967,7 @@ mod tests {
     #[test]
     fn delete_call_phrase_has_no_schema() {
         let st = DictManagerState::new(); // domain 0 = 短语
+        st.sub_tab.set(1); // 用户短语（有 remove RPC）
         let (method, params) = st.delete_call("bj", "北京");
         assert_eq!(method, "phrase.remove");
         assert!(params.get("schemaId").is_none(), "短语全局无 schemaId");
@@ -1050,6 +1051,7 @@ mod tests {
     #[test]
     fn save_calls_phrase_add_and_edit() {
         let st = DictManagerState::new(); // domain 0 = 短语
+        st.sub_tab.set(1); // 用户短语（支持 add/edit）
         st.edit_code.set("bj".into());
         st.edit_text.set("北京".into());
         st.edit_weight.set("1".into());
@@ -1134,7 +1136,7 @@ mod tests {
         st.domain.set(0);
         st.sub_tab.set(1);
         assert_eq!(st.current_tab(), LogicalTab::PhraseUser);
-        assert_eq!(st.current_category(), WordCategory::Phrase);
+        assert_eq!(st.current_category(), WordCategory::PhraseUser);
     }
 
     #[test]
@@ -1228,6 +1230,15 @@ mod tests {
     fn open_add_phrase_default_weight_1000() {
         let st = DictManagerState::new(); // domain 0 = 短语
         st.sub_tab.set(1); // 用户短语（add 仅用户页可见，但 open_add 不校验 scope）
+        st.open_add();
+        assert_eq!(st.edit_weight.get(), "1000");
+    }
+
+    #[test]
+    fn open_add_phrase_user_weight_1000() {
+        let st = DictManagerState::new();
+        st.sub_tab.set(1); // 用户短语
+        assert_eq!(st.current_category(), WordCategory::PhraseUser);
         st.open_add();
         assert_eq!(st.edit_weight.get(), "1000");
     }
