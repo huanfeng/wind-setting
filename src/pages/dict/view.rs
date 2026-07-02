@@ -127,12 +127,18 @@ pub fn build_page(state: &AppState) -> Element {
 
 /// 工具栏：批量操作按钮（按 ops 可见）+ 搜索框（可搜类别）。
 fn build_toolbar(mgr: &DictManagerState) -> Element {
-    // 添加（dict/phrase）
+    // 添加（dict/phrase/shadow 按类别分派）
     let m_add = mgr.clone();
     let v_add = mgr.clone();
     let add = Element::button("+ 添加")
         .small()
-        .on_click(move |_| m_add.open_add())
+        .on_click(move |_| {
+            if m_add.current_category() == super::spec::WordCategory::Shadow {
+                m_add.open_shadow_add();
+            } else {
+                m_add.open_add();
+            }
+        })
         .visible_when(move || v_add.current_spec().ops.add);
 
     // 批量：全部转正（temp）/ 清空（dict/temp/freq/shadow）/ 恢复默认（phrase）
