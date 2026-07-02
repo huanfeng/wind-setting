@@ -82,6 +82,9 @@ pub struct DictManagerState {
     /// 编辑模式的原始键 (code, text)；None = 新增模式。
     editing_orig: Rc<RefCell<Option<(String, String)>>>,
 
+    // ── 系统短语只读查看对话框 ──
+    pub view_visible: Signal<bool>,
+
     // ── 候选调整手动添加对话框 ──
     pub shadow_add_visible: Signal<bool>,
     pub shadow_code: Signal<String>,
@@ -144,6 +147,7 @@ impl DictManagerState {
             edit_text: signal(String::new()),
             edit_weight: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
+            view_visible: signal(false),
             shadow_add_visible: signal(false),
             shadow_code: signal(String::new()),
             shadow_word: signal(String::new()),
@@ -613,6 +617,18 @@ impl DictManagerState {
 
     pub fn cancel_edit(&self) {
         self.edit_visible.set(false);
+    }
+
+    /// 打开系统短语只读查看对话框（复用 edit_code/edit_text/edit_weight 存值，不写 editing_orig）。
+    pub fn open_view(&self, code: &str, text: &str, weight: i64) {
+        self.edit_code.set(code.into());
+        self.edit_text.set(text.into());
+        self.edit_weight.set(weight.to_string());
+        self.view_visible.set(true);
+    }
+
+    pub fn cancel_view(&self) {
+        self.view_visible.set(false);
     }
 
     /// 由"出码"按钮触发：用户词库下按词条反查编码填入编码框。
@@ -1285,6 +1301,20 @@ mod tests {
         st.sub_tab.set(3);
         st.shadow_code.set(String::new());
         assert!(st.shadow_add_call().is_err());
+    }
+
+    #[test]
+    fn open_view_sets_visible_and_signals() {
+        let st = DictManagerState::new();
+        st.open_view("bj", "北京", 1000);
+        assert!(st.view_visible.get(), "open_view 后 view_visible=true");
+        assert_eq!(st.edit_code.get(), "bj");
+        assert_eq!(st.edit_text.get(), "北京");
+        assert_eq!(st.edit_weight.get(), "1000");
+        // editing_orig 不写，仍为 None
+        assert!(st.editing_orig.borrow().is_none(), "查看不设 editing_orig");
+        st.cancel_view();
+        assert!(!st.view_visible.get(), "cancel_view 后 view_visible=false");
     }
 
     #[test]

@@ -9,13 +9,14 @@ use crate::widgets::flat_panel;
 
 use super::state::DictManagerState;
 
-/// 构建词库页所有浮层对话框：确认对话框 + 加/改词对话框 + 候选调整添加对话框（叠在一个 stack）。
+/// 构建词库页所有浮层对话框：确认 + 加/改词 + 候选调整添加 + 系统短语只读查看（叠在一个 stack）。
 pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
     Element::stack()
         .fill()
         .child(build_confirm_dialog(mgr))
         .child(build_edit_dialog(mgr))
         .child(build_shadow_dialog(mgr))
+        .child(build_view_dialog(mgr))
 }
 
 /// 加/改词对话框（用户词库 / 短语）：编码/缩写（+出码）· 词条/短语 · 权重。
@@ -187,6 +188,83 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .child(Element::divider())
         .child(footer);
     Element::dialog(mgr.shadow_add_visible, frame)
+}
+
+/// 系统短语只读查看对话框：展示缩写 / 内容 / 权重，仅"关闭"按钮，不写任何数据。
+fn build_view_dialog(mgr: &DictManagerState) -> Element {
+    let cancel = mgr.clone();
+
+    let field = |label: &'static str, input: Element| {
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(Element::label(label).font_size(12.5).fg_role(Role::TextMuted).width(48))
+            .child(input)
+    };
+
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 12)
+        .spacing(10)
+        .child(field(
+            "缩写",
+            Element::label_rc(mgr.edit_code)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .width_match()
+                .max_lines(1),
+        ))
+        .child(field(
+            "内容",
+            Element::label_rc(mgr.edit_text)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .width_match()
+                .max_lines(20),
+        ))
+        .child(field(
+            "权重",
+            Element::label_rc(mgr.edit_weight)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .width(100),
+        ));
+
+    let footer = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 12)
+        .spacing(8)
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("关闭")
+                .small()
+                .outline()
+                .on_click(move |_| cancel.cancel_view()),
+        );
+
+    let frame = Element::col()
+        .width(420)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("查看系统短语")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(footer);
+    Element::dialog(mgr.view_visible, frame)
 }
 
 /// 破坏性操作二次确认：正文由 `confirm_msg` 驱动，确认执行 `confirm_pending`。

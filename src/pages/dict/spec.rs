@@ -217,6 +217,8 @@ pub struct OpFlags {
     pub import: bool,
     /// 是否支持导出（用户短语）。
     pub export: bool,
+    /// 是否支持只读查看（系统短语）。
+    pub view: bool,
 }
 
 impl OpFlags {
@@ -233,6 +235,7 @@ impl OpFlags {
         encode: false,
         import: false,
         export: false,
+        view: false,
     };
 }
 
@@ -328,7 +331,7 @@ const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
     searchable: false,
     client_search: true,
     columns: COLS_PHRASE,
-    ops: OpFlags { set_enabled: true, reset_default: true, ..OpFlags::NONE },
+    ops: OpFlags { set_enabled: true, reset_default: true, view: true, ..OpFlags::NONE },
     rpc: RpcNames {
         list: "phrase.listSystem",
         set_enabled: "phrase.setEnabled",

@@ -316,6 +316,18 @@ fn build_actions(mgr: &DictManagerState, row: &WordRow) -> Element {
     let spec = mgr.current_spec();
     let mut r = Element::row().width(ACTION_W).cross(Align::Center).spacing(6);
 
+    // 只读查看（系统短语）
+    if spec.ops.view {
+        let m = mgr.clone();
+        let (c, t, w) = (row.code.clone(), row.text.clone(), row.weight);
+        r = r.child(
+            Element::button("查看")
+                .small()
+                .outline()
+                .on_click(move |_| m.open_view(&c, &t, w)),
+        );
+    }
+
     // 编辑（用户词库/短语）
     if spec.ops.edit {
         let m = mgr.clone();
