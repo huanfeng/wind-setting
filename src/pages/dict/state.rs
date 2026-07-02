@@ -48,7 +48,7 @@ pub struct DictManagerState {
     pub rows: Rc<RefCell<Vec<WordRow>>>,
     /// 驱动 `list_signal` 的数据信号。
     pub list_data: Signal<Vec<DictListItem>>,
-    /// 搜索框文本（可搜类别，由"搜索"按钮触发 reload，见 [`Self::apply_search`]）。
+    /// 搜索框文本（可搜类别，由搜索框输入变化经响应式 effect 触发，见 [`Self::apply_search`]）。
     pub search: Signal<String>,
     /// 分页偏移（分页类别）。
     pub offset: Rc<RefCell<usize>>,
@@ -393,8 +393,9 @@ impl DictManagerState {
         self.reload();
     }
 
-    /// 收敛越界 sub_tab（切域后子标签数量可能变少）。纯状态修正，便于单测。
-    pub fn on_nav_changed_clamp_only(&self) {
+    /// 越界时重置 sub_tab 为 0（回到首个子标签），而非钳到末项。
+    /// 纯状态修正，便于单测（切域后子标签数量可能变少）。
+    pub fn reset_sub_tab_if_out_of_range(&self) {
         let len = self.tabs_for_domain().len();
         if self.sub_tab.get() >= len {
             self.sub_tab.set(0);
@@ -404,14 +405,14 @@ impl DictManagerState {
     /// 导航（数据域/子标签）变化后：归零分页、清空搜索、重载。
     /// 由 view 侧的响应式 effect 在 domain/sub_tab 信号变化时调用。
     pub fn on_nav_changed(&self) {
-        self.on_nav_changed_clamp_only();
+        self.reset_sub_tab_if_out_of_range();
         *self.offset.borrow_mut() = 0;
         self.search.set(String::new());
         self.status.set(String::new());
         self.reload();
     }
 
-    /// 应用当前搜索框内容（归零分页 + 重载）。由"搜索"按钮触发。
+    /// 归零分页并重载当前搜索框内容，供输入即搜与清除调用。
     pub fn apply_search(&self) {
         *self.offset.borrow_mut() = 0;
         self.reload();
@@ -1235,11 +1236,11 @@ mod tests {
     fn nav_change_clamps_out_of_range_sub_tab() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("mx", "混输", "mixed"), schema("wb", "五笔", "codetable")]);
-        // 先在码表选到候选调整(3)，切到混输(仅1项) → 应收敛到 0
+        // 先在码表选到候选调整(3)，切到混输(仅1项) → 应重置到 0
         st.domain.set(2);
         st.sub_tab.set(3);
         st.domain.set(1); // 混输
-        st.on_nav_changed_clamp_only(); // 见实现：抽出纯收敛逻辑便于测试
+        st.reset_sub_tab_if_out_of_range(); // 见实现：抽出纯收敛逻辑便于测试
         assert_eq!(st.sub_tab.get(), 0);
     }
 }
