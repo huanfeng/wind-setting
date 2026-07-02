@@ -248,10 +248,33 @@ impl DictManagerState {
         self.rebuild_list();
     }
 
+    /// 应用短语系统/用户过滤 + 客户端搜索过滤后的可见行（纯函数）。
+    /// 分页类别不在此过滤（服务端已按 prefix 返回）。
+    pub fn visible_rows(&self) -> Vec<WordRow> {
+        let rows = self.rows.borrow();
+        let phrase_sys = self.current_tab().phrase_system();
+        let client_search = self.current_spec().client_search;
+        let q = self.search.get();
+        let q = q.trim().to_lowercase();
+        rows.iter()
+            .filter(|r| match phrase_sys {
+                Some(sys) => r.is_system == sys,
+                None => true,
+            })
+            .filter(|r| {
+                if !client_search || q.is_empty() {
+                    return true;
+                }
+                r.code.to_lowercase().contains(&q) || r.text.to_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// 重建 `list_data`（表头 + rows → 行项；空则空态项）并刷新分页状态文字。
     pub fn rebuild_list(&self) {
-        let rows = self.rows.borrow();
-        let total = self.total.get();
+        let rows = self.visible_rows();
+        let total = if self.current_spec().paged { self.total.get() } else { rows.len() };
         let spec = self.current_spec();
 
         // 分页/计数状态文字
@@ -275,6 +298,15 @@ impl DictManagerState {
             }
         }
         self.list_data.set(items);
+    }
+
+    /// 搜索框内容变化：分页类走服务端（归零分页+重载），非分页类走客户端重过滤。
+    pub fn on_search_changed(&self) {
+        if self.current_spec().paged {
+            self.apply_search();
+        } else {
+            self.rebuild_list();
+        }
     }
 
     fn empty_hint(&self) -> String {
@@ -1026,6 +1058,40 @@ mod tests {
         st.sub_tab.set(1);
         assert_eq!(st.current_tab(), LogicalTab::PhraseUser);
         assert_eq!(st.current_category(), WordCategory::Phrase);
+    }
+
+    #[test]
+    fn phrase_two_level_filter_by_is_system() {
+        let st = DictManagerState::new(); // domain 0 = 短语
+        *st.rows.borrow_mut() = vec![
+            WordRow { code: "bj".into(), text: "北京".into(), is_system: true, ..Default::default() },
+            WordRow { code: "me".into(), text: "我的".into(), is_system: false, ..Default::default() },
+        ];
+        st.sub_tab.set(0); // 系统短语
+        let vis = st.visible_rows();
+        assert_eq!(vis.len(), 1);
+        assert_eq!(vis[0].text, "北京");
+        st.sub_tab.set(1); // 用户短语
+        assert_eq!(st.visible_rows()[0].text, "我的");
+    }
+
+    #[test]
+    fn client_search_filters_temp_rows() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(1); // 临时词库（client_search=true）
+        *st.rows.borrow_mut() = vec![
+            WordRow { code: "nihao".into(), text: "你好".into(), ..Default::default() },
+            WordRow { code: "women".into(), text: "我们".into(), ..Default::default() },
+        ];
+        st.search.set("women".into());
+        let vis = st.visible_rows();
+        assert_eq!(vis.len(), 1);
+        assert_eq!(vis[0].text, "我们");
+        // 匹配词条也命中
+        st.search.set("你".into());
+        assert_eq!(st.visible_rows()[0].code, "nihao");
     }
 
     #[test]
