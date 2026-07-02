@@ -22,14 +22,6 @@ pub enum WordCategory {
     Shadow,
 }
 
-/// 方案内四类子标签的顺序（与 [`CategorySpec::title`] 及导航 `sub_tab` 索引一致）。
-pub const SCHEMA_SUB_CATEGORIES: [WordCategory; 4] = [
-    WordCategory::UserDict,
-    WordCategory::Temp,
-    WordCategory::Freq,
-    WordCategory::Shadow,
-];
-
 /// 导航子标签的逻辑单元：短语两级 + 方案内四类。映射到 (标题, 类别, 短语系统标志)。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LogicalTab {
@@ -549,14 +541,6 @@ mod tests {
         assert!(!phrase.scoped_by_schema);
         assert!(phrase.ops.set_enabled);
         assert!(phrase.ops.reset_default);
-    }
-
-    #[test]
-    fn schema_sub_categories_order() {
-        assert_eq!(SCHEMA_SUB_CATEGORIES[0], WordCategory::UserDict);
-        assert_eq!(SCHEMA_SUB_CATEGORIES[3], WordCategory::Shadow);
-        // 标题与顺序对齐
-        assert_eq!(spec_for(SCHEMA_SUB_CATEGORIES[2]).title, "词频");
     }
 
     #[test]

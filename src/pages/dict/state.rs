@@ -638,6 +638,7 @@ impl DictManagerState {
 
     /// 计算"保存"要执行的 RPC 调用序列（纯函数，便于单测）。
     /// 用户词库：改键走删旧+加新，仅权重变走 update；短语：走 add / update。
+    #[allow(clippy::type_complexity)]
     pub fn save_calls(&self) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
         let spec = self.current_spec();
         let cat = spec.category;
