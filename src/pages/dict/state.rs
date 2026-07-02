@@ -16,7 +16,7 @@ use crate::dialogs::schema_manager::engine_label;
 use crate::rpc;
 use crate::state::SchemaInfo;
 
-use super::spec::{CategorySpec, SCHEMA_SUB_CATEGORIES, WordCategory, WordRow, spec_for};
+use super::spec::{CategorySpec, LogicalTab, WordCategory, WordRow, spec_for};
 
 /// 分页类别每页条数（对齐旧版 webview）。
 pub const PAGE_SIZE: usize = 100;
@@ -91,6 +91,16 @@ enum PendingAction {
     ResetDefault,
 }
 
+/// 当前数据域的类型（短语域或方案 kind）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DomainKind {
+    Phrase,
+    Pinyin,
+    Codetable,
+    Mixed,
+    Other,
+}
+
 impl Default for DictManagerState {
     fn default() -> Self {
         Self::new()
@@ -127,13 +137,42 @@ impl DictManagerState {
 
     // ── 导航解析 ─────────────────────────────────────────────
 
+    /// 当前数据域类型。
+    pub fn domain_kind(&self) -> DomainKind {
+        let d = self.domain.get();
+        if d == 0 {
+            return DomainKind::Phrase;
+        }
+        match self.schemas.borrow().get(d - 1).map(|s| s.kind.as_str()) {
+            Some("pinyin") => DomainKind::Pinyin,
+            Some("codetable") => DomainKind::Codetable,
+            Some("mixed") => DomainKind::Mixed,
+            _ => DomainKind::Other,
+        }
+    }
+
+    /// 当前域的子标签序列（按 kind 生成）。
+    pub fn tabs_for_domain(&self) -> Vec<LogicalTab> {
+        use LogicalTab::*;
+        match self.domain_kind() {
+            DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
+            DomainKind::Pinyin => vec![UserDict, Temp, Freq],
+            DomainKind::Mixed => vec![Shadow],
+            // 码表与未知：全四类（未知从宽，不隐藏数据）。
+            DomainKind::Codetable | DomainKind::Other => vec![UserDict, Temp, Freq, Shadow],
+        }
+    }
+
+    /// 当前选中的逻辑子标签（sub_tab 越界钳到末项）。
+    pub fn current_tab(&self) -> LogicalTab {
+        let tabs = self.tabs_for_domain();
+        let i = self.sub_tab.get().min(tabs.len().saturating_sub(1));
+        tabs[i]
+    }
+
     /// 当前类别（由 domain + sub_tab 解析）。
     pub fn current_category(&self) -> WordCategory {
-        if self.domain.get() == 0 {
-            WordCategory::Phrase
-        } else {
-            SCHEMA_SUB_CATEGORIES[self.sub_tab.get().min(SCHEMA_SUB_CATEGORIES.len() - 1)]
-        }
+        self.current_tab().category()
     }
 
     /// 当前类别描述。
@@ -163,10 +202,7 @@ impl DictManagerState {
 
     /// 方案子标签的标题列表。
     pub fn sub_tab_titles(&self) -> Vec<String> {
-        SCHEMA_SUB_CATEGORIES
-            .iter()
-            .map(|c| spec_for(*c).title.to_string())
-            .collect()
+        self.tabs_for_domain().iter().map(|t| t.title().to_string()).collect()
     }
 
     // ── 分页守卫 ─────────────────────────────────────────────
@@ -299,9 +335,18 @@ impl DictManagerState {
         self.reload();
     }
 
+    /// 收敛越界 sub_tab（切域后子标签数量可能变少）。纯状态修正，便于单测。
+    pub fn on_nav_changed_clamp_only(&self) {
+        let len = self.tabs_for_domain().len();
+        if self.sub_tab.get() >= len {
+            self.sub_tab.set(0);
+        }
+    }
+
     /// 导航（数据域/子标签）变化后：归零分页、清空搜索、重载。
     /// 由 view 侧的响应式 effect 在 domain/sub_tab 信号变化时调用。
     pub fn on_nav_changed(&self) {
+        self.on_nav_changed_clamp_only();
         *self.offset.borrow_mut() = 0;
         self.search.set(String::new());
         self.status.set(String::new());
@@ -943,5 +988,55 @@ mod tests {
         st.reload(); // 应短路为空表 + 提示，不触发有效 rpc
         assert!(st.rows.borrow().is_empty());
         assert_eq!(st.status.get(), "暂无已启用方案");
+    }
+
+    #[test]
+    fn tabs_matrix_by_kind() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![
+            schema("wb", "五笔", "codetable"),
+            schema("py", "全拼", "pinyin"),
+            schema("mx", "混输", "mixed"),
+        ]);
+        // 短语域：系统 + 用户
+        st.domain.set(0);
+        assert_eq!(st.tabs_for_domain(), vec![LogicalTab::PhraseSystem, LogicalTab::PhraseUser]);
+        // 码表：四类含候选调整
+        st.domain.set(1);
+        assert_eq!(st.tabs_for_domain(),
+            vec![LogicalTab::UserDict, LogicalTab::Temp, LogicalTab::Freq, LogicalTab::Shadow]);
+        // 拼音：三类无候选调整
+        st.domain.set(2);
+        assert_eq!(st.tabs_for_domain(),
+            vec![LogicalTab::UserDict, LogicalTab::Temp, LogicalTab::Freq]);
+        // 混输：仅候选调整
+        st.domain.set(3);
+        assert_eq!(st.tabs_for_domain(), vec![LogicalTab::Shadow]);
+    }
+
+    #[test]
+    fn current_category_follows_dynamic_tabs() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("mx", "混输", "mixed")]);
+        st.domain.set(1); // 混输
+        st.sub_tab.set(0);
+        assert_eq!(st.current_category(), WordCategory::Shadow);
+        // 短语用户页
+        st.domain.set(0);
+        st.sub_tab.set(1);
+        assert_eq!(st.current_tab(), LogicalTab::PhraseUser);
+        assert_eq!(st.current_category(), WordCategory::Phrase);
+    }
+
+    #[test]
+    fn nav_change_clamps_out_of_range_sub_tab() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("mx", "混输", "mixed"), schema("wb", "五笔", "codetable")]);
+        // 先在码表选到候选调整(3)，切到混输(仅1项) → 应收敛到 0
+        st.domain.set(2);
+        st.sub_tab.set(3);
+        st.domain.set(1); // 混输
+        st.on_nav_changed_clamp_only(); // 见实现：抽出纯收敛逻辑便于测试
+        assert_eq!(st.sub_tab.get(), 0);
     }
 }
