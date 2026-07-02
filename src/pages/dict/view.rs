@@ -13,9 +13,9 @@ use windui::prelude::*;
 use crate::state::AppState;
 use crate::widgets::flat_panel;
 
-use super::reactive::reactive_effect;
+use super::reactive::{reactive_effect, toast_sink};
 use super::spec::{ColumnSpec, WordField, WordRow};
-use super::state::{DictListItem, DictManagerState};
+use super::state::{DictListItem, DictManagerState, DomainKind};
 
 /// 操作列固定宽度（表头与行需一致）。
 const ACTION_W: i32 = 168;
@@ -56,13 +56,24 @@ pub fn build_page(state: &AppState) -> Element {
                 .on_click(move |_| mgr_refresh.reload()),
         );
 
-    // ── 方案子标签（仅方案域显示）──
-    let dom_sub = mgr.domain;
+    // ── 方案子标签（按 domain_kind 动态显隐，四条 segmented 同时只显一条）──
+    let k_phrase = mgr.clone();
+    let k_py = mgr.clone();
+    let k_wb = mgr.clone();
+    let k_mx = mgr.clone();
+    let seg = |titles: Vec<&str>, mgr: DictManagerState, kind: DomainKind| {
+        let m = mgr.clone();
+        Element::segmented(titles.iter().map(|s| s.to_string()).collect::<Vec<_>>(), mgr.sub_tab)
+            .width(380)
+            .visible_when(move || m.domain_kind() == kind)
+    };
     let sub_tabs = Element::row()
         .width_match()
         .padding_xy(0, 2)
-        .child(Element::segmented(mgr.sub_tab_titles(), mgr.sub_tab).width(380))
-        .visible_when(move || dom_sub.get() > 0);
+        .child(seg(vec!["系统短语", "用户短语"], k_phrase, DomainKind::Phrase))
+        .child(seg(vec!["用户词库", "临时词库", "词频"], k_py, DomainKind::Pinyin))
+        .child(seg(vec!["用户词库", "临时词库", "词频", "候选调整"], k_wb, DomainKind::Codetable))
+        .child(seg(vec!["候选调整"], k_mx, DomainKind::Mixed));
 
     // ── 工具栏：批量操作（左）+ 搜索（右）──
     let toolbar = build_toolbar(&mgr);
@@ -74,14 +85,14 @@ pub fn build_page(state: &AppState) -> Element {
         DictListItem::Row(row, idx) => build_row(&mgr_row, &row, idx),
         DictListItem::Empty(msg) => build_empty(&msg),
     })
-    .weight(1.0);
+    .width_match();
 
     let card = flat_panel()
         .corner(10.0)
         .width_match()
         .weight(1.0)
         .padding_xy(4, 2)
-        .child(table);
+        .child(Element::scroll().fill().child(table));
 
     // ── 分页（仅分页类别显示）──
     let pagination = build_pagination(&mgr);
@@ -97,8 +108,12 @@ pub fn build_page(state: &AppState) -> Element {
         .child(card)
         .child(pagination);
 
-    // effect 为不可见节点，叠在 stack 里避免占据 col 间距。
-    Element::stack().fill().child(main_col).child(effect)
+    // effect/toast 为不可见/浮层节点，叠在 stack 里避免占据 col 间距。
+    Element::stack()
+        .fill()
+        .child(main_col)
+        .child(effect)
+        .child(toast_sink(mgr.feedback))
 }
 
 /// 工具栏：批量操作按钮（按 ops 可见）+ 搜索框（可搜类别）。
