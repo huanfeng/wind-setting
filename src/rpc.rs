@@ -190,6 +190,15 @@ mod tests {
         assert!(sys.as_array().unwrap().iter().all(|p| p.get("isSystem")==Some(&json!(true))));
         let usr = mock_reply("phrase.listUser");
         assert!(usr.get("items").is_some() && usr.get("total").is_some());
+        assert_eq!(usr.get("total"), Some(&json!(2)));
+        assert!(usr.get("items").unwrap().is_array());
+    }
+
+    #[test]
+    fn mock_phrase_reset_system() {
+        let reset = mock_reply("phrase.resetSystem");
+        assert_eq!(reset.get("ok"), Some(&json!(true)));
+        assert_eq!(reset.get("changed"), Some(&json!(0)));
     }
 
     #[test]
