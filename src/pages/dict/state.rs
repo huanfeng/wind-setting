@@ -21,6 +21,16 @@ use super::spec::{CategorySpec, LogicalTab, WordCategory, WordRow, spec_for};
 /// 分页类别每页条数（对齐旧版 webview）。
 pub const PAGE_SIZE: usize = 100;
 
+/// 折叠后的一个数据域（拼音族聚合为一项）。
+#[derive(Clone)]
+pub struct DomainEntry {
+    pub label: String,
+    /// engineType（"pinyin"/"codetable"/"mixed"/其它）。
+    pub kind: String,
+    /// 代表方案 id（拼音族取全拼优先；短语域不用此字段）。
+    pub rep_schema_id: String,
+}
+
 /// `list_signal` 的数据项：表头、一行词条，或空态提示。
 #[derive(Clone)]
 pub enum DictListItem {
@@ -174,6 +184,44 @@ impl DictManagerState {
         self.feedback.set(Some((false, msg.to_string())));
     }
 
+    // ── 域折叠 ───────────────────────────────────────────────
+
+    /// 从 schemas 构建折叠后的方案域列表（不含短语域）。
+    /// 拼音族（engineType=="pinyin"）聚合为单一"拼音"项；代表取非 shuangpin 优先（全拼/未标注）。
+    pub fn folded_domains(&self) -> Vec<DomainEntry> {
+        let schemas = self.schemas.borrow();
+        let mut out: Vec<DomainEntry> = Vec::new();
+        let mut pinyin_seen = false;
+        for s in schemas.iter() {
+            if s.kind == "pinyin" {
+                if pinyin_seen {
+                    // 已有拼音域：若当前方案 scheme != "shuangpin"（全拼或未标注），升级代表
+                    if s.scheme != "shuangpin" {
+                        if let Some(py) = out.iter_mut().find(|d| d.kind == "pinyin") {
+                            py.rep_schema_id = s.id.clone();
+                        }
+                    }
+                    continue;
+                }
+                pinyin_seen = true;
+                out.push(DomainEntry {
+                    label: "拼音".to_string(),
+                    kind: "pinyin".to_string(),
+                    rep_schema_id: s.id.clone(),
+                });
+            } else {
+                let tag = engine_label(&s.kind);
+                let name = if s.name.is_empty() { s.id.clone() } else { s.name.clone() };
+                out.push(DomainEntry {
+                    label: if tag == "未知" { name } else { format!("{name} · {tag}") },
+                    kind: s.kind.clone(),
+                    rep_schema_id: s.id.clone(),
+                });
+            }
+        }
+        out
+    }
+
     // ── 导航解析 ─────────────────────────────────────────────
 
     /// 当前数据域类型。
@@ -182,7 +230,7 @@ impl DictManagerState {
         if d == 0 {
             return DomainKind::Phrase;
         }
-        match self.schemas.borrow().get(d - 1).map(|s| s.kind.as_str()) {
+        match self.folded_domains().get(d - 1).map(|e| e.kind.as_str()) {
             Some("pinyin") => DomainKind::Pinyin,
             Some("codetable") => DomainKind::Codetable,
             Some("mixed") => DomainKind::Mixed,
@@ -219,22 +267,20 @@ impl DictManagerState {
         spec_for(self.current_category())
     }
 
-    /// 当前作用域方案 id（短语域返回 None）。
+    /// 当前作用域方案 id（短语域返回 None；拼音域返回代表方案 id）。
     pub fn current_schema_id(&self) -> Option<String> {
         let d = self.domain.get();
         if d == 0 {
             return None;
         }
-        self.schemas.borrow().get(d - 1).map(|s| s.id.clone())
+        self.folded_domains().get(d - 1).map(|e| e.rep_schema_id.clone())
     }
 
-    /// 数据域下拉选项标签（首项"快捷短语"，其后各方案）。
+    /// 数据域下拉选项标签（首项"快捷短语"，其后折叠后各域）。
     pub fn domain_labels(&self) -> Vec<String> {
         let mut v = vec!["快捷短语".to_string()];
-        for s in self.schemas.borrow().iter() {
-            let tag = engine_label(&s.kind);
-            let name = if s.name.is_empty() { s.id.clone() } else { s.name.clone() };
-            v.push(if tag == "未知" { name } else { format!("{name} · {tag}") });
+        for e in self.folded_domains() {
+            v.push(e.label);
         }
         v
     }
@@ -400,7 +446,7 @@ impl DictManagerState {
     pub fn set_schemas(&self, schemas: &[SchemaInfo]) {
         *self.schemas.borrow_mut() = schemas.to_vec();
         self.domain_items.set(self.domain_labels());
-        if self.domain.get() > schemas.len() {
+        if self.domain.get() > self.folded_domains().len() {
             self.domain.set(0);
         }
         self.reload();
@@ -892,7 +938,11 @@ mod tests {
     use super::*;
 
     fn schema(id: &str, name: &str, kind: &str) -> SchemaInfo {
-        SchemaInfo { id: id.into(), name: name.into(), kind: kind.into() }
+        SchemaInfo { id: id.into(), name: name.into(), kind: kind.into(), ..Default::default() }
+    }
+
+    fn schema_s(id: &str, name: &str, kind: &str, scheme: &str) -> SchemaInfo {
+        SchemaInfo { id: id.into(), name: name.into(), kind: kind.into(), scheme: scheme.into() }
     }
 
     /// 直接写 schemas/domain，不经 set_schemas（避免触发 rpc）。
@@ -935,7 +985,8 @@ mod tests {
         let labels = st.domain_labels();
         assert_eq!(labels[0], "快捷短语");
         assert_eq!(labels[1], "五笔86 · 码表");
-        assert_eq!(labels[2], "全拼 · 拼音");
+        // 拼音方案折叠后统一显示"拼音"（不再拼接各方案的 name · 拼音）
+        assert_eq!(labels[2], "拼音");
     }
 
     #[test]
@@ -1369,5 +1420,32 @@ mod tests {
         st.domain.set(1); // 混输
         st.reset_sub_tab_if_out_of_range(); // 见实现：抽出纯收敛逻辑便于测试
         assert_eq!(st.sub_tab.get(), 0);
+    }
+
+    #[test]
+    fn pinyin_family_folds_into_one_domain() {
+        let st = DictManagerState::new();
+        // 两个拼音方案(全拼+双拼) + 一个码表
+        with_schemas(&st, vec![
+            schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
+            schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin"),
+            schema("wubi86", "五笔86", "codetable"),
+        ]);
+        let labels = st.domain_labels();
+        // 域：快捷短语 + 拼音(折叠) + 五笔86 = 3 项（而非 4）
+        assert_eq!(labels, vec!["快捷短语".to_string(), "拼音".to_string(), "五笔86 · 码表".to_string()]);
+        // 选"拼音"域，current_schema_id 返回代表(全拼优先)
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        assert_eq!(st.current_schema_id().as_deref(), Some("pinyin_simp"));
+    }
+
+    #[test]
+    fn shuangpin_only_folds_with_shuangpin_rep() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin")]);
+        st.domain.set(1);
+        // 无全拼时代表取该双拼
+        assert_eq!(st.current_schema_id().as_deref(), Some("double_pinyin"));
     }
 }

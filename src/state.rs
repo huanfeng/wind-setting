@@ -26,6 +26,8 @@ pub struct SchemaInfo {
     pub name: String,
     /// 类型（codetable / pinyin / ...），用于主方案下拉过滤；缺省为空。
     pub kind: String,
+    /// 拼音方案类型（"full"=全拼，"shuangpin"=双拼，""=未标注/视为全拼）；非拼音方案为空串。
+    pub scheme: String,
 }
 
 /// 保存写回器：把某 Signal 值写回 Config。
@@ -413,7 +415,12 @@ fn load_schemas() -> Vec<SchemaInfo> {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    Some(SchemaInfo { id, name, kind })
+                    let scheme = s
+                        .get("scheme")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(SchemaInfo { id, name, kind, scheme })
                 })
                 .collect()
         })
