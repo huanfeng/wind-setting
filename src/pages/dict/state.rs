@@ -1288,14 +1288,6 @@ mod tests {
     }
 
     #[test]
-    fn open_add_phrase_default_weight_1000() {
-        let st = DictManagerState::new(); // domain 0 = 短语
-        st.sub_tab.set(1); // 用户短语（add 仅用户页可见，但 open_add 不校验 scope）
-        st.open_add();
-        assert_eq!(st.edit_weight.get(), "1000");
-    }
-
-    #[test]
     fn open_add_phrase_user_weight_1000() {
         let st = DictManagerState::new();
         st.sub_tab.set(1); // 用户短语

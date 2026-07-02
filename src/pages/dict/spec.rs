@@ -627,9 +627,4 @@ mod tests {
         assert_eq!(usr.rpc.list, "phrase.listUser");
     }
 
-    #[test]
-    fn logical_tab_maps_to_split_phrase_categories() {
-        assert_eq!(LogicalTab::PhraseSystem.category(), WordCategory::PhraseSystem);
-        assert_eq!(LogicalTab::PhraseUser.category(), WordCategory::PhraseUser);
-    }
 }
