@@ -23,14 +23,17 @@ pub fn all_tabs(state: &AppState) -> Vec<(String, Element)> {
         ("外观".into(), appearance_page(state)),
         ("词库".into(), dict_page(state)),
         // 统计页未实现，暂从导航隐藏（功能完成后恢复）。
-        ("高级".into(), manifest_page(state, "advanced")),
+        ("高级".into(), manifest_page(state, "advanced", "高级", "服务与实验性功能")),
         ("关于".into(), about_page(state)),
     ]
 }
 
-/// 由若干 section 卡片组成一页（纵向滚动 + 深色 bg 衬托卡片）。
-fn sections_page(sections: Vec<Element>) -> Element {
-    let mut col = Element::col().width_match().spacing(18);
+/// 由若干 section 卡片组成一页（页头 + 纵向滚动，深色 bg 衬托卡片）。
+fn sections_page(title: &str, desc: &str, sections: Vec<Element>) -> Element {
+    let mut col = Element::col()
+        .width_match()
+        .spacing(18)
+        .child(crate::widgets::page_header(title, desc));
     for s in sections {
         col = col.child(s);
     }
@@ -48,7 +51,7 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
 }
 
 /// 纯清单分组页（无自定义卡片）。
-fn manifest_page(state: &AppState, group: &str) -> Element {
+fn manifest_page(state: &AppState, group: &str, title: &str, desc: &str) -> Element {
     let mut secs = manifest_sections(state, group);
     if secs.is_empty() {
         secs.push(
@@ -57,7 +60,7 @@ fn manifest_page(state: &AppState, group: &str) -> Element {
                 .child(todo_hint("（该分组暂无清单项，或 core 未运行）")),
         );
     }
-    sections_page(secs)
+    sections_page(title, desc, secs)
 }
 
 // ───────────────────────── 输入 ─────────────────────────
@@ -67,7 +70,7 @@ fn manifest_page(state: &AppState, group: &str) -> Element {
 fn input_page(state: &AppState) -> Element {
     let mut secs = manifest_sections(state, "input");
     secs.extend(manifest_sections(state, "general"));
-    sections_page(secs)
+    sections_page("输入", "调整输入行为与纠错策略", secs)
 }
 
 // ───────────────────────── 方案 ─────────────────────────
@@ -140,13 +143,13 @@ fn scheme_page(state: &AppState) -> Element {
         ],
     ));
 
-    sections_page(secs)
+    sections_page("方案", "选择输入方案与引擎配置", secs)
 }
 
 // ───────────────────────── 按键 ─────────────────────────
 
 fn keys_page(state: &AppState) -> Element {
-    sections_page(manifest_sections(state, "keys"))
+    sections_page("按键", "自定义快捷键与候选选择键", manifest_sections(state, "keys"))
 }
 
 // ───────────────────────── 外观 ─────────────────────────
@@ -154,7 +157,7 @@ fn keys_page(state: &AppState) -> Element {
 fn appearance_page(state: &AppState) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
     // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。整页纯清单驱动。
-    sections_page(manifest_sections(state, "ui"))
+    sections_page("外观", "自定义候选窗与工具栏的视觉呈现", manifest_sections(state, "ui"))
 }
 
 // ───────────────────────── 词库 ─────────────────────────
@@ -401,5 +404,10 @@ fn about_page(state: &AppState) -> Element {
         .child(grid)
         .child(footer);
 
-    crate::widgets::page(panel)
+    let body = Element::col()
+        .width_match()
+        .spacing(18)
+        .child(crate::widgets::page_header("关于", "版本信息与支持"))
+        .child(panel);
+    crate::widgets::page(body)
 }

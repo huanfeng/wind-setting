@@ -88,6 +88,31 @@ pub fn section_header(title: &str) -> Element {
         )
 }
 
+/// 页面头部（左右布局）：17px 页标题在左，12px 弱化描述同行随后，不占额外纵向空间。
+pub fn page_header(title: &str, desc: &str) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::End)
+        .spacing(10)
+        .child(
+            Element::label(title)
+                .font_size(17.0)
+                .font_weight(700)
+                .fg_role(Role::Text)
+                .max_lines(1)
+                .height(24),
+        )
+        .child(
+            Element::label(desc)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .weight(1.0)
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .height(18),
+        )
+}
+
 /// 设置行：左标签（+可选副标题）+ 右控件。对齐 ime.rs setting_row。
 ///
 /// 标签 `width_match()` + `max_lines(1)`：占满左列可用宽，避免 windui Label 在紧贴宽下

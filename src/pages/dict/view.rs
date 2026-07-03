@@ -130,6 +130,7 @@ pub fn build_page(state: &AppState) -> Element {
         .bg_role(Role::SurfaceAlt)
         .padding_xy(20, 16)
         .spacing(12)
+        .child(crate::widgets::page_header("词库", "管理词库与自定义词条"))
         .child(domain_row)
         .child(sub_tabs)
         .child(toolbar)
