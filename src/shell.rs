@@ -42,6 +42,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         )
     };
 
+    // 静态色控件（图标 tint/渐变/淡底）用它做亮暗双态，须在页面构建前注册。
+    crate::widgets::init_dark_sig(dark);
+
     let titlebar = build_titlebar();
 
     // 左侧栏：仅分区导航（pill 选中）；动作下移到底部操作栏。

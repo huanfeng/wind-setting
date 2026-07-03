@@ -3,7 +3,25 @@
 //! 纯组合函数，仅供本项目用。视觉走 wind-ui-rust 的**角色化主题**（`*_role`），
 //! 故所有控件随亮/暗主题自动适配。样式对齐 examples/ime.rs 的设置面板。
 
+use std::cell::Cell;
+
 use windui::prelude::*;
+
+thread_local! {
+    /// 全局明暗信号（shell::build 注册）。静态色图标/渐变无法走 *_role 换肤，
+    /// 用它做「亮/暗双元素 visible_when」双态。UI 单线程，thread_local 即全局。
+    static DARK_SIG: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
+}
+
+/// 注册明暗信号（shell::build 调用一次）。
+pub fn init_dark_sig(sig: Signal<bool>) {
+    DARK_SIG.with(|c| c.set(Some(sig)));
+}
+
+/// 取明暗信号；未注册时返回恒亮信号（测试/独立构建兜底）。
+pub fn dark_sig() -> Signal<bool> {
+    DARK_SIG.with(|c| c.get()).unwrap_or_else(|| signal(false))
+}
 
 /// 应用图标（嵌入 PNG，与 exe/任务栏图标同源，均由主仓库 688px `pic/logo.png`
 /// 经 Lanczos 离线生成）。`px` 为逻辑边长；小尺寸（标题栏）用 64px 专用资源，
@@ -31,21 +49,43 @@ pub fn flat_panel() -> Element {
         .corner(12.0)
 }
 
-/// 分组小标题（11px 弱化大写感，上下留白）。对齐 ime.rs settings_section_header。
-/// 置于卡片上方，左侧微缩进与卡片内容对齐。
+/// 分区标题：26px 强调色淡底图标块 + 14px 加粗标题（参考稿 sec-head）。
 ///
-/// `width_match()` + `max_lines(1)`：windui 的 Label 在「无显式宽度」时，measure 收敛到
-/// 文字紧贴宽，draw 再按该窄宽折行（见 ui/mod.rs 注释），导致明明有空间也换行、甚至
-/// 2 字标题也折。给足整行宽度并锁单行即可根治。
+/// 图标块底色/图标色为静态 accent（tint/半透明底不走 *_role），按 [`dark_sig`]
+/// 做亮/暗双态 visible_when 跟随换肤；图标按 section 名查 [`crate::icons::section_icon`]。
+///
+/// 标题 Label `weight(1.0)` + `max_lines(1)`：windui 的 Label 在「无显式宽度」时，
+/// measure 收敛到文字紧贴宽，draw 再按该窄宽折行（见 ui/mod.rs 注释），导致明明有
+/// 空间也换行、甚至 2 字标题也折。给足整行宽度并锁单行即可根治。
 pub fn section_header(title: &str) -> Element {
-    Element::label(title)
-        .font_size(11.5)
-        .font_weight(600)
-        .fg_role(Role::TextMuted)
+    let svg = crate::icons::section_icon(title);
+    let chip = |accent: u32, on_dark: bool| {
+        Element::stack()
+            .size(26, 26)
+            .corner(7.0)
+            .bg(Color::hex(accent).scale_alpha(0.12))
+            .child(crate::icons::tinted(svg, 15, Color::hex(accent)).align(Align::Center))
+            .visible_when(move || dark_sig().get() == on_dark)
+    };
+    Element::row()
         .width_match()
-        .max_lines(1)
-        .height(18)
-        .margin_xy(4, 4)
+        .cross(Align::Center)
+        .spacing(9)
+        .margin_xy(2, 4)
+        .child(
+            Element::stack()
+                .child(chip(crate::theme_def::ACCENT_DARK, true))
+                .child(chip(crate::theme_def::ACCENT_LIGHT, false)),
+        )
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1)
+                .height(20),
+        )
 }
 
 /// 设置行：左标签（+可选副标题）+ 右控件。对齐 ime.rs setting_row。
@@ -119,7 +159,11 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
 /// 卡片容器：圆角 surface + 边框，承载分区内的若干设置行（行间自动插分隔线）。
 /// 卡片内置水平/垂直内边距，分隔线随之内缩（iOS/macOS 分组列表观感）。
 pub fn card(rows: Vec<Element>) -> Element {
-    let mut card = flat_panel().corner(10.0).width_match().padding_xy(16, 2);
+    let mut card = flat_panel()
+        .corner(13.0)
+        .width_match()
+        .padding_xy(16, 2)
+        .shadow(Shadow::new(0.0, 1.0, 2.0, Color::rgba(20, 30, 50, 8)));
     let last = rows.len().saturating_sub(1);
     for (i, row) in rows.into_iter().enumerate() {
         card = card.child(row);
