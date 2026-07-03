@@ -9,6 +9,7 @@ scripts/deploy.local.ps1
 .omc/
 .remember/
 .claude/
+docs/superpowers/
 
 # Screenshots / scratch output
 /out.png
