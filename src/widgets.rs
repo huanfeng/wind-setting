@@ -5,10 +5,16 @@
 
 use windui::prelude::*;
 
-/// 应用图标（嵌入 PNG，与 exe/任务栏图标同源）。`px` 为逻辑边长。
-/// 资源 `res/wind_setting_icon.png` 由 build 期从 `wind_setting.ico` 的 256px 帧提取。
+/// 应用图标（嵌入 PNG，与 exe/任务栏图标同源，均由主仓库 688px `pic/logo.png`
+/// 经 Lanczos 离线生成）。`px` 为逻辑边长；小尺寸（标题栏）用 64px 专用资源，
+/// 避免 256px 大图实时缩到 ~30 物理px 的大缩比采样发糊。
 pub fn app_icon(px: i32) -> Element {
-    Element::image_bytes(include_bytes!("../res/wind_setting_icon.png")).size(px, px)
+    let bytes: &'static [u8] = if px <= 32 {
+        include_bytes!("../res/wind_setting_icon_sm.png")
+    } else {
+        include_bytes!("../res/wind_setting_icon.png")
+    };
+    Element::image_bytes(bytes).size(px, px)
 }
 
 /// 浮层面板：圆角 surface + 边框 + 投影（对话框等浮窗用）。

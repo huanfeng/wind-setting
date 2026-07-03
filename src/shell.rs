@@ -117,6 +117,12 @@ fn build_titlebar() -> Element {
                 .font_weight(600)
                 .fg_role(Role::Text),
         )
+        // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）。
+        .child(
+            Element::label(env!("WIND_SETTING_VERSION"))
+                .font_size(11.0)
+                .fg_role(Role::TextMuted),
+        )
         .child(Element::leaf().weight(1.0))
         // 图标随主题明暗（否则默认深色字在暗色标题栏上不可见）。
         .child(Element::window_button(WindowButtonKind::Minimize).fg_role(Role::Text))

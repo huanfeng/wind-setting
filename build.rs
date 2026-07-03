@@ -23,6 +23,16 @@ fn main() {
 
     let (ver_str, ver_u64) = git_version();
 
+    // 导出给应用代码（标题栏版本号显示）：形如 X.Y.Z 开头的加 v 前缀；
+    // 纯 hash（无 tag，可能以数字开头，如 "55bb398.dirty"）原样。
+    let is_semver = {
+        let mut segs = ver_str.split(['.', '+']);
+        let num = |s: Option<&str>| s.is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+        num(segs.next()) && num(segs.next())
+    };
+    let display_ver = if is_semver { format!("v{ver_str}") } else { ver_str.clone() };
+    println!("cargo:rustc-env=WIND_SETTING_VERSION={display_ver}");
+
     // manifest：asInvoker + PerMonitorV2 DPI 感知 + win10 + 长路径（对齐 core）。
     let manifest = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
