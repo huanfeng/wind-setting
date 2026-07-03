@@ -23,12 +23,24 @@ pub struct SchemaEntry {
     pub name: String,
     pub enabled: bool,
     pub engine_type: String,   // "codetable" | "pinyin" | "mixed"
+    pub scheme: String,        // 拼音子方案："full" | "shuangpin"（非拼音为空串）
     pub source: String,        // "builtin" | "user"
     pub version: String,
     pub description: String,
     pub author: String,
     pub error: Option<String>,
 }
+
+/// 双拼布局（id ↔ 显示名）。对应 core 内置 `data/schemas/shuangpin/<id>.toml`，
+/// 集合固定；core 若新增布局需同步此表。
+const SHUANGPIN_LAYOUTS: &[(&str, &str)] = &[
+    ("xiaohe", "小鹤双拼"),
+    ("ziranma", "自然码"),
+    ("mspy", "微软双拼"),
+    ("sogou", "搜狗双拼"),
+    ("abc", "智能ABC"),
+    ("ziguang", "紫光双拼"),
+];
 
 /// `list_signal` 的数据项：行/分节标题/行间分隔线。
 #[derive(Clone)]
@@ -59,12 +71,23 @@ pub struct SchemaManagerState {
     pub selected_id: Rc<RefCell<Option<String>>>,
     /// 选中变更计数：每次变更自增，触发重布局使行高亮/工具栏 enabled_when 重估。
     pub sel_ver: Signal<u64>,
+    /// 静态状态文字（列表计数等长效信息）。
     pub status: Signal<String>,
+    /// 操作反馈（(成功?, 消息)）：经 toast_sink 弹单条 toast，替代原 status 式提示。
+    pub feedback: Signal<Option<(bool, String)>>,
     pub confirm_visible: Signal<bool>,
     pub confirm_msg: Signal<String>,
     pub confirm_id: Rc<RefCell<String>>,
     pub settings_visible: Signal<bool>,
     pub settings_content: Signal<String>,
+    /// 设置对话框当前方案 ID（保存时用）。
+    pub settings_schema_id: Rc<RefCell<String>>,
+    /// 设置对话框打开时经 schema.getConfig 拉取的完整方案配置（保存时改写后回传）。
+    pub settings_cfg: Rc<RefCell<Value>>,
+    /// 当前方案是否为双拼（决定「双拼布局」行与保存按钮的可见性）。
+    pub settings_is_shuangpin: Signal<bool>,
+    /// 双拼布局下拉选中索引（对应 [`SHUANGPIN_LAYOUTS`]）。
+    pub settings_layout: Signal<usize>,
 }
 
 impl SchemaManagerState {
@@ -78,11 +101,16 @@ impl SchemaManagerState {
             selected_id: Rc::new(RefCell::new(None)),
             sel_ver: signal(0),
             status: signal(String::new()),
+            feedback: signal(None),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
             confirm_id: Rc::new(RefCell::new(String::new())),
             settings_visible: signal(false),
             settings_content: signal(String::new()),
+            settings_schema_id: Rc::new(RefCell::new(String::new())),
+            settings_cfg: Rc::new(RefCell::new(Value::Null)),
+            settings_is_shuangpin: signal(false),
+            settings_layout: signal(0),
         };
         state.refresh();
         state
@@ -195,6 +223,7 @@ impl SchemaManagerState {
                            name: s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                            enabled,
                            engine_type,
+                           scheme: s.get("scheme").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                            source,
                            version: s.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                            description: s.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -300,6 +329,11 @@ impl SchemaManagerState {
         self.request_delete_at_id(&id);
     }
 
+    /// 操作反馈：弹单条 toast（经页面挂载的 toast_sink）。
+    fn notify(&self, ok: bool, msg: impl Into<String>) {
+        self.feedback.set(Some((ok, msg.into())));
+    }
+
     /// 上移指定方案在 enabled_order 中的位置（立即刷新列表）。
     pub fn move_schema_up(&self, schema_id: &str) {
         {
@@ -308,7 +342,7 @@ impl SchemaManagerState {
                 if idx > 0 { order.swap(idx, idx - 1); }
             }
         }
-        self.status.set("排序已调整（保存后生效）".into());
+        self.notify(true, "排序已调整（保存后生效）");
         self.rebuild_list();
     }
 
@@ -320,12 +354,13 @@ impl SchemaManagerState {
                 if idx + 1 < order.len() { order.swap(idx, idx + 1); }
             }
         }
-        self.status.set("排序已调整（保存后生效）".into());
+        self.notify(true, "排序已调整（保存后生效）");
         self.rebuild_list();
     }
 
     /// 切换方案启用状态（更新 enabled_order，立即刷新列表）。
-    pub fn toggle_schema_enabled(&self, schema_id: &str, new_enabled: bool) {
+    /// 禁用最后一个启用中的方案会被拒绝（返回 false，调用方回滚复选框）。
+    pub fn toggle_schema_enabled(&self, schema_id: &str, new_enabled: bool) -> bool {
         if new_enabled {
             let mut order = self.enabled_order.borrow_mut();
             if !order.contains(&schema_id.to_string()) {
@@ -338,28 +373,82 @@ impl SchemaManagerState {
                 let all_ids: Vec<String> = self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
                 *order = all_ids;
             }
+            // 守护：至少保留一个启用方案（否则 order 变空又回到「全部启用」语义，
+            // 表现为"禁用最后一个反而全开"）。
+            if order.len() <= 1 {
+                drop(order);
+                self.notify(false, "至少需保留一个启用的方案");
+                return false;
+            }
             order.retain(|id| id != schema_id);
         }
-        self.status.set(if new_enabled { "已启用（保存后生效）" } else { "已禁用（保存后生效）" }.into());
+        self.notify(true, if new_enabled { "已启用（保存后生效）" } else { "已禁用（保存后生效）" });
         self.rebuild_list();
+        true
     }
 
-    /// 打开指定 ID 方案的设置对话框。
+    /// 打开指定 ID 方案的设置对话框。双拼方案额外经 schema.getConfig 拉取
+    /// 当前布局，展示「双拼布局」下拉（保存走 schema.saveConfig 稀疏 override）。
     pub fn open_settings_at_id(&self, schema_id: &str) {
-        let schemas = self.schemas.borrow();
-        if let Some(entry) = schemas.iter().find(|e| e.id == schema_id) {
-            let content = format!(
-                "ID：{}\n名称：{}\n类型：{}\n来源：{}\n版本：{}\n作者：{}\n\n{}",
-                entry.id,
-                entry.name,
-                engine_label(&entry.engine_type),
-                if entry.source == "user" { "用户安装" } else { "内置" },
-                if entry.version.is_empty() { "—".to_string() } else { entry.version.clone() },
-                if entry.author.is_empty() { "—".to_string() } else { entry.author.clone() },
-                entry.description.clone(),
-            );
-            self.settings_content.set(content);
-            self.settings_visible.set(true);
+        let entry = {
+            let schemas = self.schemas.borrow();
+            let Some(e) = schemas.iter().find(|e| e.id == schema_id) else { return };
+            e.clone()
+        };
+        let content = format!(
+            "ID：{}\n名称：{}\n类型：{}\n来源：{}\n版本：{}\n作者：{}\n\n{}",
+            entry.id,
+            entry.name,
+            engine_label(&entry.engine_type),
+            if entry.source == "user" { "用户安装" } else { "内置" },
+            if entry.version.is_empty() { "—".to_string() } else { entry.version.clone() },
+            if entry.author.is_empty() { "—".to_string() } else { entry.author.clone() },
+            entry.description.clone(),
+        );
+
+        // 方案配置（三层合并结果）；失败按空对象处理（布局下拉回退首项）。
+        let cfg = rpc::call_core("schema.getConfig", &json!({ "id": schema_id }))
+            .unwrap_or_else(|_| json!({}));
+        let is_sp = entry.scheme == "shuangpin";
+        if is_sp {
+            let layout = cfg
+                .pointer("/engine/pinyin/shuangpin/layout")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let idx = SHUANGPIN_LAYOUTS.iter().position(|(id, _)| *id == layout).unwrap_or(0);
+            self.settings_layout.set(idx);
+        }
+        *self.settings_schema_id.borrow_mut() = entry.id.clone();
+        *self.settings_cfg.borrow_mut() = cfg;
+        self.settings_is_shuangpin.set(is_sp);
+        self.settings_content.set(content);
+        self.settings_visible.set(true);
+    }
+
+    /// 保存设置对话框的改动（当前仅双拼布局）：改写拉取的完整配置后回传
+    /// schema.saveConfig（core 侧与方案基线做稀疏 diff 写 override 层，立即生效）。
+    pub fn save_settings(&self) {
+        let id = self.settings_schema_id.borrow().clone();
+        if id.is_empty() || !self.settings_is_shuangpin.get() {
+            return;
+        }
+        let idx = self.settings_layout.get().min(SHUANGPIN_LAYOUTS.len() - 1);
+        let layout = SHUANGPIN_LAYOUTS[idx].0;
+        let mut cfg = self.settings_cfg.borrow().clone();
+        if !cfg.is_object() {
+            cfg = json!({});
+        }
+        set_json_path(
+            &mut cfg,
+            &["engine", "pinyin", "shuangpin", "layout"],
+            json!(layout),
+        );
+        match rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg })) {
+            Ok(_) => {
+                self.notify(true, "方案配置已保存");
+                self.settings_visible.set(false);
+            }
+            Err(e) => self.notify(false, format!("保存失败: {e}")),
         }
     }
 
@@ -368,7 +457,7 @@ impl SchemaManagerState {
         let schemas = self.schemas.borrow();
         if let Some(entry) = schemas.iter().find(|e| e.id == schema_id) {
             if entry.source == "builtin" {
-                self.status.set("内置方案不可删除".into());
+                self.notify(false, "内置方案不可删除");
                 return;
             }
             let display_name =
@@ -389,14 +478,31 @@ impl SchemaManagerState {
             Ok(_) => {
                 // refresh 内会发现选中 ID 已消失并清空选中。
                 self.refresh();
-                self.status.set("方案已删除".into());
+                self.notify(true, "方案已删除");
             }
-            Err(e) => self.status.set(format!("删除失败: {e}")),
+            Err(e) => self.notify(false, format!("删除失败: {e}")),
         }
     }
 }
 
 // ──────────────────────── 显示辅助 ────────────────────────
+
+/// 沿路径逐层确保对象存在后写入叶子值（中间层非对象时覆盖为对象；根非对象则不写）。
+fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
+    let Some((last, mids)) = path.split_last() else { return };
+    let mut cur = v;
+    for k in mids {
+        let Some(obj) = cur.as_object_mut() else { return };
+        let slot = obj.entry((*k).to_string()).or_insert_with(|| json!({}));
+        if !slot.is_object() {
+            *slot = json!({});
+        }
+        cur = slot;
+    }
+    if let Some(o) = cur.as_object_mut() {
+        o.insert((*last).to_string(), leaf);
+    }
+}
 
 pub fn engine_label(t: &str) -> &'static str {
     match t {
@@ -474,8 +580,10 @@ fn build_compound_row(
         .small()
         .on_toggle(move |_| {
             let new_val = !enabled_sig.get();
-            enabled_sig.set(new_val);
-            mgr_toggle.toggle_schema_enabled(&toggle_id, new_val);
+            // 被拒绝（最后一个启用项不可禁用）时不写 signal，勾选态保持不变。
+            if mgr_toggle.toggle_schema_enabled(&toggle_id, new_val) {
+                enabled_sig.set(new_val);
+            }
         });
 
     // ── 名称列（weight-1）：名称 + 可选描述 ──
@@ -555,33 +663,38 @@ fn build_compound_row(
         );
     }
 
-    // ── 选中视觉：底层淡蓝底 + 左缘指示条（覆盖层，不挤占布局）──
-    let mgr_bg = mgr.clone();
-    let id_bg = entry.id.clone();
+    // ── 选中视觉：淡蓝底 + accent 整条描边（置于行下，行 clickable 吞命中不受影响）
+    //    + 左缘指示条（无背景穿透容器包裹，垂直居中）。
+    //    stack 子节点铺满须用 .align(Align::Stretch)（Frame 布局只认 align，
+    //    width/height_match 在此测不出父尺寸——上一版指示条不居中即此因）。
+    let sel_when = |m: &SchemaManagerState, id: &str| {
+        let m = m.clone();
+        let id = id.to_string();
+        move || {
+            m.sel_ver.get();
+            m.is_selected(&id)
+        }
+    };
     let sel_bg = Element::leaf()
-        .width_match()
-        .height_match()
+        .align(Align::Stretch)
         .corner(8.0)
-        .bg(Color::hex(crate::theme_def::ACCENT_LIGHT).scale_alpha(0.10))
-        .visible_when(move || {
-            mgr_bg.sel_ver.get();
-            mgr_bg.is_selected(&id_bg)
-        });
-    let mgr_ind = mgr.clone();
-    let id_ind = entry.id.clone();
+        .bg(Color::hex(crate::theme_def::ACCENT_LIGHT).scale_alpha(0.08))
+        .visible_when(sel_when(mgr, &entry.id));
+    let sel_border = Element::leaf()
+        .align(Align::Stretch)
+        .corner(8.0)
+        .border_role(Role::Accent, 1)
+        .visible_when(sel_when(mgr, &entry.id));
     let indicator = Element::row()
-        .width_match()
-        .height_match()
+        .align(Align::Stretch)
         .cross(Align::Center)
         .child(Element::leaf().width(3).height(16).corner(1.5).bg_role(Role::Accent))
-        .visible_when(move || {
-            mgr_ind.sel_ver.get();
-            mgr_ind.is_selected(&id_ind)
-        });
+        .visible_when(sel_when(mgr, &entry.id));
 
     let mut item = Element::stack()
         .width_match()
         .child(sel_bg)
+        .child(sel_border)
         .child(row)
         .child(indicator);
 
@@ -652,6 +765,31 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
 fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let visible = state.settings_visible;
     let content = state.settings_content;
+    let is_sp = state.settings_is_shuangpin;
+
+    // 双拼布局行：仅双拼方案可见。下拉选项固定集（见 SHUANGPIN_LAYOUTS）。
+    let layout_labels: Vec<String> =
+        SHUANGPIN_LAYOUTS.iter().map(|(_, name)| (*name).to_string()).collect();
+    let sp_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(12)
+        .padding_xy(0, 8)
+        .child(
+            Element::label("双拼布局")
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1),
+        )
+        .child(Element::dropdown(layout_labels, state.settings_layout).width(170))
+        .visible_when(move || is_sp.get());
+    let plain_hint = Element::label("该方案暂无可配置项。")
+        .font_size(11.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .padding_xy(0, 4)
+        .visible_when(move || !is_sp.get());
 
     let body = Element::col()
         .width_match()
@@ -662,21 +800,25 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .fg_role(Role::Text)
                 .width_match(),
         )
-        .child(
-            Element::label("方案高级配置将在核心暴露配置键后提供。")
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .padding_xy(0, 4),
-        );
+        .child(sp_row)
+        .child(plain_hint);
 
+    let st_save = state.clone();
     let footer = Element::row()
         .width_match()
+        .spacing(8)
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("关闭")
                 .small()
+                .outline_soft()
                 .on_click(move |_| visible.set(false)),
+        )
+        .child(
+            Element::button("保存")
+                .small()
+                .on_click(move |_| st_save.save_settings())
+                .visible_when(move || is_sp.get()),
         );
 
     Element::dialog_panel(visible, "方案设置", 440, move |_| visible.set(false), body, footer)

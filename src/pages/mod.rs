@@ -83,7 +83,6 @@ fn scheme_page(state: &AppState) -> Element {
     // 条目操作作用于列表选中项，按选中状态/位置/来源禁用（工具栏+选中模式）。
     // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距。
     let st_refresh = mgr.clone();
-    let st_import  = mgr.clone();
     let (m_up, e_up) = (mgr.clone(), mgr.clone());
     let (m_dn, e_dn) = (mgr.clone(), mgr.clone());
     let (m_set, e_set) = (mgr.clone(), mgr.clone());
@@ -108,7 +107,7 @@ fn scheme_page(state: &AppState) -> Element {
                 .max_lines(1),
         )
         .child(
-            Element::button("上移")
+            Element::button("↑")
                 .small()
                 .outline_soft()
                 .enabled_when(move || {
@@ -118,7 +117,7 @@ fn scheme_page(state: &AppState) -> Element {
                 .on_click(move |_| m_up.move_selected(true)),
         )
         .child(
-            Element::button("下移")
+            Element::button("↓")
                 .small()
                 .outline_soft()
                 .enabled_when(move || {
@@ -128,7 +127,7 @@ fn scheme_page(state: &AppState) -> Element {
                 .on_click(move |_| m_dn.move_selected(false)),
         )
         .child(
-            Element::button("设置…")
+            Element::button("设置")
                 .small()
                 .outline_soft()
                 .enabled_when(move || {
@@ -159,8 +158,10 @@ fn scheme_page(state: &AppState) -> Element {
             Element::button("导入…")
                 .small()
                 .outline_soft()
-                .on_click(move |_| st_import.status.set("导入功能开发中".into())),
-        );
+                .on_click(|ctx| ctx.toast("导入功能开发中")),
+        )
+        // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
+        .child(dict::reactive::toast_sink(mgr.feedback));
 
     // 复合行列表（已启用在前 · 未启用在后 · ↑/↓ · outline 类型徽章）
     let list_el = build_schema_inline_list(mgr);

@@ -268,9 +268,17 @@ fn mock_reply(method: &str) -> Value {
             { "code": "wm", "word": "我们", "candId": "c1", "type": "pin", "position": 0 },
             { "code": "nh", "word": "你好", "candId": null, "type": "delete" }
         ]),
-        "config.getDefaults" | "schema.getConfig" | "schema.references" | "theme.preview" => {
+        "config.getDefaults" | "schema.references" | "theme.preview" => {
             json!({})
         }
+        // 双拼样例配置（离线核对设置对话框的布局下拉）；仅双拼方案会读取
+        // engine.pinyin.shuangpin，非双拼方案拿到同一份也不消费。
+        "schema.getConfig" => json!({
+            "engine": { "type": "pinyin", "pinyin": {
+                "scheme": "shuangpin", "shuangpin": { "layout": "ziranma" }
+            } }
+        }),
+        "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "stats.summary" => json!({ "today": 0, "week": 0, "month": 0, "total": 0, "streak": 0 }),
         "dict.listPaged" => json!({ "items": [
