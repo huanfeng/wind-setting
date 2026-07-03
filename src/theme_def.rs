@@ -5,50 +5,52 @@
 
 use windui::prelude::*;
 
-/// 设计主强调蓝，明暗一致（#3b82f6）。
-pub const ACCENT: u32 = 0x3B82F6;
+/// 亮色主题强调蓝（静态渐变/淡底用；tint/渐变不走 *_role，需静态常量）。
+pub const ACCENT_LIGHT: u32 = 0x2F6BED;
+/// 暗色主题强调蓝（暗背景上提亮一档）。
+pub const ACCENT_DARK: u32 = 0x5B8CF5;
 
-/// 亮色主题（设计浅色稿配色）。
+/// 亮色主题（参考稿蓝灰冷调）。
 pub fn light_theme() -> Theme {
     let mut t = Theme::default();
     let p = &mut t.palette;
-    p.accent = Color::hex(ACCENT);
-    p.accent_hover = Color::hex(0x60A5FA);
-    p.accent_active = Color::hex(0x2563EB);
+    p.accent = Color::hex(0x2F6BED);
+    p.accent_hover = Color::hex(0x4A80F0);
+    p.accent_active = Color::hex(0x2159D6);
     p.on_accent = Color::WHITE;
-    // 左栏(Bg)=#F9F8F8、右内容(SurfaceAlt)=#FFFEFE、卡片(Surface)=#FFFFFF（高一档 + 边框分隔）。
-    p.bg = Color::hex(0xF9F8F8);
+    // 左栏(Bg)=#F5F7FA、右内容(SurfaceAlt)=#FBFCFE、卡片(Surface)=#FFFFFF（高一档 + 边框分隔）。
+    p.bg = Color::hex(0xF5F7FA);
     p.surface = Color::hex(0xFFFFFF);
-    p.surface_alt = Color::hex(0xFFFEFE);
-    p.text = Color::hex(0x1A1F2A);
-    p.text_muted = Color::hex(0x6B7280);
-    p.text_disabled = Color::hex(0xB7BECA);
-    p.border = Color::hex(0xE3E7EC);
-    p.divider = Color::hex(0xECEEF2);
-    p.track = Color::hex(0xD7DCE3);
+    p.surface_alt = Color::hex(0xFBFCFE);
+    p.text = Color::hex(0x182031);
+    p.text_muted = Color::hex(0x5A6577);
+    p.text_disabled = Color::hex(0xB6BDC9);
+    p.border = Color::hex(0xE4E8EE);
+    p.divider = Color::hex(0xEDF0F4);
+    p.track = Color::hex(0xD8DEE8);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t
 }
 
-/// 暗色主题（设计深色稿配色）。
+/// 暗色主题（参考稿深夜蓝调）。
 pub fn dark_theme() -> Theme {
     let mut t = Theme::dark();
     let p = &mut t.palette;
-    p.accent = Color::hex(ACCENT);
-    p.accent_hover = Color::hex(0x60A5FA);
-    p.accent_active = Color::hex(0x2563EB);
+    p.accent = Color::hex(0x5B8CF5);
+    p.accent_hover = Color::hex(0x6F9BF7);
+    p.accent_active = Color::hex(0x4A7CE8);
     p.on_accent = Color::WHITE;
-    // 左栏(Bg)=#161925、右内容(SurfaceAlt)=#1A202E、卡片(Surface)=#232C3D（高一档，便于卡片浮起）。
-    p.bg = Color::hex(0x161925);
-    p.surface = Color::hex(0x232C3D);
-    p.surface_alt = Color::hex(0x1A202E);
-    p.text = Color::hex(0xE8EAED);
-    p.text_muted = Color::hex(0x8B94A7);
-    p.text_disabled = Color::hex(0x5A6377);
-    p.border = Color::hex(0x2E3A54);
-    // 分割线在暗色卡片(0x232C3D)上需足够对比，原 0x222C40 几乎同色不可见，提亮。
-    p.divider = Color::hex(0x37425D);
+    // 左栏(Bg)=#10161F、右内容(SurfaceAlt)=#131A27、卡片(Surface)=#1A2333（高一档，便于卡片浮起）。
+    p.bg = Color::hex(0x10161F);
+    p.surface = Color::hex(0x1A2333);
+    p.surface_alt = Color::hex(0x131A27);
+    p.text = Color::hex(0xEBEEF5);
+    p.text_muted = Color::hex(0x9AA3B5);
+    p.text_disabled = Color::hex(0x6A7284);
+    p.border = Color::hex(0x2A3447);
+    // 分割线须在暗色卡片(0x1A2333)上可辨（历史教训：太接近会不可见）。
+    p.divider = Color::hex(0x2C374C);
     p.track = Color::hex(0x2B3550);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
