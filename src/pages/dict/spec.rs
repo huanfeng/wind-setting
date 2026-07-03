@@ -119,7 +119,7 @@ impl WordRow {
                 code: s("code"),
                 text: s("text"),
                 count: i("count"),
-                last_used: s("lastUsed"),
+                last_used: fmt_last_used(v.get("lastUsed")),
                 ..Default::default()
             },
             WordCategory::Shadow => WordRow {
@@ -169,6 +169,26 @@ impl WordRow {
     }
 }
 
+/// 词频 `lastUsed` 的展示文本。core 真实返回为 unix 秒（数字），格式化为本地时间；
+/// 字符串形态（mock/旧版）原样保留；0/非法值显示 "—"，缺失为空。
+fn fmt_last_used(v: Option<&Value>) -> String {
+    match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => {
+            let secs = n.as_i64().unwrap_or(0);
+            if secs <= 0 {
+                return "—".to_string();
+            }
+            chrono::DateTime::from_timestamp(secs, 0)
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()
+                })
+                .unwrap_or_else(|| "—".to_string())
+        }
+        _ => String::new(),
+    }
+}
+
 /// 候选调整类型的中文标签。
 pub fn shadow_kind_label(kind: &str) -> &'static str {
     match kind {
@@ -198,6 +218,27 @@ pub enum WordField {
     Enabled,
     Kind,
     LastUsed,
+}
+
+impl WordField {
+    /// 服务端排序参数 `sortBy` 的字段名（与 list RPC 返回 item 的 json 键一致）。
+    pub fn rpc_key(self) -> &'static str {
+        match self {
+            WordField::Code => "code",
+            WordField::Text => "text",
+            WordField::Weight => "weight",
+            WordField::Count => "count",
+            WordField::Position => "position",
+            WordField::Enabled => "enabled",
+            WordField::Kind => "type",
+            WordField::LastUsed => "lastUsed",
+        }
+    }
+
+    /// 客户端排序时是否按数值比较（其余按字符串）。
+    pub fn is_numeric(self) -> bool {
+        matches!(self, WordField::Weight | WordField::Count | WordField::Position)
+    }
 }
 
 /// 类别可用操作集。视图据此决定显示哪些工具栏/行操作按钮。
@@ -290,11 +331,11 @@ pub struct CategorySpec {
     pub rpc: RpcNames,
 }
 
+// 短语无「启用」数据列：启用开关是交互控件，移入表格尾部操作列（见 view::build_row_actions）。
 const COLS_PHRASE: &[ColumnSpec] = &[
-    ColumnSpec { header: "缩写", weight: 1.0, field: WordField::Code },
+    ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
     ColumnSpec { header: "短语", weight: 2.2, field: WordField::Text },
     ColumnSpec { header: "权重", weight: 0.7, field: WordField::Weight },
-    ColumnSpec { header: "启用", weight: 0.7, field: WordField::Enabled },
 ];
 
 const COLS_USERDICT: &[ColumnSpec] = &[
@@ -312,7 +353,7 @@ const COLS_TEMP: &[ColumnSpec] = &[
 const COLS_FREQ: &[ColumnSpec] = &[
     ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
     ColumnSpec { header: "词条", weight: 2.0, field: WordField::Text },
-    ColumnSpec { header: "次数", weight: 0.7, field: WordField::Count },
+    ColumnSpec { header: "次数", weight: 0.8, field: WordField::Count },
     ColumnSpec { header: "最近使用", weight: 1.2, field: WordField::LastUsed },
 ];
 
@@ -523,6 +564,21 @@ mod tests {
         let r = WordRow::from_json(WordCategory::Freq, &v);
         assert_eq!(r.count, 9);
         assert_eq!(r.last_used, "2026-06-30");
+    }
+
+    #[test]
+    fn freq_last_used_numeric_formats_local_datetime() {
+        // core 真实返回 unix 秒（数字）：应格式化为 "YYYY-MM-DD HH:MM" 本地时间
+        //（不断言具体值以免依赖时区，只断言形状）。
+        let v = json!({ "code": "x", "text": "词", "count": 1, "lastUsed": 1_782_000_000i64 });
+        let r = WordRow::from_json(WordCategory::Freq, &v);
+        assert_eq!(r.last_used.len(), "2026-06-21 08:00".len(), "格式应为 YYYY-MM-DD HH:MM");
+        assert!(r.last_used.starts_with("20"), "应为格式化日期而非原始数字: {}", r.last_used);
+        // 0 / 缺失：占位符 / 空。
+        let z = json!({ "code": "x", "text": "词", "count": 1, "lastUsed": 0 });
+        assert_eq!(WordRow::from_json(WordCategory::Freq, &z).last_used, "—");
+        let none = json!({ "code": "x", "text": "词", "count": 1 });
+        assert_eq!(WordRow::from_json(WordCategory::Freq, &none).last_used, "");
     }
 
     #[test]

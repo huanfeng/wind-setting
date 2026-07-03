@@ -208,7 +208,7 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
         .padding_xy(18, 12)
         .spacing(10)
         .child(field(
-            "缩写",
+            "编码",
             Element::text_input(mgr.view_code, "").weight(1.0),
         ))
         .child(field(

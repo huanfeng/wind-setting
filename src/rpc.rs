@@ -278,9 +278,10 @@ fn mock_reply(method: &str) -> Value {
             { "code": "ggkg", "text": "王中", "weight": 5 },
             { "code": "wghg", "text": "程序", "weight": 3 }
         ], "total": 3 }),
+        // lastUsed 为 unix 秒（与真实 core 返回同形态，前端格式化为本地时间显示）。
         "freq.listPaged" => json!({ "items": [
-            { "code": "nihao", "text": "你好", "count": 12, "lastUsed": "2026-06-30" },
-            { "code": "women", "text": "我们", "count": 5, "lastUsed": "2026-06-28" }
+            { "code": "nihao", "text": "你好", "count": 12, "lastUsed": 1_782_050_000i64 },
+            { "code": "women", "text": "我们", "count": 5, "lastUsed": 1_781_900_000i64 }
         ], "total": 2 }),
         "dict.search" => json!([
             { "code": "aaaa", "text": "工", "weight": 0 }

@@ -8,6 +8,7 @@ windui = { path = "../wind-ui-rust" }
 wind-ipc = { path = "../WindInput/wind_input/crates/wind-ipc" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"

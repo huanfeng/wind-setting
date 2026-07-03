@@ -1,10 +1,14 @@
-//! 词库页视图 — 两级导航（数据域下拉 + 方案子标签）+ 响应式表格 + 工具栏（批量/搜索）+ 分页。
+//! 词库页视图 — 两级导航（数据域下拉 + 方案子标签）+ 可排序表格 + 工具栏（批量/搜索）+ 分页。
 //!
 //! 反应式装配：
 //! - 数据域用 `dropdown_reactive`（选项随 `set_schemas` 更新）、子标签用 `segmented`；
 //!   二者变化由 [`super::reactive::reactive_effect`] 监听后触发 `on_nav_changed`（重载）。
-//! - 表格用 `list_signal(list_data)`，随重载即时刷新；表头/行/空态由 `DictListItem` 分发。
-//! - 工具栏/分页/行操作按钮的可见性用 `visible_when`/`enabled_when` 轮询当前 spec 的
+//! - 表格用 `table_sortable_server`：正文绑定 `table_rows` 信号随重载即时刷新；点表头由
+//!   `sort` 信号 + `on_sort_changed` 驱动（分页类走服务端排序、非分页类客户端重排）；
+//!   行悬停高亮为表格内建。列集随类别变化，由 `table_epoch` 信号驱动整表重建。
+//! - 编码列徽章 / 候选调整类型彩标经 `.cell_render` 自定义；行操作按钮（含短语启用开关）
+//!   经 `.actions` 生成，按显示下标从 `display_rows` 取行绑定回调。
+//! - 工具栏/分页按钮的可见性用 `visible_when`/`enabled_when` 轮询当前 spec 的
 //!   `ops`（可用操作集），无需重建整页——切类别时按钮自动增减。
 //! - 写操作直接 RPC 即时生效（`DictManagerState` 的 do_*/request_*），破坏性操作走确认对话框。
 
@@ -14,11 +18,11 @@ use crate::state::AppState;
 use crate::widgets::flat_panel;
 
 use super::reactive::{reactive_effect, toast_sink};
-use super::spec::{ColumnSpec, WordField, WordRow};
-use super::state::{DictListItem, DictManagerState, DomainKind};
+use super::spec::{ColumnSpec, WordField};
+use super::state::{DictManagerState, DomainKind};
 
-/// 操作列固定宽度（表头与行需一致）。
-const ACTION_W: i32 = 168;
+/// 操作列宽度权重（相对数据列分配；需容纳 启用开关 + 最多两枚小按钮）。
+const ACTIONS_WEIGHT: f32 = 1.5;
 
 /// 子标签单段固定宽度（各数据域分段等宽，总宽 = 段数 × 此值）。
 const SUB_TAB_SEG_W: i32 = 104;
@@ -91,21 +95,32 @@ pub fn build_page(state: &AppState) -> Element {
     // ── 工具栏：批量操作（左）+ 搜索（右）──
     let toolbar = build_toolbar(&mgr);
 
-    // ── 表格（表头 + 行 + 空态，随 list_data 刷新）──
-    let mgr_row = mgr.clone();
-    let table = Element::list_signal(mgr.list_data, |_| (), move |item| match item {
-        DictListItem::Header => build_header(&mgr_row),
-        DictListItem::Row(row, idx) => build_row(&mgr_row, &row, idx),
-        DictListItem::Empty(msg) => build_empty(&msg),
-    })
-    .width_match();
+    // ── 表格（列集随类别变化，table_epoch 递增时整表重建；数据/排序变化由表格内部响应）──
+    // host_signal 为非滚动宿主：表格自带正文滚动，weight 布局在其中能拿到确定高度。
+    let mgr_tbl = mgr.clone();
+    let table_host = Element::host_signal(mgr.table_epoch, move |_| build_table(&mgr_tbl));
+
+    // 空态提示覆盖层（无数据/未连接/无方案；empty_msg 非空时显示在表头下方）。
+    let v_empty = mgr.clone();
+    let empty_overlay = Element::col()
+        .fill()
+        .cross(Align::Center)
+        .padding_xy(0, 80)
+        .child(
+            Element::label_rc(mgr.empty_msg)
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .text_align(Align::Center),
+        )
+        .visible_when(move || !v_empty.empty_msg.get().is_empty());
 
     let card = flat_panel()
         .corner(10.0)
         .width_match()
         .weight(1.0)
         .padding_xy(4, 2)
-        .child(Element::scroll().fill().child(table));
+        .child(Element::stack().fill().child(table_host).child(empty_overlay));
 
     // ── 分页（仅分页类别显示）──
     let pagination = build_pagination(&mgr);
@@ -262,59 +277,74 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
         .visible_when(move || dom_pg.current_spec().paged)
 }
 
-/// 表头行（列名随当前类别 spec 变化 + 操作列）。
-fn build_header(mgr: &DictManagerState) -> Element {
+/// 构建当前类别的可排序表格（服务端排序模式）：正文绑定 `table_rows` 信号，点表头
+/// 更新 `sort` 后触发 `on_sort_changed`（分页类归零分页走服务端排序、非分页类客户端重排）；
+/// 行悬停高亮为表格内建。编码/类型列自定义渲染，尾部操作列按显示下标生成。
+fn build_table(mgr: &DictManagerState) -> Element {
     let spec = mgr.current_spec();
-    let mut r = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(10, 8)
-        .spacing(8)
-        .bg_role(Role::SurfaceAlt);
-    for c in spec.columns {
-        r = r.child(
-            Element::label(c.header)
-                .font_size(11.5)
-                .font_weight(600)
+    let cols: Vec<(String, f32)> =
+        spec.columns.iter().map(|c| (c.header.to_string(), c.weight)).collect();
+    let columns = spec.columns;
+    let m_sort = mgr.clone();
+    let m_act = mgr.clone();
+    Element::table_sortable_server(cols, mgr.table_rows, mgr.sort, move |_, _| {
+        m_sort.on_sort_changed()
+    })
+    .cell_render(move |_row, col, text| render_cell(columns, col, text))
+    .actions("操作", ACTIONS_WEIGHT, move |disp| build_row_actions(&m_act, disp))
+    .fill()
+}
+
+/// 自定义单元格：编码列渲染为边框徽章、候选调整类型列渲染为彩色标签（置顶=强调色），
+/// 其余列返回 `None` 走默认文本渲染。排序仍按单元格文本。
+fn render_cell(columns: &'static [ColumnSpec], col: usize, text: &str) -> Option<Element> {
+    match columns.get(col)?.field {
+        WordField::Code => Some(
+            Element::label(text)
+                .font_size(12.5)
                 .fg_role(Role::TextMuted)
-                .weight(c.weight)
-                .width_match()
+                .padding_xy(6, 2)
+                .corner(4.0)
+                .bg_role(Role::Surface)
+                .border_role(Role::Border, 1)
                 .max_lines(1),
-        );
-    }
-    r.child(
-        Element::label("操作")
-            .font_size(11.5)
-            .font_weight(600)
-            .fg_role(Role::TextMuted)
-            .width(ACTION_W),
-    )
-}
-
-/// 一行词条（列按当前 spec 渲染 + 操作按钮）+ 底部分隔线。
-fn build_row(mgr: &DictManagerState, row: &WordRow, _idx: usize) -> Element {
-    let spec = mgr.current_spec();
-    let mut r = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(10, 6)
-        .spacing(8);
-    for c in spec.columns {
-        // 启用列渲染为交互开关（短语）；其余为静态单元格。
-        if c.field == WordField::Enabled {
-            r = r.child(build_enabled_toggle(mgr, row, c.weight));
-        } else {
-            r = r.child(build_cell(c, row));
+        ),
+        WordField::Kind => {
+            let role = if text == "置顶" { Role::Accent } else { Role::TextMuted };
+            Some(
+                Element::label(text)
+                    .font_size(11.0)
+                    .fg_role(role)
+                    .padding_xy(6, 2)
+                    .corner(4.0)
+                    .border_role(role, 1),
+            )
         }
+        _ => None,
     }
-    r = r.child(build_actions(mgr, row));
-    Element::col().width_match().child(r).child(Element::divider())
 }
 
-/// 行尾操作按钮（按当前 spec 的 ops 增减）：转正 / 撤销 / 删除。
-fn build_actions(mgr: &DictManagerState, row: &WordRow) -> Element {
+/// 行尾操作（按当前 spec 的 ops 增减）：启用开关 / 查看 / 编辑 / 转正 / 撤销 / 删除。
+/// `disp` 为页内显示下标，行数据从 `display_rows` 取（与表格正文同源同序；
+/// 数据变化必然重建正文并重新调用本生成器，下标不会陈旧）。
+fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     let spec = mgr.current_spec();
-    let mut r = Element::row().width(ACTION_W).cross(Align::Center).spacing(6);
+    let Some(row) = mgr.display_row(disp) else {
+        return Element::leaf();
+    };
+    let mut r = Element::row().cross(Align::Center).spacing(6);
+
+    // 启用开关（短语）：勾选即调 `phrase.setEnabled` 即时生效。
+    if spec.ops.set_enabled {
+        let sig = signal(row.enabled);
+        let m = mgr.clone();
+        let (c, t) = (row.code.clone(), row.text.clone());
+        r = r.child(Element::checkbox("", sig).small().on_toggle(move |_| {
+            let v = !sig.get();
+            sig.set(v);
+            m.do_set_enabled(&c, &t, v);
+        }));
+    }
 
     // 只读查看（系统短语）
     if spec.ops.view {
@@ -387,79 +417,97 @@ fn build_actions(mgr: &DictManagerState, row: &WordRow) -> Element {
     r
 }
 
-/// 启用开关单元格（短语）：勾选即调 `phrase.setEnabled` 即时生效。
-fn build_enabled_toggle(mgr: &DictManagerState, row: &WordRow, weight: f32) -> Element {
-    let sig = signal(row.enabled);
-    let m = mgr.clone();
-    let (c, t) = (row.code.clone(), row.text.clone());
-    let cb = Element::checkbox("", sig).small().on_toggle(move |_| {
-        let v = !sig.get();
-        sig.set(v);
-        m.do_set_enabled(&c, &t, v);
-    });
-    cell_wrap(weight, cb)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::SchemaInfo;
+    use serde_json::json;
+    use windui::core::Tree;
+    use windui::geometry::Size;
 
-/// 单元格：编码用等宽徽章、类型用状态标签，其余纯文本。
-fn build_cell(c: &ColumnSpec, row: &WordRow) -> Element {
-    match c.field {
-        WordField::Code => cell_wrap(
-            c.weight,
-            Element::label(row.code.clone())
-                .font_size(12.5)
-                .fg_role(Role::TextMuted)
-                .padding_xy(6, 2)
-                .corner(4.0)
-                .bg_role(Role::Surface)
-                .border_role(Role::Border, 1)
-                .max_lines(1),
-        ),
-        WordField::Kind => {
-            let (label, role) = match row.kind.as_str() {
-                "pin" => ("置顶", Role::Accent),
-                "delete" => ("删除", Role::TextMuted),
-                _ => ("—", Role::TextMuted),
-            };
-            cell_wrap(
-                c.weight,
-                Element::label(label)
-                    .font_size(11.0)
-                    .fg_role(role)
-                    .padding_xy(6, 2)
-                    .corner(4.0)
-                    .border_role(role, 1),
-            )
-        }
-        _ => Element::label(row.cell_text(c.field))
-            .font_size(13.0)
-            .fg_role(Role::Text)
-            .weight(c.weight)
-            .width_match()
-            .max_lines(1)
-            .truncate(Truncate::End),
+    /// 组装最小词库页视图（同 build_page 的表格接线：导航 effect + host_signal 表格），
+    /// 复现「切换类别 → 整表重建」的真实多帧时序。
+    fn table_view(mgr: &DictManagerState) -> Element {
+        let dom_v = mgr.domain;
+        let sub_v = mgr.sub_tab;
+        let m_eff = mgr.clone();
+        let effect = reactive_effect(
+            move || dom_v.version().wrapping_mul(1_000_003).wrapping_add(sub_v.version()),
+            move || m_eff.on_nav_changed(),
+        );
+        let m_tbl = mgr.clone();
+        let host = Element::host_signal(mgr.table_epoch, move |_| build_table(&m_tbl));
+        Element::stack()
+            .width(800)
+            .height(600)
+            .child(host)
+            .child(effect)
     }
-}
 
-/// 把徽章/开关放进一个按列宽分配的左对齐格子（内容紧贴左侧，不被拉伸）。
-fn cell_wrap(weight: f32, inner: Element) -> Element {
-    Element::row()
-        .weight(weight)
-        .cross(Align::Center)
-        .child(inner)
-        .child(Element::leaf().weight(1.0))
-}
+    fn layout(tree: &mut Tree) {
+        tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
+    }
 
-/// 空态提示（无数据/未连接/无方案）。
-fn build_empty(msg: &str) -> Element {
-    Element::col()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(0, 40)
-        .child(
-            Element::label(msg)
-                .font_size(13.0)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .text_align(Align::Center),
+    /// (表头单元格数, 正文行数) —— 表格结构 col[header, divider, scroll[col(挂正文 widget)]]。
+    fn table_shape(tree: &Tree) -> (usize, usize) {
+        let root = tree.root.unwrap();
+        let table = tree.get(root).unwrap().children[0]; // host 容器的首子 = 表格
+        let table = tree.get(table).unwrap().children[0]; // host_signal 内层（重建宿主的子）
+        let header = tree.get(table).unwrap().children[0];
+        let scroll = *tree.get(table).unwrap().children.last().unwrap();
+        let body = tree.get(scroll).unwrap().children[0];
+        (
+            tree.get(header).unwrap().children.len(),
+            tree.get(body).unwrap().children.len(),
         )
+    }
+
+    #[test]
+    fn nav_switch_and_back_rebuilds_table_with_data() {
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            scheme: String::new(),
+        }];
+        // 初始类别 = 系统短语，注入 2 行。
+        mgr.apply_rows(&json!([
+            { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
+            { "code": "dd", "text": "(^_^)", "weight": 1000, "enabled": false, "isSystem": true },
+        ]));
+
+        let mut tree = Tree::new();
+        let root = table_view(&mgr).build(&mut tree);
+        tree.root = Some(root);
+        layout(&mut tree);
+        assert_eq!(table_shape(&tree), (4, 2), "初始：短语 3 数据列 + 操作列，2 行");
+        assert!(mgr.current_spec().ops.reset_default, "系统短语应有恢复默认操作");
+
+        // 切到五笔域用户词库：effect 触发 on_nav_changed（reload 后数据到达以 apply_rows 模拟）。
+        mgr.domain.set(1);
+        layout(&mut tree);
+        mgr.apply_rows(&json!({ "items": [
+            { "code": "aaaa", "text": "工", "weight": 0 },
+            { "code": "ggkg", "text": "王中", "weight": 5 },
+            { "code": "wghg", "text": "程序", "weight": 3 },
+        ], "total": 3 }));
+        layout(&mut tree);
+        assert_eq!(table_shape(&tree), (4, 3), "切换后：用户词库 3 数据列 + 操作列，3 行");
+
+        // 切回快捷短语（系统短语）：表格应重建回短语列集并显示数据。
+        mgr.domain.set(0);
+        layout(&mut tree);
+        mgr.apply_rows(&json!([
+            { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
+            { "code": "dd", "text": "(^_^)", "weight": 1000, "enabled": false, "isSystem": true },
+        ]));
+        layout(&mut tree);
+        assert_eq!(table_shape(&tree), (4, 2), "切回后：短语列集恢复，2 行数据");
+        assert!(
+            mgr.current_spec().ops.reset_default,
+            "切回系统短语后恢复默认操作应可用（按钮 visible_when 据此显隐）"
+        );
+        assert!(mgr.empty_msg.get().is_empty(), "有数据时不应显示空态提示");
+    }
 }

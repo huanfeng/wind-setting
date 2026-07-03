@@ -16,7 +16,28 @@ use crate::dialogs::schema_manager::engine_label;
 use crate::rpc;
 use crate::state::SchemaInfo;
 
-use super::spec::{CategorySpec, LogicalTab, WordCategory, WordRow, spec_for};
+use super::spec::{CategorySpec, LogicalTab, WordCategory, WordField, WordRow, spec_for};
+
+/// 客户端排序（非分页类别）：数值字段按数值，其余按展示文本字符串序。稳定排序。
+fn sort_rows(rows: &mut [WordRow], field: WordField, ord: SortOrder) {
+    let num = |r: &WordRow| match field {
+        WordField::Weight => r.weight,
+        WordField::Count => r.count,
+        WordField::Position => r.position,
+        _ => 0,
+    };
+    rows.sort_by(|a, b| {
+        let c = if field.is_numeric() {
+            num(a).cmp(&num(b))
+        } else {
+            a.cell_text(field).cmp(&b.cell_text(field))
+        };
+        match ord {
+            SortOrder::Asc => c,
+            SortOrder::Desc => c.reverse(),
+        }
+    });
+}
 
 /// 分页类别每页条数（对齐旧版 webview）。
 pub const PAGE_SIZE: usize = 100;
@@ -31,16 +52,9 @@ pub struct DomainEntry {
     pub rep_schema_id: String,
 }
 
-/// `list_signal` 的数据项：表头、一行词条，或空态提示。
-#[derive(Clone)]
-pub enum DictListItem {
-    /// 列表头（列名随当前类别 spec 变化）。
-    Header,
-    /// 一行词条 + 页内序号（0 基）。
-    Row(WordRow, usize),
-    /// 空态提示文本（无数据/未连接/无方案）。
-    Empty(String),
-}
+// 表格数据流：结构（列集随类别变）由 `table_epoch` 驱动整表重建；
+// 数据（当前页行文本）由 `table_rows` 驱动表格正文重建（服务端排序模式）；
+// 排序意图由 `sort` 信号承载（表头箭头双向绑定）。
 
 /// 词库管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
@@ -56,8 +70,16 @@ pub struct DictManagerState {
 
     /// 当前类别原始行。
     pub rows: Rc<RefCell<Vec<WordRow>>>,
-    /// 驱动 `list_signal` 的数据信号。
-    pub list_data: Signal<Vec<DictListItem>>,
+    /// 当前显示页各行单元格文本（列与当前 spec.columns 对应），驱动表格正文。
+    pub table_rows: Signal<Vec<Vec<String>>>,
+    /// 与 `table_rows` 顺序一致的行模型（过滤+排序后），操作列回调按显示下标取行。
+    pub display_rows: Rc<RefCell<Vec<WordRow>>>,
+    /// 表格结构版本（单元素，导航变化时递增）：列集随类别变，须整表重建。
+    pub table_epoch: Signal<Vec<u64>>,
+    /// 受控排序状态（None=无排序；表头点击循环切换，导航变化时重置）。
+    pub sort: Signal<Option<(usize, SortOrder)>>,
+    /// 空态提示文本（无数据/未连接/无方案）；有数据时为空串（视图据此显隐覆盖层）。
+    pub empty_msg: Signal<String>,
     /// 搜索框文本（可搜类别，由搜索框输入变化经响应式 effect 触发，见 [`Self::apply_search`]）。
     pub search: Signal<String>,
     /// 分页偏移（分页类别）。
@@ -82,7 +104,7 @@ pub struct DictManagerState {
     // ── 加/改词对话框（用户词库 / 短语）──
     pub edit_visible: Signal<bool>,
     pub edit_title: Signal<String>,
-    /// 编码/缩写字段的标签（随类别）。
+    /// 编码字段的标签（随类别）。
     pub edit_l_code: Signal<String>,
     /// 词条/短语字段的标签（随类别）。
     pub edit_l_text: Signal<String>,
@@ -149,7 +171,11 @@ impl DictManagerState {
             domain_items: signal(vec!["快捷短语".to_string()]),
             schemas: Rc::new(RefCell::new(Vec::new())),
             rows: Rc::new(RefCell::new(Vec::new())),
-            list_data: signal(vec![]),
+            table_rows: signal(vec![]),
+            display_rows: Rc::new(RefCell::new(Vec::new())),
+            table_epoch: signal(vec![0]),
+            sort: signal(None),
+            empty_msg: signal(String::new()),
             search: signal(String::new()),
             offset: Rc::new(RefCell::new(0)),
             total: signal(0),
@@ -330,6 +356,14 @@ impl DictManagerState {
         if spec.paged {
             p.insert("offset".into(), json!(*self.offset.borrow()));
             p.insert("limit".into(), json!(PAGE_SIZE));
+            // 服务端排序：跨页全局排序由后端完成（sortBy 为返回 item 的 json 字段名）。
+            if let Some((col, ord)) = self.sort.get()
+                && let Some(c) = spec.columns.get(col)
+            {
+                p.insert("sortBy".into(), json!(c.field.rpc_key()));
+                let order = if ord == SortOrder::Asc { "asc" } else { "desc" };
+                p.insert("sortOrder".into(), json!(order));
+            }
         }
         Value::Object(p)
     }
@@ -366,11 +400,19 @@ impl DictManagerState {
             .collect()
     }
 
-    /// 重建 `list_data`（表头 + rows → 行项；空则空态项）并刷新分页状态文字。
+    /// 重建表格数据（过滤 → 排序 → 写 display_rows/table_rows）并刷新分页状态文字。
+    /// 分页类别由服务端排好序返回，这里不再排；非分页类别按当前 sort 客户端排序。
     pub fn rebuild_list(&self) {
-        let rows = self.visible_rows();
-        let total = if self.current_spec().paged { self.total.get() } else { rows.len() };
+        let mut rows = self.visible_rows();
         let spec = self.current_spec();
+        let total = if spec.paged { self.total.get() } else { rows.len() };
+
+        if !spec.paged
+            && let Some((col, ord)) = self.sort.get()
+            && let Some(c) = spec.columns.get(col)
+        {
+            sort_rows(&mut rows, c.field, ord);
+        }
 
         // 分页/计数状态文字
         let page_status = if spec.paged {
@@ -382,17 +424,30 @@ impl DictManagerState {
             format!("共 {total} 条")
         };
         self.page_status.set(page_status);
+        self.empty_msg.set(if rows.is_empty() { self.empty_hint() } else { String::new() });
 
-        let mut items = Vec::with_capacity(rows.len() + 2);
-        items.push(DictListItem::Header);
-        if rows.is_empty() {
-            items.push(DictListItem::Empty(self.empty_hint()));
+        let cells: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| spec.columns.iter().map(|c| r.cell_text(c.field)).collect())
+            .collect();
+        *self.display_rows.borrow_mut() = rows;
+        self.table_rows.set(cells);
+    }
+
+    /// 按显示下标取当前显示行（操作列回调用；正文与 display_rows 同源同序）。
+    pub fn display_row(&self, disp: usize) -> Option<WordRow> {
+        self.display_rows.borrow().get(disp).cloned()
+    }
+
+    /// 排序意图变化（点表头后由表格回调触发）：分页类别归零分页走服务端重拉，
+    /// 非分页类别客户端重排当前数据。
+    pub fn on_sort_changed(&self) {
+        if self.current_spec().paged {
+            *self.offset.borrow_mut() = 0;
+            self.reload();
         } else {
-            for (i, r) in rows.iter().enumerate() {
-                items.push(DictListItem::Row(r.clone(), i));
-            }
+            self.rebuild_list();
         }
-        self.list_data.set(items);
     }
 
     /// 搜索框内容变化：分页类走服务端（归零分页+重载），非分页类走客户端重过滤。
@@ -471,13 +526,17 @@ impl DictManagerState {
         }
     }
 
-    /// 导航（数据域/子标签）变化后：归零分页、清空搜索、重载。
+    /// 导航（数据域/子标签）变化后：归零分页、清空搜索、重置排序、重载，
+    /// 并递增表格结构版本（列集随类别变化，视图据此整表重建）。
     /// 由 view 侧的响应式 effect 在 domain/sub_tab 信号变化时调用。
     pub fn on_nav_changed(&self) {
         self.reset_sub_tab_if_out_of_range();
         *self.offset.borrow_mut() = 0;
         self.search.set(String::new());
         self.status.set(String::new());
+        self.sort.set(None);
+        let epoch = self.table_epoch.get().first().copied().unwrap_or(0);
+        self.table_epoch.set(vec![epoch + 1]);
         self.reload();
     }
 
@@ -650,7 +709,7 @@ impl DictManagerState {
     pub fn open_add(&self) {
         let (title, lc, lt, w) = match self.current_category() {
             WordCategory::UserDict => ("添加词条", "编码", "词条", "0"),
-            WordCategory::PhraseUser => ("添加短语", "缩写", "短语", "1000"),
+            WordCategory::PhraseUser => ("添加短语", "编码", "短语", "1000"),
             _ => return,
         };
         *self.editing_orig.borrow_mut() = None;
@@ -667,7 +726,7 @@ impl DictManagerState {
     pub fn open_edit(&self, code: &str, text: &str, weight: i64) {
         let (title, lc, lt) = match self.current_category() {
             WordCategory::UserDict => ("编辑词条", "编码", "词条"),
-            WordCategory::PhraseUser => ("编辑短语", "缩写", "短语"),
+            WordCategory::PhraseUser => ("编辑短语", "编码", "短语"),
             _ => return,
         };
         *self.editing_orig.borrow_mut() = Some((code.into(), text.into()));
@@ -1083,26 +1142,72 @@ mod tests {
         st.apply_rows(&v);
         assert_eq!(st.rows.borrow().len(), 2);
         assert_eq!(st.total.get(), 120);
-        // list_data = 表头 + 两行
-        let items = st.list_data.get();
-        assert_eq!(items.len(), 3);
-        assert!(matches!(items[0], DictListItem::Header));
-        assert!(matches!(items[1], DictListItem::Row(_, 0)));
+        // table_rows = 两行单元格文本（列 = 编码/词条/权重），display_rows 同序。
+        let cells = st.table_rows.get();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[0], vec!["aaaa", "工", "0"]);
+        assert_eq!(st.display_rows.borrow()[1].text, "王中");
+        assert!(st.empty_msg.get().is_empty(), "有数据时无空态提示");
         // 分页状态文字
         assert_eq!(st.page_status.get(), "第 1-2 / 共 120 条");
     }
 
     #[test]
-    fn apply_rows_empty_yields_empty_item() {
+    fn apply_rows_empty_yields_empty_hint() {
         let st = DictManagerState::new(); // 短语（非分页）
         st.apply_rows(&json!([]));
         assert!(st.rows.borrow().is_empty());
-        // 表头 + 空态项
-        let items = st.list_data.get();
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], DictListItem::Header));
-        assert!(matches!(items[1], DictListItem::Empty(_)));
+        assert!(st.table_rows.get().is_empty());
+        assert!(!st.empty_msg.get().is_empty(), "空数据应给出空态提示");
         assert_eq!(st.page_status.get(), "共 0 条");
+    }
+
+    #[test]
+    fn client_sort_reorders_unpaged_rows() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(1); // 临时词库（非分页，列 = 编码/词条/次数）
+        st.apply_rows(&json!([
+            { "code": "b", "text": "乙", "count": 2 },
+            { "code": "a", "text": "甲", "count": 30 },
+            { "code": "c", "text": "丙", "count": 4 },
+        ]));
+        // 无排序：保持原序。
+        assert_eq!(st.table_rows.get()[0][0], "b");
+        // 按编码列（0）升序。
+        st.sort.set(Some((0, SortOrder::Asc)));
+        st.on_sort_changed();
+        let cells = st.table_rows.get();
+        assert_eq!(vec![&cells[0][0], &cells[1][0], &cells[2][0]], ["a", "b", "c"]);
+        assert_eq!(st.display_rows.borrow()[0].text, "甲", "display_rows 与表格同序");
+        // 按次数列（2）降序：数值序 30 > 4 > 2（字符串序会是 4 > 30 > 2）。
+        st.sort.set(Some((2, SortOrder::Desc)));
+        st.on_sort_changed();
+        let cells = st.table_rows.get();
+        assert_eq!(vec![&cells[0][2], &cells[1][2], &cells[2][2]], ["30", "4", "2"]);
+    }
+
+    #[test]
+    fn paged_sort_params_and_reset_on_nav() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0); // 用户词库（分页）
+        st.sort.set(Some((2, SortOrder::Desc))); // 权重列
+        let p = st.build_list_params();
+        assert_eq!(p.get("sortBy"), Some(&json!("weight")), "分页类带服务端排序参数");
+        assert_eq!(p.get("sortOrder"), Some(&json!("desc")));
+        // 排序变化归零分页（模拟已翻页）。
+        *st.offset.borrow_mut() = PAGE_SIZE;
+        st.on_sort_changed();
+        assert_eq!(*st.offset.borrow(), 0, "点排序应回到第一页");
+        // 导航变化：重置排序 + 表格结构版本递增。
+        let epoch = st.table_epoch.get()[0];
+        st.on_nav_changed();
+        assert_eq!(st.sort.get(), None, "切类别应重置排序");
+        assert_eq!(st.table_epoch.get()[0], epoch + 1, "切类别应触发整表重建");
+        assert!(st.build_list_params().get("sortBy").is_none(), "无排序不带参数");
     }
 
     #[test]
