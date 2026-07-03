@@ -219,11 +219,19 @@ fn build_titlebar() -> Element {
         .bg_role(Role::SurfaceAlt)
         .window_drag()
         .child(logo)
+        // 三段式标题：产品名加粗、间隔点与「设置」弱化分层（参考稿 titlebar）。
         .child(
-            Element::label("清风输入法 · 设置")
-                .font_size(13.0)
-                .font_weight(600)
-                .fg_role(Role::Text),
+            Element::row()
+                .cross(Align::Center)
+                .spacing(4)
+                .child(
+                    Element::label("清风输入法")
+                        .font_size(13.0)
+                        .font_weight(600)
+                        .fg_role(Role::Text),
+                )
+                .child(Element::label("·").font_size(13.0).fg_role(Role::TextDisabled))
+                .child(Element::label("设置").font_size(13.0).fg_role(Role::TextMuted)),
         )
         // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）。
         .child(
@@ -246,19 +254,20 @@ fn build_footer(
     status: Signal<String>,
     conn_ok: Signal<bool>,
 ) -> Element {
-    // 连接状态点：绿=已连接，琥珀=未连接。响应式（连接在异步加载后才确定，构建期总为未连接）：
+    // 连接状态点：绿=已连接，琥珀=未连接；外圈 22% alpha 光环（参考稿 status dot）。
+    // 响应式（连接在异步加载后才确定，构建期总为未连接）：
     // 用两点 visible_when 切换，连接成功后自动转绿（同明暗切换按钮的双态模式）。
-    let dot_green = Element::leaf()
-        .size(8, 8)
-        .corner(4.0)
-        .bg(Color::hex(0x22C55E))
-        .visible_when(move || conn_ok.get());
-    let dot_amber = Element::leaf()
-        .size(8, 8)
-        .corner(4.0)
-        .bg(Color::hex(0xF59E0B))
-        .visible_when(move || !conn_ok.get());
-    let status_dot = Element::stack().child(dot_green).child(dot_amber);
+    let halo_dot = |c: u32, when_ok: bool| {
+        Element::stack()
+            .size(14, 14)
+            .corner(7.0)
+            .bg(Color::hex(c).scale_alpha(0.22))
+            .child(Element::leaf().size(8, 8).corner(4.0).bg(Color::hex(c)).align(Align::Center))
+            .visible_when(move || conn_ok.get() == when_ok)
+    };
+    let status_dot = Element::stack()
+        .child(halo_dot(0x22C55E, true))
+        .child(halo_dot(0xF59E0B, false));
 
     // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
     let th_l = th.clone();
