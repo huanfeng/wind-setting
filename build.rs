@@ -2,7 +2,7 @@
 // 参考 core 的 wind_input/apps/service/build.rs。仅 Windows 目标生效，其它目标空操作。
 //
 // 版本号取自 git（最近 tag + 短 hash），非 git 环境回退 CARGO_PKG_VERSION。
-// 下方 git_version / git / parse_xyz 与本项目无耦合，WindInputPlus 可直接照搬
+// 下方 git_version / git / parse_xyz 与本项目无耦合，WindInput 可直接照搬
 // （仅产品名、图标路径不同）。
 
 use std::path::PathBuf;

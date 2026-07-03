@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 windui = { path = "../wind-ui-rust" }
-wind-ipc = { path = "../WindInputPlus/wind_input/crates/wind-ipc" }
+wind-ipc = { path = "../WindInput/wind_input/crates/wind-ipc" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

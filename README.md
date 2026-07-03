@@ -17,7 +17,7 @@
 需要 Rust(edition 2024)工具链。本项目依赖若干同级路径仓库(见 `Cargo.toml`):
 
 - `windui`(`../wind-ui-rust`)
-- `wind-ipc`(`../WindInputPlus/wind_input/crates/wind-ipc`)
+- `wind-ipc`(`../WindInput/wind_input/crates/wind-ipc`)
 
 请确保这些依赖已在相应位置就绪,然后:
 
