@@ -47,12 +47,12 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 
     let titlebar = build_titlebar();
 
-    // 左侧栏：仅分区导航（pill 选中）；动作下移到底部操作栏。
+    // 左侧栏：图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
     let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
-    let nav = Element::list_pill(names, tab_sig).width_match().fill();
+    let nav = build_nav(&names, tab_sig);
     // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
     let sidebar = Element::col()
-        .width(156)
+        .width(184)
         .height_match()
         .bg_role(Role::Bg)
         .padding_xy(8, 10)
@@ -98,6 +98,111 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         root = root.child(dlg);
     }
     root
+}
+
+/// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。
+/// 选中/未选中为两套元素 visible_when 切换（windui 无 hover-only/响应式样式）；
+/// 渐变图标块为静态色，按 `widgets::dark_sig()` 再分亮/暗双态。
+/// 「高级」项前插分隔线（参考稿 nav-sep）。
+fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
+    use crate::icons::{nav_icon, tinted};
+    use crate::theme_def::{ACCENT_DARK, ACCENT_LIGHT};
+
+    let mut col = Element::col().width_match().spacing(2);
+    // 顶部小节标题。
+    col = col.child(
+        // 高度需容纳字号 + 上下 padding（固定高含 padding，给小了会截半字）。
+        Element::label("设置")
+            .font_size(11.0)
+            .font_weight(600)
+            .fg_role(Role::TextDisabled)
+            .width_match()
+            .max_lines(1)
+            .height(26)
+            .padding_xy(10, 5),
+    );
+
+    for (i, name) in names.iter().enumerate() {
+        if name == "高级" {
+            col = col.child(
+                Element::col()
+                    .width_match()
+                    .padding_xy(10, 8)
+                    .child(Element::leaf().width_match().height(1).bg_role(Role::Divider)),
+            );
+        }
+        let svg = nav_icon(name);
+
+        // ── 选中态（亮/暗双态渐变图标块 + accent 文字 + 左指示条）──
+        let sel_chip = |accent: u32, active: u32, on_dark: bool| {
+            Element::stack()
+                .size(26, 26)
+                .corner(7.0)
+                .bg_gradient(Gradient::linear(
+                    (0.0, 0.0),
+                    (1.0, 1.0),
+                    vec![(0.0, Color::hex(active)), (1.0, Color::hex(accent))],
+                ))
+                .child(tinted(svg, 16, Color::WHITE).align(Align::Center))
+                .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
+        };
+        let indicator = Element::leaf().width(3).height(14).corner(1.5).bg_role(Role::Accent);
+        let on = Element::row()
+            .width_match()
+            .height(36)
+            .corner(9.0)
+            .cross(Align::Center)
+            .spacing(9)
+            .padding_xy(7, 0)
+            .bg(Color::hex(ACCENT_LIGHT).scale_alpha(0.11))
+            .child(indicator)
+            .child(
+                Element::stack()
+                    .child(sel_chip(ACCENT_DARK, 0x4A7CE8, true))
+                    .child(sel_chip(ACCENT_LIGHT, 0x2159D6, false)),
+            )
+            .child(
+                Element::label(name)
+                    .font_size(13.0)
+                    .font_weight(600)
+                    .fg_role(Role::Accent)
+                    .weight(1.0)
+                    .max_lines(1)
+                    .height(18),
+            )
+            .visible_when(move || sel.get() == i);
+
+        // ── 未选中态（可点击；图标中性灰，两主题通用）──
+        let off = Element::row()
+            .clickable()
+            .on_click(move |_| sel.set(i))
+            .width_match()
+            .height(36)
+            .corner(9.0)
+            .cross(Align::Center)
+            .spacing(9)
+            .padding_xy(10, 0)
+            .child(
+                Element::stack()
+                    .size(26, 26)
+                    .corner(7.0)
+                    .bg_role(Role::Bg)
+                    .child(tinted(svg, 16, Color::hex(0x8A93A5)).align(Align::Center)),
+            )
+            .child(
+                Element::label(name)
+                    .font_size(13.0)
+                    .font_weight(500)
+                    .fg_role(Role::TextMuted)
+                    .weight(1.0)
+                    .max_lines(1)
+                    .height(18),
+            )
+            .visible_when(move || sel.get() != i);
+
+        col = col.child(Element::stack().width_match().height(36).child(on).child(off));
+    }
+    Element::scroll().fill().child(col)
 }
 
 /// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。
