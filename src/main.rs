@@ -9,6 +9,7 @@ mod capabilities;
 mod cli;
 mod config;
 mod dialogs;
+mod icons;
 mod logger;
 mod manifest;
 mod mode;
