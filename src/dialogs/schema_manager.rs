@@ -24,11 +24,21 @@ pub struct SchemaEntry {
     pub enabled: bool,
     pub engine_type: String,   // "codetable" | "pinyin" | "mixed"
     pub scheme: String,        // 拼音子方案："full" | "shuangpin"（非拼音为空串）
+    pub shuangpin_layout: String, // 双拼当前布局 id（仅 scheme=="shuangpin"；行名后缀显示）
     pub source: String,        // "builtin" | "user"
     pub version: String,
     pub description: String,
     pub author: String,
     pub error: Option<String>,
+}
+
+/// 双拼布局显示名（未知布局回退 id 原文）。
+fn shuangpin_layout_label(id: &str) -> &str {
+    SHUANGPIN_LAYOUTS
+        .iter()
+        .find(|(lid, _)| *lid == id)
+        .map(|(_, name)| *name)
+        .unwrap_or(id)
 }
 
 /// 双拼布局（id ↔ 显示名）。对应 core 内置 `data/schemas/shuangpin/<id>.toml`，
@@ -218,12 +228,27 @@ impl SchemaManagerState {
                            s.get("source").and_then(|v| v.as_str()).unwrap_or("builtin").to_string()
                        };
                        let enabled = all_enabled || order.contains(&id);
+                       let scheme = s.get("scheme").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                       // 双拼方案补拉当前布局（行名显示「名称·布局」；通常仅一个双拼方案）。
+                       let shuangpin_layout = if scheme == "shuangpin" {
+                           rpc::call_core("schema.getConfig", &json!({ "id": id.clone() }))
+                               .ok()
+                               .and_then(|cfg| {
+                                   cfg.pointer("/engine/pinyin/shuangpin/layout")
+                                       .and_then(|v| v.as_str())
+                                       .map(str::to_string)
+                               })
+                               .unwrap_or_default()
+                       } else {
+                           String::new()
+                       };
                        Some(SchemaEntry {
                            id,
                            name: s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                            enabled,
                            engine_type,
-                           scheme: s.get("scheme").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                           scheme,
+                           shuangpin_layout,
                            source,
                            version: s.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                            description: s.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -445,8 +470,10 @@ impl SchemaManagerState {
         );
         match rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg })) {
             Ok(_) => {
-                self.notify(true, "方案配置已保存");
                 self.settings_visible.set(false);
+                // 行名含当前布局后缀，保存后重拉列表刷新显示（refresh 保留选中）。
+                self.refresh();
+                self.notify(true, "方案配置已保存");
             }
             Err(e) => self.notify(false, format!("保存失败: {e}")),
         }
@@ -586,8 +613,13 @@ fn build_compound_row(
             }
         });
 
-    // ── 名称列（weight-1）：名称 + 可选描述 ──
-    let name_text = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
+    // ── 名称列（weight-1）：名称 + 可选描述；双拼方案名称后缀当前布局（如「双拼·小鹤双拼」）──
+    let base_name = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
+    let name_text = if entry.scheme == "shuangpin" && !entry.shuangpin_layout.is_empty() {
+        format!("{base_name}·{}", shuangpin_layout_label(&entry.shuangpin_layout))
+    } else {
+        base_name
+    };
     let name_fg   = if is_enabled { Role::Text } else { Role::TextMuted };
     let name_label = Element::label(name_text)
         .font_size(13.0)
@@ -691,8 +723,10 @@ fn build_compound_row(
         .child(Element::leaf().width(3).height(16).corner(1.5).bg_role(Role::Accent))
         .visible_when(sel_when(mgr, &entry.id));
 
+    // 两侧留 2px：选中描边贴列表容器边缘会被裁/被滚动条压住右缘。
     let mut item = Element::stack()
         .width_match()
+        .margin_xy(2, 0)
         .child(sel_bg)
         .child(sel_border)
         .child(row)

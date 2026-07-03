@@ -227,8 +227,8 @@ fn mock_reply(method: &str) -> Value {
               "builtin": true, "version": "1.2.0", "description": "五笔 86 + 拼音混合输入" },
             { "id": "pinyin_simp", "name": "全拼·简", "engineType": "pinyin", "scheme": "full",
               "builtin": true, "description": "简体全拼方案" },
-            { "id": "double_pinyin", "name": "自然码双拼", "engineType": "pinyin", "scheme": "shuangpin",
-              "builtin": false, "version": "0.5.0", "description": "自然码双拼布局" }
+            { "id": "double_pinyin", "name": "双拼", "engineType": "pinyin", "scheme": "shuangpin",
+              "builtin": false, "version": "0.5.0", "description": "双拼输入方案（布局可在设置中切换）" }
         ]),
         "theme.list" => json!([
             { "id": "default_light", "name": "清风·浅" },
