@@ -79,10 +79,15 @@ fn scheme_page(state: &AppState) -> Element {
     let mgr = &state.schema_mgr;
     let status = mgr.status;
 
-    // 工具栏：左侧「隐藏未启用」· 中间状态文字 · 右侧 刷新/导入
-    // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距
+    // 工具栏：左「隐藏未启用」· 中状态文字 · 右[条目操作组｜全局操作组]。
+    // 条目操作作用于列表选中项，按选中状态/位置/来源禁用（工具栏+选中模式）。
+    // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距。
     let st_refresh = mgr.clone();
     let st_import  = mgr.clone();
+    let (m_up, e_up) = (mgr.clone(), mgr.clone());
+    let (m_dn, e_dn) = (mgr.clone(), mgr.clone());
+    let (m_set, e_set) = (mgr.clone(), mgr.clone());
+    let (m_del, e_del) = (mgr.clone(), mgr.clone());
     let toolbar = Element::row()
         .width_match()
         .cross(Align::Center)
@@ -102,6 +107,48 @@ fn scheme_page(state: &AppState) -> Element {
                 .weight(1.0)
                 .max_lines(1),
         )
+        .child(
+            Element::button("上移")
+                .small()
+                .outline_soft()
+                .enabled_when(move || {
+                    e_up.sel_ver.get();
+                    e_up.selected_enabled_pos().is_some_and(|(i, _)| i > 0)
+                })
+                .on_click(move |_| m_up.move_selected(true)),
+        )
+        .child(
+            Element::button("下移")
+                .small()
+                .outline_soft()
+                .enabled_when(move || {
+                    e_dn.sel_ver.get();
+                    e_dn.selected_enabled_pos().is_some_and(|(i, t)| i + 1 < t)
+                })
+                .on_click(move |_| m_dn.move_selected(false)),
+        )
+        .child(
+            Element::button("设置…")
+                .small()
+                .outline_soft()
+                .enabled_when(move || {
+                    e_set.sel_ver.get();
+                    e_set.selected_entry().is_some()
+                })
+                .on_click(move |_| m_set.open_settings_selected()),
+        )
+        .child(
+            Element::button("删除")
+                .small()
+                .outline()
+                .danger()
+                .enabled_when(move || {
+                    e_del.sel_ver.get();
+                    e_del.selected_is_user()
+                })
+                .on_click(move |_| m_del.request_delete_selected()),
+        )
+        .child(Element::leaf().width(1).height(18).bg_role(Role::Divider))
         .child(
             Element::button("刷新")
                 .small()

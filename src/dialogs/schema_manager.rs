@@ -35,8 +35,6 @@ pub struct SchemaEntry {
 pub enum SchemaListItem {
     Row {
         entry: SchemaEntry,
-        idx: usize,    // 在已启用列表中的位置（未启用行传 0）
-        total: usize,  // 已启用方案总数（未启用行传 0）
         is_enabled: bool,
     },
     /// 未启用区分节标题（自带上方分隔线，visible_when !hide_disabled）。
@@ -57,7 +55,10 @@ pub struct SchemaManagerState {
     pub list_data: Signal<Vec<SchemaListItem>>,
     /// 是否隐藏未启用方案行（响应式，立即生效）。
     pub hide_disabled: Signal<bool>,
-    pub selected: Signal<usize>,
+    /// 当前选中方案 ID（工具栏按钮的作用对象；None=无选中）。
+    pub selected_id: Rc<RefCell<Option<String>>>,
+    /// 选中变更计数：每次变更自增，触发重布局使行高亮/工具栏 enabled_when 重估。
+    pub sel_ver: Signal<u64>,
     pub status: Signal<String>,
     pub confirm_visible: Signal<bool>,
     pub confirm_msg: Signal<String>,
@@ -74,7 +75,8 @@ impl SchemaManagerState {
             enabled_order: Rc::new(RefCell::new(available)),
             list_data: signal(vec![]),
             hide_disabled: signal(false),
-            selected: signal(0),
+            selected_id: Rc::new(RefCell::new(None)),
+            sel_ver: signal(0),
             status: signal(String::new()),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
@@ -122,7 +124,6 @@ impl SchemaManagerState {
             entries.into_iter().filter(|e| !order.contains(&e.id)).collect()
         };
 
-        let n_enabled = enabled_entries.len();
         let n_disabled = disabled_entries.len();
         let mut items: Vec<SchemaListItem> = Vec::new();
 
@@ -131,7 +132,7 @@ impl SchemaManagerState {
             if i > 0 {
                 items.push(SchemaListItem::Divider { hidden_with_disabled: false });
             }
-            items.push(SchemaListItem::Row { entry, idx: i, total: n_enabled, is_enabled: true });
+            items.push(SchemaListItem::Row { entry, is_enabled: true });
         }
 
         // 未启用区（SectionHeader 自带上方分隔线，随 hide_disabled 一起隐藏）
@@ -141,7 +142,7 @@ impl SchemaManagerState {
                 if j > 0 {
                     items.push(SchemaListItem::Divider { hidden_with_disabled: true });
                 }
-                items.push(SchemaListItem::Row { entry, idx: 0, total: 0, is_enabled: false });
+                items.push(SchemaListItem::Row { entry, is_enabled: false });
             }
         }
 
@@ -209,11 +210,94 @@ impl SchemaManagerState {
         let count = entries.len();
         *self.schemas.borrow_mut() = entries;
 
-        if count > 0 && self.selected.get() >= count {
-            self.selected.set(count - 1);
+        // 选中项已不存在（如被删除/刷新后消失）则清空选中。
+        let stale = self
+            .selected_id
+            .borrow()
+            .as_ref()
+            .is_some_and(|id| !self.schemas.borrow().iter().any(|e| &e.id == id));
+        if stale {
+            self.clear_selection();
         }
         self.status.set(format!("共 {count} 个已安装方案"));
         self.rebuild_list();
+    }
+
+    // ── 选中模型（工具栏按钮的作用对象） ──────────────────────
+
+    /// 选中指定方案（行点击回调）。
+    pub fn select(&self, id: &str) {
+        *self.selected_id.borrow_mut() = Some(id.to_string());
+        self.bump_sel();
+    }
+
+    /// 清空选中。
+    pub fn clear_selection(&self) {
+        *self.selected_id.borrow_mut() = None;
+        self.bump_sel();
+    }
+
+    fn bump_sel(&self) {
+        self.sel_ver.set(self.sel_ver.get().wrapping_add(1));
+    }
+
+    /// 该 ID 是否为当前选中（行高亮用）。
+    pub fn is_selected(&self, id: &str) -> bool {
+        self.selected_id.borrow().as_deref() == Some(id)
+    }
+
+    /// 当前选中的方案条目。
+    pub fn selected_entry(&self) -> Option<SchemaEntry> {
+        let id = self.selected_id.borrow().clone()?;
+        self.schemas.borrow().iter().find(|e| e.id == id).cloned()
+    }
+
+    /// 选中项在启用区的位置 (idx, total)；未选中或未启用返回 None。
+    /// enabled_order 为空表示「全部启用」，按 schemas 原始序折算。
+    pub fn selected_enabled_pos(&self) -> Option<(usize, usize)> {
+        let id = self.selected_id.borrow().clone()?;
+        let order = self.enabled_order.borrow();
+        if order.is_empty() {
+            let schemas = self.schemas.borrow();
+            let idx = schemas.iter().position(|e| e.id == id)?;
+            return Some((idx, schemas.len()));
+        }
+        let idx = order.iter().position(|x| *x == id)?;
+        Some((idx, order.len()))
+    }
+
+    /// 选中项是否为用户安装（删除按钮可用条件）。
+    pub fn selected_is_user(&self) -> bool {
+        self.selected_entry().is_some_and(|e| e.source == "user")
+    }
+
+    /// 上/下移选中方案。enabled_order 为空（全部启用）时先展开为全部 ID，
+    /// 与 toggle_schema_enabled 的展开策略一致，保证重排有承载体。
+    pub fn move_selected(&self, up: bool) {
+        let Some(id) = self.selected_id.borrow().clone() else { return };
+        {
+            let mut order = self.enabled_order.borrow_mut();
+            if order.is_empty() {
+                *order = self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
+            }
+        }
+        if up {
+            self.move_schema_up(&id);
+        } else {
+            self.move_schema_down(&id);
+        }
+    }
+
+    /// 打开选中方案的设置对话框。
+    pub fn open_settings_selected(&self) {
+        let Some(id) = self.selected_id.borrow().clone() else { return };
+        self.open_settings_at_id(&id);
+    }
+
+    /// 请求删除选中方案（弹确认框）。
+    pub fn request_delete_selected(&self) {
+        let Some(id) = self.selected_id.borrow().clone() else { return };
+        self.request_delete_at_id(&id);
     }
 
     /// 上移指定方案在 enabled_order 中的位置（立即刷新列表）。
@@ -297,36 +381,13 @@ impl SchemaManagerState {
         }
     }
 
-    // ── 兼容旧调用路径 ──────────────────────────────────────
-
-    pub fn open_settings_at(&self, idx: usize) {
-        let id_opt = self.schemas.borrow().get(idx).map(|e| e.id.clone());
-        if let Some(id) = id_opt { self.open_settings_at_id(&id); }
-    }
-
-    pub fn request_delete_at(&self, idx: usize) {
-        self.selected.set(idx);
-        self.request_delete();
-    }
-
-    pub fn open_settings(&self) {
-        let idx = self.selected.get();
-        let id_opt = self.schemas.borrow().get(idx).map(|e| e.id.clone());
-        if let Some(id) = id_opt { self.open_settings_at_id(&id); }
-    }
-
-    pub fn request_delete(&self) {
-        let idx = self.selected.get();
-        let id_opt = self.schemas.borrow().get(idx).map(|e| e.id.clone());
-        if let Some(id) = id_opt { self.request_delete_at_id(&id); }
-    }
-
     pub fn do_delete(&self) {
         let id = self.confirm_id.borrow().clone();
         self.confirm_visible.set(false);
         if id.is_empty() { return; }
         match rpc::call_core("schema.delete", &json!({ "id": id })) {
             Ok(_) => {
+                // refresh 内会发现选中 ID 已消失并清空选中。
                 self.refresh();
                 self.status.set("方案已删除".into());
             }
@@ -359,8 +420,8 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
         state.list_data,
         |_| (),
         move |item| match item {
-            SchemaListItem::Row { entry, idx, total, is_enabled } => {
-                build_compound_row(entry, idx, total, is_enabled, &mgr)
+            SchemaListItem::Row { entry, is_enabled } => {
+                build_compound_row(entry, is_enabled, &mgr)
             }
             SchemaListItem::SectionHeader { count } => {
                 Element::col()
@@ -394,15 +455,13 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
     .width_match()
 }
 
-/// 构建单个方案复合行。
+/// 构建单个方案复合行（工具栏+选中模式：行内无操作按钮）。
 ///
-/// 所有元素（复选框·名称·徽章·版本·↑↓·设置·删除）均为外层 row 的直接子节点，
-/// 由 `cross(Align::Center)` 统一垂直居中。`idx/total` 由 rebuild_list 在每次重建时
-/// 传入正确值，↑/↓ 的 enabled_when 无需关心历史状态。
+/// 行整体 clickable → 点击选中（事件沿祖先链派发，点 checkbox 会同时切换启用并选中，
+/// 符合预期）；选中视觉 = stack 底层 accent 淡底 + 左缘指示条覆盖层（与侧栏导航同语言），
+/// visible_when 轮询 `sel_ver`。行内保留：启用复选 · 名称/描述 · 类型/来源徽章 · 版本。
 fn build_compound_row(
     entry: SchemaEntry,
-    idx: usize,
-    total: usize,
     is_enabled: bool,
     mgr: &SchemaManagerState,
 ) -> Element {
@@ -472,23 +531,17 @@ fn build_compound_row(
         .bg_role(Role::SurfaceAlt)
         .border_role(Role::Border, 1);
 
-    // ── 操作按钮 ──
-    let is_user   = entry.source == "user";
-    let schema_id = entry.id.clone();
-    let del_id    = entry.id.clone();
-
-    let st_set = mgr.clone();
-    let settings_btn = Element::button("设置…")
-        .small()
-        .outline_soft()
-        .on_click(move |_| st_set.open_settings_at_id(&schema_id));
-
-    // ── 整行：所有子节点平铺，cross:Center 统一垂直居中 ──
+    // ── 行内容：点击选中 ──
+    let mgr_sel = mgr.clone();
+    let sel_id = entry.id.clone();
     let mut row = Element::row()
+        .clickable()
+        .on_click(move |_| mgr_sel.select(&sel_id))
         .width_match()
         .cross(Align::Center)
         .padding_xy(10, 8)
         .spacing(6)
+        .corner(8.0)
         .child(checkbox)
         .child(name_col)
         .child(type_badge)
@@ -502,47 +555,43 @@ fn build_compound_row(
         );
     }
 
-    // ↑/↓ 仅已启用行；idx/total 由 rebuild_list 保证正确
-    if is_enabled {
-        let up_id  = entry.id.clone();
-        let dn_id  = entry.id.clone();
-        let mgr_up = mgr.clone();
-        let mgr_dn = mgr.clone();
-        row = row
-            .child(
-                Element::button("↑")
-                    .small()
-                    .outline_soft()
-                    .enabled_when(move || idx > 0)
-                    .on_click(move |_| mgr_up.move_schema_up(&up_id)),
-            )
-            .child(
-                Element::button("↓")
-                    .small()
-                    .outline_soft()
-                    .enabled_when(move || idx + 1 < total)
-                    .on_click(move |_| mgr_dn.move_schema_down(&dn_id)),
-            );
-    }
+    // ── 选中视觉：底层淡蓝底 + 左缘指示条（覆盖层，不挤占布局）──
+    let mgr_bg = mgr.clone();
+    let id_bg = entry.id.clone();
+    let sel_bg = Element::leaf()
+        .width_match()
+        .height_match()
+        .corner(8.0)
+        .bg(Color::hex(crate::theme_def::ACCENT_LIGHT).scale_alpha(0.10))
+        .visible_when(move || {
+            mgr_bg.sel_ver.get();
+            mgr_bg.is_selected(&id_bg)
+        });
+    let mgr_ind = mgr.clone();
+    let id_ind = entry.id.clone();
+    let indicator = Element::row()
+        .width_match()
+        .height_match()
+        .cross(Align::Center)
+        .child(Element::leaf().width(3).height(16).corner(1.5).bg_role(Role::Accent))
+        .visible_when(move || {
+            mgr_ind.sel_ver.get();
+            mgr_ind.is_selected(&id_ind)
+        });
 
-    row = row.child(settings_btn);
-    if is_user {
-        let st_del = mgr.clone();
-        row = row.child(
-            Element::button("删除")
-                .small()
-                .danger()
-                .on_click(move |_| st_del.request_delete_at_id(&del_id)),
-        );
-    }
+    let mut item = Element::stack()
+        .width_match()
+        .child(sel_bg)
+        .child(row)
+        .child(indicator);
 
     // 未启用行随 hide_disabled 隐藏（list_signal 重建后无需 enabled_sig 联动）
     if !is_enabled {
         let hide_sig = mgr.hide_disabled;
-        row = row.visible_when(move || !hide_sig.get());
+        item = item.visible_when(move || !hide_sig.get());
     }
 
-    row
+    item
 }
 
 // ──────────────────────── UI 构建 ────────────────────────
