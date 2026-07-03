@@ -249,28 +249,57 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         if item.dialog_group.is_some() {
             continue;
         }
-        // 子对话框宿主：渲染 [宿主控件][扩展设置] 行，按钮打开成员对话框。
-        if item.opens_dialog.is_some() {
-            rows.push(build_dialog_group_row(state, k, item, cfg));
-            continue;
-        }
         // 被 gate 合并的 dialog_button：跳过独立行（gate 存在才跳，避免误吞）。
         if item.typ == "dialog_button"
+            && item.opens_dialog.is_none()
             && let Some(g) = &item.gate_key
             && state.manifest.get(g).is_some()
         {
             continue;
         }
-        // 作为某 dialog_button 门控开关的 toggle：渲染合并行。
-        if item.typ == "toggle"
+        let row = if item.opens_dialog.is_some() {
+            // 子对话框宿主：渲染 [宿主控件][扩展设置] 行，按钮打开成员对话框。
+            build_dialog_group_row(state, k, item, cfg)
+        } else if item.typ == "toggle"
             && let Some(dlg_item) = state.manifest.dialog_for_gate(k)
         {
-            rows.push(build_gated_dialog_row(state, k, item, dlg_item, cfg));
-            continue;
-        }
-        rows.push(field(state, k));
+            // 作为某 dialog_button 门控开关的 toggle：渲染合并行。
+            build_gated_dialog_row(state, k, item, dlg_item, cfg)
+        } else {
+            field(state, k)
+        };
+        // enabled_when 引用同卡片内其它 key → 视觉从属行（缩进 + └ 连接线）。
+        let dependent = item
+            .enabled_when
+            .as_deref()
+            .and_then(parse_cond)
+            .map(|(ck, _)| ck != *k && keys.iter().any(|x| x == &ck))
+            .unwrap_or(false);
+        rows.push(if dependent {
+            Element::row()
+                .width_match()
+                .cross(Align::Stretch)
+                .child(dependent_connector())
+                .child(row.weight(1.0))
+        } else {
+            row
+        });
     }
     rows
+}
+
+/// 从属行左侧 └ 连接线：竖线（顶到行中线）+ 横向短线，提示该行受上方开关控制。
+fn dependent_connector() -> Element {
+    Element::row()
+        .width(24)
+        .height_match()
+        .child(Element::leaf().width(8))
+        .child(
+            Element::col()
+                .cross(Align::Start)
+                .child(Element::leaf().width(2).height(20).bg_role(Role::Track))
+                .child(Element::leaf().width(10).height(2).bg_role(Role::Track)),
+        )
 }
 
 /// 按 key 构建一行设置项（label + 控件），并登记保存写回器与联动取值器。
