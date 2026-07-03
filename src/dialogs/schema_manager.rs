@@ -480,7 +480,7 @@ fn build_compound_row(
     let st_set = mgr.clone();
     let settings_btn = Element::button("设置…")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| st_set.open_settings_at_id(&schema_id));
 
     // ── 整行：所有子节点平铺，cross:Center 统一垂直居中 ──
@@ -512,14 +512,14 @@ fn build_compound_row(
             .child(
                 Element::button("↑")
                     .small()
-                    .outline()
+                    .outline_soft()
                     .enabled_when(move || idx > 0)
                     .on_click(move |_| mgr_up.move_schema_up(&up_id)),
             )
             .child(
                 Element::button("↓")
                     .small()
-                    .outline()
+                    .outline_soft()
                     .enabled_when(move || idx + 1 < total)
                     .on_click(move |_| mgr_dn.move_schema_down(&dn_id)),
             );
@@ -585,7 +585,7 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
                     Element::button("取消")
                         .small()
                         .weight(1.0)
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| st_cancel.confirm_visible.set(false)),
                 )
                 .child(

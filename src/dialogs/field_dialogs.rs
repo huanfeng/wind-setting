@@ -65,14 +65,14 @@ pub fn build_spaced_text_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
@@ -132,14 +132,14 @@ pub fn build_text_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
@@ -237,14 +237,14 @@ pub fn build_map_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| text.set(default_text.clone())),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
@@ -308,7 +308,7 @@ pub fn build_pairs_dialog(
                 .child(
                     Element::button("恢复默认")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| {
                             for (v, s) in &sigs_reset {
                                 s.set(defaults.iter().any(|d| d == v));
@@ -319,7 +319,7 @@ pub fn build_pairs_dialog(
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(
@@ -360,7 +360,7 @@ pub fn build_group_dialog(
         bottom = bottom.child(
             Element::button("恢复默认")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| reset()),
         );
     }
@@ -369,7 +369,7 @@ pub fn build_group_dialog(
         .child(
             Element::button("关闭")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| visible.set(false)),
         );
 
@@ -452,7 +452,7 @@ pub fn build_index_labels_dialog(
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(
-                    Element::button("恢复默认").small().outline().on_click(move |_| {
+                    Element::button("恢复默认").small().outline_soft().on_click(move |_| {
                         for s in &inputs_reset {
                             s.set(String::new());
                         }
@@ -556,7 +556,7 @@ pub fn build_punct_table_dialog(
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(
-                    Element::button("恢复默认").small().outline().on_click(move |_| {
+                    Element::button("恢复默认").small().outline_soft().on_click(move |_| {
                         for (row, def) in cells_reset.iter().zip(defaults_reset.iter()) {
                             for i in 0..4 {
                                 row[i].set(def[i].clone());
@@ -608,7 +608,7 @@ pub fn build_punct_table_dialog(
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| edit_show.set(false)),
                 )
                 .child(Element::button("确认").small().on_click(move |_| {
@@ -694,7 +694,7 @@ pub fn build_hotkey_dialog(
     let kv_def = key_values;
     let reset = Element::button("恢复默认")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| {
             let (m, k) = parse_hotkey(&default);
             mc.set(m[0]);
@@ -740,7 +740,7 @@ pub fn build_hotkey_dialog(
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(confirm),

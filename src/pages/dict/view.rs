@@ -67,7 +67,7 @@ pub fn build_page(state: &AppState) -> Element {
         .child(
             Element::button("刷新")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| mgr_refresh.reload()),
         );
 
@@ -125,12 +125,15 @@ pub fn build_page(state: &AppState) -> Element {
     // ── 分页（仅分页类别显示）──
     let pagination = build_pagination(&mgr);
 
-    let main_col = Element::col()
+    let mut main_col = Element::col()
         .fill()
         .bg_role(Role::SurfaceAlt)
         .padding_xy(20, 16)
-        .spacing(12)
-        .child(crate::widgets::page_header("词库", "管理词库与自定义词条"))
+        .spacing(12);
+    if crate::widgets::PAGE_HEADER_ENABLED {
+        main_col = main_col.child(crate::widgets::page_header("词库", "管理词库与自定义词条"));
+    }
+    let main_col = main_col
         .child(domain_row)
         .child(sub_tabs)
         .child(toolbar)
@@ -168,7 +171,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let e_pa = mgr.clone();
     let promote_all = Element::button("全部转正")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| m_pa.do_promote_all())
         .enabled_when(move || e_pa.total.get() > 0)
         .visible_when(move || v_pa.current_spec().ops.promote_all);
@@ -188,7 +191,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let v_reset = mgr.clone();
     let reset_default = Element::button("恢复默认")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| m_reset.request_reset_default())
         .visible_when(move || v_reset.current_spec().ops.reset_default);
 
@@ -196,7 +199,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let v_imp = mgr.clone();
     let import_btn = Element::button("导入")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| m_imp.do_import_phrases())
         .visible_when(move || v_imp.current_spec().ops.import);
 
@@ -204,7 +207,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let v_exp = mgr.clone();
     let export_btn = Element::button("导出")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| m_exp.do_export_phrases())
         .visible_when(move || v_exp.current_spec().ops.export);
 
@@ -219,7 +222,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(
             Element::button("清除")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| {
                     m_clr_s.search.set(String::new());
                 })
@@ -264,14 +267,14 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
         .child(
             Element::button("‹ 上一页")
                 .small()
-                .outline()
+                .outline_soft()
                 .enabled_when(move || m_hp.has_prev())
                 .on_click(move |_| m_prev.prev_page()),
         )
         .child(
             Element::button("下一页 ›")
                 .small()
-                .outline()
+                .outline_soft()
                 .enabled_when(move || m_hn.has_next())
                 .on_click(move |_| m_next.next_page()),
         )
@@ -354,7 +357,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         r = r.child(
             Element::button("查看")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| m.open_view(&c, &t, w)),
         );
     }
@@ -369,7 +372,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
             r = r.child(
                 Element::button("编辑")
                     .small()
-                    .outline()
+                    .outline_soft()
                     .on_click(move |_| m.open_shadow_edit(&c, &t, &k, pos)),
             );
         } else {
@@ -377,7 +380,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
             r = r.child(
                 Element::button("编辑")
                     .small()
-                    .outline()
+                    .outline_soft()
                     .on_click(move |_| m.open_edit(&c, &t, w)),
             );
         }
@@ -389,7 +392,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         r = r.child(
             Element::button("转正")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| m.do_promote(&c, &t)),
         );
     }
@@ -400,7 +403,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         r = r.child(
             Element::button("撤销")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| m.do_delete_row(&c, &t)),
         );
     }

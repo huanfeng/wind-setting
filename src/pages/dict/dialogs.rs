@@ -49,7 +49,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(
             Element::button("出码")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| encode.encode_current())
                 .visible_when(move || enc_vis.current_spec().ops.encode),
         );
@@ -96,7 +96,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(
             Element::button("取消")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| cancel.cancel_edit()),
         )
         .child(
@@ -166,7 +166,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .padding_xy(16, 12)
         .spacing(8)
         .child(Element::leaf().weight(1.0))
-        .child(Element::button("取消").small().outline().on_click(move |_| cancel.cancel_shadow_add()))
+        .child(Element::button("取消").small().outline_soft().on_click(move |_| cancel.cancel_shadow_add()))
         .child(Element::button("确定").small().on_click(move |_| submit.submit_shadow()));
 
     let frame = Element::col()
@@ -233,7 +233,7 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
         .child(
             Element::button("关闭")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| cancel.cancel_view()),
         );
 
@@ -291,7 +291,7 @@ fn build_confirm_dialog(mgr: &DictManagerState) -> Element {
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| cancel.cancel_confirm()),
                 )
                 .child(

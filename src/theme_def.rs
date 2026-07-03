@@ -27,7 +27,10 @@ pub fn light_theme() -> Theme {
     p.text_disabled = Color::hex(0xB6BDC9);
     p.border = Color::hex(0xE4E8EE);
     p.divider = Color::hex(0xEDF0F4);
-    p.track = Color::hex(0xD8DEE8);
+    // track 兼作 outline_soft 按钮静默边（须深于 border，禁用边才有层级）与开关关闭轨道。
+    p.track = Color::hex(0xCBD2DD);
+    // 设置行描述/输入框提示的弱化档（参考稿 text3；text_muted 留给次级正文）。
+    p.placeholder = Color::hex(0x97A1B2);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t
@@ -51,7 +54,10 @@ pub fn dark_theme() -> Theme {
     p.border = Color::hex(0x2A3447);
     // 分割线须在暗色卡片(0x1A2333)上可辨（历史教训：太接近会不可见）。
     p.divider = Color::hex(0x2C374C);
-    p.track = Color::hex(0x2B3550);
+    // track 兼作 outline_soft 按钮静默边（须深/亮于 border）与开关关闭轨道。
+    p.track = Color::hex(0x3A4560);
+    // 设置行描述/输入框提示的弱化档（参考稿 text3 ≈ 白 42% 合成色）。
+    p.placeholder = Color::hex(0x6C7890);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t

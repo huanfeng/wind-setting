@@ -146,16 +146,22 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
                 .child(tinted(svg, 16, Color::WHITE).align(Align::Center))
                 .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
         };
-        let indicator = Element::leaf().width(3).height(14).corner(1.5).bg_role(Role::Accent);
+        // 左缘指示条：作 stack 覆盖层贴行左缘垂直居中，不占行内宽度——
+        // 选中/未选中 padding 一致，切换时图标/文字不发生横向偏移。
+        let indicator = Element::row()
+            .width_match()
+            .height(36)
+            .cross(Align::Center)
+            .child(Element::leaf().width(3).height(14).corner(1.5).bg_role(Role::Accent))
+            .visible_when(move || sel.get() == i);
         let on = Element::row()
             .width_match()
             .height(36)
             .corner(9.0)
             .cross(Align::Center)
             .spacing(9)
-            .padding_xy(7, 0)
+            .padding_xy(10, 0)
             .bg(Color::hex(ACCENT_LIGHT).scale_alpha(0.11))
-            .child(indicator)
             .child(
                 Element::stack()
                     .child(sel_chip(ACCENT_DARK, 0x4A7CE8, true))
@@ -200,7 +206,14 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
             )
             .visible_when(move || sel.get() != i);
 
-        col = col.child(Element::stack().width_match().height(36).child(on).child(off));
+        col = col.child(
+            Element::stack()
+                .width_match()
+                .height(36)
+                .child(on)
+                .child(off)
+                .child(indicator),
+        );
     }
     Element::scroll().fill().child(col)
 }
@@ -274,7 +287,7 @@ fn build_footer(
     let d_l = dark;
     let to_light = Element::button("☀ 浅色")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| {
             d_l.set(false);
             th_l.set(theme_for(false));
@@ -284,7 +297,7 @@ fn build_footer(
     let d_d = dark;
     let to_dark = Element::button("🌙 深色")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| {
             d_d.set(true);
             th_d.set(theme_for(true));
@@ -296,7 +309,7 @@ fn build_footer(
     let app_reset = app.clone();
     let reset_btn = Element::button("恢复本页")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| {
             if let Ok(s) = app_reset.try_borrow() {
                 if s.is_dirty() {
@@ -311,7 +324,7 @@ fn build_footer(
     let app_reload = app.clone();
     let reload_btn = Element::button("重新加载")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| {
             if let Ok(s) = app_reload.try_borrow() {
                 s.reload_confirm.set(true);
@@ -322,7 +335,7 @@ fn build_footer(
     let app_apply = app.clone();
     let apply_btn = Element::button("应用设置")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| {
             if let Ok(mut s) = app_apply.try_borrow_mut() {
                 s.save();
@@ -432,7 +445,7 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(Element::leaf().weight(1.0))
-                .child(Element::button("退出").small().outline().on_click(|ctx| ctx.request_close()))
+                .child(Element::button("退出").small().outline_soft().on_click(|ctx| ctx.request_close()))
                 .child(Element::button("重连").small().on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
                         s.status.set("正在重连...".to_string());
@@ -487,7 +500,7 @@ fn confirm_dialog(
                 .child(
                     Element::button("取消")
                         .small()
-                        .outline()
+                        .outline_soft()
                         .on_click(move |_| cancel.set(false)),
                 )
                 .child(Element::button(confirm_label).small().on_click(on_confirm)),

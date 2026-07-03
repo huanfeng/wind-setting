@@ -30,10 +30,10 @@ pub fn all_tabs(state: &AppState) -> Vec<(String, Element)> {
 
 /// 由若干 section 卡片组成一页（页头 + 纵向滚动，深色 bg 衬托卡片）。
 fn sections_page(title: &str, desc: &str, sections: Vec<Element>) -> Element {
-    let mut col = Element::col()
-        .width_match()
-        .spacing(18)
-        .child(crate::widgets::page_header(title, desc));
+    let mut col = Element::col().width_match().spacing(18);
+    if crate::widgets::PAGE_HEADER_ENABLED {
+        col = col.child(crate::widgets::page_header(title, desc));
+    }
     for s in sections {
         col = col.child(s);
     }
@@ -105,13 +105,13 @@ fn scheme_page(state: &AppState) -> Element {
         .child(
             Element::button("刷新")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| st_refresh.refresh()),
         )
         .child(
             Element::button("导入…")
                 .small()
-                .outline()
+                .outline_soft()
                 .on_click(move |_| st_import.status.set("导入功能开发中".into())),
         );
 
@@ -301,7 +301,7 @@ fn about_page(state: &AppState) -> Element {
                         .child(
                             Element::button("检查更新")
                                 .small()
-                                .outline()
+                                .outline_soft()
                                 .on_click(|ctx| ctx.toast("检查更新功能开发中")),
                         ),
                 )
@@ -404,10 +404,9 @@ fn about_page(state: &AppState) -> Element {
         .child(grid)
         .child(footer);
 
-    let body = Element::col()
-        .width_match()
-        .spacing(18)
-        .child(crate::widgets::page_header("关于", "版本信息与支持"))
-        .child(panel);
-    crate::widgets::page(body)
+    let mut body = Element::col().width_match().spacing(18);
+    if crate::widgets::PAGE_HEADER_ENABLED {
+        body = body.child(crate::widgets::page_header("关于", "版本信息与支持"));
+    }
+    crate::widgets::page(body.child(panel))
 }

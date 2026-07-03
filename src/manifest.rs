@@ -372,7 +372,7 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
 
     let btn = Element::button("扩展设置")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| visible.set(true));
     let row_control = Element::row().cross(Align::Center).spacing(10).child(control).child(btn);
     let mut row = setting_row(&item.label, item.hint.as_deref(), row_control);
@@ -841,7 +841,7 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     let kv = key_vals;
     let open = Element::button("设置")
         .small()
-        .outline()
+        .outline_soft()
         .enabled_when(move || enabled_sig.get())
         .on_click(move |_| {
             let (m, k) = parse_hotkey(&raw.get());
@@ -1248,7 +1248,7 @@ pub fn build_scheme_config_button(
     register_dialog(state, dlg);
     Element::button("设置")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| visible.set(true))
 }
 
@@ -1256,7 +1256,7 @@ pub fn build_scheme_config_button(
 fn open_dialog_button(visible: Signal<bool>) -> Element {
     Element::button("设置")
         .small()
-        .outline()
+        .outline_soft()
         .on_click(move |_| visible.set(true))
 }
 

@@ -7,6 +7,22 @@ use std::cell::Cell;
 
 use windui::prelude::*;
 
+// ── 设置行排版统一常量（setting_row / setting_row_checks 等各行类型共用）──
+// 层次策略：标题靠**字号**压过描述（14 vs 11）+ 描述用 Placeholder 浅色阶；
+// 字重保持 500——DirectWrite 下雅黑 300–500 均落 Regular（细分字重无效），
+// 600 会映射 Bold，整页行标题全加粗过重、显乱，故不用字重分层。
+
+/// 行标题字号。
+const ROW_LABEL_SIZE: f32 = 14.0;
+/// 行标题字重（见上：300–500 同渲染，600 起为 Bold）。
+const ROW_LABEL_WEIGHT: u16 = 500;
+/// 行标题行高。
+const ROW_LABEL_H: i32 = 18;
+/// 行描述字号。
+const ROW_SUB_SIZE: f32 = 11.0;
+/// 行描述行高。
+const ROW_SUB_H: i32 = 15;
+
 thread_local! {
     /// 全局明暗信号（shell::build 注册）。静态色图标/渐变无法走 *_role 换肤，
     /// 用它做「亮/暗双元素 visible_when」双态。UI 单线程，thread_local 即全局。
@@ -88,7 +104,12 @@ pub fn section_header(title: &str) -> Element {
         )
 }
 
+/// 页面头部全局开关（预留：后续可接设置项/命令行参数）。当前关闭——观感待打磨，
+/// 各页仍保留 page_header 调用点，改此常量即整体启用。
+pub const PAGE_HEADER_ENABLED: bool = false;
+
 /// 页面头部（左右布局）：17px 页标题在左，12px 弱化描述同行随后，不占额外纵向空间。
+/// 是否渲染由调用方按 [`PAGE_HEADER_ENABLED`] 决定。
 pub fn page_header(title: &str, desc: &str) -> Element {
     Element::row()
         .width_match()
@@ -120,23 +141,23 @@ pub fn page_header(title: &str, desc: &str) -> Element {
 pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element {
     let mut left = Element::col().weight(1.0).spacing(2).child(
         Element::label(label)
-            .font_size(13.0)
-            .font_weight(500)
+            .font_size(ROW_LABEL_SIZE)
+            .font_weight(ROW_LABEL_WEIGHT)
             .fg_role(Role::Text)
             .width_match()
             .max_lines(1)
             .truncate(Truncate::End)
-            .height(18),
+            .height(ROW_LABEL_H),
     );
     if let Some(s) = sub {
         left = left.child(
             Element::label(s)
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
+                .font_size(ROW_SUB_SIZE)
+                .fg_role(Role::Placeholder)
                 .width_match()
                 .max_lines(1)
                 .truncate(Truncate::End)
-                .height(15),
+                .height(ROW_SUB_H),
         );
     }
     Element::row()
@@ -153,10 +174,11 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
 /// 网格固定 300px（两列各 ~145），不会撑宽；左侧 weight(1) 自由伸展，
 /// 窗口变宽时标签获得更多空间，与 hotkey 行的控件组视觉一致靠右。
 pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Element {
+    // 排版走文件顶部的行统一常量（与 setting_row 一致）；本行型标签/描述允许两行折行。
     let mut left = Element::col().weight(1.0).spacing(2).child(
         Element::label(label)
-            .font_size(13.0)
-            .font_weight(500)
+            .font_size(ROW_LABEL_SIZE)
+            .font_weight(ROW_LABEL_WEIGHT)
             .fg_role(Role::Text)
             .width_match()
             .max_lines(2)
@@ -165,8 +187,8 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     if let Some(s) = sub {
         left = left.child(
             Element::label(s)
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
+                .font_size(ROW_SUB_SIZE)
+                .fg_role(Role::Placeholder)
                 .width_match()
                 .max_lines(2)
                 .truncate(Truncate::End),
