@@ -471,11 +471,18 @@ pub fn build_index_labels_dialog(
 /// 自定义标点 5 列可编辑表格对话框（原字符 / 英文半角 / 英文全角 / 中文半角 / 中文全角）。
 /// 复刻 examples/settings.rs 的表格 + 单元格编辑子对话框：点单元格弹文本框编辑，确认写回。
 /// - `src_labels`：每行第 0 列「原字符」展示（只读，点击不弹编辑）；
-/// - `cells_data`：每行 4 个可编辑单元格信号（英半/英全/中半/中全，与 core 数组序一致），
+/// - `cells_data`：每行 4 个可编辑单元格信号，行内下标为 **core 存储序**
+///   [中半, 英全, 中全, 英半]（与 core lookup_custom 列语义一致）；UI 展示序
+///   （英半/英全/中半/中全）仅在本函数内经 [`PUNCT_DISPLAY_COLS`] 单点映射，
 ///   这些信号由调用方注册到 writer/loader，编辑即改它们，随主保存提交；
-/// - `defaults`：每行 4 列默认值（单元格清空时回落 + 「恢复默认」用）。
+/// - `defaults`：每行 4 列默认值（core 序；单元格清空时回落 + 「恢复默认」用）。
 ///
 /// 返回一个含「表格对话框 + 单元格编辑子对话框」两层的 stack，整体挂根。
+///
+/// UI 展示列 → core 数组下标：英半=3, 英全=1, 中半=0, 中全=2。
+/// 展示/存储换序只许经此常量，禁止在别处再写死下标（防两端再度错位）。
+const PUNCT_DISPLAY_COLS: [usize; 4] = [3, 1, 0, 2];
+
 pub fn build_punct_table_dialog(
     visible: Signal<bool>,
     title: &str,
@@ -489,15 +496,19 @@ pub fn build_punct_table_dialog(
     let edit_row = signal(0usize);
     let edit_col = signal(0usize); // 0..3，对应 cells_data 行内列
 
-    // 表格单元格：第 0 列为原字符（只读展示），第 1..4 列为可编辑信号。
+    // 表格单元格：第 0 列为原字符（只读展示），第 1..4 列为可编辑信号（按展示序重排）。
     let src_sigs: Vec<Signal<String>> = src_labels.iter().map(|s| signal(s.clone())).collect();
     let table_cells: Vec<Vec<Signal<String>>> = src_sigs
         .iter()
         .zip(cells_data.iter())
-        .map(|(src, row)| vec![*src, row[0], row[1], row[2], row[3]])
+        .map(|(src, row)| {
+            let mut cols = vec![*src];
+            cols.extend(PUNCT_DISPLAY_COLS.iter().map(|&i| row[i]));
+            cols
+        })
         .collect();
 
-    // 点单元格：第 0 列只读跳过；其余载入缓冲并弹编辑子对话框。
+    // 点单元格：第 0 列只读跳过；其余映射回 core 下标，载入缓冲并弹编辑子对话框。
     let cells_for_edit = cells_data.clone();
     let table = Element::table_editable(
         vec![
@@ -512,7 +523,7 @@ pub fn build_punct_table_dialog(
             if c == 0 {
                 return;
             }
-            let ci = c - 1;
+            let ci = PUNCT_DISPLAY_COLS[c - 1];
             edit_buf.set(cells_for_edit[r][ci].get());
             edit_row.set(r);
             edit_col.set(ci);
