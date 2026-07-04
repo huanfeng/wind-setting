@@ -244,6 +244,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "schema.mix.auto_commit_block_on_english",
+      "type": "bool"
+    },
+    {
       "default": 2,
       "key": "schema.mix.min_pinyin_length",
       "type": "int"

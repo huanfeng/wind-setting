@@ -398,6 +398,14 @@ label = "有拼音候选时否决满码上屏"
 hint = "满码自动上屏前若仍有拼音候选则不自动上屏"
 
 [[items]]
+key = "schema.mix.auto_commit_block_on_english"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "有英文候选时否决满码上屏"
+hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；仅启用英文候选时有效"
+
+[[items]]
 key = "schema.mix.min_pinyin_length"
 group = "schema"
 section = "混输行为"
