@@ -313,6 +313,15 @@
       "type": "bool"
     },
     {
+      "default": "global",
+      "key": "input.default.state_scope",
+      "type": "enum",
+      "values": [
+        "global",
+        "app"
+      ]
+    },
+    {
       "default": true,
       "key": "input.default.chinese_mode",
       "type": "bool"

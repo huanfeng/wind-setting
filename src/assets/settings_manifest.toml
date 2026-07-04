@@ -1421,6 +1421,18 @@ hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐
 
 # ═══════════════════════════ 常规（并入「输入」页尾「默认状态」）═══════════════════════════
 [[items]]
+key = "input.default.state_scope"
+group = "general"
+section = "默认状态"
+type = "select"
+label = "中英状态作用域"
+hint = "全局统一：所有应用共享同一中英状态；按应用独立：每个应用各自记忆中英文（适合游戏等需保持英文的场景，重启输入法后重置）"
+options = [
+  { value = "global", label = "全局统一" },
+  { value = "app", label = "按应用独立" },
+]
+
+[[items]]
 key = "input.default.remember_last_state"
 group = "general"
 section = "默认状态"
