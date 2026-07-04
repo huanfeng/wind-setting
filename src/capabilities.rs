@@ -53,6 +53,20 @@ impl Capabilities {
         self.entries.get(key).map(|e| e.default.clone()).unwrap_or(Value::Null)
     }
 
+    /// 所有 map 类型配置键（如 input.punct.custom_mappings）。
+    /// 供 diff_config 作「整体叶子」：map 内部键是用户数据（标点 token 可含 `.`），
+    /// 下钻 diff 会产出服务端未登记的路径被 setItems 拒绝。
+    pub fn map_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.ty == "map")
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort(); // HashMap 迭代序不稳定，排序保证 diff 行为可复现
+        keys
+    }
+
     /// 守护：清单每个 key ∈ 快照，且控件与类型兼容。返回不一致项描述列表。
     pub fn validate(&self, manifest: &Manifest) -> Vec<String> {
         let mut problems = Vec::new();

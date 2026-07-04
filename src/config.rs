@@ -85,9 +85,15 @@ pub struct ConfigItem {
 }
 
 /// 计算两个 Config 之间的差异，返回变更的路径列表。
-pub fn diff_config(base: &Config, current: &Config) -> Vec<ConfigItem> {
+///
+/// `atomic_keys`：须**整体发送**的对象型配置键（core registry 的 map 类型，如
+/// `input.punct.custom_mappings`）。map 的内部键是用户数据（标点 token 可含
+/// `.`/`/` 等字符），若按普通对象下钻会产出 `custom_mappings./` 甚至
+/// `custom_mappings..` 这类服务端未登记的路径，被 config.setItems 校验拒绝。
+/// 列表由调用方从 capabilities（type=="map"）提取。
+pub fn diff_config(base: &Config, current: &Config, atomic_keys: &[String]) -> Vec<ConfigItem> {
     let mut items = Vec::new();
-    diff_value("", &base.0, &current.0, &mut items);
+    diff_value("", &base.0, &current.0, atomic_keys, &mut items);
     items
 }
 
@@ -134,7 +140,7 @@ mod tests {
     fn test_diff_no_change() {
         let base = Config::from_value(json!({ "input": { "enter_behavior": "commit" } }));
         let current = Config::from_value(json!({ "input": { "enter_behavior": "commit" } }));
-        let items = diff_config(&base, &current);
+        let items = diff_config(&base, &current, &[]);
         assert!(items.is_empty());
     }
 
@@ -142,10 +148,48 @@ mod tests {
     fn test_diff_detects_change() {
         let base = Config::from_value(json!({ "input": { "enter_behavior": "commit" } }));
         let current = Config::from_value(json!({ "input": { "enter_behavior": "clear" } }));
-        let items = diff_config(&base, &current);
+        let items = diff_config(&base, &current, &[]);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].key, "input.enter_behavior");
         assert_eq!(items[0].value, Value::String("clear".to_string()));
+    }
+
+    #[test]
+    fn test_diff_atomic_map_key_emitted_whole() {
+        // 回归：custom_mappings（map 型）曾被按普通对象下钻，产出
+        // "input.punct.custom_mappings./" 等未登记路径被服务端拒绝（映射从未落盘）。
+        // 标点 token 含 `.` 时还会拼出 "custom_mappings.." 烂路径。
+        let base = Config::from_value(json!({
+            "input": { "punct": { "custom_mappings": {} } }
+        }));
+        let current = Config::from_value(json!({
+            "input": { "punct": { "custom_mappings": {
+                "/": ["、", "／", "、", "/"],
+                ".": ["。", "．", "。", "."]
+            } } }
+        }));
+        let atomic = vec!["input.punct.custom_mappings".to_string()];
+        let items = diff_config(&base, &current, &atomic);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, "input.punct.custom_mappings");
+        assert!(items[0].value.is_object());
+        assert_eq!(items[0].value.as_object().unwrap().len(), 2);
+
+        // 无 atomic 声明时的旧行为（下钻出带 token 的路径）——确保新参数确实改变了它
+        let bad = diff_config(&base, &current, &[]);
+        assert!(
+            bad.iter().any(|i| i.key.starts_with("input.punct.custom_mappings.")),
+            "无 atomic 时应下钻（旧行为），若此断言失败说明测试前提已变"
+        );
+    }
+
+    #[test]
+    fn test_diff_atomic_map_key_no_change_not_emitted() {
+        let v = json!({ "input": { "punct": { "custom_mappings": { "/": ["、", "", "", ""] } } } });
+        let base = Config::from_value(v.clone());
+        let current = Config::from_value(v);
+        let atomic = vec!["input.punct.custom_mappings".to_string()];
+        assert!(diff_config(&base, &current, &atomic).is_empty());
     }
 
     #[test]
@@ -158,7 +202,7 @@ mod tests {
         let current = Config::from_value(json!({
             "input": { "enter_behavior": "clear" }
         }));
-        let items = diff_config(&base, &current);
+        let items = diff_config(&base, &current, &[]);
         // 只应产出 current 中变更的 enter_behavior，不应产出 debug.* 或 null
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].key, "input.enter_behavior");
@@ -174,7 +218,7 @@ mod tests {
             "input": { "enter_behavior": "clear", "filter_mode": "smart" },
             "ui": { "theme": { "style": "dark" } }
         }));
-        let items = diff_config(&base, &current);
+        let items = diff_config(&base, &current, &[]);
         assert_eq!(items.len(), 2);
         let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
         assert!(keys.contains(&"input.enter_behavior"));
@@ -182,7 +226,13 @@ mod tests {
     }
 }
 
-fn diff_value(prefix: &str, base: &Value, current: &Value, items: &mut Vec<ConfigItem>) {
+fn diff_value(
+    prefix: &str,
+    base: &Value,
+    current: &Value,
+    atomic_keys: &[String],
+    items: &mut Vec<ConfigItem>,
+) {
     // 与 Tauri 版 configDiffToItems 对齐：只遍历 current 的键。
     // base 有而 current 没有的键（我们不管理的配置字段）完全忽略，
     // 避免对称 diff 产出 null 覆盖核心默认值。
@@ -214,6 +264,17 @@ fn diff_value(prefix: &str, base: &Value, current: &Value, items: &mut Vec<Confi
         let cv = &c[key];
         let bv = b.and_then(|m| m.get(key)).unwrap_or(&Value::Null);
 
+        // map 型配置键：整体叶子，变更即整对象产出，绝不下钻（见 diff_config 文档）。
+        if atomic_keys.iter().any(|k| k == &path) {
+            if bv != cv && !cv.is_null() {
+                items.push(ConfigItem {
+                    key: path,
+                    value: cv.clone(),
+                });
+            }
+            continue;
+        }
+
         // 两者都是对象且 current 没有删除 base 的子键 → 递归
         // 注意：用本层子节点的 base（bv）比对，而非父级 base map（b），
         // 否则会误判为「删除了键」而把整个子对象当叶子产出（key 退化为父路径）。
@@ -225,7 +286,7 @@ fn diff_value(prefix: &str, base: &Value, current: &Value, items: &mut Vec<Confi
         };
 
         if both_objects && !has_removed_keys {
-            diff_value(&path, bv, cv, items);
+            diff_value(&path, bv, cv, atomic_keys, items);
         } else if bv != cv && !cv.is_null() {
             items.push(ConfigItem {
                 key: path,

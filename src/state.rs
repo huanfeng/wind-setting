@@ -241,7 +241,7 @@ impl AppState {
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
         }
-        !diff_config(&self.base_config, &probe).is_empty()
+        !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
     }
 
     /// 当前 Tab 对应的 manifest 分组（用于「恢复本页」定位 key 集合）。
@@ -317,7 +317,8 @@ impl AppState {
                 w(&mut self.current_config);
             }
         }
-        let items = diff_config(&self.base_config, &self.current_config);
+        let items =
+            diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
         if items.is_empty() {
             self.status.set("没有变更".to_string());
             return true;
@@ -328,11 +329,34 @@ impl AppState {
             .collect();
         let params = serde_json::json!({ "items": items_json });
         match rpc::call_core("config.setItems", &params) {
-            Ok(_) => {
-                self.base_config = self.current_config.clone();
-                self.status
-                    .set(format!("已保存 {} 项变更", items_json.len()));
-                true
+            Ok(resp) => {
+                // 服务端会静默跳过无效项（未登记键/类型/枚举错），不能一律当成功——
+                // 否则用户以为已保存、实际配置丢失且无从察觉。
+                let skipped: Vec<String> = resp
+                    .get("skipped")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|it| it.get("key").and_then(|k| k.as_str()))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if skipped.is_empty() {
+                    self.base_config = self.current_config.clone();
+                    self.status
+                        .set(format!("已保存 {} 项变更", items_json.len()));
+                    true
+                } else {
+                    // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。
+                    self.status.set(format!(
+                        "已保存 {} 项，{} 项被服务端拒绝: {}",
+                        items_json.len() - skipped.len(),
+                        skipped.len(),
+                        skipped.join(", ")
+                    ));
+                    false
+                }
             }
             Err(e) => {
                 self.status.set(format!("保存失败: {e}"));
