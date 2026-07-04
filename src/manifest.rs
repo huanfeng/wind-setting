@@ -268,7 +268,8 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         } else {
             field(state, k)
         };
-        // enabled_when 引用同卡片内其它 key → 视觉从属行（缩进 + └ 连接线）。
+        // enabled_when 引用同卡片内其它 key → 视觉从属行（仅缩进，不画连接线：
+        // 多个子项连续时一排 └ 显得杂乱；缩进本身已传达从属关系，对齐 Win11/macOS 设置惯例）。
         let dependent = item
             .enabled_when
             .as_deref()
@@ -279,27 +280,13 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
             Element::row()
                 .width_match()
                 .cross(Align::Stretch)
-                .child(dependent_connector())
+                .child(Element::leaf().width(24))
                 .child(row.weight(1.0))
         } else {
             row
         });
     }
     rows
-}
-
-/// 从属行左侧 └ 连接线：竖线（顶到行中线）+ 横向短线，提示该行受上方开关控制。
-fn dependent_connector() -> Element {
-    Element::row()
-        .width(24)
-        .height_match()
-        .child(Element::leaf().width(8))
-        .child(
-            Element::col()
-                .cross(Align::Start)
-                .child(Element::leaf().width(2).height(20).bg_role(Role::Track))
-                .child(Element::leaf().width(10).height(2).bg_role(Role::Track)),
-        )
 }
 
 /// 按 key 构建一行设置项（label + 控件），并登记保存写回器与联动取值器。
