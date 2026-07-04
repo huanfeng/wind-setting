@@ -32,25 +32,9 @@ pub struct SchemaEntry {
     pub error: Option<String>,
 }
 
-/// 双拼布局显示名（未知布局回退 id 原文）。
-fn shuangpin_layout_label(id: &str) -> &str {
-    SHUANGPIN_LAYOUTS
-        .iter()
-        .find(|(lid, _)| *lid == id)
-        .map(|(_, name)| *name)
-        .unwrap_or(id)
-}
-
-/// 双拼布局（id ↔ 显示名）。对应 core 内置 `data/schemas/shuangpin/<id>.toml`，
-/// 集合固定；core 若新增布局需同步此表。
-const SHUANGPIN_LAYOUTS: &[(&str, &str)] = &[
-    ("xiaohe", "小鹤双拼"),
-    ("ziranma", "自然码"),
-    ("mspy", "微软双拼"),
-    ("sogou", "搜狗双拼"),
-    ("abc", "智能ABC"),
-    ("ziguang", "紫光双拼"),
-];
+// 双拼布局清单不再硬编码：运行时经 `schema.layouts` RPC 动态拉取（合并安装目录
+// 与用户目录 schemas/shuangpin/*.toml），存于 SchemaManagerState::layouts。
+// 见 SchemaManagerState::layout_label / refresh。
 
 /// `list_signal` 的数据项：行/分节标题/行间分隔线。
 #[derive(Clone)]
@@ -96,8 +80,11 @@ pub struct SchemaManagerState {
     pub settings_cfg: Rc<RefCell<Value>>,
     /// 当前方案是否为双拼（决定「双拼布局」行与保存按钮的可见性）。
     pub settings_is_shuangpin: Signal<bool>,
-    /// 双拼布局下拉选中索引（对应 [`SHUANGPIN_LAYOUTS`]）。
+    /// 双拼布局下拉选中索引（对应 [`SchemaManagerState::layouts`] 的顺序）。
     pub settings_layout: Signal<usize>,
+    /// 双拼布局清单 (id, 显示名)：refresh() 时经 `schema.layouts` RPC 动态拉取
+    /// （合并安装目录与用户目录），取代原硬编码；下拉选项/索引映射/行名后缀均以此为准。
+    pub layouts: Rc<RefCell<Vec<(String, String)>>>,
 }
 
 impl SchemaManagerState {
@@ -121,9 +108,20 @@ impl SchemaManagerState {
             settings_cfg: Rc::new(RefCell::new(Value::Null)),
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
+            layouts: Rc::new(RefCell::new(Vec::new())),
         };
         state.refresh();
         state
+    }
+
+    /// 双拼布局显示名（未知布局回退 id 原文）。数据源为 layouts（schema.layouts RPC）。
+    fn layout_label(&self, id: &str) -> String {
+        self.layouts
+            .borrow()
+            .iter()
+            .find(|(lid, _)| lid == id)
+            .map(|(_, name)| name.clone())
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// 同步读取 config.get → schema.available。
@@ -205,6 +203,27 @@ impl SchemaManagerState {
     pub fn refresh(&self) {
         let list = rpc::call_core("schema.list", &json!({}))
             .unwrap_or(Value::Array(vec![]));
+
+        // 双拼布局清单（动态，取代硬编码）：供下拉选项/索引映射/行名后缀。
+        let layouts: Vec<(String, String)> = rpc::call_core("schema.layouts", &json!({}))
+            .ok()
+            .and_then(|v| {
+                v.as_array().map(|arr| {
+                    arr.iter()
+                        .filter_map(|it| {
+                            let id = it.get("id")?.as_str()?.to_string();
+                            let name = it
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| id.clone());
+                            Some((id, name))
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        *self.layouts.borrow_mut() = layouts;
 
         let order = self.enabled_order.borrow();
         let all_enabled = order.is_empty();
@@ -440,7 +459,12 @@ impl SchemaManagerState {
                 .pointer("/engine/pinyin/shuangpin/layout")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let idx = SHUANGPIN_LAYOUTS.iter().position(|(id, _)| *id == layout).unwrap_or(0);
+            let idx = self
+                .layouts
+                .borrow()
+                .iter()
+                .position(|(id, _)| id == layout)
+                .unwrap_or(0);
             self.settings_layout.set(idx);
         }
         *self.settings_schema_id.borrow_mut() = entry.id.clone();
@@ -457,8 +481,15 @@ impl SchemaManagerState {
         if id.is_empty() || !self.settings_is_shuangpin.get() {
             return;
         }
-        let idx = self.settings_layout.get().min(SHUANGPIN_LAYOUTS.len() - 1);
-        let layout = SHUANGPIN_LAYOUTS[idx].0;
+        if self.layouts.borrow().is_empty() {
+            self.notify(false, "双拼布局清单未加载，无法保存");
+            return;
+        }
+        let layout = {
+            let layouts = self.layouts.borrow();
+            let idx = self.settings_layout.get().min(layouts.len() - 1);
+            layouts[idx].0.clone()
+        };
         let mut cfg = self.settings_cfg.borrow().clone();
         if !cfg.is_object() {
             cfg = json!({});
@@ -616,7 +647,7 @@ fn build_compound_row(
     // ── 名称列（weight-1）：名称 + 可选描述；双拼方案名称后缀当前布局（如「双拼·小鹤双拼」）──
     let base_name = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
     let name_text = if entry.scheme == "shuangpin" && !entry.shuangpin_layout.is_empty() {
-        format!("{base_name}·{}", shuangpin_layout_label(&entry.shuangpin_layout))
+        format!("{base_name}·{}", mgr.layout_label(&entry.shuangpin_layout))
     } else {
         base_name
     };
@@ -801,9 +832,9 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let content = state.settings_content;
     let is_sp = state.settings_is_shuangpin;
 
-    // 双拼布局行：仅双拼方案可见。下拉选项固定集（见 SHUANGPIN_LAYOUTS）。
+    // 双拼布局行：仅双拼方案可见。下拉选项来自 state.layouts（schema.layouts RPC 动态拉取）。
     let layout_labels: Vec<String> =
-        SHUANGPIN_LAYOUTS.iter().map(|(_, name)| (*name).to_string()).collect();
+        state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
     let sp_row = Element::row()
         .width_match()
         .cross(Align::Center)

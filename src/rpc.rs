@@ -230,6 +230,15 @@ fn mock_reply(method: &str) -> Value {
             { "id": "double_pinyin", "name": "双拼", "engineType": "pinyin", "scheme": "shuangpin",
               "builtin": false, "version": "0.5.0", "description": "双拼输入方案（布局可在设置中切换）" }
         ]),
+        // 双拼布局清单：core 侧合并扫描 schemas/shuangpin/*.toml（安装+用户目录）后返回。
+        "schema.layouts" => json!([
+            { "id": "abc", "name": "智能ABC" },
+            { "id": "mspy", "name": "微软双拼" },
+            { "id": "sogou", "name": "搜狗双拼" },
+            { "id": "xiaohe", "name": "小鹤双拼" },
+            { "id": "ziguang", "name": "紫光双拼" },
+            { "id": "ziranma", "name": "自然码" }
+        ]),
         "theme.list" => json!([
             { "id": "default_light", "name": "清风·浅" },
             { "id": "default_dark", "name": "清风·深" },
