@@ -407,6 +407,18 @@ hint = "编码达到此长度才开始查拼音候选（0 表示跟随方案默�
 min = 0
 max = 10
 
+# 英文最小触发长度：预留配置，暂不对用户开放（默认 3，即 2 字符以内不查英文）。
+[[items]]
+key = "schema.mix.min_english_length"
+group = "schema"
+section = "混输行为"
+type = "number"
+label = "英文最小触发长度"
+hint = "编码达到此长度才开始查英文候选（0 表示跟随默认值 3，即 2 字符以内不查）"
+min = 0
+max = 10
+hidden = true
+
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
 [[items]]
@@ -704,6 +716,14 @@ hint = "计算结果最多保留的小数位数（0 表示取整）"
 min = 0
 max = 6
 enabled_when = "schema.quick_input.enabled == true"
+
+[[items]]
+key = "schema.quick_input.enable_english"
+group = "input"
+section = "快捷输入"
+type = "toggle"
+label = "启用英文候选"
+hint = "快捷输入模式下混入英文词库候选（低优先级，排在拼音后）"
 
 # ── 临时拼音 ──
 [[items]]

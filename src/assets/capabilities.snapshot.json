@@ -249,6 +249,11 @@
       "type": "int"
     },
     {
+      "default": 3,
+      "key": "schema.mix.min_english_length",
+      "type": "int"
+    },
+    {
       "default": true,
       "key": "schema.quick_input.enabled",
       "type": "bool"
@@ -261,6 +266,11 @@
     {
       "default": true,
       "key": "schema.quick_input.force_vertical",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.quick_input.enable_english",
       "type": "bool"
     },
     {
