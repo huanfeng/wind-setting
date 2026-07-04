@@ -1447,6 +1447,26 @@ type = "toggle"
 label = "全屏时隐藏工具栏"
 hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏"
 
+[[items]]
+key = "ui.toolbar.auto_hide"
+group = "ui"
+section = "工具栏"
+type = "toggle"
+label = "自动隐藏工具栏"
+hint = "工具栏显示一段时间无交互后淡出隐藏；鼠标悬停不隐藏，切换中英等状态变化时重新显示"
+
+[[items]]
+key = "ui.toolbar.auto_hide_delay"
+group = "ui"
+section = "工具栏"
+type = "number"
+label = "自动隐藏延时"
+hint = "工具栏显示多久后开始淡出（秒）"
+min = 1
+max = 60
+unit = "s"
+enabled_when = "ui.toolbar.auto_hide == true"
+
 # ═══════════════════════════ 常规（并入「输入」页尾「默认状态」）═══════════════════════════
 [[items]]
 key = "input.default.state_scope"

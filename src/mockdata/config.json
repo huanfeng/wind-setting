@@ -217,7 +217,9 @@
   },
   "toolbar": {
    "visible": true,
-   "hide_in_fullscreen": true
+   "hide_in_fullscreen": true,
+   "auto_hide": false,
+   "auto_hide_delay": 5
   }
  },
  "stats": {

@@ -885,6 +885,16 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "ui.toolbar.auto_hide",
+      "type": "bool"
+    },
+    {
+      "default": 5,
+      "key": "ui.toolbar.auto_hide_delay",
+      "type": "int"
+    },
+    {
       "default": true,
       "key": "stats.enabled",
       "type": "bool"
