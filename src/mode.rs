@@ -36,11 +36,11 @@ pub fn pipe_suffix() -> &'static str {
     }
 }
 
-/// 版本号后缀：Release → `""`，Dev → `" (dev)"`。
+/// 版本号后缀：Release → `""`，Dev → `" (Dev)"`。
 pub fn version_suffix() -> &'static str {
     match get() {
         AppMode::Release => "",
-        AppMode::Dev => " (dev)",
+        AppMode::Dev => " (Dev)",
     }
 }
 

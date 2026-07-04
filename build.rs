@@ -21,7 +21,17 @@ fn main() {
     // HEAD 变动（提交 / 切分支）时重新注入版本。打 tag 属低频操作，必要时 cargo clean。
     println!("cargo:rerun-if-changed=.git/HEAD");
 
-    let (ver_str, ver_u64) = git_version();
+    // 版本优先级: WIND_APP_VERSION (WindInput 打包脚本/CI 从 docs/VERSION 注入) > git tag > CARGO_PKG_VERSION。
+    // 打包时与 wind_input / wind_tsf / 安装包统一走 docs/VERSION; 独立开发时回退 git。
+    println!("cargo:rerun-if-env-changed=WIND_APP_VERSION");
+    let (ver_str, ver_u64) = match std::env::var("WIND_APP_VERSION") {
+        Ok(v) if !v.trim().is_empty() => {
+            let v = v.trim().to_string();
+            let (maj, min, pat) = parse_xyz(&v);
+            (v, (maj << 48) | (min << 32) | (pat << 16))
+        }
+        _ => git_version(),
+    };
 
     // 导出给应用代码（标题栏版本号显示）：形如 X.Y.Z 开头的加 v 前缀；
     // 纯 hash（无 tag，可能以数字开头，如 "55bb398.dirty"）原样。
@@ -66,7 +76,7 @@ fn main() {
     res.set("FileDescription", "清风输入法设置");
     res.set("InternalName", "wind_setting");
     res.set("OriginalFilename", "wind_setting.exe");
-    res.set("LegalCopyright", "Copyright © 2026 清风输入法");
+    res.set("LegalCopyright", "Copyright © 清风输入法");
     res.set("ProductVersion", &ver_str);
     res.set("FileVersion", &ver_str);
     res.set_version_info(winresource::VersionInfo::FILEVERSION, ver_u64);

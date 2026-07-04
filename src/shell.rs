@@ -246,11 +246,15 @@ fn build_titlebar() -> Element {
                 .child(Element::label("·").font_size(13.0).fg_role(Role::TextDisabled))
                 .child(Element::label("设置").font_size(13.0).fg_role(Role::TextMuted)),
         )
-        // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）。
+        // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）；dev 变体追加「(开发版)」。
         .child(
-            Element::label(env!("WIND_SETTING_VERSION"))
-                .font_size(11.0)
-                .fg_role(Role::TextMuted),
+            Element::label(format!(
+                "{}{}",
+                env!("WIND_SETTING_VERSION"),
+                crate::mode::version_suffix()
+            ))
+            .font_size(11.0)
+            .fg_role(Role::TextMuted),
         )
         .child(Element::leaf().weight(1.0))
         // 图标随主题明暗（否则默认深色字在暗色标题栏上不可见）。

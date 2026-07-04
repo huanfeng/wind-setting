@@ -308,19 +308,15 @@ fn about_link_card(
 
 /// 关于页 — 复刻品牌关于卡（对齐截图 / Vue AboutPage）：
 /// 头部（图标+名称+版本徽章+检查更新）· 官网横幅 · 2×2 链接网格 · 版权页脚。
-fn about_page(state: &AppState) -> Element {
-    let version = state
-        .system_info
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let version = if version.is_empty() {
-        env!("CARGO_PKG_VERSION").to_string()
-    } else {
-        version
-    };
-    let ver_badge = format!("v{version}{}", crate::mode::version_suffix());
+fn about_page(_state: &AppState) -> Element {
+    // 版本徽章与标题栏统一：取 build 期注入的 WIND_SETTING_VERSION（= docs/VERSION，已含 v 前缀），
+    // dev 变体追加 " (Dev)"。不再用 service 上报的 system_info（其值源自 wind-rpc 的
+    // CARGO_PKG_VERSION = workspace 兜底版本 0.x）或本 crate 的 CARGO_PKG_VERSION。
+    let ver_badge = format!(
+        "{}{}",
+        env!("WIND_SETTING_VERSION"),
+        crate::mode::version_suffix()
+    );
 
     // 头部：大图标 + 名称 + 版本徽章 / 检查更新 + 副标题。
     let header = Element::row()
