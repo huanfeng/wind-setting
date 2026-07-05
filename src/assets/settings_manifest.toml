@@ -398,6 +398,26 @@ label = "有拼音候选时否决满码上屏"
 hint = "满码自动上屏前若仍有拼音候选则不自动上屏"
 
 [[items]]
+key = "schema.mix.block_commit_on_pinyin_word"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "整串是拼音词时否决上屏"
+hint = "整串是完整拼音且拼音首选为真实词（如 wangba→网吧）时，不自动/顶码上屏五笔，留给你选拼音词；aipu→落实 等无强词的仍正常上屏"
+
+# 拼音词强度权重阈值：预留配置，默认 0（仅结构判据：拼音首选须≥2汉字且消费整串）。
+[[items]]
+key = "schema.mix.pinyin_word_min_weight"
+group = "schema"
+section = "混输行为"
+type = "number"
+label = "拼音词强度阈值"
+hint = "拼音歧义拦截的词权重下限（0 表示仅用结构判据，不设权重门槛；真机误拦时可上调收紧）"
+min = 0
+max = 100000000
+hidden = true
+
+[[items]]
 key = "schema.mix.auto_commit_block_on_english"
 group = "schema"
 section = "混输行为"

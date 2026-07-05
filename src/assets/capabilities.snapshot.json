@@ -260,6 +260,16 @@
     },
     {
       "default": true,
+      "key": "schema.mix.block_commit_on_pinyin_word",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "schema.mix.pinyin_word_min_weight",
+      "type": "int"
+    },
+    {
+      "default": true,
       "key": "schema.quick_input.enabled",
       "type": "bool"
     },
