@@ -10,6 +10,7 @@ mod cli;
 mod config;
 mod dialogs;
 mod icons;
+mod key_conflict;
 mod logger;
 mod manifest;
 mod mix_trigger;
