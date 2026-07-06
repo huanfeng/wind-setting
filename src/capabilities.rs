@@ -201,8 +201,7 @@ mod tests {
         //   ⑨临时词晋升次数：schema.codetable.auto_phrase.promote_count /
         //     schema.pinyin.auto_learn.promote_count —— 自动晋升逻辑未接线，暂不暴露。
         //   ⑩其它 core 新增键，本项目尚未接入设置界面（待后续评估）：keys.take_screenshot、
-        //     input.symbol.smart_method、debug.log_max_files、debug.log_max_size_mb、
-        //     input.temp_pinyin.enabled/schema。
+        //     debug.log_max_files、debug.log_max_size_mb、input.temp_pinyin.enabled/schema。
         // 注：模糊音 schema.pinyin.fuzzy.*、ui.status.*、ui.theme.name 均已纳入清单（方案/拼音对话框等）。
         assert!(uncovered.len() <= 24, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
     }
