@@ -12,6 +12,7 @@ mod dialogs;
 mod icons;
 mod logger;
 mod manifest;
+mod mix_trigger;
 mod mode;
 mod pages;
 mod protocol;
