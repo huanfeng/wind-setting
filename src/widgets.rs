@@ -157,7 +157,9 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
                 .width_match()
                 .max_lines(1)
                 .truncate(Truncate::End)
-                .height(ROW_SUB_H),
+                .height(ROW_SUB_H)
+                // 单行省略后原文常被裁掉；tooltip 悬浮兜底完整说明（超宽自动换行）。
+                .tooltip(s),
         );
     }
     Element::row()
@@ -191,7 +193,8 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
                 .fg_role(Role::Placeholder)
                 .width_match()
                 .max_lines(2)
-                .truncate(Truncate::End),
+                .truncate(Truncate::End)
+                .tooltip(s),
         );
     }
     Element::row()

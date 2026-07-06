@@ -10,6 +10,10 @@ pub const ACCENT_LIGHT: u32 = 0x2F6BED;
 /// 暗色主题强调蓝（暗背景上提亮一档）。
 pub const ACCENT_DARK: u32 = 0x5B8CF5;
 
+/// 设置行 hint 悬浮提示的换行宽度（逻辑 px）。设置窗口比库默认场景更宽，
+/// 稍微放宽避免过短说明也被强制拆成两三行。
+pub const TOOLTIP_MAX_W: f32 = 320.0;
+
 /// 亮色主题（参考稿蓝灰冷调）。
 pub fn light_theme() -> Theme {
     let mut t = Theme::default();
@@ -33,6 +37,7 @@ pub fn light_theme() -> Theme {
     p.placeholder = Color::hex(0x97A1B2);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
+    t.tooltip.max_width = Some(TOOLTIP_MAX_W);
     t
 }
 
@@ -60,6 +65,7 @@ pub fn dark_theme() -> Theme {
     p.placeholder = Color::hex(0x6C7890);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
+    t.tooltip.max_width = Some(TOOLTIP_MAX_W);
     t
 }
 
