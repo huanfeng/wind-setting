@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::dialogs::schema_manager::engine_label;
@@ -933,54 +934,60 @@ impl DictManagerState {
     }
 
     /// 导出用户短语到文件（native save 对话框）。
-    pub fn do_export_phrases(&self) {
-        let path = match PickDialog::new()
-            .title("导出短语")
-            .file_name("phrases.wdict.yaml")
-            .filter("WindDict", &["yaml"])
-            .save_file()
-        {
-            Some(p) => p,
-            None => return, // 用户取消
-        };
-        match rpc::call_core(self.export_method(), &json!({})) {
-            Ok(v) => {
-                let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                match std::fs::write(&path, content) {
-                    Ok(_) => self.notify_ok("已导出"),
-                    Err(e) => self.notify_err(&format!("写文件失败: {e}")),
+    ///
+    /// 对话框请求经 `ctx.request_save_file` 交给宿主，待本次事件分发完全返回
+    /// （OS 鼠标捕获已同步）后再真正弹出——绝不能在这个点击回调里同步调用
+    /// `PickDialog::save_file()`，那会在 OS 捕获尚未释放时重入模态对话框的
+    /// 消息泵，反复开关几次就会把鼠标彻底锁死。
+    pub fn do_export_phrases(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_save_file(
+            PickDialog::new()
+                .title("导出短语")
+                .file_name("phrases.wdict.yaml")
+                .filter("WindDict", &["yaml"]),
+            move |path| {
+                let Some(path) = path else { return }; // 用户取消
+                match rpc::call_core(state.export_method(), &json!({})) {
+                    Ok(v) => {
+                        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        match std::fs::write(&path, content) {
+                            Ok(_) => state.notify_ok("已导出"),
+                            Err(e) => state.notify_err(&format!("写文件失败: {e}")),
+                        }
+                    }
+                    Err(e) => state.notify_err(&format!("导出失败: {e}")),
                 }
-            }
-            Err(e) => self.notify_err(&format!("导出失败: {e}")),
-        }
+            },
+        );
     }
 
-    /// 从文件导入用户短语（native open 对话框 + 合并）。
-    pub fn do_import_phrases(&self) {
-        let path = match PickDialog::new()
-            .title("导入短语")
-            .filter("WindDict", &["yaml"])
-            .pick_file()
-        {
-            Some(p) => p,
-            None => return,
-        };
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                self.notify_err(&format!("读文件失败: {e}"));
-                return;
-            }
-        };
-        match rpc::call_core("phrase.import", &self.import_params(&content)) {
-            Ok(v) => {
-                let n = v.get("imported").and_then(|x| x.as_u64()).unwrap_or(0);
-                let m = v.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0);
-                self.reload();
-                self.notify_ok(&format!("已导入 {n}（跳过 {m}）"));
-            }
-            Err(e) => self.notify_err(&format!("导入失败: {e}")),
-        }
+    /// 从文件导入用户短语（native open 对话框 + 合并）。同 `do_export_phrases`，
+    /// 对话框请求延迟到事件分发返回后才执行，避免重入导致鼠标捕获错位。
+    pub fn do_import_phrases(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_pick_file(
+            PickDialog::new().title("导入短语").filter("WindDict", &["yaml"]),
+            move |path| {
+                let Some(path) = path else { return };
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        state.notify_err(&format!("读文件失败: {e}"));
+                        return;
+                    }
+                };
+                match rpc::call_core("phrase.import", &state.import_params(&content)) {
+                    Ok(v) => {
+                        let n = v.get("imported").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let m = v.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0);
+                        state.reload();
+                        state.notify_ok(&format!("已导入 {n}（跳过 {m}）"));
+                    }
+                    Err(e) => state.notify_err(&format!("导入失败: {e}")),
+                }
+            },
+        );
     }
 
     /// 构建候选调整添加的 (方法, 参数)（纯函数，便于单测）。

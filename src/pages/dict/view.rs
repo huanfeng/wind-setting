@@ -200,7 +200,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let import_btn = Element::button("导入")
         .small()
         .outline_soft()
-        .on_click(move |_| m_imp.do_import_phrases())
+        .on_click(move |ctx| m_imp.do_import_phrases(ctx))
         .visible_when(move || v_imp.current_spec().ops.import);
 
     let m_exp = mgr.clone();
@@ -208,7 +208,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let export_btn = Element::button("导出")
         .small()
         .outline_soft()
-        .on_click(move |_| m_exp.do_export_phrases())
+        .on_click(move |ctx| m_exp.do_export_phrases(ctx))
         .visible_when(move || v_exp.current_spec().ops.export);
 
     // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
