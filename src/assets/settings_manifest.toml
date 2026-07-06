@@ -731,6 +731,26 @@ label = "' ' 单引号"
 
 # ── 快捷输入 ──
 [[items]]
+key = "schema.mix_modes"
+group = "input"
+section = "快捷输入"
+type = "dialog_button_mix_trigger"
+label = "快捷输入触发键"
+hint = "闲时按触发键进入快捷（日期/计算/拼音/英文融合）模式；可多选。修改的是「快捷」混合模式实例的触发键"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "open_bracket", label = "左方括号 ( [ )" },
+  { value = "close_bracket", label = "右方括号 ( ] )" },
+  { value = "z", label = "z 键" },
+]
+
+[[items]]
 key = "schema.quick_input.enabled"
 group = "input"
 section = "快捷输入"
@@ -765,26 +785,6 @@ section = "快捷输入"
 type = "toggle"
 label = "启用英文候选"
 hint = "快捷输入模式下混入英文词库候选（低优先级，排在拼音后）"
-
-[[items]]
-key = "schema.mix_modes"
-group = "input"
-section = "快捷输入"
-type = "dialog_button_mix_trigger"
-label = "快捷输入触发键"
-hint = "闲时按触发键进入快捷（日期/计算/拼音/英文融合）模式；可多选。修改的是「快捷」混合模式实例的触发键"
-options = [
-  { value = "backtick", label = "反引号 ( ` )" },
-  { value = "semicolon", label = "分号 ( ; )" },
-  { value = "quote", label = "单引号 ( ' )" },
-  { value = "comma", label = "逗号 ( , )" },
-  { value = "period", label = "句号 ( . )" },
-  { value = "slash", label = "斜杠 ( / )" },
-  { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "open_bracket", label = "左方括号 ( [ )" },
-  { value = "close_bracket", label = "右方括号 ( ] )" },
-  { value = "z", label = "z 键" },
-]
 
 # ── 临时拼音 ──
 [[items]]
