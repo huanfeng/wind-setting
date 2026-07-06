@@ -465,7 +465,13 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
                 .unwrap_or(Value::Null)
         }),
     );
-    Element::dropdown(labels, sig).width(item.width.map(|w| w as i32).unwrap_or(CTRL_W))
+    // 无显式 width：用 min_width 下界——短选项对齐 CTRL_W 基线，长选项按内容自适应加宽
+    // 避免文本换行；显式 width 仍走固定宽（覆盖下界）。
+    let dd = Element::dropdown(labels, sig);
+    match item.width {
+        Some(w) => dd.width(w as i32),
+        None => dd.min_width(CTRL_W),
+    }
 }
 
 /// 响应式动态选项信号对：(值列表信号, 标签列表信号)。
@@ -528,7 +534,7 @@ fn build_select_reactive(
     let el = Element::dropdown_reactive(lab_sig, sig);
     match item.width {
         Some(w) => el.width(w as i32),
-        None => el.width(CTRL_W),
+        None => el.min_width(CTRL_W),
     }
 }
 
@@ -576,7 +582,13 @@ fn build_number_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
                 .unwrap_or(Value::Null)
         }),
     );
-    Element::dropdown(labels, sig).width(item.width.map(|w| w as i32).unwrap_or(CTRL_W))
+    // 无显式 width：用 min_width 下界——短选项对齐 CTRL_W 基线，长选项按内容自适应加宽
+    // 避免文本换行；显式 width 仍走固定宽（覆盖下界）。
+    let dd = Element::dropdown(labels, sig);
+    match item.width {
+        Some(w) => dd.width(w as i32),
+        None => dd.min_width(CTRL_W),
+    }
 }
 
 fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
