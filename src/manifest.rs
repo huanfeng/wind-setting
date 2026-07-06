@@ -302,6 +302,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "string" => build_string(state, key, item, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
+        "dialog_button_mix_trigger" => build_dialog_button(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     }
 }
@@ -1489,7 +1490,7 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
         // loader：重新加载/重置时把 Signal 状态从当前 Config 灌回。
         let sigs_l = sigs.clone();
         state.fields.loaders.borrow_mut().insert(
-            "schema.mix_modes".to_string(),
+            mix_modes_path.to_string(),
             Box::new(move |c: &Config| {
                 let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
                 let cur = mix_mode_trigger_keys(&arr, QUICK_MIX_ID).unwrap_or_default();
