@@ -17,6 +17,9 @@ docs/superpowers/
 /artifacts/
 /temp/
 
+# Worktrees (isolated dev workspaces)
+.worktrees/
+
 # Editor/IDE
 .vscode/
 .idea/
