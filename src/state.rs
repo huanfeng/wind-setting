@@ -317,10 +317,13 @@ impl AppState {
                 w(&mut self.current_config);
             }
         }
+        let conflict_suffix = check_trigger_key_conflicts(&self.current_config)
+            .map(|m| format!("；{m}"))
+            .unwrap_or_default();
         let items =
             diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
         if items.is_empty() {
-            self.status.set("没有变更".to_string());
+            self.status.set(format!("没有变更{conflict_suffix}"));
             return true;
         }
         let items_json: Vec<Value> = items
@@ -345,12 +348,12 @@ impl AppState {
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
                     self.status
-                        .set(format!("已保存 {} 项变更", items_json.len()));
+                        .set(format!("已保存 {} 项变更{conflict_suffix}", items_json.len()));
                     true
                 } else {
                     // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。
                     self.status.set(format!(
-                        "已保存 {} 项，{} 项被服务端拒绝: {}",
+                        "已保存 {} 项，{} 项被服务端拒绝: {}{conflict_suffix}",
                         items_json.len() - skipped.len(),
                         skipped.len(),
                         skipped.join(", ")
@@ -364,6 +367,53 @@ impl AppState {
             }
         }
     }
+}
+
+/// 收集当前配置里"裸键触发"四组的 (显示名, 触发键列表)，供按键冲突检测用。
+fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+    fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
+        v.map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+
+    let mut groups = vec![
+        ("临时拼音".to_string(), strs(cfg.get_array("input.temp_pinyin.trigger_keys"))),
+        ("临时英文".to_string(), strs(cfg.get_array("input.temp_english.trigger_keys"))),
+    ];
+
+    if let Some(arr) = cfg.get_array("schema.mix_modes") {
+        for m in arr {
+            let label = m.get("name").and_then(Value::as_str).unwrap_or("混合模式").to_string();
+            let keys = m
+                .get("trigger_keys")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            groups.push((label, keys));
+        }
+    }
+
+    if let Some(arr) = cfg.get_array("schema.special_modes") {
+        for m in arr {
+            let name = m.get("name").and_then(Value::as_str).unwrap_or("");
+            let label = format!("特殊模式「{name}」");
+            let keys = m
+                .get("trigger_keys")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            groups.push((label, keys));
+        }
+    }
+
+    groups
+}
+
+/// 跑一次跨"裸键触发"四组的冲突检测；无冲突返回 None。
+fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
+    let groups = collect_trigger_key_groups(cfg);
+    let hits = crate::key_conflict::find_key_conflicts(&groups);
+    crate::key_conflict::conflict_summary(&hits)
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -487,6 +537,67 @@ fn load_theme_names() -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod trigger_conflict_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_collect_trigger_key_groups_no_conflict() {
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["backtick"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [
+                    { "id": "quick_mix", "name": "快捷", "trigger_keys": ["semicolon"] }
+                ],
+                "special_modes": []
+            }
+        }));
+        assert!(check_trigger_key_conflicts(&cfg).is_none());
+    }
+
+    #[test]
+    fn test_check_trigger_key_conflicts_detects_overlap() {
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["semicolon"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [
+                    { "id": "quick_mix", "name": "快捷", "trigger_keys": ["semicolon"] }
+                ],
+                "special_modes": []
+            }
+        }));
+        let msg = check_trigger_key_conflicts(&cfg).unwrap();
+        assert!(msg.contains("semicolon"));
+        assert!(msg.contains("临时拼音"));
+        assert!(msg.contains("快捷"));
+    }
+
+    #[test]
+    fn test_check_trigger_key_conflicts_includes_special_modes() {
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["z"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [],
+                "special_modes": [
+                    { "id": "fast_symbols", "name": "快符", "trigger_keys": ["z"] }
+                ]
+            }
+        }));
+        let msg = check_trigger_key_conflicts(&cfg).unwrap();
+        assert!(msg.contains("特殊模式「快符」"));
+    }
 }
 
 // 测试模块后仍有 load_schemas 等私有辅助函数；局部豁免 toolchain 新增的风格 lint。
