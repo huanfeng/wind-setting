@@ -105,6 +105,7 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "hotkey" => ty == "str",
         "checkbox_group" => ty == "strlist",
         "dialog_button" => ty == "str" || ty == "strlist" || ty == "map",
+        "dialog_button_mix_trigger" => ty == "structlist",
         _ => false,
     }
 }
@@ -151,6 +152,7 @@ mod tests {
         assert!(control_type_compatible("dialog_button", "str"));
         assert!(control_type_compatible("dialog_button", "strlist"));
         assert!(control_type_compatible("dialog_button", "map"));
+        assert!(control_type_compatible("dialog_button_mix_trigger", "structlist"));
         // 反例：不兼容组合
         assert!(!control_type_compatible("toggle", "str"));
         assert!(!control_type_compatible("checkbox_group", "bool"));
@@ -158,6 +160,7 @@ mod tests {
         assert!(!control_type_compatible("dialog_button", "bool"));
         assert!(!control_type_compatible("slider", "str"));
         assert!(!control_type_compatible("select", "int"));
+        assert!(!control_type_compatible("dialog_button_mix_trigger", "str"));
         // 未知控件恒不兼容
         assert!(!control_type_compatible("mystery", "str"));
     }
@@ -186,7 +189,7 @@ mod tests {
             .collect();
         println!("未覆盖 capability key 数: {} / {}", uncovered.len(), caps.entries.len());
         // 未覆盖项（均为有意不入清单，当前 13 项）：
-        //   ①方案管理：schema.active/available/special_modes/mix_modes —— 方案列表本身，由方案管理弹窗承载。
+        //   ①方案管理：schema.active/available/special_modes —— 方案列表本身，由方案管理弹窗承载。
         //   ②compat.host_render_processes —— 兼容渲染进程名单，暂不开放。
         //   ③input.phrase.*（短语）—— 开关暂无作用，待 core 决定后再处理。
         //   ④keys.global_hotkeys —— 非独立清单项，由功能键的「全局」勾选经收集器汇总写回。

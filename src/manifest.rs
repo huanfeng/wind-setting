@@ -1269,8 +1269,12 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
 /// 按 capability 类型分派构建对话框主体，挂到根，返回控制其显隐的 `visible` Signal。
 fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
-    // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
-    if key == "input.punct.custom_mappings" {
+    // 快捷输入激活键：schema.mix_modes 数组整体，按 id=="quick_mix" 定位其中一项的
+    // trigger_keys 字段，不是通用 strlist/map 形态，走非声明式整体读写。
+    if key == "schema.mix_modes" {
+        build_dialog_button_mix_trigger(state, item, cfg)
+    } else if key == "input.punct.custom_mappings" {
+        // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
         build_dialog_button_punct(state, key, cfg)
     } else if key == "ui.candidate.index_labels" {
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
@@ -1442,6 +1446,65 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// 快捷输入触发键：`schema.mix_modes` 是整体读写的 structlist，实际要改的是数组里
+/// `id=="quick_mix"` 那一项的 `trigger_keys` 字段，走非声明式读写（区别于通用 `build_dialog_button_pairs`
+/// 假设 key 直接指向顶层 strlist/map 的情形）。
+const QUICK_MIX_ID: &str = "quick_mix";
+
+fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_pairs_dialog;
+    use crate::mix_trigger::{mix_mode_trigger_keys, patch_mix_mode_trigger_keys};
+
+    let mix_modes_path = "schema.mix_modes";
+    let cur_mix_modes: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
+    let found = mix_mode_trigger_keys(&cur_mix_modes, QUICK_MIX_ID).is_some();
+    let cur: Vec<String> = mix_mode_trigger_keys(&cur_mix_modes, QUICK_MIX_ID).unwrap_or_default();
+
+    let opts = item.options.clone();
+    let sigs: Vec<(String, Signal<bool>)> = opts
+        .iter()
+        .map(|o| (o.value.clone(), signal(cur.contains(&o.value))))
+        .collect();
+    let visible = signal(false);
+
+    if found {
+        // writer：整体读出 schema.mix_modes，按 id 替换 trigger_keys，整体写回。
+        let sigs_w = sigs.clone();
+        state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+            let selected: Vec<String> = sigs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(v, _)| v.clone())
+                .collect();
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            if let Some(patched) = patch_mix_mode_trigger_keys(&arr, QUICK_MIX_ID, &selected) {
+                c.set_path(mix_modes_path, Value::Array(patched));
+            }
+        }));
+
+        // loader：重新加载/重置时把 Signal 状态从当前 Config 灌回。
+        let sigs_l = sigs.clone();
+        state.fields.loaders.borrow_mut().insert(
+            "schema.mix_modes".to_string(),
+            Box::new(move |c: &Config| {
+                let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+                let cur = mix_mode_trigger_keys(&arr, QUICK_MIX_ID).unwrap_or_default();
+                for (v, s) in &sigs_l {
+                    s.set(cur.iter().any(|k| k == v));
+                }
+            }),
+        );
+    }
+    // 找不到 quick_mix 项：不登记 writer/loader，对话框仍可打开但保存无效果——
+    // 属于「用户手改配置删掉了默认实例」的边缘情况，本次不做静默新建。
+
+    let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, cur.clone());
     register_dialog(state, dlg);
     visible
 }
