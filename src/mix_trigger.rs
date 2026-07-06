@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// 从 mix_modes 数组里取出指定 id 项当前的 trigger_keys；找不到该 id 返回 None。
 pub fn mix_mode_trigger_keys(mix_modes: &[Value], id: &str) -> Option<Vec<String>> {
@@ -49,6 +49,7 @@ pub fn patch_mix_mode_trigger_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn sample_mix_modes() -> Vec<Value> {
         vec![
