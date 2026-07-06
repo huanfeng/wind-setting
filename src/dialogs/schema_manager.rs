@@ -575,14 +575,17 @@ pub fn engine_label(t: &str) -> &'static str {
 
 /// 构建内联方案列表，供 `scheme_page` 直接嵌入卡片。
 ///
-/// 使用 `Element::list_signal` 驱动：启用/禁用/排序变更后 list_data 更新，列表即时刷新。
+/// 使用 `Element::host_signal`（非滚动的响应式 col）驱动：启用/禁用/排序变更后
+/// list_data 更新，列表即时重建。列表**按自然高度展开**，随外层页面滚动一起滚动
+/// ——刻意不用 `list_signal`（自带固定高度滚动容器）：设置页本身已是滚动容器，
+/// 内嵌固定高度的内层滚动会造成"滚轮在内外层间打架、列表滚不动"，且内层滚动条
+/// 压在卡片行上遮挡内容。改为自然高度后只保留页面这一层滚动，两个问题一并消除。
 pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
     let mgr = state.clone();
     let hide_sig = state.hide_disabled;
 
-    Element::list_signal(
+    Element::host_signal(
         state.list_data,
-        |_| (),
         move |item| match item {
             SchemaListItem::Row { entry, is_enabled } => {
                 build_compound_row(entry, is_enabled, &mgr)
@@ -615,7 +618,6 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
             }
         },
     )
-    .height(280)
     .width_match()
 }
 
