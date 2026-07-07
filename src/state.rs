@@ -272,6 +272,18 @@ impl AppState {
         );
     }
 
+    pub fn refresh_theme_names(&mut self) {
+        self.theme_names = load_theme_names();
+        let labels: Vec<String> = self
+            .theme_names
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect();
+        let values: Vec<String> = self.theme_names.iter().map(|(id, _)| id.clone()).collect();
+        self.theme_label_sig.set(labels);
+        self.theme_value_sig.set(values);
+    }
+
     fn sync_theme_import_display_signals(
         url: Signal<String>,
         name: Signal<String>,
@@ -720,6 +732,44 @@ mod tests {
 
         assert!(!source.contains(&format!("{}：", "来源")));
         assert!(!source.contains(&format!("{}提示：无", "名称")));
+    }
+
+    #[test]
+    fn theme_import_dialog_refreshes_theme_names_after_success() {
+        let source = include_str!("dialogs/theme_import_dialog.rs");
+
+        assert!(source.contains("refresh_theme_names()"));
+        assert!(source.contains("theme_import_dialog_visible.set(false)"));
+        assert!(source.contains("已导入主题："));
+    }
+
+    #[test]
+    fn refresh_theme_names_updates_options_from_core() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+
+        st.theme_names = vec![("old".to_string(), "旧主题".to_string())];
+        st.theme_value_sig.set(vec!["old".to_string()]);
+        st.theme_label_sig.set(vec!["旧主题".to_string()]);
+
+        st.refresh_theme_names();
+
+        assert_eq!(
+            st.theme_names,
+            vec![
+                ("default_light".to_string(), "清风·浅".to_string()),
+                ("default_dark".to_string(), "清风·深".to_string()),
+                ("mono".to_string(), "墨".to_string()),
+            ]
+        );
+        assert_eq!(
+            st.theme_value_sig.get(),
+            vec!["default_light", "default_dark", "mono"]
+        );
+        assert_eq!(st.theme_label_sig.get(), vec!["清风·浅", "清风·深", "墨"]);
+
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     #[test]

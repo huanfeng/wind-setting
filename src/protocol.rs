@@ -129,6 +129,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_theme_import_https() {
+        let req = parse_protocol_url(
+            "windinput://import/theme?url=https://example.com/theme.toml&name=Blue",
+        )
+        .unwrap();
+        assert_eq!(req.kind, "theme");
+        assert_eq!(req.url, "https://example.com/theme.toml");
+        assert_eq!(req.name, "Blue");
+    }
+
+    #[test]
+    fn reject_protocol_import_http_url() {
+        assert!(
+            parse_protocol_url("windinput://import/theme?url=http://example.com/theme.toml")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn rejects() {
         assert!(parse_protocol_url("http://import/theme?url=https://x").is_err()); // 错 scheme
         assert!(parse_protocol_url("windinput://import/unknown?url=https://x").is_err()); // 未知 kind

@@ -48,7 +48,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.status,
             build_schema_manager_dialog(&st.schema_mgr),
             pages::dict::build_dict_dialogs(&st.dict_mgr),
-            build_theme_import_dialog(&st),
+            build_theme_import_dialog(app),
             st.reload_confirm,
             st.reset_confirm,
             st.conn_ok,

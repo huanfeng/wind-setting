@@ -1,16 +1,21 @@
 //! 主题导入确认对话框。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use windui::prelude::*;
 
 use crate::state::AppState;
 
-pub fn build_theme_import_dialog(state: &AppState) -> Element {
+pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
+    let state = app_state.borrow();
     let visible = state.theme_import_dialog_visible;
     let url = state.pending_theme_import_url;
     let name = state.pending_theme_import_name;
     let url_display = state.theme_import_url_display;
     let name_display = state.theme_import_name_display;
-    let status = state.status;
+    drop(state);
+    let import_state = app_state.clone();
 
     let frame = Element::col()
         .width(520)
@@ -82,16 +87,19 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
                         .and_then(|text| crate::theme_import::import_text(&text, false))
                     {
                         Ok(result) => {
-                            status.set(format!("已导入主题：{}", result.display_name));
+                            let mut st = import_state.borrow_mut();
+                            st.refresh_theme_names();
+                            st.status
+                                .set(format!("已导入主题：{}", result.display_name));
                             AppState::clear_theme_import_signals(
                                 url,
                                 name,
                                 url_display,
                                 name_display,
                             );
-                            visible.set(false);
+                            st.theme_import_dialog_visible.set(false);
                         }
-                        Err(err) => status.set(err.user_message()),
+                        Err(err) => import_state.borrow().status.set(err.user_message()),
                     }
                 })),
         );
