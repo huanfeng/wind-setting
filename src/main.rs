@@ -132,13 +132,23 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                 req.name
             );
             if req.kind == "theme" {
+                let url_label = format!("来源：{}", req.url);
+                let name_label = if req.name.is_empty() {
+                    "名称提示：无".to_string()
+                } else {
+                    format!("名称提示：{}", req.name)
+                };
                 st.pending_theme_import_url.set(req.url);
                 st.pending_theme_import_name.set(req.name);
+                st.theme_import_url_label.set(url_label);
+                st.theme_import_name_label.set(name_label);
                 st.theme_import_dialog_visible.set(true);
                 st.status.set("收到主题导入请求，请确认来源后导入".to_string());
             } else {
                 st.pending_theme_import_url.set(String::new());
                 st.pending_theme_import_name.set(String::new());
+                st.theme_import_url_label.set("来源：".to_string());
+                st.theme_import_name_label.set("名称提示：无".to_string());
                 st.theme_import_dialog_visible.set(false);
                 st.status.set(format!("暂不支持通过协议导入 {}", req.kind));
             }
@@ -147,6 +157,8 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
             let st = state.borrow();
             st.pending_theme_import_url.set(String::new());
             st.pending_theme_import_name.set(String::new());
+            st.theme_import_url_label.set("来源：".to_string());
+            st.theme_import_name_label.set("名称提示：无".to_string());
             st.theme_import_dialog_visible.set(false);
             st.status.set(format!("协议解析失败：{e}"));
         }
@@ -170,6 +182,8 @@ mod tests {
         assert_eq!(st.tab.get(), 3);
         assert_eq!(st.pending_theme_import_url.get(), "https://example.com/dark.toml");
         assert_eq!(st.pending_theme_import_name.get(), "Dark");
+        assert_eq!(st.theme_import_url_label.get(), "来源：https://example.com/dark.toml");
+        assert_eq!(st.theme_import_name_label.get(), "名称提示：Dark");
         assert!(st.theme_import_dialog_visible.get());
         assert_eq!(st.status.get(), "收到主题导入请求，请确认来源后导入");
     }
@@ -191,6 +205,8 @@ mod tests {
         assert_eq!(st.tab.get(), 4);
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
+        assert_eq!(st.theme_import_url_label.get(), "来源：");
+        assert_eq!(st.theme_import_name_label.get(), "名称提示：无");
         assert!(!st.theme_import_dialog_visible.get());
         assert_eq!(st.status.get(), "暂不支持通过协议导入 schema");
     }
@@ -209,6 +225,8 @@ mod tests {
         assert!(st.status.get().starts_with("协议解析失败："));
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
+        assert_eq!(st.theme_import_url_label.get(), "来源：");
+        assert_eq!(st.theme_import_name_label.get(), "名称提示：无");
         assert!(!st.theme_import_dialog_visible.get());
     }
 }

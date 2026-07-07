@@ -92,6 +92,10 @@ pub struct AppState {
     pub pending_theme_import_url: Signal<String>,
     /// 待确认的主题导入名称。
     pub pending_theme_import_name: Signal<String>,
+    /// 主题导入确认对话框显示的来源文本。
+    pub theme_import_url_label: Signal<String>,
+    /// 主题导入确认对话框显示的名称提示文本。
+    pub theme_import_name_label: Signal<String>,
     /// 主题导入确认对话框可见标志。
     pub theme_import_dialog_visible: Signal<bool>,
     /// 当前 Tab 索引。
@@ -169,6 +173,8 @@ impl AppState {
             theme_editor_mode: signal(initial_mode),
             pending_theme_import_url: signal(String::new()),
             pending_theme_import_name: signal(String::new()),
+            theme_import_url_label: signal("来源：".to_string()),
+            theme_import_name_label: signal("名称提示：无".to_string()),
             theme_import_dialog_visible: signal(false),
             tab: signal(0),
             dark: signal(crate::theme_def::system_dark()),
@@ -538,6 +544,8 @@ mod tests {
         assert!(matches!(st.theme_editor_mode.get().as_str(), "off" | "auto"));
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
+        assert_eq!(st.theme_import_url_label.get(), "来源：");
+        assert_eq!(st.theme_import_name_label.get(), "名称提示：无");
         assert!(!st.theme_import_dialog_visible.get());
     }
 
