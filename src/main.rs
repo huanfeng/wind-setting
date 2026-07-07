@@ -21,6 +21,8 @@ mod setting_config;
 mod shell;
 mod state;
 mod theme_def;
+#[allow(dead_code)]
+mod theme_import;
 mod widgets;
 
 use std::cell::RefCell;
