@@ -18,6 +18,7 @@ use crate::dialogs::schema_manager::SchemaManagerState;
 use crate::manifest::Manifest;
 use crate::pages::dict::state::DictManagerState;
 use crate::rpc;
+use crate::setting_config;
 
 /// 一个方案条目（schema.list 返回）。
 #[derive(Clone, Default)]
@@ -77,6 +78,22 @@ pub struct AppState {
     pub fonts: Vec<String>,
     /// 字段注册表（清单引擎登记）。
     pub fields: Rc<FieldRegistry>,
+    /// 设置程序自身配置（不写入 core config）。
+    pub setting_config: setting_config::SettingConfig,
+    /// 启动加载本地设置配置时的非阻断警告。
+    pub setting_config_warning: Option<String>,
+    /// 主题编辑器连接服务是否运行。
+    pub theme_editor_running: Signal<bool>,
+    /// 主题编辑器连接服务地址。
+    pub theme_editor_url: Signal<String>,
+    /// 主题编辑器连接模式：off / once / auto。
+    pub theme_editor_mode: Signal<String>,
+    /// 待确认的主题导入 URL。
+    pub pending_theme_import_url: Signal<String>,
+    /// 待确认的主题导入名称。
+    pub pending_theme_import_name: Signal<String>,
+    /// 主题导入确认对话框可见标志。
+    pub theme_import_dialog_visible: Signal<bool>,
     /// 当前 Tab 索引。
     pub tab: Signal<usize>,
     /// 暗色模式（设置窗口自身明暗，运行时切换）。
@@ -121,6 +138,8 @@ impl AppState {
     pub fn empty() -> Self {
         let schema_mgr = SchemaManagerState::new();
         let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
+        let setting_load = setting_config::load();
+        let initial_mode = if setting_load.config.theme_editor.auto_start { "auto" } else { "off" }.to_string();
 
         // 注册 schema.available 写回器：把 enabled_order 序列化为有序字符串数组
         {
@@ -143,6 +162,14 @@ impl AppState {
             theme_names: vec![],
             fonts: vec![],
             fields,
+            setting_config: setting_load.config,
+            setting_config_warning: setting_load.warning,
+            theme_editor_running: signal(false),
+            theme_editor_url: signal(String::new()),
+            theme_editor_mode: signal(initial_mode),
+            pending_theme_import_url: signal(String::new()),
+            pending_theme_import_name: signal(String::new()),
+            theme_import_dialog_visible: signal(false),
             tab: signal(0),
             dark: signal(crate::theme_def::system_dark()),
             status: signal("正在连接服务...".to_string()),
@@ -497,6 +524,22 @@ mod tests {
 
     /// 所有涉及 WIND_RPC_MOCK 环境变量的测试必须持有此锁，防止并行 race。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn app_state_initializes_theme_import_wiring() {
+        let st = AppState::empty();
+
+        assert_eq!(
+            st.setting_config.theme_editor.auto_start,
+            st.theme_editor_mode.get() == "auto"
+        );
+        assert!(!st.theme_editor_running.get());
+        assert_eq!(st.theme_editor_url.get(), "");
+        assert!(matches!(st.theme_editor_mode.get().as_str(), "off" | "auto"));
+        assert_eq!(st.pending_theme_import_url.get(), "");
+        assert_eq!(st.pending_theme_import_name.get(), "");
+        assert!(!st.theme_import_dialog_visible.get());
+    }
 
     #[test]
     fn loaded_state_uses_embedded_manifest_in_mock() {

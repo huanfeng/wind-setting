@@ -63,7 +63,8 @@ fn main() {
         }
         // 冷启动协议 URL：解析并路由（切相关页 + 占位提示）。
         if let Some(raw) = cli::parse_protocol(&args) {
-            route_protocol(&raw, st.tab, st.status);
+            drop(st);
+            route_protocol(&raw, &app_state);
         }
     }
     let start_dark = app_state.borrow().dark.get();
@@ -78,14 +79,13 @@ fn main() {
 
     // 单实例 + 二次运行激活/切页/协议（app_id 含变体后缀，dev/release 互不干扰）。
     let app_id = format!("wind_setting{}", mode::pipe_suffix());
-    let si_tab = app_state.borrow().tab;
-    let si_status = app_state.borrow().status;
+    let single_instance_state = app_state.clone();
     let mut app = App::new("清风输入法设置", 820, 640)
         .single_instance(app_id, move |argv| {
             if let Some(raw) = cli::parse_protocol(&argv) {
-                route_protocol(&raw, si_tab, si_status);
+                route_protocol(&raw, &single_instance_state);
             } else if let Some(idx) = cli::parse_target(&argv) {
-                si_tab.set(idx);
+                single_instance_state.borrow().tab.set(idx);
             }
         })
         .frameless()
@@ -118,28 +118,76 @@ fn main() {
         .run();
 }
 
-/// 协议 URL 路由：解析 → 切到相关页 + 占位提示（真正的下载导入依赖词库/外观页，留后续）。
-fn route_protocol(raw: &str, tab: Signal<usize>, status: Signal<String>) {
+/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态，具体 UI 留后续接线。
+fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {
-            // theme→外观(3)，schema/dict/extdict→词库(4)。
+            let st = state.borrow();
             let idx = if req.kind == "theme" { 3 } else { 4 };
-            tab.set(idx);
+            st.tab.set(idx);
             tracing::info!(
                 "协议导入请求: kind={} url={} name={}",
                 req.kind,
                 req.url,
                 req.name
             );
-            let label = if req.name.is_empty() {
-                req.kind.clone()
+            if req.kind == "theme" {
+                st.pending_theme_import_url.set(req.url);
+                st.pending_theme_import_name.set(req.name);
+                st.theme_import_dialog_visible.set(true);
+                st.status.set("收到主题导入请求，请确认来源后导入".to_string());
             } else {
-                format!("{}（{}）", req.kind, req.name)
-            };
-            status.set(format!("收到导入请求：{label}，导入功能开发中"));
+                st.status.set(format!("暂不支持通过协议导入 {}", req.kind));
+            }
         }
-        Err(e) => {
-            status.set(format!("协议解析失败：{e}"));
-        }
+        Err(e) => state.borrow().status.set(format!("协议解析失败：{e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_protocol_stores_theme_import_request() {
+        let state = Rc::new(RefCell::new(state::AppState::empty()));
+
+        route_protocol(
+            "windinput://import/theme?url=https%3A%2F%2Fexample.com%2Fdark.toml&name=Dark",
+            &state,
+        );
+
+        let st = state.borrow();
+        assert_eq!(st.tab.get(), 3);
+        assert_eq!(st.pending_theme_import_url.get(), "https://example.com/dark.toml");
+        assert_eq!(st.pending_theme_import_name.get(), "Dark");
+        assert!(st.theme_import_dialog_visible.get());
+        assert_eq!(st.status.get(), "收到主题导入请求，请确认来源后导入");
+    }
+
+    #[test]
+    fn route_protocol_reports_unsupported_non_theme_import() {
+        let state = Rc::new(RefCell::new(state::AppState::empty()));
+
+        route_protocol(
+            "windinput://import/schema?url=https%3A%2F%2Fexample.com%2Fschema.yaml&name=Schema",
+            &state,
+        );
+
+        let st = state.borrow();
+        assert_eq!(st.tab.get(), 4);
+        assert!(!st.theme_import_dialog_visible.get());
+        assert_eq!(st.status.get(), "暂不支持通过协议导入 schema");
+    }
+
+    #[test]
+    fn route_protocol_reports_parse_error() {
+        let state = Rc::new(RefCell::new(state::AppState::empty()));
+
+        route_protocol("windinput://import/theme", &state);
+
+        let st = state.borrow();
+        assert!(st.status.get().starts_with("协议解析失败："));
+        assert!(!st.theme_import_dialog_visible.get());
     }
 }
