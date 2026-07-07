@@ -99,6 +99,9 @@ fn save_to_path(config: &SettingConfig, path: &Path) -> Result<(), String> {
     let text = toml::to_string_pretty(config).map_err(|e| format!("序列化配置失败：{e}"))?;
     let tmp = path.with_extension("toml.tmp");
     fs::write(&tmp, text).map_err(|e| format!("写入临时配置失败：{e}"))?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| format!("删除旧配置文件失败：{e}"))?;
+    }
     fs::rename(&tmp, path).map_err(|e| format!("替换配置文件失败：{e}"))?;
     Ok(())
 }
@@ -142,5 +145,25 @@ mod tests {
     fn default_config_keeps_theme_editor_disabled() {
         let cfg = SettingConfig::default();
         assert!(!cfg.theme_editor.auto_start);
+    }
+
+    #[test]
+    fn save_to_path_overwrites_existing_config() {
+        let dir = std::env::temp_dir().join(format!("wind_setting_test_{}", std::process::id()));
+        let path = dir.join("wind_setting.toml");
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, "[theme_editor]\nauto_start = false\n").unwrap();
+
+        let config = SettingConfig {
+            theme_editor: ThemeEditorConfig { auto_start: true },
+        };
+        save_to_path(&config, &path).unwrap();
+
+        let saved = fs::read_to_string(&path).unwrap();
+        let loaded: SettingConfig = toml::from_str(&saved).unwrap();
+        assert_eq!(loaded, config);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
