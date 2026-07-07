@@ -7,8 +7,9 @@ use crate::state::AppState;
 pub fn build_theme_import_dialog(state: &AppState) -> Element {
     let visible = state.theme_import_dialog_visible;
     let url = state.pending_theme_import_url;
-    let url_label = state.theme_import_url_label;
-    let name_label = state.theme_import_name_label;
+    let name = state.pending_theme_import_name;
+    let url_display = state.theme_import_url_display;
+    let name_display = state.theme_import_name_display;
     let status = state.status;
 
     let frame = Element::col()
@@ -37,7 +38,7 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
             .padding_xy(18, 10),
         )
         .child(
-            Element::label_rc(url_label)
+            Element::label_rc(url_display)
                 .font_size(12.0)
                 .fg_role(Role::Text)
                 .width_match()
@@ -45,7 +46,7 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
                 .padding_xy(18, 4),
         )
         .child(
-            Element::label_rc(name_label)
+            Element::label_rc(name_display)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
@@ -64,7 +65,13 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
                     Element::button("取消")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| visible.set(false)),
+                        .on_click(move |_| {
+                            url.set(String::new());
+                            name.set(String::new());
+                            url_display.set("来源：".to_string());
+                            name_display.set("名称提示：无".to_string());
+                            visible.set(false);
+                        }),
                 )
                 .child(Element::button("下载并导入").small().on_click(move |_| {
                     let u = url.get();
@@ -74,6 +81,10 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
                     {
                         Ok(result) => {
                             status.set(format!("已导入主题：{}", result.display_name));
+                            url.set(String::new());
+                            name.set(String::new());
+                            url_display.set("来源：".to_string());
+                            name_display.set("名称提示：无".to_string());
                             visible.set(false);
                         }
                         Err(err) => status.set(err.user_message()),

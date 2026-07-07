@@ -92,10 +92,10 @@ pub struct AppState {
     pub pending_theme_import_url: Signal<String>,
     /// 待确认的主题导入名称。
     pub pending_theme_import_name: Signal<String>,
-    /// 主题导入确认对话框显示的来源文本。
-    pub theme_import_url_label: Signal<String>,
-    /// 主题导入确认对话框显示的名称提示文本。
-    pub theme_import_name_label: Signal<String>,
+    /// 主题导入确认对话框显示的来源文本，由 pending URL 统一派生。
+    pub theme_import_url_display: Signal<String>,
+    /// 主题导入确认对话框显示的名称提示文本，由 pending name 统一派生。
+    pub theme_import_name_display: Signal<String>,
     /// 主题导入确认对话框可见标志。
     pub theme_import_dialog_visible: Signal<bool>,
     /// 当前 Tab 索引。
@@ -173,8 +173,8 @@ impl AppState {
             theme_editor_mode: signal(initial_mode),
             pending_theme_import_url: signal(String::new()),
             pending_theme_import_name: signal(String::new()),
-            theme_import_url_label: signal("来源：".to_string()),
-            theme_import_name_label: signal("名称提示：无".to_string()),
+            theme_import_url_display: signal("来源：".to_string()),
+            theme_import_name_display: signal("名称提示：无".to_string()),
             theme_import_dialog_visible: signal(false),
             tab: signal(0),
             dark: signal(crate::theme_def::system_dark()),
@@ -195,6 +195,29 @@ impl AppState {
             pinyin_schema_val_sig: signal(vec![]),
             pinyin_schema_lab_sig: signal(vec![]),
         }
+    }
+
+    pub fn set_pending_theme_import(&self, url: String, name: String) {
+        self.pending_theme_import_url.set(url);
+        self.pending_theme_import_name.set(name);
+        self.sync_theme_import_display();
+    }
+
+    pub fn clear_pending_theme_import(&self) {
+        self.pending_theme_import_url.set(String::new());
+        self.pending_theme_import_name.set(String::new());
+        self.sync_theme_import_display();
+    }
+
+    pub fn sync_theme_import_display(&self) {
+        let url = self.pending_theme_import_url.get();
+        let name = self.pending_theme_import_name.get();
+        self.theme_import_url_display.set(format!("来源：{url}"));
+        self.theme_import_name_display.set(if name.is_empty() {
+            "名称提示：无".to_string()
+        } else {
+            format!("名称提示：{name}")
+        });
     }
 
     /// 后台数据就绪后在 UI 线程调用：更新非 Signal 字段，并通过 Signal 通知界面刷新。
@@ -544,9 +567,30 @@ mod tests {
         assert!(matches!(st.theme_editor_mode.get().as_str(), "off" | "auto"));
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
-        assert_eq!(st.theme_import_url_label.get(), "来源：");
-        assert_eq!(st.theme_import_name_label.get(), "名称提示：无");
+        assert_eq!(st.theme_import_url_display.get(), "来源：");
+        assert_eq!(st.theme_import_name_display.get(), "名称提示：无");
         assert!(!st.theme_import_dialog_visible.get());
+    }
+
+    #[test]
+    fn theme_import_display_is_derived_from_pending_state() {
+        let st = AppState::empty();
+
+        st.set_pending_theme_import("https://example.com/theme.toml".to_string(), "Night".to_string());
+        assert_eq!(st.pending_theme_import_url.get(), "https://example.com/theme.toml");
+        assert_eq!(st.pending_theme_import_name.get(), "Night");
+        assert_eq!(st.theme_import_url_display.get(), "来源：https://example.com/theme.toml");
+        assert_eq!(st.theme_import_name_display.get(), "名称提示：Night");
+
+        st.set_pending_theme_import("https://example.com/unnamed.toml".to_string(), String::new());
+        assert_eq!(st.theme_import_url_display.get(), "来源：https://example.com/unnamed.toml");
+        assert_eq!(st.theme_import_name_display.get(), "名称提示：无");
+
+        st.clear_pending_theme_import();
+        assert_eq!(st.pending_theme_import_url.get(), "");
+        assert_eq!(st.pending_theme_import_name.get(), "");
+        assert_eq!(st.theme_import_url_display.get(), "来源：");
+        assert_eq!(st.theme_import_name_display.get(), "名称提示：无");
     }
 
     #[test]
