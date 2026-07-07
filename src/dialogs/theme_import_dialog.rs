@@ -66,10 +66,12 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
                         .small()
                         .outline_soft()
                         .on_click(move |_| {
-                            url.set(String::new());
-                            name.set(String::new());
-                            url_display.set("来源：".to_string());
-                            name_display.set("名称提示：无".to_string());
+                            AppState::clear_theme_import_signals(
+                                url,
+                                name,
+                                url_display,
+                                name_display,
+                            );
                             visible.set(false);
                         }),
                 )
@@ -81,10 +83,12 @@ pub fn build_theme_import_dialog(state: &AppState) -> Element {
                     {
                         Ok(result) => {
                             status.set(format!("已导入主题：{}", result.display_name));
-                            url.set(String::new());
-                            name.set(String::new());
-                            url_display.set("来源：".to_string());
-                            name_display.set("名称提示：无".to_string());
+                            AppState::clear_theme_import_signals(
+                                url,
+                                name,
+                                url_display,
+                                name_display,
+                            );
                             visible.set(false);
                         }
                         Err(err) => status.set(err.user_message()),

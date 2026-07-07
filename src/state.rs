@@ -204,16 +204,44 @@ impl AppState {
     }
 
     pub fn clear_pending_theme_import(&self) {
-        self.pending_theme_import_url.set(String::new());
-        self.pending_theme_import_name.set(String::new());
-        self.sync_theme_import_display();
+        Self::clear_theme_import_signals(
+            self.pending_theme_import_url,
+            self.pending_theme_import_name,
+            self.theme_import_url_display,
+            self.theme_import_name_display,
+        );
+    }
+
+    pub fn clear_theme_import_signals(
+        url: Signal<String>,
+        name: Signal<String>,
+        url_display: Signal<String>,
+        name_display: Signal<String>,
+    ) {
+        url.set(String::new());
+        name.set(String::new());
+        Self::sync_theme_import_display_signals(url, name, url_display, name_display);
     }
 
     pub fn sync_theme_import_display(&self) {
-        let url = self.pending_theme_import_url.get();
-        let name = self.pending_theme_import_name.get();
-        self.theme_import_url_display.set(format!("来源：{url}"));
-        self.theme_import_name_display.set(if name.is_empty() {
+        Self::sync_theme_import_display_signals(
+            self.pending_theme_import_url,
+            self.pending_theme_import_name,
+            self.theme_import_url_display,
+            self.theme_import_name_display,
+        );
+    }
+
+    fn sync_theme_import_display_signals(
+        url: Signal<String>,
+        name: Signal<String>,
+        url_display: Signal<String>,
+        name_display: Signal<String>,
+    ) {
+        let url = url.get();
+        let name = name.get();
+        url_display.set(format!("来源：{url}"));
+        name_display.set(if name.is_empty() {
             "名称提示：无".to_string()
         } else {
             format!("名称提示：{name}")
@@ -591,6 +619,14 @@ mod tests {
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert_eq!(st.theme_import_url_display.get(), "来源：");
         assert_eq!(st.theme_import_name_display.get(), "名称提示：无");
+    }
+
+    #[test]
+    fn theme_import_dialog_does_not_duplicate_reset_display_text() {
+        let source = include_str!("dialogs/theme_import_dialog.rs");
+
+        assert!(!source.contains(&format!("{}：", "来源")));
+        assert!(!source.contains(&format!("{}提示：无", "名称")));
     }
 
     #[test]
