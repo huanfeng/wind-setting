@@ -1,7 +1,8 @@
 //! 主题 TOML 导入编排：setting 处理外部输入，core 处理主题语义。
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::Read;
+use std::path::Path;
 
 const MAX_THEME_BYTES: usize = 2 * 1024 * 1024;
 
@@ -137,6 +138,21 @@ pub fn download_https_text(url: &str) -> Result<String, ThemeImportError> {
         .map_err(|_| ThemeImportError::Download("主题文件不是有效 UTF-8 文本".to_string()))
 }
 
+pub fn read_local_toml(path: &Path) -> Result<String, ThemeImportError> {
+    if path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| !s.eq_ignore_ascii_case("toml"))
+        .unwrap_or(true)
+    {
+        return Err(ThemeImportError::InvalidTheme(
+            "请选择 .toml 主题文件".to_string(),
+        ));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| ThemeImportError::InvalidTheme(format!("读取主题文件失败：{e}")))
+}
+
 pub fn preview_text(text: &str) -> Result<ThemePreview, ThemeImportError> {
     let v = crate::rpc::call_core("theme.preview", &json!({ "text": text }))
         .map_err(|e| ThemeImportError::Rpc(format!("主题预览失败：{e}")))?;
@@ -181,6 +197,13 @@ mod tests {
             download_https_text("http://theme.windinput.com/a.toml"),
             Err(ThemeImportError::InvalidUrl(_))
         ));
+    }
+
+    #[test]
+    fn read_local_toml_rejects_non_toml_extension() {
+        let path = std::path::Path::new("theme.yaml");
+        let err = read_local_toml(path).unwrap_err();
+        assert!(err.user_message().contains(".toml"));
     }
 
     #[test]

@@ -214,8 +214,7 @@ fn keys_page(state: &AppState) -> Element {
 
 fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
-    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。主题工具卡提供编辑器连接入口，
-    // TOML 文件选择器由后续任务接线。
+    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。主题工具卡提供编辑器连接入口。
     let mut secs = manifest_sections(state, "ui");
     secs.push(theme_tools_card(app, state));
     sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
@@ -243,9 +242,27 @@ fn theme_tools_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 .child(
                     Element::button("导入 TOML 主题")
                         .small()
-                        .on_click(move |_| {
-                            status.set(
-                                "请选择 TOML 主题文件导入（文件选择器接线见后续任务）".to_string(),
+                        .on_click(move |ctx| {
+                            ctx.request_pick_file(
+                                PickDialog::new()
+                                    .title("导入 TOML 主题")
+                                    .filter("TOML", &["toml"]),
+                                move |path| {
+                                    let Some(path) = path else { return };
+                                    match crate::theme_import::read_local_toml(&path)
+                                        .and_then(|text| {
+                                            crate::theme_import::preview_text(&text).map(|_| text)
+                                        })
+                                        .and_then(|text| {
+                                            crate::theme_import::import_text(&text, false)
+                                        })
+                                    {
+                                        Ok(result) => {
+                                            status.set(format!("已导入主题：{}", result.display_name));
+                                        }
+                                        Err(err) => status.set(err.user_message()),
+                                    }
+                                },
                             );
                         }),
                 )
