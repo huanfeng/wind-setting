@@ -204,8 +204,106 @@ fn keys_page(state: &AppState) -> Element {
 
 fn appearance_page(state: &AppState) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
-    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。整页纯清单驱动。
-    sections_page("外观", "自定义候选窗与工具栏的视觉呈现", manifest_sections(state, "ui"))
+    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。主题工具卡只提供入口与占位反馈，
+    // 实际编辑器服务启停与 TOML 文件选择器由后续任务接线。
+    let mut secs = manifest_sections(state, "ui");
+    secs.push(theme_tools_card(state));
+    sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
+}
+
+fn theme_tools_card(state: &AppState) -> Element {
+    let status = state.status;
+    let running = state.theme_editor_running;
+    let url = state.theme_editor_url;
+    let mode = state.theme_editor_mode;
+
+    Element::col()
+        .width_match()
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .padding_xy(16, 14)
+        .spacing(10)
+        .child(Element::label("主题工具").font_size(14.0).font_weight(600))
+        .child(
+            Element::row()
+                .spacing(8)
+                .child(Element::button("导入 TOML 主题").small().on_click(move |_| {
+                    status.set("请选择 TOML 主题文件导入（文件选择器接线见后续任务）".to_string());
+                }))
+                .child(
+                    Element::button("打开主题编辑器")
+                        .small()
+                        .outline_soft()
+                        .on_click(|ctx| ctx.open_url(THEME_EDITOR_URL)),
+                )
+                .child(
+                    Element::button("打开主题市场")
+                        .small()
+                        .outline_soft()
+                        .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
+                ),
+        )
+        .child(
+            Element::label("Web 编辑器连接")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted),
+        )
+        .child(
+            Element::row()
+                .spacing(8)
+                .child(Element::button("关闭").small().outline_soft().on_click(move |_| {
+                    mode.set("off".to_string());
+                    running.set(false);
+                    url.set(String::new());
+                    status.set("已关闭主题编辑器连接".to_string());
+                }))
+                .child(Element::button("本次开启").small().on_click(move |_| {
+                    mode.set("once".to_string());
+                    status.set("主题编辑器连接启动接线见后续任务".to_string());
+                }))
+                .child(
+                    Element::button("打开设置时自动开启")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            mode.set("auto".to_string());
+                            status.set("已设置为打开设置时自动开启".to_string());
+                        }),
+                ),
+        )
+        .child(
+            Element::row()
+                .spacing(8)
+                .cross(Align::Center)
+                .child(
+                    Element::label("本地连接地址：尚未开启")
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .weight(1.0)
+                        .visible_when(move || url.get().is_empty()),
+                )
+                .child(
+                    Element::label_rc(url)
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .weight(1.0)
+                        .visible_when(move || !url.get().is_empty()),
+                )
+                .child(
+                    Element::button("复制地址")
+                        .small()
+                        .outline_soft()
+                        .enabled_when(move || running.get())
+                        .on_click(move |ctx| {
+                            let u = url.get();
+                            if !u.is_empty() {
+                                ctx.clipboard_set(&u);
+                                ctx.toast_ok("已复制主题编辑器连接地址");
+                            }
+                        }),
+                ),
+        )
 }
 
 // ───────────────────────── 词库 ─────────────────────────
@@ -220,6 +318,10 @@ fn dict_page(state: &AppState) -> Element {
 const REPO_URL: &str = "https://github.com/huanfeng/WindInput";
 /// 官网。
 const WEBSITE_URL: &str = "https://windinput.com";
+/// 主题编辑器。
+const THEME_EDITOR_URL: &str = "https://theme.windinput.com";
+/// 主题市场。
+const THEME_MARKET_URL: &str = "https://market.windinput.com";
 /// QQ 交流群号。
 const QQ_GROUP: &str = "1085293418";
 
