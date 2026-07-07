@@ -16,6 +16,8 @@ mod mode;
 mod pages;
 mod protocol;
 mod rpc;
+#[allow(dead_code)]
+mod setting_config;
 mod shell;
 mod state;
 mod theme_def;
