@@ -78,6 +78,11 @@ impl ThemePreview {
 
 impl ThemeImportResult {
     fn from_value(v: Value) -> Result<Self, ThemeImportError> {
+        if v.get("ok").and_then(Value::as_bool) == Some(false) {
+            return Err(ThemeImportError::InvalidTheme(
+                "主题导入失败".to_string(),
+            ));
+        }
         let slug = v
             .get("slug")
             .or_else(|| v.get("id"))
@@ -204,6 +209,18 @@ mod tests {
         .unwrap();
         assert_eq!(r.slug, "blue");
         assert_eq!(r.display_name, "清风·蓝");
+    }
+
+    #[test]
+    fn parse_import_result_rejects_explicit_failure() {
+        assert!(matches!(
+            ThemeImportResult::from_value(json!({
+                "ok": false,
+                "slug": "blue",
+                "display_name": "清风·蓝"
+            })),
+            Err(ThemeImportError::InvalidTheme(_))
+        ));
     }
 
     #[test]
