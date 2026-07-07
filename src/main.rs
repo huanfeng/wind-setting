@@ -22,6 +22,8 @@ mod shell;
 mod state;
 mod theme_def;
 #[allow(dead_code)]
+mod theme_editor_server;
+#[allow(dead_code)]
 mod theme_import;
 mod widgets;
 
