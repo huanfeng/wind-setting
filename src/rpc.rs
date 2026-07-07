@@ -206,6 +206,26 @@ mod tests {
         assert!(mock_reply("phrase.export").get("content").is_some());
         assert_eq!(mock_reply("phrase.import").get("imported"), Some(&json!(0)));
     }
+
+    #[test]
+    fn mock_theme_preview_import_and_get_text() {
+        let preview = mock_reply("theme.preview");
+        assert_eq!(preview.get("display_name"), Some(&json!("测试主题")));
+        assert_eq!(preview.get("slug"), Some(&json!("test-theme")));
+
+        let imported = mock_reply("theme.importFromText");
+        assert_eq!(imported.get("ok"), Some(&json!(true)));
+        assert_eq!(imported.get("slug"), Some(&json!("test-theme")));
+
+        let text = mock_reply("theme.getText");
+        assert_eq!(text.get("slug"), Some(&json!("default")));
+        assert!(
+            text.get("toml")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .contains("[meta]")
+        );
+    }
 }
 
 /// 内置 capability 快照（与 src/assets 同一文件），mock 模式离线提供能力契约。
@@ -277,7 +297,23 @@ fn mock_reply(method: &str) -> Value {
             { "code": "wm", "word": "我们", "candId": "c1", "type": "pin", "position": 0 },
             { "code": "nh", "word": "你好", "candId": null, "type": "delete" }
         ]),
-        "config.getDefaults" | "schema.references" | "theme.preview" => {
+        "theme.preview" => json!({
+            "slug": "test-theme",
+            "display_name": "测试主题",
+            "name": "测试主题",
+            "version": "1.0.0",
+            "author": "WindInput"
+        }),
+        "theme.importFromText" => json!({
+            "ok": true,
+            "slug": "test-theme",
+            "display_name": "测试主题"
+        }),
+        "theme.getText" => json!({
+            "slug": "default",
+            "toml": "base = \"_qingfeng\"\n\n[meta]\nname = \"清风·蓝\"\nversion = \"1.0\"\nauthor = \"清风输入法\"\n"
+        }),
+        "config.getDefaults" | "schema.references" => {
             json!({})
         }
         // 双拼样例配置（离线核对设置对话框的布局下拉）；仅双拼方案会读取
