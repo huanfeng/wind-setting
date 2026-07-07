@@ -137,10 +137,19 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                 st.theme_import_dialog_visible.set(true);
                 st.status.set("收到主题导入请求，请确认来源后导入".to_string());
             } else {
+                st.pending_theme_import_url.set(String::new());
+                st.pending_theme_import_name.set(String::new());
+                st.theme_import_dialog_visible.set(false);
                 st.status.set(format!("暂不支持通过协议导入 {}", req.kind));
             }
         }
-        Err(e) => state.borrow().status.set(format!("协议解析失败：{e}")),
+        Err(e) => {
+            let st = state.borrow();
+            st.pending_theme_import_url.set(String::new());
+            st.pending_theme_import_name.set(String::new());
+            st.theme_import_dialog_visible.set(false);
+            st.status.set(format!("协议解析失败：{e}"));
+        }
     }
 }
 
@@ -170,12 +179,18 @@ mod tests {
         let state = Rc::new(RefCell::new(state::AppState::empty()));
 
         route_protocol(
+            "windinput://import/theme?url=https%3A%2F%2Fexample.com%2Fdark.toml&name=Dark",
+            &state,
+        );
+        route_protocol(
             "windinput://import/schema?url=https%3A%2F%2Fexample.com%2Fschema.yaml&name=Schema",
             &state,
         );
 
         let st = state.borrow();
         assert_eq!(st.tab.get(), 4);
+        assert_eq!(st.pending_theme_import_url.get(), "");
+        assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());
         assert_eq!(st.status.get(), "暂不支持通过协议导入 schema");
     }
@@ -184,10 +199,16 @@ mod tests {
     fn route_protocol_reports_parse_error() {
         let state = Rc::new(RefCell::new(state::AppState::empty()));
 
+        route_protocol(
+            "windinput://import/theme?url=https%3A%2F%2Fexample.com%2Fdark.toml&name=Dark",
+            &state,
+        );
         route_protocol("windinput://import/theme", &state);
 
         let st = state.borrow();
         assert!(st.status.get().starts_with("协议解析失败："));
+        assert_eq!(st.pending_theme_import_url.get(), "");
+        assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());
     }
 }
