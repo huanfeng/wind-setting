@@ -20,11 +20,24 @@ use crate::theme_def::theme_for;
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog, dict_dialog, theme_import_dialog, reload_confirm, reset_confirm, conn_ok, conn_failed, field_dialogs) = {
+    let (
+        tabs_vec,
+        tab_sig,
+        dark,
+        status,
+        dialog,
+        dict_dialog,
+        theme_import_dialog,
+        reload_confirm,
+        reset_confirm,
+        conn_ok,
+        conn_failed,
+        field_dialogs,
+    ) = {
         let st = app.borrow();
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
-        let tabs_vec = pages::all_tabs(&st);
+        let tabs_vec = pages::all_tabs(app, &st);
         // all_tabs 后各「支持全局」的功能键已登记 global_flags，汇总为 keys.global_hotkeys 写回/回填。
         crate::manifest::register_global_hotkeys_collector(&st);
         let field_dialogs = std::mem::take(&mut *st.fields.dialogs.borrow_mut());
@@ -128,10 +141,12 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
     for (i, name) in names.iter().enumerate() {
         if name == "高级" {
             col = col.child(
-                Element::col()
-                    .width_match()
-                    .padding_xy(10, 8)
-                    .child(Element::leaf().width_match().height(1).bg_role(Role::Divider)),
+                Element::col().width_match().padding_xy(10, 8).child(
+                    Element::leaf()
+                        .width_match()
+                        .height(1)
+                        .bg_role(Role::Divider),
+                ),
             );
         }
         let svg = nav_icon(name);
@@ -155,7 +170,13 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
             .width_match()
             .height(36)
             .cross(Align::Center)
-            .child(Element::leaf().width(3).height(14).corner(1.5).bg_role(Role::Accent))
+            .child(
+                Element::leaf()
+                    .width(3)
+                    .height(14)
+                    .corner(1.5)
+                    .bg_role(Role::Accent),
+            )
             .visible_when(move || sel.get() == i);
         let on = Element::row()
             .width_match()
@@ -246,8 +267,16 @@ fn build_titlebar() -> Element {
                         .font_weight(600)
                         .fg_role(Role::Text),
                 )
-                .child(Element::label("·").font_size(13.0).fg_role(Role::TextDisabled))
-                .child(Element::label("设置").font_size(13.0).fg_role(Role::TextMuted)),
+                .child(
+                    Element::label("·")
+                        .font_size(13.0)
+                        .fg_role(Role::TextDisabled),
+                )
+                .child(
+                    Element::label("设置")
+                        .font_size(13.0)
+                        .fg_role(Role::TextMuted),
+                ),
         )
         // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）；dev 变体追加「(开发版)」。
         .child(
@@ -282,7 +311,13 @@ fn build_footer(
             .size(14, 14)
             .corner(7.0)
             .bg(Color::hex(c).scale_alpha(0.22))
-            .child(Element::leaf().size(8, 8).corner(4.0).bg(Color::hex(c)).align(Align::Center))
+            .child(
+                Element::leaf()
+                    .size(8, 8)
+                    .corner(4.0)
+                    .bg(Color::hex(c))
+                    .align(Align::Center),
+            )
             .visible_when(move || conn_ok.get() == when_ok)
     };
     let status_dot = Element::stack()
@@ -452,7 +487,12 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(Element::leaf().weight(1.0))
-                .child(Element::button("退出").small().outline_soft().on_click(|ctx| ctx.request_close()))
+                .child(
+                    Element::button("退出")
+                        .small()
+                        .outline_soft()
+                        .on_click(|ctx| ctx.request_close()),
+                )
                 .child(Element::button("重连").small().on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
                         s.status.set("正在重连...".to_string());

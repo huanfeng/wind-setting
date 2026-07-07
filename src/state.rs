@@ -82,6 +82,8 @@ pub struct AppState {
     pub setting_config: setting_config::SettingConfig,
     /// 启动加载本地设置配置时的非阻断警告。
     pub setting_config_warning: Option<String>,
+    /// 主题编辑器本地 HTTP 服务句柄。
+    pub theme_editor_server: Rc<RefCell<crate::theme_editor_server::ThemeEditorServer>>,
     /// 主题编辑器连接服务是否运行。
     pub theme_editor_running: Signal<bool>,
     /// 主题编辑器连接服务地址。
@@ -143,13 +145,20 @@ impl AppState {
         let schema_mgr = SchemaManagerState::new();
         let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
         let setting_load = setting_config::load();
-        let initial_mode = if setting_load.config.theme_editor.auto_start { "auto" } else { "off" }.to_string();
+        let initial_mode = if setting_load.config.theme_editor.auto_start {
+            "auto"
+        } else {
+            "off"
+        }
+        .to_string();
 
         // 注册 schema.available 写回器：把 enabled_order 序列化为有序字符串数组
         {
             let eo = schema_mgr.enabled_order.clone();
             fields.writers.borrow_mut().push(Box::new(move |cfg| {
-                let ids: Vec<Value> = eo.borrow().iter()
+                let ids: Vec<Value> = eo
+                    .borrow()
+                    .iter()
                     .map(|id| Value::String(id.clone()))
                     .collect();
                 cfg.set_path("schema.available", Value::Array(ids));
@@ -168,6 +177,9 @@ impl AppState {
             fields,
             setting_config: setting_load.config,
             setting_config_warning: setting_load.warning,
+            theme_editor_server: Rc::new(RefCell::new(
+                crate::theme_editor_server::ThemeEditorServer::default(),
+            )),
             theme_editor_running: signal(false),
             theme_editor_url: signal(String::new()),
             theme_editor_mode: signal(initial_mode),
@@ -194,6 +206,34 @@ impl AppState {
             codetable_schema_lab_sig: signal(vec![]),
             pinyin_schema_val_sig: signal(vec![]),
             pinyin_schema_lab_sig: signal(vec![]),
+        }
+    }
+
+    pub fn start_theme_editor_server(&self, auto: bool) {
+        match self.theme_editor_server.borrow_mut().start() {
+            Ok(s) => {
+                self.theme_editor_running.set(s.running);
+                self.theme_editor_url.set(s.url.unwrap_or_default());
+                self.theme_editor_mode
+                    .set(if auto { "auto" } else { "once" }.to_string());
+                self.status.set("主题编辑器连接已开启".to_string());
+            }
+            Err(e) => self.status.set(e),
+        }
+    }
+
+    pub fn stop_theme_editor_server(&self) {
+        self.theme_editor_server.borrow_mut().stop();
+        self.theme_editor_running.set(false);
+        self.theme_editor_url.set(String::new());
+        self.theme_editor_mode.set("off".to_string());
+        self.status.set("主题编辑器连接已关闭".to_string());
+    }
+
+    pub fn save_theme_editor_auto_start(&mut self, auto: bool) {
+        self.setting_config.theme_editor.auto_start = auto;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.status.set(e);
         }
     }
 
@@ -259,8 +299,10 @@ impl AppState {
         self.schemas = data.schemas;
         self.theme_names = data.theme_names;
         self.fonts = data.fonts;
-        self.theme_label_sig.set(self.theme_names.iter().map(|(_, n)| n.clone()).collect());
-        self.theme_value_sig.set(self.theme_names.iter().map(|(id, _)| id.clone()).collect());
+        self.theme_label_sig
+            .set(self.theme_names.iter().map(|(_, n)| n.clone()).collect());
+        self.theme_value_sig
+            .set(self.theme_names.iter().map(|(id, _)| id.clone()).collect());
         // value：空字符串 = 使用默认字体；label：首项显示"默认"。
         self.font_sig.set(
             std::iter::once(String::new())
@@ -275,14 +317,26 @@ impl AppState {
         // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"，其余为 id/name。
         // 必须在 loaders 跑之前就位，否则 loader 无法在选项列表中定位当前配置值。
         {
-            let (ct_vals, ct_labs): (Vec<String>, Vec<String>) = std::iter::once((String::new(), "（自动）".to_string()))
-                .chain(self.schemas.iter().filter(|s| s.kind == "codetable").map(|s| (s.id.clone(), s.name.clone())))
-                .unzip();
+            let (ct_vals, ct_labs): (Vec<String>, Vec<String>) =
+                std::iter::once((String::new(), "（自动）".to_string()))
+                    .chain(
+                        self.schemas
+                            .iter()
+                            .filter(|s| s.kind == "codetable")
+                            .map(|s| (s.id.clone(), s.name.clone())),
+                    )
+                    .unzip();
             self.codetable_schema_val_sig.set(ct_vals);
             self.codetable_schema_lab_sig.set(ct_labs);
-            let (py_vals, py_labs): (Vec<String>, Vec<String>) = std::iter::once((String::new(), "（自动）".to_string()))
-                .chain(self.schemas.iter().filter(|s| s.kind == "pinyin").map(|s| (s.id.clone(), s.name.clone())))
-                .unzip();
+            let (py_vals, py_labs): (Vec<String>, Vec<String>) =
+                std::iter::once((String::new(), "（自动）".to_string()))
+                    .chain(
+                        self.schemas
+                            .iter()
+                            .filter(|s| s.kind == "pinyin")
+                            .map(|s| (s.id.clone(), s.name.clone())),
+                    )
+                    .unzip();
             self.pinyin_schema_val_sig.set(py_vals);
             self.pinyin_schema_lab_sig.set(py_labs);
         }
@@ -401,8 +455,11 @@ impl AppState {
                 w(&mut self.current_config);
             }
         }
-        let items =
-            diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
+        let items = diff_config(
+            &self.base_config,
+            &self.current_config,
+            &self.capabilities.map_keys(),
+        );
         if items.is_empty() {
             self.status.set("没有变更".to_string());
             return true;
@@ -472,23 +529,28 @@ impl LoadedState {
         let t0 = std::time::Instant::now();
 
         // 6 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
-        let h_config  = std::thread::spawn(|| rpc::call_core("config.get",          &serde_json::json!({})));
-        let h_info    = std::thread::spawn(|| rpc::call_core("system.info",         &serde_json::json!({})));
-        let h_caps    = std::thread::spawn(|| rpc::call_core("system.capabilities", &serde_json::json!({})));
+        let h_config = std::thread::spawn(|| rpc::call_core("config.get", &serde_json::json!({})));
+        let h_info = std::thread::spawn(|| rpc::call_core("system.info", &serde_json::json!({})));
+        let h_caps =
+            std::thread::spawn(|| rpc::call_core("system.capabilities", &serde_json::json!({})));
         let h_schemas = std::thread::spawn(load_schemas);
-        let h_themes  = std::thread::spawn(load_theme_names);
-        let h_fonts   = std::thread::spawn(load_fonts);
+        let h_themes = std::thread::spawn(load_theme_names);
+        let h_fonts = std::thread::spawn(load_fonts);
 
-        let config_res  = h_config.join().ok().and_then(|r| r.ok());
-        let system_info = h_info.join().ok().and_then(|r| r.ok()).unwrap_or_else(Self::empty_obj);
-        let caps_res    = h_caps.join().ok().and_then(|r| r.ok());
-        let schemas     = h_schemas.join().unwrap_or_default();
+        let config_res = h_config.join().ok().and_then(|r| r.ok());
+        let system_info = h_info
+            .join()
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_else(Self::empty_obj);
+        let caps_res = h_caps.join().ok().and_then(|r| r.ok());
+        let schemas = h_schemas.join().unwrap_or_default();
         let theme_names = h_themes.join().unwrap_or_default();
-        let fonts       = h_fonts.join().unwrap_or_default();
+        let fonts = h_fonts.join().unwrap_or_default();
 
         // config_value 是否为 Some 直接反映管道连接是否成功。
-        let connected         = config_res.is_some();
-        let config_value      = config_res.unwrap_or_else(Self::empty_obj);
+        let connected = config_res.is_some();
+        let config_value = config_res.unwrap_or_else(Self::empty_obj);
         let capabilities_value = caps_res.unwrap_or_else(Self::empty_obj);
 
         tracing::info!(
@@ -496,7 +558,15 @@ impl LoadedState {
             t0.elapsed()
         );
 
-        Self { config_value, system_info, capabilities_value, schemas, theme_names, fonts, connected }
+        Self {
+            config_value,
+            system_info,
+            capabilities_value,
+            schemas,
+            theme_names,
+            fonts,
+            connected,
+        }
     }
 }
 
@@ -528,7 +598,12 @@ fn load_schemas() -> Vec<SchemaInfo> {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    Some(SchemaInfo { id, name, kind, scheme })
+                    Some(SchemaInfo {
+                        id,
+                        name,
+                        kind,
+                        scheme,
+                    })
                 })
                 .collect()
         })
@@ -592,7 +667,10 @@ mod tests {
         );
         assert!(!st.theme_editor_running.get());
         assert_eq!(st.theme_editor_url.get(), "");
-        assert!(matches!(st.theme_editor_mode.get().as_str(), "off" | "auto"));
+        assert!(matches!(
+            st.theme_editor_mode.get().as_str(),
+            "off" | "auto"
+        ));
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert_eq!(st.theme_import_url_display.get(), "来源：");
@@ -604,14 +682,29 @@ mod tests {
     fn theme_import_display_is_derived_from_pending_state() {
         let st = AppState::empty();
 
-        st.set_pending_theme_import("https://example.com/theme.toml".to_string(), "Night".to_string());
-        assert_eq!(st.pending_theme_import_url.get(), "https://example.com/theme.toml");
+        st.set_pending_theme_import(
+            "https://example.com/theme.toml".to_string(),
+            "Night".to_string(),
+        );
+        assert_eq!(
+            st.pending_theme_import_url.get(),
+            "https://example.com/theme.toml"
+        );
         assert_eq!(st.pending_theme_import_name.get(), "Night");
-        assert_eq!(st.theme_import_url_display.get(), "来源：https://example.com/theme.toml");
+        assert_eq!(
+            st.theme_import_url_display.get(),
+            "来源：https://example.com/theme.toml"
+        );
         assert_eq!(st.theme_import_name_display.get(), "名称提示：Night");
 
-        st.set_pending_theme_import("https://example.com/unnamed.toml".to_string(), String::new());
-        assert_eq!(st.theme_import_url_display.get(), "来源：https://example.com/unnamed.toml");
+        st.set_pending_theme_import(
+            "https://example.com/unnamed.toml".to_string(),
+            String::new(),
+        );
+        assert_eq!(
+            st.theme_import_url_display.get(),
+            "来源：https://example.com/unnamed.toml"
+        );
         assert_eq!(st.theme_import_name_display.get(), "名称提示：无");
 
         st.clear_pending_theme_import();
@@ -685,10 +778,19 @@ mod tests {
 #[cfg(windows)]
 #[repr(C)]
 struct GdiLogFontW {
-    lf_height: i32, lf_width: i32, lf_escapement: i32, lf_orientation: i32,
-    lf_weight: i32, lf_italic: u8, lf_underline: u8, lf_strike_out: u8,
-    lf_char_set: u8, lf_out_precision: u8, lf_clip_precision: u8,
-    lf_quality: u8, lf_pitch_and_family: u8,
+    lf_height: i32,
+    lf_width: i32,
+    lf_escapement: i32,
+    lf_orientation: i32,
+    lf_weight: i32,
+    lf_italic: u8,
+    lf_underline: u8,
+    lf_strike_out: u8,
+    lf_char_set: u8,
+    lf_out_precision: u8,
+    lf_clip_precision: u8,
+    lf_quality: u8,
+    lf_pitch_and_family: u8,
     lf_face_name: [u16; 32],
 }
 
@@ -769,21 +871,23 @@ fn load_fonts_from_gdi() -> Vec<String> {
             return vec![];
         }
         let lf = GdiLogFontW {
-            lf_height: 0, lf_width: 0, lf_escapement: 0, lf_orientation: 0,
-            lf_weight: 0, lf_italic: 0, lf_underline: 0, lf_strike_out: 0,
+            lf_height: 0,
+            lf_width: 0,
+            lf_escapement: 0,
+            lf_orientation: 0,
+            lf_weight: 0,
+            lf_italic: 0,
+            lf_underline: 0,
+            lf_strike_out: 0,
             lf_char_set: 1, // DEFAULT_CHARSET — 枚举所有字体族
-            lf_out_precision: 0, lf_clip_precision: 0, lf_quality: 0,
+            lf_out_precision: 0,
+            lf_clip_precision: 0,
+            lf_quality: 0,
             lf_pitch_and_family: 0,
             lf_face_name: [0u16; 32],
         };
         let mut families: HashSet<String> = HashSet::new();
-        EnumFontFamiliesExW(
-            hdc,
-            &lf,
-            font_enum_cb,
-            &mut families as *mut _ as isize,
-            0,
-        );
+        EnumFontFamiliesExW(hdc, &lf, font_enum_cb, &mut families as *mut _ as isize, 0);
         ReleaseDC(std::ptr::null_mut(), hdc);
         let mut v: Vec<String> = families.into_iter().collect();
         v.sort();

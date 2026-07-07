@@ -67,6 +67,12 @@ fn main() {
             route_protocol(&raw, &app_state);
         }
     }
+    if app_state.borrow().setting_config.theme_editor.auto_start {
+        app_state.borrow().start_theme_editor_server(true);
+    }
+    if let Some(w) = app_state.borrow().setting_config_warning.clone() {
+        app_state.borrow().status.set(w);
+    }
     let start_dark = app_state.borrow().dark.get();
 
     // 渲染：默认 Direct2D GPU 加速（windui d2d 后端，已默认编入）；远程会话 / 无可用
@@ -74,7 +80,11 @@ fn main() {
     let soft_render = args.iter().any(|a| a == "--soft" || a == "--no-accel");
     tracing::info!(
         "渲染模式: {}",
-        if soft_render { "软件 (tiny-skia)" } else { "Direct2D 加速" }
+        if soft_render {
+            "软件 (tiny-skia)"
+        } else {
+            "Direct2D 加速"
+        }
     );
 
     // 单实例 + 二次运行激活/切页/协议（app_id 含变体后缀，dev/release 互不干扰）。
@@ -134,7 +144,8 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
             if req.kind == "theme" {
                 st.set_pending_theme_import(req.url, req.name);
                 st.theme_import_dialog_visible.set(true);
-                st.status.set("收到主题导入请求，请确认来源后导入".to_string());
+                st.status
+                    .set("收到主题导入请求，请确认来源后导入".to_string());
             } else {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
@@ -165,7 +176,10 @@ mod tests {
 
         let st = state.borrow();
         assert_eq!(st.tab.get(), 3);
-        assert_eq!(st.pending_theme_import_url.get(), "https://example.com/dark.toml");
+        assert_eq!(
+            st.pending_theme_import_url.get(),
+            "https://example.com/dark.toml"
+        );
         assert_eq!(st.pending_theme_import_name.get(), "Dark");
         assert!(st.theme_import_dialog_visible.get());
         assert_eq!(st.status.get(), "收到主题导入请求，请确认来源后导入");

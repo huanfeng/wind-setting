@@ -4,6 +4,9 @@
 //! 一张卡片，卡片次序为 section 首次出现序，行序为 manifest 原始序——key 永远与 core 一致，
 //! core 加字段自动出现，彻底消除硬编码 key 漂移。复杂页（方案管理/词库/统计/关于）手写。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use windui::core::EventCtx;
 use windui::prelude::*;
 
@@ -15,15 +18,18 @@ use crate::state::AppState;
 use crate::widgets::{page, section, setting_row, todo_hint};
 
 /// Tab：(标题, 内容)。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
-pub fn all_tabs(state: &AppState) -> Vec<(String, Element)> {
+pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, Element)> {
     vec![
         ("方案".into(), scheme_page(state)),
         ("输入".into(), input_page(state)),
         ("按键".into(), keys_page(state)),
-        ("外观".into(), appearance_page(state)),
+        ("外观".into(), appearance_page(app, state)),
         ("词库".into(), dict_page(state)),
         // 统计页未实现，暂从导航隐藏（功能完成后恢复）。
-        ("高级".into(), manifest_page(state, "advanced", "高级", "服务与实验性功能")),
+        (
+            "高级".into(),
+            manifest_page(state, "advanced", "高级", "服务与实验性功能"),
+        ),
         ("关于".into(), about_page(state)),
     ]
 }
@@ -197,25 +203,31 @@ fn scheme_page(state: &AppState) -> Element {
 // ───────────────────────── 按键 ─────────────────────────
 
 fn keys_page(state: &AppState) -> Element {
-    sections_page("按键", "自定义快捷键与候选选择键", manifest_sections(state, "keys"))
+    sections_page(
+        "按键",
+        "自定义快捷键与候选选择键",
+        manifest_sections(state, "keys"),
+    )
 }
 
 // ───────────────────────── 外观 ─────────────────────────
 
-fn appearance_page(state: &AppState) -> Element {
+fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
-    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。主题工具卡只提供入口与占位反馈，
-    // 实际编辑器服务启停与 TOML 文件选择器由后续任务接线。
+    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。主题工具卡提供编辑器连接入口，
+    // TOML 文件选择器由后续任务接线。
     let mut secs = manifest_sections(state, "ui");
-    secs.push(theme_tools_card(state));
+    secs.push(theme_tools_card(app, state));
     sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
 }
 
-fn theme_tools_card(state: &AppState) -> Element {
+fn theme_tools_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let status = state.status;
     let running = state.theme_editor_running;
     let url = state.theme_editor_url;
-    let mode = state.theme_editor_mode;
+    let stop_state = app.clone();
+    let once_state = app.clone();
+    let auto_state = app.clone();
 
     Element::col()
         .width_match()
@@ -228,9 +240,15 @@ fn theme_tools_card(state: &AppState) -> Element {
         .child(
             Element::row()
                 .spacing(8)
-                .child(Element::button("导入 TOML 主题").small().on_click(move |_| {
-                    status.set("请选择 TOML 主题文件导入（文件选择器接线见后续任务）".to_string());
-                }))
+                .child(
+                    Element::button("导入 TOML 主题")
+                        .small()
+                        .on_click(move |_| {
+                            status.set(
+                                "请选择 TOML 主题文件导入（文件选择器接线见后续任务）".to_string(),
+                            );
+                        }),
+                )
                 .child(
                     Element::button("打开主题编辑器")
                         .small()
@@ -252,23 +270,26 @@ fn theme_tools_card(state: &AppState) -> Element {
         .child(
             Element::row()
                 .spacing(8)
-                .child(Element::button("关闭").small().outline_soft().on_click(move |_| {
-                    mode.set("off".to_string());
-                    running.set(false);
-                    url.set(String::new());
-                    status.set("已关闭主题编辑器连接".to_string());
-                }))
+                .child(
+                    Element::button("关闭")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            stop_state.borrow().stop_theme_editor_server();
+                            stop_state.borrow_mut().save_theme_editor_auto_start(false);
+                        }),
+                )
                 .child(Element::button("本次开启").small().on_click(move |_| {
-                    mode.set("once".to_string());
-                    status.set("主题编辑器连接启动接线见后续任务".to_string());
+                    once_state.borrow().start_theme_editor_server(false);
+                    once_state.borrow_mut().save_theme_editor_auto_start(false);
                 }))
                 .child(
                     Element::button("打开设置时自动开启")
                         .small()
                         .outline_soft()
                         .on_click(move |_| {
-                            mode.set("auto".to_string());
-                            status.set("已设置为打开设置时自动开启".to_string());
+                            auto_state.borrow().start_theme_editor_server(true);
+                            auto_state.borrow_mut().save_theme_editor_auto_start(true);
                         }),
                 ),
         )
@@ -284,11 +305,21 @@ fn theme_tools_card(state: &AppState) -> Element {
                         .visible_when(move || url.get().is_empty()),
                 )
                 .child(
-                    Element::label_rc(url)
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted)
+                    Element::row()
+                        .spacing(0)
                         .weight(1.0)
-                        .visible_when(move || !url.get().is_empty()),
+                        .visible_when(move || !url.get().is_empty())
+                        .child(
+                            Element::label("本地连接地址：")
+                                .font_size(12.0)
+                                .fg_role(Role::TextMuted),
+                        )
+                        .child(
+                            Element::label_rc(url)
+                                .font_size(12.0)
+                                .fg_role(Role::TextMuted)
+                                .weight(1.0),
+                        ),
                 )
                 .child(
                     Element::button("复制地址")
@@ -532,12 +563,12 @@ fn about_page(_state: &AppState) -> Element {
         );
 
     let footer = Element::label("© 2026 WindInput Contributors · MIT License")
-    .font_size(12.0)
-    .fg_role(Role::TextMuted)
-    .width_match()
-    .max_lines(1)
-    .height(18)
-    .text_align(Align::Center);
+        .font_size(12.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(1)
+        .height(18)
+        .text_align(Align::Center);
 
     // 外层品牌卡：承载全部内容，浮于内容区 SurfaceAlt 之上。
     let panel = crate::widgets::flat_panel()
