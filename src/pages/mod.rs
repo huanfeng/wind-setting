@@ -214,19 +214,38 @@ fn keys_page(state: &AppState) -> Element {
 
 fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
-    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。主题工具卡提供编辑器连接入口。
+    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。
+    // 主题导入/编辑器直连拆两张卡：前者是日常操作，后者是面向进阶用户的连接管理，
+    // 混在一张卡里容易分不清"现在按钮是要做什么"和"现在连接是什么状态"。
     let mut secs = manifest_sections(state, "ui");
-    secs.push(theme_tools_card(app, state));
-    sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
+    secs.push(theme_import_card(state));
+    secs.push(theme_editor_connect_card(app, state));
+    // toast_sink 只需挂一份（不可见叶子），放在 effect 同侧的 stack 里，随主题导入/
+    // 编辑器连接的失败反馈弹出单条 toast，替代原先散落各处的 status.set 提示。
+    let page = sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs);
+    Element::stack()
+        .fill()
+        .child(page)
+        .child(theme_editor_mode_effect(app))
+        .child(dict::reactive::toast_sink(state.theme_feedback))
 }
 
-fn theme_tools_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
-    let status = state.status;
-    let running = state.theme_editor_running;
-    let url = state.theme_editor_url;
-    let stop_state = app.clone();
-    let once_state = app.clone();
-    let auto_state = app.clone();
+/// 监听 `theme_editor_mode_idx`（分段控件双向绑定）变化，触发实际启停+持久化。
+/// 索引信号只表达"用户想切到哪一档"，副作用集中在 `AppState::apply_theme_editor_mode_idx`，
+/// 避免和旧版 3 个按钮各自 on_click 重复的启停逻辑。
+fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
+    let idx = app.borrow().theme_editor_mode_idx;
+    let eff_state = app.clone();
+    dict::reactive::reactive_effect(
+        move || idx.version(),
+        move || eff_state.borrow_mut().apply_theme_editor_mode_idx(idx.get()),
+    )
+}
+
+/// 主题导入卡：本地 TOML 导入 + 主题市场入口。导入结果经 toast 反馈（成功/失败一致走
+/// toast，不再用状态文字——状态文字留给"标题栏右侧"的持续性连接状态展示）。
+fn theme_import_card(state: &AppState) -> Element {
+    let feedback = state.theme_feedback;
 
     Element::col()
         .width_match()
@@ -234,8 +253,13 @@ fn theme_tools_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         .border_role(Role::Border, 1)
         .corner(12.0)
         .padding_xy(16, 14)
-        .spacing(10)
-        .child(Element::label("主题工具").font_size(14.0).font_weight(600))
+        .spacing(8)
+        .child(Element::label("主题导入").font_size(14.0).font_weight(600))
+        .child(
+            Element::label("从本地 .toml 文件导入主题，或前往主题市场挑选现成方案。")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted),
+        )
         .child(
             Element::row()
                 .spacing(8)
@@ -255,22 +279,18 @@ fn theme_tools_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                                         })
                                         .and_then(|text| {
                                             crate::theme_import::import_text(&text, false)
-                                        })
-                                    {
-                                        Ok(result) => {
-                                            status.set(format!("已导入主题：{}", result.display_name));
+                                        }) {
+                                        Ok(result) => feedback.set(Some((
+                                            true,
+                                            format!("已导入主题：{}", result.display_name),
+                                        ))),
+                                        Err(err) => {
+                                            feedback.set(Some((false, err.user_message())))
                                         }
-                                        Err(err) => status.set(err.user_message()),
                                     }
                                 },
                             );
                         }),
-                )
-                .child(
-                    Element::button("打开主题编辑器")
-                        .small()
-                        .outline_soft()
-                        .on_click(|ctx| ctx.open_url(THEME_EDITOR_URL)),
                 )
                 .child(
                     Element::button("打开主题市场")
@@ -279,35 +299,50 @@ fn theme_tools_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                         .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
                 ),
         )
+}
+
+/// 主题编辑器直连卡：Web 编辑器通过本地 loopback 服务读写主题，三态分段控件
+/// （关闭/本次开启/自动开启）取代原先 3 个平级按钮——分段控件天然高亮当前档位，
+/// 用户一眼能看出"现在是不是开着"，不必再靠地址是否为空去猜状态。
+fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+    let running = state.theme_editor_running;
+    let url = state.theme_editor_url;
+    let mode_idx = state.theme_editor_mode_idx;
+    let _ = app;
+
+    Element::col()
+        .width_match()
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .padding_xy(16, 14)
+        .spacing(8)
         .child(
-            Element::label("Web 编辑器连接")
-                .font_size(12.0)
-                .fg_role(Role::TextMuted),
+            Element::label("主题编辑器直连")
+                .font_size(14.0)
+                .font_weight(600),
+        )
+        .child(
+            Element::label(
+                "开启后可用 Web 版主题编辑器直接读写本机主题，仅监听本机地址，不对外网开放。",
+            )
+            .font_size(12.0)
+            .fg_role(Role::TextMuted),
         )
         .child(
             Element::row()
                 .spacing(8)
                 .child(
-                    Element::button("关闭")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
-                            stop_state.borrow().stop_theme_editor_server();
-                            stop_state.borrow_mut().save_theme_editor_auto_start(false);
-                        }),
+                    Element::segmented(
+                        vec!["关闭".to_string(), "本次开启".to_string(), "自动开启".to_string()],
+                        mode_idx,
+                    ),
                 )
-                .child(Element::button("本次开启").small().on_click(move |_| {
-                    once_state.borrow().start_theme_editor_server(false);
-                    once_state.borrow_mut().save_theme_editor_auto_start(false);
-                }))
                 .child(
-                    Element::button("打开设置时自动开启")
+                    Element::button("打开主题编辑器")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| {
-                            auto_state.borrow().start_theme_editor_server(true);
-                            auto_state.borrow_mut().save_theme_editor_auto_start(true);
-                        }),
+                        .on_click(|ctx| ctx.open_url(THEME_EDITOR_URL)),
                 ),
         )
         .child(

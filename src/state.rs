@@ -90,6 +90,12 @@ pub struct AppState {
     pub theme_editor_url: Signal<String>,
     /// 主题编辑器连接模式：off / once / auto。
     pub theme_editor_mode: Signal<String>,
+    /// 主题编辑器连接模式的分段控件索引镜像（0=关闭/1=本次开启/2=自动开启），
+    /// 供 `Element::segmented` 双向绑定；实际启停由 reactive_effect 监听其变化触发，
+    /// 避免和 `theme_editor_mode`（字符串真相源，供内部方法/测试读取）互相触发死循环。
+    pub theme_editor_mode_idx: Signal<usize>,
+    /// 主题导入结果反馈通道：写操作只写此信号，`toast_sink` 在 on_update 里 ctx.toast_*。
+    pub theme_feedback: Signal<Option<(bool, String)>>,
     /// 待确认的主题导入 URL。
     pub pending_theme_import_url: Signal<String>,
     /// 待确认的主题导入名称。
@@ -138,6 +144,15 @@ pub struct AppState {
     pub pinyin_schema_lab_sig: Signal<Vec<String>>,
 }
 
+/// 主题编辑器连接模式字符串 → 分段控件索引（0=off/1=once/2=auto；未知值回落 0）。
+fn mode_str_to_idx(mode: &str) -> usize {
+    match mode {
+        "once" => 1,
+        "auto" => 2,
+        _ => 0,
+    }
+}
+
 impl AppState {
     /// 快速初始化：仅读系统主题，其余字段置空。
     /// UI 可立即显示；真实数据由后台线程通过 [`AppState::apply_loaded`] 写入。
@@ -182,7 +197,9 @@ impl AppState {
             )),
             theme_editor_running: signal(false),
             theme_editor_url: signal(String::new()),
+            theme_editor_mode_idx: signal(mode_str_to_idx(&initial_mode)),
             theme_editor_mode: signal(initial_mode),
+            theme_feedback: signal(None),
             pending_theme_import_url: signal(String::new()),
             pending_theme_import_name: signal(String::new()),
             theme_import_url_display: signal("来源：".to_string()),
@@ -218,7 +235,13 @@ impl AppState {
                     .set(if auto { "auto" } else { "once" }.to_string());
                 self.status.set("主题编辑器连接已开启".to_string());
             }
-            Err(e) => self.status.set(e),
+            Err(e) => {
+                // 启动失败（如端口均被占用）：分段控件已被用户切到"开启"档，须退回"关闭"
+                // 档，UI 才不会显示一个实际未运行的状态；错误用 toast 提示，比状态文字更醒目。
+                self.theme_editor_mode.set("off".to_string());
+                self.theme_editor_mode_idx.set(0);
+                self.notify_theme_err(e);
+            }
         }
     }
 
@@ -233,8 +256,39 @@ impl AppState {
     pub fn save_theme_editor_auto_start(&mut self, auto: bool) {
         self.setting_config.theme_editor.auto_start = auto;
         if let Err(e) = crate::setting_config::save(&self.setting_config) {
-            self.status.set(e);
+            self.notify_theme_err(e);
         }
+    }
+
+    /// 应用分段控件（关闭/本次开启/自动开启）当前档位对应的启停+持久化动作。
+    /// 由 reactive_effect 在 `theme_editor_mode_idx` 变化时调用；索引变化本身只表达用户
+    /// 意图，真正的启停副作用集中在这一处，避免散落在各按钮 on_click 里。
+    pub fn apply_theme_editor_mode_idx(&mut self, idx: usize) {
+        match idx {
+            0 => {
+                self.stop_theme_editor_server();
+                self.save_theme_editor_auto_start(false);
+            }
+            1 => {
+                self.start_theme_editor_server(false);
+                self.save_theme_editor_auto_start(false);
+            }
+            2 => {
+                self.start_theme_editor_server(true);
+                self.save_theme_editor_auto_start(true);
+            }
+            _ => {}
+        }
+    }
+
+    /// 主题导入等操作的成功反馈：走 toast（比状态文字更醒目、不与其它状态信息混淆）。
+    pub fn notify_theme_ok(&self, msg: impl Into<String>) {
+        self.theme_feedback.set(Some((true, msg.into())));
+    }
+
+    /// 主题导入等操作的失败反馈：走 toast。
+    pub fn notify_theme_err(&self, msg: impl Into<String>) {
+        self.theme_feedback.set(Some((false, msg.into())));
     }
 
     pub fn set_pending_theme_import(&self, url: String, name: String) {
