@@ -59,7 +59,7 @@ fn main() {
         }
         // 冷启动协议 URL：解析并路由（切相关页 + 占位提示）。
         if let Some(raw) = cli::parse_protocol(&args) {
-            route_protocol(&raw, st.tab, st.status);
+            route_protocol(&raw, st.tab, st.feedback);
         }
     }
     let start_dark = app_state.borrow().dark.get();
@@ -75,11 +75,11 @@ fn main() {
     // 单实例 + 二次运行激活/切页/协议（app_id 含变体后缀，dev/release 互不干扰）。
     let app_id = format!("wind_setting{}", mode::pipe_suffix());
     let si_tab = app_state.borrow().tab;
-    let si_status = app_state.borrow().status;
+    let si_feedback = app_state.borrow().feedback;
     let mut app = App::new("清风输入法设置", 820, 640)
         .single_instance(app_id, move |argv| {
             if let Some(raw) = cli::parse_protocol(&argv) {
-                route_protocol(&raw, si_tab, si_status);
+                route_protocol(&raw, si_tab, si_feedback);
             } else if let Some(idx) = cli::parse_target(&argv) {
                 si_tab.set(idx);
             }
@@ -115,7 +115,7 @@ fn main() {
 }
 
 /// 协议 URL 路由：解析 → 切到相关页 + 占位提示（真正的下载导入依赖词库/外观页，留后续）。
-fn route_protocol(raw: &str, tab: Signal<usize>, status: Signal<String>) {
+fn route_protocol(raw: &str, tab: Signal<usize>, feedback: pages::dict::reactive::Feedback) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {
             // theme→外观(3)，schema/dict/extdict→词库(4)。
@@ -132,10 +132,10 @@ fn route_protocol(raw: &str, tab: Signal<usize>, status: Signal<String>) {
             } else {
                 format!("{}（{}）", req.kind, req.name)
             };
-            status.set(format!("收到导入请求：{label}，导入功能开发中"));
+            feedback.set(Some((ToastKind::Info, format!("收到导入请求：{label}，导入功能开发中"))));
         }
         Err(e) => {
-            status.set(format!("协议解析失败：{e}"));
+            feedback.set(Some((ToastKind::Error, format!("协议解析失败：{e}"))));
         }
     }
 }

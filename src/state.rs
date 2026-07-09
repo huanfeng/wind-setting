@@ -16,6 +16,7 @@ use crate::capabilities::Capabilities;
 use crate::config::{Config, diff_config};
 use crate::dialogs::schema_manager::SchemaManagerState;
 use crate::manifest::Manifest;
+use crate::pages::dict::reactive::Feedback;
 use crate::pages::dict::state::DictManagerState;
 use crate::rpc;
 
@@ -81,8 +82,10 @@ pub struct AppState {
     pub tab: Signal<usize>,
     /// 暗色模式（设置窗口自身明暗，运行时切换）。
     pub dark: Signal<bool>,
-    /// 状态文字（标题栏右侧反馈）。
+    /// 状态文字（底栏左下角连接态：已连接/离线预览/未连接/正在重连）。
     pub status: Signal<String>,
+    /// 瞬时反馈（保存成功/没有变更/保存失败/已重新加载/已恢复本页等），走 toast 而非底栏。
+    pub feedback: Feedback,
     /// 方案管理对话框状态。
     pub schema_mgr: SchemaManagerState,
     /// 词库管理页状态（导航/数据加载/写操作）。
@@ -146,6 +149,7 @@ impl AppState {
             tab: signal(0),
             dark: signal(crate::theme_def::system_dark()),
             status: signal("正在连接服务...".to_string()),
+            feedback: signal(None),
             schema_mgr,
             dict_mgr: DictManagerState::new(),
             reload_confirm: signal(false),
@@ -281,11 +285,14 @@ impl AppState {
             l(&empty);
             n += 1;
         }
-        self.status.set(if n == 0 {
-            "本页无可恢复的默认项".to_string()
-        } else {
-            format!("已恢复本页 {n} 项为默认值（未保存）")
-        });
+        self.feedback.set(Some((
+            ToastKind::Info,
+            if n == 0 {
+                "本页无可恢复的默认项".to_string()
+            } else {
+                format!("已恢复本页 {n} 项为默认值（未保存）")
+            },
+        )));
     }
 
     /// 从服务端重新加载配置：丢弃未保存改动，重新读取并灌回所有 Signal。
@@ -303,7 +310,7 @@ impl AppState {
         self.schema_mgr.apply_config(&cfg);
         self.base_config = cfg.clone();
         self.current_config = cfg;
-        self.status.set("已从服务端重新加载".to_string());
+        self.feedback.set(Some((ToastKind::Info, "已从服务端重新加载".to_string())));
     }
 
     /// 跑所有写回器把 Signal 值写回 current_config，再 diff 保存。
@@ -323,7 +330,7 @@ impl AppState {
         let items =
             diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
         if items.is_empty() {
-            self.status.set(format!("没有变更{conflict_suffix}"));
+            self.feedback.set(Some((ToastKind::Info, format!("没有变更{conflict_suffix}"))));
             return true;
         }
         let items_json: Vec<Value> = items
@@ -347,22 +354,27 @@ impl AppState {
                     .unwrap_or_default();
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
-                    self.status
-                        .set(format!("已保存 {} 项变更{conflict_suffix}", items_json.len()));
+                    self.feedback.set(Some((
+                        ToastKind::Success,
+                        format!("已保存 {} 项变更{conflict_suffix}", items_json.len()),
+                    )));
                     true
                 } else {
                     // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。
-                    self.status.set(format!(
-                        "已保存 {} 项，{} 项被服务端拒绝: {}{conflict_suffix}",
-                        items_json.len() - skipped.len(),
-                        skipped.len(),
-                        skipped.join(", ")
-                    ));
+                    self.feedback.set(Some((
+                        ToastKind::Error,
+                        format!(
+                            "已保存 {} 项，{} 项被服务端拒绝: {}{conflict_suffix}",
+                            items_json.len() - skipped.len(),
+                            skipped.len(),
+                            skipped.join(", ")
+                        ),
+                    )));
                     false
                 }
             }
             Err(e) => {
-                self.status.set(format!("保存失败: {e}"));
+                self.feedback.set(Some((ToastKind::Error, format!("保存失败: {e}"))));
                 false
             }
         }
