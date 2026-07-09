@@ -7,6 +7,9 @@
 use windui::core::{EventCtx, Widget};
 use windui::prelude::*;
 
+/// 反馈信号类型别名：三态 kind + 文案。写操作只写此信号，[`toast_sink`] 按 kind 分派。
+pub type Feedback = Signal<Option<(ToastKind, String)>>;
+
 struct ReactiveEffect {
     /// 返回依赖信号的组合版本号（任一依赖变化时结果必变）。
     version_of: Box<dyn Fn() -> u64>,
@@ -24,13 +27,45 @@ impl Widget for ReactiveEffect {
     }
 }
 
-/// toast 反馈叶子：监听 feedback 信号版本变化，在 on_update 里取值并 ctx.toast。
+/// toast 反馈叶子：监听 feedback 信号版本变化，在 on_update 里取值并按 kind 分派 ctx.toast_*。
 struct ToastSink {
-    feedback: Signal<Option<(bool, String)>>,
+    feedback: Feedback,
     last: u64,
 }
 
 impl Widget for ToastSink {
+    fn on_update(&mut self, ctx: &mut EventCtx) {
+        let cur = self.feedback.version();
+        if cur != self.last {
+            self.last = cur;
+            if let Some((kind, msg)) = self.feedback.get() {
+                match kind {
+                    ToastKind::Success => ctx.toast_ok(msg),
+                    ToastKind::Error => ctx.toast_err(msg),
+                    ToastKind::Info => ctx.toast(msg),
+                }
+            }
+        }
+    }
+}
+
+/// 构造不可见的 toast 反馈节点：feedback 变化即按 kind 弹 toast。
+pub fn toast_sink(feedback: Feedback) -> Element {
+    let last = feedback.version();
+    let w = ToastSink { feedback, last };
+    Element::leaf().widget(w).reactive().width(0).height(0)
+}
+
+/// 旧版 bool 反馈叶子（Task 9/10 前的过渡）：监听 `(是否成功, 文案)` 信号，弹 ok/err 两态 toast。
+///
+/// `schema_manager`/`AppState` 尚未升级到三态 [`Feedback`]（属 Task 9/10 范围），
+/// 此处保留独立的 bool 版本以避免耦合升级，待其迁移完成后本函数可删除。
+struct ToastSinkBool {
+    feedback: Signal<Option<(bool, String)>>,
+    last: u64,
+}
+
+impl Widget for ToastSinkBool {
     fn on_update(&mut self, ctx: &mut EventCtx) {
         let cur = self.feedback.version();
         if cur != self.last {
@@ -46,10 +81,10 @@ impl Widget for ToastSink {
     }
 }
 
-/// 构造不可见的 toast 反馈节点：feedback 变化即弹 toast。
-pub fn toast_sink(feedback: Signal<Option<(bool, String)>>) -> Element {
+/// 构造不可见的 toast 反馈节点（旧版 bool 反馈，见 [`ToastSinkBool`]）。
+pub fn toast_sink_bool(feedback: Signal<Option<(bool, String)>>) -> Element {
     let last = feedback.version();
-    let w = ToastSink { feedback, last };
+    let w = ToastSinkBool { feedback, last };
     Element::leaf().widget(w).reactive().width(0).height(0)
 }
 

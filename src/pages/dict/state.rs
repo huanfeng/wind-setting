@@ -92,8 +92,8 @@ pub struct DictManagerState {
     /// 状态文字（操作反馈）。
     pub status: Signal<String>,
     /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
-    /// (是否成功, 文案)。
-    pub feedback: Signal<Option<(bool, String)>>,
+    /// (三态 kind, 文案)。
+    pub feedback: Signal<Option<(windui::prelude::ToastKind, String)>>,
 
     /// 确认对话框可见标志（清空/删除/恢复默认等破坏性操作）。
     pub confirm_visible: Signal<bool>,
@@ -210,11 +210,15 @@ impl DictManagerState {
 
     /// 成功反馈（toast 绿）。
     pub fn notify_ok(&self, msg: &str) {
-        self.feedback.set(Some((true, msg.to_string())));
+        self.feedback.set(Some((windui::prelude::ToastKind::Success, msg.to_string())));
     }
     /// 失败反馈（toast 红）。
     pub fn notify_err(&self, msg: &str) {
-        self.feedback.set(Some((false, msg.to_string())));
+        self.feedback.set(Some((windui::prelude::ToastKind::Error, msg.to_string())));
+    }
+    /// 中性反馈（toast 灰/默认，如"没有变更"）。
+    pub fn notify_info(&self, msg: &str) {
+        self.feedback.set(Some((windui::prelude::ToastKind::Info, msg.to_string())));
     }
 
     // ── 域折叠 ───────────────────────────────────────────────
@@ -1472,11 +1476,14 @@ mod tests {
 
     #[test]
     fn notify_sets_feedback_signal() {
+        use windui::prelude::ToastKind;
         let st = DictManagerState::new();
         st.notify_ok("已添加");
-        assert_eq!(st.feedback.get(), Some((true, "已添加".to_string())));
+        assert_eq!(st.feedback.get(), Some((ToastKind::Success, "已添加".to_string())));
         st.notify_err("失败了");
-        assert_eq!(st.feedback.get(), Some((false, "失败了".to_string())));
+        assert_eq!(st.feedback.get(), Some((ToastKind::Error, "失败了".to_string())));
+        st.notify_info("没有变更");
+        assert_eq!(st.feedback.get(), Some((ToastKind::Info, "没有变更".to_string())));
     }
 
     #[test]
