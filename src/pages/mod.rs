@@ -220,14 +220,13 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let mut secs = manifest_sections(state, "ui");
     secs.push(theme_import_card(state));
     secs.push(theme_editor_connect_card(app, state));
-    // toast_sink 只需挂一份（不可见叶子），放在 effect 同侧的 stack 里，随主题导入/
-    // 编辑器连接的失败反馈弹出单条 toast，替代原先散落各处的 status.set 提示。
+    // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
+    // toast_sink，这里不需要（也不应该）再单独挂一份。
     let page = sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs);
     Element::stack()
         .fill()
         .child(page)
         .child(theme_editor_mode_effect(app))
-        .child(dict::reactive::toast_sink(state.theme_feedback))
 }
 
 /// 监听 `theme_editor_mode_idx`（分段控件双向绑定）变化，触发实际启停+持久化。
@@ -245,7 +244,7 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
 /// 主题导入卡：本地 TOML 导入 + 主题市场入口。导入结果经 toast 反馈（成功/失败一致走
 /// toast，不再用状态文字——状态文字留给"标题栏右侧"的持续性连接状态展示）。
 fn theme_import_card(state: &AppState) -> Element {
-    let feedback = state.theme_feedback;
+    let feedback = state.feedback;
 
     Element::col()
         .width_match()
@@ -281,12 +280,13 @@ fn theme_import_card(state: &AppState) -> Element {
                                             crate::theme_import::import_text(&text, false)
                                         }) {
                                         Ok(result) => feedback.set(Some((
-                                            true,
+                                            ToastKind::Success,
                                             format!("已导入主题：{}", result.display_name),
                                         ))),
-                                        Err(err) => {
-                                            feedback.set(Some((false, err.user_message())))
-                                        }
+                                        Err(err) => feedback.set(Some((
+                                            ToastKind::Error,
+                                            err.user_message(),
+                                        ))),
                                     }
                                 },
                             );

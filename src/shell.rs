@@ -25,6 +25,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         tab_sig,
         dark,
         status,
+        feedback,
         dialog,
         dict_dialog,
         theme_import_dialog,
@@ -46,6 +47,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.tab,
             st.dark,
             st.status,
+            st.feedback,
             build_schema_manager_dialog(&st.schema_mgr),
             pages::dict::build_dict_dialogs(&st.dict_mgr),
             build_theme_import_dialog(app),
@@ -113,7 +115,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     for dlg in field_dialogs {
         root = root.child(dlg);
     }
-    root
+    // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏 status 只保留连接态）。
+    root.child(crate::pages::dict::reactive::toast_sink(feedback))
 }
 
 /// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。

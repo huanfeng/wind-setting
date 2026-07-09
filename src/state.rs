@@ -16,6 +16,7 @@ use crate::capabilities::Capabilities;
 use crate::config::{Config, diff_config};
 use crate::dialogs::schema_manager::SchemaManagerState;
 use crate::manifest::Manifest;
+use crate::pages::dict::reactive::Feedback;
 use crate::pages::dict::state::DictManagerState;
 use crate::rpc;
 use crate::setting_config;
@@ -94,8 +95,6 @@ pub struct AppState {
     /// 供 `Element::segmented` 双向绑定；实际启停由 reactive_effect 监听其变化触发，
     /// 避免和 `theme_editor_mode`（字符串真相源，供内部方法/测试读取）互相触发死循环。
     pub theme_editor_mode_idx: Signal<usize>,
-    /// 主题导入结果反馈通道：写操作只写此信号，`toast_sink` 在 on_update 里 ctx.toast_*。
-    pub theme_feedback: Signal<Option<(bool, String)>>,
     /// 待确认的主题导入 URL。
     pub pending_theme_import_url: Signal<String>,
     /// 待确认的主题导入名称。
@@ -110,8 +109,10 @@ pub struct AppState {
     pub tab: Signal<usize>,
     /// 暗色模式（设置窗口自身明暗，运行时切换）。
     pub dark: Signal<bool>,
-    /// 状态文字（标题栏右侧反馈）。
+    /// 状态文字（底栏左下角连接态：已连接/离线预览/未连接/正在重连）。
     pub status: Signal<String>,
+    /// 瞬时反馈（保存成功/没有变更/保存失败/已重新加载/已恢复本页等），走 toast 而非底栏。
+    pub feedback: Feedback,
     /// 方案管理对话框状态。
     pub schema_mgr: SchemaManagerState,
     /// 词库管理页状态（导航/数据加载/写操作）。
@@ -199,7 +200,6 @@ impl AppState {
             theme_editor_url: signal(String::new()),
             theme_editor_mode_idx: signal(mode_str_to_idx(&initial_mode)),
             theme_editor_mode: signal(initial_mode),
-            theme_feedback: signal(None),
             pending_theme_import_url: signal(String::new()),
             pending_theme_import_name: signal(String::new()),
             theme_import_url_display: signal("来源：".to_string()),
@@ -208,6 +208,7 @@ impl AppState {
             tab: signal(0),
             dark: signal(crate::theme_def::system_dark()),
             status: signal("正在连接服务...".to_string()),
+            feedback: signal(None),
             schema_mgr,
             dict_mgr: DictManagerState::new(),
             reload_confirm: signal(false),
@@ -233,14 +234,14 @@ impl AppState {
                 self.theme_editor_url.set(s.url.unwrap_or_default());
                 self.theme_editor_mode
                     .set(if auto { "auto" } else { "once" }.to_string());
-                self.status.set("主题编辑器连接已开启".to_string());
+                self.notify_ok("主题编辑器连接已开启");
             }
             Err(e) => {
                 // 启动失败（如端口均被占用）：分段控件已被用户切到"开启"档，须退回"关闭"
                 // 档，UI 才不会显示一个实际未运行的状态；错误用 toast 提示，比状态文字更醒目。
                 self.theme_editor_mode.set("off".to_string());
                 self.theme_editor_mode_idx.set(0);
-                self.notify_theme_err(e);
+                self.notify_err(e);
             }
         }
     }
@@ -250,13 +251,13 @@ impl AppState {
         self.theme_editor_running.set(false);
         self.theme_editor_url.set(String::new());
         self.theme_editor_mode.set("off".to_string());
-        self.status.set("主题编辑器连接已关闭".to_string());
+        self.notify_ok("主题编辑器连接已关闭");
     }
 
     pub fn save_theme_editor_auto_start(&mut self, auto: bool) {
         self.setting_config.theme_editor.auto_start = auto;
         if let Err(e) = crate::setting_config::save(&self.setting_config) {
-            self.notify_theme_err(e);
+            self.notify_err(e);
         }
     }
 
@@ -281,14 +282,14 @@ impl AppState {
         }
     }
 
-    /// 主题导入等操作的成功反馈：走 toast（比状态文字更醒目、不与其它状态信息混淆）。
-    pub fn notify_theme_ok(&self, msg: impl Into<String>) {
-        self.theme_feedback.set(Some((true, msg.into())));
+    /// 瞬时操作成功反馈：走全局 feedback/toast（`shell::build` 挂了唯一的 toast_sink）。
+    pub fn notify_ok(&self, msg: impl Into<String>) {
+        self.feedback.set(Some((ToastKind::Success, msg.into())));
     }
 
-    /// 主题导入等操作的失败反馈：走 toast。
-    pub fn notify_theme_err(&self, msg: impl Into<String>) {
-        self.theme_feedback.set(Some((false, msg.into())));
+    /// 瞬时操作失败反馈：走全局 feedback/toast。
+    pub fn notify_err(&self, msg: impl Into<String>) {
+        self.feedback.set(Some((ToastKind::Error, msg.into())));
     }
 
     pub fn set_pending_theme_import(&self, url: String, name: String) {
@@ -485,11 +486,14 @@ impl AppState {
             l(&empty);
             n += 1;
         }
-        self.status.set(if n == 0 {
-            "本页无可恢复的默认项".to_string()
-        } else {
-            format!("已恢复本页 {n} 项为默认值（未保存）")
-        });
+        self.feedback.set(Some((
+            ToastKind::Info,
+            if n == 0 {
+                "本页无可恢复的默认项".to_string()
+            } else {
+                format!("已恢复本页 {n} 项为默认值（未保存）")
+            },
+        )));
     }
 
     /// 从服务端重新加载配置：丢弃未保存改动，重新读取并灌回所有 Signal。
@@ -507,7 +511,7 @@ impl AppState {
         self.schema_mgr.apply_config(&cfg);
         self.base_config = cfg.clone();
         self.current_config = cfg;
-        self.status.set("已从服务端重新加载".to_string());
+        self.feedback.set(Some((ToastKind::Info, "已从服务端重新加载".to_string())));
     }
 
     /// 跑所有写回器把 Signal 值写回 current_config，再 diff 保存。
@@ -521,13 +525,13 @@ impl AppState {
                 w(&mut self.current_config);
             }
         }
-        let items = diff_config(
-            &self.base_config,
-            &self.current_config,
-            &self.capabilities.map_keys(),
-        );
+        let conflict_suffix = check_trigger_key_conflicts(&self.current_config)
+            .map(|m| format!("；{m}"))
+            .unwrap_or_default();
+        let items =
+            diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
         if items.is_empty() {
-            self.status.set("没有变更".to_string());
+            self.feedback.set(Some((ToastKind::Info, format!("没有变更{conflict_suffix}"))));
             return true;
         }
         let items_json: Vec<Value> = items
@@ -551,26 +555,78 @@ impl AppState {
                     .unwrap_or_default();
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
-                    self.status
-                        .set(format!("已保存 {} 项变更", items_json.len()));
+                    self.feedback.set(Some((
+                        ToastKind::Success,
+                        format!("已保存 {} 项变更{conflict_suffix}", items_json.len()),
+                    )));
                     true
                 } else {
                     // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。
-                    self.status.set(format!(
-                        "已保存 {} 项，{} 项被服务端拒绝: {}",
-                        items_json.len() - skipped.len(),
-                        skipped.len(),
-                        skipped.join(", ")
-                    ));
+                    self.feedback.set(Some((
+                        ToastKind::Error,
+                        format!(
+                            "已保存 {} 项，{} 项被服务端拒绝: {}{conflict_suffix}",
+                            items_json.len() - skipped.len(),
+                            skipped.len(),
+                            skipped.join(", ")
+                        ),
+                    )));
                     false
                 }
             }
             Err(e) => {
-                self.status.set(format!("保存失败: {e}"));
+                self.feedback.set(Some((ToastKind::Error, format!("保存失败: {e}"))));
                 false
             }
         }
     }
+}
+
+/// 收集当前配置里"裸键触发"四组的 (显示名, 触发键列表)，供按键冲突检测用。
+fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+    fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
+        v.map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+
+    let mut groups = vec![
+        ("临时拼音".to_string(), strs(cfg.get_array("input.temp_pinyin.trigger_keys"))),
+        ("临时英文".to_string(), strs(cfg.get_array("input.temp_english.trigger_keys"))),
+    ];
+
+    if let Some(arr) = cfg.get_array("schema.mix_modes") {
+        for m in arr {
+            let label = m.get("name").and_then(Value::as_str).unwrap_or("混合模式").to_string();
+            let keys = m
+                .get("trigger_keys")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            groups.push((label, keys));
+        }
+    }
+
+    if let Some(arr) = cfg.get_array("schema.special_modes") {
+        for m in arr {
+            let name = m.get("name").and_then(Value::as_str).unwrap_or("");
+            let label = format!("特殊模式「{name}」");
+            let keys = m
+                .get("trigger_keys")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            groups.push((label, keys));
+        }
+    }
+
+    groups
+}
+
+/// 跑一次跨"裸键触发"四组的冲突检测；无冲突返回 None。
+fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
+    let groups = collect_trigger_key_groups(cfg);
+    let hits = crate::key_conflict::find_key_conflicts(&groups);
+    crate::key_conflict::conflict_summary(&hits)
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -712,6 +768,67 @@ fn load_theme_names() -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod trigger_conflict_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_collect_trigger_key_groups_no_conflict() {
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["backtick"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [
+                    { "id": "quick_mix", "name": "快捷", "trigger_keys": ["semicolon"] }
+                ],
+                "special_modes": []
+            }
+        }));
+        assert!(check_trigger_key_conflicts(&cfg).is_none());
+    }
+
+    #[test]
+    fn test_check_trigger_key_conflicts_detects_overlap() {
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["semicolon"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [
+                    { "id": "quick_mix", "name": "快捷", "trigger_keys": ["semicolon"] }
+                ],
+                "special_modes": []
+            }
+        }));
+        let msg = check_trigger_key_conflicts(&cfg).unwrap();
+        assert!(msg.contains("semicolon"));
+        assert!(msg.contains("临时拼音"));
+        assert!(msg.contains("快捷"));
+    }
+
+    #[test]
+    fn test_check_trigger_key_conflicts_includes_special_modes() {
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["z"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [],
+                "special_modes": [
+                    { "id": "fast_symbols", "name": "快符", "trigger_keys": ["z"] }
+                ]
+            }
+        }));
+        let msg = check_trigger_key_conflicts(&cfg).unwrap();
+        assert!(msg.contains("特殊模式「快符」"));
+    }
 }
 
 // 测试模块后仍有 load_schemas 等私有辅助函数；局部豁免 toolchain 新增的风格 lint。

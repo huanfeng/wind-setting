@@ -10,8 +10,10 @@ mod cli;
 mod config;
 mod dialogs;
 mod icons;
+mod key_conflict;
 mod logger;
 mod manifest;
+mod mix_trigger;
 mod mode;
 mod pages;
 mod protocol;
@@ -71,7 +73,7 @@ fn main() {
         app_state.borrow().start_theme_editor_server(true);
     }
     if let Some(w) = app_state.borrow().setting_config_warning.clone() {
-        app_state.borrow().status.set(w);
+        app_state.borrow().feedback.set(Some((ToastKind::Info, w)));
     }
     let start_dark = app_state.borrow().dark.get();
 
@@ -128,7 +130,8 @@ fn main() {
         .run();
 }
 
-/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态，具体 UI 留后续接线。
+/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框，
+/// 其它 kind 提示暂不支持。反馈走 feedback（toast），status 只保留连接态。
 fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {
@@ -144,19 +147,25 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
             if req.kind == "theme" {
                 st.set_pending_theme_import(req.url, req.name);
                 st.theme_import_dialog_visible.set(true);
-                st.status
-                    .set("收到主题导入请求，请确认来源后导入".to_string());
+                st.feedback.set(Some((
+                    ToastKind::Info,
+                    "收到主题导入请求，请确认来源后导入".to_string(),
+                )));
             } else {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
-                st.status.set(format!("暂不支持通过协议导入 {}", req.kind));
+                st.feedback.set(Some((
+                    ToastKind::Info,
+                    format!("暂不支持通过协议导入 {}", req.kind),
+                )));
             }
         }
         Err(e) => {
             let st = state.borrow();
             st.clear_pending_theme_import();
             st.theme_import_dialog_visible.set(false);
-            st.status.set(format!("协议解析失败：{e}"));
+            st.feedback
+                .set(Some((ToastKind::Error, format!("协议解析失败：{e}"))));
         }
     }
 }
@@ -182,7 +191,10 @@ mod tests {
         );
         assert_eq!(st.pending_theme_import_name.get(), "Dark");
         assert!(st.theme_import_dialog_visible.get());
-        assert_eq!(st.status.get(), "收到主题导入请求，请确认来源后导入");
+        assert_eq!(
+            st.feedback.get(),
+            Some((ToastKind::Info, "收到主题导入请求，请确认来源后导入".to_string()))
+        );
     }
 
     #[test]
@@ -203,7 +215,10 @@ mod tests {
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());
-        assert_eq!(st.status.get(), "暂不支持通过协议导入 schema");
+        assert_eq!(
+            st.feedback.get(),
+            Some((ToastKind::Info, "暂不支持通过协议导入 schema".to_string()))
+        );
     }
 
     #[test]
@@ -217,7 +232,9 @@ mod tests {
         route_protocol("windinput://import/theme", &state);
 
         let st = state.borrow();
-        assert!(st.status.get().starts_with("协议解析失败："));
+        let (kind, msg) = st.feedback.get().expect("应有反馈");
+        assert_eq!(kind, ToastKind::Error);
+        assert!(msg.starts_with("协议解析失败："));
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());

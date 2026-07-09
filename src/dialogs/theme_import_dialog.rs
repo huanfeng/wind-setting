@@ -89,7 +89,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                         Ok(result) => {
                             let mut st = import_state.borrow_mut();
                             st.refresh_theme_names();
-                            st.notify_theme_ok(format!("已导入主题：{}", result.display_name));
+                            st.notify_ok(format!("已导入主题：{}", result.display_name));
                             AppState::clear_theme_import_signals(
                                 url,
                                 name,
@@ -101,7 +101,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                         // 下载/预览/导入任一环节失败都保留对话框（用户可改地址重试或取消），
                         // 但错误改走 toast——原先的 status.set 是标题栏右侧的持续状态文字，
                         // 一条一次性的导入失败提示混在那里容易被忽略或被后续状态覆盖。
-                        Err(err) => import_state.borrow().notify_theme_err(err.user_message()),
+                        Err(err) => import_state.borrow().notify_err(err.user_message()),
                     }
                 })),
         );

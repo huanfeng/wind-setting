@@ -67,8 +67,8 @@ pub struct SchemaManagerState {
     pub sel_ver: Signal<u64>,
     /// 静态状态文字（列表计数等长效信息）。
     pub status: Signal<String>,
-    /// 操作反馈（(成功?, 消息)）：经 toast_sink 弹单条 toast，替代原 status 式提示。
-    pub feedback: Signal<Option<(bool, String)>>,
+    /// 操作反馈（三态 kind + 消息）：经 toast_sink 弹单条 toast，替代原 status 式提示。
+    pub feedback: crate::pages::dict::reactive::Feedback,
     pub confirm_visible: Signal<bool>,
     pub confirm_msg: Signal<String>,
     pub confirm_id: Rc<RefCell<String>>,
@@ -374,8 +374,8 @@ impl SchemaManagerState {
     }
 
     /// 操作反馈：弹单条 toast（经页面挂载的 toast_sink）。
-    fn notify(&self, ok: bool, msg: impl Into<String>) {
-        self.feedback.set(Some((ok, msg.into())));
+    fn notify(&self, kind: ToastKind, msg: impl Into<String>) {
+        self.feedback.set(Some((kind, msg.into())));
     }
 
     /// 上移指定方案在 enabled_order 中的位置（立即刷新列表）。
@@ -386,7 +386,7 @@ impl SchemaManagerState {
                 if idx > 0 { order.swap(idx, idx - 1); }
             }
         }
-        self.notify(true, "排序已调整（保存后生效）");
+        self.notify(ToastKind::Success, "排序已调整（保存后生效）");
         self.rebuild_list();
     }
 
@@ -398,7 +398,7 @@ impl SchemaManagerState {
                 if idx + 1 < order.len() { order.swap(idx, idx + 1); }
             }
         }
-        self.notify(true, "排序已调整（保存后生效）");
+        self.notify(ToastKind::Success, "排序已调整（保存后生效）");
         self.rebuild_list();
     }
 
@@ -421,12 +421,12 @@ impl SchemaManagerState {
             // 表现为"禁用最后一个反而全开"）。
             if order.len() <= 1 {
                 drop(order);
-                self.notify(false, "至少需保留一个启用的方案");
+                self.notify(ToastKind::Error, "至少需保留一个启用的方案");
                 return false;
             }
             order.retain(|id| id != schema_id);
         }
-        self.notify(true, if new_enabled { "已启用（保存后生效）" } else { "已禁用（保存后生效）" });
+        self.notify(ToastKind::Success, if new_enabled { "已启用（保存后生效）" } else { "已禁用（保存后生效）" });
         self.rebuild_list();
         true
     }
@@ -482,7 +482,7 @@ impl SchemaManagerState {
             return;
         }
         if self.layouts.borrow().is_empty() {
-            self.notify(false, "双拼布局清单未加载，无法保存");
+            self.notify(ToastKind::Error, "双拼布局清单未加载，无法保存");
             return;
         }
         let layout = {
@@ -504,9 +504,9 @@ impl SchemaManagerState {
                 self.settings_visible.set(false);
                 // 行名含当前布局后缀，保存后重拉列表刷新显示（refresh 保留选中）。
                 self.refresh();
-                self.notify(true, "方案配置已保存");
+                self.notify(ToastKind::Success, "方案配置已保存");
             }
-            Err(e) => self.notify(false, format!("保存失败: {e}")),
+            Err(e) => self.notify(ToastKind::Error, format!("保存失败: {e}")),
         }
     }
 
@@ -515,7 +515,7 @@ impl SchemaManagerState {
         let schemas = self.schemas.borrow();
         if let Some(entry) = schemas.iter().find(|e| e.id == schema_id) {
             if entry.source == "builtin" {
-                self.notify(false, "内置方案不可删除");
+                self.notify(ToastKind::Error, "内置方案不可删除");
                 return;
             }
             let display_name =
@@ -536,9 +536,9 @@ impl SchemaManagerState {
             Ok(_) => {
                 // refresh 内会发现选中 ID 已消失并清空选中。
                 self.refresh();
-                self.notify(true, "方案已删除");
+                self.notify(ToastKind::Success, "方案已删除");
             }
-            Err(e) => self.notify(false, format!("删除失败: {e}")),
+            Err(e) => self.notify(ToastKind::Error, format!("删除失败: {e}")),
         }
     }
 }

@@ -302,6 +302,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "string" => build_string(state, key, item, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
+        "dialog_button_mix_trigger" => build_dialog_button(state, key, item, cfg),
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     }
 }
@@ -1269,8 +1270,12 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
 /// 按 capability 类型分派构建对话框主体，挂到根，返回控制其显隐的 `visible` Signal。
 fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
     let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
-    // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
-    if key == "input.punct.custom_mappings" {
+    // 快捷输入激活键：schema.mix_modes 数组整体，按 id=="quick_mix" 定位其中一项的
+    // trigger_keys 字段，不是通用 strlist/map 形态，走非声明式整体读写。
+    if key == "schema.mix_modes" {
+        build_dialog_button_mix_trigger(state, item, cfg)
+    } else if key == "input.punct.custom_mappings" {
+        // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
         build_dialog_button_punct(state, key, cfg)
     } else if key == "ui.candidate.index_labels" {
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
@@ -1442,6 +1447,82 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// 快捷输入触发键：`schema.mix_modes` 是整体读写的 structlist，实际要改的是数组里
+/// `id=="quick_mix"` 那一项的 `trigger_keys` 字段，走非声明式读写（区别于通用 `build_dialog_button_pairs`
+/// 假设 key 直接指向顶层 strlist/map 的情形）。
+const QUICK_MIX_ID: &str = "quick_mix";
+/// `quick_mix` 找不到该项时的回落触发键，对齐主仓 wind-config `default_mix_modes()` 给
+/// `quick_mix` 定的默认值。注意仅用于「整个 quick_mix 项都找不到」（`None`）的场景，
+/// 不用于「trigger_keys 显式为空数组」（`Some(vec![])`，用户故意清空）的场景。
+const QUICK_MIX_DEFAULT_TRIGGER: &str = "semicolon";
+
+fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_pairs_dialog;
+    use crate::mix_trigger::{mix_mode_trigger_keys, patch_mix_mode_trigger_keys};
+
+    let mix_modes_path = "schema.mix_modes";
+    // 注意：这里的 cfg 可能是 AppState::empty() 的占位配置（main.rs 里 shell::build 先于
+    // 后台异步 LoadedState::fetch 完成就同步执行，UI 立即可显示、真实数据稍后经 apply_loaded
+    // 回填），此时 quick_mix 大概率还找不到。writer/loader 必须**无条件注册**（不能像早期实现
+    // 那样 `if found` 才注册）——否则等真实配置到达、loader 本该被 apply_loaded 统一调用去刷新
+    // Signal 时，这个字段的 loader 根本没登记过，永远显示/保存不出真实值。
+    let cur_mix_modes: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
+    let cur: Vec<String> = mix_mode_trigger_keys(&cur_mix_modes, QUICK_MIX_ID)
+        .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
+
+    let opts = item.options.clone();
+    let sigs: Vec<(String, Signal<bool>)> = opts
+        .iter()
+        .map(|o| (o.value.clone(), signal(cur.contains(&o.value))))
+        .collect();
+    let visible = signal(false);
+
+    // writer：整体读出 schema.mix_modes，按 id 替换 trigger_keys，整体写回；找不到 quick_mix
+    // 项时 patch_mix_mode_trigger_keys 返回 None，本次保存对这个字段静默无操作（不新建实例）。
+    let sigs_w = sigs.clone();
+    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
+        let selected: Vec<String> = sigs_w
+            .iter()
+            .filter(|(_, s)| s.get())
+            .map(|(v, _)| v.clone())
+            .collect();
+        let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+        if let Some(patched) = patch_mix_mode_trigger_keys(&arr, QUICK_MIX_ID, &selected) {
+            c.set_path(mix_modes_path, Value::Array(patched));
+        }
+    }));
+
+    // loader：apply_loaded/重新加载/重置时把 Signal 状态从当前 Config 灌回；找不到 quick_mix
+    // 项时回落到 QUICK_MIX_DEFAULT_TRIGGER（对齐主仓 default_mix_modes 的默认触发键）。
+    let sigs_l = sigs.clone();
+    state.fields.loaders.borrow_mut().insert(
+        mix_modes_path.to_string(),
+        Box::new(move |c: &Config| {
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            let cur = mix_mode_trigger_keys(&arr, QUICK_MIX_ID)
+                .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
+            for (v, s) in &sigs_l {
+                s.set(cur.iter().any(|k| k == v));
+            }
+        }),
+    );
+
+    let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
+    let hint = item.hint.clone().unwrap_or_default();
+    // 对话框「恢复默认」目标：固定用 QUICK_MIX_DEFAULT_TRIGGER，不用 cur.clone()——cur 在占位
+    // 配置阶段可能是空/临时值，不能当作「默认值」语义。
+    let dlg = build_pairs_dialog(
+        visible,
+        &item.label,
+        &hint,
+        sigs,
+        labels,
+        vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()],
+    );
     register_dialog(state, dlg);
     visible
 }
@@ -1749,6 +1830,31 @@ mod tests {
             assert!(found.is_some(), "schema 组缺少 section「{name}」");
             assert!(!found.unwrap().1.is_empty(), "section「{name}」为空");
         }
+    }
+
+    /// 守护：`build_dialog_button_mix_trigger` loader 里 `mix_mode_trigger_keys(...).unwrap_or_else(...)`
+    /// 那一行的回落语义——「恢复本页默认」用空 Config 跑 loader 时，quick_mix 整项找不到（`None`）应
+    /// 回落到 semicolon，而不是清空；但若 quick_mix 项存在且 trigger_keys 显式为空数组（`Some(vec![])`，
+    /// 用户故意清空），不应被强行改回 semicolon。
+    #[test]
+    fn mix_trigger_loader_fallback_semantics() {
+        use crate::mix_trigger::mix_mode_trigger_keys;
+        use serde_json::json;
+
+        // 找不到 quick_mix 项（如「恢复本页默认」传入的空 Config）：回落 semicolon。
+        let empty_arr: Vec<Value> = vec![];
+        let cur = mix_mode_trigger_keys(&empty_arr, QUICK_MIX_ID)
+            .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
+        assert_eq!(cur, vec!["semicolon".to_string()]);
+
+        // quick_mix 项存在但 trigger_keys 显式为空数组：尊重用户，不强行改回 semicolon。
+        let arr_with_empty_trigger = vec![json!({
+            "id": "quick_mix",
+            "trigger_keys": []
+        })];
+        let cur = mix_mode_trigger_keys(&arr_with_empty_trigger, QUICK_MIX_ID)
+            .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
+        assert_eq!(cur, Vec::<String>::new());
     }
 
     #[test]
