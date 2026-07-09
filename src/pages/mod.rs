@@ -161,7 +161,7 @@ fn scheme_page(state: &AppState) -> Element {
                 .on_click(|ctx| ctx.toast("导入功能开发中")),
         )
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
-        .child(dict::reactive::toast_sink_bool(mgr.feedback));
+        .child(dict::reactive::toast_sink(mgr.feedback));
 
     // 复合行列表（已启用在前 · 未启用在后 · ↑/↓ · outline 类型徽章）
     let list_el = build_schema_inline_list(mgr);

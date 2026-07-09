@@ -93,7 +93,7 @@ pub struct DictManagerState {
     pub status: Signal<String>,
     /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
     /// (三态 kind, 文案)。
-    pub feedback: Signal<Option<(windui::prelude::ToastKind, String)>>,
+    pub feedback: super::reactive::Feedback,
 
     /// 确认对话框可见标志（清空/删除/恢复默认等破坏性操作）。
     pub confirm_visible: Signal<bool>,

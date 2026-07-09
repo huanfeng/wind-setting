@@ -56,38 +56,6 @@ pub fn toast_sink(feedback: Feedback) -> Element {
     Element::leaf().widget(w).reactive().width(0).height(0)
 }
 
-/// 旧版 bool 反馈叶子（Task 9/10 前的过渡）：监听 `(是否成功, 文案)` 信号，弹 ok/err 两态 toast。
-///
-/// `schema_manager`/`AppState` 尚未升级到三态 [`Feedback`]（属 Task 9/10 范围），
-/// 此处保留独立的 bool 版本以避免耦合升级，待其迁移完成后本函数可删除。
-struct ToastSinkBool {
-    feedback: Signal<Option<(bool, String)>>,
-    last: u64,
-}
-
-impl Widget for ToastSinkBool {
-    fn on_update(&mut self, ctx: &mut EventCtx) {
-        let cur = self.feedback.version();
-        if cur != self.last {
-            self.last = cur;
-            if let Some((ok, msg)) = self.feedback.get() {
-                if ok {
-                    ctx.toast_ok(msg);
-                } else {
-                    ctx.toast_err(msg);
-                }
-            }
-        }
-    }
-}
-
-/// 构造不可见的 toast 反馈节点（旧版 bool 反馈，见 [`ToastSinkBool`]）。
-pub fn toast_sink_bool(feedback: Signal<Option<(bool, String)>>) -> Element {
-    let last = feedback.version();
-    let w = ToastSinkBool { feedback, last };
-    Element::leaf().widget(w).reactive().width(0).height(0)
-}
-
 /// 构造一个不可见的响应式 effect 节点。
 ///
 /// - `version_of`：把所监视信号的 `.version()` 组合成一个 u64（任一变则整体变）。
