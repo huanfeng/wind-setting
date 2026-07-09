@@ -19,7 +19,7 @@ use crate::theme_def::theme_for;
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
-    let (tabs_vec, tab_sig, dark, status, dialog, dict_dialog, reload_confirm, reset_confirm, conn_ok, conn_failed, field_dialogs) = {
+    let (tabs_vec, tab_sig, dark, status, feedback, dialog, dict_dialog, reload_confirm, reset_confirm, conn_ok, conn_failed, field_dialogs) = {
         let st = app.borrow();
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
@@ -32,6 +32,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.tab,
             st.dark,
             st.status,
+            st.feedback,
             build_schema_manager_dialog(&st.schema_mgr),
             pages::dict::build_dict_dialogs(&st.dict_mgr),
             st.reload_confirm,
@@ -97,7 +98,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     for dlg in field_dialogs {
         root = root.child(dlg);
     }
-    root
+    // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏 status 只保留连接态）。
+    root.child(crate::pages::dict::reactive::toast_sink(feedback))
 }
 
 /// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。
