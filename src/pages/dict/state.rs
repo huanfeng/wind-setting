@@ -504,7 +504,7 @@ impl DictManagerState {
             Err(e) => {
                 self.rows.borrow_mut().clear();
                 self.total.set(0);
-                self.status.set(format!("加载失败: {e}"));
+                self.notify_err(&format!("加载失败: {e}"));
                 self.rebuild_list();
             }
         }
@@ -572,7 +572,7 @@ impl DictManagerState {
     /// 统一写入：调 RPC，成功刷新并置反馈，失败置错误（纯 method/params，副作用集中于此）。
     fn write(&self, method: &str, params: Value, ok_msg: &str) {
         if method.is_empty() {
-            self.status.set("该操作不可用".into());
+            self.notify_info("该操作不可用");
             return;
         }
         match rpc::call_core(method, &params) {
@@ -767,7 +767,7 @@ impl DictManagerState {
         }
         let text = self.edit_text.get();
         if text.trim().is_empty() {
-            self.status.set("请先填写词条".into());
+            self.notify_info("请先填写词条");
             return;
         }
         let mut p = self.scoped_params();
