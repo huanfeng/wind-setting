@@ -49,6 +49,23 @@ pub enum SchemaListItem {
     Divider { hidden_with_disabled: bool },
 }
 
+/// 方案设置对话框的一个配置分节。新增一种方案设置 = 加一个变体 + build_section 分支。
+#[derive(Clone)]
+pub enum SettingsSection {
+    ShuangpinLayout,
+    ExtensionDicts,
+    Empty,
+}
+
+/// 扩展词库行（UI 响应式包装：每行一个受控开关信号）。
+#[derive(Clone)]
+pub struct DictRow {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub on: Signal<bool>,
+}
+
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
 pub struct SchemaManagerState {
@@ -85,6 +102,12 @@ pub struct SchemaManagerState {
     /// 双拼布局清单 (id, 显示名)：refresh() 时经 `schema.layouts` RPC 动态拉取
     /// （合并安装目录与用户目录），取代原硬编码；下拉选项/索引映射/行名后缀均以此为准。
     pub layouts: Rc<RefCell<Vec<(String, String)>>>,
+    /// 当前打开方案应显示的配置分节（open_settings_at_id 重算，驱动对话框 body 重建）。
+    pub settings_sections: Signal<Vec<SettingsSection>>,
+    /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
+    pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
+    /// 是否存在需批量提交的分节（当前=双拼布局），驱动 footer「保存」按钮可见性。
+    pub settings_has_save: Signal<bool>,
 }
 
 impl SchemaManagerState {
@@ -109,6 +132,9 @@ impl SchemaManagerState {
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
+            settings_sections: signal(vec![]),
+            settings_dicts: Rc::new(RefCell::new(Vec::new())),
+            settings_has_save: signal(false),
         };
         state.refresh();
         state
@@ -471,6 +497,29 @@ impl SchemaManagerState {
         *self.settings_cfg.borrow_mut() = cfg;
         self.settings_is_shuangpin.set(is_sp);
         self.settings_content.set(content);
+
+        // ── 计算配置分节（可扩展体系）──
+        let mut sections: Vec<SettingsSection> = Vec::new();
+        let mut has_save = false;
+        if is_sp {
+            sections.push(SettingsSection::ShuangpinLayout);
+            has_save = true; // 双拼布局走「保存」按钮
+        }
+        let dict_infos = parse_extension_dicts(&self.settings_cfg.borrow());
+        let rows: Vec<DictRow> = dict_infos
+            .into_iter()
+            .map(|d| DictRow { id: d.id, label: d.label, description: d.description, on: signal(d.enabled) })
+            .collect();
+        if !rows.is_empty() {
+            sections.push(SettingsSection::ExtensionDicts);
+        }
+        *self.settings_dicts.borrow_mut() = rows;
+        if sections.is_empty() {
+            sections.push(SettingsSection::Empty);
+        }
+        self.settings_has_save.set(has_save);
+        self.settings_sections.set(sections);
+
         self.settings_visible.set(true);
     }
 
@@ -507,6 +556,25 @@ impl SchemaManagerState {
                 self.notify(ToastKind::Success, "方案配置已保存");
             }
             Err(e) => self.notify(ToastKind::Error, format!("保存失败: {e}")),
+        }
+    }
+
+    /// 即时开关扩展词库：调 schema.setDictEnabled 成功后才翻转该行信号（受控，零闪烁）。
+    pub fn toggle_dict(&self, dict_id: &str, label: &str, want: bool) {
+        let id = self.settings_schema_id.borrow().clone();
+        if id.is_empty() { return; }
+        match rpc::call_core(
+            "schema.setDictEnabled",
+            &json!({ "id": id, "dictId": dict_id, "enabled": want }),
+        ) {
+            Ok(_) => {
+                if let Some(row) = self.settings_dicts.borrow().iter().find(|r| r.id == dict_id) {
+                    row.on.set(want);
+                }
+                let verb = if want { "已启用" } else { "已停用" };
+                self.notify(ToastKind::Success, format!("{verb}「{label}」"));
+            }
+            Err(e) => self.notify(ToastKind::Error, format!("切换失败: {e}")),
         }
     }
 
@@ -569,6 +637,35 @@ pub fn engine_label(t: &str) -> &'static str {
         "mixed"     => "混输",
         _           => "未知",
     }
+}
+
+/// 附加词库解析结果（纯数据，供 UI 层包装为响应式行）。
+pub struct DictInfo {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+/// 从方案配置 `cfg["dictionaries"]` 解析可开关的附加词库（过滤主库）。
+/// 生效值：enabled.unwrap_or(default_enabled.unwrap_or(true))。
+fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
+    let Some(arr) = cfg.get("dictionaries").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter(|d| !d.get("default").and_then(|v| v.as_bool()).unwrap_or(false))
+        .map(|d| {
+            let default_enabled = d.get("default_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            let enabled = d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(default_enabled);
+            DictInfo {
+                id: d.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                label: d.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                description: d.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                enabled,
+            }
+        })
+        .collect()
 }
 
 // ──────────────────────── 内联复合列表 ────────────────────────
@@ -829,34 +926,81 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
     Element::dialog(state.confirm_visible, content)
 }
 
+/// 按分节类型构建对话框内的一个配置区块。新增方案设置只需在此加一个 match 分支。
+fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
+    match kind {
+        SettingsSection::ShuangpinLayout => {
+            let labels: Vec<String> =
+                state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(12)
+                .padding_xy(0, 8)
+                .child(
+                    Element::label("双拼布局")
+                        .font_size(13.0)
+                        .fg_role(Role::Text)
+                        .weight(1.0)
+                        .max_lines(1),
+                )
+                .child(Element::dropdown(labels, state.settings_layout).width(170))
+        }
+        SettingsSection::ExtensionDicts => {
+            let mut col = Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(
+                    Element::label("扩展词库")
+                        .font_size(12.0)
+                        .font_weight(600)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .padding_xy(0, 2),
+                );
+            for row in state.settings_dicts.borrow().iter() {
+                let st = state.clone();
+                let dict_id = row.id.clone();
+                let label = row.label.clone();
+                let cb = Element::checkbox(row.label.clone(), row.on).on_toggle(move |_| {
+                    let want = !st.settings_dicts.borrow().iter()
+                        .find(|r| r.id == dict_id).map(|r| r.on.get()).unwrap_or(false);
+                    st.toggle_dict(&dict_id, &label, want);
+                });
+                let mut item = Element::col().width_match().spacing(2).padding_xy(0, 4).child(cb);
+                if !row.description.is_empty() {
+                    item = item.child(
+                        Element::label(row.description.clone())
+                            .font_size(11.0)
+                            .fg_role(Role::TextMuted)
+                            .width_match()
+                            .padding_xy(24, 0)
+                            .max_lines(2),
+                    );
+                }
+                col = col.child(item);
+            }
+            col
+        }
+        SettingsSection::Empty => Element::label("该方案暂无可配置项。")
+            .font_size(11.0)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .padding_xy(0, 4),
+    }
+}
+
 fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let visible = state.settings_visible;
     let content = state.settings_content;
-    let is_sp = state.settings_is_shuangpin;
+    let has_save = state.settings_has_save;
 
-    // 双拼布局行：仅双拼方案可见。下拉选项来自 state.layouts（schema.layouts RPC 动态拉取）。
-    let layout_labels: Vec<String> =
-        state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
-    let sp_row = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(12)
-        .padding_xy(0, 8)
-        .child(
-            Element::label("双拼布局")
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .weight(1.0)
-                .max_lines(1),
-        )
-        .child(Element::dropdown(layout_labels, state.settings_layout).width(170))
-        .visible_when(move || is_sp.get());
-    let plain_hint = Element::label("该方案暂无可配置项。")
-        .font_size(11.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .padding_xy(0, 4)
-        .visible_when(move || !is_sp.get());
+    // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）。
+    let st_body = state.clone();
+    let sections = Element::host_signal(state.settings_sections, move |kind| {
+        build_section(kind, &st_body)
+    });
 
     let body = Element::col()
         .width_match()
@@ -867,8 +1011,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .fg_role(Role::Text)
                 .width_match(),
         )
-        .child(sp_row)
-        .child(plain_hint);
+        .child(sections);
 
     let st_save = state.clone();
     let footer = Element::row()
@@ -885,8 +1028,38 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             Element::button("保存")
                 .small()
                 .on_click(move |_| st_save.save_settings())
-                .visible_when(move || is_sp.get()),
+                .visible_when(move || has_save.get()),
         );
 
     Element::dialog_panel(visible, "方案设置", 440, move |_| visible.set(false), body, footer)
+}
+
+#[cfg(test)]
+mod ext_dict_tests {
+    use super::*;
+
+    #[test]
+    fn parse_filters_main_and_resolves_enabled() {
+        let cfg = json!({ "dictionaries": [
+            { "id": "m",  "label": "主库", "default": true },
+            { "id": "a",  "label": "扩展A", "description": "描述A", "default_enabled": true },
+            { "id": "b",  "label": "扩展B", "default_enabled": false },
+            { "id": "c",  "label": "扩展C", "default_enabled": true, "enabled": false },
+            { "id": "d",  "label": "扩展D" }
+        ]});
+        let rows = parse_extension_dicts(&cfg);
+        // 主库被过滤，剩 4 条附加库。
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c", "d"]);
+        assert!(rows[0].enabled, "a: default_enabled=true");
+        assert!(!rows[1].enabled, "b: default_enabled=false");
+        assert!(!rows[2].enabled, "c: enabled=false 覆盖 default_enabled=true");
+        assert!(rows[3].enabled, "d: 无字段 → 默认 true");
+        assert_eq!(rows[0].description, "描述A");
+    }
+
+    #[test]
+    fn parse_missing_dictionaries_is_empty() {
+        assert!(parse_extension_dicts(&json!({})).is_empty());
+        assert!(parse_extension_dicts(&json!({ "dictionaries": [] })).is_empty());
+    }
 }
