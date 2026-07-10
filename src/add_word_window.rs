@@ -43,7 +43,7 @@ pub fn run(params: AddWordParams) {
     App::new("添加用户词库", 460, 300)
         .single_instance(app_id, move |argv| {
             if let Some(p) = crate::cli::parse_add_word(&argv) {
-                si_mgr.set_schemas(&load_schemas());
+                si_mgr.set_schemas_no_reload(&load_schemas());
                 si_mgr.open_add_word_prefilled(&p.text, &p.code, &p.schema);
             }
         })
