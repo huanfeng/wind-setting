@@ -926,34 +926,81 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
     Element::dialog(state.confirm_visible, content)
 }
 
+/// 按分节类型构建对话框内的一个配置区块。新增方案设置只需在此加一个 match 分支。
+fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
+    match kind {
+        SettingsSection::ShuangpinLayout => {
+            let labels: Vec<String> =
+                state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(12)
+                .padding_xy(0, 8)
+                .child(
+                    Element::label("双拼布局")
+                        .font_size(13.0)
+                        .fg_role(Role::Text)
+                        .weight(1.0)
+                        .max_lines(1),
+                )
+                .child(Element::dropdown(labels, state.settings_layout).width(170))
+        }
+        SettingsSection::ExtensionDicts => {
+            let mut col = Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(
+                    Element::label("扩展词库")
+                        .font_size(12.0)
+                        .font_weight(600)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .padding_xy(0, 2),
+                );
+            for row in state.settings_dicts.borrow().iter() {
+                let st = state.clone();
+                let dict_id = row.id.clone();
+                let label = row.label.clone();
+                let cb = Element::checkbox(row.label.clone(), row.on).on_toggle(move |_| {
+                    let want = !st.settings_dicts.borrow().iter()
+                        .find(|r| r.id == dict_id).map(|r| r.on.get()).unwrap_or(false);
+                    st.toggle_dict(&dict_id, &label, want);
+                });
+                let mut item = Element::col().width_match().spacing(2).padding_xy(0, 4).child(cb);
+                if !row.description.is_empty() {
+                    item = item.child(
+                        Element::label(row.description.clone())
+                            .font_size(11.0)
+                            .fg_role(Role::TextMuted)
+                            .width_match()
+                            .padding_xy(24, 0)
+                            .max_lines(2),
+                    );
+                }
+                col = col.child(item);
+            }
+            col
+        }
+        SettingsSection::Empty => Element::label("该方案暂无可配置项。")
+            .font_size(11.0)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .padding_xy(0, 4),
+    }
+}
+
 fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let visible = state.settings_visible;
     let content = state.settings_content;
-    let is_sp = state.settings_is_shuangpin;
+    let has_save = state.settings_has_save;
 
-    // 双拼布局行：仅双拼方案可见。下拉选项来自 state.layouts（schema.layouts RPC 动态拉取）。
-    let layout_labels: Vec<String> =
-        state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
-    let sp_row = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(12)
-        .padding_xy(0, 8)
-        .child(
-            Element::label("双拼布局")
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .weight(1.0)
-                .max_lines(1),
-        )
-        .child(Element::dropdown(layout_labels, state.settings_layout).width(170))
-        .visible_when(move || is_sp.get());
-    let plain_hint = Element::label("该方案暂无可配置项。")
-        .font_size(11.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .padding_xy(0, 4)
-        .visible_when(move || !is_sp.get());
+    // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）。
+    let st_body = state.clone();
+    let sections = Element::host_signal(state.settings_sections, move |kind| {
+        build_section(kind, &st_body)
+    });
 
     let body = Element::col()
         .width_match()
@@ -964,8 +1011,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .fg_role(Role::Text)
                 .width_match(),
         )
-        .child(sp_row)
-        .child(plain_hint);
+        .child(sections);
 
     let st_save = state.clone();
     let footer = Element::row()
@@ -982,7 +1028,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             Element::button("保存")
                 .small()
                 .on_click(move |_| st_save.save_settings())
-                .visible_when(move || is_sp.get()),
+                .visible_when(move || has_save.get()),
         );
 
     Element::dialog_panel(visible, "方案设置", 440, move |_| visible.set(false), body, footer)
