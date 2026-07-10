@@ -5,6 +5,7 @@
 //! 通过 JSON-RPC over named pipe 与核心服务通信，不改动 core 接口。
 //! 无边框窗口 + 自定义标题栏，7 Tab 清单驱动（manifest 分组），运行时明暗换肤。
 
+mod add_word_window;
 mod capabilities;
 mod cli;
 mod config;
@@ -49,6 +50,12 @@ fn main() {
     mode::init(&args);
     logger::init();
     protocol::self_heal_registration();
+
+    // 快捷加词小窗：独立单例、紧凑窗，复用词库加词对话框；不落入常规设置界面路径。
+    if let Some(params) = cli::parse_add_word(&args) {
+        add_word_window::run(params);
+        return;
+    }
 
     // 快速初始化：仅读系统主题（~86µs），不阻塞任何 RPC，UI 立即可显示。
     let app_state = Rc::new(RefCell::new(state::AppState::empty()));

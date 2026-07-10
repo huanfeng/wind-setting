@@ -693,7 +693,7 @@ impl LoadedState {
 }
 
 /// 加载方案列表（schema.list）。
-fn load_schemas() -> Vec<SchemaInfo> {
+pub(crate) fn load_schemas() -> Vec<SchemaInfo> {
     let list =
         rpc::call_core("schema.list", &serde_json::json!({})).unwrap_or(Value::Array(vec![]));
     list.as_array()
