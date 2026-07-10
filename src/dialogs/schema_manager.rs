@@ -571,6 +571,39 @@ pub fn engine_label(t: &str) -> &'static str {
     }
 }
 
+/// 附加词库解析结果（纯数据，供 UI 层包装为响应式行）。
+// Task 3 起被 open_settings_at_id 使用（字段全部读取）。
+#[allow(dead_code)]
+pub struct DictInfo {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub enabled: bool,
+}
+
+/// 从方案配置 `cfg["dictionaries"]` 解析可开关的附加词库（过滤主库）。
+/// 生效值：enabled.unwrap_or(default_enabled.unwrap_or(true))。
+// Task 3 起被 open_settings_at_id 调用。
+#[allow(dead_code)]
+fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
+    let Some(arr) = cfg.get("dictionaries").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter(|d| !d.get("default").and_then(|v| v.as_bool()).unwrap_or(false))
+        .map(|d| {
+            let default_enabled = d.get("default_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            let enabled = d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(default_enabled);
+            DictInfo {
+                id: d.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                label: d.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                description: d.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                enabled,
+            }
+        })
+        .collect()
+}
+
 // ──────────────────────── 内联复合列表 ────────────────────────
 
 /// 构建内联方案列表，供 `scheme_page` 直接嵌入卡片。
@@ -889,4 +922,34 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         );
 
     Element::dialog_panel(visible, "方案设置", 440, move |_| visible.set(false), body, footer)
+}
+
+#[cfg(test)]
+mod ext_dict_tests {
+    use super::*;
+
+    #[test]
+    fn parse_filters_main_and_resolves_enabled() {
+        let cfg = json!({ "dictionaries": [
+            { "id": "m",  "label": "主库", "default": true },
+            { "id": "a",  "label": "扩展A", "description": "描述A", "default_enabled": true },
+            { "id": "b",  "label": "扩展B", "default_enabled": false },
+            { "id": "c",  "label": "扩展C", "default_enabled": true, "enabled": false },
+            { "id": "d",  "label": "扩展D" }
+        ]});
+        let rows = parse_extension_dicts(&cfg);
+        // 主库被过滤，剩 4 条附加库。
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c", "d"]);
+        assert!(rows[0].enabled, "a: default_enabled=true");
+        assert!(!rows[1].enabled, "b: default_enabled=false");
+        assert!(!rows[2].enabled, "c: enabled=false 覆盖 default_enabled=true");
+        assert!(rows[3].enabled, "d: 无字段 → 默认 true");
+        assert_eq!(rows[0].description, "描述A");
+    }
+
+    #[test]
+    fn parse_missing_dictionaries_is_empty() {
+        assert!(parse_extension_dicts(&json!({})).is_empty());
+        assert!(parse_extension_dicts(&json!({ "dictionaries": [] })).is_empty());
+    }
 }
