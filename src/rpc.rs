@@ -82,7 +82,7 @@ fn call_on_stream<S: Read + Write>(
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     if std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1") {
-        return Ok(mock_reply(method));
+        return Ok(mock_reply(method, params));
     }
     let endpoint = ctrl_endpoint();
     let t = std::time::Instant::now();
@@ -146,6 +146,11 @@ pub fn is_mock() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 测试遮蔽：旧用例只传 method；转调真实双参实现。
+    fn mock_reply(method: &str) -> Value {
+        super::mock_reply(method, &json!({}))
+    }
 
     #[test]
     fn test_ctrl_endpoint_format() {
@@ -226,6 +231,32 @@ mod tests {
                 .contains("[meta]")
         );
     }
+
+    #[test]
+    fn mock_get_config_codetable_has_dictionaries() {
+        // 码表方案返回带 dictionaries 数组，含主库 + 附加库。
+        let cfg = super::mock_reply("schema.getConfig", &json!({ "id": "wubi86" }));
+        let dicts = cfg.get("dictionaries").and_then(|v| v.as_array()).expect("dictionaries 数组");
+        assert!(dicts.iter().any(|d| d.get("default") == Some(&json!(true))), "含主库");
+        assert!(
+            dicts.iter().any(|d| d.get("id") == Some(&json!("wubi86_extra"))),
+            "含扩展词库附加库"
+        );
+    }
+
+    #[test]
+    fn mock_get_config_shuangpin_unchanged() {
+        // 双拼方案仍返回布局配置、无 dictionaries（保持原行为）。
+        let cfg = super::mock_reply("schema.getConfig", &json!({ "id": "double_pinyin" }));
+        assert_eq!(cfg.pointer("/engine/pinyin/shuangpin/layout"), Some(&json!("ziranma")));
+    }
+
+    #[test]
+    fn mock_set_dict_enabled_ok() {
+        let r = super::mock_reply("schema.setDictEnabled", &json!({ "id": "wubi86", "dictId": "wubi86_extra", "enabled": false }));
+        assert_eq!(r.get("ok"), Some(&json!(true)));
+        assert_eq!(r.get("live"), Some(&json!(true)));
+    }
 }
 
 /// 内置 capability 快照（与 src/assets 同一文件），mock 模式离线提供能力契约。
@@ -234,7 +265,7 @@ const MOCK_CONFIG: &str = include_str!("mockdata/config.json");
 
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
-fn mock_reply(method: &str) -> Value {
+fn mock_reply(method: &str, params: &Value) -> Value {
     match method {
         "system.capabilities" => serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({})),
         "config.get" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
@@ -316,13 +347,30 @@ fn mock_reply(method: &str) -> Value {
         "config.getDefaults" | "schema.references" => {
             json!({})
         }
-        // 双拼样例配置（离线核对设置对话框的布局下拉）；仅双拼方案会读取
-        // engine.pinyin.shuangpin，非双拼方案拿到同一份也不消费。
-        "schema.getConfig" => json!({
-            "engine": { "type": "pinyin", "pinyin": {
-                "scheme": "shuangpin", "shuangpin": { "layout": "ziranma" }
-            } }
-        }),
+        // 按方案 id 分流：码表方案返回 dictionaries（含主库 + 三个附加库，
+        // 对齐 data/schemas/wubi86.schema.toml）；其余（双拼等）保持布局样例。
+        "schema.getConfig" => {
+            let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id.starts_with("wubi") && id != "wubi_mixed" || id == "codetable" {
+                json!({
+                    "schema": { "id": id, "name": "五笔 86" },
+                    "engine": { "type": "codetable" },
+                    "dictionaries": [
+                        { "id": "wubi86_main",  "label": "极点五笔主词库", "description": "含单字与高频词组", "default": true },
+                        { "id": "wubi86_extra", "label": "扩展词库", "description": "新词、网络用语、生僻词等", "default_enabled": true },
+                        { "id": "wubi86_emoji", "label": "Emoji 表情", "description": "按五笔编码检索 emoji", "default_enabled": true, "enabled": false },
+                        { "id": "wubi86_xzqy",  "label": "行政区域", "description": "省市县区等地名词条", "default_enabled": false }
+                    ]
+                })
+            } else {
+                json!({
+                    "engine": { "type": "pinyin", "pinyin": {
+                        "scheme": "shuangpin", "shuangpin": { "layout": "ziranma" }
+                    } }
+                })
+            }
+        }
+        "schema.setDictEnabled" => json!({ "ok": true, "live": true }),
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "stats.summary" => json!({ "today": 0, "week": 0, "month": 0, "total": 0, "streak": 0 }),
