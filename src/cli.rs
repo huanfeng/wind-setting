@@ -41,6 +41,62 @@ pub fn parse_protocol(argv: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// 加词界面参数(`--page add-word` 触发)。
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct AddWordParams {
+    pub text: String,
+    pub code: String,
+    pub schema: String,
+}
+
+/// 检测 argv 是否请求加词界面并解析 `--text/--code/--schema`(`=` 与空格两式)。
+/// 触发条件:含 `--page add-word` / `--page=add-word` / `--add-word`。
+pub fn parse_add_word(argv: &[String]) -> Option<AddWordParams> {
+    let mut requested = false;
+    let mut it = argv.iter().peekable();
+    while let Some(a) = it.peek() {
+        let a = a.as_str();
+        if a == "--add-word" || a == "--page=add-word" {
+            requested = true;
+        } else if a == "--page" {
+            // 向前看下一个是否 add-word
+            let mut clone = it.clone();
+            clone.next();
+            if clone.peek().map(|s| s.as_str()) == Some("add-word") {
+                requested = true;
+            }
+        }
+        it.next();
+    }
+    if !requested {
+        return None;
+    }
+    let mut p = AddWordParams::default();
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if let Some(v) = a.strip_prefix("--text=") {
+            p.text = v.to_string();
+        } else if a == "--text" {
+            if let Some(v) = it.next() {
+                p.text = v.to_string();
+            }
+        } else if let Some(v) = a.strip_prefix("--code=") {
+            p.code = v.to_string();
+        } else if a == "--code" {
+            if let Some(v) = it.next() {
+                p.code = v.to_string();
+            }
+        } else if let Some(v) = a.strip_prefix("--schema=") {
+            p.schema = v.to_string();
+        } else if a == "--schema" {
+            if let Some(v) = it.next() {
+                p.schema = v.to_string();
+            }
+        }
+    }
+    Some(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +132,40 @@ mod tests {
             Some("windinput://import/theme?url=https://x")
         );
         assert_eq!(parse_protocol(&a(&["exe", "--page", "input"])), None);
+    }
+
+    #[test]
+    fn parse_add_word_forms() {
+        // --page add-word + 各参数(= 与空格两式)
+        let p = parse_add_word(&a(&[
+            "exe",
+            "--page",
+            "add-word",
+            "--text=你好",
+            "--code=nihao",
+            "--schema=pinyin",
+        ]))
+        .unwrap();
+        assert_eq!(p.text, "你好");
+        assert_eq!(p.code, "nihao");
+        assert_eq!(p.schema, "pinyin");
+        // 空格式
+        let p2 = parse_add_word(&a(&[
+            "exe",
+            "--page=add-word",
+            "--text",
+            "好",
+            "--schema",
+            "wubi",
+        ]))
+        .unwrap();
+        assert_eq!(p2.text, "好");
+        assert_eq!(p2.code, "");
+        assert_eq!(p2.schema, "wubi");
+        // 仅 --page add-word 无预填
+        let p3 = parse_add_word(&a(&["exe", "--page", "add-word"])).unwrap();
+        assert_eq!(p3.text, "");
+        // 非 add-word → None
+        assert!(parse_add_word(&a(&["exe", "--page", "input"])).is_none());
     }
 }
