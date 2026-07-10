@@ -539,13 +539,18 @@ impl DictManagerState {
 
     // ── 导航切换（切换后归零分页/搜索并刷新）─────────────────
 
-    /// 注入方案列表（`AppState.apply_loaded` 后调用）。domain 越界则收敛回短语域。
-    pub fn set_schemas(&self, schemas: &[SchemaInfo]) {
+    /// 注入方案列表但不触发 reload（供无表格视图的场景，如加词小窗，避免多余 list RPC）。
+    pub(crate) fn set_schemas_no_reload(&self, schemas: &[SchemaInfo]) {
         *self.schemas.borrow_mut() = schemas.to_vec();
         self.domain_items.set(self.domain_labels());
         if self.domain.get() > self.folded_domains().len() {
             self.domain.set(0);
         }
+    }
+
+    /// 注入方案列表（`AppState.apply_loaded` 后调用）。domain 越界则收敛回短语域。
+    pub fn set_schemas(&self, schemas: &[SchemaInfo]) {
+        self.set_schemas_no_reload(schemas);
         self.reload();
     }
 

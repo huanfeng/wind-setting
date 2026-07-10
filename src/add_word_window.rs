@@ -18,7 +18,7 @@ use crate::theme_def::theme_for;
 /// 用参数预填一个 DictManagerState（加载方案 + 定位 + 预填 + 打开对话框）。
 fn prepare(params: &AddWordParams) -> DictManagerState {
     let mgr = DictManagerState::new();
-    mgr.set_schemas(&load_schemas());
+    mgr.set_schemas_no_reload(&load_schemas());
     mgr.open_add_word_prefilled(&params.text, &params.code, &params.schema);
     mgr
 }
