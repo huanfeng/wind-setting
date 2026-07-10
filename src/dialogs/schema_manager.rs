@@ -49,6 +49,23 @@ pub enum SchemaListItem {
     Divider { hidden_with_disabled: bool },
 }
 
+/// 方案设置对话框的一个配置分节。新增一种方案设置 = 加一个变体 + build_section 分支。
+#[derive(Clone)]
+pub enum SettingsSection {
+    ShuangpinLayout,
+    ExtensionDicts,
+    Empty,
+}
+
+/// 扩展词库行（UI 响应式包装：每行一个受控开关信号）。
+#[derive(Clone)]
+pub struct DictRow {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub on: Signal<bool>,
+}
+
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
 pub struct SchemaManagerState {
@@ -85,6 +102,12 @@ pub struct SchemaManagerState {
     /// 双拼布局清单 (id, 显示名)：refresh() 时经 `schema.layouts` RPC 动态拉取
     /// （合并安装目录与用户目录），取代原硬编码；下拉选项/索引映射/行名后缀均以此为准。
     pub layouts: Rc<RefCell<Vec<(String, String)>>>,
+    /// 当前打开方案应显示的配置分节（open_settings_at_id 重算，驱动对话框 body 重建）。
+    pub settings_sections: Signal<Vec<SettingsSection>>,
+    /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
+    pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
+    /// 是否存在需批量提交的分节（当前=双拼布局），驱动 footer「保存」按钮可见性。
+    pub settings_has_save: Signal<bool>,
 }
 
 impl SchemaManagerState {
@@ -109,6 +132,9 @@ impl SchemaManagerState {
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
+            settings_sections: signal(vec![]),
+            settings_dicts: Rc::new(RefCell::new(Vec::new())),
+            settings_has_save: signal(false),
         };
         state.refresh();
         state
@@ -471,6 +497,29 @@ impl SchemaManagerState {
         *self.settings_cfg.borrow_mut() = cfg;
         self.settings_is_shuangpin.set(is_sp);
         self.settings_content.set(content);
+
+        // ── 计算配置分节（可扩展体系）──
+        let mut sections: Vec<SettingsSection> = Vec::new();
+        let mut has_save = false;
+        if is_sp {
+            sections.push(SettingsSection::ShuangpinLayout);
+            has_save = true; // 双拼布局走「保存」按钮
+        }
+        let dict_infos = parse_extension_dicts(&self.settings_cfg.borrow());
+        let rows: Vec<DictRow> = dict_infos
+            .into_iter()
+            .map(|d| DictRow { id: d.id, label: d.label, description: d.description, on: signal(d.enabled) })
+            .collect();
+        if !rows.is_empty() {
+            sections.push(SettingsSection::ExtensionDicts);
+        }
+        *self.settings_dicts.borrow_mut() = rows;
+        if sections.is_empty() {
+            sections.push(SettingsSection::Empty);
+        }
+        self.settings_has_save.set(has_save);
+        self.settings_sections.set(sections);
+
         self.settings_visible.set(true);
     }
 
@@ -507,6 +556,25 @@ impl SchemaManagerState {
                 self.notify(ToastKind::Success, "方案配置已保存");
             }
             Err(e) => self.notify(ToastKind::Error, format!("保存失败: {e}")),
+        }
+    }
+
+    /// 即时开关扩展词库：调 schema.setDictEnabled 成功后才翻转该行信号（受控，零闪烁）。
+    pub fn toggle_dict(&self, dict_id: &str, label: &str, want: bool) {
+        let id = self.settings_schema_id.borrow().clone();
+        if id.is_empty() { return; }
+        match rpc::call_core(
+            "schema.setDictEnabled",
+            &json!({ "id": id, "dictId": dict_id, "enabled": want }),
+        ) {
+            Ok(_) => {
+                if let Some(row) = self.settings_dicts.borrow().iter().find(|r| r.id == dict_id) {
+                    row.on.set(want);
+                }
+                let verb = if want { "已启用" } else { "已停用" };
+                self.notify(ToastKind::Success, format!("{verb}「{label}」"));
+            }
+            Err(e) => self.notify(ToastKind::Error, format!("切换失败: {e}")),
         }
     }
 
@@ -572,8 +640,6 @@ pub fn engine_label(t: &str) -> &'static str {
 }
 
 /// 附加词库解析结果（纯数据，供 UI 层包装为响应式行）。
-// Task 3 起被 open_settings_at_id 使用（字段全部读取）。
-#[allow(dead_code)]
 pub struct DictInfo {
     pub id: String,
     pub label: String,
@@ -583,8 +649,6 @@ pub struct DictInfo {
 
 /// 从方案配置 `cfg["dictionaries"]` 解析可开关的附加词库（过滤主库）。
 /// 生效值：enabled.unwrap_or(default_enabled.unwrap_or(true))。
-// Task 3 起被 open_settings_at_id 调用。
-#[allow(dead_code)]
 fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
     let Some(arr) = cfg.get("dictionaries").and_then(|v| v.as_array()) else {
         return Vec::new();
