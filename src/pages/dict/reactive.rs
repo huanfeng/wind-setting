@@ -56,32 +56,6 @@ pub fn toast_sink(feedback: Feedback) -> Element {
     Element::leaf().widget(w).reactive().width(0).height(0)
 }
 
-/// 关窗哨兵：监听 `visible` 版本变化，当其变为 false 时请求关闭窗口。
-/// 用于加词小窗——复用的对话框取消/确定成功都会把 edit_visible 置 false。
-struct CloseOnHidden {
-    visible: Signal<bool>,
-    last: u64,
-}
-
-impl Widget for CloseOnHidden {
-    fn on_update(&mut self, ctx: &mut EventCtx) {
-        let cur = self.visible.version();
-        if cur != self.last {
-            self.last = cur;
-            if !self.visible.get() {
-                ctx.request_close();
-            }
-        }
-    }
-}
-
-/// 构造不可见的关窗哨兵节点。
-pub fn close_on_hidden(visible: Signal<bool>) -> Element {
-    let last = visible.version();
-    let w = CloseOnHidden { visible, last };
-    Element::leaf().widget(w).reactive().width(0).height(0)
-}
-
 /// 构造一个不可见的响应式 effect 节点。
 ///
 /// - `version_of`：把所监视信号的 `.version()` 组合成一个 u64（任一变则整体变）。
