@@ -210,15 +210,18 @@ impl DictManagerState {
 
     /// 成功反馈（toast 绿）。
     pub fn notify_ok(&self, msg: &str) {
-        self.feedback.set(Some((windui::prelude::ToastKind::Success, msg.to_string())));
+        self.feedback
+            .set(Some((windui::prelude::ToastKind::Success, msg.to_string())));
     }
     /// 失败反馈（toast 红）。
     pub fn notify_err(&self, msg: &str) {
-        self.feedback.set(Some((windui::prelude::ToastKind::Error, msg.to_string())));
+        self.feedback
+            .set(Some((windui::prelude::ToastKind::Error, msg.to_string())));
     }
     /// 中性反馈（toast 灰/默认，如"没有变更"）。
     pub fn notify_info(&self, msg: &str) {
-        self.feedback.set(Some((windui::prelude::ToastKind::Info, msg.to_string())));
+        self.feedback
+            .set(Some((windui::prelude::ToastKind::Info, msg.to_string())));
     }
 
     // ── 域折叠 ───────────────────────────────────────────────
@@ -252,9 +255,17 @@ impl DictManagerState {
                 });
             } else {
                 let tag = engine_label(&s.kind);
-                let name = if s.name.is_empty() { s.id.clone() } else { s.name.clone() };
+                let name = if s.name.is_empty() {
+                    s.id.clone()
+                } else {
+                    s.name.clone()
+                };
                 out.push(DomainEntry {
-                    label: if tag == "未知" { name } else { format!("{name} · {tag}") },
+                    label: if tag == "未知" {
+                        name
+                    } else {
+                        format!("{name} · {tag}")
+                    },
                     kind: s.kind.clone(),
                     rep_schema_id: s.id.clone(),
                 });
@@ -314,7 +325,9 @@ impl DictManagerState {
         if d == 0 {
             return None;
         }
-        self.folded_domains().get(d - 1).map(|e| e.rep_schema_id.clone())
+        self.folded_domains()
+            .get(d - 1)
+            .map(|e| e.rep_schema_id.clone())
     }
 
     /// 数据域下拉选项标签（首项"快捷短语"，其后折叠后各域）。
@@ -328,7 +341,10 @@ impl DictManagerState {
 
     /// 方案子标签的标题列表。
     pub fn sub_tab_titles(&self) -> Vec<String> {
-        self.tabs_for_domain().iter().map(|t| t.title().to_string()).collect()
+        self.tabs_for_domain()
+            .iter()
+            .map(|t| t.title().to_string())
+            .collect()
     }
 
     // ── 分页守卫 ─────────────────────────────────────────────
@@ -410,7 +426,11 @@ impl DictManagerState {
     pub fn rebuild_list(&self) {
         let mut rows = self.visible_rows();
         let spec = self.current_spec();
-        let total = if spec.paged { self.total.get() } else { rows.len() };
+        let total = if spec.paged {
+            self.total.get()
+        } else {
+            rows.len()
+        };
 
         if !spec.paged
             && let Some((col, ord)) = self.sort.get()
@@ -429,7 +449,11 @@ impl DictManagerState {
             format!("共 {total} 条")
         };
         self.page_status.set(page_status);
-        self.empty_msg.set(if rows.is_empty() { self.empty_hint() } else { String::new() });
+        self.empty_msg.set(if rows.is_empty() {
+            self.empty_hint()
+        } else {
+            String::new()
+        });
 
         let cells: Vec<Vec<String>> = rows
             .iter()
@@ -491,8 +515,11 @@ impl DictManagerState {
                     let total = v.get("total").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
                     let off = *self.offset.borrow();
                     if off > 0 && total <= off {
-                        let max_off =
-                            if total == 0 { 0 } else { (total - 1) / PAGE_SIZE * PAGE_SIZE };
+                        let max_off = if total == 0 {
+                            0
+                        } else {
+                            (total - 1) / PAGE_SIZE * PAGE_SIZE
+                        };
                         *self.offset.borrow_mut() = max_off;
                         self.reload();
                         return;
@@ -606,7 +633,11 @@ impl DictManagerState {
     /// 删除/撤销一行（候选调整为撤销规则，其余为删除词条）。
     pub fn do_delete_row(&self, code: &str, text: &str) {
         let (method, params) = self.delete_call(code, text);
-        let msg = if self.current_spec().ops.remove_rule { "已撤销" } else { "已删除" };
+        let msg = if self.current_spec().ops.remove_rule {
+            "已撤销"
+        } else {
+            "已删除"
+        };
         self.write(method, params, msg);
     }
 
@@ -622,7 +653,11 @@ impl DictManagerState {
     /// 临时词全部转正。
     pub fn do_promote_all(&self) {
         let spec = self.current_spec();
-        self.write(spec.rpc.promote_all, Value::Object(self.scoped_params()), "已全部转正");
+        self.write(
+            spec.rpc.promote_all,
+            Value::Object(self.scoped_params()),
+            "已全部转正",
+        );
     }
 
     /// 短语启用/停用开关。
@@ -640,7 +675,11 @@ impl DictManagerState {
     pub fn do_clear(&self) {
         let spec = self.current_spec();
         if !spec.rpc.clear.is_empty() {
-            self.write(spec.rpc.clear, Value::Object(self.scoped_params()), "已清空");
+            self.write(
+                spec.rpc.clear,
+                Value::Object(self.scoped_params()),
+                "已清空",
+            );
         } else if spec.ops.remove_rule {
             let rows = self.rows.borrow().clone();
             let total = rows.len();
@@ -674,20 +713,23 @@ impl DictManagerState {
 
     pub fn request_delete_row(&self, code: &str, text: &str) {
         *self.pending.borrow_mut() = Some(PendingAction::DeleteRow(code.into(), text.into()));
-        self.confirm_msg.set(format!("确定删除「{text}」？此操作不可恢复。"));
+        self.confirm_msg
+            .set(format!("确定删除「{text}」？此操作不可恢复。"));
         self.confirm_visible.set(true);
     }
 
     pub fn request_clear(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::Clear);
         let n = self.total.get();
-        self.confirm_msg.set(format!("确定清空当前 {n} 条数据？此操作不可恢复。"));
+        self.confirm_msg
+            .set(format!("确定清空当前 {n} 条数据？此操作不可恢复。"));
         self.confirm_visible.set(true);
     }
 
     pub fn request_reset_default(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::ResetDefault);
-        self.confirm_msg.set("确定恢复为默认短语？将丢弃自定义短语的改动。".into());
+        self.confirm_msg
+            .set("确定恢复为默认短语？将丢弃自定义短语的改动。".into());
         self.confirm_visible.set(true);
     }
 
@@ -724,6 +766,64 @@ impl DictManagerState {
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
         self.edit_l_text.set(lt.into());
+        self.edit_visible.set(true);
+    }
+
+    /// 预填加词对话框（供加词小窗/快捷键使用）：定位 schema 所属域 → 用户词库子标签，
+    /// 预填 词/编码/权重(1200)，`editing_orig=None`（新增），打开对话框。
+    /// schema 命中规则：先精确匹配 rep_schema_id；未命中且为拼音变体时落拼音域；
+    /// 命中域若无「用户词库」子标签（如混输仅候选调整），回退到首个含用户词库的域。
+    pub fn open_add_word_prefilled(&self, text: &str, code: &str, schema: &str) {
+        let domains = self.folded_domains();
+
+        // 1) 找目标域索引（0-based over folded_domains；对外 domain=idx+1）
+        let mut target: Option<usize> = domains.iter().position(|d| d.rep_schema_id == schema);
+        // 拼音变体（如双拼 id）→ 落拼音域
+        if target.is_none() && !schema.is_empty() {
+            target = domains.iter().position(|d| d.kind == "pinyin");
+        }
+
+        // 2) 该域是否含用户词库子标签；无则回退首个含用户词库的域
+        let has_userdict = |idx: usize| -> Option<usize> {
+            // 临时把 domain 指向 idx 以复用 tabs_for_domain（读取用信号，读后恢复）
+            let prev = self.domain.get();
+            self.domain.set(idx + 1);
+            let pos = self
+                .tabs_for_domain()
+                .iter()
+                .position(|t| t.category() == WordCategory::UserDict);
+            self.domain.set(prev);
+            pos
+        };
+
+        let (domain_idx, sub) = match target.and_then(|i| has_userdict(i).map(|s| (i, s))) {
+            Some(v) => v,
+            None => {
+                // 回退：首个含用户词库的域
+                let mut fallback = None;
+                for i in 0..domains.len() {
+                    if let Some(s) = has_userdict(i) {
+                        fallback = Some((i, s));
+                        break;
+                    }
+                }
+                match fallback {
+                    Some(v) => v,
+                    None => (0, 0), // 无任何方案域：退化，仍打开对话框（提交会因方案缺失报错）
+                }
+            }
+        };
+
+        self.domain.set(domain_idx + 1);
+        self.sub_tab.set(sub);
+
+        *self.editing_orig.borrow_mut() = None;
+        self.edit_code.set(code.to_string());
+        self.edit_text.set(text.to_string());
+        self.edit_weight.set("1200".to_string());
+        self.edit_title.set("添加用户词库".to_string());
+        self.edit_l_code.set("编码".to_string());
+        self.edit_l_text.set("词条".to_string());
         self.edit_visible.set(true);
     }
 
@@ -856,7 +956,8 @@ impl DictManagerState {
                         Ok((vec![(spec.rpc.update, p)], "已更新"))
                     }
                     None => {
-                        let p = json!({ "code": code, "text": text, "position": 0, "weight": weight });
+                        let p =
+                            json!({ "code": code, "text": text, "position": 0, "weight": weight });
                         Ok((vec![(spec.rpc.add, p)], "已添加"))
                     }
                 }
@@ -971,7 +1072,9 @@ impl DictManagerState {
     pub fn do_import_phrases(&self, ctx: &mut EventCtx) {
         let state = self.clone();
         ctx.request_pick_file(
-            PickDialog::new().title("导入短语").filter("WindDict", &["yaml"]),
+            PickDialog::new()
+                .title("导入短语")
+                .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };
                 let content = match std::fs::read_to_string(&path) {
@@ -1008,7 +1111,12 @@ impl DictManagerState {
         p.insert("code".into(), json!(code));
         p.insert("word".into(), json!(word));
         if self.shadow_type.get() == 0 {
-            let pos: i64 = self.shadow_pos.get().trim().parse().map_err(|_| "位置需为整数")?;
+            let pos: i64 = self
+                .shadow_pos
+                .get()
+                .trim()
+                .parse()
+                .map_err(|_| "位置需为整数")?;
             p.insert("type".into(), json!("pin"));
             p.insert("position".into(), json!(pos));
         } else {
@@ -1056,16 +1164,55 @@ mod tests {
     use super::*;
 
     fn schema(id: &str, name: &str, kind: &str) -> SchemaInfo {
-        SchemaInfo { id: id.into(), name: name.into(), kind: kind.into(), ..Default::default() }
+        SchemaInfo {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            ..Default::default()
+        }
     }
 
     fn schema_s(id: &str, name: &str, kind: &str, scheme: &str) -> SchemaInfo {
-        SchemaInfo { id: id.into(), name: name.into(), kind: kind.into(), scheme: scheme.into() }
+        SchemaInfo {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            scheme: scheme.into(),
+        }
     }
 
     /// 直接写 schemas/domain，不经 set_schemas（避免触发 rpc）。
     fn with_schemas(st: &DictManagerState, list: Vec<SchemaInfo>) {
         *st.schemas.borrow_mut() = list;
+    }
+
+    #[test]
+    fn prefill_selects_userdict_domain_for_pinyin() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wubi", "五笔", "codetable"),
+                schema_s("quanpin", "全拼", "pinyin", "full"),
+            ],
+        );
+        st.open_add_word_prefilled("你好", "nihao", "quanpin");
+        // 命中拼音域（domain>=1），子标签落在用户词库
+        assert_eq!(st.current_category(), WordCategory::UserDict);
+        assert_eq!(st.edit_text.get(), "你好");
+        assert_eq!(st.edit_code.get(), "nihao");
+        assert_eq!(st.edit_weight.get(), "1200");
+        assert!(st.edit_visible.get());
+        assert_eq!(st.current_schema_id().as_deref(), Some("quanpin"));
+    }
+
+    #[test]
+    fn prefill_matches_pinyin_alias() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema_s("quanpin", "全拼", "pinyin", "full")]);
+        // core 传来的双拼 id 归一到拼音域代表
+        st.open_add_word_prefilled("好", "hao", "shuangpin_ziranma");
+        assert_eq!(st.current_category(), WordCategory::UserDict);
     }
 
     #[test]
@@ -1079,7 +1226,13 @@ mod tests {
     #[test]
     fn navigation_resolves_category_and_schema() {
         let st = DictManagerState::new();
-        with_schemas(&st, vec![schema("wb", "五笔", "codetable"), schema("py", "全拼", "pinyin")]);
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔", "codetable"),
+                schema("py", "全拼", "pinyin"),
+            ],
+        );
 
         // domain 1 = 第一个方案，子标签 0 = 用户词库
         st.domain.set(1);
@@ -1099,7 +1252,13 @@ mod tests {
     #[test]
     fn domain_labels_prefix_phrase_then_schemas() {
         let st = DictManagerState::new();
-        with_schemas(&st, vec![schema("wb", "五笔86", "codetable"), schema("py", "全拼", "pinyin")]);
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "全拼", "pinyin"),
+            ],
+        );
         let labels = st.domain_labels();
         assert_eq!(labels[0], "快捷短语");
         assert_eq!(labels[1], "五笔86 · 码表");
@@ -1190,13 +1349,23 @@ mod tests {
         st.sort.set(Some((0, SortOrder::Asc)));
         st.on_sort_changed();
         let cells = st.table_rows.get();
-        assert_eq!(vec![&cells[0][0], &cells[1][0], &cells[2][0]], ["a", "b", "c"]);
-        assert_eq!(st.display_rows.borrow()[0].text, "甲", "display_rows 与表格同序");
+        assert_eq!(
+            vec![&cells[0][0], &cells[1][0], &cells[2][0]],
+            ["a", "b", "c"]
+        );
+        assert_eq!(
+            st.display_rows.borrow()[0].text,
+            "甲",
+            "display_rows 与表格同序"
+        );
         // 按次数列（2）降序：数值序 30 > 4 > 2（字符串序会是 4 > 30 > 2）。
         st.sort.set(Some((2, SortOrder::Desc)));
         st.on_sort_changed();
         let cells = st.table_rows.get();
-        assert_eq!(vec![&cells[0][2], &cells[1][2], &cells[2][2]], ["30", "4", "2"]);
+        assert_eq!(
+            vec![&cells[0][2], &cells[1][2], &cells[2][2]],
+            ["30", "4", "2"]
+        );
     }
 
     #[test]
@@ -1207,7 +1376,11 @@ mod tests {
         st.sub_tab.set(0); // 用户词库（分页）
         st.sort.set(Some((2, SortOrder::Desc))); // 权重列
         let p = st.build_list_params();
-        assert_eq!(p.get("sortBy"), Some(&json!("weight")), "分页类带服务端排序参数");
+        assert_eq!(
+            p.get("sortBy"),
+            Some(&json!("weight")),
+            "分页类带服务端排序参数"
+        );
         assert_eq!(p.get("sortOrder"), Some(&json!("desc")));
         // 排序变化归零分页（模拟已翻页）。
         *st.offset.borrow_mut() = PAGE_SIZE;
@@ -1218,7 +1391,10 @@ mod tests {
         st.on_nav_changed();
         assert_eq!(st.sort.get(), None, "切类别应重置排序");
         assert_eq!(st.table_epoch.get()[0], epoch + 1, "切类别应触发整表重建");
-        assert!(st.build_list_params().get("sortBy").is_none(), "无排序不带参数");
+        assert!(
+            st.build_list_params().get("sortBy").is_none(),
+            "无排序不带参数"
+        );
     }
 
     #[test]
@@ -1281,7 +1457,10 @@ mod tests {
         st.request_delete_row("bj", "北京");
         assert!(st.confirm_visible.get());
         assert!(st.confirm_msg.get().contains("北京"));
-        assert!(matches!(*st.pending.borrow(), Some(PendingAction::DeleteRow(_, _))));
+        assert!(matches!(
+            *st.pending.borrow(),
+            Some(PendingAction::DeleteRow(_, _))
+        ));
         // 取消清空待办
         st.cancel_confirm();
         assert!(!st.confirm_visible.get());
@@ -1297,7 +1476,10 @@ mod tests {
         assert!(matches!(*st.pending.borrow(), Some(PendingAction::Clear)));
 
         st.request_reset_default();
-        assert!(matches!(*st.pending.borrow(), Some(PendingAction::ResetDefault)));
+        assert!(matches!(
+            *st.pending.borrow(),
+            Some(PendingAction::ResetDefault)
+        ));
     }
 
     #[test]
@@ -1405,22 +1587,37 @@ mod tests {
     #[test]
     fn tabs_matrix_by_kind() {
         let st = DictManagerState::new();
-        with_schemas(&st, vec![
-            schema("wb", "五笔", "codetable"),
-            schema("py", "全拼", "pinyin"),
-            schema("mx", "混输", "mixed"),
-        ]);
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔", "codetable"),
+                schema("py", "全拼", "pinyin"),
+                schema("mx", "混输", "mixed"),
+            ],
+        );
         // 短语域：系统 + 用户
         st.domain.set(0);
-        assert_eq!(st.tabs_for_domain(), vec![LogicalTab::PhraseSystem, LogicalTab::PhraseUser]);
+        assert_eq!(
+            st.tabs_for_domain(),
+            vec![LogicalTab::PhraseSystem, LogicalTab::PhraseUser]
+        );
         // 码表：四类含候选调整
         st.domain.set(1);
-        assert_eq!(st.tabs_for_domain(),
-            vec![LogicalTab::UserDict, LogicalTab::Temp, LogicalTab::Freq, LogicalTab::Shadow]);
+        assert_eq!(
+            st.tabs_for_domain(),
+            vec![
+                LogicalTab::UserDict,
+                LogicalTab::Temp,
+                LogicalTab::Freq,
+                LogicalTab::Shadow
+            ]
+        );
         // 拼音：三类无候选调整
         st.domain.set(2);
-        assert_eq!(st.tabs_for_domain(),
-            vec![LogicalTab::UserDict, LogicalTab::Temp, LogicalTab::Freq]);
+        assert_eq!(
+            st.tabs_for_domain(),
+            vec![LogicalTab::UserDict, LogicalTab::Temp, LogicalTab::Freq]
+        );
         // 混输：仅候选调整
         st.domain.set(3);
         assert_eq!(st.tabs_for_domain(), vec![LogicalTab::Shadow]);
@@ -1444,8 +1641,18 @@ mod tests {
     fn phrase_two_level_filter_by_is_system() {
         let st = DictManagerState::new(); // domain 0 = 短语
         *st.rows.borrow_mut() = vec![
-            WordRow { code: "bj".into(), text: "北京".into(), is_system: true, ..Default::default() },
-            WordRow { code: "me".into(), text: "我的".into(), is_system: false, ..Default::default() },
+            WordRow {
+                code: "bj".into(),
+                text: "北京".into(),
+                is_system: true,
+                ..Default::default()
+            },
+            WordRow {
+                code: "me".into(),
+                text: "我的".into(),
+                is_system: false,
+                ..Default::default()
+            },
         ];
         st.sub_tab.set(0); // 系统短语
         let vis = st.visible_rows();
@@ -1462,8 +1669,16 @@ mod tests {
         st.domain.set(1);
         st.sub_tab.set(1); // 临时词库（client_search=true）
         *st.rows.borrow_mut() = vec![
-            WordRow { code: "nihao".into(), text: "你好".into(), ..Default::default() },
-            WordRow { code: "women".into(), text: "我们".into(), ..Default::default() },
+            WordRow {
+                code: "nihao".into(),
+                text: "你好".into(),
+                ..Default::default()
+            },
+            WordRow {
+                code: "women".into(),
+                text: "我们".into(),
+                ..Default::default()
+            },
         ];
         st.search.set("women".into());
         let vis = st.visible_rows();
@@ -1479,11 +1694,20 @@ mod tests {
         use windui::prelude::ToastKind;
         let st = DictManagerState::new();
         st.notify_ok("已添加");
-        assert_eq!(st.feedback.get(), Some((ToastKind::Success, "已添加".to_string())));
+        assert_eq!(
+            st.feedback.get(),
+            Some((ToastKind::Success, "已添加".to_string()))
+        );
         st.notify_err("失败了");
-        assert_eq!(st.feedback.get(), Some((ToastKind::Error, "失败了".to_string())));
+        assert_eq!(
+            st.feedback.get(),
+            Some((ToastKind::Error, "失败了".to_string()))
+        );
         st.notify_info("没有变更");
-        assert_eq!(st.feedback.get(), Some((ToastKind::Info, "没有变更".to_string())));
+        assert_eq!(
+            st.feedback.get(),
+            Some((ToastKind::Info, "没有变更".to_string()))
+        );
     }
 
     #[test]
@@ -1592,7 +1816,10 @@ mod tests {
 
         // pin 类型 → 固定位置(0)
         st.open_shadow_edit("ab", "阿", "pin", 2);
-        assert!(st.shadow_add_visible.get(), "编辑后 shadow_add_visible=true");
+        assert!(
+            st.shadow_add_visible.get(),
+            "编辑后 shadow_add_visible=true"
+        );
         assert_eq!(st.shadow_code.get(), "ab");
         assert_eq!(st.shadow_word.get(), "阿");
         assert_eq!(st.shadow_type.get(), 0, "pin → 固定位置(0)");
@@ -1663,7 +1890,13 @@ mod tests {
     #[test]
     fn nav_change_clamps_out_of_range_sub_tab() {
         let st = DictManagerState::new();
-        with_schemas(&st, vec![schema("mx", "混输", "mixed"), schema("wb", "五笔", "codetable")]);
+        with_schemas(
+            &st,
+            vec![
+                schema("mx", "混输", "mixed"),
+                schema("wb", "五笔", "codetable"),
+            ],
+        );
         // 先在码表选到候选调整(3)，切到混输(仅1项) → 应重置到 0
         st.domain.set(2);
         st.sub_tab.set(3);
@@ -1676,14 +1909,24 @@ mod tests {
     fn pinyin_family_folds_into_one_domain() {
         let st = DictManagerState::new();
         // 两个拼音方案(全拼+双拼) + 一个码表
-        with_schemas(&st, vec![
-            schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
-            schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin"),
-            schema("wubi86", "五笔86", "codetable"),
-        ]);
+        with_schemas(
+            &st,
+            vec![
+                schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
+                schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin"),
+                schema("wubi86", "五笔86", "codetable"),
+            ],
+        );
         let labels = st.domain_labels();
         // 域：快捷短语 + 拼音(折叠) + 五笔86 = 3 项（而非 4）
-        assert_eq!(labels, vec!["快捷短语".to_string(), "拼音".to_string(), "五笔86 · 码表".to_string()]);
+        assert_eq!(
+            labels,
+            vec![
+                "快捷短语".to_string(),
+                "拼音".to_string(),
+                "五笔86 · 码表".to_string()
+            ]
+        );
         // 选"拼音"域，current_schema_id 返回代表(全拼优先)
         st.domain.set(1);
         st.sub_tab.set(0);
@@ -1693,7 +1936,15 @@ mod tests {
     #[test]
     fn shuangpin_only_folds_with_shuangpin_rep() {
         let st = DictManagerState::new();
-        with_schemas(&st, vec![schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin")]);
+        with_schemas(
+            &st,
+            vec![schema_s(
+                "double_pinyin",
+                "自然码双拼",
+                "pinyin",
+                "shuangpin",
+            )],
+        );
         st.domain.set(1);
         // 无全拼时代表取该双拼
         assert_eq!(st.current_schema_id().as_deref(), Some("double_pinyin"));
@@ -1702,14 +1953,20 @@ mod tests {
     #[test]
     fn shuangpin_before_full_upgrades_rep() {
         let st = DictManagerState::new();
-        with_schemas(&st, vec![
-            schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin"),
-            schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
-        ]);
+        with_schemas(
+            &st,
+            vec![
+                schema_s("double_pinyin", "自然码双拼", "pinyin", "shuangpin"),
+                schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
+            ],
+        );
         st.domain.set(1);
         // 双拼在前、全拼在后 → 代表应升级为全拼
         assert_eq!(st.current_schema_id().as_deref(), Some("pinyin_simp"));
         // 仍折叠为一个"拼音"域
-        assert_eq!(st.domain_labels(), vec!["快捷短语".to_string(), "拼音".to_string()]);
+        assert_eq!(
+            st.domain_labels(),
+            vec!["快捷短语".to_string(), "拼音".to_string()]
+        );
     }
 }
