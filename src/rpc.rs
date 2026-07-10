@@ -351,7 +351,10 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         // 对齐 data/schemas/wubi86.schema.toml）；其余（双拼等）保持布局样例。
         "schema.getConfig" => {
             let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if id.starts_with("wubi") && id != "wubi_mixed" || id == "codetable" {
+            // 码表族方案（五笔各版，排除混输）返回 dictionaries 样例；"codetable" 为
+            // 未来通用码表 id 预留分支（当前 schema.list 未含此 id）。
+            let is_codetable_family = (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
+            if is_codetable_family {
                 json!({
                     "schema": { "id": id, "name": "五笔 86" },
                     "engine": { "type": "codetable" },
