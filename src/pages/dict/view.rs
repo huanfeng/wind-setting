@@ -296,6 +296,8 @@ fn build_table(mgr: &DictManagerState) -> Element {
     })
     .cell_render(move |_row, col, text| render_cell(columns, col, text))
     .actions("操作", ACTIONS_WEIGHT, move |disp| build_row_actions(&m_act, disp))
+    // 系统词库等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。
+    .cell_lines(2)
     .fill()
 }
 
