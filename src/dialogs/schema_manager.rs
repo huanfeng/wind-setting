@@ -52,17 +52,22 @@ pub enum SchemaListItem {
 /// 方案设置对话框的一个配置分节。新增一种方案设置 = 加一个变体 + build_section 分支。
 #[derive(Clone)]
 pub enum SettingsSection {
+    /// 方案元信息头部（名称/类型/来源/版本/作者/描述）。恒为首节。
+    Header,
     ShuangpinLayout,
     ExtensionDicts,
     Empty,
 }
 
-/// 扩展词库行（UI 响应式包装：每行一个受控开关信号）。
+/// 扩展词库行（UI 响应式包装：每行一个开关信号 + 打开时的初始值）。
+/// 拨动只翻转 `on`（暂存），点「保存」时对比 `initial` 提交变更。
 #[derive(Clone)]
 pub struct DictRow {
     pub id: String,
     pub label: String,
     pub description: String,
+    /// 打开对话框时的启用状态（用于保存时计算变更差异）。
+    pub initial: bool,
     pub on: Signal<bool>,
 }
 
@@ -90,7 +95,8 @@ pub struct SchemaManagerState {
     pub confirm_msg: Signal<String>,
     pub confirm_id: Rc<RefCell<String>>,
     pub settings_visible: Signal<bool>,
-    pub settings_content: Signal<String>,
+    /// 设置对话框当前方案条目（驱动结构化头部渲染）。
+    pub settings_entry: Rc<RefCell<Option<SchemaEntry>>>,
     /// 设置对话框当前方案 ID（保存时用）。
     pub settings_schema_id: Rc<RefCell<String>>,
     /// 设置对话框打开时经 schema.getConfig 拉取的完整方案配置（保存时改写后回传）。
@@ -126,7 +132,7 @@ impl SchemaManagerState {
             confirm_msg: signal(String::new()),
             confirm_id: Rc::new(RefCell::new(String::new())),
             settings_visible: signal(false),
-            settings_content: signal(String::new()),
+            settings_entry: Rc::new(RefCell::new(None)),
             settings_schema_id: Rc::new(RefCell::new(String::new())),
             settings_cfg: Rc::new(RefCell::new(Value::Null)),
             settings_is_shuangpin: signal(false),
@@ -465,16 +471,6 @@ impl SchemaManagerState {
             let Some(e) = schemas.iter().find(|e| e.id == schema_id) else { return };
             e.clone()
         };
-        let content = format!(
-            "ID：{}\n名称：{}\n类型：{}\n来源：{}\n版本：{}\n作者：{}\n\n{}",
-            entry.id,
-            entry.name,
-            engine_label(&entry.engine_type),
-            if entry.source == "user" { "用户安装" } else { "内置" },
-            if entry.version.is_empty() { "—".to_string() } else { entry.version.clone() },
-            if entry.author.is_empty() { "—".to_string() } else { entry.author.clone() },
-            entry.description.clone(),
-        );
 
         // 方案配置（三层合并结果）；失败按空对象处理（布局下拉回退首项）。
         let cfg = rpc::call_core("schema.getConfig", &json!({ "id": schema_id }))
@@ -496,86 +492,99 @@ impl SchemaManagerState {
         *self.settings_schema_id.borrow_mut() = entry.id.clone();
         *self.settings_cfg.borrow_mut() = cfg;
         self.settings_is_shuangpin.set(is_sp);
-        self.settings_content.set(content);
+        *self.settings_entry.borrow_mut() = Some(entry);
 
-        // ── 计算配置分节（可扩展体系）──
-        let mut sections: Vec<SettingsSection> = Vec::new();
-        let mut has_save = false;
+        // ── 计算配置分节（可扩展体系）：Header 恒为首节，其后按方案类型追加配置节 ──
+        let mut sections: Vec<SettingsSection> = vec![SettingsSection::Header];
+        let mut has_config = false; // 是否有需「保存」按钮提交的配置节
         if is_sp {
             sections.push(SettingsSection::ShuangpinLayout);
-            has_save = true; // 双拼布局走「保存」按钮
+            has_config = true;
         }
         let dict_infos = parse_extension_dicts(&self.settings_cfg.borrow());
         let rows: Vec<DictRow> = dict_infos
             .into_iter()
-            .map(|d| DictRow { id: d.id, label: d.label, description: d.description, on: signal(d.enabled) })
+            .map(|d| DictRow {
+                id: d.id,
+                label: d.label,
+                description: d.description,
+                initial: d.enabled,
+                on: signal(d.enabled),
+            })
             .collect();
         if !rows.is_empty() {
             sections.push(SettingsSection::ExtensionDicts);
+            has_config = true;
         }
         *self.settings_dicts.borrow_mut() = rows;
-        if sections.is_empty() {
+        if !has_config {
             sections.push(SettingsSection::Empty);
         }
-        self.settings_has_save.set(has_save);
+        // 扩展词库与双拼布局都经「保存」按钮统一提交。
+        self.settings_has_save.set(has_config);
         self.settings_sections.set(sections);
 
         self.settings_visible.set(true);
     }
 
-    /// 保存设置对话框的改动（当前仅双拼布局）：改写拉取的完整配置后回传
-    /// schema.saveConfig（core 侧与方案基线做稀疏 diff 写 override 层，立即生效）。
+    /// 统一保存设置对话框的改动：扩展词库变更逐个走 schema.setDictEnabled，
+    /// 双拼布局走 schema.saveConfig（稀疏 override）。任一环失败即中止、不关窗、
+    /// 保留已暂存的翻转供重试。
     pub fn save_settings(&self) {
         let id = self.settings_schema_id.borrow().clone();
-        if id.is_empty() || !self.settings_is_shuangpin.get() {
+        if id.is_empty() {
             return;
         }
-        if self.layouts.borrow().is_empty() {
-            self.notify(ToastKind::Error, "双拼布局清单未加载，无法保存");
-            return;
-        }
-        let layout = {
-            let layouts = self.layouts.borrow();
-            let idx = self.settings_layout.get().min(layouts.len() - 1);
-            layouts[idx].0.clone()
-        };
-        let mut cfg = self.settings_cfg.borrow().clone();
-        if !cfg.is_object() {
-            cfg = json!({});
-        }
-        set_json_path(
-            &mut cfg,
-            &["engine", "pinyin", "shuangpin", "layout"],
-            json!(layout),
-        );
-        match rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg })) {
-            Ok(_) => {
-                self.settings_visible.set(false);
-                // 行名含当前布局后缀，保存后重拉列表刷新显示（refresh 保留选中）。
-                self.refresh();
-                self.notify(ToastKind::Success, "方案配置已保存");
-            }
-            Err(e) => self.notify(ToastKind::Error, format!("保存失败: {e}")),
-        }
-    }
 
-    /// 即时开关扩展词库：调 schema.setDictEnabled 成功后才翻转该行信号（受控，零闪烁）。
-    pub fn toggle_dict(&self, dict_id: &str, label: &str, want: bool) {
-        let id = self.settings_schema_id.borrow().clone();
-        if id.is_empty() { return; }
-        match rpc::call_core(
-            "schema.setDictEnabled",
-            &json!({ "id": id, "dictId": dict_id, "enabled": want }),
-        ) {
-            Ok(_) => {
-                if let Some(row) = self.settings_dicts.borrow().iter().find(|r| r.id == dict_id) {
-                    row.on.set(want);
-                }
-                let verb = if want { "已启用" } else { "已停用" };
-                self.notify(ToastKind::Success, format!("{verb}「{label}」"));
+        // 1) 扩展词库：仅提交相对打开时发生变化的行（当前值 != initial）。
+        //    core 将其写入 override 层并热插拔即时生效（不重熔大词库）。
+        let changed: Vec<(String, bool)> = self
+            .settings_dicts
+            .borrow()
+            .iter()
+            .filter(|r| r.on.get() != r.initial)
+            .map(|r| (r.id.clone(), r.on.get()))
+            .collect();
+        for (dict_id, want) in &changed {
+            if let Err(e) = rpc::call_core(
+                "schema.setDictEnabled",
+                &json!({ "id": id, "dictId": dict_id, "enabled": *want }),
+            ) {
+                self.notify(ToastKind::Error, format!("扩展词库保存失败: {e}"));
+                return;
             }
-            Err(e) => self.notify(ToastKind::Error, format!("切换失败: {e}")),
         }
+
+        // 2) 双拼布局：改写拉取的完整配置后回传 saveConfig。
+        if self.settings_is_shuangpin.get() {
+            if self.layouts.borrow().is_empty() {
+                self.notify(ToastKind::Error, "双拼布局清单未加载，无法保存");
+                return;
+            }
+            let layout = {
+                let layouts = self.layouts.borrow();
+                let idx = self.settings_layout.get().min(layouts.len() - 1);
+                layouts[idx].0.clone()
+            };
+            let mut cfg = self.settings_cfg.borrow().clone();
+            if !cfg.is_object() {
+                cfg = json!({});
+            }
+            set_json_path(
+                &mut cfg,
+                &["engine", "pinyin", "shuangpin", "layout"],
+                json!(layout),
+            );
+            if let Err(e) = rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg })) {
+                self.notify(ToastKind::Error, format!("保存失败: {e}"));
+                return;
+            }
+        }
+
+        self.settings_visible.set(false);
+        // 行名可能含布局后缀，保存后重拉列表刷新显示（refresh 保留选中）。
+        self.refresh();
+        self.notify(ToastKind::Success, "方案配置已保存");
     }
 
     /// 请求删除指定 ID 方案（弹出确认对话框）。
@@ -927,8 +936,76 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
 }
 
 /// 按分节类型构建对话框内的一个配置区块。新增方案设置只需在此加一个 match 分支。
+/// 方案设置对话框的结构化头部：标题（名称 + 类型/来源徽章）+ 元信息行 + 描述 + 分隔线。
+/// 取代原先 `\n` 拼接塞进单 label 的杂乱纯文本块。
+fn build_settings_header(entry: &SchemaEntry) -> Element {
+    let name = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
+
+    let type_badge = Element::label(engine_label(&entry.engine_type))
+        .font_size(10.5)
+        .fg_role(Role::Accent)
+        .padding_xy(6, 2)
+        .corner(4.0)
+        .border_role(Role::Accent, 1);
+    let source_badge = Element::label(if entry.source == "user" { "用户" } else { "内置" })
+        .font_size(10.5)
+        .fg_role(Role::TextMuted)
+        .padding_xy(6, 2)
+        .corner(4.0)
+        .bg_role(Role::SurfaceAlt)
+        .border_role(Role::Border, 1);
+
+    let title = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label(name)
+                .font_size(16.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1)
+                .truncate(Truncate::End),
+        )
+        .child(type_badge)
+        .child(source_badge);
+
+    // 元信息行：版本 · 作者 · ID（仅拼接存在项）。
+    let mut parts: Vec<String> = Vec::new();
+    if !entry.version.is_empty() {
+        parts.push(format!("版本 {}", entry.version));
+    }
+    if !entry.author.is_empty() {
+        parts.push(format!("作者 {}", entry.author));
+    }
+    parts.push(format!("ID {}", entry.id));
+    let meta = Element::label(parts.join("　·　"))
+        .font_size(11.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(1)
+        .truncate(Truncate::End);
+
+    let mut col = Element::col().width_match().spacing(6).child(title).child(meta);
+    if !entry.description.is_empty() {
+        col = col.child(
+            Element::label(entry.description.clone())
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3),
+        );
+    }
+    col.child(Element::divider())
+}
+
 fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
     match kind {
+        SettingsSection::Header => {
+            let entry = state.settings_entry.borrow().clone().unwrap_or_default();
+            build_settings_header(&entry)
+        }
         SettingsSection::ShuangpinLayout => {
             let labels: Vec<String> =
                 state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
@@ -960,14 +1037,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .padding_xy(0, 2),
                 );
             for row in state.settings_dicts.borrow().iter() {
-                let st = state.clone();
-                let dict_id = row.id.clone();
-                let label = row.label.clone();
-                let cb = Element::checkbox(row.label.clone(), row.on).on_toggle(move |_| {
-                    let want = !st.settings_dicts.borrow().iter()
-                        .find(|r| r.id == dict_id).map(|r| r.on.get()).unwrap_or(false);
-                    st.toggle_dict(&dict_id, &label, want);
-                });
+                // 默认点击即翻转绑定的 on 信号（暂存）；实际提交在「保存」按钮统一进行。
+                let cb = Element::checkbox(row.label.clone(), row.on);
                 let mut item = Element::col().width_match().spacing(2).padding_xy(0, 4).child(cb);
                 if !row.description.is_empty() {
                     item = item.child(
@@ -993,25 +1064,16 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
 
 fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let visible = state.settings_visible;
-    let content = state.settings_content;
     let has_save = state.settings_has_save;
 
-    // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）。
+    // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）；
+    // Header 恒为首节，元信息与各配置节统一由此渲染。
     let st_body = state.clone();
     let sections = Element::host_signal(state.settings_sections, move |kind| {
         build_section(kind, &st_body)
     });
 
-    let body = Element::col()
-        .width_match()
-        .spacing(6)
-        .child(
-            Element::label_rc(content)
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .width_match(),
-        )
-        .child(sections);
+    let body = Element::col().width_match().spacing(6).child(sections);
 
     let st_save = state.clone();
     let footer = Element::row()

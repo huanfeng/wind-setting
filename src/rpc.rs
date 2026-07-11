@@ -252,6 +252,22 @@ mod tests {
     }
 
     #[test]
+    fn mock_set_dict_enabled_persists_within_session() {
+        // 保存 wubi86_extra=false 后，getConfig 应读回 enabled=false（mock 会话内记忆）。
+        super::mock_reply(
+            "schema.setDictEnabled",
+            &json!({ "id": "wubi86", "dictId": "wubi86_extra", "enabled": false }),
+        );
+        let cfg = super::mock_reply("schema.getConfig", &json!({ "id": "wubi86" }));
+        let dicts = cfg.get("dictionaries").and_then(|v| v.as_array()).unwrap();
+        let extra = dicts
+            .iter()
+            .find(|d| d.get("id") == Some(&json!("wubi86_extra")))
+            .unwrap();
+        assert_eq!(extra.get("enabled"), Some(&json!(false)), "保存的开关应被 getConfig 读回");
+    }
+
+    #[test]
     fn mock_set_dict_enabled_ok() {
         let r = super::mock_reply("schema.setDictEnabled", &json!({ "id": "wubi86", "dictId": "wubi86_extra", "enabled": false }));
         assert_eq!(r.get("ok"), Some(&json!(true)));
@@ -262,6 +278,33 @@ mod tests {
 /// 内置 capability 快照（与 src/assets 同一文件），mock 模式离线提供能力契约。
 const MOCK_CAPABILITIES: &str = include_str!("assets/capabilities.snapshot.json");
 const MOCK_CONFIG: &str = include_str!("mockdata/config.json");
+
+thread_local! {
+    /// Mock 会话内的扩展词库开关记忆：(方案 id, 词库 id) → enabled。
+    /// 让离线 mock 下「setDictEnabled 保存 → getConfig 重开」能保留改动，仅用于 UI 自测。
+    static MOCK_DICT_OVERRIDES: std::cell::RefCell<std::collections::HashMap<(String, String), bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// 记录一次 mock setDictEnabled（会话内）。
+fn record_mock_dict_override(schema_id: String, dict_id: String, enabled: bool) {
+    MOCK_DICT_OVERRIDES.with(|m| m.borrow_mut().insert((schema_id, dict_id), enabled));
+}
+
+/// 把会话内记忆的开关套用到 getConfig 返回的 dictionaries[*].enabled 上。
+fn apply_mock_dict_overrides(schema_id: &str, cfg: &mut Value) {
+    let Some(arr) = cfg.get_mut("dictionaries").and_then(|d| d.as_array_mut()) else { return };
+    MOCK_DICT_OVERRIDES.with(|m| {
+        let map = m.borrow();
+        for d in arr.iter_mut() {
+            if let Some(did) = d.get("id").and_then(|x| x.as_str()).map(str::to_string)
+                && let Some(&en) = map.get(&(schema_id.to_string(), did))
+            {
+                d["enabled"] = json!(en);
+            }
+        }
+    });
+}
 
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
@@ -355,7 +398,7 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             // 未来通用码表 id 预留分支（当前 schema.list 未含此 id）。
             let is_codetable_family = (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
             if is_codetable_family {
-                json!({
+                let mut v = json!({
                     "schema": { "id": id, "name": "五笔 86" },
                     "engine": { "type": "codetable" },
                     "dictionaries": [
@@ -364,7 +407,10 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                         { "id": "wubi86_emoji", "label": "Emoji 表情", "description": "按五笔编码检索 emoji", "default_enabled": true, "enabled": false },
                         { "id": "wubi86_xzqy",  "label": "行政区域", "description": "省市县区等地名词条", "default_enabled": false }
                     ]
-                })
+                });
+                // 套用本会话经 setDictEnabled 记忆的开关，令离线也能验证「保存后重开保留」。
+                apply_mock_dict_overrides(id, &mut v);
+                v
             } else {
                 json!({
                     "engine": { "type": "pinyin", "pinyin": {
@@ -373,7 +419,13 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                 })
             }
         }
-        "schema.setDictEnabled" => json!({ "ok": true, "live": true }),
+        "schema.setDictEnabled" => {
+            let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let dict_id = params.get("dictId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            record_mock_dict_override(id, dict_id, enabled);
+            json!({ "ok": true, "live": true })
+        }
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "stats.summary" => json!({ "today": 0, "week": 0, "month": 0, "total": 0, "streak": 0 }),
