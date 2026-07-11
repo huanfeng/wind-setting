@@ -15,14 +15,25 @@ pub fn find_key_conflicts(groups: &[(String, Vec<String>)]) -> Vec<(String, Stri
     hits
 }
 
-/// 把冲突列表拼成一行提示文案；无冲突返回 None。
+/// 触发键内部名 → 可读符号；未知键回退原名，避免提示里出现生硬的英文标识（如 backtick）。
+/// 取值域见 settings_manifest.toml 的触发键 options（backtick/semicolon/quote）。
+pub fn key_symbol(key: &str) -> &str {
+    match key {
+        "backtick" | "grave" => "`",
+        "semicolon" => ";",
+        "quote" | "apostrophe" => "'",
+        other => other,
+    }
+}
+
+/// 把冲突列表拼成一行提示文案；无冲突返回 None。键名以符号呈现（见 [`key_symbol`]）。
 pub fn conflict_summary(hits: &[(String, String, String)]) -> Option<String> {
     if hits.is_empty() {
         return None;
     }
     let parts: Vec<String> = hits
         .iter()
-        .map(|(key, a, b)| format!("{key} 同时被「{a}」「{b}」使用"))
+        .map(|(key, a, b)| format!("{} 键同时被「{a}」「{b}」使用", key_symbol(key)))
         .collect();
     Some(format!("⚠ 触发键冲突：{}", parts.join("；")))
 }
@@ -85,8 +96,17 @@ mod tests {
     fn test_summary_formats_hits() {
         let hits = vec![("semicolon".to_string(), "临时拼音".to_string(), "快捷".to_string())];
         let msg = conflict_summary(&hits).unwrap();
-        assert!(msg.contains("semicolon"));
+        assert!(msg.contains(';'), "内部键名应渲染为符号");
+        assert!(!msg.contains("semicolon"), "不应再出现英文键名");
         assert!(msg.contains("临时拼音"));
         assert!(msg.contains("快捷"));
+    }
+
+    #[test]
+    fn test_key_symbol_maps_known_and_falls_back() {
+        assert_eq!(key_symbol("backtick"), "`");
+        assert_eq!(key_symbol("semicolon"), ";");
+        assert_eq!(key_symbol("quote"), "'");
+        assert_eq!(key_symbol("z"), "z", "未知键回退原名");
     }
 }

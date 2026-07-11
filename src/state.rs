@@ -807,7 +807,7 @@ mod trigger_conflict_tests {
             }
         }));
         let msg = check_trigger_key_conflicts(&cfg).unwrap();
-        assert!(msg.contains("semicolon"));
+        assert!(msg.contains(';'), "键名应以符号呈现");
         assert!(msg.contains("临时拼音"));
         assert!(msg.contains("快捷"));
     }
