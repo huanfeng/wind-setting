@@ -113,6 +113,9 @@ pub struct AppState {
     pub status: Signal<String>,
     /// 瞬时反馈（保存成功/没有变更/保存失败/已重新加载/已恢复本页等），走 toast 而非底栏。
     pub feedback: Feedback,
+    /// 触发键冲突的实时提示文案（空串=无冲突）；由 `conflict_watcher` 每帧刷新，
+    /// 输入页常驻警告条据此显示/隐藏。取代了旧版仅在保存 toast 里追加的冲突后缀。
+    pub conflict: Signal<String>,
     /// 方案管理对话框状态。
     pub schema_mgr: SchemaManagerState,
     /// 词库管理页状态（导航/数据加载/写操作）。
@@ -209,6 +212,7 @@ impl AppState {
             dark: signal(crate::theme_def::system_dark()),
             status: signal("正在连接服务...".to_string()),
             feedback: signal(None),
+            conflict: signal(String::new()),
             schema_mgr,
             dict_mgr: DictManagerState::new(),
             reload_confirm: signal(false),
@@ -449,6 +453,17 @@ impl AppState {
         !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
     }
 
+    /// 实时触发键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
+    /// 复用保存路径同款 [`check_trigger_key_conflicts`]。无冲突返回 None。
+    /// 供 `conflict_watcher` 每帧刷新输入页常驻警告条。
+    pub fn live_trigger_conflict(&self) -> Option<String> {
+        let mut probe = self.current_config.clone();
+        for w in self.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        check_trigger_key_conflicts(&probe)
+    }
+
     /// 当前 Tab 对应的 manifest 分组（用于「恢复本页」定位 key 集合）。
     /// 与 `pages::all_tabs` 顺序一致（统计页已隐藏）：方案0/输入1/按键2/外观3/词库4/高级5/关于6。
     /// 自定义页（词库/关于）无清单分组。
@@ -525,13 +540,11 @@ impl AppState {
                 w(&mut self.current_config);
             }
         }
-        let conflict_suffix = check_trigger_key_conflicts(&self.current_config)
-            .map(|m| format!("；{m}"))
-            .unwrap_or_default();
+        // 触发键冲突不再在此追加进保存 toast——改由输入页常驻警告条实时呈现（见 conflict_watcher）。
         let items =
             diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
         if items.is_empty() {
-            self.feedback.set(Some((ToastKind::Info, format!("没有变更{conflict_suffix}"))));
+            self.feedback.set(Some((ToastKind::Info, "没有变更".to_string())));
             return true;
         }
         let items_json: Vec<Value> = items
@@ -557,7 +570,7 @@ impl AppState {
                     self.base_config = self.current_config.clone();
                     self.feedback.set(Some((
                         ToastKind::Success,
-                        format!("已保存 {} 项变更{conflict_suffix}", items_json.len()),
+                        format!("已保存 {} 项变更", items_json.len()),
                     )));
                     true
                 } else {
@@ -565,7 +578,7 @@ impl AppState {
                     self.feedback.set(Some((
                         ToastKind::Error,
                         format!(
-                            "已保存 {} 项，{} 项被服务端拒绝: {}{conflict_suffix}",
+                            "已保存 {} 项，{} 项被服务端拒绝: {}",
                             items_json.len() - skipped.len(),
                             skipped.len(),
                             skipped.join(", ")
@@ -828,6 +841,32 @@ mod trigger_conflict_tests {
         }));
         let msg = check_trigger_key_conflicts(&cfg).unwrap();
         assert!(msg.contains("特殊模式「快符」"));
+    }
+
+    #[test]
+    fn test_live_trigger_conflict_reflects_current_config() {
+        let mut st = AppState::empty();
+        st.current_config = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["semicolon"] },
+                "temp_english": { "trigger_keys": [] }
+            },
+            "schema": {
+                "mix_modes": [
+                    { "id": "quick_mix", "name": "快捷", "trigger_keys": ["semicolon"] }
+                ],
+                "special_modes": []
+            }
+        }));
+        let msg = st.live_trigger_conflict().expect("编辑态含重叠触发键，应实时检出冲突");
+        assert!(msg.contains(';'), "键名应以符号呈现");
+        assert!(msg.contains("临时拼音"));
+        assert!(msg.contains("快捷"));
+        // 无冲突时返回 None。
+        st.current_config = Config::from_value(json!({
+            "input": { "temp_pinyin": { "trigger_keys": ["backtick"] } }
+        }));
+        assert!(st.live_trigger_conflict().is_none(), "无重叠应无冲突");
     }
 }
 

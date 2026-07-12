@@ -22,6 +22,12 @@ pub fn key_symbol(key: &str) -> &str {
         "backtick" | "grave" => "`",
         "semicolon" => ";",
         "quote" | "apostrophe" => "'",
+        "comma" => ",",
+        "period" => ".",
+        "slash" => "/",
+        "backslash" => "\\",
+        "open_bracket" => "[",
+        "close_bracket" => "]",
         other => other,
     }
 }
@@ -107,6 +113,12 @@ mod tests {
         assert_eq!(key_symbol("backtick"), "`");
         assert_eq!(key_symbol("semicolon"), ";");
         assert_eq!(key_symbol("quote"), "'");
+        assert_eq!(key_symbol("comma"), ",");
+        assert_eq!(key_symbol("period"), ".");
+        assert_eq!(key_symbol("slash"), "/");
+        assert_eq!(key_symbol("backslash"), "\\");
+        assert_eq!(key_symbol("open_bracket"), "[");
+        assert_eq!(key_symbol("close_bracket"), "]");
         assert_eq!(key_symbol("z"), "z", "未知键回退原名");
     }
 }

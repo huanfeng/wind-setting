@@ -116,7 +116,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         root = root.child(dlg);
     }
     // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏 status 只保留连接态）。
-    root.child(crate::pages::dict::reactive::toast_sink(feedback))
+    root = root.child(crate::pages::dict::reactive::toast_sink(feedback));
+    // 触发键冲突实时监听：每帧刷新 state.conflict，驱动输入页常驻警告条。
+    root.child(crate::pages::conflict_watcher(app))
 }
 
 /// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。
