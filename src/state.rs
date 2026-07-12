@@ -453,15 +453,30 @@ impl AppState {
         !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
     }
 
-    /// 实时触发键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
-    /// 复用保存路径同款 [`check_trigger_key_conflicts`]。无冲突返回 None。
-    /// 供 `conflict_watcher` 每帧刷新输入页常驻警告条。
-    pub fn live_trigger_conflict(&self) -> Option<String> {
+    /// 实时按键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
+    /// 分两个场景域各自检测——**跨域不算冲突**（同一物理键在不同场景分时复用是正常设计）：
+    /// - 触发键域：无候选/闲时触发模式（临时拼音/英文、混合、特殊模式）。
+    /// - 候选键域：有候选时操作候选（次选/翻页/高亮移动/以词定字）。
+    ///
+    /// 两域摘要用换行拼成一条文案（可能各一行）；均无冲突返回 None。
+    /// 供 `conflict_watcher` 每帧刷新固定顶栏。
+    pub fn live_conflicts(&self) -> Option<String> {
         let mut probe = self.current_config.clone();
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
         }
-        check_trigger_key_conflicts(&probe)
+        let mut lines = Vec::new();
+        if let Some(m) = check_trigger_key_conflicts(&probe) {
+            lines.push(m);
+        }
+        if let Some(m) = check_candidate_key_conflicts(&probe) {
+            lines.push(m);
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
     }
 
     /// 当前 Tab 对应的 manifest 分组（用于「恢复本页」定位 key 集合）。
@@ -635,11 +650,39 @@ fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
     groups
 }
 
-/// 跑一次跨"裸键触发"四组的冲突检测；无冲突返回 None。
+/// 跑一次跨"裸键触发"四组的冲突检测（触发键场景域）；无冲突返回 None。
 fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
     let groups = collect_trigger_key_groups(cfg);
     let hits = crate::key_conflict::find_key_conflicts(&groups);
-    crate::key_conflict::conflict_summary(&hits)
+    crate::key_conflict::conflict_summary(&hits, "触发键")
+}
+
+/// 收集"候选操作"域四组的 (显示名, 组名列表)，组名经 `canon_candidate_key` 归一
+/// （统一 tab/shift_tab），供有候选场景下的按键冲突检测。
+fn collect_candidate_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+    fn canon_strs(v: Option<&Vec<Value>>) -> Vec<String> {
+        v.map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| crate::key_conflict::canon_candidate_key(s).to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    vec![
+        ("次选/三选键".to_string(), canon_strs(cfg.get_array("keys.select_key_groups"))),
+        ("翻页键".to_string(), canon_strs(cfg.get_array("keys.page_keys"))),
+        ("高亮移动键".to_string(), canon_strs(cfg.get_array("keys.highlight_keys"))),
+        ("以词定字".to_string(), canon_strs(cfg.get_array("keys.select_char_keys"))),
+    ]
+}
+
+/// 跑一次跨"候选操作"四组的冲突检测（候选键场景域）；无冲突返回 None。
+fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
+    let groups = collect_candidate_key_groups(cfg);
+    let hits = crate::key_conflict::find_key_conflicts(&groups);
+    crate::key_conflict::conflict_summary(&hits, "候选键")
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -858,7 +901,8 @@ mod trigger_conflict_tests {
                 "special_modes": []
             }
         }));
-        let msg = st.live_trigger_conflict().expect("编辑态含重叠触发键，应实时检出冲突");
+        let msg = st.live_conflicts().expect("编辑态含重叠触发键，应实时检出冲突");
+        assert!(msg.contains("触发键冲突"), "应标注触发键场景");
         assert!(msg.contains(';'), "键名应以符号呈现");
         assert!(msg.contains("临时拼音"));
         assert!(msg.contains("快捷"));
@@ -866,7 +910,37 @@ mod trigger_conflict_tests {
         st.current_config = Config::from_value(json!({
             "input": { "temp_pinyin": { "trigger_keys": ["backtick"] } }
         }));
-        assert!(st.live_trigger_conflict().is_none(), "无重叠应无冲突");
+        assert!(st.live_conflicts().is_none(), "无重叠应无冲突");
+    }
+
+    #[test]
+    fn test_candidate_domain_conflict_and_cross_domain_ignored() {
+        // 候选域：翻页键与以词定字都用「减号/等号」→ 有候选时按 - 有歧义，应冲突。
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "page_keys": ["minus_equal"],
+                "select_char_keys": ["minus_equal"]
+            }
+        }));
+        let msg = check_candidate_key_conflicts(&cfg).expect("候选域应检出冲突");
+        assert!(msg.contains("候选键冲突"));
+        assert!(msg.contains("翻页键"));
+        assert!(msg.contains("以词定字"));
+
+        // tab(高亮移动) 与 shift_tab(翻页) 归一后应冲突。
+        let cfg2 = Config::from_value(json!({
+            "keys": { "highlight_keys": ["tab"], "page_keys": ["shift_tab"] }
+        }));
+        let msg2 = check_candidate_key_conflicts(&cfg2).expect("tab/shift_tab 应冲突");
+        assert!(msg2.contains("Tab"));
+
+        // 跨域不算冲突：触发键 ; 与 候选次选键 ; ' 分属不同场景，不应报冲突。
+        let cfg3 = Config::from_value(json!({
+            "input": { "temp_pinyin": { "trigger_keys": ["semicolon"] } },
+            "keys": { "select_key_groups": ["semicolon_quote"] }
+        }));
+        assert!(check_trigger_key_conflicts(&cfg3).is_none(), "触发域无内部重叠");
+        assert!(check_candidate_key_conflicts(&cfg3).is_none(), "候选域无内部重叠");
     }
 }
 

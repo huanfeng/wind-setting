@@ -80,10 +80,16 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .bg_role(Role::Divider);
 
     // 内容区：各分区页叠放，按选中索引切换显示。
-    let mut content = Element::stack().fill().weight(1.0);
+    let mut pages_stack = Element::stack().fill().weight(1.0);
     for (i, page) in pages.into_iter().enumerate() {
-        content = content.child(page.fill().visible_when(move || tab_sig.get() == i));
+        pages_stack = pages_stack.child(page.fill().visible_when(move || tab_sig.get() == i));
     }
+    // 按键冲突固定顶栏：置于页面滚动区之外，切页/下滚均常驻，无冲突时隐藏不占位。
+    let content = Element::col()
+        .fill()
+        .weight(1.0)
+        .child(crate::pages::conflict_bar(app.borrow().conflict))
+        .child(pages_stack);
     let body = Element::row()
         .fill()
         .weight(1.0)

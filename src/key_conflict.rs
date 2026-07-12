@@ -15,10 +15,12 @@ pub fn find_key_conflicts(groups: &[(String, Vec<String>)]) -> Vec<(String, Stri
     hits
 }
 
-/// 触发键内部名 → 可读符号；未知键回退原名，避免提示里出现生硬的英文标识（如 backtick）。
-/// 取值域见 settings_manifest.toml 的触发键 options（backtick/semicolon/quote）。
+/// 触发键内部名/候选组名 → 可读符号；未知键回退原名，避免提示里出现生硬的英文标识。
+/// 触发键取值见 settings_manifest.toml 触发键 options（单键名）；候选组名为成组按键
+/// （semicolon_quote 等，一名代表一组物理键），取值见"候选操作" section。
 pub fn key_symbol(key: &str) -> &str {
     match key {
+        // ── 触发键：单键名 ──
         "backtick" | "grave" => "`",
         "semicolon" => ";",
         "quote" | "apostrophe" => "'",
@@ -28,12 +30,33 @@ pub fn key_symbol(key: &str) -> &str {
         "backslash" => "\\",
         "open_bracket" => "[",
         "close_bracket" => "]",
+        // ── 候选操作：成组键名（canon 后） ──
+        "semicolon_quote" => "; '",
+        "comma_period" => ", .",
+        "minus_equal" => "- =",
+        "brackets" => "[ ]",
+        "tab" => "Tab/Shift+Tab",
+        "arrows" => "方向键 ↑↓",
+        "pageupdown" => "PageUp/PageDown",
+        "lrshift" => "左/右 Shift",
+        "lrctrl" => "左/右 Ctrl",
+        other => other,
+    }
+}
+
+/// 候选操作组名归一：`page_keys` 的 `shift_tab` 与 `highlight_keys` 的 `tab` 是同一对
+/// 物理键（Tab / Shift+Tab），须归一到同一 token 才能检出"移动高亮 vs 翻页"冲突。
+/// 其余组名域内同名即同键，原样返回。
+pub fn canon_candidate_key(group: &str) -> &str {
+    match group {
+        "shift_tab" => "tab",
         other => other,
     }
 }
 
 /// 把冲突列表拼成一行提示文案；无冲突返回 None。键名以符号呈现（见 [`key_symbol`]）。
-pub fn conflict_summary(hits: &[(String, String, String)]) -> Option<String> {
+/// `scene` 为场景标签（如"触发键"/"候选键"），冠于文案前区分冲突域。
+pub fn conflict_summary(hits: &[(String, String, String)], scene: &str) -> Option<String> {
     if hits.is_empty() {
         return None;
     }
@@ -41,7 +64,7 @@ pub fn conflict_summary(hits: &[(String, String, String)]) -> Option<String> {
         .iter()
         .map(|(key, a, b)| format!("{} 键同时被「{a}」「{b}」使用", key_symbol(key)))
         .collect();
-    Some(format!("⚠ 触发键冲突：{}", parts.join("；")))
+    Some(format!("⚠ {scene}冲突：{}", parts.join("；")))
 }
 
 #[cfg(test)]
@@ -95,17 +118,48 @@ mod tests {
 
     #[test]
     fn test_summary_empty_is_none() {
-        assert_eq!(conflict_summary(&[]), None);
+        assert_eq!(conflict_summary(&[], "触发键"), None);
     }
 
     #[test]
     fn test_summary_formats_hits() {
         let hits = vec![("semicolon".to_string(), "临时拼音".to_string(), "快捷".to_string())];
-        let msg = conflict_summary(&hits).unwrap();
+        let msg = conflict_summary(&hits, "触发键").unwrap();
+        assert!(msg.contains("触发键冲突"), "应冠场景标签");
         assert!(msg.contains(';'), "内部键名应渲染为符号");
         assert!(!msg.contains("semicolon"), "不应再出现英文键名");
         assert!(msg.contains("临时拼音"));
         assert!(msg.contains("快捷"));
+    }
+
+    #[test]
+    fn test_canon_candidate_key_unifies_tab_variants() {
+        // highlight_keys 的 tab 与 page_keys 的 shift_tab 是同一对物理键，须归一。
+        assert_eq!(canon_candidate_key("shift_tab"), "tab");
+        assert_eq!(canon_candidate_key("tab"), "tab");
+        assert_eq!(canon_candidate_key("comma_period"), "comma_period", "其余原样");
+    }
+
+    #[test]
+    fn test_tab_and_shift_tab_conflict_after_canon() {
+        // 高亮移动(tab) 与 翻页(shift_tab) 归一后应检出冲突。
+        let groups = vec![
+            ("高亮移动键".to_string(), vec![canon_candidate_key("tab").to_string()]),
+            ("翻页键".to_string(), vec![canon_candidate_key("shift_tab").to_string()]),
+        ];
+        let hits = find_key_conflicts(&groups);
+        assert_eq!(hits.len(), 1);
+        let msg = conflict_summary(&hits, "候选键").unwrap();
+        assert!(msg.contains("候选键冲突"));
+        assert!(msg.contains("Tab"), "canon 后的 tab 应显示为 Tab/Shift+Tab");
+    }
+
+    #[test]
+    fn test_candidate_group_symbols() {
+        assert_eq!(key_symbol("comma_period"), ", .");
+        assert_eq!(key_symbol("minus_equal"), "- =");
+        assert_eq!(key_symbol("brackets"), "[ ]");
+        assert_eq!(key_symbol("semicolon_quote"), "; '");
     }
 
     #[test]

@@ -71,32 +71,33 @@ fn manifest_page(state: &AppState, group: &str, title: &str, desc: &str) -> Elem
 
 // ───────────────────────── 输入 ─────────────────────────
 
-/// 触发键冲突常驻警告条：`state.conflict` 非空时显示一行琥珀警告（文案已含 ⚠ 前缀）。
-/// 无冲突时 `visible_when` 隐藏且不占布局（隐藏子节点被 measure/arrange 过滤，无残留间距）。
-fn conflict_banner(conflict: Signal<String>) -> Element {
+/// 按键冲突固定顶栏：`state.conflict` 非空时在内容区顶部显示琥珀警告（文案已含 ⚠ 前缀，
+/// 可能多行——触发键/候选键各一行）。**放在页面滚动区之外**，不随页面滚动、切页常驻，
+/// 使下方配置项滚动后仍可见。无冲突时 `visible_when` 隐藏且不占布局。
+pub fn conflict_bar(conflict: Signal<String>) -> Element {
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(14, 10)
-        .corner(8.0)
-        .bg(Color::hex(0xF59E0B).scale_alpha(0.12))
+        .padding_xy(16, 10)
+        .bg(Color::hex(0xF59E0B).scale_alpha(0.14))
+        .border_role(Role::Divider, 1)
         .child(
             Element::label_rc(conflict)
                 .font_size(12.5)
                 .font_weight(500)
                 .fg(Color::hex(0xB45309))
                 .weight(1.0)
-                .max_lines(2),
+                .max_lines(4),
         )
         .visible_when(move || !conflict.get().is_empty())
 }
 
-/// 冲突实时监听：每帧跑一次 `live_trigger_conflict`，仅当结果变化才写回 `state.conflict`
-/// （避免无谓重绘）。返回挂在 shell 根的 0×0 不可见叶子。
+/// 冲突实时监听：每帧跑一次 `live_conflicts`（触发键 + 候选键两域），仅当结果变化才写回
+/// `state.conflict`（避免无谓重绘）。返回挂在 shell 根的 0×0 不可见叶子。
 ///
 /// 无统一「配置改动」版本源，故用每帧递增的 tick 驱动 `reactive_effect` 每帧求值。
 /// 性能：每帧一次 probe（clone 配置 + 跑写回器），设置界面低频渲染可接受；
-/// 后续可优化为仅触发键相关 Signal 变化时重算。
+/// 后续可优化为仅相关 Signal 变化时重算。
 pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     let conflict = app.borrow().conflict;
     let eff_app = app.clone();
@@ -108,7 +109,7 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
         },
         move || {
             if let Ok(st) = eff_app.try_borrow() {
-                let next = st.live_trigger_conflict().unwrap_or_default();
+                let next = st.live_conflicts().unwrap_or_default();
                 if next != conflict.get() {
                     conflict.set(next);
                 }
@@ -118,11 +119,10 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
 }
 
 /// 输入页：manifest「input」分组 + 并入原「常规(general)」的启动状态等分区
-/// （已取消独立「常规」Tab；general 分组若空则无副作用）。顶部并入触发键冲突常驻警告条。
+/// （已取消独立「常规」Tab；general 分组若空则无副作用）。冲突提示由全局固定顶栏承担。
 fn input_page(state: &AppState) -> Element {
     let mut secs = manifest_sections(state, "input");
     secs.extend(manifest_sections(state, "general"));
-    secs.insert(0, conflict_banner(state.conflict));
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
 
