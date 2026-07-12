@@ -54,6 +54,43 @@ pub fn canon_candidate_key(group: &str) -> &str {
     }
 }
 
+/// 组合键（功能快捷键）归一化为唯一显示形：拆分 `+`、大小写无关、修饰键按固定序
+/// （Ctrl<Shift<Alt<Win）排前、主键在后。故 `shift+ctrl+e` 与 `ctrl+shift+e` 归一后相等，
+/// 既用于冲突比较也直接作显示（如 `Ctrl+Shift+E`、`Ctrl+数字`）。空/`none` 由调用方先行剔除。
+pub fn canonical_hotkey(s: &str) -> String {
+    fn display_main(k: &str) -> String {
+        match k {
+            "number" => "数字".to_string(),
+            "equal" => "=".to_string(),
+            "minus" => "-".to_string(),
+            "space" => "Space".to_string(),
+            _ => {
+                let mut c = k.chars();
+                match c.next() {
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    None => String::new(),
+                }
+            }
+        }
+    }
+    let mut mods: Vec<(u8, &str)> = Vec::new();
+    let mut mains: Vec<String> = Vec::new();
+    for part in s.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.to_lowercase().as_str() {
+            "ctrl" | "control" => mods.push((0, "Ctrl")),
+            "shift" => mods.push((1, "Shift")),
+            "alt" => mods.push((2, "Alt")),
+            "win" | "super" | "meta" => mods.push((3, "Win")),
+            other => mains.push(display_main(other)),
+        }
+    }
+    mods.sort_by_key(|(o, _)| *o);
+    mods.dedup_by_key(|(o, _)| *o);
+    let mut out: Vec<String> = mods.into_iter().map(|(_, m)| m.to_string()).collect();
+    out.extend(mains);
+    out.join("+")
+}
+
 /// 把冲突列表拼成一行提示文案；无冲突返回 None。键名以符号呈现（见 [`key_symbol`]）。
 /// `scene` 为场景标签（如"触发键"/"候选键"），冠于文案前区分冲突域。
 pub fn conflict_summary(hits: &[(String, String, String)], scene: &str) -> Option<String> {
@@ -160,6 +197,20 @@ mod tests {
         assert_eq!(key_symbol("minus_equal"), "- =");
         assert_eq!(key_symbol("brackets"), "[ ]");
         assert_eq!(key_symbol("semicolon_quote"), "; '");
+    }
+
+    #[test]
+    fn test_canonical_hotkey_is_order_and_case_insensitive() {
+        // 修饰键顺序/大小写无关，归一后相等 → 可检出冲突。
+        assert_eq!(canonical_hotkey("ctrl+shift+e"), "Ctrl+Shift+E");
+        assert_eq!(canonical_hotkey("Shift+Ctrl+E"), "Ctrl+Shift+E");
+        assert_eq!(canonical_hotkey("ctrl+number"), "Ctrl+数字");
+        assert_eq!(canonical_hotkey("ctrl+equal"), "Ctrl+=");
+        assert_eq!(canonical_hotkey("shift+space"), "Shift+Space");
+        // 两种写法归一后相等，find_key_conflicts 能检出。
+        let a = canonical_hotkey("ctrl+shift+j");
+        let b = canonical_hotkey("shift+ctrl+j");
+        assert_eq!(a, b);
     }
 
     #[test]

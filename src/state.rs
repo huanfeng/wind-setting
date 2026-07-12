@@ -454,11 +454,12 @@ impl AppState {
     }
 
     /// 实时按键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
-    /// 分两个场景域各自检测——**跨域不算冲突**（同一物理键在不同场景分时复用是正常设计）：
+    /// 分三个场景域各自检测——**跨域不算冲突**（同一物理键在不同场景分时复用是正常设计）：
     /// - 触发键域：无候选/闲时触发模式（临时拼音/英文、混合、特殊模式）。
     /// - 候选键域：有候选时操作候选（次选/翻页/高亮移动/以词定字）。
+    /// - 快捷键域：功能组合键（切换方案/标点/工具栏…、置顶/删除词条），归一化后同键即冲突。
     ///
-    /// 两域摘要用换行拼成一条文案（可能各一行）；均无冲突返回 None。
+    /// 各域摘要用换行拼成一条文案（可能各一行）；均无冲突返回 None。
     /// 供 `conflict_watcher` 每帧刷新固定顶栏。
     pub fn live_conflicts(&self) -> Option<String> {
         let mut probe = self.current_config.clone();
@@ -470,6 +471,9 @@ impl AppState {
             lines.push(m);
         }
         if let Some(m) = check_candidate_key_conflicts(&probe) {
+            lines.push(m);
+        }
+        if let Some(m) = check_hotkey_conflicts(&probe) {
             lines.push(m);
         }
         if lines.is_empty() {
@@ -683,6 +687,44 @@ fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
     let groups = collect_candidate_key_groups(cfg);
     let hits = crate::key_conflict::find_key_conflicts(&groups);
     crate::key_conflict::conflict_summary(&hits, "候选键")
+}
+
+/// 收集功能快捷键（组合键）各功能的 (显示名, [归一化组合键])，供组合键冲突检测。
+/// 组合键都带修饰键、是显式命令，不涉及裸键的按场景分派，故统一为一个域检测。
+/// 含 8 个 hotkey 项 + pin/delete_candidate（select，但值也是 Ctrl+数字 组合键）；
+/// 空值与 "none" 视为未设置、跳过。
+fn collect_hotkey_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+    const HOTKEYS: &[(&str, &str)] = &[
+        ("keys.switch_engine", "切换输入方案"),
+        ("keys.toggle_full_width", "切换全角/半角"),
+        ("keys.toggle_punct", "切换中/英文标点"),
+        ("keys.toggle_s2t", "切换简入繁出"),
+        ("keys.toggle_toolbar", "显示/隐藏工具栏"),
+        ("keys.open_settings", "打开设置"),
+        ("keys.add_word", "快捷加词"),
+        ("keys.activate_ime", "切换到本输入法"),
+        ("keys.pin_candidate", "置顶词条"),
+        ("keys.delete_candidate", "删除词条"),
+    ];
+    HOTKEYS
+        .iter()
+        .map(|(key, label)| {
+            let raw = cfg.get_str(key).unwrap_or("");
+            let keys = if raw.is_empty() || raw == "none" {
+                Vec::new()
+            } else {
+                vec![crate::key_conflict::canonical_hotkey(raw)]
+            };
+            (label.to_string(), keys)
+        })
+        .collect()
+}
+
+/// 跑一次跨功能快捷键的冲突检测（组合键域）；无冲突返回 None。
+fn check_hotkey_conflicts(cfg: &Config) -> Option<String> {
+    let groups = collect_hotkey_groups(cfg);
+    let hits = crate::key_conflict::find_key_conflicts(&groups);
+    crate::key_conflict::conflict_summary(&hits, "快捷键")
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -941,6 +983,35 @@ mod trigger_conflict_tests {
         }));
         assert!(check_trigger_key_conflicts(&cfg3).is_none(), "触发域无内部重叠");
         assert!(check_candidate_key_conflicts(&cfg3).is_none(), "候选域无内部重叠");
+    }
+
+    #[test]
+    fn test_hotkey_domain_conflict_normalizes_order() {
+        // 两功能绑到同一组合键（写法顺序不同）→ 归一后应检出冲突。
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "switch_engine": "ctrl+shift+e",
+                "toggle_toolbar": "shift+ctrl+e"
+            }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("同一组合键应冲突");
+        assert!(msg.contains("快捷键冲突"));
+        assert!(msg.contains("Ctrl+Shift+E"), "应显示归一化组合键");
+        assert!(msg.contains("切换输入方案"));
+        assert!(msg.contains("显示/隐藏工具栏"));
+
+        // none / 空值不参与，默认各异不冲突。
+        let cfg2 = Config::from_value(json!({
+            "keys": { "switch_engine": "none", "toggle_toolbar": "none" }
+        }));
+        assert!(check_hotkey_conflicts(&cfg2).is_none(), "none 不算占用");
+
+        // pin/delete 同为 Ctrl+数字 → 冲突。
+        let cfg3 = Config::from_value(json!({
+            "keys": { "pin_candidate": "ctrl+number", "delete_candidate": "ctrl+number" }
+        }));
+        let msg3 = check_hotkey_conflicts(&cfg3).expect("pin/delete 同键应冲突");
+        assert!(msg3.contains("Ctrl+数字"));
     }
 }
 
