@@ -17,6 +17,59 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_edit_dialog(mgr))
         .child(build_shadow_dialog(mgr))
         .child(build_view_dialog(mgr))
+        .child(build_import_confirm_dialog(mgr))
+}
+
+/// 词库导入确认：previewImport 计数正文 + 合并（默认）/ 替换（danger）二选一。
+fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
+    let merge = mgr.clone();
+    let replace = mgr.clone();
+    let cancel = mgr.clone();
+    let content = flat_panel()
+        .width(400)
+        .padding(20)
+        .spacing(14)
+        .child(
+            Element::label("导入用户词库")
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(24)
+                .width_match(),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label_rc(mgr.import_preview_msg)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(6),
+        )
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| cancel.cancel_import()),
+                )
+                .child(
+                    Element::button("替换导入")
+                        .small()
+                        .danger()
+                        .on_click(move |_| replace.confirm_import("replace")),
+                )
+                .child(
+                    Element::button("合并导入")
+                        .small()
+                        .on_click(move |_| merge.confirm_import("merge")),
+                ),
+        );
+    Element::dialog(mgr.import_confirm_visible, content)
 }
 
 /// 加/改词对话框（用户词库 / 短语）：编码/缩写（+出码）· 词条/短语 · 权重。
@@ -45,7 +98,11 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .weight(1.0)
         .cross(Align::Center)
         .spacing(8)
-        .child(Element::text_input(mgr.edit_code, "").height(34).weight(1.0))
+        .child(
+            Element::text_input(mgr.edit_code, "")
+                .height(34)
+                .weight(1.0),
+        )
         .child(
             Element::button("出码")
                 .small()
@@ -61,11 +118,21 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .wrap(true)
         .height(88)
         .weight(1.0)
-        .visible_when(move || matches!(is_phrase.current_category(), super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser));
+        .visible_when(move || {
+            matches!(
+                is_phrase.current_category(),
+                super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser
+            )
+        });
     let text_single = Element::text_input(mgr.edit_text, "")
         .height(34)
         .weight(1.0)
-        .visible_when(move || !matches!(is_word.current_category(), super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser));
+        .visible_when(move || {
+            !matches!(
+                is_word.current_category(),
+                super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser
+            )
+        });
     let text_field = Element::row()
         .weight(1.0)
         .cross(Align::Center)
@@ -83,8 +150,17 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .width_match()
                 .cross(Align::Center)
                 .spacing(8)
-                .child(Element::label("权重").font_size(12.5).fg_role(Role::TextMuted).width(48))
-                .child(Element::text_input(mgr.edit_weight, "").width(100).height(34)),
+                .child(
+                    Element::label("权重")
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted)
+                        .width(48),
+                )
+                .child(
+                    Element::text_input(mgr.edit_weight, "")
+                        .width(100)
+                        .height(34),
+                ),
         );
 
     let footer = Element::row()
@@ -137,7 +213,12 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
             .width_match()
             .cross(Align::Center)
             .spacing(8)
-            .child(Element::label(label).font_size(12.5).fg_role(Role::TextMuted).width(64))
+            .child(
+                Element::label(label)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .width(64),
+            )
             .child(input)
     };
 
@@ -145,12 +226,25 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .width_match()
         .padding_xy(18, 12)
         .spacing(10)
-        .child(field("编码", Element::text_input(mgr.shadow_code, "").height(34).weight(1.0)))
-        .child(field("词条", Element::text_input(mgr.shadow_word, "").height(34).weight(1.0)))
+        .child(field(
+            "编码",
+            Element::text_input(mgr.shadow_code, "")
+                .height(34)
+                .weight(1.0),
+        ))
+        .child(field(
+            "词条",
+            Element::text_input(mgr.shadow_word, "")
+                .height(34)
+                .weight(1.0),
+        ))
         .child(field(
             "类型",
-            Element::segmented(vec!["固定位置".to_string(), "隐藏".to_string()], mgr.shadow_type)
-                .width(200),
+            Element::segmented(
+                vec!["固定位置".to_string(), "隐藏".to_string()],
+                mgr.shadow_type,
+            )
+            .width(200),
         ))
         .child(field(
             "目标位置",
@@ -166,8 +260,17 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .padding_xy(16, 12)
         .spacing(8)
         .child(Element::leaf().weight(1.0))
-        .child(Element::button("取消").small().outline_soft().on_click(move |_| cancel.cancel_shadow_add()))
-        .child(Element::button("确定").small().on_click(move |_| submit.submit_shadow()));
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| cancel.cancel_shadow_add()),
+        )
+        .child(
+            Element::button("确定")
+                .small()
+                .on_click(move |_| submit.submit_shadow()),
+        );
 
     let frame = Element::col()
         .width(420)
@@ -199,7 +302,12 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
             .width_match()
             .cross(Align::Center)
             .spacing(8)
-            .child(Element::label(label).font_size(12.5).fg_role(Role::TextMuted).width(48))
+            .child(
+                Element::label(label)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .width(48),
+            )
             .child(input)
     };
 

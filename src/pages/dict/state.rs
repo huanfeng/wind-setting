@@ -102,6 +102,12 @@ pub struct DictManagerState {
     /// 待确认的操作（确认后执行）。
     pending: Rc<RefCell<Option<PendingAction>>>,
 
+    // ── 词库导入确认对话框（previewImport 计数 + 合并/替换选择）──
+    pub import_confirm_visible: Signal<bool>,
+    pub import_preview_msg: Signal<String>,
+    /// 待导入的文件内容（预览确认后执行导入）。
+    pending_import: Rc<RefCell<Option<String>>>,
+
     // ── 加/改词对话框（用户词库 / 短语）──
     pub edit_visible: Signal<bool>,
     pub edit_title: Signal<String>,
@@ -186,6 +192,9 @@ impl DictManagerState {
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
             pending: Rc::new(RefCell::new(None)),
+            import_confirm_visible: signal(false),
+            import_preview_msg: signal(String::new()),
+            pending_import: Rc::new(RefCell::new(None)),
             edit_visible: signal(false),
             edit_title: signal(String::new()),
             edit_l_code: signal("编码".to_string()),
@@ -1102,6 +1111,143 @@ impl DictManagerState {
         );
     }
 
+    // ── 用户词库导入导出（按当前方案,dict.export/previewImport/import）──
+
+    /// 工具栏「导入」统一入口：按当前类别分派（用户短语 / 用户词库）。
+    pub fn do_import(&self, ctx: &mut EventCtx) {
+        match self.current_category() {
+            WordCategory::UserDict => self.do_import_dict(ctx),
+            _ => self.do_import_phrases(ctx),
+        }
+    }
+
+    /// 工具栏「导出」统一入口。
+    pub fn do_export(&self, ctx: &mut EventCtx) {
+        match self.current_category() {
+            WordCategory::UserDict => self.do_export_dict(ctx),
+            _ => self.do_export_phrases(ctx),
+        }
+    }
+
+    /// 导出当前方案的用户词库（对话框异步请求，见 `do_export_phrases` 注释）。
+    pub fn do_export_dict(&self, ctx: &mut EventCtx) {
+        let Some(schema) = self.current_schema_id() else {
+            self.notify_err("暂无已启用方案");
+            return;
+        };
+        let state = self.clone();
+        ctx.request_save_file(
+            PickDialog::new()
+                .title("导出用户词库")
+                .file_name(&format!("{schema}.wdict.yaml"))
+                .filter("WindDict", &["yaml"]),
+            move |path| {
+                let Some(path) = path else { return };
+                match rpc::call_core("dict.export", &json!({ "schemaId": schema })) {
+                    Ok(v) => {
+                        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        match std::fs::write(&path, content) {
+                            Ok(_) => state.notify_ok("已导出"),
+                            Err(e) => state.notify_err(&format!("写文件失败: {e}")),
+                        }
+                    }
+                    Err(e) => state.notify_err(&format!("导出失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 导入用户词库：选文件 → `dict.previewImport` 预览 → 确认对话框选合并/替换。
+    pub fn do_import_dict(&self, ctx: &mut EventCtx) {
+        if self.current_schema_id().is_none() {
+            self.notify_err("暂无已启用方案");
+            return;
+        }
+        let state = self.clone();
+        ctx.request_pick_file(
+            PickDialog::new()
+                .title("导入用户词库")
+                .filter("WindDict", &["yaml"]),
+            move |path| {
+                let Some(path) = path else { return };
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        state.notify_err(&format!("读文件失败: {e}"));
+                        return;
+                    }
+                };
+                let Some(schema) = state.current_schema_id() else {
+                    return;
+                };
+                match rpc::call_core(
+                    "dict.previewImport",
+                    &json!({ "schemaId": schema, "content": content }),
+                ) {
+                    Ok(v) => {
+                        state
+                            .import_preview_msg
+                            .set(Self::format_import_preview(&v));
+                        *state.pending_import.borrow_mut() = Some(content);
+                        state.import_confirm_visible.set(true);
+                    }
+                    Err(e) => state.notify_err(&format!("预览失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
+    fn format_import_preview(v: &Value) -> String {
+        let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let mut s = format!(
+            "新增 {} · 更新 {} · 不变 {}",
+            n("willAdd"),
+            n("willUpdate"),
+            n("unchanged")
+        );
+        if let Some(samples) = v.get("samples").and_then(|x| x.as_array()) {
+            let names: Vec<&str> = samples.iter().filter_map(|x| x.as_str()).take(5).collect();
+            if !names.is_empty() {
+                s.push_str(&format!("\n样例：{}", names.join("、")));
+            }
+        }
+        s.push_str("\n\n合并保留本地已有词；替换将清空当前方案词库后导入。");
+        s
+    }
+
+    /// 确认导入（strategy: "merge" | "replace"）。
+    pub fn confirm_import(&self, strategy: &str) {
+        self.import_confirm_visible.set(false);
+        let Some(content) = self.pending_import.borrow_mut().take() else {
+            return;
+        };
+        let Some(schema) = self.current_schema_id() else {
+            return;
+        };
+        match rpc::call_core(
+            "dict.import",
+            &json!({ "schemaId": schema, "content": content, "strategy": strategy }),
+        ) {
+            Ok(v) => {
+                let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                self.reload();
+                self.notify_ok(&format!(
+                    "已导入：新增 {} · 更新 {} · 跳过 {}",
+                    n("added"),
+                    n("updated"),
+                    n("skipped")
+                ));
+            }
+            Err(e) => self.notify_err(&format!("导入失败: {e}")),
+        }
+    }
+
+    pub fn cancel_import(&self) {
+        *self.pending_import.borrow_mut() = None;
+        self.import_confirm_visible.set(false);
+    }
+
     /// 构建候选调整添加的 (方法, 参数)（纯函数，便于单测）。
     pub fn shadow_add_call(&self) -> Result<(&'static str, Value), String> {
         let code = self.shadow_code.get();
@@ -1485,6 +1631,23 @@ mod tests {
             *st.pending.borrow(),
             Some(PendingAction::ResetDefault)
         ));
+    }
+
+    #[test]
+    fn import_preview_msg_and_cancel() {
+        let st = DictManagerState::new();
+        let v = json!({ "willAdd": 3, "willUpdate": 1, "unchanged": 2, "samples": ["工", "王中"] });
+        let msg = DictManagerState::format_import_preview(&v);
+        assert!(msg.contains("新增 3"));
+        assert!(msg.contains("更新 1"));
+        assert!(msg.contains("不变 2"));
+        assert!(msg.contains("工、王中"));
+        // cancel 清空待导入内容并关对话框
+        *st.pending_import.borrow_mut() = Some("x".into());
+        st.import_confirm_visible.set(true);
+        st.cancel_import();
+        assert!(!st.import_confirm_visible.get());
+        assert!(st.pending_import.borrow().is_none());
     }
 
     #[test]

@@ -12,8 +12,7 @@ const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
 /// 管道/socket 后缀。优先级：WIND_PIPE_SUFFIX 环境变量 > 运行时模式。
 fn endpoint_suffix() -> String {
-    std::env::var("WIND_PIPE_SUFFIX")
-        .unwrap_or_else(|_| crate::mode::pipe_suffix().to_string())
+    std::env::var("WIND_PIPE_SUFFIX").unwrap_or_else(|_| crate::mode::pipe_suffix().to_string())
 }
 
 /// 控制通道端点路径。与 wind-rpc 的 ctrl_endpoint 一致。
@@ -88,7 +87,7 @@ pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     let t = std::time::Instant::now();
     let result = call_core_inner(&endpoint, method, params);
     match &result {
-        Ok(_)  => tracing::debug!("rpc {} ok ({:?})", method, t.elapsed()),
+        Ok(_) => tracing::debug!("rpc {} ok ({:?})", method, t.elapsed()),
         Err(e) => tracing::warn!("rpc {} err ({:?}): {}", method, t.elapsed(), e),
     }
     result
@@ -192,7 +191,12 @@ mod tests {
     #[test]
     fn mock_phrase_system_and_user() {
         let sys = mock_reply("phrase.listSystem");
-        assert!(sys.as_array().unwrap().iter().all(|p| p.get("isSystem")==Some(&json!(true))));
+        assert!(
+            sys.as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p.get("isSystem") == Some(&json!(true)))
+        );
         let usr = mock_reply("phrase.listUser");
         assert!(usr.get("items").is_some() && usr.get("total").is_some());
         assert_eq!(usr.get("total"), Some(&json!(2)));
@@ -236,10 +240,18 @@ mod tests {
     fn mock_get_config_codetable_has_dictionaries() {
         // 码表方案返回带 dictionaries 数组，含主库 + 附加库。
         let cfg = super::mock_reply("schema.getConfig", &json!({ "id": "wubi86" }));
-        let dicts = cfg.get("dictionaries").and_then(|v| v.as_array()).expect("dictionaries 数组");
-        assert!(dicts.iter().any(|d| d.get("default") == Some(&json!(true))), "含主库");
+        let dicts = cfg
+            .get("dictionaries")
+            .and_then(|v| v.as_array())
+            .expect("dictionaries 数组");
         assert!(
-            dicts.iter().any(|d| d.get("id") == Some(&json!("wubi86_extra"))),
+            dicts.iter().any(|d| d.get("default") == Some(&json!(true))),
+            "含主库"
+        );
+        assert!(
+            dicts
+                .iter()
+                .any(|d| d.get("id") == Some(&json!("wubi86_extra"))),
             "含扩展词库附加库"
         );
     }
@@ -248,7 +260,10 @@ mod tests {
     fn mock_get_config_shuangpin_unchanged() {
         // 双拼方案仍返回布局配置、无 dictionaries（保持原行为）。
         let cfg = super::mock_reply("schema.getConfig", &json!({ "id": "double_pinyin" }));
-        assert_eq!(cfg.pointer("/engine/pinyin/shuangpin/layout"), Some(&json!("ziranma")));
+        assert_eq!(
+            cfg.pointer("/engine/pinyin/shuangpin/layout"),
+            Some(&json!("ziranma"))
+        );
     }
 
     #[test]
@@ -264,12 +279,19 @@ mod tests {
             .iter()
             .find(|d| d.get("id") == Some(&json!("wubi86_extra")))
             .unwrap();
-        assert_eq!(extra.get("enabled"), Some(&json!(false)), "保存的开关应被 getConfig 读回");
+        assert_eq!(
+            extra.get("enabled"),
+            Some(&json!(false)),
+            "保存的开关应被 getConfig 读回"
+        );
     }
 
     #[test]
     fn mock_set_dict_enabled_ok() {
-        let r = super::mock_reply("schema.setDictEnabled", &json!({ "id": "wubi86", "dictId": "wubi86_extra", "enabled": false }));
+        let r = super::mock_reply(
+            "schema.setDictEnabled",
+            &json!({ "id": "wubi86", "dictId": "wubi86_extra", "enabled": false }),
+        );
         assert_eq!(r.get("ok"), Some(&json!(true)));
         assert_eq!(r.get("live"), Some(&json!(true)));
     }
@@ -293,7 +315,9 @@ fn record_mock_dict_override(schema_id: String, dict_id: String, enabled: bool) 
 
 /// 把会话内记忆的开关套用到 getConfig 返回的 dictionaries[*].enabled 上。
 fn apply_mock_dict_overrides(schema_id: &str, cfg: &mut Value) {
-    let Some(arr) = cfg.get_mut("dictionaries").and_then(|d| d.as_array_mut()) else { return };
+    let Some(arr) = cfg.get_mut("dictionaries").and_then(|d| d.as_array_mut()) else {
+        return;
+    };
     MOCK_DICT_OVERRIDES.with(|m| {
         let map = m.borrow();
         for d in arr.iter_mut() {
@@ -310,7 +334,9 @@ fn apply_mock_dict_overrides(schema_id: &str, cfg: &mut Value) {
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
     match method {
-        "system.capabilities" => serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({})),
+        "system.capabilities" => {
+            serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({}))
+        }
         "config.get" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
         "schema.list" => json!([
             { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "scheme": "",
@@ -360,7 +386,9 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "code": "bj", "text": "北京", "weight": 1000, "position": 0, "enabled": true, "isSystem": false },
             { "code": "yx", "text": "example@example.com", "weight": 1000, "position": 0, "enabled": true, "isSystem": false }
         ], "total": 2 }),
-        "phrase.export" => json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n\n--- !phrases\nbj\t北京\t1000\t0\t1\n" }),
+        "phrase.export" => {
+            json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n\n--- !phrases\nbj\t北京\t1000\t0\t1\n" })
+        }
         "phrase.import" => json!({ "imported": 0, "skipped": 0 }),
         "phrase.resetSystem" => json!({ "ok": true, "changed": 0 }),
         "temp.list" => json!([
@@ -396,7 +424,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
             // 码表族方案（五笔各版，排除混输）返回 dictionaries 样例；"codetable" 为
             // 未来通用码表 id 预留分支（当前 schema.list 未含此 id）。
-            let is_codetable_family = (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
+            let is_codetable_family =
+                (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
             if is_codetable_family {
                 let mut v = json!({
                     "schema": { "id": id, "name": "五笔 86" },
@@ -420,9 +449,20 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             }
         }
         "schema.setDictEnabled" => {
-            let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let dict_id = params.get("dictId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            let id = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let dict_id = params
+                .get("dictId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let enabled = params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             record_mock_dict_override(id, dict_id, enabled);
             json!({ "ok": true, "live": true })
         }
@@ -444,6 +484,14 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         ]),
         // 加词自动出码：mock 返回占位码，便于对话框演示。
         "dict.encode" => json!("aaaa"),
+        // 词库导入导出（P4 契约,形状对齐 core webdata.rs）。
+        "dict.export" => {
+            json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n\n--- !words\naaaa\t工\t0\n" })
+        }
+        "dict.import" => json!({ "added": 0, "updated": 0, "skipped": 0 }),
+        "dict.previewImport" => {
+            json!({ "willAdd": 1, "willUpdate": 0, "willConflict": 0, "unchanged": 0, "samples": ["工"] })
+        }
         "shadow.addRule" | "shadow.removeRule" => json!({ "ok": true }),
         _ => Value::Null,
     }

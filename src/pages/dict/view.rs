@@ -36,7 +36,12 @@ pub fn build_page(state: &AppState) -> Element {
     let sub_v = mgr.sub_tab;
     let mgr_eff = mgr.clone();
     let effect = reactive_effect(
-        move || dom_v.version().wrapping_mul(1_000_003).wrapping_add(sub_v.version()),
+        move || {
+            dom_v
+                .version()
+                .wrapping_mul(1_000_003)
+                .wrapping_add(sub_v.version())
+        },
         move || mgr_eff.on_nav_changed(),
     );
 
@@ -55,7 +60,11 @@ pub fn build_page(state: &AppState) -> Element {
         .cross(Align::Center)
         .spacing(10)
         .padding_xy(0, 2)
-        .child(Element::label("词库类型").font_size(13.0).fg_role(Role::TextMuted))
+        .child(
+            Element::label("词库类型")
+                .font_size(13.0)
+                .fg_role(Role::TextMuted),
+        )
         .child(Element::dropdown_reactive(mgr.domain_items, mgr.domain).width(260))
         .child(Element::leaf().weight(1.0))
         .child(
@@ -80,16 +89,31 @@ pub fn build_page(state: &AppState) -> Element {
         let m = mgr.clone();
         // 每段固定宽、总宽随段数变化：避免 1/3/4 段被均分导致各域分段宽度不一致。
         let seg_w = titles.len() as i32 * SUB_TAB_SEG_W;
-        Element::segmented(titles.iter().map(|s| s.to_string()).collect::<Vec<_>>(), mgr.sub_tab)
-            .width(seg_w)
-            .visible_when(move || m.domain_kind() == kind)
+        Element::segmented(
+            titles.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            mgr.sub_tab,
+        )
+        .width(seg_w)
+        .visible_when(move || m.domain_kind() == kind)
     };
     let sub_tabs = Element::row()
         .width_match()
         .padding_xy(0, 2)
-        .child(seg(vec!["系统短语", "用户短语"], k_phrase, DomainKind::Phrase))
-        .child(seg(vec!["用户词库", "临时词库", "词频"], k_py, DomainKind::Pinyin))
-        .child(seg(vec!["用户词库", "临时词库", "词频", "候选调整"], k_wb, DomainKind::Codetable))
+        .child(seg(
+            vec!["系统短语", "用户短语"],
+            k_phrase,
+            DomainKind::Phrase,
+        ))
+        .child(seg(
+            vec!["用户词库", "临时词库", "词频"],
+            k_py,
+            DomainKind::Pinyin,
+        ))
+        .child(seg(
+            vec!["用户词库", "临时词库", "词频", "候选调整"],
+            k_wb,
+            DomainKind::Codetable,
+        ))
         .child(seg(vec!["候选调整"], k_mx, DomainKind::Mixed));
 
     // ── 工具栏：批量操作（左）+ 搜索（右）──
@@ -120,7 +144,12 @@ pub fn build_page(state: &AppState) -> Element {
         .width_match()
         .weight(1.0)
         .padding_xy(4, 2)
-        .child(Element::stack().fill().child(table_host).child(empty_overlay));
+        .child(
+            Element::stack()
+                .fill()
+                .child(table_host)
+                .child(empty_overlay),
+        );
 
     // ── 分页（仅分页类别显示）──
     let pagination = build_pagination(&mgr);
@@ -200,7 +229,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let import_btn = Element::button("导入")
         .small()
         .outline_soft()
-        .on_click(move |ctx| m_imp.do_import_phrases(ctx))
+        .on_click(move |ctx| m_imp.do_import(ctx))
         .visible_when(move || v_imp.current_spec().ops.import);
 
     let m_exp = mgr.clone();
@@ -208,7 +237,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let export_btn = Element::button("导出")
         .small()
         .outline_soft()
-        .on_click(move |ctx| m_exp.do_export_phrases(ctx))
+        .on_click(move |ctx| m_exp.do_export(ctx))
         .visible_when(move || v_exp.current_spec().ops.export);
 
     // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
@@ -218,7 +247,11 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let search = Element::row()
         .cross(Align::Center)
         .spacing(8)
-        .child(Element::text_input(mgr.search, "搜索编码或词条…").width(240).height(30))
+        .child(
+            Element::text_input(mgr.search, "搜索编码或词条…")
+                .width(240)
+                .height(30),
+        )
         .child(
             Element::button("清除")
                 .small()
@@ -228,7 +261,9 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
                 })
                 .enabled_when(move || !e_clr_s.search.get().is_empty()),
         )
-        .visible_when(move || v_search.current_spec().searchable || v_search.current_spec().client_search);
+        .visible_when(move || {
+            v_search.current_spec().searchable || v_search.current_spec().client_search
+        });
 
     Element::row()
         .width_match()
@@ -286,8 +321,11 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
 /// 行悬停高亮为表格内建。编码/类型列自定义渲染，尾部操作列按显示下标生成。
 fn build_table(mgr: &DictManagerState) -> Element {
     let spec = mgr.current_spec();
-    let cols: Vec<(String, f32)> =
-        spec.columns.iter().map(|c| (c.header.to_string(), c.weight)).collect();
+    let cols: Vec<(String, f32)> = spec
+        .columns
+        .iter()
+        .map(|c| (c.header.to_string(), c.weight))
+        .collect();
     let columns = spec.columns;
     let m_sort = mgr.clone();
     let m_act = mgr.clone();
@@ -295,7 +333,9 @@ fn build_table(mgr: &DictManagerState) -> Element {
         m_sort.on_sort_changed()
     })
     .cell_render(move |_row, col, text| render_cell(columns, col, text))
-    .actions("操作", ACTIONS_WEIGHT, move |disp| build_row_actions(&m_act, disp))
+    .actions("操作", ACTIONS_WEIGHT, move |disp| {
+        build_row_actions(&m_act, disp)
+    })
     // 系统词库等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。
     .cell_lines(2)
     .fill()
@@ -316,7 +356,11 @@ fn render_cell(columns: &'static [ColumnSpec], col: usize, text: &str) -> Option
                 .max_lines(1),
         ),
         WordField::Kind => {
-            let role = if text == "置顶" { Role::Accent } else { Role::TextMuted };
+            let role = if text == "置顶" {
+                Role::Accent
+            } else {
+                Role::TextMuted
+            };
             Some(
                 Element::label(text)
                     .font_size(11.0)
@@ -369,8 +413,12 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         let m = mgr.clone();
         if spec.ops.remove_rule {
             // Shadow 类别：预填现值打开 shadow 对话框
-            let (c, t, k, pos) =
-                (row.code.clone(), row.text.clone(), row.kind.clone(), row.position);
+            let (c, t, k, pos) = (
+                row.code.clone(),
+                row.text.clone(),
+                row.kind.clone(),
+                row.position,
+            );
             r = r.child(
                 Element::button("编辑")
                     .small()
@@ -438,7 +486,12 @@ mod tests {
         let sub_v = mgr.sub_tab;
         let m_eff = mgr.clone();
         let effect = reactive_effect(
-            move || dom_v.version().wrapping_mul(1_000_003).wrapping_add(sub_v.version()),
+            move || {
+                dom_v
+                    .version()
+                    .wrapping_mul(1_000_003)
+                    .wrapping_add(sub_v.version())
+            },
             move || m_eff.on_nav_changed(),
         );
         let m_tbl = mgr.clone();
@@ -487,8 +540,15 @@ mod tests {
         let root = table_view(&mgr).build(&mut tree);
         tree.root = Some(root);
         layout(&mut tree);
-        assert_eq!(table_shape(&tree), (4, 2), "初始：短语 3 数据列 + 操作列，2 行");
-        assert!(mgr.current_spec().ops.reset_default, "系统短语应有恢复默认操作");
+        assert_eq!(
+            table_shape(&tree),
+            (4, 2),
+            "初始：短语 3 数据列 + 操作列，2 行"
+        );
+        assert!(
+            mgr.current_spec().ops.reset_default,
+            "系统短语应有恢复默认操作"
+        );
 
         // 切到五笔域用户词库：effect 触发 on_nav_changed（reload 后数据到达以 apply_rows 模拟）。
         mgr.domain.set(1);
@@ -499,7 +559,11 @@ mod tests {
             { "code": "wghg", "text": "程序", "weight": 3 },
         ], "total": 3 }));
         layout(&mut tree);
-        assert_eq!(table_shape(&tree), (4, 3), "切换后：用户词库 3 数据列 + 操作列，3 行");
+        assert_eq!(
+            table_shape(&tree),
+            (4, 3),
+            "切换后：用户词库 3 数据列 + 操作列，3 行"
+        );
 
         // 切回快捷短语（系统短语）：表格应重建回短语列集并显示数据。
         mgr.domain.set(0);

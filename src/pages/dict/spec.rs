@@ -181,7 +181,9 @@ fn fmt_last_used(v: Option<&Value>) -> String {
             }
             chrono::DateTime::from_timestamp(secs, 0)
                 .map(|dt| {
-                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()
+                    dt.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
                 })
                 .unwrap_or_else(|| "—".to_string())
         }
@@ -237,7 +239,10 @@ impl WordField {
 
     /// 客户端排序时是否按数值比较（其余按字符串）。
     pub fn is_numeric(self) -> bool {
-        matches!(self, WordField::Weight | WordField::Count | WordField::Position)
+        matches!(
+            self,
+            WordField::Weight | WordField::Count | WordField::Position
+        )
     }
 }
 
@@ -333,35 +338,103 @@ pub struct CategorySpec {
 
 // 短语无「启用」数据列：启用开关是交互控件，移入表格尾部操作列（见 view::build_row_actions）。
 const COLS_PHRASE: &[ColumnSpec] = &[
-    ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
-    ColumnSpec { header: "短语", weight: 2.2, field: WordField::Text },
-    ColumnSpec { header: "权重", weight: 0.7, field: WordField::Weight },
+    ColumnSpec {
+        header: "编码",
+        weight: 1.0,
+        field: WordField::Code,
+    },
+    ColumnSpec {
+        header: "短语",
+        weight: 2.2,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "权重",
+        weight: 0.7,
+        field: WordField::Weight,
+    },
 ];
 
 const COLS_USERDICT: &[ColumnSpec] = &[
-    ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
-    ColumnSpec { header: "词条", weight: 2.4, field: WordField::Text },
-    ColumnSpec { header: "权重", weight: 0.7, field: WordField::Weight },
+    ColumnSpec {
+        header: "编码",
+        weight: 1.0,
+        field: WordField::Code,
+    },
+    ColumnSpec {
+        header: "词条",
+        weight: 2.4,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "权重",
+        weight: 0.7,
+        field: WordField::Weight,
+    },
 ];
 
 const COLS_TEMP: &[ColumnSpec] = &[
-    ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
-    ColumnSpec { header: "词条", weight: 2.4, field: WordField::Text },
-    ColumnSpec { header: "次数", weight: 0.7, field: WordField::Count },
+    ColumnSpec {
+        header: "编码",
+        weight: 1.0,
+        field: WordField::Code,
+    },
+    ColumnSpec {
+        header: "词条",
+        weight: 2.4,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "次数",
+        weight: 0.7,
+        field: WordField::Count,
+    },
 ];
 
 const COLS_FREQ: &[ColumnSpec] = &[
-    ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
-    ColumnSpec { header: "词条", weight: 2.0, field: WordField::Text },
-    ColumnSpec { header: "次数", weight: 0.8, field: WordField::Count },
-    ColumnSpec { header: "最近使用", weight: 1.2, field: WordField::LastUsed },
+    ColumnSpec {
+        header: "编码",
+        weight: 1.0,
+        field: WordField::Code,
+    },
+    ColumnSpec {
+        header: "词条",
+        weight: 2.0,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "次数",
+        weight: 0.8,
+        field: WordField::Count,
+    },
+    ColumnSpec {
+        header: "最近使用",
+        weight: 1.2,
+        field: WordField::LastUsed,
+    },
 ];
 
 const COLS_SHADOW: &[ColumnSpec] = &[
-    ColumnSpec { header: "编码", weight: 1.0, field: WordField::Code },
-    ColumnSpec { header: "词", weight: 2.0, field: WordField::Text },
-    ColumnSpec { header: "类型", weight: 0.8, field: WordField::Kind },
-    ColumnSpec { header: "位置", weight: 0.7, field: WordField::Position },
+    ColumnSpec {
+        header: "编码",
+        weight: 1.0,
+        field: WordField::Code,
+    },
+    ColumnSpec {
+        header: "词",
+        weight: 2.0,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "类型",
+        weight: 0.8,
+        field: WordField::Kind,
+    },
+    ColumnSpec {
+        header: "位置",
+        weight: 0.7,
+        field: WordField::Position,
+    },
 ];
 
 const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
@@ -372,7 +445,12 @@ const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
     searchable: false,
     client_search: true,
     columns: COLS_PHRASE,
-    ops: OpFlags { set_enabled: true, reset_default: true, view: true, ..OpFlags::NONE },
+    ops: OpFlags {
+        set_enabled: true,
+        reset_default: true,
+        view: true,
+        ..OpFlags::NONE
+    },
     rpc: RpcNames {
         list: "phrase.listSystem",
         set_enabled: "phrase.setEnabled",
@@ -424,6 +502,8 @@ const SPEC_USERDICT: CategorySpec = CategorySpec {
         remove: true,
         clear: true,
         encode: true,
+        import: true,
+        export: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -526,7 +606,8 @@ mod tests {
 
     #[test]
     fn phrase_from_json_maps_all_fields() {
-        let v = json!({ "code": "bj", "text": "北京", "position": 2, "weight": 5, "enabled": true });
+        let v =
+            json!({ "code": "bj", "text": "北京", "position": 2, "weight": 5, "enabled": true });
         let r = WordRow::from_json(WordCategory::PhraseUser, &v);
         assert_eq!(r.code, "bj");
         assert_eq!(r.text, "北京");
@@ -546,7 +627,8 @@ mod tests {
 
     #[test]
     fn shadow_reads_word_not_text_and_kind_from_type() {
-        let pin = json!({ "code": "ab", "word": "阿", "candId": "c1", "type": "pin", "position": 1 });
+        let pin =
+            json!({ "code": "ab", "word": "阿", "candId": "c1", "type": "pin", "position": 1 });
         let r = WordRow::from_json(WordCategory::Shadow, &pin);
         assert_eq!(r.text, "阿", "shadow 词字段来自 word");
         assert_eq!(r.kind, "pin");
@@ -572,8 +654,16 @@ mod tests {
         //（不断言具体值以免依赖时区，只断言形状）。
         let v = json!({ "code": "x", "text": "词", "count": 1, "lastUsed": 1_782_000_000i64 });
         let r = WordRow::from_json(WordCategory::Freq, &v);
-        assert_eq!(r.last_used.len(), "2026-06-21 08:00".len(), "格式应为 YYYY-MM-DD HH:MM");
-        assert!(r.last_used.starts_with("20"), "应为格式化日期而非原始数字: {}", r.last_used);
+        assert_eq!(
+            r.last_used.len(),
+            "2026-06-21 08:00".len(),
+            "格式应为 YYYY-MM-DD HH:MM"
+        );
+        assert!(
+            r.last_used.starts_with("20"),
+            "应为格式化日期而非原始数字: {}",
+            r.last_used
+        );
         // 0 / 缺失：占位符 / 空。
         let z = json!({ "code": "x", "text": "词", "count": 1, "lastUsed": 0 });
         assert_eq!(WordRow::from_json(WordCategory::Freq, &z).last_used, "—");
@@ -647,7 +737,10 @@ mod tests {
         assert_eq!(LogicalTab::UserDict.category(), WordCategory::UserDict);
         assert_eq!(LogicalTab::Shadow.category(), WordCategory::Shadow);
         // 短语两级分别映射到对应 WordCategory
-        assert_eq!(LogicalTab::PhraseSystem.category(), WordCategory::PhraseSystem);
+        assert_eq!(
+            LogicalTab::PhraseSystem.category(),
+            WordCategory::PhraseSystem
+        );
         assert_eq!(LogicalTab::PhraseUser.category(), WordCategory::PhraseUser);
         assert_eq!(LogicalTab::PhraseSystem.phrase_system(), Some(true));
         assert_eq!(LogicalTab::PhraseUser.phrase_system(), Some(false));
@@ -659,7 +752,10 @@ mod tests {
         let sys = json!({ "code": "bj", "text": "北京", "isSystem": true });
         assert!(WordRow::from_json(WordCategory::PhraseSystem, &sys).is_system);
         let usr = json!({ "code": "me", "text": "自定义" });
-        assert!(!WordRow::from_json(WordCategory::PhraseUser, &usr).is_system, "缺省 false");
+        assert!(
+            !WordRow::from_json(WordCategory::PhraseUser, &usr).is_system,
+            "缺省 false"
+        );
     }
 
     #[test]
@@ -686,5 +782,4 @@ mod tests {
         assert!(usr.paged);
         assert_eq!(usr.rpc.list, "phrase.listUser");
     }
-
 }
