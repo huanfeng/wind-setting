@@ -678,7 +678,7 @@ impl SchemaManagerState {
             };
             *self.confirm_id.borrow_mut() = entry.id.clone();
             self.confirm_msg.set(format!(
-                "确定要删除方案「{display_name}」吗？\n此操作将删除方案文件，不可恢复。"
+                "确定要删除方案「{display_name}」吗？\n将同时删除其词库数据与未被其它方案共享的资源文件，不可恢复。"
             ));
             self.confirm_visible.set(true);
         }
@@ -691,10 +691,24 @@ impl SchemaManagerState {
             return;
         }
         match rpc::call_core("schema.delete", &json!({ "id": id })) {
-            Ok(_) => {
+            Ok(v) => {
                 // refresh 内会发现选中 ID 已消失并清空选中。
                 self.refresh();
-                self.notify(ToastKind::Success, "方案已删除");
+                let n = |k: &str| {
+                    v.get(k)
+                        .and_then(|x| x.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                };
+                let (deleted, kept) = (n("deleted"), n("keptShared"));
+                let msg = if kept > 0 {
+                    format!("方案已删除（清理 {deleted} 个文件，共享保留 {kept} 个）")
+                } else if deleted > 0 {
+                    format!("方案已删除（清理 {deleted} 个文件）")
+                } else {
+                    "方案已删除".to_string()
+                };
+                self.notify(ToastKind::Success, msg);
             }
             Err(e) => self.notify(ToastKind::Error, format!("删除失败: {e}")),
         }

@@ -507,6 +507,13 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "scheme.importPackage" => {
             json!({ "imported": ["demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
         }
+        // 删除方案:级联清理结果(deleted/keptShared 供 toast 汇总)。
+        "schema.delete" => json!({
+            "ok": true,
+            "deleted": ["demo.schema.toml", "demo/d.dict.yaml"],
+            "keptShared": [],
+            "schemaIds": ["demo"]
+        }),
         // 整机备份（P4 契约）。
         "backup.create" | "backup.inspect" => json!({
             "path": "C:/tmp/backup.zip",
