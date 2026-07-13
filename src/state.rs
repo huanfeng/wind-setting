@@ -424,7 +424,10 @@ impl AppState {
         // 方案启用状态从 schema.available 驱动，同步各行 Signal（build 后才有注册项）
         self.schema_mgr.apply_config(&cfg);
         // 词库页注入方案列表并加载当前类别数据（默认短语域）。
-        self.dict_mgr.set_schemas(&self.schemas);
+        // 词库页数据域顺序（仅作用于词库页；不改 self.schemas，故主码表/主拼音下拉、方案管理列表均不受影响）。
+        let dict_schemas =
+            order_schemas_for_dict(&self.schemas, &self.schema_mgr.enabled_order.borrow());
+        self.dict_mgr.set_schemas(&dict_schemas);
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
@@ -802,6 +805,43 @@ impl LoadedState {
     }
 }
 
+/// 词库页数据域下拉的方案排序（三段式，仅供词库页；不影响主码表/主拼音下拉与方案管理列表）：
+///   ① 已启用的拼音方案置顶；
+///   ② 其余已启用方案，按 `enabled_order`（即 `schema.available`）配置顺序；
+///   ③ 未启用方案，按类型分组「拼音→码表→混输」，组内按 id 字典序。
+///
+/// `enabled_order` 为空表示「全部启用」（与 `SchemaManagerState` 语义一致），此时段①②内部按 `schemas` 原始序。
+/// 排序稳定：段号相同者保持相对顺序。
+pub(crate) fn order_schemas_for_dict(
+    schemas: &[SchemaInfo],
+    enabled_order: &[String],
+) -> Vec<SchemaInfo> {
+    let all_enabled = enabled_order.is_empty();
+    let type_rank = |k: &str| match k {
+        "pinyin" => 0i64,
+        "codetable" => 1,
+        "mixed" => 2,
+        _ => 3,
+    };
+    let mut v: Vec<SchemaInfo> = schemas.to_vec();
+    v.sort_by_cached_key(|s| {
+        let enabled_pos = enabled_order.iter().position(|id| id == &s.id);
+        let is_enabled = all_enabled || enabled_pos.is_some();
+        if is_enabled {
+            // 段①拼音 / 段②其余；段内：有配置按配置位置，全部启用按原始序。
+            let seg = if s.kind == "pinyin" { 0u8 } else { 1 };
+            let within = enabled_pos
+                .or_else(|| schemas.iter().position(|x| x.id == s.id))
+                .unwrap_or(usize::MAX) as i64;
+            (seg, within, String::new())
+        } else {
+            // 段③未启用：类型分组 + id 字典序。
+            (2u8, type_rank(&s.kind), s.id.clone())
+        }
+    });
+    v
+}
+
 /// 加载方案列表（schema.list）。
 pub(crate) fn load_schemas() -> Vec<SchemaInfo> {
     let list =
@@ -1077,6 +1117,64 @@ mod tests {
 
     /// 所有涉及 WIND_RPC_MOCK 环境变量的测试必须持有此锁，防止并行 race。
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn si(id: &str, kind: &str) -> SchemaInfo {
+        SchemaInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: kind.to_string(),
+            scheme: String::new(),
+        }
+    }
+
+    #[test]
+    fn dict_order_three_segments() {
+        // 原始序刻意打乱，验证三段式重排结果与启用/类型无关于输入顺序。
+        let schemas = vec![
+            si("zhengma", "codetable"), // 未启用码表
+            si("wubi98", "codetable"),  // 已启用码表
+            si("cangjie", "codetable"), // 未启用码表
+            si("pinyin", "pinyin"),     // 已启用拼音
+            si("wubi_py", "mixed"),     // 已启用混输
+            si("shuangpin", "pinyin"),  // 未启用拼音
+        ];
+        // 配置顺序（已启用集合，含先后）：wubi98 在 pinyin 之前，但拼音应被段①提前。
+        let enabled = vec![
+            "wubi98".to_string(),
+            "pinyin".to_string(),
+            "wubi_py".to_string(),
+        ];
+        let ordered: Vec<String> = order_schemas_for_dict(&schemas, &enabled)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            ordered,
+            vec![
+                "pinyin",    // 段①：已启用拼音置顶
+                "wubi98",    // 段②：其余已启用，按配置顺序
+                "wubi_py",   //       （配置里 wubi98 → wubi_py）
+                "shuangpin", // 段③：未启用，类型分组 拼音在前
+                "cangjie",   //       未启用码表，组内 id 字典序 cangjie < zhengma
+                "zhengma",
+            ]
+        );
+    }
+
+    #[test]
+    fn dict_order_all_enabled_keeps_original_order_pinyin_first() {
+        // enabled_order 为空 = 全部启用：段①②内部按原始序，仅拼音整体提前。
+        let schemas = vec![
+            si("wubi98", "codetable"),
+            si("pinyin", "pinyin"),
+            si("wubi_py", "mixed"),
+        ];
+        let ordered: Vec<String> = order_schemas_for_dict(&schemas, &[])
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ordered, vec!["pinyin", "wubi98", "wubi_py"]);
+    }
 
     #[test]
     fn app_state_initializes_theme_import_wiring() {
