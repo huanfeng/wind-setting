@@ -10,6 +10,7 @@ use std::rc::Rc;
 use windui::core::EventCtx;
 use windui::prelude::*;
 
+pub mod backup;
 pub mod dict;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
@@ -26,10 +27,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, E
         ("外观".into(), appearance_page(app, state)),
         ("词库".into(), dict_page(state)),
         // 统计页未实现，暂从导航隐藏（功能完成后恢复）。
-        (
-            "高级".into(),
-            manifest_page(state, "advanced", "高级", "服务与实验性功能"),
-        ),
+        ("高级".into(), advanced_page(state)),
         ("关于".into(), about_page(state)),
     ]
 }
@@ -67,6 +65,13 @@ fn manifest_page(state: &AppState, group: &str, title: &str, desc: &str) -> Elem
         );
     }
     sections_page(title, desc, secs)
+}
+
+/// 高级页：manifest「advanced」分组 + 备份与还原卡片。
+fn advanced_page(state: &AppState) -> Element {
+    let mut secs = manifest_sections(state, "advanced");
+    secs.push(backup::build_backup_section(&state.backup_mgr));
+    sections_page("高级", "服务与实验性功能", secs)
 }
 
 // ───────────────────────── 输入 ─────────────────────────

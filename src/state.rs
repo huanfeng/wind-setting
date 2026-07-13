@@ -120,6 +120,8 @@ pub struct AppState {
     pub schema_mgr: SchemaManagerState,
     /// 词库管理页状态（导航/数据加载/写操作）。
     pub dict_mgr: DictManagerState,
+    /// 备份还原状态（高级页卡片 + 还原确认对话框）。
+    pub backup_mgr: crate::pages::backup::BackupState,
     /// 「重新加载」二次确认对话框可见标志。
     pub reload_confirm: Signal<bool>,
     /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
@@ -215,6 +217,7 @@ impl AppState {
             conflict: signal(String::new()),
             schema_mgr,
             dict_mgr: DictManagerState::new(),
+            backup_mgr: crate::pages::backup::BackupState::new(),
             reload_confirm: signal(false),
             reset_confirm: signal(false),
             connected: false,
@@ -548,7 +551,8 @@ impl AppState {
         self.schema_mgr.apply_config(&cfg);
         self.base_config = cfg.clone();
         self.current_config = cfg;
-        self.feedback.set(Some((ToastKind::Info, "已从服务端重新加载".to_string())));
+        self.feedback
+            .set(Some((ToastKind::Info, "已从服务端重新加载".to_string())));
     }
 
     /// 跑所有写回器把 Signal 值写回 current_config，再 diff 保存。
@@ -563,10 +567,14 @@ impl AppState {
             }
         }
         // 触发键冲突不再在此追加进保存 toast——改由输入页常驻警告条实时呈现（见 conflict_watcher）。
-        let items =
-            diff_config(&self.base_config, &self.current_config, &self.capabilities.map_keys());
+        let items = diff_config(
+            &self.base_config,
+            &self.current_config,
+            &self.capabilities.map_keys(),
+        );
         if items.is_empty() {
-            self.feedback.set(Some((ToastKind::Info, "没有变更".to_string())));
+            self.feedback
+                .set(Some((ToastKind::Info, "没有变更".to_string())));
             return true;
         }
         let items_json: Vec<Value> = items
@@ -610,7 +618,8 @@ impl AppState {
                 }
             }
             Err(e) => {
-                self.feedback.set(Some((ToastKind::Error, format!("保存失败: {e}"))));
+                self.feedback
+                    .set(Some((ToastKind::Error, format!("保存失败: {e}"))));
                 false
             }
         }
@@ -620,22 +629,40 @@ impl AppState {
 /// 收集当前配置里"裸键触发"四组的 (显示名, 触发键列表)，供按键冲突检测用。
 fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
     fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
-        v.map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-            .unwrap_or_default()
+        v.map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     let mut groups = vec![
-        ("临时拼音".to_string(), strs(cfg.get_array("input.temp_pinyin.trigger_keys"))),
-        ("临时英文".to_string(), strs(cfg.get_array("input.temp_english.trigger_keys"))),
+        (
+            "临时拼音".to_string(),
+            strs(cfg.get_array("input.temp_pinyin.trigger_keys")),
+        ),
+        (
+            "临时英文".to_string(),
+            strs(cfg.get_array("input.temp_english.trigger_keys")),
+        ),
     ];
 
     if let Some(arr) = cfg.get_array("schema.mix_modes") {
         for m in arr {
-            let label = m.get("name").and_then(Value::as_str).unwrap_or("混合模式").to_string();
+            let label = m
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("混合模式")
+                .to_string();
             let keys = m
                 .get("trigger_keys")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             groups.push((label, keys));
         }
@@ -648,7 +675,11 @@ fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
             let keys = m
                 .get("trigger_keys")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             groups.push((label, keys));
         }
@@ -698,11 +729,26 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
     }
 
     vec![
-        ("次选/三选键".to_string(), expand_strs(cfg.get_array("keys.select_key_groups"))),
-        ("翻页键".to_string(), expand_strs(cfg.get_array("keys.page_keys"))),
-        ("高亮移动键".to_string(), expand_strs(cfg.get_array("keys.highlight_keys"))),
-        ("以词定字".to_string(), expand_strs(cfg.get_array("keys.select_char_keys"))),
-        ("中英切换键".to_string(), expand_strs(cfg.get_array("keys.toggle_mode_keys"))),
+        (
+            "次选/三选键".to_string(),
+            expand_strs(cfg.get_array("keys.select_key_groups")),
+        ),
+        (
+            "翻页键".to_string(),
+            expand_strs(cfg.get_array("keys.page_keys")),
+        ),
+        (
+            "高亮移动键".to_string(),
+            expand_strs(cfg.get_array("keys.highlight_keys")),
+        ),
+        (
+            "以词定字".to_string(),
+            expand_strs(cfg.get_array("keys.select_char_keys")),
+        ),
+        (
+            "中英切换键".to_string(),
+            expand_strs(cfg.get_array("keys.toggle_mode_keys")),
+        ),
     ]
 }
 
@@ -995,7 +1041,9 @@ mod trigger_conflict_tests {
                 "special_modes": []
             }
         }));
-        let msg = st.live_conflicts().expect("编辑态含重叠触发键，应实时检出冲突");
+        let msg = st
+            .live_conflicts()
+            .expect("编辑态含重叠触发键，应实时检出冲突");
         assert!(msg.contains("触发键冲突"), "应标注触发键场景");
         assert!(msg.contains(';'), "键名应以符号呈现");
         assert!(msg.contains("临时拼音"));
@@ -1033,8 +1081,14 @@ mod trigger_conflict_tests {
             "input": { "temp_pinyin": { "trigger_keys": ["semicolon"] } },
             "keys": { "select_key_groups": ["semicolon_quote"] }
         }));
-        assert!(check_trigger_key_conflicts(&cfg3).is_none(), "触发域无内部重叠");
-        assert!(check_candidate_key_conflicts(&cfg3).is_none(), "候选域无内部重叠");
+        assert!(
+            check_trigger_key_conflicts(&cfg3).is_none(),
+            "触发域无内部重叠"
+        );
+        assert!(
+            check_candidate_key_conflicts(&cfg3).is_none(),
+            "候选域无内部重叠"
+        );
     }
 
     #[test]
@@ -1087,7 +1141,10 @@ mod trigger_conflict_tests {
                 "select_key_groups": ["semicolon_quote"]
             }
         }));
-        assert!(check_candidate_key_conflicts(&cfg2).is_none(), "不同物理键不应冲突");
+        assert!(
+            check_candidate_key_conflicts(&cfg2).is_none(),
+            "不同物理键不应冲突"
+        );
     }
 
     #[test]
@@ -1105,7 +1162,11 @@ mod trigger_conflict_tests {
         }));
         let msg = check_trigger_key_conflicts(&cfg).expect("应检出冲突");
         // 只应出现一次冲突描述，不因重复键翻倍。
-        assert_eq!(msg.matches("同时被").count(), 1, "重复触发键不应产生重复文案");
+        assert_eq!(
+            msg.matches("同时被").count(),
+            1,
+            "重复触发键不应产生重复文案"
+        );
     }
 }
 

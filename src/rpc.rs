@@ -504,6 +504,22 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "scheme.importPackage" => {
             json!({ "imported": ["schemas/demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
         }
+        // 整机备份（P4 契约）。
+        "backup.create" | "backup.inspect" => json!({
+            "path": "C:/tmp/backup.zip",
+            "manifest": { "format": "windinput-bundle", "kind": "backup", "spec_version": 1,
+                          "app_version": "0.0.0", "platform": "windows", "created_at": "2026-07-13T00:00:00+08:00",
+                          "contents": [
+                              { "type": "config", "path": "config/config.toml", "meta": null },
+                              { "type": "dict", "path": "userdata/user_words/wb.wdict", "meta": { "schema": "wb" } },
+                              { "type": "phrase", "path": "userdata/phrases.wdict", "meta": null }
+                          ] }
+        }),
+        "backup.restore" => json!({
+            "restored": ["config/config.toml", "userdata/user_words/wb.wdict"],
+            "conflicts": [],
+            "schemasTouched": ["wb"]
+        }),
         "shadow.addRule" | "shadow.removeRule" => json!({ "ok": true }),
         _ => Value::Null,
     }
