@@ -492,17 +492,20 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "dict.previewImport" => {
             json!({ "willAdd": 1, "willUpdate": 0, "willConflict": 0, "unchanged": 0, "samples": ["工"] })
         }
-        // 方案包导入导出（P3 契约）。
+        // 方案包导入导出（v2 契约：零层级条目名 + 可选 package 元信息）。
         "scheme.exportPackage" => {
-            json!({ "path": "C:/tmp/demo.zip", "packed": ["schemas/demo.schema.toml"], "systemRefs": [], "missing": [] })
+            json!({ "path": "C:/tmp/demo.zip", "packed": ["demo.schema.toml"], "systemRefs": [], "missing": [] })
         }
         "scheme.previewImport" => json!({
-            "manifest": { "format": "windinput-bundle", "kind": "scheme", "spec_version": 1,
-                          "app_version": "0.0.0", "platform": "windows", "created_at": "2026-07-13T00:00:00+08:00", "contents": [] },
-            "willAdd": ["schemas/demo.schema.toml"], "conflicts": [], "systemRefs": [], "missing": []
+            "package": {
+                "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-07-13T00:00:00+08:00" },
+                "schema": { "id": "demo", "version": "1.0" },
+                "refs": { "system": [], "missing": [] }
+            },
+            "willAdd": ["demo.schema.toml"], "conflicts": [], "systemRefs": [], "missing": []
         }),
         "scheme.importPackage" => {
-            json!({ "imported": ["schemas/demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
+            json!({ "imported": ["demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
         }
         // 整机备份（P4 契约）。
         "backup.create" | "backup.inspect" => json!({

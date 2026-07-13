@@ -775,6 +775,7 @@ impl SchemaManagerState {
     }
 
     /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
+    /// v2 契约：元信息在可选 `package`（package.toml 缺失时各字段为空串）。
     fn format_import_preview(v: &Value) -> String {
         let n = |k: &str| {
             v.get(k)
@@ -782,13 +783,28 @@ impl SchemaManagerState {
                 .map(|a| a.len())
                 .unwrap_or(0)
         };
-        let created = v
-            .get("manifest")
-            .and_then(|m| m.get("created_at"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("未知");
+        let pkg = v.get("package");
+        let s = |a: &str, b: &str| {
+            pkg.and_then(|x| x.get(a))
+                .and_then(|x| x.get(b))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let (id, version) = (s("schema", "id"), s("schema", "version"));
+        let head = match (id.is_empty(), version.is_empty()) {
+            (false, false) => format!("方案 {id} v{version}"),
+            (false, true) => format!("方案 {id}"),
+            _ => "方案包".to_string(),
+        };
+        let created = s("package", "created_at");
+        let created = if created.is_empty() {
+            "未知".to_string()
+        } else {
+            created
+        };
         format!(
-            "创建于 {created}\n新增文件 {} · 已存在 {} · 系统引用 {} · 缺失 {}\n\n\
+            "{head} · 创建于 {created}\n新增文件 {} · 已存在 {} · 系统引用 {} · 缺失 {}\n\n\
              合并跳过已存在文件；替换覆盖同名文件。",
             n("willAdd"),
             n("conflicts"),
@@ -1428,13 +1444,21 @@ mod ext_dict_tests {
     #[test]
     fn scheme_import_preview_msg() {
         let v = json!({
-            "manifest": { "created_at": "2026-07-13T00:00:00+08:00" },
+            "package": {
+                "package": { "created_at": "2026-07-13T00:00:00+08:00" },
+                "schema": { "id": "demo", "version": "1.0" }
+            },
             "willAdd": ["a", "b"], "conflicts": ["c"], "systemRefs": [], "missing": []
         });
         let msg = SchemaManagerState::format_import_preview(&v);
+        assert!(msg.contains("方案 demo v1.0"));
         assert!(msg.contains("2026-07-13"));
         assert!(msg.contains("新增文件 2"));
         assert!(msg.contains("已存在 1"));
+        // 手工包无 package.toml:回落"未知"不炸
+        let bare = json!({ "willAdd": ["x"], "conflicts": [] });
+        let msg2 = SchemaManagerState::format_import_preview(&bare);
+        assert!(msg2.contains("未知"));
     }
 
     #[test]
