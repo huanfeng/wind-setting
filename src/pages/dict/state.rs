@@ -1136,10 +1136,12 @@ impl DictManagerState {
             return;
         };
         let state = self.clone();
+        // 文件名带日期时间，便于区分多次导出。
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         ctx.request_save_file(
             PickDialog::new()
                 .title("导出用户词库")
-                .file_name(&format!("{schema}.wdict.yaml"))
+                .file_name(&format!("{schema}-{stamp}.wdict.yaml"))
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };

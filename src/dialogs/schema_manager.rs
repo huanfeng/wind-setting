@@ -710,10 +710,16 @@ impl SchemaManagerState {
             return;
         };
         let state = self.clone();
+        // 文件名带方案版本便于区分（schema.toml 未标版本时省略）。
+        let file_name = if entry.version.is_empty() {
+            format!("{}.zip", entry.id)
+        } else {
+            format!("{}-{}.zip", entry.id, entry.version)
+        };
         ctx.request_save_file(
             PickDialog::new()
                 .title("导出方案包")
-                .file_name(&format!("{}.zip", entry.id))
+                .file_name(&file_name)
                 .filter("方案包", &["zip"]),
             move |path| {
                 let Some(path) = path else { return };

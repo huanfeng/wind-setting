@@ -67,10 +67,11 @@ impl BackupState {
     /// 创建整机备份（save 对话框异步请求，禁同步弹框，见 dict::do_export_phrases 注释）。
     pub fn do_create(&self, ctx: &mut EventCtx) {
         let state = self.clone();
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         ctx.request_save_file(
             PickDialog::new()
                 .title("创建备份")
-                .file_name("windinput-backup.zip")
+                .file_name(&format!("windinput-backup-{stamp}.zip"))
                 .filter("备份包", &["zip"]),
             move |path| {
                 let Some(path) = path else { return };
@@ -270,13 +271,13 @@ pub fn build_backup_section(state: &BackupState) -> Element {
                 .fg_role(Role::Text),
         )
         .child(
-            Element::button("创建…")
+            Element::button("创建")
                 .small()
                 .outline_soft()
                 .on_click(move |ctx| m_create.do_create(ctx)),
         );
 
-    let restore_ctl = Element::button("还原…")
+    let restore_ctl = Element::button("还原")
         .small()
         .outline_soft()
         .on_click(move |ctx| m_restore.do_restore(ctx));

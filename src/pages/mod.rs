@@ -193,16 +193,6 @@ fn scheme_page(state: &AppState) -> Element {
                 .on_click(move |_| m_set.open_settings_selected()),
         )
         .child(
-            Element::button("导出")
-                .small()
-                .outline_soft()
-                .enabled_when(move || {
-                    e_exp.sel_ver.get();
-                    e_exp.selected_entry().is_some()
-                })
-                .on_click(move |ctx| m_exp.do_export_selected(ctx)),
-        )
-        .child(
             Element::button("删除")
                 .small()
                 .outline()
@@ -221,10 +211,20 @@ fn scheme_page(state: &AppState) -> Element {
                 .on_click(move |_| st_refresh.refresh()),
         )
         .child(
-            Element::button("导入…")
+            Element::button("导入")
                 .small()
                 .outline_soft()
                 .on_click(move |ctx| m_imp.do_import_package(ctx)),
+        )
+        .child(
+            Element::button("导出")
+                .small()
+                .outline_soft()
+                .enabled_when(move || {
+                    e_exp.sel_ver.get();
+                    e_exp.selected_entry().is_some()
+                })
+                .on_click(move |ctx| m_exp.do_export_selected(ctx)),
         )
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
         .child(dict::reactive::toast_sink(mgr.feedback));
