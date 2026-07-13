@@ -54,9 +54,10 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
         .collect()
 }
 
-/// 纯清单分组页（无自定义卡片）。
-fn manifest_page(state: &AppState, group: &str, title: &str, desc: &str) -> Element {
-    let mut secs = manifest_sections(state, group);
+/// 高级页：manifest「advanced」分组 + 备份与还原卡片。
+/// （原通用 manifest_page 仅剩本页使用，逻辑并入此处。）
+fn advanced_page(state: &AppState) -> Element {
+    let mut secs = manifest_sections(state, "advanced");
     if secs.is_empty() {
         secs.push(
             Element::col()
@@ -64,12 +65,6 @@ fn manifest_page(state: &AppState, group: &str, title: &str, desc: &str) -> Elem
                 .child(todo_hint("（该分组暂无清单项，或 core 未运行）")),
         );
     }
-    sections_page(title, desc, secs)
-}
-
-/// 高级页：manifest「advanced」分组 + 备份与还原卡片。
-fn advanced_page(state: &AppState) -> Element {
-    let mut secs = manifest_sections(state, "advanced");
     secs.push(backup::build_backup_section(&state.backup_mgr));
     sections_page("高级", "服务与实验性功能", secs)
 }
