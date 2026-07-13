@@ -87,7 +87,8 @@ pub fn conflict_bar(conflict: Signal<String>) -> Element {
                 .font_weight(500)
                 .fg(Color::hex(0xB45309))
                 .weight(1.0)
-                .max_lines(4),
+                // 三域各一行，且单域多冲突会折行——放宽上限避免静默截断藏冲突。
+                .max_lines(12),
         )
         .visible_when(move || !conflict.get().is_empty())
 }

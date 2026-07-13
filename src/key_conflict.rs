@@ -30,7 +30,7 @@ pub fn key_symbol(key: &str) -> &str {
         "backslash" => "\\",
         "open_bracket" => "[",
         "close_bracket" => "]",
-        // ── 候选操作：成组键名（canon 后） ──
+        // ── 候选操作：成组键名（expand 后仍可能出现的组名） ──
         "semicolon_quote" => "; '",
         "comma_period" => ", .",
         "minus_equal" => "- =",
@@ -40,17 +40,27 @@ pub fn key_symbol(key: &str) -> &str {
         "pageupdown" => "PageUp/PageDown",
         "lrshift" => "左/右 Shift",
         "lrctrl" => "左/右 Ctrl",
+        // ── 单修饰键（expand 展开后 / toggle_mode_keys 原值） ──
+        "lshift" => "左Shift",
+        "rshift" => "右Shift",
+        "lctrl" => "左Ctrl",
+        "rctrl" => "右Ctrl",
+        "capslock" => "CapsLock",
         other => other,
     }
 }
 
-/// 候选操作组名归一：`page_keys` 的 `shift_tab` 与 `highlight_keys` 的 `tab` 是同一对
-/// 物理键（Tab / Shift+Tab），须归一到同一 token 才能检出"移动高亮 vs 翻页"冲突。
-/// 其余组名域内同名即同键，原样返回。
-pub fn canon_candidate_key(group: &str) -> &str {
+/// 候选操作组名展开成 canonical 物理键 token（用于候选域归一化检测）：
+/// - `shift_tab`(翻页) 与 `tab`(高亮移动) 是同一对物理键（Tab/Shift+Tab），归一到 `tab`；
+/// - `lrshift`/`lrctrl`(左右 Shift/Ctrl 次选) 展开成 `{lshift,rshift}`/`{lctrl,rctrl}`，
+///   以便与 `keys.toggle_mode_keys`(中英切换，值为 lshift/rshift/…) 跨组匹配出冲突；
+/// - 其余组名域内同名即同键，原样返回单元素。
+pub fn expand_candidate_key(group: &str) -> Vec<&str> {
     match group {
-        "shift_tab" => "tab",
-        other => other,
+        "shift_tab" => vec!["tab"],
+        "lrshift" => vec!["lshift", "rshift"],
+        "lrctrl" => vec!["lctrl", "rctrl"],
+        other => vec![other],
     }
 }
 
@@ -80,7 +90,7 @@ pub fn canonical_hotkey(s: &str) -> String {
             "ctrl" | "control" => mods.push((0, "Ctrl")),
             "shift" => mods.push((1, "Shift")),
             "alt" => mods.push((2, "Alt")),
-            "win" | "super" | "meta" => mods.push((3, "Win")),
+            "win" | "super" | "meta" | "cmd" => mods.push((3, "Win")),
             other => mains.push(display_main(other)),
         }
     }
@@ -170,25 +180,42 @@ mod tests {
     }
 
     #[test]
-    fn test_canon_candidate_key_unifies_tab_variants() {
-        // highlight_keys 的 tab 与 page_keys 的 shift_tab 是同一对物理键，须归一。
-        assert_eq!(canon_candidate_key("shift_tab"), "tab");
-        assert_eq!(canon_candidate_key("tab"), "tab");
-        assert_eq!(canon_candidate_key("comma_period"), "comma_period", "其余原样");
+    fn test_expand_candidate_key() {
+        // highlight_keys 的 tab 与 page_keys 的 shift_tab 是同一对物理键，归一到 tab。
+        assert_eq!(expand_candidate_key("shift_tab"), vec!["tab"]);
+        assert_eq!(expand_candidate_key("tab"), vec!["tab"]);
+        // lrshift/lrctrl 展开成单修饰键，供与 toggle_mode_keys 跨组匹配。
+        assert_eq!(expand_candidate_key("lrshift"), vec!["lshift", "rshift"]);
+        assert_eq!(expand_candidate_key("lrctrl"), vec!["lctrl", "rctrl"]);
+        assert_eq!(expand_candidate_key("comma_period"), vec!["comma_period"], "其余原样");
+    }
+
+    fn expanded(name: &str, group: &str) -> (String, Vec<String>) {
+        (
+            name.to_string(),
+            expand_candidate_key(group).into_iter().map(String::from).collect(),
+        )
     }
 
     #[test]
-    fn test_tab_and_shift_tab_conflict_after_canon() {
+    fn test_tab_and_shift_tab_conflict_after_expand() {
         // 高亮移动(tab) 与 翻页(shift_tab) 归一后应检出冲突。
-        let groups = vec![
-            ("高亮移动键".to_string(), vec![canon_candidate_key("tab").to_string()]),
-            ("翻页键".to_string(), vec![canon_candidate_key("shift_tab").to_string()]),
-        ];
+        let groups = vec![expanded("高亮移动键", "tab"), expanded("翻页键", "shift_tab")];
         let hits = find_key_conflicts(&groups);
         assert_eq!(hits.len(), 1);
         let msg = conflict_summary(&hits, "候选键").unwrap();
         assert!(msg.contains("候选键冲突"));
-        assert!(msg.contains("Tab"), "canon 后的 tab 应显示为 Tab/Shift+Tab");
+        assert!(msg.contains("Tab"), "归一后的 tab 应显示为 Tab/Shift+Tab");
+    }
+
+    #[test]
+    fn test_lrshift_vs_toggle_mode_conflict_after_expand() {
+        // 次选键 lrshift 展开成 {lshift,rshift}，与中英切换键 rshift 争用右 Shift → 冲突。
+        let groups = vec![expanded("次选/三选键", "lrshift"), ("中英切换键".to_string(), vec!["rshift".to_string()])];
+        let hits = find_key_conflicts(&groups);
+        assert_eq!(hits.len(), 1);
+        let msg = conflict_summary(&hits, "候选键").unwrap();
+        assert!(msg.contains("右Shift"));
     }
 
     #[test]
@@ -207,6 +234,8 @@ mod tests {
         assert_eq!(canonical_hotkey("ctrl+number"), "Ctrl+数字");
         assert_eq!(canonical_hotkey("ctrl+equal"), "Ctrl+=");
         assert_eq!(canonical_hotkey("shift+space"), "Shift+Space");
+        // cmd 与 win/super/meta 同视为 Win 修饰键（与 manifest.rs 解析一致）。
+        assert_eq!(canonical_hotkey("cmd+e"), canonical_hotkey("win+e"));
         // 两种写法归一后相等，find_key_conflicts 能检出。
         let a = canonical_hotkey("ctrl+shift+j");
         let b = canonical_hotkey("shift+ctrl+j");

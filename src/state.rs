@@ -651,42 +651,56 @@ fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
         }
     }
 
+    // 去重每组触发键：mix_modes/special_modes 的 trigger_keys 直取自 core config 数组，
+    // 可能含重复值；不去重会让冲突文案对同一键重复呈现。
+    for (_, keys) in groups.iter_mut() {
+        let mut seen = std::collections::HashSet::new();
+        keys.retain(|k| seen.insert(k.clone()));
+    }
     groups
 }
 
-/// 跑一次跨"裸键触发"四组的冲突检测（触发键场景域）；无冲突返回 None。
-fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
-    let groups = collect_trigger_key_groups(cfg);
+/// 对一个场景域的分组跑冲突检测，冠 `scene` 标签生成提示；无冲突返回 None。
+fn check_domain(groups: Vec<(String, Vec<String>)>, scene: &str) -> Option<String> {
     let hits = crate::key_conflict::find_key_conflicts(&groups);
-    crate::key_conflict::conflict_summary(&hits, "触发键")
+    crate::key_conflict::conflict_summary(&hits, scene)
 }
 
-/// 收集"候选操作"域四组的 (显示名, 组名列表)，组名经 `canon_candidate_key` 归一
-/// （统一 tab/shift_tab），供有候选场景下的按键冲突检测。
+/// 触发键场景域（无候选/闲时）冲突检测。
+fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
+    check_domain(collect_trigger_key_groups(cfg), "触发键")
+}
+
+/// 候选键场景域（有候选时）冲突检测。
+fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
+    check_domain(collect_candidate_key_groups(cfg), "候选键")
+}
+
+/// 收集"候选操作"域各组的 (显示名, 物理键列表)，组名经 `expand_candidate_key` 展开
+/// （tab/shift_tab 归一、lrshift/lrctrl 拆成单修饰键），供有候选场景下的按键冲突检测。
+///
+/// 含中英切换键：core 在 KEY_UP 处理中英切换，即便候选窗打开也会触发（`coordinator.rs:3225`），
+/// 与次选键(lrshift/lrctrl)争用同一物理修饰键——有候选时按下即选词、切换被抑制，是真冲突。
+/// 详见 `docs/key-conflict-detection.md`。
 fn collect_candidate_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
-    fn canon_strs(v: Option<&Vec<Value>>) -> Vec<String> {
+    fn expand_strs(v: Option<&Vec<Value>>) -> Vec<String> {
         v.map(|a| {
             a.iter()
                 .filter_map(|x| x.as_str())
-                .map(|s| crate::key_conflict::canon_candidate_key(s).to_string())
+                .flat_map(crate::key_conflict::expand_candidate_key)
+                .map(String::from)
                 .collect()
         })
         .unwrap_or_default()
     }
 
     vec![
-        ("次选/三选键".to_string(), canon_strs(cfg.get_array("keys.select_key_groups"))),
-        ("翻页键".to_string(), canon_strs(cfg.get_array("keys.page_keys"))),
-        ("高亮移动键".to_string(), canon_strs(cfg.get_array("keys.highlight_keys"))),
-        ("以词定字".to_string(), canon_strs(cfg.get_array("keys.select_char_keys"))),
+        ("次选/三选键".to_string(), expand_strs(cfg.get_array("keys.select_key_groups"))),
+        ("翻页键".to_string(), expand_strs(cfg.get_array("keys.page_keys"))),
+        ("高亮移动键".to_string(), expand_strs(cfg.get_array("keys.highlight_keys"))),
+        ("以词定字".to_string(), expand_strs(cfg.get_array("keys.select_char_keys"))),
+        ("中英切换键".to_string(), expand_strs(cfg.get_array("keys.toggle_mode_keys"))),
     ]
-}
-
-/// 跑一次跨"候选操作"四组的冲突检测（候选键场景域）；无冲突返回 None。
-fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
-    let groups = collect_candidate_key_groups(cfg);
-    let hits = crate::key_conflict::find_key_conflicts(&groups);
-    crate::key_conflict::conflict_summary(&hits, "候选键")
 }
 
 /// 收集功能快捷键（组合键）各功能的 (显示名, [归一化组合键])，供组合键冲突检测。
@@ -720,11 +734,9 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// 跑一次跨功能快捷键的冲突检测（组合键域）；无冲突返回 None。
+/// 功能快捷键（组合键）域冲突检测。
 fn check_hotkey_conflicts(cfg: &Config) -> Option<String> {
-    let groups = collect_hotkey_groups(cfg);
-    let hits = crate::key_conflict::find_key_conflicts(&groups);
-    crate::key_conflict::conflict_summary(&hits, "快捷键")
+    check_domain(collect_hotkey_groups(cfg), "快捷键")
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -1012,6 +1024,48 @@ mod trigger_conflict_tests {
         }));
         let msg3 = check_hotkey_conflicts(&cfg3).expect("pin/delete 同键应冲突");
         assert!(msg3.contains("Ctrl+数字"));
+    }
+
+    #[test]
+    fn test_toggle_mode_vs_select_key_conflict() {
+        // 右 Shift 既设为中英切换又作次选键(lrshift 含右Shift)：有候选时按下选词、切换被抑制 → 冲突。
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "toggle_mode_keys": ["lshift", "rshift"],
+                "select_key_groups": ["lrshift"]
+            }
+        }));
+        let msg = check_candidate_key_conflicts(&cfg).expect("中英切换键与次选键应冲突");
+        assert!(msg.contains("候选键冲突"));
+        assert!(msg.contains("中英切换键"));
+        assert!(msg.contains("次选/三选键"));
+
+        // 中英切换用 Shift、次选用「分号/引号」→ 不同物理键，不冲突。
+        let cfg2 = Config::from_value(json!({
+            "keys": {
+                "toggle_mode_keys": ["lshift"],
+                "select_key_groups": ["semicolon_quote"]
+            }
+        }));
+        assert!(check_candidate_key_conflicts(&cfg2).is_none(), "不同物理键不应冲突");
+    }
+
+    #[test]
+    fn test_trigger_keys_deduped_avoids_doubled_text() {
+        // core config 数组含重复触发键时，去重避免冲突文案对同一键重复呈现。
+        let cfg = Config::from_value(json!({
+            "input": {
+                "temp_pinyin": { "trigger_keys": ["semicolon", "semicolon"] }
+            },
+            "schema": {
+                "mix_modes": [
+                    { "id": "quick_mix", "name": "快捷", "trigger_keys": ["semicolon"] }
+                ]
+            }
+        }));
+        let msg = check_trigger_key_conflicts(&cfg).expect("应检出冲突");
+        // 只应出现一次冲突描述，不因重复键翻倍。
+        assert_eq!(msg.matches("同时被").count(), 1, "重复触发键不应产生重复文案");
     }
 }
 
