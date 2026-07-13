@@ -492,6 +492,18 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "dict.previewImport" => {
             json!({ "willAdd": 1, "willUpdate": 0, "willConflict": 0, "unchanged": 0, "samples": ["工"] })
         }
+        // 方案包导入导出（P3 契约）。
+        "scheme.exportPackage" => {
+            json!({ "path": "C:/tmp/demo.zip", "packed": ["schemas/demo.schema.toml"], "systemRefs": [], "missing": [] })
+        }
+        "scheme.previewImport" => json!({
+            "manifest": { "format": "windinput-bundle", "kind": "scheme", "spec_version": 1,
+                          "app_version": "0.0.0", "platform": "windows", "created_at": "2026-07-13T00:00:00+08:00", "contents": [] },
+            "willAdd": ["schemas/demo.schema.toml"], "conflicts": [], "systemRefs": [], "missing": []
+        }),
+        "scheme.importPackage" => {
+            json!({ "imported": ["schemas/demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
+        }
         "shadow.addRule" | "shadow.removeRule" => json!({ "ok": true }),
         _ => Value::Null,
     }

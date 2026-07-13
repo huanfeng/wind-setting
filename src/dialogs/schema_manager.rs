@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::config::Config;
@@ -22,10 +23,10 @@ pub struct SchemaEntry {
     pub id: String,
     pub name: String,
     pub enabled: bool,
-    pub engine_type: String,   // "codetable" | "pinyin" | "mixed"
-    pub scheme: String,        // 拼音子方案："full" | "shuangpin"（非拼音为空串）
+    pub engine_type: String,      // "codetable" | "pinyin" | "mixed"
+    pub scheme: String,           // 拼音子方案："full" | "shuangpin"（非拼音为空串）
     pub shuangpin_layout: String, // 双拼当前布局 id（仅 scheme=="shuangpin"；行名后缀显示）
-    pub source: String,        // "builtin" | "user"
+    pub source: String,           // "builtin" | "user"
     pub version: String,
     pub description: String,
     pub author: String,
@@ -94,6 +95,11 @@ pub struct SchemaManagerState {
     pub confirm_visible: Signal<bool>,
     pub confirm_msg: Signal<String>,
     pub confirm_id: Rc<RefCell<String>>,
+    // ── 方案包导入确认（previewImport 摘要 + 合并/替换选择）──
+    pub import_confirm_visible: Signal<bool>,
+    pub import_preview_msg: Signal<String>,
+    /// 待导入的方案包路径（预览确认后执行导入）。
+    pending_import_path: Rc<RefCell<Option<std::path::PathBuf>>>,
     pub settings_visible: Signal<bool>,
     /// 设置对话框当前方案条目（驱动结构化头部渲染）。
     pub settings_entry: Rc<RefCell<Option<SchemaEntry>>>,
@@ -131,6 +137,9 @@ impl SchemaManagerState {
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
             confirm_id: Rc::new(RefCell::new(String::new())),
+            import_confirm_visible: signal(false),
+            import_preview_msg: signal(String::new()),
+            pending_import_path: Rc::new(RefCell::new(None)),
             settings_visible: signal(false),
             settings_entry: Rc::new(RefCell::new(None)),
             settings_schema_id: Rc::new(RefCell::new(String::new())),
@@ -162,9 +171,13 @@ impl SchemaManagerState {
             .ok()
             .and_then(|v| {
                 v.get("schema")
-                 .and_then(|s| s.get("available"))
-                 .and_then(|a| a.as_array())
-                 .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .and_then(|s| s.get("available"))
+                    .and_then(|a| a.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
             })
             .unwrap_or_default()
     }
@@ -189,7 +202,10 @@ impl SchemaManagerState {
         let disabled_entries: Vec<SchemaEntry> = if is_all_enabled {
             vec![]
         } else {
-            entries.into_iter().filter(|e| !order.contains(&e.id)).collect()
+            entries
+                .into_iter()
+                .filter(|e| !order.contains(&e.id))
+                .collect()
         };
 
         let n_disabled = disabled_entries.len();
@@ -198,9 +214,14 @@ impl SchemaManagerState {
         // 已启用区
         for (i, entry) in enabled_entries.into_iter().enumerate() {
             if i > 0 {
-                items.push(SchemaListItem::Divider { hidden_with_disabled: false });
+                items.push(SchemaListItem::Divider {
+                    hidden_with_disabled: false,
+                });
             }
-            items.push(SchemaListItem::Row { entry, is_enabled: true });
+            items.push(SchemaListItem::Row {
+                entry,
+                is_enabled: true,
+            });
         }
 
         // 未启用区（SectionHeader 自带上方分隔线，随 hide_disabled 一起隐藏）
@@ -208,9 +229,14 @@ impl SchemaManagerState {
             items.push(SchemaListItem::SectionHeader { count: n_disabled });
             for (j, entry) in disabled_entries.into_iter().enumerate() {
                 if j > 0 {
-                    items.push(SchemaListItem::Divider { hidden_with_disabled: true });
+                    items.push(SchemaListItem::Divider {
+                        hidden_with_disabled: true,
+                    });
                 }
-                items.push(SchemaListItem::Row { entry, is_enabled: false });
+                items.push(SchemaListItem::Row {
+                    entry,
+                    is_enabled: false,
+                });
             }
         }
 
@@ -221,20 +247,27 @@ impl SchemaManagerState {
     pub fn apply_config(&self, cfg: &Config) {
         let available: Vec<String> = cfg
             .get_array("schema.available")
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // available 为空表示全部启用：展开为全部方案 ID，使后续 toggle 逻辑无歧义。
         let all_ids: Vec<String> = self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
-        let new_order = if available.is_empty() { all_ids } else { available };
+        let new_order = if available.is_empty() {
+            all_ids
+        } else {
+            available
+        };
         *self.enabled_order.borrow_mut() = new_order;
         self.rebuild_list();
     }
 
     /// 刷新方案列表（调用 schema.list RPC）。
     pub fn refresh(&self) {
-        let list = rpc::call_core("schema.list", &json!({}))
-            .unwrap_or(Value::Array(vec![]));
+        let list = rpc::call_core("schema.list", &json!({})).unwrap_or(Value::Array(vec![]));
 
         // 双拼布局清单（动态，取代硬编码）：供下拉选项/索引映射/行名后缀。
         let layouts: Vec<(String, String)> = rpc::call_core("schema.layouts", &json!({}))
@@ -264,50 +297,73 @@ impl SchemaManagerState {
             .as_array()
             .map(|arr| {
                 arr.iter()
-                   .filter_map(|s| {
-                       let id = s.get("id")?.as_str()?.to_string();
-                       let engine_type = s
-                           .get("engineType")
-                           .or_else(|| s.get("engine_type"))
-                           .or_else(|| s.get("kind"))
-                           .and_then(|v| v.as_str())
-                           .unwrap_or("unknown")
-                           .to_string();
-                       let source = if let Some(b) = s.get("builtin").and_then(|v| v.as_bool()) {
-                           if b { "builtin" } else { "user" }.to_string()
-                       } else {
-                           s.get("source").and_then(|v| v.as_str()).unwrap_or("builtin").to_string()
-                       };
-                       let enabled = all_enabled || order.contains(&id);
-                       let scheme = s.get("scheme").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                       // 双拼方案补拉当前布局（行名显示「名称·布局」；通常仅一个双拼方案）。
-                       let shuangpin_layout = if scheme == "shuangpin" {
-                           rpc::call_core("schema.getConfig", &json!({ "id": id.clone() }))
-                               .ok()
-                               .and_then(|cfg| {
-                                   cfg.pointer("/engine/pinyin/shuangpin/layout")
-                                       .and_then(|v| v.as_str())
-                                       .map(str::to_string)
-                               })
-                               .unwrap_or_default()
-                       } else {
-                           String::new()
-                       };
-                       Some(SchemaEntry {
-                           id,
-                           name: s.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                           enabled,
-                           engine_type,
-                           scheme,
-                           shuangpin_layout,
-                           source,
-                           version: s.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                           description: s.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                           author: s.get("author").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                           error: s.get("error").and_then(|v| v.as_str()).map(str::to_string),
-                       })
-                   })
-                   .collect()
+                    .filter_map(|s| {
+                        let id = s.get("id")?.as_str()?.to_string();
+                        let engine_type = s
+                            .get("engineType")
+                            .or_else(|| s.get("engine_type"))
+                            .or_else(|| s.get("kind"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let source = if let Some(b) = s.get("builtin").and_then(|v| v.as_bool()) {
+                            if b { "builtin" } else { "user" }.to_string()
+                        } else {
+                            s.get("source")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("builtin")
+                                .to_string()
+                        };
+                        let enabled = all_enabled || order.contains(&id);
+                        let scheme = s
+                            .get("scheme")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        // 双拼方案补拉当前布局（行名显示「名称·布局」；通常仅一个双拼方案）。
+                        let shuangpin_layout = if scheme == "shuangpin" {
+                            rpc::call_core("schema.getConfig", &json!({ "id": id.clone() }))
+                                .ok()
+                                .and_then(|cfg| {
+                                    cfg.pointer("/engine/pinyin/shuangpin/layout")
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string)
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        Some(SchemaEntry {
+                            id,
+                            name: s
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            enabled,
+                            engine_type,
+                            scheme,
+                            shuangpin_layout,
+                            source,
+                            version: s
+                                .get("version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            description: s
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            author: s
+                                .get("author")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            error: s.get("error").and_then(|v| v.as_str()).map(str::to_string),
+                        })
+                    })
+                    .collect()
             })
             .unwrap_or_default();
         drop(order);
@@ -379,7 +435,9 @@ impl SchemaManagerState {
     /// 上/下移选中方案。enabled_order 为空（全部启用）时先展开为全部 ID，
     /// 与 toggle_schema_enabled 的展开策略一致，保证重排有承载体。
     pub fn move_selected(&self, up: bool) {
-        let Some(id) = self.selected_id.borrow().clone() else { return };
+        let Some(id) = self.selected_id.borrow().clone() else {
+            return;
+        };
         {
             let mut order = self.enabled_order.borrow_mut();
             if order.is_empty() {
@@ -395,13 +453,17 @@ impl SchemaManagerState {
 
     /// 打开选中方案的设置对话框。
     pub fn open_settings_selected(&self) {
-        let Some(id) = self.selected_id.borrow().clone() else { return };
+        let Some(id) = self.selected_id.borrow().clone() else {
+            return;
+        };
         self.open_settings_at_id(&id);
     }
 
     /// 请求删除选中方案（弹确认框）。
     pub fn request_delete_selected(&self) {
-        let Some(id) = self.selected_id.borrow().clone() else { return };
+        let Some(id) = self.selected_id.borrow().clone() else {
+            return;
+        };
         self.request_delete_at_id(&id);
     }
 
@@ -415,7 +477,9 @@ impl SchemaManagerState {
         {
             let mut order = self.enabled_order.borrow_mut();
             if let Some(idx) = order.iter().position(|id| id == schema_id) {
-                if idx > 0 { order.swap(idx, idx - 1); }
+                if idx > 0 {
+                    order.swap(idx, idx - 1);
+                }
             }
         }
         self.notify(ToastKind::Success, "排序已调整（保存后生效）");
@@ -427,7 +491,9 @@ impl SchemaManagerState {
         {
             let mut order = self.enabled_order.borrow_mut();
             if let Some(idx) = order.iter().position(|id| id == schema_id) {
-                if idx + 1 < order.len() { order.swap(idx, idx + 1); }
+                if idx + 1 < order.len() {
+                    order.swap(idx, idx + 1);
+                }
             }
         }
         self.notify(ToastKind::Success, "排序已调整（保存后生效）");
@@ -446,7 +512,8 @@ impl SchemaManagerState {
             let mut order = self.enabled_order.borrow_mut();
             // 若当前全部启用（order 为空），需先展开为全部 ID 再逐一 retain
             if order.is_empty() {
-                let all_ids: Vec<String> = self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
+                let all_ids: Vec<String> =
+                    self.schemas.borrow().iter().map(|e| e.id.clone()).collect();
                 *order = all_ids;
             }
             // 守护：至少保留一个启用方案（否则 order 变空又回到「全部启用」语义，
@@ -458,7 +525,14 @@ impl SchemaManagerState {
             }
             order.retain(|id| id != schema_id);
         }
-        self.notify(ToastKind::Success, if new_enabled { "已启用（保存后生效）" } else { "已禁用（保存后生效）" });
+        self.notify(
+            ToastKind::Success,
+            if new_enabled {
+                "已启用（保存后生效）"
+            } else {
+                "已禁用（保存后生效）"
+            },
+        );
         self.rebuild_list();
         true
     }
@@ -468,7 +542,9 @@ impl SchemaManagerState {
     pub fn open_settings_at_id(&self, schema_id: &str) {
         let entry = {
             let schemas = self.schemas.borrow();
-            let Some(e) = schemas.iter().find(|e| e.id == schema_id) else { return };
+            let Some(e) = schemas.iter().find(|e| e.id == schema_id) else {
+                return;
+            };
             e.clone()
         };
 
@@ -595,8 +671,11 @@ impl SchemaManagerState {
                 self.notify(ToastKind::Error, "内置方案不可删除");
                 return;
             }
-            let display_name =
-                if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
+            let display_name = if entry.name.is_empty() {
+                entry.id.clone()
+            } else {
+                entry.name.clone()
+            };
             *self.confirm_id.borrow_mut() = entry.id.clone();
             self.confirm_msg.set(format!(
                 "确定要删除方案「{display_name}」吗？\n此操作将删除方案文件，不可恢复。"
@@ -608,7 +687,9 @@ impl SchemaManagerState {
     pub fn do_delete(&self) {
         let id = self.confirm_id.borrow().clone();
         self.confirm_visible.set(false);
-        if id.is_empty() { return; }
+        if id.is_empty() {
+            return;
+        }
         match rpc::call_core("schema.delete", &json!({ "id": id })) {
             Ok(_) => {
                 // refresh 内会发现选中 ID 已消失并清空选中。
@@ -618,16 +699,146 @@ impl SchemaManagerState {
             Err(e) => self.notify(ToastKind::Error, format!("删除失败: {e}")),
         }
     }
+
+    // ── 方案包导入导出（scheme.exportPackage/previewImport/importPackage）──
+
+    /// 导出选中方案为方案包 zip。对话框经 `ctx.request_save_file` 异步请求
+    /// （禁止在点击回调里同步弹模态框，见 dict::do_export_phrases 注释）。
+    pub fn do_export_selected(&self, ctx: &mut EventCtx) {
+        let Some(entry) = self.selected_entry() else {
+            self.notify(ToastKind::Error, "请先选中方案");
+            return;
+        };
+        let state = self.clone();
+        ctx.request_save_file(
+            PickDialog::new()
+                .title("导出方案包")
+                .file_name(&format!("{}.zip", entry.id))
+                .filter("方案包", &["zip"]),
+            move |path| {
+                let Some(path) = path else { return };
+                match rpc::call_core(
+                    "scheme.exportPackage",
+                    &json!({ "id": entry.id, "path": path.to_string_lossy() }),
+                ) {
+                    Ok(v) => {
+                        let n = |k: &str| {
+                            v.get(k)
+                                .and_then(|x| x.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0)
+                        };
+                        let (packed, missing) = (n("packed"), n("missing"));
+                        let msg = if missing > 0 {
+                            format!("已导出 {packed} 个文件（缺失引用 {missing} 个）")
+                        } else {
+                            format!("已导出 {packed} 个文件")
+                        };
+                        state.notify(ToastKind::Success, msg);
+                    }
+                    Err(e) => state.notify(ToastKind::Error, format!("导出失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 导入方案包：选 zip → `scheme.previewImport` 预览 → 确认对话框选合并/替换。
+    pub fn do_import_package(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_pick_file(
+            PickDialog::new()
+                .title("导入方案包")
+                .filter("方案包", &["zip"]),
+            move |path| {
+                let Some(path) = path else { return };
+                match rpc::call_core(
+                    "scheme.previewImport",
+                    &json!({ "path": path.to_string_lossy() }),
+                ) {
+                    Ok(v) => {
+                        state
+                            .import_preview_msg
+                            .set(Self::format_import_preview(&v));
+                        *state.pending_import_path.borrow_mut() = Some(path);
+                        state.import_confirm_visible.set(true);
+                    }
+                    Err(e) => state.notify(ToastKind::Error, format!("预览失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
+    fn format_import_preview(v: &Value) -> String {
+        let n = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0)
+        };
+        let created = v
+            .get("manifest")
+            .and_then(|m| m.get("created_at"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("未知");
+        format!(
+            "创建于 {created}\n新增文件 {} · 已存在 {} · 系统引用 {} · 缺失 {}\n\n\
+             合并跳过已存在文件；替换覆盖同名文件。",
+            n("willAdd"),
+            n("conflicts"),
+            n("systemRefs"),
+            n("missing"),
+        )
+    }
+
+    /// 确认导入（strategy: "merge" | "replace"）。
+    pub fn confirm_import(&self, strategy: &str) {
+        self.import_confirm_visible.set(false);
+        let Some(path) = self.pending_import_path.borrow_mut().take() else {
+            return;
+        };
+        match rpc::call_core(
+            "scheme.importPackage",
+            &json!({ "path": path.to_string_lossy(), "strategy": strategy }),
+        ) {
+            Ok(v) => {
+                let n = |k: &str| {
+                    v.get(k)
+                        .and_then(|x| x.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0)
+                };
+                let (imported, conflicts) = (n("imported"), n("conflicts"));
+                self.refresh();
+                let msg = if conflicts > 0 {
+                    format!("已导入 {imported} 个文件（跳过已存在 {conflicts} 个）")
+                } else {
+                    format!("已导入 {imported} 个文件")
+                };
+                self.notify(ToastKind::Success, msg);
+            }
+            Err(e) => self.notify(ToastKind::Error, format!("导入失败: {e}")),
+        }
+    }
+
+    pub fn cancel_import(&self) {
+        *self.pending_import_path.borrow_mut() = None;
+        self.import_confirm_visible.set(false);
+    }
 }
 
 // ──────────────────────── 显示辅助 ────────────────────────
 
 /// 沿路径逐层确保对象存在后写入叶子值（中间层非对象时覆盖为对象；根非对象则不写）。
 fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
-    let Some((last, mids)) = path.split_last() else { return };
+    let Some((last, mids)) = path.split_last() else {
+        return;
+    };
     let mut cur = v;
     for k in mids {
-        let Some(obj) = cur.as_object_mut() else { return };
+        let Some(obj) = cur.as_object_mut() else {
+            return;
+        };
         let slot = obj.entry((*k).to_string()).or_insert_with(|| json!({}));
         if !slot.is_object() {
             *slot = json!({});
@@ -642,9 +853,9 @@ fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
 pub fn engine_label(t: &str) -> &'static str {
     match t {
         "codetable" => "码表",
-        "pinyin"    => "拼音",
-        "mixed"     => "混输",
-        _           => "未知",
+        "pinyin" => "拼音",
+        "mixed" => "混输",
+        _ => "未知",
     }
 }
 
@@ -665,12 +876,30 @@ fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
     arr.iter()
         .filter(|d| !d.get("default").and_then(|v| v.as_bool()).unwrap_or(false))
         .map(|d| {
-            let default_enabled = d.get("default_enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-            let enabled = d.get("enabled").and_then(|v| v.as_bool()).unwrap_or(default_enabled);
+            let default_enabled = d
+                .get("default_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let enabled = d
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default_enabled);
             DictInfo {
-                id: d.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                label: d.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                description: d.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                id: d
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                label: d
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                description: d
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 enabled,
             }
         })
@@ -690,40 +919,32 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
     let mgr = state.clone();
     let hide_sig = state.hide_disabled;
 
-    Element::host_signal(
-        state.list_data,
-        move |item| match item {
-            SchemaListItem::Row { entry, is_enabled } => {
-                build_compound_row(entry, is_enabled, &mgr)
+    Element::host_signal(state.list_data, move |item| match item {
+        SchemaListItem::Row { entry, is_enabled } => build_compound_row(entry, is_enabled, &mgr),
+        SchemaListItem::SectionHeader { count } => Element::col()
+            .width_match()
+            .child(Element::divider())
+            .child(
+                Element::row().width_match().padding_xy(8, 5).child(
+                    Element::label(format!("其他已安装方案（共 {count} 个）"))
+                        .font_size(10.5)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .max_lines(1),
+                ),
+            )
+            .visible_when(move || !hide_sig.get()),
+        SchemaListItem::Divider {
+            hidden_with_disabled,
+        } => {
+            let d = Element::divider();
+            if hidden_with_disabled {
+                d.visible_when(move || !hide_sig.get())
+            } else {
+                d
             }
-            SchemaListItem::SectionHeader { count } => {
-                Element::col()
-                    .width_match()
-                    .child(Element::divider())
-                    .child(
-                        Element::row()
-                            .width_match()
-                            .padding_xy(8, 5)
-                            .child(
-                                Element::label(format!("其他已安装方案（共 {count} 个）"))
-                                    .font_size(10.5)
-                                    .fg_role(Role::TextMuted)
-                                    .width_match()
-                                    .max_lines(1),
-                            ),
-                    )
-                    .visible_when(move || !hide_sig.get())
-            }
-            SchemaListItem::Divider { hidden_with_disabled } => {
-                let d = Element::divider();
-                if hidden_with_disabled {
-                    d.visible_when(move || !hide_sig.get())
-                } else {
-                    d
-                }
-            }
-        },
-    )
+        }
+    })
     .width_match()
 }
 
@@ -732,16 +953,12 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
 /// 行整体 clickable → 点击选中（事件沿祖先链派发，点 checkbox 会同时切换启用并选中，
 /// 符合预期）；选中视觉 = stack 底层 accent 淡底 + 左缘指示条覆盖层（与侧栏导航同语言），
 /// visible_when 轮询 `sel_ver`。行内保留：启用复选 · 名称/描述 · 类型/来源徽章 · 版本。
-fn build_compound_row(
-    entry: SchemaEntry,
-    is_enabled: bool,
-    mgr: &SchemaManagerState,
-) -> Element {
+fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerState) -> Element {
     let enabled_sig = signal(is_enabled);
 
     // ── Checkbox ──
     let mgr_toggle = mgr.clone();
-    let toggle_id  = entry.id.clone();
+    let toggle_id = entry.id.clone();
     let checkbox = Element::checkbox("", enabled_sig)
         .small()
         .on_toggle(move |_| {
@@ -753,13 +970,21 @@ fn build_compound_row(
         });
 
     // ── 名称列（weight-1）：名称 + 可选描述；双拼方案名称后缀当前布局（如「双拼·小鹤双拼」）──
-    let base_name = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
+    let base_name = if entry.name.is_empty() {
+        entry.id.clone()
+    } else {
+        entry.name.clone()
+    };
     let name_text = if entry.scheme == "shuangpin" && !entry.shuangpin_layout.is_empty() {
         format!("{base_name}·{}", mgr.layout_label(&entry.shuangpin_layout))
     } else {
         base_name
     };
-    let name_fg   = if is_enabled { Role::Text } else { Role::TextMuted };
+    let name_fg = if is_enabled {
+        Role::Text
+    } else {
+        Role::TextMuted
+    };
     let name_label = Element::label(name_text)
         .font_size(13.0)
         .font_weight(600)
@@ -802,13 +1027,17 @@ fn build_compound_row(
         .border_role(Role::Accent, 1);
 
     // ── 来源徽章 ──
-    let source_badge = Element::label(if entry.source == "user" { "用户" } else { "内置" })
-        .font_size(10.5)
-        .fg_role(Role::TextMuted)
-        .padding_xy(5, 2)
-        .corner(4.0)
-        .bg_role(Role::SurfaceAlt)
-        .border_role(Role::Border, 1);
+    let source_badge = Element::label(if entry.source == "user" {
+        "用户"
+    } else {
+        "内置"
+    })
+    .font_size(10.5)
+    .fg_role(Role::TextMuted)
+    .padding_xy(5, 2)
+    .corner(4.0)
+    .bg_role(Role::SurfaceAlt)
+    .border_role(Role::Border, 1);
 
     // ── 行内容：点击选中 ──
     let mgr_sel = mgr.clone();
@@ -859,7 +1088,13 @@ fn build_compound_row(
     let indicator = Element::row()
         .align(Align::Stretch)
         .cross(Align::Center)
-        .child(Element::leaf().width(3).height(16).corner(1.5).bg_role(Role::Accent))
+        .child(
+            Element::leaf()
+                .width(3)
+                .height(16)
+                .corner(1.5)
+                .bg_role(Role::Accent),
+        )
         .visible_when(sel_when(mgr, &entry.id));
 
     // 两侧留 2px：选中描边贴列表容器边缘会被裁/被滚动条压住右缘。
@@ -884,14 +1119,71 @@ fn build_compound_row(
 
 /// 构建方案相关浮层对话框：删除确认 + 方案详情/设置。
 pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
-    let confirm_dlg  = build_confirm_dialog(state);
+    let confirm_dlg = build_confirm_dialog(state);
     let settings_dlg = build_schema_settings_dialog(state);
-    Element::stack().fill().child(confirm_dlg).child(settings_dlg)
+    let import_dlg = build_import_confirm_dialog(state);
+    Element::stack()
+        .fill()
+        .child(confirm_dlg)
+        .child(settings_dlg)
+        .child(import_dlg)
+}
+
+/// 方案包导入确认：previewImport 摘要正文 + 合并（默认）/ 替换（danger）二选一。
+fn build_import_confirm_dialog(state: &SchemaManagerState) -> Element {
+    let merge = state.clone();
+    let replace = state.clone();
+    let cancel = state.clone();
+    let content = flat_panel()
+        .width(400)
+        .padding(20)
+        .spacing(14)
+        .child(
+            Element::label("导入方案包")
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(24)
+                .width_match(),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label_rc(state.import_preview_msg)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(6),
+        )
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| cancel.cancel_import()),
+                )
+                .child(
+                    Element::button("替换导入")
+                        .small()
+                        .danger()
+                        .on_click(move |_| replace.confirm_import("replace")),
+                )
+                .child(
+                    Element::button("合并导入")
+                        .small()
+                        .on_click(move |_| merge.confirm_import("merge")),
+                ),
+        );
+    Element::dialog(state.import_confirm_visible, content)
 }
 
 fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
     let st_confirm = state.clone();
-    let st_cancel  = state.clone();
+    let st_cancel = state.clone();
 
     let content = flat_panel()
         .width(380)
@@ -939,7 +1231,11 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
 /// 方案设置对话框的结构化头部：标题（名称 + 类型/来源徽章）+ 元信息行 + 描述 + 分隔线。
 /// 取代原先 `\n` 拼接塞进单 label 的杂乱纯文本块。
 fn build_settings_header(entry: &SchemaEntry) -> Element {
-    let name = if entry.name.is_empty() { entry.id.clone() } else { entry.name.clone() };
+    let name = if entry.name.is_empty() {
+        entry.id.clone()
+    } else {
+        entry.name.clone()
+    };
 
     let type_badge = Element::label(engine_label(&entry.engine_type))
         .font_size(10.5)
@@ -947,13 +1243,17 @@ fn build_settings_header(entry: &SchemaEntry) -> Element {
         .padding_xy(6, 2)
         .corner(4.0)
         .border_role(Role::Accent, 1);
-    let source_badge = Element::label(if entry.source == "user" { "用户" } else { "内置" })
-        .font_size(10.5)
-        .fg_role(Role::TextMuted)
-        .padding_xy(6, 2)
-        .corner(4.0)
-        .bg_role(Role::SurfaceAlt)
-        .border_role(Role::Border, 1);
+    let source_badge = Element::label(if entry.source == "user" {
+        "用户"
+    } else {
+        "内置"
+    })
+    .font_size(10.5)
+    .fg_role(Role::TextMuted)
+    .padding_xy(6, 2)
+    .corner(4.0)
+    .bg_role(Role::SurfaceAlt)
+    .border_role(Role::Border, 1);
 
     let title = Element::row()
         .width_match()
@@ -987,7 +1287,11 @@ fn build_settings_header(entry: &SchemaEntry) -> Element {
         .max_lines(1)
         .truncate(Truncate::End);
 
-    let mut col = Element::col().width_match().spacing(6).child(title).child(meta);
+    let mut col = Element::col()
+        .width_match()
+        .spacing(6)
+        .child(title)
+        .child(meta);
     if !entry.description.is_empty() {
         col = col.child(
             Element::label(entry.description.clone())
@@ -1007,8 +1311,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             build_settings_header(&entry)
         }
         SettingsSection::ShuangpinLayout => {
-            let labels: Vec<String> =
-                state.layouts.borrow().iter().map(|(_, name)| name.clone()).collect();
+            let labels: Vec<String> = state
+                .layouts
+                .borrow()
+                .iter()
+                .map(|(_, name)| name.clone())
+                .collect();
             Element::row()
                 .width_match()
                 .cross(Align::Center)
@@ -1039,7 +1347,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             for row in state.settings_dicts.borrow().iter() {
                 // 默认点击即翻转绑定的 on 信号（暂存）；实际提交在「保存」按钮统一进行。
                 let cb = Element::checkbox(row.label.clone(), row.on);
-                let mut item = Element::col().width_match().spacing(2).padding_xy(0, 4).child(cb);
+                let mut item = Element::col()
+                    .width_match()
+                    .spacing(2)
+                    .padding_xy(0, 4)
+                    .child(cb);
                 if !row.description.is_empty() {
                     item = item.child(
                         Element::label(row.description.clone())
@@ -1093,12 +1405,31 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .visible_when(move || has_save.get()),
         );
 
-    Element::dialog_panel(visible, "方案设置", 440, move |_| visible.set(false), body, footer)
+    Element::dialog_panel(
+        visible,
+        "方案设置",
+        440,
+        move |_| visible.set(false),
+        body,
+        footer,
+    )
 }
 
 #[cfg(test)]
 mod ext_dict_tests {
     use super::*;
+
+    #[test]
+    fn scheme_import_preview_msg() {
+        let v = json!({
+            "manifest": { "created_at": "2026-07-13T00:00:00+08:00" },
+            "willAdd": ["a", "b"], "conflicts": ["c"], "systemRefs": [], "missing": []
+        });
+        let msg = SchemaManagerState::format_import_preview(&v);
+        assert!(msg.contains("2026-07-13"));
+        assert!(msg.contains("新增文件 2"));
+        assert!(msg.contains("已存在 1"));
+    }
 
     #[test]
     fn parse_filters_main_and_resolves_enabled() {
@@ -1111,10 +1442,16 @@ mod ext_dict_tests {
         ]});
         let rows = parse_extension_dicts(&cfg);
         // 主库被过滤，剩 4 条附加库。
-        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b", "c", "d"]);
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c", "d"]
+        );
         assert!(rows[0].enabled, "a: default_enabled=true");
         assert!(!rows[1].enabled, "b: default_enabled=false");
-        assert!(!rows[2].enabled, "c: enabled=false 覆盖 default_enabled=true");
+        assert!(
+            !rows[2].enabled,
+            "c: enabled=false 覆盖 default_enabled=true"
+        );
         assert!(rows[3].enabled, "d: 无字段 → 默认 true");
         assert_eq!(rows[0].description, "描述A");
     }

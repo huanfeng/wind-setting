@@ -141,6 +141,8 @@ fn scheme_page(state: &AppState) -> Element {
     let (m_dn, e_dn) = (mgr.clone(), mgr.clone());
     let (m_set, e_set) = (mgr.clone(), mgr.clone());
     let (m_del, e_del) = (mgr.clone(), mgr.clone());
+    let (m_exp, e_exp) = (mgr.clone(), mgr.clone());
+    let m_imp = mgr.clone();
     let toolbar = Element::row()
         .width_match()
         .cross(Align::Center)
@@ -191,6 +193,16 @@ fn scheme_page(state: &AppState) -> Element {
                 .on_click(move |_| m_set.open_settings_selected()),
         )
         .child(
+            Element::button("导出")
+                .small()
+                .outline_soft()
+                .enabled_when(move || {
+                    e_exp.sel_ver.get();
+                    e_exp.selected_entry().is_some()
+                })
+                .on_click(move |ctx| m_exp.do_export_selected(ctx)),
+        )
+        .child(
             Element::button("删除")
                 .small()
                 .outline()
@@ -212,7 +224,7 @@ fn scheme_page(state: &AppState) -> Element {
             Element::button("导入…")
                 .small()
                 .outline_soft()
-                .on_click(|ctx| ctx.toast("导入功能开发中")),
+                .on_click(move |ctx| m_imp.do_import_package(ctx)),
         )
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
         .child(dict::reactive::toast_sink(mgr.feedback));
@@ -285,7 +297,11 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
     let eff_state = app.clone();
     dict::reactive::reactive_effect(
         move || idx.version(),
-        move || eff_state.borrow_mut().apply_theme_editor_mode_idx(idx.get()),
+        move || {
+            eff_state
+                .borrow_mut()
+                .apply_theme_editor_mode_idx(idx.get())
+        },
     )
 }
 
@@ -331,10 +347,8 @@ fn theme_import_card(state: &AppState) -> Element {
                                             ToastKind::Success,
                                             format!("已导入主题：{}", result.display_name),
                                         ))),
-                                        Err(err) => feedback.set(Some((
-                                            ToastKind::Error,
-                                            err.user_message(),
-                                        ))),
+                                        Err(err) => feedback
+                                            .set(Some((ToastKind::Error, err.user_message()))),
                                     }
                                 },
                             );
@@ -380,12 +394,14 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
         .child(
             Element::row()
                 .spacing(8)
-                .child(
-                    Element::segmented(
-                        vec!["关闭".to_string(), "本次开启".to_string(), "自动开启".to_string()],
-                        mode_idx,
-                    ),
-                )
+                .child(Element::segmented(
+                    vec![
+                        "关闭".to_string(),
+                        "本次开启".to_string(),
+                        "自动开启".to_string(),
+                    ],
+                    mode_idx,
+                ))
                 .child(
                     Element::button("打开主题编辑器")
                         .small()
