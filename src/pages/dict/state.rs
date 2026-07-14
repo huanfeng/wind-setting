@@ -378,7 +378,8 @@ impl DictManagerState {
         if spec.searchable {
             let q = self.search.get();
             if !q.is_empty() {
-                // dict.listPaged 认 prefix/query，freq.listPaged 认 prefix：都带上。
+                // 分页类服务端按「编码前缀 ∪ 词条内容包含」并集匹配（dict/freq/phrase 一致）：
+                // prefix 作编码前缀项，query 为兼容旧键的同值别名，都带上。
                 p.insert("prefix".into(), json!(q));
                 p.insert("query".into(), json!(q));
             }

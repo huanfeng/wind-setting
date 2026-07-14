@@ -353,7 +353,9 @@ fn render_cell(columns: &'static [ColumnSpec], col: usize, text: &str) -> Option
                 .corner(4.0)
                 .bg_role(Role::Surface)
                 .border_role(Role::Border, 1)
-                .max_lines(1),
+                .max_lines(1)
+                // 编码过长时末尾省略（编码前缀…），不再无差别硬裁。
+                .truncate(Truncate::End),
         ),
         WordField::Kind => {
             let role = if text == "置顶" {
