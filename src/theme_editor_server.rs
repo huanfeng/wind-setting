@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::rpc::call_core;
-use crate::theme_import::import_text;
+use crate::theme_import::{import_text, ThemeImportError};
 
 #[derive(Debug, Clone, Default)]
 pub struct ThemeEditorServerStatus {
@@ -336,11 +336,18 @@ fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
         Ok(result) => json_reply(
             200,
             &serde_json::json!({
-                "ok": true,
-                "slug": result.slug,
-                "display_name": result.display_name,
+                "imported": true,
+                // core 导入仅落盘；是否热重载由输入法自身监听/重启决定，这里不谎报已重载。
+                "reloaded": false,
+                "theme_name": result.display_name,
             })
             .to_string(),
+            allow_origin,
+        ),
+        // 同名已存在（force=false）：回 409，前端据此弹「覆盖确认」再以 force=true 重推。
+        Err(ThemeImportError::Conflict(_)) => json_reply(
+            409,
+            &serde_json::json!({ "conflict": true }).to_string(),
             allow_origin,
         ),
         Err(e) => json_reply(

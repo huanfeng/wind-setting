@@ -162,7 +162,8 @@ pub fn preview_text(text: &str) -> Result<ThemePreview, ThemeImportError> {
 pub fn import_text(text: &str, force: bool) -> Result<ThemeImportResult, ThemeImportError> {
     let v = crate::rpc::call_core(
         "theme.importFromText",
-        &json!({ "text": text, "force": force }),
+        // core web_theme_import_text 读取 "yaml" 键（内容为 TOML，键名沿用历史契约）。
+        &json!({ "yaml": text, "force": force }),
     )
     .map_err(classify_rpc_error)?;
     ThemeImportResult::from_value(v)
