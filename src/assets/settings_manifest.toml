@@ -729,6 +729,20 @@ label = '" " 双引号'
 value = "''"
 label = "' ' 单引号"
 
+[[items]]
+key = "input.auto_pair.jump_out_keys"
+group = "input"
+section = "标点配对"
+type = "dialog_button"
+label = "配对跳出键"
+hint = "配对状态下按这些键跳到右符号之后（等效输入右符号跳出）；可多选，留空则不启用"
+[[items.options]]
+value = "tab"
+label = "Tab 制表键"
+[[items.options]]
+value = "enter"
+label = "Enter 回车键"
+
 # ── 快捷输入 ──
 [[items]]
 key = "schema.mix_modes"

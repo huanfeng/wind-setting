@@ -442,6 +442,11 @@
       "type": "strlist"
     },
     {
+      "default": [],
+      "key": "input.auto_pair.jump_out_keys",
+      "type": "strlist"
+    },
+    {
       "default": true,
       "key": "input.temp_english.enabled",
       "type": "bool"

@@ -86,7 +86,8 @@
     "()",
     "[]",
     "{}"
-   ]
+   ],
+   "jump_out_keys": []
   },
   "temp_english": {
    "enabled": true,
