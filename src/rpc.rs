@@ -490,7 +490,7 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }
         "dict.import" => json!({ "added": 0, "updated": 0, "skipped": 0 }),
         "dict.previewImport" => {
-            json!({ "willAdd": 1, "willUpdate": 0, "willConflict": 0, "unchanged": 0, "samples": ["工"] })
+            json!({ "willAdd": 1, "willUpdate": 0, "willConflict": 0, "unchanged": 0, "samples": ["工"], "format": "winddict", "skipped": 0 })
         }
         // 方案包导入导出（v2 契约：零层级条目名 + 可选 package 元信息）。
         "scheme.exportPackage" => {

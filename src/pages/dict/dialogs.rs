@@ -20,13 +20,17 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_import_confirm_dialog(mgr))
 }
 
-/// 词库导入确认：previewImport 计数正文 + 合并（默认）/ 替换（danger）二选一。
+/// 词库导入对话框：支持格式说明 + 选文件 + 自动识别预览 + 合并（默认）/ 替换（danger）。
+/// 格式按内容自动识别，无需用户选择；预览成功前合并/替换不可用。
 fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
     let merge = mgr.clone();
     let replace = mgr.clone();
     let cancel = mgr.clone();
+    let pick = mgr.clone();
+    let merge_ready = mgr.clone();
+    let replace_ready = mgr.clone();
     let content = flat_panel()
-        .width(400)
+        .width(440)
         .padding(20)
         .spacing(14)
         .child(
@@ -39,11 +43,42 @@ fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
+            Element::label(
+                "支持的格式（按内容自动识别）：\n\
+                 · WindDict 词库（.wdict.yaml，本程序导出格式）\n\
+                 · Rime 词库（.dict.yaml）\n\
+                 · TSV 文本（每行：编码 Tab 词条 Tab 权重，权重可省略）",
+            )
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(4),
+        )
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::button("选择文件")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |ctx| pick.pick_import_file(ctx)),
+                )
+                .child(
+                    Element::label_rc(mgr.import_file_name)
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted)
+                        .weight(1.0)
+                        .max_lines(1),
+                ),
+        )
+        .child(
             Element::label_rc(mgr.import_preview_msg)
                 .font_size(13.0)
                 .fg_role(Role::Text)
                 .width_match()
-                .max_lines(6),
+                .max_lines(7),
         )
         .child(
             Element::row()
@@ -61,11 +96,13 @@ fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
                     Element::button("替换导入")
                         .small()
                         .danger()
+                        .enabled_when(move || replace_ready.import_ready.get())
                         .on_click(move |_| replace.confirm_import("replace")),
                 )
                 .child(
                     Element::button("合并导入")
                         .small()
+                        .enabled_when(move || merge_ready.import_ready.get())
                         .on_click(move |_| merge.confirm_import("merge")),
                 ),
         );

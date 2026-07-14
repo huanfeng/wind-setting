@@ -102,9 +102,13 @@ pub struct DictManagerState {
     /// 待确认的操作（确认后执行）。
     pending: Rc<RefCell<Option<PendingAction>>>,
 
-    // ── 词库导入确认对话框（previewImport 计数 + 合并/替换选择）──
+    // ── 词库导入对话框（格式说明 + 选文件 + 自动识别预览 + 合并/替换选择）──
     pub import_confirm_visible: Signal<bool>,
     pub import_preview_msg: Signal<String>,
+    /// 已选文件名（仅展示；空 = 未选）。
+    pub import_file_name: Signal<String>,
+    /// 预览成功、可执行导入（驱动合并/替换按钮可用态）。
+    pub import_ready: Signal<bool>,
     /// 待导入的文件内容（预览确认后执行导入）。
     pending_import: Rc<RefCell<Option<String>>>,
 
@@ -194,6 +198,8 @@ impl DictManagerState {
             pending: Rc::new(RefCell::new(None)),
             import_confirm_visible: signal(false),
             import_preview_msg: signal(String::new()),
+            import_file_name: signal(String::new()),
+            import_ready: signal(false),
             pending_import: Rc::new(RefCell::new(None)),
             edit_visible: signal(false),
             edit_title: signal(String::new()),
@@ -1160,19 +1166,32 @@ impl DictManagerState {
         );
     }
 
-    /// 导入用户词库：选文件 → `dict.previewImport` 预览 → 确认对话框选合并/替换。
-    pub fn do_import_dict(&self, ctx: &mut EventCtx) {
+    /// 导入用户词库：打开导入对话框（格式说明 + 选文件 + 预览 + 合并/替换）。
+    pub fn do_import_dict(&self, _ctx: &mut EventCtx) {
         if self.current_schema_id().is_none() {
             self.notify_err("暂无已启用方案");
             return;
         }
+        self.import_file_name.set(String::new());
+        self.import_preview_msg.set(String::new());
+        self.import_ready.set(false);
+        *self.pending_import.borrow_mut() = None;
+        self.import_confirm_visible.set(true);
+    }
+
+    /// 导入对话框内选文件：读文件 → `dict.previewImport`（格式内容自动识别）→ 预览回显。
+    pub fn pick_import_file(&self, ctx: &mut EventCtx) {
         let state = self.clone();
         ctx.request_pick_file(
             PickDialog::new()
-                .title("导入用户词库")
-                .filter("WindDict", &["yaml"]),
+                .title("选择词库文件")
+                .filter("词库文件 (WindDict/Rime/TSV)", &["yaml", "txt"]),
             move |path| {
                 let Some(path) = path else { return };
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 let content = match std::fs::read_to_string(&path) {
                     Ok(c) => c,
                     Err(e) => {
@@ -1183,6 +1202,7 @@ impl DictManagerState {
                 let Some(schema) = state.current_schema_id() else {
                     return;
                 };
+                state.import_file_name.set(name);
                 match rpc::call_core(
                     "dict.previewImport",
                     &json!({ "schemaId": schema, "content": content }),
@@ -1192,23 +1212,40 @@ impl DictManagerState {
                             .import_preview_msg
                             .set(Self::format_import_preview(&v));
                         *state.pending_import.borrow_mut() = Some(content);
-                        state.import_confirm_visible.set(true);
+                        state.import_ready.set(true);
                     }
-                    Err(e) => state.notify_err(&format!("预览失败: {e}")),
+                    Err(e) => {
+                        state.import_preview_msg.set(format!("无法导入：{e}"));
+                        *state.pending_import.borrow_mut() = None;
+                        state.import_ready.set(false);
+                    }
                 }
             },
         );
     }
 
-    /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
+    /// previewImport 响应 → 对话框预览正文（纯函数，便于单测）。
     fn format_import_preview(v: &Value) -> String {
         let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-        let mut s = format!(
+        let fmt_name = match v.get("format").and_then(|x| x.as_str()).unwrap_or("") {
+            "rime" => "Rime 词库",
+            "tsv" => "TSV 文本",
+            "winddict" => "WindDict 词库",
+            _ => "",
+        };
+        let mut s = String::new();
+        if !fmt_name.is_empty() {
+            s.push_str(&format!("识别为 {fmt_name}\n"));
+        }
+        s.push_str(&format!(
             "新增 {} · 更新 {} · 不变 {}",
             n("willAdd"),
             n("willUpdate"),
             n("unchanged")
-        );
+        ));
+        if n("skipped") > 0 {
+            s.push_str(&format!(" · 跳过 {} 行", n("skipped")));
+        }
         if let Some(samples) = v.get("samples").and_then(|x| x.as_array()) {
             let names: Vec<&str> = samples.iter().filter_map(|x| x.as_str()).take(5).collect();
             if !names.is_empty() {
@@ -1222,6 +1259,7 @@ impl DictManagerState {
     /// 确认导入（strategy: "merge" | "replace"）。
     pub fn confirm_import(&self, strategy: &str) {
         self.import_confirm_visible.set(false);
+        self.import_ready.set(false);
         let Some(content) = self.pending_import.borrow_mut().take() else {
             return;
         };
@@ -1248,6 +1286,7 @@ impl DictManagerState {
 
     pub fn cancel_import(&self) {
         *self.pending_import.borrow_mut() = None;
+        self.import_ready.set(false);
         self.import_confirm_visible.set(false);
     }
 
@@ -1645,12 +1684,30 @@ mod tests {
         assert!(msg.contains("更新 1"));
         assert!(msg.contains("不变 2"));
         assert!(msg.contains("工、王中"));
-        // cancel 清空待导入内容并关对话框
+        assert!(!msg.contains("识别为"), "无 format 字段不显示识别行");
+        assert!(!msg.contains("跳过"), "skipped=0 不显示跳过");
+        // cancel 清空待导入内容/可用态并关对话框
         *st.pending_import.borrow_mut() = Some("x".into());
+        st.import_ready.set(true);
         st.import_confirm_visible.set(true);
         st.cancel_import();
         assert!(!st.import_confirm_visible.get());
         assert!(st.pending_import.borrow().is_none());
+        assert!(!st.import_ready.get());
+    }
+
+    #[test]
+    fn import_preview_msg_shows_format_and_skipped() {
+        let v = json!({
+            "willAdd": 5, "willUpdate": 0, "unchanged": 0,
+            "format": "rime", "skipped": 2, "samples": []
+        });
+        let msg = DictManagerState::format_import_preview(&v);
+        assert!(msg.contains("识别为 Rime 词库"));
+        assert!(msg.contains("跳过 2 行"));
+        let v =
+            json!({ "willAdd": 1, "willUpdate": 0, "unchanged": 0, "format": "tsv", "skipped": 0 });
+        assert!(DictManagerState::format_import_preview(&v).contains("识别为 TSV 文本"));
     }
 
     #[test]
