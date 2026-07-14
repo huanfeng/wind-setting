@@ -754,6 +754,16 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "ui.candidate.swap_preedit_when_above",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "ui.candidate.pager_in_preedit",
+      "type": "bool"
+    },
+    {
       "default": "",
       "key": "ui.font.family",
       "type": "str"

@@ -1276,8 +1276,24 @@ key = "ui.candidate.flip_when_above"
 group = "ui"
 section = "候选窗口"
 type = "toggle"
-label = "候选窗在上方时反转顺序"
-hint = "候选窗显示在光标上方时，反转候选排列方向使最相关内容靠近光标"
+label = "候选窗在上方时反转候选顺序"
+hint = "候选窗显示在光标上方时，反转候选项的排列顺序（使第一候选靠近光标）；可与「编码栏置底」叠加"
+
+[[items]]
+key = "ui.candidate.swap_preedit_when_above"
+group = "ui"
+section = "候选窗口"
+type = "toggle"
+label = "候选窗在上方时编码栏置底"
+hint = "候选窗显示在光标上方时，将编码栏与候选栏上下调换，使编码栏沉到底部贴近光标"
+
+[[items]]
+key = "ui.candidate.pager_in_preedit"
+group = "ui"
+section = "候选窗口"
+type = "toggle"
+label = "翻页栏并入编码栏"
+hint = "将翻页栏右对齐显示在编码栏行（竖排可省一行）；仅「编码显示方式」为「候选窗顶部独立栏」时生效"
 
 [[items]]
 key = "ui.candidate.max_chars"

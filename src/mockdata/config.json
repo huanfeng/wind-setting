@@ -182,7 +182,9 @@
    "page_number_display": "",
    "max_chars": 16,
    "index_labels": "",
-   "flip_when_above": false
+   "flip_when_above": false,
+   "swap_preedit_when_above": false,
+   "pager_in_preedit": false
   },
   "font": {
    "family": "",
