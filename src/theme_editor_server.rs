@@ -331,8 +331,10 @@ fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
         .get("force")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    // slug：主题唯一 id（编辑器拉取时记住的原始 id）。传入则由 core 就地写回该 id 目录。
+    let slug = payload.get("slug").and_then(serde_json::Value::as_str);
 
-    let reply = match import_text(text, force) {
+    let reply = match import_text(text, force, slug) {
         Ok(result) => json_reply(
             200,
             &serde_json::json!({
@@ -340,6 +342,8 @@ fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
                 // core 导入仅落盘；是否热重载由输入法自身监听/重启决定，这里不谎报已重载。
                 "reloaded": false,
                 "theme_name": result.display_name,
+                // 落地的主题 id（可能是就地写回的旧目录名），供前端回填记忆。
+                "slug": result.slug,
             })
             .to_string(),
             allow_origin,

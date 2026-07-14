@@ -341,7 +341,7 @@ fn theme_import_card(state: &AppState) -> Element {
                                             crate::theme_import::preview_text(&text).map(|_| text)
                                         })
                                         .and_then(|text| {
-                                            crate::theme_import::import_text(&text, false)
+                                            crate::theme_import::import_text(&text, false, None)
                                         }) {
                                         Ok(result) => feedback.set(Some((
                                             ToastKind::Success,

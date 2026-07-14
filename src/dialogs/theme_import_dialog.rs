@@ -84,7 +84,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                     let u = url.get();
                     match crate::theme_import::download_https_text(&u)
                         .and_then(|text| crate::theme_import::preview_text(&text).map(|_| text))
-                        .and_then(|text| crate::theme_import::import_text(&text, false))
+                        .and_then(|text| crate::theme_import::import_text(&text, false, None))
                     {
                         Ok(result) => {
                             let mut st = import_state.borrow_mut();

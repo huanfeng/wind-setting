@@ -159,13 +159,18 @@ pub fn preview_text(text: &str) -> Result<ThemePreview, ThemeImportError> {
     ThemePreview::from_value(v)
 }
 
-pub fn import_text(text: &str, force: bool) -> Result<ThemeImportResult, ThemeImportError> {
-    let v = crate::rpc::call_core(
-        "theme.importFromText",
-        // core web_theme_import_text 读取 "yaml" 键（内容为 TOML，键名沿用历史契约）。
-        &json!({ "yaml": text, "force": force }),
-    )
-    .map_err(classify_rpc_error)?;
+pub fn import_text(
+    text: &str,
+    force: bool,
+    slug: Option<&str>,
+) -> Result<ThemeImportResult, ThemeImportError> {
+    // core web_theme_import_text 读取 "yaml" 键（内容为 TOML，键名沿用历史契约）；
+    // slug 为主题唯一 id：传入则就地写回该 id 目录，否则由 core 按 meta.name 建目录。
+    let mut params = json!({ "yaml": text, "force": force });
+    if let Some(s) = slug {
+        params["slug"] = json!(s);
+    }
+    let v = crate::rpc::call_core("theme.importFromText", &params).map_err(classify_rpc_error)?;
     ThemeImportResult::from_value(v)
 }
 
@@ -266,7 +271,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
 
-        let imported = import_text("[meta]\nname = \"测试主题\"\n", false).unwrap();
+        let imported = import_text("[meta]\nname = \"测试主题\"\n", false, None).unwrap();
 
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
         assert_eq!(imported.slug, "test-theme");
