@@ -78,6 +78,10 @@ fn call_on_stream<S: Read + Write>(
     Ok(resp.result.unwrap_or(Value::Null))
 }
 
+/// 单次 RPC 的整体超时上限。命名管道 read_exact 本身无超时,core 无响应时会无限
+/// 阻塞;该上限把最坏等待收敛到有限值,避免拖住 UI 线程与进程退出(见下方线程包装)。
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     if std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1") {
@@ -85,7 +89,19 @@ pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     }
     let endpoint = ctrl_endpoint();
     let t = std::time::Instant::now();
-    let result = call_core_inner(&endpoint, method, params);
+    // 在工作线程执行阻塞式管道 RPC,主调用侧带超时等待:命名管道读取无超时,core
+    // 无响应会无限阻塞。超时后放弃该线程(其阻塞的 read 会随进程退出由 OS 回收),
+    // 立即返回错误,从而 UI 不卡、退出不被拖住。设置操作低频,每次 spawn 开销可忽略。
+    let (tx, rx) = std::sync::mpsc::channel();
+    let method_owned = method.to_string();
+    let params_owned = params.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(call_core_inner(&endpoint, &method_owned, &params_owned));
+    });
+    let result = match rx.recv_timeout(CALL_TIMEOUT) {
+        Ok(r) => r,
+        Err(_) => Err(format!("core 无响应(超过 {}s)", CALL_TIMEOUT.as_secs())),
+    };
     match &result {
         Ok(_) => tracing::debug!("rpc {} ok ({:?})", method, t.elapsed()),
         Err(e) => tracing::warn!("rpc {} err ({:?}): {}", method, t.elapsed(), e),
@@ -484,14 +500,20 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         ]),
         // 加词自动出码：mock 返回占位码，便于对话框演示。
         "dict.encode" => json!("aaaa"),
-        // 词库导入导出（P4 契约,形状对齐 core webdata.rs）。
+        // 词库多段导入导出（sections 契约,形状对齐 core webdata.rs）。
         "dict.export" => {
-            json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n\n--- !words\naaaa\t工\t0\n" })
+            json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n  sections:\n    words:\n      columns: [code, text, weight, count]\n    shadow:\n      columns: [action, code, word, position, cand_id]\n\n--- !words\naaaa\t工\t0\t3\n\n--- !shadow\npin\tggkg\t王中\t0\t\n" })
         }
-        "dict.import" => json!({ "added": 0, "updated": 0, "skipped": 0 }),
-        "dict.previewImport" => {
-            json!({ "willAdd": 1, "willUpdate": 0, "willConflict": 0, "unchanged": 0, "samples": ["工"], "format": "winddict", "skipped": 0 })
-        }
+        "dict.import" => json!({ "sections": [
+            { "key": "userWords", "added": 1, "updated": 0, "unchanged": 0, "skipped": 0 },
+            { "key": "shadow", "imported": 1, "skipped": 0 }
+        ] }),
+        "dict.previewImport" => json!({ "format": "winddict", "compatible": true,
+            "sourceSchema": "wubi86", "sourceEngine": "codetable", "targetEngine": "codetable",
+            "sections": [
+                { "key": "userWords", "count": 1, "willAdd": 1, "willUpdate": 0, "unchanged": 0, "skipped": 0, "samples": ["工"] },
+                { "key": "shadow", "count": 1, "skipped": 0 }
+            ] }),
         // 方案包导入导出（v2 契约：零层级条目名 + 可选 package 元信息）。
         "scheme.exportPackage" => {
             json!({ "path": "C:/tmp/demo.zip", "packed": ["demo.schema.toml"], "systemRefs": [], "missing": [] })

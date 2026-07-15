@@ -17,24 +17,38 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_edit_dialog(mgr))
         .child(build_shadow_dialog(mgr))
         .child(build_view_dialog(mgr))
-        .child(build_import_confirm_dialog(mgr))
+        .child(build_export_dialog(mgr))
+        .child(build_import_dialog(mgr))
 }
 
-/// 词库导入对话框：支持格式说明 + 选文件 + 自动识别预览 + 合并（默认）/ 替换（danger）。
-/// 格式按内容自动识别，无需用户选择；预览成功前合并/替换不可用。
-fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
-    let merge = mgr.clone();
-    let replace = mgr.clone();
+/// 数据类型勾选行（导入导出共用；仅当前方案域适用的类型显示）。
+fn io_type_row(mgr: &DictManagerState) -> Element {
+    let cb = |label: &'static str, sig: Signal<bool>, key: &'static str, m: DictManagerState| {
+        Element::checkbox(label, sig)
+            .small()
+            .on_toggle(move |_| sig.set(!sig.get()))
+            .visible_when(move || m.io_type_applicable(key))
+    };
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(18)
+        .child(cb("用户词库", mgr.io_user_words, "userWords", mgr.clone()))
+        .child(cb("临时词库", mgr.io_temp_words, "tempWords", mgr.clone()))
+        .child(cb("词频", mgr.io_freq, "freq", mgr.clone()))
+        .child(cb("候选调整", mgr.io_shadow, "shadow", mgr.clone()))
+}
+
+/// 导出对话框（方案级）：标题含方案说明 + 数据类型勾选 + 导出到文件。
+fn build_export_dialog(mgr: &DictManagerState) -> Element {
+    let exp = mgr.clone();
     let cancel = mgr.clone();
-    let pick = mgr.clone();
-    let merge_ready = mgr.clone();
-    let replace_ready = mgr.clone();
     let content = flat_panel()
         .width(440)
         .padding(20)
-        .spacing(14)
+        .spacing(12)
         .child(
-            Element::label("导入用户词库")
+            Element::label_rc(mgr.io_title)
                 .font_size(15.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -43,42 +57,18 @@ fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label(
-                "支持的格式（按内容自动识别）：\n\
-                 · WindDict 词库（.wdict.yaml，本程序导出格式）\n\
-                 · Rime 词库（.dict.yaml）\n\
-                 · TSV 文本（每行：编码 Tab 词条 Tab 权重，权重可省略）",
-            )
-            .font_size(12.5)
-            .fg_role(Role::TextMuted)
-            .width_match()
-            .max_lines(4),
+            Element::label("选择要导出的数据类型")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match(),
         )
+        .child(io_type_row(mgr))
         .child(
-            Element::row()
+            Element::label("勾选的类型将导出为一个 .wdict 文件")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
                 .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(
-                    Element::button("选择文件")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |ctx| pick.pick_import_file(ctx)),
-                )
-                .child(
-                    Element::label_rc(mgr.import_file_name)
-                        .font_size(12.5)
-                        .fg_role(Role::TextMuted)
-                        .weight(1.0)
-                        .max_lines(1),
-                ),
-        )
-        .child(
-            Element::label_rc(mgr.import_preview_msg)
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .width_match()
-                .max_lines(7),
+                .max_lines(1),
         )
         .child(
             Element::row()
@@ -87,7 +77,83 @@ fn build_import_confirm_dialog(mgr: &DictManagerState) -> Element {
                 .spacing(8)
                 .child(Element::leaf().weight(1.0))
                 .child(
-                    Element::button("取消")
+                    Element::button("关闭")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| cancel.cancel_export()),
+                )
+                .child(
+                    Element::button("导出到文件…")
+                        .small()
+                        .on_click(move |ctx| exp.do_export_io(ctx)),
+                ),
+        );
+    Element::dialog(mgr.export_visible, content)
+}
+
+/// 导入对话框（方案级）：标题含方案说明 + 数据类型勾选（选文件后自动勾选文件所含段）+
+/// 选文件·自动识别·只显数量预览·合并/替换（不兼容或未预览时禁用）。
+fn build_import_dialog(mgr: &DictManagerState) -> Element {
+    let pick = mgr.clone();
+    let merge = mgr.clone();
+    let replace = mgr.clone();
+    let merge_ready = mgr.clone();
+    let replace_ready = mgr.clone();
+    let cancel = mgr.clone();
+    let file_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::button("选择文件…")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| pick.pick_import_file(ctx)),
+        )
+        .child(
+            Element::label_rc(mgr.import_file_name)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .weight(1.0)
+                .max_lines(1),
+        );
+    let content = flat_panel()
+        .width(440)
+        .padding(20)
+        .spacing(12)
+        .child(
+            Element::label_rc(mgr.io_title)
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(24)
+                .width_match(),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label("从 WindDict / Rime / TSV 文件导入（按内容自动识别）")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(1),
+        )
+        .child(file_row)
+        .child(io_type_row(mgr))
+        .child(
+            Element::label_rc(mgr.import_preview_msg)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(5),
+        )
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("关闭")
                         .small()
                         .outline_soft()
                         .on_click(move |_| cancel.cancel_import()),

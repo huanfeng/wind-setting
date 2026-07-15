@@ -96,8 +96,30 @@ pub fn build_page(state: &AppState) -> Element {
         .width(seg_w)
         .visible_when(move || m.domain_kind() == kind)
     };
+    // 「导入」「导出」入口：置于子标签行最右（弹簧右对齐），方案域与短语域均显示，
+    // 保持统一入口位置（短语走原生对话框，方案打开对应对话框）。
+    let imp_open = mgr.clone();
+    let imp_vis = mgr.clone();
+    let imp_en = mgr.clone();
+    let exp_open = mgr.clone();
+    let exp_vis = mgr.clone();
+    let exp_en = mgr.clone();
+    let import_entry = Element::button("导入")
+        .small()
+        .outline_soft()
+        .on_click(move |ctx| imp_open.do_import(ctx))
+        .visible_when(move || imp_vis.io_entry_visible())
+        .enabled_when(move || imp_en.io_entry_enabled());
+    let export_entry = Element::button("导出")
+        .small()
+        .outline_soft()
+        .on_click(move |ctx| exp_open.do_export(ctx))
+        .visible_when(move || exp_vis.io_entry_visible())
+        .enabled_when(move || exp_en.io_entry_enabled());
     let sub_tabs = Element::row()
         .width_match()
+        .cross(Align::Center)
+        .spacing(8)
         .padding_xy(0, 2)
         .child(seg(
             vec!["系统短语", "用户短语"],
@@ -114,7 +136,10 @@ pub fn build_page(state: &AppState) -> Element {
             k_wb,
             DomainKind::Codetable,
         ))
-        .child(seg(vec!["候选调整"], k_mx, DomainKind::Mixed));
+        .child(seg(vec!["候选调整"], k_mx, DomainKind::Mixed))
+        .child(Element::leaf().weight(1.0))
+        .child(import_entry)
+        .child(export_entry);
 
     // ── 工具栏：批量操作（左）+ 搜索（右）──
     let toolbar = build_toolbar(&mgr);
@@ -224,21 +249,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .on_click(move |_| m_reset.request_reset_default())
         .visible_when(move || v_reset.current_spec().ops.reset_default);
 
-    let m_imp = mgr.clone();
-    let v_imp = mgr.clone();
-    let import_btn = Element::button("导入")
-        .small()
-        .outline_soft()
-        .on_click(move |ctx| m_imp.do_import(ctx))
-        .visible_when(move || v_imp.current_spec().ops.import);
-
-    let m_exp = mgr.clone();
-    let v_exp = mgr.clone();
-    let export_btn = Element::button("导出")
-        .small()
-        .outline_soft()
-        .on_click(move |ctx| m_exp.do_export(ctx))
-        .visible_when(move || v_exp.current_spec().ops.export);
+    // 导入/导出入口已上移到子标签行（见 build_page 的 sub_tabs），工具栏不再放置。
 
     // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
     let m_clr_s = mgr.clone();
@@ -273,8 +284,6 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(add)
         .child(promote_all)
         .child(clear)
-        .child(import_btn)
-        .child(export_btn)
         .child(reset_default)
         .child(Element::leaf().weight(1.0))
         .child(search)

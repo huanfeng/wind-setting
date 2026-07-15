@@ -496,14 +496,14 @@ const SPEC_USERDICT: CategorySpec = CategorySpec {
     searchable: true,
     client_search: false,
     columns: COLS_USERDICT,
+    // 导入/导出不再挂在用户词库类别下：改为方案级统一「导入/导出」对话框（多类型可选），
+    // 入口在子标签行最右（见 view::build_page），故此处不设 import/export。
     ops: OpFlags {
         add: true,
         edit: true,
         remove: true,
         clear: true,
         encode: true,
-        import: true,
-        export: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {

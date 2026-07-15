@@ -111,6 +111,21 @@ pub struct DictManagerState {
     pub import_ready: Signal<bool>,
     /// 待导入的文件内容（预览确认后执行导入）。
     pending_import: Rc<RefCell<Option<String>>>,
+    // ── 方案级「导入/导出」统一对话框的数据类型勾选（导入导出共用；仅适用类型显示）──
+    /// 用户词库
+    pub io_user_words: Signal<bool>,
+    /// 临时词库
+    pub io_temp_words: Signal<bool>,
+    /// 词频
+    pub io_freq: Signal<bool>,
+    /// 候选调整
+    pub io_shadow: Signal<bool>,
+    /// 导出对话框可见（导入复用 import_confirm_visible）。
+    pub export_visible: Signal<bool>,
+    /// 导入/导出对话框标题（含当前方案/类型说明，如「导出 · 五笔86 · 码表」）。
+    pub io_title: Signal<String>,
+    /// 导入来源与目标是否引擎兼容（false=不同类型，禁止导入并提示）。
+    pub import_compatible: Signal<bool>,
 
     // ── 加/改词对话框（用户词库 / 短语）──
     pub edit_visible: Signal<bool>,
@@ -201,6 +216,13 @@ impl DictManagerState {
             import_file_name: signal(String::new()),
             import_ready: signal(false),
             pending_import: Rc::new(RefCell::new(None)),
+            io_user_words: signal(true),
+            io_temp_words: signal(true),
+            io_freq: signal(true),
+            io_shadow: signal(true),
+            export_visible: signal(false),
+            io_title: signal(String::new()),
+            import_compatible: signal(true),
             edit_visible: signal(false),
             edit_title: signal(String::new()),
             edit_l_code: signal("编码".to_string()),
@@ -1069,7 +1091,7 @@ impl DictManagerState {
         let state = self.clone();
         ctx.request_save_file(
             PickDialog::new()
-                .title("导出短语")
+                .title("导出 · 用户短语")
                 .file_name("phrases.wdict.yaml")
                 .filter("WindDict", &["yaml"]),
             move |path| {
@@ -1094,7 +1116,7 @@ impl DictManagerState {
         let state = self.clone();
         ctx.request_pick_file(
             PickDialog::new()
-                .title("导入短语")
+                .title("导入 · 用户短语")
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };
@@ -1120,39 +1142,154 @@ impl DictManagerState {
 
     // ── 用户词库导入导出（按当前方案,dict.export/previewImport/import）──
 
-    /// 工具栏「导入」统一入口：按当前类别分派（用户短语 / 用户词库）。
+    /// 子标签行「导入」入口：短语域走原生对话框；方案域打开导入对话框。
     pub fn do_import(&self, ctx: &mut EventCtx) {
-        match self.current_category() {
-            WordCategory::UserDict => self.do_import_dict(ctx),
-            _ => self.do_import_phrases(ctx),
+        if matches!(self.domain_kind(), DomainKind::Phrase) {
+            self.do_import_phrases(ctx);
+        } else {
+            self.open_import_dialog();
         }
     }
 
-    /// 工具栏「导出」统一入口。
+    /// 子标签行「导出」入口：短语域走原生对话框；方案域打开导出对话框。
     pub fn do_export(&self, ctx: &mut EventCtx) {
-        match self.current_category() {
-            WordCategory::UserDict => self.do_export_dict(ctx),
-            _ => self.do_export_phrases(ctx),
+        if matches!(self.domain_kind(), DomainKind::Phrase) {
+            self.do_export_phrases(ctx);
+        } else {
+            self.open_export_dialog();
         }
     }
 
-    /// 导出当前方案的用户词库（对话框异步请求，见 `do_export_phrases` 注释）。
-    pub fn do_export_dict(&self, ctx: &mut EventCtx) {
+    // ── 方案级「导入/导出」统一对话框（多类型可选；对齐 Go 融合式对话框）──
+
+    /// 当前方案域适用的数据类型 (key, 标签, 勾选信号)。短语/无方案域返回空。
+    pub fn io_section_defs(&self) -> Vec<(&'static str, &'static str, Signal<bool>)> {
+        let all = [
+            ("userWords", "用户词库", self.io_user_words),
+            ("tempWords", "临时词库", self.io_temp_words),
+            ("freq", "词频", self.io_freq),
+            ("shadow", "候选调整", self.io_shadow),
+        ];
+        all.into_iter()
+            .filter(|(k, _, _)| self.io_type_applicable(k))
+            .collect()
+    }
+
+    /// 某数据类型是否适用于当前方案域（与子标签集一致）。
+    pub fn io_type_applicable(&self, key: &str) -> bool {
+        let allow: &[&str] = match self.domain_kind() {
+            DomainKind::Pinyin => &["userWords", "tempWords", "freq"],
+            DomainKind::Codetable | DomainKind::Other => {
+                &["userWords", "tempWords", "freq", "shadow"]
+            }
+            DomainKind::Mixed => &["shadow"],
+            DomainKind::Phrase => &[],
+        };
+        allow.contains(&key)
+    }
+
+    /// 当前勾选且适用的数据类型 key 列表。
+    pub fn io_selected_sections(&self) -> Vec<String> {
+        self.io_section_defs()
+            .into_iter()
+            .filter(|(_, _, sig)| sig.get())
+            .map(|(k, _, _)| k.to_string())
+            .collect()
+    }
+
+    /// 子标签行「导入/导出」按钮是否显示：方案域（有方案）或短语域。
+    pub fn io_entry_visible(&self) -> bool {
+        match self.domain_kind() {
+            DomainKind::Phrase => true,
+            _ => self.current_schema_id().is_some(),
+        }
+    }
+
+    /// 「导入/导出」按钮是否可用：短语域仅「用户短语」子标签可用（导入导出的是用户短语，
+    /// 系统短语只读故禁用）；方案域有方案即可用。
+    pub fn io_entry_enabled(&self) -> bool {
+        match self.domain_kind() {
+            DomainKind::Phrase => self.current_category() == WordCategory::PhraseUser,
+            _ => self.current_schema_id().is_some(),
+        }
+    }
+
+    /// 当前操作对象说明（对话框标题用）：短语域=用户短语；方案域=折叠域标签（含方案名与类型）。
+    pub fn current_io_label(&self) -> String {
+        let d = self.domain.get();
+        if d == 0 {
+            return "用户短语".to_string();
+        }
+        self.folded_domains()
+            .get(d - 1)
+            .map(|e| e.label.clone())
+            .unwrap_or_default()
+    }
+
+    /// 勾选重置为全部适用类型。
+    fn reset_io_checks(&self) {
+        self.io_user_words.set(true);
+        self.io_temp_words.set(true);
+        self.io_freq.set(true);
+        self.io_shadow.set(true);
+    }
+
+    /// 打开导出对话框（方案域）。
+    pub fn open_export_dialog(&self) {
+        if self.current_schema_id().is_none() {
+            self.notify_err("暂无已启用方案");
+            return;
+        }
+        self.reset_io_checks();
+        self.io_title.set(format!("导出 · {}", self.current_io_label()));
+        self.export_visible.set(true);
+    }
+
+    /// 关闭导出对话框。
+    pub fn cancel_export(&self) {
+        self.export_visible.set(false);
+    }
+
+    /// 打开导入对话框（方案域）：清空预览、勾选默认全开。
+    pub fn open_import_dialog(&self) {
+        if self.current_schema_id().is_none() {
+            self.notify_err("暂无已启用方案");
+            return;
+        }
+        self.reset_io_checks();
+        self.io_title.set(format!("导入 · {}", self.current_io_label()));
+        self.import_file_name.set(String::new());
+        self.import_preview_msg.set(String::new());
+        self.import_ready.set(false);
+        self.import_compatible.set(true);
+        *self.pending_import.borrow_mut() = None;
+        self.import_confirm_visible.set(true);
+    }
+
+    /// 导出勾选的数据类型为单个 .wdict 文件（对话框异步请求，见 `do_export_phrases` 注释）。
+    pub fn do_export_io(&self, ctx: &mut EventCtx) {
         let Some(schema) = self.current_schema_id() else {
             self.notify_err("暂无已启用方案");
             return;
         };
+        let sections = self.io_selected_sections();
+        if sections.is_empty() {
+            self.notify_err("请至少勾选一种数据类型");
+            return;
+        }
         let state = self.clone();
-        // 文件名带日期时间，便于区分多次导出。
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         ctx.request_save_file(
             PickDialog::new()
-                .title("导出用户词库")
+                .title("导出词库数据")
                 .file_name(&format!("{schema}-{stamp}.wdict.yaml"))
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };
-                match rpc::call_core("dict.export", &json!({ "schemaId": schema })) {
+                match rpc::call_core(
+                    "dict.export",
+                    &json!({ "schemaId": schema, "sections": sections }),
+                ) {
                     Ok(v) => {
                         let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
                         match std::fs::write(&path, content) {
@@ -1164,19 +1301,6 @@ impl DictManagerState {
                 }
             },
         );
-    }
-
-    /// 导入用户词库：打开导入对话框（格式说明 + 选文件 + 预览 + 合并/替换）。
-    pub fn do_import_dict(&self, _ctx: &mut EventCtx) {
-        if self.current_schema_id().is_none() {
-            self.notify_err("暂无已启用方案");
-            return;
-        }
-        self.import_file_name.set(String::new());
-        self.import_preview_msg.set(String::new());
-        self.import_ready.set(false);
-        *self.pending_import.borrow_mut() = None;
-        self.import_confirm_visible.set(true);
     }
 
     /// 导入对话框内选文件：读文件 → `dict.previewImport`（格式内容自动识别）→ 预览回显。
@@ -1208,11 +1332,16 @@ impl DictManagerState {
                     &json!({ "schemaId": schema, "content": content }),
                 ) {
                     Ok(v) => {
+                        let compatible =
+                            v.get("compatible").and_then(|x| x.as_bool()).unwrap_or(true);
+                        state.import_compatible.set(compatible);
+                        state.apply_import_preview_sections(&v);
                         state
                             .import_preview_msg
                             .set(Self::format_import_preview(&v));
                         *state.pending_import.borrow_mut() = Some(content);
-                        state.import_ready.set(true);
+                        // 不兼容（如五笔词库导入拼音方案）：保留内容但禁止导入。
+                        state.import_ready.set(compatible);
                     }
                     Err(e) => {
                         state.import_preview_msg.set(format!("无法导入：{e}"));
@@ -1224,39 +1353,91 @@ impl DictManagerState {
         );
     }
 
+    /// 数据类型 key → 中文标签。
+    fn section_label(key: &str) -> &'static str {
+        match key {
+            "userWords" => "用户词库",
+            "tempWords" => "临时词库",
+            "freq" => "词频",
+            "shadow" => "候选调整",
+            _ => "数据",
+        }
+    }
+
+    /// 依预览响应里的 sections，把适用类型的勾选设为「文件是否含该段」。
+    fn apply_import_preview_sections(&self, v: &Value) {
+        let present = |key: &str| {
+            v.get("sections")
+                .and_then(|s| s.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .any(|x| x.get("key").and_then(|k| k.as_str()) == Some(key))
+                })
+                .unwrap_or(false)
+        };
+        self.io_user_words.set(present("userWords"));
+        self.io_temp_words.set(present("tempWords"));
+        self.io_freq.set(present("freq"));
+        self.io_shadow.set(present("shadow"));
+    }
+
+    /// 引擎类型 key → 中文标签（不兼容提示用）。
+    fn engine_label(t: &str) -> &'static str {
+        match t {
+            "pinyin" => "拼音",
+            "mixed" => "混输",
+            "codetable" => "码表",
+            _ => "未知",
+        }
+    }
+
     /// previewImport 响应 → 对话框预览正文（纯函数，便于单测）。
+    /// 不兼容（来源引擎≠当前方案）优先提示并阻止；否则逐段只列数量 + 累加跳过行（不含示例）。
     fn format_import_preview(v: &Value) -> String {
-        let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let mut s = String::new();
+        // 不兼容优先提示（如五笔词库导入拼音方案）。
+        if !v.get("compatible").and_then(|x| x.as_bool()).unwrap_or(true) {
+            let src =
+                Self::engine_label(v.get("sourceEngine").and_then(|x| x.as_str()).unwrap_or(""));
+            let tgt =
+                Self::engine_label(v.get("targetEngine").and_then(|x| x.as_str()).unwrap_or(""));
+            s.push_str(&format!(
+                "⚠ 该文件为「{src}」类型词库，与当前「{tgt}」方案不一致，无法导入（编码不通用）。"
+            ));
+            return s;
+        }
         let fmt_name = match v.get("format").and_then(|x| x.as_str()).unwrap_or("") {
             "rime" => "Rime 词库",
             "tsv" => "TSV 文本",
             "winddict" => "WindDict 词库",
             _ => "",
         };
-        let mut s = String::new();
         if !fmt_name.is_empty() {
             s.push_str(&format!("识别为 {fmt_name}\n"));
         }
-        s.push_str(&format!(
-            "新增 {} · 更新 {} · 不变 {}",
-            n("willAdd"),
-            n("willUpdate"),
-            n("unchanged")
-        ));
-        if n("skipped") > 0 {
-            s.push_str(&format!(" · 跳过 {} 行", n("skipped")));
-        }
-        if let Some(samples) = v.get("samples").and_then(|x| x.as_array()) {
-            let names: Vec<&str> = samples.iter().filter_map(|x| x.as_str()).take(5).collect();
-            if !names.is_empty() {
-                s.push_str(&format!("\n样例：{}", names.join("、")));
+        let mut parts: Vec<String> = Vec::new();
+        let mut skipped_total = 0u64;
+        if let Some(arr) = v.get("sections").and_then(|x| x.as_array()) {
+            for sec in arr {
+                let key = sec.get("key").and_then(|x| x.as_str()).unwrap_or("");
+                let count = sec.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
+                skipped_total += sec.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0);
+                parts.push(format!("{} {}", Self::section_label(key), count));
             }
         }
-        s.push_str("\n\n合并保留本地已有词；替换将清空当前方案词库后导入。");
+        if parts.is_empty() {
+            s.push_str("文件不含可导入的词库数据");
+            return s;
+        }
+        s.push_str(&parts.join(" · "));
+        if skipped_total > 0 {
+            s.push_str(&format!(" · 跳过 {skipped_total} 行"));
+        }
+        s.push_str("\n\n勾选上方类型决定导入哪些；合并保留本地已有，替换先清空所选类型后导入。");
         s
     }
 
-    /// 确认导入（strategy: "merge" | "replace"）。
+    /// 确认导入（strategy: "merge" | "replace"）：按勾选的数据类型导入。
     pub fn confirm_import(&self, strategy: &str) {
         self.import_confirm_visible.set(false);
         self.import_ready.set(false);
@@ -1266,21 +1447,42 @@ impl DictManagerState {
         let Some(schema) = self.current_schema_id() else {
             return;
         };
+        let sections = self.io_selected_sections();
         match rpc::call_core(
             "dict.import",
-            &json!({ "schemaId": schema, "content": content, "strategy": strategy }),
+            &json!({ "schemaId": schema, "content": content, "strategy": strategy, "sections": sections }),
         ) {
             Ok(v) => {
-                let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
                 self.reload();
-                self.notify_ok(&format!(
-                    "已导入：新增 {} · 更新 {} · 跳过 {}",
-                    n("added"),
-                    n("updated"),
-                    n("skipped")
-                ));
+                self.notify_ok(&Self::format_import_result(&v));
             }
             Err(e) => self.notify_err(&format!("导入失败: {e}")),
+        }
+    }
+
+    /// dict.import 响应 → toast 文案（逐段汇总，纯函数便于单测）。
+    fn format_import_result(v: &Value) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(arr) = v.get("sections").and_then(|x| x.as_array()) {
+            for sec in arr {
+                let key = sec.get("key").and_then(|x| x.as_str()).unwrap_or("");
+                let n = |k: &str| sec.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+                if sec.get("added").is_some() {
+                    parts.push(format!(
+                        "{} 新增 {}·更新 {}",
+                        Self::section_label(key),
+                        n("added"),
+                        n("updated")
+                    ));
+                } else {
+                    parts.push(format!("{} {} 条", Self::section_label(key), n("imported")));
+                }
+            }
+        }
+        if parts.is_empty() {
+            "已导入".to_string()
+        } else {
+            format!("已导入：{}", parts.join("；"))
         }
     }
 
@@ -1678,13 +1880,16 @@ mod tests {
     #[test]
     fn import_preview_msg_and_cancel() {
         let st = DictManagerState::new();
-        let v = json!({ "willAdd": 3, "willUpdate": 1, "unchanged": 2, "samples": ["工", "王中"] });
+        // 新 sections 契约：多段，只显数量（无示例、无新增/更新/不变细分）。
+        let v = json!({ "format": "winddict", "compatible": true, "sections": [
+            { "key": "userWords", "count": 6, "skipped": 0 },
+            { "key": "tempWords", "count": 4, "skipped": 0 },
+        ] });
         let msg = DictManagerState::format_import_preview(&v);
-        assert!(msg.contains("新增 3"));
-        assert!(msg.contains("更新 1"));
-        assert!(msg.contains("不变 2"));
-        assert!(msg.contains("工、王中"));
-        assert!(!msg.contains("识别为"), "无 format 字段不显示识别行");
+        assert!(msg.contains("识别为 WindDict 词库"));
+        assert!(msg.contains("用户词库 6"));
+        assert!(msg.contains("临时词库 4"));
+        assert!(!msg.contains("样例"), "不显示示例");
         assert!(!msg.contains("跳过"), "skipped=0 不显示跳过");
         // cancel 清空待导入内容/可用态并关对话框
         *st.pending_import.borrow_mut() = Some("x".into());
@@ -1698,16 +1903,37 @@ mod tests {
 
     #[test]
     fn import_preview_msg_shows_format_and_skipped() {
-        let v = json!({
-            "willAdd": 5, "willUpdate": 0, "unchanged": 0,
-            "format": "rime", "skipped": 2, "samples": []
-        });
+        let v = json!({ "format": "rime", "compatible": true, "sections": [
+            { "key": "userWords", "count": 5, "skipped": 2 },
+        ] });
         let msg = DictManagerState::format_import_preview(&v);
         assert!(msg.contains("识别为 Rime 词库"));
         assert!(msg.contains("跳过 2 行"));
-        let v =
-            json!({ "willAdd": 1, "willUpdate": 0, "unchanged": 0, "format": "tsv", "skipped": 0 });
+        let v = json!({ "format": "tsv", "compatible": true, "sections": [
+            { "key": "userWords", "count": 1, "skipped": 0 },
+        ] });
         assert!(DictManagerState::format_import_preview(&v).contains("识别为 TSV 文本"));
+    }
+
+    #[test]
+    fn import_preview_incompatible_blocks() {
+        // 来源码表、目标拼音 → 不兼容提示，阻止导入。
+        let v = json!({ "format": "winddict", "compatible": false,
+            "sourceEngine": "codetable", "targetEngine": "pinyin", "sections": [] });
+        let msg = DictManagerState::format_import_preview(&v);
+        assert!(msg.contains("无法导入"));
+        assert!(msg.contains("码表") && msg.contains("拼音"));
+    }
+
+    #[test]
+    fn import_result_summary_per_section() {
+        let v = json!({ "sections": [
+            { "key": "userWords", "added": 10, "updated": 2, "unchanged": 3, "skipped": 0 },
+            { "key": "freq", "imported": 50, "skipped": 0 },
+        ] });
+        let msg = DictManagerState::format_import_result(&v);
+        assert!(msg.contains("用户词库 新增 10·更新 2"));
+        assert!(msg.contains("词频 50 条"));
     }
 
     #[test]
