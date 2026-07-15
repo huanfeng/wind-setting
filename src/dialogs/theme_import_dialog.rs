@@ -82,8 +82,9 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                 )
                 .child(Element::button("下载并导入").small().on_click(move |_| {
                     let u = url.get();
+                    // 直接下载 → 导入；import_text 内部（core）已做校验，无需再单独预览
+                    // （core theme.preview 只支持按已安装 name 预览，不接受原始文本）。
                     match crate::theme_import::download_https_text(&u)
-                        .and_then(|text| crate::theme_import::preview_text(&text).map(|_| text))
                         .and_then(|text| crate::theme_import::import_text(&text, false, None))
                     {
                         Ok(result) => {
