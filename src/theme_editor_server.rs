@@ -105,7 +105,12 @@ impl ThemeEditorServer {
 
 impl Drop for ThemeEditorServer {
     fn drop(&mut self) {
-        self.stop();
+        // 进程退出路径:只发停止信号并 detach 工作线程,绝不 join。
+        // 工作线程可能正阻塞在请求处理中(handle_request → call_core),join 会把整个
+        // 进程退出拖住数秒(即观察到的"退出延时")。线程会在下个循环边界自行退出;
+        // 即便未及,进程退出时也由 OS 回收。运行时手动关闭仍走 stop()(需 join 释放端口)。
+        self.stop.store(true, Ordering::Relaxed);
+        self.handle = None;
     }
 }
 
