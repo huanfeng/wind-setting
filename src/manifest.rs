@@ -532,7 +532,12 @@ fn build_select_reactive(
         }),
     );
 
-    let el = Element::dropdown_reactive(lab_sig, sig);
+    // 主题下拉用富内容（版本徽章 + 外部主题删除图标）；其余动态源仍用纯文本响应式下拉。
+    let el = if item.options_source.as_deref() == Some("themes") {
+        Element::dropdown_items_reactive(state.theme_items_sig, sig)
+    } else {
+        Element::dropdown_reactive(lab_sig, sig)
+    };
     match item.width {
         Some(w) => el.width(w as i32),
         None => el.min_width(CTRL_W),
@@ -1094,7 +1099,11 @@ fn dynamic_options(state: &AppState, src: &str) -> (Vec<String>, Vec<String>) {
             (v.clone(), v)
         }
         // 主题：值=id/slug（写回 ui.theme.name），标签=显示名。
-        "themes" => state.theme_names.iter().cloned().unzip(),
+        "themes" => state
+            .theme_entries
+            .iter()
+            .map(|e| (e.id.clone(), e.display.clone()))
+            .unzip(),
         _ => (vec![], vec![]),
     }
 }

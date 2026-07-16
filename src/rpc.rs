@@ -376,10 +376,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "id": "ziranma", "name": "自然码" }
         ]),
         "theme.list" => json!([
-            { "id": "default_light", "name": "清风·浅" },
-            { "id": "default_dark", "name": "清风·深" },
-            { "id": "mono", "name": "墨" }
+            { "name": "default_light", "display_name": "清风·浅", "version": "3.2.1", "builtin": true },
+            { "name": "default_dark", "display_name": "清风·深", "version": "3.2.1", "builtin": true },
+            { "name": "mono", "display_name": "墨", "version": "1.0.0", "builtin": false }
         ]),
+        "theme.delete" => json!({ "ok": true }),
         "system.fonts" => json!([
             { "name": "微软雅黑" }, { "name": "思源黑体" }, { "name": "等线" }
         ]),

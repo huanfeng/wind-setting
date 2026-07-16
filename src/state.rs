@@ -32,6 +32,20 @@ pub struct SchemaInfo {
     pub scheme: String,
 }
 
+/// 一个主题条目（theme.list 返回）。core 协议：`name`=slug/id，`display_name`=界面显示名，
+/// `version` 主题版本（可空），`builtin`=是否内置（内置不可删除，外部主题可删）。
+#[derive(Clone, Default)]
+pub struct ThemeEntry {
+    /// slug/id，保存到 `ui.theme.name`。
+    pub id: String,
+    /// 界面显示名。
+    pub display: String,
+    /// 版本号（下拉徽章展示，可空）。
+    pub version: String,
+    /// 是否内置主题（true 不可删除；false 为外部/用户主题，显示删除按钮）。
+    pub builtin: bool,
+}
+
 /// 保存写回器：把某 Signal 值写回 Config。
 pub type FieldWriter = Box<dyn Fn(&mut Config)>;
 /// 当前值取值器：供 enabled_when 联动读取某 key 的当前值。
@@ -73,8 +87,8 @@ pub struct AppState {
     pub system_info: Value,
     /// 方案列表（schema.list）。
     pub schemas: Vec<SchemaInfo>,
-    /// 主题列表（theme.list）：(id/slug, 显示名)。下拉显示名、保存 id 到 `ui.theme.name`。
-    pub theme_names: Vec<(String, String)>,
+    /// 主题列表（theme.list）：含 id/显示名/版本/是否内置。下拉显示名、保存 id 到 `ui.theme.name`。
+    pub theme_entries: Vec<ThemeEntry>,
     /// 系统字体列表（system.fonts）。
     pub fonts: Vec<String>,
     /// 字段注册表（清单引擎登记）。
@@ -137,6 +151,14 @@ pub struct AppState {
     /// 下拉构建于异步数据到达前，故必须经 Signal 驱动响应式下拉，数据到达即填充。
     pub theme_label_sig: Signal<Vec<String>>,
     pub theme_value_sig: Signal<Vec<String>>,
+    /// 主题下拉的富内容选项（版本徽章 + 外部主题的删除图标）；与 theme_value_sig 同序。
+    pub theme_items_sig: Signal<Vec<DropdownItem>>,
+    /// 待删除主题的 id（删除确认对话框用）。
+    pub theme_delete_id: Signal<String>,
+    /// 删除确认对话框正文（含主题名）。
+    pub theme_delete_msg: Signal<String>,
+    /// 删除确认对话框可见标志。
+    pub theme_delete_visible: Signal<bool>,
     /// 候选窗字体下拉的响应式选项（system.fonts）。
     /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
     pub font_sig: Signal<Vec<String>>,
@@ -193,7 +215,7 @@ impl AppState {
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
             schemas: vec![],
-            theme_names: vec![],
+            theme_entries: vec![],
             fonts: vec![],
             fields,
             setting_config: setting_load.config,
@@ -225,6 +247,10 @@ impl AppState {
             conn_ok: signal(false),
             theme_label_sig: signal(vec![]),
             theme_value_sig: signal(vec![]),
+            theme_items_sig: signal(vec![]),
+            theme_delete_id: signal(String::new()),
+            theme_delete_msg: signal(String::new()),
+            theme_delete_visible: signal(false),
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
             codetable_schema_val_sig: signal(vec![]),
@@ -335,15 +361,41 @@ impl AppState {
     }
 
     pub fn refresh_theme_names(&mut self) {
-        self.theme_names = load_theme_names();
-        let labels: Vec<String> = self
-            .theme_names
-            .iter()
-            .map(|(_, name)| name.clone())
-            .collect();
-        let values: Vec<String> = self.theme_names.iter().map(|(id, _)| id.clone()).collect();
+        self.theme_entries = load_theme_entries();
+        self.apply_theme_entries();
+    }
+
+    /// 依 `theme_entries` 刷新三个下拉信号：显示名（label）、id（value）、富内容项（版本徽章 +
+    /// 外部主题删除图标）。删除图标点击 → 填充删除确认对话框的待删 id/正文并弹出。
+    fn apply_theme_entries(&self) {
+        let labels: Vec<String> = self.theme_entries.iter().map(|e| e.display.clone()).collect();
+        let values: Vec<String> = self.theme_entries.iter().map(|e| e.id.clone()).collect();
+        let items = build_theme_items(
+            &self.theme_entries,
+            self.theme_delete_id,
+            self.theme_delete_msg,
+            self.theme_delete_visible,
+        );
         self.theme_label_sig.set(labels);
         self.theme_value_sig.set(values);
+        self.theme_items_sig.set(items);
+    }
+
+    /// 执行主题删除（删除确认对话框「删除」按钮触发）：调 `theme.delete`，成功后刷新列表并反馈。
+    pub fn confirm_delete_theme(&mut self) {
+        self.theme_delete_visible.set(false);
+        let id = self.theme_delete_id.get();
+        if id.is_empty() {
+            return;
+        }
+        match rpc::call_core("theme.delete", &serde_json::json!({ "name": id })) {
+            Ok(_) => {
+                self.refresh_theme_names();
+                self.notify_ok("已删除主题");
+            }
+            Err(e) => self.notify_err(format!("删除主题失败：{e}")),
+        }
+        self.theme_delete_id.set(String::new());
     }
 
     fn sync_theme_import_display_signals(
@@ -371,12 +423,9 @@ impl AppState {
         // 先填充列表数据与响应式下拉选项 —— 必须早于 loader：themes 的 loader 需按配置值在
         // 选项列表中定位选中索引，故选项信号要在 loader 跑之前就位。
         self.schemas = data.schemas;
-        self.theme_names = data.theme_names;
+        self.theme_entries = data.theme_entries;
         self.fonts = data.fonts;
-        self.theme_label_sig
-            .set(self.theme_names.iter().map(|(_, n)| n.clone()).collect());
-        self.theme_value_sig
-            .set(self.theme_names.iter().map(|(id, _)| id.clone()).collect());
+        self.apply_theme_entries();
         // value：空字符串 = 使用默认字体；label：首项显示"默认"。
         self.font_sig.set(
             std::iter::once(String::new())
@@ -794,7 +843,7 @@ pub struct LoadedState {
     pub system_info: Value,
     pub capabilities_value: Value,
     pub schemas: Vec<SchemaInfo>,
-    pub theme_names: Vec<(String, String)>,
+    pub theme_entries: Vec<ThemeEntry>,
     pub fonts: Vec<String>,
     pub connected: bool,
 }
@@ -815,7 +864,7 @@ impl LoadedState {
         let h_caps =
             std::thread::spawn(|| rpc::call_core("system.capabilities", &serde_json::json!({})));
         let h_schemas = std::thread::spawn(load_schemas);
-        let h_themes = std::thread::spawn(load_theme_names);
+        let h_themes = std::thread::spawn(load_theme_entries);
         let h_fonts = std::thread::spawn(load_fonts);
 
         let config_res = h_config.join().ok().and_then(|r| r.ok());
@@ -826,7 +875,7 @@ impl LoadedState {
             .unwrap_or_else(Self::empty_obj);
         let caps_res = h_caps.join().ok().and_then(|r| r.ok());
         let schemas = h_schemas.join().unwrap_or_default();
-        let theme_names = h_themes.join().unwrap_or_default();
+        let theme_entries = h_themes.join().unwrap_or_default();
         let fonts = h_fonts.join().unwrap_or_default();
 
         // config_value 是否为 Some 直接反映管道连接是否成功。
@@ -844,7 +893,7 @@ impl LoadedState {
             system_info,
             capabilities_value,
             schemas,
-            theme_names,
+            theme_entries,
             fonts,
             connected,
         }
@@ -928,9 +977,10 @@ pub(crate) fn load_schemas() -> Vec<SchemaInfo> {
         .unwrap_or_default()
 }
 
-/// 加载主题列表（theme.list）：返回 (id/slug, 显示名) 对。
-/// id 取 `id`/`slug`（保存到 `ui.theme.name`），显示名取 `name`/`display_name`（缺省回退 id）。
-fn load_theme_names() -> Vec<(String, String)> {
+/// 加载主题列表（theme.list）→ [`ThemeEntry`]。
+/// id 取 `id`/`slug`/`name`（保存到 `ui.theme.name`）；显示名取 `display_name`/`name`（回退 id）；
+/// 版本取 `version`（下拉徽章展示）；`builtin` 缺省视为 true（保守：未知来源不给删除按钮）。
+fn load_theme_entries() -> Vec<ThemeEntry> {
     let result = rpc::call_core("theme.list", &serde_json::json!({}));
     match &result {
         Ok(v) => tracing::info!("theme.list RPC 返回: {v}"),
@@ -952,18 +1002,52 @@ fn load_theme_names() -> Vec<(String, String)> {
                         .get("display_name")
                         .or_else(|| t.get("name"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or(&id);
-                    let ver = t.get("version").and_then(|v| v.as_str()).unwrap_or("");
-                    let name = if ver.is_empty() {
-                        display.to_string()
-                    } else {
-                        format!("{display} v{ver}")
-                    };
-                    Some((id, name))
+                        .unwrap_or(&id)
+                        .to_string();
+                    let version = t
+                        .get("version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let builtin = t.get("builtin").and_then(|v| v.as_bool()).unwrap_or(true);
+                    Some(ThemeEntry {
+                        id,
+                        display,
+                        version,
+                        builtin,
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 由主题条目构建下拉富内容项：版本号作尾随徽章（中性色），外部主题（`builtin==false`）追加
+/// 可点击的删除图标——点击只填充删除确认对话框的待删 id / 正文并弹出，不选中该项。
+fn build_theme_items(
+    entries: &[ThemeEntry],
+    del_id: Signal<String>,
+    del_msg: Signal<String>,
+    del_visible: Signal<bool>,
+) -> Vec<DropdownItem> {
+    entries
+        .iter()
+        .map(|e| {
+            let mut it = DropdownItem::new(e.display.clone());
+            if !e.version.is_empty() {
+                it = it.badge(format!("v{}", e.version), Intent::Neutral);
+            }
+            if !e.builtin {
+                let (id, disp) = (e.id.clone(), e.display.clone());
+                it = it.trailing_icon("✕", move || {
+                    del_id.set(id.clone());
+                    del_msg.set(format!("确定删除外部主题「{disp}」？删除后不可恢复。"));
+                    del_visible.set(true);
+                });
+            }
+            it
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1317,25 +1401,46 @@ mod tests {
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let mut st = AppState::empty();
 
-        st.theme_names = vec![("old".to_string(), "旧主题".to_string())];
+        st.theme_entries = vec![ThemeEntry {
+            id: "old".to_string(),
+            display: "旧主题".to_string(),
+            ..Default::default()
+        }];
         st.theme_value_sig.set(vec!["old".to_string()]);
         st.theme_label_sig.set(vec!["旧主题".to_string()]);
 
         st.refresh_theme_names();
 
-        assert_eq!(
-            st.theme_names,
-            vec![
-                ("default_light".to_string(), "清风·浅".to_string()),
-                ("default_dark".to_string(), "清风·深".to_string()),
-                ("mono".to_string(), "墨".to_string()),
-            ]
-        );
+        // 值 = id，label = 显示名（不再拼版本，版本改走徽章）。
         assert_eq!(
             st.theme_value_sig.get(),
             vec!["default_light", "default_dark", "mono"]
         );
         assert_eq!(st.theme_label_sig.get(), vec!["清风·浅", "清风·深", "墨"]);
+        // 条目携带版本与内置标记。
+        assert_eq!(st.theme_entries[0].version, "3.2.1");
+        assert!(st.theme_entries[0].builtin, "default_light 为内置");
+        assert!(!st.theme_entries[2].builtin, "mono 为外部主题");
+        // 富内容项：版本作徽章；仅外部主题（mono）带删除图标。
+        let items = st.theme_items_sig.get();
+        assert_eq!(
+            items[0].badge.as_ref().map(|(t, _)| t.as_str()),
+            Some("v3.2.1")
+        );
+        assert!(items[0].trailing_icon.is_none(), "内置主题无删除图标");
+        assert!(items[2].trailing_icon.is_some(), "外部主题应有删除图标");
+
+        // 点外部主题删除图标 → 填充删除确认对话框（待删 id + 正文）并弹出。
+        (items[2].trailing_icon.as_ref().unwrap().1)();
+        assert!(st.theme_delete_visible.get(), "点删除图标应弹出确认对话框");
+        assert_eq!(st.theme_delete_id.get(), "mono");
+        assert!(st.theme_delete_msg.get().contains("墨"));
+
+        // 确认删除 → 调 theme.delete（mock ok）→ 关闭对话框 + 刷新列表 + 清空待删 id。
+        st.confirm_delete_theme();
+        assert!(!st.theme_delete_visible.get(), "删除后关闭对话框");
+        assert!(st.theme_delete_id.get().is_empty(), "删除后清空待删 id");
+        assert_eq!(st.theme_value_sig.get().len(), 3, "删除后按 mock 重新拉取列表");
 
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
@@ -1364,7 +1469,7 @@ mod tests {
             system_info: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![],
-            theme_names: vec![],
+            theme_entries: vec![],
             fonts: vec![],
             connected: false,
         };
@@ -1382,7 +1487,7 @@ mod tests {
             system_info: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![],
-            theme_names: vec![],
+            theme_entries: vec![],
             fonts: vec![],
             connected: false,
         };

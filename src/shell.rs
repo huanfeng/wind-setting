@@ -119,6 +119,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(backup_dialog)
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
+        .child(build_theme_delete_dialog(app))
         .child(build_conn_failed_dialog(app, conn_failed));
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
     for dlg in field_dialogs {
@@ -464,6 +465,66 @@ fn build_reset_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Ele
             visible.set(false);
         },
     )
+}
+
+/// 「删除主题」确认对话框：正文含主题名（`theme_delete_msg` 动态填充），确认按钮为危险色。
+/// 由主题下拉里外部主题的删除图标触发显示，确认后调 `theme.delete` 并刷新列表。
+fn build_theme_delete_dialog(app: &Rc<RefCell<AppState>>) -> Element {
+    let st = app.borrow();
+    let visible = st.theme_delete_visible;
+    let msg = st.theme_delete_msg;
+    drop(st);
+    let app_c = app.clone();
+    let frame = Element::col()
+        .width(360)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("删除主题")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(22)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label_rc(msg)
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(4)
+                .padding_xy(18, 16),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| visible.set(false)),
+                )
+                .child(
+                    Element::button("删除")
+                        .small()
+                        .danger()
+                        .on_click(move |_| {
+                            if let Ok(mut s) = app_c.try_borrow_mut() {
+                                s.confirm_delete_theme();
+                            }
+                        }),
+                ),
+        );
+    Element::dialog(visible, frame)
 }
 
 /// 连接失败阻断对话框：[重连] 重跑后台加载；[退出] 关闭应用。无取消项（阻断）。
