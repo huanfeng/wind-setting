@@ -6,7 +6,8 @@
 //!
 //! 所有写操作走直接 RPC 即时生效，不进入设置页的批量保存通道。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -66,8 +67,14 @@ pub struct DictManagerState {
     pub sub_tab: Signal<usize>,
     /// 数据域下拉的响应式选项（首项"快捷短语"，其后各方案；set_schemas 后填充）。
     pub domain_items: Signal<Vec<String>>,
+    /// 数据域下拉的富内容选项（label + 引擎类型徽章）；与 `domain_items` 同序同步刷新。
+    pub domain_rich_items: Signal<Vec<DropdownItem>>,
     /// 可选方案列表（来自 `AppState.schemas`）。
     pub schemas: Rc<RefCell<Vec<SchemaInfo>>>,
+    /// 各数据域上次停留的子标签（域下标 → sub_tab）：切域时恢复，避免统一跳到同一 TAB。
+    sub_tab_memory: Rc<RefCell<HashMap<usize, usize>>>,
+    /// 上次导航所在的数据域（用于在 `on_nav_changed` 里判定"域是否变化"）。
+    last_domain: Rc<Cell<usize>>,
 
     /// 当前类别原始行。
     pub rows: Rc<RefCell<Vec<WordRow>>>,
@@ -195,7 +202,10 @@ impl DictManagerState {
             domain: signal(0),
             sub_tab: signal(0),
             domain_items: signal(vec!["快捷短语".to_string()]),
+            domain_rich_items: signal(vec![DropdownItem::new("快捷短语").badge("全局", Intent::Neutral)]),
             schemas: Rc::new(RefCell::new(Vec::new())),
+            sub_tab_memory: Rc::new(RefCell::new(HashMap::new())),
+            last_domain: Rc::new(Cell::new(0)),
             rows: Rc::new(RefCell::new(Vec::new())),
             table_rows: signal(vec![]),
             display_rows: Rc::new(RefCell::new(Vec::new())),
@@ -372,6 +382,24 @@ impl DictManagerState {
         let mut v = vec!["快捷短语".to_string()];
         for e in self.folded_domains() {
             v.push(e.label);
+        }
+        v
+    }
+
+    /// 数据域下拉的富内容选项：方案名为主文本、引擎类型为尾随徽章（拼音=强调色，其余=中性）。
+    /// 首项"快捷短语"标"全局"徽章。与 [`Self::domain_labels`] 同序。
+    pub fn domain_rich_items(&self) -> Vec<DropdownItem> {
+        let mut v = vec![DropdownItem::new("快捷短语").badge("全局", Intent::Neutral)];
+        for e in self.folded_domains() {
+            // 折叠标签形如 "五笔86 · 码表"：主文本取方案名（· 前段），徽章取引擎类型。
+            let name = e
+                .label
+                .split_once(" · ")
+                .map(|(n, _)| n.to_string())
+                .unwrap_or_else(|| e.label.clone());
+            // 每个方案域都带引擎类型徽章（统一中性色，不用强调色以免拼音一枝独秀）。
+            let tag = engine_label(&e.kind);
+            v.push(DropdownItem::new(name).badge(tag, Intent::Neutral));
         }
         v
     }
@@ -581,9 +609,40 @@ impl DictManagerState {
     pub(crate) fn set_schemas_no_reload(&self, schemas: &[SchemaInfo]) {
         *self.schemas.borrow_mut() = schemas.to_vec();
         self.domain_items.set(self.domain_labels());
+        self.domain_rich_items.set(self.domain_rich_items());
+        // 域集合变化后，按下标记忆的子标签可能对不上位，清空避免错位恢复。
+        self.sub_tab_memory.borrow_mut().clear();
         if self.domain.get() > self.folded_domains().len() {
             self.domain.set(0);
         }
+        self.last_domain.set(self.domain.get());
+    }
+
+    /// 数据域总数（快捷短语 + 折叠后各方案域）。
+    pub fn domain_count(&self) -> usize {
+        1 + self.folded_domains().len()
+    }
+
+    /// 切到上一个数据域（循环，用于下拉右侧 ‹ 按钮）。
+    pub fn prev_domain(&self) {
+        let n = self.domain_count();
+        if n <= 1 {
+            return;
+        }
+        let cur = self.domain.get();
+        let next = if cur == 0 { n - 1 } else { cur - 1 };
+        self.domain.set(next);
+    }
+
+    /// 切到下一个数据域（循环，用于下拉右侧 › 按钮）。
+    pub fn next_domain(&self) {
+        let n = self.domain_count();
+        if n <= 1 {
+            return;
+        }
+        let cur = self.domain.get();
+        let next = if cur + 1 >= n { 0 } else { cur + 1 };
+        self.domain.set(next);
     }
 
     /// 注入方案列表（`AppState.apply_loaded` 后调用）。domain 越界则收敛回短语域。
@@ -605,7 +664,33 @@ impl DictManagerState {
     /// 并递增表格结构版本（列集随类别变化，视图据此整表重建）。
     /// 由 view 侧的响应式 effect 在 domain/sub_tab 信号变化时调用。
     pub fn on_nav_changed(&self) {
-        self.reset_sub_tab_if_out_of_range();
+        let cur_domain = self.domain.get();
+        let prev_domain = self.last_domain.replace(cur_domain);
+        if cur_domain != prev_domain {
+            // 切域：记住旧域当前子标签（此刻 sub_tab 仍是旧域的值），恢复新域上次停留的子标签
+            // （无记录则回第一个）。restored 与当前不同时 set 会再触发一次本 effect（回声）——
+            // 那次走"同域"分支，仅多做一次等价 reload，无副作用（换取逻辑简单、无抑制态可卡死）。
+            self.sub_tab_memory
+                .borrow_mut()
+                .insert(prev_domain, self.sub_tab.get());
+            let tabs_len = self.tabs_for_domain().len();
+            let restored = self
+                .sub_tab_memory
+                .borrow()
+                .get(&cur_domain)
+                .copied()
+                .unwrap_or(0)
+                .min(tabs_len.saturating_sub(1));
+            if restored != self.sub_tab.get() {
+                self.sub_tab.set(restored);
+            }
+        } else {
+            // 同域内切子标签：记住之，并做越界收敛。
+            self.sub_tab_memory
+                .borrow_mut()
+                .insert(cur_domain, self.sub_tab.get());
+            self.reset_sub_tab_if_out_of_range();
+        }
         *self.offset.borrow_mut() = 0;
         self.search.set(String::new());
         self.status.set(String::new());
@@ -2421,6 +2506,97 @@ mod tests {
         assert_eq!(
             st.domain_labels(),
             vec!["快捷短语".to_string(), "拼音".to_string()]
+        );
+    }
+
+    #[test]
+    fn sub_tab_remembered_per_domain_across_switch() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔", "codetable"),
+                schema("py", "全拼", "pinyin"),
+            ],
+        );
+        // 域 0→1（码表）：新域无记录，落第一个子标签。
+        st.domain.set(1);
+        st.on_nav_changed();
+        assert_eq!(st.sub_tab.get(), 0);
+        // 在码表域停到"词频"(2)。
+        st.sub_tab.set(2);
+        st.on_nav_changed();
+        // 切到拼音域(2)：新域无记录，回第一个（不再沿用码表的 2）。
+        st.domain.set(2);
+        st.on_nav_changed();
+        assert_eq!(st.sub_tab.get(), 0, "切到新域回第一个子标签");
+        // 切回码表域(1)：恢复上次停留的"词频"(2)。
+        st.domain.set(1);
+        st.on_nav_changed();
+        assert_eq!(st.sub_tab.get(), 2, "切回旧域应恢复其上次子标签");
+    }
+
+    #[test]
+    fn switch_domain_defaults_first_tab_when_no_memory() {
+        // 复现用户反馈：在短语域选"用户短语"(1)，切到方案域不应沿用下标 1。
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(0);
+        st.sub_tab.set(1); // 用户短语
+        st.on_nav_changed();
+        st.domain.set(1); // 切到码表域
+        st.on_nav_changed();
+        assert_eq!(st.sub_tab.get(), 0, "切到未访问过的方案域应回第一个子标签");
+    }
+
+    #[test]
+    fn prev_next_domain_cycles() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔", "codetable"),
+                schema("py", "全拼", "pinyin"),
+            ],
+        );
+        // 3 个域：快捷短语(0) + 五笔(1) + 拼音(2)。
+        assert_eq!(st.domain_count(), 3);
+        assert_eq!(st.domain.get(), 0);
+        st.next_domain();
+        assert_eq!(st.domain.get(), 1);
+        st.next_domain();
+        assert_eq!(st.domain.get(), 2);
+        st.next_domain();
+        assert_eq!(st.domain.get(), 0, "末尾循环回首");
+        st.prev_domain();
+        assert_eq!(st.domain.get(), 2, "首部循环到末尾");
+    }
+
+    #[test]
+    fn domain_rich_items_carry_engine_badges() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "全拼", "pinyin"),
+            ],
+        );
+        let items = st.domain_rich_items();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].label, "快捷短语");
+        // 主文本取方案名（去掉 " · 码表" 后缀），引擎类型进徽章。
+        assert_eq!(items[1].label, "五笔86");
+        assert_eq!(
+            items[1].badge.as_ref().map(|(t, _)| t.as_str()),
+            Some("码表")
+        );
+        // 拼音域也带徽章，保持统一。
+        assert_eq!(items[2].label, "拼音");
+        assert_eq!(
+            items[2].badge.as_ref().map(|(t, _)| t.as_str()),
+            Some("拼音"),
+            "拼音域也应带引擎徽章以保持统一"
         );
     }
 }

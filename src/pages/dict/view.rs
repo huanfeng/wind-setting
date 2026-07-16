@@ -53,8 +53,12 @@ pub fn build_page(state: &AppState) -> Element {
         move || mgr_se.on_search_changed(),
     );
 
-    // ── 数据域选择器（+ 状态文字 + 刷新）──
+    // ── 数据域选择器（富内容下拉：引擎类型徽章 + ‹ › 顺序切换 + 状态文字 + 刷新）──
     let mgr_refresh = mgr.clone();
+    let dom_prev = mgr.clone();
+    let dom_next = mgr.clone();
+    let dom_en_p = mgr.clone();
+    let dom_en_n = mgr.clone();
     let domain_row = Element::row()
         .width_match()
         .cross(Align::Center)
@@ -65,7 +69,22 @@ pub fn build_page(state: &AppState) -> Element {
                 .font_size(13.0)
                 .fg_role(Role::TextMuted),
         )
-        .child(Element::dropdown_reactive(mgr.domain_items, mgr.domain).width(260))
+        .child(Element::dropdown_items_reactive(mgr.domain_rich_items, mgr.domain).width(240))
+        // ‹ › 按顺序切换数据域（循环），下拉列表过长时无需展开逐个查找。
+        .child(
+            Element::button("‹")
+                .small()
+                .outline_soft()
+                .on_click(move |_| dom_prev.prev_domain())
+                .enabled_when(move || dom_en_p.domain_count() > 1),
+        )
+        .child(
+            Element::button("›")
+                .small()
+                .outline_soft()
+                .on_click(move |_| dom_next.next_domain())
+                .enabled_when(move || dom_en_n.domain_count() > 1),
+        )
         .child(Element::leaf().weight(1.0))
         .child(
             Element::label_rc(mgr.status)
@@ -338,6 +357,7 @@ fn build_table(mgr: &DictManagerState) -> Element {
     let columns = spec.columns;
     let m_sort = mgr.clone();
     let m_act = mgr.clone();
+    let m_dbl = mgr.clone();
     Element::table_sortable_server(cols, mgr.table_rows, mgr.sort, move |_, _| {
         m_sort.on_sort_changed()
     })
@@ -345,9 +365,28 @@ fn build_table(mgr: &DictManagerState) -> Element {
     .actions("操作", ACTIONS_WEIGHT, move |disp| {
         build_row_actions(&m_act, disp)
     })
+    // 双击整行进入编辑（仅支持编辑的类别；落点在操作列按钮上不触发）。
+    .on_row_activate(move |_ctx, disp| activate_row(&m_dbl, disp))
     // 系统词库等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。
     .cell_lines(2)
     .fill()
+}
+
+/// 双击整行的激活动作：可编辑类别进入编辑对话框（候选调整走 shadow 编辑，其余走 open_edit）。
+/// 行按显示下标从 `display_rows` 即时取（与操作列"编辑"按钮同一入口）。
+fn activate_row(mgr: &DictManagerState, disp: usize) {
+    let spec = mgr.current_spec();
+    if !spec.ops.edit {
+        return;
+    }
+    let Some(row) = mgr.display_row(disp) else {
+        return;
+    };
+    if spec.ops.remove_rule {
+        mgr.open_shadow_edit(&row.code, &row.text, &row.kind, row.position);
+    } else {
+        mgr.open_edit(&row.code, &row.text, row.weight);
+    }
 }
 
 /// 自定义单元格：编码列渲染为边框徽章、候选调整类型列渲染为彩色标签（置顶=强调色），
