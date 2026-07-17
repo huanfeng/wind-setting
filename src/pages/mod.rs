@@ -93,11 +93,15 @@ pub fn conflict_bar(conflict: Signal<String>) -> Element {
         .visible_when(move || !conflict.get().is_empty())
 }
 
-/// 冲突实时监听：每帧跑一次 `live_conflicts`（触发键 + 候选键两域），仅当结果变化才写回
+/// 冲突实时监听：每个渲染帧跑一次 `live_conflicts`（触发键 + 候选键两域），仅当结果变化才写回
 /// `state.conflict`（避免无谓重绘）。返回挂在 shell 根的 0×0 不可见叶子。
 ///
-/// 无统一「配置改动」版本源，故用每帧递增的 tick 驱动 `reactive_effect` 每帧求值。
-/// 性能：每帧一次 probe（clone 配置 + 跑写回器），设置界面低频渲染可接受；
+/// 无统一「配置改动」版本源，故用每次递增的 tick 驱动 `reactive_effect` 每次求值必触发。
+/// 求值时机（非 60fps 常态）：`reactive_effect` 由 `dispatch_reactive_updates` 派发，后者只在
+/// `layout_root` 内跑，而 render 由 WM_PAINT/WM_TIMER 驱动、空闲零渲染（见 windui
+/// `platform/win32/d2d.rs` 的空闲零 CPU 设计）。即：交互（点击/按键）与动画补间期间求值，
+/// 空闲完全不跑。
+/// 性能：每次 probe 为 clone 配置 + 跑写回器（约 30-60KB 临时分配，无常驻增长）；
 /// 后续可优化为仅相关 Signal 变化时重算。
 pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     let conflict = app.borrow().conflict;

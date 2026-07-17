@@ -127,8 +127,9 @@ pub struct AppState {
     pub status: Signal<String>,
     /// 瞬时反馈（保存成功/没有变更/保存失败/已重新加载/已恢复本页等），走 toast 而非底栏。
     pub feedback: Feedback,
-    /// 触发键冲突的实时提示文案（空串=无冲突）；由 `conflict_watcher` 每帧刷新，
-    /// 输入页常驻警告条据此显示/隐藏。取代了旧版仅在保存 toast 里追加的冲突后缀。
+    /// 触发键冲突的实时提示文案（空串=无冲突）；由 `conflict_watcher` 在渲染帧刷新
+    /// （交互/动画驱动，空闲不渲染故不求值），输入页常驻警告条据此显示/隐藏。
+    /// 取代了旧版仅在保存 toast 里追加的冲突后缀。
     pub conflict: Signal<String>,
     /// 方案管理对话框状态。
     pub schema_mgr: SchemaManagerState,
@@ -515,7 +516,8 @@ impl AppState {
     /// - 快捷键域：功能组合键（切换方案/标点/工具栏…、置顶/删除词条），归一化后同键即冲突。
     ///
     /// 各域摘要用换行拼成一条文案（可能各一行）；均无冲突返回 None。
-    /// 供 `conflict_watcher` 每帧刷新固定顶栏。
+    /// 供 `conflict_watcher` 在渲染帧刷新固定顶栏——每次求值 clone 配置并跑全部写回器，
+    /// 但渲染帧由交互/动画驱动（空闲不渲染），故非 60fps 常态开销。
     pub fn live_conflicts(&self) -> Option<String> {
         let mut probe = self.current_config.clone();
         for w in self.fields.writers.borrow().iter() {
