@@ -435,8 +435,10 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     let mut r = Element::row().cross(Align::Center).spacing(6);
 
     // 启用开关（短语）：勾选即调 `phrase.setEnabled` 即时生效。
+    // signal 按显示下标复用（见 `DictManagerState::enabled_sig`）——本生成器每次正文重建都会
+    // 重跑，逐行新建 signal 会在 arena 里越积越多（系统短语每敲一个搜索键即全量重建）。
     if spec.ops.set_enabled {
-        let sig = signal(row.enabled);
+        let sig = mgr.enabled_sig(disp, row.enabled);
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
         r = r.child(Element::checkbox("", sig).small().on_toggle(move |_| {

@@ -82,6 +82,11 @@ pub struct DictManagerState {
     pub table_rows: Signal<Vec<Vec<String>>>,
     /// 与 `table_rows` 顺序一致的行模型（过滤+排序后），操作列回调按显示下标取行。
     pub display_rows: Rc<RefCell<Vec<WordRow>>>,
+    /// 操作列「启用」开关的 signal 池，按页内显示下标复用（见 [`Self::enabled_sig`]）。
+    /// windui 的 signal arena 只增不减（`signal.rs` 自承「静态树可接受」的前提），而表格正文
+    /// 每次重建都会重跑行生成器——逐行新建 signal 会使每次搜索/翻页泄漏一批 slot。
+    /// 池化后 signal 总数封顶为历史最大行数，不随重建次数增长。
+    enabled_sigs: Rc<RefCell<Vec<Signal<bool>>>>,
     /// 表格结构版本（单元素，导航变化时递增）：列集随类别变，须整表重建。
     pub table_epoch: Signal<Vec<u64>>,
     /// 受控排序状态（None=无排序；表头点击循环切换，导航变化时重置）。
@@ -209,6 +214,7 @@ impl DictManagerState {
             rows: Rc::new(RefCell::new(Vec::new())),
             table_rows: signal(vec![]),
             display_rows: Rc::new(RefCell::new(Vec::new())),
+            enabled_sigs: Rc::new(RefCell::new(Vec::new())),
             table_epoch: signal(vec![0]),
             sort: signal(None),
             empty_msg: signal(String::new()),
@@ -532,6 +538,32 @@ impl DictManagerState {
     /// 按显示下标取当前显示行（操作列回调用；正文与 display_rows 同源同序）。
     pub fn display_row(&self, disp: usize) -> Option<WordRow> {
         self.display_rows.borrow().get(disp).cloned()
+    }
+
+    /// 取第 `disp` 行「启用」开关的复用 signal，并对齐到 `enabled` 当前值。
+    ///
+    /// 两处约束不体现在代码里，改动前先看这里：
+    /// 1. **池只增不清**：`signal.rs` 的 arena 从不回收 slot（`free` 只 pop 从不 push），
+    ///    清空池只会让后续行分配全新 slot，反而放大泄漏。池的只增不减正对应 arena 语义。
+    /// 2. **仅在值变化时写**：`Signal::set` 无条件 `notify_changed()` 请求重绘，而本方法在
+    ///    正文重建（layout 期）内调用——无条件写会自激成重绘循环，破坏空闲零 CPU。
+    ///    值已一致时不写，故稳态收敛、不产生额外帧。
+    ///
+    /// 复用 signal 意味着行内容变化时旧值会被下一次重建纠正回数据侧的 `enabled`，
+    /// 即写操作失败时开关自动回弹到真实值——正是期望行为。
+    pub(super) fn enabled_sig(&self, disp: usize, enabled: bool) -> Signal<bool> {
+        // 先取出句柄再比较：避免持有池的 borrow 时进入 signal 运行时。
+        let sig = {
+            let mut pool = self.enabled_sigs.borrow_mut();
+            while pool.len() <= disp {
+                pool.push(signal(enabled));
+            }
+            pool[disp]
+        };
+        if sig.get() != enabled {
+            sig.set(enabled);
+        }
+        sig
     }
 
     /// 排序意图变化（点表头后由表格回调触发）：分页类别归零分页走服务端重拉，
@@ -1664,6 +1696,66 @@ mod tests {
     /// 直接写 schemas/domain，不经 set_schemas（避免触发 rpc）。
     fn with_schemas(st: &DictManagerState, list: Vec<SchemaInfo>) {
         *st.schemas.borrow_mut() = list;
+    }
+
+    /// 同一显示下标跨重建复用同一 signal——池化的核心性质。
+    /// 若退化为逐行新建，写 a 不会被 b 读到，signal arena 将随每次重建增长。
+    #[test]
+    fn enabled_sig_reuses_same_signal_per_index() {
+        let st = DictManagerState::new();
+        let a = st.enabled_sig(0, true);
+        let b = st.enabled_sig(0, true); // 模拟正文重建时再次生成同一行
+        a.set(false);
+        assert!(!b.get(), "同下标应复用同一 signal（b 应读到经 a 写入的值）");
+    }
+
+    /// 不同下标是彼此独立的 signal（避免池化把各行开关串成一个）。
+    #[test]
+    fn enabled_sig_distinct_across_indices() {
+        let st = DictManagerState::new();
+        let r0 = st.enabled_sig(0, true);
+        let r1 = st.enabled_sig(1, true);
+        r0.set(false);
+        assert!(r1.get(), "不同下标不应互相影响");
+    }
+
+    /// 重建时把复用的 signal 对齐到数据侧当前值：
+    /// 翻页/搜索后同一下标换成了另一行，或写操作失败需回弹，均依赖这个同步。
+    #[test]
+    fn enabled_sig_syncs_to_row_value_on_rebuild() {
+        let st = DictManagerState::new();
+        let first = st.enabled_sig(0, true);
+        assert!(first.get());
+        let reused = st.enabled_sig(0, false); // 该下标现在是 enabled=false 的行
+        assert!(!reused.get(), "复用的 signal 应对齐到数据侧当前值");
+    }
+
+    /// 回归守护：正文反复重建时池不增长——这正是本次修复的目的。
+    /// 修复前每次重建逐行新建 signal，arena 只增不减，系统短语每敲一键即泄漏一批 slot。
+    #[test]
+    fn enabled_sig_pool_bounded_across_rebuilds() {
+        let st = DictManagerState::new();
+        for _ in 0..100 {
+            // 模拟 100 次正文重建（≈ 搜索框连打 100 键），每次 10 行
+            for disp in 0..10 {
+                let _ = st.enabled_sig(disp, true);
+            }
+        }
+        assert_eq!(
+            st.enabled_sigs.borrow().len(),
+            10,
+            "池应封顶为最大行数，不随重建次数增长"
+        );
+    }
+
+    /// 池按需扩容到请求的下标，且扩容不丢已有行的值。
+    #[test]
+    fn enabled_sig_pool_grows_and_preserves() {
+        let st = DictManagerState::new();
+        let r0 = st.enabled_sig(0, true);
+        let _ = st.enabled_sig(5, false); // 跳跃下标触发扩容
+        assert!(r0.get(), "扩容不应影响已有下标的 signal");
+        assert_eq!(st.enabled_sigs.borrow().len(), 6);
     }
 
     #[test]
