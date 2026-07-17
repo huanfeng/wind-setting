@@ -1110,8 +1110,16 @@ fn dynamic_options(state: &AppState, src: &str) -> (Vec<String>, Vec<String>) {
 
 /// 方案选项：可按 kind 过滤；首项补一个"自动/未设置"空值便于回落。
 fn schema_options(state: &AppState, kind: Option<&str>) -> (Vec<String>, Vec<String>) {
+    // 空值（首项）语义随类型不同，标签须分别表达：
+    //   码表 primary_codetable 空 = 自动挑 available 首个码表方案；
+    //   拼音 primary_pinyin   空 = 固定全拼（core 不扫描 available，见 temp_pinyin_target）。
+    // 拼音项不直接叫「全拼」——列表里若有 id=pinyin 的方案，其显示名多半也是「全拼」，会撞名。
+    let empty_label = match kind {
+        Some("pinyin") => "（默认：全拼）",
+        _ => "（自动）",
+    };
     let mut values = vec![String::new()];
-    let mut labels = vec!["（自动）".to_string()];
+    let mut labels = vec![empty_label.to_string()];
     for s in &state.schemas {
         if kind.is_some_and(|k| !s.kind.is_empty() && s.kind != k) {
             continue;

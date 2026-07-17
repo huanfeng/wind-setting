@@ -63,7 +63,7 @@ section = "主方案设置"
 type = "select"
 options_source = "pinyinSchemas"          # 选项运行时来自 schema.list（拼音类）
 label = "主拼音方案"
-hint = "混输/临时拼音使用的拼音方案 id；码表方案的临时拼音使用此方案"
+hint = "临时拼音、快捷输入使用的拼音方案（可选双拼）；留空 = 全拼。混输方案的拼音由方案自身配置决定，不受此项影响"
 
 # ── 上屏行为（码表全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
