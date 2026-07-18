@@ -735,7 +735,10 @@ group = "input"
 section = "标点配对"
 type = "dialog_button"
 label = "配对跳出键"
-hint = "配对状态下按这些键跳到右符号之后（等效输入右符号跳出）；可多选，留空则不启用"
+hint = "配对状态下按这些键跳到右符号之后；可多选，留空则不启用。引号等左右同形的配对不支持「右符号本身」跳出（无法区分是要跳出还是要嵌套新的一对），只能用 Tab/Enter"
+[[items.options]]
+value = "right_symbol"
+label = "右符号本身"
 [[items.options]]
 value = "tab"
 label = "Tab 制表键"

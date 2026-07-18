@@ -87,7 +87,9 @@
     "[]",
     "{}"
    ],
-   "jump_out_keys": []
+   "jump_out_keys": [
+    "right_symbol"
+   ]
   },
   "temp_english": {
    "enabled": true,

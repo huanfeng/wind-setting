@@ -442,7 +442,9 @@
       "type": "strlist"
     },
     {
-      "default": [],
+      "default": [
+        "right_symbol"
+      ],
       "key": "input.auto_pair.jump_out_keys",
       "type": "strlist"
     },
