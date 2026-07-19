@@ -201,8 +201,14 @@ mod tests {
         //   ⑦input.cmdbar.enabled —— 命令栏始终开启（core 默认 true），不提供关闭入口，故不暴露。
         //   ⑧词频衰减调参：schema.pinyin.frequency.half_life/base_scale/recency_peak —— 高级/内部
         //     调参（recency_peak 尚未接入引擎），由 core 维持默认值，不对普通用户暴露。
-        //   ⑨临时词晋升次数：schema.codetable.auto_phrase.promote_count /
-        //     schema.pinyin.auto_learn.promote_count —— 自动晋升逻辑未接线，暂不暴露。
+        //   ⑨临时词晋升次数：schema.pinyin.auto_learn.promote_count —— 拼音侧暂不暴露。
+        //     注：schema.codetable.auto_phrase.promote_count **已纳入清单**（「转入用户词库次数」）。
+        //     此前此处注明「自动晋升逻辑未接线」，该说法早已过期——core 侧 maybe_promote_temp
+        //     一直在跑；不暴露只会让默认值 0（永不晋升）成为用户改不动的死配置。
+        //   ⑨' 码表造词内部参数：schema.codetable.auto_phrase.min_phrase_len / max_phrase_len /
+        //     idle_timeout_ms / temp_max_entries —— 有意不开放。前两项调错直接抬高杂词率
+        //     （max 设大必出跨句杂词），后两项是兜底与容量参数，普通用户无判断依据；
+        //     需要时改配置文件。
         //   ⑩其它 core 新增键，本项目尚未接入设置界面（待后续评估）：keys.take_screenshot、
         //     debug.log_max_files、debug.log_max_size_mb、input.temp_pinyin.enabled。
         //     注：input.temp_pinyin.schema 已被 core 删除（临时拼音方案改由 schema.primary_pinyin

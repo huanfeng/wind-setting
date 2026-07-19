@@ -188,7 +188,19 @@ section = "上屏行为"
 subsection = "自动造词"
 type = "toggle"
 label = "启用自动造词"
-hint = "连续选字后自动将词组加入用户词库"
+hint = "连续单字上屏后自动组词，存入临时词库（立即可用）"
+
+[[items]]
+key = "schema.codetable.auto_phrase.promote_count"
+group = "schema"
+section = "上屏行为"
+subsection = "自动造词"
+type = "number"
+label = "转入用户词库次数"
+hint = "用满几次后永久收录进用户词库；0 = 不收录，一直留在临时词库"
+min = 0
+max = 20
+enabled_when = "schema.codetable.auto_phrase.enabled == true"
 
 # 造词字数上下限（core 有默认 2/10）：隐藏，不对用户开放。
 [[items]]

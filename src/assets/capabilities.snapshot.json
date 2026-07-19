@@ -109,6 +109,16 @@
       "type": "int"
     },
     {
+      "default": 0,
+      "key": "schema.codetable.auto_phrase.idle_timeout_ms",
+      "type": "int"
+    },
+    {
+      "default": 5000,
+      "key": "schema.codetable.auto_phrase.temp_max_entries",
+      "type": "int"
+    },
+    {
       "default": true,
       "key": "schema.pinyin.show_code_hint",
       "type": "bool"
