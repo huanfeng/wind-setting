@@ -381,6 +381,14 @@ type = "toggle"
 label = "启用英文候选"
 hint = "混输模式下同时查询英文词库并显示英文候选"
 
+[[items]]
+key = "schema.mix.enable_pinyin_abbrev"
+group = "schema"
+section = "混输行为"
+type = "toggle"
+label = "启用拼音简拼"
+hint = "混输模式下拼音支持声母简拼（nh→你好）；关闭则只认全拼，候选更精简"
+
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
 key = "schema.mix.pinyin_only_overflow"

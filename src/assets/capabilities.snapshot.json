@@ -280,6 +280,11 @@
     },
     {
       "default": true,
+      "key": "schema.mix.enable_pinyin_abbrev",
+      "type": "bool"
+    },
+    {
+      "default": true,
       "key": "schema.quick_input.enabled",
       "type": "bool"
     },
