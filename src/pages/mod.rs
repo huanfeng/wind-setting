@@ -28,7 +28,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, E
         ("词库".into(), dict_page(state)),
         // 统计页未实现，暂从导航隐藏（功能完成后恢复）。
         ("高级".into(), advanced_page(state)),
-        ("关于".into(), about_page(state)),
+        ("关于".into(), about_page(app, state)),
     ]
 }
 
@@ -559,7 +559,10 @@ fn about_link_card(
 
 /// 关于页 — 复刻品牌关于卡（对齐截图 / Vue AboutPage）：
 /// 头部（图标+名称+版本徽章+检查更新）· 官网横幅 · 2×2 链接网格 · 版权页脚。
-fn about_page(_state: &AppState) -> Element {
+fn about_page(app: &Rc<RefCell<AppState>>, _state: &AppState) -> Element {
+    // 「检查更新」按钮要能开对话框并起后台线程，故需共享状态而非只读快照
+    let update_state = app.clone();
+
     // 版本徽章与标题栏统一：取 build 期注入的 WIND_SETTING_VERSION（= docs/VERSION，已含 v 前缀），
     // dev 变体追加 " (Dev)"。不再用 service 上报的 system_info（其值源自 wind-rpc 的
     // CARGO_PKG_VERSION = workspace 兜底版本 0.x）或本 crate 的 CARGO_PKG_VERSION。
@@ -597,7 +600,7 @@ fn about_page(_state: &AppState) -> Element {
                             Element::button("检查更新")
                                 .small()
                                 .outline_soft()
-                                .on_click(|ctx| ctx.toast("检查更新功能开发中")),
+                                .on_click(move |_| update_state.borrow().open_update_dialog()),
                         ),
                 )
                 .child(

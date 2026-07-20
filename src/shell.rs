@@ -13,6 +13,7 @@ use windui::prelude::*;
 
 use crate::dialogs::schema_manager::build_schema_manager_dialog;
 use crate::dialogs::theme_import_dialog::build_theme_import_dialog;
+use crate::dialogs::update_dialog::build_update_dialog;
 use crate::pages;
 use crate::state::AppState;
 use crate::theme_def::theme_for;
@@ -120,6 +121,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
         .child(build_theme_delete_dialog(app))
+        .child(build_update_dialog(app))
         .child(build_conn_failed_dialog(app, conn_failed));
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
     for dlg in field_dialogs {

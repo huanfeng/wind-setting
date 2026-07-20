@@ -28,6 +28,8 @@ mod theme_def;
 mod theme_editor_server;
 #[allow(dead_code)]
 mod theme_import;
+#[allow(dead_code)]
+mod update;
 mod widgets;
 
 use std::cell::RefCell;
@@ -127,6 +129,27 @@ fn main() {
             tracing::warn!("窗口已关闭，后台数据发送取消");
         }
     });
+
+    // 升级通道：下载线程不能直接写 Signal（Signal 是线程局部 arena 句柄，非 Send），
+    // 故所有升级进度/结果都经此 channel 回到 UI 线程。channel 只能在 App 构建期注册，
+    // 因此这里建好后把 Sender 存进 AppState 供各按钮取用。
+    let update_state = app_state.clone();
+    let update_tx = app.channel::<update::UpdateMsg>(move |msg| {
+        update_state.borrow().on_update_msg(msg);
+    });
+    app_state.borrow().set_update_tx(update_tx);
+
+    // 启动静默检查更新：三重门控（已同意联网 + 未关自动检查 + 距上次超 24h）。
+    // 无更新或失败都不打扰用户，只有确实有新版本且未被「跳过此版本」屏蔽才弹对话框。
+    {
+        let now = chrono::Local::now().timestamp();
+        let cfg = app_state.borrow().setting_config.update.clone();
+        if update::should_auto_check(cfg.network_consent, cfg.auto_check, cfg.last_check_at, now) {
+            // 发起前就记时间：失败也算"查过"，免得每次开设置都重试
+            app_state.borrow_mut().mark_update_checked(now);
+            app_state.borrow().spawn_silent_update_check();
+        }
+    }
 
     let ui = shell::build(&app_state, th);
 

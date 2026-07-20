@@ -8,6 +8,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use windui::prelude::*;
@@ -171,6 +173,36 @@ pub struct AppState {
     /// 主拼音方案下拉的响应式选项（schema.list 拼音类，apply_loaded 后填充）。
     pub pinyin_schema_val_sig: Signal<Vec<String>>,
     pub pinyin_schema_lab_sig: Signal<Vec<String>>,
+
+    // ── 在线升级 ──────────────────────────────────────────────────────────
+    /// 升级对话框可见标志。
+    pub update_dialog_visible: Signal<bool>,
+    /// 升级流程阶段。
+    pub update_phase: Signal<crate::update::UpdatePhase>,
+    /// 下载进度 0.0..=1.0，驱动 `Element::progress`。
+    pub update_progress: Signal<f32>,
+    /// 进度旁的字节数文案（如「12.3 MB / 46.0 MB」）。
+    pub update_progress_text: Signal<String>,
+    /// 主文案：版本对比、已是最新、错误原因等，随阶段改写。
+    pub update_message: Signal<String>,
+    /// 更新包体积（如「更新包 46.0 MB」），下载前告知用户流量开销。
+    pub update_size_text: Signal<String>,
+    /// 「启动时自动检查更新」勾选框的绑定信号，初值取自 `setting_config.update.auto_check`。
+    /// windui 的 checkbox 只写信号无回调，故由对话框挂一个 `reactive_effect` 节点落盘。
+    pub update_auto_check_sig: Signal<bool>,
+    /// 发布说明（已清洗）。
+    pub update_notes: Signal<String>,
+    /// 后台线程 → UI 线程的消息发送端，由 `main()` 在 App 构建期注入。
+    ///
+    /// `App::channel` 只能在构建期调用，而 `AppState` 先于 App 创建，故此处用
+    /// `RefCell<Option<_>>` 延迟注入，而不是把它做成构造参数。
+    pub update_tx: RefCell<Option<Sender<crate::update::UpdateMsg>>>,
+    /// 下载取消旗，置 true 后下载线程在下一个数据块边界中止。
+    pub update_cancel: Arc<AtomicBool>,
+    /// 最近一次检查结果：下载阶段需要其中的 url / sha256 / size。
+    pub update_check: RefCell<Option<crate::update::CheckResult>>,
+    /// 已下载并校验通过的安装包路径。
+    pub update_installer: RefCell<Option<std::path::PathBuf>>,
 }
 
 /// 主题编辑器连接模式字符串 → 分段控件索引（0=off/1=once/2=auto；未知值回落 0）。
@@ -189,6 +221,8 @@ impl AppState {
         let schema_mgr = SchemaManagerState::new();
         let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
         let setting_load = setting_config::load();
+        // 先取出，下面 setting_load.config 会被移动进结构体
+        let setting_load_update_auto_check = setting_load.config.update.auto_check;
         let initial_mode = if setting_load.config.theme_editor.auto_start {
             "auto"
         } else {
@@ -258,6 +292,19 @@ impl AppState {
             codetable_schema_lab_sig: signal(vec![]),
             pinyin_schema_val_sig: signal(vec![]),
             pinyin_schema_lab_sig: signal(vec![]),
+
+            update_dialog_visible: signal(false),
+            update_phase: signal(crate::update::UpdatePhase::Checking),
+            update_progress: signal(0.0),
+            update_progress_text: signal(String::new()),
+            update_message: signal(String::new()),
+            update_size_text: signal(String::new()),
+            update_auto_check_sig: signal(setting_load_update_auto_check),
+            update_notes: signal(String::new()),
+            update_tx: RefCell::new(None),
+            update_cancel: Arc::new(AtomicBool::new(false)),
+            update_check: RefCell::new(None),
+            update_installer: RefCell::new(None),
         }
     }
 
@@ -292,6 +339,270 @@ impl AppState {
         self.setting_config.theme_editor.auto_start = auto;
         if let Err(e) = crate::setting_config::save(&self.setting_config) {
             self.notify_err(e);
+        }
+    }
+
+    // ── 在线升级 ──────────────────────────────────────────────────────────
+
+    /// 注入后台 → UI 的消息发送端。`main()` 在 App 构建期调用一次。
+    pub fn set_update_tx(&self, tx: Sender<crate::update::UpdateMsg>) {
+        *self.update_tx.borrow_mut() = Some(tx);
+    }
+
+    /// 打开升级对话框。已同意联网则直接开始检查，否则先走同意页。
+    ///
+    /// 已同意路径的初始态取 `Checking` 而非 `Consent`，避免同意页一闪而过。
+    pub fn open_update_dialog(&self) {
+        self.update_notes.set(String::new());
+        self.update_progress.set(0.0);
+        self.update_progress_text.set(String::new());
+        if self.setting_config.update.network_consent {
+            self.begin_update_check();
+        } else {
+            self.update_phase.set(crate::update::UpdatePhase::Consent);
+            self.update_message.set(String::new());
+        }
+        self.update_dialog_visible.set(true);
+    }
+
+    /// 用户同意联网：持久化后立即检查。
+    pub fn accept_update_consent(&mut self) {
+        self.setting_config.update.network_consent = true;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.notify_err(e);
+        }
+        self.begin_update_check();
+    }
+
+    /// 切到检查中并起后台线程（用户手动触发）。
+    pub fn begin_update_check(&self) {
+        self.update_phase.set(crate::update::UpdatePhase::Checking);
+        self.update_message.set("正在检查更新…".to_string());
+        self.spawn_update_check(false);
+    }
+
+    /// 启动时的后台静默检查：不切阶段、不显示对话框，只在发现新版本时才打扰用户。
+    pub fn spawn_silent_update_check(&self) {
+        self.spawn_update_check(true);
+    }
+
+    fn spawn_update_check(&self, silent: bool) {
+        let Some(tx) = self.update_tx.borrow().clone() else {
+            if !silent {
+                self.fail_update("升级通道未初始化");
+            }
+            return;
+        };
+        // 网络请求绝不能在 UI 线程做；结果经 channel 回到 UI 线程写 Signal。
+        std::thread::spawn(move || {
+            let result = crate::update::check_update().map_err(|e| e.user_message());
+            let _ = tx.send(crate::update::UpdateMsg::CheckDone { result, silent });
+        });
+    }
+
+    /// 记录本次检查时间，用于 24h 节流。
+    pub fn mark_update_checked(&mut self, now: i64) {
+        self.setting_config.update.last_check_at = now;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            // 只影响节流精度，不该打断启动流程
+            tracing::warn!("保存检查更新时间失败：{e}");
+        }
+    }
+
+    /// 持久化「启动时自动检查更新」开关。
+    pub fn save_update_auto_check(&mut self, enabled: bool) {
+        if self.setting_config.update.auto_check == enabled {
+            return;
+        }
+        self.setting_config.update.auto_check = enabled;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.notify_err(e);
+        }
+    }
+
+    /// 「跳过此版本」：记下版本号，该版本不再自动提示（手动检查仍会显示）。
+    pub fn skip_update_version(&mut self, version: String) {
+        self.setting_config.update.skipped_version = version;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.notify_err(e);
+        }
+        self.update_dialog_visible.set(false);
+    }
+
+    /// 下载已检查到的升级包。
+    pub fn spawn_update_download(&self) {
+        use crate::update::UpdateMsg;
+
+        let Some(tx) = self.update_tx.borrow().clone() else {
+            self.fail_update("升级通道未初始化");
+            return;
+        };
+        let Some(check) = self.update_check.borrow().clone() else {
+            self.fail_update("没有可下载的更新");
+            return;
+        };
+
+        self.update_cancel.store(false, Ordering::SeqCst);
+        let cancel = self.update_cancel.clone();
+        self.update_progress.set(0.0);
+        self.update_progress_text.set(String::new());
+        self.update_message.set("正在下载更新包…".to_string());
+        self.update_phase.set(crate::update::UpdatePhase::Downloading);
+
+        std::thread::spawn(move || {
+            let dest = crate::update::download::cache_path(&check.download_url, "wind-update.exe");
+            let progress_tx = tx.clone();
+            let outcome = crate::update::download::download(
+                &check.download_url,
+                &check.sha256,
+                check.size,
+                &dest,
+                cancel,
+                move |downloaded, total| {
+                    let _ = progress_tx.send(UpdateMsg::Progress { downloaded, total });
+                },
+            );
+            let msg = match outcome {
+                Ok(path) => UpdateMsg::DownloadDone(path),
+                // 取消不是故障，单独成一条消息
+                Err(e) if !e.is_failure() => UpdateMsg::DownloadCancelled,
+                Err(e) => UpdateMsg::DownloadFailed(e.user_message()),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// 请求取消下载；下载线程在下一个数据块边界响应。
+    pub fn cancel_update_download(&self) {
+        self.update_cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// 拉起安装器。成功后调用方须立即关闭窗口 —— 安装器要终止本进程才能替换文件。
+    ///
+    /// 返回 `Ok(true)` 表示已启动，`Ok(false)` 表示用户在 UAC 弹窗点了「否」
+    /// （主动取消，不该按错误展示）。
+    pub fn launch_update_install(&self) -> Result<bool, String> {
+        let installer = self
+            .update_installer
+            .borrow()
+            .clone()
+            .ok_or_else(|| "没有可安装的更新包".to_string())?;
+
+        let plan = crate::update::install::plan(&installer).map_err(|e| e.user_message())?;
+        if plan.portable {
+            tracing::info!("检测到便携/非标准安装，改为拉起完整安装向导");
+        }
+        match crate::update::install::launch(&plan) {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                let msg = e.user_message();
+                // UAC 拒绝不是故障：留在 Ready 态让用户可以再点一次
+                if msg.contains("已取消提权") {
+                    Ok(false)
+                } else {
+                    Err(msg)
+                }
+            }
+        }
+    }
+
+    fn fail_update(&self, msg: impl Into<String>) {
+        self.update_message.set(msg.into());
+        self.update_phase.set(crate::update::UpdatePhase::Error);
+    }
+
+    /// 后台消息 → Signal。**在 UI 线程回调中执行**（`App::channel` 保证）。
+    pub fn on_update_msg(&self, msg: crate::update::UpdateMsg) {
+        use crate::update::{UpdateMsg, UpdatePhase, format_size};
+
+        match msg {
+            UpdateMsg::CheckDone { result: Ok(r), silent: true } => {
+                // 静默检查：无更新、已跳过的版本、开发构建，一律不打扰
+                let skipped = !self.setting_config.update.skipped_version.is_empty()
+                    && self.setting_config.update.skipped_version == r.remote_version;
+                if !r.has_update || skipped {
+                    tracing::info!(
+                        "静默检查完成：has_update={} skipped={}",
+                        r.has_update,
+                        skipped
+                    );
+                    *self.update_check.borrow_mut() = Some(r);
+                    return;
+                }
+                self.update_message.set(format!(
+                    "发现新版本 {}（当前 {}）",
+                    r.remote_version, r.local_version
+                ));
+                self.update_notes.set(r.release_notes.clone());
+                self.update_size_text
+                    .set(format!("更新包 {}", r.size_display()));
+                self.update_phase.set(UpdatePhase::HasUpdate);
+                *self.update_check.borrow_mut() = Some(r);
+                self.update_dialog_visible.set(true);
+            }
+            // 静默检查失败：只记日志。启动时弹一个"检查更新失败"对用户毫无价值
+            UpdateMsg::CheckDone { result: Err(e), silent: true } => {
+                tracing::info!("静默检查更新失败（已忽略）：{e}");
+            }
+            UpdateMsg::CheckDone { result: Ok(result), silent: false } => {
+                if result.has_update {
+                    self.update_message.set(format!(
+                        "发现新版本 {}（当前 {}）",
+                        result.remote_version, result.local_version
+                    ));
+                    self.update_notes.set(result.release_notes.clone());
+                    self.update_size_text
+                        .set(format!("更新包 {}", result.size_display()));
+                    self.update_phase.set(UpdatePhase::HasUpdate);
+                } else if result.local_unparsable {
+                    // 无 tag 的开发构建：说明为何不提示，而不是谎称"已是最新"
+                    self.update_message
+                        .set("当前为开发构建，已跳过版本比较".to_string());
+                    self.update_phase.set(UpdatePhase::NoUpdate);
+                } else {
+                    self.update_message
+                        .set(format!("已是最新版本（{}）", result.remote_version));
+                    self.update_phase.set(UpdatePhase::NoUpdate);
+                }
+                *self.update_check.borrow_mut() = Some(result);
+            }
+            UpdateMsg::CheckDone { result: Err(e), silent: false } => self.fail_update(e),
+            UpdateMsg::Progress { downloaded, total } => {
+                let ratio = if total > 0 {
+                    downloaded as f32 / total as f32
+                } else {
+                    0.0
+                };
+                self.update_progress.set(ratio.clamp(0.0, 1.0));
+                self.update_progress_text.set(format!(
+                    "{} / {}",
+                    format_size(downloaded),
+                    format_size(total)
+                ));
+            }
+            UpdateMsg::DownloadDone(path) => {
+                *self.update_installer.borrow_mut() = Some(path);
+                self.update_progress.set(1.0);
+                // 预告窗口会关闭：安装器要终止本进程才能替换文件，事后再提示已来不及
+                self.update_message.set(
+                    "下载完成，完整性校验通过。\n点击安装后设置窗口将关闭，安装完成后可重新打开。"
+                        .to_string(),
+                );
+                self.update_phase.set(UpdatePhase::Ready);
+            }
+            UpdateMsg::DownloadFailed(e) => self.fail_update(e),
+            UpdateMsg::DownloadCancelled => {
+                // 退回到可重试的状态，不显示错误
+                self.update_progress.set(0.0);
+                self.update_progress_text.set(String::new());
+                if let Some(c) = self.update_check.borrow().as_ref() {
+                    self.update_message.set(format!(
+                        "已取消下载。发现新版本 {}（当前 {}）",
+                        c.remote_version, c.local_version
+                    ));
+                }
+                self.update_phase.set(UpdatePhase::HasUpdate);
+            }
         }
     }
 
@@ -1263,7 +1574,9 @@ mod tests {
     use super::*;
 
     /// 所有涉及 WIND_RPC_MOCK 环境变量的测试必须持有此锁，防止并行 race。
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 锁定义在 `rpc` 模块并全 crate 共用 —— 本模块曾自建一把，与 `theme_import`
+    /// 的另一把互不相识，造成间歇性失败（见 rpc.rs 的说明）。
+    use crate::rpc::ENV_LOCK;
 
     fn si(id: &str, kind: &str) -> SchemaInfo {
         SchemaInfo {

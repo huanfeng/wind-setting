@@ -15,6 +15,10 @@ tracing-appender = "0.2"
 toml = "0.8"
 ureq = "2"
 tiny_http = "0.12"
+# 升级版本比较：prerelease 与数字标识符的序由规范定义，不自行实现
+semver = "1"
+# 升级包完整性校验
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

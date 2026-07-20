@@ -82,6 +82,15 @@ fn call_on_stream<S: Read + Write>(
 /// 阻塞;该上限把最坏等待收敛到有限值,避免拖住 UI 线程与进程退出(见下方线程包装)。
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// 测试用互斥锁：`WIND_RPC_MOCK` 是**进程全局**环境变量,任何读写它的测试都必须先持有本锁。
+///
+/// 必须全 crate 共用一把。曾经 `state` 与 `theme_import` 各自定义了一个同名 static,
+/// 两把锁互不相识却保护同一个变量 —— 一侧刚 `set_var`,另一侧测试结束时的 `remove_var`
+/// 就把它抹掉,导致 `mock_disconnect_does_not_block` 随并行调度顺序间歇失败。
+/// 新增涉及该变量的测试时,一律 `let _g = crate::rpc::ENV_LOCK.lock()...`,不要另建锁。
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     if std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1") {

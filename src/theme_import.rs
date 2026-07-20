@@ -186,9 +186,9 @@ fn classify_rpc_error(e: String) -> ThemeImportError {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// WIND_RPC_MOCK 是进程全局变量，锁必须与其他模块共用一把（见 rpc.rs 的说明）。
+    use crate::rpc::ENV_LOCK;
 
     #[test]
     fn validate_https_url_accepts_https_only() {
@@ -254,7 +254,8 @@ mod tests {
 
     #[test]
     fn preview_text_uses_core_preview_rpc() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        // into_inner: 别的测试 panic 毒化了锁时仍继续，避免一处失败连锁放大
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
 
         let preview = preview_text("[meta]\nname = \"测试主题\"\n").unwrap();
@@ -268,7 +269,8 @@ mod tests {
 
     #[test]
     fn import_text_uses_core_import_rpc() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        // into_inner: 别的测试 panic 毒化了锁时仍继续，避免一处失败连锁放大
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
 
         let imported = import_text("[meta]\nname = \"测试主题\"\n", false, None).unwrap();
