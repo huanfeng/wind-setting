@@ -148,6 +148,38 @@ pub fn is_allowed_origin(origin: &str) -> bool {
     lower.starts_with("https://") && lower.ends_with(".windinput.com")
 }
 
+// 取 request-target 中的路径部分（丢弃 ?query）。fragment 不会由客户端发出，无需处理。
+pub fn route_path(url: &str) -> String {
+    match url.split_once('?') {
+        Some((path, _)) => path.to_string(),
+        None => url.to_string(),
+    }
+}
+
+// URL 路径段的百分号解码。tiny_http 不做解码，中文主题名（如 QQ五笔风格）
+// 会以 %E4%BA%94 形式到达，必须先还原再查主题目录。
+// 解码后的结果仍需过 validate_slug —— %2F 之类的编码分隔符要在校验前展开，
+// 否则可被用来绕过路径穿越检查。
+pub fn percent_decode(s: &str) -> Option<String> {
+    let raw = s.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            if i + 2 >= raw.len() {
+                return None;
+            }
+            let hex = std::str::from_utf8(&raw[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(raw[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 pub fn validate_slug(slug: &str) -> bool {
     !slug.is_empty()
         && !slug.contains("..")
@@ -187,7 +219,9 @@ fn guard_request(host: &str, origin: Option<&str>) -> Result<HttpReply, HttpRepl
 
 fn handle_request(req: tiny_http::Request) {
     let method = req.method().as_str().to_string();
-    let url = req.url().to_string();
+    // 只按路径分发：查询串在此剥离，否则 /api/themes?x=1 会落到 404 分支，
+    // 且带参的 /api/theme/:slug 会把 "?x=1" 当成 slug 的一部分。
+    let url = route_path(req.url());
     let host = header_value(&req, "Host").unwrap_or_default();
     let origin = header_value(&req, "Origin");
 
@@ -222,8 +256,9 @@ fn handle_request(req: tiny_http::Request) {
             ),
         }
     } else if method == "GET" && url.starts_with("/api/theme/") {
-        let slug = url.trim_start_matches("/api/theme/");
-        if !validate_slug(slug) {
+        let raw_slug = url.trim_start_matches("/api/theme/");
+        let slug = percent_decode(raw_slug).unwrap_or_default();
+        if !validate_slug(&slug) {
             json_reply(400, r#"{"ok":false,"error":"非法主题 slug"}"#, allow_origin)
         } else {
             match call_core("theme.getText", &serde_json::json!({ "slug": slug })) {
@@ -400,6 +435,43 @@ mod tests {
         assert!(!validate_slug("../default"));
         assert!(!validate_slug("a/b"));
         assert!(!validate_slug(r"a\b"));
+    }
+
+    #[test]
+    fn route_path_strips_query_string() {
+        assert_eq!(route_path("/api/themes?t=1"), "/api/themes");
+        assert_eq!(route_path("/api/themes"), "/api/themes");
+        assert_eq!(route_path("/api/theme/default?v=2"), "/api/theme/default");
+        // 查询串里的 ? 不影响首次切分
+        assert_eq!(route_path("/api/theme/x?a=1?b=2"), "/api/theme/x");
+        // 空查询串
+        assert_eq!(route_path("/api/theme/push?"), "/api/theme/push");
+    }
+
+    #[test]
+    fn percent_decode_restores_cjk_slug() {
+        assert_eq!(
+            percent_decode("QQ%E4%BA%94%E7%AC%94%E9%A3%8E%E6%A0%BC").as_deref(),
+            Some("QQ五笔风格")
+        );
+        assert_eq!(percent_decode("default").as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn percent_decode_rejects_malformed_input() {
+        assert_eq!(percent_decode("a%"), None);
+        assert_eq!(percent_decode("a%zz"), None);
+        // 非法 UTF-8 字节序列不得还原成 slug
+        assert_eq!(percent_decode("%FF%FE"), None);
+    }
+
+    #[test]
+    fn decoded_separators_still_rejected_by_validate() {
+        // 先解码再校验：%2F / %5C 展开后必须被路径穿越检查拦下
+        let decoded = percent_decode("..%2Fdefault").unwrap();
+        assert!(!validate_slug(&decoded));
+        let decoded = percent_decode("a%5Cb").unwrap();
+        assert!(!validate_slug(&decoded));
     }
 
     #[test]
