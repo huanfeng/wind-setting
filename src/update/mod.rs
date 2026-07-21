@@ -200,6 +200,23 @@ pub fn should_auto_check(
     now.saturating_sub(last_check_at) >= MIN_CHECK_INTERVAL_SECS || now < last_check_at
 }
 
+/// 调试入口：本次启动是否强制发起检查，绕过 24h 节流与「自动检查」开关。
+///
+/// 存在的理由：正常路径下三重门控叠加「失败也记时间」，使得开发期几乎无法复现启动
+/// 自动检查 —— 首次启动之后的 24 小时内，无论重启多少次都不会再请网，且没有任何
+/// 外部可见迹象。手工改 `wind_setting.toml` 的 `last_check_at` 太容易误伤真实配置。
+///
+/// **不绕过 `network_consent`** —— 未经用户明示同意联网是产品底线，不设调试后门；
+/// 开发机上在对话框里点一次同意即可持久化。
+///
+/// 触发方式（任一）：`--force-update-check` 参数，或 `WIND_UPDATE_FORCE=1` 环境变量。
+pub fn force_check_requested(argv: &[String]) -> bool {
+    if argv.iter().any(|a| a == "--force-update-check") {
+        return true;
+    }
+    std::env::var("WIND_UPDATE_FORCE").is_ok_and(|v| v == "1")
+}
+
 /// 检查更新：拉元数据 → 判定版本 → 有更新时才拉发布说明。
 ///
 /// **不得在 UI 线程调用** —— 含两次网络请求。结果经 [`UpdateMsg::CheckDone`] 回传。
@@ -321,6 +338,29 @@ mod tests {
     }
 
     /// 系统时间被调到过去时，若只用 now - last >= 间隔 判断，会把自动检查永久卡死。
+    /// 调试入口的参数式。环境变量式不入测：`set_var` 在 edition 2024 是 unsafe，
+    /// 且进程级环境是共享状态，并行测试下会互相踩（见 download.rs 中同类注释）。
+    #[test]
+    fn force_check_flag_is_recognized_only_when_present() {
+        let argv = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(force_check_requested(&argv(&[
+            "exe",
+            "--force-update-check"
+        ])));
+        assert!(force_check_requested(&argv(&[
+            "exe",
+            "--page",
+            "about",
+            "--force-update-check"
+        ])));
+        assert!(!force_check_requested(&argv(&["exe", "--page", "about"])));
+        // 不做前缀匹配：别的参数不该意外触发联网
+        assert!(!force_check_requested(&argv(&[
+            "exe",
+            "--force-update-checkX"
+        ])));
+    }
+
     #[test]
     fn auto_check_survives_clock_rollback() {
         let now = DAY * 5;

@@ -521,9 +521,14 @@ impl AppState {
                 let skipped = !self.setting_config.update.skipped_version.is_empty()
                     && self.setting_config.update.skipped_version == r.remote_version;
                 if !r.has_update || skipped {
+                    // 四个维度都要记：只打 has_update 无法区分「已是最新」「无 tag 的开发
+                    // 构建被跳过」「命中跳过版本」，而静默路径本就没有任何界面反馈。
                     tracing::info!(
-                        "静默检查完成：has_update={} skipped={}",
+                        "静默检查完成（不打扰）：local={} remote={} has_update={} local_unparsable={} skipped={}",
+                        r.local_version,
+                        r.remote_version,
                         r.has_update,
+                        r.local_unparsable,
                         skipped
                     );
                     *self.update_check.borrow_mut() = Some(r);

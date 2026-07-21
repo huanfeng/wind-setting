@@ -144,9 +144,25 @@ fn main() {
     {
         let now = chrono::Local::now().timestamp();
         let cfg = app_state.borrow().setting_config.update.clone();
-        if update::should_auto_check(cfg.network_consent, cfg.auto_check, cfg.last_check_at, now) {
-            // 发起前就记时间：失败也算"查过"，免得每次开设置都重试
-            app_state.borrow_mut().mark_update_checked(now);
+        let forced = update::force_check_requested(&args);
+        // 强制检查仍受 network_consent 门控 —— 调试后门不该越过联网同意
+        let gate = if forced {
+            cfg.network_consent
+        } else {
+            update::should_auto_check(cfg.network_consent, cfg.auto_check, cfg.last_check_at, now)
+        };
+        if forced && !cfg.network_consent {
+            tracing::warn!("请求了强制检查更新，但用户尚未同意联网，已跳过");
+        }
+        if gate {
+            if forced {
+                // 刻意不写 last_check_at：调试用的强制检查不该消耗掉真实的节流窗口，
+                // 否则跑一次调试就会让接下来 24h 的自动检查失效，反而更难验证。
+                tracing::warn!("强制检查更新（调试入口）：已绕过 24h 节流与自动检查开关");
+            } else {
+                // 发起前就记时间：失败也算"查过"，免得每次开设置都重试
+                app_state.borrow_mut().mark_update_checked(now);
+            }
             app_state.borrow().spawn_silent_update_check();
         }
     }
