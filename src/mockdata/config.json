@@ -149,6 +149,7 @@
   "toggle_toolbar": "ctrl+shift+\\",
   "open_settings": "ctrl+shift+]",
   "add_word": "ctrl+equal",
+  "open_add_word_dialog": "ctrl+shift+equal",
   "toggle_s2t": "ctrl+shift+j",
   "activate_ime": "ctrl+shift+[",
   "pin_candidate": "ctrl+number",

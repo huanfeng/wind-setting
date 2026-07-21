@@ -603,6 +603,11 @@
       "type": "str"
     },
     {
+      "default": "ctrl+shift+equal",
+      "key": "keys.open_add_word_dialog",
+      "type": "str"
+    },
+    {
       "default": "ctrl+shift+j",
       "key": "keys.toggle_s2t",
       "type": "str"

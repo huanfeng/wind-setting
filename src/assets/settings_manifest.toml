@@ -1140,13 +1140,22 @@ label = "快捷加词"
 hint = "快速将输入的内容加入用户词库"
 
 [[items]]
+key = "keys.open_add_word_dialog"
+group = "keys"
+section = "功能快捷键"
+type = "hotkey"
+label = "打开加词界面"
+hint = "取最近输入的内容，直接弹出加词窗口"
+
+[[items]]
 key = "keys.activate_ime"
 group = "keys"
 section = "功能快捷键"
 type = "hotkey"
 label = "切换到本输入法"
 hint = "在任意应用中一键切换到本输入法"
-global = true
+# 不设 global：该键走 Windows DirectSwitchHotkeys 注册表（系统层面天然全局），
+# 不经 RegisterHotKey，故不纳入 keys.global_hotkeys（核心 coordinator.rs 不识别该动作名）。
 
 # ═══════════════════════════ 外观 ═══════════════════════════
 # ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──

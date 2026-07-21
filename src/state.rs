@@ -1121,7 +1121,7 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
 
 /// 收集功能快捷键（组合键）各功能的 (显示名, [归一化组合键])，供组合键冲突检测。
 /// 组合键都带修饰键、是显式命令，不涉及裸键的按场景分派，故统一为一个域检测。
-/// 含 8 个 hotkey 项 + pin/delete_candidate（select，但值也是 Ctrl+数字 组合键）；
+/// 含 9 个 hotkey 项 + pin/delete_candidate（select，但值也是 Ctrl+数字 组合键）；
 /// 空值与 "none" 视为未设置、跳过。
 fn collect_hotkey_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
     const HOTKEYS: &[(&str, &str)] = &[
@@ -1132,6 +1132,7 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
         ("keys.toggle_toolbar", "显示/隐藏工具栏"),
         ("keys.open_settings", "打开设置"),
         ("keys.add_word", "快捷加词"),
+        ("keys.open_add_word_dialog", "打开加词界面"),
         ("keys.activate_ime", "切换到本输入法"),
         ("keys.pin_candidate", "置顶词条"),
         ("keys.delete_candidate", "删除词条"),

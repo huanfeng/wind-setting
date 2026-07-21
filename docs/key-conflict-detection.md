@@ -23,7 +23,7 @@
 |---|---|---|---|
 | **触发键** | 空缓冲、无候选 | `input.temp_pinyin.trigger_keys`、`input.temp_english.trigger_keys`、`schema.mix_modes[].trigger_keys`、`schema.special_modes[].trigger_keys` | `handle_lifecycle.rs:54-200` 激活优先级链：temp_english > temp_pinyin > special > mix |
 | **候选键** | 有候选时 | `keys.select_key_groups`、`keys.page_keys`、`keys.highlight_keys`、`keys.select_char_keys`、**`keys.toggle_mode_keys`**（见 §4） | 次选 `coordinator.rs:3832`/`handle_candidate.rs:585`；以词定字 `:3443`（先于翻页）；翻页/高亮 `:3457` |
-| **快捷键** | 组合键命令（多为中文态/全局） | 8 个 `hotkey` 项（`switch_engine`/`toggle_full_width`/`toggle_punct`/`toggle_s2t`/`toggle_toolbar`/`open_settings`/`add_word`/`activate_ime`）+ `pin_candidate`/`delete_candidate` | 热键匹配 `coordinator.rs:3310`；候选管理键（Ctrl+数字）`:3343` |
+| **快捷键** | 组合键命令（多为中文态/全局） | 9 个 `hotkey` 项（`switch_engine`/`toggle_full_width`/`toggle_punct`/`toggle_s2t`/`toggle_toolbar`/`open_settings`/`add_word`/`open_add_word_dialog`/`activate_ime`）+ `pin_candidate`/`delete_candidate` | 热键匹配 `coordinator.rs:3310`；候选管理键（Ctrl+数字）`:3343` |
 
 实现：`src/state.rs` 的 `collect_trigger_key_groups` / `collect_candidate_key_groups` /
 `collect_hotkey_groups`，各经 `check_domain(groups, scene)` 跑
