@@ -1291,6 +1291,18 @@ label = "隐藏候选窗"
 hint = "盲打/自动上屏场景不显示候选窗口；隐藏后仍可输入"
 
 [[items]]
+key = "ui.candidate.position_mode"
+group = "ui"
+section = "候选窗口"
+type = "select"
+label = "定位方式"
+hint = "跟随光标=候选窗随输入位置移动；固定位置=停在屏幕固定处，不再随光标跑动。固定位置下直接拖动候选窗即可摆放，位置自动记住"
+options = [
+  { value = "follow_caret", label = "跟随光标" },
+  { value = "fixed", label = "固定位置" },
+]
+
+[[items]]
 key = "ui.candidate.preedit_display"
 group = "ui"
 section = "候选窗口"
@@ -1323,7 +1335,7 @@ group = "ui"
 section = "候选窗口"
 type = "toggle"
 label = "候选窗在上方时反转候选顺序"
-hint = "候选窗显示在光标上方时，反转候选项的排列顺序（使第一候选靠近光标）；可与「编码栏置底」叠加"
+hint = "候选窗显示在光标上方时，反转候选项的排列顺序（使第一候选靠近光标）；可与「编码栏置底」叠加。仅「跟随光标」定位下生效"
 
 [[items]]
 key = "ui.candidate.swap_preedit_when_above"
@@ -1331,7 +1343,7 @@ group = "ui"
 section = "候选窗口"
 type = "toggle"
 label = "候选窗在上方时编码栏置底"
-hint = "候选窗显示在光标上方时，将编码栏与候选栏上下调换，使编码栏沉到底部贴近光标"
+hint = "候选窗显示在光标上方时，将编码栏与候选栏上下调换，使编码栏沉到底部贴近光标。仅「跟随光标」定位下生效"
 
 [[items]]
 key = "ui.candidate.pager_in_preedit"
@@ -1358,6 +1370,11 @@ section = "候选窗口"
 type = "dialog_button"
 label = "自定义序号标签"
 hint = "为序号 1-10 自定义标签字符（如 asdfg）；在对话框中逐框填写，留空用默认 1-9"
+
+# 注：ui.candidate.custom_x / custom_y（固定位置坐标）刻意不在此暴露——与 ui.status 同一决策：
+# 固定位置由「拖动候选窗」直接设定并自动落盘，手填屏幕绝对坐标既不直观、又与拖动结果互相覆盖。
+# 主流输入法（搜狗、Google 拼音）同样只提供「是否跟随光标」开关，不提供坐标输入。
+# 尚未拖动过时（坐标为 0,0）候选窗落在屏幕下方居中的默认锚点。配置键仍在 config.toml 中保留。
 
 # 注：input.cmdbar.enabled（命令栏开关）不在设置端暴露——命令栏始终开启（core 默认 true），
 # 不提供关闭入口；故仅保留前缀配置。

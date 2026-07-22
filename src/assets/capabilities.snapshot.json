@@ -786,6 +786,25 @@
       "type": "bool"
     },
     {
+      "default": "follow_caret",
+      "key": "ui.candidate.position_mode",
+      "type": "enum",
+      "values": [
+        "follow_caret",
+        "fixed"
+      ]
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.custom_x",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.custom_y",
+      "type": "int"
+    },
+    {
       "default": "",
       "key": "ui.font.family",
       "type": "str"
