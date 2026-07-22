@@ -1439,7 +1439,7 @@ group = "ui"
 section = "状态提示"
 type = "select"
 label = "显示模式"
-hint = "临时显示在切换时闪现后自动消失，常驻显示在有输入焦点时始终显示"
+hint = "临时显示在切换时闪现后自动消失，常驻显示在有输入焦点时始终显示；右键气泡可快速切换"
 enabled_when = "ui.status.enabled == true"
 options = [
   { value = "temp", label = "临时显示" },
@@ -1452,11 +1452,11 @@ group = "ui"
 section = "状态提示"
 type = "number"
 label = "显示时长"
-hint = "临时显示模式下气泡停留时间"
+hint = "气泡停留时间；鼠标悬停、拖动或打开右键菜单期间会顺延，不会中途消失"
 min = 0
 max = 5000
 unit = "ms"
-enabled_when = "ui.status.enabled == true"
+enabled_when = "ui.status.enabled == true && ui.status.display_mode == temp"
 
 [[items]]
 key = "ui.status.items"
@@ -1464,7 +1464,7 @@ group = "ui"
 section = "状态提示"
 type = "checkbox_group"
 label = "显示内容"
-hint = "勾选状态气泡里显示哪些内容；全部取消则气泡为空，等同关闭状态提示"
+hint = "勾选状态气泡里显示哪些内容；全部取消则不显示气泡"
 enabled_when = "ui.status.enabled == true"
 [[items.options]]
 value = "schema"
@@ -1488,7 +1488,8 @@ group = "ui"
 section = "状态提示"
 type = "select"
 label = "方案名显示样式"
-hint = "状态气泡里方案名用全名或图标短称；图标短称取方案 icon_label，无则回退全名"
+hint = "上方勾选「输入方案」后生效；图标短称取方案 icon_label，无则回退全名"
+enabled_when = "ui.status.enabled == true && ui.status.items contains schema"
 options = [
   { value = "full", label = "全名" },
   { value = "short", label = "图标短称" },
@@ -1500,7 +1501,7 @@ group = "ui"
 section = "状态提示"
 type = "select"
 label = "定位方式"
-hint = "跟随光标或固定在自定义位置；偏移与固定坐标在「扩展设置」中调整"
+hint = "固定位置下可直接拖动气泡摆放，右键气泡可切换定位方式或恢复默认位置"
 enabled_when = "ui.status.enabled == true"
 opens_dialog = "status_position"
 options = [
@@ -1517,6 +1518,7 @@ label = "水平偏移"
 hint = "相对光标下方居中的水平偏移（像素，正=右）"
 min = -400
 max = 400
+enabled_when = "ui.status.position_mode == follow_caret"
 dialog_group = "status_position"
 
 [[items]]
@@ -1528,31 +1530,12 @@ label = "垂直偏移"
 hint = "相对光标下方的垂直偏移（像素，正=下）"
 min = -400
 max = 400
+enabled_when = "ui.status.position_mode == follow_caret"
 dialog_group = "status_position"
 
-[[items]]
-key = "ui.status.custom_x"
-group = "ui"
-section = "状态提示"
-type = "number"
-label = "固定位置 X"
-hint = "固定定位时气泡屏幕横坐标（像素）"
-min = -4000
-max = 4000
-enabled_when = "ui.status.position_mode == fixed"
-dialog_group = "status_position"
-
-[[items]]
-key = "ui.status.custom_y"
-group = "ui"
-section = "状态提示"
-type = "number"
-label = "固定位置 Y"
-hint = "固定定位时气泡屏幕纵坐标（像素）"
-min = -4000
-max = 4000
-enabled_when = "ui.status.position_mode == fixed"
-dialog_group = "status_position"
+# 注：ui.status.custom_x / custom_y（固定位置坐标）刻意不在此暴露——固定位置由「拖动气泡」
+# 直接设定，右键菜单「固定位置」开关会以气泡当前实际位置落盘，「恢复默认位置」可复位。
+# 让用户手填屏幕绝对坐标既不直观、又与拖动结果互相覆盖。配置键本身仍在 config.toml 中保留。
 
 # ── 模式指示 ──
 [[items]]

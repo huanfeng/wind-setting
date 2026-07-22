@@ -273,8 +273,11 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         let dependent = item
             .enabled_when
             .as_deref()
-            .and_then(parse_cond)
-            .map(|(ck, _)| ck != *k && keys.iter().any(|x| x == &ck))
+            .and_then(parse_conds)
+            .map(|cs| {
+                cs.iter()
+                    .any(|c| c.key != *k && keys.iter().any(|x| x == &c.key))
+            })
             .unwrap_or(false);
         rows.push(if dependent {
             Element::row()
@@ -324,15 +327,13 @@ pub fn field(state: &AppState, key: &str) -> Element {
     } else {
         setting_row(&item.label, item.hint.as_deref(), control)
     };
-    if let Some((ck, expect)) = item.enabled_when.as_deref().and_then(parse_cond) {
-        let reg = state.fields.clone();
+    if let Some(f) = item
+        .enabled_when
+        .as_deref()
+        .and_then(|e| enabled_when_closure(state, e))
+    {
         // 联动用「置灰整行」而非隐藏：保留占位，避免分隔线残留与高度抖动。
-        row = row.enabled_when(move || {
-            let g = reg.getters.borrow();
-            g.get(&ck)
-                .map(|get| cond_matches(&get(), &expect))
-                .unwrap_or(true)
-        });
+        row = row.enabled_when(f);
     }
     row
 }
@@ -365,12 +366,12 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     let row_control = Element::row().cross(Align::Center).spacing(10).child(control).child(btn);
     let mut row = setting_row(&item.label, item.hint.as_deref(), row_control);
     // 宿主 enabled_when 作用于整行（含扩展按钮）。
-    if let Some((ck, expect)) = item.enabled_when.as_deref().and_then(parse_cond) {
-        let reg = state.fields.clone();
-        row = row.enabled_when(move || {
-            let g = reg.getters.borrow();
-            g.get(&ck).map(|get| cond_matches(&get(), &expect)).unwrap_or(true)
-        });
+    if let Some(f) = item
+        .enabled_when
+        .as_deref()
+        .and_then(|e| enabled_when_closure(state, e))
+    {
+        row = row.enabled_when(f);
     }
     row
 }
@@ -1768,23 +1769,137 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
 }
 
 /// 解析 `enabled_when`，仅支持 `key == value`（manifest 现有用法均为 `== true`）。
-fn parse_cond(cond: &str) -> Option<(String, String)> {
-    let (k, v) = cond.split_once("==")?;
-    Some((k.trim().to_string(), v.trim().to_string()))
+/// `enabled_when` 里的单个条件。
+#[derive(Debug, Clone, PartialEq)]
+struct Cond {
+    key: String,
+    /// true = `contains`（key 为字符串数组时判是否含该元素）；false = `==`。
+    contains: bool,
+    value: String,
 }
 
-/// 判断当前值是否满足条件（支持 true/false 与字符串相等）。
-fn cond_matches(cur: &Value, expect: &str) -> bool {
-    match expect {
+/// 解析 `enabled_when` 表达式：以 `&&` 分隔的若干条件，**全部满足**才启用。
+///
+/// 支持两种比较：
+/// - `key == value`：相等；`true`/`false` 按布尔解释，其余按字符串。
+/// - `key contains value`：`key` 是字符串数组（checkbox_group 写回的 strlist）时判是否含该元素。
+///
+/// 任一子句语法不合法即整体返回 None（调用方按"无条件"处理，不会把控件锁死）。
+fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
+    let mut out = Vec::new();
+    for part in expr.split("&&") {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        // 先试 `==`：`contains` 的键名里不会出现 `==`，两者不会互相误判。
+        let cond = if let Some((k, v)) = part.split_once("==") {
+            Cond {
+                key: k.trim().to_string(),
+                contains: false,
+                value: v.trim().to_string(),
+            }
+        } else if let Some((k, v)) = part.split_once(" contains ") {
+            Cond {
+                key: k.trim().to_string(),
+                contains: true,
+                value: v.trim().to_string(),
+            }
+        } else {
+            return None;
+        };
+        if cond.key.is_empty() || cond.value.is_empty() {
+            return None;
+        }
+        out.push(cond);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// 判断当前值是否满足单个条件。
+fn cond_matches(cur: &Value, c: &Cond) -> bool {
+    if c.contains {
+        return cur
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(c.value.as_str())));
+    }
+    match c.value.as_str() {
         "true" => cur.as_bool() == Some(true),
         "false" => cur.as_bool() == Some(false),
         s => cur.as_str() == Some(s),
     }
 }
 
+/// 由 `enabled_when` 表达式构造联动闭包：全部条件满足才启用。
+/// 引用了未登记的 key 时该子句视为满足——拼写错误只该让联动失效，不该把控件永久锁死。
+fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> bool>> {
+    let conds = parse_conds(expr)?;
+    let reg = state.fields.clone();
+    Some(Box::new(move || {
+        let g = reg.getters.borrow();
+        conds.iter().all(|c| {
+            g.get(&c.key)
+                .map(|get| cond_matches(&get(), c))
+                .unwrap_or(true)
+        })
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `==` 单条件：保持原有语义（布尔与字符串）。
+    #[test]
+    fn parse_conds_single_equality() {
+        let cs = parse_conds("ui.status.enabled == true").unwrap();
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].key, "ui.status.enabled");
+        assert!(!cs[0].contains);
+        assert!(cond_matches(&Value::Bool(true), &cs[0]));
+        assert!(!cond_matches(&Value::Bool(false), &cs[0]));
+
+        let cs = parse_conds("ui.status.position_mode == fixed").unwrap();
+        assert!(cond_matches(&Value::String("fixed".into()), &cs[0]));
+        assert!(!cond_matches(&Value::String("follow_caret".into()), &cs[0]));
+    }
+
+    /// `&&`：全部满足才算满足。
+    #[test]
+    fn parse_conds_multiple_are_anded() {
+        let cs = parse_conds("ui.status.enabled == true && ui.status.display_mode == temp").unwrap();
+        assert_eq!(cs.len(), 2);
+        assert!(cond_matches(&Value::Bool(true), &cs[0]));
+        assert!(cond_matches(&Value::String("temp".into()), &cs[1]));
+        // 第二条不满足 → 整体不满足（由调用方的 all() 保证，此处校验单条判定正确）
+        assert!(!cond_matches(&Value::String("always".into()), &cs[1]));
+    }
+
+    /// `contains`：strlist 里是否含指定元素（checkbox_group 的联动依据）。
+    #[test]
+    fn parse_conds_contains_matches_strlist_element() {
+        let cs = parse_conds("ui.status.items contains schema").unwrap();
+        assert!(cs[0].contains);
+        assert_eq!(cs[0].key, "ui.status.items");
+        let arr = Value::Array(vec![
+            Value::String("schema".into()),
+            Value::String("punct".into()),
+        ]);
+        assert!(cond_matches(&arr, &cs[0]));
+        let arr_without = Value::Array(vec![Value::String("punct".into())]);
+        assert!(!cond_matches(&arr_without, &cs[0]));
+        // 非数组值不应误判为命中
+        assert!(!cond_matches(&Value::String("schema".into()), &cs[0]));
+    }
+
+    /// 语法不合法 → None，调用方按「无条件」处理，绝不能把控件锁死。
+    #[test]
+    fn parse_conds_rejects_malformed() {
+        assert!(parse_conds("ui.status.enabled").is_none());
+        assert!(parse_conds("== true").is_none());
+        assert!(parse_conds("ui.status.enabled ==").is_none());
+        assert!(parse_conds("").is_none());
+    }
 
     #[test]
     fn checkbox_group_collects_checked_values() {
