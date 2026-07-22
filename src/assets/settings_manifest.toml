@@ -1459,6 +1459,30 @@ unit = "ms"
 enabled_when = "ui.status.enabled == true"
 
 [[items]]
+key = "ui.status.items"
+group = "ui"
+section = "状态提示"
+type = "checkbox_group"
+label = "显示内容"
+hint = "勾选状态气泡里显示哪些内容；全部取消则气泡为空，等同关闭状态提示"
+enabled_when = "ui.status.enabled == true"
+[[items.options]]
+value = "schema"
+label = "输入方案"
+[[items.options]]
+value = "punct"
+label = "标点状态"
+[[items.options]]
+value = "full_width"
+label = "全半角状态"
+[[items.options]]
+value = "s2t"
+label = "简繁状态"
+[[items.options]]
+value = "caps"
+label = "大写锁定"
+
+[[items]]
 key = "ui.status.schema_name_style"
 group = "ui"
 section = "状态提示"

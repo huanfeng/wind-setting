@@ -917,6 +917,17 @@
       "type": "int"
     },
     {
+      "default": [
+        "schema",
+        "punct",
+        "full_width",
+        "s2t",
+        "caps"
+      ],
+      "key": "ui.status.items",
+      "type": "strlist"
+    },
+    {
       "default": true,
       "key": "ui.toolbar.visible",
       "type": "bool"
