@@ -103,9 +103,11 @@
    "cancel_on_mode_switch": false
   },
   "temp_pinyin": {
+   "enabled": true,
    "trigger_keys": [
     "backtick"
-   ]
+   ],
+   "hotkey": ""
   },
   "url": {
    "enabled": false,
@@ -133,9 +135,9 @@
    "candidate_prefix": "⚡"
   },
   "phrase": {
-   "min_prefix": 2,
-   "max_display_chars": 30
-  }
+   "min_prefix": 2
+  },
+  "top_commit_mode": "direct_commit"
  },
  "keys": {
   "toggle_mode_keys": [

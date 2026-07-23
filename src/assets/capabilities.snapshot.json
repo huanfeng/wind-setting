@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.1.0",
+  "appVersion": "0.110.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -515,6 +515,11 @@
       "type": "strlist"
     },
     {
+      "default": "",
+      "key": "input.temp_pinyin.hotkey",
+      "type": "str"
+    },
+    {
       "default": false,
       "key": "input.url.enabled",
       "type": "bool"
@@ -555,9 +560,13 @@
       "type": "int"
     },
     {
-      "default": 30,
-      "key": "input.phrase.max_display_chars",
-      "type": "int"
+      "default": "direct_commit",
+      "key": "input.top_commit_mode",
+      "type": "enum",
+      "values": [
+        "pre_confirm",
+        "direct_commit"
+      ]
     },
     {
       "default": [

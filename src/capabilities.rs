@@ -174,6 +174,146 @@ mod tests {
         assert!(problems.is_empty(), "清单与 capability 不一致:\n{}", problems.join("\n"));
     }
 
+    /// 有意不进设置清单的 capability key（配套 [`uncovered_capability_keys_match_allowlist`]）。
+    ///
+    /// 此前这里是一个 `uncovered.len() <= 24` 的阈值。阈值的问题是**它不认识键**：
+    /// core 新增键让计数超标时，把数字改大就能过，于是旁边那段分类注释一路过期
+    /// （写着「当前 13 项」而实际 26 项），谁也说不清多出来的到底是哪些、该不该暴露。
+    /// 改为显式名单后，任何一个新的未覆盖键都必须在此处具名登记，顺带写清为什么不暴露。
+    const UNCOVERED_BY_DESIGN: &[&str] = &[
+        // ① 方案管理：方案列表本身由方案管理弹窗承载，不作为普通设置项。
+        "schema.active",
+        "schema.available",
+        "schema.special_modes",
+        // ② 兼容渲染进程名单，暂不开放。
+        "compat.host_render_processes",
+        // ③ 短语前缀列举：开关暂无作用，待 core 决定后再处理。
+        "input.phrase.min_prefix",
+        // ④ 非独立清单项：由各功能键的「全局」勾选经收集器汇总写回。
+        "keys.global_hotkeys",
+        // ⑤ 临时英文不再设独立启用开关（Shift+字母 始终可进入、触发键可留空）。
+        "input.temp_english.enabled",
+        // ⑥ 外观不支持 / 平台限制项，均由 core 维持默认值。
+        "ui.font.path",
+        "ui.font.render_mode",
+        "ui.tooltip.pinyin_max_readings",
+        // ⑦ 命令栏始终开启，不提供关闭入口。
+        "input.cmdbar.enabled",
+        // ⑧ 拼音词频衰减调参：高级/内部参数（recency_peak 尚未接入引擎），不对普通用户暴露。
+        "schema.pinyin.frequency.half_life",
+        "schema.pinyin.frequency.base_scale",
+        "schema.pinyin.frequency.recency_peak",
+        // ⑨ 拼音侧临时词晋升次数暂不暴露（码表侧的 auto_phrase.promote_count 已在清单内）。
+        "schema.pinyin.auto_learn.promote_count",
+        // ⑨' 码表造词的兜底与容量参数，普通用户无判断依据，需要时改配置文件。
+        //    注：min_phrase_len / max_phrase_len 已在清单内（hidden=true）。
+        "schema.codetable.auto_phrase.idle_timeout_ms",
+        "schema.codetable.auto_phrase.temp_max_entries",
+        // ⑩ core 新增键，本项目尚未接入设置界面（待评估）。
+        "keys.take_screenshot",
+        "debug.log_max_files",
+        "debug.log_max_size_mb",
+        "input.temp_pinyin.enabled",
+        "input.temp_pinyin.hotkey",
+        // ⑪ 内部/实验项：顶码上屏的宿主时序策略，仅在宿主表现异常时改配置文件。
+        "input.top_commit_mode",
+        // ⑫ 拖动落盘的绝对坐标：由用户拖动窗口写入，手填既不直观又会与拖动互相覆盖，
+        //    故刻意不在设置页暴露（与 core 侧同一决策）。
+        "ui.candidate.custom_x",
+        "ui.candidate.custom_y",
+        "ui.status.custom_x",
+        "ui.status.custom_y",
+    ];
+
+    /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。
+    ///
+    /// 双向断言：core 新增了没接进设置页的键 → 失败（逼你决定暴露还是登记）；
+    /// 名单里的键已被接进清单或已被 core 删除 → 也失败（防止名单腐烂成永真条目）。
+    #[test]
+    fn uncovered_capability_keys_match_allowlist() {
+        let caps = Capabilities::from_embedded();
+        let manifest = Manifest::from_embedded();
+        let covered: std::collections::HashSet<&str> =
+            manifest.order.iter().map(|s| s.as_str()).collect();
+        let uncovered: std::collections::BTreeSet<&str> = caps
+            .entries
+            .keys()
+            .map(|s| s.as_str())
+            .filter(|k| !covered.contains(k))
+            .collect();
+        let allow: std::collections::BTreeSet<&str> =
+            UNCOVERED_BY_DESIGN.iter().copied().collect();
+
+        let unexpected: Vec<&&str> = uncovered.difference(&allow).collect();
+        let stale: Vec<&&str> = allow.difference(&uncovered).collect();
+        assert!(
+            unexpected.is_empty() && stale.is_empty(),
+            "未覆盖 capability key 与豁免名单不符：\n  \
+             未登记的未覆盖键({})：{:?}\n    \
+             —— 要么接进 settings_manifest.toml，要么加进 UNCOVERED_BY_DESIGN 并写明理由\n  \
+             名单中已失效的条目({})：{:?}\n    \
+             —— 该键已被清单覆盖或已被 core 删除，请从 UNCOVERED_BY_DESIGN 移除",
+            unexpected.len(),
+            unexpected,
+            stale.len(),
+            stale
+        );
+    }
+
+    /// 守护：检入的 `capabilities.snapshot.json` 必须等于 core 现场生成的 capability
+    /// descriptor。快照是 core 能力的**检入镜像**，此前靠人工同步，已漂移出 4 处默认值
+    /// 偏离 + 缺 2 键 + 多 1 键（`input.phrase.max_display_chars`，core 早已删除）。
+    ///
+    /// 只比 `configKeys`：`appVersion` 跟着 docs/VERSION 走，每次发版都会变，
+    /// 与本测试要守的「配置契约」无关，且 wind-setting 并不读取它。
+    ///
+    /// 失败时请**重新生成**快照而不是手改 JSON——手改正是漂移的来源。
+    #[test]
+    fn snapshot_matches_core_generated_capabilities() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../WindInput/data");
+        let fresh =
+            wind_rpc::capabilities::generate(Some(&data)).expect("生成 core capability 失败");
+        let embedded: Value =
+            serde_json::from_str(Capabilities::EMBEDDED).expect("快照 JSON 解析失败");
+
+        let index = |v: &Value| -> std::collections::BTreeMap<String, Value> {
+            v.get("configKeys")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|i| {
+                            i.get("key")
+                                .and_then(|k| k.as_str())
+                                .map(|k| (k.to_string(), i.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (core, snap) = (index(&fresh), index(&embedded));
+        assert!(!core.is_empty(), "core 生成结果为空，对账无意义");
+
+        let mut problems = Vec::new();
+        for (key, cv) in &core {
+            match snap.get(key) {
+                None => problems.push(format!("快照缺键: {key}")),
+                Some(sv) if sv != cv => {
+                    problems.push(format!("{key}: 快照={sv} core={cv}"));
+                }
+                _ => {}
+            }
+        }
+        for key in snap.keys().filter(|k| !core.contains_key(*k)) {
+            problems.push(format!("快照多余键（core 已无此键）: {key}"));
+        }
+        assert!(
+            problems.is_empty(),
+            "capabilities.snapshot.json 与 core 漂移 {} 处，请重新生成：\n{}",
+            problems.len(),
+            problems.join("\n")
+        );
+    }
+
     /// 非失败：报告 capability 中尚未被清单覆盖的 key 数（no-silent-caps）。
     #[test]
     fn report_uncovered_capability_keys() {
@@ -188,32 +328,8 @@ mod tests {
             .filter(|k| !covered.contains(k))
             .collect();
         println!("未覆盖 capability key 数: {} / {}", uncovered.len(), caps.entries.len());
-        // 未覆盖项（均为有意不入清单，当前 13 项）：
-        //   ①方案管理：schema.active/available/special_modes —— 方案列表本身，由方案管理弹窗承载。
-        //   ②compat.host_render_processes —— 兼容渲染进程名单，暂不开放。
-        //   ③input.phrase.*（短语）—— 开关暂无作用，待 core 决定后再处理。
-        //   ④keys.global_hotkeys —— 非独立清单项，由功能键的「全局」勾选经收集器汇总写回。
-        //   ⑤input.temp_english.enabled —— 临时英文不再设独立启用开关（Shift+字母 始终可进入、
-        //     触发键可留空），由 core 维持默认值，不在设置端暴露。
-        //   ⑥外观不支持/平台限制项：ui.font.path（自定义字体文件，当前平台不支持）、
-        //     ui.font.render_mode（字体渲染方式，不支持）、ui.tooltip.pinyin_max_readings（每字最多
-        //     读音数，暂不支持）—— 均由 core 维持默认值，不在设置端暴露。
-        //   ⑦input.cmdbar.enabled —— 命令栏始终开启（core 默认 true），不提供关闭入口，故不暴露。
-        //   ⑧词频衰减调参：schema.pinyin.frequency.half_life/base_scale/recency_peak —— 高级/内部
-        //     调参（recency_peak 尚未接入引擎），由 core 维持默认值，不对普通用户暴露。
-        //   ⑨临时词晋升次数：schema.pinyin.auto_learn.promote_count —— 拼音侧暂不暴露。
-        //     注：schema.codetable.auto_phrase.promote_count **已纳入清单**（「转入用户词库次数」）。
-        //     此前此处注明「自动晋升逻辑未接线」，该说法早已过期——core 侧 maybe_promote_temp
-        //     一直在跑；不暴露只会让默认值 0（永不晋升）成为用户改不动的死配置。
-        //   ⑨' 码表造词内部参数：schema.codetable.auto_phrase.min_phrase_len / max_phrase_len /
-        //     idle_timeout_ms / temp_max_entries —— 有意不开放。前两项调错直接抬高杂词率
-        //     （max 设大必出跨句杂词），后两项是兜底与容量参数，普通用户无判断依据；
-        //     需要时改配置文件。
-        //   ⑩其它 core 新增键，本项目尚未接入设置界面（待后续评估）：keys.take_screenshot、
-        //     debug.log_max_files、debug.log_max_size_mb、input.temp_pinyin.enabled。
-        //     注：input.temp_pinyin.schema 已被 core 删除（临时拼音方案改由 schema.primary_pinyin
-        //     决定，本页「主拼音方案」即是），不再是未覆盖项。
-        // 注：模糊音 schema.pinyin.fuzzy.*、ui.status.*、ui.theme.name 均已纳入清单（方案/拼音对话框等）。
-        assert!(uncovered.len() <= 24, "未覆盖项过多({}): {:?}", uncovered.len(), uncovered);
+        // 逐项理由见 UNCOVERED_BY_DESIGN；把关的断言在
+        // uncovered_capability_keys_match_allowlist，此处只作观察输出，不设阈值。
+        println!("未覆盖明细: {uncovered:?}");
     }
 }
