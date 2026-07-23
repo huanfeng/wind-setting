@@ -1694,6 +1694,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
+ "wind-config",
  "wind-ipc",
  "wind-rpc",
  "windui",

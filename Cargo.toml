@@ -21,9 +21,11 @@ semver = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
-# 仅测试用：core 的 capability 生成器，供守护 capabilities.snapshot.json 不与 core 漂移。
+# 仅测试用：core 的 capability 生成器与配置真相源，供守护 capabilities.snapshot.json
+# 与 mockdata/config.json 不与 core 漂移。
 # core 仓已因 wind-ipc 成为硬依赖，此处不引入新的路径前提。
 wind-rpc = { path = "../WindInput/wind_input/crates/wind-rpc" }
+wind-config = { path = "../WindInput/wind_input/crates/wind-config" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

@@ -183,6 +183,111 @@ mod tests {
         assert!(ep.contains("_ctrl"));
     }
 
+    /// mockdata 中刻意偏离 core 系统预置的值（配套 [`mock_config_matches_core_system_preset`]）。
+    ///
+    /// `schema.available` 必须与 mock 的 `schema.list` 自洽（那里给的是 wubi86 / wubi98 /
+    /// wubi_mixed / pinyin_simp 这套演示方案），不能取真实预置的 wubi86_pinyin——
+    /// 否则 mock 模式的方案下拉会列出一个 `schema.list` 里不存在的 id。
+    const CURATED_MOCK_VALUES: &[&str] = &["schema.available"];
+
+    /// 把 JSON 摊平成「点分路径 → 叶子值」（规则同 core 的 collect_leaf_keys：
+    /// 非空对象下钻，数组与空对象作叶子）。
+    fn json_leaves(prefix: &str, v: &Value, out: &mut std::collections::BTreeMap<String, Value>) {
+        match v {
+            Value::Object(m) if !m.is_empty() => {
+                for (k, sub) in m {
+                    let child = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{prefix}.{k}")
+                    };
+                    json_leaves(&child, sub, out);
+                }
+            }
+            _ => {
+                out.insert(prefix.to_string(), v.clone());
+            }
+        }
+    }
+
+    /// 守护：`mockdata/config.json` 必须等于 core 的系统预置（L1 代码默认 ⊕ data/config.toml），
+    /// 即全新安装下 `config.get` 的真实返回值；仅 [`CURATED_MOCK_VALUES`] 中的键可以不同。
+    ///
+    /// mockdata 是 core `Config` 的**手抄镜像**，此前无任何对账，已烂到：缺 45 键、
+    /// 残留 6 个 core 已删除的孤儿键（`input.code_commit.*` 在 6 域重命名时就迁走了、
+    /// `schema.pinyin.candidate_order` 已下线），另有 7 处值停留在 L1 而非成品的 L1⊕L2。
+    /// 后果是 mock 模式下的设置页与真实运行时不是同一个东西，拿它验 UI 会得出错误结论。
+    ///
+    /// 失败时请重新生成 mockdata，而不是逐个手改。
+    #[test]
+    fn mock_config_matches_core_system_preset() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../WindInput/data");
+        let preset =
+            wind_config::Config::system_preset_value(Some(&data)).expect("读取 core 系统预置失败");
+        let cfg: wind_config::Config = preset.try_into().expect("系统预置反序列化为 Config 失败");
+        let expect = serde_json::to_value(&cfg).expect("Config 序列化失败");
+        let mock: Value = serde_json::from_str(MOCK_CONFIG).expect("mockdata JSON 解析失败");
+
+        let (mut e, mut m) = (Default::default(), Default::default());
+        json_leaves("", &expect, &mut e);
+        json_leaves("", &mock, &mut m);
+        assert!(!e.is_empty(), "core 预置为空，对账无意义");
+
+        let mut problems = Vec::new();
+        for (key, want) in &e {
+            match m.get(key) {
+                None => problems.push(format!("mockdata 缺键: {key}")),
+                Some(got) if got != want && !CURATED_MOCK_VALUES.contains(&key.as_str()) => {
+                    problems.push(format!("{key}: mock={got} core={want}"));
+                }
+                _ => {}
+            }
+        }
+        for key in m.keys().filter(|k| !e.contains_key(*k)) {
+            problems.push(format!("mockdata 多余键（core 已无此键）: {key}"));
+        }
+        assert!(
+            problems.is_empty(),
+            "mockdata/config.json 与 core 系统预置漂移 {} 处，请重新生成：\n{}",
+            problems.len(),
+            problems.join("\n")
+        );
+    }
+
+    /// 守护：策展名单不能腐烂——列进去的键必须真的与预置不同，否则说明它已可回归自动对账。
+    #[test]
+    fn curated_mock_values_still_differ() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../WindInput/data");
+        let preset = wind_config::Config::system_preset_value(Some(&data)).expect("读取预置失败");
+        let cfg: wind_config::Config = preset.try_into().expect("反序列化失败");
+        let expect = serde_json::to_value(&cfg).expect("序列化失败");
+        let mock: Value = serde_json::from_str(MOCK_CONFIG).expect("解析失败");
+
+        let (mut e, mut m) = (Default::default(), Default::default());
+        json_leaves("", &expect, &mut e);
+        json_leaves("", &mock, &mut m);
+        for key in CURATED_MOCK_VALUES {
+            assert!(e.contains_key(*key), "策展键已不在 core 配置中: {key}");
+            assert_ne!(
+                m.get(*key),
+                e.get(*key),
+                "{key} 现在与 core 预置相同，请从 CURATED_MOCK_VALUES 移除"
+            );
+        }
+    }
+
+    /// mock 的 `config.getDefaults` 必须给出可用的 Config（此前返回空对象，
+    /// 导致 mock 模式下「恢复默认」静默无效）。
+    #[test]
+    fn mock_get_defaults_returns_config_shape() {
+        let d = mock_reply("config.getDefaults");
+        assert!(d.is_object(), "getDefaults 应返回对象");
+        assert!(
+            d.get("schema").and_then(|s| s.get("active")).is_some(),
+            "getDefaults 应是 Config 形状（含 schema.active），实际: {d}"
+        );
+    }
+
     #[test]
     fn test_mock_reply_shapes() {
         // 确保 mock 返回合理的 JSON 结构
@@ -441,7 +546,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             "slug": "default",
             "toml": "base = \"_qingfeng\"\n\n[meta]\nname = \"清风·蓝\"\nversion = \"1.0\"\nauthor = \"清风输入法\"\n"
         }),
-        "config.getDefaults" | "schema.references" => {
+        // mockdata 就是「无用户层的系统预置」，正是 getDefaults 的语义，故直接复用。
+        // 此前这里返回空对象，Config::from_value({}) 拿不到任何值——mock 模式下
+        // 「恢复默认」是静默失效的，点了没反应也没有报错。
+        "config.getDefaults" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
+        "schema.references" => {
             json!({})
         }
         // 按方案 id 分流：码表方案返回 dictionaries（含主库 + 三个附加库，

@@ -1,13 +1,39 @@
 {
  "schema": {
   "active": "wubi86",
-  "available": ["wubi86", "pinyin_simp"],
+  "available": [
+   "wubi86",
+   "pinyin_simp"
+  ],
   "primary_codetable": "",
   "primary_pinyin": "",
+  "codetable": {
+   "top_code_commit": true,
+   "clear_on_empty_max": false,
+   "auto_commit_at_full": false,
+   "auto_commit_min_len": 0,
+   "punct_commit": true,
+   "show_code_hint": true,
+   "single_code_input": false,
+   "single_code_complete": true,
+   "z_key_repeat": true,
+   "frequency": {
+    "enabled": false,
+    "protect_top_n": 1,
+    "strategy": "top"
+   },
+   "auto_phrase": {
+    "enabled": false,
+    "min_phrase_len": 2,
+    "max_phrase_len": 5,
+    "promote_count": 0,
+    "idle_timeout_ms": 0,
+    "temp_max_entries": 5000
+   }
+  },
   "pinyin": {
    "show_code_hint": true,
    "use_smart_compose": true,
-   "candidate_order": "smart",
    "separator": "auto",
    "fuzzy": {
     "enabled": false,
@@ -22,26 +48,51 @@
     "in_ing": false,
     "ian_iang": false,
     "uan_uang": false
+   },
+   "frequency": {
+    "enabled": true,
+    "half_life": 0.0,
+    "base_scale": 0.0,
+    "recency_peak": 0.0
+   },
+   "auto_learn": {
+    "enabled": true,
+    "min_word_length": 0,
+    "promote_count": 0
    }
+  },
+  "mix": {
+   "show_source_hint": false,
+   "enable_english": false,
+   "pinyin_only_overflow": true,
+   "top_code_override_pinyin": false,
+   "auto_commit_block_on_pinyin": true,
+   "auto_commit_block_on_english": false,
+   "min_pinyin_length": 2,
+   "min_english_length": 3,
+   "block_commit_on_pinyin_word": true,
+   "pinyin_word_min_weight": 0,
+   "enable_pinyin_abbrev": true
   },
   "quick_input": {
    "enabled": true,
    "decimal_places": 6,
-   "force_vertical": false
+   "force_vertical": true,
+   "enable_english": true
   },
   "special_modes": [],
   "mix_modes": [
    {
     "id": "quick_mix",
-    "members": [
-     "quick_input",
-     "$primary_pinyin",
-     "english"
-    ],
     "name": "快捷",
     "short_name": "快",
     "trigger_keys": [
      "semicolon"
+    ],
+    "members": [
+     "quick_input",
+     "$primary_pinyin",
+     "english"
     ]
    }
   ]
@@ -55,7 +106,8 @@
    "remember_last_state": false,
    "chinese_mode": true,
    "full_width": false,
-   "chinese_punct": true
+   "chinese_punct": true,
+   "state_scope": "global"
   },
   "punct": {
    "follow_mode": false,
@@ -78,14 +130,13 @@
     "【】",
     "｛｝",
     "《》",
-    "〈〉",
-    "「」",
-    "『』"
+    "〈〉"
    ],
    "english_pairs": [
     "()",
     "[]",
-    "{}"
+    "{}",
+    "<>"
    ],
    "jump_out_keys": [
     "right_symbol"
@@ -115,16 +166,8 @@
     "www.",
     "http",
     "https",
-    "ftp.",
-    "bbs."
+    "ftp."
    ]
-  },
-  "code_commit": {
-   "auto_commit_at_full": false,
-   "auto_commit_min_len": 0,
-   "clear_on_empty_max": false,
-   "top_code_commit": false,
-   "auto_commit_block_on_pinyin": true
   },
   "s2t": {
    "enabled": false,
@@ -156,6 +199,7 @@
   "activate_ime": "ctrl+shift+[",
   "pin_candidate": "ctrl+number",
   "delete_candidate": "ctrl+shift+number",
+  "take_screenshot": "ctrl+shift+f11",
   "global_hotkeys": [],
   "select_key_groups": [
    "semicolon_quote"
@@ -190,12 +234,15 @@
    "index_labels": "",
    "flip_when_above": false,
    "swap_preedit_when_above": false,
-   "pager_in_preedit": false
+   "pager_in_preedit": false,
+   "position_mode": "follow_caret",
+   "custom_x": 0,
+   "custom_y": 0
   },
   "font": {
    "family": "",
    "path": "",
-   "render_mode": ""
+   "render_mode": "directwrite"
   },
   "theme": {
    "name": "default",
@@ -222,7 +269,14 @@
    "offset_x": 0,
    "offset_y": 0,
    "custom_x": 0,
-   "custom_y": 0
+   "custom_y": 0,
+   "items": [
+    "schema",
+    "punct",
+    "full_width",
+    "s2t",
+    "caps"
+   ]
   },
   "toolbar": {
    "visible": true,
@@ -236,9 +290,13 @@
   "track_english": true
  },
  "compat": {
-  "host_render_processes": []
+  "host_render_processes": [
+   "SearchHost.exe"
+  ]
  },
  "debug": {
-  "log_level": ""
+  "log_level": "info",
+  "log_max_size_mb": 10,
+  "log_max_files": 10
  }
 }
