@@ -70,7 +70,7 @@
       "type": "bool"
     },
     {
-      "default": true,
+      "default": false,
       "key": "schema.codetable.frequency.enabled",
       "type": "bool"
     },
@@ -99,7 +99,7 @@
       "type": "int"
     },
     {
-      "default": 10,
+      "default": 5,
       "key": "schema.codetable.auto_phrase.max_phrase_len",
       "type": "int"
     },
@@ -1001,7 +1001,7 @@
       "type": "int"
     },
     {
-      "default": 5,
+      "default": 10,
       "key": "debug.log_max_files",
       "type": "int"
     }

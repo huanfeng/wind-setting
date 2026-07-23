@@ -414,8 +414,8 @@ key = "schema.mix.auto_commit_block_on_pinyin"
 group = "schema"
 section = "混输行为"
 type = "toggle"
-label = "有拼音候选时否决满码上屏"
-hint = "满码自动上屏前若仍有拼音候选则不自动上屏"
+label = "有拼音候选时否决上屏"
+hint = "满码自动上屏与顶码上屏前，若整串仍能查出拼音候选则不自动上屏（不看拼音是否成词）；「顶码优先」开启时无视本项"
 
 [[items]]
 key = "schema.mix.block_commit_on_pinyin_word"
