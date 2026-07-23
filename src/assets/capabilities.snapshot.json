@@ -417,7 +417,7 @@
       "type": "str"
     },
     {
-      "default": "hold_composition",
+      "default": "delete_replace",
       "key": "input.symbol.smart_method",
       "type": "enum",
       "values": [

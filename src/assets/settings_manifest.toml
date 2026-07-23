@@ -521,11 +521,11 @@ group = "input"
 section = "字符与标点"
 type = "select"
 label = "智能符号上屏方案"
-hint = "组合态预览：第一次按键先以预览态显示中文符号，超时或再次按键才真正定型，多数场景更稳（推荐）；直接替换：第一次按键直接上屏中文符号，再次按键删改为英文，交互更简洁，但在少数应用中兼容性略逊于组合态预览"
+hint = "直接替换：第一次按键直接上屏中文符号，再次按键删改为英文，所见即所得、没有中间预览态，实际体感更好（推荐）；组合态预览：第一次按键先以预览态显示中文符号，超时或再次按键才真正定型，全程不做删改，兼容性更好，适合在直接替换下表现异常的应用"
 enabled_when = "input.symbol.smart_mode == true"
 options = [
-  { value = "hold_composition", label = "组合态预览（推荐）" },
-  { value = "delete_replace", label = "直接替换" },
+  { value = "delete_replace", label = "直接替换（推荐）" },
+  { value = "hold_composition", label = "组合态预览（兼容性好）" },
 ]
 
 [[items]]
