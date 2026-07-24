@@ -34,7 +34,7 @@
 检测需把两套命名归一到同一物理键空间再比较。内核的权威解析在
 `wind-config/src/hotkey.rs:322-403`（`parse_key_name`），本应用的归一在 `src/key_conflict.rs`。
 
-- **触发键（单键名）**：`backtick`/`semicolon`/`comma`/`open_bracket`… 直接作物理键；
+- **触发键（单键名）**：`backtick`/`semicolon`/`comma`/`lbracket`… 直接作物理键；
   `key_symbol` 映射为符号（`` ` ``、`;`、`,`、`[`…）。内核接受别名（`.`≡`period`、
   `=`≡`equal`≡`equals`、`-`≡`minus`≡`hyphen`），本应用取值域来自单一 manifest 选项、命名
   统一，故未处理别名（见 §5 局限）。

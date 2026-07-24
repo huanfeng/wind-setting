@@ -782,8 +782,8 @@ options = [
   { value = "period", label = "句号 ( . )" },
   { value = "slash", label = "斜杠 ( / )" },
   { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "open_bracket", label = "左方括号 ( [ )" },
-  { value = "close_bracket", label = "右方括号 ( ] )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
 ]
 
 [[items]]
@@ -852,8 +852,8 @@ options = [
   { value = "period", label = "句号 ( . )" },
   { value = "slash", label = "斜杠 ( / )" },
   { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "open_bracket", label = "左方括号 ( [ )" },
-  { value = "close_bracket", label = "右方括号 ( ] )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
   { value = "z", label = "z 键" },
 ]
 
@@ -875,8 +875,8 @@ options = [
   { value = "period", label = "句号 ( . )" },
   { value = "slash", label = "斜杠 ( / )" },
   { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "open_bracket", label = "左方括号 ( [ )" },
-  { value = "close_bracket", label = "右方括号 ( ] )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
 ]
 
 [[items]]

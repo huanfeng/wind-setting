@@ -28,8 +28,8 @@ pub fn key_symbol(key: &str) -> &str {
         "period" => ".",
         "slash" => "/",
         "backslash" => "\\",
-        "open_bracket" => "[",
-        "close_bracket" => "]",
+        "lbracket" => "[",
+        "rbracket" => "]",
         // ── 候选操作：成组键名（expand 后仍可能出现的组名） ──
         "semicolon_quote" => "; '",
         "comma_period" => ", .",
@@ -251,8 +251,8 @@ mod tests {
         assert_eq!(key_symbol("period"), ".");
         assert_eq!(key_symbol("slash"), "/");
         assert_eq!(key_symbol("backslash"), "\\");
-        assert_eq!(key_symbol("open_bracket"), "[");
-        assert_eq!(key_symbol("close_bracket"), "]");
+        assert_eq!(key_symbol("lbracket"), "[");
+        assert_eq!(key_symbol("rbracket"), "]");
         assert_eq!(key_symbol("z"), "z", "未知键回退原名");
     }
 }
