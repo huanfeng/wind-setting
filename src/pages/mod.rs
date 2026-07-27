@@ -135,14 +135,19 @@ fn input_page(state: &AppState) -> Element {
 
 fn scheme_page(state: &AppState) -> Element {
     let mgr = &state.schema_mgr;
-    let status = mgr.status;
 
-    // 工具栏：左「隐藏未启用」· 中状态文字 · 右[条目操作组｜全局操作组]。
+    // 工具栏：左「隐藏未启用」· 中弹性留白 · 右[条目操作组｜全局操作组]。
     // 条目操作作用于列表选中项，按选中状态/位置/来源禁用（工具栏+选中模式）。
+    //
+    // 中间原是「共 N 个已安装方案」状态文字，已移除：计数不影响任何决策（列表本身
+    // 就能数），却以 weight(1.0) 吃掉全部弹性空间——按钮排不下时先被挤的正是它们。
+    // 腾出的宽度给了「设为当前」，其余按钮一律保持 outline 文字样式：混入图标按钮
+    // （无边框、仅 hover 时显圆底）会在这一排里显得格格不入。
     // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距。
     let st_refresh = mgr.clone();
     let (m_up, e_up) = (mgr.clone(), mgr.clone());
     let (m_dn, e_dn) = (mgr.clone(), mgr.clone());
+    let (m_act, e_act) = (mgr.clone(), mgr.clone());
     let (m_set, e_set) = (mgr.clone(), mgr.clone());
     let (m_del, e_del) = (mgr.clone(), mgr.clone());
     let (m_exp, e_exp) = (mgr.clone(), mgr.clone());
@@ -158,14 +163,7 @@ fn scheme_page(state: &AppState) -> Element {
                 .small()
                 .fg_role(Role::Text),
         )
-        .child(
-            Element::label_rc(status)
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
-                .text_align(Align::Center)
-                .weight(1.0)
-                .max_lines(1),
-        )
+        .child(Element::leaf().weight(1.0))
         .child(
             Element::button("↑")
                 .small()
@@ -185,6 +183,20 @@ fn scheme_page(state: &AppState) -> Element {
                     e_dn.selected_enabled_pos().is_some_and(|(i, t)| i + 1 < t)
                 })
                 .on_click(move |_| m_dn.move_selected(false)),
+        )
+        .child(
+            // 设为当前：即时生效 + 随保存持久化（见 SchemaManagerState::set_active）。
+            // enabled_when 同时读 sel_ver 与 active_ver——选中变了要重估，设完当前
+            // 自身要变灰，两个来源缺一不可。
+            Element::button("设为当前")
+                .small()
+                .outline_soft()
+                .enabled_when(move || {
+                    e_act.sel_ver.get();
+                    e_act.active_ver.get();
+                    e_act.can_set_active()
+                })
+                .on_click(move |_| m_act.set_active_selected()),
         )
         .child(
             Element::button("设置")

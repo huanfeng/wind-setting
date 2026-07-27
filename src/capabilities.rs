@@ -196,7 +196,10 @@ mod tests {
     /// （写着「当前 13 项」而实际 26 项），谁也说不清多出来的到底是哪些、该不该暴露。
     /// 改为显式名单后，任何一个新的未覆盖键都必须在此处具名登记，顺带写清为什么不暴露。
     const UNCOVERED_BY_DESIGN: &[&str] = &[
-        // ① 方案管理：方案列表本身由方案管理弹窗承载，不作为普通设置项。
+        // ① 方案管理：由方案页的输入方案列表承载，不作为普通设置项。
+        //    active   → 工具栏「设为当前」+ 行内「当前」徽章（schema.setActive 即时
+        //               生效，配置值由 state.rs 注册的 writer 随保存写回）；
+        //    available→ 行内启用勾选 + ↑↓ 排序，同样经 writer 写回。
         "schema.active",
         "schema.available",
         "schema.special_modes",

@@ -88,8 +88,11 @@ pub struct SchemaManagerState {
     pub selected_id: Rc<RefCell<Option<String>>>,
     /// 选中变更计数：每次变更自增，触发重布局使行高亮/工具栏 enabled_when 重估。
     pub sel_ver: Signal<u64>,
-    /// 静态状态文字（列表计数等长效信息）。
-    pub status: Signal<String>,
+    /// 当前活跃方案 ID（core `schema.active`）。refresh() 时经 RPC 拉运行时值；
+    /// 「设为当前」时双写（setActive 即时生效 + 由 state.rs 的 writer 随保存持久化）。
+    pub active_id: Rc<RefCell<String>>,
+    /// 当前方案变更计数：与 sel_ver 同理，驱动工具栏「设为当前」按钮 enabled_when 重估。
+    pub active_ver: Signal<u64>,
     /// 操作反馈（三态 kind + 消息）：经 toast_sink 弹单条 toast，替代原 status 式提示。
     pub feedback: crate::pages::dict::reactive::Feedback,
     pub confirm_visible: Signal<bool>,
@@ -132,7 +135,8 @@ impl SchemaManagerState {
             hide_disabled: signal(false),
             selected_id: Rc::new(RefCell::new(None)),
             sel_ver: signal(0),
-            status: signal(String::new()),
+            active_id: Rc::new(RefCell::new(String::new())),
+            active_ver: signal(0),
             feedback: signal(None),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
@@ -290,6 +294,16 @@ impl SchemaManagerState {
             .unwrap_or_default();
         *self.layouts.borrow_mut() = layouts;
 
+        // 当前活跃方案：取 core 的**运行时**状态（`schema.active` RPC），而非配置里的
+        // 同名键——后者只是启动初值，用户可能已在别处（托盘/快捷键）切过方案。
+        // 拉不到时保持原值，避免"当前"标记因一次 RPC 抖动而消失。
+        if let Some(id) = rpc::call_core("schema.active", &json!({}))
+            .ok()
+            .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(str::to_string))
+        {
+            *self.active_id.borrow_mut() = id;
+        }
+
         let order = self.enabled_order.borrow();
         let all_enabled = order.is_empty();
 
@@ -368,7 +382,6 @@ impl SchemaManagerState {
             .unwrap_or_default();
         drop(order);
 
-        let count = entries.len();
         *self.schemas.borrow_mut() = entries;
 
         // 选中项已不存在（如被删除/刷新后消失）则清空选中。
@@ -380,7 +393,8 @@ impl SchemaManagerState {
         if stale {
             self.clear_selection();
         }
-        self.status.set(format!("共 {count} 个已安装方案"));
+        // 活跃方案可能在 core 侧被切换过（托盘/快捷键），bump 让工具栏按钮重估。
+        self.bump_active();
         self.rebuild_list();
     }
 
@@ -400,6 +414,72 @@ impl SchemaManagerState {
 
     fn bump_sel(&self) {
         self.sel_ver.set(self.sel_ver.get().wrapping_add(1));
+    }
+
+    fn bump_active(&self) {
+        self.active_ver.set(self.active_ver.get().wrapping_add(1));
+    }
+
+    // ── 当前方案（schema.active） ─────────────────────────────
+
+    /// 该 ID 是否为当前活跃方案（行内「当前」徽章用）。
+    pub fn is_active(&self, id: &str) -> bool {
+        self.active_id.borrow().as_str() == id
+    }
+
+    /// 该 ID 是否处于启用状态。以 enabled_order 为准（含未保存的改动），
+    /// 而非 SchemaEntry::enabled——后者是 refresh 时的快照，toggle 后不更新。
+    fn is_enabled(&self, id: &str) -> bool {
+        schema_is_enabled(&self.enabled_order.borrow(), id)
+    }
+
+    /// 选中项能否「设为当前」：有选中 · 已启用 · 且尚不是当前方案。
+    pub fn can_set_active(&self) -> bool {
+        can_activate(
+            &self.enabled_order.borrow(),
+            &self.active_id.borrow(),
+            self.selected_id.borrow().as_deref(),
+        )
+    }
+
+    /// 将选中方案设为当前（工具栏按钮）。
+    pub fn set_active_selected(&self) {
+        let Some(id) = self.selected_id.borrow().clone() else {
+            return;
+        };
+        self.set_active(&id);
+    }
+
+    /// 将指定方案设为当前输入方案：**即时生效 + 随保存持久化**（双写）。
+    ///
+    /// 双写是必需的，不是保险：core 的 `EngineManager::switch_schema` 只改运行时的
+    /// 活跃方案，**不写配置**；而「应用设置」触发的 `reload_from_config` 会用配置里的
+    /// `schema.active` 重置活跃方案。只调 RPC 的话，用户设为当前后再保存一次设置，
+    /// 活跃方案就会跳回去。故此处 RPC 让它立刻生效，同时更新 `active_id`——
+    /// state.rs 注册的 writer 会在保存时把它写进 `schema.active`。
+    pub fn set_active(&self, schema_id: &str) {
+        if self.is_active(schema_id) {
+            return;
+        }
+        if !self.is_enabled(schema_id) {
+            self.notify(ToastKind::Error, "请先启用该方案，再设为当前");
+            return;
+        }
+        match rpc::call_core("schema.setActive", &json!({ "id": schema_id })) {
+            Ok(v) if v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false) => {
+                *self.active_id.borrow_mut() = schema_id.to_string();
+                self.bump_active();
+                self.rebuild_list(); // 「当前」徽章跟随移动
+                self.notify(ToastKind::Success, "已切换当前方案");
+            }
+            // ok=false：core 未能加载该方案（如方案文件损坏，或启用状态尚未保存到
+            // 配置、core 侧还不认这个方案）。
+            Ok(_) => self.notify(
+                ToastKind::Error,
+                "切换失败：方案未能加载，若刚启用请先「应用设置」",
+            ),
+            Err(e) => self.notify(ToastKind::Error, format!("切换失败: {e}")),
+        }
     }
 
     /// 该 ID 是否为当前选中（行高亮用）。
@@ -509,6 +589,15 @@ impl SchemaManagerState {
                 order.push(schema_id.to_string());
             }
         } else {
+            // 守护：当前方案不可禁用。放在展开/计数守护之前——它的成因更具体，
+            // 提示也更有指导性（告诉用户该先做什么，而不是笼统说"至少留一个"）。
+            if self.is_active(schema_id) {
+                self.notify(
+                    ToastKind::Error,
+                    "当前方案不可禁用，请先将其他方案设为当前",
+                );
+                return false;
+            }
             let mut order = self.enabled_order.borrow_mut();
             // 若当前全部启用（order 为空），需先展开为全部 ID 再逐一 retain
             if order.is_empty() {
@@ -863,6 +952,21 @@ impl SchemaManagerState {
     }
 }
 
+// ──────────────────────── 启用/当前 判定（纯函数） ────────────────────────
+
+/// 方案是否启用。**空 order 表示「全部启用」**——这是全仓一致的语义
+/// （见 `rebuild_list` / `toggle_schema_enabled`），漏掉它会让首次加载、
+/// 配置为空时所有方案都被判成未启用。
+fn schema_is_enabled(order: &[String], id: &str) -> bool {
+    order.is_empty() || order.iter().any(|x| x == id)
+}
+
+/// 选中项能否「设为当前」：有选中 · 已启用 · 且尚不是当前方案。
+fn can_activate(order: &[String], active: &str, selected: Option<&str>) -> bool {
+    let Some(id) = selected else { return false };
+    id != active && schema_is_enabled(order, id)
+}
+
 // ──────────────────────── 显示辅助 ────────────────────────
 
 /// 沿路径逐层确保对象存在后写入叶子值（中间层非对象时覆盖为对象；根非对象则不写）。
@@ -1054,6 +1158,18 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
             )
     };
 
+    // ── 「当前」徽章：仅活跃方案显示，accent 实心（与 outline 的类型徽章拉开层次，
+    //    一眼能从整列里挑出来）。列表由 rebuild_list 整体重建，故无需响应式包装。
+    let current_badge = mgr.is_active(&entry.id).then(|| {
+        Element::label("当前")
+            .font_size(10.5)
+            .font_weight(600)
+            .fg_role(Role::OnAccent)
+            .padding_xy(6, 2)
+            .corner(4.0)
+            .bg_role(Role::Accent)
+    });
+
     // ── 类型徽章（outline 风格，直接子节点保证垂直居中）──
     let type_badge = Element::label(engine_label(&entry.engine_type))
         .font_size(10.5)
@@ -1087,9 +1203,13 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
         .spacing(6)
         .corner(8.0)
         .child(checkbox)
-        .child(name_col)
-        .child(type_badge)
-        .child(source_badge);
+        .child(name_col);
+
+    if let Some(badge) = current_badge {
+        row = row.child(badge);
+    }
+
+    row = row.child(type_badge).child(source_badge);
 
     if !entry.version.is_empty() {
         row = row.child(
@@ -1498,6 +1618,27 @@ mod ext_dict_tests {
         );
         assert!(rows[3].enabled, "d: 无字段 → 默认 true");
         assert_eq!(rows[0].description, "描述A");
+    }
+
+    /// 空 order = 全部启用。这条语义在 rebuild_list/toggle 里各写了一遍，
+    /// 抽成谓词后由本测试统一守住。
+    #[test]
+    fn empty_order_means_all_enabled() {
+        assert!(schema_is_enabled(&[], "anything"));
+        let order = vec!["a".to_string(), "b".to_string()];
+        assert!(schema_is_enabled(&order, "a"));
+        assert!(!schema_is_enabled(&order, "c"));
+    }
+
+    #[test]
+    fn can_activate_requires_selected_enabled_and_not_current() {
+        let order = vec!["a".to_string(), "b".to_string()];
+        assert!(!can_activate(&order, "a", None), "无选中 → 不可用");
+        assert!(!can_activate(&order, "a", Some("a")), "已是当前 → 不可用");
+        assert!(!can_activate(&order, "a", Some("c")), "未启用 → 不可用");
+        assert!(can_activate(&order, "a", Some("b")), "已启用的非当前项 → 可用");
+        // 全部启用（order 空）时，任何非当前方案都可设为当前。
+        assert!(can_activate(&[], "a", Some("z")));
     }
 
     #[test]

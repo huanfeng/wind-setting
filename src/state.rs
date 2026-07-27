@@ -247,6 +247,22 @@ impl AppState {
             }));
         }
 
+        // 注册 schema.active 写回器：把「设为当前」的选择持久化。
+        //
+        // core 的 switch_schema 只改运行时活跃方案不写配置，而保存设置触发的
+        // reload_from_config 会用配置里的 schema.active 重置它——不在这里写回的话，
+        // 用户设为当前后再点一次「应用设置」，活跃方案就被打回原样。
+        // 空串跳过：active_id 尚未从 RPC 拉到（离线/未连接）时不该把配置清空。
+        {
+            let active = schema_mgr.active_id.clone();
+            fields.writers.borrow_mut().push(Box::new(move |cfg| {
+                let id = active.borrow().clone();
+                if !id.is_empty() {
+                    cfg.set_path("schema.active", Value::String(id));
+                }
+            }));
+        }
+
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),

@@ -480,6 +480,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "id": "double_pinyin", "name": "双拼", "engineType": "pinyin", "scheme": "shuangpin",
               "builtin": false, "version": "0.5.0", "description": "双拼输入方案（布局可在设置中切换）" }
         ]),
+        // 当前活跃方案（core 的运行时状态）。取值必须在上面的 schema.list 内，
+        // 否则 mock 模式下「当前」徽章会无处落脚。
+        "schema.active" => json!({ "id": "wubi86" }),
+        // mock 无状态：只回 ok，UI 侧自行更新 active_id（真实 core 才有切换副作用）。
+        "schema.setActive" => json!({ "ok": true }),
         // 双拼布局清单：core 侧合并扫描 schemas/shuangpin/*.toml（安装+用户目录）后返回。
         "schema.layouts" => json!([
             { "id": "abc", "name": "智能ABC" },
