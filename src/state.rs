@@ -536,7 +536,7 @@ impl AppState {
     /// 只认当前用得上的事件，其余记 debug 后忽略。特别是 `config.changed`：core 是在
     /// **本端写配置后**才广播它的（dispatch 的 setItems/reload），拿它去重载配置会变成
     /// 「自己保存 → 自己重载」的回环，故不接。
-    pub fn on_core_event(&self, ev: &crate::rpc::CoreEvent) {
+    pub fn on_core_event(&mut self, ev: &crate::rpc::CoreEvent) {
         match ev.event.as_str() {
             "schema.activeChanged" => {
                 if let Some(id) = ev.data.get("id").and_then(|v| v.as_str()) {
@@ -544,8 +544,48 @@ impl AppState {
                     self.schema_mgr.set_active_from_core(id);
                 }
             }
+            // core 侧配置落盘（托盘/右键菜单、快捷键、命令栏改的配置）。
+            // dispatch 层在 setItems/reload 后也发同名事件，但不带 key，由下面的
+            // 取值失败自然跳过——那条是本端自己写的，无需处理。
+            "config.changed" => {
+                let (Some(key), Some(value)) =
+                    (ev.data.get("key").and_then(|v| v.as_str()), ev.data.get("value"))
+                else {
+                    return;
+                };
+                self.apply_external_config_change(key, value.clone());
+            }
             other => tracing::debug!("忽略 core 事件: {}", other),
         }
+    }
+
+    /// 把 core 侧落盘的单个配置项同步进界面。
+    ///
+    /// 两件事缺一不可：
+    /// - 更新 `base_config`，否则保存时的增量 diff 会把这一项当成"本端改的"再写一遍；
+    /// - 调该 key 的 loader 把值灌回 Signal，界面才跟着变。
+    ///
+    /// 未在清单登记的 key（如拖动落位写的 `ui.status.custom_x`）只更新 base，不找
+    /// loader——它们本就不在设置页露出。
+    ///
+    /// 取舍：若用户此刻正在设置页编辑同一项，这里会覆盖掉他的未保存改动。没有为此
+    /// 加脏标记，因为"同时在菜单和设置页改同一项"几乎不会发生，而外部改动优先也是
+    /// 说得通的语义；加了反而要维护逐项脏状态。
+    pub fn apply_external_config_change(&mut self, key: &str, value: Value) {
+        self.base_config.set_path(key, value.clone());
+        self.current_config.set_path(key, value);
+
+        // 同一配置路径可能有多个控件（视图 key 形如 `<路径>#<视图名>`），逐个灌回。
+        let cfg = self.base_config.clone();
+        let loaders = self.fields.loaders.borrow();
+        let mut hit = 0usize;
+        for (k, l) in loaders.iter() {
+            if loader_key_matches(k, key) {
+                l(&cfg);
+                hit += 1;
+            }
+        }
+        tracing::debug!("外部配置变更 {} → 回填 {} 个控件", key, hit);
     }
 
     /// 后台消息 → Signal。**在 UI 线程回调中执行**（`App::channel` 保证）。
@@ -1263,6 +1303,18 @@ impl LoadedState {
 ///
 /// `enabled_order` 为空表示「全部启用」（与 `SchemaManagerState` 语义一致），此时段①②内部按 `schemas` 原始序。
 /// 排序稳定：段号相同者保持相对顺序。
+/// 清单项 key 是否对应配置路径 `path`。
+///
+/// 命中两种形态：路径本身，以及同一路径的视图 key `<路径>#<视图名>`（同一配置项
+/// 需要两个控件时的约定，见 [`FieldRegistry::loaders`]）。**`#` 分隔符不可省**——
+/// 直接用 `starts_with(path)` 会让 `ui.status.display_mode` 误伤
+/// `ui.status.display_mode_extra` 这类同前缀的邻居键，且错了是静默的。
+fn loader_key_matches(loader_key: &str, path: &str) -> bool {
+    loader_key
+        .strip_prefix(path)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('#'))
+}
+
 pub(crate) fn order_schemas_for_dict(
     schemas: &[SchemaInfo],
     enabled_order: &[String],
@@ -1751,6 +1803,19 @@ mod tests {
         assert!(source.contains("refresh_theme_names()"));
         assert!(source.contains("theme_import_dialog_visible.set(false)"));
         assert!(source.contains("已导入主题："));
+    }
+
+    /// 守护：外部配置变更回填时的 key 匹配规则。
+    /// 匹配少了 → 界面不更新；匹配多了 → 改 A 却顺手覆盖了同前缀的 B。两种都是静默的。
+    #[test]
+    fn loader_key_matches_path_and_view_keys() {
+        let p = "ui.status.display_mode";
+        assert!(loader_key_matches(p, p), "路径本身");
+        assert!(loader_key_matches("ui.status.display_mode#compact", p), "视图 key");
+        // 同前缀的邻居键不可误伤——少了 '#' 判断就会中招。
+        assert!(!loader_key_matches("ui.status.display_mode_extra", p));
+        assert!(!loader_key_matches("ui.status.display", p));
+        assert!(!loader_key_matches("ui.theme.name", p));
     }
 
     #[test]
