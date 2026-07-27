@@ -1652,6 +1652,7 @@ dependencies = [
  "thiserror",
  "toml 0.8.23",
  "tracing",
+ "wind-quick-input",
 ]
 
 [[package]]
@@ -1663,6 +1664,13 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "wind-quick-input"
+version = "0.1.0"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

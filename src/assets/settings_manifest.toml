@@ -773,7 +773,7 @@ group = "input"
 section = "快捷输入"
 type = "dialog_button_mix_trigger"
 label = "快捷输入触发键"
-hint = "闲时按触发键进入快捷（日期/计算/拼音/英文融合）模式；可多选。修改的是「快捷」混合模式实例的触发键"
+hint = "闲时按触发键进入快捷（日期/计算/拼音/英文融合）模式；可多选。全部取消勾选即禁用快捷输入"
 options = [
   { value = "backtick", label = "反引号 ( ` )" },
   { value = "semicolon", label = "分号 ( ; )" },
@@ -786,13 +786,25 @@ options = [
   { value = "rbracket", label = "右方括号 ( ] )" },
 ]
 
+# 候选来源：与触发键读写同一个 core 键（schema.mix_modes 里 quick_mix 的 members），
+# 故用视图 key `#members` 另立一项——清单按 key 索引，同 key 两项后者会覆盖前者。
+# value = core 成员 id；声明序 = 新增成员的插入位置，须与 core 的 default_mix_modes() 一致
+# （由 mix_members_options_match_core_default_order 守护）。
 [[items]]
-key = "schema.quick_input.enabled"
+key = "schema.mix_modes#members"
 group = "input"
 section = "快捷输入"
-type = "toggle"
-label = "快捷输入（日期/计算）"
-hint = "支持数字转大小写/金额、计算器、日期等快捷输入"
+type = "dialog_button_mix_members"
+label = "快捷候选来源"
+hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选；列表顺序即候选优先级，调整顺序请直接编辑配置文件的 members"
+options = [
+  { value = "quick_input.calc", label = "计算", hint = "算式求值，如 1+2*3、5^2、(1+2)/4" },
+  { value = "quick_input.date", label = "日期 / 年月", hint = "如 12.25 → 今年12月25日；2026.3 → 2026年3月" },
+  { value = "quick_input.number", label = "数字 / 金额", hint = "中文数字、财务大写、千分位；算式结果也会转换" },
+  { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
+  { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
+  { value = "english", label = "英文", hint = "英文词库候选" },
+]
 
 [[items]]
 key = "schema.quick_input.force_vertical"
@@ -801,7 +813,6 @@ section = "快捷输入"
 type = "toggle"
 label = "强制竖排显示"
 hint = "快捷输入时候选窗口强制使用竖排布局，退出后恢复原布局"
-enabled_when = "schema.quick_input.enabled == true"
 
 [[items]]
 key = "schema.quick_input.decimal_places"
@@ -812,15 +823,6 @@ label = "小数保留位数"
 hint = "计算结果最多保留的小数位数（0 表示取整）"
 min = 0
 max = 6
-enabled_when = "schema.quick_input.enabled == true"
-
-[[items]]
-key = "schema.quick_input.enable_english"
-group = "input"
-section = "快捷输入"
-type = "toggle"
-label = "启用英文候选"
-hint = "快捷输入模式下混入英文词库候选（低优先级，排在拼音后）"
 
 # ── 临时拼音 ──
 [[items]]

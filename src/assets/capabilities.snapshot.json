@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.110.0",
+  "appVersion": "0.111.3",
   "configKeys": [
     {
       "default": "wubi86",
@@ -284,11 +284,6 @@
       "type": "bool"
     },
     {
-      "default": true,
-      "key": "schema.quick_input.enabled",
-      "type": "bool"
-    },
-    {
       "default": 6,
       "key": "schema.quick_input.decimal_places",
       "type": "int"
@@ -296,11 +291,6 @@
     {
       "default": true,
       "key": "schema.quick_input.force_vertical",
-      "type": "bool"
-    },
-    {
-      "default": true,
-      "key": "schema.quick_input.enable_english",
       "type": "bool"
     },
     {
@@ -313,7 +303,10 @@
         {
           "id": "quick_mix",
           "members": [
-            "quick_input",
+            "quick_input.calc",
+            "quick_input.date",
+            "quick_input.number",
+            "quick_input.repeat",
             "$primary_pinyin",
             "english"
           ],
@@ -737,6 +730,16 @@
       "default": false,
       "key": "ui.candidate.hide_window",
       "type": "bool"
+    },
+    {
+      "default": 0.8,
+      "key": "ui.candidate.first_show_settle_ratio",
+      "type": "float"
+    },
+    {
+      "default": 100,
+      "key": "ui.candidate.fast_typing_window_ms",
+      "type": "int"
     },
     {
       "default": 18,

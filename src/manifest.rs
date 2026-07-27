@@ -59,6 +59,33 @@ pub struct MItem {
 pub struct MOption {
     pub value: String,
     pub label: String,
+    /// 该项的补充说明。条目开关式对话框（`dialog_button_mix_members`）渲染成行副标题；
+    /// 网格式控件忽略它。
+    pub hint: String,
+}
+
+/// 解析 `[{value, label, hint}]` 选项数组；非数组/缺 value 的项跳过，label 缺省取 value。
+fn parse_options(v: Option<&Value>) -> Vec<MOption> {
+    v.and_then(|x| x.as_array())
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    let value = o.get("value").and_then(|x| x.as_str())?.to_string();
+                    let label = o
+                        .get("label")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or(&value)
+                        .to_string();
+                    let hint = o
+                        .get("hint")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    Some(MOption { value, label, hint })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 一个分组（→ Tab）。来自 manifest 的 `groups`，按 order 排序。
@@ -118,23 +145,7 @@ impl Manifest {
                 if key.is_empty() {
                     continue;
                 }
-                let options = it
-                    .get("options")
-                    .and_then(|x| x.as_array())
-                    .map(|opts| {
-                        opts.iter()
-                            .filter_map(|o| {
-                                let value = o.get("value").and_then(|x| x.as_str())?.to_string();
-                                let label = o
-                                    .get("label")
-                                    .and_then(|x| x.as_str())
-                                    .unwrap_or(&value)
-                                    .to_string();
-                                Some(MOption { value, label })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let options = parse_options(it.get("options"));
                 let item = MItem {
                     key: key.to_string(),
                     group: str_field(it, "group"),
@@ -305,7 +316,9 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "string" => build_string(state, key, item, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
-        "dialog_button_mix_trigger" => build_dialog_button(state, key, item, cfg),
+        "dialog_button_mix_trigger" | "dialog_button_mix_members" => {
+            build_dialog_button(state, key, item, cfg)
+        }
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     }
 }
@@ -1287,11 +1300,19 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
 
 /// 按 capability 类型分派构建对话框主体，挂到根，返回控制其显隐的 `visible` Signal。
 fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
-    let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
-    // 快捷输入激活键：schema.mix_modes 数组整体，按 id=="quick_mix" 定位其中一项的
-    // trigger_keys 字段，不是通用 strlist/map 形态，走非声明式整体读写。
-    if key == "schema.mix_modes" {
+    let cap_ty = state
+        .capabilities
+        .entries
+        .get(crate::capabilities::config_path_of(key))
+        .map(|e| e.ty.as_str())
+        .unwrap_or("");
+    // 快捷输入的两项都读写 schema.mix_modes 数组整体（按 id=="quick_mix" 定位其中一项的
+    // trigger_keys / members 字段），不是通用 strlist/map 形态，走非声明式整体读写。
+    // 按**控件类型**分派而非 key：两者的配置路径相同，只有 type 能区分。
+    if item.typ == "dialog_button_mix_trigger" {
         build_dialog_button_mix_trigger(state, item, cfg)
+    } else if item.typ == "dialog_button_mix_members" {
+        build_dialog_button_mix_members(state, key, item, cfg)
     } else if key == "input.punct.custom_mappings" {
         // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
         build_dialog_button_punct(state, key, cfg)
@@ -1516,6 +1537,8 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
 
     // loader：apply_loaded/重新加载/重置时把 Signal 状态从当前 Config 灌回；找不到 quick_mix
     // 项时回落到 QUICK_MIX_DEFAULT_TRIGGER（对齐主仓 default_mix_modes 的默认触发键）。
+    // 注册在**清单项 key** 下（触发键项就是 mix_modes_path 本身；候选来源项另用视图 key），
+    // 两者互不覆盖。
     let sigs_l = sigs.clone();
     state.fields.loaders.borrow_mut().insert(
         mix_modes_path.to_string(),
@@ -1541,6 +1564,84 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
         labels,
         vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()],
     );
+    register_dialog(state, dlg);
+    visible
+}
+
+/// dialog_button_mix_members：条目开关式编辑内置「快捷」融合的候选来源（core 侧 `members`）。
+///
+/// core 把 members 当作候选来源的单一真相源——**有无即开关、顺序即优先级**。界面只管
+/// 开关这一维，顺序由 `patch_mix_mode_members` 保序写回（不打乱手写配置，也不丢掉界面
+/// 不认识的成员）；调整优先级留给直接编辑配置文件的高级用户。
+///
+/// 清单项用**视图 key**（`schema.mix_modes#members`）与触发键项区分——`Manifest.items`
+/// 按 key 索引，同 key 两项后者会覆盖前者。写回路径仍是真实的 `schema.mix_modes`。
+fn build_dialog_button_mix_members(
+    state: &AppState,
+    view_key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::{ToggleRow, build_toggle_rows_dialog};
+    use crate::mix_members::{mix_mode_members, patch_mix_mode_members};
+
+    let mix_modes_path = "schema.mix_modes";
+    let managed: Vec<String> = item.options.iter().map(|o| o.value.clone()).collect();
+    // 与触发键控件同理：cfg 可能是 AppState::empty() 的占位配置，writer/loader 须无条件注册。
+    let cur_arr: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
+    let cur = mix_mode_members(&cur_arr, QUICK_MIX_ID).unwrap_or_else(|| managed.clone());
+
+    let rows: Vec<ToggleRow> = item
+        .options
+        .iter()
+        .map(|o| ToggleRow {
+            value: o.value.clone(),
+            label: o.label.clone(),
+            desc: o.hint.clone(),
+            sig: signal(cur.contains(&o.value)),
+        })
+        .collect();
+    let sigs: Vec<(String, Signal<bool>)> =
+        rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
+    let visible = signal(false);
+
+    let sigs_w = sigs.clone();
+    let managed_w = managed.clone();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let selected: Vec<String> = sigs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(v, _)| v.clone())
+                .collect();
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            if let Some(patched) = patch_mix_mode_members(&arr, QUICK_MIX_ID, &managed_w, &selected)
+            {
+                c.set_path(mix_modes_path, Value::Array(patched));
+            }
+        }));
+
+    // loader 注册在视图 key 下：`reset_current_page` 按清单 key 反查，用真实路径会与
+    // 触发键项互相覆盖。
+    let sigs_l = sigs.clone();
+    let managed_l = managed.clone();
+    state.fields.loaders.borrow_mut().insert(
+        view_key.to_string(),
+        Box::new(move |c: &Config| {
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            // 找不到 quick_mix（空配置/恢复默认）时回落「全开」，与 core 默认成员一致。
+            let cur = mix_mode_members(&arr, QUICK_MIX_ID).unwrap_or_else(|| managed_l.clone());
+            for (v, s) in &sigs_l {
+                s.set(cur.iter().any(|m| m == v));
+            }
+        }),
+    );
+
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed);
     register_dialog(state, dlg);
     visible
 }
@@ -1961,6 +2062,63 @@ mod tests {
             let found = secs.iter().find(|(s, _)| s == name);
             assert!(found.is_some(), "schema 组缺少 section「{name}」");
             assert!(!found.unwrap().1.is_empty(), "section「{name}」为空");
+        }
+    }
+
+    /// 守护：候选来源选项必须与 core 的默认 members **逐字同序**。
+    ///
+    /// 声明序在两处生效：新勾选成员的插入位置、以及对话框「恢复默认」的目标集合。
+    /// 与 core 漂移（core 加了来源 / 改了默认序）时界面会静默少一个开关或把成员插错位置，
+    /// 故在此对账而不是靠人工同步。
+    #[test]
+    fn mix_members_options_match_core_default_order() {
+        let m = Manifest::from_embedded();
+        let item = m
+            .get("schema.mix_modes#members")
+            .expect("清单缺候选来源项");
+        let declared: Vec<&str> = item.options.iter().map(|o| o.value.as_str()).collect();
+        let core = wind_config::config::Config::default();
+        let core_members: Vec<&str> = core.schema.mix_modes[0]
+            .members
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(
+            declared, core_members,
+            "候选来源选项与 core default_mix_modes() 的成员序漂移"
+        );
+    }
+
+    /// 守护：触发键与候选来源是**两个独立清单项**，且读写同一个配置路径。
+    /// 合成一项（或两项同 key）会让 `Manifest.items` 后者覆盖前者、loaders 互相挤掉。
+    #[test]
+    fn quick_input_has_two_separate_items_on_same_path() {
+        use crate::capabilities::config_path_of;
+        let m = Manifest::from_embedded();
+        let trigger = m.get("schema.mix_modes").expect("缺触发键项");
+        let members = m.get("schema.mix_modes#members").expect("缺候选来源项");
+        assert_eq!(trigger.typ, "dialog_button_mix_trigger");
+        assert_eq!(members.typ, "dialog_button_mix_members");
+        assert_eq!(
+            config_path_of("schema.mix_modes#members"),
+            "schema.mix_modes",
+            "视图 key 必须解析回真实配置路径"
+        );
+        // 两项都在「快捷输入」分区，且各自独立成行（不是同一个对话框的两段）
+        assert_eq!(trigger.section, "快捷输入");
+        assert_eq!(members.section, "快捷输入");
+    }
+
+    /// 守护：每个候选来源都带说明文字——条目开关式对话框的意义就在于放得下说明，
+    /// 缺说明的项会渲染成一行光秃秃的开关。
+    #[test]
+    fn mix_members_options_all_have_hints() {
+        let m = Manifest::from_embedded();
+        let item = m
+            .get("schema.mix_modes#members")
+            .expect("清单缺候选来源项");
+        for o in &item.options {
+            assert!(!o.hint.is_empty(), "候选来源 `{}` 缺说明文字", o.value);
         }
     }
 

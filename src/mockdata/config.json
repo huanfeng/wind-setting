@@ -75,10 +75,8 @@
    "enable_pinyin_abbrev": true
   },
   "quick_input": {
-   "enabled": true,
    "decimal_places": 6,
-   "force_vertical": true,
-   "enable_english": true
+   "force_vertical": true
   },
   "special_modes": [],
   "mix_modes": [
@@ -90,7 +88,10 @@
      "semicolon"
     ],
     "members": [
-     "quick_input",
+     "quick_input.calc",
+     "quick_input.date",
+     "quick_input.number",
+     "quick_input.repeat",
      "$primary_pinyin",
      "english"
     ]
@@ -237,7 +238,9 @@
    "pager_in_preedit": false,
    "position_mode": "follow_caret",
    "custom_x": 0,
-   "custom_y": 0
+   "custom_y": 0,
+   "first_show_settle_ratio": 0.800000011920929,
+   "fast_typing_window_ms": 100
   },
   "font": {
    "family": "",

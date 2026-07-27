@@ -63,7 +63,11 @@ pub struct FieldRegistry {
     pub writers: RefCell<Vec<FieldWriter>>,
     /// key → 当前值取值器（供 enabled_when 联动）。
     pub getters: RefCell<HashMap<String, ValueGetter>>,
-    /// key → 加载器（把给定 Config 的值灌回 Signal；空 Config 时回落 manifest 默认）。
+    /// 清单项 key → 加载器（把给定 Config 的值灌回 Signal；空 Config 时回落 manifest 默认）。
+    ///
+    /// 索引用的是**清单项 key**而非配置路径——`reset_current_page` 拿 manifest 的 key 反查。
+    /// 同一配置路径需要两个控件时，第二个用视图 key（`<路径>#<视图名>`）另立清单项，
+    /// 两者各有独立加载器；直接用同一个 key insert 两次会静默挤掉先注册的那个。
     pub loaders: RefCell<HashMap<String, FieldLoader>>,
     /// dialog_button 的对话框主体。须挂到**根窗口** stack 才能正确全窗模态遮罩；
     /// 若内联在设置行的小 stack 内，`Element::dialog` 的遮罩只填满那一格，表现为

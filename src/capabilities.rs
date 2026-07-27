@@ -68,12 +68,17 @@ impl Capabilities {
     }
 
     /// 守护：清单每个 key ∈ 快照，且控件与类型兼容。返回不一致项描述列表。
+    ///
+    /// **视图 key**（`<配置路径>#<视图名>`）：同一配置路径需要两个独立清单项时用
+    /// （`Manifest.items` 按 key 索引，一个 key 只能有一项）。校验时取 `#` 前的真实路径，
+    /// 故「路径必须存在、控件类型必须兼容」两道守护对视图 key 同样生效。
     pub fn validate(&self, manifest: &Manifest) -> Vec<String> {
         let mut problems = Vec::new();
         for key in &manifest.order {
             let Some(item) = manifest.get(key) else {
                 continue;
             };
+            let key = config_path_of(key);
             match self.entries.get(key) {
                 None => problems.push(format!("[缺失] 清单 key `{key}` 不在 capability 快照中")),
                 Some(entry) => {
@@ -88,6 +93,15 @@ impl Capabilities {
         }
         problems
     }
+}
+
+/// 清单项 key → 它读写的配置路径。
+///
+/// 视图 key `<配置路径>#<视图名>` 取 `#` 前的部分；普通 key 原样返回。
+/// 视图 key 用于「同一配置路径需要两个独立清单项」——如 `schema.mix_modes` 既编辑
+/// 触发键、又编辑候选来源，而 `Manifest.items` 按 key 索引，同 key 两项后者会覆盖前者。
+pub fn config_path_of(key: &str) -> &str {
+    key.split('#').next().unwrap_or(key)
 }
 
 /// 控件类型 ↔ capability 类型兼容判定（见计划 Global Constraints 矩阵）。
@@ -106,6 +120,7 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "checkbox_group" => ty == "strlist",
         "dialog_button" => ty == "str" || ty == "strlist" || ty == "map",
         "dialog_button_mix_trigger" => ty == "structlist",
+        "dialog_button_mix_members" => ty == "structlist",
         _ => false,
     }
 }
@@ -215,6 +230,10 @@ mod tests {
         "debug.log_max_size_mb",
         "input.temp_pinyin.enabled",
         "input.temp_pinyin.hotkey",
+        // 候选窗首显时序调参（core 侧候选窗改造新增）：判断依据是宿主的绘制时序，
+        // 普通用户无从判断，需要时改配置文件。接不接进设置页待 core 侧定稿后评估。
+        "ui.candidate.first_show_settle_ratio",
+        "ui.candidate.fast_typing_window_ms",
         // ⑪ 内部/实验项：顶码上屏的宿主时序策略，仅在宿主表现异常时改配置文件。
         "input.top_commit_mode",
         // ⑫ 拖动落盘的绝对坐标：由用户拖动窗口写入，手填既不直观又会与拖动互相覆盖，
@@ -308,10 +327,29 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "capabilities.snapshot.json 与 core 漂移 {} 处，请重新生成：\n{}",
+            "capabilities.snapshot.json 与 core 漂移 {} 处，请重新生成：\n\
+             cargo test regenerate_capabilities_snapshot -- --ignored\n{}",
             problems.len(),
             problems.join("\n")
         );
+    }
+
+    /// 重新生成检入快照（**非自动运行**，需显式 `-- --ignored`）。
+    ///
+    /// 上面的守护测试要求「重新生成而不是手改 JSON」，此前却没有生成入口，只能手抄
+    /// core 的输出——正是它要防的漂移来源。core 改了配置注册表或默认值后跑：
+    /// `cargo test regenerate_capabilities_snapshot -- --ignored`
+    #[test]
+    #[ignore = "写文件的维护工具，按需显式运行"]
+    fn regenerate_capabilities_snapshot() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fresh = wind_rpc::capabilities::generate(Some(&root.join("../WindInput/data")))
+            .expect("生成 core capability 失败");
+        let path = root.join("src/assets/capabilities.snapshot.json");
+        let mut text = serde_json::to_string_pretty(&fresh).expect("序列化失败");
+        text.push('\n'); // 与检入格式一致（EOF 换行）
+        std::fs::write(&path, text).expect("写入快照失败");
+        println!("已重新生成 {}", path.display());
     }
 
     /// 非失败：报告 capability 中尚未被清单覆盖的 key 数（no-silent-caps）。

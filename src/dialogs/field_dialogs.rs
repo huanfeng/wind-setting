@@ -256,6 +256,106 @@ pub fn build_map_dialog(
     Element::dialog(visible, frame)
 }
 
+/// 条目开关对话框的一行：标签 + 说明 + 开关。
+pub struct ToggleRow {
+    /// 该行代表的值（写回配置用）。
+    pub value: String,
+    /// 行标签。
+    pub label: String,
+    /// 行说明（副标题，可留空）。
+    pub desc: String,
+    /// 开关状态。
+    pub sig: Signal<bool>,
+}
+
+/// 条目开关对话框：每行「标签 + 说明 + 开关」。
+///
+/// 相对复选网格的取舍：网格一行挤两个，只放得下短标签；本对话框一行一项，
+/// 给每项留出说明文字的位置——项数不多但每项需要解释时用它。
+pub fn build_toggle_rows_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    hint: &str,
+    rows: Vec<ToggleRow>,
+    defaults: Vec<String>,
+) -> Element {
+    let rows_reset: Vec<(String, Signal<bool>)> =
+        rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
+    // 左右留白用 **padding** 而非 margin：`setting_row` 内部是 `width_match()` 的 row，
+    // margin 下它仍按父容器全宽排布，右侧开关会被挤出对话框。padding 缩的是内容盒，
+    // 行拿到的可用宽才是扣掉留白后的。数值对齐 `card()` / `build_group_dialog`。
+    let mut body = Element::col().width_match().padding_xy(16, 2);
+    let last = rows.len().saturating_sub(1);
+    for (i, r) in rows.iter().enumerate() {
+        let desc = (!r.desc.is_empty()).then_some(r.desc.as_str());
+        body = body.child(crate::widgets::setting_row(
+            &r.label,
+            desc,
+            Element::switch(r.sig),
+        ));
+        if i != last {
+            body = body.child(Element::divider());
+        }
+    }
+    let grid = body;
+    let frame = Element::col()
+        // 与 build_group_dialog 同宽：带副标题的行比复选网格更需要横向空间。
+        .width(460)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label(hint)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3)
+                .padding_xy(18, 10),
+        )
+        .child(grid)
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(
+                    Element::button("恢复默认")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            for (v, s) in &rows_reset {
+                                s.set(defaults.iter().any(|d| d == v));
+                            }
+                        }),
+                )
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| visible.set(false)),
+                )
+                .child(
+                    Element::button("确认")
+                        .small()
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
+}
+
 /// 配对复选网格对话框（用于 auto_pair *_pairs 类 strlist）。
 /// `sigs`: (value, Signal<bool>)；`labels`: 每项对应的展示标签（1:1 with sigs）；
 /// `defaults`: capability 默认 strlist（恢复默认用）。
