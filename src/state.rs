@@ -531,6 +531,23 @@ impl AppState {
         self.update_phase.set(crate::update::UpdatePhase::Error);
     }
 
+    /// core 推来的事件 → Signal。**在 UI 线程回调中执行**（`App::channel` 保证）。
+    ///
+    /// 只认当前用得上的事件，其余记 debug 后忽略。特别是 `config.changed`：core 是在
+    /// **本端写配置后**才广播它的（dispatch 的 setItems/reload），拿它去重载配置会变成
+    /// 「自己保存 → 自己重载」的回环，故不接。
+    pub fn on_core_event(&self, ev: &crate::rpc::CoreEvent) {
+        match ev.event.as_str() {
+            "schema.activeChanged" => {
+                if let Some(id) = ev.data.get("id").and_then(|v| v.as_str()) {
+                    tracing::debug!("core 活跃方案变更 → {}", id);
+                    self.schema_mgr.set_active_from_core(id);
+                }
+            }
+            other => tracing::debug!("忽略 core 事件: {}", other),
+        }
+    }
+
     /// 后台消息 → Signal。**在 UI 线程回调中执行**（`App::channel` 保证）。
     pub fn on_update_msg(&self, msg: crate::update::UpdateMsg) {
         use crate::update::{UpdateMsg, UpdatePhase, format_size};

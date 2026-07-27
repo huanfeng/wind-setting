@@ -165,6 +165,93 @@ pub fn is_mock() -> bool {
     std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1")
 }
 
+// ─────────────────── 事件订阅（core → 设置端单向推送） ───────────────────
+//
+// 控制通道是请求-响应的，只能"问"，问不到 core 自发的状态变更（用户用快捷键/托盘
+// 切了方案等）。core 另起了一条单向事件管道，这里订阅它，让界面能跟着变。
+
+/// 断线后的重连间隔。core 未启动时会一直按此节奏重试，单次成本仅一次 open 失败。
+const EVENTS_RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// 事件通道端点。**命名规则与 [`ctrl_endpoint`] 不一致**：core 侧 ctrl 是末尾化
+/// （`wind_input_ctrl{suffix}`），events 是中间化（`wind_input{suffix}_events`）——
+/// 见 wind-rpc/src/server.rs 的 `ctrl_endpoint` / `events_endpoint`。
+///
+/// 这里手抄格式而非直接调 core 的函数：wind-rpc 只是 dev-dependency（运行时依赖
+/// 刻意只保留轻量的 wind-ipc，见 Cargo.toml）。抄错的后果是静默连不上——事件永远
+/// 收不到，而不是报错，故由 [`tests::events_endpoint_matches_core`] 对账兜住。
+pub fn events_endpoint() -> String {
+    let suffix = endpoint_suffix();
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\wind_input{suffix}_events")
+    }
+    #[cfg(unix)]
+    {
+        let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{dir}/wind_input{suffix}_events.sock")
+    }
+}
+
+/// core 广播的一条事件（线路格式 `{event, data}`，帧编码与控制通道同为
+/// 4 字节大端长度 + JSON，故可复用 [`read_frame`]）。
+#[derive(Debug, Clone)]
+pub struct CoreEvent {
+    pub event: String,
+    pub data: Value,
+}
+
+/// 打开事件流。Windows 侧 core 用的是单向管道（`PIPE_ACCESS_OUTBOUND`），
+/// **必须只读打开**——带上 write 权限会被拒（不同于双向的 ctrl 通道）。
+#[cfg(windows)]
+fn open_events_stream(endpoint: &str) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().read(true).open(endpoint)
+}
+
+#[cfg(unix)]
+fn open_events_stream(endpoint: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
+    std::os::unix::net::UnixStream::connect(endpoint)
+}
+
+/// 解析一帧事件载荷（已剥去长度前缀的 JSON）。`event` 缺失即视为不可解析。
+/// 抽成纯函数供 [`tests::parse_event_frame_matches_core_encoding`] 与 core 的
+/// `EventMessage` 序列化对账。
+fn parse_event_frame(payload: &[u8]) -> Option<CoreEvent> {
+    let v: Value = serde_json::from_slice(payload).ok()?;
+    let event = v.get("event")?.as_str()?.to_string();
+    Some(CoreEvent {
+        event,
+        data: v.get("data").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// 阻塞订阅 core 事件，每收到一条调一次 `on_event`；断线自动重连，**永不返回**。
+/// 调用方应在专用后台线程里跑它。mock 模式无 core 可连，直接返回。
+pub fn listen_events(mut on_event: impl FnMut(CoreEvent)) {
+    if is_mock() {
+        return;
+    }
+    let endpoint = events_endpoint();
+    loop {
+        match open_events_stream(&endpoint) {
+            Ok(mut stream) => {
+                tracing::info!("已订阅 core 事件通道 {}", endpoint);
+                // 读出错即 core 退出或管道关闭，跳出由外层重连。
+                while let Ok(frame) = read_frame(&mut stream) {
+                    match parse_event_frame(&frame) {
+                        Some(ev) => on_event(ev),
+                        None => tracing::warn!("事件帧无法解析，已跳过"),
+                    }
+                }
+                tracing::info!("core 事件通道已断开，{EVENTS_RECONNECT_DELAY:?} 后重连");
+            }
+            // core 未启动是常态（设置界面可独立打开），故只记 debug。
+            Err(e) => tracing::debug!("事件通道连接失败({e})，稍后重试"),
+        }
+        std::thread::sleep(EVENTS_RECONNECT_DELAY);
+    }
+}
+
 // 测试模块后仍有 mock_reply 等离线实现；局部豁免 toolchain 新增的风格 lint。
 #[allow(clippy::items_after_test_module)]
 #[cfg(test)]
@@ -181,6 +268,45 @@ mod tests {
         let ep = ctrl_endpoint();
         assert!(ep.contains("wind_input"));
         assert!(ep.contains("_ctrl"));
+    }
+
+    /// 守护：事件帧的解析必须与 core 实际发出的 `EventMessage` 序列化结果对得上。
+    /// 用 core 自己的类型构造输入（wind-ipc 是硬依赖），字段改名会在此处失败，
+    /// 而不是等到运行时表现为"事件收得到但内容全空"。
+    #[test]
+    fn parse_event_frame_matches_core_encoding() {
+        let msg = wind_ipc::rpc::EventMessage {
+            event: "schema.activeChanged".to_string(),
+            data: json!({ "id": "wubi86" }),
+        };
+        let payload = serde_json::to_vec(&msg).expect("EventMessage 可序列化");
+        let ev = super::parse_event_frame(&payload).expect("应能解析 core 的事件帧");
+        assert_eq!(ev.event, "schema.activeChanged");
+        assert_eq!(ev.data.get("id").and_then(|v| v.as_str()), Some("wubi86"));
+
+        // 非 JSON / 缺 event 字段：跳过而不是 panic。
+        assert!(super::parse_event_frame(b"not json").is_none());
+        assert!(super::parse_event_frame(br#"{"data":{}}"#).is_none());
+    }
+
+    /// 守护：事件端点必须与 core 的 `wind_rpc::events_endpoint` 逐字一致。
+    ///
+    /// 抄错不会报错，只会静默收不到任何事件——「当前方案」之类的显示就悄悄退回
+    /// 打开那一刻的快照，且看起来一切正常。这种失败模式必须由测试兜住。
+    /// 主代码不能直接调该函数（wind-rpc 是 dev-dependency），故用对账代替复用。
+    #[test]
+    fn events_endpoint_matches_core() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 覆盖 release（空后缀）与 dev 两种变体。
+        for suffix in ["", "_dev"] {
+            unsafe { std::env::set_var("WIND_PIPE_SUFFIX", suffix) };
+            assert_eq!(
+                super::events_endpoint(),
+                wind_rpc::events_endpoint(suffix),
+                "事件端点与 core 漂移(suffix={suffix:?})"
+            );
+        }
+        unsafe { std::env::remove_var("WIND_PIPE_SUFFIX") };
     }
 
     /// mockdata 中刻意偏离 core 系统预置的值（配套 [`mock_config_matches_core_system_preset`]）。

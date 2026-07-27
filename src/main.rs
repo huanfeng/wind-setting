@@ -131,6 +131,21 @@ fn main() {
         }
     });
 
+    // core 事件订阅：控制通道是请求-响应的，问不到 core 自发的状态变更（用户用快捷键
+    // 或托盘切了方案等）。这里订阅单向事件管道，让界面跟着变——否则「当前方案」这类
+    // 显示只在打开页面那一刻正确，之后会变成看起来权威的错误信息。
+    // 监听线程内阻塞读 + 断线重连，故与升级通道一样经 channel 回 UI 线程写 Signal。
+    let events_state = app_state.clone();
+    let events_tx = app.channel::<rpc::CoreEvent>(move |ev| {
+        events_state.borrow().on_core_event(&ev);
+    });
+    std::thread::spawn(move || {
+        rpc::listen_events(|ev| {
+            // 发送失败 = 窗口已关闭，监听线程随进程退出即可。
+            let _ = events_tx.send(ev);
+        });
+    });
+
     // 升级通道：下载线程不能直接写 Signal（Signal 是线程局部 arena 句柄，非 Send），
     // 故所有升级进度/结果都经此 channel 回到 UI 线程。channel 只能在 App 构建期注册，
     // 因此这里建好后把 Sender 存进 AppState 供各按钮取用。

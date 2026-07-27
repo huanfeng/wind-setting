@@ -442,6 +442,20 @@ impl SchemaManagerState {
         )
     }
 
+    /// core 侧活跃方案已变更（事件驱动，非本端发起）：只同步显示。
+    ///
+    /// 刻意不复用 [`set_active`]——那会再往 core 发一次 setActive，形成回环。
+    /// 本端自己点「设为当前」时 core 也会广播回来，此时 active_id 已是新值，
+    /// 首行判断直接短路，天然幂等。
+    pub fn set_active_from_core(&self, id: &str) {
+        if self.is_active(id) {
+            return;
+        }
+        *self.active_id.borrow_mut() = id.to_string();
+        self.bump_active();
+        self.rebuild_list();
+    }
+
     /// 将选中方案设为当前（工具栏按钮）。
     pub fn set_active_selected(&self) {
         let Some(id) = self.selected_id.borrow().clone() else {
