@@ -35,14 +35,29 @@ impl Capabilities {
                 let Some(key) = it.get("key").and_then(|x| x.as_str()) else {
                     continue;
                 };
-                let ty = it.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let ty = it
+                    .get("type")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let values = it
                     .get("values")
                     .and_then(|x| x.as_array())
-                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let default = it.get("default").cloned().unwrap_or(Value::Null);
-                entries.insert(key.to_string(), CapEntry { ty, values, default });
+                entries.insert(
+                    key.to_string(),
+                    CapEntry {
+                        ty,
+                        values,
+                        default,
+                    },
+                );
             }
         }
         Self { entries }
@@ -50,7 +65,10 @@ impl Capabilities {
 
     /// capability 默认值（core 权威）；未知 key 返回 Null。
     pub fn default_for(&self, key: &str) -> Value {
-        self.entries.get(key).map(|e| e.default.clone()).unwrap_or(Value::Null)
+        self.entries
+            .get(key)
+            .map(|e| e.default.clone())
+            .unwrap_or(Value::Null)
     }
 
     /// 所有 map 类型配置键（如 input.punct.custom_mappings）。
@@ -132,8 +150,15 @@ mod tests {
     #[test]
     fn snapshot_parses_all_keys() {
         let caps = Capabilities::from_embedded();
-        assert!(caps.entries.len() >= 114, "快照应含 >=114 key，实际 {}", caps.entries.len());
-        let e = caps.entries.get("ui.tooltip.delay").expect("应含 ui.tooltip.delay");
+        assert!(
+            caps.entries.len() >= 114,
+            "快照应含 >=114 key，实际 {}",
+            caps.entries.len()
+        );
+        let e = caps
+            .entries
+            .get("ui.tooltip.delay")
+            .expect("应含 ui.tooltip.delay");
         assert_eq!(e.ty, "int");
     }
 
@@ -167,7 +192,10 @@ mod tests {
         assert!(control_type_compatible("dialog_button", "str"));
         assert!(control_type_compatible("dialog_button", "strlist"));
         assert!(control_type_compatible("dialog_button", "map"));
-        assert!(control_type_compatible("dialog_button_mix_trigger", "structlist"));
+        assert!(control_type_compatible(
+            "dialog_button_mix_trigger",
+            "structlist"
+        ));
         // 反例：不兼容组合
         assert!(!control_type_compatible("toggle", "str"));
         assert!(!control_type_compatible("checkbox_group", "bool"));
@@ -186,7 +214,11 @@ mod tests {
         let caps = Capabilities::from_embedded();
         let manifest = Manifest::from_embedded();
         let problems = caps.validate(&manifest);
-        assert!(problems.is_empty(), "清单与 capability 不一致:\n{}", problems.join("\n"));
+        assert!(
+            problems.is_empty(),
+            "清单与 capability 不一致:\n{}",
+            problems.join("\n")
+        );
     }
 
     /// 有意不进设置清单的 capability key（配套 [`uncovered_capability_keys_match_allowlist`]）。
@@ -263,8 +295,7 @@ mod tests {
             .map(|s| s.as_str())
             .filter(|k| !covered.contains(k))
             .collect();
-        let allow: std::collections::BTreeSet<&str> =
-            UNCOVERED_BY_DESIGN.iter().copied().collect();
+        let allow: std::collections::BTreeSet<&str> = UNCOVERED_BY_DESIGN.iter().copied().collect();
 
         let unexpected: Vec<&&str> = uncovered.difference(&allow).collect();
         let stale: Vec<&&str> = allow.difference(&uncovered).collect();
@@ -368,7 +399,11 @@ mod tests {
             .map(|s| s.as_str())
             .filter(|k| !covered.contains(k))
             .collect();
-        println!("未覆盖 capability key 数: {} / {}", uncovered.len(), caps.entries.len());
+        println!(
+            "未覆盖 capability key 数: {} / {}",
+            uncovered.len(),
+            caps.entries.len()
+        );
         // 逐项理由见 UNCOVERED_BY_DESIGN；把关的断言在
         // uncovered_capability_keys_match_allowlist，此处只作观察输出，不设阈值。
         println!("未覆盖明细: {uncovered:?}");

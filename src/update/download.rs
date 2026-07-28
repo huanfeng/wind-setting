@@ -239,8 +239,12 @@ fn download_parallel(
         let agent = agent.clone();
         let url = url.to_string();
         let tmp = tmp.clone();
-        let (cancel, abort, downloaded, tx) =
-            (cancel.clone(), abort.clone(), downloaded.clone(), tx.clone());
+        let (cancel, abort, downloaded, tx) = (
+            cancel.clone(),
+            abort.clone(),
+            downloaded.clone(),
+            tx.clone(),
+        );
         handles.push(std::thread::spawn(move || {
             let r = fetch_part(
                 &agent,
@@ -718,7 +722,10 @@ mod tests {
 
         assert!(matches!(err, UpdateError::Cancelled));
         assert!(!dest.exists());
-        assert!(!dest.with_extension("part").exists(), "取消也要清理临时文件");
+        assert!(
+            !dest.with_extension("part").exists(),
+            "取消也要清理临时文件"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -911,11 +918,23 @@ mod tests {
         // total 为 * 合法但少见，只校区间
         assert!(check_content_range("bytes 0-99/*", 0, 99, 1000).is_ok());
 
-        assert!(check_content_range("bytes 0-98/1000", 0, 99, 1000).is_err(), "区间不符");
-        assert!(check_content_range("bytes 0-99/999", 0, 99, 1000).is_err(), "总长不符");
-        assert!(check_content_range("0-99/1000", 0, 99, 1000).is_err(), "缺 bytes 前缀");
+        assert!(
+            check_content_range("bytes 0-98/1000", 0, 99, 1000).is_err(),
+            "区间不符"
+        );
+        assert!(
+            check_content_range("bytes 0-99/999", 0, 99, 1000).is_err(),
+            "总长不符"
+        );
+        assert!(
+            check_content_range("0-99/1000", 0, 99, 1000).is_err(),
+            "缺 bytes 前缀"
+        );
         assert!(check_content_range("", 0, 99, 1000).is_err(), "空头");
-        assert!(check_content_range("bytes abc/1000", 0, 99, 1000).is_err(), "畸形");
+        assert!(
+            check_content_range("bytes abc/1000", 0, 99, 1000).is_err(),
+            "畸形"
+        );
     }
 
     #[test]
@@ -940,7 +959,11 @@ mod tests {
 
         assert_eq!(path, dest);
         // 逐字节比对而非只看 sha：错位时能直接看出是拼装问题
-        assert_eq!(std::fs::read(&dest).unwrap(), data, "分片拼装结果与源不一致");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            data,
+            "分片拼装结果与源不一致"
+        );
         assert!(!dest.with_extension("part").exists(), "临时文件应已清理");
         assert_eq!(
             seen.last().copied(),
@@ -973,7 +996,11 @@ mod tests {
         .expect_err("返回 200 全量时必须拒绝");
 
         assert!(matches!(err, UpdateError::Verify(_)));
-        assert!(err.user_message().contains("206"), "错误应指明真因：{}", err.user_message());
+        assert!(
+            err.user_message().contains("206"),
+            "错误应指明真因：{}",
+            err.user_message()
+        );
         assert!(!dest.exists(), "失败不得留下目标文件");
         assert!(!dest.with_extension("part").exists(), "失败要清理临时文件");
 
@@ -1079,7 +1106,10 @@ mod tests {
         ] {
             let p = cache_path(url, "safe.exe");
             let name = p.file_name().unwrap().to_string_lossy().to_string();
-            assert!(!name.contains('/') && !name.contains('\\'), "文件名不得含分隔符：{name}");
+            assert!(
+                !name.contains('/') && !name.contains('\\'),
+                "文件名不得含分隔符：{name}"
+            );
             assert!(!name.starts_with('.'), "文件名不得以点开头：{name}");
             assert_eq!(p.parent().unwrap(), std::env::temp_dir());
         }

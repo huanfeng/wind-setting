@@ -255,7 +255,10 @@ mod tests {
         assert!(st.theme_import_dialog_visible.get());
         assert_eq!(
             st.feedback.get(),
-            Some((ToastKind::Info, "收到主题导入请求，请确认来源后导入".to_string()))
+            Some((
+                ToastKind::Info,
+                "收到主题导入请求，请确认来源后导入".to_string()
+            ))
         );
     }
 

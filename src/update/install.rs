@@ -191,9 +191,7 @@ fn shell_execute(exe: &Path, args: &str) -> Result<(), UpdateError> {
 
 #[cfg(not(windows))]
 fn shell_execute(_exe: &Path, _args: &str) -> Result<(), UpdateError> {
-    Err(UpdateError::Install(
-        "当前平台不支持自动安装".to_string(),
-    ))
+    Err(UpdateError::Install("当前平台不支持自动安装".to_string()))
 }
 
 #[cfg(test)]
@@ -201,7 +199,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("wind_install_test_{}_{tag}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("wind_install_test_{}_{tag}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -263,7 +262,10 @@ mod tests {
         // --quiet 而非 --silent：升级要显示进度界面，不是完全无界面
         assert!(args.starts_with("--quiet "), "实际: {args}");
         // 路径含空格，必须带引号，否则 clap 会把它拆成两个参数
-        assert!(args.contains(r#""D:\Program Files\WindInput""#), "实际: {args}");
+        assert!(
+            args.contains(r#""D:\Program Files\WindInput""#),
+            "实际: {args}"
+        );
     }
 
     /// 不传 --dir 会让静默安装落到 InstallConfig::default() 的默认目录，
@@ -307,7 +309,11 @@ mod tests {
     fn plan_uses_own_exe_directory() {
         let installer = std::env::temp_dir().join("Setup.exe");
         let p = plan(&installer).unwrap();
-        let expected = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let expected = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         assert_eq!(p.install_dir, expected);
         assert_eq!(p.installer, installer);
     }

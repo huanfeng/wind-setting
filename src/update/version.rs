@@ -90,7 +90,10 @@ mod tests {
     #[test]
     fn build_metadata_is_ignored_in_comparison() {
         // tag 之后的本地构建与该 tag 同版本，不应提示升级
-        assert_eq!(verdict("v0.106.0+a1b2c3d", &v("0.106.0")), Verdict::UpToDate);
+        assert_eq!(
+            verdict("v0.106.0+a1b2c3d", &v("0.106.0")),
+            Verdict::UpToDate
+        );
         assert_eq!(
             verdict("v0.106.0+a1b2c3d.dirty", &v("0.106.0")),
             Verdict::UpToDate

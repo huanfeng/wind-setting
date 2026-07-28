@@ -119,7 +119,9 @@ pub fn build_text_dialog(
         )
         .child(
             Element::col().width_match().padding_xy(18, 6).child(
-                Element::text_input(text, placeholder).width_match().height(36),
+                Element::text_input(text, placeholder)
+                    .width_match()
+                    .height(36),
             ),
         )
         .child(Element::divider())
@@ -464,14 +466,12 @@ pub fn build_group_dialog(
                 .on_click(move |_| reset()),
         );
     }
-    bottom = bottom
-        .child(Element::leaf().weight(1.0))
-        .child(
-            Element::button("关闭")
-                .small()
-                .outline_soft()
-                .on_click(move |_| visible.set(false)),
-        );
+    bottom = bottom.child(Element::leaf().weight(1.0)).child(
+        Element::button("关闭")
+            .small()
+            .outline_soft()
+            .on_click(move |_| visible.set(false)),
+    );
 
     let frame = Element::col()
         .width(460)
@@ -536,12 +536,14 @@ pub fn build_index_labels_dialog(
         )
         .child(Element::divider())
         .child(
-            Element::label("从序号 1 起依次填写自定义标签（每框一个字符，如 a s d f g）；整体留空用默认 1-9。")
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(2)
-                .padding_xy(18, 10),
+            Element::label(
+                "从序号 1 起依次填写自定义标签（每框一个字符，如 a s d f g）；整体留空用默认 1-9。",
+            )
+            .font_size(12.0)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(2)
+            .padding_xy(18, 10),
         )
         .child(grid.width_match().margin_xy(18, 8))
         .child(Element::divider())
@@ -552,11 +554,14 @@ pub fn build_index_labels_dialog(
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(
-                    Element::button("恢复默认").small().outline_soft().on_click(move |_| {
-                        for s in &inputs_reset {
-                            s.set(String::new());
-                        }
-                    }),
+                    Element::button("恢复默认")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            for s in &inputs_reset {
+                                s.set(String::new());
+                            }
+                        }),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
@@ -667,13 +672,16 @@ pub fn build_punct_table_dialog(
                 .padding_xy(16, 12)
                 .spacing(8)
                 .child(
-                    Element::button("恢复默认").small().outline_soft().on_click(move |_| {
-                        for (row, def) in cells_reset.iter().zip(defaults_reset.iter()) {
-                            for i in 0..4 {
-                                row[i].set(def[i].clone());
+                    Element::button("恢复默认")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            for (row, def) in cells_reset.iter().zip(defaults_reset.iter()) {
+                                for i in 0..4 {
+                                    row[i].set(def[i].clone());
+                                }
                             }
-                        }
-                    }),
+                        }),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
@@ -703,10 +711,10 @@ pub fn build_punct_table_dialog(
         )
         .child(Element::divider())
         .child(
-            Element::col().width_match().padding_xy(18, 10).child(
-                Element::text_input(edit_buf, "替换字符（留空恢复默认）")
-                    .width_match(),
-            ),
+            Element::col()
+                .width_match()
+                .padding_xy(18, 10)
+                .child(Element::text_input(edit_buf, "替换字符（留空恢复默认）").width_match()),
         )
         .child(Element::divider())
         .child(
@@ -728,7 +736,11 @@ pub fn build_punct_table_dialog(
                     let raw = edit_buf.get();
                     // 半角/全角空格为合法映射值，不可 trim 掉；其余去空白后若空则回落默认。
                     let is_space = raw == " " || raw == "\u{3000}";
-                    let trimmed = if is_space { raw.clone() } else { raw.trim().to_string() };
+                    let trimmed = if is_space {
+                        raw.clone()
+                    } else {
+                        raw.trim().to_string()
+                    };
                     let val = if trimmed.is_empty() {
                         defaults_commit[r][ci].clone()
                     } else {
@@ -779,9 +791,17 @@ pub fn build_hotkey_dialog(
         .width_match()
         .spacing(10)
         .padding_xy(18, 12)
-        .child(Element::label("修饰键").font_size(12.0).fg_role(Role::TextMuted))
+        .child(
+            Element::label("修饰键")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted),
+        )
         .child(mod_row)
-        .child(Element::label("主键").font_size(12.0).fg_role(Role::TextMuted))
+        .child(
+            Element::label("主键")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted),
+        )
         .child(Element::dropdown(key_labels, key_idx).width(160));
     if let Some(g) = global {
         body = body.child(
@@ -865,7 +885,11 @@ mod tests {
 
     #[test]
     fn spaced_strlist_roundtrip() {
-        let v = vec!["http://".to_string(), "https://".to_string(), "ftp://".to_string()];
+        let v = vec![
+            "http://".to_string(),
+            "https://".to_string(),
+            "ftp://".to_string(),
+        ];
         let s = strlist_to_spaced(&v);
         assert_eq!(s, "http:// https:// ftp://");
         assert_eq!(spaced_to_strlist(&s), v);
@@ -873,7 +897,10 @@ mod tests {
 
     #[test]
     fn spaced_to_strlist_trims_and_skips_empty() {
-        assert_eq!(spaced_to_strlist("  a   b  "), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            spaced_to_strlist("  a   b  "),
+            vec!["a".to_string(), "b".to_string()]
+        );
         assert!(spaced_to_strlist("   ").is_empty());
     }
 

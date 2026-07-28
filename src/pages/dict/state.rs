@@ -207,7 +207,9 @@ impl DictManagerState {
             domain: signal(0),
             sub_tab: signal(0),
             domain_items: signal(vec!["快捷短语".to_string()]),
-            domain_rich_items: signal(vec![DropdownItem::new("快捷短语").badge("全局", Intent::Neutral)]),
+            domain_rich_items: signal(vec![
+                DropdownItem::new("快捷短语").badge("全局", Intent::Neutral),
+            ]),
             schemas: Rc::new(RefCell::new(Vec::new())),
             sub_tab_memory: Rc::new(RefCell::new(HashMap::new())),
             last_domain: Rc::new(Cell::new(0)),
@@ -1358,7 +1360,8 @@ impl DictManagerState {
             return;
         }
         self.reset_io_checks();
-        self.io_title.set(format!("导出 · {}", self.current_io_label()));
+        self.io_title
+            .set(format!("导出 · {}", self.current_io_label()));
         self.export_visible.set(true);
     }
 
@@ -1374,7 +1377,8 @@ impl DictManagerState {
             return;
         }
         self.reset_io_checks();
-        self.io_title.set(format!("导入 · {}", self.current_io_label()));
+        self.io_title
+            .set(format!("导入 · {}", self.current_io_label()));
         self.import_file_name.set(String::new());
         self.import_preview_msg.set(String::new());
         self.import_ready.set(false);
@@ -1449,8 +1453,10 @@ impl DictManagerState {
                     &json!({ "schemaId": schema, "content": content }),
                 ) {
                     Ok(v) => {
-                        let compatible =
-                            v.get("compatible").and_then(|x| x.as_bool()).unwrap_or(true);
+                        let compatible = v
+                            .get("compatible")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(true);
                         state.import_compatible.set(compatible);
                         state.apply_import_preview_sections(&v);
                         state
@@ -1513,7 +1519,11 @@ impl DictManagerState {
     fn format_import_preview(v: &Value) -> String {
         let mut s = String::new();
         // 不兼容优先提示（如五笔词库导入拼音方案）。
-        if !v.get("compatible").and_then(|x| x.as_bool()).unwrap_or(true) {
+        if !v
+            .get("compatible")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(true)
+        {
             let src =
                 Self::engine_label(v.get("sourceEngine").and_then(|x| x.as_str()).unwrap_or(""));
             let tgt =

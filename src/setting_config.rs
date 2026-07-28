@@ -210,8 +210,7 @@ mod tests {
     /// [update] 段存在但字段不全时，缺失字段走字段级默认 —— auto_check 不能塌成 false。
     #[test]
     fn partial_update_section_keeps_auto_check_default() {
-        let cfg: SettingConfig =
-            toml::from_str("[update]\nnetwork_consent = true\n").unwrap();
+        let cfg: SettingConfig = toml::from_str("[update]\nnetwork_consent = true\n").unwrap();
         assert!(cfg.update.network_consent);
         assert!(
             cfg.update.auto_check,

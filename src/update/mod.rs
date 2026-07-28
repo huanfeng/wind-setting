@@ -133,7 +133,10 @@ pub enum UpdateMsg {
         result: Result<CheckResult, String>,
         silent: bool,
     },
-    Progress { downloaded: u64, total: u64 },
+    Progress {
+        downloaded: u64,
+        total: u64,
+    },
     DownloadDone(PathBuf),
     DownloadFailed(String),
     /// 用户取消。与失败分开，UI 才能退回「可重试」而不是弹错误。
@@ -312,9 +315,15 @@ mod tests {
     #[test]
     fn notes_are_fetched_whenever_an_update_will_be_shown() {
         // silent=true → notes_when_up_to_date=false
-        assert!(should_fetch_notes(true, false), "静默 + 有更新：会弹窗，必须有说明");
+        assert!(
+            should_fetch_notes(true, false),
+            "静默 + 有更新：会弹窗，必须有说明"
+        );
         assert!(should_fetch_notes(true, true), "手动 + 有更新");
-        assert!(should_fetch_notes(false, true), "手动 + 已最新：也要展示更新记录");
+        assert!(
+            should_fetch_notes(false, true),
+            "手动 + 已最新：也要展示更新记录"
+        );
         assert!(
             !should_fetch_notes(false, false),
             "静默 + 已最新：不弹界面，唯一可省的一格"
@@ -357,9 +366,18 @@ mod tests {
     #[test]
     fn auto_check_throttles_within_24h() {
         let now = DAY * 10;
-        assert!(!should_auto_check(true, true, now - 3600, now), "1 小时前查过，不应再查");
-        assert!(!should_auto_check(true, true, now - DAY + 60, now), "差一分钟到 24h");
-        assert!(should_auto_check(true, true, now - DAY, now), "满 24h 应放行");
+        assert!(
+            !should_auto_check(true, true, now - 3600, now),
+            "1 小时前查过，不应再查"
+        );
+        assert!(
+            !should_auto_check(true, true, now - DAY + 60, now),
+            "差一分钟到 24h"
+        );
+        assert!(
+            should_auto_check(true, true, now - DAY, now),
+            "满 24h 应放行"
+        );
         assert!(should_auto_check(true, true, 0, now), "从未查过应放行");
     }
 

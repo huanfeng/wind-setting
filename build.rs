@@ -37,10 +37,16 @@ fn main() {
     // 纯 hash（无 tag，可能以数字开头，如 "55bb398.dirty"）原样。
     let is_semver = {
         let mut segs = ver_str.split(['.', '+']);
-        let num = |s: Option<&str>| s.is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
+        let num = |s: Option<&str>| {
+            s.is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        };
         num(segs.next()) && num(segs.next())
     };
-    let display_ver = if is_semver { format!("v{ver_str}") } else { ver_str.clone() };
+    let display_ver = if is_semver {
+        format!("v{ver_str}")
+    } else {
+        ver_str.clone()
+    };
     println!("cargo:rustc-env=WIND_SETTING_VERSION={display_ver}");
 
     // manifest：asInvoker + PerMonitorV2 DPI 感知 + win10 + 长路径（对齐 core）。
@@ -143,7 +149,9 @@ fn git(args: &[&str]) -> Option<String> {
 /// 取开头 X.Y.Z 三段（忽略 `-alpha` / `-test` 等 prerelease 后缀）。
 fn parse_xyz(s: &str) -> (u64, u64, u64) {
     let core = s.split('-').next().unwrap_or(s);
-    let mut it = core.split('.').map(|p| p.trim().parse::<u64>().unwrap_or(0));
+    let mut it = core
+        .split('.')
+        .map(|p| p.trim().parse::<u64>().unwrap_or(0));
     (
         it.next().unwrap_or(0),
         it.next().unwrap_or(0),

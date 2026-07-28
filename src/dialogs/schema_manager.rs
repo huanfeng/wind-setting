@@ -606,10 +606,7 @@ impl SchemaManagerState {
             // 守护：当前方案不可禁用。放在展开/计数守护之前——它的成因更具体，
             // 提示也更有指导性（告诉用户该先做什么，而不是笼统说"至少留一个"）。
             if self.is_active(schema_id) {
-                self.notify(
-                    ToastKind::Error,
-                    "当前方案不可禁用，请先将其他方案设为当前",
-                );
+                self.notify(ToastKind::Error, "当前方案不可禁用，请先将其他方案设为当前");
                 return false;
             }
             let mut order = self.enabled_order.borrow_mut();
@@ -1650,7 +1647,10 @@ mod ext_dict_tests {
         assert!(!can_activate(&order, "a", None), "无选中 → 不可用");
         assert!(!can_activate(&order, "a", Some("a")), "已是当前 → 不可用");
         assert!(!can_activate(&order, "a", Some("c")), "未启用 → 不可用");
-        assert!(can_activate(&order, "a", Some("b")), "已启用的非当前项 → 可用");
+        assert!(
+            can_activate(&order, "a", Some("b")),
+            "已启用的非当前项 → 可用"
+        );
         // 全部启用（order 空）时，任何非当前方案都可设为当前。
         assert!(can_activate(&[], "a", Some("z")));
     }

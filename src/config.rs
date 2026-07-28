@@ -178,7 +178,8 @@ mod tests {
         // 无 atomic 声明时的旧行为（下钻出带 token 的路径）——确保新参数确实改变了它
         let bad = diff_config(&base, &current, &[]);
         assert!(
-            bad.iter().any(|i| i.key.starts_with("input.punct.custom_mappings.")),
+            bad.iter()
+                .any(|i| i.key.starts_with("input.punct.custom_mappings.")),
             "无 atomic 时应下钻（旧行为），若此断言失败说明测试前提已变"
         );
     }

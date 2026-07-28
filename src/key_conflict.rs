@@ -134,7 +134,14 @@ mod tests {
             ("快捷".to_string(), vec!["semicolon".to_string()]),
         ];
         let hits = find_key_conflicts(&groups);
-        assert_eq!(hits, vec![("semicolon".to_string(), "临时拼音".to_string(), "快捷".to_string())]);
+        assert_eq!(
+            hits,
+            vec![(
+                "semicolon".to_string(),
+                "临时拼音".to_string(),
+                "快捷".to_string()
+            )]
+        );
     }
 
     #[test]
@@ -170,7 +177,11 @@ mod tests {
 
     #[test]
     fn test_summary_formats_hits() {
-        let hits = vec![("semicolon".to_string(), "临时拼音".to_string(), "快捷".to_string())];
+        let hits = vec![(
+            "semicolon".to_string(),
+            "临时拼音".to_string(),
+            "快捷".to_string(),
+        )];
         let msg = conflict_summary(&hits, "触发键").unwrap();
         assert!(msg.contains("触发键冲突"), "应冠场景标签");
         assert!(msg.contains(';'), "内部键名应渲染为符号");
@@ -187,20 +198,30 @@ mod tests {
         // lrshift/lrctrl 展开成单修饰键，供与 toggle_mode_keys 跨组匹配。
         assert_eq!(expand_candidate_key("lrshift"), vec!["lshift", "rshift"]);
         assert_eq!(expand_candidate_key("lrctrl"), vec!["lctrl", "rctrl"]);
-        assert_eq!(expand_candidate_key("comma_period"), vec!["comma_period"], "其余原样");
+        assert_eq!(
+            expand_candidate_key("comma_period"),
+            vec!["comma_period"],
+            "其余原样"
+        );
     }
 
     fn expanded(name: &str, group: &str) -> (String, Vec<String>) {
         (
             name.to_string(),
-            expand_candidate_key(group).into_iter().map(String::from).collect(),
+            expand_candidate_key(group)
+                .into_iter()
+                .map(String::from)
+                .collect(),
         )
     }
 
     #[test]
     fn test_tab_and_shift_tab_conflict_after_expand() {
         // 高亮移动(tab) 与 翻页(shift_tab) 归一后应检出冲突。
-        let groups = vec![expanded("高亮移动键", "tab"), expanded("翻页键", "shift_tab")];
+        let groups = vec![
+            expanded("高亮移动键", "tab"),
+            expanded("翻页键", "shift_tab"),
+        ];
         let hits = find_key_conflicts(&groups);
         assert_eq!(hits.len(), 1);
         let msg = conflict_summary(&hits, "候选键").unwrap();
@@ -211,7 +232,10 @@ mod tests {
     #[test]
     fn test_lrshift_vs_toggle_mode_conflict_after_expand() {
         // 次选键 lrshift 展开成 {lshift,rshift}，与中英切换键 rshift 争用右 Shift → 冲突。
-        let groups = vec![expanded("次选/三选键", "lrshift"), ("中英切换键".to_string(), vec!["rshift".to_string()])];
+        let groups = vec![
+            expanded("次选/三选键", "lrshift"),
+            ("中英切换键".to_string(), vec!["rshift".to_string()]),
+        ];
         let hits = find_key_conflicts(&groups);
         assert_eq!(hits.len(), 1);
         let msg = conflict_summary(&hits, "候选键").unwrap();

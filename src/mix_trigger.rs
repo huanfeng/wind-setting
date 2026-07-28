@@ -8,7 +8,11 @@ pub fn mix_mode_trigger_keys(mix_modes: &[Value], id: &str) -> Option<Vec<String
         .map(|m| {
             m.get("trigger_keys")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default()
         })
 }
@@ -90,13 +94,13 @@ mod tests {
         let arr = sample_mix_modes();
         let patched =
             patch_mix_mode_trigger_keys(&arr, "quick_mix", &["backtick".to_string()]).unwrap();
-        assert_eq!(
-            patched[0]["trigger_keys"],
-            json!(["backtick"])
-        );
+        assert_eq!(patched[0]["trigger_keys"], json!(["backtick"]));
         // 其余字段原样保留
         assert_eq!(patched[0]["name"], json!("快捷"));
-        assert_eq!(patched[0]["members"], json!(["quick_input", "pinyin", "english"]));
+        assert_eq!(
+            patched[0]["members"],
+            json!(["quick_input", "pinyin", "english"])
+        );
         // 其它数组元素完全不动
         assert_eq!(patched[1], arr[1]);
     }

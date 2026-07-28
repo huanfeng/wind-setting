@@ -468,7 +468,8 @@ impl AppState {
         self.update_progress.set(0.0);
         self.update_progress_text.set(String::new());
         self.update_message.set("正在下载更新包…".to_string());
-        self.update_phase.set(crate::update::UpdatePhase::Downloading);
+        self.update_phase
+            .set(crate::update::UpdatePhase::Downloading);
 
         std::thread::spawn(move || {
             let dest = crate::update::download::cache_path(&check.download_url, "wind-update.exe");
@@ -549,9 +550,10 @@ impl AppState {
             // dispatch 层在 setItems/reload 后也发同名事件，但不带 key，由下面的
             // 取值失败自然跳过——那条是本端自己写的，无需处理。
             "config.changed" => {
-                let (Some(key), Some(value)) =
-                    (ev.data.get("key").and_then(|v| v.as_str()), ev.data.get("value"))
-                else {
+                let (Some(key), Some(value)) = (
+                    ev.data.get("key").and_then(|v| v.as_str()),
+                    ev.data.get("value"),
+                ) else {
                     return;
                 };
                 self.apply_external_config_change(key, value.clone());
@@ -594,7 +596,10 @@ impl AppState {
         use crate::update::{UpdateMsg, UpdatePhase, format_size};
 
         match msg {
-            UpdateMsg::CheckDone { result: Ok(r), silent: true } => {
+            UpdateMsg::CheckDone {
+                result: Ok(r),
+                silent: true,
+            } => {
                 // 静默检查：无更新、已跳过的版本、开发构建，一律不打扰
                 let skipped = !self.setting_config.update.skipped_version.is_empty()
                     && self.setting_config.update.skipped_version == r.remote_version;
@@ -624,10 +629,16 @@ impl AppState {
                 self.update_dialog_visible.set(true);
             }
             // 静默检查失败：只记日志。启动时弹一个"检查更新失败"对用户毫无价值
-            UpdateMsg::CheckDone { result: Err(e), silent: true } => {
+            UpdateMsg::CheckDone {
+                result: Err(e),
+                silent: true,
+            } => {
                 tracing::info!("静默检查更新失败（已忽略）：{e}");
             }
-            UpdateMsg::CheckDone { result: Ok(result), silent: false } => {
+            UpdateMsg::CheckDone {
+                result: Ok(result),
+                silent: false,
+            } => {
                 if result.has_update {
                     self.update_message.set(format!(
                         "发现新版本 {}（当前 {}）",
@@ -653,7 +664,10 @@ impl AppState {
                 }
                 *self.update_check.borrow_mut() = Some(result);
             }
-            UpdateMsg::CheckDone { result: Err(e), silent: false } => self.fail_update(e),
+            UpdateMsg::CheckDone {
+                result: Err(e),
+                silent: false,
+            } => self.fail_update(e),
             UpdateMsg::Progress { downloaded, total } => {
                 let ratio = if total > 0 {
                     downloaded as f32 / total as f32
@@ -767,7 +781,11 @@ impl AppState {
     /// 依 `theme_entries` 刷新三个下拉信号：显示名（label）、id（value）、富内容项（版本徽章 +
     /// 外部主题删除图标）。删除图标点击 → 填充删除确认对话框的待删 id/正文并弹出。
     fn apply_theme_entries(&self) {
-        let labels: Vec<String> = self.theme_entries.iter().map(|e| e.display.clone()).collect();
+        let labels: Vec<String> = self
+            .theme_entries
+            .iter()
+            .map(|e| e.display.clone())
+            .collect();
         let values: Vec<String> = self.theme_entries.iter().map(|e| e.id.clone()).collect();
         let items = build_theme_items(
             &self.theme_entries,
@@ -1816,7 +1834,10 @@ mod tests {
     fn loader_key_matches_path_and_view_keys() {
         let p = "ui.status.display_mode";
         assert!(loader_key_matches(p, p), "路径本身");
-        assert!(loader_key_matches("ui.status.display_mode#compact", p), "视图 key");
+        assert!(
+            loader_key_matches("ui.status.display_mode#compact", p),
+            "视图 key"
+        );
         // 同前缀的邻居键不可误伤——少了 '#' 判断就会中招。
         assert!(!loader_key_matches("ui.status.display_mode_extra", p));
         assert!(!loader_key_matches("ui.status.display", p));
@@ -1868,7 +1889,11 @@ mod tests {
         st.confirm_delete_theme();
         assert!(!st.theme_delete_visible.get(), "删除后关闭对话框");
         assert!(st.theme_delete_id.get().is_empty(), "删除后清空待删 id");
-        assert_eq!(st.theme_value_sig.get().len(), 3, "删除后按 mock 重新拉取列表");
+        assert_eq!(
+            st.theme_value_sig.get().len(),
+            3,
+            "删除后按 mock 重新拉取列表"
+        );
 
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }

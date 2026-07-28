@@ -364,7 +364,13 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         .manifest
         .order
         .iter()
-        .filter(|k| state.manifest.get(k).and_then(|i| i.dialog_group.as_deref()) == Some(group.as_str()))
+        .filter(|k| {
+            state
+                .manifest
+                .get(k)
+                .and_then(|i| i.dialog_group.as_deref())
+                == Some(group.as_str())
+        })
         .cloned()
         .collect();
     let rows: Vec<Element> = member_keys.iter().map(|k| field(state, k)).collect();
@@ -376,7 +382,11 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         .small()
         .outline_soft()
         .on_click(move |_| visible.set(true));
-    let row_control = Element::row().cross(Align::Center).spacing(10).child(control).child(btn);
+    let row_control = Element::row()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(control)
+        .child(btn);
     let mut row = setting_row(&item.label, item.hint.as_deref(), row_control);
     // 宿主 enabled_when 作用于整行（含扩展按钮）。
     if let Some(f) = item
@@ -396,7 +406,11 @@ fn build_toggle(state: &AppState, key: &str, _item: &MItem, cfg: &Config) -> Ele
 /// 为某 bool key 建 Signal 并登记 writer/getter/loader，返回该 Signal。
 /// 独立出来便于「开关 + 设置」合并行直接复用同一开关（见 [`build_gated_dialog_row`]）。
 fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    let def = state.capabilities.default_for(key).as_bool().unwrap_or(false);
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_bool()
+        .unwrap_or(false);
     let cur = cfg.get_bool(key).unwrap_or(def);
     let sig = signal(cur);
     let kw = key.to_string();
@@ -439,7 +453,12 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     if values.is_empty() {
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
-    let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
+    let def_str = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let cur = cfg
         .get_str(key)
         .map(str::to_string)
@@ -496,10 +515,13 @@ type OptionSignals = (Signal<Vec<String>>, Signal<Vec<String>>);
 /// 字体 value 为字体族名（空字符串=默认），label 首项为"默认"其余同值。
 fn reactive_option_signals(state: &AppState, src: &str) -> Option<OptionSignals> {
     match src {
-        "themes"           => Some((state.theme_value_sig,          state.theme_label_sig)),
-        "fonts"            => Some((state.font_sig,                  state.font_label_sig)),
-        "codetableSchemas" => Some((state.codetable_schema_val_sig,  state.codetable_schema_lab_sig)),
-        "pinyinSchemas"    => Some((state.pinyin_schema_val_sig,     state.pinyin_schema_lab_sig)),
+        "themes" => Some((state.theme_value_sig, state.theme_label_sig)),
+        "fonts" => Some((state.font_sig, state.font_label_sig)),
+        "codetableSchemas" => Some((
+            state.codetable_schema_val_sig,
+            state.codetable_schema_lab_sig,
+        )),
+        "pinyinSchemas" => Some((state.pinyin_schema_val_sig, state.pinyin_schema_lab_sig)),
         _ => None,
     }
 }
@@ -513,26 +535,41 @@ fn build_select_reactive(
     val_sig: Signal<Vec<String>>,
     lab_sig: Signal<Vec<String>>,
 ) -> Element {
-    let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
-    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def_str.clone());
+    let def_str = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def_str.clone());
     // 初始索引：在当前（可能为空）值列表中定位；空则 0，待 loader 在数据到达后重定位。
     let idx = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
     let sig = signal(idx);
 
     // writer：按当前索引取值；列表为空（未加载）时不写，避免清空配置。
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        if let Some(v) = val_sig.with(|vs| vs.get(sig.get()).cloned()) {
-            c.set_path(&kw, Value::String(v));
-        }
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            if let Some(v) = val_sig.with(|vs| vs.get(sig.get()).cloned()) {
+                c.set_path(&kw, Value::String(v));
+            }
+        }));
     // loader：按配置值在（已就位的）值列表中重定位索引。
     let kl = key.to_string();
     let def_l = def_str.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            let cur = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
+            let cur = c
+                .get_str(&kl)
+                .map(str::to_string)
+                .unwrap_or_else(|| def_l.clone());
             let i = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
             sig.set(i);
         }),
@@ -542,7 +579,10 @@ fn build_select_reactive(
     state.fields.getters.borrow_mut().insert(
         key.to_string(),
         Box::new(move || {
-            val_sig.with(|vs| vs.get(sig.get()).cloned()).map(Value::String).unwrap_or(Value::Null)
+            val_sig
+                .with(|vs| vs.get(sig.get()).cloned())
+                .map(Value::String)
+                .unwrap_or(Value::Null)
         }),
     );
 
@@ -560,26 +600,39 @@ fn build_select_reactive(
 
 /// 离散数值下拉（int 键，如每页候选数）：options 的 value 为整数字符串，显示 label，写回整数。
 fn build_number_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
-    let (values, labels): (Vec<String>, Vec<String>) =
-        item.options.iter().map(|o| (o.value.clone(), o.label.clone())).unzip();
+    let (values, labels): (Vec<String>, Vec<String>) = item
+        .options
+        .iter()
+        .map(|o| (o.value.clone(), o.label.clone()))
+        .unzip();
     if values.is_empty() {
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
     let def = state.capabilities.default_for(key).as_i64().unwrap_or(0);
     // 越界/缺失回落到「默认值对应索引」（而非首项），避免显示与保存偏离 capability 默认。
-    let def_idx = values.iter().position(|v| *v == def.to_string()).unwrap_or(0);
+    let def_idx = values
+        .iter()
+        .position(|v| *v == def.to_string())
+        .unwrap_or(0);
     let cur = cfg.get_f64(key).map(|f| f as i64).unwrap_or(def);
-    let idx = values.iter().position(|v| *v == cur.to_string()).unwrap_or(def_idx);
+    let idx = values
+        .iter()
+        .position(|v| *v == cur.to_string())
+        .unwrap_or(def_idx);
     let sig = signal(idx);
 
     // writer：取选中项的整数值写回。
     let kw = key.to_string();
     let vals_w = values.clone();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        if let Some(n) = vals_w.get(sig.get()).and_then(|v| v.parse::<i64>().ok()) {
-            c.set_path(&kw, Value::from(n));
-        }
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            if let Some(n) = vals_w.get(sig.get()).and_then(|v| v.parse::<i64>().ok()) {
+                c.set_path(&kw, Value::from(n));
+            }
+        }));
     // loader：配置整数 → 在 values 中定位索引（越界回落默认值索引）。
     let kl = key.to_string();
     let vals_l = values.clone();
@@ -587,7 +640,12 @@ fn build_number_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
         key.to_string(),
         Box::new(move |c: &Config| {
             let cur = c.get_f64(&kl).map(|f| f as i64).unwrap_or(def);
-            sig.set(vals_l.iter().position(|v| *v == cur.to_string()).unwrap_or(def_idx));
+            sig.set(
+                vals_l
+                    .iter()
+                    .position(|v| *v == cur.to_string())
+                    .unwrap_or(def_idx),
+            );
         }),
     );
     // getter：当前选中整数值。
@@ -648,7 +706,12 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 }
 
 fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
-    let def = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let cur = cfg
         .get_str(key)
         .map(str::to_string)
@@ -695,9 +758,20 @@ fn hotkey_keys() -> Vec<(String, String)> {
     }
     // 注：core 对 = / - 用命名键 equal / minus（见快照默认 "ctrl+equal"），其余标点用字面符号。
     for (val, lbl) in [
-        ("space", "Space"), ("tab", "Tab"), ("enter", "Enter"),
-        (".", "."), (",", ","), ("/", "/"), (";", ";"), ("'", "'"),
-        ("[", "["), ("]", "]"), ("minus", "-"), ("equal", "="), ("`", "`"), ("\\", "\\"),
+        ("space", "Space"),
+        ("tab", "Tab"),
+        ("enter", "Enter"),
+        (".", "."),
+        (",", ","),
+        ("/", "/"),
+        (";", ";"),
+        ("'", "'"),
+        ("[", "["),
+        ("]", "]"),
+        ("minus", "-"),
+        ("equal", "="),
+        ("`", "`"),
+        ("\\", "\\"),
     ] {
         v.push((val.to_string(), lbl.to_string()));
     }
@@ -705,8 +779,12 @@ fn hotkey_keys() -> Vec<(String, String)> {
 }
 
 /// 修饰键 (值, 显示名)，顺序即合成顺序（与 core 既有默认 "ctrl+shift+e" 一致）。
-const HOTKEY_MODS: [(&str, &str); 4] =
-    [("ctrl", "Ctrl"), ("shift", "Shift"), ("alt", "Alt"), ("win", "Win")];
+const HOTKEY_MODS: [(&str, &str); 4] = [
+    ("ctrl", "Ctrl"),
+    ("shift", "Shift"),
+    ("alt", "Alt"),
+    ("win", "Win"),
+];
 
 /// 解析 "ctrl+shift+e" → (修饰位 [ctrl,shift,alt,win], 主键值)。"none"/空 → 全 false + 空键。
 pub(crate) fn parse_hotkey(s: &str) -> ([bool; 4], String) {
@@ -783,14 +861,26 @@ fn split_binding(v: &str, def: &str) -> (bool, String) {
 
 /// 热键有效写回值：启用→绑定，禁用→"none"（core 未绑定 sentinel）。
 fn effective_hotkey(enabled: bool, raw: &str) -> String {
-    if enabled { raw.to_string() } else { "none".to_string() }
+    if enabled {
+        raw.to_string()
+    } else {
+        "none".to_string()
+    }
 }
 
 fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     use crate::dialogs::field_dialogs::build_hotkey_dialog;
 
-    let def = state.capabilities.default_for(key).as_str().unwrap_or("none").to_string();
-    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("none")
+        .to_string();
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def.clone());
     // 启用 = 有实际绑定；禁用（"none"/空）时以默认绑定填充 raw（置灰展示，重新启用即用默认）。
     let (on, binding) = split_binding(&cur, &def);
     let enabled_sig = signal(on);
@@ -813,16 +903,26 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 
     // writer：启用时写 raw 绑定，禁用时写 "none"（core 未绑定 sentinel）。
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        c.set_path(&kw, Value::String(effective_hotkey(enabled_sig.get(), &raw.get())))
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(
+                &kw,
+                Value::String(effective_hotkey(enabled_sig.get(), &raw.get())),
+            )
+        }));
     // loader：回填启用态 + raw + disp（禁用时以默认绑定填充，置灰展示）。
     let kl = key.to_string();
     let def_l = def.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            let v = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
+            let v = c
+                .get_str(&kl)
+                .map(str::to_string)
+                .unwrap_or_else(|| def_l.clone());
             let (on, binding) = split_binding(&v, &def_l);
             enabled_sig.set(on);
             disp.set(format_hotkey(&binding));
@@ -850,8 +950,17 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     };
 
     let dlg = build_hotkey_dialog(
-        visible, &item.label, raw, disp, def, mods, key_idx,
-        key_vals.clone(), key_labels, global_sig, enabled_sig,
+        visible,
+        &item.label,
+        raw,
+        disp,
+        def,
+        mods,
+        key_idx,
+        key_vals.clone(),
+        key_labels,
+        global_sig,
+        enabled_sig,
     );
     register_dialog(state, dlg);
 
@@ -873,7 +982,11 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     Element::row()
         .cross(Align::Center)
         .spacing(10)
-        .child(Element::checkbox("启用", enabled_sig).small().fg_role(Role::Text))
+        .child(
+            Element::checkbox("启用", enabled_sig)
+                .small()
+                .fg_role(Role::Text),
+        )
         .child(
             // 固定宽度：防止长热键文本（如 "Ctrl+Shift+\"）撑宽右侧，挤压左侧功能名标签。
             Element::label_rc(disp)
@@ -896,14 +1009,21 @@ pub fn register_global_hotkeys_collector(state: &AppState) {
     let pairs: Vec<(String, Signal<bool>)> = flags.clone();
 
     let pairs_w = pairs.clone();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        // 排序使输出确定（数组按值相等比对，避免顺序差异误判 dirty / 每次保存重排）。
-        let mut names: Vec<String> =
-            pairs_w.iter().filter(|(_, s)| s.get()).map(|(f, _)| f.clone()).collect();
-        names.sort();
-        let arr: Vec<Value> = names.into_iter().map(Value::String).collect();
-        c.set_path("keys.global_hotkeys", Value::Array(arr));
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            // 排序使输出确定（数组按值相等比对，避免顺序差异误判 dirty / 每次保存重排）。
+            let mut names: Vec<String> = pairs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(f, _)| f.clone())
+                .collect();
+            names.sort();
+            let arr: Vec<Value> = names.into_iter().map(Value::String).collect();
+            c.set_path("keys.global_hotkeys", Value::Array(arr));
+        }));
 
     let pairs_l = pairs;
     state.fields.loaders.borrow_mut().insert(
@@ -911,7 +1031,11 @@ pub fn register_global_hotkeys_collector(state: &AppState) {
         Box::new(move |c: &Config| {
             let set: Vec<String> = c
                 .get_array("keys.global_hotkeys")
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             for (f, s) in &pairs_l {
                 s.set(set.iter().any(|x| x == f));
@@ -930,11 +1054,21 @@ fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> E
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
     // bool 键的分段控制器（两段映射 false/true，值 "false"/"true"）：用于「初始语言模式」等二态项。
-    let cap_ty = state.capabilities.entries.get(key).map(|e| e.ty.as_str()).unwrap_or("");
+    let cap_ty = state
+        .capabilities
+        .entries
+        .get(key)
+        .map(|e| e.ty.as_str())
+        .unwrap_or("");
     if cap_ty == "bool" {
         return build_segmented_bool(state, key, cfg, values, labels);
     }
-    let def_str = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
+    let def_str = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     let cur = cfg
         .get_str(key)
         .map(str::to_string)
@@ -986,7 +1120,11 @@ fn build_segmented_bool(
     values: Vec<String>,
     labels: Vec<String>,
 ) -> Element {
-    let def = state.capabilities.default_for(key).as_bool().unwrap_or(false);
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_bool()
+        .unwrap_or(false);
     let cur = cfg.get_bool(key).unwrap_or(def);
     let pos_of = |on: bool, vals: &[String]| -> usize {
         let s = if on { "true" } else { "false" };
@@ -996,10 +1134,14 @@ fn build_segmented_bool(
 
     let vals_w = values.clone();
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        let on = vals_w.get(sig.get()).map(|v| v == "true").unwrap_or(false);
-        c.set_path(&kw, Value::Bool(on));
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let on = vals_w.get(sig.get()).map(|v| v == "true").unwrap_or(false);
+            c.set_path(&kw, Value::Bool(on));
+        }));
 
     let vals_g = values.clone();
     state.fields.getters.borrow_mut().insert(
@@ -1019,7 +1161,11 @@ fn build_segmented_bool(
 fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     let cur: Vec<String> = cfg
         .get_array(key)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| default_strlist(state, key));
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
@@ -1037,7 +1183,10 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         .push(Box::new(move |c: &mut Config| {
             let pairs: Vec<(&str, bool)> =
                 sigs_w.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
-            let arr: Vec<Value> = collect_checked(&pairs).into_iter().map(Value::String).collect();
+            let arr: Vec<Value> = collect_checked(&pairs)
+                .into_iter()
+                .map(Value::String)
+                .collect();
             c.set_path(&kw, Value::Array(arr));
         }));
 
@@ -1048,7 +1197,10 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         Box::new(move || {
             let pairs: Vec<(&str, bool)> =
                 sigs_g.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
-            let arr: Vec<Value> = collect_checked(&pairs).into_iter().map(Value::String).collect();
+            let arr: Vec<Value> = collect_checked(&pairs)
+                .into_iter()
+                .map(Value::String)
+                .collect();
             Value::Array(arr)
         }),
     );
@@ -1062,7 +1214,11 @@ fn build_checkbox_group(state: &AppState, key: &str, item: &MItem, cfg: &Config)
         Box::new(move |c: &Config| {
             let cur: Vec<String> = c
                 .get_array(&kl)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_else(|| def_l.clone());
             for (v, s) in &sigs_l {
                 s.set(cur.iter().any(|c| c == v));
@@ -1085,13 +1241,22 @@ fn default_strlist(state: &AppState, key: &str) -> Vec<String> {
         .capabilities
         .default_for(key)
         .as_array()
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// 读 capability 默认值并解析为键值对 map（map 类型回落用）。
 fn default_map(state: &AppState, key: &str) -> serde_json::Map<String, Value> {
-    state.capabilities.default_for(key).as_object().cloned().unwrap_or_default()
+    state
+        .capabilities
+        .default_for(key)
+        .as_object()
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// 按声明顺序收集被勾选的选项值（写回 strlist 用）。
@@ -1173,7 +1338,9 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
             Element::checkbox(*lbl, s).small().fg_role(Role::Text)
         })
         .collect();
-    let grid = Element::grid(2, 10, cells).width_match().enabled_when(move || en.get());
+    let grid = Element::grid(2, 10, cells)
+        .width_match()
+        .enabled_when(move || en.get());
     Element::col()
         .width_match()
         .padding_xy(0, 11)
@@ -1223,8 +1390,12 @@ pub fn build_scheme_config_button(
     // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
     let mut cur_subsec: Option<String> = None;
     for k in &keys {
-        let Some(item) = state.manifest.get(k) else { continue };
-        if item.hidden { continue; }
+        let Some(item) = state.manifest.get(k) else {
+            continue;
+        };
+        if item.hidden {
+            continue;
+        }
         let subsec = item.subsection.clone();
         if subsec != cur_subsec {
             if let Some(ref name) = subsec {
@@ -1357,26 +1528,41 @@ fn build_gated_dialog_row(
 }
 
 /// dialog_button（strlist，无 options）：空格分隔文本编辑。挂对话框到根，返回 visible。
-fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::field_dialogs::{build_spaced_text_dialog, spaced_to_strlist, strlist_to_spaced};
+fn build_dialog_button_spaced(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::{
+        build_spaced_text_dialog, spaced_to_strlist, strlist_to_spaced,
+    };
 
     // 读当前值播种文本框 signal（缺省回落 capability 默认）
     let cur: Vec<String> = cfg
         .get_array(key)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| default_strlist(state, key));
     let text = signal(strlist_to_spaced(&cur));
     let visible = signal(false);
 
     // writer：把文本框内容（空格分隔）写回 strlist
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        let arr: Vec<Value> = spaced_to_strlist(&text.get())
-            .into_iter()
-            .map(Value::String)
-            .collect();
-        c.set_path(&kw, Value::Array(arr));
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let arr: Vec<Value> = spaced_to_strlist(&text.get())
+                .into_iter()
+                .map(Value::String)
+                .collect();
+            c.set_path(&kw, Value::Array(arr));
+        }));
 
     // loader：从 Config 回填文本框（缺省回落 capability 默认）
     let kl = key.to_string();
@@ -1386,7 +1572,11 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
         Box::new(move |c: &Config| {
             let cur: Vec<String> = c
                 .get_array(&kl)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_else(|| def_l.clone());
             text.set(strlist_to_spaced(&cur));
         }),
@@ -1397,7 +1587,11 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
         let d = state.capabilities.default_for(key);
         let v: Vec<String> = d
             .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         strlist_to_spaced(&v)
     };
@@ -1410,25 +1604,46 @@ fn build_dialog_button_spaced(state: &AppState, key: &str, item: &MItem, cfg: &C
 
 /// dialog_button（str）：单行字符串编辑对话框（如智能标点字符集/数字后保留英文标点）。
 /// 走对话框是为了带「恢复默认」操作。挂对话框到根，返回 visible。
-fn build_dialog_button_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
+fn build_dialog_button_string(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_text_dialog;
 
-    let def = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
-    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def.clone());
     let text = signal(cur);
     let visible = signal(false);
 
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        c.set_path(&kw, Value::String(text.get()))
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, Value::String(text.get()))
+        }));
 
     let kl = key.to_string();
     let def_l = def.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            text.set(c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone()));
+            text.set(
+                c.get_str(&kl)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| def_l.clone()),
+            );
         }),
     );
 
@@ -1439,13 +1654,22 @@ fn build_dialog_button_string(state: &AppState, key: &str, item: &MItem, cfg: &C
 }
 
 /// dialog_button（strlist with options）：勾选配对清单。挂对话框到根，返回 visible。
-fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
+fn build_dialog_button_pairs(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
 
     let defaults = default_strlist(state, key);
     let cur: Vec<String> = cfg
         .get_array(key)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_else(|| defaults.clone());
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
@@ -1462,8 +1686,12 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
-            let pairs: Vec<(&str, bool)> = sigs_w.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
-            let arr: Vec<Value> = collect_checked(&pairs).into_iter().map(Value::String).collect();
+            let pairs: Vec<(&str, bool)> =
+                sigs_w.iter().map(|(v, s)| (v.as_str(), s.get())).collect();
+            let arr: Vec<Value> = collect_checked(&pairs)
+                .into_iter()
+                .map(Value::String)
+                .collect();
             c.set_path(&kw, Value::Array(arr));
         }));
 
@@ -1476,7 +1704,11 @@ fn build_dialog_button_pairs(state: &AppState, key: &str, item: &MItem, cfg: &Co
         Box::new(move |c: &Config| {
             let cur: Vec<String> = c
                 .get_array(&kl)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_else(|| def_l.clone());
             for (v, s) in &sigs_l {
                 s.set(cur.iter().any(|c| c == v));
@@ -1523,17 +1755,21 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
     // writer：整体读出 schema.mix_modes，按 id 替换 trigger_keys，整体写回；找不到 quick_mix
     // 项时 patch_mix_mode_trigger_keys 返回 None，本次保存对这个字段静默无操作（不新建实例）。
     let sigs_w = sigs.clone();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        let selected: Vec<String> = sigs_w
-            .iter()
-            .filter(|(_, s)| s.get())
-            .map(|(v, _)| v.clone())
-            .collect();
-        let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
-        if let Some(patched) = patch_mix_mode_trigger_keys(&arr, QUICK_MIX_ID, &selected) {
-            c.set_path(mix_modes_path, Value::Array(patched));
-        }
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let selected: Vec<String> = sigs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(v, _)| v.clone())
+                .collect();
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            if let Some(patched) = patch_mix_mode_trigger_keys(&arr, QUICK_MIX_ID, &selected) {
+                c.set_path(mix_modes_path, Value::Array(patched));
+            }
+        }));
 
     // loader：apply_loaded/重新加载/重置时把 Signal 状态从当前 Config 灌回；找不到 quick_mix
     // 项时回落到 QUICK_MIX_DEFAULT_TRIGGER（对齐主仓 default_mix_modes 的默认触发键）。
@@ -1601,8 +1837,7 @@ fn build_dialog_button_mix_members(
             sig: signal(cur.contains(&o.value)),
         })
         .collect();
-    let sigs: Vec<(String, Signal<bool>)> =
-        rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
+    let sigs: Vec<(String, Signal<bool>)> = rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
     let visible = signal(false);
 
     let sigs_w = sigs.clone();
@@ -1647,7 +1882,12 @@ fn build_dialog_button_mix_members(
 }
 
 /// dialog_button（map）：键值对 text_input 降级实现。挂对话框到根，返回 visible。
-fn build_dialog_button_map(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
+fn build_dialog_button_map(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
     use crate::dialogs::field_dialogs::{build_map_dialog, map_to_rows, rows_to_map};
 
     let def_map = default_map(state, key);
@@ -1770,8 +2010,16 @@ fn collect_labels(inputs: &[Signal<String>]) -> String {
 fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_index_labels_dialog;
 
-    let def = state.capabilities.default_for(key).as_str().unwrap_or("").to_string();
-    let cur = cfg.get_str(key).map(str::to_string).unwrap_or_else(|| def.clone());
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def.clone());
     let cur_chars: Vec<char> = cur.chars().collect();
     let inputs: Vec<Signal<String>> = (0..INDEX_LABEL_SLOTS)
         .map(|i| signal(cur_chars.get(i).map(|c| c.to_string()).unwrap_or_default()))
@@ -1781,9 +2029,13 @@ fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -
     // writer：各框首字符拼接（遇空即停）→ 前缀串。
     let inputs_w = inputs.clone();
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        c.set_path(&kw, Value::String(collect_labels(&inputs_w)));
-    }));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, Value::String(collect_labels(&inputs_w)));
+        }));
     // loader：字符串按字符回填各框（多余截断、不足留空）。
     let inputs_l = inputs.clone();
     let kl = key.to_string();
@@ -1791,7 +2043,10 @@ fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            let cur = c.get_str(&kl).map(str::to_string).unwrap_or_else(|| def_l.clone());
+            let cur = c
+                .get_str(&kl)
+                .map(str::to_string)
+                .unwrap_or_else(|| def_l.clone());
             let chars: Vec<char> = cur.chars().collect();
             for (i, sig) in inputs_l.iter().enumerate() {
                 sig.set(chars.get(i).map(|c| c.to_string()).unwrap_or_default());
@@ -1816,7 +2071,11 @@ fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -
 fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_punct_table_dialog;
 
-    let cur_map = cfg.get_path(key).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    let cur_map = cfg
+        .get_path(key)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
 
     // 每行 4 个可编辑信号，从「覆盖值或默认值」播种。
     let cells: Vec<[Signal<String>; 4]> = PUNCT_DEFAULTS
@@ -1831,17 +2090,21 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
     // writer：仅存与默认不同的行 → custom_mappings 对象。
     let cells_w = cells.clone();
     let kw = key.to_string();
-    state.fields.writers.borrow_mut().push(Box::new(move |c: &mut Config| {
-        let mut m = serde_json::Map::new();
-        for (row, (_, tok, defs)) in cells_w.iter().zip(PUNCT_DEFAULTS.iter()) {
-            let vals: [String; 4] = std::array::from_fn(|i| row[i].get());
-            if (0..4).any(|i| vals[i].as_str() != defs[i]) {
-                let arr: Vec<Value> = vals.iter().cloned().map(Value::String).collect();
-                m.insert((*tok).to_string(), Value::Array(arr));
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let mut m = serde_json::Map::new();
+            for (row, (_, tok, defs)) in cells_w.iter().zip(PUNCT_DEFAULTS.iter()) {
+                let vals: [String; 4] = std::array::from_fn(|i| row[i].get());
+                if (0..4).any(|i| vals[i].as_str() != defs[i]) {
+                    let arr: Vec<Value> = vals.iter().cloned().map(Value::String).collect();
+                    m.insert((*tok).to_string(), Value::Array(arr));
+                }
             }
-        }
-        c.set_path(&kw, Value::Object(m));
-    }));
+            c.set_path(&kw, Value::Object(m));
+        }));
 
     // loader：config 覆盖叠加到默认，回填各信号。
     let cells_l = cells.clone();
@@ -1849,7 +2112,11 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            let m = c.get_path(&kl).and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let m = c
+                .get_path(&kl)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
             for (row, (_, tok, defs)) in cells_l.iter().zip(PUNCT_DEFAULTS.iter()) {
                 let ov = m.get(*tok).and_then(|v| v.as_array());
                 for i in 0..4 {
@@ -1859,7 +2126,10 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
         }),
     );
 
-    let src_labels: Vec<String> = PUNCT_DEFAULTS.iter().map(|(s, _, _)| s.to_string()).collect();
+    let src_labels: Vec<String> = PUNCT_DEFAULTS
+        .iter()
+        .map(|(s, _, _)| s.to_string())
+        .collect();
     let defaults: Vec<[String; 4]> = PUNCT_DEFAULTS
         .iter()
         .map(|(_, _, d)| std::array::from_fn(|i| d[i].to_string()))
@@ -1968,7 +2238,8 @@ mod tests {
     /// `&&`：全部满足才算满足。
     #[test]
     fn parse_conds_multiple_are_anded() {
-        let cs = parse_conds("ui.status.enabled == true && ui.status.display_mode == temp").unwrap();
+        let cs =
+            parse_conds("ui.status.enabled == true && ui.status.display_mode == temp").unwrap();
         assert_eq!(cs.len(), 2);
         assert!(cond_matches(&Value::Bool(true), &cs[0]));
         assert!(cond_matches(&Value::String("temp".into()), &cs[1]));
@@ -2029,17 +2300,30 @@ mod tests {
         }
         for (g, cnt) in &members {
             let hosts = openers.get(g).copied().unwrap_or(0);
-            assert_eq!(hosts, 1, "dialog_group `{g}`（{cnt} 成员）应恰好 1 个宿主，实际 {hosts}");
+            assert_eq!(
+                hosts, 1,
+                "dialog_group `{g}`（{cnt} 成员）应恰好 1 个宿主，实际 {hosts}"
+            );
         }
         for g in openers.keys() {
-            assert!(members.contains_key(g), "opens_dialog `{g}` 无任何成员(dialog_group)");
+            assert!(
+                members.contains_key(g),
+                "opens_dialog `{g}` 无任何成员(dialog_group)"
+            );
         }
     }
 
     #[test]
     fn hotkey_parse_compose_roundtrip() {
         // core 实际默认值需原样往返（注意 = 用命名 equal、标点 . \ 用字面）。
-        for s in ["ctrl+shift+e", "shift+space", "ctrl+.", "ctrl+shift+\\", "ctrl+equal", "ctrl+shift+["] {
+        for s in [
+            "ctrl+shift+e",
+            "shift+space",
+            "ctrl+.",
+            "ctrl+shift+\\",
+            "ctrl+equal",
+            "ctrl+shift+[",
+        ] {
             let (m, k) = parse_hotkey(s);
             assert_eq!(compose_hotkey(m, &k), s, "round-trip 失败: {s}");
         }
@@ -2073,9 +2357,7 @@ mod tests {
     #[test]
     fn mix_members_options_match_core_default_order() {
         let m = Manifest::from_embedded();
-        let item = m
-            .get("schema.mix_modes#members")
-            .expect("清单缺候选来源项");
+        let item = m.get("schema.mix_modes#members").expect("清单缺候选来源项");
         let declared: Vec<&str> = item.options.iter().map(|o| o.value.as_str()).collect();
         let core = wind_config::config::Config::default();
         let core_members: Vec<&str> = core.schema.mix_modes[0]
@@ -2114,9 +2396,7 @@ mod tests {
     #[test]
     fn mix_members_options_all_have_hints() {
         let m = Manifest::from_embedded();
-        let item = m
-            .get("schema.mix_modes#members")
-            .expect("清单缺候选来源项");
+        let item = m.get("schema.mix_modes#members").expect("清单缺候选来源项");
         for o in &item.options {
             assert!(!o.hint.is_empty(), "候选来源 `{}` 缺说明文字", o.value);
         }
@@ -2153,11 +2433,17 @@ mod tests {
         // 6 个分组：schema/input/keys/ui/general/advanced
         assert_eq!(m.groups.len(), 6, "应解析出 6 个分组");
         // 代表性 key 存在且类型/标签正确
-        let it = m.get("input.auto_pair.chinese").expect("应含 input.auto_pair.chinese");
+        let it = m
+            .get("input.auto_pair.chinese")
+            .expect("应含 input.auto_pair.chinese");
         assert_eq!(it.typ, "toggle");
         assert_eq!(it.group, "input");
         assert!(!it.label.is_empty(), "label 不应为空");
         // 至少 70 个配置项
-        assert!(m.order.len() >= 70, "items 数量应 >= 70，实际 {}", m.order.len());
+        assert!(
+            m.order.len() >= 70,
+            "items 数量应 >= 70，实际 {}",
+            m.order.len()
+        );
     }
 }

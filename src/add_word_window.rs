@@ -56,7 +56,10 @@ pub fn run(params: AddWordParams) {
     let dark = std::env::args().any(|a| a == "--dark");
 
     // 字段信号（Signal 为 Copy，可直接进多个闭包）。
-    let title = signal(title_text(&resolve_schema_name(&params.schema, &load_schemas())));
+    let title = signal(title_text(&resolve_schema_name(
+        &params.schema,
+        &load_schemas(),
+    )));
     let schema_id = signal(params.schema.clone());
     let code = signal(params.code.clone());
     let text = signal(params.text.clone());
@@ -145,8 +148,10 @@ fn build_form(
                         return;
                     }
                     let sid = schema_id.get();
-                    match crate::rpc::call_core("dict.encode", &json!({ "schemaId": sid, "text": t }))
-                    {
+                    match crate::rpc::call_core(
+                        "dict.encode",
+                        &json!({ "schemaId": sid, "text": t }),
+                    ) {
                         Ok(v) => {
                             if let Some(s) = v.as_str() {
                                 code.set(s.to_string());

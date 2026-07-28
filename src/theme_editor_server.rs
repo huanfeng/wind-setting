@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::rpc::call_core;
-use crate::theme_import::{import_text, ThemeImportError};
+use crate::theme_import::{ThemeImportError, import_text};
 
 #[derive(Debug, Clone, Default)]
 pub struct ThemeEditorServerStatus {

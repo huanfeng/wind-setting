@@ -1,6 +1,6 @@
 //! 主题 TOML 导入编排：setting 处理外部输入，core 处理主题语义。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
 
@@ -80,9 +80,7 @@ impl ThemePreview {
 impl ThemeImportResult {
     fn from_value(v: Value) -> Result<Self, ThemeImportError> {
         if v.get("ok").and_then(Value::as_bool) == Some(false) {
-            return Err(ThemeImportError::InvalidTheme(
-                "主题导入失败".to_string(),
-            ));
+            return Err(ThemeImportError::InvalidTheme("主题导入失败".to_string()));
         }
         let slug = v
             .get("slug")

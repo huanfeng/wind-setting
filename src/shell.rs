@@ -515,16 +515,11 @@ fn build_theme_delete_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                         .outline_soft()
                         .on_click(move |_| visible.set(false)),
                 )
-                .child(
-                    Element::button("删除")
-                        .small()
-                        .danger()
-                        .on_click(move |_| {
-                            if let Ok(mut s) = app_c.try_borrow_mut() {
-                                s.confirm_delete_theme();
-                            }
-                        }),
-                ),
+                .child(Element::button("删除").small().danger().on_click(move |_| {
+                    if let Ok(mut s) = app_c.try_borrow_mut() {
+                        s.confirm_delete_theme();
+                    }
+                })),
         );
     Element::dialog(visible, frame)
 }

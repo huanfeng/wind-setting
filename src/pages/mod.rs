@@ -353,10 +353,9 @@ fn theme_import_card(state: &AppState) -> Element {
                                 move |path| {
                                     let Some(path) = path else { return };
                                     // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
-                                    match crate::theme_import::read_local_toml(&path)
-                                        .and_then(|text| {
-                                            crate::theme_import::import_text(&text, false, None)
-                                        }) {
+                                    match crate::theme_import::read_local_toml(&path).and_then(
+                                        |text| crate::theme_import::import_text(&text, false, None),
+                                    ) {
                                         Ok(result) => feedback.set(Some((
                                             ToastKind::Success,
                                             format!("已导入主题：{}", result.display_name),

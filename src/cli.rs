@@ -3,9 +3,7 @@
 
 /// 规范页 id,顺序对齐 `pages::all_tabs`(方案/输入/按键/外观/词库/高级/关于)。
 /// 统计页未实现已从导航隐藏,故不在此列(对应 id `stats` 不再可路由)。
-const PAGES: &[&str] = &[
-    "schema", "input", "keys", "ui", "dict", "advanced", "about",
-];
+const PAGES: &[&str] = &["schema", "input", "keys", "ui", "dict", "advanced", "about"];
 
 /// 规范页 id → tab 索引。非法 id 返回 None(不兼容旧别名)。
 pub fn page_to_index(page: &str) -> Option<usize> {

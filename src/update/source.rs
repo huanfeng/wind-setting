@@ -83,9 +83,7 @@ pub fn parse_latest_json(text: &str, expected: Channel) -> Result<ReleaseInfo, U
     }
 
     if raw.size == 0 {
-        return Err(UpdateError::InvalidMetadata(
-            "缺少安装包大小".to_string(),
-        ));
+        return Err(UpdateError::InvalidMetadata("缺少安装包大小".to_string()));
     }
 
     // notes 地址允许缺失（拉不到就不显示），但给了就必须是 https。
@@ -269,14 +267,18 @@ mod tests {
 
     #[test]
     fn rejects_non_https_download_url() {
-        let json = valid_json("stable").replace("https://dl.windinput.com/WindInput", "http://dl.windinput.com/WindInput");
+        let json = valid_json("stable").replace(
+            "https://dl.windinput.com/WindInput",
+            "http://dl.windinput.com/WindInput",
+        );
         let err = parse_latest_json(&json, Channel::Stable).unwrap_err();
         assert!(err.user_message().contains("https"));
     }
 
     #[test]
     fn rejects_unparsable_version() {
-        let json = valid_json("stable").replace(r#""version": "0.107.0""#, r#""version": "不是版本""#);
+        let json =
+            valid_json("stable").replace(r#""version": "0.107.0""#, r#""version": "不是版本""#);
         let err = parse_latest_json(&json, Channel::Stable).unwrap_err();
         assert!(err.user_message().contains("版本号"));
     }

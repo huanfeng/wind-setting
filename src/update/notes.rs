@@ -217,7 +217,10 @@ mod tests {
 
     #[test]
     fn plain_text_strips_heading_hashes() {
-        assert_eq!(to_plain_text("# 一级\n## 二级\n### 三级"), "一级\n二级\n三级");
+        assert_eq!(
+            to_plain_text("# 一级\n## 二级\n### 三级"),
+            "一级\n二级\n三级"
+        );
     }
 
     #[test]

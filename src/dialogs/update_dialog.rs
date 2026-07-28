@@ -44,9 +44,7 @@ pub fn build_update_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
         .child(Element::divider())
         .child(consent_body().visible_when(is(UpdatePhase::Consent)))
         .child(checking_body().visible_when(is(UpdatePhase::Checking)))
-        .child(
-            has_update_body(message, size_text, notes).visible_when(is(UpdatePhase::HasUpdate)),
-        )
+        .child(has_update_body(message, size_text, notes).visible_when(is(UpdatePhase::HasUpdate)))
         .child(no_update_body(message, notes).visible_when(is(UpdatePhase::NoUpdate)))
         .child(
             downloading_body(message, progress, progress_text)
@@ -281,12 +279,8 @@ fn footer(
 
     // 「自动检查」在有结论的两个阶段（有更新／已最新）显示 —— 用户此刻最容易想到调整它。
     // 检查中/下载中不显示，避免在进行中的操作旁放一个会改行为的开关。
-    let show_auto_check = move || {
-        matches!(
-            phase.get(),
-            UpdatePhase::HasUpdate | UpdatePhase::NoUpdate
-        )
-    };
+    let show_auto_check =
+        move || matches!(phase.get(), UpdatePhase::HasUpdate | UpdatePhase::NoUpdate);
 
     Element::row()
         .width_match()
@@ -300,10 +294,7 @@ fn footer(
         )
         .child(Element::leaf().weight(1.0))
         // Consent
-        .child(
-            close_button(visible, "暂不")
-                .visible_when(is(UpdatePhase::Consent)),
-        )
+        .child(close_button(visible, "暂不").visible_when(is(UpdatePhase::Consent)))
         .child(
             Element::button("允许联网并检查")
                 .small()
@@ -406,7 +397,10 @@ mod tests {
             .build(&mut tree);
         tree.root = Some(root);
         // 用按行折算的引擎：NullTextEngine 恒返回单行高，测不出"内容变高→溢出→可滚动"。
-        tree.layout_root(Size::new(DIALOG_W, 800), &mut windui::text::LineAwareTextEngine);
+        tree.layout_root(
+            Size::new(DIALOG_W, 800),
+            &mut windui::text::LineAwareTextEngine,
+        );
         let scroll = tree.get(root).unwrap().children[0];
         let n = tree.get(scroll).unwrap();
         (n.measured.h, n.content_h)
@@ -446,13 +440,20 @@ mod tests {
             .child(no_update_body(msg, notes))
             .build(&mut tree);
         tree.root = Some(root);
-        tree.layout_root(Size::new(DIALOG_W, 800), &mut windui::text::LineAwareTextEngine);
+        tree.layout_root(
+            Size::new(DIALOG_W, 800),
+            &mut windui::text::LineAwareTextEngine,
+        );
         let body = tree.get(root).unwrap().children[0];
         tree.get(body)
             .unwrap()
             .children
             .iter()
-            .filter(|c| tree.get(**c).map(|n| n.effective_visible()).unwrap_or(false))
+            .filter(|c| {
+                tree.get(**c)
+                    .map(|n| n.effective_visible())
+                    .unwrap_or(false)
+            })
             .count()
     }
 
@@ -466,6 +467,10 @@ mod tests {
     #[test]
     fn up_to_date_hides_notes_section_when_empty() {
         assert_eq!(visible_children_of_no_update(""), 1, "只剩结论一行");
-        assert_eq!(visible_children_of_no_update("   \n  "), 1, "空白同样视为无说明");
+        assert_eq!(
+            visible_children_of_no_update("   \n  "),
+            1,
+            "空白同样视为无说明"
+        );
     }
 }
