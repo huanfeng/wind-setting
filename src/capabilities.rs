@@ -267,8 +267,11 @@ mod tests {
         "input.temp_pinyin.hotkey",
         // 候选窗首显时序调参（core 侧候选窗改造新增）：判断依据是宿主的绘制时序，
         // 普通用户无从判断，需要时改配置文件。接不接进设置页待 core 侧定稿后评估。
+        // fast_first_show_fallback_ms 在 core 侧的字段注释里明确标注为「内部选项」，
+        // 取值依据是特定宿主（Word/记事本）的坐标下发时序，不具备可暴露性。
         "ui.candidate.first_show_settle_ratio",
         "ui.candidate.fast_typing_window_ms",
+        "ui.candidate.fast_first_show_fallback_ms",
         // ⑪ 内部/实验项：顶码上屏的宿主时序策略，仅在宿主表现异常时改配置文件。
         "input.top_commit_mode",
         // ⑫ 拖动落盘的绝对坐标：由用户拖动窗口写入，手填既不直观又会与拖动互相覆盖，

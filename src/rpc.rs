@@ -374,10 +374,52 @@ mod tests {
         }
         assert!(
             problems.is_empty(),
-            "mockdata/config.json 与 core 系统预置漂移 {} 处，请重新生成：\n{}",
+            "mockdata/config.json 与 core 系统预置漂移 {} 处，请重新生成：\n\
+             cargo test regenerate_mock_config -- --ignored\n{}",
             problems.len(),
             problems.join("\n")
         );
+    }
+
+    /// 重新生成 `mockdata/config.json`（**非自动运行**，需显式 `-- --ignored`）。
+    ///
+    /// 上面的守护测试要求「重新生成而不是逐个手改」，此前却没有生成入口，只能照着
+    /// 报错逐条补——正是它要防的手抄漂移。core 改了配置默认值后跑：
+    /// `cargo test regenerate_mock_config -- --ignored`
+    ///
+    /// [`CURATED_MOCK_VALUES`] 中的键沿用旧 mock 的值：它们**有意**偏离 core 预置，
+    /// 直接覆盖会把那份策展改掉（`curated_mock_values_still_differ` 会当场发现）。
+    ///
+    /// 缩进用 1 空格而非 `to_string_pretty` 的 2 空格，与检入格式一致——否则一次
+    /// 再生成会把 300 余行全部重排，真正的改动淹没在噪声里。
+    #[test]
+    #[ignore = "写文件的维护工具，按需显式运行"]
+    fn regenerate_mock_config() {
+        use serde::Serialize;
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let preset =
+            wind_config::Config::system_preset_value(Some(&root.join("../WindInput/data")))
+                .expect("读取 core 系统预置失败");
+        let cfg: wind_config::Config = preset.try_into().expect("系统预置反序列化为 Config 失败");
+        let mut fresh = serde_json::to_value(&cfg).expect("Config 序列化失败");
+
+        let old: Value = serde_json::from_str(MOCK_CONFIG).expect("旧 mockdata 解析失败");
+        for key in CURATED_MOCK_VALUES {
+            let ptr = format!("/{}", key.replace('.', "/"));
+            let want = old.pointer(&ptr).expect("策展键不在旧 mockdata 中").clone();
+            *fresh.pointer_mut(&ptr).expect("策展键不在 core 配置中") = want;
+        }
+
+        let mut buf = Vec::new();
+        let fmt = serde_json::ser::PrettyFormatter::with_indent(b" ");
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
+        fresh.serialize(&mut ser).expect("序列化失败");
+        buf.push(b'\n'); // 与检入格式一致（EOF 换行）
+
+        let path = root.join("src/mockdata/config.json");
+        std::fs::write(&path, buf).expect("写入 mockdata 失败");
+        println!("已重新生成 {}", path.display());
     }
 
     /// 守护：策展名单不能腐烂——列进去的键必须真的与预置不同，否则说明它已可回归自动对账。

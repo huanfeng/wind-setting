@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.111.3",
+  "appVersion": "0.112.1",
   "configKeys": [
     {
       "default": "wubi86",
@@ -739,6 +739,11 @@
     {
       "default": 100,
       "key": "ui.candidate.fast_typing_window_ms",
+      "type": "int"
+    },
+    {
+      "default": 25,
+      "key": "ui.candidate.fast_first_show_fallback_ms",
       "type": "int"
     },
     {
