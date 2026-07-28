@@ -84,8 +84,13 @@ pub fn build_spaced_text_dialog(
     Element::dialog(visible, frame)
 }
 
-/// 单行字符串编辑对话框：提示 + 单行 text_input + [恢复默认 | 取消 确认]。
+/// 单行字符串编辑对话框：提示 + 单行 text_input +（可选附加行）+ [恢复默认 | 取消 确认]。
 /// 用于 str 类型的「启用 + 设置」项（如智能标点字符集），需要「恢复默认」故走对话框。
+///
+/// `extra`：追加在输入框下方的附加行，承载 manifest 里声明了 `dialog_extra_for` 的从属项
+/// （如「英文标点智能符号」开关寄居在中文智能符号的对话框里）。`None` = 无附加行，
+/// 版式与改造前完全一致。注意「恢复默认」只复位文本框，不动附加项——附加项是独立配置键，
+/// 各自有自己的默认值，一并复位会造成「我只想恢复字符集」的误伤。
 pub fn build_text_dialog(
     visible: Signal<bool>,
     title: &str,
@@ -93,6 +98,7 @@ pub fn build_text_dialog(
     text: Signal<String>,
     default_text: String,
     placeholder: &str,
+    extra: Option<Element>,
 ) -> Element {
     let frame = Element::col()
         .width(420)
@@ -123,33 +129,36 @@ pub fn build_text_dialog(
                     .width_match()
                     .height(36),
             ),
-        )
-        .child(Element::divider())
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .padding_xy(16, 12)
-                .spacing(8)
-                .child(
-                    Element::button("恢复默认")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| text.set(default_text.clone())),
-                )
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("取消")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| visible.set(false)),
-                )
-                .child(
-                    Element::button("确认")
-                        .small()
-                        .on_click(move |_| visible.set(false)),
-                ),
         );
+    let frame = match extra {
+        Some(e) => frame.child(Element::col().width_match().padding_xy(18, 4).child(e)),
+        None => frame,
+    };
+    let frame = frame.child(Element::divider()).child(
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .padding_xy(16, 12)
+            .spacing(8)
+            .child(
+                Element::button("恢复默认")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| text.set(default_text.clone())),
+            )
+            .child(Element::leaf().weight(1.0))
+            .child(
+                Element::button("取消")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| visible.set(false)),
+            )
+            .child(
+                Element::button("确认")
+                    .small()
+                    .on_click(move |_| visible.set(false)),
+            ),
+    );
     Element::dialog(visible, frame)
 }
 

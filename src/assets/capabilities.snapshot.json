@@ -420,6 +420,21 @@
     },
     {
       "default": false,
+      "key": "input.symbol.english_punct_mode",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.symbol.english_mode",
+      "type": "bool"
+    },
+    {
+      "default": ".,?!:;",
+      "key": "input.symbol.english_chars",
+      "type": "str"
+    },
+    {
+      "default": false,
       "key": "input.auto_pair.chinese",
       "type": "bool"
     },

@@ -508,49 +508,6 @@ hint = "数字后保持英文形态的标点集合，默认 .,:"
 gate_key = "input.punct.smart_after_digit"
 
 [[items]]
-key = "input.symbol.smart_mode"
-group = "input"
-section = "字符与标点"
-type = "toggle"
-label = "智能符号模式"
-hint = "连按两次同一中文标点自动转英文，可配置参与的符号集合"
-
-[[items]]
-key = "input.symbol.smart_method"
-group = "input"
-section = "字符与标点"
-type = "select"
-label = "智能符号上屏方案"
-hint = "直接替换：第一次按键直接上屏中文符号，再次按键删改为英文，所见即所得、没有中间预览态，实际体感更好（推荐）；组合态预览：第一次按键先以预览态显示中文符号，超时或再次按键才真正定型，全程不做删改，兼容性更好，适合在直接替换下表现异常的应用"
-enabled_when = "input.symbol.smart_mode == true"
-options = [
-  { value = "delete_replace", label = "直接替换（推荐）" },
-  { value = "hold_composition", label = "组合态预览（兼容性好）" },
-]
-
-[[items]]
-key = "input.symbol.smart_timeout_ms"
-group = "input"
-section = "字符与标点"
-type = "slider"
-label = "智能符号时限"
-hint = "两次按键的最大间隔（毫秒）"
-min = 100
-max = 2000
-step = 50
-unit = "ms"
-enabled_when = "input.symbol.smart_mode == true"
-
-[[items]]
-key = "input.symbol.smart_chars"
-group = "input"
-section = "字符与标点"
-type = "dialog_button"
-label = "智能符号字符集"
-hint = "参与智能符号转换的中文标点集合"
-gate_key = "input.symbol.smart_mode"
-
-[[items]]
 key = "input.punct.custom_enabled"
 group = "input"
 section = "字符与标点"
@@ -566,6 +523,178 @@ type = "dialog_button"
 label = "自定义标点映射"
 hint = "按英文半角/全角、中文半角/全角四态自定义标点替换；在表格对话框中逐格编辑"
 gate_key = "input.punct.custom_enabled"
+
+# ── 智能符号 ──
+# 三个开关各管一种场景、互相独立，都默认关。上屏方案与时限**不挂 enabled_when**：
+# 它们是三个开关共用的公共参数，挂在任何单个开关上都会造成「另外两个开着却调不了」。
+[[items]]
+key = "input.symbol.smart_mode"
+group = "input"
+section = "智能符号"
+type = "toggle"
+label = "中文标点智能符号"
+hint = "连按两次同一中文标点转英文；数字后的标点方向相反（先出英文，再按转中文）"
+
+# gate_soft：按钮不随「启用」置灰——对话框里还寄居着「英文标点智能符号」开关，
+# 置灰会让只想用那一项的用户彻底够不着它。
+[[items]]
+key = "input.symbol.smart_chars"
+group = "input"
+section = "智能符号"
+type = "dialog_button"
+label = "中文符号字符集"
+hint = "参与转换的中文标点集合"
+gate_key = "input.symbol.smart_mode"
+gate_soft = true
+
+# 寄居在上面那个对话框里（不独立成行）：它与中文智能符号同属「中文输入模式下」的标点行为，
+# 单开一行会让卡片又多一个顶层开关。
+[[items]]
+key = "input.symbol.english_punct_mode"
+group = "input"
+section = "智能符号"
+type = "toggle"
+label = "英文标点智能符号"
+hint = "标点切到英文时，连按两次同一英文标点转中文。符号列表使用下方的「英文符号字符集」，不是本对话框的中文集合"
+dialog_extra_for = "input.symbol.smart_chars"
+
+[[items]]
+key = "input.symbol.english_mode"
+group = "input"
+section = "智能符号"
+type = "toggle"
+label = "英文模式智能符号"
+hint = "英文输入模式下，连按两次同一英文标点转中文。开启后输入法会接管这些标点键（原本直接交给应用），故默认关闭"
+
+# gate_soft：字符集同时服务于「英文标点智能符号」（在上面的对话框里），
+# 跟着 english_mode 置灰会让只开那一项的用户改不了集合。
+[[items]]
+key = "input.symbol.english_chars"
+group = "input"
+section = "智能符号"
+type = "dialog_button"
+label = "英文符号字符集"
+hint = "两个英文场景共用的标点集合，填按键本身的英文标点（如 . 而非 。）。不建议放括号引号：英文模式下这些键被接管后，Tab 跳出配对会失效"
+gate_key = "input.symbol.english_mode"
+gate_soft = true
+
+[[items]]
+key = "input.symbol.smart_method"
+group = "input"
+section = "智能符号"
+type = "select"
+label = "智能符号上屏方案"
+hint = "直接替换：第一次按键直接上屏符号，再次按键删改为另一形态，所见即所得、没有中间预览态，实际体感更好（推荐）；组合态预览：第一次按键先以预览态显示，超时或再次按键才真正定型，全程不做删改，兼容性更好，适合在直接替换下表现异常的应用。三种场景共用"
+options = [
+  { value = "delete_replace", label = "直接替换（推荐）" },
+  { value = "hold_composition", label = "组合态预览（兼容性好）" },
+]
+
+[[items]]
+key = "input.symbol.smart_timeout_ms"
+group = "input"
+section = "智能符号"
+type = "slider"
+label = "智能符号时限"
+hint = "两次按键的最大间隔（毫秒）；三种场景共用"
+min = 100
+max = 2000
+step = 50
+unit = "ms"
+
+# ── 标点配对 ──
+[[items]]
+key = "input.auto_pair.chinese"
+group = "input"
+section = "标点配对"
+type = "toggle"
+label = "中文标点自动配对"
+hint = "输入左括号类标点时自动补全右标点"
+
+[[items]]
+key = "input.auto_pair.chinese_pairs"
+group = "input"
+section = "标点配对"
+type = "dialog_button"
+label = "中文配对字符"
+hint = "勾选参与自动配对的中文标点对"
+gate_key = "input.auto_pair.chinese"
+[[items.options]]
+value = "（）"
+label = "（ ）全角圆括号"
+[[items.options]]
+value = "【】"
+label = "【 】方括号"
+[[items.options]]
+value = "｛｝"
+label = "｛ ｝花括号"
+[[items.options]]
+value = "《》"
+label = "《 》书名号"
+[[items.options]]
+value = "〈〉"
+label = "〈 〉单书名号"
+[[items.options]]
+value = "「」"
+label = "「 」引号（台）"
+[[items.options]]
+value = "『』"
+label = "『 』双引号（台）"
+[[items.options]]
+value = "“”"
+label = "“ ” 双引号"
+[[items.options]]
+value = "‘’"
+label = "‘ ’ 单引号"
+
+[[items]]
+key = "input.auto_pair.english"
+group = "input"
+section = "标点配对"
+type = "toggle"
+label = "英文标点自动配对"
+hint = "英文模式或英文标点下自动配对括号"
+
+[[items]]
+key = "input.auto_pair.english_pairs"
+group = "input"
+section = "标点配对"
+type = "dialog_button"
+label = "英文配对字符"
+hint = "勾选参与自动配对的英文括号对"
+gate_key = "input.auto_pair.english"
+[[items.options]]
+value = "()"
+label = "( ) 圆括号"
+[[items.options]]
+value = "[]"
+label = "[ ] 方括号"
+[[items.options]]
+value = "{}"
+label = "{ } 花括号"
+[[items.options]]
+value = '""'
+label = '" " 双引号'
+[[items.options]]
+value = "''"
+label = "' ' 单引号"
+
+[[items]]
+key = "input.auto_pair.jump_out_keys"
+group = "input"
+section = "标点配对"
+type = "dialog_button"
+label = "配对跳出键"
+hint = "配对状态下按这些键跳到右符号之后；可多选，留空则不启用。引号等左右同形的配对不支持「右符号本身」跳出（无法区分是要跳出还是要嵌套新的一对），只能用 Tab/Enter"
+[[items.options]]
+value = "right_symbol"
+label = "右符号本身"
+[[items.options]]
+value = "tab"
+label = "Tab 制表键"
+[[items.options]]
+value = "enter"
+label = "Enter 回车键"
 
 # ── 按键行为 ──
 [[items]]
@@ -671,100 +800,6 @@ options = [
   { value = "s2twp", label = "台湾繁体（含词汇）" },
   { value = "s2hk", label = "香港繁体" },
 ]
-
-# ── 标点配对 ──
-[[items]]
-key = "input.auto_pair.chinese"
-group = "input"
-section = "标点配对"
-type = "toggle"
-label = "中文标点自动配对"
-hint = "输入左括号类标点时自动补全右标点"
-
-[[items]]
-key = "input.auto_pair.chinese_pairs"
-group = "input"
-section = "标点配对"
-type = "dialog_button"
-label = "中文配对字符"
-hint = "勾选参与自动配对的中文标点对"
-gate_key = "input.auto_pair.chinese"
-[[items.options]]
-value = "（）"
-label = "（ ）全角圆括号"
-[[items.options]]
-value = "【】"
-label = "【 】方括号"
-[[items.options]]
-value = "｛｝"
-label = "｛ ｝花括号"
-[[items.options]]
-value = "《》"
-label = "《 》书名号"
-[[items.options]]
-value = "〈〉"
-label = "〈 〉单书名号"
-[[items.options]]
-value = "「」"
-label = "「 」引号（台）"
-[[items.options]]
-value = "『』"
-label = "『 』双引号（台）"
-[[items.options]]
-value = "“”"
-label = "“ ” 双引号"
-[[items.options]]
-value = "‘’"
-label = "‘ ’ 单引号"
-
-[[items]]
-key = "input.auto_pair.english"
-group = "input"
-section = "标点配对"
-type = "toggle"
-label = "英文标点自动配对"
-hint = "英文模式或英文标点下自动配对括号"
-
-[[items]]
-key = "input.auto_pair.english_pairs"
-group = "input"
-section = "标点配对"
-type = "dialog_button"
-label = "英文配对字符"
-hint = "勾选参与自动配对的英文括号对"
-gate_key = "input.auto_pair.english"
-[[items.options]]
-value = "()"
-label = "( ) 圆括号"
-[[items.options]]
-value = "[]"
-label = "[ ] 方括号"
-[[items.options]]
-value = "{}"
-label = "{ } 花括号"
-[[items.options]]
-value = '""'
-label = '" " 双引号'
-[[items.options]]
-value = "''"
-label = "' ' 单引号"
-
-[[items]]
-key = "input.auto_pair.jump_out_keys"
-group = "input"
-section = "标点配对"
-type = "dialog_button"
-label = "配对跳出键"
-hint = "配对状态下按这些键跳到右符号之后；可多选，留空则不启用。引号等左右同形的配对不支持「右符号本身」跳出（无法区分是要跳出还是要嵌套新的一对），只能用 Tab/Enter"
-[[items.options]]
-value = "right_symbol"
-label = "右符号本身"
-[[items.options]]
-value = "tab"
-label = "Tab 制表键"
-[[items.options]]
-value = "enter"
-label = "Enter 回车键"
 
 # ── 快捷输入 ──
 [[items]]

@@ -63,6 +63,9 @@
   },
   "space_on_empty_behavior": "commit",
   "symbol": {
+   "english_chars": ".,?!:;",
+   "english_mode": false,
+   "english_punct_mode": false,
    "smart_chars": "。，？！：；、～￥·……——",
    "smart_method": "delete_replace",
    "smart_mode": false,

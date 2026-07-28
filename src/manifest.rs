@@ -40,8 +40,16 @@ pub struct MItem {
     /// 控件显式宽度（select/dropdown 选项文本较长时加宽，覆盖默认 CTRL_W）。
     pub width: Option<f64>,
     pub enabled_when: Option<String>,
-    /// dialog_button 专用：门控开关 key（该 toggle 关时按钮置灰不可点）。
+    /// dialog_button 专用：门控开关 key（该 toggle 关时按钮置灰不可点，除非 `gate_soft`）。
     pub gate_key: Option<String>,
+    /// dialog_button 专用：只与 `gate_key` 合并排版、**按钮不随开关置灰**。
+    /// 用于对话框内容不专属于该开关的情形——如「英文符号字符集」同时服务于英文标点智能符号，
+    /// 「中文符号字符集」的对话框里还寄居着别的开关；置灰会让另一条路的用户够不着。
+    pub gate_soft: bool,
+    /// 寄居在某个 dialog_button 的对话框里（值为宿主 dialog_button 的 key），不独立成行。
+    /// 与 `dialog_group`/`opens_dialog` 那套「扩展设置」不同：这是把一两个从属项塞进**已有的**
+    /// 值编辑对话框，不额外挂按钮，避免为一个开关多开一层套娃。
+    pub dialog_extra_for: Option<String>,
     /// hotkey 专用：该功能是否支持「全局热键」（编辑对话框显示「全局」勾选）。
     pub global: bool,
     /// 子对话框分组：成员项标记同一 id，收进对话框渲染、不在分区内独立成行。
@@ -163,6 +171,11 @@ impl Manifest {
                     width: it.get("width").and_then(|x| x.as_f64()),
                     enabled_when: opt_str(it, "enabled_when"),
                     gate_key: opt_str(it, "gate_key"),
+                    gate_soft: it
+                        .get("gate_soft")
+                        .and_then(|x| x.as_bool())
+                        .unwrap_or(false),
+                    dialog_extra_for: opt_str(it, "dialog_extra_for"),
                     global: it.get("global").and_then(|x| x.as_bool()).unwrap_or(false),
                     dialog_group: opt_str(it, "dialog_group"),
                     opens_dialog: opt_str(it, "opens_dialog"),
@@ -258,6 +271,10 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         }
         // 子对话框成员：不在分区内独立成行（由 opens_dialog 宿主的「扩展设置」对话框承载）。
         if item.dialog_group.is_some() {
+            continue;
+        }
+        // 寄居项：渲染在宿主 dialog_button 的对话框里（见 `dialog_extra_for`），不独立成行。
+        if item.dialog_extra_for.is_some() {
             continue;
         }
         // 被 gate 合并的 dialog_button：跳过独立行（gate 存在才跳，避免误吞）。
@@ -1517,7 +1534,13 @@ fn build_gated_dialog_row(
     let visible = build_dialog_body(state, &dlg_item.key, dlg_item, cfg);
 
     // 开关开启才可点「设置」：用响应式 enabled_when 置灰（windui 0.4.x 起支持闭包启用条件）。
-    let btn = open_dialog_button(visible).enabled_when(move || gate_sig.get());
+    // `gate_soft` 例外：对话框内容不专属于这个开关（共用字符集 / 里面还寄居着别的开关），
+    // 置灰会让另一条路的用户够不着，故只合并排版、按钮常开。
+    let btn = if dlg_item.gate_soft {
+        open_dialog_button(visible)
+    } else {
+        open_dialog_button(visible).enabled_when(move || gate_sig.get())
+    };
 
     let control = Element::row()
         .cross(Align::Center)
@@ -1648,9 +1671,39 @@ fn build_dialog_button_string(
     );
 
     let hint = item.hint.clone().unwrap_or_default();
-    let dlg = build_text_dialog(visible, &item.label, &hint, text, def, "输入字符…");
+    let extra = dialog_extra_rows(state, key);
+    let dlg = build_text_dialog(visible, &item.label, &hint, text, def, "输入字符…", extra);
     register_dialog(state, dlg);
     visible
+}
+
+/// 收集寄居在 `host_key` 对话框里的从属项（`dialog_extra_for == host_key`），按 manifest 顺序
+/// 渲染成行。无成员返回 None（版式与改造前一致）。
+///
+/// 成员经各自 [`field`] 登记 writer/loader，与独立成行时完全一致 —— 保存/加载/重置都自动覆盖，
+/// 不需要为「寄居」这件事另写一套读写。
+fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
+    let members: Vec<String> = state
+        .manifest
+        .order
+        .iter()
+        .filter(|k| {
+            state
+                .manifest
+                .get(k)
+                .and_then(|i| i.dialog_extra_for.as_deref())
+                == Some(host_key)
+        })
+        .cloned()
+        .collect();
+    if members.is_empty() {
+        return None;
+    }
+    let mut col = Element::col().width_match().spacing(6);
+    for k in &members {
+        col = col.child(field(state, k));
+    }
+    Some(col)
 }
 
 /// dialog_button（strlist with options）：勾选配对清单。挂对话框到根，返回 visible。
@@ -2279,6 +2332,42 @@ mod tests {
         let checked = [("lshift", true), ("rshift", false), ("capslock", true)];
         let arr = collect_checked(&checked);
         assert_eq!(arr, vec!["lshift".to_string(), "capslock".to_string()]);
+    }
+
+    /// 守护：`dialog_extra_for` 必须指向一个**真实存在且能承载附加行**的 dialog_button。
+    ///
+    /// 失配的后果是静默的：寄居项在 `section_rows` 里被跳过（不独立成行），宿主又不存在或
+    /// 不走 `build_dialog_button_string`，于是这个配置项在整个设置页里**彻底消失**——
+    /// 用户改不到，覆盖守护也查不出（key 仍在 manifest 里登记着）。
+    #[test]
+    fn dialog_extra_for_targets_are_valid() {
+        let m = Manifest::from_embedded();
+        for k in &m.order {
+            let it = m.get(k).unwrap();
+            let Some(host_key) = &it.dialog_extra_for else {
+                continue;
+            };
+            let host = m
+                .get(host_key)
+                .unwrap_or_else(|| panic!("`{k}` 的 dialog_extra_for 指向不存在的项 `{host_key}`"));
+            assert_eq!(
+                host.typ, "dialog_button",
+                "`{k}` 寄居的宿主 `{host_key}` 必须是 dialog_button，实际 `{}`",
+                host.typ
+            );
+            assert_eq!(
+                host.section, it.section,
+                "`{k}` 与宿主 `{host_key}` 必须同 section，否则跨卡片寄居难以理解"
+            );
+            // 宿主若被 gate 且会置灰，寄居项就可能永远够不着（见 gate_soft 的存在理由）。
+            if host.gate_key.is_some() {
+                assert!(
+                    host.gate_soft,
+                    "`{host_key}` 承载了寄居项却仍随开关置灰，`{k}` 在开关关闭时将无法访问；\
+                     请给宿主加 gate_soft = true"
+                );
+            }
+        }
     }
 
     /// 守护：子对话框分组配对一致 —— 每个 dialog_group 必有恰好一个 opens_dialog 宿主，
