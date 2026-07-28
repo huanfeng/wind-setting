@@ -217,14 +217,19 @@ pub fn force_check_requested(argv: &[String]) -> bool {
     std::env::var("WIND_UPDATE_FORCE").is_ok_and(|v| v == "1")
 }
 
-/// 检查更新：拉元数据 → 判定版本 → 有更新时才拉发布说明。
+/// 检查更新：拉元数据 → 判定版本 → 按需拉发布说明。
+///
+/// 有更新时**总是**拉发布说明（对话框必然展示它）。`notes_when_up_to_date` 控制的是
+/// 「已是最新」那条路径：用户手动点「检查更新」时即便没有新版本也想看看最新版改了
+/// 什么，故要拉；而静默的启动检查在无更新时根本不弹界面，那次请求没有任何消费者，
+/// 省掉即可。
 ///
 /// **不得在 UI 线程调用** —— 含两次网络请求。结果经 [`UpdateMsg::CheckDone`] 回传。
-pub fn check_update() -> Result<CheckResult, UpdateError> {
+pub fn check_update(notes_when_up_to_date: bool) -> Result<CheckResult, UpdateError> {
     let channel = Channel::current();
     let info = source::fetch_release_info(channel)?;
     let mut result = decide(&info, version::local_raw())?;
-    if result.has_update {
+    if result.has_update || notes_when_up_to_date {
         result.release_notes = source::fetch_release_notes(&info.release_notes_url);
     }
     Ok(result)
@@ -293,6 +298,27 @@ mod tests {
         let r = decide(&info("0.107.0"), "v0.107.0").unwrap();
         assert!(!r.has_update);
         assert!(!r.local_unparsable);
+    }
+
+    /// 拉取发布说明的判定（`check_update` 里的那个条件，抽出来单测——它不联网）。
+    fn should_fetch_notes(has_update: bool, notes_when_up_to_date: bool) -> bool {
+        has_update || notes_when_up_to_date
+    }
+
+    /// 有更新时**必须**拉说明，与静默与否无关。
+    ///
+    /// 这里曾差点写成 `want_notes = !silent`：静默检查发现新版本会照常弹窗，那个窗
+    /// 恰恰最需要说明，却会是空的。判定依据是"这条路径会不会展示说明"，不是"静不静默"。
+    #[test]
+    fn notes_are_fetched_whenever_an_update_will_be_shown() {
+        // silent=true → notes_when_up_to_date=false
+        assert!(should_fetch_notes(true, false), "静默 + 有更新：会弹窗，必须有说明");
+        assert!(should_fetch_notes(true, true), "手动 + 有更新");
+        assert!(should_fetch_notes(false, true), "手动 + 已最新：也要展示更新记录");
+        assert!(
+            !should_fetch_notes(false, false),
+            "静默 + 已最新：不弹界面，唯一可省的一格"
+        );
     }
 
     /// 开发构建（无 tag）不提示升级，且要能让 UI 区分"已最新"与"跳过检查"。

@@ -415,7 +415,8 @@ impl AppState {
         };
         // 网络请求绝不能在 UI 线程做；结果经 channel 回到 UI 线程写 Signal。
         std::thread::spawn(move || {
-            let result = crate::update::check_update().map_err(|e| e.user_message());
+            // 有更新时必拉说明；「已是最新」时只有手动检查才拉（静默那条不弹界面）。
+            let result = crate::update::check_update(!silent).map_err(|e| e.user_message());
             let _ = tx.send(crate::update::UpdateMsg::CheckDone { result, silent });
         });
     }
@@ -640,10 +641,14 @@ impl AppState {
                     // 无 tag 的开发构建：说明为何不提示，而不是谎称"已是最新"
                     self.update_message
                         .set("当前为开发构建，已跳过版本比较".to_string());
+                    self.update_notes.set(result.release_notes.clone());
                     self.update_phase.set(UpdatePhase::NoUpdate);
                 } else {
                     self.update_message
                         .set(format!("已是最新版本（{}）", result.remote_version));
+                    // 已是最新也展示最新版的更新记录——用户点开检查更新，多半也想知道
+                    // 自己手上这个版本都带了什么。
+                    self.update_notes.set(result.release_notes.clone());
                     self.update_phase.set(UpdatePhase::NoUpdate);
                 }
                 *self.update_check.borrow_mut() = Some(result);

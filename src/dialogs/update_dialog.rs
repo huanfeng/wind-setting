@@ -13,6 +13,14 @@ use windui::prelude::*;
 use crate::state::AppState;
 use crate::update::UpdatePhase;
 
+/// 对话框宽度。发布说明常有较长条目，比常规对话框宽一档可减少折行。
+const DIALOG_W: i32 = 620;
+/// 发布说明区高度上限：超出即滚动。
+///
+/// 用 `max_height` 而非固定高，短说明（多数版本只有两三条）时对话框自然收缩，
+/// 不会留一大片空白；长说明则封顶在此高度，按钮行始终留在视野内。
+const NOTES_MAX_H: i32 = 220;
+
 pub fn build_update_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
     let st = app_state.borrow();
     let visible = st.update_dialog_visible;
@@ -27,7 +35,7 @@ pub fn build_update_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
     let is = move |p: UpdatePhase| move || phase.get() == p;
 
     let frame = Element::col()
-        .width(560)
+        .width(DIALOG_W)
         .bg_role(Role::Surface)
         .border_role(Role::Border, 1)
         .corner(12.0)
@@ -39,7 +47,7 @@ pub fn build_update_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
         .child(
             has_update_body(message, size_text, notes).visible_when(is(UpdatePhase::HasUpdate)),
         )
-        .child(simple_body(message).visible_when(is(UpdatePhase::NoUpdate)))
+        .child(no_update_body(message, notes).visible_when(is(UpdatePhase::NoUpdate)))
         .child(
             downloading_body(message, progress, progress_text)
                 .visible_when(is(UpdatePhase::Downloading)),
@@ -160,13 +168,52 @@ fn has_update_body(
                 .width_match()
                 .max_lines(1),
         )
+        .child(notes_area(notes))
+}
+
+/// 发布说明区：内容超过 [`NOTES_MAX_H`] 即可滚动。
+///
+/// 此前是一个 `max_lines(8)` 的裸 label——超过八行的说明后半段既看不到也滚不动。
+/// 现在交给滚动容器：label 不再限行，按完整高度测量，溢出部分成为可滚动量。
+fn notes_area(notes: Signal<String>) -> Element {
+    Element::scroll()
+        .width_match()
+        .max_height(NOTES_MAX_H)
         .child(
             Element::label_rc(notes)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(8),
+                .width_match(),
         )
+}
+
+/// 「已是最新」正文：结论 + 最新版的更新记录。
+///
+/// 展示更新记录不是多余的——用户点开"检查更新"，除了想知道有没有新版，也想知道
+/// 手上这个版本都带了什么。说明拉取失败或为空时整段隐藏，不留一个空框。
+fn no_update_body(message: Signal<String>, notes: Signal<String>) -> Element {
+    let has_notes = move || !notes.get().trim().is_empty();
+    Element::col()
+        .width_match()
+        .spacing(8)
+        .padding_xy(18, 14)
+        .child(
+            Element::label_rc(message)
+                .font_size(12.0)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(2),
+        )
+        .child(
+            Element::label("本版更新记录")
+                .font_size(12.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1)
+                .visible_when(has_notes),
+        )
+        .child(notes_area(notes).visible_when(has_notes))
 }
 
 fn simple_body(message: Signal<String>) -> Element {
@@ -340,4 +387,85 @@ fn close_button(visible: Signal<bool>, text: &str) -> Element {
         .small()
         .outline_soft()
         .on_click(move |_| visible.set(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windui::core::Tree;
+    use windui::geometry::Size;
+
+    /// 布局 notes 区，返回 (节点占位高, 完整内容高)。
+    fn layout_notes(text: &str) -> (i32, i32) {
+        let sig = windui::signal::signal(text.to_string());
+        let mut tree = Tree::new();
+        // 外层给定与对话框一致的宽度，使 label 的换行条件贴近真实。
+        let root = Element::col()
+            .width(DIALOG_W)
+            .child(notes_area(sig))
+            .build(&mut tree);
+        tree.root = Some(root);
+        // 用按行折算的引擎：NullTextEngine 恒返回单行高，测不出"内容变高→溢出→可滚动"。
+        tree.layout_root(Size::new(DIALOG_W, 800), &mut windui::text::LineAwareTextEngine);
+        let scroll = tree.get(root).unwrap().children[0];
+        let n = tree.get(scroll).unwrap();
+        (n.measured.h, n.content_h)
+    }
+
+    /// 长发布说明须封顶并留下可滚动量——回归此前 `max_lines(8)` 直接截断、下半段
+    /// 既看不到也滚不动的问题。
+    #[test]
+    fn long_notes_are_capped_and_scrollable() {
+        let long = (1..=60)
+            .map(|i| format!("- 第 {i} 条更新内容"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (h, content_h) = layout_notes(&long);
+        assert_eq!(h, NOTES_MAX_H, "超长说明须封顶在上限高度");
+        assert!(
+            content_h > NOTES_MAX_H,
+            "溢出部分须成为可滚动量（content_h={content_h}）"
+        );
+    }
+
+    /// 短说明不该被撑到上限——多数版本只有两三条，撑高会留一大片空白。
+    #[test]
+    fn short_notes_shrink_to_content() {
+        let (h, content_h) = layout_notes("- 修了一个小问题");
+        assert!(h < NOTES_MAX_H, "短说明应按内容收缩，实际 {h}");
+        assert_eq!(h, content_h, "无溢出时占位高即内容高");
+    }
+
+    /// 布局「已是最新」正文，返回可见的子节点数。
+    fn visible_children_of_no_update(notes_text: &str) -> usize {
+        let msg = windui::signal::signal("已是最新版本（0.112.0）".to_string());
+        let notes = windui::signal::signal(notes_text.to_string());
+        let mut tree = Tree::new();
+        let root = Element::col()
+            .width(DIALOG_W)
+            .child(no_update_body(msg, notes))
+            .build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(DIALOG_W, 800), &mut windui::text::LineAwareTextEngine);
+        let body = tree.get(root).unwrap().children[0];
+        tree.get(body)
+            .unwrap()
+            .children
+            .iter()
+            .filter(|c| tree.get(**c).map(|n| n.effective_visible()).unwrap_or(false))
+            .count()
+    }
+
+    /// 已是最新时也要展示更新记录（结论 + 小标题 + 说明区）。
+    #[test]
+    fn up_to_date_shows_release_notes() {
+        assert_eq!(visible_children_of_no_update("- 新增了一些东西"), 3);
+    }
+
+    /// 说明拉取失败或为空时整段隐藏，不留一个空框。
+    #[test]
+    fn up_to_date_hides_notes_section_when_empty() {
+        assert_eq!(visible_children_of_no_update(""), 1, "只剩结论一行");
+        assert_eq!(visible_children_of_no_update("   \n  "), 1, "空白同样视为无说明");
+    }
 }
