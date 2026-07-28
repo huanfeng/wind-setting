@@ -1,0 +1,3 @@
+# Git 钩子是 sh 脚本,必须为 LF：core.autocrlf=true 的环境下 checkout 会把它转成
+# CRLF,shebang 行尾多出的 \r 会让解释器查找失败(bad interpreter)。
+.githooks/** text eol=lf

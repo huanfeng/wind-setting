@@ -29,6 +29,14 @@ cargo test             # 运行测试
 
 > 目标平台为 Windows:图标 / 版本信息 / DPI 感知 manifest 通过 `winresource` 在构建期嵌入,注册表访问使用 `winreg`。
 
+### 代码格式
+
+本项目采用 `cargo fmt` 默认风格,提交前请先 `cargo fmt`。仓库在 `.githooks/` 提供了 `pre-commit` 钩子(跑 `cargo fmt --check`),启用一次即可在提交前自动拦住格式漂移:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## 命令行
 
 | 参数 | 说明 |
