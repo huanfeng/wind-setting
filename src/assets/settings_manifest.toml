@@ -1017,6 +1017,9 @@ label = "触发前缀"
 hint = "识别为网址的前缀（如 www. http https ftp.），按空格分隔"
 gate_key = "input.url.enabled"
 
+# 暂时隐藏：网址输入模式目前不产出任何候选，候选窗根本不出现，这一项没有可观察的效果。
+# core 侧字段保留（模式级布局是统一机制，六个模式都有），将来网址若开始出候选，
+# 删掉下面的 hidden 一行即可恢复——不必重写清单项与选项表。
 [[items]]
 key = "input.url.candidate_layout"
 group = "input"
@@ -1026,6 +1029,7 @@ label = "候选窗布局"
 hint = "网址输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
 width = 210
 enabled_when = "input.url.enabled == true"
+hidden = true
 options = [
   { value = "follow", label = "跟随全局" },
   { value = "vertical", label = "强制竖排" },
