@@ -304,6 +304,9 @@ pub struct OpFlags {
     pub export: bool,
     /// 是否支持只读查看（系统短语）。
     pub view: bool,
+    /// 是否支持「转为用户短语」（系统短语）：原样复制为用户短语后即可编辑。
+    /// 走 `phrase.add` 撞键转归属，不另设 RPC（见 `DictManagerState::claim_phrase_as_user`）。
+    pub claim_as_user: bool,
 }
 
 impl OpFlags {
@@ -321,6 +324,7 @@ impl OpFlags {
         import: false,
         export: false,
         view: false,
+        claim_as_user: false,
     };
 }
 
@@ -488,6 +492,7 @@ const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
         set_enabled: true,
         reset_default: true,
         view: true,
+        claim_as_user: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {

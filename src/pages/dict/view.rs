@@ -386,7 +386,7 @@ fn activate_row(mgr: &DictManagerState, disp: usize) {
     if spec.ops.remove_rule {
         mgr.open_shadow_edit(&row.code, &row.text, &row.kind, row.position);
     } else {
-        mgr.open_edit(&row.code, &row.text, row.weight);
+        mgr.open_edit(&row.code, &row.text, row.weight, row.position);
     }
 }
 
@@ -506,14 +506,26 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                     .on_click(move |_| m.open_shadow_edit(&c, &t, &k, pos)),
             );
         } else {
-            let (c, t, w) = (row.code.clone(), row.text.clone(), row.weight);
+            let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
             r = r.child(
                 Element::button("编辑")
                     .small()
                     .outline_soft()
-                    .on_click(move |_| m.open_edit(&c, &t, w)),
+                    .on_click(move |_| m.open_edit(&c, &t, w, pos)),
             );
         }
+    }
+
+    // 转为用户短语（系统短语）：原样复制归属，之后即可编辑。
+    if spec.ops.claim_as_user {
+        let m = mgr.clone();
+        let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
+        r = r.child(
+            Element::button("转为用户")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.claim_phrase_as_user(&c, &t, w, pos)),
+        );
     }
 
     if spec.ops.promote {

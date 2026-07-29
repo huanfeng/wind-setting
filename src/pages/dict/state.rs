@@ -149,6 +149,10 @@ pub struct DictManagerState {
     pub edit_code: Signal<String>,
     pub edit_text: Signal<String>,
     pub edit_weight: Signal<String>,
+    /// 短语次序（`position`）。**仅在同编码、同权重时才决定先后**——主程序的短语层排序是
+    /// 「weight 降序，然后 position 升序」，权重不同则 position 完全不起作用。
+    /// 导入导出的 wdict 短语段一直带这一列，此前设置页却只能写死 0。
+    pub edit_position: Signal<String>,
     /// 编辑模式的原始键 (code, text)；None = 新增模式。
     editing_orig: Rc<RefCell<Option<(String, String)>>>,
 
@@ -248,6 +252,7 @@ impl DictManagerState {
             edit_code: signal(String::new()),
             edit_text: signal(String::new()),
             edit_weight: signal("0".to_string()),
+            edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
             shadow_orig: Rc::new(RefCell::new(None)),
             view_visible: signal(false),
@@ -1064,6 +1069,7 @@ impl DictManagerState {
         self.edit_code.set(String::new());
         self.edit_text.set(String::new());
         self.edit_weight.set(w.into());
+        self.edit_position.set("0".into());
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
         self.edit_l_text.set(lt.into());
@@ -1107,6 +1113,7 @@ impl DictManagerState {
         self.edit_code.set(code.to_string());
         self.edit_text.set(text.to_string());
         self.edit_weight.set("1200".to_string());
+        self.edit_position.set("0".to_string());
         self.edit_title.set("添加用户词库".to_string());
         self.edit_l_code.set("编码".to_string());
         self.edit_l_text.set("词条".to_string());
@@ -1114,7 +1121,8 @@ impl DictManagerState {
     }
 
     /// 打开"编辑"对话框（回填字段，记录原始键）。
-    pub fn open_edit(&self, code: &str, text: &str, weight: i64) {
+    /// `position` 仅短语用（用户词库无此维度，传 0 即可）。
+    pub fn open_edit(&self, code: &str, text: &str, weight: i64, position: i64) {
         let (title, lc, lt) = match self.current_category() {
             WordCategory::UserDict => ("编辑词条", "编码", "词条"),
             WordCategory::PhraseUser => ("编辑短语", "编码", "短语"),
@@ -1124,6 +1132,7 @@ impl DictManagerState {
         self.edit_code.set(code.into());
         self.edit_text.set(text.into());
         self.edit_weight.set(weight.to_string());
+        self.edit_position.set(position.to_string());
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
         self.edit_l_text.set(lt.into());
@@ -1233,17 +1242,27 @@ impl DictManagerState {
                 if text.trim().is_empty() {
                     return Err("短语不能为空".into());
                 }
+                // 次序：同编码同权重时才起作用（主程序按 weight 降序 → position 升序排）。
+                // 新增与编辑都要带上——此前 add 写死 0、update 根本不发，用户在导入的
+                // wdict 里设好的 position 一经设置页保存就被抹平。
+                let position: i64 = match self.edit_position.get().trim().parse() {
+                    Ok(p) => p,
+                    Err(_) => return Err("次序需为整数".into()),
+                };
                 match orig {
                     Some((oc, ot)) => {
                         let p = json!({
                             "code": oc, "text": ot,
-                            "newCode": code, "newText": text, "weight": weight
+                            "newCode": code, "newText": text,
+                            "weight": weight, "position": position
                         });
                         Ok((vec![(spec.rpc.update, p)], "已更新"))
                     }
                     None => {
-                        let p =
-                            json!({ "code": code, "text": text, "position": 0, "weight": weight });
+                        let p = json!({
+                            "code": code, "text": text,
+                            "position": position, "weight": weight
+                        });
                         Ok((vec![(spec.rpc.add, p)], "已添加"))
                     }
                 }
@@ -1262,6 +1281,28 @@ impl DictManagerState {
         }
         self.reload();
         self.notify_ok(ok_msg);
+    }
+
+    /// 把一条系统短语转为用户短语（原样复制其编码/内容/权重/次序）。
+    ///
+    /// 主程序的短语表主键只有 `(code, text)` 一把，`phrase.add` 撞上同键的系统行时即把该行
+    /// 转为用户行并记下遮蔽关系——所以「转为用户短语」不需要专门的 RPC，用该行现值调一次
+    /// `phrase.add` 就是它本身的语义（内容一字不改，只换归属）。
+    ///
+    /// 转换后：该条从系统短语列表隐去、出现在用户短语列表（带「覆盖」标记），可自由编辑；
+    /// 想还原走系统短语的「恢复默认」。
+    pub fn claim_phrase_as_user(&self, code: &str, text: &str, weight: i64, position: i64) {
+        let p = json!({
+            "code": code, "text": text,
+            "weight": weight, "position": position
+        });
+        match rpc::call_core("phrase.add", &p) {
+            Ok(_) => {
+                self.reload();
+                self.notify_ok("已转为用户短语");
+            }
+            Err(e) => self.notify_err(&format!("转换失败: {e}")),
+        }
     }
 
     /// 提交加/改词对话框。
@@ -2395,7 +2436,7 @@ mod tests {
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(1);
         st.sub_tab.set(0);
-        st.open_edit("aaaa", "工", 0);
+        st.open_edit("aaaa", "工", 0, 0);
         st.edit_weight.set("9".into()); // 仅改权重
         let (calls, _) = st.save_calls().unwrap();
         assert_eq!(calls.len(), 1);
@@ -2409,7 +2450,7 @@ mod tests {
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(1);
         st.sub_tab.set(0);
-        st.open_edit("aaaa", "工", 0);
+        st.open_edit("aaaa", "工", 0, 0);
         st.edit_text.set("工人".into()); // 词条变更
         let (calls, _) = st.save_calls().unwrap();
         assert_eq!(calls.len(), 2);
@@ -2431,12 +2472,61 @@ mod tests {
         assert_eq!(calls[0].0, "phrase.add");
         assert!(calls[0].1.get("schemaId").is_none());
 
-        st.open_edit("bj", "北京", 1);
+        st.open_edit("bj", "北京", 1, 0);
         st.edit_text.set("北京市".into());
         let (calls2, _) = st.save_calls().unwrap();
         assert_eq!(calls2[0].0, "phrase.update");
         assert_eq!(calls2[0].1["newText"], json!("北京市"));
         assert_eq!(calls2[0].1["text"], json!("北京")); // 原键
+    }
+
+    /// 短语的 `position` 必须在新增与编辑两条路上都发出去。
+    ///
+    /// 此前 add 写死 `position: 0`、update 根本不带该字段——用户在导入的 wdict 里设好的
+    /// 次序，一经设置页保存就被抹平（且导出文件里那一列看着还在，很难联想到是被谁改的）。
+    #[test]
+    fn save_calls_phrase_carries_position() {
+        let st = DictManagerState::new(); // domain 0 = 短语
+        st.sub_tab.set(1); // 用户短语
+        st.edit_code.set("date".into());
+        st.edit_text.set("$Y-$MM-$DD".into());
+        st.edit_weight.set("800".into());
+        st.edit_position.set("3".into());
+
+        // 新增
+        let (add, _) = st.save_calls().unwrap();
+        assert_eq!(add[0].0, "phrase.add");
+        assert_eq!(add[0].1["position"], json!(3), "新增须带 position");
+
+        // 编辑：回填现值后改次序
+        st.open_edit("date", "$Y-$MM-$DD", 800, 3);
+        assert_eq!(st.edit_position.get(), "3", "编辑对话框回填 position");
+        st.edit_position.set("1".into());
+        let (upd, _) = st.save_calls().unwrap();
+        assert_eq!(upd[0].0, "phrase.update");
+        assert_eq!(upd[0].1["position"], json!(1), "编辑须带 position");
+        assert_eq!(upd[0].1["weight"], json!(800), "权重不因改次序而丢失");
+    }
+
+    #[test]
+    fn save_calls_rejects_non_numeric_position() {
+        let st = DictManagerState::new();
+        st.sub_tab.set(1);
+        st.edit_code.set("date".into());
+        st.edit_text.set("x".into());
+        st.edit_weight.set("1".into());
+        st.edit_position.set("abc".into());
+        assert!(st.save_calls().is_err(), "非数字次序应校验失败");
+    }
+
+    /// 「转为用户短语」只在系统短语类别可用；用户短语侧不该出现这个操作。
+    #[test]
+    fn claim_as_user_only_for_system_phrases() {
+        let st = DictManagerState::new(); // domain 0 = 短语
+        st.sub_tab.set(0); // 系统短语
+        assert!(st.current_spec().ops.claim_as_user);
+        st.sub_tab.set(1); // 用户短语
+        assert!(!st.current_spec().ops.claim_as_user);
     }
 
     #[test]

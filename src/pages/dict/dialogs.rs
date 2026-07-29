@@ -177,6 +177,50 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
 
 /// 加/改词对话框（用户词库 / 短语）：编码/缩写（+出码）· 词条/短语 · 权重。
 /// 标签与标题随类别经 `label_rc` 响应式切换；保存逻辑见 `DictManagerState::submit_word`。
+/// 短语专用的「次序」字段（用户词库无此维度，整块隐藏）。
+///
+/// 附一行说明：主程序的短语层排序是「weight 降序 → position 升序」，**权重不同时
+/// position 完全不参与比较**。不写清楚的话，用户会以为它是全局排序位而反复调它却没反应。
+fn position_field(mgr: &DictManagerState) -> Element {
+    let vis = mgr.clone();
+    let is_phrase = move || {
+        matches!(
+            vis.current_category(),
+            super::spec::WordCategory::PhraseUser
+        )
+    };
+    let hint_vis = is_phrase.clone();
+    Element::col()
+        .width_match()
+        .spacing(4)
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::label("次序")
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted)
+                        .width(48),
+                )
+                .child(
+                    Element::text_input(mgr.edit_position, "")
+                        .width(100)
+                        .height(34),
+                ),
+        )
+        .child(
+            Element::label("仅在同编码、同权重时决定先后（数值小的靠前）")
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .padding_xy(56, 0)
+                .visible_when(hint_vis),
+        )
+        .visible_when(is_phrase)
+}
+
 fn build_edit_dialog(mgr: &DictManagerState) -> Element {
     let submit = mgr.clone();
     let cancel = mgr.clone();
@@ -264,7 +308,8 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                         .width(100)
                         .height(34),
                 ),
-        );
+        )
+        .child(position_field(mgr));
 
     let footer = Element::row()
         .width_match()
