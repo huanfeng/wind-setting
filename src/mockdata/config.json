@@ -28,7 +28,8 @@
    ],
    "jump_out_keys": [
     "right_symbol"
-   ]
+   ],
+   "state_ttl_secs": 120
   },
   "capslock": {
    "cancel_on_mode_switch": false

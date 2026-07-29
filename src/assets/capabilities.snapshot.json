@@ -472,6 +472,11 @@
       "type": "strlist"
     },
     {
+      "default": 120,
+      "key": "input.auto_pair.state_ttl_secs",
+      "type": "int"
+    },
+    {
       "default": true,
       "key": "input.temp_english.enabled",
       "type": "bool"

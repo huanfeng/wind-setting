@@ -280,6 +280,10 @@ mod tests {
         "ui.candidate.custom_y",
         "ui.status.custom_x",
         "ui.status.custom_y",
+        // ⑬ 配对状态时效秒数（core 侧跨模式跳出改造新增，内部项）：兜底「用户中途用鼠标
+        //    点走、把括号退格删掉」这类输入法感知不到的操作。取值依据是人的操作节奏，
+        //    普通用户无判断依据，需要时改配置文件。
+        "input.auto_pair.state_ttl_secs",
     ];
 
     /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。
