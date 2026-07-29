@@ -130,10 +130,8 @@ const CELL_GAP: f32 = 3.0;
 const WEEKDAY_W: f32 = 16.0;
 /// 网格底部到图例带的间距。
 const LEGEND_GAP: f32 = 14.0;
-/// 图例带高度（同时承载左侧的悬停说明文字）。
+/// 图例带高度。
 const LEGEND_BAND_H: f32 = 16.0;
-/// 悬停说明字号。
-const HOVER_TEXT_SIZE: f32 = 11.5;
 /// 星期标签（与 `data::weekday_mon0` 同为周一起始）。
 const WEEKDAY_LABELS: [&str; 7] = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -186,17 +184,14 @@ fn grid_for(width: f32, days: usize, first_weekday: usize) -> Grid {
 /// 日历热力图：一列一周、一行一个星期几，格子深浅表示当日输入量。
 ///
 /// 用自绘而非 180+ 个 `Element`：其一，节点与信号数会随天数线性膨胀；
-/// 其二，逐格 `.tooltip()` 要求每格都是独立节点，自绘只需在 `on_event` 里按坐标反算。
-/// 悬停详情写进 [`Self::hover`]，由外部 `label_rc` 显示——画在部件内会被自身 bounds
-/// 裁掉，做浮层又得动框架层，固定一行最稳且能显示更多信息。
+/// 其二，逐格提示要求每格都是独立节点，自绘只需在 `on_event` 里按坐标反算命中格，
+/// 再由 [`Widget::tooltip`] 交给框架弹浮层。
 struct Heatmap {
     /// `(日期, 当日总字数)`，按日期升序且连续（core 已补齐空白日）。
     days: Rc<Vec<(String, u32)>>,
     /// 首日的周内序号（周一 = 0）。
     first_weekday: usize,
-    /// 悬停详情输出。
-    hover: Signal<String>,
-    /// 上次命中的天索引，用于避免同一格重复写信号。
+    /// 当前命中的天索引，`tooltip()` 据此给文案。
     last_hit: std::cell::Cell<Option<usize>>,
 }
 
@@ -226,19 +221,21 @@ impl Heatmap {
         (idx < self.days.len()).then_some(idx)
     }
 
-    /// 悬停文案：日期 · 星期 · 总字数。
-    fn describe(&self, idx: usize) -> String {
-        let (date, chars) = &self.days[idx];
-        let mut s = format!(
-            "{} {} · {} 字",
+    /// 悬停文案：首行日期与星期，次行字数。
+    ///
+    /// 分两行是为了让浮层窄一些——跟着指针走的提示越宽越容易挡住相邻格子。
+    fn describe(&self, idx: usize) -> Option<String> {
+        let (date, chars) = self.days.get(idx)?;
+        let head = format!(
+            "{} {}",
             data::format_date_label(date),
-            data::format_weekday_label(date),
-            data::format_num(*chars as u64)
+            data::format_weekday_label(date)
         );
-        if *chars == 0 {
-            s.push_str("（无输入）");
-        }
-        s
+        Some(if *chars == 0 {
+            format!("{head}\n无输入")
+        } else {
+            format!("{head}\n{} 字", data::format_num(*chars as u64))
+        })
     }
 
     /// 画一段星期标签或图例文字。
@@ -335,26 +332,6 @@ impl Widget for Heatmap {
         let grid_right = ox + WEEKDAY_W + g.cols as f32 * g.step - CELL_GAP;
         let boxes_x = (grid_right - text_w - boxes_w).max(ox + WEEKDAY_W);
 
-        // 悬停说明与图例同行：框架的 tooltip 只认节点上的静态文本（core.rs::node_tooltip），
-        // 自绘部件无法按命中格动态提供，故不做浮层，占用图例带左侧的空档。
-        let hover = self.hover.get();
-        if !hover.is_empty() {
-            let avail = boxes_x - text_w - 8.0 - ox;
-            if avail > 0.0 {
-                Self::text_at(
-                    canvas,
-                    &hover,
-                    ox,
-                    band_y,
-                    avail,
-                    LEGEND_BAND_H,
-                    Color::hex(if dark { 0xA8B0_BA } else { 0x5C65_70 }),
-                    Align::Start,
-                    HOVER_TEXT_SIZE,
-                );
-            }
-        }
-
         Self::text_at(
             canvas,
             "少",
@@ -400,25 +377,26 @@ impl Widget for Heatmap {
             PointerKind::Leave => None,
             _ => return false,
         };
-        // 只在命中格变化时写信号：在同一格里移动不该每帧刷新。
+        // 只在命中格变化时请求重绘：在同一格里移动不该每帧刷新。
         if hit != self.last_hit.get() {
             self.last_hit.set(hit);
-            self.hover
-                .set(hit.map(|i| self.describe(i)).unwrap_or_default());
             ctx.mark_dirty();
         }
         // 不消费：滚轮/拖动仍要穿透给外层滚动容器。
         false
     }
+
+    fn tooltip(&self) -> Option<String> {
+        self.describe(self.last_hit.get()?)
+    }
 }
 
-/// 热力图元素。`days` 需按日期升序且连续；`hover` 承载悬停详情文案。
-pub fn heatmap(days: Vec<(String, u32)>, first_weekday: usize, hover: Signal<String>) -> Element {
+/// 热力图元素。`days` 需按日期升序且连续。
+pub fn heatmap(days: Vec<(String, u32)>, first_weekday: usize) -> Element {
     Element::leaf()
         .widget(Heatmap {
             days: Rc::new(days),
             first_weekday,
-            hover,
             last_hit: std::cell::Cell::new(None),
         })
         .width_match()
@@ -444,7 +422,7 @@ struct HourBars {
     hours: [u32; 24],
     /// 当日总量（算占比用；恒等于 hours 之和，但由调用方给以免重复求和）。
     total: u32,
-    hover: Signal<String>,
+    /// 当前命中的时段，`tooltip()` 据此给文案。
     last_hit: std::cell::Cell<Option<usize>>,
 }
 
@@ -456,16 +434,16 @@ impl HourBars {
         (i as f32 * step, w)
     }
 
-    fn describe(&self, i: usize) -> String {
-        let v = self.hours[i];
-        let mut s = format!("{i:02}:00–{i:02}:59 · {} 字", data::format_num(v as u64));
+    fn describe(&self, i: usize) -> Option<String> {
+        let v = *self.hours.get(i)?;
+        let mut s = format!("{i:02}:00–{i:02}:59\n{} 字", data::format_num(v as u64));
         if v > 0 && self.total > 0 {
             s.push_str(&format!(
-                " · 占今日 {:.1}%",
+                "（占今日 {:.1}%）",
                 v as f64 * 100.0 / self.total as f64
             ));
         }
-        s
+        Some(s)
     }
 }
 
@@ -535,21 +513,22 @@ impl Widget for HourBars {
         };
         if hit != self.last_hit.get() {
             self.last_hit.set(hit);
-            self.hover
-                .set(hit.map(|i| self.describe(i)).unwrap_or_default());
             ctx.mark_dirty();
         }
         false
     }
+
+    fn tooltip(&self) -> Option<String> {
+        self.describe(self.last_hit.get()?)
+    }
 }
 
 /// 今日时段柱状图元素。
-pub fn hour_bars(hours: [u32; 24], total: u32, hover: Signal<String>) -> Element {
+pub fn hour_bars(hours: [u32; 24], total: u32) -> Element {
     Element::leaf()
         .widget(HourBars {
             hours,
             total,
-            hover,
             last_hit: std::cell::Cell::new(None),
         })
         .width_match()
@@ -567,7 +546,6 @@ mod tests {
         Heatmap {
             days: Rc::new(v),
             first_weekday: fw,
-            hover: signal(String::new()),
             last_hit: std::cell::Cell::new(None),
         }
     }
@@ -708,7 +686,6 @@ mod tests {
         HourBars {
             hours,
             total: hours.iter().sum(),
-            hover: signal(String::new()),
             last_hit: std::cell::Cell::new(None),
         }
     }
@@ -733,7 +710,7 @@ mod tests {
         h[9] = 300;
         h[14] = 700;
         let b = bars_of(h);
-        let s = b.describe(14);
+        let s = b.describe(14).expect("14 时应有文案");
         assert!(s.contains("14:00–14:59"), "实际: {s}");
         assert!(s.contains("700"), "实际: {s}");
         assert!(s.contains("70.0%"), "实际: {s}");
@@ -743,8 +720,25 @@ mod tests {
     #[test]
     fn hour_tooltip_omits_share_when_empty() {
         let b = bars_of([0; 24]);
-        let s = b.describe(3);
+        let s = b.describe(3).expect("空时段也应有文案");
         assert!(s.contains("03:00–03:59"), "实际: {s}");
         assert!(!s.contains('%'), "空时段不应出现占比: {s}");
+    }
+
+    /// 越界索引不该 panic——`tooltip()` 每帧被调用，命中状态可能滞后于数据。
+    #[test]
+    fn describe_out_of_range_is_none() {
+        assert!(bars_of([0; 24]).describe(24).is_none());
+        assert!(map_of(10, 0).describe(10).is_none());
+    }
+
+    /// 未悬停时不给提示，避免弹出空浮层。
+    #[test]
+    fn tooltip_is_none_until_a_cell_is_hit() {
+        use windui::core::Widget;
+        let hm = map_of(30, 0);
+        assert!(hm.tooltip().is_none());
+        hm.last_hit.set(Some(3));
+        assert!(hm.tooltip().is_some());
     }
 }

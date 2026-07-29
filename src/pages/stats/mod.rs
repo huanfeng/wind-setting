@@ -64,10 +64,6 @@ pub struct StatsState {
     confirm_msg: Signal<String>,
     pending: Rc<Cell<Pending>>,
     feedback: Feedback,
-    /// 热力图悬停详情（空 = 未悬停）。
-    hover: Signal<String>,
-    /// 时段柱状图悬停详情（与热力图各用一行，互不覆盖）。
-    hour_hover: Signal<String>,
     /// 方案 `(id, 显示名)`，由 [`AppState::apply_loaded`] 填充。
     ///
     /// 用信号而非构建期快照：页面树在冷启动 RPC 回来之前就建好了，那时 `state.schemas`
@@ -91,8 +87,6 @@ impl StatsState {
             confirm_msg: signal(String::new()),
             pending: Rc::new(Cell::new(Pending::Idle)),
             feedback: signal(None),
-            hover: signal(String::new()),
-            hour_hover: signal(String::new()),
             schema_names: signal(Vec::new()),
         }
     }
@@ -174,11 +168,10 @@ pub fn build_page(state: &AppState) -> Element {
     let mgr = state.stats_mgr.clone();
 
     let schema_names = mgr.schema_names;
-    let (hover, hour_hover) = (mgr.hover, mgr.hour_hover);
     let data_area = Element::host_signal(mgr.view, move |v| match v {
         View::Loading => hint_row("加载中…"),
         View::Failed(e) => hint_row(&format!("统计数据加载失败：{e}")),
-        View::Ready(d) => ready_body(&d, &schema_names.get(), hover, hour_hover),
+        View::Ready(d) => ready_body(&d, &schema_names.get()),
     });
 
     // 刷新入口在底栏（`shell::build_footer`，仅本页可见）：页内浮层要么挡内容、
@@ -216,56 +209,35 @@ fn load_effect(state: &AppState) -> Element {
 }
 
 /// 数据区（加载完成后）：数字卡片 · 输入日历 · 今日时段 · 输入详情。
-fn ready_body(
-    d: &StatsData,
-    schema_names: &[(String, String)],
-    hover: Signal<String>,
-    hour_hover: Signal<String>,
-) -> Element {
+fn ready_body(d: &StatsData, schema_names: &[(String, String)]) -> Element {
     let mut col = Element::col()
         .width_match()
         .spacing(18)
         .child(summary_cards(d));
-    if let Some(cal) = calendar_section(d, hover) {
+    if let Some(cal) = calendar_section(d) {
         col = col.child(cal);
     }
-    col.child(hours_section(d, hour_hover))
+    col.child(hours_section(d))
         .child(detail_section(d, schema_names))
 }
 
 /// 今日时段分布卡片。今日无输入时给空态提示而非一排空柱。
-fn hours_section(d: &StatsData, hover: Signal<String>) -> Element {
+fn hours_section(d: &StatsData) -> Element {
     let today = d.today();
     let total = today.map_or(0, |t| t.total);
     let body = if total == 0 {
         hint_row("今日暂无输入")
     } else {
-        Element::col()
-            .width_match()
-            .spacing(6)
-            .child(charts::hour_bars(
-                today.map_or([0; 24], |t| t.hours),
-                total,
-                hover,
-            ))
-            .child(
-                Element::label_rc(hover)
-                    .font_size(12.0)
-                    .fg_role(Role::TextMuted)
-                    .width_match()
-                    .max_lines(1)
-                    .truncate(Truncate::End)
-                    .height(18),
-            )
+        charts::hour_bars(today.map_or([0; 24], |t| t.hours), total)
     };
     section("今日时段分布", vec![body.padding_xy(0, 12)])
 }
 
 /// 输入日历卡片。无数据时整块不渲染。
 ///
-/// 悬停详情由热力图自己画在图例带左侧（同一行），故这里没有额外的详情行——
-/// 部件高度恒定，鼠标划过时布局不会上下跳。
-fn calendar_section(d: &StatsData, hover: Signal<String>) -> Option<Element> {
+/// 两张图的悬停详情都走框架 tooltip 浮层（`Widget::tooltip`），故卡片里没有
+/// 额外的说明行——部件高度恒定，鼠标划过时布局不会上下跳。
+fn calendar_section(d: &StatsData) -> Option<Element> {
     let first = d.days.first()?;
     let first_weekday = data::weekday_mon0(data::parse_key(&first.date)?);
     let days: Vec<(String, u32)> = d.days.iter().map(|x| (x.date.clone(), x.total)).collect();
@@ -276,7 +248,7 @@ fn calendar_section(d: &StatsData, hover: Signal<String>) -> Option<Element> {
             Element::col()
                 .width_match()
                 .padding_xy(0, 12)
-                .child(charts::heatmap(days, first_weekday, hover)),
+                .child(charts::heatmap(days, first_weekday)),
         ],
     ))
 }
