@@ -237,6 +237,12 @@ mod tests {
         //    available→ 行内启用勾选 + ↑↓ 排序，同样经 writer 写回。
         "schema.active",
         "schema.available",
+        // ①' 引导键特殊模式（快符/生僻字等）：**用户自建的实例列表，出厂是空数组**，
+        //     定位为高级功能、由用户手写 config.toml 配置（文档 advanced/config/special-modes）。
+        //     不能照 schema.mix_modes 的办法暴露：那个内置恰好一个 quick_mix，三个清单项都靠
+        //     硬编码这个 id 打补丁；special_modes 没有固定 id、条目可增删，manifest 的
+        //     「一个 key 一个控件」模型套不上，需要的是 schema_manager.rs 那种列表编辑器。
+        //     真要做，先补出厂码表数据，否则编辑器打开是空列表。
         "schema.special_modes",
         // ② 兼容渲染进程名单，暂不开放。
         "compat.host_render_processes",
