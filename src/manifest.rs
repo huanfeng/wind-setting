@@ -326,6 +326,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
     match item.typ.as_str() {
         "toggle" => build_toggle(state, key, item, cfg),
         "select" => build_select(state, key, item, cfg),
+        "select_mix_layout" => build_select_mix_layout(state, key, item, cfg),
         "segmented" => build_segmented(state, key, item, cfg),
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
@@ -1932,6 +1933,74 @@ fn build_dialog_button_mix_members(
     let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed);
     register_dialog(state, dlg);
     visible
+}
+
+/// 内置 quick_mix 的候选布局下拉。
+///
+/// `schema.mix_modes` 是整体读写的 structlist，实际要改的是数组里 `id == quick_mix`
+/// 那项的 `candidate_layout`（core 侧是每实例的三态字段）。与触发键、候选来源两项同构，
+/// 清单项用**视图 key** `schema.mix_modes#candidate_layout` 区分——`Manifest.items`
+/// 按 key 索引，同 key 多项后者会覆盖前者。写回路径仍是真实的 `schema.mix_modes`。
+///
+/// 不能走通用 [`build_select`]：那个直接 `cfg.get_str(key)` / `set_path(key, ...)`，
+/// 用在这里会把整个 mix_modes 数组换成一个字符串。
+fn build_select_mix_layout(
+    state: &AppState,
+    view_key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Element {
+    use crate::mix_layout::{LAYOUT_FALLBACK, mix_mode_layout, patch_mix_mode_layout};
+
+    let mix_modes_path = "schema.mix_modes";
+    let (values, labels): (Vec<String>, Vec<String>) = item
+        .options
+        .iter()
+        .map(|o| (o.value.clone(), o.label.clone()))
+        .unzip();
+    if values.is_empty() {
+        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+    }
+    // 与触发键/候选来源控件同理：cfg 可能是 AppState::empty() 的占位配置，
+    // writer/loader 须无条件注册（否则空配置构建的这一页永远写不回）。
+    let cur_arr: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
+    let cur =
+        mix_mode_layout(&cur_arr, QUICK_MIX_ID).unwrap_or_else(|| LAYOUT_FALLBACK.to_string());
+    let sig = signal(values.iter().position(|v| *v == cur).unwrap_or(0));
+
+    let vals_w = values.clone();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let Some(v) = vals_w.get(sig.get()) else {
+                return;
+            };
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            if let Some(patched) = patch_mix_mode_layout(&arr, QUICK_MIX_ID, v) {
+                c.set_path(mix_modes_path, Value::Array(patched));
+            }
+        }));
+
+    // loader 注册在视图 key 下：`reset_current_page` 按清单 key 反查，
+    // 用真实路径会与触发键/候选来源两项互相覆盖。
+    let vals_l = values.clone();
+    state.fields.loaders.borrow_mut().insert(
+        view_key.to_string(),
+        Box::new(move |c: &Config| {
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            let cur =
+                mix_mode_layout(&arr, QUICK_MIX_ID).unwrap_or_else(|| LAYOUT_FALLBACK.to_string());
+            sig.set(vals_l.iter().position(|v| *v == cur).unwrap_or(0));
+        }),
+    );
+
+    let dd = Element::dropdown(labels, sig);
+    match item.width {
+        Some(w) => dd.width(w as i32),
+        None => dd.min_width(CTRL_W),
+    }
 }
 
 /// dialog_button（map）：键值对 text_input 降级实现。挂对话框到根，返回 visible。

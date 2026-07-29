@@ -841,13 +841,23 @@ options = [
   { value = "english", label = "英文", hint = "英文词库候选" },
 ]
 
+# 候选布局：与触发键、候选来源读写同一个 core 键（schema.mix_modes 里 quick_mix 的
+# candidate_layout），故用视图 key `#candidate_layout` 另立一项。
+# 取代旧的 schema.quick_input.force_vertical——那个布尔挂在与实例无关的全局段，
+# 且表达不了「全局竖排但本模式横排」。三个模式的选项须一致（见下方临拼/临英/网址）。
 [[items]]
-key = "schema.quick_input.force_vertical"
+key = "schema.mix_modes#candidate_layout"
 group = "input"
 section = "快捷输入"
-type = "toggle"
-label = "强制竖排显示"
-hint = "快捷输入时候选窗口强制使用竖排布局，退出后恢复原布局"
+type = "select_mix_layout"
+label = "候选窗布局"
+hint = "快捷输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
 
 [[items]]
 key = "schema.quick_input.decimal_places"
@@ -892,6 +902,20 @@ options = [
   { value = "lbracket", label = "左方括号 ( [ )" },
   { value = "rbracket", label = "右方括号 ( ] )" },
   { value = "z", label = "z 键" },
+]
+
+[[items]]
+key = "input.temp_pinyin.candidate_layout"
+group = "input"
+section = "临时拼音"
+type = "select"
+label = "候选窗布局"
+hint = "临时拼音期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
 ]
 
 # ── 临时英文 ──
@@ -954,6 +978,20 @@ label = "空格作为输入字符"
 hint = "空格不再上屏，可连续输入多个单词，回车上屏"
 
 [[items]]
+key = "input.temp_english.candidate_layout"
+group = "input"
+section = "临时英文"
+type = "select"
+label = "候选窗布局"
+hint = "临时英文期间候选窗的排列方向；退出后自动恢复。英文候选一行放得下，全局竖排时可设横排省屏幕"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
+
+[[items]]
 key = "input.capslock.cancel_on_mode_switch"
 group = "input"
 section = "临时英文"
@@ -978,6 +1016,21 @@ type = "dialog_button"
 label = "触发前缀"
 hint = "识别为网址的前缀（如 www. http https ftp.），按空格分隔"
 gate_key = "input.url.enabled"
+
+[[items]]
+key = "input.url.candidate_layout"
+group = "input"
+section = "网址输入"
+type = "select"
+label = "候选窗布局"
+hint = "网址输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+enabled_when = "input.url.enabled == true"
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
 
 # ═══════════════════════════ 按键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。

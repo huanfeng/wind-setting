@@ -289,11 +289,6 @@
       "type": "int"
     },
     {
-      "default": true,
-      "key": "schema.quick_input.force_vertical",
-      "type": "bool"
-    },
-    {
       "default": [],
       "key": "schema.special_modes",
       "type": "structlist"
@@ -301,6 +296,7 @@
     {
       "default": [
         {
+          "candidate_layout": "vertical",
           "id": "quick_mix",
           "members": [
             "quick_input.calc",
@@ -511,6 +507,16 @@
       "type": "bool"
     },
     {
+      "default": "follow",
+      "key": "input.temp_english.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
+    },
+    {
       "default": false,
       "key": "input.capslock.cancel_on_mode_switch",
       "type": "bool"
@@ -533,6 +539,16 @@
       "type": "str"
     },
     {
+      "default": "follow",
+      "key": "input.temp_pinyin.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
+    },
+    {
       "default": false,
       "key": "input.url.enabled",
       "type": "bool"
@@ -546,6 +562,26 @@
       ],
       "key": "input.url.prefixes",
       "type": "strlist"
+    },
+    {
+      "default": "follow",
+      "key": "input.url.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
+    },
+    {
+      "default": "vertical",
+      "key": "input.add_word.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
     },
     {
       "default": false,

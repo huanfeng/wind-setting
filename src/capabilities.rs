@@ -139,6 +139,9 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "dialog_button" => ty == "str" || ty == "strlist" || ty == "map",
         "dialog_button_mix_trigger" => ty == "structlist",
         "dialog_button_mix_members" => ty == "structlist",
+        // select_mix_layout：下拉，但读写的是 structlist 里按 id 定位的一个字符串字段
+        // （quick_mix 的 candidate_layout），故按 structlist 而非 enum 校验。
+        "select_mix_layout" => ty == "structlist",
         _ => false,
     }
 }
@@ -284,6 +287,10 @@ mod tests {
         //    点走、把括号退格删掉」这类输入法感知不到的操作。取值依据是人的操作节奏，
         //    普通用户无判断依据，需要时改配置文件。
         "input.auto_pair.state_ttl_secs",
+        // ⑭ 加词面板的候选布局（core 侧模式级候选布局改造新增）：加词面板没有独立设置
+        //    分区，且它逐字确认的两行提示本就该竖排——出厂 vertical 即最优解，横排没有
+        //    使用场景。同批的临拼/临英/网址/快捷四项都已进清单，只有它刻意不暴露。
+        "input.add_word.candidate_layout",
     ];
 
     /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。

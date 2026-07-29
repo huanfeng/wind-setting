@@ -10,6 +10,9 @@
   "log_max_size_mb": 10
  },
  "input": {
+  "add_word": {
+   "candidate_layout": "vertical"
+  },
   "auto_pair": {
    "chinese": false,
    "chinese_pairs": [
@@ -74,6 +77,7 @@
   },
   "temp_english": {
    "allow_symbols": false,
+   "candidate_layout": "follow",
    "enabled": true,
    "shift_behavior": "temp_english",
    "show_candidates": true,
@@ -81,6 +85,7 @@
    "trigger_keys": []
   },
   "temp_pinyin": {
+   "candidate_layout": "follow",
    "enabled": true,
    "hotkey": "",
    "trigger_keys": [
@@ -89,6 +94,7 @@
   },
   "top_commit_mode": "direct_commit",
   "url": {
+   "candidate_layout": "follow",
    "enabled": false,
    "prefixes": [
     "www.",
@@ -180,6 +186,7 @@
   },
   "mix_modes": [
    {
+    "candidate_layout": "vertical",
     "id": "quick_mix",
     "members": [
      "quick_input.calc",
@@ -229,8 +236,7 @@
   "primary_codetable": "",
   "primary_pinyin": "",
   "quick_input": {
-   "decimal_places": 6,
-   "force_vertical": true
+   "decimal_places": 6
   },
   "special_modes": []
  },
