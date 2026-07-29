@@ -296,7 +296,7 @@ wind-installer.exe --silent --dir <安装目录> [--datadir <数据目录>]
 
 **(a) 安装目录必须显式传入。** `--silent` 分支用的是 `InstallConfig::default()`，不传 `--dir` 会装到默认目录。若用户当初装在非默认路径，会造成**双份安装**。安装目录应从 `std::env::current_exe()` 的父目录推导，或读 installer 写的 receipt。
 
-**(b) `InstallMode` 在静默分支被硬编码为 `Standard`。** 见 `wind-installer/src/main.rs:114`：
+**(b) `InstallMode` 在静默分支被硬编码为 `Standard`。** 见 `wind-installer/src/main.rs` 的 `run_install`：
 ```rust
 let result = installer::perform_install(&config, installer::InstallMode::Standard);
 ```
@@ -336,6 +336,8 @@ core 侧**没有** `system.shutdown` RPC，`system.notifyReload` 是空壳。但
 
 TSF DLL（`wind_tsf.dll`）被**每个有输入焦点的进程**加载，不可能全部卸载。installer 已有 rename-then-create 核心机制（§1.3），足以让升级**跑通**；但缺 PendingFileRenameOperations，会持续泄漏 `.old_` 文件。这不阻塞升级功能落地，作为 wind-installer 侧的独立改进项处理（§8）。
 
+> **已解决（2026-07-28）**：`.old_` 泄漏与「需要重启」的用户提示均已在 wind-installer 落地，见 §8 B 项的完成说明。
+
 ---
 
 ## 7. 配置项
@@ -373,13 +375,22 @@ last_check_at = 0           # Unix 秒，用于「距上次检查不足 N 小时
 
 ### 非阻塞但应尽快补（每次升级都在恶化）
 
-**B. `.old_` 文件永久泄漏。** `create_or_backup` rename 成功后应立即登记重启删除：
+**B. `.old_` 文件永久泄漏。** ~~`create_or_backup` rename 成功后应立即登记重启删除~~
 
 ```
 MoveFileExW(old_path, NULL, MOVEFILE_DELAY_UNTIL_REBOOT)
 ```
 
 这是 NSIS 有而 wind-installer 没有的唯一实质能力。不补的话，`wind_tsf.dll.old_xxxxxxxx` 每次升级新增一个，永久累积在安装目录。改动量约 10 行。
+
+> **已完成（2026-07-28）**，且比原估的「约 10 行」多做了一层——排队本身早已补上，但**排了队这件事没有回传通道**：`schedule_delete_on_reboot` 的调用点深在 IO 层（`archive/reader.rs`、`installer/legacy.rs`），只 `eprintln!` 到无控制台的 GUI 进程里，等于丢弃；而 `RunOutcome::need_reboot` 只在「步骤失败」时置位，带锁升级时解压是**成功**返回的，所以恒为 `false`。用户永远看不到提示。
+>
+> 现在 `util::reboot` 维护一本进程级账本，`step::run_plan` 收尾汇总成 `need_reboot`，三处消费：
+> - 完成页 warning 色提示（**不提供重启按钮**——安装器无从判断用户有没有没保存的工作）
+> - **`--quiet` 放弃自动退出**，窗口留给用户亲手关闭（自动升级时用户没盯着屏幕，2 秒自弹自灭等于把提示扔了）
+> - `--silent` 以 `3010` 退出——**与 wind-setting 无关**，本仓库用 `ShellExecuteW` 拿不到退出码，见 `update/install.rs` 模块文档
+>
+> 另：`legacy.rs` 删不掉的旧版**目录**需自底向上逐项排队——`MoveFileEx` 对非空目录无效，只排根目录会在重启时静默失败。
 
 **C. rename 失败的二级回退。** 补 NSIS 的第 ③④ 级（Sleep 500 重试一次、改扩展名 `.bak` 再试），避免瞬时占用导致整个安装致命中止。
 
@@ -557,7 +568,7 @@ verb 取 `"open"` 而非 `"runas"`：manifest 已声明提权需求，shell 会�
 
 **便携安装不静默升级**（§6.2b）：`is_portable_install` 取「标记文件存在 ∨ 卸载器缺失」两个信号的或，
 命中则不传 `--silent`，拉起完整向导。另外确认了非静默分支**完全忽略 `--dir`**
-（`main.rs:118` 直接进 `run_install_wizard()`），所以该分支干脆不传，免得让人以为路径已指定。
+（`main.rs` 的 `run_install` 直接进 `run_install_wizard()`），所以该分支干脆不传，免得让人以为路径已指定。
 
 Ready 阶段的文案**预先告知**窗口将关闭 —— 安装器要终止本进程才能替换文件，
 事后再提示已来不及（旧 NSIS 方案的用户体感就是「点了安装窗口凭空消失」）。已截图验证。

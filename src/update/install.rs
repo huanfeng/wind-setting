@@ -7,6 +7,25 @@
 //! `requestedExecutionLevel=requireAdministrator`（`wind-installer/assets/app.manifest`），
 //! 从非提权进程调 `CreateProcess` 会直接失败（ERROR_ELEVATION_REQUIRED, 740）。
 //! `ShellExecuteW` 会走 shell 的提权路径弹出 UAC。
+//!
+//! # 拿不到、也不需要安装器的退出码
+//!
+//! `ShellExecuteW` 返回的是历史遗留的 `HINSTANCE`（>32 即成功），**没有进程句柄**，
+//! 无从 `WaitForSingleObject`。这不是疏漏而是必然：安装器要终止本进程才能替换文件，
+//! 「等它退出」与「被它杀掉」自相矛盾。所以本模块只判断「有没有启动起来」。
+//!
+//! 因此 wind-installer 的 `3010`（`ERROR_SUCCESS_REBOOT_REQUIRED`，装好了但有文件
+//! 被占用需重启清理）**不经过这里**——那个退出码是给会 `Wait` 的调用方（批量部署
+//! 脚本等）用的。走升级这条路时，该情形由安装器自己的完成页提示用户，见下。
+//!
+//! # 安装器不一定会自动关窗
+//!
+//! `--quiet` 装完通常停留约 2 秒自动退出，但**有两种情况它会一直等用户亲手关闭**：
+//! 安装失败，以及有旧文件被占用清不掉（完成页显示重启提示）。后者在升级 TSF 输入法
+//! 时很常见——旧 `wind_tsf.dll` 仍被各宿主进程加载着。
+//!
+//! 对本模块无影响（我们启动完就自退），但若日后要加「安装结束后重新拉起设置窗口」
+//! 之类的逻辑，不能假设安装器一定会在固定时间内消失。
 
 use std::path::{Path, PathBuf};
 
@@ -42,7 +61,7 @@ impl InstallPlan {
 /// 依当前进程位置推导安装计划。
 ///
 /// **便携安装不走静默升级。** wind-installer 的静默分支把 `InstallMode` 硬编码为
-/// `Standard`（`main.rs:114`），静默升级一个便携安装会把它变成标准安装 —— 写注册表、
+/// `Standard`（`main.rs` 的 `run_install`），静默升级一个便携安装会把它变成标准安装 —— 写注册表、
 /// 注册 COM/TSF、建快捷方式，用户的安装形态被悄悄改掉。故此处改为拉起完整向导，
 /// 由用户自行确认路径与模式。
 pub fn plan(installer: &Path) -> Result<InstallPlan, UpdateError> {
@@ -94,8 +113,8 @@ fn is_portable_install(install_dir: &Path) -> bool {
 /// 拼安装器命令行参数。
 ///
 /// 便携/非标准安装返回空串（拉起完整向导）—— 注意 wind-installer 的非静默分支
-/// **完全忽略 `--dir`**（`main.rs:118` 直接走 `run_install_wizard()`），传了也没用，
-/// 不如不传以免让人以为路径已被指定。
+/// **完全忽略 `--dir`**（`main.rs` 的 `run_install` 直接走 `run_install_wizard()`），
+/// 传了也没用，不如不传以免让人以为路径已被指定。
 pub fn build_args(plan: &InstallPlan) -> String {
     if !plan.unattended() {
         return String::new();
