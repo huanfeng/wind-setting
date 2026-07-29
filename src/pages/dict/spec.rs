@@ -116,6 +116,12 @@ pub struct WordRow {
     pub last_used: String,
     /// 短语专用：是否系统内置（phrase from_json 读 isSystem，其余类别恒 false）。
     pub is_system: bool,
+    /// 短语专用：这条用户短语**遮蔽了同码同内容的系统条目**（读 `overridesSystem`）。
+    ///
+    /// 主程序的短语表主键只有 `(code, text)` 一把，用户建同款时该行转为用户行、系统条目
+    /// 从系统短语列表隐去。此位供列表标注来源，并提示「删掉它即恢复系统默认」——
+    /// 否则用户看到系统短语少了一条却不知道去哪儿找。
+    pub overrides_system: bool,
 }
 
 impl WordRow {
@@ -132,6 +138,7 @@ impl WordRow {
                 position: i("position"),
                 enabled: b("enabled"),
                 is_system: b("isSystem"),
+                overrides_system: b("overridesSystem"),
                 ..Default::default()
             },
             WordCategory::UserDict => WordRow {
@@ -803,6 +810,24 @@ mod tests {
         let usr = json!({ "code": "me", "text": "自定义" });
         assert!(
             !WordRow::from_json(WordCategory::PhraseUser, &usr).is_system,
+            "缺省 false"
+        );
+    }
+
+    /// 用户短语的 `overridesSystem`：该行遮蔽了同码同内容的系统条目（那条已从系统短语
+    /// 列表隐去）。列表据此标「覆盖」，不解析的话用户只会觉得系统短语莫名少了一条。
+    #[test]
+    fn phrase_from_json_reads_overrides_system() {
+        let shadowing = json!({
+            "code": "date", "text": "$Y年$M月$D日", "isSystem": false, "overridesSystem": true
+        });
+        let row = WordRow::from_json(WordCategory::PhraseUser, &shadowing);
+        assert!(row.overrides_system, "遮蔽标记须解析");
+        assert!(!row.is_system, "归属是用户");
+
+        let plain = json!({ "code": "me", "text": "自定义" });
+        assert!(
+            !WordRow::from_json(WordCategory::PhraseUser, &plain).overrides_system,
             "缺省 false"
         );
     }

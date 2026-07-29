@@ -355,13 +355,14 @@ fn build_table(mgr: &DictManagerState) -> Element {
         .map(|c| (c.header.to_string(), c.weight))
         .collect();
     let columns = spec.columns;
+    let m_cell = mgr.clone();
     let m_sort = mgr.clone();
     let m_act = mgr.clone();
     let m_dbl = mgr.clone();
     Element::table_sortable_server(cols, mgr.table_rows, mgr.sort, move |_, _| {
         m_sort.on_sort_changed()
     })
-    .cell_render(move |_row, col, text| render_cell(columns, col, text))
+    .cell_render(move |row, col, text| render_cell(&m_cell, columns, row, col, text))
     .actions("操作", ACTIONS_WEIGHT, move |disp| {
         build_row_actions(&m_act, disp)
     })
@@ -391,10 +392,19 @@ fn activate_row(mgr: &DictManagerState, disp: usize) {
 
 /// 自定义单元格：编码列渲染为边框徽章、候选调整类型列渲染为彩色标签（置顶=强调色），
 /// 其余列返回 `None` 走默认文本渲染。排序仍按单元格文本。
-fn render_cell(columns: &'static [ColumnSpec], col: usize, text: &str) -> Option<Element> {
+///
+/// 编码列在**遮蔽了系统条目的用户短语**上追加一枚「覆盖」标签（`overrides_system`）：
+/// 那条系统短语已从系统短语列表隐去，不标注的话用户只会觉得系统短语莫名少了一条。
+fn render_cell(
+    mgr: &DictManagerState,
+    columns: &'static [ColumnSpec],
+    row: usize,
+    col: usize,
+    text: &str,
+) -> Option<Element> {
     match columns.get(col)?.field {
-        WordField::Code => Some(
-            Element::label(text)
+        WordField::Code => {
+            let badge = Element::label(text)
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
                 .padding_xy(6, 2)
@@ -403,8 +413,26 @@ fn render_cell(columns: &'static [ColumnSpec], col: usize, text: &str) -> Option
                 .border_role(Role::Border, 1)
                 .max_lines(1)
                 // 编码过长时末尾省略（编码前缀…），不再无差别硬裁。
-                .truncate(Truncate::End),
-        ),
+                .truncate(Truncate::End);
+            if !mgr.display_row(row).is_some_and(|r| r.overrides_system) {
+                return Some(badge);
+            }
+            Some(
+                Element::row()
+                    .cross(Align::Center)
+                    .spacing(4)
+                    .child(badge)
+                    .child(
+                        Element::label("覆盖")
+                            .font_size(10.5)
+                            .fg_role(Role::Accent)
+                            .padding_xy(4, 1)
+                            .corner(3.0)
+                            .border_role(Role::Accent, 1)
+                            .max_lines(1),
+                    ),
+            )
+        }
         WordField::Kind => {
             let role = if text == "置顶" {
                 Role::Accent
