@@ -298,18 +298,21 @@ fn hint_row(text: &str) -> Element {
 // ───────────────────────── 数字卡片 ─────────────────────────
 
 /// 一张数字卡片：大字数值 + 标签 + 可选补充行。
+///
+/// 内边距与字号偏紧：四张卡片等分一行，在 560px 最小窗口下每列只剩 ~75px，
+/// 再宽松一点「59.6万」这类值就会被省略号吃掉。
 fn stat_card(value: String, label: &str, detail: Option<String>) -> Element {
     let mut col = Element::col()
         .width_match()
         .cross(Align::Center)
         .spacing(3)
-        .padding_xy(8, 14)
+        .padding_xy(4, 14)
         .corner(13.0)
         .bg_role(Role::Surface)
         .border_role(Role::Border, 1)
         .child(
             Element::label(value)
-                .font_size(22.0)
+                .font_size(20.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
                 .width_match()
@@ -385,6 +388,9 @@ fn summary_cards(d: &StatsData) -> Element {
 // ───────────────────────── 输入详情 ─────────────────────────
 
 /// 详情格：左标签 + 右数值，淡底圆角块。
+///
+/// 弹性给右侧数值而非左侧标签：窄窗口下放不下时该截断的是数值尾巴（多为日期后缀），
+/// 标签被吃成「..」则整行失去意义。
 fn detail_item(label: &str, value: String) -> Element {
     Element::row()
         .width_match()
@@ -397,16 +403,17 @@ fn detail_item(label: &str, value: String) -> Element {
             Element::label(label)
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
-                .weight(1.0)
-                .max_lines(1)
-                .truncate(Truncate::End),
+                .max_lines(1),
         )
         .child(
             Element::label(value)
                 .font_size(12.5)
                 .font_weight(600)
                 .fg_role(Role::Text)
-                .max_lines(1),
+                .weight(1.0)
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .text_align(Align::End),
         )
 }
 
@@ -454,7 +461,7 @@ fn detail_section(d: &StatsData, schema_names: &[(String, String)]) -> Element {
         let date = s.max_day_date.get(5..).unwrap_or(&s.max_day_date);
         items.push(detail_item(
             "最高日",
-            format!("{} 字（{date}）", data::format_num(s.max_day_chars as u64)),
+            format!("{} 字 {date}", data::format_num(s.max_day_chars as u64)),
         ));
     }
     if s.avg_code_len > 0.0 {
