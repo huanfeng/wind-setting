@@ -66,6 +66,8 @@ pub struct StatsState {
     feedback: Feedback,
     /// 热力图悬停详情（空 = 未悬停）。
     hover: Signal<String>,
+    /// 时段柱状图悬停详情（与热力图各用一行，互不覆盖）。
+    hour_hover: Signal<String>,
     /// 方案 `(id, 显示名)`，由 [`AppState::apply_loaded`] 填充。
     ///
     /// 用信号而非构建期快照：页面树在冷启动 RPC 回来之前就建好了，那时 `state.schemas`
@@ -90,6 +92,7 @@ impl StatsState {
             pending: Rc::new(Cell::new(Pending::Idle)),
             feedback: signal(None),
             hover: signal(String::new()),
+            hour_hover: signal(String::new()),
             schema_names: signal(Vec::new()),
         }
     }
@@ -129,7 +132,7 @@ impl StatsState {
             ),
             Some(d) => (
                 Pending::Prune(d),
-                format!("确定要清理 {label} 的统计数据吗？此操作不可恢复。"),
+                format!("确定要清理{label}的统计数据吗？此操作不可恢复。"),
             ),
         };
         self.pending.set(pending);
@@ -169,11 +172,11 @@ pub fn build_page(state: &AppState) -> Element {
     let mgr = state.stats_mgr.clone();
 
     let schema_names = mgr.schema_names;
-    let hover = mgr.hover;
+    let (hover, hour_hover) = (mgr.hover, mgr.hour_hover);
     let data_area = Element::host_signal(mgr.view, move |v| match v {
         View::Loading => hint_row("加载中…"),
         View::Failed(e) => hint_row(&format!("统计数据加载失败：{e}")),
-        View::Ready(d) => ready_body(&d, &schema_names.get(), hover),
+        View::Ready(d) => ready_body(&d, &schema_names.get(), hover, hour_hover),
     });
 
     let body = Element::col()
@@ -208,8 +211,13 @@ fn load_effect(state: &AppState) -> Element {
     )
 }
 
-/// 数据区（加载完成后）：数字卡片 · 输入日历 · 输入详情。
-fn ready_body(d: &StatsData, schema_names: &[(String, String)], hover: Signal<String>) -> Element {
+/// 数据区（加载完成后）：数字卡片 · 输入日历 · 今日时段 · 输入详情。
+fn ready_body(
+    d: &StatsData,
+    schema_names: &[(String, String)],
+    hover: Signal<String>,
+    hour_hover: Signal<String>,
+) -> Element {
     let mut col = Element::col()
         .width_match()
         .spacing(18)
@@ -217,7 +225,36 @@ fn ready_body(d: &StatsData, schema_names: &[(String, String)], hover: Signal<St
     if let Some(cal) = calendar_section(d, hover) {
         col = col.child(cal);
     }
-    col.child(detail_section(d, schema_names))
+    col.child(hours_section(d, hour_hover))
+        .child(detail_section(d, schema_names))
+}
+
+/// 今日时段分布卡片。今日无输入时给空态提示而非一排空柱。
+fn hours_section(d: &StatsData, hover: Signal<String>) -> Element {
+    let today = d.today();
+    let total = today.map_or(0, |t| t.total);
+    let body = if total == 0 {
+        hint_row("今日暂无输入")
+    } else {
+        Element::col()
+            .width_match()
+            .spacing(6)
+            .child(charts::hour_bars(
+                today.map_or([0; 24], |t| t.hours),
+                total,
+                hover,
+            ))
+            .child(
+                Element::label_rc(hover)
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(1)
+                    .truncate(Truncate::End)
+                    .height(18),
+            )
+    };
+    section("今日时段分布", vec![body.padding_xy(0, 12)])
 }
 
 /// 输入日历卡片：热力图 + 悬停详情行。无数据时整块不渲染。

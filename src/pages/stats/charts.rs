@@ -388,6 +388,137 @@ pub fn heatmap(days: Vec<(String, u32)>, first_weekday: usize, hover: Signal<Str
         .width_match()
 }
 
+// ───────────────────────── 今日时段分布 ─────────────────────────
+
+/// 柱状图绘图区高度。
+const HOUR_AREA_H: f32 = 80.0;
+/// 时刻标签带高度。
+const HOUR_LABEL_H: f32 = 16.0;
+/// 柱间距。
+const HOUR_GAP: f32 = 2.0;
+/// 空时段的底座高度——画一小截而非全空，才看得出「这里有个时段但没输入」。
+const HOUR_ZERO_H: f32 = 2.0;
+/// 标注刻度的整点。
+const HOUR_TICKS: [usize; 8] = [0, 3, 6, 9, 12, 15, 18, 21];
+
+/// 今日 24 小时输入量柱状图。
+///
+/// 与热力图同构：几何由 [`Self::bar_x`] 统一解算，悬停详情写信号交外部行显示。
+struct HourBars {
+    hours: [u32; 24],
+    /// 当日总量（算占比用；恒等于 hours 之和，但由调用方给以免重复求和）。
+    total: u32,
+    hover: Signal<String>,
+    last_hit: std::cell::Cell<Option<usize>>,
+}
+
+impl HourBars {
+    /// 第 `i` 根柱子的左边界与宽度。
+    fn bar_x(width: f32, i: usize) -> (f32, f32) {
+        let step = width / 24.0;
+        let w = (step - HOUR_GAP).max(1.0);
+        (i as f32 * step, w)
+    }
+
+    fn describe(&self, i: usize) -> String {
+        let v = self.hours[i];
+        let mut s = format!("{i:02}:00–{i:02}:59 · {} 字", data::format_num(v as u64));
+        if v > 0 && self.total > 0 {
+            s.push_str(&format!(
+                " · 占今日 {:.1}%",
+                v as f64 * 100.0 / self.total as f64
+            ));
+        }
+        s
+    }
+}
+
+impl Widget for HourBars {
+    fn measure(&self, avail: Size, _style: &Style, _text: &mut dyn TextEngine) -> Size {
+        Size::new(avail.w, (HOUR_AREA_H + HOUR_LABEL_H) as i32)
+    }
+
+    fn paint(
+        &self,
+        _bounds: Rect,
+        content: Rect,
+        _focused: bool,
+        _enabled: bool,
+        canvas: &mut dyn Canvas,
+        _style: &Style,
+    ) {
+        let dark = dark_sig().get();
+        let fill = pick(GREEN);
+        let zero = Color::hex(if dark { 0x3A41_4B } else { 0xD8DE_E4 });
+        let label_color = Color::hex(if dark { 0x8B94_9E } else { 0x8C95_9F });
+        let (ox, oy, w) = (content.x as f32, content.y as f32, content.w as f32);
+        let peak = self.hours.iter().copied().max().unwrap_or(0).max(1);
+        let base = oy + HOUR_AREA_H;
+
+        for (i, v) in self.hours.iter().enumerate() {
+            let (bx, bw) = Self::bar_x(w, i);
+            // 非零时段至少 3px 高，否则凌晨的零星输入会被压成看不见的一条线。
+            let h = if *v == 0 {
+                HOUR_ZERO_H
+            } else {
+                (*v as f32 / peak as f32 * HOUR_AREA_H).max(3.0)
+            };
+            let color = if *v == 0 { zero } else { fill };
+            canvas.fill_round_rect(ox + bx, base - h, bw, h, 2.0, &Paint::fill(color));
+        }
+
+        // 刻度：每 3 小时一个，标在对应柱子下方。
+        for t in HOUR_TICKS {
+            let (bx, _) = Self::bar_x(w, t);
+            Heatmap::text_at(
+                canvas,
+                &t.to_string(),
+                ox + bx,
+                base + 3.0,
+                w / 24.0 * 3.0,
+                HOUR_LABEL_H - 3.0,
+                label_color,
+                Align::Start,
+            );
+        }
+    }
+
+    fn on_event(&mut self, ctx: &mut EventCtx, ev: &Event) -> bool {
+        let Event::Pointer(p) = ev else { return false };
+        let hit = match p.kind {
+            PointerKind::Move | PointerKind::Enter => {
+                let b = ctx.bounds();
+                let (rx, ry) = ((p.pos.x - b.x) as f32, (p.pos.y - b.y) as f32);
+                (rx >= 0.0 && ry >= 0.0 && ry <= HOUR_AREA_H)
+                    .then(|| (rx / (b.w as f32 / 24.0)).floor() as usize)
+                    .filter(|i| *i < 24)
+            }
+            PointerKind::Leave => None,
+            _ => return false,
+        };
+        if hit != self.last_hit.get() {
+            self.last_hit.set(hit);
+            self.hover
+                .set(hit.map(|i| self.describe(i)).unwrap_or_default());
+            ctx.mark_dirty();
+        }
+        false
+    }
+}
+
+/// 今日时段柱状图元素。
+pub fn hour_bars(hours: [u32; 24], total: u32, hover: Signal<String>) -> Element {
+    Element::leaf()
+        .widget(HourBars {
+            hours,
+            total,
+            hover,
+            last_hit: std::cell::Cell::new(None),
+        })
+        .width_match()
+        .height((HOUR_AREA_H + HOUR_LABEL_H) as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +640,51 @@ mod tests {
         let g = grid_for(800.0, 181, 0);
         let gap_y = g.cell + CELL_GAP / 2.0;
         assert_eq!(hm.hit(&g, WEEKDAY_W + g.cell / 2.0, gap_y), None);
+    }
+
+    // ── 时段柱状图 ──
+
+    fn bars_of(hours: [u32; 24]) -> HourBars {
+        HourBars {
+            hours,
+            total: hours.iter().sum(),
+            hover: signal(String::new()),
+            last_hit: std::cell::Cell::new(None),
+        }
+    }
+
+    /// 24 根柱子必须铺满且不溢出可用宽度。
+    #[test]
+    fn hour_bars_span_full_width() {
+        let w = 480.0;
+        let (x0, _) = HourBars::bar_x(w, 0);
+        let (x23, w23) = HourBars::bar_x(w, 23);
+        assert_eq!(x0, 0.0);
+        assert!(x23 + w23 <= w + 0.01, "末柱右缘 {} 超出 {w}", x23 + w23);
+        // 相邻柱间距恒定。
+        let (x1, w1) = HourBars::bar_x(w, 1);
+        let (x2, _) = HourBars::bar_x(w, 2);
+        assert!((x2 - x1 - (w1 + HOUR_GAP)).abs() < 0.01);
+    }
+
+    #[test]
+    fn hour_tooltip_reports_share_of_today() {
+        let mut h = [0u32; 24];
+        h[9] = 300;
+        h[14] = 700;
+        let b = bars_of(h);
+        let s = b.describe(14);
+        assert!(s.contains("14:00–14:59"), "实际: {s}");
+        assert!(s.contains("700"), "实际: {s}");
+        assert!(s.contains("70.0%"), "实际: {s}");
+    }
+
+    /// 空时段不报占比（0% 是噪音），但仍要给出时刻与字数。
+    #[test]
+    fn hour_tooltip_omits_share_when_empty() {
+        let b = bars_of([0; 24]);
+        let s = b.describe(3);
+        assert!(s.contains("03:00–03:59"), "实际: {s}");
+        assert!(!s.contains('%'), "空时段不应出现占比: {s}");
     }
 }
