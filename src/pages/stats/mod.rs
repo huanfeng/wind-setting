@@ -64,6 +64,8 @@ pub struct StatsState {
     confirm_msg: Signal<String>,
     pending: Rc<Cell<Pending>>,
     feedback: Feedback,
+    /// 热力图悬停详情（空 = 未悬停）。
+    hover: Signal<String>,
     /// 方案 `(id, 显示名)`，由 [`AppState::apply_loaded`] 填充。
     ///
     /// 用信号而非构建期快照：页面树在冷启动 RPC 回来之前就建好了，那时 `state.schemas`
@@ -87,6 +89,7 @@ impl StatsState {
             confirm_msg: signal(String::new()),
             pending: Rc::new(Cell::new(Pending::Idle)),
             feedback: signal(None),
+            hover: signal(String::new()),
             schema_names: signal(Vec::new()),
         }
     }
@@ -166,10 +169,11 @@ pub fn build_page(state: &AppState) -> Element {
     let mgr = state.stats_mgr.clone();
 
     let schema_names = mgr.schema_names;
+    let hover = mgr.hover;
     let data_area = Element::host_signal(mgr.view, move |v| match v {
         View::Loading => hint_row("加载中…"),
         View::Failed(e) => hint_row(&format!("统计数据加载失败：{e}")),
-        View::Ready(d) => ready_body(&d, &schema_names.get()),
+        View::Ready(d) => ready_body(&d, &schema_names.get(), hover),
     });
 
     let body = Element::col()
@@ -204,13 +208,44 @@ fn load_effect(state: &AppState) -> Element {
     )
 }
 
-/// 数据区（加载完成后）：数字卡片 · 输入详情 · 各占比条。
-fn ready_body(d: &StatsData, schema_names: &[(String, String)]) -> Element {
-    Element::col()
+/// 数据区（加载完成后）：数字卡片 · 输入日历 · 输入详情。
+fn ready_body(d: &StatsData, schema_names: &[(String, String)], hover: Signal<String>) -> Element {
+    let mut col = Element::col()
         .width_match()
         .spacing(18)
-        .child(summary_cards(d))
-        .child(detail_section(d, schema_names))
+        .child(summary_cards(d));
+    if let Some(cal) = calendar_section(d, hover) {
+        col = col.child(cal);
+    }
+    col.child(detail_section(d, schema_names))
+}
+
+/// 输入日历卡片：热力图 + 悬停详情行。无数据时整块不渲染。
+fn calendar_section(d: &StatsData, hover: Signal<String>) -> Option<Element> {
+    let first = d.days.first()?;
+    let first_weekday = data::weekday_mon0(data::parse_key(&first.date)?);
+    let days: Vec<(String, u32)> = d.days.iter().map(|x| (x.date.clone(), x.total)).collect();
+
+    // 详情行高度固定：未悬停时留白而非塌陷，鼠标划过日历时布局才不会上下跳。
+    let detail = Element::label_rc(hover)
+        .font_size(12.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(1)
+        .truncate(Truncate::End)
+        .height(18);
+
+    Some(section(
+        "输入日历",
+        vec![
+            Element::col()
+                .width_match()
+                .spacing(6)
+                .padding_xy(0, 12)
+                .child(charts::heatmap(days, first_weekday, hover))
+                .child(detail),
+        ],
+    ))
 }
 
 /// 加载中 / 失败的居中提示。
