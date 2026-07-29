@@ -3,9 +3,10 @@
 
 use crate::pages::dict::spec::LogicalTab;
 
-/// 规范页 id,顺序对齐 `pages::all_tabs`(方案/输入/按键/外观/词库/高级/关于)。
-/// 统计页未实现已从导航隐藏,故不在此列(对应 id `stats` 不再可路由)。
-const PAGES: &[&str] = &["schema", "input", "keys", "ui", "dict", "advanced", "about"];
+/// 规范页 id,顺序对齐 `pages::all_tabs`(方案/输入/按键/外观/词库/统计/高级/关于)。
+const PAGES: &[&str] = &[
+    "schema", "input", "keys", "ui", "dict", "stats", "advanced", "about",
+];
 
 /// 规范页 id → tab 索引。非法 id 返回 None(不兼容旧别名)。
 pub fn page_to_index(page: &str) -> Option<usize> {
@@ -169,18 +170,18 @@ mod tests {
     fn page_mapping() {
         assert_eq!(page_to_index("schema"), Some(0));
         assert_eq!(page_to_index("keys"), Some(2));
-        assert_eq!(page_to_index("advanced"), Some(5));
-        assert_eq!(page_to_index("about"), Some(6));
+        assert_eq!(page_to_index("stats"), Some(5));
+        assert_eq!(page_to_index("advanced"), Some(6));
+        assert_eq!(page_to_index("about"), Some(7));
         assert_eq!(page_to_index("nope"), None);
         assert_eq!(page_to_index("general"), None); // 旧别名不再支持
-        assert_eq!(page_to_index("stats"), None); // 统计页已隐藏
     }
 
     #[test]
     fn parse_target_forms() {
         assert_eq!(parse_target(&a(&["exe", "--page", "input"])), Some(1));
-        assert_eq!(parse_target(&a(&["exe", "--page=about"])), Some(6));
-        assert_eq!(parse_target(&a(&["exe", "--about"])), Some(6));
+        assert_eq!(parse_target(&a(&["exe", "--page=about"])), Some(7));
+        assert_eq!(parse_target(&a(&["exe", "--about"])), Some(7));
         assert_eq!(parse_target(&a(&["exe", "--tab", "5"])), Some(5));
         assert_eq!(parse_target(&a(&["exe"])), None);
     }

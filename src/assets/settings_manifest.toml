@@ -1753,25 +1753,26 @@ options = [
   { value = "true", label = "中文标点" },
 ]
 
-# ═══════════════════════════ 高级 ═══════════════════════════
-# ── 输入统计（统计页未实现期间，开关暂置高级）──
+# ═══════════════════════════ 统计 ═══════════════════════════
+# 统计页的图表区不由清单驱动（见 pages/stats），仅这两个开关走通用行渲染。
 [[items]]
 key = "stats.enabled"
-group = "advanced"
-section = "输入统计"
+group = "stats"
+section = "统计设置"
 type = "toggle"
 label = "启用输入统计"
 hint = "开关输入统计功能"
 
 [[items]]
 key = "stats.track_english"
-group = "advanced"
-section = "输入统计"
+group = "stats"
+section = "统计设置"
 type = "toggle"
 label = "统计英文输入"
 hint = "是否统计英文模式下的输入"
 enabled_when = "stats.enabled == true"
 
+# ═══════════════════════════ 高级 ═══════════════════════════
 # ── 日志设置 ──
 [[items]]
 key = "debug.log_level"

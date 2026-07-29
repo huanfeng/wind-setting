@@ -456,6 +456,47 @@ mod tests {
         );
     }
 
+    /// 守护：统计样例必须能被页面的数据层按 core 契约解析。
+    ///
+    /// mock 与 `data::DailyItem`/`Summary` 的字段名（core 的压缩缩写）一旦对不上，
+    /// 表现是「离线模式统计页全零」——静默且容易误判成"功能没做"，故在此锁死。
+    #[test]
+    fn mock_stats_parses_as_page_data() {
+        use crate::pages::stats::data::{DailyItem, Summary};
+
+        let daily = super::mock_reply(
+            "stats.daily",
+            &json!({ "from": "2026-01-01", "to": "2026-01-31" }),
+        );
+        let days: Vec<DailyItem> = serde_json::from_value(daily).expect("daily 应能解析");
+        assert_eq!(days.len(), 31, "区间内每天都要有一条（含零值日）");
+        assert!(days.iter().any(|d| d.total > 0), "样例不应全是空白日");
+        assert!(
+            days.iter().any(|d| d.total == 0),
+            "样例应含空白日，否则热力图色阶 0 档无从核对"
+        );
+        // 时段分布必须与当日总量自洽，否则「占今日 x%」会算出 >100%。
+        for d in days.iter().filter(|d| d.total > 0) {
+            assert_eq!(
+                d.hours.iter().sum::<u32>(),
+                d.total,
+                "{} 的时段分布之和应等于总字数",
+                d.date
+            );
+            assert!(!d.by_schema.is_empty(), "{} 应有方案分项", d.date);
+        }
+
+        let summary: Summary =
+            serde_json::from_value(super::mock_reply("stats.summary", &json!({})))
+                .expect("summary 应能解析");
+        assert!(summary.total_chars > 0);
+        assert!(summary.active_days > 0);
+        assert!(
+            summary.avg_code_len > 0.0 && summary.first_select_rate > 0.0,
+            "码长/首选率应非零，否则详情区整块隐藏"
+        );
+    }
+
     #[test]
     fn test_mock_reply_shapes() {
         // 确保 mock 返回合理的 JSON 结构
@@ -628,6 +669,209 @@ fn apply_mock_dict_overrides(schema_id: &str, cfg: &mut Value) {
     });
 }
 
+/// 统计样例的确定性伪随机源：同一天恒定，故截图可复现（不用 rand，避免引入依赖）。
+fn mock_noise(seed: u64, salt: u64) -> u64 {
+    let mut x = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(salt.wrapping_mul(1_442_695_040_888_963_407));
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 29;
+    x
+}
+
+/// 统计页离线样例：区间内逐日生成（含零值日），形状对齐 core `daily_item_json`。
+///
+/// 刻意做出「工作日多、周末少、偶有整日空档」的分布，否则热力图全是同一档色阶，
+/// 截图核对色阶与留白就失去意义。
+fn mock_stats_daily(params: &Value) -> Value {
+    use chrono::Datelike;
+    let get = |k: &str| params.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
+    let (Some(from), Some(to)) = (parse(get("from")), parse(get("to"))) else {
+        return json!([]);
+    };
+
+    let mut out = Vec::new();
+    let mut cur = from;
+    while cur <= to {
+        let seed = cur.num_days_from_ce() as u64;
+        let weekday = cur.weekday().num_days_from_monday();
+        // 8% 的日子整日无输入（休假/未开机）；周末产出约为工作日四成。
+        let idle = mock_noise(seed, 1) % 100 < 8;
+        let scale = if weekday >= 5 { 0.4 } else { 1.0 };
+        let base = if idle {
+            0
+        } else {
+            ((800 + mock_noise(seed, 2) % 3_700) as f64 * scale) as u32
+        };
+
+        let chinese = base * 70 / 100;
+        let english = base * 18 / 100;
+        let punct = base * 8 / 100;
+        let other = base - chinese - english - punct;
+        let total = base;
+
+        // 时段：上午 9-12、下午 14-18、晚间 20-23 三个峰，其余低谷。
+        let mut hours = [0u32; 24];
+        if total > 0 {
+            let weights: [u32; 24] = [
+                0, 0, 0, 0, 0, 0, 1, 2, 4, 9, 10, 9, 5, 6, 9, 10, 9, 8, 5, 4, 7, 8, 6, 3,
+            ];
+            let wsum: u32 = weights.iter().sum();
+            let mut acc = 0u32;
+            for h in 0..24 {
+                // 末位吸收余数，保证 sum(hours) == total（页面按今日总量算占比）。
+                hours[h] = if h == 23 {
+                    total - acc
+                } else {
+                    let v = total * weights[h] / wsum;
+                    acc += v;
+                    v
+                };
+            }
+        }
+
+        let commit_count = total / 3;
+        // 码长以 4 码为主，符合码表方案的实际分布。
+        let cld_w = [2u32, 8, 22, 52, 12, 4];
+        let mut code_len_dist = [0u32; 6];
+        let mut cl_sum = 0u32;
+        for (i, w) in cld_w.iter().enumerate() {
+            code_len_dist[i] = commit_count * w / 100;
+            cl_sum += code_len_dist[i] * (i as u32 + 1);
+        }
+        let code_len_count: u32 = code_len_dist.iter().sum();
+        // 候选位置：首选约 78%，越靠后越少。
+        let cpd_w = [78u32, 13, 5, 3, 1];
+        let mut cand_pos_dist = [0u32; 5];
+        for (i, w) in cpd_w.iter().enumerate() {
+            cand_pos_dist[i] = commit_count * w / 100;
+        }
+
+        // 活跃秒数反推出 55~85 字/分的速度区间。
+        let speed = 55 + mock_noise(seed, 3) % 31;
+        let active_seconds = if total > 0 {
+            (total as u64 * 60 / speed) as u32
+        } else {
+            0
+        };
+
+        // 双方案共存，便于验证「方案占比」条形图（id 取自 mock 的 schema.list）。
+        let wubi = total * 62 / 100;
+        let pinyin = total - wubi;
+        let by_schema = if total > 0 {
+            json!({
+                "wubi86": { "tc": wubi, "cn": wubi / 3, "cls": cl_sum * 62 / 100,
+                            "clc": code_len_count * 62 / 100, "cpd": cand_pos_dist },
+                "pinyin_simp": { "tc": pinyin, "cn": pinyin / 3, "cls": cl_sum * 38 / 100,
+                                 "clc": code_len_count * 38 / 100, "cpd": cand_pos_dist },
+            })
+        } else {
+            json!({})
+        };
+
+        out.push(json!({
+            "d": cur.format("%Y-%m-%d").to_string(),
+            "tc": total, "cc": chinese, "ec": english, "pc": punct, "oc": other,
+            "h": hours, "cn": commit_count,
+            "cls": cl_sum, "clc": code_len_count,
+            "cld": code_len_dist, "cpd": cand_pos_dist,
+            "as": active_seconds, "bs": by_schema,
+            "src": [commit_count, 0, 0],
+        }));
+        cur += chrono::Duration::days(1);
+    }
+    json!(out)
+}
+
+/// 统计概览样例（17 字段，形状对齐 core `web_stats_summary`）。
+///
+/// 由 `mock_stats_daily` 的同一份样例汇总而来——两个接口若各编各的，
+/// 页面上「今日输入」和热力图最后一格会对不上，离线核对反而误导。
+fn mock_stats_summary() -> Value {
+    let today = chrono::Local::now();
+    let from = (today - chrono::Duration::days(180))
+        .format("%Y-%m-%d")
+        .to_string();
+    let to = today.format("%Y-%m-%d").to_string();
+    let days = mock_stats_daily(&json!({ "from": from, "to": to }));
+    let days = days.as_array().cloned().unwrap_or_default();
+    let num = |d: &Value, k: &str| d.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+
+    let last = days.last().cloned().unwrap_or_else(|| json!({}));
+    let today_chars = num(&last, "tc");
+    let window_total: u64 = days.iter().map(|d| num(d, "tc")).sum();
+    let active_days = days.iter().filter(|d| num(d, "tc") > 0).count() as u64;
+    // 窗口外还有更早的历史，累计量取窗口和的 1.6 倍，避免「累计 == 半年」的失真。
+    let total_chars = window_total * 8 / 5;
+
+    // 连续天数：从今天往回数到第一个空白日。
+    let streak_current = days.iter().rev().take_while(|d| num(d, "tc") > 0).count() as u64;
+    let streak_max = streak_current.max(21);
+
+    let (max_day_chars, max_day_date) = days.iter().fold((0u64, String::new()), |acc, d| {
+        let t = num(d, "tc");
+        if t > acc.0 {
+            (
+                t,
+                d.get("d")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        } else {
+            acc
+        }
+    });
+
+    let week_chars: u64 = days.iter().rev().take(7).map(|d| num(d, "tc")).sum();
+    let month_chars: u64 = days.iter().rev().take(30).map(|d| num(d, "tc")).sum();
+    let cl_sum: u64 = days.iter().map(|d| num(d, "cls")).sum();
+    let cl_cnt: u64 = days.iter().map(|d| num(d, "clc")).sum();
+    let first_sel: u64 = days
+        .iter()
+        .map(|d| {
+            d.get("cpd")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        })
+        .sum();
+    let cand_sel: u64 = days
+        .iter()
+        .map(|d| {
+            d.get("cpd")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_u64()).sum::<u64>())
+                .unwrap_or(0)
+        })
+        .sum();
+    let active_sec: u64 = days.iter().map(|d| num(d, "as")).sum();
+    let speed = |chars: u64, secs: u64| if secs == 0 { 0 } else { chars * 60 / secs };
+
+    json!({
+        "today_chars": today_chars,
+        "today_chinese": num(&last, "cc"),
+        "today_english": num(&last, "ec"),
+        "total_chars": total_chars,
+        "active_days": active_days,
+        "daily_avg": if active_days > 0 { total_chars / active_days } else { 0 },
+        "streak_current": streak_current,
+        "streak_max": streak_max,
+        "week_chars": week_chars,
+        "month_chars": month_chars,
+        "max_day_chars": max_day_chars,
+        "max_day_date": max_day_date,
+        "avg_code_len": if cl_cnt > 0 { cl_sum as f64 / cl_cnt as f64 } else { 0.0 },
+        "first_select_rate": if cand_sel > 0 { first_sel as f64 / cand_sel as f64 } else { 0.0 },
+        "today_speed": speed(today_chars, num(&last, "as")),
+        "overall_speed": speed(window_total, active_sec),
+        "max_speed": 118,
+    })
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -675,7 +919,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             "version": "3.2.1", "platform": "windows", "arch": "x86_64",
             "build": "release", "dataDir": "C:/Users/.../WindInput", "running": true
         }),
-        "dict.stats" | "stats.daily" => json!([]),
+        "dict.stats" => json!([]),
+        "stats.daily" => mock_stats_daily(params),
         // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。
         "phrase.list" => json!([
             { "code": "bj", "text": "北京", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
@@ -776,7 +1021,9 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
-        "stats.summary" => json!({ "today": 0, "week": 0, "month": 0, "total": 0, "streak": 0 }),
+        "stats.summary" => mock_stats_summary(),
+        "stats.clear" => json!({ "ok": true }),
+        "stats.pruneBefore" => json!({ "count": 0, "before": "" }),
         "dict.listPaged" => json!({ "items": [
             { "code": "aaaa", "text": "工", "weight": 0 },
             { "code": "ggkg", "text": "王中", "weight": 5 },

@@ -149,6 +149,8 @@ pub struct AppState {
     pending_dict_target: Rc<RefCell<Option<crate::cli::DictTarget>>>,
     /// 备份还原状态（高级页卡片 + 还原确认对话框）。
     pub backup_mgr: crate::pages::backup::BackupState,
+    /// 统计页状态（数据快照 + 清理确认对话框）。
+    pub stats_mgr: crate::pages::stats::StatsState,
     /// 「重新加载」二次确认对话框可见标志。
     pub reload_confirm: Signal<bool>,
     /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
@@ -305,6 +307,7 @@ impl AppState {
             dict_mgr: DictManagerState::new(),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
+            stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),
             reset_confirm: signal(false),
             connected: false,
@@ -887,6 +890,13 @@ impl AppState {
         // 先填充列表数据与响应式下拉选项 —— 必须早于 loader：themes 的 loader 需按配置值在
         // 选项列表中定位选中索引，故选项信号要在 loader 跑之前就位。
         self.schemas = data.schemas;
+        // 统计页「方案占比」的 id→名映射（页面树早于本次加载建成，故走信号而非快照）。
+        self.stats_mgr.schema_names.set(
+            self.schemas
+                .iter()
+                .map(|s| (s.id.clone(), s.name.clone()))
+                .collect(),
+        );
         self.theme_entries = data.theme_entries;
         self.fonts = data.fonts;
         self.apply_theme_entries();

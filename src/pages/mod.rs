@@ -12,6 +12,7 @@ use windui::prelude::*;
 
 pub mod backup;
 pub mod dict;
+pub mod stats;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{build_scheme_config_button, section_rows};
@@ -26,7 +27,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, E
         ("按键".into(), keys_page(state)),
         ("外观".into(), appearance_page(app, state)),
         ("词库".into(), dict_page(state)),
-        // 统计页未实现，暂从导航隐藏（功能完成后恢复）。
+        ("统计".into(), stats::build_page(state)),
         ("高级".into(), advanced_page(state)),
         ("关于".into(), about_page(app, state)),
     ]
