@@ -64,6 +64,38 @@ impl LogicalTab {
             _ => None,
         }
     }
+
+    /// 命令行 `--type` 的稳定 id。与 [`Self::title`] 分离：标题是给人看的中文、可随文案调整，
+    /// id 是对外契约（用户会写死在快捷方式/脚本里），改动会破坏已有的命令行。
+    pub fn cli_id(self) -> &'static str {
+        match self {
+            LogicalTab::PhraseSystem => "phrase-system",
+            LogicalTab::PhraseUser => "phrase-user",
+            LogicalTab::UserDict => "user-dict",
+            LogicalTab::Temp => "temp",
+            LogicalTab::Freq => "freq",
+            LogicalTab::Shadow => "shadow",
+        }
+    }
+
+    /// 全部逻辑子标签（`from_cli_id` 与测试穷尽用）。
+    pub const ALL: &'static [LogicalTab] = &[
+        LogicalTab::PhraseSystem,
+        LogicalTab::PhraseUser,
+        LogicalTab::UserDict,
+        LogicalTab::Temp,
+        LogicalTab::Freq,
+        LogicalTab::Shadow,
+    ];
+
+    /// 由 `--type` 取值反查（大小写不敏感）。`dict` 是 `user-dict` 的顺手别名。
+    pub fn from_cli_id(s: &str) -> Option<LogicalTab> {
+        let s = s.trim().to_ascii_lowercase();
+        if s == "dict" {
+            return Some(LogicalTab::UserDict);
+        }
+        Self::ALL.iter().copied().find(|t| t.cli_id() == s)
+    }
 }
 
 /// 统一行模型：五类 RPC 返回都归一到此，视图按 [`ColumnSpec::field`] 取字段。
@@ -745,6 +777,23 @@ mod tests {
         assert_eq!(LogicalTab::PhraseSystem.phrase_system(), Some(true));
         assert_eq!(LogicalTab::PhraseUser.phrase_system(), Some(false));
         assert_eq!(LogicalTab::UserDict.phrase_system(), None);
+    }
+
+    /// CLI id 是对外契约：既要能往返，也要钉死具体字符串——改了就会破坏用户已有的命令行。
+    #[test]
+    fn logical_tab_cli_id_round_trips() {
+        for t in LogicalTab::ALL.iter().copied() {
+            assert_eq!(LogicalTab::from_cli_id(t.cli_id()), Some(t));
+        }
+        assert_eq!(LogicalTab::Shadow.cli_id(), "shadow");
+        assert_eq!(LogicalTab::UserDict.cli_id(), "user-dict");
+        // 别名与大小写/空白
+        assert_eq!(LogicalTab::from_cli_id("dict"), Some(LogicalTab::UserDict));
+        assert_eq!(LogicalTab::from_cli_id("SHADOW"), Some(LogicalTab::Shadow));
+        assert_eq!(LogicalTab::from_cli_id(" freq "), Some(LogicalTab::Freq));
+        // 中文标题不是 id
+        assert_eq!(LogicalTab::from_cli_id("候选调整"), None);
+        assert_eq!(LogicalTab::from_cli_id("nope"), None);
     }
 
     #[test]

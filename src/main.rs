@@ -73,6 +73,11 @@ fn main() {
         if let Some(idx) = cli::parse_target(&args) {
             st.tab.set(idx);
         }
+        // 词库页深链（--schema/--type）：此刻方案列表尚未就绪，故只挂起，
+        // 待 apply_loaded 注入方案后再定位（见 AppState::route_dict_target）。
+        if let Some(t) = cli::parse_dict_target(&args) {
+            st.route_dict_target(t);
+        }
         // 冷启动协议 URL：解析并路由（切相关页 + 占位提示）。
         if let Some(raw) = cli::parse_protocol(&args) {
             drop(st);
@@ -107,7 +112,13 @@ fn main() {
             if let Some(raw) = cli::parse_protocol(&argv) {
                 route_protocol(&raw, &single_instance_state);
             } else if let Some(idx) = cli::parse_target(&argv) {
-                single_instance_state.borrow().tab.set(idx);
+                let st = single_instance_state.borrow();
+                st.tab.set(idx);
+                // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
+                // 头几十毫秒数据还没回来，route_dict_target 会自动改为挂起。
+                if let Some(t) = cli::parse_dict_target(&argv) {
+                    st.route_dict_target(t);
+                }
             }
         })
         .frameless()

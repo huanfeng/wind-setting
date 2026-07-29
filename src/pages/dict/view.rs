@@ -526,6 +526,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pages::dict::spec::{LogicalTab, WordCategory};
     use crate::state::SchemaInfo;
     use serde_json::json;
     use windui::core::Tree;
@@ -631,5 +632,43 @@ mod tests {
             "切回系统短语后恢复默认操作应可用（按钮 visible_when 据此显隐）"
         );
         assert!(mgr.empty_msg.get().is_empty(), "有数据时不应显示空态提示");
+    }
+
+    /// 命令行深链（`--page dict --schema wb --type shadow`）在挂着导航 effect 的真实
+    /// 视图里跑完整多帧：定位后 effect 会在下一帧触发 `on_nav_changed`——若 `navigate_to`
+    /// 没有提前对齐 `last_domain`/`sub_tab_memory`，这里会被打回用户词库的 3 列。
+    #[test]
+    fn deep_link_lands_on_shadow_tab_across_layout_frames() {
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            scheme: String::new(),
+        }];
+
+        let mut tree = Tree::new();
+        let root = table_view(&mgr).build(&mut tree);
+        tree.root = Some(root);
+        layout(&mut tree);
+
+        assert_eq!(
+            mgr.apply_deep_link("wb", Some(LogicalTab::Shadow)),
+            None,
+            "五笔（码表）域有候选调整，应完全命中、无降级提示"
+        );
+        layout(&mut tree); // effect 在这一帧跑 on_nav_changed
+        mgr.apply_rows(&json!([
+            { "code": "ab", "word": "阿", "type": "pin", "position": 1 },
+            { "code": "cd", "word": "屏", "type": "delete" },
+        ]));
+        layout(&mut tree);
+
+        assert_eq!(mgr.current_category(), WordCategory::Shadow);
+        assert_eq!(
+            table_shape(&tree),
+            (5, 2),
+            "候选调整 4 数据列（编码/词/类型/位置）+ 操作列，2 行"
+        );
     }
 }

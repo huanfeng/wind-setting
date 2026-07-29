@@ -141,6 +141,12 @@ pub struct AppState {
     pub schema_mgr: SchemaManagerState,
     /// 词库管理页状态（导航/数据加载/写操作）。
     pub dict_mgr: DictManagerState,
+    /// 待应用的词库页深链（`--page dict --schema .. --type ..`）。
+    ///
+    /// 冷启动解析命令行时方案列表尚未就绪（要等后台 RPC 回来才有），无从把 `--schema`
+    /// 解析成数据域下标，故先挂在这里，由 [`Self::apply_loaded`] 在 `set_schemas` 之后消费。
+    /// 顺序不能反：`set_schemas_no_reload` 会清空 `sub_tab_memory` 并收敛越界的 domain。
+    pending_dict_target: Rc<RefCell<Option<crate::cli::DictTarget>>>,
     /// 备份还原状态（高级页卡片 + 还原确认对话框）。
     pub backup_mgr: crate::pages::backup::BackupState,
     /// 「重新加载」二次确认对话框可见标志。
@@ -149,6 +155,9 @@ pub struct AppState {
     pub reset_confirm: Signal<bool>,
     /// 启动时是否成功连接到输入法服务（core）。未连接则设置只读、保存会失败。
     pub connected: bool,
+    /// [`Self::apply_loaded`] 是否已跑过一轮。区别于 `connected`：mock / 离线预览下
+    /// 数据同样已就位但 `connected` 为 false，故不能拿后者判断"方案列表可用了没"。
+    data_loaded: bool,
     /// 正式模式下连接失败标志：true 时显示阻断对话框；mock 模式始终 false。
     pub conn_failed: Signal<bool>,
     /// 连接成功的响应式标志（异步加载后置位）。底栏状态圆点据此响应式着色——
@@ -294,10 +303,12 @@ impl AppState {
             conflict: signal(String::new()),
             schema_mgr,
             dict_mgr: DictManagerState::new(),
+            pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
             reload_confirm: signal(false),
             reset_confirm: signal(false),
             connected: false,
+            data_loaded: false,
             conn_failed: signal(false),
             conn_ok: signal(false),
             theme_label_sig: signal(vec![]),
@@ -831,6 +842,42 @@ impl AppState {
         });
     }
 
+    /// 词库页深链统一入口：方案列表已就绪则立即定位，否则挂起等 [`Self::apply_loaded`] 消费。
+    /// 冷启动（列表未就绪）与二次实例激活（已就绪）共用此入口，避免两条易走偏的路径。
+    pub fn route_dict_target(&self, target: crate::cli::DictTarget) {
+        if target.is_empty() {
+            return;
+        }
+        if self.data_loaded {
+            self.apply_dict_target(&target);
+        } else {
+            *self.pending_dict_target.borrow_mut() = Some(target);
+        }
+    }
+
+    /// 消费挂起的深链（`apply_loaded` 末尾调用）。无挂起则无操作。
+    fn consume_pending_dict_target(&self) {
+        let pending = self.pending_dict_target.borrow_mut().take();
+        if let Some(t) = pending {
+            self.apply_dict_target(&t);
+        }
+    }
+
+    /// 执行深链定位并汇总提示。偏差一律降级 + toast，不阻断——用户的意图是"打开看看"，
+    /// 把他挡在词库页外面没有意义。多条偏差合并成一条 toast，免得连弹两次。
+    fn apply_dict_target(&self, t: &crate::cli::DictTarget) {
+        let mut notes: Vec<String> = Vec::new();
+        if !t.bad_tab.is_empty() {
+            notes.push(format!("未知的词库类型「{}」", t.bad_tab));
+        }
+        if let Some(n) = self.dict_mgr.apply_deep_link(&t.schema, t.tab) {
+            notes.push(n);
+        }
+        if !notes.is_empty() {
+            self.feedback.set(Some((ToastKind::Info, notes.join("；"))));
+        }
+    }
+
     /// 后台数据就绪后在 UI 线程调用：更新非 Signal 字段，并通过 Signal 通知界面刷新。
     ///
     /// 主题/字体下拉经响应式选项信号（theme_label_sig/font_sig 等）填充，异步数据到达即刷新；
@@ -897,6 +944,10 @@ impl AppState {
         let dict_schemas =
             order_schemas_for_dict(&self.schemas, &self.schema_mgr.enabled_order.borrow());
         self.dict_mgr.set_schemas(&dict_schemas);
+        // 深链必须在 set_schemas 之后：那之前 folded_domains 为空，--schema 无从解析；
+        // 且 set_schemas_no_reload 会清空 sub_tab_memory、把越界 domain 收敛回 0。
+        self.data_loaded = true;
+        self.consume_pending_dict_target();
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
@@ -1928,6 +1979,51 @@ mod tests {
         };
         st.apply_loaded(data);
         assert!(st.conn_failed.get(), "非 mock 未连接应置 conn_failed");
+    }
+
+    /// 冷启动时机守护：命令行解析发生在方案列表就绪之前，深链只能先挂起，
+    /// 由 `apply_loaded` 在 `set_schemas` **之后**消费。若哪天顺序被调换（或消费点
+    /// 提前到 set_schemas 前），folded_domains 还是空的，`--schema` 会解析失败，
+    /// 这条测试就会红。
+    #[test]
+    fn pending_dict_target_applied_after_schemas_arrive() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+
+        // 冷启动：此刻方案列表为空，深链必须挂起而非当场失败
+        st.route_dict_target(crate::cli::DictTarget {
+            schema: "wb".into(),
+            tab: Some(crate::pages::dict::spec::LogicalTab::Shadow),
+            bad_tab: String::new(),
+        });
+        assert_eq!(st.dict_mgr.domain.get(), 0, "方案未就绪时不应先跳到某个域");
+
+        let data = LoadedState {
+            config_value: Value::Object(Default::default()),
+            system_info: Value::Object(Default::default()),
+            capabilities_value: Value::Object(Default::default()),
+            schemas: vec![SchemaInfo {
+                id: "wb".into(),
+                name: "五笔86".into(),
+                kind: "codetable".into(),
+                scheme: String::new(),
+            }],
+            theme_entries: vec![],
+            fonts: vec![],
+            connected: true,
+        };
+        st.apply_loaded(data);
+
+        assert_eq!(st.dict_mgr.current_schema_id().as_deref(), Some("wb"));
+        assert_eq!(
+            st.dict_mgr.current_category(),
+            crate::pages::dict::spec::WordCategory::Shadow,
+            "方案到位后应完成深链定位"
+        );
+        // 完全命中不该弹提示（提示只留给降级场景）
+        assert!(st.feedback.get().is_none(), "命中时不应有多余 toast");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     #[test]

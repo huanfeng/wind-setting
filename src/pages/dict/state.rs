@@ -331,13 +331,16 @@ impl DictManagerState {
 
     // ── 导航解析 ─────────────────────────────────────────────
 
-    /// 当前数据域类型。
-    pub fn domain_kind(&self) -> DomainKind {
-        let d = self.domain.get();
-        if d == 0 {
+    /// 指定数据域的类型（0 = 快捷短语）。
+    pub fn domain_kind_at(&self, domain: usize) -> DomainKind {
+        if domain == 0 {
             return DomainKind::Phrase;
         }
-        match self.folded_domains().get(d - 1).map(|e| e.kind.as_str()) {
+        match self
+            .folded_domains()
+            .get(domain - 1)
+            .map(|e| e.kind.as_str())
+        {
             Some("pinyin") => DomainKind::Pinyin,
             Some("codetable") => DomainKind::Codetable,
             Some("mixed") => DomainKind::Mixed,
@@ -345,16 +348,41 @@ impl DictManagerState {
         }
     }
 
-    /// 当前域的子标签序列（按 kind 生成）。
-    pub fn tabs_for_domain(&self) -> Vec<LogicalTab> {
+    /// 当前数据域类型。
+    pub fn domain_kind(&self) -> DomainKind {
+        self.domain_kind_at(self.domain.get())
+    }
+
+    /// 指定数据域的子标签序列（按 kind 生成）。
+    ///
+    /// 按域参数化而非只读当前信号：深链要在「切过去之前」就知道目标域有没有请求的类型，
+    /// 否则只能像早期 `open_add_word_prefilled` 那样临时改写 `domain` 信号再恢复——
+    /// 那种写法会平白触发信号版本变化，把导航 effect 卷进来。
+    pub fn tabs_for_domain_at(&self, domain: usize) -> Vec<LogicalTab> {
         use LogicalTab::*;
-        match self.domain_kind() {
+        match self.domain_kind_at(domain) {
             DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
             DomainKind::Pinyin => vec![UserDict, Temp, Freq],
             DomainKind::Mixed => vec![Shadow],
             // 码表与未知：全四类（未知从宽，不隐藏数据）。
             DomainKind::Codetable | DomainKind::Other => vec![UserDict, Temp, Freq, Shadow],
         }
+    }
+
+    /// 当前域的子标签序列。
+    pub fn tabs_for_domain(&self) -> Vec<LogicalTab> {
+        self.tabs_for_domain_at(self.domain.get())
+    }
+
+    /// 指定数据域的展示名（0 = "快捷短语"，其余取折叠域标签，如 "五笔86 · 码表"）。
+    pub fn domain_label_at(&self, domain: usize) -> String {
+        if domain == 0 {
+            return "快捷短语".to_string();
+        }
+        self.folded_domains()
+            .get(domain - 1)
+            .map(|e| e.label.clone())
+            .unwrap_or_default()
     }
 
     /// 当前选中的逻辑子标签（sub_tab 越界钳到末项）。
@@ -383,6 +411,117 @@ impl DictManagerState {
         self.folded_domains()
             .get(d - 1)
             .map(|e| e.rep_schema_id.clone())
+    }
+
+    // ── 程序化定位（命令行深链 / 加词小窗）─────────────────────
+
+    /// 把外部传入的方案标识解析为数据域下标（0 = 快捷短语，≥1 = 折叠后的方案域）。
+    ///
+    /// 按序尝试：`phrase` → 精确方案 id → 引擎族名（`pinyin`/`codetable`/`mixed`）
+    /// → 已启用但被折叠掉的拼音变体（如双拼 id）。全不中返回 `None`。
+    ///
+    /// 严格匹配，刻意不做「未知即拼音」的猜测：命令行里 `--schema` 拼错时，
+    /// 静默落到别的域远比明确告诉用户"没找到"更难排查。需要宽松兜底的调用方
+    /// （如 [`Self::open_add_word_prefilled`]）自行在外层追加。
+    pub fn resolve_domain(&self, schema: &str) -> Option<usize> {
+        let s = schema.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if s.eq_ignore_ascii_case("phrase") {
+            return Some(0);
+        }
+        let domains = self.folded_domains();
+        if let Some(i) = domains.iter().position(|d| d.rep_schema_id == s) {
+            return Some(i + 1);
+        }
+        let kind = s.to_ascii_lowercase();
+        if let Some(i) = domains.iter().position(|d| d.kind == kind) {
+            return Some(i + 1);
+        }
+        // 折叠掉的拼音变体：id 在方案列表里且引擎为拼音 → 落拼音域代表。
+        let is_pinyin_variant = self
+            .schemas
+            .borrow()
+            .iter()
+            .any(|x| x.id == s && x.kind == "pinyin");
+        if is_pinyin_variant {
+            return domains
+                .iter()
+                .position(|d| d.kind == "pinyin")
+                .map(|i| i + 1);
+        }
+        None
+    }
+
+    /// 程序化导航到指定域/子标签（`sub = None` 表示沿用该域上次停留处）。
+    ///
+    /// **不要直接 `domain.set()` + `sub_tab.set()`**：view 侧挂着一个监听二者版本的
+    /// effect，变化时跑 [`Self::on_nav_changed`]，而那里把「domain 变了」唯一地解释成
+    /// 用户手动切域，会用 `sub_tab_memory` 里的旧值把刚设的子标签覆盖回去。
+    ///
+    /// 这里的解法不是加抑制标志（易留下卡死态），而是**让状态提前自洽**：先把
+    /// `last_domain` 与 `sub_tab_memory` 对齐到目标，effect 随后自然走「同域」分支，
+    /// 只多做一次等价 reload。
+    ///
+    /// 本方法不自行 reload —— 有表格的页面由上述 effect 负责，无表格的调用方
+    /// （加词小窗）则本就不该为此发一次 list RPC。
+    pub fn navigate_to(&self, domain: usize, sub: Option<usize>) {
+        let domain = domain.min(self.domain_count().saturating_sub(1));
+        let tabs_len = self.tabs_for_domain_at(domain).len();
+        let sub = sub
+            .or_else(|| self.sub_tab_memory.borrow().get(&domain).copied())
+            .unwrap_or(0)
+            .min(tabs_len.saturating_sub(1));
+
+        self.last_domain.set(domain);
+        self.sub_tab_memory.borrow_mut().insert(domain, sub);
+        self.domain.set(domain);
+        self.sub_tab.set(sub);
+    }
+
+    /// 应用命令行深链（`--page dict --schema <id> --type <id>`）。
+    ///
+    /// 两维各自可选：省 `schema` = 保持当前域，省 `tab` = 沿用该域上次停留的子标签。
+    /// 返回 `Some(提示)` 表示已尽力定位但有偏差（供上层 toast），`None` 表示完全命中。
+    ///
+    /// 偏差有两类，都降级而不报错——用户的意图是"打开设置看看"，把他挡在门外没有意义：
+    /// - 方案没找到 → 保持当前域
+    /// - 该域没有请求的类型（如拼音域没有候选调整）→ 落该域首个子标签
+    pub fn apply_deep_link(&self, schema: &str, tab: Option<LogicalTab>) -> Option<String> {
+        let mut note = None;
+        let domain = match self.resolve_domain(schema) {
+            Some(d) => d,
+            None => {
+                if !schema.trim().is_empty() {
+                    note = Some(format!("未找到方案「{schema}」，已保持当前数据域"));
+                }
+                self.domain.get()
+            }
+        };
+
+        // 子标签集随域而变，故必须先把域定下来再解析类型。
+        let tabs = self.tabs_for_domain_at(domain);
+        let sub = match tab {
+            None => None,
+            Some(t) => match tabs.iter().position(|x| *x == t) {
+                Some(i) => Some(i),
+                None => {
+                    if let Some(first) = tabs.first() {
+                        note = Some(format!(
+                            "「{}」没有「{}」，已定位到「{}」",
+                            self.domain_label_at(domain),
+                            t.title(),
+                            first.title()
+                        ));
+                    }
+                    Some(0)
+                }
+            },
+        };
+
+        self.navigate_to(domain, sub);
+        note
     }
 
     /// 数据域下拉选项标签（首项"快捷短语"，其后折叠后各域）。
@@ -936,48 +1075,33 @@ impl DictManagerState {
     /// schema 命中规则：先精确匹配 rep_schema_id；未命中且为拼音变体时落拼音域；
     /// 命中域若无「用户词库」子标签（如混输仅候选调整），回退到首个含用户词库的域。
     pub fn open_add_word_prefilled(&self, text: &str, code: &str, schema: &str) {
-        let domains = self.folded_domains();
-
-        // 1) 找目标域索引（0-based over folded_domains；对外 domain=idx+1）
-        let mut target: Option<usize> = domains.iter().position(|d| d.rep_schema_id == schema);
-        // 拼音变体（如双拼 id）→ 落拼音域
-        if target.is_none() && !schema.is_empty() {
-            target = domains.iter().position(|d| d.kind == "pinyin");
-        }
-
-        // 2) 该域是否含用户词库子标签；无则回退首个含用户词库的域
-        let has_userdict = |idx: usize| -> Option<usize> {
-            // 临时把 domain 指向 idx 以复用 tabs_for_domain（读取用信号，读后恢复）
-            let prev = self.domain.get();
-            self.domain.set(idx + 1);
-            let pos = self
-                .tabs_for_domain()
-                .iter()
-                .position(|t| t.category() == WordCategory::UserDict);
-            self.domain.set(prev);
-            pos
-        };
-
-        let (domain_idx, sub) = match target.and_then(|i| has_userdict(i).map(|s| (i, s))) {
-            Some(v) => v,
-            None => {
-                // 回退：首个含用户词库的域
-                let mut fallback = None;
-                for i in 0..domains.len() {
-                    if let Some(s) = has_userdict(i) {
-                        fallback = Some((i, s));
-                        break;
-                    }
-                }
-                match fallback {
-                    Some(v) => v,
-                    None => (0, 0), // 无任何方案域：退化，仍打开对话框（提交会因方案缺失报错）
-                }
+        // 1) 目标域：走统一解析，另加「未知方案即拼音」的宽松兜底。
+        //    这里的 schema 由 core 透传（可能是尚未列入已启用列表的双拼变体），
+        //    与命令行深链不同——猜错只是落错域，不猜则连对话框都开不出来。
+        let domain = self.resolve_domain(schema).or_else(|| {
+            if schema.trim().is_empty() {
+                None
+            } else {
+                self.folded_domains()
+                    .iter()
+                    .position(|d| d.kind == "pinyin")
+                    .map(|i| i + 1)
             }
-        };
+        });
 
-        self.domain.set(domain_idx + 1);
-        self.sub_tab.set(sub);
+        // 2) 该域是否含用户词库子标签；无则回退到首个含用户词库的方案域。
+        let userdict_sub = |d: usize| -> Option<usize> {
+            self.tabs_for_domain_at(d)
+                .iter()
+                .position(|t| t.category() == WordCategory::UserDict)
+        };
+        let (domain, sub) = domain
+            .and_then(|d| userdict_sub(d).map(|s| (d, s)))
+            .or_else(|| (1..self.domain_count()).find_map(|d| userdict_sub(d).map(|s| (d, s))))
+            // 无任何方案域：退化到短语域，仍打开对话框（提交会因类别不支持而报错）
+            .unwrap_or((0, 0));
+
+        self.navigate_to(domain, Some(sub));
 
         *self.editing_orig.borrow_mut() = None;
         self.edit_code.set(code.to_string());
@@ -1337,12 +1461,10 @@ impl DictManagerState {
     pub fn current_io_label(&self) -> String {
         let d = self.domain.get();
         if d == 0 {
+            // 短语域的导入导出对象是「用户短语」，比域名"快捷短语"更准确，故不走 domain_label_at。
             return "用户短语".to_string();
         }
-        self.folded_domains()
-            .get(d - 1)
-            .map(|e| e.label.clone())
-            .unwrap_or_default()
+        self.domain_label_at(d)
     }
 
     /// 勾选重置为全部适用类型。
@@ -1795,6 +1917,132 @@ mod tests {
         // core 传来的双拼 id 归一到拼音域代表
         st.open_add_word_prefilled("好", "hao", "shuangpin_ziranma");
         assert_eq!(st.current_category(), WordCategory::UserDict);
+    }
+
+    // ── 程序化定位（命令行深链）──────────────────────────────
+
+    /// 三条方案：五笔（码表）+ 全拼 + 自然码（双拼，会被折叠进拼音域）。
+    /// 折叠后数据域为 [0]快捷短语 [1]五笔86·码表 [2]拼音。
+    fn deep_link_fixture() -> DictManagerState {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema_s("quanpin", "全拼", "pinyin", "full"),
+                schema_s("ziranma", "自然码", "pinyin", "shuangpin"),
+            ],
+        );
+        st
+    }
+
+    #[test]
+    fn resolve_domain_matches_id_kind_and_folded_pinyin_variant() {
+        let st = deep_link_fixture();
+        assert_eq!(st.resolve_domain(""), None, "空 = 不指定");
+        assert_eq!(st.resolve_domain("phrase"), Some(0));
+        assert_eq!(st.resolve_domain("wb"), Some(1), "精确方案 id");
+        assert_eq!(st.resolve_domain("quanpin"), Some(2));
+        assert_eq!(st.resolve_domain("codetable"), Some(1), "引擎族名");
+        assert_eq!(st.resolve_domain("pinyin"), Some(2));
+        assert_eq!(
+            st.resolve_domain("ziranma"),
+            Some(2),
+            "被折叠掉的双拼变体应落到拼音域"
+        );
+        assert_eq!(
+            st.resolve_domain("wubi"),
+            None,
+            "严格匹配：拼错不猜，交由上层提示"
+        );
+    }
+
+    /// 本次设计的核心风险点：view 侧那个监听 domain/sub_tab 的 effect 会在下一帧跑
+    /// `on_nav_changed`，其切域分支会用 `sub_tab_memory` 里的旧值覆盖子标签。
+    /// `navigate_to` 靠提前对齐 `last_domain` / 记忆来规避——这条测试就守它。
+    #[test]
+    fn navigate_to_survives_nav_effect() {
+        let st = deep_link_fixture();
+        assert_eq!(st.apply_deep_link("wb", Some(LogicalTab::Shadow)), None);
+        assert_eq!(st.current_category(), WordCategory::Shadow);
+
+        st.on_nav_changed(); // 模拟 effect 在下一帧触发
+        assert_eq!(
+            st.current_category(),
+            WordCategory::Shadow,
+            "导航 effect 不得把深链定位的子标签打回首个子标签"
+        );
+        assert_eq!(st.current_schema_id().as_deref(), Some("wb"));
+    }
+
+    /// 深链之后用户手动切域，仍应走正常的「记忆恢复」语义（不能被 navigate_to 带偏）。
+    #[test]
+    fn manual_switch_after_deep_link_still_restores_memory() {
+        let st = deep_link_fixture();
+        st.apply_deep_link("wb", Some(LogicalTab::Shadow));
+        st.on_nav_changed();
+
+        st.domain.set(2); // 用户切到拼音域
+        st.on_nav_changed();
+        assert_eq!(
+            st.current_category(),
+            WordCategory::UserDict,
+            "新域无记忆→首项"
+        );
+
+        st.domain.set(1); // 切回五笔域
+        st.on_nav_changed();
+        assert_eq!(
+            st.current_category(),
+            WordCategory::Shadow,
+            "回到五笔域应恢复到离开时的候选调整"
+        );
+    }
+
+    #[test]
+    fn deep_link_downgrades_when_type_absent_in_domain() {
+        let st = deep_link_fixture();
+        // 拼音域没有候选调整（tabs_for_domain 只给 用户词库/临时词库/词频）
+        let note = st
+            .apply_deep_link("pinyin", Some(LogicalTab::Shadow))
+            .expect("落空档应给出提示");
+        assert!(note.contains("候选调整"), "提示要点名用户要的类型: {note}");
+        assert!(note.contains("用户词库"), "提示要说明实际落点: {note}");
+        assert_eq!(st.domain.get(), 2, "域仍按 schema 定位");
+        assert_eq!(
+            st.current_category(),
+            WordCategory::UserDict,
+            "降级到该域首个子标签，而非报错或错位"
+        );
+    }
+
+    #[test]
+    fn deep_link_reports_unknown_schema_and_keeps_domain() {
+        let st = deep_link_fixture();
+        st.navigate_to(1, Some(0));
+        let note = st.apply_deep_link("typo", None).expect("未知方案应提示");
+        assert!(note.contains("typo"), "提示要带上用户输入的原值: {note}");
+        assert_eq!(st.domain.get(), 1, "未找到方案时保持当前域，不乱跳");
+    }
+
+    #[test]
+    fn deep_link_dimensions_are_independently_optional() {
+        let st = deep_link_fixture();
+        st.navigate_to(1, Some(0));
+
+        // 只给类型：不改域，只换子标签
+        assert_eq!(st.apply_deep_link("", Some(LogicalTab::Freq)), None);
+        assert_eq!(st.domain.get(), 1, "省 --schema 时保持当前域");
+        assert_eq!(st.current_category(), WordCategory::Freq);
+
+        // 只给方案：切域，子标签沿用该域记忆（新域无记忆则落首项）
+        assert_eq!(st.apply_deep_link("pinyin", None), None);
+        assert_eq!(st.domain.get(), 2);
+        assert_eq!(st.current_category(), WordCategory::UserDict);
+
+        // 回到五笔域：省 --type 时应恢复到刚才停留的词频
+        assert_eq!(st.apply_deep_link("wb", None), None);
+        assert_eq!(st.current_category(), WordCategory::Freq);
     }
 
     #[test]

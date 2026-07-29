@@ -44,6 +44,20 @@ git config core.hooksPath .githooks
 | `--light` / `--dark` | 强制明 / 暗主题 |
 | `--page <id>` / `--<id>` | 启动时定位到指定页面 |
 | `--tab <n>` | 启动时定位到第 n 个 Tab |
+| `--schema <id>` | 仅 `--page dict`:定位到指定数据域 |
+| `--type <id>` | 仅 `--page dict`:定位到指定子标签 |
+
+`--schema` 取方案 id(如 `wubi86`)、引擎族名(`pinyin` / `codetable` / `mixed`)或 `phrase`(快捷短语);
+双拼等被折叠的拼音变体 id 会落到「拼音」域。`--type` 取 `phrase-system` / `phrase-user` /
+`user-dict`(别名 `dict`)/ `temp` / `freq` / `shadow`。两者各自可选:
+
+```sh
+wind_setting.exe --page dict --schema wubi86 --type shadow   # 五笔的候选调整
+wind_setting.exe --page dict --type freq                     # 当前数据域的词频
+wind_setting.exe --dict --schema pinyin                      # 拼音域,子标签沿用上次
+```
+
+方案未找到、或该数据域没有请求的类型(如拼音域没有「候选调整」)时会降级到最接近的位置并 toast 说明,不会报错阻断。
 
 ## 目录结构
 
