@@ -249,14 +249,20 @@ impl Heatmap {
         h: f32,
         c: Color,
         a: Align,
+        size: f32,
     ) {
         canvas.draw_text(
             s,
             Rect::new(x as i32, y as i32, w as i32, h as i32),
             c,
             a,
-            &TextStyle::new(10.0),
+            &TextStyle::new(size),
         );
+    }
+
+    /// 星期标签字号：跟着格子缩放，小格子下也塞得进七行。
+    fn label_size(g: &Grid) -> f32 {
+        (g.cell * 0.72).clamp(7.5, 10.0)
     }
 }
 
@@ -282,11 +288,9 @@ impl Widget for Heatmap {
         let label_color = Color::hex(if dark { 0x8B94_9E } else { 0x8C95_9F });
         let radius = (g.cell * 0.18).clamp(1.5, 3.0);
 
-        // 星期标签：只标一/三/五/日——小格子下全标会挤成一团。
+        // 星期标签：七行全标，字号跟格子缩放以免小格子下挤成一团。
+        let ls = Self::label_size(&g);
         for (row, name) in WEEKDAY_LABELS.iter().enumerate() {
-            if row % 2 == 1 && row != 6 {
-                continue;
-            }
             Self::text_at(
                 canvas,
                 name,
@@ -296,6 +300,7 @@ impl Widget for Heatmap {
                 g.cell,
                 label_color,
                 Align::End,
+                ls,
             );
         }
 
@@ -315,21 +320,27 @@ impl Widget for Heatmap {
             );
         }
 
-        // 图例：右下角「少 ▢▢▢▢▢ 多」。
+        // 图例：「少 ▢▢▢▢▢ 多」，右对齐到**网格右缘**而非内容区右缘。
+        //
+        // 格子受 CELL_MAX 限制，网格往往画不满可用宽度（820px 下网格右缘比内容区右缘
+        // 靠左约 90px）。若按内容区右对齐，图例会孤零零悬在网格右侧的空白之下，
+        // 看起来像"图例上方缺了一块"。贴网格右缘才与格子连成一体。
         let legend_y = oy + 7.0 * g.step - CELL_GAP + (LEGEND_H - g.cell) / 2.0;
         let box_step = g.cell + CELL_GAP;
-        let legend_w = 5.0 * box_step - CELL_GAP;
-        let text_w = 18.0;
-        let boxes_x = ox + content.w as f32 - legend_w - text_w;
+        let boxes_w = 5.0 * box_step - CELL_GAP;
+        let text_w = 16.0;
+        let grid_right = ox + WEEKDAY_W + g.cols as f32 * g.step - CELL_GAP;
+        let boxes_x = (grid_right - text_w - boxes_w).max(ox + WEEKDAY_W);
         Self::text_at(
             canvas,
             "少",
-            boxes_x - text_w,
+            boxes_x - text_w - 3.0,
             legend_y,
-            text_w - 3.0,
+            text_w,
             g.cell,
             label_color,
             Align::End,
+            ls,
         );
         for (i, c) in scale.iter().enumerate() {
             canvas.fill_round_rect(
@@ -344,12 +355,13 @@ impl Widget for Heatmap {
         Self::text_at(
             canvas,
             "多",
-            boxes_x + legend_w + 3.0,
+            boxes_x + boxes_w + 3.0,
             legend_y,
             text_w,
             g.cell,
             label_color,
             Align::Start,
+            ls,
         );
     }
 
@@ -479,6 +491,7 @@ impl Widget for HourBars {
                 HOUR_LABEL_H - 3.0,
                 label_color,
                 Align::Start,
+                10.0,
             );
         }
     }

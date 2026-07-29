@@ -34,6 +34,9 @@ const PRUNE_OPTIONS: &[(&str, Option<i64>)] = &[
     ("全部数据", None),
 ];
 
+/// 页尾为悬浮刷新按钮预留的空白高度。
+const FAB_CLEARANCE: i32 = 40;
+
 /// 数据区三态。
 #[derive(Clone)]
 enum View {
@@ -184,9 +187,22 @@ pub fn build_page(state: &AppState) -> Element {
         .spacing(18)
         .child(data_area)
         .child(settings_section(state))
-        .child(load_effect(state));
+        .child(load_effect(state))
+        // 页尾让位：悬浮按钮盖在内容之上，没有这块留白，滚到底时它会压住最后一行
+        //（正好是「数据清理」的红色按钮，挨着更容易误触）。
+        .child(Element::leaf().height(FAB_CLEARANCE));
 
-    page(body)
+    // 刷新做成右下角悬浮按钮而非设置区里的一行：那一行在页尾，"想刷新得先滚到底、
+    // 刷完再滚回去看"，恰好和它的用途相反。悬浮层在页面任意滚动位置都可点。
+    let mgr_refresh = state.stats_mgr.clone();
+    let fab = Element::button("刷新")
+        .small()
+        .on_click(move |_| mgr_refresh.reload())
+        .align(Align::End)
+        // 右侧留够 14px 避开滚动条轨道，底部抬高避开设置卡片的按钮列。
+        .margin_xy(14, 22);
+
+    Element::stack().fill().child(page(body)).child(fab)
 }
 
 /// 切到统计页时懒加载。
@@ -301,7 +317,7 @@ fn hint_row(text: &str) -> Element {
 ///
 /// 内边距与字号偏紧：四张卡片等分一行，在 560px 最小窗口下每列只剩 ~75px，
 /// 再宽松一点「59.6万」这类值就会被省略号吃掉。
-fn stat_card(value: String, label: &str, detail: Option<String>) -> Element {
+fn stat_card(value: String, label: &str, detail: Vec<String>) -> Element {
     let mut col = Element::col()
         .width_match()
         .cross(Align::Center)
@@ -330,7 +346,7 @@ fn stat_card(value: String, label: &str, detail: Option<String>) -> Element {
                 .text_align(Align::Center)
                 .height(16),
         );
-    if let Some(t) = detail {
+    for t in detail {
         col = col.child(
             Element::label(t)
                 .font_size(11.0)
@@ -348,18 +364,27 @@ fn stat_card(value: String, label: &str, detail: Option<String>) -> Element {
 /// 四张概览卡片：今日 / 累计 / 日均 / 连续。
 fn summary_cards(d: &StatsData) -> Element {
     let s = &d.summary;
-    let today_detail = {
-        let t = d.today();
-        let (cc, ec) = t.map_or((s.today_chinese, s.today_english), |t| {
-            (t.chinese, t.english)
-        });
-        (cc + ec > 0).then(|| {
+    // 今日分类拆两行（中英 / 符数）：四张卡片等分一行，一行塞四项在窄窗口下必被省略。
+    // 今日明细缺失时退回 summary 的中英两项（core 的 summary 只带这两个分类）。
+    let today_detail = match d.today() {
+        Some(t) if t.total > 0 => vec![
             format!(
                 "中{} 英{}",
-                data::format_num(cc as u64),
-                data::format_num(ec as u64)
-            )
-        })
+                data::format_num(t.chinese as u64),
+                data::format_num(t.english as u64)
+            ),
+            format!(
+                "符{} 数{}",
+                data::format_num(t.punct as u64),
+                data::format_num(t.other as u64)
+            ),
+        ],
+        _ if s.today_chinese + s.today_english > 0 => vec![format!(
+            "中{} 英{}",
+            data::format_num(s.today_chinese as u64),
+            data::format_num(s.today_english as u64)
+        )],
+        _ => Vec::new(),
     };
     Element::grid(
         4,
@@ -373,13 +398,13 @@ fn summary_cards(d: &StatsData) -> Element {
             stat_card(
                 data::format_num(s.total_chars),
                 "累计输入",
-                Some(format!("{} 天", s.active_days)),
+                vec![format!("{} 天", s.active_days)],
             ),
-            stat_card(data::format_num(s.daily_avg as u64), "日均输入", None),
+            stat_card(data::format_num(s.daily_avg as u64), "日均输入", Vec::new()),
             stat_card(
                 s.streak_current.to_string(),
                 "连续天数",
-                Some(format!("最长 {} 天", s.streak_max)),
+                vec![format!("最长 {} 天", s.streak_max)],
             ),
         ],
     )
@@ -429,9 +454,17 @@ fn sub_title(text: &str) -> Element {
         .margin_xy(0, 4)
 }
 
-/// 一组占比条（标题 + 若干行）；`bars` 为空时整组不渲染。
-fn bar_group(title: &str, bars: &[Bar], color: charts::ChartColor) -> Option<Element> {
-    if bars.is_empty() {
+/// 一组占比条（标题 + 若干行）。
+///
+/// `min_items` 之下整组不渲染：方案占比传 2——只有一个方案时永远是 100%，
+/// 一根满格的条没有任何信息量（`data::schema_bars` 已滤掉零输入的方案）。
+fn bar_group(
+    title: &str,
+    bars: &[Bar],
+    color: charts::ChartColor,
+    min_items: usize,
+) -> Option<Element> {
+    if bars.len() < min_items.max(1) {
         return None;
     }
     let mut col = Element::col()
@@ -499,12 +532,14 @@ fn detail_section(d: &StatsData, schema_names: &[(String, String)]) -> Element {
             "字符分类",
             &data::char_category_bars(&d.days),
             charts::AMBER,
+            1,
         ),
-        bar_group("码长分布", &data::code_len_bars(&d.days), charts::GREEN),
+        bar_group("码长分布", &data::code_len_bars(&d.days), charts::GREEN, 1),
         bar_group(
             "方案占比",
             &data::schema_bars(&d.days, name_of),
             charts::INDIGO,
+            2,
         ),
     ]
     .into_iter()
@@ -527,16 +562,6 @@ fn settings_section(state: &AppState) -> Element {
         .flat_map(|(_, k)| k)
         .collect();
     let mut rows = section_rows(state, &keys);
-
-    let mgr_refresh = state.stats_mgr.clone();
-    rows.push(setting_row(
-        "刷新数据",
-        Some("重新读取最新的统计数据"),
-        Element::button("刷新")
-            .small()
-            .outline_soft()
-            .on_click(move |_| mgr_refresh.reload()),
-    ));
 
     let mgr_prune = state.stats_mgr.clone();
     let labels: Vec<&str> = PRUNE_OPTIONS.iter().map(|(l, _)| *l).collect();
@@ -626,6 +651,26 @@ mod tests {
         s.request_prune();
         assert_eq!(s.pending.get(), Pending::ClearAll);
         assert!(s.confirm_msg.get().contains("全部"));
+    }
+
+    fn bar(label: &str, pct: u32) -> Bar {
+        Bar {
+            label: label.into(),
+            count: pct as u64,
+            pct,
+        }
+    }
+
+    /// 只剩一个方案时占比图恒为 100%，没有信息量——整组不渲染。
+    /// 字符分类等单项仍要显示（它表达的是绝对构成，不是相互比较）。
+    #[test]
+    fn schema_group_needs_at_least_two_entries() {
+        let one = vec![bar("五笔 86", 100)];
+        let two = vec![bar("五笔 86", 62), bar("全拼·简", 38)];
+        assert!(bar_group("方案占比", &one, charts::INDIGO, 2).is_none());
+        assert!(bar_group("方案占比", &two, charts::INDIGO, 2).is_some());
+        assert!(bar_group("字符分类", &one, charts::AMBER, 1).is_some());
+        assert!(bar_group("字符分类", &[], charts::AMBER, 1).is_none());
     }
 
     #[test]

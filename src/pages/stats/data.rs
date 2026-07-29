@@ -231,7 +231,7 @@ pub fn char_category_bars(days: &[DailyItem]) -> Vec<Bar> {
         ("中文".into(), cc),
         ("英文".into(), ec),
         ("标点".into(), pc),
-        ("数字符号".into(), oc),
+        ("数字".into(), oc),
     ])
 }
 
