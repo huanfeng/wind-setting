@@ -367,6 +367,19 @@ fn build_footer(
         .visible_when(move || !d_d.get());
     let theme_btn = Element::stack().child(to_light).child(to_dark);
 
+    // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为
+    // 是「重新加载配置」。放底栏而非页内浮层：浮层要么挡内容、要么得在页尾留白让位。
+    let (stats_mgr, tab_sig) = {
+        let s = app.borrow();
+        (s.stats_mgr.clone(), s.tab)
+    };
+    let stats_tab = crate::cli::page_to_index("stats");
+    let refresh_btn = Element::button("刷新数据")
+        .small()
+        .outline_soft()
+        .on_click(move |_| stats_mgr.reload())
+        .visible_when(move || stats_tab == Some(tab_sig.get()));
+
     // 恢复本页：本页改默认值；有未保存改动先弹确认。
     let app_reset = app.clone();
     let reset_btn = Element::button("恢复本页")
@@ -432,6 +445,7 @@ fn build_footer(
         .child(Element::leaf().width(6))
         .child(theme_btn)
         .child(Element::leaf().weight(1.0))
+        .child(refresh_btn)
         .child(reset_btn)
         .child(reload_btn)
         .child(apply_btn)

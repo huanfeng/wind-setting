@@ -128,8 +128,12 @@ const CELL_MAX: f32 = 14.0;
 const CELL_GAP: f32 = 3.0;
 /// 左侧星期标签列宽。
 const WEEKDAY_W: f32 = 16.0;
-/// 底部图例带高度。
-const LEGEND_H: f32 = 18.0;
+/// 网格底部到图例带的间距。
+const LEGEND_GAP: f32 = 14.0;
+/// 图例带高度（同时承载左侧的悬停说明文字）。
+const LEGEND_BAND_H: f32 = 16.0;
+/// 悬停说明字号。
+const HOVER_TEXT_SIZE: f32 = 11.5;
 /// 星期标签（与 `data::weekday_mon0` 同为周一起始）。
 const WEEKDAY_LABELS: [&str; 7] = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -145,10 +149,8 @@ struct Grid {
     step: f32,
     /// 实际绘制的列数（周数）。
     cols: usize,
-    /// 前面被舍弃的天数（宽度不够时只显示最近若干周）。
+    /// 前面被舍弃的天数：开头不满一周的零头 + 宽度不够时多丢的整周。
     skip_days: usize,
-    /// 首列在网格中的周内偏移（跳过整周后恒为 0）。
-    lead: usize,
 }
 
 /// 按可用宽度解算网格。
@@ -158,25 +160,26 @@ struct Grid {
 /// 这样 560px 的最小窗口也不会溢出。
 fn grid_for(width: f32, days: usize, first_weekday: usize) -> Grid {
     let grid_w = (width - WEEKDAY_W).max(CELL_MIN);
-    let want_cols = (days + first_weekday).div_ceil(7).max(1);
+    // 开头不满一周的零头直接丢弃，首列必从周一起始。
+    //
+    // 左上角的缺口与右下角的缺口性质不同：右下是「日期还没到」，属日历的正常留白；
+    // 左上只是「统计窗口的起点恰好落在周中」，留着就是块无意义的空洞。
+    // 代价是最旧的至多 6 天不显示。
+    let head = (7 - first_weekday % 7) % 7;
+    let usable = days.saturating_sub(head);
+    let want_cols = usable.div_ceil(7).max(1);
     // +CELL_GAP：末列不需要尾随间距，故可用宽度按「含一个虚拟尾隙」折算。
     let max_cols = (((grid_w + CELL_GAP) / (CELL_MIN + CELL_GAP)).floor() as usize).max(1);
     let cols = want_cols.min(max_cols);
     let step = ((grid_w + CELL_GAP) / cols as f32).min(CELL_MAX + CELL_GAP);
     let cell = (step - CELL_GAP).clamp(CELL_MIN, CELL_MAX);
-    // 只按整列裁剪：跳掉的天数正好补齐整周，剩余部分必从周一起始。
-    let (skip_days, lead) = if cols < want_cols {
-        let slots = (want_cols - cols) * 7;
-        (slots.saturating_sub(first_weekday), 0)
-    } else {
-        (0, first_weekday)
-    };
+    // 宽度不够时再往后丢整周，首列仍落在周一。
+    let skip_days = (head + (want_cols - cols) * 7).min(days);
     Grid {
         cell,
         step,
         cols,
         skip_days,
-        lead,
     }
 }
 
@@ -198,9 +201,9 @@ struct Heatmap {
 }
 
 impl Heatmap {
-    /// 网格总高度（7 行 + 图例带）。
+    /// 网格总高度（7 行 + 间距 + 图例带）。
     fn height_of(g: &Grid) -> f32 {
-        7.0 * g.step - CELL_GAP + LEGEND_H
+        7.0 * g.step - CELL_GAP + LEGEND_GAP + LEGEND_BAND_H
     }
 
     /// 命中检测：控件内相对坐标 → 天索引。
@@ -218,10 +221,9 @@ impl Heatmap {
         if gx - col as f32 * g.step > g.cell || rel_y - row as f32 * g.step > g.cell {
             return None;
         }
-        let slot = col * 7 + row;
-        // 首列可能有前导空位（lead）：那几个槽位没有对应的天。
-        let idx = (slot + g.skip_days).checked_sub(g.lead)?;
-        (idx >= g.skip_days && idx < self.days.len()).then_some(idx)
+        // 首列从周一起始、无前导空位，故槽位与天索引只差一个 skip_days。
+        let idx = g.skip_days + col * 7 + row;
+        (idx < self.days.len()).then_some(idx)
     }
 
     /// 悬停文案：日期 · 星期 · 总字数。
@@ -305,7 +307,7 @@ impl Widget for Heatmap {
         }
 
         for (i, (_, chars)) in self.days.iter().enumerate().skip(g.skip_days) {
-            let slot = i + g.lead - g.skip_days;
+            let slot = i - g.skip_days;
             let (col, row) = (slot / 7, slot % 7);
             if col >= g.cols {
                 break;
@@ -320,17 +322,39 @@ impl Widget for Heatmap {
             );
         }
 
-        // 图例：「少 ▢▢▢▢▢ 多」，右对齐到**网格右缘**而非内容区右缘。
+        // 图例带：左侧悬停说明、右侧「少 ▢▢▢▢▢ 多」，与网格拉开 LEGEND_GAP。
         //
-        // 格子受 CELL_MAX 限制，网格往往画不满可用宽度（820px 下网格右缘比内容区右缘
-        // 靠左约 90px）。若按内容区右对齐，图例会孤零零悬在网格右侧的空白之下，
-        // 看起来像"图例上方缺了一块"。贴网格右缘才与格子连成一体。
-        let legend_y = oy + 7.0 * g.step - CELL_GAP + (LEGEND_H - g.cell) / 2.0;
+        // 图例右对齐到**网格右缘**而非内容区右缘：格子受 CELL_MAX 限制，网格往往画不满
+        // 可用宽度（820px 下网格右缘比内容区右缘靠左约 90px）。若按内容区右对齐，图例会
+        // 孤零零悬在网格右侧的空白之下，看着像"上方缺了一块"。
+        let band_y = oy + 7.0 * g.step - CELL_GAP + LEGEND_GAP;
+        let legend_y = band_y + (LEGEND_BAND_H - g.cell) / 2.0;
         let box_step = g.cell + CELL_GAP;
         let boxes_w = 5.0 * box_step - CELL_GAP;
         let text_w = 16.0;
         let grid_right = ox + WEEKDAY_W + g.cols as f32 * g.step - CELL_GAP;
         let boxes_x = (grid_right - text_w - boxes_w).max(ox + WEEKDAY_W);
+
+        // 悬停说明与图例同行：框架的 tooltip 只认节点上的静态文本（core.rs::node_tooltip），
+        // 自绘部件无法按命中格动态提供，故不做浮层，占用图例带左侧的空档。
+        let hover = self.hover.get();
+        if !hover.is_empty() {
+            let avail = boxes_x - text_w - 8.0 - ox;
+            if avail > 0.0 {
+                Self::text_at(
+                    canvas,
+                    &hover,
+                    ox,
+                    band_y,
+                    avail,
+                    LEGEND_BAND_H,
+                    Color::hex(if dark { 0xA8B0_BA } else { 0x5C65_70 }),
+                    Align::Start,
+                    HOVER_TEXT_SIZE,
+                );
+            }
+        }
+
         Self::text_at(
             canvas,
             "少",
@@ -548,13 +572,22 @@ mod tests {
         }
     }
 
+    /// 宽度足够时显示全部完整周，只丢开头不满一周的零头。
     #[test]
-    fn grid_shows_all_weeks_when_wide_enough() {
+    fn grid_shows_all_whole_weeks_when_wide_enough() {
+        // 首日周三（fw=2）→ 丢 5 天凑到下个周一，剩 176 天 = 26 整周。
         let g = grid_for(800.0, 181, 2);
-        assert_eq!(g.cols, (181 + 2usize).div_ceil(7));
-        assert_eq!(g.skip_days, 0);
-        assert_eq!(g.lead, 2);
+        assert_eq!(g.skip_days, 5);
+        assert_eq!(g.cols, (181 - 5usize).div_ceil(7));
         assert!(g.cell >= CELL_MIN && g.cell <= CELL_MAX);
+    }
+
+    /// 首日已是周一时不该丢任何数据。
+    #[test]
+    fn grid_skips_nothing_when_first_day_is_monday() {
+        let g = grid_for(800.0, 182, 0);
+        assert_eq!(g.skip_days, 0);
+        assert_eq!(g.cols, 26);
     }
 
     /// 窄窗口下宁可少显示几周也不把格子挤没，且绝不溢出可用宽度。
@@ -563,22 +596,22 @@ mod tests {
         let width = 200.0;
         let g = grid_for(width, 181, 2);
         assert!(g.cell >= CELL_MIN, "格子不应小于最小边长");
-        assert!(g.skip_days > 0, "放不下时应舍弃早期数据");
-        assert_eq!(g.lead, 0, "按整周裁剪后首列必从周一开始");
+        assert!(g.skip_days > 5, "放不下时应在零头之外再舍弃整周");
         let used = WEEKDAY_W + g.cols as f32 * g.step - CELL_GAP;
         assert!(used <= width + 0.01, "绘制宽度 {used} 不应超出 {width}");
     }
 
-    /// 舍弃的天数必须落在整周边界，否则星期行会整体错位。
+    /// 无论首日是星期几，保留段的第一天都必须是周一——否则星期行整体错位，
+    /// 且左上角会空出无意义的缺口。
     #[test]
-    fn skipped_days_align_to_week_boundary() {
+    fn first_kept_day_is_always_monday() {
         for fw in 0..7 {
-            let g = grid_for(180.0, 181, fw);
-            if g.skip_days > 0 {
+            for width in [180.0, 400.0, 800.0] {
+                let g = grid_for(width, 181, fw);
                 assert_eq!(
-                    (g.skip_days + fw) % 7,
+                    (fw + g.skip_days) % 7,
                     0,
-                    "首日周内序号 {fw} 下裁剪未对齐整周"
+                    "首日周内序号 {fw} / 宽度 {width} 下保留段未落在周一"
                 );
             }
         }
@@ -599,8 +632,8 @@ mod tests {
     fn hit_matches_painted_cell_centers() {
         let hm = map_of(181, 2);
         let g = grid_for(800.0, 181, 2);
-        for i in [0usize, 1, 7, 50, 180] {
-            let slot = i + g.lead - g.skip_days;
+        for i in [g.skip_days, g.skip_days + 1, g.skip_days + 7, 100, 180] {
+            let slot = i - g.skip_days;
             let (col, row) = (slot / 7, slot % 7);
             let cx = WEEKDAY_W + col as f32 * g.step + g.cell / 2.0;
             let cy = row as f32 * g.step + g.cell / 2.0;
@@ -608,12 +641,23 @@ mod tests {
         }
     }
 
-    /// 裁剪后同样要对齐：被保留的首日应落在第 0 列第 0 行。
+    /// 左上角第一格必须就是保留段的首日——没有前导空位。
+    #[test]
+    fn first_cell_is_the_first_kept_day() {
+        for fw in 0..7 {
+            let hm = map_of(181, fw);
+            let g = grid_for(800.0, 181, fw);
+            let hit = hm.hit(&g, WEEKDAY_W + g.cell / 2.0, g.cell / 2.0);
+            assert_eq!(hit, Some(g.skip_days), "首日周内序号 {fw} 下左上角应有格子");
+        }
+    }
+
+    /// 窄窗口多丢几周后，被保留的首日同样落在第 0 列第 0 行。
     #[test]
     fn hit_matches_centers_after_clipping() {
         let hm = map_of(181, 3);
         let g = grid_for(200.0, 181, 3);
-        assert!(g.skip_days > 0);
+        assert!(g.skip_days > 4);
         let cx = WEEKDAY_W + g.cell / 2.0;
         let cy = g.cell / 2.0;
         assert_eq!(hm.hit(&g, cx, cy), Some(g.skip_days));
@@ -634,15 +678,18 @@ mod tests {
         );
     }
 
-    /// 首列的前导空位（首日之前的那几个星期几）不应命中任何一天。
+    /// 末列尾部（今天之后的日期）不应命中——那是日历的正常留白。
     #[test]
-    fn hit_ignores_leading_blanks() {
-        let hm = map_of(181, 3);
-        let g = grid_for(800.0, 181, 3);
-        assert_eq!(g.lead, 3);
-        for row in 0..3 {
+    fn hit_ignores_trailing_blanks() {
+        let hm = map_of(181, 0);
+        let g = grid_for(800.0, 181, 0);
+        let last_slot = hm.days.len() - 1 - g.skip_days;
+        let last_col = last_slot / 7;
+        // 末列中最后一天之后的那些行。
+        for row in (last_slot % 7 + 1)..7 {
+            let cx = WEEKDAY_W + last_col as f32 * g.step + g.cell / 2.0;
             let cy = row as f32 * g.step + g.cell / 2.0;
-            assert_eq!(hm.hit(&g, WEEKDAY_W + g.cell / 2.0, cy), None);
+            assert_eq!(hm.hit(&g, cx, cy), None, "末列第 {row} 行应为空");
         }
     }
 

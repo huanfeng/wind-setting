@@ -34,9 +34,6 @@ const PRUNE_OPTIONS: &[(&str, Option<i64>)] = &[
     ("全部数据", None),
 ];
 
-/// 页尾为悬浮刷新按钮预留的空白高度。
-const FAB_CLEARANCE: i32 = 40;
-
 /// 数据区三态。
 #[derive(Clone)]
 enum View {
@@ -117,7 +114,9 @@ impl StatsState {
     /// 同步调用：本地 redb 范围扫描 + 一次管道往返，180 天量级在毫秒档，
     /// 且只在进页/手动刷新时发生，尚不值得为它引入后台线程 + `App::channel` 回投。
     /// 若日后统计窗口拉长到卡顿可感，再改走 channel。
-    fn reload(&self) {
+    ///
+    /// 供底栏的「刷新数据」按钮调用（见 `shell::build_footer`）。
+    pub fn reload(&self) {
         self.loaded.set(true);
         match data::fetch(data::DEFAULT_DAYS_BACK) {
             Ok(d) => self.view.set(vec![View::Ready(Rc::new(d))]),
@@ -182,27 +181,16 @@ pub fn build_page(state: &AppState) -> Element {
         View::Ready(d) => ready_body(&d, &schema_names.get(), hover, hour_hover),
     });
 
+    // 刷新入口在底栏（`shell::build_footer`，仅本页可见）：页内浮层要么挡内容、
+    // 要么得在页尾留一块专供让位的空白，而底栏本就是全局操作区，天然常驻可点。
     let body = Element::col()
         .width_match()
         .spacing(18)
         .child(data_area)
         .child(settings_section(state))
-        .child(load_effect(state))
-        // 页尾让位：悬浮按钮盖在内容之上，没有这块留白，滚到底时它会压住最后一行
-        //（正好是「数据清理」的红色按钮，挨着更容易误触）。
-        .child(Element::leaf().height(FAB_CLEARANCE));
+        .child(load_effect(state));
 
-    // 刷新做成右下角悬浮按钮而非设置区里的一行：那一行在页尾，"想刷新得先滚到底、
-    // 刷完再滚回去看"，恰好和它的用途相反。悬浮层在页面任意滚动位置都可点。
-    let mgr_refresh = state.stats_mgr.clone();
-    let fab = Element::button("刷新")
-        .small()
-        .on_click(move |_| mgr_refresh.reload())
-        .align(Align::End)
-        // 右侧留够 14px 避开滚动条轨道，底部抬高避开设置卡片的按钮列。
-        .margin_xy(14, 22);
-
-    Element::stack().fill().child(page(body)).child(fab)
+    page(body)
 }
 
 /// 切到统计页时懒加载。
@@ -273,30 +261,22 @@ fn hours_section(d: &StatsData, hover: Signal<String>) -> Element {
     section("今日时段分布", vec![body.padding_xy(0, 12)])
 }
 
-/// 输入日历卡片：热力图 + 悬停详情行。无数据时整块不渲染。
+/// 输入日历卡片。无数据时整块不渲染。
+///
+/// 悬停详情由热力图自己画在图例带左侧（同一行），故这里没有额外的详情行——
+/// 部件高度恒定，鼠标划过时布局不会上下跳。
 fn calendar_section(d: &StatsData, hover: Signal<String>) -> Option<Element> {
     let first = d.days.first()?;
     let first_weekday = data::weekday_mon0(data::parse_key(&first.date)?);
     let days: Vec<(String, u32)> = d.days.iter().map(|x| (x.date.clone(), x.total)).collect();
-
-    // 详情行高度固定：未悬停时留白而非塌陷，鼠标划过日历时布局才不会上下跳。
-    let detail = Element::label_rc(hover)
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .max_lines(1)
-        .truncate(Truncate::End)
-        .height(18);
 
     Some(section(
         "输入日历",
         vec![
             Element::col()
                 .width_match()
-                .spacing(6)
                 .padding_xy(0, 12)
-                .child(charts::heatmap(days, first_weekday, hover))
-                .child(detail),
+                .child(charts::heatmap(days, first_weekday, hover)),
         ],
     ))
 }
