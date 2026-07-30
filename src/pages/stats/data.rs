@@ -171,20 +171,12 @@ pub fn format_num(n: u64) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);
     }
     out
-}
-
-/// 字/分钟（活跃秒数为 0 时返回 0，口径同 core `speed_per_minute`）。
-pub fn speed_per_minute(chars: u32, active_seconds: u32) -> u32 {
-    if active_seconds == 0 || chars == 0 {
-        return 0;
-    }
-    (chars as u64 * 60 / active_seconds as u64) as u32
 }
 
 // ─────────────────────────── 聚合 ───────────────────────────
@@ -407,13 +399,5 @@ mod tests {
         // 2026-07-27 是周一。
         assert_eq!(weekday_mon0(parse_key("2026-07-27").unwrap()), 0);
         assert_eq!(weekday_mon0(parse_key("2026-08-02").unwrap()), 6);
-    }
-
-    #[test]
-    fn speed_matches_core_rounding() {
-        assert_eq!(speed_per_minute(0, 60), 0);
-        assert_eq!(speed_per_minute(100, 0), 0);
-        assert_eq!(speed_per_minute(120, 60), 120);
-        assert_eq!(speed_per_minute(100, 60), 100);
     }
 }

@@ -25,11 +25,11 @@ use crate::widgets::dark_sig;
 pub type ChartColor = (u32, u32);
 
 /// 绿——「量」的主色（码长分布、热力图色阶、时段柱）。
-pub const GREEN: ChartColor = (0x30A1_4E, 0x39D3_53);
+pub const GREEN: ChartColor = (0x30A14E, 0x39D353);
 /// 橙——字符分类。
-pub const AMBER: ChartColor = (0xF59E_0B, 0xFBBF_24);
+pub const AMBER: ChartColor = (0xF59E0B, 0xFBBF24);
 /// 靛蓝——方案占比。
-pub const INDIGO: ChartColor = (0x6366_F1, 0x818C_F8);
+pub const INDIGO: ChartColor = (0x6366F1, 0x818CF8);
 
 /// 按当前明暗取色。
 pub fn pick(c: ChartColor) -> Color {
@@ -118,8 +118,8 @@ pub fn bar_row(label: &str, pct: u32, color: ChartColor) -> Element {
 // ───────────────────────── 日历热力图 ─────────────────────────
 
 /// 热力图色阶（GitHub 风格 5 档）：亮色一套、暗色一套。
-const HEAT_LIGHT: [u32; 5] = [0xEBED_F0, 0x9BE9_A8, 0x40C4_63, 0x30A1_4E, 0x216E_39];
-const HEAT_DARK: [u32; 5] = [0x161B_22, 0x0E44_29, 0x006D_32, 0x26A6_41, 0x39D3_53];
+const HEAT_LIGHT: [u32; 5] = [0xEBEDF0, 0x9BE9A8, 0x40C463, 0x30A14E, 0x216E39];
+const HEAT_DARK: [u32; 5] = [0x161B22, 0x0E4429, 0x006D32, 0x26A641, 0x39D353];
 
 /// 格子最小/最大边长。小于最小值宁可少显示几周，也不挤成看不清的点。
 const CELL_MIN: f32 = 8.0;
@@ -134,6 +134,21 @@ const LEGEND_GAP: f32 = 14.0;
 const LEGEND_BAND_H: f32 = 16.0;
 /// 星期标签（与 `data::weekday_mon0` 同为周一起始）。
 const WEEKDAY_LABELS: [&str; 7] = ["一", "二", "三", "四", "五", "六", "日"];
+
+/// 绘制文字用的浮点矩形（`Canvas` 只收整数 `Rect`，这里保留亚像素定位再统一取整）。
+#[derive(Debug, Clone, Copy)]
+struct TextBox {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl TextBox {
+    fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self { x, y, w, h }
+    }
+}
 
 /// 一次布局解算的结果。
 ///
@@ -238,21 +253,11 @@ impl Heatmap {
         })
     }
 
-    /// 画一段星期标签或图例文字。
-    fn text_at(
-        canvas: &mut dyn Canvas,
-        s: &str,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        c: Color,
-        a: Align,
-        size: f32,
-    ) {
+    /// 画一段标签文字（星期列、图例两端、时段刻度共用）。
+    fn text_at(canvas: &mut dyn Canvas, s: &str, r: TextBox, c: Color, a: Align, size: f32) {
         canvas.draw_text(
             s,
-            Rect::new(x as i32, y as i32, w as i32, h as i32),
+            Rect::new(r.x as i32, r.y as i32, r.w as i32, r.h as i32),
             c,
             a,
             &TextStyle::new(size),
@@ -284,23 +289,14 @@ impl Widget for Heatmap {
         let scale = if dark { HEAT_DARK } else { HEAT_LIGHT };
         let g = grid_for(content.w as f32, self.days.len(), self.first_weekday);
         let (ox, oy) = (content.x as f32, content.y as f32);
-        let label_color = Color::hex(if dark { 0x8B94_9E } else { 0x8C95_9F });
+        let label_color = Color::hex(if dark { 0x8B949E } else { 0x8C959F });
         let radius = (g.cell * 0.18).clamp(1.5, 3.0);
 
         // 星期标签：七行全标，字号跟格子缩放以免小格子下挤成一团。
         let ls = Self::label_size(&g);
         for (row, name) in WEEKDAY_LABELS.iter().enumerate() {
-            Self::text_at(
-                canvas,
-                name,
-                ox,
-                oy + row as f32 * g.step,
-                WEEKDAY_W - 4.0,
-                g.cell,
-                label_color,
-                Align::End,
-                ls,
-            );
+            let r = TextBox::new(ox, oy + row as f32 * g.step, WEEKDAY_W - 4.0, g.cell);
+            Self::text_at(canvas, name, r, label_color, Align::End, ls);
         }
 
         for (i, (_, chars)) in self.days.iter().enumerate().skip(g.skip_days) {
@@ -332,17 +328,8 @@ impl Widget for Heatmap {
         let grid_right = ox + WEEKDAY_W + g.cols as f32 * g.step - CELL_GAP;
         let boxes_x = (grid_right - text_w - boxes_w).max(ox + WEEKDAY_W);
 
-        Self::text_at(
-            canvas,
-            "少",
-            boxes_x - text_w - 3.0,
-            legend_y,
-            text_w,
-            g.cell,
-            label_color,
-            Align::End,
-            ls,
-        );
+        let less = TextBox::new(boxes_x - text_w - 3.0, legend_y, text_w, g.cell);
+        Self::text_at(canvas, "少", less, label_color, Align::End, ls);
         for (i, c) in scale.iter().enumerate() {
             canvas.fill_round_rect(
                 boxes_x + i as f32 * box_step,
@@ -353,17 +340,8 @@ impl Widget for Heatmap {
                 &Paint::fill(Color::hex(*c)),
             );
         }
-        Self::text_at(
-            canvas,
-            "多",
-            boxes_x + boxes_w + 3.0,
-            legend_y,
-            text_w,
-            g.cell,
-            label_color,
-            Align::Start,
-            ls,
-        );
+        let more = TextBox::new(boxes_x + boxes_w + 3.0, legend_y, text_w, g.cell);
+        Self::text_at(canvas, "多", more, label_color, Align::Start, ls);
     }
 
     fn on_event(&mut self, ctx: &mut EventCtx, ev: &Event) -> bool {
@@ -463,8 +441,8 @@ impl Widget for HourBars {
     ) {
         let dark = dark_sig().get();
         let fill = pick(GREEN);
-        let zero = Color::hex(if dark { 0x3A41_4B } else { 0xD8DE_E4 });
-        let label_color = Color::hex(if dark { 0x8B94_9E } else { 0x8C95_9F });
+        let zero = Color::hex(if dark { 0x3A414B } else { 0xD8DEE4 });
+        let label_color = Color::hex(if dark { 0x8B949E } else { 0x8C959F });
         let (ox, oy, w) = (content.x as f32, content.y as f32, content.w as f32);
         let peak = self.hours.iter().copied().max().unwrap_or(0).max(1);
         let base = oy + HOUR_AREA_H;
@@ -484,17 +462,8 @@ impl Widget for HourBars {
         // 刻度：每 3 小时一个，标在对应柱子下方。
         for t in HOUR_TICKS {
             let (bx, _) = Self::bar_x(w, t);
-            Heatmap::text_at(
-                canvas,
-                &t.to_string(),
-                ox + bx,
-                base + 3.0,
-                w / 24.0 * 3.0,
-                HOUR_LABEL_H - 3.0,
-                label_color,
-                Align::Start,
-                10.0,
-            );
+            let r = TextBox::new(ox + bx, base + 3.0, w / 24.0 * 3.0, HOUR_LABEL_H - 3.0);
+            Heatmap::text_at(canvas, &t.to_string(), r, label_color, Align::Start, 10.0);
         }
     }
 
@@ -504,7 +473,7 @@ impl Widget for HourBars {
             PointerKind::Move | PointerKind::Enter => {
                 let b = ctx.bounds();
                 let (rx, ry) = ((p.pos.x - b.x) as f32, (p.pos.y - b.y) as f32);
-                (rx >= 0.0 && ry >= 0.0 && ry <= HOUR_AREA_H)
+                (rx >= 0.0 && (0.0..=HOUR_AREA_H).contains(&ry))
                     .then(|| (rx / (b.w as f32 / 24.0)).floor() as usize)
                     .filter(|i| *i < 24)
             }
