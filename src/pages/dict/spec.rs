@@ -116,6 +116,9 @@ pub struct WordRow {
     pub last_used: String,
     /// 短语专用：是否系统内置（phrase from_json 读 isSystem，其余类别恒 false）。
     pub is_system: bool,
+    /// 候选调整专用：规则锚定的候选**稳定 id**（`phrase:{code}:{模板原文}`，读 `candId`）。
+    /// 其余类别恒空。短语规则靠它跨日命中，也靠它还原出「这条规则管的是哪个短语」。
+    pub cand_id: String,
     /// 短语专用：这条用户短语**遮蔽了同码同内容的系统条目**（读 `overridesSystem`）。
     ///
     /// 主程序的短语表主键只有 `(code, text)` 一把，用户建同款时该行转为用户行、系统条目
@@ -165,6 +168,7 @@ impl WordRow {
                 code: s("code"),
                 // shadow 的词字段名是 word，不是 text。
                 text: s("word"),
+                cand_id: s("candId"),
                 position: i("position"),
                 kind: s("type"),
                 ..Default::default()
@@ -193,11 +197,24 @@ impl WordRow {
         }
     }
 
+    /// 「词条」列的显示文本：有候选稳定 id 时显示**模板原文**，否则显示 `text` 本身。
+    ///
+    /// 候选调整里短语规则的 `word` 存的是**最后一次调整时**的候选文本。`date`/`time` 这类
+    /// 求值型短语次日即过期——列表写着 `2026/07/30`、候选早已是 `07/31`，看着像条失效的
+    /// 僵尸规则（其实工作正常，匹配走的是 id）；同一个 `date` 下多个格式的规则放久了也
+    /// 全是旧日期，无从分辨每行管的是哪个。模板原文才是规则真正锚定的东西。
+    ///
+    /// **`text` 字段本身保持原始 `word` 不动**：编辑与删除规则都按它定位并回传给 core
+    /// （`open_shadow_edit` / `do_remove_rule`），换成模板就定位不到了。
+    pub fn display_text(&self) -> String {
+        phrase_template_of(&self.cand_id).unwrap_or_else(|| self.text.clone())
+    }
+
     /// 某列的展示文本（非交互列用；`Enabled`/`Kind` 由视图特殊渲染，这里给回退文本）。
     pub fn cell_text(&self, field: WordField) -> String {
         match field {
             WordField::Code => self.code.clone(),
-            WordField::Text => self.text.clone(),
+            WordField::Text => self.display_text(),
             WordField::Weight => self.weight.to_string(),
             WordField::Count => self.count.to_string(),
             WordField::Position => self.position.to_string(),
@@ -206,6 +223,18 @@ impl WordRow {
             WordField::LastUsed => self.last_used.clone(),
         }
     }
+}
+
+/// 从候选稳定 id 里取出模板原文：`phrase:{code}:{模板}` → `Some(模板)`。
+/// 非 `phrase:` 命名空间、缺第三段或模板为空 → `None`（调用方回落到原文本）。
+///
+/// ⚠️ 取的是**第二个冒号之后的全部内容**（`strip_prefix` + `split_once`），不能按冒号
+/// 切成三段取第三段——模板自身常含冒号：`{time("HH:mm:ss")}`、`$CC(...)` 的参数等，
+/// 按段取会把模板截断成 `{time("HH`。
+fn phrase_template_of(cand_id: &str) -> Option<String> {
+    let rest = cand_id.strip_prefix("phrase:")?;
+    let (_code, tpl) = rest.split_once(':')?;
+    (!tpl.is_empty()).then(|| tpl.to_string())
 }
 
 /// 词频 `lastUsed` 的展示文本。core 真实返回为 unix 秒（数字），格式化为本地时间；
@@ -839,6 +868,46 @@ mod tests {
             !WordRow::from_json(WordCategory::PhraseUser, &plain).overrides_system,
             "缺省 false"
         );
+    }
+
+    /// 候选调整里短语规则显示**模板原文**而非当日求值文本。
+    ///
+    /// 规则的 `word` 是最后一次调整时的候选文本，`date` 这类次日即过期——列表写着
+    /// `2026/07/30`、候选已是 `07/31`，看着像条失效的僵尸规则。同时 `text` 字段本身
+    /// 必须保持原值不动（编辑/删除按它定位）。
+    #[test]
+    fn shadow_row_displays_phrase_template() {
+        let v = json!({
+            "code": "date", "word": "2026/07/30", "type": "pin", "position": 0,
+            "candId": "phrase:date:$Y/$MM/$DD"
+        });
+        let row = WordRow::from_json(WordCategory::Shadow, &v);
+        assert_eq!(row.text, "2026/07/30", "text 保持规则原值（写操作依赖）");
+        assert_eq!(row.display_text(), "$Y/$MM/$DD", "显示模板原文");
+        assert_eq!(row.cell_text(WordField::Text), "$Y/$MM/$DD");
+    }
+
+    /// 无 candId 的规则（手动添加 / 码表候选）照旧显示 word 本身。
+    #[test]
+    fn shadow_row_without_cand_id_displays_word() {
+        let v = json!({ "code": "aaaa", "word": "工", "type": "pin", "position": 0 });
+        let row = WordRow::from_json(WordCategory::Shadow, &v);
+        assert_eq!(row.display_text(), "工");
+    }
+
+    /// ⚠️ 模板自身含冒号时不得被截断——时间格式 `HH:mm:ss` 是最常见的一例。
+    /// 按冒号切段取第三段会得到 `{time("HH`。
+    #[test]
+    fn phrase_template_keeps_colons_inside_template() {
+        assert_eq!(
+            phrase_template_of("phrase:time:{time(\"HH:mm:ss\")}").as_deref(),
+            Some("{time(\"HH:mm:ss\")}")
+        );
+        // 非 phrase 命名空间 / 缺段 / 空模板 → None（调用方回落原文本）
+        assert!(phrase_template_of("dict:abc:x").is_none());
+        assert!(phrase_template_of("phrase:onlycode").is_none());
+        assert!(phrase_template_of("phrase:date:").is_none());
+        assert!(phrase_template_of("").is_none());
     }
 
     #[test]

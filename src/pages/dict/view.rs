@@ -384,7 +384,9 @@ fn activate_row(mgr: &DictManagerState, disp: usize) {
         return;
     };
     if spec.ops.remove_rule {
-        mgr.open_shadow_edit(&row.code, &row.text, &row.kind, row.position);
+        // 传 row.text（规则里的原始文本）而非 display_text()：那是给人看的模板原文，
+        // 提交回去会把规则的 word 写成模板串。cand_id 原样带上，别把它擦掉。
+        mgr.open_shadow_edit(&row.code, &row.text, &row.kind, row.position, &row.cand_id);
     } else {
         mgr.open_edit(&row.code, &row.text, row.weight, row.position);
     }
@@ -492,18 +494,21 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     if spec.ops.edit {
         let m = mgr.clone();
         if spec.ops.remove_rule {
-            // Shadow 类别：预填现值打开 shadow 对话框
-            let (c, t, k, pos) = (
+            // Shadow 类别：预填现值打开 shadow 对话框。
+            // `row.text` 是规则的原始文本（列表显示的模板原文不能回填，见 activate_row）；
+            // `cand_id` 必须带上，否则提交会擦掉短语规则的稳定 id。
+            let (c, t, k, pos, cid) = (
                 row.code.clone(),
                 row.text.clone(),
                 row.kind.clone(),
                 row.position,
+                row.cand_id.clone(),
             );
             r = r.child(
                 Element::button("编辑")
                     .small()
                     .outline_soft()
-                    .on_click(move |_| m.open_shadow_edit(&c, &t, &k, pos)),
+                    .on_click(move |_| m.open_shadow_edit(&c, &t, &k, pos, &cid)),
             );
         } else {
             let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);

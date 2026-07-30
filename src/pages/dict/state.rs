@@ -181,6 +181,12 @@ pub struct DictManagerState {
     pub shadow_pos: Signal<String>,
     /// 候选调整编辑模式的原始键 (code, word)；None = 新增模式。
     shadow_orig: Rc<RefCell<Option<(String, String)>>>,
+    /// 正在编辑的候选调整规则的稳定 id（短语规则才有；新增模式为空）。
+    ///
+    /// **提交时必须原样回传**：这条路先按 id/word 匹配掉同一条旧规则再插入新规则，不带
+    /// 就等于把原规则的 id 擦掉——规则退化成按当日文本匹配，次日必失配。用户侧表现为
+    /// 「在设置页改了一下位置，第二天整条规则就不生效了」。
+    shadow_cand_id: Rc<RefCell<String>>,
 }
 
 /// 待确认的破坏性操作。
@@ -260,6 +266,7 @@ impl DictManagerState {
             edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
             shadow_orig: Rc::new(RefCell::new(None)),
+            shadow_cand_id: Rc::new(RefCell::new(String::new())),
             view_visible: signal(false),
             view_code: signal(String::new()),
             view_text: signal(String::new()),
@@ -640,7 +647,12 @@ impl DictManagerState {
                 if !client_search || q.is_empty() {
                     return true;
                 }
-                r.code.to_lowercase().contains(&q) || r.text.to_lowercase().contains(&q)
+                // 同时匹配原始文本与显示文本：候选调整里短语规则**显示的是模板原文**，
+                // 而 `text` 是最后一次调整时的候选文本（见 `WordRow::display_text`）。
+                // 只匹配其中一边，用户按屏幕上看到的内容搜就会搜不到。
+                r.code.to_lowercase().contains(&q)
+                    || r.text.to_lowercase().contains(&q)
+                    || r.display_text().to_lowercase().contains(&q)
             })
             .cloned()
             .collect()
@@ -930,6 +942,11 @@ impl DictManagerState {
 
     /// 删除一行要调用的 (方法, 参数)。候选调整走 removeRule（word 键），其余走 remove（text 键）。
     /// 纯函数，便于单测路由/键名。
+    ///
+    /// **不带 candId**（与 pin 路径不同）：这里的 `text` 取自规则自身的 `word` 字段，
+    /// 与库里存的完全一致，按 word 就能定位。唯一失配场景是「同一 code 下两条规则的 word
+    /// 恰好相同」（两个不同短语当天求值出同样文本），此时会删错那一条——概率极低，而带上
+    /// id 需要一路穿过 `PendingAction`（删除走确认流程），暂不做。真遇到再补。
     pub fn delete_call(&self, code: &str, text: &str) -> (&'static str, Value) {
         let spec = self.current_spec();
         let mut p = self.scoped_params();
@@ -1354,6 +1371,7 @@ impl DictManagerState {
         self.shadow_type.set(0);
         self.shadow_pos.set("0".into());
         *self.shadow_orig.borrow_mut() = None;
+        self.shadow_cand_id.borrow_mut().clear(); // 手动新增没有候选实体，无稳定 id
         self.shadow_add_visible.set(true);
     }
 
@@ -1361,13 +1379,24 @@ impl DictManagerState {
     /// kind 为 "delete" 映射到隐藏(1)，其余（"pin"）映射到固定位置(0)。
     /// 提交走 `submit_shadow` → `shadow_save_calls`：键不变 addRule upsert 覆盖，
     /// 改了 code/word 则加新 + 删旧原子替换。
-    pub fn open_shadow_edit(&self, code: &str, word: &str, kind: &str, position: i64) {
+    /// `cand_id` 为该规则的候选稳定 id（短语规则非空），提交时原样回传，见 `shadow_cand_id`。
+    /// `word` 传的是规则里的**原始文本**（不是列表显示的模板原文）——它是规则的实际字段，
+    /// 换成模板提交后会把 word 写成模板串。
+    pub fn open_shadow_edit(
+        &self,
+        code: &str,
+        word: &str,
+        kind: &str,
+        position: i64,
+        cand_id: &str,
+    ) {
         self.shadow_title.set("编辑候选调整".into());
         self.shadow_code.set(code.into());
         self.shadow_word.set(word.into());
         self.shadow_type.set(if kind == "delete" { 1 } else { 0 });
         self.shadow_pos.set(position.to_string());
         *self.shadow_orig.borrow_mut() = Some((code.into(), word.into()));
+        *self.shadow_cand_id.borrow_mut() = cand_id.to_string();
         self.shadow_add_visible.set(true);
     }
 
@@ -1815,6 +1844,12 @@ impl DictManagerState {
         let mut p = self.scoped_params();
         p.insert("code".into(), json!(code));
         p.insert("word".into(), json!(word));
+        // 编辑既有短语规则时原样回传稳定 id：这条路会先匹配掉旧规则再插新的，
+        // 不带 id 就把它擦了（次日失配，见 `shadow_cand_id`）。
+        let cand_id = self.shadow_cand_id.borrow().clone();
+        if !cand_id.is_empty() {
+            p.insert("candId".into(), json!(cand_id));
+        }
         if self.shadow_type.get() == 0 {
             let pos: i64 = self
                 .shadow_pos
@@ -2777,7 +2812,7 @@ mod tests {
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(1);
         st.sub_tab.set(3);
-        st.open_shadow_edit("wm", "我们", "pin", 2);
+        st.open_shadow_edit("wm", "我们", "pin", 2, "");
         st.shadow_pos.set("5".into()); // 仅改位置，键不变
         let (calls, msg) = st.shadow_save_calls().unwrap();
         assert_eq!(msg, "已更新规则");
@@ -2792,7 +2827,7 @@ mod tests {
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(1);
         st.sub_tab.set(3);
-        st.open_shadow_edit("wm", "我们", "pin", 2);
+        st.open_shadow_edit("wm", "我们", "pin", 2, "");
         st.shadow_word.set("我门".into()); // 改词条 → 键变更
         let (calls, msg) = st.shadow_save_calls().unwrap();
         assert_eq!(msg, "已更新规则");
@@ -2806,6 +2841,61 @@ mod tests {
         assert_eq!(calls[1].1["schemaId"], json!("wb"));
     }
 
+    /// 编辑短语规则必须**原样回传 candId**。
+    ///
+    /// 这条路（`shadow.addRule`）在 core 侧会先按 id/word 匹配掉同一条旧规则再插入新规则，
+    /// 不带 id 就等于把原规则的稳定 id 擦掉——规则退化成按当日文本匹配，次日必失配。
+    /// 用户侧表现为「在设置页只改了个位置，第二天整条规则就不生效了」。
+    #[test]
+    fn shadow_edit_preserves_cand_id() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3); // 候选调整
+        let cid = "phrase:date:$Y/$MM/$DD";
+
+        // 编辑一条短语规则：只改位置，文本不动。
+        st.open_shadow_edit("date", "2026/07/30", "pin", 0, cid);
+        st.shadow_pos.set("2".into());
+        let (calls, _) = st.shadow_save_calls().unwrap();
+
+        assert_eq!(calls[0].0, "shadow.addRule");
+        assert_eq!(calls[0].1["candId"], json!(cid), "稳定 id 必须回传");
+        assert_eq!(calls[0].1["word"], json!("2026/07/30"), "word 用规则原值");
+        assert_eq!(calls[0].1["position"], json!(2));
+        assert_eq!(calls.len(), 1, "键未变，不该删旧规则");
+    }
+
+    /// 手动新增的规则没有候选实体，不带 candId（否则会凭空造一个匹配不到任何候选的 id）。
+    #[test]
+    fn shadow_add_omits_cand_id() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3);
+        st.open_shadow_add();
+        st.shadow_code.set("aaaa".into());
+        st.shadow_word.set("工".into());
+        let (m, p) = st.shadow_add_call().unwrap();
+        assert_eq!(m, "shadow.addRule");
+        assert!(p.get("candId").is_none(), "手动新增不带 candId");
+    }
+
+    /// 先编辑带 id 的规则、再打开「新增」，不得把上一条的 id 带过去。
+    #[test]
+    fn shadow_add_after_edit_clears_stale_cand_id() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(3);
+        st.open_shadow_edit("date", "2026/07/30", "pin", 0, "phrase:date:$Y/$MM/$DD");
+        st.open_shadow_add();
+        st.shadow_code.set("aaaa".into());
+        st.shadow_word.set("工".into());
+        let (_, p) = st.shadow_add_call().unwrap();
+        assert!(p.get("candId").is_none(), "新增须清掉上一条的 id");
+    }
+
     #[test]
     fn open_shadow_edit_prefills_signals_and_sets_visible() {
         let st = DictManagerState::new();
@@ -2814,7 +2904,7 @@ mod tests {
         st.sub_tab.set(3); // 候选调整
 
         // pin 类型 → 固定位置(0)
-        st.open_shadow_edit("ab", "阿", "pin", 2);
+        st.open_shadow_edit("ab", "阿", "pin", 2, "");
         assert!(
             st.shadow_add_visible.get(),
             "编辑后 shadow_add_visible=true"
@@ -2827,7 +2917,7 @@ mod tests {
 
         // delete 类型 → 隐藏(1)
         st.shadow_add_visible.set(false);
-        st.open_shadow_edit("cd", "屏", "delete", 0);
+        st.open_shadow_edit("cd", "屏", "delete", 0, "");
         assert!(st.shadow_add_visible.get());
         assert_eq!(st.shadow_type.get(), 1, "delete → 隐藏(1)");
         assert_eq!(st.shadow_word.get(), "屏");
