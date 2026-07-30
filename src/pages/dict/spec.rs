@@ -306,6 +306,10 @@ pub struct OpFlags {
     pub view: bool,
     /// 是否支持「转为用户短语」（系统短语）：原样复制为用户短语后即可编辑。
     /// 走 `phrase.add` 撞键转归属，不另设 RPC（见 `DictManagerState::claim_phrase_as_user`）。
+    ///
+    /// 入口在**只读查看对话框**里，不在列表操作列——系统短语行已有「启用开关 + 查看」，
+    /// 默认列宽（`ACTIONS_WEIGHT`）再加一枚按钮就挤爆了。本标志因此只作为能力声明，
+    /// 由 `build_view_dialog` 消费。
     pub claim_as_user: bool,
 }
 

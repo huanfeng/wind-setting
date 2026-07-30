@@ -177,10 +177,33 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
 
 /// 加/改词对话框（用户词库 / 短语）：编码/缩写（+出码）· 词条/短语 · 权重。
 /// 标签与标题随类别经 `label_rc` 响应式切换；保存逻辑见 `DictManagerState::submit_word`。
-/// 短语专用的「次序」字段（用户词库无此维度，整块隐藏）。
-///
-/// 附一行说明：主程序的短语层排序是「weight 降序 → position 升序」，**权重不同时
+/// 「标签 + 控件」一行（编辑与查看两个对话框同款，标签宽度一致才能让两处字段左边线对齐）。
+fn labeled_field(label: &'static str, input: Element) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label(label)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width(48),
+        )
+        .child(input)
+}
+
+/// 次序字段的说明行：主程序的短语层排序是「weight 降序 → position 升序」，**权重不同时
 /// position 完全不参与比较**。不写清楚的话，用户会以为它是全局排序位而反复调它却没反应。
+/// 编辑与查看两处共用同一句话，避免日后只改一处造成口径分裂。
+fn position_hint() -> Element {
+    Element::label("仅在同编码、同权重时决定先后（数值小的靠前）")
+        .font_size(11.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .padding_xy(56, 0)
+}
+
+/// 编辑对话框的「次序」字段（用户词库无此维度，整块隐藏）。
 fn position_field(mgr: &DictManagerState) -> Element {
     let vis = mgr.clone();
     let is_phrase = move || {
@@ -193,31 +216,13 @@ fn position_field(mgr: &DictManagerState) -> Element {
     Element::col()
         .width_match()
         .spacing(4)
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(
-                    Element::label("次序")
-                        .font_size(12.5)
-                        .fg_role(Role::TextMuted)
-                        .width(48),
-                )
-                .child(
-                    Element::text_input(mgr.edit_position, "")
-                        .width(100)
-                        .height(34),
-                ),
-        )
-        .child(
-            Element::label("仅在同编码、同权重时决定先后（数值小的靠前）")
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .padding_xy(56, 0)
-                .visible_when(hint_vis),
-        )
+        .child(labeled_field(
+            "次序",
+            Element::text_input(mgr.edit_position, "")
+                .width(100)
+                .height(34),
+        ))
+        .child(position_hint().visible_when(hint_vis))
         .visible_when(is_phrase)
 }
 
@@ -227,6 +232,8 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
     let encode = mgr.clone();
     let enc_vis = mgr.clone();
 
+    // 编码/词条两个标签随类别变化（`label_rc` 绑信号），故与静态标签的 `labeled_field`
+    // 各留一份——共用得把标签参数抽象成两种来源，反而更绕。样式保持一致（同宽同色号）。
     let field = |label: Signal<String>, input: Element| {
         Element::row()
             .width_match()
@@ -292,23 +299,12 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .spacing(10)
         .child(field(mgr.edit_l_code, code_input))
         .child(field(mgr.edit_l_text, text_field))
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(
-                    Element::label("权重")
-                        .font_size(12.5)
-                        .fg_role(Role::TextMuted)
-                        .width(48),
-                )
-                .child(
-                    Element::text_input(mgr.edit_weight, "")
-                        .width(100)
-                        .height(34),
-                ),
-        )
+        .child(labeled_field(
+            "权重",
+            Element::text_input(mgr.edit_weight, "")
+                .width(100)
+                .height(34),
+        ))
         .child(position_field(mgr));
 
     let footer = Element::row()
@@ -441,33 +437,27 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
     Element::dialog(mgr.shadow_add_visible, frame)
 }
 
-/// 系统短语只读查看对话框：缩写 / 内容 / 权重用 text_input 展示（可选中复制），仅"关闭"按钮，不写任何数据。
+/// 系统短语只读查看对话框：编码 / 内容 / 权重 / 次序用 text_input 展示（可选中复制）。
+///
+/// 字段构成与用户短语的编辑对话框一致（同一套 `labeled_field` + `position_hint`），差别只在
+/// 不可改、且多一个「转为用户短语」出口。**未与编辑对话框合并**：合并要引入 readonly 维度，
+/// 且得共用 `edit_*` 信号——查看系统短语会覆写用户尚未提交的编辑内容。
+///
+/// 「转为用户短语」放在此处而非列表操作列：系统短语行本已有「启用开关 + 查看」，默认列宽下
+/// 再加一枚按钮会把操作列挤爆（`ACTIONS_WEIGHT` 只留得下两枚小按钮）。
 fn build_view_dialog(mgr: &DictManagerState) -> Element {
     let cancel = mgr.clone();
-
-    let field = |label: &'static str, input: Element| {
-        Element::row()
-            .width_match()
-            .cross(Align::Center)
-            .spacing(8)
-            .child(
-                Element::label(label)
-                    .font_size(12.5)
-                    .fg_role(Role::TextMuted)
-                    .width(48),
-            )
-            .child(input)
-    };
+    let claim = mgr.clone();
 
     let body = Element::col()
         .width_match()
         .padding_xy(18, 12)
         .spacing(10)
-        .child(field(
+        .child(labeled_field(
             "编码",
             Element::text_input(mgr.view_code, "").weight(1.0),
         ))
-        .child(field(
+        .child(labeled_field(
             "内容",
             Element::text_input(mgr.view_text, "")
                 .multiline()
@@ -475,16 +465,33 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
                 .height(88)
                 .weight(1.0),
         ))
-        .child(field(
+        .child(labeled_field(
             "权重",
             Element::text_input(mgr.view_weight, "").width(100),
-        ));
+        ))
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .child(labeled_field(
+                    "次序",
+                    Element::text_input(mgr.view_position, "").width(100),
+                ))
+                .child(position_hint()),
+        );
 
     let footer = Element::row()
         .width_match()
         .cross(Align::Center)
         .padding_xy(16, 12)
         .spacing(8)
+        // 转为用户短语：原样复制归属后即可编辑（原条目从系统列表隐去）。左置以与「关闭」分区。
+        .child(
+            Element::button("转为用户短语")
+                .small()
+                .outline_soft()
+                .on_click(move |_| claim.claim_viewing_as_user()),
+        )
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("关闭")

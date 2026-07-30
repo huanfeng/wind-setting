@@ -164,6 +164,11 @@ pub struct DictManagerState {
     pub view_text: Signal<String>,
     /// 查看对话框：权重。
     pub view_weight: Signal<String>,
+    /// 查看对话框：次序（与用户短语的编辑对话框一致，只是不可改）。
+    pub view_position: Signal<String>,
+    /// 当前查看的系统短语原值 `(code, text, weight, position)`，供「转为用户短语」原样复制。
+    /// 存原值而不是从 `view_*` 信号回 parse——那几个是给人看的字符串，parse 失败就得静默兜底。
+    viewing: Rc<RefCell<Option<(String, String, i64, i64)>>>,
 
     // ── 候选调整手动添加/编辑对话框 ──
     pub shadow_add_visible: Signal<bool>,
@@ -259,6 +264,8 @@ impl DictManagerState {
             view_code: signal(String::new()),
             view_text: signal(String::new()),
             view_weight: signal(String::new()),
+            view_position: signal(String::new()),
+            viewing: Rc::new(RefCell::new(None)),
             shadow_add_visible: signal(false),
             shadow_title: signal("添加候选调整".to_string()),
             shadow_code: signal(String::new()),
@@ -1144,15 +1151,28 @@ impl DictManagerState {
     }
 
     /// 打开系统短语只读查看对话框（写入独立 view_* 信号，不污染 edit_*）。
-    pub fn open_view(&self, code: &str, text: &str, weight: i64) {
+    pub fn open_view(&self, code: &str, text: &str, weight: i64, position: i64) {
         self.view_code.set(code.into());
         self.view_text.set(text.into());
         self.view_weight.set(weight.to_string());
+        self.view_position.set(position.to_string());
+        *self.viewing.borrow_mut() = Some((code.into(), text.into(), weight, position));
         self.view_visible.set(true);
     }
 
     pub fn cancel_view(&self) {
         self.view_visible.set(false);
+        *self.viewing.borrow_mut() = None;
+    }
+
+    /// 查看对话框里的「转为用户短语」：按当前查看的那条原值转归属，成功后关闭对话框
+    /// （该条随即从系统短语列表消失、出现在用户短语列表，留着对话框只会显示一条已不在本列表的记录）。
+    pub fn claim_viewing_as_user(&self) {
+        let Some((code, text, weight, position)) = self.viewing.borrow().clone() else {
+            return;
+        };
+        self.claim_phrase_as_user(&code, &text, weight, position);
+        self.cancel_view();
     }
 
     /// 由"出码"按钮触发：用户词库下按词条反查编码填入编码框。
@@ -2822,19 +2842,40 @@ mod tests {
     #[test]
     fn open_view_sets_visible_and_signals() {
         let st = DictManagerState::new();
-        st.open_view("bj", "北京", 1000);
+        st.open_view("bj", "北京", 1000, 4);
         assert!(st.view_visible.get(), "open_view 后 view_visible=true");
         // 写入独立 view_* 信号，不污染 edit_*
         assert_eq!(st.view_code.get(), "bj");
         assert_eq!(st.view_text.get(), "北京");
         assert_eq!(st.view_weight.get(), "1000");
+        assert_eq!(st.view_position.get(), "4", "查看也显示次序");
         // edit_* 信号不受影响
         assert_eq!(st.edit_code.get(), "", "open_view 不写 edit_code");
         assert_eq!(st.edit_text.get(), "", "open_view 不写 edit_text");
         // editing_orig 不写，仍为 None
         assert!(st.editing_orig.borrow().is_none(), "查看不设 editing_orig");
+        assert!(
+            st.viewing.borrow().is_some(),
+            "记住原值供「转为用户短语」原样复制"
+        );
         st.cancel_view();
         assert!(!st.view_visible.get(), "cancel_view 后 view_visible=false");
+        assert!(
+            st.viewing.borrow().is_none(),
+            "关闭后清掉原值，避免下次误用上一条的数据"
+        );
+    }
+
+    /// 查看对话框里的「转为用户短语」：无当前查看项时必须是安全的空操作。
+    ///
+    /// 该入口只在对话框内可点，正常流程下 `viewing` 必然有值；但它读的是 RefCell 而非
+    /// 按钮回调捕获的行数据，一旦将来被别处复用（如快捷键）就可能在无查看项时触发。
+    #[test]
+    fn claim_viewing_as_user_is_noop_without_viewing() {
+        let st = DictManagerState::new();
+        assert!(st.viewing.borrow().is_none());
+        st.claim_viewing_as_user(); // 不 panic、不发 RPC
+        assert!(!st.view_visible.get());
     }
 
     #[test]

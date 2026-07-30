@@ -476,15 +476,15 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         }));
     }
 
-    // 只读查看（系统短语）
+    // 只读查看（系统短语）。「转为用户短语」在该对话框内，不占操作列宽度。
     if spec.ops.view {
         let m = mgr.clone();
-        let (c, t, w) = (row.code.clone(), row.text.clone(), row.weight);
+        let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
         r = r.child(
             Element::button("查看")
                 .small()
                 .outline_soft()
-                .on_click(move |_| m.open_view(&c, &t, w)),
+                .on_click(move |_| m.open_view(&c, &t, w, pos)),
         );
     }
 
@@ -514,18 +514,6 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                     .on_click(move |_| m.open_edit(&c, &t, w, pos)),
             );
         }
-    }
-
-    // 转为用户短语（系统短语）：原样复制归属，之后即可编辑。
-    if spec.ops.claim_as_user {
-        let m = mgr.clone();
-        let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
-        r = r.child(
-            Element::button("转为用户")
-                .small()
-                .outline_soft()
-                .on_click(move |_| m.claim_phrase_as_user(&c, &t, w, pos)),
-        );
     }
 
     if spec.ops.promote {
