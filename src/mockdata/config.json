@@ -1,9 +1,4 @@
 {
- "compat": {
-  "host_render_processes": [
-   "SearchHost.exe"
-  ]
- },
  "debug": {
   "log_level": "info",
   "log_max_files": 10,

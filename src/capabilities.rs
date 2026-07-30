@@ -244,8 +244,6 @@ mod tests {
         //     「一个 key 一个控件」模型套不上，需要的是 schema_manager.rs 那种列表编辑器。
         //     真要做，先补出厂码表数据，否则编辑器打开是空列表。
         "schema.special_modes",
-        // ② 兼容渲染进程名单，暂不开放。
-        "compat.host_render_processes",
         // ③ 短语前缀列举：开关暂无作用，待 core 决定后再处理。
         "input.phrase.min_prefix",
         // ④ 非独立清单项：由各功能键的「全局」勾选经收集器汇总写回。
