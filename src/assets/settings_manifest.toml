@@ -169,13 +169,49 @@ enabled_when = "schema.codetable.frequency.enabled == true"
 options = [{ value = "top", label = "置顶" }, { value = "step", label = "步进" }]
 
 [[items]]
+key = "schema.codetable.frequency.protect_top_n_len1"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "number"
+label = "一简位保护前 N 项"
+hint = "只输入 1 个编码时（如五笔一简），词典前 N 项不参与调频。一简每个编码通常只有两个字，误选一次就会永久换掉首选，故默认保护"
+min = 0
+max = 100
+enabled_when = "schema.codetable.frequency.enabled == true"
+
+[[items]]
+key = "schema.codetable.frequency.protect_top_n_len2"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "number"
+label = "二简位保护前 N 项"
+hint = "输入 2 个编码时，词典前 N 项不参与调频（0 = 不保护）"
+min = 0
+max = 100
+enabled_when = "schema.codetable.frequency.enabled == true"
+
+[[items]]
+key = "schema.codetable.frequency.protect_top_n_len3"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "number"
+label = "三简位保护前 N 项"
+hint = "输入 3 个编码时，词典前 N 项不参与调频。默认不保护——三简的固定程度弱于一二简"
+min = 0
+max = 100
+enabled_when = "schema.codetable.frequency.enabled == true"
+
+[[items]]
 key = "schema.codetable.frequency.protect_top_n"
 group = "schema"
 section = "上屏行为"
 subsection = "词频调整"
 type = "number"
-label = "保护前 N 个词条"
-hint = "词典前 N 个词条不参与调频（0 = 不保护）"
+label = "全码位保护前 N 项"
+hint = "输入 4 个及以上编码时，词典前 N 项不参与调频。默认 0 = 不保护，让调频在全码位正常起作用"
 min = 0
 max = 100
 enabled_when = "schema.codetable.frequency.enabled == true"

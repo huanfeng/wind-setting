@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.112.1",
+  "appVersion": "0.113.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -75,8 +75,23 @@
       "type": "bool"
     },
     {
-      "default": 1,
+      "default": 0,
       "key": "schema.codetable.frequency.protect_top_n",
+      "type": "int"
+    },
+    {
+      "default": 1,
+      "key": "schema.codetable.frequency.protect_top_n_len1",
+      "type": "int"
+    },
+    {
+      "default": 1,
+      "key": "schema.codetable.frequency.protect_top_n_len2",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "schema.codetable.frequency.protect_top_n_len3",
       "type": "int"
     },
     {

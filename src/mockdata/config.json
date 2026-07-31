@@ -156,7 +156,10 @@
    "clear_on_empty_max": false,
    "frequency": {
     "enabled": false,
-    "protect_top_n": 1,
+    "protect_top_n": 0,
+    "protect_top_n_len1": 1,
+    "protect_top_n_len2": 1,
+    "protect_top_n_len3": 0,
     "strategy": "top"
    },
    "punct_commit": true,
