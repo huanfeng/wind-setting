@@ -295,6 +295,12 @@ mod tests {
         //    分区，且它逐字确认的两行提示本就该竖排——出厂 vertical 即最优解，横排没有
         //    使用场景。同批的临拼/临英/网址/快捷四项都已进清单，只有它刻意不暴露。
         "input.add_word.candidate_layout",
+        // ⑮ 候选注释词库挂载列表（core 侧候选注释改造新增）：**待接入，不是设计上不暴露**。
+        //    它是用户可见功能（挂载英汉释义、emoji 名称等），理应有 GUI；但形态是可增删的
+        //    条目列表（id/label/path/enabled/schemas 五个字段），manifest 的「一个 key 一个
+        //    控件」模型套不上，需要 schema_manager.rs 那种列表编辑器 + 文件选择。
+        //    在此之前由用户手写 config.toml（文档 customize/candidate-comment）。
+        "ui.comment_dicts",
     ];
 
     /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。

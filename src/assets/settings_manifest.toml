@@ -998,6 +998,14 @@ label = "显示英文候选"
 hint = "临时英文模式下查询英文词库显示候选词"
 
 [[items]]
+key = "input.temp_english.case_variants"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "生成大小写变形候选"
+hint = "在候选中补出全小写、首字母大写、全大写三种形态。它们各占一个候选位，只需要词库补全时可关闭"
+
+[[items]]
 key = "input.temp_english.allow_symbols"
 group = "input"
 section = "临时英文"

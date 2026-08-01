@@ -522,6 +522,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "input.temp_english.case_variants",
+      "type": "bool"
+    },
+    {
       "default": "follow",
       "key": "input.temp_english.candidate_layout",
       "type": "enum",
@@ -867,6 +872,11 @@
       "default": 0,
       "key": "ui.candidate.comment_max_chars",
       "type": "int"
+    },
+    {
+      "default": [],
+      "key": "ui.comment_dicts",
+      "type": "structlist"
     },
     {
       "default": "",

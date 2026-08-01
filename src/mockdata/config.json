@@ -73,6 +73,7 @@
   "temp_english": {
    "allow_symbols": false,
    "candidate_layout": "follow",
+   "case_variants": true,
    "enabled": true,
    "shift_behavior": "temp_english",
    "show_candidates": true,
@@ -268,6 +269,7 @@
    "preedit_display": "app_inline",
    "swap_preedit_when_above": false
   },
+  "comment_dicts": [],
   "font": {
    "family": "",
    "path": "",
