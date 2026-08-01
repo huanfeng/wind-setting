@@ -854,6 +854,21 @@
       "type": "int"
     },
     {
+      "default": "${code_hint|code}",
+      "key": "ui.candidate.comment_template_vertical",
+      "type": "str"
+    },
+    {
+      "default": "${code_hint|code}",
+      "key": "ui.candidate.comment_template_horizontal",
+      "type": "str"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.comment_max_chars",
+      "type": "int"
+    },
+    {
       "default": "",
       "key": "ui.candidate.index_labels",
       "type": "str"

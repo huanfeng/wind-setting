@@ -1508,6 +1508,9 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
     } else if key == "ui.candidate.index_labels" {
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
         build_dialog_button_index_labels(state, key, cfg)
+    } else if key == COMMENT_HOST_KEY {
+        // 候选注释：横/纵两份模板 + 最大字数 + 可复制的模板参考，共用一个对话框。
+        build_dialog_button_comment(state, key, cfg)
     } else if cap_ty == "map" {
         build_dialog_button_map(state, key, item, cfg)
     } else if cap_ty == "strlist" && !item.options.is_empty() {
@@ -1705,6 +1708,111 @@ fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
         col = col.child(field(state, k));
     }
     Some(col)
+}
+
+/// 候选注释对话框的宿主 key。宿主取**横排**模板：它是对话框里第一个出现的字段，而横排的
+/// 可用宽度由全部候选共享、最需要斟酌，该让用户先看到它。
+const COMMENT_HOST_KEY: &str = "ui.candidate.comment_template_horizontal";
+
+/// 候选注释：宿主（横排模板）自建输入行，纵排模板与最大字数经 `dialog_extra_for` 寄居，
+/// 末尾追加可复制的模板参考。
+///
+/// **为什么不直接用 `build_dialog_button_string`**（宿主是 str，本会落到那条通用分支）：
+/// 那个对话框把 `item.hint` 渲染成 `max_lines(3)` 的**标签**。而这里的说明是变量表 + 示例
+/// 模板，既超过三行，又是用户要照抄进输入框的东西——标签选不中、复制不了。参考区因此改用
+/// `text_input` 承载，见 [`crate::dialogs::field_dialogs::build_comment_dialog`]。
+///
+/// 宿主的读写按 `build_dialog_button_string` 的写法手工登记；寄居项各自经 [`field`] 登记，
+/// 与独立成行时完全一致（保存/加载/恢复默认都自动覆盖）。
+fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_comment_dialog;
+
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def.clone());
+    let text = signal(cur);
+    let visible = signal(false);
+
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, Value::String(text.get()))
+        }));
+    let kl = key.to_string();
+    let def_l = def.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            text.set(
+                c.get_str(&kl)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| def_l.clone()),
+            );
+        }),
+    );
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(move || Value::String(text.get())));
+
+    // 对话框内这一行的标签**不用 `item.label`**：那是卡片行的文案（「候选注释」，说的是整件
+    // 事），而对话框里它只是三个字段之一，得叫「横排注释」才与旁边的「竖排注释」成对。
+    // 同 `build_dialog_button_index_labels` 硬编码对话框标题的先例——专用 builder 里的文案
+    // 属于该对话框的版式，不是清单项的属性。
+    let mut rows = vec![setting_row(
+        "横排注释",
+        Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽"),
+        Element::text_input(text, "留空则不显示注释").width(240),
+    )];
+    if let Some(extra) = dialog_extra_rows(state, key) {
+        rows.push(extra);
+    }
+
+    // 恢复默认：与 build_gated_dialog_row 同法，取 core 权威默认值灌回三个字段的 loader。
+    // 走 loader 而非直接 set signal，寄居项才能一并复位（它们的 signal 本函数拿不到）。
+    let fields = state.fields.clone();
+    let reset_keys: Vec<String> = std::iter::once(key.to_string())
+        .chain(
+            state
+                .manifest
+                .order
+                .iter()
+                .filter(|k| {
+                    state
+                        .manifest
+                        .get(k)
+                        .and_then(|i| i.dialog_extra_for.as_deref())
+                        == Some(key)
+                })
+                .cloned(),
+        )
+        .collect();
+    let reset_fn: Box<dyn Fn() + 'static> = Box::new(move || {
+        let defaults = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
+            .unwrap_or(Value::Object(serde_json::Map::new()));
+        let def_cfg = Config::from_value(defaults);
+        let ld = fields.loaders.borrow();
+        for k in &reset_keys {
+            if let Some(loader) = ld.get(k) {
+                loader(&def_cfg);
+            }
+        }
+    });
+
+    let dlg = build_comment_dialog(visible, "候选注释", rows, Some(reset_fn));
+    register_dialog(state, dlg);
+    visible
 }
 
 /// dialog_button（strlist with options）：勾选配对清单。挂对话框到根，返回 visible。
