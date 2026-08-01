@@ -451,6 +451,23 @@ pub fn build_group_dialog(
     rows: Vec<Element>,
     reset_fn: Option<Box<dyn Fn() + 'static>>,
 ) -> Element {
+    build_group_dialog_with_link(visible, title, rows, reset_fn, None)
+}
+
+/// 同 [`build_group_dialog`]，但按钮栏左侧多一个「查看文档」链接。
+///
+/// 给的是链接而非按钮：它跳出应用、不改任何设置，与「恢复默认 / 关闭」这类会产生后果的
+/// 操作不是一类东西，形态上区分开更不容易误点。
+///
+/// 高级功能（如候选注释的模板语法）用它替代把说明塞进对话框——语法还会继续长，
+/// 200px 的框里既排不下也搜不了，而文档站可以配示例、对照表和跳转。
+pub fn build_group_dialog_with_link(
+    visible: Signal<bool>,
+    title: &str,
+    rows: Vec<Element>,
+    reset_fn: Option<Box<dyn Fn() + 'static>>,
+    doc_url: Option<&'static str>,
+) -> Element {
     let mut content = Element::col().width_match().padding_xy(16, 2);
     let last = rows.len().saturating_sub(1);
     for (i, r) in rows.into_iter().enumerate() {
@@ -474,6 +491,9 @@ pub fn build_group_dialog(
                 .outline_soft()
                 .on_click(move |_| reset()),
         );
+    }
+    if let Some(url) = doc_url {
+        bottom = bottom.child(Element::link("查看文档").url(url).font_size(12.0));
     }
     bottom = bottom.child(Element::leaf().weight(1.0)).child(
         Element::button("关闭")
@@ -891,55 +911,6 @@ pub fn build_hotkey_dialog(
 /// 候选注释文档地址（模板语法、全部变量、常用示例）。
 const COMMENT_DOC_URL: &str = "https://windinput.com/docs/customize/candidate-comment";
 
-/// 候选注释模板的**速查**行 + 文档链接。
-///
-/// 此前这里塞的是一整块变量表 + 语法 + 示例的静态文本（用 `text_input` 承载以便复制）。
-/// 那样有两个问题：模板语法还会继续长（变量参数、将来的注释库变量、模式级覆盖），塞进对话框
-/// 只会越来越挤；而完整说明要配示例和对照表，200px 的框里排不下也搜不了。
-///
-/// 现在只留**最常用的三个示例**（用 `text_input` 承载，仍可选中复制——`${code_hint|code}`
-/// 这类串手打极易出错，且打错的表现是候选栏出现 `${code_hin}` 这种回显），完整说明走文档站。
-///
-/// 该输入框绑一个**不注册 writer/loader** 的游离 signal：用户可随便改（甚至拿它当草稿纸拼
-/// 模板再复制上去），改动不写回任何配置、也不参与保存。
-fn comment_reference_box() -> Element {
-    const SAMPLES: &str = "\
-${code_hint|code}                 编码提示（默认）
-{(${pinyin})}                     带声调注音
-{〔${chaizi}〕}{ ${pinyin}}        单字字根 + 注音";
-
-    Element::col()
-        .width_match()
-        .spacing(6)
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .child(
-                    Element::label("常用示例（可选中复制）")
-                        .font_size(12.0)
-                        .font_weight(600)
-                        .fg_role(Role::TextMuted)
-                        .weight(1.0),
-                )
-                .child(
-                    Element::button("查看文档")
-                        .small()
-                        .outline_soft()
-                        .on_click(|ctx| ctx.open_url(COMMENT_DOC_URL)),
-                ),
-        )
-        .child(
-            // 刻意 `wrap(false)`：示例是按列对齐排版的，软换行会把「模板 + 说明」的对齐打散，
-            // 读起来比横向截断更糟。
-            Element::text_input(signal(SAMPLES.to_string()), "")
-                .multiline()
-                .wrap(false)
-                .width_match()
-                .height(72),
-        )
-}
-
 /// 候选注释设置对话框：横排模板 + 纵排模板 + 最大字数 + 模板参考。
 ///
 /// `rows` 由调用方按序传入（横排在前——用户先看到的应是空间最紧张、最需要斟酌的那一个），
@@ -950,9 +921,7 @@ pub fn build_comment_dialog(
     rows: Vec<Element>,
     reset_fn: Option<Box<dyn Fn() + 'static>>,
 ) -> Element {
-    let mut all = rows;
-    all.push(comment_reference_box());
-    build_group_dialog(visible, title, all, reset_fn)
+    build_group_dialog_with_link(visible, title, rows, reset_fn, Some(COMMENT_DOC_URL))
 }
 
 #[cfg(test)]
