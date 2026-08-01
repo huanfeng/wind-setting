@@ -1634,6 +1634,16 @@ options = [
 ]
 
 [[items]]
+key = "ui.status.show_on_focus"
+group = "ui"
+section = "状态提示"
+type = "toggle"
+label = "焦点切换时显示"
+hint = "切换到别的输入框时也提示一次当前状态；跟随光标定位下，取不到精确插入点的应用不显示，避免弹在错误位置"
+# 常驻显示本就在获焦时显示，此项对它没有额外效果，故仅在临时显示下可用（与「显示时长」同条件）。
+enabled_when = "ui.status.enabled == true && ui.status.display_mode == temp"
+
+[[items]]
 key = "ui.status.duration"
 group = "ui"
 section = "状态提示"

@@ -294,7 +294,8 @@
    "offset_x": 0,
    "offset_y": 0,
    "position_mode": "follow_caret",
-   "schema_name_style": "full"
+   "schema_name_style": "full",
+   "show_on_focus": false
   },
   "theme": {
    "name": "default",

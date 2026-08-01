@@ -1011,6 +1011,11 @@
       ]
     },
     {
+      "default": false,
+      "key": "ui.status.show_on_focus",
+      "type": "bool"
+    },
+    {
       "default": "full",
       "key": "ui.status.schema_name_style",
       "type": "enum",
