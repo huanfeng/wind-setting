@@ -256,10 +256,18 @@ mod tests {
         "ui.tooltip.pinyin_max_readings",
         // ⑦ 命令栏始终开启，不提供关闭入口。
         "input.cmdbar.enabled",
-        // ⑧ 拼音词频衰减调参：高级/内部参数（recency_peak 尚未接入引擎），不对普通用户暴露。
+        // ⑧ 词频的高级/内部参数，不对普通用户暴露。
+        //    half_life 仍生效（位置提升的衰减尺度）；base_scale / recency_peak 在 core 改用
+        //    位置提升模型后已成死链——配置项 → FreqProfile 字段 → pinyin_score 整条链无
+        //    生产调用者，core 侧已在 data/config.toml 与函数文档上标注，保留仅为将来若恢复
+        //    打分模型可复用（见 core 的 docs/design/freq-rerank-model.md）。
         "schema.pinyin.frequency.half_life",
         "schema.pinyin.frequency.base_scale",
         "schema.pinyin.frequency.recency_peak",
+        // ⑧' 英文候选的词频记账码口径（candidate/input）：英文几乎全是前缀匹配，
+        //     「跨码位共享」与「各前缀独立学习」各有道理，core 侧尚未定论，先留内部旋钮
+        //     观察真机表现，定论后再决定是否进设置页。
+        "schema.codetable.frequency.english_code_scope",
         // ⑨ 拼音侧临时词晋升次数暂不暴露（码表侧的 auto_phrase.promote_count 已在清单内）。
         "schema.pinyin.auto_learn.promote_count",
         // ⑨' 码表造词的兜底与容量参数，普通用户无判断依据，需要时改配置文件。

@@ -157,6 +157,7 @@
    "clear_on_empty_max": false,
    "frequency": {
     "enabled": false,
+    "english_code_scope": "candidate",
     "promote_prefix": "all",
     "protect_top_n": 0,
     "protect_top_n_len1": 1,

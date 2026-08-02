@@ -115,6 +115,15 @@
       ]
     },
     {
+      "default": "candidate",
+      "key": "schema.codetable.frequency.english_code_scope",
+      "type": "enum",
+      "values": [
+        "candidate",
+        "input"
+      ]
+    },
+    {
       "default": false,
       "key": "schema.codetable.auto_phrase.enabled",
       "type": "bool"
