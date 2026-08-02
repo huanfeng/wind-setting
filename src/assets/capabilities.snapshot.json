@@ -100,7 +100,18 @@
       "type": "enum",
       "values": [
         "top",
-        "step"
+        "step",
+        "position"
+      ]
+    },
+    {
+      "default": "all",
+      "key": "schema.codetable.frequency.promote_prefix",
+      "type": "enum",
+      "values": [
+        "none",
+        "single",
+        "all"
       ]
     },
     {
@@ -227,6 +238,16 @@
       "default": 0.0,
       "key": "schema.pinyin.frequency.recency_peak",
       "type": "float"
+    },
+    {
+      "default": "single",
+      "key": "schema.pinyin.frequency.promote_prefix",
+      "type": "enum",
+      "values": [
+        "none",
+        "single",
+        "all"
+      ]
     },
     {
       "default": true,

@@ -2547,6 +2547,49 @@ mod tests {
         }
     }
 
+    /// 守护：`enabled_when` 引用的 key 必须真实存在于 manifest。
+    ///
+    /// **失配的后果是静默的、且方向最坏**：求值时 `getters.get(key)` 取不到就
+    /// `unwrap_or(true)` —— 条件被当作**恒满足**，控件永远可用。写错一个字母，联动就
+    /// 悄无声息地整个失效，UI 上完全看不出异常。
+    ///
+    /// 顺带校验 `== value` 的取值落在该项声明的 options 内（仅对 select 类宿主）：
+    /// 值写错同样是恒不满足或恒满足，肉眼极难发现。
+    #[test]
+    fn enabled_when_keys_and_values_are_valid() {
+        let m = Manifest::from_embedded();
+        for k in &m.order {
+            let it = m.get(k).unwrap();
+            let Some(expr) = &it.enabled_when else {
+                continue;
+            };
+            let conds = parse_conds(expr)
+                .unwrap_or_else(|| panic!("`{k}` 的 enabled_when 无法解析：`{expr}`"));
+            for c in &conds {
+                let target = m.get(&c.key).unwrap_or_else(|| {
+                    panic!(
+                        "`{k}` 的 enabled_when 引用了不存在的 key `{}`——求值会 unwrap_or(true)，                         条件恒满足、联动静默失效",
+                        c.key
+                    )
+                });
+                // 布尔字面量与 contains 不参与 options 校验
+                if c.contains || c.value == "true" || c.value == "false" {
+                    continue;
+                }
+                if target.typ == "select" && !target.options.is_empty() {
+                    let vals: Vec<&str> = target.options.iter().map(|o| o.value.as_str()).collect();
+                    assert!(
+                        vals.contains(&c.value.as_str()),
+                        "`{k}` 的 enabled_when 比较 `{} == {}`，但该项的 options 只有 {:?}",
+                        c.key,
+                        c.value,
+                        vals
+                    );
+                }
+            }
+        }
+    }
+
     /// 守护：子对话框分组配对一致 —— 每个 dialog_group 必有恰好一个 opens_dialog 宿主，
     /// 每个宿主至少一个成员。防止失配导致成员 key 静默丢失三件套注册（覆盖守护查不出）。
     #[test]

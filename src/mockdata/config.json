@@ -157,6 +157,7 @@
    "clear_on_empty_max": false,
    "frequency": {
     "enabled": false,
+    "promote_prefix": "all",
     "protect_top_n": 0,
     "protect_top_n_len1": 1,
     "protect_top_n_len2": 1,
@@ -212,6 +213,7 @@
     "base_scale": 0.0,
     "enabled": true,
     "half_life": 0.0,
+    "promote_prefix": "single",
     "recency_peak": 0.0
    },
    "fuzzy": {

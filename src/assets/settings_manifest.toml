@@ -164,9 +164,28 @@ section = "上屏行为"
 subsection = "词频调整"
 type = "select"
 label = "调频策略"
-hint = "置顶：高频词固定首位；步进：每次使用逐步上升"
+hint = "置顶：用过一次即到首位；步进：按累计次数上升；位次渐进：每次前移一半位次，逐步靠前"
 enabled_when = "schema.codetable.frequency.enabled == true"
-options = [{ value = "top", label = "置顶" }, { value = "step", label = "步进" }]
+options = [
+    { value = "top", label = "置顶" },
+    { value = "step", label = "步进" },
+    { value = "position", label = "位次渐进" },
+]
+
+[[items]]
+key = "schema.codetable.frequency.promote_prefix"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "select"
+label = "补全词参与调频"
+hint = "仅「位次渐进」策略下生效。英文等以前缀匹配为主的方案建议选「全部」"
+enabled_when = "schema.codetable.frequency.enabled == true && schema.codetable.frequency.strategy == position"
+options = [
+    { value = "none", label = "不参与" },
+    { value = "single", label = "仅单字/单词" },
+    { value = "all", label = "全部" },
+]
 
 [[items]]
 key = "schema.codetable.frequency.protect_top_n_len1"
@@ -291,6 +310,21 @@ subsection = "词频调整"
 type = "toggle"
 label = "启用词频调整"
 hint = "根据使用频次动态调整候选排序"
+
+[[items]]
+key = "schema.pinyin.frequency.promote_prefix"
+group = "schema"
+section = "候选行为"
+subsection = "词频调整"
+type = "select"
+label = "补全词参与调频"
+hint = "只打半个音时（如 d），补全出的候选是否也参与调频。「仅单字」让「的/得」这类单字上浮，但不让「东西」这类词组跑到单字前面"
+enabled_when = "schema.pinyin.frequency.enabled == true"
+options = [
+    { value = "none", label = "不参与" },
+    { value = "single", label = "仅单字/单词" },
+    { value = "all", label = "全部" },
+]
 
 # 自动学习
 [[items]]
