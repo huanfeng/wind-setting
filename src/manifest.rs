@@ -327,6 +327,8 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "toggle" => build_toggle(state, key, item, cfg),
         "select" => build_select(state, key, item, cfg),
         "select_mix_layout" => build_select_mix_layout(state, key, item, cfg),
+        "select_mix_free_input" => build_select_mix_free_input(state, key, item, cfg),
+        "checkbox_mix_free_select_keys" => build_checkbox_mix_free_select_keys(state, key, cfg),
         "segmented" => build_segmented(state, key, item, cfg),
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
@@ -2071,7 +2073,7 @@ fn build_select_mix_layout(
     item: &MItem,
     cfg: &Config,
 ) -> Element {
-    use crate::mix_layout::{LAYOUT_FALLBACK, mix_mode_layout, patch_mix_mode_layout};
+    use crate::mix_fields::{LAYOUT_FALLBACK, mix_mode_layout, patch_mix_mode_layout};
 
     let mix_modes_path = "schema.mix_modes";
     let (values, labels): (Vec<String>, Vec<String>) = item
@@ -2122,6 +2124,153 @@ fn build_select_mix_layout(
         Some(w) => dd.width(w as i32),
         None => dd.min_width(CTRL_W),
     }
+}
+
+/// 内置 quick_mix 的自由（字面）输入下拉（`free_input` 三态）。
+///
+/// 与 [`build_select_mix_layout`] 同构——整体读写 structlist + 按 id 打补丁，清单项走
+/// 视图 key `schema.mix_modes#free_input`。
+///
+/// ★ **必须注册 getter**：下面那个「夺取二三候选键」用 `enabled_when` 引用本项，而
+/// `enabled_when_closure` 是从 `fields.getters` 取值的，取不到就 `unwrap_or(true)`
+/// ——条件恒满足、联动**静默失效**（既不报错也不锁死，只是看着像没接）。
+/// 布局那项没有 getter，因为没人引用它；本项有人引用，就必须有。
+fn build_select_mix_free_input(
+    state: &AppState,
+    view_key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Element {
+    use crate::mix_fields::{FIELD_FREE_INPUT, FREE_INPUT_FALLBACK};
+    build_mix_field_select(
+        state,
+        view_key,
+        item,
+        cfg,
+        FIELD_FREE_INPUT,
+        FREE_INPUT_FALLBACK,
+    )
+}
+
+/// mix 实例某个**字符串字段**的下拉控件（按 id 打补丁），供 `free_input` 等复用。
+fn build_mix_field_select(
+    state: &AppState,
+    view_key: &str,
+    item: &MItem,
+    cfg: &Config,
+    field: &'static str,
+    fallback: &'static str,
+) -> Element {
+    use crate::mix_fields::{mix_mode_field_str, patch_mix_mode_field};
+
+    let mix_modes_path = "schema.mix_modes";
+    let (values, labels): (Vec<String>, Vec<String>) = item
+        .options
+        .iter()
+        .map(|o| (o.value.clone(), o.label.clone()))
+        .unzip();
+    if values.is_empty() {
+        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+    }
+    // 与布局控件同理：cfg 可能是 AppState::empty() 的占位配置，writer/loader 须无条件注册。
+    let cur_arr: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
+    let cur = mix_mode_field_str(&cur_arr, QUICK_MIX_ID, field, fallback)
+        .unwrap_or_else(|| fallback.to_string());
+    let sig = signal(values.iter().position(|v| *v == cur).unwrap_or(0));
+
+    let vals_w = values.clone();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let Some(v) = vals_w.get(sig.get()) else {
+                return;
+            };
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            if let Some(patched) =
+                patch_mix_mode_field(&arr, QUICK_MIX_ID, field, Value::String(v.clone()))
+            {
+                c.set_path(mix_modes_path, Value::Array(patched));
+            }
+        }));
+
+    // loader 注册在视图 key 下（同布局项：`reset_current_page` 按清单 key 反查，
+    // 用真实路径会与同键的其它视图项互相覆盖）。
+    let vals_l = values.clone();
+    state.fields.loaders.borrow_mut().insert(
+        view_key.to_string(),
+        Box::new(move |c: &Config| {
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            let cur = mix_mode_field_str(&arr, QUICK_MIX_ID, field, fallback)
+                .unwrap_or_else(|| fallback.to_string());
+            sig.set(vals_l.iter().position(|v| *v == cur).unwrap_or(0));
+        }),
+    );
+
+    // getter 也注册在视图 key 下——enabled_when 表达式里写的正是视图 key。
+    let vals_g = values;
+    state.fields.getters.borrow_mut().insert(
+        view_key.to_string(),
+        Box::new(move || {
+            vals_g
+                .get(sig.get())
+                .map(|v| Value::String(v.clone()))
+                .unwrap_or(Value::Null)
+        }),
+    );
+
+    let dd = Element::dropdown(labels, sig);
+    match item.width {
+        Some(w) => dd.width(w as i32),
+        None => dd.min_width(CTRL_W),
+    }
+}
+
+/// 内置 quick_mix 的「自由输入夺取二三候选键」开关（`free_input_takes_select_keys`）。
+///
+/// 不能走通用 [`build_toggle`]：那个直接 `cfg.get_bool(key)` / `set_path(key, …)`，
+/// 用在这里会把整个 mix_modes 数组换成一个布尔。
+fn build_checkbox_mix_free_select_keys(state: &AppState, view_key: &str, cfg: &Config) -> Element {
+    use crate::mix_fields::{
+        FIELD_FREE_INPUT_TAKES_SELECT_KEYS, FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK,
+        mix_mode_field_bool, patch_mix_mode_field,
+    };
+
+    let mix_modes_path = "schema.mix_modes";
+    let field = FIELD_FREE_INPUT_TAKES_SELECT_KEYS;
+    let fallback = FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK;
+
+    let cur_arr: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
+    let sig =
+        signal(mix_mode_field_bool(&cur_arr, QUICK_MIX_ID, field, fallback).unwrap_or(fallback));
+
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            if let Some(patched) =
+                patch_mix_mode_field(&arr, QUICK_MIX_ID, field, Value::Bool(sig.get()))
+            {
+                c.set_path(mix_modes_path, Value::Array(patched));
+            }
+        }));
+
+    state.fields.loaders.borrow_mut().insert(
+        view_key.to_string(),
+        Box::new(move |c: &Config| {
+            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
+            sig.set(mix_mode_field_bool(&arr, QUICK_MIX_ID, field, fallback).unwrap_or(fallback));
+        }),
+    );
+    state.fields.getters.borrow_mut().insert(
+        view_key.to_string(),
+        Box::new(move || Value::Bool(sig.get())),
+    );
+
+    Element::switch(sig)
 }
 
 /// dialog_button（map）：键值对 text_input 降级实现。挂对话框到根，返回 visible。
@@ -2382,23 +2531,41 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
     visible
 }
 
-/// 解析 `enabled_when`，仅支持 `key == value`（manifest 现有用法均为 `== true`）。
+/// `enabled_when` 里单个条件的比较算子。
+///
+/// 原先是 `contains: bool`。加 `!=` 时没有改成第二个布尔——两个布尔能表达四种组合，
+/// 其中两种（既 contains 又 ne）没有意义，枚举才是恰好三态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CondOp {
+    /// `key == value`
+    Eq,
+    /// `key != value`
+    Ne,
+    /// `key contains value`（key 为字符串数组时判是否含该元素）
+    Contains,
+}
+
 /// `enabled_when` 里的单个条件。
 #[derive(Debug, Clone, PartialEq)]
 struct Cond {
     key: String,
-    /// true = `contains`（key 为字符串数组时判是否含该元素）；false = `==`。
-    contains: bool,
+    op: CondOp,
     value: String,
 }
 
 /// 解析 `enabled_when` 表达式：以 `&&` 分隔的若干条件，**全部满足**才启用。
 ///
-/// 支持两种比较：
+/// 支持三种比较：
 /// - `key == value`：相等；`true`/`false` 按布尔解释，其余按字符串。
+/// - `key != value`：不等，取 `==` 的反。
 /// - `key contains value`：`key` 是字符串数组（checkbox_group 写回的 strlist）时判是否含该元素。
 ///
 /// 任一子句语法不合法即整体返回 None（调用方按"无条件"处理，不会把控件锁死）。
+///
+/// ⚠️ **`!=` 必须先于 `==` 匹配**：`"a != b"` 里并不含 `==`，若先试 `==` 会落空、再落到
+/// ` contains ` 也落空 → 整体返回 None → 调用方按「无条件」处理，控件**永远可用**。
+/// 注意失败方向是「永远可用」而非「永远禁用」——不会有任何可见异常，从属控件只是悄悄
+/// 失去联动。这条顺序由 `parse_conds_ne_is_not_swallowed_by_eq` 守着。
 fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
     let mut out = Vec::new();
     for part in expr.split("&&") {
@@ -2406,17 +2573,23 @@ fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
         if part.is_empty() {
             continue;
         }
-        // 先试 `==`：`contains` 的键名里不会出现 `==`，两者不会互相误判。
-        let cond = if let Some((k, v)) = part.split_once("==") {
+        // `!=` 在前（见函数文档的 ⚠️）；`contains` 的键名里不会出现 `==`/`!=`，不会互相误判。
+        let cond = if let Some((k, v)) = part.split_once("!=") {
             Cond {
                 key: k.trim().to_string(),
-                contains: false,
+                op: CondOp::Ne,
+                value: v.trim().to_string(),
+            }
+        } else if let Some((k, v)) = part.split_once("==") {
+            Cond {
+                key: k.trim().to_string(),
+                op: CondOp::Eq,
                 value: v.trim().to_string(),
             }
         } else if let Some((k, v)) = part.split_once(" contains ") {
             Cond {
                 key: k.trim().to_string(),
-                contains: true,
+                op: CondOp::Contains,
                 value: v.trim().to_string(),
             }
         } else {
@@ -2432,16 +2605,20 @@ fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
 
 /// 判断当前值是否满足单个条件。
 fn cond_matches(cur: &Value, c: &Cond) -> bool {
-    if c.contains {
+    if c.op == CondOp::Contains {
         return cur
             .as_array()
             .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(c.value.as_str())));
     }
-    match c.value.as_str() {
+    let eq = match c.value.as_str() {
         "true" => cur.as_bool() == Some(true),
         "false" => cur.as_bool() == Some(false),
         s => cur.as_str() == Some(s),
-    }
+    };
+    // `!=` 就是 `==` 的反。注意取值类型不匹配时（如布尔键写了 `!= off`）`eq` 恒 false ⇒
+    // `!=` 恒 true ⇒ 控件恒可用，与「未登记 key 视为满足」的宽松方向一致：拼写错误只该
+    // 让联动失效，不该把控件永久锁死。
+    if c.op == CondOp::Ne { !eq } else { eq }
 }
 
 /// 由 `enabled_when` 表达式构造联动闭包：全部条件满足才启用。
@@ -2511,7 +2688,7 @@ mod tests {
         let cs = parse_conds("ui.status.enabled == true").unwrap();
         assert_eq!(cs.len(), 1);
         assert_eq!(cs[0].key, "ui.status.enabled");
-        assert!(!cs[0].contains);
+        assert_eq!(cs[0].op, CondOp::Eq);
         assert!(cond_matches(&Value::Bool(true), &cs[0]));
         assert!(!cond_matches(&Value::Bool(false), &cs[0]));
 
@@ -2536,7 +2713,7 @@ mod tests {
     #[test]
     fn parse_conds_contains_matches_strlist_element() {
         let cs = parse_conds("ui.status.items contains schema").unwrap();
-        assert!(cs[0].contains);
+        assert_eq!(cs[0].op, CondOp::Contains);
         assert_eq!(cs[0].key, "ui.status.items");
         let arr = Value::Array(vec![
             Value::String("schema".into()),
@@ -2547,6 +2724,37 @@ mod tests {
         assert!(!cond_matches(&arr_without, &cs[0]));
         // 非数组值不应误判为命中
         assert!(!cond_matches(&Value::String("schema".into()), &cs[0]));
+    }
+
+    /// `!=` 必须先于 `==` 匹配。
+    ///
+    /// ★ 这条测试守的是一个**静默失败方向**：`"a != b"` 不含 `==`，顺序写反会让整条表达式
+    /// 解析失败返回 None，而调用方对 None 的处理是「无条件启用」——控件不会锁死、不会报错，
+    /// 只是悄悄失去联动。没有这条断言，写反了跑起来看着一切正常。
+    #[test]
+    fn parse_conds_ne_is_not_swallowed_by_eq() {
+        let cs = parse_conds("schema.mix_modes#free_input != off").expect("!= 应能解析");
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].op, CondOp::Ne);
+        assert_eq!(cs[0].key, "schema.mix_modes#free_input");
+        assert_eq!(cs[0].value, "off");
+        // 语义：等于该值时不满足，其余取值都满足。
+        assert!(!cond_matches(&Value::String("off".into()), &cs[0]));
+        assert!(cond_matches(&Value::String("auto".into()), &cs[0]));
+        assert!(cond_matches(&Value::String("always".into()), &cs[0]));
+        // 布尔形态的 != 同样成立（取 == 的反）。
+        let cb = parse_conds("k != true").unwrap();
+        assert!(!cond_matches(&Value::Bool(true), &cb[0]));
+        assert!(cond_matches(&Value::Bool(false), &cb[0]));
+    }
+
+    /// `!=` 与 `==` 混用、以 `&&` 串联时仍是「全部满足」。
+    #[test]
+    fn parse_conds_mixes_ne_with_eq() {
+        let cs = parse_conds("a == true && b != off").unwrap();
+        assert_eq!(cs.len(), 2);
+        assert_eq!(cs[0].op, CondOp::Eq);
+        assert_eq!(cs[1].op, CondOp::Ne);
     }
 
     /// 语法不合法 → None，调用方按「无条件」处理，绝不能把控件锁死。
@@ -2628,7 +2836,7 @@ mod tests {
                     )
                 });
                 // 布尔字面量与 contains 不参与 options 校验
-                if c.contains || c.value == "true" || c.value == "false" {
+                if c.op == CondOp::Contains || c.value == "true" || c.value == "false" {
                     continue;
                 }
                 if target.typ == "select" && !target.options.is_empty() {

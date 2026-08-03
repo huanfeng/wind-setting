@@ -14,7 +14,7 @@ mod icons;
 mod key_conflict;
 mod logger;
 mod manifest;
-mod mix_layout;
+mod mix_fields;
 mod mix_members;
 mod mix_trigger;
 mod mode;
