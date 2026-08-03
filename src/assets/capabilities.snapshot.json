@@ -348,6 +348,7 @@
         {
           "candidate_layout": "vertical",
           "free_input": "auto",
+          "free_input_takes_select_keys": true,
           "id": "quick_mix",
           "members": [
             "quick_input.calc",
@@ -370,6 +371,16 @@
     {
       "default": "smart",
       "key": "input.filter_mode",
+      "type": "str"
+    },
+    {
+      "default": true,
+      "key": "input.scope_relax.page_end_key",
+      "type": "bool"
+    },
+    {
+      "default": "·",
+      "key": "input.scope_relax.prefix",
       "type": "str"
     },
     {
@@ -750,6 +761,11 @@
       "default": [],
       "key": "keys.global_hotkeys",
       "type": "strlist"
+    },
+    {
+      "default": {},
+      "key": "keys.schema_hotkeys",
+      "type": "map"
     },
     {
       "default": [

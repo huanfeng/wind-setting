@@ -30,6 +30,10 @@ pub struct SchemaEntry {
     pub version: String,
     pub description: String,
     pub author: String,
+    /// 特殊方案（core `[schema].hidden`）：英文、快符这类。默认不在列表显示，
+    /// 由工具栏「显示特殊方案」开关放出来。已启用的即使 hidden 也恒显示——
+    /// 用户既然启用了它，藏起来只会让人找不到怎么停用。
+    pub hidden: bool,
     pub error: Option<String>,
 }
 
@@ -84,6 +88,9 @@ pub struct SchemaManagerState {
     pub list_data: Signal<Vec<SchemaListItem>>,
     /// 是否隐藏未启用方案行（响应式，立即生效）。
     pub hide_disabled: Signal<bool>,
+    /// 是否显示特殊方案（core `[schema].hidden`：英文、快符）。默认关。
+    /// 列表数据恒含它们（refresh 走 includeHidden），此开关只控制渲染，切换即时生效。
+    pub show_hidden: Signal<bool>,
     /// 当前选中方案 ID（工具栏按钮的作用对象；None=无选中）。
     pub selected_id: Rc<RefCell<Option<String>>>,
     /// 选中变更计数：每次变更自增，触发重布局使行高亮/工具栏 enabled_when 重估。
@@ -133,6 +140,7 @@ impl SchemaManagerState {
             enabled_order: Rc::new(RefCell::new(available)),
             list_data: signal(vec![]),
             hide_disabled: signal(false),
+            show_hidden: signal(false),
             selected_id: Rc::new(RefCell::new(None)),
             sel_ver: signal(0),
             active_id: Rc::new(RefCell::new(String::new())),
@@ -188,9 +196,21 @@ impl SchemaManagerState {
 
     /// 根据当前 schemas + enabled_order 重建 list_data 信号（即时刷新列表）。
     fn rebuild_list(&self) {
-        let entries = self.schemas.borrow().clone();
         let order = self.enabled_order.borrow().clone();
         let is_all_enabled = order.is_empty();
+
+        // 特殊方案（[schema].hidden：英文/快符）默认不入列表。**在这里过滤而非靠
+        // visible_when**：分节标题的「共 N 个」是按 items 数算的，隐藏行若仍在数据里，
+        // 标题就会报出一个比实际可见行数大的数字。已启用的特殊方案是例外——用户既然
+        // 启用了它，藏起来就没法停用了。
+        let show_hidden = self.show_hidden.get();
+        let entries: Vec<SchemaEntry> = self
+            .schemas
+            .borrow()
+            .iter()
+            .filter(|e| show_hidden || !e.hidden || is_all_enabled || order.contains(&e.id))
+            .cloned()
+            .collect();
 
         let mut enabled_entries: Vec<SchemaEntry> = Vec::new();
         if is_all_enabled {
@@ -271,7 +291,10 @@ impl SchemaManagerState {
 
     /// 刷新方案列表（调用 schema.list RPC）。
     pub fn refresh(&self) {
-        let list = rpc::call_core("schema.list", &json!({})).unwrap_or(Value::Array(vec![]));
+        // 恒取全集（含特殊方案），显示与否由 `show_hidden` 在渲染层过滤——
+        // 开关切换无需重新走 RPC，与 `hide_disabled` 同一套做法。
+        let list = rpc::call_core("schema.list", &json!({ "includeHidden": true }))
+            .unwrap_or(Value::Array(vec![]));
 
         // 双拼布局清单（动态，取代硬编码）：供下拉选项/索引映射/行名后缀。
         let layouts: Vec<(String, String)> = rpc::call_core("schema.layouts", &json!({}))
@@ -359,6 +382,7 @@ impl SchemaManagerState {
                             scheme,
                             shuangpin_layout,
                             source,
+                            hidden: s.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false),
                             version: s
                                 .get("version")
                                 .and_then(|v| v.as_str())
@@ -596,6 +620,13 @@ impl SchemaManagerState {
 
     /// 切换方案启用状态（更新 enabled_order，立即刷新列表）。
     /// 禁用最后一个启用中的方案会被拒绝（返回 false，调用方回滚复选框）。
+    /// 切换「显示特殊方案」。列表数据本身已含特殊方案（refresh 走 includeHidden），
+    /// 这里只需按新值重建 items——过滤在 `rebuild_list` 里做，分节计数才跟得上。
+    pub fn set_show_hidden(&self, on: bool) {
+        self.show_hidden.set(on);
+        self.rebuild_list();
+    }
+
     pub fn toggle_schema_enabled(&self, schema_id: &str, new_enabled: bool) -> bool {
         if new_enabled {
             let mut order = self.enabled_order.borrow_mut();
@@ -1006,6 +1037,7 @@ pub fn engine_label(t: &str) -> &'static str {
         "codetable" => "码表",
         "pinyin" => "拼音",
         "mixed" => "混输",
+        "english" => "英文",
         _ => "未知",
     }
 }
@@ -1273,7 +1305,9 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
         .child(row)
         .child(indicator);
 
-    // 未启用行随 hide_disabled 隐藏（list_signal 重建后无需 enabled_sig 联动）
+    // 未启用行随 hide_disabled 隐藏（list_signal 重建后无需 enabled_sig 联动）。
+    // 注：特殊方案的显隐不在这里——它决定的是「进不进列表」，走 rebuild_list 过滤，
+    // 否则分节标题的计数会把看不见的行也算进去。
     if !is_enabled {
         let hide_sig = mgr.hide_disabled;
         item = item.visible_when(move || !hide_sig.get());

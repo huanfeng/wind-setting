@@ -164,6 +164,16 @@ fn scheme_page(state: &AppState) -> Element {
                 .small()
                 .fg_role(Role::Text),
         )
+        .child({
+            // on_toggle 取代默认翻转，故须自己 set；set_show_hidden 内会重建列表
+            // （特殊方案的显隐改的是「进不进列表」，不是单纯的行可见性）。
+            let m_sh = mgr.clone();
+            let sh = mgr.show_hidden;
+            Element::checkbox("显示特殊方案", sh)
+                .small()
+                .fg_role(Role::Text)
+                .on_toggle(move |_| m_sh.set_show_hidden(!sh.get()))
+        })
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("↑")
@@ -251,6 +261,22 @@ fn scheme_page(state: &AppState) -> Element {
 
     let mut secs = vec![section("输入方案", vec![toolbar, list_el])];
 
+    // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。
+    // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。
+    let codetable = build_scheme_config_button(state, "码表方案配置", "上屏行为", false);
+    let mixed = build_scheme_config_button(state, "混输方案配置", "混输行为", false);
+    let pinyin = build_scheme_config_button(state, "拼音方案配置", "候选行为", true);
+    let english = build_scheme_config_button(state, "英文方案配置", "英文行为", false);
+    secs.push(section(
+        "全局方案配置",
+        vec![
+            setting_row("码表方案配置", Some("码表引擎的全局默认配置"), codetable),
+            setting_row("混输方案配置", Some("混输引擎的全局默认配置"), mixed),
+            setting_row("拼音方案配置", Some("拼音引擎的全局默认配置"), pinyin),
+            setting_row("英文方案配置", Some("英文引擎的全局默认配置"), english),
+        ],
+    ));
+
     // 主方案设置（manifest schema 分组中的"主方案设置" section）。
     if let Some((_, keys)) = state
         .manifest
@@ -260,19 +286,6 @@ fn scheme_page(state: &AppState) -> Element {
     {
         secs.push(section("主方案设置", section_rows(state, &keys)));
     }
-
-    // 全局方案配置：码表 / 混输 / 拼音 三个 [设置] 对话框。
-    let codetable = build_scheme_config_button(state, "码表方案配置", "上屏行为", false);
-    let mixed = build_scheme_config_button(state, "混输方案配置", "混输行为", false);
-    let pinyin = build_scheme_config_button(state, "拼音方案配置", "候选行为", true);
-    secs.push(section(
-        "全局方案配置",
-        vec![
-            setting_row("码表方案配置", Some("码表引擎的全局默认配置"), codetable),
-            setting_row("混输方案配置", Some("混输引擎的全局默认配置"), mixed),
-            setting_row("拼音方案配置", Some("拼音引擎的全局默认配置"), pinyin),
-        ],
-    ));
 
     sections_page("方案", "选择输入方案与引擎配置", secs)
 }

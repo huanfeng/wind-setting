@@ -60,6 +60,10 @@
    "enabled": false,
    "variant": "s2t"
   },
+  "scope_relax": {
+   "page_end_key": true,
+   "prefix": "·"
+  },
   "space_on_empty_behavior": "commit",
   "symbol": {
    "english_chars": ".,?!:;",
@@ -122,6 +126,7 @@
    "minus_equal"
   ],
   "pin_candidate": "ctrl+number",
+  "schema_hotkeys": {},
   "select_char_keys": [],
   "select_key_groups": [
    "semicolon_quote"
@@ -190,6 +195,7 @@
    {
     "candidate_layout": "vertical",
     "free_input": "auto",
+    "free_input_takes_select_keys": true,
     "id": "quick_mix",
     "members": [
      "quick_input.calc",

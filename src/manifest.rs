@@ -13,7 +13,7 @@ use serde_json::Value;
 use windui::prelude::*;
 
 use crate::config::Config;
-use crate::state::AppState;
+use crate::state::{AppState, SchemaInfo};
 use crate::widgets::{setting_row, setting_row_checks};
 
 /// 单个清单项（来自 manifest.toml 经 system.manifest 暴露的 JSON）。
@@ -1289,8 +1289,8 @@ pub(crate) fn collect_checked(pairs: &[(&str, bool)]) -> Vec<String> {
 /// 动态选项来源（方案/字体）：从已加载的 schema/font 列表填充。
 fn dynamic_options(state: &AppState, src: &str) -> (Vec<String>, Vec<String>) {
     match src {
-        "codetableSchemas" => schema_options(state, Some("codetable")),
-        "pinyinSchemas" => schema_options(state, Some("pinyin")),
+        "codetableSchemas" => schema_options(&state.schemas, Some("codetable")),
+        "pinyinSchemas" => schema_options(&state.schemas, Some("pinyin")),
         "fonts" => {
             let v: Vec<String> = state.fonts.clone();
             (v.clone(), v)
@@ -1306,7 +1306,15 @@ fn dynamic_options(state: &AppState, src: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// 方案选项：可按 kind 过滤；首项补一个"自动/未设置"空值便于回落。
-fn schema_options(state: &AppState, kind: Option<&str>) -> (Vec<String>, Vec<String>) {
+///
+/// **主方案下拉的唯一选项来源**——`dynamic_options()`（清单声明的 options_source）与
+/// `AppState::apply_loaded` 的响应式 signal 都走这里。两者曾各写一份，语义悄悄漂成相反：
+/// 一份保留 kind 为空的方案、另一份排除，而生效的恰是排除那份，导致同一个方案在两条路径
+/// 下命运不同。故本函数接收 `&[SchemaInfo]` 而非 `&AppState`，让两个调用点都能复用。
+pub(crate) fn schema_options(
+    schemas: &[SchemaInfo],
+    kind: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
     // 空值（首项）语义随类型不同，标签须分别表达：
     //   码表 primary_codetable 空 = 自动挑 available 首个码表方案；
     //   拼音 primary_pinyin   空 = 固定全拼（core 不扫描 available，见 temp_pinyin_target）。
@@ -1317,7 +1325,12 @@ fn schema_options(state: &AppState, kind: Option<&str>) -> (Vec<String>, Vec<Str
     };
     let mut values = vec![String::new()];
     let mut labels = vec![empty_label.to_string()];
-    for s in &state.schemas {
+    for s in schemas {
+        // kind 为空 = core 没读出该方案的 .schema.toml（TOML 语法错，或字段类型与 Schema
+        // 结构体不匹配——第三方方案从别的输入法移植时常见）。此时 core 的 schema_name 会
+        // 回退成 id，方案**照常出现在方案列表里**，只有类型是未知的。
+        // 这种方案不能排除：排除等于「列表里看得见、下拉里选不到」，用户无从判断出了什么事，
+        // 而失败只 warn 进日志。列出来至少让人能选、能试，也能从「名字显示成 id」看出端倪。
         if kind.is_some_and(|k| !s.kind.is_empty() && s.kind != k) {
             continue;
         }
@@ -2449,6 +2462,48 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn si(id: &str, kind: &str) -> SchemaInfo {
+        SchemaInfo {
+            id: id.to_string(),
+            name: format!("{id}名"),
+            kind: kind.to_string(),
+            scheme: String::new(),
+        }
+    }
+
+    /// 空值首项标签按 kind 分流：码表「（自动）」、拼音「（默认：全拼）」。
+    ///
+    /// core 侧两者语义确实不同——`primary_codetable` 空 = 扫描 available 挑首个码表方案，
+    /// `primary_pinyin` 空 = 固定全拼、不扫描。标签必须跟着分流，否则拼音那份是在骗人。
+    #[test]
+    fn schema_options_empty_label_differs_by_kind() {
+        let schemas = vec![si("wubi86", "codetable"), si("pinyin", "pinyin")];
+        let (_, ct_labs) = schema_options(&schemas, Some("codetable"));
+        assert_eq!(ct_labs[0], "（自动）");
+        let (_, py_labs) = schema_options(&schemas, Some("pinyin"));
+        assert_eq!(py_labs[0], "（默认：全拼）", "拼音空值 = 固定全拼，非自动");
+    }
+
+    /// kind 为空（core 没读出 .schema.toml）的方案**不得**被过滤掉。
+    ///
+    /// 该方案在方案列表里是看得见的（core 的 schema_name 回退成 id），排除它等于
+    /// 「列表里有、下拉里没有」，而解析失败只 warn 进日志，用户完全无从判断。
+    #[test]
+    fn schema_options_keeps_schemas_with_unknown_kind() {
+        let schemas = vec![si("pinyin", "pinyin"), si("thirdparty", "")];
+        let (py_vals, _) = schema_options(&schemas, Some("pinyin"));
+        assert!(
+            py_vals.contains(&"thirdparty".to_string()),
+            "kind 未知的方案应保留，实际 {py_vals:?}"
+        );
+        // 反向对照：kind 已知且不匹配的照常排除，否则上面那条会因为"根本没过滤"而假绿。
+        let (ct_vals, _) = schema_options(&schemas, Some("codetable"));
+        assert!(
+            !ct_vals.contains(&"pinyin".to_string()),
+            "kind 明确为 pinyin 的方案不该出现在码表下拉里，实际 {ct_vals:?}"
+        );
+    }
 
     /// `==` 单条件：保持原有语义（布尔与字符串）。
     #[test]

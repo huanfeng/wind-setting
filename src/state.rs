@@ -911,29 +911,18 @@ impl AppState {
                 .chain(self.fonts.iter().cloned())
                 .collect(),
         );
-        // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"，其余为 id/name。
+        // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"/"默认：全拼"，其余为 id/name。
         // 必须在 loaders 跑之前就位，否则 loader 无法在选项列表中定位当前配置值。
+        //
+        // 走 manifest::schema_options —— 与清单 options_source 路径**同一份实现**。此处曾内联
+        // 手写一遍，与那份漂成了两套语义（空值标签、kind 为空时是否排除），且生效的是这份，
+        // 于是改另一份的人会发现"改了没反应"。
         {
-            let (ct_vals, ct_labs): (Vec<String>, Vec<String>) =
-                std::iter::once((String::new(), "（自动）".to_string()))
-                    .chain(
-                        self.schemas
-                            .iter()
-                            .filter(|s| s.kind == "codetable")
-                            .map(|s| (s.id.clone(), s.name.clone())),
-                    )
-                    .unzip();
+            let (ct_vals, ct_labs) =
+                crate::manifest::schema_options(&self.schemas, Some("codetable"));
             self.codetable_schema_val_sig.set(ct_vals);
             self.codetable_schema_lab_sig.set(ct_labs);
-            let (py_vals, py_labs): (Vec<String>, Vec<String>) =
-                std::iter::once((String::new(), "（自动）".to_string()))
-                    .chain(
-                        self.schemas
-                            .iter()
-                            .filter(|s| s.kind == "pinyin")
-                            .map(|s| (s.id.clone(), s.name.clone())),
-                    )
-                    .unzip();
+            let (py_vals, py_labs) = crate::manifest::schema_options(&self.schemas, Some("pinyin"));
             self.pinyin_schema_val_sig.set(py_vals);
             self.pinyin_schema_lab_sig.set(py_labs);
         }
