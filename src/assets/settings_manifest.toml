@@ -1045,7 +1045,7 @@ group = "input"
 section = "快捷输入"
 type = "select_mix_free_input"
 label = "自由输入"
-hint = "打 GetTestData() / test_data / <TAB> 这类内容：当输入的字符不可能是任何候选来源的编码时（大写字母、多数符号），自动转为字面输入，一切按键原样进缓冲。代价是标点不再顶屏——`;nihao,` 会得到 nihao, 而非「你好，」，要中文标点请先按空格上屏"
+hint = "把不可能是编码的按键（大写字母、多数符号）作字面输入，原样上屏；开启后标点不再顶屏候选"
 width = 210
 options = [
   { value = "off", label = "关闭" },
@@ -1060,8 +1060,8 @@ key = "schema.mix_modes#free_input_takes_select_keys"
 group = "input"
 section = "快捷输入"
 type = "checkbox_mix_free_select_keys"
-label = "夺取二三候选键"
-hint = "自由输入下把 ; ' 也当成普通字符，才打得出 rock'n'roll、don't、for(;;)。关掉则它们继续用来选第 2/3 个候选。注意数字键 1-9 始终是选词键，不受本项影响"
+label = "; ' 作字面字符"
+hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 不受影响"
 enabled_when = "schema.mix_modes#free_input != off"
 
 [[items]]

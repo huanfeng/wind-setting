@@ -2131,7 +2131,8 @@ fn build_select_mix_layout(
 /// 与 [`build_select_mix_layout`] 同构——整体读写 structlist + 按 id 打补丁，清单项走
 /// 视图 key `schema.mix_modes#free_input`。
 ///
-/// ★ **必须注册 getter**：下面那个「夺取二三候选键」用 `enabled_when` 引用本项，而
+/// ★ **必须注册 getter**：下面那个 `free_input_takes_select_keys` 项用 `enabled_when`
+/// 引用本项（按配置字段名指代，不按界面标签——标签会改，字段名不会），而
 /// `enabled_when_closure` 是从 `fields.getters` 取值的，取不到就 `unwrap_or(true)`
 /// ——条件恒满足、联动**静默失效**（既不报错也不锁死，只是看着像没接）。
 /// 布局那项没有 getter，因为没人引用它；本项有人引用，就必须有。
@@ -2227,7 +2228,8 @@ fn build_mix_field_select(
     }
 }
 
-/// 内置 quick_mix 的「自由输入夺取二三候选键」开关（`free_input_takes_select_keys`）。
+/// 内置 quick_mix 的 `free_input_takes_select_keys` 开关：自由输入时把二三候选键
+/// （默认 `;` `'`）当作字面字符。
 ///
 /// 不能走通用 [`build_toggle`]：那个直接 `cfg.get_bool(key)` / `set_path(key, …)`，
 /// 用在这里会把整个 mix_modes 数组换成一个布尔。
