@@ -188,6 +188,34 @@ options = [
 ]
 
 [[items]]
+key = "schema.codetable.frequency.half_life"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "number"
+label = "热度衰减半衰期"
+hint = "多久没用的词会淡出：过了这么久，一个词攒下的使用次数只算一半（72 小时 = 3 天）。仅「位次渐进」策略下生效。0 = 跟随拼音的同名设置"
+min = 0
+max = 8760
+step = 12
+unit = "小时"
+enabled_when = "schema.codetable.frequency.enabled == true && schema.codetable.frequency.strategy == position"
+
+[[items]]
+key = "schema.codetable.frequency.english_code_scope"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "select"
+label = "英文调频记账方式"
+hint = "只影响英文候选。按整词：打 hel 选中 hello 后，之后打 he 也会让 hello 靠前；按编码：每个前缀各自独立学习"
+enabled_when = "schema.codetable.frequency.enabled == true"
+options = [
+    { value = "candidate", label = "按整词" },
+    { value = "input", label = "按编码" },
+]
+
+[[items]]
 key = "schema.codetable.frequency.protect_top_n_len1"
 group = "schema"
 section = "上屏行为"
@@ -325,6 +353,20 @@ options = [
     { value = "single", label = "仅单字/单词" },
     { value = "all", label = "全部" },
 ]
+
+[[items]]
+key = "schema.pinyin.frequency.half_life"
+group = "schema"
+section = "候选行为"
+subsection = "词频调整"
+type = "number"
+label = "热度衰减半衰期"
+hint = "多久没用的词会淡出：过了这么久，一个词攒下的使用次数只算一半（72 小时 = 3 天）。0 = 用内置的 72 小时"
+min = 0
+max = 8760
+step = 12
+unit = "小时"
+enabled_when = "schema.pinyin.frequency.enabled == true"
 
 # 自动学习
 [[items]]
