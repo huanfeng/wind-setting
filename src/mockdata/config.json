@@ -162,7 +162,6 @@
    "clear_on_empty_max": false,
    "frequency": {
     "enabled": false,
-    "english_code_scope": "candidate",
     "half_life": 0.0,
     "promote_prefix": "all",
     "protect_top_n": 0,
@@ -177,6 +176,16 @@
    "single_code_input": false,
    "top_code_commit": true,
    "z_key_repeat": true
+  },
+  "english": {
+   "commit_space": false,
+   "frequency": {
+    "code_scope": "candidate",
+    "enabled": false,
+    "half_life": 0.0,
+    "promote_prefix": "all",
+    "strategy": "position"
+   }
   },
   "mix": {
    "auto_commit_block_on_english": false,

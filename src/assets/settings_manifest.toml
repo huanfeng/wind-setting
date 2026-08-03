@@ -566,29 +566,84 @@ max = 10
 hidden = true
 
 # ── 英文行为（英文方案的全局配置；「全局方案配置 → 英文方案配置」对话框）──
-# 英文自 0.115 起是可切换方案（不再是 hidden 的词库载体），故与码表/混输/拼音并列
-# 有了自己的一节。
+# 英文现在是可切换方案，core 侧也有了自己的 [schema.english] 段，不再共用码表那套
+# ——此前英文用户改调频策略会连带改掉五笔的。
 #
-# 这里目前只有调频记账一项。临时英文那批（大小写变形 / 符号数字 / 空格作为输入）
-# **刻意不搬**：它们的 key 是 input.temp_english.*，只在临英 overlay 里被读取，
-# 英文方案走的是主输入路径、根本不经过那段逻辑。搬过来会让用户以为改的是英文方案，
-# 实际改的是另一个模式——等 core 把这些行为接到方案路径上再说。
-#
-# 记账口径的键路径仍在 schema.codetable.frequency 下（英文引擎复用码表那条重排路径），
-# 但**只作用于英文候选**。待英文方案配置在 core 侧独立后再迁键路径
-# （见 core 的 docs/design/freq-rerank-model.md §9.1.3）。
+# 临时英文那批（大小写变形 / 符号数字 / 空格作为输入）**刻意不搬**：它们的 key 是
+# input.temp_english.*，只在临英 overlay 里被读取，英文方案走主输入路径根本不经过
+# 那段逻辑。搬过来会让用户以为改的是英文方案，实际改的是另一个模式。
 [[items]]
-key = "schema.codetable.frequency.english_code_scope"
+key = "schema.english.frequency.enabled"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "启用词频调整"
+hint = "按使用频率调整英文候选顺序"
+
+[[items]]
+key = "schema.english.frequency.strategy"
 group = "schema"
 section = "英文行为"
 type = "select"
-label = "英文调频记账方式"
+label = "调频策略"
+hint = "位次渐进：每用一次前移一半，久不用回落；一次到顶 / 逐次提升：用过即排到未用过的之前"
+width = 210
+enabled_when = "schema.english.frequency.enabled == true"
+options = [
+    { value = "position", label = "位次渐进" },
+    { value = "top", label = "一次到顶" },
+    { value = "step", label = "逐次提升" },
+]
+
+[[items]]
+key = "schema.english.frequency.promote_prefix"
+group = "schema"
+section = "英文行为"
+type = "select"
+label = "补全词参与调频"
+hint = "打 hel 选中 hello 这类前缀补全的候选是否参与调频，仅「位次渐进」策略下生效"
+width = 210
+enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
+options = [
+    { value = "all", label = "全部" },
+    { value = "single", label = "仅单词" },
+    { value = "none", label = "不参与" },
+]
+
+[[items]]
+key = "schema.english.frequency.half_life"
+group = "schema"
+section = "英文行为"
+type = "number"
+label = "热度衰减半衰期"
+hint = "使用记录衰减到一半所需的时间，仅「位次渐进」策略下生效。0 = 默认 72 小时"
+min = 0
+max = 8760
+step = 12
+unit = "小时"
+enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
+
+[[items]]
+key = "schema.english.frequency.code_scope"
+group = "schema"
+section = "英文行为"
+type = "select"
+label = "调频记账方式"
 hint = "按整词：打 hel 选过 hello 后，打 he 也受益；按编码：各前缀独立学习"
-enabled_when = "schema.codetable.frequency.enabled == true"
+width = 210
+enabled_when = "schema.english.frequency.enabled == true"
 options = [
     { value = "candidate", label = "按整词" },
     { value = "input", label = "按编码" },
 ]
+
+[[items]]
+key = "schema.english.commit_space"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "上屏后自动加空格"
+hint = "选中英文候选上屏后补一个空格，连续打词不必手动按"
 
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──

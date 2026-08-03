@@ -476,6 +476,36 @@ pub fn build_group_dialog_with_link(
             content = content.child(Element::divider());
         }
     }
+
+    let mut leading: Vec<Element> = Vec::new();
+    if let Some(reset) = reset_fn {
+        leading.push(
+            Element::button("恢复默认")
+                .small()
+                .outline_soft()
+                .on_click(move |_| reset()),
+        );
+    }
+    if let Some(url) = doc_url {
+        leading.push(Element::link("查看文档").url(url).font_size(12.0));
+    }
+
+    build_group_dialog_shell(visible, title, content, leading)
+}
+
+/// 配置类对话框的**统一外壳**：标题栏 + 固定高滚动区 + 按钮栏。
+///
+/// 抽出来是为了让内容动态生成的对话框（方案设置那种 `host_signal` 重建 body）与
+/// 清单驱动的静态对话框长得一模一样——两处各写一遍框架的结果，是宽度、滚动高度、
+/// 标题字号、按钮栏间距慢慢各走各的，而用户看到的是"同一个设置界面里两种弹窗"。
+///
+/// `bottom_leading` 是按钮栏左侧的元素（恢复默认 / 查看文档 / 保存…）；「关闭」恒在右侧。
+pub fn build_group_dialog_shell(
+    visible: Signal<bool>,
+    title: &str,
+    content: Element,
+    bottom_leading: Vec<Element>,
+) -> Element {
     // 内容超长时中间区域可滚动；固定视口高度确保标题栏和关闭按钮始终可见。
     let body = Element::scroll().width_match().height(380).child(content);
 
@@ -484,16 +514,8 @@ pub fn build_group_dialog_with_link(
         .cross(Align::Center)
         .padding_xy(16, 12)
         .spacing(8);
-    if let Some(reset) = reset_fn {
-        bottom = bottom.child(
-            Element::button("恢复默认")
-                .small()
-                .outline_soft()
-                .on_click(move |_| reset()),
-        );
-    }
-    if let Some(url) = doc_url {
-        bottom = bottom.child(Element::link("查看文档").url(url).font_size(12.0));
+    for el in bottom_leading {
+        bottom = bottom.child(el);
     }
     bottom = bottom.child(Element::leaf().weight(1.0)).child(
         Element::button("关闭")

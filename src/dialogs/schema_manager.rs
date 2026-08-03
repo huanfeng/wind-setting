@@ -63,6 +63,8 @@ pub enum SettingsSection {
     EntryKeys,
     ShuangpinLayout,
     ExtensionDicts,
+    /// 节间分隔线（Header 自带结尾分隔，故只在其后的各节之间插入）。
+    Divider,
     Empty,
 }
 
@@ -802,6 +804,7 @@ impl SchemaManagerState {
         // 进入方式：所有方案都有（切到该方案的直达热键），故紧随 Header。
         sections.push(SettingsSection::EntryKeys);
         if is_sp {
+            sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ShuangpinLayout);
             has_config = true;
         }
@@ -817,6 +820,7 @@ impl SchemaManagerState {
             })
             .collect();
         if !rows.is_empty() {
+            sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ExtensionDicts);
             has_config = true;
         }
@@ -1669,49 +1673,26 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             build_settings_header(&entry)
         }
         SettingsSection::EntryKeys => {
-            let entry = state.settings_entry.borrow().clone().unwrap_or_default();
             let disp = state.settings_hotkey_disp;
             let visible = state.settings_hotkey_visible;
-            // 特殊方案（英文/快符）的引导键走 schema.special_modes，是另一套机制
-            // （overlay 临时进入，打完一段自动退回），这里只管方案切换。说清楚免得
-            // 用户以为配了这个键就能"临时用一下"。
-            let hint = if entry.hidden {
-                "按下即切换到本方案；再按其它方案的热键或循环键切回"
-            } else {
-                "按下即切换到本方案，等同于用循环键切到它"
-            };
+            // 行内不写说明：这一栏只有一项，标题「进入方式」+「切换热键」已经说清了，
+            // 再挂一行灰色小字只是噪音。语义细节（与特殊模式引导键的区别）在文档站。
             Element::col()
                 .width_match()
                 .spacing(4)
                 .padding_xy(0, 4)
-                .child(
-                    Element::label("进入方式")
-                        .font_size(12.0)
-                        .font_weight(600)
-                        .fg_role(Role::TextMuted)
-                        .width_match()
-                        .padding_xy(0, 2),
-                )
+                .child(crate::manifest::dialog_group_header("进入方式"))
                 .child(
                     Element::row()
                         .width_match()
                         .cross(Align::Center)
                         .spacing(10)
                         .child(
-                            Element::col()
+                            Element::label("切换热键")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
                                 .weight(1.0)
-                                .child(
-                                    Element::label("切换热键")
-                                        .font_size(13.0)
-                                        .fg_role(Role::Text)
-                                        .max_lines(1),
-                                )
-                                .child(
-                                    Element::label(hint)
-                                        .font_size(11.0)
-                                        .fg_role(Role::TextMuted)
-                                        .max_lines(2),
-                                ),
+                                .max_lines(1),
                         )
                         .child(
                             Element::checkbox("启用", state.settings_hotkey_enabled)
@@ -1734,6 +1715,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         ),
                 )
         }
+        SettingsSection::Divider => Element::divider(),
         SettingsSection::ShuangpinLayout => {
             let labels: Vec<String> = state
                 .layouts
@@ -1741,33 +1723,34 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 .iter()
                 .map(|(_, name)| name.clone())
                 .collect();
-            Element::row()
+            // 带分组标题，与「进入方式」「扩展词库」同构——少了它这一节就是节间唯一的
+            // 裸行，视觉上像是漏排了。
+            Element::col()
                 .width_match()
-                .cross(Align::Center)
-                .spacing(12)
-                .padding_xy(0, 8)
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(crate::manifest::dialog_group_header("方案参数"))
                 .child(
-                    Element::label("双拼布局")
-                        .font_size(13.0)
-                        .fg_role(Role::Text)
-                        .weight(1.0)
-                        .max_lines(1),
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(12)
+                        .child(
+                            Element::label("双拼布局")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(Element::dropdown(labels, state.settings_layout).width(170)),
                 )
-                .child(Element::dropdown(labels, state.settings_layout).width(170))
         }
         SettingsSection::ExtensionDicts => {
             let mut col = Element::col()
                 .width_match()
                 .spacing(4)
                 .padding_xy(0, 4)
-                .child(
-                    Element::label("扩展词库")
-                        .font_size(12.0)
-                        .font_weight(600)
-                        .fg_role(Role::TextMuted)
-                        .width_match()
-                        .padding_xy(0, 2),
-                );
+                .child(crate::manifest::dialog_group_header("扩展词库"));
             for row in state.settings_dicts.borrow().iter() {
                 // 默认点击即翻转绑定的 on 信号（暂存）；实际提交在「保存」按钮统一进行。
                 let cb = Element::checkbox(row.label.clone(), row.on);
@@ -1822,37 +1805,28 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         move || st_eff.commit_hotkey_edit(),
     );
 
-    let body = Element::col()
+    // 走与「全局方案配置」相同的外壳（标题栏 + 固定高滚动区 + 按钮栏）。此前用的是
+    // dialog_panel：无滚动、标题 18px、宽 440，同一个设置界面里两种弹窗长得不一样。
+    let content = Element::col()
         .width_match()
-        .spacing(6)
+        .padding_xy(16, 2)
         .child(sections)
         .child(hotkey_effect);
 
     let st_save = state.clone();
-    let footer = Element::row()
-        .width_match()
-        .spacing(8)
-        .child(Element::leaf().weight(1.0))
-        .child(
-            Element::button("关闭")
-                .small()
-                .outline_soft()
-                .on_click(move |_| visible.set(false)),
-        )
-        .child(
-            Element::button("保存")
-                .small()
-                .on_click(move |_| st_save.save_settings())
-                .visible_when(move || has_save.get()),
-        );
+    // 「保存」放按钮栏左侧、与「恢复默认」同位：那一侧是「产生后果的操作」，
+    // 右侧固定是「关闭」。仅在有需批量提交的分节时出现（双拼布局 / 扩展词库）——
+    // 热键改动随主保存走，不归这个按钮管。
+    let save_btn = Element::button("保存")
+        .small()
+        .on_click(move |_| st_save.save_settings())
+        .visible_when(move || has_save.get());
 
-    Element::dialog_panel(
+    crate::dialogs::field_dialogs::build_group_dialog_shell(
         visible,
         "方案设置",
-        440,
-        move |_| visible.set(false),
-        body,
-        footer,
+        content,
+        vec![save_btn],
     )
 }
 

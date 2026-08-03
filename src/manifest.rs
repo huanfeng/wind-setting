@@ -1387,7 +1387,7 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
 }
 
 /// 对话框内分组标题（section/subsection 同一层级，主题色强调，不额外缩进）。
-fn dialog_group_header(name: &str) -> Element {
+pub(crate) fn dialog_group_header(name: &str) -> Element {
     Element::label(name)
         .font_size(11.5)
         .font_weight(600)

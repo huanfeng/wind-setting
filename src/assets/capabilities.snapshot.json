@@ -120,13 +120,48 @@
       "type": "float"
     },
     {
+      "default": false,
+      "key": "schema.english.frequency.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "position",
+      "key": "schema.english.frequency.strategy",
+      "type": "enum",
+      "values": [
+        "top",
+        "step",
+        "position"
+      ]
+    },
+    {
+      "default": "all",
+      "key": "schema.english.frequency.promote_prefix",
+      "type": "enum",
+      "values": [
+        "none",
+        "single",
+        "all"
+      ]
+    },
+    {
+      "default": 0.0,
+      "key": "schema.english.frequency.half_life",
+      "type": "float"
+    },
+    {
       "default": "candidate",
-      "key": "schema.codetable.frequency.english_code_scope",
+      "key": "schema.english.frequency.code_scope",
       "type": "enum",
       "values": [
         "candidate",
         "input"
       ]
+    },
+    {
+      "default": false,
+      "key": "schema.english.commit_space",
+      "type": "bool"
     },
     {
       "default": false,
