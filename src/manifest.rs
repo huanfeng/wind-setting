@@ -763,7 +763,7 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
 }
 
 /// hotkey 主键候选 (value, 显示名)。idx 0 = 未设置（值为空 → 合成 "none"）。
-fn hotkey_keys() -> Vec<(String, String)> {
+pub(crate) fn hotkey_keys() -> Vec<(String, String)> {
     let mut v = vec![(String::new(), "（未设置）".to_string())];
     for c in 'a'..='z' {
         v.push((c.to_string(), c.to_ascii_uppercase().to_string()));

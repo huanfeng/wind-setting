@@ -258,6 +258,23 @@ impl AppState {
             }));
         }
 
+        // 注册 keys.schema_hotkeys 写回器：方案直达热键（方案 id → 热键串）。
+        //
+        // 与方案启用状态同一条路——在方案页改、按主保存提交。**不能在方案对话框里
+        // 直接 config.setItems**：该键是 Map，在 diff 里是原子叶子（整对象产出），
+        // 主页面持有的仍是打开时的旧值，用户之后按一次保存就会把它整体覆盖回去。
+        {
+            let hk = schema_mgr.schema_hotkeys.clone();
+            fields.writers.borrow_mut().push(Box::new(move |cfg| {
+                let map: serde_json::Map<String, Value> = hk
+                    .borrow()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                    .collect();
+                cfg.set_path("keys.schema_hotkeys", Value::Object(map));
+            }));
+        }
+
         // 注册 schema.active 写回器：把「设为当前」的选择持久化。
         //
         // core 的 switch_schema 只改运行时活跃方案不写配置，而保存设置触发的

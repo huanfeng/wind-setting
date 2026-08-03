@@ -59,6 +59,8 @@ pub enum SchemaListItem {
 pub enum SettingsSection {
     /// 方案元信息头部（名称/类型/来源/版本/作者/描述）。恒为首节。
     Header,
+    /// 进入方式：切到该方案的直达热键（`keys.schema_hotkeys`）。所有方案都有。
+    EntryKeys,
     ShuangpinLayout,
     ExtensionDicts,
     Empty,
@@ -130,14 +132,38 @@ pub struct SchemaManagerState {
     pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
     /// 是否存在需批量提交的分节（当前=双拼布局），驱动 footer「保存」按钮可见性。
     pub settings_has_save: Signal<bool>,
+
+    // ── 方案直达热键（core `keys.schema_hotkeys`，Map: 方案 id → 热键串）──
+    /// 全量映射，随主保存一并写回（见 `AppState` 里注册的 writer）。
+    ///
+    /// **不在这里直接调 `config.setItems`**：那会与主设置页的 base/current diff 打架——
+    /// 主页面持有的是打开时的旧值，用户之后按一次「保存」就会把刚配的热键整体覆盖回去
+    /// （Map 型键在 diff 里是原子叶子，整对象产出）。改走 writer 注册，与
+    /// `schema.available` / `schema.active` 同一条路。
+    pub schema_hotkeys: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    /// 热键编辑对话框的可见性与工作态（打开方案设置时按当前方案播种）。
+    pub settings_hotkey_visible: Signal<bool>,
+    pub settings_hotkey_raw: Signal<String>,
+    pub settings_hotkey_disp: Signal<String>,
+    pub settings_hotkey_enabled: Signal<bool>,
+    pub settings_hotkey_mods: [Signal<bool>; 4],
+    pub settings_hotkey_key_idx: Signal<usize>,
 }
 
 impl SchemaManagerState {
     pub fn new() -> Self {
         let available = Self::read_available();
+        let hotkeys = Self::read_schema_hotkeys();
         let state = Self {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
+            schema_hotkeys: Rc::new(RefCell::new(hotkeys)),
+            settings_hotkey_visible: signal(false),
+            settings_hotkey_raw: signal(String::new()),
+            settings_hotkey_disp: signal(String::new()),
+            settings_hotkey_enabled: signal(false),
+            settings_hotkey_mods: [signal(false), signal(false), signal(false), signal(false)],
+            settings_hotkey_key_idx: signal(0),
             list_data: signal(vec![]),
             hide_disabled: signal(false),
             show_hidden: signal(false),
@@ -192,6 +218,71 @@ impl SchemaManagerState {
                     })
             })
             .unwrap_or_default()
+    }
+
+    /// 读取 `keys.schema_hotkeys`（方案 id → 热键串）。缺失/类型不符时按空表处理——
+    /// 该键是 Map，出厂就是 `{}`，没有「默认热键」这回事。
+    fn read_schema_hotkeys() -> std::collections::HashMap<String, String> {
+        rpc::call_core("config.get", &json!({}))
+            .ok()
+            .and_then(|v| {
+                v.get("keys")
+                    .and_then(|k| k.get("schema_hotkeys"))
+                    .and_then(|m| m.as_object())
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+            })
+            .unwrap_or_default()
+    }
+
+    /// 某方案当前绑定的直达热键（未绑定返回空串）。
+    pub fn hotkey_of(&self, schema_id: &str) -> String {
+        self.schema_hotkeys
+            .borrow()
+            .get(schema_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 用某个绑定串播种热键编辑器的工作态。
+    ///
+    /// 空串 = 未绑定：启用开关关、修饰位清空、主键回到列表首项。这些信号是**对话框
+    /// 复用的同一组**，不重置的话打开 A 方案配了键、再打开 B 方案会看到 A 的值。
+    fn seed_hotkey_editor(&self, binding: &str) {
+        use crate::manifest::{format_hotkey, hotkey_keys, parse_hotkey};
+        self.settings_hotkey_enabled.set(!binding.is_empty());
+        self.settings_hotkey_raw.set(binding.to_string());
+        // format_hotkey 对空串/"none" 已返回「未设置」，无需在此再分支。
+        self.settings_hotkey_disp.set(format_hotkey(binding));
+        let (mods, key) = parse_hotkey(binding);
+        // parse_hotkey 返回的修饰序与对话框的 [Ctrl, Shift, Alt, Win] 一致。
+        for (sig, on) in self.settings_hotkey_mods.iter().zip(mods.iter()) {
+            sig.set(*on);
+        }
+        let idx = hotkey_keys()
+            .iter()
+            .position(|(v, _)| v == &key)
+            .unwrap_or(0);
+        self.settings_hotkey_key_idx.set(idx);
+    }
+
+    /// 把热键编辑器的当前工作态写回 `schema_hotkeys`（内存；随主保存提交）。
+    ///
+    /// 关掉启用开关 = 移除该方案的条目，而不是写空串——空串会在 config.toml 里留下
+    /// 一条 `方案id = ""` 的死条目，core 侧 `parse_hotkey` 虽然会忽略它，但用户翻开
+    /// 配置文件会以为自己设过什么。
+    pub fn commit_hotkey_edit(&self) {
+        let id = self.settings_schema_id.borrow().clone();
+        let raw = self.settings_hotkey_raw.get();
+        apply_hotkey_edit(
+            &mut self.schema_hotkeys.borrow_mut(),
+            &id,
+            self.settings_hotkey_enabled.get(),
+            &raw,
+        );
     }
 
     /// 根据当前 schemas + enabled_order 重建 list_data 信号（即时刷新列表）。
@@ -701,9 +792,15 @@ impl SchemaManagerState {
         self.settings_is_shuangpin.set(is_sp);
         *self.settings_entry.borrow_mut() = Some(entry);
 
+        // 直达热键工作态按当前方案播种（每个方案一个绑定，对话框复用同一组信号）。
+        let bound = self.hotkey_of(self.settings_schema_id.borrow().as_str());
+        self.seed_hotkey_editor(&bound);
+
         // ── 计算配置分节（可扩展体系）：Header 恒为首节，其后按方案类型追加配置节 ──
         let mut sections: Vec<SettingsSection> = vec![SettingsSection::Header];
         let mut has_config = false; // 是否有需「保存」按钮提交的配置节
+        // 进入方式：所有方案都有（切到该方案的直达热键），故紧随 Header。
+        sections.push(SettingsSection::EntryKeys);
         if is_sp {
             sections.push(SettingsSection::ShuangpinLayout);
             has_config = true;
@@ -1032,6 +1129,30 @@ fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
     }
 }
 
+/// 把一次热键编辑落到映射表上（纯函数，供测试）。
+///
+/// **未绑定 = 表里没有这一条**，而不是一条空串。写空串会在 config.toml 里留下
+/// `方案id = ""` 的死条目：core 侧 `parse_hotkey` 确实会忽略它，但用户翻开配置
+/// 看见自己的方案名挂在那儿，只会以为设过什么却没生效。
+///
+/// `raw` 为空（用户在对话框里把主键选成「（未设置）」）同样按解绑处理——
+/// 只看 `enabled` 会写进一条 `"none"` 或空串。
+fn apply_hotkey_edit(
+    map: &mut std::collections::HashMap<String, String>,
+    schema_id: &str,
+    enabled: bool,
+    raw: &str,
+) {
+    if schema_id.is_empty() {
+        return;
+    }
+    if enabled && !raw.is_empty() && raw != "none" {
+        map.insert(schema_id.to_string(), raw.to_string());
+    } else {
+        map.remove(schema_id);
+    }
+}
+
 pub fn engine_label(t: &str) -> &'static str {
     match t {
         "codetable" => "码表",
@@ -1323,11 +1444,47 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
     let confirm_dlg = build_confirm_dialog(state);
     let settings_dlg = build_schema_settings_dialog(state);
     let import_dlg = build_import_confirm_dialog(state);
+    let hotkey_dlg = build_schema_hotkey_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
         .child(settings_dlg)
         .child(import_dlg)
+        // 排在方案设置之后 = 叠在它上面：这个对话框是从方案设置里打开的。
+        .child(hotkey_dlg)
+}
+
+/// 方案直达热键的编辑浮层（复用 manifest 那套热键对话框组件）。
+///
+/// 与清单里的功能热键共用同一个 UI，但**不经 FieldRegistry 注册**——它编辑的是
+/// `keys.schema_hotkeys` 里按方案 id 索引的一条，而清单模型是「一个 key 一个控件」。
+/// 写回由 `commit_hotkey_edit` → `schema_hotkeys` map → AppState 注册的 writer 完成。
+fn build_schema_hotkey_dialog(state: &SchemaManagerState) -> Element {
+    use crate::dialogs::field_dialogs::build_hotkey_dialog;
+    use crate::manifest::hotkey_keys;
+
+    let keys = hotkey_keys();
+    let key_vals: Vec<String> = keys.iter().map(|(v, _)| v.clone()).collect();
+    let key_labels: Vec<String> = keys.iter().map(|(_, l)| l.clone()).collect();
+
+    build_hotkey_dialog(
+        state.settings_hotkey_visible,
+        "方案切换热键",
+        state.settings_hotkey_raw,
+        state.settings_hotkey_disp,
+        // 方案热键出厂即空表，没有「默认键位」可回落，故默认 = 未绑定。
+        // 必须传 core 的 sentinel "none" 而不是空串：对话框的「恢复默认」按
+        // `default != "none"` 反推启用态，传空串会把「启用」勾亮、而热键显示「未设置」。
+        "none".to_string(),
+        state.settings_hotkey_mods,
+        state.settings_hotkey_key_idx,
+        key_vals,
+        key_labels,
+        // 不提供「全局拦截」勾选：那要写 keys.global_hotkeys，而该列表只认固定的
+        // 7 个动作名，塞不进按方案变化的条目。
+        None,
+        state.settings_hotkey_enabled,
+    )
 }
 
 /// 方案包导入确认：previewImport 摘要正文 + 合并（默认）/ 替换（danger）二选一。
@@ -1511,6 +1668,72 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let entry = state.settings_entry.borrow().clone().unwrap_or_default();
             build_settings_header(&entry)
         }
+        SettingsSection::EntryKeys => {
+            let entry = state.settings_entry.borrow().clone().unwrap_or_default();
+            let disp = state.settings_hotkey_disp;
+            let visible = state.settings_hotkey_visible;
+            // 特殊方案（英文/快符）的引导键走 schema.special_modes，是另一套机制
+            // （overlay 临时进入，打完一段自动退回），这里只管方案切换。说清楚免得
+            // 用户以为配了这个键就能"临时用一下"。
+            let hint = if entry.hidden {
+                "按下即切换到本方案；再按其它方案的热键或循环键切回"
+            } else {
+                "按下即切换到本方案，等同于用循环键切到它"
+            };
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(
+                    Element::label("进入方式")
+                        .font_size(12.0)
+                        .font_weight(600)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .padding_xy(0, 2),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::col()
+                                .weight(1.0)
+                                .child(
+                                    Element::label("切换热键")
+                                        .font_size(13.0)
+                                        .fg_role(Role::Text)
+                                        .max_lines(1),
+                                )
+                                .child(
+                                    Element::label(hint)
+                                        .font_size(11.0)
+                                        .fg_role(Role::TextMuted)
+                                        .max_lines(2),
+                                ),
+                        )
+                        .child(
+                            Element::checkbox("启用", state.settings_hotkey_enabled)
+                                .small()
+                                .fg_role(Role::Text),
+                        )
+                        .child(
+                            // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
+                            Element::label_rc(disp)
+                                .font_size(12.5)
+                                .fg_role(Role::TextMuted)
+                                .max_lines(1)
+                                .width(114),
+                        )
+                        .child(
+                            Element::button("设置")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| visible.set(true)),
+                        ),
+                )
+        }
         SettingsSection::ShuangpinLayout => {
             let labels: Vec<String> = state
                 .layouts
@@ -1586,7 +1809,24 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         build_section(kind, &st_body)
     });
 
-    let body = Element::col().width_match().spacing(6).child(sections);
+    // 热键工作态 → 内存 map 的落盘点。**用 effect 而非在各个「关闭」按钮上调**：
+    // 对话框有多条关闭路径（footer 按钮 / 标题栏 / 保存后自动关），逐个挂等于赌自己
+    // 数全了；而工作态是所有方案复用的同一组信号，漏一条路径就意味着「配了 A 的热键、
+    // 转头打开 B」时 A 的改动被 seed 静默冲掉。
+    // raw 与 enabled 都要监听：关掉「启用」不改 raw，只看 raw 会漏掉「解绑」这个操作。
+    let st_eff = state.clone();
+    let raw_sig = state.settings_hotkey_raw;
+    let en_sig = state.settings_hotkey_enabled;
+    let hotkey_effect = crate::pages::dict::reactive::reactive_effect(
+        move || raw_sig.version().wrapping_add(en_sig.version()),
+        move || st_eff.commit_hotkey_edit(),
+    );
+
+    let body = Element::col()
+        .width_match()
+        .spacing(6)
+        .child(sections)
+        .child(hotkey_effect);
 
     let st_save = state.clone();
     let footer = Element::row()
@@ -1619,6 +1859,46 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
 #[cfg(test)]
 mod ext_dict_tests {
     use super::*;
+
+    /// 解绑必须**移除条目**，不能留空串——否则 config.toml 里会积下
+    /// `方案id = ""` 的死条目，用户以为自己设过热键。
+    #[test]
+    fn hotkey_edit_unbind_removes_entry() {
+        let mut m = std::collections::HashMap::new();
+        apply_hotkey_edit(&mut m, "english", true, "ctrl+shift+n");
+        assert_eq!(m.get("english").map(String::as_str), Some("ctrl+shift+n"));
+
+        // 关掉「启用」
+        apply_hotkey_edit(&mut m, "english", false, "ctrl+shift+n");
+        assert!(!m.contains_key("english"), "解绑应移除条目，实际 {m:?}");
+
+        // 启用着但主键选成「（未设置）」：raw 为空，同样按解绑处理
+        apply_hotkey_edit(&mut m, "english", true, "ctrl+shift+n");
+        apply_hotkey_edit(&mut m, "english", true, "");
+        assert!(!m.contains_key("english"), "空 raw 应移除条目，实际 {m:?}");
+
+        // core 的未绑定 sentinel 也不该被写进来
+        apply_hotkey_edit(&mut m, "english", true, "none");
+        assert!(!m.contains_key("english"), "\"none\" 不该入表，实际 {m:?}");
+    }
+
+    /// 每个方案一条，互不干扰——对话框复用同一组工作态信号，最容易写成
+    /// 「改了 B 把 A 也一起覆盖掉」。
+    #[test]
+    fn hotkey_edit_is_per_schema() {
+        let mut m = std::collections::HashMap::new();
+        apply_hotkey_edit(&mut m, "wubi86", true, "ctrl+shift+w");
+        apply_hotkey_edit(&mut m, "english", true, "ctrl+shift+n");
+        apply_hotkey_edit(&mut m, "english", false, "");
+        assert_eq!(
+            m.get("wubi86").map(String::as_str),
+            Some("ctrl+shift+w"),
+            "解绑 english 不应影响 wubi86：{m:?}"
+        );
+        // 空 id（settings_schema_id 尚未播种）不得污染表
+        apply_hotkey_edit(&mut m, "", true, "ctrl+shift+x");
+        assert_eq!(m.len(), 1, "空方案 id 不该产生条目：{m:?}");
+    }
 
     #[test]
     fn scheme_import_preview_msg() {
