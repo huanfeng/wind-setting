@@ -115,6 +115,11 @@
       ]
     },
     {
+      "default": 0.0,
+      "key": "schema.codetable.frequency.half_life",
+      "type": "float"
+    },
+    {
       "default": "candidate",
       "key": "schema.codetable.frequency.english_code_scope",
       "type": "enum",
@@ -342,6 +347,7 @@
       "default": [
         {
           "candidate_layout": "vertical",
+          "free_input": "auto",
           "id": "quick_mix",
           "members": [
             "quick_input.calc",

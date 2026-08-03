@@ -257,13 +257,17 @@ mod tests {
         // ⑦ 命令栏始终开启，不提供关闭入口。
         "input.cmdbar.enabled",
         // ⑧ 词频的高级/内部参数，不对普通用户暴露。
-        //    half_life 仍生效（位置提升的衰减尺度）；base_scale / recency_peak 在 core 改用
-        //    位置提升模型后已成死链——配置项 → FreqProfile 字段 → pinyin_score 整条链无
-        //    生产调用者，core 侧已在 data/config.toml 与函数文档上标注，保留仅为将来若恢复
-        //    打分模型可复用（见 core 的 docs/design/freq-rerank-model.md）。
+        //    两个 half_life 都仍生效（位置提升的衰减尺度），码表段为 0 时回落拼音段；
+        //    分开是因为码表用户的用词集中度通常高于拼音，旧记录该留得久一些。判断依据是
+        //    「多久不用的词该淡出」，普通用户无从估量，需要时改配置文件。
+        //    base_scale / recency_peak 则在 core 改用位置提升模型后已成死链——配置项 →
+        //    FreqProfile 字段 → pinyin_score 整条链无生产调用者，core 侧已在 data/config.toml
+        //    与函数文档上标注，保留仅为将来若恢复打分模型可复用（见 core 的
+        //    docs/design/freq-rerank-model.md）。
         "schema.pinyin.frequency.half_life",
         "schema.pinyin.frequency.base_scale",
         "schema.pinyin.frequency.recency_peak",
+        "schema.codetable.frequency.half_life",
         // ⑧' 英文候选的词频记账码口径（candidate/input）：英文几乎全是前缀匹配，
         //     「跨码位共享」与「各前缀独立学习」各有道理，core 侧尚未定论，先留内部旋钮
         //     观察真机表现，定论后再决定是否进设置页。
