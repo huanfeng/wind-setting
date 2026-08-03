@@ -194,26 +194,12 @@ section = "上屏行为"
 subsection = "词频调整"
 type = "number"
 label = "热度衰减半衰期"
-hint = "多久没用的词会淡出：过了这么久，一个词攒下的使用次数只算一半（72 小时 = 3 天）。仅「位次渐进」策略下生效。0 = 跟随拼音的同名设置"
+hint = "使用记录衰减到一半所需的时间，仅「位次渐进」策略下生效。0 = 默认 72 小时"
 min = 0
 max = 8760
 step = 12
 unit = "小时"
 enabled_when = "schema.codetable.frequency.enabled == true && schema.codetable.frequency.strategy == position"
-
-[[items]]
-key = "schema.codetable.frequency.english_code_scope"
-group = "schema"
-section = "上屏行为"
-subsection = "词频调整"
-type = "select"
-label = "英文调频记账方式"
-hint = "只影响英文候选。按整词：打 hel 选中 hello 后，之后打 he 也会让 hello 靠前；按编码：每个前缀各自独立学习"
-enabled_when = "schema.codetable.frequency.enabled == true"
-options = [
-    { value = "candidate", label = "按整词" },
-    { value = "input", label = "按编码" },
-]
 
 [[items]]
 key = "schema.codetable.frequency.protect_top_n_len1"
@@ -361,7 +347,7 @@ section = "候选行为"
 subsection = "词频调整"
 type = "number"
 label = "热度衰减半衰期"
-hint = "多久没用的词会淡出：过了这么久，一个词攒下的使用次数只算一半（72 小时 = 3 天）。0 = 用内置的 72 小时"
+hint = "使用记录衰减到一半所需的时间。0 = 默认 72 小时"
 min = 0
 max = 8760
 step = 12
@@ -492,6 +478,23 @@ section = "混输行为"
 type = "toggle"
 label = "启用英文候选"
 hint = "混输模式下同时查询英文词库并显示英文候选"
+
+# 记账口径的配置键仍在 schema.codetable.frequency 下（英文引擎走的是码表那条重排路径），
+# 但**只作用于英文候选**，摆在「上屏行为 → 词频调整」里对纯码表用户毫无意义——那里根本
+# 没有英文候选。故按它实际影响的场景归到本节，紧挨「启用英文候选」。
+# 键路径待英文方案配置独立后再迁（见 core 的 docs/design/freq-rerank-model.md §9.1.3）。
+[[items]]
+key = "schema.codetable.frequency.english_code_scope"
+group = "schema"
+section = "混输行为"
+type = "select"
+label = "英文调频记账方式"
+hint = "按整词：打 hel 选过 hello 后，打 he 也受益；按编码：各前缀独立学习"
+enabled_when = "schema.codetable.frequency.enabled == true"
+options = [
+    { value = "candidate", label = "按整词" },
+    { value = "input", label = "按编码" },
+]
 
 [[items]]
 key = "schema.mix.enable_pinyin_abbrev"
