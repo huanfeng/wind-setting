@@ -24,6 +24,7 @@ mod rpc;
 #[allow(dead_code)]
 mod setting_config;
 mod shell;
+mod special_modes;
 mod state;
 mod theme_def;
 #[allow(dead_code)]

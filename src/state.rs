@@ -238,6 +238,20 @@ impl AppState {
         let setting_load = setting_config::load();
         // 先取出，下面 setting_load.config 会被移动进结构体
         let setting_load_update_auto_check = setting_load.config.update.auto_check;
+        // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
+        // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
+        let initial_dark = setting_load
+            .config
+            .ui
+            .dark
+            .unwrap_or_else(crate::theme_def::system_dark);
+        // 方案列表的两个显示过滤：`new()` 内部已 refresh 过一次（当时读到的是默认值），
+        // 故 show_hidden 走 set_show_hidden 重建列表，而不是只 set 信号——它决定的是
+        // 「哪些方案进列表」，不重建的话开关是打开的、列表里却没有特殊方案。
+        schema_mgr
+            .hide_disabled
+            .set(setting_load.config.ui.hide_disabled_schemas);
+        schema_mgr.set_show_hidden(setting_load.config.ui.show_hidden_schemas);
         let initial_mode = if setting_load.config.theme_editor.auto_start {
             "auto"
         } else {
@@ -272,6 +286,18 @@ impl AppState {
                     .map(|(k, v)| (k.clone(), Value::String(v.clone())))
                     .collect();
                 cfg.set_path("keys.schema_hotkeys", Value::Object(map));
+            }));
+        }
+
+        // 注册 schema.special_modes 写回器：特殊方案的引导键。
+        //
+        // 写的是原始 `Value` 数组——条目还带 show_all_on_enter / candidate_layout /
+        // 注释模板等只能手写 config.toml 的字段，用结构体重建会把它们静默抹掉。
+        // 数组恒整体写回（StructList 语义），故内存表必须始终是「读进来的全量 + 本次改动」。
+        {
+            let sm = schema_mgr.special_modes.clone();
+            fields.writers.borrow_mut().push(Box::new(move |cfg| {
+                cfg.set_path("schema.special_modes", Value::Array(sm.borrow().clone()));
             }));
         }
 
@@ -316,7 +342,7 @@ impl AppState {
             theme_import_name_display: signal("名称提示：无".to_string()),
             theme_import_dialog_visible: signal(false),
             tab: signal(0),
-            dark: signal(crate::theme_def::system_dark()),
+            dark: signal(initial_dark),
             status: signal("正在连接服务...".to_string()),
             feedback: signal(None),
             conflict: signal(String::new()),
@@ -459,6 +485,37 @@ impl AppState {
             // 只影响节流精度，不该打断启动流程
             tracing::warn!("保存检查更新时间失败：{e}");
         }
+    }
+
+    /// 持久化界面状态（明暗 / 方案列表两个显示过滤）。
+    ///
+    /// 三处调用点各自只改一个字段再调它，故先比对再写：这些开关都是高频点击的，
+    /// 每次翻转都落一次盘没必要。
+    fn save_ui_state(&mut self, mutate: impl FnOnce(&mut crate::setting_config::UiStateConfig)) {
+        let before = self.setting_config.ui.clone();
+        mutate(&mut self.setting_config.ui);
+        if self.setting_config.ui == before {
+            return;
+        }
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            // 只影响下次启动的界面状态，不该打断当前操作。
+            tracing::warn!("保存界面状态失败：{e}");
+        }
+    }
+
+    /// 持久化明暗选择。写 `Some` 即表示用户显式选过，此后不再跟随系统。
+    pub fn save_dark_mode(&mut self, dark: bool) {
+        self.save_ui_state(|ui| ui.dark = Some(dark));
+    }
+
+    /// 持久化方案页「隐藏未启用」。
+    pub fn save_hide_disabled_schemas(&mut self, on: bool) {
+        self.save_ui_state(|ui| ui.hide_disabled_schemas = on);
+    }
+
+    /// 持久化方案页「显示特殊方案」。
+    pub fn save_show_hidden_schemas(&mut self, on: bool) {
+        self.save_ui_state(|ui| ui.show_hidden_schemas = on);
     }
 
     /// 持久化「启动时自动检查更新」开关。

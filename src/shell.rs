@@ -345,24 +345,29 @@ fn build_footer(
         .child(halo_dot(0xF59E0B, false));
 
     // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
+    // 切换即持久化——选择写进 wind_setting.toml 的 ui.dark，下次启动不再跟随系统。
     let th_l = th.clone();
     let d_l = dark;
+    let app_l = app.clone();
     let to_light = Element::button("☀ 浅色")
         .small()
         .outline_soft()
         .on_click(move |_| {
             d_l.set(false);
             th_l.set(theme_for(false));
+            app_l.borrow_mut().save_dark_mode(false);
         })
         .visible_when(move || d_l.get());
     let th_d = th;
     let d_d = dark;
+    let app_d = app.clone();
     let to_dark = Element::button("🌙 深色")
         .small()
         .outline_soft()
         .on_click(move |_| {
             d_d.set(true);
             th_d.set(theme_for(true));
+            app_d.borrow_mut().save_dark_mode(true);
         })
         .visible_when(move || !d_d.get());
     let theme_btn = Element::stack().child(to_light).child(to_dark);

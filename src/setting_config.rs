@@ -11,6 +11,26 @@ pub struct SettingConfig {
     pub theme_editor: ThemeEditorConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    #[serde(default)]
+    pub ui: UiStateConfig,
+}
+
+/// 设置窗口自身的界面状态。纯呈现偏好，与输入法功能无关，故留在本文件而非 core config
+/// （也就不必动 manifest / capabilities 快照）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct UiStateConfig {
+    /// 暗色模式。**`None` = 跟随系统**，用户显式切过之后才落成 `Some`。
+    ///
+    /// 不能用 `bool`：默认 `false` 会让系统处于深色主题的用户每次启动都被强制翻成浅色，
+    /// 而「跟随系统」与「我就要浅色」在配置里必须是两件事。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark: Option<bool>,
+    /// 方案页「隐藏未启用」。
+    #[serde(default)]
+    pub hide_disabled_schemas: bool,
+    /// 方案页「显示特殊方案」。
+    #[serde(default)]
+    pub show_hidden_schemas: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +70,7 @@ impl Default for SettingConfig {
         Self {
             theme_editor: ThemeEditorConfig::default(),
             update: UpdateConfig::default(),
+            ui: UiStateConfig::default(),
         }
     }
 }
@@ -187,6 +208,61 @@ mod tests {
         assert!(!cfg.theme_editor.auto_start);
     }
 
+    /// 明暗是**三态**：未设过（跟随系统）/ 显式浅色 / 显式深色。
+    ///
+    /// 写成 `bool` 的话，「没设过」与「设了浅色」在配置里长得一模一样，系统处于深色
+    /// 主题的用户每次启动都会被强制翻成浅色。这条测的就是那个区分不会在序列化往返中丢失。
+    #[test]
+    fn dark_mode_distinguishes_unset_from_explicit_light() {
+        // 未设过：不写进文件，读回仍是 None。
+        let cfg = SettingConfig::default();
+        let s = toml::to_string(&cfg).expect("序列化");
+        assert!(
+            !s.contains("dark"),
+            "未设过的明暗不该落盘（否则下次启动就不再跟随系统了）：\n{s}"
+        );
+        let back: SettingConfig = toml::from_str(&s).expect("反序列化");
+        assert_eq!(back.ui.dark, None);
+
+        // 显式浅色：必须落盘且读回 Some(false)——与上面的 None 是两件事。
+        let mut cfg2 = SettingConfig::default();
+        cfg2.ui.dark = Some(false);
+        let s2 = toml::to_string(&cfg2).expect("序列化");
+        let back2: SettingConfig = toml::from_str(&s2).expect("反序列化");
+        assert_eq!(
+            back2.ui.dark,
+            Some(false),
+            "显式浅色不得退化成 None：\n{s2}"
+        );
+    }
+
+    /// 方案列表两个显示过滤的往返。出厂都关：新用户第一眼该看到全部普通方案，
+    /// 且不该看到英文/快符这类特殊方案。
+    #[test]
+    fn schema_list_filters_default_off_and_roundtrip() {
+        let cfg = SettingConfig::default();
+        assert!(!cfg.ui.hide_disabled_schemas);
+        assert!(!cfg.ui.show_hidden_schemas);
+
+        let mut cfg2 = SettingConfig::default();
+        cfg2.ui.hide_disabled_schemas = true;
+        cfg2.ui.show_hidden_schemas = true;
+        let s = toml::to_string(&cfg2).expect("序列化");
+        let back: SettingConfig = toml::from_str(&s).expect("反序列化");
+        assert!(back.ui.hide_disabled_schemas);
+        assert!(back.ui.show_hidden_schemas);
+    }
+
+    /// 旧版本写的文件没有 `[ui]` 段，必须能读（否则升级即报配置损坏）。
+    #[test]
+    fn config_without_ui_section_still_loads() {
+        let old = "[theme_editor]\nauto_start = true\n";
+        let cfg: SettingConfig = toml::from_str(old).expect("缺 [ui] 段应能读");
+        assert!(cfg.theme_editor.auto_start);
+        assert_eq!(cfg.ui.dark, None);
+        assert!(!cfg.ui.show_hidden_schemas);
+    }
+
     #[test]
     fn update_defaults_require_consent_before_any_network_access() {
         let cfg = UpdateConfig::default();
@@ -228,6 +304,7 @@ mod tests {
                 skipped_version: "0.107.0-dev.3".to_string(),
                 last_check_at: 1_750_000_000,
             },
+            ui: UiStateConfig::default(),
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: SettingConfig = toml::from_str(&text).unwrap();
@@ -245,6 +322,7 @@ mod tests {
         let config = SettingConfig {
             theme_editor: ThemeEditorConfig { auto_start: true },
             update: UpdateConfig::default(),
+            ui: UiStateConfig::default(),
         };
         save_to_path(&config, &path).unwrap();
 

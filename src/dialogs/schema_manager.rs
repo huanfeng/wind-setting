@@ -17,6 +17,22 @@ use crate::config::Config;
 use crate::rpc;
 use crate::widgets::flat_panel;
 
+/// 引导键候选（与临时拼音 / 临时英文 / 快捷输入清单里的那组逐字一致）。
+///
+/// 只列符号键：字母键作引导键会吞掉以该字母开头的所有编码（`z` 是历史教训），
+/// 这里不给这种选项。
+pub const TRIGGER_KEY_OPTIONS: &[(&str, &str)] = &[
+    ("backtick", "反引号 ( ` )"),
+    ("semicolon", "分号 ( ; )"),
+    ("quote", "单引号 ( ' )"),
+    ("comma", "逗号 ( , )"),
+    ("period", "句号 ( . )"),
+    ("slash", "斜杠 ( / )"),
+    ("backslash", "反斜杠 ( \\ )"),
+    ("lbracket", "左方括号 ( [ )"),
+    ("rbracket", "右方括号 ( ] )"),
+];
+
 /// 方案条目（含从 schema.list 解析的完整元信息）。
 #[derive(Clone, Default)]
 pub struct SchemaEntry {
@@ -143,6 +159,18 @@ pub struct SchemaManagerState {
     /// （Map 型键在 diff 里是原子叶子，整对象产出）。改走 writer 注册，与
     /// `schema.available` / `schema.active` 同一条路。
     pub schema_hotkeys: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    // ── 特殊方案的引导键（core `schema.special_modes`）──
+    /// 原始条目数组，随主保存整表写回。**保存的是 `Value` 而非结构体**：条目还带
+    /// `show_all_on_enter` / `candidate_layout` / 注释模板等只能手写 config.toml 的字段，
+    /// 用结构体重建会把它们静默抹掉——用户改一次引导键就丢配置。
+    pub special_modes: Rc<RefCell<Vec<Value>>>,
+    /// 引导键复选工作态（固定 9 个候选键，与临拼/临英同一组）。
+    pub settings_trigger_sigs: Vec<(String, Signal<bool>)>,
+    pub settings_trigger_visible: Signal<bool>,
+    /// 行内摘要（「未设置」/「已选 N 个」）。与勾选同步更新，不等 commit 落表——
+    /// 否则用户勾完看不到变化。
+    pub settings_trigger_disp: Signal<String>,
+
     /// 热键编辑对话框的可见性与工作态（打开方案设置时按当前方案播种）。
     pub settings_hotkey_visible: Signal<bool>,
     pub settings_hotkey_raw: Signal<String>,
@@ -156,10 +184,18 @@ impl SchemaManagerState {
     pub fn new() -> Self {
         let available = Self::read_available();
         let hotkeys = Self::read_schema_hotkeys();
+        let special = Self::read_special_modes();
         let state = Self {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
             schema_hotkeys: Rc::new(RefCell::new(hotkeys)),
+            special_modes: Rc::new(RefCell::new(special)),
+            settings_trigger_sigs: TRIGGER_KEY_OPTIONS
+                .iter()
+                .map(|(k, _)| (k.to_string(), signal(false)))
+                .collect(),
+            settings_trigger_visible: signal(false),
+            settings_trigger_disp: signal("未设置".to_string()),
             settings_hotkey_visible: signal(false),
             settings_hotkey_raw: signal(String::new()),
             settings_hotkey_disp: signal(String::new()),
@@ -238,6 +274,71 @@ impl SchemaManagerState {
                     })
             })
             .unwrap_or_default()
+    }
+
+    /// 读取 `schema.special_modes`（原始条目数组）。
+    fn read_special_modes() -> Vec<Value> {
+        rpc::call_core("config.get", &json!({}))
+            .ok()
+            .and_then(|v| {
+                v.get("schema")
+                    .and_then(|s| s.get("special_modes"))
+                    .and_then(|a| a.as_array())
+                    .cloned()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 用某方案已配的引导键播种复选工作态。
+    ///
+    /// 与热键工作态同理：这组信号是所有方案复用的，不逐个重置就会把上一个方案的
+    /// 勾选带到下一个方案。
+    fn seed_trigger_keys(&self, schema_id: &str) {
+        let cur = crate::special_modes::special_mode_trigger_keys(
+            &self.special_modes.borrow(),
+            schema_id,
+        )
+        .unwrap_or_default();
+        for (k, sig) in &self.settings_trigger_sigs {
+            sig.set(cur.contains(k));
+        }
+    }
+
+    /// 把引导键工作态写回 `special_modes`（内存；随主保存提交）。
+    pub fn commit_trigger_keys_edit(&self) {
+        let id = self.settings_schema_id.borrow().clone();
+        if id.is_empty() {
+            return;
+        }
+        // 新建条目要写显示名（UI 徽标 / 模式指示用），取方案名、空则回退 id。
+        let name = self
+            .settings_entry
+            .borrow()
+            .as_ref()
+            .map(|e| {
+                if e.name.is_empty() {
+                    e.id.clone()
+                } else {
+                    e.name.clone()
+                }
+            })
+            .unwrap_or_else(|| id.clone());
+        let keys: Vec<String> = self
+            .settings_trigger_sigs
+            .iter()
+            .filter(|(_, s)| s.get())
+            .map(|(k, _)| k.clone())
+            .collect();
+        let cur = self.special_modes.borrow().clone();
+        *self.special_modes.borrow_mut() =
+            crate::special_modes::upsert_special_mode_trigger_keys(&cur, &id, &name, &keys);
+    }
+
+    /// 某方案当前已配的引导键条数（行内摘要用）。
+    pub fn trigger_key_count(&self, schema_id: &str) -> usize {
+        crate::special_modes::special_mode_trigger_keys(&self.special_modes.borrow(), schema_id)
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
 
     /// 某方案当前绑定的直达热键（未绑定返回空串）。
@@ -794,9 +895,11 @@ impl SchemaManagerState {
         self.settings_is_shuangpin.set(is_sp);
         *self.settings_entry.borrow_mut() = Some(entry);
 
-        // 直达热键工作态按当前方案播种（每个方案一个绑定，对话框复用同一组信号）。
-        let bound = self.hotkey_of(self.settings_schema_id.borrow().as_str());
+        // 直达热键 / 引导键工作态按当前方案播种（对话框复用同一组信号，必须逐个重置）。
+        let sid = self.settings_schema_id.borrow().clone();
+        let bound = self.hotkey_of(&sid);
         self.seed_hotkey_editor(&bound);
+        self.seed_trigger_keys(&sid);
 
         // ── 计算配置分节（可扩展体系）：Header 恒为首节，其后按方案类型追加配置节 ──
         let mut sections: Vec<SettingsSection> = vec![SettingsSection::Header];
@@ -1449,13 +1552,38 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
     let settings_dlg = build_schema_settings_dialog(state);
     let import_dlg = build_import_confirm_dialog(state);
     let hotkey_dlg = build_schema_hotkey_dialog(state);
+    let trigger_dlg = build_trigger_keys_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
         .child(settings_dlg)
         .child(import_dlg)
-        // 排在方案设置之后 = 叠在它上面：这个对话框是从方案设置里打开的。
+        // 排在方案设置之后 = 叠在它上面：这两个对话框都是从方案设置里打开的。
         .child(hotkey_dlg)
+        .child(trigger_dlg)
+}
+
+/// 特殊方案的引导键多选浮层（复用清单那套 pairs 对话框）。
+///
+/// 写回目标是 `schema.special_modes` 里按 `schema` 定位的条目，与「一个 key 一个控件」
+/// 的清单模型对不上，故不经 FieldRegistry 注册；落表由 `commit_trigger_keys_edit`
+/// → `special_modes` → AppState 注册的 writer 完成。
+fn build_trigger_keys_dialog(state: &SchemaManagerState) -> Element {
+    use crate::dialogs::field_dialogs::build_pairs_dialog;
+
+    let labels: Vec<String> = TRIGGER_KEY_OPTIONS
+        .iter()
+        .map(|(_, l)| l.to_string())
+        .collect();
+    build_pairs_dialog(
+        state.settings_trigger_visible,
+        "引导键",
+        "在中文输入中按下即临时进入本方案，打完一段自动退回。可多选，全部取消即禁用。",
+        state.settings_trigger_sigs.clone(),
+        labels,
+        // 无「恢复默认」可回落：出厂就没有任何引导键（special_modes 是空数组）。
+        Vec::new(),
+    )
 }
 
 /// 方案直达热键的编辑浮层（复用 manifest 那套热键对话框组件）。
@@ -1673,11 +1801,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             build_settings_header(&entry)
         }
         SettingsSection::EntryKeys => {
+            let entry = state.settings_entry.borrow().clone().unwrap_or_default();
             let disp = state.settings_hotkey_disp;
             let visible = state.settings_hotkey_visible;
-            // 行内不写说明：这一栏只有一项，标题「进入方式」+「切换热键」已经说清了，
-            // 再挂一行灰色小字只是噪音。语义细节（与特殊模式引导键的区别）在文档站。
-            Element::col()
+            // 行内不写说明：标题「进入方式」+ 行名已经说清了，再挂一行灰色小字只是噪音。
+            // 语义细节（切换 vs 临时进入的区别）在文档站。
+            let mut col = Element::col()
                 .width_match()
                 .spacing(4)
                 .padding_xy(0, 4)
@@ -1713,7 +1842,43 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .outline_soft()
                                 .on_click(move |_| visible.set(true)),
                         ),
-                )
+                );
+
+            // 引导键只给特殊方案：它走 schema.special_modes 的 overlay 机制——按下引导键
+            // 临时进入、打完一段自动退回原方案。普通方案没有这条通路（切过去就留在那儿），
+            // 给它们显示这一行只会让人以为能配。
+            if entry.hidden {
+                let tv = state.settings_trigger_visible;
+                col = col.child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::label("引导键")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(
+                            // 摘要由 effect 与勾选同步刷新（见 build_schema_settings_dialog），
+                            // 不等 commit 落表——否则用户勾完看不到变化。
+                            Element::label_rc(state.settings_trigger_disp)
+                                .font_size(12.5)
+                                .fg_role(Role::TextMuted)
+                                .max_lines(1)
+                                .width(114),
+                        )
+                        .child(
+                            Element::button("设置")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| tv.set(true)),
+                        ),
+                );
+            }
+            col
         }
         SettingsSection::Divider => Element::divider(),
         SettingsSection::ShuangpinLayout => {
@@ -1805,13 +1970,37 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         move || st_eff.commit_hotkey_edit(),
     );
 
+    // 引导键同理：9 个复选各自独立，版本号求和即可覆盖「任一勾选变化」。
+    // 顺带刷新行内摘要——它与勾选同源，放两个 effect 里只会多一次遍历。
+    let st_tk = state.clone();
+    let tk_sigs = state.settings_trigger_sigs.clone();
+    let tk_disp = state.settings_trigger_disp;
+    let ver_sigs = state.settings_trigger_sigs.clone();
+    let trigger_effect = crate::pages::dict::reactive::reactive_effect(
+        move || {
+            ver_sigs
+                .iter()
+                .fold(0u64, |acc, (_, s)| acc.wrapping_add(s.version()))
+        },
+        move || {
+            st_tk.commit_trigger_keys_edit();
+            let n = tk_sigs.iter().filter(|(_, s)| s.get()).count();
+            tk_disp.set(if n == 0 {
+                "未设置".to_string()
+            } else {
+                format!("已选 {n} 个")
+            });
+        },
+    );
+
     // 走与「全局方案配置」相同的外壳（标题栏 + 固定高滚动区 + 按钮栏）。此前用的是
     // dialog_panel：无滚动、标题 18px、宽 440，同一个设置界面里两种弹窗长得不一样。
     let content = Element::col()
         .width_match()
         .padding_xy(16, 2)
         .child(sections)
-        .child(hotkey_effect);
+        .child(hotkey_effect)
+        .child(trigger_effect);
 
     let st_save = state.clone();
     // 「保存」放按钮栏左侧、与「恢复默认」同位：那一侧是「产生后果的操作」，

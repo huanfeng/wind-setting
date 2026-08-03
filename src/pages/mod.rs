@@ -22,7 +22,7 @@ use crate::widgets::{page, section, setting_row, todo_hint};
 /// Tab：(标题, 内容)。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, Element)> {
     vec![
-        ("方案".into(), scheme_page(state)),
+        ("方案".into(), scheme_page(app, state)),
         ("输入".into(), input_page(state)),
         ("按键".into(), keys_page(state)),
         ("外观".into(), appearance_page(app, state)),
@@ -134,16 +134,18 @@ fn input_page(state: &AppState) -> Element {
 
 // ───────────────────────── 方案 ─────────────────────────
 
-fn scheme_page(state: &AppState) -> Element {
+fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let mgr = &state.schema_mgr;
 
-    // 工具栏：左「隐藏未启用」· 中弹性留白 · 右[条目操作组｜全局操作组]。
-    // 条目操作作用于列表选中项，按选中状态/位置/来源禁用（工具栏+选中模式）。
+    // 工具栏**拆成两行**：上行是作用于选中项与全局的操作按钮，下行是列表显示过滤。
     //
-    // 中间原是「共 N 个已安装方案」状态文字，已移除：计数不影响任何决策（列表本身
-    // 就能数），却以 weight(1.0) 吃掉全部弹性空间——按钮排不下时先被挤的正是它们。
-    // 腾出的宽度给了「设为当前」，其余按钮一律保持 outline 文字样式：混入图标按钮
-    // （无边框、仅 hover 时显圆底）会在这一排里显得格格不入。
+    // 曾经一行装下：左边两个复选框、右边七个按钮 + 一个分隔条。加了「显示特殊方案」后
+    // 总宽超出容器，按钮被挤出可视区。这不是第一次——中间原有的「共 N 个已安装方案」
+    // 状态文字也是因为 weight(1.0) 吃掉弹性空间、把按钮挤没了才被删掉的。
+    // 一行里塞十个控件本就没有余量，改成分行比继续在里面腾挪稳。
+    //
+    // 过滤行放在按钮行**下方、紧贴列表**：它描述的是「下面这个列表显示什么」，
+    // 与列表相邻比与操作按钮相邻更说得通。
     // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距。
     let st_refresh = mgr.clone();
     let (m_up, e_up) = (mgr.clone(), mgr.clone());
@@ -158,22 +160,6 @@ fn scheme_page(state: &AppState) -> Element {
         .cross(Align::Center)
         .padding_xy(0, 4)
         .spacing(8)
-        .child(
-            // fg_role(Text) 确保暗色模式下标签文字跟随主题色
-            Element::checkbox("隐藏未启用", mgr.hide_disabled)
-                .small()
-                .fg_role(Role::Text),
-        )
-        .child({
-            // on_toggle 取代默认翻转，故须自己 set；set_show_hidden 内会重建列表
-            // （特殊方案的显隐改的是「进不进列表」，不是单纯的行可见性）。
-            let m_sh = mgr.clone();
-            let sh = mgr.show_hidden;
-            Element::checkbox("显示特殊方案", sh)
-                .small()
-                .fg_role(Role::Text)
-                .on_toggle(move |_| m_sh.set_show_hidden(!sh.get()))
-        })
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("↑")
@@ -256,10 +242,47 @@ fn scheme_page(state: &AppState) -> Element {
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
         .child(dict::reactive::toast_sink(mgr.feedback));
 
+    // 显示过滤行：两个复选框都在切换时落盘（wind_setting.toml 的 ui 段），
+    // 下次启动恢复。on_toggle 取代默认翻转，故须自己 set。
+    let filter_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(0, 2)
+        .spacing(14)
+        .child({
+            let hd = mgr.hide_disabled;
+            let app_hd = app.clone();
+            // fg_role(Text) 确保暗色模式下标签文字跟随主题色
+            Element::checkbox("隐藏未启用", hd)
+                .small()
+                .fg_role(Role::Text)
+                .on_toggle(move |_| {
+                    let v = !hd.get();
+                    hd.set(v);
+                    app_hd.borrow_mut().save_hide_disabled_schemas(v);
+                })
+        })
+        .child({
+            // set_show_hidden 内会重建列表——特殊方案的显隐改的是「进不进列表」，
+            // 不是单纯的行可见性（分节标题的计数按数据项算）。
+            let m_sh = mgr.clone();
+            let sh = mgr.show_hidden;
+            let app_sh = app.clone();
+            Element::checkbox("显示特殊方案", sh)
+                .small()
+                .fg_role(Role::Text)
+                .on_toggle(move |_| {
+                    let v = !sh.get();
+                    m_sh.set_show_hidden(v);
+                    app_sh.borrow_mut().save_show_hidden_schemas(v);
+                })
+        })
+        .child(Element::leaf().weight(1.0));
+
     // 复合行列表（已启用在前 · 未启用在后 · ↑/↓ · outline 类型徽章）
     let list_el = build_schema_inline_list(mgr);
 
-    let mut secs = vec![section("输入方案", vec![toolbar, list_el])];
+    let mut secs = vec![section("输入方案", vec![toolbar, filter_row, list_el])];
 
     // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。
     // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。
