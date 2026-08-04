@@ -1881,7 +1881,7 @@ group = "ui"
 section = "状态提示"
 type = "number"
 label = "水平偏移"
-hint = "相对光标下方居中的水平偏移（像素，正=右）"
+hint = "相对光标下方（左边缘对齐光标）的水平偏移（像素，正=右）"
 min = -400
 max = 400
 enabled_when = "ui.status.position_mode == follow_caret"
