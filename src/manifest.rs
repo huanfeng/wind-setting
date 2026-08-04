@@ -1336,6 +1336,12 @@ pub(crate) fn schema_options(
         if kind.is_some_and(|k| !s.kind.is_empty() && s.kind != k) {
             continue;
         }
+        // 特殊方案（英文、快符）不进主方案下拉：它们不参与方案轮换，选中了也不会被
+        // 「主拼音方案」「主码表方案」这类设置消费。方案列表恒含它们（词库页要用），
+        // 过滤只在这一个呈现点做。
+        if s.hidden {
+            continue;
+        }
         values.push(s.id.clone());
         labels.push(s.name.clone());
     }
@@ -2538,7 +2544,7 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
 /// 原先是 `contains: bool`。加 `!=` 时没有改成第二个布尔——两个布尔能表达四种组合，
 /// 其中两种（既 contains 又 ne）没有意义，枚举才是恰好三态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CondOp {
+pub(crate) enum CondOp {
     /// `key == value`
     Eq,
     /// `key != value`
@@ -2549,8 +2555,8 @@ enum CondOp {
 
 /// `enabled_when` 里的单个条件。
 #[derive(Debug, Clone, PartialEq)]
-struct Cond {
-    key: String,
+pub(crate) struct Cond {
+    pub(crate) key: String,
     op: CondOp,
     value: String,
 }
@@ -2568,7 +2574,7 @@ struct Cond {
 /// ` contains ` 也落空 → 整体返回 None → 调用方按「无条件」处理，控件**永远可用**。
 /// 注意失败方向是「永远可用」而非「永远禁用」——不会有任何可见异常，从属控件只是悄悄
 /// 失去联动。这条顺序由 `parse_conds_ne_is_not_swallowed_by_eq` 守着。
-fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
+pub(crate) fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
     let mut out = Vec::new();
     for part in expr.split("&&") {
         let part = part.trim();
@@ -2606,7 +2612,7 @@ fn parse_conds(expr: &str) -> Option<Vec<Cond>> {
 }
 
 /// 判断当前值是否满足单个条件。
-fn cond_matches(cur: &Value, c: &Cond) -> bool {
+pub(crate) fn cond_matches(cur: &Value, c: &Cond) -> bool {
     if c.op == CondOp::Contains {
         return cur
             .as_array()
@@ -2648,6 +2654,7 @@ mod tests {
             name: format!("{id}名"),
             kind: kind.to_string(),
             scheme: String::new(),
+            hidden: false,
         }
     }
 
@@ -2681,6 +2688,44 @@ mod tests {
         assert!(
             !ct_vals.contains(&"pinyin".to_string()),
             "kind 明确为 pinyin 的方案不该出现在码表下拉里，实际 {ct_vals:?}"
+        );
+    }
+
+    /// 特殊方案（英文、快符）不进主方案下拉。
+    ///
+    /// 方案列表自打开 `includeHidden` 起就恒含它们（词库页、统计页要用），过滤只在这一个
+    /// 呈现点做。少了这一条，「主拼音方案」下拉里会冒出英文和快符——选中也没有任何效果，
+    /// 因为 core 的 `primary_pinyin` 只认拼音方案。
+    #[test]
+    fn schema_options_excludes_hidden_schemas() {
+        let hidden = |id: &str, kind: &str| SchemaInfo {
+            hidden: true,
+            ..si(id, kind)
+        };
+        let schemas = vec![
+            si("pinyin", "pinyin"),
+            hidden("english", "pinyin"),
+            si("wubi86", "codetable"),
+            hidden("qsym", "codetable"),
+        ];
+        let (py_vals, _) = schema_options(&schemas, Some("pinyin"));
+        assert!(
+            !py_vals.contains(&"english".to_string()),
+            "特殊方案不该进主拼音下拉，实际 {py_vals:?}"
+        );
+        let (ct_vals, _) = schema_options(&schemas, Some("codetable"));
+        assert!(
+            !ct_vals.contains(&"qsym".to_string()),
+            "快符不该进主码表下拉，实际 {ct_vals:?}"
+        );
+        // 反向对照：同 kind 的普通方案必须还在——否则上面两条在「整个下拉空了」时也通过。
+        assert!(
+            py_vals.contains(&"pinyin".to_string()),
+            "普通拼音方案应保留"
+        );
+        assert!(
+            ct_vals.contains(&"wubi86".to_string()),
+            "普通码表方案应保留"
         );
     }
 

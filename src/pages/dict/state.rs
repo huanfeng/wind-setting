@@ -1926,6 +1926,7 @@ mod tests {
             name: name.into(),
             kind: kind.into(),
             scheme: scheme.into(),
+            hidden: false,
         }
     }
 

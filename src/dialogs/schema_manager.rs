@@ -82,6 +82,8 @@ pub enum SettingsSection {
     /// 进入方式：切到该方案的直达热键（`keys.schema_hotkeys`）。所有方案都有。
     EntryKeys,
     ShuangpinLayout,
+    /// 码表配置：总开关 +（开启后）子对话框。仅码表方案有。
+    CodeTable,
     ExtensionDicts,
     /// 节间分隔线（Header 自带结尾分隔，故只在其后的各节之间插入）。
     Divider,
@@ -182,6 +184,23 @@ pub struct SchemaManagerState {
     pub settings_hotkey_enabled: Signal<bool>,
     pub settings_hotkey_mods: [Signal<bool>; 4],
     pub settings_hotkey_key_idx: Signal<usize>,
+
+    // ── 方案级码表配置（`engine.codetable`，见 dialogs::schema_codetable）──
+    /// 设置清单：方案级码表配置与全局页**共用同一份条目定义**（label/hint/范围/联动）。
+    /// 本对话框不持有 `AppState`，故自带一份内嵌清单。
+    pub manifest: Rc<crate::manifest::Manifest>,
+    /// 「自定义码表配置」总开关。初值由配置内容推导（`schema_codetable::has_custom`），
+    /// 不另存布尔键——多一个键就多一处可能与实际内容不一致的状态。
+    pub settings_ct_enabled: Signal<bool>,
+    pub settings_ct_visible: Signal<bool>,
+    /// 各配置项的工作态信号（打开时按生效值播种，保存时落盘）。
+    pub settings_ct: crate::dialogs::schema_codetable::CtFields,
+    /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
+    /// 中间靠这个信号驱动 `host_signal` 重建。
+    pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtItem>>,
+    /// 打开时的生效值快照（core 随 `schema.getConfig` 给的 `effectiveCodetable`）。
+    /// 保存时用来补齐没有控件的隐藏项。
+    pub settings_ct_eff: Rc<RefCell<Value>>,
 }
 
 impl SchemaManagerState {
@@ -230,6 +249,12 @@ impl SchemaManagerState {
             settings_sections: signal(vec![]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             settings_has_save: signal(false),
+            manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
+            settings_ct_enabled: signal(false),
+            settings_ct_visible: signal(false),
+            settings_ct: Default::default(),
+            settings_ct_plan: signal(vec![]),
+            settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
         };
         state.refresh();
         state
@@ -939,6 +964,25 @@ impl SchemaManagerState {
             sections.push(SettingsSection::ShuangpinLayout);
             has_config = true;
         }
+        // 码表配置：码表方案才有（含快符这类特殊方案——它们本质就是码表方案，
+        // 只是靠引导键进入）。混输方案暂不给：它的码表部分与拼音部分怎么分账是另一件事，
+        // core 侧 `effectiveCodetable` 也只对 codetable 类给出。
+        {
+            let cfg = self.settings_cfg.borrow();
+            let is_ct = cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable");
+            if is_ct {
+                let eff = cfg.get("effectiveCodetable").cloned().unwrap_or(json!({}));
+                self.settings_ct.seed(&self.manifest, &eff);
+                self.settings_ct_plan.set(self.settings_ct.plan());
+                self.settings_ct_enabled
+                    .set(crate::dialogs::schema_codetable::has_custom(&cfg));
+                *self.settings_ct_eff.borrow_mut() = eff;
+                drop(cfg);
+                sections.push(SettingsSection::Divider);
+                sections.push(SettingsSection::CodeTable);
+                has_config = true;
+            }
+        }
         let dict_infos = parse_extension_dicts(&self.settings_cfg.borrow());
         let rows: Vec<DictRow> = dict_infos
             .into_iter()
@@ -994,7 +1038,29 @@ impl SchemaManagerState {
             }
         }
 
-        // 2) 双拼布局：改写拉取的完整配置后回传 saveConfig。
+        // 2) 方案配置（双拼布局 + 方案级码表配置）：改写拉取的完整配置后回传 saveConfig。
+        //
+        //    ⚠️ 两者必须写进**同一份 cfg、只调一次** saveConfig。core 那边是「整份 cfg 与
+        //    方案文件 diff，结果全量重写 override」——分两次调的话，后一次会拿自己那份
+        //    cfg 的 diff 把前一次的结果整个覆盖掉。
+        let mut cfg = self.settings_cfg.borrow().clone();
+        if !cfg.is_object() {
+            cfg = json!({});
+        }
+        let mut dirty = false;
+
+        // 码表配置：关掉总开关时写入的是一串 null——core 的 json_to_toml 跳过 null，
+        // 于是 override 里不含这些键 = 跟随基线。这是「取消自定义」唯一的落地方式。
+        if cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable") {
+            let enabled = self.settings_ct_enabled.get();
+            self.settings_ct.apply(&mut cfg, enabled);
+            if enabled {
+                let eff = self.settings_ct_eff.borrow().clone();
+                self.settings_ct.apply_hidden(&mut cfg, &eff);
+            }
+            dirty = true;
+        }
+
         if self.settings_is_shuangpin.get() {
             if self.layouts.borrow().is_empty() {
                 self.notify(ToastKind::Error, "双拼布局清单未加载，无法保存");
@@ -1005,19 +1071,19 @@ impl SchemaManagerState {
                 let idx = self.settings_layout.get().min(layouts.len() - 1);
                 layouts[idx].0.clone()
             };
-            let mut cfg = self.settings_cfg.borrow().clone();
-            if !cfg.is_object() {
-                cfg = json!({});
-            }
             set_json_path(
                 &mut cfg,
                 &["engine", "pinyin", "shuangpin", "layout"],
                 json!(layout),
             );
-            if let Err(e) = rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg })) {
-                self.notify(ToastKind::Error, format!("保存失败: {e}"));
-                return;
-            }
+            dirty = true;
+        }
+
+        if dirty
+            && let Err(e) = rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg }))
+        {
+            self.notify(ToastKind::Error, format!("保存失败: {e}"));
+            return;
         }
 
         self.settings_visible.set(false);
@@ -1597,14 +1663,35 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
     let import_dlg = build_import_confirm_dialog(state);
     let hotkey_dlg = build_schema_hotkey_dialog(state);
     let trigger_dlg = build_trigger_keys_dialog(state);
+    let ct_dlg = build_codetable_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
         .child(settings_dlg)
         .child(import_dlg)
-        // 排在方案设置之后 = 叠在它上面：这两个对话框都是从方案设置里打开的。
+        // 排在方案设置之后 = 叠在它上面：这几个对话框都是从方案设置里打开的。
         .child(hotkey_dlg)
         .child(trigger_dlg)
+        .child(ct_dlg)
+}
+
+/// 方案级码表配置浮层（第三级）：与全局「上屏行为」对话框同一份 manifest 定义，
+/// 只是读写落点在方案 override 上。见 [`crate::dialogs::schema_codetable`]。
+///
+/// 内容按 `settings_ct_plan` 响应式重建——对话框结构建于选中方案之前，而控件信号要等
+/// 播种；固定构建会让所有方案共用第一次播种的那批控件。
+fn build_codetable_dialog(state: &SchemaManagerState) -> Element {
+    let ct = state.settings_ct.clone();
+    let manifest = state.manifest.clone();
+    let body = Element::host_signal(state.settings_ct_plan, move |item| ct.row(&manifest, item));
+    crate::dialogs::field_dialogs::build_group_dialog_shell(
+        state.settings_ct_visible,
+        "码表配置",
+        Element::col().width_match().padding_xy(16, 2).child(body),
+        // 无「保存」：改动随方案设置对话框的「保存」一并提交，与双拼布局、扩展词库同路。
+        // 这里再放一个会让人以为两处各存各的。
+        Vec::new(),
+    )
 }
 
 /// 特殊方案的引导键多选浮层（复用清单那套 pairs 对话框）。
@@ -1952,6 +2039,53 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .max_lines(1),
                         )
                         .child(Element::dropdown(labels, state.settings_layout).width(170)),
+                )
+        }
+        SettingsSection::CodeTable => {
+            let entry = state.settings_entry.borrow().clone().unwrap_or_default();
+            let en = state.settings_ct_enabled;
+            let cv = state.settings_ct_visible;
+            // 摘要既是状态也是解释：关着时说清「跟的是谁」——普通方案跟全局，特殊方案
+            // 跟内置基线（core 不让特殊方案继承全局，见 codetable_baseline）。
+            // 不另挂一行灰色说明，与「进入方式」一节的处理保持一致。
+            let follows = if entry.hidden {
+                "跟随内置基线"
+            } else {
+                "跟随全局配置"
+            };
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(crate::manifest::dialog_group_header("码表配置"))
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::label("自定义码表配置")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(
+                            Element::label(follows)
+                                .font_size(12.5)
+                                .fg_role(Role::TextMuted)
+                                .max_lines(1)
+                                .visible_when(move || !en.get()),
+                        )
+                        .child(Element::switch(en))
+                        .child(
+                            // 未开启时不显示——用户选的就是「不开就把相关项藏起来」。
+                            Element::button("设置")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| cv.set(true))
+                                .visible_when(move || en.get()),
+                        ),
                 )
         }
         SettingsSection::ExtensionDicts => {

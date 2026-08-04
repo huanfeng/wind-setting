@@ -33,6 +33,12 @@ pub struct SchemaInfo {
     pub kind: String,
     /// 拼音方案类型（"full"=全拼，"shuangpin"=双拼，""=未标注/视为全拼）；非拼音方案为空串。
     pub scheme: String,
+    /// 特殊方案（core `[schema].hidden`：英文、快符这类，只经引导键/热键进入）。
+    ///
+    /// 列表**恒含**特殊方案，由各消费点自己决定要不要——主方案下拉要排除（选不了也不该
+    /// 显示），词库页与统计页要保留（它们各有独立的用户词库与词频记账）。在这里按显示
+    /// 需求过滤的话，一个消费点的口径就成了所有消费点的口径。
+    pub hidden: bool,
 }
 
 /// 一个主题条目（theme.list 返回）。core 协议：`name`=slug/id，`display_name`=界面显示名，
@@ -1545,8 +1551,10 @@ pub(crate) fn order_schemas_for_dict(
 
 /// 加载方案列表（schema.list）。
 pub(crate) fn load_schemas() -> Vec<SchemaInfo> {
-    let list =
-        rpc::call_core("schema.list", &serde_json::json!({})).unwrap_or(Value::Array(vec![]));
+    // includeHidden：特殊方案（英文、快符）也要拿到——它们有独立的用户词库与词频，
+    // 词库页与统计页都得能选中。不需要它们的消费点按 `hidden` 自行排除。
+    let list = rpc::call_core("schema.list", &serde_json::json!({ "includeHidden": true }))
+        .unwrap_or(Value::Array(vec![]));
     list.as_array()
         .map(|arr| {
             arr.iter()
@@ -1571,11 +1579,13 @@ pub(crate) fn load_schemas() -> Vec<SchemaInfo> {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
+                    let hidden = s.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
                     Some(SchemaInfo {
                         id,
                         name,
                         kind,
                         scheme,
+                        hidden,
                     })
                 })
                 .collect()
@@ -2001,6 +2011,7 @@ mod tests {
             name: id.to_string(),
             kind: kind.to_string(),
             scheme: String::new(),
+            hidden: false,
         }
     }
 
@@ -2256,6 +2267,7 @@ mod tests {
                 name: "五笔86".into(),
                 kind: "codetable".into(),
                 scheme: String::new(),
+                hidden: false,
             }],
             theme_entries: vec![],
             fonts: vec![],

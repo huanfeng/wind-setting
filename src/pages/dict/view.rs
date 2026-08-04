@@ -677,6 +677,7 @@ mod tests {
             name: "五笔".into(),
             kind: "codetable".into(),
             scheme: String::new(),
+            hidden: false,
         }];
         // 初始类别 = 系统短语，注入 2 行。
         mgr.apply_rows(&json!([
@@ -740,6 +741,7 @@ mod tests {
             name: "五笔".into(),
             kind: "codetable".into(),
             scheme: String::new(),
+            hidden: false,
         }];
 
         let mut tree = Tree::new();
