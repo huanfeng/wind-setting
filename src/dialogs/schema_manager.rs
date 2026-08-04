@@ -64,8 +64,12 @@ pub enum SchemaListItem {
         entry: SchemaEntry,
         is_enabled: bool,
     },
-    /// 未启用区分节标题（自带上方分隔线，visible_when !hide_disabled）。
-    SectionHeader { count: usize },
+    /// 分区标题（自带上方分隔线）。`hidden_with_disabled` 为真时随 hide_disabled 一起隐藏
+    /// ——未启用区是这样，特殊方案区不是（它跟「启用」无关）。
+    SectionHeader {
+        title: String,
+        hidden_with_disabled: bool,
+    },
     /// 行间分隔线；hidden_with_disabled=true 时随 hide_disabled 一起隐藏。
     Divider { hidden_with_disabled: bool },
 }
@@ -392,26 +396,24 @@ impl SchemaManagerState {
     fn rebuild_list(&self) {
         let order = self.enabled_order.borrow().clone();
         let is_all_enabled = order.is_empty();
-
-        // 特殊方案（[schema].hidden：英文/快符）默认不入列表。**在这里过滤而非靠
-        // visible_when**：分节标题的「共 N 个」是按 items 数算的，隐藏行若仍在数据里，
-        // 标题就会报出一个比实际可见行数大的数字。已启用的特殊方案是例外——用户既然
-        // 启用了它，藏起来就没法停用了。
         let show_hidden = self.show_hidden.get();
-        let entries: Vec<SchemaEntry> = self
+
+        // 三个区，**特殊方案先摘出去**：它没有「启用/未启用」这回事——不进 available、
+        // 不参与循环切换，只靠引导键或直达热键进入，所以既不该出现在已启用区、也不该
+        // 出现在未启用区（更不该随「隐藏未启用」一起消失，那个开关管的是普通方案）。
+        let (special, normal): (Vec<SchemaEntry>, Vec<SchemaEntry>) = self
             .schemas
             .borrow()
             .iter()
-            .filter(|e| show_hidden || !e.hidden || is_all_enabled || order.contains(&e.id))
             .cloned()
-            .collect();
+            .partition(|e| e.hidden);
 
         let mut enabled_entries: Vec<SchemaEntry> = Vec::new();
         if is_all_enabled {
-            enabled_entries = entries.clone();
+            enabled_entries = normal.clone();
         } else {
             for id in &order {
-                if let Some(e) = entries.iter().find(|e| &e.id == id) {
+                if let Some(e) = normal.iter().find(|e| &e.id == id) {
                     enabled_entries.push(e.clone());
                 }
             }
@@ -420,7 +422,7 @@ impl SchemaManagerState {
         let disabled_entries: Vec<SchemaEntry> = if is_all_enabled {
             vec![]
         } else {
-            entries
+            normal
                 .into_iter()
                 .filter(|e| !order.contains(&e.id))
                 .collect()
@@ -444,7 +446,10 @@ impl SchemaManagerState {
 
         // 未启用区（SectionHeader 自带上方分隔线，随 hide_disabled 一起隐藏）
         if n_disabled > 0 {
-            items.push(SchemaListItem::SectionHeader { count: n_disabled });
+            items.push(SchemaListItem::SectionHeader {
+                title: format!("其他已安装方案（共 {n_disabled} 个）"),
+                hidden_with_disabled: true,
+            });
             for (j, entry) in disabled_entries.into_iter().enumerate() {
                 if j > 0 {
                     items.push(SchemaListItem::Divider {
@@ -454,6 +459,29 @@ impl SchemaManagerState {
                 items.push(SchemaListItem::Row {
                     entry,
                     is_enabled: false,
+                });
+            }
+        }
+
+        // 特殊方案区：整区由「显示特殊方案」控制，**不受「隐藏未启用」影响**。
+        // 在这里过滤而非靠 visible_when：区标题的计数按 items 数算，隐藏行若仍在数据里，
+        // 标题会报出一个比实际可见行数大的数字。
+        if show_hidden && !special.is_empty() {
+            items.push(SchemaListItem::SectionHeader {
+                title: format!("特殊方案（共 {} 个）", special.len()),
+                hidden_with_disabled: false,
+            });
+            for (k, entry) in special.into_iter().enumerate() {
+                if k > 0 {
+                    items.push(SchemaListItem::Divider {
+                        hidden_with_disabled: false,
+                    });
+                }
+                // is_enabled 对特殊方案无意义（行内不渲染启用勾选），传 true 只是让
+                // 名称按正常色显示——它们随时可用，不该是「未启用」那种灰。
+                items.push(SchemaListItem::Row {
+                    entry,
+                    is_enabled: true,
                 });
             }
         }
@@ -1332,19 +1360,28 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
 
     Element::host_signal(state.list_data, move |item| match item {
         SchemaListItem::Row { entry, is_enabled } => build_compound_row(entry, is_enabled, &mgr),
-        SchemaListItem::SectionHeader { count } => Element::col()
-            .width_match()
-            .child(Element::divider())
-            .child(
-                Element::row().width_match().padding_xy(8, 5).child(
-                    Element::label(format!("其他已安装方案（共 {count} 个）"))
-                        .font_size(10.5)
-                        .fg_role(Role::TextMuted)
-                        .width_match()
-                        .max_lines(1),
-                ),
-            )
-            .visible_when(move || !hide_sig.get()),
+        SchemaListItem::SectionHeader {
+            title,
+            hidden_with_disabled,
+        } => {
+            let el = Element::col()
+                .width_match()
+                .child(Element::divider())
+                .child(
+                    Element::row().width_match().padding_xy(8, 5).child(
+                        Element::label(title)
+                            .font_size(10.5)
+                            .fg_role(Role::TextMuted)
+                            .width_match()
+                            .max_lines(1),
+                    ),
+                );
+            if hidden_with_disabled {
+                el.visible_when(move || !hide_sig.get())
+            } else {
+                el
+            }
+        }
         SchemaListItem::Divider {
             hidden_with_disabled,
         } => {
@@ -1368,17 +1405,24 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
     let enabled_sig = signal(is_enabled);
 
     // ── Checkbox ──
-    let mgr_toggle = mgr.clone();
-    let toggle_id = entry.id.clone();
-    let checkbox = Element::checkbox("", enabled_sig)
-        .small()
-        .on_toggle(move |_| {
-            let new_val = !enabled_sig.get();
-            // 被拒绝（最后一个启用项不可禁用）时不写 signal，勾选态保持不变。
-            if mgr_toggle.toggle_schema_enabled(&toggle_id, new_val) {
-                enabled_sig.set(new_val);
-            }
-        });
+    // 特殊方案（英文/快符）没有「启用」这回事：它们不进 available、不参与循环切换，
+    // 只靠引导键或直达热键进入。给它们一个勾选框会凭空造出一个不存在的状态，用户勾了
+    // 也不知道自己勾出了什么。占位保持与上方各行的列对齐（宽度取自 small checkbox）。
+    let checkbox = if entry.hidden {
+        Element::leaf().width(18).height(18)
+    } else {
+        let mgr_toggle = mgr.clone();
+        let toggle_id = entry.id.clone();
+        Element::checkbox("", enabled_sig)
+            .small()
+            .on_toggle(move |_| {
+                let new_val = !enabled_sig.get();
+                // 被拒绝（最后一个启用项不可禁用）时不写 signal，勾选态保持不变。
+                if mgr_toggle.toggle_schema_enabled(&toggle_id, new_val) {
+                    enabled_sig.set(new_val);
+                }
+            })
+    };
 
     // ── 名称列（weight-1）：名称 + 可选描述；双拼方案名称后缀当前布局（如「双拼·小鹤双拼」）──
     let base_name = if entry.name.is_empty() {

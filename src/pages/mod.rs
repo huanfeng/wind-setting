@@ -134,6 +134,77 @@ fn input_page(state: &AppState) -> Element {
 
 // ───────────────────────── 方案 ─────────────────────────
 
+/// 「列表显示」下拉：把两个显示过滤收进一个菜单，不再各占一格。
+///
+/// windui 的 dropdown 是**单选**语义（`selected: Signal<usize>`），没有复选菜单。这里用
+/// 首项当标题哨兵：收起态恒显示 `options[selected]`，故 selected 必须停在第 0 项，
+/// 标题才不会变成上次点的那一项。选中 1/2 项 → effect 翻转对应开关并把 selected 拨回 0；
+/// 拨回这一步本身会再触发一次 effect，靠「== 0 时不做事」收敛。
+///
+/// 开关态用 badge 显示（开/关），比在 label 前缀加 ✓ 更容易一眼扫到。
+fn build_list_view_menu(
+    app: &Rc<RefCell<AppState>>,
+    mgr: &crate::dialogs::schema_manager::SchemaManagerState,
+) -> Element {
+    let hd = mgr.hide_disabled;
+    let sh = mgr.show_hidden;
+    let items = signal(list_view_items(hd.get(), sh.get()));
+    let sel = signal(0usize);
+
+    let m_eff = mgr.clone();
+    let app_eff = app.clone();
+    let effect = dict::reactive::reactive_effect(
+        move || {
+            sel.version()
+                .wrapping_add(hd.version())
+                .wrapping_add(sh.version())
+        },
+        move || {
+            match sel.get() {
+                1 => {
+                    let v = !hd.get();
+                    hd.set(v);
+                    app_eff.borrow_mut().save_hide_disabled_schemas(v);
+                }
+                2 => {
+                    // set_show_hidden 内会重建列表——特殊方案的显隐改的是「进不进列表」，
+                    // 不是单纯的行可见性（分区标题的计数按数据项算）。
+                    let v = !sh.get();
+                    m_eff.set_show_hidden(v);
+                    app_eff.borrow_mut().save_show_hidden_schemas(v);
+                }
+                _ => {}
+            }
+            if sel.get() != 0 {
+                sel.set(0);
+            }
+            items.set(list_view_items(hd.get(), sh.get()));
+        },
+    );
+
+    Element::stack()
+        .child(Element::dropdown_items_reactive(items, sel).width(132))
+        .child(effect)
+}
+
+/// 「列表显示」菜单项（首项为标题哨兵，见 [`build_list_view_menu`]）。
+fn list_view_items(hide_disabled: bool, show_hidden: bool) -> Vec<DropdownItem> {
+    let flag = |on: bool| {
+        if on {
+            ("开", Intent::Primary)
+        } else {
+            ("关", Intent::Neutral)
+        }
+    };
+    let (h_txt, h_intent) = flag(hide_disabled);
+    let (s_txt, s_intent) = flag(show_hidden);
+    vec![
+        DropdownItem::new("列表显示"),
+        DropdownItem::new("隐藏未启用").badge(h_txt, h_intent),
+        DropdownItem::new("显示特殊方案").badge(s_txt, s_intent),
+    ]
+}
+
 fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let mgr = &state.schema_mgr;
 
@@ -160,6 +231,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         .cross(Align::Center)
         .padding_xy(0, 4)
         .spacing(8)
+        .child(build_list_view_menu(app, mgr))
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("↑")
@@ -242,47 +314,10 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
         .child(dict::reactive::toast_sink(mgr.feedback));
 
-    // 显示过滤行：两个复选框都在切换时落盘（wind_setting.toml 的 ui 段），
-    // 下次启动恢复。on_toggle 取代默认翻转，故须自己 set。
-    let filter_row = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(0, 2)
-        .spacing(14)
-        .child({
-            let hd = mgr.hide_disabled;
-            let app_hd = app.clone();
-            // fg_role(Text) 确保暗色模式下标签文字跟随主题色
-            Element::checkbox("隐藏未启用", hd)
-                .small()
-                .fg_role(Role::Text)
-                .on_toggle(move |_| {
-                    let v = !hd.get();
-                    hd.set(v);
-                    app_hd.borrow_mut().save_hide_disabled_schemas(v);
-                })
-        })
-        .child({
-            // set_show_hidden 内会重建列表——特殊方案的显隐改的是「进不进列表」，
-            // 不是单纯的行可见性（分节标题的计数按数据项算）。
-            let m_sh = mgr.clone();
-            let sh = mgr.show_hidden;
-            let app_sh = app.clone();
-            Element::checkbox("显示特殊方案", sh)
-                .small()
-                .fg_role(Role::Text)
-                .on_toggle(move |_| {
-                    let v = !sh.get();
-                    m_sh.set_show_hidden(v);
-                    app_sh.borrow_mut().save_show_hidden_schemas(v);
-                })
-        })
-        .child(Element::leaf().weight(1.0));
-
-    // 复合行列表（已启用在前 · 未启用在后 · ↑/↓ · outline 类型徽章）
+    // 复合行列表（已启用在前 · 未启用在后 · 特殊方案独立分区）
     let list_el = build_schema_inline_list(mgr);
 
-    let mut secs = vec![section("输入方案", vec![toolbar, filter_row, list_el])];
+    let mut secs = vec![section("输入方案", vec![toolbar, list_el])];
 
     // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。
     // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。
