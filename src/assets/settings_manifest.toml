@@ -1319,7 +1319,7 @@ group = "keys"
 section = "候选操作"
 type = "checkbox_group"
 label = "次选/三选快捷键"
-hint = "选中第 2、3 位候选词的快捷键"
+hint = "选中第 2、3 位候选词的快捷键；选修饰键时按下松开（轻敲）才生效"
 [[items.options]]
 value = "semicolon_quote"
 label = "分号/引号 ; '"

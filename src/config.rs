@@ -58,6 +58,11 @@ impl Config {
         self.get_path(path)?.as_array()
     }
 
+    /// 按点分路径获取对象（Map 型配置，如 `keys.schema_hotkeys`）。
+    pub fn get_object(&self, path: &str) -> Option<&serde_json::Map<String, Value>> {
+        self.get_path(path)?.as_object()
+    }
+
     /// 按点分路径设置值。
     pub fn set_path(&mut self, path: &str, value: Value) {
         let parts: Vec<&str> = path.split('.').collect();

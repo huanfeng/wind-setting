@@ -130,10 +130,14 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     for dlg in field_dialogs {
         root = root.child(dlg);
     }
+    // 按键冲突实时监听：每帧刷新 state.conflict（驱动常驻警告条），并对新出现的
+    // 「可共存」组合写 feedback 弹一次说明 toast。
+    //
+    // ⚠ 必须挂在 toast_sink **之前**：两者都在 on_update 阶段按树序派发，watcher 在后就要
+    // 等下一帧才被 toast_sink 读到——而渲染由交互驱动、空闲零帧，那一帧未必会来。
+    root = root.child(crate::pages::conflict_watcher(app));
     // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏 status 只保留连接态）。
-    root = root.child(crate::pages::dict::reactive::toast_sink(feedback));
-    // 触发键冲突实时监听：每帧刷新 state.conflict，驱动输入页常驻警告条。
-    root.child(crate::pages::conflict_watcher(app))
+    root.child(crate::pages::dict::reactive::toast_sink(feedback))
 }
 
 /// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。

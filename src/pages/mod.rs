@@ -106,20 +106,42 @@ pub fn conflict_bar(conflict: Signal<String>) -> Element {
 /// 后续可优化为仅相关 Signal 变化时重算。
 pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     let conflict = app.borrow().conflict;
+    let feedback = app.borrow().feedback;
     let eff_app = app.clone();
     let tick = std::cell::Cell::new(0u64);
+    // 上一轮的共存指纹集合。`None` = 还没跑过第一轮。
+    //
+    // ⚠ 首轮只建基线、**不弹 Toast**：打开设置页时配置里本来就有的共存组合不是「刚发生的事」，
+    // 每次开窗都弹一遍只会让人学会忽略它。Toast 只在集合**新增**成员时弹——即用户刚刚
+    // 亲手配出这个组合的那一刻，此时他正需要知道这两个功能将如何分时。
+    let seen: std::cell::RefCell<Option<std::collections::HashSet<String>>> =
+        std::cell::RefCell::new(None);
     dict::reactive::reactive_effect(
         move || {
             tick.set(tick.get().wrapping_add(1));
             tick.get()
         },
         move || {
-            if let Ok(st) = eff_app.try_borrow() {
-                let next = st.live_conflicts().unwrap_or_default();
-                if next != conflict.get() {
-                    conflict.set(next);
+            let Ok(st) = eff_app.try_borrow() else { return };
+            let res = st.live_conflicts();
+            if res.blocking != conflict.get() {
+                conflict.set(res.blocking);
+            }
+            let now: std::collections::HashSet<String> =
+                res.coexist.iter().map(|c| c.fingerprint()).collect();
+            let mut slot = seen.borrow_mut();
+            if let Some(prev) = slot.as_ref() {
+                // 逐条播报新增项。同一帧内多条（如一次勾选同时撞上左右两个修饰键）会互相
+                // 覆盖 toast——但共存文案已按「一对分组」描述，多条内容高度重复，不值得排队。
+                for c in &res.coexist {
+                    if !prev.contains(&c.fingerprint())
+                        && let Some(note) = crate::key_conflict::coexist_note(c)
+                    {
+                        feedback.set(Some((ToastKind::Info, note)));
+                    }
                 }
             }
+            *slot = Some(now);
         },
     )
 }

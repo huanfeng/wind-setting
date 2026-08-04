@@ -17,6 +17,7 @@ use windui::prelude::*;
 use crate::capabilities::Capabilities;
 use crate::config::{Config, diff_config};
 use crate::dialogs::schema_manager::SchemaManagerState;
+use crate::key_conflict::{Conflict, ConflictLevel, KeyGroup};
 use crate::manifest::Manifest;
 use crate::pages::dict::reactive::Feedback;
 use crate::pages::dict::state::DictManagerState;
@@ -1055,28 +1056,33 @@ impl AppState {
     /// - 候选键域：有候选时操作候选（次选/翻页/高亮移动/以词定字）。
     /// - 快捷键域：功能组合键（切换方案/标点/工具栏…、置顶/删除词条），归一化后同键即冲突。
     ///
-    /// 各域摘要用换行拼成一条文案（可能各一行）；均无冲突返回 None。
-    /// 供 `conflict_watcher` 在渲染帧刷新固定顶栏——每次求值 clone 配置并跑全部写回器，
+    /// 结果按**级别**分流，两者呈现方式不同（见 [`ConflictLevel`]）：
+    /// - `blocking`：各域摘要用换行拼成一条文案（可能各一行），驱动常驻警告顶栏；
+    /// - `coexist`：可用的分时复用，交给 `conflict_watcher` 在**刚配出来那一刻** Toast 一次。
+    ///
+    /// 供 `conflict_watcher` 在渲染帧刷新——每次求值 clone 配置并跑全部写回器，
     /// 但渲染帧由交互/动画驱动（空闲不渲染），故非 60fps 常态开销。
-    pub fn live_conflicts(&self) -> Option<String> {
+    pub fn live_conflicts(&self) -> LiveConflicts {
         let mut probe = self.current_config.clone();
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
         }
         let mut lines = Vec::new();
-        if let Some(m) = check_trigger_key_conflicts(&probe) {
-            lines.push(m);
+        let mut coexist = Vec::new();
+        for (groups, scene) in [
+            (collect_trigger_key_groups(&probe), "触发键"),
+            (collect_candidate_key_groups(&probe), "候选键"),
+            (collect_hotkey_groups(&probe), "快捷键"),
+        ] {
+            let (blocking, mut co) = check_domain(groups, scene);
+            if let Some(m) = blocking {
+                lines.push(m);
+            }
+            coexist.append(&mut co);
         }
-        if let Some(m) = check_candidate_key_conflicts(&probe) {
-            lines.push(m);
-        }
-        if let Some(m) = check_hotkey_conflicts(&probe) {
-            lines.push(m);
-        }
-        if lines.is_empty() {
-            None
-        } else {
-            Some(lines.join("\n"))
+        LiveConflicts {
+            blocking: lines.join("\n"),
+            coexist,
         }
     }
 
@@ -1217,8 +1223,8 @@ impl AppState {
     }
 }
 
-/// 收集当前配置里"裸键触发"四组的 (显示名, 触发键列表)，供按键冲突检测用。
-fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+/// 收集当前配置里"裸键触发"四组，供按键冲突检测用。
+fn collect_trigger_key_groups(cfg: &Config) -> Vec<KeyGroup> {
     fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
         v.map(|a| {
             a.iter()
@@ -1227,78 +1233,79 @@ fn collect_trigger_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
         })
         .unwrap_or_default()
     }
+    fn nested_keys(m: &Value) -> Vec<String> {
+        m.get("trigger_keys")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 
     let mut groups = vec![
-        (
-            "临时拼音".to_string(),
+        KeyGroup::new(
+            "temp_pinyin",
+            "临时拼音",
             strs(cfg.get_array("input.temp_pinyin.trigger_keys")),
         ),
-        (
-            "临时英文".to_string(),
+        KeyGroup::new(
+            "temp_english",
+            "临时英文",
             strs(cfg.get_array("input.temp_english.trigger_keys")),
         ),
     ];
 
     if let Some(arr) = cfg.get_array("schema.mix_modes") {
-        for m in arr {
+        for (i, m) in arr.iter().enumerate() {
             let label = m
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("混合模式")
                 .to_string();
-            let keys = m
-                .get("trigger_keys")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            groups.push((label, keys));
+            groups.push(KeyGroup::new(&format!("mix_{i}"), label, nested_keys(m)));
         }
     }
 
     if let Some(arr) = cfg.get_array("schema.special_modes") {
-        for m in arr {
+        for (i, m) in arr.iter().enumerate() {
             let name = m.get("name").and_then(Value::as_str).unwrap_or("");
-            let label = format!("特殊模式「{name}」");
-            let keys = m
-                .get("trigger_keys")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            groups.push((label, keys));
+            groups.push(KeyGroup::new(
+                &format!("special_{i}"),
+                format!("特殊模式「{name}」"),
+                nested_keys(m),
+            ));
         }
     }
 
     // 去重每组触发键：mix_modes/special_modes 的 trigger_keys 直取自 core config 数组，
     // 可能含重复值；不去重会让冲突文案对同一键重复呈现。
-    for (_, keys) in groups.iter_mut() {
+    for g in groups.iter_mut() {
         let mut seen = std::collections::HashSet::new();
-        keys.retain(|k| seen.insert(k.clone()));
+        g.keys.retain(|k| seen.insert(k.clone()));
     }
     groups
 }
 
-/// 对一个场景域的分组跑冲突检测，冠 `scene` 标签生成提示；无冲突返回 None。
-fn check_domain(groups: Vec<(String, Vec<String>)>, scene: &str) -> Option<String> {
+/// 一次实时检测的结果，按呈现方式分流（见 [`AppState::live_conflicts`]）。
+#[derive(Debug, Clone, Default)]
+pub struct LiveConflicts {
+    /// 常驻警告顶栏文案；空串 = 无需警告。
+    pub blocking: String,
+    /// 可共存的分时复用，供 Toast 一次性告知实际行为。
+    pub coexist: Vec<Conflict>,
+}
+
+/// 对一个场景域跑冲突检测，把 Blocking 摘要（冠 `scene` 标签）与 Coexist 明细分开返回。
+fn check_domain(groups: Vec<KeyGroup>, scene: &str) -> (Option<String>, Vec<Conflict>) {
     let hits = crate::key_conflict::find_key_conflicts(&groups);
-    crate::key_conflict::conflict_summary(&hits, scene)
-}
-
-/// 触发键场景域（无候选/闲时）冲突检测。
-fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
-    check_domain(collect_trigger_key_groups(cfg), "触发键")
-}
-
-/// 候选键场景域（有候选时）冲突检测。
-fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
-    check_domain(collect_candidate_key_groups(cfg), "候选键")
+    let coexist = hits
+        .iter()
+        .filter(|c| c.level == ConflictLevel::Coexist)
+        .cloned()
+        .collect();
+    (crate::key_conflict::conflict_summary(&hits, scene), coexist)
 }
 
 /// 收集"候选操作"域各组的 (显示名, 物理键列表)，组名经 `expand_candidate_key` 展开
@@ -1307,7 +1314,7 @@ fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
 /// 含中英切换键：core 在 KEY_UP 处理中英切换，即便候选窗打开也会触发（`coordinator.rs:3225`），
 /// 与次选键(lrshift/lrctrl)争用同一物理修饰键——有候选时按下即选词、切换被抑制，是真冲突。
 /// 详见 `docs/key-conflict-detection.md`。
-fn collect_candidate_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+fn collect_candidate_key_groups(cfg: &Config) -> Vec<KeyGroup> {
     fn expand_strs(v: Option<&Vec<Value>>) -> Vec<String> {
         v.map(|a| {
             a.iter()
@@ -1320,34 +1327,48 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
     }
 
     vec![
-        (
-            "次选/三选键".to_string(),
+        KeyGroup::new(
+            "select_keys",
+            "次选/三选键",
             expand_strs(cfg.get_array("keys.select_key_groups")),
         ),
-        (
-            "翻页键".to_string(),
+        KeyGroup::new(
+            "page_keys",
+            "翻页键",
             expand_strs(cfg.get_array("keys.page_keys")),
         ),
-        (
-            "高亮移动键".to_string(),
+        KeyGroup::new(
+            "highlight_keys",
+            "高亮移动键",
             expand_strs(cfg.get_array("keys.highlight_keys")),
         ),
-        (
-            "以词定字".to_string(),
+        KeyGroup::new(
+            "select_char",
+            "以词定字",
             expand_strs(cfg.get_array("keys.select_char_keys")),
         ),
-        (
-            "中英切换键".to_string(),
+        KeyGroup::new(
+            "toggle_mode",
+            "中英切换键",
             expand_strs(cfg.get_array("keys.toggle_mode_keys")),
         ),
     ]
 }
 
-/// 收集功能快捷键（组合键）各功能的 (显示名, [归一化组合键])，供组合键冲突检测。
+/// 收集功能快捷键（组合键）各功能的分组，供组合键冲突检测。
 /// 组合键都带修饰键、是显式命令，不涉及裸键的按场景分派，故统一为一个域检测。
-/// 含 9 个 hotkey 项 + pin/delete_candidate（select，但值也是 Ctrl+数字 组合键）；
-/// 空值与 "none" 视为未设置、跳过。
-fn collect_hotkey_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
+///
+/// 覆盖三类来源——**它们在内核是同一张 key_down 表**（`wind-config/src/hotkey.rs` 的
+/// `compile`），匹配走 `.find()`，即先注册者赢、后者静默失效，所以必须放在一个域里比：
+/// 1. `[keys]` 下的 9 个 hotkey 项 + `pin_candidate`/`delete_candidate`（模板值，见 `expand_hotkey`）；
+/// 2. `keys.schema_hotkeys`（方案直达热键，方案管理对话框可编辑）；
+/// 3. `input.temp_pinyin.hotkey` 与 `schema.special_modes[].hotkey`（模式直达热键）。
+///
+/// 2、3 两类此前**完全没有参与检测**：把某方案的直达热键配成 `Ctrl+Shift+E`（= 切换方案的
+/// 出厂值）在对话框里是点得出来的，配完毫无提示、按下去也只有一个生效。
+fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
+    use crate::key_conflict::expand_hotkey;
+
     const HOTKEYS: &[(&str, &str)] = &[
         ("keys.switch_engine", "切换输入方案"),
         ("keys.toggle_full_width", "切换全角/半角"),
@@ -1361,23 +1382,53 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<(String, Vec<String>)> {
         ("keys.pin_candidate", "置顶词条"),
         ("keys.delete_candidate", "删除词条"),
     ];
-    HOTKEYS
+    let mut groups: Vec<KeyGroup> = HOTKEYS
         .iter()
         .map(|(key, label)| {
-            let raw = cfg.get_str(key).unwrap_or("");
-            let keys = if raw.is_empty() || raw == "none" {
-                Vec::new()
-            } else {
-                vec![crate::key_conflict::canonical_hotkey(raw)]
-            };
-            (label.to_string(), keys)
+            KeyGroup::new(key, *label, expand_hotkey(cfg.get_str(key).unwrap_or("")))
         })
-        .collect()
-}
+        .collect();
 
-/// 功能快捷键（组合键）域冲突检测。
-fn check_hotkey_conflicts(cfg: &Config) -> Option<String> {
-    check_domain(collect_hotkey_groups(cfg), "快捷键")
+    // 方案直达热键：Map<方案 id, 热键串>。按 id 排序保证同一份配置每次得到同样的报告顺序
+    // （内核编译期也排序，见 hotkey.rs 里 schema_hotkeys 的 sort_by）。
+    if let Some(map) = cfg.get_object("keys.schema_hotkeys") {
+        let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (id, v) in entries {
+            if id.is_empty() {
+                continue;
+            }
+            groups.push(KeyGroup::new(
+                &format!("schema_hotkey_{id}"),
+                format!("切换到方案「{id}」"),
+                expand_hotkey(v.as_str().unwrap_or("")),
+            ));
+        }
+    }
+
+    groups.push(KeyGroup::new(
+        "temp_pinyin_hotkey",
+        "临时拼音直达热键",
+        expand_hotkey(cfg.get_str("input.temp_pinyin.hotkey").unwrap_or("")),
+    ));
+
+    if let Some(arr) = cfg.get_array("schema.special_modes") {
+        for (i, m) in arr.iter().enumerate() {
+            // 内核对 id 为空的条目直接跳过编译（hotkey.rs），故这里也不参与检测——
+            // 报一个根本不会注册的热键的冲突，只会让用户去改一个无关的地方。
+            if m.get("id").and_then(Value::as_str).unwrap_or("").is_empty() {
+                continue;
+            }
+            let name = m.get("name").and_then(Value::as_str).unwrap_or("");
+            groups.push(KeyGroup::new(
+                &format!("special_hotkey_{i}"),
+                format!("特殊模式「{name}」直达热键"),
+                expand_hotkey(m.get("hotkey").and_then(Value::as_str).unwrap_or("")),
+            ));
+        }
+    }
+
+    groups
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -1610,6 +1661,21 @@ mod trigger_conflict_tests {
     use super::*;
     use serde_json::json;
 
+    // 三个域的 Blocking 摘要快捷方式（历史用例按域断言文案，保留这层薄封装免得逐个改写）。
+    fn check_trigger_key_conflicts(cfg: &Config) -> Option<String> {
+        check_domain(collect_trigger_key_groups(cfg), "触发键").0
+    }
+    fn check_candidate_key_conflicts(cfg: &Config) -> Option<String> {
+        check_domain(collect_candidate_key_groups(cfg), "候选键").0
+    }
+    fn check_hotkey_conflicts(cfg: &Config) -> Option<String> {
+        check_domain(collect_hotkey_groups(cfg), "快捷键").0
+    }
+    /// 某域的可共存明细。
+    fn coexist_of(groups: Vec<KeyGroup>) -> Vec<Conflict> {
+        check_domain(groups, "候选键").1
+    }
+
     #[test]
     fn test_collect_trigger_key_groups_no_conflict() {
         let cfg = Config::from_value(json!({
@@ -1680,18 +1746,19 @@ mod trigger_conflict_tests {
                 "special_modes": []
             }
         }));
-        let msg = st
-            .live_conflicts()
-            .expect("编辑态含重叠触发键，应实时检出冲突");
+        let msg = st.live_conflicts().blocking;
+        assert!(!msg.is_empty(), "编辑态含重叠触发键，应实时检出冲突");
         assert!(msg.contains("触发键冲突"), "应标注触发键场景");
         assert!(msg.contains(';'), "键名应以符号呈现");
         assert!(msg.contains("临时拼音"));
         assert!(msg.contains("快捷"));
-        // 无冲突时返回 None。
+        // 无冲突时警告文案为空。
         st.current_config = Config::from_value(json!({
             "input": { "temp_pinyin": { "trigger_keys": ["backtick"] } }
         }));
-        assert!(st.live_conflicts().is_none(), "无重叠应无冲突");
+        let clean = st.live_conflicts();
+        assert!(clean.blocking.is_empty(), "无重叠应无冲突");
+        assert!(clean.coexist.is_empty());
     }
 
     #[test]
@@ -1751,38 +1818,146 @@ mod trigger_conflict_tests {
         }));
         assert!(check_hotkey_conflicts(&cfg2).is_none(), "none 不算占用");
 
-        // pin/delete 同为 Ctrl+数字 → 冲突。
+        // pin/delete 同为 Ctrl+数字 → 冲突。模板展开成十个具体键（见 `expand_hotkey`），
+        // 文案按「等 N 个键」缩写，而不是逐个列出十行。
         let cfg3 = Config::from_value(json!({
             "keys": { "pin_candidate": "ctrl+number", "delete_candidate": "ctrl+number" }
         }));
         let msg3 = check_hotkey_conflicts(&cfg3).expect("pin/delete 同键应冲突");
-        assert!(msg3.contains("Ctrl+数字"));
+        assert!(msg3.contains("等 10 个键"), "实际: {msg3}");
+        assert!(msg3.contains("置顶词条") && msg3.contains("删除词条"));
     }
 
+    /// 中英切换键 × 修饰键次选键：**可共存**，不进警告条、只给行为说明。
+    ///
+    /// 这条用例的断言方向被反转过：内核 2026-08-03 前，次选吃掉 KEY_DOWN、切换在 KEY_UP
+    /// 等不到 `had_pending`，右 Shift 的切换意图确实静默丢失，是真冲突；现在修饰键选词改走
+    /// KEY_UP 轻敲并明确裁决为「有候选选词、无候选切换」，两个功能都在。
+    /// 若哪天内核又改回去，这里会先红——这正是它存在的意义。
     #[test]
-    fn test_toggle_mode_vs_select_key_conflict() {
-        // 右 Shift 既设为中英切换又作次选键(lrshift 含右Shift)：有候选时按下选词、切换被抑制 → 冲突。
+    fn test_toggle_mode_vs_select_key_coexists() {
         let cfg = Config::from_value(json!({
             "keys": {
                 "toggle_mode_keys": ["lshift", "rshift"],
                 "select_key_groups": ["lrshift"]
             }
         }));
-        let msg = check_candidate_key_conflicts(&cfg).expect("中英切换键与次选键应冲突");
-        assert!(msg.contains("候选键冲突"));
-        assert!(msg.contains("中英切换键"));
-        assert!(msg.contains("次选/三选键"));
+        assert!(
+            check_candidate_key_conflicts(&cfg).is_none(),
+            "可共存的分时复用不该进常驻警告条"
+        );
+        let co = coexist_of(collect_candidate_key_groups(&cfg));
+        assert_eq!(co.len(), 2, "左右 Shift 各一条");
+        let note = crate::key_conflict::coexist_note(&co[0]).expect("应给出行为说明");
+        assert!(note.contains("中英切换键") && note.contains("次选/三选键"));
 
-        // 中英切换用 Shift、次选用「分号/引号」→ 不同物理键，不冲突。
+        // 中英切换用 Shift、次选用「分号/引号」→ 不同物理键，两级都不该有。
         let cfg2 = Config::from_value(json!({
             "keys": {
                 "toggle_mode_keys": ["lshift"],
                 "select_key_groups": ["semicolon_quote"]
             }
         }));
+        assert!(check_candidate_key_conflicts(&cfg2).is_none());
+        assert!(coexist_of(collect_candidate_key_groups(&cfg2)).is_empty());
+    }
+
+    /// 方案直达热键此前**完全没参与检测**：在方案管理对话框里把某方案配成
+    /// `Ctrl+Shift+E`（＝切换方案的出厂值）毫无提示，实际只有一个会生效。
+    #[test]
+    fn test_schema_hotkey_conflicts_with_builtin_hotkey() {
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "switch_engine": "ctrl+shift+e",
+                "schema_hotkeys": { "wubi86": "ctrl+shift+e" }
+            }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("方案直达热键应参与快捷键域检测");
+        assert!(msg.contains("Ctrl+Shift+E"));
+        assert!(msg.contains("切换输入方案"));
+        assert!(msg.contains("切换到方案「wubi86」"));
+    }
+
+    /// 模式直达热键（临拼 / 特殊模式）同样进快捷键域——它们与 `[keys]` 那批
+    /// 在内核是同一张 key_down 表，撞了就是先注册者赢。
+    #[test]
+    fn test_mode_direct_hotkeys_join_hotkey_domain() {
+        let cfg = Config::from_value(json!({
+            "keys": { "toggle_s2t": "ctrl+shift+j" },
+            "input": { "temp_pinyin": { "hotkey": "ctrl+shift+j" } },
+            "schema": { "special_modes": [] }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("临拼直达热键应参与检测");
+        assert!(msg.contains("临时拼音直达热键"));
+        assert!(msg.contains("切换简入繁出"));
+
+        let cfg2 = Config::from_value(json!({
+            "keys": { "open_settings": "ctrl+shift+p" },
+            "schema": { "special_modes": [
+                { "id": "fast_symbols", "name": "快符", "hotkey": "ctrl+shift+p" }
+            ]}
+        }));
+        let msg2 = check_hotkey_conflicts(&cfg2).expect("特殊模式直达热键应参与检测");
+        assert!(msg2.contains("特殊模式「快符」直达热键"));
+    }
+
+    /// id 为空的特殊模式内核根本不注册热键，报它只会把用户引去改无关的地方。
+    #[test]
+    fn test_special_mode_without_id_is_not_reported() {
+        let cfg = Config::from_value(json!({
+            "keys": { "open_settings": "ctrl+shift+p" },
+            "schema": { "special_modes": [
+                { "id": "", "name": "没写 id 的", "hotkey": "ctrl+shift+p" }
+            ]}
+        }));
+        assert!(check_hotkey_conflicts(&cfg).is_none());
+    }
+
+    /// `Ctrl+数字` 模板占满整段数字键，与具体的 `Ctrl+1` 重叠——GUI 主键列表里有 0-9，
+    /// 这是点得出来的配置。
+    #[test]
+    fn test_number_template_overlaps_specific_digit_in_domain() {
+        let cfg = Config::from_value(json!({
+            "keys": { "pin_candidate": "ctrl+number", "open_settings": "ctrl+1" }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("模板与具体数字键应检出重叠");
+        assert!(msg.contains("Ctrl+1"));
+        assert!(msg.contains("置顶词条") && msg.contains("打开设置"));
+    }
+
+    /// **出厂默认必须两级皆空**：既不该有警告条，也不该一打开设置页就弹共存 toast。
+    ///
+    /// 基线取 `mockdata/config.json`，它由 `regenerate_mock_config` 从主仓
+    /// （`wind-config` 代码默认 ⊕ `data/config.toml`）现算，已有守护测试钉住其与 core 一致。
+    /// 于是本用例实际断言的是**主仓的出厂配置本身没有按键打架**——某天有人把某个默认值
+    /// 改成与别处撞车的键，这里会红，而不是等用户装完发现某个功能按下去没反应。
+    ///
+    /// 注意默认配置里 `;` 既是内置「快捷」的触发键、又在次选键组 `semicolon_quote` 里：
+    /// 那是跨域分时复用（空缓冲触发 / 有候选选词），按 §1 原则本就不该报。
+    #[test]
+    fn test_factory_defaults_have_no_conflicts() {
+        let cfg = Config::from_value(
+            serde_json::from_str(include_str!("mockdata/config.json"))
+                .expect("mockdata/config.json 应是合法 JSON"),
+        );
+        assert_eq!(
+            check_trigger_key_conflicts(&cfg),
+            None,
+            "出厂默认的触发键不应互撞"
+        );
+        assert_eq!(
+            check_candidate_key_conflicts(&cfg),
+            None,
+            "出厂默认的候选操作键不应互撞"
+        );
+        assert_eq!(
+            check_hotkey_conflicts(&cfg),
+            None,
+            "出厂默认的功能快捷键不应互撞"
+        );
         assert!(
-            check_candidate_key_conflicts(&cfg2).is_none(),
-            "不同物理键不应冲突"
+            coexist_of(collect_candidate_key_groups(&cfg)).is_empty(),
+            "出厂默认不该触发共存提示——否则每个新用户第一次打开设置页都会看到它"
         );
     }
 
