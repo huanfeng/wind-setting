@@ -27,6 +27,25 @@ const ACTIONS_WEIGHT: f32 = 1.5;
 /// 子标签单段固定宽度（各数据域分段等宽，总宽 = 段数 × 此值）。
 const SUB_TAB_SEG_W: i32 = 104;
 
+// 各子标签分段适用的数据域类型。**并集必须覆盖 `DomainKind` 的每个变体**——漏掉哪个，
+// 那类方案下就一个标签都不渲染，而逻辑层 `tabs_for_domain_at` 照常给出标签集，
+// 表现为「能加词条、能导入导出，就是看不到标签」。守护见
+// `sub_tab_segments_cover_every_domain_kind`。
+const SEG_PHRASE: &[DomainKind] = &[DomainKind::Phrase];
+const SEG_PINYIN: &[DomainKind] = &[DomainKind::Pinyin];
+/// 未知引擎类型挂在码表这组：逻辑层对 `Other` 也是按码表从宽给全四类，两处保持一致。
+const SEG_CODETABLE: &[DomainKind] = &[DomainKind::Codetable, DomainKind::Other];
+const SEG_ENGLISH: &[DomainKind] = &[DomainKind::English];
+const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
+/// 覆盖性校验用（顺序无关）。加新分段时记得挂进来。
+const ALL_SEGMENTS: &[&[DomainKind]] = &[
+    SEG_PHRASE,
+    SEG_PINYIN,
+    SEG_CODETABLE,
+    SEG_ENGLISH,
+    SEG_MIXED,
+];
+
 /// 构建词库页。
 pub fn build_page(state: &AppState) -> Element {
     let mgr = state.dict_mgr.clone();
@@ -99,12 +118,14 @@ pub fn build_page(state: &AppState) -> Element {
                 .on_click(move |_| mgr_refresh.reload()),
         );
 
-    // ── 方案子标签（按 domain_kind 动态显隐，四条 segmented 同时只显一条）──
-    let k_phrase = mgr.clone();
-    let k_py = mgr.clone();
-    let k_wb = mgr.clone();
-    let k_mx = mgr.clone();
-    let seg = |titles: Vec<&str>, mgr: DictManagerState, kind: DomainKind| {
+    // ── 方案子标签（按 domain_kind 动态显隐，同时只显一条）──
+    //
+    // 每条分段挂一组适用的 DomainKind，而非单个：`Other`（未知引擎类型）必须挂在某条上，
+    // 否则那类方案下一个标签都不渲染——**而逻辑层 `tabs_for_domain_at` 仍会给出标签集**，
+    // 于是「有功能、没入口」：能加词条、能导入导出，就是看不到标签。英文方案正是这么漏的
+    // （`domain_kind()` 把它落到 `Other`，而这里只逐个列举了 Phrase/Pinyin/Codetable/Mixed）。
+    // 覆盖性由 `sub_tab_segments_cover_every_domain_kind` 守护。
+    let seg = |titles: Vec<&str>, mgr: DictManagerState, kinds: &'static [DomainKind]| {
         let m = mgr.clone();
         // 每段固定宽、总宽随段数变化：避免 1/3/4 段被均分导致各域分段宽度不一致。
         let seg_w = titles.len() as i32 * SUB_TAB_SEG_W;
@@ -113,7 +134,7 @@ pub fn build_page(state: &AppState) -> Element {
             mgr.sub_tab,
         )
         .width(seg_w)
-        .visible_when(move || m.domain_kind() == kind)
+        .visible_when(move || kinds.contains(&m.domain_kind()))
     };
     // 「导入」「导出」入口：置于子标签行最右（弹簧右对齐），方案域与短语域均显示，
     // 保持统一入口位置（短语走原生对话框，方案打开对应对话框）。
@@ -140,22 +161,24 @@ pub fn build_page(state: &AppState) -> Element {
         .cross(Align::Center)
         .spacing(8)
         .padding_xy(0, 2)
-        .child(seg(
-            vec!["系统短语", "用户短语"],
-            k_phrase,
-            DomainKind::Phrase,
-        ))
+        .child(seg(vec!["系统短语", "用户短语"], mgr.clone(), SEG_PHRASE))
         .child(seg(
             vec!["用户词库", "临时词库", "词频"],
-            k_py,
-            DomainKind::Pinyin,
+            mgr.clone(),
+            SEG_PINYIN,
         ))
         .child(seg(
             vec!["用户词库", "临时词库", "词频", "候选调整"],
-            k_wb,
-            DomainKind::Codetable,
+            mgr.clone(),
+            SEG_CODETABLE,
         ))
-        .child(seg(vec!["候选调整"], k_mx, DomainKind::Mixed))
+        // 英文无临时词库（无造词流程，那张表恒空），故三段而非四段。
+        .child(seg(
+            vec!["用户词库", "词频", "候选调整"],
+            mgr.clone(),
+            SEG_ENGLISH,
+        ))
+        .child(seg(vec!["候选调整"], mgr.clone(), SEG_MIXED))
         .child(Element::leaf().weight(1.0))
         .child(import_entry)
         .child(export_entry);
@@ -564,6 +587,45 @@ mod tests {
     use serde_json::json;
     use windui::core::Tree;
     use windui::geometry::Size;
+
+    /// 子标签分段必须覆盖 `DomainKind` 的**每个**变体。
+    ///
+    /// 漏掉哪个，那类方案下就一个标签都不渲染——而逻辑层 `tabs_for_domain_at` 照常给出
+    /// 标签集，于是「能加词条、能导入导出，就是看不到标签」。英文方案实际这么漏过一次：
+    /// `domain_kind()` 把它落到 `Other`，而分段只逐个列举了 Phrase/Pinyin/Codetable/Mixed。
+    ///
+    /// 枚举变体在此**逐个写死**：新增变体时这里编译不过（match 不穷尽），强制来这里
+    /// 决定它挂哪一段——比「漏了也照样编译、跑起来才发现没标签」强。
+    #[test]
+    fn sub_tab_segments_cover_every_domain_kind() {
+        let all = [
+            DomainKind::Phrase,
+            DomainKind::Pinyin,
+            DomainKind::Codetable,
+            DomainKind::Mixed,
+            DomainKind::English,
+            DomainKind::Other,
+        ];
+        // 穷尽性哨兵：新增变体会让这个 match 编译失败，逼人回到上面的数组补齐。
+        for k in all {
+            let _: () = match k {
+                DomainKind::Phrase
+                | DomainKind::Pinyin
+                | DomainKind::Codetable
+                | DomainKind::Mixed
+                | DomainKind::English
+                | DomainKind::Other => (),
+            };
+        }
+        for k in all {
+            let n = ALL_SEGMENTS.iter().filter(|s| s.contains(&k)).count();
+            assert_eq!(
+                n, 1,
+                "{k:?} 应恰好挂在一个分段上（实际 {n} 个）——0 个 = 该类方案看不到任何标签，\
+                 多于 1 个 = 同时显示两条分段"
+            );
+        }
+    }
 
     /// 组装最小词库页视图（同 build_page 的表格接线：导航 effect + host_signal 表格），
     /// 复现「切换类别 → 整表重建」的真实多帧时序。

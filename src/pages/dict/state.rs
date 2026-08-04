@@ -207,6 +207,9 @@ pub enum DomainKind {
     Pinyin,
     Codetable,
     Mixed,
+    /// 英文方案。**没有临时词库**——那是自动造词的暂存区，英文没有造词流程，
+    /// 挂上去永远是空表。其余（用户词库/词频/候选调整）都有。
+    English,
     Other,
 }
 
@@ -363,6 +366,7 @@ impl DictManagerState {
             Some("pinyin") => DomainKind::Pinyin,
             Some("codetable") => DomainKind::Codetable,
             Some("mixed") => DomainKind::Mixed,
+            Some("english") => DomainKind::English,
             _ => DomainKind::Other,
         }
     }
@@ -383,6 +387,8 @@ impl DictManagerState {
             DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
             DomainKind::Pinyin => vec![UserDict, Temp, Freq],
             DomainKind::Mixed => vec![Shadow],
+            // 英文：无临时词库（无造词流程，那张表恒空）。
+            DomainKind::English => vec![UserDict, Freq, Shadow],
             // 码表与未知：全四类（未知从宽，不隐藏数据）。
             DomainKind::Codetable | DomainKind::Other => vec![UserDict, Temp, Freq, Shadow],
         }
@@ -1515,6 +1521,8 @@ impl DictManagerState {
             DomainKind::Codetable | DomainKind::Other => {
                 &["userWords", "tempWords", "freq", "shadow"]
             }
+            // 与 tabs_for_domain_at 保持一致：英文无临时词库。
+            DomainKind::English => &["userWords", "freq", "shadow"],
             DomainKind::Mixed => &["shadow"],
             DomainKind::Phrase => &[],
         };
