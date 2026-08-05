@@ -553,6 +553,31 @@ mod tests {
         );
     }
 
+    /// 脏判定决定「打开对话框看一眼再关掉」会不会写盘。
+    ///
+    /// 两个方向都要守：漏判则改动丢失；误判则每次打开关闭都写一次 override，
+    /// 且整个设置界面会一直显示「有未保存改动」。
+    ///
+    /// 最后一条最容易漏：对话框复用同一组信号，换方案重新 seed 时若不重置基准，
+    /// 上一个方案的脏状态会被带到下一个方案身上。
+    #[test]
+    fn is_dirty_resets_on_reseed() {
+        let m = manifest();
+        let f = CtFields::default();
+        f.seed(&m, &json!({ "punct_commit": true }));
+        assert!(!f.is_dirty(), "刚播种完不该判脏——用户还没动过任何一项");
+
+        match f.sigs.borrow().get("schema.codetable.punct_commit") {
+            Some(CtSig::Bool(s)) => s.set(false),
+            _ => panic!("punct_commit 应是 bool 项"),
+        }
+        assert!(f.is_dirty(), "拨动任一项即为脏");
+
+        // 换方案（重新播种）：基准跟着重置，否则上一个方案的脏状态会赖到这个方案头上。
+        f.seed(&m, &json!({ "punct_commit": true }));
+        assert!(!f.is_dirty(), "换方案重新播种后应回到干净");
+    }
+
     /// 总开关初值靠内容推导，不另存一个布尔键。手写过配置文件的用户打开设置页
     /// 也该看到「已自定义」。
     #[test]

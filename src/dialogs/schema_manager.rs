@@ -1142,15 +1142,8 @@ impl SchemaManagerState {
     }
 
     /// 提交待提交队列（由主保存调用）。
-    ///
-    /// 逐个方案提交，**成功一个移除一个**：中途失败时已落盘的不该留在队列里再写一次，
-    /// 未落盘的要留着让用户重试。
     pub fn commit_pending_edits(&self) -> Result<(), String> {
-        let ids: Vec<String> = self.pending_edits.borrow().keys().cloned().collect();
-        for id in ids {
-            let Some(edit) = self.pending_edits.borrow().get(&id).cloned() else {
-                continue;
-            };
+        drain_pending(&self.pending_edits, |id, edit| {
             for (dict_id, want) in &edit.dicts {
                 rpc::call_core(
                     "schema.setDictEnabled",
@@ -1162,8 +1155,8 @@ impl SchemaManagerState {
                 rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg }))
                     .map_err(|e| format!("方案配置保存失败（{id}）: {e}"))?;
             }
-            self.pending_edits.borrow_mut().remove(&id);
-        }
+            Ok(())
+        })?;
         // 行名可能含双拼布局后缀，提交后重拉列表刷新显示（refresh 保留选中）。
         self.refresh();
         Ok(())
@@ -2007,6 +2000,29 @@ fn build_settings_header(entry: &SchemaEntry) -> Element {
     col.child(Element::divider())
 }
 
+/// 逐个方案提交队列，**成功一个移除一个**。
+///
+/// 中途失败时：已落盘的必须移出队列，否则下次保存会再写一遍；未落盘的必须留着，
+/// 否则用户重试时那些改动已经不在了——而他并不知道自己丢了什么。
+///
+/// 提交动作由调用方传入（真实路径是两个 RPC），本函数只管队列的进出，
+/// 好让重试语义能脱离 RPC 单测。
+fn drain_pending(
+    q: &Rc<RefCell<std::collections::HashMap<String, PendingSchemaEdit>>>,
+    mut submit: impl FnMut(&str, &PendingSchemaEdit) -> Result<(), String>,
+) -> Result<(), String> {
+    // 先取 id 列表：submit 期间不持有 q 的借用，否则 RPC 回调链上任何一处碰到队列即 panic。
+    let ids: Vec<String> = q.borrow().keys().cloned().collect();
+    for id in ids {
+        let Some(edit) = q.borrow().get(&id).cloned() else {
+            continue;
+        };
+        submit(&id, &edit)?;
+        q.borrow_mut().remove(&id);
+    }
+    Ok(())
+}
+
 /// 把一次编辑合并进待提交队列。
 ///
 /// **合并而非覆盖**：用户可以先改词库、关窗、再进去改码表配置，两次都得留下；
@@ -2390,6 +2406,60 @@ mod ext_dict_tests {
         assert_eq!(q["wubi"].dicts.len(), 2);
         // cfg 未再给出时保留上一次的——不能因为这次只改了词库就把方案配置抹掉。
         assert!(q["wubi"].cfg.is_some(), "只改词库不该清掉已暂存的方案配置");
+    }
+
+    /// 中途失败时的队列状态决定了「重试」是否可用：已落盘的不能再写一遍，
+    /// 未落盘的不能消失。两个方向都错过一次就是静默丢数据。
+    #[test]
+    fn drain_pending_keeps_unsubmitted_on_failure() {
+        let q: Rc<RefCell<std::collections::HashMap<String, PendingSchemaEdit>>> =
+            Rc::new(RefCell::new(std::collections::HashMap::new()));
+        for id in ["a", "b", "c"] {
+            merge_pending(&mut q.borrow_mut(), id, Some(json!({"id": id})), vec![]);
+        }
+
+        // 第二个方案提交失败（顺序不定，故按「第 2 次调用」判）。
+        let seen = Rc::new(RefCell::new(Vec::<String>::new()));
+        let s2 = seen.clone();
+        let err = drain_pending(&q, move |id, _| {
+            s2.borrow_mut().push(id.to_string());
+            if s2.borrow().len() == 2 {
+                Err("boom".to_string())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(err, "boom");
+
+        let done = &seen.borrow()[0];
+        let failed = &seen.borrow()[1];
+        assert!(
+            !q.borrow().contains_key(done),
+            "已落盘的必须移出队列，否则下次保存重写一遍"
+        );
+        assert!(q.borrow().contains_key(failed), "失败的必须留下供重试");
+        assert_eq!(q.borrow().len(), 2, "失败点之后的也该原样留着");
+
+        // 重试：这次全成功 → 队列清空。
+        assert!(drain_pending(&q, |_, _| Ok(())).is_ok());
+        assert!(q.borrow().is_empty(), "全部成功后队列应清空");
+    }
+
+    /// 提交动作执行期间不得持有队列借用——真实路径上它会走 RPC，
+    /// 回调链上任何一处碰到队列就是 BorrowMutError panic。
+    #[test]
+    fn drain_pending_does_not_hold_borrow_during_submit() {
+        let q: Rc<RefCell<std::collections::HashMap<String, PendingSchemaEdit>>> =
+            Rc::new(RefCell::new(std::collections::HashMap::new()));
+        merge_pending(&mut q.borrow_mut(), "wubi", Some(json!({})), vec![]);
+        let probe = q.clone();
+        let r = drain_pending(&q, move |_, _| {
+            // 若实现是「borrow 着遍历」，这一句直接 panic。
+            assert!(probe.try_borrow_mut().is_ok(), "submit 期间队列不该被借着");
+            Ok(())
+        });
+        assert!(r.is_ok());
     }
 
     /// 摘要必须区分「跟随全局」与「跟随内置基线」：特殊方案不继承全局码表配置

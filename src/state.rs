@@ -105,6 +105,27 @@ pub struct SideCommitter {
     pub commit: Box<dyn Fn() -> Result<(), String>>,
 }
 
+impl FieldRegistry {
+    /// 是否有待提交的非 config 改动。
+    pub fn side_dirty(&self) -> bool {
+        self.side.borrow().iter().any(|s| (s.is_dirty)())
+    }
+
+    /// 依次提交所有非 config 落点，**任一失败即中止**并返回其错误。
+    ///
+    /// 中止而非continue：后续提交多半依赖同一批数据，硬着头皮往下写只会让失败面变大，
+    /// 且 toast 只能显示一条错误——用户看到的会是最后一个错，而不是最先出问题的那个。
+    ///
+    /// 与 [`Self::side_dirty`] 一起抽成方法（而非内联在 `AppState::save`）是为了可测：
+    /// `AppState` 的构造走 RPC 与文件系统，测试里造不出来。
+    pub fn commit_side(&self) -> Result<(), String> {
+        for s in self.side.borrow().iter() {
+            (s.commit)()?;
+        }
+        Ok(())
+    }
+}
+
 /// 应用全局状态。
 pub struct AppState {
     /// 从 core 加载的原始配置（用于 diff 基线）。
@@ -1080,7 +1101,7 @@ impl AppState {
     pub fn is_dirty(&self) -> bool {
         // config.toml 之外的落点也算——否则改完方案配置点「恢复本页」，
         // 确认框不会提醒用户即将丢弃它们。
-        if self.fields.side.borrow().iter().any(|s| (s.is_dirty)()) {
+        if self.fields.side_dirty() {
             return true;
         }
         let mut probe = self.current_config.clone();
@@ -1203,17 +1224,11 @@ impl AppState {
         // ── 先提交 config.toml 之外的落点（方案 override、词库开关）──
         // 放在最前：它失败时 config.toml 还没动，用户重试不会重复写一遍配置。
         // 反过来先写 config 再失败，两个存储就分叉了。
-        let side_changed = {
-            let side = reg.side.borrow();
-            let changed = side.iter().any(|s| (s.is_dirty)());
-            for s in side.iter() {
-                if let Err(e) = (s.commit)() {
-                    self.feedback.set(Some((ToastKind::Error, e)));
-                    return false;
-                }
-            }
-            changed
-        };
+        let side_changed = reg.side_dirty();
+        if let Err(e) = reg.commit_side() {
+            self.feedback.set(Some((ToastKind::Error, e)));
+            return false;
+        }
 
         {
             let writers = reg.writers.borrow();
@@ -2060,6 +2075,73 @@ mod tests {
     /// 锁定义在 `rpc` 模块并全 crate 共用 —— 本模块曾自建一把，与 `theme_import`
     /// 的另一把互不相识，造成间歇性失败（见 rpc.rs 的说明）。
     use crate::rpc::ENV_LOCK;
+
+    /// 造一个记录调用次数的 side committer。
+    fn probe(dirty: bool, result: Result<(), String>) -> (SideCommitter, Rc<std::cell::Cell<u32>>) {
+        let calls = Rc::new(std::cell::Cell::new(0u32));
+        let c = calls.clone();
+        (
+            SideCommitter {
+                is_dirty: Box::new(move || dirty),
+                commit: Box::new(move || {
+                    c.set(c.get() + 1);
+                    result.clone()
+                }),
+            },
+            calls,
+        )
+    }
+
+    /// 非 config 落点的提交必须**任一失败即中止**，且错误原样上抛。
+    ///
+    /// 继续往下写的话，toast 只显示得了一条错误——用户看到的会是最后一个错，
+    /// 而不是最先出问题的那个；后续提交多半还依赖同一批数据，失败面只会更大。
+    #[test]
+    fn commit_side_stops_at_first_error() {
+        let reg = FieldRegistry::default();
+        let (ok1, n1) = probe(false, Ok(()));
+        let (bad, n2) = probe(false, Err("方案配置保存失败（wubi）".into()));
+        let (ok2, n3) = probe(false, Ok(()));
+        reg.side.borrow_mut().push(ok1);
+        reg.side.borrow_mut().push(bad);
+        reg.side.borrow_mut().push(ok2);
+
+        let err = reg.commit_side().unwrap_err();
+        assert_eq!(
+            err, "方案配置保存失败（wubi）",
+            "错误须原样上抛，供 toast 显示"
+        );
+        assert_eq!(n1.get(), 1, "失败点之前的照常提交");
+        assert_eq!(n2.get(), 1);
+        assert_eq!(n3.get(), 0, "失败点之后的不该再执行");
+    }
+
+    /// 全部成功时每个都跑到，且返回 Ok。
+    #[test]
+    fn commit_side_runs_every_committer() {
+        let reg = FieldRegistry::default();
+        let (a, na) = probe(false, Ok(()));
+        let (b, nb) = probe(false, Ok(()));
+        reg.side.borrow_mut().push(a);
+        reg.side.borrow_mut().push(b);
+        assert!(reg.commit_side().is_ok());
+        assert_eq!((na.get(), nb.get()), (1, 1));
+    }
+
+    /// 「有未保存改动」必须覆盖非 config 落点——否则用户改完方案配置点「恢复本页」，
+    /// 确认框不弹，改动被静默丢弃。
+    #[test]
+    fn side_dirty_is_any_not_all() {
+        let reg = FieldRegistry::default();
+        assert!(!reg.side_dirty(), "没有登记项时不该判脏");
+
+        reg.side.borrow_mut().push(probe(false, Ok(())).0);
+        assert!(!reg.side_dirty(), "登记项都干净时不该判脏");
+
+        // 任一为真即为真：多个落点时，只有一个有改动也必须提醒。
+        reg.side.borrow_mut().push(probe(true, Ok(())).0);
+        assert!(reg.side_dirty());
+    }
 
     fn si(id: &str, kind: &str) -> SchemaInfo {
         SchemaInfo {
