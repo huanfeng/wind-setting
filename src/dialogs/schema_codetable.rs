@@ -89,6 +89,15 @@ pub enum CtSig {
 }
 
 impl CtSig {
+    /// 信号版本号（脏判定用）。三种形态都只有一个信号，取它的即可。
+    fn version(&self) -> u64 {
+        match self {
+            CtSig::Bool(s) => s.version(),
+            CtSig::Num(s) => s.version(),
+            CtSig::Sel { sig, .. } => sig.version(),
+        }
+    }
+
     /// 当前值的 JSON 形态（供 `enabled_when` 求值与写回共用——两处取值必须同源，
     /// 否则会出现「联动按 A 判、落盘写 B」）。
     pub fn value(&self) -> Value {
@@ -130,6 +139,11 @@ pub struct CtFields {
     order: Rc<RefCell<Vec<String>>>,
     /// key → subsection（算渲染计划时用；避免 plan() 反查 manifest 而多传一个参数）。
     subsecs: Rc<RefCell<HashMap<String, Option<String>>>>,
+    /// `seed` 时各信号 version 之和。与当前值不等 = 用户动过某一项。
+    ///
+    /// 比「逐项存快照再比值」省事，且对「改了又改回去」同样判脏——那种情况下确实
+    /// 该写一次盘：用户可能是在撤销上一次保存的结果。
+    ver_at_seed: Rc<std::cell::Cell<u64>>,
 }
 
 impl CtFields {
@@ -170,6 +184,19 @@ impl CtFields {
         *self.sigs.borrow_mut() = sigs;
         *self.order.borrow_mut() = order;
         *self.subsecs.borrow_mut() = subsecs;
+        self.ver_at_seed.set(self.version_sum());
+    }
+
+    /// 用户是否动过其中任何一项（相对上次 `seed`）。
+    pub fn is_dirty(&self) -> bool {
+        self.version_sum() != self.ver_at_seed.get()
+    }
+
+    fn version_sum(&self) -> u64 {
+        self.sigs
+            .borrow()
+            .values()
+            .fold(0u64, |acc, s| acc.wrapping_add(s.version()))
     }
 
     /// 渲染计划（按 manifest 原序，subsection 变化处插标题）。

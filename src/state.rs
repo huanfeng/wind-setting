@@ -84,6 +84,25 @@ pub struct FieldRegistry {
     /// 由 `register_global_hotkeys_collector` 汇总成 `keys.global_hotkeys` strlist 写回/回填
     /// （多个功能键写同一 key，故需单一收集器，模式同 checkbox_group）。
     pub global_flags: RefCell<Vec<(String, Signal<bool>)>>,
+    /// **config.toml 之外**的落点，随主保存一并提交。见 [`SideCommitter`]。
+    pub side: RefCell<Vec<SideCommitter>>,
+}
+
+/// 非 `config.toml` 落点的提交器 —— `writers` 之于 config.toml，`SideCommitter` 之于其余。
+///
+/// 设置界面里不是所有数据都进 `config.toml`：方案 override（`schema_overrides/<id>.toml`）
+/// 走 `schema.saveConfig`，词库开关走 `schema.setDictEnabled`，都不在 `config.setItems`
+/// 的键空间里，主保存的键 diff 够不着。
+///
+/// 曾经的做法是让这类界面各自长一个「保存」按钮。那条路的终点是一堆各存各的按钮，
+/// 用户无从知道哪个管哪些、点了哪个还有什么没存——所以改成在此登记，由「应用设置 /
+/// 保存并退出」统一提交。**新增任何非 config 落点都该登记到这里，而不是再加按钮。**
+pub struct SideCommitter {
+    /// 是否有待提交改动。汇总进 [`AppState::is_dirty`]，让「有未保存改动」的判断
+    /// 覆盖这类数据——否则用户改完方案配置，「恢复本页」不会提醒他即将丢弃什么。
+    pub is_dirty: Box<dyn Fn() -> bool>,
+    /// 提交。`Err` 使整次保存判失败，文案直接进 toast。
+    pub commit: Box<dyn Fn() -> Result<(), String>>,
 }
 
 /// 应用全局状态。
@@ -242,6 +261,16 @@ impl AppState {
     pub fn empty() -> Self {
         let schema_mgr = SchemaManagerState::new();
         let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
+        // 方案 override / 词库开关不进 config.toml，主保存的键 diff 够不着 —— 在此登记，
+        // 随「应用设置 / 保存并退出」一并提交。见 SideCommitter 的文档。
+        {
+            let dirty_mgr = schema_mgr.clone();
+            let commit_mgr = schema_mgr.clone();
+            fields.side.borrow_mut().push(SideCommitter {
+                is_dirty: Box::new(move || dirty_mgr.has_pending_edits()),
+                commit: Box::new(move || commit_mgr.commit_pending_edits()),
+            });
+        }
         let setting_load = setting_config::load();
         // 先取出，下面 setting_load.config 会被移动进结构体
         let setting_load_update_auto_check = setting_load.config.update.auto_check;
@@ -1049,6 +1078,11 @@ impl AppState {
 
     /// 是否存在未保存改动：跑写回器到 current 的副本上，与 base 比对有无差异。
     pub fn is_dirty(&self) -> bool {
+        // config.toml 之外的落点也算——否则改完方案配置点「恢复本页」，
+        // 确认框不会提醒用户即将丢弃它们。
+        if self.fields.side.borrow().iter().any(|s| (s.is_dirty)()) {
+            return true;
+        }
         let mut probe = self.current_config.clone();
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
@@ -1152,6 +1186,9 @@ impl AppState {
         }
         // 方案启用排序也需要从配置恢复，否则未保存的列表变更不会撤销。
         self.schema_mgr.apply_config(&cfg);
+        // 待提交的方案 override 同理——「重新加载」是明确的「丢弃未保存改动」，
+        // 留着它们的话，下次点保存会把用户以为已丢弃的改动写下去。
+        self.schema_mgr.clear_pending_edits();
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.feedback
@@ -1162,22 +1199,22 @@ impl AppState {
     /// 返回是否「可视为成功」（无错误）：无变更与保存成功均为 true，仅 RPC 报错为 false。
     /// 供「保存&退出」据此决定是否真的退出。
     pub fn save(&mut self) -> bool {
-        self.save_inner(true)
-    }
-
-    /// 静默保存：成功路径不弹 toast，失败路径照弹。
-    ///
-    /// 给方案设置对话框的「保存」用——它一次点击要落两个地方（方案 override + 本函数
-    /// 管的 config.toml），反馈得由它自己统一给一条。否则只改了 override 类时，这里会
-    /// 弹「没有变更」，与对话框的「已保存」并排出现，两条互相矛盾。
-    ///
-    /// 失败仍弹：那是用户必须看到的，且对话框会据返回值中止自己的成功提示。
-    pub fn save_silent(&mut self) -> bool {
-        self.save_inner(false)
-    }
-
-    fn save_inner(&mut self, notify_success: bool) -> bool {
         let reg = self.fields.clone();
+        // ── 先提交 config.toml 之外的落点（方案 override、词库开关）──
+        // 放在最前：它失败时 config.toml 还没动，用户重试不会重复写一遍配置。
+        // 反过来先写 config 再失败，两个存储就分叉了。
+        let side_changed = {
+            let side = reg.side.borrow();
+            let changed = side.iter().any(|s| (s.is_dirty)());
+            for s in side.iter() {
+                if let Err(e) = (s.commit)() {
+                    self.feedback.set(Some((ToastKind::Error, e)));
+                    return false;
+                }
+            }
+            changed
+        };
+
         {
             let writers = reg.writers.borrow();
             for w in writers.iter() {
@@ -1191,10 +1228,12 @@ impl AppState {
             &self.capabilities.map_keys(),
         );
         if items.is_empty() {
-            if notify_success {
-                self.feedback
-                    .set(Some((ToastKind::Info, "没有变更".to_string())));
-            }
+            // side 有改动时不能说「没有变更」——方案配置刚刚才落盘。
+            self.feedback.set(Some(if side_changed {
+                (ToastKind::Success, "已保存方案配置".to_string())
+            } else {
+                (ToastKind::Info, "没有变更".to_string())
+            }));
             return true;
         }
         let items_json: Vec<Value> = items
@@ -1218,12 +1257,10 @@ impl AppState {
                     .unwrap_or_default();
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
-                    if notify_success {
-                        self.feedback.set(Some((
-                            ToastKind::Success,
-                            format!("已保存 {} 项变更", items_json.len()),
-                        )));
-                    }
+                    self.feedback.set(Some((
+                        ToastKind::Success,
+                        format!("已保存 {} 项变更", items_json.len()),
+                    )));
                     true
                 } else {
                     // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。

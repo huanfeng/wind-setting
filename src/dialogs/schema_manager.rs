@@ -102,9 +102,16 @@ pub struct DictRow {
     pub on: Signal<bool>,
 }
 
-/// 主保存回调的槽位：`Option` 因为注入发生在 shell 构建期（构造时还没有 AppState），
-/// `RefCell` 因为要在 `&self` 方法里取出再放回（见 [`invoke_taking`]）。
-type MainSaveSlot = Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>;
+/// 一个方案待提交的 override 改动。
+///
+/// `cfg` 是**改写后的整份方案配置**而非增量：core 的 `saveConfig` 拿它与方案文件 diff
+/// 后全量重写 override，喂增量会把没带上的字段当成「已删除」。
+#[derive(Clone, Default)]
+struct PendingSchemaEdit {
+    cfg: Option<Value>,
+    /// 词库开关变更 (dict_id, enabled)。
+    dicts: Vec<(String, bool)>,
+}
 
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
@@ -158,8 +165,6 @@ pub struct SchemaManagerState {
     pub settings_sections: Signal<Vec<SettingsSection>>,
     /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
     pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
-    /// 是否存在需批量提交的分节（当前=双拼布局），驱动 footer「保存」按钮可见性。
-    pub settings_has_save: Signal<bool>,
 
     // ── 方案直达热键（core `keys.schema_hotkeys`，Map: 方案 id → 热键串）──
     /// 全量映射，随主保存一并写回（见 `AppState` 里注册的 writer）。
@@ -212,17 +217,15 @@ pub struct SchemaManagerState {
     /// 保存时用来补齐没有控件的隐藏项。
     pub settings_ct_eff: Rc<RefCell<Value>>,
 
-    /// 主保存回调（静默版 `AppState::save_silent`），由 `shell` 在 AppState 成型后注入。
+    /// 打开对话框那一刻的双拼布局索引 / 码表总开关值。脏判定用——没有它就分不清
+    /// 「用户拨过」和「本来就是这个值」，于是打开看一眼再关掉也会写一次盘。
+    settings_layout_at_open: Rc<std::cell::Cell<usize>>,
+    settings_ct_enabled_at_open: Rc<std::cell::Cell<bool>>,
+    /// 待提交的方案 override 改动（方案 id → 变更）。关窗时暂存，随主保存提交。
     ///
-    /// 本对话框里的改动有**两个落盘目标**：热键/引导键/启用排序进 `config.toml`（走
-    /// FieldRegistry + `config.setItems`），扩展词库/双拼布局/码表配置进
-    /// `schema_overrides/<id>.toml`（走 `schema.saveConfig`/`setDictEnabled`）。后者不在
-    /// `setItems` 的键空间里，主保存够不着——所以这个对话框自带「保存」按钮。
-    ///
-    /// 但用户看到的是一个对话框，没道理点了「保存」还有一半改动没生效。故「保存」＝
-    /// 落 override + 回调主保存。用回调而非持有 `AppState`：本结构是 `AppState` 的字段，
-    /// 直接反向引用是循环持有。
-    main_save: MainSaveSlot,
+    /// **按方案 id 存**而不是只留最后一次的工作态：用户可以连着配好几个方案再点
+    /// 「应用设置」，只留一份的话先配的那几个会静默丢。
+    pending_edits: Rc<RefCell<std::collections::HashMap<String, PendingSchemaEdit>>>,
 }
 
 impl SchemaManagerState {
@@ -270,7 +273,6 @@ impl SchemaManagerState {
             layouts: Rc::new(RefCell::new(Vec::new())),
             settings_sections: signal(vec![]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
-            settings_has_save: signal(false),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
             settings_ct_enabled: signal(false),
             settings_ct_visible: signal(false),
@@ -279,7 +281,9 @@ impl SchemaManagerState {
             settings_ct: Default::default(),
             settings_ct_plan: signal(vec![]),
             settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
-            main_save: Rc::new(RefCell::new(None)),
+            settings_layout_at_open: Rc::new(std::cell::Cell::new(0)),
+            settings_ct_enabled_at_open: Rc::new(std::cell::Cell::new(false)),
+            pending_edits: Rc::new(RefCell::new(std::collections::HashMap::new())),
         };
         state.refresh();
         state
@@ -967,6 +971,7 @@ impl SchemaManagerState {
                 .position(|(id, _)| id == layout)
                 .unwrap_or(0);
             self.settings_layout.set(idx);
+            self.settings_layout_at_open.set(idx);
         }
         *self.settings_schema_id.borrow_mut() = entry.id.clone();
         *self.settings_cfg.borrow_mut() = cfg;
@@ -981,7 +986,8 @@ impl SchemaManagerState {
 
         // ── 计算配置分节（可扩展体系）：Header 恒为首节，其后按方案类型追加配置节 ──
         let mut sections: Vec<SettingsSection> = vec![SettingsSection::Header];
-        let mut has_config = false; // 是否有需「保存」按钮提交的配置节
+        // 除「进入方式」外还有没有别的配置节——只影响是否显示「暂无其它可配置项」。
+        let mut has_config = false;
         // 进入方式：所有方案都有（切到该方案的直达热键），故紧随 Header。
         sections.push(SettingsSection::EntryKeys);
         if is_sp {
@@ -999,8 +1005,9 @@ impl SchemaManagerState {
                 let eff = cfg.get("effectiveCodetable").cloned().unwrap_or(json!({}));
                 self.settings_ct.seed(&self.manifest, &eff);
                 self.settings_ct_plan.set(self.settings_ct.plan());
-                self.settings_ct_enabled
-                    .set(crate::dialogs::schema_codetable::has_custom(&cfg));
+                let custom = crate::dialogs::schema_codetable::has_custom(&cfg);
+                self.settings_ct_enabled.set(custom);
+                self.settings_ct_enabled_at_open.set(custom);
                 *self.settings_ct_eff.borrow_mut() = eff;
                 drop(cfg);
                 // 标题带方案名（名称缺失时回退 id——总比只显示「码表配置」强）。
@@ -1041,24 +1048,9 @@ impl SchemaManagerState {
         if !has_config {
             sections.push(SettingsSection::Empty);
         }
-        // 「保存」按钮**恒显示**：它现在也负责提交进入方式那一节（切换热键、引导键），
-        // 而那一节所有方案都有。按 has_config 显隐的话，一个只改了热键的拼音方案会看不到
-        // 保存按钮，用户只能出去点「应用设置」——正是这个按钮要消灭的事。
-        self.settings_has_save.set(true);
         self.settings_sections.set(sections);
 
         self.settings_visible.set(true);
-    }
-
-    /// 注入主保存回调（`shell` 在 AppState 成型后调一次）。见 `main_save` 字段文档。
-    pub fn set_main_save(&self, f: impl Fn() -> bool + 'static) {
-        *self.main_save.borrow_mut() = Some(Box::new(f));
-    }
-
-    /// 调主保存。未注入时返回 true（视为无事可做）——注入发生在 shell 构建期，
-    /// 正常路径下必然已注入；这里宽松处理是不让「没接上」表现为「保存失败」。
-    fn run_main_save(&self) -> bool {
-        invoke_taking(&self.main_save)
     }
 
     /// 当前打开的方案是否为特殊方案（决定摘要说「跟随内置基线」还是「跟随全局配置」）。
@@ -1070,62 +1062,56 @@ impl SchemaManagerState {
             .unwrap_or(false)
     }
 
-    /// 统一保存设置对话框的改动：扩展词库变更逐个走 schema.setDictEnabled，
-    /// 双拼布局走 schema.saveConfig（稀疏 override）。任一环失败即中止、不关窗、
-    /// 保留已暂存的翻转供重试。
-    pub fn save_settings(&self) {
+    /// 把对话框的工作态**暂存**进待提交队列（关窗时调用）。
+    ///
+    /// 不在这里落盘：方案 override 与 config.toml 里的热键/引导键属于同一次编辑，
+    /// 分两个时机写会让用户看到「一半存了一半没存」。统一由「应用设置 / 保存并退出」
+    /// 提交，见 [`Self::commit_pending_edits`] 与 `state::SideCommitter`。
+    ///
+    /// 无改动则不入队——否则打开看一眼再关掉也会让整个设置界面变成「有未保存改动」。
+    pub fn stage_settings_edits(&self) {
         let id = self.settings_schema_id.borrow().clone();
         if id.is_empty() {
             return;
         }
 
-        // 1) 扩展词库：仅提交相对打开时发生变化的行（当前值 != initial）。
-        //    core 将其写入 override 层并热插拔即时生效（不重熔大词库）。
-        let changed: Vec<(String, bool)> = self
+        // 扩展词库：仅相对打开时发生变化的行。
+        let dicts: Vec<(String, bool)> = self
             .settings_dicts
             .borrow()
             .iter()
             .filter(|r| r.on.get() != r.initial)
             .map(|r| (r.id.clone(), r.on.get()))
             .collect();
-        for (dict_id, want) in &changed {
-            if let Err(e) = rpc::call_core(
-                "schema.setDictEnabled",
-                &json!({ "id": id, "dictId": dict_id, "enabled": *want }),
-            ) {
-                self.notify(ToastKind::Error, format!("扩展词库保存失败: {e}"));
-                return;
-            }
-        }
 
-        // 2) 方案配置（双拼布局 + 方案级码表配置）：改写拉取的完整配置后回传 saveConfig。
-        //
-        //    ⚠️ 两者必须写进**同一份 cfg、只调一次** saveConfig。core 那边是「整份 cfg 与
-        //    方案文件 diff，结果全量重写 override」——分两次调的话，后一次会拿自己那份
-        //    cfg 的 diff 把前一次的结果整个覆盖掉。
+        // 方案配置（双拼布局 + 码表配置）：两者必须写进**同一份 cfg**。core 那边是
+        // 「整份 cfg 与方案文件 diff，结果全量重写 override」——分两次提交的话，
+        // 后一次会拿自己那份 cfg 的 diff 把前一次的结果整个覆盖掉。
         let mut cfg = self.settings_cfg.borrow().clone();
         if !cfg.is_object() {
             cfg = json!({});
         }
-        let mut dirty = false;
+        let mut cfg_changed = false;
 
-        // 码表配置：关掉总开关时写入的是一串 null——core 的 json_to_toml 跳过 null，
-        // 于是 override 里不含这些键 = 跟随基线。这是「取消自定义」唯一的落地方式。
         if cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable") {
             let enabled = self.settings_ct_enabled.get();
-            self.settings_ct.apply(&mut cfg, enabled);
-            if enabled {
-                let eff = self.settings_ct_eff.borrow().clone();
-                self.settings_ct.apply_hidden(&mut cfg, &eff);
+            // 脏判定要在 apply 之前：apply 会把所有字段写实，之后再比就永远「有改动」。
+            if enabled != self.settings_ct_enabled_at_open.get() || self.settings_ct.is_dirty() {
+                // 关掉总开关时写入的是一串 null——core 的 json_to_toml 跳过 null，于是
+                // override 里不含这些键 = 跟随基线。这是「取消自定义」唯一的落地方式。
+                self.settings_ct.apply(&mut cfg, enabled);
+                if enabled {
+                    let eff = self.settings_ct_eff.borrow().clone();
+                    self.settings_ct.apply_hidden(&mut cfg, &eff);
+                }
+                cfg_changed = true;
             }
-            dirty = true;
         }
 
-        if self.settings_is_shuangpin.get() {
-            if self.layouts.borrow().is_empty() {
-                self.notify(ToastKind::Error, "双拼布局清单未加载，无法保存");
-                return;
-            }
+        if self.settings_is_shuangpin.get()
+            && self.settings_layout.get() != self.settings_layout_at_open.get()
+            && !self.layouts.borrow().is_empty()
+        {
             let layout = {
                 let layouts = self.layouts.borrow();
                 let idx = self.settings_layout.get().min(layouts.len() - 1);
@@ -1136,30 +1122,56 @@ impl SchemaManagerState {
                 &["engine", "pinyin", "shuangpin", "layout"],
                 json!(layout),
             );
-            dirty = true;
+            cfg_changed = true;
         }
 
-        if dirty
-            && let Err(e) = rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg }))
-        {
-            self.notify(ToastKind::Error, format!("保存失败: {e}"));
+        if dicts.is_empty() && !cfg_changed {
             return;
         }
+        merge_pending(
+            &mut self.pending_edits.borrow_mut(),
+            &id,
+            cfg_changed.then_some(cfg),
+            dicts,
+        );
+    }
 
-        // 3) config.toml 那一半（切换热键、引导键、启用/排序）：它们随 FieldRegistry
-        //    writer 走主保存。放在 override 之后——override 失败时上面已 return，
-        //    不会出现「配置写了一半、方案文件没动」的错配。
-        //    静默版：反馈在下面统一给一条，否则只改了 override 类时主保存会弹
-        //    「没有变更」，与「方案配置已保存」并排出现、互相矛盾。
-        if !self.run_main_save() {
-            // 失败原因由主保存自己弹（RPC 报错 / 服务端拒绝）；不关窗，让用户能重试。
-            return;
+    /// 是否有待提交的方案 override 改动（供主保存的 `is_dirty` 汇总）。
+    pub fn has_pending_edits(&self) -> bool {
+        !self.pending_edits.borrow().is_empty()
+    }
+
+    /// 提交待提交队列（由主保存调用）。
+    ///
+    /// 逐个方案提交，**成功一个移除一个**：中途失败时已落盘的不该留在队列里再写一次，
+    /// 未落盘的要留着让用户重试。
+    pub fn commit_pending_edits(&self) -> Result<(), String> {
+        let ids: Vec<String> = self.pending_edits.borrow().keys().cloned().collect();
+        for id in ids {
+            let Some(edit) = self.pending_edits.borrow().get(&id).cloned() else {
+                continue;
+            };
+            for (dict_id, want) in &edit.dicts {
+                rpc::call_core(
+                    "schema.setDictEnabled",
+                    &json!({ "id": id, "dictId": dict_id, "enabled": *want }),
+                )
+                .map_err(|e| format!("扩展词库保存失败（{id}）: {e}"))?;
+            }
+            if let Some(cfg) = &edit.cfg {
+                rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg }))
+                    .map_err(|e| format!("方案配置保存失败（{id}）: {e}"))?;
+            }
+            self.pending_edits.borrow_mut().remove(&id);
         }
-
-        self.settings_visible.set(false);
-        // 行名可能含布局后缀，保存后重拉列表刷新显示（refresh 保留选中）。
+        // 行名可能含双拼布局后缀，提交后重拉列表刷新显示（refresh 保留选中）。
         self.refresh();
-        self.notify(ToastKind::Success, "方案配置已保存");
+        Ok(())
+    }
+
+    /// 丢弃待提交队列（「重新加载」时调用——那是明确的「丢弃未保存改动」操作）。
+    pub fn clear_pending_edits(&self) {
+        self.pending_edits.borrow_mut().clear();
     }
 
     /// 请求删除指定 ID 方案（弹出确认对话框）。
@@ -1995,20 +2007,28 @@ fn build_settings_header(entry: &SchemaEntry) -> Element {
     col.child(Element::divider())
 }
 
-/// 取出回调 → 调用 → 放回。空槽视为成功。
+/// 把一次编辑合并进待提交队列。
 ///
-/// **必须先 take 再调用**：回调里要 `borrow_mut` `AppState`，而 `AppState` 持有
-/// `SchemaManagerState`。若在 `borrow()` 期间直接调，回调链上任何一处再碰到这个槽
-/// 就是 `BorrowMutError` panic——而它只在真机点「保存」时才会现形。
-fn invoke_taking(slot: &MainSaveSlot) -> bool {
-    let f = slot.borrow_mut().take();
-    match f {
-        Some(f) => {
-            let ok = f();
-            *slot.borrow_mut() = Some(f);
-            ok
+/// **合并而非覆盖**：用户可以先改词库、关窗、再进去改码表配置，两次都得留下；
+/// 也可以连着配好几个方案再点「应用设置」，先配的那几个不能被后面的挤掉。
+/// 只留最后一份工作态的话，丢失是静默的——用户以为都存了。
+fn merge_pending(
+    q: &mut std::collections::HashMap<String, PendingSchemaEdit>,
+    id: &str,
+    cfg: Option<Value>,
+    dicts: Vec<(String, bool)>,
+) {
+    let slot = q.entry(id.to_string()).or_default();
+    // cfg 是整份配置快照，后一次天然含前一次的内容，直接替换。
+    if cfg.is_some() {
+        slot.cfg = cfg;
+    }
+    // 词库开关是逐条的，同一条以后写为准，不同条累加。
+    for (dict_id, want) in dicts {
+        match slot.dicts.iter_mut().find(|(d, _)| *d == dict_id) {
+            Some(e) => e.1 = want,
+            None => slot.dicts.push((dict_id, want)),
         }
-        None => true,
     }
 }
 
@@ -2217,7 +2237,6 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
 
 fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let visible = state.settings_visible;
-    let has_save = state.settings_has_save;
 
     // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）；
     // Header 恒为首节，元信息与各配置节统一由此渲染。
@@ -2271,6 +2290,26 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         move || ct_disp.set(ct_summary(ct_en.get(), st_ct.settings_entry_hidden()).to_string()),
     );
 
+    // 关窗即把工作态暂存进待提交队列，随「应用设置 / 保存并退出」落盘。
+    //
+    // 对话框自己不再有「保存」按钮：方案 override 与热键/引导键属于同一次编辑，
+    // 分两个按钮提交必然出现「一半存了一半没存」。每多一个非 config.toml 的落点就多
+    // 一个独立保存按钮的话，设置界面最后会是一堆各存各的按钮——所以统一登记进
+    // `state::SideCommitter`，由底栏那个按钮提交。
+    //
+    // 挂 effect 而非挂在「关闭」按钮上：对话框有多条关闭路径（footer 按钮 / ESC /
+    // 标题栏），逐个挂等于赌自己数全了。
+    let st_stage = state.clone();
+    let vis = visible;
+    let stage_effect = crate::pages::dict::reactive::reactive_effect(
+        move || vis.version(),
+        move || {
+            if !vis.get() {
+                st_stage.stage_settings_edits();
+            }
+        },
+    );
+
     // 走与「全局方案配置」相同的外壳（标题栏 + 固定高滚动区 + 按钮栏）。此前用的是
     // dialog_panel：无滚动、标题 18px、宽 440，同一个设置界面里两种弹窗长得不一样。
     let content = Element::col()
@@ -2279,23 +2318,10 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         .child(sections)
         .child(hotkey_effect)
         .child(trigger_effect)
-        .child(ct_effect);
+        .child(ct_effect)
+        .child(stage_effect);
 
-    let st_save = state.clone();
-    // 「保存」放按钮栏左侧、与「恢复默认」同位：那一侧是「产生后果的操作」，
-    // 右侧固定是「关闭」。仅在有需批量提交的分节时出现（双拼布局 / 扩展词库）——
-    // 热键改动随主保存走，不归这个按钮管。
-    let save_btn = Element::button("保存")
-        .small()
-        .on_click(move |_| st_save.save_settings())
-        .visible_when(move || has_save.get());
-
-    crate::dialogs::field_dialogs::build_group_dialog_shell(
-        visible,
-        "方案设置",
-        content,
-        vec![save_btn],
-    )
+    crate::dialogs::field_dialogs::build_group_dialog_shell(visible, "方案设置", content, vec![])
 }
 
 #[cfg(test)]
@@ -2324,31 +2350,46 @@ mod ext_dict_tests {
         assert!(!m.contains_key("english"), "\"none\" 不该入表，实际 {m:?}");
     }
 
-    /// 主保存回调必须能在自己执行期间安全触碰同一个槽。
-    ///
-    /// 实际链路是「点保存 → 回调 borrow_mut AppState → AppState 持有本结构」，
-    /// 借用期内再入就是 BorrowMutError panic，且只在真机点保存时才现形。
-    /// 这里用一个「执行中回头读同一个槽」的回调把那条路径压出来。
+    /// 待提交队列必须按方案累积。用户连着配好几个方案再点「应用设置」是正常用法，
+    /// 只留最后一份的话前面几个会**静默**丢——没有任何提示。
     #[test]
-    fn invoke_taking_allows_reentrant_slot_access() {
-        let slot: MainSaveSlot = Rc::new(RefCell::new(None));
-        assert!(invoke_taking(&slot), "未注入应视为成功，不该表现为保存失败");
+    fn merge_pending_accumulates_across_schemas_and_edits() {
+        let mut q = std::collections::HashMap::new();
 
-        let inner = slot.clone();
-        *slot.borrow_mut() = Some(Box::new(move || {
-            // 执行期间访问同一个槽：若实现是「borrow 着调用」，这里直接 panic。
-            assert!(inner.borrow().is_none(), "执行期间槽应是空的（已被取出）");
-            true
-        }));
-        assert!(invoke_taking(&slot));
-        assert!(
-            slot.borrow().is_some(),
-            "调用后必须放回，否则第二次保存就静默跳过 config.toml 那一半"
+        // 方案 A：先只改词库开关。
+        merge_pending(&mut q, "wubi", None, vec![("emoji".into(), true)]);
+        // 方案 B：改码表配置。
+        merge_pending(
+            &mut q,
+            "qsym",
+            Some(json!({"engine":{"codetable":{}}})),
+            vec![],
+        );
+        assert_eq!(q.len(), 2, "两个方案各占一条，不该互相挤掉");
+
+        // 回到方案 A 改码表配置：与上一次的词库改动**合并**。
+        merge_pending(
+            &mut q,
+            "wubi",
+            Some(json!({"engine":{"type":"codetable"}})),
+            vec![],
+        );
+        let a = &q["wubi"];
+        assert!(a.cfg.is_some(), "码表配置应记下");
+        assert_eq!(
+            a.dicts,
+            vec![("emoji".to_string(), true)],
+            "上一次的词库改动不该被这次覆盖掉"
         );
 
-        // 回调返回 false（主保存报错）必须原样透出——对话框据此决定不关窗。
-        *slot.borrow_mut() = Some(Box::new(|| false));
-        assert!(!invoke_taking(&slot));
+        // 同一个词库开关反复拨：以最后一次为准，不产生两条。
+        merge_pending(&mut q, "wubi", None, vec![("emoji".into(), false)]);
+        assert_eq!(q["wubi"].dicts, vec![("emoji".to_string(), false)]);
+        // 另一个词库累加。
+        merge_pending(&mut q, "wubi", None, vec![("district".into(), true)]);
+        assert_eq!(q["wubi"].dicts.len(), 2);
+        // cfg 未再给出时保留上一次的——不能因为这次只改了词库就把方案配置抹掉。
+        assert!(q["wubi"].cfg.is_some(), "只改词库不该清掉已暂存的方案配置");
     }
 
     /// 摘要必须区分「跟随全局」与「跟随内置基线」：特殊方案不继承全局码表配置

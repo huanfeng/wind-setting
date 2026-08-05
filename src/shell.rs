@@ -45,20 +45,6 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         // all_tabs 后各「支持全局」的功能键已登记 global_flags，汇总为 keys.global_hotkeys 写回/回填。
         crate::manifest::register_global_hotkeys_collector(&st);
         let field_dialogs = std::mem::take(&mut *st.fields.dialogs.borrow_mut());
-        // 方案设置对话框的「保存」= 落方案 override + 主保存（config.toml 那一半）。
-        // 注入回调而非让它持有 AppState：它是 AppState 的字段，反向引用即循环持有。
-        // 此处 `st` 是 app 的不可变借用，闭包只存起来、不在借用期内调用。
-        {
-            let app_save = app.clone();
-            st.schema_mgr.set_main_save(move || {
-                app_save
-                    .try_borrow_mut()
-                    .map(|mut s| s.save_silent())
-                    // 借不到 = 有人正持有 AppState，此刻保存 config.toml 不安全。
-                    // 按失败处理：对话框会保留窗口，用户可重试。
-                    .unwrap_or(false)
-            });
-        }
         (
             tabs_vec,
             st.tab,
