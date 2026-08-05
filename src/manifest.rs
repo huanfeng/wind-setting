@@ -454,6 +454,26 @@ fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     sig
 }
 
+/// 求 `cur` 在 `values` 中的索引；不在其中时补一个承载它的选项并返回该索引。
+///
+/// 清单只能列举**已知**取值，而 config.toml 是用户可手写的——例如
+/// `schema.codetable.z_key_action` 可写 `special:<id>`，实例 id 随已安装方案增删，
+/// 静态清单无从列举。不补这一项的话 `position` 会回落到 0，而 writer 保存的是
+/// **选中项的值**：用户手写的取值就在「打开设置页、点一次保存」之间被静默换掉，
+/// 页面上还看不出任何异常。
+fn select_index_for(values: &mut Vec<String>, labels: &mut Vec<String>, cur: &str) -> usize {
+    if let Some(i) = values.iter().position(|v| v == cur) {
+        return i;
+    }
+    // 空值本就表示「未设置」，清单没列空选项时回落首项即可（补一项空标签反而更糟）。
+    if cur.is_empty() {
+        return 0;
+    }
+    values.push(cur.to_string());
+    labels.push(format!("{cur}（当前配置）"));
+    values.len() - 1
+}
+
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     // 响应式动态源（异步加载的主题/字体）：选项绑定 Signal，数据到达即填充下拉，
     // 避免静态构建在数据到达前拿到空列表显示「（无可选项）」。schemas 仍走下方静态路径。
@@ -462,14 +482,15 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     {
         return build_select_reactive(state, key, item, cfg, val_sig, lab_sig);
     }
-    let (values, labels): (Vec<String>, Vec<String>) = if let Some(src) = &item.options_source {
-        dynamic_options(state, src)
-    } else {
-        item.options
-            .iter()
-            .map(|o| (o.value.clone(), o.label.clone()))
-            .unzip()
-    };
+    let (mut values, mut labels): (Vec<String>, Vec<String>) =
+        if let Some(src) = &item.options_source {
+            dynamic_options(state, src)
+        } else {
+            item.options
+                .iter()
+                .map(|o| (o.value.clone(), o.label.clone()))
+                .unzip()
+        };
     if values.is_empty() {
         return Element::label("（无可选项）").fg_role(Role::TextMuted);
     }
@@ -483,7 +504,7 @@ fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .get_str(key)
         .map(str::to_string)
         .unwrap_or_else(|| def_str.clone());
-    let idx = values.iter().position(|v| *v == cur).unwrap_or(0);
+    let idx = select_index_for(&mut values, &mut labels, &cur);
     let sig = signal(idx);
     let kw = key.to_string();
     let vals_w = values.clone();
@@ -2647,6 +2668,33 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 清单未列举的当前取值必须被保留成一个选项。
+    ///
+    /// ★ 守的是一个**静默数据丢失**方向：没有这一步，手写了 `z_key_action =
+    /// "special:rare"` 的用户一打开设置页，下拉会显示首项「不启用」，点保存就把配置
+    /// 改成了空——全程无报错、无提示，页面看着一切正常。
+    #[test]
+    fn select_keeps_unlisted_current_value() {
+        let mut v = vec![String::new(), "temp_pinyin".to_string()];
+        let mut l = vec!["不启用".to_string(), "临时拼音".to_string()];
+
+        // 已列举的取值：正常命中，不该补项。
+        assert_eq!(select_index_for(&mut v, &mut l, "temp_pinyin"), 1);
+        assert_eq!(v.len(), 2, "命中时不该补项");
+
+        // 未列举的取值：补项并选中；写回的必须是原值本身，不能是标签。
+        let idx = select_index_for(&mut v, &mut l, "special:rare");
+        assert_eq!(idx, 2);
+        assert_eq!(v[2], "special:rare");
+        assert!(l[2].contains("special:rare"), "标签应能看出这是当前配置");
+
+        // 空值 = 未设置：回落首项，不该补出一个空标签项。
+        let mut v2 = vec!["a".to_string()];
+        let mut l2 = vec!["A".to_string()];
+        assert_eq!(select_index_for(&mut v2, &mut l2, ""), 0);
+        assert_eq!(v2.len(), 1);
+    }
 
     fn si(id: &str, kind: &str) -> SchemaInfo {
         SchemaInfo {
