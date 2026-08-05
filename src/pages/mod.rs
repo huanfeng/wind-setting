@@ -168,63 +168,22 @@ fn build_list_view_menu(
     app: &Rc<RefCell<AppState>>,
     mgr: &crate::dialogs::schema_manager::SchemaManagerState,
 ) -> Element {
-    let hd = mgr.hide_disabled;
-    let sh = mgr.show_hidden;
-    let items = signal(list_view_items(hd.get(), sh.get()));
-    let sel = signal(0usize);
-
-    let m_eff = mgr.clone();
-    let app_eff = app.clone();
-    let effect = dict::reactive::reactive_effect(
-        move || {
-            sel.version()
-                .wrapping_add(hd.version())
-                .wrapping_add(sh.version())
-        },
-        move || {
-            match sel.get() {
-                1 => {
-                    let v = !hd.get();
-                    hd.set(v);
-                    app_eff.borrow_mut().save_hide_disabled_schemas(v);
-                }
-                2 => {
-                    // set_show_hidden 内会重建列表——特殊方案的显隐改的是「进不进列表」，
-                    // 不是单纯的行可见性（分区标题的计数按数据项算）。
-                    let v = !sh.get();
-                    m_eff.set_show_hidden(v);
-                    app_eff.borrow_mut().save_show_hidden_schemas(v);
-                }
-                _ => {}
-            }
-            if sel.get() != 0 {
-                sel.set(0);
-            }
-            items.set(list_view_items(hd.get(), sh.get()));
-        },
-    );
-
-    Element::stack()
-        .child(Element::dropdown_items_reactive(items, sel).width(132))
-        .child(effect)
-}
-
-/// 「列表显示」菜单项（首项为标题哨兵，见 [`build_list_view_menu`]）。
-fn list_view_items(hide_disabled: bool, show_hidden: bool) -> Vec<DropdownItem> {
-    let flag = |on: bool| {
-        if on {
-            ("开", Intent::Primary)
-        } else {
-            ("关", Intent::Neutral)
-        }
-    };
-    let (h_txt, h_intent) = flag(hide_disabled);
-    let (s_txt, s_intent) = flag(show_hidden);
-    vec![
-        DropdownItem::new("列表显示"),
-        DropdownItem::new("隐藏未启用").badge(h_txt, h_intent),
-        DropdownItem::new("显示特殊方案").badge(s_txt, s_intent),
-    ]
+    let app_hd = app.clone();
+    let (m_sh, app_sh) = (mgr.clone(), app.clone());
+    Element::check_menu(
+        "列表显示",
+        vec![
+            CheckMenuItem::check("隐藏未启用", mgr.hide_disabled)
+                .on_change(move |v| app_hd.borrow_mut().save_hide_disabled_schemas(v)),
+            CheckMenuItem::check("显示特殊方案", mgr.show_hidden).on_change(move |v| {
+                // set_show_hidden 内会重建列表——特殊方案的显隐改的是「进不进列表」，
+                // 不是单纯的行可见性（分区标题的计数按数据项算）。
+                m_sh.set_show_hidden(v);
+                app_sh.borrow_mut().save_show_hidden_schemas(v);
+            }),
+        ],
+    )
+    .width(132)
 }
 
 fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
