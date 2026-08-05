@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.113.0",
+  "appVersion": "0.114.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -311,6 +311,16 @@
     {
       "default": 0,
       "key": "schema.pinyin.auto_learn.promote_count",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.pinyin.completion.min_syllables",
+      "type": "int"
+    },
+    {
+      "default": 3,
+      "key": "schema.pinyin.completion.max_extra_syllables",
       "type": "int"
     },
     {

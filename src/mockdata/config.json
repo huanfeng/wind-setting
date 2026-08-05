@@ -227,6 +227,10 @@
     "min_word_length": 0,
     "promote_count": 0
    },
+   "completion": {
+    "max_extra_syllables": 3,
+    "min_syllables": 2
+   },
    "frequency": {
     "base_scale": 0.0,
     "enabled": true,

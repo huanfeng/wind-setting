@@ -354,6 +354,31 @@ step = 12
 unit = "小时"
 enabled_when = "schema.pinyin.frequency.enabled == true"
 
+# 词组补全
+[[items]]
+key = "schema.pinyin.completion.min_syllables"
+group = "schema"
+section = "候选行为"
+subsection = "词组补全"
+type = "number"
+label = "最少音节数"
+hint = "输入达到几个音节才给出词组候选。1 = 不限制，单个字母也给"
+min = 1
+max = 4
+unit = "个音节"
+
+[[items]]
+key = "schema.pinyin.completion.max_extra_syllables"
+group = "schema"
+section = "候选行为"
+subsection = "词组补全"
+type = "number"
+label = "词组最多超出"
+hint = "词组最多比已输入的内容多几个音节。数值越小，候选越贴近已打的字"
+min = 0
+max = 6
+unit = "个音节"
+
 # 自动学习
 [[items]]
 key = "schema.pinyin.auto_learn.enabled"
@@ -643,7 +668,7 @@ group = "schema"
 section = "英文行为"
 type = "toggle"
 label = "上屏后自动加空格"
-hint = "选中英文候选上屏后补一个空格，连续打词不必手动按"
+hint = "上屏英文词后补一个空格，连续打词不必手动按；回车上屏不补"
 
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
