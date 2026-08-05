@@ -145,7 +145,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 /// 渐变图标块为静态色，按 `widgets::dark_sig()` 再分亮/暗双态。
 /// 「高级」项前插分隔线（参考稿 nav-sep）。
 fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
-    use crate::icons::{nav_icon, tinted};
+    use crate::icons::{CHIP_PX, ICON_PX, nav_icon, tinted};
     use crate::theme_def::{ACCENT_DARK, ACCENT_LIGHT};
 
     let mut col = Element::col().width_match().spacing(2);
@@ -178,14 +178,14 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
         // ── 选中态（亮/暗双态渐变图标块 + accent 文字 + 左指示条）──
         let sel_chip = |accent: u32, active: u32, on_dark: bool| {
             Element::stack()
-                .size(26, 26)
+                .size(CHIP_PX, CHIP_PX)
                 .corner(7.0)
                 .bg_gradient(Gradient::linear(
                     (0.0, 0.0),
                     (1.0, 1.0),
                     vec![(0.0, Color::hex(active)), (1.0, Color::hex(accent))],
                 ))
-                .child(tinted(svg, 16, Color::WHITE).align(Align::Center))
+                .child(tinted(svg, ICON_PX, Color::WHITE).align(Align::Center))
                 .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
         };
         // 左缘指示条：作 stack 覆盖层贴行左缘垂直居中，不占行内宽度——
@@ -238,10 +238,10 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
             .padding_xy(10, 0)
             .child(
                 Element::stack()
-                    .size(26, 26)
+                    .size(CHIP_PX, CHIP_PX)
                     .corner(7.0)
                     .bg_role(Role::Bg)
-                    .child(tinted(svg, 16, Color::hex(0x8A93A5)).align(Align::Center)),
+                    .child(tinted(svg, ICON_PX, Color::hex(0x8A93A5)).align(Align::Center)),
             )
             .child(
                 Element::label(name)

@@ -65,7 +65,7 @@ pub fn flat_panel() -> Element {
         .corner(12.0)
 }
 
-/// 分区标题：26px 强调色淡底图标块 + 14px 加粗标题（参考稿 sec-head）。
+/// 分区标题：强调色淡底图标块（[`crate::icons::CHIP_PX`]）+ 14px 加粗标题（参考稿 sec-head）。
 ///
 /// 图标块底色/图标色为静态 accent（tint/半透明底不走 *_role），按 [`dark_sig`]
 /// 做亮/暗双态 visible_when 跟随换肤；图标按 section 名查 [`crate::icons::section_icon`]。
@@ -77,10 +77,13 @@ pub fn section_header(title: &str) -> Element {
     let svg = crate::icons::section_icon(title);
     let chip = |accent: u32, on_dark: bool| {
         Element::stack()
-            .size(26, 26)
+            .size(crate::icons::CHIP_PX, crate::icons::CHIP_PX)
             .corner(7.0)
             .bg(Color::hex(accent).scale_alpha(0.12))
-            .child(crate::icons::tinted(svg, 15, Color::hex(accent)).align(Align::Center))
+            .child(
+                crate::icons::tinted(svg, crate::icons::ICON_PX, Color::hex(accent))
+                    .align(Align::Center),
+            )
             .visible_when(move || dark_sig().get() == on_dark)
     };
     Element::row()
