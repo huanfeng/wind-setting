@@ -102,6 +102,10 @@ pub struct DictRow {
     pub on: Signal<bool>,
 }
 
+/// 主保存回调的槽位：`Option` 因为注入发生在 shell 构建期（构造时还没有 AppState），
+/// `RefCell` 因为要在 `&self` 方法里取出再放回（见 [`invoke_taking`]）。
+type MainSaveSlot = Rc<RefCell<Option<Box<dyn Fn() -> bool>>>>;
+
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
 pub struct SchemaManagerState {
@@ -193,6 +197,12 @@ pub struct SchemaManagerState {
     /// 不另存布尔键——多一个键就多一处可能与实际内容不一致的状态。
     pub settings_ct_enabled: Signal<bool>,
     pub settings_ct_visible: Signal<bool>,
+    /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
+    /// 标题里不带方案名的话，点进去就不知道自己在配哪个表了。
+    pub settings_ct_title: Signal<String>,
+    /// 行内摘要（「跟随全局配置」/「已自定义」）。**定宽**——文本随勾选变化，
+    /// 若靠显隐表达状态，右侧的「设置」按钮会跟着左右跳。
+    pub settings_ct_disp: Signal<String>,
     /// 各配置项的工作态信号（打开时按生效值播种，保存时落盘）。
     pub settings_ct: crate::dialogs::schema_codetable::CtFields,
     /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
@@ -201,6 +211,18 @@ pub struct SchemaManagerState {
     /// 打开时的生效值快照（core 随 `schema.getConfig` 给的 `effectiveCodetable`）。
     /// 保存时用来补齐没有控件的隐藏项。
     pub settings_ct_eff: Rc<RefCell<Value>>,
+
+    /// 主保存回调（静默版 `AppState::save_silent`），由 `shell` 在 AppState 成型后注入。
+    ///
+    /// 本对话框里的改动有**两个落盘目标**：热键/引导键/启用排序进 `config.toml`（走
+    /// FieldRegistry + `config.setItems`），扩展词库/双拼布局/码表配置进
+    /// `schema_overrides/<id>.toml`（走 `schema.saveConfig`/`setDictEnabled`）。后者不在
+    /// `setItems` 的键空间里，主保存够不着——所以这个对话框自带「保存」按钮。
+    ///
+    /// 但用户看到的是一个对话框，没道理点了「保存」还有一半改动没生效。故「保存」＝
+    /// 落 override + 回调主保存。用回调而非持有 `AppState`：本结构是 `AppState` 的字段，
+    /// 直接反向引用是循环持有。
+    main_save: MainSaveSlot,
 }
 
 impl SchemaManagerState {
@@ -252,9 +274,12 @@ impl SchemaManagerState {
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
             settings_ct_enabled: signal(false),
             settings_ct_visible: signal(false),
+            settings_ct_title: signal("码表配置".to_string()),
+            settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
             settings_ct_plan: signal(vec![]),
             settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
+            main_save: Rc::new(RefCell::new(None)),
         };
         state.refresh();
         state
@@ -978,6 +1003,19 @@ impl SchemaManagerState {
                     .set(crate::dialogs::schema_codetable::has_custom(&cfg));
                 *self.settings_ct_eff.borrow_mut() = eff;
                 drop(cfg);
+                // 标题带方案名（名称缺失时回退 id——总比只显示「码表配置」强）。
+                let who = self
+                    .settings_entry
+                    .borrow()
+                    .as_ref()
+                    .map(|e| e.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| sid.clone());
+                self.settings_ct_title.set(format!("码表配置 - {who}"));
+                self.settings_ct_disp.set(
+                    ct_summary(self.settings_ct_enabled.get(), self.settings_entry_hidden())
+                        .to_string(),
+                );
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::CodeTable);
                 has_config = true;
@@ -1003,11 +1041,33 @@ impl SchemaManagerState {
         if !has_config {
             sections.push(SettingsSection::Empty);
         }
-        // 扩展词库与双拼布局都经「保存」按钮统一提交。
-        self.settings_has_save.set(has_config);
+        // 「保存」按钮**恒显示**：它现在也负责提交进入方式那一节（切换热键、引导键），
+        // 而那一节所有方案都有。按 has_config 显隐的话，一个只改了热键的拼音方案会看不到
+        // 保存按钮，用户只能出去点「应用设置」——正是这个按钮要消灭的事。
+        self.settings_has_save.set(true);
         self.settings_sections.set(sections);
 
         self.settings_visible.set(true);
+    }
+
+    /// 注入主保存回调（`shell` 在 AppState 成型后调一次）。见 `main_save` 字段文档。
+    pub fn set_main_save(&self, f: impl Fn() -> bool + 'static) {
+        *self.main_save.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 调主保存。未注入时返回 true（视为无事可做）——注入发生在 shell 构建期，
+    /// 正常路径下必然已注入；这里宽松处理是不让「没接上」表现为「保存失败」。
+    fn run_main_save(&self) -> bool {
+        invoke_taking(&self.main_save)
+    }
+
+    /// 当前打开的方案是否为特殊方案（决定摘要说「跟随内置基线」还是「跟随全局配置」）。
+    fn settings_entry_hidden(&self) -> bool {
+        self.settings_entry
+            .borrow()
+            .as_ref()
+            .map(|e| e.hidden)
+            .unwrap_or(false)
     }
 
     /// 统一保存设置对话框的改动：扩展词库变更逐个走 schema.setDictEnabled，
@@ -1083,6 +1143,16 @@ impl SchemaManagerState {
             && let Err(e) = rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg }))
         {
             self.notify(ToastKind::Error, format!("保存失败: {e}"));
+            return;
+        }
+
+        // 3) config.toml 那一半（切换热键、引导键、启用/排序）：它们随 FieldRegistry
+        //    writer 走主保存。放在 override 之后——override 失败时上面已 return，
+        //    不会出现「配置写了一半、方案文件没动」的错配。
+        //    静默版：反馈在下面统一给一条，否则只改了 override 类时主保存会弹
+        //    「没有变更」，与「方案配置已保存」并排出现、互相矛盾。
+        if !self.run_main_save() {
+            // 失败原因由主保存自己弹（RPC 报错 / 服务端拒绝）；不关窗，让用户能重试。
             return;
         }
 
@@ -1684,9 +1754,9 @@ fn build_codetable_dialog(state: &SchemaManagerState) -> Element {
     let ct = state.settings_ct.clone();
     let manifest = state.manifest.clone();
     let body = Element::host_signal(state.settings_ct_plan, move |item| ct.row(&manifest, item));
-    crate::dialogs::field_dialogs::build_group_dialog_shell(
+    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
         state.settings_ct_visible,
-        "码表配置",
+        state.settings_ct_title,
         Element::col().width_match().padding_xy(16, 2).child(body),
         // 无「保存」：改动随方案设置对话框的「保存」一并提交，与双拼布局、扩展词库同路。
         // 这里再放一个会让人以为两处各存各的。
@@ -1925,6 +1995,33 @@ fn build_settings_header(entry: &SchemaEntry) -> Element {
     col.child(Element::divider())
 }
 
+/// 取出回调 → 调用 → 放回。空槽视为成功。
+///
+/// **必须先 take 再调用**：回调里要 `borrow_mut` `AppState`，而 `AppState` 持有
+/// `SchemaManagerState`。若在 `borrow()` 期间直接调，回调链上任何一处再碰到这个槽
+/// 就是 `BorrowMutError` panic——而它只在真机点「保存」时才会现形。
+fn invoke_taking(slot: &MainSaveSlot) -> bool {
+    let f = slot.borrow_mut().take();
+    match f {
+        Some(f) => {
+            let ok = f();
+            *slot.borrow_mut() = Some(f);
+            ok
+        }
+        None => true,
+    }
+}
+
+/// 码表配置行的摘要文案。关着时说清「跟的是谁」——普通方案跟全局，特殊方案跟内置基线
+/// （core 不让特殊方案继承全局，见 `codetable_baseline`）。纯函数便于单测。
+fn ct_summary(enabled: bool, hidden_schema: bool) -> &'static str {
+    match (enabled, hidden_schema) {
+        (true, _) => "已自定义",
+        (false, true) => "跟随内置基线",
+        (false, false) => "跟随全局配置",
+    }
+}
+
 fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
     match kind {
         SettingsSection::Header => {
@@ -2042,17 +2139,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 )
         }
         SettingsSection::CodeTable => {
-            let entry = state.settings_entry.borrow().clone().unwrap_or_default();
             let en = state.settings_ct_enabled;
             let cv = state.settings_ct_visible;
-            // 摘要既是状态也是解释：关着时说清「跟的是谁」——普通方案跟全局，特殊方案
-            // 跟内置基线（core 不让特殊方案继承全局，见 codetable_baseline）。
-            // 不另挂一行灰色说明，与「进入方式」一节的处理保持一致。
-            let follows = if entry.hidden {
-                "跟随内置基线"
-            } else {
-                "跟随全局配置"
-            };
+            // 与「进入方式 → 切换热键」逐字同构：勾选框 + 定宽摘要 + 常驻「设置」按钮。
+            //
+            // 不用 Switch、也不靠显隐表达状态：那样勾上之后摘要消失、按钮出现，同一行的
+            // 元素会左右跳一下。摘要定宽 + 按钮常驻（未勾选时置灰）则行宽恒定。
             Element::col()
                 .width_match()
                 .spacing(4)
@@ -2070,21 +2162,20 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .weight(1.0)
                                 .max_lines(1),
                         )
+                        .child(Element::checkbox("启用", en).small().fg_role(Role::Text))
                         .child(
-                            Element::label(follows)
+                            Element::label_rc(state.settings_ct_disp)
                                 .font_size(12.5)
                                 .fg_role(Role::TextMuted)
                                 .max_lines(1)
-                                .visible_when(move || !en.get()),
+                                .width(114),
                         )
-                        .child(Element::switch(en))
                         .child(
-                            // 未开启时不显示——用户选的就是「不开就把相关项藏起来」。
                             Element::button("设置")
                                 .small()
                                 .outline_soft()
                                 .on_click(move |_| cv.set(true))
-                                .visible_when(move || en.get()),
+                                .enabled_when(move || en.get()),
                         ),
                 )
         }
@@ -2116,7 +2207,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             }
             col
         }
-        SettingsSection::Empty => Element::label("该方案暂无可配置项。")
+        SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
             .font_size(11.0)
             .fg_role(Role::TextMuted)
             .width_match()
@@ -2171,6 +2262,15 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         },
     );
 
+    // 码表配置摘要随勾选刷新。与引导键摘要同理：不等落盘，否则勾完看不到变化。
+    let st_ct = state.clone();
+    let ct_en = state.settings_ct_enabled;
+    let ct_disp = state.settings_ct_disp;
+    let ct_effect = crate::pages::dict::reactive::reactive_effect(
+        move || ct_en.version(),
+        move || ct_disp.set(ct_summary(ct_en.get(), st_ct.settings_entry_hidden()).to_string()),
+    );
+
     // 走与「全局方案配置」相同的外壳（标题栏 + 固定高滚动区 + 按钮栏）。此前用的是
     // dialog_panel：无滚动、标题 18px、宽 440，同一个设置界面里两种弹窗长得不一样。
     let content = Element::col()
@@ -2178,7 +2278,8 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         .padding_xy(16, 2)
         .child(sections)
         .child(hotkey_effect)
-        .child(trigger_effect);
+        .child(trigger_effect)
+        .child(ct_effect);
 
     let st_save = state.clone();
     // 「保存」放按钮栏左侧、与「恢复默认」同位：那一侧是「产生后果的操作」，
@@ -2221,6 +2322,45 @@ mod ext_dict_tests {
         // core 的未绑定 sentinel 也不该被写进来
         apply_hotkey_edit(&mut m, "english", true, "none");
         assert!(!m.contains_key("english"), "\"none\" 不该入表，实际 {m:?}");
+    }
+
+    /// 主保存回调必须能在自己执行期间安全触碰同一个槽。
+    ///
+    /// 实际链路是「点保存 → 回调 borrow_mut AppState → AppState 持有本结构」，
+    /// 借用期内再入就是 BorrowMutError panic，且只在真机点保存时才现形。
+    /// 这里用一个「执行中回头读同一个槽」的回调把那条路径压出来。
+    #[test]
+    fn invoke_taking_allows_reentrant_slot_access() {
+        let slot: MainSaveSlot = Rc::new(RefCell::new(None));
+        assert!(invoke_taking(&slot), "未注入应视为成功，不该表现为保存失败");
+
+        let inner = slot.clone();
+        *slot.borrow_mut() = Some(Box::new(move || {
+            // 执行期间访问同一个槽：若实现是「borrow 着调用」，这里直接 panic。
+            assert!(inner.borrow().is_none(), "执行期间槽应是空的（已被取出）");
+            true
+        }));
+        assert!(invoke_taking(&slot));
+        assert!(
+            slot.borrow().is_some(),
+            "调用后必须放回，否则第二次保存就静默跳过 config.toml 那一半"
+        );
+
+        // 回调返回 false（主保存报错）必须原样透出——对话框据此决定不关窗。
+        *slot.borrow_mut() = Some(Box::new(|| false));
+        assert!(!invoke_taking(&slot));
+    }
+
+    /// 摘要必须区分「跟随全局」与「跟随内置基线」：特殊方案不继承全局码表配置
+    /// （core `codetable_baseline`），对它说「跟随全局配置」是在骗人——用户会去改
+    /// 全局，然后发现快符纹丝不动。
+    #[test]
+    fn ct_summary_distinguishes_baseline_by_schema_kind() {
+        assert_eq!(ct_summary(false, false), "跟随全局配置");
+        assert_eq!(ct_summary(false, true), "跟随内置基线");
+        // 开启后跟谁都无关了，两种方案同一句。
+        assert_eq!(ct_summary(true, false), "已自定义");
+        assert_eq!(ct_summary(true, true), "已自定义");
     }
 
     /// 每个方案一条，互不干扰——对话框复用同一组工作态信号，最容易写成

@@ -506,6 +506,30 @@ pub fn build_group_dialog_shell(
     content: Element,
     bottom_leading: Vec<Element>,
 ) -> Element {
+    shell_with_title(visible, Element::label(title), content, bottom_leading)
+}
+
+/// 标题随内容变化的变体（如「码表配置 - 五笔」：同一个浮层服务于任意方案）。
+///
+/// 单独开一个入口而不是把 `&str` 那版改成泛型：静态标题是绝大多数调用点的形态，
+/// 让它们全都去构造一个 Signal 只是噪音。
+pub fn build_group_dialog_shell_dyn(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    bottom_leading: Vec<Element>,
+) -> Element {
+    shell_with_title(visible, Element::label_rc(title), content, bottom_leading)
+}
+
+/// 外壳本体。`title` 传的是**未加样式**的标签元素，样式在此统一施加——
+/// 两个入口各自 `.font_size()` 一遍的话，改一处忘另一处就成了「两种弹窗」。
+fn shell_with_title(
+    visible: Signal<bool>,
+    title: Element,
+    content: Element,
+    bottom_leading: Vec<Element>,
+) -> Element {
     // 内容超长时中间区域可滚动；固定视口高度确保标题栏和关闭按钮始终可见。
     let body = Element::scroll().width_match().height(380).child(content);
 
@@ -531,7 +555,7 @@ pub fn build_group_dialog_shell(
         .corner(12.0)
         .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
         .child(
-            Element::label(title)
+            title
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)

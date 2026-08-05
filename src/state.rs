@@ -1162,6 +1162,21 @@ impl AppState {
     /// 返回是否「可视为成功」（无错误）：无变更与保存成功均为 true，仅 RPC 报错为 false。
     /// 供「保存&退出」据此决定是否真的退出。
     pub fn save(&mut self) -> bool {
+        self.save_inner(true)
+    }
+
+    /// 静默保存：成功路径不弹 toast，失败路径照弹。
+    ///
+    /// 给方案设置对话框的「保存」用——它一次点击要落两个地方（方案 override + 本函数
+    /// 管的 config.toml），反馈得由它自己统一给一条。否则只改了 override 类时，这里会
+    /// 弹「没有变更」，与对话框的「已保存」并排出现，两条互相矛盾。
+    ///
+    /// 失败仍弹：那是用户必须看到的，且对话框会据返回值中止自己的成功提示。
+    pub fn save_silent(&mut self) -> bool {
+        self.save_inner(false)
+    }
+
+    fn save_inner(&mut self, notify_success: bool) -> bool {
         let reg = self.fields.clone();
         {
             let writers = reg.writers.borrow();
@@ -1176,8 +1191,10 @@ impl AppState {
             &self.capabilities.map_keys(),
         );
         if items.is_empty() {
-            self.feedback
-                .set(Some((ToastKind::Info, "没有变更".to_string())));
+            if notify_success {
+                self.feedback
+                    .set(Some((ToastKind::Info, "没有变更".to_string())));
+            }
             return true;
         }
         let items_json: Vec<Value> = items
@@ -1201,10 +1218,12 @@ impl AppState {
                     .unwrap_or_default();
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
-                    self.feedback.set(Some((
-                        ToastKind::Success,
-                        format!("已保存 {} 项变更", items_json.len()),
-                    )));
+                    if notify_success {
+                        self.feedback.set(Some((
+                            ToastKind::Success,
+                            format!("已保存 {} 项变更", items_json.len()),
+                        )));
+                    }
                     true
                 } else {
                     // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。
