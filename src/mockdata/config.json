@@ -170,11 +170,14 @@
     "protect_top_n_len3": 0,
     "strategy": "top"
    },
+   "input_chars": "",
+   "leading_chars": "",
    "punct_commit": true,
    "show_code_hint": true,
    "single_code_complete": true,
    "single_code_input": false,
    "top_code_commit": true,
+   "z_key_action": "",
    "z_key_repeat": true
   },
   "english": {

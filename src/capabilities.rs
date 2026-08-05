@@ -281,6 +281,10 @@ mod tests {
         //    注：min_phrase_len / max_phrase_len 已在清单内（hidden=true）。
         "schema.codetable.auto_phrase.idle_timeout_ms",
         "schema.codetable.auto_phrase.temp_max_entries",
+        // ⑨'' 码元字符集：core 的 REGISTRY 已注册（config_schema.rs），但消费侧仍在开发中，
+        //     暂不接入设置界面。**待 core 定稿后再评估**该不该暴露、放全局清单还是方案对话框。
+        "schema.codetable.input_chars",
+        "schema.codetable.leading_chars",
         // ⑩ core 新增键，本项目尚未接入设置界面（待评估）。
         "keys.take_screenshot",
         "debug.log_max_files",

@@ -74,6 +74,9 @@ const SPEC_BEHAVIOR_FIELDS: &[&str] = &[
     "single_code_input",
     "single_code_complete",
     "z_key_repeat",
+    // z 的另一个身份（引导键）。与 z_key_repeat 同为用户偏好、且同样按方案覆盖——
+    // z 是不是死码取决于这张码表，故必须逐方案可调。
+    "z_key_action",
 ];
 
 /// 一个方案级配置项的工作态信号。三种形态对应 manifest 的 toggle / number / select。

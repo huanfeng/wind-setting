@@ -70,6 +70,21 @@
       "type": "bool"
     },
     {
+      "default": "",
+      "key": "schema.codetable.z_key_action",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "schema.codetable.input_chars",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "schema.codetable.leading_chars",
+      "type": "str"
+    },
+    {
       "default": false,
       "key": "schema.codetable.frequency.enabled",
       "type": "bool"

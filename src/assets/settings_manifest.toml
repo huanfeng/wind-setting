@@ -147,6 +147,25 @@ type = "toggle"
 label = "z 键重复输入"
 hint = "输入z时首选为上一次上屏的内容，快速重复输入"
 
+# z 的两个身份共用一个键，由 core 在运行时裁决：z_key_repeat 开且有上屏历史、
+# 或 z 是本方案的活码前缀时，本项让位（见 core handle_lifecycle.rs 的三重身份裁决）。
+# 融合/特殊模式的实例 id 随已安装方案增删，清单只列内置的 quick_mix；配了其他实例的
+# 用户，其取值由下拉的「保留当前配置」项兜住，不会在保存时被抹掉。
+[[items]]
+key = "schema.codetable.z_key_action"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "select"
+label = "z 键引导功能"
+hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先"
+options = [
+    { value = "", label = "不启用（作编码字母）" },
+    { value = "temp_pinyin", label = "临时拼音" },
+    { value = "temp_english", label = "临时英文" },
+    { value = "mix:quick_mix", label = "快捷融合" },
+]
+
 # 词频调整
 [[items]]
 key = "schema.codetable.frequency.enabled"
@@ -684,6 +703,24 @@ options = [
   { value = "general", label = "常用字" },
   { value = "gb18030", label = "全部字符" },
 ]
+
+[[items]]
+key = "input.scope_relax.page_end_key"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "翻到底临时放宽范围"
+hint = "候选翻到最后一页后再按一次向后翻页键，本次输入临时显示全部字符，上屏后自动恢复；用于打出被同码常用字挡住的生僻字"
+enabled_when = "input.filter_mode != gb18030"
+
+[[items]]
+key = "input.scope_relax.prefix"
+group = "input"
+section = "字符与标点"
+type = "string"
+label = "放宽候选标记"
+hint = "临时放宽后多出来的候选加的前缀，用于与正常候选区分；留空则不加标记"
+enabled_when = "input.filter_mode != gb18030 && input.scope_relax.page_end_key == true"
 
 [[items]]
 key = "input.punct.follow_mode"
