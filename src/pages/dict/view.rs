@@ -37,7 +37,8 @@ const SEG_PINYIN: &[DomainKind] = &[DomainKind::Pinyin];
 const SEG_CODETABLE: &[DomainKind] = &[DomainKind::Codetable, DomainKind::Other];
 const SEG_ENGLISH: &[DomainKind] = &[DomainKind::English];
 const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
-/// 覆盖性校验用（顺序无关）。加新分段时记得挂进来。
+/// 覆盖性校验用（顺序无关），仅测试构建需要。加新分段时记得挂进来。
+#[cfg(test)]
 const ALL_SEGMENTS: &[&[DomainKind]] = &[
     SEG_PHRASE,
     SEG_PINYIN,
