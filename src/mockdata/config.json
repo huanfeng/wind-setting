@@ -82,6 +82,7 @@
    "shift_behavior": "temp_english",
    "show_candidates": true,
    "space_as_input": false,
+   "symbol_chars": "0123456789+-_.@#/",
    "trigger_keys": []
   },
   "temp_pinyin": {
@@ -114,6 +115,7 @@
    "arrows",
    "tab"
   ],
+  "key_actions": {},
   "open_add_word_dialog": "ctrl+shift+equal",
   "open_settings": "ctrl+shift+]",
   "overflow": {

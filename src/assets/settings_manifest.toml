@@ -1245,7 +1245,18 @@ group = "input"
 section = "临时英文"
 type = "toggle"
 label = "允许输入符号与数字"
-hint = "可输入下划线、点号等符号，便于书写标识符或代码"
+hint = "符号与数字直接进入输入缓冲，而非上屏退出或选词，便于书写标识符与代码。放行哪些字符在右侧设置"
+
+# 字符集专属于上面这个开关（不像英文符号字符集要服务两个场景），故用硬 gate：
+# 开关关闭时集合无意义，置灰是对的。
+[[items]]
+key = "input.temp_english.symbol_chars"
+group = "input"
+section = "临时英文"
+type = "dialog_button"
+label = "可输入的字符集"
+hint = "逐字符填写，一个字符就是一个字符（不支持 a-z 这类范围写法）。未列入的字符保持原有职责：符号上屏退出、分号与单引号选第 2/3 候选、减号等号方括号逗号句号翻页、数字键选词。留空则一个都不放行"
+gate_key = "input.temp_english.allow_symbols"
 
 [[items]]
 key = "input.temp_english.space_as_input"

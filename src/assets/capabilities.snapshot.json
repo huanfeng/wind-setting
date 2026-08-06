@@ -624,6 +624,11 @@
       "type": "bool"
     },
     {
+      "default": "0123456789+-_.@#/",
+      "key": "input.temp_english.symbol_chars",
+      "type": "str"
+    },
+    {
       "default": false,
       "key": "input.temp_english.space_as_input",
       "type": "bool"
@@ -825,6 +830,11 @@
     {
       "default": {},
       "key": "keys.schema_hotkeys",
+      "type": "map"
+    },
+    {
+      "default": {},
+      "key": "keys.key_actions",
       "type": "map"
     },
     {
