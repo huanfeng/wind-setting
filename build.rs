@@ -1,23 +1,21 @@
-// 为 wind_setting.exe 嵌入 Windows 资源：图标 / 版本信息 / manifest（DPI 感知）。
-// 参考 core 的 wind_input/apps/service/build.rs。仅 Windows 目标生效，其它目标空操作。
+// 为 wind_setting 注入版本号（全平台），并为 .exe 嵌入 Windows 资源：
+// 图标 / 版本信息 / manifest（DPI 感知，仅 Windows 目标）。
+// 参考 core 的 wind_input/apps/service/build.rs。
 //
 // 版本号取自 git（最近 tag + 短 hash），非 git 环境回退 CARGO_PKG_VERSION。
 // 下方 git_version / git / parse_xyz 与本项目无耦合，WindInput 可直接照搬
 // （仅产品名、图标路径不同）。
+//
+// ⚠️ `WIND_SETTING_VERSION` 的注入**必须在平台门控之外**：应用代码（src/shell.rs /
+// src/pages/mod.rs / src/update/version.rs）用的是 `env!`，编译期缺它直接 E0080 编译失败，
+// 不是"少个版本号"而是整个 crate 编不过。此前 main() 开头对非 Windows 目标一律早退，
+// 连带把这行也跳过了 —— macOS 上 `scripts/mac/dev.sh 1` 因此始终构建不出设置程序。
 
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
-
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let icon = manifest_dir.join("res").join("wind_setting.ico");
-
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed={}", icon.display());
     // HEAD 变动（提交 / 切分支）时重新注入版本。打 tag 属低频操作，必要时 cargo clean。
     println!("cargo:rerun-if-changed=.git/HEAD");
 
@@ -48,6 +46,15 @@ fn main() {
         ver_str.clone()
     };
     println!("cargo:rustc-env=WIND_SETTING_VERSION={display_ver}");
+
+    // ── 以下仅 Windows 目标：图标 / 版本资源 / manifest 嵌入 ──
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let icon = manifest_dir.join("res").join("wind_setting.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
 
     // manifest：asInvoker + PerMonitorV2 DPI 感知 + win10 + 长路径（对齐 core）。
     let manifest = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
