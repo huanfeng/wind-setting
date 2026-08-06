@@ -109,6 +109,9 @@ fn main() {
     let single_instance_state = app_state.clone();
     let mut app = App::new("清风输入法设置", 820, 640)
         .single_instance(app_id, move |argv| {
+            // 深链失效（点了"词库管理"却停在原页）时，这条是唯一能分辨「argv 没送到」
+            // 与「送到了但解析不出页」的证据。两种成因的修法完全不同，值一条 info。
+            tracing::info!("二次实例 argv: {:?}", argv.get(1..).unwrap_or(&[]));
             if let Some(raw) = cli::parse_protocol(&argv) {
                 route_protocol(&raw, &single_instance_state);
             } else if let Some(idx) = cli::parse_target(&argv) {
