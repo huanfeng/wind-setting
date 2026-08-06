@@ -163,7 +163,7 @@ options = [
     { value = "", label = "不启用（作编码字母）" },
     { value = "temp_pinyin", label = "临时拼音" },
     { value = "temp_english", label = "临时英文" },
-    { value = "mix:quick_mix", label = "快捷融合" },
+    { value = "mix:quick_mix", label = "快捷输入" },
 ]
 
 # 词频调整
