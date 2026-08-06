@@ -697,7 +697,8 @@ group = "input"
 section = "字符与标点"
 type = "select"
 label = "候选检索范围"
-hint = "过滤候选词中的生僻字"
+hint = "过滤候选词中的生僻字；「智能」档可在扩展设置里配置临时放宽"
+opens_dialog = "scope_relax"
 options = [
   { value = "smart", label = "智能" },
   { value = "general", label = "常用字" },
@@ -712,6 +713,7 @@ type = "toggle"
 label = "翻到底临时放宽范围"
 hint = "候选翻到最后一页后再按一次向后翻页键，本次输入临时显示全部字符，上屏后自动恢复；用于打出被同码常用字挡住的生僻字。仅「智能」档生效"
 enabled_when = "input.filter_mode == smart"
+dialog_group = "scope_relax"
 
 [[items]]
 key = "input.scope_relax.prefix"
@@ -721,6 +723,7 @@ type = "string"
 label = "放宽候选标记"
 hint = "临时放宽后多出来的候选加的前缀，用于与正常候选区分；留空则不加标记"
 enabled_when = "input.filter_mode == smart && input.scope_relax.page_end_key == true"
+dialog_group = "scope_relax"
 
 [[items]]
 key = "input.punct.follow_mode"
