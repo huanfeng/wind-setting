@@ -66,7 +66,8 @@ pub struct MItem {
     pub opens_dialog: Option<String>,
     /// 对话框内子分区（如"词频调整"/"自动造词"），同值的项聚合在同一子标题下。
     pub subsection: Option<String>,
-    /// 隐藏此项（未完全实现或不对最终用户开放），不渲染也不注册 writer/loader。
+    /// 隐藏此项（未完全实现 / 不对最终用户开放 / 当前平台无落点），不渲染也不注册
+    /// writer/loader。清单里的 `platform` 字段在解析时折进本字段（见 [`platform_matches`]）。
     pub hidden: bool,
 }
 
@@ -189,7 +190,11 @@ impl Manifest {
                     dialog_group: opt_str(it, "dialog_group"),
                     opens_dialog: opt_str(it, "opens_dialog"),
                     subsection: opt_str(it, "subsection"),
-                    hidden: it.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false),
+                    // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
+                    // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
+                    // 不注册 writer/loader，配置文件里的原值原样留着不动。
+                    hidden: it.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false)
+                        || !platform_matches(opt_str(it, "platform").as_deref()),
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -255,6 +260,25 @@ fn opt_str(v: &Value, k: &str) -> Option<String> {
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// 清单项的 `platform` 字段是否匹配当前平台。
+///
+/// 取值为逗号分隔的平台名（`windows` / `macos`），命中其一即显示；缺省（`None`）= 全平台。
+/// 用于「该配置项在本平台没有落点」的情形——如工具栏自动隐藏（macOS 用菜单栏指示器，
+/// 没有浮动工具栏可隐藏）。**不要**用它藏「本平台还没做」的功能：那属于待办，藏起来只会
+/// 让人以为不支持。
+///
+/// 未知平台名一律不匹配：写错名字宁可整项消失（一眼看得见），也不要静默当成全平台显示。
+fn platform_matches(platform: Option<&str>) -> bool {
+    let Some(list) = platform else {
+        return true;
+    };
+    list.split(',').map(str::trim).any(|p| match p {
+        "windows" => cfg!(windows),
+        "macos" => cfg!(target_os = "macos"),
+        _ => false,
+    })
 }
 
 /// 控件标准宽度（右侧对齐区）。
@@ -2754,6 +2778,45 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_gate() {
+        // 缺省 = 全平台。
+        assert!(platform_matches(None));
+        // 当前平台恒有一个匹配，另一个不匹配。
+        assert_eq!(platform_matches(Some("windows")), cfg!(windows));
+        assert_eq!(platform_matches(Some("macos")), cfg!(target_os = "macos"));
+        // 逗号列表：命中其一即可，容忍空白。
+        assert!(platform_matches(Some("windows, macos")));
+        // 写错名字宁可整项消失（一眼看得见），也不要静默当成全平台显示。
+        assert!(!platform_matches(Some("darwin")));
+    }
+
+    #[test]
+    fn toolbar_items_hidden_on_macos() {
+        // 三项工具栏配置在 macOS 无落点（菜单栏指示器，无浮动工具栏可隐藏）。
+        // 而 ui.toolbar.visible 必须留着——它在 macOS 上控制指示器的显示与否。
+        let m = Manifest::from_embedded();
+        for k in [
+            "ui.toolbar.hide_in_fullscreen",
+            "ui.toolbar.auto_hide",
+            "ui.toolbar.auto_hide_delay",
+        ] {
+            let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
+            assert_eq!(
+                item.hidden,
+                cfg!(target_os = "macos"),
+                "{k} 的平台门控与当前平台不符"
+            );
+        }
+        assert!(
+            !m.items
+                .get("ui.toolbar.visible")
+                .expect("清单缺该项")
+                .hidden,
+            "ui.toolbar.visible 两平台都该显示"
+        );
+    }
 
     /// 清单未列举的当前取值必须被保留成一个选项。
     ///

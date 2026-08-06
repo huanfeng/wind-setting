@@ -1563,9 +1563,14 @@ group = "keys"
 section = "功能快捷键"
 type = "hotkey"
 label = "切换到本输入法"
-hint = "在任意应用中一键切换到本输入法"
-# 不设 global：该键走 Windows DirectSwitchHotkeys 注册表（系统层面天然全局），
-# 不经 RegisterHotKey，故不纳入 keys.global_hotkeys（核心 coordinator.rs 不识别该动作名）。
+hint = "在任意应用中一键切换到本输入法（Windows 只切当前应用，macOS 为系统级切换）"
+# 不设 global：两平台都不经 keys.global_hotkeys 这条路，该动作名不在
+# build_global_hotkey_entries 的 supported 表里。
+#   Windows：写 DirectSwitchHotkeys 注册表，由 ctfmon 原生处理（系统层面天然全局，且是
+#            per-app 切换——只改当前前台应用的输入法）。
+#   macOS：  无对应机制，由服务进程自己注册 Carbon 全局热键 + TISSelectInputSource。
+#            系统没有「只改这个 app」的公开 API，故只能全局切换——差异不可消除，
+#            上面的 hint 已如实写明。
 
 # ═══════════════════════════ 外观 ═══════════════════════════
 # ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──
@@ -2029,6 +2034,8 @@ type = "toggle"
 label = "显示工具栏"
 hint = "在屏幕上显示可拖动的输入法状态栏"
 
+# 下面三项 platform = "windows"：macOS 用菜单栏指示器，没有浮动工具栏可隐藏。
+# （ui.toolbar.visible 不在此列——它在 macOS 上控制指示器的显示与否，是有落点的。）
 [[items]]
 key = "ui.toolbar.hide_in_fullscreen"
 group = "ui"
@@ -2036,6 +2043,7 @@ section = "工具栏"
 type = "toggle"
 label = "全屏时隐藏工具栏"
 hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏"
+platform = "windows"
 
 [[items]]
 key = "ui.toolbar.vertical"
@@ -2052,6 +2060,7 @@ section = "工具栏"
 type = "toggle"
 label = "自动隐藏工具栏"
 hint = "工具栏显示一段时间无交互后淡出隐藏；鼠标悬停不隐藏，切换中英等状态变化时重新显示"
+platform = "windows"
 
 [[items]]
 key = "ui.toolbar.auto_hide_delay"
@@ -2064,6 +2073,7 @@ min = 1
 max = 60
 unit = "s"
 enabled_when = "ui.toolbar.auto_hide == true"
+platform = "windows"
 
 # ═══════════════════════════ 常规（并入「输入」页尾「默认状态」）═══════════════════════════
 [[items]]
