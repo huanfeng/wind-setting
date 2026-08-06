@@ -379,8 +379,9 @@ fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
             200,
             &serde_json::json!({
                 "imported": true,
-                // core 导入仅落盘；是否热重载由输入法自身监听/重启决定，这里不谎报已重载。
-                "reloaded": false,
+                // 由 core 判定并回报：推的正好是当前生效主题时它会重解析下发，此处如实透传。
+                // 推的是别的主题则为 false —— 那本来也不该动用户正在用的外观。
+                "reloaded": result.reloaded,
                 "theme_name": result.display_name,
                 // 落地的主题 id（可能是就地写回的旧目录名），供前端回填记忆。
                 "slug": result.slug,

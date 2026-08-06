@@ -18,6 +18,9 @@ pub struct ThemePreview {
 pub struct ThemeImportResult {
     pub slug: String,
     pub display_name: String,
+    /// 导入的正好是当前生效主题，core 已重解析下发（改动即时可见）。
+    /// 由 core 判定并回报——旧版 core 不返回此字段，缺省 false。
+    pub reloaded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +102,12 @@ impl ThemeImportResult {
                 "主题导入结果缺少主题标识".to_string(),
             ));
         }
-        Ok(Self { slug, display_name })
+        let reloaded = v.get("reloaded").and_then(Value::as_bool).unwrap_or(false);
+        Ok(Self {
+            slug,
+            display_name,
+            reloaded,
+        })
     }
 }
 
@@ -236,6 +244,21 @@ mod tests {
         .unwrap();
         assert_eq!(r.slug, "blue");
         assert_eq!(r.display_name, "清风·蓝");
+        // 旧 core 不返回 reloaded → 缺省 false，不谎报「已生效」
+        assert!(!r.reloaded);
+    }
+
+    /// core 判定「推的是当前生效主题」时回报 reloaded=true，本层如实透传给编辑器。
+    #[test]
+    fn parse_import_result_carries_reloaded_flag() {
+        let r = ThemeImportResult::from_value(json!({
+            "ok": true,
+            "slug": "blue",
+            "display_name": "清风·蓝",
+            "reloaded": true
+        }))
+        .unwrap();
+        assert!(r.reloaded);
     }
 
     #[test]
