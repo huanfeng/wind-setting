@@ -710,8 +710,8 @@ group = "input"
 section = "字符与标点"
 type = "toggle"
 label = "翻到底临时放宽范围"
-hint = "候选翻到最后一页后再按一次向后翻页键，本次输入临时显示全部字符，上屏后自动恢复；用于打出被同码常用字挡住的生僻字"
-enabled_when = "input.filter_mode != gb18030"
+hint = "候选翻到最后一页后再按一次向后翻页键，本次输入临时显示全部字符，上屏后自动恢复；用于打出被同码常用字挡住的生僻字。仅「智能」档生效"
+enabled_when = "input.filter_mode == smart"
 
 [[items]]
 key = "input.scope_relax.prefix"
@@ -720,7 +720,7 @@ section = "字符与标点"
 type = "string"
 label = "放宽候选标记"
 hint = "临时放宽后多出来的候选加的前缀，用于与正常候选区分；留空则不加标记"
-enabled_when = "input.filter_mode != gb18030 && input.scope_relax.page_end_key == true"
+enabled_when = "input.filter_mode == smart && input.scope_relax.page_end_key == true"
 
 [[items]]
 key = "input.punct.follow_mode"
