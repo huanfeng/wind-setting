@@ -62,6 +62,9 @@ pub struct KeyActionFields {
     key_labels: Signal<Vec<String>>,
     /// 打开对话框那一刻的内容快照，供脏判定。
     at_open: Rc<RefCell<Vec<(String, String)>>>,
+    /// 本方案首码集里的符号键名（core `getConfig` 的 `leadingCodeKeys` 旁路字段）。
+    /// 随 `seed` 刷新——同一个对话框服务于任意方案，不刷会拿上一个方案的码元集去提示。
+    leading_keys: Rc<RefCell<Vec<String>>>,
 }
 
 impl Default for KeyActionFields {
@@ -73,6 +76,7 @@ impl Default for KeyActionFields {
             key_values: Rc::new(RefCell::new(Vec::new())),
             key_labels: signal(Vec::new()),
             at_open: Rc::new(RefCell::new(Vec::new())),
+            leading_keys: Rc::new(RefCell::new(Vec::new())),
         }
     }
 }
@@ -101,6 +105,20 @@ impl KeyActionFields {
     /// 用户打开一次设置页就静默失去配置，和 `z_key_action` 下拉「保留当前配置」同一策略。
     pub fn seed(&self, cfg: &Value) {
         self.init_key_options();
+        // 本方案首码集里的符号键（core 的只读旁路字段）。用来提示「绑了这个键，该符号
+        // 在本方案就起不了头了」——内核裁决是绑定优先，码表那边静默失效。
+        //
+        // 由 core 给键名而非字符集原文：`input_chars` 有区间语法，这边再解析一遍就是
+        // 两处慢慢漂移。缺字段（旧版 core）时为空表 = 不提示，不阻塞使用。
+        *self.leading_keys.borrow_mut() = cfg
+            .get("leadingCodeKeys")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut pairs: Vec<(String, String)> = cfg
             .get("key_actions")
             .and_then(|v| v.as_object())
@@ -319,6 +337,7 @@ impl KeyActionFields {
         let key_labels_sig = self.key_labels;
         let verbs = self.verbs.clone();
         let key_values = self.key_values.clone();
+        let leading_keys = self.leading_keys.clone();
 
         let list = Element::host_signal(rows_sig, move |row: Row| {
             let me = row.key;
@@ -338,6 +357,36 @@ impl KeyActionFields {
                     .is_some_and(|k| Self::is_modifier_key(k));
                 verb_needs && !on_modifier
             };
+            // 该键同时是本方案的码元首码：内核裁决「绑定优先」，于是这个符号在本方案
+            // 起不了头（组码中仍可用）。这是**同层冲突**，两条配置都不算坏，故用中性
+            // 措辞告知实际行为，不作错误标红——常驻警告会把可用的设计误报成待修问题。
+            //
+            // 与「需 Shift/Ctrl」互斥显示：那条是错配（配了不工作），优先级更高；
+            // 两条一起挂在窄行上也读不过来。
+            let (lk, kv2, vi2) = (leading_keys.clone(), key_values.clone(), row.verb);
+            let ki2 = row.key_idx;
+            let vb2 = verbs.clone();
+            let shadows_code = move || {
+                // 显式 `none` 不算——它本来就是「让这个键回归正常输入」，与码元无冲突。
+                let disabled = vb2
+                    .borrow()
+                    .get(vi2.get())
+                    .is_some_and(|v: &Verb| v.value == "none" || v.value.is_empty());
+                if disabled {
+                    return false;
+                }
+                let on_modifier = kv2
+                    .borrow()
+                    .get(ki2.get())
+                    .is_some_and(|k| Self::is_modifier_key(k));
+                if on_modifier {
+                    return false; // 修饰键不可能是码元
+                }
+                kv2.borrow()
+                    .get(ki2.get())
+                    .is_some_and(|k| lk.borrow().iter().any(|l| l == k))
+            };
+            let needs_mod_for_hint = needs_modifier.clone();
             Element::row()
                 .width_match()
                 .cross(Align::Center)
@@ -351,6 +400,13 @@ impl KeyActionFields {
                         .fg_role(Role::Danger)
                         .max_lines(1)
                         .visible_when(needs_modifier),
+                )
+                .child(
+                    Element::label("本方案码元")
+                        .font_size(11.0)
+                        .fg_role(Role::TextMuted)
+                        .max_lines(1)
+                        .visible_when(move || shadows_code() && !needs_mod_for_hint()),
                 )
                 .child(
                     Element::button("✕")
@@ -504,6 +560,34 @@ mod tests {
     /// 两处各写一份列表的后果是：下拉里能选、判定却不认，于是「切换方案」在修饰键上
     /// 照样弹「需 Shift/Ctrl」提示——用户按提示改也改不好。本仓已有过 UI 暴露 core
     /// 不接受的值那类 bug，这里从数据上堵住同型问题。
+    /// `leadingCodeKeys` 旁路字段要被 seed 接住，且**随方案刷新**。
+    ///
+    /// 不刷的后果：同一个对话框服务于任意方案，切到方案 B 后仍拿着方案 A 的码元集提示，
+    /// 用户会看到一条指向别的方案的「本方案码元」。
+    #[test]
+    fn leading_code_keys_refresh_per_seed() {
+        let f = KeyActionFields::default();
+        f.set_verbs(verbs());
+        f.seed(
+            &serde_json::from_str(
+                r#"{"key_actions":{"semicolon":"mix:quick_mix"},"leadingCodeKeys":["semicolon"]}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(f.leading_keys.borrow().as_slice(), ["semicolon"]);
+
+        // 换一个方案：字段变了要跟着变。
+        f.seed(&serde_json::from_str(r#"{"leadingCodeKeys":["backslash"]}"#).unwrap());
+        assert_eq!(f.leading_keys.borrow().as_slice(), ["backslash"]);
+
+        // 旧版 core 不给这个字段 → 空表 = 不提示，而不是沿用上一次的。
+        f.seed(&serde_json::from_str(r#"{"key_actions":{}}"#).unwrap());
+        assert!(
+            f.leading_keys.borrow().is_empty(),
+            "缺字段时应清空，否则会拿陈旧码元集提示"
+        );
+    }
+
     /// 「限修饰键」的动词分类必须与 core 的 `requires_modifier_key` 一致。
     ///
     /// 两仓各存一份手写清单、无编译期约束，漂移的表现是行内提示与实际行为对不上：
