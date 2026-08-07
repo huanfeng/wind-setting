@@ -84,6 +84,9 @@ pub enum SettingsSection {
     ShuangpinLayout,
     /// 码表配置：总开关 +（开启后）子对话框。仅码表方案有。
     CodeTable,
+    /// 方案级按键功能表（`[key_actions]`）。**所有方案都有**——按键功能与引擎类型无关，
+    /// 拼音方案里用 `\` 进快符同样合理。
+    KeyActions,
     ExtensionDicts,
     /// 节间分隔线（Header 自带结尾分隔，故只在其后的各节之间插入）。
     Divider,
@@ -210,6 +213,11 @@ pub struct SchemaManagerState {
     pub settings_ct_disp: Signal<String>,
     /// 各配置项的工作态信号（打开时按生效值播种，保存时落盘）。
     pub settings_ct: crate::dialogs::schema_codetable::CtFields,
+    // ── 方案级按键功能表（方案顶层 `key_actions`，见 dialogs::schema_key_actions）──
+    pub settings_ka: crate::dialogs::schema_key_actions::KeyActionFields,
+    pub settings_ka_visible: Signal<bool>,
+    pub settings_ka_title: Signal<String>,
+    pub settings_ka_disp: Signal<String>,
     /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
     /// 中间靠这个信号驱动 `host_signal` 重建。
     pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtItem>>,
@@ -279,6 +287,10 @@ impl SchemaManagerState {
             settings_ct_title: signal("码表配置".to_string()),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
+            settings_ka: Default::default(),
+            settings_ka_visible: signal(false),
+            settings_ka_title: signal("按键功能".to_string()),
+            settings_ka_disp: signal(String::new()),
             settings_ct_plan: signal(vec![]),
             settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
             settings_layout_at_open: Rc::new(std::cell::Cell::new(0)),
@@ -345,6 +357,73 @@ impl SchemaManagerState {
                     .cloned()
             })
             .unwrap_or_default()
+    }
+
+    /// 组装按键功能表的动词选项。
+    ///
+    /// 固定动词 + 实例动词（`mix:<id>` / `special:<id>`）。实例随已安装方案增删，故每次打开
+    /// 设置都重新读一遍 `config.get`，不缓存——用户可能刚在别的页加了个特殊方案。
+    ///
+    /// ⚠️ 首项恒为「不启用」：`Element::dropdown` 的选中值是**索引**，新建行的索引为 0，
+    /// 若首项是个真动作，「添加一行还没选」就等于配了那个动作。
+    ///
+    /// `toggle_schema:<id>` 刻意不列：方案级表里只允许有夺取回路或可往返的动词，
+    /// 见 core 仓 docs/design/schema-key-actions.md §5（方案级不允许单向 switch_schema，
+    /// 而 toggle_schema 属 C 类、四期才进方案级表）。
+    fn build_key_action_verbs(&self) -> Vec<crate::dialogs::schema_key_actions::Verb> {
+        use crate::dialogs::schema_key_actions::Verb;
+        let mut out = vec![
+            Verb {
+                value: "none".into(),
+                label: "不启用（在本方案屏蔽该键的全局绑定）".into(),
+            },
+            Verb {
+                value: "temp_pinyin".into(),
+                label: "临时拼音".into(),
+            },
+            Verb {
+                value: "temp_english".into(),
+                label: "临时英文".into(),
+            },
+        ];
+        let root = rpc::call_core("config.get", &json!({})).ok();
+        let arr = |seg: &str| -> Vec<Value> {
+            root.as_ref()
+                .and_then(|v| v.get("schema"))
+                .and_then(|s| s.get(seg))
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default()
+        };
+        for m in arr("mix_modes") {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() {
+                continue;
+            }
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            out.push(Verb {
+                value: format!("mix:{id}"),
+                label: format!("快捷输入 - {name}"),
+            });
+        }
+        for m in arr("special_modes") {
+            // id 缺省时回退 schema 名，与 core 的 `SpecialModeConfig::effective_id` 一致。
+            let sid = m.get("schema").and_then(|v| v.as_str()).unwrap_or("");
+            let id = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(sid);
+            if id.is_empty() {
+                continue;
+            }
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            out.push(Verb {
+                value: format!("special:{id}"),
+                label: format!("特殊模式 - {name}"),
+            });
+        }
+        out
     }
 
     /// 用某方案已配的引导键播种复选工作态。
@@ -987,13 +1066,11 @@ impl SchemaManagerState {
         // ── 计算配置分节（可扩展体系）：Header 恒为首节，其后按方案类型追加配置节 ──
         let mut sections: Vec<SettingsSection> = vec![SettingsSection::Header];
         // 除「进入方式」外还有没有别的配置节——只影响是否显示「暂无其它可配置项」。
-        let mut has_config = false;
         // 进入方式：所有方案都有（切到该方案的直达热键），故紧随 Header。
         sections.push(SettingsSection::EntryKeys);
         if is_sp {
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ShuangpinLayout);
-            has_config = true;
         }
         // 码表配置：码表方案才有（含快符这类特殊方案——它们本质就是码表方案，
         // 只是靠引导键进入）。混输方案暂不给：它的码表部分与拼音部分怎么分账是另一件事，
@@ -1025,8 +1102,24 @@ impl SchemaManagerState {
                 );
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::CodeTable);
-                has_config = true;
             }
+        }
+        // 按键功能表：所有方案都有（按键功能与引擎类型无关）。放在码表配置之后、
+        // 扩展词库之前——它同属「这个方案怎么用」，而词库是「这个方案有什么内容」。
+        {
+            self.settings_ka.set_verbs(self.build_key_action_verbs());
+            self.settings_ka.seed(&self.settings_cfg.borrow());
+            let who = self
+                .settings_entry
+                .borrow()
+                .as_ref()
+                .map(|e| e.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| sid.clone());
+            self.settings_ka_title.set(format!("按键功能 - {who}"));
+            self.settings_ka_disp.set(self.settings_ka.summary());
+            sections.push(SettingsSection::Divider);
+            sections.push(SettingsSection::KeyActions);
         }
         let dict_infos = parse_extension_dicts(&self.settings_cfg.borrow());
         let rows: Vec<DictRow> = dict_infos
@@ -1042,12 +1135,11 @@ impl SchemaManagerState {
         if !rows.is_empty() {
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ExtensionDicts);
-            has_config = true;
         }
         *self.settings_dicts.borrow_mut() = rows;
-        if !has_config {
-            sections.push(SettingsSection::Empty);
-        }
+        // 注：曾有 `has_config` 与 `SettingsSection::Empty`——「没有任何可配置项」的空状态。
+        // 「按键功能」对所有方案都有之后，那个分支恒不可达，故一并退役（枚举项保留，
+        // 将来若又出现真的空方案可直接复用）。
         self.settings_sections.set(sections);
 
         self.settings_visible.set(true);
@@ -1106,6 +1198,13 @@ impl SchemaManagerState {
                 }
                 cfg_changed = true;
             }
+        }
+
+        // 按键功能表：写进同一份 cfg（理由同上——core 是整份 diff 后全量重写 override）。
+        // 无总开关，脏判定即内容比对；空表也要写，那是「删光所有绑定」的落地方式。
+        if self.settings_ka.is_dirty() {
+            self.settings_ka.apply(&mut cfg);
+            cfg_changed = true;
         }
 
         if self.settings_is_shuangpin.get()
@@ -1739,6 +1838,7 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
     let hotkey_dlg = build_schema_hotkey_dialog(state);
     let trigger_dlg = build_trigger_keys_dialog(state);
     let ct_dlg = build_codetable_dialog(state);
+    let ka_dlg = build_key_actions_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -1748,6 +1848,23 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
         .child(hotkey_dlg)
         .child(trigger_dlg)
         .child(ct_dlg)
+        .child(ka_dlg)
+}
+
+/// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
+/// 无需像码表配置那样按 plan 重建——行元素绑的是 `Signal<Vec<Row>>`，播种时 `set`
+/// 即触发 `list_signal` 重建，天然跟得上换方案。
+fn build_key_actions_dialog(state: &SchemaManagerState) -> Element {
+    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
+        state.settings_ka_visible,
+        state.settings_ka_title,
+        Element::col()
+            .width_match()
+            .padding_xy(16, 6)
+            .child(state.settings_ka.build_body()),
+        // 无「保存」：与码表配置同路，改动随方案设置对话框的「保存」一并提交。
+        Vec::new(),
+    )
 }
 
 /// 方案级码表配置浮层（第三级）：与全局「上屏行为」对话框同一份 manifest 定义，
@@ -2172,6 +2289,42 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .max_lines(1),
                         )
                         .child(Element::dropdown(labels, state.settings_layout).width(170)),
+                )
+        }
+        SettingsSection::KeyActions => {
+            let kv = state.settings_ka_visible;
+            // 与码表配置行同构，但**没有启用开关**：本表的「有没有配」由内容本身表达
+            // （空表即未配置），多一个开关就多一处可能与内容不一致的状态。
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(crate::manifest::dialog_group_header("按键功能"))
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::label("本方案的按键绑定")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(
+                            Element::label_rc(state.settings_ka_disp)
+                                .font_size(12.5)
+                                .fg_role(Role::TextMuted)
+                                .max_lines(1)
+                                .width(114),
+                        )
+                        .child(
+                            Element::button("设置")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| kv.set(true)),
+                        ),
                 )
         }
         SettingsSection::CodeTable => {
