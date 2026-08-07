@@ -432,6 +432,23 @@ impl SchemaManagerState {
                 label: format!("特殊模式 - {name}"),
             });
         }
+        // C 类：切到目标方案，再按回来。**只在修饰键上可用**——它必须在英文模式下也按得动
+        // （否则切到英文方案就回不来），而有字符的键走的 keydown 链在英文态根本到不了。
+        // 这里照常列出，由 `KeyActionFields` 在行内按所选键给提示（core 侧同样有裁决）。
+        //
+        // 刻意不提供全局那个单向的 `switch_schema:<id>`：方案级绑定 + 单向切换会锁死用户
+        // （A 里配了去 B，B 没配回程 ⇒ 只能去点工具栏）。往返版由运行时来源兜底，
+        // 不要求目标方案配对称的绑定。见 docs/design/schema-key-actions.md §5。
+        for e in self.schemas.borrow().iter() {
+            if e.id.is_empty() || e.hidden {
+                continue;
+            }
+            let name = if e.name.is_empty() { &e.id } else { &e.name };
+            out.push(Verb {
+                value: format!("toggle_schema:{}", e.id),
+                label: format!("切换方案 - {name}"),
+            });
+        }
         out
     }
 

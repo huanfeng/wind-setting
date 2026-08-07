@@ -262,13 +262,12 @@ impl KeyActionFields {
     /// 其余字母在任何码表里几乎都是活码前缀，`bound_action_key_yields` 必然让位，配了等于
     /// 没配。列出来只会让人配完发现没反应，与「临拼触发键里那个失效的 z 选项」同型。
     ///
-    /// # 修饰键（LShift/RShift）为什么不在这里
+    /// # 修饰键与其它键的分工
     ///
-    /// core 目前**接不住**：① `key_name_to_vk` 查的 `KEY_TABLE` 只含符号键，`lshift`
-    /// 解析不出；② 更根本的是修饰键作功能键只能走 **keyup 轻敲**通路（keydown 不能吃、
-    /// `Ctrl+A` 的第一下会误触发、长按会连触发），而方案级表的分派点在 keydown 的
-    /// `try_activate_mode` 里。两条都要 core 先支持（设计文档四期），在那之前把它们放进
-    /// 下拉，就是又造一个「配了不生效」的选项。
+    /// 修饰键走 **keyup 轻敲**通路（keydown 不能吃：`Ctrl+A` 的第一下会误触发、长按会
+    /// 连触发、宿主看不到修饰键会卡），有字符的键走 keydown。判据是**键有没有字符**，
+    /// 不是动作类别——`toggle_schema` 只在修饰键上可用，正是因为它必须在英文模式下也
+    /// 按得动（否则切到英文方案就回不来），而 keydown 那条链在英文模式下走不到。
     fn key_options() -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = crate::dialogs::schema_manager::TRIGGER_KEY_OPTIONS
             .iter()
@@ -277,7 +276,18 @@ impl KeyActionFields {
         out.push(("minus".into(), "减号 ( - )".into()));
         out.push(("equal".into(), "等号 ( = )".into()));
         out.push(("z".into(), "字母 z".into()));
+        // 与 core `keymap::modifier_name_to_vk` 的规范名一一对应。
+        out.push(("lshift".into(), "左 Shift".into()));
+        out.push(("rshift".into(), "右 Shift".into()));
+        out.push(("lctrl".into(), "左 Ctrl".into()));
+        out.push(("rctrl".into(), "右 Ctrl".into()));
         out
+    }
+
+    /// 该键名是否为纯修饰键（与 `key_options` 里那四项同源）。
+    /// 用于给「动词只在修饰键上可用」的组合做提示，与 core 的裁决保持同一判据。
+    pub fn is_modifier_key(name: &str) -> bool {
+        matches!(name, "lshift" | "rshift" | "lctrl" | "rctrl")
     }
 
     /// 对话框内容（外壳由调用方用 `build_group_dialog_shell_dyn` 套上，
@@ -295,9 +305,27 @@ impl KeyActionFields {
         let rows_sig = self.rows;
         let labels_sig = self.verb_labels;
         let key_labels_sig = self.key_labels;
+        let verbs = self.verbs.clone();
+        let key_values = self.key_values.clone();
 
         let list = Element::host_signal(rows_sig, move |row: Row| {
             let me = row.key;
+            // 「切换方案」只在修饰键上生效（core 侧同判据）。选错组合时当场标出来，
+            // 否则用户配完只会得到一个安静不工作的绑定——这类「配了不生效」的求助，
+            // 本模块已经贡献过一次了。
+            let (vb, kv) = (verbs.clone(), key_values.clone());
+            let (vi, ki) = (row.verb, row.key_idx);
+            let needs_modifier = move || {
+                let is_toggle_schema = vb
+                    .borrow()
+                    .get(vi.get())
+                    .is_some_and(|v: &Verb| v.value.starts_with("toggle_schema:"));
+                let on_modifier = kv
+                    .borrow()
+                    .get(ki.get())
+                    .is_some_and(|k| Self::is_modifier_key(k));
+                is_toggle_schema && !on_modifier
+            };
             Element::row()
                 .width_match()
                 .cross(Align::Center)
@@ -305,6 +333,13 @@ impl KeyActionFields {
                 .padding_xy(0, 3)
                 .child(Element::dropdown_reactive(key_labels_sig, row.key_idx).width(150))
                 .child(Element::dropdown_reactive(labels_sig, row.verb).weight(1.0))
+                .child(
+                    Element::label("需 Shift/Ctrl")
+                        .font_size(11.0)
+                        .fg_role(Role::Danger)
+                        .max_lines(1)
+                        .visible_when(needs_modifier),
+                )
                 .child(
                     Element::button("✕")
                         .small()
@@ -450,5 +485,54 @@ mod tests {
         let mut cfg = json!({});
         f.apply(&mut cfg);
         assert_eq!(cfg["key_actions"], json!({"z":"mix:quick_mix"}));
+    }
+
+    /// 修饰键选项与 `is_modifier_key` 必须同源。
+    ///
+    /// 两处各写一份列表的后果是：下拉里能选、判定却不认，于是「切换方案」在修饰键上
+    /// 照样弹「需 Shift/Ctrl」提示——用户按提示改也改不好。本仓已有过 UI 暴露 core
+    /// 不接受的值那类 bug，这里从数据上堵住同型问题。
+    #[test]
+    fn modifier_options_agree_with_predicate() {
+        let opts = KeyActionFields::key_options();
+        let listed: Vec<&str> = opts
+            .iter()
+            .map(|(v, _)| v.as_str())
+            .filter(|v| KeyActionFields::is_modifier_key(v))
+            .collect();
+        assert_eq!(
+            listed,
+            vec!["lshift", "rshift", "lctrl", "rctrl"],
+            "选项里的修饰键应恰好是判定认可的那四个"
+        );
+        // 反向：符号键与字母不该被判成修饰键。
+        for k in ["backslash", "semicolon", "z", "grave"] {
+            assert!(!KeyActionFields::is_modifier_key(k), "{k} 不是修饰键");
+        }
+    }
+
+    /// `toggle_schema:<id>` 动词能往返：存得进、读得出、不算脏。
+    ///
+    /// C 类是四期新增的值域，seed/apply 若认不得它，用户手写的配置会在下次保存时
+    /// 被静默丢掉——`apply` 走的是「整份 cfg 与方案文件 diff」，认不得等于删掉。
+    #[test]
+    fn toggle_schema_verb_round_trips() {
+        let f = KeyActionFields::default();
+        let mut vs = verbs();
+        vs.push(Verb {
+            value: "toggle_schema:english".into(),
+            label: "切换方案 - 英文".into(),
+        });
+        f.set_verbs(vs);
+        f.seed(
+            &serde_json::from_str(r#"{"key_actions":{"rshift":"toggle_schema:english"}}"#).unwrap(),
+        );
+        assert!(!f.is_dirty(), "原样播种不该算脏");
+        let mut cfg = serde_json::json!({});
+        f.apply(&mut cfg);
+        assert_eq!(
+            cfg.pointer("/key_actions/rshift").and_then(|v| v.as_str()),
+            Some("toggle_schema:english")
+        );
     }
 }
