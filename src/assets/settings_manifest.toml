@@ -2010,6 +2010,14 @@ label = "全屏时隐藏工具栏"
 hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏"
 
 [[items]]
+key = "ui.toolbar.vertical"
+group = "ui"
+section = "工具栏"
+type = "toggle"
+label = "纵向排列"
+hint = "工具栏竖着摆放；适合把它靠在屏幕左右两侧"
+
+[[items]]
 key = "ui.toolbar.auto_hide"
 group = "ui"
 section = "工具栏"

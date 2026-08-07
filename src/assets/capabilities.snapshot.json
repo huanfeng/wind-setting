@@ -1207,6 +1207,11 @@
       "type": "int"
     },
     {
+      "default": false,
+      "key": "ui.toolbar.vertical",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "stats.enabled",
       "type": "bool"

@@ -334,6 +334,7 @@
    "auto_hide": false,
    "auto_hide_delay": 5,
    "hide_in_fullscreen": true,
+   "vertical": false,
    "visible": true
   },
   "tooltip": {
