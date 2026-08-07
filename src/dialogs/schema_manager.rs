@@ -397,7 +397,14 @@ impl SchemaManagerState {
             if id.is_empty() {
                 continue;
             }
-            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            // ★ 必须 filter 非空：core 的 MixModeConfig 带 #[serde(default)]，未填的
+            // name 序列化成 ""（不是缺失），unwrap_or 对 Some("") 不生效 —— 表现为
+            // 下拉里显示「快捷输入 - 」这样的半截标签。
+            let name = m
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id);
             out.push(Verb {
                 value: format!("mix:{id}"),
                 label: format!("快捷输入 - {name}"),
@@ -414,7 +421,12 @@ impl SchemaManagerState {
             if id.is_empty() {
                 continue;
             }
-            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+            // 同上：未填 name 时回落 id（多半就是方案 id，如 quick_symbols）。
+            let name = m
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id);
             out.push(Verb {
                 value: format!("special:{id}"),
                 label: format!("特殊模式 - {name}"),

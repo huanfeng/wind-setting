@@ -251,13 +251,24 @@ impl KeyActionFields {
         }
     }
 
-    /// 键名选项：符号键 + 字母。
+    /// 键名选项：符号键 + `z`。
     ///
     /// 用下拉而非文本框：键名是 core `keymap` 里的固定词表（`backslash` / `grave` …），
     /// 让用户手打等于把一张内部词表当成 API——拼错了也没有任何反馈，配了不生效还查不出。
     ///
-    /// 字母只列 a-z 的常用几个是不够的：哪个字母能借作功能键取决于该方案里它是不是死码，
-    /// 那是 core 运行时的判断（见 `bound_action_key_yields`），UI 无从预知，故全列。
+    /// # 字母为什么只留 z
+    ///
+    /// core 侧任意字母都能绑（活码裁决已从 z 泛化到所有字母），但**实践上只有 z 有意义**：
+    /// 其余字母在任何码表里几乎都是活码前缀，`bound_action_key_yields` 必然让位，配了等于
+    /// 没配。列出来只会让人配完发现没反应，与「临拼触发键里那个失效的 z 选项」同型。
+    ///
+    /// # 修饰键（LShift/RShift）为什么不在这里
+    ///
+    /// core 目前**接不住**：① `key_name_to_vk` 查的 `KEY_TABLE` 只含符号键，`lshift`
+    /// 解析不出；② 更根本的是修饰键作功能键只能走 **keyup 轻敲**通路（keydown 不能吃、
+    /// `Ctrl+A` 的第一下会误触发、长按会连触发），而方案级表的分派点在 keydown 的
+    /// `try_activate_mode` 里。两条都要 core 先支持（设计文档四期），在那之前把它们放进
+    /// 下拉，就是又造一个「配了不生效」的选项。
     fn key_options() -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = crate::dialogs::schema_manager::TRIGGER_KEY_OPTIONS
             .iter()
@@ -265,9 +276,7 @@ impl KeyActionFields {
             .collect();
         out.push(("minus".into(), "减号 ( - )".into()));
         out.push(("equal".into(), "等号 ( = )".into()));
-        for c in 'a'..='z' {
-            out.push((c.to_string(), format!("字母 {c}")));
-        }
+        out.push(("z".into(), "字母 z".into()));
         out
     }
 
