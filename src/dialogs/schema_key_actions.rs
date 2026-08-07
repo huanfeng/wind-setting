@@ -1,7 +1,7 @@
 //! 方案级按键功能表（`[key_actions]`）编辑对话框。
 //!
 //! 一行一条绑定：`[键名] [动词下拉] [删除]`，底部「添加」。行数随 `Signal<Vec<Row>>`
-//! 变化由 `Element::list_signal` 自动重建。
+//! 变化由 `Element::host_signal` 自动重建。
 //!
 //! # 与码表配置对话框的区别
 //!
@@ -285,41 +285,39 @@ impl KeyActionFields {
     ///
     /// 返回 `(内容, 底部按钮)`——「添加绑定」交给外壳的底部按钮栏，与「关闭」同排；
     /// 放在列表下方会随列表滚动、且和内容挤在一起。
+    ///
+    /// 列表用 `host_signal`（非滚动的响应式 col）而非 `list_signal`：外壳
+    /// `build_group_dialog_shell_dyn` 本身就是一个固定高的滚动区，内嵌第二层滚动会让
+    /// 外层按无限高度测量内层、滚轮在两层间打架，结果是列表滚不动、且高度被内层写死
+    /// 撑不满外壳视口。按自然高度展开后只保留外壳这一层滚动，两个问题一并消除。
+    /// 判据是「父容器是否已在滚动」，不是「要不要响应式」——同文件的码表配置浮层同理。
     pub fn build_body(&self) -> (Element, Vec<Element>) {
         let rows_sig = self.rows;
         let labels_sig = self.verb_labels;
         let key_labels_sig = self.key_labels;
 
-        let list = Element::list_signal(
-            rows_sig,
-            |_| (),
-            move |row: Row| {
-                let me = row.key;
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .spacing(8)
-                    .padding_xy(0, 3)
-                    .child(Element::dropdown_reactive(key_labels_sig, row.key_idx).width(150))
-                    .child(Element::dropdown_reactive(labels_sig, row.verb).weight(1.0))
-                    .child(
-                        Element::button("✕")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| {
-                                // 按 key signal 的身份定位：行序号随增删变化，存下标必然错位。
-                                let mut v = rows_sig.get();
-                                v.retain(|r| r.key != me);
-                                rows_sig.set(v);
-                            }),
-                    )
-                    // 让开滚动条：只有对称 padding 可用，故用定宽占位撑出右侧空隙，
-                    // 否则删除按钮压在滚动条下点不到。
-                    .child(Element::leaf().width(10))
-            },
-        )
-        .width_match()
-        .weight(1.0);
+        let list = Element::host_signal(rows_sig, move |row: Row| {
+            let me = row.key;
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .padding_xy(0, 3)
+                .child(Element::dropdown_reactive(key_labels_sig, row.key_idx).width(150))
+                .child(Element::dropdown_reactive(labels_sig, row.verb).weight(1.0))
+                .child(
+                    Element::button("✕")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            // 按 key signal 的身份定位：行序号随增删变化，存下标必然错位。
+                            let mut v = rows_sig.get();
+                            v.retain(|r| r.key != me);
+                            rows_sig.set(v);
+                        }),
+                )
+        })
+        .width_match();
 
         let add = Element::button("+ 添加绑定").small().on_click(move |_| {
             let mut v = rows_sig.get();
@@ -333,7 +331,6 @@ impl KeyActionFields {
 
         let content = Element::col()
             .width_match()
-            .height(260)
             .spacing(6)
             .child(
                 Element::label("给本方案的按键指定功能，优先于全局设置。")

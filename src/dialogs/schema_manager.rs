@@ -1863,7 +1863,7 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
 
 /// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
 /// 无需像码表配置那样按 plan 重建——行元素绑的是 `Signal<Vec<Row>>`，播种时 `set`
-/// 即触发 `list_signal` 重建，天然跟得上换方案。
+/// 即触发 `host_signal` 重建，天然跟得上换方案。
 fn build_key_actions_dialog(state: &SchemaManagerState) -> Element {
     let (content, buttons) = state.settings_ka.build_body();
     crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
