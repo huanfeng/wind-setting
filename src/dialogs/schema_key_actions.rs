@@ -290,6 +290,18 @@ impl KeyActionFields {
         matches!(name, "lshift" | "rshift" | "lctrl" | "rctrl")
     }
 
+    /// 该动词是否**只能绑修饰键**。镜像 core 的 `BoundAction::requires_modifier_key`。
+    ///
+    /// 判据是「它是不是**从英文态出来**的手段」：是的话绑在有字符的键上就是单程票
+    /// ——那条 keydown 链在英文模式分水岭之后，切过去就再也按不动。
+    /// `toggle_punct` 那类只在中文态有意义，不受此限。
+    ///
+    /// ⚠ 与 core 是**两份手写清单**，没有编译期约束。加动词时两处都要改，
+    /// 判据本身写在 core 那侧的文档注释里。
+    pub fn verb_requires_modifier(value: &str) -> bool {
+        value.starts_with("toggle_schema:") || matches!(value, "toggle_mode" | "switch_engine")
+    }
+
     /// 对话框内容（外壳由调用方用 `build_group_dialog_shell_dyn` 套上，
     /// 以便与码表配置、扩展词库等其它三级浮层长得一致）。
     ///
@@ -310,21 +322,21 @@ impl KeyActionFields {
 
         let list = Element::host_signal(rows_sig, move |row: Row| {
             let me = row.key;
-            // 「切换方案」只在修饰键上生效（core 侧同判据）。选错组合时当场标出来，
+            // 部分动词只在修饰键上生效（core 侧同判据）。选错组合时当场标出来，
             // 否则用户配完只会得到一个安静不工作的绑定——这类「配了不生效」的求助，
             // 本模块已经贡献过一次了。
             let (vb, kv) = (verbs.clone(), key_values.clone());
             let (vi, ki) = (row.verb, row.key_idx);
             let needs_modifier = move || {
-                let is_toggle_schema = vb
+                let verb_needs = vb
                     .borrow()
                     .get(vi.get())
-                    .is_some_and(|v: &Verb| v.value.starts_with("toggle_schema:"));
+                    .is_some_and(|v: &Verb| Self::verb_requires_modifier(&v.value));
                 let on_modifier = kv
                     .borrow()
                     .get(ki.get())
                     .is_some_and(|k| Self::is_modifier_key(k));
-                is_toggle_schema && !on_modifier
+                verb_needs && !on_modifier
             };
             Element::row()
                 .width_match()
@@ -492,6 +504,36 @@ mod tests {
     /// 两处各写一份列表的后果是：下拉里能选、判定却不认，于是「切换方案」在修饰键上
     /// 照样弹「需 Shift/Ctrl」提示——用户按提示改也改不好。本仓已有过 UI 暴露 core
     /// 不接受的值那类 bug，这里从数据上堵住同型问题。
+    /// 「限修饰键」的动词分类必须与 core 的 `requires_modifier_key` 一致。
+    ///
+    /// 两仓各存一份手写清单、无编译期约束，漂移的表现是行内提示与实际行为对不上：
+    /// 提示「需 Shift/Ctrl」但配上去照样不工作，或反过来——提示没出、配完却静默失效。
+    #[test]
+    fn verbs_requiring_modifier_match_core_classification() {
+        // 用来「离开英文态」的动作：绑有字符键是单程票。
+        for v in ["toggle_mode", "switch_engine", "toggle_schema:english"] {
+            assert!(KeyActionFields::verb_requires_modifier(v), "{v} 应限修饰键");
+        }
+        // 只在中文态有意义的，有字符键可用。
+        for v in [
+            "toggle_punct",
+            "toggle_s2t",
+            "toggle_full_width",
+            "toggle_toolbar",
+            "open_settings",
+            "take_screenshot",
+            "temp_pinyin",
+            "mix:quick_mix",
+            "special:fuhao",
+            "none",
+        ] {
+            assert!(
+                !KeyActionFields::verb_requires_modifier(v),
+                "{v} 不该限修饰键"
+            );
+        }
+    }
+
     #[test]
     fn modifier_options_agree_with_predicate() {
         let opts = KeyActionFields::key_options();

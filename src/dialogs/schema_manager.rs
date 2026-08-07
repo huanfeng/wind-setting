@@ -449,6 +449,26 @@ impl SchemaManagerState {
                 label: format!("切换方案 - {name}"),
             });
         }
+        // A 类状态切换。取值必须与 core `BoundAction::DISPATCH_ACTIONS` 逐字一致——
+        // 那边是白名单校验，拼错即静默落回「不启用」。
+        //
+        // `add_word` / `open_add_word_dialog` 不在此列：它们要返回占位 composition
+        // 激活 C++ 转发，不走 `dispatch_hotkey`，列出来就是个按了没反应的选项。
+        for (value, label) in [
+            ("toggle_mode", "中英文切换"),
+            ("switch_engine", "循环切换方案"),
+            ("toggle_full_width", "全角/半角切换"),
+            ("toggle_punct", "中/英标点切换"),
+            ("toggle_s2t", "简体/繁体切换"),
+            ("toggle_toolbar", "显示/隐藏工具栏"),
+            ("open_settings", "打开设置"),
+            ("take_screenshot", "截图"),
+        ] {
+            out.push(Verb {
+                value: value.into(),
+                label: label.into(),
+            });
+        }
         out
     }
 
