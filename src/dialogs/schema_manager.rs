@@ -84,9 +84,6 @@ pub enum SettingsSection {
     ShuangpinLayout,
     /// 码表配置：总开关 +（开启后）子对话框。仅码表方案有。
     CodeTable,
-    /// 方案级按键功能表（`[key_actions]`）。**所有方案都有**——按键功能与引擎类型无关，
-    /// 拼音方案里用 `\` 进快符同样合理。
-    KeyActions,
     ExtensionDicts,
     /// 节间分隔线（Header 自带结尾分隔，故只在其后的各节之间插入）。
     Divider,
@@ -375,7 +372,7 @@ impl SchemaManagerState {
         let mut out = vec![
             Verb {
                 value: "none".into(),
-                label: "不启用（在本方案屏蔽该键的全局绑定）".into(),
+                label: "不启用".into(),
             },
             Verb {
                 value: "temp_pinyin".into(),
@@ -1118,8 +1115,9 @@ impl SchemaManagerState {
                 .unwrap_or_else(|| sid.clone());
             self.settings_ka_title.set(format!("按键功能 - {who}"));
             self.settings_ka_disp.set(self.settings_ka.summary());
-            sections.push(SettingsSection::Divider);
-            sections.push(SettingsSection::KeyActions);
+            // 不单独成节：内容并进 EntryKeys 那节（组名已改「按键设置」）——
+            // 「切换热键 / 引导键 / 按键绑定」三行讲的是同一件事，分成两个组标题
+            // 只会让人以为它们互不相干。
         }
         let dict_infos = parse_extension_dicts(&self.settings_cfg.borrow());
         let rows: Vec<DictRow> = dict_infos
@@ -1855,15 +1853,17 @@ pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
 /// 无需像码表配置那样按 plan 重建——行元素绑的是 `Signal<Vec<Row>>`，播种时 `set`
 /// 即触发 `list_signal` 重建，天然跟得上换方案。
 fn build_key_actions_dialog(state: &SchemaManagerState) -> Element {
+    let (content, buttons) = state.settings_ka.build_body();
     crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
         state.settings_ka_visible,
         state.settings_ka_title,
         Element::col()
             .width_match()
             .padding_xy(16, 6)
-            .child(state.settings_ka.build_body()),
+            .child(content),
+        // 「添加绑定」进底部按钮栏（与「关闭」同排）；放列表下方会随列表一起滚走。
         // 无「保存」：与码表配置同路，改动随方案设置对话框的「保存」一并提交。
-        Vec::new(),
+        buttons,
     )
 }
 
@@ -2191,7 +2191,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 .width_match()
                 .spacing(4)
                 .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("进入方式"))
+                .child(crate::manifest::dialog_group_header("按键设置"))
                 .child(
                     Element::row()
                         .width_match()
@@ -2259,6 +2259,36 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         ),
                 );
             }
+
+            // 按键绑定（方案顶层 `key_actions`）：与上面两行同属「这个方案怎么进、
+            // 键怎么用」，故并入本节而非另立组标题。所有方案都有。
+            let kv = state.settings_ka_visible;
+            col = col.child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(10)
+                    .child(
+                        Element::label("本方案的按键绑定")
+                            .font_size(13.0)
+                            .fg_role(Role::Text)
+                            .weight(1.0)
+                            .max_lines(1),
+                    )
+                    .child(
+                        Element::label_rc(state.settings_ka_disp)
+                            .font_size(12.5)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(1)
+                            .width(114),
+                    )
+                    .child(
+                        Element::button("设置")
+                            .small()
+                            .outline_soft()
+                            .on_click(move |_| kv.set(true)),
+                    ),
+            );
             col
         }
         SettingsSection::Divider => Element::divider(),
@@ -2289,42 +2319,6 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .max_lines(1),
                         )
                         .child(Element::dropdown(labels, state.settings_layout).width(170)),
-                )
-        }
-        SettingsSection::KeyActions => {
-            let kv = state.settings_ka_visible;
-            // 与码表配置行同构，但**没有启用开关**：本表的「有没有配」由内容本身表达
-            // （空表即未配置），多一个开关就多一处可能与内容不一致的状态。
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("按键功能"))
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("本方案的按键绑定")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        .child(
-                            Element::label_rc(state.settings_ka_disp)
-                                .font_size(12.5)
-                                .fg_role(Role::TextMuted)
-                                .max_lines(1)
-                                .width(114),
-                        )
-                        .child(
-                            Element::button("设置")
-                                .small()
-                                .outline_soft()
-                                .on_click(move |_| kv.set(true)),
-                        ),
                 )
         }
         SettingsSection::CodeTable => {
