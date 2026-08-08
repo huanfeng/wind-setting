@@ -50,6 +50,14 @@ pub struct MItem {
     /// 与 `dialog_group`/`opens_dialog` 那套「扩展设置」不同：这是把一两个从属项塞进**已有的**
     /// 值编辑对话框，不额外挂按钮，避免为一个开关多开一层套娃。
     pub dialog_extra_for: Option<String>,
+    /// `dialog_button_key_action` 专用：这一项对应全局 `keys.key_actions` 里的哪个**动词**
+    /// （`temp_pinyin` / `mix:quick_mix` …）。
+    ///
+    /// 五c 收编后，引导键的唯一落点是 `keys.key_actions`；`item.key`（如
+    /// `input.temp_pinyin.trigger_keys`）退化为**标识符**，只用于 capability 校验与
+    /// 清单定位，不再是写入路径。`dialog_button_mix_trigger` 早就是这个形态
+    /// （key 指 `schema.mix_modes`，实际改的是数组里某项的字段）。
+    pub verb: Option<String>,
     /// hotkey 专用：该功能是否支持「全局热键」（编辑对话框显示「全局」勾选）。
     pub global: bool,
     /// 子对话框分组：成员项标记同一 id，收进对话框渲染、不在分区内独立成行。
@@ -176,6 +184,7 @@ impl Manifest {
                         .and_then(|x| x.as_bool())
                         .unwrap_or(false),
                     dialog_extra_for: opt_str(it, "dialog_extra_for"),
+                    verb: opt_str(it, "verb"),
                     global: it.get("global").and_then(|x| x.as_bool()).unwrap_or(false),
                     dialog_group: opt_str(it, "dialog_group"),
                     opens_dialog: opt_str(it, "opens_dialog"),
@@ -336,7 +345,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "string" => build_string(state, key, item, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
-        "dialog_button_mix_trigger" | "dialog_button_mix_members" => {
+        "dialog_button_key_action" | "dialog_button_mix_members" => {
             build_dialog_button(state, key, item, cfg)
         }
         other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
@@ -1540,8 +1549,8 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
     // 快捷输入的两项都读写 schema.mix_modes 数组整体（按 id=="quick_mix" 定位其中一项的
     // trigger_keys / members 字段），不是通用 strlist/map 形态，走非声明式整体读写。
     // 按**控件类型**分派而非 key：两者的配置路径相同，只有 type 能区分。
-    if item.typ == "dialog_button_mix_trigger" {
-        build_dialog_button_mix_trigger(state, item, cfg)
+    if item.typ == "dialog_button_key_action" {
+        build_dialog_button_key_action(state, item, cfg)
     } else if item.typ == "dialog_button_mix_members" {
         build_dialog_button_mix_members(state, key, item, cfg)
     } else if key == "input.punct.custom_mappings" {
@@ -1926,29 +1935,52 @@ fn build_dialog_button_pairs(
     visible
 }
 
-/// 快捷输入触发键：`schema.mix_modes` 是整体读写的 structlist，实际要改的是数组里
-/// `id=="quick_mix"` 那一项的 `trigger_keys` 字段，走非声明式读写（区别于通用 `build_dialog_button_pairs`
-/// 假设 key 直接指向顶层 strlist/map 的情形）。
+/// 引导键控件（`dialog_button_key_action`）：勾选若干符号键，绑到 `item.verb` 指定的动词上。
+///
+/// 五c 收编后，五处 `trigger_keys` 的唯一落点是全局 `keys.key_actions`（core 的
+/// `Config::normalize` 会折算并清空原字段）。故本控件读写的是那张 Map，而 `item.key`
+/// （如 `input.temp_pinyin.trigger_keys`）退化为**标识符**——只用于 capability 校验与
+/// loader 注册，不再是写入路径。`dialog_button_mix_trigger` 早就是这个形态
+/// （key 指 `schema.mix_modes`，实际改的是数组里某项的字段），此处只是把它泛化。
+///
+/// 替代了原先按 `schema.mix_modes[quick_mix].trigger_keys` 读写的专用实现：那个字段
+/// 现在恒为空，继续读写它就是「勾了不生效」。
+const KEY_ACTIONS_PATH: &str = "keys.key_actions";
+
+/// 内置「快捷」融合的实例 id。引导键之外的字段（members / layout / 显示名等）仍按
+/// id 定位 `schema.mix_modes` 数组里的那一项——收编只动引导键，不动实例定义。
 const QUICK_MIX_ID: &str = "quick_mix";
-/// `quick_mix` 找不到该项时的回落触发键，对齐主仓 wind-config `default_mix_modes()` 给
-/// `quick_mix` 定的默认值。注意仅用于「整个 quick_mix 项都找不到」（`None`）的场景，
-/// 不用于「trigger_keys 显式为空数组」（`Some(vec![])`，用户故意清空）的场景。
-const QUICK_MIX_DEFAULT_TRIGGER: &str = "semicolon";
 
-fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config) -> Signal<bool> {
+/// 从 `keys.key_actions` 里取出绑到 `verb` 的全部键名。
+fn key_action_keys_of(cfg: &Config, verb: &str) -> Vec<String> {
+    cfg.get_path(KEY_ACTIONS_PATH)
+        .and_then(|v| v.as_object())
+        .map(|o| {
+            o.iter()
+                .filter(|(_, v)| v.as_str() == Some(verb))
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
-    use crate::mix_trigger::{mix_mode_trigger_keys, patch_mix_mode_trigger_keys};
 
-    let mix_modes_path = "schema.mix_modes";
-    // 注意：这里的 cfg 可能是 AppState::empty() 的占位配置（main.rs 里 shell::build 先于
-    // 后台异步 LoadedState::fetch 完成就同步执行，UI 立即可显示、真实数据稍后经 apply_loaded
-    // 回填），此时 quick_mix 大概率还找不到。writer/loader 必须**无条件注册**（不能像早期实现
-    // 那样 `if found` 才注册）——否则等真实配置到达、loader 本该被 apply_loaded 统一调用去刷新
-    // Signal 时，这个字段的 loader 根本没登记过，永远显示/保存不出真实值。
-    let cur_mix_modes: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
-    let cur: Vec<String> = mix_mode_trigger_keys(&cur_mix_modes, QUICK_MIX_ID)
-        .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
+    // verb 缺失是清单写错（新控件必须声明动词）。回落成空串会把所有键绑到 ""，
+    // 那是一条 core 侧解析成 None 的死绑定——宁可什么都不绑。
+    let Some(verb) = item.verb.clone() else {
+        tracing::warn!(
+            "清单项 {} 用了 dialog_button_key_action 却没声明 verb，跳过",
+            item.key
+        );
+        return signal(false);
+    };
 
+    // 注意：cfg 可能是 AppState::empty() 的占位配置（shell::build 先于异步 fetch 完成），
+    // 此时表还是空的。writer/loader 必须**无条件注册**——否则等真实配置到达、loader 本该
+    // 被 apply_loaded 调用去刷新 Signal 时，这个字段根本没登记过，永远显示/保存不出真实值。
+    let cur = key_action_keys_of(cfg, &verb);
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
         .iter()
@@ -1956,9 +1988,10 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
         .collect();
     let visible = signal(false);
 
-    // writer：整体读出 schema.mix_modes，按 id 替换 trigger_keys，整体写回；找不到 quick_mix
-    // 项时 patch_mix_mode_trigger_keys 返回 None，本次保存对这个字段静默无操作（不新建实例）。
+    // writer：整体读出 key_actions，摘掉所有指向本动词的旧键，再写入勾选的键。
+    // 「先摘再写」——只增不减的话取消勾选毫无效果，且旧键会挡住别的模式配同一个键。
     let sigs_w = sigs.clone();
+    let verb_w = verb.clone();
     state
         .fields
         .writers
@@ -1969,23 +2002,25 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
                 .filter(|(_, s)| s.get())
                 .map(|(v, _)| v.clone())
                 .collect();
-            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
-            if let Some(patched) = patch_mix_mode_trigger_keys(&arr, QUICK_MIX_ID, &selected) {
-                c.set_path(mix_modes_path, Value::Array(patched));
+            let mut map: serde_json::Map<String, Value> = c
+                .get_path(KEY_ACTIONS_PATH)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            map.retain(|_, v| v.as_str() != Some(verb_w.as_str()));
+            for k in selected {
+                map.insert(k, Value::String(verb_w.clone()));
             }
+            c.set_path(KEY_ACTIONS_PATH, Value::Object(map));
         }));
 
-    // loader：apply_loaded/重新加载/重置时把 Signal 状态从当前 Config 灌回；找不到 quick_mix
-    // 项时回落到 QUICK_MIX_DEFAULT_TRIGGER（对齐主仓 default_mix_modes 的默认触发键）。
-    // 注册在**清单项 key** 下（触发键项就是 mix_modes_path 本身；候选来源项另用视图 key），
-    // 两者互不覆盖。
+    // loader：注册在**清单项 key** 下（每项一个 verb，key 各不相同，互不覆盖）。
     let sigs_l = sigs.clone();
+    let verb_l = verb.clone();
     state.fields.loaders.borrow_mut().insert(
-        mix_modes_path.to_string(),
+        item.key.clone(),
         Box::new(move |c: &Config| {
-            let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
-            let cur = mix_mode_trigger_keys(&arr, QUICK_MIX_ID)
-                .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
+            let cur = key_action_keys_of(c, &verb_l);
             for (v, s) in &sigs_l {
                 s.set(cur.iter().any(|k| k == v));
             }
@@ -1994,16 +2029,10 @@ fn build_dialog_button_mix_trigger(state: &AppState, item: &MItem, cfg: &Config)
 
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
-    // 对话框「恢复默认」目标：固定用 QUICK_MIX_DEFAULT_TRIGGER，不用 cur.clone()——cur 在占位
-    // 配置阶段可能是空/临时值，不能当作「默认值」语义。
-    let dlg = build_pairs_dialog(
-        visible,
-        &item.label,
-        &hint,
-        sigs,
-        labels,
-        vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()],
-    );
+    // 「恢复默认」= 清空该动词的绑定。出厂默认值由 core 的 data/config.toml 决定，
+    // 设置端不再各存一份——早先这里硬编码过 quick_mix 的默认触发键，两处一旦不同步
+    // 就会出现「点恢复默认反而变成一个从没配过的值」。
+    let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, Vec::new());
     register_dialog(state, dlg);
     visible
 }
@@ -3046,7 +3075,10 @@ mod tests {
         let m = Manifest::from_embedded();
         let trigger = m.get("schema.mix_modes").expect("缺触发键项");
         let members = m.get("schema.mix_modes#members").expect("缺候选来源项");
-        assert_eq!(trigger.typ, "dialog_button_mix_trigger");
+        // 触发键项五c 后改走 `keys.key_actions`（key 退化为标识符），候选来源仍写
+        // `schema.mix_modes` 本身——两项落点不同，更要各自独立成行、各注册各的 loader。
+        assert_eq!(trigger.typ, "dialog_button_key_action");
+        assert_eq!(trigger.verb.as_deref(), Some("mix:quick_mix"));
         assert_eq!(members.typ, "dialog_button_mix_members");
         assert_eq!(
             config_path_of("schema.mix_modes#members"),
@@ -3069,29 +3101,27 @@ mod tests {
         }
     }
 
-    /// 守护：`build_dialog_button_mix_trigger` loader 里 `mix_mode_trigger_keys(...).unwrap_or_else(...)`
-    /// 那一行的回落语义——「恢复本页默认」用空 Config 跑 loader 时，quick_mix 整项找不到（`None`）应
-    /// 回落到 semicolon，而不是清空；但若 quick_mix 项存在且 trigger_keys 显式为空数组（`Some(vec![])`，
-    /// 用户故意清空），不应被强行改回 semicolon。
+    /// 守护：三个引导键控件都声明了 `verb`。
+    ///
+    /// `dialog_button_key_action` 的写入路径由 `verb` 决定，缺了它控件会直接跳过——
+    /// 表现是「那个对话框点开能勾，保存后什么也没发生」。清单里漏写不会有编译错误，
+    /// 故在此拦一道。
     #[test]
-    fn mix_trigger_loader_fallback_semantics() {
-        use crate::mix_trigger::mix_mode_trigger_keys;
-        use serde_json::json;
-
-        // 找不到 quick_mix 项（如「恢复本页默认」传入的空 Config）：回落 semicolon。
-        let empty_arr: Vec<Value> = vec![];
-        let cur = mix_mode_trigger_keys(&empty_arr, QUICK_MIX_ID)
-            .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
-        assert_eq!(cur, vec!["semicolon".to_string()]);
-
-        // quick_mix 项存在但 trigger_keys 显式为空数组：尊重用户，不强行改回 semicolon。
-        let arr_with_empty_trigger = vec![json!({
-            "id": "quick_mix",
-            "trigger_keys": []
-        })];
-        let cur = mix_mode_trigger_keys(&arr_with_empty_trigger, QUICK_MIX_ID)
-            .unwrap_or_else(|| vec![QUICK_MIX_DEFAULT_TRIGGER.to_string()]);
-        assert_eq!(cur, Vec::<String>::new());
+    fn key_action_items_declare_verb() {
+        let m = Manifest::from_embedded();
+        let mut found = 0;
+        for key in m.order.iter() {
+            let it = m.get(key).expect("order 里的 key 必在 items 中");
+            if it.typ == "dialog_button_key_action" {
+                found += 1;
+                let verb = it.verb.as_deref().unwrap_or("");
+                assert!(!verb.is_empty(), "清单项 {key} 缺 verb，控件会静默跳过");
+            }
+        }
+        assert!(
+            found >= 3,
+            "应至少有临拼/临英/快捷输入三个引导键控件，实际 {found}"
+        );
     }
 
     #[test]

@@ -16,7 +16,6 @@ mod logger;
 mod manifest;
 mod mix_fields;
 mod mix_members;
-mod mix_trigger;
 mod mode;
 mod pages;
 mod protocol;

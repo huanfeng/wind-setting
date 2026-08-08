@@ -137,7 +137,9 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "hotkey" => ty == "str",
         "checkbox_group" => ty == "strlist",
         "dialog_button" => ty == "str" || ty == "strlist" || ty == "map",
-        "dialog_button_mix_trigger" => ty == "structlist",
+        // key_action 型控件的 `key` 只是标识符（真实落点是 keys.key_actions），
+        // 故按被标识字段的原类型校验：strlist（trigger_keys）或 structlist（mix_modes）。
+        "dialog_button_key_action" => ty == "strlist" || ty == "structlist",
         "dialog_button_mix_members" => ty == "structlist",
         // select_mix_layout：下拉，但读写的是 structlist 里按 id 定位的一个字符串字段
         // （quick_mix 的 candidate_layout），故按 structlist 而非 enum 校验。
@@ -200,7 +202,7 @@ mod tests {
         assert!(control_type_compatible("dialog_button", "strlist"));
         assert!(control_type_compatible("dialog_button", "map"));
         assert!(control_type_compatible(
-            "dialog_button_mix_trigger",
+            "dialog_button_key_action",
             "structlist"
         ));
         // 反例：不兼容组合
@@ -210,7 +212,7 @@ mod tests {
         assert!(!control_type_compatible("dialog_button", "bool"));
         assert!(!control_type_compatible("slider", "str"));
         assert!(!control_type_compatible("select", "int"));
-        assert!(!control_type_compatible("dialog_button_mix_trigger", "str"));
+        assert!(!control_type_compatible("dialog_button_key_action", "str"));
         // 未知控件恒不兼容
         assert!(!control_type_compatible("mystery", "str"));
     }
