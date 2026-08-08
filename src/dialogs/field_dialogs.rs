@@ -955,7 +955,7 @@ pub fn build_hotkey_dialog(
 }
 
 /// 候选注释文档地址（模板语法、全部变量、常用示例）。
-const COMMENT_DOC_URL: &str = "https://windinput.com/docs/customize/candidate-comment";
+const COMMENT_DOC_URL: &str = "https://windinput.com/docs/settings/appearance/candidate-comment";
 
 /// 候选注释设置对话框：横排模板 + 纵排模板 + 最大字数 + 模板参考。
 ///
