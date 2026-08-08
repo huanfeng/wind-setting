@@ -346,6 +346,23 @@ impl AppState {
             }));
         }
 
+        // 注册 keys.key_actions 写回器：全局按键功能表（五c 收编后所有引导键的落点）。
+        //
+        // 与 schema_hotkeys 同一条路、同一个理由：Map 型键在 diff 里是原子叶子（整对象
+        // 产出），在对话框里直接 config.setItems 的话，主页面持有的仍是打开时的旧值，
+        // 用户之后按一次保存就会把它整体覆盖回去。
+        {
+            let ka = schema_mgr.key_actions.clone();
+            fields.writers.borrow_mut().push(Box::new(move |cfg| {
+                let map: serde_json::Map<String, Value> = ka
+                    .borrow()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                    .collect();
+                cfg.set_path("keys.key_actions", Value::Object(map));
+            }));
+        }
+
         // 注册 schema.special_modes 写回器：特殊方案的引导键。
         //
         // 写的是原始 `Value` 数组——条目还带 show_all_on_enter / candidate_layout /

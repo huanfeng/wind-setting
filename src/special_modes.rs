@@ -18,37 +18,22 @@ fn matches(entry: &Value, schema_id: &str) -> bool {
     entry.get("schema").and_then(Value::as_str) == Some(schema_id)
 }
 
-/// 取某方案当前的引导键；无对应条目返回 None（与「有条目但键为空」是两件事）。
-pub fn special_mode_trigger_keys(modes: &[Value], schema_id: &str) -> Option<Vec<String>> {
-    modes.iter().find(|m| matches(m, schema_id)).map(|m| {
-        m.get("trigger_keys")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
-}
-
-/// 写入某方案的引导键，返回新数组。
+/// 确保某方案在 `special_modes` 里有条目（供 `special:<id>` 绑定指向），并**清空**其
+/// `trigger_keys`。
 ///
-/// - 已有条目 → 只改 `trigger_keys`，**其余字段原样保留**；
-/// - 无条目且 `new_keys` 非空 → 追加最小条目（`id` / `name` / `schema` / `trigger_keys`）；
-/// - 无条目且 `new_keys` 为空 → 原样返回，**不新建空条目**（没配过的方案不该在
-///   config.toml 里凭空多出一段）。
+/// 五c 收编后引导键的落点是全局 `keys.key_actions`，条目本身只承载实例定义
+/// （`show_all_on_enter` / 注释模板 / 显示名等）。旧 `trigger_keys` 字段一并清掉——
+/// core 侧 `normalize` 反正会忽略它，但留在 config.toml 里会让人以为它还管用。
 ///
-/// 新条目必须写 `id`：`hotkey.rs` 的编译期对 `id` 为空的条目直接 `continue`，
+/// `need_entry=false` 且原本无条目时不新建：没配过的方案不该在 config.toml 里凭空
+/// 多出一段。新条目必须写 `id`——`hotkey.rs` 编译期对 `id` 为空的条目直接 `continue`，
 /// 只写 `schema` 的话该方案后续配的直达热键会静默不注册。
-pub fn upsert_special_mode_trigger_keys(
+pub fn ensure_special_mode_entry(
     modes: &[Value],
     schema_id: &str,
     display_name: &str,
-    new_keys: &[String],
+    need_entry: bool,
 ) -> Vec<Value> {
-    let keys_json = Value::Array(new_keys.iter().cloned().map(Value::String).collect());
-
     if modes.iter().any(|m| matches(m, schema_id)) {
         return modes
             .iter()
@@ -56,7 +41,7 @@ pub fn upsert_special_mode_trigger_keys(
                 if matches(m, schema_id) {
                     let mut m = m.clone();
                     if let Some(obj) = m.as_object_mut() {
-                        obj.insert("trigger_keys".to_string(), keys_json.clone());
+                        obj.remove("trigger_keys");
                     }
                     m
                 } else {
@@ -65,14 +50,12 @@ pub fn upsert_special_mode_trigger_keys(
             })
             .collect();
     }
-
     let mut out = modes.to_vec();
-    if !new_keys.is_empty() {
+    if need_entry {
         out.push(serde_json::json!({
             "id": schema_id,
             "name": display_name,
             "schema": schema_id,
-            "trigger_keys": keys_json,
         }));
     }
     out
@@ -94,43 +77,53 @@ mod tests {
         })]
     }
 
-    /// 改引导键**不得动其它字段**。`show_all_on_enter` / `candidate_layout` 只能手写
+    /// 维护条目**不得动其它字段**。`show_all_on_enter` / `candidate_layout` 只能手写
     /// config.toml，用结构体重建条目会把它们静默抹掉——用户改一次引导键就丢配置。
     #[test]
     fn patch_preserves_hand_written_fields() {
-        let out = upsert_special_mode_trigger_keys(&sample(), "qsym", "快符", &["grave".into()]);
+        let out = ensure_special_mode_entry(&sample(), "qsym", "快符", true);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["trigger_keys"], json!(["grave"]));
         assert_eq!(out[0]["show_all_on_enter"], json!(true), "手写字段丢了");
         assert_eq!(out[0]["candidate_layout"], json!("vertical"));
+        assert_eq!(out[0]["name"], json!("快符"));
     }
 
-    /// 首次配置：special_modes 出厂是空数组，必须能新建条目。
+    /// 旧的 `trigger_keys` 字段要清掉：五c 之后它没有任何消费者
+    /// （core 的 `normalize` 会忽略），留着只会让人以为它还管用。
+    #[test]
+    fn legacy_trigger_keys_field_is_stripped() {
+        let out = ensure_special_mode_entry(&sample(), "qsym", "快符", true);
+        assert!(
+            out[0].get("trigger_keys").is_none(),
+            "旧字段应清除，实际 {out:?}"
+        );
+    }
+
+    /// 首次配置：special_modes 出厂是空数组，必须能新建条目
+    /// （`special:<id>` 得指向一个真实存在的实例定义）。
     #[test]
     fn creates_entry_when_absent() {
-        let out = upsert_special_mode_trigger_keys(&[], "kf", "快符", &["backslash".into()]);
+        let out = ensure_special_mode_entry(&[], "kf", "快符", true);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["schema"], json!("kf"));
-        assert_eq!(out[0]["trigger_keys"], json!(["backslash"]));
         // id 必须写：hotkey 编译期对 id 为空的条目直接跳过，否则该方案的直达热键
         // 会静默不注册。
         assert_eq!(out[0]["id"], json!("kf"), "缺 id 会让直达热键静默失效");
         assert_eq!(out[0]["name"], json!("快符"));
     }
 
-    /// 没配过 + 清空选择 = 什么也不做，不该在 config.toml 里凭空多出一段。
+    /// 没配过 + 无需条目 = 什么也不做，不该在 config.toml 里凭空多出一段。
     #[test]
-    fn no_entry_created_for_empty_selection() {
-        let out = upsert_special_mode_trigger_keys(&[], "kf", "快符", &[]);
-        assert!(out.is_empty(), "空选择不该新建条目：{out:?}");
+    fn no_entry_created_when_not_needed() {
+        let out = ensure_special_mode_entry(&[], "kf", "快符", false);
+        assert!(out.is_empty(), "不需要时不该新建条目：{out:?}");
     }
 
-    /// 已有条目被清空引导键时**保留条目**——它可能还带着直达热键与其它手写配置。
+    /// 已有条目在清空引导键后**保留**——它可能还带着直达热键与其它手写配置。
     #[test]
     fn clearing_keys_keeps_existing_entry() {
-        let out = upsert_special_mode_trigger_keys(&sample(), "qsym", "快符", &[]);
+        let out = ensure_special_mode_entry(&sample(), "qsym", "快符", false);
         assert_eq!(out.len(), 1, "清空引导键不该删掉整个条目");
-        assert_eq!(out[0]["trigger_keys"], json!([]));
         assert_eq!(out[0]["show_all_on_enter"], json!(true));
     }
 
@@ -138,22 +131,10 @@ mod tests {
     #[test]
     fn other_entries_untouched() {
         let mut modes = sample();
-        modes.push(json!({ "id": "rare", "schema": "rare", "trigger_keys": ["grave"] }));
-        let out = upsert_special_mode_trigger_keys(&modes, "qsym", "快符", &["slash".into()]);
+        modes.push(json!({ "id": "rare", "schema": "rare", "show_all_on_enter": false }));
+        let out = ensure_special_mode_entry(&modes, "qsym", "快符", true);
         assert_eq!(out.len(), 2);
         let rare = out.iter().find(|m| m["schema"] == json!("rare")).unwrap();
-        assert_eq!(rare["trigger_keys"], json!(["grave"]));
-    }
-
-    /// 读取：无条目返回 None，有条目但键为空返回 Some(vec![])——两者语义不同，
-    /// 前者是「没配过」，后者是「配过又清空了」。
-    #[test]
-    fn read_distinguishes_absent_from_empty() {
-        assert_eq!(special_mode_trigger_keys(&[], "kf"), None);
-        let cleared = vec![json!({ "schema": "kf", "trigger_keys": [] })];
-        assert_eq!(
-            special_mode_trigger_keys(&cleared, "kf"),
-            Some(Vec::<String>::new())
-        );
+        assert_eq!(rare["show_all_on_enter"], json!(false));
     }
 }

@@ -33,6 +33,24 @@ pub const TRIGGER_KEY_OPTIONS: &[(&str, &str)] = &[
     ("rbracket", "右方括号 ( ] )"),
 ];
 
+/// 把某个动词的绑定键**整体换成** `new_keys`（纯函数，便于单测）。
+///
+/// 「先摘掉所有指向它的旧键，再写入新键」——只增不减的话，用户取消勾选毫无效果，
+/// 且旧键还占着位置让别的模式配不上（一个键只能有一个动词）。
+fn apply_verb_rebind(
+    map: &mut std::collections::BTreeMap<String, String>,
+    verb: &str,
+    new_keys: &[String],
+) {
+    map.retain(|_, v| v.as_str() != verb);
+    for k in new_keys {
+        let k = k.trim();
+        if !k.is_empty() {
+            map.insert(k.to_string(), verb.to_string());
+        }
+    }
+}
+
 /// 方案条目（含从 schema.list 解析的完整元信息）。
 #[derive(Clone, Default)]
 pub struct SchemaEntry {
@@ -174,6 +192,15 @@ pub struct SchemaManagerState {
     /// （Map 型键在 diff 里是原子叶子，整对象产出）。改走 writer 注册，与
     /// `schema.available` / `schema.active` 同一条路。
     pub schema_hotkeys: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    /// 全局按键功能表 `keys.key_actions`（键名 → 动词）的内存态。
+    ///
+    /// 五c 收编后，五处 `trigger_keys` 都折算到了这张表，core 侧 `trigger_keys` 恒为空
+    /// （`Config::normalize`）。「进入方式」勾选框若还读写旧字段，用户勾了只是往一个
+    /// 没有消费者的字段里写——**配了不生效**。故改为读写本表。
+    ///
+    /// 用 BTreeMap 而非 HashMap：写回顺序要可复现，否则每次保存 config.toml 的这一段
+    /// 都在洗牌，diff 全是噪音。与 core 侧 `keys.key_actions` 的 BTreeMap 也对得上。
+    pub key_actions: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
     // ── 特殊方案的引导键（core `schema.special_modes`）──
     /// 原始条目数组，随主保存整表写回。**保存的是 `Value` 而非结构体**：条目还带
     /// `show_all_on_enter` / `candidate_layout` / 注释模板等只能手写 config.toml 的字段，
@@ -242,6 +269,7 @@ impl SchemaManagerState {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
             schema_hotkeys: Rc::new(RefCell::new(hotkeys)),
+            key_actions: Rc::new(RefCell::new(Self::read_key_actions())),
             special_modes: Rc::new(RefCell::new(special)),
             settings_trigger_sigs: TRIGGER_KEY_OPTIONS
                 .iter()
@@ -341,6 +369,45 @@ impl SchemaManagerState {
                     })
             })
             .unwrap_or_default()
+    }
+
+    /// 读取全局 `keys.key_actions`（键名 → 动词）。
+    ///
+    /// 这张表是五c 收编后**所有引导键的唯一落点**：core 的 `Config::normalize` 会把
+    /// 五处 `trigger_keys` 折算进来并清空原字段，故 `config.get` 拿到的 `trigger_keys`
+    /// 恒为空——读那边只会得到一张空表。
+    fn read_key_actions() -> std::collections::BTreeMap<String, String> {
+        rpc::call_core("config.get", &json!({}))
+            .ok()
+            .and_then(|v| {
+                v.get("keys")
+                    .and_then(|k| k.get("key_actions"))
+                    .and_then(|m| m.as_object())
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+            })
+            .unwrap_or_default()
+    }
+
+    /// 指向某个动词的全部键名（如 `special:kf` → `["backslash"]`）。
+    pub fn keys_bound_to(&self, verb: &str) -> Vec<String> {
+        self.key_actions
+            .borrow()
+            .iter()
+            .filter(|(_, v)| v.as_str() == verb)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// 把某个动词的绑定键**整体换成** `new_keys`：先摘掉所有指向它的旧键，再写入新键。
+    ///
+    /// 「先摘再写」而不是只增不减——用户取消勾选某个键时，那条绑定必须真的消失。
+    /// 只增的话取消勾选毫无效果，且旧键还占着位置让别的模式配不上。
+    pub fn rebind_verb(&self, verb: &str, new_keys: &[String]) {
+        apply_verb_rebind(&mut self.key_actions.borrow_mut(), verb, new_keys);
     }
 
     /// 读取 `schema.special_modes`（原始条目数组）。
@@ -477,17 +544,19 @@ impl SchemaManagerState {
     /// 与热键工作态同理：这组信号是所有方案复用的，不逐个重置就会把上一个方案的
     /// 勾选带到下一个方案。
     fn seed_trigger_keys(&self, schema_id: &str) {
-        let cur = crate::special_modes::special_mode_trigger_keys(
-            &self.special_modes.borrow(),
-            schema_id,
-        )
-        .unwrap_or_default();
+        let cur = self.keys_bound_to(&format!("special:{schema_id}"));
         for (k, sig) in &self.settings_trigger_sigs {
             sig.set(cur.contains(k));
         }
     }
 
-    /// 把引导键工作态写回 `special_modes`（内存；随主保存提交）。
+    /// 把引导键工作态写回**全局 `keys.key_actions`**（内存；随主保存提交）。
+    ///
+    /// 五c 之前写的是 `special_modes[].trigger_keys`，那个字段现在由 core 的
+    /// `normalize` 折算后清空、没有任何消费者——继续写它等于「勾了不生效」。
+    ///
+    /// `special_modes` 条目仍要维护：`special:<id>` 得指向一个真实存在的实例定义
+    /// （`show_all_on_enter` / 注释模板等都在条目上）。故两处都动，各司其职。
     pub fn commit_trigger_keys_edit(&self) {
         let id = self.settings_schema_id.borrow().clone();
         if id.is_empty() {
@@ -512,16 +581,18 @@ impl SchemaManagerState {
             .filter(|(_, s)| s.get())
             .map(|(k, _)| k.clone())
             .collect();
+        self.rebind_verb(&format!("special:{id}"), &keys);
         let cur = self.special_modes.borrow().clone();
         *self.special_modes.borrow_mut() =
-            crate::special_modes::upsert_special_mode_trigger_keys(&cur, &id, &name, &keys);
+            crate::special_modes::ensure_special_mode_entry(&cur, &id, &name, !keys.is_empty());
     }
 
     /// 某方案当前已配的引导键条数（行内摘要用）。
+    ///
+    /// 与 `seed_trigger_keys` 同源查全局表——读旧的 `trigger_keys` 会恒为 0，
+    /// 行内摘要显示「未设置」而对话框里明明勾着，两处自相矛盾。
     pub fn trigger_key_count(&self, schema_id: &str) -> usize {
-        crate::special_modes::special_mode_trigger_keys(&self.special_modes.borrow(), schema_id)
-            .map(|v| v.len())
-            .unwrap_or(0)
+        self.keys_bound_to(&format!("special:{schema_id}")).len()
     }
 
     /// 某方案当前绑定的直达热键（未绑定返回空串）。
@@ -2539,6 +2610,55 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
 #[cfg(test)]
 mod ext_dict_tests {
     use super::*;
+
+    /// 改绑必须**先摘再写**：取消勾选的键要真的消失。
+    ///
+    /// 只增不减的话，用户取消勾选毫无效果；且一个键只能有一个动词，旧键留着会
+    /// 挡住别的模式配同一个键——现象是「那个键怎么配都归前一个模式」。
+    #[test]
+    fn verb_rebind_drops_stale_keys() {
+        let mut m = std::collections::BTreeMap::new();
+        apply_verb_rebind(&mut m, "special:kf", &["backslash".into(), "grave".into()]);
+        assert_eq!(m.get("backslash").map(String::as_str), Some("special:kf"));
+        assert_eq!(m.get("grave").map(String::as_str), Some("special:kf"));
+
+        // 改成只留 grave：backslash 那条必须消失。
+        apply_verb_rebind(&mut m, "special:kf", &["grave".into()]);
+        assert!(
+            !m.contains_key("backslash"),
+            "取消勾选的键应移除，实际 {m:?}"
+        );
+        assert_eq!(m.get("grave").map(String::as_str), Some("special:kf"));
+
+        // 全部取消：该动词一条不剩。
+        apply_verb_rebind(&mut m, "special:kf", &[]);
+        assert!(m.is_empty(), "清空后不该有残留，实际 {m:?}");
+    }
+
+    /// 别的动词的绑定不受影响——改 A 模式的引导键不能碰掉 B 模式的。
+    #[test]
+    fn verb_rebind_leaves_other_verbs_alone() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("semicolon".to_string(), "mix:quick_mix".to_string());
+        m.insert("backtick".to_string(), "temp_pinyin".to_string());
+
+        apply_verb_rebind(&mut m, "special:kf", &["backslash".into()]);
+        assert_eq!(
+            m.get("semicolon").map(String::as_str),
+            Some("mix:quick_mix")
+        );
+        assert_eq!(m.get("backtick").map(String::as_str), Some("temp_pinyin"));
+        assert_eq!(m.get("backslash").map(String::as_str), Some("special:kf"));
+    }
+
+    /// 空串/纯空白的键名不进表——它们是历史占位（`trigger_keys = [""]`），
+    /// 写进去会变成一条永远匹配不上的死绑定。
+    #[test]
+    fn verb_rebind_skips_blank_keys() {
+        let mut m = std::collections::BTreeMap::new();
+        apply_verb_rebind(&mut m, "special:kf", &["".into(), "  ".into()]);
+        assert!(m.is_empty(), "空键名不该进表，实际 {m:?}");
+    }
 
     /// 解绑必须**移除条目**，不能留空串——否则 config.toml 里会积下
     /// `方案id = ""` 的死条目，用户以为自己设过热键。
