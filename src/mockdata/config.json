@@ -265,8 +265,7 @@
   "primary_pinyin": "",
   "quick_input": {
    "decimal_places": 6
-  },
-  "special_modes": []
+  }
  },
  "stats": {
   "enabled": true,

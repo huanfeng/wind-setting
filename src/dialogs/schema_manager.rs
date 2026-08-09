@@ -68,6 +68,12 @@ pub struct SchemaEntry {
     /// 由工具栏「显示特殊方案」开关放出来。已启用的即使 hidden 也恒显示——
     /// 用户既然启用了它，藏起来只会让人找不到怎么停用。
     pub hidden: bool,
+    /// **overlay 方案**（core 方案文件带 `[overlay]` 段）：可由引导键/直达热键临时叠加
+    /// 进入的快符/生僻字那类。
+    ///
+    /// ⚠️ 与 `hidden` **正交**，不能互推：english 也是 hidden 但没有 overlay 生命周期。
+    /// 判据取自 core 的 `schema.list`，不在本仓再推一遍——跨仓契约无编译期约束。
+    pub overlay: bool,
     pub error: Option<String>,
 }
 
@@ -201,11 +207,6 @@ pub struct SchemaManagerState {
     /// 用 BTreeMap 而非 HashMap：写回顺序要可复现，否则每次保存 config.toml 的这一段
     /// 都在洗牌，diff 全是噪音。与 core 侧 `keys.key_actions` 的 BTreeMap 也对得上。
     pub key_actions: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
-    // ── 特殊方案的引导键（core `schema.special_modes`）──
-    /// 原始条目数组，随主保存整表写回。**保存的是 `Value` 而非结构体**：条目还带
-    /// `show_all_on_enter` / `candidate_layout` / 注释模板等只能手写 config.toml 的字段，
-    /// 用结构体重建会把它们静默抹掉——用户改一次引导键就丢配置。
-    pub special_modes: Rc<RefCell<Vec<Value>>>,
     /// 引导键复选工作态（固定 9 个候选键，与临拼/临英同一组）。
     pub settings_trigger_sigs: Vec<(String, Signal<bool>)>,
     pub settings_trigger_visible: Signal<bool>,
@@ -264,13 +265,11 @@ impl SchemaManagerState {
     pub fn new() -> Self {
         let available = Self::read_available();
         let hotkeys = Self::read_schema_hotkeys();
-        let special = Self::read_special_modes();
         let state = Self {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
             schema_hotkeys: Rc::new(RefCell::new(hotkeys)),
             key_actions: Rc::new(RefCell::new(Self::read_key_actions())),
-            special_modes: Rc::new(RefCell::new(special)),
             settings_trigger_sigs: TRIGGER_KEY_OPTIONS
                 .iter()
                 .map(|(k, _)| (k.to_string(), signal(false)))
@@ -410,19 +409,6 @@ impl SchemaManagerState {
         apply_verb_rebind(&mut self.key_actions.borrow_mut(), verb, new_keys);
     }
 
-    /// 读取 `schema.special_modes`（原始条目数组）。
-    fn read_special_modes() -> Vec<Value> {
-        rpc::call_core("config.get", &json!({}))
-            .ok()
-            .and_then(|v| {
-                v.get("schema")
-                    .and_then(|s| s.get("special_modes"))
-                    .and_then(|a| a.as_array())
-                    .cloned()
-            })
-            .unwrap_or_default()
-    }
-
     /// 组装按键功能表的动词选项。
     ///
     /// 固定动词 + 实例动词（`mix:<id>` / `special:<id>`）。实例随已安装方案增删，故每次打开
@@ -477,25 +463,15 @@ impl SchemaManagerState {
                 label: format!("快捷输入 - {name}"),
             });
         }
-        for m in arr("special_modes") {
-            // id 缺省时回退 schema 名，与 core 的 `SpecialModeConfig::effective_id` 一致。
-            let sid = m.get("schema").and_then(|v| v.as_str()).unwrap_or("");
-            let id = m
-                .get("id")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(sid);
-            if id.is_empty() {
+        // 特殊模式：**实例即方案**，故从方案列表里挑带 `[overlay]` 段的，不再读
+        // 已删除的 `schema.special_modes` 数组。`special:<id>` 的 `<id>` 就是方案 id。
+        for e in self.schemas.borrow().iter() {
+            if !e.overlay || e.id.is_empty() {
                 continue;
             }
-            // 同上：未填 name 时回落 id（多半就是方案 id，如 quick_symbols）。
-            let name = m
-                .get("name")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(id);
+            let name = if e.name.is_empty() { &e.id } else { &e.name };
             out.push(Verb {
-                value: format!("special:{id}"),
+                value: format!("special:{}", e.id),
                 label: format!("特殊模式 - {name}"),
             });
         }
@@ -552,29 +528,15 @@ impl SchemaManagerState {
 
     /// 把引导键工作态写回**全局 `keys.key_actions`**（内存；随主保存提交）。
     ///
-    /// 五c 之前写的是 `special_modes[].trigger_keys`，那个字段现在由 core 的
-    /// `normalize` 折算后清空、没有任何消费者——继续写它等于「勾了不生效」。
-    ///
-    /// `special_modes` 条目仍要维护：`special:<id>` 得指向一个真实存在的实例定义
-    /// （`show_all_on_enter` / 注释模板等都在条目上）。故两处都动，各司其职。
+    /// ★ 这里曾是**双写**：除了 key_actions，还要维护一条 `schema.special_modes` 条目，
+    /// 因为 `special:<id>` 得指向一个真实存在的实例定义。那条条目随该键删除一并消失——
+    /// 实例即方案，`<id>` 就是方案 id，指向的东西本来就一直在。
+    /// 于是「用户配一个引导键，config.toml 里凭空长出一段空壳」这个副作用也没了。
     pub fn commit_trigger_keys_edit(&self) {
         let id = self.settings_schema_id.borrow().clone();
         if id.is_empty() {
             return;
         }
-        // 新建条目要写显示名（UI 徽标 / 模式指示用），取方案名、空则回退 id。
-        let name = self
-            .settings_entry
-            .borrow()
-            .as_ref()
-            .map(|e| {
-                if e.name.is_empty() {
-                    e.id.clone()
-                } else {
-                    e.name.clone()
-                }
-            })
-            .unwrap_or_else(|| id.clone());
         let keys: Vec<String> = self
             .settings_trigger_sigs
             .iter()
@@ -582,9 +544,6 @@ impl SchemaManagerState {
             .map(|(k, _)| k.clone())
             .collect();
         self.rebind_verb(&format!("special:{id}"), &keys);
-        let cur = self.special_modes.borrow().clone();
-        *self.special_modes.borrow_mut() =
-            crate::special_modes::ensure_special_mode_entry(&cur, &id, &name, !keys.is_empty());
     }
 
     /// 某方案当前已配的引导键条数（行内摘要用）。
@@ -855,6 +814,7 @@ impl SchemaManagerState {
                             shuangpin_layout,
                             source,
                             hidden: s.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false),
+                            overlay: s.get("overlay").and_then(|v| v.as_bool()).unwrap_or(false),
                             version: s
                                 .get("version")
                                 .and_then(|v| v.as_str())
@@ -2008,9 +1968,9 @@ fn build_codetable_dialog(state: &SchemaManagerState) -> Element {
 
 /// 特殊方案的引导键多选浮层（复用清单那套 pairs 对话框）。
 ///
-/// 写回目标是 `schema.special_modes` 里按 `schema` 定位的条目，与「一个 key 一个控件」
-/// 的清单模型对不上，故不经 FieldRegistry 注册；落表由 `commit_trigger_keys_edit`
-/// → `special_modes` → AppState 注册的 writer 完成。
+/// 写回目标是全局 `keys.key_actions` 里指向 `special:<方案id>` 的那几个键，与
+/// 「一个 key 一个控件」的清单模型对不上，故不经 FieldRegistry 注册；落表由
+/// `commit_trigger_keys_edit` → `key_actions` → AppState 注册的 writer 完成。
 fn build_trigger_keys_dialog(state: &SchemaManagerState) -> Element {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
 
@@ -2024,7 +1984,7 @@ fn build_trigger_keys_dialog(state: &SchemaManagerState) -> Element {
         "在中文输入中按下即临时进入本方案，打完一段自动退回。可多选，全部取消即禁用。",
         state.settings_trigger_sigs.clone(),
         labels,
-        // 无「恢复默认」可回落：出厂就没有任何引导键（special_modes 是空数组）。
+        // 无「恢复默认」可回落：出厂不给任何方案预置引导键。
         Vec::new(),
     )
 }
@@ -2345,10 +2305,13 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         ),
                 );
 
-            // 引导键只给特殊方案：它走 schema.special_modes 的 overlay 机制——按下引导键
-            // 临时进入、打完一段自动退回原方案。普通方案没有这条通路（切过去就留在那儿），
-            // 给它们显示这一行只会让人以为能配。
-            if entry.hidden {
+            // 引导键只给 **overlay 方案**：按下引导键临时进入、打完一段自动退回原方案。
+            // 普通方案没有这条通路（切过去就留在那儿），给它们显示这一行只会让人以为能配。
+            //
+            // ★ 判据从 `entry.hidden` 改成 `entry.overlay`。hidden 当年是 overlay 的**代理**
+            // （那时只有快符/英文两个隐藏方案），但它一直不准：english 也是 hidden，却没有
+            // overlay 生命周期，配了引导键按下去什么都不会发生。现在 core 给出了真判据。
+            if entry.overlay {
                 let tv = state.settings_trigger_visible;
                 col = col.child(
                     Element::row()

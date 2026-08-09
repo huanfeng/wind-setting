@@ -399,11 +399,6 @@
       "type": "int"
     },
     {
-      "default": [],
-      "key": "schema.special_modes",
-      "type": "structlist"
-    },
-    {
       "default": [
         {
           "candidate_layout": "vertical",

@@ -363,17 +363,10 @@ impl AppState {
             }));
         }
 
-        // 注册 schema.special_modes 写回器：特殊方案的引导键。
-        //
-        // 写的是原始 `Value` 数组——条目还带 show_all_on_enter / candidate_layout /
-        // 注释模板等只能手写 config.toml 的字段，用结构体重建会把它们静默抹掉。
-        // 数组恒整体写回（StructList 语义），故内存表必须始终是「读进来的全量 + 本次改动」。
-        {
-            let sm = schema_mgr.special_modes.clone();
-            fields.writers.borrow_mut().push(Box::new(move |cfg| {
-                cfg.set_path("schema.special_modes", Value::Array(sm.borrow().clone()));
-            }));
-        }
+        // 原先此处还有一个 `schema.special_modes` 写回器（特殊方案的引导键 + 条目维护）。
+        // 该键已从 core 删除：实例集合改由「带 [overlay] 段的已安装方案」定义，引导键
+        // 落上面的 keys.key_actions，overlay 呈现配置落方案 override（走 SideCommitter）。
+        // 于是这里那份「必须整表写回、不能用结构体重建」的易碎逻辑整个消失。
 
         // 注册 schema.active 写回器：把「设为当前」的选择持久化。
         //

@@ -243,16 +243,6 @@ mod tests {
         //    available→ 行内启用勾选 + ↑↓ 排序，同样经 writer 写回。
         "schema.active",
         "schema.available",
-        // ①' 引导键特殊模式（快符/生僻字等）：**部分已有 GUI，但不走清单**。
-        //     引导键在「方案 → 选中特殊方案 → 设置 → 进入方式 → 引导键」里编辑，按 schema
-        //     字段定位条目、没有就新建（见 special_modes.rs）。
-        //     不能照 schema.mix_modes 的办法接进清单：那个内置恰好一个 quick_mix，三个清单项
-        //     都靠硬编码这个 id 打补丁；special_modes 没有固定 id、条目随已安装方案增删，
-        //     manifest 的「一个 key 一个控件」模型套不上。
-        //     条目的其余字段（show_all_on_enter / candidate_layout / 注释模板）仍只能手写
-        //     config.toml；⚠️ 故任何写回都必须在原始 Value 上改单个字段，用结构体重建会把
-        //     它们静默抹掉。
-        "schema.special_modes",
         // ③ 短语前缀列举：开关暂无作用，待 core 决定后再处理。
         "input.phrase.min_prefix",
         // ④ 非独立清单项：由各功能键的「全局」勾选经收集器汇总写回。
