@@ -71,7 +71,8 @@ pub struct SchemaEntry {
     /// **overlay 方案**（core 方案文件带 `[overlay]` 段）：可由引导键/直达热键临时叠加
     /// 进入的快符/生僻字那类。
     ///
-    /// ⚠️ 与 `hidden` **正交**，不能互推：english 也是 hidden 但没有 overlay 生命周期。
+    /// ⚠️ 与 `hidden` **正交**，不能互推：hidden 只说「不列进方案切换列表」，隐藏的
+    /// 码表方案也可能只是 mix 成员、没有 overlay 生命周期。
     /// 判据取自 core 的 `schema.list`，不在本仓再推一遍——跨仓契约无编译期约束。
     pub overlay: bool,
     pub error: Option<String>,
@@ -2398,8 +2399,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 普通方案没有这条通路（切过去就留在那儿），给它们显示这一行只会让人以为能配。
             //
             // ★ 判据从 `entry.hidden` 改成 `entry.overlay`。hidden 当年是 overlay 的**代理**
-            // （那时只有快符/英文两个隐藏方案），但它一直不准：english 也是 hidden，却没有
-            // overlay 生命周期，配了引导键按下去什么都不会发生。现在 core 给出了真判据。
+            // （那时快符与英文都是隐藏方案），但它一直不准：隐藏方案未必有 overlay 生命周期，
+            // 给这类方案配了引导键按下去什么都不会发生。现在 core 给出了真判据。
             if entry.overlay {
                 let tv = state.settings_trigger_visible;
                 col = col.child(
