@@ -2599,8 +2599,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .max_lines(1),
                         )
                         .child(
+                            // ⚠️ 不能加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
+                            // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`
+                            // ——segmented 是独立 widget，debug 构建下当场 panic。
+                            // 这类链式 API 用**运行时 downcast** 做类型检查，编译期抓不到。
                             Element::segmented(vec!["跟随全局", "竖排", "横排"], layout)
-                                .small()
                                 .enabled_when(move || on.get()),
                         ),
                 )
@@ -3050,5 +3053,39 @@ mod overlay_tests {
             "越界应回落首项"
         );
         assert_eq!(overlay_layout_idx("不存在的值"), 0, "未知值回落跟随全局");
+    }
+}
+
+#[cfg(test)]
+mod section_build_tests {
+    use super::*;
+
+    /// 每个配置节都要能**构建出来**而不 panic。
+    ///
+    /// ★ 这条测的不是布局对不对，而是链式 API 有没有用错对象：windui 的 `.small()`
+    /// `.outline_soft()` 这类是 Button/CheckBox 专属，对别的 widget 会落到
+    /// `config_button` 的 `debug_assert!(false, "…只能用于 Element::button(..)")`。
+    /// 那是**运行时 downcast**，编译期一律放行——`Overlay` 节就因为给 `segmented`
+    /// 加了 `.small()` 而在真机上一打开设置就崩，编译和既有测试全绿。
+    #[test]
+    fn every_settings_section_builds_without_panicking() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        for kind in [
+            SettingsSection::Header,
+            SettingsSection::EntryKeys,
+            SettingsSection::ShuangpinLayout,
+            SettingsSection::CodeTable,
+            SettingsSection::Overlay,
+            SettingsSection::ExtensionDicts,
+            SettingsSection::Divider,
+            SettingsSection::Empty,
+        ] {
+            let _ = build_section(kind, &state);
+        }
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 }
