@@ -1355,18 +1355,28 @@ fn collect_trigger_key_groups(cfg: &Config) -> Vec<KeyGroup> {
         }
     }
 
-    if let Some(arr) = cfg.get_array("schema.special_modes") {
-        for (i, m) in arr.iter().enumerate() {
-            let name = m.get("name").and_then(Value::as_str).unwrap_or("");
-            groups.push(KeyGroup::new(
-                &format!("special_{i}"),
-                format!("特殊模式「{name}」"),
-                nested_keys(m),
-            ));
+    // `keys.key_actions` 里的**单键**条目（引导键通路）。
+    //
+    // ★ 五c 把四处 `trigger_keys` 收编进了这张表，但本检测一直没跟着换源——上面那几组
+    // 读的字段在 core 侧已被 `normalize` 折算清空，于是「引导键撞车」实际上很久没被检出来
+    // 过了。特殊模式那一路更是随 `schema.special_modes` 删除而彻底断供（原先读
+    // `special_modes[].trigger_keys`）。这里把新表补进来。
+    //
+    // 只收单键：组合键归 `collect_hotkey_groups`（那是另一张 key_down 表），纯修饰键走
+    // keyup 轻敲、与引导键不争用。判据用「键串含 `+`」近似 core 的 `route_of_key_action`
+    // ——对 `ctrl+shift+u` / `backslash` 这类实际取值足够，且不必在本仓再写一份键名解析器。
+    for (key, verb) in key_action_entries(cfg) {
+        if key.contains('+') || is_modifier_key_name(&key) {
+            continue;
         }
+        groups.push(KeyGroup::new(
+            &format!("key_action_{key}"),
+            key_action_label(&verb),
+            vec![key],
+        ));
     }
 
-    // 去重每组触发键：mix_modes/special_modes 的 trigger_keys 直取自 core config 数组，
+    // 去重每组触发键：mix_modes 的 trigger_keys 直取自 core config 数组，
     // 可能含重复值；不去重会让冲突文案对同一键重复呈现。
     for g in groups.iter_mut() {
         let mut seen = std::collections::HashSet::new();
@@ -1499,23 +1509,65 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
         expand_hotkey(cfg.get_str("input.temp_pinyin.hotkey").unwrap_or("")),
     ));
 
-    if let Some(arr) = cfg.get_array("schema.special_modes") {
-        for (i, m) in arr.iter().enumerate() {
-            // 内核对 id 为空的条目直接跳过编译（hotkey.rs），故这里也不参与检测——
-            // 报一个根本不会注册的热键的冲突，只会让用户去改一个无关的地方。
-            if m.get("id").and_then(Value::as_str).unwrap_or("").is_empty() {
-                continue;
-            }
-            let name = m.get("name").and_then(Value::as_str).unwrap_or("");
-            groups.push(KeyGroup::new(
-                &format!("special_hotkey_{i}"),
-                format!("特殊模式「{name}」直达热键"),
-                expand_hotkey(m.get("hotkey").and_then(Value::as_str).unwrap_or("")),
-            ));
+    // `keys.key_actions` 里的**组合键**条目：与上面 11 项、schema_hotkeys 在内核是同一张
+    // key_down 表（见本函数文档的判据），必须同域比较。
+    //
+    // 特殊模式的直达热键此前挂在 `schema.special_modes[].hotkey`，随该键删除后改写在这张
+    // 表里（`"ctrl+shift+u" = "special:<方案id>"`）；`toggle_schema:` 也一直在这里却从未
+    // 参与过检测。一并补上。
+    for (key, verb) in key_action_entries(cfg) {
+        if !key.contains('+') {
+            continue;
         }
+        groups.push(KeyGroup::new(
+            &format!("key_action_hotkey_{key}"),
+            format!("{}（直达热键）", key_action_label(&verb)),
+            expand_hotkey(&key),
+        ));
     }
 
     groups
+}
+
+/// 读 `keys.key_actions`（键名 → 动词），按键名排序保证报告顺序可复现。
+fn key_action_entries(cfg: &Config) -> Vec<(String, String)> {
+    let Some(map) = cfg.get_object("keys.key_actions") else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = map
+        .iter()
+        .filter_map(|(k, v)| {
+            let verb = v.as_str()?.trim();
+            // `none` 是「本方案禁用该键」的哨兵，不产生任何绑定，自然不参与争用。
+            (!k.is_empty() && !verb.is_empty() && verb != "none")
+                .then(|| (k.clone(), verb.to_string()))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// 纯修饰键名（走 keyup 轻敲通路，与 keydown 的引导键/热键都不争用）。
+fn is_modifier_key_name(key: &str) -> bool {
+    matches!(key, "lshift" | "rshift" | "lctrl" | "rctrl")
+}
+
+/// 动词 → 冲突报告里的人话标签。未知动词原样回显，便于发现拼写错误。
+fn key_action_label(verb: &str) -> String {
+    if let Some(id) = verb.strip_prefix("special:") {
+        return format!("特殊模式「{id}」");
+    }
+    if let Some(id) = verb.strip_prefix("mix:") {
+        return format!("快捷输入「{id}」");
+    }
+    if let Some(id) = verb.strip_prefix("toggle_schema:") {
+        return format!("切换到方案「{id}」");
+    }
+    match verb {
+        "temp_pinyin" => "临时拼音".to_string(),
+        "temp_english" => "临时英文".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// 后台线程从 core 拉取的全部数据（所有字段均 `Send`，可跨线程传递）。
@@ -1804,22 +1856,50 @@ mod trigger_conflict_tests {
         assert!(msg.contains("快捷"));
     }
 
+    /// `keys.key_actions` 里的**单键**绑定参与触发键冲突检测。
+    ///
+    /// ★ 五c 把四处 `trigger_keys` 收编进了这张表，但本检测一直没换源——那几年里
+    /// 「引导键撞车」实际上检不出来了。特殊模式那一路更随 `schema.special_modes`
+    /// 删除而彻底断供。这条钉住新数据源。
     #[test]
-    fn test_check_trigger_key_conflicts_includes_special_modes() {
+    fn test_key_action_single_keys_join_trigger_domain() {
         let cfg = Config::from_value(json!({
             "input": {
-                "temp_pinyin": { "trigger_keys": ["z"] },
+                "temp_pinyin": { "trigger_keys": ["backslash"] },
                 "temp_english": { "trigger_keys": [] }
             },
-            "schema": {
-                "mix_modes": [],
-                "special_modes": [
-                    { "id": "fast_symbols", "name": "快符", "trigger_keys": ["z"] }
-                ]
-            }
+            "schema": { "mix_modes": [] },
+            "keys": { "key_actions": { "backslash": "special:kf" } }
         }));
-        let msg = check_trigger_key_conflicts(&cfg).unwrap();
-        assert!(msg.contains("特殊模式「快符」"));
+        let msg = check_trigger_key_conflicts(&cfg).expect("同一个键配给两处应检出冲突");
+        assert!(msg.contains("特殊模式「kf」"), "实际: {msg}");
+        assert!(msg.contains("临时拼音"), "实际: {msg}");
+    }
+
+    /// 组合键与纯修饰键**不进**触发键域：前者归 key_down 热键表（另一个域），
+    /// 后者走 keyup 轻敲，与 keydown 的引导键不争用。
+    #[test]
+    fn test_key_action_combos_and_modifiers_stay_out_of_trigger_domain() {
+        let cfg = Config::from_value(json!({
+            "input": { "temp_pinyin": { "trigger_keys": [] } },
+            "schema": { "mix_modes": [] },
+            "keys": { "key_actions": {
+                "ctrl+shift+u": "special:kf",
+                "rshift": "toggle_schema:english"
+            }}
+        }));
+        assert!(check_trigger_key_conflicts(&cfg).is_none());
+    }
+
+    /// `none` 是「禁用该键」的哨兵，不产生绑定，自然不参与争用。
+    #[test]
+    fn test_key_action_none_sentinel_does_not_conflict() {
+        let cfg = Config::from_value(json!({
+            "input": { "temp_pinyin": { "trigger_keys": ["grave"] } },
+            "schema": { "mix_modes": [] },
+            "keys": { "key_actions": { "grave": "none" } }
+        }));
+        assert!(check_trigger_key_conflicts(&cfg).is_none());
     }
 
     #[test]
@@ -1982,26 +2062,30 @@ mod trigger_conflict_tests {
         assert!(msg.contains("临时拼音直达热键"));
         assert!(msg.contains("切换简入繁出"));
 
+        // 特殊模式的直达热键现在写在 keys.key_actions 里（原 special_modes[].hotkey）。
         let cfg2 = Config::from_value(json!({
-            "keys": { "open_settings": "ctrl+shift+p" },
-            "schema": { "special_modes": [
-                { "id": "fast_symbols", "name": "快符", "hotkey": "ctrl+shift+p" }
-            ]}
+            "keys": {
+                "open_settings": "ctrl+shift+p",
+                "key_actions": { "ctrl+shift+p": "special:fast_symbols" }
+            }
         }));
         let msg2 = check_hotkey_conflicts(&cfg2).expect("特殊模式直达热键应参与检测");
-        assert!(msg2.contains("特殊模式「快符」直达热键"));
+        assert!(msg2.contains("特殊模式「fast_symbols」"), "实际: {msg2}");
+        assert!(msg2.contains("打开设置"), "实际: {msg2}");
     }
 
-    /// id 为空的特殊模式内核根本不注册热键，报它只会把用户引去改无关的地方。
+    /// `toggle_schema:` 一直写在 key_actions 里、却从未参与过检测——与上面那些
+    /// 在内核是同一张 key_down 表，撞车同样是先注册者赢、后者静默失效。
     #[test]
-    fn test_special_mode_without_id_is_not_reported() {
+    fn test_key_action_toggle_schema_joins_hotkey_domain() {
         let cfg = Config::from_value(json!({
-            "keys": { "open_settings": "ctrl+shift+p" },
-            "schema": { "special_modes": [
-                { "id": "", "name": "没写 id 的", "hotkey": "ctrl+shift+p" }
-            ]}
+            "keys": {
+                "switch_engine": "ctrl+shift+e",
+                "key_actions": { "ctrl+shift+e": "toggle_schema:english" }
+            }
         }));
-        assert!(check_hotkey_conflicts(&cfg).is_none());
+        let msg = check_hotkey_conflicts(&cfg).expect("组合键动词应参与热键域检测");
+        assert!(msg.contains("切换到方案「english」"), "实际: {msg}");
     }
 
     /// `Ctrl+数字` 模板占满整段数字键，与具体的 `Ctrl+1` 重叠——GUI 主键列表里有 0-9，

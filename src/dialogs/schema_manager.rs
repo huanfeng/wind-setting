@@ -2578,14 +2578,17 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .weight(1.0)
                                 .max_lines(1),
                         )
-                        // ⚠️ 不能加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
-                        // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`
-                        // ——segmented 是独立 widget，debug 构建下当场 panic。
-                        // 这类链式 API 用**运行时 downcast** 做类型检查，编译期抓不到。
-                        .child(Element::segmented(
-                            vec!["跟随全局", "竖排", "横排"],
-                            layout,
-                        )),
+                        // 下拉而非分段控件：同一对话框里的「双拼布局」、码表配置里的各枚举项
+                        // 用的都是 dropdown，同类选项换个控件形态会显得没来由。宽度也对齐
+                        // 双拼布局那一行。
+                        //
+                        // ⚠️ 别加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
+                        // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`，
+                        // debug 构建下当场 panic。这类链式 API 用**运行时 downcast** 做类型
+                        // 检查，编译期一律放行——本节此前就是这么崩的。
+                        .child(
+                            Element::dropdown(vec!["跟随全局", "竖排", "横排"], layout).width(170),
+                        ),
                 )
         }
         SettingsSection::ExtensionDicts => {
