@@ -127,26 +127,16 @@ fn overlay_layout_idx(v: &str) -> usize {
     OVERLAY_LAYOUTS.iter().position(|x| *x == v).unwrap_or(0)
 }
 
-/// overlay 工作态 → 写进方案 cfg 的 `overlay` 值。
+/// 分段控件下标 → `[overlay] candidate_layout` 的字符串值。
 ///
-/// ★ 关闭时返回 **`Null`** 而不是「不写」：core 的 `json_to_toml` 跳过 null ⇒ 落盘的
-/// override 里不含 `[overlay]` 段 ⇒ 回落方案文件。这是「取消特殊模式」**唯一**的落地
-/// 方式（saveConfig 是整份 diff 后全量重写 override，漏写等于保留原值）。
-///
-/// ⚠️ 方案文件自带 `[overlay]` 时关不掉——override 只能清掉用户改的那层，与
-/// 「方案文件写死的值不受总开关控制」是同一条既定语义。
-fn overlay_value(enabled: bool, show_all: bool, layout_idx: usize) -> Value {
-    if !enabled {
-        return Value::Null;
-    }
-    json!({
-        "kind": "special",
-        "show_all_on_enter": show_all,
-        // 越界回落**首项**（跟随全局）而不是钳到末项：钳会把用户没选过的「横排」
-        // 塞给他。与 `overlay_layout_idx` 对未知值的处理、以及 core `layout.rs`
-        // 「下标越界回落 Follow——跟随全局是安全的默认，不猜方向」同口径。
-        "candidate_layout": OVERLAY_LAYOUTS.get(layout_idx).copied().unwrap_or(OVERLAY_LAYOUTS[0]),
-    })
+/// ★ 越界回落**首项**（跟随全局）而不是钳到末项：钳会把用户没选过的「横排」塞给他。
+/// 与 [`overlay_layout_idx`] 对未知值的处理、以及 core `layout.rs`「下标越界回落
+/// Follow——跟随全局是安全的默认，不猜方向」同口径。
+fn overlay_layout_value(idx: usize) -> &'static str {
+    OVERLAY_LAYOUTS
+        .get(idx)
+        .copied()
+        .unwrap_or(OVERLAY_LAYOUTS[0])
 }
 
 /// 扩展词库行（UI 响应式包装：每行一个开关信号 + 打开时的初始值）。
@@ -264,14 +254,15 @@ pub struct SchemaManagerState {
     /// 「自定义码表配置」总开关。初值由配置内容推导（`schema_codetable::has_custom`），
     /// 不另存布尔键——多一个键就多一处可能与实际内容不一致的状态。
     // ── 特殊模式（方案文件 `[overlay]` 段）──
-    /// 总开关：本方案是不是 overlay 方案（= `[overlay]` 段存不存在）。
-    pub settings_ov_enabled: Signal<bool>,
+    //
+    // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
+    // 那是方案的固有属性，由方案文件决定。这里只调段内的行为参数。
     /// 进入模式即展示候选（`[overlay] show_all_on_enter`）。
     pub settings_ov_show_all: Signal<bool>,
     /// 候选排列（0=跟随全局 / 1=竖排 / 2=横排），对应 `[overlay] candidate_layout`。
     pub settings_ov_layout: Signal<usize>,
-    /// 打开对话框时的三项初值，用于脏判定——没有它，打开看一眼再关掉也会入队写盘。
-    settings_ov_at_open: Rc<std::cell::Cell<(bool, bool, usize)>>,
+    /// 打开对话框时的两项初值，用于脏判定——没有它，打开看一眼再关掉也会入队写盘。
+    settings_ov_at_open: Rc<std::cell::Cell<(bool, usize)>>,
     pub settings_ct_enabled: Signal<bool>,
     pub settings_ct_visible: Signal<bool>,
     /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
@@ -350,10 +341,9 @@ impl SchemaManagerState {
             settings_sections: signal(vec![]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
-            settings_ov_enabled: signal(false),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
-            settings_ov_at_open: Rc::new(std::cell::Cell::new((false, false, 0))),
+            settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_enabled: signal(false),
             settings_ct_visible: signal(false),
             settings_ct_title: signal("码表配置".to_string()),
@@ -1228,26 +1218,31 @@ impl SchemaManagerState {
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::CodeTable);
 
-                // 特殊模式：与码表配置同为码表方案专属，紧随其后。
+                // 特殊模式：**只在方案已声明 `[overlay]` 段时**才建节。
+                //
+                // ★ 「是不是 overlay 方案」是方案的**固有属性**，由方案文件（作者或手写）
+                // 决定，不是普通用户随手勾选的东西。给每个码表方案都挂一节「要不要变成
+                // 特殊模式」，只会让常规码表配置变乱——而那是绝大多数人唯一会看的地方。
+                // 故这里没有总开关：本节只调 `[overlay]` 段内的行为参数。
                 let cfg = self.settings_cfg.borrow();
-                let ov = cfg.get("overlay");
-                let on = ov.is_some_and(|v| !v.is_null());
-                let show_all = ov
-                    .and_then(|v| v.get("show_all_on_enter"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let layout = ov
-                    .and_then(|v| v.get("candidate_layout"))
-                    .and_then(|v| v.as_str())
-                    .map(overlay_layout_idx)
-                    .unwrap_or(0);
-                drop(cfg);
-                self.settings_ov_enabled.set(on);
-                self.settings_ov_show_all.set(show_all);
-                self.settings_ov_layout.set(layout);
-                self.settings_ov_at_open.set((on, show_all, layout));
-                sections.push(SettingsSection::Divider);
-                sections.push(SettingsSection::Overlay);
+                let ov = cfg.get("overlay").filter(|v| v.is_object());
+                if let Some(ov) = ov {
+                    let show_all = ov
+                        .get("show_all_on_enter")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let layout = ov
+                        .get("candidate_layout")
+                        .and_then(|v| v.as_str())
+                        .map(overlay_layout_idx)
+                        .unwrap_or(0);
+                    drop(cfg);
+                    self.settings_ov_show_all.set(show_all);
+                    self.settings_ov_layout.set(layout);
+                    self.settings_ov_at_open.set((show_all, layout));
+                    sections.push(SettingsSection::Divider);
+                    sections.push(SettingsSection::Overlay);
+                }
             }
         }
         // 按键功能表：所有方案都有（按键功能与引擎类型无关）。放在码表配置之后、
@@ -1355,18 +1350,26 @@ impl SchemaManagerState {
         }
 
         // 特殊模式（`[overlay]` 段）：与码表配置写进**同一份 cfg**，理由同上。
+        // 仅当方案已声明该段时才有工作态可提交（无该段时本节根本不出现）。
         {
             let now = (
-                self.settings_ov_enabled.get(),
                 self.settings_ov_show_all.get(),
                 self.settings_ov_layout.get(),
             );
-            if now != self.settings_ov_at_open.get() {
-                // 关掉时写 null：core 的 json_to_toml 跳过 null ⇒ override 里不含 [overlay]
-                // ⇒ 回落方案文件。这是「取消特殊模式」唯一的落地方式，与码表配置总开关同构。
-                // ⚠️ 方案文件自带 [overlay] 的话关不掉——override 只能清掉用户改的那层，
-                //    与「方案文件写死的值不受总开关控制」是同一条既定语义。
-                set_json_path(&mut cfg, &["overlay"], overlay_value(now.0, now.1, now.2));
+            if now != self.settings_ov_at_open.get()
+                && cfg.get("overlay").is_some_and(|v| v.is_object())
+            {
+                // ★ **在原对象上改这两个字段，不重建整个 overlay**。段里还可能有本 UI 不管的
+                // 项（`kind`、`comment_template_vertical/_horizontal`，以及将来新增的）——
+                // 用结构体/字面量重建会把它们静默抹掉，用户改一次候选排列就丢配置。
+                // 这正是已删除的 `special_modes.rs` 当年那条教训的同形。
+                if let Some(ov) = cfg.get_mut("overlay").and_then(|v| v.as_object_mut()) {
+                    ov.insert("show_all_on_enter".into(), json!(now.0));
+                    ov.insert(
+                        "candidate_layout".into(),
+                        json!(overlay_layout_value(now.1)),
+                    );
+                }
                 cfg_changed = true;
             }
         }
@@ -2532,40 +2535,22 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 )
         }
         SettingsSection::Overlay => {
-            let on = state.settings_ov_enabled;
             let show_all = state.settings_ov_show_all;
             let layout = state.settings_ov_layout;
-            // 子项**常驻并置灰**，不做显隐：显隐会让下面几节在勾选时上下跳一格。
-            // 与码表配置那节「摘要定宽 + 按钮常驻」是同一条取舍。
+            // 本节只在方案已声明 `[overlay]` 时出现，故无总开关、无置灰联动：
+            // 两项恒可用。见 `SchemaManagerState` 里那组信号的说明。
             Element::col()
                 .width_match()
                 .spacing(4)
                 .padding_xy(0, 4)
                 .child(crate::manifest::dialog_group_header("特殊模式"))
                 .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::col()
-                                .weight(1.0)
-                                .child(
-                                    Element::label("作为特殊模式使用")
-                                        .font_size(13.0)
-                                        .fg_role(Role::Text)
-                                        .max_lines(1),
-                                )
-                                .child(
-                                    Element::label(
-                                        "开启后可用引导键临时进入本方案，打完一段自动退回原方案。",
-                                    )
-                                    .font_size(12.0)
-                                    .fg_role(Role::TextMuted)
-                                    .max_lines(2),
-                                ),
-                        )
-                        .child(Element::checkbox("启用", on).small().fg_role(Role::Text)),
+                    Element::label(
+                        "本方案可用引导键临时进入，打完一段自动退回原方案。引导键在上方「按键设置」里配。",
+                    )
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .max_lines(2),
                 )
                 .child(
                     Element::row()
@@ -2579,12 +2564,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .weight(1.0)
                                 .max_lines(1),
                         )
-                        .child(
-                            Element::checkbox("开启", show_all)
-                                .small()
-                                .fg_role(Role::Text)
-                                .enabled_when(move || on.get()),
-                        ),
+                        .child(Element::checkbox("开启", show_all).small().fg_role(Role::Text)),
                 )
                 .child(
                     Element::row()
@@ -2598,14 +2578,14 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .weight(1.0)
                                 .max_lines(1),
                         )
-                        .child(
-                            // ⚠️ 不能加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
-                            // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`
-                            // ——segmented 是独立 widget，debug 构建下当场 panic。
-                            // 这类链式 API 用**运行时 downcast** 做类型检查，编译期抓不到。
-                            Element::segmented(vec!["跟随全局", "竖排", "横排"], layout)
-                                .enabled_when(move || on.get()),
-                        ),
+                        // ⚠️ 不能加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
+                        // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`
+                        // ——segmented 是独立 widget，debug 构建下当场 panic。
+                        // 这类链式 API 用**运行时 downcast** 做类型检查，编译期抓不到。
+                        .child(Element::segmented(
+                            vec!["跟随全局", "竖排", "横排"],
+                            layout,
+                        )),
                 )
         }
         SettingsSection::ExtensionDicts => {
@@ -3014,45 +2994,50 @@ mod ext_dict_tests {
 mod overlay_tests {
     use super::*;
 
-    /// 开启：写出完整的 `[overlay]` 段。`kind` 恒为 `special`——当前只有这一类 overlay，
-    /// 但字段要显式写出，否则 core 那边缺省成空串、日后加第二类时无从分辨。
-    #[test]
-    fn enabling_writes_full_overlay_section() {
-        let v = overlay_value(true, true, 1);
-        assert_eq!(v["kind"], json!("special"));
-        assert_eq!(v["show_all_on_enter"], json!(true));
-        assert_eq!(v["candidate_layout"], json!("vertical"));
-    }
-
-    /// ★★ 关闭必须写 **null**，不能是「不写」或空对象。
-    ///
-    /// core 的 saveConfig 是「整份 cfg 与方案文件 diff 后全量重写 override」：不写 =
-    /// 保留原值（关不掉）；空对象 = 落一个 `[overlay]`（该方案仍是特殊模式，只是全默认）。
-    /// 只有 null 会被 json_to_toml 跳过，使 override 里不含该段 ⇒ 回落方案文件。
-    #[test]
-    fn disabling_writes_null_not_absent_or_empty() {
-        let v = overlay_value(false, true, 2);
-        assert!(v.is_null(), "关闭时必须是 null，实际 {v}");
-    }
-
     /// 布局下标 ↔ core `LayoutIntent` 值域逐字对应；越界回落首项而不是 panic。
     ///
     /// 跨仓契约无编译期约束：拼错的表现是 core 解析回落默认值，用户改了没反应。
     #[test]
     fn layout_index_maps_to_core_value_domain() {
         for (idx, want) in [(0, "follow"), (1, "vertical"), (2, "horizontal")] {
-            assert_eq!(
-                overlay_value(true, false, idx)["candidate_layout"],
-                json!(want)
-            );
+            assert_eq!(overlay_layout_value(idx), want);
             assert_eq!(overlay_layout_idx(want), idx, "反向映射应自洽");
         }
-        assert_eq!(
-            overlay_value(true, false, 99)["candidate_layout"],
-            json!("follow"),
-            "越界应回落首项"
-        );
+        assert_eq!(overlay_layout_value(99), "follow", "越界应回落跟随全局");
         assert_eq!(overlay_layout_idx("不存在的值"), 0, "未知值回落跟随全局");
+    }
+
+    /// ★★ 保存**只改本 UI 管的两个字段**，`[overlay]` 段里其余项原样保留。
+    ///
+    /// 段里还可能有 `kind`、`comment_template_vertical/_horizontal`（模式级注释模板，
+    /// 无图形界面、只能手写），以及将来新增的字段。用字面量重建整个对象会把它们静默
+    /// 抹掉——用户改一次候选排列就丢掉手写的注释模板配置。
+    ///
+    /// 这与已删除的 `special_modes.rs` 当年那条教训是同一个形状，故单独钉住。
+    #[test]
+    fn saving_patches_in_place_and_keeps_unmanaged_fields() {
+        let mut cfg = json!({
+            "overlay": {
+                "kind": "special",
+                "show_all_on_enter": false,
+                "candidate_layout": "follow",
+                "comment_template_vertical": "${dict}",
+            }
+        });
+        // 模拟入队那段的写法：在原对象上 insert，不重建。
+        let ov = cfg.get_mut("overlay").unwrap().as_object_mut().unwrap();
+        ov.insert("show_all_on_enter".into(), json!(true));
+        ov.insert("candidate_layout".into(), json!(overlay_layout_value(1)));
+
+        let ov = &cfg["overlay"];
+        assert_eq!(ov["show_all_on_enter"], json!(true), "管的字段要写进去");
+        assert_eq!(ov["candidate_layout"], json!("vertical"));
+        assert_eq!(
+            ov["comment_template_vertical"],
+            json!("${dict}"),
+            "不管的字段必须原样保留，否则用户手写的注释模板会被静默抹掉"
+        );
+        assert_eq!(ov["kind"], json!("special"), "kind 同样不该被动");
     }
 }
 
