@@ -21,7 +21,36 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_import_dialog(mgr))
 }
 
-/// 数据类型勾选行（导入导出共用；仅当前方案域适用的类型显示）。
+/// 目标方案选择行（导入导出共用）：`verb` 为「导入到」/「导出自」。
+///
+/// 目标独立于页面导航的数据域——混输方案自身只有候选调整，用户却常在混输域点导入，
+/// 期望的是"把五笔词库装进去"。给一个显式的目标选择器，配合选文件后的自动匹配
+/// （见 `DictManagerState::run_import_preview`），用户不必先理解"域"才能导对。
+fn io_target_row(mgr: &DictManagerState, verb: &'static str) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label(verb)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width(52),
+        )
+        .child(Element::dropdown_items_reactive(mgr.io_target_items, mgr.io_target).weight(1.0))
+}
+
+/// 提示条：内容为空时整行隐藏（自动匹配说明 / 目标方案作用域说明共用）。
+fn io_note(sig: Signal<String>, role: Role) -> Element {
+    Element::label_rc(sig)
+        .font_size(12.0)
+        .fg_role(role)
+        .width_match()
+        .max_lines(3)
+        .visible_when(move || !sig.get().is_empty())
+}
+
+/// 数据类型勾选行（导入导出共用；仅目标方案适用的类型显示）。
 fn io_type_row(mgr: &DictManagerState) -> Element {
     let cb = |label: &'static str, sig: Signal<bool>, key: &'static str, m: DictManagerState| {
         Element::checkbox(label, sig)
@@ -56,6 +85,8 @@ fn build_export_dialog(mgr: &DictManagerState) -> Element {
                 .width_match(),
         )
         .child(Element::divider())
+        .child(io_target_row(mgr, "导出自"))
+        .child(io_note(mgr.io_scope_note, Role::TextMuted))
         .child(
             Element::label("选择要导出的数据类型")
                 .font_size(12.5)
@@ -138,13 +169,16 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                 .max_lines(1),
         )
         .child(file_row)
+        .child(io_target_row(mgr, "导入到"))
+        .child(io_note(mgr.io_auto_note, Role::Accent))
+        .child(io_note(mgr.io_scope_note, Role::TextMuted))
         .child(io_type_row(mgr))
         .child(
             Element::label_rc(mgr.import_preview_msg)
                 .font_size(13.0)
                 .fg_role(Role::Text)
                 .width_match()
-                .max_lines(5),
+                .max_lines(7),
         )
         .child(
             Element::row()
@@ -162,13 +196,13 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                     Element::button("替换导入")
                         .small()
                         .danger()
-                        .enabled_when(move || replace_ready.import_ready.get())
+                        .enabled_when(move || replace_ready.import_enabled())
                         .on_click(move |_| replace.confirm_import("replace")),
                 )
                 .child(
                     Element::button("合并导入")
                         .small()
-                        .enabled_when(move || merge_ready.import_ready.get())
+                        .enabled_when(move || merge_ready.import_enabled())
                         .on_click(move |_| merge.confirm_import("merge")),
                 ),
         );

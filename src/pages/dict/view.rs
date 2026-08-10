@@ -51,7 +51,7 @@ const ALL_SEGMENTS: &[&[DomainKind]] = &[
 pub fn build_page(state: &AppState) -> Element {
     let mgr = state.dict_mgr.clone();
 
-    // ── 响应式 effect：数据域/子标签变化 → 归零分页 + 清空搜索 + 重载 ──
+    // ── 响应式 effect：数据域/子标签变化 → 归零分页 + 重载（搜索词刻意保留）──
     let dom_v = mgr.domain;
     let sub_v = mgr.sub_tab;
     let mgr_eff = mgr.clone();
@@ -71,6 +71,15 @@ pub fn build_page(state: &AppState) -> Element {
     let search_effect = reactive_effect(
         move || search_v.version(),
         move || mgr_se.on_search_changed(),
+    );
+
+    // ── 响应式 effect：导入/导出目标方案变化 → 重算标题/说明/勾选，并按新目标重新预览 ──
+    // 下拉只写信号、无变更回调（同 domain/sub_tab），故仍走版本轮询这条路。
+    let target_v = mgr.io_target;
+    let mgr_io = mgr.clone();
+    let io_target_effect = reactive_effect(
+        move || target_v.version(),
+        move || mgr_io.on_io_target_changed(),
     );
 
     // ── 数据域选择器（富内容下拉：引擎类型徽章 + ‹ › 顺序切换 + 状态文字 + 刷新）──
@@ -243,6 +252,7 @@ pub fn build_page(state: &AppState) -> Element {
         .child(main_col)
         .child(effect)
         .child(search_effect)
+        .child(io_target_effect)
         .child(toast_sink(mgr.feedback))
 }
 
@@ -626,6 +636,47 @@ mod tests {
                  多于 1 个 = 同时显示两条分段"
             );
         }
+    }
+
+    /// 导入/导出对话框必须能真的搭起来并完成布局。
+    ///
+    /// windui 的部件约束多是**运行时 downcast**（`config_button` 那类 `debug_assert!`），
+    /// 编译期一律放行——「特殊模式」节就因为给 `segmented` 加了 `.small()` 而一打开就崩，
+    /// 编译和既有测试全绿。目标方案下拉与提示条是新加的部件组合，这里过一遍布局。
+    #[test]
+    fn io_dialogs_build_and_layout() {
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![
+            SchemaInfo {
+                id: "wb".into(),
+                name: "五笔86".into(),
+                kind: "codetable".into(),
+                ..Default::default()
+            },
+            SchemaInfo {
+                id: "mx".into(),
+                name: "五笔拼音混输".into(),
+                kind: "mixed".into(),
+                ..Default::default()
+            },
+        ];
+        mgr.io_target_items
+            .set(mgr.domain_rich_items().into_iter().skip(1).collect());
+        // 混输目标：提示条非空、勾选行只剩候选调整——恰是最容易出问题的那一档。
+        mgr.io_target.set(1);
+        mgr.io_scope_note.set("混输方案说明".into());
+        mgr.io_auto_note.set("已自动切换".into());
+        mgr.import_confirm_visible.set(true);
+        mgr.export_visible.set(true);
+
+        let mut tree = Tree::new();
+        let root = Element::stack()
+            .width(800)
+            .height(600)
+            .child(crate::pages::dict::dialogs::build_dict_dialogs(&mgr))
+            .build(&mut tree);
+        tree.root = Some(root);
+        layout(&mut tree);
     }
 
     /// 组装最小词库页视图（同 build_page 的表格接线：导航 effect + host_signal 表格），

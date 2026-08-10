@@ -124,6 +124,21 @@ pub struct DictManagerState {
     /// 待导入的文件内容（预览确认后执行导入）。
     pending_import: Rc<RefCell<Option<String>>>,
     // ── 方案级「导入/导出」统一对话框的数据类型勾选（导入导出共用；仅适用类型显示）──
+    /// 导入/导出的**目标方案**下标（索引进 [`Self::folded_domains`]，即数据域下标 - 1）。
+    ///
+    /// 与页面导航的 `domain` 刻意解耦。混输方案自身只有候选调整（词条存在成员方案里），
+    /// 而用户的心智是「我有个词库文件，导进去让它能打出来」——目标若跟着当前域走，
+    /// 混输用户在混输域点导入就必然导错：预览写着「用户词库 2000」，实际一条都进不去。
+    pub io_target: Signal<usize>,
+    /// 目标方案下拉的响应式选项（**仅方案域**，不含短语域；与 `folded_domains` 同序同下标）。
+    pub io_target_items: Signal<Vec<DropdownItem>>,
+    /// 目标方案的自动匹配提示（空 = 不显示）。
+    pub io_auto_note: Signal<String>,
+    /// 写入 `io_auto_note` 时记下的目标下标：目标再变（用户手动改下拉）即清提示，
+    /// 避免「已自动选择「五笔86」」这句话挂在一个已被改成拼音的下拉上。
+    io_auto_at: Rc<Cell<Option<usize>>>,
+    /// 目标方案的作用域说明（如混输只有候选调整；空 = 不显示）。导入导出对话框共用。
+    pub io_scope_note: Signal<String>,
     /// 用户词库
     pub io_user_words: Signal<bool>,
     /// 临时词库
@@ -252,6 +267,11 @@ impl DictManagerState {
             import_file_name: signal(String::new()),
             import_ready: signal(false),
             pending_import: Rc::new(RefCell::new(None)),
+            io_target: signal(0),
+            io_target_items: signal(vec![]),
+            io_auto_note: signal(String::new()),
+            io_auto_at: Rc::new(Cell::new(None)),
+            io_scope_note: signal(String::new()),
             io_user_words: signal(true),
             io_temp_words: signal(true),
             io_freq: signal(true),
@@ -757,12 +777,19 @@ impl DictManagerState {
         }
     }
 
+    /// 空表时的提示语。搜索词跨导航保留（见 [`Self::on_nav_changed`]），故必须把
+    /// 「本来就没数据」和「有数据但被搜索词滤没了」分开说——否则切过来看到空表，
+    /// 用户会以为这个类别是空的，而其实只是上一个标签的搜索词还挂着。
     fn empty_hint(&self) -> String {
         if self.current_spec().scoped_by_schema && self.current_schema_id().is_none() {
-            "暂无已启用方案".to_string()
-        } else {
-            "暂无数据".to_string()
+            return "暂无已启用方案".to_string();
         }
+        let q = self.search.get();
+        let q = q.trim();
+        if !q.is_empty() {
+            return format!("没有匹配「{q}」的内容（清除搜索可看全部）");
+        }
+        "暂无数据".to_string()
     }
 
     /// 拉取当前类别数据（走真实/mock RPC），刷新列表。
@@ -813,6 +840,12 @@ impl DictManagerState {
         *self.schemas.borrow_mut() = schemas.to_vec();
         self.domain_items.set(self.domain_labels());
         self.domain_rich_items.set(self.domain_rich_items());
+        // 导入导出的目标下拉与域下拉同源，只是去掉首项「快捷短语」（短语走原生对话框，
+        // 不是这套多类型导入的目标）。方案集变了就要重建，否则目标下拉会停在旧方案上。
+        self.io_target_items.set(self.io_target_item_list());
+        if self.io_target.get() >= self.folded_domains().len() {
+            self.io_target.set(0);
+        }
         // 域集合变化后，按下标记忆的子标签可能对不上位，清空避免错位恢复。
         self.sub_tab_memory.borrow_mut().clear();
         if self.domain.get() > self.folded_domains().len() {
@@ -863,7 +896,7 @@ impl DictManagerState {
         }
     }
 
-    /// 导航（数据域/子标签）变化后：归零分页、清空搜索、重置排序、重载，
+    /// 导航（数据域/子标签）变化后：归零分页、重置排序、重载（**搜索词保留**），
     /// 并递增表格结构版本（列集随类别变化，视图据此整表重建）。
     /// 由 view 侧的响应式 effect 在 domain/sub_tab 信号变化时调用。
     pub fn on_nav_changed(&self) {
@@ -895,7 +928,10 @@ impl DictManagerState {
             self.reset_sub_tab_if_out_of_range();
         }
         *self.offset.borrow_mut() = 0;
-        self.search.set(String::new());
+        // 搜索词**刻意跨导航保留**：搜索框自始至终是同一个 `search` 信号，用户在五笔的
+        // 用户词库里搜「程序」再切到临时词库，想看的多半还是「程序」。切一次清一次，等于
+        // 逼他每换一个标签就重打一遍。搜索词导致的空表由 `empty_hint` 显式说明，
+        // 不会退化成分不清"没数据"还是"没匹配"。
         self.status.set(String::new());
         self.sort.set(None);
         let epoch = self.table_epoch.get().first().copied().unwrap_or(0);
@@ -1514,19 +1550,24 @@ impl DictManagerState {
             .collect()
     }
 
-    /// 某数据类型是否适用于当前方案域（与子标签集一致）。
+    /// 某数据类型是否适用于**导入导出的目标方案**（注意：不是当前浏览的域）。
     pub fn io_type_applicable(&self, key: &str) -> bool {
-        let allow: &[&str] = match self.domain_kind() {
+        Self::types_for_kind(self.io_target_kind()).contains(&key)
+    }
+
+    /// 某引擎类型的方案能承载哪些数据类型（与 `tabs_for_domain_at` 的标签集一一对应）。
+    fn types_for_kind(kind: DomainKind) -> &'static [&'static str] {
+        match kind {
             DomainKind::Pinyin => &["userWords", "tempWords", "freq"],
             DomainKind::Codetable | DomainKind::Other => {
                 &["userWords", "tempWords", "freq", "shadow"]
             }
             // 与 tabs_for_domain_at 保持一致：英文无临时词库。
             DomainKind::English => &["userWords", "freq", "shadow"],
+            // 混输方案自身只有候选调整——五笔/拼音词条落在它的成员方案里。
             DomainKind::Mixed => &["shadow"],
             DomainKind::Phrase => &[],
-        };
-        allow.contains(&key)
+        }
     }
 
     /// 当前勾选且适用的数据类型 key 列表。
@@ -1555,14 +1596,52 @@ impl DictManagerState {
         }
     }
 
-    /// 当前操作对象说明（对话框标题用）：短语域=用户短语；方案域=折叠域标签（含方案名与类型）。
-    pub fn current_io_label(&self) -> String {
-        let d = self.domain.get();
-        if d == 0 {
-            // 短语域的导入导出对象是「用户短语」，比域名"快捷短语"更准确，故不走 domain_label_at。
-            return "用户短语".to_string();
+    // ── 导入导出的目标方案（`io_target` 索引进 folded_domains）─────
+
+    /// 目标方案下拉选项（去掉域下拉首项「快捷短语」，其余同序）。
+    fn io_target_item_list(&self) -> Vec<DropdownItem> {
+        self.domain_rich_items().into_iter().skip(1).collect()
+    }
+
+    /// 目标方案 id（无方案时 None）。
+    pub fn io_target_schema_id(&self) -> Option<String> {
+        self.folded_domains()
+            .get(self.io_target.get())
+            .map(|e| e.rep_schema_id.clone())
+    }
+
+    /// 目标方案的引擎类型（无方案时按 `Other` 从宽，不隐藏数据）。
+    pub fn io_target_kind(&self) -> DomainKind {
+        match self.io_target.get().checked_add(1) {
+            Some(d) if d < self.domain_count() => self.domain_kind_at(d),
+            _ => DomainKind::Other,
         }
-        self.domain_label_at(d)
+    }
+
+    /// 目标方案展示名（如「五笔86 · 码表」）。
+    pub fn io_target_label(&self) -> String {
+        self.folded_domains()
+            .get(self.io_target.get())
+            .map(|e| e.label.clone())
+            .unwrap_or_default()
+    }
+
+    /// 找到首个引擎类型为 `engine` 的方案域下标（用于按文件来源自动选目标）。
+    fn io_target_by_engine(&self, engine: &str) -> Option<usize> {
+        self.folded_domains().iter().position(|d| d.kind == engine)
+    }
+
+    /// 目标方案的作用域说明：只对「自身承载的数据类型明显少于用户预期」的方案给提示。
+    /// 混输是唯一这样的——用户看到"五笔拼音混输"会以为词库在这里，实际只有候选调整。
+    fn io_scope_note_for_target(&self) -> String {
+        if self.io_target_kind() == DomainKind::Mixed {
+            format!(
+                "「{}」自身只有候选调整，五笔/拼音词条存放在它的成员方案里。要导入导出词条，请在上方改选对应方案。",
+                self.io_target_label()
+            )
+        } else {
+            String::new()
+        }
     }
 
     /// 勾选重置为全部适用类型。
@@ -1573,15 +1652,55 @@ impl DictManagerState {
         self.io_shadow.set(true);
     }
 
-    /// 打开导出对话框（方案域）。
-    pub fn open_export_dialog(&self) {
-        if self.current_schema_id().is_none() {
+    /// 打开对话框前的共用准备：目标默认取当前浏览的方案域，刷新选项/说明与勾选。
+    fn prepare_io_dialog(&self, verb: &str) -> bool {
+        if self.folded_domains().is_empty() {
             self.notify_err("暂无已启用方案");
-            return;
+            return false;
         }
+        self.io_target_items.set(self.io_target_item_list());
+        self.io_target.set(self.domain.get().saturating_sub(1));
+        self.io_auto_note.set(String::new());
+        self.io_auto_at.set(None);
+        self.io_scope_note.set(self.io_scope_note_for_target());
         self.reset_io_checks();
         self.io_title
-            .set(format!("导出 · {}", self.current_io_label()));
+            .set(format!("{verb} · {}", self.io_target_label()));
+        true
+    }
+
+    /// 目标方案变化（下拉选择或自动匹配）后的同步：标题/说明/勾选/预览重算。
+    /// 由 view 侧监听 `io_target` 版本的 effect 调用——windui 的下拉只写信号、无变更回调。
+    pub fn on_io_target_changed(&self) {
+        let importing = self.import_confirm_visible.get();
+        self.io_title.set(format!(
+            "{} · {}",
+            if importing { "导入" } else { "导出" },
+            self.io_target_label()
+        ));
+        self.io_scope_note.set(self.io_scope_note_for_target());
+        // 自动提示只对它当初指向的那个目标有效；用户手动改走后即失效。
+        if self.io_auto_at.get() != Some(self.io_target.get()) {
+            self.io_auto_note.set(String::new());
+            self.io_auto_at.set(None);
+        }
+        if !importing {
+            self.reset_io_checks();
+            return;
+        }
+        // 导入：换目标等于换了兼容性判定与"能收哪些段"，必须按新目标重新预览。
+        let content = self.pending_import.borrow().clone();
+        match content {
+            Some(c) => self.run_import_preview(&c, false),
+            None => self.reset_io_checks(),
+        }
+    }
+
+    /// 打开导出对话框（方案域）。
+    pub fn open_export_dialog(&self) {
+        if !self.prepare_io_dialog("导出") {
+            return;
+        }
         self.export_visible.set(true);
     }
 
@@ -1592,13 +1711,9 @@ impl DictManagerState {
 
     /// 打开导入对话框（方案域）：清空预览、勾选默认全开。
     pub fn open_import_dialog(&self) {
-        if self.current_schema_id().is_none() {
-            self.notify_err("暂无已启用方案");
+        if !self.prepare_io_dialog("导入") {
             return;
         }
-        self.reset_io_checks();
-        self.io_title
-            .set(format!("导入 · {}", self.current_io_label()));
         self.import_file_name.set(String::new());
         self.import_preview_msg.set(String::new());
         self.import_ready.set(false);
@@ -1609,7 +1724,7 @@ impl DictManagerState {
 
     /// 导出勾选的数据类型为单个 .wdict 文件（对话框异步请求，见 `do_export_phrases` 注释）。
     pub fn do_export_io(&self, ctx: &mut EventCtx) {
-        let Some(schema) = self.current_schema_id() else {
+        let Some(schema) = self.io_target_schema_id() else {
             self.notify_err("暂无已启用方案");
             return;
         };
@@ -1664,36 +1779,75 @@ impl DictManagerState {
                         return;
                     }
                 };
-                let Some(schema) = state.current_schema_id() else {
-                    return;
-                };
                 state.import_file_name.set(name);
-                match rpc::call_core(
-                    "dict.previewImport",
-                    &json!({ "schemaId": schema, "content": content }),
-                ) {
-                    Ok(v) => {
-                        let compatible = v
-                            .get("compatible")
-                            .and_then(|x| x.as_bool())
-                            .unwrap_or(true);
-                        state.import_compatible.set(compatible);
-                        state.apply_import_preview_sections(&v);
-                        state
-                            .import_preview_msg
-                            .set(Self::format_import_preview(&v));
-                        *state.pending_import.borrow_mut() = Some(content);
-                        // 不兼容（如五笔词库导入拼音方案）：保留内容但禁止导入。
-                        state.import_ready.set(compatible);
-                    }
-                    Err(e) => {
-                        state.import_preview_msg.set(format!("无法导入：{e}"));
-                        *state.pending_import.borrow_mut() = None;
-                        state.import_ready.set(false);
-                    }
-                }
+                *state.pending_import.borrow_mut() = Some(content.clone());
+                state.run_import_preview(&content, true);
             },
         );
+    }
+
+    /// 按当前目标方案预览 `content`，把结果落到预览相关信号。
+    ///
+    /// `allow_redirect` 仅在「刚选完文件」时为 true：目标收不下这个文件时，按文件自报的
+    /// 来源引擎去已启用方案里找一个能收的，找到就把目标改过去——用户的意图是「把这个词库
+    /// 装进输入法」，而不是「往我当前正看着的那个域里塞」。混输用户正卡在这上面：混输方案
+    /// 只有候选调整，不改目标就只能眼看着预览写了 2000 条、导完一条也打不出来。
+    ///
+    /// 改目标后本方法**不自行重跑预览**：`io_target` 变化会被 view 的 effect 接住，
+    /// 走 [`Self::on_io_target_changed`] 重新预览（`allow_redirect=false`，不会来回弹）。
+    fn run_import_preview(&self, content: &str, allow_redirect: bool) {
+        let Some(schema) = self.io_target_schema_id() else {
+            self.import_preview_msg.set("暂无已启用方案".into());
+            self.import_ready.set(false);
+            return;
+        };
+        match rpc::call_core(
+            "dict.previewImport",
+            &json!({ "schemaId": schema, "content": content }),
+        ) {
+            Ok(v) => {
+                let compatible = v
+                    .get("compatible")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(true);
+                if allow_redirect
+                    && !compatible
+                    && let Some(src) = v.get("sourceEngine").and_then(|x| x.as_str())
+                    && let Some(i) = self.io_target_by_engine(src)
+                    && i != self.io_target.get()
+                {
+                    self.io_target.set(i);
+                    self.io_auto_at.set(Some(i));
+                    self.io_auto_note.set(format!(
+                        "已按文件内容把目标切换为「{}」",
+                        self.io_target_label()
+                    ));
+                    return;
+                }
+                self.import_compatible.set(compatible);
+                self.apply_import_preview_sections(&v);
+                self.import_preview_msg
+                    .set(self.format_import_preview_for_target(&v));
+                // 不兼容（如五笔词库导入拼音方案）：保留内容但禁止导入。
+                self.import_ready.set(compatible);
+            }
+            Err(e) => {
+                self.import_preview_msg.set(format!("无法导入：{e}"));
+                *self.pending_import.borrow_mut() = None;
+                self.import_ready.set(false);
+            }
+        }
+    }
+
+    /// 数据类型 key → 对应子标签（导入后把视图落到刚写入的那一类上）。
+    fn tab_for_section(key: &str) -> Option<LogicalTab> {
+        match key {
+            "userWords" => Some(LogicalTab::UserDict),
+            "tempWords" => Some(LogicalTab::Temp),
+            "freq" => Some(LogicalTab::Freq),
+            "shadow" => Some(LogicalTab::Shadow),
+            _ => None,
+        }
     }
 
     /// 数据类型 key → 中文标签。
@@ -1734,9 +1888,22 @@ impl DictManagerState {
         }
     }
 
+    /// 用当前目标方案的口径格式化预览正文。
+    fn format_import_preview_for_target(&self, v: &Value) -> String {
+        Self::format_import_preview(
+            v,
+            Self::types_for_kind(self.io_target_kind()),
+            &self.io_target_label(),
+        )
+    }
+
     /// previewImport 响应 → 对话框预览正文（纯函数，便于单测）。
-    /// 不兼容（来源引擎≠当前方案）优先提示并阻止；否则逐段只列数量 + 累加跳过行（不含示例）。
-    fn format_import_preview(v: &Value) -> String {
+    ///
+    /// 不兼容（来源引擎≠目标方案）优先提示并阻止；否则**按目标方案能不能收把段分成两拨**：
+    /// 能收的列数量，收不了的单列一行明说「不会导入」。此前两拨混在一起列，于是混输方案下
+    /// 预览写着「用户词库 2000」、导入按钮可点、toast 报成功，实际 `io_selected_sections`
+    /// 把这段过滤掉了，一条也没进——用户只能得出"导了但打不出来"的结论。
+    fn format_import_preview(v: &Value, applicable: &[&str], target_label: &str) -> String {
         let mut s = String::new();
         // 不兼容优先提示（如五笔词库导入拼音方案）。
         if !v
@@ -1749,7 +1916,7 @@ impl DictManagerState {
             let tgt =
                 Self::engine_label(v.get("targetEngine").and_then(|x| x.as_str()).unwrap_or(""));
             s.push_str(&format!(
-                "⚠ 该文件为「{src}」类型词库，与当前「{tgt}」方案不一致，无法导入（编码不通用）。"
+                "⚠ 该文件为「{src}」类型词库，与目标「{tgt}」方案不一致，无法导入（编码不通用）。\n请在上方「导入到」改选一个{src}方案。"
             ));
             return s;
         }
@@ -1762,44 +1929,87 @@ impl DictManagerState {
         if !fmt_name.is_empty() {
             s.push_str(&format!("识别为 {fmt_name}\n"));
         }
-        let mut parts: Vec<String> = Vec::new();
+        let mut ok: Vec<String> = Vec::new();
+        let mut skipped_sections: Vec<String> = Vec::new();
         let mut skipped_total = 0u64;
         if let Some(arr) = v.get("sections").and_then(|x| x.as_array()) {
             for sec in arr {
                 let key = sec.get("key").and_then(|x| x.as_str()).unwrap_or("");
                 let count = sec.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
                 skipped_total += sec.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0);
-                parts.push(format!("{} {}", Self::section_label(key), count));
+                let part = format!("{} {}", Self::section_label(key), count);
+                if applicable.contains(&key) {
+                    ok.push(part);
+                } else {
+                    skipped_sections.push(part);
+                }
             }
         }
-        if parts.is_empty() {
+        if ok.is_empty() && skipped_sections.is_empty() {
             s.push_str("文件不含可导入的词库数据");
             return s;
         }
-        s.push_str(&parts.join(" · "));
+        if ok.is_empty() {
+            s.push_str(&format!(
+                "⚠ 文件里的 {} 都不属于「{target_label}」，一条也不会导入。\n请在上方「导入到」改选目标方案。",
+                skipped_sections.join(" · ")
+            ));
+            return s;
+        }
+        s.push_str(&format!("可导入：{}", ok.join(" · ")));
         if skipped_total > 0 {
             s.push_str(&format!(" · 跳过 {skipped_total} 行"));
+        }
+        if !skipped_sections.is_empty() {
+            s.push_str(&format!(
+                "\n⚠ 不会导入：{}（「{target_label}」不含此类数据）",
+                skipped_sections.join(" · ")
+            ));
         }
         s.push_str("\n\n勾选上方类型决定导入哪些；合并保留本地已有，替换先清空所选类型后导入。");
         s
     }
 
+    /// 导入按钮是否可点：预览通过 **且** 至少有一种目标能收的类型被勾选。
+    ///
+    /// 后半个条件是这次修复的要害——`io_selected_sections` 会把目标收不了的段过滤掉，
+    /// 过滤到空还照发 `dict.import`，后端拿一个空 sections 回一句成功，界面弹绿 toast。
+    /// 「点了、报成功、零条」是最难自查的一类假象，宁可让按钮灰着。
+    pub fn import_enabled(&self) -> bool {
+        self.import_ready.get() && !self.io_selected_sections().is_empty()
+    }
+
     /// 确认导入（strategy: "merge" | "replace"）：按勾选的数据类型导入。
     pub fn confirm_import(&self, strategy: &str) {
+        let sections = self.io_selected_sections();
+        if sections.is_empty() {
+            self.notify_err("没有可导入的数据类型：请改选目标方案或勾选类型");
+            return;
+        }
         self.import_confirm_visible.set(false);
         self.import_ready.set(false);
         let Some(content) = self.pending_import.borrow_mut().take() else {
             return;
         };
-        let Some(schema) = self.current_schema_id() else {
+        let Some(schema) = self.io_target_schema_id() else {
             return;
         };
-        let sections = self.io_selected_sections();
+        // 先记下要落到哪个子标签（`sections` 随即被 json! 取走）。
+        let landing = Self::tab_for_section(sections.first().map(String::as_str).unwrap_or(""));
         match rpc::call_core(
             "dict.import",
             &json!({ "schemaId": schema, "content": content, "strategy": strategy, "sections": sections }),
         ) {
             Ok(v) => {
+                // 导入目标可能不是当前正看着的域（自动匹配或手动改过）。留在原地只会让人
+                // 再次得出"导了但没有"的结论——把视图带到刚写入的方案与类型上，眼见为实。
+                let target_domain = self.io_target.get() + 1;
+                let sub = landing.and_then(|t| {
+                    self.tabs_for_domain_at(target_domain)
+                        .iter()
+                        .position(|x| *x == t)
+                });
+                self.navigate_to(target_domain, sub);
                 self.reload();
                 self.notify_ok(&Self::format_import_result(&v));
             }
@@ -1910,6 +2120,11 @@ impl DictManagerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 预览格式化的目标口径（与 `types_for_kind` 同源，测试里直接写出以固定预期）。
+    const CODETABLE_TYPES: &[&str] = &["userWords", "tempWords", "freq", "shadow"];
+    const PINYIN_TYPES: &[&str] = &["userWords", "tempWords", "freq"];
+    const MIXED_TYPES: &[&str] = &["shadow"];
 
     fn schema(id: &str, name: &str, kind: &str) -> SchemaInfo {
         SchemaInfo {
@@ -2425,7 +2640,7 @@ mod tests {
             { "key": "userWords", "count": 6, "skipped": 0 },
             { "key": "tempWords", "count": 4, "skipped": 0 },
         ] });
-        let msg = DictManagerState::format_import_preview(&v);
+        let msg = DictManagerState::format_import_preview(&v, CODETABLE_TYPES, "五笔86 · 码表");
         assert!(msg.contains("识别为 WindDict 词库"));
         assert!(msg.contains("用户词库 6"));
         assert!(msg.contains("临时词库 4"));
@@ -2446,13 +2661,16 @@ mod tests {
         let v = json!({ "format": "rime", "compatible": true, "sections": [
             { "key": "userWords", "count": 5, "skipped": 2 },
         ] });
-        let msg = DictManagerState::format_import_preview(&v);
+        let msg = DictManagerState::format_import_preview(&v, CODETABLE_TYPES, "五笔86 · 码表");
         assert!(msg.contains("识别为 Rime 词库"));
         assert!(msg.contains("跳过 2 行"));
         let v = json!({ "format": "tsv", "compatible": true, "sections": [
             { "key": "userWords", "count": 1, "skipped": 0 },
         ] });
-        assert!(DictManagerState::format_import_preview(&v).contains("识别为 TSV 文本"));
+        assert!(
+            DictManagerState::format_import_preview(&v, CODETABLE_TYPES, "五笔86 · 码表")
+                .contains("识别为 TSV 文本")
+        );
     }
 
     #[test]
@@ -2460,9 +2678,154 @@ mod tests {
         // 来源码表、目标拼音 → 不兼容提示，阻止导入。
         let v = json!({ "format": "winddict", "compatible": false,
             "sourceEngine": "codetable", "targetEngine": "pinyin", "sections": [] });
-        let msg = DictManagerState::format_import_preview(&v);
+        let msg = DictManagerState::format_import_preview(&v, PINYIN_TYPES, "拼音");
         assert!(msg.contains("无法导入"));
         assert!(msg.contains("码表") && msg.contains("拼音"));
+        assert!(msg.contains("改选"), "应指出可以改选目标方案");
+    }
+
+    /// 混输场景的要害：文件里全是目标收不了的段时，预览必须明说"一条也不会导入"，
+    /// 而不是像从前那样把数量原样列出来，让人以为导进去了。
+    #[test]
+    fn import_preview_flags_sections_target_cannot_take() {
+        let v = json!({ "format": "winddict", "compatible": true, "sections": [
+            { "key": "userWords", "count": 2000, "skipped": 0 },
+            { "key": "freq", "count": 340, "skipped": 0 },
+        ] });
+        let msg = DictManagerState::format_import_preview(&v, MIXED_TYPES, "五笔拼音混输 · 混输");
+        assert!(msg.contains("一条也不会导入"), "实际: {msg}");
+        assert!(msg.contains("五笔拼音混输"));
+        assert!(!msg.contains("可导入："), "没有任何一段能进，不该说可导入");
+
+        // 部分可收：能收的与收不了的分两拨列，都要出现。
+        let v = json!({ "format": "winddict", "compatible": true, "sections": [
+            { "key": "userWords", "count": 2000, "skipped": 0 },
+            { "key": "shadow", "count": 12, "skipped": 0 },
+        ] });
+        let msg = DictManagerState::format_import_preview(&v, PINYIN_TYPES, "拼音");
+        assert!(msg.contains("可导入：用户词库 2000"), "实际: {msg}");
+        assert!(msg.contains("不会导入：候选调整 12"), "实际: {msg}");
+    }
+
+    /// 目标方案决定勾选可见性与选中集合——不再跟着当前浏览的数据域走。
+    #[test]
+    fn io_applicable_types_follow_target_not_domain() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("mx", "五笔拼音混输", "mixed"),
+            ],
+        );
+        st.domain.set(2); // 页面停在混输域
+        st.io_target.set(1); // 目标也是混输
+        assert!(!st.io_type_applicable("userWords"));
+        assert!(st.io_type_applicable("shadow"));
+
+        st.io_target.set(0); // 目标改到五笔86，页面仍在混输域
+        assert!(
+            st.io_type_applicable("userWords"),
+            "目标是码表方案就应能收用户词库，与当前浏览域无关"
+        );
+        assert_eq!(st.io_target_schema_id().as_deref(), Some("wb"));
+    }
+
+    /// 目标收不了任何勾选类型时导入按钮必须灰掉——这正是"点了、报成功、零条"的来源。
+    #[test]
+    fn import_disabled_when_nothing_selectable() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("mx", "混输", "mixed")]);
+        st.io_target.set(0);
+        st.import_ready.set(true);
+        st.io_shadow.set(false); // 混输只有候选调整，取消勾选后无可导入类型
+        assert!(st.io_selected_sections().is_empty());
+        assert!(!st.import_enabled());
+        st.io_shadow.set(true);
+        assert!(st.import_enabled());
+    }
+
+    /// 自动匹配的提示只对它当初指向的目标有效：用户手动改走下拉后必须消失，
+    /// 否则「已按文件内容把目标切换为「五笔86」」会挂在一个已改成拼音的下拉旁边。
+    #[test]
+    fn auto_note_expires_when_user_changes_target() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "拼音", "pinyin"),
+            ],
+        );
+        st.io_target.set(0);
+        st.io_auto_at.set(Some(0));
+        st.io_auto_note
+            .set("已按文件内容把目标切换为「五笔86」".into());
+        st.on_io_target_changed();
+        assert!(!st.io_auto_note.get().is_empty(), "目标未变，提示应保留");
+
+        st.io_target.set(1); // 用户手动改走
+        st.on_io_target_changed();
+        assert!(st.io_auto_note.get().is_empty(), "目标已变，提示必须失效");
+    }
+
+    /// 切换子标签/数据域不再清空搜索框——搜索框全程是同一个信号，切一次清一次等于
+    /// 逼用户每换一个标签重打一遍。
+    #[test]
+    fn nav_change_keeps_search_text() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔86", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        st.search.set("程序".into());
+        st.sub_tab.set(1);
+        st.on_nav_changed();
+        assert_eq!(st.search.get(), "程序", "切子标签不应清空搜索词");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 搜索词跨导航保留后，空表必须说清是"没数据"还是"没匹配"。
+    #[test]
+    fn empty_hint_distinguishes_no_data_from_no_match() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔86", "codetable")]);
+        st.domain.set(1);
+        st.sub_tab.set(0);
+        assert_eq!(st.empty_hint(), "暂无数据");
+        st.search.set("程序".into());
+        let hint = st.empty_hint();
+        assert!(
+            hint.contains("程序") && hint.contains("没有匹配"),
+            "实际: {hint}"
+        );
+    }
+
+    /// 混输目标要给出「词条在成员方案里」的说明，其余方案不加噪音。
+    #[test]
+    fn mixed_target_explains_where_words_live() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("mx", "混输", "mixed"),
+            ],
+        );
+        st.io_target.set(1);
+        let note = st.io_scope_note_for_target();
+        assert!(
+            note.contains("候选调整") && note.contains("成员方案"),
+            "实际: {note}"
+        );
+        st.io_target.set(0);
+        assert!(
+            st.io_scope_note_for_target().is_empty(),
+            "码表方案不该有此提示"
+        );
     }
 
     #[test]
