@@ -136,6 +136,22 @@ pub struct DictManagerState {
     pub io_auto_note: Signal<String>,
     /// 导出对话框的引擎提示（文件带引擎标记、只能导回同类引擎）。
     pub io_engine_note: Signal<String>,
+
+    // ── 纯词列表导入（一行一个词、无编码；由目标方案现场出码）──────
+    /// 导入格式：0 = 自动识别，1 = 强制纯词列表。
+    ///
+    /// 只给这两项。强制指定 WindDict/Rime/TSV 需要 core 的 preview/import 接受 format
+    /// 参数（它们现在一律按内容自动识别），给了也不生效——列一个点了没反应的选项比不列更糟。
+    pub io_format: Signal<usize>,
+    /// 格式行右侧的识别结果回显（"纯词列表" / "WindDict 词库" / …；空 = 未选文件）。
+    pub io_format_note: Signal<String>,
+    /// 纯词列表入库权重（用户可改）。纯词列表没有权重列，只能由用户给一个。
+    pub io_weight: Signal<String>,
+    /// 已解析待导入的纯词列表；`Some` 即表示本次导入走纯词列表通道。
+    ///
+    /// 这里只存**词**，不存码：出码在点「导入」时才分批发生（刻意不做出码预览）。
+    /// 因此切换目标方案无需作废任何东西——那一刻还没有依赖方案的中间结果。
+    pending_wordlist: Rc<RefCell<Option<super::wordlist::WordList>>>,
     /// 写入 `io_auto_note` 时记下的目标下标：目标再变（用户手动改下拉）即清提示，
     /// 避免「已自动选择「五笔86」」这句话挂在一个已被改成拼音的下拉上。
     io_auto_at: Rc<Cell<Option<usize>>>,
@@ -273,6 +289,10 @@ impl DictManagerState {
             io_target_items: signal(vec![]),
             io_auto_note: signal(String::new()),
             io_engine_note: signal(String::new()),
+            io_format: signal(0),
+            io_format_note: signal(String::new()),
+            io_weight: signal("1200".to_string()),
+            pending_wordlist: Rc::new(RefCell::new(None)),
             io_auto_at: Rc::new(Cell::new(None)),
             io_scope_note: signal(String::new()),
             io_user_words: signal(true),
@@ -1563,6 +1583,11 @@ impl DictManagerState {
 
     /// 某数据类型是否适用于**导入导出的目标方案**（注意：不是当前浏览的域）。
     pub fn io_type_applicable(&self, key: &str) -> bool {
+        // 纯词列表只产出用户词库这一类，别的勾选框在这条路上没有意义。
+        // （`pending_wordlist` 仅在导入流程内有值，确认与取消都会清，不会漏进导出对话框。）
+        if key != "userWords" && self.pending_wordlist.borrow().is_some() {
+            return false;
+        }
         Self::types_for_kind(self.io_target_kind()).contains(&key)
     }
 
@@ -1717,7 +1742,15 @@ impl DictManagerState {
             self.reset_io_checks();
             return;
         }
-        // 导入：换目标等于换了兼容性判定与"能收哪些段"，必须按新目标重新预览。
+        // 纯词列表：出码要到点导入才发生，此刻没有任何依赖方案的中间结果需要作废，
+        // 只把文案里的方案名换掉即可（不做出码预览换来的简化，见 apply_word_list）。
+        if let Some(p) = self.pending_wordlist.borrow().as_ref() {
+            self.import_preview_msg.set(self.word_list_summary(p));
+            self.import_ready
+                .set(!p.words.is_empty() && self.io_type_applicable("userWords"));
+            return;
+        }
+        // 其余格式：换目标等于换了兼容性判定与"能收哪些段"，必须按新目标重新预览。
         let content = self.pending_import.borrow().clone();
         match content {
             Some(c) => self.run_import_preview(&c, false),
@@ -1747,7 +1780,10 @@ impl DictManagerState {
         self.import_preview_msg.set(String::new());
         self.import_ready.set(false);
         self.import_compatible.set(true);
+        self.io_format.set(0);
+        self.io_format_note.set(String::new());
         *self.pending_import.borrow_mut() = None;
+        *self.pending_wordlist.borrow_mut() = None;
         self.import_confirm_visible.set(true);
     }
 
@@ -1809,9 +1845,88 @@ impl DictManagerState {
                 };
                 state.import_file_name.set(name);
                 *state.pending_import.borrow_mut() = Some(content.clone());
-                state.run_import_preview(&content, true);
+                state.apply_picked_content(&content, true);
             },
         );
+    }
+
+    /// 选完文件（或改了格式下拉）后的分派：纯词列表走客户端解析，其余交给 core 预览。
+    ///
+    /// `allow_redirect` 只对 core 那条路有意义（见 [`Self::run_import_preview`]）。
+    fn apply_picked_content(&self, content: &str, allow_redirect: bool) {
+        if self.wants_word_list(content) {
+            self.apply_word_list(content);
+        } else {
+            *self.pending_wordlist.borrow_mut() = None;
+            self.run_import_preview(content, allow_redirect);
+        }
+    }
+
+    /// 本次是否按纯词列表处理：用户强制指定，或自动识别通过了严格判据。
+    fn wants_word_list(&self, content: &str) -> bool {
+        match self.io_format.get() {
+            1 => true,
+            _ => super::wordlist::looks_like_word_list(content),
+        }
+    }
+
+    /// 纯词列表：客户端解析即出结果，**不发 RPC、不出码**。
+    ///
+    /// 这一步只回答「这文件里有多少词」。出码要等点导入——不做出码预览换来的正是
+    /// 选文件的即时响应（否则这里就得同步跑完整批出码，几千词卡住一两秒）。
+    fn apply_word_list(&self, content: &str) {
+        let parsed = super::wordlist::parse_word_list(content);
+        self.io_format_note.set("纯词列表".into());
+        self.import_compatible.set(true);
+        // 纯词列表只可能进用户词库，其余类型与它无关。
+        self.io_user_words.set(true);
+        self.io_temp_words.set(false);
+        self.io_freq.set(false);
+        self.io_shadow.set(false);
+        self.import_preview_msg.set(self.word_list_summary(&parsed));
+        self.import_ready
+            .set(!parsed.words.is_empty() && self.io_type_applicable("userWords"));
+        *self.pending_wordlist.borrow_mut() = Some(parsed);
+    }
+
+    /// 纯词列表的回显文案（词数 + 跳过/去重 + 出码归属说明）。
+    fn word_list_summary(&self, p: &super::wordlist::WordList) -> String {
+        if p.words.is_empty() {
+            return "文件里没有可用的词条。".into();
+        }
+        let mut extra: Vec<String> = Vec::new();
+        if p.skipped > 0 {
+            extra.push(format!("跳过 {} 行", p.skipped));
+        }
+        if p.duplicates > 0 {
+            extra.push(format!("去重 {}", p.duplicates));
+        }
+        let tail = if extra.is_empty() {
+            String::new()
+        } else {
+            format!("（{}）", extra.join(" · "))
+        };
+        format!(
+            "识别为 纯词列表 · {} 个词{tail}\n编码将按「{}」现场生成，出不了码的词会被跳过。",
+            p.words.len(),
+            self.io_target_label()
+        )
+    }
+
+    /// 本次导入是否已按纯词列表解析（驱动权重行显隐）。
+    pub fn is_word_list_import(&self) -> bool {
+        self.pending_wordlist.borrow().is_some()
+    }
+
+    /// 格式下拉变化：按新格式重新解释已选文件。由 view 侧 effect 调用。
+    pub fn on_io_format_changed(&self) {
+        let content = self.pending_import.borrow().clone();
+        match content {
+            // 改格式后 redirect 必须关掉：那是「刚选完文件」的一次性自动纠偏，
+            // 用户此刻正在手动指定格式，再把目标弹走就是跟他对着干。
+            Some(c) => self.apply_picked_content(&c, false),
+            None => self.io_format_note.set(String::new()),
+        }
     }
 
     /// 按当前目标方案预览 `content`，把结果落到预览相关信号。
@@ -1853,6 +1968,10 @@ impl DictManagerState {
                     return;
                 }
                 self.import_compatible.set(compatible);
+                self.io_format_note.set(
+                    Self::format_label(v.get("format").and_then(|x| x.as_str()).unwrap_or(""))
+                        .into(),
+                );
                 self.apply_import_preview_sections(&v);
                 self.import_preview_msg
                     .set(self.format_import_preview_for_target(&v));
@@ -1904,6 +2023,16 @@ impl DictManagerState {
         self.io_temp_words.set(present("tempWords"));
         self.io_freq.set(present("freq"));
         self.io_shadow.set(present("shadow"));
+    }
+
+    /// previewImport 的 `format` → 中文名（空串 = 未知，调用方据此不显示）。
+    fn format_label(fmt: &str) -> &'static str {
+        match fmt {
+            "rime" => "Rime 词库",
+            "tsv" => "TSV 文本",
+            "winddict" => "WindDict 词库",
+            _ => "",
+        }
     }
 
     /// previewImport 响应里的来源标记 → 「五笔86（码表）」这样的一句话；两项都缺则 None。
@@ -1958,12 +2087,7 @@ impl DictManagerState {
             ));
             return s;
         }
-        let fmt_name = match v.get("format").and_then(|x| x.as_str()).unwrap_or("") {
-            "rime" => "Rime 词库",
-            "tsv" => "TSV 文本",
-            "winddict" => "WindDict 词库",
-            _ => "",
-        };
+        let fmt_name = Self::format_label(v.get("format").and_then(|x| x.as_str()).unwrap_or(""));
         if !fmt_name.is_empty() {
             s.push_str(&format!("识别为 {fmt_name}"));
             // 兼容时也把来源方案/引擎摆出来：导出文件本就带这个标记，导入前让用户自己
@@ -2024,8 +2148,137 @@ impl DictManagerState {
         self.import_ready.get() && !self.io_selected_sections().is_empty()
     }
 
+    /// 分批出码：把词列表送 `dict.encodeWords`，回收 `(code, text)`（丢弃出不了码的）。
+    /// 返回 `(可入库行, 出不了码数)`。
+    ///
+    /// 分批而非一次全量，两个理由都是硬的：`rpc::call_core` 有 5 秒超时；core 侧单次
+    /// `encode_word` 每调一次就重读一次方案文件，批量入口才会把 spec 提到循环外。
+    fn encode_word_batches(
+        &self,
+        schema: &str,
+        words: &[String],
+    ) -> Result<(Vec<(String, String)>, usize), String> {
+        let mut rows: Vec<(String, String)> = Vec::with_capacity(words.len());
+        let mut unencodable = 0usize;
+        for batch in super::wordlist::batches(words) {
+            let v = rpc::call_core(
+                "dict.encodeWords",
+                &json!({ "schemaId": schema, "texts": batch }),
+            )
+            .map_err(|e| format!("出码失败: {e}"))?;
+            let (batch_rows, n) = Self::zip_codes(batch, &v)?;
+            rows.extend(batch_rows);
+            unencodable += n;
+        }
+        Ok((rows, unencodable))
+    }
+
+    /// 把一批出码结果配回词并剔除空码。返回 `(可入库行, 空码数)`。纯函数，便于单测。
+    ///
+    /// 契约是 **codes 与 texts 同序等长**。长度对不上宁可整体失败也不按下标硬配——
+    /// 错位的结果是把 A 的码安到 B 的词上，静默写进词库，事后极难发现。
+    fn zip_codes(words: &[String], v: &Value) -> Result<(Vec<(String, String)>, usize), String> {
+        let codes = v
+            .get("codes")
+            .and_then(|x| x.as_array())
+            .ok_or("出码返回缺 codes")?;
+        if codes.len() != words.len() {
+            return Err(format!(
+                "出码返回条数不符（送 {} 回 {}），已中止",
+                words.len(),
+                codes.len()
+            ));
+        }
+        let mut rows = Vec::with_capacity(words.len());
+        let mut unencodable = 0usize;
+        for (word, code) in words.iter().zip(codes) {
+            match code.as_str().unwrap_or("") {
+                "" => unencodable += 1,
+                c => rows.push((c.to_string(), word.clone())),
+            }
+        }
+        Ok((rows, unencodable))
+    }
+
+    /// 纯词列表导入：分批出码 → 拼 TSV → 走既有 `dict.import` 通道。
+    ///
+    /// 复用 TSV 而不新开一条导入协议，是因为出好码之后这就是标准的
+    /// `code<TAB>text<TAB>weight`——那条路的解析、去重、merge/replace 语义全部现成，
+    /// core 侧因此只需新增一个批量出码 RPC，`wind-store` 一行都不用动。
+    fn import_word_list(&self, strategy: &str, words: &[String]) {
+        let Some(schema) = self.io_target_schema_id() else {
+            self.notify_err("暂无已启用方案");
+            return;
+        };
+        let weight: i64 = match self.io_weight.get().trim().parse() {
+            Ok(w) => w,
+            Err(_) => {
+                self.notify_err("权重需为整数");
+                return;
+            }
+        };
+        let (rows, unencodable) = match self.encode_word_batches(&schema, words) {
+            Ok(r) => r,
+            Err(e) => {
+                self.notify_err(&e);
+                return;
+            }
+        };
+        if rows.is_empty() {
+            // 不做出码预览的代价：这只能等到点了导入才发现，故话要说全（是方案不对，
+            // 而不是文件有问题——文件在选的时候已经报过词数了）。
+            self.notify_err(&format!(
+                "{} 个词在「{}」下都出不了码，请确认目标方案是否正确",
+                words.len(),
+                self.io_target_label()
+            ));
+            return;
+        }
+        self.import_confirm_visible.set(false);
+        self.import_ready.set(false);
+        *self.pending_import.borrow_mut() = None;
+        *self.pending_wordlist.borrow_mut() = None;
+
+        let tsv = super::wordlist::to_tsv(&rows, weight);
+        match rpc::call_core(
+            "dict.import",
+            &json!({ "schemaId": schema, "content": tsv, "strategy": strategy, "sections": ["userWords"] }),
+        ) {
+            Ok(v) => {
+                self.navigate_to(
+                    self.io_target.get() + 1,
+                    self.landing_sub(LogicalTab::UserDict),
+                );
+                self.reload();
+                let mut msg = Self::format_import_result(&v);
+                if unencodable > 0 {
+                    msg.push_str(&format!("；{unencodable} 个词出不了码已跳过"));
+                }
+                self.notify_ok(&msg);
+            }
+            Err(e) => self.notify_err(&format!("导入失败: {e}")),
+        }
+    }
+
+    /// 目标域里 `tab` 对应的子标签下标（该域没有这一类时 None）。
+    fn landing_sub(&self, tab: LogicalTab) -> Option<usize> {
+        self.tabs_for_domain_at(self.io_target.get() + 1)
+            .iter()
+            .position(|x| *x == tab)
+    }
+
     /// 确认导入（strategy: "merge" | "replace"）：按勾选的数据类型导入。
     pub fn confirm_import(&self, strategy: &str) {
+        // 纯词列表走独立通道（客户端出码 + TSV），与多段导入无关。
+        let wl = self
+            .pending_wordlist
+            .borrow()
+            .as_ref()
+            .map(|p| p.words.clone());
+        if let Some(words) = wl {
+            self.import_word_list(strategy, &words);
+            return;
+        }
         let sections = self.io_selected_sections();
         if sections.is_empty() {
             self.notify_err("没有可导入的数据类型：请改选目标方案或勾选类型");
@@ -2048,13 +2301,8 @@ impl DictManagerState {
             Ok(v) => {
                 // 导入目标可能不是当前正看着的域（自动匹配或手动改过）。留在原地只会让人
                 // 再次得出"导了但没有"的结论——把视图带到刚写入的方案与类型上，眼见为实。
-                let target_domain = self.io_target.get() + 1;
-                let sub = landing.and_then(|t| {
-                    self.tabs_for_domain_at(target_domain)
-                        .iter()
-                        .position(|x| *x == t)
-                });
-                self.navigate_to(target_domain, sub);
+                let sub = landing.and_then(|t| self.landing_sub(t));
+                self.navigate_to(self.io_target.get() + 1, sub);
                 self.reload();
                 self.notify_ok(&Self::format_import_result(&v));
             }
@@ -2090,6 +2338,7 @@ impl DictManagerState {
 
     pub fn cancel_import(&self) {
         *self.pending_import.borrow_mut() = None;
+        *self.pending_wordlist.borrow_mut() = None;
         self.import_ready.set(false);
         self.import_confirm_visible.set(false);
     }
@@ -2788,6 +3037,120 @@ mod tests {
         assert!(!st.import_enabled());
         st.io_shadow.set(true);
         assert!(st.import_enabled());
+    }
+
+    /// 选完文件走客户端解析即出结果：词数、跳过、去重都要报，且**不发 RPC**
+    /// （不做出码预览换来的正是这一步的即时响应）。
+    #[test]
+    fn word_list_is_parsed_client_side_on_pick() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔86", "codetable")]);
+        st.io_target.set(0);
+        st.apply_word_list("中国\n计算机\n中国\n= 噪声 =\n");
+
+        assert!(st.is_word_list_import());
+        assert!(st.import_ready.get());
+        assert_eq!(st.io_format_note.get(), "纯词列表");
+        let msg = st.import_preview_msg.get();
+        assert!(msg.contains("2 个词"), "实际: {msg}");
+        assert!(
+            msg.contains("跳过 1 行") && msg.contains("去重 1"),
+            "实际: {msg}"
+        );
+        assert!(msg.contains("五笔86"), "要说明按哪个方案出码，实际: {msg}");
+        // 纯词列表只进用户词库，其余勾选在这条路上不可用。
+        assert!(st.io_type_applicable("userWords"));
+        assert!(!st.io_type_applicable("freq"));
+        assert!(!st.io_type_applicable("shadow"));
+    }
+
+    /// 切换目标方案时纯词列表**不需要作废任何东西**（出码还没发生），
+    /// 只把文案里的方案名换掉——这正是不做出码预览省下的那套缓存逻辑。
+    #[test]
+    fn switching_target_only_relabels_word_list() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "拼音", "pinyin"),
+            ],
+        );
+        st.io_target.set(0);
+        st.import_confirm_visible.set(true);
+        st.apply_word_list("中国\n计算机\n");
+        assert!(st.import_preview_msg.get().contains("五笔86"));
+
+        st.io_target.set(1);
+        st.on_io_target_changed();
+        assert!(st.is_word_list_import(), "词列表应原样留着，不该被作废");
+        let msg = st.import_preview_msg.get();
+        assert!(
+            msg.contains("拼音") && msg.contains("2 个词"),
+            "实际: {msg}"
+        );
+    }
+
+    /// 空码行必须剔除、并计入 unencodable —— 若混进 TSV，会被 TSV 解析器判非法
+    /// 并计进它自己的 skipped，统计口径就分裂成两处，界面数字对不上。
+    #[test]
+    fn encoding_drops_unencodable_words() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = DictManagerState::new();
+        // mock 出码对 BMP 外字符回空串（模拟方案未配拆字）。
+        let words = vec![
+            "中国".to_string(),
+            "𰻞𰻞面".to_string(),
+            "计算机".to_string(),
+        ];
+        let (rows, unencodable) = st.encode_word_batches("wb", &words).unwrap();
+        assert_eq!(unencodable, 1);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "中国");
+        assert_eq!(rows[1].1, "计算机");
+        assert!(rows.iter().all(|(c, _)| !c.is_empty()));
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 出码结果条数与送出的词数不符 = core 契约违例。宁可整体失败也不按下标硬配：
+    /// 错位会把 A 的码安到 B 的词上静默入库，事后极难发现。
+    #[test]
+    fn zip_codes_rejects_contract_violations() {
+        let words: Vec<String> = ["中国", "计算机", "人工智能"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // 少回一条 → 整体失败，不按下标硬配。
+        let err = DictManagerState::zip_codes(&words, &json!({ "codes": ["a", "b"] })).unwrap_err();
+        assert!(
+            err.contains("条数不符") && err.contains("送 3 回 2"),
+            "实际: {err}"
+        );
+
+        // 多回一条同样拒绝。
+        assert!(
+            DictManagerState::zip_codes(&words, &json!({ "codes": ["a", "b", "c", "d"] })).is_err()
+        );
+
+        // 缺 codes 字段。
+        assert!(DictManagerState::zip_codes(&words, &json!({})).is_err());
+
+        // 等长即通过；空码剔除但**不破坏其余词与码的对应**。
+        let (rows, n) =
+            DictManagerState::zip_codes(&words, &json!({ "codes": ["khgo", "", "dpdb"] })).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(
+            rows,
+            vec![
+                ("khgo".to_string(), "中国".to_string()),
+                ("dpdb".to_string(), "人工智能".to_string()),
+            ],
+            "剔除中间的空码后，第三个词必须仍配第三个码"
+        );
     }
 
     /// 导出文件名一律带时间戳：短语此前写死 `phrases.wdict.yaml`，连导两次后一次

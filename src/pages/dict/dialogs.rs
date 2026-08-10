@@ -51,6 +51,71 @@ fn io_target_row(mgr: &DictManagerState, verb: &'static str) -> Element {
         .child(Element::dropdown_items_reactive(mgr.io_target_items, mgr.io_target).weight(1.0))
 }
 
+/// 格式行：格式下拉 + 识别结果回显。
+///
+/// 下拉只给「自动识别 / 纯词列表」两项。强制指定 WindDict/Rime/TSV 需要 core 的
+/// preview/import 接受 format 参数（现在一律按内容自动识别），给了也不生效；
+/// 而纯词列表的强制指定是纯客户端能力，立即可用，也正是严格判据误伤时的救济通道。
+fn io_format_row(mgr: &DictManagerState) -> Element {
+    let note = mgr.io_format_note;
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label("格式")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width(52),
+        )
+        .child(
+            Element::dropdown(
+                vec!["自动识别".to_string(), "纯词列表（自动出码）".to_string()],
+                mgr.io_format,
+            )
+            .min_width(200),
+        )
+        .child(
+            Element::label_rc(note)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .weight(1.0)
+                .max_lines(1)
+                .visible_when(move || !note.get().is_empty()),
+        )
+}
+
+/// 权重行：仅纯词列表出现。
+///
+/// 其余格式的权重来自文件本身，摆一个输入框会造成「能覆盖」的误导；而纯词列表
+/// 压根没有权重列，不给用户一个入口就只能由代码替他拍板。
+fn io_weight_row(mgr: &DictManagerState) -> Element {
+    let vis = mgr.clone();
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label("权重")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width(52),
+        )
+        .child(
+            Element::text_input(mgr.io_weight, "1200")
+                .width(96)
+                .height(28),
+        )
+        .child(
+            Element::label("越大越靠前；纯词列表没有权重列，全部按此值入库")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .weight(1.0)
+                .max_lines(1),
+        )
+        .visible_when(move || vis.is_word_list_import())
+}
+
 /// 提示条：内容为空时整行隐藏（自动匹配说明 / 目标方案作用域说明共用）。
 fn io_note(sig: Signal<String>, role: Role) -> Element {
     Element::label_rc(sig)
@@ -175,7 +240,7 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label("从 WindDict / Rime / TSV 文件导入（按内容自动识别）")
+            Element::label("从 WindDict / Rime / TSV / 纯词列表导入（按内容自动识别）")
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
                 .width_match()
@@ -183,6 +248,8 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(file_row)
         .child(io_target_row(mgr, "导入到"))
+        .child(io_format_row(mgr))
+        .child(io_weight_row(mgr))
         .child(io_type_row(mgr))
         // 提示与预览同处一个固定视口：三条的行数各自随目标/文件变动，分开放会让对话框
         // 高度跟着跳。放不下时内部滚动，外框尺寸恒定（见 IO_NOTE_VIEWPORT_H）。

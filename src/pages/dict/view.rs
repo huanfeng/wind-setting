@@ -82,6 +82,14 @@ pub fn build_page(state: &AppState) -> Element {
         move || mgr_io.on_io_target_changed(),
     );
 
+    // ── 响应式 effect：导入格式下拉变化 → 按新格式重新解释已选文件 ──
+    let fmt_v = mgr.io_format;
+    let mgr_fmt = mgr.clone();
+    let io_format_effect = reactive_effect(
+        move || fmt_v.version(),
+        move || mgr_fmt.on_io_format_changed(),
+    );
+
     // ── 数据域选择器（富内容下拉：引擎类型徽章 + ‹ › 顺序切换 + 状态文字 + 刷新）──
     let mgr_refresh = mgr.clone();
     let dom_prev = mgr.clone();
@@ -265,6 +273,7 @@ pub fn build_page(state: &AppState) -> Element {
         .child(effect)
         .child(search_effect)
         .child(io_target_effect)
+        .child(io_format_effect)
         .child(toast_sink(mgr.feedback))
 }
 

@@ -872,6 +872,18 @@ fn mock_stats_summary() -> Value {
     })
 }
 
+/// mock 出码：每字取一个占位字母；含 BMP 外字符（扩展区生僻字）时回空串，
+/// 用来复现真实出码里「方案未配拆字 → 出不了码」这一支。
+fn mock_word_code(text: &str) -> String {
+    if text.is_empty() || text.chars().any(|c| c as u32 > 0xFFFF) {
+        return String::new();
+    }
+    text.chars()
+        .zip("abcdefghijklmnopqrstuvwxyz".chars().cycle())
+        .map(|(_, letter)| letter)
+        .collect()
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1039,6 +1051,21 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         ]),
         // 加词自动出码：mock 返回占位码，便于对话框演示。
         "dict.encode" => json!("aaaa"),
+        // 批量出码（纯词列表导入）。契约要害是 **codes 与 texts 同序等长**，
+        // 出不了码回空串而非省略——客户端靠下标把码配回词。mock 用「BMP 外的生僻字
+        // 出不了码」来复现真实的部分失败，好让 UI 那条跳过分支也能离线验证。
+        "dict.encodeWords" => {
+            let codes: Vec<Value> = params
+                .get("texts")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .map(|t| json!(mock_word_code(t.as_str().unwrap_or(""))))
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({ "codes": codes })
+        }
         // 词库多段导入导出（sections 契约,形状对齐 core webdata.rs）。
         "dict.export" => {
             json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n  sections:\n    words:\n      columns: [code, text, weight, count]\n    shadow:\n      columns: [action, code, word, position, cand_id]\n\n--- !words\naaaa\t工\t0\t3\n\n--- !shadow\npin\tggkg\t王中\t0\t\n" })
