@@ -2,8 +2,10 @@
 
 一个文件里只有词、没有编码，导入时按目标方案现场出码，落进用户词库。
 
-状态：设计待实现。core（WindInput）侧改动**需等待确认后开工**，该仓库当前有其他任务在改。
-wind-setting 侧可先行（mock 已能支撑）。
+状态：阶段 A、B 均已实现。
+- 阶段 A（wind-setting）：`8bd945b`
+- 阶段 B（WindInput）：`EngineManager::encode_words` / `generate_words_pinyin` +
+  `dict.encodeWords`，实测 1000 词批量 1.86ms vs 逐个 618ms（**332x**，见 §4.3）
 
 ## 1. 目标与非目标
 
@@ -89,6 +91,21 @@ pub fn encode_words(&self, schema_id: &str, words: &[&str]) -> Vec<String>
 ```
 
 这是 4.1 能跑起来的前提，不是可选的优化项。
+
+### 4.3 实测：批量 vs 逐个
+
+`cargo test -p wind-engine --test engine_manager encode_words_batch_is_faster -- --ignored --nocapture`
+
+```
+1000 词：批量 1.8593ms / 逐个 617.9142ms → 332.3x
+```
+
+按这个斜率，逐个调用下 10000 词约需 6.2 秒——**单次 RPC 必撞 5 秒超时**，
+即最初设想的「core 在 import 内部一次做完」根本跑不通，不是慢一点的问题。
+批量后同样 10000 词分 10 批共约 19ms。
+
+该对照测试带 `#[ignore]`（性能数字随机器波动，不适合当门禁），但保留下来是有用的：
+若日后有人把 `encode_words` 改回内部循环调 `encode_word`，倍率会立刻塌回 1x。
 
 ## 5. wind-setting 侧流程
 
@@ -207,9 +224,14 @@ pub fn encode_words(&self, schema_id: &str, words: &[&str]) -> Vec<String>
 验收：`WIND_RPC_MOCK=1 cargo run -- --page dict --screenshot` 核对三种状态
 （识别为纯词列表／误选非词表文件报错／手动强制指定格式）。
 
-**阶段 B（待确认后，WindInput）**
-1. `EngineManager::encode_words`（spec/codes 循环外准备）
-2. `webdata.rs` 新增 `dict.encodeWords`，与 `dict.encode` 共用引擎分派
-3. 单测：同序等长、出不了码回空串、批量与单次结果一致
+**阶段 B（WindInput）— 已完成**
+1. `EngineManager::encode_words`（spec 循环外准备）、`generate_words_pinyin`（引擎句柄只取一次）
+2. `webdata.rs` 新增 `dict.encodeWords`；`dict.encode` 一并改为走同一个 `encode_texts`，
+   两条口径不会各自漂移（漂移的后果是同一个词在加词对话框与批量导入下得到两种码）
+3. 测试：
+   - `wind-engine/tests/engine_manager.rs`：批量与逐个逐位一致、失败位空串占位、
+     空输入与未知方案、拼音侧一致性、性能对照（`#[ignore]`）
+   - `wind-coordinator/tests/dict_encode_words.rs`：RPC 契约（同序等长、非字符串元素
+     占位、缺 schemaId 报错、码表/拼音两条分派各自与 `dict.encode` 一致）
 
-验收：真实 core 下导入一份万级词表，核对耗时与入库条数。
+仍待人工验收：真实 core 下导入一份万级词表，核对入库条数与实际可打出。
