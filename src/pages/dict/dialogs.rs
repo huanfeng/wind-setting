@@ -9,6 +9,17 @@ use crate::widgets::flat_panel;
 
 use super::state::DictManagerState;
 
+/// 导入/导出对话框宽度。比其余对话框宽一档：这里要同时容纳目标方案下拉、四个类型勾选、
+/// 多行预览与提示，窄了会把每一条都挤成两三行，读起来全是折行。
+const IO_DIALOG_W: i32 = 540;
+
+/// 导入对话框里「提示 + 预览」区的固定视口高度。
+///
+/// 刻意写死而非按内容自适应：这块的行数随目标方案与文件内容大幅波动（混输目标多两行
+/// 作用域说明、自动匹配又多一行、预览本身 1~5 行），自适应会让对话框每选一次文件、
+/// 每换一次目标就跳一次高度，按钮位置跟着乱动。固定视口 + 内部滚动，尺寸自始至终不变。
+const IO_NOTE_VIEWPORT_H: i32 = 132;
+
 /// 构建词库页所有浮层对话框：确认 + 加/改词 + 候选调整添加 + 系统短语只读查看（叠在一个 stack）。
 pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
     Element::stack()
@@ -73,7 +84,7 @@ fn build_export_dialog(mgr: &DictManagerState) -> Element {
     let exp = mgr.clone();
     let cancel = mgr.clone();
     let content = flat_panel()
-        .width(440)
+        .width(IO_DIALOG_W)
         .padding(20)
         .spacing(12)
         .child(
@@ -101,6 +112,8 @@ fn build_export_dialog(mgr: &DictManagerState) -> Element {
                 .width_match()
                 .max_lines(1),
         )
+        // 引擎标记的提示放在按钮正上方：这是点「导出到文件…」之前最后看到的一句。
+        .child(io_note(mgr.io_engine_note, Role::TextMuted))
         .child(
             Element::row()
                 .width_match()
@@ -149,7 +162,7 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                 .max_lines(1),
         );
     let content = flat_panel()
-        .width(440)
+        .width(IO_DIALOG_W)
         .padding(20)
         .spacing(12)
         .child(
@@ -170,15 +183,27 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(file_row)
         .child(io_target_row(mgr, "导入到"))
-        .child(io_note(mgr.io_auto_note, Role::Accent))
-        .child(io_note(mgr.io_scope_note, Role::TextMuted))
         .child(io_type_row(mgr))
+        // 提示与预览同处一个固定视口：三条的行数各自随目标/文件变动，分开放会让对话框
+        // 高度跟着跳。放不下时内部滚动，外框尺寸恒定（见 IO_NOTE_VIEWPORT_H）。
+        // 预览不再 max_lines 截断——溢出量交给滚动，长文案不会看不全。
         .child(
-            Element::label_rc(mgr.import_preview_msg)
-                .font_size(13.0)
-                .fg_role(Role::Text)
+            Element::scroll()
                 .width_match()
-                .max_lines(7),
+                .height(IO_NOTE_VIEWPORT_H)
+                .child(
+                    Element::col()
+                        .width_match()
+                        .spacing(8)
+                        .child(io_note(mgr.io_auto_note, Role::Accent))
+                        .child(io_note(mgr.io_scope_note, Role::TextMuted))
+                        .child(
+                            Element::label_rc(mgr.import_preview_msg)
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .width_match(),
+                        ),
+                ),
         )
         .child(
             Element::row()

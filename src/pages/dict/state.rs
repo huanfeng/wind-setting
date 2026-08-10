@@ -134,6 +134,8 @@ pub struct DictManagerState {
     pub io_target_items: Signal<Vec<DropdownItem>>,
     /// 目标方案的自动匹配提示（空 = 不显示）。
     pub io_auto_note: Signal<String>,
+    /// 导出对话框的引擎提示（文件带引擎标记、只能导回同类引擎）。
+    pub io_engine_note: Signal<String>,
     /// 写入 `io_auto_note` 时记下的目标下标：目标再变（用户手动改下拉）即清提示，
     /// 避免「已自动选择「五笔86」」这句话挂在一个已被改成拼音的下拉上。
     io_auto_at: Rc<Cell<Option<usize>>>,
@@ -270,6 +272,7 @@ impl DictManagerState {
             io_target: signal(0),
             io_target_items: signal(vec![]),
             io_auto_note: signal(String::new()),
+            io_engine_note: signal(String::new()),
             io_auto_at: Rc::new(Cell::new(None)),
             io_scope_note: signal(String::new()),
             io_user_words: signal(true),
@@ -1451,6 +1454,12 @@ impl DictManagerState {
         "phrase.export"
     }
 
+    /// 导出的默认文件名：`<来源>-<时间戳>.wdict.yaml`。短语与方案级导出共用同一套命名。
+    fn export_file_name(source: &str) -> String {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        format!("{source}-{stamp}.wdict.yaml")
+    }
+
     /// 导入调用参数（内容来自文件）。
     pub fn import_params(&self, content: &str) -> Value {
         json!({ "content": content })
@@ -1467,7 +1476,9 @@ impl DictManagerState {
         ctx.request_save_file(
             PickDialog::new()
                 .title("导出 · 用户短语")
-                .file_name("phrases.wdict.yaml")
+                // 带时间戳，与方案级导出同一套命名：连着导两次不会互相覆盖，
+                // 攒了一堆备份时也能一眼看出先后。
+                .file_name(Self::export_file_name("phrases"))
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return }; // 用户取消
@@ -1631,6 +1642,22 @@ impl DictManagerState {
         self.folded_domains().iter().position(|d| d.kind == engine)
     }
 
+    /// 导出对话框的引擎提示：导出文件带来源方案与引擎标记，只能导回同引擎的方案。
+    ///
+    /// 这条要在**导出时**就说清楚，而不是等用户把五笔词库喂给拼音方案再报错——那时
+    /// 文件已经传给别人、或者已经躺在备份盘里半年了，回头翻查代价大得多。
+    fn io_engine_note_for_target(&self) -> String {
+        let engine = match self.io_target_kind() {
+            DomainKind::Pinyin => "pinyin",
+            DomainKind::Codetable => "codetable",
+            DomainKind::Mixed => "mixed",
+            DomainKind::English => "english",
+            _ => return String::new(),
+        };
+        let label = engine_label(engine);
+        format!("文件会记录引擎类型（{label}），只能导回{label}类方案。")
+    }
+
     /// 目标方案的作用域说明：只对「自身承载的数据类型明显少于用户预期」的方案给提示。
     /// 混输是唯一这样的——用户看到"五笔拼音混输"会以为词库在这里，实际只有候选调整。
     fn io_scope_note_for_target(&self) -> String {
@@ -1663,6 +1690,7 @@ impl DictManagerState {
         self.io_auto_note.set(String::new());
         self.io_auto_at.set(None);
         self.io_scope_note.set(self.io_scope_note_for_target());
+        self.io_engine_note.set(self.io_engine_note_for_target());
         self.reset_io_checks();
         self.io_title
             .set(format!("{verb} · {}", self.io_target_label()));
@@ -1679,6 +1707,7 @@ impl DictManagerState {
             self.io_target_label()
         ));
         self.io_scope_note.set(self.io_scope_note_for_target());
+        self.io_engine_note.set(self.io_engine_note_for_target());
         // 自动提示只对它当初指向的那个目标有效；用户手动改走后即失效。
         if self.io_auto_at.get() != Some(self.io_target.get()) {
             self.io_auto_note.set(String::new());
@@ -1734,11 +1763,10 @@ impl DictManagerState {
             return;
         }
         let state = self.clone();
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         ctx.request_save_file(
             PickDialog::new()
                 .title("导出词库数据")
-                .file_name(&format!("{schema}-{stamp}.wdict.yaml"))
+                .file_name(Self::export_file_name(&schema))
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };
@@ -1878,13 +1906,25 @@ impl DictManagerState {
         self.io_shadow.set(present("shadow"));
     }
 
-    /// 引擎类型 key → 中文标签（不兼容提示用）。
-    fn engine_label(t: &str) -> &'static str {
-        match t {
-            "pinyin" => "拼音",
-            "mixed" => "混输",
-            "codetable" => "码表",
-            _ => "未知",
+    /// previewImport 响应里的来源标记 → 「五笔86（码表）」这样的一句话；两项都缺则 None。
+    ///
+    /// 导出文件带方案 id 与引擎类型（core 侧写入），这里只是把它翻出来给人看。
+    fn source_desc(v: &Value) -> Option<String> {
+        let schema = v
+            .get("sourceSchema")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim();
+        let engine = v
+            .get("sourceEngine")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim();
+        match (schema.is_empty(), engine.is_empty()) {
+            (true, true) => None,
+            (false, false) => Some(format!("「{schema}」（{}）", engine_label(engine))),
+            (false, true) => Some(format!("「{schema}」")),
+            (true, false) => Some(format!("「{}」类词库", engine_label(engine))),
         }
     }
 
@@ -1911,10 +1951,8 @@ impl DictManagerState {
             .and_then(|x| x.as_bool())
             .unwrap_or(true)
         {
-            let src =
-                Self::engine_label(v.get("sourceEngine").and_then(|x| x.as_str()).unwrap_or(""));
-            let tgt =
-                Self::engine_label(v.get("targetEngine").and_then(|x| x.as_str()).unwrap_or(""));
+            let src = engine_label(v.get("sourceEngine").and_then(|x| x.as_str()).unwrap_or(""));
+            let tgt = engine_label(v.get("targetEngine").and_then(|x| x.as_str()).unwrap_or(""));
             s.push_str(&format!(
                 "⚠ 该文件为「{src}」类型词库，与目标「{tgt}」方案不一致，无法导入（编码不通用）。\n请在上方「导入到」改选一个{src}方案。"
             ));
@@ -1927,7 +1965,14 @@ impl DictManagerState {
             _ => "",
         };
         if !fmt_name.is_empty() {
-            s.push_str(&format!("识别为 {fmt_name}\n"));
+            s.push_str(&format!("识别为 {fmt_name}"));
+            // 兼容时也把来源方案/引擎摆出来：导出文件本就带这个标记，导入前让用户自己
+            // 核对一眼「我拿的是不是这套编码的词库」，比事后发现打不出来再回溯便宜得多。
+            // （不兼容时上面那支已经把两边引擎说清了，不重复。）
+            if let Some(desc) = Self::source_desc(v) {
+                s.push_str(&format!(" · 来源{desc}"));
+            }
+            s.push('\n');
         }
         let mut ok: Vec<String> = Vec::new();
         let mut skipped_sections: Vec<String> = Vec::new();
@@ -2743,6 +2788,73 @@ mod tests {
         assert!(!st.import_enabled());
         st.io_shadow.set(true);
         assert!(st.import_enabled());
+    }
+
+    /// 导出文件名一律带时间戳：短语此前写死 `phrases.wdict.yaml`，连导两次后一次
+    /// 直接盖掉前一次，而方案级导出早就带了戳——两处口径必须一致。
+    #[test]
+    fn export_file_name_always_carries_timestamp() {
+        for source in ["phrases", "wubi86"] {
+            let name = DictManagerState::export_file_name(source);
+            assert!(name.starts_with(&format!("{source}-")), "实际: {name}");
+            assert!(name.ends_with(".wdict.yaml"), "实际: {name}");
+            // <来源>-YYYYmmdd-HHMMSS.wdict.yaml → 戳部分为 8 位日期 + 6 位时间。
+            let stamp = name
+                .trim_start_matches(&format!("{source}-"))
+                .trim_end_matches(".wdict.yaml");
+            let (d, t) = stamp.split_once('-').expect("戳应为 日期-时间 两段");
+            assert!(
+                d.len() == 8 && d.chars().all(|c| c.is_ascii_digit()),
+                "{name}"
+            );
+            assert!(
+                t.len() == 6 && t.chars().all(|c| c.is_ascii_digit()),
+                "{name}"
+            );
+        }
+    }
+
+    /// 导出文件带引擎标记，提示必须在**导出前**说清能导回哪类方案——等用户把五笔词库
+    /// 喂给拼音方案再报错，文件早就传出去或躺进备份盘了。
+    #[test]
+    fn export_engine_note_names_the_target_engine() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "拼音", "pinyin"),
+                schema("en", "英文", "english"),
+            ],
+        );
+        st.io_target.set(0);
+        assert!(st.io_engine_note_for_target().contains("码表"));
+        st.io_target.set(1);
+        assert!(st.io_engine_note_for_target().contains("拼音"));
+        // 英文方案曾因 state.rs 里那份不完整的 engine_label 副本显示成「未知」。
+        st.io_target.set(2);
+        let note = st.io_engine_note_for_target();
+        assert!(
+            note.contains("英文") && !note.contains("未知"),
+            "实际: {note}"
+        );
+    }
+
+    /// 兼容也要把来源方案与引擎摆出来：导入前核对一眼，比事后发现打不出来再回溯便宜。
+    #[test]
+    fn import_preview_shows_source_schema_and_engine() {
+        let v = json!({ "format": "winddict", "compatible": true,
+            "sourceSchema": "wubi86", "sourceEngine": "codetable",
+            "sections": [{ "key": "userWords", "count": 6, "skipped": 0 }] });
+        let msg = DictManagerState::format_import_preview(&v, CODETABLE_TYPES, "五笔86 · 码表");
+        assert!(msg.contains("来源「wubi86」（码表）"), "实际: {msg}");
+
+        // 来源标记缺失时不硬凑「未知」，直接不显示这一段。
+        let v = json!({ "format": "tsv", "compatible": true,
+            "sections": [{ "key": "userWords", "count": 1, "skipped": 0 }] });
+        let msg = DictManagerState::format_import_preview(&v, CODETABLE_TYPES, "五笔86 · 码表");
+        assert!(!msg.contains("来源"), "实际: {msg}");
+        assert!(msg.contains("识别为 TSV 文本"));
     }
 
     /// 自动匹配的提示只对它当初指向的目标有效：用户手动改走下拉后必须消失，
