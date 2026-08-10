@@ -166,6 +166,17 @@ pub fn build_page(state: &AppState) -> Element {
         .on_click(move |ctx| exp_open.do_export(ctx))
         .visible_when(move || exp_vis.io_entry_visible())
         .enabled_when(move || exp_en.io_entry_enabled());
+    // 混输域只有「候选调整」一条分段，标签行右侧大片留白——正好安置这句说明，不占额外行高。
+    //
+    // 候选调整只对**已经出现过的候选**做固定/隐藏，不是加词的地方。用户在这里点「添加」
+    // 填上编码和词、看到列表里多了一行，就以为词加进去了，实际打不出来——与导入那条
+    // 误解同源（见 `DictManagerState::io_scope_note_for_target`）：混输方案自身不存词条。
+    let hint_vis = mgr.clone();
+    let mixed_hint = Element::label("混输模式只有候选调整，加词请切到码表或拼音方案")
+        .font_size(12.0)
+        .fg_role(Role::TextMuted)
+        .max_lines(1)
+        .visible_when(move || hint_vis.domain_kind() == DomainKind::Mixed);
     let sub_tabs = Element::row()
         .width_match()
         .cross(Align::Center)
@@ -189,6 +200,7 @@ pub fn build_page(state: &AppState) -> Element {
             SEG_ENGLISH,
         ))
         .child(seg(vec!["候选调整"], mgr.clone(), SEG_MIXED))
+        .child(mixed_hint)
         .child(Element::leaf().weight(1.0))
         .child(import_entry)
         .child(export_entry);
