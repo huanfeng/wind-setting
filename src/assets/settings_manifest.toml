@@ -420,6 +420,17 @@ min = 2
 max = 10
 enabled_when = "schema.pinyin.auto_learn.enabled == true"
 
+# 双拼：allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达「当前方案是双拼」
+# （它只能比较配置键），故常驻可见，由 hint 说明适用范围。
+[[items]]
+key = "schema.pinyin.shuangpin.allow_full_pinyin"
+group = "schema"
+section = "候选行为"
+subsection = "双拼"
+type = "toggle"
+label = "允许全拼输入"
+hint = "双拼方案下也能按全拼打字，如 zaijian → 再见。对全拼方案无影响"
+
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
 [[items]]
 key = "schema.pinyin.fuzzy.enabled"

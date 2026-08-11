@@ -133,6 +133,7 @@
   "select_key_groups": [
    "semicolon_quote"
   ],
+  "session_actions": {},
   "switch_engine": "ctrl+shift+e",
   "take_screenshot": "ctrl+shift+f11",
   "toggle_full_width": "shift+space",
@@ -259,6 +260,9 @@
    },
    "separator": "auto",
    "show_code_hint": true,
+   "shuangpin": {
+    "allow_full_pinyin": false
+   },
    "use_smart_compose": true
   },
   "primary_codetable": "",

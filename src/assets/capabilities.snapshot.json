@@ -340,6 +340,11 @@
     },
     {
       "default": false,
+      "key": "schema.pinyin.shuangpin.allow_full_pinyin",
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "schema.mix.show_source_hint",
       "type": "bool"
     },
@@ -830,6 +835,11 @@
     {
       "default": {},
       "key": "keys.key_actions",
+      "type": "map"
+    },
+    {
+      "default": {},
+      "key": "keys.session_actions",
       "type": "map"
     },
     {
