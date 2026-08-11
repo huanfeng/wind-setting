@@ -246,6 +246,34 @@ pub enum DomainKind {
     Other,
 }
 
+/// 某类数据域有哪些子标签——**全页唯一真值**。
+///
+/// 渲染层（`view.rs` 的子标签分段）的标题走这里 + [`LogicalTab::title`] 派生，**不另写一份**。
+/// 两处各持一份清单时，漏改任一边都很隐蔽，且症状不同：
+///
+/// - 逻辑层有、渲染层没有 ⇒「有功能、没入口」：能加词条、能导入导出，就是看不到标签。
+/// - 渲染层多画一段 ⇒ 点得到一个逻辑层不认的下标。
+///
+/// 拼音曾无候选调整（那时拼音下调位被整体屏蔽，规则表恒空）。置顶放开后规则真的会产生，
+/// 不给这个标签就等于「调得了、看不见、也删不掉」——撤销只剩右键「恢复默认」，且必须先把
+/// 那条候选重新打出来。
+///
+/// ⚠️ 还与主仓 `webdata.rs::default_dict_sections`（导出默认段）同增同减，那条跨仓契约
+/// **没有编译期约束**：只改这边而导出仍缺 Shadow，用户会在设置页看见规则、导出的文件里
+/// 却没有，直到还原时才发现丢了数据。
+pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
+    use LogicalTab::*;
+    match kind {
+        DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
+        DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
+        DomainKind::Mixed => vec![Shadow],
+        // 英文：无临时词库（无造词流程，那张表恒空）。
+        DomainKind::English => vec![UserDict, Freq, Shadow],
+        // 码表与未知：全四类（未知从宽，不隐藏数据）。
+        DomainKind::Codetable | DomainKind::Other => vec![UserDict, Temp, Freq, Shadow],
+    }
+}
+
 impl Default for DictManagerState {
     fn default() -> Self {
         Self::new()
@@ -425,16 +453,7 @@ impl DictManagerState {
     /// 否则只能像早期 `open_add_word_prefilled` 那样临时改写 `domain` 信号再恢复——
     /// 那种写法会平白触发信号版本变化，把导航 effect 卷进来。
     pub fn tabs_for_domain_at(&self, domain: usize) -> Vec<LogicalTab> {
-        use LogicalTab::*;
-        match self.domain_kind_at(domain) {
-            DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
-            DomainKind::Pinyin => vec![UserDict, Temp, Freq],
-            DomainKind::Mixed => vec![Shadow],
-            // 英文：无临时词库（无造词流程，那张表恒空）。
-            DomainKind::English => vec![UserDict, Freq, Shadow],
-            // 码表与未知：全四类（未知从宽，不隐藏数据）。
-            DomainKind::Codetable | DomainKind::Other => vec![UserDict, Temp, Freq, Shadow],
-        }
+        tabs_for_kind(self.domain_kind_at(domain))
     }
 
     /// 当前域的子标签序列。
@@ -2545,6 +2564,9 @@ mod tests {
                 schema("wb", "五笔86", "codetable"),
                 schema_s("quanpin", "全拼", "pinyin", "full"),
                 schema_s("ziranma", "自然码", "pinyin", "shuangpin"),
+                // 混输域只有「候选调整」一类，是夹具里唯一还缺类型的普通数据域——
+                // 深链落空的用例靠它。**加在末尾**：前面三项的域下标被多处断言写死。
+                schema("mixed", "混输", "mixed"),
             ],
         );
         st
@@ -2616,16 +2638,18 @@ mod tests {
     #[test]
     fn deep_link_downgrades_when_type_absent_in_domain() {
         let st = deep_link_fixture();
-        // 拼音域没有候选调整（tabs_for_domain 只给 用户词库/临时词库/词频）
+        // 混输域只有候选调整（tabs_for_domain 不给用户词库）。
+        // 这里原本用「拼音域 + 候选调整」作样例——拼音补上该标签后那个前提就不成立了，
+        // 测试会因**样例失效**而红，而不是机制坏了。换成夹具里仍然缺类型的混输域。
         let note = st
-            .apply_deep_link("pinyin", Some(LogicalTab::Shadow))
+            .apply_deep_link("mixed", Some(LogicalTab::UserDict))
             .expect("落空档应给出提示");
-        assert!(note.contains("候选调整"), "提示要点名用户要的类型: {note}");
-        assert!(note.contains("用户词库"), "提示要说明实际落点: {note}");
-        assert_eq!(st.domain.get(), 2, "域仍按 schema 定位");
+        assert!(note.contains("用户词库"), "提示要点名用户要的类型: {note}");
+        assert!(note.contains("候选调整"), "提示要说明实际落点: {note}");
+        assert_eq!(st.domain.get(), 3, "域仍按 schema 定位");
         assert_eq!(
             st.current_category(),
-            WordCategory::UserDict,
+            WordCategory::Shadow,
             "降级到该域首个子标签，而非报错或错位"
         );
     }
@@ -3493,11 +3517,17 @@ mod tests {
                 LogicalTab::Shadow
             ]
         );
-        // 拼音：三类无候选调整
+        // 拼音：四类含候选调整。曾是三类——那时拼音下调位被整体屏蔽、规则表恒空；
+        // 置顶放开后规则真的会产生，标签必须给，否则用户看不见也删不掉。
         st.domain.set(2);
         assert_eq!(
             st.tabs_for_domain(),
-            vec![LogicalTab::UserDict, LogicalTab::Temp, LogicalTab::Freq]
+            vec![
+                LogicalTab::UserDict,
+                LogicalTab::Temp,
+                LogicalTab::Freq,
+                LogicalTab::Shadow
+            ]
         );
         // 混输：仅候选调整
         st.domain.set(3);

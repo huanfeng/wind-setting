@@ -19,7 +19,7 @@ use crate::widgets::flat_panel;
 
 use super::reactive::{reactive_effect, toast_sink};
 use super::spec::{ColumnSpec, WordField};
-use super::state::{DictManagerState, DomainKind};
+use super::state::{DictManagerState, DomainKind, tabs_for_kind};
 
 /// 操作列宽度权重（相对数据列分配；需容纳 启用开关 + 最多两枚小按钮）。
 const ACTIONS_WEIGHT: f32 = 1.5;
@@ -138,21 +138,29 @@ pub fn build_page(state: &AppState) -> Element {
 
     // ── 方案子标签（按 domain_kind 动态显隐，同时只显一条）──
     //
-    // 每条分段挂一组适用的 DomainKind，而非单个：`Other`（未知引擎类型）必须挂在某条上，
-    // 否则那类方案下一个标签都不渲染——**而逻辑层 `tabs_for_domain_at` 仍会给出标签集**，
+    // 这里只决定**哪条分段在什么时候显示**；显示哪些标题由 `tabs_for_kind` 说了算。
+    //
+    // 显隐：每条分段挂一组适用的 DomainKind 而非单个——`Other`（未知引擎类型）也必须挂在
+    // 某条上，否则那类方案下一个标签都不渲染，而逻辑层 `tabs_for_domain_at` 仍会给出标签集，
     // 于是「有功能、没入口」：能加词条、能导入导出，就是看不到标签。英文方案正是这么漏的
     // （`domain_kind()` 把它落到 `Other`，而这里只逐个列举了 Phrase/Pinyin/Codetable/Mixed）。
     // 覆盖性由 `sub_tab_segments_cover_every_domain_kind` 守护。
-    let seg = |titles: Vec<&str>, mgr: DictManagerState, kinds: &'static [DomainKind]| {
+    //
+    // 标题：**一律派生，不在这里硬编码**。同一份清单写两遍就会漏改一遍，而漏改的症状与上面
+    // 那种同形、同样只在特定引擎类型下出现。同一分段内各 kind 的标签集必须一致
+    //（Codetable/Other 同为四类），故取 kinds[0] 即可，该前提由
+    // `segment_kinds_share_one_tab_set` 守护。
+    let seg = |mgr: DictManagerState, kinds: &'static [DomainKind]| {
         let m = mgr.clone();
+        let titles: Vec<String> = tabs_for_kind(kinds[0])
+            .iter()
+            .map(|t| t.title().to_string())
+            .collect();
         // 每段固定宽、总宽随段数变化：避免 1/3/4 段被均分导致各域分段宽度不一致。
         let seg_w = titles.len() as i32 * SUB_TAB_SEG_W;
-        Element::segmented(
-            titles.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-            mgr.sub_tab,
-        )
-        .width(seg_w)
-        .visible_when(move || kinds.contains(&m.domain_kind()))
+        Element::segmented(titles, mgr.sub_tab)
+            .width(seg_w)
+            .visible_when(move || kinds.contains(&m.domain_kind()))
     };
     // 「导入」「导出」入口：置于子标签行最右（弹簧右对齐），方案域与短语域均显示，
     // 保持统一入口位置（短语走原生对话框，方案打开对应对话框）。
@@ -190,24 +198,11 @@ pub fn build_page(state: &AppState) -> Element {
         .cross(Align::Center)
         .spacing(8)
         .padding_xy(0, 2)
-        .child(seg(vec!["系统短语", "用户短语"], mgr.clone(), SEG_PHRASE))
-        .child(seg(
-            vec!["用户词库", "临时词库", "词频"],
-            mgr.clone(),
-            SEG_PINYIN,
-        ))
-        .child(seg(
-            vec!["用户词库", "临时词库", "词频", "候选调整"],
-            mgr.clone(),
-            SEG_CODETABLE,
-        ))
-        // 英文无临时词库（无造词流程，那张表恒空），故三段而非四段。
-        .child(seg(
-            vec!["用户词库", "词频", "候选调整"],
-            mgr.clone(),
-            SEG_ENGLISH,
-        ))
-        .child(seg(vec!["候选调整"], mgr.clone(), SEG_MIXED))
+        .child(seg(mgr.clone(), SEG_PHRASE))
+        .child(seg(mgr.clone(), SEG_PINYIN))
+        .child(seg(mgr.clone(), SEG_CODETABLE))
+        .child(seg(mgr.clone(), SEG_ENGLISH))
+        .child(seg(mgr.clone(), SEG_MIXED))
         .child(mixed_hint)
         .child(Element::leaf().weight(1.0))
         .child(import_entry)
@@ -656,6 +651,26 @@ mod tests {
                 "{k:?} 应恰好挂在一个分段上（实际 {n} 个）——0 个 = 该类方案看不到任何标签，\
                  多于 1 个 = 同时显示两条分段"
             );
+        }
+    }
+
+    /// 渲染取 `kinds[0]` 的标签集当作整条分段的标题，故同一分段内各 kind 的标签集必须一致。
+    ///
+    /// 不成立时的表现极隐蔽：分段按 `kinds` 显隐、标题却只按第一个 kind 生成，于是某类方案
+    /// 显示的是**另一类方案的标签**——点进去还能正常加载数据（数据按 `current_category` 走），
+    /// 只是标签名对不上。目前唯一的多 kind 分段是 Codetable + Other（未知从宽，同为四类）。
+    #[test]
+    fn segment_kinds_share_one_tab_set() {
+        for seg in ALL_SEGMENTS {
+            let head = tabs_for_kind(seg[0]);
+            for k in &seg[1..] {
+                assert_eq!(
+                    tabs_for_kind(*k),
+                    head,
+                    "{k:?} 与同分段的 {:?} 标签集不一致——渲染只取首个 kind 的标签集当标题",
+                    seg[0]
+                );
+            }
         }
     }
 
