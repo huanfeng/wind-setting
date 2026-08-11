@@ -295,9 +295,13 @@ impl SessionActionFields {
             rows_sig.set(v);
         });
 
+        // ★ 内边距由**内容**加，外壳（`build_group_dialog_shell`）只管标题栏/滚动区/按钮栏。
+        // 与 `build_group_dialog_with_link` 的 `.padding_xy(16, 2)` 对齐，否则同一个设置界面
+        // 里会出现两种松紧度的弹窗。垂直给 8 是因为本对话框顶部有说明文字，2 会贴住标题栏。
         let content = Element::col()
             .width_match()
-            .spacing(6)
+            .padding_xy(16, 8)
+            .spacing(8)
             .child(
                 Element::label("指定「正在打字时」这些键的功能；空闲时它们仍是原本的用途。")
                     .font_size(12.0)
@@ -306,7 +310,7 @@ impl SessionActionFields {
                     .max_lines(2),
             )
             .child(
-                Element::label("这里配的键优先于上面的翻页/高亮/次选/以词定字四项。")
+                Element::label("这里配的键优先于外面的翻页 / 高亮 / 次选 / 以词定字四项。")
                     .font_size(12.0)
                     .fg_role(Role::TextMuted)
                     .width_match()
