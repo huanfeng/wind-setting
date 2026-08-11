@@ -18,7 +18,7 @@ use crate::state::AppState;
 use crate::widgets::flat_panel;
 
 use super::reactive::{reactive_effect, toast_sink};
-use super::spec::{ColumnSpec, WordField};
+use super::spec::{ColumnSpec, WordField, shadow_kind_label};
 use super::state::{DictManagerState, DomainKind, tabs_for_kind};
 
 /// 操作列宽度权重（相对数据列分配；需容纳 启用开关 + 最多两枚小按钮）。
@@ -486,7 +486,9 @@ fn render_cell(
             )
         }
         WordField::Kind => {
-            let role = if text == "置顶" {
+            // 与 `shadow_kind_label` 同源比对，别写字面量：这里拿到的 text 已经是标签文本，
+            // 改文案时若只改 spec 那边，徽章会静默退成灰色（位置类规则不再被强调）。
+            let role = if text == shadow_kind_label("pin") {
                 Role::Accent
             } else {
                 Role::TextMuted

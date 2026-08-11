@@ -260,9 +260,13 @@ fn fmt_last_used(v: Option<&Value>) -> String {
 }
 
 /// 候选调整类型的中文标签。
+///
+/// `pin` 叫「位置」而不是「置顶」：这类规则带一个 `position` 字段，置顶只是 `position = 0`
+/// 的那种情形，右键菜单的「前移 / 后移」同样落成 pin 规则。列里写「置顶」会让 position 非 0
+/// 的行自相矛盾。添加对话框的类型选项（`dialogs.rs`）用的也是同一套语义。
 pub fn shadow_kind_label(kind: &str) -> &'static str {
     match kind {
-        "pin" => "置顶",
+        "pin" => "位置",
         "delete" => "删除",
         _ => "—",
     }
@@ -710,6 +714,8 @@ mod tests {
         assert_eq!(r.text, "阿", "shadow 词字段来自 word");
         assert_eq!(r.kind, "pin");
         assert_eq!(r.position, 1);
+        // 这条夹具的 position 是 1 而非 0——pin 规则并不等同于置顶，故类型列写「位置」。
+        assert_eq!(shadow_kind_label(&r.kind), "位置");
 
         let del = json!({ "code": "cd", "word": "屏", "candId": null, "type": "delete" });
         let r2 = WordRow::from_json(WordCategory::Shadow, &del);
