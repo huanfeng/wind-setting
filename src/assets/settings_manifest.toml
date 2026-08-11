@@ -1479,6 +1479,17 @@ label = "减号/等号 - ="
 value = "brackets"
 label = "方括号 [ ]"
 
+# 会话态按键表：上面四项是「按组勾选」的常用形态，本项是逐键自定义的完整形态。
+# 两者在 core 侧合流——四项会被折算进同一张表，本表里显式配的键优先。
+# 放在四项之后：先给常用的勾选项，再给需要时才展开的自定义入口。
+[[items]]
+key = "keys.session_actions"
+group = "keys"
+section = "候选操作"
+type = "dialog_button"
+label = "自定义按键"
+hint = "逐键指定「正在打字时」的功能，如 Tab 翻页、CapsLock 翻页、Tab 放弃输入"
+
 # ── 功能快捷键（hotkey 控件：修饰键+主键编辑对话框；部分支持「全局」）──
 # 注：全局开关汇总写入 keys.global_hotkeys（strlist），不再有独立「全局热键」项。
 [[items]]

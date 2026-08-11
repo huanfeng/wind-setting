@@ -1556,6 +1556,10 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
     } else if key == "input.punct.custom_mappings" {
         // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
         build_dialog_button_punct(state, key, cfg)
+    } else if key == "keys.session_actions" {
+        // 会话态按键表：map 的键与值都是 core 的内部词表，通用 map 对话框的文本行编辑
+        // 会让用户把内部词表当 API 手打（拼错零反馈），故走键/动词双下拉的专用对话框。
+        build_dialog_button_session_actions(state, key, cfg)
     } else if key == "ui.candidate.index_labels" {
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
         build_dialog_button_index_labels(state, key, cfg)
@@ -2457,6 +2461,59 @@ fn collect_labels(inputs: &[Signal<String>]) -> String {
 
 /// dialog_button（ui.candidate.index_labels）：10 框对话框，每框一个字符，连续拼成标签串。
 /// 字符串语义为前缀（char[i] = 序号 i+1 的标签），整体留空 = 默认 1-9。
+/// dialog_button（keys.session_actions）：键 → 动词的行编辑器，两列都是下拉。
+///
+/// 与方案级按键表（`dialogs::schema_key_actions`）是同族编辑器，形态刻意一致；
+/// 两者的分野是**触发态**（空闲时 / 正在打字时），见那两个模块的文档注释。
+fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_group_dialog_shell;
+    use crate::dialogs::session_actions::SessionActionFields;
+
+    let fields = SessionActionFields::default();
+    fields.seed(
+        &cfg.get_path(key)
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let visible = signal(false);
+
+    let (fw, kw) = (fields.clone(), key.to_string());
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, Value::Object(fw.to_map()));
+        }));
+
+    // loader：外部改动（恢复默认 / 重新拉取配置）后重建行。
+    let (fl, kl) = (fields.clone(), key.to_string());
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            fl.seed(
+                &c.get_path(&kl)
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }),
+    );
+
+    // getter（与 writer 同一取值逻辑，供一致性校验）。
+    let fg = fields.clone();
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::Object(fg.to_map())),
+    );
+
+    let (content, bottom) = fields.build_body();
+    let dlg = build_group_dialog_shell(visible, "打字时的按键功能", content, bottom);
+    register_dialog(state, dlg);
+    visible
+}
+
 fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_index_labels_dialog;
 

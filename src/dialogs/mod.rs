@@ -4,5 +4,6 @@ pub mod field_dialogs;
 pub mod schema_codetable;
 pub mod schema_key_actions;
 pub mod schema_manager;
+pub mod session_actions;
 pub mod theme_import_dialog;
 pub mod update_dialog;
