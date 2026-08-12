@@ -91,7 +91,41 @@ impl SessionActionFields {
     ///
     /// 别名（`pgup`/`caps`/`lcontrol` 等）**不列**：它们与主名同义，列出来只会让人以为
     /// 是不同的键。手写配置里用了别名时，`seed` 会把原值当「当前值」追加进选项，不丢配置。
+    ///
+    /// **CapsLock 仅 Windows 可选**：拦住它需要低级键盘钩子（`WH_KEYBOARD_LL`），
+    /// core 侧 `capslock_hook` 在非 Windows 是直接 `bail!` 的空壳。列出来只会让用户
+    /// 配一个永远不生效的键。已有配置（如从 Windows 同步过来的）不受影响——`key_index`
+    /// 会把词表外的键当「当前值」追加，不丢用户配置。
     fn key_options() -> &'static [(&'static str, &'static str)] {
+        #[cfg(not(windows))]
+        return &[
+            ("tab", "Tab"),
+            ("shift+tab", "Shift + Tab"),
+            ("pageup", "PageUp"),
+            ("pagedown", "PageDown"),
+            ("up", "↑ 上"),
+            ("down", "↓ 下"),
+            ("left", "← 左"),
+            ("right", "→ 右"),
+            ("home", "Home"),
+            ("end", "End"),
+            ("lshift", "左 Shift"),
+            ("rshift", "右 Shift"),
+            ("lctrl", "左 Ctrl"),
+            ("rctrl", "右 Ctrl"),
+            ("minus", "减号 ( - )"),
+            ("equal", "等号 ( = )"),
+            ("lbracket", "左方括号 ( [ )"),
+            ("rbracket", "右方括号 ( ] )"),
+            ("comma", "逗号 ( , )"),
+            ("period", "句号 ( . )"),
+            ("semicolon", "分号 ( ; )"),
+            ("quote", "单引号 ( ' )"),
+            ("slash", "斜杠 ( / )"),
+            ("backslash", "反斜杠 ( \\ )"),
+            ("backtick", "反引号 ( ` )"),
+        ];
+        #[cfg(windows)]
         &[
             ("tab", "Tab"),
             ("shift+tab", "Shift + Tab"),
@@ -239,9 +273,13 @@ impl SessionActionFields {
 
         let list = Element::host_signal(rows_sig, move |row: Row| {
             let me = row.key;
-            // CapsLock 要靠全局键盘钩子才能拦住（Windows 的大小写锁定在输入法拿到按键
-            // 之前就已翻转，压不住）。这不是错误配置，但用户有权知道自己开启了什么，
-            // 故用中性措辞提示、不标红。
+            // CapsLock 要靠全局键盘钩子才能拦住（大小写锁定在输入法拿到按键之前就已
+            // 翻转，压不住）。这不是错误配置，但用户有权知道自己开启了什么，故用中性
+            // 措辞提示、不标红。
+            //
+            // 非 Windows 上该钩子根本不存在（core 侧是 `bail!` 的空壳），此时选项里也
+            // 没有 CapsLock——能走到这一支只可能是从 Windows 同步过来的既有配置，
+            // 那就把话说明白：不是「需要什么」，而是本平台压根不生效。
             let kv = key_values.clone();
             let ki = row.key_idx;
             let is_capslock = move || {
@@ -257,11 +295,15 @@ impl SessionActionFields {
                 .child(Element::dropdown_reactive(key_labels_sig, row.key_idx).width(150))
                 .child(Element::dropdown_reactive(verb_labels_sig, row.verb).weight(1.0))
                 .child(
-                    Element::label("需全局钩子")
-                        .font_size(11.0)
-                        .fg_role(Role::TextMuted)
-                        .max_lines(1)
-                        .visible_when(is_capslock),
+                    Element::label(if cfg!(windows) {
+                        "需全局钩子"
+                    } else {
+                        "本平台不支持"
+                    })
+                    .font_size(11.0)
+                    .fg_role(Role::TextMuted)
+                    .max_lines(1)
+                    .visible_when(is_capslock),
                 )
                 .child(
                     Element::button("✕")
