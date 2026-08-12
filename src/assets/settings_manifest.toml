@@ -1303,6 +1303,10 @@ section = "临时英文"
 type = "toggle"
 label = "切换模式时取消大写锁定"
 hint = "切换中英文模式时自动取消大写锁定状态"
+# macOS 无落点：实现手段是合成一次 CapsLock 敲击（`key_inject::tap_caps_lock`），而
+# 大写锁定态在 macOS 由 HID 层维护，CGEvent 合成的 CapsLock 改不动它（要走
+# IOHIDSetModifierLockState 那条完全不同的路）。补 VK→CGKeyCode 映射也没用。
+platform = "windows"
 
 # ── 网址输入 ──
 [[items]]
@@ -2031,10 +2035,13 @@ key = "ui.toolbar.visible"
 group = "ui"
 section = "工具栏"
 type = "toggle"
-label = "显示工具栏"
-hint = "在屏幕上显示可拖动的输入法状态栏"
+label = "显示状态栏"
+# 文案刻意写成平台中立：本项在 Windows 上控制可拖动的浮动工具栏，在 macOS 上控制
+# 菜单栏指示器——两者形态不同但语义一致（“输入法的常驻状态显示”），故不提“可拖动”
+# 之类只在一边成立的描述。清单当前不支持分平台文案，写通用的即可。
+hint = "常驻显示输入法当前状态（中英、全半角、标点、方案）"
 
-# 下面三项 platform = "windows"：macOS 用菜单栏指示器，没有浮动工具栏可隐藏。
+# 带 platform = "windows" 的几项：macOS 用菜单栏指示器，既不是浮动窗口也无法排列/自动隐藏。
 # （ui.toolbar.visible 不在此列——它在 macOS 上控制指示器的显示与否，是有落点的。）
 [[items]]
 key = "ui.toolbar.hide_in_fullscreen"
@@ -2052,6 +2059,7 @@ section = "工具栏"
 type = "toggle"
 label = "纵向排列"
 hint = "工具栏竖着摆放；适合把它靠在屏幕左右两侧"
+platform = "windows"
 
 [[items]]
 key = "ui.toolbar.auto_hide"
@@ -2147,6 +2155,9 @@ type = "toggle"
 label = "统计英文输入"
 hint = "是否统计英文模式下的输入"
 enabled_when = "stats.enabled == true"
+# macOS 无落点：英文模式下的输入由 Windows 侧 TSF DLL 经 CMD_INPUT_STATS 上报，
+# macOS 的 `.app` 没有对应采集点，开关无论开关都统计不到。
+platform = "windows"
 
 # ═══════════════════════════ 高级 ═══════════════════════════
 # ── 日志设置 ──

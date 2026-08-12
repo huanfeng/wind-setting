@@ -2794,13 +2794,21 @@ mod tests {
 
     #[test]
     fn toolbar_items_hidden_on_macos() {
-        // 三项工具栏配置在 macOS 无落点（菜单栏指示器，无浮动工具栏可隐藏）。
+        // 这些配置在 macOS 无落点，逐项理由：
+        //   toolbar.*         菜单栏指示器不是浮动窗口，无从隐藏/排列/自动淡出；
+        //   capslock.cancel_* 取消大写靠合成 CapsLock 敲击，而 macOS 的锁定态由 HID 层
+        //                     维护，CGEvent 改不动（要走 IOHIDSetModifierLockState）；
+        //   stats.track_english  英文输入由 Windows 侧 TSF DLL 经 CMD_INPUT_STATS 上报，
+        //                     macOS 的 `.app` 没有对应采集点。
         // 而 ui.toolbar.visible 必须留着——它在 macOS 上控制指示器的显示与否。
         let m = Manifest::from_embedded();
         for k in [
             "ui.toolbar.hide_in_fullscreen",
             "ui.toolbar.auto_hide",
             "ui.toolbar.auto_hide_delay",
+            "ui.toolbar.vertical",
+            "input.capslock.cancel_on_mode_switch",
+            "stats.track_english",
         ] {
             let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
             assert_eq!(
