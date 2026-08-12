@@ -627,7 +627,15 @@ impl AppState {
             .set(crate::update::UpdatePhase::Downloading);
 
         std::thread::spawn(move || {
-            let dest = crate::update::download::cache_path(&check.download_url, "wind-update.exe");
+            // 文件名正常从 URL 末段取；这个兜底只在 URL 拼不出合法文件名时才用上，
+            // 但扩展名必须对 —— macOS 上 `open` 是按扩展名决定交给谁打开的，
+            // 一个 .exe 后缀的 pkg 会被 Finder 当成不认识的文件而不是安装包。
+            let fallback = if cfg!(windows) {
+                "wind-update.exe"
+            } else {
+                "wind-update.pkg"
+            };
+            let dest = crate::update::download::cache_path(&check.download_url, fallback);
             let progress_tx = tx.clone();
             let outcome = crate::update::download::download(
                 &check.download_url,

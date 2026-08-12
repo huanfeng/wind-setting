@@ -43,10 +43,46 @@ impl Channel {
     }
 
     /// 该通道的元数据地址。两个变体各看各的文件，互不干扰。
+    ///
+    /// **平台也各看各的**：Windows 的 `latest.json` 描述 `Setup.exe`，macOS 的
+    /// `latest-mac.json` 描述 `.pkg`。合不成一个文件 —— 版本号、大小、sha256 都是每平台
+    /// 一份，而在野的老 Windows 客户端只认顶层的那一组字段，改不动。
+    ///
+    /// Linux 落到 mac 分支只是形式上的：`self_update_supported()` 压根不放它进来。
     pub fn metadata_url(self) -> &'static str {
+        match (self, cfg!(windows)) {
+            (Self::Stable, true) => "https://dl.windinput.com/latest.json",
+            (Self::Dev, true) => "https://dl.windinput.com/latest-dev.json",
+            (Self::Stable, false) => "https://dl.windinput.com/latest-mac.json",
+            (Self::Dev, false) => "https://dl.windinput.com/latest-mac-dev.json",
+        }
+    }
+}
+
+/// 元数据里安装包地址的字段名。
+///
+/// 两平台**故意不共用一个键**。共用的话，「mac 客户端读到了 Windows 的元数据」这类串档
+/// 会静默通过，最后下到一个装不上的文件 —— 与 `channel` 字段当初要防的是同一类事故，
+/// 只是维度从通道换成了平台。各用各的键，串档会在解析阶段就报「缺少下载地址」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Artifact {
+    /// Windows 安装器，键 `exeUrl`。
+    Exe,
+    /// macOS 安装包，键 `pkgUrl`。
+    Pkg,
+}
+
+impl Artifact {
+    /// 本机平台对应的产物类型。
+    pub fn current() -> Self {
+        if cfg!(windows) { Self::Exe } else { Self::Pkg }
+    }
+
+    /// 元数据里的键名，用于出错时告诉用户到底缺了哪一个。
+    pub fn key(self) -> &'static str {
         match self {
-            Self::Stable => "https://dl.windinput.com/latest.json",
-            Self::Dev => "https://dl.windinput.com/latest-dev.json",
+            Self::Exe => "exeUrl",
+            Self::Pkg => "pkgUrl",
         }
     }
 }
@@ -57,7 +93,8 @@ pub struct ReleaseInfo {
     pub version: String,
     pub tag: String,
     pub channel: String,
-    pub exe_url: String,
+    /// 安装包地址。取自 `exeUrl`（Windows）或 `pkgUrl`（macOS），见 [`Artifact`]。
+    pub download_url: String,
     /// 安装包 sha256，64 位小写 hex。**必填** —— 缺失即拒绝升级。
     pub sha256: String,
     /// 安装包字节数。**必填** —— 用于下载前展示体积与下载后校验。
@@ -183,17 +220,17 @@ impl UpdateError {
 
 /// 本平台是否具备自动升级通路。
 ///
-/// **只有 Windows 有。** `latest.json` 描述的是 `WindInput-Setup-<版本>.exe`，安装那步
-/// (`install::shell_execute`) 在非 Windows 上是个直接返回「当前平台不支持自动安装」的桩。
+/// Windows（`Setup.exe` + `ShellExecuteW` 提权）与 macOS（`.pkg` + `open` 交给
+/// Installer.app）各有一条；其余平台没有发行产物，`install::shell_execute` 是个直接
+/// 返回「当前平台不支持自动安装」的桩。
 ///
-/// 不加这道门的后果不是"少个功能"，而是**主动骚扰**：macOS 上照样会去比对版本号 —— 而
-/// 版本号是两平台共用的，Windows 一发版 macOS 这边就判定"有新版"，弹窗、下载几十兆的
-/// `.exe`、最后在安装那步报错。整条链路唯一的产出就是一个装不上的文件。
+/// 这道门不能省：版本号是各平台共用的，没有门就会在没有升级通路的平台上照常判定
+/// 「有新版」，弹窗、下载、然后在安装那步报错 —— 整条链路唯一的产出是一个装不上的文件。
 ///
 /// 用 `cfg!` 而非 `#[cfg]`：两边都参与编译，改坏了任一平台都会当场编译失败，
 /// 不会出现"条件写错位置、悄悄失效"那种只在另一个平台才暴露的问题。
 pub fn self_update_supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "macos"))
 }
 
 /// 启动时是否应发起自动检查。
@@ -272,7 +309,7 @@ fn decide(info: &ReleaseInfo, local_raw: &str) -> Result<CheckResult, UpdateErro
         local_version: local_raw.to_string(),
         remote_version: info.version.clone(),
         release_notes: String::new(),
-        download_url: info.exe_url.clone(),
+        download_url: info.download_url.clone(),
         sha256: info.sha256.clone(),
         size: info.size,
         local_unparsable,
@@ -288,7 +325,7 @@ mod tests {
             version: version.to_string(),
             tag: format!("v{version}"),
             channel: "stable".to_string(),
-            exe_url: "https://dl.windinput.com/WindInput-Setup.exe".to_string(),
+            download_url: "https://dl.windinput.com/WindInput-Setup.exe".to_string(),
             sha256: "a".repeat(64),
             size: 48_234_496,
             release_notes_url: "https://dl.windinput.com/notes.md".to_string(),

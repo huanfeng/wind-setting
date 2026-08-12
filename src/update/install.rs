@@ -73,7 +73,11 @@ pub fn plan(installer: &Path) -> Result<InstallPlan, UpdateError> {
         .to_path_buf();
 
     let (has_marker, no_uninstaller) = portable_signals(&install_dir);
-    let portable = has_marker || no_uninstaller;
+    // 便携形态只有 Windows 有。macOS 的分发只有 .pkg 一种，而 Windows 那套「身边没有
+    // uninstall.exe 即判便携」的信号在 mac 上必然命中 —— 可执行文件在 .app 壳里，身边
+    // 永远没有卸载器。判定结果对 mac 的安装通路不起作用（pkg 不看这个字段），但会让
+    // 下面那行诊断日志一律谎报「便携安装」，排查时反而误导。
+    let portable = cfg!(windows) && (has_marker || no_uninstaller);
     // 无条件记录判定依据：升级出问题时，「到底判成了哪种形态、凭什么」是第一现场，
     // 只在便携分支打日志会让标准分支的误判无迹可寻。
     tracing::info!(
@@ -208,7 +212,31 @@ fn shell_execute(exe: &Path, args: &str) -> Result<(), UpdateError> {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS：把 `.pkg` 交给系统的 Installer.app。
+///
+/// **不自己 `installer -pkg -target /`** —— 那需要 root，而 wind_setting 是普通用户进程。
+/// `open` 拉起 Installer.app，由它自行向用户索要管理员授权，与用户双击安装包的路径完全
+/// 一致，也就不必在设置程序里自建一套提权。
+///
+/// `args` 一概忽略：`.pkg` 没有 `--quiet` 这类开关，安装一律走向导。故 [`build_args`]
+/// 那套 Windows 参数在 mac 上算出什么都无所谓，不必为它加平台分支（那样反倒会让它那组
+/// 纯函数单测在 mac 上集体失效）。
+///
+/// 与 Windows 一样拿不到、也不需要退出码：pkg 的 postinstall 会杀掉正在运行的设置 app
+/// 和输入法进程，「等它结束」与「被它杀掉」自相矛盾。
+///
+/// 未公证的包由我们自己下载、不带 quarantine 扩展属性，`open` 不会被 Gatekeeper 拦；
+/// 但**若将来改成让浏览器下载再打开，就会被拦**，那条路要另配公证。
+#[cfg(target_os = "macos")]
+fn shell_execute(pkg: &Path, _args: &str) -> Result<(), UpdateError> {
+    std::process::Command::new("/usr/bin/open")
+        .arg(pkg)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| UpdateError::Install(format!("拉起系统安装器失败：{e}")))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn shell_execute(_exe: &Path, _args: &str) -> Result<(), UpdateError> {
     Err(UpdateError::Install("当前平台不支持自动安装".to_string()))
 }

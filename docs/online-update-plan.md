@@ -182,6 +182,29 @@ Dev 变体的 `latest-dev.json` 结构相同，差异在三个字段：
 }
 ```
 
+macOS 另有一套：`latest-mac.json` / `latest-mac-dev.json`，结构相同，**安装包字段叫 `pkgUrl` 而非 `exeUrl`**：
+
+```json
+{
+  "version": "0.116.0",
+  "tag": "v0.116.0",
+  "channel": "stable",
+  "pkgUrl": "https://dl.windinput.com/WindInput-0.116.0-macOS.pkg",
+  "sha256": "…",
+  "size": 20971520,
+  "releaseNotesUrl": "https://dl.windinput.com/WindInput-0.116.0-Release.md",
+  "publishedAt": "2026-08-12T10:00:00Z"
+}
+```
+
+为什么两平台分文件、且键名故意不同：
+
+- **分文件**：版本号、大小、sha256 每平台各一份，合不进一个顶层对象；且在野的老 Windows 客户端只认现有字段，改不动。
+- **键名不同**：这是 `channel` 防「通道串档」的同一手法，换到平台维度。若共用 `exeUrl`，「mac 客户端读到 Windows 元数据」会静默通过，用户下完才发现是个装不上的文件；各用各的键，串档在解析阶段就被拒，报错还能直接点名缺的是哪个字段。客户端实现见 `src/update/mod.rs::Artifact`。
+- 发布说明（`releaseNotesUrl`）两平台**共用同一份** md，不重复上传。R2 清理旧版本时因此要判断另一平台是否仍引用它。
+
+macOS 的安装动作是 `open <pkg>` 交给系统 Installer.app（见 `src/update/install.rs`）——不自己 `installer -pkg`，那需要 root，而设置程序是普通用户进程。
+
 相对旧协议的增补：
 - `sha256` / `size`：**必填**。缺失时客户端应拒绝升级并提示「更新元数据不完整」，而不是降级为不校验 —— 否则等于把旧项目的漏洞原样搬过来。
 - `channel`：冗余标识，客户端校验它与自身变体匹配，防止 CDN 缓存串档（stable 用户拿到 dev 包）。不匹配则拒绝。
