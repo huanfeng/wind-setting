@@ -375,7 +375,7 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
 }
 
 /// 主题导入卡：本地 TOML 导入 + 主题市场入口。导入结果经 toast 反馈（成功/失败一致走
-/// toast，不再用状态文字——状态文字留给"标题栏右侧"的持续性连接状态展示）。
+/// toast——界面里已没有承载一次性提示的常驻状态文字位）。
 fn theme_import_card(state: &AppState) -> Element {
     let feedback = state.feedback;
 

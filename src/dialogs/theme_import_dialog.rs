@@ -100,7 +100,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                             st.theme_import_dialog_visible.set(false);
                         }
                         // 下载/预览/导入任一环节失败都保留对话框（用户可改地址重试或取消），
-                        // 但错误改走 toast——原先的 status.set 是标题栏右侧的持续状态文字，
+                        // 但错误改走 toast——早先写的是底栏常驻状态文字（现已只剩状态点），
                         // 一条一次性的导入失败提示混在那里容易被忽略或被后续状态覆盖。
                         Err(err) => import_state.borrow().notify_err(err.user_message()),
                     }

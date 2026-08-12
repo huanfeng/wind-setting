@@ -126,6 +126,23 @@ impl FieldRegistry {
     }
 }
 
+/// 底栏状态点表示的四种运行态。
+///
+/// 只驱动一个圆点 + 悬停提示，不再有常驻文字：早先底栏常驻「已连接 / 未连接到输入法
+/// 服务」，多位用户把它读成"连的是云端服务器"——这里连的其实是本机的输入法进程
+/// （命名管道 / Unix socket），说法本身就是误导。文案改到 tooltip 里、并避开"连接"一词。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConnState {
+    /// 后台加载尚未回来（启动或重连中）。
+    Loading,
+    /// 输入法服务在跑，配置可读可存。
+    Ready,
+    /// `WIND_RPC_MOCK=1` 的离线预览，数据是假的、改动存不下去。
+    Mock,
+    /// 正式模式下服务没起来（同时会弹阻断对话框）。
+    Down,
+}
+
 /// 应用全局状态。
 pub struct AppState {
     /// 从 core 加载的原始配置（用于 diff 基线）。
@@ -176,8 +193,8 @@ pub struct AppState {
     pub tab: Signal<usize>,
     /// 暗色模式（设置窗口自身明暗，运行时切换）。
     pub dark: Signal<bool>,
-    /// 状态文字（底栏左下角连接态：已连接/离线预览/未连接/正在重连）。
-    pub status: Signal<String>,
+    /// 底栏左下角的运行态（驱动状态圆点的颜色与悬停提示）。见 [`ConnState`]。
+    pub conn: Signal<ConnState>,
     /// 瞬时反馈（保存成功/没有变更/保存失败/已重新加载/已恢复本页等），走 toast 而非底栏。
     pub feedback: Feedback,
     /// 触发键冲突的实时提示文案（空串=无冲突）；由 `conflict_watcher` 在渲染帧刷新
@@ -209,9 +226,6 @@ pub struct AppState {
     data_loaded: bool,
     /// 正式模式下连接失败标志：true 时显示阻断对话框；mock 模式始终 false。
     pub conn_failed: Signal<bool>,
-    /// 连接成功的响应式标志（异步加载后置位）。底栏状态圆点据此响应式着色——
-    /// 构建时尚未连接（empty），故圆点必须用 Signal 而非构建期 bool 才能在连接后转绿。
-    pub conn_ok: Signal<bool>,
     /// 主题下拉的响应式选项：显示名列表 + 对应 id/slug 值列表（异步加载后填充）。
     /// 下拉构建于异步数据到达前，故必须经 Signal 驱动响应式下拉，数据到达即填充。
     pub theme_label_sig: Signal<Vec<String>>,
@@ -410,7 +424,7 @@ impl AppState {
             theme_import_dialog_visible: signal(false),
             tab: signal(0),
             dark: signal(initial_dark),
-            status: signal("正在连接服务...".to_string()),
+            conn: signal(ConnState::Loading),
             feedback: signal(None),
             conflict: signal(String::new()),
             schema_mgr,
@@ -423,7 +437,6 @@ impl AppState {
             connected: false,
             data_loaded: false,
             conn_failed: signal(false),
-            conn_ok: signal(false),
             theme_label_sig: signal(vec![]),
             theme_value_sig: signal(vec![]),
             theme_items_sig: signal(vec![]),
@@ -1101,15 +1114,17 @@ impl AppState {
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
         self.connected = data.connected;
-        self.conn_ok.set(data.connected); // 响应式：底栏圆点连接后转绿
+        // 响应式：构建期数据还没回来（总为 Loading），圆点必须靠 Signal 才能在加载后改色。
         if data.connected {
-            self.status.set("已连接".to_string());
+            self.conn.set(ConnState::Ready);
             self.conn_failed.set(false);
         } else if rpc::is_mock() {
-            self.status.set("离线预览（mock）".to_string());
+            // 兜底分支：mock 下 `LoadedState::fetch` 总能给出配置（connected=true，
+            // 走上面的 Ready），只有 mock 数据自身取不到时才落到这里。
+            self.conn.set(ConnState::Mock);
             self.conn_failed.set(false);
         } else {
-            self.status.set("未连接到输入法服务".to_string());
+            self.conn.set(ConnState::Down);
             self.conn_failed.set(true);
         }
         tracing::info!("apply_loaded 完成, connected={}", data.connected);

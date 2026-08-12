@@ -212,7 +212,7 @@ fn main() {
 }
 
 /// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框，
-/// 其它 kind 提示暂不支持。反馈走 feedback（toast），status 只保留连接态。
+/// 其它 kind 提示暂不支持。反馈走 feedback（toast）——底栏只剩状态点，没有常驻文字位。
 fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {

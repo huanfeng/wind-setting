@@ -2,7 +2,7 @@
 //!
 //! 标题栏：渐变 Logo + 标题（可拖动）+ 窗口按钮。
 //! 左侧栏：分区导航（pill 选中）。
-//! 底部操作栏（搜狗式）：左=连接状态 + 明暗切换；右=恢复本页 / 重新加载 / 应用设置 / 保存并退出。
+//! 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换；右=恢复本页 / 重新加载 / 应用设置 / 保存并退出。
 //! 明暗切换通过 `ThemeHandle::set(theme_for(dark))` 整窗换肤（`*_role` 节点自动跟随）。
 
 use std::cell::RefCell;
@@ -15,7 +15,7 @@ use crate::dialogs::schema_manager::build_schema_manager_dialog;
 use crate::dialogs::theme_import_dialog::build_theme_import_dialog;
 use crate::dialogs::update_dialog::build_update_dialog;
 use crate::pages;
-use crate::state::AppState;
+use crate::state::{AppState, ConnState};
 use crate::theme_def::theme_for;
 
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
@@ -25,7 +25,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         tabs_vec,
         tab_sig,
         dark,
-        status,
+        conn,
         feedback,
         dialog,
         dict_dialog,
@@ -34,7 +34,6 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         stats_confirm_dialog,
         reload_confirm,
         reset_confirm,
-        conn_ok,
         conn_failed,
         field_dialogs,
     ) = {
@@ -49,7 +48,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             tabs_vec,
             st.tab,
             st.dark,
-            st.status,
+            st.conn,
             st.feedback,
             build_schema_manager_dialog(&st.schema_mgr),
             pages::dict::build_dict_dialogs(&st.dict_mgr),
@@ -58,7 +57,6 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             pages::stats::build_stats_confirm_dialog(&st.stats_mgr),
             st.reload_confirm,
             st.reset_confirm,
-            st.conn_ok,
             st.conn_failed,
             field_dialogs,
         )
@@ -102,7 +100,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(vdivider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, status, conn_ok);
+    let footer = build_footer(app, th, dark, conn);
 
     let main_col = Element::col()
         .fill()
@@ -136,7 +134,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // ⚠ 必须挂在 toast_sink **之前**：两者都在 on_update 阶段按树序派发，watcher 在后就要
     // 等下一帧才被 toast_sink 读到——而渲染由交互驱动、空闲零帧，那一帧未必会来。
     root = root.child(crate::pages::conflict_watcher(app));
-    // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏 status 只保留连接态）。
+    // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏只剩状态点）。
     root.child(crate::pages::dict::reactive::toast_sink(feedback))
 }
 
@@ -319,34 +317,62 @@ fn build_titlebar() -> Element {
         .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text))
 }
 
-/// 底部操作栏（搜狗式）：左=连接状态点 + 文字 + 明暗切换；右=恢复本页/重新加载/应用设置/保存并退出。
+/// 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换；右=恢复本页/重新加载/应用设置/保存并退出。
 fn build_footer(
     app: &Rc<RefCell<AppState>>,
     th: ThemeHandle,
     dark: Signal<bool>,
-    status: Signal<String>,
-    conn_ok: Signal<bool>,
+    conn: Signal<ConnState>,
 ) -> Element {
-    // 连接状态点：绿=已连接，琥珀=未连接；外圈 22% alpha 光环（参考稿 status dot）。
-    // 响应式（连接在异步加载后才确定，构建期总为未连接）：
-    // 用两点 visible_when 切换，连接成功后自动转绿（同明暗切换按钮的双态模式）。
-    let halo_dot = |c: u32, when_ok: bool| {
+    // 状态点：绿=服务就绪，琥珀=其余（加载中/离线预览/服务未运行）；外圈 22% alpha 光环。
+    // 说明文字只在悬停时出现——常驻的「已连接」被不少用户读成"连上了云端服务器"，
+    // 而这里连的是本机输入法进程；文案因此也避开"连接"一词（详见 [`ConnState`]）。
+    //
+    // 两处实现约束：
+    // - `tooltip` 收的是静态文本，给不了 Signal，故四态各建一个点用 visible_when 互斥切换；
+    // - 提示取命中节点自身（`Tree::node_tooltip` 不回溯父链），所以命中区/光环/实心点
+    //   三层都得挂同一句，否则指针停在最上层的实心点上反而不弹。
+    let dot = |c: u32, tip: &'static str, when: ConnState| {
         Element::stack()
-            .size(14, 14)
-            .corner(7.0)
-            .bg(Color::hex(c).scale_alpha(0.22))
+            .size(22, 22) // 透明命中区：14px 的点太小，悬停不好瞄
+            .tooltip(tip)
             .child(
-                Element::leaf()
-                    .size(8, 8)
-                    .corner(4.0)
-                    .bg(Color::hex(c))
-                    .align(Align::Center),
+                Element::stack()
+                    .size(14, 14)
+                    .corner(7.0)
+                    .bg(Color::hex(c).scale_alpha(0.22))
+                    .align(Align::Center)
+                    .tooltip(tip)
+                    .child(
+                        Element::leaf()
+                            .size(8, 8)
+                            .corner(4.0)
+                            .bg(Color::hex(c))
+                            .align(Align::Center)
+                            .tooltip(tip),
+                    ),
             )
-            .visible_when(move || conn_ok.get() == when_ok)
+            .visible_when(move || conn.get() == when)
     };
+    const DOT_OK: u32 = 0x22C55E;
+    const DOT_WARN: u32 = 0xF59E0B;
     let status_dot = Element::stack()
-        .child(halo_dot(0x22C55E, true))
-        .child(halo_dot(0xF59E0B, false));
+        .child(dot(
+            DOT_OK,
+            "输入法服务就绪，设置可正常保存",
+            ConnState::Ready,
+        ))
+        .child(dot(DOT_WARN, "正在读取输入法设置…", ConnState::Loading))
+        .child(dot(
+            DOT_WARN,
+            "离线预览（示例数据），修改不会保存",
+            ConnState::Mock,
+        ))
+        .child(dot(
+            DOT_WARN,
+            "输入法未在运行，设置无法保存",
+            ConnState::Down,
+        ));
 
     // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
     // 切换即持久化——选择写进 wind_setting.toml 的 ui.dark，下次启动不再跟随系统。
@@ -445,13 +471,6 @@ fn build_footer(
         .spacing(8)
         .bg_role(Role::SurfaceAlt)
         .child(status_dot)
-        .child(
-            Element::label_rc(status)
-                .font_size(11.5)
-                .fg_role(Role::TextMuted)
-                .max_lines(1),
-        )
-        .child(Element::leaf().width(6))
         .child(theme_btn)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
@@ -560,7 +579,7 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
         .corner(12.0)
         .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
         .child(
-            Element::label("无法连接输入法服务")
+            Element::label("输入法服务未运行")
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -570,7 +589,7 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
         )
         .child(Element::divider())
         .child(
-            Element::label("设置应用需要输入法服务在运行。请确认服务已启动后重连，或退出。")
+            Element::label("设置需要本机的输入法服务在运行。请确认输入法已启动后重试，或退出。")
                 .font_size(13.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
@@ -591,9 +610,9 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                         .outline_soft()
                         .on_click(|ctx| ctx.request_close()),
                 )
-                .child(Element::button("重连").small().on_click(move |_| {
+                .child(Element::button("重试").small().on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
-                        s.status.set("正在重连...".to_string());
+                        s.conn.set(ConnState::Loading);
                     }
                     crate::main_reconnect(&app_retry);
                 })),
