@@ -176,7 +176,12 @@ fn main() {
         let cfg = app_state.borrow().setting_config.update.clone();
         let forced = update::force_check_requested(&args);
         // 强制检查仍受 network_consent 门控 —— 调试后门不该越过联网同意
-        let gate = if forced {
+        let gate = if !update::self_update_supported() {
+            // 非 Windows 无升级通路：查了也只能下到一个装不上的 .exe，纯骚扰。
+            // 门控放在这里而不是 should_auto_check 里边 —— 那是个纯函数，三重门控的
+            // 语义与平台无关，掺进平台判断会让它的单测在非 Windows 上集体失效。
+            false
+        } else if forced {
             cfg.network_consent
         } else {
             update::should_auto_check(cfg.network_consent, cfg.auto_check, cfg.last_check_at, now)

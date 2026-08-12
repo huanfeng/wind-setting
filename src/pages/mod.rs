@@ -655,18 +655,24 @@ fn about_page(app: &Rc<RefCell<AppState>>, _state: &AppState) -> Element {
                         .max_lines(1)
                         .height(30),
                 )
-                .child(
-                    Element::row()
+                .child({
+                    let row = Element::row()
                         .cross(Align::Center)
                         .spacing(10)
-                        .child(Element::badge(ver_badge))
-                        .child(
+                        .child(Element::badge(ver_badge));
+                    // 非 Windows 没有升级通路（见 update::self_update_supported）：
+                    // 按钮点下去只会下到一个装不上的 .exe，不如不给。
+                    if crate::update::self_update_supported() {
+                        row.child(
                             Element::button("检查更新")
                                 .small()
                                 .outline_soft()
                                 .on_click(move |_| update_state.borrow().open_update_dialog()),
-                        ),
-                )
+                        )
+                    } else {
+                        row
+                    }
+                })
                 .child(
                     Element::label("轻量、快速、可定制的开源中文输入法")
                         .font_size(13.0)
