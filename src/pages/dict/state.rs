@@ -1170,7 +1170,12 @@ impl DictManagerState {
     pub fn open_add(&self) {
         let (title, lc, lt, w) = match self.current_category() {
             WordCategory::UserDict => ("添加词条", "编码", "词条", "0"),
-            WordCategory::PhraseUser => ("添加短语", "编码", "短语", "1000"),
+            // 短语默认 1800：主程序删除 `PHRASE_WEIGHT_BASE`(40M) 类别硬顶后，短语与码表
+            // 精确候选**按权重竞争**（见主仓 docs/architecture/candidate-sorting-rules.md §5.1），
+            // 这个默认值直接决定「新建的短语打不打得出」。五笔主库 median=941、p99=9000，
+            // 1800 越过约 90% 的条目，又留足余量给用户手动上调（约定值域 0~10000）。
+            // 此前是 1000，只压得住一半——在 40M 时代无所谓，现在会让新短语时灵时不灵。
+            WordCategory::PhraseUser => ("添加短语", "编码", "短语", "1800"),
             _ => return,
         };
         *self.editing_orig.borrow_mut() = None;
@@ -3845,13 +3850,16 @@ mod tests {
         assert!(!st.view_visible.get());
     }
 
+    /// 新建短语的默认权重。**不是随手挑的数**：主程序侧短语与码表精确候选按权重竞争
+    /// （`PHRASE_WEIGHT_BASE` 40M 硬顶已删除），这个值决定新短语打不打得出。改它要同时
+    /// 核对主仓 `webdata.rs::web_phrase_add` 的兜底默认。
     #[test]
-    fn open_add_phrase_user_weight_1000() {
+    fn open_add_phrase_user_weight_1800() {
         let st = DictManagerState::new();
         st.sub_tab.set(1); // 用户短语
         assert_eq!(st.current_category(), WordCategory::PhraseUser);
         st.open_add();
-        assert_eq!(st.edit_weight.get(), "1000");
+        assert_eq!(st.edit_weight.get(), "1800");
     }
 
     #[test]
