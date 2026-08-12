@@ -752,6 +752,15 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         item.max.unwrap_or(100.0),
         item.step.unwrap_or(1.0),
     );
+    // 写回该编码成 serde_json 的 Int 变体还是 Float 变体，得看 capability 登记的字段类型，
+    // 不能猜——core 的 int 型字段严格校验，必须收整数；但 float 型字段（如 half_life、
+    // font_size）取整数值时若也按整数写回，会跟 config.get 返回的 Float 变体在 Value
+    // 层面判不相等，diff_config 就会把它当成一条虚假变更。
+    let is_int = state
+        .capabilities
+        .entries
+        .get(key)
+        .is_some_and(|e| e.ty == "int");
     let kw = key.to_string();
     state
         .fields
@@ -759,7 +768,7 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
             let v = sig.get();
-            let val = if v.fract() == 0.0 {
+            let val = if is_int {
                 Value::from(v as i64)
             } else {
                 Value::from(v)
@@ -2851,6 +2860,41 @@ mod tests {
         let mut l2 = vec!["A".to_string()];
         assert_eq!(select_index_for(&mut v2, &mut l2, ""), 0);
         assert_eq!(v2.len(), 1);
+    }
+
+    /// 数值控件写回时该编码成 Value 的 Int 变体还是 Float 变体，得看 capability 登记的
+    /// 字段类型，不能按当前值有没有小数部分猜——float 型字段恰好取整数值时（如
+    /// `font_size` 默认 18）若被猜成 Int，会跟 `config.get` 返回的 Float 变体在
+    /// `serde_json::Value` 层面判不相等，diff_config 就会把「什么都没改」误判成一条变更。
+    #[test]
+    fn number_writer_encodes_by_capability_type_not_by_value_shape() {
+        let state = AppState::empty();
+        let m = Manifest::from_embedded();
+        let cfg = Config::from_value(serde_json::json!({}));
+
+        // float 型字段：即使当前是整数值，也必须写回 Float 变体。
+        let font_item = m.items.get("ui.candidate.font_size").expect("清单缺该项");
+        build_number(&state, "ui.candidate.font_size", font_item, &cfg);
+
+        // int 型字段：必须写回 Int 变体，否则服务端严格类型校验会直接拒绝该项。
+        let max_chars_item = m.items.get("ui.candidate.max_chars").expect("清单缺该项");
+        build_number(&state, "ui.candidate.max_chars", max_chars_item, &cfg);
+
+        let mut out = Config::from_value(serde_json::json!({}));
+        for w in state.fields.writers.borrow().iter() {
+            w(&mut out);
+        }
+
+        let font_v = out.get_path("ui.candidate.font_size").unwrap();
+        assert!(
+            font_v.is_f64() && !font_v.is_i64(),
+            "float 型字段应写回浮点 Value，实际: {font_v:?}"
+        );
+        let max_chars_v = out.get_path("ui.candidate.max_chars").unwrap();
+        assert!(
+            max_chars_v.is_i64(),
+            "int 型字段应写回整数 Value，实际: {max_chars_v:?}"
+        );
     }
 
     fn si(id: &str, kind: &str) -> SchemaInfo {
