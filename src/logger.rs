@@ -18,23 +18,16 @@ use tracing_subscriber::EnvFilter;
 const PREFIX: &str = "wind_setting";
 const KEEP: usize = 5;
 
-/// 初始化日志。`secondary` = 本进程多半只是个「转发 argv 给首实例后立即退出」的二次实例
-/// (判据见 [`crate::is_secondary_instance`])，此时**必须**走不轮转的独立文件，理由见
-/// [`rotate`]。
-pub fn init(secondary: bool) {
+/// 初始化日志。
+///
+/// ⚠️ 调用点必须留在单实例闸门**之后**（`main` 里的 `claim_instance`）：轮转会动首实例
+/// 正在写的文件，只有确定自己会活下去的进程才有资格做，理由见 [`rotate`]。
+pub fn init() {
     let log_dir = resolve_log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
+    rotate(&log_dir);
 
-    let file_name = if secondary {
-        // 只留最近一次:这份日志的全部价值就是「上一次深链有没有正常转发」,不必累积。
-        let name = format!("{PREFIX}.secondary.log");
-        let _ = std::fs::remove_file(log_dir.join(&name));
-        name
-    } else {
-        rotate(&log_dir);
-        format!("{PREFIX}.1.log")
-    };
-
+    let file_name = format!("{PREFIX}.1.log");
     let file_appender = tracing_appender::rolling::never(&log_dir, &file_name);
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
@@ -52,9 +45,8 @@ pub fn init(secondary: bool) {
     Box::leak(Box::new(guard));
 
     tracing::info!(
-        "wind_setting v{} 启动{}，日志: {}",
+        "wind_setting v{} 启动，日志: {}",
         env!("CARGO_PKG_VERSION"),
-        if secondary { " (二次实例)" } else { "" },
         log_dir.join(&file_name).display()
     );
 }
@@ -78,8 +70,9 @@ fn resolve_log_dir() -> PathBuf {
 /// 启动时将旧日志后移一位，删除超出 KEEP 的最旧文件。
 /// 结果：.1.log 不存在（由 appender 新建），.2~.N 是历史记录。
 ///
-/// ⚠️ **只有首实例可以调用**。二次实例(深链再次启动)若也 rotate，会把首实例正在写的
-/// .1.log 改名 —— 首实例的 appender 攥着旧 fd 继续写，于是日志内容与文件名对不上，
+/// ⚠️ **只有首实例可以调用**，这由 `main` 里「先过单实例闸门再 `logger::init`」的顺序
+/// 保证 —— 别把 `init` 挪到闸门之前。二次实例(深链再次启动)若也 rotate，会把首实例正在
+/// 写的 .1.log 改名 —— 首实例的 appender 攥着旧 fd 继续写，于是日志内容与文件名对不上，
 /// 连着 5 次深链就能把首实例那份轮出去删掉。排查深链问题时这会精准地把人引向错误结论
 /// （「首实例没收到 argv」其实是「首实例的日志被挪走了」）。
 fn rotate(log_dir: &Path) {

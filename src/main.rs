@@ -50,8 +50,7 @@ pub fn main_reconnect(app: &Rc<RefCell<state::AppState>>) {
 /// 单实例 app_id（含变体后缀，dev/release 互不干扰）。主窗口与加词小窗是两个独立单例，
 /// 各占一个 id —— 加词小窗开着时点「设置」，两者互不顶替。
 ///
-/// windui 在 `App::run` 里据此仲裁；本模块另在启动早期用它做一次只读探测，见
-/// [`is_secondary_instance`]。
+/// `claim_instance` 与 `App::single_instance` 必须用同一个 id，故收拢在此。
 fn single_instance_app_id(add_word: bool) -> String {
     let suffix = mode::pipe_suffix();
     if add_word {
@@ -61,25 +60,27 @@ fn single_instance_app_id(add_word: bool) -> String {
     }
 }
 
-/// 本进程多半只是个「转发 argv 给首实例后立即退出」的二次实例吗？
-///
-/// 只读探测，不参与仲裁（真正的仲裁在 `App::run` 里，见 windui `single_instance`）。
-/// 用途是让启动早期就能避开那些会**打扰首实例**的动作 —— 目前是日志轮转（见
-/// [`logger::rotate`]）。结论有竞态且允许出错：判成首实例最坏就是多轮转一次日志。
-fn is_secondary_instance(args: &[String]) -> bool {
-    let add_word = cli::parse_add_word(args).is_some();
-    windui::instance_running(&single_instance_app_id(add_word))
-}
-
 fn main() {
     // mode::init 必须最先执行：logger 的目录路径和 RPC 管道名均依赖它。
     let args: Vec<String> = std::env::args().collect();
     mode::init(&args);
-    logger::init(is_secondary_instance(&args));
+
+    // 单实例闸门：设置程序已开着时，本进程的使命就只是把 argv（深链页、协议 URL）递给
+    // 首实例，然后死掉。故仲裁要赶在任何启动动作之前 —— windui 在 App::run 里也会仲裁，
+    // 但那时这个注定要退场的进程已经轮转过日志、发了七八个 RPC、订阅了 core 事件通道，
+    // theme_editor.auto_start 开着的话还会去抢端口。这些副作用全落在首实例头上。
+    let add_word = cli::parse_add_word(&args);
+    if windui::claim_instance(&single_instance_app_id(add_word.is_some()))
+        == windui::InstanceRole::Handoff
+    {
+        return;
+    }
+
+    logger::init();
     protocol::self_heal_registration();
 
     // 快捷加词小窗：独立单例、紧凑窗，复用词库加词对话框；不落入常规设置界面路径。
-    if let Some(params) = cli::parse_add_word(&args) {
+    if let Some(params) = add_word {
         add_word_window::run(params);
         return;
     }
