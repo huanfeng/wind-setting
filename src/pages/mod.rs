@@ -298,7 +298,11 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 复合行列表（已启用在前 · 未启用在后 · 特殊方案独立分区）
     let list_el = build_schema_inline_list(mgr);
 
-    let mut secs = vec![section("输入方案", vec![toolbar, list_el])];
+    // 工具栏与列表合成**一个**卡片子项：`card()` 会在相邻子项间自动插分隔线，而列表
+    // 的每一行已自带顶部分隔线（可拖行必须行行一致，否则拖动中会错位——见
+    // `build_draggable_row`），两者同时存在就成了双线。
+    let toolbar_and_list = Element::col().width_match().child(toolbar).child(list_el);
+    let mut secs = vec![section("输入方案", vec![toolbar_and_list])];
 
     // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。
     // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。

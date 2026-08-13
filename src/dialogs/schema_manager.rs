@@ -171,7 +171,12 @@ pub struct SchemaManagerState {
     /// 已启用方案的有序 ID 列表（对应 schema.available 配置键）。
     /// 空 vec 表示"全部启用"（首次加载且配置为空时的默认状态）。
     pub enabled_order: Rc<RefCell<Vec<String>>>,
-    /// 驱动 list_signal 的数据信号；任何启用/排序变更后调 rebuild_list() 更新。
+    /// 已启用区的行数据（**按启用顺序**）。单独成一个信号是因为这一段是可拖拽重排的
+    /// `reorder_list_signal`，而它要求数据即顺序；未启用区/特殊方案区不参与排序，
+    /// 仍走 `list_data`。两者都由 rebuild_list() 一并更新。
+    pub enabled_rows: Signal<Vec<SchemaEntry>>,
+    /// 已启用区**之后**的列表数据（未启用区、特殊方案区，含各自的分区标题与分隔线）；
+    /// 任何启用/排序变更后调 rebuild_list() 更新。
     pub list_data: Signal<Vec<SchemaListItem>>,
     /// 是否隐藏未启用方案行（响应式，立即生效）。
     pub hide_disabled: Signal<bool>,
@@ -318,6 +323,7 @@ impl SchemaManagerState {
             settings_hotkey_enabled: signal(false),
             settings_hotkey_mods: [signal(false), signal(false), signal(false), signal(false)],
             settings_hotkey_key_idx: signal(0),
+            enabled_rows: signal(vec![]),
             list_data: signal(vec![]),
             hide_disabled: signal(false),
             show_hidden: signal(false),
@@ -679,18 +685,10 @@ impl SchemaManagerState {
         let n_disabled = disabled_entries.len();
         let mut items: Vec<SchemaListItem> = Vec::new();
 
-        // 已启用区
-        for (i, entry) in enabled_entries.into_iter().enumerate() {
-            if i > 0 {
-                items.push(SchemaListItem::Divider {
-                    hidden_with_disabled: false,
-                });
-            }
-            items.push(SchemaListItem::Row {
-                entry,
-                is_enabled: true,
-            });
-        }
+        // 已启用区独立成一条信号，交给可拖拽重排的列表渲染（行间分隔线做进行内，
+        // 见 build_compound_row）。它必须先于 list_data 落值——两者在同一帧被各自的
+        // 宿主消费，先后顺序无所谓，但都得在本函数返回前写完。
+        self.enabled_rows.set(enabled_entries);
 
         // 未启用区（SectionHeader 自带上方分隔线，随 hide_disabled 一起隐藏）
         if n_disabled > 0 {
@@ -1059,6 +1057,31 @@ impl SchemaManagerState {
     /// 操作反馈：弹单条 toast（经页面挂载的 toast_sink）。
     fn notify(&self, kind: ToastKind, msg: impl Into<String>) {
         self.feedback.set(Some((kind, msg.into())));
+    }
+
+    /// 拖拽重排：把已启用区第 `from` 行挪到第 `to` 位（下标都相对**已启用区**）。
+    ///
+    /// 不直接对 `enabled_order` 用下标——它可能是空的（表示"全部启用"），也可能含着
+    /// 已启用区里不出现的 id（特殊方案、已卸载但还留在 available 里的条目）。一律以
+    /// `enabled_rows`（界面上真实那几行）为准算出新序，再把 order 里的其余 id 原样接在
+    /// 后面：拖一次顺序不该把 available 里的别的条目悄悄抹掉。
+    pub fn reorder_enabled(&self, from: usize, to: usize) {
+        let visible: Vec<String> = self
+            .enabled_rows
+            .get()
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        let next = {
+            let order = self.enabled_order.borrow();
+            match reordered_enabled_order(&visible, &order, from, to) {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        *self.enabled_order.borrow_mut() = next;
+        self.notify(ToastKind::Success, "排序已调整（保存后生效）");
+        self.rebuild_list();
     }
 
     /// 上移指定方案在 enabled_order 中的位置（立即刷新列表）。
@@ -1757,17 +1780,32 @@ fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
 
 /// 构建内联方案列表，供 `scheme_page` 直接嵌入卡片。
 ///
-/// 使用 `Element::host_signal`（非滚动的响应式 col）驱动：启用/禁用/排序变更后
-/// list_data 更新，列表即时重建。列表**按自然高度展开**，随外层页面滚动一起滚动
-/// ——刻意不用 `list_signal`（自带固定高度滚动容器）：设置页本身已是滚动容器，
-/// 内嵌固定高度的内层滚动会造成"滚轮在内外层间打架、列表滚不动"，且内层滚动条
-/// 压在卡片行上遮挡内容。改为自然高度后只保留页面这一层滚动，两个问题一并消除。
+/// 分成两段：
+/// - **已启用区**用 `Element::reorder_list_signal`——按住行首手柄上下拖即可调优先级，
+///   顺序的真相源是 `enabled_rows` 信号，落定后经 `reorder_enabled` 写回 `enabled_order`。
+///   只有这一段可拖：未启用方案没有"优先级"可言，特殊方案更不进循环切换，把它们混进
+///   同一个可拖列表只会让用户拖出无意义（且要被 rebuild 打回原形）的落点。
+/// - **其余区**（未启用、特殊方案）仍用 `Element::host_signal` 按 `list_data` 渲染。
+///
+/// 两段都**按自然高度展开**，随外层页面滚动一起滚动——刻意不用 `list_signal`
+///（自带固定高度滚动容器）：设置页本身已是滚动容器，内嵌固定高度的内层滚动会造成
+/// "滚轮在内外层间打架、列表滚不动"，且内层滚动条压在卡片行上遮挡内容。
 pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
     let mgr = state.clone();
     let hide_sig = state.hide_disabled;
 
-    Element::host_signal(state.list_data, move |item| match item {
-        SchemaListItem::Row { entry, is_enabled } => build_compound_row(entry, is_enabled, &mgr),
+    let mgr_drag = state.clone();
+    let mgr_move = state.clone();
+    let enabled =
+        Element::reorder_list_signal(state.enabled_rows, move |entry: SchemaEntry, handle| {
+            build_draggable_row(entry, &mgr_drag, handle)
+        })
+        .on_reorder(move |_ctx, from, to| mgr_move.reorder_enabled(from, to));
+
+    let rest = Element::host_signal(state.list_data, move |item| match item {
+        SchemaListItem::Row { entry, is_enabled } => {
+            build_compound_row(entry, is_enabled, &mgr, None)
+        }
         SchemaListItem::SectionHeader {
             title,
             hidden_with_disabled,
@@ -1801,15 +1839,55 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
             }
         }
     })
-    .width_match()
+    .width_match();
+
+    Element::col().width_match().child(enabled).child(rest)
 }
+
+/// 拖拽落定后的新 `enabled_order`：把 `visible`（已启用区当前那几行的 id，界面顺序）
+/// 的第 `from` 项挪到第 `to` 位，再把 `order` 里**不在可见行中**的 id 原样接在后面。
+/// `from` 越界返回 None（调用方不动数据）。
+///
+/// 不直接对 `order` 用下标：它可能是空的（表示"全部启用"，此时可见行才是真顺序），
+/// 也可能含着已启用区里不出现的 id——特殊方案、或已卸载但仍留在 available 里的条目。
+/// 尾巴那一段必须原样保留：拖一次顺序不该把它们悄悄从 available 里抹掉。
+fn reordered_enabled_order(
+    visible: &[String],
+    order: &[String],
+    from: usize,
+    to: usize,
+) -> Option<Vec<String>> {
+    if from >= visible.len() {
+        return None;
+    }
+    let mut ids = visible.to_vec();
+    let id = ids.remove(from);
+    ids.insert(to.min(ids.len()), id);
+    let rest: Vec<String> = order.iter().filter(|x| !ids.contains(x)).cloned().collect();
+    ids.extend(rest);
+    Some(ids)
+}
+
+/// 行首手柄槽宽（含手柄本体 20px 的余量）。所有行都留这一格——未启用/特殊方案行
+/// 不可拖、没有手柄，但仍要留槽，否则各区之间的复选框、名称列会错开一截。
+const HANDLE_SLOT_W: i32 = 18;
 
 /// 构建单个方案复合行（工具栏+选中模式：行内无操作按钮）。
 ///
 /// 行整体 clickable → 点击选中（事件沿祖先链派发，点 checkbox 会同时切换启用并选中，
 /// 符合预期）；选中视觉 = stack 底层 accent 淡底 + 左缘指示条覆盖层（与侧栏导航同语言），
 /// visible_when 轮询 `sel_ver`。行内保留：启用复选 · 名称/描述 · 类型/来源徽章 · 版本。
-fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerState) -> Element {
+///
+/// `handle` 为 `Some` 时该行可拖拽重排（已启用区）。手柄**不能放进 clickable 那个 row**：
+/// `Clickable` 对 Down/Up 一律消费，冒泡断在它那里，`ReorderList` 收不到事件、拖动
+/// 根本起不来。故它作为 stack 的同级覆盖层叠在行首的占位槽上——顺带让选中底色/描边
+/// 也覆盖到手柄这一列，而不是从手柄右侧才开始。
+fn build_compound_row(
+    entry: SchemaEntry,
+    is_enabled: bool,
+    mgr: &SchemaManagerState,
+    handle: Option<Element>,
+) -> Element {
     let enabled_sig = signal(is_enabled);
 
     // ── Checkbox ──
@@ -1925,6 +2003,8 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
         .padding_xy(10, 8)
         .spacing(6)
         .corner(8.0)
+        // 手柄槽占位：手柄本体是 stack 的覆盖层，画在这一格上（见函数文档）。
+        .child(Element::leaf().width(HANDLE_SLOT_W).height(1))
         .child(checkbox)
         .child(name_col);
 
@@ -1985,6 +2065,18 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
         .child(row)
         .child(indicator);
 
+    // 手柄覆盖层排在最后 = 画在最上、命中最优先（stack 倒序命中），落在行首占位槽上。
+    // 包一层无背景容器仅为垂直居中——透明容器不吞命中，行的其余区域照常可点选中。
+    if let Some(h) = handle {
+        item = item.child(
+            Element::row()
+                .align(Align::Stretch)
+                .cross(Align::Center)
+                .padding_xy(8, 0)
+                .child(h),
+        );
+    }
+
     // 未启用行随 hide_disabled 隐藏（list_signal 重建后无需 enabled_sig 联动）。
     // 注：特殊方案的显隐不在这里——它决定的是「进不进列表」，走 rebuild_list 过滤，
     // 否则分节标题的计数会把看不见的行也算进去。
@@ -1994,6 +2086,19 @@ fn build_compound_row(entry: SchemaEntry, is_enabled: bool, mgr: &SchemaManagerS
     }
 
     item
+}
+
+/// 已启用区的可拖行 = 顶部分隔线 + 行本体。
+///
+/// 分隔线做进**每一行**（含首行）而不是行与行之间：拖动中行会重新堆叠，若首行特殊、
+/// 其余带线，动画期间就会出现"顶上多一条、中间少一条"的错位。每行长得一样，任何排列
+/// 都对。首行那条同时承担"工具栏与列表之间的分隔"，故卡片不再自动插那一条
+///（见 `scheme_page` 把工具栏与列表并成一个卡片子项）。
+fn build_draggable_row(entry: SchemaEntry, mgr: &SchemaManagerState, handle: Element) -> Element {
+    Element::col()
+        .width_match()
+        .child(Element::divider())
+        .child(build_compound_row(entry, true, mgr, Some(handle)))
 }
 
 // ──────────────────────── UI 构建 ────────────────────────
@@ -3076,5 +3181,54 @@ mod section_build_tests {
             let _ = build_section(kind, &state);
         }
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reordered_enabled_order;
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn moves_row_to_target_slot() {
+        let vis = strs(&["a", "b", "c"]);
+        assert_eq!(
+            reordered_enabled_order(&vis, &vis, 0, 2).unwrap(),
+            strs(&["b", "c", "a"])
+        );
+        assert_eq!(
+            reordered_enabled_order(&vis, &vis, 2, 0).unwrap(),
+            strs(&["c", "a", "b"])
+        );
+    }
+
+    #[test]
+    fn expands_empty_order_from_visible_rows() {
+        // enabled_order 为空 = "全部启用"，此时可见行才是真顺序，拖完要把它展开落地。
+        let vis = strs(&["a", "b", "c"]);
+        assert_eq!(
+            reordered_enabled_order(&vis, &[], 0, 1).unwrap(),
+            strs(&["b", "a", "c"])
+        );
+    }
+
+    #[test]
+    fn keeps_order_entries_that_have_no_visible_row() {
+        // order 里的 x 在已启用区没有对应行（特殊方案 / 已卸载但仍在 available 里）。
+        // 拖一次顺序不该把它从 available 里抹掉。
+        let vis = strs(&["a", "b"]);
+        let order = strs(&["a", "x", "b"]);
+        assert_eq!(
+            reordered_enabled_order(&vis, &order, 1, 0).unwrap(),
+            strs(&["b", "a", "x"])
+        );
+    }
+
+    #[test]
+    fn out_of_range_source_is_rejected() {
+        assert!(reordered_enabled_order(&strs(&["a"]), &[], 3, 0).is_none());
     }
 }
