@@ -280,7 +280,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
             Element::button("导入")
                 .small()
                 .outline_soft()
-                .on_click(move |ctx| m_imp.do_import_package(ctx)),
+                .on_click(move |_| m_imp.do_import_package()),
         )
         .child(
             Element::button("导出")
@@ -290,7 +290,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                     e_exp.sel_ver.get();
                     e_exp.selected_entry().is_some()
                 })
-                .on_click(move |ctx| m_exp.do_export_selected(ctx)),
+                .on_click(move |_| m_exp.do_export_selected()),
         )
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
         .child(dict::reactive::toast_sink(mgr.feedback));
@@ -301,7 +301,24 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 工具栏与列表合成**一个**卡片子项：`card()` 会在相邻子项间自动插分隔线，而列表
     // 的每一行已自带顶部分隔线（可拖行必须行行一致，否则拖动中会错位——见
     // `build_draggable_row`），两者同时存在就成了双线。
-    let toolbar_and_list = Element::col().width_match().child(toolbar).child(list_el);
+    //
+    // 列表级右键菜单（导入/刷新/显示过滤）挂在这个容器上：行有自己的菜单且命中更靠内，
+    // 落到这里的只有列表下方空白与工具栏空隙。两个显示过滤要持久化，故把写盘动作
+    // 以回调传进去——`SchemaManagerState` 不持有 `AppState`，不该为此反向依赖。
+    let (app_hd, app_sh) = (app.clone(), app.clone());
+    let m_list = mgr.clone();
+    let toolbar_and_list = Element::col()
+        .width_match()
+        .child(toolbar)
+        .child(list_el)
+        .on_context_menu(move || {
+            let (a_hd, a_sh) = (app_hd.clone(), app_sh.clone());
+            crate::dialogs::schema_manager::list_menu_items(
+                &m_list,
+                Rc::new(move |v| a_hd.borrow_mut().save_hide_disabled_schemas(v)),
+                Rc::new(move |v| a_sh.borrow_mut().save_show_hidden_schemas(v)),
+            )
+        });
     let mut secs = vec![section("输入方案", vec![toolbar_and_list])];
 
     // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。

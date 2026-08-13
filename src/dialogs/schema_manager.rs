@@ -10,7 +10,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
-use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::config::Config;
@@ -1038,6 +1037,33 @@ impl SchemaManagerState {
         }
     }
 
+    /// 选中方案在**已启用区行序**里的位置 (idx, total)；未选中或不在该区返回 None。
+    ///
+    /// 与 [`selected_enabled_pos`](Self::selected_enabled_pos) 的区别在真相源：那个读
+    /// `enabled_order`（可能为空 = 全部启用，也可能含界面上根本不出现的 id），够工具栏
+    /// ↑/↓ 判可用性；本函数读 `enabled_rows`——界面上真实那几行，与拖拽重排
+    /// [`reorder_enabled`](Self::reorder_enabled) 同一套下标，故算出的位置能直接喂给它。
+    pub fn selected_row_pos(&self) -> Option<(usize, usize)> {
+        let id = self.selected_id.borrow().clone()?;
+        let rows = self.enabled_rows.get();
+        let idx = rows.iter().position(|e| e.id == id)?;
+        Some((idx, rows.len()))
+    }
+
+    /// 把选中方案移到已启用区的首位 / 末位（右键菜单「移到最前 / 最后」）。
+    ///
+    /// 方案一多，靠 ↑/↓ 一格格挪到头要点十几次——这正是把操作搬进右键菜单要解决的问题，
+    /// 只搬「上移/下移」等于把同样的点击次数换个地方点。
+    pub fn move_selected_to(&self, to_top: bool) {
+        let Some((idx, total)) = self.selected_row_pos() else {
+            return;
+        };
+        let to = if to_top { 0 } else { total.saturating_sub(1) };
+        if idx != to {
+            self.reorder_enabled(idx, to);
+        }
+    }
+
     /// 打开选中方案的设置对话框。
     pub fn open_settings_selected(&self) {
         let Some(id) = self.selected_id.borrow().clone() else {
@@ -1510,76 +1536,95 @@ impl SchemaManagerState {
 
     // ── 方案包导入导出（scheme.exportPackage/previewImport/importPackage）──
 
-    /// 导出选中方案为方案包 zip。对话框经 `ctx.request_save_file` 异步请求
-    /// （禁止在点击回调里同步弹模态框，见 dict::do_export_phrases 注释）。
-    pub fn do_export_selected(&self, ctx: &mut EventCtx) {
+    /// 导出选中方案为方案包 zip。
+    pub fn do_export_selected(&self) {
         let Some(entry) = self.selected_entry() else {
             self.notify(ToastKind::Error, "请先选中方案");
             return;
         };
-        let state = self.clone();
+        self.export_schema(&entry.id);
+    }
+
+    /// 导出指定方案为方案包 zip：弹保存框取落点 → `scheme.exportPackage` → 报结果。
+    ///
+    /// 走 `app::defer_blocking` 而非 `ctx.request_save_file`：两者时机语义相同（都在事件
+    /// 分发完全返回后执行，绝不在回调栈内同步弹原生模态框），但前者不要 `ctx`，于是
+    /// 工具栏按钮与右键菜单项能共用**同一条**路径——菜单项的动作是无参 `Fn()`，拿不到
+    /// `ctx`，分成两条实现迟早分叉。
+    pub fn export_schema(&self, schema_id: &str) {
+        let entry = {
+            let schemas = self.schemas.borrow();
+            let Some(e) = schemas.iter().find(|e| e.id == schema_id) else {
+                return;
+            };
+            e.clone()
+        };
         // 文件名带方案版本便于区分（schema.toml 未标版本时省略）。
         let file_name = if entry.version.is_empty() {
             format!("{}.zip", entry.id)
         } else {
             format!("{}-{}.zip", entry.id, entry.version)
         };
-        ctx.request_save_file(
-            PickDialog::new()
+        let state = self.clone();
+        windui::app::defer_blocking(move || {
+            let Some(path) = PickDialog::new()
                 .title("导出方案包")
                 .file_name(&file_name)
-                .filter("方案包", &["zip"]),
-            move |path| {
-                let Some(path) = path else { return };
-                match rpc::call_core(
-                    "scheme.exportPackage",
-                    &json!({ "id": entry.id, "path": path.to_string_lossy() }),
-                ) {
-                    Ok(v) => {
-                        let n = |k: &str| {
-                            v.get(k)
-                                .and_then(|x| x.as_array())
-                                .map(|a| a.len())
-                                .unwrap_or(0)
-                        };
-                        let (packed, missing) = (n("packed"), n("missing"));
-                        let msg = if missing > 0 {
-                            format!("已导出 {packed} 个文件（缺失引用 {missing} 个）")
-                        } else {
-                            format!("已导出 {packed} 个文件")
-                        };
-                        state.notify(ToastKind::Success, msg);
-                    }
-                    Err(e) => state.notify(ToastKind::Error, format!("导出失败: {e}")),
+                .filter("方案包", &["zip"])
+                .save_file()
+            else {
+                return;
+            };
+            match rpc::call_core(
+                "scheme.exportPackage",
+                &json!({ "id": entry.id, "path": path.to_string_lossy() }),
+            ) {
+                Ok(v) => {
+                    let n = |k: &str| {
+                        v.get(k)
+                            .and_then(|x| x.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0)
+                    };
+                    let (packed, missing) = (n("packed"), n("missing"));
+                    let msg = if missing > 0 {
+                        format!("已导出 {packed} 个文件（缺失引用 {missing} 个）")
+                    } else {
+                        format!("已导出 {packed} 个文件")
+                    };
+                    state.notify(ToastKind::Success, msg);
                 }
-            },
-        );
+                Err(e) => state.notify(ToastKind::Error, format!("导出失败: {e}")),
+            }
+        });
     }
 
     /// 导入方案包：选 zip → `scheme.previewImport` 预览 → 确认对话框选合并/替换。
-    pub fn do_import_package(&self, ctx: &mut EventCtx) {
+    /// 延迟通道的选型同 [`export_schema`](Self::export_schema)。
+    pub fn do_import_package(&self) {
         let state = self.clone();
-        ctx.request_pick_file(
-            PickDialog::new()
+        windui::app::defer_blocking(move || {
+            let Some(path) = PickDialog::new()
                 .title("导入方案包")
-                .filter("方案包", &["zip"]),
-            move |path| {
-                let Some(path) = path else { return };
-                match rpc::call_core(
-                    "scheme.previewImport",
-                    &json!({ "path": path.to_string_lossy() }),
-                ) {
-                    Ok(v) => {
-                        state
-                            .import_preview_msg
-                            .set(Self::format_import_preview(&v));
-                        *state.pending_import_path.borrow_mut() = Some(path);
-                        state.import_confirm_visible.set(true);
-                    }
-                    Err(e) => state.notify(ToastKind::Error, format!("预览失败: {e}")),
+                .filter("方案包", &["zip"])
+                .pick_file()
+            else {
+                return;
+            };
+            match rpc::call_core(
+                "scheme.previewImport",
+                &json!({ "path": path.to_string_lossy() }),
+            ) {
+                Ok(v) => {
+                    state
+                        .import_preview_msg
+                        .set(Self::format_import_preview(&v));
+                    *state.pending_import_path.borrow_mut() = Some(path);
+                    state.import_confirm_visible.set(true);
                 }
-            },
-        );
+                Err(e) => state.notify(ToastKind::Error, format!("预览失败: {e}")),
+            }
+        });
     }
 
     /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
@@ -1844,6 +1889,135 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
     Element::col().width_match().child(enabled).child(rest)
 }
 
+/// 方案行的右键菜单。**先把该行设为选中**，再按选中态复用工具栏那套判定
+///（`can_set_active` / `selected_row_pos` / `selected_is_user`）——右击即选中是桌面惯例，
+/// 也让菜单与工具栏共享同一个"作用对象"模型，不必为菜单另写一套按 id 的判定。
+///
+/// 项的启用态在**每次右击时**现算（`on_context_menu` 的构建器每次都跑），故"设为当前"
+/// 在当前方案上是灰的、"上移"在首行是灰的，都无需额外的响应式包装。
+fn row_menu_items(mgr: &SchemaManagerState, entry: &SchemaEntry) -> Vec<MenuItem> {
+    mgr.select(&entry.id);
+
+    let mut items = Vec::new();
+
+    // 特殊方案（英文/快符）不进 available、不参与循环切换，故没有「设为当前 / 启用 / 排序」
+    // 这几件事可做——列出来只会造出一个用户点了也不知道发生什么的状态。
+    if !entry.hidden {
+        let m = mgr.clone();
+        items.push(
+            MenuItem::run("设为当前", move || m.set_active_selected(), false)
+                .with_enabled(mgr.can_set_active()),
+        );
+
+        let enabled = mgr.is_enabled(&entry.id);
+        let (m, id) = (mgr.clone(), entry.id.clone());
+        items.push(
+            MenuItem::run(
+                "启用",
+                move || {
+                    m.toggle_schema_enabled(&id, !enabled);
+                },
+                enabled,
+            )
+            // 当前方案不可禁用（toggle 里会拒并弹提示）。菜单里直接置灰更早一步说清楚。
+            .with_enabled(!enabled || !mgr.is_active(&entry.id)),
+        );
+
+        // 排序仅对已启用区有意义：未启用方案不在循环里，没有"优先级"可言。
+        if let Some((idx, total)) = mgr.selected_row_pos() {
+            items.push(MenuItem::separator());
+            let m = mgr.clone();
+            items.push(
+                MenuItem::run("上移", move || m.move_selected(true), false)
+                    .with_shortcut("↑")
+                    .with_enabled(idx > 0),
+            );
+            let m = mgr.clone();
+            items.push(
+                MenuItem::run("下移", move || m.move_selected(false), false)
+                    .with_shortcut("↓")
+                    .with_enabled(idx + 1 < total),
+            );
+            let m = mgr.clone();
+            items.push(
+                MenuItem::run("移到最前", move || m.move_selected_to(true), false)
+                    .with_enabled(idx > 0),
+            );
+            let m = mgr.clone();
+            items.push(
+                MenuItem::run("移到最后", move || m.move_selected_to(false), false)
+                    .with_enabled(idx + 1 < total),
+            );
+        }
+    }
+
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+    }
+    let m = mgr.clone();
+    items.push(MenuItem::run(
+        "方案设置…",
+        move || m.open_settings_selected(),
+        false,
+    ));
+    let (m, id) = (mgr.clone(), entry.id.clone());
+    items.push(MenuItem::run(
+        "导出方案包…",
+        move || m.export_schema(&id),
+        false,
+    ));
+    items.push(MenuItem::separator());
+    let m = mgr.clone();
+    items.push(
+        MenuItem::run("删除", move || m.request_delete_selected(), false)
+            .with_enabled(entry.source == "user"),
+    );
+    items
+}
+
+/// 方案列表**空白处**的右键菜单：作用于整个列表而非某一行。
+///
+/// 挂在工具栏+列表那个外层容器上，故行上右击命中行菜单（更靠近命中点的节点先接），
+/// 落在列表下方空白、工具栏空隙才落到这里。
+pub fn list_menu_items(
+    mgr: &SchemaManagerState,
+    on_hide_disabled: Rc<dyn Fn(bool)>,
+    on_show_hidden: Rc<dyn Fn(bool)>,
+) -> Vec<MenuItem> {
+    let m = mgr.clone();
+    let m_r = mgr.clone();
+    let (hide, show) = (mgr.hide_disabled.get(), mgr.show_hidden.get());
+    let (m_h, m_s) = (mgr.clone(), mgr.clone());
+    vec![
+        MenuItem::run("导入方案包…", move || m.do_import_package(), false),
+        MenuItem::run("刷新列表", move || m_r.refresh(), false),
+        MenuItem::separator(),
+        // 粘滞项：连点两个过滤开关不必反复右击。勾选态每次右击重建时现取。
+        MenuItem::run(
+            "隐藏未启用",
+            move || {
+                let v = !m_h.hide_disabled.get();
+                m_h.hide_disabled.set(v);
+                on_hide_disabled(v);
+            },
+            hide,
+        )
+        .stay_open(),
+        MenuItem::run(
+            "显示特殊方案",
+            move || {
+                let v = !m_s.show_hidden.get();
+                // set_show_hidden 内会重建列表——特殊方案的显隐决定「进不进列表」，
+                // 不是单纯的行可见性（分区标题的计数按数据项算）。
+                m_s.set_show_hidden(v);
+                on_show_hidden(v);
+            },
+            show,
+        )
+        .stay_open(),
+    ]
+}
+
 /// 拖拽落定后的新 `enabled_order`：把 `visible`（已启用区当前那几行的 id，界面顺序）
 /// 的第 `from` 项挪到第 `to` 位，再把 `order` 里**不在可见行中**的 id 原样接在后面。
 /// `from` 越界返回 None（调用方不动数据）。
@@ -2076,6 +2250,13 @@ fn build_compound_row(
                 .child(h),
         );
     }
+
+    // 右键菜单挂 **stack 整体**而非内层那个 clickable 的 row：手柄是 stack 的同级覆盖层，
+    // 挂内层 row 的话右击手柄冒泡不到它（右击落在手柄上就没菜单，而那正是行首一整格）。
+    // 右键不会被 Clickable 吞掉——框架在分发层只把非左键发给接右键的节点，故内层 row
+    // 的 clickable 不构成阻碍（与拖拽手柄那个坑正相反）。
+    let (m_menu, e_menu) = (mgr.clone(), entry.clone());
+    item = item.on_context_menu(move || row_menu_items(&m_menu, &e_menu));
 
     // 未启用行随 hide_disabled 隐藏（list_signal 重建后无需 enabled_sig 联动）。
     // 注：特殊方案的显隐不在这里——它决定的是「进不进列表」，走 rebuild_list 过滤，
@@ -3181,6 +3362,202 @@ mod section_build_tests {
             let _ = build_section(kind, &state);
         }
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+}
+
+#[cfg(test)]
+mod row_menu_tests {
+    use super::*;
+
+    fn entry(id: &str, source: &str, hidden: bool) -> SchemaEntry {
+        SchemaEntry {
+            id: id.into(),
+            name: id.into(),
+            source: source.into(),
+            hidden,
+            ..Default::default()
+        }
+    }
+
+    /// 三行已启用（a/b/c）+ 一个特殊方案 s；当前方案为 a，全为用户安装（除 b 为内置）。
+    fn fixture() -> SchemaManagerState {
+        let st = SchemaManagerState::new();
+        let rows = vec![
+            entry("a", "user", false),
+            entry("b", "builtin", false),
+            entry("c", "user", false),
+        ];
+        *st.schemas.borrow_mut() = {
+            let mut v = rows.clone();
+            v.push(entry("s", "user", true));
+            v
+        };
+        *st.enabled_order.borrow_mut() = vec!["a".into(), "b".into(), "c".into()];
+        st.enabled_rows.set(rows);
+        *st.active_id.borrow_mut() = "a".into();
+        st
+    }
+
+    fn labels(items: &[MenuItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter(|i| !i.separator)
+            .map(|i| i.label.clone())
+            .collect()
+    }
+
+    fn item<'a>(items: &'a [MenuItem], label: &str) -> &'a MenuItem {
+        items
+            .iter()
+            .find(|i| i.label == label)
+            .unwrap_or_else(|| panic!("菜单里应有「{label}」项，实际：{:?}", labels(items)))
+    }
+
+    /// 右击一行即把它设为选中——菜单里所有判定都按"选中项"算，不选中就会对着上一次
+    /// 选的那个方案出菜单（点了「删除」删掉的是别的方案）。
+    #[test]
+    fn right_click_selects_the_row() {
+        let st = fixture();
+        st.select("a");
+        let _ = row_menu_items(&st, &entry("c", "user", false));
+        assert_eq!(st.selected_id.borrow().as_deref(), Some("c"));
+    }
+
+    /// 特殊方案（英文/快符）不进 available、不参与循环切换：菜单里不该出现
+    /// 「设为当前 / 启用 / 排序」——列出来只会造出一个点了也不知道发生什么的状态。
+    #[test]
+    fn special_schema_menu_omits_activation_and_ordering() {
+        let st = fixture();
+        let items = row_menu_items(&st, &entry("s", "user", true));
+        assert_eq!(labels(&items), ["方案设置…", "导出方案包…", "删除"]);
+    }
+
+    /// 当前方案：不能"再设为当前"，也不能被禁用（toggle 会拒），菜单里直接置灰。
+    #[test]
+    fn active_schema_can_neither_be_reactivated_nor_disabled() {
+        let st = fixture();
+        let items = row_menu_items(&st, &entry("a", "user", false));
+        assert!(!item(&items, "设为当前").enabled, "已是当前方案");
+        let toggle = item(&items, "启用");
+        assert!(toggle.checked, "当前方案必然是启用的");
+        assert!(
+            !toggle.enabled,
+            "当前方案不可禁用，应提前置灰而不是点了才报错"
+        );
+    }
+
+    /// 非当前的已启用方案：可设为当前、可禁用。
+    #[test]
+    fn enabled_non_active_schema_can_be_activated_and_disabled() {
+        let st = fixture();
+        let items = row_menu_items(&st, &entry("c", "user", false));
+        assert!(item(&items, "设为当前").enabled);
+        let toggle = item(&items, "启用");
+        assert!(toggle.checked && toggle.enabled);
+    }
+
+    /// 排序项按行在**已启用区**的位置置灰：首行不能上移/移到最前，末行反之。
+    #[test]
+    fn ordering_items_gray_out_at_the_ends() {
+        let st = fixture();
+        let first = row_menu_items(&st, &entry("a", "user", false));
+        assert!(!item(&first, "上移").enabled && !item(&first, "移到最前").enabled);
+        assert!(item(&first, "下移").enabled && item(&first, "移到最后").enabled);
+
+        let last = row_menu_items(&st, &entry("c", "user", false));
+        assert!(item(&last, "上移").enabled && item(&last, "移到最前").enabled);
+        assert!(!item(&last, "下移").enabled && !item(&last, "移到最后").enabled);
+    }
+
+    /// 内置方案不可删除（与 `request_delete_at_id` 的守护同口径，菜单提前置灰）。
+    #[test]
+    fn delete_is_enabled_only_for_user_installed_schemas() {
+        let st = fixture();
+        assert!(item(&row_menu_items(&st, &entry("c", "user", false)), "删除").enabled);
+        assert!(!item(&row_menu_items(&st, &entry("b", "builtin", false)), "删除").enabled);
+    }
+
+    /// 「移到最前/最后」走 `enabled_rows` 的下标（与拖拽重排同一真相源）。
+    #[test]
+    fn move_to_top_and_bottom_rewrite_the_order() {
+        let st = fixture();
+        st.select("c");
+        st.move_selected_to(true);
+        assert_eq!(*st.enabled_order.borrow(), ["c", "a", "b"]);
+
+        let st = fixture();
+        st.select("a");
+        st.move_selected_to(false);
+        assert_eq!(*st.enabled_order.borrow(), ["b", "c", "a"]);
+    }
+
+    /// 接线守护：右击行内**任意位置**都要弹出菜单——包括行首那一格手柄槽。
+    ///
+    /// 菜单挂在整行的 stack 上而非内层那个 clickable 的 row，正是为了这一格：手柄是
+    /// stack 的同级覆盖层（见 `build_compound_row` 的文档），挂内层 row 的话右击手柄
+    /// 冒泡不到菜单节点，行首一整列就成了死区。上面那些测试只验证菜单**内容**，
+    /// 挂错节点它们照样全绿。
+    #[test]
+    fn right_clicking_anywhere_on_the_row_opens_the_menu() {
+        use windui::core::Tree;
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::{Point, Size};
+
+        let st = fixture();
+        // 带手柄 = 已启用区的可拖行，行首那一格被手柄覆盖层占着。
+        let el = build_compound_row(
+            entry("c", "user", false),
+            true,
+            &st,
+            Some(Element::leaf().width(12).height(12)),
+        );
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(600, 200), &mut windui::text::NullTextEngine);
+
+        // 手柄槽（x≈12）、名称列（x≈200）、右侧徽章区（x≈540）各来一次。
+        for x in [12, 200, 540] {
+            let (mut hover, mut capture) = (None, None);
+            let res = tree.dispatch_pointer(
+                PointerEvent::single(PointerKind::Down, Point::new(x, 20), MouseButton::Right),
+                &mut hover,
+                &mut capture,
+            );
+            let menu = res
+                .menu
+                .unwrap_or_else(|| panic!("x={x} 处右击应弹出行菜单"));
+            assert!(
+                menu.items.iter().any(|i| i.label == "方案设置…"),
+                "x={x} 弹出的应是方案行菜单"
+            );
+        }
+    }
+
+    /// 列表级菜单：过滤项是粘滞的（点了菜单不关），且勾选态取自当前开关值。
+    #[test]
+    fn list_menu_filter_items_are_sticky_and_reflect_current_state() {
+        let st = fixture();
+        st.hide_disabled.set(true);
+        let noop = || Rc::new(|_: bool| {}) as Rc<dyn Fn(bool)>;
+        let items = list_menu_items(&st, noop(), noop());
+        let hide = item(&items, "隐藏未启用");
+        assert!(hide.checked && hide.stay_open, "粘滞项才能连点多个过滤开关");
+        assert!(!item(&items, "显示特殊方案").checked);
+    }
+
+    /// 过滤项点击后既翻信号也调持久化回调——只翻信号的话重开设置页就打回原形。
+    #[test]
+    fn list_menu_filter_persists_through_callback() {
+        let st = fixture();
+        let saved = Rc::new(std::cell::Cell::new(None));
+        let s = saved.clone();
+        let items = list_menu_items(&st, Rc::new(move |v| s.set(Some(v))), Rc::new(|_: bool| {}));
+        if let windui::event::MenuAction::Run(f) = &item(&items, "隐藏未启用").action {
+            f();
+        }
+        assert!(st.hide_disabled.get(), "信号应翻转");
+        assert_eq!(saved.get(), Some(true), "并应把新值交给持久化回调");
     }
 }
 
