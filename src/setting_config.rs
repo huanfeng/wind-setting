@@ -181,7 +181,10 @@ mod tests {
     fn config_path_uses_release_user_dir() {
         let base = std::path::PathBuf::from("user-config-root");
         let path = config_path_from_base(AppMode::Release, Some(base.clone()));
-        assert_eq!(path.unwrap(), base.join("WindInput").join("wind_setting.toml"));
+        assert_eq!(
+            path.unwrap(),
+            base.join("WindInput").join("wind_setting.toml")
+        );
     }
 
     #[test]
@@ -210,8 +213,16 @@ mod tests {
         let path = config_path_for_mode(AppMode::Release)
             .expect("当前平台必须能定位用户配置目录（旧实现只认 APPDATA，非 Windows 恒为 None）");
         // Path::ends_with 按**组件**比较，两个平台上都成立。
-        assert!(path.ends_with("WindInput/wind_setting.toml"), "{}", path.display());
-        assert!(path.is_absolute(), "配置路径须为绝对路径：{}", path.display());
+        assert!(
+            path.ends_with("WindInput/wind_setting.toml"),
+            "{}",
+            path.display()
+        );
+        assert!(
+            path.is_absolute(),
+            "配置路径须为绝对路径：{}",
+            path.display()
+        );
     }
 
     /// macOS 上落在 `~/Library/Application Support/WindInput[Dev]`，
