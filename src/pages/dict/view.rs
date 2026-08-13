@@ -512,25 +512,21 @@ fn render_cell(
 /// 行右键菜单（按当前 spec 的 ops 增减）。与 [`build_row_actions`] 同源同判据——
 /// 两处各写一套 ops 分支，加类别时必漏一边。
 ///
-/// 比操作列多出三样，都是**列宽装不下**才落在这里的：
-/// - 首项标题（词条 + 编码副标题，禁用态）：表格无选中态，不标出来用户不知道菜单作用于哪行；
+/// 比操作列多出两样，都是**列宽装不下**才落在这里的：
 /// - 复制词条 / 复制编码：查完词想拿去搜一下，此前只能手抄；
 /// - 「转为用户短语」：`OpFlags::claim_as_user` 的注释写着"操作列再加一枚按钮就挤爆了"，
 ///   于是它一直藏在只读查看对话框二层里——右键菜单没有宽度约束，正好把它提到一层。
+///
+/// **刻意不放"当前行"的标题项**：词条与编码都可能很长（整句短语、长编码），菜单宽度按
+/// 最宽项算，一行长文本就把整个菜单撑成一大片，反而看不清有哪些操作。菜单弹在指针处、
+/// 紧贴被右击的那一行，作用对象本就在眼前，不值得为标注它付出这个代价。
 fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     let spec = mgr.current_spec();
     let Some(row) = mgr.display_row(disp) else {
         return Vec::new();
     };
     let text = row.display_text();
-
-    // 标题项：禁用态、不可点。表格只有悬停高亮没有选中态，右击后菜单弹在指针处，
-    // 不标出作用对象的话，多行密排时很容易对着上一行的印象点下去。
-    let mut items = vec![
-        MenuItem::run(text.clone(), || {}, false)
-            .with_subtitle(row.code.clone())
-            .with_enabled(false),
-    ];
+    let mut items: Vec<MenuItem> = Vec::new();
 
     // 操作组：**整组可能一项都不剩**（词频这类只有批量操作、无行级操作的类别），
     // 故用 `push_group` 装配——组空时连同它前面的分隔线一起省掉，不留一条孤线。
@@ -930,20 +926,31 @@ mod tests {
             .collect()
     }
 
-    /// 菜单首项是作用对象的标题（词条 + 编码副标题），且**不可点**。
+    /// 菜单里**不出现行内容本身**（词条 / 编码）。
     ///
-    /// 表格只有悬停高亮、没有选中态，菜单又弹在指针处；不标出作用于哪一行，密排时
-    /// 很容易对着上一行的印象点下去。禁用是为了让它读起来像标题而不是一个操作。
+    /// ★ 菜单宽度按最宽项算：整句短语或长编码放进去，一行长文本就把整个菜单撑成一大片，
+    /// 操作反而看不清。曾用它当"作用对象"的标题，但菜单本就弹在指针处、紧贴被右击那行，
+    /// 标注的收益抵不过这个代价。判据查**任何项**都不含行内容，而不只是首项——
+    /// 换个位置塞回去同样会撑宽。
     #[test]
-    fn row_menu_leads_with_a_disabled_title_of_the_target_row() {
+    fn row_menu_never_echoes_row_content() {
         let mgr = DictManagerState::new();
+        let long = "这是一条很长很长的短语内容会把菜单撑得很宽";
         mgr.apply_rows(&json!([
-            { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
+            { "code": "averylongcodehere", "text": long, "weight": 1000, "enabled": true, "isSystem": true },
         ]));
-        let items = row_menu_items(&mgr, 0);
-        assert_eq!(items[0].label, "$date");
-        assert_eq!(items[0].subtitle.as_deref(), Some("rq"));
-        assert!(!items[0].enabled, "标题项不该可点");
+        for it in row_menu_items(&mgr, 0) {
+            assert!(
+                !it.label.contains(long) && !it.label.contains("averylongcodehere"),
+                "菜单项「{}」回显了行内容，会把菜单撑宽",
+                it.label
+            );
+            assert!(
+                it.subtitle.is_none(),
+                "副标题同样会撑宽（且让行高变高），项「{}」不该有",
+                it.label
+            );
+        }
     }
 
     /// 系统短语：只读类别。菜单给「查看/启用/复制」，并把藏在查看对话框二层的
@@ -958,14 +965,7 @@ mod tests {
         let items = row_menu_items(&mgr, 0);
         assert_eq!(
             menu_labels(&items),
-            [
-                "$date",
-                "查看…",
-                "转为用户短语",
-                "启用",
-                "复制词条",
-                "复制编码"
-            ]
+            ["查看…", "转为用户短语", "启用", "复制词条", "复制编码"]
         );
         assert!(items.iter().find(|i| i.label == "启用").unwrap().checked);
         assert!(
@@ -999,7 +999,7 @@ mod tests {
         let items = row_menu_items(&mgr, 0);
         assert_eq!(
             menu_labels(&items),
-            ["工", "编辑…", "复制词条", "复制编码", "删除"]
+            ["编辑…", "复制词条", "复制编码", "删除"]
         );
     }
 
