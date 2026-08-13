@@ -47,11 +47,35 @@ pub fn main_reconnect(app: &Rc<RefCell<state::AppState>>) {
     app.borrow_mut().apply_loaded(data);
 }
 
+/// 单实例 app_id（含变体后缀，dev/release 互不干扰）。主窗口与加词小窗是两个独立单例，
+/// 各占一个 id —— 加词小窗开着时点「设置」，两者互不顶替。
+///
+/// windui 在 `App::run` 里据此仲裁；本模块另在启动早期用它做一次只读探测，见
+/// [`is_secondary_instance`]。
+fn single_instance_app_id(add_word: bool) -> String {
+    let suffix = mode::pipe_suffix();
+    if add_word {
+        format!("wind_setting_addword{suffix}")
+    } else {
+        format!("wind_setting{suffix}")
+    }
+}
+
+/// 本进程多半只是个「转发 argv 给首实例后立即退出」的二次实例吗？
+///
+/// 只读探测，不参与仲裁（真正的仲裁在 `App::run` 里，见 windui `single_instance`）。
+/// 用途是让启动早期就能避开那些会**打扰首实例**的动作 —— 目前是日志轮转（见
+/// [`logger::rotate`]）。结论有竞态且允许出错：判成首实例最坏就是多轮转一次日志。
+fn is_secondary_instance(args: &[String]) -> bool {
+    let add_word = cli::parse_add_word(args).is_some();
+    windui::instance_running(&single_instance_app_id(add_word))
+}
+
 fn main() {
     // mode::init 必须最先执行：logger 的目录路径和 RPC 管道名均依赖它。
     let args: Vec<String> = std::env::args().collect();
     mode::init(&args);
-    logger::init();
+    logger::init(is_secondary_instance(&args));
     protocol::self_heal_registration();
 
     // 快捷加词小窗：独立单例、紧凑窗，复用词库加词对话框；不落入常规设置界面路径。
@@ -104,8 +128,8 @@ fn main() {
         }
     );
 
-    // 单实例 + 二次运行激活/切页/协议（app_id 含变体后缀，dev/release 互不干扰）。
-    let app_id = format!("wind_setting{}", mode::pipe_suffix());
+    // 单实例 + 二次运行激活/切页/协议。
+    let app_id = single_instance_app_id(false);
     let single_instance_state = app_state.clone();
     let mut app = App::new("清风输入法设置", 820, 640)
         .single_instance(app_id, move |argv| {

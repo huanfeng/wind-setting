@@ -68,7 +68,7 @@ pub fn run(params: AddWordParams) {
 
     let root = build_form(title, schema_id, code, text, weight, error);
 
-    let app_id = format!("wind_setting_addword{}", crate::mode::pipe_suffix());
+    let app_id = crate::single_instance_app_id(true);
     App::new("添加用户词库", 400, 300)
         // 二次启动：重新解析参数并重填字段（复用同一小窗，不新起进程）。
         .single_instance(app_id, move |argv| {
