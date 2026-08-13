@@ -409,6 +409,7 @@ fn build_table(mgr: &DictManagerState) -> Element {
     let m_sort = mgr.clone();
     let m_act = mgr.clone();
     let m_dbl = mgr.clone();
+    let m_menu = mgr.clone();
     Element::table_sortable_server(cols, mgr.table_rows, mgr.sort, move |_, _| {
         m_sort.on_sort_changed()
     })
@@ -418,6 +419,8 @@ fn build_table(mgr: &DictManagerState) -> Element {
     })
     // 双击整行进入编辑（仅支持编辑的类别；落点在操作列按钮上不触发）。
     .on_row_activate(move |_ctx, disp| activate_row(&m_dbl, disp))
+    // 右击整行：与操作列同源的菜单，外加复制与「转为用户短语」（列宽装不下的那几样）。
+    .on_row_context_menu(move |disp| row_menu_items(&m_menu, disp))
     // 系统词库等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。
     .cell_lines(2)
     .fill()
@@ -504,6 +507,141 @@ fn render_cell(
         }
         _ => None,
     }
+}
+
+/// 行右键菜单（按当前 spec 的 ops 增减）。与 [`build_row_actions`] 同源同判据——
+/// 两处各写一套 ops 分支，加类别时必漏一边。
+///
+/// 比操作列多出三样，都是**列宽装不下**才落在这里的：
+/// - 首项标题（词条 + 编码副标题，禁用态）：表格无选中态，不标出来用户不知道菜单作用于哪行；
+/// - 复制词条 / 复制编码：查完词想拿去搜一下，此前只能手抄；
+/// - 「转为用户短语」：`OpFlags::claim_as_user` 的注释写着"操作列再加一枚按钮就挤爆了"，
+///   于是它一直藏在只读查看对话框二层里——右键菜单没有宽度约束，正好把它提到一层。
+fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
+    let spec = mgr.current_spec();
+    let Some(row) = mgr.display_row(disp) else {
+        return Vec::new();
+    };
+    let text = row.display_text();
+
+    // 标题项：禁用态、不可点。表格只有悬停高亮没有选中态，右击后菜单弹在指针处，
+    // 不标出作用对象的话，多行密排时很容易对着上一行的印象点下去。
+    let mut items = vec![
+        MenuItem::run(text.clone(), || {}, false)
+            .with_subtitle(row.code.clone())
+            .with_enabled(false),
+        MenuItem::separator(),
+    ];
+
+    if spec.ops.view {
+        let m = mgr.clone();
+        let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
+        items.push(MenuItem::run(
+            "查看…",
+            move || m.open_view(&c, &t, w, pos),
+            false,
+        ));
+    }
+    if spec.ops.edit {
+        let m = mgr.clone();
+        if spec.ops.remove_rule {
+            // Shadow 类别：`row.text` 是规则原文（列表显示的模板原文不能回填，见 activate_row），
+            // `cand_id` 必须带上，否则提交会擦掉短语规则的稳定 id。
+            let (c, t, k, pos, cid) = (
+                row.code.clone(),
+                row.text.clone(),
+                row.kind.clone(),
+                row.position,
+                row.cand_id.clone(),
+            );
+            items.push(MenuItem::run(
+                "编辑…",
+                move || m.open_shadow_edit(&c, &t, &k, pos, &cid),
+                false,
+            ));
+        } else {
+            let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
+            items.push(MenuItem::run(
+                "编辑…",
+                move || m.open_edit(&c, &t, w, pos),
+                false,
+            ));
+        }
+    }
+    if spec.ops.claim_as_user {
+        let m = mgr.clone();
+        let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
+        items.push(MenuItem::run(
+            "转为用户短语",
+            move || m.claim_phrase_as_user(&c, &t, w, pos),
+            false,
+        ));
+    }
+    if spec.ops.set_enabled {
+        let m = mgr.clone();
+        let (c, t, on) = (row.code.clone(), row.text.clone(), row.enabled);
+        // 勾选态直接读行数据：菜单每次右击重建，取到的就是当刻的值。
+        // 复选框那边还要维护 `enabled_sig` 是因为它常驻在行里、要跟着点击即时变。
+        items.push(MenuItem::run(
+            "启用",
+            move || m.do_set_enabled(&c, &t, !on),
+            on,
+        ));
+    }
+    if spec.ops.promote {
+        let m = mgr.clone();
+        let (c, t) = (row.code.clone(), row.text.clone());
+        items.push(MenuItem::run("转正", move || m.do_promote(&c, &t), false));
+    }
+    if spec.ops.remove_rule {
+        let m = mgr.clone();
+        let (c, t) = (row.code.clone(), row.text.clone());
+        items.push(MenuItem::run(
+            "撤销",
+            move || m.do_delete_row(&c, &t),
+            false,
+        ));
+    }
+
+    items.push(MenuItem::separator());
+    let (m_t, m_c) = (mgr.clone(), mgr.clone());
+    let (copy_text, copy_code) = (text, row.code.clone());
+    items.push(MenuItem::run(
+        "复制词条",
+        move || copy_to_clipboard(&m_t, &copy_text),
+        false,
+    ));
+    items.push(MenuItem::run(
+        "复制编码",
+        move || copy_to_clipboard(&m_c, &copy_code),
+        false,
+    ));
+
+    if spec.ops.remove {
+        items.push(MenuItem::separator());
+        let m = mgr.clone();
+        let (c, t) = (row.code.clone(), row.text.clone());
+        items.push(MenuItem::run(
+            "删除",
+            move || m.request_delete_row(&c, &t),
+            false,
+        ));
+    }
+    items
+}
+
+/// 写剪贴板并给一条 toast 回执。
+///
+/// 走平台单例而非 `EventCtx::clipboard_set`：菜单项动作是无参 `Fn()`，没有 `ctx`。
+/// 剪贴板不同于原生文件对话框——它不起模态消息泵，在菜单项里同步调用是安全的，
+/// 不必绕 `defer_blocking`（windui 自己的 toast 右键「复制内容」也是这么做的）。
+fn copy_to_clipboard(mgr: &DictManagerState, s: &str) {
+    use windui::core::ClipboardProvider;
+    if s.is_empty() {
+        return;
+    }
+    windui::platform::Clipboard.set_text(s);
+    mgr.notify_ok("已复制");
 }
 
 /// 行尾操作（按当前 spec 的 ops 增减）：启用开关 / 查看 / 编辑 / 转正 / 撤销 / 删除。
@@ -757,6 +895,130 @@ mod tests {
             tree.get(header).unwrap().children.len(),
             tree.get(body).unwrap().children.len(),
         )
+    }
+
+    fn menu_labels(items: &[MenuItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter(|i| !i.separator)
+            .map(|i| i.label.clone())
+            .collect()
+    }
+
+    /// 菜单首项是作用对象的标题（词条 + 编码副标题），且**不可点**。
+    ///
+    /// 表格只有悬停高亮、没有选中态，菜单又弹在指针处；不标出作用于哪一行，密排时
+    /// 很容易对着上一行的印象点下去。禁用是为了让它读起来像标题而不是一个操作。
+    #[test]
+    fn row_menu_leads_with_a_disabled_title_of_the_target_row() {
+        let mgr = DictManagerState::new();
+        mgr.apply_rows(&json!([
+            { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
+        ]));
+        let items = row_menu_items(&mgr, 0);
+        assert_eq!(items[0].label, "$date");
+        assert_eq!(items[0].subtitle.as_deref(), Some("rq"));
+        assert!(!items[0].enabled, "标题项不该可点");
+    }
+
+    /// 系统短语：只读类别。菜单给「查看/启用/复制」，并把藏在查看对话框二层的
+    /// 「转为用户短语」提到一层（`OpFlags::claim_as_user` 的注释说明它是因操作列
+    /// 挤不下才下沉的，右键菜单没有宽度约束）。
+    #[test]
+    fn system_phrase_row_menu_surfaces_claim_as_user() {
+        let mgr = DictManagerState::new();
+        mgr.apply_rows(&json!([
+            { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
+        ]));
+        let items = row_menu_items(&mgr, 0);
+        assert_eq!(
+            menu_labels(&items),
+            [
+                "$date",
+                "查看…",
+                "转为用户短语",
+                "启用",
+                "复制词条",
+                "复制编码"
+            ]
+        );
+        assert!(items.iter().find(|i| i.label == "启用").unwrap().checked);
+        assert!(
+            !items.iter().any(|i| i.label == "删除"),
+            "系统短语不可删除，菜单里不该出现"
+        );
+    }
+
+    /// 用户词库：可编辑可删除、无查看/转正/启用开关。菜单必须与操作列同一套 ops 判据
+    /// ——两处各写一份分支，加类别时必漏一边。
+    #[test]
+    fn user_dict_row_menu_matches_the_action_column_ops() {
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(1);
+        mgr.on_nav_changed();
+        mgr.apply_rows(&json!({ "items": [
+            { "code": "aaaa", "text": "工", "weight": 0 },
+        ], "total": 1 }));
+        let spec = mgr.current_spec();
+        assert!(
+            spec.ops.edit && spec.ops.remove,
+            "前提：用户词库可编辑可删除"
+        );
+
+        let items = row_menu_items(&mgr, 0);
+        assert_eq!(
+            menu_labels(&items),
+            ["工", "编辑…", "复制词条", "复制编码", "删除"]
+        );
+    }
+
+    /// 越界下标（数据刚被换掉、菜单构建器拿到旧下标）返回空菜单而不是 panic。
+    /// 空 `Vec` 在框架侧就是"不弹"，正是想要的行为。
+    #[test]
+    fn row_menu_on_a_stale_index_yields_nothing() {
+        let mgr = DictManagerState::new();
+        assert!(row_menu_items(&mgr, 7).is_empty());
+    }
+
+    /// 接线守护：在**真实表格**上派发右键，菜单要真的弹出来。
+    ///
+    /// 上面几条只验证菜单内容——`.on_row_context_menu` 忘了接、或接到了错误的节点
+    /// （表格结构是 col[header, divider, scroll[body]]，挂错一层就没反应），它们照样全绿。
+    #[test]
+    fn right_clicking_a_table_row_opens_the_menu() {
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::Point;
+
+        let mgr = DictManagerState::new();
+        mgr.apply_rows(&json!([
+            { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
+            { "code": "dd", "text": "(^_^)", "weight": 1000, "enabled": false, "isSystem": true },
+        ]));
+        let mut tree = Tree::new();
+        let root = table_view(&mgr).build(&mut tree);
+        tree.root = Some(root);
+        layout(&mut tree);
+        assert_eq!(table_shape(&tree).1, 2, "前提：正文有两行");
+
+        // 表头约 38px 高，首行落在其下。x=100 在编码列内。
+        let (mut hover, mut capture) = (None, None);
+        let res = tree.dispatch_pointer(
+            PointerEvent::single(PointerKind::Down, Point::new(100, 60), MouseButton::Right),
+            &mut hover,
+            &mut capture,
+        );
+        let menu = res.menu.expect("右击正文行应弹出行菜单");
+        assert!(
+            menu.items.iter().any(|i| i.label == "复制编码"),
+            "弹出的应是词库行菜单，实际：{:?}",
+            menu_labels(&menu.items)
+        );
     }
 
     #[test]
