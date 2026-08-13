@@ -1695,6 +1695,7 @@ name = "wind_setting"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs",
  "semver",
  "serde",
  "serde_json",

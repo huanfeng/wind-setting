@@ -4,7 +4,10 @@
 //! 每次启动将旧文件后移一位，超出 KEEP 的删除，1 号由 appender 新建。
 //!
 //! 日志目录优先级：
-//!   %LOCALAPPDATA%\WindInput\logs  →  <exe 同级>\logs  →  ./logs
+//!   <本机状态目录>\WindInput\logs  →  <exe 同级>\logs  →  ./logs
+//!
+//! 本机状态目录即 `dirs::data_local_dir()`：Windows `%LOCALAPPDATA%`、
+//! macOS `~/Library/Application Support`，与 core 的 `Config::local_dir()` 同源。
 //!
 //! 注：应用以 windows_subsystem="windows" 运行，无控制台，仅写文件。
 //! 开发时可用 `RUST_LOG=debug cargo run` 覆盖级别。
@@ -48,8 +51,10 @@ fn resolve_log_dir() -> PathBuf {
         crate::mode::AppMode::Release => "WindInput",
         crate::mode::AppMode::Dev => "WindInputDev",
     };
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(local).join(app_dir).join("logs");
+    // 走 `dirs` 而非直接读 `LOCALAPPDATA`：后者在 Windows 之外恒为空，会一路回落到
+    // exe 同级 —— 在 macOS 的 .app 里那就是往 bundle 内部写，签名后直接失败、日志静默丢失。
+    if let Some(local) = dirs::data_local_dir() {
+        return local.join(app_dir).join("logs");
     }
     std::env::current_exe()
         .ok()

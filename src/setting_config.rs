@@ -99,19 +99,22 @@ pub struct LoadResult {
     pub warning: Option<String>,
 }
 
+/// 本文件落在**用户配置目录**下，与 core 的 `config.toml` 同一个目录：
+/// Windows `%APPDATA%\WindInput[Dev]`、macOS `~/Library/Application Support/WindInput[Dev]`。
+///
+/// 必须走 `dirs`，不能直接读 `APPDATA` 环境变量 —— 后者在 Windows 之外恒为空，
+/// 结果是整个函数返回 `None`，设置项每次启动都回到默认值（连"已同意联网"都记不住）。
+/// core 的 `Config::user_config_dir()` 用的就是 `dirs::config_dir()`，两边必须同源。
 pub fn config_path_for_mode(mode: crate::mode::AppMode) -> Option<PathBuf> {
-    config_path_from_appdata(mode, std::env::var_os("APPDATA").map(PathBuf::from))
+    config_path_from_base(mode, dirs::config_dir())
 }
 
-fn config_path_from_appdata(
-    mode: crate::mode::AppMode,
-    appdata: Option<PathBuf>,
-) -> Option<PathBuf> {
+fn config_path_from_base(mode: crate::mode::AppMode, base: Option<PathBuf>) -> Option<PathBuf> {
     let dir = match mode {
         crate::mode::AppMode::Release => "WindInput",
         crate::mode::AppMode::Dev => "WindInputDev",
     };
-    appdata.map(|base| base.join(dir).join("wind_setting.toml"))
+    base.map(|base| base.join(dir).join("wind_setting.toml"))
 }
 
 pub fn load() -> LoadResult {
@@ -172,34 +175,54 @@ mod tests {
     use super::*;
     use crate::mode::AppMode;
 
+    /// 期望值用 `join` 拼而非字面量：路径分隔符随平台变，写死 `\` 会让这条测试
+    /// 在 macOS/Linux 上无关地红掉，掩盖它真正要守的东西（目录名与文件名）。
     #[test]
     fn config_path_uses_release_user_dir() {
-        let base = std::path::PathBuf::from(r"C:\Users\tester\AppData\Roaming");
-        let path = config_path_from_appdata(AppMode::Release, Some(base));
-        assert_eq!(
-            path.unwrap(),
-            std::path::PathBuf::from(
-                r"C:\Users\tester\AppData\Roaming\WindInput\wind_setting.toml"
-            )
-        );
+        let base = std::path::PathBuf::from("user-config-root");
+        let path = config_path_from_base(AppMode::Release, Some(base.clone()));
+        assert_eq!(path.unwrap(), base.join("WindInput").join("wind_setting.toml"));
     }
 
     #[test]
     fn config_path_uses_dev_user_dir() {
-        let base = std::path::PathBuf::from(r"C:\Users\tester\AppData\Roaming");
-        let path = config_path_from_appdata(AppMode::Dev, Some(base));
+        let base = std::path::PathBuf::from("user-config-root");
+        let path = config_path_from_base(AppMode::Dev, Some(base.clone()));
         assert_eq!(
             path.unwrap(),
-            std::path::PathBuf::from(
-                r"C:\Users\tester\AppData\Roaming\WindInputDev\wind_setting.toml"
-            )
+            base.join("WindInputDev").join("wind_setting.toml")
         );
     }
 
     #[test]
-    fn missing_appdata_returns_none_instead_of_exe_fallback() {
-        assert!(config_path_from_appdata(AppMode::Release, None).is_none());
-        assert!(config_path_from_appdata(AppMode::Dev, None).is_none());
+    fn missing_base_returns_none_instead_of_exe_fallback() {
+        assert!(config_path_from_base(AppMode::Release, None).is_none());
+        assert!(config_path_from_base(AppMode::Dev, None).is_none());
+    }
+
+    /// 配置目录必须由 `dirs` 解析，不能直接读 `APPDATA`。
+    ///
+    /// 曾经的写法是 `env::var_os("APPDATA")`，在 macOS/Linux 上恒为 `None`，
+    /// 于是 `save()` 每次都失败、`load()` 每次都回默认值 —— 表现为"设置里的
+    /// 选项不记忆"。这条测的就是非 Windows 平台上路径**能被解析出来**。
+    #[test]
+    fn config_path_resolves_on_current_platform() {
+        let path = config_path_for_mode(AppMode::Release)
+            .expect("当前平台必须能定位用户配置目录（旧实现只认 APPDATA，非 Windows 恒为 None）");
+        // Path::ends_with 按**组件**比较，两个平台上都成立。
+        assert!(path.ends_with("WindInput/wind_setting.toml"), "{}", path.display());
+        assert!(path.is_absolute(), "配置路径须为绝对路径：{}", path.display());
+    }
+
+    /// macOS 上落在 `~/Library/Application Support/WindInput[Dev]`，
+    /// 与 core 的 `Config::user_config_dir()` 同一个目录 —— 两边不得各写各的。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_config_path_matches_core_user_config_dir() {
+        let home = std::env::var("HOME").expect("macOS 必有 HOME");
+        let expected = std::path::PathBuf::from(home)
+            .join("Library/Application Support/WindInputDev/wind_setting.toml");
+        assert_eq!(config_path_for_mode(AppMode::Dev).unwrap(), expected);
     }
 
     #[test]
