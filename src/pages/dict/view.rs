@@ -530,13 +530,15 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         MenuItem::run(text.clone(), || {}, false)
             .with_subtitle(row.code.clone())
             .with_enabled(false),
-        MenuItem::separator(),
     ];
 
+    // 操作组：**整组可能一项都不剩**（词频这类只有批量操作、无行级操作的类别），
+    // 故用 `push_group` 装配——组空时连同它前面的分隔线一起省掉，不留一条孤线。
+    let mut ops = Vec::new();
     if spec.ops.view {
         let m = mgr.clone();
         let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
-        items.push(MenuItem::run(
+        ops.push(MenuItem::run(
             "查看…",
             move || m.open_view(&c, &t, w, pos),
             false,
@@ -554,14 +556,14 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                 row.position,
                 row.cand_id.clone(),
             );
-            items.push(MenuItem::run(
+            ops.push(MenuItem::run(
                 "编辑…",
                 move || m.open_shadow_edit(&c, &t, &k, pos, &cid),
                 false,
             ));
         } else {
             let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
-            items.push(MenuItem::run(
+            ops.push(MenuItem::run(
                 "编辑…",
                 move || m.open_edit(&c, &t, w, pos),
                 false,
@@ -571,7 +573,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     if spec.ops.claim_as_user {
         let m = mgr.clone();
         let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
-        items.push(MenuItem::run(
+        ops.push(MenuItem::run(
             "转为用户短语",
             move || m.claim_phrase_as_user(&c, &t, w, pos),
             false,
@@ -582,7 +584,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let (c, t, on) = (row.code.clone(), row.text.clone(), row.enabled);
         // 勾选态直接读行数据：菜单每次右击重建，取到的就是当刻的值。
         // 复选框那边还要维护 `enabled_sig` 是因为它常驻在行里、要跟着点击即时变。
-        items.push(MenuItem::run(
+        ops.push(MenuItem::run(
             "启用",
             move || m.do_set_enabled(&c, &t, !on),
             on,
@@ -591,43 +593,66 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     if spec.ops.promote {
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
-        items.push(MenuItem::run("转正", move || m.do_promote(&c, &t), false));
+        ops.push(MenuItem::run("转正", move || m.do_promote(&c, &t), false));
     }
     if spec.ops.remove_rule {
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
-        items.push(MenuItem::run(
+        ops.push(MenuItem::run(
             "撤销",
             move || m.do_delete_row(&c, &t),
             false,
         ));
     }
+    push_group(&mut items, ops);
 
-    items.push(MenuItem::separator());
     let (m_t, m_c) = (mgr.clone(), mgr.clone());
     let (copy_text, copy_code) = (text, row.code.clone());
-    items.push(MenuItem::run(
-        "复制词条",
-        move || copy_to_clipboard(&m_t, &copy_text),
-        false,
-    ));
-    items.push(MenuItem::run(
-        "复制编码",
-        move || copy_to_clipboard(&m_c, &copy_code),
-        false,
-    ));
+    push_group(
+        &mut items,
+        vec![
+            MenuItem::run(
+                "复制词条",
+                move || copy_to_clipboard(&m_t, &copy_text),
+                false,
+            ),
+            MenuItem::run(
+                "复制编码",
+                move || copy_to_clipboard(&m_c, &copy_code),
+                false,
+            ),
+        ],
+    );
 
     if spec.ops.remove {
-        items.push(MenuItem::separator());
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
-        items.push(MenuItem::run(
-            "删除",
-            move || m.request_delete_row(&c, &t),
-            false,
-        ));
+        push_group(
+            &mut items,
+            vec![
+                MenuItem::run("删除", move || m.request_delete_row(&c, &t), false)
+                    // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
+                    // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
+                    .danger(),
+            ],
+        );
     }
     items
+}
+
+/// 往菜单里追加一组，组前自动补分隔线；**组为空则整组连同分隔线一起省掉**。
+///
+/// 词频这类只有批量操作、没有任何行级操作的类别，操作组会一项不剩；无条件写下分隔线
+/// 就会在菜单里留一条孤线。windui 弹出时也会兜底折叠（`normalize_separators`），
+/// 但在生成侧就不产生更直接——这样"这一组有没有内容"是可单测的，不必依赖渲染层。
+fn push_group(items: &mut Vec<MenuItem>, group: Vec<MenuItem>) {
+    if group.is_empty() {
+        return;
+    }
+    if !items.is_empty() {
+        items.push(MenuItem::separator());
+    }
+    items.extend(group);
 }
 
 /// 写剪贴板并给一条 toast 回执。
@@ -975,6 +1000,61 @@ mod tests {
         assert_eq!(
             menu_labels(&items),
             ["工", "编辑…", "复制词条", "复制编码", "删除"]
+        );
+    }
+
+    /// 没有任何行级操作的类别（词频只有批量清空），菜单不该因为"操作组为空"而留下孤立分隔线。
+    ///
+    /// ★ 症状很轻微、很容易漏：菜单里凭空多一条线，功能全对。判据直接查连续/首尾分隔线，
+    /// 而不是比对某个类别的期望列表——后者只锁住写测试那天的那一个类别。
+    #[test]
+    fn empty_op_group_leaves_no_stray_separator() {
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(1);
+        // 逐个走一遍该域的所有子标签，任何一类都不许出现孤线。
+        let mut saw_empty_group = 0;
+        for (i, tab) in mgr.tabs_for_domain().into_iter().enumerate() {
+            mgr.sub_tab.set(i);
+            mgr.on_nav_changed();
+            mgr.apply_rows(&json!({ "items": [
+                { "code": "aaaa", "text": "工", "weight": 1, "count": 1 },
+            ], "total": 1 }));
+            let spec = mgr.current_spec();
+            if !(spec.ops.view
+                || spec.ops.edit
+                || spec.ops.claim_as_user
+                || spec.ops.set_enabled
+                || spec.ops.promote
+                || spec.ops.remove_rule)
+            {
+                saw_empty_group += 1;
+            }
+            let items = row_menu_items(&mgr, 0);
+            if items.is_empty() {
+                continue;
+            }
+            assert!(
+                !items[0].separator && !items[items.len() - 1].separator,
+                "{tab:?}：菜单首尾不该是分隔线"
+            );
+            for w in items.windows(2) {
+                assert!(
+                    !(w[0].separator && w[1].separator),
+                    "{tab:?}：出现连续分隔线，说明某一组为空却仍写下了分隔线"
+                );
+            }
+        }
+        // 自证有效：本轮必须真的遇到过"操作组为空"的类别，否则上面的断言只是空转。
+        assert!(
+            saw_empty_group > 0,
+            "该域下没有任何「无行级操作」的类别，这条测试没测到要防的情况——\
+             ops 配置若有调整，换一个仍有空操作组的数据域"
         );
     }
 

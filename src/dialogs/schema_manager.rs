@@ -1970,6 +1970,9 @@ fn row_menu_items(mgr: &SchemaManagerState, entry: &SchemaEntry) -> Vec<MenuItem
     let m = mgr.clone();
     items.push(
         MenuItem::run("删除", move || m.request_delete_selected(), false)
+            // 与工具栏「删除」按钮的 danger 描边同语义：菜单里各项长得一样，
+            // 颜色是唯一能在扫读时把不可逆操作与旁边那些拦开的信号。
+            .danger()
             .with_enabled(entry.source == "user"),
     );
     items
