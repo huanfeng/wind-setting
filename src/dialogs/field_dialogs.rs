@@ -1,6 +1,7 @@
 //! dialog_button 各定制对话框主体（按 key 注册）。
 
 use serde_json::{Map, Value};
+use std::rc::Rc;
 use windui::prelude::*;
 
 /// strlist → 空格分隔字符串（对话框文本框展示）。
@@ -279,36 +280,67 @@ pub struct ToggleRow {
     pub sig: Signal<bool>,
 }
 
-/// 条目开关对话框：每行「标签 + 说明 + 开关」。
+/// 条目开关对话框：每行「手柄 + 标签 + 说明 + 开关」，**可拖拽调整顺序**。
 ///
 /// 相对复选网格的取舍：网格一行挤两个，只放得下短标签；本对话框一行一项，
 /// 给每项留出说明文字的位置——项数不多但每项需要解释时用它。
+///
+/// `order` 是行序的真相源（元素为 `ToggleRow::value`），拖拽与「恢复默认」都改它，
+/// 列表随之重建。用 `reorder_list_signal` 而非 `reorder_list` 正是为了「恢复默认」
+/// ——后者把顺序只存在节点树里，应用推不回去，点了恢复默认顺序会原样留在那儿。
+///
+/// 分隔线做进**每一行的顶部**（含首行）而不是行与行之间：拖动中行会重新堆叠，
+/// 若首行特殊、其余带线，动画期间就会出现"顶上多一条、中间少一条"的错位。
+/// 每行长得一样，任何排列都对。首行那条顺带把行区与上方提示文字分开。
 pub fn build_toggle_rows_dialog(
     visible: Signal<bool>,
     title: &str,
     hint: &str,
     rows: Vec<ToggleRow>,
     defaults: Vec<String>,
+    order: Signal<Vec<String>>,
 ) -> Element {
     let rows_reset: Vec<(String, Signal<bool>)> =
         rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
+    let declared: Vec<String> = rows.iter().map(|r| r.value.clone()).collect();
+    // 行元数据按 value 查表——`reorder_list_signal` 的行构建函数只拿得到 value。
+    let meta: Rc<Vec<ToggleRow>> = Rc::new(rows);
     // 左右留白用 **padding** 而非 margin：`setting_row` 内部是 `width_match()` 的 row，
     // margin 下它仍按父容器全宽排布，右侧开关会被挤出对话框。padding 缩的是内容盒，
     // 行拿到的可用宽才是扣掉留白后的。数值对齐 `card()` / `build_group_dialog`。
-    let mut body = Element::col().width_match().padding_xy(16, 2);
-    let last = rows.len().saturating_sub(1);
-    for (i, r) in rows.iter().enumerate() {
-        let desc = (!r.desc.is_empty()).then_some(r.desc.as_str());
-        body = body.child(crate::widgets::setting_row(
-            &r.label,
-            desc,
-            Element::switch(r.sig),
-        ));
-        if i != last {
-            body = body.child(Element::divider());
-        }
-    }
-    let grid = body;
+    let grid = Element::col().width_match().padding_xy(16, 2).child(
+        Element::reorder_list_signal(order, move |value: String, handle| {
+            let Some(r) = meta.iter().find(|r| r.value == value) else {
+                // order 里混进了未知 value：不该发生，但也不能让整行塌成空白。
+                return Element::label(value).fg_role(Role::TextMuted);
+            };
+            let desc = (!r.desc.is_empty()).then_some(r.desc.as_str());
+            Element::col()
+                .width_match()
+                .child(Element::divider())
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        // 行内容左右各留 8：拖动中整行会浮起成一张带底色、投影与圆角的卡片，
+                        // 而行的左右两端就是手柄和开关——不留边距时它们会贴死在卡片边框上
+                        // （右侧开关尤其明显，圆角处几乎相切）。静止态这点留白也不碍事，
+                        // 分隔线仍按外层 padding 铺满，看起来是整幅分隔而非缩进线。
+                        .padding_xy(8, 0)
+                        .child(handle)
+                        .child(
+                            crate::widgets::setting_row(&r.label, desc, Element::switch(r.sig))
+                                .weight(1.0),
+                        ),
+                )
+        })
+        .on_reorder(move |_ctx, from, to| {
+            order.update(|v| {
+                let x = v.remove(from);
+                v.insert(to.min(v.len()), x);
+            })
+        }),
+    );
     let frame = Element::col()
         // 与 build_group_dialog 同宽：带副标题的行比复选网格更需要横向空间。
         .width(460)
@@ -349,6 +381,9 @@ pub fn build_toggle_rows_dialog(
                             for (v, s) in &rows_reset {
                                 s.set(defaults.iter().any(|d| d == v));
                             }
+                            // 顺序也是配置的一部分：只复位开关会留下用户上次拖出来的
+                            // 优先级，看起来"恢复了一半"。声明序即出厂序。
+                            order.set(declared.clone());
                         }),
                 )
                 .child(Element::leaf().weight(1.0))

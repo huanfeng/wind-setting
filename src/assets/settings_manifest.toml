@@ -1103,7 +1103,7 @@ group = "input"
 section = "快捷输入"
 type = "dialog_button_mix_members"
 label = "快捷候选来源"
-hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选；列表顺序即候选优先级，调整顺序请直接编辑配置文件的 members"
+hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选；列表顺序即候选优先级，按住行首手柄上下拖动即可调整"
 options = [
   { value = "quick_input.calc", label = "计算", hint = "算式求值，如 1+2*3、5^2、(1+2)/4" },
   { value = "quick_input.date", label = "日期 / 年月", hint = "如 12.25 → 今年12月25日；2026.3 → 2026年3月" },

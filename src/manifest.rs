@@ -2076,9 +2076,9 @@ fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) 
 
 /// dialog_button_mix_members：条目开关式编辑内置「快捷」融合的候选来源（core 侧 `members`）。
 ///
-/// core 把 members 当作候选来源的单一真相源——**有无即开关、顺序即优先级**。界面只管
-/// 开关这一维，顺序由 `patch_mix_mode_members` 保序写回（不打乱手写配置，也不丢掉界面
-/// 不认识的成员）；调整优先级留给直接编辑配置文件的高级用户。
+/// core 把 members 当作候选来源的单一真相源——**有无即开关、顺序即优先级**。界面两维都管：
+/// 一列开关决定有无，拖拽手柄决定顺序（`order` 信号是行序的真相源）。写回经
+/// `patch_mix_mode_members`，界面不认识的成员按锚点留在原处，不被冲到末尾。
 ///
 /// 清单项用**视图 key**（`schema.mix_modes#members`）与触发键项区分——`Manifest.items`
 /// 按 key 索引，同 key 两项后者会覆盖前者。写回路径仍是真实的 `schema.mix_modes`。
@@ -2089,7 +2089,7 @@ fn build_dialog_button_mix_members(
     cfg: &Config,
 ) -> Signal<bool> {
     use crate::dialogs::field_dialogs::{ToggleRow, build_toggle_rows_dialog};
-    use crate::mix_members::{mix_mode_members, patch_mix_mode_members};
+    use crate::mix_members::{managed_order, mix_mode_members, patch_mix_mode_members};
 
     let mix_modes_path = "schema.mix_modes";
     let managed: Vec<String> = item.options.iter().map(|o| o.value.clone()).collect();
@@ -2108,6 +2108,9 @@ fn build_dialog_button_mix_members(
         })
         .collect();
     let sigs: Vec<(String, Signal<bool>)> = rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
+    // 行序按**当前配置**排（未启用的成员补在声明序位），而不是恒按声明序——
+    // 否则用户手写的优先级在他还没动任何东西时就"看起来"被改过了。
+    let order = signal(managed_order(&cur, &managed));
     let visible = signal(false);
 
     let sigs_w = sigs.clone();
@@ -2117,13 +2120,19 @@ fn build_dialog_button_mix_members(
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
-            let selected: Vec<String> = sigs_w
-                .iter()
-                .filter(|(_, s)| s.get())
-                .map(|(v, _)| v.clone())
+            // 顺序取自 order（界面行序），有无取自各行开关：两者相乘才是 members。
+            let ordered: Vec<String> = order
+                .get()
+                .into_iter()
+                .filter(|v| {
+                    sigs_w
+                        .iter()
+                        .find(|(x, _)| x == v)
+                        .is_some_and(|(_, s)| s.get())
+                })
                 .collect();
             let arr = c.get_array(mix_modes_path).cloned().unwrap_or_default();
-            if let Some(patched) = patch_mix_mode_members(&arr, QUICK_MIX_ID, &managed_w, &selected)
+            if let Some(patched) = patch_mix_mode_members(&arr, QUICK_MIX_ID, &managed_w, &ordered)
             {
                 c.set_path(mix_modes_path, Value::Array(patched));
             }
@@ -2142,11 +2151,14 @@ fn build_dialog_button_mix_members(
             for (v, s) in &sigs_l {
                 s.set(cur.iter().any(|m| m == v));
             }
+            // 顺序同样要跟着配置回位——只复位开关会把上次拖出来的优先级留在界面上，
+            // 与刚载入的配置不符，保存时又会把这个错顺序写回去。
+            order.set(managed_order(&cur, &managed_l));
         }),
     );
 
     let hint = item.hint.clone().unwrap_or_default();
-    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed);
+    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order);
     register_dialog(state, dlg);
     visible
 }
