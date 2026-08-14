@@ -554,7 +554,12 @@ pub fn build_group_dialog_shell_dyn(
     content: Element,
     bottom_leading: Vec<Element>,
 ) -> Element {
-    shell_with_title(visible, Element::label_rc(title), content, bottom_leading)
+    shell_with_title(
+        visible,
+        Element::label_signal(title),
+        content,
+        bottom_leading,
+    )
 }
 
 /// 外壳本体。`title` 传的是**未加样式**的标签元素，样式在此统一施加——

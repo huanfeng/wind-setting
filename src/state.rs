@@ -1811,15 +1811,31 @@ fn build_theme_items(
             }
             if !e.builtin {
                 let (id, disp) = (e.id.clone(), e.display.clone());
-                it = it.trailing_icon("✕", move || {
-                    del_id.set(id.clone());
-                    del_msg.set(format!("确定删除外部主题「{disp}」？删除后不可恢复。"));
-                    del_visible.set(true);
+                it = it.trailing_icon("✕", move |_ctx| {
+                    prompt_theme_delete(del_id, del_msg, del_visible, &id, &disp);
                 });
             }
             it
         })
         .collect()
+}
+
+/// 填充删除确认对话框（待删 id + 正文）并弹出。
+///
+/// 单独成函数而非写在图标回调里，是为了留一个**不需要 `EventCtx` 的**测试入口：
+/// windui 0.12 起 `DropdownItem::trailing_icon` 的回调收 `&mut EventCtx`，而 `EventCtx`
+/// 的构造只有宿主做得到（字段私有、`Tree::run_detached` 是 `pub(crate)`），下游测试
+/// 无法再直接跑这个闭包。测试遂改为「断言图标已挂上 + 直接验此函数的行为」两段。
+fn prompt_theme_delete(
+    del_id: Signal<String>,
+    del_msg: Signal<String>,
+    del_visible: Signal<bool>,
+    id: &str,
+    disp: &str,
+) {
+    del_id.set(id.to_string());
+    del_msg.set(format!("确定删除外部主题「{disp}」？删除后不可恢复。"));
+    del_visible.set(true);
 }
 
 #[cfg(test)]
@@ -2445,7 +2461,15 @@ mod tests {
         assert!(items[2].trailing_icon.is_some(), "外部主题应有删除图标");
 
         // 点外部主题删除图标 → 填充删除确认对话框（待删 id + 正文）并弹出。
-        (items[2].trailing_icon.as_ref().unwrap().1)();
+        // 图标回调本身跑不了（收 `&mut EventCtx`，只有宿主造得出），故上一行断言"图标已挂"，
+        // 这里直接验回调体所调的 `prompt_theme_delete`——两段合起来等价于原来的一次点击。
+        prompt_theme_delete(
+            st.theme_delete_id,
+            st.theme_delete_msg,
+            st.theme_delete_visible,
+            "mono",
+            "墨",
+        );
         assert!(st.theme_delete_visible.get(), "点删除图标应弹出确认对话框");
         assert_eq!(st.theme_delete_id.get(), "mono");
         assert!(st.theme_delete_msg.get().contains("墨"));

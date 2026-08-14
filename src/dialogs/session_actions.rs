@@ -292,8 +292,8 @@ impl SessionActionFields {
                 .cross(Align::Center)
                 .spacing(8)
                 .padding_xy(0, 3)
-                .child(Element::dropdown_reactive(key_labels_sig, row.key_idx).width(150))
-                .child(Element::dropdown_reactive(verb_labels_sig, row.verb).weight(1.0))
+                .child(Element::dropdown_signal(key_labels_sig, row.key_idx).width(150))
+                .child(Element::dropdown_signal(verb_labels_sig, row.verb).weight(1.0))
                 .child(
                     Element::label(if cfg!(windows) {
                         "需全局钩子"

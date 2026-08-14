@@ -156,7 +156,7 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
         left = left.child(
             Element::label(s)
                 .font_size(ROW_SUB_SIZE)
-                .fg_role(Role::Placeholder)
+                .fg_role(Role::TextSubtle)
                 .width_match()
                 .max_lines(1)
                 .truncate(Truncate::End)
@@ -193,7 +193,7 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
         left = left.child(
             Element::label(s)
                 .font_size(ROW_SUB_SIZE)
-                .fg_role(Role::Placeholder)
+                .fg_role(Role::TextSubtle)
                 .width_match()
                 .max_lines(2)
                 .truncate(Truncate::End)

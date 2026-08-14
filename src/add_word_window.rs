@@ -122,7 +122,7 @@ fn build_form(
         .bg_role(Role::SurfaceAlt)
         .window_drag()
         .child(
-            Element::label_rc(title)
+            Element::label_signal(title)
                 .font_size(13.5)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -178,9 +178,10 @@ fn build_form(
         ))
         // 错误提示（红字，仅在有错时显示；替代会被 on_update 丢弃的 toast）。
         .child(
-            Element::label_rc(error)
+            Element::label_signal(error)
                 .font_size(12.0)
-                .fg(Color::hex(0xEF4444))
+                // 错误文字走语义色而非硬编码红：随主题解析，与各处 danger 按钮同源。
+                .fg_role(Role::Danger)
                 .width_match()
                 .max_lines(2)
                 .visible_when(move || !error.get().is_empty()),

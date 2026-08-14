@@ -152,7 +152,7 @@ fn has_update_body(
         .spacing(6)
         .padding_xy(18, 12)
         .child(
-            Element::label_rc(message)
+            Element::label_signal(message)
                 .font_size(13.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -160,7 +160,7 @@ fn has_update_body(
                 .max_lines(2),
         )
         .child(
-            Element::label_rc(size_text)
+            Element::label_signal(size_text)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
@@ -178,7 +178,7 @@ fn notes_area(notes: Signal<String>) -> Element {
         .width_match()
         .max_height(NOTES_MAX_H)
         .child(
-            Element::label_rc(notes)
+            Element::label_signal(notes)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .width_match(),
@@ -196,7 +196,7 @@ fn no_update_body(message: Signal<String>, notes: Signal<String>) -> Element {
         .spacing(8)
         .padding_xy(18, 14)
         .child(
-            Element::label_rc(message)
+            Element::label_signal(message)
                 .font_size(12.0)
                 .fg_role(Role::Text)
                 .width_match()
@@ -216,7 +216,7 @@ fn no_update_body(message: Signal<String>, notes: Signal<String>) -> Element {
 
 fn simple_body(message: Signal<String>) -> Element {
     Element::col().width_match().padding_xy(18, 16).child(
-        Element::label_rc(message)
+        Element::label_signal(message)
             .font_size(12.0)
             .fg_role(Role::Text)
             .width_match()
@@ -226,7 +226,7 @@ fn simple_body(message: Signal<String>) -> Element {
 
 fn error_body(message: Signal<String>) -> Element {
     Element::col().width_match().padding_xy(18, 16).child(
-        Element::label_rc(message)
+        Element::label_signal(message)
             .font_size(12.0)
             .fg_role(Role::Danger)
             .width_match()
@@ -244,7 +244,7 @@ fn downloading_body(
         .spacing(8)
         .padding_xy(18, 14)
         .child(
-            Element::label_rc(message)
+            Element::label_signal(message)
                 .font_size(12.0)
                 .fg_role(Role::Text)
                 .width_match()
@@ -252,7 +252,7 @@ fn downloading_body(
         )
         .child(Element::progress(progress).width_match())
         .child(
-            Element::label_rc(progress_text)
+            Element::label_signal(progress_text)
                 .font_size(11.0)
                 .fg_role(Role::TextMuted)
                 .width_match()

@@ -106,7 +106,7 @@ pub fn build_page(state: &AppState) -> Element {
                 .font_size(13.0)
                 .fg_role(Role::TextMuted),
         )
-        .child(Element::dropdown_items_reactive(mgr.domain_rich_items, mgr.domain).width(240))
+        .child(Element::dropdown_items_signal(mgr.domain_rich_items, mgr.domain).width(240))
         // ‹ › 按顺序切换数据域（循环），下拉列表过长时无需展开逐个查找。
         .child(
             Element::button("‹")
@@ -124,7 +124,7 @@ pub fn build_page(state: &AppState) -> Element {
         )
         .child(Element::leaf().weight(1.0))
         .child(
-            Element::label_rc(mgr.status)
+            Element::label_signal(mgr.status)
                 .font_size(11.5)
                 .fg_role(Role::TextMuted)
                 .max_lines(1),
@@ -223,7 +223,7 @@ pub fn build_page(state: &AppState) -> Element {
         .cross(Align::Center)
         .padding_xy(0, 80)
         .child(
-            Element::label_rc(mgr.empty_msg)
+            Element::label_signal(mgr.empty_msg)
                 .font_size(13.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
@@ -371,7 +371,7 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
         .spacing(8)
         .padding_xy(2, 4)
         .child(
-            Element::label_rc(mgr.page_status)
+            Element::label_signal(mgr.page_status)
                 .font_size(11.5)
                 .fg_role(Role::TextMuted)
                 .max_lines(1),
@@ -536,7 +536,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
         ops.push(MenuItem::run(
             "查看…",
-            move || m.open_view(&c, &t, w, pos),
+            move |_ctx| m.open_view(&c, &t, w, pos),
             false,
         ));
     }
@@ -554,14 +554,14 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             );
             ops.push(MenuItem::run(
                 "编辑…",
-                move || m.open_shadow_edit(&c, &t, &k, pos, &cid),
+                move |_ctx| m.open_shadow_edit(&c, &t, &k, pos, &cid),
                 false,
             ));
         } else {
             let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
             ops.push(MenuItem::run(
                 "编辑…",
-                move || m.open_edit(&c, &t, w, pos),
+                move |_ctx| m.open_edit(&c, &t, w, pos),
                 false,
             ));
         }
@@ -571,7 +571,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
         ops.push(MenuItem::run(
             "转为用户短语",
-            move || m.claim_phrase_as_user(&c, &t, w, pos),
+            move |_ctx| m.claim_phrase_as_user(&c, &t, w, pos),
             false,
         ));
     }
@@ -582,21 +582,25 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         // 复选框那边还要维护 `enabled_sig` 是因为它常驻在行里、要跟着点击即时变。
         ops.push(MenuItem::run(
             "启用",
-            move || m.do_set_enabled(&c, &t, !on),
+            move |_ctx| m.do_set_enabled(&c, &t, !on),
             on,
         ));
     }
     if spec.ops.promote {
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
-        ops.push(MenuItem::run("转正", move || m.do_promote(&c, &t), false));
+        ops.push(MenuItem::run(
+            "转正",
+            move |_ctx| m.do_promote(&c, &t),
+            false,
+        ));
     }
     if spec.ops.remove_rule {
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
         ops.push(MenuItem::run(
             "撤销",
-            move || m.do_delete_row(&c, &t),
+            move |_ctx| m.do_delete_row(&c, &t),
             false,
         ));
     }
@@ -609,12 +613,12 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         vec![
             MenuItem::run(
                 "复制词条",
-                move || copy_to_clipboard(&m_t, &copy_text),
+                move |_ctx| copy_to_clipboard(&m_t, &copy_text),
                 false,
             ),
             MenuItem::run(
                 "复制编码",
-                move || copy_to_clipboard(&m_c, &copy_code),
+                move |_ctx| copy_to_clipboard(&m_c, &copy_code),
                 false,
             ),
         ],
@@ -626,7 +630,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         push_group(
             &mut items,
             vec![
-                MenuItem::run("删除", move || m.request_delete_row(&c, &t), false)
+                MenuItem::run("删除", move |_ctx| m.request_delete_row(&c, &t), false)
                     // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
                     // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
                     .danger(),
@@ -676,10 +680,11 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     let mut r = Element::row().cross(Align::Center).spacing(6);
 
     // 启用开关（短语）：勾选即调 `phrase.setEnabled` 即时生效。
-    // signal 按显示下标复用（见 `DictManagerState::enabled_sig`）——本生成器每次正文重建都会
-    // 重跑，逐行新建 signal 会在 arena 里越积越多（系统短语每敲一个搜索键即全量重建）。
+    // 逐行现建 signal：本生成器每次正文重建都会重跑，而 windui 0.12 起表格正文自持
+    // `SignalScope`，重建时连同旧子节点一并回收这一批构建期信号，故不再需要本仓那个
+    // 按显示下标复用的手工池（它反而会在回收后留下悬垂句柄，一读即 panic）。
     if spec.ops.set_enabled {
-        let sig = mgr.enabled_sig(disp, row.enabled);
+        let sig = signal(row.enabled);
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
         r = r.child(Element::checkbox("", sig).small().on_toggle(move |_| {
@@ -1055,6 +1060,46 @@ mod tests {
             saw_empty_group > 0,
             "该域下没有任何「无行级操作」的类别，这条测试没测到要防的情况——\
              ops 配置若有调整，换一个仍有空操作组的数据域"
+        );
+    }
+
+    /// 回归守护：表格正文反复重建，活跃 signal 槽位不增长。
+    ///
+    /// 行内「启用」开关的 signal 由 `build_row_actions` **逐行现建**，回收全靠 windui 表格
+    /// 自持的 `SignalScope`（0.12 起，见其 CHANGELOG「重建子树时构建期信号永久累积」）。
+    /// 本仓曾为绕开旧版「arena 只增不减」写过一个按显示下标复用的手工池，上游修掉根因后
+    /// 那个池反而会在回收后留下悬垂句柄。这条断言同时锁两端：上游若丢掉回收、或本仓再退回
+    /// 池化，系统短语每敲一个搜索键泄漏一批槽位的老问题就会立刻现形。
+    #[test]
+    fn table_rebuild_does_not_leak_signals() {
+        let mgr = DictManagerState::new();
+        let rows = |n: i64| {
+            json!([
+                { "code": "rq", "text": "$date", "weight": n, "enabled": true, "isSystem": true },
+                { "code": "dd", "text": "(^_^)", "weight": n, "enabled": false, "isSystem": true },
+            ])
+        };
+        mgr.apply_rows(&rows(1000));
+        let mut tree = Tree::new();
+        let root = table_view(&mgr).build(&mut tree);
+        tree.root = Some(root);
+        layout(&mut tree);
+        assert_eq!(table_shape(&tree).1, 2, "前提：正文有两行");
+
+        // 首轮重建后取基线：建树那一轮还含着不属于行的一次性信号。
+        mgr.apply_rows(&rows(1));
+        layout(&mut tree);
+        let base = windui::signal::stats().live;
+        for i in 2..22 {
+            mgr.apply_rows(&rows(i));
+            layout(&mut tree);
+        }
+        let after = windui::signal::stats().live;
+        assert_eq!(
+            after,
+            base,
+            "20 轮正文重建后活跃 signal 应回到基线（泄漏 {} 个）",
+            after as i64 - base as i64
         );
     }
 

@@ -80,13 +80,16 @@ pub fn conflict_bar(conflict: Signal<String>) -> Element {
         .width_match()
         .cross(Align::Center)
         .padding_xy(16, 10)
-        .bg(Color::hex(0xF59E0B).scale_alpha(0.14))
+        // 冲突条是"警告"语义：windui 0.12 补上 `Role::Warning` 后不必再硬编码琥珀色——
+        // 硬编码的深琥珀字（0xB45309）在暗色主题下压在同一片 14% 底上几乎读不出来，
+        // 而语义色两套主题各有取值、且库以单测锁住对表面 ≥ 3:1。
+        .bg_role_alpha(Role::Warning, 0.14)
         .border_role(Role::Divider, 1)
         .child(
-            Element::label_rc(conflict)
+            Element::label_signal(conflict)
                 .font_size(12.5)
                 .font_weight(500)
-                .fg(Color::hex(0xB45309))
+                .fg_role(Role::Warning)
                 .weight(1.0)
                 // 三域各一行，且单域多冲突会折行——放宽上限避免静默截断藏冲突。
                 .max_lines(12),
@@ -174,8 +177,8 @@ fn build_list_view_menu(
         "列表显示",
         vec![
             CheckMenuItem::check("隐藏未启用", mgr.hide_disabled)
-                .on_change(move |v| app_hd.borrow_mut().save_hide_disabled_schemas(v)),
-            CheckMenuItem::check("显示特殊方案", mgr.show_hidden).on_change(move |v| {
+                .on_change(move |_ctx, v| app_hd.borrow_mut().save_hide_disabled_schemas(v)),
+            CheckMenuItem::check("显示特殊方案", mgr.show_hidden).on_change(move |_ctx, v| {
                 // set_show_hidden 内会重建列表——特殊方案的显隐改的是「进不进列表」，
                 // 不是单纯的行可见性（分区标题的计数按数据项算）。
                 m_sh.set_show_hidden(v);
@@ -280,7 +283,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
             Element::button("导入")
                 .small()
                 .outline_soft()
-                .on_click(move |_| m_imp.do_import_package()),
+                .on_click(move |ctx| m_imp.do_import_package(ctx)),
         )
         .child(
             Element::button("导出")
@@ -290,7 +293,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                     e_exp.sel_ver.get();
                     e_exp.selected_entry().is_some()
                 })
-                .on_click(move |_| m_exp.do_export_selected()),
+                .on_click(move |ctx| m_exp.do_export_selected(ctx)),
         )
         // 操作反馈 toast（0×0 不可见叶子，feedback 信号变化即弹单条 toast）。
         .child(dict::reactive::toast_sink(mgr.feedback));
@@ -518,7 +521,7 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
                                 .fg_role(Role::TextMuted),
                         )
                         .child(
-                            Element::label_rc(url)
+                            Element::label_signal(url)
                                 .font_size(12.0)
                                 .fg_role(Role::TextMuted)
                                 .weight(1.0),
@@ -528,7 +531,7 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
                     Element::button("复制地址")
                         .small()
                         .outline_soft()
-                        .enabled_when(move || running.get())
+                        .enabled_signal(running)
                         .on_click(move |ctx| {
                             let u = url.get();
                             if !u.is_empty() {

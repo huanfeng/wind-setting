@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::config::Config;
@@ -1537,21 +1538,22 @@ impl SchemaManagerState {
     // ── 方案包导入导出（scheme.exportPackage/previewImport/importPackage）──
 
     /// 导出选中方案为方案包 zip。
-    pub fn do_export_selected(&self) {
+    pub fn do_export_selected(&self, ctx: &mut EventCtx) {
         let Some(entry) = self.selected_entry() else {
             self.notify(ToastKind::Error, "请先选中方案");
             return;
         };
-        self.export_schema(&entry.id);
+        self.export_schema(ctx, &entry.id);
     }
 
     /// 导出指定方案为方案包 zip：弹保存框取落点 → `scheme.exportPackage` → 报结果。
     ///
-    /// 走 `app::defer_blocking` 而非 `ctx.request_save_file`：两者时机语义相同（都在事件
-    /// 分发完全返回后执行，绝不在回调栈内同步弹原生模态框），但前者不要 `ctx`，于是
-    /// 工具栏按钮与右键菜单项能共用**同一条**路径——菜单项的动作是无参 `Fn()`，拿不到
-    /// `ctx`，分成两条实现迟早分叉。
-    pub fn export_schema(&self, schema_id: &str) {
+    /// 走 `ctx.defer_blocking` 而非 `ctx.request_save_file`：两者时机语义相同（都在事件
+    /// 分发完全返回后执行，绝不在回调栈内同步弹原生模态框），但前者把"选路径 + 调用
+    /// core + 报结果"整条流程留在一处，不必把后半段拆进对话框回调里。
+    /// windui 0.12 起菜单项动作也收 `&mut EventCtx`，故工具栏按钮与右键菜单项仍共用
+    /// **同一条**路径（此前是靠已废弃的自由函数 `app::defer_blocking` 才做到的）。
+    pub fn export_schema(&self, ctx: &mut EventCtx, schema_id: &str) {
         let entry = {
             let schemas = self.schemas.borrow();
             let Some(e) = schemas.iter().find(|e| e.id == schema_id) else {
@@ -1566,7 +1568,7 @@ impl SchemaManagerState {
             format!("{}-{}.zip", entry.id, entry.version)
         };
         let state = self.clone();
-        windui::app::defer_blocking(move || {
+        ctx.defer_blocking(move || {
             let Some(path) = PickDialog::new()
                 .title("导出方案包")
                 .file_name(&file_name)
@@ -1601,9 +1603,9 @@ impl SchemaManagerState {
 
     /// 导入方案包：选 zip → `scheme.previewImport` 预览 → 确认对话框选合并/替换。
     /// 延迟通道的选型同 [`export_schema`](Self::export_schema)。
-    pub fn do_import_package(&self) {
+    pub fn do_import_package(&self, ctx: &mut EventCtx) {
         let state = self.clone();
-        windui::app::defer_blocking(move || {
+        ctx.defer_blocking(move || {
             let Some(path) = PickDialog::new()
                 .title("导入方案包")
                 .filter("方案包", &["zip"])
@@ -1905,8 +1907,8 @@ fn row_menu_items(mgr: &SchemaManagerState, entry: &SchemaEntry) -> Vec<MenuItem
     if !entry.hidden {
         let m = mgr.clone();
         items.push(
-            MenuItem::run("设为当前", move || m.set_active_selected(), false)
-                .with_enabled(mgr.can_set_active()),
+            MenuItem::run("设为当前", move |_ctx| m.set_active_selected(), false)
+                .enabled(mgr.can_set_active()),
         );
 
         let enabled = mgr.is_enabled(&entry.id);
@@ -1914,13 +1916,13 @@ fn row_menu_items(mgr: &SchemaManagerState, entry: &SchemaEntry) -> Vec<MenuItem
         items.push(
             MenuItem::run(
                 "启用",
-                move || {
+                move |_ctx| {
                     m.toggle_schema_enabled(&id, !enabled);
                 },
                 enabled,
             )
             // 当前方案不可禁用（toggle 里会拒并弹提示）。菜单里直接置灰更早一步说清楚。
-            .with_enabled(!enabled || !mgr.is_active(&entry.id)),
+            .enabled(!enabled || !mgr.is_active(&entry.id)),
         );
 
         // 排序仅对已启用区有意义：未启用方案不在循环里，没有"优先级"可言。
@@ -1928,25 +1930,25 @@ fn row_menu_items(mgr: &SchemaManagerState, entry: &SchemaEntry) -> Vec<MenuItem
             items.push(MenuItem::separator());
             let m = mgr.clone();
             items.push(
-                MenuItem::run("上移", move || m.move_selected(true), false)
-                    .with_shortcut("↑")
-                    .with_enabled(idx > 0),
+                MenuItem::run("上移", move |_ctx| m.move_selected(true), false)
+                    .shortcut("↑")
+                    .enabled(idx > 0),
             );
             let m = mgr.clone();
             items.push(
-                MenuItem::run("下移", move || m.move_selected(false), false)
-                    .with_shortcut("↓")
-                    .with_enabled(idx + 1 < total),
+                MenuItem::run("下移", move |_ctx| m.move_selected(false), false)
+                    .shortcut("↓")
+                    .enabled(idx + 1 < total),
             );
             let m = mgr.clone();
             items.push(
-                MenuItem::run("移到最前", move || m.move_selected_to(true), false)
-                    .with_enabled(idx > 0),
+                MenuItem::run("移到最前", move |_ctx| m.move_selected_to(true), false)
+                    .enabled(idx > 0),
             );
             let m = mgr.clone();
             items.push(
-                MenuItem::run("移到最后", move || m.move_selected_to(false), false)
-                    .with_enabled(idx + 1 < total),
+                MenuItem::run("移到最后", move |_ctx| m.move_selected_to(false), false)
+                    .enabled(idx + 1 < total),
             );
         }
     }
@@ -1957,23 +1959,25 @@ fn row_menu_items(mgr: &SchemaManagerState, entry: &SchemaEntry) -> Vec<MenuItem
     let m = mgr.clone();
     items.push(MenuItem::run(
         "方案设置…",
-        move || m.open_settings_selected(),
+        move |_ctx| m.open_settings_selected(),
         false,
     ));
     let (m, id) = (mgr.clone(), entry.id.clone());
     items.push(MenuItem::run(
         "导出方案包…",
-        move || m.export_schema(&id),
+        // 菜单动作的 `ctx` 正是这里要用的：导出要弹原生保存框，必须排到事件分发
+        // 完全返回之后（`export_schema` 内走 `ctx.defer_blocking`）。
+        move |ctx| m.export_schema(ctx, &id),
         false,
     ));
     items.push(MenuItem::separator());
     let m = mgr.clone();
     items.push(
-        MenuItem::run("删除", move || m.request_delete_selected(), false)
+        MenuItem::run("删除", move |_ctx| m.request_delete_selected(), false)
             // 与工具栏「删除」按钮的 danger 描边同语义：菜单里各项长得一样，
             // 颜色是唯一能在扫读时把不可逆操作与旁边那些拦开的信号。
             .danger()
-            .with_enabled(entry.source == "user"),
+            .enabled(entry.source == "user"),
     );
     items
 }
@@ -1992,33 +1996,43 @@ pub fn list_menu_items(
     let (hide, show) = (mgr.hide_disabled.get(), mgr.show_hidden.get());
     let (m_h, m_s) = (mgr.clone(), mgr.clone());
     vec![
-        MenuItem::run("导入方案包…", move || m.do_import_package(), false),
-        MenuItem::run("刷新列表", move || m_r.refresh(), false),
+        MenuItem::run("导入方案包…", move |ctx| m.do_import_package(ctx), false),
+        MenuItem::run("刷新列表", move |_ctx| m_r.refresh(), false),
         MenuItem::separator(),
         // 粘滞项：连点两个过滤开关不必反复右击。勾选态每次右击重建时现取。
         MenuItem::run(
             "隐藏未启用",
-            move || {
-                let v = !m_h.hide_disabled.get();
-                m_h.hide_disabled.set(v);
-                on_hide_disabled(v);
-            },
+            move |_ctx| toggle_hide_disabled(&m_h, &*on_hide_disabled),
             hide,
         )
         .stay_open(),
         MenuItem::run(
             "显示特殊方案",
-            move || {
-                let v = !m_s.show_hidden.get();
-                // set_show_hidden 内会重建列表——特殊方案的显隐决定「进不进列表」，
-                // 不是单纯的行可见性（分区标题的计数按数据项算）。
-                m_s.set_show_hidden(v);
-                on_show_hidden(v);
-            },
+            move |_ctx| toggle_show_hidden(&m_s, &*on_show_hidden),
             show,
         )
         .stay_open(),
     ]
+}
+
+/// 翻转「隐藏未启用」并把新值交给持久化回调。
+///
+/// 两个过滤开关的动作单独成函数而非写在菜单闭包里，是为了留一个**不需要 `EventCtx` 的**
+/// 测试入口：windui 0.12 起菜单动作收 `&mut EventCtx`，而 `EventCtx` 只有宿主造得出
+///（字段私有、`Tree::run_detached` 是 `pub(crate)`），下游测试跑不了菜单闭包本身。
+fn toggle_hide_disabled(mgr: &SchemaManagerState, on_changed: &dyn Fn(bool)) {
+    let v = !mgr.hide_disabled.get();
+    mgr.hide_disabled.set(v);
+    on_changed(v);
+}
+
+/// 翻转「显示特殊方案」并把新值交给持久化回调。选型同 [`toggle_hide_disabled`]。
+fn toggle_show_hidden(mgr: &SchemaManagerState, on_changed: &dyn Fn(bool)) {
+    let v = !mgr.show_hidden.get();
+    // set_show_hidden 内会重建列表——特殊方案的显隐决定「进不进列表」，
+    // 不是单纯的行可见性（分区标题的计数按数据项算）。
+    mgr.set_show_hidden(v);
+    on_changed(v);
 }
 
 /// 拖拽落定后的新 `enabled_order`：把 `visible`（已启用区当前那几行的 id，界面顺序）
@@ -2420,7 +2434,7 @@ fn build_import_confirm_dialog(state: &SchemaManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label_rc(state.import_preview_msg)
+            Element::label_signal(state.import_preview_msg)
                 .font_size(13.0)
                 .fg_role(Role::Text)
                 .width_match()
@@ -2471,7 +2485,7 @@ fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label_rc(state.confirm_msg)
+            Element::label_signal(state.confirm_msg)
                 .font_size(13.0)
                 .fg_role(Role::Text)
                 .width_match(),
@@ -2670,7 +2684,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         )
                         .child(
                             // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
-                            Element::label_rc(disp)
+                            Element::label_signal(disp)
                                 .font_size(12.5)
                                 .fg_role(Role::TextMuted)
                                 .max_lines(1)
@@ -2707,7 +2721,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .child(
                             // 摘要由 effect 与勾选同步刷新（见 build_schema_settings_dialog），
                             // 不等 commit 落表——否则用户勾完看不到变化。
-                            Element::label_rc(state.settings_trigger_disp)
+                            Element::label_signal(state.settings_trigger_disp)
                                 .font_size(12.5)
                                 .fg_role(Role::TextMuted)
                                 .max_lines(1)
@@ -2738,7 +2752,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             .max_lines(1),
                     )
                     .child(
-                        Element::label_rc(state.settings_ka_disp)
+                        Element::label_signal(state.settings_ka_disp)
                             .font_size(12.5)
                             .fg_role(Role::TextMuted)
                             .max_lines(1)
@@ -2809,7 +2823,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         )
                         .child(Element::checkbox("启用", en).small().fg_role(Role::Text))
                         .child(
-                            Element::label_rc(state.settings_ct_disp)
+                            Element::label_signal(state.settings_ct_disp)
                                 .font_size(12.5)
                                 .fg_role(Role::TextMuted)
                                 .max_lines(1)
@@ -2820,7 +2834,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .small()
                                 .outline_soft()
                                 .on_click(move |_| cv.set(true))
-                                .enabled_when(move || en.get()),
+                                .enabled_signal(en),
                         ),
                 )
         }
@@ -3555,10 +3569,18 @@ mod row_menu_tests {
         let st = fixture();
         let saved = Rc::new(std::cell::Cell::new(None));
         let s = saved.clone();
-        let items = list_menu_items(&st, Rc::new(move |v| s.set(Some(v))), Rc::new(|_: bool| {}));
-        if let windui::event::MenuAction::Run(f) = &item(&items, "隐藏未启用").action {
-            f();
-        }
+        let on_hide: Rc<dyn Fn(bool)> = Rc::new(move |v| s.set(Some(v)));
+        let items = list_menu_items(&st, on_hide.clone(), Rc::new(|_: bool| {}));
+        // 菜单动作跑不了（收 `&mut EventCtx`，只有宿主造得出），故断言项确实是可执行动作，
+        // 再直接验它调的 `toggle_hide_disabled`——两段合起来等价于原来的一次点击。
+        assert!(
+            matches!(
+                item(&items, "隐藏未启用").action,
+                windui::event::MenuAction::Run(_)
+            ),
+            "过滤项应挂着可执行动作"
+        );
+        toggle_hide_disabled(&st, &*on_hide);
         assert!(st.hide_disabled.get(), "信号应翻转");
         assert_eq!(saved.get(), Some(true), "并应把新值交给持久化回调");
     }

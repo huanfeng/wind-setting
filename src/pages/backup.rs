@@ -331,7 +331,7 @@ pub fn build_backup_restore_dialog(state: &BackupState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label_rc(state.restore_summary_msg)
+            Element::label_signal(state.restore_summary_msg)
                 .font_size(13.0)
                 .fg_role(Role::Text)
                 .width_match()

@@ -662,9 +662,9 @@ fn build_select_reactive(
 
     // 主题下拉用富内容（版本徽章 + 外部主题删除图标）；其余动态源仍用纯文本响应式下拉。
     let el = if item.options_source.as_deref() == Some("themes") {
-        Element::dropdown_items_reactive(state.theme_items_sig, sig)
+        Element::dropdown_items_signal(state.theme_items_sig, sig)
     } else {
-        Element::dropdown_reactive(lab_sig, sig)
+        Element::dropdown_signal(lab_sig, sig)
     };
     match item.width {
         Some(w) => el.width(w as i32),
@@ -1053,7 +1053,7 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     let open = Element::button("设置")
         .small()
         .outline_soft()
-        .enabled_when(move || enabled_sig.get())
+        .enabled_signal(enabled_sig)
         .on_click(move |_| {
             let (m, k) = parse_hotkey(&raw.get());
             for (i, s) in mods.iter().enumerate() {
@@ -1072,12 +1072,12 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         )
         .child(
             // 固定宽度：防止长热键文本（如 "Ctrl+Shift+\"）撑宽右侧，挤压左侧功能名标签。
-            Element::label_rc(disp)
+            Element::label_signal(disp)
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
                 .max_lines(1)
                 .width(114)
-                .enabled_when(move || enabled_sig.get()),
+                .enabled_signal(enabled_sig),
         )
         .child(open)
 }
@@ -1440,9 +1440,7 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
             Element::checkbox(*lbl, s).small().fg_role(Role::Text)
         })
         .collect();
-    let grid = Element::grid(2, 10, cells)
-        .width_match()
-        .enabled_when(move || en.get());
+    let grid = Element::grid(2, 10, cells).width_match().enabled_signal(en);
     Element::col()
         .width_match()
         .padding_xy(0, 11)
@@ -1631,7 +1629,7 @@ fn build_gated_dialog_row(
     let btn = if dlg_item.gate_soft {
         open_dialog_button(visible)
     } else {
-        open_dialog_button(visible).enabled_when(move || gate_sig.get())
+        open_dialog_button(visible).enabled_signal(gate_sig)
     };
 
     let control = Element::row()

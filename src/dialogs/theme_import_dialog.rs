@@ -43,7 +43,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
             .padding_xy(18, 10),
         )
         .child(
-            Element::label_rc(url_display)
+            Element::label_signal(url_display)
                 .font_size(12.0)
                 .fg_role(Role::Text)
                 .width_match()
@@ -51,7 +51,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                 .padding_xy(18, 4),
         )
         .child(
-            Element::label_rc(name_display)
+            Element::label_signal(name_display)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .width_match()

@@ -48,7 +48,7 @@ fn io_target_row(mgr: &DictManagerState, verb: &'static str) -> Element {
                 .fg_role(Role::TextMuted)
                 .width(52),
         )
-        .child(Element::dropdown_items_reactive(mgr.io_target_items, mgr.io_target).weight(1.0))
+        .child(Element::dropdown_items_signal(mgr.io_target_items, mgr.io_target).weight(1.0))
 }
 
 /// 格式行：格式下拉 + 识别结果回显。
@@ -76,7 +76,7 @@ fn io_format_row(mgr: &DictManagerState) -> Element {
             .min_width(200),
         )
         .child(
-            Element::label_rc(note)
+            Element::label_signal(note)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .weight(1.0)
@@ -118,7 +118,7 @@ fn io_weight_row(mgr: &DictManagerState) -> Element {
 
 /// 提示条：内容为空时整行隐藏（自动匹配说明 / 目标方案作用域说明共用）。
 fn io_note(sig: Signal<String>, role: Role) -> Element {
-    Element::label_rc(sig)
+    Element::label_signal(sig)
         .font_size(12.0)
         .fg_role(role)
         .width_match()
@@ -153,7 +153,7 @@ fn build_export_dialog(mgr: &DictManagerState) -> Element {
         .padding(20)
         .spacing(12)
         .child(
-            Element::label_rc(mgr.io_title)
+            Element::label_signal(mgr.io_title)
                 .font_size(15.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -220,7 +220,7 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |ctx| pick.pick_import_file(ctx)),
         )
         .child(
-            Element::label_rc(mgr.import_file_name)
+            Element::label_signal(mgr.import_file_name)
                 .font_size(12.5)
                 .fg_role(Role::TextMuted)
                 .weight(1.0)
@@ -231,7 +231,7 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         .padding(20)
         .spacing(12)
         .child(
-            Element::label_rc(mgr.io_title)
+            Element::label_signal(mgr.io_title)
                 .font_size(15.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -265,7 +265,7 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                         .child(io_note(mgr.io_auto_note, Role::Accent))
                         .child(io_note(mgr.io_scope_note, Role::TextMuted))
                         .child(
-                            Element::label_rc(mgr.import_preview_msg)
+                            Element::label_signal(mgr.import_preview_msg)
                                 .font_size(13.0)
                                 .fg_role(Role::Text)
                                 .width_match(),
@@ -366,7 +366,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
             .cross(Align::Center)
             .spacing(8)
             .child(
-                Element::label_rc(label)
+                Element::label_signal(label)
                     .font_size(12.5)
                     .fg_role(Role::TextMuted)
                     .width(48),
@@ -458,7 +458,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .corner(12.0)
         .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
         .child(
-            Element::label_rc(mgr.edit_title)
+            Element::label_signal(mgr.edit_title)
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -549,7 +549,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .corner(12.0)
         .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
         .child(
-            Element::label_rc(mgr.shadow_title)
+            Element::label_signal(mgr.shadow_title)
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
@@ -665,7 +665,7 @@ fn build_confirm_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label_rc(mgr.confirm_msg)
+            Element::label_signal(mgr.confirm_msg)
                 .font_size(13.0)
                 .fg_role(Role::Text)
                 .width_match()

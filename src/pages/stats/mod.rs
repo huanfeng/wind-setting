@@ -302,7 +302,7 @@ fn stat_card(value: String, label: &str, detail: Vec<String>) -> Element {
         col = col.child(
             Element::label(t)
                 .font_size(11.0)
-                .fg_role(Role::Placeholder)
+                .fg_role(Role::TextSubtle)
                 .width_match()
                 .max_lines(1)
                 .truncate(Truncate::End)
@@ -545,7 +545,7 @@ pub fn build_stats_confirm_dialog(state: &StatsState) -> Element {
     let s_ok = state.clone();
 
     let body = Element::col().width_match().spacing(8).child(
-        Element::label_rc(state.confirm_msg)
+        Element::label_signal(state.confirm_msg)
             .font_size(13.0)
             .fg_role(Role::Text)
             .width_match()

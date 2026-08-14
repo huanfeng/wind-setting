@@ -33,8 +33,12 @@ pub fn light_theme() -> Theme {
     p.divider = Color::hex(0xEDF0F4);
     // track 兼作 outline_soft 按钮静默边（须深于 border，禁用边才有层级）与开关关闭轨道。
     p.track = Color::hex(0xCBD2DD);
-    // 设置行描述/输入框提示的弱化档（参考稿 text3；text_muted 留给次级正文）。
+    // 输入框提示（"待填写"语义）。
     p.placeholder = Color::hex(0x97A1B2);
+    // 设置行描述这类三级弱化正文（参考稿 text3；text_muted 留给次级正文）。
+    // 取值与 placeholder 相同是参考稿如此，语义则分家：windui 0.12 起有正牌的
+    // `Role::TextSubtle`，此前本仓借 `Role::Placeholder` 上色，把可读说明说成了待填写。
+    p.text_subtle = Color::hex(0x97A1B2);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
@@ -61,8 +65,10 @@ pub fn dark_theme() -> Theme {
     p.divider = Color::hex(0x2C374C);
     // track 兼作 outline_soft 按钮静默边（须深/亮于 border）与开关关闭轨道。
     p.track = Color::hex(0x3A4560);
-    // 设置行描述/输入框提示的弱化档（参考稿 text3 ≈ 白 42% 合成色）。
+    // 输入框提示（"待填写"语义）。
     p.placeholder = Color::hex(0x6C7890);
+    // 设置行描述这类三级弱化正文（参考稿 text3 ≈ 白 42% 合成色）。选型同亮色主题。
+    p.text_subtle = Color::hex(0x6C7890);
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);

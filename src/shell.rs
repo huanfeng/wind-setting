@@ -387,7 +387,7 @@ fn build_footer(
             th_l.set(theme_for(false));
             app_l.borrow_mut().save_dark_mode(false);
         })
-        .visible_when(move || d_l.get());
+        .visible_signal(d_l);
     let th_d = th;
     let d_d = dark;
     let app_d = app.clone();
@@ -539,7 +539,7 @@ fn build_theme_delete_dialog(app: &Rc<RefCell<AppState>>) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label_rc(msg)
+            Element::label_signal(msg)
                 .font_size(13.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
