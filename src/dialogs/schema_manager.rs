@@ -2002,37 +2002,27 @@ pub fn list_menu_items(
         // 粘滞项：连点两个过滤开关不必反复右击。勾选态每次右击重建时现取。
         MenuItem::run(
             "隐藏未启用",
-            move |_ctx| toggle_hide_disabled(&m_h, &*on_hide_disabled),
+            move |_ctx| {
+                let v = !m_h.hide_disabled.get();
+                m_h.hide_disabled.set(v);
+                on_hide_disabled(v);
+            },
             hide,
         )
         .stay_open(),
         MenuItem::run(
             "显示特殊方案",
-            move |_ctx| toggle_show_hidden(&m_s, &*on_show_hidden),
+            move |_ctx| {
+                let v = !m_s.show_hidden.get();
+                // set_show_hidden 内会重建列表——特殊方案的显隐决定「进不进列表」，
+                // 不是单纯的行可见性（分区标题的计数按数据项算）。
+                m_s.set_show_hidden(v);
+                on_show_hidden(v);
+            },
             show,
         )
         .stay_open(),
     ]
-}
-
-/// 翻转「隐藏未启用」并把新值交给持久化回调。
-///
-/// 两个过滤开关的动作单独成函数而非写在菜单闭包里，是为了留一个**不需要 `EventCtx` 的**
-/// 测试入口：windui 0.12 起菜单动作收 `&mut EventCtx`，而 `EventCtx` 只有宿主造得出
-///（字段私有、`Tree::run_detached` 是 `pub(crate)`），下游测试跑不了菜单闭包本身。
-fn toggle_hide_disabled(mgr: &SchemaManagerState, on_changed: &dyn Fn(bool)) {
-    let v = !mgr.hide_disabled.get();
-    mgr.hide_disabled.set(v);
-    on_changed(v);
-}
-
-/// 翻转「显示特殊方案」并把新值交给持久化回调。选型同 [`toggle_hide_disabled`]。
-fn toggle_show_hidden(mgr: &SchemaManagerState, on_changed: &dyn Fn(bool)) {
-    let v = !mgr.show_hidden.get();
-    // set_show_hidden 内会重建列表——特殊方案的显隐决定「进不进列表」，
-    // 不是单纯的行可见性（分区标题的计数按数据项算）。
-    mgr.set_show_hidden(v);
-    on_changed(v);
 }
 
 /// 拖拽落定后的新 `enabled_order`：把 `visible`（已启用区当前那几行的 id，界面顺序）
@@ -3569,18 +3559,14 @@ mod row_menu_tests {
         let st = fixture();
         let saved = Rc::new(std::cell::Cell::new(None));
         let s = saved.clone();
-        let on_hide: Rc<dyn Fn(bool)> = Rc::new(move |v| s.set(Some(v)));
-        let items = list_menu_items(&st, on_hide.clone(), Rc::new(|_: bool| {}));
-        // 菜单动作跑不了（收 `&mut EventCtx`，只有宿主造得出），故断言项确实是可执行动作，
-        // 再直接验它调的 `toggle_hide_disabled`——两段合起来等价于原来的一次点击。
-        assert!(
-            matches!(
-                item(&items, "隐藏未启用").action,
-                windui::event::MenuAction::Run(_)
-            ),
-            "过滤项应挂着可执行动作"
-        );
-        toggle_hide_disabled(&st, &*on_hide);
+        let items = list_menu_items(&st, Rc::new(move |v| s.set(Some(v))), Rc::new(|_: bool| {}));
+        // 真的把这一项的动作跑一遍：ctx 由 `windui::testing` 借出（菜单动作收
+        // `&mut EventCtx`，只有宿主造得出，故不能直接调）。这样测的是**接线本身**，
+        // 而不是被抽出来的那半截逻辑——项挂错了动作照样能被这条断言抓住。
+        let windui::event::MenuAction::Run(action) = &item(&items, "隐藏未启用").action else {
+            panic!("过滤项应挂着可执行动作");
+        };
+        windui::testing::run_with_ctx(|ctx| action(ctx));
         assert!(st.hide_disabled.get(), "信号应翻转");
         assert_eq!(saved.get(), Some(true), "并应把新值交给持久化回调");
     }
