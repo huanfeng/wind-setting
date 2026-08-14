@@ -117,15 +117,23 @@ fn main() {
     }
     let start_dark = app_state.borrow().dark.get();
 
-    // 渲染：默认 Direct2D GPU 加速（windui d2d 后端，已默认编入）；远程会话 / 无可用
-    // GPU 时由 windui 自动回退软渲染（不 panic）。命令行 --soft / --no-accel 强制软渲染。
+    // 渲染：默认 `Renderer::Auto`（GPU 优先，远程会话 / 无可用 GPU 时由 windui 自动回退
+    // 软渲染，不 panic）。命令行 --soft / --no-accel 强制软渲染。
+    //
+    // 显式写 Auto 而非省略：windui 的默认值是 `Software`（其 GPU 路径的验证仍在补齐），
+    // 而本应用一直跑在 GPU 加速上——省略参数会静默降级成软渲染。
     let soft_render = args.iter().any(|a| a == "--soft" || a == "--no-accel");
+    let renderer = if soft_render {
+        Renderer::Software
+    } else {
+        Renderer::Auto
+    };
     tracing::info!(
         "渲染模式: {}",
         if soft_render {
             "软件 (tiny-skia)"
         } else {
-            "Direct2D 加速"
+            "GPU 优先（不可用时自动回退软渲染）"
         }
     );
 
@@ -151,7 +159,7 @@ fn main() {
         })
         .frameless()
         .centered()
-        .accelerated(!soft_render)
+        .renderer(renderer)
         .min_size(560, 440)
         .theme(theme_def::theme_for(start_dark));
     let th = app.theme_handle();

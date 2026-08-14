@@ -292,6 +292,11 @@ pub struct AppState {
     /// 是否已有下载在跑。防重入：`spawn_update_download` 每调用一次就起一个线程，
     /// 两个线程写同一个目标文件，进度还会互相打架。三种终态消息到达时复位。
     update_downloading: std::cell::Cell<bool>,
+    /// 正在跑的那次检查是否为静默检查；`None` = 当前没有检查在跑。
+    ///
+    /// 只挡**同类型**的重复请求（见 [`Self::spawn_update_check`]）。清除条件是"结果的
+    /// 请求号仍是最新的"——过期结果（用户中途又发起过检查）不能把新那次的标记抹掉。
+    update_checking: std::cell::Cell<Option<bool>>,
 }
 
 /// 主题编辑器连接模式字符串 → 分段控件索引（0=off/1=once/2=auto；未知值回落 0）。
@@ -476,6 +481,7 @@ impl AppState {
             update_cancel: Arc::new(AtomicBool::new(false)),
             update_check_seq: std::cell::Cell::new(0),
             update_downloading: std::cell::Cell::new(false),
+            update_checking: std::cell::Cell::new(None),
             update_check: RefCell::new(None),
             update_installer: RefCell::new(None),
         }
@@ -571,6 +577,16 @@ impl AppState {
         self.spawn_update_check(true);
     }
 
+    /// 起一次检查。`silent` 见 [`UpdateMsg::CheckDone`](crate::update::UpdateMsg)。
+    ///
+    /// **同类型的检查已在跑时直接复用**，不起第二个线程、也**不推进请求号**——推进了的话，
+    /// 正在跑的那次回来就成了"过期"被丢弃，而新线程没起，界面会永远停在「检查中」。
+    /// 防的是"网络慢 → 用户反复点检查更新"：每点一次都起一个最长 10s 的 HTTP 请求，
+    /// 纯属浪费。界面侧的反馈（切到 Checking）由调用方照常做，用户看得到响应。
+    ///
+    /// 静默与手动**不互相复用**：两者的结果处理完全不同（静默无更新时不打扰、不弹对话框），
+    /// 拿静默的结果去满足用户手动点的那一次，界面就会停在检查中不动。此时改为起新线程，
+    /// 先前那次由请求号自然作废。
     fn spawn_update_check(&self, silent: bool) {
         let Some(tx) = self.update_tx.borrow().clone() else {
             if !silent {
@@ -578,6 +594,10 @@ impl AppState {
             }
             return;
         };
+        if !self.try_begin_check(silent) {
+            tracing::debug!("同类型的检查已在进行中（silent={silent}），复用当前请求");
+            return;
+        }
         // 请求号自增：这一刻起，之前发出的检查结果一律作废（见 `update_check_seq`）。
         let seq = self.update_check_seq.get().wrapping_add(1);
         self.update_check_seq.set(seq);
@@ -707,6 +727,19 @@ impl AppState {
             };
             let _ = tx.send(msg);
         });
+    }
+
+    /// 能否发起一次 `silent` 类型的检查；能则就地占位（防重入）。结果到达时由
+    /// [`Self::on_update_msg`] 复位（且只有**最新那次**的结果才复位）。
+    ///
+    /// 只挡同类型：静默与手动的结果处理完全不同（静默无更新时不打扰、不弹对话框），
+    /// 让手动那次复用正在跑的静默检查，界面就会停在「检查中」等一个永远不会切阶段的结果。
+    fn try_begin_check(&self, silent: bool) -> bool {
+        if self.update_checking.get() == Some(silent) {
+            return false;
+        }
+        self.update_checking.set(Some(silent));
+        true
     }
 
     /// 能否开始一次新下载；能则就地占位（防重入）。终态消息到达时由
@@ -856,16 +889,20 @@ impl AppState {
         //（关掉对话框再点一次、或手动检查撞上启动时的静默检查）。放行的话，先发后到的
         // 那次会把当前状态覆盖掉——正在下载的界面被打回「发现新版本」，再点一次下载
         // 就起了第二个下载线程。
-        if let UpdateMsg::CheckDone { seq, silent, .. } = &msg
-            && *seq != self.update_check_seq.get()
-        {
-            tracing::debug!(
-                "丢弃过期的检查结果：seq={} 当前={} silent={}",
-                seq,
-                self.update_check_seq.get(),
-                silent
-            );
-            return;
+        if let UpdateMsg::CheckDone { seq, silent, .. } = &msg {
+            if *seq != self.update_check_seq.get() {
+                tracing::debug!(
+                    "丢弃过期的检查结果：seq={} 当前={} silent={}",
+                    seq,
+                    self.update_check_seq.get(),
+                    silent
+                );
+                // 刻意**不**清 `update_checking`：那个标记属于最新那次请求，
+                // 被一个已经作废的结果抹掉，会让真正在跑的那次失去防重入保护。
+                return;
+            }
+            // 最新那次有结果了，检查结束，放行后续请求。
+            self.update_checking.set(None);
         }
         // 下载的三种终态：复位防重入标志，之后才允许再次下载。
         if matches!(
@@ -2709,6 +2746,49 @@ mod tests {
             seq: 2,
         });
         assert_eq!(st.update_phase.get(), UpdatePhase::HasUpdate);
+    }
+
+    /// 检查不许同类型重入，且**过期结果不得清掉正在跑那次的标记**。
+    ///
+    /// 前者防的是"网络慢（最长 10s）→ 用户反复点检查更新"：每点一次起一个 HTTP 请求。
+    /// 后者是这条防重入自己的陷阱——若过期结果也复位标记，用户中途换过一次请求时，
+    /// 真正在跑的那次就失去了保护，狂点又能起线程了。
+    ///
+    /// 静默与手动**不互相复用**：两者结果处理不同（静默无更新时不弹对话框），
+    /// 让手动那次去等静默的结果，界面会永远停在「检查中」。
+    #[test]
+    fn check_reentry_is_blocked_per_kind_and_survives_stale_results() {
+        use crate::update::UpdateMsg;
+        let st = AppState::empty();
+        assert!(st.try_begin_check(false), "首次手动检查应放行");
+        assert!(!st.try_begin_check(false), "同类型重复请求应被挡下");
+        assert!(
+            st.try_begin_check(true),
+            "静默检查不该被手动检查挡住——两者结果处理不同"
+        );
+
+        // 过期结果（seq 不是最新）不得清掉标记。
+        st.update_check_seq.set(7);
+        st.update_checking.set(Some(false));
+        st.on_update_msg(UpdateMsg::CheckDone {
+            result: Ok(check_result("2.0.0")),
+            silent: false,
+            seq: 6,
+        });
+        assert_eq!(
+            st.update_checking.get(),
+            Some(false),
+            "过期结果不该把正在跑那次的防重入标记抹掉"
+        );
+
+        // 最新那次到达才算结束，之后可以再发起。
+        st.on_update_msg(UpdateMsg::CheckDone {
+            result: Ok(check_result("2.0.0")),
+            silent: false,
+            seq: 7,
+        });
+        assert_eq!(st.update_checking.get(), None, "最新结果到达即结束");
+        assert!(st.try_begin_check(false), "结束后应可再次发起");
     }
 
     /// 下载不许重入：一次只能有一个下载线程，两个会写同一个目标文件、进度互相打架。
