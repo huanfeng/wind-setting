@@ -233,15 +233,17 @@ fn main() {
     //
     // `on_close_request` 的返回值被平台在 WM_CLOSE 里**同步等待**，容不下"等用户回答"
     // 这种异步决定，故这里只能"先返回 false 挡住 + 另起一条路把答案送回来"——那条路就是
-    // 应用内的确认对话框，它的两个退出按钮置 `exit_confirmed` 后再 `request_close()`。
-    // 判据本身（有没有改动）不消失，所以放行必须靠那个标志，否则会被自己再拦一次。
+    // 应用内的确认对话框，它的两个退出按钮走 `ctx.force_close()`（绕过本守卫）——
+    // 判据本身（有没有改动）不会因为用户选了"直接退出"就消失，走普通关闭会被自己再拦一次。
+    //
+    // 自绘标题栏的 × 与 Alt+F4 都会到这里（windui 0.12 起两者同走关闭决策链）。
     let close_state = app_state.clone();
     app = app.on_close_request(move |_ctx| {
         let Ok(st) = close_state.try_borrow() else {
             // 借用不到说明正处在某个改状态的回调里，此时拦下反而更糟（用户会以为窗口卡死）。
             return true;
         };
-        if st.exit_confirmed.get() || !st.has_unsaved_changes() {
+        if !st.has_unsaved_changes() {
             return true;
         }
         st.exit_confirm.set(true);

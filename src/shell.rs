@@ -489,14 +489,11 @@ fn build_footer(
 /// 三按钮而非「确定/取消」：两按钮版本逼用户在"丢弃"和"留下"之间二选一，而绝大多数人
 /// 此刻想要的是第三件事——存了再走。这也是各家编辑器关窗确认的通行形状。
 ///
-/// 「直接退出」与「保存并退出」都先置 `exit_confirmed` 再请求关窗：`on_close_request`
-/// 的判据是"有没有未保存改动"，而丢弃改动并不会消掉它们，不置这个标志就会被自己的守卫
-/// 再拦一次、永远关不掉。
+/// 「直接退出」与「保存并退出」都走 `force_close`（绕过守卫）：守卫的判据是"有没有未保存
+/// 改动"，而丢弃改动并不会消掉它们——走普通 `request_close` 会被自己的守卫再拦一次、
+/// 永远关不掉。
 fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
-    let (visible, confirmed) = {
-        let st = app.borrow();
-        (st.exit_confirm, st.exit_confirmed)
-    };
+    let visible = app.borrow().exit_confirm;
     let app_save = app.clone();
     let frame = Element::col()
         .width(380)
@@ -543,8 +540,7 @@ fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                         .danger()
                         .on_click(move |ctx| {
                             visible.set(false);
-                            confirmed.set(true);
-                            ctx.request_close();
+                            ctx.force_close();
                         }),
                 )
                 .child(Element::button("保存并退出").small().on_click(move |ctx| {
@@ -554,8 +550,7 @@ fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                         && s.save()
                     {
                         visible.set(false);
-                        confirmed.set(true);
-                        ctx.request_close();
+                        s.close_window(ctx);
                     }
                 })),
         );

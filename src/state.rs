@@ -222,11 +222,6 @@ pub struct AppState {
     pub reset_confirm: Signal<bool>,
     /// 关窗前「有未保存的更改」确认对话框可见标志。
     pub exit_confirm: Signal<bool>,
-    /// 用户已在退出确认里选过「直接退出 / 保存并退出」，下一次关窗请求直接放行。
-    ///
-    /// 必须有这个标志：`on_close_request` 的判据是"有没有未保存改动"，而"直接退出"
-    /// 并不会消掉改动——不放行的话，点了直接退出会被自己的守卫再拦一次，永远关不掉。
-    pub exit_confirmed: Signal<bool>,
     /// 启动时是否成功连接到输入法服务（core）。未连接则设置只读、保存会失败。
     pub connected: bool,
     /// [`Self::apply_loaded`] 是否已跑过一轮。区别于 `connected`：mock / 离线预览下
@@ -452,7 +447,6 @@ impl AppState {
             stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),
             exit_confirm: signal(false),
-            exit_confirmed: signal(false),
             reset_confirm: signal(false),
             connected: false,
             data_loaded: false,
@@ -1368,16 +1362,18 @@ impl AppState {
     /// 跑所有写回器把 Signal 值写回 current_config，再 diff 保存。
     /// 返回是否「可视为成功」（无错误）：无变更与保存成功均为 true，仅 RPC 报错为 false。
     /// 供「保存&退出」据此决定是否真的退出。
-    /// 应用内主动关窗：置已确认标志后请求关闭，**绕过未保存守卫**。
+    /// 应用内主动关窗：**绕过**未保存守卫直接关。
     ///
-    /// 守卫要拦的是"点 ✕ / Alt+F4"这类可能出于无意的关闭；应用内按钮（保存并退出、
-    /// 立即安装、连接失败后退出）都是明确的意思表示，再问一遍只会挡路。
+    /// 守卫（`on_close_request`）要拦的是"点 ✕ / Alt+F4"这类可能出于无意的关闭；
+    /// 应用内按钮（保存并退出、立即安装、连接失败后退出、确认框里的两个出口）都是明确
+    /// 的意思表示，再问一遍只会挡路。
     ///
     /// 「立即安装」那处更是**不能**拦：安装器要等本进程退出才能替换文件，而守卫此时弹一个
     /// 确认框，就成了"安装器等窗口关、窗口等用户回答"——用户看到的是装到一半卡住。
+    ///
+    /// windui 0.12 的 `force_close` 正是为此而设，故本仓不再自备"已确认"标志位。
     pub fn close_window(&self, ctx: &mut EventCtx) {
-        self.exit_confirmed.set(true);
-        ctx.request_close();
+        ctx.force_close();
     }
 
     /// 是否有未保存的改动（关窗确认用）。
