@@ -280,6 +280,16 @@ pub struct AppState {
     pub update_check: RefCell<Option<crate::update::CheckResult>>,
     /// 已下载并校验通过的安装包路径。
     pub update_installer: RefCell<Option<std::path::PathBuf>>,
+    /// 最新一次检查请求的编号；`CheckDone` 带回的 `seq` 与它不等即为过期结果，丢弃。
+    ///
+    /// 检查请求会并存：网络慢时用户关掉对话框再点一次（关闭不取消已发出的请求），
+    /// 启动时的静默检查也可能与手动检查撞上。先发的那次晚回来若照单全收，就会把
+    /// 正在下载的界面打回「发现新版本」——用户再点一次下载即起第二个下载线程。
+    /// 只在 UI 线程读写，故 `Cell` 足够。
+    update_check_seq: std::cell::Cell<u64>,
+    /// 是否已有下载在跑。防重入：`spawn_update_download` 每调用一次就起一个线程，
+    /// 两个线程写同一个目标文件，进度还会互相打架。三种终态消息到达时复位。
+    update_downloading: std::cell::Cell<bool>,
 }
 
 /// 主题编辑器连接模式字符串 → 分段控件索引（0=off/1=once/2=auto；未知值回落 0）。
@@ -461,6 +471,8 @@ impl AppState {
             update_notes: signal(String::new()),
             update_tx: RefCell::new(None),
             update_cancel: Arc::new(AtomicBool::new(false)),
+            update_check_seq: std::cell::Cell::new(0),
+            update_downloading: std::cell::Cell::new(false),
             update_check: RefCell::new(None),
             update_installer: RefCell::new(None),
         }
@@ -510,7 +522,19 @@ impl AppState {
     /// 打开升级对话框。已同意联网则直接开始检查，否则先走同意页。
     ///
     /// 已同意路径的初始态取 `Checking` 而非 `Consent`，避免同意页一闪而过。
+    ///
+    /// **正在下载 / 已下好待安装时只把对话框显示出来**，不重置任何状态、也不再发起检查：
+    /// 此时用户是回来看进度的。原先无条件重置会把后台任务与界面割裂——下载仍在跑，界面
+    /// 却回到「检查中」，检查结果一到又变成「发现新版本」，再点一次下载就起了第二个线程。
     pub fn open_update_dialog(&self) {
+        use crate::update::UpdatePhase;
+        if matches!(
+            self.update_phase.get(),
+            UpdatePhase::Downloading | UpdatePhase::Ready
+        ) {
+            self.update_dialog_visible.set(true);
+            return;
+        }
         self.update_notes.set(String::new());
         self.update_progress.set(0.0);
         self.update_progress_text.set(String::new());
@@ -551,11 +575,18 @@ impl AppState {
             }
             return;
         };
+        // 请求号自增：这一刻起，之前发出的检查结果一律作废（见 `update_check_seq`）。
+        let seq = self.update_check_seq.get().wrapping_add(1);
+        self.update_check_seq.set(seq);
         // 网络请求绝不能在 UI 线程做；结果经 channel 回到 UI 线程写 Signal。
         std::thread::spawn(move || {
             // 有更新时必拉说明；「已是最新」时只有手动检查才拉（静默那条不弹界面）。
             let result = crate::update::check_update(!silent).map_err(|e| e.user_message());
-            let _ = tx.send(crate::update::UpdateMsg::CheckDone { result, silent });
+            let _ = tx.send(crate::update::UpdateMsg::CheckDone {
+                result,
+                silent,
+                seq,
+            });
         });
     }
 
@@ -631,6 +662,10 @@ impl AppState {
             self.fail_update("没有可下载的更新");
             return;
         };
+        if !self.try_begin_download() {
+            tracing::warn!("已有下载在进行中，忽略重复的下载请求");
+            return;
+        }
 
         self.update_cancel.store(false, Ordering::SeqCst);
         let cancel = self.update_cancel.clone();
@@ -669,6 +704,16 @@ impl AppState {
             };
             let _ = tx.send(msg);
         });
+    }
+
+    /// 能否开始一次新下载；能则就地占位（防重入）。终态消息到达时由
+    /// [`Self::on_update_msg`] 复位。
+    ///
+    /// 两个下载线程会写同一个目标文件、进度还互相打架。正常路径下「下载更新」按钮在
+    /// Downloading 阶段是隐藏的，但阶段本身可能被别处改回去（过期的检查结果就干过这事），
+    /// 所以守卫放在真正起线程的地方，而不是依赖按钮的可见性。
+    fn try_begin_download(&self) -> bool {
+        !self.update_downloading.replace(true)
     }
 
     /// 请求取消下载；下载线程在下一个数据块边界响应。
@@ -804,10 +849,36 @@ impl AppState {
     pub fn on_update_msg(&self, msg: crate::update::UpdateMsg) {
         use crate::update::{UpdateMsg, UpdatePhase, format_size};
 
+        // 过期的检查结果一律丢弃：请求号不是最新的那次，说明用户之后又发起过检查
+        //（关掉对话框再点一次、或手动检查撞上启动时的静默检查）。放行的话，先发后到的
+        // 那次会把当前状态覆盖掉——正在下载的界面被打回「发现新版本」，再点一次下载
+        // 就起了第二个下载线程。
+        if let UpdateMsg::CheckDone { seq, silent, .. } = &msg
+            && *seq != self.update_check_seq.get()
+        {
+            tracing::debug!(
+                "丢弃过期的检查结果：seq={} 当前={} silent={}",
+                seq,
+                self.update_check_seq.get(),
+                silent
+            );
+            return;
+        }
+        // 下载的三种终态：复位防重入标志，之后才允许再次下载。
+        if matches!(
+            msg,
+            UpdateMsg::DownloadDone(_)
+                | UpdateMsg::DownloadFailed(_)
+                | UpdateMsg::DownloadCancelled
+        ) {
+            self.update_downloading.set(false);
+        }
+
         match msg {
             UpdateMsg::CheckDone {
                 result: Ok(r),
                 silent: true,
+                ..
             } => {
                 // 静默检查：无更新、已跳过的版本、开发构建，一律不打扰
                 let skipped = !self.setting_config.update.skipped_version.is_empty()
@@ -841,12 +912,14 @@ impl AppState {
             UpdateMsg::CheckDone {
                 result: Err(e),
                 silent: true,
+                ..
             } => {
                 tracing::info!("静默检查更新失败（已忽略）：{e}");
             }
             UpdateMsg::CheckDone {
                 result: Ok(result),
                 silent: false,
+                ..
             } => {
                 if result.has_update {
                     self.update_message.set(format!(
@@ -876,6 +949,7 @@ impl AppState {
             UpdateMsg::CheckDone {
                 result: Err(e),
                 silent: false,
+                ..
             } => self.fail_update(e),
             UpdateMsg::Progress { downloaded, total } => {
                 let ratio = if total > 0 {
@@ -2490,6 +2564,84 @@ mod tests {
         let res =
             windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev("ui.status.custom_x")));
         assert!(res.toast.is_none(), "界面没跳变就不该弹提示");
+    }
+
+    fn check_result(remote: &str) -> crate::update::CheckResult {
+        crate::update::CheckResult {
+            has_update: true,
+            local_version: "1.0.0".into(),
+            remote_version: remote.into(),
+            release_notes: String::new(),
+            download_url: "https://example.com/a.exe".into(),
+            sha256: "0".repeat(64),
+            size: 1024,
+            local_unparsable: false,
+        }
+    }
+
+    /// 过期的检查结果不许覆盖当前状态。
+    ///
+    /// 复现的那条链：网络慢 → 用户关掉对话框再点一次「检查更新」（关闭并不取消已发出的
+    /// 请求，于是两次检查并存）→ 先发的那次晚回来 → 无条件 `set(HasUpdate)` 把正在下载
+    /// 的界面打回「发现新版本」→ 用户再点一次下载 → 两个下载线程 → 先完成的那个把界面
+    /// 推到「安装」。请求号就是为切断这条链而加的。
+    #[test]
+    fn stale_check_result_does_not_hijack_current_state() {
+        use crate::update::{UpdateMsg, UpdatePhase};
+        let st = AppState::empty();
+        // 已发起过两次检查，界面此刻在下载中。
+        st.update_check_seq.set(2);
+        st.update_phase.set(UpdatePhase::Downloading);
+
+        // 第一次检查（seq=1）的结果现在才回来——必须被丢弃。
+        st.on_update_msg(UpdateMsg::CheckDone {
+            result: Ok(check_result("2.0.0")),
+            silent: false,
+            seq: 1,
+        });
+        assert_eq!(
+            st.update_phase.get(),
+            UpdatePhase::Downloading,
+            "过期结果不该打断正在进行的下载"
+        );
+
+        // 静默检查同理：它的请求号更早，晚到时不该弹对话框抢界面。
+        st.on_update_msg(UpdateMsg::CheckDone {
+            result: Ok(check_result("2.0.0")),
+            silent: true,
+            seq: 1,
+        });
+        assert!(
+            !st.update_dialog_visible.get(),
+            "过期的静默检查结果不该弹出对话框"
+        );
+
+        // 最新那次（seq=2）照常生效。
+        st.on_update_msg(UpdateMsg::CheckDone {
+            result: Ok(check_result("2.0.0")),
+            silent: false,
+            seq: 2,
+        });
+        assert_eq!(st.update_phase.get(), UpdatePhase::HasUpdate);
+    }
+
+    /// 下载不许重入：一次只能有一个下载线程，两个会写同一个目标文件、进度互相打架。
+    /// 三种终态消息（完成/失败/取消）到达后才允许再次开始。
+    #[test]
+    fn download_reentry_is_blocked_until_a_terminal_message() {
+        use crate::update::UpdateMsg;
+        let st = AppState::empty();
+        assert!(st.try_begin_download(), "首次请求应放行");
+        assert!(!st.try_begin_download(), "下载进行中，重复请求应被挡下");
+
+        st.on_update_msg(UpdateMsg::DownloadCancelled);
+        assert!(st.try_begin_download(), "取消后应可重新开始");
+
+        st.on_update_msg(UpdateMsg::DownloadFailed("网络错误".into()));
+        assert!(st.try_begin_download(), "失败后应可重试");
+
+        st.on_update_msg(UpdateMsg::DownloadDone(std::path::PathBuf::from("a.exe")));
+        assert!(st.try_begin_download(), "完成后标志也应复位");
     }
 
     #[test]
