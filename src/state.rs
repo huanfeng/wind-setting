@@ -1943,6 +1943,13 @@ mod trigger_conflict_tests {
 
     #[test]
     fn test_live_trigger_conflict_reflects_current_config() {
+        // 本模块唯一碰 `AppState` 的用例：`live_conflicts` 会跑字段写回器，未开 mock 时
+        // 会去够真实 core，检出配置里根本没有的冲突。此前它靠**别的测试**先 `set_var`
+        // 才偶然变绿——谁先跑到决定成败，`cargo test` 随机红。按仓库惯例自带 mock + 锁。
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let mut st = AppState::empty();
         st.current_config = Config::from_value(json!({
             "input": {
