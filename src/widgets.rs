@@ -7,21 +7,9 @@ use std::cell::Cell;
 
 use windui::prelude::*;
 
-// ── 设置行排版统一常量（setting_row / setting_row_checks 等各行类型共用）──
-// 层次策略：标题靠**字号**压过描述（14 vs 11）+ 描述用 Placeholder 浅色阶；
-// 字重保持 500——DirectWrite 下雅黑 300–500 均落 Regular（细分字重无效），
-// 600 会映射 Bold，整页行标题全加粗过重、显乱，故不用字重分层。
-
-/// 行标题字号。
-const ROW_LABEL_SIZE: f32 = 14.0;
-/// 行标题字重（见上：300–500 同渲染，600 起为 Bold）。
-const ROW_LABEL_WEIGHT: u16 = 500;
-/// 行标题行高。
-const ROW_LABEL_H: i32 = 18;
-/// 行描述字号。
-const ROW_SUB_SIZE: f32 = 11.0;
-/// 行描述行高。
-const ROW_SUB_H: i32 = 15;
+// 设置行的排版（字号/字重/行高/间距/限行）统一在 `theme_def::apply_form_theme` 里，
+// 由 windui 的 `FormTheme` 承载——本文件曾有一组同名私有常量，行的实现收敛到库之后
+// 它们只剩一份重复的真相，已删除。调排版改那一处。
 
 thread_local! {
     /// 全局明暗信号（shell::build 注册）。静态色图标/渐变无法走 *_role 换肤，
@@ -137,41 +125,21 @@ pub fn page_header(title: &str, desc: &str) -> Element {
         )
 }
 
-/// 设置行：左标签（+可选副标题）+ 右控件。对齐 ime.rs setting_row。
+/// 设置行：左标签（+可选副标题）+ 右控件。
 ///
-/// 标签 `width_match()` + `max_lines(1)`：占满左列可用宽，避免 windui Label 在紧贴宽下
-/// 误折行（详见 [`section_header`]）。副标题同样占满宽，单行省略。
+/// 实现委托给 windui 的 `Element::setting_row` / `setting_row_desc`（0.12+），本函数只剩
+/// 一件事：把本仓惯用的 `Option<&str>` 副标题分派到那两个构造器上——库刻意不做
+/// `Option` 参数（`None` 推断不出类型，且占多数的无副标题行还得白写一个 `None`）。
+///
+/// 排版（行高/标签字号字重/说明字号/内边距/限行）全部走 `FormTheme`，见
+/// [`crate::theme_def::apply_form_theme`]。限行 + 末尾省略 + 悬浮看全文这套，
+/// 本仓曾各写一遍，现由库统一提供：说明文字来自 core 的 manifest、长度不可控，
+/// 不限行会把行撑成三四行、整列高度参差。
 pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element {
-    let mut left = Element::col().weight(1.0).spacing(2).child(
-        Element::label(label)
-            .font_size(ROW_LABEL_SIZE)
-            .font_weight(ROW_LABEL_WEIGHT)
-            .fg_role(Role::Text)
-            .width_match()
-            .max_lines(1)
-            .truncate(Truncate::End)
-            .height(ROW_LABEL_H),
-    );
-    if let Some(s) = sub {
-        left = left.child(
-            Element::label(s)
-                .font_size(ROW_SUB_SIZE)
-                .fg_role(Role::TextSubtle)
-                .width_match()
-                .max_lines(1)
-                .truncate(Truncate::End)
-                .height(ROW_SUB_H)
-                // 单行省略后原文常被裁掉；tooltip 悬浮兜底完整说明（超宽自动换行）。
-                .tooltip(s),
-        );
+    match sub {
+        Some(s) => Element::setting_row_desc(label, s, control),
+        None => Element::setting_row(label, control),
     }
-    Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(0, 11)
-        .spacing(12)
-        .child(left)
-        .child(control)
 }
 
 /// 多选键组专用行：左侧弹性标签 + 右侧固定宽网格（靠右对齐）。
@@ -179,11 +147,18 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
 /// 网格固定 300px（两列各 ~145），不会撑宽；左侧 weight(1) 自由伸展，
 /// 窗口变宽时标签获得更多空间，与 hotkey 行的控件组视觉一致靠右。
 pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Element {
-    // 排版走文件顶部的行统一常量（与 setting_row 一致）；本行型标签/描述允许两行折行。
+    // 字号/字重/间距与库版设置行同源（`FormTheme`），只是本行型自行拼装：库没有
+    // 「右侧固定宽网格」这一种，而它与普通行的差别（cross 对齐、控件定宽、允许两行）
+    // 都在骨架上，套不进 `setting_row_desc`。
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    // 限行取 2 而非跟随 `form.*_max_lines`：键组行的标签常是「候选翻页键（上一页/下一页）」
+    // 这类长名，右侧又被 300px 网格占死，压成一行会把大半个名字吃掉；而本行型总共只有
+    // 三五行，不像清单页那样需要严格等高。
     let mut left = Element::col().weight(1.0).spacing(2).child(
         Element::label(label)
-            .font_size(ROW_LABEL_SIZE)
-            .font_weight(ROW_LABEL_WEIGHT)
+            .font_size(f.label_size(m))
+            .font_weight(f.label_weight())
             .fg_role(Role::Text)
             .width_match()
             .max_lines(2)
@@ -192,7 +167,7 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     if let Some(s) = sub {
         left = left.child(
             Element::label(s)
-                .font_size(ROW_SUB_SIZE)
+                .font_size(f.desc_size(m))
                 .fg_role(Role::TextSubtle)
                 .width_match()
                 .max_lines(2)
@@ -203,8 +178,8 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     Element::row()
         .width_match()
         .cross(Align::Start)
-        .padding_xy(0, 11)
-        .spacing(12)
+        .padding_xy(0, f.row_pad_y())
+        .spacing(f.gap())
         .child(left)
         .child(grid.width(300))
 }

@@ -14,6 +14,28 @@ pub const ACCENT_DARK: u32 = 0x5B8CF5;
 /// 稍微放宽避免过短说明也被强制拆成两三行。
 pub const TOOLTIP_MAX_W: f32 = 320.0;
 
+/// 表单行排版（`Element::setting_row` / `setting_row_desc` / `field` 一并适用）。
+///
+/// 这些值原是 `widgets.rs` 顶部的一组私有常量，本仓自建的行构造器逐个读它们；行的实现
+/// 收敛到库之后，它们的去处只能是主题——库刻意不让尺寸进构造器签名（一个应用里的表单行
+/// 必须整齐划一，逐行传尺寸只会让每处各写一个近似值）。
+///
+/// 层次策略仍是**字号分层**（标题 14 / 说明 11）而非字重：DirectWrite 下雅黑 300–500 均落
+/// Regular（细分字重无效），600 起才是 Bold，而整页行标题全加粗过重、显乱。
+///
+/// 限行取 1：说明文字来自 core 的 manifest，长度不可控（真实数据里四分之一超出左列单行
+/// 宽度）。限行后库会自动加末尾省略并挂上悬浮看全文的提示，没真截断时不弹。
+fn apply_form_theme(t: &mut Theme) {
+    t.form.label_size = Some(14.0);
+    t.form.label_weight = Some(500);
+    t.form.desc_size = Some(11.0);
+    t.form.row_height = Some(40);
+    t.form.gap = Some(12);
+    t.form.row_pad_y = Some(11);
+    t.form.label_max_lines = Some(1);
+    t.form.desc_max_lines = Some(1);
+}
+
 /// 亮色主题（参考稿蓝灰冷调）。
 pub fn light_theme() -> Theme {
     let mut t = Theme::default();
@@ -42,6 +64,7 @@ pub fn light_theme() -> Theme {
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
+    apply_form_theme(&mut t);
     t
 }
 
@@ -72,6 +95,7 @@ pub fn dark_theme() -> Theme {
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
+    apply_form_theme(&mut t);
     t
 }
 
