@@ -369,9 +369,12 @@ fn footer(
             Element::button("立即安装")
                 .small()
                 .on_click(move |ctx| {
-                    match install_state.borrow().launch_update_install() {
-                        // 安装器随即会终止本进程，主动让出窗口比等它来杀更干净
-                        Ok(true) => ctx.request_close(),
+                    let st = install_state.borrow();
+                    match st.launch_update_install() {
+                        // 安装器随即会终止本进程，主动让出窗口比等它来杀更干净。
+                        // 必须绕过未保存守卫（close_window）：安装器要等本进程退出才能
+                        // 替换文件，此时弹确认框会变成"安装器等窗口关、窗口等用户回答"。
+                        Ok(true) => st.close_window(ctx),
                         // UAC 被拒：留在当前阶段，用户可再点一次
                         Ok(false) => ctx.toast("已取消提权，未开始安装"),
                         Err(e) => ctx.toast_err(e),

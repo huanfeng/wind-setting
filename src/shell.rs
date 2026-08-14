@@ -459,7 +459,10 @@ fn build_footer(
         if let Ok(mut s) = app_save_exit.try_borrow_mut()
             && s.save()
         {
-            ctx.request_close();
+            // 走 close_window 而非裸 request_close：保存若有被服务端跳过的项，配置仍判脏，
+            // 关窗守卫会再弹一次确认——而用户刚刚已经明确表达过"保存并退出"，跳过项的
+            // 提示 save 自己弹的 toast 里有。
+            s.close_window(ctx);
         }
     });
 
@@ -651,6 +654,7 @@ fn build_theme_delete_dialog(app: &Rc<RefCell<AppState>>) -> Element {
 /// 连接失败阻断对话框：[重连] 重跑后台加载；[退出] 关闭应用。无取消项（阻断）。
 fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Element {
     let app_retry = app.clone();
+    let app_exit = app.clone();
     let frame = Element::col()
         .width(360)
         .bg_role(Role::Surface)
@@ -687,7 +691,15 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                     Element::button("退出")
                         .small()
                         .outline_soft()
-                        .on_click(|ctx| ctx.request_close()),
+                        // 绕过未保存守卫：core 都连不上，此刻的"改动"根本存不下去，
+                        // 再拦一道只会让用户在一个已经没救的界面里多点一次。
+                        .on_click(move |ctx| {
+                            if let Ok(s) = app_exit.try_borrow() {
+                                s.close_window(ctx);
+                            } else {
+                                ctx.request_close();
+                            }
+                        }),
                 )
                 .child(Element::button("重试").small().on_click(move |_| {
                     if let Ok(s) = app_retry.try_borrow() {
