@@ -282,6 +282,19 @@ fn footer(
     let show_auto_check =
         move || matches!(phase.get(), UpdatePhase::HasUpdate | UpdatePhase::NoUpdate);
 
+    // 关闭按钮的文案由阶段派生。windui 没有 derived signal，故用本仓惯用的
+    // `reactive_effect`（隐藏叶子轮询 version）把 phase 的变化搬到文案信号上。
+    // 下载中不更新：那一阶段按钮本就不可见，留着上一次的文案即可。
+    let close_label_sig = signal(close_label(phase.get()).unwrap_or("关闭").to_string());
+    let label_sync = crate::pages::dict::reactive::reactive_effect(
+        move || phase.version(),
+        move || {
+            if let Some(t) = close_label(phase.get()) {
+                close_label_sig.set(t.to_string());
+            }
+        },
+    );
+
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -293,16 +306,23 @@ fn footer(
                 .visible_when(show_auto_check),
         )
         .child(Element::leaf().weight(1.0))
-        // Consent
-        .child(close_button(visible, "暂不").visible_when(is(UpdatePhase::Consent)))
+        // 关闭按钮全阶段共用一个：六个阶段里它只是文案不同（暂不／稍后再说／关闭），
+        // 行为完全一样。文案绑信号（windui 0.12 起控件文案可收 `Signal<String>`），
+        // 于是「哪些阶段有关闭按钮、各叫什么」收进 `close_label` 一处 match——原先是
+        // 六个各带 visible_when 的按钮，而"下载中没有关闭按钮"只能靠"没写"来表达。
+        .child(
+            Element::button(close_label_sig)
+                .small()
+                .outline_soft()
+                .on_click(move |_| visible.set(false))
+                .visible_when(move || close_label(phase.get()).is_some()),
+        )
         .child(
             Element::button("允许联网并检查")
                 .small()
                 .on_click(move |_| consent_state.borrow_mut().accept_update_consent())
                 .visible_when(is(UpdatePhase::Consent)),
         )
-        // Checking —— 只给关闭，检查本身很快
-        .child(close_button(visible, "关闭").visible_when(is(UpdatePhase::Checking)))
         // HasUpdate
         .child(
             Element::button("跳过此版本")
@@ -322,7 +342,6 @@ fn footer(
                 })
                 .visible_when(is(UpdatePhase::HasUpdate)),
         )
-        .child(close_button(visible, "稍后再说").visible_when(is(UpdatePhase::HasUpdate)))
         .child(
             Element::button("下载更新")
                 .small()
@@ -337,7 +356,6 @@ fn footer(
                 .on_click(move |_| recheck_state.borrow().begin_update_check())
                 .visible_when(is(UpdatePhase::NoUpdate)),
         )
-        .child(close_button(visible, "关闭").visible_when(is(UpdatePhase::NoUpdate)))
         // Downloading —— 取消只置旗，下载线程在下一个数据块边界响应
         .child(
             Element::button("取消下载")
@@ -347,7 +365,6 @@ fn footer(
                 .visible_when(is(UpdatePhase::Downloading)),
         )
         // Ready（安装由 P4 接线）
-        .child(close_button(visible, "关闭").visible_when(is(UpdatePhase::Ready)))
         .child(
             Element::button("立即安装")
                 .small()
@@ -370,14 +387,23 @@ fn footer(
                 .on_click(move |_| retry_state.borrow().begin_update_check())
                 .visible_when(is(UpdatePhase::Error)),
         )
-        .child(close_button(visible, "关闭").visible_when(is(UpdatePhase::Error)))
+        .child(label_sync)
 }
 
-fn close_button(visible: Signal<bool>, text: &str) -> Element {
-    Element::button(text)
-        .small()
-        .outline_soft()
-        .on_click(move |_| visible.set(false))
+/// 各阶段「关闭」按钮的文案；`None` = 该阶段不给关闭按钮。
+///
+/// 下载中刻意没有：此时只能「取消下载」——直接关掉对话框会让下载在后台继续跑而界面
+/// 无处可回，而取消是明确的意思表示。这条规则过去分散在六个 `visible_when` 里，
+/// "下载中没有"只能靠"没写"来表达，读代码时要把六个分支数一遍才看得出来。
+fn close_label(p: UpdatePhase) -> Option<&'static str> {
+    match p {
+        UpdatePhase::Consent => Some("暂不"),
+        UpdatePhase::HasUpdate => Some("稍后再说"),
+        UpdatePhase::Checking | UpdatePhase::NoUpdate | UpdatePhase::Ready | UpdatePhase::Error => {
+            Some("关闭")
+        }
+        UpdatePhase::Downloading => None,
+    }
 }
 
 #[cfg(test)]
@@ -404,6 +430,34 @@ mod tests {
         let scroll = tree.get(root).unwrap().children[0];
         let n = tree.get(scroll).unwrap();
         (n.measured.h, n.content_h)
+    }
+
+    /// 关闭按钮的阶段规则：**只有下载中没有**，其余六个阶段都给，文案按语境三选一。
+    ///
+    /// 单独锁住这条，是因为"下载中不给关闭"看起来像遗漏——六个按钮合并成一个之后，
+    /// 它在 `close_label` 里是一个显式的 `None` 分支，很容易被后来者顺手"补全"。
+    /// 直接关掉对话框会让下载在后台继续跑而界面无处可回；取消才是明确的意思表示。
+    #[test]
+    fn close_button_is_absent_only_while_downloading() {
+        assert_eq!(
+            close_label(UpdatePhase::Downloading),
+            None,
+            "下载中只能取消，不给关闭"
+        );
+        for p in [
+            UpdatePhase::Consent,
+            UpdatePhase::Checking,
+            UpdatePhase::HasUpdate,
+            UpdatePhase::NoUpdate,
+            UpdatePhase::Ready,
+            UpdatePhase::Error,
+        ] {
+            assert!(close_label(p).is_some(), "{p:?} 阶段应有关闭按钮");
+        }
+        // 文案按语境走，不是一律「关闭」——同意页说"暂不"、有更新时说"稍后再说"。
+        assert_eq!(close_label(UpdatePhase::Consent), Some("暂不"));
+        assert_eq!(close_label(UpdatePhase::HasUpdate), Some("稍后再说"));
+        assert_eq!(close_label(UpdatePhase::Error), Some("关闭"));
     }
 
     /// 长发布说明须封顶并留下可滚动量——回归此前 `max_lines(8)` 直接截断、下半段
