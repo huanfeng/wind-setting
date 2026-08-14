@@ -806,9 +806,8 @@ impl AppState {
                 // 刻意不提示：切方案多半是用户自己按的快捷键或点的托盘，他知道刚发生了
                 // 什么；而这是高频操作，逐次弹提示只会让人学会忽略 toast。
             }
-            // core 侧配置落盘（托盘/右键菜单、快捷键、命令栏改的配置）。
-            // dispatch 层在 setItems/reload 后也发同名事件，但不带 key，由下面的
-            // 取值失败自然跳过——那条是本端自己写的，无需处理。
+            // core 侧配置落盘。**本端自己保存也会收到这条**（core 在 setItems 后广播同名
+            // 事件，且带 key），故不能一见到就当外部改动。
             "config.changed" => {
                 let (Some(key), Some(value)) = (
                     ev.data.get("key").and_then(|v| v.as_str()),
@@ -816,8 +815,14 @@ impl AppState {
                 ) else {
                     return;
                 };
+                // 与本端当前值比对**必须在回填之前**做：值相同即本端刚写下去的回声，
+                // 界面不会有任何跳变，提示纯属噪音（用户在对话框里改一项、点保存，
+                // 转头就被告知"已在别处更改"）。
+                let differs = self.current_config.get_path(key) != Some(value);
                 let hit = self.apply_external_config_change(key, value.clone());
-                self.notify_external_change(ctx, key, hit);
+                if differs {
+                    self.notify_external_change(ctx, key, hit);
+                }
             }
             other => tracing::debug!("忽略 core 事件: {}", other),
         }
@@ -830,9 +835,12 @@ impl AppState {
     /// 发生，不值得为它维护逐项脏状态。取舍本身仍然成立，但"静默"这一半是可以改掉的：
     /// 屏幕上有个开关自己动了却没有任何解释，才是真正让人困惑的部分。
     ///
-    /// 只在**界面确实跳变了**时才提示（`hit > 0`，即该 key 有控件在页面上），且带上清单里
-    /// 的人类可读名——未在清单登记的 key（拖动落位写的 `ui.status.custom_x` 之类）本就不在
-    /// 设置页露出，为它弹提示纯属噪音。
+    /// 两个条件缺一不可，少任一个都会变成噪音：
+    /// - **值确实变了**（调用方在回填前比对）——本端自己保存后 core 也会广播 `config.changed`，
+    ///   loader 把同一个值再灌一次，控件纹丝不动。只看"有没有控件被回填"会把这条回声
+    ///   报成外部改动，用户在对话框里改一项、点保存，转头就被告知"已在别处更改"。
+    /// - **界面上确实有这一项**（`hit > 0`）——未在清单登记的 key（拖动落位写的
+    ///   `ui.status.custom_x` 之类）本就不在设置页露出，为它弹提示同样是打扰。
     ///
     /// 这条提示过去写不出来：它的位置在 `App::channel` 的回调里，而那个回调直到 windui
     /// 0.12 才拿到 `EventCtx`，toast 是宿主浮层、没有信号接口可绕。
@@ -2603,7 +2611,7 @@ mod tests {
         assert!(!loader_key_matches("ui.theme.name", p));
     }
 
-    /// 外部改动落到界面上时要给一条提示，但**只在界面确实跳变时**给。
+    /// 外部改动落到界面上时要给一条提示，但**只在值真的变了、且界面上有这一项**时给。
     ///
     /// 覆盖用户未保存改动这件事是既定取舍（见 `apply_external_config_change`），
     /// 但"静默"这一半不是必须的：屏幕上有个开关自己动了却没有任何解释才最让人困惑。
@@ -2613,7 +2621,7 @@ mod tests {
     /// 直接跑 `on_core_event` 本体（ctx 由 `windui::testing` 借出），测的是这条链路
     /// 的接线，而非某个抽出来的辅助函数。
     #[test]
-    fn external_config_change_notifies_only_when_a_control_moved() {
+    fn external_config_change_notifies_only_on_a_real_change() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let mut st = AppState::empty();
@@ -2640,10 +2648,32 @@ mod tests {
             toast.text
         );
 
-        // 未在清单/加载器登记的 key：界面没有对应控件，不该打扰。
+        // 未在清单/加载器登记的 key：界面上没有这一项，不该打扰。
         let res =
             windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev("ui.status.custom_x")));
-        assert!(res.toast.is_none(), "界面没跳变就不该弹提示");
+        assert!(res.toast.is_none(), "界面上没有这一项就不该弹提示");
+
+        // **本端自己保存的回声**：core 在 setItems 后同样广播 config.changed（带 key），
+        // 而此刻 current_config 已经是这个值——loader 把同一个值再灌一次，控件纹丝不动。
+        // 上一轮已把 true 落进 current_config，故这条重复事件不该再提示。
+        assert_eq!(
+            st.current_config.get_path(key),
+            Some(&serde_json::json!(true)),
+            "前提：上一轮已把该值落进 current_config"
+        );
+        let res = windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev(key)));
+        assert!(
+            res.toast.is_none(),
+            "值没变（本端保存的回声）就不该报「已在别处更改」"
+        );
+
+        // 真外部改动：值与本端不同，照常提示。
+        let ev_off = crate::rpc::CoreEvent {
+            event: "config.changed".to_string(),
+            data: serde_json::json!({ "key": key, "value": false }),
+        };
+        let res = windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev_off));
+        assert!(res.toast.is_some(), "值真的变了才是外部改动，应提示");
     }
 
     /// 关窗守卫的判据：两个来源各自都要能把窗口拦下来。
