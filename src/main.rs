@@ -175,8 +175,8 @@ fn main() {
     // 显示只在打开页面那一刻正确，之后会变成看起来权威的错误信息。
     // 监听线程内阻塞读 + 断线重连，故与升级通道一样经 channel 回 UI 线程写 Signal。
     let events_state = app_state.clone();
-    let events_tx = app.channel::<rpc::CoreEvent>(move |_ctx, ev| {
-        events_state.borrow_mut().on_core_event(&ev);
+    let events_tx = app.channel::<rpc::CoreEvent>(move |ctx, ev| {
+        events_state.borrow_mut().on_core_event(ctx, &ev);
     });
     std::thread::spawn(move || {
         rpc::listen_events(|ev| {

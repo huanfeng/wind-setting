@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::capabilities::Capabilities;
@@ -714,13 +715,15 @@ impl AppState {
     /// 只认当前用得上的事件，其余记 debug 后忽略。特别是 `config.changed`：core 是在
     /// **本端写配置后**才广播它的（dispatch 的 setItems/reload），拿它去重载配置会变成
     /// 「自己保存 → 自己重载」的回环，故不接。
-    pub fn on_core_event(&mut self, ev: &crate::rpc::CoreEvent) {
+    pub fn on_core_event(&mut self, ctx: &mut EventCtx, ev: &crate::rpc::CoreEvent) {
         match ev.event.as_str() {
             "schema.activeChanged" => {
                 if let Some(id) = ev.data.get("id").and_then(|v| v.as_str()) {
                     tracing::debug!("core 活跃方案变更 → {}", id);
                     self.schema_mgr.set_active_from_core(id);
                 }
+                // 刻意不提示：切方案多半是用户自己按的快捷键或点的托盘，他知道刚发生了
+                // 什么；而这是高频操作，逐次弹提示只会让人学会忽略 toast。
             }
             // core 侧配置落盘（托盘/右键菜单、快捷键、命令栏改的配置）。
             // dispatch 层在 setItems/reload 后也发同名事件，但不带 key，由下面的
@@ -732,10 +735,36 @@ impl AppState {
                 ) else {
                     return;
                 };
-                self.apply_external_config_change(key, value.clone());
+                let hit = self.apply_external_config_change(key, value.clone());
+                self.notify_external_change(ctx, key, hit);
             }
             other => tracing::debug!("忽略 core 事件: {}", other),
         }
+    }
+
+    /// 外部改动落到界面上时给一条轻提示。
+    ///
+    /// `apply_external_config_change` 有个写在注释里的取舍：用户此刻正在设置页编辑同一项
+    /// 的话，回填会**覆盖掉他的未保存改动**——当时判断"同时在菜单和设置页改同一项"极少
+    /// 发生，不值得为它维护逐项脏状态。取舍本身仍然成立，但"静默"这一半是可以改掉的：
+    /// 屏幕上有个开关自己动了却没有任何解释，才是真正让人困惑的部分。
+    ///
+    /// 只在**界面确实跳变了**时才提示（`hit > 0`，即该 key 有控件在页面上），且带上清单里
+    /// 的人类可读名——未在清单登记的 key（拖动落位写的 `ui.status.custom_x` 之类）本就不在
+    /// 设置页露出，为它弹提示纯属噪音。
+    ///
+    /// 这条提示过去写不出来：它的位置在 `App::channel` 的回调里，而那个回调直到 windui
+    /// 0.12 才拿到 `EventCtx`，toast 是宿主浮层、没有信号接口可绕。
+    fn notify_external_change(&self, ctx: &mut EventCtx, key: &str, hit: usize) {
+        if hit == 0 {
+            return;
+        }
+        let label = self
+            .manifest
+            .get(key)
+            .map(|it| it.label.clone())
+            .unwrap_or_else(|| key.to_string());
+        ctx.toast(format!("「{label}」已在别处更改，页面已同步"));
     }
 
     /// 把 core 侧落盘的单个配置项同步进界面。
@@ -749,8 +778,11 @@ impl AppState {
     ///
     /// 取舍：若用户此刻正在设置页编辑同一项，这里会覆盖掉他的未保存改动。没有为此
     /// 加脏标记，因为"同时在菜单和设置页改同一项"几乎不会发生，而外部改动优先也是
-    /// 说得通的语义；加了反而要维护逐项脏状态。
-    pub fn apply_external_config_change(&mut self, key: &str, value: Value) {
+    /// 说得通的语义；加了反而要维护逐项脏状态。覆盖不再是**静默**的了——回填命中控件时
+    /// 由 [`Self::notify_external_change`] 弹一条提示。
+    ///
+    /// 返回回填命中的控件数：0 表示这个 key 在设置页上没有露出，界面并未跳变。
+    pub fn apply_external_config_change(&mut self, key: &str, value: Value) -> usize {
         self.base_config.set_path(key, value.clone());
         self.current_config.set_path(key, value);
 
@@ -765,6 +797,7 @@ impl AppState {
             }
         }
         tracing::debug!("外部配置变更 {} → 回填 {} 个控件", key, hit);
+        hit
     }
 
     /// 后台消息 → Signal。**在 UI 线程回调中执行**（`App::channel` 保证）。
@@ -2414,6 +2447,49 @@ mod tests {
         assert!(!loader_key_matches("ui.status.display_mode_extra", p));
         assert!(!loader_key_matches("ui.status.display", p));
         assert!(!loader_key_matches("ui.theme.name", p));
+    }
+
+    /// 外部改动落到界面上时要给一条提示，但**只在界面确实跳变时**给。
+    ///
+    /// 覆盖用户未保存改动这件事是既定取舍（见 `apply_external_config_change`），
+    /// 但"静默"这一半不是必须的：屏幕上有个开关自己动了却没有任何解释才最让人困惑。
+    /// 反过来，未在清单露出的 key（拖动落位写的 `ui.status.custom_x` 之类）界面上根本
+    /// 没有对应控件，为它弹提示纯属噪音——这条测试把两侧都钉住。
+    ///
+    /// 直接跑 `on_core_event` 本体（ctx 由 `windui::testing` 借出），测的是这条链路
+    /// 的接线，而非某个抽出来的辅助函数。
+    #[test]
+    fn external_config_change_notifies_only_when_a_control_moved() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        // 清单里真实存在的一项，并给它登记一个加载器（正常由 UI 构建时注册）。
+        let key = "input.filter_mode";
+        let label = st.manifest.get(key).expect("清单应有此项").label.clone();
+        let loaded = Rc::new(std::cell::Cell::new(false));
+        let l = loaded.clone();
+        st.fields
+            .loaders
+            .borrow_mut()
+            .insert(key.to_string(), Box::new(move |_cfg| l.set(true)));
+
+        let ev = |k: &str| crate::rpc::CoreEvent {
+            event: "config.changed".to_string(),
+            data: serde_json::json!({ "key": k, "value": true }),
+        };
+        let res = windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev(key)));
+        assert!(loaded.get(), "前提：该 key 的加载器被调到，界面确实跳变了");
+        let toast = res.toast.expect("界面跳变了就该给一条提示");
+        assert!(
+            toast.text.contains(&label),
+            "提示应带清单里的人类可读名，实得：{}",
+            toast.text
+        );
+
+        // 未在清单/加载器登记的 key：界面没有对应控件，不该打扰。
+        let res =
+            windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev("ui.status.custom_x")));
+        assert!(res.toast.is_none(), "界面没跳变就不该弹提示");
     }
 
     #[test]
