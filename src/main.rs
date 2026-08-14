@@ -229,6 +229,25 @@ fn main() {
 
     let ui = shell::build(&app_state, th);
 
+    // 关窗守卫：有未保存改动时挡下这一次关闭，弹确认框问一句。
+    //
+    // `on_close_request` 的返回值被平台在 WM_CLOSE 里**同步等待**，容不下"等用户回答"
+    // 这种异步决定，故这里只能"先返回 false 挡住 + 另起一条路把答案送回来"——那条路就是
+    // 应用内的确认对话框，它的两个退出按钮置 `exit_confirmed` 后再 `request_close()`。
+    // 判据本身（有没有改动）不消失，所以放行必须靠那个标志，否则会被自己再拦一次。
+    let close_state = app_state.clone();
+    app = app.on_close_request(move |_ctx| {
+        let Ok(st) = close_state.try_borrow() else {
+            // 借用不到说明正处在某个改状态的回调里，此时拦下反而更糟（用户会以为窗口卡死）。
+            return true;
+        };
+        if st.exit_confirmed.get() || !st.has_unsaved_changes() {
+            return true;
+        }
+        st.exit_confirm.set(true);
+        false
+    });
+
     app.bg(theme_def::theme_for(start_dark).palette.bg)
         // `--screenshot <path>` 离屏出图（配合 WIND_RPC_MOCK=1 可无 core 核对 UI）。
         .screenshot_from_args()

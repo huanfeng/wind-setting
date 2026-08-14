@@ -220,6 +220,13 @@ pub struct AppState {
     pub reload_confirm: Signal<bool>,
     /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
     pub reset_confirm: Signal<bool>,
+    /// 关窗前「有未保存的更改」确认对话框可见标志。
+    pub exit_confirm: Signal<bool>,
+    /// 用户已在退出确认里选过「直接退出 / 保存并退出」，下一次关窗请求直接放行。
+    ///
+    /// 必须有这个标志：`on_close_request` 的判据是"有没有未保存改动"，而"直接退出"
+    /// 并不会消掉改动——不放行的话，点了直接退出会被自己的守卫再拦一次，永远关不掉。
+    pub exit_confirmed: Signal<bool>,
     /// 启动时是否成功连接到输入法服务（core）。未连接则设置只读、保存会失败。
     pub connected: bool,
     /// [`Self::apply_loaded`] 是否已跑过一轮。区别于 `connected`：mock / 离线预览下
@@ -444,6 +451,8 @@ impl AppState {
             backup_mgr: crate::pages::backup::BackupState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),
+            exit_confirm: signal(false),
+            exit_confirmed: signal(false),
             reset_confirm: signal(false),
             connected: false,
             data_loaded: false,
@@ -1359,6 +1368,32 @@ impl AppState {
     /// 跑所有写回器把 Signal 值写回 current_config，再 diff 保存。
     /// 返回是否「可视为成功」（无错误）：无变更与保存成功均为 true，仅 RPC 报错为 false。
     /// 供「保存&退出」据此决定是否真的退出。
+    /// 是否有未保存的改动（关窗确认用）。
+    ///
+    /// 两个来源与 [`Self::save`] 一一对应：config.toml 之外的落点（方案 override、词库
+    /// 开关），以及 config.toml 的增量 diff。
+    ///
+    /// diff 跑在**副本**上：`save` 是把 writers 直接写进 `self.current_config` 的——那是
+    /// 提交路径的一部分。只为问一句"要不要保存"就改掉当前配置，会让紧接着的"直接退出"
+    /// 变成已经改了一半；`live_conflicts` 出于同样的理由也用副本。
+    pub fn has_unsaved_changes(&self) -> bool {
+        // 数据没到位时一律视为无改动：此刻 `base_config` 还是空的，而 `AppState::empty`
+        // 就带着四个内建 writer（方案 available、全局热键收集等），它们照样会写出
+        // `keys` / `schema` 两个键——拿这个 diff 去拦关窗纯属误报，用户根本还没机会改
+        // 任何东西。core 未响应时开了设置页又想关掉，正是最不该被拦的时候。
+        if !self.data_loaded {
+            return false;
+        }
+        if self.fields.side_dirty() {
+            return true;
+        }
+        let mut probe = self.current_config.clone();
+        for w in self.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
+    }
+
     pub fn save(&mut self) -> bool {
         let reg = self.fields.clone();
         // ── 先提交 config.toml 之外的落点（方案 override、词库开关）──
@@ -2564,6 +2599,49 @@ mod tests {
         let res =
             windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev("ui.status.custom_x")));
         assert!(res.toast.is_none(), "界面没跳变就不该弹提示");
+    }
+
+    /// 关窗守卫的判据：两个来源各自都要能把窗口拦下来。
+    ///
+    /// 判错任一侧都是实打实的损失——漏判则未保存的改动被静默丢弃，误判则窗口关不掉
+    /// 而用户根本没改过东西。另外 diff 必须跑在副本上：`save` 会把 writers 直接写进
+    /// `current_config`，判定若走同一条路，问完"要不要保存"就已经改了一半。
+    #[test]
+    fn unsaved_changes_come_from_both_config_diff_and_side_committers() {
+        // 数据未就绪时不判脏：此刻 base 还是空的，而 empty() 自带的四个内建 writer
+        // 照样会写出 keys/schema——不豁免的话，core 没响应时开了设置页就再也关不掉。
+        let mut st = AppState::empty();
+        assert!(!st.has_unsaved_changes(), "数据未加载完不该判脏");
+
+        // 模拟 apply_loaded 之后：base 里已含各内建 writer 的当前输出。
+        st.data_loaded = true;
+        let mut base = st.current_config.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut base);
+        }
+        st.base_config = base.clone();
+        st.current_config = base;
+        assert!(!st.has_unsaved_changes(), "刚加载完、没动过，不该判脏");
+
+        // ① config.toml 侧：writer 写出与 base 不同的值。
+        st.fields
+            .writers
+            .borrow_mut()
+            .push(Box::new(|cfg: &mut Config| {
+                cfg.set_path("input.filter_mode", serde_json::json!("gb18030"));
+            }));
+        assert!(st.has_unsaved_changes(), "writer 写出的差异应判脏");
+        assert!(
+            st.current_config.get_path("input.filter_mode").is_none(),
+            "判定不得把 writer 的值落进 current_config（那是 save 的提交路径）"
+        );
+
+        // ② config.toml 之外的落点（方案 override、词库开关）。
+        let mut st2 = AppState::empty();
+        st2.data_loaded = true;
+        let (side, _) = probe(true, Ok(()));
+        st2.fields.side.borrow_mut().push(side);
+        assert!(st2.has_unsaved_changes(), "side committer 脏也算未保存");
     }
 
     fn check_result(remote: &str) -> crate::update::CheckResult {

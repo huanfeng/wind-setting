@@ -119,6 +119,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(theme_import_dialog)
         .child(backup_dialog)
         .child(stats_confirm_dialog)
+        .child(build_exit_confirm_dialog(app))
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
         .child(build_theme_delete_dialog(app))
@@ -478,6 +479,84 @@ fn build_footer(
         .child(reload_btn)
         .child(apply_btn)
         .child(save_exit_btn)
+}
+
+/// 关窗前的「有未保存的更改」确认框。三个出口：保存并退出 / 直接退出 / 取消。
+///
+/// 三按钮而非「确定/取消」：两按钮版本逼用户在"丢弃"和"留下"之间二选一，而绝大多数人
+/// 此刻想要的是第三件事——存了再走。这也是各家编辑器关窗确认的通行形状。
+///
+/// 「直接退出」与「保存并退出」都先置 `exit_confirmed` 再请求关窗：`on_close_request`
+/// 的判据是"有没有未保存改动"，而丢弃改动并不会消掉它们，不置这个标志就会被自己的守卫
+/// 再拦一次、永远关不掉。
+fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
+    let (visible, confirmed) = {
+        let st = app.borrow();
+        (st.exit_confirm, st.exit_confirmed)
+    };
+    let app_save = app.clone();
+    let frame = Element::col()
+        .width(380)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("有未保存的更改")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(22)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label("关闭设置窗口前是否保存这些更改？未保存的更改将会丢失。")
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3)
+                .padding_xy(18, 16),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| visible.set(false)),
+                )
+                .child(
+                    Element::button("直接退出")
+                        .small()
+                        .outline_soft()
+                        .danger()
+                        .on_click(move |ctx| {
+                            visible.set(false);
+                            confirmed.set(true);
+                            ctx.request_close();
+                        }),
+                )
+                .child(Element::button("保存并退出").small().on_click(move |ctx| {
+                    // 保存失败（如 core 未运行）就留在原地：此时退出等于丢数据，
+                    // 而失败原因已由 save 自己弹的 toast 说明。
+                    if let Ok(mut s) = app_save.try_borrow_mut()
+                        && s.save()
+                    {
+                        visible.set(false);
+                        confirmed.set(true);
+                        ctx.request_close();
+                    }
+                })),
+        );
+    Element::dialog(visible, frame)
 }
 
 /// 「重新加载」二次确认对话框。
