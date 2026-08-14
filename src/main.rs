@@ -158,7 +158,7 @@ fn main() {
 
     // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
     let app_state_cb = app_state.clone();
-    let tx = app.channel::<state::LoadedState>(move |data| {
+    let tx = app.channel::<state::LoadedState>(move |_ctx, data| {
         app_state_cb.borrow_mut().apply_loaded(data);
     });
 
@@ -175,7 +175,7 @@ fn main() {
     // 显示只在打开页面那一刻正确，之后会变成看起来权威的错误信息。
     // 监听线程内阻塞读 + 断线重连，故与升级通道一样经 channel 回 UI 线程写 Signal。
     let events_state = app_state.clone();
-    let events_tx = app.channel::<rpc::CoreEvent>(move |ev| {
+    let events_tx = app.channel::<rpc::CoreEvent>(move |_ctx, ev| {
         events_state.borrow_mut().on_core_event(&ev);
     });
     std::thread::spawn(move || {
@@ -189,7 +189,7 @@ fn main() {
     // 故所有升级进度/结果都经此 channel 回到 UI 线程。channel 只能在 App 构建期注册，
     // 因此这里建好后把 Sender 存进 AppState 供各按钮取用。
     let update_state = app_state.clone();
-    let update_tx = app.channel::<update::UpdateMsg>(move |msg| {
+    let update_tx = app.channel::<update::UpdateMsg>(move |_ctx, msg| {
         update_state.borrow().on_update_msg(msg);
     });
     app_state.borrow().set_update_tx(update_tx);
