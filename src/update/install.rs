@@ -31,9 +31,6 @@ use std::path::{Path, PathBuf};
 
 use super::UpdateError;
 
-/// 便携安装的标记文件名，对应 `config/app.toml` 的 `[app] portable_marker`。
-/// 两处必须一致；改配置时记得同步这里。
-const PORTABLE_MARKER: &str = "portable_mode";
 /// 标准安装才会释放的卸载器。
 const UNINSTALLER: &str = "uninstall.exe";
 
@@ -96,9 +93,13 @@ pub fn plan(installer: &Path) -> Result<InstallPlan, UpdateError> {
 }
 
 /// 便携判定的两个信号，分开返回以便诊断日志逐个呈现。
+///
+/// 标记检测复用 [`crate::mode::has_portable_marker_in`]（认新旧两个文件名），
+/// 不再在此另存一份文件名常量 —— 曾经的两份副本正是「配置路径判成非便携、
+/// 升级流程判成便携」这类分歧的温床。
 fn portable_signals(install_dir: &Path) -> (bool, bool) {
     (
-        install_dir.join(PORTABLE_MARKER).exists(),
+        crate::mode::has_portable_marker_in(install_dir),
         !install_dir.join(UNINSTALLER).exists(),
     )
 }
@@ -275,7 +276,7 @@ mod tests {
     fn portable_marker_forces_interactive_wizard() {
         let dir = temp_dir("marker");
         std::fs::write(dir.join(UNINSTALLER), b"x").unwrap();
-        std::fs::write(dir.join(PORTABLE_MARKER), b"portable=1\n").unwrap();
+        std::fs::write(dir.join(crate::mode::PORTABLE_MARKER_NAME), b"portable=1\n").unwrap();
 
         assert!(is_portable_install(&dir));
         assert!(

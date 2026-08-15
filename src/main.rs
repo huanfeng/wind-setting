@@ -31,6 +31,7 @@ mod theme_editor_server;
 mod theme_import;
 #[allow(dead_code)]
 mod update;
+mod user_dir;
 mod widgets;
 
 use std::cell::RefCell;

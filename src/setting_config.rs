@@ -99,22 +99,22 @@ pub struct LoadResult {
     pub warning: Option<String>,
 }
 
-/// 本文件落在**用户配置目录**下，与 core 的 `config.toml` 同一个目录：
-/// Windows `%APPDATA%\WindInput[Dev]`、macOS `~/Library/Application Support/WindInput[Dev]`。
+/// 配置文件名。目录由 [`crate::user_dir`] 决定 —— 三种部署形态各落一处，见那里的文档。
+const CONFIG_FILE_NAME: &str = "wind_setting.toml";
+
+/// 本文件与 core 的 `config.toml` **同目录**，目录选择完全交给 [`crate::user_dir`]：
+/// 便携 → `<exe 目录>\userdata\`；自定义数据目录 → `datadir.conf` 里那个路径；
+/// 否则 → `%APPDATA%\WindInput[Dev]`（macOS `~/Library/Application Support/WindInput[Dev]`）。
 ///
-/// 必须走 `dirs`，不能直接读 `APPDATA` 环境变量 —— 后者在 Windows 之外恒为空，
-/// 结果是整个函数返回 `None`，设置项每次启动都回到默认值（连"已同意联网"都记不住）。
-/// core 的 `Config::user_config_dir()` 用的就是 `dirs::config_dir()`，两边必须同源。
+/// 这里不再自己拼 `dirs::config_dir()`：那样只覆盖第三种形态，便携包与自定义数据目录
+/// 的用户会出现「输入法读 A、设置程序写 B」，表现为设置项存了但下次启动读不回来。
 pub fn config_path_for_mode(mode: crate::mode::AppMode) -> Option<PathBuf> {
-    config_path_from_base(mode, dirs::config_dir())
+    crate::user_dir::user_config_dir_for_mode(mode).map(config_path_in_dir)
 }
 
-fn config_path_from_base(mode: crate::mode::AppMode, base: Option<PathBuf>) -> Option<PathBuf> {
-    let dir = match mode {
-        crate::mode::AppMode::Release => "WindInput",
-        crate::mode::AppMode::Dev => "WindInputDev",
-    };
-    base.map(|base| base.join(dir).join("wind_setting.toml"))
+/// 目录 → 完整文件路径。抽出以便在测试里对任意目录断言文件名。
+fn config_path_in_dir(dir: PathBuf) -> PathBuf {
+    dir.join(CONFIG_FILE_NAME)
 }
 
 pub fn load() -> LoadResult {
@@ -180,9 +180,9 @@ mod tests {
     #[test]
     fn config_path_uses_release_user_dir() {
         let base = std::path::PathBuf::from("user-config-root");
-        let path = config_path_from_base(AppMode::Release, Some(base.clone()));
+        let dir = crate::user_dir::default_user_dir_from_base(Some(base.clone()), AppMode::Release);
         assert_eq!(
-            path.unwrap(),
+            config_path_in_dir(dir.unwrap()),
             base.join("WindInput").join("wind_setting.toml")
         );
     }
@@ -190,17 +190,31 @@ mod tests {
     #[test]
     fn config_path_uses_dev_user_dir() {
         let base = std::path::PathBuf::from("user-config-root");
-        let path = config_path_from_base(AppMode::Dev, Some(base.clone()));
+        let dir = crate::user_dir::default_user_dir_from_base(Some(base.clone()), AppMode::Dev);
         assert_eq!(
-            path.unwrap(),
+            config_path_in_dir(dir.unwrap()),
             base.join("WindInputDev").join("wind_setting.toml")
+        );
+    }
+
+    /// 便携部署下配置与 core 的 `config.toml` 并排躺在 `<exe 目录>\userdata\`，
+    /// **不带**变体子目录 —— 多拼一层 `WindInput` 就会与输入法读的位置错开。
+    #[test]
+    fn portable_config_path_sits_in_userdata_root() {
+        let dir = crate::mode::portable_userdata_dir().expect("测试进程必能定位自身 exe");
+        let path = config_path_in_dir(dir.clone());
+        assert_eq!(path, dir.join("wind_setting.toml"));
+        assert!(
+            path.ends_with("userdata/wind_setting.toml"),
+            "{}",
+            path.display()
         );
     }
 
     #[test]
     fn missing_base_returns_none_instead_of_exe_fallback() {
-        assert!(config_path_from_base(AppMode::Release, None).is_none());
-        assert!(config_path_from_base(AppMode::Dev, None).is_none());
+        assert!(crate::user_dir::default_user_dir_from_base(None, AppMode::Release).is_none());
+        assert!(crate::user_dir::default_user_dir_from_base(None, AppMode::Dev).is_none());
     }
 
     /// 配置目录必须由 `dirs` 解析，不能直接读 `APPDATA`。
@@ -208,10 +222,15 @@ mod tests {
     /// 曾经的写法是 `env::var_os("APPDATA")`，在 macOS/Linux 上恒为 `None`，
     /// 于是 `save()` 每次都失败、`load()` 每次都回默认值 —— 表现为"设置里的
     /// 选项不记忆"。这条测的就是非 Windows 平台上路径**能被解析出来**。
+    ///
+    /// 走默认层的纯函数而非 `config_path_for_mode`：后者会读本机真实的
+    /// `datadir.conf`，开发机上若恰好装了自定义数据目录的版本，这条测试就会因为
+    /// 环境而非代码变红 —— 它要守的是「`dirs` 在本平台能解析出目录」，与那无关。
     #[test]
     fn config_path_resolves_on_current_platform() {
-        let path = config_path_for_mode(AppMode::Release)
+        let dir = crate::user_dir::default_user_dir_from_base(dirs::config_dir(), AppMode::Release)
             .expect("当前平台必须能定位用户配置目录（旧实现只认 APPDATA，非 Windows 恒为 None）");
+        let path = config_path_in_dir(dir);
         // Path::ends_with 按**组件**比较，两个平台上都成立。
         assert!(
             path.ends_with("WindInput/wind_setting.toml"),
@@ -233,7 +252,8 @@ mod tests {
         let home = std::env::var("HOME").expect("macOS 必有 HOME");
         let expected = std::path::PathBuf::from(home)
             .join("Library/Application Support/WindInputDev/wind_setting.toml");
-        assert_eq!(config_path_for_mode(AppMode::Dev).unwrap(), expected);
+        let dir = crate::user_dir::default_user_dir_from_base(dirs::config_dir(), AppMode::Dev);
+        assert_eq!(config_path_in_dir(dir.unwrap()), expected);
     }
 
     #[test]
