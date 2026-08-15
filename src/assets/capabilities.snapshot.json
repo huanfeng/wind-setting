@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.116.0",
+  "appVersion": "0.117.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -337,6 +337,16 @@
       "default": 3,
       "key": "schema.pinyin.completion.max_extra_syllables",
       "type": "int"
+    },
+    {
+      "default": 0.0,
+      "key": "schema.pinyin.grammar.weight",
+      "type": "float"
+    },
+    {
+      "default": "",
+      "key": "schema.pinyin.grammar.model",
+      "type": "str"
     },
     {
       "default": false,
@@ -1225,6 +1235,59 @@
       "default": false,
       "key": "ui.toolbar.vertical",
       "type": "bool"
+    },
+    {
+      "default": "none",
+      "key": "ui.langbar.punct_badge",
+      "type": "enum",
+      "values": [
+        "none",
+        "corner_triangle",
+        "outer_ring",
+        "bottom_bar",
+        "circle_square",
+        "ring_dot"
+      ]
+    },
+    {
+      "default": 1.0,
+      "key": "ui.langbar.punct_badge_scale",
+      "type": "float"
+    },
+    {
+      "default": false,
+      "key": "ui.langbar.full_width_mark",
+      "type": "bool"
+    },
+    {
+      "default": 1.0,
+      "key": "ui.langbar.full_width_mark_scale",
+      "type": "float"
+    },
+    {
+      "default": 0.88,
+      "key": "ui.langbar.badge_alpha",
+      "type": "float"
+    },
+    {
+      "default": true,
+      "key": "ui.langbar.colored",
+      "type": "bool"
+    },
+    {
+      "default": "#2288E0",
+      "key": "ui.langbar.punct_color_cn",
+      "type": "str"
+    },
+    {
+      "default": "#EE9922",
+      "key": "ui.langbar.punct_color_en",
+      "type": "str"
+    },
+    {
+      "default": "#E0447A",
+      "key": "ui.langbar.full_width_color",
+      "type": "str"
     },
     {
       "default": true,

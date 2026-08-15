@@ -260,6 +260,10 @@
     "uan_uang": false,
     "zh_z": false
    },
+   "grammar": {
+    "model": "",
+    "weight": 0.0
+   },
    "separator": "auto",
    "show_code_hint": true,
    "shuangpin": {
@@ -308,6 +312,17 @@
    "family": "",
    "path": "",
    "render_mode": "directwrite"
+  },
+  "langbar": {
+   "badge_alpha": 0.8799999952316284,
+   "colored": true,
+   "full_width_color": "#E0447A",
+   "full_width_mark": false,
+   "full_width_mark_scale": 1.0,
+   "punct_badge": "none",
+   "punct_badge_scale": 1.0,
+   "punct_color_cn": "#2288E0",
+   "punct_color_en": "#EE9922"
   },
   "mode_indicator": {
    "style": "short"

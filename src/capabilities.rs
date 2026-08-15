@@ -328,6 +328,24 @@ mod tests {
         //    ⚠️ 别因为「热键都该在按键页」就把它搬进清单：搬过去只能变成一个固定方案 id
         //    的单键，用户装的第三方方案就永远配不上热键了。
         "keys.schema_hotkeys",
+        // ⑰ 任务栏图标标记的微调项（core 侧语言栏图标改造新增）：两个开关
+        //    （punct_badge / full_width_mark）已在清单内，这七项是它们的**外观微调**。
+        //
+        //    不暴露的判据是「调它需要什么依据」：这些量的取值只能靠盯着 16×16 的任务栏图标
+        //    反复比对——大小差 0.1 倍、不透明度差 0.05 在设置页的预览里根本看不出来，
+        //    而放进去就等于给用户七个只能盲调的旋钮。真要调的人本来就得开着图标一点点试，
+        //    改配置文件反而更顺手（core 的 data/config.toml 每项都有注释）。
+        //
+        //    ⚠️ badge_alpha 尤其不能"顺手加个滑块"：它同时是**档位开关**（= 1.0 走实心挖空、
+        //    < 1.0 走半透明保留主字，两条互斥的路径），滑到 1.0 会整个换一种画法。
+        //    滑块表达不了这种跳变，用户拖到底会以为"最不透明"，实际得到的是另一种设计。
+        "ui.langbar.punct_badge_scale",
+        "ui.langbar.full_width_mark_scale",
+        "ui.langbar.badge_alpha",
+        "ui.langbar.colored",
+        "ui.langbar.punct_color_cn",
+        "ui.langbar.punct_color_en",
+        "ui.langbar.full_width_color",
     ];
 
     /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。
