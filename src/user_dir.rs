@@ -54,6 +54,31 @@ pub fn default_user_dir_from_base(base: Option<PathBuf>, mode: AppMode) -> Optio
     base.map(|d| d.join(crate::mode::app_dir_name_of(mode)))
 }
 
+/// 本机状态目录（日志、缓存等机器相关数据），镜像 core 的 `Config::local_dir()`：
+/// - 便携：`<exe 目录>\userdata\`，与漫游那份同目录 —— 便携包本就该自包含，
+///   日志留在 `%LOCALAPPDATA%` 会让"拔盘走人不留痕"落空。
+/// - 否则：`%LOCALAPPDATA%\WindInput[Dev]`（本机数据，不随漫游同步到别的机器）
+///
+/// ⚠️ **刻意不接 `datadir.conf`**，这与 [`user_config_dir_for_mode`] 的不对称是有意的：
+/// core 的 `local_dir()` 压根不看 `custom_userdata_dir()`，安装器卸载侧的
+/// `local_cache_dir()` 也恒为 `%LOCALAPPDATA%\{id}\cache`。三边口径必须一致 ——
+/// 谁"顺手"把自定义数据目录也接到这里，卸载时就会漏删（或删错）目录。
+pub fn local_dir_for_mode(mode: AppMode) -> Option<PathBuf> {
+    if crate::mode::is_portable() {
+        return crate::mode::portable_userdata_dir();
+    }
+    default_local_dir_from_base(dirs::data_local_dir(), mode)
+}
+
+/// 本机状态目录的默认位置。纯拼接，无副作用。
+///
+/// 与 [`default_user_dir_from_base`] 眼下拼法相同但**不合并**：两者的 `base` 来自
+/// 不同的 `dirs` 函数（漫游 vs 本机），语义各自独立；core 那边也是两条各自演进的路径，
+/// 合成一个函数会让将来任一侧分化时改错另一侧。
+pub fn default_local_dir_from_base(base: Option<PathBuf>, mode: AppMode) -> Option<PathBuf> {
+    base.map(|d| d.join(crate::mode::app_dir_name_of(mode)))
+}
+
 /// `datadir.conf` 的所在路径：`%LOCALAPPDATA%\WindInput[Dev]\datadir.conf`。
 ///
 /// 注意是**本机**目录（`data_local_dir`）而非漫游目录 —— 数据目录是这台机器的选择，
@@ -259,5 +284,43 @@ mod tests {
     fn missing_base_returns_none() {
         assert!(default_user_dir_from_base(None, AppMode::Release).is_none());
         assert!(default_user_dir_from_base(None, AppMode::Dev).is_none());
+        assert!(default_local_dir_from_base(None, AppMode::Release).is_none());
+    }
+
+    /// 本机状态目录的默认层同样按变体分目录。
+    #[test]
+    fn default_local_dir_uses_variant_subdir() {
+        let base = PathBuf::from("local-root");
+        assert_eq!(
+            default_local_dir_from_base(Some(base.clone()), AppMode::Release).unwrap(),
+            base.join("WindInput")
+        );
+        assert_eq!(
+            default_local_dir_from_base(Some(base.clone()), AppMode::Dev).unwrap(),
+            base.join("WindInputDev")
+        );
+    }
+
+    /// 本机状态目录（日志/缓存）与漫游配置目录取自**不同**的 `dirs` 基准，
+    /// 非便携下必须分居两处 —— 合成一处会让日志跟着漫游同步到别的机器。
+    #[test]
+    fn local_and_roaming_defaults_are_distinct_on_windows() {
+        let local = default_local_dir_from_base(dirs::data_local_dir(), AppMode::Release);
+        let roaming = default_user_dir_from_base(dirs::config_dir(), AppMode::Release);
+        if cfg!(windows) {
+            assert_ne!(
+                local, roaming,
+                "Windows 上 %LOCALAPPDATA% 与 %APPDATA% 必须是两个目录"
+            );
+        }
+    }
+
+    /// 便携下两者**收敛到同一个** `userdata`：core 的 `local_dir()` 便携分支
+    /// 返回的就是 `portable_userdata_dir()` 本身，日志再落进它的 `logs` 子目录。
+    #[test]
+    fn portable_collapses_local_and_roaming_to_userdata() {
+        let dir = crate::mode::portable_userdata_dir().expect("测试进程必能定位自身 exe");
+        assert!(dir.ends_with("userdata"), "{}", dir.display());
+        assert!(dir.join("logs").ends_with("userdata/logs"));
     }
 }
