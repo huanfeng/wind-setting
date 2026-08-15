@@ -15,6 +15,7 @@ use windui::prelude::*;
 use crate::pages::dict::reactive::Feedback;
 use crate::protocol::Registration;
 use crate::state::AppState;
+use crate::widgets::{section, setting_row_desc_signal};
 
 /// 桌面集成状态（Signal 为 Copy，可直接 Clone 进闭包）。
 ///
@@ -60,7 +61,8 @@ impl IntegrationState {
     /// 现读注册表并刷新展示信号。
     pub fn refresh(&self) {
         let reg = crate::protocol::current_registration();
-        self.protocol_status.set(status_text(&reg));
+        self.protocol_status
+            .set(status_text(&reg, crate::mode::is_portable()));
         self.can_register.set(can_register(&reg));
         self.can_unregister.set(can_unregister(&reg));
     }
@@ -140,14 +142,22 @@ fn apply(app: &Rc<RefCell<AppState>>, action: Action) {
     }
 }
 
-/// 状态文案。注册表原样回显，不加"被占用"这类判断 ——
-/// 这里最常见的"他人"其实是用户自己的另一份安装。
-fn status_text(reg: &Registration) -> String {
+/// 状态文案 —— 它同时是设置行的副标题，所以要独立成句、不依赖别处的补充说明。
+///
+/// 注册表原样回显，不加"被占用"这类判断：这里最常见的"他人"其实是用户自己的
+/// 另一份安装（旧安装路径、移动过的便携包）。
+///
+/// 便携版的"要手动注册"提示并进**未注册**这一支，而不是常驻单独一行：
+/// 已经注册好的便携用户不需要再被告知一遍怎么注册。
+fn status_text(reg: &Registration, portable: bool) -> String {
     if !cfg!(windows) {
         return "本平台的协议关联由应用包声明，无需在此管理".to_string();
     }
     match reg {
         Registration::Ours => "已注册，由本程序处理".to_string(),
+        Registration::Unregistered if portable => {
+            "未注册 —— 便携版启动不会自动注册，需要一键导入请点右侧「注册」".to_string()
+        }
         Registration::Unregistered => "未注册 —— 网页上的一键导入链接暂时唤不起本程序".to_string(),
         Registration::Other(cur) => format!("已注册，但指向其它程序：{cur}"),
     }
@@ -162,13 +172,12 @@ fn can_unregister(reg: &Registration) -> bool {
     cfg!(windows) && !matches!(reg, Registration::Unregistered)
 }
 
-/// 高级页「桌面集成」卡片。
+/// 高级页「系统集成」卡片。
 ///
-/// 不用 `section` + `setting_row`：状态文案是响应式的（`label_signal`），
-/// 而 `setting_row` 的副标题只收 `&str`，套不进去。
+/// 与日志设置/备份还原同一形态（`section` + 设置行），只是副标题走信号版行型 ——
+/// 这一行的说明就是**当前关联状态**，随注册表变化。
 pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let s = state.integration.clone();
-    let status = s.protocol_status;
     let can_reg = s.can_register;
     let can_unreg = s.can_unregister;
 
@@ -177,67 +186,31 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
     let app_unreg = app.clone();
     let s_unreg = s.clone();
 
-    Element::col()
-        .width_match()
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .padding_xy(16, 14)
+    let buttons = Element::row()
+        .cross(Align::Center)
         .spacing(8)
-        .child(Element::label("桌面集成").font_size(14.0).font_weight(600))
         .child(
-            Element::label(
-                "网页上的一键导入（主题等）通过 windinput:// 链接唤起本程序处理。\
-                 关联写在当前用户下，不需要管理员权限。",
-            )
-            .font_size(12.0)
-            .fg_role(Role::TextMuted),
-        )
-        // 便携版没有启动自愈这层兜底，用户得知道关联要自己挂上。
-        .child(
-            Element::label("便携版启动时不会自动注册，需要一键导入时请在此手动注册。")
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
-                .visible_when(crate::mode::is_portable),
+            Element::button("注册")
+                .small()
+                .outline_soft()
+                .enabled_signal(can_reg)
+                .on_click(move |_| s_reg.on_register_clicked(&app_reg)),
         )
         .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(
-                    Element::label("状态：")
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted),
-                )
-                .child(
-                    Element::label_signal(status)
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted)
-                        .weight(1.0)
-                        // 他人注册时要连命令行一起显示，一行放不下。
-                        .max_lines(3),
-                ),
-        )
-        .child(
-            Element::row()
-                .spacing(8)
-                .child(
-                    Element::button("注册")
-                        .small()
-                        .outline_soft()
-                        .enabled_signal(can_reg)
-                        .on_click(move |_| s_reg.on_register_clicked(&app_reg)),
-                )
-                .child(
-                    Element::button("取消注册")
-                        .small()
-                        .outline_soft()
-                        .enabled_signal(can_unreg)
-                        .on_click(move |_| s_unreg.on_unregister_clicked(&app_unreg)),
-                ),
-        )
-        .child(crate::pages::dict::reactive::toast_sink(s.feedback))
+            Element::button("取消注册")
+                .small()
+                .outline_soft()
+                .enabled_signal(can_unreg)
+                .on_click(move |_| s_unreg.on_unregister_clicked(&app_unreg)),
+        );
+
+    section(
+        "系统集成",
+        vec![
+            setting_row_desc_signal("windinput:// 协议（一键导入）", s.protocol_status, buttons),
+            crate::pages::dict::reactive::toast_sink(s.feedback),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -277,8 +250,35 @@ mod tests {
             return;
         }
         let cmd = r#""D:\old\wind_setting.exe" "%1""#;
-        let text = status_text(&Registration::Other(cmd.to_string()));
+        let text = status_text(&Registration::Other(cmd.to_string()), false);
         assert!(text.contains(cmd), "{text}");
+    }
+
+    /// 便携版没有启动自愈兜底，未注册时这行字得把"要自己点注册"说清楚 ——
+    /// 它是副标题，用户看不到别处的补充说明。
+    #[test]
+    fn portable_unregistered_status_tells_user_to_register() {
+        if !cfg!(windows) {
+            return;
+        }
+        let portable = status_text(&Registration::Unregistered, true);
+        let installed = status_text(&Registration::Unregistered, false);
+        assert_ne!(portable, installed);
+        assert!(portable.contains("便携版"), "{portable}");
+        assert!(portable.contains("注册"), "{portable}");
+    }
+
+    /// 已经注册好的便携用户不该再被念一遍"便携版要手动注册"。
+    #[test]
+    fn portable_hint_only_shows_when_unregistered() {
+        if !cfg!(windows) {
+            return;
+        }
+        assert!(!status_text(&Registration::Ours, true).contains("便携版"));
+        assert!(
+            !status_text(&Registration::Other("x".into()), true).contains("便携版"),
+            "指向他人时该说的是占用者，不是便携提示"
+        );
     }
 
     /// 确认只加在"动了别人的东西"这一种情况上，且拿到的正是那条命令行。
@@ -312,8 +312,8 @@ mod tests {
         if !cfg!(windows) {
             return;
         }
-        let ours = status_text(&Registration::Ours);
-        let none = status_text(&Registration::Unregistered);
+        let ours = status_text(&Registration::Ours, false);
+        let none = status_text(&Registration::Unregistered, false);
         assert_ne!(ours, none);
         assert!(none.contains("未注册"), "{none}");
     }

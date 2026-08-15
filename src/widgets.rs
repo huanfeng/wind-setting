@@ -142,6 +142,50 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
     }
 }
 
+/// 副标题随信号变化的设置行：左标签 + 下方动态说明 + 右控件。
+///
+/// 用于展示**运行期状态**（如 `windinput://` 关联当前指向谁）——库的
+/// `setting_row_desc` 只收 `String`，套不进随注册表变化的文案。除副标题换成
+/// `label_signal` 外，字号/文字色/间距/内边距一律走同一套 `FormTheme`，
+/// 与相邻的清单行对得齐。
+///
+/// 与库版的一处有意偏离：**不挂 tooltip**。库的 `clamp_lines` 在截断时用
+/// `tooltip(full_text)` 兜底看全文，而 tooltip 只收静态字符串（且 `debug_assert`
+/// 禁多行），动态文本给不了。故限行放宽到 3，让带完整路径的长状态尽量显示完整；
+/// 真被截断也不至于丢信息 —— 需要完整路径的场合（覆盖/解除确认）会在对话框里全文呈现。
+pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Element) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let left = Element::col()
+        .weight(1.0)
+        .spacing(2)
+        .child(
+            Element::label(label)
+                .font_size(f.label_size(m))
+                .font_weight(f.label_weight())
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1)
+                .truncate(Truncate::End),
+        )
+        .child(
+            Element::label_signal(desc)
+                .font_size(f.desc_size(m))
+                .fg_role(Role::TextSubtle)
+                .width_match()
+                .max_lines(3)
+                .truncate(Truncate::End),
+        );
+    Element::row()
+        .width_match()
+        // Center 而非 Start：右侧是一组按钮，副标题一行时贴顶会让按钮与标签错位。
+        .cross(Align::Center)
+        .padding_xy(0, f.row_pad_y())
+        .spacing(f.gap())
+        .child(left)
+        .child(control)
+}
+
 /// 多选键组专用行：左侧弹性标签 + 右侧固定宽网格（靠右对齐）。
 ///
 /// 网格固定 300px（两列各 ~145），不会撑宽；左侧 weight(1) 自由伸展，
