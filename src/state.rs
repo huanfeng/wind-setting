@@ -214,6 +214,8 @@ pub struct AppState {
     pending_dict_target: Rc<RefCell<Option<crate::cli::DictTarget>>>,
     /// 备份还原状态（高级页卡片 + 还原确认对话框）。
     pub backup_mgr: crate::pages::backup::BackupState,
+    /// 桌面集成状态（高级页卡片 + 协议注册的两个确认对话框）。
+    pub integration: crate::pages::integration::IntegrationState,
     /// 统计页状态（数据快照 + 清理确认对话框）。
     pub stats_mgr: crate::pages::stats::StatsState,
     /// 「重新加载」二次确认对话框可见标志。
@@ -449,6 +451,7 @@ impl AppState {
             dict_mgr: DictManagerState::new(),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
+            integration: crate::pages::integration::IntegrationState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),
             exit_confirm: signal(false),
@@ -516,6 +519,45 @@ impl AppState {
 
     pub fn save_theme_editor_auto_start(&mut self, auto: bool) {
         self.setting_config.theme_editor.auto_start = auto;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.notify_err(e);
+        }
+    }
+
+    // ── windinput:// 协议关联 ─────────────────────────────────────────────
+
+    /// 注册（或修复）协议关联，指向本程序。
+    ///
+    /// 同时把 `protocol.self_heal` 置回 `true`：用户既然主动注册，就是要这个关联长期有效，
+    /// 之后启动自愈该继续兜底（便携版另有一道门，恒不自愈）。
+    pub fn register_protocol(&mut self) {
+        match crate::protocol::register() {
+            Ok(()) => {
+                self.set_protocol_self_heal(true);
+                self.integration.refresh();
+                self.notify_ok("windinput:// 协议已注册");
+            }
+            Err(e) => self.notify_err(format!("协议注册失败：{e}")),
+        }
+    }
+
+    /// 解除协议关联。
+    ///
+    /// **必须**同时把 `protocol.self_heal` 置 `false` —— 否则下次启动自愈立刻把关联
+    /// 写回去，用户看到的是"取消了个寂寞"。这也是这个配置项存在的唯一理由。
+    pub fn unregister_protocol(&mut self) {
+        match crate::protocol::unregister() {
+            Ok(()) => {
+                self.set_protocol_self_heal(false);
+                self.integration.refresh();
+                self.notify_ok("windinput:// 协议注册已解除，启动时不再自动注册");
+            }
+            Err(e) => self.notify_err(format!("解除协议注册失败：{e}")),
+        }
+    }
+
+    fn set_protocol_self_heal(&mut self, allow: bool) {
+        self.setting_config.protocol.self_heal = allow;
         if let Err(e) = crate::setting_config::save(&self.setting_config) {
             self.notify_err(e);
         }

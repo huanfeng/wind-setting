@@ -78,7 +78,15 @@ fn main() {
     }
 
     logger::init();
-    protocol::self_heal_registration();
+    // 协议自愈有两道门：便携版不碰宿主机注册表，用户手动取消过注册的也不再写回去。
+    // 单读一次配置而不等 AppState 建好 —— 自愈要赶在窗口出现前完成，此刻 AppState
+    // 还没开始拉 core 数据。判定本身是纯函数，见 protocol::should_self_heal_on_startup。
+    if protocol::should_self_heal_on_startup(
+        mode::is_portable(),
+        setting_config::load().config.protocol.self_heal,
+    ) {
+        protocol::self_heal_registration();
+    }
 
     // 快捷加词小窗：独立单例、紧凑窗，复用词库加词对话框；不落入常规设置界面路径。
     if let Some(params) = add_word {

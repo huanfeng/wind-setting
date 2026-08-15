@@ -13,6 +13,23 @@ pub struct SettingConfig {
     pub update: UpdateConfig,
     #[serde(default)]
     pub ui: UiStateConfig,
+    #[serde(default)]
+    pub protocol: ProtocolConfig,
+}
+
+/// `windinput://` 协议关联的偏好。
+///
+/// 与「注册表当前指向谁」是两回事：注册表是**事实**（每次都现读，见
+/// [`crate::protocol::current_registration`]），这里只记**用户的意愿**。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolConfig {
+    /// 允许启动时自愈协议注册。
+    ///
+    /// 用户在高级页点「取消注册」时置 `false` —— 否则下次启动 `self_heal` 又把注册
+    /// 写回去，「取消注册」变成一个点了没用的按钮。手动「注册」时置回 `true`。
+    /// 便携版不看这个字段（恒不自愈），但仍如实记录，便于同一份配置在两种形态间迁移。
+    #[serde(default = "default_true")]
+    pub self_heal: bool,
 }
 
 /// 设置窗口自身的界面状态。纯呈现偏好，与输入法功能无关，故留在本文件而非 core config
@@ -71,7 +88,14 @@ impl Default for SettingConfig {
             theme_editor: ThemeEditorConfig::default(),
             update: UpdateConfig::default(),
             ui: UiStateConfig::default(),
+            protocol: ProtocolConfig::default(),
         }
+    }
+}
+
+impl Default for ProtocolConfig {
+    fn default() -> Self {
+        Self { self_heal: true }
     }
 }
 
@@ -256,6 +280,29 @@ mod tests {
         assert_eq!(config_path_in_dir(dir.unwrap()), expected);
     }
 
+    /// 自愈默认开：绝大多数用户装完就该能点一键导入链接。
+    /// 缺字段的**旧配置文件**也必须读成 `true` —— `#[serde(default)]` 用的是
+    /// `Default::default()`，若这里写成 `false`，所有存量用户升级后协议就悄悄失效了。
+    #[test]
+    fn protocol_self_heal_defaults_on_including_legacy_files() {
+        assert!(SettingConfig::default().protocol.self_heal);
+        let legacy: SettingConfig = toml::from_str("[ui]\n").expect("旧文件应能读入");
+        assert!(legacy.protocol.self_heal, "缺 [protocol] 段时须回到开启");
+        let explicit: SettingConfig =
+            toml::from_str("[protocol]\nself_heal = false\n").expect("显式关闭应保留");
+        assert!(!explicit.protocol.self_heal);
+    }
+
+    /// 用户的取消意愿必须能跨重启存活，否则下次启动自愈把注册写回去。
+    #[test]
+    fn protocol_self_heal_survives_roundtrip() {
+        let mut cfg = SettingConfig::default();
+        cfg.protocol.self_heal = false;
+        let s = toml::to_string(&cfg).expect("序列化");
+        let back: SettingConfig = toml::from_str(&s).expect("反序列化");
+        assert!(!back.protocol.self_heal);
+    }
+
     #[test]
     fn default_config_keeps_theme_editor_disabled() {
         let cfg = SettingConfig::default();
@@ -359,6 +406,7 @@ mod tests {
                 last_check_at: 1_750_000_000,
             },
             ui: UiStateConfig::default(),
+            protocol: ProtocolConfig::default(),
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: SettingConfig = toml::from_str(&text).unwrap();
@@ -377,6 +425,7 @@ mod tests {
             theme_editor: ThemeEditorConfig { auto_start: true },
             update: UpdateConfig::default(),
             ui: UiStateConfig::default(),
+            protocol: ProtocolConfig::default(),
         };
         save_to_path(&config, &path).unwrap();
 

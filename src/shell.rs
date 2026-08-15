@@ -110,10 +110,14 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(Element::divider())
         .child(footer);
 
+    let (protocol_overwrite_dlg, protocol_remove_dlg) = build_protocol_confirm_dialogs(app);
+
     let mut root = Element::stack()
         .fill()
         .bg_role(Role::Bg)
         .child(main_col)
+        .child(protocol_overwrite_dlg)
+        .child(protocol_remove_dlg)
         .child(dialog)
         .child(dict_dialog)
         .child(theme_import_dialog)
@@ -506,8 +510,8 @@ fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
-                .height(22)
                 .width_match()
+                .max_lines(1)
                 .padding_xy(18, 14),
         )
         .child(Element::divider())
@@ -574,6 +578,51 @@ fn build_reload_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> El
     )
 }
 
+/// 协议关联的两个确认框：覆盖他人注册 / 清除他人注册。
+///
+/// 只有「当前指向别的程序」时才会被打开（见 `IntegrationState::on_*_clicked`）——
+/// 指向本程序或未注册时按钮直接执行，不该为无风险的操作加一道多余的确认。
+fn build_protocol_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Element) {
+    let (overwrite, remove, msg) = {
+        let st = app.borrow();
+        (
+            st.integration.overwrite_confirm,
+            st.integration.remove_confirm,
+            st.integration.confirm_msg,
+        )
+    };
+
+    let app_ow = app.clone();
+    let overwrite_dlg = confirm_dialog_msg(
+        overwrite,
+        "改为由本程序处理",
+        msg,
+        "覆盖注册",
+        move |_| {
+            if let Ok(mut s) = app_ow.try_borrow_mut() {
+                s.register_protocol();
+            }
+            overwrite.set(false);
+        },
+    );
+
+    let app_rm = app.clone();
+    let remove_dlg = confirm_dialog_msg(
+        remove,
+        "解除协议关联",
+        msg,
+        "仍然删除",
+        move |_| {
+            if let Ok(mut s) = app_rm.try_borrow_mut() {
+                s.unregister_protocol();
+            }
+            remove.set(false);
+        },
+    );
+
+    (overwrite_dlg, remove_dlg)
+}
+
 /// 「恢复本页」确认对话框（仅在有未保存改动时弹出）。
 fn build_reset_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) -> Element {
     let app_c = app.clone();
@@ -610,8 +659,8 @@ fn build_theme_delete_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
-                .height(22)
                 .width_match()
+                .max_lines(1)
                 .padding_xy(18, 14),
         )
         .child(Element::divider())
@@ -661,8 +710,8 @@ fn build_conn_failed_dialog(app: &Rc<RefCell<AppState>>, visible: Signal<bool>) 
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
-                .height(22)
                 .width_match()
+                .max_lines(1)
                 .padding_xy(18, 14),
         )
         .child(Element::divider())
@@ -714,6 +763,44 @@ fn confirm_dialog(
     confirm_label: &str,
     on_confirm: impl FnMut(&mut EventCtx) + 'static,
 ) -> Element {
+    confirm_dialog_body(
+        visible,
+        title,
+        Element::label(message).max_lines(4),
+        confirm_label,
+        on_confirm,
+    )
+}
+
+/// 正文随信号变化的变体（如协议关联确认：正文里要嵌入注册表当前的命令行）。
+///
+/// 单开一个入口而不是把 `&str` 那版改成泛型：静态正文是绝大多数调用点的形态。
+/// 限行放到 8 —— 命令行是完整的 exe 路径，压在 4 行里会被省略号吃掉尾巴，
+/// 而用户恰恰要靠那段路径判断"占用者是不是我自己另一份安装"。
+fn confirm_dialog_msg(
+    visible: Signal<bool>,
+    title: &str,
+    message: Signal<String>,
+    confirm_label: &str,
+    on_confirm: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
+    confirm_dialog_body(
+        visible,
+        title,
+        Element::label_signal(message).max_lines(8),
+        confirm_label,
+        on_confirm,
+    )
+}
+
+/// 两个入口共用的外壳。`message` 传的是**未加样式**的标签元素，样式在此统一施加。
+fn confirm_dialog_body(
+    visible: Signal<bool>,
+    title: &str,
+    message: Element,
+    confirm_label: &str,
+    on_confirm: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
     let cancel = visible;
     let frame = Element::col()
         .width(360)
@@ -726,17 +813,16 @@ fn confirm_dialog(
                 .font_size(14.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
-                .height(22)
                 .width_match()
+                .max_lines(1)
                 .padding_xy(18, 14),
         )
         .child(Element::divider())
         .child(
-            Element::label(message)
+            message
                 .font_size(13.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
-                .max_lines(4)
                 .padding_xy(18, 16),
         )
         .child(Element::divider())
