@@ -2845,6 +2845,79 @@ mod tests {
         );
     }
 
+    /// 「混输行为」对话框的分组结构必须是**可渲染的形状**，且四个拼音项对用户可见。
+    ///
+    /// ★ 守三个静默失效方向，`capabilities` 那几道守门测试一个都查不出来（它们只问
+    /// 「key 有没有登记」）：
+    ///
+    /// 1. **`subsection = None` 不终止前一个分组**（[`build_scheme_config_button`] 只在
+    ///    `subsec != cur_subsec` 且非 None 时插标题）⇒ 无 subsection 的通用项若排在某个
+    ///    分组之后，会紧跟其后渲染、**视觉上成为那个分组的成员**。`schema.pinyin.separator`
+    ///    曾因此长期挂在「自动学习」下，且只在对话框里看得出来（主体页压根不读 subsection）。
+    /// 2. **同名 subsection 被别的分组打断**会渲染出两个同名标题。
+    /// 3. **`hidden`（或写错的 `platform`）让项连行都不渲染**，而 key 仍在清单里登记着，
+    ///    覆盖率检查照样绿——用户视角就是「设置页没有这个开关」。
+    ///
+    /// 前两条是对整个 section 的结构断言，比钉死具体位置更耐改：日后往这张卡片加项、调序
+    /// 都不会误报，只有排出「渲染不出预期形状」的顺序才红。
+    #[test]
+    fn mix_section_subsections_render_as_declared() {
+        let m = Manifest::from_embedded();
+        let keys = m
+            .sections_of("schema")
+            .into_iter()
+            .find(|(s, _)| s == "混输行为")
+            .map(|(_, k)| k)
+            .expect("清单缺「混输行为」卡片");
+
+        // ① 无 subsection 的项必须全部排在第一个有 subsection 的项之前。
+        let first_grouped = keys
+            .iter()
+            .position(|k| m.items[k].subsection.is_some())
+            .expect("「混输行为」应当有 subsection 分组");
+        for k in &keys[first_grouped..] {
+            assert!(
+                m.items[k].subsection.is_some(),
+                "{k} 没有 subsection 却排在分组之后，会被静默吸附进上一个分组"
+            );
+        }
+
+        // ② 同一 subsection 的项必须连续，否则标题会重复渲染。
+        let mut seen: Vec<&str> = Vec::new();
+        let mut cur: Option<&str> = None;
+        for k in &keys {
+            let sub = m.items[k].subsection.as_deref();
+            if sub != cur {
+                if let Some(name) = sub {
+                    assert!(!seen.contains(&name), "分组「{name}」被打断后再次出现");
+                    seen.push(name);
+                }
+                cur = sub;
+            }
+        }
+
+        // ③ 四个拼音项的归属与可见性（本轮新增两项即在其中）。
+        for k in [
+            "schema.mix.enable_pinyin_abbrev",
+            "schema.mix.min_pinyin_length",
+            "schema.mix.pinyin_partial_candidates",
+            "schema.mix.pinyin_partial_candidates_overflow",
+        ] {
+            let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
+            assert!(!item.hidden, "{k} 必须对用户可见");
+            assert_eq!(item.subsection.as_deref(), Some("拼音相关"), "{k} 的分组");
+        }
+        for k in [
+            "schema.mix.auto_commit_block_on_pinyin",
+            "schema.mix.block_commit_on_pinyin_word",
+            "schema.mix.auto_commit_block_on_english",
+        ] {
+            let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
+            assert!(!item.hidden, "{k} 必须对用户可见");
+            assert_eq!(item.subsection.as_deref(), Some("上屏设置"), "{k} 的分组");
+        }
+    }
+
     /// 清单未列举的当前取值必须被保留成一个选项。
     ///
     /// ★ 守的是一个**静默数据丢失**方向：没有这一步，手写了 `z_key_action =

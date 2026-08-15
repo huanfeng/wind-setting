@@ -535,6 +535,11 @@ type = "toggle"
 label = "uan ↔ uang"
 
 # ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
+#
+# ⚠️ 项序即渲染序，且 `subsection = None` **不会终止**前一个分组（对话框渲染只在
+# subsection 变化且非 None 时插标题）⇒ **无 subsection 的通用项必须全部声明在下面
+# 两个 subsection 之前**，否则会被静默吸附成上一个分组的成员。
+# hidden 项在渲染前就被跳过、不影响游标，但仍按语义就位——将来取消 hidden 才落在对的组里。
 [[items]]
 key = "schema.mix.show_source_hint"
 group = "schema"
@@ -551,38 +556,75 @@ type = "toggle"
 label = "启用英文候选"
 hint = "混输模式下同时查询英文词库并显示英文候选"
 
+# 英文最小触发长度：预留配置，暂不对用户开放（默认 3，即 2 字符以内不查英文）。
+[[items]]
+key = "schema.mix.min_english_length"
+group = "schema"
+section = "混输行为"
+type = "number"
+label = "英文最小触发长度"
+hint = "编码达到此长度才开始查英文候选（0 表示跟随默认值 3，即 2 字符以内不查）"
+min = 0
+max = 10
+hidden = true
+
+# ── 拼音相关：拼音候选的范围有多宽 ──
+# 项序即渲染序：先「从第几码开始查拼音」，再「查出来的候选放多宽」。
+[[items]]
+key = "schema.mix.min_pinyin_length"
+group = "schema"
+section = "混输行为"
+subsection = "拼音相关"
+type = "number"
+label = "拼音最小触发长度"
+hint = "编码达到此长度才开始查拼音候选（0 表示跟随方案默认值 2）"
+min = 0
+max = 10
+
 [[items]]
 key = "schema.mix.enable_pinyin_abbrev"
 group = "schema"
 section = "混输行为"
+subsection = "拼音相关"
 type = "toggle"
 label = "启用拼音简拼"
-hint = "混输模式下拼音支持声母简拼（nh→你好）；关闭则只认全拼，候选更精简"
+hint = "拼音支持声母简拼（nh→你好）；关闭则只认全拼，候选更精简"
+
+[[items]]
+key = "schema.mix.pinyin_partial_candidates"
+group = "schema"
+section = "混输行为"
+subsection = "拼音相关"
+type = "toggle"
+label = "显示拼音前缀匹配"
+hint = "只有编码开头能读成拼音时（gedw 的 ge），显示这些读不完整的候选"
+
+[[items]]
+key = "schema.mix.pinyin_partial_candidates_overflow"
+group = "schema"
+section = "混输行为"
+subsection = "拼音相关"
+type = "toggle"
+label = "超码长时显示拼音前缀匹配"
+hint = "编码超过最大码长后同上；开着可先选前半段上屏，剩余接着打"
 
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
 key = "schema.mix.pinyin_only_overflow"
 group = "schema"
 section = "混输行为"
+subsection = "拼音相关"
 type = "toggle"
 label = "超码长时仅查拼音"
 hint = "编码超过最大码长时只显示拼音候选，不再查码表"
 hidden = true
 
-# 顶码歧义裁决（core 默认 false，保护拼音）：隐藏，不对用户开放。
-[[items]]
-key = "schema.mix.top_code_override_pinyin"
-group = "schema"
-section = "混输行为"
-type = "toggle"
-label = "顶码优先（覆盖拼音）"
-hint = "顶码上屏时优先选择码表词条而非拼音候选"
-hidden = true
-
+# ── 上屏设置：什么情况下不自动上屏码表词 ──
 [[items]]
 key = "schema.mix.auto_commit_block_on_pinyin"
 group = "schema"
 section = "混输行为"
+subsection = "上屏设置"
 type = "toggle"
 label = "有拼音候选时否决上屏"
 hint = "满码自动上屏与顶码上屏前，若整串仍能查出拼音候选则不自动上屏（不看拼音是否成词）；「顶码优先」开启时无视本项。本项同时管「满码无候选清空」：开启时有拼音候选或拼音还没打完都不清空，关闭则满码无匹配即清空"
@@ -591,6 +633,7 @@ hint = "满码自动上屏与顶码上屏前，若整串仍能查出拼音候选
 key = "schema.mix.block_commit_on_pinyin_word"
 group = "schema"
 section = "混输行为"
+subsection = "上屏设置"
 type = "toggle"
 label = "整串是拼音词时否决上屏"
 hint = "整串是完整拼音且拼音首选为真实词（如 wangba→网吧）时，不自动/顶码上屏五笔，留给你选拼音词；aipu→落实 等无强词的仍正常上屏"
@@ -600,6 +643,7 @@ hint = "整串是完整拼音且拼音首选为真实词（如 wangba→网吧�
 key = "schema.mix.pinyin_word_min_weight"
 group = "schema"
 section = "混输行为"
+subsection = "上屏设置"
 type = "number"
 label = "拼音词强度阈值"
 hint = "拼音歧义拦截的词权重下限（0 表示仅用结构判据，不设权重门槛；真机误拦时可上调收紧）"
@@ -611,30 +655,20 @@ hidden = true
 key = "schema.mix.auto_commit_block_on_english"
 group = "schema"
 section = "混输行为"
+subsection = "上屏设置"
 type = "toggle"
 label = "有英文候选时否决满码上屏"
 hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；仅启用英文候选时有效"
 
+# 顶码歧义裁决（core 默认 false，保护拼音）：隐藏，不对用户开放。
 [[items]]
-key = "schema.mix.min_pinyin_length"
+key = "schema.mix.top_code_override_pinyin"
 group = "schema"
 section = "混输行为"
-type = "number"
-label = "拼音最小触发长度"
-hint = "编码达到此长度才开始查拼音候选（0 表示跟随方案默认值 2）"
-min = 0
-max = 10
-
-# 英文最小触发长度：预留配置，暂不对用户开放（默认 3，即 2 字符以内不查英文）。
-[[items]]
-key = "schema.mix.min_english_length"
-group = "schema"
-section = "混输行为"
-type = "number"
-label = "英文最小触发长度"
-hint = "编码达到此长度才开始查英文候选（0 表示跟随默认值 3，即 2 字符以内不查）"
-min = 0
-max = 10
+subsection = "上屏设置"
+type = "toggle"
+label = "顶码优先（覆盖拼音）"
+hint = "顶码上屏时优先选择码表词条而非拼音候选"
 hidden = true
 
 # ── 英文行为（英文方案的全局配置；「全局方案配置 → 英文方案配置」对话框）──

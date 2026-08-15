@@ -202,6 +202,8 @@
    "min_english_length": 3,
    "min_pinyin_length": 2,
    "pinyin_only_overflow": true,
+   "pinyin_partial_candidates": false,
+   "pinyin_partial_candidates_overflow": true,
    "pinyin_word_min_weight": 0,
    "show_source_hint": false,
    "top_code_override_pinyin": false

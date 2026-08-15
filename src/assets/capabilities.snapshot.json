@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.114.0",
+  "appVersion": "0.116.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -396,6 +396,16 @@
     {
       "default": true,
       "key": "schema.mix.enable_pinyin_abbrev",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.mix.pinyin_partial_candidates",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "schema.mix.pinyin_partial_candidates_overflow",
       "type": "bool"
     },
     {
