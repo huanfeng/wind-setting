@@ -44,3 +44,11 @@ winresource = "0.1"
 # 设置应用在 debug 构建下渲染/布局也需流畅（避免 dev 版卡顿）；
 # d2d 加速的是 GPU 呈现，CPU 侧布局/合成靠此优化档。编译稍慢、运行顺滑。
 opt-level = 1
+
+[profile.release]
+# 与 cargo 默认同值，显式写出来是为了钉住这个前提：windui 开着 objc2 的 catch-all，
+# 靠它把 macOS 上的 Objective-C 异常转成带 name/reason/ObjC 栈的 Rust panic。改成
+# "abort" 会让转出来的 panic 落进 nounwind 上下文，崩溃现场退化成一句
+# "panic in a function that cannot unwind" —— 正是 WindInput #67 查不动的那种日志。
+# 为压体积动这里之前，先读 windui Cargo.toml 里 objc2 依赖处的说明。
+panic = "unwind"
