@@ -1416,7 +1416,7 @@ fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
-/// 模糊音紧凑组：启用开关 + 11 对小号 checkbox（2 列），随启用置灰。
+/// 模糊音紧凑组：启用开关 + 全选按钮 + 11 对小号 checkbox（2 列），随启用置灰。
 /// 各项经 register_toggle 登记 writer/loader（key 在清单 schema/模糊音，受「恢复本页」覆盖）。
 fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
     let en = register_toggle(state, "schema.pinyin.fuzzy.enabled", cfg);
@@ -1433,14 +1433,26 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         ("schema.pinyin.fuzzy.ian_iang", "ian ↔ iang"),
         ("schema.pinyin.fuzzy.uan_uang", "uan ↔ uang"),
     ];
+    let sigs: Vec<Signal<bool>> = pairs
+        .iter()
+        .map(|(k, _)| register_toggle(state, k, cfg))
+        .collect();
     let cells: Vec<Element> = pairs
         .iter()
-        .map(|(k, lbl)| {
-            let s = register_toggle(state, k, cfg);
-            Element::checkbox(*lbl, s).small().fg_role(Role::Text)
-        })
+        .zip(sigs.iter())
+        .map(|((_, lbl), s)| Element::checkbox(*lbl, *s).small().fg_role(Role::Text))
         .collect();
     let grid = Element::grid(2, 10, cells).width_match().enabled_signal(en);
+    let select_all_sigs = sigs.clone();
+    let select_all = Element::button("全选")
+        .small()
+        .outline_soft()
+        .enabled_signal(en)
+        .on_click(move |_| {
+            for s in &select_all_sigs {
+                s.set(true);
+            }
+        });
     Element::col()
         .width_match()
         .padding_xy(0, 11)
@@ -1448,7 +1460,11 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         .child(setting_row(
             "启用模糊音",
             Some("勾选下方拼音对，使其互不区分"),
-            Element::switch(en),
+            Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::switch(en))
+                .child(select_all),
         ))
         .child(grid)
 }
