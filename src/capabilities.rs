@@ -346,6 +346,52 @@ mod tests {
         "ui.langbar.punct_color_cn",
         "ui.langbar.punct_color_en",
         "ui.langbar.full_width_color",
+        // ⑱ 联想的四个「来源开关」（core 侧联想改造新增）：主干六项已在清单内，这四项决定
+        //    联想候选**从哪来**，按配置文件里的书写顺序取配额。
+        //
+        //    history / bigram 是**尚无实现**的来源（core 的 data/config.toml 上标着「待实现」），
+        //    开着也不会出候选——与 ⑧ 的两个死链系数同一处理：给用户拧了没反应的旋钮，
+        //    比不放更糟。等各自的数据来源落地后再评估。
+        //
+        //    prefix / punct 已有实现，仍不暴露，判据是「调它需要什么依据」：
+        //    - prefix 是词语联想档的**唯一**来源，关掉它等于把「联想类型 = 词语联想」变成空转,
+        //      而用户已经有「联想类型 = 关闭」这个正主，两个入口关同一件事只会让人误关；
+        //    - punct 只在智能联想档有意义（词语联想按定义不出标点），而智能联想档是移动端
+        //      默认、桌面端要显式选——为一个桌面端少数人才会进入的档位挂一个常驻开关，
+        //      收益抵不过卡片变长的代价。
+        //    要调的人改配置文件（core 的 data/config.toml 四项各有注释）。
+        "input.association.history",
+        "input.association.bigram",
+        "input.association.prefix",
+        "input.association.punct",
+        // ⑲ 拼音语法模型（core 侧 octagram 接入新增）：**实验性且模型文件不随安装包分发**。
+        //    weight = 0.0 与 model = "" 两个默认都是关，且必须两个都显式配置才生效；
+        //    模型因许可与体积（数百 MB）要用户自行获取。⇒ 在设置页放这两项，绝大多数用户
+        //    拧了完全没反应——没有模型文件时调 weight 是空转，而 model 是个要填文件名的
+        //    输入框，填什么只能去看设计文档。与 ⑧、⑱ 同一判据。
+        //    真正暴露的前提是 core 先决定模型怎么分发（见 core 的
+        //    docs/design/pinyin-grammar-model.md）；那时该配的多半也不是这两个裸键，
+        //    而是「下载/选择模型」那样的功能入口。
+        //
+        //    注：这两个键是 core 早先引入却未同步本仓的遗留项，此前因旧快照里没有它们而
+        //    一直没报红，是本次重生成把它们激活的——不是本次 core 改动带来的。
+        "schema.pinyin.grammar.weight",
+        "schema.pinyin.grammar.model",
+        // ⑳ core 的 `[mobile.*]` 域：**移动端对桌面基线的覆盖**，桌面构建根本不读。
+        //    本程序只在桌面端运行 ⇒ 这些键在这里既显示不出有意义的当前值，改了也不会
+        //    影响本机任何行为。它们的编辑入口属于移动端设置页（安卓仓的 Compose 界面）。
+        //
+        //    ⚠️ core 将来往 [mobile.*] 加键时，这道测试会再报一次——**照样登记进这里，
+        //    别接进清单**。判据不是「这个键有没有用」而是「它管的是不是本平台」。
+        "mobile.association.kind",
+        "mobile.association.mode",
+        "mobile.association.punct",
+        // ㉑ 联想的编码栏标识：纯文案定制项，出厂「联想输入」已够用。
+        //    它只在「编码不嵌入宿主程序」时可见——而嵌入是出厂默认，多数用户根本看不到
+        //    这个标识，却要在卡片里常占一行。要改的人手写 config.toml。
+        //    ⚠️ 与 ⑱ 那四个来源开关不同，这一项**不是**「改了没反应」——它有实际作用，
+        //    只是作用面窄。将来若卡片有余地，可以放回清单（type = "string"）。
+        "input.association.hint",
     ];
 
     /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。

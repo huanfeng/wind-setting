@@ -1379,6 +1379,81 @@ options = [
   { value = "horizontal", label = "强制横排" },
 ]
 
+# ── 联想 ──
+# 上屏之后按刚上屏的内容再给一批候选。core 侧设计见 WindInput/docs/design/association.md。
+# 注：四个「来源开关」(history/bigram/prefix/punct) 不在此暴露，理由见 capabilities.rs 的
+#     UNCOVERED_BY_DESIGN ⑱。
+# 注：本段对应 core 的 [input.association]，那是**桌面基线**；移动端取值在 core 的
+#     [mobile.association] 里，本程序只在桌面端运行故不涉及（已登记 ⑳）。
+[[items]]
+key = "input.association.kind"
+group = "input"
+section = "联想"
+type = "select"
+label = "联想类型"
+hint = "从词库里找以刚上屏内容开头的更长的词：输入「中」提示「中国」「中间」，选中只补出多出来的部分"
+width = 210
+# ⚠️ **不列 smart（智能联想）**：它设计上有四个来源，已实现的只有词库前缀与标点，而标点
+#    在桌面默认关 ⇒ 桌面上选 smart 拿到的与 word 完全相同。摆一个和隔壁没区别的选项，
+#    用户只会反复试。等 history/bigram 落地、两档真正分开了再放出来。
+#    core 侧值域仍有 smart（移动端出厂就是它），手改 config.toml 照样能启用；
+#    已配 smart 的用户打开设置页会看到「smart（当前配置）」——select_index_for 的兜底，
+#    不会在「打开设置页、点一次保存」之间被静默换成 word。
+options = [
+  { value = "off", label = "关闭" },
+  { value = "word", label = "词语联想" },
+]
+
+[[items]]
+key = "input.association.mode"
+group = "input"
+section = "联想"
+type = "select"
+label = "连续联想"
+hint = "持续联想 = 选中联想词后拿它当新的上文接着给（「中」→「中国」→ 以「中国」开头的词）；一次性 = 只出一次，任何非选词动作即退出"
+width = 210
+enabled_when = "input.association.kind != off"
+options = [
+  { value = "one_shot", label = "一次性" },
+  { value = "continuous", label = "持续联想" },
+]
+
+[[items]]
+key = "input.association.max_count"
+group = "input"
+section = "联想"
+type = "number"
+label = "候选条数上限"
+hint = "联想候选最多显示几条"
+min = 1
+max = 20
+enabled_when = "input.association.kind != off"
+
+[[items]]
+key = "input.association.space_commits"
+group = "input"
+section = "联想"
+type = "toggle"
+label = "空格上屏联想候选"
+hint = "空格上屏当前高亮的联想词，多数输入法如此。关掉则空格照常出空格，联想窗同时收起"
+enabled_when = "input.association.kind != off"
+
+[[items]]
+key = "input.association.hide_after_ms"
+group = "input"
+section = "联想"
+type = "number"
+label = "自动隐藏"
+hint = "联想窗显示多久后自动收起。0 = 不自动隐藏；联想候选几乎一直挂着，久留会挡住正文"
+min = 0
+max = 60000
+step = 500
+unit = "毫秒"
+enabled_when = "input.association.kind != off"
+
+# 注：input.association.hint（编码栏标识）不在此暴露，见 capabilities.rs 的
+#     UNCOVERED_BY_DESIGN ㉑。
+
 # ═══════════════════════════ 按键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。
 # ── 中英文切换 ──

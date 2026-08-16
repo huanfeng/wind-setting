@@ -2945,6 +2945,32 @@ mod tests {
         assert_eq!(v2.len(), 1);
     }
 
+    /// ★ 联想类型的清单**刻意不列 `smart`**（桌面上它与 `word` 给的东西相同），而 core
+    /// 的值域里仍有它、移动端出厂就是它，且已经有用户配着它。
+    ///
+    /// 这一条钉的正是「从 options 里删掉一个仍然合法的取值」这个动作的安全性：
+    /// 已配 `smart` 的人打开设置页必须仍看到 `smart` 被选中，一旦回落到首项（关闭），
+    /// 他只要点一次保存，联想就被静默关掉了——而页面上看不出任何异常。
+    ///
+    /// ⚠️ 将来若把 `smart` 放回 options（history/bigram 落地、两档真正分开后），
+    /// 本测试的前两个断言会失效，届时删掉它即可，不必强行保留。
+    #[test]
+    fn association_kind_keeps_smart_when_configured() {
+        let manifest = Manifest::from_embedded();
+        let item = manifest
+            .get("input.association.kind")
+            .expect("清单应有联想类型");
+        let mut values: Vec<String> = item.options.iter().map(|o| o.value.clone()).collect();
+        let mut labels: Vec<String> = item.options.iter().map(|o| o.label.clone()).collect();
+
+        assert!(!values.contains(&"smart".to_string()), "清单不该列 smart");
+        assert!(values.contains(&"word".to_string()), "清单该列 word");
+
+        let idx = select_index_for(&mut values, &mut labels, "smart");
+        assert_eq!(values[idx], "smart", "已配 smart 的用户必须仍选中 smart");
+        assert_ne!(idx, 0, "绝不能回落到首项（关闭）——保存一次就把联想关掉了");
+    }
+
     /// 数值控件写回时该编码成 Value 的 Int 变体还是 Float 变体，得看 capability 登记的
     /// 字段类型，不能按当前值有没有小数部分猜——float 型字段恰好取整数值时（如
     /// `font_size` 默认 18）若被猜成 Int，会跟 `config.get` 返回的 Float 变体在

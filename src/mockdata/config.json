@@ -8,6 +8,18 @@
   "add_word": {
    "candidate_layout": "vertical"
   },
+  "association": {
+   "bigram": true,
+   "hide_after_ms": 5000,
+   "hint": "联想输入",
+   "history": true,
+   "kind": "off",
+   "max_count": 9,
+   "mode": "one_shot",
+   "prefix": true,
+   "punct": false,
+   "space_commits": true
+  },
   "auto_pair": {
    "chinese": false,
    "chinese_pairs": [
@@ -144,6 +156,13 @@
   "toggle_punct": "ctrl+.",
   "toggle_s2t": "ctrl+shift+j",
   "toggle_toolbar": "ctrl+shift+\\"
+ },
+ "mobile": {
+  "association": {
+   "kind": "smart",
+   "mode": "continuous",
+   "punct": true
+  }
  },
  "schema": {
   "active": "wubi86",

@@ -770,6 +770,65 @@
       ]
     },
     {
+      "default": "off",
+      "key": "input.association.kind",
+      "type": "enum",
+      "values": [
+        "off",
+        "word",
+        "smart"
+      ]
+    },
+    {
+      "default": "one_shot",
+      "key": "input.association.mode",
+      "type": "enum",
+      "values": [
+        "one_shot",
+        "continuous"
+      ]
+    },
+    {
+      "default": 9,
+      "key": "input.association.max_count",
+      "type": "int"
+    },
+    {
+      "default": true,
+      "key": "input.association.space_commits",
+      "type": "bool"
+    },
+    {
+      "default": 5000,
+      "key": "input.association.hide_after_ms",
+      "type": "int"
+    },
+    {
+      "default": "联想输入",
+      "key": "input.association.hint",
+      "type": "str"
+    },
+    {
+      "default": true,
+      "key": "input.association.history",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.association.bigram",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.association.prefix",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.association.punct",
+      "type": "bool"
+    },
+    {
       "default": [
         "lshift",
         "rshift"
@@ -1320,6 +1379,30 @@
       "default": 10,
       "key": "debug.log_max_files",
       "type": "int"
+    },
+    {
+      "default": "smart",
+      "key": "mobile.association.kind",
+      "type": "enum",
+      "values": [
+        "off",
+        "word",
+        "smart"
+      ]
+    },
+    {
+      "default": "continuous",
+      "key": "mobile.association.mode",
+      "type": "enum",
+      "values": [
+        "one_shot",
+        "continuous"
+      ]
+    },
+    {
+      "default": true,
+      "key": "mobile.association.punct",
+      "type": "bool"
     }
   ]
 }
