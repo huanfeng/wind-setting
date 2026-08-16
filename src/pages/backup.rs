@@ -162,9 +162,9 @@ impl BackupState {
         if let Some(contents) = m.and_then(|m| m.get("contents")).and_then(|c| c.as_array()) {
             for e in contents {
                 match e.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-                    "config" => config += 1,
+                    "config" | "compat" => config += 1,
                     "dict" | "temp" | "phrase" | "freq" | "shadow" => data += 1,
-                    "schema_file" => schemas += 1,
+                    "schema_file" | "schema_override_file" => schemas += 1,
                     "theme_file" => themes += 1,
                     "stats" | "stats_meta" => stats += 1,
                     "state" => state_n += 1,
@@ -390,18 +390,22 @@ mod tests {
             "app_version": "1.0.0", "platform": "windows", "created_at": "2026-07-13",
             "contents": [
                 { "type": "config", "path": "config/config.toml" },
+                { "type": "compat", "path": "config/compat.toml" },
                 { "type": "dict", "path": "userdata/user_words/wb.wdict" },
                 { "type": "freq", "path": "userdata/freq/wb.jsonl" },
                 { "type": "schema_file", "path": "schemas/my.schema.toml" },
+                { "type": "schema_override_file", "path": "schema_overrides/my.toml" },
                 { "type": "stats", "path": "userdata/stats.jsonl" },
                 { "type": "stats_meta", "path": "userdata/stats_meta.json" }
             ]
         }});
         let msg = BackupState::format_inspect_summary(&v);
         assert!(msg.contains("v1.0.0"));
-        assert!(msg.contains("配置 1"));
+        // compat 并入「配置」计数，schema_override_file 并入「方案文件」计数——
+        // 二者与 config/schema_file 是同一还原范围（见 wind-transfer::backup::section_of）。
+        assert!(msg.contains("配置 2"), "{msg}");
         assert!(msg.contains("数据 2"));
-        assert!(msg.contains("方案文件 1"));
+        assert!(msg.contains("方案文件 2"), "{msg}");
         assert!(msg.contains("统计 2"));
     }
 
