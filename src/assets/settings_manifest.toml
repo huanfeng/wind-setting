@@ -460,6 +460,18 @@ min = 2
 max = 10
 enabled_when = "schema.pinyin.auto_learn.enabled == true"
 
+[[items]]
+key = "schema.pinyin.auto_learn.max_word_length"
+group = "schema"
+section = "候选行为"
+subsection = "自动学习"
+type = "number"
+label = "最长学习词长"
+hint = "超过这个字数就不记录；智能组句的长句主要受它约束"
+min = 2
+max = 20
+enabled_when = "schema.pinyin.auto_learn.enabled == true"
+
 # 双拼：allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达「当前方案是双拼」
 # （它只能比较配置键），故常驻可见，由 hint 说明适用范围。
 [[items]]

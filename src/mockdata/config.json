@@ -236,8 +236,8 @@
     "id": "quick_mix",
     "members": [
      "quick_input.calc",
-     "quick_input.date",
      "quick_input.number",
+     "quick_input.date",
      "quick_input.repeat",
      "$primary_pinyin",
      "english"
@@ -252,6 +252,7 @@
   "pinyin": {
    "auto_learn": {
     "enabled": true,
+    "max_word_length": 10,
     "min_word_length": 0,
     "promote_count": 0
    },

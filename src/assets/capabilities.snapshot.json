@@ -329,6 +329,11 @@
       "type": "int"
     },
     {
+      "default": 10,
+      "key": "schema.pinyin.auto_learn.max_word_length",
+      "type": "int"
+    },
+    {
       "default": 0,
       "key": "schema.pinyin.auto_learn.promote_count",
       "type": "int"
@@ -437,8 +442,8 @@
           "id": "quick_mix",
           "members": [
             "quick_input.calc",
-            "quick_input.date",
             "quick_input.number",
+            "quick_input.date",
             "quick_input.repeat",
             "$primary_pinyin",
             "english"
