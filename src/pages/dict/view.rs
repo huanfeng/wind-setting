@@ -728,6 +728,9 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
 
     // 行内调序（快捷输入）。windui 没有拖拽重排控件，只能一对小按钮。
     //
+    // 箭头用 `↑`/`↓` 而不是 `▲`/`▼`：与方案管理的调序菜单同一套字形（那边用作快捷键提示），
+    // 实心三角在小号按钮里显得又黑又胖，两枚并排挤在操作列里尤其重。
+    //
     // ⚠️ 传给状态层的是 `move_index`（候选内下标），不是行号——停用项占着行号却不在
     // 候选里，用行号会让「上移一位」跳过好几条。停用项 `move_index` 为 None，
     // 两个按钮一并置灰。
@@ -740,14 +743,14 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         let (ru, rd) = (row.clone(), row.clone());
         r = r
             .child(
-                Element::button("▲")
+                Element::button("↑")
                     .small()
                     .outline_soft()
                     .enabled(can_up)
                     .on_click(move |_| mu.do_quick_move(&ru, -1)),
             )
             .child(
-                Element::button("▼")
+                Element::button("↓")
                     .small()
                     .outline_soft()
                     .enabled(can_down)
