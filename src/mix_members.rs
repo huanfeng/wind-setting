@@ -129,10 +129,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 声明序照搬清单的候选来源选项（＝core `default_mix_modes()` 序，由
+    /// `manifest::tests::mix_members_options_match_core_default_order` 对账）。
+    /// 本模块测的是"按声明序补位"的算法，顺序本身可任取，但抄真值才不会误导读者。
     const MANAGED: [&str; 6] = [
         "quick_input.calc",
-        "quick_input.date",
         "quick_input.number",
+        "quick_input.date",
         "quick_input.repeat",
         "$primary_pinyin",
         "english",
@@ -192,8 +195,8 @@ mod tests {
             managed_order(&current, &managed()),
             strs(&[
                 "quick_input.calc",
-                "quick_input.date",
                 "quick_input.number",
+                "quick_input.date",
                 "quick_input.repeat",
                 "$primary_pinyin",
                 "english"
@@ -214,8 +217,8 @@ mod tests {
             &managed(),
             &strs(&[
                 "quick_input.calc",
-                "quick_input.date",
                 "quick_input.number",
+                "quick_input.date",
                 "quick_input.repeat",
                 "english",
             ]),
@@ -224,8 +227,8 @@ mod tests {
             out,
             strs(&[
                 "quick_input.calc",
-                "quick_input.date",
                 "quick_input.number",
+                "quick_input.date",
                 "quick_input.repeat",
                 "english"
             ]),

@@ -1175,8 +1175,8 @@ label = "快捷候选来源"
 hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选；列表顺序即候选优先级，按住行首手柄上下拖动即可调整"
 options = [
   { value = "quick_input.calc", label = "计算", hint = "算式求值，如 1+2*3、5^2、(1+2)/4" },
-  { value = "quick_input.date", label = "日期 / 年月", hint = "如 12.25 → 今年12月25日；2026.3 → 2026年3月" },
   { value = "quick_input.number", label = "数字 / 金额", hint = "中文数字、财务大写、千分位；算式结果也会转换" },
+  { value = "quick_input.date", label = "日期 / 年月", hint = "如 12.25 → 今年12月25日；2026.3 → 2026年3月。只有一个点时数字候选在前，多打一个点（12.25.）即可让日期优先" },
   { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
   { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
   { value = "english", label = "英文", hint = "英文词库候选" },
