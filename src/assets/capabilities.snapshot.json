@@ -329,12 +329,12 @@
       "type": "int"
     },
     {
-      "default": 2,
+      "default": 4,
       "key": "schema.pinyin.completion.min_syllables",
       "type": "int"
     },
     {
-      "default": 3,
+      "default": 5,
       "key": "schema.pinyin.completion.max_extra_syllables",
       "type": "int"
     },

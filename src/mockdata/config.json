@@ -255,8 +255,8 @@
     "promote_count": 0
    },
    "completion": {
-    "max_extra_syllables": 3,
-    "min_syllables": 2
+    "max_extra_syllables": 5,
+    "min_syllables": 4
    },
    "frequency": {
     "base_scale": 0.0,
