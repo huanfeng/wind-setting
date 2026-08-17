@@ -272,7 +272,10 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
 /// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。
 fn build_titlebar() -> Element {
     // 应用图标（与 exe/任务栏同一张图，PNG 由 build 期从 .ico 提取的 256px 帧）。
-    let logo = crate::widgets::app_icon(26);
+    // 传 28 是**占位**边长：`app_icon` 内缩 2px 后实绘仍是 24px（图标视觉大小不变），
+    // 多出的那 2px 是安全边距——小尺寸下按比例算只有 1px，不足以吸收落点吸附的
+    // 半物理像素位移，150% 下会把右侧削掉一列（见 `app_icon` 文档）。
+    let logo = crate::widgets::app_icon(28);
 
     Element::row()
         .width_match()

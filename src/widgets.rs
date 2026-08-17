@@ -27,16 +27,46 @@ pub fn dark_sig() -> Signal<bool> {
     DARK_SIG.with(|c| c.get()).unwrap_or_else(|| signal(false))
 }
 
-/// 应用图标（嵌入 PNG，与 exe/任务栏图标同源，均由主仓库 688px `pic/logo.png`
-/// 经 Lanczos 离线生成）。`px` 为逻辑边长；小尺寸（标题栏）用 64px 专用资源，
+/// 应用图标（嵌入 PNG，与 exe/任务栏图标同源，均由主仓库 `pic/logo.png` 经
+/// Lanczos 离线生成）。`px` 为逻辑边长；小尺寸（标题栏）用 64px 专用资源，
 /// 避免 256px 大图实时缩到 ~30 物理px 的大缩比采样发糊。
+///
+/// **安全边距**：图标资源满画布无留白（有意为之——任务栏 16/24px 那种极小尺寸
+/// 要靠铺满换取有效像素），但本页面渲染的是 26/72px 这类较大尺寸，铺满会让圆角
+/// 直接顶死容器边界，观感就是"边缘被裁了一点"。故按 [`ICON_INSET_RATIO`] 内缩，
+/// 布局占位仍为 `px`（排版不动）。
+///
+/// 内缩还顺带消掉一个真裁剪：windui 的 `draw_image` 以 `dst` 作 ALIASED 裁剪框，
+/// 铺满时图边界与裁剪框零余量重合，而落点会吸附到整数物理像素——125%/150% 下
+/// 这半像素位移会把一侧最外半个物理像素切掉。留边即留出这份余量。
 pub fn app_icon(px: i32) -> Element {
     let bytes: &'static [u8] = if px <= 32 {
         include_bytes!("../res/wind_setting_icon_sm.png")
     } else {
         include_bytes!("../res/wind_setting_icon.png")
     };
-    Element::image_bytes(bytes).size(px, px)
+    let inner = app_icon_inner_px(px);
+    Element::stack().size(px, px).child(
+        Element::image_bytes(bytes)
+            .size(inner, inner)
+            .align(Align::Center),
+    )
+}
+
+/// 应用图标四周留白占边长的比例。4% ≈ 72px 留 3px。
+const ICON_INSET_RATIO: f32 = 0.04;
+
+/// 留白下限（逻辑 px）。小图标不能只按比例给：28px 处 4% 仅 1px，
+/// 而图标资源最外一圈本就是抗锯齿边（`_sm.png` 四边 alpha 247/248），
+/// 叠加落点吸附到整数物理像素后，150% 下实测会丢掉一整列——余量必须
+/// 大于那半个物理像素的位移，2px 逻辑留白在 150% 下即 3 物理像素，足够。
+const ICON_INSET_MIN: i32 = 2;
+
+/// 图标实际绘制边长（[`app_icon`] 的占位 `px` 扣掉两侧安全边距）。
+/// 下限 1px 防极小尺寸下算出非正值。
+fn app_icon_inner_px(px: i32) -> i32 {
+    let inset = ((px as f32 * ICON_INSET_RATIO).round() as i32).max(ICON_INSET_MIN);
+    (px - inset * 2).max(1)
 }
 
 /// 浮层面板：圆角 surface + 边框 + 投影（对话框等浮窗用）。
@@ -288,4 +318,61 @@ pub fn todo_hint(text: &str) -> Element {
         .fg_role(Role::TextMuted)
         .width_match()
         .padding_xy(0, 10)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 图标必须**小于**占位框：等于就是零余量铺满，圆角顶死边界、且与 windui 的
+    /// ALIASED 裁剪框重合（见 [`app_icon`] 文档）。实际调用的两处尺寸逐一钉死。
+    #[test]
+    fn app_icon_keeps_safe_margin() {
+        for px in [28, 72] {
+            let inner = app_icon_inner_px(px);
+            assert!(
+                inner < px,
+                "app_icon({px}) 实绘 {inner}px 应小于占位，否则安全边距为零"
+            );
+            assert!(
+                (px - inner) % 2 == 0,
+                "app_icon({px}) 留白 {} 应为偶数，否则居中后两侧不等宽",
+                px - inner
+            );
+        }
+    }
+
+    /// 留白比例落在 3%~8%：太小吸收不了亚像素位移，太大图标会明显缩水。
+    /// 上界给到 8% 是因为小尺寸受 [`ICON_INSET_MIN`] 托底（28px 处即 7.1%）。
+    #[test]
+    fn app_icon_inset_ratio_is_moderate() {
+        for px in [28, 32, 48, 72, 128] {
+            let ratio = (px - app_icon_inner_px(px)) as f32 / 2.0 / px as f32;
+            assert!(
+                (0.03..=0.08).contains(&ratio),
+                "app_icon({px}) 单边留白占比 {ratio:.3} 应在 3%~8%"
+            );
+        }
+    }
+
+    /// 小尺寸的留白必须由 [`ICON_INSET_MIN`] 托底，不能退回按比例算出的 1px：
+    /// 1px 逻辑留白在 150% 下只有 1.5 物理像素，吸收不掉落点吸附的位移。
+    #[test]
+    fn app_icon_small_size_uses_min_inset() {
+        for px in [24, 28, 32] {
+            assert_eq!(
+                px - app_icon_inner_px(px),
+                ICON_INSET_MIN * 2,
+                "app_icon({px}) 应走 ICON_INSET_MIN 托底"
+            );
+        }
+    }
+
+    /// 极小尺寸不得算出非正边长（`.max(1)` 兜底），否则布局塌陷或 panic。
+    #[test]
+    fn app_icon_inner_px_stays_positive() {
+        for px in 1..=16 {
+            assert!(app_icon_inner_px(px) >= 1, "app_icon({px}) 实绘边长应 >= 1");
+        }
+    }
 }
