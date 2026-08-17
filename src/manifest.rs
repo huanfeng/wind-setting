@@ -1416,7 +1416,7 @@ fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
-/// 模糊音紧凑组：启用开关 + 全选按钮 + 11 对小号 checkbox（2 列），随启用置灰。
+/// 模糊音紧凑组：启用开关 + 全选 checkbox + 11 对小号 checkbox（2 列），随启用置灰。
 /// 各项经 register_toggle 登记 writer/loader（key 在清单 schema/模糊音，受「恢复本页」覆盖）。
 fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
     let en = register_toggle(state, "schema.pinyin.fuzzy.enabled", cfg);
@@ -1443,16 +1443,40 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         .map(|((_, lbl), s)| Element::checkbox(*lbl, *s).small().fg_role(Role::Text))
         .collect();
     let grid = Element::grid(2, 10, cells).width_match().enabled_signal(en);
-    let select_all_sigs = sigs.clone();
-    let select_all = Element::button("全选")
+
+    // 全选 checkbox：受控（on_toggle 接管点击），点击即把 11 项整体设为「取反当前是否
+    // 全选」——已全选时点击变全不选，故同一个 checkbox 兼顾全选/取消全选，不需要
+    // 额外按钮。checkbox 本身不接收 on-change，故其勾选状态需要另一条腿维持：下方
+    // reactive_effect 监听 11 项版本，任一项被单独勾/取消时都重算「是否全选」回写
+    // 本信号，让全选框始终如实反映当前状态（而非只在点它自己时才更新）。
+    let select_all_sig = signal(sigs.iter().all(|s| s.get()));
+    let click_sigs = sigs.clone();
+    let select_all_box = Element::checkbox("全选", select_all_sig)
         .small()
-        .outline_soft()
+        .fg_role(Role::Text)
         .enabled_signal(en)
-        .on_click(move |_| {
-            for s in &select_all_sigs {
-                s.set(true);
+        .on_toggle(move |_ctx| {
+            let target = !click_sigs.iter().all(|s| s.get());
+            for s in &click_sigs {
+                s.set(target);
             }
         });
+    let version_sigs = sigs.clone();
+    let sync_sigs = sigs.clone();
+    let sync_effect = crate::pages::dict::reactive::reactive_effect(
+        move || {
+            version_sigs
+                .iter()
+                .fold(0u64, |acc, s| acc.wrapping_add(s.version()))
+        },
+        move || {
+            let all = sync_sigs.iter().all(|s| s.get());
+            if select_all_sig.get() != all {
+                select_all_sig.set(all);
+            }
+        },
+    );
+
     Element::col()
         .width_match()
         .padding_xy(0, 11)
@@ -1464,9 +1488,10 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
                 .cross(Align::Center)
                 .spacing(8)
                 .child(Element::switch(en))
-                .child(select_all),
+                .child(select_all_box),
         ))
         .child(grid)
+        .child(sync_effect)
 }
 
 /// 对话框内分组标题（section/subsection 同一层级，主题色强调，不额外缩进）。
