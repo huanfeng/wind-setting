@@ -22,6 +22,8 @@ pub enum WordCategory {
     Freq,
     /// 候选调整 / 影子规则（按方案，只读 + 撤销）。
     Shadow,
+    /// 快捷输入格式（全局；调序 / 停用 / 恢复，出厂条目不可增删）。
+    QuickFormat,
 }
 
 /// 导航子标签的逻辑单元：短语两级 + 方案内四类。映射到 (标题, 类别, 短语系统标志)。
@@ -33,6 +35,7 @@ pub enum LogicalTab {
     Temp,
     Freq,
     Shadow,
+    QuickFormat,
 }
 
 impl LogicalTab {
@@ -44,6 +47,7 @@ impl LogicalTab {
             LogicalTab::Temp => "临时词库",
             LogicalTab::Freq => "词频",
             LogicalTab::Shadow => "候选调整",
+            LogicalTab::QuickFormat => "快捷输入",
         }
     }
     pub fn category(self) -> WordCategory {
@@ -54,6 +58,7 @@ impl LogicalTab {
             LogicalTab::Temp => WordCategory::Temp,
             LogicalTab::Freq => WordCategory::Freq,
             LogicalTab::Shadow => WordCategory::Shadow,
+            LogicalTab::QuickFormat => WordCategory::QuickFormat,
         }
     }
     /// 短语两级：Some(true)=系统，Some(false)=用户；非短语=None。
@@ -75,6 +80,7 @@ impl LogicalTab {
             LogicalTab::Temp => "temp",
             LogicalTab::Freq => "freq",
             LogicalTab::Shadow => "shadow",
+            LogicalTab::QuickFormat => "quick",
         }
     }
 
@@ -86,6 +92,7 @@ impl LogicalTab {
         LogicalTab::Temp,
         LogicalTab::Freq,
         LogicalTab::Shadow,
+        LogicalTab::QuickFormat,
     ];
 
     /// 由 `--type` 取值反查（大小写不敏感）。`dict` 是 `user-dict` 的顺手别名。
@@ -125,6 +132,17 @@ pub struct WordRow {
     /// 从系统短语列表隐去。此位供列表标注来源，并提示「删掉它即恢复系统默认」——
     /// 否则用户看到系统短语少了一条却不知道去哪儿找。
     pub overrides_system: bool,
+    /// 快捷输入专用：该条格式的示例效果（core 用示例输入跑真实候选生成，读 `sample`）。
+    /// 其余类别恒空。列表里全是 `$YC年$MC月$DC日` 这样的模板，光看认不出哪条是哪条。
+    pub sample: String,
+    /// 快捷输入专用：该条在**候选**里的 0-based 下标（读 `moveIndex`）。
+    ///
+    /// ⚠️ 与 [`Self::position`]（列表行号 `displayPos`）**不是一回事**：停用项占着行号却
+    /// 不在候选里，拿行号去写移动规则，用户会看到「上移一位跳过好几条」。停用项此处为
+    /// `None`，这同时表达了「不能移动，得先启用」。
+    pub move_index: Option<usize>,
+    /// 快捷输入专用：用户是否调整过（移动或停用，读 `adjusted`）。决定「恢复此条」能不能点。
+    pub adjusted: bool,
 }
 
 impl WordRow {
@@ -173,6 +191,22 @@ impl WordRow {
                 kind: s("type"),
                 ..Default::default()
             },
+            // 快捷输入：`code` 复用为格式 id、`kind` 为格式类别、`position` 为**列表行号**。
+            // `moveIndex` 单独存 —— 两个下标的区别见 [`WordRow::move_index`]。
+            WordCategory::QuickFormat => WordRow {
+                code: s("id"),
+                text: s("text"),
+                kind: s("kind"),
+                position: i("displayPos"),
+                enabled: b("enabled"),
+                adjusted: b("adjusted"),
+                sample: s("sample"),
+                move_index: v
+                    .get("moveIndex")
+                    .and_then(|x| x.as_u64())
+                    .map(|n| n as usize),
+                ..Default::default()
+            },
         }
     }
 
@@ -219,8 +253,9 @@ impl WordRow {
             WordField::Count => self.count.to_string(),
             WordField::Position => self.position.to_string(),
             WordField::Enabled => if self.enabled { "是" } else { "否" }.to_string(),
-            WordField::Kind => shadow_kind_label(&self.kind).to_string(),
+            WordField::Kind => kind_label(&self.kind).to_string(),
             WordField::LastUsed => self.last_used.clone(),
+            WordField::Sample => self.sample.clone(),
         }
     }
 }
@@ -259,15 +294,23 @@ fn fmt_last_used(v: Option<&Value>) -> String {
     }
 }
 
-/// 候选调整类型的中文标签。
+/// 「类型」列的中文标签。
+///
+/// 候选调整与快捷输入共用这一列，两者取值域**不重叠**（`pin`/`delete` vs
+/// `date`/`month_day`/…），故一个函数认两套，不必给 [`WordRow::cell_text`] 多传一个类别参数。
 ///
 /// `pin` 叫「位置」而不是「置顶」：这类规则带一个 `position` 字段，置顶只是 `position = 0`
 /// 的那种情形，右键菜单的「前移 / 后移」同样落成 pin 规则。列里写「置顶」会让 position 非 0
 /// 的行自相矛盾。添加对话框的类型选项（`dialogs.rs`）用的也是同一套语义。
-pub fn shadow_kind_label(kind: &str) -> &'static str {
+pub fn kind_label(kind: &str) -> &'static str {
     match kind {
         "pin" => "位置",
         "delete" => "删除",
+        "date" => "日期",
+        "month_day" => "月日",
+        "year_month" => "年月",
+        "number" => "数字",
+        "calc" => "计算",
         _ => "—",
     }
 }
@@ -292,6 +335,8 @@ pub enum WordField {
     Enabled,
     Kind,
     LastUsed,
+    /// 快捷输入：该条格式的示例效果（core 用示例输入跑真实候选生成得到）。
+    Sample,
 }
 
 impl WordField {
@@ -306,6 +351,7 @@ impl WordField {
             WordField::Enabled => "enabled",
             WordField::Kind => "type",
             WordField::LastUsed => "lastUsed",
+            WordField::Sample => "sample",
         }
     }
 
@@ -344,6 +390,16 @@ pub struct OpFlags {
     /// 默认列宽（`ACTIONS_WEIGHT`）再加一枚按钮就挤爆了。本标志因此只作为能力声明，
     /// 由 `build_view_dialog` 消费。
     pub claim_as_user: bool,
+    /// 是否支持**行内调序**（上移 / 下移 / 置顶）。
+    ///
+    /// windui 没有拖拽重排控件，故用一对小按钮；点击时传的是
+    /// [`WordRow::move_index`]（候选内下标）而不是行号。
+    pub reorder: bool,
+    /// 是否支持「恢复此条默认」（快捷输入：清掉这一条的调序与停用）。
+    ///
+    /// 与 `reset_default`（整类/整表恢复）分开：出厂条目改坏了，用户想恢复的通常是
+    /// 手上这一条，而不是把整类的排序偏好全丢掉。
+    pub reset_entry: bool,
 }
 
 impl OpFlags {
@@ -362,6 +418,8 @@ impl OpFlags {
         export: false,
         view: false,
         claim_as_user: false,
+        reorder: false,
+        reset_entry: false,
     };
 }
 
@@ -379,6 +437,10 @@ pub struct RpcNames {
     pub set_enabled: &'static str,
     pub reset_default: &'static str,
     pub encode: &'static str,
+    /// 移到指定位置（快捷输入：`quick.move`，参数 kind/id/index）。
+    pub move_to: &'static str,
+    /// 恢复单条默认（快捷输入：`quick.resetEntry`）。
+    pub reset_entry: &'static str,
 }
 
 impl RpcNames {
@@ -394,6 +456,8 @@ impl RpcNames {
         set_enabled: "",
         reset_default: "",
         encode: "",
+        move_to: "",
+        reset_entry: "",
     };
 }
 
@@ -668,6 +732,64 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
     },
 };
 
+// 快捷输入：不显示格式 id（`date.cn` 这种对用户没有识别价值，认条目靠「示例」那一列），
+// 省下的宽度给示例。id 仍可从行右键菜单里复制。
+const COLS_QUICK: &[ColumnSpec] = &[
+    ColumnSpec {
+        header: "类别",
+        weight: 0.7,
+        field: WordField::Kind,
+    },
+    ColumnSpec {
+        header: "格式",
+        weight: 1.6,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "示例",
+        weight: 1.7,
+        field: WordField::Sample,
+    },
+];
+
+/// 快捷输入格式表。
+///
+/// 全局（不按方案）：core 那张调整表的键只到格式类别，不带方案。
+///
+/// **无增删**：`kind` 是解析器白名单，条目只能由出厂表或高级用户手写的
+/// `system.quick.toml` 提供，GUI 只做调序 / 停用 / 恢复。（用户自定义条目是后续的事，
+/// 届时才会有 `add`/`remove`。）
+///
+/// 客户端搜索：条目总数二十余条，一次全取，服务端搜索反而多一轮 RPC。
+const SPEC_QUICK: CategorySpec = CategorySpec {
+    category: WordCategory::QuickFormat,
+    title: "快捷输入",
+    scoped_by_schema: false,
+    paged: false,
+    searchable: false,
+    client_search: true,
+    columns: COLS_QUICK,
+    ops: OpFlags {
+        set_enabled: true,
+        reorder: true,
+        reset_entry: true,
+        // 整表恢复（逐类调 quick.resetKind，见 `do_reset_default`）。
+        reset_default: true,
+        import: true,
+        export: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "quick.list",
+        set_enabled: "quick.setEnabled",
+        move_to: "quick.move",
+        reset_entry: "quick.resetEntry",
+        // 整类恢复；「整表」由状态层对每个类别各调一次。
+        reset_default: "quick.resetKind",
+        ..RpcNames::EMPTY
+    },
+};
+
 /// 取某类别的静态描述。
 pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
     match cat {
@@ -677,6 +799,7 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
         WordCategory::Temp => &SPEC_TEMP,
         WordCategory::Freq => &SPEC_FREQ,
         WordCategory::Shadow => &SPEC_SHADOW,
+        WordCategory::QuickFormat => &SPEC_QUICK,
     }
 }
 
@@ -715,12 +838,12 @@ mod tests {
         assert_eq!(r.kind, "pin");
         assert_eq!(r.position, 1);
         // 这条夹具的 position 是 1 而非 0——pin 规则并不等同于置顶，故类型列写「位置」。
-        assert_eq!(shadow_kind_label(&r.kind), "位置");
+        assert_eq!(kind_label(&r.kind), "位置");
 
         let del = json!({ "code": "cd", "word": "屏", "candId": null, "type": "delete" });
         let r2 = WordRow::from_json(WordCategory::Shadow, &del);
         assert_eq!(r2.kind, "delete");
-        assert_eq!(shadow_kind_label(&r2.kind), "删除");
+        assert_eq!(kind_label(&r2.kind), "删除");
     }
 
     #[test]
@@ -811,6 +934,113 @@ mod tests {
         assert!(usr.ops.add && usr.ops.edit && usr.ops.remove && usr.ops.clear);
         assert!(usr.ops.import && usr.ops.export);
         assert!(usr.paged);
+    }
+
+    /// 快捷输入行解析：`code` ← id、`position` ← 列表行号、`moveIndex` 单独存。
+    ///
+    /// ★ 两个下标必须**各归各位**：把 `displayPos` 当成 `move_index` 用，就是
+    /// 「上移一位跳过好几条」。
+    #[test]
+    fn quick_format_from_json_keeps_two_indices_apart() {
+        let v = json!({
+            "kind": "date", "id": "date.lunar", "text": "农历$LMD",
+            "displayPos": 6, "moveIndex": 5, "enabled": true, "adjusted": true,
+            "sample": "农历七月初五"
+        });
+        let r = WordRow::from_json(WordCategory::QuickFormat, &v);
+        assert_eq!(r.code, "date.lunar", "code 复用为格式 id");
+        assert_eq!(r.text, "农历$LMD");
+        assert_eq!(r.kind, "date");
+        assert_eq!(r.position, 6, "position = 列表行号");
+        assert_eq!(r.move_index, Some(5), "move_index = 候选内下标");
+        assert_eq!(r.sample, "农历七月初五");
+        assert!(r.enabled && r.adjusted);
+        // 「类别」列显示中文
+        assert_eq!(r.cell_text(WordField::Kind), "日期");
+        assert_eq!(r.cell_text(WordField::Sample), "农历七月初五");
+    }
+
+    /// 停用行：`moveIndex` 为 null → `None`（表示"不能移动，得先启用"），
+    /// 而行号照常有值——两者不可互相兜底。
+    #[test]
+    fn quick_format_disabled_row_has_no_move_index() {
+        let v = json!({
+            "kind": "number", "id": "number.digits", "text": "$DIG",
+            "displayPos": 4, "moveIndex": null, "enabled": false, "adjusted": true, "sample": ""
+        });
+        let r = WordRow::from_json(WordCategory::QuickFormat, &v);
+        assert_eq!(r.move_index, None);
+        assert_eq!(r.position, 4, "行号仍在");
+        assert!(!r.enabled);
+        // 示例可以为空（农历超范围、表达式写错都会这样），不代表这条永远不出
+        assert_eq!(r.sample, "");
+    }
+
+    /// 「类型」列被候选调整与快捷输入共用，两套取值域都要认。
+    #[test]
+    fn kind_label_covers_both_shadow_and_quick_kinds() {
+        assert_eq!(kind_label("pin"), "位置");
+        assert_eq!(kind_label("delete"), "删除");
+        for (k, want) in [
+            ("date", "日期"),
+            ("month_day", "月日"),
+            ("year_month", "年月"),
+            ("number", "数字"),
+            ("calc", "计算"),
+        ] {
+            assert_eq!(kind_label(k), want, "kind={k}");
+        }
+        assert_eq!(kind_label("weather"), "—", "未知类别给占位符而不是空白");
+    }
+
+    /// 快捷输入的能力声明：可调序 / 可停用 / 可恢复，但**不可增删**
+    /// （kind 是解析器白名单，条目只能来自格式表文件）。
+    #[test]
+    fn quick_format_spec_allows_reorder_but_not_add_remove() {
+        let q = spec_for(WordCategory::QuickFormat);
+        assert!(q.ops.reorder && q.ops.set_enabled && q.ops.reset_entry);
+        assert!(q.ops.import && q.ops.export);
+        assert!(!q.ops.add && !q.ops.remove && !q.ops.clear);
+        assert!(!q.scoped_by_schema, "全局，不按方案");
+        assert!(!q.paged, "二十余条，一次全取");
+        assert!(q.client_search, "客户端过滤，省一轮 RPC");
+        assert_eq!(q.rpc.list, "quick.list");
+        assert_eq!(q.rpc.move_to, "quick.move");
+        assert_eq!(q.rpc.set_enabled, "quick.setEnabled");
+        assert_eq!(q.rpc.reset_entry, "quick.resetEntry");
+        assert_eq!(q.rpc.reset_default, "quick.resetKind");
+    }
+
+    /// 声明了某个 op 就必须有对应的 RPC 方法名，否则点了只会得到「该操作不可用」。
+    #[test]
+    fn declared_ops_have_rpc_methods() {
+        for cat in [
+            WordCategory::PhraseSystem,
+            WordCategory::PhraseUser,
+            WordCategory::UserDict,
+            WordCategory::Temp,
+            WordCategory::Freq,
+            WordCategory::Shadow,
+            WordCategory::QuickFormat,
+        ] {
+            let s = spec_for(cat);
+            assert!(!s.rpc.list.is_empty(), "{cat:?} 缺 list RPC");
+            if s.ops.reorder {
+                assert!(
+                    !s.rpc.move_to.is_empty(),
+                    "{cat:?} 声明了 reorder 却没有 move RPC"
+                );
+            }
+            if s.ops.reset_entry {
+                assert!(
+                    !s.rpc.reset_entry.is_empty(),
+                    "{cat:?} 声明了 reset_entry 却没有对应 RPC"
+                );
+            }
+            if s.ops.set_enabled {
+                assert!(!s.rpc.set_enabled.is_empty(), "{cat:?} 缺 setEnabled RPC");
+            }
+        }
     }
 
     #[test]
