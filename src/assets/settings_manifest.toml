@@ -166,6 +166,24 @@ options = [
     { value = "mix:quick_mix", label = "快捷输入" },
 ]
 
+# 档位取「对哪几级简码生效」，故 core 侧判据是「当前码长 > 档位」而非「等于全码长」——
+# 非五笔方案的全码长未必是 4，用码长比较才不必知道方案的最大码长。
+# core 支持 1（仅一简），下拉不列：一简位的字本就只有 25 个，单独成档没有实际用途。
+[[items]]
+key = "schema.codetable.short_code_yield_level"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "number_select"
+label = "出简让全"
+hint = "有简码的字在更长编码上把首选让给词组，自己排到候选末尾"
+width = 160
+options = [
+    { value = "0", label = "关闭" },
+    { value = "2", label = "一、二级简码" },
+    { value = "3", label = "全部简码" },
+]
+
 # 词频调整
 [[items]]
 key = "schema.codetable.frequency.enabled"

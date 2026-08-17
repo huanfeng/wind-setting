@@ -77,17 +77,27 @@ const SPEC_BEHAVIOR_FIELDS: &[&str] = &[
     // z 的另一个身份（引导键）。与 z_key_repeat 同为用户偏好、且同样按方案覆盖——
     // z 是不是死码取决于这张码表，故必须逐方案可调。
     "z_key_action",
+    // 出简让全的档位。按方案覆盖的理由是「短码首选 = 简码」这个前提只对五笔这类
+    // 前缀式简码成立，别的码表可以在自己的方案里关掉。
+    "short_code_yield_level",
 ];
 
-/// 一个方案级配置项的工作态信号。三种形态对应 manifest 的 toggle / number / select。
+/// 一个方案级配置项的工作态信号。三种形态对应 manifest 的
+/// toggle / number / select + number_select。
 #[derive(Clone)]
 pub enum CtSig {
     Bool(Signal<bool>),
     Num(Signal<f64>),
     /// 下拉：信号存的是**索引**，写回时映射回 `values[idx]`。
+    ///
+    /// `numeric` 区分 manifest 的 `select` 与 `number_select`：两者的 options 都把 value
+    /// 写成字符串，但后者对应的 core 字段是整数（`short_code_yield_level: Option<usize>`）。
+    /// 原样写字符串会让 TOML 落一个 `"3"`，core 反序列化 usize 直接失败——与下面
+    /// `Num` 那条「整数形态回整数」是同一族陷阱的另一个入口。
     Sel {
         sig: Signal<usize>,
         values: Rc<Vec<String>>,
+        numeric: bool,
     },
 }
 
@@ -116,9 +126,19 @@ impl CtSig {
                     Value::from(v)
                 }
             }
-            CtSig::Sel { sig, values } => values
+            CtSig::Sel {
+                sig,
+                values,
+                numeric,
+            } => values
                 .get(sig.get())
-                .map(|v| Value::String(v.clone()))
+                .map(|v| {
+                    if *numeric {
+                        v.parse::<i64>().map(Value::from).unwrap_or(Value::Null)
+                    } else {
+                        Value::String(v.clone())
+                    }
+                })
                 .unwrap_or(Value::Null),
         }
     }
@@ -166,14 +186,24 @@ impl CtFields {
             let sig = match item.typ.as_str() {
                 "toggle" => CtSig::Bool(signal(cur.and_then(|v| v.as_bool()).unwrap_or(false))),
                 "number" => CtSig::Num(signal(cur.and_then(|v| v.as_f64()).unwrap_or(0.0))),
-                "select" => {
+                "select" | "number_select" => {
+                    let numeric = item.typ == "number_select";
                     let values: Vec<String> =
                         item.options.iter().map(|o| o.value.clone()).collect();
-                    let s = cur.and_then(|v| v.as_str()).unwrap_or("");
-                    let idx = values.iter().position(|v| v == s).unwrap_or(0);
+                    // 生效值的 JSON 形态随类型不同（select 是字符串、number_select 是数字），
+                    // 但 options 的 value 一律是字符串——统一转成字符串再比，避免两边形态错位
+                    // 导致恒定落到 idx 0（那会让「当前档位」在方案对话框里永远显示成第一项）。
+                    let s = if numeric {
+                        cur.and_then(|v| v.as_i64()).map(|n| n.to_string())
+                    } else {
+                        cur.and_then(|v| v.as_str()).map(str::to_string)
+                    }
+                    .unwrap_or_default();
+                    let idx = values.iter().position(|v| v == &s).unwrap_or(0);
                     CtSig::Sel {
                         sig: signal(idx),
                         values: Rc::new(values),
+                        numeric,
                     }
                 }
                 // 其余控件类型方案级用不到；出现即跳过（不渲染也不落盘），
@@ -242,7 +272,7 @@ impl CtFields {
                 item.step.unwrap_or(1.0),
             )
             .width(CTRL_W),
-            CtSig::Sel { sig, values } => {
+            CtSig::Sel { sig, values, .. } => {
                 let labels: Vec<String> = values
                     .iter()
                     .map(|v| {
@@ -482,7 +512,7 @@ mod tests {
         );
 
         match sigs.get("schema.codetable.frequency.strategy") {
-            Some(CtSig::Sel { sig, values }) => {
+            Some(CtSig::Sel { sig, values, .. }) => {
                 assert_eq!(values[sig.get()], "position", "下拉初值应落在生效项上");
             }
             _ => panic!("strategy 应是 select"),
@@ -490,6 +520,29 @@ mod tests {
         match sigs.get("schema.codetable.frequency.protect_top_n_len1") {
             Some(CtSig::Num(s)) => assert_eq!(s.get(), 7.0),
             _ => panic!("protect_top_n_len1 应是 number"),
+        }
+    }
+
+    /// 数值下拉（`number_select`）的初值按**数字**匹配，写回也是数字。
+    ///
+    /// 两侧都会静默出错，故必须一并断言：
+    /// - 初值：生效值是 JSON 数字而 options 的 value 是字符串，比对时不转形态就恒落 idx 0
+    ///   ——界面显示「关闭」，用户以为自己没开过；
+    /// - 写回：`Sel` 原本恒写 `Value::String`，落进 TOML 是 `"3"`，core 的
+    ///   `Option<usize>` 反序列化直接失败。UI 上两者都看不出来。
+    #[test]
+    fn number_select_round_trips_as_an_integer() {
+        let m = manifest();
+        let eff = json!({ "short_code_yield_level": 2 });
+        let f = CtFields::default();
+        f.seed(&m, &eff);
+        let key = "schema.codetable.short_code_yield_level";
+        match f.sigs.borrow().get(key) {
+            Some(s @ CtSig::Sel { sig, values, .. }) => {
+                assert_eq!(values[sig.get()], "2", "数值下拉初值应落在生效档位上");
+                assert_eq!(s.value(), json!(2), "写回必须是整数，不是字符串 \"2\"");
+            }
+            _ => panic!("{key} 应是 number_select"),
         }
     }
 

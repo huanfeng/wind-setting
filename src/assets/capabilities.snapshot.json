@@ -65,6 +65,11 @@
       "type": "bool"
     },
     {
+      "default": 3,
+      "key": "schema.codetable.short_code_yield_level",
+      "type": "int"
+    },
+    {
       "default": true,
       "key": "schema.codetable.z_key_repeat",
       "type": "bool"

@@ -195,6 +195,7 @@
    "input_chars": "",
    "leading_chars": "",
    "punct_commit": true,
+   "short_code_yield_level": 3,
    "show_code_hint": true,
    "single_code_complete": true,
    "single_code_input": false,
