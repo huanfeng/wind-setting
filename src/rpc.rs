@@ -952,6 +952,29 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }
         "phrase.import" => json!({ "imported": 0, "skipped": 0 }),
         "phrase.resetSystem" => json!({ "ok": true, "changed": 0 }),
+        // 快捷输入格式表。夹具刻意覆盖三种状态：普通行、被停用的行（`moveIndex` 为 null，
+        // 调序按钮应置灰）、以及调整过的行（`adjusted` 为真，「恢复此条」才可点）。
+        // 只给两个类别即可——UI 侧的类别集是从数据里现取的，不写死五个。
+        "quick.list" => json!([
+            { "kind": "date", "id": "date.cn", "text": "$Y年$M月$D日", "displayPos": 1,
+              "moveIndex": 0, "enabled": true, "adjusted": false, "sample": "2026年8月17日" },
+            { "kind": "date", "id": "date.iso", "text": "$YYYY-$MM-$DD", "displayPos": 2,
+              "moveIndex": 1, "enabled": true, "adjusted": true, "sample": "2026-08-17" },
+            { "kind": "date", "id": "date.basic", "text": "$YYYY$MM$DD", "displayPos": 3,
+              "moveIndex": null, "enabled": false, "adjusted": true, "sample": "20260817" },
+            { "kind": "number", "id": "number.amount", "text": "$AMT", "displayPos": 1,
+              "moveIndex": 0, "enabled": true, "adjusted": false, "sample": "壹仟贰佰叁拾肆元伍角整" }
+        ]),
+        "quick.move" | "quick.setEnabled" | "quick.resetEntry" | "quick.resetKind" => {
+            json!({ "ok": true })
+        }
+        "quick.export" => json!({
+            "content": "# WindInput 快捷输入 · 用户设置\n\n[[adjust]]\nkind = 'date'\ndisabled = ['date.basic']\n"
+        }),
+        "quick.previewImport" => {
+            json!({ "moved": 1, "disabled": 1, "ignoredFormats": 0, "skipped": [], "kinds": ["date"] })
+        }
+        "quick.import" => json!({ "moved": 1, "disabled": 1, "ignoredFormats": 0, "skipped": [] }),
         "temp.list" => json!([
             { "code": "nihao", "text": "你好", "count": 3 },
             { "code": "women", "text": "我们", "count": 7 }

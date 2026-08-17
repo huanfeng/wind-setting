@@ -228,10 +228,12 @@ enum PendingAction {
     ResetDefault,
 }
 
-/// 当前数据域的类型（短语域或方案 kind）。
+/// 当前数据域的类型（全局域或方案 kind）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DomainKind {
     Phrase,
+    /// 快捷输入格式表。**全局域**（与方案无关：core 那张表的键只到格式类别）。
+    QuickFormat,
     Pinyin,
     Codetable,
     Mixed,
@@ -239,6 +241,33 @@ pub enum DomainKind {
     /// 挂上去永远是空表。其余（用户词库/词频/候选调整）都有。
     English,
     Other,
+}
+
+/// 全局域（不按方案）在域列表里的固定槽位；方案域从 [`GLOBAL_DOMAINS`] 起算。
+///
+/// ⚠️ 此前只有一个全局域，于是 `domain - 1` 这个偏移在四处各手写一遍。加第二个全局域时
+/// **漏改任何一处，那处就整体错位一格**——选「五笔86」却看到拼音的数据，而且不报错、
+/// 不 panic。故域下标一律经 [`domain_slot`] 解析，不再手写下标算术。
+pub(crate) const DOMAIN_PHRASE: usize = 0;
+pub(crate) const DOMAIN_QUICK: usize = 1;
+pub(crate) const GLOBAL_DOMAINS: usize = 2;
+
+/// 域下标的语义。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DomainSlot {
+    Phrase,
+    QuickFormat,
+    /// 折叠后的方案域下标（**已减去全局槽位**，可直接索引 `folded_domains()`）。
+    Schema(usize),
+}
+
+/// 域下标 → 语义。越界一律当方案域（由调用方 `get()` 兜空）。
+pub fn domain_slot(domain: usize) -> DomainSlot {
+    match domain {
+        DOMAIN_PHRASE => DomainSlot::Phrase,
+        DOMAIN_QUICK => DomainSlot::QuickFormat,
+        d => DomainSlot::Schema(d - GLOBAL_DOMAINS),
+    }
 }
 
 /// 某类数据域有哪些子标签——**全页唯一真值**。
@@ -260,6 +289,8 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
     use LogicalTab::*;
     match kind {
         DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
+        // 快捷输入只有一张表（五个类别在同一列表里靠「类别」列区分，排序是组内语义）。
+        DomainKind::QuickFormat => vec![QuickFormat],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -418,16 +449,14 @@ impl DictManagerState {
 
     // ── 导航解析 ─────────────────────────────────────────────
 
-    /// 指定数据域的类型（0 = 快捷短语）。
+    /// 指定数据域的类型（前两槽是全局域，见 [`domain_slot`]）。
     pub fn domain_kind_at(&self, domain: usize) -> DomainKind {
-        if domain == 0 {
-            return DomainKind::Phrase;
-        }
-        match self
-            .folded_domains()
-            .get(domain - 1)
-            .map(|e| e.kind.as_str())
-        {
+        let i = match domain_slot(domain) {
+            DomainSlot::Phrase => return DomainKind::Phrase,
+            DomainSlot::QuickFormat => return DomainKind::QuickFormat,
+            DomainSlot::Schema(i) => i,
+        };
+        match self.folded_domains().get(i).map(|e| e.kind.as_str()) {
             Some("pinyin") => DomainKind::Pinyin,
             Some("codetable") => DomainKind::Codetable,
             Some("mixed") => DomainKind::Mixed,
@@ -455,13 +484,15 @@ impl DictManagerState {
         self.tabs_for_domain_at(self.domain.get())
     }
 
-    /// 指定数据域的展示名（0 = "快捷短语"，其余取折叠域标签，如 "五笔86 · 码表"）。
+    /// 指定数据域的展示名（两个全局域各有固定名，其余取折叠域标签，如 "五笔86 · 码表"）。
     pub fn domain_label_at(&self, domain: usize) -> String {
-        if domain == 0 {
-            return "快捷短语".to_string();
-        }
+        let i = match domain_slot(domain) {
+            DomainSlot::Phrase => return "快捷短语".to_string(),
+            DomainSlot::QuickFormat => return "快捷输入".to_string(),
+            DomainSlot::Schema(i) => i,
+        };
         self.folded_domains()
-            .get(domain - 1)
+            .get(i)
             .map(|e| e.label.clone())
             .unwrap_or_default()
     }
@@ -483,22 +514,21 @@ impl DictManagerState {
         spec_for(self.current_category())
     }
 
-    /// 当前作用域方案 id（短语域返回 None；拼音域返回代表方案 id）。
+    /// 当前作用域方案 id（**两个全局域都返回 None**；拼音域返回代表方案 id）。
     pub fn current_schema_id(&self) -> Option<String> {
-        let d = self.domain.get();
-        if d == 0 {
+        let DomainSlot::Schema(i) = domain_slot(self.domain.get()) else {
             return None;
-        }
+        };
         self.folded_domains()
-            .get(d - 1)
+            .get(i)
             .map(|e| e.rep_schema_id.clone())
     }
 
     // ── 程序化定位（命令行深链 / 加词小窗）─────────────────────
 
-    /// 把外部传入的方案标识解析为数据域下标（0 = 快捷短语，≥1 = 折叠后的方案域）。
+    /// 把外部传入的方案标识解析为数据域下标（全局域用固定关键字，其余为折叠后的方案域）。
     ///
-    /// 按序尝试：`phrase` → 精确方案 id → 引擎族名（`pinyin`/`codetable`/`mixed`）
+    /// 按序尝试：`phrase` / `quick` → 精确方案 id → 引擎族名（`pinyin`/`codetable`/`mixed`）
     /// → 已启用但被折叠掉的拼音变体（如双拼 id）。全不中返回 `None`。
     ///
     /// 严格匹配，刻意不做「未知即拼音」的猜测：命令行里 `--schema` 拼错时，
@@ -510,15 +540,18 @@ impl DictManagerState {
             return None;
         }
         if s.eq_ignore_ascii_case("phrase") {
-            return Some(0);
+            return Some(DOMAIN_PHRASE);
+        }
+        if s.eq_ignore_ascii_case("quick") {
+            return Some(DOMAIN_QUICK);
         }
         let domains = self.folded_domains();
         if let Some(i) = domains.iter().position(|d| d.rep_schema_id == s) {
-            return Some(i + 1);
+            return Some(i + GLOBAL_DOMAINS);
         }
         let kind = s.to_ascii_lowercase();
         if let Some(i) = domains.iter().position(|d| d.kind == kind) {
-            return Some(i + 1);
+            return Some(i + GLOBAL_DOMAINS);
         }
         // 折叠掉的拼音变体：id 在方案列表里且引擎为拼音 → 落拼音域代表。
         let is_pinyin_variant = self
@@ -530,7 +563,7 @@ impl DictManagerState {
             return domains
                 .iter()
                 .position(|d| d.kind == "pinyin")
-                .map(|i| i + 1);
+                .map(|i| i + GLOBAL_DOMAINS);
         }
         None
     }
@@ -605,9 +638,12 @@ impl DictManagerState {
         note
     }
 
-    /// 数据域下拉选项标签（首项"快捷短语"，其后折叠后各域）。
+    /// 数据域下拉选项标签（先两个全局域，其后折叠后各方案域）。
+    ///
+    /// 顺序必须与 [`domain_slot`] 的槽位一致——这里多写一项或少写一项，下拉的每一项都会
+    /// 指向隔壁的域。
     pub fn domain_labels(&self) -> Vec<String> {
-        let mut v = vec!["快捷短语".to_string()];
+        let mut v = vec!["快捷短语".to_string(), "快捷输入".to_string()];
         for e in self.folded_domains() {
             v.push(e.label);
         }
@@ -615,9 +651,12 @@ impl DictManagerState {
     }
 
     /// 数据域下拉的富内容选项：方案名为主文本、引擎类型为尾随徽章（拼音=强调色，其余=中性）。
-    /// 首项"快捷短语"标"全局"徽章。与 [`Self::domain_labels`] 同序。
+    /// 两个全局域标"全局"徽章。与 [`Self::domain_labels`] 同序。
     pub fn domain_rich_items(&self) -> Vec<DropdownItem> {
-        let mut v = vec![DropdownItem::new("快捷短语").badge("全局", Intent::Neutral)];
+        let mut v = vec![
+            DropdownItem::new("快捷短语").badge("全局", Intent::Neutral),
+            DropdownItem::new("快捷输入").badge("全局", Intent::Neutral),
+        ];
         for e in self.folded_domains() {
             // 折叠标签形如 "五笔86 · 码表"：主文本取方案名（· 前段），徽章取引擎类型。
             let name = e
@@ -850,23 +889,24 @@ impl DictManagerState {
         *self.schemas.borrow_mut() = schemas.to_vec();
         self.domain_items.set(self.domain_labels());
         self.domain_rich_items.set(self.domain_rich_items());
-        // 导入导出的目标下拉与域下拉同源，只是去掉首项「快捷短语」（短语走原生对话框，
-        // 不是这套多类型导入的目标）。方案集变了就要重建，否则目标下拉会停在旧方案上。
+        // 导入导出的目标下拉与域下拉同源，只是去掉两个全局域（它们各有自己的导入导出流：
+        // 短语走原生对话框、快捷输入走 quick.* 全局 RPC，都不是这套按方案分段的目标）。
+        // 方案集变了就要重建，否则目标下拉会停在旧方案上。
         self.io_target_items.set(self.io_target_item_list());
         if self.io_target.get() >= self.folded_domains().len() {
             self.io_target.set(0);
         }
         // 域集合变化后，按下标记忆的子标签可能对不上位，清空避免错位恢复。
         self.sub_tab_memory.borrow_mut().clear();
-        if self.domain.get() > self.folded_domains().len() {
-            self.domain.set(0);
+        if self.domain.get() >= self.domain_count() {
+            self.domain.set(DOMAIN_PHRASE);
         }
         self.last_domain.set(self.domain.get());
     }
 
-    /// 数据域总数（快捷短语 + 折叠后各方案域）。
+    /// 数据域总数（两个全局域 + 折叠后各方案域）。
     pub fn domain_count(&self) -> usize {
-        1 + self.folded_domains().len()
+        GLOBAL_DOMAINS + self.folded_domains().len()
     }
 
     /// 切到上一个数据域（循环，用于下拉右侧 ‹ 按钮）。
@@ -1043,14 +1083,204 @@ impl DictManagerState {
     }
 
     /// 短语启用/停用开关。
-    pub fn do_set_enabled(&self, code: &str, text: &str, enabled: bool) {
+    /// 启用 / 停用一行。
+    ///
+    /// 主键按类别分流：短语是 `(code, text)`，快捷输入是 `(kind, id)`。后者的 `text` 是模板、
+    /// 用户可以改，认不了人；而格式 id 只在**同类内**唯一（高级用户手写 `system.quick.toml`
+    /// 时不强制带 kind 前缀），跨类可能重名，故必须带上 kind。
+    pub fn do_set_enabled(&self, row: &WordRow, enabled: bool) {
         let spec = self.current_spec();
         let mut p = self.scoped_params();
-        p.insert("code".into(), json!(code));
-        p.insert("text".into(), json!(text));
+        if spec.category == WordCategory::QuickFormat {
+            p.insert("kind".into(), json!(row.kind));
+            p.insert("id".into(), json!(row.code));
+        } else {
+            p.insert("code".into(), json!(row.code));
+            p.insert("text".into(), json!(row.text));
+        }
         p.insert("enabled".into(), json!(enabled));
         let msg = if enabled { "已启用" } else { "已停用" };
         self.write(spec.rpc.set_enabled, Value::Object(p), msg);
+    }
+
+    // ── 快捷输入格式（全局域）────────────────────────────────
+
+    /// 相对调序的目标下标；`None` = 这一行动不了。
+    ///
+    /// ★★ 基准是 [`WordRow::move_index`]（**候选内**下标），**不是列表行号**
+    /// （[`WordRow::position`] / `displayPos`）。停用项占着行号却不在候选里，
+    /// 拿行号算目标位置会让「上移一位」跳过好几条——而这种错在界面上极难看出来，
+    /// 故抽成纯函数由测试钉住。
+    ///
+    /// 两种 `None`：停用（没有 move_index，得先启用）与已在首位（上移无意义）。
+    pub(crate) fn quick_move_target(row: &WordRow, delta: i64) -> Option<usize> {
+        let cur = row.move_index?;
+        if delta < 0 && cur == 0 {
+            return None;
+        }
+        Some((cur as i64 + delta).max(0) as usize)
+    }
+
+    /// 快捷输入写操作的 `(method, params)`。主键 `(kind, id)` + 附加参数。
+    pub(crate) fn quick_call(
+        &self,
+        method: &'static str,
+        row: &WordRow,
+        extra: &[(&str, Value)],
+    ) -> (&'static str, Value) {
+        let mut p = serde_json::Map::new();
+        p.insert("kind".into(), json!(row.kind));
+        p.insert("id".into(), json!(row.code));
+        for (k, v) in extra {
+            p.insert((*k).to_string(), v.clone());
+        }
+        (method, Value::Object(p))
+    }
+
+    /// 快捷输入：相对调序（`delta` = -1 上移 / +1 下移）。
+    pub fn do_quick_move(&self, row: &WordRow, delta: i64) {
+        let Some(target) = Self::quick_move_target(row, delta) else {
+            // 停用项要给出原因；已在首位则静默（按钮此时也是灰的，不该弹提示）。
+            if row.move_index.is_none() {
+                self.notify_info("已停用的格式不参与排序，请先启用");
+            }
+            return;
+        };
+        let msg = if delta < 0 { "已上移" } else { "已下移" };
+        let (method, params) = self.quick_call(
+            self.current_spec().rpc.move_to,
+            row,
+            &[("index", json!(target))],
+        );
+        self.write(method, params, msg);
+    }
+
+    /// 快捷输入：移到本类首位。
+    pub fn do_quick_move_top(&self, row: &WordRow) {
+        if row.move_index.is_none() {
+            self.notify_info("已停用的格式不参与排序，请先启用");
+            return;
+        }
+        let (method, params) =
+            self.quick_call(self.current_spec().rpc.move_to, row, &[("index", json!(0))]);
+        self.write(method, params, "已置顶");
+    }
+
+    /// 快捷输入：恢复这一条的默认（清掉它的调序与停用）。
+    pub fn do_quick_reset_entry(&self, row: &WordRow) {
+        let (method, params) = self.quick_call(self.current_spec().rpc.reset_entry, row, &[]);
+        self.write(method, params, "已恢复此条");
+    }
+
+    /// 快捷输入：恢复**全部**默认（对每个类别各调一次 `quick.resetKind`）。
+    ///
+    /// 类别取自当前列表里**实际出现的** kind，不写死那五个：core 侧 kind 是解析器白名单，
+    /// 将来新增一类，这里自动跟上；写死列表则会漏掉新类别，症状是「点了恢复默认，
+    /// 偏偏有一类还保持着旧顺序」。
+    pub fn do_quick_reset_all(&self) {
+        let kinds = self.quick_kinds_present();
+        let method = self.current_spec().rpc.reset_default;
+        let mut failed = 0usize;
+        for k in &kinds {
+            if rpc::call_core(method, &json!({ "kind": k })).is_err() {
+                failed += 1;
+            }
+        }
+        self.reload();
+        if failed == 0 {
+            self.notify_ok("已恢复全部默认");
+        } else {
+            self.notify_err(&format!("{failed}/{} 个类别恢复失败", kinds.len()));
+        }
+    }
+
+    /// 当前列表里出现过的格式类别（保序去重）。
+    ///
+    /// 取自数据而非写死那五个：core 侧 kind 是解析器白名单，将来新增一类，这里自动跟上。
+    pub(crate) fn quick_kinds_present(&self) -> Vec<String> {
+        let mut kinds: Vec<String> = Vec::new();
+        for r in self.rows.borrow().iter() {
+            if !r.kind.is_empty() && !kinds.contains(&r.kind) {
+                kinds.push(r.kind.clone());
+            }
+        }
+        kinds
+    }
+
+    /// 快捷输入：导出用户改动到文件。
+    ///
+    /// 导出的是**改动**（调序 / 停用），不是完整格式表——换机导入后，出厂新增的写法
+    /// 仍会自然生效。文件是 TOML，可手工编辑后再导入。
+    pub fn do_quick_export(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_save_file(
+            PickDialog::new()
+                .title("导出 · 快捷输入")
+                .file_name(Self::export_file_name_ext("quick-input", "toml"))
+                .filter("TOML", &["toml"]),
+            move |path| {
+                let Some(path) = path else { return }; // 用户取消
+                match rpc::call_core("quick.export", &json!({})) {
+                    Ok(v) => {
+                        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        match std::fs::write(&path, content) {
+                            Ok(_) => state.notify_ok("已导出"),
+                            Err(e) => state.notify_err(&format!("写文件失败: {e}")),
+                        }
+                    }
+                    Err(e) => state.notify_err(&format!("导出失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 快捷输入：从文件导入用户改动（合并）。
+    pub fn do_quick_import(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_pick_file(
+            PickDialog::new()
+                .title("导入 · 快捷输入")
+                .filter("TOML", &["toml"]),
+            move |path| {
+                let Some(path) = path else { return };
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        state.notify_err(&format!("读文件失败: {e}"));
+                        return;
+                    }
+                };
+                match rpc::call_core("quick.import", &json!({ "content": content })) {
+                    Ok(v) => {
+                        state.reload();
+                        state.notify_ok(&Self::quick_import_summary(&v));
+                    }
+                    Err(e) => state.notify_err(&format!("导入失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 导入结果的一句话摘要。
+    ///
+    /// 跳过项与「已忽略的自定义条目」**必须出现在文案里**：用户看到「导入成功」却少了规则，
+    /// 无从判断是文件坏了还是程序吃了。core 那边如实上报，这里就不能咽下去。
+    fn quick_import_summary(v: &Value) -> String {
+        let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let skipped = v
+            .get("skipped")
+            .and_then(|x| x.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let mut s = format!("已导入：调序 {} · 停用 {}", n("moved"), n("disabled"));
+        let ignored = n("ignoredFormats");
+        if ignored > 0 {
+            s.push_str(&format!("；自定义条目 {ignored} 条本版暂不支持，已忽略"));
+        }
+        if skipped > 0 {
+            s.push_str(&format!("；{skipped} 条无法识别已跳过"));
+        }
+        s
     }
 
     /// 清空当前类别：有 clear RPC 走之；候选调整无 clear，循环撤销所有规则。
@@ -1088,6 +1318,10 @@ impl DictManagerState {
     /// 恢复默认短语。
     pub fn do_reset_default(&self) {
         let spec = self.current_spec();
+        // 快捷输入的「恢复默认」是逐类别的（core 那张表按 kind 索引），文案也不能写死短语。
+        if spec.category == WordCategory::QuickFormat {
+            return self.do_quick_reset_all();
+        }
         self.write(spec.rpc.reset_default, json!({}), "已恢复默认短语");
     }
 
@@ -1184,7 +1418,9 @@ impl DictManagerState {
         };
         let (domain, sub) = domain
             .and_then(|d| userdict_sub(d).map(|s| (d, s)))
-            .or_else(|| (1..self.domain_count()).find_map(|d| userdict_sub(d).map(|s| (d, s))))
+            .or_else(|| {
+                (GLOBAL_DOMAINS..self.domain_count()).find_map(|d| userdict_sub(d).map(|s| (d, s)))
+            })
             // 无任何方案域：退化到短语域，仍打开对话框（提交会因类别不支持而报错）
             .unwrap_or((0, 0));
 
@@ -1468,8 +1704,13 @@ impl DictManagerState {
 
     /// 导出的默认文件名：`<来源>-<时间戳>.wdict.yaml`。短语与方案级导出共用同一套命名。
     fn export_file_name(source: &str) -> String {
+        Self::export_file_name_ext(source, "wdict.yaml")
+    }
+
+    /// 同上，但指定扩展名——快捷输入导出的是 TOML，不是 wdict。
+    fn export_file_name_ext(source: &str, ext: &str) -> String {
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        format!("{source}-{stamp}.wdict.yaml")
+        format!("{source}-{stamp}.{ext}")
     }
 
     /// 导入调用参数（内容来自文件）。
@@ -1542,19 +1783,19 @@ impl DictManagerState {
 
     /// 子标签行「导入」入口：短语域走原生对话框；方案域打开导入对话框。
     pub fn do_import(&self, ctx: &mut EventCtx) {
-        if matches!(self.domain_kind(), DomainKind::Phrase) {
-            self.do_import_phrases(ctx);
-        } else {
-            self.open_import_dialog();
+        match self.domain_kind() {
+            DomainKind::Phrase => self.do_import_phrases(ctx),
+            DomainKind::QuickFormat => self.do_quick_import(ctx),
+            _ => self.open_import_dialog(),
         }
     }
 
     /// 子标签行「导出」入口：短语域走原生对话框；方案域打开导出对话框。
     pub fn do_export(&self, ctx: &mut EventCtx) {
-        if matches!(self.domain_kind(), DomainKind::Phrase) {
-            self.do_export_phrases(ctx);
-        } else {
-            self.open_export_dialog();
+        match self.domain_kind() {
+            DomainKind::Phrase => self.do_export_phrases(ctx),
+            DomainKind::QuickFormat => self.do_quick_export(ctx),
+            _ => self.open_export_dialog(),
         }
     }
 
@@ -1594,7 +1835,9 @@ impl DictManagerState {
             DomainKind::English => &["userWords", "freq", "shadow"],
             // 混输方案自身只有候选调整——五笔/拼音词条落在它的成员方案里。
             DomainKind::Mixed => &["shadow"],
-            DomainKind::Phrase => &[],
+            // 两个全局域都不参与这套「按方案分段」的导入导出：短语走原生对话框，
+            // 快捷输入走 quick.export/import（整份用户改动，无分段可选）。
+            DomainKind::Phrase | DomainKind::QuickFormat => &[],
         }
     }
 
@@ -1610,7 +1853,9 @@ impl DictManagerState {
     /// 子标签行「导入/导出」按钮是否显示：方案域（有方案）或短语域。
     pub fn io_entry_visible(&self) -> bool {
         match self.domain_kind() {
-            DomainKind::Phrase => true,
+            // 两个全局域各有自己的导入导出流（短语走 phrase.*、快捷输入走 quick.*），
+            // 都不依赖「当前有没有方案」。
+            DomainKind::Phrase | DomainKind::QuickFormat => true,
             _ => self.current_schema_id().is_some(),
         }
     }
@@ -1620,6 +1865,7 @@ impl DictManagerState {
     pub fn io_entry_enabled(&self) -> bool {
         match self.domain_kind() {
             DomainKind::Phrase => self.current_category() == WordCategory::PhraseUser,
+            DomainKind::QuickFormat => true,
             _ => self.current_schema_id().is_some(),
         }
     }
@@ -1640,7 +1886,7 @@ impl DictManagerState {
 
     /// 目标方案的引擎类型（无方案时按 `Other` 从宽，不隐藏数据）。
     pub fn io_target_kind(&self) -> DomainKind {
-        match self.io_target.get().checked_add(1) {
+        match self.io_target.get().checked_add(GLOBAL_DOMAINS) {
             Some(d) if d < self.domain_count() => self.domain_kind_at(d),
             _ => DomainKind::Other,
         }
@@ -2238,7 +2484,7 @@ impl DictManagerState {
         ) {
             Ok(v) => {
                 self.navigate_to(
-                    self.io_target.get() + 1,
+                    self.io_target.get() + GLOBAL_DOMAINS,
                     self.landing_sub(LogicalTab::UserDict),
                 );
                 self.reload();
@@ -2254,7 +2500,7 @@ impl DictManagerState {
 
     /// 目标域里 `tab` 对应的子标签下标（该域没有这一类时 None）。
     fn landing_sub(&self, tab: LogicalTab) -> Option<usize> {
-        self.tabs_for_domain_at(self.io_target.get() + 1)
+        self.tabs_for_domain_at(self.io_target.get() + GLOBAL_DOMAINS)
             .iter()
             .position(|x| *x == tab)
     }
@@ -2294,7 +2540,7 @@ impl DictManagerState {
                 // 导入目标可能不是当前正看着的域（自动匹配或手动改过）。留在原地只会让人
                 // 再次得出"导了但没有"的结论——把视图带到刚写入的方案与类型上，眼见为实。
                 let sub = landing.and_then(|t| self.landing_sub(t));
-                self.navigate_to(self.io_target.get() + 1, sub);
+                self.navigate_to(self.io_target.get() + GLOBAL_DOMAINS, sub);
                 self.reload();
                 self.notify_ok(&Self::format_import_result(&v));
             }
@@ -2485,18 +2731,196 @@ mod tests {
         st
     }
 
+    // ───────── 快捷输入格式（全局域）─────────
+
+    /// 域下标 → 语义的三段映射。**本次改动的全部风险都在这里**：偏移错一格，
+    /// 用户选 A 方案就会看到 B 方案的数据，而且不 panic、不报错。
+    #[test]
+    fn domain_slot_maps_two_global_slots_then_schemas() {
+        assert_eq!(domain_slot(DOMAIN_PHRASE), DomainSlot::Phrase);
+        assert_eq!(domain_slot(DOMAIN_QUICK), DomainSlot::QuickFormat);
+        // 方案域从 GLOBAL_DOMAINS 起，且**已减去**全局槽位（可直接索引 folded_domains）。
+        assert_eq!(domain_slot(GLOBAL_DOMAINS), DomainSlot::Schema(0));
+        assert_eq!(domain_slot(GLOBAL_DOMAINS + 3), DomainSlot::Schema(3));
+        // 两个全局槽位必须互不相同且相邻——写成同一个值会让快捷输入永远打不开。
+        assert_ne!(DOMAIN_PHRASE, DOMAIN_QUICK);
+        assert_eq!(GLOBAL_DOMAINS, DOMAIN_QUICK + 1);
+    }
+
+    /// 快捷输入是**全局**域：没有 schemaId，参数里也不该出现它。
+    ///
+    /// 带上 schemaId 的后果不是报错而是「core 侧忽略掉、但列表看起来正常」，
+    /// 直到有人按方案去筛数据才会发现。
+    #[test]
+    fn quick_domain_is_global_and_sends_no_schema_id() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(DOMAIN_QUICK);
+        st.sub_tab.set(0);
+        assert_eq!(st.domain_kind(), DomainKind::QuickFormat);
+        assert_eq!(st.current_category(), WordCategory::QuickFormat);
+        assert_eq!(st.current_schema_id(), None, "全局域没有方案");
+        assert_eq!(st.domain_label_at(DOMAIN_QUICK), "快捷输入");
+        // 只有一个子标签（五个类别在同一张表里靠「类别」列区分）
+        assert_eq!(st.tabs_for_domain(), vec![LogicalTab::QuickFormat]);
+        let p = st.build_list_params();
+        assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
+        // 导入导出入口可用（走 quick.* 全局流，不依赖有没有方案）
+        assert!(st.io_entry_visible() && st.io_entry_enabled());
+    }
+
+    /// ★★ 调序基准是**候选内下标**（`move_index`），不是列表行号（`position`）。
+    ///
+    /// 夹具刻意让两者不同（行号 5、候选内第 1 位）：拿行号算目标位置会得到 4/6，
+    /// 而正确答案是 0/2。停用项占着行号却不在候选里，这个差值就是「上移一位跳过
+    /// 好几条」的成因——界面上极难看出，故在这里钉死。
+    #[test]
+    fn quick_move_target_uses_candidate_index_not_row_number() {
+        let row = WordRow {
+            code: "date.lunar".into(),
+            kind: "date".into(),
+            position: 5,         // 列表行号（displayPos）
+            move_index: Some(1), // 候选内下标
+            enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(DictManagerState::quick_move_target(&row, -1), Some(0));
+        assert_eq!(DictManagerState::quick_move_target(&row, 1), Some(2));
+    }
+
+    /// 两种「动不了」：已在首位（上移无意义）与已停用（不在候选里，得先启用）。
+    #[test]
+    fn quick_move_target_rejects_first_row_and_disabled() {
+        let first = WordRow {
+            move_index: Some(0),
+            enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            DictManagerState::quick_move_target(&first, -1),
+            None,
+            "首位不能再上移"
+        );
+        assert_eq!(
+            DictManagerState::quick_move_target(&first, 1),
+            Some(1),
+            "但能下移"
+        );
+
+        let disabled = WordRow {
+            position: 9,      // 有行号
+            move_index: None, // 却不在候选里
+            enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(DictManagerState::quick_move_target(&disabled, -1), None);
+        assert_eq!(
+            DictManagerState::quick_move_target(&disabled, 1),
+            None,
+            "停用项两个方向都动不了，且不能拿行号 9 兜底"
+        );
+    }
+
+    /// 写操作的主键是 `(kind, id)`，不是 `(code, text)`。
+    ///
+    /// 格式 id 只在**同类内**唯一（高级用户手写 system.quick.toml 时不强制带 kind 前缀），
+    /// 漏了 kind 就可能改到另一类的同名条目上。
+    #[test]
+    fn quick_write_keys_on_kind_and_id() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_QUICK);
+        st.sub_tab.set(0);
+        let row = WordRow {
+            code: "date.lunar".into(),
+            text: "农历$LMD".into(),
+            kind: "date".into(),
+            move_index: Some(2),
+            ..Default::default()
+        };
+        let (method, params) = st.quick_call("quick.move", &row, &[("index", json!(1))]);
+        assert_eq!(method, "quick.move");
+        assert_eq!(params["kind"], json!("date"));
+        assert_eq!(params["id"], json!("date.lunar"));
+        assert_eq!(params["index"], json!(1));
+        // 模板是可变的展示内容，绝不能当主键
+        assert!(params.get("text").is_none(), "模板不该作为主键的一部分");
+        assert!(params.get("code").is_none(), "快捷输入用 id 而非 code");
+    }
+
+    /// 「恢复全部默认」的类别集取自**数据**，不写死那五个——core 新增一类时自动跟上。
+    #[test]
+    fn quick_kinds_come_from_data_not_hardcoded() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_QUICK);
+        st.sub_tab.set(0);
+        *st.rows.borrow_mut() = vec![
+            WordRow {
+                kind: "date".into(),
+                ..Default::default()
+            },
+            WordRow {
+                kind: "date".into(),
+                ..Default::default()
+            },
+            WordRow {
+                kind: "number".into(),
+                ..Default::default()
+            },
+            // 假想的将来新增类别：不改代码也应被收进来
+            WordRow {
+                kind: "weekday".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            st.quick_kinds_present(),
+            vec![
+                "date".to_string(),
+                "number".to_string(),
+                "weekday".to_string()
+            ],
+            "保序去重，且不写死类别表"
+        );
+    }
+
+    /// 导入摘要必须**如实报出**跳过与被忽略的条目。
+    ///
+    /// 用户看到「导入成功」却少了规则，无从判断是文件坏了还是程序吃了。
+    #[test]
+    fn quick_import_summary_never_hides_skipped_items() {
+        let clean = json!({ "moved": 3, "disabled": 1, "ignoredFormats": 0, "skipped": [] });
+        let s = DictManagerState::quick_import_summary(&clean);
+        assert!(s.contains('3') && s.contains('1'), "{s}");
+        assert!(!s.contains("跳过"), "干净的导入不该提跳过: {s}");
+
+        let dirty = json!({
+            "moved": 1, "disabled": 0, "ignoredFormats": 2,
+            "skipped": ["条目 x：未知类别 weather", "调整段：未知类别 nope"]
+        });
+        let s = DictManagerState::quick_import_summary(&dirty);
+        assert!(
+            s.contains('2') && s.contains("忽略"),
+            "自定义条目要报出来: {s}"
+        );
+        assert!(s.contains("跳过"), "跳过项要报出来: {s}");
+    }
+
     #[test]
     fn resolve_domain_matches_id_kind_and_folded_pinyin_variant() {
         let st = deep_link_fixture();
         assert_eq!(st.resolve_domain(""), None, "空 = 不指定");
-        assert_eq!(st.resolve_domain("phrase"), Some(0));
-        assert_eq!(st.resolve_domain("wb"), Some(1), "精确方案 id");
-        assert_eq!(st.resolve_domain("quanpin"), Some(2));
-        assert_eq!(st.resolve_domain("codetable"), Some(1), "引擎族名");
-        assert_eq!(st.resolve_domain("pinyin"), Some(2));
+        assert_eq!(st.resolve_domain("phrase"), Some(DOMAIN_PHRASE));
+        assert_eq!(st.resolve_domain("wb"), Some(GLOBAL_DOMAINS), "精确方案 id");
+        assert_eq!(st.resolve_domain("quanpin"), Some(GLOBAL_DOMAINS + 1));
+        assert_eq!(
+            st.resolve_domain("codetable"),
+            Some(GLOBAL_DOMAINS),
+            "引擎族名"
+        );
+        assert_eq!(st.resolve_domain("pinyin"), Some(GLOBAL_DOMAINS + 1));
         assert_eq!(
             st.resolve_domain("ziranma"),
-            Some(2),
+            Some(GLOBAL_DOMAINS + 1),
             "被折叠掉的双拼变体应落到拼音域"
         );
         assert_eq!(
@@ -2531,7 +2955,7 @@ mod tests {
         st.apply_deep_link("wb", Some(LogicalTab::Shadow));
         st.on_nav_changed();
 
-        st.domain.set(2); // 用户切到拼音域
+        st.domain.set(GLOBAL_DOMAINS + 1); // 用户切到拼音域
         st.on_nav_changed();
         assert_eq!(
             st.current_category(),
@@ -2539,7 +2963,7 @@ mod tests {
             "新域无记忆→首项"
         );
 
-        st.domain.set(1); // 切回五笔域
+        st.domain.set(GLOBAL_DOMAINS); // 切回五笔域
         st.on_nav_changed();
         assert_eq!(
             st.current_category(),
@@ -2559,7 +2983,7 @@ mod tests {
             .expect("落空档应给出提示");
         assert!(note.contains("用户词库"), "提示要点名用户要的类型: {note}");
         assert!(note.contains("候选调整"), "提示要说明实际落点: {note}");
-        assert_eq!(st.domain.get(), 3, "域仍按 schema 定位");
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 2, "域仍按 schema 定位");
         assert_eq!(
             st.current_category(),
             WordCategory::Shadow,
@@ -2570,25 +2994,29 @@ mod tests {
     #[test]
     fn deep_link_reports_unknown_schema_and_keeps_domain() {
         let st = deep_link_fixture();
-        st.navigate_to(1, Some(0));
+        st.navigate_to(GLOBAL_DOMAINS, Some(0));
         let note = st.apply_deep_link("typo", None).expect("未知方案应提示");
         assert!(note.contains("typo"), "提示要带上用户输入的原值: {note}");
-        assert_eq!(st.domain.get(), 1, "未找到方案时保持当前域，不乱跳");
+        assert_eq!(
+            st.domain.get(),
+            GLOBAL_DOMAINS,
+            "未找到方案时保持当前域，不乱跳"
+        );
     }
 
     #[test]
     fn deep_link_dimensions_are_independently_optional() {
         let st = deep_link_fixture();
-        st.navigate_to(1, Some(0));
+        st.navigate_to(GLOBAL_DOMAINS, Some(0));
 
         // 只给类型：不改域，只换子标签
         assert_eq!(st.apply_deep_link("", Some(LogicalTab::Freq)), None);
-        assert_eq!(st.domain.get(), 1, "省 --schema 时保持当前域");
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS, "省 --schema 时保持当前域");
         assert_eq!(st.current_category(), WordCategory::Freq);
 
         // 只给方案：切域，子标签沿用该域记忆（新域无记忆则落首项）
         assert_eq!(st.apply_deep_link("pinyin", None), None);
-        assert_eq!(st.domain.get(), 2);
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1);
         assert_eq!(st.current_category(), WordCategory::UserDict);
 
         // 回到五笔域：省 --type 时应恢复到刚才停留的词频
@@ -2616,7 +3044,7 @@ mod tests {
         );
 
         // domain 1 = 第一个方案，子标签 0 = 用户词库
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         assert_eq!(st.current_category(), WordCategory::UserDict);
         assert_eq!(st.current_schema_id().as_deref(), Some("wb"));
@@ -2626,7 +3054,7 @@ mod tests {
         assert_eq!(st.current_category(), WordCategory::Shadow);
 
         // domain 2 = 第二个方案
-        st.domain.set(2);
+        st.domain.set(GLOBAL_DOMAINS + 1);
         assert_eq!(st.current_schema_id().as_deref(), Some("py"));
     }
 
@@ -2641,17 +3069,19 @@ mod tests {
             ],
         );
         let labels = st.domain_labels();
-        assert_eq!(labels[0], "快捷短语");
-        assert_eq!(labels[1], "五笔86 · 码表");
+        // 前两项是全局域（不按方案），方案域从 GLOBAL_DOMAINS 起。
+        assert_eq!(labels[DOMAIN_PHRASE], "快捷短语");
+        assert_eq!(labels[DOMAIN_QUICK], "快捷输入");
+        assert_eq!(labels[GLOBAL_DOMAINS], "五笔86 · 码表");
         // 拼音方案折叠后统一显示"拼音"（不再拼接各方案的 name · 拼音）
-        assert_eq!(labels[2], "拼音");
+        assert_eq!(labels[GLOBAL_DOMAINS + 1], "拼音");
     }
 
     #[test]
     fn build_params_userdict_has_schema_and_paging() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0); // 用户词库
         let p = st.build_list_params();
         assert_eq!(p["schemaId"], json!("wb"));
@@ -2664,7 +3094,7 @@ mod tests {
     fn build_params_userdict_with_search() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.search.set("工".into());
         let p = st.build_list_params();
@@ -2684,7 +3114,7 @@ mod tests {
     fn apply_rows_paged_reads_total_and_builds_list() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0); // 用户词库（分页）
         let v = json!({ "items": [
             { "code": "aaaa", "text": "工", "weight": 0 },
@@ -2717,7 +3147,7 @@ mod tests {
     fn client_sort_reorders_unpaged_rows() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(1); // 临时词库（非分页，列 = 编码/词条/次数）
         st.apply_rows(&json!([
             { "code": "b", "text": "乙", "count": 2 },
@@ -2753,7 +3183,7 @@ mod tests {
     fn paged_sort_params_and_reset_on_nav() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0); // 用户词库（分页）
         st.sort.set(Some(SortKey::desc(2))); // 权重列
         let p = st.build_list_params();
@@ -2782,7 +3212,7 @@ mod tests {
     fn pagination_guards() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.total.set(250);
         *st.offset.borrow_mut() = 0;
@@ -2800,7 +3230,7 @@ mod tests {
     fn delete_call_dict_uses_remove_with_text_and_schema() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0); // 用户词库
         let (method, params) = st.delete_call("aaaa", "工");
         assert_eq!(method, "dict.remove");
@@ -2814,7 +3244,7 @@ mod tests {
     fn delete_call_shadow_uses_remove_rule_with_word() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3); // 候选调整
         let (method, params) = st.delete_call("wm", "我们");
         assert_eq!(method, "shadow.removeRule");
@@ -2949,7 +3379,7 @@ mod tests {
                 schema("mx", "五笔拼音混输", "mixed"),
             ],
         );
-        st.domain.set(2); // 页面停在混输域
+        st.domain.set(GLOBAL_DOMAINS + 1); // 页面停在混输域
         st.io_target.set(1); // 目标也是混输
         assert!(!st.io_type_applicable("userWords"));
         assert!(st.io_type_applicable("shadow"));
@@ -3191,7 +3621,7 @@ mod tests {
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔86", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.search.set("程序".into());
         st.sub_tab.set(1);
@@ -3205,7 +3635,7 @@ mod tests {
     fn empty_hint_distinguishes_no_data_from_no_match() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔86", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         assert_eq!(st.empty_hint(), "暂无数据");
         st.search.set("程序".into());
@@ -3255,7 +3685,7 @@ mod tests {
     fn save_calls_dict_add() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0); // 用户词库
         st.edit_code.set("aaaa".into());
         st.edit_text.set("工".into());
@@ -3273,7 +3703,7 @@ mod tests {
     fn save_calls_dict_edit_weight_only_uses_update() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.open_edit("aaaa", "工", 0, 0);
         st.edit_weight.set("9".into()); // 仅改权重
@@ -3287,7 +3717,7 @@ mod tests {
     fn save_calls_dict_edit_changed_key_removes_then_adds() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.open_edit("aaaa", "工", 0, 0);
         st.edit_text.set("工人".into()); // 词条变更
@@ -3372,7 +3802,7 @@ mod tests {
     fn save_calls_validates_empty() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.edit_code.set(String::new());
         st.edit_text.set(String::new());
@@ -3383,7 +3813,7 @@ mod tests {
     fn save_calls_rejects_non_numeric_weight() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.edit_code.set("aaaa".into());
         st.edit_text.set("工".into());
@@ -3395,7 +3825,7 @@ mod tests {
     fn scoped_category_without_schema_shows_hint() {
         let st = DictManagerState::new();
         // 无方案，强制进入方案域（domain=1 但 schemas 空）
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         assert!(st.current_schema_id().is_none());
         st.reload(); // 应短路为空表 + 提示，不触发有效 rpc
         assert!(st.rows.borrow().is_empty());
@@ -3414,13 +3844,13 @@ mod tests {
             ],
         );
         // 短语域：系统 + 用户
-        st.domain.set(0);
+        st.domain.set(DOMAIN_PHRASE);
         assert_eq!(
             st.tabs_for_domain(),
             vec![LogicalTab::PhraseSystem, LogicalTab::PhraseUser]
         );
         // 码表：四类含候选调整
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         assert_eq!(
             st.tabs_for_domain(),
             vec![
@@ -3432,7 +3862,7 @@ mod tests {
         );
         // 拼音：四类含候选调整。曾是三类——那时拼音下调位被整体屏蔽、规则表恒空；
         // 置顶放开后规则真的会产生，标签必须给，否则用户看不见也删不掉。
-        st.domain.set(2);
+        st.domain.set(GLOBAL_DOMAINS + 1);
         assert_eq!(
             st.tabs_for_domain(),
             vec![
@@ -3443,7 +3873,7 @@ mod tests {
             ]
         );
         // 混输：仅候选调整
-        st.domain.set(3);
+        st.domain.set(GLOBAL_DOMAINS + 2);
         assert_eq!(st.tabs_for_domain(), vec![LogicalTab::Shadow]);
     }
 
@@ -3451,11 +3881,11 @@ mod tests {
     fn current_category_follows_dynamic_tabs() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("mx", "混输", "mixed")]);
-        st.domain.set(1); // 混输
+        st.domain.set(GLOBAL_DOMAINS); // 混输
         st.sub_tab.set(0);
         assert_eq!(st.current_category(), WordCategory::Shadow);
         // 短语用户页
-        st.domain.set(0);
+        st.domain.set(DOMAIN_PHRASE);
         st.sub_tab.set(1);
         assert_eq!(st.current_tab(), LogicalTab::PhraseUser);
         assert_eq!(st.current_category(), WordCategory::PhraseUser);
@@ -3490,7 +3920,7 @@ mod tests {
     fn client_search_filters_temp_rows() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(1); // 临时词库（client_search=true）
         *st.rows.borrow_mut() = vec![
             WordRow {
@@ -3538,7 +3968,7 @@ mod tests {
     fn shadow_add_call_pin_carries_position() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3); // 候选调整
         st.shadow_code.set("wm".into());
         st.shadow_word.set("我们".into());
@@ -3557,7 +3987,7 @@ mod tests {
     fn shadow_add_call_hide_omits_position() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.shadow_code.set("nh".into());
         st.shadow_word.set("你好".into());
@@ -3572,7 +4002,7 @@ mod tests {
     fn shadow_add_call_validates_empty() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.shadow_code.set(String::new());
         assert!(st.shadow_add_call().is_err());
@@ -3582,7 +4012,7 @@ mod tests {
     fn shadow_save_calls_add_mode_single_call() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3); // 候选调整
         st.open_shadow_add();
         st.shadow_code.set("wm".into());
@@ -3600,7 +4030,7 @@ mod tests {
     fn shadow_save_calls_edit_same_key_single_upsert() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.open_shadow_edit("wm", "我们", "pin", 2, "");
         st.shadow_pos.set("5".into()); // 仅改位置，键不变
@@ -3615,7 +4045,7 @@ mod tests {
     fn shadow_save_calls_edit_changed_key_adds_then_removes_old() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.open_shadow_edit("wm", "我们", "pin", 2, "");
         st.shadow_word.set("我门".into()); // 改词条 → 键变更
@@ -3640,7 +4070,7 @@ mod tests {
     fn shadow_edit_preserves_cand_id() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3); // 候选调整
         let cid = "phrase:date:$Y/$MM/$DD";
 
@@ -3661,7 +4091,7 @@ mod tests {
     fn shadow_add_omits_cand_id() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.open_shadow_add();
         st.shadow_code.set("aaaa".into());
@@ -3676,7 +4106,7 @@ mod tests {
     fn shadow_add_after_edit_clears_stale_cand_id() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.open_shadow_edit("date", "2026/07/30", "pin", 0, "phrase:date:$Y/$MM/$DD");
         st.open_shadow_add();
@@ -3690,7 +4120,7 @@ mod tests {
     fn open_shadow_edit_prefills_signals_and_sets_visible() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3); // 候选调整
 
         // pin 类型 → 固定位置(0)
@@ -3773,7 +4203,7 @@ mod tests {
     #[test]
     fn phrase_user_list_params_paged() {
         let st = DictManagerState::new();
-        st.domain.set(0);
+        st.domain.set(DOMAIN_PHRASE);
         st.sub_tab.set(1); // 用户短语（分页）
         let p = st.build_list_params();
         assert_eq!(p["offset"], serde_json::json!(0));
@@ -3784,7 +4214,7 @@ mod tests {
     #[test]
     fn phrase_system_list_params_bare() {
         let st = DictManagerState::new();
-        st.domain.set(0);
+        st.domain.set(DOMAIN_PHRASE);
         st.sub_tab.set(0); // 系统短语（不分页）
         let p = st.build_list_params();
         assert!(p.get("offset").is_none(), "系统短语不分页");
@@ -3801,9 +4231,9 @@ mod tests {
             ],
         );
         // 先在码表选到候选调整(3)，切到混输(仅1项) → 应重置到 0
-        st.domain.set(2);
+        st.domain.set(GLOBAL_DOMAINS + 1);
         st.sub_tab.set(3);
-        st.domain.set(1); // 混输
+        st.domain.set(GLOBAL_DOMAINS); // 混输
         st.reset_sub_tab_if_out_of_range(); // 见实现：抽出纯收敛逻辑便于测试
         assert_eq!(st.sub_tab.get(), 0);
     }
@@ -3821,17 +4251,18 @@ mod tests {
             ],
         );
         let labels = st.domain_labels();
-        // 域：快捷短语 + 拼音(折叠) + 五笔86 = 3 项（而非 4）
+        // 域：两个全局域 + 拼音(折叠) + 五笔86 = 4 项（三个拼音方案折叠成一个域，而非 5）
         assert_eq!(
             labels,
             vec![
                 "快捷短语".to_string(),
+                "快捷输入".to_string(),
                 "拼音".to_string(),
                 "五笔86 · 码表".to_string()
             ]
         );
         // 选"拼音"域，current_schema_id 返回代表(全拼优先)
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         assert_eq!(st.current_schema_id().as_deref(), Some("pinyin_simp"));
     }
@@ -3848,7 +4279,7 @@ mod tests {
                 "shuangpin",
             )],
         );
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         // 无全拼时代表取该双拼
         assert_eq!(st.current_schema_id().as_deref(), Some("double_pinyin"));
     }
@@ -3863,13 +4294,17 @@ mod tests {
                 schema_s("pinyin_simp", "全拼·简", "pinyin", "full"),
             ],
         );
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         // 双拼在前、全拼在后 → 代表应升级为全拼
         assert_eq!(st.current_schema_id().as_deref(), Some("pinyin_simp"));
         // 仍折叠为一个"拼音"域
         assert_eq!(
             st.domain_labels(),
-            vec!["快捷短语".to_string(), "拼音".to_string()]
+            vec![
+                "快捷短语".to_string(),
+                "快捷输入".to_string(),
+                "拼音".to_string()
+            ]
         );
     }
 
@@ -3884,18 +4319,18 @@ mod tests {
             ],
         );
         // 域 0→1（码表）：新域无记录，落第一个子标签。
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.on_nav_changed();
         assert_eq!(st.sub_tab.get(), 0);
         // 在码表域停到"词频"(2)。
         st.sub_tab.set(2);
         st.on_nav_changed();
         // 切到拼音域(2)：新域无记录，回第一个（不再沿用码表的 2）。
-        st.domain.set(2);
+        st.domain.set(GLOBAL_DOMAINS + 1);
         st.on_nav_changed();
         assert_eq!(st.sub_tab.get(), 0, "切到新域回第一个子标签");
         // 切回码表域(1)：恢复上次停留的"词频"(2)。
-        st.domain.set(1);
+        st.domain.set(GLOBAL_DOMAINS);
         st.on_nav_changed();
         assert_eq!(st.sub_tab.get(), 2, "切回旧域应恢复其上次子标签");
     }
@@ -3905,10 +4340,10 @@ mod tests {
         // 复现用户反馈：在短语域选"用户短语"(1)，切到方案域不应沿用下标 1。
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(0);
+        st.domain.set(DOMAIN_PHRASE);
         st.sub_tab.set(1); // 用户短语
         st.on_nav_changed();
-        st.domain.set(1); // 切到码表域
+        st.domain.set(GLOBAL_DOMAINS); // 切到码表域
         st.on_nav_changed();
         assert_eq!(st.sub_tab.get(), 0, "切到未访问过的方案域应回第一个子标签");
     }
@@ -3923,17 +4358,20 @@ mod tests {
                 schema("py", "全拼", "pinyin"),
             ],
         );
-        // 3 个域：快捷短语(0) + 五笔(1) + 拼音(2)。
-        assert_eq!(st.domain_count(), 3);
-        assert_eq!(st.domain.get(), 0);
+        // 4 个域：快捷短语(0) + 快捷输入(1) + 五笔(2) + 拼音(3)。
+        // 循环要走遍**全部**域，两个全局域也在其中——漏了它们就等于「‹ › 按钮切不到快捷输入」。
+        assert_eq!(st.domain_count(), GLOBAL_DOMAINS + 2);
+        assert_eq!(st.domain.get(), DOMAIN_PHRASE);
         st.next_domain();
-        assert_eq!(st.domain.get(), 1);
+        assert_eq!(st.domain.get(), DOMAIN_QUICK);
         st.next_domain();
-        assert_eq!(st.domain.get(), 2);
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS);
         st.next_domain();
-        assert_eq!(st.domain.get(), 0, "末尾循环回首");
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1);
+        st.next_domain();
+        assert_eq!(st.domain.get(), DOMAIN_PHRASE, "末尾循环回首");
         st.prev_domain();
-        assert_eq!(st.domain.get(), 2, "首部循环到末尾");
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1, "首部循环到末尾");
     }
 
     #[test]
@@ -3947,18 +4385,35 @@ mod tests {
             ],
         );
         let items = st.domain_rich_items();
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[0].label, "快捷短语");
-        // 主文本取方案名（去掉 " · 码表" 后缀），引擎类型进徽章。
-        assert_eq!(items[1].label, "五笔86");
+        assert_eq!(items.len(), GLOBAL_DOMAINS + 2);
+        // 两个全局域都标「全局」徽章——它们不按方案，徽章位不能空着，
+        // 否则下拉里只有这两项没有尾标，看着像渲染缺了一块。
+        assert_eq!(items[DOMAIN_PHRASE].label, "快捷短语");
         assert_eq!(
-            items[1].badge.as_ref().map(|(t, _)| t.as_str()),
+            items[DOMAIN_PHRASE].badge.as_ref().map(|(t, _)| t.as_str()),
+            Some("全局")
+        );
+        assert_eq!(items[DOMAIN_QUICK].label, "快捷输入");
+        assert_eq!(
+            items[DOMAIN_QUICK].badge.as_ref().map(|(t, _)| t.as_str()),
+            Some("全局")
+        );
+        // 主文本取方案名（去掉 " · 码表" 后缀），引擎类型进徽章。
+        assert_eq!(items[GLOBAL_DOMAINS].label, "五笔86");
+        assert_eq!(
+            items[GLOBAL_DOMAINS]
+                .badge
+                .as_ref()
+                .map(|(t, _)| t.as_str()),
             Some("码表")
         );
         // 拼音域也带徽章，保持统一。
-        assert_eq!(items[2].label, "拼音");
+        assert_eq!(items[GLOBAL_DOMAINS + 1].label, "拼音");
         assert_eq!(
-            items[2].badge.as_ref().map(|(t, _)| t.as_str()),
+            items[GLOBAL_DOMAINS + 1]
+                .badge
+                .as_ref()
+                .map(|(t, _)| t.as_str()),
             Some("拼音"),
             "拼音域也应带引擎徽章以保持统一"
         );

@@ -18,7 +18,9 @@ use crate::state::AppState;
 use crate::widgets::flat_panel;
 
 use super::reactive::{reactive_effect, toast_sink};
-use super::spec::{ColumnSpec, WordField, shadow_kind_label};
+use super::spec::{ColumnSpec, WordField, kind_label};
+#[cfg(test)]
+use super::state::{DOMAIN_PHRASE, GLOBAL_DOMAINS};
 use super::state::{DictManagerState, DomainKind, tabs_for_kind};
 
 /// 操作列宽度权重（相对数据列分配；需容纳 启用开关 + 最多两枚小按钮）。
@@ -37,6 +39,9 @@ const SEG_PINYIN: &[DomainKind] = &[DomainKind::Pinyin];
 const SEG_CODETABLE: &[DomainKind] = &[DomainKind::Codetable, DomainKind::Other];
 const SEG_ENGLISH: &[DomainKind] = &[DomainKind::English];
 const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
+// 快捷输入只有一个子标签，分段本身没有切换意义，但仍要有：分段的显隐决定这一行画不画，
+// 缺了它这个域就一个标签都不渲染（见 `sub_tab_segments_cover_every_domain_kind`）。
+const SEG_QUICK: &[DomainKind] = &[DomainKind::QuickFormat];
 /// 覆盖性校验用（顺序无关），仅测试构建需要。加新分段时记得挂进来。
 #[cfg(test)]
 const ALL_SEGMENTS: &[&[DomainKind]] = &[
@@ -45,6 +50,7 @@ const ALL_SEGMENTS: &[&[DomainKind]] = &[
     SEG_CODETABLE,
     SEG_ENGLISH,
     SEG_MIXED,
+    SEG_QUICK,
 ];
 
 /// 构建词库页。
@@ -203,6 +209,7 @@ pub fn build_page(state: &AppState) -> Element {
         .child(seg(mgr.clone(), SEG_CODETABLE))
         .child(seg(mgr.clone(), SEG_ENGLISH))
         .child(seg(mgr.clone(), SEG_MIXED))
+        .child(seg(mgr.clone(), SEG_QUICK))
         .child(mixed_hint)
         .child(Element::leaf().weight(1.0))
         .child(import_entry)
@@ -489,9 +496,9 @@ fn render_cell(
             )
         }
         WordField::Kind => {
-            // 与 `shadow_kind_label` 同源比对，别写字面量：这里拿到的 text 已经是标签文本，
+            // 与 `kind_label` 同源比对，别写字面量：这里拿到的 text 已经是标签文本，
             // 改文案时若只改 spec 那边，徽章会静默退成灰色（位置类规则不再被强调）。
-            let role = if text == shadow_kind_label("pin") {
+            let role = if text == kind_label("pin") {
                 Role::Accent
             } else {
                 Role::TextMuted
@@ -577,14 +584,39 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     }
     if spec.ops.set_enabled {
         let m = mgr.clone();
-        let (c, t, on) = (row.code.clone(), row.text.clone(), row.enabled);
+        let (r, on) = (row.clone(), row.enabled);
         // 勾选态直接读行数据：菜单每次右击重建，取到的就是当刻的值。
         // 复选框那边还要维护 `enabled_sig` 是因为它常驻在行里、要跟着点击即时变。
         ops.push(MenuItem::run(
             "启用",
-            move |_ctx| m.do_set_enabled(&c, &t, !on),
+            move |_ctx| m.do_set_enabled(&r, !on),
             on,
         ));
+    }
+    // 快捷输入的调序：置顶在菜单里（上移/下移在操作列，那里点着更顺手）。
+    // 停用项不参与排序（它不在候选里），故置灰而不是让它点了没反应。
+    if spec.ops.reorder {
+        let m = mgr.clone();
+        let r = row.clone();
+        let movable = row.move_index.is_some_and(|i| i > 0);
+        ops.push(
+            MenuItem::run("移到本类首位", move |_ctx| m.do_quick_move_top(&r), false)
+                .enabled(movable),
+        );
+    }
+    if spec.ops.reset_entry {
+        let m = mgr.clone();
+        let r = row.clone();
+        // 没调整过就没什么可恢复的。
+        let adjusted = row.adjusted;
+        ops.push(
+            MenuItem::run(
+                "恢复此条默认",
+                move |_ctx| m.do_quick_reset_entry(&r),
+                false,
+            )
+            .enabled(adjusted),
+        );
     }
     if spec.ops.promote {
         let m = mgr.clone();
@@ -686,12 +718,44 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     if spec.ops.set_enabled {
         let sig = signal(row.enabled);
         let m = mgr.clone();
-        let (c, t) = (row.code.clone(), row.text.clone());
+        let target = row.clone();
         r = r.child(Element::checkbox("", sig).small().on_toggle(move |_| {
             let v = !sig.get();
             sig.set(v);
-            m.do_set_enabled(&c, &t, v);
+            m.do_set_enabled(&target, v);
         }));
+    }
+
+    // 行内调序（快捷输入）。windui 没有拖拽重排控件，只能一对小按钮。
+    //
+    // 箭头用 `↑`/`↓` 而不是 `▲`/`▼`：与方案管理的调序菜单同一套字形（那边用作快捷键提示），
+    // 实心三角在小号按钮里显得又黑又胖，两枚并排挤在操作列里尤其重。
+    //
+    // ⚠️ 传给状态层的是 `move_index`（候选内下标），不是行号——停用项占着行号却不在
+    // 候选里，用行号会让「上移一位」跳过好几条。停用项 `move_index` 为 None，
+    // 两个按钮一并置灰。
+    if spec.ops.reorder {
+        let can_up = row.move_index.is_some_and(|i| i > 0);
+        // 下移不设上界：越界由 core 侧 clamp 到末尾（条目数会因停用而变，UI 这边
+        // 算不准「最后一条是谁」，硬算反而会把最后一行的按钮错误地留成可点）。
+        let can_down = row.move_index.is_some();
+        let (mu, md) = (mgr.clone(), mgr.clone());
+        let (ru, rd) = (row.clone(), row.clone());
+        r = r
+            .child(
+                Element::button("↑")
+                    .small()
+                    .outline_soft()
+                    .enabled(can_up)
+                    .on_click(move |_| mu.do_quick_move(&ru, -1)),
+            )
+            .child(
+                Element::button("↓")
+                    .small()
+                    .outline_soft()
+                    .enabled(can_down)
+                    .on_click(move |_| md.do_quick_move(&rd, 1)),
+            );
     }
 
     // 只读查看（系统短语）。「转为用户短语」在该对话框内，不占操作列宽度。
@@ -798,6 +862,7 @@ mod tests {
             DomainKind::Mixed,
             DomainKind::English,
             DomainKind::Other,
+            DomainKind::QuickFormat,
         ];
         // 穷尽性哨兵：新增变体会让这个 match 编译失败，逼人回到上面的数组补齐。
         for k in all {
@@ -807,7 +872,8 @@ mod tests {
                 | DomainKind::Codetable
                 | DomainKind::Mixed
                 | DomainKind::English
-                | DomainKind::Other => (),
+                | DomainKind::Other
+                | DomainKind::QuickFormat => (),
             };
         }
         for k in all {
@@ -990,7 +1056,7 @@ mod tests {
             kind: "codetable".into(),
             ..Default::default()
         }];
-        mgr.domain.set(1);
+        mgr.domain.set(GLOBAL_DOMAINS);
         mgr.on_nav_changed();
         mgr.apply_rows(&json!({ "items": [
             { "code": "aaaa", "text": "工", "weight": 0 },
@@ -1021,7 +1087,7 @@ mod tests {
             kind: "codetable".into(),
             ..Default::default()
         }];
-        mgr.domain.set(1);
+        mgr.domain.set(GLOBAL_DOMAINS);
         // 逐个走一遍该域的所有子标签，任何一类都不许出现孤线。
         let mut saw_empty_group = 0;
         for (i, tab) in mgr.tabs_for_domain().into_iter().enumerate() {
@@ -1177,7 +1243,7 @@ mod tests {
         );
 
         // 切到五笔域用户词库：effect 触发 on_nav_changed（reload 后数据到达以 apply_rows 模拟）。
-        mgr.domain.set(1);
+        mgr.domain.set(GLOBAL_DOMAINS);
         layout(&mut tree);
         mgr.apply_rows(&json!({ "items": [
             { "code": "aaaa", "text": "工", "weight": 0 },
@@ -1192,7 +1258,7 @@ mod tests {
         );
 
         // 切回快捷短语（系统短语）：表格应重建回短语列集并显示数据。
-        mgr.domain.set(0);
+        mgr.domain.set(DOMAIN_PHRASE);
         layout(&mut tree);
         mgr.apply_rows(&json!([
             { "code": "rq", "text": "$date", "weight": 1000, "enabled": true, "isSystem": true },
