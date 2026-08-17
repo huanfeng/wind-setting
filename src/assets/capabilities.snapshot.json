@@ -1071,7 +1071,12 @@
     },
     {
       "default": 0,
-      "key": "ui.candidate.min_width_chars",
+      "key": "ui.candidate.min_width_chars_horizontal",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.min_width_chars_vertical",
       "type": "int"
     },
     {

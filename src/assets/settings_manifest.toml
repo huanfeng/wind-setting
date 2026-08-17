@@ -1915,11 +1915,21 @@ min = 0
 max = 64
 
 [[items]]
-key = "ui.candidate.min_width_chars"
+key = "ui.candidate.min_width_chars_horizontal"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "候选行最小宽度"
+label = "横排候选最小宽度"
+hint = "按全角字符数计的整格最小宽度（含序号、文字、注释）；超出后跟随内容，不封顶；0 = 不限，跟随内容"
+min = 0
+max = 64
+
+[[items]]
+key = "ui.candidate.min_width_chars_vertical"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "竖排候选最小宽度"
 hint = "按全角字符数计的整行最小宽度（含序号、文字、注释）；超出后跟随内容，不封顶；0 = 不限，跟随内容"
 min = 0
 max = 64
