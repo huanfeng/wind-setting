@@ -1896,6 +1896,26 @@ hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
 min = 0
 max = 64
 
+[[items]]
+key = "ui.candidate.min_width_chars"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "候选行最小宽度"
+hint = "按全角字符数计的整行最小宽度（含序号、文字、注释）；超出后跟随内容，不封顶；0 = 不限，跟随内容"
+min = 0
+max = 64
+
+[[items]]
+key = "ui.candidate.min_rows"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "竖排候选最小行数"
+hint = "候选数不足时补透明空行以保持窗口高度；自动钳到每页候选数；0 = 不限，跟随候选数。仅竖排排列下生效"
+min = 0
+max = 9
+
 # 候选注释段（候选右侧灰字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
 # 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。
 # 宿主取**横排**模板：它是对话框里第一个出现的字段，而横排宽度由全部候选共享、最需斟酌。

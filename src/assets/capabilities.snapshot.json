@@ -1065,6 +1065,16 @@
       "type": "int"
     },
     {
+      "default": 0,
+      "key": "ui.candidate.min_width_chars",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.min_rows",
+      "type": "int"
+    },
+    {
       "default": "${code_hint|code}",
       "key": "ui.candidate.comment_template_vertical",
       "type": "str"

@@ -317,6 +317,8 @@
    "index_labels": "",
    "layout": "horizontal",
    "max_chars": 16,
+   "min_rows": 0,
+   "min_width_chars": 0,
    "page_number_display": "",
    "pager_bar_display": "",
    "pager_in_preedit": false,
