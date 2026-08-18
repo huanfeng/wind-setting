@@ -2532,19 +2532,43 @@ fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String {
 /// 自定义序号标签槽位数（序号 1-10）。
 const INDEX_LABEL_SLOTS: usize = 10;
 
-/// 序号标签拼接：从序号 1 起取各框首字符，**遇到第一个空框即停止**（前缀语义，
-/// 避免「中间留空、后面有值」时把后续标签向前位移）。writer 与 getter 共用，保持一致。
-fn collect_labels(inputs: &[Signal<String>]) -> String {
-    inputs
-        .iter()
-        .map(|s| s.get())
-        .take_while(|s| !s.is_empty())
-        .filter_map(|s| s.chars().next())
-        .collect()
+/// 序号标签数组的第 `i` 槽 → 输入框文本（越界/非数组 → 空串 = 该槽让位主题）。
+/// 播种与 loader 共用，保证「打开对话框」与「外部改动后重载」看到的是同一套值。
+fn label_slot(v: &Value, i: usize) -> String {
+    v.as_array()
+        .and_then(|a| a.get(i))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
-/// dialog_button（ui.candidate.index_labels）：10 框对话框，每框一个字符，连续拼成标签串。
-/// 字符串语义为前缀（char[i] = 序号 i+1 的标签），整体留空 = 默认 1-9。
+/// 序号标签收集：一框一项，**整框内容为一个标签**（不再只取首字符）——
+/// `(1)`、罗马数字、带 ZWJ 的组合 emoji 都是多 char 的合法标签，按 char 切会拆散它们。
+///
+/// 空框**原地保留**为空串（core 侧 `user_index_label` 把空串判为「该槽让位主题」），
+/// 只裁掉**尾部**连续空框：全空即得 `[]`，等于出厂默认，写回时可被 `prune_redundant` 清掉。
+/// 曾经的「遇空即停」是字符串前缀形态的遗留，它让「第 1、4 槽自定义，中间走主题」根本
+/// 表达不出来。全空白的框（只敲了空格）按空槽处理，其余原样保留内部空格。
+///
+/// writer 与 getter 共用，保持一致。
+fn collect_labels(inputs: &[Signal<String>]) -> Vec<Value> {
+    let mut out: Vec<String> = inputs
+        .iter()
+        .map(|s| {
+            let v = s.get();
+            if v.trim().is_empty() {
+                String::new()
+            } else {
+                v
+            }
+        })
+        .collect();
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    out.into_iter().map(Value::String).collect()
+}
+
 /// dialog_button（keys.session_actions）：键 → 动词的行编辑器，两列都是下拉。
 ///
 /// 与方案级按键表（`dialogs::schema_key_actions`）是同族编辑器，形态刻意一致；
@@ -2601,23 +2625,14 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
 fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_index_labels_dialog;
 
-    let def = state
-        .capabilities
-        .default_for(key)
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let cur = cfg
-        .get_str(key)
-        .map(str::to_string)
-        .unwrap_or_else(|| def.clone());
-    let cur_chars: Vec<char> = cur.chars().collect();
+    let def = state.capabilities.default_for(key);
+    let cur = cfg.get_path(key).cloned().unwrap_or_else(|| def.clone());
     let inputs: Vec<Signal<String>> = (0..INDEX_LABEL_SLOTS)
-        .map(|i| signal(cur_chars.get(i).map(|c| c.to_string()).unwrap_or_default()))
+        .map(|i| signal(label_slot(&cur, i)))
         .collect();
     let visible = signal(false);
 
-    // writer：各框首字符拼接（遇空即停）→ 前缀串。
+    // writer：一框一项，尾部空框裁掉（见 `collect_labels`）。
     let inputs_w = inputs.clone();
     let kw = key.to_string();
     state
@@ -2625,30 +2640,26 @@ fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
-            c.set_path(&kw, Value::String(collect_labels(&inputs_w)));
+            c.set_path(&kw, Value::Array(collect_labels(&inputs_w)));
         }));
-    // loader：字符串按字符回填各框（多余截断、不足留空）。
+    // loader：数组按下标回填各框（超出 10 槽的项截断、不足留空）。
     let inputs_l = inputs.clone();
     let kl = key.to_string();
     let def_l = def.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            let cur = c
-                .get_str(&kl)
-                .map(str::to_string)
-                .unwrap_or_else(|| def_l.clone());
-            let chars: Vec<char> = cur.chars().collect();
+            let cur = c.get_path(&kl).cloned().unwrap_or_else(|| def_l.clone());
             for (i, sig) in inputs_l.iter().enumerate() {
-                sig.set(chars.get(i).map(|c| c.to_string()).unwrap_or_default());
+                sig.set(label_slot(&cur, i));
             }
         }),
     );
-    // getter（一致性，与 writer 同拼接逻辑）。
+    // getter（一致性，与 writer 同收集逻辑）。
     let inputs_g = inputs.clone();
     state.fields.getters.borrow_mut().insert(
         key.to_string(),
-        Box::new(move || Value::String(collect_labels(&inputs_g))),
+        Box::new(move || Value::Array(collect_labels(&inputs_g))),
     );
 
     let dlg = build_index_labels_dialog(visible, "自定义序号标签", inputs);

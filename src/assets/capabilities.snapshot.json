@@ -414,7 +414,7 @@
       "type": "int"
     },
     {
-      "default": true,
+      "default": false,
       "key": "schema.mix.enable_pinyin_abbrev",
       "type": "bool"
     },
@@ -1110,9 +1110,9 @@
       "type": "structlist"
     },
     {
-      "default": "",
+      "default": [],
       "key": "ui.candidate.index_labels",
-      "type": "str"
+      "type": "strlist"
     },
     {
       "default": false,

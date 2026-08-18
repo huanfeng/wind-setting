@@ -316,7 +316,7 @@
    "font_size": 18.0,
    "font_size_follow_theme": true,
    "hide_window": false,
-   "index_labels": "",
+   "index_labels": [],
    "layout": "horizontal",
    "max_chars": 16,
    "min_rows": 0,

@@ -609,9 +609,12 @@ fn shell_with_title(
     Element::dialog(visible, frame)
 }
 
-/// 自定义序号标签对话框：10 个文本框对应序号 1-10（每框一个字符），2 列排布。
-/// `inputs` 为 10 个单字符信号（由调用方注册 writer/loader），编辑随主保存提交；
-/// 「恢复默认」清空全部（空 = 默认 1-9）。
+/// 自定义序号标签对话框：10 个文本框对应序号 1-10（**每框一个完整标签**，可多字符），
+/// 2 列排布。`inputs` 为 10 个文本信号（由调用方注册 writer/loader），编辑随主保存提交；
+/// 「恢复默认」清空全部（全空 = 默认 1-9）。
+///
+/// 单框留空**不是**「到此为止」而是「该槽让位主题」——中间留空是合法配置，
+/// 收集逻辑见 `manifest::collect_labels`。
 pub fn build_index_labels_dialog(
     visible: Signal<bool>,
     title: &str,
@@ -630,7 +633,7 @@ pub fn build_index_labels_dialog(
                         .fg_role(Role::TextMuted)
                         .width(48),
                 )
-                .child(Element::text_input(*s, "").width(64))
+                .child(Element::text_input(*s, "").width(96))
         })
         .collect();
     let grid = Element::grid(2, 12, cells);
@@ -652,7 +655,7 @@ pub fn build_index_labels_dialog(
         .child(Element::divider())
         .child(
             Element::label(
-                "从序号 1 起依次填写自定义标签（每框一个字符，如 a s d f g）；整体留空用默认 1-9。",
+                "为各序号填写标签，每框一个完整标签（可多字符，如 a、(1)、Ⅰ）；单框留空该序号用主题或默认值，全部留空用默认 1-9。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
