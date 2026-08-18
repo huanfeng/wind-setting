@@ -623,7 +623,7 @@ section = "混输行为"
 subsection = "拼音相关"
 type = "toggle"
 label = "启用拼音简拼"
-hint = "拼音支持声母简拼（nh→你好）；关闭则只认全拼，候选更精简"
+hint = "拼音支持声母简拼（nh→你好）；关闭则只认全拼、候选更精简，且满码后继续输入才会顶码上屏码表词"
 
 [[items]]
 key = "schema.mix.pinyin_partial_candidates"
