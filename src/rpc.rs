@@ -952,29 +952,42 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }
         "phrase.import" => json!({ "imported": 0, "skipped": 0 }),
         "phrase.resetSystem" => json!({ "ok": true, "changed": 0 }),
-        // 快捷输入格式表。夹具刻意覆盖三种状态：普通行、被停用的行（`moveIndex` 为 null，
-        // 调序按钮应置灰）、以及调整过的行（`adjusted` 为真，「恢复此条」才可点）。
+        // 快捷输入格式表。夹具刻意覆盖四种状态：普通行、被停用的行（`moveIndex` 为 null，
+        // 调序按钮应置灰）、调整过的行（`adjusted` 为真，「恢复此条」才可点）、以及**用户
+        // 自己加的行**（`user` 为真，可改模板/可删、但「恢复此条」不可点）。
         // 只给两个类别即可——UI 侧的类别集是从数据里现取的，不写死五个。
         "quick.list" => json!([
             { "kind": "date", "id": "date.cn", "text": "$Y年$M月$D日", "displayPos": 1,
-              "moveIndex": 0, "enabled": true, "adjusted": false, "sample": "2026年8月17日" },
+              "moveIndex": 0, "enabled": true, "adjusted": false, "user": false, "sample": "2026年8月17日" },
             { "kind": "date", "id": "date.iso", "text": "$YYYY-$MM-$DD", "displayPos": 2,
-              "moveIndex": 1, "enabled": true, "adjusted": true, "sample": "2026-08-17" },
+              "moveIndex": 1, "enabled": true, "adjusted": true, "user": false, "sample": "2026-08-17" },
             { "kind": "date", "id": "date.basic", "text": "$YYYY$MM$DD", "displayPos": 3,
-              "moveIndex": null, "enabled": false, "adjusted": true, "sample": "20260817" },
+              "moveIndex": null, "enabled": false, "adjusted": true, "user": false, "sample": "20260817" },
+            { "kind": "date", "id": "date.u1", "text": "$Y/$M/$D", "displayPos": 4,
+              "moveIndex": 2, "enabled": true, "adjusted": false, "user": true, "sample": "2026/8/17" },
             { "kind": "number", "id": "number.amount", "text": "$AMT", "displayPos": 1,
-              "moveIndex": 0, "enabled": true, "adjusted": false, "sample": "壹仟贰佰叁拾肆元伍角整" }
+              "moveIndex": 0, "enabled": true, "adjusted": false, "user": false, "sample": "壹仟贰佰叁拾肆元伍角整" }
         ]),
-        "quick.move" | "quick.setEnabled" | "quick.resetEntry" | "quick.resetKind" => {
-            json!({ "ok": true })
-        }
+        "quick.move" | "quick.setEnabled" | "quick.resetEntry" | "quick.resetKind"
+        | "quick.setText" | "quick.delete" => json!({ "ok": true }),
+        "quick.add" => json!({ "ok": true, "id": "date.u2" }),
+        // 变量提示：只给两类、每类两条即可——真值来自 core，这里只让离线预览有东西可显。
+        "quick.vars" => json!([
+            { "kind": "date", "vars": [
+                { "name": "Y", "desc": "年，如 2026" },
+                { "name": "LMD", "desc": "农历月日，四月廿九" }
+            ]},
+            { "kind": "number", "vars": [
+                { "name": "AMT", "desc": "金额大写，壹仟贰佰叁拾肆元伍角" }
+            ]}
+        ]),
         "quick.export" => json!({
-            "content": "# WindInput 快捷输入 · 用户设置\n\n[[adjust]]\nkind = 'date'\ndisabled = ['date.basic']\n"
+            "content": "# WindInput 快捷输入 · 用户设置\n\n[[formats]]\nid = 'date.u1'\nkind = 'date'\ntext = '$Y/$M/$D'\nposition = 0\n\n[[adjust]]\nkind = 'date'\ndisabled = ['date.basic']\n"
         }),
         "quick.previewImport" => {
-            json!({ "moved": 1, "disabled": 1, "ignoredFormats": 0, "skipped": [], "kinds": ["date"] })
+            json!({ "moved": 1, "disabled": 1, "formats": 1, "skipped": [], "kinds": ["date"] })
         }
-        "quick.import" => json!({ "moved": 1, "disabled": 1, "ignoredFormats": 0, "skipped": [] }),
+        "quick.import" => json!({ "moved": 1, "disabled": 1, "formats": 1, "skipped": [] }),
         "temp.list" => json!([
             { "code": "nihao", "text": "你好", "count": 3 },
             { "code": "women", "text": "我们", "count": 7 }

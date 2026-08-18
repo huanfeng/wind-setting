@@ -26,6 +26,7 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .fill()
         .child(build_confirm_dialog(mgr))
         .child(build_edit_dialog(mgr))
+        .child(build_quick_dialog(mgr))
         .child(build_shadow_dialog(mgr))
         .child(build_view_dialog(mgr))
         .child(build_export_dialog(mgr))
@@ -470,6 +471,120 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(Element::divider())
         .child(footer);
     Element::dialog(mgr.edit_visible, frame)
+}
+
+/// 快捷输入格式的添加 / 编辑：类别 + 模板 + 本类可用变量提示。
+///
+/// 与 [`build_edit_dialog`] 分开而不是塞进它的 `visible_when` 分支：这个对话框没有编码、
+/// 权重、次序（快捷输入没有这些维度），多出来的是类别选择与一整块变量提示——共用一个
+/// 布局会变成一堆互斥的显隐条件，而每加一个条件都要在另一个类别上验一遍。
+///
+/// **编辑时类别锁定**：类别决定了可用变量与出厂分组，换类别本就是另一条格式（想换就删掉
+/// 重加）。锁定的做法是禁用选择器而非隐藏它——用户仍需看到「这条属于哪一类」。
+fn build_quick_dialog(mgr: &DictManagerState) -> Element {
+    let submit = mgr.clone();
+    let cancel = mgr.clone();
+    let kind_enabled = mgr.clone();
+
+    let field = |label: &str, input: Element| {
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(
+                Element::label(label)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .width(48),
+            )
+            .child(input)
+    };
+
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 12)
+        .spacing(10)
+        .child(field(
+            "类别",
+            // ⚠️ 选项走 `dropdown_signal`（绑信号）而**不是**在这里算好一个 Vec：对话框只
+            // 构建一次，而那一刻列表数据还没加载，算出来的是空列表并被永久冻结。
+            // 选项在 `open_quick_add`/`open_quick_edit` 里填入 `quick_kind_labels`。
+            Element::dropdown_signal(mgr.quick_kind_labels, mgr.quick_kind_idx)
+                .width(160)
+                // 编辑已有条目时锁定：`editing_orig` 有值即为编辑。
+                .enabled_when(move || !kind_enabled.is_editing_quick()),
+        ))
+        .child(field(
+            "模板",
+            Element::text_input(mgr.edit_text, "如 $Y年$M月$D日")
+                .height(34)
+                .weight(1.0),
+        ))
+        .child(
+            Element::label("可用变量（可选中复制）")
+                .font_size(11.5)
+                .font_weight(600)
+                .fg_role(Role::TextMuted)
+                .width_match(),
+        )
+        .child(
+            // ★★ 用多行 `text_input` 承载而不是 label 或 RichText，判据是**选区粒度**：
+            // 用户要做的事是「把 $LMD 照抄进模板」，也就是选中**一个短变量名**。
+            //   - label 不可选中，只能手打；
+            //   - RichText 有划选与右键复制，但选区是碎片级、Latin 按空格切 ⇒ `$LMD`
+            //     整个是一个碎片，而选区要求「拖出锚点碎片」才成立——在变量名内部
+            //     怎么拖都选不中，恰好挡死了主用例（其 doc 把「Latin 词内字符级选区」
+            //     列在已知限制里）；
+            //   - text_input 是字符级选区，与用户在别处的选中习惯一致。
+            //
+            // 它可编辑，但内容每次打开对话框都重设，且没有任何地方读这个信号——
+            // 改了不会有任何后果，代价换来的是确定可用的复制。
+            //
+            // 高度写死 + 控件自带滚动：全部类别合计二十余行，铺开会把对话框顶出屏幕。
+            Element::text_input(mgr.quick_var_text, "")
+                .multiline()
+                .wrap(false)
+                .height(150)
+                .width_match(),
+        );
+
+    let footer = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 12)
+        .spacing(8)
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| cancel.cancel_quick_edit()),
+        )
+        .child(
+            Element::button("确定")
+                .small()
+                .on_click(move |_| submit.submit_word()),
+        );
+
+    let frame = Element::col()
+        .width(460)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label_signal(mgr.edit_title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(footer);
+    Element::dialog(mgr.quick_edit_visible, frame)
 }
 
 /// 候选调整手动添加：编码 / 词条 / 类型(固定位置|隐藏) / 目标位置(仅固定位置)。

@@ -183,6 +183,11 @@ pub struct DictManagerState {
     pub edit_position: Signal<String>,
     /// 编辑模式的原始键 (code, text)；None = 新增模式。
     editing_orig: Rc<RefCell<Option<(String, String)>>>,
+    /// 快捷输入的模板变量提示，`[(kind, [(变量名, 说明)])]`。
+    ///
+    /// 懒加载 + 常驻缓存：它是静态数据（core 的编译期常量），一次 RPC 取完够用整个会话，
+    /// 每次开对话框都拉一遍只是白费一轮往返。
+    quick_vars: Rc<RefCell<QuickVarsByKind>>,
 
     // ── 系统短语只读查看对话框 ──
     pub view_visible: Signal<bool>,
@@ -200,6 +205,39 @@ pub struct DictManagerState {
 
     // ── 候选调整手动添加/编辑对话框 ──
     pub shadow_add_visible: Signal<bool>,
+    /// 快捷输入「添加/编辑格式」对话框的可见性。
+    ///
+    /// 字段本身复用 `edit_code`（存类别）/`edit_text`（存模板）/`edit_title`/`editing_orig`
+    /// 与 `submit_word` 那条提交路径，只有可见性独立——两个对话框的布局差别太大
+    /// （类别下拉 + 变量提示 vs 编码/权重/次序），塞进一个会变成一堆 visible_when。
+    pub quick_edit_visible: Signal<bool>,
+    /// 类别选择器的选项标签。开对话框时填充。
+    ///
+    /// ⚠️ 必须是信号、不能在构建期算好：对话框只构建一次，而那一刻列表数据还没加载——
+    /// 选项会被永久冻结成空的。`Element::segmented` 甚至直接 `debug_assert` 非空，
+    /// 测试因此当场炸了；若换成容忍空列表的控件，这个 bug 会一直潜伏到真机，
+    /// 症状是「类别下拉里什么都没有」。
+    pub quick_kind_labels: Signal<Vec<String>>,
+    /// 变量提示文本（见 [`Self::build_quick_var_text`]）。开对话框时填充。
+    ///
+    /// 用信号而不是构建期算好：`quick.vars` 要走一轮 RPC，而对话框只构建一次——在构建期
+    /// 取，万一那一刻 core 还没连上，这块提示就永久是空的。开对话框时 core 必然可用。
+    ///
+    /// ★★ 承载控件选过三轮，判据是**选区粒度**：
+    /// - `label` 不可选中，用户只能手打变量名，出局；
+    /// - `RichText` 有划选/双击选词/右键复制，看着正合适，但它的选区是**碎片级**、
+    ///   且「Latin 按空格切」⇒ `$LMD` 整个是一个碎片，而选区要求「拖出锚点碎片」才成立。
+    ///   于是在一个变量名内部怎么拖都选不中（`sel` 恒 None，右键菜单也只剩「复制全部」）
+    ///   ——恰好挡死了「只想复制一个变量名」这个主用例。其 doc 里「Latin 词内字符级选区」
+    ///   正列在已知限制中。
+    /// - `text_input` 多行：字符级选区，与用户在别处的选中习惯一致。它可编辑，但每次
+    ///   打开对话框都重设内容，且没有任何地方读这个信号，改了不会有后果。
+    pub quick_var_text: Signal<String>,
+    /// 新增格式时选中的类别，是 [`Self::quick_kind_options`] 的下标。
+    ///
+    /// 用下标而不是 kind 字符串：分段选择器绑的就是下标信号。选项列表**从当前数据现取**
+    /// （见 `quick_kind_options`），故主程序加一类解析器时这里自动跟上，不必同步一份常量。
+    pub quick_kind_idx: Signal<usize>,
     /// 对话框标题（"添加候选调整" / "编辑候选调整"）。
     pub shadow_title: Signal<String>,
     pub shadow_code: Signal<String>,
@@ -218,10 +256,24 @@ pub struct DictManagerState {
 }
 
 /// 待确认的破坏性操作。
+/// 按类别索引的模板变量提示：`[(kind, [(变量名, 说明)])]`。
+type QuickVarsByKind = Vec<(String, Vec<(String, String)>)>;
+
+/// 变量提示的一节：`(合并到一起的类别名, 该节的变量集)`。
+///
+/// 变量集相同的类别合并成一节（core 里 date 与 month_day 完全相同），故类别名是一组。
+type QuickVarSection = (Vec<String>, Vec<(String, String)>);
+
 #[derive(Clone)]
 enum PendingAction {
     /// 删除一行（code, text/word）。
     DeleteRow(String, String),
+    /// 删除一条快捷输入的自定义格式（kind, id）。
+    ///
+    /// 与 [`Self::DeleteRow`] 分开而不是复用它：快捷输入的主键是 `(kind, id)`，
+    /// 而 `DeleteRow` 只带 `(code, text)`——把 kind 丢在半路，确认之后就拼不出请求了。
+    /// 确认文案在入队时就已生成，故这里不必带模板原文。
+    DeleteQuickFormat { kind: String, id: String },
     /// 清空当前类别。
     Clear,
     /// 恢复默认（短语）。
@@ -364,6 +416,7 @@ impl DictManagerState {
             edit_weight: signal("0".to_string()),
             edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
+            quick_vars: Rc::new(RefCell::new(Vec::new())),
             shadow_orig: Rc::new(RefCell::new(None)),
             shadow_cand_id: Rc::new(RefCell::new(String::new())),
             view_visible: signal(false),
@@ -373,6 +426,10 @@ impl DictManagerState {
             view_position: signal(String::new()),
             viewing: Rc::new(RefCell::new(None)),
             shadow_add_visible: signal(false),
+            quick_edit_visible: signal(false),
+            quick_kind_idx: signal(0),
+            quick_kind_labels: signal(Vec::new()),
+            quick_var_text: signal(String::new()),
             shadow_title: signal("添加候选调整".to_string()),
             shadow_code: signal(String::new()),
             shadow_word: signal(String::new()),
@@ -1211,6 +1268,241 @@ impl DictManagerState {
     ///
     /// 导出的是**改动**（调序 / 停用），不是完整格式表——换机导入后，出厂新增的写法
     /// 仍会自然生效。文件是 TOML，可手工编辑后再导入。
+    /// 打开「添加格式」对话框。`kind` 预选当前列表里最后一次看到的类别（见调用侧）。
+    ///
+    /// 复用 `edit_*` 那套信号：`edit_code` 存**类别**、`edit_text` 存模板，
+    /// `editing_orig = None` 表示新增。快捷输入没有权重与位置维度，那两个信号不参与
+    /// （`save_calls` 对本类别在解析权重**之前**就分流了，见 `quick_save_calls`）。
+    pub fn open_quick_add(&self, kind: &str) {
+        *self.editing_orig.borrow_mut() = None;
+        let opts = self.quick_kind_options();
+        self.quick_kind_idx
+            .set(opts.iter().position(|k| k == kind).unwrap_or(0));
+        self.edit_code.set(kind.to_string());
+        self.edit_text.set(String::new());
+        self.edit_title.set("添加快捷输入格式".into());
+        self.edit_l_code.set("类别".into());
+        self.edit_l_text.set("模板".into());
+        self.quick_kind_labels.set(
+            self.quick_kind_options()
+                .iter()
+                .map(|k| crate::pages::dict::spec::kind_label(k).to_string())
+                .collect(),
+        );
+        self.quick_var_text.set(self.build_quick_var_text());
+        self.quick_edit_visible.set(true);
+    }
+
+    /// 打开「编辑格式」对话框。
+    ///
+    /// 只对**用户自己加的**条目开放（出厂模板不可改，见 `spec::row_ops`）。这里不再判一次
+    /// 归属：判据在 `row_ops` 一处，菜单与操作列都读它——两处各判一遍迟早漂移，
+    /// 而症状是「菜单里能点、点了报错」。
+    pub fn open_quick_edit(&self, row: &WordRow) {
+        *self.editing_orig.borrow_mut() = Some((row.kind.clone(), row.code.clone()));
+        let opts = self.quick_kind_options();
+        self.quick_kind_idx
+            .set(opts.iter().position(|k| *k == row.kind).unwrap_or(0));
+        self.edit_code.set(row.kind.clone());
+        self.edit_text.set(row.text.clone());
+        self.edit_title.set("编辑快捷输入格式".into());
+        self.edit_l_code.set("类别".into());
+        self.edit_l_text.set("模板".into());
+        self.quick_kind_labels.set(
+            self.quick_kind_options()
+                .iter()
+                .map(|k| crate::pages::dict::spec::kind_label(k).to_string())
+                .collect(),
+        );
+        self.quick_var_text.set(self.build_quick_var_text());
+        self.quick_edit_visible.set(true);
+    }
+
+    /// 请求删除一条自定义格式（走确认弹窗——真删不可恢复）。
+    pub fn request_quick_delete(&self, row: &WordRow) {
+        *self.pending.borrow_mut() = Some(PendingAction::DeleteQuickFormat {
+            kind: row.kind.clone(),
+            id: row.code.clone(),
+        });
+        self.confirm_msg.set(format!(
+            "确定删除自定义格式「{}」？此操作不可恢复。",
+            row.text
+        ));
+        self.confirm_visible.set(true);
+    }
+
+    pub fn do_quick_delete(&self, kind: &str, id: &str) {
+        let method = self.current_spec().rpc.remove;
+        self.write(
+            method,
+            json!({ "kind": kind, "id": id }),
+            "已删除自定义格式",
+        );
+    }
+
+    /// 快捷输入的保存调用（新增 / 改模板）。抽成纯函数便于单测。
+    ///
+    /// `code` 是**类别**、`text` 是模板；`orig = Some((kind, id))` 表示改的是已有条目。
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn quick_save_calls(
+        &self,
+        code: &str,
+        text: &str,
+        orig: Option<(String, String)>,
+    ) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
+        let spec = self.current_spec();
+        if text.trim().is_empty() {
+            return Err("模板不能为空".into());
+        }
+        match orig {
+            // 编辑：类别不可改（它决定了可用变量与出厂分组），故只发新模板。
+            // 想换类别就删掉重加——那本就是另一条格式。
+            Some((kind, id)) => Ok((
+                vec![(
+                    spec.rpc.update,
+                    json!({ "kind": kind, "id": id, "text": text }),
+                )],
+                "已保存",
+            )),
+            None => {
+                if code.trim().is_empty() {
+                    return Err("请选择类别".into());
+                }
+                Ok((
+                    vec![(spec.rpc.add, json!({ "kind": code, "text": text }))],
+                    "已添加",
+                ))
+            }
+        }
+    }
+
+    /// 新增格式时可选的类别（kind 列表），**从当前列表数据现取**。
+    ///
+    /// ★ 不硬编码一份类别常量：core 的 `FormatKind::ALL` 是真相源，而 `quick.list` 会列出
+    /// 每一类的条目（每类至少有出厂条目），故数据里必然带着完整的类别集合。主程序加一类
+    /// 解析器时这里自动跟上——硬编码那份则会静默少一项，且没人会想到来改设置仓。
+    pub(crate) fn quick_kind_options(&self) -> Vec<String> {
+        self.quick_kinds_present()
+    }
+
+    /// 类别下标 → kind 字符串。越界回落首项（选项列表恒非空时不会发生）。
+    pub(crate) fn quick_selected_kind(&self) -> String {
+        let opts = self.quick_kind_options();
+        opts.get(self.quick_kind_idx.get())
+            .or_else(|| opts.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 变量提示的展示行：`(左列, 右列)`。右列为空的那行是**节标题**。
+    ///
+    /// 一次列出全部类别而不是只列当前选中的那一类，有两个原因：
+    /// 一是分段选择器没有变更回调，只显示当前类就得让整块跟着信号重建（windui 的
+    /// `reactive` 是标记而非动态构建）；二是列全了反而更有用——用户能直接看到
+    /// 「年月那类没有农历变量」这种对比，而那正是最容易写错的地方。
+    ///
+    /// 变量集相同的类别合并成一节（date 与 month_day 完全相同），否则同样的 17 行要出两遍。
+    pub(crate) fn build_quick_var_lines(&self) -> Vec<(String, String)> {
+        let kinds = self.quick_kind_options();
+        let mut sections: Vec<QuickVarSection> = Vec::new();
+        for k in &kinds {
+            let vars = self.quick_vars_of(k);
+            if vars.is_empty() {
+                continue;
+            }
+            let label = crate::pages::dict::spec::kind_label(k).to_string();
+            match sections.iter_mut().find(|(_, v)| *v == vars) {
+                Some((names, _)) => names.push(label),
+                None => sections.push((vec![label], vars)),
+            }
+        }
+        let mut out = Vec::new();
+        for (names, vars) in sections {
+            out.push((names.join(" / "), String::new()));
+            for (name, desc) in vars {
+                out.push((format!("${name}"), desc));
+            }
+        }
+        out
+    }
+
+    /// 变量提示的展示文本（多行）。
+    ///
+    /// 与 [`Self::build_quick_var_lines`] 的分工：那边算「哪些类别合并、列哪些变量」
+    /// （纯数据，可单测），这里只把它拼成文本。两件事分开，排版改动不会牵动合并逻辑
+    /// 的测试。
+    ///
+    /// 变量名与说明之间用**制表符**：等宽对齐交给控件，用空格填充会在非等宽字体下参差，
+    /// 而用户复制走的正是这段文本，填充空格也会被一起带走。
+    ///
+    /// 末尾追加那句用法说明：它同样是「说明文本」，一并放进来就一并可选中复制。
+    pub(crate) fn build_quick_var_text(&self) -> String {
+        let mut out = String::new();
+        for (left, right) in self.build_quick_var_lines() {
+            if right.is_empty() {
+                // 右列为空 = 节标题（「日期 / 月日」这种）
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&format!("【{left}】\n"));
+            } else {
+                out.push_str(&format!("{left}\t{right}\n"));
+            }
+        }
+        out.push_str(
+            "\n模板里的 $变量 会按实际输入替换；也可整条写成 {函数()} 表达式，两者不可混用。",
+        );
+        out
+    }
+
+    /// 取某类的模板变量提示（首次调用时拉取并缓存）。
+    ///
+    /// 真相源在 core（`FormatKind::var_hints`）：设置仓自己硬编码一份，会在主程序加新变量时
+    /// 静默过时——用户照提示写不出新变量，或提示里的变量已被删，两种都看不出是提示的错。
+    pub fn quick_vars_of(&self, kind: &str) -> Vec<(String, String)> {
+        if self.quick_vars.borrow().is_empty() {
+            match rpc::call_core("quick.vars", &json!({})) {
+                Ok(v) => {
+                    let mut cache = self.quick_vars.borrow_mut();
+                    for k in v.as_array().map(|a| a.as_slice()).unwrap_or_default() {
+                        let name = k
+                            .get("kind")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let vars: Vec<(String, String)> = k
+                            .get("vars")
+                            .and_then(|x| x.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .map(|it| {
+                                        let s = |f: &str| {
+                                            it.get(f)
+                                                .and_then(|x| x.as_str())
+                                                .unwrap_or("")
+                                                .to_string()
+                                        };
+                                        (s("name"), s("desc"))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        cache.push((name, vars));
+                    }
+                }
+                // 拿不到就不显示提示：对话框照样能用（模板非法时保存期会报错）。
+                // 这里不弹提示——用户是来加条目的，一个「变量提示加载失败」只会添乱。
+                Err(e) => tracing::warn!("快捷输入变量提示加载失败: {e}"),
+            }
+        }
+        self.quick_vars
+            .borrow()
+            .iter()
+            .find(|(k, _)| k == kind)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
     pub fn do_quick_export(&self, ctx: &mut EventCtx) {
         let state = self.clone();
         ctx.request_save_file(
@@ -1273,12 +1565,14 @@ impl DictManagerState {
             .map(|a| a.len())
             .unwrap_or(0);
         let mut s = format!("已导入：调序 {} · 停用 {}", n("moved"), n("disabled"));
-        let ignored = n("ignoredFormats");
-        if ignored > 0 {
-            s.push_str(&format!("；自定义条目 {ignored} 条本版暂不支持，已忽略"));
+        // 字段名与语义在 core 侧一起改过：P1 是 `ignoredFormats`（没有落点，如实报「已忽略」），
+        // 现在是 `formats`（真的写入）。文案跟着走，否则会一直说「暂不支持」。
+        let formats = n("formats");
+        if formats > 0 {
+            s.push_str(&format!("；自定义条目 {formats} 条"));
         }
         if skipped > 0 {
-            s.push_str(&format!("；{skipped} 条无法识别已跳过"));
+            s.push_str(&format!("；{skipped} 条无法识别或重复已跳过"));
         }
         s
     }
@@ -1355,6 +1649,7 @@ impl DictManagerState {
         self.confirm_visible.set(false);
         match act {
             Some(PendingAction::DeleteRow(c, t)) => self.do_delete_row(&c, &t),
+            Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
             Some(PendingAction::Clear) => self.do_clear(),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
             None => {}
@@ -1460,6 +1755,17 @@ impl DictManagerState {
         self.edit_visible.set(false);
     }
 
+    pub fn cancel_quick_edit(&self) {
+        self.quick_edit_visible.set(false);
+    }
+
+    /// 当前快捷输入对话框是「编辑已有条目」而非「新增」。
+    ///
+    /// 编辑时类别锁定：类别决定可用变量与出厂分组，换类别本就是另一条格式。
+    pub(crate) fn is_editing_quick(&self) -> bool {
+        self.editing_orig.borrow().is_some()
+    }
+
     /// 打开系统短语只读查看对话框（写入独立 view_* 信号，不污染 edit_*）。
     pub fn open_view(&self, code: &str, text: &str, weight: i64, position: i64) {
         self.view_code.set(code.into());
@@ -1515,11 +1821,17 @@ impl DictManagerState {
         let cat = spec.category;
         let code = self.edit_code.get();
         let text = self.edit_text.get();
+        let orig = self.editing_orig.borrow().clone();
+        // 快捷输入在解析权重**之前**分流：这一类没有权重维度，`edit_weight` 从来不被设置，
+        // 让它先跑下面那个 parse 会得到「权重需为整数」——一个与用户所做之事毫无关系的报错。
+        if cat == WordCategory::QuickFormat {
+            // 类别取自分段选择器（`edit_code` 只是开对话框时的初值，用户可能改过选择）
+            return self.quick_save_calls(&self.quick_selected_kind(), &text, orig);
+        }
         let weight: i64 = match self.edit_weight.get().trim().parse() {
             Ok(w) => w,
             Err(_) => return Err("权重需为整数".into()),
         };
-        let orig = self.editing_orig.borrow().clone();
         match cat {
             WordCategory::UserDict => {
                 if text.trim().is_empty() {
@@ -1639,7 +1951,11 @@ impl DictManagerState {
     pub fn submit_word(&self) {
         match self.save_calls() {
             Ok((calls, ok)) => {
+                // 两个对话框共用 edit_* 字段与本提交路径，各有自己的可见性信号。
+                // 无条件关掉两个，比在这里再判一次当前类别更不容易错（判错的症状是
+                // 「保存成功了但窗口不关」）。
                 self.edit_visible.set(false);
+                self.quick_edit_visible.set(false);
                 self.run_calls(calls, ok);
             }
             Err(e) => self.notify_err(&e),
@@ -2883,26 +3199,223 @@ mod tests {
         );
     }
 
-    /// 导入摘要必须**如实报出**跳过与被忽略的条目。
+    /// 当前域为「快捷输入」、列表里有两个类别的 state。
+    ///
+    /// `quick_save_calls` 读 `current_spec()` 拿 RPC 名，故域必须切过去；类别选项与变量
+    /// 提示都从 `rows` 现取，故 rows 也要有内容。
+    fn quick_state_fixture() -> DictManagerState {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_QUICK);
+        *st.rows.borrow_mut() = vec![
+            WordRow {
+                kind: "date".into(),
+                code: "date.cn".into(),
+                ..Default::default()
+            },
+            WordRow {
+                kind: "month_day".into(),
+                code: "month_day.cn".into(),
+                ..Default::default()
+            },
+            WordRow {
+                kind: "number".into(),
+                code: "number.amount".into(),
+                ..Default::default()
+            },
+        ];
+        st
+    }
+
+    /// 快捷输入的保存：新增发 `quick.add`（带类别）、编辑发 `quick.setText`（带 kind+id）。
+    ///
+    /// ★ 编辑时**不发类别**：类别决定可用变量与出厂分组，换类别本就是另一条格式。
+    #[test]
+    fn quick_save_calls_split_add_and_update() {
+        let st = quick_state_fixture();
+
+        // 新增：类别取自选择器
+        let (calls, msg) = st
+            .quick_save_calls("number", "共$THOU元", None)
+            .expect("合法输入");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "quick.add");
+        assert_eq!(calls[0].1["kind"], json!("number"));
+        assert_eq!(calls[0].1["text"], json!("共$THOU元"));
+        assert!(calls[0].1.get("id").is_none(), "新增没有 id，由 core 分配");
+        assert_eq!(msg, "已添加");
+
+        // 编辑：主键 (kind, id)，类别取自 orig 而非选择器
+        let orig = Some(("date".to_string(), "date.u1".to_string()));
+        let (calls, msg) = st
+            .quick_save_calls("number", "$Y/$M/$D", orig)
+            .expect("合法输入");
+        assert_eq!(calls[0].0, "quick.setText");
+        assert_eq!(
+            calls[0].1["kind"],
+            json!("date"),
+            "★ 编辑用原类别，不受选择器影响"
+        );
+        assert_eq!(calls[0].1["id"], json!("date.u1"));
+        assert_eq!(calls[0].1["text"], json!("$Y/$M/$D"));
+        assert_eq!(msg, "已保存");
+    }
+
+    /// 空模板与空类别在**发请求之前**被拦下，并给出说明。
+    ///
+    /// 纯空白也算空：它会渲染出一条「看起来是空的」候选，选中则上屏几个空格。
+    #[test]
+    fn quick_save_calls_rejects_empty_input() {
+        let st = quick_state_fixture();
+        assert!(
+            st.quick_save_calls("date", "   ", None)
+                .unwrap_err()
+                .contains("模板")
+        );
+        assert!(
+            st.quick_save_calls("", "$Y", None)
+                .unwrap_err()
+                .contains("类别")
+        );
+        // 编辑时类别来自 orig，故不校验选择器那个值
+        let orig = Some(("date".to_string(), "date.u1".to_string()));
+        assert!(st.quick_save_calls("", "$Y", orig).is_ok());
+    }
+
+    /// ★ 变量提示：变量集**相同**的类别合并成一节，不同的各占一节。
+    ///
+    /// core 里 date 与 month_day 的变量完全一样（17 条），不合并就要把同样的十七行出两遍。
+    ///
+    /// 直接注入缓存而不是走 mock：mock 要靠进程级环境变量 `WIND_RPC_MOCK`，测试并发跑时
+    /// 互相干扰；而注入还能造出「两类变量集相同」这个真实场景（mock 数据里没有）。
+    #[test]
+    fn quick_var_lines_merge_kinds_sharing_one_var_set() {
+        let st = quick_state_fixture();
+        let date_vars = vec![
+            ("Y".to_string(), "年".to_string()),
+            ("LMD".to_string(), "农历月日".to_string()),
+        ];
+        *st.quick_vars.borrow_mut() = vec![
+            ("date".to_string(), date_vars.clone()),
+            // 与 date 逐条相同 → 应与它合并成一节
+            ("month_day".to_string(), date_vars.clone()),
+            (
+                "number".to_string(),
+                vec![("AMT".to_string(), "金额大写".to_string())],
+            ),
+        ];
+
+        let lines = st.build_quick_var_lines();
+        let headers: Vec<&str> = lines
+            .iter()
+            .filter(|(_, r)| r.is_empty())
+            .map(|(l, _)| l.as_str())
+            .collect();
+        assert_eq!(
+            headers,
+            vec!["日期 / 月日", "数字"],
+            "★ 变量集相同的两类合并成一节标题"
+        );
+        // 合并后 date 的两条变量只出现一次
+        let y_count = lines.iter().filter(|(l, _)| l == "$Y").count();
+        assert_eq!(y_count, 1, "$Y 不该出现两遍");
+        // 变量行的左列带 $ 前缀（照着抄就能用）
+        assert!(
+            lines
+                .iter()
+                .filter(|(_, r)| !r.is_empty())
+                .all(|(l, _)| l.starts_with('$')),
+            "变量名要带 $: {lines:?}"
+        );
+    }
+
+    /// ★ 变量提示放进可选中的输入框是为了**能复制**（用户要把 `$LMD` 照抄进模板）。
+    ///
+    /// 断言的是这段文本本身——它就是用户选中后复制走的内容，验的不是排版，
+    /// 而是「复制出来的东西对不对」这件用户真正在乎的事。
+    #[test]
+    fn quick_var_text_carries_copyable_variable_names() {
+        let st = quick_state_fixture();
+        *st.quick_vars.borrow_mut() = vec![
+            (
+                "date".to_string(),
+                vec![
+                    ("Y".to_string(), "年，如 2026".to_string()),
+                    ("LMD".to_string(), "农历月日，四月廿九".to_string()),
+                ],
+            ),
+            (
+                "number".to_string(),
+                vec![("AMT".to_string(), "金额大写".to_string())],
+            ),
+        ];
+        let text = st.build_quick_var_text();
+        assert!(text.contains("$Y"), "变量名要能复制到: {text}");
+        assert!(text.contains("$LMD"), "农历变量同理: {text}");
+        assert!(text.contains("农历月日，四月廿九"), "说明也要在");
+        assert!(text.contains("日期"), "节标题要在");
+        assert!(text.contains("不可混用"), "末尾那句用法说明也一并可复制");
+    }
+
+    /// 拿不到变量提示时文本仍可构造（只剩末尾那句说明），不 panic——core 没连上时
+    /// 对话框要照常能用。
+    #[test]
+    fn quick_var_text_survives_missing_data() {
+        let st = quick_state_fixture();
+        let text = st.build_quick_var_text();
+        // 断言具体变量名而不是裸 `$`：末尾那句说明本身就含「$变量」三个字。
+        assert!(!text.contains("$Y"), "没有变量数据时不该凭空出现变量名");
+        assert!(!text.contains("$AMT"));
+        assert!(text.contains("不可混用"), "静态的用法说明仍在");
+    }
+
+    /// 拿不到变量提示时返回空、不 panic——core 没连上时对话框仍要能用
+    /// （模板非法会在保存期由 core 拒绝，提示只是便利）。
+    #[test]
+    fn quick_var_lines_tolerate_missing_data() {
+        let st = quick_state_fixture();
+        // 不注入任何缓存，且测试环境没有 core：应安静地给出空清单
+        assert!(st.build_quick_var_lines().is_empty());
+    }
+
+    /// 类别选项从数据现取：同一个 `quick_kinds_present`，故不会与列表里的类别脱节。
+    #[test]
+    fn quick_kind_options_follow_the_data() {
+        let st = quick_state_fixture();
+        assert_eq!(st.quick_kind_options(), st.quick_kinds_present());
+        // 下标 → kind；越界回落首项而不是 panic 或空串
+        st.quick_kind_idx.set(999);
+        assert_eq!(
+            st.quick_selected_kind(),
+            st.quick_kind_options()[0],
+            "越界回落首项"
+        );
+    }
+
+    /// 导入摘要必须**如实报出**跳过项与自定义条目数。
     ///
     /// 用户看到「导入成功」却少了规则，无从判断是文件坏了还是程序吃了。
+    ///
+    /// ⚠️ 字段名是 `formats`（实际写入数）。P1 时叫 `ignoredFormats`（当时没有存储落点，
+    /// 如实报「已忽略」）——core 侧改名时这里必须跟着改，否则摘要会永远说「暂不支持」。
     #[test]
     fn quick_import_summary_never_hides_skipped_items() {
-        let clean = json!({ "moved": 3, "disabled": 1, "ignoredFormats": 0, "skipped": [] });
+        let clean = json!({ "moved": 3, "disabled": 1, "formats": 0, "skipped": [] });
         let s = DictManagerState::quick_import_summary(&clean);
         assert!(s.contains('3') && s.contains('1'), "{s}");
         assert!(!s.contains("跳过"), "干净的导入不该提跳过: {s}");
+        assert!(!s.contains("自定义"), "一条都没有时不提自定义条目: {s}");
 
         let dirty = json!({
-            "moved": 1, "disabled": 0, "ignoredFormats": 2,
+            "moved": 1, "disabled": 0, "formats": 2,
             "skipped": ["条目 x：未知类别 weather", "调整段：未知类别 nope"]
         });
         let s = DictManagerState::quick_import_summary(&dirty);
-        assert!(
-            s.contains('2') && s.contains("忽略"),
-            "自定义条目要报出来: {s}"
-        );
+        assert!(s.contains("自定义条目 2"), "自定义条目数要报出来: {s}");
         assert!(s.contains("跳过"), "跳过项要报出来: {s}");
+        assert!(
+            !s.contains("不支持"),
+            "★ 自定义条目已能导入，摘要不该再说「暂不支持」: {s}"
+        );
     }
 
     #[test]

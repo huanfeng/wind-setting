@@ -143,6 +143,12 @@ pub struct WordRow {
     pub move_index: Option<usize>,
     /// 快捷输入专用：用户是否调整过（移动或停用，读 `adjusted`）。决定「恢复此条」能不能点。
     pub adjusted: bool,
+    /// 快捷输入专用：是不是用户自己加的条目（读 `user`）。
+    ///
+    /// ⚠️ 与 [`Self::adjusted`] **不是一回事**，行内操作按它分流：出厂条目被调序过也是
+    /// `adjusted`，但它只能停用、能「恢复默认」；用户条目反过来——能改模板、能真删，
+    /// 而它没有「默认」可回到（「恢复此条」对它无意义，要禁掉）。
+    pub user: bool,
 }
 
 impl WordRow {
@@ -200,6 +206,7 @@ impl WordRow {
                 position: i("displayPos"),
                 enabled: b("enabled"),
                 adjusted: b("adjusted"),
+                user: b("user"),
                 sample: s("sample"),
                 move_index: v
                     .get("moveIndex")
@@ -734,20 +741,26 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
 
 // 快捷输入：不显示格式 id（`date.cn` 这种对用户没有识别价值，认条目靠「示例」那一列），
 // 省下的宽度给示例。id 仍可从行右键菜单里复制。
+// ⚠️ 这四个权重（含 `actions_weight` 给的操作列）是**一组配比**，不是各自独立的宽度：
+// 实际宽度 = 本列权重 / 总权重。动其中任何一个都会挤到其余所有列——操作列为装下
+// 用户条目的五个控件从 1.5 提到 2.9 时，类别列数值没变，占比却从 12.7% 掉到 10.1%，
+// 「年月」两个汉字就折行了。改任一列前先把四个数加起来算占比。
+// 现行配比合计 7.3：类别 14% / 格式 25% / 示例 25% / 操作 37%。
 const COLS_QUICK: &[ColumnSpec] = &[
     ColumnSpec {
         header: "类别",
-        weight: 0.7,
+        // 内容恒是两个汉字（日期/月日/年月/数字/计算），够放不折行即可。
+        weight: 1.0,
         field: WordField::Kind,
     },
     ColumnSpec {
         header: "格式",
-        weight: 1.6,
+        weight: 1.8,
         field: WordField::Text,
     },
     ColumnSpec {
         header: "示例",
-        weight: 1.7,
+        weight: 1.8,
         field: WordField::Sample,
     },
 ];
@@ -756,9 +769,9 @@ const COLS_QUICK: &[ColumnSpec] = &[
 ///
 /// 全局（不按方案）：core 那张调整表的键只到格式类别，不带方案。
 ///
-/// **无增删**：`kind` 是解析器白名单，条目只能由出厂表或高级用户手写的
-/// `system.quick.toml` 提供，GUI 只做调序 / 停用 / 恢复。（用户自定义条目是后续的事，
-/// 届时才会有 `add`/`remove`。）
+/// **增删只对用户自己的条目**：`kind` 是解析器白名单（不可自创），出厂条目的模板也不可改
+/// ——想要别的写法就停用出厂那条、自己加一条。故 `add`/`edit`/`remove` 三个开关为真，
+/// 但每一行能不能用要看 [`WordRow::user`]（见 `row_ops`），不是整类一刀切。
 ///
 /// 客户端搜索：条目总数二十余条，一次全取，服务端搜索反而多一轮 RPC。
 const SPEC_QUICK: CategorySpec = CategorySpec {
@@ -777,6 +790,10 @@ const SPEC_QUICK: CategorySpec = CategorySpec {
         reset_default: true,
         import: true,
         export: true,
+        // 三个「按行才知道能不能用」的能力：出厂条目一律不可编辑/删除。
+        add: true,
+        edit: true,
+        remove: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -786,9 +803,54 @@ const SPEC_QUICK: CategorySpec = CategorySpec {
         reset_entry: "quick.resetEntry",
         // 整类恢复；「整表」由状态层对每个类别各调一次。
         reset_default: "quick.resetKind",
+        add: "quick.add",
+        // 改的是**模板**，故落在 update 上；出厂条目会被 core 拒绝。
+        update: "quick.setText",
+        remove: "quick.delete",
         ..RpcNames::EMPTY
     },
 };
+
+/// 这一行实际可用的操作。
+///
+/// ★ 存在的理由：快捷输入是本页第一个「同一类别里，两种行有不同权限」的域。
+/// [`CategorySpec::ops`] 是**类别级**的能力声明（这一类有没有这个功能），到了行级还要
+/// 再过一道——否则用户会看到出厂条目上亮着「删除」，点下去收一句 core 的报错。
+///
+/// 其余类别没有行级差异，原样返回。
+pub fn row_ops(cat: WordCategory, row: &WordRow) -> OpFlags {
+    let base = spec_for(cat).ops;
+    match cat {
+        WordCategory::QuickFormat => OpFlags {
+            // 出厂条目：只能停用/调序/恢复默认
+            edit: row.user,
+            remove: row.user,
+            // 用户条目没有「默认」可回到——「恢复此条」对它无意义
+            reset_entry: base.reset_entry && !row.user && row.adjusted,
+            ..base
+        },
+        _ => base,
+    }
+}
+
+impl CategorySpec {
+    /// 操作列宽度权重。默认值只够「启用开关 + 两枚小按钮」。
+    ///
+    /// 快捷输入要宽一档：它的**用户条目**上最多同时出现五个控件——启用开关、↑、↓、
+    /// 编辑、删除。按默认宽度排，后面的按钮会被挤出可视区（列不会自动加宽，只会截断），
+    /// 用户看到的是「有些行的删除按钮不见了」。
+    ///
+    /// 出厂条目只有四个（无编辑无删除，见 `row_ops`），但列宽是**整列**的，
+    /// 必须按最宽的那种行算。
+    pub fn actions_weight(&self) -> f32 {
+        match self.category {
+            // 与 COLS_QUICK 的三个权重是一组配比（见那里的 ⚠️）：合计 7.3，
+            // 操作列占约 37%，恰好排下五个控件而不挤压类别列。
+            WordCategory::QuickFormat => 2.7,
+            _ => 1.5,
+        }
+    }
+}
 
 /// 取某类别的静态描述。
 pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
@@ -993,14 +1055,16 @@ mod tests {
         assert_eq!(kind_label("weather"), "—", "未知类别给占位符而不是空白");
     }
 
-    /// 快捷输入的能力声明：可调序 / 可停用 / 可恢复，但**不可增删**
-    /// （kind 是解析器白名单，条目只能来自格式表文件）。
+    /// 快捷输入的能力声明：可调序 / 可停用 / 可恢复 / 可增删改（后三者按行再过一道）。
+    ///
+    /// **没有 clear**：清空会连出厂条目一起没了，而它们不可删——这一类没有「清空」的语义。
     #[test]
-    fn quick_format_spec_allows_reorder_but_not_add_remove() {
+    fn quick_format_spec_allows_reorder_and_user_entries() {
         let q = spec_for(WordCategory::QuickFormat);
         assert!(q.ops.reorder && q.ops.set_enabled && q.ops.reset_entry);
         assert!(q.ops.import && q.ops.export);
-        assert!(!q.ops.add && !q.ops.remove && !q.ops.clear);
+        assert!(q.ops.add && q.ops.edit && q.ops.remove, "自定义条目");
+        assert!(!q.ops.clear, "出厂条目不可删，故没有「清空」");
         assert!(!q.scoped_by_schema, "全局，不按方案");
         assert!(!q.paged, "二十余条，一次全取");
         assert!(q.client_search, "客户端过滤，省一轮 RPC");
@@ -1009,6 +1073,97 @@ mod tests {
         assert_eq!(q.rpc.set_enabled, "quick.setEnabled");
         assert_eq!(q.rpc.reset_entry, "quick.resetEntry");
         assert_eq!(q.rpc.reset_default, "quick.resetKind");
+        assert_eq!(q.rpc.add, "quick.add");
+        assert_eq!(q.rpc.update, "quick.setText", "改的是模板");
+        assert_eq!(q.rpc.remove, "quick.delete");
+    }
+
+    /// ★★ 行级能力：出厂条目**只能停用**，用户条目**不能「恢复默认」**。
+    ///
+    /// 这是本页第一个「同类别里两种行权限不同」的域。类别级 `ops` 声明的是「这一类有没有
+    /// 这个功能」，到了行级还要再过一道——否则出厂条目上会亮着「删除」，点下去收一句
+    /// core 的报错，而用户完全不明白为什么。
+    #[test]
+    fn row_ops_split_factory_and_user_entries() {
+        let factory = WordRow {
+            kind: "date".into(),
+            code: "date.cn".into(),
+            adjusted: true,
+            user: false,
+            ..Default::default()
+        };
+        let mine = WordRow {
+            kind: "date".into(),
+            code: "date.u1".into(),
+            adjusted: true,
+            user: true,
+            ..Default::default()
+        };
+        let f = row_ops(WordCategory::QuickFormat, &factory);
+        assert!(!f.edit, "出厂模板不可改");
+        assert!(!f.remove, "出厂条目只能停用");
+        assert!(f.reset_entry, "调整过，可恢复默认");
+        assert!(f.set_enabled && f.reorder, "停用与调序两类都能做");
+
+        let u = row_ops(WordCategory::QuickFormat, &mine);
+        assert!(u.edit && u.remove, "自己的条目可改可删");
+        assert!(!u.reset_entry, "★ 用户条目没有「默认」可回到");
+        assert!(u.set_enabled && u.reorder);
+
+        // 没调整过的出厂条目：没什么可恢复的
+        let untouched = WordRow {
+            kind: "date".into(),
+            code: "date.iso".into(),
+            ..Default::default()
+        };
+        assert!(!row_ops(WordCategory::QuickFormat, &untouched).reset_entry);
+    }
+
+    /// 操作列宽度：快捷输入必须比默认宽——它的用户条目上有五个控件
+    /// （启用 + ↑ + ↓ + 编辑 + 删除），按默认宽度排后面的按钮会被挤出可视区，
+    /// 症状是「有些行的删除按钮不见了」。
+    #[test]
+    fn quick_format_actions_column_is_wider() {
+        let quick = spec_for(WordCategory::QuickFormat).actions_weight();
+        let other = spec_for(WordCategory::PhraseUser).actions_weight();
+        assert!(
+            quick > other,
+            "快捷输入的操作列要宽一档: {quick} vs {other}"
+        );
+        // 其余类别保持默认，不该被这次改动波及
+        for cat in [
+            WordCategory::PhraseSystem,
+            WordCategory::UserDict,
+            WordCategory::Temp,
+            WordCategory::Freq,
+            WordCategory::Shadow,
+        ] {
+            assert_eq!(spec_for(cat).actions_weight(), other, "cat={cat:?}");
+        }
+    }
+
+    /// 其余类别没有行级差异，`row_ops` 原样返回类别声明——加一层过滤不该悄悄改变它们。
+    #[test]
+    fn row_ops_is_transparent_for_other_categories() {
+        let row = WordRow {
+            code: "abc".into(),
+            text: "词".into(),
+            ..Default::default()
+        };
+        for cat in [
+            WordCategory::PhraseSystem,
+            WordCategory::PhraseUser,
+            WordCategory::UserDict,
+            WordCategory::Temp,
+            WordCategory::Freq,
+            WordCategory::Shadow,
+        ] {
+            let base = spec_for(cat).ops;
+            let got = row_ops(cat, &row);
+            assert_eq!(got.edit, base.edit, "cat={cat:?} edit");
+            assert_eq!(got.remove, base.remove, "cat={cat:?} remove");
+            assert_eq!(got.reset_entry, base.reset_entry, "cat={cat:?} reset_entry");
+        }
     }
 
     /// 声明了某个 op 就必须有对应的 RPC 方法名，否则点了只会得到「该操作不可用」。

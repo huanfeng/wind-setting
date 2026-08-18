@@ -20,11 +20,11 @@ use crate::widgets::flat_panel;
 use super::reactive::{reactive_effect, toast_sink};
 use super::spec::{ColumnSpec, WordField, kind_label};
 #[cfg(test)]
-use super::state::{DOMAIN_PHRASE, GLOBAL_DOMAINS};
+use super::state::{DOMAIN_PHRASE, DOMAIN_QUICK, GLOBAL_DOMAINS};
 use super::state::{DictManagerState, DomainKind, tabs_for_kind};
 
-/// 操作列宽度权重（相对数据列分配；需容纳 启用开关 + 最多两枚小按钮）。
-const ACTIONS_WEIGHT: f32 = 1.5;
+// 操作列宽度权重由类别决定，见 `CategorySpec::actions_weight`——快捷输入的用户条目
+// 最多同时有五个控件（启用 + ↑↓ + 编辑 + 删除），默认宽度装不下。
 
 /// 子标签单段固定宽度（各数据域分段等宽，总宽 = 段数 × 此值）。
 const SUB_TAB_SEG_W: i32 = 104;
@@ -287,10 +287,20 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let add = Element::button("+ 添加")
         .small()
         .on_click(move |_| {
-            if m_add.current_category() == super::spec::WordCategory::Shadow {
-                m_add.open_shadow_add();
-            } else {
-                m_add.open_add();
+            use super::spec::WordCategory as C;
+            match m_add.current_category() {
+                C::Shadow => m_add.open_shadow_add(),
+                // 预选类别：取当前列表里第一个类别，用户可在对话框里改。
+                // 不固定成 date——用户搜过/滚到某一类时，那一类才是他要加的。
+                C::QuickFormat => {
+                    let kind = m_add
+                        .quick_kind_options()
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+                    m_add.open_quick_add(&kind);
+                }
+                _ => m_add.open_add(),
             }
         })
         .visible_when(move || v_add.current_spec().ops.add);
@@ -421,7 +431,8 @@ fn build_table(mgr: &DictManagerState) -> Element {
         m_sort.on_sort_changed()
     })
     .cell_render(move |row, col, text| render_cell(&m_cell, columns, row, col, text))
-    .actions("操作", ACTIONS_WEIGHT, move |disp| {
+    // 宽度按类别取：表格随类别整表重建（table_epoch 驱动），故这里读到的恒是当前类别。
+    .actions("操作", mgr.current_spec().actions_weight(), move |disp| {
         build_row_actions(&m_act, disp)
     })
     // 双击整行进入编辑（仅支持编辑的类别；落点在操作列按钮上不触发）。
@@ -532,6 +543,10 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     let Some(row) = mgr.display_row(disp) else {
         return Vec::new();
     };
+    // 行级能力：同一类别里两种行可以有不同权限（快捷输入的出厂条目不可编辑/删除）。
+    // 菜单与操作列都读它，判据只此一处——两边各判一遍迟早漂移，而症状是
+    // 「菜单里能点、点下去报错」。
+    let rops = super::spec::row_ops(spec.category, &row);
     let text = row.display_text();
     let mut items: Vec<MenuItem> = Vec::new();
 
@@ -547,9 +562,16 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             false,
         ));
     }
-    if spec.ops.edit {
+    if rops.edit {
         let m = mgr.clone();
-        if spec.ops.remove_rule {
+        if spec.category == super::spec::WordCategory::QuickFormat {
+            let r = row.clone();
+            ops.push(MenuItem::run(
+                "编辑模板…",
+                move |_ctx| m.open_quick_edit(&r),
+                false,
+            ));
+        } else if spec.ops.remove_rule {
             // Shadow 类别：`row.text` 是规则原文（列表显示的模板原文不能回填，见 activate_row），
             // `cand_id` 必须带上，否则提交会擦掉短语规则的稳定 id。
             let (c, t, k, pos, cid) = (
@@ -604,18 +626,19 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                 .enabled(movable),
         );
     }
+    // 出厂条目才有「默认」可回到；用户自己加的条目没有，`row_ops` 已把它算进去
+    // （那一项对用户条目恒 false，故整条菜单项不出现，而不是出现后灰着）。
     if spec.ops.reset_entry {
         let m = mgr.clone();
         let r = row.clone();
-        // 没调整过就没什么可恢复的。
-        let adjusted = row.adjusted;
+        let can = rops.reset_entry;
         ops.push(
             MenuItem::run(
                 "恢复此条默认",
                 move |_ctx| m.do_quick_reset_entry(&r),
                 false,
             )
-            .enabled(adjusted),
+            .enabled(can),
         );
     }
     if spec.ops.promote {
@@ -656,16 +679,27 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         ],
     );
 
-    if spec.ops.remove {
+    if rops.remove {
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
+        let quick_row =
+            (spec.category == super::spec::WordCategory::QuickFormat).then(|| row.clone());
         push_group(
             &mut items,
             vec![
-                MenuItem::run("删除", move |_ctx| m.request_delete_row(&c, &t), false)
-                    // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
-                    // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
-                    .danger(),
+                MenuItem::run(
+                    "删除",
+                    move |_ctx| match &quick_row {
+                        // 快捷输入的主键是 (kind, id)，走专用确认——通用那条只带
+                        // (code, text)，kind 丢在半路，确认之后就拼不出请求了。
+                        Some(r) => m.request_quick_delete(r),
+                        None => m.request_delete_row(&c, &t),
+                    },
+                    false,
+                )
+                // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
+                // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
+                .danger(),
             ],
         );
     }
@@ -709,6 +743,8 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     let Some(row) = mgr.display_row(disp) else {
         return Element::leaf();
     };
+    // 与右键菜单同源的行级能力（见 `row_menu_items` 里的同名变量）。
+    let rops = super::spec::row_ops(spec.category, &row);
     let mut r = Element::row().cross(Align::Center).spacing(6);
 
     // 启用开关（短语）：勾选即调 `phrase.setEnabled` 即时生效。
@@ -770,10 +806,18 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         );
     }
 
-    // 编辑（候选调整走 open_shadow_edit，用户词库/短语走 open_edit）
-    if spec.ops.edit {
+    // 编辑（快捷输入走 open_quick_edit，候选调整走 open_shadow_edit，其余走 open_edit）
+    if rops.edit {
         let m = mgr.clone();
-        if spec.ops.remove_rule {
+        if spec.category == super::spec::WordCategory::QuickFormat {
+            let row_q = row.clone();
+            r = r.child(
+                Element::button("编辑")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| m.open_quick_edit(&row_q)),
+            );
+        } else if spec.ops.remove_rule {
             // Shadow 类别：预填现值打开 shadow 对话框。
             // `row.text` 是规则的原始文本（列表显示的模板原文不能回填，见 activate_row）；
             // `cand_id` 必须带上，否则提交会擦掉短语规则的稳定 id。
@@ -823,14 +867,28 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         );
     }
     // 删除词条（确认后执行）。
-    if spec.ops.remove {
+    //
+    // ⚠️ 判据用 `rops`（行级）而不是 `spec.ops`（类别级）：快捷输入的出厂条目不可删，
+    // 只能停用。用类别级判据会在出厂条目上也摆出删除按钮，而它按下去只会收到一句
+    // core 的报错——用户看到的是「有这个按钮，但点了就出错」。
+    //
+    // 主键也要按类别分流：快捷输入是 `(kind, id)`，通用路径发的是 `(code, text)`，
+    // 发错的症状正是 core 回一句「缺少参数 kind」。这与右键菜单是同一份判据的两个
+    // 落点，改一处漏一处就会不一致（`quick_format_factory_row_offers_no_delete`
+    // 同时钉住两侧）。
+    if rops.remove {
         let m = mgr.clone();
         let (c, t) = (row.code.clone(), row.text.clone());
+        let quick_row =
+            (spec.category == super::spec::WordCategory::QuickFormat).then(|| row.clone());
         r = r.child(
             Element::button("删除")
                 .small()
                 .danger()
-                .on_click(move |_| m.request_delete_row(&c, &t)),
+                .on_click(move |_| match &quick_row {
+                    Some(rq) => m.request_quick_delete(rq),
+                    None => m.request_delete_row(&c, &t),
+                }),
         );
     }
     r
@@ -1071,6 +1129,64 @@ mod tests {
         assert_eq!(
             menu_labels(&items),
             ["编辑…", "复制词条", "复制编码", "删除"]
+        );
+    }
+
+    /// ★★ 快捷输入：**出厂条目不可删、不可改模板**，用户自己加的才可以。
+    ///
+    /// 这是本页第一个「同类别里两种行权限不同」的域，判据在 `spec::row_ops` 一处，
+    /// 菜单与操作列都读它。曾经操作列漏读、仍用类别级 `spec.ops.remove`，于是出厂条目上
+    /// 也摆出了删除按钮，按下去收到 core 一句「缺少参数 kind」（通用删除路径发的是
+    /// `(code, text)`，而快捷输入的主键是 `(kind, id)`）——两个症状同一个根因。
+    #[test]
+    fn quick_format_factory_row_offers_no_delete() {
+        let mgr = DictManagerState::new();
+        mgr.domain.set(DOMAIN_QUICK);
+        mgr.on_nav_changed();
+        mgr.apply_rows(&json!([
+            { "kind": "date", "id": "date.cn", "text": "$Y年", "displayPos": 1,
+              "moveIndex": 0, "enabled": true, "adjusted": true, "user": false, "sample": "2026年" },
+            { "kind": "date", "id": "date.u1", "text": "$Y/$M", "displayPos": 2,
+              "moveIndex": 1, "enabled": true, "adjusted": false, "user": true, "sample": "2026/8" }
+        ]));
+
+        // 第 0 行：出厂条目——能停用、能恢复默认，但不能删、不能改模板
+        let factory = menu_labels(&row_menu_items(&mgr, 0));
+        assert!(
+            !factory.iter().any(|l| l == "删除"),
+            "★ 出厂条目不该有删除入口: {factory:?}"
+        );
+        assert!(
+            !factory.iter().any(|l| l == "编辑模板…"),
+            "★ 出厂条目的模板不可改: {factory:?}"
+        );
+        assert!(
+            factory.iter().any(|l| l == "启用"),
+            "但可以停用: {factory:?}"
+        );
+        assert!(
+            factory.iter().any(|l| l == "恢复此条默认"),
+            "调整过的出厂条目可恢复: {factory:?}"
+        );
+
+        // 第 1 行：用户条目——可删、可改模板；「恢复此条默认」对它无意义，应禁用
+        let mine = row_menu_items(&mgr, 1);
+        let labels = menu_labels(&mine);
+        assert!(
+            labels.iter().any(|l| l == "删除"),
+            "用户条目可删: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l == "编辑模板…"),
+            "用户条目可改模板: {labels:?}"
+        );
+        assert!(
+            !mine
+                .iter()
+                .find(|i| i.label == "恢复此条默认")
+                .map(|i| i.enabled)
+                .unwrap_or(false),
+            "用户条目没有「默认」可回到，该项应禁用"
         );
     }
 
