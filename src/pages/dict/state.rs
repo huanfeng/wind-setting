@@ -187,7 +187,12 @@ pub struct DictManagerState {
     ///
     /// 懒加载 + 常驻缓存：它是静态数据（core 的编译期常量），一次 RPC 取完够用整个会话，
     /// 每次开对话框都拉一遍只是白费一轮往返。
-    quick_vars: Rc<RefCell<QuickVarsByKind>>,
+    ///
+    /// ⚠️ 用 `Option` 而非空 `Vec` 表达「取没取过」：空 `Vec` 分不清「还没取」与「取回来
+    /// 就是空的」，于是 core 一断开，[`Self::build_quick_var_lines`] 的每类循环都会各发
+    /// 一轮 RPC（类别有几个就几轮），"一次取完"的承诺形同虚设。`None`=没取过、
+    /// `Some`=取过（失败仍留 `None`，下次开对话框可重试，不会因一次连不上就永久没提示）。
+    quick_vars: Rc<RefCell<Option<QuickVarsByKind>>>,
 
     // ── 系统短语只读查看对话框 ──
     pub view_visible: Signal<bool>,
@@ -416,7 +421,7 @@ impl DictManagerState {
             edit_weight: signal("0".to_string()),
             edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
-            quick_vars: Rc::new(RefCell::new(Vec::new())),
+            quick_vars: Rc::new(RefCell::new(None)),
             shadow_orig: Rc::new(RefCell::new(None)),
             shadow_cand_id: Rc::new(RefCell::new(String::new())),
             view_visible: signal(false),
@@ -1403,6 +1408,8 @@ impl DictManagerState {
     ///
     /// 变量集相同的类别合并成一节（date 与 month_day 完全相同），否则同样的 17 行要出两遍。
     pub(crate) fn build_quick_var_lines(&self) -> Vec<(String, String)> {
+        // 一轮 RPC 覆盖所有类别；放在循环外，core 断开时也只发一次。
+        self.ensure_quick_vars();
         let kinds = self.quick_kind_options();
         let mut sections: Vec<QuickVarSection> = Vec::new();
         for k in &kinds {
@@ -1455,48 +1462,59 @@ impl DictManagerState {
         out
     }
 
-    /// 取某类的模板变量提示（首次调用时拉取并缓存）。
+    /// 确保变量提示已取过（没取过才发一轮 RPC）。
     ///
     /// 真相源在 core（`FormatKind::var_hints`）：设置仓自己硬编码一份，会在主程序加新变量时
     /// 静默过时——用户照提示写不出新变量，或提示里的变量已被删，两种都看不出是提示的错。
-    pub fn quick_vars_of(&self, kind: &str) -> Vec<(String, String)> {
-        if self.quick_vars.borrow().is_empty() {
-            match rpc::call_core("quick.vars", &json!({})) {
-                Ok(v) => {
-                    let mut cache = self.quick_vars.borrow_mut();
-                    for k in v.as_array().map(|a| a.as_slice()).unwrap_or_default() {
-                        let name = k
-                            .get("kind")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let vars: Vec<(String, String)> = k
-                            .get("vars")
-                            .and_then(|x| x.as_array())
-                            .map(|a| {
-                                a.iter()
-                                    .map(|it| {
-                                        let s = |f: &str| {
-                                            it.get(f)
-                                                .and_then(|x| x.as_str())
-                                                .unwrap_or("")
-                                                .to_string()
-                                        };
-                                        (s("name"), s("desc"))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        cache.push((name, vars));
-                    }
-                }
-                // 拿不到就不显示提示：对话框照样能用（模板非法时保存期会报错）。
-                // 这里不弹提示——用户是来加条目的，一个「变量提示加载失败」只会添乱。
-                Err(e) => tracing::warn!("快捷输入变量提示加载失败: {e}"),
-            }
+    ///
+    /// 拉取独立于 [`Self::quick_vars_of`]，由 [`Self::build_quick_var_lines`] 在遍历类别
+    /// **之前**调一次：拉取若写在按类查询里，core 断开时每类都会各发一轮，类别有几个就几轮。
+    ///
+    /// 失败**不**写缓存：core 可能只是还没起来（设置页先于它启动），留 `None` 让下次开
+    /// 对话框重试，比一次连不上就整个会话没提示要好。
+    fn ensure_quick_vars(&self) {
+        if self.quick_vars.borrow().is_some() {
+            return;
         }
+        match rpc::call_core("quick.vars", &json!({})) {
+            Ok(v) => {
+                let mut cache: QuickVarsByKind = Vec::new();
+                for k in v.as_array().map(|a| a.as_slice()).unwrap_or_default() {
+                    let name = k
+                        .get("kind")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let vars: Vec<(String, String)> = k
+                        .get("vars")
+                        .and_then(|x| x.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .map(|it| {
+                                    let s = |f: &str| {
+                                        it.get(f).and_then(|x| x.as_str()).unwrap_or("").to_string()
+                                    };
+                                    (s("name"), s("desc"))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    cache.push((name, vars));
+                }
+                *self.quick_vars.borrow_mut() = Some(cache);
+            }
+            // 拿不到就不显示提示：对话框照样能用（模板非法时保存期会报错）。
+            // 这里不弹提示——用户是来加条目的，一个「变量提示加载失败」只会添乱。
+            Err(e) => tracing::warn!("快捷输入变量提示加载失败: {e}"),
+        }
+    }
+
+    /// 取某类的模板变量提示。**纯查询**，不发 RPC——拉取见 [`Self::ensure_quick_vars`]。
+    pub(crate) fn quick_vars_of(&self, kind: &str) -> Vec<(String, String)> {
         self.quick_vars
             .borrow()
+            .as_deref()
+            .unwrap_or_default()
             .iter()
             .find(|(k, _)| k == kind)
             .map(|(_, v)| v.clone())
@@ -3313,7 +3331,7 @@ mod tests {
             ("Y".to_string(), "年".to_string()),
             ("LMD".to_string(), "农历月日".to_string()),
         ];
-        *st.quick_vars.borrow_mut() = vec![
+        *st.quick_vars.borrow_mut() = Some(vec![
             ("date".to_string(), date_vars.clone()),
             // 与 date 逐条相同 → 应与它合并成一节
             ("month_day".to_string(), date_vars.clone()),
@@ -3321,7 +3339,7 @@ mod tests {
                 "number".to_string(),
                 vec![("AMT".to_string(), "金额大写".to_string())],
             ),
-        ];
+        ]);
 
         let lines = st.build_quick_var_lines();
         let headers: Vec<&str> = lines
@@ -3354,7 +3372,7 @@ mod tests {
     #[test]
     fn quick_var_text_carries_copyable_variable_names() {
         let st = quick_state_fixture();
-        *st.quick_vars.borrow_mut() = vec![
+        *st.quick_vars.borrow_mut() = Some(vec![
             (
                 "date".to_string(),
                 vec![
@@ -3366,7 +3384,7 @@ mod tests {
                 "number".to_string(),
                 vec![("AMT".to_string(), "金额大写".to_string())],
             ),
-        ];
+        ]);
         let text = st.build_quick_var_text();
         assert!(text.contains("$Y"), "变量名要能复制到: {text}");
         assert!(text.contains("$LMD"), "农历变量同理: {text}");
@@ -3377,9 +3395,14 @@ mod tests {
 
     /// 拿不到变量提示时文本仍可构造（只剩末尾那句说明），不 panic——core 没连上时
     /// 对话框要照常能用。
+    ///
+    /// ⚠️ 「拿不到」必须**显式注入** `Some(vec![])`，不能靠「测试环境连不上 core」：
+    /// 开发机上往往正跑着输入法，RPC 会真的连上命名管道取回真实变量，本条随即变红。
+    /// 曾经就是这么红的——CI 上没有 core 所以一直绿，本地一装输入法就失败。
     #[test]
     fn quick_var_text_survives_missing_data() {
         let st = quick_state_fixture();
+        *st.quick_vars.borrow_mut() = Some(Vec::new());
         let text = st.build_quick_var_text();
         // 断言具体变量名而不是裸 `$`：末尾那句说明本身就含「$变量」三个字。
         assert!(!text.contains("$Y"), "没有变量数据时不该凭空出现变量名");
@@ -3389,11 +3412,31 @@ mod tests {
 
     /// 拿不到变量提示时返回空、不 panic——core 没连上时对话框仍要能用
     /// （模板非法会在保存期由 core 拒绝，提示只是便利）。
+    ///
+    /// 同 `quick_var_text_survives_missing_data`：注入空缓存表达「取过、core 没给数据」，
+    /// 不依赖开发机上恰好没运行输入法。
     #[test]
     fn quick_var_lines_tolerate_missing_data() {
         let st = quick_state_fixture();
-        // 不注入任何缓存，且测试环境没有 core：应安静地给出空清单
+        *st.quick_vars.borrow_mut() = Some(Vec::new());
         assert!(st.build_quick_var_lines().is_empty());
+    }
+
+    /// 变量提示只拉一轮：类别有几个就发几轮 RPC 的话，core 断开时开一次对话框要连着
+    /// 撞好几次超时。`None`=没取过、`Some`=取过，正是为了让这件事可判定。
+    #[test]
+    fn quick_vars_fetch_is_skipped_once_loaded() {
+        let st = quick_state_fixture();
+        assert!(st.quick_vars.borrow().is_none(), "初始应是「没取过」");
+        // 注入 = 已取过：ensure 必须直接返回，不碰 RPC（本机可能正跑着 core，
+        // 真发了 RPC 就会拿回真实数据，下面的空断言随即失败）。
+        *st.quick_vars.borrow_mut() = Some(Vec::new());
+        st.ensure_quick_vars();
+        assert_eq!(
+            st.quick_vars.borrow().as_deref(),
+            Some(&[][..]),
+            "已取过就不该再拉取覆盖"
+        );
     }
 
     /// 类别选项从数据现取：同一个 `quick_kinds_present`，故不会与列表里的类别脱节。
