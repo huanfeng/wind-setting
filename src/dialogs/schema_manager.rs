@@ -1617,16 +1617,19 @@ impl SchemaManagerState {
                 "scheme.previewImport",
                 &json!({ "path": path.to_string_lossy() }),
             ) {
-                Ok(v) => {
-                    state
-                        .import_preview_msg
-                        .set(Self::format_import_preview(&v));
-                    *state.pending_import_path.borrow_mut() = Some(path);
-                    state.import_confirm_visible.set(true);
-                }
+                Ok(v) => state.open_import_confirm(path, &v),
                 Err(e) => state.notify(ToastKind::Error, format!("预览失败: {e}")),
             }
         });
+    }
+
+    /// 打开导入确认对话框（`scheme.previewImport` 已由调用方完成）。
+    /// 统一导入分派器（高级页「导入文件…」）复用此入口，路由不重写域逻辑。
+    pub fn open_import_confirm(&self, path: std::path::PathBuf, preview: &Value) {
+        self.import_preview_msg
+            .set(Self::format_import_preview(preview));
+        *self.pending_import_path.borrow_mut() = Some(path);
+        self.import_confirm_visible.set(true);
     }
 
     /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。

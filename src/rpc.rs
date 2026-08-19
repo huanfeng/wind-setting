@@ -522,6 +522,33 @@ mod tests {
         assert!(arr.iter().any(|p| p.get("isSystem") == Some(&json!(false))));
     }
 
+    /// mock 的配置片段导入形状须与 core 契约一致：previewPatch 每条含 key/next
+    /// （current 可缺席=未设置，合法条目无 error）；applyPatch 含 ok/applied/needsRestart。
+    #[test]
+    fn mock_config_patch_shapes() {
+        let p = mock_reply("config.previewPatch");
+        assert_eq!(p.get("ok"), Some(&json!(true)));
+        let entries = p
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .expect("entries 数组");
+        assert!(!entries.is_empty());
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.get("key").is_some() && e.get("next").is_some())
+        );
+        assert!(
+            entries.iter().all(|e| e.get("error").is_none()),
+            "合法条目不带 error"
+        );
+
+        let a = mock_reply("config.applyPatch");
+        assert_eq!(a.get("ok"), Some(&json!(true)));
+        assert!(a.get("applied").and_then(|v| v.as_u64()).is_some());
+        assert!(a.get("needsRestart").and_then(|v| v.as_bool()).is_some());
+    }
+
     #[test]
     fn mock_shadow_add_rule_ok() {
         assert_eq!(mock_reply("shadow.addRule").get("ok"), Some(&json!(true)));
@@ -1138,6 +1165,16 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             "keptShared": [],
             "schemaIds": ["demo"]
         }),
+        // 配置片段导入（core 契约：previewPatch 只读逐条校验，current 缺席=未设置；
+        // applyPatch 全部合法才落盘，逐键错误时整体为 RPC error）。
+        "config.previewPatch" => json!({
+            "ok": true,
+            "entries": [
+                { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
+                { "key": "input.initial_mode", "next": "chinese" }
+            ]
+        }),
+        "config.applyPatch" => json!({ "ok": true, "applied": 2, "needsRestart": false }),
         // 整机备份（P4 契约）。
         "backup.create" | "backup.inspect" => json!({
             "path": "C:/tmp/backup.zip",

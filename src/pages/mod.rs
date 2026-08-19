@@ -11,6 +11,7 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 pub mod backup;
+pub mod config_import;
 pub mod dict;
 pub mod integration;
 pub mod stats;
@@ -56,7 +57,7 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
         .collect()
 }
 
-/// 高级页：manifest「advanced」分组 + 桌面集成 + 备份与还原卡片。
+/// 高级页：manifest「advanced」分组 + 桌面集成 + 导入与导出 + 备份与还原卡片。
 /// （原通用 manifest_page 仅剩本页使用，逻辑并入此处。）
 ///
 /// 桌面集成排在备份之前：协议关联属于"这台机器上装好了没"，与备份这种一次性动作
@@ -71,6 +72,10 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         );
     }
     secs.push(integration::build_integration_section(app, state));
+    secs.push(config_import::build_import_export_section(
+        &state.config_import,
+        &state.schema_mgr,
+    ));
     secs.push(backup::build_backup_section(&state.backup_mgr));
     sections_page("高级", "服务与实验性功能", secs)
 }

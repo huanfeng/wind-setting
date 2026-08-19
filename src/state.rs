@@ -214,6 +214,8 @@ pub struct AppState {
     pending_dict_target: Rc<RefCell<Option<crate::cli::DictTarget>>>,
     /// 备份还原状态（高级页卡片 + 还原确认对话框）。
     pub backup_mgr: crate::pages::backup::BackupState,
+    /// 统一配置导入状态（高级页「导入与导出」卡片 + 导入配置对话框）。
+    pub config_import: crate::pages::config_import::ConfigImportState,
     /// 桌面集成状态（高级页卡片 + 协议注册的两个确认对话框）。
     pub integration: crate::pages::integration::IntegrationState,
     /// 统计页状态（数据快照 + 清理确认对话框）。
@@ -451,6 +453,7 @@ impl AppState {
             dict_mgr: DictManagerState::new(),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
+            config_import: crate::pages::config_import::ConfigImportState::new(),
             integration: crate::pages::integration::IntegrationState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),
@@ -558,6 +561,40 @@ impl AppState {
 
     fn set_protocol_self_heal(&mut self, allow: bool) {
         self.setting_config.protocol.self_heal = allow;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.notify_err(e);
+        }
+    }
+
+    // ── .wpkg 文件关联 ────────────────────────────────────────────────────
+
+    /// 注册（或修复）`.wpkg` 关联。自愈意愿同步置回 `true`，规则同协议注册。
+    pub fn register_file_assoc(&mut self) {
+        match crate::file_assoc::register() {
+            Ok(()) => {
+                self.set_file_assoc_self_heal(true);
+                self.integration.refresh();
+                self.notify_ok(".wpkg 文件关联已注册");
+            }
+            Err(e) => self.notify_err(format!("文件关联注册失败：{e}")),
+        }
+    }
+
+    /// 解除 `.wpkg` 关联。**必须**同时把 `file_assoc.self_heal` 置 `false` ——
+    /// 否则下次启动自愈立刻把关联写回去（与协议取消注册同一条教训）。
+    pub fn unregister_file_assoc(&mut self) {
+        match crate::file_assoc::unregister() {
+            Ok(()) => {
+                self.set_file_assoc_self_heal(false);
+                self.integration.refresh();
+                self.notify_ok(".wpkg 文件关联已解除，启动时不再自动注册");
+            }
+            Err(e) => self.notify_err(format!("解除文件关联失败：{e}")),
+        }
+    }
+
+    fn set_file_assoc_self_heal(&mut self, allow: bool) {
+        self.setting_config.file_assoc.self_heal = allow;
         if let Err(e) = crate::setting_config::save(&self.setting_config) {
             self.notify_err(e);
         }
