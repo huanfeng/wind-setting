@@ -8,10 +8,10 @@
 
 pub mod dialogs;
 pub mod reactive;
+pub mod sidebar;
 pub mod spec;
 pub mod state;
 pub mod view;
 pub mod wordlist;
 
 pub use dialogs::build_dict_dialogs;
-pub use view::build_page;

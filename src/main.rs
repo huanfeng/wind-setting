@@ -10,6 +10,7 @@ mod capabilities;
 mod cli;
 mod config;
 mod dialogs;
+mod dict_window;
 mod icons;
 mod key_conflict;
 mod logger;
@@ -38,6 +39,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use windui::prelude::*;
+
+/// 没有 `EventCtx` 的回调（`single_instance` 的 argv 处理）送往 UI 线程的请求。
+///
+/// 之所以要绕这一道：开窗请求只在副作用被采纳的时机才算数（控件事件回调、
+/// `App::channel` 的 `on_message`、`on_interval`），而 `single_instance` 的回调虽然也在
+/// UI 线程，却只收 argv、拿不到 ctx。经 channel 转一手，回调那侧就有 ctx 了。
+pub enum UiRequest {
+    /// 打开词库管理窗（实际开不开取决于 `take_dict_window_request`）。
+    OpenDictWindow,
+}
 
 /// 同步拉取数据并 apply；连接不存在时 fast-fail 立即返回。重连复用此入口。
 ///
@@ -104,8 +115,16 @@ fn main() {
             st.dark.set(true);
         }
         // 初始页：--page <id> / --page=<id> / 快捷 --<id> / --tab <n>。
+        //
+        // `--page dict` 不再是"切到第 4 页"——词库已整体迁进独立窗，主窗那一格只剩个
+        // 永不显示的占位（见 `pages::dict_page`）。设过去只会得到一屏空白，故改为挂起一个
+        // 开窗请求，等 `apply_loaded` 之后再开（那时方案列表才就绪，`--schema` 才解析得出）。
         if let Some(idx) = cli::parse_target(&args) {
-            st.tab.set(idx);
+            if Some(idx) == cli::page_to_index("dict") {
+                st.request_dict_window(false);
+            } else {
+                st.tab.set(idx);
+            }
         }
         // 词库页深链（--schema/--type）：此刻方案列表尚未就绪，故只挂起，
         // 待 apply_loaded 注入方案后再定位（见 AppState::route_dict_target）。
@@ -158,11 +177,17 @@ fn main() {
                 route_protocol(&raw, &single_instance_state);
             } else if let Some(idx) = cli::parse_target(&argv) {
                 let st = single_instance_state.borrow();
-                st.tab.set(idx);
                 // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
                 // 头几十毫秒数据还没回来，route_dict_target 会自动改为挂起。
                 if let Some(t) = cli::parse_dict_target(&argv) {
                     st.route_dict_target(t);
+                }
+                if Some(idx) == cli::page_to_index("dict") {
+                    // 本回调没有 ctx，开不了窗（见 `UiRequest`），故经通道推一帧。
+                    // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
+                    st.request_dict_window(true);
+                } else {
+                    st.tab.set(idx);
                 }
             }
         })
@@ -175,8 +200,14 @@ fn main() {
 
     // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
     let app_state_cb = app_state.clone();
-    let tx = app.channel::<state::LoadedState>(move |_ctx, data| {
+    let tx = app.channel::<state::LoadedState>(move |ctx, data| {
         app_state_cb.borrow_mut().apply_loaded(data);
+        // 冷启动 `--page dict` 的落点：方案列表刚刚注入，此刻开窗左栏才有内容、
+        // `--schema` 也才解析得出域下标。channel 回调的副作用走
+        // `apply_dispatch_effects`，`open_window` 在这条路上是被采纳的。
+        if app_state_cb.borrow().take_dict_window_request() {
+            dict_window::open(ctx, &app_state_cb);
+        }
     });
 
     // 后台线程并行执行全部 RPC（fast-fail，管道不存在时几乎立即返回）。
@@ -210,6 +241,18 @@ fn main() {
         update_state.borrow().on_update_msg(msg);
     });
     app_state.borrow().set_update_tx(update_tx);
+
+    // UI 请求通道：`single_instance` 的 argv 回调没有 ctx，开不了窗（见 `UiRequest`），
+    // 由它把请求转到这里 —— channel 的 on_message 收 `&mut EventCtx`，副作用被采纳。
+    let ui_state = app_state.clone();
+    let ui_tx = app.channel::<UiRequest>(move |ctx, req| match req {
+        UiRequest::OpenDictWindow => {
+            if ui_state.borrow().take_dict_window_request() {
+                dict_window::open(ctx, &ui_state);
+            }
+        }
+    });
+    app_state.borrow().set_ui_tx(ui_tx);
 
     // 启动静默检查更新：三重门控（已同意联网 + 未关自动检查 + 距上次超 24h）。
     // 无更新或失败都不打扰用户，只有确实有新版本且未被「跳过此版本」屏蔽才弹对话框。
@@ -261,6 +304,10 @@ fn main() {
             return true;
         };
         if !st.has_unsaved_changes() {
+            // 放行的这一刻才宣告退出：词库子窗的哨兵据此自行关闭（windui 没有"关别的
+            // 窗口"的 API）。置位必须在**放行分支**里 —— 下面那条是拦下、应用并没有要退出，
+            // 在那里置位会让用户点了取消之后词库窗自己消失。
+            st.mark_app_exiting();
             return true;
         }
         st.exit_confirm.set(true);
@@ -280,8 +327,14 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {
             let st = state.borrow();
-            let idx = if req.kind == "theme" { 3 } else { 4 };
-            st.tab.set(idx);
+            // 只有主题导入有页可切（外观页）。其余 kind 一律只弹一句"暂不支持"，**不切页**：
+            // 此前它们被送到索引 4（词库），而词库现在是主窗里一格永不显示的占位，切过去
+            // 就是一屏空白 —— 用户点了个导入链接，设置窗跳出来却什么都没有。
+            if req.kind == "theme"
+                && let Some(i) = cli::page_to_index("ui")
+            {
+                st.tab.set(i);
+            }
             tracing::info!(
                 "协议导入请求: kind={} url={} name={}",
                 req.kind,
@@ -328,7 +381,7 @@ mod tests {
         );
 
         let st = state.borrow();
-        assert_eq!(st.tab.get(), 3);
+        assert_eq!(st.tab.get(), crate::cli::page_to_index("ui").unwrap());
         assert_eq!(
             st.pending_theme_import_url.get(),
             "https://example.com/dark.toml"
@@ -358,7 +411,9 @@ mod tests {
         );
 
         let st = state.borrow();
-        assert_eq!(st.tab.get(), 4);
+        // 不支持的 kind **不切页**：停在上一次主题请求切到的外观页，而不是被送去词库
+        // 那一格永不显示的占位（切过去就是一屏空白）。
+        assert_eq!(st.tab.get(), crate::cli::page_to_index("ui").unwrap());
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());

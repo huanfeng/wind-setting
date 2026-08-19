@@ -550,8 +550,15 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
 
 // ───────────────────────── 词库 ─────────────────────────
 
-fn dict_page(state: &AppState) -> Element {
-    dict::build_page(state)
+/// 词库在主窗里只剩一个**永不显示的占位格**：这一页已整体迁进独立窗
+/// （[`crate::dict_window`]），侧栏那一项是开窗的动作项、不切页，故 `tab` 永远不会等于
+/// 它的下标。
+///
+/// 保留占位而不是把这一格从 `all_tabs` 里删掉：`cli::PAGES` 与本函数的顺序是靠约定对齐的
+/// （`page_to_index("dict") == 4`），少一格就会让它后面的「统计/高级/关于」整体前移一位，
+/// 于是 `--page about` 打开的是高级页 —— 不报错、不 panic，只是每一条深链都错一格。
+fn dict_page(_state: &AppState) -> Element {
+    Element::leaf()
 }
 
 // ───────────────────────── 关于 ─────────────────────────

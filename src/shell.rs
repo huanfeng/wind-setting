@@ -28,7 +28,6 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         conn,
         feedback,
         dialog,
-        dict_dialog,
         theme_import_dialog,
         backup_dialog,
         stats_confirm_dialog,
@@ -51,7 +50,6 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.conn,
             st.feedback,
             build_schema_manager_dialog(&st.schema_mgr),
-            pages::dict::build_dict_dialogs(&st.dict_mgr),
             build_theme_import_dialog(app),
             pages::backup::build_backup_restore_dialog(&st.backup_mgr),
             pages::stats::build_stats_confirm_dialog(&st.stats_mgr),
@@ -65,11 +63,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 静态色控件（图标 tint/渐变/淡底）用它做亮暗双态，须在页面构建前注册。
     crate::widgets::init_dark_sig(dark);
 
-    let titlebar = build_titlebar();
+    let titlebar = build_titlebar("设置");
 
     // 左侧栏：图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
     let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
-    let nav = build_nav(&names, tab_sig);
+    let nav = build_nav(&names, tab_sig, app);
     // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
     let sidebar = Element::col()
         .width(184)
@@ -119,7 +117,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(protocol_overwrite_dlg)
         .child(protocol_remove_dlg)
         .child(dialog)
-        .child(dict_dialog)
+        // 词库对话框已随词库页迁进独立窗（见 `dict_window::build_content`），不在这里挂。
         .child(theme_import_dialog)
         .child(backup_dialog)
         .child(stats_confirm_dialog)
@@ -147,9 +145,17 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 /// 选中/未选中为两套元素 visible_when 切换（windui 无 hover-only/响应式样式）；
 /// 渐变图标块为静态色，按 `widgets::dark_sig()` 再分亮/暗双态。
 /// 「高级」项前插分隔线（参考稿 nav-sep）。
-fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
-    use crate::icons::{CHIP_PX, ICON_PX, nav_icon, tinted};
+///
+/// 「词库」是**动作项**而非页项：点它开独立窗（[`crate::dict_window::open`]），主窗停在
+/// 原页不动。故它没有选中态、没有指示条，改在右侧挂一枚「外开」角标把这件事说出来——
+/// 不给提示的话，点一下侧栏而当前页纹丝不动，看着就是按钮坏了。
+fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) -> Element {
+    use crate::icons::{CHIP_PX, EXTERNAL, ICON_PX, nav_icon, tinted};
     use crate::theme_def::{ACCENT_DARK, ACCENT_LIGHT};
+
+    // 动作项下标经 `page_to_index` 取，不写字面量 4：PAGES 与 `all_tabs` 的顺序本来就
+    // 靠约定对齐，这里再手抄一个下标，将来插一页就会指到隔壁那项上。
+    let dict_idx = crate::cli::page_to_index("dict");
 
     let mut col = Element::col().width_match().spacing(2);
     // 顶部小节标题。
@@ -177,6 +183,7 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
             );
         }
         let svg = nav_icon(name);
+        let is_action = dict_idx == Some(i);
 
         // ── 选中态（亮/暗双态渐变图标块 + accent 文字 + 左指示条）──
         let sel_chip = |accent: u32, active: u32, on_dark: bool| {
@@ -230,9 +237,16 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
             .visible_when(move || sel.get() == i);
 
         // ── 未选中态（可点击；图标中性灰，两主题通用）──
-        let off = Element::row()
+        let app_for_click = app.clone();
+        let mut off = Element::row()
             .clickable()
-            .on_click(move |_| sel.set(i))
+            .on_click(move |ctx| {
+                if is_action {
+                    crate::dict_window::open(ctx, &app_for_click);
+                } else {
+                    sel.set(i);
+                }
+            })
             .width_match()
             .height(36)
             .corner(9.0)
@@ -254,23 +268,37 @@ fn build_nav(names: &[String], sel: Signal<usize>) -> Element {
                     .weight(1.0)
                     .max_lines(1)
                     .height(18),
-            )
-            .visible_when(move || sel.get() != i);
+            );
+        if is_action {
+            // 角标比正文更淡：它是对「点了会发生什么」的注解，不该与条目本身争视线。
+            off = off.child(tinted(EXTERNAL, 13, Color::hex(0x8A93A5)).align(Align::Center));
+        }
+        // 动作项永不选中，`visible_when` 恒真即可 —— 但仍写成同一个判据，免得哪天
+        // `--tab 4` 之类的路径真把 sel 设成了它，整行凭空消失。
+        let off = off.visible_when(move || sel.get() != i);
 
-        col = col.child(
-            Element::stack()
-                .width_match()
-                .height(36)
-                .child(on)
-                .child(off)
-                .child(indicator),
-        );
+        // 层叠顺序保持 on → off → indicator 不变（on/off 互斥显示，但指示条要压在最上）。
+        // 动作项不生成选中态与指示条：它们的 `visible_when` 恒假，留着只是两棵永不显示
+        // 的子树，白占布局签名。
+        let mut item = Element::stack().width_match().height(36);
+        if !is_action {
+            item = item.child(on);
+        }
+        item = item.child(off);
+        if !is_action {
+            item = item.child(indicator);
+        }
+        col = col.child(item);
     }
     Element::scroll().fill().child(col)
 }
 
 /// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。
-fn build_titlebar() -> Element {
+///
+/// `subtitle` 是三段式标题的末段（主窗「设置」、词库窗「词库管理」）。参数化而非各窗
+/// 各写一份：Logo 尺寸、三段式的字重/弱化色分层、版本号基线对齐这些都是调过的，
+/// 复制一份出去就会在下次调整时漏改一边，而两个窗口并排摆着，差异一眼可见。
+pub(crate) fn build_titlebar(subtitle: &str) -> Element {
     // 应用图标（与 exe/任务栏同一张图，PNG 由 build 期从 .ico 提取的 256px 帧）。
     // 传 28 是**占位**边长：`app_icon` 内缩 2px 后实绘仍是 24px（图标视觉大小不变），
     // 多出的那 2px 是安全边距——小尺寸下按比例算只有 1px，不足以吸收落点吸附的
@@ -303,7 +331,7 @@ fn build_titlebar() -> Element {
                         .fg_role(Role::TextDisabled),
                 )
                 .child(
-                    Element::label("设置")
+                    Element::label(subtitle)
                         .font_size(13.0)
                         .fg_role(Role::TextMuted),
                 ),
@@ -502,6 +530,7 @@ fn build_footer(
 fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
     let visible = app.borrow().exit_confirm;
     let app_save = app.clone();
+    let app_quit = app.clone();
     let frame = Element::col()
         .width(380)
         .bg_role(Role::Surface)
@@ -547,7 +576,9 @@ fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                         .danger()
                         .on_click(move |ctx| {
                             visible.set(false);
-                            ctx.force_close();
+                            // 走 close_window 而非裸 force_close：退出置位收在那里，
+                            // 漏掉这一条就会留下一个关不掉的词库窗（见 mark_app_exiting）。
+                            app_quit.borrow().close_window(ctx);
                         }),
                 )
                 .child(Element::button("保存并退出").small().on_click(move |ctx| {

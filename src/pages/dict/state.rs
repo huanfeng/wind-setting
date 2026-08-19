@@ -84,6 +84,12 @@ pub struct DictManagerState {
     pub display_rows: Rc<RefCell<Vec<WordRow>>>,
     /// 表格结构版本（单元素，导航变化时递增）：列集随类别变，须整表重建。
     pub table_epoch: Signal<Vec<u64>>,
+    /// 域列表版本（单元素，`set_schemas_no_reload` 时递增）：驱动词库窗左栏整体重建。
+    ///
+    /// 与 `domain_items` 分开而不是直接把左栏挂在它上面：`host_signal` 是按 Vec 的**每个
+    /// 元素**调一次构建器的，挂多元素信号会得到 N 份完整列表叠在一起。同 `table_epoch`，
+    /// 这里要的是「变了就整体重建」，故用单元素计数器。
+    pub domain_epoch: Signal<Vec<u64>>,
     /// 受控排序状态（None=无排序；表头点击循环切换，导航变化时重置）。
     pub sort: Signal<Option<SortKey>>,
     /// 空态提示文本（无数据/未连接/无方案）；有数据时为空串（视图据此显隐覆盖层）。
@@ -379,6 +385,7 @@ impl DictManagerState {
             table_rows: signal(vec![]),
             display_rows: Rc::new(RefCell::new(Vec::new())),
             table_epoch: signal(vec![0]),
+            domain_epoch: signal(vec![0]),
             sort: signal(None),
             empty_msg: signal(String::new()),
             search: signal(String::new()),
@@ -964,6 +971,9 @@ impl DictManagerState {
             self.domain.set(DOMAIN_PHRASE);
         }
         self.last_domain.set(self.domain.get());
+        // 域集合已换一批，词库窗左栏须整体重建（新方案要出现、删掉的要消失）。
+        let epoch = self.domain_epoch.get().first().copied().unwrap_or(0);
+        self.domain_epoch.set(vec![epoch + 1]);
     }
 
     /// 数据域总数（两个全局域 + 折叠后各方案域）。

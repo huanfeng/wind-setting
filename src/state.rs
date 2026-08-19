@@ -5,7 +5,7 @@
 //! 登记进 [`FieldRegistry`]；[`AppState::save`] 跑所有写回器把 Signal 值写回
 //! Config，再与 base 做 diff，增量 `config.setItems`。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -206,6 +206,26 @@ pub struct AppState {
     pub schema_mgr: SchemaManagerState,
     /// 词库管理页状态（导航/数据加载/写操作）。
     pub dict_mgr: DictManagerState,
+    /// 待打开词库窗（`--page dict` 深链、协议路由）。
+    ///
+    /// 开窗**必须**有个 `EventCtx`，而且得是副作用被采纳的时机：`Tree::call_on_update`
+    /// 只把 toast 捞出来、丢弃整个 `EventOutcome`，所以响应式哨兵里 `open_window` 永不
+    /// 生效。命令行解析（冷启动）与 `single_instance` 回调（二次实例）都没有 ctx，故先
+    /// 在此挂起，由带 ctx 的 channel 回调消费（见 `main` 的两个 channel）。
+    pending_dict_window: Cell<bool>,
+    /// UI 请求通道：让**没有 ctx 的回调**（`single_instance` 的 argv 处理）能把
+    /// 「该开词库窗了」送到一个有 ctx 的时机。`main()` 在 App 构建期注入一次。
+    pub ui_tx: RefCell<Option<Sender<crate::UiRequest>>>,
+    /// 应用正在退出 —— 词库子窗的关闭哨兵据此自行 `request_close`。
+    ///
+    /// windui 没有「关掉别的窗口」或「退出应用」的 API（`WindowOp` 只有最小化/最大化/
+    /// 显隐四个变体），而它又是「关掉最后一个窗口才退进程」。于是主窗关掉后子窗会独活，
+    /// 而 `App::channel` 的 pumps 随主窗 `UiHost` 一起销毁 —— core 事件订阅、升级通道、
+    /// 二次实例开窗全部失效，主窗也再没有任何途径能重新开出来，只剩一个词库窗僵在那里。
+    ///
+    /// 故由主窗在**所有**退出路径上置位（见 [`Self::mark_app_exiting`]），子窗的
+    /// `on_interval` 哨兵轮询它。信号本身跨窗共享（`Signal` 是 `Copy` 句柄）。
+    pub app_closing: Signal<bool>,
     /// 待应用的词库页深链（`--page dict --schema .. --type ..`）。
     ///
     /// 冷启动解析命令行时方案列表尚未就绪（要等后台 RPC 回来才有），无从把 `--schema`
@@ -449,6 +469,9 @@ impl AppState {
             conflict: signal(String::new()),
             schema_mgr,
             dict_mgr: DictManagerState::new(),
+            pending_dict_window: Cell::new(false),
+            ui_tx: RefCell::new(None),
+            app_closing: signal(false),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
             integration: crate::pages::integration::IntegrationState::new(),
@@ -1204,6 +1227,30 @@ impl AppState {
         });
     }
 
+    /// 注入 UI 请求通道的发送端。`main()` 在 App 构建期调用一次。
+    pub fn set_ui_tx(&self, tx: Sender<crate::UiRequest>) {
+        *self.ui_tx.borrow_mut() = Some(tx);
+    }
+
+    /// 请求打开词库窗。只置标志，真正开窗由带 `EventCtx` 的 channel 回调完成。
+    ///
+    /// `notify` 决定要不要顺带唤醒 UI 通道：
+    /// - 冷启动时传 `false` —— 那一刻方案列表还没到（后台 RPC 在飞），开出来的窗左栏是空的，
+    ///   `--schema wb` 也无从解析成域下标。标志由 `apply_loaded` 之后的回调消费，时机天然对。
+    /// - 二次实例 / 协议路由传 `true` —— 数据早已就绪，需要立刻推一帧把窗开出来。
+    pub fn request_dict_window(&self, notify: bool) {
+        self.pending_dict_window.set(true);
+        if notify && let Some(tx) = self.ui_tx.borrow().clone() {
+            // 发送失败 = 窗口已关闭，此时开窗本来也没有意义。
+            let _ = tx.send(crate::UiRequest::OpenDictWindow);
+        }
+    }
+
+    /// 取走「该开词库窗了」这个请求（取一次即清）。
+    pub fn take_dict_window_request(&self) -> bool {
+        self.pending_dict_window.replace(false)
+    }
+
     /// 词库页深链统一入口：方案列表已就绪则立即定位，否则挂起等 [`Self::apply_loaded`] 消费。
     /// 冷启动（列表未就绪）与二次实例激活（已就绪）共用此入口，避免两条易走偏的路径。
     pub fn route_dict_target(&self, target: crate::cli::DictTarget) {
@@ -1459,8 +1506,26 @@ impl AppState {
     /// 确认框，就成了"安装器等窗口关、窗口等用户回答"——用户看到的是装到一半卡住。
     ///
     /// windui 0.12 的 `force_close` 正是为此而设，故本仓不再自备"已确认"标志位。
+    ///
+    /// 顺带宣告应用退出（见 [`Self::mark_app_exiting`]）：本方法是应用内所有主动关窗的
+    /// 统一入口，置位收在这里就不必让每个调用点各记一次。
     pub fn close_window(&self, ctx: &mut EventCtx) {
+        self.mark_app_exiting();
         ctx.force_close();
+    }
+
+    /// 宣告应用正在退出：词库子窗的哨兵读到后自行关闭，进程随最后一个窗口消亡。
+    ///
+    /// ⚠️ 主窗退出**不止一条路**，漏掉哪条，那条路关掉主窗后就会留下一个僵着的词库窗
+    /// （详见 [`Self::app_closing`]）。已知两类，各自的置位点：
+    /// 1. 应用内的主动关窗（底栏与确认框的「保存并退出」、「直接退出」、连接失败后的
+    ///    「退出」、升级的「立即安装」）—— 全部经 [`Self::close_window`]，置位收在那里；
+    /// 2. 系统 ✕ / Alt+F4 —— 走 `App::on_close_request`，在**放行的那一刻**由 `main` 调
+    ///    本方法。不能在拦下时就置位：那次关闭被取消了，应用并没有要退出。
+    ///
+    /// 第 1 类刻意绕过 `on_close_request`（见该处说明），所以把置位挂在守卫里覆盖不到它们。
+    pub fn mark_app_exiting(&self) {
+        self.app_closing.set(true);
     }
 
     /// 是否有未保存的改动（关窗确认用）。

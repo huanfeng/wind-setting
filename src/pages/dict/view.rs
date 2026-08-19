@@ -14,7 +14,6 @@
 
 use windui::prelude::*;
 
-use crate::state::AppState;
 use crate::widgets::flat_panel;
 
 use super::reactive::{reactive_effect, toast_sink};
@@ -53,10 +52,12 @@ const ALL_SEGMENTS: &[&[DomainKind]] = &[
     SEG_QUICK,
 ];
 
-/// 构建词库页。
-pub fn build_page(state: &AppState) -> Element {
-    let mgr = state.dict_mgr.clone();
-
+/// 按一份 [`DictManagerState`] 构建词库页主体。
+///
+/// 收值而不是 `&AppState`：这一页现在只长在独立词库窗里，而 `Window::content` 收的是
+/// `'static` 闭包，借用进不去。本页原本也只依赖 `dict_mgr`（它自带全部 Signal 与 Rc，
+/// 是个自包含的 `Clone` 单元），传值即可。
+pub fn build_page_for(mgr: DictManagerState) -> Element {
     // ── 响应式 effect：数据域/子标签变化 → 归零分页 + 重载（搜索词刻意保留）──
     let dom_v = mgr.domain;
     let sub_v = mgr.sub_tab;
@@ -95,52 +96,6 @@ pub fn build_page(state: &AppState) -> Element {
         move || fmt_v.version(),
         move || mgr_fmt.on_io_format_changed(),
     );
-
-    // ── 数据域选择器（富内容下拉：引擎类型徽章 + ‹ › 顺序切换 + 状态文字 + 刷新）──
-    let mgr_refresh = mgr.clone();
-    let dom_prev = mgr.clone();
-    let dom_next = mgr.clone();
-    let dom_en_p = mgr.clone();
-    let dom_en_n = mgr.clone();
-    let domain_row = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(10)
-        .padding_xy(0, 2)
-        .child(
-            Element::label("词库类型")
-                .font_size(13.0)
-                .fg_role(Role::TextMuted),
-        )
-        .child(Element::dropdown_items_signal(mgr.domain_rich_items, mgr.domain).width(240))
-        // ‹ › 按顺序切换数据域（循环），下拉列表过长时无需展开逐个查找。
-        .child(
-            Element::button("‹")
-                .small()
-                .outline_soft()
-                .on_click(move |_| dom_prev.prev_domain())
-                .enabled_when(move || dom_en_p.domain_count() > 1),
-        )
-        .child(
-            Element::button("›")
-                .small()
-                .outline_soft()
-                .on_click(move |_| dom_next.next_domain())
-                .enabled_when(move || dom_en_n.domain_count() > 1),
-        )
-        .child(Element::leaf().weight(1.0))
-        .child(
-            Element::label_signal(mgr.status)
-                .font_size(11.5)
-                .fg_role(Role::TextMuted)
-                .max_lines(1),
-        )
-        .child(
-            Element::button("刷新")
-                .small()
-                .outline_soft()
-                .on_click(move |_| mgr_refresh.reload()),
-        );
 
     // ── 方案子标签（按 domain_kind 动态显隐，同时只显一条）──
     //
@@ -262,7 +217,6 @@ pub fn build_page(state: &AppState) -> Element {
         main_col = main_col.child(crate::widgets::page_header("词库", "管理词库与自定义词条"));
     }
     let main_col = main_col
-        .child(domain_row)
         .child(sub_tabs)
         .child(toolbar)
         .child(card)
