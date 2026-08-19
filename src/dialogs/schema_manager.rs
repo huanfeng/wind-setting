@@ -3500,6 +3500,64 @@ mod ext_dict_tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 信封分支的端到端：**发出去的请求**长什么样。
+    ///
+    /// 与上面 zip 那条独立断言而不复用——两条路在 `confirm_import` 里是各自的
+    /// match 臂，共用一份断言的话，信封臂把 text 漏成空串、或错发成 zip 那一法，
+    /// 都能照绿。返回值对不对是一回事，请求里少个字段是另一回事，后者只有接上
+    /// 真实 core 才会暴露。
+    #[test]
+    fn confirm_import_text_envelope_sends_text_and_strategy() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = SchemaManagerState::new();
+
+        let envelope = "[package]\nformat_version = 2\nkind = \"schema_text\"\n";
+        let patch_text = "[keys.key_actions]\nbacktick = \"quick_input\"\n";
+        mgr.open_import_text_confirm(
+            envelope.to_string(),
+            &json!({
+                "willAdd": ["kf.schema.toml"], "conflicts": [],
+                "configPatch": { "text": patch_text, "ok": true, "entries": [
+                    { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                ]}
+            }),
+        );
+        // 清场：丢掉 new()/refresh 期间的调用，只看确认之后发出的。
+        let _ = crate::rpc::take_mock_calls();
+
+        let written = mgr.confirm_import("replace");
+        let calls = crate::rpc::take_mock_calls();
+        let find = |name: &str| calls.iter().find(|(m, _)| m == name).map(|(_, p)| p);
+        let pos = |name: &str| calls.iter().position(|(m, _)| m == name);
+
+        // ① 第一步：信封走 importText，text 逐字原样、strategy 跟着按钮走。
+        let p = find("scheme.importText").expect("信封必须走 scheme.importText");
+        assert_eq!(p.get("text").and_then(|v| v.as_str()), Some(envelope));
+        assert_eq!(p.get("strategy").and_then(|v| v.as_str()), Some("replace"));
+        assert!(
+            find("scheme.importPackage").is_none(),
+            "信封不得错发成 zip 那一法（它要的是 path，信封没有）"
+        );
+
+        // ② 第二步：applyPatch 收到的是 configPatch.text 原文（客户端不重新拼装）。
+        let ap = find("config.applyPatch").expect("带片段的包必须发第二步");
+        assert_eq!(ap.get("text").and_then(|v| v.as_str()), Some(patch_text));
+        assert!(
+            pos("scheme.importText") < pos("config.applyPatch"),
+            "先写方案文件再应用片段——次序反了，片段引用的方案还不存在"
+        );
+
+        // ③ written 原样回传给调用方去回灌镜像。
+        assert!(
+            written.iter().any(|(k, _)| k == "keys.key_actions"),
+            "written 应来自 applyPatch 响应，实际: {written:?}"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
     #[test]
     fn parse_filters_main_and_resolves_enabled() {
         let cfg = json!({ "dictionaries": [

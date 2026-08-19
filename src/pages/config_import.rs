@@ -35,22 +35,27 @@ use crate::widgets::{flat_panel, section, setting_row};
 /// `package-format.md` §3.4）。
 pub const NOT_SCHEMA_TEXT_PREFIX: &str = "not_schema_text:";
 
-/// core 对未注册方法的错误串标记（跨仓错误串契约，见主仓
-/// `wind-rpc/src/dispatch.rs` 与 `wind-webdata/src/lib.rs`，两层同款
-/// `unknown method: <方法名>`）。
+/// core 对未注册方法的错误前缀（跨仓错误串契约，主仓 `wind-webdata/src/lib.rs`
+/// 与 `wind-rpc/src/dispatch.rs` 两层同款 `unknown method: <方法名>`）。
 ///
 /// 认它是为了**版本斜错窗口**：新设置端配旧 core 时 `scheme.previewImportText`
 /// 尚未注册，若把这条也当成「信封的真实错误」，片段导入整条路会连带死掉，用户
 /// 看到的还是「方案文本解析失败」这种指错方向的提示。
-const UNKNOWN_METHOD_MARKER: &str = "unknown method";
+///
+/// **按前缀而非包含匹配**：已查证生产路径上这个串没有任何外层包装——core 侧是
+/// `anyhow::bail!` 直出，`dispatch.rs` 用 `e.to_string()`（anyhow 只取最外层消息）
+/// 装进 `Response::error`，本仓 `call_on_stream` 再原样透传。用包含匹配就多开了
+/// 一个误吃面：信封真实错误里回显的用户路径只要字面含这个串，就会被静默回落成
+/// 一串「未知配置键」——正是下面注释说要避免的那种噪音。
+const UNKNOWN_METHOD_PREFIX: &str = "unknown method: ";
 
 /// 这个 RPC 错误是否应当回落片段管线。
 ///
-/// 两种情形回落：**这段文本不是信封**（前缀契约），或**这个 core 还不认识信封
-/// 两法**（版本斜错）。其余一律不回落——信封自己写错了（files 路径非法、超限额
-/// 等）必须如实报，回落的话真正的原因会被片段管线的一串「未知配置键」淹没。
+/// 两种情形回落：**这段文本不是信封**，或**这个 core 还不认识信封两法**（版本
+/// 斜错）。两者都按前缀判定。其余一律不回落——信封自己写错了（files 路径非法、
+/// 超限额等）必须如实报，回落的话真正的原因会被片段管线的一串「未知配置键」淹没。
 fn falls_back_to_fragment(err: &str) -> bool {
-    err.starts_with(NOT_SCHEMA_TEXT_PREFIX) || err.contains(UNKNOWN_METHOD_MARKER)
+    err.starts_with(NOT_SCHEMA_TEXT_PREFIX) || err.starts_with(UNKNOWN_METHOD_PREFIX)
 }
 
 /// 预览区一行（渲染前已把值格式化成显示串，host_signal 的数据项要求 `Clone`）。
@@ -857,21 +862,28 @@ mod tests {
             "前缀契约只认开头，不认包含"
         );
 
-        // 形二：旧 core 没注册这两法。core 两层（wind-rpc dispatch / wind-webdata）
-        // 都是 `unknown method: <方法名>`，故按包含匹配。
+        // 形二：旧 core 没注册这两法。core 侧 `anyhow::bail!` 直出、dispatch 用
+        // `e.to_string()` 装进 Response::error、本仓 call_on_stream 原样透传——
+        // 已查证生产路径上无任何外层包装，故同样按前缀判定。
         assert!(falls_back_to_fragment(
             "unknown method: scheme.previewImportText"
         ));
-        assert!(falls_back_to_fragment(
-            "RPC 失败: unknown method: scheme.importText"
-        ));
+        assert!(
+            !falls_back_to_fragment("RPC 失败: unknown method: scheme.importText"),
+            "带外层包装的形态不在契约里；认它等于把判据放宽成包含匹配"
+        );
 
-        // 信封的真实错误：一条都不许回落。
+        // 信封的真实错误：一条都不许回落。末一条是收紧为前缀匹配要挡的那个误吃面
+        // ——用户路径字面含这个串时，包含匹配会把它静默回落成「未知配置键」噪音。
         assert!(!falls_back_to_fragment("files[0].path 非法: ../evil.toml"));
         assert!(!falls_back_to_fragment("信封超限: files 65 条"));
         assert!(!falls_back_to_fragment(
             "format_version 3 高于本版支持的 2，请升级应用"
         ));
+        assert!(
+            !falls_back_to_fragment("files[1].path 非法: docs/unknown method: 备忘.txt"),
+            "路径回显里含该串的信封真实错误必须如实报，不能被当成旧 core"
+        );
     }
 
     /// 包内 `configPatch` 与 previewPatch 的 entries 同形，缺席即纯方案包。

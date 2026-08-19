@@ -975,10 +975,30 @@ fn mock_word_code(text: &str) -> String {
 /// 报 `not_schema_text:`」来回落片段管线——离线模式下每段文本都会被当成方案信封，
 /// 片段导入整条路走不到。
 fn mock_result(method: &str, params: &Value) -> Result<Value, String> {
+    #[cfg(test)]
+    MOCK_CALLS.with(|c| c.borrow_mut().push((method.to_string(), params.clone())));
     match mock_error(method, params) {
         Some(e) => Err(e),
         None => Ok(mock_reply(method, params)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Mock 模式下按序记录每次调用的 (method, params)。
+    ///
+    /// 返回值对不对是一回事，**请求里少个字段**是另一回事——后者只有接上真实 core
+    /// 才会暴露，本地怎么点都是绿的。多步编排（导入两法 + applyPatch）尤其需要锁住
+    /// 发出去的参数形状与先后顺序。mock 分支不 spawn 线程，与调用方同线程，故
+    /// thread_local 够用。
+    static MOCK_CALLS: std::cell::RefCell<Vec<(String, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 取走并清空本线程记录的 mock 调用（取走语义：便于「清场 → 触发 → 断言」）。
+#[cfg(test)]
+pub(crate) fn take_mock_calls() -> Vec<(String, Value)> {
+    MOCK_CALLS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 /// mock 侧会「失败」的调用。目前只有文本信封两法：内容不是信封时按跨仓契约回
