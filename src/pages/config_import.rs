@@ -1,9 +1,14 @@
 //! 统一配置导入（高级页「导入与导出」卡片 + 可编辑文本区对话框）。
 //!
-//! 入口可以多（剪贴板 / 本地文件 / 直接手敲），通路只有一条：片段文本进可编辑
-//! 文本区 → 「校验预览」调 `config.previewPatch` 刷新只读预览 → 「应用」发
-//! `config.applyPatch`。校验全部在 core 侧（REGISTRY 权威在主仓），本页只渲染
-//! 结果；校验失败可在文本区就地改好后再点「校验预览」。
+//! 入口可以多（剪贴板 / 本地文件 / 直接手敲），通路只有一条：文本进可编辑文本区
+//! → 「校验预览」→ 只读预览 → 「应用」。校验全部在 core 侧（REGISTRY 权威在主仓），
+//! 本页只渲染结果；校验失败可在文本区就地改好后再点「校验预览」。
+//!
+//! 「校验预览」按内容分两支（`package-format.md` §4 侦测规则 4/5）：先问
+//! `scheme.previewImportText`——文本是方案信封（`package.kind = "schema_text"`）就
+//! 转交方案包导入确认对话框，与 zip 包同一个界面；只有 [`falls_back_to_fragment`]
+//! 认可的错误才回落片段管线 `config.previewPatch`。信封解析出的**真实**错误如实
+//! 回显，不回落——否则「信封里某个 path 非法」会被片段管线的「未知配置键」淹没。
 //!
 //! 「应用」门控：预览通过 **且** 文本区内容与最后一次校验时的原文逐字相同
 //! （见 [`can_apply`]）——文本一改动应用自动失效，杜绝「校验的是 A、应用的是 B」。
@@ -26,14 +31,53 @@ use crate::rpc;
 use crate::state::AppState;
 use crate::widgets::{flat_panel, section, setting_row};
 
+/// core 判定「这段文本不是方案信封」时的错误前缀（跨仓契约，见
+/// `package-format.md` §3.4）。
+pub const NOT_SCHEMA_TEXT_PREFIX: &str = "not_schema_text:";
+
+/// core 对未注册方法的错误前缀（跨仓错误串契约，主仓 `wind-webdata/src/lib.rs`
+/// 与 `wind-rpc/src/dispatch.rs` 两层同款 `unknown method: <方法名>`）。
+///
+/// 认它是为了**版本斜错窗口**：新设置端配旧 core 时 `scheme.previewImportText`
+/// 尚未注册，若把这条也当成「信封的真实错误」，片段导入整条路会连带死掉，用户
+/// 看到的还是「方案文本解析失败」这种指错方向的提示。
+///
+/// **按前缀而非包含匹配**：已查证生产路径上这个串没有任何外层包装——core 侧是
+/// `anyhow::bail!` 直出，`dispatch.rs` 用 `e.to_string()`（anyhow 只取最外层消息）
+/// 装进 `Response::error`，本仓 `call_on_stream` 再原样透传。用包含匹配就多开了
+/// 一个误吃面：信封真实错误里回显的用户路径只要字面含这个串，就会被静默回落成
+/// 一串「未知配置键」——正是下面注释说要避免的那种噪音。
+const UNKNOWN_METHOD_PREFIX: &str = "unknown method: ";
+
+/// 这个 RPC 错误是否应当回落片段管线。
+///
+/// 两种情形回落：**这段文本不是信封**，或**这个 core 还不认识信封两法**（版本
+/// 斜错）。两者都按前缀判定。其余一律不回落——信封自己写错了（files 路径非法、
+/// 超限额等）必须如实报，回落的话真正的原因会被片段管线的一串「未知配置键」淹没。
+fn falls_back_to_fragment(err: &str) -> bool {
+    err.starts_with(NOT_SCHEMA_TEXT_PREFIX) || err.starts_with(UNKNOWN_METHOD_PREFIX)
+}
+
 /// 预览区一行（渲染前已把值格式化成显示串，host_signal 的数据项要求 `Clone`）。
 #[derive(Clone)]
 pub struct PreviewRow {
-    /// 点分配置键。
+    /// 显示键：普通条目为点分配置键，Map 条目为 `父键[条目名]`——条目名不并入点分
+    /// 键，`custom_mappings` 的条目名本身可含 `.`（见 `package-format.md` §2.2）。
     pub key: String,
     /// 正常条目为「当前值 → 新值」，错误条目为错误原因。
     pub detail: String,
     pub is_error: bool,
+}
+
+/// 分发包携带的配置片段预览（`previewImport` / `previewImportText` 响应的
+/// 可选 `configPatch`）。确认导入后由第二步 `config.applyPatch` 应用。
+#[derive(Clone)]
+pub struct ConfigPatchPreview {
+    /// 片段原文，确认后原样交给 `config.applyPatch`（客户端不重新拼装）。
+    pub text: String,
+    /// 整片段是否通过校验。为假即**整包禁止导入**（`package-format.md` §3.3）。
+    pub ok: bool,
+    pub rows: Vec<PreviewRow>,
 }
 
 /// 配置导入状态（Signal 为 Copy，可直接 Clone 进闭包）。
@@ -55,9 +99,6 @@ pub struct ConfigImportState {
     /// 「应用」可点的校验半边：previewPatch ok 且至少一条可应用条目
     /// （另一半是「文本未改动」，见 [`can_apply`]）。
     pub apply_ok: Signal<bool>,
-    /// 校验通过时的逐条 (key, next)。应用成功后交给调用方回灌 AppState 的
-    /// 配置镜像，让 core 的 `config.changed` 回声被识别为本端写入而不弹提示。
-    validated_entries: Rc<RefCell<Vec<(String, Value)>>>,
     pub feedback: Feedback,
 }
 
@@ -77,7 +118,6 @@ impl ConfigImportState {
             rows: signal(Vec::new()),
             error_msg: signal(String::new()),
             apply_ok: signal(false),
-            validated_entries: Rc::new(RefCell::new(Vec::new())),
             feedback: signal(None),
         }
     }
@@ -104,7 +144,6 @@ impl ConfigImportState {
         self.rows.set(Vec::new());
         self.apply_ok.set(false);
         self.validated_text.set(String::new());
-        self.validated_entries.borrow_mut().clear();
     }
 
     /// 校验失败（读不到内容 / 整体解析失败）：清空预览区并回显原因，「应用」禁用。
@@ -122,10 +161,32 @@ impl ConfigImportState {
         self.error_msg.set(String::new());
     }
 
-    /// 「校验预览」：取文本区当前内容调 `config.previewPatch` 刷新预览区。
-    /// 通过（含逐条错误的"通过解析"）即记录 validated_text；RPC 整体失败走 [`Self::fail`]。
-    pub fn validate(&self) {
+    /// 「校验预览」：先按方案信封试（`scheme.previewImportText`），不是信封才走片段
+    /// 管线（`config.previewPatch`）刷新预览区。
+    ///
+    /// 三个出口互斥：
+    /// - **是信封且预览成功** → 关本对话框，转交 `schema_mgr` 的导入确认（与 zip 包
+    ///   同一个界面，含 config_patch 逐键 diff）；
+    /// - **是信封但解析出错** → 对话框内回显该错误，**不**回落片段管线；
+    /// - **不是信封 / core 不认识信封两法**（见 [`falls_back_to_fragment`]）→ 片段
+    ///   管线，行为不变：通过（含逐条错误的「通过解析」）即记录 validated_text；
+    ///   RPC 整体失败走 [`Self::fail`]。
+    pub fn validate(&self, schema_mgr: &SchemaManagerState) {
         let text = self.text.get();
+        match rpc::call_core("scheme.previewImportText", &json!({ "text": text })) {
+            Ok(v) => {
+                self.clear_validation();
+                self.error_msg.set(String::new());
+                self.visible.set(false);
+                schema_mgr.open_import_text_confirm(text, &v);
+                return;
+            }
+            Err(e) if !falls_back_to_fragment(&e) => {
+                return self.fail(format!("方案文本解析失败: {e}"));
+            }
+            // 不是信封（或 core 还不认识信封两法）：继续片段管线。
+            Err(_) => {}
+        }
         match rpc::call_core("config.previewPatch", &json!({ "text": text })) {
             Ok(v) => {
                 let (ok, rows) = parse_preview(&v);
@@ -137,11 +198,6 @@ impl ConfigImportState {
                 self.rows.set(rows);
                 self.apply_ok.set(ok);
                 self.validated_text.set(text);
-                *self.validated_entries.borrow_mut() = if ok {
-                    parse_entry_values(&v)
-                } else {
-                    Vec::new()
-                };
             }
             // 整体 TOML 解析失败等是 RPC error（区别于逐条 error），在对话框内回显。
             Err(e) => self.fail(format!("预览失败: {e}")),
@@ -160,8 +216,8 @@ impl ConfigImportState {
     }
 
     /// 应用：把（与校验原文逐字相同的）文本区内容提交 `config.applyPatch`。
-    /// 成功关对话框并 toast，返回校验时的逐条 (key, next) 供调用方回灌配置镜像；
-    /// 失败对话框内回显（core 的错误串逐键点名，用户就地改好后重新校验）。
+    /// 成功关对话框并 toast，返回响应里的 `written`（**落盘后**的最终键值）供调用方
+    /// 回灌配置镜像；失败对话框内回显（core 的错误串逐键点名，用户就地改好后重新校验）。
     pub fn do_apply(&self) -> Option<Vec<(String, Value)>> {
         let text = self.text.get();
         if !can_apply(self.apply_ok.get(), &text, &self.validated_text.get()) {
@@ -181,7 +237,7 @@ impl ConfigImportState {
                 };
                 self.visible.set(false);
                 self.notify(ToastKind::Success, msg);
-                Some(std::mem::take(&mut *self.validated_entries.borrow_mut()))
+                Some(parse_written(&v))
             }
             Err(e) => {
                 self.error_msg.set(format!("应用失败: {e}"));
@@ -319,6 +375,14 @@ pub fn import_menu_items(
 /// previewPatch 响应 → (可应用, 预览行)。可应用 = `ok:true` 且至少一条条目
 /// （空片段 applyPatch 虽是合法 no-op，但「应用」没有意义，禁用防误触）。
 fn parse_preview(v: &Value) -> (bool, Vec<PreviewRow>) {
+    let rows = parse_entries(v);
+    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+    (ok && !rows.is_empty(), rows)
+}
+
+/// `{ entries: [...] }` → 预览行。previewPatch 与包内 `configPatch` 的 entries
+/// 同形（`package-format.md` §2.3），故两处共用本函数。
+fn parse_entries(v: &Value) -> Vec<PreviewRow> {
     let mut rows = Vec::new();
     if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
         for e in entries {
@@ -327,6 +391,11 @@ fn parse_preview(v: &Value) -> (bool, Vec<PreviewRow>) {
                 .and_then(|k| k.as_str())
                 .unwrap_or("?")
                 .to_string();
+            // Map 条目：条目名以 `父键[条目名]` 显示，不并进点分键。
+            let key = match e.get("mapEntry").and_then(|k| k.as_str()) {
+                Some(entry) => format!("{key}[{entry}]"),
+                None => key,
+            };
             match e.get("error").and_then(|x| x.as_str()) {
                 Some(err) => rows.push(PreviewRow {
                     key,
@@ -349,25 +418,41 @@ fn parse_preview(v: &Value) -> (bool, Vec<PreviewRow>) {
             }
         }
     }
-    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
-    (ok && !rows.is_empty(), rows)
+    rows
 }
 
-/// previewPatch 响应 → 逐条 (key, next)（跳过错误条目）。应用成功后用它回灌
-/// AppState 的配置镜像：core 对每个写入键会广播 `config.changed` 回声，镜像里
-/// 已有同值则被识别为本端写入，不弹「已在别处更改」（与 setItems 保存同一豁免机制）。
-fn parse_entry_values(v: &Value) -> Vec<(String, Value)> {
-    let Some(entries) = v.get("entries").and_then(|e| e.as_array()) else {
+/// `previewImport` / `previewImportText` 响应 → 包内配置片段预览。
+/// 缺 `configPatch` = 包不带片段（纯方案包），返回 `None`。
+pub fn parse_config_patch(v: &Value) -> Option<ConfigPatchPreview> {
+    let cp = v.get("configPatch")?;
+    Some(ConfigPatchPreview {
+        text: cp
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
+        ok: cp.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+        rows: parse_entries(cp),
+    })
+}
+
+/// applyPatch 响应的 `written` → 逐条 (key, value)。
+///
+/// **必须用 core 回传的 written 而不是预览 entries**：Map 键逐条合并后，落盘的是
+/// 合并结果整表，客户端从 entries 拼不出来（`package-format.md` §2.3）。
+/// 应用成功后用它回灌 AppState 的配置镜像：core 对每个写入键会广播 `config.changed`
+/// 回声，镜像里已有同值则被识别为本端写入，不弹「已在别处更改」。
+pub fn parse_written(v: &Value) -> Vec<(String, Value)> {
+    let Some(written) = v.get("written").and_then(|e| e.as_array()) else {
         return Vec::new();
     };
-    entries
+    written
         .iter()
-        .filter(|e| e.get("error").is_none())
         .filter_map(|e| {
             let key = e.get("key").and_then(|k| k.as_str())?;
             Some((
                 key.to_string(),
-                e.get("next").cloned().unwrap_or(Value::Null),
+                e.get("value").cloned().unwrap_or(Value::Null),
             ))
         })
         .collect()
@@ -382,6 +467,43 @@ fn fmt_value(v: &Value) -> String {
 }
 
 // ──────────────────────── UI 构建 ────────────────────────
+
+/// 配置片段预览的一行。片段对话框与方案包导入确认对话框**共用**——两处各写一份的
+/// 话，宽度分配这类坑就要各踩一次。
+///
+/// 宽度分配：key 按自然宽度（弹性给 key 会被长 detail 挤到一字宽），detail 占余宽
+/// 并折行。key 只设上界防畸形长键（错误条目的键是用户手敲的任意串），中段省略同时
+/// 保住段前缀与叶子名——两端都是识别一个配置键要看的部分。
+pub fn preview_row_element(row: &PreviewRow) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Start)
+        .spacing(12)
+        .padding_xy(10, 5)
+        .child(
+            Element::label(&row.key)
+                .font_size(12.5)
+                .fg_role(if row.is_error {
+                    Role::Danger
+                } else {
+                    Role::Text
+                })
+                .max_width(230)
+                .max_lines(1)
+                .truncate(Truncate::Middle),
+        )
+        .child(
+            Element::label(&row.detail)
+                .font_size(12.5)
+                .fg_role(if row.is_error {
+                    Role::Danger
+                } else {
+                    Role::TextMuted
+                })
+                .weight(1.0)
+                .max_lines(3),
+        )
+}
 
 /// 高级页「导入与导出」卡片：统一导入文件 + 剪贴板导入两个入口。
 pub fn build_import_export_section(
@@ -436,6 +558,8 @@ pub fn build_config_import_dialog(
     let m_file = import.clone();
     let mgr_file = schema_mgr.clone();
     let m_validate = import.clone();
+    // 「校验预览」也可能落到方案信封那一支，需要转交方案包导入确认对话框。
+    let mgr_validate = schema_mgr.clone();
     let m_apply = import.clone();
     let app_apply = app.clone();
     let m_cancel = import.clone();
@@ -463,40 +587,7 @@ pub fn build_config_import_dialog(
         .height(180);
 
     // 预览列表（动态内容一律走 Signal，构建期读取会被永久冻结）。
-    let list = Element::host_signal(rows_sig, move |row: PreviewRow| {
-        let role = if row.is_error {
-            Role::Danger
-        } else {
-            Role::Text
-        };
-        // 宽度分配：key 按自然宽度（弹性给 key 会被长 detail 挤到一字宽），detail
-        // 占余宽并折行。key 只设上界防畸形长键（错误条目的键是用户手敲的任意串），
-        // 中段省略同时保住段前缀与叶子名——两端都是识别一个配置键要看的部分。
-        Element::row()
-            .width_match()
-            .cross(Align::Start)
-            .spacing(12)
-            .padding_xy(10, 5)
-            .child(
-                Element::label(&row.key)
-                    .font_size(12.5)
-                    .fg_role(role)
-                    .max_width(230)
-                    .max_lines(1)
-                    .truncate(Truncate::Middle),
-            )
-            .child(
-                Element::label(&row.detail)
-                    .font_size(12.5)
-                    .fg_role(if row.is_error {
-                        Role::Danger
-                    } else {
-                        Role::TextMuted
-                    })
-                    .weight(1.0)
-                    .max_lines(3),
-            )
-    });
+    let list = Element::host_signal(rows_sig, |row: PreviewRow| preview_row_element(&row));
     let rows_empty = move || rows_sig.get().is_empty();
     let placeholder = Element::label("点击「校验预览」查看逐项变更")
         .font_size(12.5)
@@ -560,7 +651,7 @@ pub fn build_config_import_dialog(
                     Element::button("校验预览")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| m_validate.validate()),
+                        .on_click(move |_| m_validate.validate(&mgr_validate)),
                 )
                 .child(Element::leaf().weight(1.0)),
         )
@@ -714,20 +805,105 @@ mod tests {
         );
     }
 
-    /// 应用成功后回灌配置镜像用的 (key, next)：跳过错误条目、保留合法条目原值。
+    /// 应用成功后回灌配置镜像用的 (key, value) 取自 core 的 `written`——**落盘后**的
+    /// 最终键值。Map 父键携带合并后的整表，客户端从 entries 拼不出它（§2.3）。
     #[test]
-    fn parse_entry_values_skips_error_entries() {
-        let v = json!({ "ok": false, "entries": [
-            { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
-            { "key": "input.initial_mode", "next": "chinese" },
-            { "key": "input.foo.bar", "next": 1, "error": "未知配置键" }
+    fn parse_written_takes_final_values_from_core() {
+        let v = json!({ "ok": true, "applied": 2, "needsRestart": false, "written": [
+            { "key": "ui.candidate.per_page", "value": 9 },
+            // Map 父键：core 合并后的整表，含用户原有的 `x`（片段里只写了 `z`）。
+            { "key": "keys.key_actions", "value": { "x": "temp_english", "z": "temp_pinyin" } }
         ]});
-        let pairs = parse_entry_values(&v);
+        let pairs = parse_written(&v);
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], ("ui.candidate.per_page".to_string(), json!(9)));
         assert_eq!(
-            pairs[1],
-            ("input.initial_mode".to_string(), json!("chinese"))
+            pairs[1].1,
+            json!({ "x": "temp_english", "z": "temp_pinyin" }),
+            "Map 父键必须原样带回合并后的整表"
+        );
+    }
+
+    /// 老 core 不回 `written` 时不能 panic，只是没有镜像回灌（退化为「已在别处更改」
+    /// 提示一次），不影响配置本身已经落盘。
+    #[test]
+    fn parse_written_absent_is_empty() {
+        assert!(parse_written(&json!({ "ok": true, "applied": 2 })).is_empty());
+    }
+
+    /// Map 条目的显示键为 `父键[条目名]`：条目名不并进点分键——
+    /// `custom_mappings` 的条目名本身可含 `.`，并进去就分不清层级了。
+    #[test]
+    fn parse_preview_map_entry_display_key() {
+        let v = json!({ "ok": true, "entries": [
+            { "key": "keys.key_actions", "mapEntry": "z", "next": "temp_pinyin" },
+            { "key": "input.punct.custom_mappings", "mapEntry": ".", "current": "。", "next": "." }
+        ]});
+        let (ok, rows) = parse_preview(&v);
+        assert!(ok);
+        assert_eq!(rows[0].key, "keys.key_actions[z]");
+        assert_eq!(rows[0].detail, "未设置 → temp_pinyin");
+        assert_eq!(rows[1].key, "input.punct.custom_mappings[.]");
+        assert_eq!(rows[1].detail, "。 → .");
+    }
+
+    /// 回落片段管线的两种情形：文本不是信封（前缀契约），或 core 还不认识信封两法
+    /// （版本斜错窗口）。除此之外一律不回落——信封自己写错了（files 路径非法等）
+    /// 必须如实报，回落片段管线会让真正的原因被一串「未知配置键」淹没。
+    #[test]
+    fn falls_back_only_on_not_envelope_or_unknown_method() {
+        // 形一：不是信封。前缀契约，只认前缀不认包含。
+        assert!(falls_back_to_fragment(&format!(
+            "{NOT_SCHEMA_TEXT_PREFIX} 缺少 package.kind"
+        )));
+        assert!(falls_back_to_fragment("not_schema_text:"));
+        assert!(
+            !falls_back_to_fragment("解析失败: not_schema_text: 混在中段"),
+            "前缀契约只认开头，不认包含"
+        );
+
+        // 形二：旧 core 没注册这两法。core 侧 `anyhow::bail!` 直出、dispatch 用
+        // `e.to_string()` 装进 Response::error、本仓 call_on_stream 原样透传——
+        // 已查证生产路径上无任何外层包装，故同样按前缀判定。
+        assert!(falls_back_to_fragment(
+            "unknown method: scheme.previewImportText"
+        ));
+        assert!(
+            !falls_back_to_fragment("RPC 失败: unknown method: scheme.importText"),
+            "带外层包装的形态不在契约里；认它等于把判据放宽成包含匹配"
+        );
+
+        // 信封的真实错误：一条都不许回落。末一条是收紧为前缀匹配要挡的那个误吃面
+        // ——用户路径字面含这个串时，包含匹配会把它静默回落成「未知配置键」噪音。
+        assert!(!falls_back_to_fragment("files[0].path 非法: ../evil.toml"));
+        assert!(!falls_back_to_fragment("信封超限: files 65 条"));
+        assert!(!falls_back_to_fragment(
+            "format_version 3 高于本版支持的 2，请升级应用"
+        ));
+        assert!(
+            !falls_back_to_fragment("files[1].path 非法: docs/unknown method: 备忘.txt"),
+            "路径回显里含该串的信封真实错误必须如实报，不能被当成旧 core"
+        );
+    }
+
+    /// 包内 `configPatch` 与 previewPatch 的 entries 同形，缺席即纯方案包。
+    #[test]
+    fn parse_config_patch_reads_text_ok_and_rows() {
+        let v = json!({
+            "willAdd": ["kf.schema.toml"],
+            "configPatch": { "text": "[keys]\n", "ok": true, "entries": [
+                { "key": "keys.key_actions", "mapEntry": "z", "next": "temp_pinyin" }
+            ]}
+        });
+        let p = parse_config_patch(&v).expect("含 configPatch");
+        assert_eq!(p.text, "[keys]\n");
+        assert!(p.ok);
+        assert_eq!(p.rows.len(), 1);
+        assert_eq!(p.rows[0].key, "keys.key_actions[z]");
+
+        assert!(
+            parse_config_patch(&json!({ "willAdd": [] })).is_none(),
+            "纯方案包无 configPatch"
         );
     }
 }

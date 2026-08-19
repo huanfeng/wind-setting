@@ -14,8 +14,20 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::config::Config;
+use crate::pages::config_import::{ConfigPatchPreview, PreviewRow, preview_row_element};
 use crate::rpc;
+use crate::state::AppState;
 use crate::widgets::flat_panel;
+
+/// 待导入的分发包来源。zip 与文本信封走**同一个确认对话框**，只在最后执行导入时
+/// 分派到各自的 RPC（`package-format.md` §3.4：信封的响应形状与 zip 一致）。
+#[derive(Clone)]
+enum PendingImport {
+    /// zip / `.wpkg` 文件路径。
+    Package(std::path::PathBuf),
+    /// 文本信封原文（`package.kind = "schema_text"`）。
+    Text(String),
+}
 
 /// 引导键候选（与临时拼音 / 临时英文 / 快捷输入清单里的那组逐字一致）。
 ///
@@ -197,11 +209,18 @@ pub struct SchemaManagerState {
     pub confirm_visible: Signal<bool>,
     pub confirm_msg: Signal<String>,
     pub confirm_id: Rc<RefCell<String>>,
-    // ── 方案包导入确认（previewImport 摘要 + 合并/替换选择）──
+    // ── 分发包导入确认（previewImport 摘要 + config_patch diff + 合并/替换选择）──
     pub import_confirm_visible: Signal<bool>,
     pub import_preview_msg: Signal<String>,
-    /// 待导入的方案包路径（预览确认后执行导入）。
-    pending_import_path: Rc<RefCell<Option<std::path::PathBuf>>>,
+    /// 待导入的分发包（zip 路径或信封原文），预览确认后执行导入。
+    pending_import: Rc<RefCell<Option<PendingImport>>>,
+    /// 包内配置片段的预览结果（`configPatch`），确认后由第二步 `config.applyPatch`
+    /// 应用。`None` = 纯方案包，确认对话框不显示「将修改的配置」区块。
+    pending_config_patch: Rc<RefCell<Option<ConfigPatchPreview>>>,
+    /// 「将修改的配置」区块的逐键 diff 行（动态内容走 Signal）。
+    pub import_patch_rows: Signal<Vec<PreviewRow>>,
+    /// 导入按钮可点：见 [`import_allowed`]（片段有错即整包拒绝）。
+    pub import_can_confirm: Signal<bool>,
     pub settings_visible: Signal<bool>,
     /// 设置对话框当前方案条目（驱动结构化头部渲染）。
     pub settings_entry: Rc<RefCell<Option<SchemaEntry>>>,
@@ -337,7 +356,10 @@ impl SchemaManagerState {
             confirm_id: Rc::new(RefCell::new(String::new())),
             import_confirm_visible: signal(false),
             import_preview_msg: signal(String::new()),
-            pending_import_path: Rc::new(RefCell::new(None)),
+            pending_import: Rc::new(RefCell::new(None)),
+            pending_config_patch: Rc::new(RefCell::new(None)),
+            import_patch_rows: signal(vec![]),
+            import_can_confirm: signal(true),
             settings_visible: signal(false),
             settings_entry: Rc::new(RefCell::new(None)),
             settings_schema_id: Rc::new(RefCell::new(String::new())),
@@ -1626,9 +1648,26 @@ impl SchemaManagerState {
     /// 打开导入确认对话框（`scheme.previewImport` 已由调用方完成）。
     /// 统一导入分派器（高级页「导入文件…」）复用此入口，路由不重写域逻辑。
     pub fn open_import_confirm(&self, path: std::path::PathBuf, preview: &Value) {
+        self.open_import(PendingImport::Package(path), preview);
+    }
+
+    /// 打开导入确认对话框——文本信封分支（`scheme.previewImportText` 已由调用方完成，
+    /// 见 `config_import::ConfigImportState::validate`）。与 zip 共用同一个对话框：
+    /// 响应形状一致，用户看到的确认内容也就该一致（`package-format.md` §3.4）。
+    pub fn open_import_text_confirm(&self, text: String, preview: &Value) {
+        self.open_import(PendingImport::Text(text), preview);
+    }
+
+    /// 两个分支的共同落点：摘要 + config_patch 逐键 diff + 导入门控。
+    fn open_import(&self, pending: PendingImport, preview: &Value) {
         self.import_preview_msg
             .set(Self::format_import_preview(preview));
-        *self.pending_import_path.borrow_mut() = Some(path);
+        let patch = crate::pages::config_import::parse_config_patch(preview);
+        self.import_patch_rows
+            .set(patch.as_ref().map(|p| p.rows.clone()).unwrap_or_default());
+        self.import_can_confirm.set(import_allowed(patch.as_ref()));
+        *self.pending_config_patch.borrow_mut() = patch;
+        *self.pending_import.borrow_mut() = Some(pending);
         self.import_confirm_visible.set(true);
     }
 
@@ -1671,43 +1710,105 @@ impl SchemaManagerState {
         )
     }
 
-    /// 确认导入（strategy: "merge" | "replace"）。
-    pub fn confirm_import(&self, strategy: &str) {
+    /// 确认导入（strategy: "merge" | "replace"），两步编排（`package-format.md` §3.3）：
+    /// ① 写方案文件——zip 走 `scheme.importPackage`、信封走 `scheme.importText`；
+    /// ② 包若带 config_patch 且预览通过 → `config.applyPatch` 应用片段。
+    ///
+    /// 返回 applyPatch 的 `written`（落盘后的最终键值）供调用方回灌配置镜像；无片段
+    /// 或第一步失败时为空。
+    ///
+    /// **两步之间非原子**是规格定稿的取舍：文件已装而片段失败时如实报错（方案已导入、
+    /// 配置未应用），**不回滚文件**——patch 管线的热重载与事件广播住在 RPC 分发层，
+    /// 在文件层复刻它们是第二份真相源。
+    pub fn confirm_import(&self, strategy: &str) -> Vec<(String, Value)> {
         self.import_confirm_visible.set(false);
-        let Some(path) = self.pending_import_path.borrow_mut().take() else {
-            return;
+        let patch = self.pending_config_patch.borrow_mut().take();
+        let Some(pending) = self.pending_import.borrow_mut().take() else {
+            return Vec::new();
         };
-        match rpc::call_core(
-            "scheme.importPackage",
-            &json!({ "path": path.to_string_lossy(), "strategy": strategy }),
-        ) {
-            Ok(v) => {
-                let n = |k: &str| {
-                    v.get(k)
-                        .and_then(|x| x.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0)
-                };
-                let (imported, conflicts) = (n("imported"), n("conflicts"));
-                self.refresh();
-                let msg = if conflicts > 0 {
-                    format!("已导入 {imported} 个文件（跳过已存在 {conflicts} 个）")
-                } else {
-                    format!("已导入 {imported} 个文件")
-                };
-                self.notify(ToastKind::Success, msg);
+        let (method, params) = match &pending {
+            PendingImport::Package(path) => (
+                "scheme.importPackage",
+                json!({ "path": path.to_string_lossy(), "strategy": strategy }),
+            ),
+            PendingImport::Text(text) => (
+                "scheme.importText",
+                json!({ "text": text, "strategy": strategy }),
+            ),
+        };
+        let v = match rpc::call_core(method, &params) {
+            Ok(v) => v,
+            Err(e) => {
+                self.notify(ToastKind::Error, format!("导入失败: {e}"));
+                return Vec::new();
             }
-            Err(e) => self.notify(ToastKind::Error, format!("导入失败: {e}")),
+        };
+        let n = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0)
+        };
+        let (imported, conflicts) = (n("imported"), n("conflicts"));
+        self.refresh();
+        let msg = if conflicts > 0 {
+            format!("已导入 {imported} 个文件（跳过已存在 {conflicts} 个）")
+        } else {
+            format!("已导入 {imported} 个文件")
+        };
+
+        // 第二步：配置片段。预览不通过的包在对话框里就点不了导入（见 import_allowed），
+        // 这里的 `p.ok` 是同一判据的兜底。
+        let Some(patch) = patch.filter(|p| p.ok) else {
+            self.notify(ToastKind::Success, msg);
+            return Vec::new();
+        };
+        match rpc::call_core("config.applyPatch", &json!({ "text": patch.text })) {
+            Ok(r) => {
+                let applied = r.get("applied").and_then(|x| x.as_u64()).unwrap_or(0);
+                let restart = r
+                    .get("needsRestart")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                let tail = if restart {
+                    format!("，配置已应用 {applied} 项（部分设置重启后生效）")
+                } else {
+                    format!("，配置已应用 {applied} 项")
+                };
+                self.notify(ToastKind::Success, format!("{msg}{tail}"));
+                crate::pages::config_import::parse_written(&r)
+            }
+            Err(e) => {
+                self.notify(
+                    ToastKind::Error,
+                    format!("方案已导入，配置片段应用失败: {e}"),
+                );
+                Vec::new()
+            }
         }
     }
 
     pub fn cancel_import(&self) {
-        *self.pending_import_path.borrow_mut() = None;
+        *self.pending_import.borrow_mut() = None;
+        *self.pending_config_patch.borrow_mut() = None;
+        self.import_patch_rows.set(Vec::new());
         self.import_confirm_visible.set(false);
     }
 }
 
 // ──────────────────────── 启用/当前 判定（纯函数） ────────────────────────
+
+/// 导入确认对话框的「合并/替换导入」是否可点。
+///
+/// 包不带 config_patch 时恒可点；带则要求片段**整体**通过——预览有任一错误条目即
+/// 整包拒绝（`package-format.md` §3.3：分发侧应出厂前测过）。半装一个包比不装更糟：
+/// 方案文件已落盘、配置却没跟上，用户看到的是一个行为对不上说明的方案。
+fn import_allowed(patch: Option<&ConfigPatchPreview>) -> bool {
+    match patch {
+        None => true,
+        Some(p) => p.ok,
+    }
+}
 
 /// 方案是否启用。**空 order 表示「全部启用」**——这是全仓一致的语义
 /// （见 `rebuild_list` / `toggle_schema_enabled`），漏掉它会让首次加载、
@@ -2295,10 +2396,14 @@ fn build_draggable_row(entry: SchemaEntry, mgr: &SchemaManagerState, handle: Ele
 // ──────────────────────── UI 构建 ────────────────────────
 
 /// 构建方案相关浮层对话框：删除确认 + 方案详情/设置。
-pub fn build_schema_manager_dialog(state: &SchemaManagerState) -> Element {
+/// `app` 只为导入确认那一支所需（片段应用后回灌配置镜像）。
+pub fn build_schema_manager_dialog(
+    app: &Rc<RefCell<AppState>>,
+    state: &SchemaManagerState,
+) -> Element {
     let confirm_dlg = build_confirm_dialog(state);
     let settings_dlg = build_schema_settings_dialog(state);
-    let import_dlg = build_import_confirm_dialog(state);
+    let import_dlg = build_import_confirm_dialog(app, state);
     let hotkey_dlg = build_schema_hotkey_dialog(state);
     let trigger_dlg = build_trigger_keys_dialog(state);
     let ct_dlg = build_codetable_dialog(state);
@@ -2408,11 +2513,47 @@ fn build_schema_hotkey_dialog(state: &SchemaManagerState) -> Element {
     )
 }
 
-/// 方案包导入确认：previewImport 摘要正文 + 合并（默认）/ 替换（danger）二选一。
-fn build_import_confirm_dialog(state: &SchemaManagerState) -> Element {
+/// 方案包导入确认：previewImport 摘要正文 +（包带 config_patch 时）逐键 diff +
+/// 合并（默认）/ 替换（danger）二选一。zip 与文本信封共用本对话框。
+///
+/// `app` 用于第二步 `config.applyPatch` 成功后回灌配置镜像——core 的逐键
+/// `config.changed` 回声到达时镜像已持有同值，被识别为本端写入，不弹「已在别处更改」。
+fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManagerState) -> Element {
     let merge = state.clone();
     let replace = state.clone();
     let cancel = state.clone();
+    let (app_merge, app_replace) = (app.clone(), app.clone());
+    let rows_sig = state.import_patch_rows;
+    let can_confirm = state.import_can_confirm;
+
+    // 「将修改的配置」区块：仅带 config_patch 的包显示。行渲染与片段对话框共用
+    // （见 `config_import::preview_row_element`），宽度分配的坑不必再踩一遍。
+    let patch_title = Element::label("将修改的配置")
+        .font_size(13.0)
+        .font_weight(600)
+        .fg_role(Role::Text)
+        .width_match()
+        .visible_when(move || !rows_sig.get().is_empty());
+    let patch_list = Element::scroll()
+        .width_match()
+        .max_height(132)
+        .border_role(Role::Divider, 1)
+        .child(
+            Element::col()
+                .width_match()
+                .child(Element::host_signal(rows_sig, |row: PreviewRow| {
+                    preview_row_element(&row)
+                })),
+        )
+        .visible_when(move || !rows_sig.get().is_empty());
+    // 整包拒绝时给出原因，否则按钮灰着而屏幕上没有任何解释。
+    let patch_blocked = Element::label("配置片段有无法应用的项，整个包已拒绝导入")
+        .font_size(12.5)
+        .fg_role(Role::Danger)
+        .width_match()
+        .max_lines(2)
+        .visible_when(move || !can_confirm.get());
+
     let content = flat_panel()
         .width(400)
         .padding(20)
@@ -2433,6 +2574,9 @@ fn build_import_confirm_dialog(state: &SchemaManagerState) -> Element {
                 .width_match()
                 .max_lines(6),
         )
+        .child(patch_title)
+        .child(patch_list)
+        .child(patch_blocked)
         .child(
             Element::row()
                 .width_match()
@@ -2449,15 +2593,33 @@ fn build_import_confirm_dialog(state: &SchemaManagerState) -> Element {
                     Element::button("替换导入")
                         .small()
                         .danger()
-                        .on_click(move |_| replace.confirm_import("replace")),
+                        .enabled_when(move || can_confirm.get())
+                        .on_click(move |_| {
+                            apply_import_written(&app_replace, replace.confirm_import("replace"))
+                        }),
                 )
                 .child(
                     Element::button("合并导入")
                         .small()
-                        .on_click(move |_| merge.confirm_import("merge")),
+                        .enabled_when(move || can_confirm.get())
+                        .on_click(move |_| {
+                            apply_import_written(&app_merge, merge.confirm_import("merge"))
+                        }),
                 ),
         );
     Element::dialog(state.import_confirm_visible, content)
+}
+
+/// 把 `config.applyPatch` 落盘的键值回灌配置镜像与设置页控件（复用外部变更的既有
+/// 回填通路）。空列表 = 包不带片段或片段没应用成，直接返回。
+fn apply_import_written(app: &Rc<RefCell<AppState>>, written: Vec<(String, Value)>) {
+    if written.is_empty() {
+        return;
+    }
+    let mut st = app.borrow_mut();
+    for (key, value) in written {
+        st.apply_external_config_change(&key, value);
+    }
 }
 
 fn build_confirm_dialog(state: &SchemaManagerState) -> Element {
@@ -3232,6 +3394,168 @@ mod ext_dict_tests {
         let bare = json!({ "willAdd": ["x"], "conflicts": [] });
         let msg2 = SchemaManagerState::format_import_preview(&bare);
         assert!(msg2.contains("未知"));
+    }
+
+    /// 导入门控（整包拒绝策略，`package-format.md` §3.3）：纯方案包恒可导入；
+    /// 带片段的包要求片段**整体**通过，有一条错就整包禁止——半装一个包比不装更糟。
+    #[test]
+    fn import_blocked_when_config_patch_has_error() {
+        let patch = |ok| ConfigPatchPreview {
+            text: "x = 1\n".to_string(),
+            ok,
+            rows: vec![],
+        };
+        assert!(import_allowed(None), "纯方案包无片段，恒可导入");
+        assert!(import_allowed(Some(&patch(true))));
+        assert!(!import_allowed(Some(&patch(false))), "片段有错即整包拒绝");
+    }
+
+    /// 打开确认对话框：zip 与文本信封走同一个对话框，且都要把 configPatch 的逐键
+    /// diff 渲染进「将修改的配置」区块、按片段是否通过设置导入门控。
+    ///
+    /// 两条路各测一遍：只测 zip 的话，信封那支忘了接 patch 也照绿。
+    #[test]
+    fn open_import_wires_patch_rows_and_gate_for_both_sources() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = SchemaManagerState::new();
+
+        let preview = json!({
+            "willAdd": ["kf.schema.toml"], "conflicts": [],
+            "configPatch": { "text": "[keys.key_actions]\n", "ok": true, "entries": [
+                { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+            ]}
+        });
+        mgr.open_import_confirm(std::path::PathBuf::from("a.wpkg"), &preview);
+        assert!(mgr.import_confirm_visible.get());
+        assert_eq!(mgr.import_patch_rows.get().len(), 1);
+        assert_eq!(
+            mgr.import_patch_rows.get()[0].key,
+            "keys.key_actions[backtick]",
+            "Map 条目的显示键"
+        );
+        assert!(mgr.import_can_confirm.get());
+
+        // 信封路径 + 片段有错 → 同一区块、按钮禁用。
+        let bad = json!({
+            "willAdd": ["kf.schema.toml"],
+            "configPatch": { "text": "foo = 1\n", "ok": false, "entries": [
+                { "key": "foo", "next": 1, "error": "未知配置键" }
+            ]}
+        });
+        mgr.open_import_text_confirm("[package]\nkind = \"schema_text\"\n".into(), &bad);
+        assert_eq!(mgr.import_patch_rows.get().len(), 1);
+        assert!(mgr.import_patch_rows.get()[0].is_error);
+        assert!(!mgr.import_can_confirm.get(), "片段有错即禁用导入");
+
+        // 纯方案包（无 configPatch）：区块不显示、门控放行。
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("b.zip"),
+            &json!({ "willAdd": ["x"], "conflicts": [] }),
+        );
+        assert!(mgr.import_patch_rows.get().is_empty());
+        assert!(mgr.import_can_confirm.get());
+
+        mgr.cancel_import();
+        assert!(!mgr.import_confirm_visible.get());
+        assert!(mgr.import_patch_rows.get().is_empty(), "取消须清空区块");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 确认导入的两步编排：第二步 `config.applyPatch` 的 `written` 必须原样回传给
+    /// 调用方去回灌配置镜像——否则 core 的逐键 `config.changed` 回声会被当成外部改动，
+    /// 用户刚导入完就被告知「已在别处更改」。
+    #[test]
+    fn confirm_import_returns_written_from_apply_patch() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = SchemaManagerState::new();
+
+        // 带片段的包：走完两步，拿到 written。
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("a.wpkg"),
+            &json!({ "willAdd": ["x"], "conflicts": [],
+                     "configPatch": { "text": "ui.candidate.per_page = 9\n", "ok": true,
+                                      "entries": [{ "key": "ui.candidate.per_page", "current": 5, "next": 9 }] }}),
+        );
+        let written = mgr.confirm_import("merge");
+        assert!(
+            written.iter().any(|(k, _)| k == "keys.key_actions"),
+            "written 应原样来自 applyPatch 响应（含 Map 父键整表），实际: {written:?}"
+        );
+
+        // 纯方案包：不发第二步，回空。
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("b.zip"),
+            &json!({ "willAdd": ["x"], "conflicts": [] }),
+        );
+        assert!(mgr.confirm_import("merge").is_empty());
+
+        // 没有待导入项（重复点击/已取消）：静默返回空，不发 RPC。
+        assert!(mgr.confirm_import("merge").is_empty());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 信封分支的端到端：**发出去的请求**长什么样。
+    ///
+    /// 与上面 zip 那条独立断言而不复用——两条路在 `confirm_import` 里是各自的
+    /// match 臂，共用一份断言的话，信封臂把 text 漏成空串、或错发成 zip 那一法，
+    /// 都能照绿。返回值对不对是一回事，请求里少个字段是另一回事，后者只有接上
+    /// 真实 core 才会暴露。
+    #[test]
+    fn confirm_import_text_envelope_sends_text_and_strategy() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = SchemaManagerState::new();
+
+        let envelope = "[package]\nformat_version = 2\nkind = \"schema_text\"\n";
+        let patch_text = "[keys.key_actions]\nbacktick = \"quick_input\"\n";
+        mgr.open_import_text_confirm(
+            envelope.to_string(),
+            &json!({
+                "willAdd": ["kf.schema.toml"], "conflicts": [],
+                "configPatch": { "text": patch_text, "ok": true, "entries": [
+                    { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                ]}
+            }),
+        );
+        // 清场：丢掉 new()/refresh 期间的调用，只看确认之后发出的。
+        let _ = crate::rpc::take_mock_calls();
+
+        let written = mgr.confirm_import("replace");
+        let calls = crate::rpc::take_mock_calls();
+        let find = |name: &str| calls.iter().find(|(m, _)| m == name).map(|(_, p)| p);
+        let pos = |name: &str| calls.iter().position(|(m, _)| m == name);
+
+        // ① 第一步：信封走 importText，text 逐字原样、strategy 跟着按钮走。
+        let p = find("scheme.importText").expect("信封必须走 scheme.importText");
+        assert_eq!(p.get("text").and_then(|v| v.as_str()), Some(envelope));
+        assert_eq!(p.get("strategy").and_then(|v| v.as_str()), Some("replace"));
+        assert!(
+            find("scheme.importPackage").is_none(),
+            "信封不得错发成 zip 那一法（它要的是 path，信封没有）"
+        );
+
+        // ② 第二步：applyPatch 收到的是 configPatch.text 原文（客户端不重新拼装）。
+        let ap = find("config.applyPatch").expect("带片段的包必须发第二步");
+        assert_eq!(ap.get("text").and_then(|v| v.as_str()), Some(patch_text));
+        assert!(
+            pos("scheme.importText") < pos("config.applyPatch"),
+            "先写方案文件再应用片段——次序反了，片段引用的方案还不存在"
+        );
+
+        // ③ written 原样回传给调用方去回灌镜像。
+        assert!(
+            written.iter().any(|(k, _)| k == "keys.key_actions"),
+            "written 应来自 applyPatch 响应，实际: {written:?}"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     #[test]
