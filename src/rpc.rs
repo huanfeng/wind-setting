@@ -94,7 +94,7 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     if std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1") {
-        return Ok(mock_reply(method, params));
+        return mock_result(method, params);
     }
     let endpoint = ctrl_endpoint();
     let t = std::time::Instant::now();
@@ -576,6 +576,37 @@ mod tests {
         );
     }
 
+    /// 文本信封两法：内容是信封才成功，否则回 `not_schema_text:` 前缀的错误——
+    /// 统一导入通路靠这个前缀回落片段管线，mock 只 Ok 的话离线走不到片段那一支。
+    #[test]
+    fn mock_schema_text_envelope_detection() {
+        let envelope = "[package]\nformat_version = 2\nkind = \"schema_text\"\n";
+        let fragment = "[ui.candidate]\nper_page = 9\n";
+
+        let err = super::mock_result("scheme.previewImportText", &json!({ "text": fragment }))
+            .expect_err("片段不是信封");
+        assert!(
+            err.starts_with(crate::pages::config_import::NOT_SCHEMA_TEXT_PREFIX),
+            "回落判据是前缀，实际: {err}"
+        );
+
+        let v = super::mock_result("scheme.previewImportText", &json!({ "text": envelope }))
+            .expect("信封应预览成功");
+        assert!(v.get("willAdd").is_some(), "形状须与 previewImport 一致");
+        assert!(
+            v.pointer("/configPatch/entries")
+                .and_then(|e| e.as_array())
+                .is_some_and(|a| !a.is_empty()),
+            "样例信封应带 configPatch，否则离线核对不到「将修改的配置」区块"
+        );
+
+        let imported = super::mock_result("scheme.importText", &json!({ "text": envelope }))
+            .expect("信封应导入成功");
+        assert!(imported.get("imported").is_some());
+        // 单引号写法同样算信封（生成端可自选 TOML 引法）。
+        assert!(super::mock_is_schema_text("kind = 'schema_text'"));
+    }
+
     #[test]
     fn mock_shadow_add_rule_ok() {
         assert_eq!(mock_reply("shadow.addRule").get("ok"), Some(&json!(true)));
@@ -938,6 +969,37 @@ fn mock_word_code(text: &str) -> String {
         .collect()
 }
 
+/// Mock 模式的完整结果：**先判错再取值**。
+///
+/// 没有这一层的话 mock 只会 `Ok`，而统一导入通路恰恰靠「`scheme.previewImportText`
+/// 报 `not_schema_text:`」来回落片段管线——离线模式下每段文本都会被当成方案信封，
+/// 片段导入整条路走不到。
+fn mock_result(method: &str, params: &Value) -> Result<Value, String> {
+    match mock_error(method, params) {
+        Some(e) => Err(e),
+        None => Ok(mock_reply(method, params)),
+    }
+}
+
+/// mock 侧会「失败」的调用。目前只有文本信封两法：内容不是信封时按跨仓契约回
+/// `not_schema_text:` 前缀的错误（见 `package-format.md` §3.4）。
+fn mock_error(method: &str, params: &Value) -> Option<String> {
+    match method {
+        "scheme.previewImportText" | "scheme.importText" => {
+            let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            (!mock_is_schema_text(text))
+                .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// mock 的信封判定：只看 `kind` 是否声明为 `schema_text`（真实解析在 core 侧，
+/// 这里只需分出「信封 / 不是信封」两支供离线走通两条通路）。
+fn mock_is_schema_text(text: &str) -> bool {
+    text.contains("kind = \"schema_text\"") || text.contains("kind = 'schema_text'")
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1184,6 +1246,26 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }),
         "scheme.importPackage" => {
             json!({ "imported": ["demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
+        }
+        // 文本信封（§3.4）。响应形状与 zip 两法一致；这里刻意带上 configPatch，
+        // 让「将修改的配置」区块（含 Map 条目显示键）离线也能核对。
+        "scheme.previewImportText" => json!({
+            "package": {
+                "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-08-19T00:00:00+08:00" },
+                "schema": { "id": "kf", "version": "1.00.0" },
+                "refs": { "system": [], "missing": [] }
+            },
+            "willAdd": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "systemRefs": [], "missing": [],
+            "configPatch": {
+                "text": "[keys.key_actions]\nbacktick = \"quick_input\"\n",
+                "ok": true,
+                "entries": [
+                    { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                ]
+            }
+        }),
+        "scheme.importText" => {
+            json!({ "imported": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "schemaIds": ["kf"] })
         }
         // 删除方案:级联清理结果(deleted/keptShared 供 toast 汇总)。
         "schema.delete" => json!({

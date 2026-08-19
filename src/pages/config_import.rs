@@ -1,9 +1,14 @@
 //! 统一配置导入（高级页「导入与导出」卡片 + 可编辑文本区对话框）。
 //!
-//! 入口可以多（剪贴板 / 本地文件 / 直接手敲），通路只有一条：片段文本进可编辑
-//! 文本区 → 「校验预览」调 `config.previewPatch` 刷新只读预览 → 「应用」发
-//! `config.applyPatch`。校验全部在 core 侧（REGISTRY 权威在主仓），本页只渲染
-//! 结果；校验失败可在文本区就地改好后再点「校验预览」。
+//! 入口可以多（剪贴板 / 本地文件 / 直接手敲），通路只有一条：文本进可编辑文本区
+//! → 「校验预览」→ 只读预览 → 「应用」。校验全部在 core 侧（REGISTRY 权威在主仓），
+//! 本页只渲染结果；校验失败可在文本区就地改好后再点「校验预览」。
+//!
+//! 「校验预览」按内容分两支（`package-format.md` §4 侦测规则 4/5）：先问
+//! `scheme.previewImportText`——文本是方案信封（`package.kind = "schema_text"`）就
+//! 转交方案包导入确认对话框，与 zip 包同一个界面；core 回 [`NOT_SCHEMA_TEXT_PREFIX`]
+//! 开头的错误才回落片段管线 `config.previewPatch`。信封解析出的**真实**错误如实
+//! 回显，不回落——否则「信封里某个 path 非法」会被片段管线的「未知配置键」淹没。
 //!
 //! 「应用」门控：预览通过 **且** 文本区内容与最后一次校验时的原文逐字相同
 //! （见 [`can_apply`]）——文本一改动应用自动失效，杜绝「校验的是 A、应用的是 B」。
@@ -25,6 +30,16 @@ use crate::pages::dict::reactive::Feedback;
 use crate::rpc;
 use crate::state::AppState;
 use crate::widgets::{flat_panel, section, setting_row};
+
+/// core 判定「这段文本不是方案信封」时的错误前缀（跨仓契约，见
+/// `package-format.md` §3.4）。**只有**这个前缀才回落片段管线：信封自己写错了
+/// （files 路径非法、超限额等）必须如实报，不能被片段管线的「未知配置键」淹没。
+pub const NOT_SCHEMA_TEXT_PREFIX: &str = "not_schema_text:";
+
+/// 该 RPC 错误是否表示「这段文本压根不是信封」（→ 回落片段管线）。
+fn is_not_schema_text(err: &str) -> bool {
+    err.starts_with(NOT_SCHEMA_TEXT_PREFIX)
+}
 
 /// 预览区一行（渲染前已把值格式化成显示串，host_signal 的数据项要求 `Clone`）。
 #[derive(Clone)]
@@ -129,10 +144,32 @@ impl ConfigImportState {
         self.error_msg.set(String::new());
     }
 
-    /// 「校验预览」：取文本区当前内容调 `config.previewPatch` 刷新预览区。
-    /// 通过（含逐条错误的"通过解析"）即记录 validated_text；RPC 整体失败走 [`Self::fail`]。
-    pub fn validate(&self) {
+    /// 「校验预览」：先按方案信封试（`scheme.previewImportText`），不是信封才走片段
+    /// 管线（`config.previewPatch`）刷新预览区。
+    ///
+    /// 三个出口互斥：
+    /// - **是信封且预览成功** → 关本对话框，转交 `schema_mgr` 的导入确认（与 zip 包
+    ///   同一个界面，含 config_patch 逐键 diff）；
+    /// - **是信封但解析出错** → 对话框内回显该错误，**不**回落片段管线；
+    /// - **不是信封**（错误以 [`NOT_SCHEMA_TEXT_PREFIX`] 开头）→ 片段管线，行为不变：
+    ///   通过（含逐条错误的「通过解析」）即记录 validated_text；RPC 整体失败走
+    ///   [`Self::fail`]。
+    pub fn validate(&self, schema_mgr: &SchemaManagerState) {
         let text = self.text.get();
+        match rpc::call_core("scheme.previewImportText", &json!({ "text": text })) {
+            Ok(v) => {
+                self.clear_validation();
+                self.error_msg.set(String::new());
+                self.visible.set(false);
+                schema_mgr.open_import_text_confirm(text, &v);
+                return;
+            }
+            Err(e) if !is_not_schema_text(&e) => {
+                return self.fail(format!("方案文本解析失败: {e}"));
+            }
+            // 不是信封：继续片段管线。
+            Err(_) => {}
+        }
         match rpc::call_core("config.previewPatch", &json!({ "text": text })) {
             Ok(v) => {
                 let (ok, rows) = parse_preview(&v);
@@ -504,6 +541,8 @@ pub fn build_config_import_dialog(
     let m_file = import.clone();
     let mgr_file = schema_mgr.clone();
     let m_validate = import.clone();
+    // 「校验预览」也可能落到方案信封那一支，需要转交方案包导入确认对话框。
+    let mgr_validate = schema_mgr.clone();
     let m_apply = import.clone();
     let app_apply = app.clone();
     let m_cancel = import.clone();
@@ -595,7 +634,7 @@ pub fn build_config_import_dialog(
                     Element::button("校验预览")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| m_validate.validate()),
+                        .on_click(move |_| m_validate.validate(&mgr_validate)),
                 )
                 .child(Element::leaf().weight(1.0)),
         )
@@ -789,6 +828,25 @@ mod tests {
         assert_eq!(rows[0].detail, "未设置 → temp_pinyin");
         assert_eq!(rows[1].key, "input.punct.custom_mappings[.]");
         assert_eq!(rows[1].detail, "。 → .");
+    }
+
+    /// 「不是信封」的判定只认前缀常量——信封自己写错了（files 路径非法等）必须如实
+    /// 报错，回落片段管线会让它被「未知配置键」淹没。
+    #[test]
+    fn not_schema_text_prefix_only_matches_that_error() {
+        assert!(is_not_schema_text(&format!(
+            "{NOT_SCHEMA_TEXT_PREFIX} 缺少 package.kind"
+        )));
+        assert!(is_not_schema_text("not_schema_text:"));
+        assert!(!is_not_schema_text("files[0].path 非法: ../evil.toml"));
+        assert!(
+            !is_not_schema_text("信封超限: files 65 条"),
+            "信封的真实错误不能被当成「不是信封」"
+        );
+        assert!(
+            !is_not_schema_text("解析失败: not_schema_text: 混在中段"),
+            "只认前缀，不认包含"
+        );
     }
 
     /// 包内 `configPatch` 与 previewPatch 的 entries 同形，缺席即纯方案包。
