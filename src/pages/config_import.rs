@@ -29,11 +29,23 @@ use crate::widgets::{flat_panel, section, setting_row};
 /// 预览区一行（渲染前已把值格式化成显示串，host_signal 的数据项要求 `Clone`）。
 #[derive(Clone)]
 pub struct PreviewRow {
-    /// 点分配置键。
+    /// 显示键：普通条目为点分配置键，Map 条目为 `父键[条目名]`——条目名不并入点分
+    /// 键，`custom_mappings` 的条目名本身可含 `.`（见 `package-format.md` §2.2）。
     pub key: String,
     /// 正常条目为「当前值 → 新值」，错误条目为错误原因。
     pub detail: String,
     pub is_error: bool,
+}
+
+/// 分发包携带的配置片段预览（`previewImport` / `previewImportText` 响应的
+/// 可选 `configPatch`）。确认导入后由第二步 `config.applyPatch` 应用。
+#[derive(Clone)]
+pub struct ConfigPatchPreview {
+    /// 片段原文，确认后原样交给 `config.applyPatch`（客户端不重新拼装）。
+    pub text: String,
+    /// 整片段是否通过校验。为假即**整包禁止导入**（`package-format.md` §3.3）。
+    pub ok: bool,
+    pub rows: Vec<PreviewRow>,
 }
 
 /// 配置导入状态（Signal 为 Copy，可直接 Clone 进闭包）。
@@ -55,9 +67,6 @@ pub struct ConfigImportState {
     /// 「应用」可点的校验半边：previewPatch ok 且至少一条可应用条目
     /// （另一半是「文本未改动」，见 [`can_apply`]）。
     pub apply_ok: Signal<bool>,
-    /// 校验通过时的逐条 (key, next)。应用成功后交给调用方回灌 AppState 的
-    /// 配置镜像，让 core 的 `config.changed` 回声被识别为本端写入而不弹提示。
-    validated_entries: Rc<RefCell<Vec<(String, Value)>>>,
     pub feedback: Feedback,
 }
 
@@ -77,7 +86,6 @@ impl ConfigImportState {
             rows: signal(Vec::new()),
             error_msg: signal(String::new()),
             apply_ok: signal(false),
-            validated_entries: Rc::new(RefCell::new(Vec::new())),
             feedback: signal(None),
         }
     }
@@ -104,7 +112,6 @@ impl ConfigImportState {
         self.rows.set(Vec::new());
         self.apply_ok.set(false);
         self.validated_text.set(String::new());
-        self.validated_entries.borrow_mut().clear();
     }
 
     /// 校验失败（读不到内容 / 整体解析失败）：清空预览区并回显原因，「应用」禁用。
@@ -137,11 +144,6 @@ impl ConfigImportState {
                 self.rows.set(rows);
                 self.apply_ok.set(ok);
                 self.validated_text.set(text);
-                *self.validated_entries.borrow_mut() = if ok {
-                    parse_entry_values(&v)
-                } else {
-                    Vec::new()
-                };
             }
             // 整体 TOML 解析失败等是 RPC error（区别于逐条 error），在对话框内回显。
             Err(e) => self.fail(format!("预览失败: {e}")),
@@ -160,8 +162,8 @@ impl ConfigImportState {
     }
 
     /// 应用：把（与校验原文逐字相同的）文本区内容提交 `config.applyPatch`。
-    /// 成功关对话框并 toast，返回校验时的逐条 (key, next) 供调用方回灌配置镜像；
-    /// 失败对话框内回显（core 的错误串逐键点名，用户就地改好后重新校验）。
+    /// 成功关对话框并 toast，返回响应里的 `written`（**落盘后**的最终键值）供调用方
+    /// 回灌配置镜像；失败对话框内回显（core 的错误串逐键点名，用户就地改好后重新校验）。
     pub fn do_apply(&self) -> Option<Vec<(String, Value)>> {
         let text = self.text.get();
         if !can_apply(self.apply_ok.get(), &text, &self.validated_text.get()) {
@@ -181,7 +183,7 @@ impl ConfigImportState {
                 };
                 self.visible.set(false);
                 self.notify(ToastKind::Success, msg);
-                Some(std::mem::take(&mut *self.validated_entries.borrow_mut()))
+                Some(parse_written(&v))
             }
             Err(e) => {
                 self.error_msg.set(format!("应用失败: {e}"));
@@ -319,6 +321,14 @@ pub fn import_menu_items(
 /// previewPatch 响应 → (可应用, 预览行)。可应用 = `ok:true` 且至少一条条目
 /// （空片段 applyPatch 虽是合法 no-op，但「应用」没有意义，禁用防误触）。
 fn parse_preview(v: &Value) -> (bool, Vec<PreviewRow>) {
+    let rows = parse_entries(v);
+    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+    (ok && !rows.is_empty(), rows)
+}
+
+/// `{ entries: [...] }` → 预览行。previewPatch 与包内 `configPatch` 的 entries
+/// 同形（`package-format.md` §2.3），故两处共用本函数。
+fn parse_entries(v: &Value) -> Vec<PreviewRow> {
     let mut rows = Vec::new();
     if let Some(entries) = v.get("entries").and_then(|e| e.as_array()) {
         for e in entries {
@@ -327,6 +337,11 @@ fn parse_preview(v: &Value) -> (bool, Vec<PreviewRow>) {
                 .and_then(|k| k.as_str())
                 .unwrap_or("?")
                 .to_string();
+            // Map 条目：条目名以 `父键[条目名]` 显示，不并进点分键。
+            let key = match e.get("mapEntry").and_then(|k| k.as_str()) {
+                Some(entry) => format!("{key}[{entry}]"),
+                None => key,
+            };
             match e.get("error").and_then(|x| x.as_str()) {
                 Some(err) => rows.push(PreviewRow {
                     key,
@@ -349,25 +364,41 @@ fn parse_preview(v: &Value) -> (bool, Vec<PreviewRow>) {
             }
         }
     }
-    let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
-    (ok && !rows.is_empty(), rows)
+    rows
 }
 
-/// previewPatch 响应 → 逐条 (key, next)（跳过错误条目）。应用成功后用它回灌
-/// AppState 的配置镜像：core 对每个写入键会广播 `config.changed` 回声，镜像里
-/// 已有同值则被识别为本端写入，不弹「已在别处更改」（与 setItems 保存同一豁免机制）。
-fn parse_entry_values(v: &Value) -> Vec<(String, Value)> {
-    let Some(entries) = v.get("entries").and_then(|e| e.as_array()) else {
+/// `previewImport` / `previewImportText` 响应 → 包内配置片段预览。
+/// 缺 `configPatch` = 包不带片段（纯方案包），返回 `None`。
+pub fn parse_config_patch(v: &Value) -> Option<ConfigPatchPreview> {
+    let cp = v.get("configPatch")?;
+    Some(ConfigPatchPreview {
+        text: cp
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string(),
+        ok: cp.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
+        rows: parse_entries(cp),
+    })
+}
+
+/// applyPatch 响应的 `written` → 逐条 (key, value)。
+///
+/// **必须用 core 回传的 written 而不是预览 entries**：Map 键逐条合并后，落盘的是
+/// 合并结果整表，客户端从 entries 拼不出来（`package-format.md` §2.3）。
+/// 应用成功后用它回灌 AppState 的配置镜像：core 对每个写入键会广播 `config.changed`
+/// 回声，镜像里已有同值则被识别为本端写入，不弹「已在别处更改」。
+pub fn parse_written(v: &Value) -> Vec<(String, Value)> {
+    let Some(written) = v.get("written").and_then(|e| e.as_array()) else {
         return Vec::new();
     };
-    entries
+    written
         .iter()
-        .filter(|e| e.get("error").is_none())
         .filter_map(|e| {
             let key = e.get("key").and_then(|k| k.as_str())?;
             Some((
                 key.to_string(),
-                e.get("next").cloned().unwrap_or(Value::Null),
+                e.get("value").cloned().unwrap_or(Value::Null),
             ))
         })
         .collect()
@@ -382,6 +413,43 @@ fn fmt_value(v: &Value) -> String {
 }
 
 // ──────────────────────── UI 构建 ────────────────────────
+
+/// 配置片段预览的一行。片段对话框与方案包导入确认对话框**共用**——两处各写一份的
+/// 话，宽度分配这类坑就要各踩一次。
+///
+/// 宽度分配：key 按自然宽度（弹性给 key 会被长 detail 挤到一字宽），detail 占余宽
+/// 并折行。key 只设上界防畸形长键（错误条目的键是用户手敲的任意串），中段省略同时
+/// 保住段前缀与叶子名——两端都是识别一个配置键要看的部分。
+pub fn preview_row_element(row: &PreviewRow) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Start)
+        .spacing(12)
+        .padding_xy(10, 5)
+        .child(
+            Element::label(&row.key)
+                .font_size(12.5)
+                .fg_role(if row.is_error {
+                    Role::Danger
+                } else {
+                    Role::Text
+                })
+                .max_width(230)
+                .max_lines(1)
+                .truncate(Truncate::Middle),
+        )
+        .child(
+            Element::label(&row.detail)
+                .font_size(12.5)
+                .fg_role(if row.is_error {
+                    Role::Danger
+                } else {
+                    Role::TextMuted
+                })
+                .weight(1.0)
+                .max_lines(3),
+        )
+}
 
 /// 高级页「导入与导出」卡片：统一导入文件 + 剪贴板导入两个入口。
 pub fn build_import_export_section(
@@ -463,40 +531,7 @@ pub fn build_config_import_dialog(
         .height(180);
 
     // 预览列表（动态内容一律走 Signal，构建期读取会被永久冻结）。
-    let list = Element::host_signal(rows_sig, move |row: PreviewRow| {
-        let role = if row.is_error {
-            Role::Danger
-        } else {
-            Role::Text
-        };
-        // 宽度分配：key 按自然宽度（弹性给 key 会被长 detail 挤到一字宽），detail
-        // 占余宽并折行。key 只设上界防畸形长键（错误条目的键是用户手敲的任意串），
-        // 中段省略同时保住段前缀与叶子名——两端都是识别一个配置键要看的部分。
-        Element::row()
-            .width_match()
-            .cross(Align::Start)
-            .spacing(12)
-            .padding_xy(10, 5)
-            .child(
-                Element::label(&row.key)
-                    .font_size(12.5)
-                    .fg_role(role)
-                    .max_width(230)
-                    .max_lines(1)
-                    .truncate(Truncate::Middle),
-            )
-            .child(
-                Element::label(&row.detail)
-                    .font_size(12.5)
-                    .fg_role(if row.is_error {
-                        Role::Danger
-                    } else {
-                        Role::TextMuted
-                    })
-                    .weight(1.0)
-                    .max_lines(3),
-            )
-    });
+    let list = Element::host_signal(rows_sig, |row: PreviewRow| preview_row_element(&row));
     let rows_empty = move || rows_sig.get().is_empty();
     let placeholder = Element::label("点击「校验预览」查看逐项变更")
         .font_size(12.5)
@@ -714,20 +749,66 @@ mod tests {
         );
     }
 
-    /// 应用成功后回灌配置镜像用的 (key, next)：跳过错误条目、保留合法条目原值。
+    /// 应用成功后回灌配置镜像用的 (key, value) 取自 core 的 `written`——**落盘后**的
+    /// 最终键值。Map 父键携带合并后的整表，客户端从 entries 拼不出它（§2.3）。
     #[test]
-    fn parse_entry_values_skips_error_entries() {
-        let v = json!({ "ok": false, "entries": [
-            { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
-            { "key": "input.initial_mode", "next": "chinese" },
-            { "key": "input.foo.bar", "next": 1, "error": "未知配置键" }
+    fn parse_written_takes_final_values_from_core() {
+        let v = json!({ "ok": true, "applied": 2, "needsRestart": false, "written": [
+            { "key": "ui.candidate.per_page", "value": 9 },
+            // Map 父键：core 合并后的整表，含用户原有的 `x`（片段里只写了 `z`）。
+            { "key": "keys.key_actions", "value": { "x": "temp_english", "z": "temp_pinyin" } }
         ]});
-        let pairs = parse_entry_values(&v);
+        let pairs = parse_written(&v);
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], ("ui.candidate.per_page".to_string(), json!(9)));
         assert_eq!(
-            pairs[1],
-            ("input.initial_mode".to_string(), json!("chinese"))
+            pairs[1].1,
+            json!({ "x": "temp_english", "z": "temp_pinyin" }),
+            "Map 父键必须原样带回合并后的整表"
+        );
+    }
+
+    /// 老 core 不回 `written` 时不能 panic，只是没有镜像回灌（退化为「已在别处更改」
+    /// 提示一次），不影响配置本身已经落盘。
+    #[test]
+    fn parse_written_absent_is_empty() {
+        assert!(parse_written(&json!({ "ok": true, "applied": 2 })).is_empty());
+    }
+
+    /// Map 条目的显示键为 `父键[条目名]`：条目名不并进点分键——
+    /// `custom_mappings` 的条目名本身可含 `.`，并进去就分不清层级了。
+    #[test]
+    fn parse_preview_map_entry_display_key() {
+        let v = json!({ "ok": true, "entries": [
+            { "key": "keys.key_actions", "mapEntry": "z", "next": "temp_pinyin" },
+            { "key": "input.punct.custom_mappings", "mapEntry": ".", "current": "。", "next": "." }
+        ]});
+        let (ok, rows) = parse_preview(&v);
+        assert!(ok);
+        assert_eq!(rows[0].key, "keys.key_actions[z]");
+        assert_eq!(rows[0].detail, "未设置 → temp_pinyin");
+        assert_eq!(rows[1].key, "input.punct.custom_mappings[.]");
+        assert_eq!(rows[1].detail, "。 → .");
+    }
+
+    /// 包内 `configPatch` 与 previewPatch 的 entries 同形，缺席即纯方案包。
+    #[test]
+    fn parse_config_patch_reads_text_ok_and_rows() {
+        let v = json!({
+            "willAdd": ["kf.schema.toml"],
+            "configPatch": { "text": "[keys]\n", "ok": true, "entries": [
+                { "key": "keys.key_actions", "mapEntry": "z", "next": "temp_pinyin" }
+            ]}
+        });
+        let p = parse_config_patch(&v).expect("含 configPatch");
+        assert_eq!(p.text, "[keys]\n");
+        assert!(p.ok);
+        assert_eq!(p.rows.len(), 1);
+        assert_eq!(p.rows[0].key, "keys.key_actions[z]");
+
+        assert!(
+            parse_config_patch(&json!({ "willAdd": [] })).is_none(),
+            "纯方案包无 configPatch"
         );
     }
 }

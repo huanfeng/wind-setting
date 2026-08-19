@@ -543,10 +543,37 @@ mod tests {
             "合法条目不带 error"
         );
 
+        // Map 键的条目行：key = 父键、mapEntry = 条目名（条目名不并进点分键）。
+        let map_row = entries
+            .iter()
+            .find(|e| e.get("key") == Some(&json!("keys.key_actions")))
+            .expect("样例应含一条 Map 条目");
+        assert_eq!(map_row.get("mapEntry"), Some(&json!("backtick")));
+
         let a = mock_reply("config.applyPatch");
         assert_eq!(a.get("ok"), Some(&json!(true)));
         assert!(a.get("applied").and_then(|v| v.as_u64()).is_some());
         assert!(a.get("needsRestart").and_then(|v| v.as_bool()).is_some());
+        // written = 落盘后的最终键值；Map 父键带合并后的整表（不止片段里那一条）。
+        let written = a
+            .get("written")
+            .and_then(|v| v.as_array())
+            .expect("written 数组");
+        assert!(
+            written
+                .iter()
+                .all(|w| w.get("key").is_some() && w.get("value").is_some())
+        );
+        let map_written = written
+            .iter()
+            .find(|w| w.get("key") == Some(&json!("keys.key_actions")))
+            .and_then(|w| w.get("value"))
+            .and_then(|v| v.as_object())
+            .expect("Map 父键的 written 值应是整表");
+        assert!(
+            map_written.len() > 1,
+            "Map 父键必须带合并后的整表（含片段未提及的既有条目），实际: {map_written:?}"
+        );
     }
 
     #[test]
@@ -1167,14 +1194,27 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }),
         // 配置片段导入（core 契约：previewPatch 只读逐条校验，current 缺席=未设置；
         // applyPatch 全部合法才落盘，逐键错误时整体为 RPC error）。
+        // Map 键（key_actions）刻意给一条：预览逐**条目**报告、显示键为
+        // `父键[条目名]`，且 written 回传的是合并后的整表（§2.2 / §2.3）。
         "config.previewPatch" => json!({
             "ok": true,
             "entries": [
                 { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
-                { "key": "input.initial_mode", "next": "chinese" }
+                { "key": "input.initial_mode", "next": "chinese" },
+                { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
             ]
         }),
-        "config.applyPatch" => json!({ "ok": true, "applied": 2, "needsRestart": false }),
+        // written = 落盘后的最终键值：Map 父键带的是合并结果整表（片段只写了
+        // backtick，semicolon 是用户原有条目），客户端拼不出来，必须由 core 回传。
+        "config.applyPatch" => json!({
+            "ok": true, "applied": 3, "needsRestart": false,
+            "written": [
+                { "key": "ui.candidate.per_page", "value": 9 },
+                { "key": "input.initial_mode", "value": "chinese" },
+                { "key": "keys.key_actions",
+                  "value": { "semicolon": "temp_pinyin", "backtick": "quick_input" } }
+            ]
+        }),
         // 整机备份（P4 契约）。
         "backup.create" | "backup.inspect" => json!({
             "path": "C:/tmp/backup.zip",

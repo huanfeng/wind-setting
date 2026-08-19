@@ -51,7 +51,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.dark,
             st.conn,
             st.feedback,
-            build_schema_manager_dialog(&st.schema_mgr),
+            build_schema_manager_dialog(app, &st.schema_mgr),
             pages::dict::build_dict_dialogs(&st.dict_mgr),
             build_theme_import_dialog(app),
             pages::backup::build_backup_restore_dialog(&st.backup_mgr),
