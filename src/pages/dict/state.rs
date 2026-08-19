@@ -2141,10 +2141,17 @@ impl DictManagerState {
     }
 
     /// 某引擎类型的方案能承载哪些数据类型（与 `tabs_for_domain_at` 的标签集一一对应）。
+    ///
+    /// ⚠️ 这份清单是**三处同增同减**契约的一环：本函数（导入导出的分段）、
+    /// [`tabs_for_kind`]（设置页子标签）、主仓 `wind-webdata::default_dict_sections`
+    /// （core 侧的默认导出段）。三处都没有编译期约束，只改其中一两处的症状是
+    /// 「设置页看得见、导出文件里没有」——用户直到还原时才发现丢了数据。
+    /// 拼音就这么丢过候选调整：它曾因下调位被整体屏蔽而只有三段，置顶放开后
+    /// tabs 与 core 都补了 Shadow，唯独这里漏了。
     fn types_for_kind(kind: DomainKind) -> &'static [&'static str] {
         match kind {
-            DomainKind::Pinyin => &["userWords", "tempWords", "freq"],
-            DomainKind::Codetable | DomainKind::Other => {
+            // 拼音与码表同口径：置顶放开后拼音同样会产生候选调整规则。
+            DomainKind::Pinyin | DomainKind::Codetable | DomainKind::Other => {
                 &["userWords", "tempWords", "freq", "shadow"]
             }
             // 与 tabs_for_domain_at 保持一致：英文无临时词库。
@@ -2983,7 +2990,7 @@ mod tests {
 
     /// 预览格式化的目标口径（与 `types_for_kind` 同源，测试里直接写出以固定预期）。
     const CODETABLE_TYPES: &[&str] = &["userWords", "tempWords", "freq", "shadow"];
-    const PINYIN_TYPES: &[&str] = &["userWords", "tempWords", "freq"];
+    const PINYIN_TYPES: &[&str] = &["userWords", "tempWords", "freq", "shadow"];
     const MIXED_TYPES: &[&str] = &["shadow"];
 
     fn schema(id: &str, name: &str, kind: &str) -> SchemaInfo {
@@ -3884,13 +3891,14 @@ mod tests {
         assert!(!msg.contains("可导入："), "没有任何一段能进，不该说可导入");
 
         // 部分可收：能收的与收不了的分两拨列，都要出现。
+        // 用混输做样本而非拼音——拼音四段全收（含候选调整），演示不出"收不了"这一拨。
         let v = json!({ "format": "winddict", "compatible": true, "sections": [
             { "key": "userWords", "count": 2000, "skipped": 0 },
             { "key": "shadow", "count": 12, "skipped": 0 },
         ] });
-        let msg = DictManagerState::format_import_preview(&v, PINYIN_TYPES, "拼音");
-        assert!(msg.contains("可导入：用户词库 2000"), "实际: {msg}");
-        assert!(msg.contains("不会导入：候选调整 12"), "实际: {msg}");
+        let msg = DictManagerState::format_import_preview(&v, MIXED_TYPES, "五笔拼音混输 · 混输");
+        assert!(msg.contains("可导入：候选调整 12"), "实际: {msg}");
+        assert!(msg.contains("不会导入：用户词库 2000"), "实际: {msg}");
     }
 
     /// 目标下拉的**显示序**与 `io_target` 的**语义序**必须逐项对齐。
@@ -3952,6 +3960,30 @@ mod tests {
                 "浏览第 {i} 个方案域，默认目标应是它自己"
             );
         }
+    }
+
+    /// 拼音的导入导出段必须含**候选调整**——与设置页的拼音「候选调整」子标签、以及主仓
+    /// `wind-webdata::default_dict_sections` 三处同增同减（见 `types_for_kind` 的告警）。
+    ///
+    /// 拼音曾因下调位被整体屏蔽而只有三段；置顶放开后 tabs 与 core 都补了 Shadow，唯独
+    /// 这里漏了，症状是「设置页看得见规则，导出的文件里没有」。
+    #[test]
+    fn pinyin_io_sections_include_shadow() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("py", "全拼", "pinyin")]);
+        st.io_target.set(0);
+        assert_eq!(st.io_target_kind(), DomainKind::Pinyin);
+        assert!(st.io_type_applicable("shadow"), "拼音须能导入导出候选调整");
+        assert!(
+            st.io_selected_sections().iter().any(|k| k == "shadow"),
+            "默认全选时候选调整须在导出段里，实际: {:?}",
+            st.io_selected_sections()
+        );
+        // 与设置页子标签对齐：tabs 有 Shadow、段清单也有，两边同口径。
+        assert!(
+            tabs_for_kind(DomainKind::Pinyin).contains(&LogicalTab::Shadow),
+            "前提被改动：拼音子标签若不再有候选调整，本条契约需一并复审"
+        );
     }
 
     /// 目标方案决定勾选可见性与选中集合——不再跟着当前浏览的数据域走。
