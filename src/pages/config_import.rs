@@ -469,16 +469,21 @@ pub fn build_config_import_dialog(
         } else {
             Role::Text
         };
+        // 宽度分配：key 按自然宽度（弹性给 key 会被长 detail 挤到一字宽），detail
+        // 占余宽并折行。key 只设上界防畸形长键（错误条目的键是用户手敲的任意串），
+        // 中段省略同时保住段前缀与叶子名——两端都是识别一个配置键要看的部分。
         Element::row()
             .width_match()
-            .cross(Align::Center)
+            .cross(Align::Start)
             .spacing(12)
             .padding_xy(10, 5)
             .child(
                 Element::label(&row.key)
                     .font_size(12.5)
                     .fg_role(role)
-                    .weight(1.0),
+                    .max_width(230)
+                    .max_lines(1)
+                    .truncate(Truncate::Middle),
             )
             .child(
                 Element::label(&row.detail)
@@ -487,7 +492,9 @@ pub fn build_config_import_dialog(
                         Role::Danger
                     } else {
                         Role::TextMuted
-                    }),
+                    })
+                    .weight(1.0)
+                    .max_lines(3),
             )
     });
     let rows_empty = move || rows_sig.get().is_empty();
