@@ -55,7 +55,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             pages::dict::build_dict_dialogs(&st.dict_mgr),
             build_theme_import_dialog(app),
             pages::backup::build_backup_restore_dialog(&st.backup_mgr),
-            pages::config_import::build_config_import_dialog(&st.config_import, &st.schema_mgr),
+            pages::config_import::build_config_import_dialog(
+                app,
+                &st.config_import,
+                &st.schema_mgr,
+            ),
             pages::stats::build_stats_confirm_dialog(&st.stats_mgr),
             st.reload_confirm,
             st.reset_confirm,
@@ -69,6 +73,15 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 
     let titlebar = build_titlebar();
 
+    // 快速导入右键菜单：挂在左侧栏与底栏的空白处（真机反馈：挂满整个内容区太泛，
+    // 所有条目上都会弹）。内容区不再挂，页内元素的自有菜单不受影响。
+    let (ci_menu, mgr_menu) = {
+        let st = app.borrow();
+        (st.config_import.clone(), st.schema_mgr.clone())
+    };
+    let ci_menu_footer = ci_menu.clone();
+    let mgr_menu_footer = mgr_menu.clone();
+
     // 左侧栏：图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
     let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
     let nav = build_nav(&names, tab_sig);
@@ -78,7 +91,10 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .height_match()
         .bg_role(Role::Bg)
         .padding_xy(8, 10)
-        .child(nav);
+        .child(nav)
+        .on_context_menu(move || {
+            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
+        });
     let vdivider = Element::leaf()
         .width(1)
         .height_match()
@@ -90,20 +106,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         pages_stack = pages_stack.child(page.fill().visible_when(move || tab_sig.get() == i));
     }
     // 按键冲突固定顶栏：置于页面滚动区之外，切页/下滚均常驻，无冲突时隐藏不占位。
-    // 内容区右键菜单 = 快速导入入口（任意页空白处可达）；带自有菜单的内层元素
-    // （方案列表、表格行等）命中更靠内，不受影响。
-    let (ci_menu, mgr_menu) = {
-        let st = app.borrow();
-        (st.config_import.clone(), st.schema_mgr.clone())
-    };
     let content = Element::col()
         .fill()
         .weight(1.0)
         .child(crate::pages::conflict_bar(app.borrow().conflict))
-        .child(pages_stack)
-        .on_context_menu(move || {
-            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
-        });
+        .child(pages_stack);
     let body = Element::row()
         .fill()
         .weight(1.0)
@@ -111,7 +118,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(vdivider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, conn);
+    let footer = build_footer(app, th, dark, conn).on_context_menu(move || {
+        crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer)
+    });
 
     let main_col = Element::col()
         .fill()
