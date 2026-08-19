@@ -50,6 +50,24 @@ pub enum UiRequest {
     OpenDictWindow,
 }
 
+/// 把 `--page` / `--tab` 解出的目标下标分派到「切页」或「开词库窗」。
+///
+/// `dict` 已不是一个页：词库整体迁进了独立窗，主窗那一格只剩个永不显示的占位
+/// （见 `pages::dict_page`），`tab.set(dict_idx)` 只会得到一屏空白。
+///
+/// `notify` 透传给 [`state::AppState::request_dict_window`]：冷启动传 `false`（等
+/// `apply_loaded` 注入方案后再开），二次实例传 `true`（数据早已就绪，立刻推一帧）。
+///
+/// 冷启动与二次实例共用此入口 —— 两处各写一份 if 的话，改一边漏一边，而漏掉的那条
+/// 路径的症状是「点了词库管理，设置窗跳出来却是一片空白」。
+fn route_target(st: &state::AppState, idx: usize, notify: bool) {
+    if Some(idx) == cli::page_to_index("dict") {
+        st.request_dict_window(notify);
+    } else {
+        st.tab.set(idx);
+    }
+}
+
 /// 同步拉取数据并 apply；连接不存在时 fast-fail 立即返回。重连复用此入口。
 ///
 /// 设置操作低频，故直接在调用线程同步 fetch（无后台线程）；
@@ -115,16 +133,9 @@ fn main() {
             st.dark.set(true);
         }
         // 初始页：--page <id> / --page=<id> / 快捷 --<id> / --tab <n>。
-        //
-        // `--page dict` 不再是"切到第 4 页"——词库已整体迁进独立窗，主窗那一格只剩个
-        // 永不显示的占位（见 `pages::dict_page`）。设过去只会得到一屏空白，故改为挂起一个
-        // 开窗请求，等 `apply_loaded` 之后再开（那时方案列表才就绪，`--schema` 才解析得出）。
+        // `--page dict` 走开窗而非切页，且冷启动不立刻推帧（等 apply_loaded），见 route_target。
         if let Some(idx) = cli::parse_target(&args) {
-            if Some(idx) == cli::page_to_index("dict") {
-                st.request_dict_window(false);
-            } else {
-                st.tab.set(idx);
-            }
+            route_target(&st, idx, false);
         }
         // 词库页深链（--schema/--type）：此刻方案列表尚未就绪，故只挂起，
         // 待 apply_loaded 注入方案后再定位（见 AppState::route_dict_target）。
@@ -182,13 +193,9 @@ fn main() {
                 if let Some(t) = cli::parse_dict_target(&argv) {
                     st.route_dict_target(t);
                 }
-                if Some(idx) == cli::page_to_index("dict") {
-                    // 本回调没有 ctx，开不了窗（见 `UiRequest`），故经通道推一帧。
-                    // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
-                    st.request_dict_window(true);
-                } else {
-                    st.tab.set(idx);
-                }
+                // notify = true：本回调没有 ctx、开不了窗（见 `UiRequest`），要经通道推一帧。
+                // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
+                route_target(&st, idx, true);
             }
         })
         .frameless()
@@ -440,5 +447,57 @@ mod tests {
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());
+    }
+
+    /// `--page dict` 必须**开窗**而不是切页：主窗那一格是永不显示的占位，切过去就是
+    /// 一屏空白。这是本次把词库迁出主窗后最容易回退的一条。
+    #[test]
+    fn dict_target_requests_window_and_leaves_tab_alone() {
+        let st = state::AppState::empty();
+        let before = st.tab.get();
+
+        route_target(
+            &st,
+            cli::page_to_index("dict").expect("dict 必在 PAGES 中"),
+            false,
+        );
+
+        assert_eq!(st.tab.get(), before, "开词库窗不该动主窗的当前页");
+        assert!(st.take_dict_window_request(), "应挂起一个开窗请求");
+    }
+
+    /// 开窗请求取一次即清：否则 `apply_loaded` 与 UI 通道两处都会消费到它，
+    /// 一次深链开两回窗（非单例窗就是真开两个）。
+    #[test]
+    fn dict_window_request_is_consumed_once() {
+        let st = state::AppState::empty();
+
+        st.request_dict_window(false);
+
+        assert!(st.take_dict_window_request());
+        assert!(!st.take_dict_window_request(), "第二次取应为空");
+    }
+
+    /// 其余页照旧切页，且不该顺带挂起开窗请求。
+    #[test]
+    fn non_dict_target_switches_tab() {
+        let st = state::AppState::empty();
+        let about = cli::page_to_index("about").expect("about 必在 PAGES 中");
+
+        route_target(&st, about, false);
+
+        assert_eq!(st.tab.get(), about);
+        assert!(!st.take_dict_window_request());
+    }
+
+    /// 退出置位默认关着 —— 否则词库窗一开出来就被哨兵关掉。
+    #[test]
+    fn app_closing_starts_false_and_latches() {
+        let st = state::AppState::empty();
+        assert!(!st.app_closing.get());
+
+        st.mark_app_exiting();
+
+        assert!(st.app_closing.get());
     }
 }

@@ -71,40 +71,75 @@ pub fn build_sidebar(mgr: &DictManagerState) -> Element {
         .child(footer)
 }
 
+/// 左栏的一个条目。`domain` 是它要写进 `mgr.domain` 的**数据域下标**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarEntry {
+    /// 数据域下标（`domain_slot` 的定义域）。
+    pub domain: usize,
+    /// 显示名（方案名，已去掉折叠标签里的「 · 引擎」后缀）。
+    pub name: String,
+    /// 右侧徽章文字（「全局」或引擎类型）。
+    pub tag: String,
+    /// 是否属于「输入方案」组（false = 全局组）。
+    pub in_schema_group: bool,
+}
+
+/// 算出左栏要渲染哪些条目。
+///
+/// 与渲染分开是为了能单测**下标**：这一栏最危险的错误不是画歪，而是条目与数据域错位
+/// 一格——点「五笔86」出来的是拼音的词，不报错、不 panic，只是数据全不对。
+/// `state.rs:303` 记着同一个坑（加第二个全局域时四处手写的 `domain - 1` 漏改一处）。
+///
+/// 故这里一律以 [`GLOBAL_DOMAINS`] 为界，不写字面量 0/1，也不做下标算术。
+pub fn sidebar_entries(mgr: &DictManagerState) -> Vec<SidebarEntry> {
+    let mut out = Vec::new();
+
+    let labels = mgr.domain_labels();
+    for (i, label) in labels.iter().take(GLOBAL_DOMAINS).enumerate() {
+        out.push(SidebarEntry {
+            domain: i,
+            name: label.clone(),
+            tag: "全局".to_string(),
+            in_schema_group: false,
+        });
+    }
+
+    for (n, e) in mgr.folded_domains().iter().enumerate() {
+        // 折叠标签形如「五笔86 · 码表」：主文本取 · 前段，引擎类型另作徽章。
+        // 与 `domain_rich_items` 同一套拆法，两处必须一致，否则同一个方案在下拉与
+        // 左栏里显示成两个名字。
+        let name = e
+            .label
+            .split_once(" · ")
+            .map(|(n, _)| n.to_string())
+            .unwrap_or_else(|| e.label.clone());
+        out.push(SidebarEntry {
+            domain: GLOBAL_DOMAINS + n,
+            name,
+            tag: engine_label(&e.kind).to_string(),
+            in_schema_group: true,
+        });
+    }
+    out
+}
+
 /// 列表主体：两个分组标题 + 各自的条目。
 fn build_list(mgr: &DictManagerState) -> Element {
     let mut col = Element::col().width_match().spacing(2);
+    let entries = sidebar_entries(mgr);
 
     col = col.child(group_title("全局"));
-    // 全局域固定两个（快捷短语、快捷输入），下标就是 0..GLOBAL_DOMAINS。
-    //
-    // ⚠️ 不写字面量 0/1，也不写 `domain - 1` 这类下标算术：`state.rs` 那条注释记着，
-    // 加第二个全局域时四处手写的偏移漏改一处就整体错位一格 —— 选「五笔86」看到拼音的
-    // 数据，不报错也不 panic。这里一律以 GLOBAL_DOMAINS 为界、以 domain_slot 为判据。
-    let labels = mgr.domain_labels();
-    for i in 0..GLOBAL_DOMAINS {
-        let label = labels.get(i).cloned().unwrap_or_default();
-        col = col.child(nav_item(mgr, i, &label, "全局"));
+    for e in entries.iter().filter(|e| !e.in_schema_group) {
+        col = col.child(nav_item(mgr, e.domain, &e.name, &e.tag));
     }
 
-    let folded = mgr.folded_domains();
-    if !folded.is_empty() {
+    let schemas: Vec<&SidebarEntry> = entries.iter().filter(|e| e.in_schema_group).collect();
+    // 一个方案都没装（或 core 没连上）时不画这个标题：光秃秃一个「输入方案」下面什么
+    // 都没有，比不画更像出了错。空态提示由右侧的 empty_msg 覆盖层负责。
+    if !schemas.is_empty() {
         col = col.child(group_title("输入方案"));
-        for (n, e) in folded.iter().enumerate() {
-            // 折叠标签形如「五笔86 · 码表」：主文本取 · 前段，引擎类型另作徽章。
-            // 与 `domain_rich_items` 同一套拆法，两处必须一致，否则同一个方案在下拉与
-            // 左栏里显示成两个名字。
-            let name = e
-                .label
-                .split_once(" · ")
-                .map(|(n, _)| n.to_string())
-                .unwrap_or_else(|| e.label.clone());
-            col = col.child(nav_item(
-                mgr,
-                GLOBAL_DOMAINS + n,
-                &name,
-                engine_label(&e.kind),
-            ));
+        for e in schemas {
+            col = col.child(nav_item(mgr, e.domain, &e.name, &e.tag));
         }
     }
     col
@@ -193,4 +228,111 @@ fn badge(tag: &str) -> Element {
         .corner(4.0)
         .bg_role(Role::SurfaceAlt)
         .padding_xy(5, 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::state::{DomainSlot, domain_slot};
+    use super::*;
+    use crate::state::SchemaInfo;
+
+    fn schema(id: &str, name: &str, kind: &str) -> SchemaInfo {
+        SchemaInfo {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 直接写 schemas，不经 `set_schemas`（那会触发 RPC）。
+    fn with_schemas(mgr: &DictManagerState, list: Vec<SchemaInfo>) {
+        *mgr.schemas.borrow_mut() = list;
+    }
+
+    fn fixture() -> DictManagerState {
+        let mgr = DictManagerState::new();
+        with_schemas(
+            &mgr,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("quanpin", "全拼", "pinyin"),
+                schema("mixed", "混输", "mixed"),
+            ],
+        );
+        mgr
+    }
+
+    /// 本栏最危险的错误：条目与数据域**错位一格** —— 点「五笔86」出来的是拼音的词，
+    /// 不报错也不 panic。故逐条把下标喂回 `domain_slot`，核对语义与它在列表里的位置一致。
+    #[test]
+    fn entry_domains_match_domain_slot_semantics() {
+        let entries = sidebar_entries(&fixture());
+
+        let globals: Vec<&SidebarEntry> = entries.iter().filter(|e| !e.in_schema_group).collect();
+        assert_eq!(
+            globals.len(),
+            GLOBAL_DOMAINS,
+            "全局组条目数必须等于 GLOBAL_DOMAINS，多一条少一条都会让其后的方案域整体错位"
+        );
+        assert_eq!(domain_slot(globals[0].domain), DomainSlot::Phrase);
+        assert_eq!(domain_slot(globals[1].domain), DomainSlot::QuickFormat);
+
+        for (n, e) in entries.iter().filter(|e| e.in_schema_group).enumerate() {
+            assert_eq!(
+                domain_slot(e.domain),
+                DomainSlot::Schema(n),
+                "方案组第 {n} 项「{}」的域下标解析错位",
+                e.name
+            );
+        }
+    }
+
+    /// 名字/徽章的拆法必须与数据域下拉（`domain_rich_items`）一致 —— 同一个方案在两处
+    /// 显示成两个名字，用户只会以为那是两个不同的东西。
+    #[test]
+    fn entry_names_have_engine_suffix_stripped() {
+        let entries = sidebar_entries(&fixture());
+        let schemas: Vec<&SidebarEntry> = entries.iter().filter(|e| e.in_schema_group).collect();
+
+        for e in &schemas {
+            assert!(
+                !e.name.contains(" · "),
+                "方案名「{}」仍带着折叠标签的引擎后缀，应当拆进 tag",
+                e.name
+            );
+            assert!(!e.tag.is_empty(), "方案条目必须带引擎类型徽章");
+        }
+        assert!(
+            schemas
+                .iter()
+                .any(|e| e.name == "五笔86" && e.tag == "码表"),
+            "应有「五笔86」+「码表」徽章，实得 {:?}",
+            schemas
+                .iter()
+                .map(|e| (&e.name, &e.tag))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 一个方案都没有时（core 没连上 / 全部隐藏）只剩全局组，不留一个空的「输入方案」标题。
+    #[test]
+    fn no_schema_group_when_no_schemas() {
+        let entries = sidebar_entries(&DictManagerState::new());
+
+        assert_eq!(entries.len(), GLOBAL_DOMAINS);
+        assert!(entries.iter().all(|e| !e.in_schema_group));
+    }
+
+    /// 域集合变化必须递增 `domain_epoch`，否则左栏停在建窗那一刻的快照上 ——
+    /// 症状是「装了新方案，词库窗里死活看不到」。
+    #[test]
+    fn domain_epoch_advances_when_schemas_change() {
+        let mgr = DictManagerState::new();
+        let before = mgr.domain_epoch.get()[0];
+
+        mgr.set_schemas_no_reload(&[schema("wb", "五笔86", "codetable")]);
+
+        assert_eq!(mgr.domain_epoch.get()[0], before + 1);
+    }
 }
