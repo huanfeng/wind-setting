@@ -21,6 +21,7 @@ mod mode;
 mod pages;
 mod protocol;
 mod rpc;
+mod schema_url_import;
 #[allow(dead_code)]
 mod setting_config;
 mod shell;
@@ -332,8 +333,10 @@ fn run_import_action(
     }
 }
 
-/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框，
-/// 其它 kind 提示暂不支持。反馈走 feedback（toast）——底栏只剩状态点，没有常驻文字位。
+/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框；
+/// 方案包（schema）仅接受官方域，下载到临时文件后复用 schema_manager 既有的导入
+/// 确认对话框；其余 kind 提示暂不支持。反馈走 feedback（toast）——底栏只剩状态点，
+/// 没有常驻文字位。
 fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {
@@ -353,6 +356,24 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                     ToastKind::Info,
                     "收到主题导入请求，请确认来源后导入".to_string(),
                 )));
+            } else if req.kind == "schema" {
+                st.clear_pending_theme_import();
+                st.theme_import_dialog_visible.set(false);
+                // 白名单在下载前校验（域名不对不发请求）；临时文件的清理不在这里做——
+                // 确认对话框是异步的，文件要活到用户确认导入之后，固定文件名 + 系统
+                // 临时目录，下次下载覆盖、其余交给系统清理（见 schema_url_import）。
+                match schema_url_import::download_schema_package(&req.url) {
+                    Ok(path) => match rpc::call_core(
+                        "scheme.previewImport",
+                        &serde_json::json!({ "path": path.to_string_lossy() }),
+                    ) {
+                        Ok(v) => st.schema_mgr.open_import_confirm(path, &v),
+                        Err(e) => st
+                            .feedback
+                            .set(Some((ToastKind::Error, format!("读取方案包失败：{e}")))),
+                    },
+                    Err(e) => st.feedback.set(Some((ToastKind::Error, e))),
+                }
             } else {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
@@ -411,7 +432,7 @@ mod tests {
             &state,
         );
         route_protocol(
-            "windinput://import/schema?url=https%3A%2F%2Fexample.com%2Fschema.yaml&name=Schema",
+            "windinput://import/dict?url=https%3A%2F%2Fexample.com%2Fdict.zip&name=Dict",
             &state,
         );
 
@@ -422,8 +443,27 @@ mod tests {
         assert!(!st.theme_import_dialog_visible.get());
         assert_eq!(
             st.feedback.get(),
-            Some((ToastKind::Info, "暂不支持通过协议导入 schema".to_string()))
+            Some((ToastKind::Info, "暂不支持通过协议导入 dict".to_string()))
         );
+    }
+
+    /// schema kind 已接通，但只认官方域：非白名单域在**发出任何网络请求之前**
+    /// 被拒并 toast（本测试因此不需要网络）。
+    #[test]
+    fn route_protocol_schema_rejects_non_official_domain() {
+        let state = Rc::new(RefCell::new(state::AppState::empty()));
+
+        route_protocol(
+            "windinput://import/schema?url=https%3A%2F%2Fexample.com%2Fpkg.zip&name=Pkg",
+            &state,
+        );
+
+        let st = state.borrow();
+        assert_eq!(st.tab.get(), 4);
+        assert!(!st.theme_import_dialog_visible.get());
+        let (kind, msg) = st.feedback.get().expect("应有反馈");
+        assert_eq!(kind, ToastKind::Error);
+        assert!(msg.contains("官方域名"), "{msg}");
     }
 
     #[test]
