@@ -90,11 +90,20 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         pages_stack = pages_stack.child(page.fill().visible_when(move || tab_sig.get() == i));
     }
     // 按键冲突固定顶栏：置于页面滚动区之外，切页/下滚均常驻，无冲突时隐藏不占位。
+    // 内容区右键菜单 = 快速导入入口（任意页空白处可达）；带自有菜单的内层元素
+    // （方案列表、表格行等）命中更靠内，不受影响。
+    let (ci_menu, mgr_menu) = {
+        let st = app.borrow();
+        (st.config_import.clone(), st.schema_mgr.clone())
+    };
     let content = Element::col()
         .fill()
         .weight(1.0)
         .child(crate::pages::conflict_bar(app.borrow().conflict))
-        .child(pages_stack);
+        .child(pages_stack)
+        .on_context_menu(move || {
+            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
+        });
     let body = Element::row()
         .fill()
         .weight(1.0)

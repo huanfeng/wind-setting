@@ -245,6 +245,32 @@ pub fn dispatch_import_path(
     }
 }
 
+/// 设置窗口内容区的右键菜单项：任意页空白处直达导入（比进高级页找卡片更快）。
+/// 构建器每次右击都会重跑，闭包捕获的是当次的克隆。
+pub fn import_menu_items(
+    import: &ConfigImportState,
+    schema_mgr: &SchemaManagerState,
+) -> Vec<MenuItem> {
+    let ci_clip = import.clone();
+    let ci_file = import.clone();
+    let mgr_file = schema_mgr.clone();
+    vec![
+        MenuItem::run(
+            "从剪贴板导入配置",
+            move |ctx| {
+                ci_clip.open();
+                ci_clip.read_clipboard(ctx);
+            },
+            false,
+        ),
+        MenuItem::run(
+            "导入文件…",
+            move |ctx| pick_import_file(ctx, &ci_file, &mgr_file),
+            false,
+        ),
+    ]
+}
+
 // ──────────────────────── 纯函数（便于单测） ────────────────────────
 
 /// previewPatch 响应 → (可应用, 预览行)。可应用 = `ok:true` 且至少一条条目
@@ -505,6 +531,20 @@ mod tests {
         assert_eq!(route_of(Path::new("pkg.wpkg")), ImportRoute::Package);
         assert_eq!(route_of(Path::new("readme.txt")), ImportRoute::Unknown);
         assert_eq!(route_of(Path::new("noext")), ImportRoute::Unknown);
+    }
+
+    /// 内容区右键菜单恒两项、文案钉死——`shell::build` 挂接处只调本函数，
+    /// 文案改动或项目增减都应先红在这里。
+    #[test]
+    fn import_menu_has_clipboard_and_file_entries() {
+        let import = ConfigImportState::new();
+        let mgr = SchemaManagerState::new();
+        let labels: Vec<String> = import_menu_items(&import, &mgr)
+            .iter()
+            .filter(|i| !i.separator)
+            .map(|i| i.label.clone())
+            .collect();
+        assert_eq!(labels, vec!["从剪贴板导入配置", "导入文件…"]);
     }
 
     #[test]
