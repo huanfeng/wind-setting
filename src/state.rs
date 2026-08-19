@@ -214,6 +214,8 @@ pub struct AppState {
     pending_dict_target: Rc<RefCell<Option<crate::cli::DictTarget>>>,
     /// 备份还原状态（高级页卡片 + 还原确认对话框）。
     pub backup_mgr: crate::pages::backup::BackupState,
+    /// 统一配置导入状态（高级页「导入与导出」卡片 + 导入配置对话框）。
+    pub config_import: crate::pages::config_import::ConfigImportState,
     /// 桌面集成状态（高级页卡片 + 协议注册的两个确认对话框）。
     pub integration: crate::pages::integration::IntegrationState,
     /// 统计页状态（数据快照 + 清理确认对话框）。
@@ -451,6 +453,7 @@ impl AppState {
             dict_mgr: DictManagerState::new(),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
+            config_import: crate::pages::config_import::ConfigImportState::new(),
             integration: crate::pages::integration::IntegrationState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),

@@ -31,6 +31,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         dict_dialog,
         theme_import_dialog,
         backup_dialog,
+        config_import_dialog,
         stats_confirm_dialog,
         reload_confirm,
         reset_confirm,
@@ -54,6 +55,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             pages::dict::build_dict_dialogs(&st.dict_mgr),
             build_theme_import_dialog(app),
             pages::backup::build_backup_restore_dialog(&st.backup_mgr),
+            pages::config_import::build_config_import_dialog(&st.config_import, &st.schema_mgr),
             pages::stats::build_stats_confirm_dialog(&st.stats_mgr),
             st.reload_confirm,
             st.reset_confirm,
@@ -122,6 +124,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(dict_dialog)
         .child(theme_import_dialog)
         .child(backup_dialog)
+        .child(config_import_dialog)
         .child(stats_confirm_dialog)
         .child(build_exit_confirm_dialog(app))
         .child(build_reload_dialog(app, reload_confirm))
