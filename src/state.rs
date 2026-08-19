@@ -566,6 +566,40 @@ impl AppState {
         }
     }
 
+    // ── .wpkg 文件关联 ────────────────────────────────────────────────────
+
+    /// 注册（或修复）`.wpkg` 关联。自愈意愿同步置回 `true`，规则同协议注册。
+    pub fn register_file_assoc(&mut self) {
+        match crate::file_assoc::register() {
+            Ok(()) => {
+                self.set_file_assoc_self_heal(true);
+                self.integration.refresh();
+                self.notify_ok(".wpkg 文件关联已注册");
+            }
+            Err(e) => self.notify_err(format!("文件关联注册失败：{e}")),
+        }
+    }
+
+    /// 解除 `.wpkg` 关联。**必须**同时把 `file_assoc.self_heal` 置 `false` ——
+    /// 否则下次启动自愈立刻把关联写回去（与协议取消注册同一条教训）。
+    pub fn unregister_file_assoc(&mut self) {
+        match crate::file_assoc::unregister() {
+            Ok(()) => {
+                self.set_file_assoc_self_heal(false);
+                self.integration.refresh();
+                self.notify_ok(".wpkg 文件关联已解除，启动时不再自动注册");
+            }
+            Err(e) => self.notify_err(format!("解除文件关联失败：{e}")),
+        }
+    }
+
+    fn set_file_assoc_self_heal(&mut self, allow: bool) {
+        self.setting_config.file_assoc.self_heal = allow;
+        if let Err(e) = crate::setting_config::save(&self.setting_config) {
+            self.notify_err(e);
+        }
+    }
+
     // ── 在线升级 ──────────────────────────────────────────────────────────
 
     /// 注入后台 → UI 的消息发送端。`main()` 在 App 构建期调用一次。

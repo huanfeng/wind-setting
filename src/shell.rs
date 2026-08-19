@@ -113,6 +113,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(footer);
 
     let (protocol_overwrite_dlg, protocol_remove_dlg) = build_protocol_confirm_dialogs(app);
+    let (assoc_overwrite_dlg, assoc_remove_dlg) = build_assoc_confirm_dialogs(app);
 
     let mut root = Element::stack()
         .fill()
@@ -120,6 +121,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(main_col)
         .child(protocol_overwrite_dlg)
         .child(protocol_remove_dlg)
+        .child(assoc_overwrite_dlg)
+        .child(assoc_remove_dlg)
         .child(dialog)
         .child(dict_dialog)
         .child(theme_import_dialog)
@@ -621,6 +624,49 @@ fn build_protocol_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Elem
         move |_| {
             if let Ok(mut s) = app_rm.try_borrow_mut() {
                 s.unregister_protocol();
+            }
+            remove.set(false);
+        },
+    );
+
+    (overwrite_dlg, remove_dlg)
+}
+
+/// `.wpkg` 文件关联的两个确认框，形态与协议的完全一致（共用 `confirm_msg`，
+/// 同刻只开一个框），只是落点换成 `register_file_assoc` / `unregister_file_assoc`。
+fn build_assoc_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Element) {
+    let (overwrite, remove, msg) = {
+        let st = app.borrow();
+        (
+            st.integration.assoc_overwrite_confirm,
+            st.integration.assoc_remove_confirm,
+            st.integration.confirm_msg,
+        )
+    };
+
+    let app_ow = app.clone();
+    let overwrite_dlg = confirm_dialog_msg(
+        overwrite,
+        "改为由本程序打开",
+        msg,
+        "覆盖注册",
+        move |_| {
+            if let Ok(mut s) = app_ow.try_borrow_mut() {
+                s.register_file_assoc();
+            }
+            overwrite.set(false);
+        },
+    );
+
+    let app_rm = app.clone();
+    let remove_dlg = confirm_dialog_msg(
+        remove,
+        "解除 .wpkg 文件关联",
+        msg,
+        "仍然解除",
+        move |_| {
+            if let Ok(mut s) = app_rm.try_borrow_mut() {
+                s.unregister_file_assoc();
             }
             remove.set(false);
         },

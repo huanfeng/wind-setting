@@ -10,6 +10,7 @@ mod capabilities;
 mod cli;
 mod config;
 mod dialogs;
+mod file_assoc;
 mod icons;
 mod key_conflict;
 mod logger;
@@ -78,14 +79,19 @@ fn main() {
     }
 
     logger::init();
-    // 协议自愈有两道门：便携版不碰宿主机注册表，用户手动取消过注册的也不再写回去。
+    // 协议与 .wpkg 关联的自愈各有两道门：便携版不碰宿主机注册表，用户手动取消过
+    // 注册的也不再写回去（两条关联各记各的意愿，取消其一不影响另一条）。
     // 单读一次配置而不等 AppState 建好 —— 自愈要赶在窗口出现前完成，此刻 AppState
     // 还没开始拉 core 数据。判定本身是纯函数，见 protocol::should_self_heal_on_startup。
-    if protocol::should_self_heal_on_startup(
-        mode::is_portable(),
-        setting_config::load().config.protocol.self_heal,
-    ) {
-        protocol::self_heal_registration();
+    {
+        let sc = setting_config::load().config;
+        let portable = mode::is_portable();
+        if protocol::should_self_heal_on_startup(portable, sc.protocol.self_heal) {
+            protocol::self_heal_registration();
+        }
+        if protocol::should_self_heal_on_startup(portable, sc.file_assoc.self_heal) {
+            file_assoc::self_heal_registration();
+        }
     }
 
     // 快捷加词小窗：独立单例、紧凑窗，复用词库加词对话框；不落入常规设置界面路径。
@@ -146,32 +152,52 @@ fn main() {
         }
     );
 
-    // 单实例 + 二次运行激活/切页/协议。
-    let app_id = single_instance_app_id(false);
-    let single_instance_state = app_state.clone();
     let mut app = App::new("清风输入法设置", 820, 640)
-        .single_instance(app_id, move |argv| {
-            // 深链失效（点了"词库管理"却停在原页）时，这条是唯一能分辨「argv 没送到」
-            // 与「送到了但解析不出页」的证据。两种成因的修法完全不同，值一条 info。
-            tracing::info!("二次实例 argv: {:?}", argv.get(1..).unwrap_or(&[]));
-            if let Some(raw) = cli::parse_protocol(&argv) {
-                route_protocol(&raw, &single_instance_state);
-            } else if let Some(idx) = cli::parse_target(&argv) {
-                let st = single_instance_state.borrow();
-                st.tab.set(idx);
-                // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
-                // 头几十毫秒数据还没回来，route_dict_target 会自动改为挂起。
-                if let Some(t) = cli::parse_dict_target(&argv) {
-                    st.route_dict_target(t);
-                }
-            }
-        })
         .frameless()
         .centered()
         .renderer(renderer)
         .min_size(560, 440)
         .theme(theme_def::theme_for(start_dark));
     let th = app.theme_handle();
+
+    // 导入意图（`--page import` 深链 / `.wpkg` 文件关联双击）统一经此通道到 UI 线程：
+    // 读剪贴板要 `EventCtx`，只有 channel 回调拿得到；channel 靠出帧排空，冷启动在
+    // 首帧执行，正好也保证了 UI 树已就绪。冷启动与二次唤起同一条路，行为不会分叉。
+    let import_action_state = app_state.clone();
+    let import_tx = app.channel::<ImportAction>(move |ctx, act| {
+        run_import_action(ctx, act, &import_action_state);
+    });
+
+    // 冷启动的导入意图：解析在此，执行在首帧（见上）。
+    if cli::parse_import_request(&args) {
+        let _ = import_tx.send(ImportAction::ClipboardDialog);
+    } else if let Some(p) = cli::parse_import_file(&args) {
+        let _ = import_tx.send(ImportAction::File(p));
+    }
+
+    // 单实例 + 二次运行激活/切页/协议/导入。
+    let app_id = single_instance_app_id(false);
+    let single_instance_state = app_state.clone();
+    let mut app = app.single_instance(app_id, move |argv| {
+        // 深链失效（点了"词库管理"却停在原页）时，这条是唯一能分辨「argv 没送到」
+        // 与「送到了但解析不出页」的证据。两种成因的修法完全不同，值一条 info。
+        tracing::info!("二次实例 argv: {:?}", argv.get(1..).unwrap_or(&[]));
+        if let Some(raw) = cli::parse_protocol(&argv) {
+            route_protocol(&raw, &single_instance_state);
+        } else if cli::parse_import_request(&argv) {
+            let _ = import_tx.send(ImportAction::ClipboardDialog);
+        } else if let Some(p) = cli::parse_import_file(&argv) {
+            let _ = import_tx.send(ImportAction::File(p));
+        } else if let Some(idx) = cli::parse_target(&argv) {
+            let st = single_instance_state.borrow();
+            st.tab.set(idx);
+            // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
+            // 头几十毫秒数据还没回来，route_dict_target 会自动改为挂起。
+            if let Some(t) = cli::parse_dict_target(&argv) {
+                st.route_dict_target(t);
+            }
+        }
+    });
 
     // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
     let app_state_cb = app_state.clone();
@@ -272,6 +298,38 @@ fn main() {
         .screenshot_from_args()
         .content(ui)
         .run();
+}
+
+/// UI 就绪后才能执行的导入动作（解析在 argv 侧，执行在首帧的 channel 回调里）。
+enum ImportAction {
+    /// `--page import` 深链：切高级页 + 弹「导入配置」+ 读一次剪贴板。
+    ClipboardDialog,
+    /// `.wpkg` 文件关联双击：走统一分派器进方案包导入确认。
+    File(std::path::PathBuf),
+}
+
+/// 导入动作统一落点（冷启动与二次唤起同路）。
+///
+/// 文件分支不切页：方案包导入确认对话框挂在根上（全窗模态），与当前页无关；
+/// 剪贴板分支切到高级页 —— 「导入配置」对话框关掉后用户应落在它的入口所在页。
+fn run_import_action(
+    ctx: &mut windui::core::EventCtx,
+    act: ImportAction,
+    state: &Rc<RefCell<state::AppState>>,
+) {
+    let st = state.borrow();
+    match act {
+        ImportAction::ClipboardDialog => {
+            if let Some(idx) = cli::page_to_index("advanced") {
+                st.tab.set(idx);
+            }
+            st.config_import.open();
+            st.config_import.read_clipboard(ctx);
+        }
+        ImportAction::File(p) => {
+            pages::config_import::dispatch_import_path(&st.config_import, &st.schema_mgr, p);
+        }
+    }
 }
 
 /// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框，

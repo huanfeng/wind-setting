@@ -201,7 +201,10 @@ pub fn pick_import_file(
 
 /// 分派器只路由不重写域逻辑：片段进本模块预览；方案包转交 schema_manager
 /// 既有的确认对话框（`open_import_confirm`）；备份包给出去向提示。
-fn dispatch_import_path(
+///
+/// pub：除本页两个按钮外，`.wpkg` 文件关联双击（argv 路径经 main 的导入通道）
+/// 也走这里，保证双击与页内选文件行为完全一致。
+pub fn dispatch_import_path(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
     path: PathBuf,

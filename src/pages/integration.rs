@@ -1,9 +1,11 @@
-//! 桌面集成（高级页卡片 + 两个确认对话框）。
+//! 桌面集成（高级页卡片 + 四个确认对话框）。
 //!
-//! 眼下只管 `windinput://` 协议关联 —— 一键导入链接（主题，后续还有方案/词库）
-//! 靠它从浏览器唤起本程序。协议没注册，市场页上的「一键导入」按钮就是个死链。
+//! 管两条关联：`windinput://` 协议（一键导入链接靠它从浏览器唤起本程序）与
+//! `.wpkg` 文件关联（双击方案包直接进导入确认）。两者同一套规则与门控，
+//! 只是注册表形状不同（见 [`crate::file_assoc`]）。
 //!
-//! 状态**每次现读注册表**（[`crate::protocol::current_registration`]），不缓存判断结果：
+//! 状态**每次现读注册表**（[`crate::protocol::current_registration`] /
+//! [`crate::file_assoc::current_registration`]），不缓存判断结果：
 //! 关联可能被别的程序、或另一份清风输入法在我们运行期间改掉，缓存下来只会让界面
 //! 显示一个早已不成立的结论。`refresh` 在建卡片时与每次操作后各调一次。
 
@@ -32,7 +34,17 @@ pub struct IntegrationState {
     pub overwrite_confirm: Signal<bool>,
     /// 清除他人注册的确认框。
     pub remove_confirm: Signal<bool>,
-    /// 两个确认框共用的正文（含占用者命令行，由触发方填好再开框）。
+    /// `.wpkg` 关联状态的展示文案。
+    pub assoc_status: Signal<String>,
+    /// `.wpkg`「注册」是否可点。
+    pub assoc_can_register: Signal<bool>,
+    /// `.wpkg`「取消注册」是否可点。
+    pub assoc_can_unregister: Signal<bool>,
+    /// 覆盖他人 `.wpkg` 关联的确认框。
+    pub assoc_overwrite_confirm: Signal<bool>,
+    /// 解除他人 `.wpkg` 关联的确认框。
+    pub assoc_remove_confirm: Signal<bool>,
+    /// 四个确认框共用的正文（含占用者命令行，由触发方填好再开框；同刻只开一个框）。
     pub confirm_msg: Signal<String>,
     pub feedback: Feedback,
 }
@@ -51,6 +63,11 @@ impl IntegrationState {
             can_unregister: signal(false),
             overwrite_confirm: signal(false),
             remove_confirm: signal(false),
+            assoc_status: signal(String::new()),
+            assoc_can_register: signal(false),
+            assoc_can_unregister: signal(false),
+            assoc_overwrite_confirm: signal(false),
+            assoc_remove_confirm: signal(false),
             confirm_msg: signal(String::new()),
             feedback: signal(None),
         };
@@ -58,13 +75,17 @@ impl IntegrationState {
         s
     }
 
-    /// 现读注册表并刷新展示信号。
+    /// 现读注册表并刷新展示信号（协议与 `.wpkg` 各读各的）。
     pub fn refresh(&self) {
+        let portable = crate::mode::is_portable();
         let reg = crate::protocol::current_registration();
-        self.protocol_status
-            .set(status_text(&reg, crate::mode::is_portable()));
+        self.protocol_status.set(status_text(&reg, portable));
         self.can_register.set(can_register(&reg));
         self.can_unregister.set(can_unregister(&reg));
+        let assoc = crate::file_assoc::current_registration();
+        self.assoc_status.set(assoc_status_text(&assoc, portable));
+        self.assoc_can_register.set(can_register(&assoc));
+        self.assoc_can_unregister.set(can_unregister(&assoc));
     }
 
     /// 「注册」按钮：指向他人时先征得同意，其余情况直接执行。
@@ -90,6 +111,28 @@ impl IntegrationState {
                 self.remove_confirm.set(true);
             }
             None => apply(app, Action::Unregister),
+        }
+    }
+
+    /// `.wpkg`「注册」按钮：与协议同规则 —— 点击这一刻现读，指向他人先确认。
+    pub fn on_assoc_register_clicked(&self, app: &Rc<RefCell<AppState>>) {
+        match foreign_command(&crate::file_assoc::current_registration()) {
+            Some(cur) => {
+                self.confirm_msg.set(assoc_overwrite_msg(cur));
+                self.assoc_overwrite_confirm.set(true);
+            }
+            None => apply(app, Action::RegisterAssoc),
+        }
+    }
+
+    /// `.wpkg`「取消注册」按钮：解除的若是他人关联，同样先确认。
+    pub fn on_assoc_unregister_clicked(&self, app: &Rc<RefCell<AppState>>) {
+        match foreign_command(&crate::file_assoc::current_registration()) {
+            Some(cur) => {
+                self.confirm_msg.set(assoc_remove_msg(cur));
+                self.assoc_remove_confirm.set(true);
+            }
+            None => apply(app, Action::UnregisterAssoc),
         }
     }
 }
@@ -121,11 +164,27 @@ fn remove_msg(cur: &str) -> String {
     )
 }
 
-/// 一次注册表写操作。抽成枚举是为了让两个确认对话框的回调只差一个值。
+fn assoc_overwrite_msg(cur: &str) -> String {
+    format!(
+        ".wpkg 文件当前由以下程序打开：\n{cur}\n\n\
+         继续将改为由本程序打开。若上面是另一份清风输入法（例如旧的安装路径），覆盖是安全的。"
+    )
+}
+
+fn assoc_remove_msg(cur: &str) -> String {
+    format!(
+        ".wpkg 文件当前由以下程序打开：\n{cur}\n\n\
+         这不是本程序写入的关联。继续将解除它，之后双击 .wpkg 文件不再打开对应程序。"
+    )
+}
+
+/// 一次注册表写操作。抽成枚举是为了让四个确认对话框的回调只差一个值。
 #[derive(Clone, Copy)]
 pub enum Action {
     Register,
     Unregister,
+    RegisterAssoc,
+    UnregisterAssoc,
 }
 
 /// 执行操作 + 持久化用户意愿 + 刷新展示。
@@ -139,6 +198,8 @@ fn apply(app: &Rc<RefCell<AppState>>, action: Action) {
     match action {
         Action::Register => st.register_protocol(),
         Action::Unregister => st.unregister_protocol(),
+        Action::RegisterAssoc => st.register_file_assoc(),
+        Action::UnregisterAssoc => st.unregister_file_assoc(),
     }
 }
 
@@ -159,6 +220,22 @@ fn status_text(reg: &Registration, portable: bool) -> String {
             "未注册 —— 便携版启动不会自动注册，需要一键导入请点右侧「注册」".to_string()
         }
         Registration::Unregistered => "未注册 —— 网页上的一键导入链接暂时唤不起本程序".to_string(),
+        Registration::Other(cur) => format!("已注册，但指向其它程序：{cur}"),
+    }
+}
+
+/// `.wpkg` 关联的状态文案。规则同 [`status_text`]：独立成句、注册表原样回显、
+/// 便携提示只在未注册时给。
+fn assoc_status_text(reg: &Registration, portable: bool) -> String {
+    if !cfg!(windows) {
+        return "本平台的文件关联由应用包声明，无需在此管理".to_string();
+    }
+    match reg {
+        Registration::Ours => "已注册，双击 .wpkg 方案包会用本程序打开".to_string(),
+        Registration::Unregistered if portable => {
+            "未注册 —— 便携版启动不会自动注册，需要双击导入请点右侧「注册」".to_string()
+        }
+        Registration::Unregistered => "未注册 —— 双击 .wpkg 方案包暂时不会唤起本程序".to_string(),
         Registration::Other(cur) => format!("已注册，但指向其它程序：{cur}"),
     }
 }
@@ -204,10 +281,39 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
                 .on_click(move |_| s_unreg.on_unregister_clicked(&app_unreg)),
         );
 
+    let assoc_can_reg = s.assoc_can_register;
+    let assoc_can_unreg = s.assoc_can_unregister;
+    let app_areg = app.clone();
+    let s_areg = s.clone();
+    let app_aunreg = app.clone();
+    let s_aunreg = s.clone();
+    let assoc_buttons = Element::row()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::button("注册")
+                .small()
+                .outline_soft()
+                .enabled_signal(assoc_can_reg)
+                .on_click(move |_| s_areg.on_assoc_register_clicked(&app_areg)),
+        )
+        .child(
+            Element::button("取消注册")
+                .small()
+                .outline_soft()
+                .enabled_signal(assoc_can_unreg)
+                .on_click(move |_| s_aunreg.on_assoc_unregister_clicked(&app_aunreg)),
+        );
+
     section(
         "系统集成",
         vec![
             setting_row_desc_signal("windinput:// 协议（一键导入）", s.protocol_status, buttons),
+            setting_row_desc_signal(
+                ".wpkg 文件关联（双击导入方案包）",
+                s.assoc_status,
+                assoc_buttons,
+            ),
             crate::pages::dict::reactive::toast_sink(s.feedback),
         ],
     )
@@ -305,6 +411,39 @@ mod tests {
         assert!(rm.contains(cmd), "{rm}");
         assert_ne!(ow, rm);
         assert!(rm.contains("删除"), "解除关联的后果要说明白：{rm}");
+    }
+
+    /// `.wpkg` 状态文案与协议同规则：三态各自独立成句、他人命令行原样回显、
+    /// 便携提示只在未注册时给。
+    #[test]
+    fn assoc_status_text_covers_three_states() {
+        if !cfg!(windows) {
+            return;
+        }
+        let cmd = r#""D:\old\wind_setting.exe" "%1""#;
+        assert!(assoc_status_text(&Registration::Other(cmd.to_string()), false).contains(cmd));
+        let ours = assoc_status_text(&Registration::Ours, false);
+        let none = assoc_status_text(&Registration::Unregistered, false);
+        assert_ne!(ours, none);
+        assert!(none.contains("未注册"), "{none}");
+        let portable = assoc_status_text(&Registration::Unregistered, true);
+        assert!(portable.contains("便携版"), "{portable}");
+        assert!(
+            !assoc_status_text(&Registration::Ours, true).contains("便携版"),
+            "已注册的便携用户不该再被念注册提示"
+        );
+    }
+
+    /// `.wpkg` 的两个确认框正文都要带占用者命令行，且措辞区分「覆盖」与「解除」。
+    #[test]
+    fn assoc_confirm_messages_carry_command_and_differ() {
+        let cmd = r#""D:\other\tool.exe" "%1""#;
+        let ow = assoc_overwrite_msg(cmd);
+        let rm = assoc_remove_msg(cmd);
+        assert!(ow.contains(cmd), "{ow}");
+        assert!(rm.contains(cmd), "{rm}");
+        assert_ne!(ow, rm);
+        assert!(rm.contains("解除"), "解除关联的后果要说明白：{rm}");
     }
 
     #[test]
