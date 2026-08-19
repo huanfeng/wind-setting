@@ -6,8 +6,8 @@
 //!
 //! 「校验预览」按内容分两支（`package-format.md` §4 侦测规则 4/5）：先问
 //! `scheme.previewImportText`——文本是方案信封（`package.kind = "schema_text"`）就
-//! 转交方案包导入确认对话框，与 zip 包同一个界面；core 回 [`NOT_SCHEMA_TEXT_PREFIX`]
-//! 开头的错误才回落片段管线 `config.previewPatch`。信封解析出的**真实**错误如实
+//! 转交方案包导入确认对话框，与 zip 包同一个界面；只有 [`falls_back_to_fragment`]
+//! 认可的错误才回落片段管线 `config.previewPatch`。信封解析出的**真实**错误如实
 //! 回显，不回落——否则「信封里某个 path 非法」会被片段管线的「未知配置键」淹没。
 //!
 //! 「应用」门控：预览通过 **且** 文本区内容与最后一次校验时的原文逐字相同
@@ -32,13 +32,25 @@ use crate::state::AppState;
 use crate::widgets::{flat_panel, section, setting_row};
 
 /// core 判定「这段文本不是方案信封」时的错误前缀（跨仓契约，见
-/// `package-format.md` §3.4）。**只有**这个前缀才回落片段管线：信封自己写错了
-/// （files 路径非法、超限额等）必须如实报，不能被片段管线的「未知配置键」淹没。
+/// `package-format.md` §3.4）。
 pub const NOT_SCHEMA_TEXT_PREFIX: &str = "not_schema_text:";
 
-/// 该 RPC 错误是否表示「这段文本压根不是信封」（→ 回落片段管线）。
-fn is_not_schema_text(err: &str) -> bool {
-    err.starts_with(NOT_SCHEMA_TEXT_PREFIX)
+/// core 对未注册方法的错误串标记（跨仓错误串契约，见主仓
+/// `wind-rpc/src/dispatch.rs` 与 `wind-webdata/src/lib.rs`，两层同款
+/// `unknown method: <方法名>`）。
+///
+/// 认它是为了**版本斜错窗口**：新设置端配旧 core 时 `scheme.previewImportText`
+/// 尚未注册，若把这条也当成「信封的真实错误」，片段导入整条路会连带死掉，用户
+/// 看到的还是「方案文本解析失败」这种指错方向的提示。
+const UNKNOWN_METHOD_MARKER: &str = "unknown method";
+
+/// 这个 RPC 错误是否应当回落片段管线。
+///
+/// 两种情形回落：**这段文本不是信封**（前缀契约），或**这个 core 还不认识信封
+/// 两法**（版本斜错）。其余一律不回落——信封自己写错了（files 路径非法、超限额
+/// 等）必须如实报，回落的话真正的原因会被片段管线的一串「未知配置键」淹没。
+fn falls_back_to_fragment(err: &str) -> bool {
+    err.starts_with(NOT_SCHEMA_TEXT_PREFIX) || err.contains(UNKNOWN_METHOD_MARKER)
 }
 
 /// 预览区一行（渲染前已把值格式化成显示串，host_signal 的数据项要求 `Clone`）。
@@ -151,9 +163,9 @@ impl ConfigImportState {
     /// - **是信封且预览成功** → 关本对话框，转交 `schema_mgr` 的导入确认（与 zip 包
     ///   同一个界面，含 config_patch 逐键 diff）；
     /// - **是信封但解析出错** → 对话框内回显该错误，**不**回落片段管线；
-    /// - **不是信封**（错误以 [`NOT_SCHEMA_TEXT_PREFIX`] 开头）→ 片段管线，行为不变：
-    ///   通过（含逐条错误的「通过解析」）即记录 validated_text；RPC 整体失败走
-    ///   [`Self::fail`]。
+    /// - **不是信封 / core 不认识信封两法**（见 [`falls_back_to_fragment`]）→ 片段
+    ///   管线，行为不变：通过（含逐条错误的「通过解析」）即记录 validated_text；
+    ///   RPC 整体失败走 [`Self::fail`]。
     pub fn validate(&self, schema_mgr: &SchemaManagerState) {
         let text = self.text.get();
         match rpc::call_core("scheme.previewImportText", &json!({ "text": text })) {
@@ -164,10 +176,10 @@ impl ConfigImportState {
                 schema_mgr.open_import_text_confirm(text, &v);
                 return;
             }
-            Err(e) if !is_not_schema_text(&e) => {
+            Err(e) if !falls_back_to_fragment(&e) => {
                 return self.fail(format!("方案文本解析失败: {e}"));
             }
-            // 不是信封：继续片段管线。
+            // 不是信封（或 core 还不认识信封两法）：继续片段管线。
             Err(_) => {}
         }
         match rpc::call_core("config.previewPatch", &json!({ "text": text })) {
@@ -830,23 +842,36 @@ mod tests {
         assert_eq!(rows[1].detail, "。 → .");
     }
 
-    /// 「不是信封」的判定只认前缀常量——信封自己写错了（files 路径非法等）必须如实
-    /// 报错，回落片段管线会让它被「未知配置键」淹没。
+    /// 回落片段管线的两种情形：文本不是信封（前缀契约），或 core 还不认识信封两法
+    /// （版本斜错窗口）。除此之外一律不回落——信封自己写错了（files 路径非法等）
+    /// 必须如实报，回落片段管线会让真正的原因被一串「未知配置键」淹没。
     #[test]
-    fn not_schema_text_prefix_only_matches_that_error() {
-        assert!(is_not_schema_text(&format!(
+    fn falls_back_only_on_not_envelope_or_unknown_method() {
+        // 形一：不是信封。前缀契约，只认前缀不认包含。
+        assert!(falls_back_to_fragment(&format!(
             "{NOT_SCHEMA_TEXT_PREFIX} 缺少 package.kind"
         )));
-        assert!(is_not_schema_text("not_schema_text:"));
-        assert!(!is_not_schema_text("files[0].path 非法: ../evil.toml"));
+        assert!(falls_back_to_fragment("not_schema_text:"));
         assert!(
-            !is_not_schema_text("信封超限: files 65 条"),
-            "信封的真实错误不能被当成「不是信封」"
+            !falls_back_to_fragment("解析失败: not_schema_text: 混在中段"),
+            "前缀契约只认开头，不认包含"
         );
-        assert!(
-            !is_not_schema_text("解析失败: not_schema_text: 混在中段"),
-            "只认前缀，不认包含"
-        );
+
+        // 形二：旧 core 没注册这两法。core 两层（wind-rpc dispatch / wind-webdata）
+        // 都是 `unknown method: <方法名>`，故按包含匹配。
+        assert!(falls_back_to_fragment(
+            "unknown method: scheme.previewImportText"
+        ));
+        assert!(falls_back_to_fragment(
+            "RPC 失败: unknown method: scheme.importText"
+        ));
+
+        // 信封的真实错误：一条都不许回落。
+        assert!(!falls_back_to_fragment("files[0].path 非法: ../evil.toml"));
+        assert!(!falls_back_to_fragment("信封超限: files 65 条"));
+        assert!(!falls_back_to_fragment(
+            "format_version 3 高于本版支持的 2，请升级应用"
+        ));
     }
 
     /// 包内 `configPatch` 与 previewPatch 的 entries 同形，缺席即纯方案包。
