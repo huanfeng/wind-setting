@@ -986,8 +986,8 @@ mod tests {
                 ..Default::default()
             },
         ];
-        mgr.io_target_items
-            .set(mgr.domain_rich_items().into_iter().skip(1).collect());
+        // 走真实构造，不在夹具里另抄一份 skip —— 抄一份就等于把偏移 bug 一起复制进测试。
+        mgr.io_target_items.set(mgr.io_target_item_list());
         // 混输目标：提示条非空、勾选行只剩候选调整——恰是最容易出问题的那一档。
         mgr.io_target.set(1);
         mgr.io_scope_note.set("混输方案说明".into());

@@ -2188,9 +2188,18 @@ impl DictManagerState {
 
     // ── 导入导出的目标方案（`io_target` 索引进 folded_domains）─────
 
-    /// 目标方案下拉选项（去掉域下拉首项「快捷短语」，其余同序）。
-    fn io_target_item_list(&self) -> Vec<DropdownItem> {
-        self.domain_rich_items().into_iter().skip(1).collect()
+    /// 目标方案下拉选项（去掉域下拉开头的全部全局域，其余同序）。
+    ///
+    /// ⚠️ 跳过的项数必须是 [`GLOBAL_DOMAINS`]，不能写字面量：`io_target` 是
+    /// `folded_domains()` 的下标（不含全局槽），列表里多留一项就让「显示第 i 项」与
+    /// 「实际第 i 个方案」整体错位一格——不报错、不 panic，只是选「五笔86」导出的是拼音。
+    /// 加「快捷输入」这第二个全局域时正是这么错的，故此处与 [`Self::prepare_io_dialog`]
+    /// 一并由 `io_target_dropdown_index_matches_target` 钉住。
+    pub(crate) fn io_target_item_list(&self) -> Vec<DropdownItem> {
+        self.domain_rich_items()
+            .into_iter()
+            .skip(GLOBAL_DOMAINS)
+            .collect()
     }
 
     /// 目标方案 id（无方案时 None）。
@@ -2265,7 +2274,10 @@ impl DictManagerState {
             return false;
         }
         self.io_target_items.set(self.io_target_item_list());
-        self.io_target.set(self.domain.get().saturating_sub(1));
+        // domain 含全局槽、io_target 不含，换算减的是 GLOBAL_DOMAINS 而非 1
+        // （见 io_target_item_list 的告警）。
+        self.io_target
+            .set(self.domain.get().saturating_sub(GLOBAL_DOMAINS));
         self.io_auto_note.set(String::new());
         self.io_auto_at.set(None);
         self.io_scope_note.set(self.io_scope_note_for_target());
@@ -3879,6 +3891,67 @@ mod tests {
         let msg = DictManagerState::format_import_preview(&v, PINYIN_TYPES, "拼音");
         assert!(msg.contains("可导入：用户词库 2000"), "实际: {msg}");
         assert!(msg.contains("不会导入：候选调整 12"), "实际: {msg}");
+    }
+
+    /// 目标下拉的**显示序**与 `io_target` 的**语义序**必须逐项对齐。
+    ///
+    /// 这是加第二个全局域（快捷输入）时真实翻车的那一格：`io_target_item_list` 只
+    /// `skip(1)`，把「快捷输入」留在了列表首位，于是选「五笔86」导出的是拼音、选最后
+    /// 一项则 `io_target_schema_id()` 为 None 直接报「暂无已启用方案」。全程不报错、
+    /// 不 panic，光看语义层测试（都是直接 `io_target.set(i)`）永远抓不到。
+    #[test]
+    fn io_target_dropdown_index_matches_target() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "全拼", "pinyin"),
+                schema("en", "英文", "english"),
+            ],
+        );
+        let items = st.io_target_item_list();
+        assert_eq!(
+            items.len(),
+            st.folded_domains().len(),
+            "下拉项数须等于方案域数——多一项就是全局域漏跳，整列错位"
+        );
+        for (i, item) in items.iter().enumerate() {
+            st.io_target.set(i);
+            assert!(
+                st.io_target_label().starts_with(&item.label),
+                "第 {i} 项显示「{}」，实际目标却是「{}」",
+                item.label,
+                st.io_target_label()
+            );
+            assert!(
+                st.io_target_schema_id().is_some(),
+                "第 {i} 项「{}」解析不出方案 id",
+                item.label
+            );
+        }
+    }
+
+    /// 打开对话框的默认目标 = 当前浏览的那个方案，不是它的邻居。
+    #[test]
+    fn io_dialog_defaults_to_the_browsed_schema() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "全拼", "pinyin"),
+            ],
+        );
+        for (i, want) in [(0usize, "wb"), (1, "py")] {
+            st.domain.set(GLOBAL_DOMAINS + i);
+            assert!(st.prepare_io_dialog("导出"));
+            assert_eq!(
+                st.io_target_schema_id().as_deref(),
+                Some(want),
+                "浏览第 {i} 个方案域，默认目标应是它自己"
+            );
+        }
     }
 
     /// 目标方案决定勾选可见性与选中集合——不再跟着当前浏览的数据域走。
