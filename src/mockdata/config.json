@@ -218,7 +218,7 @@
    "auto_commit_block_on_pinyin": true,
    "block_commit_on_pinyin_word": true,
    "enable_english": false,
-   "enable_pinyin_abbrev": true,
+   "enable_pinyin_abbrev": false,
    "min_english_length": 3,
    "min_pinyin_length": 2,
    "pinyin_only_overflow": true,
