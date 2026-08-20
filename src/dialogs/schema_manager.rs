@@ -214,7 +214,11 @@ pub struct SchemaManagerState {
     pub confirm_id: Rc<RefCell<String>>,
     // ── 分发包导入确认（previewImport 摘要 + config_patch diff + 合并/替换选择）──
     pub import_confirm_visible: Signal<bool>,
+    /// 元信息一行：`方案 <id> v<版本> · <创建时间>`。
     pub import_preview_msg: Signal<String>,
+    /// 文件统计一行（只列非零项）。与元信息分开是为了让两者各自成行、
+    /// 各有各的字重，而不是挤成一段谁也不显眼的多行文本。
+    pub import_counts_msg: Signal<String>,
     /// 待导入的分发包（zip 路径或信封原文），预览确认后执行导入。
     pending_import: Rc<RefCell<Option<PendingImport>>>,
     /// 包内配置片段的预览结果（`configPatch`），确认后由第二步 `config.applyPatch`
@@ -369,6 +373,7 @@ impl SchemaManagerState {
             confirm_id: Rc::new(RefCell::new(String::new())),
             import_confirm_visible: signal(false),
             import_preview_msg: signal(String::new()),
+            import_counts_msg: signal(String::new()),
             pending_import: Rc::new(RefCell::new(None)),
             pending_config_patch: Rc::new(RefCell::new(None)),
             import_patch_rows: signal(vec![]),
@@ -1679,6 +1684,8 @@ impl SchemaManagerState {
     fn open_import(&self, pending: PendingImport, preview: &Value) {
         self.import_preview_msg
             .set(Self::format_import_preview(preview));
+        self.import_counts_msg
+            .set(Self::format_import_counts(preview));
         let patch = crate::pages::config_import::parse_config_patch(preview);
         self.import_patch_rows
             .set(patch.as_ref().map(|p| p.rows.clone()).unwrap_or_default());
@@ -1704,15 +1711,54 @@ impl SchemaManagerState {
         self.import_patch_desc.set(patch.description.clone());
     }
 
-    /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
-    /// v2 契约：元信息在可选 `package`（package.toml 缺失时各字段为空串）。
-    fn format_import_preview(v: &Value) -> String {
+    /// ISO 8601 时间戳 → `YYYY-MM-DD HH:MM`。
+    ///
+    /// 包里存的是 `2026-08-20T15:30:00+08:00` 这种机器格式，原样摆进对话框又长又吵，
+    /// 而用户只关心「哪天打的包」。不解析时区、不做换算——只截取，因为**要显示的正是
+    /// 打包者当地的时间**，换算到本地反而让「作者说的 15:30」对不上号。
+    /// 认不出格式就原样返回，不猜。
+    fn format_created_at(raw: &str) -> String {
+        let (date, rest) = match raw.split_once('T') {
+            Some(v) => v,
+            None => return raw.to_string(),
+        };
+        let hhmm: String = rest.chars().take(5).collect();
+        if date.len() == 10 && hhmm.len() == 5 && hhmm.as_bytes()[2] == b':' {
+            format!("{date} {hhmm}")
+        } else {
+            raw.to_string()
+        }
+    }
+
+    /// previewImport 响应 → 文件统计行。**只列非零项**：一串「系统引用 0 · 缺失 0」
+    /// 占着位置却不含信息，真正要紧的「已存在 2」反而被淹没。全为零时说明包是空的。
+    fn format_import_counts(v: &Value) -> String {
         let n = |k: &str| {
             v.get(k)
                 .and_then(|x| x.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0)
         };
+        let parts: Vec<String> = [
+            ("新增文件", n("willAdd")),
+            ("已存在", n("conflicts")),
+            ("系统引用", n("systemRefs")),
+            ("缺失", n("missing")),
+        ]
+        .iter()
+        .filter(|(_, c)| *c > 0)
+        .map(|(label, c)| format!("{label} {c}"))
+        .collect();
+        if parts.is_empty() {
+            "包内没有方案文件".to_string()
+        } else {
+            parts.join(" · ")
+        }
+    }
+
+    /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
+    /// v2 契约：元信息在可选 `package`（package.toml 缺失时各字段为空串）。
+    fn format_import_preview(v: &Value) -> String {
         let pkg = v.get("package");
         let s = |a: &str, b: &str| {
             pkg.and_then(|x| x.get(a))
@@ -1729,18 +1775,14 @@ impl SchemaManagerState {
         };
         let created = s("package", "created_at");
         let created = if created.is_empty() {
-            "未知".to_string()
+            "创建时间未知".to_string()
         } else {
-            created
+            Self::format_created_at(&created)
         };
-        format!(
-            "{head} · 创建于 {created}\n新增文件 {} · 已存在 {} · 系统引用 {} · 缺失 {}\n\n\
-             合并跳过已存在文件；替换覆盖同名文件。",
-            n("willAdd"),
-            n("conflicts"),
-            n("systemRefs"),
-            n("missing"),
-        )
+        // 只出「方案 + 时间」这一行。文件统计走 [`Self::format_import_counts`]、
+        // 合并/替换的差别贴在按钮旁——三类信息挤成一段多行文本时，
+        // 谁也不比谁显眼，用户得逐行读才知道哪句和自己有关。
+        format!("{head} · {created}")
     }
 
     /// 确认导入（strategy: "merge" | "replace"），两步编排（`package-format.md` §3.3）：
@@ -2562,9 +2604,11 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
 
     // 包级说明（§2.3：包/信封导入确认在顶部显示）。方案信息之前——用户先要知道
     // 「这是什么」，再看它装哪些文件。
-    let pkg_info = info_block(state.import_pkg_title, state.import_pkg_desc, 14.0);
+    // 三级字号拉开档距（15 对话框标题 / 14.5 包名 / 13 分组标题 / 12 片段说明），
+    // 挨得太近时三个加粗标题看上去是平级的，读不出「谁属于谁」。
+    let pkg_info = info_block(state.import_pkg_title, state.import_pkg_desc, 14.5);
     // 包内片段自己的说明，紧邻「将修改的配置」标题。与包级说明各显各的。
-    let patch_info = info_block(state.import_patch_title, state.import_patch_desc, 12.5);
+    let patch_info = info_block(state.import_patch_title, state.import_patch_desc, 12.0);
 
     // 「将修改的配置」区块：仅带 config_patch 的包显示。行渲染与片段对话框共用
     // （见 `config_import::preview_row_element`），宽度分配的坑不必再踩一遍。
@@ -2595,9 +2639,9 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
         .visible_when(move || !can_confirm.get());
 
     let content = flat_panel()
-        .width(400)
+        .width(430)
         .padding(20)
-        .spacing(14)
+        .spacing(10)
         .child(
             Element::label("导入方案包")
                 .font_size(15.0)
@@ -2608,12 +2652,21 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
         )
         .child(Element::divider())
         .child(pkg_info)
+        // 元信息与文件统计各自一行、弱化配色：它们是「核对用」的背景信息，
+        // 不该和包名、要改的配置抢注意力。
         .child(
             Element::label_signal(state.import_preview_msg)
-                .font_size(13.0)
-                .fg_role(Role::Text)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
                 .width_match()
-                .max_lines(6),
+                .max_lines(2),
+        )
+        .child(
+            Element::label_signal(state.import_counts_msg)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(1),
         )
         .child(patch_title)
         .child(patch_info)
@@ -2624,7 +2677,15 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
                 .width_match()
                 .cross(Align::Center)
                 .spacing(8)
-                .child(Element::leaf().weight(1.0))
+                // 合并/替换的差别贴在按钮旁边——这句话是**在按下前那一刻**才用得上的，
+                // 放在对话框中段的正文里，读到它时还不知道要选哪个。
+                .child(
+                    Element::label("合并跳过已存在文件，替换覆盖同名文件")
+                        .font_size(11.5)
+                        .fg_role(Role::TextMuted)
+                        .max_lines(2)
+                        .weight(1.0),
+                )
                 .child(
                     Element::button("取消")
                         .small()
@@ -3428,14 +3489,44 @@ mod ext_dict_tests {
             "willAdd": ["a", "b"], "conflicts": ["c"], "systemRefs": [], "missing": []
         });
         let msg = SchemaManagerState::format_import_preview(&v);
-        assert!(msg.contains("方案 demo v1.0"));
-        assert!(msg.contains("2026-07-13"));
-        assert!(msg.contains("新增文件 2"));
-        assert!(msg.contains("已存在 1"));
+        assert!(msg.contains("方案 demo v1.0"), "{msg}");
+        // 机器格式的时间戳要收成人读的样子，且**不含** T/时区尾巴
+        assert!(msg.contains("2026-07-13 00:00"), "{msg}");
+        assert!(!msg.contains('T') && !msg.contains("+08:00"), "{msg}");
+        // 统计与策略说明已各自独立，不再挤在这一行里
+        assert!(!msg.contains("新增文件"), "统计不该留在元信息行：{msg}");
+        assert!(!msg.contains("合并"), "策略说明不该留在元信息行：{msg}");
+
+        let counts = SchemaManagerState::format_import_counts(&v);
+        assert_eq!(counts, "新增文件 2 · 已存在 1", "零值项不该占位：{counts}");
+
         // 手工包无 package.toml:回落"未知"不炸
         let bare = json!({ "willAdd": ["x"], "conflicts": [] });
         let msg2 = SchemaManagerState::format_import_preview(&bare);
-        assert!(msg2.contains("未知"));
+        assert!(msg2.contains("未知"), "{msg2}");
+        assert_eq!(
+            SchemaManagerState::format_import_counts(&bare),
+            "新增文件 1"
+        );
+        // 全零 = 包里没有方案文件，要说人话而不是摆一排 0
+        assert_eq!(
+            SchemaManagerState::format_import_counts(&json!({})),
+            "包内没有方案文件"
+        );
+    }
+
+    /// 时间戳只截取、不换算：显示的正是**打包者当地**的时间，换算到本地会让
+    /// 作者写在说明里的时间对不上号。认不出的格式原样返回，不猜。
+    #[test]
+    fn created_at_is_trimmed_not_converted() {
+        let f = SchemaManagerState::format_created_at;
+        assert_eq!(f("2026-08-20T15:30:00+08:00"), "2026-08-20 15:30");
+        assert_eq!(f("2026-08-20T15:30:00Z"), "2026-08-20 15:30");
+        // 认不出的一律原样：宁可显示得丑，不可显示得错
+        assert_eq!(f("2026-08-20"), "2026-08-20");
+        assert_eq!(f("昨天"), "昨天");
+        assert_eq!(f(""), "");
+        assert_eq!(f("2026-08-20T1"), "2026-08-20T1");
     }
 
     /// 导入门控（整包拒绝策略，`package-format.md` §3.3）：纯方案包恒可导入；
