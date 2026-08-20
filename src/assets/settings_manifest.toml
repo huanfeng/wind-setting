@@ -1473,6 +1473,26 @@ label = "空格上屏联想候选"
 hint = "空格上屏当前高亮的联想词，多数输入法如此。关掉则空格照常出空格，联想窗同时收起"
 enabled_when = "input.association.kind != off"
 
+# 回车与退格的默认值**相反**（回车透传、退格吃键）：回车的透传是把正事办了，退格的透传
+# 是删掉刚上屏的字、不可逆。core 侧理由见 AssociationConfig 两个字段的文档。
+[[items]]
+key = "input.association.enter_cancels_only"
+group = "input"
+section = "联想"
+type = "toggle"
+label = "回车仅取消联想"
+hint = "开启后回车只收起联想窗，要再按一次才换行或发送。关闭（默认）则收窗的同时回车照常生效"
+enabled_when = "input.association.kind != off"
+
+[[items]]
+key = "input.association.backspace_cancels_only"
+group = "input"
+section = "联想"
+type = "toggle"
+label = "退格仅取消联想"
+hint = "开启（默认）后退格只收起联想窗，要再按一次才删字。关闭则收窗的同时直接删掉前一个字"
+enabled_when = "input.association.kind != off"
+
 [[items]]
 key = "input.association.hide_after_ms"
 group = "input"

@@ -819,6 +819,16 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "input.association.enter_cancels_only",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.association.backspace_cancels_only",
+      "type": "bool"
+    },
+    {
       "default": 5000,
       "key": "input.association.hide_after_ms",
       "type": "int"
