@@ -392,6 +392,36 @@ mod tests {
         //    ⚠️ 与 ⑱ 那四个来源开关不同，这一项**不是**「改了没反应」——它有实际作用，
         //    只是作用面窄。将来若卡片有余地，可以放回清单（type = "string"）。
         "input.association.hint",
+        // ㉒ 辅助码（拼音候选的字形二次筛选，core PR #68、合并提交 529b6d80 新增）：
+        //    **待做 GUI，不是永久豁免**（同 ④'）。core 侧两个键已登记进 REGISTRY，设置端
+        //    的控件是辅助码那条线自己列明的「未做（留给后续）」项，不是设计上不该暴露。
+        //
+        //    不在本次接进清单的原因有二：
+        //    1. 它属于辅助码功能自身的完成度，而 hint 措辞要说清一个微妙前提——**全拼方案
+        //       的反引号出厂被音节分隔符占用，绑了也进不去**（见 core `config_schema.rs`
+        //       该键上方注释）。措辞做错就是给用户挖「配了没反应」的坑，这个决定该由做那条
+        //       线的人下。清单里 `shuangpin.allow_full_pinyin` 有同类先例可循：`enabled_when`
+        //       表达不出「当前方案是哪种」，故常驻可见、由 hint 交代适用范围。
+        //    2. `enabled` 只是**全局基线**，方案段 `[engine.aux_code]` 的 tri-state 覆盖才是
+        //       真开关（`AuxCodeGlobal::resolved`）——「双拼开、全拼关」正是靠它表达。于是
+        //       「全局页放一个基线开关，还是只在方案设置对话框里配」是要拍板的设计题，不是
+        //       接两个 [[items]] 的机械活。与 ⑨'' 的「放全局清单还是方案对话框」同一类。
+        //
+        //    待接入时的候选方案（存此省后来人一轮推导；section/subsection 与 hint 仍需定夺）：
+        //      key = "schema.pinyin.aux_code.enabled"
+        //      group = "schema"；section = "候选行为"；subsection = "辅助码"；type = "toggle"
+        //      hint = "用字形码二次筛选拼音候选；全拼方案需先把引导键从音节分隔符改开"
+        //
+        //      key = "schema.pinyin.aux_code.max_phrase_len"
+        //      group/section/subsection 同上；type = "number"；min = 0；max = 20
+        //      enabled_when = "schema.pinyin.aux_code.enabled == true"
+        //      hint = "超过这个字数的词组不参与筛选；0 = 不限，单字不受限"
+        //
+        //    （`number` 是 int 的合法控件，已对过 `control_type_compatible`；max_phrase_len
+        //     的语义取自 core `config.rs`：字数 > 此值的**词组**一律排除，0 = 不限，单字恒
+        //     参与——注意是 >，不是 ≥，等于上限的词组保留。）
+        "schema.pinyin.aux_code.enabled",
+        "schema.pinyin.aux_code.max_phrase_len",
     ];
 
     /// 守护（no-silent-caps）：未被设置清单覆盖的 capability key 必须与豁免名单**逐项相等**。

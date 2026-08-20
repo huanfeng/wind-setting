@@ -14,7 +14,10 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::config::Config;
-use crate::pages::config_import::{ConfigPatchPreview, PreviewRow, preview_row_element};
+use crate::pages::config_import::{
+    ConfigPatchPreview, PackageInfo, PreviewRow, info_block, parse_package_info,
+    preview_row_element,
+};
 use crate::rpc;
 use crate::state::AppState;
 use crate::widgets::flat_panel;
@@ -219,6 +222,16 @@ pub struct SchemaManagerState {
     pending_config_patch: Rc<RefCell<Option<ConfigPatchPreview>>>,
     /// 「将修改的配置」区块的逐键 diff 行（动态内容走 Signal）。
     pub import_patch_rows: Signal<Vec<PreviewRow>>,
+    /// **包级**说明（响应顶层 title/description，来自 package.toml / 信封
+    /// `[package]`），显示在对话框顶部。
+    pub import_pkg_title: Signal<String>,
+    pub import_pkg_desc: Signal<String>,
+    /// **包内片段自己**的说明（`configPatch.info`），显示在「将修改的配置」处。
+    ///
+    /// 与上面那对分开存而不是合成一份：§2.3 定稿两级说的不是同一件事，缺一方时
+    /// 另一方顶上会把「这个包是什么」说成「这段配置改什么」。
+    pub import_patch_title: Signal<String>,
+    pub import_patch_desc: Signal<String>,
     /// 导入按钮可点：见 [`import_allowed`]（片段有错即整包拒绝）。
     pub import_can_confirm: Signal<bool>,
     pub settings_visible: Signal<bool>,
@@ -359,6 +372,10 @@ impl SchemaManagerState {
             pending_import: Rc::new(RefCell::new(None)),
             pending_config_patch: Rc::new(RefCell::new(None)),
             import_patch_rows: signal(vec![]),
+            import_pkg_title: signal(String::new()),
+            import_pkg_desc: signal(String::new()),
+            import_patch_title: signal(String::new()),
+            import_patch_desc: signal(String::new()),
             import_can_confirm: signal(true),
             settings_visible: signal(false),
             settings_entry: Rc::new(RefCell::new(None)),
@@ -1658,17 +1675,33 @@ impl SchemaManagerState {
         self.open_import(PendingImport::Text(text), preview);
     }
 
-    /// 两个分支的共同落点：摘要 + config_patch 逐键 diff + 导入门控。
+    /// 两个分支的共同落点：摘要 + 两级说明 + config_patch 逐键 diff + 导入门控。
     fn open_import(&self, pending: PendingImport, preview: &Value) {
         self.import_preview_msg
             .set(Self::format_import_preview(preview));
         let patch = crate::pages::config_import::parse_config_patch(preview);
         self.import_patch_rows
             .set(patch.as_ref().map(|p| p.rows.clone()).unwrap_or_default());
+        // 两级说明各取各的源：包级在响应顶层，片段的在 configPatch.info 里。
+        // 恒设值（含空串），否则上一个包的说明会留在下一个包的对话框上。
+        self.set_import_info(
+            &parse_package_info(preview),
+            patch.as_ref().map(|p| &p.info),
+        );
         self.import_can_confirm.set(import_allowed(patch.as_ref()));
         *self.pending_config_patch.borrow_mut() = patch;
         *self.pending_import.borrow_mut() = Some(pending);
         self.import_confirm_visible.set(true);
+    }
+
+    /// 两级说明取值（`None` / 空 `PackageInfo` 即清空，对应区块随之不占位）。
+    fn set_import_info(&self, pkg: &PackageInfo, patch: Option<&PackageInfo>) {
+        let empty = PackageInfo::default();
+        let patch = patch.unwrap_or(&empty);
+        self.import_pkg_title.set(pkg.title.clone());
+        self.import_pkg_desc.set(pkg.description.clone());
+        self.import_patch_title.set(patch.title.clone());
+        self.import_patch_desc.set(patch.description.clone());
     }
 
     /// previewImport 响应 → 确认对话框正文（纯函数，便于单测）。
@@ -1792,6 +1825,7 @@ impl SchemaManagerState {
         *self.pending_import.borrow_mut() = None;
         *self.pending_config_patch.borrow_mut() = None;
         self.import_patch_rows.set(Vec::new());
+        self.set_import_info(&PackageInfo::default(), None);
         self.import_confirm_visible.set(false);
     }
 }
@@ -2526,6 +2560,12 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
     let rows_sig = state.import_patch_rows;
     let can_confirm = state.import_can_confirm;
 
+    // 包级说明（§2.3：包/信封导入确认在顶部显示）。方案信息之前——用户先要知道
+    // 「这是什么」，再看它装哪些文件。
+    let pkg_info = info_block(state.import_pkg_title, state.import_pkg_desc, 14.0);
+    // 包内片段自己的说明，紧邻「将修改的配置」标题。与包级说明各显各的。
+    let patch_info = info_block(state.import_patch_title, state.import_patch_desc, 12.5);
+
     // 「将修改的配置」区块：仅带 config_patch 的包显示。行渲染与片段对话框共用
     // （见 `config_import::preview_row_element`），宽度分配的坑不必再踩一遍。
     let patch_title = Element::label("将修改的配置")
@@ -2567,6 +2607,7 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
                 .width_match(),
         )
         .child(Element::divider())
+        .child(pkg_info)
         .child(
             Element::label_signal(state.import_preview_msg)
                 .font_size(13.0)
@@ -2575,6 +2616,7 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
                 .max_lines(6),
         )
         .child(patch_title)
+        .child(patch_info)
         .child(patch_list)
         .child(patch_blocked)
         .child(
@@ -3404,6 +3446,7 @@ mod ext_dict_tests {
             text: "x = 1\n".to_string(),
             ok,
             rows: vec![],
+            info: PackageInfo::default(),
         };
         assert!(import_allowed(None), "纯方案包无片段，恒可导入");
         assert!(import_allowed(Some(&patch(true))));
@@ -3462,6 +3505,173 @@ mod ext_dict_tests {
         assert!(!mgr.import_confirm_visible.get());
         assert!(mgr.import_patch_rows.get().is_empty(), "取消须清空区块");
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 两级说明在确认对话框上**各显各的**：包级取自响应顶层（package.toml / 信封
+    /// `[package]`），片段自己的取自 `configPatch.info`。
+    ///
+    /// 四个信号刻意给四个不同取值：写成同源就分不清 UI 是各显各的、还是有一处串了源。
+    /// zip 与信封两条路各测一遍——只测 zip 的话，信封那支忘了接说明也照绿。
+    #[test]
+    fn open_import_wires_both_levels_of_info_without_crossing() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = SchemaManagerState::new();
+
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("a.wpkg"),
+            &json!({
+                "title": "快符方案", "description": "分号引导的符号表。",
+                "willAdd": ["kf.schema.toml"], "conflicts": [],
+                "configPatch": { "text": "x = 1\n", "ok": true, "entries": [],
+                                 "info": { "title": "快符引导键", "description": "把反引号设为引导键。" } }
+            }),
+        );
+        assert_eq!(mgr.import_pkg_title.get(), "快符方案");
+        assert_eq!(mgr.import_pkg_desc.get(), "分号引导的符号表。");
+        assert_eq!(mgr.import_patch_title.get(), "快符引导键");
+        assert_eq!(mgr.import_patch_desc.get(), "把反引号设为引导键。");
+
+        // 信封路径：同样两级都要接上，且不与 zip 那次的取值重合。
+        mgr.open_import_text_confirm(
+            "[package]\nkind = \"schema_text\"\n".into(),
+            &json!({
+                "title": "拼音增强", "description": "补一批模糊音规则。",
+                "willAdd": ["py.schema.toml"],
+                "configPatch": { "text": "y = 2\n", "ok": true, "entries": [],
+                                 "info": { "title": "模糊音开关", "description": "打开 zh/z 等价。" } }
+            }),
+        );
+        assert_eq!(mgr.import_pkg_title.get(), "拼音增强");
+        assert_eq!(mgr.import_pkg_desc.get(), "补一批模糊音规则。");
+        assert_eq!(mgr.import_patch_title.get(), "模糊音开关");
+        assert_eq!(mgr.import_patch_desc.get(), "打开 zh/z 等价。");
+
+        // 只有包级说明的包：片段那份保持空，不拿包级的顶上（§2.3：两级说的不是
+        // 同一件事，顶上会把「这个包是什么」说成「这段配置改什么」）。
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("c.wpkg"),
+            &json!({ "title": "只有包级说明", "willAdd": ["x"],
+                     "configPatch": { "text": "z = 3\n", "ok": true, "entries": [] } }),
+        );
+        assert_eq!(mgr.import_pkg_title.get(), "只有包级说明");
+        assert!(
+            mgr.import_patch_title.get().is_empty() && mgr.import_patch_desc.get().is_empty(),
+            "包级说明不得回落成片段说明"
+        );
+
+        // 纯方案包（无说明、无片段）：四个信号全清，两处区块都不占位。恒设值而不是
+        // 只在有值时 set——否则上一个包的说明会留在这一个包的对话框上。
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("d.zip"),
+            &json!({ "willAdd": ["x"], "conflicts": [] }),
+        );
+        for s in [
+            mgr.import_pkg_title,
+            mgr.import_pkg_desc,
+            mgr.import_patch_title,
+            mgr.import_patch_desc,
+        ] {
+            assert!(s.get().is_empty(), "换包必须清掉上一个包的说明");
+        }
+
+        // 取消同样清场（与 import_patch_rows 同口径）。
+        mgr.open_import_confirm(
+            std::path::PathBuf::from("e.wpkg"),
+            &json!({ "title": "待取消", "willAdd": ["x"] }),
+        );
+        mgr.cancel_import();
+        assert!(mgr.import_pkg_title.get().is_empty(), "取消须清空说明");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 包确认对话框的三块**各自独立限高**：两个说明区块（包级 + 片段自己的）同时撑到
+    /// 限额上限时，各自封顶，diff 列表仍是 `max_height(132)` 的完整高度。
+    ///
+    /// 与片段对话框那条（`info_block_does_not_squeeze_the_preview_list`）分开写，因为
+    /// 结构不同：那边是**一个** info_block + 定高预览区，这边是**两个** + `max_height`
+    /// 的列表。只测那边的话，这边多出来的第二个说明区块没封顶也照绿。
+    ///
+    /// ⚠️ **两句断言的分量不同**（变异测试实测）：删掉 `info_block` 的
+    /// `.max_height(INFO_DESC_MAX_H)` 后，红的是「两个说明区块须各自封顶」那句
+    /// （两块各增高 937px），而「列表仍是 132」**照样绿**——windui 的 col 不会把超高的
+    /// 兄弟节点的压力传导给别人，各子节点独立 measure。所以：
+    /// - 「各自封顶」是本用例的**载荷断言**，能抓住封顶失效；
+    /// - 「列表仍是 132」是**常量回归守卫**，抓的是有人改了 `patch_list` 的上限、或 12 行
+    ///   diff 不再溢出（`short_list` 那句先兜住后者），不是在证明「说明挤不掉列表」。
+    ///
+    /// ⚠️ 400 / 132 两个数抄自 `build_import_confirm_dialog`（`flat_panel().width(400)`
+    /// 与 `patch_list` 的 `max_height(132)`）——改那边记得同步这里。
+    #[test]
+    fn two_info_blocks_are_capped_independently_of_the_patch_list() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        const CONFIRM_W: i32 = 400;
+        const LIST_MAX_H: i32 = 132;
+
+        let measure = |desc: &str| {
+            let mut tree = Tree::new();
+            // diff 行要够多才会触到 max_height——列表不溢出的话「仍是 132」测不出东西。
+            let mut list = Element::col().width_match();
+            for i in 0..12 {
+                list = list.child(preview_row_element(&PreviewRow {
+                    key: format!("keys.key_actions[{i}]"),
+                    detail: "未设置 → quick_input".to_string(),
+                    is_error: false,
+                }));
+            }
+            let root = Element::col()
+                .width(CONFIRM_W)
+                .spacing(14)
+                // 包级说明
+                .child(info_block(
+                    signal("包级标题".to_string()),
+                    signal(desc.to_string()),
+                    14.0,
+                ))
+                // 包内片段自己的说明
+                .child(info_block(
+                    signal("片段标题".to_string()),
+                    signal(desc.to_string()),
+                    12.5,
+                ))
+                .child(
+                    Element::scroll()
+                        .width_match()
+                        .max_height(LIST_MAX_H)
+                        .child(list),
+                )
+                .build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(
+                Size::new(CONFIRM_W, 2000),
+                &mut windui::text::LineAwareTextEngine,
+            );
+            let kids = tree.get(root).unwrap().children.clone();
+            let h = |id| tree.get(id).unwrap().measured.h;
+            (h(kids[0]), h(kids[1]), h(kids[2]))
+        };
+
+        let cap = crate::pages::config_import::INFO_DESC_MAX_H;
+        let (short_pkg, short_patch, short_list) = measure("一行短说明。");
+        assert_eq!(short_list, LIST_MAX_H, "12 行 diff 应已触到列表上限");
+
+        // 两个说明同时撑到限额上限（4000 字符）。
+        let long: String = "分发者提供的任意文本".chars().cycle().take(4000).collect();
+        let (long_pkg, long_patch, long_list) = measure(&long);
+        assert_eq!(
+            long_list, LIST_MAX_H,
+            "两个说明都超长时 diff 列表高度不得改变"
+        );
+        // 两个说明各自封顶，谁也不吃谁的余量。
+        assert!(
+            long_pkg - short_pkg <= cap && long_patch - short_patch <= cap,
+            "两个说明区块须各自封顶，实际增高 包级={} 片段={}",
+            long_pkg - short_pkg,
+            long_patch - short_patch
+        );
     }
 
     /// 确认导入的两步编排：第二步 `config.applyPatch` 的 `written` 必须原样回传给

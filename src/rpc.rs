@@ -263,6 +263,11 @@ mod tests {
         super::mock_reply(method, &json!({}))
     }
 
+    /// 带 params 的 mock 取值（部分应答按请求内容分形，见 `mock_wants_long_info`）。
+    fn mock_reply_with(method: &str, params: &Value) -> Value {
+        super::mock_reply(method, params)
+    }
+
     #[test]
     fn test_ctrl_endpoint_format() {
         let ep = ctrl_endpoint();
@@ -573,6 +578,75 @@ mod tests {
         assert!(
             map_written.len() > 1,
             "Map 父键必须带合并后的整表（含片段未提及的既有条目），实际: {map_written:?}"
+        );
+    }
+
+    /// 说明元信息（§2.3）的 mock 形状，三件事：
+    ///
+    /// ① **有说明 / 无说明两形都在**——信封样例带说明，纯方案包（`scheme.previewImport`）
+    ///    不带，后者是「区块整块不占位」那条路离线唯一能走到的样例；
+    /// ② 同一个信封响应里，**包级说明与 `configPatch.info` 取值不同**——写成同源的话，
+    ///    UI 把两级合并、或某一处串了源，离线怎么点都看不出来；
+    /// ③ 文本带 `mock_long_info` 记号时说明撑到 core 限额上限（title 200 /
+    ///    description 4000 字符），供显示封顶的离线核对。样例说明都是两三行的短文本，
+    ///    光靠它们测不出封顶有没有生效。
+    #[test]
+    fn mock_package_info_shapes() {
+        let s = |v: &Value, p: &str| {
+            v.pointer(p)
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        // 片段：previewPatch 带 info。
+        let p = mock_reply("config.previewPatch");
+        assert!(!s(&p, "/info/title").is_empty());
+        assert!(!s(&p, "/info/description").is_empty());
+
+        // 纯方案包：无说明形（顶层两字段都缺席）。
+        let zip = mock_reply("scheme.previewImport");
+        assert!(zip.get("title").is_none() && zip.get("description").is_none());
+
+        // 信封：两级都在，且四个值互不相同。
+        let env = super::mock_result(
+            "scheme.previewImportText",
+            &json!({ "text": "kind = \"schema_text\"" }),
+        )
+        .expect("信封应预览成功");
+        let vals = [
+            s(&env, "/title"),
+            s(&env, "/description"),
+            s(&env, "/configPatch/info/title"),
+            s(&env, "/configPatch/info/description"),
+        ];
+        assert!(
+            vals.iter().all(|v| !v.is_empty()),
+            "两级说明都要给: {vals:?}"
+        );
+        for (i, a) in vals.iter().enumerate() {
+            for b in &vals[i + 1..] {
+                assert_ne!(a, b, "两级说明取值必须互不相同，否则测不出串源");
+            }
+        }
+
+        // 限额上限形：记号在片段文本里，两法都要认。
+        let long = mock_reply_with(
+            "config.previewPatch",
+            &json!({ "text": "# mock_long_info\n" }),
+        );
+        assert_eq!(s(&long, "/info/title").chars().count(), 200);
+        assert_eq!(s(&long, "/info/description").chars().count(), 4000);
+        let long_env = mock_reply_with(
+            "scheme.previewImportText",
+            &json!({ "text": "kind = \"schema_text\"\n# mock_long_info\n" }),
+        );
+        assert_eq!(s(&long_env, "/description").chars().count(), 4000);
+        assert_eq!(
+            s(&long_env, "/configPatch/info/description")
+                .chars()
+                .count(),
+            4000
         );
     }
 
@@ -1020,6 +1094,36 @@ fn mock_is_schema_text(text: &str) -> bool {
     text.contains("kind = \"schema_text\"") || text.contains("kind = 'schema_text'")
 }
 
+/// 导入文本里带这个记号时，mock 把说明（§2.3）撑到 core 限额上限。
+///
+/// 说明是分发者提供的任意文本，`description` 限额 4000 字符——足以把对话框顶出
+/// 屏幕。样例说明都是两三行的短文本，光靠它们离线怎么点都看不出封顶有没有生效。
+const MOCK_LONG_INFO_MARK: &str = "mock_long_info";
+
+fn mock_wants_long_info(params: &Value) -> bool {
+    params
+        .get("text")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t.contains(MOCK_LONG_INFO_MARK))
+}
+
+/// core 限额上限的说明：title 恰 200 字符、description 恰 4000 字符。
+fn mock_limit_info() -> Value {
+    let title: String = "分发者可以把标题一直写到限额上限而不报错，"
+        .chars()
+        .cycle()
+        .take(200)
+        .collect();
+    let mut desc = String::new();
+    let mut i = 1;
+    while desc.chars().count() < 4000 {
+        desc.push_str(&format!("第 {i} 行说明：分发者提供的任意文本。\n"));
+        i += 1;
+    }
+    let description: String = desc.chars().take(4000).collect();
+    json!({ "title": title, "description": description })
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1256,6 +1360,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "scheme.exportPackage" => {
             json!({ "path": "C:/tmp/demo.zip", "packed": ["demo.schema.toml"], "systemRefs": [], "missing": [] })
         }
+        // 无 `title` / `description`：**无说明形**（旧包 / 生成端没填），确认对话框
+        // 顶部整块不占位。有说明形由下面的信封样例覆盖。
         "scheme.previewImport" => json!({
             "package": {
                 "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-07-13T00:00:00+08:00" },
@@ -1269,21 +1375,39 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         }
         // 文本信封（§3.4）。响应形状与 zip 两法一致；这里刻意带上 configPatch，
         // 让「将修改的配置」区块（含 Map 条目显示键）离线也能核对。
-        "scheme.previewImportText" => json!({
-            "package": {
-                "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-08-19T00:00:00+08:00" },
-                "schema": { "id": "kf", "version": "1.00.0" },
-                "refs": { "system": [], "missing": [] }
-            },
-            "willAdd": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "systemRefs": [], "missing": [],
-            "configPatch": {
-                "text": "[keys.key_actions]\nbacktick = \"quick_input\"\n",
-                "ok": true,
-                "entries": [
-                    { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
-                ]
+        //
+        // 说明（§2.3）刻意给**两级且取值不同**：顶层 title/description 是包级说明，
+        // configPatch.info 是那段片段自己的说明。取一样的值就分不清 UI 是各显各的
+        // 还是有一处串了源——两级说的不是同一件事，合并即错。
+        "scheme.previewImportText" => {
+            let mut v = json!({
+                "package": {
+                    "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-08-19T00:00:00+08:00" },
+                    "schema": { "id": "kf", "version": "1.00.0" },
+                    "refs": { "system": [], "missing": [] }
+                },
+                "title": "快符方案",
+                "description": "分号引导的符号表，含常用标点与配对符号。\n随包附带一份按键功能配置。",
+                "willAdd": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "systemRefs": [], "missing": [],
+                "configPatch": {
+                    "text": "[keys.key_actions]\nbacktick = \"quick_input\"\n",
+                    "ok": true,
+                    "entries": [
+                        { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                    ],
+                    "info": {
+                        "title": "快符引导键",
+                        "description": "把反引号设为快捷输入引导键。"
+                    }
+                }
+            });
+            if mock_wants_long_info(params) {
+                v["configPatch"]["info"] = mock_limit_info();
+                v["title"] = mock_limit_info()["title"].clone();
+                v["description"] = mock_limit_info()["description"].clone();
             }
-        }),
+            v
+        }
         "scheme.importText" => {
             json!({ "imported": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "schemaIds": ["kf"] })
         }
@@ -1298,14 +1422,26 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         // applyPatch 全部合法才落盘，逐键错误时整体为 RPC error）。
         // Map 键（key_actions）刻意给一条：预览逐**条目**报告、显示键为
         // `父键[条目名]`，且 written 回传的是合并后的整表（§2.2 / §2.3）。
-        "config.previewPatch" => json!({
-            "ok": true,
-            "entries": [
-                { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
-                { "key": "input.initial_mode", "next": "chinese" },
-                { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
-            ]
-        }),
+        // `info` = 片段 `[package]` 段的说明（§2.3）；两字段都缺省时 core 不发它，
+        // 那一形由 `scheme.previewImport`（纯方案包，无说明）覆盖。
+        "config.previewPatch" => {
+            let mut v = json!({
+                "ok": true,
+                "entries": [
+                    { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
+                    { "key": "input.initial_mode", "next": "chinese" },
+                    { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                ],
+                "info": {
+                    "title": "九候选 + 默认中文",
+                    "description": "把候选栏调成每页九个，并把启动模式设为中文。\n反引号设为快捷输入引导键。"
+                }
+            });
+            if mock_wants_long_info(params) {
+                v["info"] = mock_limit_info();
+            }
+            v
+        }
         // written = 落盘后的最终键值：Map 父键带的是合并结果整表（片段只写了
         // backtick，semicolon 是用户原有条目），客户端拼不出来，必须由 core 回传。
         "config.applyPatch" => json!({
