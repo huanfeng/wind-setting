@@ -1946,57 +1946,74 @@ hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
 min = 0
 max = 64
 
-# 候选窗尺寸下限：量的是整个窗口（含翻页栏、编码栏），候选照常紧凑排列、凑不满的部分
-# 留空。横排/竖排各配一套——两种排布的可用空间差一个数量级。
+# 候选窗尺寸下限段：五项都是「窗口别缩得比这更小」的同一件事，且都不常改——摊在卡片上
+# 五行连排会把「候选窗排列」「最大字数」这些天天要动的项挤没。故卡片上只占一行
+# 「候选窗口最小大小 …… [设置]」，五项全在对话框里（`dialog_title` 宿主 + `dialog_extra_for`
+# 寄居，见 manifest.rs 的 build_grouped_dialog_row）。
+#
+# 宿主取**横排最小宽度**：它是对话框里第一个字段，也是最常配的一项——横排候选窗随候选
+# 字数忽宽忽窄，"宽度别再跳"是这组设置最主要的用途。
+#
+# 下限量的是整个窗口（含翻页栏、编码栏），候选照常紧凑排列、凑不满的部分留空。
+# 横排/竖排各配一套——两种排布的可用空间差一个数量级。
 [[items]]
 key = "ui.candidate.min_window_width_horizontal"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "横排候选窗最小宽度"
-hint = "窗口不足此宽时右侧留空，候选本身不拉伸；单位 dp；0 = 不限，跟随内容"
+label = "横排最小宽度（dp）"
+hint = "窗口不足此宽时右侧留空，候选本身不拉伸；0 = 不限，跟随内容"
 min = 0
 max = 1200
+dialog_title = "候选窗口最小大小"
+dialog_hint = "为候选窗设定宽高下限，避免窗口随候选内容忽大忽小；横排、竖排各自一套"
+# 单位「（dp）」写进 label 而不是 hint：对话框只有 460 宽，hint 会被截成一行（截断处
+# 有 tooltip 兜底看全文），单位藏在截断后面等于没写——而不知道填的是像素还是字数，
+# 这一格根本没法填。清单的 `unit` 字段目前无人消费（见 manifest.rs 的 MItem::unit）。
 
 [[items]]
 key = "ui.candidate.min_window_width_vertical"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "竖排候选窗最小宽度"
-hint = "窗口不足此宽时右侧留空，候选高亮跟随窗口铺满；单位 dp；0 = 不限，跟随内容"
+label = "竖排最小宽度（dp）"
+hint = "窗口不足此宽时右侧留空，候选高亮跟随窗口铺满；0 = 不限，跟随内容"
 min = 0
 max = 1200
+dialog_extra_for = "ui.candidate.min_window_width_horizontal"
 
 [[items]]
 key = "ui.candidate.min_window_height_horizontal"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "横排候选窗最小高度"
-hint = "窗口不足此高时留空；窗口在光标上方时空白补在顶部；单位 dp；0 = 不限，跟随内容"
+label = "横排最小高度（dp）"
+hint = "窗口不足此高时留空；窗口在光标上方时空白补在顶部；0 = 不限，跟随内容"
 min = 0
 max = 1200
+dialog_extra_for = "ui.candidate.min_window_width_horizontal"
 
 [[items]]
 key = "ui.candidate.min_window_height_vertical"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "竖排候选窗最小高度"
-hint = "窗口不足此高时留空，翻页栏的出现消失一并吸收；单位 dp；0 = 不限，跟随内容"
+label = "竖排最小高度（dp）"
+hint = "窗口不足此高时留空，翻页栏的出现消失一并吸收；0 = 不限，跟随内容"
 min = 0
 max = 1200
+dialog_extra_for = "ui.candidate.min_window_width_horizontal"
 
 [[items]]
 key = "ui.candidate.min_rows"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "竖排候选最小行数"
+label = "竖排最小行数"
 hint = "候选数不足时补透明空行以保持候选区高度；自动钳到每页候选数；0 = 不限。仅竖排生效"
 min = 0
 max = 9
+dialog_extra_for = "ui.candidate.min_window_width_horizontal"
 
 # 候选注释段（候选右侧灰字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
 # 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。

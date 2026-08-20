@@ -50,6 +50,17 @@ pub struct MItem {
     /// 与 `dialog_group`/`opens_dialog` 那套「扩展设置」不同：这是把一两个从属项塞进**已有的**
     /// 值编辑对话框，不额外挂按钮，避免为一个开关多开一层套娃。
     pub dialog_extra_for: Option<String>,
+    /// 分组对话框宿主：本项**自身也是一个普通值控件**（number/toggle/…），但卡片上不显示
+    /// 自己的控件行，而是与寄居它的 `dialog_extra_for` 从属项一起收进一个对话框，卡片上
+    /// 只留一行「<dialog_title> …… [设置]」。此字段即该行的标签兼对话框标题。
+    ///
+    /// 与 `dialog_button` 宿主的区别：那个宿主自身是个按钮、值编辑器要专门写；这里宿主
+    /// 在对话框里就按自己的 `type` 用 [`field`] 渲染成普通一行，读写零手工。用于一组
+    /// 同类字段（如候选窗四个尺寸下限 + 最小行数）挤爆卡片、又都不常改的情形。
+    pub dialog_title: Option<String>,
+    /// 分组对话框宿主行的副标题（`dialog_title` 存在时才有意义）。宿主自己的 `hint`
+    /// 是对话框里那一行的说明，讲的是单个字段；卡片行需要另一句概括整组。
+    pub dialog_hint: Option<String>,
     /// `dialog_button_key_action` 专用：这一项对应全局 `keys.key_actions` 里的哪个**动词**
     /// （`temp_pinyin` / `mix:quick_mix` …）。
     ///
@@ -185,6 +196,8 @@ impl Manifest {
                         .and_then(|x| x.as_bool())
                         .unwrap_or(false),
                     dialog_extra_for: opt_str(it, "dialog_extra_for"),
+                    dialog_title: opt_str(it, "dialog_title"),
+                    dialog_hint: opt_str(it, "dialog_hint"),
                     verb: opt_str(it, "verb"),
                     global: it.get("global").and_then(|x| x.as_bool()).unwrap_or(false),
                     dialog_group: opt_str(it, "dialog_group"),
@@ -318,7 +331,11 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         {
             continue;
         }
-        let row = if item.opens_dialog.is_some() {
+        let row = if item.dialog_title.is_some() {
+            // 分组对话框宿主：卡片上收成一行「<dialog_title> …… [设置]」，宿主自身与寄居项
+            // 都在对话框里（见 `dialog_title` 的说明）。
+            build_grouped_dialog_row(state, k, item)
+        } else if item.opens_dialog.is_some() {
             // 子对话框宿主：渲染 [宿主控件][扩展设置] 行，按钮打开成员对话框。
             build_dialog_group_row(state, k, item, cfg)
         } else if item.typ == "toggle"
@@ -1814,7 +1831,20 @@ fn build_dialog_button_string(
 /// 成员经各自 [`field`] 登记 writer/loader，与独立成行时完全一致 —— 保存/加载/重置都自动覆盖，
 /// 不需要为「寄居」这件事另写一套读写。
 fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
-    let members: Vec<String> = state
+    let members = dialog_extra_keys(state, host_key);
+    if members.is_empty() {
+        return None;
+    }
+    let mut col = Element::col().width_match().spacing(6);
+    for k in &members {
+        col = col.child(field(state, k));
+    }
+    Some(col)
+}
+
+/// 寄居在 `host_key` 对话框里的从属项的 key，按 manifest 顺序。
+fn dialog_extra_keys(state: &AppState, host_key: &str) -> Vec<String> {
+    state
         .manifest
         .order
         .iter()
@@ -1826,15 +1856,59 @@ fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
                 == Some(host_key)
         })
         .cloned()
-        .collect();
-    if members.is_empty() {
-        return None;
-    }
-    let mut col = Element::col().width_match().spacing(6);
+        .collect()
+}
+
+/// 「恢复默认」回调：向 core 取权威默认值，灌回 `keys` 各自的 loader。
+///
+/// 走 loader 而非直接 set signal，是因为调用点通常拿不到从属项的 signal（它们由 [`field`]
+/// 在别处建立）；loader 是这些 signal 的唯一公共入口。core 未连接时回落空对象，等效
+/// capability fallback——宁可什么都不改，也不要把用户的值清成 0。
+fn reset_to_core_defaults(state: &AppState, keys: Vec<String>) -> Box<dyn Fn() + 'static> {
+    let fields = state.fields.clone();
+    Box::new(move || {
+        let defaults = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
+            .unwrap_or(Value::Object(serde_json::Map::new()));
+        let def_cfg = Config::from_value(defaults);
+        let ld = fields.loaders.borrow();
+        for k in &keys {
+            if let Some(loader) = ld.get(k) {
+                loader(&def_cfg);
+            }
+        }
+    })
+}
+
+/// 分组对话框宿主行：卡片上只有「<dialog_title> …… [设置]」，宿主自身与寄居项都在对话框里。
+///
+/// 宿主与成员一律经 [`field`] 渲染并登记 writer/loader，与它们独立成行时完全一致——
+/// 「搬进对话框」只是版式变化，不改读写语义（保存、加载、恢复本页都照旧覆盖）。
+/// 每项之间由 [`build_group_dialog`] 自动加分隔线，故这里逐行 push 而不用
+/// [`dialog_extra_rows`] 那个合并成一列的形态。
+fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Element {
+    use crate::dialogs::field_dialogs::build_group_dialog;
+    let visible = signal(false);
+    let title = item
+        .dialog_title
+        .clone()
+        .unwrap_or_else(|| item.label.clone());
+
+    let members = dialog_extra_keys(state, key);
+    let mut rows = vec![field(state, key)];
     for k in &members {
-        col = col.child(field(state, k));
+        rows.push(field(state, k));
     }
-    Some(col)
+
+    let reset_keys: Vec<String> = std::iter::once(key.to_string()).chain(members).collect();
+    let reset_fn = reset_to_core_defaults(state, reset_keys);
+
+    let dlg = build_group_dialog(visible, &title, rows, Some(reset_fn));
+    register_dialog(state, dlg);
+    setting_row(
+        &title,
+        item.dialog_hint.as_deref(),
+        open_dialog_button(visible),
+    )
 }
 
 /// 候选注释对话框的宿主 key。宿主取**横排**模板：它是对话框里第一个出现的字段，而横排的
@@ -1906,36 +1980,11 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
         rows.push(extra);
     }
 
-    // 恢复默认：与 build_gated_dialog_row 同法，取 core 权威默认值灌回三个字段的 loader。
-    // 走 loader 而非直接 set signal，寄居项才能一并复位（它们的 signal 本函数拿不到）。
-    let fields = state.fields.clone();
+    // 恢复默认：宿主与寄居项一并复位（见 [`reset_to_core_defaults`]）。
     let reset_keys: Vec<String> = std::iter::once(key.to_string())
-        .chain(
-            state
-                .manifest
-                .order
-                .iter()
-                .filter(|k| {
-                    state
-                        .manifest
-                        .get(k)
-                        .and_then(|i| i.dialog_extra_for.as_deref())
-                        == Some(key)
-                })
-                .cloned(),
-        )
+        .chain(dialog_extra_keys(state, key))
         .collect();
-    let reset_fn: Box<dyn Fn() + 'static> = Box::new(move || {
-        let defaults = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let def_cfg = Config::from_value(defaults);
-        let ld = fields.loaders.borrow();
-        for k in &reset_keys {
-            if let Some(loader) = ld.get(k) {
-                loader(&def_cfg);
-            }
-        }
-    });
+    let reset_fn = reset_to_core_defaults(state, reset_keys);
 
     let dlg = build_comment_dialog(visible, "候选注释", rows, Some(reset_fn));
     register_dialog(state, dlg);
@@ -3490,9 +3539,12 @@ mod tests {
             let host = m
                 .get(host_key)
                 .unwrap_or_else(|| panic!("`{k}` 的 dialog_extra_for 指向不存在的项 `{host_key}`"));
-            assert_eq!(
-                host.typ, "dialog_button",
-                "`{k}` 寄居的宿主 `{host_key}` 必须是 dialog_button，实际 `{}`",
+            // 宿主有两种合法形态：dialog_button（自身即按钮），或声明了 dialog_title 的
+            // 普通值控件（分组对话框宿主，见 build_grouped_dialog_row）。别的类型都会让
+            // 寄居项无处可去——宿主照常独立成行，寄居项则被 section_rows 跳过、彻底消失。
+            assert!(
+                host.typ == "dialog_button" || host.dialog_title.is_some(),
+                "`{k}` 寄居的宿主 `{host_key}` 必须是 dialog_button 或带 dialog_title，实际 `{}`",
                 host.typ
             );
             assert_eq!(
@@ -3507,6 +3559,50 @@ mod tests {
                      请给宿主加 gate_soft = true"
                 );
             }
+        }
+    }
+
+    /// 守护：`dialog_title` 宿主必须真的有寄居项，且自身不被别的收纳机制吞掉。
+    ///
+    /// 没有寄居项的宿主 = 把一个普通设置行藏进只有它一项的对话框，纯粹多一次点击；
+    /// 而宿主若同时带 `dialog_extra_for` / `dialog_group` / `hidden`，`section_rows`
+    /// 会先在那些分支上把它跳过，整组设置（宿主 + 所有寄居项）一并从页面上消失。
+    #[test]
+    fn dialog_title_hosts_are_well_formed() {
+        let m = Manifest::from_embedded();
+        for k in &m.order {
+            let it = m.get(k).unwrap();
+            if it.dialog_title.is_none() {
+                continue;
+            }
+            assert!(
+                it.dialog_extra_for.is_none() && it.dialog_group.is_none() && !it.hidden,
+                "`{k}` 是 dialog_title 宿主，不能同时被 dialog_extra_for / dialog_group / hidden 收走"
+            );
+            let members = m
+                .order
+                .iter()
+                .filter(|x| {
+                    m.get(x).and_then(|i| i.dialog_extra_for.as_deref()) == Some(k.as_str())
+                })
+                .count();
+            assert!(
+                members > 0,
+                "`{k}` 声明了 dialog_title 却没有任何 dialog_extra_for 成员，                 等于把一行设置藏进对话框；要么补成员，要么去掉 dialog_title"
+            );
+        }
+    }
+
+    /// 守护：`dialog_hint` 只在 `dialog_title` 宿主上有意义（别处写了不会渲染）。
+    #[test]
+    fn dialog_hint_requires_dialog_title() {
+        let m = Manifest::from_embedded();
+        for k in &m.order {
+            let it = m.get(k).unwrap();
+            assert!(
+                it.dialog_hint.is_none() || it.dialog_title.is_some(),
+                "`{k}` 写了 dialog_hint 却没有 dialog_title，该文案不会出现在任何地方"
+            );
         }
     }
 
