@@ -38,6 +38,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         field_dialogs,
     ) = {
         let st = app.borrow();
+        // 先清空上一棵设置树的登记项，再构建新的。主窗可以关掉再开（见
+        // `dict_window` 与 `main::open_main_window`），本函数因此不再是"一辈子只跑一次"
+        // ——不清的话，旧树那批 Signal 句柄会连同新的一起留在注册表里，而它们的槽位
+        // 早已随上一个窗口的 `SignalScope` 回收、并被新信号复用。详见 `FieldRegistry::reset`。
+        st.fields.reset();
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
         let tabs_vec = pages::all_tabs(app, &st);
@@ -943,4 +948,47 @@ fn confirm_dialog_body(
                 .child(Element::button(confirm_label).small().on_click(on_confirm)),
         );
     Element::dialog(visible, frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::state::AppState;
+
+    /// 重建设置树前必须清空 `FieldRegistry`：主窗可以关掉再开，`shell::build` 因此不再是
+    /// 「一辈子只跑一次」。
+    ///
+    /// 不清的后果有两层，第二层才是致命的：
+    /// 1. `writers` 只追加不清理 → 保存时同一个键写两遍；
+    /// 2. 上一棵树的 Signal 归**那个窗口**的 `SignalScope`，窗一关就 `dispose()`、槽位
+    ///    还给 arena 等待复用，而句柄还留在注册表里 —— 之后读到的是别人的值。
+    ///
+    /// 症状是「第一次重建好好的、第二次崩」，因为第一次时旧句柄还没被复用。
+    #[test]
+    fn registry_reset_clears_every_registration() {
+        let st = AppState::empty();
+        {
+            let mut w = st.fields.writers.borrow_mut();
+            w.push(Box::new(|_cfg| {}));
+        }
+        st.fields
+            .global_flags
+            .borrow_mut()
+            .push(("dummy".into(), windui::prelude::signal(true)));
+        st.fields
+            .loaders
+            .borrow_mut()
+            .insert("k".into(), Box::new(|_cfg| {}));
+
+        st.fields.reset();
+
+        assert!(st.fields.writers.borrow().is_empty(), "writers 未清空");
+        assert!(
+            st.fields.global_flags.borrow().is_empty(),
+            "global_flags 未清空 —— 它存的是 Signal 句柄，留着就会悬垂"
+        );
+        assert!(st.fields.loaders.borrow().is_empty(), "loaders 未清空");
+        assert!(st.fields.getters.borrow().is_empty(), "getters 未清空");
+        assert!(st.fields.dialogs.borrow().is_empty(), "dialogs 未清空");
+        assert!(st.fields.side.borrow().is_empty(), "side 未清空");
+    }
 }

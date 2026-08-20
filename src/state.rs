@@ -89,6 +89,34 @@ pub struct FieldRegistry {
     pub side: RefCell<Vec<SideCommitter>>,
 }
 
+impl FieldRegistry {
+    /// 清空全部登记项，供 [`crate::shell::build`] 在重建设置树前调用。
+    ///
+    /// # 为什么必须清
+    ///
+    /// 本注册表里存的是**上一棵设置树**的 Signal 句柄与闭包。设置树重建过一次之后
+    /// （主窗关掉再开），旧的那批就同时是错的和危险的：
+    ///
+    /// - **错**：`writers` 只追加不清理，保存时同一个键会被写两遍；`global_flags` 同理，
+    ///   汇总出的 `keys.global_hotkeys` 会带上重复项。
+    /// - **危险**：这些 Signal 是在 `Window::content` 闭包里创建的，归**那个窗口**的
+    ///   `SignalScope` 所有。窗口一关就 `dispose()`，槽位还给 arena 等待复用；而句柄
+    ///   还留在这里，指向的槽位随后会被下一批信号占用。读它拿到的是别人的值。
+    ///
+    /// 所以症状是「第一次重建好好的，第二次崩」——第一次时旧句柄还没来得及被复用。
+    ///
+    /// 这条前提以前由「主窗等于进程」免费保证着（`shell::build` 一辈子只跑一次），
+    /// 主窗改成可重建之后就得显式维护了。
+    pub fn reset(&self) {
+        self.writers.borrow_mut().clear();
+        self.getters.borrow_mut().clear();
+        self.loaders.borrow_mut().clear();
+        self.dialogs.borrow_mut().clear();
+        self.global_flags.borrow_mut().clear();
+        self.side.borrow_mut().clear();
+    }
+}
+
 /// 非 `config.toml` 落点的提交器 —— `writers` 之于 config.toml，`SideCommitter` 之于其余。
 ///
 /// 设置界面里不是所有数据都进 `config.toml`：方案 override（`schema_overrides/<id>.toml`）

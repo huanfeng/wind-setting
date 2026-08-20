@@ -45,11 +45,42 @@ pub fn init() {
     // guard 必须存活至进程退出，否则 non_blocking 缓冲无法刷盘
     Box::leak(Box::new(guard));
 
+    install_panic_hook();
+
     tracing::info!(
         "wind_setting v{} 启动，日志: {}",
         env!("CARGO_PKG_VERSION"),
         log_dir.join(&file_name).display()
     );
+}
+
+/// 把 panic 写进日志，而不是随 stderr 一起消失。
+///
+/// 本程序编译为 `windows_subsystem = "windows"`（无控制台），默认 panic handler 那句
+/// "thread 'main' panicked at ..." 写的是 stderr —— 而 stderr 没有去处。表现就是**窗口
+/// 直接消失、日志停在最后一条正常记录上**，事后完全无从判断是崩了还是正常退出。
+///
+/// 保留默认钩子并在其后调用：调试器附着时那条 stderr 仍然有用。
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // payload 常见两种形态：`panic!("字面量")` 给 &str，`format!` 过的给 String。
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(无 panic 消息)".to_string());
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "(位置未知)".to_string());
+        tracing::error!(
+            "panic 于 {loc}: {msg}\n栈回溯:\n{}",
+            std::backtrace::Backtrace::force_capture()
+        );
+        default(info);
+    }));
 }
 
 fn resolve_log_dir() -> PathBuf {
