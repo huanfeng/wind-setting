@@ -256,6 +256,10 @@
     "min_word_length": 0,
     "promote_count": 0
    },
+   "aux_code": {
+    "enabled": false,
+    "max_phrase_len": 0
+   },
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4

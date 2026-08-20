@@ -30,6 +30,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         dialog,
         theme_import_dialog,
         backup_dialog,
+        config_import_dialog,
         stats_confirm_dialog,
         reload_confirm,
         reset_confirm,
@@ -49,9 +50,14 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.dark,
             st.conn,
             st.feedback,
-            build_schema_manager_dialog(&st.schema_mgr),
+            build_schema_manager_dialog(app, &st.schema_mgr),
             build_theme_import_dialog(app),
             pages::backup::build_backup_restore_dialog(&st.backup_mgr),
+            pages::config_import::build_config_import_dialog(
+                app,
+                &st.config_import,
+                &st.schema_mgr,
+            ),
             pages::stats::build_stats_confirm_dialog(&st.stats_mgr),
             st.reload_confirm,
             st.reset_confirm,
@@ -65,6 +71,15 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 
     let titlebar = build_titlebar("设置");
 
+    // 快速导入右键菜单：挂在左侧栏与底栏的空白处（真机反馈：挂满整个内容区太泛，
+    // 所有条目上都会弹）。内容区不再挂，页内元素的自有菜单不受影响。
+    let (ci_menu, mgr_menu) = {
+        let st = app.borrow();
+        (st.config_import.clone(), st.schema_mgr.clone())
+    };
+    let ci_menu_footer = ci_menu.clone();
+    let mgr_menu_footer = mgr_menu.clone();
+
     // 左侧栏：图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
     let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
     let nav = build_nav(&names, tab_sig, app);
@@ -74,7 +89,10 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .height_match()
         .bg_role(Role::Bg)
         .padding_xy(8, 10)
-        .child(nav);
+        .child(nav)
+        .on_context_menu(move || {
+            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
+        });
     let vdivider = Element::leaf()
         .width(1)
         .height_match()
@@ -98,7 +116,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(vdivider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, conn);
+    let footer = build_footer(app, th, dark, conn).on_context_menu(move || {
+        crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer)
+    });
 
     let main_col = Element::col()
         .fill()
@@ -109,6 +129,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(footer);
 
     let (protocol_overwrite_dlg, protocol_remove_dlg) = build_protocol_confirm_dialogs(app);
+    let (assoc_overwrite_dlg, assoc_remove_dlg) = build_assoc_confirm_dialogs(app);
 
     let mut root = Element::stack()
         .fill()
@@ -116,10 +137,13 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(main_col)
         .child(protocol_overwrite_dlg)
         .child(protocol_remove_dlg)
+        .child(assoc_overwrite_dlg)
+        .child(assoc_remove_dlg)
         .child(dialog)
         // 词库对话框已随词库页迁进独立窗（见 `dict_window::build_content`），不在这里挂。
         .child(theme_import_dialog)
         .child(backup_dialog)
+        .child(config_import_dialog)
         .child(stats_confirm_dialog)
         .child(build_exit_confirm_dialog(app))
         .child(build_reload_dialog(app, reload_confirm))
@@ -649,6 +673,49 @@ fn build_protocol_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Elem
         move |_| {
             if let Ok(mut s) = app_rm.try_borrow_mut() {
                 s.unregister_protocol();
+            }
+            remove.set(false);
+        },
+    );
+
+    (overwrite_dlg, remove_dlg)
+}
+
+/// `.wpkg` 文件关联的两个确认框，形态与协议的完全一致（共用 `confirm_msg`，
+/// 同刻只开一个框），只是落点换成 `register_file_assoc` / `unregister_file_assoc`。
+fn build_assoc_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Element) {
+    let (overwrite, remove, msg) = {
+        let st = app.borrow();
+        (
+            st.integration.assoc_overwrite_confirm,
+            st.integration.assoc_remove_confirm,
+            st.integration.confirm_msg,
+        )
+    };
+
+    let app_ow = app.clone();
+    let overwrite_dlg = confirm_dialog_msg(
+        overwrite,
+        "改为由本程序打开",
+        msg,
+        "覆盖注册",
+        move |_| {
+            if let Ok(mut s) = app_ow.try_borrow_mut() {
+                s.register_file_assoc();
+            }
+            overwrite.set(false);
+        },
+    );
+
+    let app_rm = app.clone();
+    let remove_dlg = confirm_dialog_msg(
+        remove,
+        "解除 .wpkg 文件关联",
+        msg,
+        "仍然解除",
+        move |_| {
+            if let Ok(mut s) = app_rm.try_borrow_mut() {
+                s.unregister_file_assoc();
             }
             remove.set(false);
         },

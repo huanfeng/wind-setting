@@ -42,6 +42,40 @@ pub fn parse_protocol(argv: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// argv 是否请求「导入配置」深链(`--page import` / `--page=import` / `--import`)。
+///
+/// `import` 不是真实 Tab(PAGES 里没有,`parse_target` 对它返回 None):它是
+/// 「切到高级页 + 弹出导入对话框 + 读一次剪贴板」的组合动作。解析归解析,
+/// 执行在 main 的导入通道里(读剪贴板要 EventCtx,只能在 UI 线程事件里做)。
+pub fn parse_import_request(argv: &[String]) -> bool {
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if a == "--import" || a == "--page=import" {
+            return true;
+        }
+        if a == "--page" && it.next().map(|s| s.as_str()) == Some("import") {
+            return true;
+        }
+    }
+    false
+}
+
+/// argv 里的 `.wpkg` 方案包路径(文件关联双击时 shell 按 `"<exe>" "%1"` 传入)。
+///
+/// 只认 `.wpkg`:`.zip` 太泛,不抢通用压缩包的关联,也不从命令行猜。
+/// 跳过 argv[0](自身 exe 路径)与 `--` 开头的旗标。
+pub fn parse_import_file(argv: &[String]) -> Option<std::path::PathBuf> {
+    argv.iter()
+        .skip(1)
+        .find(|a| {
+            !a.starts_with("--")
+                && std::path::Path::new(a.as_str())
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("wpkg"))
+        })
+        .map(std::path::PathBuf::from)
+}
+
 /// 词库页深链参数(`--page dict` 时可选携带 `--schema` / `--type`)。
 ///
 /// 两维各自可选:只给 `--type` 表示"当前数据域的该类型",只给 `--schema` 表示
@@ -193,6 +227,40 @@ mod tests {
             Some("windinput://import/theme?url=https://x")
         );
         assert_eq!(parse_protocol(&a(&["exe", "--page", "input"])), None);
+    }
+
+    /// `import` 深链三种写法都认;不是真实页,`parse_target` 必须继续返回 None,
+    /// 否则会被当成 tab 索引乱切页。
+    #[test]
+    fn parse_import_request_forms() {
+        assert!(parse_import_request(&a(&["exe", "--page", "import"])));
+        assert!(parse_import_request(&a(&["exe", "--page=import"])));
+        assert!(parse_import_request(&a(&["exe", "--import"])));
+        assert!(!parse_import_request(&a(&["exe", "--page", "dict"])));
+        assert!(!parse_import_request(&a(&["exe"])));
+        assert_eq!(parse_target(&a(&["exe", "--page", "import"])), None);
+        assert_eq!(parse_target(&a(&["exe", "--import"])), None);
+    }
+
+    /// 文件关联只登记 `.wpkg`,路由也只认 `.wpkg`:.zip/.toml 不从命令行猜。
+    /// 扩展名判断走 `Path::extension`,路径末尾是多字节字符也不 panic。
+    #[test]
+    fn parse_import_file_only_wpkg() {
+        assert_eq!(
+            parse_import_file(&a(&["exe", r"C:\down\pkg.wpkg"])),
+            Some(std::path::PathBuf::from(r"C:\down\pkg.wpkg"))
+        );
+        // 大小写不敏感 + 中文文件名
+        assert_eq!(
+            parse_import_file(&a(&["exe", r"C:\下载\方案包.WPKG"])),
+            Some(std::path::PathBuf::from(r"C:\下载\方案包.WPKG"))
+        );
+        // 旗标与其它扩展名都不认
+        assert_eq!(parse_import_file(&a(&["exe", "--page", "dict"])), None);
+        assert_eq!(parse_import_file(&a(&["exe", r"C:\a\b.zip"])), None);
+        assert_eq!(parse_import_file(&a(&["exe", r"C:\a\b.toml"])), None);
+        // argv[0] 是自身路径,即便像 .wpkg 也跳过
+        assert_eq!(parse_import_file(&a(&["weird.wpkg"])), None);
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub struct SettingConfig {
     pub ui: UiStateConfig,
     #[serde(default)]
     pub protocol: ProtocolConfig,
+    #[serde(default)]
+    pub file_assoc: FileAssocConfig,
 }
 
 /// `windinput://` 协议关联的偏好。
@@ -28,6 +30,16 @@ pub struct ProtocolConfig {
     /// 用户在高级页点「取消注册」时置 `false` —— 否则下次启动 `self_heal` 又把注册
     /// 写回去，「取消注册」变成一个点了没用的按钮。手动「注册」时置回 `true`。
     /// 便携版不看这个字段（恒不自愈），但仍如实记录，便于同一份配置在两种形态间迁移。
+    #[serde(default = "default_true")]
+    pub self_heal: bool,
+}
+
+/// `.wpkg` 文件关联的偏好。语义同 [`ProtocolConfig`]：注册表是事实（每次现读，见
+/// [`crate::file_assoc::current_registration`]），这里只记用户意愿。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileAssocConfig {
+    /// 允许启动时自愈 `.wpkg` 关联。「取消注册」置 `false`，手动「注册」置回 `true`，
+    /// 便携版不看这个字段（恒不自愈）。
     #[serde(default = "default_true")]
     pub self_heal: bool,
 }
@@ -89,11 +101,18 @@ impl Default for SettingConfig {
             update: UpdateConfig::default(),
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),
+            file_assoc: FileAssocConfig::default(),
         }
     }
 }
 
 impl Default for ProtocolConfig {
+    fn default() -> Self {
+        Self { self_heal: true }
+    }
+}
+
+impl Default for FileAssocConfig {
     fn default() -> Self {
         Self { self_heal: true }
     }
@@ -303,6 +322,23 @@ mod tests {
         assert!(!back.protocol.self_heal);
     }
 
+    /// `.wpkg` 关联的自愈门控与协议同规则：默认开（含缺段的旧文件）、
+    /// 用户的取消意愿跨重启存活。
+    #[test]
+    fn file_assoc_self_heal_defaults_on_and_survives_roundtrip() {
+        assert!(SettingConfig::default().file_assoc.self_heal);
+        let legacy: SettingConfig = toml::from_str("[ui]\n").expect("旧文件应能读入");
+        assert!(
+            legacy.file_assoc.self_heal,
+            "缺 [file_assoc] 段时须回到开启"
+        );
+        let mut cfg = SettingConfig::default();
+        cfg.file_assoc.self_heal = false;
+        let s = toml::to_string(&cfg).expect("序列化");
+        let back: SettingConfig = toml::from_str(&s).expect("反序列化");
+        assert!(!back.file_assoc.self_heal);
+    }
+
     #[test]
     fn default_config_keeps_theme_editor_disabled() {
         let cfg = SettingConfig::default();
@@ -407,6 +443,7 @@ mod tests {
             },
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),
+            file_assoc: FileAssocConfig::default(),
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: SettingConfig = toml::from_str(&text).unwrap();
@@ -426,6 +463,7 @@ mod tests {
             update: UpdateConfig::default(),
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),
+            file_assoc: FileAssocConfig::default(),
         };
         save_to_path(&config, &path).unwrap();
 

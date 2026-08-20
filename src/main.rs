@@ -11,6 +11,7 @@ mod cli;
 mod config;
 mod dialogs;
 mod dict_window;
+mod file_assoc;
 mod icons;
 mod key_conflict;
 mod logger;
@@ -21,6 +22,7 @@ mod mode;
 mod pages;
 mod protocol;
 mod rpc;
+mod schema_url_import;
 #[allow(dead_code)]
 mod setting_config;
 mod shell;
@@ -168,14 +170,19 @@ fn main() {
     }
 
     logger::init();
-    // 协议自愈有两道门：便携版不碰宿主机注册表，用户手动取消过注册的也不再写回去。
+    // 协议与 .wpkg 关联的自愈各有两道门：便携版不碰宿主机注册表，用户手动取消过
+    // 注册的也不再写回去（两条关联各记各的意愿，取消其一不影响另一条）。
     // 单读一次配置而不等 AppState 建好 —— 自愈要赶在窗口出现前完成，此刻 AppState
     // 还没开始拉 core 数据。判定本身是纯函数，见 protocol::should_self_heal_on_startup。
-    if protocol::should_self_heal_on_startup(
-        mode::is_portable(),
-        setting_config::load().config.protocol.self_heal,
-    ) {
-        protocol::self_heal_registration();
+    {
+        let sc = setting_config::load().config;
+        let portable = mode::is_portable();
+        if protocol::should_self_heal_on_startup(portable, sc.protocol.self_heal) {
+            protocol::self_heal_registration();
+        }
+        if protocol::should_self_heal_on_startup(portable, sc.file_assoc.self_heal) {
+            file_assoc::self_heal_registration();
+        }
     }
 
     // 快捷加词小窗：独立单例、紧凑窗，复用词库加词对话框；不落入常规设置界面路径。
@@ -237,34 +244,7 @@ fn main() {
         }
     );
 
-    // 单实例 + 二次运行激活/切页/协议。
-    let app_id = single_instance_app_id(false);
-    let single_instance_state = app_state.clone();
     let mut app = App::new("清风输入法设置", MAIN_W, MAIN_H)
-        .single_instance(app_id, move |argv| {
-            // 深链失效（点了"词库管理"却停在原页）时，这条是唯一能分辨「argv 没送到」
-            // 与「送到了但解析不出页」的证据。两种成因的修法完全不同，值一条 info。
-            tracing::info!("二次实例 argv: {:?}", argv.get(1..).unwrap_or(&[]));
-            if let Some(raw) = cli::parse_protocol(&argv) {
-                route_protocol(&raw, &single_instance_state);
-            } else if let Some(idx) = cli::parse_target(&argv) {
-                let st = single_instance_state.borrow();
-                // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
-                // 头几十毫秒数据还没回来，route_dict_target 会自动改为挂起。
-                if let Some(t) = cli::parse_dict_target(&argv) {
-                    st.route_dict_target(t);
-                }
-                // notify = true：本回调没有 ctx、开不了窗（见 `UiRequest`），要经通道推一帧。
-                // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
-                route_target(&st, idx, true);
-                // 主窗已经关掉（词库窗还开着、进程因此活着）时，windui 只会去 activate
-                // 一个不存在的窗口，用户看到的是「点了设置没反应」。这里补一次重建。
-                // 主窗还在的话什么都不用做——单实例监听自己会把它拉到前台。
-                if st.main_window_closed.get() {
-                    st.request_main_window();
-                }
-            }
-        })
         .frameless()
         .centered()
         .renderer(renderer)
@@ -273,6 +253,53 @@ fn main() {
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
     *app_state.borrow().theme_handle.borrow_mut() = Some(th.clone());
+
+    // 导入意图（`--page import` 深链 / `.wpkg` 文件关联双击）统一经此通道到 UI 线程：
+    // 读剪贴板要 `EventCtx`，只有 channel 回调拿得到；channel 靠出帧排空，冷启动在
+    // 首帧执行，正好也保证了 UI 树已就绪。冷启动与二次唤起同一条路，行为不会分叉。
+    let import_action_state = app_state.clone();
+    let import_tx = app.channel::<ImportAction>(move |ctx, act| {
+        run_import_action(ctx, act, &import_action_state);
+    });
+
+    // 冷启动的导入意图：解析在此，执行在首帧（见上）。
+    if cli::parse_import_request(&args) {
+        let _ = import_tx.send(ImportAction::ClipboardDialog);
+    } else if let Some(p) = cli::parse_import_file(&args) {
+        let _ = import_tx.send(ImportAction::File(p));
+    }
+
+    // 单实例 + 二次运行激活/切页/协议/导入。
+    let app_id = single_instance_app_id(false);
+    let single_instance_state = app_state.clone();
+    let mut app = app.single_instance(app_id, move |argv| {
+        // 深链失效（点了"词库管理"却停在原页）时，这条是唯一能分辨「argv 没送到」
+        // 与「送到了但解析不出页」的证据。两种成因的修法完全不同，值一条 info。
+        tracing::info!("二次实例 argv: {:?}", argv.get(1..).unwrap_or(&[]));
+        if let Some(raw) = cli::parse_protocol(&argv) {
+            route_protocol(&raw, &single_instance_state);
+        } else if cli::parse_import_request(&argv) {
+            let _ = import_tx.send(ImportAction::ClipboardDialog);
+        } else if let Some(p) = cli::parse_import_file(&argv) {
+            let _ = import_tx.send(ImportAction::File(p));
+        } else if let Some(idx) = cli::parse_target(&argv) {
+            let st = single_instance_state.borrow();
+            // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
+            // 头几十毫秒数据还没回来，route_dict_target 会自动改为挂起。
+            if let Some(t) = cli::parse_dict_target(&argv) {
+                st.route_dict_target(t);
+            }
+            // notify = true：本回调没有 ctx、开不了窗（见 `UiRequest`），要经通道推一帧。
+            // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
+            route_target(&st, idx, true);
+            // 主窗已经关掉（词库窗还开着、进程因此活着）时，windui 只会去 activate
+            // 一个不存在的窗口，用户看到的是「点了设置没反应」。这里补一次重建。
+            // 主窗还在的话什么都不用做——单实例监听自己会把它拉到前台。
+            if st.main_window_closed.get() {
+                st.request_main_window();
+            }
+        }
+    });
 
     // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
     let app_state_cb = app_state.clone();
@@ -402,18 +429,59 @@ fn main() {
         .run();
 }
 
-/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框，
-/// 其它 kind 提示暂不支持。反馈走 feedback（toast）——底栏只剩状态点，没有常驻文字位。
+/// UI 就绪后才能执行的导入动作（解析在 argv 侧，执行在首帧的 channel 回调里）。
+enum ImportAction {
+    /// `--page import` 深链：切高级页 + 弹「导入配置」+ 读一次剪贴板。
+    ClipboardDialog,
+    /// `.wpkg` 文件关联双击：走统一分派器进方案包导入确认。
+    File(std::path::PathBuf),
+}
+
+/// 导入动作统一落点（冷启动与二次唤起同路）。
+///
+/// 文件分支不切页：方案包导入确认对话框挂在根上（全窗模态），与当前页无关；
+/// 剪贴板分支切到高级页 —— 「导入配置」对话框关掉后用户应落在它的入口所在页。
+fn run_import_action(
+    ctx: &mut windui::core::EventCtx,
+    act: ImportAction,
+    state: &Rc<RefCell<state::AppState>>,
+) {
+    let st = state.borrow();
+    match act {
+        ImportAction::ClipboardDialog => {
+            if let Some(idx) = cli::page_to_index("advanced") {
+                st.tab.set(idx);
+            }
+            st.config_import.open();
+            st.config_import.read_clipboard(ctx);
+        }
+        ImportAction::File(p) => {
+            pages::config_import::dispatch_import_path(&st.config_import, &st.schema_mgr, p);
+        }
+    }
+}
+
+/// 协议 URL 路由：解析 → 切到相关页；主题导入暂存到待确认状态并弹出导入对话框；
+/// 方案包（schema）仅接受官方域，下载到临时文件后复用 schema_manager 既有的导入
+/// 确认对话框；其余 kind 提示暂不支持。反馈走 feedback（toast）——底栏只剩状态点，
+/// 没有常驻文字位。
 fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
     match protocol::parse_protocol_url(raw) {
         Ok(req) => {
             let st = state.borrow();
-            // 只有主题导入有页可切（外观页）。其余 kind 一律只弹一句"暂不支持"，**不切页**：
-            // 此前它们被送到索引 4（词库），而词库现在是主窗里一格永不显示的占位，切过去
-            // 就是一屏空白 —— 用户点了个导入链接，设置窗跳出来却什么都没有。
-            if req.kind == "theme"
-                && let Some(i) = cli::page_to_index("ui")
-            {
+            // 切到**这类导入的落点页**，让用户看得见接下来要确认的东西：主题导入的对话框
+            // 属于外观页、方案包导入的确认框属于方案页。不认识的 kind 不切页——只弹一句
+            // "暂不支持"，把用户留在原处。
+            //
+            // 此前这里是"theme 去 3、其余一律去 4"的两档粗分，schema 落到 4 纯属遗留：
+            // 4 是词库，与方案包导入毫无关系；而词库现在已迁出主窗、那一格是永不显示的
+            // 占位，再送过去就是一屏空白——用户点了个导入链接，设置窗跳出来却什么都没有。
+            let target_page = match req.kind.as_str() {
+                "theme" => cli::page_to_index("ui"),
+                "schema" => cli::page_to_index("schema"),
+                _ => None,
+            };
+            if let Some(i) = target_page {
                 st.tab.set(i);
             }
             tracing::info!(
@@ -429,6 +497,24 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                     ToastKind::Info,
                     "收到主题导入请求，请确认来源后导入".to_string(),
                 )));
+            } else if req.kind == "schema" {
+                st.clear_pending_theme_import();
+                st.theme_import_dialog_visible.set(false);
+                // 白名单在下载前校验（域名不对不发请求）；临时文件的清理不在这里做——
+                // 确认对话框是异步的，文件要活到用户确认导入之后，固定文件名 + 系统
+                // 临时目录，下次下载覆盖、其余交给系统清理（见 schema_url_import）。
+                match schema_url_import::download_schema_package(&req.url) {
+                    Ok(path) => match rpc::call_core(
+                        "scheme.previewImport",
+                        &serde_json::json!({ "path": path.to_string_lossy() }),
+                    ) {
+                        Ok(v) => st.schema_mgr.open_import_confirm(path, &v),
+                        Err(e) => st
+                            .feedback
+                            .set(Some((ToastKind::Error, format!("读取方案包失败：{e}")))),
+                    },
+                    Err(e) => st.feedback.set(Some((ToastKind::Error, e))),
+                }
             } else {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
@@ -487,7 +573,7 @@ mod tests {
             &state,
         );
         route_protocol(
-            "windinput://import/schema?url=https%3A%2F%2Fexample.com%2Fschema.yaml&name=Schema",
+            "windinput://import/dict?url=https%3A%2F%2Fexample.com%2Fdict.zip&name=Dict",
             &state,
         );
 
@@ -500,8 +586,29 @@ mod tests {
         assert!(!st.theme_import_dialog_visible.get());
         assert_eq!(
             st.feedback.get(),
-            Some((ToastKind::Info, "暂不支持通过协议导入 schema".to_string()))
+            Some((ToastKind::Info, "暂不支持通过协议导入 dict".to_string()))
         );
+    }
+
+    /// schema kind 已接通，但只认官方域：非白名单域在**发出任何网络请求之前**
+    /// 被拒并 toast（本测试因此不需要网络）。
+    #[test]
+    fn route_protocol_schema_rejects_non_official_domain() {
+        let state = Rc::new(RefCell::new(state::AppState::empty()));
+
+        route_protocol(
+            "windinput://import/schema?url=https%3A%2F%2Fexample.com%2Fpkg.zip&name=Pkg",
+            &state,
+        );
+
+        let st = state.borrow();
+        // 方案包导入的确认框属于**方案页**，不是词库（旧代码 "theme=3、其余=4" 的两档
+        // 粗分让它落在了 4，那是词库，与方案包毫无关系）。
+        assert_eq!(st.tab.get(), crate::cli::page_to_index("schema").unwrap());
+        assert!(!st.theme_import_dialog_visible.get());
+        let (kind, msg) = st.feedback.get().expect("应有反馈");
+        assert_eq!(kind, ToastKind::Error);
+        assert!(msg.contains("官方域名"), "{msg}");
     }
 
     #[test]

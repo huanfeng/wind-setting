@@ -94,7 +94,7 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     if std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1") {
-        return Ok(mock_reply(method, params));
+        return mock_result(method, params);
     }
     let endpoint = ctrl_endpoint();
     let t = std::time::Instant::now();
@@ -261,6 +261,11 @@ mod tests {
     // 测试遮蔽：旧用例只传 method；转调真实双参实现。
     fn mock_reply(method: &str) -> Value {
         super::mock_reply(method, &json!({}))
+    }
+
+    /// 带 params 的 mock 取值（部分应答按请求内容分形，见 `mock_wants_long_info`）。
+    fn mock_reply_with(method: &str, params: &Value) -> Value {
+        super::mock_reply(method, params)
     }
 
     #[test]
@@ -520,6 +525,160 @@ mod tests {
         let arr = list.as_array().unwrap();
         assert!(arr.iter().any(|p| p.get("isSystem") == Some(&json!(true))));
         assert!(arr.iter().any(|p| p.get("isSystem") == Some(&json!(false))));
+    }
+
+    /// mock 的配置片段导入形状须与 core 契约一致：previewPatch 每条含 key/next
+    /// （current 可缺席=未设置，合法条目无 error）；applyPatch 含 ok/applied/needsRestart。
+    #[test]
+    fn mock_config_patch_shapes() {
+        let p = mock_reply("config.previewPatch");
+        assert_eq!(p.get("ok"), Some(&json!(true)));
+        let entries = p
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .expect("entries 数组");
+        assert!(!entries.is_empty());
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.get("key").is_some() && e.get("next").is_some())
+        );
+        assert!(
+            entries.iter().all(|e| e.get("error").is_none()),
+            "合法条目不带 error"
+        );
+
+        // Map 键的条目行：key = 父键、mapEntry = 条目名（条目名不并进点分键）。
+        let map_row = entries
+            .iter()
+            .find(|e| e.get("key") == Some(&json!("keys.key_actions")))
+            .expect("样例应含一条 Map 条目");
+        assert_eq!(map_row.get("mapEntry"), Some(&json!("backtick")));
+
+        let a = mock_reply("config.applyPatch");
+        assert_eq!(a.get("ok"), Some(&json!(true)));
+        assert!(a.get("applied").and_then(|v| v.as_u64()).is_some());
+        assert!(a.get("needsRestart").and_then(|v| v.as_bool()).is_some());
+        // written = 落盘后的最终键值；Map 父键带合并后的整表（不止片段里那一条）。
+        let written = a
+            .get("written")
+            .and_then(|v| v.as_array())
+            .expect("written 数组");
+        assert!(
+            written
+                .iter()
+                .all(|w| w.get("key").is_some() && w.get("value").is_some())
+        );
+        let map_written = written
+            .iter()
+            .find(|w| w.get("key") == Some(&json!("keys.key_actions")))
+            .and_then(|w| w.get("value"))
+            .and_then(|v| v.as_object())
+            .expect("Map 父键的 written 值应是整表");
+        assert!(
+            map_written.len() > 1,
+            "Map 父键必须带合并后的整表（含片段未提及的既有条目），实际: {map_written:?}"
+        );
+    }
+
+    /// 说明元信息（§2.3）的 mock 形状，三件事：
+    ///
+    /// ① **有说明 / 无说明两形都在**——信封样例带说明，纯方案包（`scheme.previewImport`）
+    ///    不带，后者是「区块整块不占位」那条路离线唯一能走到的样例；
+    /// ② 同一个信封响应里，**包级说明与 `configPatch.info` 取值不同**——写成同源的话，
+    ///    UI 把两级合并、或某一处串了源，离线怎么点都看不出来；
+    /// ③ 文本带 `mock_long_info` 记号时说明撑到 core 限额上限（title 200 /
+    ///    description 4000 字符），供显示封顶的离线核对。样例说明都是两三行的短文本，
+    ///    光靠它们测不出封顶有没有生效。
+    #[test]
+    fn mock_package_info_shapes() {
+        let s = |v: &Value, p: &str| {
+            v.pointer(p)
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        // 片段：previewPatch 带 info。
+        let p = mock_reply("config.previewPatch");
+        assert!(!s(&p, "/info/title").is_empty());
+        assert!(!s(&p, "/info/description").is_empty());
+
+        // 纯方案包：无说明形（顶层两字段都缺席）。
+        let zip = mock_reply("scheme.previewImport");
+        assert!(zip.get("title").is_none() && zip.get("description").is_none());
+
+        // 信封：两级都在，且四个值互不相同。
+        let env = super::mock_result(
+            "scheme.previewImportText",
+            &json!({ "text": "kind = \"schema_text\"" }),
+        )
+        .expect("信封应预览成功");
+        let vals = [
+            s(&env, "/title"),
+            s(&env, "/description"),
+            s(&env, "/configPatch/info/title"),
+            s(&env, "/configPatch/info/description"),
+        ];
+        assert!(
+            vals.iter().all(|v| !v.is_empty()),
+            "两级说明都要给: {vals:?}"
+        );
+        for (i, a) in vals.iter().enumerate() {
+            for b in &vals[i + 1..] {
+                assert_ne!(a, b, "两级说明取值必须互不相同，否则测不出串源");
+            }
+        }
+
+        // 限额上限形：记号在片段文本里，两法都要认。
+        let long = mock_reply_with(
+            "config.previewPatch",
+            &json!({ "text": "# mock_long_info\n" }),
+        );
+        assert_eq!(s(&long, "/info/title").chars().count(), 200);
+        assert_eq!(s(&long, "/info/description").chars().count(), 4000);
+        let long_env = mock_reply_with(
+            "scheme.previewImportText",
+            &json!({ "text": "kind = \"schema_text\"\n# mock_long_info\n" }),
+        );
+        assert_eq!(s(&long_env, "/description").chars().count(), 4000);
+        assert_eq!(
+            s(&long_env, "/configPatch/info/description")
+                .chars()
+                .count(),
+            4000
+        );
+    }
+
+    /// 文本信封两法：内容是信封才成功，否则回 `not_schema_text:` 前缀的错误——
+    /// 统一导入通路靠这个前缀回落片段管线，mock 只 Ok 的话离线走不到片段那一支。
+    #[test]
+    fn mock_schema_text_envelope_detection() {
+        let envelope = "[package]\nformat_version = 2\nkind = \"schema_text\"\n";
+        let fragment = "[ui.candidate]\nper_page = 9\n";
+
+        let err = super::mock_result("scheme.previewImportText", &json!({ "text": fragment }))
+            .expect_err("片段不是信封");
+        assert!(
+            err.starts_with(crate::pages::config_import::NOT_SCHEMA_TEXT_PREFIX),
+            "回落判据是前缀，实际: {err}"
+        );
+
+        let v = super::mock_result("scheme.previewImportText", &json!({ "text": envelope }))
+            .expect("信封应预览成功");
+        assert!(v.get("willAdd").is_some(), "形状须与 previewImport 一致");
+        assert!(
+            v.pointer("/configPatch/entries")
+                .and_then(|e| e.as_array())
+                .is_some_and(|a| !a.is_empty()),
+            "样例信封应带 configPatch，否则离线核对不到「将修改的配置」区块"
+        );
+
+        let imported = super::mock_result("scheme.importText", &json!({ "text": envelope }))
+            .expect("信封应导入成功");
+        assert!(imported.get("imported").is_some());
+        // 单引号写法同样算信封（生成端可自选 TOML 引法）。
+        assert!(super::mock_is_schema_text("kind = 'schema_text'"));
     }
 
     #[test]
@@ -884,6 +1043,87 @@ fn mock_word_code(text: &str) -> String {
         .collect()
 }
 
+/// Mock 模式的完整结果：**先判错再取值**。
+///
+/// 没有这一层的话 mock 只会 `Ok`，而统一导入通路恰恰靠「`scheme.previewImportText`
+/// 报 `not_schema_text:`」来回落片段管线——离线模式下每段文本都会被当成方案信封，
+/// 片段导入整条路走不到。
+fn mock_result(method: &str, params: &Value) -> Result<Value, String> {
+    #[cfg(test)]
+    MOCK_CALLS.with(|c| c.borrow_mut().push((method.to_string(), params.clone())));
+    match mock_error(method, params) {
+        Some(e) => Err(e),
+        None => Ok(mock_reply(method, params)),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Mock 模式下按序记录每次调用的 (method, params)。
+    ///
+    /// 返回值对不对是一回事，**请求里少个字段**是另一回事——后者只有接上真实 core
+    /// 才会暴露，本地怎么点都是绿的。多步编排（导入两法 + applyPatch）尤其需要锁住
+    /// 发出去的参数形状与先后顺序。mock 分支不 spawn 线程，与调用方同线程，故
+    /// thread_local 够用。
+    static MOCK_CALLS: std::cell::RefCell<Vec<(String, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 取走并清空本线程记录的 mock 调用（取走语义：便于「清场 → 触发 → 断言」）。
+#[cfg(test)]
+pub(crate) fn take_mock_calls() -> Vec<(String, Value)> {
+    MOCK_CALLS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// mock 侧会「失败」的调用。目前只有文本信封两法：内容不是信封时按跨仓契约回
+/// `not_schema_text:` 前缀的错误（见 `package-format.md` §3.4）。
+fn mock_error(method: &str, params: &Value) -> Option<String> {
+    match method {
+        "scheme.previewImportText" | "scheme.importText" => {
+            let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            (!mock_is_schema_text(text))
+                .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// mock 的信封判定：只看 `kind` 是否声明为 `schema_text`（真实解析在 core 侧，
+/// 这里只需分出「信封 / 不是信封」两支供离线走通两条通路）。
+fn mock_is_schema_text(text: &str) -> bool {
+    text.contains("kind = \"schema_text\"") || text.contains("kind = 'schema_text'")
+}
+
+/// 导入文本里带这个记号时，mock 把说明（§2.3）撑到 core 限额上限。
+///
+/// 说明是分发者提供的任意文本，`description` 限额 4000 字符——足以把对话框顶出
+/// 屏幕。样例说明都是两三行的短文本，光靠它们离线怎么点都看不出封顶有没有生效。
+const MOCK_LONG_INFO_MARK: &str = "mock_long_info";
+
+fn mock_wants_long_info(params: &Value) -> bool {
+    params
+        .get("text")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t.contains(MOCK_LONG_INFO_MARK))
+}
+
+/// core 限额上限的说明：title 恰 200 字符、description 恰 4000 字符。
+fn mock_limit_info() -> Value {
+    let title: String = "分发者可以把标题一直写到限额上限而不报错，"
+        .chars()
+        .cycle()
+        .take(200)
+        .collect();
+    let mut desc = String::new();
+    let mut i = 1;
+    while desc.chars().count() < 4000 {
+        desc.push_str(&format!("第 {i} 行说明：分发者提供的任意文本。\n"));
+        i += 1;
+    }
+    let description: String = desc.chars().take(4000).collect();
+    json!({ "title": title, "description": description })
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1120,6 +1360,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "scheme.exportPackage" => {
             json!({ "path": "C:/tmp/demo.zip", "packed": ["demo.schema.toml"], "systemRefs": [], "missing": [] })
         }
+        // 无 `title` / `description`：**无说明形**（旧包 / 生成端没填），确认对话框
+        // 顶部整块不占位。有说明形由下面的信封样例覆盖。
         "scheme.previewImport" => json!({
             "package": {
                 "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-07-13T00:00:00+08:00" },
@@ -1131,12 +1373,85 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "scheme.importPackage" => {
             json!({ "imported": ["demo.schema.toml"], "conflicts": [], "schemaIds": ["demo"] })
         }
+        // 文本信封（§3.4）。响应形状与 zip 两法一致；这里刻意带上 configPatch，
+        // 让「将修改的配置」区块（含 Map 条目显示键）离线也能核对。
+        //
+        // 说明（§2.3）刻意给**两级且取值不同**：顶层 title/description 是包级说明，
+        // configPatch.info 是那段片段自己的说明。取一样的值就分不清 UI 是各显各的
+        // 还是有一处串了源——两级说的不是同一件事，合并即错。
+        "scheme.previewImportText" => {
+            let mut v = json!({
+                "package": {
+                    "package": { "app_version": "0.0.0", "platform": "windows", "created_at": "2026-08-19T00:00:00+08:00" },
+                    "schema": { "id": "kf", "version": "1.00.0" },
+                    "refs": { "system": [], "missing": [] }
+                },
+                "title": "快符方案",
+                "description": "分号引导的符号表，含常用标点与配对符号。\n随包附带一份按键功能配置。",
+                "willAdd": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "systemRefs": [], "missing": [],
+                "configPatch": {
+                    "text": "[keys.key_actions]\nbacktick = \"quick_input\"\n",
+                    "ok": true,
+                    "entries": [
+                        { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                    ],
+                    "info": {
+                        "title": "快符引导键",
+                        "description": "把反引号设为快捷输入引导键。"
+                    }
+                }
+            });
+            if mock_wants_long_info(params) {
+                v["configPatch"]["info"] = mock_limit_info();
+                v["title"] = mock_limit_info()["title"].clone();
+                v["description"] = mock_limit_info()["description"].clone();
+            }
+            v
+        }
+        "scheme.importText" => {
+            json!({ "imported": ["kf.schema.toml", "flypy/12_kf.dict.yaml"], "conflicts": [], "schemaIds": ["kf"] })
+        }
         // 删除方案:级联清理结果(deleted/keptShared 供 toast 汇总)。
         "schema.delete" => json!({
             "ok": true,
             "deleted": ["demo.schema.toml", "demo/d.dict.yaml"],
             "keptShared": [],
             "schemaIds": ["demo"]
+        }),
+        // 配置片段导入（core 契约：previewPatch 只读逐条校验，current 缺席=未设置；
+        // applyPatch 全部合法才落盘，逐键错误时整体为 RPC error）。
+        // Map 键（key_actions）刻意给一条：预览逐**条目**报告、显示键为
+        // `父键[条目名]`，且 written 回传的是合并后的整表（§2.2 / §2.3）。
+        // `info` = 片段 `[package]` 段的说明（§2.3）；两字段都缺省时 core 不发它，
+        // 那一形由 `scheme.previewImport`（纯方案包，无说明）覆盖。
+        "config.previewPatch" => {
+            let mut v = json!({
+                "ok": true,
+                "entries": [
+                    { "key": "ui.candidate.per_page", "current": 5, "next": 9 },
+                    { "key": "input.initial_mode", "next": "chinese" },
+                    { "key": "keys.key_actions", "mapEntry": "backtick", "next": "quick_input" }
+                ],
+                "info": {
+                    "title": "九候选 + 默认中文",
+                    "description": "把候选栏调成每页九个，并把启动模式设为中文。\n反引号设为快捷输入引导键。"
+                }
+            });
+            if mock_wants_long_info(params) {
+                v["info"] = mock_limit_info();
+            }
+            v
+        }
+        // written = 落盘后的最终键值：Map 父键带的是合并结果整表（片段只写了
+        // backtick，semicolon 是用户原有条目），客户端拼不出来，必须由 core 回传。
+        "config.applyPatch" => json!({
+            "ok": true, "applied": 3, "needsRestart": false,
+            "written": [
+                { "key": "ui.candidate.per_page", "value": 9 },
+                { "key": "input.initial_mode", "value": "chinese" },
+                { "key": "keys.key_actions",
+                  "value": { "semicolon": "temp_pinyin", "backtick": "quick_input" } }
+            ]
         }),
         // 整机备份（P4 契约）。
         "backup.create" | "backup.inspect" => json!({
