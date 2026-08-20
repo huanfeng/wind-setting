@@ -18,11 +18,12 @@
 //! 2. **`content` 闭包里创建的 `Signal` 归本窗所有，关窗即回收**。故闭包内新建的信号
 //!    绝不能存回长命的 [`DictManagerState`]（它活在 `AppState` 里），否则关窗后就是一个
 //!    悬垂句柄，下次开窗读到的是别人的槽位。窗内只读写既有信号。
-//! 3. **主窗关闭必须连带关掉本窗**，见 [`crate::state::AppState::app_closing`]。
+//! 3. **本窗独立于主窗存活**：主窗关掉后它照常工作（写操作全是同步 RPC），此时由它
+//!    接手排空 App 级通道，使「再点一次设置」还能开出主窗。见 [`open`] 与
+//!    [`crate::state::AppState::main_window_closed`]。
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use windui::core::EventCtx;
 use windui::prelude::*;
@@ -44,20 +45,21 @@ const WIN_H: i32 = 720;
 const MIN_W: i32 = 860;
 const MIN_H: i32 = 560;
 
-/// 主窗关闭哨兵的轮询间隔。平台定时器，间隔内零 CPU；随本窗关闭自动停止。
-const CLOSE_SENTINEL_TICK: Duration = Duration::from_millis(250);
-
 /// 打开词库管理窗。已经开着时由 `single` 激活既有窗口，本次请求被丢弃。
 ///
 /// 无论开新窗还是激活既有窗都会触发一次 [`DictManagerState::reload`]：`dict_mgr` 活在
 /// `AppState` 里、比窗口长命，重开窗会原样显示上次留下的 `table_rows`，而这中间 core
 /// 侧完全可能已经变了（用户在别处加过词、导入过词库）—— 不刷新就是一屏看起来权威的
 /// 陈旧数据。
+///
+/// **本窗不随主窗关闭而关闭**，是有意的：它的写操作全是同步 RPC（`call_core` 自己起
+/// 线程 + 超时等待），一条都不依赖主窗；core 也还在后台跑着。主窗只是「设置界面」，
+/// 关掉它没有理由连带关掉一个正在用的词库管理器。
+///
+/// 这条能成立的前提是 windui 把 `App::channel` 的通道挂到了 App 级：主窗关闭后通道仍
+/// 活着，由还在出帧的窗口（也就是本窗）接手排空，「再点一次设置」才能重新开出主窗。
 pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
-    let (mgr, app_closing) = {
-        let st = app.borrow();
-        (st.dict_mgr.clone(), st.app_closing)
-    };
+    let mgr = app.borrow().dict_mgr.clone();
     mgr.reload();
 
     ctx.open_window(
@@ -66,13 +68,6 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
             .frameless(true)
             .centered(true)
             .min_size(MIN_W, MIN_H)
-            // 主窗退出哨兵。见 `AppState::app_closing`：windui 没有「关别的窗口」的 API，
-            // 只能让子窗自己盯着一个共享信号退场。
-            .on_interval(CLOSE_SENTINEL_TICK, move |ctx| {
-                if app_closing.get() {
-                    ctx.request_close();
-                }
-            })
             .content(move || build_content(mgr)),
     );
 }

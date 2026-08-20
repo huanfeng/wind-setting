@@ -577,7 +577,7 @@ fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                         .on_click(move |ctx| {
                             visible.set(false);
                             // 走 close_window 而非裸 force_close：退出置位收在那里，
-                            // 漏掉这一条就会留下一个关不掉的词库窗（见 mark_app_exiting）。
+                            // 漏掉这一条，二次实例会误判主窗还在（见 mark_main_window_closed）。
                             app_quit.borrow().close_window(ctx);
                         }),
                 )

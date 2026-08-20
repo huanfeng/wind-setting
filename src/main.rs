@@ -38,6 +38,7 @@ mod widgets;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use windui::core::EventCtx;
 use windui::prelude::*;
 
 /// 没有 `EventCtx` 的回调（`single_instance` 的 argv 处理）送往 UI 线程的请求。
@@ -48,6 +49,66 @@ use windui::prelude::*;
 pub enum UiRequest {
     /// 打开词库管理窗（实际开不开取决于 `take_dict_window_request`）。
     OpenDictWindow,
+    /// 重新开出主窗（主窗已关、词库窗还开着时点「设置」）。
+    OpenMainWindow,
+}
+
+/// 主窗尺寸。`App::new` 与重建路径共用，免得两处各写一份、改一边漏一边。
+const MAIN_W: i32 = 820;
+const MAIN_H: i32 = 640;
+const MAIN_MIN_W: i32 = 560;
+const MAIN_MIN_H: i32 = 440;
+
+/// 重新开出主窗。
+///
+/// 主窗关掉后进程并不退出——词库窗还开着的话它照常活着（windui 是「关掉最后一个窗口
+/// 才退出」）。此时用户再点「设置」，单实例监听（独立的 message-only 窗口，不随主窗死）
+/// 会收到 argv，但 windui 只会去 activate 那个已经不存在的主窗，什么都不会发生。
+/// 于是这里重新建一个。
+///
+/// 重建出来的是子窗，与 `App::run` 建的那个有一处**实质差别**：它不能注册 `App::channel`
+/// （通道只在建窗前可注册）。但通道本身挂在 App 级、并没有随主窗一起死，原先注册的三条
+/// （数据加载 / core 事件 / 升级）照常有人排空——重建后仍然收得到。
+///
+/// `single("main")` 挡住重复重建；首个主窗由 `App` 建、不带这个键，故只在它确实关掉之后
+/// 才会走到这里（判据是 `main_window_closed`）。
+fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
+    let th = match app.borrow().theme_handle.borrow().clone() {
+        Some(h) => h,
+        // 建窗前必然已注入（见 main 里 `set_theme_handle`）。真取不到就只能放弃重建，
+        // 硬造一个新句柄会让这个窗口与其余窗口的换肤脱钩。
+        None => {
+            tracing::error!("主窗重建失败：换肤句柄缺失");
+            return;
+        }
+    };
+    let st = app.clone();
+    let guard = app.clone();
+    // 重建即视为主窗回来了：这一步要赶在 content 求值之前，否则窗口已经在了、
+    // 标志还写着"已关闭"，下一次二次实例会再重建一个。
+    app.borrow().main_window_closed.set(false);
+    ctx.open_window(
+        Window::new("清风输入法设置", MAIN_W, MAIN_H)
+            .single("main")
+            .frameless(true)
+            .centered(true)
+            .min_size(MAIN_MIN_W, MAIN_MIN_H)
+            // 与 `App::on_close_request` 同一套守卫：有未保存改动就拦下弹确认框。
+            // 子窗的拦截器必须自己挂——平台在 WM_CLOSE 里同步问的是「**这个**窗口能不能关」，
+            // 主窗那份不代管子窗。
+            .on_close_request(move |_ctx| {
+                let Ok(s) = guard.try_borrow() else {
+                    return true;
+                };
+                if !s.has_unsaved_changes() {
+                    s.mark_main_window_closed();
+                    return true;
+                }
+                s.exit_confirm.set(true);
+                false
+            })
+            .content(move || shell::build(&st, th)),
+    );
 }
 
 /// 把 `--page` / `--tab` 解出的目标下标分派到「切页」或「开词库窗」。
@@ -179,7 +240,7 @@ fn main() {
     // 单实例 + 二次运行激活/切页/协议。
     let app_id = single_instance_app_id(false);
     let single_instance_state = app_state.clone();
-    let mut app = App::new("清风输入法设置", 820, 640)
+    let mut app = App::new("清风输入法设置", MAIN_W, MAIN_H)
         .single_instance(app_id, move |argv| {
             // 深链失效（点了"词库管理"却停在原页）时，这条是唯一能分辨「argv 没送到」
             // 与「送到了但解析不出页」的证据。两种成因的修法完全不同，值一条 info。
@@ -196,14 +257,22 @@ fn main() {
                 // notify = true：本回调没有 ctx、开不了窗（见 `UiRequest`），要经通道推一帧。
                 // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
                 route_target(&st, idx, true);
+                // 主窗已经关掉（词库窗还开着、进程因此活着）时，windui 只会去 activate
+                // 一个不存在的窗口，用户看到的是「点了设置没反应」。这里补一次重建。
+                // 主窗还在的话什么都不用做——单实例监听自己会把它拉到前台。
+                if st.main_window_closed.get() {
+                    st.request_main_window();
+                }
             }
         })
         .frameless()
         .centered()
         .renderer(renderer)
-        .min_size(560, 440)
+        .min_size(MAIN_MIN_W, MAIN_MIN_H)
         .theme(theme_def::theme_for(start_dark));
     let th = app.theme_handle();
+    // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
+    *app_state.borrow().theme_handle.borrow_mut() = Some(th.clone());
 
     // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
     let app_state_cb = app_state.clone();
@@ -256,6 +325,11 @@ fn main() {
         UiRequest::OpenDictWindow => {
             if ui_state.borrow().take_dict_window_request() {
                 dict_window::open(ctx, &ui_state);
+            }
+        }
+        UiRequest::OpenMainWindow => {
+            if ui_state.borrow().take_main_window_request() {
+                open_main_window(ctx, &ui_state);
             }
         }
     });
@@ -314,7 +388,7 @@ fn main() {
             // 放行的这一刻才宣告退出：词库子窗的哨兵据此自行关闭（windui 没有"关别的
             // 窗口"的 API）。置位必须在**放行分支**里 —— 下面那条是拦下、应用并没有要退出，
             // 在那里置位会让用户点了取消之后词库窗自己消失。
-            st.mark_app_exiting();
+            st.mark_main_window_closed();
             return true;
         }
         st.exit_confirm.set(true);
@@ -490,14 +564,26 @@ mod tests {
         assert!(!st.take_dict_window_request());
     }
 
-    /// 退出置位默认关着 —— 否则词库窗一开出来就被哨兵关掉。
+    /// 「主窗已关闭」默认为假，置位后保持 —— 二次实例据此分辨该 activate 已有主窗
+    /// 还是重建一个。默认为真的话，第一次点设置就会平白多开一个主窗。
     #[test]
-    fn app_closing_starts_false_and_latches() {
+    fn main_window_closed_starts_false_and_latches() {
         let st = state::AppState::empty();
-        assert!(!st.app_closing.get());
+        assert!(!st.main_window_closed.get());
 
-        st.mark_app_exiting();
+        st.mark_main_window_closed();
 
-        assert!(st.app_closing.get());
+        assert!(st.main_window_closed.get());
+    }
+
+    /// 重开主窗的请求同样取一次即清，否则一次「点设置」会重建两个主窗。
+    #[test]
+    fn main_window_request_is_consumed_once() {
+        let st = state::AppState::empty();
+
+        st.request_main_window();
+
+        assert!(st.take_main_window_request());
+        assert!(!st.take_main_window_request(), "第二次取应为空");
     }
 }

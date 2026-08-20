@@ -213,19 +213,24 @@ pub struct AppState {
     /// 生效。命令行解析（冷启动）与 `single_instance` 回调（二次实例）都没有 ctx，故先
     /// 在此挂起，由带 ctx 的 channel 回调消费（见 `main` 的两个 channel）。
     pending_dict_window: Cell<bool>,
+    /// 待重开主窗（主窗已关闭时二次实例送来 argv）。同 `pending_dict_window`：开窗要
+    /// `EventCtx`，命令行/单实例回调都没有，故先挂起、由带 ctx 的通道回调消费。
+    pending_main_window: Cell<bool>,
     /// UI 请求通道：让**没有 ctx 的回调**（`single_instance` 的 argv 处理）能把
     /// 「该开词库窗了」送到一个有 ctx 的时机。`main()` 在 App 构建期注入一次。
     pub ui_tx: RefCell<Option<Sender<crate::UiRequest>>>,
-    /// 应用正在退出 —— 词库子窗的关闭哨兵据此自行 `request_close`。
+    /// 主窗是否已经关闭。**不影响词库窗**——它独立存活（见 [`crate::dict_window::open`]）。
     ///
-    /// windui 没有「关掉别的窗口」或「退出应用」的 API（`WindowOp` 只有最小化/最大化/
-    /// 显隐四个变体），而它又是「关掉最后一个窗口才退进程」。于是主窗关掉后子窗会独活，
-    /// 而 `App::channel` 的 pumps 随主窗 `UiHost` 一起销毁 —— core 事件订阅、升级通道、
-    /// 二次实例开窗全部失效，主窗也再没有任何途径能重新开出来，只剩一个词库窗僵在那里。
+    /// 用途只有一个：二次实例送来 argv 时，据此判断该「把已有主窗拉到前台」（windui 的
+    /// 单实例监听自己会做）还是「重新开一个主窗」。没有它就分不清这两种情形，而两者
+    /// 用户看到的差别是「设置窗跳出来」与「点了没反应」。
     ///
-    /// 故由主窗在**所有**退出路径上置位（见 [`Self::mark_app_exiting`]），子窗的
-    /// `on_interval` 哨兵轮询它。信号本身跨窗共享（`Signal` 是 `Copy` 句柄）。
-    pub app_closing: Signal<bool>,
+    /// 只在主窗真正关闭时置位，`on_close_request` 被拦下（有未保存改动）时不置——
+    /// 那次关闭取消了，主窗还在。
+    pub main_window_closed: Signal<bool>,
+    /// 运行期换肤句柄。重建主窗时 `shell::build` 要用它，而 `App::theme_handle()` 只在
+    /// 建窗前拿得到，故建好后存一份进来。
+    pub theme_handle: RefCell<Option<ThemeHandle>>,
     /// 待应用的词库页深链（`--page dict --schema .. --type ..`）。
     ///
     /// 冷启动解析命令行时方案列表尚未就绪（要等后台 RPC 回来才有），无从把 `--schema`
@@ -470,8 +475,10 @@ impl AppState {
             schema_mgr,
             dict_mgr: DictManagerState::new(),
             pending_dict_window: Cell::new(false),
+            pending_main_window: Cell::new(false),
             ui_tx: RefCell::new(None),
-            app_closing: signal(false),
+            main_window_closed: signal(false),
+            theme_handle: RefCell::new(None),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
             integration: crate::pages::integration::IntegrationState::new(),
@@ -1251,6 +1258,23 @@ impl AppState {
         self.pending_dict_window.replace(false)
     }
 
+    /// 请求重新开出主窗（主窗已关、二次实例又送来 argv 时）。
+    ///
+    /// 与 [`Self::request_dict_window`] 一样只置标志 + 推一帧：开窗要 `EventCtx`，而
+    /// `single_instance` 的回调没有。这条路在主窗已关的情况下仍然通——通道挂在 App 级，
+    /// 由还活着的词库窗接手排空。
+    pub fn request_main_window(&self) {
+        self.pending_main_window.set(true);
+        if let Some(tx) = self.ui_tx.borrow().clone() {
+            let _ = tx.send(crate::UiRequest::OpenMainWindow);
+        }
+    }
+
+    /// 取走「该开主窗了」这个请求（取一次即清）。
+    pub fn take_main_window_request(&self) -> bool {
+        self.pending_main_window.replace(false)
+    }
+
     /// 词库页深链统一入口：方案列表已就绪则立即定位，否则挂起等 [`Self::apply_loaded`] 消费。
     /// 冷启动（列表未就绪）与二次实例激活（已就绪）共用此入口，避免两条易走偏的路径。
     pub fn route_dict_target(&self, target: crate::cli::DictTarget) {
@@ -1507,25 +1531,26 @@ impl AppState {
     ///
     /// windui 0.12 的 `force_close` 正是为此而设，故本仓不再自备"已确认"标志位。
     ///
-    /// 顺带宣告应用退出（见 [`Self::mark_app_exiting`]）：本方法是应用内所有主动关窗的
-    /// 统一入口，置位收在这里就不必让每个调用点各记一次。
+    /// 顺带记下「主窗已关闭」（见 [`Self::mark_main_window_closed`]）：本方法是应用内
+    /// 所有主动关窗的统一入口，置位收在这里就不必让每个调用点各记一次。
     pub fn close_window(&self, ctx: &mut EventCtx) {
-        self.mark_app_exiting();
+        self.mark_main_window_closed();
         ctx.force_close();
     }
 
-    /// 宣告应用正在退出：词库子窗的哨兵读到后自行关闭，进程随最后一个窗口消亡。
+    /// 记下主窗已关闭。词库窗**不受影响**，照常存活。
     ///
-    /// ⚠️ 主窗退出**不止一条路**，漏掉哪条，那条路关掉主窗后就会留下一个僵着的词库窗
-    /// （详见 [`Self::app_closing`]）。已知两类，各自的置位点：
+    /// ⚠️ 主窗关闭**不止一条路**，漏掉哪条，那条路之后二次实例就会误判成「主窗还在」，
+    /// 于是只去 activate 一个已经不存在的窗口 —— 用户看到的是点了设置没反应。
+    /// 已知两类，各自的置位点：
     /// 1. 应用内的主动关窗（底栏与确认框的「保存并退出」、「直接退出」、连接失败后的
     ///    「退出」、升级的「立即安装」）—— 全部经 [`Self::close_window`]，置位收在那里；
     /// 2. 系统 ✕ / Alt+F4 —— 走 `App::on_close_request`，在**放行的那一刻**由 `main` 调
-    ///    本方法。不能在拦下时就置位：那次关闭被取消了，应用并没有要退出。
+    ///    本方法。不能在拦下时就置位：那次关闭被取消了，主窗还在。
     ///
     /// 第 1 类刻意绕过 `on_close_request`（见该处说明），所以把置位挂在守卫里覆盖不到它们。
-    pub fn mark_app_exiting(&self) {
-        self.app_closing.set(true);
+    pub fn mark_main_window_closed(&self) {
+        self.main_window_closed.set(true);
     }
 
     /// 是否有未保存的改动（关窗确认用）。
