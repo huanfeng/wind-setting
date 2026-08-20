@@ -24,6 +24,10 @@ const PROGID_KEY: &str = r"Software\Classes\WindInput.Package";
 /// 打开命令子键。
 #[cfg(windows)]
 const COMMAND_KEY: &str = r"Software\Classes\WindInput.Package\shell\open\command";
+/// 关联图标子键。缺它时资源管理器回落到打开命令那个 exe 的**主图标**——
+/// 于是 `.wpkg` 文件和设置程序长得一模一样，看图标分不出哪个是数据文件。
+#[cfg(windows)]
+const ICON_KEY: &str = r"Software\Classes\WindInput.Package\DefaultIcon";
 
 /// 纯判定：两跳读到的值 → 三态。抽出以便单测。
 ///
@@ -47,6 +51,15 @@ pub fn classify_assoc(
             _ => Registration::Other(format!("(ProgId: {p}，无打开命令)")),
         },
     }
+}
+
+/// `DefaultIcon` 的值：`"<exe路径>,-2"`。
+///
+/// **负号是关键**：正数按图标在资源表里的**位置序号**取（0 开始），会随资源顺序
+/// 变动而指错；负数按**资源 ID** 取，ID 由 build.rs 显式钉死（主图标 1、本图标 2）。
+/// 路径含空格时整体加引号，与打开命令同一处理。
+pub fn icon_value_for_exe(exe: &str) -> String {
+    format!("\"{exe}\",-2")
 }
 
 /// 读 HKCU 下某键的默认值。键不存在 / 值不存在都归 `None`。
@@ -97,6 +110,11 @@ pub fn register() -> Result<(), String> {
         .map_err(|e| format!("创建命令行项失败：{e}"))?;
     cmd.set_value("", &want)
         .map_err(|e| format!("写入命令行失败：{e}"))?;
+    let (icon, _) = hkcu
+        .create_subkey(ICON_KEY)
+        .map_err(|e| format!("创建图标项失败：{e}"))?;
+    icon.set_value("", &icon_value_for_exe(&exe.to_string_lossy()))
+        .map_err(|e| format!("写入关联图标失败：{e}"))?;
     let (ext, _) = hkcu
         .create_subkey(EXT_KEY)
         .map_err(|e| format!("创建扩展名项失败：{e}"))?;
@@ -245,6 +263,24 @@ mod tests {
         assert!(
             crate::protocol::is_stale_registration(desc, |p| std::path::Path::new(p).exists()),
             "无打开命令的关联唤不起任何程序，应按残留处理"
+        );
+    }
+
+    /// `DefaultIcon` 的值形状：引号包路径 + **负数**资源 ID。
+    ///
+    /// 负号钉死在这里：正数是按图标在资源表里的位置序号取，build.rs 里图标的
+    /// 添加顺序一变就指到主图标去了——那正是本功能要消除的「文件和程序同一个图标」。
+    #[test]
+    fn icon_value_uses_negative_resource_id() {
+        let v = icon_value_for_exe(r"C:\Program Files\WindInput\wind_setting.exe");
+        assert_eq!(v, r#""C:\Program Files\WindInput\wind_setting.exe",-2"#);
+        assert!(
+            v.ends_with(",-2"),
+            "必须按资源 ID 取（负号），不是位置序号：{v}"
+        );
+        assert!(
+            v.starts_with('"') && v[1..].contains('"'),
+            "含空格的路径必须整体加引号：{v}"
         );
     }
 }

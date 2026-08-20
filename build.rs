@@ -55,6 +55,10 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let icon = manifest_dir.join("res").join("wind_setting.ico");
     println!("cargo:rerun-if-changed={}", icon.display());
+    // `.wpkg` 关联图标。单独一张而不是复用主图标：资源管理器里要一眼分出
+    // 「这是数据文件」还是「这是程序」，同一张图做不到（见 file_assoc 的 DefaultIcon）。
+    let wpkg_icon = manifest_dir.join("res").join("wpkg.ico");
+    println!("cargo:rerun-if-changed={}", wpkg_icon.display());
 
     // manifest：asInvoker + PerMonitorV2 DPI 感知 + win10 + 长路径（对齐 core）。
     let manifest = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -83,7 +87,12 @@ fn main() {
 "#;
 
     let mut res = winresource::WindowsResource::new();
-    res.set_icon(icon.to_str().expect("icon 路径含非 UTF-8"));
+    // 主图标恒为资源 ID 1：exe 自身在资源管理器里显示的是**最小 ID** 的那个图标，
+    // 顺序写反会让程序图标变成文件图标。
+    res.set_icon_with_id(icon.to_str().expect("icon 路径含非 UTF-8"), "1");
+    // ID 2 供 `.wpkg` 关联的 DefaultIcon 引用（注册表写 `<exe>,-2`，负号 = 按资源 ID
+    // 而非位置序号取；位置序号会随资源表顺序变动而错位）。
+    res.set_icon_with_id(wpkg_icon.to_str().expect("wpkg icon 路径含非 UTF-8"), "2");
     res.set("ProductName", "清风输入法");
     res.set("CompanyName", "清风输入法");
     res.set("FileDescription", "清风输入法设置");
