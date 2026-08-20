@@ -9,7 +9,9 @@
    "candidate_layout": "vertical"
   },
   "association": {
+   "backspace_cancels_only": true,
    "bigram": true,
+   "enter_cancels_only": false,
    "hide_after_ms": 5000,
    "hint": "联想输入",
    "history": true,
