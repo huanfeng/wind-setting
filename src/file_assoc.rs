@@ -89,6 +89,38 @@ pub fn current_registration() -> Registration {
     classify_assoc(ext_progid.as_deref(), cmd.as_deref(), &want)
 }
 
+/// 通知 Shell「文件关联变了」。
+///
+/// **写完注册表不等于生效**：资源管理器缓存着关联与图标，不广播这条通知的话，
+/// 用户重新注册、甚至跑 `ie4uinit -ClearIconCache` 都看不到变化（那个只清图标缓存，
+/// 不重读关联）——只能等重启或重新登录。微软对写关联的程序明确要求发这条。
+///
+/// 只声明用得到的这一个导出，不为一次调用引入 `windows-sys`：shell32 是系统必备库。
+#[cfg(windows)]
+fn notify_shell_assoc_changed() {
+    const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+    const SHCNF_IDLIST: u32 = 0x0000;
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn SHChangeNotify(
+            event_id: i32,
+            flags: u32,
+            item1: *const std::ffi::c_void,
+            item2: *const std::ffi::c_void,
+        );
+    }
+    // 安全性：四个参数都按文档取值，两个 item 传 NULL 表示「全局关联变更」，
+    // 无内存所有权转移。
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+}
+
 /// 注册（或修复）`.wpkg` 关联，指向本 exe。已被他人关联时**直接覆盖** `.wpkg` 的
 /// 指向 —— 调用方负责在覆盖前征得用户同意（见高级页「系统集成」卡片）。
 /// 他人的 ProgId 树不动：覆盖指向已足够，删树是越权。
@@ -120,6 +152,7 @@ pub fn register() -> Result<(), String> {
         .map_err(|e| format!("创建扩展名项失败：{e}"))?;
     ext.set_value("", &PROGID)
         .map_err(|e| format!("写入扩展名指向失败：{e}"))?;
+    notify_shell_assoc_changed();
     tracing::info!(".wpkg 文件关联已注册：{want}");
     Ok(())
 }
@@ -142,6 +175,8 @@ pub fn unregister() -> Result<(), String> {
             Err(e) => return Err(format!("删除注册表项失败：{e}")),
         }
     }
+    // 解除同样要通知：不发的话资源管理器还按旧关联显示图标、双击还唤起本程序。
+    notify_shell_assoc_changed();
     tracing::info!(".wpkg 文件关联已解除");
     Ok(())
 }
