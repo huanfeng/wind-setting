@@ -15,8 +15,7 @@ use windui::prelude::*;
 
 use crate::config::Config;
 use crate::pages::config_import::{
-    ConfigPatchPreview, PackageInfo, PreviewRow, info_block, parse_package_info,
-    preview_row_element,
+    ConfigPatchPreview, PackageInfo, PreviewRow, parse_package_info,
 };
 use crate::rpc;
 use crate::state::AppState;
@@ -214,11 +213,17 @@ pub struct SchemaManagerState {
     pub confirm_id: Rc<RefCell<String>>,
     // ── 分发包导入确认（previewImport 摘要 + config_patch diff + 合并/替换选择）──
     pub import_confirm_visible: Signal<bool>,
-    /// 元信息一行：`方案 <id> v<版本> · <创建时间>`。
+    /// 元信息一行：`方案 <id> v<版本> · <创建时间>`。报表内部用。
     pub import_preview_msg: Signal<String>,
-    /// 文件统计一行（只列非零项）。与元信息分开是为了让两者各自成行、
-    /// 各有各的字重，而不是挤成一段谁也不显眼的多行文本。
+    /// 文件统计一行（只列非零项）。
     pub import_counts_msg: Signal<String>,
+    /// 导入报表（富文本）：包名、说明、元信息、文件统计、逐条配置改动合成一份文档，
+    /// 层级与配色由报表自己的样式表统一定义。见 [`SchemaManagerState::build_import_report`]。
+    pub import_report: Signal<RichDoc>,
+    /// 报表里长说明的展开态。分发者的说明可长达 4000 字符，默认截断成几行并缀
+    /// 「… 展开」，由读者决定看不看——否则一段长文就把「要改哪些配置」挤出视野。
+    /// 与文档分离（`Para::clamp` 的信号纪律），每次打开对话框复位。
+    pub import_report_expanded: Signal<bool>,
     /// 待导入的分发包（zip 路径或信封原文），预览确认后执行导入。
     pending_import: Rc<RefCell<Option<PendingImport>>>,
     /// 包内配置片段的预览结果（`configPatch`），确认后由第二步 `config.applyPatch`
@@ -374,6 +379,8 @@ impl SchemaManagerState {
             import_confirm_visible: signal(false),
             import_preview_msg: signal(String::new()),
             import_counts_msg: signal(String::new()),
+            import_report: signal(RichDoc::new()),
+            import_report_expanded: signal(false),
             pending_import: Rc::new(RefCell::new(None)),
             pending_config_patch: Rc::new(RefCell::new(None)),
             import_patch_rows: signal(vec![]),
@@ -1687,6 +1694,13 @@ impl SchemaManagerState {
         self.import_counts_msg
             .set(Self::format_import_counts(preview));
         let patch = crate::pages::config_import::parse_config_patch(preview);
+        self.import_report_expanded.set(false);
+        self.import_report
+            .set(SchemaManagerState::build_import_report(
+                preview,
+                patch.as_ref(),
+                self.import_report_expanded,
+            ));
         self.import_patch_rows
             .set(patch.as_ref().map(|p| p.rows.clone()).unwrap_or_default());
         // 两级说明各取各的源：包级在响应顶层，片段的在 configPatch.info 里。
@@ -1699,6 +1713,91 @@ impl SchemaManagerState {
         *self.pending_config_patch.borrow_mut() = patch;
         *self.pending_import.borrow_mut() = Some(pending);
         self.import_confirm_visible.set(true);
+    }
+
+    /// previewImport 响应 → 一份**导入报表**（富文本）。
+    ///
+    /// 此前是六个控件各管一段（包名 / 说明 / 元信息 / 统计 / 片段说明 / diff 列表），
+    /// 每段自带字号与配色，凑在一起谁也不比谁显眼。改用单份 `RichDoc` 之后，
+    /// 层级由**一张样式表**统一定义，读者扫一眼就能分出「标题 / 正文 / 次要信息 /
+    /// 警示」，而不必逐段辨认。
+    ///
+    /// 分段与顺序即阅读顺序：**这是什么 → 装哪些文件 → 改哪些配置 → 有无问题**。
+    fn build_import_report(
+        preview: &Value,
+        patch: Option<&ConfigPatchPreview>,
+        expanded: Signal<bool>,
+    ) -> RichDoc {
+        let pkg = parse_package_info(preview);
+        let mut doc = RichDoc::new()
+            .style("h1", SpanStyle::new().size(15.0).bold())
+            .style("h2", SpanStyle::new().size(13.0).bold())
+            .style("body", SpanStyle::new().size(12.5))
+            .style("muted", SpanStyle::new().size(12.0).fg(RichColor::Muted))
+            .style("key", SpanStyle::new().size(12.0).bold())
+            .style("from", SpanStyle::new().size(12.0).fg(RichColor::Muted))
+            .style("to", SpanStyle::new().size(12.0).fg(RichColor::Accent))
+            .style("bad", SpanStyle::new().size(12.0).fg(RichColor::Danger))
+            .style(
+                "badge",
+                SpanStyle::new()
+                    .size(11.0)
+                    .bold()
+                    .chip()
+                    .fg(RichColor::Muted),
+            );
+
+        // ① 这是什么：包名（缺说明时回落到方案 id，标题栏不能空着）
+        let head = if pkg.title.trim().is_empty() {
+            Self::format_import_preview(preview)
+        } else {
+            pkg.title.clone()
+        };
+        doc = doc.para(Para::new().styled("h1", head));
+        if !pkg.description.trim().is_empty() {
+            // 说明可长达 4000 字符：默认排 4 行，末尾缀「… 展开」由用户决定看不看，
+            // 不能让分发者的一段长文把后面的改动清单挤出视野。
+            doc = doc.para(
+                Para::new()
+                    .styled("body", pkg.description.trim())
+                    .clamp(4, expanded),
+            );
+        }
+
+        // ② 装哪些文件：元信息与统计各一行，弱化——核对用，不抢注意力
+        doc = doc
+            .para(Para::new().styled("muted", Self::format_import_preview(preview)))
+            .para(Para::new().styled("muted", Self::format_import_counts(preview)));
+
+        // ③ 改哪些配置：只有带 config_patch 的包才有这一节
+        if let Some(p) = patch {
+            doc = doc.divider().para(Para::new().styled("h2", "将修改的配置"));
+            if !p.info.title.trim().is_empty() {
+                doc = doc.para(Para::new().styled("body", p.info.title.trim()));
+            }
+            if !p.info.description.trim().is_empty() {
+                doc = doc.para(
+                    Para::new()
+                        .styled("muted", p.info.description.trim())
+                        .clamp(3, expanded),
+                );
+            }
+            for row in &p.rows {
+                // 键与取值分行：键名可长达数十字符，与取值挤一行必然折行错位
+                // （宽度分配那个坑已经踩过一次）。悬挂缩进让续行对齐到取值列。
+                doc = doc.para(Para::new().styled("key", &row.key).indent(4));
+                doc = doc.para(
+                    Para::new()
+                        .styled(if row.is_error { "bad" } else { "to" }, &row.detail)
+                        .indent(18),
+                );
+            }
+            if !p.ok {
+                doc =
+                    doc.para(Para::new().styled("bad", "配置片段有无法应用的项，整个包已拒绝导入"));
+            }
+        }
+        doc
     }
 
     /// 两级说明取值（`None` / 空 `PackageInfo` 即清空，对应区块随之不占位）。
@@ -2589,8 +2688,13 @@ fn build_schema_hotkey_dialog(state: &SchemaManagerState) -> Element {
     )
 }
 
-/// 方案包导入确认：previewImport 摘要正文 +（包带 config_patch 时）逐键 diff +
-/// 合并（默认）/ 替换（danger）二选一。zip 与文本信封共用本对话框。
+/// 方案包导入确认：一份可滚动的**富文本导入报表**（见
+/// [`SchemaManagerState::build_import_report`]）+ 合并（默认）/ 替换（danger）二选一。
+/// zip 与文本信封共用本对话框。
+///
+/// 报表把包名、说明、元信息、文件统计、逐条配置改动收进**同一份文档**，层级与配色
+/// 由它自己的样式表统一定义——此前是六个控件各管一段、各自带字号，凑在一起谁也不
+/// 比谁显眼。
 ///
 /// `app` 用于第二步 `config.applyPatch` 成功后回灌配置镜像——core 的逐键
 /// `config.changed` 回声到达时镜像已持有同值，被识别为本端写入，不弹「已在别处更改」。
@@ -2599,49 +2703,19 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
     let replace = state.clone();
     let cancel = state.clone();
     let (app_merge, app_replace) = (app.clone(), app.clone());
-    let rows_sig = state.import_patch_rows;
     let can_confirm = state.import_can_confirm;
 
-    // 包级说明（§2.3：包/信封导入确认在顶部显示）。方案信息之前——用户先要知道
-    // 「这是什么」，再看它装哪些文件。
-    // 三级字号拉开档距（15 对话框标题 / 14.5 包名 / 13 分组标题 / 12 片段说明），
-    // 挨得太近时三个加粗标题看上去是平级的，读不出「谁属于谁」。
-    let pkg_info = info_block(state.import_pkg_title, state.import_pkg_desc, 14.5);
-    // 包内片段自己的说明，紧邻「将修改的配置」标题。与包级说明各显各的。
-    let patch_info = info_block(state.import_patch_title, state.import_patch_desc, 12.0);
-
-    // 「将修改的配置」区块：仅带 config_patch 的包显示。行渲染与片段对话框共用
-    // （见 `config_import::preview_row_element`），宽度分配的坑不必再踩一遍。
-    let patch_title = Element::label("将修改的配置")
-        .font_size(13.0)
-        .font_weight(600)
-        .fg_role(Role::Text)
+    // 报表整体放进一个限高滚动区：内容多寡由包决定（说明可长、改动可多），
+    // 对话框高度却必须可控——短包时自然收缩，长包时封顶并可滚。
+    let report = Element::scroll()
         .width_match()
-        .visible_when(move || !rows_sig.get().is_empty());
-    let patch_list = Element::scroll()
-        .width_match()
-        .max_height(132)
-        .border_role(Role::Divider, 1)
-        .child(
-            Element::col()
-                .width_match()
-                .child(Element::host_signal(rows_sig, |row: PreviewRow| {
-                    preview_row_element(&row)
-                })),
-        )
-        .visible_when(move || !rows_sig.get().is_empty());
-    // 整包拒绝时给出原因，否则按钮灰着而屏幕上没有任何解释。
-    let patch_blocked = Element::label("配置片段有无法应用的项，整个包已拒绝导入")
-        .font_size(12.5)
-        .fg_role(Role::Danger)
-        .width_match()
-        .max_lines(2)
-        .visible_when(move || !can_confirm.get());
+        .max_height(320)
+        .child(Element::rich_signal(state.import_report).width_match());
 
     let content = flat_panel()
-        .width(430)
+        .width(440)
         .padding(20)
-        .spacing(10)
+        .spacing(12)
         .child(
             Element::label("导入方案包")
                 .font_size(15.0)
@@ -2651,27 +2725,7 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
                 .width_match(),
         )
         .child(Element::divider())
-        .child(pkg_info)
-        // 元信息与文件统计各自一行、弱化配色：它们是「核对用」的背景信息，
-        // 不该和包名、要改的配置抢注意力。
-        .child(
-            Element::label_signal(state.import_preview_msg)
-                .font_size(12.5)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(2),
-        )
-        .child(
-            Element::label_signal(state.import_counts_msg)
-                .font_size(12.5)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(1),
-        )
-        .child(patch_title)
-        .child(patch_info)
-        .child(patch_list)
-        .child(patch_blocked)
+        .child(report)
         .child(
             Element::row()
                 .width_match()
@@ -3515,6 +3569,89 @@ mod ext_dict_tests {
         );
     }
 
+    /// 导入报表的内容与顺序：**这是什么 → 装哪些文件 → 改哪些配置**。
+    ///
+    /// 断言走 `plain_text()`（富文本的全文投影）而不是数 span——后者把实现细节
+    /// 焊进测试，改个样式名就红；前者盯的是「用户到底看到哪些字、按什么顺序」。
+    #[test]
+    fn import_report_covers_package_files_and_changes_in_reading_order() {
+        let preview = json!({
+            "title": "快符示例 · 引导键符号表",
+            "description": "按引导键呼出的符号表。",
+            "package": {
+                "package": { "created_at": "2026-08-20T15:30:00+08:00" },
+                "schema": { "id": "quick_symbols", "version": "1.0" }
+            },
+            "willAdd": ["a.schema.toml", "b.dict.yaml"], "conflicts": [], "systemRefs": [], "missing": []
+        });
+        let patch = ConfigPatchPreview {
+            text: String::new(),
+            ok: true,
+            rows: vec![PreviewRow {
+                key: "keys.key_actions[backslash]".to_string(),
+                detail: "未设置 → special:quick_symbols".to_string(),
+                is_error: false,
+            }],
+            info: PackageInfo {
+                title: "接上引导键".to_string(),
+                description: "把反斜杠键设为引导键。".to_string(),
+            },
+        };
+        let t = SchemaManagerState::build_import_report(&preview, Some(&patch), signal(false))
+            .plain_text();
+
+        for needle in [
+            "快符示例 · 引导键符号表",
+            "按引导键呼出的符号表。",
+            "方案 quick_symbols v1.0",
+            "2026-08-20 15:30",
+            "新增文件 2",
+            "将修改的配置",
+            "接上引导键",
+            "keys.key_actions[backslash]",
+            "未设置 → special:quick_symbols",
+        ] {
+            assert!(t.contains(needle), "报表缺少「{needle}」：\n{t}");
+        }
+        // 顺序即阅读顺序：包名在最前，改动清单在文件统计之后
+        let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("缺 {s}"));
+        assert!(at("快符示例 · 引导键符号表") < at("方案 quick_symbols"));
+        assert!(at("新增文件 2") < at("将修改的配置"));
+        assert!(at("将修改的配置") < at("keys.key_actions[backslash]"));
+        // ok 的片段不该出现拒绝提示
+        assert!(!t.contains("已拒绝导入"), "{t}");
+    }
+
+    /// 纯方案包（无 config_patch）不出现「将修改的配置」整节——没有的东西不占版面。
+    /// 片段有错时才出拒绝提示，且提示必须在报表里（按钮灰着而无解释是最难受的状态）。
+    #[test]
+    fn import_report_omits_change_section_and_flags_rejection() {
+        let preview = json!({ "willAdd": ["x"], "conflicts": [] });
+        let plain =
+            SchemaManagerState::build_import_report(&preview, None, signal(false)).plain_text();
+        assert!(
+            !plain.contains("将修改的配置"),
+            "纯方案包不该有该节：{plain}"
+        );
+        assert!(!plain.contains("已拒绝导入"), "{plain}");
+
+        let bad = ConfigPatchPreview {
+            text: String::new(),
+            ok: false,
+            rows: vec![PreviewRow {
+                key: "input.foo".to_string(),
+                detail: "未知配置键".to_string(),
+                is_error: true,
+            }],
+            info: PackageInfo::default(),
+        };
+        let t = SchemaManagerState::build_import_report(&preview, Some(&bad), signal(false))
+            .plain_text();
+        assert!(t.contains("将修改的配置"), "{t}");
+        assert!(t.contains("未知配置键"), "{t}");
+        assert!(t.contains("已拒绝导入"), "整包被拒必须给出原因：{t}");
+    }
+
     /// 时间戳只截取、不换算：显示的正是**打包者当地**的时间，换算到本地会让
     /// 作者写在说明里的时间对不上号。认不出的格式原样返回，不猜。
     #[test]
@@ -3676,93 +3813,6 @@ mod ext_dict_tests {
         mgr.cancel_import();
         assert!(mgr.import_pkg_title.get().is_empty(), "取消须清空说明");
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
-    }
-
-    /// 包确认对话框的三块**各自独立限高**：两个说明区块（包级 + 片段自己的）同时撑到
-    /// 限额上限时，各自封顶，diff 列表仍是 `max_height(132)` 的完整高度。
-    ///
-    /// 与片段对话框那条（`info_block_does_not_squeeze_the_preview_list`）分开写，因为
-    /// 结构不同：那边是**一个** info_block + 定高预览区，这边是**两个** + `max_height`
-    /// 的列表。只测那边的话，这边多出来的第二个说明区块没封顶也照绿。
-    ///
-    /// ⚠️ **两句断言的分量不同**（变异测试实测）：删掉 `info_block` 的
-    /// `.max_height(INFO_DESC_MAX_H)` 后，红的是「两个说明区块须各自封顶」那句
-    /// （两块各增高 937px），而「列表仍是 132」**照样绿**——windui 的 col 不会把超高的
-    /// 兄弟节点的压力传导给别人，各子节点独立 measure。所以：
-    /// - 「各自封顶」是本用例的**载荷断言**，能抓住封顶失效；
-    /// - 「列表仍是 132」是**常量回归守卫**，抓的是有人改了 `patch_list` 的上限、或 12 行
-    ///   diff 不再溢出（`short_list` 那句先兜住后者），不是在证明「说明挤不掉列表」。
-    ///
-    /// ⚠️ 400 / 132 两个数抄自 `build_import_confirm_dialog`（`flat_panel().width(400)`
-    /// 与 `patch_list` 的 `max_height(132)`）——改那边记得同步这里。
-    #[test]
-    fn two_info_blocks_are_capped_independently_of_the_patch_list() {
-        use windui::core::Tree;
-        use windui::geometry::Size;
-        const CONFIRM_W: i32 = 400;
-        const LIST_MAX_H: i32 = 132;
-
-        let measure = |desc: &str| {
-            let mut tree = Tree::new();
-            // diff 行要够多才会触到 max_height——列表不溢出的话「仍是 132」测不出东西。
-            let mut list = Element::col().width_match();
-            for i in 0..12 {
-                list = list.child(preview_row_element(&PreviewRow {
-                    key: format!("keys.key_actions[{i}]"),
-                    detail: "未设置 → quick_input".to_string(),
-                    is_error: false,
-                }));
-            }
-            let root = Element::col()
-                .width(CONFIRM_W)
-                .spacing(14)
-                // 包级说明
-                .child(info_block(
-                    signal("包级标题".to_string()),
-                    signal(desc.to_string()),
-                    14.0,
-                ))
-                // 包内片段自己的说明
-                .child(info_block(
-                    signal("片段标题".to_string()),
-                    signal(desc.to_string()),
-                    12.5,
-                ))
-                .child(
-                    Element::scroll()
-                        .width_match()
-                        .max_height(LIST_MAX_H)
-                        .child(list),
-                )
-                .build(&mut tree);
-            tree.root = Some(root);
-            tree.layout_root(
-                Size::new(CONFIRM_W, 2000),
-                &mut windui::text::LineAwareTextEngine,
-            );
-            let kids = tree.get(root).unwrap().children.clone();
-            let h = |id| tree.get(id).unwrap().measured.h;
-            (h(kids[0]), h(kids[1]), h(kids[2]))
-        };
-
-        let cap = crate::pages::config_import::INFO_DESC_MAX_H;
-        let (short_pkg, short_patch, short_list) = measure("一行短说明。");
-        assert_eq!(short_list, LIST_MAX_H, "12 行 diff 应已触到列表上限");
-
-        // 两个说明同时撑到限额上限（4000 字符）。
-        let long: String = "分发者提供的任意文本".chars().cycle().take(4000).collect();
-        let (long_pkg, long_patch, long_list) = measure(&long);
-        assert_eq!(
-            long_list, LIST_MAX_H,
-            "两个说明都超长时 diff 列表高度不得改变"
-        );
-        // 两个说明各自封顶，谁也不吃谁的余量。
-        assert!(
-            long_pkg - short_pkg <= cap && long_patch - short_patch <= cap,
-            "两个说明区块须各自封顶，实际增高 包级={} 片段={}",
-            long_pkg - short_pkg,
-            long_patch - short_patch
-        );
     }
 
     /// 确认导入的两步编排：第二步 `config.applyPatch` 的 `written` 必须原样回传给
