@@ -365,6 +365,16 @@
     },
     {
       "default": false,
+      "key": "schema.pinyin.aux_code.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "schema.pinyin.aux_code.max_phrase_len",
+      "type": "int"
+    },
+    {
+      "default": false,
       "key": "schema.mix.show_source_hint",
       "type": "bool"
     },
