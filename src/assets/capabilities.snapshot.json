@@ -1096,12 +1096,22 @@
     },
     {
       "default": 0,
-      "key": "ui.candidate.min_width_chars_horizontal",
+      "key": "ui.candidate.min_window_width_horizontal",
       "type": "int"
     },
     {
       "default": 0,
-      "key": "ui.candidate.min_width_chars_vertical",
+      "key": "ui.candidate.min_window_width_vertical",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.min_window_height_horizontal",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.min_window_height_vertical",
       "type": "int"
     },
     {

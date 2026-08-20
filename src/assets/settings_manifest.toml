@@ -1946,25 +1946,47 @@ hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
 min = 0
 max = 64
 
+# 候选窗尺寸下限：量的是整个窗口（含翻页栏、编码栏），候选照常紧凑排列、凑不满的部分
+# 留空。横排/竖排各配一套——两种排布的可用空间差一个数量级。
 [[items]]
-key = "ui.candidate.min_width_chars_horizontal"
+key = "ui.candidate.min_window_width_horizontal"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "横排候选最小宽度"
-hint = "按全角字符数计的整格最小宽度（含序号、文字、注释）；超出后跟随内容，不封顶；0 = 不限，跟随内容"
+label = "横排候选窗最小宽度"
+hint = "窗口不足此宽时右侧留空，候选本身不拉伸；单位 dp；0 = 不限，跟随内容"
 min = 0
-max = 64
+max = 1200
 
 [[items]]
-key = "ui.candidate.min_width_chars_vertical"
+key = "ui.candidate.min_window_width_vertical"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "竖排候选最小宽度"
-hint = "按全角字符数计的整行最小宽度（含序号、文字、注释）；超出后跟随内容，不封顶；0 = 不限，跟随内容"
+label = "竖排候选窗最小宽度"
+hint = "窗口不足此宽时右侧留空，候选高亮跟随窗口铺满；单位 dp；0 = 不限，跟随内容"
 min = 0
-max = 64
+max = 1200
+
+[[items]]
+key = "ui.candidate.min_window_height_horizontal"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "横排候选窗最小高度"
+hint = "窗口不足此高时留空；窗口在光标上方时空白补在顶部；单位 dp；0 = 不限，跟随内容"
+min = 0
+max = 1200
+
+[[items]]
+key = "ui.candidate.min_window_height_vertical"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "竖排候选窗最小高度"
+hint = "窗口不足此高时留空，翻页栏的出现消失一并吸收；单位 dp；0 = 不限，跟随内容"
+min = 0
+max = 1200
 
 [[items]]
 key = "ui.candidate.min_rows"
@@ -1972,7 +1994,7 @@ group = "ui"
 section = "候选窗口"
 type = "number"
 label = "竖排候选最小行数"
-hint = "候选数不足时补透明空行以保持窗口高度；自动钳到每页候选数；0 = 不限，跟随候选数。仅竖排排列下生效"
+hint = "候选数不足时补透明空行以保持候选区高度；自动钳到每页候选数；0 = 不限。仅竖排生效"
 min = 0
 max = 9
 
