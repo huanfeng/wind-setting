@@ -220,10 +220,6 @@ pub struct SchemaManagerState {
     /// 导入报表（富文本）：包名、说明、元信息、文件统计、逐条配置改动合成一份文档，
     /// 层级与配色由报表自己的样式表统一定义。见 [`SchemaManagerState::build_import_report`]。
     pub import_report: Signal<RichDoc>,
-    /// 报表里长说明的展开态。分发者的说明可长达 4000 字符，默认截断成几行并缀
-    /// 「… 展开」，由读者决定看不看——否则一段长文就把「要改哪些配置」挤出视野。
-    /// 与文档分离（`Para::clamp` 的信号纪律），每次打开对话框复位。
-    pub import_report_expanded: Signal<bool>,
     /// 待导入的分发包（zip 路径或信封原文），预览确认后执行导入。
     pending_import: Rc<RefCell<Option<PendingImport>>>,
     /// 包内配置片段的预览结果（`configPatch`），确认后由第二步 `config.applyPatch`
@@ -380,7 +376,6 @@ impl SchemaManagerState {
             import_preview_msg: signal(String::new()),
             import_counts_msg: signal(String::new()),
             import_report: signal(RichDoc::new()),
-            import_report_expanded: signal(false),
             pending_import: Rc::new(RefCell::new(None)),
             pending_config_patch: Rc::new(RefCell::new(None)),
             import_patch_rows: signal(vec![]),
@@ -1694,13 +1689,8 @@ impl SchemaManagerState {
         self.import_counts_msg
             .set(Self::format_import_counts(preview));
         let patch = crate::pages::config_import::parse_config_patch(preview);
-        self.import_report_expanded.set(false);
         self.import_report
-            .set(SchemaManagerState::build_import_report(
-                preview,
-                patch.as_ref(),
-                self.import_report_expanded,
-            ));
+            .set(Self::build_import_report(preview, patch.as_ref()));
         self.import_patch_rows
             .set(patch.as_ref().map(|p| p.rows.clone()).unwrap_or_default());
         // 两级说明各取各的源：包级在响应顶层，片段的在 configPatch.info 里。
@@ -1723,11 +1713,7 @@ impl SchemaManagerState {
     /// 警示」，而不必逐段辨认。
     ///
     /// 分段与顺序即阅读顺序：**这是什么 → 装哪些文件 → 改哪些配置 → 有无问题**。
-    fn build_import_report(
-        preview: &Value,
-        patch: Option<&ConfigPatchPreview>,
-        expanded: Signal<bool>,
-    ) -> RichDoc {
+    fn build_import_report(preview: &Value, patch: Option<&ConfigPatchPreview>) -> RichDoc {
         let pkg = parse_package_info(preview);
         let mut doc = RichDoc::new()
             .style("h1", SpanStyle::new().size(15.0).bold())
@@ -1758,9 +1744,9 @@ impl SchemaManagerState {
             // 说明可长达 4000 字符：默认排 4 行，末尾缀「… 展开」由用户决定看不看，
             // 不能让分发者的一段长文把后面的改动清单挤出视野。
             doc = doc.para(
-                Para::new()
-                    .styled("body", pkg.description.trim())
-                    .clamp(4, expanded),
+                // 不截断：说明就是分发者要用户读的那段话，折起来等于劝人别读。
+                // 长了由外层滚动区兜底。
+                Para::new().styled("body", pkg.description.trim()),
             );
         }
 
@@ -1776,11 +1762,7 @@ impl SchemaManagerState {
                 doc = doc.para(Para::new().styled("body", p.info.title.trim()));
             }
             if !p.info.description.trim().is_empty() {
-                doc = doc.para(
-                    Para::new()
-                        .styled("muted", p.info.description.trim())
-                        .clamp(3, expanded),
-                );
+                doc = doc.para(Para::new().styled("muted", p.info.description.trim()));
             }
             for row in &p.rows {
                 // 键与取值分行：键名可长达数十字符，与取值挤一行必然折行错位
@@ -2709,11 +2691,11 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
     // 对话框高度却必须可控——短包时自然收缩，长包时封顶并可滚。
     let report = Element::scroll()
         .width_match()
-        .max_height(320)
+        .max_height(420)
         .child(Element::rich_signal(state.import_report).width_match());
 
     let content = flat_panel()
-        .width(440)
+        .width(520)
         .padding(20)
         .spacing(12)
         .child(
@@ -2726,20 +2708,21 @@ fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManage
         )
         .child(Element::divider())
         .child(report)
+        // 合并/替换的差别紧贴按钮上方**独占一行**：这句话是按下前那一刻才用得上的，
+        // 但与三个按钮挤同一排时剩余宽度不够，必然折成两行。
+        .child(
+            Element::label("合并跳过已存在的同名文件，替换则覆盖它们")
+                .font_size(11.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(1),
+        )
         .child(
             Element::row()
                 .width_match()
                 .cross(Align::Center)
                 .spacing(8)
-                // 合并/替换的差别贴在按钮旁边——这句话是**在按下前那一刻**才用得上的，
-                // 放在对话框中段的正文里，读到它时还不知道要选哪个。
-                .child(
-                    Element::label("合并跳过已存在文件，替换覆盖同名文件")
-                        .font_size(11.5)
-                        .fg_role(Role::TextMuted)
-                        .max_lines(2)
-                        .weight(1.0),
-                )
+                .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
                         .small()
@@ -3597,8 +3580,7 @@ mod ext_dict_tests {
                 description: "把反斜杠键设为引导键。".to_string(),
             },
         };
-        let t = SchemaManagerState::build_import_report(&preview, Some(&patch), signal(false))
-            .plain_text();
+        let t = SchemaManagerState::build_import_report(&preview, Some(&patch)).plain_text();
 
         for needle in [
             "快符示例 · 引导键符号表",
@@ -3627,8 +3609,7 @@ mod ext_dict_tests {
     #[test]
     fn import_report_omits_change_section_and_flags_rejection() {
         let preview = json!({ "willAdd": ["x"], "conflicts": [] });
-        let plain =
-            SchemaManagerState::build_import_report(&preview, None, signal(false)).plain_text();
+        let plain = SchemaManagerState::build_import_report(&preview, None).plain_text();
         assert!(
             !plain.contains("将修改的配置"),
             "纯方案包不该有该节：{plain}"
@@ -3645,8 +3626,7 @@ mod ext_dict_tests {
             }],
             info: PackageInfo::default(),
         };
-        let t = SchemaManagerState::build_import_report(&preview, Some(&bad), signal(false))
-            .plain_text();
+        let t = SchemaManagerState::build_import_report(&preview, Some(&bad)).plain_text();
         assert!(t.contains("将修改的配置"), "{t}");
         assert!(t.contains("未知配置键"), "{t}");
         assert!(t.contains("已拒绝导入"), "整包被拒必须给出原因：{t}");
