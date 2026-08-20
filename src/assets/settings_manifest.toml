@@ -1370,8 +1370,8 @@ key = "input.capslock.cancel_on_mode_switch"
 group = "input"
 section = "临时英文"
 type = "toggle"
-label = "切换模式时取消大写锁定"
-hint = "切换中英文模式时自动取消大写锁定状态"
+label = "切换中英文时取消大写锁定"
+hint = "切换中英文模式时自动取消大写锁定状态；切换方案不受此项影响，一律取消"
 # macOS 无落点：实现手段是合成一次 CapsLock 敲击（`key_inject::tap_caps_lock`），而
 # 大写锁定态在 macOS 由 HID 层维护，CGEvent 合成的 CapsLock 改不动它（要走
 # IOHIDSetModifierLockState 那条完全不同的路）。补 VK→CGKeyCode 映射也没用。
