@@ -27,12 +27,13 @@ pub const SIDEBAR_W: i32 = 200;
 /// 单项行高，与主窗侧栏一致（36），保持两级导航的节奏感相同。
 const ITEM_H: i32 = 36;
 
-/// 构建左栏。
+/// 构建左栏。`back` 是底栏左侧的「返回设置」按钮，由窗口层构造（它要 `AppState`，
+/// 而本模块只认识 `DictManagerState`）。
 ///
 /// 整个列表挂在 `host_signal(domain_items)` 上：方案是运行期才由 `set_schemas` 注入的
 /// （冷启动时后台 RPC 还没回来，列表是空的），且用户在方案页增删方案后也会变。不挂响应式
 /// 就会停在建窗那一刻的快照上 —— 症状是「装了新方案，词库窗里死活看不到」。
-pub fn build_sidebar(mgr: &DictManagerState) -> Element {
+pub fn build_sidebar(mgr: &DictManagerState, back: Element) -> Element {
     let mgr_list = mgr.clone();
     // 挂 `domain_epoch`（单元素计数器）而**不是** `domain_items`：`host_signal` 按 Vec 的
     // 每个元素调一次构建器，挂多元素信号会得到 N 份完整列表叠在一起。同 view.rs 的
@@ -40,25 +41,39 @@ pub fn build_sidebar(mgr: &DictManagerState) -> Element {
     let list = Element::host_signal(mgr.domain_epoch, move |_| build_list(&mgr_list));
 
     let mgr_refresh = mgr.clone();
-    let footer = Element::row()
+    let status = mgr.status;
+    // 状态与按钮**分两行**：200 宽的左栏放不下「一行状态 + 两个按钮」，挤在一行会把
+    // 状态压成两三个字。状态为空时整行隐藏且不占位（`visible_when` 语义），故通常看到的
+    // 就是紧贴底边的一排按钮。
+    let footer = Element::col()
         .width_match()
-        .cross(Align::Center)
-        .spacing(6)
         .padding_xy(10, 8)
+        .spacing(6)
         .child(
             // 状态文字（「已加载 250 条」「未连接」等）。原先挤在页顶下拉右侧，那里同时还要
             // 放刷新按钮与 ‹ ›，长一点的状态就被 max_lines(1) 截掉；挪到左栏底部后有整行可用。
-            Element::label_signal(mgr.status)
+            Element::label_signal(status)
                 .font_size(11.0)
                 .fg_role(Role::TextMuted)
-                .weight(1.0)
-                .max_lines(2),
+                .width_match()
+                .max_lines(2)
+                .visible_when(move || !status.get().is_empty()),
         )
         .child(
-            Element::button("刷新")
-                .small()
-                .outline_soft()
-                .on_click(move |_| mgr_refresh.reload()),
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(6)
+                // 两个按钮等宽平分：一个靠左一个靠右会在窄栏里显得散，等宽是这一栏里
+                // 唯一能同时对齐左右边缘的排法。
+                .child(back.weight(1.0))
+                .child(
+                    Element::button("刷新")
+                        .small()
+                        .outline_soft()
+                        .weight(1.0)
+                        .on_click(move |_| mgr_refresh.reload()),
+                ),
         );
 
     Element::col()

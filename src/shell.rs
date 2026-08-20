@@ -74,7 +74,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 静态色控件（图标 tint/渐变/淡底）用它做亮暗双态，须在页面构建前注册。
     crate::widgets::init_dark_sig(dark);
 
-    let titlebar = build_titlebar("设置", None);
+    let titlebar = build_titlebar("设置");
 
     // 快速导入右键菜单：挂在左侧栏与底栏的空白处（真机反馈：挂满整个内容区太泛，
     // 所有条目上都会弹）。内容区不再挂，页内元素的自有菜单不受影响。
@@ -327,29 +327,21 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
 /// `subtitle` 是三段式标题的末段（主窗「设置」、词库窗「词库管理」）。参数化而非各窗
 /// 各写一份：Logo 尺寸、三段式的字重/弱化色分层、版本号基线对齐这些都是调过的，
 /// 复制一份出去就会在下次调整时漏改一边，而两个窗口并排摆着，差异一眼可见。
-///
-/// `leading` 是排在 Logo **之前**的可选槽位，供次级窗口放「返回」这类导航（词库窗用它）。
-/// 主窗传 `None` —— 它没有可返回的上一层。
-pub(crate) fn build_titlebar(subtitle: &str, leading: Option<Element>) -> Element {
+pub(crate) fn build_titlebar(subtitle: &str) -> Element {
     // 应用图标（与 exe/任务栏同一张图，PNG 由 build 期从 .ico 提取的 256px 帧）。
     // 传 28 是**占位**边长：`app_icon` 内缩 2px 后实绘仍是 24px（图标视觉大小不变），
     // 多出的那 2px 是安全边距——小尺寸下按比例算只有 1px，不足以吸收落点吸附的
     // 半物理像素位移，150% 下会把右侧削掉一列（见 `app_icon` 文档）。
     let logo = crate::widgets::app_icon(28);
 
-    let mut bar = Element::row()
+    Element::row()
         .width_match()
         .height(44)
         .cross(Align::Center)
         .padding_xy(14, 0)
         .spacing(10)
         .bg_role(Role::SurfaceAlt)
-        .window_drag();
-    // 放在 `window_drag` 之后仍然可点：拖动区不吞子节点的点击（同下方几个窗口按钮）。
-    if let Some(el) = leading {
-        bar = bar.child(el);
-    }
-    bar = bar
+        .window_drag()
         .child(logo)
         // 三段式标题：产品名加粗、间隔点与「设置」弱化分层（参考稿 titlebar）。
         .child(
@@ -387,8 +379,7 @@ pub(crate) fn build_titlebar(subtitle: &str, leading: Option<Element>) -> Elemen
         // 图标随主题明暗（否则默认深色字在暗色标题栏上不可见）。
         .child(Element::window_button(WindowButtonKind::Minimize).fg_role(Role::Text))
         .child(Element::window_button(WindowButtonKind::Maximize).fg_role(Role::Text))
-        .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text));
-    bar
+        .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text))
 }
 
 /// 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换；右=恢复本页/重新加载/应用设置/保存并退出。

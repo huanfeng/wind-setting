@@ -84,7 +84,7 @@ pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
     let body = Element::row()
         .fill()
         .weight(1.0)
-        .child(build_sidebar(&mgr))
+        .child(build_sidebar(&mgr, build_back_button(app.clone())))
         .child(vdivider)
         // 右侧沿用词库页原有的子标签/工具栏/表格/分页。显式 `weight(1.0)` 而不只靠
         // `fill()`：在 row 里没有权重的话它按内容宽度收缩，表格会缩成窄窄一条。
@@ -92,10 +92,7 @@ pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
 
     let main_col = Element::col()
         .fill()
-        .child(crate::shell::build_titlebar(
-            "词库管理",
-            Some(build_back_button(app.clone())),
-        ))
+        .child(crate::shell::build_titlebar("词库管理"))
         .child(Element::divider())
         .child(body);
 
@@ -106,7 +103,7 @@ pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
         .child(build_dict_dialogs(&mgr))
 }
 
-/// 标题栏最左的「返回设置」按钮。
+/// 左栏底栏的「返回设置」按钮（与「刷新」并排）。
 ///
 /// 两种情形合成一个动作，用户不必先判断设置窗还在不在：
 /// - 设置窗还开着 → 只关掉本窗，它自然就露出来了；
