@@ -55,11 +55,12 @@ pub enum UiRequest {
     OpenMainWindow,
 }
 
-/// 主窗尺寸。`App::new` 与重建路径共用，免得两处各写一份、改一边漏一边。
-const MAIN_W: i32 = 820;
-const MAIN_H: i32 = 640;
-const MAIN_MIN_W: i32 = 560;
-const MAIN_MIN_H: i32 = 440;
+/// 窗口尺寸。设置窗与词库窗**同尺寸**，`App::new`、主窗重建、词库开窗四条路共用一份，
+/// 免得各写各的、改一边漏一边。
+pub(crate) const MAIN_W: i32 = 820;
+pub(crate) const MAIN_H: i32 = 640;
+pub(crate) const MAIN_MIN_W: i32 = 560;
+pub(crate) const MAIN_MIN_H: i32 = 440;
 
 /// 重新开出主窗。
 ///
@@ -74,7 +75,7 @@ const MAIN_MIN_H: i32 = 440;
 ///
 /// `single("main")` 挡住重复重建；首个主窗由 `App` 建、不带这个键，故只在它确实关掉之后
 /// 才会走到这里（判据是 `main_window_closed`）。
-fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
+pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
     let th = match app.borrow().theme_handle.borrow().clone() {
         Some(h) => h,
         // 建窗前必然已注入（见 main 里 `set_theme_handle`）。真取不到就只能放弃重建，
@@ -257,22 +258,17 @@ fn main() {
         // 设置窗这一趟压根没建过，故按"已关闭"记账：之后点「设置」才会走重建那条路。
         st.mark_main_window_closed();
     }
-    let (title, win_w, win_h, min_w, min_h) = if dict_as_main {
-        (
-            dict_window::TITLE,
-            dict_window::WIN_W,
-            dict_window::WIN_H,
-            dict_window::MIN_W,
-            dict_window::MIN_H,
-        )
+    // 尺寸两者相同，只有标题不同。
+    let title = if dict_as_main {
+        dict_window::TITLE
     } else {
-        ("清风输入法设置", MAIN_W, MAIN_H, MAIN_MIN_W, MAIN_MIN_H)
+        "清风输入法设置"
     };
-    let mut app = App::new(title, win_w, win_h)
+    let mut app = App::new(title, MAIN_W, MAIN_H)
         .frameless()
         .centered()
         .renderer(renderer)
-        .min_size(min_w, min_h)
+        .min_size(MAIN_MIN_W, MAIN_MIN_H)
         .theme(theme_def::theme_for(start_dark));
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
@@ -432,7 +428,7 @@ fn main() {
         // 是全局注册的，平时由 `shell::build` 顺手做掉——走这条路就得自己补上，否则
         // 标题栏图标在暗色主题下是黑的。
         crate::widgets::init_dark_sig(app_state.borrow().dark);
-        dict_window::build_content(app_state.borrow().dict_mgr.clone())
+        dict_window::build_content(app_state.clone())
     } else {
         shell::build(&app_state, th)
     };

@@ -29,7 +29,6 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 use crate::pages::dict::sidebar::build_sidebar;
-use crate::pages::dict::state::DictManagerState;
 use crate::pages::dict::{build_dict_dialogs, view::build_page_for};
 use crate::state::AppState;
 
@@ -41,12 +40,7 @@ pub const TITLE: &str = "清风输入法 · 词库管理";
 /// 的路径也不会漏复位 —— 故**不要**再另设一个「开着没有」的信号去挡重复开窗。
 const SINGLE_KEY: &str = "dict_manager";
 
-/// 默认尺寸。1100 宽足以放下 200 的左栏 + 表格全部列不挤，720 高约 15 行数据；
-/// 最小尺寸压到 860×560 仍能完整显示子标签行与工具栏（再窄导入/导出按钮会换行）。
-pub const WIN_W: i32 = 1100;
-pub const WIN_H: i32 = 720;
-pub const MIN_W: i32 = 860;
-pub const MIN_H: i32 = 560;
+// 尺寸与设置窗一致，共用 `crate::MAIN_*` 那一份常量（见其说明）。
 
 /// 打开词库管理窗。已经开着时由 `single` 激活既有窗口，本次请求被丢弃。
 ///
@@ -62,16 +56,16 @@ pub const MIN_H: i32 = 560;
 /// 这条能成立的前提是 windui 把 `App::channel` 的通道挂到了 App 级：主窗关闭后通道仍
 /// 活着，由还在出帧的窗口（也就是本窗）接手排空，「再点一次设置」才能重新开出主窗。
 pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
-    let mgr = app.borrow().dict_mgr.clone();
-    mgr.reload();
+    app.borrow().dict_mgr.reload();
+    let app_for_content = app.clone();
 
     ctx.open_window(
-        Window::new(TITLE, WIN_W, WIN_H)
+        Window::new(TITLE, crate::MAIN_W, crate::MAIN_H)
             .single(SINGLE_KEY)
             .frameless(true)
             .centered(true)
-            .min_size(MIN_W, MIN_H)
-            .content(move || build_content(mgr)),
+            .min_size(crate::MAIN_MIN_W, crate::MAIN_MIN_H)
+            .content(move || build_content(app_for_content)),
     );
 }
 
@@ -79,7 +73,8 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
 ///
 /// 对话框挂在**本窗**的根 stack 上，不再是主窗那份（`shell::build` 里已摘掉）。挂错窗
 /// 的症状是「点删除没有任何反应」—— 遮罩确实弹了，弹在另一个窗口里。
-pub fn build_content(mgr: DictManagerState) -> Element {
+pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
+    let mgr = app.borrow().dict_mgr.clone();
     // 竖分隔线与主窗 sidebar/content 之间那条同源（`Role::Divider`），两窗并排时对得上。
     let vdivider = Element::leaf()
         .width(1)
@@ -97,7 +92,10 @@ pub fn build_content(mgr: DictManagerState) -> Element {
 
     let main_col = Element::col()
         .fill()
-        .child(crate::shell::build_titlebar("词库管理"))
+        .child(crate::shell::build_titlebar(
+            "词库管理",
+            Some(build_back_button(app.clone())),
+        ))
         .child(Element::divider())
         .child(body);
 
@@ -106,4 +104,26 @@ pub fn build_content(mgr: DictManagerState) -> Element {
         .bg_role(Role::Bg)
         .child(main_col)
         .child(build_dict_dialogs(&mgr))
+}
+
+/// 标题栏最左的「返回设置」按钮。
+///
+/// 两种情形合成一个动作，用户不必先判断设置窗还在不在：
+/// - 设置窗还开着 → 只关掉本窗，它自然就露出来了；
+/// - 设置窗已经关了 → 先开一个，再关掉本窗。
+///
+/// 两件事在**同一次点击**里排队，顺序是安全的：`ctx.open_window` 与 `ctx.request_close`
+/// 都经宿主延后执行，而平台先建窗、后关窗（win32 `apply_window_op` 那句注释写着
+/// 「在可能的关窗之前执行」）。故本窗即使是当前唯一的窗口，也不会先关掉导致进程退出、
+/// 新窗根本没机会建出来。
+fn build_back_button(app: Rc<RefCell<AppState>>) -> Element {
+    Element::button("← 设置")
+        .small()
+        .outline_soft()
+        .on_click(move |ctx| {
+            if app.borrow().main_window_closed.get() {
+                crate::open_main_window(ctx, &app);
+            }
+            ctx.request_close();
+        })
 }
