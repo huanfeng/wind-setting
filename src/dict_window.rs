@@ -33,6 +33,9 @@ use crate::pages::dict::state::DictManagerState;
 use crate::pages::dict::{build_dict_dialogs, view::build_page_for};
 use crate::state::AppState;
 
+/// 窗口标题。`App` 主窗承载词库时（`--page dict` 冷启动）也用这个，两条路同名。
+pub const TITLE: &str = "清风输入法 · 词库管理";
+
 /// 单例键。同键窗口同时只存在一个：再点一次侧栏不会开出第二个，已开着的那个被激活到
 /// 前台（最小化的会还原）。键随窗口登记表自动释放，`request_close` 这类绕过关闭决策链
 /// 的路径也不会漏复位 —— 故**不要**再另设一个「开着没有」的信号去挡重复开窗。
@@ -40,10 +43,10 @@ const SINGLE_KEY: &str = "dict_manager";
 
 /// 默认尺寸。1100 宽足以放下 200 的左栏 + 表格全部列不挤，720 高约 15 行数据；
 /// 最小尺寸压到 860×560 仍能完整显示子标签行与工具栏（再窄导入/导出按钮会换行）。
-const WIN_W: i32 = 1100;
-const WIN_H: i32 = 720;
-const MIN_W: i32 = 860;
-const MIN_H: i32 = 560;
+pub const WIN_W: i32 = 1100;
+pub const WIN_H: i32 = 720;
+pub const MIN_W: i32 = 860;
+pub const MIN_H: i32 = 560;
 
 /// 打开词库管理窗。已经开着时由 `single` 激活既有窗口，本次请求被丢弃。
 ///
@@ -63,7 +66,7 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
     mgr.reload();
 
     ctx.open_window(
-        Window::new("清风输入法 · 词库管理", WIN_W, WIN_H)
+        Window::new(TITLE, WIN_W, WIN_H)
             .single(SINGLE_KEY)
             .frameless(true)
             .centered(true)
@@ -76,7 +79,7 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
 ///
 /// 对话框挂在**本窗**的根 stack 上，不再是主窗那份（`shell::build` 里已摘掉）。挂错窗
 /// 的症状是「点删除没有任何反应」—— 遮罩确实弹了，弹在另一个窗口里。
-fn build_content(mgr: DictManagerState) -> Element {
+pub fn build_content(mgr: DictManagerState) -> Element {
     // 竖分隔线与主窗 sidebar/content 之间那条同源（`Role::Divider`），两窗并排时对得上。
     let vdivider = Element::leaf()
         .width(1)

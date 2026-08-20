@@ -231,6 +231,15 @@ pub struct AppState {
     /// 运行期换肤句柄。重建主窗时 `shell::build` 要用它，而 `App::theme_handle()` 只在
     /// 建窗前拿得到，故建好后存一份进来。
     pub theme_handle: RefCell<Option<ThemeHandle>>,
+    /// 词库正作为 `App` 的那个窗口（`--page dict` 冷启动时如此）。
+    ///
+    /// 这种启动下**不建设置窗**：从托盘点「词库管理」却弹出两个窗口（设置窗 + 词库窗）
+    /// 是没道理的，用户要的就只是词库。
+    ///
+    /// 之所以要记一笔，是因为 `App::run` 建的那个窗口拿不到 `Window::single` 的键——
+    /// 单例登记表里没有它。不记的话，再来一次 `--page dict` 就会在它旁边**另开**一个
+    /// 词库窗；而记了就能识别出"已经有一个了"，交给单实例监听把它激活到前台。
+    dict_is_main: Cell<bool>,
     /// 待应用的词库页深链（`--page dict --schema .. --type ..`）。
     ///
     /// 冷启动解析命令行时方案列表尚未就绪（要等后台 RPC 回来才有），无从把 `--schema`
@@ -481,6 +490,7 @@ impl AppState {
             ui_tx: RefCell::new(None),
             main_window_closed: signal(false),
             theme_handle: RefCell::new(None),
+            dict_is_main: Cell::new(false),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
             config_import: crate::pages::config_import::ConfigImportState::new(),
@@ -1283,11 +1293,26 @@ impl AppState {
     ///   `--schema wb` 也无从解析成域下标。标志由 `apply_loaded` 之后的回调消费，时机天然对。
     /// - 二次实例 / 协议路由传 `true` —— 数据早已就绪，需要立刻推一帧把窗开出来。
     pub fn request_dict_window(&self, notify: bool) {
+        // 词库已经是 `App` 的那个窗口时不再开第二个。单实例监听会把它激活到前台，
+        // 而深链参数（`--schema` / `--type`）照常经 `route_dict_target` 写进去生效。
+        if self.dict_is_main.get() {
+            return;
+        }
         self.pending_dict_window.set(true);
         if notify && let Some(tx) = self.ui_tx.borrow().clone() {
             // 发送失败 = 窗口已关闭，此时开窗本来也没有意义。
             let _ = tx.send(crate::UiRequest::OpenDictWindow);
         }
+    }
+
+    /// 词库是否正作为 `App` 的主窗口。见 [`Self::dict_is_main`] 字段说明。
+    pub fn dict_is_main(&self) -> bool {
+        self.dict_is_main.get()
+    }
+
+    /// 标记词库为 `App` 的主窗口（`--page dict` 冷启动）；它关闭时须复位。
+    pub fn set_dict_is_main(&self, on: bool) {
+        self.dict_is_main.set(on);
     }
 
     /// 取走「该开词库窗了」这个请求（取一次即清）。

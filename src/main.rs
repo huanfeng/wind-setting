@@ -244,11 +244,35 @@ fn main() {
         }
     );
 
-    let mut app = App::new("清风输入法设置", MAIN_W, MAIN_H)
+    // `--page dict` 冷启动（托盘/开始菜单的「词库管理」）让 `App` 的那个窗口**直接承载
+    // 词库**，不再建设置窗。此前是照建设置窗、再往上叠一个词库窗，于是点一次「词库管理」
+    // 冒出两个窗口——而用户要的就只是词库。
+    //
+    // 只能在这里分叉：`App::run` 建的窗口是无条件出现的，没有"建好但不显示"这条路
+    // （`start_hidden` 要求有托盘或全局热键把它唤回来，本应用两样都没有）。
+    let dict_as_main = app_state.borrow().take_dict_window_request();
+    if dict_as_main {
+        let st = app_state.borrow();
+        st.set_dict_is_main(true);
+        // 设置窗这一趟压根没建过，故按"已关闭"记账：之后点「设置」才会走重建那条路。
+        st.mark_main_window_closed();
+    }
+    let (title, win_w, win_h, min_w, min_h) = if dict_as_main {
+        (
+            dict_window::TITLE,
+            dict_window::WIN_W,
+            dict_window::WIN_H,
+            dict_window::MIN_W,
+            dict_window::MIN_H,
+        )
+    } else {
+        ("清风输入法设置", MAIN_W, MAIN_H, MAIN_MIN_W, MAIN_MIN_H)
+    };
+    let mut app = App::new(title, win_w, win_h)
         .frameless()
         .centered()
         .renderer(renderer)
-        .min_size(MAIN_MIN_W, MAIN_MIN_H)
+        .min_size(min_w, min_h)
         .theme(theme_def::theme_for(start_dark));
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
@@ -292,12 +316,20 @@ fn main() {
             // notify = true：本回调没有 ctx、开不了窗（见 `UiRequest`），要经通道推一帧。
             // 词库窗若已开着，`Window::single` 会把它激活到前台，深链参数照样生效。
             route_target(&st, idx, true);
-            // 主窗已经关掉（词库窗还开着、进程因此活着）时，windui 只会去 activate
-            // 一个不存在的窗口，用户看到的是「点了设置没反应」。这里补一次重建。
-            // 主窗还在的话什么都不用做——单实例监听自己会把它拉到前台。
-            if st.main_window_closed.get() {
-                st.request_main_window();
-            }
+        }
+
+        // 主窗已经关掉（词库窗还开着、进程因此活着）时，windui 只会去 activate 一个
+        // 不存在的窗口，用户看到的是「点了设置没反应」。这里补一次重建。
+        //
+        // ⚠️ 必须在上面那串 if-else **之外**：最常见的一次二次启动就是从托盘或开始菜单
+        // 点「设置」，那次 argv 一个参数都没有，上面每个分支都不匹配。把重建挂在
+        // `parse_target` 分支里，等于给它加了个"这次得带参数"的莫须有前提——而重建与
+        // argv 想干什么无关，它是**所有**后续动作的前置条件。
+        //
+        // 主窗还在的话这里什么都不做：单实例监听自己会把它拉到前台。
+        let st = single_instance_state.borrow();
+        if st.main_window_closed.get() {
+            st.request_main_window();
         }
     });
 
@@ -395,7 +427,15 @@ fn main() {
         }
     }
 
-    let ui = shell::build(&app_state, th);
+    let ui = if dict_as_main {
+        // 词库窗自己不建设置外壳，但静态色控件（图标 tint / 渐变 / 淡底）的亮暗双态
+        // 是全局注册的，平时由 `shell::build` 顺手做掉——走这条路就得自己补上，否则
+        // 标题栏图标在暗色主题下是黑的。
+        crate::widgets::init_dark_sig(app_state.borrow().dark);
+        dict_window::build_content(app_state.borrow().dict_mgr.clone())
+    } else {
+        shell::build(&app_state, th)
+    };
 
     // 关窗守卫：有未保存改动时挡下这一次关闭，弹确认框问一句。
     //
@@ -411,10 +451,16 @@ fn main() {
             // 借用不到说明正处在某个改状态的回调里，此时拦下反而更糟（用户会以为窗口卡死）。
             return true;
         };
+        // 本窗承载的是词库时直接放行：词库的写操作即时生效，没有"未保存改动"这回事，
+        // 拿设置页的判据拦它只会莫名其妙地弹确认框。复位标志，好让之后的
+        // 「词库管理」重新开得出窗（此刻可能还有设置子窗开着，进程不一定退出）。
+        if st.dict_is_main() {
+            st.set_dict_is_main(false);
+            return true;
+        }
         if !st.has_unsaved_changes() {
-            // 放行的这一刻才宣告退出：词库子窗的哨兵据此自行关闭（windui 没有"关别的
-            // 窗口"的 API）。置位必须在**放行分支**里 —— 下面那条是拦下、应用并没有要退出，
-            // 在那里置位会让用户点了取消之后词库窗自己消失。
+            // 放行的这一刻才记下主窗已关：二次实例据此分辨该 activate 已有主窗还是
+            // 重建一个。必须在**放行分支**里 —— 下面那条是拦下，主窗还在。
             st.mark_main_window_closed();
             return true;
         }
@@ -681,6 +727,33 @@ mod tests {
         st.mark_main_window_closed();
 
         assert!(st.main_window_closed.get());
+    }
+
+    /// 词库作为 `App` 主窗时不得再开第二个词库窗：`App::run` 建的窗口拿不到
+    /// `Window::single` 的键，单例登记表里没有它，挡不住重复开窗。
+    #[test]
+    fn dict_as_main_window_suppresses_extra_dict_window() {
+        let st = state::AppState::empty();
+        st.set_dict_is_main(true);
+
+        st.request_dict_window(false);
+
+        assert!(
+            !st.take_dict_window_request(),
+            "词库已是主窗，不该再挂起开窗请求"
+        );
+    }
+
+    /// 复位后恢复正常：词库主窗关掉、只剩设置子窗时，「词库管理」还得开得出来。
+    #[test]
+    fn dict_window_request_works_again_after_main_dict_closed() {
+        let st = state::AppState::empty();
+        st.set_dict_is_main(true);
+        st.set_dict_is_main(false);
+
+        st.request_dict_window(false);
+
+        assert!(st.take_dict_window_request());
     }
 
     /// 重开主窗的请求同样取一次即清，否则一次「点设置」会重建两个主窗。
