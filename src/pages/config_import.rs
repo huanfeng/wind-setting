@@ -69,6 +69,17 @@ pub struct PreviewRow {
     pub is_error: bool,
 }
 
+/// 分发内容的说明元信息（`[package]` 段的 `title` / `description`，
+/// `package-format.md` §2.3）。字段缺省即空串。
+///
+/// 分发者提供的**任意文本**，core 限额 title ≤ 200 字符、description ≤ 4000 字符——
+/// 4000 字符足以撑爆对话框，故渲染一律走 [`info_block`]，不要另拼裸 label。
+#[derive(Clone, Default)]
+pub struct PackageInfo {
+    pub title: String,
+    pub description: String,
+}
+
 /// 分发包携带的配置片段预览（`previewImport` / `previewImportText` 响应的
 /// 可选 `configPatch`）。确认导入后由第二步 `config.applyPatch` 应用。
 #[derive(Clone)]
@@ -78,6 +89,8 @@ pub struct ConfigPatchPreview {
     /// 整片段是否通过校验。为假即**整包禁止导入**（`package-format.md` §3.3）。
     pub ok: bool,
     pub rows: Vec<PreviewRow>,
+    /// **该片段自己**的说明（`configPatch.info`），与包级说明各显各的。
+    pub info: PackageInfo,
 }
 
 /// 配置导入状态（Signal 为 Copy，可直接 Clone 进闭包）。
@@ -94,6 +107,10 @@ pub struct ConfigImportState {
     pub validated_text: Signal<String>,
     /// 预览行（previewPatch 逐条结果）。
     pub rows: Signal<Vec<PreviewRow>>,
+    /// 片段自带的说明（previewPatch 响应的 `info`）。**属于预览结果**，与 rows
+    /// 同生同灭——换文本 / 重新校验 / 关对话框都清掉，否则 A 的说明会挂在 B 的预览上。
+    pub info_title: Signal<String>,
+    pub info_desc: Signal<String>,
     /// 整体错误回显（TOML 解析失败等 RPC error / 应用失败），空串 = 无。
     pub error_msg: Signal<String>,
     /// 「应用」可点的校验半边：previewPatch ok 且至少一条可应用条目
@@ -116,6 +133,8 @@ impl ConfigImportState {
             text: signal(String::new()),
             validated_text: signal(String::new()),
             rows: signal(Vec::new()),
+            info_title: signal(String::new()),
+            info_desc: signal(String::new()),
             error_msg: signal(String::new()),
             apply_ok: signal(false),
             feedback: signal(None),
@@ -139,11 +158,18 @@ impl ConfigImportState {
         self.visible.set(false);
     }
 
-    /// 作废上次校验：清预览区、禁应用。文本内容不动。
+    /// 作废上次校验：清预览区（含说明区块）、禁应用。文本内容不动。
     fn clear_validation(&self) {
         self.rows.set(Vec::new());
+        self.set_info(&PackageInfo::default());
         self.apply_ok.set(false);
         self.validated_text.set(String::new());
+    }
+
+    /// 说明区块取值（空 PackageInfo 即清空，区块随之不占位）。
+    fn set_info(&self, info: &PackageInfo) {
+        self.info_title.set(info.title.clone());
+        self.info_desc.set(info.description.clone());
     }
 
     /// 校验失败（读不到内容 / 整体解析失败）：清空预览区并回显原因，「应用」禁用。
@@ -196,6 +222,7 @@ impl ConfigImportState {
                     String::new()
                 });
                 self.rows.set(rows);
+                self.set_info(&parse_info(&v));
                 self.apply_ok.set(ok);
                 self.validated_text.set(text);
             }
@@ -433,7 +460,33 @@ pub fn parse_config_patch(v: &Value) -> Option<ConfigPatchPreview> {
             .to_string(),
         ok: cp.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
         rows: parse_entries(cp),
+        info: parse_info(cp),
     })
+}
+
+/// 一个带 `title` / `description` 的对象 → 说明（字段缺席即空串）。
+fn read_info(v: &Value) -> PackageInfo {
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    PackageInfo {
+        title: s("title"),
+        description: s("description"),
+    }
+}
+
+/// 片段自己的说明：`previewPatch` 响应 / 包内 `configPatch` 的可选 `info` 段
+/// （`package-format.md` §2.4）。两字段都缺省时 core 不发 `info`，这里回空。
+pub fn parse_info(v: &Value) -> PackageInfo {
+    v.get("info").map(read_info).unwrap_or_default()
+}
+
+/// 包级说明：`previewImport` / `previewImportText` 响应**顶层**的 `title` /
+/// `description`（来自 package.toml / 信封 `[package]`）。
+///
+/// 与片段自己的 [`parse_info`] 是两个独立取值点，**互不回落、不做优先级**——
+/// §2.3 定稿：两级说的不是同一件事，一方缺席时另一方顶上会把「包是什么」说成
+/// 「这段配置改什么」。
+pub fn parse_package_info(v: &Value) -> PackageInfo {
+    read_info(v)
 }
 
 /// applyPatch 响应的 `written` → 逐条 (key, value)。
@@ -503,6 +556,51 @@ pub fn preview_row_element(row: &PreviewRow) -> Element {
                 .weight(1.0)
                 .max_lines(3),
         )
+}
+
+/// 说明正文区的高度上限（px）。超出部分在区块内滚动，不外溢到对话框高度上。
+///
+/// 有这个上限是因为说明是**分发者提供的任意文本**：core 只把 description 限到
+/// 4000 字符，那已经够把对话框顶出屏幕。区块限高与预览列表限高互不相干，两者
+/// 各自封顶——共用一份余高的话，长说明会把预览列表挤没。
+pub const INFO_DESC_MAX_H: i32 = 84;
+
+/// 说明区块（`[package]` 的 title/description，`package-format.md` §2.3）：
+/// 标题单行截断、正文限高滚动；两者皆空时整块不占位。
+///
+/// 三处渲染共用（片段对话框、包级说明、包内片段说明），`title_size` 是唯一差异——
+/// 包内片段的说明挨着「将修改的配置」小标题，字号要比它低一档才不抢层级。
+///
+/// **一次调用只渲染一份说明**：两级说明各显各的，合并是调用方也不该做的事。
+pub fn info_block(title: Signal<String>, desc: Signal<String>, title_size: f32) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(4)
+        .child(
+            Element::label_signal(title)
+                .font_size(title_size)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                // 单行封顶 + 末尾省略：标题最长可达 200 字符，任其折行就是三四行
+                // 加粗大字压在预览上方。
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .visible_when(move || !title.get().is_empty()),
+        )
+        .child(
+            Element::scroll()
+                .width_match()
+                .max_height(INFO_DESC_MAX_H)
+                .child(
+                    Element::label_signal(desc)
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted)
+                        .width_match(),
+                )
+                .visible_when(move || !desc.get().is_empty()),
+        )
+        .visible_when(move || !title.get().is_empty() || !desc.get().is_empty())
 }
 
 /// 高级页「导入与导出」卡片：统一导入文件 + 剪贴板导入两个入口。
@@ -586,6 +684,10 @@ pub fn build_config_import_dialog(
         .width_match()
         .height(180);
 
+    // 片段自带的说明（§2.3：片段导入对话框在预览列表上方显示）。校验前 / 片段没带
+    // 说明时整块不占位。
+    let info = info_block(import.info_title, import.info_desc, 13.5);
+
     // 预览列表（动态内容一律走 Signal，构建期读取会被永久冻结）。
     let list = Element::host_signal(rows_sig, |row: PreviewRow| preview_row_element(&row));
     let rows_empty = move || rows_sig.get().is_empty();
@@ -655,6 +757,7 @@ pub fn build_config_import_dialog(
                 )
                 .child(Element::leaf().weight(1.0)),
         )
+        .child(info)
         .child(preview)
         .child(error_line)
         .child(
@@ -884,6 +987,296 @@ mod tests {
             !falls_back_to_fragment("files[1].path 非法: docs/unknown method: 备忘.txt"),
             "路径回显里含该串的信封真实错误必须如实报，不能被当成旧 core"
         );
+    }
+
+    // ──────────────── 说明元信息（`package-format.md` §2.3） ────────────────
+
+    /// 片段自己的说明取自可选 `info` 段。两字段都缺省时 core 不发 `info`，此时
+    /// 两个字段都要留空——区块靠「两者皆空」判定不占位。
+    #[test]
+    fn parse_info_reads_the_optional_info_section() {
+        let full = json!({ "ok": true, "entries": [],
+                           "info": { "title": "九候选", "description": "把候选栏调成每页九个。" } });
+        let i = parse_info(&full);
+        assert_eq!(i.title, "九候选");
+        assert_eq!(i.description, "把候选栏调成每页九个。");
+
+        let none = parse_info(&json!({ "ok": true, "entries": [] }));
+        assert!(none.title.is_empty() && none.description.is_empty());
+
+        // 单字段：缺的那个留空，不拿在场的那个补——标题和说明不是一回事。
+        assert_eq!(
+            parse_info(&json!({ "info": { "title": "只有标题" } })).description,
+            ""
+        );
+        assert_eq!(
+            parse_info(&json!({ "info": { "description": "只有说明" } })).title,
+            ""
+        );
+    }
+
+    /// 两级说明取自**两个**位置：包级在响应顶层，片段自己的在 `configPatch.info`。
+    ///
+    /// 同一个响应里刻意给不同取值：写成同源就分不清 UI 是各显各的、还是有一处串了源。
+    /// 单边在场的两形也各测一遍——§2.3 定稿两级说的不是同一件事，缺一方时另一方顶上
+    /// 会把「这个包是什么」说成「这段配置改什么」。
+    #[test]
+    fn package_level_and_fragment_info_are_read_independently() {
+        let both = json!({
+            "title": "快符方案", "description": "分号引导的符号表。",
+            "willAdd": ["kf.schema.toml"],
+            "configPatch": { "text": "x = 1\n", "ok": true, "entries": [],
+                             "info": { "title": "快符引导键", "description": "把反引号设为引导键。" } }
+        });
+        let pkg = parse_package_info(&both);
+        assert_eq!(pkg.title, "快符方案");
+        assert_eq!(pkg.description, "分号引导的符号表。");
+        let frag = parse_config_patch(&both).expect("含 configPatch").info;
+        assert_eq!(frag.title, "快符引导键");
+        assert_eq!(frag.description, "把反引号设为引导键。");
+
+        // 只有包级说明：片段那份保持空，不拿包级的顶上。
+        let pkg_only = json!({ "title": "快符方案",
+                               "configPatch": { "text": "", "ok": true, "entries": [] } });
+        assert_eq!(parse_package_info(&pkg_only).title, "快符方案");
+        assert!(
+            parse_config_patch(&pkg_only).unwrap().info.title.is_empty(),
+            "包级说明不得回落成片段说明"
+        );
+
+        // 只有片段说明：包级保持空，方向反过来同样不许串。
+        let frag_only = json!({ "configPatch": { "text": "", "ok": true, "entries": [],
+                                                 "info": { "title": "快符引导键" } } });
+        assert!(parse_package_info(&frag_only).title.is_empty());
+        assert_eq!(
+            parse_config_patch(&frag_only).unwrap().info.title,
+            "快符引导键"
+        );
+    }
+
+    /// 说明属于**预览结果**：校验后填上，换文本 / 重开对话框随预览一起清空。
+    /// 不清的话，A 片段的说明会挂在 B 片段的预览上方，而两者毫无关系。
+    #[test]
+    fn info_is_filled_by_preview_and_cleared_with_it() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let import = ConfigImportState::new();
+        let mgr = SchemaManagerState::new();
+
+        import.set_text("剪贴板", "[ui.candidate]\nper_page = 9\n".to_string());
+        assert!(import.info_title.get().is_empty(), "校验前没有说明可显示");
+        import.validate(&mgr);
+        assert!(
+            !import.info_title.get().is_empty(),
+            "片段带说明时须显示标题"
+        );
+        assert!(!import.info_desc.get().is_empty());
+
+        import.set_text(
+            "剪贴板",
+            "[input]\ninitial_mode = \"chinese\"\n".to_string(),
+        );
+        assert!(
+            import.info_title.get().is_empty() && import.info_desc.get().is_empty(),
+            "换文本须与预览一起清空说明"
+        );
+
+        import.validate(&mgr);
+        assert!(!import.info_title.get().is_empty());
+        import.open();
+        assert!(
+            import.info_title.get().is_empty() && import.info_desc.get().is_empty(),
+            "重开对话框须清空说明"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    // ──────────── 显示防护：说明是分发者提供的任意文本，UI 侧必须自己封顶 ────────────
+
+    /// 片段导入对话框宽度（`build_config_import_dialog` 的 `flat_panel().width(520)`），
+    /// 使 label 的换行条件贴近真实。
+    const DLG_W: i32 = 520;
+
+    /// 布局说明区块，返回 (整块高, 标题高, 正文占位高, 正文完整内容高)。
+    fn layout_info(title: &str, desc: &str) -> (i32, i32, i32, i32) {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let mut tree = Tree::new();
+        let root = Element::col()
+            .width(DLG_W)
+            .child(info_block(
+                signal(title.to_string()),
+                signal(desc.to_string()),
+                13.5,
+            ))
+            .build(&mut tree);
+        tree.root = Some(root);
+        // NullTextEngine 恒返回单行高，测不出「内容变长 → 溢出 → 可滚动」。
+        tree.layout_root(
+            Size::new(DLG_W, 2000),
+            &mut windui::text::LineAwareTextEngine,
+        );
+        let block = tree.get(root).unwrap().children[0];
+        let kids = tree.get(block).unwrap().children.clone();
+        let h = |id| tree.get(id).unwrap().measured.h;
+        (
+            h(block),
+            h(kids[0]),
+            h(kids[1]),
+            tree.get(kids[1]).unwrap().content_h,
+        )
+    }
+
+    /// 布局说明区块，返回 (整块是否可见, 可见子节点数)。
+    fn info_visibility(title: &str, desc: &str) -> (bool, usize) {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let mut tree = Tree::new();
+        let root = Element::col()
+            .width(DLG_W)
+            .child(info_block(
+                signal(title.to_string()),
+                signal(desc.to_string()),
+                13.5,
+            ))
+            .build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(
+            Size::new(DLG_W, 2000),
+            &mut windui::text::LineAwareTextEngine,
+        );
+        let block = tree.get(root).unwrap().children[0];
+        let n = tree.get(block).unwrap();
+        let visible = n.effective_visible();
+        let kids = n
+            .children
+            .iter()
+            .filter(|c| tree.get(**c).is_some_and(|k| k.effective_visible()))
+            .count();
+        (visible, kids)
+    }
+
+    /// 没有说明时整块不占位——留一个空框比不显示更糟，用户会以为说明加载失败了。
+    #[test]
+    fn info_block_is_absent_when_there_is_nothing_to_show() {
+        assert_eq!(info_visibility("", ""), (false, 0));
+    }
+
+    /// 单字段在场时只显示在场的那个，另一半不留空行。
+    #[test]
+    fn info_block_shows_only_the_present_field() {
+        assert_eq!(info_visibility("只有标题", ""), (true, 1));
+        assert_eq!(info_visibility("", "只有说明"), (true, 1));
+        assert_eq!(info_visibility("标题", "说明"), (true, 2));
+    }
+
+    /// 限额上限的 description（4000 字符）须封顶在 [`INFO_DESC_MAX_H`] 并留下可滚动量。
+    ///
+    /// 这是本功能最容易翻车的地方：core 只管到 4000 字符这个限额，那已经够把对话框
+    /// 顶出屏幕；不封顶的话预览列表、底部按钮会一起被推走。
+    #[test]
+    fn limit_length_description_is_capped_and_scrollable() {
+        let desc: String = (1..=200)
+            .map(|i| format!("第 {i} 行说明：分发者提供的任意文本。\n"))
+            .collect::<String>()
+            .chars()
+            .take(4000)
+            .collect();
+        let (block_h, _, desc_h, content_h) = layout_info("说明标题", &desc);
+        assert_eq!(desc_h, INFO_DESC_MAX_H, "超长说明须封顶在上限高度");
+        assert!(
+            content_h > INFO_DESC_MAX_H,
+            "溢出部分须成为可滚动量（content_h={content_h}）"
+        );
+        // 整块高 = 标题一行 + 间距 + 正文上限，与 description 有多长无关。
+        let (short_block_h, ..) = layout_info("说明标题", "一行短说明。");
+        assert!(
+            block_h - short_block_h <= INFO_DESC_MAX_H,
+            "说明变长只能吃掉正文区那点余量，实际长/短两形差 {}",
+            block_h - short_block_h
+        );
+    }
+
+    /// 限额上限的 title（200 字符）须恒为一行——任其折行就是三四行加粗大字压在
+    /// 预览上方，把真正要看的逐键 diff 挤出可视区。
+    #[test]
+    fn limit_length_title_stays_on_one_line() {
+        let long: String = "标题可以一直写到限额上限"
+            .chars()
+            .cycle()
+            .take(200)
+            .collect();
+        let (_, long_h, ..) = layout_info(&long, "");
+        let (_, one_h, ..) = layout_info("短标题", "");
+        assert_eq!(long_h, one_h, "200 字符标题须与一行短标题等高（单行封顶）");
+    }
+
+    /// 说明区块与预览列表**各自独立限高**：说明再长也不改变预览区高度。
+    ///
+    /// 两者是 `flat_panel` 里的兄弟节点、各自封顶，共用一份余高的话长说明会把预览
+    /// 列表挤没——`preview_row_element` 的宽度分配就是同类问题栽的跟头。
+    #[test]
+    fn info_block_does_not_squeeze_the_preview_list() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let long: String = std::iter::repeat_n("说明", 2000).collect();
+        let measure_preview = |desc: &str| {
+            let mut tree = Tree::new();
+            // 与对话框同构：说明区块 + 定高预览区，同一个 col 的两个兄弟。
+            let root = Element::col()
+                .width(DLG_W)
+                .spacing(14)
+                .child(info_block(
+                    signal("说明标题".to_string()),
+                    signal(desc.to_string()),
+                    13.5,
+                ))
+                .child(
+                    Element::scroll()
+                        .width_match()
+                        .height(150)
+                        .child(Element::label("预览行").width_match()),
+                )
+                .build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(
+                Size::new(DLG_W, 2000),
+                &mut windui::text::LineAwareTextEngine,
+            );
+            let preview = tree.get(root).unwrap().children[1];
+            tree.get(preview).unwrap().measured.h
+        };
+        assert_eq!(measure_preview("一行短说明。"), 150);
+        assert_eq!(measure_preview(&long), 150, "说明变长不得改变预览区高度");
+    }
+
+    /// 端到端：mock 产出限额上限的说明 → 解析 → 落信号 → 布局，全程不 panic 且封顶。
+    ///
+    /// 上面几条各自测一段；这条走的是用户真会走的那条路（校验预览 → 显示），
+    /// 中间任一环把说明漏掉或没接上封顶都会红在这里。
+    #[test]
+    fn limit_length_info_survives_the_whole_preview_path() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let import = ConfigImportState::new();
+        let mgr = SchemaManagerState::new();
+        // 记号让 mock 把说明撑到 core 限额上限（title 200 / description 4000）。
+        import.set_text("剪贴板", "# mock_long_info\nper_page = 9\n".to_string());
+        import.validate(&mgr);
+
+        assert_eq!(import.info_title.get().chars().count(), 200);
+        assert_eq!(import.info_desc.get().chars().count(), 4000);
+        let (_, title_h, desc_h, content_h) =
+            layout_info(&import.info_title.get(), &import.info_desc.get());
+        let (_, one_line_h, ..) = layout_info("短标题", "");
+        assert_eq!(title_h, one_line_h, "限额标题仍是一行");
+        assert_eq!(desc_h, INFO_DESC_MAX_H, "限额说明仍封顶");
+        assert!(content_h > INFO_DESC_MAX_H, "且留下可滚动量");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 包内 `configPatch` 与 previewPatch 的 entries 同形，缺席即纯方案包。
