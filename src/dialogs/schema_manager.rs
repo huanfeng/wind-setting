@@ -3587,6 +3587,93 @@ mod ext_dict_tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 包确认对话框的三块**各自独立限高**：两个说明区块（包级 + 片段自己的）同时撑到
+    /// 限额上限时，各自封顶，diff 列表仍是 `max_height(132)` 的完整高度。
+    ///
+    /// 与片段对话框那条（`info_block_does_not_squeeze_the_preview_list`）分开写，因为
+    /// 结构不同：那边是**一个** info_block + 定高预览区，这边是**两个** + `max_height`
+    /// 的列表。只测那边的话，这边多出来的第二个说明区块没封顶也照绿。
+    ///
+    /// ⚠️ **两句断言的分量不同**（变异测试实测）：删掉 `info_block` 的
+    /// `.max_height(INFO_DESC_MAX_H)` 后，红的是「两个说明区块须各自封顶」那句
+    /// （两块各增高 937px），而「列表仍是 132」**照样绿**——windui 的 col 不会把超高的
+    /// 兄弟节点的压力传导给别人，各子节点独立 measure。所以：
+    /// - 「各自封顶」是本用例的**载荷断言**，能抓住封顶失效；
+    /// - 「列表仍是 132」是**常量回归守卫**，抓的是有人改了 `patch_list` 的上限、或 12 行
+    ///   diff 不再溢出（`short_list` 那句先兜住后者），不是在证明「说明挤不掉列表」。
+    ///
+    /// ⚠️ 400 / 132 两个数抄自 `build_import_confirm_dialog`（`flat_panel().width(400)`
+    /// 与 `patch_list` 的 `max_height(132)`）——改那边记得同步这里。
+    #[test]
+    fn two_info_blocks_are_capped_independently_of_the_patch_list() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        const CONFIRM_W: i32 = 400;
+        const LIST_MAX_H: i32 = 132;
+
+        let measure = |desc: &str| {
+            let mut tree = Tree::new();
+            // diff 行要够多才会触到 max_height——列表不溢出的话「仍是 132」测不出东西。
+            let mut list = Element::col().width_match();
+            for i in 0..12 {
+                list = list.child(preview_row_element(&PreviewRow {
+                    key: format!("keys.key_actions[{i}]"),
+                    detail: "未设置 → quick_input".to_string(),
+                    is_error: false,
+                }));
+            }
+            let root = Element::col()
+                .width(CONFIRM_W)
+                .spacing(14)
+                // 包级说明
+                .child(info_block(
+                    signal("包级标题".to_string()),
+                    signal(desc.to_string()),
+                    14.0,
+                ))
+                // 包内片段自己的说明
+                .child(info_block(
+                    signal("片段标题".to_string()),
+                    signal(desc.to_string()),
+                    12.5,
+                ))
+                .child(
+                    Element::scroll()
+                        .width_match()
+                        .max_height(LIST_MAX_H)
+                        .child(list),
+                )
+                .build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(
+                Size::new(CONFIRM_W, 2000),
+                &mut windui::text::LineAwareTextEngine,
+            );
+            let kids = tree.get(root).unwrap().children.clone();
+            let h = |id| tree.get(id).unwrap().measured.h;
+            (h(kids[0]), h(kids[1]), h(kids[2]))
+        };
+
+        let cap = crate::pages::config_import::INFO_DESC_MAX_H;
+        let (short_pkg, short_patch, short_list) = measure("一行短说明。");
+        assert_eq!(short_list, LIST_MAX_H, "12 行 diff 应已触到列表上限");
+
+        // 两个说明同时撑到限额上限（4000 字符）。
+        let long: String = "分发者提供的任意文本".chars().cycle().take(4000).collect();
+        let (long_pkg, long_patch, long_list) = measure(&long);
+        assert_eq!(
+            long_list, LIST_MAX_H,
+            "两个说明都超长时 diff 列表高度不得改变"
+        );
+        // 两个说明各自封顶，谁也不吃谁的余量。
+        assert!(
+            long_pkg - short_pkg <= cap && long_patch - short_patch <= cap,
+            "两个说明区块须各自封顶，实际增高 包级={} 片段={}",
+            long_pkg - short_pkg,
+            long_patch - short_patch
+        );
+    }
+
     /// 确认导入的两步编排：第二步 `config.applyPatch` 的 `written` 必须原样回传给
     /// 调用方去回灌配置镜像——否则 core 的逐键 `config.changed` 回声会被当成外部改动，
     /// 用户刚导入完就被告知「已在别处更改」。

@@ -1199,6 +1199,42 @@ mod tests {
         );
     }
 
+    /// 极端形态一：4000 个**连续 CJK 字符，无任何换行与空格**（URL / base64 的中文
+    /// 等价物）。
+    ///
+    /// 单独测它，是因为上一条用的是「约 20 字符一行 + 显式 `\n`」拼出来的文本——
+    /// 那种形态下「按行数封顶」的实现也能过。这里整段是**一个**没有断点的长 seg，
+    /// 全靠容器按可用宽折行，是最可能让行数型实现失效的形态。
+    #[test]
+    fn unbroken_cjk_run_is_capped_and_scrollable() {
+        let desc: String = "分发者提供的任意文本".chars().cycle().take(4000).collect();
+        assert!(
+            !desc.contains('\n') && !desc.contains(' '),
+            "本形态不得有断点"
+        );
+        let (_, _, desc_h, content_h) = layout_info("说明标题", &desc);
+        assert_eq!(desc_h, INFO_DESC_MAX_H, "无断点的长串同样须封顶");
+        assert!(
+            content_h > INFO_DESC_MAX_H,
+            "折行后的完整高度须成为可滚动量（content_h={content_h}）"
+        );
+    }
+
+    /// 极端形态二：200 个**连续空行**——行数极多而内容近乎为零。
+    ///
+    /// 与上一条互为对照：那条是「一行很长」，这条是「很多行但每行都空」。封顶的判据
+    /// 必须是**排版高度**，不是字符数或可见内容量；按内容量估高的实现在这里会漏封。
+    #[test]
+    fn many_blank_lines_are_capped_by_height_not_content() {
+        let desc = "\n".repeat(200);
+        let (_, _, desc_h, content_h) = layout_info("说明标题", &desc);
+        assert_eq!(desc_h, INFO_DESC_MAX_H, "空行撑出的高度同样须封顶");
+        assert!(
+            content_h > INFO_DESC_MAX_H,
+            "200 个空行的排版高度须远超上限（content_h={content_h}）"
+        );
+    }
+
     /// 限额上限的 title（200 字符）须恒为一行——任其折行就是三四行加粗大字压在
     /// 预览上方，把真正要看的逐键 diff 挤出可视区。
     #[test]
@@ -1217,6 +1253,12 @@ mod tests {
     ///
     /// 两者是 `flat_panel` 里的兄弟节点、各自封顶，共用一份余高的话长说明会把预览
     /// 列表挤没——`preview_row_element` 的宽度分配就是同类问题栽的跟头。
+    ///
+    /// ⚠️ 分量说明（与 `two_info_blocks_are_capped_independently_of_the_patch_list`
+    /// 同）：windui 的 col 各子节点独立 measure，不把超高兄弟的压力传导出去，故本条
+    /// 的断言**无法因说明失去封顶而变红**——它是预览区定高的回归守卫，不是「说明挤不掉
+    /// 预览」的证明。真正抓封顶失效的是 `limit_length_description_is_capped_and_scrollable`
+    /// 那几条的 `desc_h == INFO_DESC_MAX_H`（变异测试实测会红）。
     #[test]
     fn info_block_does_not_squeeze_the_preview_list() {
         use windui::core::Tree;
