@@ -29,6 +29,10 @@ sha2 = "0.10"
 # core 仓已因 wind-ipc 成为硬依赖，此处不引入新的路径前提。
 wind-rpc = { path = "../WindInput/wind_input/crates/wind-rpc" }
 wind-config = { path = "../WindInput/wind_input/crates/wind-config" }
+# 标点转换真相源：守护 PUNCT_DEFAULTS（设置页那份四列默认表）不与 core 的转换
+# 流水线漂移。漂移的表现是「不动也判脏」，没有堆栈、只能靠这条测试看见。
+wind-punct = { path = "../WindInput/wind_input/crates/wind-punct" }
+wind-transform = { path = "../WindInput/wind_input/crates/wind-transform" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

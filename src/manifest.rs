@@ -2529,6 +2529,64 @@ fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String {
         .unwrap_or_else(|| def.to_string())
 }
 
+/// `input.punct.custom_mappings` 的配置路径。归一化与 diff 基线共用，防两处写死漂移。
+pub(crate) const PUNCT_MAP_KEY: &str = "input.punct.custom_mappings";
+
+/// 一行四格 → 该行在 `custom_mappings` 里的落点：四格全等默认即 `None`（不落盘）。
+///
+/// 这是「什么算自定义」的**唯一判据**，writer 与 [`punct_canonical_map`] 都问它。
+/// 两处一旦分头写，就会造出「基线里有、写回时被剪」的固定差异——关窗守卫从此永远
+/// 提示未保存，而用户根本没动过任何东西。
+fn punct_row_override(vals: &[String; 4], defs: &[&str; 4]) -> Option<Value> {
+    if (0..4).all(|i| vals[i].as_str() == defs[i]) {
+        return None;
+    }
+    Some(Value::Array(
+        vals.iter().cloned().map(Value::String).collect(),
+    ))
+}
+
+/// 把 `custom_mappings` 归一成「未编辑时 writer 会产出的形状」：逐行按 [`seed_cell`]
+/// 播种（缺格回落默认），再套 [`punct_row_override`] 的裁剪。
+///
+/// 存在理由是两处不对称，它们都让「什么都没改」的配置与 writer 的输出恒不相等：
+///
+/// 1. **显式写着默认值的条目**。core 的「等出厂默认即删」够不着 Map 内部条目——
+///    `input.punct.custom_mappings.<` 不是注册表登记键，`prune_redundant` 用
+///    `is_known_key` 把整个 Map 子路径排除在外（那道保险是对的：一刀切会把用户的
+///    自定义标点删光）。于是手工编辑 config.toml、或 `config.applyPatch` 按合并语义
+///    带进来的冗余行会永久留存，而 writer 每次都把它剪掉。
+///    真实案例：`"<" = ["《","＜","《","<"]` 四格全是内置默认，写进 config.toml 后
+///    设置页每次开关都提示「有未保存改动」；改成 `〈` 反而正常，因为那才算自定义。
+/// 2. **`PUNCT_DEFAULTS` 之外的源字符**。writer 只遍历这张表，表外 token 一律丢弃。
+///
+/// 归一只作用于 diff 基线，不回写 core：冗余行留在 config.toml 里对取值没有影响
+/// （查到的就是默认值），静默删掉用户手写的行反而更糟。
+fn punct_canonical_map(m: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for (_, tok, defs) in PUNCT_DEFAULTS {
+        let ov = m.get(*tok).and_then(|v| v.as_array());
+        let vals: [String; 4] = std::array::from_fn(|i| seed_cell(ov, i, defs[i]));
+        if let Some(row) = punct_row_override(&vals, defs) {
+            out.insert((*tok).to_string(), row);
+        }
+    }
+    out
+}
+
+/// 就地归一配置里的 `custom_mappings`（见 [`punct_canonical_map`]）。
+///
+/// 键缺失时也写入空表——writer 是**无条件** `set_path` 的，基线缺键会让 diff 拿
+/// `Null` 跟 `{}` 比而恒判有变更。
+pub(crate) fn canonicalize_punct_baseline(cfg: &mut Config) {
+    let cur = cfg
+        .get_path(PUNCT_MAP_KEY)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    cfg.set_path(PUNCT_MAP_KEY, Value::Object(punct_canonical_map(&cur)));
+}
+
 /// 自定义序号标签槽位数（序号 1-10）。
 const INDEX_LABEL_SLOTS: usize = 10;
 
@@ -2700,9 +2758,10 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
             let mut m = serde_json::Map::new();
             for (row, (_, tok, defs)) in cells_w.iter().zip(PUNCT_DEFAULTS.iter()) {
                 let vals: [String; 4] = std::array::from_fn(|i| row[i].get());
-                if (0..4).any(|i| vals[i].as_str() != defs[i]) {
-                    let arr: Vec<Value> = vals.iter().cloned().map(Value::String).collect();
-                    m.insert((*tok).to_string(), Value::Array(arr));
+                // 裁剪判据只此一处（见 punct_row_override）：diff 基线归一化问的是同一个
+                // 函数，两边同构，「什么都没改」才可能 diff 为空。
+                if let Some(arr) = punct_row_override(&vals, defs) {
+                    m.insert((*tok).to_string(), arr);
                 }
             }
             c.set_path(&kw, Value::Object(m));
@@ -2849,6 +2908,190 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归：config.toml 里**显式写着内置默认值**的标点映射行，不许把设置页判成脏。
+    ///
+    /// 用户实景：手工把 `"<"` 从 `〈` 改成 `《`（后者正是内置默认），此后每次打开设置页
+    /// 什么都不动、关窗都提示「有未保存改动」。根因是 writer 会剪掉全等默认的行、而
+    /// core 保留了它（Map 内部条目不在注册表，剪枝够不着），两侧恒不相等。
+    ///
+    /// 断言方式是「归一后的基线 == 未编辑时 writer 的输出」——writer 未编辑时的输出就是
+    /// 对基线逐行 `seed_cell` 播种再裁剪，即 `punct_canonical_map` 本身，故直接比对它
+    /// 的幂等性与裁剪结果即可，不必立起需要 windui 环境的 `AppState`。
+    #[test]
+    fn punct_baseline_absorbs_explicit_default_row() {
+        let mut cfg = Config::from_value(serde_json::json!({
+            "input": { "punct": { "custom_mappings": {
+                // 四格全是内置默认 → 不算自定义，基线里必须被吸收掉
+                "<": ["《", "＜", "《", "<"],
+                ">": ["》", "＞", "》", ">"],
+                // 真正的自定义 → 必须原样留下
+                "\\": ["、", "＼", "、", "|"],
+            } } }
+        }));
+        canonicalize_punct_baseline(&mut cfg);
+        let m = cfg
+            .get_path(PUNCT_MAP_KEY)
+            .and_then(|v| v.as_object())
+            .expect("归一后该键必须存在");
+        assert!(!m.contains_key("<"), "全等默认的行应被剪掉: {m:?}");
+        assert!(!m.contains_key(">"), "全等默认的行应被剪掉: {m:?}");
+        assert_eq!(
+            m.get("\\"),
+            Some(&serde_json::json!(["、", "＼", "、", "|"])),
+            "真正的自定义行必须原样保留"
+        );
+
+        // 幂等：再归一一次不再变化 —— writer 的输出喂回基线也必须落在同一个不动点上，
+        // 否则「保存后立刻又判脏」。
+        let once = m.clone();
+        canonicalize_punct_baseline(&mut cfg);
+        assert_eq!(
+            cfg.get_path(PUNCT_MAP_KEY).and_then(|v| v.as_object()),
+            Some(&once),
+            "归一必须幂等"
+        );
+    }
+
+    /// 键缺失时基线也要补出空表：writer 是无条件 `set_path` 的，
+    /// 基线缺键会让 diff 拿 `Null` 跟 `{}` 比而恒判有变更。
+    #[test]
+    fn punct_baseline_fills_missing_key_with_empty_map() {
+        let mut cfg = Config::from_value(serde_json::json!({ "input": {} }));
+        canonicalize_punct_baseline(&mut cfg);
+        assert_eq!(
+            cfg.get_path(PUNCT_MAP_KEY),
+            Some(&serde_json::json!({})),
+            "缺键必须补成空表"
+        );
+    }
+
+    /// 缺格（数组不足 4 项）按 `seed_cell` 回落默认后再判裁剪：
+    /// 只写了默认值前缀的行同样不算自定义。
+    #[test]
+    fn punct_baseline_treats_short_default_row_as_clean() {
+        let mut cfg = Config::from_value(serde_json::json!({
+            "input": { "punct": { "custom_mappings": { "!": ["！"] } } }
+        }));
+        canonicalize_punct_baseline(&mut cfg);
+        let m = cfg
+            .get_path(PUNCT_MAP_KEY)
+            .and_then(|v| v.as_object())
+            .expect("归一后该键必须存在");
+        assert!(m.is_empty(), "缺格补默认后全等默认，应被剪掉: {m:?}");
+    }
+
+    /// 端到端闭环：**真实** punct writer + 真实基线归一 + 真实 diff。
+    ///
+    /// 上面那条回归测的是归一函数本身，这条测的是「writer 的输出确实落在归一后的基线
+    /// 上」——两者一旦分头演化（哪怕都各自自洽），关窗守卫就又会永远拦人。故这里不复刻
+    /// writer 的逻辑，直接把 `build_dialog_button_punct` 注册的那个 writer 跑起来。
+    #[test]
+    fn punct_writer_lands_on_canonical_baseline() {
+        // core 返回的配置：前两行四格全是内置默认（手工编辑 config.toml、或
+        // config.applyPatch 的合并语义都会留下这种冗余行），第三行是真自定义。
+        let cfg = Config::from_value(serde_json::json!({
+            "input": { "punct": { "custom_mappings": {
+                "<": ["《", "＜", "《", "<"],
+                ">": ["》", "＞", "》", ">"],
+                "\\": ["、", "＼", "、", "|"],
+            } } }
+        }));
+
+        let st = AppState::empty();
+        let _ = build_dialog_button_punct(&st, PUNCT_MAP_KEY, &cfg);
+
+        // apply_loaded 的做法：基线归一后再作为 diff 基准。
+        let mut base = cfg.clone();
+        canonicalize_punct_baseline(&mut base);
+
+        // has_unsaved_changes 的做法：跑全部 writer 到副本上。用户一格都没动过。
+        let mut probe = base.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+
+        assert_eq!(
+            probe.get_path(PUNCT_MAP_KEY),
+            base.get_path(PUNCT_MAP_KEY),
+            "什么都没改，writer 的输出必须与归一后的基线相等，否则关窗永远提示未保存"
+        );
+        // 顺带钉住：真自定义那行不许在这条路上蒸发。
+        assert_eq!(
+            probe
+                .get_path(PUNCT_MAP_KEY)
+                .and_then(|v| v.as_object())
+                .and_then(|m| m.get("\\")),
+            Some(&serde_json::json!(["、", "＼", "、", "|"])),
+        );
+    }
+
+    /// `PUNCT_DEFAULTS` 的四列必须与 core 的标点转换流水线**逐格相等**。
+    ///
+    /// 这张表是 core 内置转换表在设置端的第二个知情者，且被当成「什么算自定义」的判据
+    /// （见 [`punct_row_override`]）。漂移一格的后果不是显示错一个字符，而是那一行永远
+    /// 判不干净——用户什么都没改，关窗也提示未保存。没有堆栈、没有报错，只有这条测试
+    /// 看得见，所以对着 core 的真实流水线算，而不是抄一份快照自己跟自己比。
+    ///
+    /// 列语义（core 存储序）：0 中半 / 1 英全 / 2 中全 / 3 英半，
+    /// 与 `wind_punct::punct_col_idx` 的 `(chinese_punct, full_width)` 组合一一对应。
+    #[test]
+    fn punct_defaults_match_core_pipeline() {
+        use wind_config::config::InputConfig;
+        use wind_transform::punctuation::PunctuationConverter;
+
+        /// core 在「无自定义映射」时该格的产物。`skip` 为引号交替态的预热次数
+        /// （`"2`/`'2` 那两行是**右形**，须先消耗掉一次左形）。
+        fn core_col(ch: char, skip: usize, col: usize) -> String {
+            let cfg = InputConfig::default();
+            debug_assert!(!cfg.punct.custom_enabled, "默认应无自定义，否则本测试自欺");
+            let (chinese, full) = match col {
+                0 => (true, false),
+                1 => (false, true),
+                2 => (true, true),
+                3 => (false, false),
+                _ => unreachable!(),
+            };
+            let mut conv = PunctuationConverter::new();
+            // 预热必须走中文分支：英文列不调 to_chinese，也就不推进交替态。
+            for _ in 0..skip {
+                wind_punct::convert_punct(&mut conv, &cfg, true, false, ch, 0);
+            }
+            wind_punct::convert_punct(&mut conv, &cfg, chinese, full, ch, 0)
+        }
+
+        for (label, tok, defs) in PUNCT_DEFAULTS {
+            let (ch, skip) = match *tok {
+                "\"1" => ('"', 0),
+                "\"2" => ('"', 1),
+                "'1" => ('\'', 0),
+                "'2" => ('\'', 1),
+                _ => {
+                    let mut it = tok.chars();
+                    let c = it.next().expect("token 不可为空");
+                    assert!(it.next().is_none(), "非引号 token 必须是单字符: {tok:?}");
+                    (c, 0)
+                }
+            };
+            for (col, got) in defs.iter().enumerate() {
+                let want = core_col(ch, skip, col);
+                if got.is_empty() {
+                    // 空串在 core 侧的语义是「该格回落默认」（lookup_custom 会 filter 掉
+                    // 空值），所以空格行用它表示「不改」是对的——文本框里也没法把一个
+                    // 空格显示成可辨认的内容。只有空格行允许这样。
+                    assert_eq!(
+                        *tok, " ",
+                        "只有空格行允许留空格：{label} 第 {col} 列空着，core 却给出 {want:?}"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    *got, want,
+                    "PUNCT_DEFAULTS 与 core 转换表漂移：{label}(token={tok:?}) 第 {col} 列"
+                );
+            }
+        }
+    }
 
     #[test]
     fn platform_gate() {

@@ -1406,7 +1406,12 @@ impl AppState {
     /// 主题/字体下拉经响应式选项信号（theme_label_sig/font_sig 等）填充，异步数据到达即刷新；
     /// 其余 manifest 字段经已注册加载器回填 Signal。
     pub fn apply_loaded(&mut self, data: LoadedState) {
-        let cfg = Config::from_value(data.config_value);
+        let mut cfg = Config::from_value(data.config_value);
+        // diff 基线必须与 writer 的输出同构：punct writer 有「全等内置默认即不落盘」的
+        // 裁剪语义，而 core 会原样保留 config.toml 里显式写着默认值的映射行（Map 内部
+        // 条目不在注册表，core 的剪枝够不着）。不归一则「什么都没改」也恒判脏，关窗
+        // 每次都拦。详见 `manifest::punct_canonical_map`。
+        crate::manifest::canonicalize_punct_baseline(&mut cfg);
         // 先填充列表数据与响应式下拉选项 —— 必须早于 loader：themes 的 loader 需按配置值在
         // 选项列表中定位选中索引，故选项信号要在 loader 跑之前就位。
         self.schemas = data.schemas;
@@ -1589,7 +1594,10 @@ impl AppState {
     pub fn reload(&mut self) {
         let fresh = rpc::call_core("config.get", &serde_json::json!({}))
             .unwrap_or(Value::Object(serde_json::Map::new()));
-        let cfg = Config::from_value(fresh);
+        let mut cfg = Config::from_value(fresh);
+        // 与 `apply_loaded` 同一道归一：重新加载后基线同样要与 writer 同构，
+        // 否则「重新加载」反而把设置页留在永久判脏的状态。
+        crate::manifest::canonicalize_punct_baseline(&mut cfg);
         {
             let loaders = self.fields.loaders.borrow();
             for l in loaders.values() {

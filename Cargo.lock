@@ -1675,6 +1675,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wind-punct"
+version = "0.1.0"
+dependencies = [
+ "wind-config",
+ "wind-transform",
+]
+
+[[package]]
 name = "wind-quick-input"
 version = "0.1.0"
 dependencies = [
@@ -1699,6 +1707,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wind-transform"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "wind-config",
+]
+
+[[package]]
 name = "wind_setting"
 version = "0.1.0"
 dependencies = [
@@ -1716,7 +1732,9 @@ dependencies = [
  "ureq",
  "wind-config",
  "wind-ipc",
+ "wind-punct",
  "wind-rpc",
+ "wind-transform",
  "windui",
  "winreg",
  "winresource",
