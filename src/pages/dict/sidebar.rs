@@ -230,19 +230,33 @@ fn item_row(name: &str, tag: &str, active: bool) -> Element {
                 .max_lines(1)
                 .height(18),
         )
-        .child(badge(tag))
+        .child(badge(tag, active))
 }
 
-/// 引擎类型徽章（「拼音」「码表」「全局」…）。中性淡底小字，不用强调色 —— 每一行都有
-/// 一枚，染上强调色整列都在闪。
-fn badge(tag: &str) -> Element {
-    Element::label(tag)
-        .font_size(10.0)
-        .fg_role(Role::TextDisabled)
+/// 引擎类型徽章（「拼音」「码表」「全局」…）。
+///
+/// 与方案页的徽章同一套尺寸与配色（`schema_manager` 的 type/source badge），两处并排
+/// 出现时不该有两种长相。
+///
+/// **靠边框而不是靠颜色把它立起来**：左栏每行都挂一枚，密度比方案页高得多，整列染上
+/// 强调色会很吵；但为了不吵而一路降到 `TextDisabled` + 无底无框，就掉到可读性下限
+/// 之外了——这正是 windui `badge_intent` 注释里记着的那个坑（灰字灰底几乎看不清）。
+/// 形状由边框提供，颜色保持克制。
+///
+/// 选中行例外：徽章跟着选中态转成强调色，与行内文字呼应。只有一行是这样，不构成噪音。
+fn badge(tag: &str, active: bool) -> Element {
+    let el = Element::label(tag)
+        .font_size(10.5)
         .max_lines(1)
         .corner(4.0)
-        .bg_role(Role::SurfaceAlt)
-        .padding_xy(5, 2)
+        .padding_xy(5, 2);
+    if active {
+        el.fg_role(Role::Accent).border_role(Role::Accent, 1)
+    } else {
+        el.fg_role(Role::TextMuted)
+            .bg_role(Role::SurfaceAlt)
+            .border_role(Role::Border, 1)
+    }
 }
 
 #[cfg(test)]
