@@ -374,22 +374,103 @@ fn mode_str_to_idx(mode: &str) -> usize {
     }
 }
 
+/// 登记**方案页专有**的写回器与 side 提交器。
+///
+/// # 必须可重入，且必须在每次 `FieldRegistry::reset()` 之后重新调用
+///
+/// 这批登记原先写在 `AppState::empty()` 里、一辈子只跑一次。而 `shell::build` 开头会
+/// `fields.reset()` 清空整个注册表（主窗可关掉再开，见 `FieldRegistry::reset`）——
+/// `empty()` 早于 `shell::build`，于是设置树一建好，这批登记就全没了：
+///
+/// - `keys.key_actions` writer 没了 ⇒ 方案热键 / 引导键的改动**永远进不了 diff**，
+///   保存时提示「没有变更」；
+/// - `schema.available` / `schema.active` writer 没了 ⇒ 方案启用状态、「设为当前」同样存不下；
+/// - `SideCommitter` 没了 ⇒ 方案 override、词库开关也存不下。
+///
+/// 而 manifest 那批 writer 是在 `shell::build` 里注册的，reset 后照常重建——**所以症状
+/// 是「别的设置能存、只有方案页存不了」**，很容易误判成方案页自己的问题。
+///
+/// 守卫见 `builtin_registrations_survive_registry_reset`。
+pub(crate) fn register_schema_registrations(
+    fields: &Rc<FieldRegistry>,
+    schema_mgr: &SchemaManagerState,
+) {
+    // 方案 override / 词库开关不进 config.toml，主保存的键 diff 够不着 —— 在此登记，
+    // 随「应用设置 / 保存并退出」一并提交。见 SideCommitter 的文档。
+    {
+        let dirty_mgr = schema_mgr.clone();
+        let commit_mgr = schema_mgr.clone();
+        fields.side.borrow_mut().push(SideCommitter {
+            is_dirty: Box::new(move || dirty_mgr.has_pending_edits()),
+            commit: Box::new(move || commit_mgr.commit_pending_edits()),
+        });
+    }
+    // 注册 schema.available 写回器：把 enabled_order 序列化为有序字符串数组
+    {
+        let eo = schema_mgr.enabled_order.clone();
+        fields.writers.borrow_mut().push(Box::new(move |cfg| {
+            let ids: Vec<Value> = eo
+                .borrow()
+                .iter()
+                .map(|id| Value::String(id.clone()))
+                .collect();
+            cfg.set_path("schema.available", Value::Array(ids));
+        }));
+    }
+
+    // `keys.schema_hotkeys` **不再有写回器**：该键已在 core 废弃并移出登记表
+    // （`config.setItems` 会把它当未登记键跳过），方案直达热键统一落进下面的
+    // key_actions（动词 `switch_schema:<方案id>`）。留着这个 writer 的话，每次保存
+    // 都会往 diff 里塞一个必被服务端 skip 的项——用户看到「部分设置未保存」的提示，
+    // 而那一项其实压根不该存在。
+    //
+    // 注册 keys.key_actions 写回器：全局按键功能表（五c 收编后所有引导键的落点，
+    // 以及合并进来的方案直达热键）。
+    //
+    // 与 schema_hotkeys 同一条路、同一个理由：Map 型键在 diff 里是原子叶子（整对象
+    // 产出），在对话框里直接 config.setItems 的话，主页面持有的仍是打开时的旧值，
+    // 用户之后按一次保存就会把它整体覆盖回去。
+    {
+        let ka = schema_mgr.key_actions.clone();
+        fields.writers.borrow_mut().push(Box::new(move |cfg| {
+            let map: serde_json::Map<String, Value> = ka
+                .borrow()
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            cfg.set_path("keys.key_actions", Value::Object(map));
+        }));
+    }
+
+    // 原先此处还有一个 `schema.special_modes` 写回器（特殊方案的引导键 + 条目维护）。
+    // 该键已从 core 删除：实例集合改由「带 [overlay] 段的已安装方案」定义，引导键
+    // 落上面的 keys.key_actions，overlay 呈现配置落方案 override（走 SideCommitter）。
+    // 于是这里那份「必须整表写回、不能用结构体重建」的易碎逻辑整个消失。
+
+    // 注册 schema.active 写回器：把「设为当前」的选择持久化。
+    //
+    // core 的 switch_schema 只改运行时活跃方案不写配置，而保存设置触发的
+    // reload_from_config 会用配置里的 schema.active 重置它——不在这里写回的话，
+    // 用户设为当前后再点一次「应用设置」，活跃方案就被打回原样。
+    // 空串跳过：active_id 尚未从 RPC 拉到（离线/未连接）时不该把配置清空。
+    {
+        let active = schema_mgr.active_id.clone();
+        fields.writers.borrow_mut().push(Box::new(move |cfg| {
+            let id = active.borrow().clone();
+            if !id.is_empty() {
+                cfg.set_path("schema.active", Value::String(id));
+            }
+        }));
+    }
+}
+
 impl AppState {
     /// 快速初始化：仅读系统主题，其余字段置空。
     /// UI 可立即显示；真实数据由后台线程通过 [`AppState::apply_loaded`] 写入。
     pub fn empty() -> Self {
         let schema_mgr = SchemaManagerState::new();
         let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
-        // 方案 override / 词库开关不进 config.toml，主保存的键 diff 够不着 —— 在此登记，
-        // 随「应用设置 / 保存并退出」一并提交。见 SideCommitter 的文档。
-        {
-            let dirty_mgr = schema_mgr.clone();
-            let commit_mgr = schema_mgr.clone();
-            fields.side.borrow_mut().push(SideCommitter {
-                is_dirty: Box::new(move || dirty_mgr.has_pending_edits()),
-                commit: Box::new(move || commit_mgr.commit_pending_edits()),
-            });
-        }
+        register_schema_registrations(&fields, &schema_mgr);
         let setting_load = setting_config::load();
         // 先取出，下面 setting_load.config 会被移动进结构体
         let setting_load_update_auto_check = setting_load.config.update.auto_check;
@@ -413,64 +494,6 @@ impl AppState {
             "off"
         }
         .to_string();
-
-        // 注册 schema.available 写回器：把 enabled_order 序列化为有序字符串数组
-        {
-            let eo = schema_mgr.enabled_order.clone();
-            fields.writers.borrow_mut().push(Box::new(move |cfg| {
-                let ids: Vec<Value> = eo
-                    .borrow()
-                    .iter()
-                    .map(|id| Value::String(id.clone()))
-                    .collect();
-                cfg.set_path("schema.available", Value::Array(ids));
-            }));
-        }
-
-        // `keys.schema_hotkeys` **不再有写回器**：该键已在 core 废弃并移出登记表
-        // （`config.setItems` 会把它当未登记键跳过），方案直达热键统一落进下面的
-        // key_actions（动词 `switch_schema:<方案id>`）。留着这个 writer 的话，每次保存
-        // 都会往 diff 里塞一个必被服务端 skip 的项——用户看到「部分设置未保存」的提示，
-        // 而那一项其实压根不该存在。
-        //
-        // 注册 keys.key_actions 写回器：全局按键功能表（五c 收编后所有引导键的落点，
-        // 以及合并进来的方案直达热键）。
-        //
-        // 与 schema_hotkeys 同一条路、同一个理由：Map 型键在 diff 里是原子叶子（整对象
-        // 产出），在对话框里直接 config.setItems 的话，主页面持有的仍是打开时的旧值，
-        // 用户之后按一次保存就会把它整体覆盖回去。
-        {
-            let ka = schema_mgr.key_actions.clone();
-            fields.writers.borrow_mut().push(Box::new(move |cfg| {
-                let map: serde_json::Map<String, Value> = ka
-                    .borrow()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-                    .collect();
-                cfg.set_path("keys.key_actions", Value::Object(map));
-            }));
-        }
-
-        // 原先此处还有一个 `schema.special_modes` 写回器（特殊方案的引导键 + 条目维护）。
-        // 该键已从 core 删除：实例集合改由「带 [overlay] 段的已安装方案」定义，引导键
-        // 落上面的 keys.key_actions，overlay 呈现配置落方案 override（走 SideCommitter）。
-        // 于是这里那份「必须整表写回、不能用结构体重建」的易碎逻辑整个消失。
-
-        // 注册 schema.active 写回器：把「设为当前」的选择持久化。
-        //
-        // core 的 switch_schema 只改运行时活跃方案不写配置，而保存设置触发的
-        // reload_from_config 会用配置里的 schema.active 重置它——不在这里写回的话，
-        // 用户设为当前后再点一次「应用设置」，活跃方案就被打回原样。
-        // 空串跳过：active_id 尚未从 RPC 拉到（离线/未连接）时不该把配置清空。
-        {
-            let active = schema_mgr.active_id.clone();
-            fields.writers.borrow_mut().push(Box::new(move |cfg| {
-                let id = active.borrow().clone();
-                if !id.is_empty() {
-                    cfg.set_path("schema.active", Value::String(id));
-                }
-            }));
-        }
 
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),

@@ -43,6 +43,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         // ——不清的话，旧树那批 Signal 句柄会连同新的一起留在注册表里，而它们的槽位
         // 早已随上一个窗口的 `SignalScope` 回收、并被新信号复用。详见 `FieldRegistry::reset`。
         st.fields.reset();
+        // reset 把**所有**登记项都清了，包括不在本函数里注册的那批（方案页的三个写回器
+        // 与 SideCommitter，原先只在 `AppState::empty()` 里登记一次）。不在这里补回来，
+        // 设置树一建好它们就永远缺席——症状是「别的设置能存、只有方案页存不了」：热键 /
+        // 引导键改动进不了 diff，保存时提示「没有变更」。
+        crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
         let tabs_vec = pages::all_tabs(app, &st);

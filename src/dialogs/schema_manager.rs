@@ -4414,6 +4414,76 @@ mod hotkey_save_pipeline_tests {
         );
     }
 
+    /// ★ 回归守卫：`FieldRegistry::reset()` 之后，方案页那批登记必须仍然在。
+    ///
+    /// `shell::build` 开头会 reset 整个注册表（主窗可关掉再开），而这批登记原先只在
+    /// `AppState::empty()` 里做一次、且 `empty()` 早于 `shell::build` —— 于是设置树一
+    /// 建好它们就全没了：热键改动进不了 diff，保存时提示「没有变更」。manifest 那批
+    /// writer 因为在 `shell::build` 里注册而照常重建，**所以症状是「别的设置能存、只有
+    /// 方案页存不了」**，极易误判成方案页自身的问题（真机上误判了整整两天）。
+    ///
+    /// 这里直接模拟那个顺序：reset 之后重新登记，再验热键改动仍能产出 diff。
+    #[test]
+    fn builtin_registrations_survive_registry_reset() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let base = json!({ "keys": { "key_actions": {} } });
+        st.base_config = Config::from_value(base.clone());
+        st.current_config = Config::from_value(base);
+
+        // shell::build 的开头：清空整棵设置树的登记项……
+        st.fields.reset();
+        assert!(
+            st.fields.writers.borrow().is_empty(),
+            "前提：reset 确实清空了 writers，否则本用例证明不了什么"
+        );
+        // ……随后必须把方案页那批补回来（真实调用点在 shell::build 里）。
+        crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+
+        *st.schema_mgr.settings_schema_id.borrow_mut() = "wubi86".to_string();
+        st.schema_mgr.settings_hotkey_enabled.set(true);
+        st.schema_mgr.settings_hotkey_raw.set("ctrl+shift+r".into());
+        st.schema_mgr.commit_hotkey_edit();
+
+        let items = st.debug_diff_after_writers();
+        assert!(
+            items.iter().any(|it| it.key == "keys.key_actions"),
+            "reset 后 key_actions writer 缺席 ⇒ 方案热键永远存不下：{items:?}"
+        );
+        assert!(
+            !st.fields.side.borrow().is_empty(),
+            "SideCommitter 也要补回来，否则方案 override / 词库开关同样存不下"
+        );
+    }
+
+    /// ★★ 与上一条配套：钉住 `shell::build` **确实调用**了那个补登记的函数。
+    ///
+    /// 上一条测试自己调 `register_schema_registrations`，所以它只证明「这个函数有效」，
+    /// 证明不了「有人调它」——把 shell.rs 里的真实调用点删掉，它照样绿（本条守卫就是
+    /// 在那次改坏验证里补出来的）。**行为测试与调用点守卫缺一不可**：前者防函数写错，
+    /// 后者防调用点丢失，而本次事故恰恰是后一种。
+    ///
+    /// 用源码扫描是因为 `shell::build` 要真实 UI 运行时才跑得起来，测试里进不去。
+    #[test]
+    fn shell_build_reregisters_after_reset() {
+        const SHELL_SRC: &str = include_str!("../shell.rs");
+        let reset_at = SHELL_SRC
+            .find("st.fields.reset();")
+            .expect("shell::build 里找不到 fields.reset()（改名了？守卫需同步更新）");
+        let reregister_at = SHELL_SRC
+            .find("register_schema_registrations(")
+            .expect(
+                "shell::build 没有补回方案页的登记 ⇒ reset 之后热键/方案启用/设为当前/                 方案 override 全部保存不了，且症状是「别的设置能存、只有方案页存不了」",
+            );
+        assert!(
+            reregister_at > reset_at,
+            "补登记必须排在 reset **之后**，否则照样被清空"
+        );
+    }
+
     /// 反向对照：什么都没改时 diff 必须为空。
     ///
     /// 少了这条，上面那条在「diff 恒非空」（比如 writer 每次都产出不同的表）时也会绿，
