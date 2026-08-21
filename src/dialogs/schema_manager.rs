@@ -321,6 +321,15 @@ pub struct SchemaManagerState {
     pub settings_ka_visible: Signal<bool>,
     pub settings_ka_title: Signal<String>,
     pub settings_ka_disp: Signal<String>,
+    // ── 方案级会话态按键表（方案顶层 `session_actions`，见 dialogs::schema_session_actions）──
+    //
+    // 与上面那张是对称的两张表：`key_actions` 管无会话态的引导键，本张管**打字时**的
+    // 翻页/选词/取消。分开而不是合成一张带状态维度的表，判据见 core 仓
+    // `docs/design/session-key-actions.md` §2。
+    pub settings_sa: crate::dialogs::schema_session_actions::SchemaSessionActionFields,
+    pub settings_sa_visible: Signal<bool>,
+    pub settings_sa_title: Signal<String>,
+    pub settings_sa_disp: Signal<String>,
     /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
     /// 中间靠这个信号驱动 `host_signal` 重建。
     pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtItem>>,
@@ -404,6 +413,10 @@ impl SchemaManagerState {
             settings_ka_visible: signal(false),
             settings_ka_title: signal("按键功能".to_string()),
             settings_ka_disp: signal(String::new()),
+            settings_sa: Default::default(),
+            settings_sa_visible: signal(false),
+            settings_sa_title: signal("打字时按键".to_string()),
+            settings_sa_disp: signal(String::new()),
             settings_ct_plan: signal(vec![]),
             settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
             settings_layout_at_open: Rc::new(std::cell::Cell::new(0)),
@@ -1343,6 +1356,11 @@ impl SchemaManagerState {
                 .unwrap_or_else(|| sid.clone());
             self.settings_ka_title.set(format!("按键功能 - {who}"));
             self.settings_ka_disp.set(self.settings_ka.summary());
+            // 会话态那张同批播种：两张表读的是同一份 cfg，分开播种没有意义，且漏掉一处
+            // 的表现是「打开设置页看到的是上一个方案的绑定」。
+            self.settings_sa.seed(&self.settings_cfg.borrow());
+            self.settings_sa_title.set(format!("打字时按键 - {who}"));
+            self.settings_sa_disp.set(self.settings_sa.summary());
             // 不单独成节：内容并进 EntryKeys 那节（组名已改「按键设置」）——
             // 「切换热键 / 引导键 / 按键绑定」三行讲的是同一件事，分成两个组标题
             // 只会让人以为它们互不相干。
@@ -1430,6 +1448,14 @@ impl SchemaManagerState {
         // 无总开关，脏判定即内容比对；空表也要写，那是「删光所有绑定」的落地方式。
         if self.settings_ka.is_dirty() {
             self.settings_ka.apply(&mut cfg);
+            cfg_changed = true;
+        }
+
+        // 会话态按键表：同一份 cfg，同样是内容比对定脏、空表也要写。
+        // ⚠️ 两张表必须都在这一次 saveConfig 里落地：core 是整份 cfg 与方案文件 diff 后
+        // 全量重写 override，分两次提交会互相覆盖（后一次的基线里没有前一次的改动）。
+        if self.settings_sa.is_dirty() {
+            self.settings_sa.apply(&mut cfg);
             cfg_changed = true;
         }
 
@@ -2561,6 +2587,7 @@ pub fn build_schema_manager_dialog(
     let trigger_dlg = build_trigger_keys_dialog(state);
     let ct_dlg = build_codetable_dialog(state);
     let ka_dlg = build_key_actions_dialog(state);
+    let sa_dlg = build_session_actions_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -2571,6 +2598,7 @@ pub fn build_schema_manager_dialog(
         .child(trigger_dlg)
         .child(ct_dlg)
         .child(ka_dlg)
+        .child(sa_dlg)
 }
 
 /// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
@@ -2587,6 +2615,21 @@ fn build_key_actions_dialog(state: &SchemaManagerState) -> Element {
             .child(content),
         // 「添加绑定」进底部按钮栏（与「关闭」同排）；放列表下方会随列表一起滚走。
         // 无「保存」：与码表配置同路，改动随方案设置对话框的「保存」一并提交。
+        buttons,
+    )
+}
+
+/// 方案级会话态按键表浮层（第三级）。结构与 [`build_key_actions_dialog`] 对称，
+/// 内容同样由自带响应式列表驱动。
+fn build_session_actions_dialog(state: &SchemaManagerState) -> Element {
+    let (content, buttons) = state.settings_sa.build_body();
+    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
+        state.settings_sa_visible,
+        state.settings_sa_title,
+        Element::col()
+            .width_match()
+            .padding_xy(16, 6)
+            .child(content),
         buttons,
     )
 }
@@ -3077,6 +3120,37 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             .small()
                             .outline_soft()
                             .on_click(move |_| kv.set(true)),
+                    ),
+            );
+
+            // 打字时按键（方案顶层 `session_actions`）：与上一行成对——那张管「没在打字时
+            // 按下去干什么」（引导键），这张管「正在打字时按下去干什么」（翻页/选词/取消）。
+            // 措辞按**用户处境**分而不是按内部表名分：用户不知道也不必知道有两张表。
+            let sv = state.settings_sa_visible;
+            col = col.child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(10)
+                    .child(
+                        Element::label("本方案打字时的按键")
+                            .font_size(13.0)
+                            .fg_role(Role::Text)
+                            .weight(1.0)
+                            .max_lines(1),
+                    )
+                    .child(
+                        Element::label_signal(state.settings_sa_disp)
+                            .font_size(12.5)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(1)
+                            .width(114),
+                    )
+                    .child(
+                        Element::button("设置")
+                            .small()
+                            .outline_soft()
+                            .on_click(move |_| sv.set(true)),
                     ),
             );
             col
