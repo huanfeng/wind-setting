@@ -162,7 +162,7 @@ impl SessionActionFields {
     /// `select_candidate:N` / `select_char:N` 的 N 只列常用档：core 侧 N 无上限，但
     /// 次选/三选之外几乎无人使用，全列出来会把下拉撑成一长条。手写配置里的其它 N
     /// 由 `seed` 的「当前值」机制兜住。
-    fn verb_options() -> &'static [(&'static str, &'static str)] {
+    pub fn verb_options() -> &'static [(&'static str, &'static str)] {
         &[
             ("none", "打字时禁用该键"),
             ("page_next", "下一页"),

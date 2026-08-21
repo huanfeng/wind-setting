@@ -330,6 +330,14 @@ pub struct SchemaManagerState {
     pub settings_sa_visible: Signal<bool>,
     pub settings_sa_title: Signal<String>,
     pub settings_sa_disp: Signal<String>,
+    // ── 按键总览（**只读**，见 dialogs::keys_overview）──
+    //
+    // 不参与 commit：它没有 is_dirty/apply。集中视图若可写回就得决定写哪一层，那是第二个
+    // 真相源。判据见 core 仓 `docs/design/key-resolver-unification.md` §4.3。
+    pub settings_ko: crate::dialogs::keys_overview::KeysOverview,
+    pub settings_ko_visible: Signal<bool>,
+    pub settings_ko_title: Signal<String>,
+    pub settings_ko_disp: Signal<String>,
     /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
     /// 中间靠这个信号驱动 `host_signal` 重建。
     pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtItem>>,
@@ -417,6 +425,10 @@ impl SchemaManagerState {
             settings_sa_visible: signal(false),
             settings_sa_title: signal("打字时按键".to_string()),
             settings_sa_disp: signal(String::new()),
+            settings_ko: Default::default(),
+            settings_ko_visible: signal(false),
+            settings_ko_title: signal("按键总览".to_string()),
+            settings_ko_disp: signal(String::new()),
             settings_ct_plan: signal(vec![]),
             settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
             settings_layout_at_open: Rc::new(std::cell::Cell::new(0)),
@@ -1361,6 +1373,12 @@ impl SchemaManagerState {
             self.settings_sa.seed(&self.settings_cfg.borrow());
             self.settings_sa_title.set(format!("打字时按键 - {who}"));
             self.settings_sa_disp.set(self.settings_sa.summary());
+            // 总览同批播种。数据整份来自 core 的 `keysOverview` 旁路字段，本仓不做仲裁——
+            // 全局那份要经 `effective_session_actions` 折算，展开规则只该有一处。
+            self.settings_ko
+                .seed(&self.settings_cfg.borrow(), &self.build_key_action_verbs());
+            self.settings_ko_title.set(format!("按键总览 - {who}"));
+            self.settings_ko_disp.set(self.settings_ko.summary());
             // 不单独成节：内容并进 EntryKeys 那节（组名已改「按键设置」）——
             // 「切换热键 / 引导键 / 按键绑定」三行讲的是同一件事，分成两个组标题
             // 只会让人以为它们互不相干。
@@ -2588,6 +2606,7 @@ pub fn build_schema_manager_dialog(
     let ct_dlg = build_codetable_dialog(state);
     let ka_dlg = build_key_actions_dialog(state);
     let sa_dlg = build_session_actions_dialog(state);
+    let ko_dlg = build_keys_overview_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -2599,6 +2618,7 @@ pub fn build_schema_manager_dialog(
         .child(ct_dlg)
         .child(ka_dlg)
         .child(sa_dlg)
+        .child(ko_dlg)
 }
 
 /// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
@@ -2615,6 +2635,20 @@ fn build_key_actions_dialog(state: &SchemaManagerState) -> Element {
             .child(content),
         // 「添加绑定」进底部按钮栏（与「关闭」同排）；放列表下方会随列表一起滚走。
         // 无「保存」：与码表配置同路，改动随方案设置对话框的「保存」一并提交。
+        buttons,
+    )
+}
+
+/// 按键总览浮层（第三级，**只读**）。没有「添加」按钮，底部只有壳自带的「关闭」。
+fn build_keys_overview_dialog(state: &SchemaManagerState) -> Element {
+    let (content, buttons) = state.settings_ko.build_body();
+    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
+        state.settings_ko_visible,
+        state.settings_ko_title,
+        Element::col()
+            .width_match()
+            .padding_xy(16, 6)
+            .child(content),
         buttons,
     )
 }
@@ -3151,6 +3185,36 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             .small()
                             .outline_soft()
                             .on_click(move |_| sv.set(true)),
+                    ),
+            );
+
+            // 按键总览：把上面两行加全局那几张表**合起来**回答「这个键现在到底干什么」。
+            // 排在两个编辑入口之后 —— 它是查看用的，不是又一个编辑入口。
+            let ov = state.settings_ko_visible;
+            col = col.child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(10)
+                    .child(
+                        Element::label("按键总览（只读）")
+                            .font_size(13.0)
+                            .fg_role(Role::Text)
+                            .weight(1.0)
+                            .max_lines(1),
+                    )
+                    .child(
+                        Element::label_signal(state.settings_ko_disp)
+                            .font_size(12.5)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(1)
+                            .width(114),
+                    )
+                    .child(
+                        Element::button("查看")
+                            .small()
+                            .outline_soft()
+                            .on_click(move |_| ov.set(true)),
                     ),
             );
             col
