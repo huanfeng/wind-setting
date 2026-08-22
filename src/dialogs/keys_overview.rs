@@ -20,8 +20,7 @@
 use serde_json::Value;
 use windui::prelude::*;
 
-use super::schema_key_actions::Verb;
-use super::session_actions::SessionActionFields;
+use super::key_binding::{Verb, key_display, session_verb_label};
 
 /// 总览的一行。
 #[derive(Clone)]
@@ -55,8 +54,8 @@ impl Default for KeysOverview {
 impl KeysOverview {
     /// 从 `getConfig` 的 `keysOverview` 旁路字段播种。
     ///
-    /// `lead_verbs` 是引导键那张表的动词中文名（由 `schema_manager` 现算，与「按键功能」
-    /// 对话框同一份）；会话态那张用 [`SessionActionFields::verb_options`]。
+    /// `lead_verbs` 是引导键那张表的动词中文名（由 `schema_manager` 现算，与「按键自定义」
+    /// 对话框同一份）；会话态那张用 [`session_verb_label`]。
     /// **两张表各查各的**：同一个动词字符串在两张表里不会同时出现，混查会把
     /// 「找不到就显示原值」这条兜底变成「显示了另一张表的中文名」。
     pub fn seed(&self, cfg: &Value, lead_verbs: &[Verb]) {
@@ -96,11 +95,8 @@ impl KeysOverview {
             return "—".to_string();
         }
         if session {
-            if let Some((_, label)) = SessionActionFields::verb_options()
-                .iter()
-                .find(|(v, _)| *v == action)
-            {
-                return label.to_string();
+            if let Some(label) = session_verb_label(action) {
+                return label;
             }
         } else if let Some(v) = lead_verbs.iter().find(|v| v.value == action) {
             return v.label.clone();
@@ -127,7 +123,10 @@ impl KeysOverview {
                 .spacing(8)
                 .padding_xy(0, 3)
                 .child(
-                    Element::label(&row.key)
+                    // 键名转义：配置里存的是 `rbracket` / `ctrl+shift+r` 这种内部写法，
+                    // 直接摆出来等于让用户读内部词表。与两个编辑器共用同一个显示函数——
+                    // 各写一份的结果是同一个键在总览和编辑页显示成两个名字。
+                    Element::label(key_display(&row.key))
                         .font_size(12.5)
                         .fg_role(Role::Text)
                         .width(150)
@@ -149,7 +148,7 @@ impl KeysOverview {
                 )
         });
         let hint = Element::label(
-            "只读。编辑请回「本方案的按键绑定」「本方案输入中的按键」，或全局按键设置。",
+            "本页只展示不修改。编辑请回「本方案-按键自定义」「本方案-输入中按键自定义」，或全局按键设置。",
         )
         .font_size(12.0)
         .fg_role(Role::TextMuted)
@@ -204,11 +203,37 @@ mod tests {
         let o = KeysOverview::default();
         o.seed(
             &json!({ "keysOverview": [
+                { "key": "tab", "table": "session", "action": "some_future_verb", "from": "global" },
+            ]}),
+            &[],
+        );
+        assert_eq!(o.rows.get()[0].action, "some_future_verb");
+    }
+
+    /// 序号档现在是全量 1..=9，总览要认得出来（此前只认 2、3，第 7 候选显示成原值）。
+    #[test]
+    fn ordinal_verbs_are_named() {
+        let o = KeysOverview::default();
+        o.seed(
+            &json!({ "keysOverview": [
                 { "key": "tab", "table": "session", "action": "select_candidate:7", "from": "global" },
             ]}),
             &[],
         );
-        assert_eq!(o.rows.get()[0].action, "select_candidate:7");
+        assert_eq!(o.rows.get()[0].action, "选中第 7 个候选");
+    }
+
+    /// 键名要转义成人能读的形式，而不是配置里的内部写法。
+    #[test]
+    fn key_names_are_escaped_for_display() {
+        let o = KeysOverview::default();
+        o.seed(
+            &json!({ "keysOverview": [
+                { "key": "rbracket", "table": "session", "action": "page_next", "from": "global" },
+            ]}),
+            &[],
+        );
+        assert_eq!(key_display(&o.rows.get()[0].key), "]");
     }
 
     /// 显式 none（core 给空动作）显示成占位符而不是空白行。

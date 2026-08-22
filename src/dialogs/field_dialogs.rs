@@ -647,6 +647,45 @@ fn shell_with_title(
     shell_with_title_sized(visible, title, content, bottom_leading, 460, 380)
 }
 
+/// 带「确定 / 取消」的外壳，供**编辑型**浮层用：改完要确认才生效。
+///
+/// 与 [`build_group_dialog_shell`] 那套「只有关闭」的形态是两种语义，不能混用：那类浮层
+/// 里的控件**改一下就已经进工作态**了，底部只需要一个关掉的出口；而本外壳服务的是
+/// 「攒一组值、一起提交或整体丢弃」——没有取消按钮的话，用户点开一行想看看配的是什么，
+/// 看完只能被迫接受自己途中的每一次误点。
+///
+/// `confirm_enabled` 控制「确定」是否可点（如键与功能不合法时）。
+pub fn build_confirm_dialog_shell(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    confirm_enabled: Signal<bool>,
+    on_confirm: impl Fn() + 'static,
+) -> Element {
+    let trailing = vec![
+        Element::button("取消")
+            .small()
+            .outline_soft()
+            .on_click(move |_| visible.set(false)),
+        Element::button("确定")
+            .small()
+            .enabled_signal(confirm_enabled)
+            .on_click(move |_| {
+                on_confirm();
+                visible.set(false);
+            }),
+    ];
+    shell_with_buttons(
+        visible,
+        Element::label_signal(title),
+        content,
+        Vec::new(),
+        trailing,
+        460,
+        400,
+    )
+}
+
 /// 尺寸可指定的外壳。默认 460×380 装不下的（如分了 TAB 的方案设置）用这个。
 ///
 /// 单开一个入口而不是把默认值改大：那会一次性放大**所有**用这套外壳的浮层，而它们
@@ -656,6 +695,36 @@ fn shell_with_title_sized(
     title: Element,
     content: Element,
     bottom_leading: Vec<Element>,
+    width: i32,
+    height: i32,
+) -> Element {
+    let close = vec![
+        Element::button("关闭")
+            .small()
+            .outline_soft()
+            .on_click(move |_| visible.set(false)),
+    ];
+    shell_with_buttons(
+        visible,
+        title,
+        content,
+        bottom_leading,
+        close,
+        width,
+        height,
+    )
+}
+
+/// 外壳本体（底部按钮由调用方给全）。抽出这一层是因为编辑型浮层要「确定 / 取消」而不是
+/// 「关闭」——两套底栏各写一遍框架，就会重蹈本文件开头那段注释说的「同一个设置界面里
+/// 两种弹窗」。
+#[allow(clippy::too_many_arguments)]
+fn shell_with_buttons(
+    visible: Signal<bool>,
+    title: Element,
+    content: Element,
+    bottom_leading: Vec<Element>,
+    bottom_trailing: Vec<Element>,
     width: i32,
     height: i32,
 ) -> Element {
@@ -673,12 +742,10 @@ fn shell_with_title_sized(
     for el in bottom_leading {
         bottom = bottom.child(el);
     }
-    bottom = bottom.child(Element::leaf().weight(1.0)).child(
-        Element::button("关闭")
-            .small()
-            .outline_soft()
-            .on_click(move |_| visible.set(false)),
-    );
+    bottom = bottom.child(Element::leaf().weight(1.0));
+    for el in bottom_trailing {
+        bottom = bottom.child(el);
+    }
 
     let frame = Element::col()
         .width(width)

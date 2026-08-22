@@ -2679,10 +2679,10 @@ fn collect_labels(inputs: &[Signal<String>]) -> Vec<Value> {
     out.into_iter().map(Value::String).collect()
 }
 
-/// dialog_button（keys.session_actions）：键 → 动词的行编辑器，两列都是下拉。
+/// dialog_button（keys.session_actions）：`[按键] [功能] [修改][删除]` 的行编辑器。
 ///
-/// 与方案级按键表（`dialogs::schema_key_actions`）是同族编辑器，形态刻意一致；
-/// 两者的分野是**触发态**（空闲时 / 输入中），见那两个模块的文档注释。
+/// 与按键功能表（`dialogs::schema_key_actions`）是同族编辑器，共用 `dialogs::key_binding`
+/// 里的行渲染与按键选择对话框；两者的分野见那两个模块的文档注释。
 fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_group_dialog_shell;
     use crate::dialogs::session_actions::SessionActionFields;
@@ -2727,12 +2727,16 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
     );
 
     let (content, bottom) = fields.build_body();
-    let dlg = build_group_dialog_shell(visible, "输入中的按键功能", content, bottom);
+    let dlg = build_group_dialog_shell(visible, "全局自定义输入时按键", content, bottom);
     register_dialog(state, dlg);
+    // 按键选择浮层排在本对话框**之后**登记 = 叠在它上面。register_dialog 是往 Vec 里推，
+    // 挂到根窗口时按 Vec 序成为 stack 的子节点，先推的在下。顺序反了的表现是点「添加」
+    // 之后什么都看不见——浮层建出来了，被压在编辑器下面。
+    register_dialog(state, fields.build_picker());
     visible
 }
 
-/// dialog_button（keys.key_actions）：全局引导键表，与会话态那张同族。
+/// dialog_button（keys.key_actions）：全局按键功能表，与会话态那张同族。
 ///
 /// 复用方案级的 [`crate::dialogs::schema_key_actions::KeyActionFields`]——两处的键名值域
 /// 与行为完全一致，差别只在**动词值域**（全局多一个单向 `switch_schema:<id>`）与数据来源
@@ -2787,8 +2791,10 @@ fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) ->
     );
 
     let (content, bottom) = fields.build_body();
-    let dlg = build_group_dialog_shell(visible, "空闲时的按键功能", content, bottom);
+    let dlg = build_group_dialog_shell(visible, "全局自定义按键", content, bottom);
     register_dialog(state, dlg);
+    // 同上：选择浮层必须排在编辑器之后。
+    register_dialog(state, fields.build_picker());
     visible
 }
 

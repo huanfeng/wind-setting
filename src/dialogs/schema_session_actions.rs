@@ -95,6 +95,11 @@ impl SchemaSessionActionFields {
     pub fn build_body(&self) -> (Element, Vec<Element>) {
         self.inner.build_body()
     }
+
+    /// 按键选择浮层，同样来自复用的行编辑器。**必须挂在本对话框之后**才叠得对。
+    pub fn build_picker(&self) -> Element {
+        self.inner.build_picker()
+    }
 }
 
 #[cfg(test)]

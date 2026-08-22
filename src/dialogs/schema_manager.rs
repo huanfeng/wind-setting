@@ -115,7 +115,7 @@ pub enum SchemaListItem {
 
 /// 方案设置对话框的一个配置分节。新增一种方案设置 = 加一个变体 + build_section 分支
 /// + [`SettingsSection::tab`] 里指定它归哪个 TAB。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsSection {
     /// 方案元信息头部（名称/类型/来源/版本/作者/描述）。恒为首节。
     Header,
@@ -133,37 +133,39 @@ pub enum SettingsSection {
     Empty,
 }
 
-/// 方案设置对话框的三个 TAB。
-pub const SETTINGS_TABS: [&str; 3] = ["基本信息", "按键配置", "方案自定义"];
+/// 方案设置对话框的两个 TAB。
+///
+/// 曾经是三个（基本信息 / 按键配置 / 方案自定义）。实测下来「按键配置」独立成一页并不好用：
+/// 它只有四行，单开一页显得空，而用户从「这个方案是什么」看到「它的键怎么按」本就是
+/// 一口气的事，中间隔一次点击反而打断。故并回基本配置。
+pub const SETTINGS_TABS: [&str; 2] = ["基本配置", "方案自定义"];
 
 impl SettingsSection {
     /// 本节归到哪个 TAB。
     ///
     /// 分组判据是**用户想做什么**，不是数据落在哪个文件：
-    /// - 基本信息：这个方案是什么、带哪些词库（看与开关）
-    /// - 按键配置：这个方案的键怎么按（三个入口 + 总览）
+    /// - 基本配置：这个方案是什么、键怎么按、带哪些词库——日常会看的都在这一页
     /// - 方案自定义：这个方案的引擎行为要不要偏离全局（双拼布局 / 码表覆盖 / 特殊模式）
     ///
     /// `Divider` 不参与分组：原先那份扁平列表里的分隔线是按「相邻两节之间」插的，分完 TAB
     /// 后相邻关系全变了，故丢弃重插（见 `split_sections_by_tab`）。
     fn tab(self) -> Option<usize> {
         match self {
-            Self::Header | Self::ExtensionDicts => Some(0),
-            Self::EntryKeys => Some(1),
-            Self::ShuangpinLayout | Self::CodeTable | Self::Overlay => Some(2),
+            Self::Header | Self::EntryKeys | Self::ExtensionDicts => Some(0),
+            Self::ShuangpinLayout | Self::CodeTable | Self::Overlay => Some(1),
             Self::Divider | Self::Empty => None,
         }
     }
 }
 
-/// 把扁平分节表拆成三个 TAB 各自的列表，并在**组内**重插分隔线。
+/// 把扁平分节表拆成两个 TAB 各自的列表，并在**组内**重插分隔线。
 ///
 /// ★ 丢弃原有 `Divider` 而不是搬运：它表达的是「相邻两节之间」，分完 TAB 后相邻关系变了，
 /// 照搬会出现开头就是一条分隔线、或两节之间没有线。
 ///
 /// `Header` 后面不插：它自带结尾分隔（见 `SettingsSection::Divider` 的文档）。
-fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; 3] {
-    let mut out: [Vec<SettingsSection>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; 2] {
+    let mut out: [Vec<SettingsSection>; 2] = [Vec::new(), Vec::new()];
     for s in flat {
         let Some(t) = s.tab() else { continue };
         let bucket = &mut out[t];
@@ -299,11 +301,11 @@ pub struct SchemaManagerState {
     /// （合并安装目录与用户目录），取代原硬编码；下拉选项/索引映射/行名后缀均以此为准。
     pub layouts: Rc<RefCell<Vec<(String, String)>>>,
     /// 当前打开方案应显示的配置分节（open_settings_at_id 重算，驱动对话框 body 重建）。
-    /// 三个 TAB 各自的分节表（由 [`split_sections_by_tab`] 从扁平表拆出）。
+    /// 两个 TAB 各自的分节表（由 [`split_sections_by_tab`] 从扁平表拆出）。
     ///
     /// 拆成三个信号而不是「一个信号 + 渲染时过滤」：`host_signal` 拿到的是整份 Vec、
     /// 对每个元素建一个元素，没有过滤的入口；要过滤就得在数据侧分好。
-    pub settings_sections: [Signal<Vec<SettingsSection>>; 3],
+    pub settings_sections: [Signal<Vec<SettingsSection>>; 2],
     /// 当前选中的 TAB 下标。
     pub settings_tab: Signal<usize>,
     /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
@@ -455,7 +457,7 @@ impl SchemaManagerState {
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
-            settings_sections: [signal(vec![]), signal(vec![]), signal(vec![])],
+            settings_sections: [signal(vec![]), signal(vec![])],
             settings_tab: signal(0),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
@@ -467,11 +469,11 @@ impl SchemaManagerState {
             settings_ct: Default::default(),
             settings_ka: Default::default(),
             settings_ka_visible: signal(false),
-            settings_ka_title: signal("按键功能".to_string()),
+            settings_ka_title: signal("按键自定义".to_string()),
             settings_ka_disp: signal(String::new()),
             settings_sa: Default::default(),
             settings_sa_visible: signal(false),
-            settings_sa_title: signal("输入中按键".to_string()),
+            settings_sa_title: signal("输入中按键自定义".to_string()),
             settings_sa_disp: signal(String::new()),
             settings_ko: Default::default(),
             settings_ko_visible: signal(false),
@@ -608,6 +610,15 @@ impl SchemaManagerState {
             Verb {
                 value: "temp_english".into(),
                 label: "临时英文".into(),
+            },
+            // 辅助码：core 的 `BoundAction::AuxCode` 早已接通（`enter_bound_action` 两条
+            // 通路都有臂），但此前设置页从没列出来 —— 触发键只能手改配置文件。
+            //
+            // ⚠️ 全拼方案默认 `separator = "auto"`，反引号恒为音节分隔符，绑在它上面
+            // 进不去（core 的 `enter_aux_code` 会 warn 后返回 None）。选别的键。
+            Verb {
+                value: "aux_code".into(),
+                label: "辅助码筛选（拼音候选二次筛选）".into(),
             },
         ];
         let root = rpc::call_core("config.get", &json!({})).ok();
@@ -1435,12 +1446,13 @@ impl SchemaManagerState {
                 .map(|e| e.name.clone())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| sid.clone());
-            self.settings_ka_title.set(format!("按键功能 - {who}"));
+            self.settings_ka_title.set(format!("按键自定义 - {who}"));
             self.settings_ka_disp.set(self.settings_ka.summary());
             // 会话态那张同批播种：两张表读的是同一份 cfg，分开播种没有意义，且漏掉一处
             // 的表现是「打开设置页看到的是上一个方案的绑定」。
             self.settings_sa.seed(&self.settings_cfg.borrow());
-            self.settings_sa_title.set(format!("输入中按键 - {who}"));
+            self.settings_sa_title
+                .set(format!("输入中按键自定义 - {who}"));
             self.settings_sa_disp.set(self.settings_sa.summary());
             // 总览同批播种。数据整份来自 core 的 `keysOverview` 旁路字段，本仓不做仲裁——
             // 全局那份要经 `effective_session_actions` 折算，展开规则只该有一处。
@@ -1471,10 +1483,9 @@ impl SchemaManagerState {
         // 注：曾有 `has_config` 与 `SettingsSection::Empty`——「没有任何可配置项」的空状态。
         // 「按键功能」对所有方案都有之后，那个分支恒不可达，故一并退役（枚举项保留，
         // 将来若又出现真的空方案可直接复用）。
-        let [basic, keys, custom] = split_sections_by_tab(&sections);
+        let [basic, custom] = split_sections_by_tab(&sections);
         self.settings_sections[0].set(basic);
-        self.settings_sections[1].set(keys);
-        self.settings_sections[2].set(custom);
+        self.settings_sections[1].set(custom);
         // 每次打开都回到首个 TAB：对话框服务于任意方案，停在上一个方案看过的 TAB 上
         // 会让人以为「这个方案也有那些项」，而它可能整个 TAB 都是空的。
         self.settings_tab.set(0);
@@ -2692,6 +2703,10 @@ pub fn build_schema_manager_dialog(
         .child(ka_dlg)
         .child(sa_dlg)
         .child(ko_dlg)
+        // 按键选择浮层是**第四级**：从按键表里点「添加 / 修改」打开，故排在两张表之后。
+        // 顺序反了的表现是点了没反应——浮层建出来了，被压在按键表下面。
+        .child(state.settings_ka.build_picker())
+        .child(state.settings_sa.build_picker())
 }
 
 /// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
@@ -3087,8 +3102,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 state.settings_hotkey_disp,
                 state.settings_hotkey_enabled,
             );
-            // 行内不写说明：标题「进入方式」+ 行名已经说清了，再挂一行灰色小字只是噪音。
-            // 语义细节（切换 vs 临时进入的区别）在文档站。
+            // 多数行不写说明：行名已经说清了，再挂一行灰色小字只是噪音。语义细节
+            // （切换 vs 临时进入的区别）在文档站。「切换到本方案」是例外——它写的不是
+            // 方案自己的配置，见下方那行说明。
             let mut col = Element::col()
                 .width_match()
                 .spacing(4)
@@ -3100,7 +3116,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .cross(Align::Center)
                         .spacing(10)
                         .child(
-                            Element::label("切换热键")
+                            Element::label("切换到本方案按键")
                                 .font_size(13.0)
                                 .fg_role(Role::Text)
                                 .weight(1.0)
@@ -3141,6 +3157,17 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 hk_raw.set(String::new());
                             },
                         )),
+                )
+                // 说明这条配置**存在哪儿**：它写的不是方案自己的 override，而是全局
+                // `keys.key_actions` 里一条指向本方案的条目。不点破的话，用户在「全局
+                // 自定义按键」里看到一条自己没加过的绑定，会以为是哪里冒出来的脏数据，
+                // 甚至手动删掉——而删掉就等于把这里的「切换到本方案」也一并清了。
+                .child(
+                    Element::label("此配置同时出现在「按键 → 全局自定义按键」中")
+                        .font_size(11.0)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .max_lines(2),
                 );
 
             // 引导键只给 **overlay 方案**：按下引导键临时进入、打完一段自动退回原方案。
@@ -3190,7 +3217,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .cross(Align::Center)
                     .spacing(10)
                     .child(
-                        Element::label("本方案的按键绑定")
+                        Element::label("本方案-按键自定义")
                             .font_size(13.0)
                             .fg_role(Role::Text)
                             .weight(1.0)
@@ -3221,7 +3248,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .cross(Align::Center)
                     .spacing(10)
                     .child(
-                        Element::label("本方案输入中的按键")
+                        Element::label("本方案-输入中按键自定义")
                             .font_size(13.0)
                             .fg_role(Role::Text)
                             .weight(1.0)
@@ -3251,7 +3278,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .cross(Align::Center)
                     .spacing(10)
                     .child(
-                        Element::label("按键总览（只读）")
+                        Element::label("按键总览")
                             .font_size(13.0)
                             .fg_role(Role::Text)
                             .weight(1.0)
@@ -3317,7 +3344,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 Element::host_signal(state.settings_ct_plan, move |item| ct.row(&manifest, item));
             crate::dialogs::field_dialogs::collapsible_group(
                 "方案自定义",
-                "自定义本方案的码表行为",
+                "自定义本方案的行为",
                 state.settings_ct_disp,
                 state.settings_ct_enabled,
                 Element::col().width_match().padding_xy(0, 4).child(body),
@@ -4289,6 +4316,57 @@ mod section_build_tests {
     /// `config_button` 的 `debug_assert!(false, "…只能用于 Element::button(..)")`。
     /// 那是**运行时 downcast**，编译期一律放行——`Overlay` 节就因为给 `segmented`
     /// 加了 `.small()` 而在真机上一打开设置就崩，编译和既有测试全绿。
+    /// TAB 拆分：每节落在约定的那一页，且分隔线**只在组内**重插。
+    ///
+    /// 原有的 `Divider` 表达的是「相邻两节之间」，分完 TAB 后相邻关系变了——照搬会出现
+    /// 开头就是一条分隔线、或两节之间没有线。这条守的就是那个重插规则。
+    #[test]
+    fn sections_split_into_two_tabs_with_dividers_reinserted() {
+        use SettingsSection::*;
+        // 扁平表按真实构造顺序：Header, EntryKeys, |, CodeTable, |, Overlay, |, ExtensionDicts
+        let flat = [
+            Header,
+            EntryKeys,
+            Divider,
+            CodeTable,
+            Divider,
+            Overlay,
+            Divider,
+            ExtensionDicts,
+        ];
+        let [basic, custom] = split_sections_by_tab(&flat);
+        assert_eq!(
+            basic,
+            vec![Header, EntryKeys, Divider, ExtensionDicts],
+            "按键配置已并回基本配置；Header 自带结尾分隔故其后不插"
+        );
+        assert_eq!(
+            custom,
+            vec![CodeTable, Divider, Overlay],
+            "方案自定义页开头不该是一条分隔线"
+        );
+    }
+
+    /// 每一节都必须有归属，且只归一页——漏一节的表现是那节在界面上整个消失。
+    #[test]
+    fn every_content_section_belongs_to_exactly_one_tab() {
+        use SettingsSection::*;
+        for s in [
+            Header,
+            EntryKeys,
+            ShuangpinLayout,
+            CodeTable,
+            Overlay,
+            ExtensionDicts,
+        ] {
+            let t = s.tab().unwrap_or_else(|| panic!("{s:?} 没有归属 TAB"));
+            assert!(t < SETTINGS_TABS.len(), "{s:?} 的 TAB 下标越界");
+        }
+        // 结构性节不参与分组（分隔线要重插、空态节已退役）。
+        assert_eq!(Divider.tab(), None);
+        assert_eq!(Empty.tab(), None);
+    }
+
     #[test]
     fn every_settings_section_builds_without_panicking() {
         let _guard = crate::rpc::ENV_LOCK

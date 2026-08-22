@@ -1,0 +1,1651 @@
+//! 按键绑定的共用件：键名显示、功能分类、按键选择对话框、绑定行渲染。
+//!
+//! 服务于四个编辑器实例——全局 `keys.key_actions` / `keys.session_actions`，以及方案级
+//! `[key_actions]` / `[session_actions]`。它们此前各自用「两个下拉一行」的形态，问题有二：
+//!
+//! 1. **组合键表达不出来**。`Ctrl+Shift+R → 切换方案` 这类条目本就存在（方案设置里的
+//!    「切换到本方案按键」写的就是它），却只能在一个「键名下拉」里当作生僻值兜住。
+//! 2. **功能下拉长到不能用**。「切换方案（往返）」「切到方案（单向）」各按已安装方案展开
+//!    一条，装了六个方案就是十二条，再加模式与状态切换，一条竖直下拉滚不到头。
+//!
+//! 改成 `[按键] [功能] [修改][删除]` 的行 + 一个共用的选择对话框后，两个问题一并消失：
+//! 行只负责展示，选择在对话框里分两段（键形态 / 功能分类）做。
+//!
+//! # 值域为什么要按键形态过滤
+//!
+//! core 对这两张表的裁决**本来就分形态**，不是本模块新加的规矩：
+//!
+//! | 键形态 | 通路 | 能绑什么 |
+//! |---|---|---|
+//! | 组合键 | key_down 热键表 | 只有 `toggle_schema:` / `switch_schema:` / `special:` 三族（`hotkey_action_entry` 白名单） |
+//! | 纯修饰键 | key_up 轻敲 | 全部 |
+//! | 单个有字符的键 | keydown 引导键链 | 除「用来离开英文态」的那几个（`BoundAction::requires_modifier_key`） |
+//!
+//! 不过滤的后果是用户配得上、按下去没反应，且 core 只在日志里 warn 一句——正是本仓
+//! 反复出现的那类缺陷。故过滤 + 一行说明指路，而不是让人试错一次才知道。
+//!
+//! # 与 `keys_overview` 共用什么
+//!
+//! 只共用 [`key_display`]。总览是只读视图，编辑仍回各自入口（见 `keys_overview` 的
+//! 「为什么只读」）——共用一个显示函数不会把它变成第二个写回口。
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use windui::core::EventCtx;
+use windui::prelude::*;
+
+/// 功能选项：`value` 落盘、`label` 给人看。
+#[derive(Clone)]
+pub struct Verb {
+    pub value: String,
+    pub label: String,
+}
+
+/// 一条绑定。`id` 是**行身份**：增删改都靠它定位。
+///
+/// 用单调 id 而不是行下标或键名：下标随增删错位；键名在「用户把两行配成同一个键」的
+/// 中间态下不唯一，而那个中间态恰恰是要检出重复键的时候。
+#[derive(Clone)]
+pub struct Binding {
+    pub id: u64,
+    pub key: String,
+    pub verb: String,
+}
+
+/// 行身份。见 [`Binding::id`]。
+pub type RowId = u64;
+
+/// 「确定」的回调：`(被编辑行的 id 或 None（新增）, 键名, 功能值)`。
+type CommitFn = Box<dyn Fn(Option<RowId>, String, String)>;
+
+/// 这个编辑器服务于哪张表。两张表的**键值域**与**功能值域**都不同，见模块文档。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BindingTable {
+    /// `key_actions`：给按键指定功能。修饰键任意组合，功能受键形态限制。
+    Lead,
+    /// `session_actions`：输入过程中的按键功能。**只认 `shift+` 前缀**
+    /// （core `session_key_to_vk` 只剥这一种），故没有 Ctrl/Alt/Win。
+    Session,
+}
+
+/// 按键的形态。core 按它分三条通路，见模块文档的表。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyShape {
+    /// 单个有字符的键（`backtick` / `z` / `minus`…）。
+    Char,
+    /// 纯修饰键（`lshift` / `rctrl`…）。
+    Modifier,
+    /// 带 Ctrl/Alt/Shift/Win 的组合键。
+    Combo,
+}
+
+/// 判定键形态。**只看键名字面**，与 core 的 `route_of_key_action` 同判据
+/// （有修饰位 → 组合；裸修饰键 VK → 修饰键；其余 → 有字符的键）。
+pub fn key_shape(name: &str) -> KeyShape {
+    let n = name.trim().to_ascii_lowercase();
+    if n.contains('+') {
+        return KeyShape::Combo;
+    }
+    if matches!(
+        n.as_str(),
+        "lshift" | "rshift" | "lctrl" | "lcontrol" | "rctrl" | "rcontrol"
+    ) {
+        return KeyShape::Modifier;
+    }
+    KeyShape::Char
+}
+
+/// 该功能是否**只能绑修饰键**。镜像 core 的 `BoundAction::requires_modifier_key`。
+///
+/// 判据是「它是不是**从英文态出来**的手段」：是的话绑在有字符的键上就是单程票——
+/// 那条 keydown 链在英文模式分水岭之后，切过去就再也按不动。
+///
+/// ⚠ 与 core 是**两份手写清单**，没有编译期约束。加功能时两处都要改。
+pub fn verb_requires_modifier(value: &str) -> bool {
+    value.starts_with("toggle_schema:")
+        || value.starts_with("switch_schema:")
+        || matches!(value, "toggle_mode" | "switch_engine")
+}
+
+/// 这个功能能不能绑在这个键形态上（`Lead` 表用；`Session` 表没有此限制）。
+pub fn verb_allowed(shape: KeyShape, value: &str) -> bool {
+    match shape {
+        // 组合键走 key_down 热键表，动词受 core `hotkey_action_entry` 白名单限制。
+        // ⚠ 与那张白名单是两份手写清单，加动词时两处都要改。
+        KeyShape::Combo => {
+            value.starts_with("toggle_schema:")
+                || value.starts_with("switch_schema:")
+                || value.starts_with("special:")
+        }
+        KeyShape::Char => !verb_requires_modifier(value),
+        KeyShape::Modifier => true,
+    }
+}
+
+// ───────────────────────────── 键名显示 ─────────────────────────────
+
+/// 键名 → 给人看的文本。`rbracket` → `]`，`ctrl+shift+rbracket` → `Ctrl + Shift + ]`。
+///
+/// ★ 与 [`key_choice_label`] 分工：**这个用于展示**（列表里一眼认出是哪个键），那个用于
+/// **选择**（下拉里要能把 `'` 和 `` ` `` 分辨开）。同一个函数干两件事的结果，是列表里挤着
+/// 「右方括号 ( ] )」这样的长串，或者下拉里并排两个看不出差别的引号。
+pub fn key_display(name: &str) -> String {
+    let n = name.trim();
+    if n.is_empty() {
+        return "未设置".to_string();
+    }
+    n.split('+')
+        .map(|p| key_part_display(p.trim()))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn key_part_display(part: &str) -> String {
+    let k = part.to_ascii_lowercase();
+    let fixed = match k.as_str() {
+        "ctrl" | "control" => "Ctrl",
+        "alt" => "Alt",
+        "shift" => "Shift",
+        "win" | "super" | "meta" | "cmd" => "Win",
+        // 符号键：显示符号本身。配置里用的是规范名（`rbracket`），但手写配置也可能
+        // 直接写字面符号——core 的 `KEY_TABLE` 两种都认，故这里也两种都收。
+        "backtick" | "grave" | "`" => "`",
+        "semicolon" | ";" => ";",
+        "quote" | "'" => "'",
+        "comma" | "," => ",",
+        "period" | "." => ".",
+        "slash" | "/" => "/",
+        "backslash" | "\\" => "\\",
+        "lbracket" | "[" => "[",
+        "rbracket" | "]" => "]",
+        "minus" | "hyphen" | "-" => "-",
+        "equal" | "equals" | "=" => "=",
+        "lshift" => "左 Shift",
+        "rshift" => "右 Shift",
+        "lctrl" | "lcontrol" => "左 Ctrl",
+        "rctrl" | "rcontrol" => "右 Ctrl",
+        "lalt" | "lmenu" => "左 Alt",
+        "ralt" | "rmenu" => "右 Alt",
+        "capslock" | "caps" => "CapsLock",
+        "space" => "Space",
+        "return" | "enter" => "Enter",
+        "escape" | "esc" => "Esc",
+        "backspace" | "back" => "Backspace",
+        "delete" | "del" => "Delete",
+        "insert" | "ins" => "Insert",
+        "tab" => "Tab",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" | "pgup" | "prior" => "PageUp",
+        "pagedown" | "pgdn" | "next" => "PageDown",
+        "up" => "↑",
+        "down" => "↓",
+        "left" => "←",
+        "right" => "→",
+        _ => "",
+    };
+    if !fixed.is_empty() {
+        return fixed.to_string();
+    }
+    // F 键与单字母大写；其余原样（手写配置里本版本不认识的键名，显示原值不显示「未知」
+    // ——它在 core 里可能跑得好好的，同 `keys_overview::action_label` 的兜底策略）。
+    if let Some(n) = k.strip_prefix('f')
+        && n.parse::<u8>().is_ok_and(|n| (1..=24).contains(&n))
+    {
+        return format!("F{n}");
+    }
+    if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() {
+        return k.to_ascii_uppercase();
+    }
+    part.to_string()
+}
+
+/// 键名 → 下拉里的**可辨识**标签。符号键带中文名，其余同 [`key_display`]。
+pub fn key_choice_label(name: &str) -> String {
+    let named = match name {
+        "backtick" => "反引号 ( ` )",
+        "semicolon" => "分号 ( ; )",
+        "quote" => "单引号 ( ' )",
+        "comma" => "逗号 ( , )",
+        "period" => "句号 ( . )",
+        "slash" => "斜杠 ( / )",
+        "backslash" => "反斜杠 ( \\ )",
+        "lbracket" => "左方括号 ( [ )",
+        "rbracket" => "右方括号 ( ] )",
+        "minus" => "减号 ( - )",
+        "equal" => "等号 ( = )",
+        "z" => "字母 z",
+        _ => "",
+    };
+    if named.is_empty() {
+        key_display(name)
+    } else {
+        named.to_string()
+    }
+}
+
+// ───────────────────────────── 功能分类 ─────────────────────────────
+
+/// 一个功能分类。
+#[derive(Clone)]
+pub struct VerbCategory {
+    pub name: String,
+    pub items: Vec<Verb>,
+    /// 选中本类即禁用「确定」，并显示 [`Self::notice`]。给「预留但未开放」的项用。
+    pub locked: bool,
+    pub notice: String,
+}
+
+impl VerbCategory {
+    fn new(name: &str, items: Vec<Verb>) -> Self {
+        Self {
+            name: name.to_string(),
+            items,
+            locked: false,
+            notice: String::new(),
+        }
+    }
+}
+
+/// 预留项的值。**不能用空串**：`refresh` 靠「当前功能值」恢复选中项，空值恒查不到，
+/// 于是每次重算都把选择弹回第一个分类——那一类点开就跳走，里面写了什么都看不到。
+///
+/// 反过来也要保证它绝不落盘：出口只有 [`KeyPicker::commit_value`]，它对 `locked` 分类
+/// 一律返回 `None`（「确定」也据同一判据置灰）。
+const RESERVED_VERB: &str = "__reserved__";
+
+/// 「高级」分类：当前只有一个占位项。
+///
+/// 露出而不实现，是为了让「一个键能不能调外部程序」这个问题在界面上有答案。整类 `locked`
+/// ——windui 的 `DropdownItem` 没有禁用位，逐项置灰做不到，故把「不可用」提到分类这一层：
+/// 选中它就显示说明并禁用「确定」，效果与置灰一致且不需要改控件。
+fn advanced_category() -> VerbCategory {
+    VerbCategory {
+        name: "高级".to_string(),
+        items: vec![Verb {
+            value: RESERVED_VERB.to_string(),
+            label: "调用直通命令（暂未开放）".to_string(),
+        }],
+        locked: true,
+        notice: "「调用直通命令」（按一个键运行外部程序或内部指令）尚未开放，将在后续版本提供。"
+            .to_string(),
+    }
+}
+
+/// 把扁平功能表按**值的形态**分类。
+///
+/// ★ 只认 `value` 前缀，不认 `label`：label 里的方案名是用户起的，随时会改，
+/// 用它分类等于把用户输入当协议。
+pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
+    let (mut disable, mut modes, mut schemas) = (vec![], vec![], vec![]);
+    let (mut states, mut tools, mut other) = (vec![], vec![], vec![]);
+    for v in verbs {
+        let bucket = match v.value.as_str() {
+            "none" => &mut disable,
+            "temp_pinyin" | "temp_english" | "aux_code" => &mut modes,
+            "toggle_mode" | "switch_engine" | "toggle_full_width" | "toggle_punct"
+            | "toggle_s2t" | "toggle_toolbar" => &mut states,
+            "open_settings" | "take_screenshot" => &mut tools,
+            s if s.starts_with("mix:") || s.starts_with("special:") => &mut modes,
+            s if s.starts_with("toggle_schema:") || s.starts_with("switch_schema:") => &mut schemas,
+            // 本版本不认识的动词（手写配置 / 更新前的旧配置）。不丢弃：丢弃等于用户
+            // 打开一次设置页就静默失去配置，与两个编辑器的 seed 同策略。
+            _ => &mut other,
+        };
+        bucket.push(v.clone());
+    }
+    let mut out = vec![
+        VerbCategory::new("不启用", disable),
+        VerbCategory::new("输入模式", modes),
+        VerbCategory::new("切换方案", schemas),
+        VerbCategory::new("状态切换", states),
+        VerbCategory::new("工具", tools),
+        VerbCategory::new("其它", other),
+    ];
+    out.retain(|c| !c.items.is_empty());
+    out.push(advanced_category());
+    out
+}
+
+/// 会话态（`session_actions`）的功能分类。
+///
+/// 序号档从 core 的值域全量给出（`SelectCandidate` / `SelectChar` 都是 1..=9）。此前只给
+/// 2、3 是因为「全列出来会把下拉撑成一长条」——分了类之后这个理由不成立，而截断的代价
+/// 是「想把某个键配成第 5 候选」在界面上根本表达不出来。
+pub fn session_verb_categories() -> Vec<VerbCategory> {
+    let ord = |prefix: &str, fmt: &dyn Fn(u8) -> String| -> Vec<Verb> {
+        (1..=9)
+            .map(|n| Verb {
+                value: format!("{prefix}{n}"),
+                label: fmt(n),
+            })
+            .collect()
+    };
+    vec![
+        VerbCategory::new(
+            "不启用",
+            vec![Verb {
+                value: "none".into(),
+                label: "输入中禁用该键".into(),
+            }],
+        ),
+        VerbCategory::new(
+            "候选导航",
+            ["page_prev", "page_next", "highlight_up", "highlight_down"]
+                .iter()
+                .zip(["上一页", "下一页", "高亮上移", "高亮下移"])
+                .map(|(v, l)| Verb {
+                    value: (*v).to_string(),
+                    label: l.to_string(),
+                })
+                .collect(),
+        ),
+        VerbCategory::new(
+            "选择候选",
+            ord("select_candidate:", &|n| format!("选中第 {n} 个候选")),
+        ),
+        VerbCategory::new(
+            "以词定字",
+            ord("select_char:", &|n| format!("以词定字：取第 {n} 字")),
+        ),
+        VerbCategory::new(
+            "编辑",
+            vec![Verb {
+                value: "cancel".into(),
+                label: "放弃当前输入（同 Esc）".into(),
+            }],
+        ),
+        advanced_category(),
+    ]
+}
+
+/// 会话态功能值 → 中文名（供只读视图查）。未知值返回 `None`，由调用方兜底显示原值。
+pub fn session_verb_label(value: &str) -> Option<String> {
+    session_verb_categories()
+        .iter()
+        .flat_map(|c| c.items.iter())
+        .find(|v| v.value == value)
+        .map(|v| v.label.clone())
+}
+
+// ───────────────────────────── 键值域 ─────────────────────────────
+
+/// 可作**独立绑定**的单个键（不带修饰）。
+fn single_keys(table: BindingTable) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![(String::new(), "（请选择）".to_string())];
+    let push = |out: &mut Vec<(String, String)>, k: &str| {
+        out.push((k.to_string(), key_choice_label(k)));
+    };
+    match table {
+        BindingTable::Lead => {
+            // 符号键取自 `TRIGGER_KEY_OPTIONS`——它是本仓「哪些符号键可以绑功能」的
+            // 单一真相源（引导键多选那个对话框也读它）。这里再抄一份的话，那张表增删时
+            // 本处不会跟着改，表现是新键在引导键里选得到、在按键自定义里选不到。
+            //
+            // 只取**值**，标签一律走 `key_choice_label`：显示怎么写是另一件事，
+            // 让它也有单一出处，免得同一个键在两个下拉里长得不一样。
+            for (k, _) in crate::dialogs::schema_manager::TRIGGER_KEY_OPTIONS {
+                push(&mut out, k);
+            }
+            for k in [
+                "minus", "equal",
+                // 字母只列 z：其余字母在任何码表里几乎都是活码前缀，core 的活码裁决
+                // 必然让位，配了等于没配。列出来只会让人配完发现没反应。
+                "z",
+                // 与 core `keymap::modifier_name_to_vk` 的规范名一一对应。
+                "lshift", "rshift", "lctrl", "rctrl",
+            ] {
+                push(&mut out, k);
+            }
+        }
+        BindingTable::Session => {
+            for k in session_base_keys() {
+                push(&mut out, k);
+            }
+        }
+    }
+    out
+}
+
+/// 会话态表认的基础键。与 core `session_key_to_vk` 的 match 臂一一对应。
+///
+/// 别名（`pgup` / `caps` / `lcontrol`…）**不列**：与主名同义，列出来只会让人以为是
+/// 不同的键。手写配置里用了别名时由「当前值」机制兜住，不丢配置。
+///
+/// **CapsLock 仅 Windows**：拦住它要低级键盘钩子，core 的 `capslock_hook` 在非 Windows
+/// 是 `bail!` 的空壳，列出来就是配一个永远不生效的键。
+fn session_base_keys() -> &'static [&'static str] {
+    #[cfg(not(windows))]
+    {
+        &[
+            "tab",
+            "pageup",
+            "pagedown",
+            "up",
+            "down",
+            "left",
+            "right",
+            "home",
+            "end",
+            "lshift",
+            "rshift",
+            "lctrl",
+            "rctrl",
+            "minus",
+            "equal",
+            "lbracket",
+            "rbracket",
+            "comma",
+            "period",
+            "semicolon",
+            "quote",
+            "slash",
+            "backslash",
+            "backtick",
+            "z",
+        ]
+    }
+    #[cfg(windows)]
+    {
+        &[
+            "tab",
+            "capslock",
+            "pageup",
+            "pagedown",
+            "up",
+            "down",
+            "left",
+            "right",
+            "home",
+            "end",
+            "lshift",
+            "rshift",
+            "lctrl",
+            "rctrl",
+            "minus",
+            "equal",
+            "lbracket",
+            "rbracket",
+            "comma",
+            "period",
+            "semicolon",
+            "quote",
+            "slash",
+            "backslash",
+            "backtick",
+            "z",
+        ]
+    }
+}
+
+/// 组合键的基础键（修饰键之外的那一个）。
+fn combo_base_keys(table: BindingTable) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![(String::new(), "（请选择）".to_string())];
+    match table {
+        // Lead 表的组合键走 `parse_hotkey`，值域与「功能快捷键」那套一致，故直接复用
+        // 同一份主键表——两处各写一份的结果，是同一个应用里两个热键编辑器能选的键不一样。
+        // 首项「（未设置）」在那边表示解绑，这边由 `single_keys` 的空项承担，故跳过。
+        BindingTable::Lead => {
+            for (v, l) in crate::manifest::hotkey_keys() {
+                if !v.is_empty() {
+                    out.push((v, l));
+                }
+            }
+        }
+        // Session 表的组合只有 `shift+<基础键>`，基础键值域与单键相同。
+        BindingTable::Session => {
+            for k in session_base_keys() {
+                out.push((k.to_string(), key_choice_label(k)));
+            }
+        }
+    }
+    out
+}
+
+// ───────────────────────────── 选择对话框 ─────────────────────────────
+
+struct PickerData {
+    table: BindingTable,
+    /// 两个键下拉的**取值**表（显示项在 `KeyPicker::{single,combo}_labels`，须是信号：
+    /// `open_edit` 会为手写配置里的生僻键追加选项，构建时捕获一份 Vec 的话下拉会永远
+    /// 停在初始选项集上——而那意味着用户点开「修改」看到的是「（请选择）」，
+    /// 自己配的那个键像是凭空消失了）。
+    single: RefCell<Vec<String>>,
+    combo: RefCell<Vec<String>>,
+    /// 全量分类（由调用方 `set_verbs` 灌入；Session 表恒为固定表）。
+    all: RefCell<Vec<VerbCategory>>,
+    /// 当前按键形态过滤后的分类，与 `cat_labels` / `item_labels` 同序。
+    view: RefCell<Vec<VerbCategory>>,
+    /// 本方案首码集里的符号键（core `getConfig` 的 `leadingCodeKeys` 旁路字段）。
+    leading: RefCell<Vec<String>>,
+    editing: Cell<Option<RowId>>,
+    on_commit: RefCell<Option<CommitFn>>,
+}
+
+/// 按键选择对话框。四个编辑器各持一个实例。
+///
+/// 为什么不做成全应用一个共享实例：对话框元素要挂进**它所属的那棵浮层栈**才叠得对
+/// （全局两个挂 `fields.dialogs`，方案两个挂方案管理器的 `stack`），共享实例就得处理
+/// 「同一个 Element 挂两处」，而 windui 的 Element 是值语义、挂两处等于两份互不相干的
+/// 状态——比多持有一份工作态更难查。
+#[derive(Clone)]
+pub struct KeyPicker {
+    pub visible: Signal<bool>,
+    title: Signal<String>,
+    /// 0 = 单个按键，1 = 组合键
+    mode: Signal<usize>,
+    /// ctrl / shift / alt / win，顺序同 `manifest::compose_hotkey`
+    mods: [Signal<bool>; 4],
+    single_idx: Signal<usize>,
+    combo_idx: Signal<usize>,
+    cat_idx: Signal<usize>,
+    item_idx: Signal<usize>,
+    single_labels: Signal<Vec<String>>,
+    combo_labels: Signal<Vec<String>>,
+    cat_labels: Signal<Vec<String>>,
+    item_labels: Signal<Vec<String>>,
+    preview: Signal<String>,
+    notice: Signal<String>,
+    can_confirm: Signal<bool>,
+    data: Rc<PickerData>,
+}
+
+impl KeyPicker {
+    pub fn new(table: BindingTable) -> Self {
+        let all = match table {
+            BindingTable::Lead => Vec::new(), // 由 set_verbs 灌入（实例类动词随方案变）
+            BindingTable::Session => session_verb_categories(),
+        };
+        let (single, combo) = (single_keys(table), combo_base_keys(table));
+        let me = Self {
+            visible: signal(false),
+            title: signal("添加按键".to_string()),
+            mode: signal(0),
+            mods: [signal(false), signal(false), signal(false), signal(false)],
+            single_idx: signal(0),
+            combo_idx: signal(0),
+            cat_idx: signal(0),
+            item_idx: signal(0),
+            single_labels: signal(single.iter().map(|(_, l)| l.clone()).collect()),
+            combo_labels: signal(combo.iter().map(|(_, l)| l.clone()).collect()),
+            cat_labels: signal(Vec::new()),
+            item_labels: signal(Vec::new()),
+            preview: signal("未设置".to_string()),
+            notice: signal(String::new()),
+            can_confirm: signal(false),
+            data: Rc::new(PickerData {
+                table,
+                single: RefCell::new(single.into_iter().map(|(v, _)| v).collect()),
+                combo: RefCell::new(combo.into_iter().map(|(v, _)| v).collect()),
+                all: RefCell::new(all),
+                view: RefCell::new(Vec::new()),
+                leading: RefCell::new(Vec::new()),
+                editing: Cell::new(None),
+                on_commit: RefCell::new(None),
+            }),
+        };
+        me.refresh();
+        me
+    }
+
+    /// 灌入功能表（`Lead` 用；实例类动词随已安装方案增删，故每次打开设置都重算）。
+    pub fn set_verbs(&self, verbs: &[Verb]) {
+        *self.data.all.borrow_mut() = categorize_lead_verbs(verbs);
+        self.refresh();
+    }
+
+    /// 本方案首码集里的符号键，用于「绑了这个键，该符号在本方案就起不了头」提示。
+    pub fn set_leading_keys(&self, keys: Vec<String>) {
+        *self.data.leading.borrow_mut() = keys;
+    }
+
+    /// 「确定」时的回调：`(被编辑行的 id 或 None（新增）, 键名, 功能值)`。
+    pub fn on_commit(&self, f: impl Fn(Option<RowId>, String, String) + 'static) {
+        *self.data.on_commit.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 打开「添加」。
+    pub fn open_new(&self) {
+        self.data.editing.set(None);
+        self.title.set("添加按键".to_string());
+        self.mode.set(0);
+        for m in &self.mods {
+            m.set(false);
+        }
+        self.single_idx.set(0);
+        self.combo_idx.set(0);
+        self.cat_idx.set(0);
+        self.item_idx.set(0);
+        self.refresh();
+        self.visible.set(true);
+    }
+
+    /// 打开「修改」，把已有绑定回填进各控件。
+    pub fn open_edit(&self, id: RowId, key: &str, verb: &str) {
+        self.data.editing.set(Some(id));
+        self.title.set("修改按键".to_string());
+
+        let (mods, base) = crate::manifest::parse_hotkey(key);
+        if mods.iter().any(|b| *b) {
+            self.mode.set(1);
+            for (i, m) in self.mods.iter().enumerate() {
+                m.set(mods[i]);
+            }
+            self.combo_idx
+                .set(key_index(&self.data.combo, self.combo_labels, &base));
+            self.single_idx.set(0);
+        } else {
+            self.mode.set(0);
+            for m in &self.mods {
+                m.set(false);
+            }
+            self.single_idx
+                .set(key_index(&self.data.single, self.single_labels, key));
+            self.combo_idx.set(0);
+        }
+        self.select_verb(verb);
+        self.refresh();
+        // refresh 会按键形态过滤，可能把当前值筛掉（历史配置本就可能是非法组合）。
+        // 过滤后再选一次，让「修改」对话框至少显示得出用户现在配的是什么。
+        self.select_verb(verb);
+        self.visible.set(true);
+    }
+
+    /// 把 `value` 选中（找不到则在「其它」类里补一条「当前值」，不丢配置）。
+    fn select_verb(&self, value: &str) {
+        if let Some((c, i)) = find_verb(&self.data.view.borrow(), value) {
+            self.cat_idx.set(c);
+            self.item_idx.set(i);
+            return;
+        }
+        if find_verb(&self.data.all.borrow(), value).is_none() && !value.is_empty() {
+            let mut all = self.data.all.borrow_mut();
+            let label = format!("{value}（当前值）");
+            match all.iter_mut().find(|c| c.name == "其它") {
+                Some(c) => c.items.push(Verb {
+                    value: value.to_string(),
+                    label,
+                }),
+                None => {
+                    // 「高级」恒为末类，「其它」插在它之前，保持分类顺序稳定。
+                    let at = all.len().saturating_sub(1);
+                    all.insert(
+                        at,
+                        VerbCategory::new(
+                            "其它",
+                            vec![Verb {
+                                value: value.to_string(),
+                                label,
+                            }],
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 当前选中的键名（空串 = 还没选全）。
+    fn current_key(&self) -> String {
+        if self.mode.get() == 0 {
+            return self
+                .data
+                .single
+                .borrow()
+                .get(self.single_idx.get())
+                .cloned()
+                .unwrap_or_default();
+        }
+        let base = self
+            .data
+            .combo
+            .borrow()
+            .get(self.combo_idx.get())
+            .cloned()
+            .unwrap_or_default();
+        if base.is_empty() {
+            return String::new();
+        }
+        let m = [
+            self.mods[0].get(),
+            self.mods[1].get(),
+            self.mods[2].get(),
+            self.mods[3].get(),
+        ];
+        // 一个修饰键都没勾 = 还不是组合键。此时不回落成裸键：那会让「组合键」这一档
+        // 悄悄产出一个单键绑定，而单键有自己的值域（比如 Lead 表的组合档能选任意字母，
+        // 单键档只给 z）——回落等于绕过单键那份值域限制。
+        if !m.iter().any(|b| *b) {
+            return String::new();
+        }
+        crate::manifest::compose_hotkey(m, &base)
+    }
+
+    /// 当前选中的功能值（空串 = 没有可选项 / 选中的是占位项）。
+    fn current_verb(&self) -> String {
+        self.data
+            .view
+            .borrow()
+            .get(self.cat_idx.get())
+            .and_then(|c| c.items.get(self.item_idx.get()))
+            .map(|v| v.value.clone())
+            .unwrap_or_default()
+    }
+
+    /// 当前选中的分类是否为预留类（选中即不可提交）。
+    fn locked_now(&self) -> bool {
+        self.data
+            .view
+            .borrow()
+            .get(self.cat_idx.get())
+            .is_some_and(|c| c.locked)
+    }
+
+    /// 「确定」要落下去的 `(键名, 功能值)`；不可提交时返回 `None`。
+    ///
+    /// **提交的唯一出口**。按钮的置灰（`can_confirm`）与这里用的是同一条判据——分两处
+    /// 各写一遍的话，只要哪天某条路径绕过了置灰（键盘回车、脚本、测试），预留项就会
+    /// 真的写进配置。这类「两处必须一致」的约束本仓已栽过四次。
+    fn commit_value(&self) -> Option<(String, String)> {
+        if self.locked_now() {
+            return None;
+        }
+        let (key, verb) = (self.current_key(), self.current_verb());
+        (!key.is_empty() && !verb.is_empty() && verb != RESERVED_VERB).then_some((key, verb))
+    }
+
+    /// 按当前按键形态重算可选功能、预览与提示。
+    ///
+    /// 幂等：第二次跑不会再改任何信号（选中项此时已合法），故挂在 `reactive_effect` 上
+    /// 不会自激——effect 比对的是各信号版本，而稳定后版本不再变。
+    fn refresh(&self) {
+        let key = self.current_key();
+        let keep = self.current_verb();
+        // 分类名也要记：换分类时 `item_idx` 还停在上一类的位置，多半已越界，于是
+        // `current_verb()` 取不到值。只按值恢复的话这时会双双回落 (0,0)——表现是
+        // **点哪个分类都跳回第一个**，高级类那种单项分类尤其明显（永远打不开）。
+        let keep_cat = self
+            .data
+            .view
+            .borrow()
+            .get(self.cat_idx.get())
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+
+        // ── 过滤 ──
+        let view: Vec<VerbCategory> = if key.is_empty() || self.data.table == BindingTable::Session
+        {
+            self.data.all.borrow().clone()
+        } else {
+            let shape = key_shape(&key);
+            let mut v: Vec<VerbCategory> = self
+                .data
+                .all
+                .borrow()
+                .iter()
+                .map(|c| {
+                    let mut c = c.clone();
+                    if !c.locked {
+                        c.items.retain(|it| verb_allowed(shape, &it.value));
+                    }
+                    c
+                })
+                .collect();
+            v.retain(|c| !c.items.is_empty());
+            v
+        };
+        *self.data.view.borrow_mut() = view;
+
+        // ── 选中项：先按值保、再按分类保 ──
+        //
+        // 两级兜底对应两种情形：值还在（换了键但这个功能仍可选）→ 跟着它走；值没了
+        // （刚换分类，或该功能被键形态滤掉）→ 至少留在用户点的那个分类里，选它的第一项。
+        let (c, i) = find_verb(&self.data.view.borrow(), &keep).unwrap_or_else(|| {
+            let c = self
+                .data
+                .view
+                .borrow()
+                .iter()
+                .position(|x| x.name == keep_cat)
+                .unwrap_or(0);
+            (c, 0)
+        });
+        set_if_changed(self.cat_idx, c);
+        set_if_changed(self.item_idx, i);
+
+        let cats: Vec<String> = self
+            .data
+            .view
+            .borrow()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let items: Vec<String> = self
+            .data
+            .view
+            .borrow()
+            .get(self.cat_idx.get())
+            .map(|c| c.items.iter().map(|v| v.label.clone()).collect())
+            .unwrap_or_default();
+        set_vec_if_changed(self.cat_labels, cats);
+        set_vec_if_changed(self.item_labels, items);
+
+        // ── 预览 / 提示 / 确定可用性 ──
+        set_str_if_changed(self.preview, key_display(&key));
+        set_str_if_changed(self.notice, self.notice_text(&key, self.locked_now()));
+        set_if_changed_bool(self.can_confirm, self.commit_value().is_some());
+    }
+
+    fn notice_text(&self, key: &str, locked: bool) -> String {
+        if locked {
+            return self
+                .data
+                .view
+                .borrow()
+                .get(self.cat_idx.get())
+                .map(|c| c.notice.clone())
+                .unwrap_or_default();
+        }
+        if key.is_empty() {
+            return match self.mode.get() {
+                1 => "组合键需要至少一个修饰键和一个基础键。".to_string(),
+                _ => "请先选择按键。".to_string(),
+            };
+        }
+        match self.data.table {
+            BindingTable::Session => {
+                if key.starts_with("capslock") || key == "caps" {
+                    return "CapsLock 需要全局键盘钩子才能拦住，非 Windows 平台不生效。"
+                        .to_string();
+                }
+                String::new()
+            }
+            BindingTable::Lead => {
+                // 辅助码专属：全拼方案出厂 `separator = "auto"`，反引号恒为音节分隔符，
+                // 而分隔符臂在按键 match 里排在 `key_actions` 裁决**之前**——绑在它上面
+                // 根本走不到 `enter_aux_code`。core 那边只 warn 一句，用户看到的是
+                // 「配了完全没反应」。这条不放进 `verb_allowed` 过滤：它只对拼音方案成立，
+                // 而这个对话框也服务码表方案，一刀切会挡掉合法配置。
+                if self.current_verb() == "aux_code" && matches!(key, "backtick" | "grave" | "`") {
+                    return "全拼方案的反引号被音节分隔符占用，绑在它上面进不了辅助码；                            请换一个键。"
+                        .to_string();
+                }
+                match key_shape(key) {
+                    KeyShape::Combo => {
+                        "组合键只能绑「切换方案」与「特殊模式」。其它功能请改用单个按键，\
+                     或到「按键 → 功能快捷键」里配。"
+                            .to_string()
+                    }
+                    KeyShape::Char => {
+                        if self.data.leading.borrow().iter().any(|l| l == key) {
+                            // 同层冲突，两条配置都不算坏：内核裁决绑定优先，该符号在本方案
+                            // 起不了头（组码中仍可用）。故用中性措辞告知实际行为，不标红。
+                            "该键是本方案的码元首码：绑定后它在本方案起不了头（组码中仍可用）。"
+                                .to_string()
+                        } else {
+                            String::new()
+                        }
+                    }
+                    KeyShape::Modifier => String::new(),
+                }
+            }
+        }
+    }
+
+    /// 对话框元素。**必须**挂在比它的宿主编辑器更靠后的位置，否则会被压在下面。
+    pub fn build_dialog(&self) -> Element {
+        let me = self.clone();
+        let [mc, ms, ma, mw] = self.mods;
+        let table = self.data.table;
+
+        let mode = self.mode;
+        let mode_row = Element::row().width_match().child(
+            Element::segmented(vec!["单个按键".to_string(), "组合键".to_string()], mode)
+                .weight(1.0),
+        );
+
+        // Session 表只认 `shift+` 前缀（core `session_key_to_vk` 只剥这一种），故 Ctrl/Alt/Win
+        // 不给：列出来就是配得上、core 解析不了、整条静默丢弃。
+        let mut mod_row = Element::row()
+            .spacing(16)
+            .cross(Align::Center)
+            .visible_when(move || mode.get() == 1);
+        if table == BindingTable::Lead {
+            mod_row = mod_row.child(Element::checkbox("Ctrl", mc).small().fg_role(Role::Text));
+        }
+        mod_row = mod_row.child(Element::checkbox("Shift", ms).small().fg_role(Role::Text));
+        if table == BindingTable::Lead {
+            mod_row = mod_row
+                .child(Element::checkbox("Alt", ma).small().fg_role(Role::Text))
+                .child(Element::checkbox("Win", mw).small().fg_role(Role::Text));
+        }
+
+        let key_col = Element::col()
+            .width_match()
+            .spacing(8)
+            .child(section_title("按键"))
+            .child(mode_row)
+            .child(mod_row)
+            .child(
+                Element::dropdown_signal(self.single_labels, self.single_idx)
+                    .width(200)
+                    .visible_when(move || mode.get() == 0),
+            )
+            .child(
+                Element::dropdown_signal(self.combo_labels, self.combo_idx)
+                    .width(200)
+                    .visible_when(move || mode.get() == 1),
+            )
+            .child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(8)
+                    .child(
+                        Element::label("当前按键")
+                            .font_size(12.0)
+                            .fg_role(Role::TextMuted),
+                    )
+                    .child(
+                        Element::label_signal(self.preview)
+                            .font_size(13.0)
+                            .font_weight(600)
+                            .fg_role(Role::Text)
+                            .max_lines(1),
+                    ),
+            );
+
+        let verb_col = Element::col()
+            .width_match()
+            .spacing(8)
+            .child(section_title("功能"))
+            .child(Element::dropdown_signal(self.cat_labels, self.cat_idx).width(200))
+            .child(Element::dropdown_signal(self.item_labels, self.item_idx).width(280));
+
+        let notice = self.notice;
+        let notice_row = Element::label_signal(notice)
+            .font_size(11.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(3)
+            .visible_when(move || !notice.get().is_empty());
+
+        // 任一控件动了就重算可选功能与提示。用 effect 而不是给每个控件挂 on_change：
+        // 挂七处等于赌自己数全了，漏一处的表现是「换了键、功能列表没跟着变」。
+        let eff_me = self.clone();
+        let (mi, si, ci, ki) = (self.mode, self.single_idx, self.combo_idx, self.cat_idx);
+        let effect = crate::pages::dict::reactive::reactive_effect(
+            move || {
+                mi.version()
+                    .wrapping_add(si.version())
+                    .wrapping_add(ci.version())
+                    .wrapping_add(ki.version())
+                    .wrapping_add(mc.version())
+                    .wrapping_add(ms.version())
+                    .wrapping_add(ma.version())
+                    .wrapping_add(mw.version())
+            },
+            move || eff_me.refresh(),
+        );
+
+        let content = Element::col()
+            .width_match()
+            .spacing(12)
+            .padding_xy(18, 12)
+            .child(key_col)
+            .child(Element::divider())
+            .child(verb_col)
+            .child(notice_row)
+            .child(effect);
+
+        crate::dialogs::field_dialogs::build_confirm_dialog_shell(
+            self.visible,
+            self.title,
+            content,
+            self.can_confirm,
+            move || {
+                let Some((key, verb)) = me.commit_value() else {
+                    return;
+                };
+                if let Some(f) = me.data.on_commit.borrow().as_ref() {
+                    f(me.data.editing.get(), key, verb);
+                }
+            },
+        )
+    }
+}
+
+fn section_title(t: &str) -> Element {
+    Element::label(t)
+        .font_size(12.0)
+        .font_weight(600)
+        .fg_role(Role::TextMuted)
+        .width_match()
+}
+
+/// 键名 → 下拉索引；不在词表里的（手写配置的生僻键）**追加**为选项，不丢弃。
+///
+/// 丢弃的表现是：用户点「修改」看到「（请选择）」，自己配的那个键像凭空消失了，
+/// 而它在 core 里跑得好好的。与两个编辑器对未知**动词**的处置同策略。
+fn key_index(vals: &RefCell<Vec<String>>, labels: Signal<Vec<String>>, name: &str) -> usize {
+    let name = name.trim();
+    if name.is_empty() {
+        return 0;
+    }
+    if let Some(i) = vals.borrow().iter().position(|v| v == name) {
+        return i;
+    }
+    vals.borrow_mut().push(name.to_string());
+    let mut l = labels.get();
+    l.push(format!("{}（当前值）", key_display(name)));
+    labels.set(l);
+    vals.borrow().len() - 1
+}
+
+fn find_verb(cats: &[VerbCategory], value: &str) -> Option<(usize, usize)> {
+    if value.is_empty() {
+        return None;
+    }
+    for (ci, c) in cats.iter().enumerate() {
+        if let Some(ii) = c.items.iter().position(|v| v.value == value) {
+            return Some((ci, ii));
+        }
+    }
+    None
+}
+
+// 写前先比：`refresh` 挂在 `reactive_effect` 上，而 effect 的触发判据是信号版本。
+// 无条件 `set` 会让每次 refresh 都推高版本 ⇒ 下一帧再触发一次，永不收敛。
+fn set_if_changed(sig: Signal<usize>, v: usize) {
+    if sig.get() != v {
+        sig.set(v);
+    }
+}
+fn set_if_changed_bool(sig: Signal<bool>, v: bool) {
+    if sig.get() != v {
+        sig.set(v);
+    }
+}
+fn set_str_if_changed(sig: Signal<String>, v: String) {
+    if sig.get() != v {
+        sig.set(v);
+    }
+}
+fn set_vec_if_changed(sig: Signal<Vec<String>>, v: Vec<String>) {
+    if sig.get() != v {
+        sig.set(v);
+    }
+}
+
+// ───────────────────────────── 行渲染 ─────────────────────────────
+
+/// 一条绑定的展示行：`[按键] [功能] [提示] [修改] [删除]`。
+///
+/// 展示用静态文本而不是信号：整份列表挂在 `Signal<Vec<Binding>>` 上，增删改一律整表
+/// `set`（编辑走对话框，不再有行内逐字符输入那种"每敲一下都重建"的问题），故每次变化
+/// 本来就会重建行——再让单元格自己响应式就是两套刷新路径。
+pub fn binding_row(
+    key: &str,
+    verb_label: &str,
+    hint: Option<(&str, Role)>,
+    on_edit: impl FnMut(&mut EventCtx) + 'static,
+    on_delete: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
+    let mut row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .padding_xy(0, 3)
+        .child(
+            Element::label(key_display(key))
+                .font_size(12.5)
+                .fg_role(Role::Text)
+                .width(130)
+                .max_lines(1),
+        )
+        .child(
+            Element::label(verb_label)
+                .font_size(12.5)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1),
+        );
+    if let Some((text, role)) = hint {
+        row = row.child(
+            Element::label(text)
+                .font_size(11.0)
+                .fg_role(role)
+                .max_lines(1),
+        );
+    }
+    row.child(
+        Element::button("修改")
+            .small()
+            .outline_soft()
+            .on_click(on_edit),
+    )
+    .child(
+        Element::button("删除")
+            .small()
+            .outline_soft()
+            .on_click(on_delete),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 键名转义：符号显示成符号本身，组合键逐段翻译。
+    #[test]
+    fn key_names_are_rendered_for_humans() {
+        assert_eq!(key_display("rbracket"), "]");
+        assert_eq!(key_display("backtick"), "`");
+        assert_eq!(key_display("rshift"), "右 Shift");
+        assert_eq!(key_display("ctrl+shift+r"), "Ctrl + Shift + R");
+        assert_eq!(key_display("shift+tab"), "Shift + Tab");
+        assert_eq!(key_display("f5"), "F5");
+        assert_eq!(key_display(""), "未设置");
+        // 字面符号写法（手写配置）与规范名等价，core 的 KEY_TABLE 两种都认。
+        assert_eq!(key_display("]"), "]");
+    }
+
+    /// 认不出的键名显示**原值**，不显示「未知」——它在 core 里可能跑得好好的。
+    #[test]
+    fn unknown_key_name_falls_back_to_raw() {
+        assert_eq!(key_display("f99"), "f99");
+        assert_eq!(key_display("某个未来的键"), "某个未来的键");
+    }
+
+    /// 选择用标签要能把形近符号分辨开，展示用标签则要短。两者是不同的函数。
+    #[test]
+    fn choice_label_disambiguates_where_display_is_terse() {
+        assert_eq!(key_choice_label("quote"), "单引号 ( ' )");
+        assert_eq!(key_choice_label("backtick"), "反引号 ( ` )");
+        assert_eq!(key_display("quote"), "'");
+        assert_eq!(key_display("backtick"), "`");
+        // 非符号键两者一致，不该凭空造第二套名字。
+        assert_eq!(key_choice_label("rshift"), key_display("rshift"));
+    }
+
+    #[test]
+    fn key_shapes_match_core_routing() {
+        assert_eq!(key_shape("ctrl+shift+r"), KeyShape::Combo);
+        assert_eq!(key_shape("rshift"), KeyShape::Modifier);
+        assert_eq!(key_shape("lctrl"), KeyShape::Modifier);
+        assert_eq!(key_shape("backtick"), KeyShape::Char);
+        assert_eq!(key_shape("z"), KeyShape::Char);
+    }
+
+    /// ★★ 组合键的可绑功能必须与 core `hotkey_action_entry` 的白名单一致。
+    ///
+    /// 放宽的后果是用户配得上、按下去什么都不发生，core 只在日志里 warn 一句——
+    /// 与「没绑上」完全同形，无从分辨。收紧的后果是能力凭空少一半。
+    #[test]
+    fn combo_keys_allow_exactly_the_core_whitelist() {
+        for v in [
+            "toggle_schema:english",
+            "switch_schema:wubi",
+            "special:fuhao",
+        ] {
+            assert!(verb_allowed(KeyShape::Combo, v), "{v} 应允许绑组合键");
+        }
+        for v in [
+            "none",
+            "temp_pinyin",
+            "temp_english",
+            "aux_code",
+            "mix:quick_mix",
+            "toggle_mode",
+            "switch_engine",
+            "toggle_punct",
+            "toggle_s2t",
+            "open_settings",
+        ] {
+            assert!(!verb_allowed(KeyShape::Combo, v), "{v} 不该允许绑组合键");
+        }
+    }
+
+    /// 「用来离开英文态」的动作绑有字符的键是单程票，必须挡住；修饰键上则全放行。
+    #[test]
+    fn char_keys_exclude_modifier_only_verbs() {
+        for v in [
+            "toggle_mode",
+            "switch_engine",
+            "toggle_schema:english",
+            "switch_schema:wubi",
+        ] {
+            assert!(!verb_allowed(KeyShape::Char, v), "{v} 不该允许绑有字符的键");
+            assert!(verb_allowed(KeyShape::Modifier, v), "{v} 应允许绑修饰键");
+        }
+        for v in ["temp_pinyin", "aux_code", "toggle_punct", "none"] {
+            assert!(verb_allowed(KeyShape::Char, v), "{v} 应允许绑有字符的键");
+        }
+    }
+
+    fn lead_verbs() -> Vec<Verb> {
+        [
+            ("none", "不启用"),
+            ("temp_pinyin", "临时拼音"),
+            ("aux_code", "辅助码筛选"),
+            ("mix:quick_mix", "快捷输入 - 快符"),
+            ("special:fuhao", "特殊模式 - 符号"),
+            ("toggle_schema:english", "切换方案 - 英文"),
+            // 状态切换类里两种都要有：`toggle_mode` 限修饰键、`toggle_punct` 不限。
+            // 只放前者的话，「有字符的键上这一类被整类滤掉」是正确行为，测不出过滤有没有
+            // 过头——本测试第一版就是这么假绿的。
+            ("toggle_mode", "中英文切换"),
+            ("toggle_punct", "中/英标点切换"),
+            ("open_settings", "打开设置"),
+            ("some_future_verb", "未来动词"),
+        ]
+        .iter()
+        .map(|(v, l)| Verb {
+            value: (*v).to_string(),
+            label: (*l).to_string(),
+        })
+        .collect()
+    }
+
+    /// 分类按 value 前缀分，且**不丢项**——丢一项就等于用户配的那个功能在界面上消失。
+    #[test]
+    fn categorization_keeps_every_verb() {
+        let cats = categorize_lead_verbs(&lead_verbs());
+        let mut got: Vec<String> = cats
+            .iter()
+            .filter(|c| c.name != "高级")
+            .flat_map(|c| c.items.iter())
+            .map(|v| v.value.clone())
+            .collect();
+        got.sort();
+        let mut want: Vec<String> = lead_verbs().iter().map(|v| v.value.clone()).collect();
+        want.sort();
+        assert_eq!(got, want, "分类不得丢弃任何动词");
+        // 未知动词落「其它」，不静默消失。
+        let other = cats
+            .iter()
+            .find(|c| c.name == "其它")
+            .expect("应有「其它」类");
+        assert_eq!(other.items[0].value, "some_future_verb");
+    }
+
+    /// 空分类要被删掉：给用户一个点开只有空列表的分类，比不给更让人困惑。
+    #[test]
+    fn empty_categories_are_dropped() {
+        let cats = categorize_lead_verbs(&[Verb {
+            value: "none".into(),
+            label: "不启用".into(),
+        }]);
+        let names: Vec<&str> = cats.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["不启用", "高级"],
+            "只有一个动词时不该出现空分类"
+        );
+    }
+
+    /// 「高级」恒为末类且 locked——它是预留位，选中即禁用「确定」。
+    #[test]
+    fn advanced_category_is_last_and_locked() {
+        let cats = categorize_lead_verbs(&lead_verbs());
+        let last = cats.last().expect("至少有高级类");
+        assert_eq!(last.name, "高级");
+        assert!(last.locked, "高级类必须 locked，否则能选中一个不存在的功能");
+        assert!(!last.notice.is_empty(), "locked 的类必须说明为什么不能选");
+
+        let s = session_verb_categories();
+        assert_eq!(s.last().expect("至少有高级类").name, "高级");
+    }
+
+    /// 会话态序号档必须给全 1..=9：截断的代价是「配成第 5 候选」在界面上表达不出来。
+    #[test]
+    fn session_ordinal_verbs_cover_core_domain() {
+        let cats = session_verb_categories();
+        for (name, prefix) in [
+            ("选择候选", "select_candidate:"),
+            ("以词定字", "select_char:"),
+        ] {
+            let c = cats.iter().find(|c| c.name == name).expect(name);
+            let vals: Vec<String> = c.items.iter().map(|v| v.value.clone()).collect();
+            let want: Vec<String> = (1..=9).map(|n| format!("{prefix}{n}")).collect();
+            assert_eq!(vals, want, "{name} 应覆盖 core 的 1..=9");
+        }
+    }
+
+    /// 会话态动词值必须都在 core `SessionAction` 的值域里（拼写守门）。
+    ///
+    /// ⚠ 与 core 的 `SessionAction::parse` 是两份手写清单，没有编译期约束——本仓已有过
+    /// 「两仓键名拼写不一致致静默不匹配」的现场。
+    #[test]
+    fn session_verb_values_match_core_domain() {
+        for c in session_verb_categories() {
+            if c.locked {
+                continue; // 占位项，值恒为空
+            }
+            for v in c.items {
+                let ok = matches!(
+                    v.value.as_str(),
+                    "none"
+                        | "page_prev"
+                        | "page_next"
+                        | "highlight_up"
+                        | "highlight_down"
+                        | "cancel"
+                        | "clear"
+                ) || v
+                    .value
+                    .strip_prefix("select_candidate:")
+                    .or_else(|| v.value.strip_prefix("select_char:"))
+                    .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| (1..=9).contains(&n)));
+                assert!(ok, "动词 {:?} 不在 core SessionAction 的值域里", v.value);
+            }
+        }
+    }
+
+    fn lead_picker() -> KeyPicker {
+        let p = KeyPicker::new(BindingTable::Lead);
+        p.set_verbs(&lead_verbs());
+        p
+    }
+
+    /// 组合键条目往返：回填 → 读出必须一字不差。
+    ///
+    /// 这类条目**本就存在**（方案设置的「切换到本方案按键」写的就是它）。回填错了的表现是
+    /// 用户点开「修改」、什么都不改点确定，那条绑定就变了形。
+    #[test]
+    fn picker_round_trips_a_combo_binding() {
+        let p = lead_picker();
+        p.open_edit(7, "ctrl+shift+r", "toggle_schema:english");
+        assert_eq!(p.mode.get(), 1, "有修饰键应落在「组合键」档");
+        assert_eq!(p.current_key(), "ctrl+shift+r");
+        assert_eq!(p.current_verb(), "toggle_schema:english");
+    }
+
+    #[test]
+    fn picker_round_trips_a_single_key_binding() {
+        let p = lead_picker();
+        p.open_edit(1, "backslash", "mix:quick_mix");
+        assert_eq!(p.mode.get(), 0, "无修饰键应落在「单个按键」档");
+        assert_eq!(p.current_key(), "backslash");
+        assert_eq!(p.current_verb(), "mix:quick_mix");
+    }
+
+    /// 会话态的 `shift+` 前缀同样要能往返（core 只认这一种组合形态）。
+    #[test]
+    fn session_picker_round_trips_shift_prefix() {
+        let p = KeyPicker::new(BindingTable::Session);
+        p.open_edit(1, "shift+tab", "page_prev");
+        assert_eq!(p.mode.get(), 1);
+        assert_eq!(p.current_key(), "shift+tab");
+        assert_eq!(p.current_verb(), "page_prev");
+    }
+
+    /// ★★ `refresh` 必须幂等。
+    ///
+    /// 它挂在 `reactive_effect` 上，而 effect 的触发判据是各信号的版本号。若 refresh 每次
+    /// 都无条件写信号，版本每帧都变 ⇒ 每帧都再跑一次，永不收敛——表现是设置页 CPU 空转，
+    /// 与本仓「UI 8ms 轮询」那次同型。
+    #[test]
+    fn refresh_is_idempotent() {
+        let p = lead_picker();
+        p.open_edit(1, "backslash", "mix:quick_mix");
+        p.refresh();
+        let before = (
+            p.cat_idx.version(),
+            p.item_idx.version(),
+            p.cat_labels.version(),
+            p.item_labels.version(),
+            p.preview.version(),
+            p.notice.version(),
+            p.can_confirm.version(),
+        );
+        p.refresh();
+        let after = (
+            p.cat_idx.version(),
+            p.item_idx.version(),
+            p.cat_labels.version(),
+            p.item_labels.version(),
+            p.preview.version(),
+            p.notice.version(),
+            p.can_confirm.version(),
+        );
+        assert_eq!(before, after, "第二次 refresh 不该再改动任何信号");
+    }
+
+    /// 选了组合键，功能列表就只剩 core 认的那两类，并给出一行说明。
+    #[test]
+    fn combo_selection_narrows_the_verb_list() {
+        let p = lead_picker();
+        p.open_edit(1, "ctrl+shift+r", "toggle_schema:english");
+        let names: Vec<String> = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"切换方案".to_string()),
+            "组合键应保留「切换方案」：{names:?}"
+        );
+        assert!(
+            !names.contains(&"状态切换".to_string()),
+            "组合键不该出现「状态切换」：{names:?}"
+        );
+        assert!(
+            !p.notice.get().is_empty(),
+            "过滤后必须说明为什么，否则像是少了功能"
+        );
+
+        // 换回单个按键，列表要恢复。
+        p.open_edit(1, "backslash", "mix:quick_mix");
+        let names: Vec<String> = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"状态切换".to_string()),
+            "换回单键后应恢复完整列表：{names:?}"
+        );
+    }
+
+    /// 词表外的生僻键要被保留成「当前值」，不能悄悄变回「（请选择）」。
+    #[test]
+    fn unknown_key_is_kept_as_current_value() {
+        let p = lead_picker();
+        p.open_edit(1, "f13", "temp_pinyin");
+        assert_eq!(p.current_key(), "f13", "生僻键必须原样保住");
+        assert!(
+            p.single_labels.get().iter().any(|l| l.contains("当前值")),
+            "生僻键应作为「当前值」进下拉"
+        );
+    }
+
+    /// 「组合键」档一个修饰键都没勾时不产出绑定——不能悄悄回落成裸键。
+    ///
+    /// 回落的话就绕过了单键那份值域限制（Lead 表的组合档能选任意字母，单键档只给 z），
+    /// 结果是用户配出一个 core 必然让位的字母绑定。
+    #[test]
+    fn combo_mode_without_modifier_yields_nothing() {
+        let p = lead_picker();
+        p.open_edit(1, "ctrl+shift+r", "toggle_schema:english");
+        for m in &p.mods {
+            m.set(false);
+        }
+        p.refresh();
+        assert_eq!(p.current_key(), "", "没勾修饰键就不该产出键名");
+        assert!(!p.can_confirm.get(), "此时「确定」必须不可点");
+    }
+
+    /// 「高级」类选中即禁用确定——它是预留位，不能真配上去。
+    #[test]
+    fn advanced_category_blocks_confirm() {
+        let p = lead_picker();
+        p.open_edit(1, "backslash", "mix:quick_mix");
+        let adv = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .position(|c| c.name == "高级")
+            .expect("应有高级类");
+        p.cat_idx.set(adv);
+        p.refresh();
+        assert_eq!(
+            p.cat_idx.get(),
+            adv,
+            "★ 选中高级类后不能被 refresh 弹回第一类——否则那一类点开就跳走，             用户根本看不到里面写了什么"
+        );
+        assert!(!p.can_confirm.get(), "选中高级类时「确定」必须不可点");
+        assert!(!p.notice.get().is_empty(), "必须说明为什么不能选");
+        assert!(p.commit_value().is_none(), "预留项绝不能落盘");
+    }
+
+    /// ★ 换分类不能被 refresh 弹回。
+    ///
+    /// `item_idx` 换类后多半越界（上一类项多、这一类项少），若只按「当前功能值」恢复
+    /// 选中项，此时取不到值就会双双回落 (0,0)——表现是点哪个分类都跳回第一个。
+    #[test]
+    fn switching_category_sticks() {
+        let p = lead_picker();
+        // 先选一个项多的分类里靠后的项，制造出「换类后 item_idx 越界」这个前提。
+        p.open_edit(1, "backslash", "special:fuhao");
+        let modes = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .position(|c| c.name == "输入模式")
+            .expect("应有输入模式类");
+        assert_eq!(p.cat_idx.get(), modes);
+        assert!(p.item_idx.get() > 0, "前提：选中项不是首项，否则测不出越界");
+
+        // 换到一个只有一项的分类。
+        let disable = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .position(|c| c.name == "不启用")
+            .expect("应有不启用类");
+        p.cat_idx.set(disable);
+        p.refresh();
+        assert_eq!(p.cat_idx.get(), disable, "换分类后不该被弹回");
+        assert_eq!(p.item_idx.get(), 0, "换分类后应选中它的第一项");
+        assert_eq!(p.current_verb(), "none");
+    }
+
+    /// 辅助码 + 反引号要当场提示：全拼的反引号被音节分隔符占着，绑上去完全没反应。
+    #[test]
+    fn aux_code_on_backtick_is_warned() {
+        let mut vs = lead_verbs();
+        vs.push(Verb {
+            value: "aux_code".into(),
+            label: "辅助码筛选".into(),
+        });
+        let p = KeyPicker::new(BindingTable::Lead);
+        p.set_verbs(&vs);
+        p.open_edit(1, "backtick", "aux_code");
+        assert!(
+            p.notice.get().contains("音节分隔符"),
+            "反引号 + 辅助码必须提示，否则就是「配了没反应」：{:?}",
+            p.notice.get()
+        );
+        // 换个键就不该再提示——常驻警告会把可用的配置误报成待修问题。
+        p.open_edit(1, "semicolon", "aux_code");
+        assert!(p.notice.get().is_empty(), "别的键上不该有这条提示");
+        // 而且它**不是**过滤：分号上照样选得到辅助码。
+        assert_eq!(p.current_verb(), "aux_code");
+    }
+
+    /// 确定回调拿到的是 `(行 id, 键, 功能)`；新增时行 id 为 None。
+    #[test]
+    fn commit_reports_edit_target() {
+        type Call = (Option<RowId>, String, String);
+        let got: Rc<RefCell<Vec<Call>>> = Rc::new(RefCell::new(Vec::new()));
+        let p = lead_picker();
+        let sink = got.clone();
+        p.on_commit(move |id, k, v| sink.borrow_mut().push((id, k, v)));
+
+        p.open_edit(42, "backslash", "mix:quick_mix");
+        commit(&p);
+        p.open_new();
+        p.open_edit_key_only("semicolon", "temp_pinyin");
+        commit(&p);
+
+        let g = got.borrow();
+        assert_eq!(g[0].0, Some(42), "「修改」必须带上被改那一行的 id");
+        assert_eq!(g[0].1, "backslash");
+        assert_eq!(g[1].0, None, "「添加」不带 id");
+        assert_eq!(g[1].1, "semicolon");
+    }
+
+    /// 走一遍「确定」按钮里的那段逻辑（按钮闭包本身要靠 UI 才点得到）。
+    /// 与按钮共用 `commit_value`，故这里测得到的就是按下去会发生的。
+    fn commit(p: &KeyPicker) {
+        let Some((key, verb)) = p.commit_value() else {
+            return;
+        };
+        if let Some(f) = p.data.on_commit.borrow().as_ref() {
+            f(p.data.editing.get(), key, verb);
+        }
+    }
+
+    impl KeyPicker {
+        /// 测试用：模拟「新增」态下用户选好了键与功能。
+        fn open_edit_key_only(&self, key: &str, verb: &str) {
+            self.single_idx
+                .set(key_index(&self.data.single, self.single_labels, key));
+            self.mode.set(0);
+            self.select_verb(verb);
+            self.refresh();
+            self.select_verb(verb);
+        }
+    }
+
+    /// 单键值域里的每个键都要有可辨识的标签——落回原始键名（`rbracket` 这种内部写法）
+    /// 就等于让用户在下拉里读内部词表。
+    #[test]
+    fn every_single_key_has_a_readable_label() {
+        for table in [BindingTable::Lead, BindingTable::Session] {
+            for (v, l) in single_keys(table) {
+                if v.is_empty() {
+                    continue; // 「（请选择）」占位项
+                }
+                assert_ne!(l, v, "{v:?} 的下拉标签落回了原始键名");
+            }
+        }
+    }
+
+    /// 修饰键必须都在单键值域里——「按右 Shift 切方案」是最常见的用法之一，
+    /// 而那类动作**只能**绑修饰键（见 `verb_requires_modifier`）。少了它们，
+    /// 整类「切换方案」在界面上就配不出来了。
+    #[test]
+    fn lead_single_keys_include_all_modifiers() {
+        let vals: Vec<String> = single_keys(BindingTable::Lead)
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        for k in ["lshift", "rshift", "lctrl", "rctrl"] {
+            assert!(vals.iter().any(|v| v == k), "单键值域缺 {k}");
+            assert_eq!(key_shape(k), KeyShape::Modifier);
+        }
+    }
+
+    /// 会话态键名不得含别名——别名与主名同义，列出来只会让人以为是不同的键。
+    #[test]
+    fn session_key_options_have_no_aliases() {
+        for k in session_base_keys() {
+            assert!(
+                !matches!(
+                    *k,
+                    "pgup" | "pgdn" | "prior" | "next" | "caps" | "lcontrol" | "rcontrol"
+                ),
+                "{k:?} 是别名，不该出现在下拉里"
+            );
+        }
+    }
+}

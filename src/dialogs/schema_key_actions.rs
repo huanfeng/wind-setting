@@ -1,7 +1,7 @@
-//! 方案级按键功能表（`[key_actions]`）编辑对话框。
+//! 按键功能表（方案 `[key_actions]` / 全局 `keys.key_actions`）编辑对话框。
 //!
-//! 一行一条绑定：`[键名] [动词下拉] [删除]`，底部「添加」。行数随 `Signal<Vec<Row>>`
-//! 变化由 `Element::host_signal` 自动重建。
+//! 一行一条绑定：`[按键] [功能] [修改][删除]`，底部「添加」。增删改都走
+//! [`crate::dialogs::key_binding::KeyPicker`]，与会话态那张表共用同一个选择器。
 //!
 //! # 与码表配置对话框的区别
 //!
@@ -17,100 +17,100 @@
 //!
 //! 语义与值域见 core 仓 `docs/design/schema-key-actions.md`。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde_json::{Map, Value, json};
 use windui::prelude::*;
 
-/// 动词选项：`value` 落盘、`label` 给人看。
-#[derive(Clone)]
-pub struct Verb {
-    pub value: String,
-    pub label: String,
-}
+use super::key_binding::{
+    Binding, BindingTable, KeyPicker, KeyShape, binding_row, key_shape, verb_allowed,
+    verb_requires_modifier,
+};
 
-/// 一行绑定的工作态。
-///
-/// ★ 键名与动词各自持有 signal，**不**把行内容直接塞进 `Signal<Vec<..>>` 的元素里：
-/// `list_signal` 只在数据信号版本变化时重建行，行内编辑若也写数据信号，每敲一个字符
-/// 整列表就会被销毁重建 —— 输入框当场失焦、光标回到行首。让行内值走各自的 signal，
-/// 数据信号只在**增删行**时变，两类变化就分开了。
-#[derive(Clone)]
-struct Row {
-    /// 键名字符串（落盘用）。由 `key_idx` 下拉回写，本身不直接编辑。
-    key: Signal<String>,
-    /// 键名下拉的选中索引。与 `key` 并存而非只留其一：下拉要索引，落盘要字符串，
-    /// 且未知键名（手写配置里的生僻键）在选项里找不到时索引会落 0，靠 `key` 兜住原值。
-    key_idx: Signal<usize>,
-    verb: Signal<usize>,
-}
+pub use super::key_binding::Verb;
 
-/// 方案级按键功能表的工作态。
+/// 按键功能表的工作态。
 #[derive(Clone)]
 pub struct KeyActionFields {
-    rows: Signal<Vec<Row>>,
+    rows: Signal<Vec<Binding>>,
+    next_id: Rc<Cell<u64>>,
     verbs: Rc<RefCell<Vec<Verb>>>,
-    /// 下拉的显示项。**必须是信号**：对话框结构建于选中方案之前，而 `seed` 可能追加
-    /// 「当前值」占位项（见 `seed`）；构建时捕获一份 `Vec<String>` 的话，下拉会永远停在
-    /// 第一次构建那一刻的选项集上。
-    verb_labels: Signal<Vec<String>>,
-    /// 键名下拉的取值表（与 `key_labels` 同序），落盘取值即查它。
-    key_values: Rc<RefCell<Vec<String>>>,
-    /// 键名下拉的显示项。与 `verb_labels` 同理必须是信号——`seed` 会为手写配置里的
-    /// 生僻键追加选项。
-    key_labels: Signal<Vec<String>>,
     /// 打开对话框那一刻的内容快照，供脏判定。
     at_open: Rc<RefCell<Vec<(String, String)>>>,
     /// 本方案首码集里的符号键名（core `getConfig` 的 `leadingCodeKeys` 旁路字段）。
     /// 随 `seed` 刷新——同一个对话框服务于任意方案，不刷会拿上一个方案的码元集去提示。
     leading_keys: Rc<RefCell<Vec<String>>>,
+    picker: KeyPicker,
 }
 
 impl Default for KeyActionFields {
     fn default() -> Self {
-        Self {
+        let me = Self {
             rows: signal(Vec::new()),
+            next_id: Rc::new(Cell::new(1)),
             verbs: Rc::new(RefCell::new(Vec::new())),
-            verb_labels: signal(Vec::new()),
-            key_values: Rc::new(RefCell::new(Vec::new())),
-            key_labels: signal(Vec::new()),
             at_open: Rc::new(RefCell::new(Vec::new())),
             leading_keys: Rc::new(RefCell::new(Vec::new())),
-        }
+            picker: KeyPicker::new(BindingTable::Lead),
+        };
+        me.wire_picker();
+        me
     }
 }
 
 impl KeyActionFields {
-    /// 设定动词选项。实例类动词（`mix:<id>` / `special:<id>` / `toggle_schema:<id>`）随
+    /// 把选择对话框的「确定」接到本表上。**在构造期接一次**，理由同
+    /// [`super::session_actions::SessionActionFields`]：接在 `build_body` 里会挂重复回调。
+    fn wire_picker(&self) {
+        let rows = self.rows;
+        let next_id = self.next_id.clone();
+        self.picker.on_commit(move |id, key, verb| {
+            let mut v = rows.get();
+            match id {
+                Some(id) => {
+                    if let Some(r) = v.iter_mut().find(|r| r.id == id) {
+                        r.key = key;
+                        r.verb = verb;
+                    }
+                }
+                None => {
+                    let id = next_id.get();
+                    next_id.set(id + 1);
+                    v.push(Binding { id, key, verb });
+                }
+            }
+            v.sort_by(|a, b| a.key.cmp(&b.key));
+            rows.set(v);
+        });
+    }
+
+    /// 设定功能选项。实例类动词（`mix:<id>` / `special:<id>` / `toggle_schema:<id>`）随
     /// 已安装方案增删，故由调用方从全局配置组装后传入，本模块不依赖 `Config` 结构。
     pub fn set_verbs(&self, verbs: Vec<Verb>) {
         *self.verbs.borrow_mut() = verbs;
-        self.sync_labels();
+        self.sync_picker_verbs();
     }
 
-    fn sync_labels(&self) {
-        let labels: Vec<String> = self
-            .verbs
-            .borrow()
-            .iter()
-            .map(|v| v.label.clone())
-            .collect();
-        self.verb_labels.set(labels);
+    /// 把当前动词表推给选择器（分类在那边算）。
+    ///
+    /// `set_verbs` 与 `seed` 之后**都要调**：`seed` 会为未知动词追加「当前值」条目，
+    /// 只在 `set_verbs` 里推的话，那些条目进不了选择器，用户点「修改」看到的是空白。
+    fn sync_picker_verbs(&self) {
+        self.picker.set_verbs(&self.verbs.borrow());
     }
 
     /// 从 `schema.getConfig` 的结果播种。
     ///
-    /// 未知动词（方案被删、或手写了本版本不认识的值）**保留原值**并进下拉：直接丢弃会让
-    /// 用户打开一次设置页就静默失去配置，和 `z_key_action` 下拉「保留当前配置」同一策略。
+    /// 未知动词（方案被删、或手写了本版本不认识的值）**保留原值**并进选项：直接丢弃会让
+    /// 用户打开一次设置页就静默失去配置。
     pub fn seed(&self, cfg: &Value) {
-        self.init_key_options();
         // 本方案首码集里的符号键（core 的只读旁路字段）。用来提示「绑了这个键，该符号
         // 在本方案就起不了头了」——内核裁决是绑定优先，码表那边静默失效。
         //
         // 由 core 给键名而非字符集原文：`input_chars` 有区间语法，这边再解析一遍就是
         // 两处慢慢漂移。缺字段（旧版 core）时为空表 = 不提示，不阻塞使用。
-        *self.leading_keys.borrow_mut() = cfg
+        let leading: Vec<String> = cfg
             .get("leadingCodeKeys")
             .and_then(|v| v.as_array())
             .map(|a| {
@@ -119,6 +119,9 @@ impl KeyActionFields {
                     .collect()
             })
             .unwrap_or_default();
+        *self.leading_keys.borrow_mut() = leading.clone();
+        self.picker.set_leading_keys(leading);
+
         let mut pairs: Vec<(String, String)> = cfg
             .get("key_actions")
             .and_then(|v| v.as_object())
@@ -139,16 +142,22 @@ impl KeyActionFields {
                 });
             }
         }
-        self.sync_labels();
+        self.sync_picker_verbs();
 
-        let rows: Vec<Row> = pairs
+        let mut id = 1u64;
+        let rows: Vec<Binding> = pairs
             .iter()
-            .map(|(k, a)| Row {
-                key: signal(k.clone()),
-                key_idx: signal(self.key_index(k)),
-                verb: signal(self.verb_index(a)),
+            .map(|(k, a)| {
+                let b = Binding {
+                    id,
+                    key: k.clone(),
+                    verb: a.clone(),
+                };
+                id += 1;
+                b
             })
             .collect();
+        self.next_id.set(id);
         self.rows.set(rows);
         *self.at_open.borrow_mut() = pairs;
     }
@@ -173,61 +182,28 @@ impl KeyActionFields {
             .collect()
     }
 
-    /// 初始化键名下拉的取值/显示表（幂等）。
-    fn init_key_options(&self) {
-        if !self.key_values.borrow().is_empty() {
-            return;
-        }
-        let opts = Self::key_options();
-        *self.key_values.borrow_mut() = opts.iter().map(|(v, _)| v.clone()).collect();
-        self.key_labels
-            .set(opts.iter().map(|(_, l)| l.clone()).collect());
-    }
-
-    /// 键名 → 下拉索引；不在词表里的（手写配置的生僻键）**追加**为选项，不丢弃。
-    fn key_index(&self, name: &str) -> usize {
-        if let Some(i) = self.key_values.borrow().iter().position(|v| v == name) {
-            return i;
-        }
-        self.key_values.borrow_mut().push(name.to_string());
-        let mut labels = self.key_labels.get();
-        labels.push(format!("{name}（当前值）"));
-        self.key_labels.set(labels);
-        self.key_values.borrow().len() - 1
-    }
-
-    fn verb_index(&self, value: &str) -> usize {
+    /// 功能值 → 中文名。查不到显示原值（同 `keys_overview::action_label` 的兜底策略）。
+    fn verb_label(&self, value: &str) -> String {
         self.verbs
             .borrow()
             .iter()
-            .position(|v| v.value == value)
-            .unwrap_or(0)
+            .find(|v| v.value == value)
+            .map(|v| v.label.clone())
+            .unwrap_or_else(|| value.to_string())
     }
 
     /// 当前工作态（键名去空白、丢弃空键；**后写覆盖先写**，与 core 侧 Map 语义一致）。
     fn current(&self) -> Vec<(String, String)> {
-        let verbs = self.verbs.borrow();
         let mut out: Vec<(String, String)> = Vec::new();
-        let key_values = self.key_values.borrow();
         for r in self.rows.get() {
-            // 键名以下拉选中项为准；索引越界（未播种就构建的空行）回落 Row::key。
-            let k = key_values
-                .get(r.key_idx.get())
-                .cloned()
-                .unwrap_or_else(|| r.key.get())
-                .trim()
-                .to_string();
+            let k = r.key.trim().to_string();
             if k.is_empty() {
                 continue;
             }
-            let action = verbs
-                .get(r.verb.get())
-                .map(|v| v.value.clone())
-                .unwrap_or_default();
             if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k) {
-                slot.1 = action;
+                slot.1 = r.verb.clone();
             } else {
-                out.push((k, action));
+                out.push((k, r.verb.clone()));
             }
         }
         out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -242,14 +218,8 @@ impl KeyActionFields {
     /// 是否存在重复键（保存前提示用）。
     pub fn duplicate_key(&self) -> Option<String> {
         let mut seen: Vec<String> = Vec::new();
-        let key_values = self.key_values.borrow();
         for r in self.rows.get() {
-            let k = key_values
-                .get(r.key_idx.get())
-                .cloned()
-                .unwrap_or_else(|| r.key.get())
-                .trim()
-                .to_string();
+            let k = r.key.trim().to_string();
             if k.is_empty() {
                 continue;
             }
@@ -289,61 +259,25 @@ impl KeyActionFields {
         }
     }
 
-    /// 键名选项：符号键 + `z`。
-    ///
-    /// 用下拉而非文本框：键名是 core `keymap` 里的固定词表（`backslash` / `grave` …），
-    /// 让用户手打等于把一张内部词表当成 API——拼错了也没有任何反馈，配了不生效还查不出。
-    ///
-    /// # 字母为什么只留 z
-    ///
-    /// core 侧任意字母都能绑（活码裁决已从 z 泛化到所有字母），但**实践上只有 z 有意义**：
-    /// 其余字母在任何码表里几乎都是活码前缀，`bound_action_key_yields` 必然让位，配了等于
-    /// 没配。列出来只会让人配完发现没反应，与「临拼触发键里那个失效的 z 选项」同型。
-    ///
-    /// # 修饰键与其它键的分工
-    ///
-    /// 修饰键走 **keyup 轻敲**通路（keydown 不能吃：`Ctrl+A` 的第一下会误触发、长按会
-    /// 连触发、宿主看不到修饰键会卡），有字符的键走 keydown。判据是**键有没有字符**，
-    /// 不是动作类别——`toggle_schema` 只在修饰键上可用，正是因为它必须在英文模式下也
-    /// 按得动（否则切到英文方案就回不来），而 keydown 那条链在英文模式下走不到。
-    fn key_options() -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = crate::dialogs::schema_manager::TRIGGER_KEY_OPTIONS
-            .iter()
-            .map(|(v, l)| (v.to_string(), l.to_string()))
-            .collect();
-        out.push(("minus".into(), "减号 ( - )".into()));
-        out.push(("equal".into(), "等号 ( = )".into()));
-        out.push(("z".into(), "字母 z".into()));
-        // 与 core `keymap::modifier_name_to_vk` 的规范名一一对应。
-        out.push(("lshift".into(), "左 Shift".into()));
-        out.push(("rshift".into(), "右 Shift".into()));
-        out.push(("lctrl".into(), "左 Ctrl".into()));
-        out.push(("rctrl".into(), "右 Ctrl".into()));
-        out
-    }
-
-    /// 该键名是否为纯修饰键（与 `key_options` 里那四项同源）。
-    /// 用于给「动词只在修饰键上可用」的组合做提示，与 core 的裁决保持同一判据。
+    /// 该键名是否为纯修饰键。转调 [`key_shape`]，与 core 的裁决保持同一判据。
     pub fn is_modifier_key(name: &str) -> bool {
-        matches!(name, "lshift" | "rshift" | "lctrl" | "rctrl")
+        key_shape(name) == KeyShape::Modifier
     }
 
-    /// 该动词是否**只能绑修饰键**。镜像 core 的 `BoundAction::requires_modifier_key`。
-    ///
-    /// 判据是「它是不是**从英文态出来**的手段」：是的话绑在有字符的键上就是单程票
-    /// ——那条 keydown 链在英文模式分水岭之后，切过去就再也按不动。
-    /// `toggle_punct` 那类只在中文态有意义，不受此限。
-    ///
-    /// ⚠ 与 core 是**两份手写清单**，没有编译期约束。加动词时两处都要改，
-    /// 判据本身写在 core 那侧的文档注释里。
+    /// 该功能是否**只能绑修饰键**。见 [`verb_requires_modifier`]。
     pub fn verb_requires_modifier(value: &str) -> bool {
-        value.starts_with("toggle_schema:") || matches!(value, "toggle_mode" | "switch_engine")
+        verb_requires_modifier(value)
+    }
+
+    /// 按键选择浮层。**必须挂在本编辑器所在浮层之后**，否则会被压在下面。
+    pub fn build_picker(&self) -> Element {
+        self.picker.build_dialog()
     }
 
     /// 对话框内容（外壳由调用方用 `build_group_dialog_shell_dyn` 套上，
     /// 以便与码表配置、扩展词库等其它三级浮层长得一致）。
     ///
-    /// 返回 `(内容, 底部按钮)`——「添加绑定」交给外壳的底部按钮栏，与「关闭」同排；
+    /// 返回 `(内容, 底部按钮)`——「添加」交给外壳的底部按钮栏，与「关闭」同排；
     /// 放在列表下方会随列表滚动、且和内容挤在一起。
     ///
     /// 列表用 `host_signal`（非滚动的响应式 col）而非 `list_signal`：外壳
@@ -353,114 +287,67 @@ impl KeyActionFields {
     /// 判据是「父容器是否已在滚动」，不是「要不要响应式」——同文件的码表配置浮层同理。
     pub fn build_body(&self) -> (Element, Vec<Element>) {
         let rows_sig = self.rows;
-        let labels_sig = self.verb_labels;
-        let key_labels_sig = self.key_labels;
-        let verbs = self.verbs.clone();
-        let key_values = self.key_values.clone();
-        let leading_keys = self.leading_keys.clone();
+        let picker = self.picker.clone();
+        let leading = self.leading_keys.clone();
+        let me = self.clone();
 
-        let list = Element::host_signal(rows_sig, move |row: Row| {
-            let me = row.key;
-            // 部分动词只在修饰键上生效（core 侧同判据）。选错组合时当场标出来，
-            // 否则用户配完只会得到一个安静不工作的绑定——这类「配了不生效」的求助，
-            // 本模块已经贡献过一次了。
-            let (vb, kv) = (verbs.clone(), key_values.clone());
-            let (vi, ki) = (row.verb, row.key_idx);
-            let needs_modifier = move || {
-                let verb_needs = vb
-                    .borrow()
-                    .get(vi.get())
-                    .is_some_and(|v: &Verb| Self::verb_requires_modifier(&v.value));
-                let on_modifier = kv
-                    .borrow()
-                    .get(ki.get())
-                    .is_some_and(|k| Self::is_modifier_key(k));
-                verb_needs && !on_modifier
+        let list = Element::host_signal(rows_sig, move |row: Binding| {
+            let shape = key_shape(&row.key);
+            // 选择器已按键形态过滤，配不出非法组合；但**历史配置里可能有**（手写的、
+            // 或旧版设置页留下的）。行内当场标出来，否则用户只会得到一个安静不工作的
+            // 绑定——这类「配了不生效」的求助，本模块已经贡献过一次了。
+            let hint = if !verb_allowed(shape, &row.verb) {
+                Some(match shape {
+                    KeyShape::Combo => ("组合键不支持", Role::Danger),
+                    _ => ("需修饰键", Role::Danger),
+                })
+            } else if shape == KeyShape::Char
+                && row.verb != "none"
+                && !row.verb.is_empty()
+                && leading.borrow().contains(&row.key)
+            {
+                // 该键同时是本方案的码元首码：内核裁决「绑定优先」，于是这个符号在本方案
+                // 起不了头（组码中仍可用）。这是**同层冲突**，两条配置都不算坏，故用中性
+                // 措辞告知实际行为，不作错误标红——常驻警告会把可用的设计误报成待修问题。
+                //
+                // 与上一条互斥：那条是错配（配了不工作），优先级更高；两条一起挂在窄行上
+                // 也读不过来。
+                Some(("本方案码元", Role::TextMuted))
+            } else {
+                None
             };
-            // 该键同时是本方案的码元首码：内核裁决「绑定优先」，于是这个符号在本方案
-            // 起不了头（组码中仍可用）。这是**同层冲突**，两条配置都不算坏，故用中性
-            // 措辞告知实际行为，不作错误标红——常驻警告会把可用的设计误报成待修问题。
-            //
-            // 与「需 Shift/Ctrl」互斥显示：那条是错配（配了不工作），优先级更高；
-            // 两条一起挂在窄行上也读不过来。
-            let (lk, kv2, vi2) = (leading_keys.clone(), key_values.clone(), row.verb);
-            let ki2 = row.key_idx;
-            let vb2 = verbs.clone();
-            let shadows_code = move || {
-                // 显式 `none` 不算——它本来就是「让这个键回归正常输入」，与码元无冲突。
-                let disabled = vb2
-                    .borrow()
-                    .get(vi2.get())
-                    .is_some_and(|v: &Verb| v.value == "none" || v.value.is_empty());
-                if disabled {
-                    return false;
-                }
-                let on_modifier = kv2
-                    .borrow()
-                    .get(ki2.get())
-                    .is_some_and(|k| Self::is_modifier_key(k));
-                if on_modifier {
-                    return false; // 修饰键不可能是码元
-                }
-                kv2.borrow()
-                    .get(ki2.get())
-                    .is_some_and(|k| lk.borrow().iter().any(|l| l == k))
-            };
-            let needs_mod_for_hint = needs_modifier.clone();
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .padding_xy(0, 3)
-                .child(Element::dropdown_signal(key_labels_sig, row.key_idx).width(150))
-                .child(Element::dropdown_signal(labels_sig, row.verb).weight(1.0))
-                .child(
-                    Element::label("需 Shift/Ctrl")
-                        .font_size(11.0)
-                        .fg_role(Role::Danger)
-                        .max_lines(1)
-                        .visible_when(needs_modifier),
-                )
-                .child(
-                    Element::label("本方案码元")
-                        .font_size(11.0)
-                        .fg_role(Role::TextMuted)
-                        .max_lines(1)
-                        .visible_when(move || shadows_code() && !needs_mod_for_hint()),
-                )
-                .child(
-                    Element::button("✕")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
-                            // 按 key signal 的身份定位：行序号随增删变化，存下标必然错位。
-                            let mut v = rows_sig.get();
-                            v.retain(|r| r.key != me);
-                            rows_sig.set(v);
-                        }),
-                )
+
+            let (p, r) = (picker.clone(), row.clone());
+            let id = row.id;
+            binding_row(
+                &row.key,
+                &me.verb_label(&row.verb),
+                hint,
+                move |_| p.open_edit(r.id, &r.key, &r.verb),
+                move |_| {
+                    // 按行 id 定位：行序号随增删变化，存下标必然错位。
+                    let mut v = rows_sig.get();
+                    v.retain(|x| x.id != id);
+                    rows_sig.set(v);
+                },
+            )
         })
         .width_match();
 
-        let add = Element::button("+ 添加绑定").small().on_click(move |_| {
-            let mut v = rows_sig.get();
-            v.push(Row {
-                key: signal(String::new()),
-                key_idx: signal(0),
-                verb: signal(0),
-            });
-            rows_sig.set(v);
+        let p_add = self.picker.clone();
+        let add = Element::button("+ 添加").small().on_click(move |_| {
+            p_add.open_new();
         });
 
         let content = Element::col()
             .width_match()
             .spacing(6)
             .child(
-                Element::label("给本方案的按键指定功能，优先于全局设置。")
+                Element::label("给按键指定功能。同一个键，方案里配的优先于全局。")
                     .font_size(12.0)
                     .fg_role(Role::TextMuted)
                     .width_match()
-                    .max_lines(1),
+                    .max_lines(2),
             )
             .child(list);
         (content, vec![add])
@@ -511,7 +398,7 @@ mod tests {
         );
     }
 
-    /// 未知动词保留原值并进下拉，不静默丢弃。
+    /// 未知动词保留原值并进选项，不静默丢弃。
     #[test]
     fn unknown_verb_is_preserved() {
         let f = seeded(r#"{"key_actions":{"grave":"special:gone"}}"#);
@@ -521,6 +408,11 @@ mod tests {
         assert_eq!(
             cfg["key_actions"]["grave"], "special:gone",
             "指向已删方案的绑定必须原样保留——丢弃等于用户打开一次设置页就失去配置"
+        );
+        // 行里显示成「当前值」而不是空白，用户看得出这条配的是什么。
+        assert!(
+            f.verb_label("special:gone").starts_with("special:gone"),
+            "未知动词的行标签应含原值"
         );
     }
 
@@ -535,15 +427,14 @@ mod tests {
         assert_eq!(cfg["key_actions"], json!({}), "空表要写 {{}} 而非 null");
     }
 
-    /// 空键名的行被忽略（用户点了「添加」还没填就保存）。
+    /// 空键名的行被忽略（数据里混进了空键，或将来某条路径产出了空行）。
     #[test]
     fn blank_key_rows_are_dropped() {
         let f = seeded(r#"{"key_actions":{}}"#);
-        // key_idx 越界 → current() 回落 Row::key（此处是空白），即「添加了还没选」的行。
-        f.rows.set(vec![Row {
-            key: signal("  ".into()),
-            key_idx: signal(usize::MAX),
-            verb: signal(1),
+        f.rows.set(vec![Binding {
+            id: 1,
+            key: "  ".into(),
+            verb: "temp_pinyin".into(),
         }]);
         assert!(!f.is_dirty(), "只有空行时不算改动");
         let mut cfg = json!({});
@@ -555,17 +446,16 @@ mod tests {
     #[test]
     fn duplicate_key_is_detected() {
         let f = seeded(r#"{"key_actions":{}}"#);
-        let zi = f.key_index("z");
         f.rows.set(vec![
-            Row {
-                key: signal("z".into()),
-                key_idx: signal(zi),
-                verb: signal(1),
+            Binding {
+                id: 1,
+                key: "z".into(),
+                verb: "temp_pinyin".into(),
             },
-            Row {
-                key: signal("z".into()),
-                key_idx: signal(zi),
-                verb: signal(2),
+            Binding {
+                id: 2,
+                key: "z".into(),
+                verb: "mix:quick_mix".into(),
             },
         ]);
         assert_eq!(f.duplicate_key().as_deref(), Some("z"));
@@ -575,11 +465,6 @@ mod tests {
         assert_eq!(cfg["key_actions"], json!({"z":"mix:quick_mix"}));
     }
 
-    /// 修饰键选项与 `is_modifier_key` 必须同源。
-    ///
-    /// 两处各写一份列表的后果是：下拉里能选、判定却不认，于是「切换方案」在修饰键上
-    /// 照样弹「需 Shift/Ctrl」提示——用户按提示改也改不好。本仓已有过 UI 暴露 core
-    /// 不接受的值那类 bug，这里从数据上堵住同型问题。
     /// `leadingCodeKeys` 旁路字段要被 seed 接住，且**随方案刷新**。
     ///
     /// 不刷的后果：同一个对话框服务于任意方案，切到方案 B 后仍拿着方案 A 的码元集提示，
@@ -611,7 +496,7 @@ mod tests {
     /// 「限修饰键」的动词分类必须与 core 的 `requires_modifier_key` 一致。
     ///
     /// 两仓各存一份手写清单、无编译期约束，漂移的表现是行内提示与实际行为对不上：
-    /// 提示「需 Shift/Ctrl」但配上去照样不工作，或反过来——提示没出、配完却静默失效。
+    /// 提示「需修饰键」但配上去照样不工作，或反过来——提示没出、配完却静默失效。
     #[test]
     fn verbs_requiring_modifier_match_core_classification() {
         // 用来「离开英文态」的动作：绑有字符键是单程票。
@@ -627,6 +512,7 @@ mod tests {
             "open_settings",
             "take_screenshot",
             "temp_pinyin",
+            "aux_code",
             "mix:quick_mix",
             "special:fuhao",
             "none",
@@ -638,21 +524,13 @@ mod tests {
         }
     }
 
+    /// 修饰键判定与 core `modifier_name_to_vk` 的四个规范名一致。
     #[test]
-    fn modifier_options_agree_with_predicate() {
-        let opts = KeyActionFields::key_options();
-        let listed: Vec<&str> = opts
-            .iter()
-            .map(|(v, _)| v.as_str())
-            .filter(|v| KeyActionFields::is_modifier_key(v))
-            .collect();
-        assert_eq!(
-            listed,
-            vec!["lshift", "rshift", "lctrl", "rctrl"],
-            "选项里的修饰键应恰好是判定认可的那四个"
-        );
-        // 反向：符号键与字母不该被判成修饰键。
-        for k in ["backslash", "semicolon", "z", "grave"] {
+    fn modifier_predicate_matches_core_names() {
+        for k in ["lshift", "rshift", "lctrl", "rctrl"] {
+            assert!(KeyActionFields::is_modifier_key(k), "{k} 应是修饰键");
+        }
+        for k in ["backslash", "semicolon", "z", "grave", "ctrl+shift+r"] {
             assert!(!KeyActionFields::is_modifier_key(k), "{k} 不是修饰键");
         }
     }
@@ -679,6 +557,33 @@ mod tests {
         assert_eq!(
             cfg.pointer("/key_actions/rshift").and_then(|v| v.as_str()),
             Some("toggle_schema:english")
+        );
+    }
+
+    /// 组合键条目（方案切换热键写进来的那种）必须能原样往返。
+    ///
+    /// 这类条目**本就存在**于全局 `keys.key_actions` 里——方案设置的「切换到本方案按键」
+    /// 写的就是它。编辑器若在往返中把它弄丢或改形，用户在方案页配的切换键会在打开一次
+    /// 全局按键设置后消失。
+    #[test]
+    fn combo_key_entries_round_trip() {
+        let f = KeyActionFields::default();
+        let mut vs = verbs();
+        vs.push(Verb {
+            value: "toggle_schema:wubi".into(),
+            label: "切换方案 - 五笔".into(),
+        });
+        f.set_verbs(vs);
+        f.seed_map(
+            serde_json::from_str::<Value>(r#"{"ctrl+shift+r":"toggle_schema:wubi"}"#)
+                .unwrap()
+                .as_object()
+                .unwrap(),
+        );
+        assert!(!f.is_dirty(), "组合键条目原样播种不该算脏");
+        assert_eq!(
+            Value::Object(f.to_map()),
+            json!({"ctrl+shift+r":"toggle_schema:wubi"})
         );
     }
 }
