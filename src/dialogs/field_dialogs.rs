@@ -544,6 +544,80 @@ pub fn build_group_dialog_shell(
     shell_with_title(visible, Element::label(title), content, bottom_leading)
 }
 
+/// 「总开关 + 折叠区」：勾选框控制下方整片内容的显隐。
+///
+/// 通用组件，当前用于方案设置的「方案自定义」（码表覆盖）。**将来混输等方案类型的专属
+/// 设置同理**——它们与码表覆盖是同一个形态：默认跟随全局，勾上才有本方案自己的一套。
+///
+/// ★ 开关与内容**分行**。同一行内做显隐会让元素左右跳（摘要消失、按钮出现，行宽就变了），
+/// 这也是本节此前用「勾选 + 常驻按钮 + 定宽摘要」而不用显隐的原因。整片折叠没有这个问题：
+/// 下方有没有内容，不影响开关那一行的布局。
+///
+/// `hint` 取信号而非 `&str`：关闭时要说明「关了会怎样」，而那句话可能随方案而变
+/// （特殊方案跟随内置基线、普通方案跟随全局配置）。
+pub fn collapsible_group(
+    title: &str,
+    switch_label: &str,
+    hint: Signal<String>,
+    enabled: Signal<bool>,
+    body: Element,
+) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(4)
+        .padding_xy(0, 4)
+        .child(crate::manifest::dialog_group_header(title))
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(10)
+                .child(
+                    Element::label(switch_label)
+                        .font_size(13.0)
+                        .fg_role(Role::Text)
+                        .weight(1.0)
+                        .max_lines(1),
+                )
+                .child(
+                    Element::checkbox("启用", enabled)
+                        .small()
+                        .fg_role(Role::Text),
+                ),
+        )
+        .child(
+            Element::label_signal(hint)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .max_lines(2)
+                .visible_when(move || !enabled.get()),
+        )
+        .child(
+            Element::col()
+                .width_match()
+                .child(Element::divider())
+                .child(body)
+                .visible_when(move || enabled.get()),
+        )
+}
+
+/// 尺寸放大的变体，供内容分了 TAB、默认 460×380 装不下的浮层用。
+pub fn build_group_dialog_shell_large(
+    visible: Signal<bool>,
+    title: &str,
+    content: Element,
+    bottom_leading: Vec<Element>,
+) -> Element {
+    shell_with_title_sized(
+        visible,
+        Element::label(title),
+        content,
+        bottom_leading,
+        620,
+        460,
+    )
+}
+
 /// 标题随内容变化的变体（如「码表配置 - 五笔」：同一个浮层服务于任意方案）。
 ///
 /// 单独开一个入口而不是把 `&str` 那版改成泛型：静态标题是绝大多数调用点的形态，
@@ -570,8 +644,26 @@ fn shell_with_title(
     content: Element,
     bottom_leading: Vec<Element>,
 ) -> Element {
+    shell_with_title_sized(visible, title, content, bottom_leading, 460, 380)
+}
+
+/// 尺寸可指定的外壳。默认 460×380 装不下的（如分了 TAB 的方案设置）用这个。
+///
+/// 单开一个入口而不是把默认值改大：那会一次性放大**所有**用这套外壳的浮层，而它们
+/// 绝大多数只有三五行，撑大只是留白。
+fn shell_with_title_sized(
+    visible: Signal<bool>,
+    title: Element,
+    content: Element,
+    bottom_leading: Vec<Element>,
+    width: i32,
+    height: i32,
+) -> Element {
     // 内容超长时中间区域可滚动；固定视口高度确保标题栏和关闭按钮始终可见。
-    let body = Element::scroll().width_match().height(380).child(content);
+    let body = Element::scroll()
+        .width_match()
+        .height(height)
+        .child(content);
 
     let mut bottom = Element::row()
         .width_match()
@@ -589,7 +681,7 @@ fn shell_with_title(
     );
 
     let frame = Element::col()
-        .width(460)
+        .width(width)
         .bg_role(Role::Surface)
         .border_role(Role::Border, 1)
         .corner(12.0)

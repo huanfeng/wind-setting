@@ -113,8 +113,9 @@ pub enum SchemaListItem {
     Divider { hidden_with_disabled: bool },
 }
 
-/// 方案设置对话框的一个配置分节。新增一种方案设置 = 加一个变体 + build_section 分支。
-#[derive(Clone)]
+/// 方案设置对话框的一个配置分节。新增一种方案设置 = 加一个变体 + build_section 分支
+/// + [`SettingsSection::tab`] 里指定它归哪个 TAB。
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     /// 方案元信息头部（名称/类型/来源/版本/作者/描述）。恒为首节。
     Header,
@@ -130,6 +131,50 @@ pub enum SettingsSection {
     /// 节间分隔线（Header 自带结尾分隔，故只在其后的各节之间插入）。
     Divider,
     Empty,
+}
+
+/// 方案设置对话框的三个 TAB。
+pub const SETTINGS_TABS: [&str; 3] = ["基本信息", "按键配置", "方案自定义"];
+
+impl SettingsSection {
+    /// 本节归到哪个 TAB。
+    ///
+    /// 分组判据是**用户想做什么**，不是数据落在哪个文件：
+    /// - 基本信息：这个方案是什么、带哪些词库（看与开关）
+    /// - 按键配置：这个方案的键怎么按（三个入口 + 总览）
+    /// - 方案自定义：这个方案的引擎行为要不要偏离全局（双拼布局 / 码表覆盖 / 特殊模式）
+    ///
+    /// `Divider` 不参与分组：原先那份扁平列表里的分隔线是按「相邻两节之间」插的，分完 TAB
+    /// 后相邻关系全变了，故丢弃重插（见 `split_sections_by_tab`）。
+    fn tab(self) -> Option<usize> {
+        match self {
+            Self::Header | Self::ExtensionDicts => Some(0),
+            Self::EntryKeys => Some(1),
+            Self::ShuangpinLayout | Self::CodeTable | Self::Overlay => Some(2),
+            Self::Divider | Self::Empty => None,
+        }
+    }
+}
+
+/// 把扁平分节表拆成三个 TAB 各自的列表，并在**组内**重插分隔线。
+///
+/// ★ 丢弃原有 `Divider` 而不是搬运：它表达的是「相邻两节之间」，分完 TAB 后相邻关系变了，
+/// 照搬会出现开头就是一条分隔线、或两节之间没有线。
+///
+/// `Header` 后面不插：它自带结尾分隔（见 `SettingsSection::Divider` 的文档）。
+fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; 3] {
+    let mut out: [Vec<SettingsSection>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for s in flat {
+        let Some(t) = s.tab() else { continue };
+        let bucket = &mut out[t];
+        if let Some(prev) = bucket.last()
+            && *prev != SettingsSection::Header
+        {
+            bucket.push(SettingsSection::Divider);
+        }
+        bucket.push(*s);
+    }
+    out
 }
 
 /// `[overlay] candidate_layout` 的字符串值 ↔ 分段控件下标。
@@ -254,7 +299,13 @@ pub struct SchemaManagerState {
     /// （合并安装目录与用户目录），取代原硬编码；下拉选项/索引映射/行名后缀均以此为准。
     pub layouts: Rc<RefCell<Vec<(String, String)>>>,
     /// 当前打开方案应显示的配置分节（open_settings_at_id 重算，驱动对话框 body 重建）。
-    pub settings_sections: Signal<Vec<SettingsSection>>,
+    /// 三个 TAB 各自的分节表（由 [`split_sections_by_tab`] 从扁平表拆出）。
+    ///
+    /// 拆成三个信号而不是「一个信号 + 渲染时过滤」：`host_signal` 拿到的是整份 Vec、
+    /// 对每个元素建一个元素，没有过滤的入口；要过滤就得在数据侧分好。
+    pub settings_sections: [Signal<Vec<SettingsSection>>; 3],
+    /// 当前选中的 TAB 下标。
+    pub settings_tab: Signal<usize>,
     /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
     pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
 
@@ -307,10 +358,8 @@ pub struct SchemaManagerState {
     /// 打开对话框时的两项初值，用于脏判定——没有它，打开看一眼再关掉也会入队写盘。
     settings_ov_at_open: Rc<std::cell::Cell<(bool, usize)>>,
     pub settings_ct_enabled: Signal<bool>,
-    pub settings_ct_visible: Signal<bool>,
     /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
     /// 标题里不带方案名的话，点进去就不知道自己在配哪个表了。
-    pub settings_ct_title: Signal<String>,
     /// 行内摘要（「跟随全局配置」/「已自定义」）。**定宽**——文本随勾选变化，
     /// 若靠显隐表达状态，右侧的「设置」按钮会跟着左右跳。
     pub settings_ct_disp: Signal<String>,
@@ -406,15 +455,14 @@ impl SchemaManagerState {
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
-            settings_sections: signal(vec![]),
+            settings_sections: [signal(vec![]), signal(vec![]), signal(vec![])],
+            settings_tab: signal(0),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_enabled: signal(false),
-            settings_ct_visible: signal(false),
-            settings_ct_title: signal("码表配置".to_string()),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
             settings_ka: Default::default(),
@@ -1341,15 +1389,6 @@ impl SchemaManagerState {
                 self.settings_ct_enabled_at_open.set(custom);
                 *self.settings_ct_eff.borrow_mut() = eff;
                 drop(cfg);
-                // 标题带方案名（名称缺失时回退 id——总比只显示「码表配置」强）。
-                let who = self
-                    .settings_entry
-                    .borrow()
-                    .as_ref()
-                    .map(|e| e.name.clone())
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| sid.clone());
-                self.settings_ct_title.set(format!("码表配置 - {who}"));
                 self.settings_ct_disp.set(
                     ct_summary(self.settings_ct_enabled.get(), self.settings_entry_hidden())
                         .to_string(),
@@ -1432,7 +1471,13 @@ impl SchemaManagerState {
         // 注：曾有 `has_config` 与 `SettingsSection::Empty`——「没有任何可配置项」的空状态。
         // 「按键功能」对所有方案都有之后，那个分支恒不可达，故一并退役（枚举项保留，
         // 将来若又出现真的空方案可直接复用）。
-        self.settings_sections.set(sections);
+        let [basic, keys, custom] = split_sections_by_tab(&sections);
+        self.settings_sections[0].set(basic);
+        self.settings_sections[1].set(keys);
+        self.settings_sections[2].set(custom);
+        // 每次打开都回到首个 TAB：对话框服务于任意方案，停在上一个方案看过的 TAB 上
+        // 会让人以为「这个方案也有那些项」，而它可能整个 TAB 都是空的。
+        self.settings_tab.set(0);
 
         self.settings_visible.set(true);
     }
@@ -2633,7 +2678,6 @@ pub fn build_schema_manager_dialog(
     let import_dlg = build_import_confirm_dialog(app, state);
     let hotkey_dlg = build_schema_hotkey_dialog(state);
     let trigger_dlg = build_trigger_keys_dialog(state);
-    let ct_dlg = build_codetable_dialog(state);
     let ka_dlg = build_key_actions_dialog(state);
     let sa_dlg = build_session_actions_dialog(state);
     let ko_dlg = build_keys_overview_dialog(state);
@@ -2645,7 +2689,6 @@ pub fn build_schema_manager_dialog(
         // 排在方案设置之后 = 叠在它上面：这几个对话框都是从方案设置里打开的。
         .child(hotkey_dlg)
         .child(trigger_dlg)
-        .child(ct_dlg)
         .child(ka_dlg)
         .child(sa_dlg)
         .child(ko_dlg)
@@ -2695,25 +2738,6 @@ fn build_session_actions_dialog(state: &SchemaManagerState) -> Element {
             .padding_xy(16, 6)
             .child(content),
         buttons,
-    )
-}
-
-/// 方案级码表配置浮层（第三级）：与全局「上屏行为」对话框同一份 manifest 定义，
-/// 只是读写落点在方案 override 上。见 [`crate::dialogs::schema_codetable`]。
-///
-/// 内容按 `settings_ct_plan` 响应式重建——对话框结构建于选中方案之前，而控件信号要等
-/// 播种；固定构建会让所有方案共用第一次播种的那批控件。
-fn build_codetable_dialog(state: &SchemaManagerState) -> Element {
-    let ct = state.settings_ct.clone();
-    let manifest = state.manifest.clone();
-    let body = Element::host_signal(state.settings_ct_plan, move |item| ct.row(&manifest, item));
-    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
-        state.settings_ct_visible,
-        state.settings_ct_title,
-        Element::col().width_match().padding_xy(16, 2).child(body),
-        // 无「保存」：改动随方案设置对话框的「保存」一并提交，与双拼布局、扩展词库同路。
-        // 这里再放一个会让人以为两处各存各的。
-        Vec::new(),
     )
 }
 
@@ -3280,45 +3304,24 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 )
         }
         SettingsSection::CodeTable => {
-            let en = state.settings_ct_enabled;
-            let cv = state.settings_ct_visible;
-            // 与「进入方式 → 切换热键」逐字同构：勾选框 + 定宽摘要 + 常驻「设置」按钮。
+            // 总开关 + **内联**的具体设置（勾掉即整片折叠），而不是「勾选 + 打开子对话框」。
             //
-            // 不用 Switch、也不靠显隐表达状态：那样勾上之后摘要消失、按钮出现，同一行的
-            // 元素会左右跳一下。摘要定宽 + 按钮常驻（未勾选时置灰）则行宽恒定。
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("码表配置"))
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("自定义码表配置")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        .child(Element::checkbox("启用", en).small().fg_role(Role::Text))
-                        .child(
-                            Element::label_signal(state.settings_ct_disp)
-                                .font_size(12.5)
-                                .fg_role(Role::TextMuted)
-                                .max_lines(1)
-                                .width(114),
-                        )
-                        .child(
-                            Element::button("设置")
-                                .small()
-                                .outline_soft()
-                                .on_click(move |_| cv.set(true))
-                                .enabled_signal(en),
-                        ),
-                )
+            // 分了 TAB 之后这一屏有的是纵向空间，再套一层浮层只是多一次点击；而折叠区把
+            // 「跟随全局 / 自己一套」这个二选一和它的后果放在同一屏里，选完就能看到改什么。
+            //
+            // 组件是通用的（`collapsible_group`）：混输等方案类型将来加自己的覆盖设置时
+            // 直接复用，不必再拼一遍开关与折叠的联动。
+            let ct = state.settings_ct.clone();
+            let manifest = state.manifest.clone();
+            let body =
+                Element::host_signal(state.settings_ct_plan, move |item| ct.row(&manifest, item));
+            crate::dialogs::field_dialogs::collapsible_group(
+                "方案自定义",
+                "自定义本方案的码表行为",
+                state.settings_ct_disp,
+                state.settings_ct_enabled,
+                Element::col().width_match().padding_xy(0, 4).child(body),
+            )
         }
         SettingsSection::Overlay => {
             let show_all = state.settings_ov_show_all;
@@ -3418,10 +3421,40 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
 
     // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）；
     // Header 恒为首节，元信息与各配置节统一由此渲染。
-    let st_body = state.clone();
-    let sections = Element::host_signal(state.settings_sections, move |kind| {
-        build_section(kind, &st_body)
-    });
+    // TAB 条 + 三块内容。
+    //
+    // 三块**同时建好、靠 visible_when 切换**，不是按选中项重建：各节的工作态（勾选、
+    // 下拉、行编辑器）都挂在 Element 上，重建等于用户切个 TAB 回来就发现刚改的没了。
+    let tab = state.settings_tab;
+    let tab_bar = Element::row().width_match().padding_xy(0, 8).child(
+        Element::segmented(SETTINGS_TABS.iter().map(|s| s.to_string()).collect(), tab).weight(1.0),
+    );
+
+    let mut panes = Element::col().width_match();
+    for i in 0..SETTINGS_TABS.len() {
+        let st = state.clone();
+        let sec = state.settings_sections[i];
+        let body = Element::host_signal(sec, move |kind| build_section(kind, &st));
+        // 空 TAB 给一句话而不是留白：一片空白看起来像没加载出来，而「方案自定义」对
+        // 拼音/混输这类方案确实是空的（core 只对 codetable 给 effectiveCodetable）。
+        let hint = Element::label("该方案在这一类下没有可配置的项。")
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .padding_xy(0, 10)
+            .visible_when(move || sec.get().is_empty());
+        panes = panes.child(
+            Element::col()
+                .width_match()
+                .child(body)
+                .child(hint)
+                .visible_when(move || tab.get() == i),
+        );
+    }
+    let sections = Element::col()
+        .width_match()
+        .child(tab_bar)
+        .child(Element::divider())
+        .child(panes);
 
     // 热键工作态 → 内存 map 的落盘点。**用 effect 而非在各个「关闭」按钮上调**：
     // 对话框有多条关闭路径（footer 按钮 / 标题栏 / 保存后自动关），逐个挂等于赌自己
@@ -3499,7 +3532,14 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         .child(ct_effect)
         .child(stage_effect);
 
-    crate::dialogs::field_dialogs::build_group_dialog_shell(visible, "方案设置", content, vec![])
+    // 用放大的外壳：分了 TAB 之后，默认 460×380 里 TAB 条要占掉一行，剩下的高度装不下
+    // 「基本信息 + 扩展词库」那一屏。
+    crate::dialogs::field_dialogs::build_group_dialog_shell_large(
+        visible,
+        "方案设置",
+        content,
+        vec![],
+    )
 }
 
 #[cfg(test)]
