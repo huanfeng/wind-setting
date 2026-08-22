@@ -149,7 +149,7 @@ impl KeysOverview {
                 )
         });
         let hint = Element::label(
-            "只读。编辑请回「本方案的按键绑定」「本方案打字时的按键」，或全局按键设置。",
+            "只读。编辑请回「本方案的按键绑定」「本方案输入中的按键」，或全局按键设置。",
         )
         .font_size(12.0)
         .fg_role(Role::TextMuted)
@@ -221,7 +221,7 @@ mod tests {
             ]}),
             &[],
         );
-        assert_eq!(o.rows.get()[0].action, "打字时禁用该键");
+        assert_eq!(o.rows.get()[0].action, "输入中禁用该键");
     }
 
     /// 旧版 core 没有该字段时给空表，不 panic、不挡住设置页。

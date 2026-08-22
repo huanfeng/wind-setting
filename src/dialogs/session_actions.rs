@@ -9,10 +9,10 @@
 //!
 //! | | 表 | 管的是 |
 //! | --- | --- | --- |
-//! | [`super::schema_key_actions`] | 方案 `[key_actions]` / 全局 `keys.key_actions` | **空闲时**（没在打字）这个键干什么 |
-//! | 本模块 | `keys.session_actions` | **正在打字时**（有编码或候选）这个键干什么 |
+//! | [`super::schema_key_actions`] | 方案 `[key_actions]` / 全局 `keys.key_actions` | **空闲时**（没在输入）这个键干什么 |
+//! | 本模块 | `keys.session_actions` | **输入中**（有编码或候选）这个键干什么 |
 //!
-//! 同一个键在两种状态下可以是两个动作——Tab 打字时翻页、空闲时仍是宿主的制表符。
+//! 同一个键在两种状态下可以是两个动作——Tab 输入中翻页、空闲时仍是宿主的制表符。
 //!
 //! ★ 改动其一的**交互形态**时请同步另一个。`capabilities.rs` 对 `keys.key_actions` 的
 //! 豁免理由里写着「两者的 UI 应当一并设计，避免出两个长得不一样的键绑定编辑器」——
@@ -124,6 +124,11 @@ impl SessionActionFields {
             ("slash", "斜杠 ( / )"),
             ("backslash", "反斜杠 ( \\ )"),
             ("backtick", "反引号 ( ` )"),
+            // ★ 唯一收进本表的字母。core 侧 `session_key_to_vk` 也只认这一个：其余字母
+            // 在任何码表里几乎都是活码前缀，配了等于把那个字母在该方案里废掉。
+            // ⚠️ 配了之后，该方案「出候选后再按 z」就不再是编码（五笔的 zz 类短语打不出）；
+            // 空缓冲按 z 不受影响，照常起头组码。
+            ("z", "字母 z"),
         ];
         #[cfg(windows)]
         &[
@@ -154,6 +159,11 @@ impl SessionActionFields {
             ("slash", "斜杠 ( / )"),
             ("backslash", "反斜杠 ( \\ )"),
             ("backtick", "反引号 ( ` )"),
+            // ★ 唯一收进本表的字母。core 侧 `session_key_to_vk` 也只认这一个：其余字母
+            // 在任何码表里几乎都是活码前缀，配了等于把那个字母在该方案里废掉。
+            // ⚠️ 配了之后，该方案「出候选后再按 z」就不再是编码（五笔的 zz 类短语打不出）；
+            // 空缓冲按 z 不受影响，照常起头组码。
+            ("z", "字母 z"),
         ]
     }
 
@@ -164,7 +174,7 @@ impl SessionActionFields {
     /// 由 `seed` 的「当前值」机制兜住。
     pub fn verb_options() -> &'static [(&'static str, &'static str)] {
         &[
-            ("none", "打字时禁用该键"),
+            ("none", "输入中禁用该键"),
             ("page_next", "下一页"),
             ("page_prev", "上一页"),
             ("highlight_down", "高亮下移"),
@@ -322,8 +332,8 @@ impl SessionActionFields {
         let vv = verb_values.clone();
         let add = Element::button("+ 添加绑定").small().on_click(move |_| {
             let mut v = rows_sig.get();
-            // 新行默认落在「下一页」而非首项「打字时禁用该键」：后者是个破坏性动作，
-            // 用户添加一行却忘了改动词时，不该把那个键在打字时废掉。
+            // 新行默认落在「下一页」而非首项「输入中禁用该键」：后者是个破坏性动作，
+            // 用户添加一行却忘了改动词时，不该把那个键在输入中废掉。
             let default_verb = vv
                 .borrow()
                 .iter()
@@ -345,7 +355,7 @@ impl SessionActionFields {
             .padding_xy(16, 8)
             .spacing(8)
             .child(
-                Element::label("指定「正在打字时」这些键的功能；空闲时它们仍是原本的用途。")
+                Element::label("指定「输入中」这些键的功能；空闲时它们仍是原本的用途。")
                     .font_size(12.0)
                     .fg_role(Role::TextMuted)
                     .width_match()
