@@ -1649,6 +1649,9 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
         // 会话态按键表：map 的键与值都是 core 的内部词表，通用 map 对话框的文本行编辑
         // 会让用户把内部词表当 API 手打（拼错零反馈），故走键/动词双下拉的专用对话框。
         build_dialog_button_session_actions(state, key, cfg)
+    } else if key == "keys.key_actions" {
+        // 全局引导键表：与上一项同族（同样的行编辑器），分野是触发态——本表管空闲时。
+        build_dialog_button_key_actions(state, key, cfg)
     } else if key == "ui.candidate.index_labels" {
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
         build_dialog_button_index_labels(state, key, cfg)
@@ -2679,7 +2682,7 @@ fn collect_labels(inputs: &[Signal<String>]) -> Vec<Value> {
 /// dialog_button（keys.session_actions）：键 → 动词的行编辑器，两列都是下拉。
 ///
 /// 与方案级按键表（`dialogs::schema_key_actions`）是同族编辑器，形态刻意一致；
-/// 两者的分野是**触发态**（空闲时 / 正在打字时），见那两个模块的文档注释。
+/// 两者的分野是**触发态**（空闲时 / 输入中），见那两个模块的文档注释。
 fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_group_dialog_shell;
     use crate::dialogs::session_actions::SessionActionFields;
@@ -2724,7 +2727,67 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
     );
 
     let (content, bottom) = fields.build_body();
-    let dlg = build_group_dialog_shell(visible, "打字时的按键功能", content, bottom);
+    let dlg = build_group_dialog_shell(visible, "输入中的按键功能", content, bottom);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// dialog_button（keys.key_actions）：全局引导键表，与会话态那张同族。
+///
+/// 复用方案级的 [`crate::dialogs::schema_key_actions::KeyActionFields`]——两处的键名值域
+/// 与行为完全一致，差别只在**动词值域**（全局多一个单向 `switch_schema:<id>`）与数据来源
+/// （裸 map vs 方案 cfg 的一个段）。再写一个编辑器就是两个长得不一样的键绑定编辑器，
+/// 正是 `capabilities.rs` 当初把本键登记进豁免清单时想避免的事。
+fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_group_dialog_shell;
+    use crate::dialogs::schema_key_actions::KeyActionFields;
+
+    let fields = KeyActionFields::default();
+    // ⚠️ 动词表要枚举方案（`special:` / `toggle_schema:` / `switch_schema:`），而方案列表
+    // 是懒加载的——用户可能从没进过方案页。空表时先拉一次，否则下拉里只剩固定动词，
+    // 看起来像「这个版本不支持切方案」。
+    if state.schema_mgr.schemas.borrow().is_empty() {
+        state.schema_mgr.refresh();
+    }
+    fields.set_verbs(state.schema_mgr.build_global_key_action_verbs());
+    fields.seed_map(
+        &cfg.get_path(key)
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let visible = signal(false);
+
+    let (fw, kw) = (fields.clone(), key.to_string());
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, Value::Object(fw.to_map()));
+        }));
+
+    let (fl, kl) = (fields.clone(), key.to_string());
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            fl.seed_map(
+                &c.get_path(&kl)
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }),
+    );
+
+    let fg = fields.clone();
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::Object(fg.to_map())),
+    );
+
+    let (content, bottom) = fields.build_body();
+    let dlg = build_group_dialog_shell(visible, "空闲时的按键功能", content, bottom);
     register_dialog(state, dlg);
     visible
 }

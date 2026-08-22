@@ -20,7 +20,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use windui::prelude::*;
 
 /// 动词选项：`value` 落盘、`label` 给人看。
@@ -151,6 +151,26 @@ impl KeyActionFields {
             .collect();
         self.rows.set(rows);
         *self.at_open.borrow_mut() = pairs;
+    }
+
+    /// 从**裸 map** 播种（全局 `keys.key_actions` 用）。
+    ///
+    /// 与 [`Self::seed`] 的差别只在数据从哪来：那个从方案 cfg 的 `key_actions` 段取，并额外
+    /// 读 `leadingCodeKeys` 给「绑的键是本方案码元」提示；全局表没有方案上下文，无此提示
+    /// （码元集是 per-schema 的，全局层无从知道）。
+    ///
+    /// 直接转调 `seed` 而不是复制一份：两条播种路径的「未知动词保留为当前值」「按键名
+    /// 排序」「记录 at_open 快照」都必须一致，分两份写迟早漂移。
+    pub fn seed_map(&self, map: &Map<String, Value>) {
+        self.seed(&json!({ "key_actions": Value::Object(map.clone()) }));
+    }
+
+    /// 导出成裸 map（全局 `keys.key_actions` 用）。方案级走 [`Self::apply`]。
+    pub fn to_map(&self) -> Map<String, Value> {
+        self.current()
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect()
     }
 
     /// 初始化键名下拉的取值/显示表（幂等）。

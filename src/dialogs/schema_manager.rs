@@ -323,7 +323,7 @@ pub struct SchemaManagerState {
     pub settings_ka_disp: Signal<String>,
     // ── 方案级会话态按键表（方案顶层 `session_actions`，见 dialogs::schema_session_actions）──
     //
-    // 与上面那张是对称的两张表：`key_actions` 管无会话态的引导键，本张管**打字时**的
+    // 与上面那张是对称的两张表：`key_actions` 管无会话态的引导键，本张管**输入中**的
     // 翻页/选词/取消。分开而不是合成一张带状态维度的表，判据见 core 仓
     // `docs/design/session-key-actions.md` §2。
     pub settings_sa: crate::dialogs::schema_session_actions::SchemaSessionActionFields,
@@ -423,7 +423,7 @@ impl SchemaManagerState {
             settings_ka_disp: signal(String::new()),
             settings_sa: Default::default(),
             settings_sa_visible: signal(false),
-            settings_sa_title: signal("打字时按键".to_string()),
+            settings_sa_title: signal("输入中按键".to_string()),
             settings_sa_disp: signal(String::new()),
             settings_ko: Default::default(),
             settings_ko_visible: signal(false),
@@ -497,6 +497,36 @@ impl SchemaManagerState {
             .collect()
     }
 
+    /// 全局 `keys.key_actions` 的动词表 = 方案级那份 ⊕ 单向 `switch_schema:<id>`。
+    ///
+    /// ★ **单向切换只在全局合法**。方案级表按活跃方案查，单向切走之后目标方案没有这条
+    /// 绑定，那个键就再也按不动了（core 侧 `bound_key_decision` 为此专门让位并 warn）。
+    /// 全局表在所有方案下都生效，不存在这个问题，故这里补上、方案级那份仍不列。
+    /// 见 core 仓 docs/design/schema-key-actions.md §5。
+    ///
+    /// ⚠️ 调用前确保方案列表已加载（`refresh()`）：`special:` / `toggle_schema:` /
+    /// `switch_schema:` 三类都从 `self.schemas` 枚举，列表空时下拉里就只剩固定动词，
+    /// 用户会以为「这个版本不支持切方案」。
+    pub(crate) fn build_global_key_action_verbs(
+        &self,
+    ) -> Vec<crate::dialogs::schema_key_actions::Verb> {
+        use crate::dialogs::schema_key_actions::Verb;
+        let mut out = self.build_key_action_verbs();
+        // 与上面 `toggle_schema` 那段同样跳过 hidden：隐藏方案不进循环切换列表，
+        // 给它配直达键属于高级用法，手写配置仍然认（`seed` 会把未知值保留成当前值）。
+        for e in self.schemas.borrow().iter() {
+            if e.id.is_empty() || e.hidden {
+                continue;
+            }
+            let name = if e.name.is_empty() { &e.id } else { &e.name };
+            out.push(Verb {
+                value: format!("switch_schema:{}", e.id),
+                label: format!("切到方案（单向） - {name}"),
+            });
+        }
+        out
+    }
+
     /// 把某个动词的绑定键**整体换成** `new_keys`：先摘掉所有指向它的旧键，再写入新键。
     ///
     /// 「先摘再写」而不是只增不减——用户取消勾选某个键时，那条绑定必须真的消失。
@@ -516,7 +546,7 @@ impl SchemaManagerState {
     /// `toggle_schema:<id>` 刻意不列：方案级表里只允许有夺取回路或可往返的动词，
     /// 见 core 仓 docs/design/schema-key-actions.md §5（方案级不允许单向 switch_schema，
     /// 而 toggle_schema 属 C 类、四期才进方案级表）。
-    fn build_key_action_verbs(&self) -> Vec<crate::dialogs::schema_key_actions::Verb> {
+    pub(crate) fn build_key_action_verbs(&self) -> Vec<crate::dialogs::schema_key_actions::Verb> {
         use crate::dialogs::schema_key_actions::Verb;
         let mut out = vec![
             Verb {
@@ -1371,7 +1401,7 @@ impl SchemaManagerState {
             // 会话态那张同批播种：两张表读的是同一份 cfg，分开播种没有意义，且漏掉一处
             // 的表现是「打开设置页看到的是上一个方案的绑定」。
             self.settings_sa.seed(&self.settings_cfg.borrow());
-            self.settings_sa_title.set(format!("打字时按键 - {who}"));
+            self.settings_sa_title.set(format!("输入中按键 - {who}"));
             self.settings_sa_disp.set(self.settings_sa.summary());
             // 总览同批播种。数据整份来自 core 的 `keysOverview` 旁路字段，本仓不做仲裁——
             // 全局那份要经 `effective_session_actions` 折算，展开规则只该有一处。
@@ -3157,8 +3187,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     ),
             );
 
-            // 打字时按键（方案顶层 `session_actions`）：与上一行成对——那张管「没在打字时
-            // 按下去干什么」（引导键），这张管「正在打字时按下去干什么」（翻页/选词/取消）。
+            // 输入中按键（方案顶层 `session_actions`）：与上一行成对——那张管「没在输入时
+            // 按下去干什么」（引导键），这张管「输入中按下去干什么」（翻页/选词/取消）。
             // 措辞按**用户处境**分而不是按内部表名分：用户不知道也不必知道有两张表。
             let sv = state.settings_sa_visible;
             col = col.child(
@@ -3167,7 +3197,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .cross(Align::Center)
                     .spacing(10)
                     .child(
-                        Element::label("本方案打字时的按键")
+                        Element::label("本方案输入中的按键")
                             .font_size(13.0)
                             .fg_role(Role::Text)
                             .weight(1.0)

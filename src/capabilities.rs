@@ -247,15 +247,6 @@ mod tests {
         "input.phrase.min_prefix",
         // ④ 非独立清单项：由各功能键的「全局」勾选经收集器汇总写回。
         "keys.global_hotkeys",
-        // ④' 按键功能表（热键串 → 动词）：**待做 GUI，不是永久豁免**。
-        //     manifest 的「一个 key 一个控件」模型装不下它——条目是动态行（键 + 动词，可增删），
-        //     且动词里的 `mix:<id>` / `special:<id>` / `toggle_schema:<id>` 要按已安装方案
-        //     动态生成选项。需要 dialog_button_mix_members 那种列表编辑器，属独立设计。
-        //     设计与分期见 core 仓 docs/design/schema-key-actions.md（三期）。
-        //     ⚠️ 同一套动词值域将来还要用于**方案级** `[key_actions]`（写在方案文件里，
-        //     不在本 capability 键空间内），两者的 UI 应当一并设计，避免出两个长得不一样的
-        //     键绑定编辑器。
-        "keys.key_actions",
         // ⑤ 临时英文不再设独立启用开关（Shift+字母 始终可进入、触发键可留空）。
         "input.temp_english.enabled",
         // ⑥ 外观不支持 / 平台限制项，均由 core 维持默认值。
