@@ -1581,8 +1581,7 @@ pub fn build_scheme_config_button(
         rows.push(build_fuzzy_group(state, &state.current_config));
     }
 
-    // 恢复默认：调用 config.getDefaults RPC 取 core 权威默认值，灌回各字段 loader。
-    // 若 core 未连接或接口返回错误，则回落空对象（等效 capability fallback）。
+    // 恢复默认：取 core 权威出厂配置（含折算），灌回各字段 loader。见 [`core_defaults_config`]。
     let fields = state.fields.clone();
     let mut reset_keys = keys.clone();
     if with_fuzzy {
@@ -1593,9 +1592,7 @@ pub fn build_scheme_config_button(
         }
     }
     let reset_fn: Box<dyn Fn() + 'static> = Box::new(move || {
-        let defaults = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let def_cfg = Config::from_value(defaults);
+        let def_cfg = core_defaults_config();
         let ld = fields.loaders.borrow();
         for k in &reset_keys {
             if let Some(loader) = ld.get(k) {
@@ -1867,12 +1864,51 @@ fn dialog_extra_keys(state: &AppState, host_key: &str) -> Vec<String> {
 /// 走 loader 而非直接 set signal，是因为调用点通常拿不到从属项的 signal（它们由 [`field`]
 /// 在别处建立）；loader 是这些 signal 的唯一公共入口。core 未连接时回落空对象，等效
 /// capability fallback——宁可什么都不改，也不要把用户的值清成 0。
+/// 「恢复默认」要灌回各 loader 的那份**出厂配置**。三条恢复路径共用（本函数、分组对话框、
+/// 底部栏「恢复本页」），**两道处理一道都不能省**：
+///
+/// - ⛔ **不能用 `Config::from_value({})` 的纯 L1**。顶码上屏（L1 `false` / 出厂 `true`）、
+///   拼音自动学习等键的出厂值经 `data/config.toml`（L2）置开，纯 L1 会把它们**误关**。
+///   core 的 `config.getDefaults` 正是为此从纯 L1 改成 `system_preset_value` 的
+///   （见 wind-rpc `dispatch.rs` 那段注释），而「恢复本页」当时漏改。
+/// - ⛔ **必须 `normalize()`**。五处 `trigger_keys` 的出厂值住在**被折算的那一侧**
+///   （`schema.mix_modes[].trigger_keys` / `input.temp_pinyin.trigger_keys`），而引导键类
+///   字段的 loader 读的是折算后的 `keys.key_actions`——不折算那张表恒为 `{}`，恢复后
+///   快捷输入的 `;`、临拼的 `` ` `` 一并消失，而**清空即禁用**。
+///   `normalize` 是零 IO、幂等、纯内存的，在这里跑是安全的。
+pub(crate) fn core_defaults_config() -> Config {
+    let v = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+    normalize_defaults(v)
+}
+
+/// [`core_defaults_config`] 的纯逻辑部分（不含 RPC），供测试直接喂值。
+///
+/// 折算借 **core 自己的 `Config::normalize`** 跑：设置端的 `Config` 只是 JSON 包装，
+/// 在这里另写一份折算规则就是「同一条规则两处实现」，必然漂移。
+pub(crate) fn normalize_defaults(v: Value) -> Config {
+    let folded = match serde_json::from_value::<wind_config::config::Config>(v.clone()) {
+        Ok(mut core) => {
+            core.normalize();
+            serde_json::to_value(&core).unwrap_or_else(|e| {
+                // 折算成功却序列化不回来：宁可用未折算的原值，也不要给出半截配置。
+                tracing::warn!("出厂配置折算后序列化失败，退回未折算值：{e}");
+                v.clone()
+            })
+        }
+        Err(e) => {
+            // 静默退回等于 bug 原样复发（引导键恢复后全空），必须留痕。
+            tracing::warn!("出厂配置无法反序列化为 core Config，跳过折算：{e}");
+            v
+        }
+    };
+    Config::from_value(folded)
+}
+
 fn reset_to_core_defaults(state: &AppState, keys: Vec<String>) -> Box<dyn Fn() + 'static> {
     let fields = state.fields.clone();
     Box::new(move || {
-        let defaults = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let def_cfg = Config::from_value(defaults);
+        let def_cfg = core_defaults_config();
         let ld = fields.loaders.borrow();
         for k in &keys {
             if let Some(loader) = ld.get(k) {
@@ -3915,6 +3951,58 @@ mod tests {
         assert!(
             found >= 3,
             "应至少有临拼/临英/快捷输入三个引导键控件，实际 {found}"
+        );
+    }
+
+    /// ★★ 「恢复默认」灌回 loader 的那份配置必须**折算**，否则引导键类字段一恢复就全空。
+    ///
+    /// 现场（2026-08-22 用户报）：设置「输入」页点底部「恢复本页」，快捷输入触发键 `;`
+    /// 消失——而**清空 trigger_keys 正是 core 认定的「禁用快捷输入」**，一个写着「恢复」
+    /// 的按钮把功能关掉了。
+    ///
+    /// 本测试把 bug 与修复摆在一起看：同一份出厂值，不折算时 `key_actions` 就是空的。
+    #[test]
+    fn reset_defaults_must_be_normalized_to_expose_trigger_keys() {
+        // 折算前：出厂值住在 `schema.mix_modes[].trigger_keys` / `input.temp_pinyin.trigger_keys`，
+        // 而引导键类字段的 loader 读的是 `keys.key_actions`——那里还是空的。
+        let raw = Config::from_value(serde_json::json!({}));
+        assert!(
+            key_action_keys_of(&raw, "mix:quick_mix").is_empty(),
+            "未折算时 key_actions 为空——这正是「一恢复就没了」的成因"
+        );
+        // 折算后：出厂绑定就位。
+        let def = normalize_defaults(serde_json::json!({}));
+        assert_eq!(
+            key_action_keys_of(&def, "mix:quick_mix"),
+            vec!["semicolon".to_string()],
+            "折算后快捷输入应绑回分号"
+        );
+        assert_eq!(
+            key_action_keys_of(&def, "temp_pinyin"),
+            vec!["backtick".to_string()],
+            "折算后临时拼音应绑回反引号"
+        );
+    }
+
+    /// ★ 「恢复默认」也不能用**纯 L1**：出厂经 `data/config.toml`（L2）置开的项会被误关。
+    ///
+    /// core 的 `config.getDefaults` 早就为此从纯 L1 改成 `system_preset_value`
+    /// （wind-rpc `dispatch.rs` 那段注释点名了顶码上屏与拼音自动学习），但设置端的
+    /// 「恢复本页」当时漏改，一直拿 `Config::from_value({})` 当默认。
+    #[test]
+    fn reset_defaults_must_come_from_system_preset_not_bare_l1() {
+        let caps = crate::capabilities::Capabilities::from_embedded();
+        // capability 默认 ＝ core 的 system_preset（L1 ⊕ data/config.toml）：出厂是开的。
+        assert_eq!(
+            caps.default_for("schema.codetable.top_code_commit"),
+            serde_json::json!(true),
+            "顶码上屏出厂应为开"
+        );
+        // 纯 L1 却是关的 —— 拿它当「默认」会把顶码上屏静默关掉。
+        let l1 = wind_config::config::Config::default();
+        assert!(
+            !l1.schema.codetable.top_code_commit,
+            "纯 L1 与出厂值分叉，正是不能拿它当默认的理由"
         );
     }
 

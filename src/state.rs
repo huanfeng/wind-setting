@@ -1573,14 +1573,17 @@ impl AppState {
     /// 恢复本页为系统默认值：用空 Config 跑当前页各 key 的加载器（回落 manifest 默认）。
     /// 仅改 Signal（控件即时显示默认值），不落盘——用户再「应用设置」持久化。
     pub fn reset_current_page(&self) {
-        let empty = Config::from_value(Value::Object(serde_json::Map::new()));
+        // ⛔ 曾经是 `Config::from_value({})`（纯 L1、未折算），两处都错：顶码上屏这类
+        // 出厂经 L2 置开的项会被误关，而引导键类字段读的 `keys.key_actions` 恒为空
+        // ⇒ 快捷输入的 `;` 一恢复就没了（清空即禁用）。见 [`core_defaults_config`]。
+        let def = crate::manifest::core_defaults_config();
         let loaders = self.fields.loaders.borrow();
         let mut n = 0usize;
         for g in self.current_tab_groups() {
             for (_sec, keys) in self.manifest.sections_of(g) {
                 for k in keys {
                     if let Some(l) = loaders.get(&k) {
-                        l(&empty);
+                        l(&def);
                         n += 1;
                     }
                 }
@@ -1590,7 +1593,7 @@ impl AppState {
         if self.current_tab_groups().contains(&"keys")
             && let Some(l) = loaders.get("keys.global_hotkeys")
         {
-            l(&empty);
+            l(&def);
             n += 1;
         }
         self.feedback.set(Some((
