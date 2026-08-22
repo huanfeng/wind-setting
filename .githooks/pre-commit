@@ -1,12 +1,47 @@
-#!/bin/sh
-# 提交前门禁：格式检查（快，约 1s）。
-# 拦住未 cargo fmt 的代码，避免格式漂移重新累积。
-# 启用方式：git config core.hooksPath .githooks
+#!/usr/bin/env bash
+# 激活方式（一次性）: git config core.hooksPath .githooks
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
 
-echo "[pre-commit] cargo fmt --check ..."
-if ! cargo fmt --check; then
+echo "[pre-commit] cargo fmt check..."
+
+# ★ 只检查**本次暂存**的 .rs，不查整个工作区。
+#
+# 原先是 `cargo fmt --check`，查的是工作区全量。本仓常有多个会话并行改不同模块，别人写到
+# 一半、还没 fmt 的文件会把无关的提交一并拦下——被拦的人既不该去 fmt 别人正在编辑的文件
+# （那是在改对方的在制品，还可能与对方的写入撞车），也不该 --no-verify 跳过，只能干等。
+# 2026-08-22 在本仓实测被拦过一次，核心仓当天已按同一修法改过（.githooks/pre-commit）。
+#
+# 只查暂存文件是 pre-commit 的常规做法，且不放松真正的约束：要提交的东西照样逐个查。
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+if [ -z "$files" ]; then
+    echo "[pre-commit] 本次无 .rs 改动，跳过"
+    exit 0
+fi
+
+# 用 rustfmt 而不是 cargo fmt：后者没有「只格式化指定文件」的入口。
+# ⚠️ edition 必须与 Cargo.toml 一致（本仓 edition = "2024"）；漏传会按 2015 解析，
+# 把合规文件误报成不合规。改 edition 时这里要跟着改。
+#
+# 取舍：查的是**工作区里的那个文件**，不是暂存的内容快照。`git add` 之后又把格式改坏的
+# 情况会漏——换来的是不必为每个文件开一次 `git show :file` 临时文件。本仓是小团队自用，
+# 这个洞的代价远小于复杂度。
+bad=""
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -f "$ROOT/$f" ] || continue
+    rustfmt --edition 2024 --check "$ROOT/$f" >/dev/null 2>&1 || bad="$bad  $f"$'
+'
+done <<< "$files"
+
+if [ -n "$bad" ]; then
     echo ""
-    echo "❌ 代码格式不规范。请运行 'cargo fmt' 后重新 git add 并提交。"
+    echo "  以下暂存文件格式不符："
+    printf '%s' "$bad"
+    echo ""
+    echo "  修复: cargo fmt"
+    echo ""
     exit 1
 fi
-echo "[pre-commit] ✓ 格式检查通过"
+
+echo "[pre-commit] fmt OK"
