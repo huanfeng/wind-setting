@@ -117,6 +117,37 @@ fn io_weight_row(mgr: &DictManagerState) -> Element {
         .visible_when(move || vis.is_word_list_import())
 }
 
+/// 音节分隔补齐的二选一。**只在预览报出「可补齐」行时才出现**——没有这类词的导入
+/// （码表词库、本就带分隔的拼音词库）不该看到一行读不懂的选项。
+///
+/// 用勾选框而非两个单选：这个对话框里的类型选择已经是勾选框，形态一致；
+/// 且默认项（补充）有实测支撑，勾着不动就是推荐路径。
+fn io_boundary_row(mgr: &DictManagerState) -> Element {
+    let count = mgr.import_boundary_pending;
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label("音节分隔")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width(52),
+        )
+        .child(Element::checkbox(
+            "由程序补充（推荐）",
+            mgr.io_fill_boundary,
+        ))
+        .child(
+            Element::label("不勾选则跳过这些词，不会以缺分隔的形式入库")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .weight(1.0)
+                .max_lines(1),
+        )
+        .visible_when(move || count.get() > 0)
+}
+
 /// 提示条：内容为空时整行隐藏（自动匹配说明 / 目标方案作用域说明共用）。
 fn io_note(sig: Signal<String>, role: Role) -> Element {
     Element::label_signal(sig)
@@ -252,6 +283,7 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         .child(io_format_row(mgr))
         .child(io_weight_row(mgr))
         .child(io_type_row(mgr))
+        .child(io_boundary_row(mgr))
         // 提示与预览同处一个固定视口：三条的行数各自随目标/文件变动，分开放会让对话框
         // 高度跟着跳。放不下时内部滚动，外框尺寸恒定（见 IO_NOTE_VIEWPORT_H）。
         // 预览不再 max_lines 截断——溢出量交给滚动，长文案不会看不全。

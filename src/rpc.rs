@@ -1124,6 +1124,16 @@ fn mock_limit_info() -> Value {
     json!({ "title": title, "description": description })
 }
 
+/// mock 侧判断导入目标是不是拼音族方案（按 schemaId 命名约定）。
+///
+/// 只服务于 mock 的形状分流：真实 core 走 `schema_engine_type`，与本函数无关。
+fn mock_target_is_pinyin(params: &Value) -> bool {
+    params
+        .get("schemaId")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.contains("pinyin") || s.contains("shuangpin"))
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1371,10 +1381,27 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "dict.export" => {
             json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n  sections:\n    words:\n      columns: [code, text, weight, count]\n    shadow:\n      columns: [action, code, word, position, cand_id]\n\n--- !words\naaaa\t工\t0\t3\n\n--- !shadow\npin\tggkg\t王中\t0\t\n" })
         }
+        // 目标是拼音方案时给出**带准入契约计数**的样例，否则维持原来的码表样例。
+        // 两种形状都要能离线看到：那一行「音节分隔」的二选一只在拼音下出现，
+        // 只留码表样例的话，mock 模式下它永远不显示、等于没法验。
+        "dict.import" if mock_target_is_pinyin(params) => json!({ "sections": [
+            { "key": "userWords", "added": 8, "updated": 0, "unchanged": 0, "skipped": 3,
+              "rejected": 2, "boundaryFilled": 5, "boundaryAmbiguous": 1,
+              "noBoundary": 0, "boundarySkipped": 1 }
+        ] }),
         "dict.import" => json!({ "sections": [
             { "key": "userWords", "added": 1, "updated": 0, "unchanged": 0, "skipped": 0 },
             { "key": "shadow", "imported": 1, "skipped": 0 }
         ] }),
+        "dict.previewImport" if mock_target_is_pinyin(params) => json!({
+            "format": "rime", "compatible": true,
+            "sourceSchema": "", "sourceEngine": "", "targetEngine": "pinyin",
+            "sections": [
+                { "key": "userWords", "count": 10, "willAdd": 8, "willUpdate": 0, "unchanged": 0,
+                  "skipped": 2, "samples": ["你好"],
+                  "rejected": 2, "rejectedSamples": ["wgkq 工", "aaaa 田"],
+                  "boundaryFilled": 5, "boundaryAmbiguous": 1, "noBoundary": 0 }
+            ] }),
         "dict.previewImport" => json!({ "format": "winddict", "compatible": true,
             "sourceSchema": "wubi86", "sourceEngine": "codetable", "targetEngine": "codetable",
             "sections": [

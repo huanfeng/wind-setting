@@ -172,6 +172,17 @@ pub struct DictManagerState {
     pub io_title: Signal<String>,
     /// 导入来源与目标是否引擎兼容（false=不同类型，禁止导入并提示）。
     pub import_compatible: Signal<bool>,
+    /// 拼音词条准入契约的二选一：true=由程序补充音节分隔，false=跳过这些词。
+    ///
+    /// 默认 true 有实测依据：60 万条出厂词条把码拍平重解，补齐正确率 99.9997%
+    /// （主仓 `docs/design/pinyin-entry-boundary-contract.md` §5.0）。
+    /// ⚠️ false 是**跳过**不是「照原样导入」——后者会让这些词以 boundary=0 入库，
+    /// 简拼索引与双拼校验对它们静默失效，正是这套契约要消灭的东西。
+    pub io_fill_boundary: Signal<bool>,
+    /// 预览报告的「缺音节分隔、可补齐」行数（0 = 不显示那一行选择）。
+    pub import_boundary_pending: Signal<u64>,
+    /// 预览报告的「无法解析为拼音音节、一律不导入」行数。
+    pub import_boundary_rejected: Signal<u64>,
 
     // ── 加/改词对话框（用户词库 / 短语）──
     pub edit_visible: Signal<bool>,
@@ -419,6 +430,9 @@ impl DictManagerState {
             export_visible: signal(false),
             io_title: signal(String::new()),
             import_compatible: signal(true),
+            io_fill_boundary: signal(true),
+            import_boundary_pending: signal(0),
+            import_boundary_rejected: signal(0),
             edit_visible: signal(false),
             edit_title: signal(String::new()),
             edit_l_code: signal("编码".to_string()),
@@ -2381,6 +2395,11 @@ impl DictManagerState {
         self.import_preview_msg.set(String::new());
         self.import_ready.set(false);
         self.import_compatible.set(true);
+        // 每次开对话框都回到「补充」：这是推荐项，上一次选了「跳过」不该粘在这儿——
+        // 那会让下一次导入悄悄少掉一批词，而用户并不记得自己上次选过什么。
+        self.io_fill_boundary.set(true);
+        self.import_boundary_pending.set(0);
+        self.import_boundary_rejected.set(0);
         self.io_format.set(0);
         self.io_format_note.set(String::new());
         *self.pending_import.borrow_mut() = None;
@@ -2574,6 +2593,9 @@ impl DictManagerState {
                         .into(),
                 );
                 self.apply_import_preview_sections(&v);
+                let (pending, rejected) = Self::boundary_counts(&v);
+                self.import_boundary_pending.set(pending);
+                self.import_boundary_rejected.set(rejected);
                 self.import_preview_msg
                     .set(self.format_import_preview_for_target(&v));
                 // 不兼容（如五笔词库导入拼音方案）：保留内容但禁止导入。
@@ -2585,6 +2607,63 @@ impl DictManagerState {
                 self.import_ready.set(false);
             }
         }
+    }
+
+    /// previewImport 响应 → 拼音词条准入契约的两行说明（纯函数便于单测）。
+    ///
+    /// 两档都为 0 时返回空串——码表方案与本就带分隔的拼音词库都走这一支，
+    /// **不给它们凭空加一段看不懂的话**。
+    ///
+    /// ★ 「非法」档一定要列样例：用户看到 `wgkq 工` 才能立刻明白自己选错了文件。
+    /// 只说「有 M 条不导入」等于让他自己去猜是哪些、为什么。
+    fn format_boundary_note(v: &Value) -> String {
+        let (pending, rejected) = Self::boundary_counts(v);
+        let mut s = String::new();
+        if pending > 0 {
+            s.push_str(&format!(
+                "\n· {pending} 条缺少音节分隔，可由程序按「音节数=字数」解出（下方可改）"
+            ));
+        }
+        if rejected > 0 {
+            s.push_str(&format!(
+                "\n⚠ {rejected} 条无法解析为拼音音节，不会导入——可能是码表词库选错了文件"
+            ));
+            let samples: Vec<&str> = v
+                .get("sections")
+                .and_then(|x| x.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|sec| sec.get("rejectedSamples").and_then(|x| x.as_array()))
+                        .flatten()
+                        .filter_map(|x| x.as_str())
+                        .take(3)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !samples.is_empty() {
+                s.push_str(&format!("：{}", samples.join("、")));
+            }
+        }
+        s
+    }
+
+    /// previewImport 响应 → `(可补齐行数, 判非法行数)`，跨全部段累加。纯函数便于单测。
+    ///
+    /// 两个数都只在拼音方案下非零：码表方案的编码没有音节语义，core 侧原样放行、
+    /// 这些字段压根不出现。⇒ **不必在 UI 侧判断目标是不是拼音**，为 0 即不显示。
+    fn boundary_counts(v: &Value) -> (u64, u64) {
+        let mut pending = 0u64;
+        let mut rejected = 0u64;
+        if let Some(arr) = v.get("sections").and_then(|x| x.as_array()) {
+            for sec in arr {
+                pending += sec
+                    .get("boundaryFilled")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                rejected += sec.get("rejected").and_then(|x| x.as_u64()).unwrap_or(0);
+            }
+        }
+        (pending, rejected)
     }
 
     /// 数据类型 key → 对应子标签（导入后把视图落到刚写入的那一类上）。
@@ -2730,6 +2809,7 @@ impl DictManagerState {
         if skipped_total > 0 {
             s.push_str(&format!(" · 跳过 {skipped_total} 行"));
         }
+        s.push_str(&Self::format_boundary_note(v));
         if !skipped_sections.is_empty() {
             s.push_str(&format!(
                 "\n⚠ 不会导入：{}（「{target_label}」不含此类数据）",
@@ -2895,9 +2975,12 @@ impl DictManagerState {
         };
         // 先记下要落到哪个子标签（`sections` 随即被 json! 取走）。
         let landing = Self::tab_for_section(sections.first().map(String::as_str).unwrap_or(""));
+        // fillBoundary 只在有可补齐行时才有意义，但恒传更省事也更诚实：core 侧缺省 true，
+        // 传与不传对码表方案完全等价（那边根本不进求解链）。
+        let fill_boundary = self.io_fill_boundary.get();
         match rpc::call_core(
             "dict.import",
-            &json!({ "schemaId": schema, "content": content, "strategy": strategy, "sections": sections }),
+            &json!({ "schemaId": schema, "content": content, "strategy": strategy, "sections": sections, "fillBoundary": fill_boundary }),
         ) {
             Ok(v) => {
                 // 导入目标可能不是当前正看着的域（自动匹配或手动改过）。留在原地只会让人
@@ -2930,10 +3013,36 @@ impl DictManagerState {
                 }
             }
         }
-        if parts.is_empty() {
-            "已导入".to_string()
+        // 少掉的词按**原因**分列。三个原因对用户意味着三种不同的下一步：拒收 = 可能选错
+        // 文件；跳过 = 他自己刚做的选择；只报一个「跳过 N 行」等于把这两件事混成一件。
+        let mut why: Vec<String> = Vec::new();
+        let sum = |k: &str| {
+            v.get("sections")
+                .and_then(|x| x.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.get(k).and_then(|x| x.as_u64()))
+                        .sum::<u64>()
+                })
+                .unwrap_or(0)
+        };
+        let rejected = sum("rejected");
+        let unfilled = sum("boundarySkipped");
+        if rejected > 0 {
+            why.push(format!("{rejected} 条非拼音音节未导入"));
+        }
+        if unfilled > 0 {
+            why.push(format!("{unfilled} 条按你的选择跳过"));
+        }
+        let tail = if why.is_empty() {
+            String::new()
         } else {
-            format!("已导入：{}", parts.join("；"))
+            format!("（{}）", why.join("，"))
+        };
+        if parts.is_empty() {
+            format!("已导入{tail}")
+        } else {
+            format!("已导入：{}{tail}", parts.join("；"))
         }
     }
 
@@ -3900,6 +4009,63 @@ mod tests {
         assert!(!st.import_confirm_visible.get());
         assert!(st.pending_import.borrow().is_none());
         assert!(!st.import_ready.get());
+    }
+
+    /// 拼音词条准入契约的三档在预览正文里的呈现，以及**没有这类词时一个字都不多说**。
+    ///
+    /// ★ 后半条是要点：码表词库与本就带分隔的拼音词库都走这一支，给它们凭空加一段
+    /// 「音节分隔」的说明，只会让绝大多数导入变得更难读。
+    #[test]
+    fn import_preview_shows_boundary_tiers_only_when_present() {
+        let v = json!({ "format": "rime", "compatible": true, "sections": [
+            { "key": "userWords", "count": 10, "skipped": 2,
+              "rejected": 2, "rejectedSamples": ["wgkq 工", "aaaa 田"],
+              "boundaryFilled": 5, "boundaryAmbiguous": 1, "noBoundary": 0 },
+        ] });
+        let msg = DictManagerState::format_import_preview(&v, PINYIN_TYPES, "拼音");
+        assert!(msg.contains("5 条缺少音节分隔"), "可补档要报数：{msg}");
+        assert!(
+            msg.contains("2 条无法解析为拼音音节"),
+            "非法档要报数：{msg}"
+        );
+        assert!(
+            msg.contains("wgkq 工"),
+            "★ 非法档必须列样例，否则用户无从判断是不是选错了文件：{msg}"
+        );
+        assert_eq!(DictManagerState::boundary_counts(&v), (5, 2));
+
+        // 无这两档 ⇒ 不多说一个字
+        let plain = json!({ "format": "rime", "compatible": true, "sections": [
+            { "key": "userWords", "count": 3, "skipped": 0 },
+        ] });
+        let msg = DictManagerState::format_import_preview(&plain, PINYIN_TYPES, "拼音");
+        assert!(
+            !msg.contains("音节分隔"),
+            "没有可补齐的词就不该提这件事：{msg}"
+        );
+        assert_eq!(DictManagerState::boundary_counts(&plain), (0, 0));
+    }
+
+    /// 导入结果 toast 要把「少掉的词」按原因分开讲。
+    ///
+    /// 「非拼音音节未导入」和「按你的选择跳过」对用户是两种不同的下一步：前者要去
+    /// 检查是不是拿错了文件，后者是他自己刚做的决定。混成一个「跳过 N 行」讲不清。
+    #[test]
+    fn import_result_toast_separates_rejected_from_user_skip() {
+        let v = json!({ "sections": [
+            { "key": "userWords", "added": 8, "updated": 0, "unchanged": 0,
+              "skipped": 3, "rejected": 2, "boundarySkipped": 1 },
+        ] });
+        let msg = DictManagerState::format_import_result(&v);
+        assert!(msg.contains("新增 8"));
+        assert!(msg.contains("2 条非拼音音节未导入"), "{msg}");
+        assert!(msg.contains("1 条按你的选择跳过"), "{msg}");
+
+        // 两个原因都为 0 ⇒ 不加括号尾巴
+        let clean = json!({ "sections": [
+            { "key": "userWords", "added": 1, "updated": 0, "unchanged": 0, "skipped": 0 },
+        ] });
+        assert!(!DictManagerState::format_import_result(&clean).contains('（'));
     }
 
     #[test]
