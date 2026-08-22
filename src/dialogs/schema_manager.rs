@@ -1456,8 +1456,16 @@ impl SchemaManagerState {
             self.settings_sa_disp.set(self.settings_sa.summary());
             // 总览同批播种。数据整份来自 core 的 `keysOverview` 旁路字段，本仓不做仲裁——
             // 全局那份要经 `effective_session_actions` 折算，展开规则只该有一处。
-            self.settings_ko
-                .seed(&self.settings_cfg.borrow(), &self.build_key_action_verbs());
+            //
+            // ★ 动词表用**全局**那份（`build_global_key_action_verbs`），不是方案级那份。
+            // 总览逐行标了「本方案 / 全局」，即它**同时展示两层**；而单向 `switch_schema:`
+            // 只在全局表里合法，方案级那份刻意不列它。用方案级表去翻译的表现是：
+            // 「切换到本方案按键」配出来的那条（落点正是全局 `switch_schema:<id>`）在总览里
+            // 翻不出中文名，显示成原始的 `switch_schema:wubi86`。
+            self.settings_ko.seed(
+                &self.settings_cfg.borrow(),
+                &self.build_global_key_action_verbs(),
+            );
             self.settings_ko_title.set(format!("按键总览 - {who}"));
             self.settings_ko_disp.set(self.settings_ko.summary());
             // 不单独成节：内容并进 EntryKeys 那节（组名已改「按键设置」）——

@@ -54,8 +54,13 @@ impl Default for KeysOverview {
 impl KeysOverview {
     /// 从 `getConfig` 的 `keysOverview` 旁路字段播种。
     ///
-    /// `lead_verbs` 是引导键那张表的动词中文名（由 `schema_manager` 现算，与「按键自定义」
-    /// 对话框同一份）；会话态那张用 [`session_verb_label`]。
+    /// `lead_verbs` 是按键功能表的动词中文名（由 `schema_manager` 现算）；会话态那张用
+    /// [`session_verb_label`]。
+    ///
+    /// ★★ **必须传全局那份**（`build_global_key_action_verbs`），不是方案级那份。本表逐行
+    /// 标了「本方案 / 全局」，即它**同时展示两层**；而单向 `switch_schema:` 只在全局表里
+    /// 合法、方案级那份刻意不列它。传方案级表的表现是「切换到本方案按键」配出来的那条
+    /// 在总览里翻不出中文名，显示成原始的 `switch_schema:wubi86`。
     /// **两张表各查各的**：同一个动词字符串在两张表里不会同时出现，混查会把
     /// 「找不到就显示原值」这条兜底变成「显示了另一张表的中文名」。
     pub fn seed(&self, cfg: &Value, lead_verbs: &[Verb]) {
@@ -221,6 +226,26 @@ mod tests {
             &[],
         );
         assert_eq!(o.rows.get()[0].action, "选中第 7 个候选");
+    }
+
+    /// ★ 全局层独有的动词（单向 `switch_schema:`）必须翻得出中文名。
+    ///
+    /// 它是「切换到本方案按键」的落点，几乎每个配过方案直达键的用户都有一条。用方案级
+    /// 动词表来查（那份刻意不含单向切换）就会落到「显示原值」兜底上，总览里出现一行
+    /// `switch_schema:wubi86`——曾经就是这么显示的。
+    #[test]
+    fn global_only_verbs_are_named() {
+        let o = KeysOverview::default();
+        o.seed(
+            &json!({ "keysOverview": [
+                { "key": "ctrl+shift+r", "table": "lead", "action": "switch_schema:wubi86", "from": "global" },
+            ]}),
+            &[Verb {
+                value: "switch_schema:wubi86".to_string(),
+                label: "切到方案（单向） - 五笔".to_string(),
+            }],
+        );
+        assert_eq!(o.rows.get()[0].action, "切到方案（单向） - 五笔");
     }
 
     /// 键名要转义成人能读的形式，而不是配置里的内部写法。

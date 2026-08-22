@@ -1671,8 +1671,8 @@ key = "keys.session_actions"
 group = "keys"
 section = "自定义按键"
 type = "dialog_button"
-label = "全局自定义输入时按键"
-hint = "指定按键在输入过程中的功能，如翻页、选择候选"
+label = "全局自定义输入中按键"
+hint = "指定按键在输入中的功能，如翻页、选择候选"
 
 # ── 功能快捷键（hotkey 控件：修饰键+主键编辑对话框；部分支持「全局」）──
 # 注：全局开关汇总写入 keys.global_hotkeys（strlist），不再有独立「全局热键」项。

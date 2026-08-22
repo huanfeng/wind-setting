@@ -2727,7 +2727,7 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
     );
 
     let (content, bottom) = fields.build_body();
-    let dlg = build_group_dialog_shell(visible, "全局自定义输入时按键", content, bottom);
+    let dlg = build_group_dialog_shell(visible, "全局自定义输入中按键", content, bottom);
     register_dialog(state, dlg);
     // 按键选择浮层排在本对话框**之后**登记 = 叠在它上面。register_dialog 是往 Vec 里推，
     // 挂到根窗口时按 Vec 序成为 stack 的子节点，先推的在下。顺序反了的表现是点「添加」

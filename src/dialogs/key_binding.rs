@@ -832,11 +832,29 @@ impl KeyPicker {
 
         // ── 预览 / 提示 / 确定可用性 ──
         set_str_if_changed(self.preview, key_display(&key));
-        set_str_if_changed(self.notice, self.notice_text(&key, self.locked_now()));
+        // 「这次滤掉东西了吗」必须在这里算：`notice_text` 只看得到过滤**之后**的 view，
+        // 无从判断少了什么。不算的话，用户选个符号键、「切换方案」整类无声消失，界面上
+        // 没有任何一处说得出原因——那正是这轮改动本想消灭的「配不出来还不知道为什么」。
+        let filtered = self.filtered_count() > 0;
+        set_str_if_changed(
+            self.notice,
+            self.notice_text(&key, self.locked_now(), filtered),
+        );
         set_if_changed_bool(self.can_confirm, self.commit_value().is_some());
     }
 
-    fn notice_text(&self, key: &str, locked: bool) -> String {
+    /// 按当前键形态被滤掉的功能条数（不含 `locked` 类，它从不参与过滤）。
+    fn filtered_count(&self) -> usize {
+        let live = |cats: &[VerbCategory]| -> usize {
+            cats.iter()
+                .filter(|c| !c.locked)
+                .map(|c| c.items.len())
+                .sum()
+        };
+        live(&self.data.all.borrow()).saturating_sub(live(&self.data.view.borrow()))
+    }
+
+    fn notice_text(&self, key: &str, locked: bool, filtered: bool) -> String {
         if locked {
             return self
                 .data
@@ -867,13 +885,24 @@ impl KeyPicker {
                 // 「配了完全没反应」。这条不放进 `verb_allowed` 过滤：它只对拼音方案成立，
                 // 而这个对话框也服务码表方案，一刀切会挡掉合法配置。
                 if self.current_verb() == "aux_code" && matches!(key, "backtick" | "grave" | "`") {
-                    return "全拼方案的反引号被音节分隔符占用，绑在它上面进不了辅助码；                            请换一个键。"
+                    return "全拼方案的反引号被音节分隔符占用，绑在它上面进不了辅助码，请换一个键。"
                         .to_string();
                 }
+                // ★ 说明**只在真的滤掉了东西时**才出。恒挂就成了常驻噪音，而它要传达的
+                // 恰恰是「你现在少看到了几项」这个一次性的事实。
+                //
+                // ⛔ 这几条一律写成**单行字面量**，不用反斜杠续行：rustfmt 会把续行接回一行，
+                // 被反斜杠吞掉的缩进随之变成**字面空格**，用户看到的提示中间夹一大段空白。
+                // 上面辅助码那条就是这么中招的（已修）。
                 match key_shape(key) {
-                    KeyShape::Combo => {
-                        "组合键只能绑「切换方案」与「特殊模式」。其它功能请改用单个按键，\
-                     或到「按键 → 功能快捷键」里配。"
+                    KeyShape::Combo if filtered => {
+                        "组合键只能绑「切换方案」与「特殊模式」。其它功能请改用单个按键，或到「按键 → 功能快捷键」里配。"
+                            .to_string()
+                    }
+                    // 有字符的键滤掉的是「用来离开英文态」的那几个。此前这一支恒返回空串
+                    // ⇒ 选个符号键，「切换方案」「状态切换」两整类无声消失，无处可查原因。
+                    KeyShape::Char if filtered => {
+                        "「切换方案」「中英文切换」「循环切换方案」不能绑在有字符的键上——那条通路在英文模式下到不了，切过去就按不回来。请改用左右 Shift / Ctrl，或组合键。"
                             .to_string()
                     }
                     KeyShape::Char => {
@@ -886,7 +915,7 @@ impl KeyPicker {
                             String::new()
                         }
                     }
-                    KeyShape::Modifier => String::new(),
+                    KeyShape::Combo | KeyShape::Modifier => String::new(),
                 }
             }
         }
@@ -1452,6 +1481,98 @@ mod tests {
         );
     }
 
+    /// 任何一次「功能被滤掉」都必须有说明。
+    ///
+    /// 没有说明的过滤 = 用户选了个键，整类功能无声消失，界面上没有一处说得出原因。
+    /// 这正是本轮改动想消灭的「配不出来还不知道为什么」，却在 Char 那一支上漏了。
+    #[test]
+    fn every_filtering_shape_explains_itself() {
+        let p = lead_picker();
+        for key in ["backslash", "ctrl+shift+r"] {
+            p.open_edit(1, key, "none");
+            assert!(
+                p.filtered_count() > 0,
+                "前提：{key} 上应当有功能被滤掉，否则这条测不到东西"
+            );
+            assert!(
+                !p.notice.get().is_empty(),
+                "{key} 上滤掉了功能却没有任何说明：{:?}",
+                p.notice.get()
+            );
+        }
+        // 修饰键什么都不滤 ⇒ 不该挂说明，否则成了常驻噪音。
+        p.open_edit(1, "rshift", "none");
+        assert_eq!(p.filtered_count(), 0, "修饰键上不该有功能被滤掉");
+        assert!(p.notice.get().is_empty(), "没滤掉东西时不该有说明");
+    }
+
+    /// 提示文案里不得混入连续空白。
+    ///
+    /// 反斜杠续行会被 rustfmt 接回一行，被它吞掉的缩进随之变成字面空格——用户看到的是
+    /// 句子中间夹一大段空白。本文件的辅助码那条已经这么中招过一次。
+    #[test]
+    fn notice_texts_have_no_stray_whitespace() {
+        let mut vs = lead_verbs();
+        vs.push(Verb {
+            value: "aux_code".into(),
+            label: "辅助码筛选".into(),
+        });
+        let p = KeyPicker::new(BindingTable::Lead);
+        p.set_verbs(&vs);
+        for (key, verb) in [
+            ("backtick", "aux_code"),
+            ("backslash", "none"),
+            ("ctrl+shift+r", "toggle_schema:english"),
+            ("", "none"),
+        ] {
+            if key.is_empty() {
+                p.open_new();
+            } else {
+                p.open_edit(1, key, verb);
+            }
+            let n = p.notice.get();
+            assert!(!n.contains("  "), "提示里混入了连续空白：{n:?}");
+        }
+        // 分类里那条也一样（它不经 notice_text，是 VerbCategory::notice）。
+        for c in categorize_lead_verbs(&vs) {
+            assert!(
+                !c.notice.contains("  "),
+                "分类说明混入连续空白：{:?}",
+                c.notice
+            );
+        }
+    }
+
+    /// 单向切换在**能合法绑它的每一种键形态**上都要出得来。
+    ///
+    /// 它是「切换到本方案按键」的落点动词，全局表里天天有；选不到就等于那条绑定只能靠
+    /// 方案页那个专用入口配，改不了也加不了第二个。
+    #[test]
+    fn one_way_schema_switch_is_offered_wherever_legal() {
+        let mut vs = lead_verbs();
+        vs.push(Verb {
+            value: "switch_schema:wubi".into(),
+            label: "切到方案（单向） - 五笔".into(),
+        });
+        let p = KeyPicker::new(BindingTable::Lead);
+        p.set_verbs(&vs);
+        for key in ["rshift", "ctrl+shift+r"] {
+            p.open_edit(1, key, "switch_schema:wubi");
+            assert_eq!(
+                p.current_verb(),
+                "switch_schema:wubi",
+                "{key} 上应当选得到单向切换"
+            );
+        }
+        // 有字符的键上它确实不该有（core 的 requires_modifier_key 拒绝），
+        // 但此时必须有说明——见 every_filtering_shape_explains_itself。
+        p.open_edit(1, "backslash", "none");
+        assert!(
+            find_verb(&p.data.view.borrow(), "switch_schema:wubi").is_none(),
+            "有字符的键上不该提供单向切换"
+        );
+    }
+
     /// 词表外的生僻键要被保留成「当前值」，不能悄悄变回「（请选择）」。
     #[test]
     fn unknown_key_is_kept_as_current_value() {
@@ -1554,9 +1675,16 @@ mod tests {
             "反引号 + 辅助码必须提示，否则就是「配了没反应」：{:?}",
             p.notice.get()
         );
-        // 换个键就不该再提示——常驻警告会把可用的配置误报成待修问题。
+        // 换个键就不该再提示这一条——常驻警告会把可用的配置误报成待修问题。
+        // ⚠️ 断言查的是**内容**不是「提示为空」：分号是有字符的键，会另出一条「切换方案
+        // 之类绑不上去」的过滤说明。按「为空」断言的话，这条测的其实是「那边有没有别的
+        // 提示」，与它的名字无关——加过滤说明时它就假红了一次。
         p.open_edit(1, "semicolon", "aux_code");
-        assert!(p.notice.get().is_empty(), "别的键上不该有这条提示");
+        assert!(
+            !p.notice.get().contains("音节分隔符"),
+            "别的键上不该有这条提示：{:?}",
+            p.notice.get()
+        );
         // 而且它**不是**过滤：分号上照样选得到辅助码。
         assert_eq!(p.current_verb(), "aux_code");
     }
