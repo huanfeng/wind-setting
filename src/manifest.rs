@@ -2092,6 +2092,48 @@ fn key_action_keys_of(cfg: &Config, verb: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 本控件「恢复默认」该勾上哪些键 = **core 的出厂值**，从 capability 默认里取。
+///
+/// ⚠️ **不能问 `keys.key_actions` 的 capability 默认**，那里恒是 `{}`。五处 `trigger_keys`
+/// 是在 core 的 `normalize()` 里折算进 `key_actions` 的，而 capability 快照取自
+/// `Config::system_preset_value`（`Config::default()` ⊕ `data/config.toml`）——**它不跑
+/// `normalize()`** ⇒ 出厂值只在**被折算的那一侧**看得见。
+///
+/// 出厂值刻意留在被折算侧还有第二个理由（见 core `default_mix_modes` 的注释）：直接写进
+/// `key_actions` 的话，「用户清空」与「从没配过」就同形了，清空的意图会被静默丢掉。
+///
+/// 两种形态，按元素类型分：
+/// - `strlist`（`input.temp_pinyin.trigger_keys`）：默认值本身就是键名数组。
+/// - `structlist`（`schema.mix_modes`）：按**动词冒号后半段**（实例 id，`mix:quick_mix`
+///   → `quick_mix`）在数组里定位那一项，取它的 `trigger_keys`。
+fn key_action_defaults(state: &AppState, item_key: &str, verb: &str) -> Vec<String> {
+    key_action_defaults_from(&state.capabilities.default_for(item_key), verb)
+}
+
+/// [`key_action_defaults`] 的纯逻辑部分（入参是 capability 默认值本身）。
+/// 拆开只为可测：取 capability 要 `AppState`，而这段判据才是会出错的地方。
+fn key_action_defaults_from(def: &Value, verb: &str) -> Vec<String> {
+    let Some(list) = def.as_array() else {
+        return Vec::new();
+    };
+    let strs = |a: &[Value]| -> Vec<String> {
+        a.iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect()
+    };
+    // 空数组走这一支（`all` 对空恒真），结果为空——临英出厂就是不绑，那是正确答案。
+    if list.iter().all(|x| x.is_string()) {
+        return strs(list);
+    }
+    let id = verb.rsplit(':').next().unwrap_or_default();
+    list.iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+        .and_then(|e| e.get("trigger_keys"))
+        .and_then(|v| v.as_array())
+        .map(|a| strs(a))
+        .unwrap_or_default()
+}
+
 fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
 
@@ -2157,10 +2199,17 @@ fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) 
 
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
-    // 「恢复默认」= 清空该动词的绑定。出厂默认值由 core 的 data/config.toml 决定，
-    // 设置端不再各存一份——早先这里硬编码过 quick_mix 的默认触发键，两处一旦不同步
-    // 就会出现「点恢复默认反而变成一个从没配过的值」。
-    let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, Vec::new());
+    // 「恢复默认」= 勾回 core 的出厂绑定，见 [`key_action_defaults`]。
+    //
+    // 原先传的是 `Vec::new()`（＝全部取消勾选），理由写的是「出厂默认值由 core 的
+    // data/config.toml 决定，设置端不再各存一份」。**前半句对、后半句的结论走反了**：
+    // 「不各存一份」的解法是去读 core 那一份，不是一份都不读。而且这三项的出厂值恰恰
+    // **不在** data/config.toml 里（`schema.mix_modes` 刻意不写进预置文件）。
+    //
+    // 实际后果：快捷输入点一次「恢复默认」，出厂的 `;` 被清空 ⇒ 功能整个关掉，而
+    // 「清空 trigger_keys」正是 core 认定的「禁用快捷输入」。临拼的 `` ` `` 同理。
+    let defaults = key_action_defaults(state, &item.key, &verb);
+    let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
     register_dialog(state, dlg);
     visible
 }
@@ -3867,6 +3916,69 @@ mod tests {
             found >= 3,
             "应至少有临拼/临英/快捷输入三个引导键控件，实际 {found}"
         );
+    }
+
+    /// ★★ 「恢复默认」必须勾回 core 的出厂绑定，不能一律清空。
+    ///
+    /// 现场（2026-08-22 用户报）：快捷输入点「恢复默认」后触发键为空。而**清空
+    /// trigger_keys 正是 core 认定的「禁用快捷输入」** ⇒ 一个本意是「回到出厂」的按钮，
+    /// 把功能整个关掉了。原因是控件把默认集写死成 `Vec::new()`。
+    ///
+    /// ⚠️ 判据取自 capability 快照（它由 core 的 `system_preset_value` 重生成），所以
+    /// core 改了出厂值这条会红——那正是要的：出厂值变了就该有人来确认这里。
+    #[test]
+    fn key_action_reset_restores_core_factory_bindings() {
+        let caps = crate::capabilities::Capabilities::from_embedded();
+        let d = |k: &str, verb: &str| key_action_defaults_from(&caps.default_for(k), verb);
+
+        // structlist：出厂 `;`。这一项的默认值**不在 data/config.toml 里**（预置文件刻意
+        // 不写 mix_modes），只在 `Config::default()` 的 default_mix_modes() 里。
+        assert_eq!(
+            d("schema.mix_modes", "mix:quick_mix"),
+            vec!["semicolon".to_string()],
+            "快捷输入恢复默认应勾回分号"
+        );
+        // strlist：出厂反引号。
+        assert_eq!(
+            d("input.temp_pinyin.trigger_keys", "temp_pinyin"),
+            vec!["backtick".to_string()],
+            "临时拼音恢复默认应勾回反引号"
+        );
+        // 出厂就不绑 ⇒ 空是**正确答案**，不是漏读。留着这条免得日后有人看见空就去"修"。
+        assert!(
+            d("input.temp_english.trigger_keys", "temp_english").is_empty(),
+            "临时英文出厂不绑引导键"
+        );
+        // 实例 id 对不上时不得瞎猜，宁可空。
+        assert!(
+            d("schema.mix_modes", "mix:not_installed").is_empty(),
+            "找不到对应实例应返回空，不能回落到数组首项"
+        );
+    }
+
+    /// 恢复默认要勾的键，必须都在该项的 options 里——否则那个复选框根本不存在，
+    /// 点了「恢复默认」看起来仍是全空，与这次的 bug 完全同形却更难查。
+    #[test]
+    fn key_action_defaults_are_all_offered_as_options() {
+        let caps = crate::capabilities::Capabilities::from_embedded();
+        let m = Manifest::from_embedded();
+        let mut checked = 0;
+        for key in m.order.iter() {
+            let it = m.get(key).expect("order 里的 key 必在 items 中");
+            if it.typ != "dialog_button_key_action" {
+                continue;
+            }
+            let verb = it.verb.as_deref().unwrap_or_default();
+            let defs = key_action_defaults_from(&caps.default_for(&it.key), verb);
+            for d in &defs {
+                assert!(
+                    it.options.iter().any(|o| &o.value == d),
+                    "清单项 {key} 的出厂键 {d:?} 不在 options 里，恢复默认勾不上"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "至少应校验到一个出厂绑定，否则本测试恒真");
     }
 
     #[test]

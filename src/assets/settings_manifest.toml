@@ -1173,7 +1173,7 @@ section = "快捷输入"
 type = "dialog_button_key_action"
 verb = "mix:quick_mix"
 label = "快捷输入触发键"
-hint = "闲时按触发键进入快捷（日期/计算/拼音/英文融合）模式；可多选。全部取消勾选即禁用快捷输入"
+hint = "按触发键进入快捷（日期/计算/拼音/英文融合）模式，打字中按下会先把已输入内容上屏；可多选。全部取消勾选即禁用快捷输入"
 options = [
   { value = "backtick", label = "反引号 ( ` )" },
   { value = "semicolon", label = "分号 ( ; )" },
