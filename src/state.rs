@@ -427,24 +427,14 @@ impl AppState {
             }));
         }
 
-        // 注册 keys.schema_hotkeys 写回器：方案直达热键（方案 id → 热键串）。
+        // `keys.schema_hotkeys` **不再有写回器**：该键已在 core 废弃并移出登记表
+        // （`config.setItems` 会把它当未登记键跳过），方案直达热键统一落进下面的
+        // key_actions（动词 `switch_schema:<方案id>`）。留着这个 writer 的话，每次保存
+        // 都会往 diff 里塞一个必被服务端 skip 的项——用户看到「部分设置未保存」的提示，
+        // 而那一项其实压根不该存在。
         //
-        // 与方案启用状态同一条路——在方案页改、按主保存提交。**不能在方案对话框里
-        // 直接 config.setItems**：该键是 Map，在 diff 里是原子叶子（整对象产出），
-        // 主页面持有的仍是打开时的旧值，用户之后按一次保存就会把它整体覆盖回去。
-        {
-            let hk = schema_mgr.schema_hotkeys.clone();
-            fields.writers.borrow_mut().push(Box::new(move |cfg| {
-                let map: serde_json::Map<String, Value> = hk
-                    .borrow()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-                    .collect();
-                cfg.set_path("keys.schema_hotkeys", Value::Object(map));
-            }));
-        }
-
-        // 注册 keys.key_actions 写回器：全局按键功能表（五c 收编后所有引导键的落点）。
+        // 注册 keys.key_actions 写回器：全局按键功能表（五c 收编后所有引导键的落点，
+        // 以及合并进来的方案直达热键）。
         //
         // 与 schema_hotkeys 同一条路、同一个理由：Map 型键在 diff 里是原子叶子（整对象
         // 产出），在对话框里直接 config.setItems 的话，主页面持有的仍是打开时的旧值，
@@ -1677,6 +1667,20 @@ impl AppState {
         !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
     }
 
+    /// 跑一遍 writers 再与 base 做 diff，返回本次保存**会提交的项**。仅供测试。
+    ///
+    /// 与 [`Self::save`] 共用 `diff_config` 这一步，但**在副本上**跑 writers：save 是把
+    /// writers 直接写进 `self.current_config` 的（那是提交路径的一部分），测试若照做，
+    /// 一次调用就把状态改成"已保存"的样子，第二次断言便不再成立。同 `has_unsaved_changes`。
+    #[cfg(test)]
+    pub fn debug_diff_after_writers(&self) -> Vec<crate::config::ConfigItem> {
+        let mut probe = self.current_config.clone();
+        for w in self.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        diff_config(&self.base_config, &probe, &self.capabilities.map_keys())
+    }
+
     pub fn save(&mut self) -> bool {
         let reg = self.fields.clone();
         // ── 先提交 config.toml 之外的落点（方案 override、词库开关）──
@@ -1934,23 +1938,9 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
         })
         .collect();
 
-    // 方案直达热键：Map<方案 id, 热键串>。按 id 排序保证同一份配置每次得到同样的报告顺序
-    // （内核编译期也排序，见 hotkey.rs 里 schema_hotkeys 的 sort_by）。
-    if let Some(map) = cfg.get_object("keys.schema_hotkeys") {
-        let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (id, v) in entries {
-            if id.is_empty() {
-                continue;
-            }
-            groups.push(KeyGroup::new(
-                &format!("schema_hotkey_{id}"),
-                format!("切换到方案「{id}」"),
-                expand_hotkey(v.as_str().unwrap_or("")),
-            ));
-        }
-    }
-
+    // 方案直达热键**不再单独收集**：`keys.schema_hotkeys` 已并入 key_actions
+    // （动词 `switch_schema:<方案id>`），由下面那段统一纳入检测。core 折算后该表恒为空，
+    // 留着这段只会是永不执行的死代码。
     groups.push(KeyGroup::new(
         "temp_pinyin_hotkey",
         "临时拼音直达热键",
@@ -2009,6 +1999,9 @@ fn key_action_label(verb: &str) -> String {
         return format!("快捷输入「{id}」");
     }
     if let Some(id) = verb.strip_prefix("toggle_schema:") {
+        return format!("切换到方案「{id}」（可返回）");
+    }
+    if let Some(id) = verb.strip_prefix("switch_schema:") {
         return format!("切换到方案「{id}」");
     }
     match verb {
@@ -2495,7 +2488,7 @@ mod trigger_conflict_tests {
         let cfg = Config::from_value(json!({
             "keys": {
                 "switch_engine": "ctrl+shift+e",
-                "schema_hotkeys": { "wubi86": "ctrl+shift+e" }
+                "key_actions": { "ctrl+shift+e": "switch_schema:wubi86" }
             }
         }));
         let msg = check_hotkey_conflicts(&cfg).expect("方案直达热键应参与快捷键域检测");

@@ -938,11 +938,6 @@
     },
     {
       "default": {},
-      "key": "keys.schema_hotkeys",
-      "type": "map"
-    },
-    {
-      "default": {},
       "key": "keys.key_actions",
       "type": "map"
     },

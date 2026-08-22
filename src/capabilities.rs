@@ -321,13 +321,9 @@ mod tests {
         //    控件」模型套不上，需要 schema_manager.rs 那种列表编辑器 + 文件选择。
         //    在此之前由用户手写 config.toml（文档 customize/candidate-comment）。
         "ui.comment_dicts",
-        // ⑯ 方案直达热键（core `keys.schema_hotkeys`）：**在方案管理界面里编辑，不走清单**。
-        //    它是 Map（方案 id → 热键串），条目随已安装方案增删，而清单是「一个 key 一个
-        //    控件」的静态声明——写不出「每个方案一行」。与 ⑮ 同一类原因，区别是它已有
-        //    GUI：方案页「输入方案 → 选中方案 → 设置」对话框的「进入方式」一节。
-        //    ⚠️ 别因为「热键都该在按键页」就把它搬进清单：搬过去只能变成一个固定方案 id
-        //    的单键，用户装的第三方方案就永远配不上热键了。
-        "keys.schema_hotkeys",
+        // ⑯ `keys.schema_hotkeys` 已从这份白名单**移除**：core 侧该键已废弃并移出登记表
+        //    （并入 `keys.key_actions` 的 `switch_schema:<方案id>`）。方案页「进入方式」
+        //    那一节现在读写的是 key_actions，而它就在下面一条里，理由完全相同。
         // ⑰ 任务栏图标标记的微调项（core 侧语言栏图标改造新增）：两个开关
         //    （punct_badge / full_width_mark）已在清单内，这七项是它们的**外观微调**。
         //

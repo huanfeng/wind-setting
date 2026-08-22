@@ -258,14 +258,14 @@ pub struct SchemaManagerState {
     /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
     pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
 
-    // ── 方案直达热键（core `keys.schema_hotkeys`，Map: 方案 id → 热键串）──
-    /// 全量映射，随主保存一并写回（见 `AppState` 里注册的 writer）。
-    ///
-    /// **不在这里直接调 `config.setItems`**：那会与主设置页的 base/current diff 打架——
-    /// 主页面持有的是打开时的旧值，用户之后按一次「保存」就会把刚配的热键整体覆盖回去
-    /// （Map 型键在 diff 里是原子叶子，整对象产出）。改走 writer 注册，与
-    /// `schema.available` / `schema.active` 同一条路。
-    pub schema_hotkeys: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    // ── 方案直达热键：**没有独立字段**，就存在下面的 `key_actions` 里 ──
+    // core 的 `keys.schema_hotkeys` 已废弃并移出登记表（`config.setItems` 不再接受它），
+    // 直达热键统一是 `key_actions` 的 `switch_schema:<方案id>`。「进入方式」这一节据此
+    // 反查/写入，与「按键功能」那张表共用同一份内存态——**同一个键不可能再被两处各配
+    // 一次**，而那正是合并前 `.find()` 先注册者赢、后者静默失效的根源。
+    //
+    // 两节的分工按**动词**切开，互不越界：本节只增删 `switch_schema:`（单向），
+    // 「按键功能」管 `toggle_schema:`（往返）与其余动词。
     /// 全局按键功能表 `keys.key_actions`（键名 → 动词）的内存态。
     ///
     /// 五c 收编后，五处 `trigger_keys` 都折算到了这张表，core 侧 `trigger_keys` 恒为空
@@ -342,11 +342,9 @@ pub struct SchemaManagerState {
 impl SchemaManagerState {
     pub fn new() -> Self {
         let available = Self::read_available();
-        let hotkeys = Self::read_schema_hotkeys();
         let state = Self {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
-            schema_hotkeys: Rc::new(RefCell::new(hotkeys)),
             key_actions: Rc::new(RefCell::new(Self::read_key_actions())),
             settings_trigger_sigs: TRIGGER_KEY_OPTIONS
                 .iter()
@@ -437,24 +435,6 @@ impl SchemaManagerState {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-            })
-            .unwrap_or_default()
-    }
-
-    /// 读取 `keys.schema_hotkeys`（方案 id → 热键串）。缺失/类型不符时按空表处理——
-    /// 该键是 Map，出厂就是 `{}`，没有「默认热键」这回事。
-    fn read_schema_hotkeys() -> std::collections::HashMap<String, String> {
-        rpc::call_core("config.get", &json!({}))
-            .ok()
-            .and_then(|v| {
-                v.get("keys")
-                    .and_then(|k| k.get("schema_hotkeys"))
-                    .and_then(|m| m.as_object())
-                    .map(|o| {
-                        o.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                             .collect()
                     })
             })
@@ -646,11 +626,18 @@ impl SchemaManagerState {
     }
 
     /// 某方案当前绑定的直达热键（未绑定返回空串）。
+    /// 本方案的直达热键（`key_actions` 里 value == `switch_schema:<本方案>` 的那个键）。
+    ///
+    /// 反查而非按方案索引：合并后这张表是「键 → 动词」的。理论上可能有多个键指向同一
+    /// 方案（手写配置做得到），此时取键名升序的第一个——**必须是确定性的**，否则同一份
+    /// 配置每次打开对话框显示的键都可能不同。`key_actions` 是 `BTreeMap`，迭代即有序。
     pub fn hotkey_of(&self, schema_id: &str) -> String {
-        self.schema_hotkeys
+        let want = format!("switch_schema:{schema_id}");
+        self.key_actions
             .borrow()
-            .get(schema_id)
-            .cloned()
+            .iter()
+            .find(|(_, v)| *v == &want)
+            .map(|(k, _)| k.clone())
             .unwrap_or_default()
     }
 
@@ -685,7 +672,7 @@ impl SchemaManagerState {
         let id = self.settings_schema_id.borrow().clone();
         let raw = self.settings_hotkey_raw.get();
         apply_hotkey_edit(
-            &mut self.schema_hotkeys.borrow_mut(),
+            &mut self.key_actions.borrow_mut(),
             &id,
             self.settings_hotkey_enabled.get(),
             &raw,
@@ -2003,16 +1990,23 @@ fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
     }
 }
 
-/// 把一次热键编辑落到映射表上（纯函数，供测试）。
+/// 把一次「进入方式」的热键编辑落到 `key_actions`（键 → 动词）上（纯函数，供测试）。
 ///
-/// **未绑定 = 表里没有这一条**，而不是一条空串。写空串会在 config.toml 里留下
-/// `方案id = ""` 的死条目：core 侧 `parse_hotkey` 确实会忽略它，但用户翻开配置
-/// 看见自己的方案名挂在那儿，只会以为设过什么却没生效。
+/// # 只碰 `switch_schema:` 这一个动词
+///
+/// 同一张表里还躺着「按键功能」配的 `toggle_schema:`（往返）、`special:`（overlay）
+/// 以及别的方案的绑定。**先按动词+方案精确清掉旧条目，再插新的**——不能按方案粗暴清、
+/// 更不能整表重建：那会把用户在另一节配的往返绑定连带抹掉，而他只是在这一节改了个键。
+///
+/// # 未绑定 = 表里没有这一条
+///
+/// 而不是一条空串。写空串会在 config.toml 里留下死条目：core 侧 `parse_hotkey` 确实
+/// 会忽略它，但用户翻开配置看见自己的方案挂在那儿，只会以为设过什么却没生效。
 ///
 /// `raw` 为空（用户在对话框里把主键选成「（未设置）」）同样按解绑处理——
 /// 只看 `enabled` 会写进一条 `"none"` 或空串。
 fn apply_hotkey_edit(
-    map: &mut std::collections::HashMap<String, String>,
+    map: &mut std::collections::BTreeMap<String, String>,
     schema_id: &str,
     enabled: bool,
     raw: &str,
@@ -2020,10 +2014,12 @@ fn apply_hotkey_edit(
     if schema_id.is_empty() {
         return;
     }
+    let verb = format!("switch_schema:{schema_id}");
+    // 旧条目可能不止一条（手写配置能给同一方案配多个键），全部清掉再插新的，
+    // 否则改键之后旧键仍然生效——「改了没反应」的又一种形态。
+    map.retain(|_, v| v != &verb);
     if enabled && !raw.is_empty() && raw != "none" {
-        map.insert(schema_id.to_string(), raw.to_string());
-    } else {
-        map.remove(schema_id);
+        map.insert(raw.to_string(), verb);
     }
 }
 
@@ -2953,6 +2949,13 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let entry = state.settings_entry.borrow().clone().unwrap_or_default();
             let disp = state.settings_hotkey_disp;
             let visible = state.settings_hotkey_visible;
+            // 「清除」按钮的闭包要动这三个：raw 是真相源（commit 侧据它增删条目），
+            // disp 是行内显示，enabled 是对话框内部的派生态。
+            let (hk_raw, hk_disp, hk_enabled) = (
+                state.settings_hotkey_raw,
+                state.settings_hotkey_disp,
+                state.settings_hotkey_enabled,
+            );
             // 行内不写说明：标题「进入方式」+ 行名已经说清了，再挂一行灰色小字只是噪音。
             // 语义细节（切换 vs 临时进入的区别）在文档站。
             let mut col = Element::col()
@@ -2973,11 +2976,6 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .max_lines(1),
                         )
                         .child(
-                            Element::checkbox("启用", state.settings_hotkey_enabled)
-                                .small()
-                                .fg_role(Role::Text),
-                        )
-                        .child(
                             // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
                             Element::label_signal(disp)
                                 .font_size(12.5)
@@ -2990,7 +2988,28 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 .small()
                                 .outline_soft()
                                 .on_click(move |_| visible.set(true)),
-                        ),
+                        )
+                        // ⛔ 这里**不要**再加「启用」复选框（2026-08-21 删除）。
+                        //
+                        // 配置模型里没有「停用但保留键位」这回事：一条方案热键就是
+                        // key_actions 里的一个条目，要么在、要么不在。而复选框天然让人
+                        // 以为取消勾选只是暂时关掉——实际是把条目删了，关掉对话框再打开
+                        // 就变成「未设置」，键位也没了。用户原话：「关闭后就清空了」。
+                        //
+                        // 真要做「停用保留」，得先在 core 给 key_actions 的值增加一种
+                        // 「停用态」的表达（`none` 不行，那是**键**维度的「禁用这个键」，
+                        // 语义不同还会占着这个键）。在那之前，UI 不该暗示一个不存在的能力。
+                        .child(Element::button("清除").small().outline_soft().on_click(
+                            move |_| {
+                                // 置空 raw 即解绑：commit 侧按 `raw` 为空处理为移除条目。
+                                // enabled 同步置 false——它是对话框内部的派生量
+                                // （`enabled.set(v != "none")`），不同步会让下次打开
+                                // 对话框时「已启用」与「未设置」自相矛盾。
+                                hk_enabled.set(false);
+                                hk_disp.set("未设置".to_string());
+                                hk_raw.set(String::new());
+                            },
+                        )),
                 );
 
             // 引导键只给 **overlay 方案**：按下引导键临时进入、打完一段自动退回原方案。
@@ -3368,26 +3387,81 @@ mod ext_dict_tests {
         assert!(m.is_empty(), "空键名不该进表，实际 {m:?}");
     }
 
-    /// 解绑必须**移除条目**，不能留空串——否则 config.toml 里会积下
-    /// `方案id = ""` 的死条目，用户以为自己设过热键。
+    /// 解绑必须**移除条目**，不能留空串——否则 config.toml 里会积下死条目，
+    /// 用户以为自己设过热键。
+    ///
+    /// 表方向已随合并翻转：现在是 `key_actions` 的「键 → 动词」，故按热键串查。
     #[test]
     fn hotkey_edit_unbind_removes_entry() {
-        let mut m = std::collections::HashMap::new();
+        let mut m = std::collections::BTreeMap::new();
         apply_hotkey_edit(&mut m, "english", true, "ctrl+shift+n");
-        assert_eq!(m.get("english").map(String::as_str), Some("ctrl+shift+n"));
+        assert_eq!(
+            m.get("ctrl+shift+n").map(String::as_str),
+            Some("switch_schema:english")
+        );
 
         // 关掉「启用」
         apply_hotkey_edit(&mut m, "english", false, "ctrl+shift+n");
-        assert!(!m.contains_key("english"), "解绑应移除条目，实际 {m:?}");
+        assert!(m.is_empty(), "解绑应移除条目，实际 {m:?}");
 
         // 启用着但主键选成「（未设置）」：raw 为空，同样按解绑处理
         apply_hotkey_edit(&mut m, "english", true, "ctrl+shift+n");
         apply_hotkey_edit(&mut m, "english", true, "");
-        assert!(!m.contains_key("english"), "空 raw 应移除条目，实际 {m:?}");
+        assert!(m.is_empty(), "空 raw 应移除条目，实际 {m:?}");
 
         // core 的未绑定 sentinel 也不该被写进来
         apply_hotkey_edit(&mut m, "english", true, "none");
-        assert!(!m.contains_key("english"), "\"none\" 不该入表，实际 {m:?}");
+        assert!(m.is_empty(), "\"none\" 不该入表，实际 {m:?}");
+    }
+
+    /// 改键必须**清掉旧键**：表方向翻转后，旧条目的主键是热键串而不是方案 id，
+    /// 忘了清就会留下两个键都指向同一方案——用户改了键，旧键却照样生效。
+    #[test]
+    fn hotkey_edit_rebind_drops_the_old_key() {
+        let mut m = std::collections::BTreeMap::new();
+        apply_hotkey_edit(&mut m, "wubi86", true, "ctrl+shift+w");
+        apply_hotkey_edit(&mut m, "wubi86", true, "ctrl+shift+r");
+        assert_eq!(
+            m.get("ctrl+shift+r").map(String::as_str),
+            Some("switch_schema:wubi86")
+        );
+        assert!(
+            !m.contains_key("ctrl+shift+w"),
+            "改键后旧键仍在表里 ⇒ 两个键都能切，用户改了等于没改：{m:?}"
+        );
+    }
+
+    /// ★ 合并后才有的风险：「进入方式」与「按键功能」共用同一张表，前者**只能碰**
+    /// `switch_schema:` 的条目。按方案粗暴清理会把用户在另一节配的往返绑定、
+    /// overlay 引导键连带抹掉——而他只是在这一节改了个键。
+    #[test]
+    fn hotkey_edit_does_not_touch_other_verbs_in_the_shared_table() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            "ctrl+shift+n".to_string(),
+            "toggle_schema:english".to_string(),
+        );
+        m.insert("backslash".to_string(), "special:quick_symbols".to_string());
+        m.insert("rshift".to_string(), "toggle_schema:wubi86".to_string());
+
+        apply_hotkey_edit(&mut m, "wubi86", true, "ctrl+shift+r");
+        apply_hotkey_edit(&mut m, "wubi86", false, "");
+
+        assert_eq!(
+            m.get("ctrl+shift+n").map(String::as_str),
+            Some("toggle_schema:english"),
+            "别的方案的往返绑定被误删：{m:?}"
+        );
+        assert_eq!(
+            m.get("backslash").map(String::as_str),
+            Some("special:quick_symbols"),
+            "overlay 引导键被误删：{m:?}"
+        );
+        assert_eq!(
+            m.get("rshift").map(String::as_str),
+            Some("toggle_schema:wubi86"),
+            "**同一方案**的往返绑定归「按键功能」管，不该被「进入方式」的解绑带走：{m:?}"
+        );
     }
 
     /// 待提交队列必须按方案累积。用户连着配好几个方案再点「应用设置」是正常用法，
@@ -3502,13 +3576,13 @@ mod ext_dict_tests {
     /// 「改了 B 把 A 也一起覆盖掉」。
     #[test]
     fn hotkey_edit_is_per_schema() {
-        let mut m = std::collections::HashMap::new();
+        let mut m = std::collections::BTreeMap::new();
         apply_hotkey_edit(&mut m, "wubi86", true, "ctrl+shift+w");
         apply_hotkey_edit(&mut m, "english", true, "ctrl+shift+n");
         apply_hotkey_edit(&mut m, "english", false, "");
         assert_eq!(
-            m.get("wubi86").map(String::as_str),
-            Some("ctrl+shift+w"),
+            m.get("ctrl+shift+w").map(String::as_str),
+            Some("switch_schema:wubi86"),
             "解绑 english 不应影响 wubi86：{m:?}"
         );
         // 空 id（settings_schema_id 尚未播种）不得污染表
@@ -4276,5 +4350,97 @@ mod tests {
     #[test]
     fn out_of_range_source_is_rejected() {
         assert!(reordered_enabled_order(&strs(&["a"]), &[], 3, 0).is_none());
+    }
+}
+
+/// 「进入方式」热键的**端到端保存链路**：编辑工作态 → 内存表 → writer → diff。
+///
+/// 这条链上的每一环单独看都对，合起来却出过「配了热键、点保存说『没有变更』」——
+/// 单测各测一环验不出来，故在此从 `AppState` 一路走到 diff。
+#[cfg(test)]
+mod hotkey_save_pipeline_tests {
+    use crate::config::Config;
+    use crate::state::AppState;
+    use serde_json::json;
+
+    /// 配一个新热键之后，主保存的 diff 必须**包含** `keys.key_actions`。
+    ///
+    /// 空 diff 就是用户看到的「没有变更」——而他明明刚配完键。
+    #[test]
+    fn editing_entry_hotkey_produces_a_nonempty_diff() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        // 基线：用户原本已有一条别的绑定，用来验证写回不会把它冲掉。
+        let base = json!({
+            "keys": { "key_actions": { "ctrl+shift+n": "toggle_schema:english" } }
+        });
+        st.base_config = Config::from_value(base.clone());
+        st.current_config = Config::from_value(base);
+        *st.schema_mgr.key_actions.borrow_mut() = [(
+            "ctrl+shift+n".to_string(),
+            "toggle_schema:english".to_string(),
+        )]
+        .into_iter()
+        .collect();
+
+        // 用户在方案对话框里给 wubi86 配了 Ctrl+Shift+R。
+        *st.schema_mgr.settings_schema_id.borrow_mut() = "wubi86".to_string();
+        st.schema_mgr.settings_hotkey_enabled.set(true);
+        st.schema_mgr.settings_hotkey_raw.set("ctrl+shift+r".into());
+        st.schema_mgr.commit_hotkey_edit();
+
+        let items = st.debug_diff_after_writers();
+        let ka = items
+            .iter()
+            .find(|it| it.key == "keys.key_actions")
+            .unwrap_or_else(|| {
+                panic!(
+                    "diff 里没有 keys.key_actions ⇒ 保存时会说「没有变更」；实际 diff: {items:?}"
+                )
+            });
+        let obj = ka.value.as_object().expect("key_actions 应是对象");
+        assert_eq!(
+            obj.get("ctrl+shift+r").and_then(|v| v.as_str()),
+            Some("switch_schema:wubi86"),
+            "新配的热键没进写回值"
+        );
+        assert_eq!(
+            obj.get("ctrl+shift+n").and_then(|v| v.as_str()),
+            Some("toggle_schema:english"),
+            "写回把用户原有的绑定冲掉了"
+        );
+    }
+
+    /// 反向对照：什么都没改时 diff 必须为空。
+    ///
+    /// 少了这条，上面那条在「diff 恒非空」（比如 writer 每次都产出不同的表）时也会绿，
+    /// 而那种缺陷的表现是关窗永远被拦着问「要不要保存」。
+    #[test]
+    fn untouched_state_produces_an_empty_diff() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let base = json!({
+            "keys": { "key_actions": { "ctrl+shift+n": "toggle_schema:english" } }
+        });
+        st.base_config = Config::from_value(base.clone());
+        st.current_config = Config::from_value(base);
+        *st.schema_mgr.key_actions.borrow_mut() = [(
+            "ctrl+shift+n".to_string(),
+            "toggle_schema:english".to_string(),
+        )]
+        .into_iter()
+        .collect();
+
+        let items = st.debug_diff_after_writers();
+        assert!(
+            !items.iter().any(|it| it.key == "keys.key_actions"),
+            "没动过就不该产出 key_actions 改动：{items:?}"
+        );
     }
 }
