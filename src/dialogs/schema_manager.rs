@@ -189,6 +189,22 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; 2] 
 /// 就等于把每个方案都钉死成显式值。
 const AUX_CODE_MODES: [&str; 3] = ["跟随全局", "开启", "关闭"];
 
+/// 这个方案**有没有可用的辅助码表**。建节与落盘共用**同一条**判据。
+///
+/// ★ 判据是 `files` 为非空数组，不是「这个键存在」：`files = []` 是「声明了段但没给表」，
+/// 与没声明等价。两处各写一份的后果是它们中间夹着一道缝——建节按非空、落盘按存在，
+/// 于是 `files = []` 的方案不出这一节，却会被上一个方案留在信号里的档位写进 override。
+///
+/// 也不按引擎类型：「这个方案用哪张辅助码表」是方案作者的声明（全拼配笔画、双拼配小鹤
+/// 形码），没声明就意味着压根没有可用的表，给它一个开关只会让人开了发现没反应。
+///
+/// ⚠️ `files` 非空 ≠ 功能开启，那是本节那个开关的事，见 core 的 `AuxCodeSpec`。
+fn has_aux_code_table(cfg: &Value) -> bool {
+    cfg.pointer("/engine/aux_code/files")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
+}
+
 fn aux_code_idx(v: Option<bool>) -> usize {
     match v {
         None => 0,
@@ -1419,19 +1435,11 @@ impl SchemaManagerState {
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ShuangpinLayout);
         }
-        // 辅助码：**只在方案声明了辅助码表时**建节。
-        //
-        // 判据是 `[engine.aux_code].files` 非空，不是引擎类型——「这个方案用哪张辅助码表」
-        // 是方案作者的声明（全拼配笔画、双拼配小鹤形码），没声明就意味着这个方案压根没有
-        // 可用的表，给它一个开关只会让人开了发现没反应。
-        // ⚠️ `files` 非空 ≠ 功能开启，那是本节这个开关的事，见 `AuxCodeSpec` 的文档。
+        // 辅助码：**只在方案声明了辅助码表时**建节。判据见 `has_aux_code_table`——
+        // 落盘那侧用的是同一个函数，两处必须同判据。
         {
             let cfg = self.settings_cfg.borrow();
-            let has_table = cfg
-                .pointer("/engine/aux_code/files")
-                .and_then(|v| v.as_array())
-                .is_some_and(|a| !a.is_empty());
-            if has_table {
+            if has_aux_code_table(&cfg) {
                 let idx = aux_code_idx(
                     cfg.pointer("/engine/aux_code/enabled")
                         .and_then(|v| v.as_bool()),
@@ -1634,7 +1642,7 @@ impl SchemaManagerState {
         // 也塞一个 `engine.aux_code` 段，那会让 `json_diff` 认定方案文件缺这个键，把整份
         // 快照写进 override。
         if self.settings_aux_idx.get() != self.settings_aux_at_open.get()
-            && cfg.pointer("/engine/aux_code/files").is_some()
+            && has_aux_code_table(&cfg)
         {
             set_json_path(
                 &mut cfg,
@@ -4427,6 +4435,30 @@ mod section_build_tests {
         // 越界回落**跟随**而不是钳到末项：钳会把「关闭」塞给一个没选过的方案。
         // 与 `overlay_layout_value` 的同类处置同口径。
         assert_eq!(aux_code_value(99), Value::Null);
+    }
+
+    /// ★ 建节与落盘必须**同判据**，`files = []` 不算有表。
+    ///
+    /// 两处各写一份时它们中间夹着一道缝：建节按「非空数组」、落盘按「这个键存在」，
+    /// 于是 `files = []` 的方案不出这一节（信号没被重新播种），保存时却过得了守卫——
+    /// 上一个方案留在信号里的档位被写进这个方案的 override，用户从没碰过这个开关。
+    #[test]
+    fn aux_code_table_criterion_is_shared_by_build_and_save() {
+        assert!(has_aux_code_table(&json!({
+            "engine": {"aux_code": {"files": ["aux_code/stroke.txt"]}}
+        })));
+        // 声明了段但没给表 = 没有可用的表。这一条正是那道缝。
+        assert!(!has_aux_code_table(&json!({
+            "engine": {"aux_code": {"files": []}}
+        })));
+        assert!(!has_aux_code_table(&json!({
+            "engine": {"aux_code": {"enabled": true}}
+        })));
+        assert!(!has_aux_code_table(&json!({"engine": {}})));
+        // 类型不对（写成字符串）同样不算——`is_some()` 会放过它。
+        assert!(!has_aux_code_table(&json!({
+            "engine": {"aux_code": {"files": "aux_code/stroke.txt"}}
+        })));
     }
 
     /// tri-state 三档往返：读出来的档位写回去必须是同一个值。
