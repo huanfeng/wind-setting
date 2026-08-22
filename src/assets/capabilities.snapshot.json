@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.117.0",
+  "appVersion": "0.118.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -486,12 +486,29 @@
     {
       "default": "commit",
       "key": "input.enter_behavior",
-      "type": "str"
+      "type": "enum",
+      "values": [
+        "commit",
+        "clear"
+      ]
     },
     {
       "default": "commit",
       "key": "input.space_on_empty_behavior",
-      "type": "str"
+      "type": "enum",
+      "values": [
+        "commit",
+        "clear"
+      ]
+    },
+    {
+      "default": "commit",
+      "key": "input.punct_on_empty_behavior",
+      "type": "enum",
+      "values": [
+        "commit",
+        "clear"
+      ]
     },
     {
       "default": "direct",

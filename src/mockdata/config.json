@@ -70,6 +70,7 @@
    "smart_after_digit": true,
    "smart_list": ".,:"
   },
+  "punct_on_empty_behavior": "commit",
   "s2t": {
    "enabled": false,
    "variant": "s2t"

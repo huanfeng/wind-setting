@@ -1071,8 +1071,6 @@ hint = "有编码时按回车键的处理方式"
 options = [
   { value = "commit", label = "上屏编码" },
   { value = "clear", label = "清空编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-  { value = "ignore", label = "忽略" },
 ]
 
 [[items]]
@@ -1085,8 +1083,18 @@ hint = "无候选词时按空格键的处理方式"
 options = [
   { value = "commit", label = "上屏编码" },
   { value = "clear", label = "清空编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-  { value = "ignore", label = "忽略" },
+]
+
+[[items]]
+key = "input.punct_on_empty_behavior"
+group = "input"
+section = "按键行为"
+type = "select"
+label = "空码时标点键功能"
+hint = "无候选词时按标点符号键怎么处理编码；标点本身照常上屏"
+options = [
+  { value = "commit", label = "上屏编码" },
+  { value = "clear", label = "清空编码" },
 ]
 
 [[items]]
