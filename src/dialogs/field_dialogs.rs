@@ -618,21 +618,24 @@ pub fn build_group_dialog_shell_large(
     )
 }
 
-/// 标题随内容变化的变体（如「码表配置 - 五笔」：同一个浮层服务于任意方案）。
-///
-/// 单独开一个入口而不是把 `&str` 那版改成泛型：静态标题是绝大多数调用点的形态，
-/// 让它们全都去构造一个 Signal 只是噪音。
-pub fn build_group_dialog_shell_dyn(
+/// 尺寸可指定的动态标题外壳（标题随内容变化，如「按键自定义 - 五笔」：同一个浮层服务于
+/// 任意方案）。给「默认 460×380 装不下」的那类用——当前是按键绑定编辑器家族，
+/// 见 `dialogs::key_binding::build_binding_dialog`。
+pub fn build_group_dialog_shell_dyn_sized(
     visible: Signal<bool>,
     title: Signal<String>,
     content: Element,
     bottom_leading: Vec<Element>,
+    width: i32,
+    height: i32,
 ) -> Element {
-    shell_with_title(
+    shell_with_title_sized(
         visible,
         Element::label_signal(title),
         content,
         bottom_leading,
+        width,
+        height,
     )
 }
 

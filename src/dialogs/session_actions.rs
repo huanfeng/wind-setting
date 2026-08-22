@@ -30,7 +30,7 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use windui::prelude::*;
 
-use super::key_binding::{Binding, BindingTable, KeyPicker, binding_row};
+use super::key_binding::{Binding, BindingBody, BindingTable, KeyPicker, binding_row};
 
 /// 会话态按键表的工作态。
 #[derive(Clone)]
@@ -146,11 +146,13 @@ impl SessionActionFields {
         self.picker.build_dialog()
     }
 
-    /// 对话框内容 + 底部附加按钮（「添加」交给外壳底部栏，与「关闭」同排）。
+    /// 对话框主体（「添加」交给外壳底部栏，与「关闭」同排）。
+    ///
+    /// **不加内边距**：由 [`super::key_binding::build_binding_dialog`] 统一加，见 `BindingBody`。
     ///
     /// 列表用 `host_signal` 而非 `list_signal`：外壳本身已是固定高的滚动区，内嵌第二层
     /// 滚动会让两层打架（列表滚不动、高度撑不满）。判据是「父容器是否已在滚动」。
-    pub fn build_body(&self) -> (Element, Vec<Element>) {
+    pub fn build_body(&self) -> BindingBody {
         let rows_sig = self.rows;
         let picker = self.picker.clone();
 
@@ -189,12 +191,8 @@ impl SessionActionFields {
             p_add.open_new();
         });
 
-        // ★ 内边距由**内容**加，外壳（`build_group_dialog_shell`）只管标题栏/滚动区/按钮栏。
-        // 与 `build_group_dialog_with_link` 的 `.padding_xy(16, 2)` 对齐，否则同一个设置界面
-        // 里会出现两种松紧度的弹窗。垂直给 8 是因为本对话框顶部有说明文字，2 会贴住标题栏。
         let content = Element::col()
             .width_match()
-            .padding_xy(16, 8)
             .spacing(8)
             .child(
                 Element::label(
@@ -213,7 +211,7 @@ impl SessionActionFields {
                     .max_lines(2),
             )
             .child(list);
-        (content, vec![add])
+        BindingBody::new(content, vec![add])
     }
 }
 

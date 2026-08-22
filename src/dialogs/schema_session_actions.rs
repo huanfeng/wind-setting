@@ -92,7 +92,7 @@ impl SchemaSessionActionFields {
     }
 
     /// 对话框主体，直接来自复用的行编辑器。
-    pub fn build_body(&self) -> (Element, Vec<Element>) {
+    pub fn build_body(&self) -> super::key_binding::BindingBody {
         self.inner.build_body()
     }
 

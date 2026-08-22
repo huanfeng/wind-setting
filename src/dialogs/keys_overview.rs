@@ -20,7 +20,7 @@
 use serde_json::Value;
 use windui::prelude::*;
 
-use super::key_binding::{Verb, key_display, session_verb_label};
+use super::key_binding::{BindingBody, Verb, key_display, session_verb_label};
 
 /// 总览的一行。
 #[derive(Clone)]
@@ -120,7 +120,10 @@ impl KeysOverview {
     }
 
     /// 对话框主体。整表只读，故没有「添加」按钮，底部只有壳自带的「关闭」。
-    pub fn build_body(&self) -> (Element, Vec<Element>) {
+    ///
+    /// **不加内边距**：与两个编辑器共用 [`super::key_binding::build_binding_dialog`]，
+    /// 由它统一加。
+    pub fn build_body(&self) -> BindingBody {
         let list = Element::host_signal(self.rows, move |row: Row| {
             Element::row()
                 .width_match()
@@ -158,7 +161,7 @@ impl KeysOverview {
         .font_size(12.0)
         .fg_role(Role::TextMuted)
         .max_lines(2);
-        (
+        BindingBody::new(
             Element::col()
                 .width_match()
                 .spacing(6)

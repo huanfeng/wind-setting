@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 use windui::prelude::*;
 
 use super::key_binding::{
-    Binding, BindingTable, KeyPicker, KeyShape, binding_row, key_shape, verb_allowed,
+    Binding, BindingBody, BindingTable, KeyPicker, KeyShape, binding_row, key_shape, verb_allowed,
     verb_requires_modifier,
 };
 
@@ -274,18 +274,18 @@ impl KeyActionFields {
         self.picker.build_dialog()
     }
 
-    /// 对话框内容（外壳由调用方用 `build_group_dialog_shell_dyn` 套上，
-    /// 以便与码表配置、扩展词库等其它三级浮层长得一致）。
+    /// 对话框主体（外壳由 [`super::key_binding::build_binding_dialog`] 套上，
+    /// 尺寸与内边距在那里统一决定，**本函数不加内边距**）。
     ///
-    /// 返回 `(内容, 底部按钮)`——「添加」交给外壳的底部按钮栏，与「关闭」同排；
-    /// 放在列表下方会随列表滚动、且和内容挤在一起。
+    /// 「添加」交给外壳的底部按钮栏，与「关闭」同排；放在列表下方会随列表滚动、
+    /// 且和内容挤在一起。
     ///
     /// 列表用 `host_signal`（非滚动的响应式 col）而非 `list_signal`：外壳
-    /// `build_group_dialog_shell_dyn` 本身就是一个固定高的滚动区，内嵌第二层滚动会让
+    /// `build_binding_dialog` 的外壳本身就是一个固定高的滚动区，内嵌第二层滚动会让
     /// 外层按无限高度测量内层、滚轮在两层间打架，结果是列表滚不动、且高度被内层写死
     /// 撑不满外壳视口。按自然高度展开后只保留外壳这一层滚动，两个问题一并消除。
     /// 判据是「父容器是否已在滚动」，不是「要不要响应式」——同文件的码表配置浮层同理。
-    pub fn build_body(&self) -> (Element, Vec<Element>) {
+    pub fn build_body(&self) -> BindingBody {
         let rows_sig = self.rows;
         let picker = self.picker.clone();
         let leading = self.leading_keys.clone();
@@ -350,7 +350,7 @@ impl KeyActionFields {
                     .max_lines(2),
             )
             .child(list);
-        (content, vec![add])
+        BindingBody::new(content, vec![add])
     }
 }
 

@@ -2684,7 +2684,6 @@ fn collect_labels(inputs: &[Signal<String>]) -> Vec<Value> {
 /// 与按键功能表（`dialogs::schema_key_actions`）是同族编辑器，共用 `dialogs::key_binding`
 /// 里的行渲染与按键选择对话框；两者的分野见那两个模块的文档注释。
 fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::field_dialogs::build_group_dialog_shell;
     use crate::dialogs::session_actions::SessionActionFields;
 
     let fields = SessionActionFields::default();
@@ -2726,8 +2725,11 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
         Box::new(move || Value::Object(fg.to_map())),
     );
 
-    let (content, bottom) = fields.build_body();
-    let dlg = build_group_dialog_shell(visible, "全局自定义输入中按键", content, bottom);
+    let dlg = crate::dialogs::key_binding::build_binding_dialog(
+        visible,
+        signal("全局自定义输入中按键".to_string()),
+        fields.build_body(),
+    );
     register_dialog(state, dlg);
     // 按键选择浮层排在本对话框**之后**登记 = 叠在它上面。register_dialog 是往 Vec 里推，
     // 挂到根窗口时按 Vec 序成为 stack 的子节点，先推的在下。顺序反了的表现是点「添加」
@@ -2743,7 +2745,6 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
 /// （裸 map vs 方案 cfg 的一个段）。再写一个编辑器就是两个长得不一样的键绑定编辑器，
 /// 正是 `capabilities.rs` 当初把本键登记进豁免清单时想避免的事。
 fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::field_dialogs::build_group_dialog_shell;
     use crate::dialogs::schema_key_actions::KeyActionFields;
 
     let fields = KeyActionFields::default();
@@ -2790,8 +2791,11 @@ fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) ->
         Box::new(move || Value::Object(fg.to_map())),
     );
 
-    let (content, bottom) = fields.build_body();
-    let dlg = build_group_dialog_shell(visible, "全局自定义按键", content, bottom);
+    let dlg = crate::dialogs::key_binding::build_binding_dialog(
+        visible,
+        signal("全局自定义按键".to_string()),
+        fields.build_body(),
+    );
     register_dialog(state, dlg);
     // 同上：选择浮层必须排在编辑器之后。
     register_dialog(state, fields.build_picker());

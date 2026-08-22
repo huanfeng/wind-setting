@@ -2721,46 +2721,32 @@ pub fn build_schema_manager_dialog(
 /// 无需像码表配置那样按 plan 重建——行元素绑的是 `Signal<Vec<Row>>`，播种时 `set`
 /// 即触发 `host_signal` 重建，天然跟得上换方案。
 fn build_key_actions_dialog(state: &SchemaManagerState) -> Element {
-    let (content, buttons) = state.settings_ka.build_body();
-    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
+    // 尺寸与内边距由 `build_binding_dialog` 统一决定——全局那两个也走它，五处一致。
+    // 「添加」进底部按钮栏（与「关闭」同排）；放列表下方会随列表一起滚走。
+    // 无「保存」：与码表配置同路，改动随方案设置对话框的「保存」一并提交。
+    crate::dialogs::key_binding::build_binding_dialog(
         state.settings_ka_visible,
         state.settings_ka_title,
-        Element::col()
-            .width_match()
-            .padding_xy(16, 6)
-            .child(content),
-        // 「添加绑定」进底部按钮栏（与「关闭」同排）；放列表下方会随列表一起滚走。
-        // 无「保存」：与码表配置同路，改动随方案设置对话框的「保存」一并提交。
-        buttons,
+        state.settings_ka.build_body(),
     )
 }
 
 /// 按键总览浮层（第三级，**只读**）。没有「添加」按钮，底部只有壳自带的「关闭」。
 fn build_keys_overview_dialog(state: &SchemaManagerState) -> Element {
-    let (content, buttons) = state.settings_ko.build_body();
-    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
+    crate::dialogs::key_binding::build_binding_dialog(
         state.settings_ko_visible,
         state.settings_ko_title,
-        Element::col()
-            .width_match()
-            .padding_xy(16, 6)
-            .child(content),
-        buttons,
+        state.settings_ko.build_body(),
     )
 }
 
 /// 方案级会话态按键表浮层（第三级）。结构与 [`build_key_actions_dialog`] 对称，
 /// 内容同样由自带响应式列表驱动。
 fn build_session_actions_dialog(state: &SchemaManagerState) -> Element {
-    let (content, buttons) = state.settings_sa.build_body();
-    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn(
+    crate::dialogs::key_binding::build_binding_dialog(
         state.settings_sa_visible,
         state.settings_sa_title,
-        Element::col()
-            .width_match()
-            .padding_xy(16, 6)
-            .child(content),
-        buttons,
+        state.settings_sa.build_body(),
     )
 }
 

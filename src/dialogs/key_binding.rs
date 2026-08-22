@@ -56,6 +56,60 @@ pub struct Binding {
 /// 行身份。见 [`Binding::id`]。
 pub type RowId = u64;
 
+/// 绑定编辑器对话框的尺寸。比通用外壳的 460×380 宽一档。
+///
+/// 本家族的行是 `[按键][功能][提示][修改][删除]` 五列，固定开销约 340px；460 下留给
+/// 「功能」那一列的空间放不下「切到方案（单向） - 五笔拼音」这类标签。
+///
+/// **没有并用 `build_group_dialog_shell_large`（620×460）**：那个尺寸是给分了 TAB 的方案
+/// 设置用的，内容本来就多；本家族多数时候只有三五行，撑到那么大只剩留白。
+const DIALOG_W: i32 = 560;
+const DIALOG_H: i32 = 420;
+
+/// 内容区内边距。**全家族只在 [`build_binding_dialog`] 里加这一次**。
+const PAD_X: i32 = 16;
+const PAD_Y: i32 = 10;
+
+/// 绑定编辑器的对话框主体：内容 + 底部附加按钮。
+///
+/// ★ 用 newtype 而不是裸 `(Element, Vec<Element>)`：五个调用点此前各自套壳，内边距长成了
+/// 四种样子——全局按键那个**一点都没有**（内容没加、外壳也不加），方案那两个套了两层
+/// （内容 16,8 ＋ 外壳 16,6 ＝ 32,14）。字段私有 ⇒ 内容出不了这个类型，半路再包一层就不
+/// 可能了，`build_binding_dialog` 成为唯一出口。
+pub struct BindingBody {
+    content: Element,
+    buttons: Vec<Element>,
+}
+
+impl BindingBody {
+    pub fn new(content: Element, buttons: Vec<Element>) -> Self {
+        Self { content, buttons }
+    }
+}
+
+/// 绑定编辑器家族的统一外壳：四个编辑器（全局 / 方案 × 按键 / 输入中按键）+ 只读总览，
+/// 共五处。尺寸、内边距、标题样式在此一处决定。
+///
+/// 标题一律取 `Signal<String>`（全局那两个是静态文案，`signal(...)` 包一下即可）：为两种
+/// 标题各开一个入口，就等于给这五处又留了一条各走各的路。
+pub fn build_binding_dialog(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    body: BindingBody,
+) -> Element {
+    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn_sized(
+        visible,
+        title,
+        Element::col()
+            .width_match()
+            .padding_xy(PAD_X, PAD_Y)
+            .child(body.content),
+        body.buttons,
+        DIALOG_W,
+        DIALOG_H,
+    )
+}
+
 /// 「确定」的回调：`(被编辑行的 id 或 None（新增）, 键名, 功能值)`。
 type CommitFn = Box<dyn Fn(Option<RowId>, String, String)>;
 
@@ -1020,7 +1074,7 @@ impl KeyPicker {
         let content = Element::col()
             .width_match()
             .spacing(12)
-            .padding_xy(18, 12)
+            .padding_xy(PAD_X, PAD_Y)
             .child(key_col)
             .child(Element::divider())
             .child(verb_col)
