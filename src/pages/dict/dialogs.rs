@@ -134,10 +134,14 @@ fn io_boundary_row(mgr: &DictManagerState) -> Element {
                 .fg_role(Role::TextMuted)
                 .width(52),
         )
-        .child(Element::checkbox(
-            "由程序补充（推荐）",
-            mgr.io_fill_boundary,
-        ))
+        .child({
+            // ⚠️ `Element::checkbox` 只负责显示，**自己不会翻转**——必须配 on_toggle，
+            // 否则勾选框渲染正常、点了毫无反应（同 io_type_row 的写法）。
+            let sig = mgr.io_fill_boundary;
+            Element::checkbox("由程序补充（推荐）", sig)
+                .small()
+                .on_toggle(move |_| sig.set(!sig.get()))
+        })
         .child(
             Element::label("不勾选则跳过这些词，不会以缺分隔的形式入库")
                 .font_size(12.0)
