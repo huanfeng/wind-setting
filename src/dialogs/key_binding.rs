@@ -410,6 +410,19 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
                 label: "放弃当前输入（同 Esc）".into(),
             }],
         ),
+        // 辅助码同时在**两张表**里：`key_actions` 那份是既有的（双拼出厂
+        // `backtick = "aux_code"`），本表这份让 Tab / PageDown / 方向键那一批也绑得上——
+        // `key_action_name_to_vk` 解析不出它们，写进 `key_actions` 会被静默丢弃。
+        //
+        // 它落在本表是语义上的归位：`enter_aux_code` 第一件事就是查候选是否为空，
+        // 而「只在有候选时才有意义」正是本表的定义性质。
+        VerbCategory::new(
+            "候选筛选",
+            vec![Verb {
+                value: "aux_code".into(),
+                label: "辅助码筛选（按字形码二次筛选）".into(),
+            }],
+        ),
         advanced_category(),
     ]
 }
@@ -1415,6 +1428,7 @@ mod tests {
                         | "highlight_down"
                         | "cancel"
                         | "clear"
+                        | "aux_code"
                 ) || v
                     .value
                     .strip_prefix("select_candidate:")

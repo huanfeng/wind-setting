@@ -122,6 +122,8 @@ pub enum SettingsSection {
     /// 进入方式：切到该方案的直达热键（`keys.schema_hotkeys`）。所有方案都有。
     EntryKeys,
     ShuangpinLayout,
+    /// 辅助码：本方案是否启用（tri-state 覆盖全局基线）。仅**声明了辅助码表**的方案有。
+    AuxCode,
     /// 码表配置：总开关 +（开启后）子对话框。仅码表方案有。
     CodeTable,
     /// 特殊模式（overlay）：把本方案变成「引导键临时进入」的快符/生僻字那类。
@@ -152,7 +154,7 @@ impl SettingsSection {
     fn tab(self) -> Option<usize> {
         match self {
             Self::Header | Self::EntryKeys | Self::ExtensionDicts => Some(0),
-            Self::ShuangpinLayout | Self::CodeTable | Self::Overlay => Some(1),
+            Self::ShuangpinLayout | Self::AuxCode | Self::CodeTable | Self::Overlay => Some(1),
             Self::Divider | Self::Empty => None,
         }
     }
@@ -177,6 +179,32 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; 2] 
         bucket.push(*s);
     }
     out
+}
+
+/// 辅助码方案级覆盖的三档。`[engine.aux_code].enabled` 是 tri-state `Option<bool>`：
+/// `None` 回落全局 `[schema.pinyin.aux_code].enabled`，`Some` 覆盖它。
+///
+/// ★ 用三档分段而不是复选框：复选框只有两态，表达不出「跟随全局」——而那恰恰是出厂态，
+/// 也是绝大多数方案该停在的地方。用复选框就必须替用户在开/关里二选一，一打开设置页
+/// 就等于把每个方案都钉死成显式值。
+const AUX_CODE_MODES: [&str; 3] = ["跟随全局", "开启", "关闭"];
+
+fn aux_code_idx(v: Option<bool>) -> usize {
+    match v {
+        None => 0,
+        Some(true) => 1,
+        Some(false) => 2,
+    }
+}
+
+/// 下标 → 落盘值。`Null` 即「不写这一行」：core 的 `json_to_toml` 跳过 null，于是该键不进
+/// override，取值回落全局——这正是「跟随全局」的落地方式，不是丢失。
+fn aux_code_value(idx: usize) -> Value {
+    match idx {
+        1 => json!(true),
+        2 => json!(false),
+        _ => Value::Null,
+    }
 }
 
 /// `[overlay] candidate_layout` 的字符串值 ↔ 分段控件下标。
@@ -354,6 +382,10 @@ pub struct SchemaManagerState {
     // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
     // 那是方案的固有属性，由方案文件决定。这里只调段内的行为参数。
     /// 进入模式即展示候选（`[overlay] show_all_on_enter`）。
+    /// 辅助码方案级覆盖的三档下标（见 [`AUX_CODE_MODES`]）。
+    pub settings_aux_idx: Signal<usize>,
+    /// 打开时的档位快照，供脏判定。
+    settings_aux_at_open: Rc<std::cell::Cell<usize>>,
     pub settings_ov_show_all: Signal<bool>,
     /// 候选排列（0=跟随全局 / 1=竖排 / 2=横排），对应 `[overlay] candidate_layout`。
     pub settings_ov_layout: Signal<usize>,
@@ -461,6 +493,8 @@ impl SchemaManagerState {
             settings_tab: signal(0),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
+            settings_aux_idx: signal(0),
+            settings_aux_at_open: Rc::new(std::cell::Cell::new(0)),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
@@ -1385,6 +1419,30 @@ impl SchemaManagerState {
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ShuangpinLayout);
         }
+        // 辅助码：**只在方案声明了辅助码表时**建节。
+        //
+        // 判据是 `[engine.aux_code].files` 非空，不是引擎类型——「这个方案用哪张辅助码表」
+        // 是方案作者的声明（全拼配笔画、双拼配小鹤形码），没声明就意味着这个方案压根没有
+        // 可用的表，给它一个开关只会让人开了发现没反应。
+        // ⚠️ `files` 非空 ≠ 功能开启，那是本节这个开关的事，见 `AuxCodeSpec` 的文档。
+        {
+            let cfg = self.settings_cfg.borrow();
+            let has_table = cfg
+                .pointer("/engine/aux_code/files")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| !a.is_empty());
+            if has_table {
+                let idx = aux_code_idx(
+                    cfg.pointer("/engine/aux_code/enabled")
+                        .and_then(|v| v.as_bool()),
+                );
+                drop(cfg);
+                self.settings_aux_idx.set(idx);
+                self.settings_aux_at_open.set(idx);
+                sections.push(SettingsSection::Divider);
+                sections.push(SettingsSection::AuxCode);
+            }
+        }
         // 码表配置：码表方案才有（含快符这类特殊方案——它们本质就是码表方案，
         // 只是靠引导键进入）。混输方案暂不给：它的码表部分与拼音部分怎么分账是另一件事，
         // core 侧 `effectiveCodetable` 也只对 codetable 类给出。
@@ -1568,6 +1626,21 @@ impl SchemaManagerState {
         // 全量重写 override，分两次提交会互相覆盖（后一次的基线里没有前一次的改动）。
         if self.settings_sa.is_dirty() {
             self.settings_sa.apply(&mut cfg);
+            cfg_changed = true;
+        }
+
+        // 辅助码方案级覆盖：与其余各节写进**同一份 cfg**，理由同上。
+        // 只在本节出现过（`at_open` 被播种过）且档位变了时才写——否则给没有辅助码表的方案
+        // 也塞一个 `engine.aux_code` 段，那会让 `json_diff` 认定方案文件缺这个键，把整份
+        // 快照写进 override。
+        if self.settings_aux_idx.get() != self.settings_aux_at_open.get()
+            && cfg.pointer("/engine/aux_code/files").is_some()
+        {
+            set_json_path(
+                &mut cfg,
+                &["engine", "aux_code", "enabled"],
+                aux_code_value(self.settings_aux_idx.get()),
+            );
             cfg_changed = true;
         }
 
@@ -3324,6 +3397,44 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .child(Element::dropdown(labels, state.settings_layout).width(170)),
                 )
         }
+        SettingsSection::AuxCode => {
+            // 关闭态的说明随全局基线而变——「跟随全局」到底是开还是关，用户在这一屏看不到
+            // 全局页，不写清就得来回切页确认。
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(crate::manifest::dialog_group_header("辅助码"))
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(12)
+                        .child(
+                            Element::label("本方案启用辅助码")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(
+                            Element::segmented(
+                                AUX_CODE_MODES.iter().map(|s| s.to_string()).collect(),
+                                state.settings_aux_idx,
+                            )
+                            .width(210),
+                        ),
+                )
+                .child(
+                    Element::label(
+                        "打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配。",
+                    )
+                    .font_size(11.5)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(2),
+                )
+        }
         SettingsSection::CodeTable => {
             // 总开关 + **内联**的具体设置（勾掉即整片折叠），而不是「勾选 + 打开子对话框」。
             //
@@ -4303,6 +4414,32 @@ mod overlay_tests {
 mod section_build_tests {
     use super::*;
 
+    /// ★★ 辅助码的「跟随全局」必须落成 **null**，不是 false。
+    ///
+    /// core 的 `json_to_toml` 跳过 null ⇒ 该键不进 override ⇒ 取值回落全局基线。写 false
+    /// 的话就成了「显式关闭本方案」——用户明明选的是「跟随」，全局开了这个方案却不跟，
+    /// 而且从配置文件上看不出是谁写的。
+    #[test]
+    fn aux_code_follow_global_writes_null_not_false() {
+        assert_eq!(aux_code_value(0), Value::Null, "跟随全局必须写 null");
+        assert_eq!(aux_code_value(1), json!(true));
+        assert_eq!(aux_code_value(2), json!(false));
+        // 越界回落**跟随**而不是钳到末项：钳会把「关闭」塞给一个没选过的方案。
+        // 与 `overlay_layout_value` 的同类处置同口径。
+        assert_eq!(aux_code_value(99), Value::Null);
+    }
+
+    /// tri-state 三档往返：读出来的档位写回去必须是同一个值。
+    #[test]
+    fn aux_code_tri_state_round_trips() {
+        for (v, idx) in [(None, 0), (Some(true), 1), (Some(false), 2)] {
+            assert_eq!(aux_code_idx(v), idx, "{v:?} 应落在第 {idx} 档");
+            let back = aux_code_value(idx);
+            let back = if back.is_null() { None } else { back.as_bool() };
+            assert_eq!(back, v, "第 {idx} 档写回后应仍是 {v:?}");
+        }
+    }
+
     /// 每个配置节都要能**构建出来**而不 panic。
     ///
     /// ★ 这条测的不是布局对不对，而是链式 API 有没有用错对象：windui 的 `.small()`
@@ -4349,6 +4486,7 @@ mod section_build_tests {
             Header,
             EntryKeys,
             ShuangpinLayout,
+            AuxCode,
             CodeTable,
             Overlay,
             ExtensionDicts,
@@ -4372,6 +4510,7 @@ mod section_build_tests {
             SettingsSection::Header,
             SettingsSection::EntryKeys,
             SettingsSection::ShuangpinLayout,
+            SettingsSection::AuxCode,
             SettingsSection::CodeTable,
             SettingsSection::Overlay,
             SettingsSection::ExtensionDicts,

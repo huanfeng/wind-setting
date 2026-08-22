@@ -483,6 +483,30 @@ type = "toggle"
 label = "允许全拼输入"
 hint = "双拼方案下也能按全拼打字，如 zaijian → 再见。对全拼方案无影响"
 
+# 辅助码：与「双拼」同理常驻可见——enabled_when 只能比较配置键，表达不出「当前方案是
+# 哪种」，而这里的 enabled 本就是**全局基线**，方案段 [engine.aux_code] 的 tri-state 覆盖
+# 才是那个方案的真开关（「双拼开、全拼关」正是靠它表达）。
+[[items]]
+key = "schema.pinyin.aux_code.enabled"
+group = "schema"
+section = "候选行为"
+subsection = "辅助码"
+type = "toggle"
+label = "启用辅助码"
+hint = "打出候选后按触发键，用字形码进一步筛选；触发键需在按键设置里另配"
+
+[[items]]
+key = "schema.pinyin.aux_code.max_phrase_len"
+group = "schema"
+section = "候选行为"
+subsection = "辅助码"
+type = "number"
+label = "参与筛选的最大词长"
+hint = "超过这个字数的词组不参与筛选；0 = 不限。单字始终参与"
+min = 0
+max = 20
+enabled_when = "schema.pinyin.aux_code.enabled == true"
+
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
 [[items]]
 key = "schema.pinyin.fuzzy.enabled"
