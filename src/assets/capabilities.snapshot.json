@@ -502,7 +502,7 @@
       ]
     },
     {
-      "default": "commit",
+      "default": "clear",
       "key": "input.punct_on_empty_behavior",
       "type": "enum",
       "values": [
