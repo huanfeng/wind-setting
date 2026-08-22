@@ -1576,7 +1576,8 @@ impl AppState {
         // ⛔ 曾经是 `Config::from_value({})`（纯 L1、未折算），两处都错：顶码上屏这类
         // 出厂经 L2 置开的项会被误关，而引导键类字段读的 `keys.key_actions` 恒为空
         // ⇒ 快捷输入的 `;` 一恢复就没了（清空即禁用）。见 [`core_defaults_config`]。
-        let def = crate::manifest::core_defaults_config();
+        let seed = crate::manifest::key_action_default_bindings(self);
+        let def = crate::manifest::core_defaults_config(&seed);
         let loaders = self.fields.loaders.borrow();
         let mut n = 0usize;
         for g in self.current_tab_groups() {

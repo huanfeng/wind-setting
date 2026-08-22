@@ -1591,8 +1591,9 @@ pub fn build_scheme_config_button(
             }
         }
     }
+    let seed = key_action_default_bindings(state);
     let reset_fn: Box<dyn Fn() + 'static> = Box::new(move || {
-        let def_cfg = core_defaults_config();
+        let def_cfg = core_defaults_config(&seed);
         let ld = fields.loaders.borrow();
         for k in &reset_keys {
             if let Some(loader) = ld.get(k) {
@@ -1871,44 +1872,72 @@ fn dialog_extra_keys(state: &AppState, host_key: &str) -> Vec<String> {
 ///   拼音自动学习等键的出厂值经 `data/config.toml`（L2）置开，纯 L1 会把它们**误关**。
 ///   core 的 `config.getDefaults` 正是为此从纯 L1 改成 `system_preset_value` 的
 ///   （见 wind-rpc `dispatch.rs` 那段注释），而「恢复本页」当时漏改。
-/// - ⛔ **必须 `normalize()`**。五处 `trigger_keys` 的出厂值住在**被折算的那一侧**
-///   （`schema.mix_modes[].trigger_keys` / `input.temp_pinyin.trigger_keys`），而引导键类
-///   字段的 loader 读的是折算后的 `keys.key_actions`——不折算那张表恒为 `{}`，恢复后
-///   快捷输入的 `;`、临拼的 `` ` `` 一并消失，而**清空即禁用**。
-///   `normalize` 是零 IO、幂等、纯内存的，在这里跑是安全的。
-pub(crate) fn core_defaults_config() -> Config {
+/// - ⛔ **必须把引导键的出厂绑定补进 `keys.key_actions`**。五处 `trigger_keys` 的出厂值
+///   住在**被折算的那一侧**（`schema.mix_modes[].trigger_keys` /
+///   `input.temp_pinyin.trigger_keys`），core 的 `normalize()` 会把它们折算进
+///   `keys.key_actions`，而 `getDefaults` 返回的是**未折算**的系统预置 ⇒ 那张表恒为 `{}`。
+///   引导键类字段的 loader 读的正是它，不补的话恢复后快捷输入的 `;`、临拼的 `` ` ``
+///   一并消失，而**清空即禁用**。见 [`seed_key_action_defaults`]。
+/// ⚠️ `seed` 由 [`key_action_default_bindings`] **提前算好**再传进来：本函数的调用方多为
+/// `'static` 闭包，握不住 `&AppState`；而这份绑定只依赖清单与 capability，二者在进程内
+/// 不变，提前算与延后算等价。
+pub(crate) fn core_defaults_config(seed: &[(String, String)]) -> Config {
     let v = crate::rpc::call_core("config.getDefaults", &serde_json::json!({}))
         .unwrap_or(Value::Object(serde_json::Map::new()));
-    normalize_defaults(v)
+    let mut cfg = Config::from_value(v);
+    let mut map: serde_json::Map<String, Value> = cfg
+        .get_path(KEY_ACTIONS_PATH)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    for (k, verb) in seed {
+        map.insert(k.clone(), Value::String(verb.clone()));
+    }
+    cfg.set_path(KEY_ACTIONS_PATH, Value::Object(map));
+    cfg
 }
 
-/// [`core_defaults_config`] 的纯逻辑部分（不含 RPC），供测试直接喂值。
+/// 引导键类项的**出厂绑定**（键名 → 动词），供 [`core_defaults_config`] 补进 `keys.key_actions`。
 ///
-/// 折算借 **core 自己的 `Config::normalize`** 跑：设置端的 `Config` 只是 JSON 包装，
-/// 在这里另写一份折算规则就是「同一条规则两处实现」，必然漂移。
-pub(crate) fn normalize_defaults(v: Value) -> Config {
-    let folded = match serde_json::from_value::<wind_config::config::Config>(v.clone()) {
-        Ok(mut core) => {
-            core.normalize();
-            serde_json::to_value(&core).unwrap_or_else(|e| {
-                // 折算成功却序列化不回来：宁可用未折算的原值，也不要给出半截配置。
-                tracing::warn!("出厂配置折算后序列化失败，退回未折算值：{e}");
-                v.clone()
-            })
+/// ⛔ **这不是在重写 core 的折算规则**。设置端刻意不把 `wind-config` 作生产依赖
+/// （Cargo.toml 里它在 `[dev-dependencies]`，注释写着「仅测试用…不引入新的路径前提」），
+/// 所以跑不了 core 的 `normalize()`；而照抄一份折算规则是「同一条规则两处实现」，必然漂移。
+///
+/// 这里用的是**清单自己的声明**——每个 `dialog_button_key_action` 项的 `key`（出厂值在
+/// capability 里的位置）与 `verb`（绑到哪个动词）。那个映射本来就由设置端定义，不是从
+/// core 抄来的第二份真相。
+pub(crate) fn key_action_default_bindings(state: &AppState) -> Vec<(String, String)> {
+    key_action_default_bindings_from(&state.manifest, &state.capabilities)
+}
+
+/// 同上，但直接吃清单与 capability——`AppState` 造不出来的地方（测试）走这个。
+pub(crate) fn key_action_default_bindings_from(
+    m: &Manifest,
+    caps: &crate::capabilities::Capabilities,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for key in m.order.iter() {
+        let Some(it) = m.get(key) else {
+            continue;
+        };
+        if it.typ != "dialog_button_key_action" {
+            continue;
         }
-        Err(e) => {
-            // 静默退回等于 bug 原样复发（引导键恢复后全空），必须留痕。
-            tracing::warn!("出厂配置无法反序列化为 core Config，跳过折算：{e}");
-            v
+        let Some(verb) = it.verb.as_deref() else {
+            continue;
+        };
+        for k in key_action_defaults_from(&caps.default_for(&it.key), verb) {
+            out.push((k, verb.to_string()));
         }
-    };
-    Config::from_value(folded)
+    }
+    out
 }
 
 fn reset_to_core_defaults(state: &AppState, keys: Vec<String>) -> Box<dyn Fn() + 'static> {
     let fields = state.fields.clone();
+    let seed = key_action_default_bindings(state);
     Box::new(move || {
-        let def_cfg = core_defaults_config();
+        let def_cfg = core_defaults_config(&seed);
         let ld = fields.loaders.borrow();
         for k in &keys {
             if let Some(loader) = ld.get(k) {
@@ -3960,28 +3989,38 @@ mod tests {
     /// 消失——而**清空 trigger_keys 正是 core 认定的「禁用快捷输入」**，一个写着「恢复」
     /// 的按钮把功能关掉了。
     ///
-    /// 本测试把 bug 与修复摆在一起看：同一份出厂值，不折算时 `key_actions` 就是空的。
+    /// 本测试把 bug 与修复摆在一起看。
     #[test]
-    fn reset_defaults_must_be_normalized_to_expose_trigger_keys() {
-        // 折算前：出厂值住在 `schema.mix_modes[].trigger_keys` / `input.temp_pinyin.trigger_keys`，
-        // 而引导键类字段的 loader 读的是 `keys.key_actions`——那里还是空的。
+    fn reset_defaults_seed_binds_factory_trigger_keys() {
+        // bug 的成因：出厂值住在 `schema.mix_modes[].trigger_keys` 这类**被折算侧**，
+        // 而 `getDefaults` 返回未折算的系统预置 ⇒ loader 读的 `keys.key_actions` 是空的。
         let raw = Config::from_value(serde_json::json!({}));
         assert!(
             key_action_keys_of(&raw, "mix:quick_mix").is_empty(),
-            "未折算时 key_actions 为空——这正是「一恢复就没了」的成因"
+            "未补绑定时 key_actions 为空——这正是「一恢复就没了」的成因"
         );
-        // 折算后：出厂绑定就位。
-        let def = normalize_defaults(serde_json::json!({}));
-        assert_eq!(
-            key_action_keys_of(&def, "mix:quick_mix"),
-            vec!["semicolon".to_string()],
-            "折算后快捷输入应绑回分号"
+
+        // 修复：按清单声明把出厂绑定补回去。
+        let seed = key_action_default_bindings_from(
+            &Manifest::from_embedded(),
+            &crate::capabilities::Capabilities::from_embedded(),
         );
-        assert_eq!(
-            key_action_keys_of(&def, "temp_pinyin"),
-            vec!["backtick".to_string()],
-            "折算后临时拼音应绑回反引号"
+        assert!(
+            seed.contains(&("semicolon".to_string(), "mix:quick_mix".to_string())),
+            "快捷输入应绑回分号，实际 {seed:?}"
         );
+        assert!(
+            seed.contains(&("backtick".to_string(), "temp_pinyin".to_string())),
+            "临时拼音应绑回反引号，实际 {seed:?}"
+        );
+
+        // ⚠️ 出厂绑定之间不得撞键：补进 map 时是后写覆盖先写，而 core 的折算是**先到先得**，
+        // 撞了两边胜者相反。出厂值不撞，这条只是把前提钉住。
+        let mut ks: Vec<&String> = seed.iter().map(|(k, _)| k).collect();
+        let n = ks.len();
+        ks.sort();
+        ks.dedup();
+        assert_eq!(ks.len(), n, "出厂绑定不应撞键，实际 {seed:?}");
     }
 
     /// ★ 「恢复默认」也不能用**纯 L1**：出厂经 `data/config.toml`（L2）置开的项会被误关。
