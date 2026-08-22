@@ -362,17 +362,47 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
     out
 }
 
+/// 序号动词的中文名——**措辞的单一出处**。
+///
+/// 选择器（[`session_verb_categories`]）与读取侧（[`session_verb_label`]）都从这里取：
+/// 两边各自抄一份的话，改了措辞只改一处，表现是同一条绑定在选择对话框里叫一个名、在按键
+/// 总览里叫另一个名。本仓在键名显示上已经栽过一次同形的问题。
+fn ordinal_label(prefix: &str, n: u8) -> Option<String> {
+    match prefix {
+        "select_candidate:" => Some(format!("选中第 {n} 个候选")),
+        "select_char:" => Some(format!("以词定字：取第 {n} 字")),
+        _ => None,
+    }
+}
+
 /// 会话态（`session_actions`）的功能分类。
 ///
-/// 序号档从 core 的值域全量给出（`SelectCandidate` / `SelectChar` 都是 1..=9）。此前只给
-/// 2、3 是因为「全列出来会把下拉撑成一长条」——分了类之后这个理由不成立，而截断的代价
-/// 是「想把某个键配成第 5 候选」在界面上根本表达不出来。
+/// 两个序号档的上限**不同**，这个不同是有意的：
+///
+/// - 选词 `select_candidate:` 给全 1..=9——一页真有 9 个候选。此前只给 2、3 是因为
+///   「全列出来会把下拉撑成一长条」，分了类之后这个理由不成立，而截断的代价是「想把某个
+///   键配成第 5 候选」在界面上根本表达不出来。
+/// - 以词定字 `select_char:` 只到 4。core 的 `SessionAction::parse` 认 1..=9，但那是
+///   **解析器的宽容度**（与 `select_candidate:` 共用同一句 `Ok(n @ 1..=9)` 守卫），不是
+///   被设计过的能力：三个既有键组 `comma_period` / `minus_equal` / `brackets` 经
+///   `select_char_group_binds` 折算出的清一色只有 `SelectChar(1)` 与 `(2)`——以词定字在
+///   配置层面从来就是「取第一字 / 取第二字」这一对。
+///
+/// 放到 4 而不是照搬那 2 档：键组只给两档是**键位预算**所致（一组就两个键），不是语义
+/// 上限，而逐键指定不受这个约束，四字成语取第 3/4 字是真实场景（「守株待兔」取「待」）。
+/// 再往上则不然——`handle_select_char` 在 `char_index >= 词长` 时返回 None 转 overflow
+/// 策略，而中文候选绝大多数 2-4 字，配「取第 7 字」按下去**恒定**走 overflow，与「这个
+/// 键根本没绑上」完全同形，用户无从分辨。
+///
+/// ⚠️ 收窄的只是**写入侧**（选择器给不给配）。读取侧不能跟着收：用户手写的
+/// `select_char:7` core 照样执行，按键总览与值域守门仍按 core 的 1..=9 认全，否则那条
+/// 绑定会落到「显示原值」兜底上，总览里出现一行 `select_char:7`。
 pub fn session_verb_categories() -> Vec<VerbCategory> {
-    let ord = |prefix: &str, fmt: &dyn Fn(u8) -> String| -> Vec<Verb> {
-        (1..=9)
+    let ord = |prefix: &str, max: u8| -> Vec<Verb> {
+        (1..=max)
             .map(|n| Verb {
                 value: format!("{prefix}{n}"),
-                label: fmt(n),
+                label: ordinal_label(prefix, n).expect("序号前缀已在 ordinal_label 里登记"),
             })
             .collect()
     };
@@ -395,14 +425,8 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
                 })
                 .collect(),
         ),
-        VerbCategory::new(
-            "选择候选",
-            ord("select_candidate:", &|n| format!("选中第 {n} 个候选")),
-        ),
-        VerbCategory::new(
-            "以词定字",
-            ord("select_char:", &|n| format!("以词定字：取第 {n} 字")),
-        ),
+        VerbCategory::new("选择候选", ord("select_candidate:", 9)),
+        VerbCategory::new("以词定字", ord("select_char:", 4)),
         VerbCategory::new(
             "编辑",
             vec![Verb {
@@ -429,11 +453,33 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
 
 /// 会话态功能值 → 中文名（供只读视图查）。未知值返回 `None`，由调用方兜底显示原值。
 pub fn session_verb_label(value: &str) -> Option<String> {
-    session_verb_categories()
+    if let Some(label) = session_verb_categories()
         .iter()
         .flat_map(|c| c.items.iter())
         .find(|v| v.value == value)
         .map(|v| v.label.clone())
+    {
+        return Some(label);
+    }
+    // ★★ 序号动词**不能只查分类表**：那张表是**选择器**的值域（以词定字只给到第 4 字，
+    // 见 `session_verb_categories`），而本函数服务的是**读取侧**——按键总览要显示用户手写
+    // 的、core 照样执行的 `select_char:7`。只查分类表的话它翻不出名字，落到「显示原值」
+    // 兜底上，总览里出现一行 `select_char:7`；同 `switch_schema:wubi86` 那次（见
+    // `keys_overview` 的 `global_only_verbs_are_named`）。
+    //
+    // 写入侧要窄（别让人配出按下去没反应的档位），读取侧要宽（core 认什么就得显示得出
+    // 什么）——两者要求相反，故值域在此**独立**按 core 的 1..=9 判，不复用分类表。
+    for prefix in ["select_candidate:", "select_char:"] {
+        if let Some(rest) = value.strip_prefix(prefix) {
+            return rest
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|n| (1..=9).contains(n))
+                .and_then(|n| ordinal_label(prefix, n));
+        }
+    }
+    None
 }
 
 // ───────────────────────────── 键值域 ─────────────────────────────
@@ -1393,22 +1439,30 @@ mod tests {
         assert_eq!(s.last().expect("至少有高级类").name, "高级");
     }
 
-    /// 会话态序号档必须给全 1..=9：截断的代价是「配成第 5 候选」在界面上表达不出来。
+    /// 两个序号档的上限**不同**，两边都要钉住——一样的写法很容易在后续维护里被「统一」
+    /// 成同一个数，而它们不同的理由各自独立（见 `session_verb_categories` 的文档）：
+    /// 选词 1..=9 是「一页真有 9 个候选」，以词定字 1..=4 是「第 5 字以上恒定落进
+    /// overflow，与没绑上同形」。
     #[test]
-    fn session_ordinal_verbs_cover_core_domain() {
+    fn session_ordinal_verbs_cover_intended_domain() {
         let cats = session_verb_categories();
-        for (name, prefix) in [
-            ("选择候选", "select_candidate:"),
-            ("以词定字", "select_char:"),
+        for (name, prefix, max) in [
+            ("选择候选", "select_candidate:", 9u8),
+            ("以词定字", "select_char:", 4u8),
         ] {
             let c = cats.iter().find(|c| c.name == name).expect(name);
             let vals: Vec<String> = c.items.iter().map(|v| v.value.clone()).collect();
-            let want: Vec<String> = (1..=9).map(|n| format!("{prefix}{n}")).collect();
-            assert_eq!(vals, want, "{name} 应覆盖 core 的 1..=9");
+            let want: Vec<String> = (1..=max).map(|n| format!("{prefix}{n}")).collect();
+            assert_eq!(vals, want, "{name} 的序号档应为 1..={max}");
         }
     }
 
     /// 会话态动词值必须都在 core `SessionAction` 的值域里（拼写守门）。
+    ///
+    /// ⚠️ 序号上界这里恒按 core 的 1..=9 判，**不跟着选择器的 1..=4 收窄**：本测断言的是
+    /// 「不超出 core 值域」，写入侧收窄后照样成立。改成等值比较就把两件事绑死了——以词定字
+    /// 给到第几档是产品取舍（`session_ordinal_verbs_cover_intended_domain` 管），core 认到
+    /// 第几档是拼写守门（本测管）。
     ///
     /// ⚠ 与 core 的 `SessionAction::parse` 是两份手写清单，没有编译期约束——本仓已有过
     /// 「两仓键名拼写不一致致静默不匹配」的现场。

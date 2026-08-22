@@ -218,17 +218,36 @@ mod tests {
         assert_eq!(o.rows.get()[0].action, "some_future_verb");
     }
 
-    /// 序号档现在是全量 1..=9，总览要认得出来（此前只认 2、3，第 7 候选显示成原值）。
+    /// 总览要认得出 core 值域内的**全部**序号档，**包括选择器不给配的那些**。
+    ///
+    /// 此前只认 2、3，第 7 候选显示成原值。现在还多一层：以词定字的选择器只给到第 4 字
+    /// （第 5 字以上按下去恒定走 overflow，见 `key_binding::session_verb_categories`），
+    /// 但 core 认 1..=9、用户手写的 `select_char:7` 照样执行——总览不认就会落到「显示原
+    /// 值」兜底上，出现一行 `select_char:7`。
+    ///
+    /// ★ 写入侧收窄时最容易顺手把读取侧一起收了（两者共用过同一张表），故**两个前缀**都
+    /// 钉在这里，其中 `select_char:7` 正是「选择器给不出、总览必须显示得出」的那一档。
     #[test]
     fn ordinal_verbs_are_named() {
         let o = KeysOverview::default();
         o.seed(
             &json!({ "keysOverview": [
                 { "key": "tab", "table": "session", "action": "select_candidate:7", "from": "global" },
+                { "key": "comma", "table": "session", "action": "select_char:7", "from": "global" },
             ]}),
             &[],
         );
-        assert_eq!(o.rows.get()[0].action, "选中第 7 个候选");
+        // 按内容查而不是按下标：`seed` 末尾对行排过序（先 session 后 key），下标断言会
+        // 随「换个键名」这种无关改动而红。
+        let labels: Vec<String> = o.rows.get().iter().map(|r| r.action.clone()).collect();
+        assert!(
+            labels.contains(&"选中第 7 个候选".to_string()),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"以词定字：取第 7 字".to_string()),
+            "{labels:?}"
+        );
     }
 
     /// ★ 全局层独有的动词（单向 `switch_schema:`）必须翻得出中文名。
