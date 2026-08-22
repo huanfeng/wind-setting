@@ -1191,6 +1191,31 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             json!({ "content": "# WindInput 用户数据文件\nwind_dict:\n  version: 1\n\n--- !phrases\nbj\t北京\t1000\t0\t1\n" })
         }
         "phrase.import" => json!({ "imported": 0, "skipped": 0 }),
+        // 短语分发格式预览。夹具覆盖四种行态：普通、命令、遮蔽系统短语，
+        // 以及带反斜杠笔误提示的——只给普通条目的话，提示行与遮蔽标注的
+        // 渲染路径在 mock 模式下永远走不到。
+        "phrase.previewImportText" => json!({
+            "title": "示例短语包",
+            "entries": [
+                { "line": 2, "code": "kx", "text": "(＾▽＾)", "status": "new",
+                  "hints": [], "error": null },
+                { "line": 3, "code": "jsb", "text": "$CC(\"记事本\", proc.run(\"notepad.exe\"))",
+                  "status": "new", "hints": [], "error": null },
+                { "line": 4, "code": "yx", "text": "example@example.com",
+                  "status": "shadowsSystem", "hints": [], "error": null },
+                { "line": 5, "code": "dk", "text": "$CC(\"打开\", open(\"D:notes\"))",
+                  "status": "new",
+                  "hints": [{ "kind": "controlCharInPath", "func": "open",
+                              "message": "open 的路径里出现了换行或制表符，通常是反斜杠只写了一个" }],
+                  "error": null }
+            ],
+            "problems": [],
+            "counts": { "new": 3, "existsUser": 0, "shadowsSystem": 1, "skippedLines": 0 },
+        }),
+        "phrase.importText" => json!({
+            "added": 0, "skippedExisting": 0, "shadowedSystem": 0,
+            "skippedInvalid": 0, "skippedUnselected": 0,
+        }),
         "phrase.resetSystem" => json!({ "ok": true, "changed": 0 }),
         // 快捷输入格式表。夹具刻意覆盖四种状态：普通行、被停用的行（`moveIndex` 为 null，
         // 调序按钮应置灰）、调整过的行（`adjusted` 为真，「恢复此条」才可点）、以及**用户

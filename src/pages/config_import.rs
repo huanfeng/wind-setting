@@ -27,6 +27,7 @@ use windui::prelude::*;
 
 use crate::dialogs::schema_manager::SchemaManagerState;
 use crate::pages::dict::reactive::Feedback;
+use crate::pages::phrase_import::{self, PhraseRow};
 use crate::rpc;
 use crate::state::AppState;
 use crate::widgets::{flat_panel, section, setting_row};
@@ -93,6 +94,18 @@ pub struct ConfigPatchPreview {
     pub info: PackageInfo,
 }
 
+/// 当前预览的内容类型——决定「应用」走哪条 RPC。
+///
+/// 由 [`ConfigImportState::validate`] 按内容侦测后设定，**只有校验成功才会改动**：
+/// 校验失败恒回落 [`ImportKind::Fragment`]，免得上一次的短语预览留着旧类型，让
+/// 「应用」把一段配置片段送进短语管线。
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportKind {
+    #[default]
+    Fragment,
+    Phrase,
+}
+
 /// 配置导入状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
 pub struct ConfigImportState {
@@ -117,12 +130,13 @@ pub struct ConfigImportState {
     /// （另一半是「文本未改动」，见 [`can_apply`]）。
     pub apply_ok: Signal<bool>,
     pub feedback: Feedback,
-}
 
-impl Default for ConfigImportState {
-    fn default() -> Self {
-        Self::new()
-    }
+    // ── 短语分发格式（`wind:p1`）那一支，见 `phrase_import` ──
+    /// 当前预览的内容类型。
+    pub kind: Signal<ImportKind>,
+    pub phrase_rows: Signal<Vec<PhraseRow>>,
+    /// 解析跳过的行，多行合成一段回显；空 = 无。
+    pub phrase_problems: Signal<String>,
 }
 
 impl ConfigImportState {
@@ -138,6 +152,9 @@ impl ConfigImportState {
             error_msg: signal(String::new()),
             apply_ok: signal(false),
             feedback: signal(None),
+            kind: signal(ImportKind::default()),
+            phrase_rows: signal(Vec::new()),
+            phrase_problems: signal(String::new()),
         }
     }
 
@@ -164,6 +181,11 @@ impl ConfigImportState {
         self.set_info(&PackageInfo::default());
         self.apply_ok.set(false);
         self.validated_text.set(String::new());
+        // 短语那一支同生同灭。`include_high_risk` **每次都重置为关**：上一段文本里
+        // 勾过的「我了解风险」绝不能延用到下一段——那正是一键装进恶意短语的路径。
+        self.kind.set(ImportKind::Fragment);
+        self.phrase_rows.set(Vec::new());
+        self.phrase_problems.set(String::new());
     }
 
     /// 说明区块取值（空 PackageInfo 即清空，区块随之不占位）。
@@ -199,6 +221,11 @@ impl ConfigImportState {
     ///   RPC 整体失败走 [`Self::fail`]。
     pub fn validate(&self, schema_mgr: &SchemaManagerState) {
         let text = self.text.get();
+        // 短语分发格式先判：`wind:p1` 前缀匹配零歧义，而且它根本不是 TOML——
+        // 让它走下面两条 TOML 管线只会得到一句指错方向的「解析失败」。
+        if phrase_import::is_phrase_text(&text) {
+            return self.validate_phrase(text);
+        }
         match rpc::call_core("scheme.previewImportText", &json!({ "text": text })) {
             Ok(v) => {
                 self.clear_validation();
@@ -231,6 +258,31 @@ impl ConfigImportState {
         }
     }
 
+    /// 「校验预览」的短语分支：`phrase.previewImportText` → 分组预览。
+    ///
+    /// 与片段分支同样的门控——记下 `validated_text`，文本一改动「应用」即失效。
+    fn validate_phrase(&self, text: String) {
+        match rpc::call_core("phrase.previewImportText", &json!({ "content": text })) {
+            Ok(v) => {
+                let preview = phrase_import::parse_phrase_preview(&v);
+                self.clear_validation();
+                let importable = preview.has_importable();
+                self.error_msg.set(if importable {
+                    String::new()
+                } else {
+                    "没有可导入的短语".to_string()
+                });
+                self.info_title.set(preview.title.clone());
+                self.phrase_problems.set(preview.problems.join("\n"));
+                self.phrase_rows.set(preview.rows);
+                self.kind.set(ImportKind::Phrase);
+                self.apply_ok.set(importable);
+                self.validated_text.set(text);
+            }
+            Err(e) => self.fail(format!("短语解析失败: {e}")),
+        }
+    }
+
     /// 读剪贴板填入文本区。走 `EventCtx::clipboard_get`（windui 平台剪贴板，无新依赖）。
     pub fn read_clipboard(&self, ctx: &mut EventCtx) {
         match ctx.clipboard_get() {
@@ -242,12 +294,32 @@ impl ConfigImportState {
         }
     }
 
-    /// 应用：把（与校验原文逐字相同的）文本区内容提交 `config.applyPatch`。
-    /// 成功关对话框并 toast，返回响应里的 `written`（**落盘后**的最终键值）供调用方
-    /// 回灌配置镜像；失败对话框内回显（core 的错误串逐键点名，用户就地改好后重新校验）。
+    /// 应用短语导入。
+    ///
+    /// 不传 `accept`——core 缺省导入全部可导入条目，语法错的那几条它自己拦。
+    fn apply_phrases(&self, text: &str) {
+        match phrase_import::apply_phrase_import(text) {
+            Ok(msg) => {
+                self.visible.set(false);
+                self.notify(ToastKind::Success, msg);
+            }
+            Err(e) => self.error_msg.set(e),
+        }
+    }
+
+    /// 应用：把（与校验原文逐字相同的）文本区内容提交 `config.applyPatch`（短语走
+    /// [`Self::apply_phrases`]）。成功关对话框并 toast，返回响应里的 `written`
+    /// （**落盘后**的最终键值）供调用方回灌配置镜像；失败对话框内回显（core 的错误串
+    /// 逐键点名，用户就地改好后重新校验）。
     pub fn do_apply(&self) -> Option<Vec<(String, Value)>> {
         let text = self.text.get();
         if !can_apply(self.apply_ok.get(), &text, &self.validated_text.get()) {
+            return None;
+        }
+        // 短语没有配置键要回灌，恒返回 None——调用方拿它去回填配置镜像，给它短语
+        // 结果是串线。
+        if self.kind.get() == ImportKind::Phrase {
+            self.apply_phrases(&text);
             return None;
         }
         match rpc::call_core("config.applyPatch", &json!({ "text": text })) {
@@ -677,12 +749,15 @@ pub fn build_config_import_dialog(
 
     // 可编辑文本区：片段全文可见、可就地修改（等宽字体便于对齐 TOML；字体缺失
     // 时 windui 回退系统默认，不报错）。
-    let editor = Element::text_input(text_sig, "在此粘贴或编辑配置片段（TOML）")
-        .multiline()
-        .wrap(true)
-        .font_family("Consolas")
-        .width_match()
-        .height(180);
+    let editor = Element::text_input(
+        text_sig,
+        "在此粘贴配置片段（TOML）或短语文本（wind:p1 开头）",
+    )
+    .multiline()
+    .wrap(true)
+    .font_family("Consolas")
+    .width_match()
+    .height(180);
 
     // 片段自带的说明（§2.3：片段导入对话框在预览列表上方显示）。校验前 / 片段没带
     // 说明时整块不占位。
@@ -690,18 +765,46 @@ pub fn build_config_import_dialog(
 
     // 预览列表（动态内容一律走 Signal，构建期读取会被永久冻结）。
     let list = Element::host_signal(rows_sig, |row: PreviewRow| preview_row_element(&row));
-    let rows_empty = move || rows_sig.get().is_empty();
+    let phrase_rows_probe = import.phrase_rows;
+    // 两条管线各有一份行列表，占位提示要等**两边都空**才显示——只看片段那份的话，
+    // 短语预览出来后占位会挂在列表上方。
+    let rows_empty = move || rows_sig.get().is_empty() && phrase_rows_probe.get().is_empty();
     let placeholder = Element::label("点击「校验预览」查看逐项变更")
         .font_size(12.5)
         .fg_role(Role::TextMuted)
         .width_match()
         .padding_xy(10, 8)
         .visible_when(move || rows_empty() && err_sig.get().is_empty());
+    // 短语预览：与片段列表共用同一个滚动框，按 kind 二选一显示。
+    let kind_sig = import.kind;
+    let phrase_rows_sig = import.phrase_rows;
+    let is_phrase = move || kind_sig.get() == ImportKind::Phrase;
+    let phrase_list = Element::host_signal(phrase_rows_sig, |row: PhraseRow| {
+        phrase_import::phrase_row_element(&row)
+    })
+    .visible_when(is_phrase);
+    let list = list.visible_when(move || !is_phrase());
+
     let preview = Element::scroll()
         .width_match()
         .height(150)
         .border_role(Role::Divider, 1)
-        .child(Element::col().width_match().child(placeholder).child(list));
+        .child(
+            Element::col()
+                .width_match()
+                .child(placeholder)
+                .child(list)
+                .child(phrase_list),
+        );
+
+    // 跳过的行（缺分隔符、编码非法…）：只回显不参与导入。
+    let problems_sig = import.phrase_problems;
+    let problems_line = Element::label_signal(problems_sig)
+        .font_size(11.5)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(4)
+        .visible_when(move || !problems_sig.get().is_empty());
 
     // 错误回显（整体解析失败 / 应用失败）。
     let error_line = Element::label_signal(err_sig)
@@ -759,6 +862,7 @@ pub fn build_config_import_dialog(
         )
         .child(info)
         .child(preview)
+        .child(problems_line)
         .child(error_line)
         .child(
             Element::row()

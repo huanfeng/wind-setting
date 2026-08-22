@@ -14,6 +14,7 @@ pub mod backup;
 pub mod config_import;
 pub mod dict;
 pub mod integration;
+pub mod phrase_import;
 pub mod stats;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
