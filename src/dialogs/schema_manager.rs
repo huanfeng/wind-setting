@@ -149,6 +149,28 @@ pub enum SettingsSection {
 pub const SETTINGS_TABS: [&str; 2] = ["基本配置", "方案自定义"];
 
 impl SettingsSection {
+    /// 全部分节，供 `every_settings_section_builds_without_panicking` 遍历。
+    ///
+    /// ⚠️ **新增变体后必须加进这里**——这份列表是手写的，编译器不会提醒。
+    /// 漏加的后果不是「少测一节」，而是那一节的 `.small()` / `.weight()` 之类误用
+    /// 完全没有防护网：windui 的链式 API 是**运行时 downcast**，`.small()` 落到
+    /// 非 Button/CheckBox/Switch 的 widget 上会在 debug 构建下当场 panic，
+    /// 而编译与其余测试全绿（本仓已因此崩过一次）。
+    ///
+    /// 放在 enum 定义旁边而不是测试里，就是为了让新增变体的人看得见它。
+    pub const ALL: &'static [Self] = &[
+        Self::Header,
+        Self::EntryKeys,
+        Self::ShuangpinLayout,
+        Self::AuxCode,
+        Self::CodeTable,
+        Self::Overlay,
+        Self::Behavior,
+        Self::ExtensionDicts,
+        Self::Divider,
+        Self::Empty,
+    ];
+
     /// 本节归到哪个 TAB。
     ///
     /// 分组判据是**用户想做什么**，不是数据落在哪个文件：
@@ -4832,17 +4854,9 @@ mod section_build_tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let state = SchemaManagerState::new();
-        for kind in [
-            SettingsSection::Header,
-            SettingsSection::EntryKeys,
-            SettingsSection::ShuangpinLayout,
-            SettingsSection::AuxCode,
-            SettingsSection::CodeTable,
-            SettingsSection::Overlay,
-            SettingsSection::ExtensionDicts,
-            SettingsSection::Divider,
-            SettingsSection::Empty,
-        ] {
+        // 遍历 `SettingsSection::ALL`：列表挂在 enum 定义旁边，新增变体时看得见。
+        // ⚠️ 它仍是手写的——之前这份列表就写在这里，`Behavior` 节加进来时漏掉了整整一轮。
+        for &kind in SettingsSection::ALL {
             let _ = build_section(kind, &state);
         }
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
