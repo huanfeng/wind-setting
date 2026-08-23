@@ -1753,6 +1753,27 @@ impl AppState {
             items.len(),
             items.iter().map(|it| it.key.as_str()).collect::<Vec<_>>()
         );
+        // 实测「内存表 5->4、writer 写回 4 条，diff 仍 0 项」，且新增绑定同样 0 项 ⇒
+        // 差异根本没进到比较里。三个值足以定位：base/current 各自的键集是否真的不同，
+        // 以及这个键有没有被当成 map 整体比较（不在 map_keys 里就会下钻，而下钻
+        // **只遍历 current 的键**，删除因此永远不可见）。
+        {
+            let ka_of = |c: &Config| -> Vec<String> {
+                c.get_object("keys.key_actions")
+                    .map(|o| o.keys().cloned().collect())
+                    .unwrap_or_default()
+            };
+            let atomic = self
+                .capabilities
+                .map_keys()
+                .iter()
+                .any(|k| k == "keys.key_actions");
+            tracing::debug!(
+                "save diff 诊断: base={:?} current={:?} atomic={atomic}",
+                ka_of(&self.base_config),
+                ka_of(&self.current_config),
+            );
+        }
         if items.is_empty() {
             // side 有改动时不能说「没有变更」——方案配置刚刚才落盘。
             self.feedback.set(Some(if side_changed {
