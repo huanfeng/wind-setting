@@ -1091,10 +1091,11 @@ group = "input"
 section = "按键行为"
 type = "select"
 label = "空码时标点键功能"
-hint = "无候选词时按标点符号键怎么处理编码；标点本身照常上屏"
+hint = "无候选词时按标点符号键怎么处理编码；前两项标点本身照常上屏"
 options = [
   { value = "commit", label = "上屏编码" },
   { value = "clear", label = "清空编码" },
+  { value = "clear_no_input", label = "清空编码，标点也不上屏" },
 ]
 
 [[items]]

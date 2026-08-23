@@ -507,7 +507,8 @@
       "type": "enum",
       "values": [
         "commit",
-        "clear"
+        "clear",
+        "clear_no_input"
       ]
     },
     {
