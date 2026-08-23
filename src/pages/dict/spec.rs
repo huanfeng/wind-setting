@@ -402,6 +402,12 @@ pub struct OpFlags {
     /// windui 没有拖拽重排控件，故用一对小按钮；点击时传的是
     /// [`WordRow::move_index`]（候选内下标）而不是行号。
     pub reorder: bool,
+    /// 是否支持「复制为一键导入文本」（短语两级）。
+    ///
+    /// 只对短语开：这个格式（`wind:p1`，见 `pages::phrase_import`）只承载 `code` 与
+    /// `text` 二元组，词库/词频/候选调整那几类的 weight、position、type、cand_id 全部
+    /// 表达不了——给它们开等于生成一串**看着像、装进去缺一半**的文本。
+    pub share_text: bool,
     /// 是否支持「恢复此条默认」（快捷输入：清掉这一条的调序与停用）。
     ///
     /// 与 `reset_default`（整类/整表恢复）分开：出厂条目改坏了，用户想恢复的通常是
@@ -427,6 +433,7 @@ impl OpFlags {
         claim_as_user: false,
         reorder: false,
         reset_entry: false,
+        share_text: false,
     };
 }
 
@@ -601,6 +608,7 @@ const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
         reset_default: true,
         view: true,
         claim_as_user: true,
+        share_text: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -627,6 +635,7 @@ const SPEC_PHRASE_USER: CategorySpec = CategorySpec {
         set_enabled: true,
         import: true,
         export: true,
+        share_text: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {

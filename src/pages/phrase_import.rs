@@ -1,4 +1,8 @@
-//! 短语逐行分发格式（`wind:p1`）的导入预览与应用。
+//! 短语逐行分发格式（`wind:p1`）的**出入口两侧**：导入的预览与应用，以及从一条已有短语
+//! 反向生成同格式文本（词库页右键「复制为一键导入文本」）。
+//!
+//! 两侧同处一个模块是为了让 [`MARKER_PREFIX`] 只有一份——它是跨仓契约，抄成两份之后
+//! 漂移的症状是「复制出来的文本别人导不进去」，而失败点离改动处隔着一次分享。
 //!
 //! 与配置片段**共用同一个导入对话框**——「入口多通路一条」：用户从群里复制一段文本
 //! 粘进来，不该先被问「这是配置还是短语」。`ConfigImportState::validate` 按内容分派，
@@ -32,6 +36,36 @@ pub fn is_phrase_text(text: &str) -> bool {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .is_some_and(|l| l.starts_with(MARKER_PREFIX))
+}
+
+/// 出口写死的格式版本。core 的 `SUPPORTED_VERSION` 是权威上限，但「宽容只给过去、
+/// 不给未来」是对**读**的一侧说的——写的一侧该挑收得最广的那个版本，而不是最新的：
+/// 拿旧版应用的人收到 `wind:p2` 会被硬拒绝，而这条短语本可以用 v1 表达。
+const SHARE_VERSION: u32 = 1;
+
+/// 一条短语 →「一键导入文本」。`None` = 这条生成不出合法文本（判据见下）。
+///
+/// `text` 必须是**分发域**文本，也就是设置页列表里那一串原样。core 的 `phrase.listUser`
+/// 出口已过 `ui_text`（即 `wdict::escape_text_field`），而 `phrase.previewImportText`
+/// 回显的也是同一串——两域同形，故此处**一个字符都不再转义**。多转一层的症状是命令
+/// 短语里的反斜杠每分享一轮就翻一倍，对方那边路径静默损坏。
+///
+/// 生成不了就拒绝、不勉强拼一串出来，是因为「行内零解析」把全部结构压在两个位置上，
+/// 任一位置被污染都会让整行在对方那边失效：
+/// - code 含空白 → 拆分点跑到那个空白上，正文被截断成 code 的一部分；
+/// - code 含非可打印 ASCII → core 判 `BadCode`，整行跳过；
+/// - text 含换行/制表 → 一条被切成两行，后半行多半连 code 都拼不出。
+///
+/// 三者都是「复制时无声、导入时才炸」——而炸的时候用户早已把文本发出去了。
+pub fn phrase_share_text(code: &str, text: &str) -> Option<String> {
+    // `is_ascii_graphic` 已排除空白与控制符，与 core `phrase_text::is_valid_code` 同构。
+    if code.is_empty() || !code.chars().all(|c| c.is_ascii_graphic()) {
+        return None;
+    }
+    if text.is_empty() || text.contains(['\n', '\r', '\t']) {
+        return None;
+    }
+    Some(format!("{MARKER_PREFIX}{SHARE_VERSION}\n{code} {text}\n"))
 }
 
 /// 预览列表的一行。
@@ -248,6 +282,76 @@ mod tests {
             ],
             "problems": [ { "line": 6, "raw": "xx", "message": "缺少空格分隔" } ]
         })
+    }
+
+    // ── 出口：复制为一键导入文本 ──────────────────────────────
+
+    /// ★ 出口必须过自己的入口。前缀常量只有一份，这条测试是它的守卫：
+    /// 哪天有人把 `MARKER_PREFIX` 或 `SHARE_VERSION` 改到与 core 不一致，这里先炸，
+    /// 而不是等用户把文本发出去之后由对方那边报「缺少格式标记」。
+    #[test]
+    fn share_text_is_recognized_by_the_importer() {
+        let out = phrase_share_text("kx", "(＾▽＾)").unwrap();
+        assert!(is_phrase_text(&out), "{out:?}");
+        assert_eq!(out, "wind:p1\nkx (＾▽＾)\n");
+    }
+
+    /// ★★ 命令短语逐字穿过，**一个反斜杠都不许多**。
+    ///
+    /// 列表里那串已是分发域（core 出口过了 `escape_text_field`），出口再转一层的话
+    /// 反斜杠每分享一轮翻一倍：对方 lexer 拿到的 `D:\\notes` 会变成 `D:<换行>otes`，
+    /// 路径静默损坏，且失败点在他触发短语时，离导入隔着好几天。
+    #[test]
+    fn share_text_keeps_command_phrase_verbatim() {
+        let cmd = r#"$CC("知典 {sub(reverse(last(1)), 1, 1)}", proc.run("D:\\\\Program Files\\\\知典.exe", "--query"))"#;
+        let out = phrase_share_text("zd", cmd).unwrap();
+        assert_eq!(out, format!("wind:p1\nzd {cmd}\n"), "正文必须逐字保留");
+    }
+
+    /// 正文里的空格不是分隔符——只认第一个空白，其余原样到行尾。
+    #[test]
+    fn share_text_allows_spaces_inside_the_body() {
+        let out = phrase_share_text("em", "我 的 邮箱 是 a@b.com").unwrap();
+        assert_eq!(out, "wind:p1\nem 我 的 邮箱 是 a@b.com\n");
+    }
+
+    /// ★ 拼不出合法文本时返回 `None`，不勉强拼一串出来。
+    ///
+    /// 这四种输入生成的文本在**复制时毫无异样**，只在对方导入时才失效（编码被截断、
+    /// 整行判 BadCode、一条切成两行）。那时文本早已发出去，没人能把它关联回这一步。
+    #[test]
+    fn share_text_refuses_what_the_importer_would_drop() {
+        assert_eq!(
+            phrase_share_text("k x", "好"),
+            None,
+            "编码带空白会把正文截断"
+        );
+        assert_eq!(
+            phrase_share_text("编码", "好"),
+            None,
+            "编码非可打印 ASCII，core 判 BadCode"
+        );
+        assert_eq!(phrase_share_text("", "好"), None, "空编码");
+        assert_eq!(
+            phrase_share_text("kx", ""),
+            None,
+            "空正文，core 判 EmptyText"
+        );
+        assert_eq!(
+            phrase_share_text("kx", "上\n下"),
+            None,
+            "真换行会把一条切成两行"
+        );
+        assert_eq!(phrase_share_text("kx", "左\t右"), None, "真制表同理");
+    }
+
+    /// 分发域里的换行是**字面两字符** `\\n`（core 出口 `escape_text_field` 的投影），
+    /// 它不该被上面那条守卫误伤——多行短语正是要靠它才能落在一行里分发。
+    #[test]
+    fn share_text_accepts_the_escaped_newline_form() {
+        let out = phrase_share_text("dz", r"第一行\n第二行").unwrap();
+        assert_eq!(out, "wind:p1\ndz 第一行\\n第二行\n");
+        assert_eq!(out.lines().count(), 2, "整条短语仍占一行");
     }
 
     #[test]

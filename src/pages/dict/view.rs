@@ -486,6 +486,8 @@ fn render_cell(
 ///
 /// 比操作列多出两样，都是**列宽装不下**才落在这里的：
 /// - 复制词条 / 复制编码：查完词想拿去搜一下，此前只能手抄；
+/// - 复制为一键导入文本：短语两级专有（`OpFlags::share_text`），把这一条拼成 `wind:p1`
+///   分发格式，对方粘进导入框即可一键装上；
 /// - 「转为用户短语」：`OpFlags::claim_as_user` 的注释写着"操作列再加一枚按钮就挤爆了"，
 ///   于是它一直藏在只读查看对话框二层里——右键菜单没有宽度约束，正好把它提到一层。
 ///
@@ -617,21 +619,31 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
 
     let (m_t, m_c) = (mgr.clone(), mgr.clone());
     let (copy_text, copy_code) = (text, row.code.clone());
-    push_group(
-        &mut items,
-        vec![
-            MenuItem::run(
-                "复制词条",
-                move |_ctx| copy_to_clipboard(&m_t, &copy_text),
-                false,
-            ),
-            MenuItem::run(
-                "复制编码",
-                move |_ctx| copy_to_clipboard(&m_c, &copy_code),
-                false,
-            ),
-        ],
-    );
+    let mut copies = vec![
+        MenuItem::run(
+            "复制词条",
+            move |_ctx| copy_to_clipboard(&m_t, &copy_text),
+            false,
+        ),
+        MenuItem::run(
+            "复制编码",
+            move |_ctx| copy_to_clipboard(&m_c, &copy_code),
+            false,
+        ),
+    ];
+    if spec.ops.share_text {
+        let m = mgr.clone();
+        // 取 `row.text` 而不是 `display_text()`：后者是**候选调整**那类的模板投影
+        // （`phrase:{code}:{模板}` 里的模板原文），短语行两者恒同，但写 display_text
+        // 会让「哪天给 shadow 也开了 share_text」时静默分发出规则模板而非短语正文。
+        let (c, t) = (row.code.clone(), row.text.clone());
+        copies.push(MenuItem::run(
+            "复制为一键导入文本",
+            move |_ctx| copy_share_text(&m, &c, &t),
+            false,
+        ));
+    }
+    push_group(&mut items, copies);
 
     if rops.remove {
         let m = mgr.clone();
@@ -687,6 +699,21 @@ fn copy_to_clipboard(mgr: &DictManagerState, s: &str) {
     }
     windui::platform::Clipboard.set_text(s);
     mgr.notify_ok("已复制");
+}
+
+/// 「复制为一键导入文本」：把这一条拼成 `wind:p1` 分发格式写进剪贴板。
+///
+/// 生成不出来时**报错而不是退而求其次**：`phrase_share_text` 拒绝的三种情形
+/// （编码带空白 / 编码非可打印 ASCII / 正文带换行制表）都会让对方那边整行失效，
+/// 而失败点在他导入的那一刻、不在这里。当场说清楚，好过让人把一串废文本发出去。
+fn copy_share_text(mgr: &DictManagerState, code: &str, text: &str) {
+    use windui::core::ClipboardProvider;
+    let Some(s) = crate::pages::phrase_import::phrase_share_text(code, text) else {
+        mgr.notify_err("这条短语的编码或内容拼不出分发文本，未复制");
+        return;
+    };
+    windui::platform::Clipboard.set_text(&s);
+    mgr.notify_ok("已复制为一键导入文本");
 }
 
 /// 行尾操作（按当前 spec 的 ops 增减）：启用开关 / 查看 / 编辑 / 转正 / 撤销 / 删除。
@@ -1048,12 +1075,69 @@ mod tests {
         let items = row_menu_items(&mgr, 0);
         assert_eq!(
             menu_labels(&items),
-            ["查看…", "转为用户短语", "启用", "复制词条", "复制编码"]
+            [
+                "查看…",
+                "转为用户短语",
+                "启用",
+                "复制词条",
+                "复制编码",
+                "复制为一键导入文本"
+            ]
         );
         assert!(items.iter().find(|i| i.label == "启用").unwrap().checked);
         assert!(
             !items.iter().any(|i| i.label == "删除"),
             "系统短语不可删除，菜单里不该出现"
+        );
+    }
+
+    /// 「复制为一键导入文本」是**短语两级专有**（`OpFlags::share_text`）。
+    ///
+    /// ★ 判据挂在 ops 上而不是写成 `category == PhraseUser`：`wind:p1` 只承载
+    /// `code` + `text` 二元组，用户词库的 weight、词频的 count、候选调整的 candId
+    /// 它一个都表达不了。给这些类别开等于生成一串**看着像、装进去缺一半**的文本，
+    /// 而缺的那一半在对方导入成功之后才显形（词序不对、规则失效），无从归因。
+    #[test]
+    fn share_as_import_text_is_phrase_only() {
+        const LABEL: &str = "复制为一键导入文本";
+
+        // 用户短语：有
+        let mgr = DictManagerState::new();
+        mgr.sub_tab.set(1);
+        assert_eq!(
+            mgr.current_spec().category,
+            WordCategory::PhraseUser,
+            "前提：域 0 的第二个子标签是用户短语"
+        );
+        mgr.apply_rows(&json!({ "items": [
+            { "code": "kx", "text": "(＾▽＾)", "weight": 1000, "enabled": true },
+        ], "total": 1 }));
+        assert!(
+            menu_labels(&row_menu_items(&mgr, 0))
+                .iter()
+                .any(|l| l == LABEL),
+            "用户短语该有分发入口"
+        );
+
+        // 用户词库：没有
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(GLOBAL_DOMAINS);
+        mgr.on_nav_changed();
+        mgr.apply_rows(&json!({ "items": [
+            { "code": "aaaa", "text": "工", "weight": 0 },
+        ], "total": 1 }));
+        assert_eq!(mgr.current_spec().category, WordCategory::UserDict, "前提");
+        assert!(
+            !menu_labels(&row_menu_items(&mgr, 0))
+                .iter()
+                .any(|l| l == LABEL),
+            "★ 用户词库的 weight 分发格式装不下，不该有这个入口"
         );
     }
 
