@@ -129,6 +129,12 @@ pub enum SettingsSection {
     /// 特殊模式（overlay）：把本方案变成「引导键临时进入」的快符/生僻字那类。
     /// 仅码表方案有——overlay 的价值在于一张自成体系的小码表。
     Overlay,
+    /// 本方案行为：切到该方案时的标点态 / 候选排列 / 要不要加载短语
+    /// （方案文件 `[punct]` / `[candidate]` / `[phrases]` 三段）。**所有方案都有**。
+    ///
+    /// 与 [`Self::Overlay`] 的「段存在才建节」不同：那三段是通用能力，默认值就是
+    /// 「跟随全局」，方案文件里不写才是常态——要求先手写方案文件才能配，等于没有。
+    Behavior,
     ExtensionDicts,
     /// 节间分隔线（Header 自带结尾分隔，故只在其后的各节之间插入）。
     Divider,
@@ -154,7 +160,11 @@ impl SettingsSection {
     fn tab(self) -> Option<usize> {
         match self {
             Self::Header | Self::EntryKeys | Self::ExtensionDicts => Some(0),
-            Self::ShuangpinLayout | Self::AuxCode | Self::CodeTable | Self::Overlay => Some(1),
+            Self::ShuangpinLayout
+            | Self::AuxCode
+            | Self::CodeTable
+            | Self::Overlay
+            | Self::Behavior => Some(1),
             Self::Divider | Self::Empty => None,
         }
     }
@@ -238,6 +248,57 @@ fn overlay_layout_idx(v: &str) -> usize {
 /// ★ 越界回落**首项**（跟随全局）而不是钳到末项：钳会把用户没选过的「横排」塞给他。
 /// 与 [`overlay_layout_idx`] 对未知值的处理、以及 core `layout.rs`「下标越界回落
 /// Follow——跟随全局是安全的默认，不猜方向」同口径。
+/// 从方案配置里读出「本方案行为」三项的初值（纯函数，供测试）。
+///
+/// 返回 `(标点下标, 候选排列下标, 是否加载短语)`。
+///
+/// ★ **短语默认 `true`**：与 core `PhrasesSpec::default()` 同源。取 `false` 作默认会让
+/// 所有没写这段的方案（也就是绝大多数）在界面上显示成「不加载短语」，而实际是加载的
+/// ——用户照着界面去开一下，反而在 override 里写死了一个本来就生效的值。
+///
+/// 两个下标项的未知值一律回落 0（跟随全局），理由见 [`punct_mode_idx`]。
+fn seed_behavior(cfg: &Value) -> (usize, usize, bool) {
+    let punct = cfg
+        .get("punct")
+        .and_then(|v| v.get("mode"))
+        .and_then(|v| v.as_str())
+        .map(punct_mode_idx)
+        .unwrap_or(0);
+    let layout = cfg
+        .get("candidate")
+        .and_then(|v| v.get("layout"))
+        .and_then(|v| v.as_str())
+        .map(overlay_layout_idx)
+        .unwrap_or(0);
+    let phrases = cfg
+        .get("phrases")
+        .and_then(|v| v.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    (punct, layout, phrases)
+}
+
+/// `[punct] mode` 的字符串值 ↔ 下拉下标。
+///
+/// 与 [`overlay_layout_idx`] 同构：未知值一律回落 0（跟随全局）。**不猜方向**——
+/// 方案文件是可手写的，写错一个词不该被解释成某个具体档位。
+fn punct_mode_idx(v: &str) -> usize {
+    match v {
+        "chinese" => 1,
+        "english" => 2,
+        _ => 0,
+    }
+}
+
+/// 下拉下标 → `[punct] mode` 的字符串值。
+fn punct_mode_value(idx: usize) -> &'static str {
+    match idx {
+        1 => "chinese",
+        2 => "english",
+        _ => "follow",
+    }
+}
+
 fn overlay_layout_value(idx: usize) -> &'static str {
     OVERLAY_LAYOUTS
         .get(idx)
@@ -402,6 +463,18 @@ pub struct SchemaManagerState {
     pub settings_aux_idx: Signal<usize>,
     /// 打开时的档位快照，供脏判定。
     settings_aux_at_open: Rc<std::cell::Cell<usize>>,
+    // ── 本方案行为（`[punct]` / `[candidate]` / `[phrases]` 三段）──
+    //
+    // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
+    // 等于两处表达同一件事。
+    /// 标点态：0=跟随全局 / 1=中文标点 / 2=英文标点（`[punct] mode`）。
+    pub settings_bh_punct: Signal<usize>,
+    /// 候选排列：0=跟随全局 / 1=竖排 / 2=横排（`[candidate] layout`）。
+    pub settings_bh_layout: Signal<usize>,
+    /// 是否加载短语（`[phrases] enabled`）。
+    pub settings_bh_phrases: Signal<bool>,
+    /// 打开时的三项初值，供脏判定——没有它，打开看一眼再关掉也会入队写盘。
+    settings_bh_at_open: Rc<std::cell::Cell<(usize, usize, bool)>>,
     pub settings_ov_show_all: Signal<bool>,
     /// 候选排列（0=跟随全局 / 1=竖排 / 2=横排），对应 `[overlay] candidate_layout`。
     pub settings_ov_layout: Signal<usize>,
@@ -513,6 +586,10 @@ impl SchemaManagerState {
             settings_aux_at_open: Rc::new(std::cell::Cell::new(0)),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
+            settings_bh_punct: signal(0),
+            settings_bh_layout: signal(0),
+            settings_bh_phrases: signal(true),
+            settings_bh_at_open: Rc::new(std::cell::Cell::new((0, 0, true))),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_enabled: signal(false),
             settings_ct_disp: signal(String::new()),
@@ -1431,6 +1508,17 @@ impl SchemaManagerState {
         // 除「进入方式」外还有没有别的配置节——只影响是否显示「暂无其它可配置项」。
         // 进入方式：所有方案都有（切到该方案的直达热键），故紧随 Header。
         sections.push(SettingsSection::EntryKeys);
+        // 本方案行为：所有方案都有。三项默认「跟随全局 / 加载」，方案文件不写这三段是常态，
+        // 故与 overlay 那节不同——不以「段存在」为建节条件。
+        {
+            let (punct, layout, phrases) = seed_behavior(&self.settings_cfg.borrow());
+            self.settings_bh_punct.set(punct);
+            self.settings_bh_layout.set(layout);
+            self.settings_bh_phrases.set(phrases);
+            self.settings_bh_at_open.set((punct, layout, phrases));
+            sections.push(SettingsSection::Divider);
+            sections.push(SettingsSection::Behavior);
+        }
         if is_sp {
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ShuangpinLayout);
@@ -1650,6 +1738,29 @@ impl SchemaManagerState {
                 aux_code_value(self.settings_aux_idx.get()),
             );
             cfg_changed = true;
+        }
+
+        // 本方案行为三段：与上面写进**同一份 cfg**，理由同上（saveConfig 是整份 diff
+        // 后全量重写 override，分两次提交后者会把前者整个覆盖掉）。
+        {
+            let now = (
+                self.settings_bh_punct.get(),
+                self.settings_bh_layout.get(),
+                self.settings_bh_phrases.get(),
+            );
+            if now != self.settings_bh_at_open.get() {
+                // 用 `set_json_path` 而不是取段再重建：它只 insert 叶子键，段里本 UI 不管的
+                // 项（`[phrases]` 的 categories / exclude_categories，目前只能手写）原样保留。
+                // 同 `[overlay]` 那节的教训。
+                set_json_path(&mut cfg, &["punct", "mode"], json!(punct_mode_value(now.0)));
+                set_json_path(
+                    &mut cfg,
+                    &["candidate", "layout"],
+                    json!(overlay_layout_value(now.1)),
+                );
+                set_json_path(&mut cfg, &["phrases", "enabled"], json!(now.2));
+                cfg_changed = true;
+            }
         }
 
         // 特殊模式（`[overlay]` 段）：与码表配置写进**同一份 cfg**，理由同上。
@@ -3526,6 +3637,81 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         ),
                 )
         }
+        SettingsSection::Behavior => {
+            let punct = state.settings_bh_punct;
+            let layout = state.settings_bh_layout;
+            let phrases = state.settings_bh_phrases;
+            // ⚠️ dropdown / label 上别加 `.small()`：那是 Button/CheckBox/Switch 专属，
+            // 落到别的 widget 会在 debug 构建下当场 panic（运行时 downcast，编译期放行）。
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                .child(crate::manifest::dialog_group_header("本方案行为"))
+                .child(
+                    Element::label("切到本方案时的表现。选「跟随全局」的项不受本方案影响。")
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .max_lines(2),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::label("标点")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(
+                            Element::dropdown(vec!["跟随全局", "中文标点", "英文标点"], punct)
+                                .width(170),
+                        ),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::label("候选排列")
+                                .font_size(13.0)
+                                .fg_role(Role::Text)
+                                .weight(1.0)
+                                .max_lines(1),
+                        )
+                        .child(
+                            Element::dropdown(vec!["跟随全局", "竖排", "横排"], layout).width(170),
+                        ),
+                )
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            Element::col()
+                                .weight(1.0)
+                                .spacing(2)
+                                .child(
+                                    Element::label("加载短语")
+                                        .font_size(13.0)
+                                        .fg_role(Role::Text)
+                                        .max_lines(1),
+                                )
+                                .child(
+                                    Element::label("关闭后本方案不出短语候选。英文方案建议关闭：短语码常与英文词撞车")
+                                        .font_size(12.0)
+                                        .fg_role(Role::TextMuted)
+                                        .max_lines(2),
+                                ),
+                        )
+                        .child(Element::checkbox("开启", phrases).small().fg_role(Role::Text)),
+                )
+        }
         SettingsSection::ExtensionDicts => {
             let mut col = Element::col()
                 .width_match()
@@ -4315,6 +4501,108 @@ mod ext_dict_tests {
             "written 应来自 applyPatch 响应，实际: {written:?}"
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 「本方案行为」三项的播种：缺段时的默认值必须与 core 一致。
+    ///
+    /// ★ 短语那项默认 `true` 是关键：绝大多数方案文件不写 `[phrases]` 段，取 `false`
+    /// 作默认会让它们在界面上全部显示成「不加载短语」——而实际是加载的。用户照着界面
+    /// 去开一下，反而在 override 里写死了一个本来就生效的值。
+    #[test]
+    fn seed_behavior_defaults_match_core() {
+        assert_eq!(
+            seed_behavior(&json!({})),
+            (0, 0, true),
+            "三段全缺：两个下标跟随全局，短语加载"
+        );
+        assert_eq!(
+            seed_behavior(&json!({
+                "punct": { "mode": "english" },
+                "candidate": { "layout": "vertical" },
+                "phrases": { "enabled": false }
+            })),
+            (2, 1, false),
+            "英文方案那套写法"
+        );
+        assert_eq!(
+            seed_behavior(&json!({ "punct": { "mode": "chinese" } })),
+            (1, 0, true),
+            "只写一段时另两段仍取默认"
+        );
+    }
+
+    /// 未知取值一律回落「跟随全局」，不猜方向。
+    ///
+    /// 方案文件是可手写的，写错一个词（`englsh`）不该被解释成某个具体档位——那会让用户
+    /// 看到一个他没选过的设置，并且一保存就把这个错误值固化成正确值。
+    #[test]
+    fn unknown_values_fall_back_to_follow() {
+        assert_eq!(
+            seed_behavior(&json!({ "punct": { "mode": "englsh" } })).0,
+            0
+        );
+        assert_eq!(
+            seed_behavior(&json!({ "candidate": { "layout": "斜排" } })).1,
+            0
+        );
+    }
+
+    /// 三项的下标 ↔ 字符串往返必须闭合，否则「保存后重开设置页，选项变了」。
+    #[test]
+    fn behavior_value_round_trip() {
+        for i in 0..3 {
+            assert_eq!(punct_mode_idx(punct_mode_value(i)), i, "punct 第 {i} 档");
+            assert_eq!(
+                overlay_layout_idx(overlay_layout_value(i)),
+                i,
+                "layout 第 {i} 档"
+            );
+        }
+    }
+
+    /// ★★ 保存只改本 UI 管的字段——`[phrases]` 里手写的 `categories` 不得被抹掉。
+    ///
+    /// 分类目前没有图形界面，只能手写方案文件。若保存时用字面量重建整个段，用户改一次
+    /// 「加载短语」就把自己配的分类清单丢了，且完全静默。这正是已删除的 `special_modes.rs`
+    /// 当年那条教训的同形（见 `[overlay]` 那节的保存代码）。
+    #[test]
+    fn behavior_save_preserves_handwritten_fields() {
+        let mut cfg = json!({
+            "phrases": { "enabled": true, "categories": ["工作"], "exclude_categories": ["日期"] },
+            "candidate": { "layout": "vertical" },
+            "engine": { "type": "codetable" }
+        });
+        // 模拟保存路径：三项都写，用的是 set_json_path（只 insert 叶子）。
+        set_json_path(&mut cfg, &["punct", "mode"], json!(punct_mode_value(2)));
+        set_json_path(
+            &mut cfg,
+            &["candidate", "layout"],
+            json!(overlay_layout_value(2)),
+        );
+        set_json_path(&mut cfg, &["phrases", "enabled"], json!(false));
+
+        assert_eq!(
+            cfg["phrases"]["enabled"],
+            json!(false),
+            "本 UI 管的字段要改到"
+        );
+        assert_eq!(
+            cfg["phrases"]["categories"],
+            json!(["工作"]),
+            "手写的分类白名单必须原样保留"
+        );
+        assert_eq!(
+            cfg["phrases"]["exclude_categories"],
+            json!(["日期"]),
+            "黑名单同理"
+        );
+        assert_eq!(cfg["candidate"]["layout"], json!("horizontal"));
+        assert_eq!(cfg["punct"]["mode"], json!("english"), "缺段时应能创建");
+        assert_eq!(
+            cfg["engine"]["type"],
+            json!("codetable"),
+            "同级的其它段不受影响"
+        );
     }
 
     #[test]

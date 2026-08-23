@@ -184,6 +184,16 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "schema.english.raw_candidate",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.english.case_variants",
+      "type": "bool"
+    },
+    {
       "default": false,
       "key": "schema.codetable.auto_phrase.enabled",
       "type": "bool"
@@ -689,6 +699,11 @@
     {
       "default": false,
       "key": "input.temp_english.space_as_input",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.temp_english.raw_candidate",
       "type": "bool"
     },
     {

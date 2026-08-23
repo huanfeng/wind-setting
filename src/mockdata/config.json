@@ -94,6 +94,7 @@
    "candidate_layout": "follow",
    "case_variants": true,
    "enabled": true,
+   "raw_candidate": true,
    "shift_behavior": "temp_english",
    "show_candidates": true,
    "space_as_input": false,
@@ -206,6 +207,7 @@
    "z_key_repeat": true
   },
   "english": {
+   "case_variants": false,
    "commit_space": false,
    "frequency": {
     "code_scope": "candidate",
@@ -213,7 +215,8 @@
     "half_life": 0.0,
     "promote_prefix": "all",
     "strategy": "position"
-   }
+   },
+   "raw_candidate": true
   },
   "mix": {
    "auto_commit_block_on_english": false,

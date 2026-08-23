@@ -803,6 +803,22 @@ options = [
 ]
 
 [[items]]
+key = "schema.english.raw_candidate"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "首候选为所打原文"
+hint = "把输入的字母串本身放在首位，空格直接上屏它；关闭后首位是词库补全，打生词要按回车"
+
+[[items]]
+key = "schema.english.case_variants"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "生成大小写变形候选"
+hint = "补出全小写、首字母大写、全大写三种形态。它们各占一个候选位；临时英文的同名开关另设"
+
+[[items]]
 key = "schema.english.commit_space"
 group = "schema"
 section = "英文行为"
@@ -1348,6 +1364,14 @@ section = "临时英文"
 type = "toggle"
 label = "显示英文候选"
 hint = "临时英文模式下查询英文词库显示候选词"
+
+[[items]]
+key = "input.temp_english.raw_candidate"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "首候选为所打原文"
+hint = "把输入的字母串本身放在首位，空格直接上屏它；关闭后只出词库候选与变形候选"
 
 [[items]]
 key = "input.temp_english.case_variants"
