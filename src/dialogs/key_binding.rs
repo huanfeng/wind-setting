@@ -177,6 +177,35 @@ pub fn verb_allowed(shape: KeyShape, value: &str) -> bool {
     }
 }
 
+/// 「辅助码触发键绑在反引号上」的专属提示，**两张表共用**。
+///
+/// 全拼方案出厂 `separator = "auto"` 且 `'` 作选词键 ⇒ 反引号恒为音节分隔符，绑在它上面
+/// 走不到 `enter_aux_code`。core 那边只 warn 一句，用户看到的是「配了完全没反应」。
+///
+/// 两种形态的后果不同，文案也不同：专用触发键是**彻底没反应**（门卫拒绝后该键落回分隔符），
+/// 共键则会降级成翻页 ⇒ 用户得到的是一个翻页键，而不是他要的辅助码。
+///
+/// 这条不放进 `verb_allowed` 过滤：它只对拼音方案成立，而这个对话框也服务码表方案，
+/// 一刀切会挡掉合法配置。
+///
+/// ⛔ 文案一律写成**单行字面量**：反斜杠续行被 rustfmt 接回一行时，被吞掉的缩进会变成
+/// 字面空格，用户看到的提示中间夹一大段空白。
+fn aux_code_backtick_notice(verb: &str, key: &str) -> Option<String> {
+    if !matches!(key, "backtick" | "grave" | "`") {
+        return None;
+    }
+    match verb {
+        "aux_code" => Some(
+            "全拼方案的反引号被音节分隔符占用，绑在它上面进不了辅助码，请换一个键。".to_string(),
+        ),
+        "aux_code:page_next" => Some(
+            "全拼方案的反引号被音节分隔符占用，绑在它上面进不了辅助码，只会当成下翻页键。"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 // ───────────────────────────── 键名显示 ─────────────────────────────
 
 /// 键名 → 给人看的文本。`rbracket` → `]`，`ctrl+shift+rbracket` → `Ctrl + Shift + ]`。
@@ -440,12 +469,21 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
         //
         // 它落在本表是语义上的归位：`enter_aux_code` 第一件事就是查候选是否为空，
         // 而「只在有候选时才有意义」正是本表的定义性质。
+        // `aux_code:page_next` 是 `aux_code` 的**参数**（与下翻页共用一个键），不是另一个
+        // 动词：能进辅助码就进、进不去就翻下一页。只有本表有这个形态——`key_actions` 解析
+        // 不出翻页键，那张表里也就不存在「与翻页共键」这回事。
         VerbCategory::new(
             "候选筛选",
-            vec![Verb {
-                value: "aux_code".into(),
-                label: "辅助码筛选（按字形码二次筛选）".into(),
-            }],
+            vec![
+                Verb {
+                    value: "aux_code".into(),
+                    label: "辅助码筛选（按字形码二次筛选）".into(),
+                },
+                Verb {
+                    value: "aux_code:page_next".into(),
+                    label: "辅助码筛选（进不去时翻下一页）".into(),
+                },
+            ],
         ),
         advanced_category(),
     ]
@@ -989,6 +1027,11 @@ impl KeyPicker {
                     return "CapsLock 需要全局键盘钩子才能拦住，非 Windows 平台不生效。"
                         .to_string();
                 }
+                // 辅助码收编进本表后这条一直没跟过来——而「在会话表里把反引号配成 aux_code」
+                // 正是最自然的配法。
+                if let Some(n) = aux_code_backtick_notice(&self.current_verb(), key) {
+                    return n;
+                }
                 String::new()
             }
             BindingTable::Lead => {
@@ -997,9 +1040,8 @@ impl KeyPicker {
                 // 根本走不到 `enter_aux_code`。core 那边只 warn 一句，用户看到的是
                 // 「配了完全没反应」。这条不放进 `verb_allowed` 过滤：它只对拼音方案成立，
                 // 而这个对话框也服务码表方案，一刀切会挡掉合法配置。
-                if self.current_verb() == "aux_code" && matches!(key, "backtick" | "grave" | "`") {
-                    return "全拼方案的反引号被音节分隔符占用，绑在它上面进不了辅助码，请换一个键。"
-                        .to_string();
+                if let Some(n) = aux_code_backtick_notice(&self.current_verb(), key) {
+                    return n;
                 }
                 // ★ 说明**只在真的滤掉了东西时**才出。恒挂就成了常驻噪音，而它要传达的
                 // 恰恰是「你现在少看到了几项」这个一次性的事实。
@@ -1483,6 +1525,7 @@ mod tests {
                         | "cancel"
                         | "clear"
                         | "aux_code"
+                        | "aux_code:page_next"
                 ) || v
                     .value
                     .strip_prefix("select_candidate:")
@@ -1809,6 +1852,48 @@ mod tests {
         );
         // 而且它**不是**过滤：分号上照样选得到辅助码。
         assert_eq!(p.current_verb(), "aux_code");
+    }
+
+    /// ★ 会话表这一侧同样要提示。辅助码收编进 `session_actions` 之后，这条提示一直没跟
+    /// 过来——而「在会话表里把反引号配成 aux_code」恰恰是最自然的配法。
+    ///
+    /// 共键（`aux_code:page_next`）的文案必须**不同**：它进不去时会降级成翻页，用户拿到的
+    /// 是一个翻页键而不是「完全没反应」，说成「请换一个键」就不准确了。
+    #[test]
+    fn aux_code_on_backtick_is_warned_in_session_table_too() {
+        let p = KeyPicker::new(BindingTable::Session);
+
+        p.open_edit(1, "backtick", "aux_code");
+        assert!(
+            p.notice.get().contains("音节分隔符"),
+            "会话表里同样要提示：{:?}",
+            p.notice.get()
+        );
+        assert!(
+            p.notice.get().contains("请换一个键"),
+            "专用触发键进不去 = 彻底没反应：{:?}",
+            p.notice.get()
+        );
+
+        p.open_edit(1, "backtick", "aux_code:page_next");
+        assert!(
+            p.notice.get().contains("音节分隔符"),
+            "共键同样进不去辅助码：{:?}",
+            p.notice.get()
+        );
+        assert!(
+            p.notice.get().contains("下翻页"),
+            "共键会降级成翻页，文案不能说「请换一个键」：{:?}",
+            p.notice.get()
+        );
+
+        // 换个键就不该再提示这一条——常驻警告会把可用的配置误报成待修问题。
+        p.open_edit(1, "pagedown", "aux_code:page_next");
+        assert!(
+            !p.notice.get().contains("音节分隔符"),
+            "别的键上不该有这条提示：{:?}",
+            p.notice.get()
+        );
     }
 
     /// 确定回调拿到的是 `(行 id, 键, 功能)`；新增时行 id 为 None。
