@@ -449,6 +449,9 @@ pub(crate) fn register_schema_registrations(
                 .iter()
                 .map(|(k, v)| (k.clone(), Value::String(v.clone())))
                 .collect();
+            // 诊断：与 commit_hotkey_edit 的条目数对照 —— 两处一致却仍报「没有变更」，
+            // 就说明问题不在内存表而在 diff 基线（base_config）那一侧。
+            tracing::debug!("key_actions writer: 写回 {} 条", map.len());
             cfg.set_path("keys.key_actions", Value::Object(map));
         }));
     }
@@ -1741,6 +1744,14 @@ impl AppState {
             &self.base_config,
             &self.current_config,
             &self.capabilities.map_keys(),
+        );
+        // 诊断：「没有变更」的最终判据就在这里。配合上面两条日志可定位到具体环节：
+        // 内存表变了、writer 也写了，diff 却为空 ⇒ base_config 已经含有新值
+        // （基线在保存前被刷新过），那是另一类 bug。
+        tracing::debug!(
+            "save: diff {} 项 {:?} (side_changed={side_changed})",
+            items.len(),
+            items.iter().map(|it| it.key.as_str()).collect::<Vec<_>>()
         );
         if items.is_empty() {
             // side 有改动时不能说「没有变更」——方案配置刚刚才落盘。

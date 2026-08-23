@@ -978,11 +978,16 @@ impl SchemaManagerState {
     pub fn commit_hotkey_edit(&self) {
         let id = self.settings_schema_id.borrow().clone();
         let raw = self.settings_hotkey_raw.get();
-        apply_hotkey_edit(
-            &mut self.key_actions.borrow_mut(),
-            &id,
-            self.settings_hotkey_enabled.get(),
-            &raw,
+        let enabled = self.settings_hotkey_enabled.get();
+        // 诊断：本函数只由 `hotkey_effect` 驱动（对话框有多条关闭路径，故用 effect 而非
+        // 挂按钮）。「清除后保存说没有变更」时据此分辨：没有这条日志 = effect 没触发；
+        // 有但 before==after = 内存表里本就没有这条（表的来源出了问题）。
+        let before = self.key_actions.borrow().len();
+        apply_hotkey_edit(&mut self.key_actions.borrow_mut(), &id, enabled, &raw);
+        let after = self.key_actions.borrow().len();
+        tracing::debug!(
+            "commit_hotkey_edit: schema={id} raw={raw:?} enabled={enabled} \
+             entries {before}->{after}"
         );
     }
 
