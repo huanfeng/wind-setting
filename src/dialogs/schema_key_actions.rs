@@ -174,6 +174,15 @@ impl KeyActionFields {
         self.seed(&json!({ "key_actions": Value::Object(map.clone()) }));
     }
 
+    /// 行数据的版本号，供调用方挂 `reactive_effect` 监听编辑。
+    ///
+    /// 全局 `keys.key_actions` 那张表**不再自带 writer**（见
+    /// `manifest::build_dialog_button_key_actions`），编辑要经此同步到唯一真相源
+    /// `SchemaManagerState::key_actions`，否则两处各写各的、按注册顺序互相覆盖。
+    pub fn rows_version(&self) -> u64 {
+        self.rows.version()
+    }
+
     /// 导出成裸 map（全局 `keys.key_actions` 用）。方案级走 [`Self::apply`]。
     pub fn to_map(&self) -> Map<String, Value> {
         self.current()

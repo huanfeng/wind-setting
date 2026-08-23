@@ -449,9 +449,6 @@ pub(crate) fn register_schema_registrations(
                 .iter()
                 .map(|(k, v)| (k.clone(), Value::String(v.clone())))
                 .collect();
-            // 诊断：与 commit_hotkey_edit 的条目数对照 —— 两处一致却仍报「没有变更」，
-            // 就说明问题不在内存表而在 diff 基线（base_config）那一侧。
-            tracing::debug!("key_actions writer: 写回 {} 条", map.len());
             cfg.set_path("keys.key_actions", Value::Object(map));
         }));
     }
@@ -1735,25 +1732,8 @@ impl AppState {
 
         {
             let writers = reg.writers.borrow();
-            // 诊断：方案页 writer 明明写回 4 条，diff 时 current 却仍是 5 条（含被删的
-            // 那一条）⇒ 后面还有 writer 把整张表覆盖了回去。逐个跑完看条数，**只在变化时
-            // 打印**，落在哪个下标就是哪个 writer 干的。
-            let count = |c: &Config| -> usize {
-                c.get_object("keys.key_actions")
-                    .map(|o| o.len())
-                    .unwrap_or(0)
-            };
-            let mut last = count(&self.current_config);
-            tracing::debug!("save writers 起点: key_actions {last} 条");
-            for (i, w) in writers.iter().enumerate() {
+            for w in writers.iter() {
                 w(&mut self.current_config);
-                let n = count(&self.current_config);
-                if n != last {
-                    tracing::debug!(
-                        "save writers: writer[{i}] 把 key_actions 从 {last} 改成 {n} 条"
-                    );
-                    last = n;
-                }
             }
         }
         // 触发键冲突不再在此追加进保存 toast——改由输入页常驻警告条实时呈现（见 conflict_watcher）。
@@ -1770,27 +1750,6 @@ impl AppState {
             items.len(),
             items.iter().map(|it| it.key.as_str()).collect::<Vec<_>>()
         );
-        // 实测「内存表 5->4、writer 写回 4 条，diff 仍 0 项」，且新增绑定同样 0 项 ⇒
-        // 差异根本没进到比较里。三个值足以定位：base/current 各自的键集是否真的不同，
-        // 以及这个键有没有被当成 map 整体比较（不在 map_keys 里就会下钻，而下钻
-        // **只遍历 current 的键**，删除因此永远不可见）。
-        {
-            let ka_of = |c: &Config| -> Vec<String> {
-                c.get_object("keys.key_actions")
-                    .map(|o| o.keys().cloned().collect())
-                    .unwrap_or_default()
-            };
-            let atomic = self
-                .capabilities
-                .map_keys()
-                .iter()
-                .any(|k| k == "keys.key_actions");
-            tracing::debug!(
-                "save diff 诊断: base={:?} current={:?} atomic={atomic}",
-                ka_of(&self.base_config),
-                ka_of(&self.current_config),
-            );
-        }
         if items.is_empty() {
             // side 有改动时不能说「没有变更」——方案配置刚刚才落盘。
             self.feedback.set(Some(if side_changed {

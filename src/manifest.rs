@@ -2858,7 +2858,9 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
 /// 与行为完全一致，差别只在**动词值域**（全局多一个单向 `switch_schema:<id>`）与数据来源
 /// （裸 map vs 方案 cfg 的一个段）。再写一个编辑器就是两个长得不一样的键绑定编辑器，
 /// 正是 `capabilities.rs` 当初把本键登记进豁免清单时想避免的事。
-fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+/// ⚠️ `_cfg` 刻意不用：播种源已改为唯一真相源 `SchemaManagerState::key_actions`（见函数体）。
+/// 参数保留是为了与同族 `build_dialog_button_*` 的签名一致（调用点按统一形态分发）。
+fn build_dialog_button_key_actions(state: &AppState, key: &str, _cfg: &Config) -> Signal<bool> {
     use crate::dialogs::schema_key_actions::KeyActionFields;
 
     let fields = KeyActionFields::default();
@@ -2869,22 +2871,29 @@ fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) ->
         state.schema_mgr.refresh();
     }
     fields.set_verbs(state.schema_mgr.build_global_key_action_verbs());
+    // ★ 从**唯一真相源**播种，而不是从 cfg。
+    //
+    // `SchemaManagerState::key_actions` 与本控件此前是同一个配置键的两份独立副本：方案
+    // 对话框（切换热键 / 引导键）改前者，本控件改后者，各自注册一个**整表覆盖**的 writer。
+    // 二者按注册顺序执行，本控件排在后面 ⇒ 它那份「设置页启动时播种、之后再没更新过」的
+    // 旧快照，每次保存都把方案对话框的改动原样盖回去。表现是「清除/重设方案切换热键后
+    // 保存说没有变更，重开对话框那条还在」，且 diff 恒为 0（写回 current 的正是 base 的
+    // 原值）。见 docs 与提交记录里的诊断链。
     fields.seed_map(
-        &cfg.get_path(key)
-            .and_then(|v| v.as_object())
-            .cloned()
-            .unwrap_or_default(),
+        &state
+            .schema_mgr
+            .key_actions
+            .borrow()
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect(),
     );
     let visible = signal(false);
 
-    let (fw, kw) = (fields.clone(), key.to_string());
-    state
-        .fields
-        .writers
-        .borrow_mut()
-        .push(Box::new(move |c: &mut Config| {
-            c.set_path(&kw, Value::Object(fw.to_map()));
-        }));
+    // ⛔ **本控件不再注册 writer**。它是编辑器，不是存储：编辑经下面的 effect 同步进
+    // `schema_mgr.key_actions`，由那一个 writer 统一落盘。一个配置键只能有一个能整表
+    // 写它的地方——否则「谁后跑谁赢」是迟早的事，而注册顺序是隐式的、没有任何东西在守。
+    // 守门测试见 `no_duplicate_writer_for_key_actions`。
 
     let (fl, kl) = (fields.clone(), key.to_string());
     state.fields.loaders.borrow_mut().insert(
@@ -2898,6 +2907,31 @@ fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) ->
             );
         }),
     );
+
+    // 编辑 → 唯一真相源。挂 effect 而非在对话框「关闭」上调：`build_binding_dialog` 有多条
+    // 关闭路径（底栏按钮 / ESC / 标题栏），逐个挂等于赌自己数全了——与方案对话框那几个
+    // effect 同一个理由、同一套写法。
+    //
+    // 播种也会让 rows 版本变化，从而回灌一次；因为播种源就是这张表，那次回灌是幂等的。
+    // loader 触发的播种同理：它跑在 `apply_loaded` / `reload` 里，而
+    // `SchemaManagerState::apply_config` 在同一批里刷新 `key_actions`，两者取值一致。
+    {
+        let fe = fields.clone();
+        let fw = fields.clone();
+        let mgr = state.schema_mgr.clone();
+        let sync = crate::pages::dict::reactive::reactive_effect(
+            move || fe.rows_version(),
+            move || {
+                *mgr.key_actions.borrow_mut() = fw
+                    .to_map()
+                    .into_iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                    .collect();
+                mgr.key_actions_loaded.set(true);
+            },
+        );
+        register_dialog(state, sync);
+    }
 
     let fg = fields.clone();
     state.fields.getters.borrow_mut().insert(
@@ -4125,6 +4159,139 @@ mod tests {
             m.order.len() >= 70,
             "items 数量应 >= 70，实际 {}",
             m.order.len()
+        );
+    }
+
+    /// ★★★ 不变量：**整表覆盖 `keys.key_actions` 的 writer 最多一个**。
+    ///
+    /// # 这条守的是什么
+    ///
+    /// 该键一度有两个各自持有副本、且都整表覆盖的 writer：
+    /// - `state::register_schema_registrations` 那个（源：`SchemaManagerState::key_actions`，
+    ///   方案对话框改热键/引导键时实时更新）；
+    /// - 本文件 `build_dialog_button_key_actions`（源：控件自己的 `KeyActionFields`，
+    ///   **设置页启动时播种一次、之后再没更新过**）。
+    ///
+    /// 二者按注册顺序执行，后者排在后面 ⇒ 它那份旧快照每次保存都把方案对话框的改动原样
+    /// 盖回去。真机表现：清除/重设方案切换热键后保存提示「没有变更」，重开对话框那条还在，
+    /// 且 diff 恒为 0（写回 current 的正是 base 的原值）。已改为单一真相源。
+    ///
+    /// # 为什么不是「一个键只能有一个 writer」
+    ///
+    /// 那条太严：引导键控件（`build_dialog_button_key_action`，单数）也写这个键，但它是
+    /// **读-改-写**——只摘掉自己动词的键再插回勾选的，保留其余。多个这样的 writer 共存是
+    /// 设计意图。危险的只有「整表覆盖」。
+    ///
+    /// 判据用哨兵：往表里放一个谁都不认识的键，跑一遍 writer，**被抹掉的就是整表覆盖者**。
+    #[test]
+    fn at_most_one_writer_overwrites_key_actions_wholesale() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+        let st = app.borrow();
+        // 复现 shell::build 的注册顺序：先清空、再补方案页那批、最后建设置树。
+        st.fields.reset();
+        crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+        let _tabs = crate::pages::all_tabs(&app, &st);
+
+        const SENTINEL: &str = "__probe_sentinel__";
+        let probe = Config::from_value(serde_json::json!({
+            "keys": { "key_actions": { SENTINEL: "none" } }
+        }));
+
+        let wholesale: Vec<usize> = st
+            .fields
+            .writers
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| {
+                let mut c = probe.clone();
+                w(&mut c);
+                // 哨兵没了 = 这个 writer 不读旧值、直接整表写。
+                !c.get_object("keys.key_actions")
+                    .is_some_and(|o| o.contains_key(SENTINEL))
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        assert!(
+            wholesale.len() <= 1,
+            "有 {} 个 writer 整表覆盖 keys.key_actions（下标 {:?}）——它们会按注册顺序\
+             互相踩，后跑的那个用自己那份副本把先跑的改动盖掉。该键必须只有一个整表写入者，\
+             其余一律读-改-写或改为同步到同一真相源。",
+            wholesale.len(),
+            wholesale
+        );
+    }
+
+    /// ★★ 端到端回归：方案对话框删掉的热键，跑完**全部** writer 后不得复活。
+    ///
+    /// 精确复刻真机时序（用户报障现场）：
+    /// 1. 设置页启动，全局「自定义按键」控件按当时的表播种；
+    /// 2. 用户在方案对话框里清除某方案的切换热键 ⇒ 只有 `SchemaManagerState::key_actions`
+    ///    变了，全局控件那份副本**不会**跟着变；
+    /// 3. 点保存 ⇒ 跑全部 writer。
+    ///
+    /// 修复前第 3 步会被全局控件的整表覆盖盖回旧值，diff 因此恒为 0、提示「没有变更」。
+    #[test]
+    fn schema_hotkey_removal_survives_all_writers() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+        let st = app.borrow();
+
+        // ① 启动态：表里有一条五笔的切换热键。
+        {
+            let mut ka = st.schema_mgr.key_actions.borrow_mut();
+            ka.clear();
+            ka.insert("backtick".into(), "temp_pinyin".into());
+            ka.insert("ctrl+shift+q".into(), "switch_schema:wubi86".into());
+        }
+        st.schema_mgr.key_actions_loaded.set(true);
+
+        // 建设置树：全局控件在此按①播种（含 ctrl+shift+q）。
+        st.fields.reset();
+        crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+        let _tabs = crate::pages::all_tabs(&app, &st);
+
+        // ② 用户在方案对话框里清除该热键——只动唯一真相源。
+        st.schema_mgr
+            .key_actions
+            .borrow_mut()
+            .retain(|_, v| v != "switch_schema:wubi86");
+
+        // ③ 保存：跑全部 writer。
+        let mut probe = Config::from_value(serde_json::json!({
+            "keys": { "key_actions": {
+                "backtick": "temp_pinyin",
+                "ctrl+shift+q": "switch_schema:wubi86",
+            } }
+        }));
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+
+        let survived = probe
+            .get_object("keys.key_actions")
+            .is_some_and(|o| o.contains_key("ctrl+shift+q"));
+        assert!(
+            !survived,
+            "被删的方案热键在跑完 writer 后复活了 ⇒ 又有 writer 拿旧副本整表覆盖。\
+             最终表: {:?}",
+            probe.get_object("keys.key_actions")
         );
     }
 }
