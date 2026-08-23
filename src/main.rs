@@ -62,6 +62,24 @@ pub(crate) const MAIN_H: i32 = 640;
 pub(crate) const MAIN_MIN_W: i32 = 560;
 pub(crate) const MAIN_MIN_H: i32 = 440;
 
+/// 设置主窗的单例键。窗口在的时候，别处 `open_window(Window::single(本键))` 会把它
+/// 激活到前台而不是再开一个——[`open_main_window`] 与词库窗的两个入口都靠这条。
+pub(crate) const MAIN_SINGLE_KEY: &str = "main";
+
+/// `App` 那个窗口这一趟要登记哪个单例键。
+///
+/// **按它承载的界面选，不能一律 `MAIN_SINGLE_KEY`**：`--page dict` 冷启动时 `App` 建的
+/// 是词库窗（见下面 `dict_as_main`），此时若把它登记成「main」，之后任何一次
+/// [`open_main_window`] 都会命中它、被平台当成"设置窗已经开着"，于是只把这个词库窗
+/// 激活到前台——用户点「设置」，跳出来的是他已经在看的词库。
+fn main_window_single_key(dict_as_main: bool) -> &'static str {
+    if dict_as_main {
+        dict_window::SINGLE_KEY
+    } else {
+        MAIN_SINGLE_KEY
+    }
+}
+
 /// 重新开出主窗。
 ///
 /// 主窗关掉后进程并不退出——词库窗还开着的话它照常活着（windui 是「关掉最后一个窗口
@@ -73,8 +91,14 @@ pub(crate) const MAIN_MIN_H: i32 = 440;
 /// （通道只在建窗前可注册）。但通道本身挂在 App 级、并没有随主窗一起死，原先注册的三条
 /// （数据加载 / core 事件 / 升级）照常有人排空——重建后仍然收得到。
 ///
-/// `single("main")` 挡住重复重建；首个主窗由 `App` 建、不带这个键，故只在它确实关掉之后
-/// 才会走到这里（判据是 `main_window_closed`）。
+/// **主窗还开着时调用本函数是安全的**：`single(MAIN_SINGLE_KEY)` 此时命中既有窗口，
+/// 平台把它激活到前台（最小化的会还原），本次请求被丢弃，不会建出第二个。首个主窗
+/// 也登记了同一个键（`App::single_window`，见 [`main_window_single_key`]）——那正是
+/// 「把主窗拉到前台」唯一可走的路：`EventCtx` 没有"激活某个窗口"的原语，只有平台层
+/// 在单例判定命中时代做。
+///
+/// 故调用方**不需要**先查 `main_window_closed`：那个标志只用来分辨二次实例该 activate
+/// 还是重建，不是本函数的前置条件。
 pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
     let th = match app.borrow().theme_handle.borrow().clone() {
         Some(h) => h,
@@ -92,7 +116,7 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
     app.borrow().main_window_closed.set(false);
     ctx.open_window(
         Window::new("清风输入法设置", MAIN_W, MAIN_H)
-            .single("main")
+            .single(MAIN_SINGLE_KEY)
             .frameless(true)
             .centered(true)
             .min_size(MAIN_MIN_W, MAIN_MIN_H)
@@ -265,6 +289,8 @@ fn main() {
         "清风输入法设置"
     };
     let mut app = App::new(title, MAIN_W, MAIN_H)
+        // 单例键要跟着这一趟承载的界面走（见 `main_window_single_key`）。
+        .single_window(main_window_single_key(dict_as_main))
         .frameless()
         .centered()
         .renderer(renderer)
@@ -715,6 +741,22 @@ mod tests {
 
     /// 「主窗已关闭」默认为假，置位后保持 —— 二次实例据此分辨该 activate 已有主窗
     /// 还是重建一个。默认为真的话，第一次点设置就会平白多开一个主窗。
+    /// `App` 那个窗口的单例键必须跟着它承载的界面走。
+    ///
+    /// 一律登记成「main」的后果：`--page dict` 冷启动后点「设置」，`open_main_window`
+    /// 的单例判定命中这个词库窗，平台把它激活到前台就算完事——设置窗永远开不出来，
+    /// 而这一路没有任何报错。
+    #[test]
+    fn main_window_single_key_follows_what_it_hosts() {
+        assert_eq!(main_window_single_key(false), MAIN_SINGLE_KEY);
+        assert_eq!(main_window_single_key(true), dict_window::SINGLE_KEY);
+        assert_ne!(
+            MAIN_SINGLE_KEY,
+            dict_window::SINGLE_KEY,
+            "两个键同值的话，设置窗与词库窗会互相顶替"
+        );
+    }
+
     #[test]
     fn main_window_closed_starts_false_and_latches() {
         let st = state::AppState::empty();

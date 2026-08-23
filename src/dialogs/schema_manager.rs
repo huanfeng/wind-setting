@@ -2897,6 +2897,12 @@ fn build_schema_hotkey_dialog(state: &SchemaManagerState) -> Element {
 ///
 /// `app` 用于第二步 `config.applyPatch` 成功后回灌配置镜像——core 的逐键
 /// `config.changed` 回声到达时镜像已持有同值，被识别为本端写入，不弹「已在别处更改」。
+///
+/// 只挂在**主窗**（本对话框是 `build_schema_manager_dialog` 的一部分）。词库窗的右键
+/// 导入也能选到 `.zip`/`.wpkg`，但那条路先把主窗拉到前台再弹选择器（见
+/// `config_import::import_menu_items_via_main_window`），确认框照样出现在主窗里——
+/// 词库窗不再挂一份：`import_confirm_visible` 是同一个 `Signal`，两棵树各画一遍就是
+/// 两个窗口同时弹同一个确认框。
 fn build_import_confirm_dialog(app: &Rc<RefCell<AppState>>, state: &SchemaManagerState) -> Element {
     let merge = state.clone();
     let replace = state.clone();
