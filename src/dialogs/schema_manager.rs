@@ -5343,6 +5343,64 @@ mod hotkey_save_pipeline_tests {
         );
     }
 
+    /// ★★★ 端到端：点「清除」后，改动必须经 **effect** 落到 `key_actions` 内存表。
+    ///
+    /// # 这条链此前是测试盲区
+    ///
+    /// `commit_hotkey_edit` 的**唯一**驱动者是 `build_schema_settings_dialog` 里的
+    /// `hotkey_effect`（对话框有多条关闭路径，故用 effect 而非挂按钮）。而既有测试
+    /// 全部**直接调** `commit_hotkey_edit`，绕过了 effect —— 于是「effect 到底有没有
+    /// 驱动它」从来没有被任何东西守住，真机表现就是「清除后保存说没有变更，重开对话框
+    /// 那个热键还在」。
+    ///
+    /// 本用例用 `NullTextEngine` 跑真实的 layout 循环（`layout_root` 里调
+    /// `dispatch_reactive_updates`，那是 effect 唯一的驱动点），把整条链纳入测试。
+    #[test]
+    fn clearing_hotkey_reaches_key_actions_through_effect() {
+        use super::SchemaManagerState;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let st = SchemaManagerState::new();
+        st.key_actions.borrow_mut().insert(
+            "ctrl+shift+q".to_string(),
+            "switch_schema:wubi86".to_string(),
+        );
+        *st.settings_schema_id.borrow_mut() = "wubi86".to_string();
+        // 打开对话框时的播种。
+        st.seed_hotkey_editor("ctrl+shift+q");
+
+        // 建树 + 跑一帧：effect 以当前版本为基线（构建帧不触发，见 reactive_effect）。
+        let mut tree = Tree::new();
+        let id = super::build_schema_settings_dialog(&st).build(&mut tree);
+        tree.root = Some(id);
+        let mut te = windui::text::NullTextEngine;
+        tree.layout_root(Size::new(800, 600), &mut te);
+
+        // 模拟点「清除」：与 EntryKeys 节里那个按钮的闭包做同样的事。
+        st.settings_hotkey_enabled.set(false);
+        st.settings_hotkey_disp.set("未设置".to_string());
+        st.settings_hotkey_raw.set(String::new());
+
+        // 下一帧：dispatch_reactive_updates 应当驱动 hotkey_effect → commit_hotkey_edit。
+        tree.layout_root(Size::new(800, 600), &mut te);
+
+        assert!(
+            !st.key_actions
+                .borrow()
+                .values()
+                .any(|v| v == "switch_schema:wubi86"),
+            "清除后 effect 没把删除落到内存表 ⇒ writer 写回的仍是旧值 ⇒ 保存报「没有变更」。\
+             当前表: {:?}",
+            st.key_actions.borrow()
+        );
+    }
+
     /// `apply_loaded` 必须能把构造期没读到的表补齐（此前它只刷新 enabled_order）。
     #[test]
     fn apply_config_refreshes_key_actions() {
