@@ -1083,6 +1083,31 @@ pub fn build_hotkey_dialog(
                 .fg_role(Role::TextMuted),
         )
         .child(Element::dropdown(key_labels, key_idx).width(160));
+
+    // 「只勾了修饰键、没选主键」的即时提示。
+    //
+    // `compose_hotkey` 对空主键一律返回 `"none"`（**不管勾了几个修饰键**），于是这种
+    // 半成品状态会被当作「解绑」。若该项原本就没绑过，解绑等于什么都没做 ⇒ 工作态无变化
+    // ⇒ 保存时报「没有变更」——用户明明刚配过，只是主键忘了选。等到那一步才反馈太迟，
+    // 而且那句提示还把原因指向了错误的地方。
+    {
+        let (wc, ws, wa, ww) = (mods[0], mods[1], mods[2], mods[3]);
+        let kv_warn = key_values.clone();
+        let ki = key_idx;
+        body = body.child(
+            Element::label("只选修饰键不构成热键：请选择主键，否则本次设置不会有任何变更")
+                .font_size(11.0)
+                .fg_role(Role::Warning)
+                .width_match()
+                .max_lines(2)
+                .visible_when(move || {
+                    let any_mod = wc.get() || ws.get() || wa.get() || ww.get();
+                    let key_empty = kv_warn.get(ki.get()).is_none_or(String::is_empty);
+                    any_mod && key_empty
+                }),
+        );
+    }
+
     if let Some(g) = global {
         body = body.child(
             Element::checkbox("注册为全局热键（其它程序中也生效）", g)

@@ -455,6 +455,15 @@ pub struct SchemaManagerState {
     /// 用 BTreeMap 而非 HashMap：写回顺序要可复现，否则每次保存 config.toml 的这一段
     /// 都在洗牌，diff 全是噪音。与 core 侧 `keys.key_actions` 的 BTreeMap 也对得上。
     pub key_actions: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
+    /// [`Self::key_actions`] 是否**确实从 core 读到过**（而非兜底的空表）。
+    ///
+    /// ★ 这张表的 writer 是**整表覆盖**语义，所以「空」有两种含义必须分开：
+    /// 「RPC 没读到」与「用户真的删光了」。混同的代价是前者被当成后者写回去，
+    /// 用户全部按键绑定被清空。旁边 `schema.active` 的 writer 早就防了同一件事
+    /// （注释原文：「离线/未连接时不该把配置清空」），这张表当时漏了。
+    ///
+    /// 置位点有二：构造期同步 RPC 成功，或 `apply_loaded` → [`Self::refresh_key_actions`]。
+    pub key_actions_loaded: Rc<std::cell::Cell<bool>>,
     /// 引导键复选工作态（固定 9 个候选键，与临拼/临英同一组）。
     pub settings_trigger_sigs: Vec<(String, Signal<bool>)>,
     pub settings_trigger_visible: Signal<bool>,
@@ -553,10 +562,14 @@ pub struct SchemaManagerState {
 impl SchemaManagerState {
     pub fn new() -> Self {
         let available = Self::read_available();
+        // 读不到与「读到空表」必须分开，见 `key_actions_loaded`。
+        let key_actions = Self::read_key_actions();
+        let key_actions_loaded = Rc::new(std::cell::Cell::new(key_actions.is_some()));
         let state = Self {
             schemas: Rc::new(RefCell::new(Vec::new())),
             enabled_order: Rc::new(RefCell::new(available)),
-            key_actions: Rc::new(RefCell::new(Self::read_key_actions())),
+            key_actions: Rc::new(RefCell::new(key_actions.unwrap_or_default())),
+            key_actions_loaded,
             settings_trigger_sigs: TRIGGER_KEY_OPTIONS
                 .iter()
                 .map(|(k, _)| (k.to_string(), signal(false)))
@@ -670,20 +683,51 @@ impl SchemaManagerState {
     /// 这张表是五c 收编后**所有引导键的唯一落点**：core 的 `Config::normalize` 会把
     /// 五处 `trigger_keys` 折算进来并清空原字段，故 `config.get` 拿到的 `trigger_keys`
     /// 恒为空——读那边只会得到一张空表。
-    fn read_key_actions() -> std::collections::BTreeMap<String, String> {
-        rpc::call_core("config.get", &json!({}))
-            .ok()
-            .and_then(|v| {
-                v.get("keys")
-                    .and_then(|k| k.get("key_actions"))
-                    .and_then(|m| m.as_object())
-                    .map(|o| {
-                        o.iter()
-                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                            .collect()
-                    })
-            })
-            .unwrap_or_default()
+    /// ⚠️ **返回 `None` = 没读到**，与「读到一张空表」必须分开——本函数在
+    /// `AppState::empty()` 里执行，那时 RPC 未必可用（该处注释原文是「不阻塞任何 RPC」，
+    /// 本调用其实违反了它）。两者混同的后果见 [`Self::key_actions_loaded`]：writer 会拿
+    /// 空表整表覆盖，把用户**全部**按键绑定清空。
+    fn read_key_actions() -> Option<std::collections::BTreeMap<String, String>> {
+        let v = match rpc::call_core("config.get", &json!({})) {
+            Ok(v) => v,
+            Err(e) => {
+                // 静默失败是本 bug 的一半——没有这条日志，事后无从判断用户当时是
+                // 「没读到」还是「真的没配过」。
+                tracing::warn!("读取 keys.key_actions 失败（将等待 apply_loaded 补齐）: {e}");
+                return None;
+            }
+        };
+        let map = v
+            .get("keys")
+            .and_then(|k| k.get("key_actions"))
+            .and_then(|m| m.as_object())?;
+        Some(
+            map.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect(),
+        )
+    }
+
+    /// 用完整配置刷新 `key_actions` 内存表（由 [`Self::apply_config`] 在 `apply_loaded`
+    /// 时调用）。
+    ///
+    /// # 为什么必须有这一步
+    ///
+    /// 构造期的 [`Self::read_key_actions`] 是**同步 RPC**，离线/服务未就绪时拿不到值。
+    /// 而这张表此前**没有任何后续刷新**——对比之下 `enabled_order` 走
+    /// [`Self::apply_config`] 能自愈，`key_actions` 漏了，于是一次失败就永久是空表。
+    /// 叠加 writer 的整表覆盖语义，用户的全部按键绑定会在下一次保存时被清空
+    /// （`keys.key_actions` 出厂默认是 `{}`，core 的 `set_user_value` 还会判「等于默认」
+    /// 直接删掉整个键，连痕迹都不留）。
+    fn refresh_key_actions(&self, cfg: &Config) {
+        let Some(map) = cfg.get_object("keys.key_actions") else {
+            return;
+        };
+        *self.key_actions.borrow_mut() = map
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect();
+        self.key_actions_loaded.set(true);
     }
 
     /// 指向某个动词的全部键名（如 `special:kf` → `["backslash"]`）。
@@ -1050,6 +1094,9 @@ impl SchemaManagerState {
             available
         };
         *self.enabled_order.borrow_mut() = new_order;
+        // 与 enabled_order 同批刷新：构造期那次同步 RPC 可能失败，而这张表此前没有任何
+        // 后续刷新点 —— 一次失败就永久是空表，再被 writer 整表覆盖回 core。
+        self.refresh_key_actions(cfg);
         self.rebuild_list();
     }
 
@@ -1827,6 +1874,17 @@ impl SchemaManagerState {
             cfg_changed = true;
         }
 
+        // 诊断：本函数是方案设置对话框**唯一**的落地入口（关窗时由 stage_effect 触发），
+        // 而它有多条静默 return —— 一旦没走到 merge_pending，用户的改动就无声消失，
+        // 保存时表现为「没有变更」。报障时先看这条日志：没有它 = 压根没 stage；
+        // 有它但 ka=false = 脏判定认为没变；都对则问题在 commit 或更后面。
+        tracing::debug!(
+            "stage_settings_edits: schema={id} cfg_changed={cfg_changed} dicts={} \
+             ka_dirty={} sa_dirty={}",
+            dicts.len(),
+            self.settings_ka.is_dirty(),
+            self.settings_sa.is_dirty(),
+        );
         if dicts.is_empty() && !cfg_changed {
             return;
         }
@@ -5215,6 +5273,98 @@ mod hotkey_save_pipeline_tests {
         assert!(
             !st.fields.side.borrow().is_empty(),
             "SideCommitter 也要补回来，否则方案 override / 词库开关同样存不下"
+        );
+    }
+
+    /// ★★ 构造期 RPC 失败（内存表是兜底空表）时，writer 必须**跳过**这个键。
+    ///
+    /// 不跳的话：用户点一次「应用设置」→ `keys.key_actions` 被整表写成 `{}` ⇒ 方案直达
+    /// 热键 / 往返热键 / special / 五c 收编后的全部引导键一次清空；又因 `{}` 恰好等于出厂
+    /// 默认，core 的 `set_user_value` 会判「等于默认」把整个键删掉，连痕迹都不留。
+    #[test]
+    fn key_actions_writer_skips_when_never_loaded() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let base = json!({
+            "keys": { "key_actions": { "ctrl+shift+n": "toggle_schema:english" } }
+        });
+        st.base_config = Config::from_value(base.clone());
+        st.current_config = Config::from_value(base);
+
+        // 复现构造期那次同步 RPC 失败：表是空的，且从未被标记为「读到过」。
+        st.schema_mgr.key_actions.borrow_mut().clear();
+        st.schema_mgr.key_actions_loaded.set(false);
+
+        let items = st.debug_diff_after_writers();
+        assert!(
+            !items.iter().any(|it| it.key == "keys.key_actions"),
+            "未加载就写回 ⇒ 用户全部按键绑定被清空：{items:?}"
+        );
+    }
+
+    /// ★★ 反向守卫：**已加载**时的空表必须照写——那是「用户真的删光了」。
+    ///
+    /// 缺这一条，上面那道闸就会被顺手做成「空表一律不写」，于是用户永远删不掉最后一条
+    /// 绑定——正是 `key_actions` 这一族反复栽的「清空意图被静默丢弃」。两个方向都要钉。
+    #[test]
+    fn key_actions_writer_writes_empty_table_once_loaded() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let base = json!({
+            "keys": { "key_actions": { "ctrl+shift+n": "toggle_schema:english" } }
+        });
+        st.base_config = Config::from_value(base.clone());
+        st.current_config = Config::from_value(base);
+
+        // 用户把最后一条绑定也删了，且这张表确实是从 core 读来的。
+        st.schema_mgr.key_actions.borrow_mut().clear();
+        st.schema_mgr.key_actions_loaded.set(true);
+
+        let items = st.debug_diff_after_writers();
+        let ka = items
+            .iter()
+            .find(|it| it.key == "keys.key_actions")
+            .unwrap_or_else(|| panic!("已加载时的空表必须写回，否则删不掉：{items:?}"));
+        assert_eq!(
+            ka.value.as_object().map(|o| o.len()),
+            Some(0),
+            "写回的应当是空表本身"
+        );
+    }
+
+    /// `apply_loaded` 必须能把构造期没读到的表补齐（此前它只刷新 enabled_order）。
+    #[test]
+    fn apply_config_refreshes_key_actions() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = AppState::empty();
+        st.schema_mgr.key_actions.borrow_mut().clear();
+        st.schema_mgr.key_actions_loaded.set(false);
+
+        let cfg = Config::from_value(json!({
+            "keys": { "key_actions": { "ctrl+shift+r": "switch_schema:wubi86" } }
+        }));
+        st.schema_mgr.apply_config(&cfg);
+
+        assert!(
+            st.schema_mgr.key_actions_loaded.get(),
+            "补齐后必须标记为已加载，否则 writer 会一直跳过、用户改什么都存不下"
+        );
+        assert_eq!(
+            st.schema_mgr
+                .key_actions
+                .borrow()
+                .get("ctrl+shift+r")
+                .map(String::as_str),
+            Some("switch_schema:wubi86")
         );
     }
 

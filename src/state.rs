@@ -432,7 +432,18 @@ pub(crate) fn register_schema_registrations(
     // 用户之后按一次保存就会把它整体覆盖回去。
     {
         let ka = schema_mgr.key_actions.clone();
+        let loaded = schema_mgr.key_actions_loaded.clone();
         fields.writers.borrow_mut().push(Box::new(move |cfg| {
+            // ★ 从没成功读到过就不写 —— 与下面 schema.active 的空串跳过同一个理由。
+            // 本 writer 是**整表覆盖**，而构造期那次同步 RPC 在离线/服务未就绪时会失败并
+            // 落一张空表。不设这道闸的话，用户点一次「应用设置」就把 keys.key_actions 整
+            // 体写成 `{}` ⇒ 方案直达热键 / 往返热键 / special / 五c 收编后的全部引导键
+            // 一次清空；又因 `{}` 恰好等于出厂默认，core 的 `set_user_value` 会判「等于
+            // 默认」把整个键删掉，连痕迹都不留。
+            if !loaded.get() {
+                tracing::warn!("keys.key_actions 尚未成功加载，跳过写回（避免整表清空）");
+                return;
+            }
             let map: serde_json::Map<String, Value> = ka
                 .borrow()
                 .iter()
