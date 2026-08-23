@@ -1735,8 +1735,25 @@ impl AppState {
 
         {
             let writers = reg.writers.borrow();
-            for w in writers.iter() {
+            // 诊断：方案页 writer 明明写回 4 条，diff 时 current 却仍是 5 条（含被删的
+            // 那一条）⇒ 后面还有 writer 把整张表覆盖了回去。逐个跑完看条数，**只在变化时
+            // 打印**，落在哪个下标就是哪个 writer 干的。
+            let count = |c: &Config| -> usize {
+                c.get_object("keys.key_actions")
+                    .map(|o| o.len())
+                    .unwrap_or(0)
+            };
+            let mut last = count(&self.current_config);
+            tracing::debug!("save writers 起点: key_actions {last} 条");
+            for (i, w) in writers.iter().enumerate() {
                 w(&mut self.current_config);
+                let n = count(&self.current_config);
+                if n != last {
+                    tracing::debug!(
+                        "save writers: writer[{i}] 把 key_actions 从 {last} 改成 {n} 条"
+                    );
+                    last = n;
+                }
             }
         }
         // 触发键冲突不再在此追加进保存 toast——改由输入页常驻警告条实时呈现（见 conflict_watcher）。
