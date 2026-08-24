@@ -27,6 +27,30 @@ pub const SIDEBAR_W: i32 = 200;
 /// 单项行高，与主窗侧栏一致（36），保持两级导航的节奏感相同。
 const ITEM_H: i32 = 36;
 
+/// 滚动区内侧的横向内缩，**同时是滚动条的让位量**。
+///
+/// 滚动条画在滚动容器自己的右缘，容器一旦被外层 padding 内缩，它就跟着悬在离栏边
+/// 十来像素的半空中——原先左栏容器统一 `padding_xy(8, 10)` 就是这个症状。故滚动区
+/// 整栏铺满（贴住右侧分隔线），横向内缩下放到它的内容上。
+///
+/// **下限是滚动条占宽**（`scrollbar::occupied_w(0)` = 轨宽 7 + 边距 3）：windui 的
+/// `arrange_scroll` 只把滚动容器**直接子节点**的 bounds 收窄给滚动条让位，更深一层的
+/// `width_match` 子树沿用 measure 期量到的宽度——于是让位量实际是被这层内缩吸收的。
+/// 内缩小于占宽，条目就会伸到滚动条底下——原先那 8px 挂在滚动区**外面**，区内一点
+/// 内缩都没有，于是整行直接压在滚动条上，徽章右边框被吞掉。右栏 `widgets::page` 的
+/// `padding_xy(20, …)` 满足同一条不变式，只是余量大得看不出来。
+/// 由 `tests::sidebar_padding_covers_scrollbar_gutter` 守着。
+///
+/// 副作用是好的：内容宽度由本常量而非让位量决定，滚动条出现/消失时条目**不横移**。
+///
+/// 左栏不必再避让窗口缩放边框（`scrollbar::WINDOW_EDGE_INSET`）：它右边还隔着内容区，
+/// `WM_NCHITTEST` 那 8px 判定区够不着这里。
+const SIDE_PAD: i32 = 10;
+
+/// 条目/标题的行内左右内边距。与 [`SIDE_PAD`] 相加即文字的左基线（18，同主窗侧栏），
+/// 底栏按钮照抄这个和——两处对不齐时，底栏按钮会比上面整列条目的文字左右各错开一点点。
+const ITEM_PAD_X: i32 = 8;
+
 /// 构建左栏。`back` 是底栏左侧的「返回设置」按钮，由窗口层构造（它要 `AppState`，
 /// 而本模块只认识 `DictManagerState`）。
 ///
@@ -38,7 +62,8 @@ pub fn build_sidebar(mgr: &DictManagerState, back: Element) -> Element {
     // 挂 `domain_epoch`（单元素计数器）而**不是** `domain_items`：`host_signal` 按 Vec 的
     // 每个元素调一次构建器，挂多元素信号会得到 N 份完整列表叠在一起。同 view.rs 的
     // table_host。
-    let list = Element::host_signal(mgr.domain_epoch, move |_| build_list(&mgr_list));
+    let list = Element::host_signal(mgr.domain_epoch, move |_| build_list(&mgr_list))
+        .padding_xy(SIDE_PAD, 0);
 
     let mgr_refresh = mgr.clone();
     let status = mgr.status;
@@ -47,7 +72,7 @@ pub fn build_sidebar(mgr: &DictManagerState, back: Element) -> Element {
     // 就是紧贴底边的一排按钮。
     let footer = Element::col()
         .width_match()
-        .padding_xy(10, 8)
+        .padding_xy(SIDE_PAD + ITEM_PAD_X, 8)
         .spacing(6)
         .child(
             // 状态文字（「已加载 250 条」「未连接」等）。原先挤在页顶下拉右侧，那里同时还要
@@ -76,11 +101,13 @@ pub fn build_sidebar(mgr: &DictManagerState, back: Element) -> Element {
                 ),
         );
 
+    // 横向 padding 归零（下放给 list/footer），滚动区因此能铺满整栏；分隔线也随之
+    // 变成通栏，与底栏的"一条横杠隔开"读法一致。纵向 10 仍留在这里：那是整栏的上下留白。
     Element::col()
         .width(SIDEBAR_W)
         .height_match()
         .bg_role(Role::Bg)
-        .padding_xy(8, 10)
+        .padding_xy(0, 10)
         .child(Element::scroll().fill().weight(1.0).child(list))
         .child(Element::divider())
         .child(footer)
@@ -169,7 +196,7 @@ fn group_title(text: &str) -> Element {
         .width_match()
         .max_lines(1)
         .height(26)
-        .padding_xy(10, 5)
+        .padding_xy(ITEM_PAD_X, 5)
 }
 
 /// 一个词库类型条目。选中/未选中两套元素 `visible_when` 切换（windui 无响应式样式）。
@@ -220,7 +247,7 @@ fn item_row(name: &str, tag: &str, active: bool) -> Element {
         .corner(9.0)
         .cross(Align::Center)
         .spacing(6)
-        .padding_xy(10, 0)
+        .padding_xy(ITEM_PAD_X, 0)
         .child(
             Element::label(name)
                 .font_size(13.0)
@@ -264,6 +291,8 @@ mod tests {
     use super::super::state::{DomainSlot, domain_slot};
     use super::*;
     use crate::state::SchemaInfo;
+    use windui::core::{Tree, scrollbar};
+    use windui::geometry::Size;
 
     fn schema(id: &str, name: &str, kind: &str) -> SchemaInfo {
         SchemaInfo {
@@ -351,6 +380,104 @@ mod tests {
 
         assert_eq!(entries.len(), GLOBAL_DOMAINS);
         assert!(entries.iter().all(|e| !e.in_schema_group));
+    }
+
+    /// 内缩必须盖得住滚动条让位量，否则条目会伸到滚动条底下。
+    ///
+    /// ★ 单拎出来是因为它是一条**算术**不变式：`arrange_scroll` 只收窄滚动容器直接
+    /// 子节点的 bounds，更深一层的 `width_match` 子树沿用 measure 期的宽度，让位量
+    /// 全靠这层内缩吸收。哪天有人把 `SIDE_PAD` 调小去省两像素，这里立刻响。
+    #[test]
+    fn sidebar_padding_covers_scrollbar_gutter() {
+        assert!(
+            SIDE_PAD >= scrollbar::occupied_w(0),
+            "SIDE_PAD({SIDE_PAD}) 必须不小于滚动条占宽({})，否则条目压在滚动条底下",
+            scrollbar::occupied_w(0)
+        );
+    }
+
+    /// 方案多到要滚动时，**滚动条贴住栏的右缘、且不压在条目上**。
+    ///
+    /// ★ 这条钉住两件曾经出过错的事：
+    /// 1. 滚动条位置——它画在滚动容器自己的右缘，容器一旦被外层 padding 内缩，
+    ///    滚动条就跟着悬在离栏边十来像素的半空中（原先 `padding_xy(8, 10)` 就是这样）；
+    /// 2. 条目让位——内缩不足时整行伸到滚动条底下，徽章右边框被吞掉。
+    ///
+    /// 判据取**最深一层的条目行**，不取滚动容器的直接子节点：后者的 bounds 由
+    /// `arrange_scroll` 直接收窄，本来就是对的，真正会出错的是它下面那几层。
+    #[test]
+    fn scrollbar_hugs_right_edge_and_clears_items() {
+        let mgr = DictManagerState::new();
+        with_schemas(
+            &mgr,
+            (0..20)
+                .map(|i| schema(&format!("s{i}"), &format!("方案{i}"), "codetable"))
+                .collect(),
+        );
+
+        // 左栏摆在整窗里（右侧还有内容区），故不涉及贴窗口右缘的缩放边框内缩。
+        let root = Element::row()
+            .width(820)
+            .height(640)
+            .child(build_sidebar(&mgr, Element::button("返回")))
+            .child(Element::leaf().weight(1.0).height_match());
+        let mut tree = Tree::new();
+        let rid = root.build(&mut tree);
+        tree.root = Some(rid);
+        tree.layout_root(Size::new(820, 640), &mut windui::text::NullTextEngine);
+
+        let side = tree.get(rid).unwrap().children[0];
+        let scroll = tree.get(side).unwrap().children[0];
+        let sb = tree.abs_bounds(scroll);
+        assert!(
+            tree.get(scroll).unwrap().content_h > sb.h,
+            "前提：20 个方案必须撑得滚动条出来"
+        );
+        assert_eq!(
+            sb.right(),
+            SIDEBAR_W,
+            "滚动区须铺满整栏，滚动条才贴得住栏的右缘"
+        );
+
+        // 滚动条轨道左缘（同 `core::scrollbar` 的绘制式：右缘 - 轨宽 - 边距）。
+        let bar_left = sb.right() - scrollbar::occupied_w(0);
+
+        let host = tree.get(scroll).unwrap().children[0];
+        let list = tree.get(host).unwrap().children[0];
+        let before = tree.get(list).unwrap().children.len();
+        assert_items_clear_bar(&tree, list, bar_left);
+
+        // 再核一遍**重建之后**：内缩挂在 `host_signal` 宿主节点上，而 DynList 重建的是
+        // 它的子树——哪天内缩被挪进构建函数里，重建后就没了，只测首帧看不出来。
+        mgr.set_schemas_no_reload(
+            &(0..24)
+                .map(|i| schema(&format!("s{i}"), &format!("方案{i}"), "codetable"))
+                .collect::<Vec<_>>(),
+        );
+        tree.layout_root(Size::new(820, 640), &mut windui::text::NullTextEngine);
+        let list2 = tree
+            .get(tree.get(scroll).unwrap().children[0])
+            .unwrap()
+            .children[0];
+        assert!(
+            tree.get(list2).unwrap().children.len() > before,
+            "前提：多注入 4 个方案后列表应真的重建过（否则下面这条判据是空转）"
+        );
+        assert_items_clear_bar(&tree, list2, bar_left);
+    }
+
+    /// 列表里每一条的右缘都不得越过滚动条轨道左缘。
+    fn assert_items_clear_bar(tree: &Tree, list: windui::core::NodeId, bar_left: i32) {
+        let items = tree.get(list).unwrap().children.clone();
+        assert!(items.len() > 20, "前提：列表里应有分组标题 + 全部条目");
+        for it in items {
+            let b = tree.abs_bounds(it);
+            assert!(
+                b.right() <= bar_left,
+                "条目右缘 {} 伸进了滚动条轨道（轨道左缘 {bar_left}）",
+                b.right()
+            );
+        }
     }
 
     /// 域集合变化必须递增 `domain_epoch`，否则左栏停在建窗那一刻的快照上 ——
