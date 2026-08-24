@@ -1142,6 +1142,11 @@ impl DictManagerState {
     }
 
     /// 统一写入：调 RPC，成功刷新并置反馈，失败置错误（纯 method/params，副作用集中于此）。
+    /// `ok_msg` 为空 = **成功时不弹 toast**（失败仍要弹）。
+    ///
+    /// 给「点一下就完事」的轻操作用：常用字的常用⇄生僻切换，结果就在同一行的徽章上
+    /// 立刻看得见，再飘一条 toast 属于用一个更重的东西去通报一件更轻的事。
+    /// 加词、导入这类看不出结果的操作仍然要提示。
     fn write(&self, method: &str, params: Value, ok_msg: &str) {
         if method.is_empty() {
             self.notify_info("该操作不可用");
@@ -1150,7 +1155,9 @@ impl DictManagerState {
         match rpc::call_core(method, &params) {
             Ok(_) => {
                 self.reload();
-                self.notify_ok(ok_msg);
+                if !ok_msg.is_empty() {
+                    self.notify_ok(ok_msg);
+                }
             }
             Err(e) => {
                 // 失败也刷新：把乐观改动（如启用开关翻转）回退到服务端真实状态。
@@ -1715,12 +1722,9 @@ impl DictManagerState {
     /// core 会把那条调整删掉而不是写一条同向的冗余记录。
     pub fn toggle_common_row(&self, row: &WordRow) {
         let (method, params) = self.toggle_common_call(row);
-        let msg = if row.common_now {
-            "已设为生僻字"
-        } else {
-            "已设为常用字"
-        };
-        self.write(method, params, msg);
+        // **不弹 toast**：结果就在同一行的「当前」徽章上立刻看得见（改过的还会变色），
+        // 再飘一条提示是用更重的东西去通报一件更轻的事。加词那类看不出结果的才需要。
+        self.write(method, params, "");
     }
 
     /// 一键切换要发的 (方法, 参数)。**纯函数，便于单测键名与方向**（同 [`Self::delete_call`]）
@@ -1741,11 +1745,11 @@ impl DictManagerState {
         let spec = self.current_spec();
         match spec.category {
             WordCategory::QuickFormat => self.do_quick_reset_entry(row),
-            WordCategory::CommonChars => self.write(
-                spec.rpc.reset_entry,
-                json!({ "char": row.text }),
-                "已恢复默认",
-            ),
+            // 同 `toggle_common_row`：行内轻操作，结果就在那一行的徽章上（值翻回默认、
+            // 强调色褪掉），不弹 toast。整表恢复才提示——那个看不出结果。
+            WordCategory::CommonChars => {
+                self.write(spec.rpc.reset_entry, json!({ "char": row.text }), "")
+            }
             _ => {}
         }
     }
@@ -3584,6 +3588,36 @@ mod tests {
         assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
         assert_eq!(p.get("prefix").and_then(|v| v.as_str()), Some("槮"));
         assert!(p.get("offset").is_some() && p.get("limit").is_some());
+    }
+
+    /// 点列头要真的把 `sortBy` 发出去。
+    ///
+    /// 服务端分页的类别，排序也必须在服务端做——只排当页那几十条毫无意义。发不出去的
+    /// 表现是「点了列头没反应」，而列头照旧画着可排序的样子，也不报错。
+    #[test]
+    fn common_list_sends_sort_key_of_clicked_column() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+
+        // 第 0 列「字」——它复用 WordField::Text，故发出去的键是 "text"
+        // （core 侧两个键都认，见 `sort_common_char_rows`）。
+        st.sort.set(Some(SortKey {
+            column: 0,
+            order: SortOrder::Asc,
+        }));
+        let p = st.build_list_params();
+        assert_eq!(p.get("sortBy").and_then(|v| v.as_str()), Some("text"));
+        assert_eq!(p.get("sortOrder").and_then(|v| v.as_str()), Some("asc"));
+
+        // 第 2 列「当前」→ common，降序。
+        st.sort.set(Some(SortKey {
+            column: 2,
+            order: SortOrder::Desc,
+        }));
+        let p = st.build_list_params();
+        assert_eq!(p.get("sortBy").and_then(|v| v.as_str()), Some("common"));
+        assert_eq!(p.get("sortOrder").and_then(|v| v.as_str()), Some("desc"));
     }
 
     /// `adjusted` 要从 list 的 json 读出来——漏读的话全表每一行都是「没改过」，
