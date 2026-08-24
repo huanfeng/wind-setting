@@ -27,6 +27,7 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_confirm_dialog(mgr))
         .child(build_edit_dialog(mgr))
         .child(build_quick_dialog(mgr))
+        .child(build_common_dialog(mgr))
         .child(build_shadow_dialog(mgr))
         .child(build_view_dialog(mgr))
         .child(build_export_dialog(mgr))
@@ -621,6 +622,101 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
         .child(Element::divider())
         .child(footer);
     Element::dialog(mgr.quick_edit_visible, frame)
+}
+
+/// 常用字调整的添加 / 编辑：一个字 + 判为哪边。
+///
+/// 与 [`build_edit_dialog`] 分开的理由同 [`build_quick_dialog`]：这张表没有编码、权重、
+/// 次序，共用一个布局会变成一堆互斥的显隐条件，而每加一个条件都要在别的类别上验一遍。
+///
+/// **编辑时那个字锁定**：主键就是它，换个字本就是另一条调整（想改就删掉重加）。
+/// 与快捷输入锁定类别同理——禁用而不是隐藏，用户仍需看到自己在改哪个字。
+fn build_common_dialog(mgr: &DictManagerState) -> Element {
+    let submit = mgr.clone();
+    let cancel = mgr.clone();
+    let char_enabled = mgr.clone();
+
+    let field = |label: &str, input: Element| {
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(
+                Element::label(label)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .width(48),
+            )
+            .child(input)
+    };
+
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 12)
+        .spacing(10)
+        .child(field(
+            "字",
+            Element::text_input(mgr.edit_text, "")
+                .width(80)
+                .height(34)
+                .enabled_when(move || !char_enabled.is_editing_common()),
+        ))
+        .child(field(
+            "判为",
+            // 两个互斥选项用分段控件：下拉要点两下才看得到另一个选项，而这里的全部信息
+            // 就是「二选一」，值得直接摊开。
+            Element::segmented(super::spec::common_choices(), mgr.common_choice).width(160),
+        ))
+        .child(
+            Element::label(
+                "只有汉字有常用/生僻之分。设为生僻后，该字在「智能」「常用字」两档检索\
+                 范围下会被同码位的常用字压住；设为常用则反之。此设置对所有方案生效。",
+            )
+            .font_size(11.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            // 说明有三行左右，给足行数上限；`wrap()` 只对 text_input 有效，label 靠
+            // width_match + max_lines 折行。
+            .max_lines(4),
+        );
+
+    let footer = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 12)
+        .spacing(8)
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| cancel.cancel_common_edit()),
+        )
+        .child(
+            Element::button("确定")
+                .small()
+                .on_click(move |_| submit.submit_word()),
+        );
+
+    let frame = Element::col()
+        .width(420)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label_signal(mgr.edit_title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(footer);
+    Element::dialog(mgr.common_edit_visible, frame)
 }
 
 /// 候选调整手动添加：编码 / 词条 / 类型(固定位置|隐藏) / 目标位置(仅固定位置)。

@@ -41,6 +41,8 @@ const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
 // 快捷输入只有一个子标签，分段本身没有切换意义，但仍要有：分段的显隐决定这一行画不画，
 // 缺了它这个域就一个标签都不渲染（见 `sub_tab_segments_cover_every_domain_kind`）。
 const SEG_QUICK: &[DomainKind] = &[DomainKind::QuickFormat];
+// 常用字同理：单标签，分段只为让这一行画出来。
+const SEG_COMMON: &[DomainKind] = &[DomainKind::CommonChars];
 /// 覆盖性校验用（顺序无关），仅测试构建需要。加新分段时记得挂进来。
 #[cfg(test)]
 const ALL_SEGMENTS: &[&[DomainKind]] = &[
@@ -50,6 +52,7 @@ const ALL_SEGMENTS: &[&[DomainKind]] = &[
     SEG_ENGLISH,
     SEG_MIXED,
     SEG_QUICK,
+    SEG_COMMON,
 ];
 
 /// 按一份 [`DictManagerState`] 构建词库页主体。
@@ -165,6 +168,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(seg(mgr.clone(), SEG_ENGLISH))
         .child(seg(mgr.clone(), SEG_MIXED))
         .child(seg(mgr.clone(), SEG_QUICK))
+        .child(seg(mgr.clone(), SEG_COMMON))
         .child(mixed_hint)
         .child(Element::leaf().weight(1.0))
         .child(import_entry)
@@ -254,6 +258,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
                         .unwrap_or_default();
                     m_add.open_quick_add(&kind);
                 }
+                C::CommonChars => m_add.open_common_add(),
                 _ => m_add.open_add(),
             }
         })
@@ -477,6 +482,24 @@ fn render_cell(
                     .border_role(role, 1),
             )
         }
+        // 常用性两列渲染成徽章：**生僻用强调色**。这一列要一眼看出的是「哪些字被我压下去了」
+        // ——被压住意味着它在智能/常用字档不再露面，那才是需要留意的状态；「常用」是默认
+        // 姿态，反而不该抢眼。与候选调整那列同一套视觉语言（值得注意的用 Accent）。
+        WordField::CommonNow | WordField::CommonBase => {
+            let role = if text == super::spec::common_label(false) {
+                Role::Accent
+            } else {
+                Role::TextMuted
+            };
+            Some(
+                Element::label(text)
+                    .font_size(11.0)
+                    .fg_role(role)
+                    .padding_xy(6, 2)
+                    .corner(4.0)
+                    .border_role(role, 1),
+            )
+        }
         _ => None,
     }
 }
@@ -650,24 +673,25 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let (c, t) = (row.code.clone(), row.text.clone());
         let quick_row =
             (spec.category == super::spec::WordCategory::QuickFormat).then(|| row.clone());
-        push_group(
-            &mut items,
-            vec![
-                MenuItem::run(
-                    "删除",
-                    move |_ctx| match &quick_row {
-                        // 快捷输入的主键是 (kind, id)，走专用确认——通用那条只带
-                        // (code, text)，kind 丢在半路，确认之后就拼不出请求了。
-                        Some(r) => m.request_quick_delete(r),
-                        None => m.request_delete_row(&c, &t),
-                    },
-                    false,
-                )
-                // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
-                // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
-                .danger(),
-            ],
+        // 文案与危险标记跟操作列按钮同源（`spec::remove_action`）：两处各写一份的话，
+        // 常用字会出现「按钮写着恢复出厂、右键菜单写着删除」这种自相矛盾的措辞。
+        let (label, dangerous) = super::spec::remove_action(spec.category);
+        let mut item = MenuItem::run(
+            label,
+            move |_ctx| match &quick_row {
+                // 快捷输入的主键是 (kind, id)，走专用确认——通用那条只带
+                // (code, text)，kind 丢在半路，确认之后就拼不出请求了。
+                Some(r) => m.request_quick_delete(r),
+                None => m.request_delete_row(&c, &t),
+            },
+            false,
         );
+        if dangerous {
+            // 菜单各项长得一样，颜色是唯一能在扫读时把不可逆操作与紧邻的「复制编码」
+            // 拦开的信号。可逆的那类（常用字恢复出厂）不标，免得红色贬值。
+            item = item.danger();
+        }
+        push_group(&mut items, vec![item]);
     }
     items
 }
@@ -798,6 +822,14 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                     .outline_soft()
                     .on_click(move |_| m.open_quick_edit(&row_q)),
             );
+        } else if spec.category == super::spec::WordCategory::CommonChars {
+            let row_c = row.clone();
+            r = r.child(
+                Element::button("编辑")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| m.open_common_edit(&row_c)),
+            );
         } else if spec.ops.remove_rule {
             // Shadow 类别：预填现值打开 shadow 对话框。
             // `row.text` 是规则的原始文本（列表显示的模板原文不能回填，见 activate_row）；
@@ -862,15 +894,15 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         let (c, t) = (row.code.clone(), row.text.clone());
         let quick_row =
             (spec.category == super::spec::WordCategory::QuickFormat).then(|| row.clone());
-        r = r.child(
-            Element::button("删除")
-                .small()
-                .danger()
-                .on_click(move |_| match &quick_row {
-                    Some(rq) => m.request_quick_delete(rq),
-                    None => m.request_delete_row(&c, &t),
-                }),
-        );
+        let (label, dangerous) = super::spec::remove_action(spec.category);
+        let mut btn = Element::button(label).small();
+        if dangerous {
+            btn = btn.danger();
+        }
+        r = r.child(btn.on_click(move |_| match &quick_row {
+            Some(rq) => m.request_quick_delete(rq),
+            None => m.request_delete_row(&c, &t),
+        }));
     }
     r
 }
@@ -902,6 +934,7 @@ mod tests {
             DomainKind::English,
             DomainKind::Other,
             DomainKind::QuickFormat,
+            DomainKind::CommonChars,
         ];
         // 穷尽性哨兵：新增变体会让这个 match 编译失败，逼人回到上面的数组补齐。
         for k in all {
@@ -912,7 +945,8 @@ mod tests {
                 | DomainKind::Mixed
                 | DomainKind::English
                 | DomainKind::Other
-                | DomainKind::QuickFormat => (),
+                | DomainKind::QuickFormat
+                | DomainKind::CommonChars => (),
             };
         }
         for k in all {

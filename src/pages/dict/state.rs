@@ -233,6 +233,10 @@ pub struct DictManagerState {
     /// 与 `submit_word` 那条提交路径，只有可见性独立——两个对话框的布局差别太大
     /// （类别下拉 + 变量提示 vs 编码/权重/次序），塞进一个会变成一堆 visible_when。
     pub quick_edit_visible: Signal<bool>,
+    /// 常用字对话框的可见性（独立于 `edit_visible`：那个对话框有编码/权重/次序，这个没有）。
+    pub common_edit_visible: Signal<bool>,
+    /// 常用字对话框里「判为哪边」的选择，下标对应 [`COMMON_CHOICES`]。
+    pub common_choice: Signal<usize>,
     /// 类别选择器的选项标签。开对话框时填充。
     ///
     /// ⚠️ 必须是信号、不能在构建期算好：对话框只构建一次，而那一刻列表数据还没加载——
@@ -308,6 +312,8 @@ pub enum DomainKind {
     Phrase,
     /// 快捷输入格式表。**全局域**（与方案无关：core 那张表的键只到格式类别）。
     QuickFormat,
+    /// 常用字覆盖。**全局域**（core 那张表的键就是一个字，不带方案也不带编码）。
+    CommonChars,
     Pinyin,
     Codetable,
     Mixed,
@@ -324,13 +330,25 @@ pub enum DomainKind {
 /// 不 panic。故域下标一律经 [`domain_slot`] 解析，不再手写下标算术。
 pub(crate) const DOMAIN_PHRASE: usize = 0;
 pub(crate) const DOMAIN_QUICK: usize = 1;
-pub(crate) const GLOBAL_DOMAINS: usize = 2;
+pub(crate) const DOMAIN_COMMON: usize = 2;
+pub(crate) const GLOBAL_DOMAINS: usize = 3;
+
+/// 全局域的展示名，**按槽位顺序**（`[DOMAIN_PHRASE]` / `[DOMAIN_QUICK]` / `[DOMAIN_COMMON]`）。
+///
+/// ★ 数组长度锁死 [`GLOBAL_DOMAINS`]：加一个全局域却忘了在这里补名字会**当场编译失败**。
+/// 这条约束是补出来的——上面那段注释当年把「域下标算术」收敛进了 [`domain_slot`]，
+/// 却漏了**标签列表**这一路：`domain_labels` 与 `domain_rich_items` 各自手写着两项字面量，
+/// 与 `GLOBAL_DOMAINS` 毫无编译期关联。加第三个全局域时它们照旧只产出两项，症状正是那段
+/// 注释描述的：侧栏少画一项、其后的方案域整体错位一格，且不报错不 panic。
+pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] = ["快捷短语", "快捷输入", "常用字"];
 
 /// 域下标的语义。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DomainSlot {
     Phrase,
     QuickFormat,
+    /// 常用字覆盖（全局：那张表的键就是一个字，不带方案）。
+    CommonChars,
     /// 折叠后的方案域下标（**已减去全局槽位**，可直接索引 `folded_domains()`）。
     Schema(usize),
 }
@@ -340,6 +358,7 @@ pub fn domain_slot(domain: usize) -> DomainSlot {
     match domain {
         DOMAIN_PHRASE => DomainSlot::Phrase,
         DOMAIN_QUICK => DomainSlot::QuickFormat,
+        DOMAIN_COMMON => DomainSlot::CommonChars,
         d => DomainSlot::Schema(d - GLOBAL_DOMAINS),
     }
 }
@@ -365,6 +384,8 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
         // 快捷输入只有一张表（五个类别在同一列表里靠「类别」列区分，排序是组内语义）。
         DomainKind::QuickFormat => vec![QuickFormat],
+        // 常用字也只有一张表：出厂 8104 字不进列表，这里只列用户改过的那些。
+        DomainKind::CommonChars => vec![CommonChars],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -453,6 +474,8 @@ impl DictManagerState {
             viewing: Rc::new(RefCell::new(None)),
             shadow_add_visible: signal(false),
             quick_edit_visible: signal(false),
+            common_edit_visible: signal(false),
+            common_choice: signal(0),
             quick_kind_idx: signal(0),
             quick_kind_labels: signal(Vec::new()),
             quick_var_text: signal(String::new()),
@@ -537,6 +560,7 @@ impl DictManagerState {
         let i = match domain_slot(domain) {
             DomainSlot::Phrase => return DomainKind::Phrase,
             DomainSlot::QuickFormat => return DomainKind::QuickFormat,
+            DomainSlot::CommonChars => return DomainKind::CommonChars,
             DomainSlot::Schema(i) => i,
         };
         match self.folded_domains().get(i).map(|e| e.kind.as_str()) {
@@ -570,8 +594,11 @@ impl DictManagerState {
     /// 指定数据域的展示名（两个全局域各有固定名，其余取折叠域标签，如 "五笔86 · 码表"）。
     pub fn domain_label_at(&self, domain: usize) -> String {
         let i = match domain_slot(domain) {
-            DomainSlot::Phrase => return "快捷短语".to_string(),
-            DomainSlot::QuickFormat => return "快捷输入".to_string(),
+            // 名字取自 [`GLOBAL_DOMAIN_LABELS`]，不另写字面量：这一处与 `domain_labels`
+            // 必须逐字相同，否则侧栏与下拉会对同一个域显示两种叫法。
+            DomainSlot::Phrase => return GLOBAL_DOMAIN_LABELS[DOMAIN_PHRASE].to_string(),
+            DomainSlot::QuickFormat => return GLOBAL_DOMAIN_LABELS[DOMAIN_QUICK].to_string(),
+            DomainSlot::CommonChars => return GLOBAL_DOMAIN_LABELS[DOMAIN_COMMON].to_string(),
             DomainSlot::Schema(i) => i,
         };
         self.folded_domains()
@@ -627,6 +654,9 @@ impl DictManagerState {
         }
         if s.eq_ignore_ascii_case("quick") {
             return Some(DOMAIN_QUICK);
+        }
+        if s.eq_ignore_ascii_case("common") || s.eq_ignore_ascii_case("common-chars") {
+            return Some(DOMAIN_COMMON);
         }
         let domains = self.folded_domains();
         if let Some(i) = domains.iter().position(|d| d.rep_schema_id == s) {
@@ -726,7 +756,7 @@ impl DictManagerState {
     /// 顺序必须与 [`domain_slot`] 的槽位一致——这里多写一项或少写一项，下拉的每一项都会
     /// 指向隔壁的域。
     pub fn domain_labels(&self) -> Vec<String> {
-        let mut v = vec!["快捷短语".to_string(), "快捷输入".to_string()];
+        let mut v: Vec<String> = GLOBAL_DOMAIN_LABELS.iter().map(|s| s.to_string()).collect();
         for e in self.folded_domains() {
             v.push(e.label);
         }
@@ -734,12 +764,13 @@ impl DictManagerState {
     }
 
     /// 数据域下拉的富内容选项：方案名为主文本、引擎类型为尾随徽章（拼音=强调色，其余=中性）。
-    /// 两个全局域标"全局"徽章。与 [`Self::domain_labels`] 同序。
+    /// 全局域一律标"全局"徽章。与 [`Self::domain_labels`] 同序、同源
+    /// （[`GLOBAL_DOMAIN_LABELS`]）——两处各写一份字面量正是上一次加全局域时的漏网点。
     pub fn domain_rich_items(&self) -> Vec<DropdownItem> {
-        let mut v = vec![
-            DropdownItem::new("快捷短语").badge("全局", Intent::Neutral),
-            DropdownItem::new("快捷输入").badge("全局", Intent::Neutral),
-        ];
+        let mut v: Vec<DropdownItem> = GLOBAL_DOMAIN_LABELS
+            .iter()
+            .map(|s| DropdownItem::new(*s).badge("全局", Intent::Neutral))
+            .collect();
         for e in self.folded_domains() {
             // 折叠标签形如 "五笔86 · 码表"：主文本取方案名（· 前段），徽章取引擎类型。
             let name = e
@@ -1127,6 +1158,11 @@ impl DictManagerState {
     /// id 需要一路穿过 `PendingAction`（删除走确认流程），暂不做。真遇到再补。
     pub fn delete_call(&self, code: &str, text: &str) -> (&'static str, Value) {
         let spec = self.current_spec();
+        // 常用字：主键就是那个字，没有编码也没有方案。参数键是 `char` 而不是 `text`——
+        // 键名错了 core 会报「缺少参数 char」，不至于静默，但也没必要让用户看见。
+        if spec.category == WordCategory::CommonChars {
+            return (spec.rpc.remove, json!({ "char": text }));
+        }
         let mut p = self.scoped_params();
         p.insert("code".into(), json!(code));
         if spec.ops.remove_rule {
@@ -1665,16 +1701,27 @@ impl DictManagerState {
 
     pub fn request_delete_row(&self, code: &str, text: &str) {
         *self.pending.borrow_mut() = Some(PendingAction::DeleteRow(code.into(), text.into()));
-        self.confirm_msg
-            .set(format!("确定删除「{text}」？此操作不可恢复。"));
+        // 常用字这一类删的是一条调整，不是用户的内容：说「不可恢复」既不准确，也会把
+        // 一个随手可撤的操作吓成大事。文案如实说明它的效果——那个字回到出厂判定。
+        let msg = if self.current_category() == WordCategory::CommonChars {
+            format!("确定让「{text}」回到出厂判定？这条调整会被清除。")
+        } else {
+            format!("确定删除「{text}」？此操作不可恢复。")
+        };
+        self.confirm_msg.set(msg);
         self.confirm_visible.set(true);
     }
 
     pub fn request_clear(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::Clear);
         let n = self.total.get();
-        self.confirm_msg
-            .set(format!("确定清空当前 {n} 条数据？此操作不可恢复。"));
+        // 同 `request_delete_row`：常用字清的是全部调整，字本身与出厂表都还在。
+        let msg = if self.current_category() == WordCategory::CommonChars {
+            format!("确定清除全部 {n} 条常用字调整？这些字都会回到出厂判定。")
+        } else {
+            format!("确定清空当前 {n} 条数据？此操作不可恢复。")
+        };
+        self.confirm_msg.set(msg);
         self.confirm_visible.set(true);
     }
 
@@ -1808,6 +1855,39 @@ impl DictManagerState {
         self.editing_orig.borrow().is_some()
     }
 
+    /// 打开「添加常用字调整」对话框。
+    pub fn open_common_add(&self) {
+        *self.editing_orig.borrow_mut() = None;
+        self.edit_text.set(String::new());
+        // 默认「常用」：来这里手动添加多半是想把某个被判生僻的字提上来
+        // （想压掉某个常用字，更顺手的入口是打出它然后右键）。
+        self.common_choice.set(0);
+        self.edit_title.set("添加常用字调整".into());
+        self.common_edit_visible.set(true);
+    }
+
+    /// 打开「编辑常用字调整」对话框：预填那个字与它当前的方向。
+    pub fn open_common_edit(&self, row: &WordRow) {
+        // `editing_orig` 的 code 位留空——这张表没有编码维度，主键就是那个字。
+        *self.editing_orig.borrow_mut() = Some((String::new(), row.text.clone()));
+        self.edit_text.set(row.text.clone());
+        self.common_choice.set(usize::from(!row.common_now));
+        self.edit_title.set("编辑常用字调整".into());
+        self.common_edit_visible.set(true);
+    }
+
+    pub fn cancel_common_edit(&self) {
+        self.common_edit_visible.set(false);
+    }
+
+    /// 常用字对话框是「编辑已有」而非新增。
+    ///
+    /// 编辑时**那个字锁定**：主键就是它，换个字本就是另一条调整（想改就删掉重加）。
+    /// 与快捷输入锁定类别同理——锁定而不是隐藏，用户仍需看到自己在改哪个字。
+    pub(crate) fn is_editing_common(&self) -> bool {
+        self.editing_orig.borrow().is_some()
+    }
+
     /// 打开系统短语只读查看对话框（写入独立 view_* 信号，不污染 edit_*）。
     pub fn open_view(&self, code: &str, text: &str, weight: i64, position: i64) {
         self.view_code.set(code.into());
@@ -1855,6 +1935,35 @@ impl DictManagerState {
         }
     }
 
+    /// 常用字：`{char, common}`。新增与编辑走**同一个** RPC——两者都是「把这个字设成
+    /// 这一边」，core 侧对已存在的字直接改写方向。
+    ///
+    /// 这里只拦「不是一个字」这种参数形态问题，**不判它是不是汉字**：管辖域的判据在
+    /// core 一处（`is_common_scope`，读端过滤用的也是它），前端抄一份迟早漂移，而漂移的
+    /// 症状是「设置页放行了、core 拒绝了」或反过来「设置页拦住了一个其实能用的字」。
+    /// core 拒绝时的报错文案本身可读，由 `run_calls` 原样显示。
+    #[allow(clippy::type_complexity)]
+    fn common_save_calls(
+        &self,
+        text: &str,
+        editing: bool,
+    ) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
+        let spec = self.current_spec();
+        let t = text.trim();
+        let mut it = t.chars();
+        let Some(ch) = it.next() else {
+            return Err("请填一个字".into());
+        };
+        if it.next().is_some() {
+            return Err("只能填一个字——常用/生僻是单字的属性，词组没有".into());
+        }
+        let p = json!({ "char": ch.to_string(), "common": self.common_choice.get() == 0 });
+        Ok((
+            vec![(spec.rpc.add, p)],
+            if editing { "已更新" } else { "已添加" },
+        ))
+    }
+
     /// 计算"保存"要执行的 RPC 调用序列（纯函数，便于单测）。
     /// 用户词库：改键走删旧+加新，仅权重变走 update；短语：走 add / update。
     #[allow(clippy::type_complexity)]
@@ -1869,6 +1978,14 @@ impl DictManagerState {
         if cat == WordCategory::QuickFormat {
             // 类别取自分段选择器（`edit_code` 只是开对话框时的初值，用户可能改过选择）
             return self.quick_save_calls(&self.quick_selected_kind(), &text, orig);
+        }
+        // 同上：常用字也没有权重维度，落到下面那个 parse 会得到「权重需为整数」——
+        // 一个与用户所做之事毫无关系的报错。
+        // 同上：常用字也没有权重维度，落到下面那个 parse 会得到「权重需为整数」——
+        // 一个与用户所做之事毫无关系的报错。回归见
+        // `common_save_calls_emit_char_and_direction`（它刻意把 edit_weight 置空来锁这条）。
+        if cat == WordCategory::CommonChars {
+            return self.common_save_calls(&text, orig.is_some());
         }
         let weight: i64 = match self.edit_weight.get().trim().parse() {
             Ok(w) => w,
@@ -1993,11 +2110,12 @@ impl DictManagerState {
     pub fn submit_word(&self) {
         match self.save_calls() {
             Ok((calls, ok)) => {
-                // 两个对话框共用 edit_* 字段与本提交路径，各有自己的可见性信号。
-                // 无条件关掉两个，比在这里再判一次当前类别更不容易错（判错的症状是
+                // 三个对话框共用 edit_* 字段与本提交路径，各有自己的可见性信号。
+                // 无条件关掉全部，比在这里再判一次当前类别更不容易错（判错的症状是
                 // 「保存成功了但窗口不关」）。
                 self.edit_visible.set(false);
                 self.quick_edit_visible.set(false);
+                self.common_edit_visible.set(false);
                 self.run_calls(calls, ok);
             }
             Err(e) => self.notify_err(&e),
@@ -2200,9 +2318,11 @@ impl DictManagerState {
             DomainKind::English => &["userWords", "freq", "shadow"],
             // 混输方案自身只有候选调整——五笔/拼音词条落在它的成员方案里。
             DomainKind::Mixed => &["shadow"],
-            // 两个全局域都不参与这套「按方案分段」的导入导出：短语走原生对话框，
-            // 快捷输入走 quick.export/import（整份用户改动，无分段可选）。
-            DomainKind::Phrase | DomainKind::QuickFormat => &[],
+            // 三个全局域都不参与这套「按方案分段」的导入导出：短语走原生对话框，
+            // 快捷输入走 quick.export/import；常用字覆盖随**整份备份**走
+            // （core 的 `userdata/common_chars.jsonl` 段），本页不单独给导入导出——
+            // 它是一串「这个字我要它算生僻」的判断，脱离整份配置单独分发没有意义。
+            DomainKind::Phrase | DomainKind::QuickFormat | DomainKind::CommonChars => &[],
         }
     }
 
@@ -3154,6 +3274,20 @@ mod tests {
         *st.schemas.borrow_mut() = list;
     }
 
+    /// 期望的域标签：全局域那一段 + 给定的方案域标签。
+    ///
+    /// 全局域从 [`GLOBAL_DOMAIN_LABELS`] 派生而不在各测试里重抄一遍——那些用例要钉的是
+    /// 「方案域跟在全局域之后、且拼音族已折叠」，全局域有几个、各叫什么由
+    /// `domain_slot_maps_global_slots_then_schemas` 单独把关。抄一份的代价是每加一个
+    /// 全局域就有一批不相干的用例跟着变红，红得多了就没人细看红的是什么。
+    fn global_labels_then(schema_labels: &[&str]) -> Vec<String> {
+        GLOBAL_DOMAIN_LABELS
+            .iter()
+            .chain(schema_labels.iter())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     #[test]
     fn prefill_selects_userdict_domain_for_pinyin() {
         let st = DictManagerState::new();
@@ -3208,15 +3342,23 @@ mod tests {
     /// 域下标 → 语义的三段映射。**本次改动的全部风险都在这里**：偏移错一格，
     /// 用户选 A 方案就会看到 B 方案的数据，而且不 panic、不报错。
     #[test]
-    fn domain_slot_maps_two_global_slots_then_schemas() {
+    fn domain_slot_maps_global_slots_then_schemas() {
         assert_eq!(domain_slot(DOMAIN_PHRASE), DomainSlot::Phrase);
         assert_eq!(domain_slot(DOMAIN_QUICK), DomainSlot::QuickFormat);
+        assert_eq!(domain_slot(DOMAIN_COMMON), DomainSlot::CommonChars);
         // 方案域从 GLOBAL_DOMAINS 起，且**已减去**全局槽位（可直接索引 folded_domains）。
         assert_eq!(domain_slot(GLOBAL_DOMAINS), DomainSlot::Schema(0));
         assert_eq!(domain_slot(GLOBAL_DOMAINS + 3), DomainSlot::Schema(3));
-        // 两个全局槽位必须互不相同且相邻——写成同一个值会让快捷输入永远打不开。
-        assert_ne!(DOMAIN_PHRASE, DOMAIN_QUICK);
-        assert_eq!(GLOBAL_DOMAINS, DOMAIN_QUICK + 1);
+        // 全局槽位必须两两不同且**连续占满** [0, GLOBAL_DOMAINS)：
+        // 写重会让其中一个域永远打不开，留空洞会让那一格点进去落到方案域上。
+        let slots = [DOMAIN_PHRASE, DOMAIN_QUICK, DOMAIN_COMMON];
+        assert_eq!(slots.len(), GLOBAL_DOMAINS, "新增全局域要在这里补一格");
+        let mut sorted = slots;
+        sorted.sort_unstable();
+        assert_eq!(sorted, [0, 1, 2], "全局槽位必须从 0 起连续，不能重号或跳号");
+        // 标签表与槽位同长，且每格都有名字（空名字＝侧栏上一条看不见的项）。
+        assert_eq!(GLOBAL_DOMAIN_LABELS.len(), GLOBAL_DOMAINS);
+        assert!(GLOBAL_DOMAIN_LABELS.iter().all(|s| !s.is_empty()));
     }
 
     /// 快捷输入是**全局**域：没有 schemaId，参数里也不该出现它。
@@ -3239,6 +3381,106 @@ mod tests {
         assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
         // 导入导出入口可用（走 quick.* 全局流，不依赖有没有方案）
         assert!(st.io_entry_visible() && st.io_entry_enabled());
+    }
+
+    // ───────── 常用字调整（全局域）─────────
+
+    /// 常用字是**全局**域：没有 schemaId，参数里也不该出现它。
+    ///
+    /// 带上 schemaId 的后果不是报错而是「core 侧忽略掉、但列表看起来正常」——
+    /// 那张表的键就是一个字，方案维度从头到尾都不存在。
+    #[test]
+    fn common_domain_is_global_and_sends_no_schema_id() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+        assert_eq!(st.domain_kind(), DomainKind::CommonChars);
+        assert_eq!(st.current_category(), WordCategory::CommonChars);
+        assert_eq!(st.current_schema_id(), None, "全局域没有方案");
+        assert_eq!(st.domain_label_at(DOMAIN_COMMON), "常用字");
+        assert_eq!(st.tabs_for_domain(), vec![LogicalTab::CommonChars]);
+        let p = st.build_list_params();
+        assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
+    }
+
+    /// 保存产出 `{char, common}`，**新增与编辑同一个 RPC**。
+    ///
+    /// 也钉住「不走权重那条路」：这一类没有权重维度，`edit_weight` 从来不被设置，
+    /// 若分流写在权重解析之后，用户会收到「权重需为整数」——一个与他所做之事毫无
+    /// 关系的报错（快捷输入正是为此在 parse 之前分流的）。
+    #[test]
+    fn common_save_calls_emit_char_and_direction() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+
+        st.open_common_add();
+        st.edit_text.set("槮".into());
+        st.common_choice.set(0); // 常用
+        // ★ 关键装置：把 `edit_weight` 置成**解析不了**的值。
+        //
+        // 这一类没有权重维度，`edit_weight` 从来不被本对话框设置，但它是全页共用的信号
+        // ——用户在别的类别里把权重框删空过，切过来时它就是空串。分流若写在权重解析
+        // 之后，这里会得到「权重需为整数」而不是保存成功。
+        //
+        // ⚠️ 不置这一下的话本用例是**假绿**：初值恰好能 parse，把分流挪到 parse 之后
+        // 测试照样通过（实测确认过）。
+        st.edit_weight.set(String::new());
+        let (calls, msg) = st.save_calls().expect("应能保存");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "commonChars.set");
+        assert_eq!(calls[0].1, json!({ "char": "槮", "common": true }));
+        assert_eq!(msg, "已添加");
+
+        // 编辑已有条目：同一个 RPC，只是反馈文案不同。
+        let row = WordRow {
+            text: "的".into(),
+            common_now: false,
+            common_base: true,
+            ..Default::default()
+        };
+        st.open_common_edit(&row);
+        assert_eq!(st.edit_text.get(), "的");
+        assert_eq!(st.common_choice.get(), 1, "预填当前方向：生僻");
+        let (calls, msg) = st.save_calls().expect("应能保存");
+        assert_eq!(calls[0].0, "commonChars.set");
+        assert_eq!(calls[0].1, json!({ "char": "的", "common": false }));
+        assert_eq!(msg, "已更新");
+    }
+
+    /// 非单字一律拒绝，且报错要说得出所以然（不能是「权重需为整数」那种驴唇不对马嘴的）。
+    #[test]
+    fn common_save_calls_reject_non_single_char() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+        st.open_common_add();
+        // 同 `common_save_calls_emit_char_and_direction`：空权重是这条分流的试金石，
+        // 报错必须是「填一个字」而不是「权重需为整数」。
+        st.edit_weight.set(String::new());
+
+        st.edit_text.set("  ".into());
+        assert!(st.save_calls().unwrap_err().contains("一个字"));
+
+        st.edit_text.set("我们".into());
+        let e = st.save_calls().unwrap_err();
+        assert!(e.contains("一个字"), "实际报错: {e}");
+    }
+
+    /// 「删除」走 `commonChars.reset`，参数键是 `char`——这张表没有编码也没有方案。
+    #[test]
+    fn common_delete_call_uses_char_key() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+        let (method, params) = st.delete_call("", "槮");
+        assert_eq!(method, "commonChars.reset");
+        assert_eq!(params, json!({ "char": "槮" }));
+        assert!(
+            params.get("schemaId").is_none() && params.get("code").is_none(),
+            "全局字级的表不该带方案或编码: {params:?}"
+        );
     }
 
     /// ★★ 调序基准是**候选内下标**（`move_index`），不是列表行号（`position`）。
@@ -5088,16 +5330,10 @@ mod tests {
             ],
         );
         let labels = st.domain_labels();
-        // 域：两个全局域 + 拼音(折叠) + 五笔86 = 4 项（三个拼音方案折叠成一个域，而非 5）
-        assert_eq!(
-            labels,
-            vec![
-                "快捷短语".to_string(),
-                "快捷输入".to_string(),
-                "拼音".to_string(),
-                "五笔86 · 码表".to_string()
-            ]
-        );
+        // 域：全局域 + 拼音(折叠) + 五笔86（两个拼音方案折叠成一个域，而非各占一格）。
+        // 全局域那一段从 `GLOBAL_DOMAIN_LABELS` 派生而不再写死：这里要钉的是「方案域
+        // 跟在全局域后面、且拼音族折叠成一项」，全局域叫什么由那个常量单独管。
+        assert_eq!(labels, global_labels_then(&["拼音", "五笔86 · 码表"]));
         // 选"拼音"域，current_schema_id 返回代表(全拼优先)
         st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
@@ -5135,14 +5371,7 @@ mod tests {
         // 双拼在前、全拼在后 → 代表应升级为全拼
         assert_eq!(st.current_schema_id().as_deref(), Some("pinyin_simp"));
         // 仍折叠为一个"拼音"域
-        assert_eq!(
-            st.domain_labels(),
-            vec![
-                "快捷短语".to_string(),
-                "快捷输入".to_string(),
-                "拼音".to_string()
-            ]
-        );
+        assert_eq!(st.domain_labels(), global_labels_then(&["拼音"]));
     }
 
     #[test]
@@ -5195,20 +5424,20 @@ mod tests {
                 schema("py", "全拼", "pinyin"),
             ],
         );
-        // 4 个域：快捷短语(0) + 快捷输入(1) + 五笔(2) + 拼音(3)。
-        // 循环要走遍**全部**域，两个全局域也在其中——漏了它们就等于「‹ › 按钮切不到快捷输入」。
-        assert_eq!(st.domain_count(), GLOBAL_DOMAINS + 2);
+        // 域 = 全部全局域 + 五笔 + 拼音。循环要走遍**全部**域，全局域也在其中——
+        // 漏了它们就等于「‹ › 按钮切不到快捷输入 / 常用字」。
+        let total = GLOBAL_DOMAINS + 2;
+        assert_eq!(st.domain_count(), total);
         assert_eq!(st.domain.get(), DOMAIN_PHRASE);
-        st.next_domain();
-        assert_eq!(st.domain.get(), DOMAIN_QUICK);
-        st.next_domain();
-        assert_eq!(st.domain.get(), GLOBAL_DOMAINS);
-        st.next_domain();
-        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1);
+        // 逐格前进，下标必须严格 +1 走完一整圈（写死序列的话每加一个全局域都要重抄）。
+        for expect in 1..total {
+            st.next_domain();
+            assert_eq!(st.domain.get(), expect, "第 {expect} 格");
+        }
         st.next_domain();
         assert_eq!(st.domain.get(), DOMAIN_PHRASE, "末尾循环回首");
         st.prev_domain();
-        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1, "首部循环到末尾");
+        assert_eq!(st.domain.get(), total - 1, "首部循环到末尾");
     }
 
     #[test]

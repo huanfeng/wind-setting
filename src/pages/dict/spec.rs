@@ -24,6 +24,8 @@ pub enum WordCategory {
     Shadow,
     /// 快捷输入格式（全局；调序 / 停用 / 恢复，出厂条目不可增删）。
     QuickFormat,
+    /// 常用字覆盖（全局；只列**用户改过的字**，出厂那 8104 字不进列表）。
+    CommonChars,
 }
 
 /// 导航子标签的逻辑单元：短语两级 + 方案内四类。映射到 (标题, 类别, 短语系统标志)。
@@ -36,6 +38,7 @@ pub enum LogicalTab {
     Freq,
     Shadow,
     QuickFormat,
+    CommonChars,
 }
 
 impl LogicalTab {
@@ -48,6 +51,7 @@ impl LogicalTab {
             LogicalTab::Freq => "词频",
             LogicalTab::Shadow => "候选调整",
             LogicalTab::QuickFormat => "快捷输入",
+            LogicalTab::CommonChars => "常用字",
         }
     }
     pub fn category(self) -> WordCategory {
@@ -59,6 +63,7 @@ impl LogicalTab {
             LogicalTab::Freq => WordCategory::Freq,
             LogicalTab::Shadow => WordCategory::Shadow,
             LogicalTab::QuickFormat => WordCategory::QuickFormat,
+            LogicalTab::CommonChars => WordCategory::CommonChars,
         }
     }
     /// 短语两级：Some(true)=系统，Some(false)=用户；非短语=None。
@@ -81,6 +86,7 @@ impl LogicalTab {
             LogicalTab::Freq => "freq",
             LogicalTab::Shadow => "shadow",
             LogicalTab::QuickFormat => "quick",
+            LogicalTab::CommonChars => "common-chars",
         }
     }
 
@@ -93,6 +99,7 @@ impl LogicalTab {
         LogicalTab::Freq,
         LogicalTab::Shadow,
         LogicalTab::QuickFormat,
+        LogicalTab::CommonChars,
     ];
 
     /// 由 `--type` 取值反查（大小写不敏感）。`dict` 是 `user-dict` 的顺手别名。
@@ -149,6 +156,13 @@ pub struct WordRow {
     /// `adjusted`，但它只能停用、能「恢复默认」；用户条目反过来——能改模板、能真删，
     /// 而它没有「默认」可回到（「恢复此条」对它无意义，要禁掉）。
     pub user: bool,
+    /// 常用字专用：**用户设定**的判定（读 `common`）。`text` 存那个字本身。
+    pub common_now: bool,
+    /// 常用字专用：**出厂**判定（读 `baseCommon`）。
+    ///
+    /// 两个都要有，列表才能显示「出厂：常用 → 现在：生僻」这层对照。只给现在的话，
+    /// 用户看到一行「的 · 生僻」根本不知道自己当初改的是什么、改之前是哪一边。
+    pub common_base: bool,
 }
 
 impl WordRow {
@@ -214,6 +228,14 @@ impl WordRow {
                     .map(|n| n as usize),
                 ..Default::default()
             },
+            // 常用字：`text` 就是那个字（主键），两个 bool 分别是现在与出厂的判定。
+            // 没有 `code`——这张表的键不带编码，也不带方案。
+            WordCategory::CommonChars => WordRow {
+                text: s("char"),
+                common_now: b("common"),
+                common_base: b("baseCommon"),
+                ..Default::default()
+            },
         }
     }
 
@@ -263,8 +285,27 @@ impl WordRow {
             WordField::Kind => kind_label(&self.kind).to_string(),
             WordField::LastUsed => self.last_used.clone(),
             WordField::Sample => self.sample.clone(),
+            WordField::CommonNow => common_label(self.common_now).to_string(),
+            WordField::CommonBase => common_label(self.common_base).to_string(),
         }
     }
+}
+
+/// 常用性的显示文案。两列共用一个函数，避免「出厂」列写「常用」而「现在」列写「常用字」
+/// 这种同义不同形的不一致。
+pub fn common_label(common: bool) -> &'static str {
+    if common { "常用" } else { "生僻" }
+}
+
+/// 对话框里「判为」选择器的两个选项，**下标即 `common_choice` 的取值**（0 = 常用）。
+///
+/// 文案与列表列同源（[`common_label`]）而不另写一份：同一个概念在列表里叫「常用」、
+/// 在对话框里叫「常用字」，用户会以为它们是两回事。
+pub fn common_choices() -> Vec<String> {
+    vec![
+        common_label(true).to_string(),
+        common_label(false).to_string(),
+    ]
 }
 
 /// 从候选稳定 id 里取出模板原文：`phrase:{code}:{模板}` → `Some(模板)`。
@@ -344,6 +385,10 @@ pub enum WordField {
     LastUsed,
     /// 快捷输入：该条格式的示例效果（core 用示例输入跑真实候选生成得到）。
     Sample,
+    /// 常用字：**现在**的判定（用户设定的那一边）。
+    CommonNow,
+    /// 常用字：**出厂**的判定。与 [`Self::CommonNow`] 并排显示，用户才看得出改了什么。
+    CommonBase,
 }
 
 impl WordField {
@@ -359,6 +404,8 @@ impl WordField {
             WordField::Kind => "type",
             WordField::LastUsed => "lastUsed",
             WordField::Sample => "sample",
+            WordField::CommonNow => "common",
+            WordField::CommonBase => "baseCommon",
         }
     }
 
@@ -820,6 +867,82 @@ const SPEC_QUICK: CategorySpec = CategorySpec {
     },
 };
 
+const COLS_COMMON: &[ColumnSpec] = &[
+    ColumnSpec {
+        header: "字",
+        // 内容恒是一个汉字，给足点击区即可。
+        weight: 0.8,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "出厂",
+        weight: 1.0,
+        field: WordField::CommonBase,
+    },
+    ColumnSpec {
+        header: "现在",
+        weight: 1.0,
+        field: WordField::CommonNow,
+    },
+];
+
+/// 常用字表的用户覆盖。
+///
+/// 全局（不按方案）：「某个字常不常用」是语言学属性，与五笔/拼音无关，core 那张表的键
+/// 就是那个字本身。
+///
+/// **列表只含用户改过的字**，出厂那 8104 字不在这里——core 的存储本就是稀疏的。要在
+/// 8104 个字里翻页找一个字的界面根本没法用，而那也不是用户来这个页面想做的事；想改哪个
+/// 字，更顺手的入口是打出它然后右键。本页面负责的是「回看我改过什么」与「改回去」。
+///
+/// 「删除」在这里的语义是**恢复出厂判定**（那条覆盖没了，该字重新跟随出厂表），
+/// 不是「把这个字删掉」——文案在 `row_action_labels` 里相应改写。
+///
+/// 客户端搜索：条目是用户手工点出来的，几十条到几百条，一次全取。
+const SPEC_COMMON: CategorySpec = CategorySpec {
+    category: WordCategory::CommonChars,
+    title: "常用字",
+    scoped_by_schema: false,
+    paged: false,
+    searchable: false,
+    client_search: true,
+    columns: COLS_COMMON,
+    ops: OpFlags {
+        // 添加：输入一个字并指定判为哪边。
+        add: true,
+        // 编辑：把已有的一条改到另一边。
+        edit: true,
+        // 「删除」＝撤销这条覆盖，回到出厂判定。
+        remove: true,
+        // 整表恢复出厂。
+        clear: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "commonChars.list",
+        // add 与 update 是同一个 RPC：两者都是「把这个字设成这一边」，参数完全一样。
+        // core 侧对已存在的字直接改写方向，不需要区分新增与修改。
+        add: "commonChars.set",
+        update: "commonChars.set",
+        // 撤销覆盖（不是删字）。
+        remove: "commonChars.reset",
+        clear: "commonChars.clear",
+        ..RpcNames::EMPTY
+    },
+};
+
+/// 行内「删除」的文案与是否按危险操作着色。
+///
+/// 常用字这一类删掉的是**一条调整**，效果是那个字回到出厂判定——既没丢用户内容，也完全
+/// 可逆（照原样再设一次就回来了），故文案作「恢复出厂」且不标红。其余类别删的是用户真正
+/// 的数据，红色是扫读时唯一能把它与紧邻的「复制编码」拦开的信号，不能一并去掉。
+pub fn remove_action(cat: WordCategory) -> (&'static str, bool) {
+    match cat {
+        WordCategory::CommonChars => ("恢复出厂", false),
+        _ => ("删除", true),
+    }
+}
+
 /// 这一行实际可用的操作。
 ///
 /// ★ 存在的理由：快捷输入是本页第一个「同一类别里，两种行有不同权限」的域。
@@ -871,6 +994,7 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
         WordCategory::Freq => &SPEC_FREQ,
         WordCategory::Shadow => &SPEC_SHADOW,
         WordCategory::QuickFormat => &SPEC_QUICK,
+        WordCategory::CommonChars => &SPEC_COMMON,
     }
 }
 
