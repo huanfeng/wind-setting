@@ -1612,6 +1612,7 @@ width = 180
 options = [
   { value = "ctrl+number", label = "Ctrl + 数字" },
   { value = "ctrl+shift+number", label = "Ctrl + Shift + 数字" },
+  { value = "ctrl+alt+number", label = "Ctrl + Alt + 数字" },
   { value = "none", label = "不使用" },
 ]
 
@@ -1626,6 +1627,7 @@ width = 180
 options = [
   { value = "ctrl+number", label = "Ctrl + 数字" },
   { value = "ctrl+shift+number", label = "Ctrl + Shift + 数字" },
+  { value = "ctrl+alt+number", label = "Ctrl + Alt + 数字" },
   { value = "none", label = "不使用" },
 ]
 
