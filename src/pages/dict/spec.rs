@@ -234,6 +234,9 @@ impl WordRow {
                 text: s("char"),
                 common_now: b("common"),
                 common_base: b("baseCommon"),
+                // 复用 `adjusted`（与快捷输入同义：用户改过没有）。全表里绝大多数行都是
+                // false，「恢复默认」靠它只对改过的行放行。
+                adjusted: b("adjusted"),
                 ..Default::default()
             },
         }
@@ -875,7 +878,7 @@ const COLS_COMMON: &[ColumnSpec] = &[
         field: WordField::Text,
     },
     ColumnSpec {
-        header: "出厂",
+        header: "默认",
         weight: 1.0,
         field: WordField::CommonBase,
     },
@@ -886,36 +889,35 @@ const COLS_COMMON: &[ColumnSpec] = &[
     },
 ];
 
-/// 常用字表的用户覆盖。
+/// 常用字表。
 ///
 /// 全局（不按方案）：「某个字常不常用」是语言学属性，与五笔/拼音无关，core 那张表的键
 /// 就是那个字本身。
 ///
-/// **列表只含用户改过的字**，出厂那 8104 字不在这里——core 的存储本就是稀疏的。要在
-/// 8104 个字里翻页找一个字的界面根本没法用，而那也不是用户来这个页面想做的事；想改哪个
-/// 字，更顺手的入口是打出它然后右键。本页面负责的是「回看我改过什么」与「改回去」。
+/// **列的是全表**（默认字表 8104 条 + 用户加的），不是只列改过的那几条：用户来这个页面
+/// 最常问的是「这个字现在算不算常用」，只列改动答不了。改过的行由
+/// [`WordRow::adjusted`] 标出，「恢复默认」据此只对它们放行。
 ///
-/// 「删除」在这里的语义是**恢复出厂判定**（那条覆盖没了，该字重新跟随出厂表），
-/// 不是「把这个字删掉」——文案在 `row_action_labels` 里相应改写。
-///
-/// 客户端搜索：条目是用户手工点出来的，几十条到几百条，一次全取。
+/// 服务端分页 + 服务端搜索：8104 条一次全取约 400KB JSON，每次刷新整份过 IPC 不划算，
+/// 走 `dict`/`freq` 那套现成的分页。搜索按「字出现在查询串里」匹配——用户既可以只打
+/// 一个字查它，也可以粘一整句列出句中所有字。
 const SPEC_COMMON: CategorySpec = CategorySpec {
     category: WordCategory::CommonChars,
     title: "常用字",
     scoped_by_schema: false,
-    paged: false,
-    searchable: false,
-    client_search: true,
+    paged: true,
+    searchable: true,
+    client_search: false,
     columns: COLS_COMMON,
     ops: OpFlags {
-        // 添加：输入一个字并指定判为哪边。
+        // 添加：把一个不在表里的字纳入管理（指定判为哪边）。
         add: true,
-        // 编辑：把已有的一条改到另一边。
+        // 编辑：把某个字改到另一边。
         edit: true,
-        // 「删除」＝撤销这条覆盖，回到出厂判定。
-        remove: true,
-        // 整表恢复出厂。
-        clear: true,
+        // 恢复这一条的默认判定；仅对改过的行开放（见 `row_ops`）。
+        reset_entry: true,
+        // 整表恢复默认（清掉全部调整）。
+        reset_default: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -924,24 +926,12 @@ const SPEC_COMMON: CategorySpec = CategorySpec {
         // core 侧对已存在的字直接改写方向，不需要区分新增与修改。
         add: "commonChars.set",
         update: "commonChars.set",
-        // 撤销覆盖（不是删字）。
-        remove: "commonChars.reset",
-        clear: "commonChars.clear",
+        // 撤销一条调整（回到默认判定），不是删字。
+        reset_entry: "commonChars.reset",
+        reset_default: "commonChars.clear",
         ..RpcNames::EMPTY
     },
 };
-
-/// 行内「删除」的文案与是否按危险操作着色。
-///
-/// 常用字这一类删掉的是**一条调整**，效果是那个字回到出厂判定——既没丢用户内容，也完全
-/// 可逆（照原样再设一次就回来了），故文案作「恢复出厂」且不标红。其余类别删的是用户真正
-/// 的数据，红色是扫读时唯一能把它与紧邻的「复制编码」拦开的信号，不能一并去掉。
-pub fn remove_action(cat: WordCategory) -> (&'static str, bool) {
-    match cat {
-        WordCategory::CommonChars => ("恢复出厂", false),
-        _ => ("删除", true),
-    }
-}
 
 /// 这一行实际可用的操作。
 ///
@@ -959,6 +949,14 @@ pub fn row_ops(cat: WordCategory, row: &WordRow) -> OpFlags {
             remove: row.user,
             // 用户条目没有「默认」可回到——「恢复此条」对它无意义
             reset_entry: base.reset_entry && !row.user && row.adjusted,
+            ..base
+        },
+        // 常用字列的是全表，绝大多数行从没被碰过：给它们亮着「恢复默认」，点下去
+        // 什么都不会发生。只对改过的行放行（`adjusted` 由 core 的 list 直接给出）。
+        // 常用字列的是全表，绝大多数行从没被碰过：给它们亮着「恢复此条默认」，点下去
+        // 什么都不会发生。只对改过的行放行（`adjusted` 由 core 的 list 直接给出）。
+        WordCategory::CommonChars => OpFlags {
+            reset_entry: base.reset_entry && row.adjusted,
             ..base
         },
         _ => base,

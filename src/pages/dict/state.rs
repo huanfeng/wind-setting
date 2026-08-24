@@ -1158,11 +1158,6 @@ impl DictManagerState {
     /// id 需要一路穿过 `PendingAction`（删除走确认流程），暂不做。真遇到再补。
     pub fn delete_call(&self, code: &str, text: &str) -> (&'static str, Value) {
         let spec = self.current_spec();
-        // 常用字：主键就是那个字，没有编码也没有方案。参数键是 `char` 而不是 `text`——
-        // 键名错了 core 会报「缺少参数 char」，不至于静默，但也没必要让用户看见。
-        if spec.category == WordCategory::CommonChars {
-            return (spec.rpc.remove, json!({ "char": text }));
-        }
         let mut p = self.scoped_params();
         p.insert("code".into(), json!(code));
         if spec.ops.remove_rule {
@@ -1694,41 +1689,57 @@ impl DictManagerState {
         if spec.category == WordCategory::QuickFormat {
             return self.do_quick_reset_all();
         }
-        self.write(spec.rpc.reset_default, json!({}), "已恢复默认短语");
+        // 反馈文案按类别给：写死「短语」的话，常用字整表恢复后会提示「已恢复默认短语」。
+        let msg = match spec.category {
+            WordCategory::CommonChars => "已恢复默认",
+            _ => "已恢复默认短语",
+        };
+        self.write(spec.rpc.reset_default, json!({}), msg);
+    }
+
+    /// 恢复**一行**的默认（按类别分派）。
+    ///
+    /// 两类的主键完全不同：快捷输入是 `(kind, id)`，常用字是那个字本身。故不能共用
+    /// 一套参数构造——写错键名 core 会报「缺少参数」，用户看到的是一句莫名其妙的报错。
+    pub fn do_reset_entry(&self, row: &WordRow) {
+        let spec = self.current_spec();
+        match spec.category {
+            WordCategory::QuickFormat => self.do_quick_reset_entry(row),
+            WordCategory::CommonChars => self.write(
+                spec.rpc.reset_entry,
+                json!({ "char": row.text }),
+                "已恢复默认",
+            ),
+            _ => {}
+        }
     }
 
     // ── 破坏性操作确认 ───────────────────────────────────────
 
     pub fn request_delete_row(&self, code: &str, text: &str) {
         *self.pending.borrow_mut() = Some(PendingAction::DeleteRow(code.into(), text.into()));
-        // 常用字这一类删的是一条调整，不是用户的内容：说「不可恢复」既不准确，也会把
-        // 一个随手可撤的操作吓成大事。文案如实说明它的效果——那个字回到出厂判定。
-        let msg = if self.current_category() == WordCategory::CommonChars {
-            format!("确定让「{text}」回到出厂判定？这条调整会被清除。")
-        } else {
-            format!("确定删除「{text}」？此操作不可恢复。")
-        };
-        self.confirm_msg.set(msg);
+        self.confirm_msg
+            .set(format!("确定删除「{text}」？此操作不可恢复。"));
         self.confirm_visible.set(true);
     }
 
     pub fn request_clear(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::Clear);
         let n = self.total.get();
-        // 同 `request_delete_row`：常用字清的是全部调整，字本身与出厂表都还在。
-        let msg = if self.current_category() == WordCategory::CommonChars {
-            format!("确定清除全部 {n} 条常用字调整？这些字都会回到出厂判定。")
-        } else {
-            format!("确定清空当前 {n} 条数据？此操作不可恢复。")
-        };
-        self.confirm_msg.set(msg);
+        self.confirm_msg
+            .set(format!("确定清空当前 {n} 条数据？此操作不可恢复。"));
         self.confirm_visible.set(true);
     }
 
     pub fn request_reset_default(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::ResetDefault);
-        self.confirm_msg
-            .set("确定恢复为默认短语？将丢弃自定义短语的改动。".into());
+        // 文案按类别给：常用字这一类丢弃的是「哪些字算常用」的调整，说成「自定义短语」
+        // 会让用户以为自己要删的是别的东西。
+        let msg = match self.current_category() {
+            WordCategory::CommonChars => "确定恢复默认？你对常用字做过的全部调整都会被清除。",
+            _ => "确定恢复为默认短语？将丢弃自定义短语的改动。",
+        };
+        self.confirm_msg.set(msg.into());
         self.confirm_visible.set(true);
     }
 
@@ -3468,19 +3479,63 @@ mod tests {
         assert!(e.contains("一个字"), "实际报错: {e}");
     }
 
-    /// 「删除」走 `commonChars.reset`，参数键是 `char`——这张表没有编码也没有方案。
+    /// 「恢复默认」只对**改过的行**放行。
+    ///
+    /// 列表是全表（8104 条），绝大多数行从没被碰过；给它们亮着「恢复此条默认」，
+    /// 点下去什么都不会发生——一个永远无效的按钮比没有这个按钮更让人困惑。
     #[test]
-    fn common_delete_call_uses_char_key() {
+    fn common_reset_entry_only_for_adjusted_rows() {
+        use crate::pages::dict::spec::row_ops;
+        let untouched = WordRow {
+            text: "一".into(),
+            common_now: true,
+            common_base: true,
+            adjusted: false,
+            ..Default::default()
+        };
+        let changed = WordRow {
+            adjusted: true,
+            ..untouched.clone()
+        };
+        assert!(
+            !row_ops(WordCategory::CommonChars, &untouched).reset_entry,
+            "没改过的行不该给「恢复此条默认」"
+        );
+        assert!(row_ops(WordCategory::CommonChars, &changed).reset_entry);
+        // 编辑对两种行都开放：全表里任何一个字都可以改判定。
+        assert!(row_ops(WordCategory::CommonChars, &untouched).edit);
+    }
+
+    /// 全表列表是**分页 + 服务端搜索**：8104 条一次全取约 400KB，走不得客户端过滤。
+    #[test]
+    fn common_list_is_paged_and_server_searched() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
         st.sub_tab.set(0);
-        let (method, params) = st.delete_call("", "槮");
-        assert_eq!(method, "commonChars.reset");
-        assert_eq!(params, json!({ "char": "槮" }));
-        assert!(
-            params.get("schemaId").is_none() && params.get("code").is_none(),
-            "全局字级的表不该带方案或编码: {params:?}"
+        let spec = st.current_spec();
+        assert!(spec.paged && spec.searchable && !spec.client_search);
+        assert_eq!(spec.rpc.list, "commonChars.list");
+        assert_eq!(spec.rpc.reset_entry, "commonChars.reset");
+        assert_eq!(spec.rpc.reset_default, "commonChars.clear");
+
+        // 分页参数要发出去，且**不带 schemaId**（全局域）。
+        st.search.set("槮".into());
+        let p = st.build_list_params();
+        assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
+        assert_eq!(p.get("prefix").and_then(|v| v.as_str()), Some("槮"));
+        assert!(p.get("offset").is_some() && p.get("limit").is_some());
+    }
+
+    /// `adjusted` 要从 list 的 json 读出来——漏读的话全表每一行都是「没改过」，
+    /// 「恢复此条默认」在所有行上永久灰着，且不报错。
+    #[test]
+    fn common_from_json_reads_adjusted() {
+        let row = WordRow::from_json(
+            WordCategory::CommonChars,
+            &json!({ "char": "的", "common": false, "baseCommon": true, "adjusted": true }),
         );
+        assert_eq!(row.text, "的");
+        assert!(!row.common_now && row.common_base && row.adjusted);
     }
 
     /// ★★ 调序基准是**候选内下标**（`move_index`），不是列表行号（`position`）。

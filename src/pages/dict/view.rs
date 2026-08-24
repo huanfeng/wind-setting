@@ -612,12 +612,8 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let r = row.clone();
         let can = rops.reset_entry;
         ops.push(
-            MenuItem::run(
-                "恢复此条默认",
-                move |_ctx| m.do_quick_reset_entry(&r),
-                false,
-            )
-            .enabled(can),
+            // 按类别分派（快捷输入的主键是 (kind,id)、常用字是那个字），见 `do_reset_entry`。
+            MenuItem::run("恢复此条默认", move |_ctx| m.do_reset_entry(&r), false).enabled(can),
         );
     }
     if spec.ops.promote {
@@ -673,25 +669,24 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let (c, t) = (row.code.clone(), row.text.clone());
         let quick_row =
             (spec.category == super::spec::WordCategory::QuickFormat).then(|| row.clone());
-        // 文案与危险标记跟操作列按钮同源（`spec::remove_action`）：两处各写一份的话，
-        // 常用字会出现「按钮写着恢复出厂、右键菜单写着删除」这种自相矛盾的措辞。
-        let (label, dangerous) = super::spec::remove_action(spec.category);
-        let mut item = MenuItem::run(
-            label,
-            move |_ctx| match &quick_row {
-                // 快捷输入的主键是 (kind, id)，走专用确认——通用那条只带
-                // (code, text)，kind 丢在半路，确认之后就拼不出请求了。
-                Some(r) => m.request_quick_delete(r),
-                None => m.request_delete_row(&c, &t),
-            },
-            false,
+        push_group(
+            &mut items,
+            vec![
+                MenuItem::run(
+                    "删除",
+                    move |_ctx| match &quick_row {
+                        // 快捷输入的主键是 (kind, id)，走专用确认——通用那条只带
+                        // (code, text)，kind 丢在半路，确认之后就拼不出请求了。
+                        Some(r) => m.request_quick_delete(r),
+                        None => m.request_delete_row(&c, &t),
+                    },
+                    false,
+                )
+                // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
+                // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
+                .danger(),
+            ],
         );
-        if dangerous {
-            // 菜单各项长得一样，颜色是唯一能在扫读时把不可逆操作与紧邻的「复制编码」
-            // 拦开的信号。可逆的那类（常用字恢复出厂）不标，免得红色贬值。
-            item = item.danger();
-        }
-        push_group(&mut items, vec![item]);
     }
     items
 }
@@ -894,15 +889,15 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         let (c, t) = (row.code.clone(), row.text.clone());
         let quick_row =
             (spec.category == super::spec::WordCategory::QuickFormat).then(|| row.clone());
-        let (label, dangerous) = super::spec::remove_action(spec.category);
-        let mut btn = Element::button(label).small();
-        if dangerous {
-            btn = btn.danger();
-        }
-        r = r.child(btn.on_click(move |_| match &quick_row {
-            Some(rq) => m.request_quick_delete(rq),
-            None => m.request_delete_row(&c, &t),
-        }));
+        r = r.child(
+            Element::button("删除")
+                .small()
+                .danger()
+                .on_click(move |_| match &quick_row {
+                    Some(rq) => m.request_quick_delete(rq),
+                    None => m.request_delete_row(&c, &t),
+                }),
+        );
     }
     r
 }
