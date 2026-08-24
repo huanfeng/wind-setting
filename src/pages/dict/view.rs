@@ -538,7 +538,7 @@ fn render_cell(
 /// 两处各写一套 ops 分支，加类别时必漏一边。
 ///
 /// 比操作列多出两样，都是**列宽装不下**才落在这里的：
-/// - 复制词条 / 复制编码：查完词想拿去搜一下，此前只能手抄；
+/// - 复制编码 / 复制词条：查完词想拿去搜一下，此前只能手抄；
 /// - 复制为一键导入文本：短语两级专有（`OpFlags::share_text`），把这一条拼成 `wind:p1`
 ///   分发格式，对方粘进导入框即可一键装上；
 /// - 「转为用户短语」：`OpFlags::claim_as_user` 的注释写着"操作列再加一枚按钮就挤爆了"，
@@ -681,11 +681,10 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
 
     let (m_t, m_c) = (mgr.clone(), mgr.clone());
     let (copy_text, copy_code) = (text, row.code.clone());
-    let mut copies = vec![MenuItem::run(
-        "复制词条",
-        move |_ctx| copy_to_clipboard(&m_t, &copy_text),
-        false,
-    )];
+    let mut copies: Vec<MenuItem> = Vec::new();
+    // 「编码 → 词条」跟着表格列序走：表格第一列是编码、第二列才是词条，菜单里反过来
+    // 排就得每次重新读一遍才敢点。两处顺序一致时，"第几项"这个肌肉记忆才立得住。
+    //
     // 「复制编码」只在这一列真有内容时给。常用字表的键就是那个字、没有编码维度，
     // `row.code` 恒空——给了也是复制一个空串，属于点了不知道发生没发生的那类项。
     if !row.code.is_empty() {
@@ -695,6 +694,11 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             false,
         ));
     }
+    copies.push(MenuItem::run(
+        "复制词条",
+        move |_ctx| copy_to_clipboard(&m_t, &copy_text),
+        false,
+    ));
     if spec.ops.share_text {
         let m = mgr.clone();
         // 取 `row.text` 而不是 `display_text()`：后者是**候选调整**那类的模板投影
@@ -728,7 +732,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                     false,
                 )
                 // 与操作列「删除」按钮的 danger 同语义：菜单各项长得一样，颜色是唯一
-                // 能在扫读时把不可逆操作与紧邻的「复制编码」拦开的信号。
+                // 能在扫读时把不可逆操作与紧邻的那组复制项拦开的信号。
                 .danger(),
             ],
         );
@@ -1160,8 +1164,8 @@ mod tests {
                 "查看…",
                 "转为用户短语",
                 "启用",
-                "复制词条",
                 "复制编码",
+                "复制词条",
                 "复制为一键导入文本"
             ]
         );
@@ -1247,7 +1251,7 @@ mod tests {
         let items = row_menu_items(&mgr, 0);
         assert_eq!(
             menu_labels(&items),
-            ["编辑…", "复制词条", "复制编码", "删除"]
+            ["编辑…", "复制编码", "复制词条", "删除"]
         );
     }
 
