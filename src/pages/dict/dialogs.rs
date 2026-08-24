@@ -429,33 +429,23 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .visible_when(move || enc_vis.current_spec().ops.encode),
         );
 
-    let is_phrase = mgr.clone();
-    let is_word = mgr.clone();
-    let text_multi = Element::text_input(mgr.edit_text, "")
-        .multiline()
-        .wrap(true)
-        .height(88)
-        .weight(1.0)
-        .visible_when(move || {
-            matches!(
-                is_phrase.current_category(),
-                super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser
-            )
-        });
-    let text_single = Element::text_input(mgr.edit_text, "")
-        .height(34)
-        .weight(1.0)
-        .visible_when(move || {
-            !matches!(
-                is_word.current_category(),
-                super::spec::WordCategory::PhraseSystem | super::spec::WordCategory::PhraseUser
-            )
-        });
-    let text_field = Element::row()
-        .weight(1.0)
-        .cross(Align::Center)
-        .child(text_multi)
-        .child(text_single);
+    // 正文一律多行——用户词库与短语用的是同一套文本域，两边都可能是多行内容
+    // （词条里塞一段签名、一段地址都属常见用法）。此前用户词库锁单行，回车被吞掉，
+    // 用户只能手打两个字符 `\n`，而那串在单行框里既看不出效果也极易写成 `\\n`。
+    //
+    // 曾经这里是 `text_multi`/`text_single` 两个元素靠 `visible_when` 二选一——
+    // `multiline()` 是构建期属性，接不了信号，想按类别切就只能摆两份。两类都多行之后
+    // 这个变通没有存在理由，整块收敛掉。
+    //
+    // 框里敲下的真换行由 `save_calls` 统一投影成字面 `\n` 再发给 core（core 收的是
+    // 转义形态，见 `wind-webdata` 的 `ui_text`/`store_text` 一对）。
+    let text_field = Element::row().weight(1.0).cross(Align::Center).child(
+        Element::text_input(mgr.edit_text, "")
+            .multiline()
+            .wrap(true)
+            .height(88)
+            .weight(1.0),
+    );
 
     let body = Element::col()
         .width_match()

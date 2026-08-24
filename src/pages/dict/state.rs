@@ -400,6 +400,27 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
     }
 }
 
+/// 多行输入框里的真换行 → 字面两字符 `\n`（转义域）。
+///
+/// 设置页与 core 之间的 text 走的是**转义形态**：core 出口 `ui_text`
+/// (`escape_text_field`) 把存储域的真换行投影成 `\n`，入口 `store_text`
+/// (`unescape_text_field`) 还原。列表回填给对话框的串因此本就是转义形态；用户在多行框里
+/// 新敲的回车是唯一的例外，由本函数补上这一投影，使提交出去的串整串同域。
+///
+/// `\r\n` / 裸 `\r` 一并归一：来源可能是从别处粘贴进来的 Windows 行尾，漏掉的话 core
+/// 落库的文本会带一个不可见的 `\r`，表现为上屏时多一个诡异空白，且从界面上完全看不出来。
+///
+/// **只动换行，不动反斜杠**——用户写的 `\\`（字面反斜杠）与 `$CC(...)` 里的路径都已是
+/// 转义域写法，再转一层会让反斜杠每保存一轮翻一倍（同 `phrase_import` 那条分享路径的教训）。
+fn escape_input_newlines(s: &str) -> String {
+    if !s.contains('\n') && !s.contains('\r') {
+        return s.to_string();
+    }
+    s.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\\n")
+}
+
 impl Default for DictManagerState {
     fn default() -> Self {
         Self::new()
@@ -1956,6 +1977,10 @@ impl DictManagerState {
             self.notify_info("请先填写词条");
             return;
         }
+        // 同 `save_calls`：`dict.encode` 也走 `store_text` 还原，收的是转义形态。
+        // 词条框改多行后这里若发真换行，core 那侧还原不动它，逐字反查会撞上一个
+        // 不可读音的字符而整条出不了码——按钮看着"没反应"。
+        let text = escape_input_newlines(&text);
         let mut p = self.scoped_params();
         p.insert("text".into(), json!(text));
         match rpc::call_core("dict.encode", &Value::Object(p)) {
@@ -2020,6 +2045,15 @@ impl DictManagerState {
         if cat == WordCategory::CommonChars {
             return self.common_save_calls(&text, orig.is_some());
         }
+        // 正文框是多行的，用户按回车得到的是**真换行**；而 core 收的 text 是**转义形态**
+        // （出口 `ui_text` / 入口 `store_text` 一对投影，见 wind-webdata）。不在这里投影
+        // 也能落库——`unescape_text_field` 对真换行原样放行——但那是绕开契约碰巧成立：
+        // 一旦同一串里还有用户写的 `\\`，两种域混在一起，反斜杠的还原口径就说不清了。
+        // 显式转成字面 `\n`，发出去的串自始至终只属于转义域一个域。
+        //
+        // 放在快捷输入/常用字两条早退**之后**：那两类没有多行入口（模板单行、常用字单字），
+        // 且各自的 save_calls 对 text 另有形态约定，不该被这层投影穿过。
+        let text = escape_input_newlines(&text);
         let weight: i64 = match self.edit_weight.get().trim().parse() {
             Ok(w) => w,
             Err(_) => return Err("权重需为整数".into()),
@@ -4907,6 +4941,87 @@ mod tests {
         let msg = DictManagerState::format_import_result(&v);
         assert!(msg.contains("用户词库 新增 10·更新 2"));
         assert!(msg.contains("词频 50 条"));
+    }
+
+    /// ★★ 多行词条框里敲的**真换行**必须在出门前投影成字面 `\n`。
+    ///
+    /// core 收 text 的口径是转义域（`store_text` = `unescape_text_field`）。真换行发过去
+    /// 虽然也能落库（unescape 对它原样放行），但同一串里就同时混进了两个域——用户若还写了
+    /// `\\`，反斜杠该还原几层便无从判定。这条锁的是「发出去的串整串只属于转义域」。
+    #[test]
+    fn save_calls_escapes_real_newlines_in_text() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0); // 用户词库
+        st.edit_code.set("aaaa".into());
+        st.edit_text.set("第一行\n第二行".into());
+        st.edit_weight.set("5".into());
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls[0].1["text"], json!(r"第一行\n第二行"));
+
+        // 短语侧同口径——此前它靠「真换行恰好能穿过 unescape」隐式成立，现在是显式契约。
+        let ph = DictManagerState::new(); // domain 0 = 短语
+        ph.sub_tab.set(1); // 用户短语
+        ph.edit_code.set("dz".into());
+        ph.edit_text.set("上\n下".into());
+        ph.edit_weight.set("1800".into());
+        let (pcalls, _) = ph.save_calls().unwrap();
+        assert_eq!(pcalls[0].1["text"], json!(r"上\n下"));
+    }
+
+    /// 粘贴进来的 Windows 行尾要归一，不能把裸 `\r` 带进库。
+    ///
+    /// 漏掉的话 core 落的是一个含不可见 `\r` 的文本，上屏时多一个诡异空白，而界面上
+    /// 从头到尾看不出任何异样——最难往回追的那一类。
+    #[test]
+    fn save_calls_normalizes_crlf_in_text() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0);
+        st.edit_code.set("aaaa".into());
+        st.edit_text.set("甲\r\n乙\r丙".into());
+        st.edit_weight.set("5".into());
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls[0].1["text"], json!(r"甲\n乙\n丙"));
+    }
+
+    /// 反斜杠**不得**被这层投影碰到：`\\`（字面反斜杠）与命令短语里的路径都已是转义域
+    /// 写法，再转一层的话每保存一轮翻一倍（同 `phrase_import` 分享路径的教训）。
+    #[test]
+    fn save_calls_leaves_backslashes_untouched() {
+        let st = DictManagerState::new();
+        st.sub_tab.set(1); // 用户短语
+        st.edit_code.set("zd".into());
+        let cmd = r#"$CC("知典", proc.run("D:\\Program Files\\知典.exe"))"#;
+        st.edit_text.set(cmd.into());
+        st.edit_weight.set("1800".into());
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls[0].1["text"], json!(cmd), "正文必须逐字保留");
+
+        // 用户手打的字面 `\n` 也不该被再转一层成 `\\n`。
+        st.edit_text.set(r"第一行\n第二行".into());
+        let (again, _) = st.save_calls().unwrap();
+        assert_eq!(again[0].1["text"], json!(r"第一行\n第二行"));
+    }
+
+    /// 编辑一条多行词条、只改权重时仍须命中 `update` 这条路。
+    ///
+    /// 判「是否只改了权重」比较的是 `edit_text` 与回填的原值，而原值来自列表（转义域）。
+    /// 若投影只做了一半（比如改在别处、或漏掉这条路径），未改动的多行词条会被判成
+    /// 「键变了」→ 走删旧+加新，用户只是调了个权重却看到词条被重建。
+    #[test]
+    fn save_calls_multiline_weight_only_still_updates() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0);
+        st.open_edit("aaaa", r"第一行\n第二行", 0, 0); // 回填的是转义形态
+        st.edit_weight.set("9".into());
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "dict.update");
     }
 
     #[test]
