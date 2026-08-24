@@ -235,8 +235,13 @@ pub struct DictManagerState {
     pub quick_edit_visible: Signal<bool>,
     /// 常用字对话框的可见性（独立于 `edit_visible`：那个对话框有编码/权重/次序，这个没有）。
     pub common_edit_visible: Signal<bool>,
-    /// 常用字对话框里「判为哪边」的选择，下标对应 [`COMMON_CHOICES`]。
+    /// 常用字对话框里「判为哪边」的选择，下标对应 [`crate::pages::dict::spec::common_choices`]。
     pub common_choice: Signal<usize>,
+    /// 常用字列表的「只看已修改」过滤。
+    ///
+    /// 列表是全表（8104 条），自己动过的那几个靠翻页根本找不到；搜索也不行——用户记不住
+    /// 自己改过哪些字，正是要靠这个开关**列出来**。
+    pub only_modified: Signal<bool>,
     /// 类别选择器的选项标签。开对话框时填充。
     ///
     /// ⚠️ 必须是信号、不能在构建期算好：对话框只构建一次，而那一刻列表数据还没加载——
@@ -476,6 +481,7 @@ impl DictManagerState {
             quick_edit_visible: signal(false),
             common_edit_visible: signal(false),
             common_choice: signal(0),
+            only_modified: signal(false),
             quick_kind_idx: signal(0),
             quick_kind_labels: signal(Vec::new()),
             quick_var_text: signal(String::new()),
@@ -820,6 +826,11 @@ impl DictManagerState {
                 p.insert("prefix".into(), json!(q));
                 p.insert("query".into(), json!(q));
             }
+        }
+        // 「只看已修改」只对常用字有意义；别的类别没有「改过没有」这个维度，
+        // 无条件发出去会让 core 侧多一个永远为 false 的参数。
+        if spec.category == WordCategory::CommonChars && self.only_modified.get() {
+            p.insert("onlyModified".into(), json!(true));
         }
         if spec.paged {
             p.insert("offset".into(), json!(*self.offset.borrow()));
@@ -1697,6 +1708,31 @@ impl DictManagerState {
         self.write(spec.rpc.reset_default, json!({}), msg);
     }
 
+    /// 常用字行内的一键切换：常用 ⇄ 生僻，**不经对话框**。
+    ///
+    /// 这一类只有一个二值属性，为改一个 bool 开一层模态再点确定，比操作本身还重。
+    /// 复用 `commonChars.set`（与对话框、与候选右键同一个写端）——切到默认方向时
+    /// core 会把那条调整删掉而不是写一条同向的冗余记录。
+    pub fn toggle_common_row(&self, row: &WordRow) {
+        let (method, params) = self.toggle_common_call(row);
+        let msg = if row.common_now {
+            "已设为生僻字"
+        } else {
+            "已设为常用字"
+        };
+        self.write(method, params, msg);
+    }
+
+    /// 一键切换要发的 (方法, 参数)。**纯函数，便于单测键名与方向**（同 [`Self::delete_call`]）
+    /// ——`toggle_common_row` 本身直接发 RPC，测不到。
+    pub fn toggle_common_call(&self, row: &WordRow) -> (&'static str, Value) {
+        let spec = self.current_spec();
+        (
+            spec.rpc.update,
+            json!({ "char": row.text, "common": !row.common_now }),
+        )
+    }
+
     /// 恢复**一行**的默认（按类别分派）。
     ///
     /// 两类的主键完全不同：快捷输入是 `(kind, id)`，常用字是那个字本身。故不能共用
@@ -1877,26 +1913,8 @@ impl DictManagerState {
         self.common_edit_visible.set(true);
     }
 
-    /// 打开「编辑常用字调整」对话框：预填那个字与它当前的方向。
-    pub fn open_common_edit(&self, row: &WordRow) {
-        // `editing_orig` 的 code 位留空——这张表没有编码维度，主键就是那个字。
-        *self.editing_orig.borrow_mut() = Some((String::new(), row.text.clone()));
-        self.edit_text.set(row.text.clone());
-        self.common_choice.set(usize::from(!row.common_now));
-        self.edit_title.set("编辑常用字调整".into());
-        self.common_edit_visible.set(true);
-    }
-
     pub fn cancel_common_edit(&self) {
         self.common_edit_visible.set(false);
-    }
-
-    /// 常用字对话框是「编辑已有」而非新增。
-    ///
-    /// 编辑时**那个字锁定**：主键就是它，换个字本就是另一条调整（想改就删掉重加）。
-    /// 与快捷输入锁定类别同理——锁定而不是隐藏，用户仍需看到自己在改哪个字。
-    pub(crate) fn is_editing_common(&self) -> bool {
-        self.editing_orig.borrow().is_some()
     }
 
     /// 打开系统短语只读查看对话框（写入独立 view_* 信号，不污染 edit_*）。
@@ -3443,21 +3461,63 @@ mod tests {
         assert_eq!(calls[0].0, "commonChars.set");
         assert_eq!(calls[0].1, json!({ "char": "槮", "common": true }));
         assert_eq!(msg, "已添加");
+    }
 
-        // 编辑已有条目：同一个 RPC，只是反馈文案不同。
-        let row = WordRow {
+    /// 列表里的**一键切换**：不经对话框，直接发 `commonChars.set` 到反方向。
+    ///
+    /// 键名是 `char` 不是 `text`——这张表没有编码维度，主键就是那个字。
+    #[test]
+    fn common_toggle_sends_opposite_direction() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+
+        let common_row = WordRow {
             text: "的".into(),
-            common_now: false,
+            common_now: true,
             common_base: true,
             ..Default::default()
         };
-        st.open_common_edit(&row);
-        assert_eq!(st.edit_text.get(), "的");
-        assert_eq!(st.common_choice.get(), 1, "预填当前方向：生僻");
-        let (calls, msg) = st.save_calls().expect("应能保存");
-        assert_eq!(calls[0].0, "commonChars.set");
-        assert_eq!(calls[0].1, json!({ "char": "的", "common": false }));
-        assert_eq!(msg, "已更新");
+        let (method, params) = st.toggle_common_call(&common_row);
+        assert_eq!(method, "commonChars.set");
+        assert_eq!(
+            params,
+            json!({ "char": "的", "common": false }),
+            "当前判常用 ⇒ 点一下切到生僻"
+        );
+
+        // 反方向：现在是生僻的行，点一下切回常用。
+        let rare_row = WordRow {
+            common_now: false,
+            ..common_row.clone()
+        };
+        assert_eq!(
+            st.toggle_common_call(&rare_row).1,
+            json!({ "char": "的", "common": true })
+        );
+    }
+
+    /// 「只看已修改」要真的发到 core（列表是全表，靠客户端过滤当页那几十条没有意义）。
+    #[test]
+    fn common_only_modified_goes_to_server() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+        assert!(
+            st.build_list_params().get("onlyModified").is_none(),
+            "默认不发这个参数"
+        );
+
+        st.only_modified.set(true);
+        assert_eq!(
+            st.build_list_params().get("onlyModified"),
+            Some(&json!(true))
+        );
+
+        // 别的类别没有「改过没有」这个维度，不该带上它。
+        st.domain.set(DOMAIN_PHRASE);
+        st.sub_tab.set(0);
+        assert!(st.build_list_params().get("onlyModified").is_none());
     }
 
     /// 非单字一律拒绝，且报错要说得出所以然（不能是「权重需为整数」那种驴唇不对马嘴的）。

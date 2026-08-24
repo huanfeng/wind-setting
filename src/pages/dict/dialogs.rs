@@ -624,17 +624,17 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
     Element::dialog(mgr.quick_edit_visible, frame)
 }
 
-/// 常用字调整的添加 / 编辑：一个字 + 判为哪边。
+/// 常用字的**添加**：一个字 + 判为哪边。
+///
+/// 只服务「添加」这一条路径：改已有的字走列表里的一键切换（`toggle_common_row`），
+/// 为一个二值属性开模态、再点确定，比操作本身还重。这里之所以还要对话框，是因为
+/// 要添加的字**不在列表里**（默认字表没收录），搜也搜不到，只能手填。
 ///
 /// 与 [`build_edit_dialog`] 分开的理由同 [`build_quick_dialog`]：这张表没有编码、权重、
 /// 次序，共用一个布局会变成一堆互斥的显隐条件，而每加一个条件都要在别的类别上验一遍。
-///
-/// **编辑时那个字锁定**：主键就是它，换个字本就是另一条调整（想改就删掉重加）。
-/// 与快捷输入锁定类别同理——禁用而不是隐藏，用户仍需看到自己在改哪个字。
 fn build_common_dialog(mgr: &DictManagerState) -> Element {
     let submit = mgr.clone();
     let cancel = mgr.clone();
-    let char_enabled = mgr.clone();
 
     let field = |label: &str, input: Element| {
         Element::row()
@@ -656,10 +656,7 @@ fn build_common_dialog(mgr: &DictManagerState) -> Element {
         .spacing(10)
         .child(field(
             "字",
-            Element::text_input(mgr.edit_text, "")
-                .width(80)
-                .height(34)
-                .enabled_when(move || !char_enabled.is_editing_common()),
+            Element::text_input(mgr.edit_text, "").width(80).height(34),
         ))
         .child(field(
             "判为",

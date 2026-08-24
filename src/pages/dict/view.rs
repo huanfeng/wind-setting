@@ -321,6 +321,21 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
             v_search.current_spec().searchable || v_search.current_spec().client_search
         });
 
+    // 「只看已修改」：全表 8104 条里自己动过的那几个，靠翻页是找不到的。
+    // ⚠️ `Element::checkbox` 只负责显示、自己不翻转，必须配 on_toggle。
+    let m_om = mgr.clone();
+    let v_om = mgr.clone();
+    let sig_om = mgr.only_modified;
+    let only_modified = Element::checkbox("只看已修改", sig_om)
+        .small()
+        .on_toggle(move |_| {
+            sig_om.set(!sig_om.get());
+            // 与改搜索词同一条路：分页类走「归零分页 + 重载」。不归零的话，留在第 5 页
+            // 而过滤后只剩 3 条，用户看到的是一张空表。
+            m_om.on_search_changed();
+        })
+        .visible_when(move || v_om.current_category() == super::spec::WordCategory::CommonChars);
+
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -330,6 +345,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(promote_all)
         .child(clear)
         .child(reset_default)
+        .child(only_modified)
         .child(Element::leaf().weight(1.0))
         .child(search)
 }
@@ -550,6 +566,19 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                 move |_ctx| m.open_quick_edit(&r),
                 false,
             ));
+        } else if spec.category == super::spec::WordCategory::CommonChars {
+            // 与操作列按钮同一动作：直接切换，不带省略号（没有后续对话框）。
+            let r = row.clone();
+            let label = if row.common_now {
+                "设为生僻字"
+            } else {
+                "设为常用字"
+            };
+            ops.push(MenuItem::run(
+                label,
+                move |_ctx| m.toggle_common_row(&r),
+                false,
+            ));
         } else if spec.ops.remove_rule {
             // Shadow 类别：`row.text` 是规则原文（列表显示的模板原文不能回填，见 activate_row），
             // `cand_id` 必须带上，否则提交会擦掉短语规则的稳定 id。
@@ -638,18 +667,20 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
 
     let (m_t, m_c) = (mgr.clone(), mgr.clone());
     let (copy_text, copy_code) = (text, row.code.clone());
-    let mut copies = vec![
-        MenuItem::run(
-            "复制词条",
-            move |_ctx| copy_to_clipboard(&m_t, &copy_text),
-            false,
-        ),
-        MenuItem::run(
+    let mut copies = vec![MenuItem::run(
+        "复制词条",
+        move |_ctx| copy_to_clipboard(&m_t, &copy_text),
+        false,
+    )];
+    // 「复制编码」只在这一列真有内容时给。常用字表的键就是那个字、没有编码维度，
+    // `row.code` 恒空——给了也是复制一个空串，属于点了不知道发生没发生的那类项。
+    if !row.code.is_empty() {
+        copies.push(MenuItem::run(
             "复制编码",
             move |_ctx| copy_to_clipboard(&m_c, &copy_code),
             false,
-        ),
-    ];
+        ));
+    }
     if spec.ops.share_text {
         let m = mgr.clone();
         // 取 `row.text` 而不是 `display_text()`：后者是**候选调整**那类的模板投影
@@ -818,12 +849,19 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                     .on_click(move |_| m.open_quick_edit(&row_q)),
             );
         } else if spec.category == super::spec::WordCategory::CommonChars {
+            // **直接切换，不弹对话框**：这一类只有一个二值属性，为改一个 bool 开一层
+            // 模态、再点确定，比它本身的操作还重。按钮文案说的是「点下去会变成什么」。
             let row_c = row.clone();
+            let label = if row.common_now {
+                "设为生僻"
+            } else {
+                "设为常用"
+            };
             r = r.child(
-                Element::button("编辑")
+                Element::button(label)
                     .small()
                     .outline_soft()
-                    .on_click(move |_| m.open_common_edit(&row_c)),
+                    .on_click(move |_| m.toggle_common_row(&row_c)),
             );
         } else if spec.ops.remove_rule {
             // Shadow 类别：预填现值打开 shadow 对话框。
