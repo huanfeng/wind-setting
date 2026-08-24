@@ -1067,6 +1067,31 @@ pub fn build_hotkey_dialog(
         .child(Element::checkbox("Alt", ma).small().fg_role(Role::Text))
         .child(Element::checkbox("Win", mw).small().fg_role(Role::Text));
 
+    // 当前工作态的两个自由度：勾了修饰键吗、选了主键吗。
+    //
+    // **合法只有两种：两者都有（真热键），或两者都无（= 解绑）。只有一半都是废配置**，
+    // 而两种半成品的坏法还不一样：
+    //
+    // - 只勾修饰键：`compose_hotkey` 对空主键一律返回 `"none"`（**不管勾了几个修饰键**），
+    //   于是被当成解绑。该项原本没绑过的话，解绑等于什么都没做 ⇒ 工作态无变化 ⇒ 保存时
+    //   报「没有变更」——用户明明刚配过，只是主键忘了选。
+    // - 只选主键：合成出裸主键（`"e"`），而 core 编译这批功能快捷键时只判 `parse_hotkey`
+    //   是否 `Some`、**不看有无修饰位**（`wind-config/src/hotkey.rs:366`），照常编进
+    //   key_down 表且策略是 `Always`。后果不是「不生效」而是更糟：那个键在所有应用、
+    //   中英两种模式下被无条件吞掉（`key_gate.rs:117`），`e` 从此打不出来，且无任何日志。
+    //   `open_settings` 这么配坏就连设置窗都打不开，只能手改配置文件。F1-F12 无例外。
+    //
+    // 核心侧没有任何闸门挡这个，校验只能落在这里。三处（两条提示 + 确认可用性）共用同一
+    // 判定：各写一份的结果，是提示已经出来了、确认还点得下去。
+    let form: Rc<dyn Fn() -> (bool, bool)> = {
+        let kv = key_values.clone();
+        Rc::new(move || {
+            let has_mod = mc.get() || ms.get() || ma.get() || mw.get();
+            let has_key = kv.get(key_idx.get()).is_some_and(|k| !k.is_empty());
+            (has_mod, has_key)
+        })
+    };
+
     let mut body = Element::col()
         .width_match()
         .spacing(10)
@@ -1078,35 +1103,48 @@ pub fn build_hotkey_dialog(
         )
         .child(mod_row)
         .child(
-            Element::label("主键")
-                .font_size(12.0)
-                .fg_role(Role::TextMuted),
+            // 「主键」标签与「只勾了修饰键、没选主键」的提示同一行。
+            //
+            // 提示**不能自成一行**：它出现/消失会改对话框高度，用户每勾一个修饰键窗口就
+            // 跳一下。挂在标签行右侧则始终有位置——11px 提示矮于 12px 标签，显隐都不改行高。
+            //
+            // 提示为什么必须有：`compose_hotkey` 对空主键一律返回 `"none"`（**不管勾了
+            // 几个修饰键**），于是这种半成品状态会被当作「解绑」。若该项原本就没绑过，
+            // 解绑等于什么都没做 ⇒ 工作态无变化 ⇒ 保存时报「没有变更」——用户明明刚配过，
+            // 只是主键忘了选。等到那一步才反馈太迟，且那句提示还把原因指向了错误的地方。
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::label("主键")
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted),
+                )
+                .child(
+                    Element::label("只选修饰键不构成热键，请选择主键")
+                        .font_size(11.0)
+                        .fg_role(Role::Warning)
+                        .max_lines(1)
+                        .visible_when({
+                            let f = form.clone();
+                            move || matches!(f(), (true, false))
+                        }),
+                )
+                .child(
+                    // 两条提示互斥，同挂这一行：分挂两行的话「修饰键」那行只剩 ~100px，
+                    // 塞不下说得清后果的句子，而这句的后果（键被全局吞掉）恰恰最需要说清。
+                    Element::label("单个按键会被全局吞掉，请加修饰键")
+                        .font_size(11.0)
+                        .fg_role(Role::Warning)
+                        .max_lines(1)
+                        .visible_when({
+                            let f = form.clone();
+                            move || matches!(f(), (false, true))
+                        }),
+                ),
         )
         .child(Element::dropdown(key_labels, key_idx).width(160));
-
-    // 「只勾了修饰键、没选主键」的即时提示。
-    //
-    // `compose_hotkey` 对空主键一律返回 `"none"`（**不管勾了几个修饰键**），于是这种
-    // 半成品状态会被当作「解绑」。若该项原本就没绑过，解绑等于什么都没做 ⇒ 工作态无变化
-    // ⇒ 保存时报「没有变更」——用户明明刚配过，只是主键忘了选。等到那一步才反馈太迟，
-    // 而且那句提示还把原因指向了错误的地方。
-    {
-        let (wc, ws, wa, ww) = (mods[0], mods[1], mods[2], mods[3]);
-        let kv_warn = key_values.clone();
-        let ki = key_idx;
-        body = body.child(
-            Element::label("只选修饰键不构成热键：请选择主键，否则本次设置不会有任何变更")
-                .font_size(11.0)
-                .fg_role(Role::Warning)
-                .width_match()
-                .max_lines(2)
-                .visible_when(move || {
-                    let any_mod = wc.get() || ws.get() || wa.get() || ww.get();
-                    let key_empty = kv_warn.get(ki.get()).is_none_or(String::is_empty);
-                    any_mod && key_empty
-                }),
-        );
-    }
 
     if let Some(g) = global {
         body = body.child(
@@ -1117,16 +1155,25 @@ pub fn build_hotkey_dialog(
     }
 
     let kv_ok = key_values.clone();
-    let confirm = Element::button("确认").small().on_click(move |_| {
-        let m = [mc.get(), ms.get(), ma.get(), mw.get()];
-        let k = kv_ok.get(key_idx.get()).cloned().unwrap_or_default();
-        let v = compose_hotkey(m, &k);
-        // 同步启用态：对话框选「（未设置）」合成 "none" 即视为禁用，避免与行内复选漂移。
-        enabled.set(v != "none");
-        disp.set(format_hotkey(&v));
-        raw.set(v);
-        visible.set(false);
-    });
+    // 半成品一律置灰而不是让它点得下去：点下去要么写成解绑（用户以为配好了、实际什么
+    // 都没配上），要么写成裸单键（把那个键全局吞掉）。两者相等 = 都有或都无 = 合法。
+    let confirm_form = form.clone();
+    let confirm = Element::button("确认")
+        .small()
+        .enabled_when(move || {
+            let (has_mod, has_key) = confirm_form();
+            has_mod == has_key
+        })
+        .on_click(move |_| {
+            let m = [mc.get(), ms.get(), ma.get(), mw.get()];
+            let k = kv_ok.get(key_idx.get()).cloned().unwrap_or_default();
+            let v = compose_hotkey(m, &k);
+            // 同步启用态：对话框选「（未设置）」合成 "none" 即视为禁用，避免与行内复选漂移。
+            enabled.set(v != "none");
+            disp.set(format_hotkey(&v));
+            raw.set(v);
+            visible.set(false);
+        });
     let kv_def = key_values;
     let reset = Element::button("恢复默认")
         .small()
@@ -1251,5 +1298,110 @@ mod tests {
         m.insert("a".to_string(), Value::String("A".to_string()));
         let text = map_to_rows(&m);
         assert_eq!(text, "a=A\nb=B");
+    }
+
+    /// 两条提示都挂在「主键」标签行右侧，不自成一行——守的是**对话框高度不因它显隐而变**。
+    /// 独立一行时用户每勾一个修饰键窗口就跳一下，那正是这轮改动要消灭的。
+    ///
+    /// 同一个用例连带守住「半成品下确认必须置灰」：两件事同源（`form` 那个闭包），分开写
+    /// 会出现「提示已经出来了、确认还点得下去」。四个状态各按一次，因为**两种半成品的
+    /// 坏法不同**：只勾修饰键 → 合成 `"none"` = 解绑（保存报「没有变更」）；只选主键 →
+    /// 合成裸单键，core 照编不误且策略是 `Always`，那个键在所有应用里被吞掉、打不出来。
+    #[test]
+    fn hotkey_dialog_height_is_stable_and_confirm_blocks_half_configured_keys() {
+        use windui::core::{NodeId, Tree};
+        use windui::geometry::Size;
+
+        // 面板宽度固定 380（见 `build_hotkey_dialog` 的 frame）。它的 width_match 子节点
+        // 同宽，故取「宽 380 中最高的那个」= 面板自身。
+        fn panel_h(t: &Tree, id: NodeId, best: &mut i32) {
+            if let Some(n) = t.get(id) {
+                if n.bounds.w == 380 {
+                    *best = (*best).max(n.bounds.h);
+                }
+                for c in n.children.clone() {
+                    panel_h(t, c, best);
+                }
+            }
+        }
+        // 树里唯一挂了启用条件的节点就是「确认」；其余节点 own_enabled 恒真。
+        fn has_disabled(t: &Tree, id: NodeId) -> bool {
+            match t.get(id) {
+                None => false,
+                Some(n) => {
+                    !n.own_enabled() || n.children.clone().iter().any(|c| has_disabled(t, *c))
+                }
+            }
+        }
+
+        let visible = signal(true);
+        let raw = signal(String::new());
+        let disp = signal("未设置".to_string());
+        let mods = [signal(false), signal(false), signal(false), signal(false)];
+        let key_idx = signal(0usize);
+        let enabled = signal(false);
+        let el = build_hotkey_dialog(
+            visible,
+            "测试热键",
+            raw,
+            disp,
+            "none".to_string(),
+            mods,
+            key_idx,
+            vec![String::new(), "e".to_string()],
+            vec!["（未设置）".to_string(), "E".to_string()],
+            None,
+            enabled,
+        );
+
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        let mut te = windui::text::NullTextEngine;
+        let mut relayout = |t: &mut Tree| t.layout_root(Size::new(800, 600), &mut te);
+
+        relayout(&mut tree);
+        let mut h0 = 0;
+        panel_h(&tree, root, &mut h0);
+        assert!(h0 > 0, "没量到面板，宽度约定（380）变了就得同步改这个用例");
+        assert!(
+            !has_disabled(&tree, root),
+            "什么都没勾 = 解绑，是合法操作，确认不该置灰"
+        );
+
+        // (勾了修饰?, 选了主键?, 该禁用确认吗, 断言说明)
+        let steps: [(bool, bool, bool, &str); 4] = [
+            (
+                true,
+                false,
+                true,
+                "只勾修饰键 → 合成 \"none\" = 解绑，保存会报「没有变更」",
+            ),
+            (
+                false,
+                true,
+                true,
+                "只选主键 → 裸单键被 core 照编不误，那个键从此全局打不出来",
+            ),
+            (
+                true,
+                true,
+                false,
+                "修饰键 + 主键齐全，是合法热键，不该禁用确认",
+            ),
+            (false, false, false, "全空 = 解绑，是合法操作"),
+        ];
+        for (has_mod, has_key, should_block, why) in steps {
+            mods[0].set(has_mod);
+            key_idx.set(usize::from(has_key));
+            relayout(&mut tree);
+            let mut h = 0;
+            panel_h(&tree, root, &mut h);
+            assert_eq!(
+                h, h0,
+                "({has_mod}, {has_key}) 下高度变了 ⇒ 提示又自成一行了"
+            );
+            assert_eq!(has_disabled(&tree, root), should_block, "{why}");
+        }
     }
 }
