@@ -498,11 +498,17 @@ fn render_cell(
                     .border_role(role, 1),
             )
         }
-        // 常用性两列渲染成徽章：**生僻用强调色**。这一列要一眼看出的是「哪些字被我压下去了」
-        // ——被压住意味着它在智能/常用字档不再露面，那才是需要留意的状态；「常用」是默认
-        // 姿态，反而不该抢眼。与候选调整那列同一套视觉语言（值得注意的用 Accent）。
-        WordField::CommonNow | WordField::CommonBase => {
-            let role = if text == super::spec::common_label(false) {
+        // 常用性两列渲染成徽章。**颜色这个维度只承载一件事：这一行我改过没有**。
+        //
+        // 「常用/生僻」由文字本身说清楚了，再让颜色也去表达它，两个信息就挤在同一个视觉
+        // 通道里，谁也读不准。全表 8104 行里真正要一眼认出的是「哪几个是我动过的」，
+        // 那正是强调色该留给的东西——与「只看已修改」互补：那个是筛出来，这个是扫过去
+        // 也能注意到。
+        //
+        // 只给「当前」列上色，「默认」列恒是中性：后者是参照物，两列都亮就没有对比可言。
+        WordField::CommonNow => {
+            let adjusted = mgr.display_row(row).is_some_and(|r| r.adjusted);
+            let role = if adjusted {
                 Role::Accent
             } else {
                 Role::TextMuted
@@ -516,6 +522,14 @@ fn render_cell(
                     .border_role(role, 1),
             )
         }
+        WordField::CommonBase => Some(
+            Element::label(text)
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .padding_xy(6, 2)
+                .corner(4.0)
+                .border_role(Role::TextMuted, 1),
+        ),
         _ => None,
     }
 }

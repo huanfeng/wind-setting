@@ -883,7 +883,7 @@ const COLS_COMMON: &[ColumnSpec] = &[
         field: WordField::CommonBase,
     },
     ColumnSpec {
-        header: "现在",
+        header: "当前",
         weight: 1.0,
         field: WordField::CommonNow,
     },
