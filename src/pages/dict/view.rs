@@ -355,6 +355,11 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
 ///
 /// 计数文字**对所有类别都显示**（不分页的类别写「共 N 条」）——此前它随翻页按钮一起
 /// 被整条隐藏，于是系统短语、快捷输入这些类别连总条数都看不到。
+///
+/// ⚠️ 计数文字用 `weight(1.0)` 占位，而**不是**「自然宽度 + 弹簧」：row 的 weight 瓜分的是
+/// 非 weighted 子节点测量之后的**剩余**空间，故右侧翻页控件先按自然宽度落位，长文案只会
+/// 把自己截断。反过来写（label 自然宽 + `leaf().weight(1.0)` 当弹簧）时，六位数的
+/// 「第 123401-123500 / 共 234567 条」会把整行撑过父容器宽度，末页按钮被顶出可视区。
 fn build_pagination(mgr: &DictManagerState) -> Element {
     Element::row()
         .width_match()
@@ -365,9 +370,10 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
             Element::label_signal(mgr.page_status)
                 .font_size(11.5)
                 .fg_role(Role::TextMuted)
-                .max_lines(1),
+                .max_lines(1)
+                .weight(1.0)
+                .truncate(Truncate::End),
         )
-        .child(Element::leaf().weight(1.0))
         .child(build_page_nav(mgr))
 }
 
@@ -408,9 +414,10 @@ fn build_page_nav(mgr: &DictManagerState) -> Element {
         )
         .child(
             // Enter 提交（单行输入的 Enter 只有 `on_submit` 这一个出口，按键分发不冒泡）。
-            // 宽度按四位数留：上千页的表也放得下，再宽输入框就该喧宾夺主了。
+            // 宽度按**四位数**留（每页 100 条 ⇒ 覆盖到近百万条），再宽输入框就该喧宾夺主了。
+            // 46px 只装得下三位，页数上千时末位被框边裁掉。
             Element::text_input(mgr.page_input, "")
-                .width(46)
+                .width(62)
                 .height(26)
                 .on_submit(move |_| m_jump.submit_page_jump()),
         )
