@@ -1390,6 +1390,11 @@
       "type": "strlist"
     },
     {
+      "default": [],
+      "key": "ui.toolbar.buttons",
+      "type": "structlist"
+    },
+    {
       "default": "none",
       "key": "ui.langbar.punct_badge",
       "type": "enum",

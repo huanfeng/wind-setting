@@ -4394,6 +4394,7 @@ mod ext_dict_tests {
                 key: "keys.key_actions[backslash]".to_string(),
                 detail: "未设置 → special:quick_symbols".to_string(),
                 is_error: false,
+                warning: String::new(),
             }],
             info: PackageInfo {
                 title: "接上引导键".to_string(),
@@ -4443,6 +4444,7 @@ mod ext_dict_tests {
                 key: "input.foo".to_string(),
                 detail: "未知配置键".to_string(),
                 is_error: true,
+                warning: String::new(),
             }],
             info: PackageInfo::default(),
         };

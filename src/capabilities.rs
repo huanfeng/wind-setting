@@ -411,6 +411,18 @@ mod tests {
         //    ⚠️ 这是**临时**豁免：接进清单时记得从本名单撤出（双向断言会提醒）。
         "ui.labels.english",
         "ui.labels.caps_lock",
+        // ㉒' 工具栏自定义按钮（core 0.119）：**设计上不做专属控件**，不是待接入。
+        //
+        //    它是 config-design-rules §R5 的 expert 档典型：结构体数组（id/label/action/
+        //    enabled），而 action 是 cmdbar 表达式——真要做 GUI，得做一个动作编辑器
+        //    （函数名补全、参数校验、路径选择），那是比工具栏本身大得多的一件事。
+        //
+        //    与 ui.comment_dicts 同类同处置：出口是文档站的可复制片段
+        //    （guides/config/ui#toolbar-buttons），设置页在「显示的格」旁给一句指路。
+        //
+        //    ⚠️ 「显示哪些格、排第几」是另一个键（ui.toolbar.items），那个**有** GUI
+        //    （外观 → 工具栏 → 显示的格）。两者分工见 core 的 toolbar-customization.md。
+        "ui.toolbar.buttons",
         // 注：㉓ 辅助码那两个键（`schema.pinyin.aux_code.*`）曾登记在此，注明「待做 GUI，
         // 不是永久豁免」。2026-08-22 已接进清单（候选行为 → 辅助码），故从名单撤出——
         // 本名单的双向断言不容许留下已被覆盖的条目。

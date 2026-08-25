@@ -393,6 +393,7 @@
   "toolbar": {
    "auto_hide": false,
    "auto_hide_delay": 5,
+   "buttons": [],
    "hide_in_fullscreen": true,
    "items": [
     "mode",

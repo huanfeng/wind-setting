@@ -68,6 +68,12 @@ pub struct PreviewRow {
     /// 正常条目为「当前值 → 新值」，错误条目为错误原因。
     pub detail: String,
     pub is_error: bool,
+    /// core 给出的风险提示（`warning`）：本条可以应用，但用户得知道它意味着什么
+    /// （如「会往工具栏放一个能启动程序的按钮」）。空串 = 无提示。
+    ///
+    /// 与 [`Self::is_error`] 正交：一条可以既合法又有提示，也可以既写错了又有提示
+    /// （用户多半会改对再来一次，那时提示就该已经说过）。
+    pub warning: String,
 }
 
 /// 分发内容的说明元信息（`[package]` 段的 `title` / `description`，
@@ -538,11 +544,18 @@ fn parse_entries(v: &Value) -> Vec<PreviewRow> {
                 Some(entry) => format!("{key}[{entry}]"),
                 None => key,
             };
+            // 风险提示与 error 正交，两支都要带上（core 对写错了的危险键照样给提示）。
+            let warning = e
+                .get("warning")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             match e.get("error").and_then(|x| x.as_str()) {
                 Some(err) => rows.push(PreviewRow {
                     key,
                     detail: err.to_string(),
                     is_error: true,
+                    warning,
                 }),
                 None => {
                     let next = fmt_value(e.get("next").unwrap_or(&Value::Null));
@@ -555,6 +568,7 @@ fn parse_entries(v: &Value) -> Vec<PreviewRow> {
                         key,
                         detail,
                         is_error: false,
+                        warning,
                     });
                 }
             }
@@ -643,11 +657,10 @@ fn fmt_value(v: &Value) -> String {
 /// 并折行。key 只设上界防畸形长键（错误条目的键是用户手敲的任意串），中段省略同时
 /// 保住段前缀与叶子名——两端都是识别一个配置键要看的部分。
 pub fn preview_row_element(row: &PreviewRow) -> Element {
-    Element::row()
+    let head = Element::row()
         .width_match()
         .cross(Align::Start)
         .spacing(12)
-        .padding_xy(10, 5)
         .child(
             Element::label(&row.key)
                 .font_size(12.5)
@@ -670,7 +683,23 @@ pub fn preview_row_element(row: &PreviewRow) -> Element {
                 })
                 .weight(1.0)
                 .max_lines(3),
-        )
+        );
+    let mut col = Element::col().width_match().spacing(3).child(head);
+    // 风险提示单独一行、走 Warning 色：它要回答的是「这条会带来什么」，与「当前值 →
+    // 新值」不是一类信息，挤进 detail 里会被当成值的一部分读。
+    //
+    // ⚠️ 用 Warning 而不是 Danger：Danger 在本列表里已经表示「这条有错、不会应用」，
+    // 两者混色会让「合法但有风险」看着像「导入失败」。
+    if !row.warning.is_empty() {
+        col = col.child(
+            Element::label(format!("⚠ {}", row.warning))
+                .font_size(12.0)
+                .fg_role(Role::Warning)
+                .weight(1.0)
+                .max_lines(3),
+        );
+    }
+    col.padding_xy(10, 5)
 }
 
 /// 说明正文区的高度上限（px）。超出部分在区块内滚动，不外溢到对话框高度上。
@@ -961,6 +990,43 @@ mod tests {
         assert_eq!(rows[1].detail, "未设置 → chinese");
     }
 
+    /// core 的风险提示要真的进到行里——`warning` 是 `previewPatch` 响应的新字段，
+    /// 解析漏了的话对话框上什么都不显示，而「提示没出现」没有任何信号。
+    ///
+    /// 同时钉住它与 `ok` 正交：有提示不等于不合法，「应用」按钮不该因此被禁用。
+    #[test]
+    fn parse_preview_carries_risk_warning_without_disabling_apply() {
+        let v = json!({ "ok": true, "entries": [
+            { "key": "ui.toolbar.buttons", "next": [], "warning": "该片段会在工具栏上添加按钮，按钮可启动程序或打开网址——点击即执行。请确认来源可信。" }
+        ]});
+        let (ok, rows) = parse_preview(&v);
+        assert!(ok, "有风险提示不代表不合法");
+        assert!(!rows[0].is_error);
+        assert!(rows[0].warning.contains("启动程序"), "提示须原样带到行里");
+    }
+
+    /// 写错了的危险键：错误与提示**同时**呈现（core 对这种情形照样给提示）。
+    #[test]
+    fn parse_preview_shows_warning_alongside_error() {
+        let v = json!({ "ok": false, "entries": [
+            { "key": "ui.toolbar.buttons", "next": 5, "error": "类型应为数组", "warning": "该片段会在工具栏上添加按钮，按钮可启动程序或打开网址——点击即执行。请确认来源可信。" }
+        ]});
+        let (ok, rows) = parse_preview(&v);
+        assert!(!ok);
+        assert!(rows[0].is_error, "错误照常呈现");
+        assert!(!rows[0].warning.is_empty(), "提示不因有错而丢失");
+    }
+
+    /// 寻常条目不带提示——否则提示遍地都是，等于没有提示。
+    #[test]
+    fn parse_preview_ordinary_entry_has_no_warning() {
+        let v = json!({ "ok": true, "entries": [
+            { "key": "ui.candidate.per_page", "current": 5, "next": 9 }
+        ]});
+        let (_, rows) = parse_preview(&v);
+        assert!(rows[0].warning.is_empty());
+    }
+
     #[test]
     fn parse_preview_error_entries_disable_apply() {
         let v = json!({ "ok": false, "entries": [
@@ -1065,6 +1131,7 @@ mod tests {
             key: "ui.candidate.per_page".to_string(),
             detail: "5 → 9".to_string(),
             is_error: false,
+            warning: String::new(),
         }]);
         import.apply_ok.set(true);
         import.validated_text.set("old = 1".to_string());
