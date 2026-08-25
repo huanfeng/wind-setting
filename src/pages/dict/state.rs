@@ -41,6 +41,14 @@ fn sort_rows(rows: &mut [WordRow], field: WordField, ord: SortOrder) {
     });
 }
 
+/// 页码（1-based）→ 分页偏移，越界钳到 `[1, total_pages]`。
+///
+/// 单独抽出来是为了可测：`goto_page` 里这一步之后紧跟 `reload()`，而 reload 会按服务端
+/// 回来的 total 再做一次越界回收，钳制本身的行为在集成路径上被盖住、断言不到。
+pub fn page_offset(page: usize, total_pages: usize) -> usize {
+    (page.clamp(1, total_pages.max(1)) - 1) * PAGE_SIZE
+}
+
 /// 分页类别每页条数（对齐旧版 webview）。
 pub const PAGE_SIZE: usize = 100;
 
@@ -102,6 +110,11 @@ pub struct DictManagerState {
     pub total: Signal<usize>,
     /// 分页/计数状态文字（如"第 1-100 / 共 250 条"）。
     pub page_status: Signal<String>,
+    /// 跳页输入框的内容（1-based 页码）。列表每次重建后由 [`Self::sync_page_input`]
+    /// 回填成实际页码，故翻页/搜索/切标签之后框里恒是真值。
+    pub page_input: Signal<String>,
+    /// 跳页框右侧的「/ N 页」。非分页类别为空串（那组控件本身也不显示）。
+    pub page_count_text: Signal<String>,
     /// 状态文字（操作反馈）。
     pub status: Signal<String>,
     /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
@@ -450,6 +463,8 @@ impl DictManagerState {
             offset: Rc::new(RefCell::new(0)),
             total: signal(0),
             page_status: signal(String::new()),
+            page_input: signal("1".to_string()),
+            page_count_text: signal(String::new()),
             status: signal(String::new()),
             feedback: signal(None),
             confirm_visible: signal(false),
@@ -830,6 +845,75 @@ impl DictManagerState {
         *self.offset.borrow() + PAGE_SIZE < self.total.get()
     }
 
+    /// 总页数。**空表也算一页**——否则跳页框旁边会显示「/ 0 页」，而"第 1 页 / 共 0 页"
+    /// 本身就是自相矛盾的说法。
+    pub fn total_pages(&self) -> usize {
+        self.total.get().div_ceil(PAGE_SIZE).max(1)
+    }
+
+    /// 当前页码（1-based）。
+    pub fn current_page(&self) -> usize {
+        *self.offset.borrow() / PAGE_SIZE + 1
+    }
+
+    /// 跳到第 `page` 页（1-based）。
+    ///
+    /// **越界一律钳到 `[1, total_pages]`，不报错**：这个入口只有一种合理反应——用户打
+    /// 「999」是想去最后一页，不是想看一条错误提示。
+    pub fn goto_page(&self, page: usize) {
+        if !self.current_spec().paged {
+            return;
+        }
+        let off = page_offset(page, self.total_pages());
+        if off == *self.offset.borrow() {
+            // 页没变也要回填输入框：用户在只有 3 页的表里打了「99」，框里得显示钳回的 3，
+            // 否则它会一直挂着一个按了没反应的数字。
+            self.sync_page_input();
+            return;
+        }
+        *self.offset.borrow_mut() = off;
+        self.reload();
+    }
+
+    /// 跳页框回车提交。非数字/空串按「什么也没发生」处理（回填当前页）——为一个空框
+    /// 弹错误提示，比直接复位更烦人。
+    pub fn submit_page_jump(&self) {
+        match self.page_input.get().trim().parse::<usize>() {
+            Ok(p) => self.goto_page(p),
+            Err(_) => self.sync_page_input(),
+        }
+    }
+
+    /// 把跳页框回填成当前实际页码。
+    ///
+    /// 同值不写：`Signal::set` 每次都自增 version，正在编辑的输入框被重写会跳光标。
+    fn sync_page_input(&self) {
+        let now = self.current_page().to_string();
+        if self.page_input.get() != now {
+            self.page_input.set(now);
+        }
+    }
+
+    pub fn first_page(&self) {
+        self.goto_page(1);
+    }
+
+    pub fn last_page(&self) {
+        self.goto_page(self.total_pages());
+    }
+
+    pub fn prev_page(&self) {
+        if self.has_prev() {
+            self.goto_page(self.current_page() - 1);
+        }
+    }
+
+    pub fn next_page(&self) {
+        if self.has_next() {
+            self.goto_page(self.current_page() + 1);
+        }
+    }
+
     // ── 数据加载 ─────────────────────────────────────────────
 
     /// 构建当前类别 list RPC 的参数（纯函数，便于单测）。
@@ -933,6 +1017,14 @@ impl DictManagerState {
             format!("共 {total} 条")
         };
         self.page_status.set(page_status);
+        // 跳页控件：页数文字 + 把框回填成实际页码。非分页类别置空（那组控件也不显示），
+        // 留着上一个类别的「/ 7 页」比空着更糟。
+        self.page_count_text.set(if spec.paged {
+            format!("/ {} 页", self.total_pages())
+        } else {
+            String::new()
+        });
+        self.sync_page_input();
         self.empty_msg.set(if rows.is_empty() {
             self.empty_hint()
         } else {
@@ -1142,13 +1234,6 @@ impl DictManagerState {
     pub fn apply_search(&self) {
         *self.offset.borrow_mut() = 0;
         self.reload();
-    }
-
-    pub fn next_page(&self) {
-        if self.has_next() {
-            *self.offset.borrow_mut() += PAGE_SIZE;
-            self.reload();
-        }
     }
 
     // ── 写操作（直接 RPC 即时生效 + 刷新）─────────────────────
@@ -1780,25 +1865,11 @@ impl DictManagerState {
                 Value::Object(self.scoped_params()),
                 "已清空",
             );
-        } else if spec.ops.remove_rule {
-            let rows = self.rows.borrow().clone();
-            let total = rows.len();
-            let mut n = 0usize;
-            for r in &rows {
-                let mut p = self.scoped_params();
-                p.insert("code".into(), json!(r.code));
-                p.insert("word".into(), json!(r.text));
-                if rpc::call_core(spec.rpc.remove_rule, &Value::Object(p)).is_ok() {
-                    n += 1;
-                }
-            }
-            self.reload();
-            if n == total {
-                self.notify_ok(&format!("已撤销 {n} 条规则"));
-            } else {
-                self.notify_ok(&format!("已撤销 {n} 条，{} 条失败", total - n));
-            }
         } else {
+            // ⚠️ 这里曾有一条「候选调整没有 clear RPC，就循环 remove_rule 逐条撤销」的
+            // 退路。它依赖 `self.rows` 是全量——候选调整改服务端分页后那里只剩当前页，
+            // 那条路会**静默只清一页**。故 core 侧补了 `shadow.clear`，退路一并退役：
+            // 凡 `ops.clear` 为真的类别，`rpc.clear` 都必须非空（见 spec 的守护测试）。
             self.notify_err("该类别不支持清空");
         }
     }
@@ -2268,14 +2339,6 @@ impl DictManagerState {
                 self.run_calls(calls, ok);
             }
             Err(e) => self.notify_err(&e),
-        }
-    }
-
-    pub fn prev_page(&self) {
-        if self.has_prev() {
-            let cur = *self.offset.borrow();
-            *self.offset.borrow_mut() = cur.saturating_sub(PAGE_SIZE);
-            self.reload();
         }
     }
 
@@ -4380,14 +4443,13 @@ mod tests {
 
     #[test]
     fn client_sort_reorders_unpaged_rows() {
-        let st = DictManagerState::new();
-        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(GLOBAL_DOMAINS);
-        st.sub_tab.set(1); // 临时词库（非分页，列 = 编码/词条/次数）
+        // 样例用系统短语：临时词库/候选调整改走服务端分页后，非分页类别只剩短语系统与
+        // 快捷输入两类，拿分页类别当样例会因 parse_list 取不到 items 而空表。
+        let st = DictManagerState::new(); // domain 0 = 短语，sub_tab 0 = 系统短语
         st.apply_rows(&json!([
-            { "code": "b", "text": "乙", "count": 2 },
-            { "code": "a", "text": "甲", "count": 30 },
-            { "code": "c", "text": "丙", "count": 4 },
+            { "code": "b", "text": "乙", "weight": 2, "isSystem": true },
+            { "code": "a", "text": "甲", "weight": 30, "isSystem": true },
+            { "code": "c", "text": "丙", "weight": 4, "isSystem": true },
         ]));
         // 无排序：保持原序。
         assert_eq!(st.table_rows.get()[0][0], "b");
@@ -4404,7 +4466,7 @@ mod tests {
             "甲",
             "display_rows 与表格同序"
         );
-        // 按次数列（2）降序：数值序 30 > 4 > 2（字符串序会是 4 > 30 > 2）。
+        // 按权重列（2）降序：数值序 30 > 4 > 2（字符串序会是 4 > 30 > 2）。
         st.sort.set(Some(SortKey::desc(2)));
         st.on_sort_changed();
         let cells = st.table_rows.get();
@@ -5376,20 +5438,20 @@ mod tests {
     }
 
     #[test]
-    fn client_search_filters_temp_rows() {
-        let st = DictManagerState::new();
-        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
-        st.domain.set(GLOBAL_DOMAINS);
-        st.sub_tab.set(1); // 临时词库（client_search=true）
+    fn client_search_filters_unpaged_rows() {
+        // 同 `client_sort_reorders_unpaged_rows`：客户端过滤现在只剩短语系统/快捷输入两类。
+        let st = DictManagerState::new(); // domain 0 = 短语，sub_tab 0 = 系统短语
         *st.rows.borrow_mut() = vec![
             WordRow {
                 code: "nihao".into(),
                 text: "你好".into(),
+                is_system: true,
                 ..Default::default()
             },
             WordRow {
                 code: "women".into(),
                 text: "我们".into(),
+                is_system: true,
                 ..Default::default()
             },
         ];
@@ -5400,6 +5462,110 @@ mod tests {
         // 匹配词条也命中
         st.search.set("你".into());
         assert_eq!(st.visible_rows()[0].code, "nihao");
+    }
+
+    /// 页码 ⇄ 偏移的换算与钳制。越界**不报错也不跳空页**：打「999」是想去最后一页。
+    #[test]
+    fn page_offset_clamps_to_valid_range() {
+        assert_eq!(page_offset(1, 3), 0);
+        assert_eq!(page_offset(2, 3), PAGE_SIZE);
+        assert_eq!(page_offset(3, 3), PAGE_SIZE * 2);
+        assert_eq!(page_offset(999, 3), PAGE_SIZE * 2, "超出末页钳到末页");
+        assert_eq!(page_offset(0, 3), 0, "0 页不存在，钳到首页");
+        assert_eq!(page_offset(5, 0), 0, "空表也当一页，不产生非法偏移");
+    }
+
+    /// 空表也算一页：否则跳页框旁边会写「第 1 / 0 页」，那是自相矛盾的说法。
+    #[test]
+    fn total_pages_counts_partial_page_and_never_zero() {
+        let st = DictManagerState::new();
+        st.total.set(0);
+        assert_eq!(st.total_pages(), 1);
+        st.total.set(1);
+        assert_eq!(st.total_pages(), 1);
+        st.total.set(PAGE_SIZE);
+        assert_eq!(st.total_pages(), 1);
+        st.total.set(PAGE_SIZE + 1);
+        assert_eq!(st.total_pages(), 2, "余数要单独占一页");
+        st.total.set(PAGE_SIZE * 3);
+        assert_eq!(st.total_pages(), 3);
+    }
+
+    #[test]
+    fn current_page_is_one_based() {
+        let st = DictManagerState::new();
+        assert_eq!(st.current_page(), 1);
+        *st.offset.borrow_mut() = PAGE_SIZE * 4;
+        assert_eq!(st.current_page(), 5);
+    }
+
+    /// 跳页框输入非数字/空串：按「什么也没发生」处理并把框回填成当前页。
+    /// 为一个打错的框弹错误提示，比直接复位更烦人。
+    #[test]
+    fn page_jump_restores_input_on_garbage() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0); // 用户词库（分页）
+        *st.offset.borrow_mut() = PAGE_SIZE * 2;
+        st.page_input.set("abc".into());
+        st.submit_page_jump();
+        assert_eq!(st.page_input.get(), "3", "非数字回填当前页");
+        assert_eq!(*st.offset.borrow(), PAGE_SIZE * 2, "偏移不动");
+
+        st.page_input.set("  ".into());
+        st.submit_page_jump();
+        assert_eq!(st.page_input.get(), "3", "空串同理");
+    }
+
+    /// 非分页类别不接受跳页（那组控件也不显示），别让 offset 被写脏。
+    #[test]
+    fn goto_page_is_noop_for_unpaged_category() {
+        let st = DictManagerState::new(); // 系统短语（非分页）
+        st.total.set(500);
+        st.goto_page(3);
+        assert_eq!(*st.offset.borrow(), 0);
+    }
+
+    /// 列表每次重建后，「/ N 页」与跳页框都要跟上；非分页类别不显示页数。
+    #[test]
+    fn page_widgets_sync_on_rebuild() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0); // 用户词库（分页）
+        *st.offset.borrow_mut() = PAGE_SIZE;
+        st.apply_rows(&json!({ "items": [
+            { "code": "aaaa", "text": "工", "weight": 0 }
+        ], "total": 250 }));
+        assert_eq!(st.page_count_text.get(), "/ 3 页");
+        assert_eq!(st.page_input.get(), "2", "跳页框回填实际页码");
+        assert_eq!(st.page_status.get(), "第 101-101 / 共 250 条");
+
+        // 切到非分页类别：页数文字清空，别留着上一个类别的「/ 3 页」。
+        st.domain.set(0);
+        st.sub_tab.set(0); // 系统短语
+        st.apply_rows(&json!([]));
+        assert!(st.page_count_text.get().is_empty());
+    }
+
+    /// 临时词库与候选调整改服务端分页后必须真的发出分页参数——spec 里开关拨对了、
+    /// 参数没跟上的话，症状是「翻到第 2 页还是第 1 页那批数据」。
+    #[test]
+    fn build_params_temp_and_shadow_are_paged() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        for (tab, name) in [(1usize, "临时词库"), (3, "候选调整")] {
+            st.sub_tab.set(tab);
+            *st.offset.borrow_mut() = PAGE_SIZE;
+            st.search.set("ni".into());
+            let p = st.build_list_params();
+            assert_eq!(p["offset"], json!(PAGE_SIZE), "{name} 应带 offset");
+            assert_eq!(p["limit"], json!(PAGE_SIZE), "{name} 应带 limit");
+            assert_eq!(p["prefix"], json!("ni"), "{name} 的搜索走服务端");
+            assert_eq!(p["schemaId"], json!("wb"), "{name} 按方案取数");
+        }
     }
 
     #[test]

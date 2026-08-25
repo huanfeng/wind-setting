@@ -16,11 +16,11 @@ pub enum WordCategory {
     PhraseUser,
     /// 用户词库（按方案·分页）。
     UserDict,
-    /// 临时词库（按方案）。
+    /// 临时词库（按方案·分页）。
     Temp,
     /// 词频（按方案·分页）。
     Freq,
-    /// 候选调整 / 影子规则（按方案，只读 + 撤销）。
+    /// 候选调整 / 影子规则（按方案·分页，只读 + 撤销）。
     Shadow,
     /// 快捷输入格式（全局；调序 / 停用 / 恢复，出厂条目不可增删）。
     QuickFormat,
@@ -243,7 +243,7 @@ impl WordRow {
     }
 
     /// 从列表 RPC 返回解析出 (行集合, 总数)。
-    /// 分页类（dict/freq）返回 `{items,total}`；其余返回裸数组，total = 长度。
+    /// 分页类返回 `{items,total}`；其余返回裸数组，total = 长度。
     pub fn parse_list(cat: WordCategory, paged: bool, v: &Value) -> (Vec<WordRow>, usize) {
         if paged {
             let items = v
@@ -728,13 +728,18 @@ const SPEC_USERDICT: CategorySpec = CategorySpec {
     },
 };
 
+/// 临时词库。
+///
+/// **服务端分页 + 服务端搜索**（2026-08-25 由「一次全取 + 客户端过滤」改来）：临时词是
+/// 打字过程中自动攒下的，只增不减直到用户转正或清空，量级与用户词库同级。全取要把整份
+/// json 推过 IPC，设置端再给每条建一个表格行 widget（那张表不做虚拟化），上万条时开页即卡。
 const SPEC_TEMP: CategorySpec = CategorySpec {
     category: WordCategory::Temp,
     title: "临时词库",
     scoped_by_schema: true,
-    paged: false,
-    searchable: false,
-    client_search: true,
+    paged: true,
+    searchable: true,
+    client_search: false,
     columns: COLS_TEMP,
     ops: OpFlags {
         remove: true,
@@ -744,7 +749,8 @@ const SPEC_TEMP: CategorySpec = CategorySpec {
         ..OpFlags::NONE
     },
     rpc: RpcNames {
-        list: "temp.list",
+        // 分页版。`temp.list`（裸数组）仍在 core 侧保留给导出等全量取用方。
+        list: "temp.listPaged",
         remove: "temp.remove",
         clear: "temp.clear",
         promote: "temp.promote",
@@ -774,13 +780,21 @@ const SPEC_FREQ: CategorySpec = CategorySpec {
     },
 };
 
+/// 候选调整（影子规则）。
+///
+/// **服务端分页 + 服务端搜索**（2026-08-25 由「一次全取 + 客户端过滤」改来）：规则随每次
+/// 手动调序/删候选累加，没有上限，理由同 [`SPEC_TEMP`]。
+///
+/// ⚠️ 「词」这一列显示的是 `candId` 里的**模板原文**（见 [`WordRow::display_text`]），故
+/// core 侧的搜索与排序也按显示文本算——两边判据一旦漂移，症状是「屏幕上看得见、搜索框
+/// 里搜不着」。
 const SPEC_SHADOW: CategorySpec = CategorySpec {
     category: WordCategory::Shadow,
     title: "候选调整",
     scoped_by_schema: true,
-    paged: false,
-    searchable: false,
-    client_search: true,
+    paged: true,
+    searchable: true,
+    client_search: false,
     columns: COLS_SHADOW,
     ops: OpFlags {
         add: true,
@@ -790,10 +804,13 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
         ..OpFlags::NONE
     },
     rpc: RpcNames {
-        list: "shadow.list",
+        // 分页版。`shadow.list`（裸数组）仍在 core 侧保留给全量取用方。
+        list: "shadow.listPaged",
         add: "shadow.addRule",
         remove_rule: "shadow.removeRule",
-        // clear 无单独 RPC：视图侧循环 remove_rule 实现。
+        // 整表撤销走 core。此前是「视图侧循环 remove_rule」——分页之后设置端手上只剩
+        // 当前页，那条路会静默只清一页。
+        clear: "shadow.clear",
         ..RpcNames::EMPTY
     },
 };
@@ -1441,7 +1458,33 @@ mod tests {
         let s = spec_for(WordCategory::Shadow);
         assert!(s.ops.add);
         assert_eq!(s.rpc.add, "shadow.addRule");
-        assert!(s.client_search, "候选调整走客户端搜索");
+    }
+
+    /// 会无上限增长的两类（临时词库 / 候选调整）必须走服务端分页——它们此前是
+    /// 「一次全取 + 客户端过滤」，条目上万时开页即卡。守住三件配套的事：分页开关、
+    /// 搜索改走服务端、list 指向 `*Paged`。
+    #[test]
+    fn unbounded_categories_are_server_paged() {
+        for cat in [WordCategory::Temp, WordCategory::Shadow] {
+            let s = spec_for(cat);
+            assert!(s.paged, "{:?} 应服务端分页", cat);
+            assert!(s.searchable && !s.client_search, "{:?} 应服务端搜索", cat);
+            assert!(
+                s.rpc.list.ends_with("listPaged"),
+                "{:?} 的 list 应指向分页 RPC，实为 {}",
+                cat,
+                s.rpc.list
+            );
+        }
+    }
+
+    /// 候选调整的「清空」必须有真 RPC。分页后设置端手上只剩当前页，靠循环 remove_rule
+    /// 凑出来的清空会静默只清一页——这条断言就是那个回归的闸门。
+    #[test]
+    fn shadow_clear_has_dedicated_rpc() {
+        let s = spec_for(WordCategory::Shadow);
+        assert!(s.ops.clear);
+        assert_eq!(s.rpc.clear, "shadow.clear");
     }
 
     #[test]

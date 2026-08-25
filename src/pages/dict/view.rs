@@ -351,13 +351,11 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(search)
 }
 
-/// 分页条（仅分页类别显示）。
+/// 底栏：左侧计数文字 + 右侧翻页/跳页控件组。
+///
+/// 计数文字**对所有类别都显示**（不分页的类别写「共 N 条」）——此前它随翻页按钮一起
+/// 被整条隐藏，于是系统短语、快捷输入这些类别连总条数都看不到。
 fn build_pagination(mgr: &DictManagerState) -> Element {
-    let dom_pg = mgr.clone();
-    let m_prev = mgr.clone();
-    let m_next = mgr.clone();
-    let m_hp = mgr.clone();
-    let m_hn = mgr.clone();
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -370,21 +368,73 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
                 .max_lines(1),
         )
         .child(Element::leaf().weight(1.0))
+        .child(build_page_nav(mgr))
+}
+
+/// 翻页 + 跳页控件组（仅分页类别显示）：`« 首页 ‹ 上一页 | 第 [n] / N 页 | 下一页 › 末页 »`。
+///
+/// **跳页框是这组控件的重点**：用户词库/常用字动辄上百页，只有「上一页/下一页」时想去
+/// 第 47 页要点 46 次。首页/末页两枚同理——「看最后攒下的那几条」是个高频动作，而它
+/// 恰恰是逐页点击代价最大的位置。
+fn build_page_nav(mgr: &DictManagerState) -> Element {
+    let (m_first, e_first) = (mgr.clone(), mgr.clone());
+    let (m_prev, e_prev) = (mgr.clone(), mgr.clone());
+    let (m_next, e_next) = (mgr.clone(), mgr.clone());
+    let (m_last, e_last) = (mgr.clone(), mgr.clone());
+    let m_jump = mgr.clone();
+    let v_nav = mgr.clone();
+    Element::row()
+        .cross(Align::Center)
+        .spacing(6)
+        .child(
+            Element::button("« 首页")
+                .small()
+                .outline_soft()
+                .enabled_when(move || e_first.has_prev())
+                .on_click(move |_| m_first.first_page()),
+        )
         .child(
             Element::button("‹ 上一页")
                 .small()
                 .outline_soft()
-                .enabled_when(move || m_hp.has_prev())
+                .enabled_when(move || e_prev.has_prev())
                 .on_click(move |_| m_prev.prev_page()),
+        )
+        .child(
+            Element::label("第")
+                .font_size(11.5)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
+        )
+        .child(
+            // Enter 提交（单行输入的 Enter 只有 `on_submit` 这一个出口，按键分发不冒泡）。
+            // 宽度按四位数留：上千页的表也放得下，再宽输入框就该喧宾夺主了。
+            Element::text_input(mgr.page_input, "")
+                .width(46)
+                .height(26)
+                .on_submit(move |_| m_jump.submit_page_jump()),
+        )
+        .child(
+            Element::label_signal(mgr.page_count_text)
+                .font_size(11.5)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
         )
         .child(
             Element::button("下一页 ›")
                 .small()
                 .outline_soft()
-                .enabled_when(move || m_hn.has_next())
+                .enabled_when(move || e_next.has_next())
                 .on_click(move |_| m_next.next_page()),
         )
-        .visible_when(move || dom_pg.current_spec().paged)
+        .child(
+            Element::button("末页 »")
+                .small()
+                .outline_soft()
+                .enabled_when(move || e_last.has_next())
+                .on_click(move |_| m_last.last_page()),
+        )
+        .visible_when(move || v_nav.current_spec().paged)
 }
 
 /// 构建当前类别的可排序表格（服务端排序模式）：正文绑定 `table_rows` 信号，点表头
@@ -1538,10 +1588,11 @@ mod tests {
             "五笔（码表）域有候选调整，应完全命中、无降级提示"
         );
         layout(&mut tree); // effect 在这一帧跑 on_nav_changed
-        mgr.apply_rows(&json!([
+        // 候选调整走服务端分页，返回 `{items,total}`（裸数组会被 parse_list 读成空表）。
+        mgr.apply_rows(&json!({ "items": [
             { "code": "ab", "word": "阿", "type": "pin", "position": 1 },
             { "code": "cd", "word": "屏", "type": "delete" },
-        ]));
+        ], "total": 2 }));
         layout(&mut tree);
 
         assert_eq!(mgr.current_category(), WordCategory::Shadow);

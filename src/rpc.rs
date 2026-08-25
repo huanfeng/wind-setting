@@ -1267,10 +1267,21 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "code": "nihao", "text": "你好", "count": 3 },
             { "code": "women", "text": "我们", "count": 7 }
         ]),
+        // 设置页列表走分页版（`{items,total}`）；上面那条裸数组留给全量取用方。
+        "temp.listPaged" => json!({ "items": [
+            { "code": "nihao", "text": "你好", "count": 3 },
+            { "code": "women", "text": "我们", "count": 7 }
+        ], "total": 2 }),
         "shadow.list" => json!([
             { "code": "wm", "word": "我们", "candId": "c1", "type": "pin", "position": 0 },
             { "code": "nh", "word": "你好", "candId": null, "type": "delete" }
         ]),
+        "shadow.listPaged" => json!({ "items": [
+            { "code": "wm", "word": "我们", "candId": "c1", "type": "pin", "position": 0 },
+            { "code": "nh", "word": "你好", "candId": null, "type": "delete" }
+        ], "total": 2 }),
+        // 返回撤销条数（与 temp.clear 同形）。
+        "shadow.clear" => json!(2),
         "theme.preview" => json!({
             "slug": "test-theme",
             "display_name": "测试主题",
