@@ -435,6 +435,9 @@ pub struct SchemaManagerState {
     pub settings_sections: [Signal<Vec<SettingsSection>>; 2],
     /// 当前选中的 TAB 下标。
     pub settings_tab: Signal<usize>,
+    /// TAB 标签（外层 `Vec` 恒长度 1，理由见 `tab_bar` 的构建处）。「方案自定义」那一项
+    /// 会带上已改项数，由码表配置的 effect 推。
+    pub settings_tab_labels: Signal<Vec<Vec<String>>>,
     /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
     pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
 
@@ -483,8 +486,6 @@ pub struct SchemaManagerState {
     /// 设置清单：方案级码表配置与全局页**共用同一份条目定义**（label/hint/范围/联动）。
     /// 本对话框不持有 `AppState`，故自带一份内嵌清单。
     pub manifest: Rc<crate::manifest::Manifest>,
-    /// 「自定义码表配置」总开关。初值由配置内容推导（`schema_codetable::has_custom`），
-    /// 不另存布尔键——多一个键就多一处可能与实际内容不一致的状态。
     // ── 特殊模式（方案文件 `[overlay]` 段）──
     //
     // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
@@ -511,7 +512,6 @@ pub struct SchemaManagerState {
     pub settings_ov_layout: Signal<usize>,
     /// 打开对话框时的两项初值，用于脏判定——没有它，打开看一眼再关掉也会入队写盘。
     settings_ov_at_open: Rc<std::cell::Cell<(bool, usize)>>,
-    pub settings_ct_enabled: Signal<bool>,
     /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
     /// 标题里不带方案名的话，点进去就不知道自己在配哪个表了。
     /// 行内摘要（「跟随全局配置」/「已自定义」）。**定宽**——文本随勾选变化，
@@ -543,15 +543,16 @@ pub struct SchemaManagerState {
     pub settings_ko_disp: Signal<String>,
     /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
     /// 中间靠这个信号驱动 `host_signal` 重建。
-    pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtItem>>,
-    /// 打开时的生效值快照（core 随 `schema.getConfig` 给的 `effectiveCodetable`）。
-    /// 保存时用来补齐没有控件的隐藏项。
-    pub settings_ct_eff: Rc<RefCell<Value>>,
+    pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtGroup>>,
+    /// 用户按过「全部恢复跟随」。落盘时据此额外调 [`CtFields::reset`]——逐项 `apply`
+    /// 够不着**隐藏项**（没控件就没信号），而 0.118 的「开总开关整段写实」会把
+    /// `auto_commit_min_len` 写进 override。不带这个标志的话，那个键清不掉，用户按了
+    /// 「全部恢复跟随」仍有一项在偷偷生效。`seed` 时清零。
+    settings_ct_reset_all: Rc<std::cell::Cell<bool>>,
 
-    /// 打开对话框那一刻的双拼布局索引 / 码表总开关值。脏判定用——没有它就分不清
-    /// 「用户拨过」和「本来就是这个值」，于是打开看一眼再关掉也会写一次盘。
+    /// 打开对话框那一刻的双拼布局索引。脏判定用——没有它就分不清「用户拨过」和
+    /// 「本来就是这个值」，于是打开看一眼再关掉也会写一次盘。
     settings_layout_at_open: Rc<std::cell::Cell<usize>>,
-    settings_ct_enabled_at_open: Rc<std::cell::Cell<bool>>,
     /// 待提交的方案 override 改动（方案 id → 变更）。关窗时暂存，随主保存提交。
     ///
     /// **按方案 id 存**而不是只留最后一次的工作态：用户可以连着配好几个方案再点
@@ -615,6 +616,9 @@ impl SchemaManagerState {
             layouts: Rc::new(RefCell::new(Vec::new())),
             settings_sections: [signal(vec![]), signal(vec![])],
             settings_tab: signal(0),
+            settings_tab_labels: signal(vec![
+                SETTINGS_TABS.iter().map(|s| s.to_string()).collect(),
+            ]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
             settings_aux_idx: signal(0),
@@ -626,7 +630,6 @@ impl SchemaManagerState {
             settings_bh_phrases: signal(true),
             settings_bh_at_open: Rc::new(std::cell::Cell::new((0, 0, true))),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
-            settings_ct_enabled: signal(false),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
             settings_ka: Default::default(),
@@ -642,9 +645,8 @@ impl SchemaManagerState {
             settings_ko_title: signal("按键总览".to_string()),
             settings_ko_disp: signal(String::new()),
             settings_ct_plan: signal(vec![]),
-            settings_ct_eff: Rc::new(RefCell::new(Value::Null)),
+            settings_ct_reset_all: Rc::new(std::cell::Cell::new(false)),
             settings_layout_at_open: Rc::new(std::cell::Cell::new(0)),
-            settings_ct_enabled_at_open: Rc::new(std::cell::Cell::new(false)),
             pending_edits: Rc::new(RefCell::new(std::collections::HashMap::new())),
         };
         state.refresh();
@@ -1620,18 +1622,45 @@ impl SchemaManagerState {
             let cfg = self.settings_cfg.borrow();
             let is_ct = cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable");
             if is_ct {
+                // 四份数据各答一个问题，缺一项就有一类状态显示不出来：
+                // 生效值＝勾选时控件的初值；跟随值＝取消覆盖后变成什么（未勾选时显示它）；
+                // override 层＝这一项是不是用户改的；合并值＝配合 override 层判「方案自带」。
                 let eff = cfg.get("effectiveCodetable").cloned().unwrap_or(json!({}));
-                self.settings_ct.seed(&self.manifest, &eff);
-                self.settings_ct_plan.set(self.settings_ct.plan());
-                let custom = crate::dialogs::schema_codetable::has_custom(&cfg);
-                self.settings_ct_enabled.set(custom);
-                self.settings_ct_enabled_at_open.set(custom);
-                *self.settings_ct_eff.borrow_mut() = eff;
-                drop(cfg);
-                self.settings_ct_disp.set(
-                    ct_summary(self.settings_ct_enabled.get(), self.settings_entry_hidden())
-                        .to_string(),
+                let followed = cfg.get("followedCodetable").cloned().unwrap_or(json!({}));
+                let ov = cfg.get("codetableOverride").cloned().unwrap_or(json!({}));
+                let merged = cfg
+                    .pointer("/engine/codetable")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                // 特殊方案不继承全局（core `codetable_baseline`），文案跟着换，否则会写着
+                // 「跟随全局」而实际跟的是内置基线。
+                //
+                // ★ 判据是 **`[overlay]` 段存在**，不是 `[schema].hidden` ——两者正交：
+                // hidden 管「列不列进方案切换列表」，与折叠哪份基线无关。core 侧
+                // `codetable_baseline` 早已换成 overlay 判据，这里跟上（本行内摘要此前
+                // 一直用 hidden，对「hidden 但非 overlay 的小码表」会说反）。
+                let follow_label = if cfg.get("overlay").is_some_and(|v| v.is_object()) {
+                    "跟随基线"
+                } else {
+                    "跟随全局"
+                };
+                self.settings_ct.seed(
+                    &self.manifest,
+                    &crate::dialogs::schema_codetable::CtSeed {
+                        effective: &eff,
+                        followed: &followed,
+                        overridden: &ov,
+                        merged: &merged,
+                        follow_label,
+                    },
                 );
+                self.settings_ct_plan.set(self.settings_ct.plan());
+                // 换方案要清：上一个方案按过「全部恢复跟随」，标志留着会把这个方案的
+                // 隐藏项一起清掉，而用户在这个方案上什么都没按。
+                self.settings_ct_reset_all.set(false);
+                drop(cfg);
+                self.settings_ct_disp
+                    .set(ct_summary(self.settings_ct.custom_count()));
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::CodeTable);
 
@@ -1729,15 +1758,6 @@ impl SchemaManagerState {
         self.settings_visible.set(true);
     }
 
-    /// 当前打开的方案是否为特殊方案（决定摘要说「跟随内置基线」还是「跟随全局配置」）。
-    fn settings_entry_hidden(&self) -> bool {
-        self.settings_entry
-            .borrow()
-            .as_ref()
-            .map(|e| e.hidden)
-            .unwrap_or(false)
-    }
-
     /// 把对话框的工作态**暂存**进待提交队列（关窗时调用）。
     ///
     /// 不在这里落盘：方案 override 与 config.toml 里的热键/引导键属于同一次编辑，
@@ -1770,16 +1790,23 @@ impl SchemaManagerState {
         let mut cfg_changed = false;
 
         if cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable") {
-            let enabled = self.settings_ct_enabled.get();
-            // 脏判定要在 apply 之前：apply 会把所有字段写实，之后再比就永远「有改动」。
-            if enabled != self.settings_ct_enabled_at_open.get() || self.settings_ct.is_dirty() {
-                // 关掉总开关时写入的是一串 null——core 的 json_to_toml 跳过 null，于是
-                // override 里不含这些键 = 跟随基线。这是「取消自定义」唯一的落地方式。
-                self.settings_ct.apply(&mut cfg, enabled);
-                if enabled {
-                    let eff = self.settings_ct_eff.borrow().clone();
-                    self.settings_ct.apply_hidden(&mut cfg, &eff);
+            // 脏判定必须在 apply 之前：apply 会把每一项都写一遍（勾选的写值、没勾的写
+            // null），之后再比就永远是「有改动」。
+            //
+            // 三态之后脏判定只剩内容比对这一条——没有总开关，「勾/取消勾」本身就在
+            // `is_dirty` 里（勾选框的 version 计入 version_sum）。
+            let reset_all = self.settings_ct_reset_all.get();
+            if self.settings_ct.is_dirty() || reset_all {
+                // 先 reset 后 apply，顺序不能反：reset 清的是**全集**（含隐藏项），
+                // apply 再把有控件的那些按勾选状态写一遍。反过来的话 reset 会把刚写好的
+                // 用户值又抹成 null——而用户可能是「全部恢复跟随后又勾了一两项」。
+                if reset_all {
+                    self.settings_ct.reset(&mut cfg);
                 }
+                // 没勾的项写入 null——core 的 json_to_toml 跳过 null，于是 override 里不含
+                // 这些键；而 saveConfig 是拿**方案文件基线**与 cfg 做 diff，故取消覆盖后
+                // 该项回到方案作者的值，作者没写就回到全局。这是「取消覆盖」的落地方式。
+                self.settings_ct.apply(&mut cfg);
                 cfg_changed = true;
             }
         }
@@ -3352,13 +3379,18 @@ fn merge_pending(
     }
 }
 
-/// 码表配置行的摘要文案。关着时说清「跟的是谁」——普通方案跟全局，特殊方案跟内置基线
-/// （core 不让特殊方案继承全局，见 `codetable_baseline`）。纯函数便于单测。
-fn ct_summary(enabled: bool, hidden_schema: bool) -> &'static str {
-    match (enabled, hidden_schema) {
-        (true, _) => "已自定义",
-        (false, true) => "跟随内置基线",
-        (false, false) => "跟随全局配置",
+/// 码表配置行的摘要文案：**报数**，不报「开/关」。
+///
+/// 逐项三态之后没有「整段自定义」这个状态了——用户可能只覆盖了一项。报数是这里唯一
+/// 说得准的话：`0` 就是全跟随，非 0 就直接告诉他改过几项，不必点进去数。
+///
+/// 「跟的是谁」不放在这句里：那是**逐项**的（同一个方案里，A 项跟全局、B 项跟方案作者），
+/// 一句总括的摘要说不清，硬说就会说错。来源写在每一行自己的那一列。纯函数便于单测。
+fn ct_summary(custom: usize) -> String {
+    if custom == 0 {
+        "全部跟随".to_string()
+    } else {
+        format!("已自定义 {custom} 项")
     }
 }
 
@@ -3646,24 +3678,67 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 )
         }
         SettingsSection::CodeTable => {
-            // 总开关 + **内联**的具体设置（勾掉即整片折叠），而不是「勾选 + 打开子对话框」。
+            // **内联**的具体设置，而不是「勾选 + 打开子对话框」：分了 TAB 之后这一屏有的是
+            // 纵向空间，再套一层浮层只是多一次点击。
             //
-            // 分了 TAB 之后这一屏有的是纵向空间，再套一层浮层只是多一次点击；而折叠区把
-            // 「跟随全局 / 自己一套」这个二选一和它的后果放在同一屏里，选完就能看到改什么。
-            //
-            // 组件是通用的（`collapsible_group`）：混输等方案类型将来加自己的覆盖设置时
-            // 直接复用，不必再拼一遍开关与折叠的联动。
+            // 0.119 起没有总开关（原先是 `collapsible_group`，勾掉即整片折叠）：覆盖是
+            // **逐项**的，每行左侧一个勾选框。总开关与逐项勾选并存会语义重叠——「总开关
+            // 开着但一项都没勾」说不清是什么状态。整段的入口只剩「全部恢复跟随」。
             let ct = state.settings_ct.clone();
             let manifest = state.manifest.clone();
-            let body =
-                Element::host_signal(state.settings_ct_plan, move |item| ct.row(&manifest, item));
-            crate::dialogs::field_dialogs::collapsible_group(
-                "方案自定义",
-                "自定义本方案的行为",
-                state.settings_ct_disp,
-                state.settings_ct_enabled,
-                Element::col().width_match().padding_xy(0, 4).child(body),
-            )
+            let body = Element::host_signal(state.settings_ct_plan, move |g| ct.card(&manifest, g));
+            let ct_reset = state.settings_ct.clone();
+            let disp = state.settings_ct_disp;
+            let reset_flag = state.settings_ct_reset_all.clone();
+            Element::col()
+                .width_match()
+                .spacing(4)
+                .padding_xy(0, 4)
+                // 节名是「码表配置」而不是「方案自定义」——后者是这个 TAB 的名字，
+                // 同名的小标题读起来像套娃，且说不清它与同 TAB 里「本方案行为」那节的区别。
+                //
+                // 标题与按钮**同一行**：按钮单独占一行时，左边一整条空白把它孤零零推到
+                // 右上角，看着像误放的浮标。挂到标题行尾即可，那一行本就有富余。
+                //
+                // 这一行**不重复报摘要**：每张卡片的标题右侧已各报本组的数，节头再写一遍
+                // 总数，两处都写「全部跟随」时就是纯噪音。总数仍在方案列表那一行上
+                // （`settings_ct_disp` 的另一个消费点）。
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(
+                            // 字号/字重/颜色与 `manifest::dialog_group_header` 同款；
+                            // 那个函数返回的是整宽 label，塞不进带按钮的行，故复刻样式。
+                            Element::label("码表配置")
+                                .font_size(11.5)
+                                .font_weight(600)
+                                .fg_role(Role::Accent)
+                                .weight(1.0)
+                                .max_lines(1)
+                                .padding_xy(0, 5),
+                        )
+                        .child(
+                            // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：
+                            // 它是一个**兜底动作**，与它同行的是这一节的小标题，实心色块
+                            // 在那儿比标题还抢眼，看着像这一屏的主操作。
+                            Element::button("全部恢复跟随")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| {
+                                    // 只动 UI（勾选清空 + 控件值拨回跟随值）。落盘统一走底栏的
+                                    // 保存——本对话框不该有自己的写盘入口，见 core 仓那条
+                                    // 「非 config.toml 落点一律登记 SideCommitter」。
+                                    ct_reset.revert_all();
+                                    // 标志给落盘那侧看：隐藏项没有控件，只能靠它去清。
+                                    reset_flag.set(true);
+                                    disp.set(ct_summary(ct_reset.custom_count()));
+                                }),
+                        ),
+                )
+                .child(Element::divider())
+                .child(Element::col().width_match().padding_xy(0, 4).child(body))
         }
         SettingsSection::Overlay => {
             let show_all = state.settings_ov_show_all;
@@ -3843,9 +3918,21 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 三块**同时建好、靠 visible_when 切换**，不是按选中项重建：各节的工作态（勾选、
     // 下拉、行编辑器）都挂在 Element 上，重建等于用户切个 TAB 回来就发现刚改的没了。
     let tab = state.settings_tab;
-    let tab_bar = Element::row().width_match().padding_xy(0, 8).child(
-        Element::segmented(SETTINGS_TABS.iter().map(|s| s.to_string()).collect(), tab).weight(1.0),
-    );
+    // TAB 标签带自定义计数（「方案自定义 · 2」）：切在「基本配置」那边时，也得能看出
+    // 另一边有没有改动——否则用户改完切走，回头完全不记得自己动过哪个方案。
+    //
+    // ⚠️ 外面套一层 `Vec` 是 `host_signal` 的签名所迫：它对 `Signal<Vec<T>>` 的**每个元素**
+    // 调一次闭包，直接喂 `Signal<Vec<String>>` 会按标签数生成同样多个 segmented。
+    // 装进单元素 Vec，闭包收到的才是整份标签表。
+    //
+    // 重建 segmented 不丢状态：选中项在 `tab` 信号里，不在 Element 上。
+    let labels = state.settings_tab_labels;
+    let tab_bar = Element::host_signal(labels, move |ls: Vec<String>| {
+        Element::row()
+            .width_match()
+            .padding_xy(0, 8)
+            .child(Element::segmented(ls, tab).weight(1.0))
+    });
 
     let mut panes = Element::col().width_match();
     for i in 0..SETTINGS_TABS.len() {
@@ -3910,12 +3997,43 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     );
 
     // 码表配置摘要随勾选刷新。与引导键摘要同理：不等落盘，否则勾完看不到变化。
-    let st_ct = state.clone();
-    let ct_en = state.settings_ct_enabled;
+    //
+    // 监听的是**整组信号的 version 之和**（含值信号），而摘要只用到勾选数——多刷几次
+    // 无害，漏刷才是问题：只盯勾选框的话，`revert_all` 之后若哪天改成不动勾选框，
+    // 摘要就会停在旧数字上。
+    let ct_watch = state.settings_ct.clone();
+    let ct_count = state.settings_ct.clone();
     let ct_disp = state.settings_ct_disp;
+    let tab_labels = state.settings_tab_labels;
+    // TAB 星号要覆盖**整个 TAB**，不只是码表配置那一节：同一屏上面还有「本方案行为」的
+    // 标点与候选排列，它们各自的第 0 档就是「跟随全局」。只算码表的话，用户把标点改成
+    // 「中文标点」，TAB 上却一点痕迹都没有——那个星号就是在说谎。
+    //
+    // 「加载短语」不计入：它是个没有「跟随」档的布尔，恒有值，算不出「有没有自定义」。
+    let bh_punct = state.settings_bh_punct;
+    let bh_layout = state.settings_bh_layout;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
-        move || ct_en.version(),
-        move || ct_disp.set(ct_summary(ct_en.get(), st_ct.settings_entry_hidden()).to_string()),
+        move || {
+            ct_watch
+                .version_sum()
+                .wrapping_add(bh_punct.version())
+                .wrapping_add(bh_layout.version())
+        },
+        move || {
+            let n = ct_count.custom_count();
+            let bh_custom = (bh_punct.get() != 0) as usize + (bh_layout.get() != 0) as usize;
+            ct_disp.set(ct_summary(n));
+            // 各分类卡片标题右侧那句也在这里推——它与整段摘要同源（勾选状态），
+            // 分两个 effect 只会多一次遍历，还得担心两处口径漂移。
+            ct_count.refresh_group_summaries();
+            // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
+            // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。
+            let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
+            if n + bh_custom > 0 {
+                ls[1] = format!("{} *", SETTINGS_TABS[1]);
+            }
+            tab_labels.set(vec![ls]);
+        },
     );
 
     // 关窗即把工作态暂存进待提交队列，随「应用设置 / 保存并退出」落盘。
@@ -4185,16 +4303,19 @@ mod ext_dict_tests {
         assert!(r.is_ok());
     }
 
-    /// 摘要必须区分「跟随全局」与「跟随内置基线」：特殊方案不继承全局码表配置
-    /// （core `codetable_baseline`），对它说「跟随全局配置」是在骗人——用户会去改
-    /// 全局，然后发现快符纹丝不动。
+    /// 摘要报的是**项数**。
+    ///
+    /// 逐项三态之后没有「整段自定义」这个状态了，摘要唯一说得准的话就是「改过几项」。
+    ///
+    /// ⚠️ 「跟的是谁」**不能**放进这句总括：三态下同一个方案里 A 项可以跟全局、B 项跟
+    /// 方案作者，一句话说不清。此前那版摘要（「跟随全局配置」/「跟随内置基线」）正是
+    /// 因此退役——它还顺带用错了判据（`[schema].hidden` 而非 `[overlay]` 段）。
+    /// 来源现在写在每一行自己那一列，由 `CtSeed::follow_label` + 「方案自带」给出。
     #[test]
-    fn ct_summary_distinguishes_baseline_by_schema_kind() {
-        assert_eq!(ct_summary(false, false), "跟随全局配置");
-        assert_eq!(ct_summary(false, true), "跟随内置基线");
-        // 开启后跟谁都无关了，两种方案同一句。
-        assert_eq!(ct_summary(true, false), "已自定义");
-        assert_eq!(ct_summary(true, true), "已自定义");
+    fn ct_summary_reports_the_number_of_overridden_items() {
+        assert_eq!(ct_summary(0), "全部跟随");
+        assert_eq!(ct_summary(1), "已自定义 1 项");
+        assert_eq!(ct_summary(7), "已自定义 7 项");
     }
 
     /// 每个方案一条，互不干扰——对话框复用同一组工作态信号，最容易写成

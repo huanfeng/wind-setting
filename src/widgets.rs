@@ -216,6 +216,195 @@ pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Eleme
         .child(control)
 }
 
+/// 三态设置行：**行首覆盖勾选** + 左标签（+副标题）+ 来源文案 + 右控件区。
+///
+/// 用于方案级覆盖（当前是码表配置）：每一项各自决定跟随基线还是自己设一个值，勾选框
+/// 就是这个决定。与 [`setting_row`] 的差别只有行首那个框和控件左侧那句来源——排版
+/// （字号/字重/行高/限行）全部走同一套 `FormTheme`，两种行混排时对得齐。
+///
+/// ★ 勾选框**必须在行首而不是控件旁**：这一列要能被竖着扫一眼就看出「我改过哪几项」。
+/// 混在右侧一堆开关下拉里就没有这个作用了。
+///
+/// 来源列**三态三色**，不是一律灰：
+///
+/// | 状态 | 文案 | 颜色 |
+/// | --- | --- | --- |
+/// | 跟随基线 | 跟随全局 / 跟随基线 | `TextMuted`（灰，默认态不该抢眼） |
+/// | 方案作者定的 | 方案自带 | `Warning`（琥珀，提示「这项与全局不同，但不是你改的」） |
+/// | 用户改的 | 已自定义 | `Accent`（与整个设置界面的主色一致，＝「你的改动」） |
+///
+/// 一律灰的话，「方案自带」在一屏「跟随全局」里毫无存在感——而它恰恰是最需要被看见的：
+/// 用户改了全局却发现这个方案没跟着变，答案就在这一列。
+///
+/// 用两个叠加 label + `visible_when` 而不是给一个 label 换色：`fg_role` 不收信号，
+/// 而勾选是随时会变的。未勾选那半的颜色由 `follow_role` 静态给出（来源是 seed 时定的）。
+///
+/// ⚠️ 本函数**不**给整行挂 `enabled_when`。调用方只在**真不可用**（上游开关没开）时才挂，
+/// 那会把勾选框一起置灰——这是对的：上游关着时，这一项连覆盖都不该谈。**「未勾选」
+/// 绝不能用置灰表达**，理由见 [`override_control`]。
+pub fn setting_row_override(
+    over: Signal<bool>,
+    label: &str,
+    sub: Option<&str>,
+    follow_source: &str,
+    follow_role: Role,
+    control: Element,
+) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let mut left = Element::col().weight(1.0).spacing(2).child(
+        Element::label(label)
+            .font_size(f.label_size(m))
+            .font_weight(f.label_weight())
+            .fg_role(Role::Text)
+            .width_match()
+            .max_lines(1)
+            .truncate(Truncate::End),
+    );
+    if let Some(s) = sub {
+        left = left.child(
+            Element::label(s)
+                .font_size(f.desc_size(m))
+                .fg_role(Role::TextSubtle)
+                .width_match()
+                .max_lines(2)
+                .truncate(Truncate::End),
+        );
+    }
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(0, f.row_pad_y())
+        .spacing(f.gap())
+        // 空标签的勾选框：标签文字在左列，这里只要那个方框。
+        .child(Element::checkbox("", over).small().fg_role(Role::Text))
+        .child(left)
+        .child(
+            Element::row()
+                .width(SOURCE_W)
+                .cross(Align::Center)
+                .child(
+                    Element::label(follow_source)
+                        .font_size(f.desc_size(m))
+                        .fg_role(follow_role)
+                        .max_lines(1)
+                        .truncate(Truncate::End)
+                        .visible_when(move || !over.get()),
+                )
+                .child(
+                    Element::label("已自定义")
+                        .font_size(f.desc_size(m))
+                        .fg_role(Role::Accent)
+                        .max_lines(1)
+                        .visible_when(move || over.get()),
+                ),
+        )
+        .child(control)
+}
+
+/// 来源文案列宽。**定宽**：文案随勾选在「已自定义」「跟随全局」「方案自带」之间变，
+/// 不定宽的话右侧控件会跟着左右跳。
+const SOURCE_W: i32 = 64;
+
+/// 控件位的三种形态，叠在同一个定宽容器里各挂一个 `visible_when`：
+///
+/// | 情形 | 显示 |
+/// | --- | --- |
+/// | 上游没开（`gate` 为假） | 原因文字（「需先开启「精确匹配模式」」） |
+/// | 已勾选 | 可编辑控件 |
+/// | 未勾选 | **跟随值**，正常文字色 |
+///
+/// ★★★ **未勾选不是禁用，绝不能置灰。** 这一屏绝大多数行都是跟随态，把跟随做成灰色
+/// 只读，整屏就是一片灰，看起来像坏了——这正是上一版被推翻的原因。灰只留给「上游没开」
+/// 那一种，且那时整行都淡下去、并直接写出原因，用户不必挨个试上游开关。
+///
+/// ⚠️ 未勾选时显示的是**跟随值**，不是控件当前值：用户勾上改了值又取消勾选，落盘的是
+/// 「取消覆盖」，界面若还显示他刚改的那个数就是在说谎。
+///
+/// 用显隐而不是重建控件：windui 的信号没有变更回调，「取消勾选时把控件值改回跟随值」
+/// 只能在渲染闭包里做 side effect（每帧求值 + 条件写信号），既脆又会污染脏判定。
+/// 显隐是纯函数，每帧求值天然正确。
+pub fn override_control(
+    over: Signal<bool>,
+    gate: std::rc::Rc<dyn Fn() -> bool>,
+    editor: Element,
+    follow_text: &str,
+    reason: &str,
+    width: i32,
+) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let (g1, g2, g3) = (gate.clone(), gate.clone(), gate);
+    Element::row()
+        .width(width)
+        .cross(Align::Center)
+        // ⚠️ 靠右**必须**靠这个弹性空白撑，不能用 `Element::align(Align::End)`：那个设的是
+        // 元素自身在父容器里的对齐，不是 row 的主轴对齐——写上去毫无反应，三种形态会全部
+        // 贴在容器左边，与右侧的全局页控件列对不齐。同 `setting_row_checks` 的做法。
+        .child(Element::col().weight(1.0))
+        .child(editor.visible_when(move || g1() && over.get()))
+        .child(
+            Element::label(follow_text)
+                .font_size(f.label_size(m))
+                // 跟随值用**正常文字色**——它是这一项当前真实生效的值，不是残缺状态。
+                .fg_role(Role::Text)
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .visible_when(move || g2() && !over.get()),
+        )
+        .child(
+            Element::label(reason)
+                .font_size(f.desc_size(m))
+                .fg_role(Role::TextMuted)
+                .max_lines(2)
+                .truncate(Truncate::End)
+                .visible_when(move || !g3()),
+        )
+}
+
+/// 分组卡片：圆角边框 + 标题行（左标题、右状态摘要）+ 组内各行。
+///
+/// ★ 卡片而不是一行分组标题：上一版用的是普通标题行，被行首勾选框和来源列的视觉重量
+/// 压得看不见了——分类是这一屏的骨架，得有边框把它撑住。
+///
+/// `summary` 取信号：标题右侧报本组改过几项，随勾选实时变。
+pub fn override_group_card(title: &str, summary: Signal<String>, rows: Element) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let mut col = Element::col().width_match();
+    if !title.is_empty() {
+        col = col.child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .padding_xy(0, 2)
+                .child(
+                    // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
+                    // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
+                    Element::label(title)
+                        .font_size(11.5)
+                        .font_weight(600)
+                        .fg_role(Role::Accent)
+                        .weight(1.0)
+                        .max_lines(1),
+                )
+                .child(
+                    Element::label_signal(summary)
+                        .font_size(f.desc_size(m))
+                        .fg_role(Role::TextMuted)
+                        .max_lines(1),
+                ),
+        );
+        col = col.child(Element::divider());
+    }
+    flat_panel()
+        .width_match()
+        .padding_xy(12, 6)
+        .margin_xy(0, 3)
+        .child(col.child(rows))
+}
+
 /// 多选键组专用行：左侧弹性标签 + 右侧固定宽网格（靠右对齐）。
 ///
 /// 网格固定 300px（两列各 ~145），不会撑宽；左侧 weight(1) 自由伸展，

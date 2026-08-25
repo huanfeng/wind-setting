@@ -176,7 +176,7 @@ section = "上屏行为"
 subsection = "常用功能"
 type = "number_select"
 label = "出简让全"
-hint = "有简码的字在更长编码上把首选让给词组，自己排到候选末尾"
+hint = "有简码的字在更长编码上把首选让给词组，自己排到候选末尾；这里是全局基线，方案可单独覆盖"
 width = 160
 options = [
     { value = "0", label = "关闭" },

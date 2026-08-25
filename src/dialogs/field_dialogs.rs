@@ -544,62 +544,10 @@ pub fn build_group_dialog_shell(
     shell_with_title(visible, Element::label(title), content, bottom_leading)
 }
 
-/// 「总开关 + 折叠区」：勾选框控制下方整片内容的显隐。
-///
-/// 通用组件，当前用于方案设置的「方案自定义」（码表覆盖）。**将来混输等方案类型的专属
-/// 设置同理**——它们与码表覆盖是同一个形态：默认跟随全局，勾上才有本方案自己的一套。
-///
-/// ★ 开关与内容**分行**。同一行内做显隐会让元素左右跳（摘要消失、按钮出现，行宽就变了），
-/// 这也是本节此前用「勾选 + 常驻按钮 + 定宽摘要」而不用显隐的原因。整片折叠没有这个问题：
-/// 下方有没有内容，不影响开关那一行的布局。
-///
-/// `hint` 取信号而非 `&str`：关闭时要说明「关了会怎样」，而那句话可能随方案而变
-/// （特殊方案跟随内置基线、普通方案跟随全局配置）。
-pub fn collapsible_group(
-    title: &str,
-    switch_label: &str,
-    hint: Signal<String>,
-    enabled: Signal<bool>,
-    body: Element,
-) -> Element {
-    Element::col()
-        .width_match()
-        .spacing(4)
-        .padding_xy(0, 4)
-        .child(crate::manifest::dialog_group_header(title))
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(10)
-                .child(
-                    Element::label(switch_label)
-                        .font_size(13.0)
-                        .fg_role(Role::Text)
-                        .weight(1.0)
-                        .max_lines(1),
-                )
-                .child(
-                    Element::checkbox("启用", enabled)
-                        .small()
-                        .fg_role(Role::Text),
-                ),
-        )
-        .child(
-            Element::label_signal(hint)
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
-                .max_lines(2)
-                .visible_when(move || !enabled.get()),
-        )
-        .child(
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(body)
-                .visible_when(move || enabled.get()),
-        )
-}
+// ⚠️ 这里曾有一个 `collapsible_group`（「总开关 + 折叠区」），是方案级码表配置的
+// 「自定义码表配置」总开关。0.119 改成逐项三态后它没有了使用者，随之删除——
+// 方案级覆盖的正确形态是**每项一个勾选框**（见 `dialogs::schema_codetable` 的模块文档），
+// 「整段接管」这个模型本身有问题，不该留着给下一个人复用。要做折叠区请另写。
 
 /// 尺寸放大的变体，供内容分了 TAB、默认 460×380 装不下的浮层用。
 pub fn build_group_dialog_shell_large(
