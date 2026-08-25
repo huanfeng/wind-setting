@@ -372,6 +372,34 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
 
 /// 按 key 构建一行设置项（label + 控件），并登记保存写回器与联动取值器。
 /// 按 item.typ 构建控件本体（不含行包裹/标签/enabled_when）。field() 与子对话框宿主行共用。
+/// `build_control` 能渲染出真控件的全部 `type` 取值。
+///
+/// 存在的理由是**清单声明的类型与渲染器认识的类型是两份知识**，而不同步的后果没有任何
+/// 编译期或测试期信号：capability 校验只问「控件与配置类型兼不兼容」，答得上来照样全绿，
+/// 界面上却是一行 `[类型名?]` 灰字占位符。2026-08-25 加 `dialog_button_ordered_pairs`
+/// 时实测踩到，靠 `--screenshot` 才看见。
+///
+/// 两道断言把缺口封死（见 `renderable_control_types_*` 两条测试）：
+/// 清单里的每个 type 都在本名单里；本名单里的每一项都在 `build_control` 的 match 里。
+pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
+    "toggle",
+    "select",
+    "select_mix_layout",
+    "select_mix_free_input",
+    "checkbox_mix_free_select_keys",
+    "segmented",
+    "checkbox_group",
+    "number",
+    "slider",
+    "number_select",
+    "string",
+    "hotkey",
+    "dialog_button",
+    "dialog_button_key_action",
+    "dialog_button_mix_members",
+    "dialog_button_ordered_pairs",
+];
+
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     match item.typ.as_str() {
         "toggle" => build_toggle(state, key, item, cfg),
@@ -386,10 +414,22 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "string" => build_string(state, key, item, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
-        "dialog_button_key_action" | "dialog_button_mix_members" => {
-            build_dialog_button(state, key, item, cfg)
+        // 三者都渲染成「设置…」按钮，差别只在 `build_dialog_body` 里按 typ 分派出的
+        // 对话框主体。⚠️ **加新的 dialog_button_* 类型必须同时改这两处**：只加
+        // build_dialog_body 的分支，capability 校验照样过、测试照样全绿，界面上却是
+        // 下面那行 `[类型名?]` 占位符（2026-08-25 实测踩到，靠 --screenshot 才发现）。
+        "dialog_button_key_action"
+        | "dialog_button_mix_members"
+        | "dialog_button_ordered_pairs" => build_dialog_button(state, key, item, cfg),
+        other => {
+            // 名单说能渲染、match 却没有分支 ⇒ 名单与实现脱节，debug 构建当场炸。
+            // release 下仍回落占位符（灰字比崩溃好），故不用 unreachable!。
+            debug_assert!(
+                !RENDERABLE_CONTROL_TYPES.contains(&other),
+                "控件类型 {other:?} 在 RENDERABLE_CONTROL_TYPES 里，却没有 build_control 分支"
+            );
+            Element::label(format!("[{other}?]")).fg_role(Role::TextMuted)
         }
-        other => Element::label(format!("[{other}?]")).fg_role(Role::TextMuted),
     }
 }
 
@@ -1640,6 +1680,11 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
         build_dialog_button_key_action(state, item, cfg)
     } else if item.typ == "dialog_button_mix_members" {
         build_dialog_button_mix_members(state, key, item, cfg)
+    } else if item.typ == "dialog_button_ordered_pairs" {
+        // 顺序有语义的 strlist（如 ui.toolbar.items）。与下面 `cap_ty == "strlist"` 那条
+        // 通用分支的分野是**顺序是否被 core 消费**，而 capability 里只有类型没有这个信息，
+        // 故只能由清单的 type 声明——同 mix_members 那条「按控件类型分派而非 key」。
+        build_dialog_button_ordered_pairs(state, key, item, cfg)
     } else if key == "input.punct.custom_mappings" {
         // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
         build_dialog_button_punct(state, key, cfg)
@@ -2124,6 +2169,104 @@ fn build_dialog_button_pairs(
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, defaults);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// `dialog_button_ordered_pairs`：**顺序有语义**的 strlist 编辑——一列开关决定有无，
+/// 拖拽手柄决定顺序。写回路径就是 `item.key` 本身（不同于 mix_members 要 patch 进数组
+/// 里的某一项），故可被任何「顺序即语义」的 strlist 键复用。
+///
+/// # 与 [`build_dialog_button_pairs`] 的分野只有一条
+///
+/// 那个控件写回的数组**顺序无语义**（core 侧按固定顺序消费，如 `ui.status.items`），
+/// 所以恒按声明序写回即可；本控件写回的顺序**就是** core 的消费顺序。这条差别决定了
+/// 两件事，缺一不可：
+///
+/// 1. 必须让用户排（否则用户手排的顺序会被声明序静默改写——`config-design-rules.md` §R3
+///    点名的「两不管」）；
+/// 2. 载入时顺序也要跟着配置回位。只复位开关会把上次拖出来的顺序留在界面上，与刚载入的
+///    配置不符，保存时又把这个错顺序写回去——同 `build_dialog_button_mix_members` 里
+///    那条注释记的坑。
+fn build_dialog_button_ordered_pairs(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::{ToggleRow, build_toggle_rows_dialog};
+    use crate::mix_members::managed_order;
+
+    /// 读一个 strlist 键；缺省/非数组回落 `def`。
+    fn read_list(c: &Config, key: &str, def: &[String]) -> Vec<String> {
+        c.get_array(key)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| def.to_vec())
+    }
+
+    let managed: Vec<String> = item.options.iter().map(|o| o.value.clone()).collect();
+    let defaults = default_strlist(state, key);
+    let cur = read_list(cfg, key, &defaults);
+
+    let rows: Vec<ToggleRow> = item
+        .options
+        .iter()
+        .map(|o| ToggleRow {
+            value: o.value.clone(),
+            label: o.label.clone(),
+            desc: o.hint.clone(),
+            sig: signal(cur.contains(&o.value)),
+        })
+        .collect();
+    let sigs: Vec<(String, Signal<bool>)> = rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
+    // 行序按**当前配置**排（未启用项补在声明序位），而不是恒按声明序——否则用户手排的
+    // 顺序在他还没动任何东西时就"看起来"被改过了。
+    let order = signal(managed_order(&cur, &managed));
+    let visible = signal(false);
+
+    let sigs_w = sigs.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            // 顺序取自 order（界面行序），有无取自各行开关：两者相乘才是最终列表。
+            let arr: Vec<Value> = order
+                .get()
+                .into_iter()
+                .filter(|v| {
+                    sigs_w
+                        .iter()
+                        .find(|(x, _)| x == v)
+                        .is_some_and(|(_, s)| s.get())
+                })
+                .map(Value::String)
+                .collect();
+            c.set_path(&kw, Value::Array(arr));
+        }));
+
+    let sigs_l = sigs.clone();
+    let managed_l = managed.clone();
+    let kl = key.to_string();
+    let def_l = defaults.clone();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur = read_list(c, &kl, &def_l);
+            for (v, s) in &sigs_l {
+                s.set(cur.iter().any(|m| m == v));
+            }
+            order.set(managed_order(&cur, &managed_l));
+        }),
+    );
+
+    let hint = item.hint.clone().unwrap_or_default();
+    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order);
     register_dialog(state, dlg);
     visible
 }
@@ -3211,6 +3354,49 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 守护：清单里出现的每个 `type` 都必须能渲染出真控件。
+    ///
+    /// 缺这条的后果不是报错而是**静默降级**：capability 校验只问「控件与配置类型兼不兼容」，
+    /// 一个渲染器根本不认识的 type 照样能答"兼容"，于是全套测试绿着，界面上那一行却是
+    /// `[类型名?]` 灰字。2026-08-25 加 `dialog_button_ordered_pairs` 时实测如此——
+    /// 741 条测试无一变红，是截图才看出来的。
+    #[test]
+    fn manifest_control_types_are_all_renderable() {
+        let m = Manifest::from_embedded();
+        let mut unknown: Vec<&str> = m
+            .items
+            .values()
+            .map(|i| i.typ.as_str())
+            .filter(|t| !RENDERABLE_CONTROL_TYPES.contains(t))
+            .collect();
+        unknown.sort_unstable();
+        unknown.dedup();
+        assert!(
+            unknown.is_empty(),
+            "清单声明了渲染器不认识的控件类型 {unknown:?}\n  \
+             —— 界面上会显示成 [类型名?] 占位符。要么在 build_control 加分支并登记进 \
+             RENDERABLE_CONTROL_TYPES，要么改用已有类型"
+        );
+    }
+
+    /// 反向：名单里的每一项都必须真有 `build_control` 分支。
+    ///
+    /// 与上一条**方向相反、缺一不可**：上一条防"清单有、名单无"，这条防"名单有、实现无"
+    /// ——后者会让上一条变成永真测试（名单里塞个不存在的类型，清单校验照样过）。
+    ///
+    /// 判据取自 `build_control` 的 `other` 分支那句 `debug_assert!`：测试构建即 debug，
+    /// 真走到占位符分支会当场炸。这里只能静态核对名单非空且无重复——真正的对拍由那句
+    /// 断言在运行时完成。
+    #[test]
+    fn renderable_control_types_has_no_duplicates() {
+        let mut sorted = RENDERABLE_CONTROL_TYPES.to_vec();
+        sorted.sort_unstable();
+        let n = sorted.len();
+        sorted.dedup();
+        assert_eq!(n, sorted.len(), "RENDERABLE_CONTROL_TYPES 有重复项");
+        assert!(!RENDERABLE_CONTROL_TYPES.is_empty());
+    }
 
     /// 回归：config.toml 里**显式写着内置默认值**的标点映射行，不许把设置页判成脏。
     ///

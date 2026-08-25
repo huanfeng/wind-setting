@@ -1379,6 +1379,17 @@
       "type": "bool"
     },
     {
+      "default": [
+        "mode",
+        "punct",
+        "full_width",
+        "s2t",
+        "settings"
+      ],
+      "key": "ui.toolbar.items",
+      "type": "strlist"
+    },
+    {
       "default": "none",
       "key": "ui.langbar.punct_badge",
       "type": "enum",
@@ -1429,6 +1440,16 @@
     {
       "default": "#E0447A",
       "key": "ui.langbar.full_width_color",
+      "type": "str"
+    },
+    {
+      "default": "英",
+      "key": "ui.labels.english",
+      "type": "str"
+    },
+    {
+      "default": "A",
+      "key": "ui.labels.caps_lock",
       "type": "str"
     },
     {

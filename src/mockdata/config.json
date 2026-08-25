@@ -349,6 +349,10 @@
    "path": "",
    "render_mode": "directwrite"
   },
+  "labels": {
+   "caps_lock": "A",
+   "english": "英"
+  },
   "langbar": {
    "badge_alpha": 0.8799999952316284,
    "colored": true,
@@ -390,6 +394,13 @@
    "auto_hide": false,
    "auto_hide_delay": 5,
    "hide_in_fullscreen": true,
+   "items": [
+    "mode",
+    "punct",
+    "full_width",
+    "s2t",
+    "settings"
+   ],
    "vertical": false,
    "visible": true
   },

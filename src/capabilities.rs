@@ -141,6 +141,9 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // 故按被标识字段的原类型校验：strlist（trigger_keys）或 structlist（mix_modes）。
         "dialog_button_key_action" => ty == "strlist" || ty == "structlist",
         "dialog_button_mix_members" => ty == "structlist",
+        // ordered_pairs：与 checkbox_group 读写同一形态（strlist），差别只在**顺序是否被
+        // core 消费**——那是清单声明的语义，capability 里没有这个维度，故类型校验一致。
+        "dialog_button_ordered_pairs" => ty == "strlist",
         // select_mix_layout：下拉，但读写的是 structlist 里按 id 定位的一个字符串字段
         // （quick_mix 的 candidate_layout），故按 structlist 而非 enum 校验。
         "select_mix_layout" => ty == "structlist",
@@ -213,6 +216,14 @@ mod tests {
         assert!(!control_type_compatible("slider", "str"));
         assert!(!control_type_compatible("select", "int"));
         assert!(!control_type_compatible("dialog_button_key_action", "str"));
+        assert!(control_type_compatible(
+            "dialog_button_ordered_pairs",
+            "strlist"
+        ));
+        assert!(!control_type_compatible(
+            "dialog_button_ordered_pairs",
+            "str"
+        ));
         // 未知控件恒不兼容
         assert!(!control_type_compatible("mystery", "str"));
     }
@@ -388,7 +399,19 @@ mod tests {
         //    ⚠️ 与 ⑱ 那四个来源开关不同，这一项**不是**「改了没反应」——它有实际作用，
         //    只是作用面窄。将来若卡片有余地，可以放回清单（type = "string"）。
         "input.association.hint",
-        // 注：㉒ 辅助码那两个键（`schema.pinyin.aux_code.*`）曾登记在此，注明「待做 GUI，
+        // ㉒ 模式主字（core 的 `[ui.labels]`，2026-08-25 合入主仓）：**待接入，不是设计上
+        //    不暴露**。它是用户可见的文案定制（把「英」改成 En、把「A」改成 Ca 之类），
+        //    理应有 GUI，形态也简单（两个 string 项）。
+        //
+        //    此刻登记而非直接接进清单，是因为这两个键与本次改动（工具栏条目显隐排序）
+        //    毫无关系——是重生成快照把它们一并激活的，同 ⑲ 那两项的由来。接入属于
+        //    `[ui.labels]` 功能自己的收尾，由那边一并做（含中文态标签在方案文件里的
+        //    `[schema] icon_label`，两者该放同一处呈现）。
+        //
+        //    ⚠️ 这是**临时**豁免：接进清单时记得从本名单撤出（双向断言会提醒）。
+        "ui.labels.english",
+        "ui.labels.caps_lock",
+        // 注：㉓ 辅助码那两个键（`schema.pinyin.aux_code.*`）曾登记在此，注明「待做 GUI，
         // 不是永久豁免」。2026-08-22 已接进清单（候选行为 → 辅助码），故从名单撤出——
         // 本名单的双向断言不容许留下已被覆盖的条目。
     ];

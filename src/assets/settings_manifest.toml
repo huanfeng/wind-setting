@@ -2370,6 +2370,25 @@ label = "纵向排列"
 hint = "工具栏竖着摆放；适合把它靠在屏幕左右两侧"
 platform = "windows"
 
+# 显示哪些格 + 顺序。用 ordered_pairs 而非 checkbox_group：core 侧**数组顺序即渲染顺序**，
+# 而 checkbox_group 恒按声明序写回，会静默改写用户拖出来的顺序（config-design-rules §R3）。
+# value = core 的条目键，声明序 = 出厂顺序，须与主仓 TOOLBAR_ITEM_KEYS 一致。
+[[items]]
+key = "ui.toolbar.items"
+group = "ui"
+section = "工具栏"
+type = "dialog_button_ordered_pairs"
+label = "显示的格"
+hint = "工具栏上显示哪几格、按什么顺序；按住行首手柄上下拖动即可调整"
+platform = "windows"
+options = [
+  { value = "mode", label = "中英 / 方案", hint = "显示当前是中文还是英文，中文时显示方案标签（拼、五等）；点击切换中英" },
+  { value = "punct", label = "标点", hint = "中文标点还是英文标点；点击切换" },
+  { value = "full_width", label = "全 / 半角", hint = "满月＝全角、弯月＝半角；点击切换" },
+  { value = "s2t", label = "简 / 繁", hint = "只在简繁转换已开启时出现，关掉简繁转换后这一格自动消失" },
+  { value = "settings", label = "设置", hint = "齿轮按钮，点击打开功能菜单。隐藏它也不影响使用——右键工具栏任意位置同样能打开菜单" },
+]
+
 [[items]]
 key = "ui.toolbar.auto_hide"
 group = "ui"
