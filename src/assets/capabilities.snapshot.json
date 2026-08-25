@@ -65,7 +65,7 @@
       "type": "bool"
     },
     {
-      "default": 3,
+      "default": 0,
       "key": "schema.codetable.short_code_yield_level",
       "type": "int"
     },
