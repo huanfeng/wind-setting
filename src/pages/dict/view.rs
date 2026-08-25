@@ -126,8 +126,9 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
             .width(seg_w)
             .visible_when(move || kinds.contains(&m.domain_kind()))
     };
-    // 「导入」「导出」入口：置于子标签行最右（弹簧右对齐），方案域与短语域均显示，
-    // 保持统一入口位置（短语走原生对话框，方案打开对应对话框）。
+    // 「导入」「导出」入口：置于子标签行最右（弹簧右对齐），方案域与三个全局域均显示，
+    // 保持统一入口位置（全局域走原生对话框，方案打开对应对话框；分派见
+    // `DictManagerState::do_import` / `do_export`）。
     let imp_open = mgr.clone();
     let imp_vis = mgr.clone();
     let imp_en = mgr.clone();

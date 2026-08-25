@@ -1689,6 +1689,88 @@ impl DictManagerState {
         s
     }
 
+    /// 常用字：导出用户调整为 TOML 文件。
+    ///
+    /// 导出的是**「我改过的那些字」**（core 侧只存与默认不同的字），不是 8104 字全表——
+    /// 全表快照到了另一台机器上，会把对方默认字表里本就有的字也钉成显式覆盖，从此拿不到
+    /// 默认表升版，而这件事导入时毫无异样。
+    pub fn do_common_chars_export(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_save_file(
+            PickDialog::new()
+                .title("导出 · 常用字")
+                .file_name(Self::export_file_name_ext("common-chars", "toml"))
+                .filter("TOML", &["toml"]),
+            move |path| {
+                let Some(path) = path else { return }; // 用户取消
+                match rpc::call_core("commonChars.export", &json!({})) {
+                    Ok(v) => {
+                        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                        match std::fs::write(&path, content) {
+                            Ok(_) => state.notify_ok("已导出"),
+                            Err(e) => state.notify_err(&format!("写文件失败: {e}")),
+                        }
+                    }
+                    Err(e) => state.notify_err(&format!("导出失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 常用字：从文件导入用户调整（合并）。
+    ///
+    /// 过滤器带上 jsonl：整份备份里的 `userdata/common_chars.jsonl` 段是现成的一份，
+    /// core 侧认得它，文件对话框却把它藏起来的话，用户只能改扩展名才选得到。
+    pub fn do_common_chars_import(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_pick_file(
+            PickDialog::new()
+                .title("导入 · 常用字")
+                .filter("常用字调整", &["toml", "jsonl"]),
+            move |path| {
+                let Some(path) = path else { return };
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        state.notify_err(&format!("读文件失败: {e}"));
+                        return;
+                    }
+                };
+                match rpc::call_core("commonChars.import", &json!({ "content": content })) {
+                    Ok(v) => {
+                        state.reload();
+                        state.notify_ok(&Self::common_chars_import_summary(&v));
+                    }
+                    Err(e) => state.notify_err(&format!("导入失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 导入结果的一句话摘要。
+    ///
+    /// ★ 「与默认相同」这一项**必须出现在文案里**：两台机器的默认字表可能是不同版本，
+    /// 文件里 100 个字到了本机可能只有 30 个需要记录（其余本就是这个判定）。core 如实
+    /// 上报，这里咽下去的话，用户看到「已导入 30」会以为丢了 70 个字。
+    /// 跳过项同理（同 [`Self::quick_import_summary`] 那条）。
+    fn common_chars_import_summary(v: &Value) -> String {
+        let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        let skipped = v
+            .get("skipped")
+            .and_then(|x| x.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let mut s = format!("已导入 {} 条调整", n("imported"));
+        let same = n("sameAsDefault");
+        if same > 0 {
+            s.push_str(&format!("；{same} 个字与本机默认判定相同，无需记录"));
+        }
+        if skipped > 0 {
+            s.push_str(&format!("；{skipped} 条无法识别已跳过"));
+        }
+        s
+    }
+
     /// 清空当前类别：有 clear RPC 走之；候选调整无 clear，循环撤销所有规则。
     pub fn do_clear(&self) {
         let spec = self.current_spec();
@@ -2329,6 +2411,7 @@ impl DictManagerState {
         match self.domain_kind() {
             DomainKind::Phrase => self.do_import_phrases(ctx),
             DomainKind::QuickFormat => self.do_quick_import(ctx),
+            DomainKind::CommonChars => self.do_common_chars_import(ctx),
             _ => self.open_import_dialog(),
         }
     }
@@ -2338,6 +2421,7 @@ impl DictManagerState {
         match self.domain_kind() {
             DomainKind::Phrase => self.do_export_phrases(ctx),
             DomainKind::QuickFormat => self.do_quick_export(ctx),
+            DomainKind::CommonChars => self.do_common_chars_export(ctx),
             _ => self.open_export_dialog(),
         }
     }
@@ -2385,10 +2469,11 @@ impl DictManagerState {
             DomainKind::English => &["userWords", "freq", "shadow"],
             // 混输方案自身只有候选调整——五笔/拼音词条落在它的成员方案里。
             DomainKind::Mixed => &["shadow"],
-            // 三个全局域都不参与这套「按方案分段」的导入导出：短语走原生对话框，
-            // 快捷输入走 quick.export/import；常用字覆盖随**整份备份**走
-            // （core 的 `userdata/common_chars.jsonl` 段），本页不单独给导入导出——
-            // 它是一串「这个字我要它算生僻」的判断，脱离整份配置单独分发没有意义。
+            // 三个全局域都不参与这套「按方案分段」的导入导出，但各有自己的一条流：
+            // 短语走原生对话框，快捷输入走 quick.export/import，常用字走
+            // commonChars.export/import（另外它也随整份备份走 core 的
+            // `userdata/common_chars.jsonl` 段——两条路并存，前者是单独分发一份
+            // 「我的常用字判断」，后者是换机还原）。
             DomainKind::Phrase | DomainKind::QuickFormat | DomainKind::CommonChars => &[],
         }
     }
@@ -2405,9 +2490,9 @@ impl DictManagerState {
     /// 子标签行「导入/导出」按钮是否显示：方案域（有方案）或短语域。
     pub fn io_entry_visible(&self) -> bool {
         match self.domain_kind() {
-            // 两个全局域各有自己的导入导出流（短语走 phrase.*、快捷输入走 quick.*），
-            // 都不依赖「当前有没有方案」。
-            DomainKind::Phrase | DomainKind::QuickFormat => true,
+            // 三个全局域各有自己的导入导出流（短语走 phrase.*、快捷输入走 quick.*、
+            // 常用字走 commonChars.*），都不依赖「当前有没有方案」。
+            DomainKind::Phrase | DomainKind::QuickFormat | DomainKind::CommonChars => true,
             _ => self.current_schema_id().is_some(),
         }
     }
@@ -2417,7 +2502,7 @@ impl DictManagerState {
     pub fn io_entry_enabled(&self) -> bool {
         match self.domain_kind() {
             DomainKind::Phrase => self.current_category() == WordCategory::PhraseUser,
-            DomainKind::QuickFormat => true,
+            DomainKind::QuickFormat | DomainKind::CommonChars => true,
             _ => self.current_schema_id().is_some(),
         }
     }
@@ -3469,6 +3554,37 @@ mod tests {
         assert_eq!(st.tabs_for_domain(), vec![LogicalTab::CommonChars]);
         let p = st.build_list_params();
         assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
+        // 导入导出入口可用（走 commonChars.* 全局流，不依赖有没有方案）。
+        // ⚠️ 光有 `spec.ops.import/export` 不够：按钮的显隐/可用是另外两道
+        //（`io_entry_visible`/`io_entry_enabled`），漏了它们的表现是「能力声明写着有，
+        // 按钮却根本不出现」——spec 的测试全绿也照样看不见。
+        assert!(spec_for(WordCategory::CommonChars).ops.import);
+        assert!(spec_for(WordCategory::CommonChars).ops.export);
+        assert!(st.io_entry_visible() && st.io_entry_enabled());
+    }
+
+    /// 导入摘要必须交代「与默认相同」和「已跳过」两项。
+    ///
+    /// 两台机器的默认字表可能是不同版本，文件里 3 个字到本机可能只有 1 个需要记录。
+    /// 只报 imported 的话，用户看到「已导入 1 条」会以为另外两个字丢了。
+    #[test]
+    fn common_chars_import_summary_reports_skipped_and_same_as_default() {
+        let s = DictManagerState::common_chars_import_summary(&json!({
+            "imported": 1,
+            "sameAsDefault": 2,
+            "skipped": ["「、」不受常用字表管辖，已跳过"],
+        }));
+        assert!(s.contains('1') && s.contains('2'), "{s}");
+        assert!(s.contains("默认"), "必须说明那两个字去哪了: {s}");
+        assert!(s.contains("跳过"), "{s}");
+
+        // 没有这两项时不啰嗦。
+        let clean =
+            DictManagerState::common_chars_import_summary(&json!({ "imported": 3, "skipped": [] }));
+        assert!(
+            !clean.contains("默认") && !clean.contains("跳过"),
+            "{clean}"
+        );
     }
 
     /// 保存产出 `{char, common}`，**新增与编辑同一个 RPC**。

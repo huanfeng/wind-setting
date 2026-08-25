@@ -918,6 +918,10 @@ const SPEC_COMMON: CategorySpec = CategorySpec {
         reset_entry: true,
         // 整表恢复默认（清掉全部调整）。
         reset_default: true,
+        // 导入导出的是**用户调整**（那份稀疏覆盖），不是 8104 字全表：文件带到另一台机器
+        // 上，全表快照会把对方默认里本就有的字也钉成显式覆盖，从此拿不到默认表升版。
+        import: true,
+        export: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
