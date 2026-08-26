@@ -268,6 +268,30 @@ pub fn build_map_dialog(
     Element::dialog(visible, frame)
 }
 
+/// 一行的开关，带「至少留 N 个开着」的下限守卫。
+///
+/// 只在**本行开着且开着的总数已到下限**时置灰——关不掉的只有那最后几个，
+/// 已经关掉的项照常可以打开（否则用户会被锁死在当前组合里）。
+///
+/// `min_enabled == 0` 时恒可用，等价于没有守卫。
+fn switch_with_floor(
+    sig: Signal<bool>,
+    all: &Rc<Vec<Signal<bool>>>,
+    min_enabled: usize,
+) -> Element {
+    let sw = Element::switch(sig);
+    if min_enabled == 0 {
+        return sw;
+    }
+    let all = all.clone();
+    sw.enabled_when(move || {
+        if !sig.get() {
+            return true; // 关着的永远可以打开
+        }
+        all.iter().filter(|s| s.get()).count() > min_enabled
+    })
+}
+
 /// 条目开关对话框的一行：标签 + 说明 + 开关。
 pub struct ToggleRow {
     /// 该行代表的值（写回配置用）。
@@ -292,6 +316,11 @@ pub struct ToggleRow {
 /// 分隔线做进**每一行的顶部**（含首行）而不是行与行之间：拖动中行会重新堆叠，
 /// 若首行特殊、其余带线，动画期间就会出现"顶上多一条、中间少一条"的错位。
 /// 每行长得一样，任何排列都对。首行那条顺带把行区与上方提示文字分开。
+///
+/// `min_enabled` = **至少要留几项开着**（0 = 不限制）。开着的项数降到这个数时，
+/// 那几项的开关**置灰不可关**——把最后一项也关掉往往不是用户想要的：core 侧对
+/// 「全关」只能回落成全显示或空条，两种反馈都与"我关掉了它们"相反。
+/// 置灰而不是拦截点击：拦截是"点了没反应"，置灰当场说明"这个关不掉"。
 pub fn build_toggle_rows_dialog(
     visible: Signal<bool>,
     title: &str,
@@ -299,10 +328,13 @@ pub fn build_toggle_rows_dialog(
     rows: Vec<ToggleRow>,
     defaults: Vec<String>,
     order: Signal<Vec<String>>,
+    min_enabled: usize,
 ) -> Element {
     let rows_reset: Vec<(String, Signal<bool>)> =
         rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
     let declared: Vec<String> = rows.iter().map(|r| r.value.clone()).collect();
+    // 全部行的开关，供 `min_enabled` 的下限判定用（每行都要看"现在总共开着几个"）。
+    let all_sigs: Rc<Vec<Signal<bool>>> = Rc::new(rows.iter().map(|r| r.sig).collect());
     // 行元数据按 value 查表——`reorder_list_signal` 的行构建函数只拿得到 value。
     let meta: Rc<Vec<ToggleRow>> = Rc::new(rows);
     // 左右留白用 **padding** 而非 margin：`setting_row` 内部是 `width_match()` 的 row，
@@ -329,8 +361,12 @@ pub fn build_toggle_rows_dialog(
                         .padding_xy(8, 0)
                         .child(handle)
                         .child(
-                            crate::widgets::setting_row(&r.label, desc, Element::switch(r.sig))
-                                .weight(1.0),
+                            crate::widgets::setting_row(
+                                &r.label,
+                                desc,
+                                switch_with_floor(r.sig, &all_sigs, min_enabled),
+                            )
+                            .weight(1.0),
                         ),
                 )
         })

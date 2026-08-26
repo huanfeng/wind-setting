@@ -2173,6 +2173,39 @@ fn build_dialog_button_pairs(
     visible
 }
 
+/// 剥掉「关着」的 `-` 前缀，得到条目本名。无前缀则原样返回。
+///
+/// 与 core 的 `parse_toolbar_items` 是**同一套编码**的两端：那边负责「不渲染带前缀的项」，
+/// 这边负责「把它读回成一个关着的行」。两处都只剥一层——`--x` 是手滑，不是双重否定。
+pub(crate) fn strip_off(s: &str) -> &str {
+    s.strip_prefix('-').unwrap_or(s)
+}
+
+/// 条目在当前列表里是否**开着**：以本名原样出现过（即那一次没带 `-` 前缀）。
+///
+/// 没出现过 = 关。这条让**旧配置**（只列启用项、无前缀）不必迁移即可正确读回：
+/// 没列出的项判为关，位置由 `managed_order` 补在声明序位——与本编码引入前逐项相同。
+pub(crate) fn enabled_of(cur: &[String], value: &str) -> bool {
+    cur.iter().any(|s| s == value)
+}
+
+/// 把「界面行序 + 启用集」编码成配置数组：开着的写本名，关着的加 `-` 前缀。
+///
+/// **写全序**是这个编码存在的理由：只写启用项的话，关掉一项就丢掉了它的位置，
+/// 重新打开只能补在声明序位，用户体感是「排好的顺序，关一下再开就乱了」。
+pub(crate) fn encode_ordered_items(order: &[String], enabled: &[String]) -> Vec<String> {
+    order
+        .iter()
+        .map(|v| {
+            if enabled.iter().any(|e| e == v) {
+                v.clone()
+            } else {
+                format!("-{v}")
+            }
+        })
+        .collect()
+}
+
 /// `dialog_button_ordered_pairs`：**顺序有语义**的 strlist 编辑——一列开关决定有无，
 /// 拖拽手柄决定顺序。写回路径就是 `item.key` 本身（不同于 mix_members 要 patch 进数组
 /// 里的某一项），故可被任何「顺序即语义」的 strlist 键复用。
@@ -2235,16 +2268,18 @@ fn build_dialog_button_ordered_pairs(
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
-            // 顺序取自 order（界面行序），有无取自各行开关：两者相乘才是最终列表。
-            let arr: Vec<Value> = order
-                .get()
+            // **写全序**：关掉的项也写进去，加 `-` 前缀表示「在这个位置，但不显示」。
+            //
+            // 早先是 `.filter(开着的)`，关掉的项直接从数组里消失——于是位置信息也没了，
+            // 重新打开时只能补在声明序位。用户体感是「我排好的顺序，关一下再开就乱了」。
+            // 顺序与启用态留在同一个数组里，也就不存在两张表要同步的问题。
+            let on: Vec<String> = sigs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(v, _)| v.clone())
+                .collect();
+            let arr: Vec<Value> = encode_ordered_items(&order.get(), &on)
                 .into_iter()
-                .filter(|v| {
-                    sigs_w
-                        .iter()
-                        .find(|(x, _)| x == v)
-                        .is_some_and(|(_, s)| s.get())
-                })
                 .map(Value::String)
                 .collect();
             c.set_path(&kw, Value::Array(arr));
@@ -2258,15 +2293,22 @@ fn build_dialog_button_ordered_pairs(
         key.to_string(),
         Box::new(move |c: &Config| {
             let cur = read_list(c, &kl, &def_l);
+            // 开关看**有没有前缀**，顺序看**剥掉前缀后的排列**：两者来自同一个数组。
+            // 旧配置（无前缀、只列启用项）照常工作——没列出的项 `enabled_of` 判为关，
+            // 位置由 `managed_order` 补在声明序位，与本改动前的行为逐项相同。
             for (v, s) in &sigs_l {
-                s.set(cur.iter().any(|m| m == v));
+                s.set(enabled_of(&cur, v));
             }
-            order.set(managed_order(&cur, &managed_l));
+            let seq: Vec<String> = cur.iter().map(|s| strip_off(s).to_string()).collect();
+            order.set(managed_order(&seq, &managed_l));
         }),
     );
 
     let hint = item.hint.clone().unwrap_or_default();
-    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order);
+    // 至少留一项开着：core 对「全关」只能回落成全显示（`items` 全带 `-` 前缀时）——
+    // 那与用户「我把它们都关了」的意图正好相反。与其让用户配出一个反馈相反的状态，
+    // 不如在最后一项上直接置灰说明它关不掉。
+    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order, 1);
     register_dialog(state, dlg);
     visible
 }
@@ -2506,7 +2548,9 @@ fn build_dialog_button_mix_members(
     );
 
     let hint = item.hint.clone().unwrap_or_default();
-    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order);
+    // 不设下限（0）：**刻意保持既有行为**，不顺手改这个控件。快捷输入把候选来源全关
+    // 是否该拦，是那个功能自己的判断，与工具栏「全关会回落成全显示」的处境不同。
+    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order, 0);
     register_dialog(state, dlg);
     visible
 }
@@ -3354,6 +3398,71 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ordered_pairs 的 `-` 前缀编码 ───────────────────────────
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// ★ 编码存在的**全部理由**：关掉一项，它的位置还在。
+    ///
+    /// 模拟设置页的一个来回——用户把 full_width 拖到第 2 位、关掉、保存、重新载入。
+    /// 若只写启用项（本编码引入前的形态），full_width 会从数组里消失，重新打开时
+    /// 只能补在声明序位（第 3 位）。
+    #[test]
+    fn disabled_item_keeps_its_position_across_a_round_trip() {
+        let order = s(&["mode", "full_width", "punct"]);
+        let enabled = s(&["mode", "punct"]); // full_width 被关掉
+        let stored = encode_ordered_items(&order, &enabled);
+        assert_eq!(stored, s(&["mode", "-full_width", "punct"]));
+
+        // 读回：顺序仍是三项、full_width 仍在第 2 位，只是开关为关。
+        let seq: Vec<String> = stored.iter().map(|x| strip_off(x).to_string()).collect();
+        assert_eq!(seq, order, "剥掉前缀后必须还原成原来的行序");
+        assert!(enabled_of(&stored, "mode"));
+        assert!(!enabled_of(&stored, "full_width"), "带前缀的项判为关");
+        assert!(enabled_of(&stored, "punct"));
+    }
+
+    /// 全开时不产生任何前缀——出厂配置读起来仍是干净的一行。
+    #[test]
+    fn all_enabled_encodes_without_prefixes() {
+        let order = s(&["mode", "punct"]);
+        assert_eq!(encode_ordered_items(&order, &order), order);
+    }
+
+    /// **旧配置**（只列启用项、无前缀）不迁移即可正确读回：
+    /// 列出的判为开，没列出的判为关。这条保证升级后用户的工具栏不变样。
+    #[test]
+    fn legacy_list_without_prefixes_still_reads_correctly() {
+        let legacy = s(&["mode", "punct"]);
+        assert!(enabled_of(&legacy, "mode"));
+        assert!(enabled_of(&legacy, "punct"));
+        assert!(!enabled_of(&legacy, "settings"), "没列出的就是关掉的");
+        let seq: Vec<String> = legacy.iter().map(|x| strip_off(x).to_string()).collect();
+        assert_eq!(seq, legacy, "无前缀时剥离是恒等的");
+    }
+
+    /// `-` 只剥一层，与 core 的 `parse_toolbar_items` 同口径。
+    #[test]
+    fn strip_off_peels_exactly_one_dash() {
+        assert_eq!(strip_off("mode"), "mode");
+        assert_eq!(strip_off("-mode"), "mode");
+        assert_eq!(strip_off("--mode"), "-mode");
+    }
+
+    /// 自定义按钮的条目名带冒号，前缀编码不得破坏它。
+    #[test]
+    fn custom_item_names_survive_the_encoding() {
+        let order = s(&["custom:sym"]);
+        assert_eq!(
+            encode_ordered_items(&order, &[]),
+            s(&["-custom:sym"]),
+            "关掉的自定义按钮加前缀，冒号原样保留"
+        );
+        assert_eq!(strip_off("-custom:sym"), "custom:sym");
+    }
 
     /// 守护：清单里出现的每个 `type` 都必须能渲染出真控件。
     ///
