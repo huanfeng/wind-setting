@@ -2206,6 +2206,79 @@ pub(crate) fn encode_ordered_items(order: &[String], enabled: &[String]) -> Vec<
         .collect()
 }
 
+/// ordered_pairs 写回配置的**完整取值逻辑**：行序 + 开关 + 当前配置 → 最终数组。
+///
+/// 抽成纯函数是因为 writer 挂在 `AppState` 上、而 `AppState` 需要 windui 运行时立不起来
+/// ⇒ 那条链端到端测不了。把组合逻辑收在这里，至少保证「怎么组合」只有一份实现、
+/// 且这一份被测到；writer 退化成一行转发。
+///
+/// ⚠️ 仍**测不到**「writer 真的调了本函数」——那一步只能靠 review 与真机。改 writer 时
+/// 别把这几步重新内联回去。
+pub(crate) fn ordered_pairs_write_value(
+    order: &[String],
+    enabled: &[String],
+    managed: &[String],
+    current: &[String],
+) -> Vec<String> {
+    let encoded = encode_ordered_items(order, enabled);
+    merge_preserving_foreign(current, managed, &encoded)
+}
+
+/// 把界面结果并回当前配置，**保留界面不认识的条目**并按锚点还原它们的落点。
+///
+/// # 为什么必须有这一步
+///
+/// `managed_order` 只把界面管得着的条目排进行序（界面显示不了别的），于是 writer 若
+/// 直接整表覆盖，用户**手写**的条目就没了。2026-08-26 真机踩到：用户手写了一个
+/// `custom:sym` 自定义按钮，随后在设置页动了一下「显示的格」，那一条**当场消失**。
+///
+/// `mix_members` 早就有同一道保护（`apply_member_order`，其模块注释写着「写回时仍必须
+/// 保留界面不认识的成员，且不能把它们冲到列表末尾」）。我复用了它的 `managed_order`
+/// 却没搬这一半——**一个算法拆两半用，只搬走了显示的那一半。**
+///
+/// # 锚点规则
+///
+/// 记下外来条目原本前面有几个「界面管得着的条目」，重排后仍插在新序列的同一个序号处。
+/// 这让「用户没动过顺序」成为恒等变换，也让手写的混排在拖动后不失真。
+/// 反例是「外来条目一律追加末尾」：那会让用户每保存一次就把手写的编排推走一截。
+///
+/// 判定「界面认不认识」时先剥 `-` 前缀：一个关着的 `-custom:sym` 与开着的
+/// `custom:sym` 是同一个条目，不能因为带了前缀就被当成外来项复制一份。
+pub(crate) fn merge_preserving_foreign(
+    current: &[String],
+    managed: &[String],
+    encoded: &[String],
+) -> Vec<String> {
+    let is_managed = |s: &str| managed.iter().any(|m| m == strip_off(s));
+    // (锚点 = 它前面的受管条目个数, 原样保留的条目)
+    let mut foreign: Vec<(usize, String)> = Vec::new();
+    let mut seen = 0usize;
+    for s in current {
+        if is_managed(s) {
+            seen += 1;
+        } else {
+            foreign.push((seen, s.clone()));
+        }
+    }
+    if foreign.is_empty() {
+        return encoded.to_vec();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(encoded.len() + foreign.len());
+    let mut fi = 0;
+    for (i, s) in encoded.iter().enumerate() {
+        while fi < foreign.len() && foreign[fi].0 <= i {
+            out.push(foreign[fi].1.clone());
+            fi += 1;
+        }
+        out.push(s.clone());
+    }
+    // 锚点落在新序列末尾之后的（原本排在所有受管条目之后）。
+    for (_, s) in foreign.into_iter().skip(fi) {
+        out.push(s);
+    }
+    out
+}
+
 /// `dialog_button_ordered_pairs`：**顺序有语义**的 strlist 编辑——一列开关决定有无，
 /// 拖拽手柄决定顺序。写回路径就是 `item.key` 本身（不同于 mix_members 要 patch 进数组
 /// 里的某一项），故可被任何「顺序即语义」的 strlist 键复用。
@@ -2262,6 +2335,7 @@ fn build_dialog_button_ordered_pairs(
     let visible = signal(false);
 
     let sigs_w = sigs.clone();
+    let managed_w = managed.clone();
     let kw = key.to_string();
     state
         .fields
@@ -2278,10 +2352,12 @@ fn build_dialog_button_ordered_pairs(
                 .filter(|(_, s)| s.get())
                 .map(|(v, _)| v.clone())
                 .collect();
-            let arr: Vec<Value> = encode_ordered_items(&order.get(), &on)
-                .into_iter()
-                .map(Value::String)
-                .collect();
+            // ⚠️ **必须以写回那一刻的配置为准**读外来条目，不能用界面构建时的快照：
+            // 中间可能发生过「恢复本页」「重新加载」，甚至用户在外部编辑器改了配置。
+            // 用旧快照会把那期间新增的手写条目当成不存在，写回时照样丢。
+            let cur_now = read_list(c, &kw, &[]);
+            let merged = ordered_pairs_write_value(&order.get(), &on, &managed_w, &cur_now);
+            let arr: Vec<Value> = merged.into_iter().map(Value::String).collect();
             c.set_path(&kw, Value::Array(arr));
         }));
 
@@ -2308,7 +2384,18 @@ fn build_dialog_button_ordered_pairs(
     // 至少留一项开着：core 对「全关」只能回落成全显示（`items` 全带 `-` 前缀时）——
     // 那与用户「我把它们都关了」的意图正好相反。与其让用户配出一个反馈相反的状态，
     // 不如在最后一项上直接置灰说明它关不掉。
-    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order, 1);
+    let dlg = build_toggle_rows_dialog(
+        visible,
+        &item.label,
+        &hint,
+        rows,
+        managed,
+        order,
+        Some(crate::dialogs::field_dialogs::MinEnabled {
+            count: 1,
+            noun: "格".to_string(),
+        }),
+    );
     register_dialog(state, dlg);
     visible
 }
@@ -2550,7 +2637,7 @@ fn build_dialog_button_mix_members(
     let hint = item.hint.clone().unwrap_or_default();
     // 不设下限（0）：**刻意保持既有行为**，不顺手改这个控件。快捷输入把候选来源全关
     // 是否该拦，是那个功能自己的判断，与工具栏「全关会回落成全显示」的处境不同。
-    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order, 0);
+    let dlg = build_toggle_rows_dialog(visible, &item.label, &hint, rows, managed, order, None);
     register_dialog(state, dlg);
     visible
 }
@@ -3442,6 +3529,103 @@ mod tests {
         assert!(!enabled_of(&legacy, "settings"), "没列出的就是关掉的");
         let seq: Vec<String> = legacy.iter().map(|x| strip_off(x).to_string()).collect();
         assert_eq!(seq, legacy, "无前缀时剥离是恒等的");
+    }
+
+    /// ★★ 回归：**用户手写的、界面不认识的条目，保存后必须还在**。
+    ///
+    /// 2026-08-26 真机踩到：用户手写了一个 `custom:sym` 自定义按钮，随后在设置页动了
+    /// 一下「显示的格」，那一条当场消失。根因是 writer 整表覆盖，而 `managed_order`
+    /// 只把界面管得着的条目排进行序（界面显示不了别的）。
+    #[test]
+    fn foreign_items_survive_a_save() {
+        let managed = s(&["mode", "punct", "settings"]);
+        // 用户手写的配置：custom:sym 夹在 punct 与 settings 之间。
+        let current = s(&["mode", "punct", "custom:sym", "settings"]);
+        // 界面这一侧只知道三个内置项（用户什么都没改）。
+        let encoded = encode_ordered_items(&s(&["mode", "punct", "settings"]), &managed);
+
+        let merged = merge_preserving_foreign(&current, &managed, &encoded);
+        assert_eq!(
+            merged, current,
+            "用户没动过顺序时，合并必须是恒等变换（外来条目留在原位）"
+        );
+    }
+
+    /// ★★ 写回的**完整取值**：用户手写的按钮 + 界面关掉一格，两件事都要正确。
+    ///
+    /// 这条走 `ordered_pairs_write_value`（writer 实际调用的那个），而不是分别测
+    /// 两个零件——「组合对不对」是独立于「零件对不对」的一层。
+    #[test]
+    fn write_value_preserves_foreign_and_encodes_disabled() {
+        let managed = s(&["mode", "punct", "settings"]);
+        let current = s(&["mode", "punct", "custom:sym", "settings"]);
+        // 界面：顺序没动，但用户关掉了 punct。
+        let order = s(&["mode", "punct", "settings"]);
+        let enabled = s(&["mode", "settings"]);
+
+        let got = ordered_pairs_write_value(&order, &enabled, &managed, &current);
+        assert_eq!(
+            got,
+            s(&["mode", "-punct", "custom:sym", "settings"]),
+            "关掉的格加前缀留在原位，手写的 custom:sym 也留在原位"
+        );
+    }
+
+    /// 外来条目按**锚点**落位，不被冲到末尾——它原本的相对位置也是用户的编排意图。
+    #[test]
+    fn foreign_item_keeps_its_anchor_after_reorder() {
+        let managed = s(&["mode", "punct", "settings"]);
+        let current = s(&["mode", "custom:sym", "punct", "settings"]);
+        // 用户把 settings 拖到最前面。
+        let encoded = s(&["settings", "mode", "punct"]);
+
+        let merged = merge_preserving_foreign(&current, &managed, &encoded);
+        // custom:sym 的锚点是「前面有 1 个受管条目」⇒ 仍插在新序列的第 1 个之后。
+        assert_eq!(merged, s(&["settings", "custom:sym", "mode", "punct"]));
+    }
+
+    /// 排在所有受管条目之后的外来条目，落到末尾（锚点超出新序列长度）。
+    #[test]
+    fn trailing_foreign_item_stays_trailing() {
+        let managed = s(&["mode", "punct"]);
+        let current = s(&["mode", "punct", "custom:tail"]);
+        let encoded = s(&["punct", "mode"]);
+        assert_eq!(
+            merge_preserving_foreign(&current, &managed, &encoded),
+            s(&["punct", "mode", "custom:tail"])
+        );
+    }
+
+    /// 关着的外来条目（带 `-` 前缀）同样保留，且**不被当成另一个条目**。
+    ///
+    /// 判定「界面认不认识」时要先剥前缀，否则 `-custom:sym` 会被视为外来项、而
+    /// `custom:sym` 又在别处出现，同一个按钮会被写出两份。
+    #[test]
+    fn disabled_foreign_item_is_preserved_once() {
+        let managed = s(&["mode", "punct"]);
+        let current = s(&["mode", "-custom:sym", "punct"]);
+        let encoded = s(&["mode", "punct"]);
+        let merged = merge_preserving_foreign(&current, &managed, &encoded);
+        assert_eq!(merged, current);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|x| strip_off(x) == "custom:sym")
+                .count(),
+            1,
+            "同一个条目不得被写出两份"
+        );
+    }
+
+    /// 没有外来条目时，合并等于原样返回（快速路径，也保证不引入意外重排）。
+    #[test]
+    fn no_foreign_items_is_identity() {
+        let managed = s(&["mode", "punct"]);
+        let encoded = s(&["punct", "-mode"]);
+        assert_eq!(
+            merge_preserving_foreign(&s(&["mode", "punct"]), &managed, &encoded),
+            encoded
+        );
     }
 
     /// `-` 只剥一层，与 core 的 `parse_toolbar_items` 同口径。

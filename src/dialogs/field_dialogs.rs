@@ -270,26 +270,51 @@ pub fn build_map_dialog(
 
 /// 一行的开关，带「至少留 N 个开着」的下限守卫。
 ///
-/// 只在**本行开着且开着的总数已到下限**时置灰——关不掉的只有那最后几个，
-/// 已经关掉的项照常可以打开（否则用户会被锁死在当前组合里）。
+/// # 为什么是「可点 + toast」而不是置灰
 ///
-/// `min_enabled == 0` 时恒可用，等价于没有守卫。
+/// 初版用 `enabled_when` 把最后几个开关置灰，判据是「置灰当场说明这个关不掉」。
+/// **实测被用户推翻**：灰掉的开关与正常开关差别太小、看不出来，点下去没反应
+/// 反而更像卡住了。改成受控点击——照常可点，越界时**明说为什么**。
+///
+/// `on_toggle` 会接管翻转：设了它之后点击不再自动改 `sig`，得由本回调决定翻不翻。
+/// 这正是「先判断再决定」需要的形态，且渲染始终跟随 `sig`，零闪烁。
+///
+/// 只拦「关掉最后几个」，已关掉的照常可以打开——否则用户会被锁死在当前组合里。
+///
+/// `min_enabled == 0` 时不接管，退回普通开关（等价于没有守卫）。
 fn switch_with_floor(
     sig: Signal<bool>,
     all: &Rc<Vec<Signal<bool>>>,
-    min_enabled: usize,
+    floor: Option<&MinEnabled>,
 ) -> Element {
-    let sw = Element::switch(sig);
-    if min_enabled == 0 {
-        return sw;
-    }
+    let Some(f) = floor else {
+        return Element::switch(sig);
+    };
     let all = all.clone();
-    sw.enabled_when(move || {
-        if !sig.get() {
-            return true; // 关着的永远可以打开
+    let n = f.count;
+    let msg = if n == 1 {
+        format!("至少要保留一个{}", f.noun)
+    } else {
+        format!("至少要保留 {n} 个{}", f.noun)
+    };
+    Element::switch(sig).on_toggle(move |ctx| {
+        if sig.get() && all.iter().filter(|s| s.get()).count() <= n {
+            ctx.toast_err(msg.clone());
+            return; // 不翻转
         }
-        all.iter().filter(|s| s.get()).count() > min_enabled
+        sig.set(!sig.get());
     })
+}
+
+/// 「至少留 N 项开着」的下限约束（[`build_toggle_rows_dialog`] 的可选参数）。
+///
+/// 用 `Option<MinEnabled>` 而不是 `usize` 的 0 表示「不限」：这里的 0 与 1 是两种
+/// **性质不同**的策略（不接管点击 / 接管并可能拒绝），不是同一量纲上的两个取值。
+pub struct MinEnabled {
+    /// 至少要有几项开着。
+    pub count: usize,
+    /// 提示语里的名词，如「格」→「至少要保留一个格」。
+    pub noun: String,
 }
 
 /// 条目开关对话框的一行：标签 + 说明 + 开关。
@@ -317,10 +342,10 @@ pub struct ToggleRow {
 /// 若首行特殊、其余带线，动画期间就会出现"顶上多一条、中间少一条"的错位。
 /// 每行长得一样，任何排列都对。首行那条顺带把行区与上方提示文字分开。
 ///
-/// `min_enabled` = **至少要留几项开着**（0 = 不限制）。开着的项数降到这个数时，
-/// 那几项的开关**置灰不可关**——把最后一项也关掉往往不是用户想要的：core 侧对
-/// 「全关」只能回落成全显示或空条，两种反馈都与"我关掉了它们"相反。
-/// 置灰而不是拦截点击：拦截是"点了没反应"，置灰当场说明"这个关不掉"。
+/// `min_enabled` = 可选的「至少要留几项开着」约束（`None` = 不限）。把最后一项也关掉
+/// 往往不是用户想要的：core 侧对「全关」只能回落成全显示或空条，两种反馈都与
+/// 「我关掉了它们」相反。越界时**照常可点、弹 toast 说明**——见 [`switch_with_floor`]
+/// 里为什么不用置灰。
 pub fn build_toggle_rows_dialog(
     visible: Signal<bool>,
     title: &str,
@@ -328,7 +353,7 @@ pub fn build_toggle_rows_dialog(
     rows: Vec<ToggleRow>,
     defaults: Vec<String>,
     order: Signal<Vec<String>>,
-    min_enabled: usize,
+    min_enabled: Option<MinEnabled>,
 ) -> Element {
     let rows_reset: Vec<(String, Signal<bool>)> =
         rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
@@ -364,7 +389,7 @@ pub fn build_toggle_rows_dialog(
                             crate::widgets::setting_row(
                                 &r.label,
                                 desc,
-                                switch_with_floor(r.sig, &all_sigs, min_enabled),
+                                switch_with_floor(r.sig, &all_sigs, min_enabled.as_ref()),
                             )
                             .weight(1.0),
                         ),
