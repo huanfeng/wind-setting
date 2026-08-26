@@ -1,4 +1,4 @@
-//! 「显示的格」对话框：内置格与自定义按钮同列，可勾选、可拖拽排序、可增删按钮。
+//! 「显示内容」对话框：内置格与自定义按钮同列，可勾选、可拖拽排序、可增删按钮。
 //!
 //! # 为什么不复用 `build_toggle_rows_dialog`
 //!
@@ -41,7 +41,7 @@ pub fn custom_value(id: &str) -> String {
     format!("custom:{id}")
 }
 
-/// 「显示的格」对话框的全部可变状态。
+/// 「显示内容」对话框的全部可变状态。
 #[derive(Clone)]
 pub struct ToolbarItemsUi {
     pub visible: Signal<bool>,
@@ -330,7 +330,7 @@ pub fn build_toolbar_items_dialog(
                 ),
         );
 
-    // 按钮表单挂在同一棵子树上：它是本对话框的二级弹层（页面 → 显示的格 → 编辑按钮，
+    // 按钮表单挂在同一棵子树上：它是本对话框的二级弹层（页面 → 显示内容 → 编辑按钮，
     // 深度 2，正好是仓规的上限）。
     let form_ui = ui.clone();
     let form_ui2 = ui.clone();
@@ -354,9 +354,9 @@ fn switch_with_floor(sig: Signal<bool>, ui: &ToolbarItemsUi, min_enabled: usize)
     Element::switch(sig).on_toggle(move |ctx| {
         if sig.get() && ui.enabled_values().len() <= min_enabled {
             ctx.toast_err(if min_enabled == 1 {
-                "至少要保留一个格".to_string()
+                "至少要保留一项".to_string()
             } else {
-                format!("至少要保留 {min_enabled} 个格")
+                format!("至少要保留 {min_enabled} 项")
             });
             return;
         }

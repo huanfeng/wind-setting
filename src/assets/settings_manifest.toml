@@ -2378,8 +2378,8 @@ key = "ui.toolbar.items"
 group = "ui"
 section = "工具栏"
 type = "dialog_button_ordered_pairs"
-label = "显示的格"
-hint = "工具栏上显示哪几格、按什么顺序；按住行首手柄上下拖动即可调整"
+label = "显示内容"
+hint = "工具栏上显示哪些内容、按什么顺序；按住行首手柄上下拖动即可调整"
 platform = "windows"
 options = [
   { value = "mode", label = "中英 / 方案", hint = "显示当前是中文还是英文，中文时显示方案标签（拼、五等）；点击切换中英" },
