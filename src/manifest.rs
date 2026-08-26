@@ -2300,8 +2300,12 @@ fn build_dialog_button_ordered_pairs(
     item: &MItem,
     cfg: &Config,
 ) -> Signal<bool> {
-    use crate::dialogs::field_dialogs::{ToggleRow, build_toggle_rows_dialog};
-    use crate::mix_members::managed_order;
+    use crate::dialogs::toolbar_items_dialog::{
+        BuiltinRow, ToolbarItemsUi, build_toolbar_items_dialog, custom_value,
+    };
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
 
     /// 读一个 strlist 键；缺省/非数组回落 `def`。
     fn read_list(c: &Config, key: &str, def: &[String]) -> Vec<String> {
@@ -2314,90 +2318,152 @@ fn build_dialog_button_ordered_pairs(
             .unwrap_or_else(|| def.to_vec())
     }
 
-    let managed: Vec<String> = item.options.iter().map(|o| o.value.clone()).collect();
-    let defaults = default_strlist(state, key);
-    let cur = read_list(cfg, key, &defaults);
-
-    let rows: Vec<ToggleRow> = item
+    let builtins: Vec<BuiltinRow> = item
         .options
         .iter()
-        .map(|o| ToggleRow {
+        .map(|o| BuiltinRow {
             value: o.value.clone(),
             label: o.label.clone(),
             desc: o.hint.clone(),
-            sig: signal(cur.contains(&o.value)),
         })
         .collect();
-    let sigs: Vec<(String, Signal<bool>)> = rows.iter().map(|r| (r.value.clone(), r.sig)).collect();
-    // 行序按**当前配置**排（未启用项补在声明序位），而不是恒按声明序——否则用户手排的
-    // 顺序在他还没动任何东西时就"看起来"被改过了。
-    let order = signal(managed_order(&cur, &managed));
-    let visible = signal(false);
+    let declared: Vec<String> = builtins.iter().map(|b| b.value.clone()).collect();
+    let defaults = default_strlist(state, key);
+    let cur = read_list(cfg, key, &defaults);
+    let cur_buttons = read_buttons(cfg);
 
-    let sigs_w = sigs.clone();
-    let managed_w = managed.clone();
+    // 受管条目 = 内置格 + **当前已定义的**自定义按钮。后者随新建/删除变化，故写回时
+    // 要按那一刻的按钮列表重算，不能用这份构建期快照（见 writer 里的注释）。
+    let ui = ToolbarItemsUi {
+        visible: signal(false),
+        switches: Rc::new(RefCell::new(HashMap::new())),
+        buttons: signal(cur_buttons.clone()),
+        order: signal(Vec::new()),
+        form: crate::dialogs::toolbar_button_edit::ButtonForm::new(),
+    };
+    // 开关与行序的初值：与 loader 同一套算法，避免"首次打开"与"重新加载后"不一致。
+    apply_items_to_ui(&ui, &cur, &declared, &cur_buttons);
+
+    let ui_w = ui.clone();
     let kw = key.to_string();
+    let declared_w = declared.clone();
     state
         .fields
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
             // **写全序**：关掉的项也写进去，加 `-` 前缀表示「在这个位置，但不显示」。
-            //
-            // 早先是 `.filter(开着的)`，关掉的项直接从数组里消失——于是位置信息也没了，
-            // 重新打开时只能补在声明序位。用户体感是「我排好的顺序，关一下再开就乱了」。
-            // 顺序与启用态留在同一个数组里，也就不存在两张表要同步的问题。
-            let on: Vec<String> = sigs_w
-                .iter()
-                .filter(|(_, s)| s.get())
-                .map(|(v, _)| v.clone())
-                .collect();
+            // 早先是 `.filter(开着的)`，关掉的项直接从数组里消失——位置信息也没了，
+            // 重新打开只能补在声明序位。顺序与启用态留在同一个数组里，就不存在两张表
+            // 要同步的问题。
+            let on = ui_w.enabled_values();
+            // 受管集合按**此刻**的按钮列表算：新建的按钮要算受管（否则它刚被写进
+            // `order`，却被当成外来项，位置会错乱）；删掉的不再受管。
+            let mut managed = declared_w.clone();
+            managed.extend(ui_w.buttons.get().iter().map(|b| custom_value(&b.id)));
             // ⚠️ **必须以写回那一刻的配置为准**读外来条目，不能用界面构建时的快照：
             // 中间可能发生过「恢复本页」「重新加载」，甚至用户在外部编辑器改了配置。
-            // 用旧快照会把那期间新增的手写条目当成不存在，写回时照样丢。
             let cur_now = read_list(c, &kw, &[]);
-            let merged = ordered_pairs_write_value(&order.get(), &on, &managed_w, &cur_now);
+            let merged = ordered_pairs_write_value(&ui_w.order.get(), &on, &managed, &cur_now);
             let arr: Vec<Value> = merged.into_iter().map(Value::String).collect();
             c.set_path(&kw, Value::Array(arr));
+            // 按钮定义与引用是**同一次保存的两半**，必须一起落盘：只写 items 会留下
+            // 指不到按钮的引用，只写 buttons 会有一个谁也没引用的按钮。
+            c.set_path(
+                BUTTONS_KEY,
+                Value::Array(buttons_to_json(&ui_w.buttons.get())),
+            );
         }));
 
-    let sigs_l = sigs.clone();
-    let managed_l = managed.clone();
+    let ui_l = ui.clone();
     let kl = key.to_string();
     let def_l = defaults.clone();
+    let declared_l = declared.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
             let cur = read_list(c, &kl, &def_l);
-            // 开关看**有没有前缀**，顺序看**剥掉前缀后的排列**：两者来自同一个数组。
-            // 旧配置（无前缀、只列启用项）照常工作——没列出的项 `enabled_of` 判为关，
-            // 位置由 `managed_order` 补在声明序位，与本改动前的行为逐项相同。
-            for (v, s) in &sigs_l {
-                s.set(enabled_of(&cur, v));
-            }
-            let seq: Vec<String> = cur.iter().map(|s| strip_off(s).to_string()).collect();
-            order.set(managed_order(&seq, &managed_l));
+            let btns = read_buttons(c);
+            ui_l.buttons.set(btns.clone());
+            apply_items_to_ui(&ui_l, &cur, &declared_l, &btns);
         }),
     );
 
     let hint = item.hint.clone().unwrap_or_default();
-    // 至少留一项开着：core 对「全关」只能回落成全显示（`items` 全带 `-` 前缀时）——
-    // 那与用户「我把它们都关了」的意图正好相反。与其让用户配出一个反馈相反的状态，
-    // 不如在最后一项上直接置灰说明它关不掉。
-    let dlg = build_toggle_rows_dialog(
-        visible,
-        &item.label,
-        &hint,
-        rows,
-        managed,
-        order,
-        Some(crate::dialogs::field_dialogs::MinEnabled {
-            count: 1,
-            noun: "格".to_string(),
-        }),
-    );
+    let visible = ui.visible;
+    // 至少留一项开着：core 对「全关」只能回落成全部显示（`items` 全带 `-` 前缀时），
+    // 那与用户「我把它们都关了」的意图正好相反。越界时弹 toast 说明，不置灰。
+    let dlg = build_toolbar_items_dialog(&ui, &item.label, &hint, builtins, declared, 1);
     register_dialog(state, dlg);
     visible
+}
+
+/// 自定义按钮的配置键。与 `ui.toolbar.items` 是**同一个功能的两半**，故在同一处读写。
+const BUTTONS_KEY: &str = "ui.toolbar.buttons";
+
+/// 读 `ui.toolbar.buttons`（缺省/非数组 → 空表）。
+fn read_buttons(c: &Config) -> Vec<crate::dialogs::toolbar_items_dialog::ButtonRow> {
+    use crate::dialogs::toolbar_items_dialog::ButtonRow;
+    let s = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    c.get_array(BUTTONS_KEY)
+        .map(|a| {
+            a.iter()
+                // 无 id 的条目**跳过**：它无法被 `custom:<id>` 引用，界面上是一行点不到
+                // 任何东西的死行。写回时它会作为外来条目被 merge 保住吗？不会——buttons
+                // 是整表覆盖。故此处跳过 = 该条目会在下次保存时消失，这是对的：
+                // 一个引用不到的按钮定义本就没有意义。
+                .filter(|v| !s(v, "id").is_empty())
+                .map(|v| ButtonRow {
+                    id: s(v, "id"),
+                    label: s(v, "label"),
+                    action: s(v, "action"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 界面的按钮列表 → 配置数组。
+///
+/// 只写四个字段：`enabled` 刻意**不写**——界面用「在不在 items 里」表达显示与否，
+/// 再写一个 `enabled` 就是同一件事的两个真相源。core 侧该字段缺省为 true。
+fn buttons_to_json(rows: &[crate::dialogs::toolbar_items_dialog::ButtonRow]) -> Vec<Value> {
+    rows.iter()
+        .map(|b| {
+            let mut m = serde_json::Map::new();
+            m.insert("id".into(), Value::String(b.id.clone()));
+            m.insert("label".into(), Value::String(b.label.clone()));
+            m.insert("action".into(), Value::String(b.action.clone()));
+            Value::Object(m)
+        })
+        .collect()
+}
+
+/// 把配置里的 `items` 摊进界面状态（开关 + 行序）。载入与首次构建共用，避免两套算法。
+fn apply_items_to_ui(
+    ui: &crate::dialogs::toolbar_items_dialog::ToolbarItemsUi,
+    cur: &[String],
+    declared: &[String],
+    buttons: &[crate::dialogs::toolbar_items_dialog::ButtonRow],
+) {
+    use crate::dialogs::toolbar_items_dialog::custom_value;
+    use crate::mix_members::managed_order;
+
+    let mut managed = declared.to_vec();
+    managed.extend(buttons.iter().map(|b| custom_value(&b.id)));
+    // 开关看**有没有前缀**：`enabled_of` 只认原样出现的本名。旧配置（无前缀、只列启用项）
+    // 照常工作——没列出的判为关，位置由 `managed_order` 补在声明序位。
+    ui.switches.borrow_mut().clear();
+    for v in &managed {
+        ui.switch_of(v, enabled_of(cur, v));
+    }
+    let seq: Vec<String> = cur.iter().map(|s| strip_off(s).to_string()).collect();
+    ui.order.set(managed_order(&seq, &managed));
 }
 
 /// 引导键控件（`dialog_button_key_action`）：勾选若干符号键，绑到 `item.verb` 指定的动词上。

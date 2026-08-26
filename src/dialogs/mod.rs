@@ -11,4 +11,5 @@ pub mod schema_session_actions;
 pub mod session_actions;
 pub mod theme_import_dialog;
 pub mod toolbar_button_edit;
+pub mod toolbar_items_dialog;
 pub mod update_dialog;

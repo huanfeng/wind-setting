@@ -57,17 +57,6 @@ impl ActionKind {
         }
     }
 
-    /// 参数框的占位提示——**只说这一栏该填什么**，不解释语法。
-    pub fn placeholder(self) -> &'static str {
-        match self {
-            ActionKind::RunProgram => r"程序路径，如 D:\Tools\abc.exe",
-            ActionKind::Open => "网址或文件路径，如 https://www.zdic.net",
-            ActionKind::WindCli => "命令，如 schema switch wubi86",
-            ActionKind::KeyTap => "按键组合，如 Ctrl+Shift+P",
-            ActionKind::Custom => r#"完整表达式，如 proc.run("D:\\a.exe")"#,
-        }
-    }
-
     /// 该类型的参数是不是本机文件路径（决定要不要给「浏览」按钮）。
     pub fn takes_path(self) -> bool {
         matches!(self, ActionKind::RunProgram)
@@ -101,6 +90,19 @@ impl ActionExpr {
             // Custom：arg 本身就是用户写的整条表达式，原样返回。
             None => self.arg.clone(),
         }
+    }
+}
+
+/// 一条动作的**人话摘要**，用于列表行的说明文字。
+///
+/// 显示解析后的真实参数而不是表达式源码：源码里的双反斜杠是给 cmdbar 看的，
+/// 摆在界面上只会让用户以为自己的路径写错了。认不出的形态没有更好的说法，
+/// 原样显示它自己写的那一行。
+pub fn summary(src: &str) -> String {
+    let a = parse(src);
+    match a.kind {
+        ActionKind::Custom => a.arg,
+        _ => format!("{}：{}", a.kind.label(), a.arg),
     }
 }
 
@@ -274,6 +276,25 @@ mod tests {
     fn unknown_escape_is_preserved_like_core() {
         assert_eq!(unquote_arg(r"a\xb"), r"a\xb");
         assert_eq!(unquote_arg(r"E:\文档"), r"E:\文档");
+    }
+
+    /// 列表行的说明显示**真实参数**，不含表达式里的双反斜杠。
+    ///
+    /// 这一条钉的是「界面上不出现给机器看的转义」——用户看到 `D:\\Download` 会以为
+    /// 自己的路径写错了。
+    #[test]
+    fn summary_shows_real_value_not_source() {
+        assert_eq!(
+            summary(r#"proc.run("D:\\Download\\知符\\知符.exe")"#),
+            r"启动程序：D:\Download\知符\知符.exe"
+        );
+        assert_eq!(
+            summary(r#"open("https://www.zdic.net")"#),
+            "打开网址 / 文件：https://www.zdic.net"
+        );
+        // 认不出的形态没有更好的说法，原样显示用户写的那一行。
+        let exotic = r#"key.seq("Home", "Shift+End")"#;
+        assert_eq!(summary(exotic), exotic);
     }
 
     /// 空白容错：源码两端的空格不影响识别。
