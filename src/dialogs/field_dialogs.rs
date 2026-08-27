@@ -877,12 +877,17 @@ pub fn build_index_labels_dialog(
 /// 展示/存储换序只许经此常量，禁止在别处再写死下标（防两端再度错位）。
 const PUNCT_DISPLAY_COLS: [usize; 4] = [3, 1, 0, 2];
 
+/// `header`：表格上方的额外控件（方案级那处放「本方案使用自己的表」开关）；`None` = 不插。
+/// `hint`：表格上方的说明文字（两处语义不同——全局那份是「基线是内置默认」，方案那份还要
+/// 说清「整份替换全局表」）。
 pub fn build_punct_table_dialog(
     visible: Signal<bool>,
     title: &str,
     src_labels: Vec<String>,
     cells_data: Vec<[Signal<String>; 4]>,
     defaults: Vec<[String; 4]>,
+    header: Option<Element>,
+    hint: &str,
 ) -> Element {
     // 单元格编辑子对话框状态
     let edit_show = signal(false);
@@ -945,13 +950,19 @@ pub fn build_punct_table_dialog(
         )
         .child(Element::divider())
         .child(
-            Element::label("点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会被保存。")
+            Element::label(hint)
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
-                .max_lines(2)
+                .max_lines(3)
                 .padding_xy(18, 10),
-        )
+        );
+    // 额外控件插在说明与表格之间：它决定整张表生不生效，得在表格之前被看到。
+    let frame = match header {
+        Some(h) => frame.child(Element::col().width_match().padding_xy(18, 0).child(h)),
+        None => frame,
+    };
+    let frame = frame
         .child(Element::col().width_match().padding_xy(18, 6).child(table))
         .child(Element::divider())
         .child(

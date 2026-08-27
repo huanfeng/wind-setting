@@ -3096,7 +3096,7 @@ fn build_dialog_button_map(
 /// 不同的行，未改动行不落盘、运行时由 core 内建默认决定行为；若 core 默认变更须同步此表，
 /// 否则 UI 展示与实际行为不符且用户无从察觉。
 #[rustfmt::skip]
-const PUNCT_DEFAULTS: &[(&str, &str, [&str; 4])] = &[
+pub(crate) const PUNCT_DEFAULTS: &[(&str, &str, [&str; 4])] = &[
     ("空格",      " ",  ["",   "\u{3000}", "\u{3000}", ""]),
     ("!",         "!",  ["！", "！", "！", "!"]),
     ("@",         "@",  ["@",  "＠", "＠", "@"]),
@@ -3135,7 +3135,7 @@ const PUNCT_DEFAULTS: &[(&str, &str, [&str; 4])] = &[
 ];
 
 /// 取某行第 i 格的展示值：有覆盖值用覆盖、否则回落默认（seed 与 loader 共用，避免逻辑漂移）。
-fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String {
+pub(crate) fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String {
     ov.and_then(|a| a.get(i))
         .and_then(|x| x.as_str())
         .map(String::from)
@@ -3150,7 +3150,7 @@ pub(crate) const PUNCT_MAP_KEY: &str = "input.punct.custom_mappings";
 /// 这是「什么算自定义」的**唯一判据**，writer 与 [`punct_canonical_map`] 都问它。
 /// 两处一旦分头写，就会造出「基线里有、写回时被剪」的固定差异——关窗守卫从此永远
 /// 提示未保存，而用户根本没动过任何东西。
-fn punct_row_override(vals: &[String; 4], defs: &[&str; 4]) -> Option<Value> {
+pub(crate) fn punct_row_override(vals: &[String; 4], defs: &[&str; 4]) -> Option<Value> {
     if (0..4).all(|i| vals[i].as_str() == defs[i]) {
         return None;
     }
@@ -3512,7 +3512,15 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
         .iter()
         .map(|(_, _, d)| std::array::from_fn(|i| d[i].to_string()))
         .collect();
-    let dlg = build_punct_table_dialog(visible, "自定义标点映射", src_labels, cells, defaults);
+    let dlg = build_punct_table_dialog(
+        visible,
+        "自定义标点映射",
+        src_labels,
+        cells,
+        defaults,
+        None,
+        "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会被保存。",
+    );
     register_dialog(state, dlg);
     visible
 }
@@ -4010,9 +4018,9 @@ mod tests {
             let mut conv = PunctuationConverter::new();
             // 预热必须走中文分支：英文列不调 to_chinese，也就不推进交替态。
             for _ in 0..skip {
-                wind_punct::convert_punct(&mut conv, &cfg, true, false, ch, 0);
+                wind_punct::convert_punct(&mut conv, &cfg.punct, true, false, ch, 0);
             }
-            wind_punct::convert_punct(&mut conv, &cfg, chinese, full, ch, 0)
+            wind_punct::convert_punct(&mut conv, &cfg.punct, chinese, full, ch, 0)
         }
 
         for (label, tok, defs) in PUNCT_DEFAULTS {

@@ -291,6 +291,12 @@ struct BehaviorSeed {
     /// 竖排注释模板三态：`None` = 键缺失（跟随全局），`Some("")` = 本方案不显示注释。
     comment_v: Option<String>,
     comment_h: Option<String>,
+    /// 方案级自定义标点表三态，与 core `PunctSpec::custom_mappings` 同构：
+    /// `None` = 跟随全局（键缺失）；`Some(表)` = **整份替换**全局表；`Some({})` = 一条都不要。
+    ///
+    /// ⚠️ 与上面两个注释模板一样，三态**只能由「键在不在」区分**，不能拿空表代表跟随——
+    /// 那正是 core 侧刻意不加方案级 `custom_enabled` 的理由（空表已经是第三态）。
+    punct_map: Option<serde_json::Map<String, Value>>,
 }
 
 impl Default for BehaviorSeed {
@@ -303,6 +309,7 @@ impl Default for BehaviorSeed {
             phrases: true,
             comment_v: None,
             comment_h: None,
+            punct_map: None,
         }
     }
 }
@@ -349,6 +356,12 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         phrases,
         comment_v: tpl("comment_template_vertical"),
         comment_h: tpl("comment_template_horizontal"),
+        // `as_object()` 顺带滤掉 null（core「取消覆盖」写的就是 null），与上面模板同理。
+        punct_map: cfg
+            .get("punct")
+            .and_then(|v| v.get("custom_mappings"))
+            .and_then(|v| v.as_object())
+            .cloned(),
     }
 }
 
@@ -408,6 +421,80 @@ fn comment_summary(v_on: bool, h_on: bool) -> String {
         (false, true) => "横排已自定义".to_string(),
         (true, true) => "横竖均已自定义".to_string(),
     }
+}
+
+/// 「自定义标点」那一行的摘要（纯函数，供测试）。
+///
+/// ★ 与 [`comment_summary`] 同构：**只看勾选态**，不看表里有几行。
+/// 报行数就得让摘要 effect 依赖全部 4×N 个单元格信号，那是每帧要遍历的开销，
+/// 而这一屏已经因为「每帧轮询」付过一次代价。行数打开子对话框一眼就能看见。
+///
+/// ⚠️ 于是「勾上但一行都没改」（core 侧的 `Some({})`＝本方案一条自定义都不要）
+/// 与「勾上且配了几行」在这一行文案上不作区分——两者都是「本方案自己说了算」，
+/// 与「跟随全局」的区别才是这行要回答的。
+fn punct_map_summary(on: bool) -> String {
+    if on {
+        "本方案自定义".to_string()
+    } else {
+        "跟随全局".to_string()
+    }
+}
+
+/// 方案级自定义标点子对话框：一个「本方案使用自己的表」开关 + 复用全局那张 5 列表格。
+///
+/// # ★ 为什么复用 `build_punct_table_dialog` 而不是另画一张
+///
+/// 列序契约（core 存储序 [中半, 英全, 中全, 英半] ↔ 展示序）**只许在
+/// `field_dialogs::PUNCT_DISPLAY_COLS` 一处换**。另写一张表就是第二处写死下标，
+/// 而两处错位的杀伤力是「中文半角状态永远输出英文字符」，且不报错——本仓已栽过一次。
+///
+/// # ★ 表格里的基线仍是**内置默认**，不是全局表
+///
+/// 与全局那处同构：只有「与内置默认不同」的行会被写进方案表。这不是偷懒——整表替换下
+/// 方案表里没写的行本来就走 core 内建转换，写进去反而是一堆恒等的冗余行。
+///
+/// ⚠️ 于是有一条用户可见的后果，hint 里必须说：**开启后，全局表里配的那些行不再生效**。
+fn build_schema_punct_dialog(state: &SchemaManagerState) -> Element {
+    use crate::dialogs::field_dialogs::build_punct_table_dialog;
+
+    let on = state.settings_bh_punct_map_on;
+    let cells: Vec<[Signal<String>; 4]> = state.settings_bh_punct_cells.as_ref().clone();
+    // 摘要不在这里推：它随勾选态走，由「码表覆盖计数 + 候选注释摘要」那个统一 effect
+    // 一并刷新（另开一个 effect 只会多一处要同步的口径）。
+    let header = crate::widgets::setting_row(
+        "使用本方案的标点表",
+        Some("开启后全局的自定义标点整份不再生效；关闭则完全跟随全局"),
+        Element::checkbox("开启", on).small().fg_role(Role::Text),
+    );
+    let src_labels: Vec<String> = crate::manifest::PUNCT_DEFAULTS
+        .iter()
+        .map(|(s, _, _)| s.to_string())
+        .collect();
+    let defaults: Vec<[String; 4]> = crate::manifest::PUNCT_DEFAULTS
+        .iter()
+        .map(|(_, _, d)| std::array::from_fn(|i| d[i].to_string()))
+        .collect();
+    build_punct_table_dialog(
+        state.settings_bh_punct_map_visible,
+        "本方案的自定义标点",
+        src_labels,
+        cells,
+        defaults,
+        Some(header),
+        "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会写进本方案。\n未开启时本方案完全跟随全局的自定义标点设置。",
+    )
+}
+
+/// 表格工作态 → 方案表（只收「与内置默认不同」的行，判据与全局那处**同一个函数**）。
+fn collect_punct_map(cells: &[[Signal<String>; 4]]) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    for (row, (_, tok, defs)) in cells.iter().zip(crate::manifest::PUNCT_DEFAULTS.iter()) {
+        let vals: [String; 4] = std::array::from_fn(|i| row[i].get());
+        if let Some(arr) = crate::manifest::punct_row_override(&vals, defs) {
+            m.insert((*tok).to_string(), arr);
+        }
+    }
+    m
 }
 
 /// 候选注释子对话框：横竖两行 + 恢复默认。
@@ -499,6 +586,20 @@ fn build_comment_tpl_dialog(state: &SchemaManagerState) -> Element {
 fn comment_tpl_value(tpl: Option<&str>) -> Value {
     match tpl {
         Some(s) => json!(s),
+        None => Value::Null,
+    }
+}
+
+/// 方案级自定义标点表三态 → 回传 JSON（与 [`comment_tpl_value`] 同构）。
+///
+/// ★ **未勾选写 `null` 而不是省略这个键**：core 的 `json_to_toml` 跳过 null ⇒ override 里
+/// 不含该键 ⇒ 回落方案文件（作者写了就用作者的、没写就跟随全局）。省略则 `json_diff`
+/// 压根看不到这一项，方案作者写的表想取消也取消不掉。
+///
+/// ⚠️ `Some({})` 要如实写成空表——那是「本方案一条自定义标点都不要」，不是「跟随」。
+fn punct_map_value(map: Option<&serde_json::Map<String, Value>>) -> Value {
+    match map {
+        Some(m) => Value::Object(m.clone()),
         None => Value::Null,
     }
 }
@@ -704,6 +805,19 @@ pub struct SchemaManagerState {
     pub settings_bh_comment_visible: Signal<bool>,
     /// 节内那一行的摘要（「跟随全局」/「竖排已自定义」…），随勾选态刷新。
     pub settings_bh_comment_disp: Signal<String>,
+    /// 本方案是否使用自己的自定义标点表（`[punct] custom_mappings` 这个键存不存在）。
+    ///
+    /// 形态与注释模板那两个勾选同类：「跟随全局」是**键缺失**，没有显式档位可选。
+    /// ⚠️ 勾上而表格全空 = `Some({})` = **本方案一条自定义标点都不要**，不是「跟随全局」。
+    pub settings_bh_punct_map_on: Signal<bool>,
+    /// 自定义标点子对话框的可见性（表格铺不进节里，同注释模板那处的理由）。
+    pub settings_bh_punct_map_visible: Signal<bool>,
+    /// 节内那一行的摘要（「跟随全局」/「本方案 3 项」…）。
+    pub settings_bh_punct_map_disp: Signal<String>,
+    /// 表格单元格工作态：每行 4 列，行序与列序都跟 `manifest::PUNCT_DEFAULTS` 走
+    /// （列序是 **core 存储序** [中半, 英全, 中全, 英半]，展示换序只在 `field_dialogs`
+    /// 的 `PUNCT_DISPLAY_COLS` 一处发生——★ 禁止在别处再写死下标）。
+    settings_bh_punct_cells: Rc<Vec<[Signal<String>; 4]>>,
     /// 打开时的各项初值，供脏判定——没有它，打开看一眼再关掉也会入队写盘。
     ///
     /// `RefCell` 而非 `Cell`：注释模板带 `String`，`BehaviorSeed` 不再是 `Copy`。
@@ -835,6 +949,15 @@ impl SchemaManagerState {
             settings_bh_comment_h: signal(String::new()),
             settings_bh_comment_visible: signal(false),
             settings_bh_comment_disp: signal(comment_summary(false, false)),
+            settings_bh_punct_map_on: signal(false),
+            settings_bh_punct_map_visible: signal(false),
+            settings_bh_punct_map_disp: signal(punct_map_summary(false)),
+            settings_bh_punct_cells: Rc::new(
+                crate::manifest::PUNCT_DEFAULTS
+                    .iter()
+                    .map(|(_, _, defs)| std::array::from_fn(|i| signal(defs[i].to_string())))
+                    .collect(),
+            ),
             settings_bh_at_open: Rc::new(RefCell::new(BehaviorSeed::default())),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_disp: signal(String::new()),
@@ -1811,6 +1934,23 @@ impl SchemaManagerState {
                 seed.comment_v.is_some(),
                 seed.comment_h.is_some(),
             ));
+            // 自定义标点表：勾选态问「键在不在」，格子按「方案表覆盖值 ⊕ 内置默认」播种。
+            // ⚠️ 换方案必须逐格重播——信号是整个对话框复用的一组，不重播就会把上一个方案
+            // 的表显示成这个方案的（同本函数开头那句「对话框复用同一组信号」）。
+            self.settings_bh_punct_map_on.set(seed.punct_map.is_some());
+            let pm = seed.punct_map.clone().unwrap_or_default();
+            for (row, (_, tok, defs)) in self
+                .settings_bh_punct_cells
+                .iter()
+                .zip(crate::manifest::PUNCT_DEFAULTS.iter())
+            {
+                let ov = pm.get(*tok).and_then(|v| v.as_array());
+                for i in 0..4 {
+                    row[i].set(crate::manifest::seed_cell(ov, i, defs[i]));
+                }
+            }
+            self.settings_bh_punct_map_disp
+                .set(punct_map_summary(seed.punct_map.is_some()));
             *self.settings_bh_at_open.borrow_mut() = seed;
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::Behavior);
@@ -1998,6 +2138,12 @@ impl SchemaManagerState {
             phrases: self.settings_bh_phrases.get(),
             comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v),
             comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h),
+            // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
+            // 三态合成只此一处。
+            punct_map: self
+                .settings_bh_punct_map_on
+                .get()
+                .then(|| collect_punct_map(&self.settings_bh_punct_cells)),
         }
     }
 
@@ -2092,6 +2238,14 @@ impl SchemaManagerState {
                 // 用 `set_json_path` 而不是取段再重建：它只 insert 叶子键，段里本 UI 不管的
                 // 项（`[phrases]` 的 categories / exclude_categories，目前只能手写）原样保留。
                 // 同 `[overlay]` 那节的教训。
+                // ⚠️ 整张表作一个叶子写下去。core 侧 `json_diff` 对 `custom_mappings`
+                // 是**原子叶子**、`merge_toml` 对它是**整体替换**——这里若按行拆着写，
+                // override 里就只剩改过的那几行，读侧整体替换后方案作者写的其余行全丢。
+                set_json_path(
+                    &mut cfg,
+                    &["punct", "custom_mappings"],
+                    punct_map_value(now.punct_map.as_ref()),
+                );
                 set_json_path(
                     &mut cfg,
                     &["punct", "mode"],
@@ -3262,6 +3416,7 @@ pub fn build_schema_manager_dialog(
     let sa_dlg = build_session_actions_dialog(state);
     let ko_dlg = build_keys_overview_dialog(state);
     let cmt_dlg = build_comment_tpl_dialog(state);
+    let punct_dlg = build_schema_punct_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -3274,6 +3429,9 @@ pub fn build_schema_manager_dialog(
         .child(sa_dlg)
         .child(ko_dlg)
         .child(cmt_dlg)
+        // 自定义标点自带一层「单元格编辑」子对话框（在 build_punct_table_dialog 内部
+        // 已叠成 stack），故整体排在这里即可，不必再拆一级。
+        .child(punct_dlg)
         // 按键选择浮层是**第四级**：从按键表里点「添加 / 修改」打开，故排在两张表之后。
         // 顺序反了的表现是点了没反应——浮层建出来了，被压在按键表下面。
         .child(state.settings_ka.build_picker())
@@ -3993,6 +4151,13 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         "设置",
                         state.settings_bh_comment_visible,
                     ),
+                    summary_action_row(
+                        "自定义标点",
+                        Some("本方案专用的标点映射表。开启后全局那份整份不再生效"),
+                        state.settings_bh_punct_map_disp,
+                        "设置",
+                        state.settings_bh_punct_map_visible,
+                    ),
                 ],
             )
         }
@@ -4135,6 +4300,10 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let bh_cmt_v = state.settings_bh_comment_v_on;
     let bh_cmt_h = state.settings_bh_comment_h_on;
     let cmt_disp = state.settings_bh_comment_disp;
+    // 自定义标点同理：只看勾选态。★ 不把 4×N 个单元格信号并进依赖——那是每帧遍历，
+    // 而这一屏已经为「每帧轮询」付过一次代价（见 punct_map_summary 的说明）。
+    let bh_punct_map = state.settings_bh_punct_map_on;
+    let punct_disp = state.settings_bh_punct_map_disp;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
         move || {
             ct_watch
@@ -4143,17 +4312,21 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .wrapping_add(bh_layout.version())
                 .wrapping_add(bh_cmt_v.version())
                 .wrapping_add(bh_cmt_h.version())
+                .wrapping_add(bh_punct_map.version())
         },
         move || {
             let n = ct_count.custom_count();
             let bh_custom = (bh_punct.get() != 0) as usize
                 + (bh_layout.get() != 0) as usize
                 + bh_cmt_v.get() as usize
-                + bh_cmt_h.get() as usize;
+                + bh_cmt_h.get() as usize
+                + bh_punct_map.get() as usize;
             ct_disp.set(ct_summary(n));
             // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
             // 另开一个 effect 只会多一处要同步的口径。
             cmt_disp.set(comment_summary(bh_cmt_v.get(), bh_cmt_h.get()));
+            // 自定义标点那一行同源（也只看勾选态），一并在这里推。
+            punct_disp.set(punct_map_summary(bh_punct_map.get()));
             // 各分类卡片标题右侧那句也在这里推——它与整段摘要同源（勾选状态），
             // 分两个 effect 只会多一次遍历，还得担心两处口径漂移。
             ct_count.refresh_group_summaries();
@@ -5026,6 +5199,80 @@ mod ext_dict_tests {
             json!("codetable"),
             "同级的其它段不受影响"
         );
+    }
+
+    // ── 方案级自定义标点表 ─────────────────────────────────────────────
+
+    /// ★★ 三态**只能由「键在不在」区分**，空表不是「跟随全局」。
+    ///
+    /// 最容易写错的是把 `Some({})` 当成未设置——那会让「本方案一条自定义标点都不要」
+    /// 在重开设置页后变回「跟随全局」，于是全局那张表又冒出来，用户配的东西静默失效。
+    /// 与注释模板的 `Some("")` 是同一个形状。
+    #[test]
+    fn seed_behavior_reads_punct_map_tri_state() {
+        assert_eq!(
+            seed_behavior(&json!({})).punct_map,
+            None,
+            "键缺失 = 跟随全局"
+        );
+        assert_eq!(
+            seed_behavior(&json!({ "punct": { "custom_mappings": {} } })).punct_map,
+            Some(serde_json::Map::new()),
+            "空表 = 本方案一条都不要，必须与「跟随」可区分"
+        );
+        // core「取消覆盖」写的是 null，读回来要还原成「未设置」而不是 Some。
+        assert_eq!(
+            seed_behavior(&json!({ "punct": { "custom_mappings": null } })).punct_map,
+            None,
+            "null 等同键缺失"
+        );
+        let seed = seed_behavior(&json!({
+            "punct": { "custom_mappings": { ".": ["·", "", "", ""] } }
+        }));
+        assert_eq!(
+            seed.punct_map.as_ref().and_then(|m| m.get(".")),
+            Some(&json!(["·", "", "", ""])),
+            "列序原样带过，不在设置端重排（换序只许在 PUNCT_DISPLAY_COLS 一处发生）"
+        );
+    }
+
+    /// 未勾选必须写 `null`——省略这个键的话 `json_diff` 看不到这一项，
+    /// 方案作者写死的表就再也取消不掉了。
+    #[test]
+    fn punct_map_value_uses_null_to_clear() {
+        assert_eq!(punct_map_value(None), Value::Null, "未勾选必须写 null");
+        assert_eq!(
+            punct_map_value(Some(&serde_json::Map::new())),
+            json!({}),
+            "勾上而一行没改 = 空表，如实写"
+        );
+        let mut m = serde_json::Map::new();
+        m.insert(".".into(), json!(["·"]));
+        assert_eq!(punct_map_value(Some(&m)), json!({ ".": ["·"] }));
+    }
+
+    /// seed → 回写 → 再 seed 必须闭合，否则「保存后重开设置页，配的东西没了」。
+    #[test]
+    fn punct_map_round_trip() {
+        let mut table = serde_json::Map::new();
+        table.insert(".".into(), json!(["·", "", "", ""]));
+        for map in [None, Some(serde_json::Map::new()), Some(table)] {
+            let mut cfg = json!({});
+            set_json_path(
+                &mut cfg,
+                &["punct", "custom_mappings"],
+                punct_map_value(map.as_ref()),
+            );
+            // null 落进 cfg 后 seed 要读回 None——这一步正是三态闭合的关键格。
+            assert_eq!(seed_behavior(&cfg).punct_map, map, "三态回环必须闭合");
+        }
+    }
+
+    /// 摘要只看勾选态（与候选注释同构）；行数不进摘要，理由见 `punct_map_summary`。
+    #[test]
+    fn punct_map_summary_reads_checkbox_only() {
+        assert_eq!(punct_map_summary(false), "跟随全局");
+        assert_eq!(punct_map_summary(true), "本方案自定义");
     }
 
     #[test]
