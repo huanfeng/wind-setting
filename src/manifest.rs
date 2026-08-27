@@ -398,6 +398,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_key_action",
     "dialog_button_mix_members",
     "dialog_button_ordered_pairs",
+    "dialog_button_comment_dicts",
 ];
 
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -420,7 +421,8 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         // 下面那行 `[类型名?]` 占位符（2026-08-25 实测踩到，靠 --screenshot 才发现）。
         "dialog_button_key_action"
         | "dialog_button_mix_members"
-        | "dialog_button_ordered_pairs" => build_dialog_button(state, key, item, cfg),
+        | "dialog_button_ordered_pairs"
+        | "dialog_button_comment_dicts" => build_dialog_button(state, key, item, cfg),
         other => {
             // 名单说能渲染、match 却没有分支 ⇒ 名单与实现脱节，debug 构建当场炸。
             // release 下仍回落占位符（灰字比崩溃好），故不用 unreachable!。
@@ -1554,12 +1556,22 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
 /// 对话框内分组标题（section/subsection 同一层级，主题色强调，不额外缩进）。
 pub(crate) fn dialog_group_header(name: &str) -> Element {
     Element::label(name)
-        .font_size(11.5)
+        .font_size(DIALOG_HEADER_SIZE)
         .font_weight(600)
         .fg_role(Role::Accent)
         .width_match()
         .padding_xy(0, 5)
 }
+
+/// 对话框内小标题的字号。
+///
+/// ★ **必须 ≥ 条目标题**（`FormTheme::label_size`，13.0）。原先是 11.5，比它管辖的条目
+/// 标题还小 ⇒ 层级倒置，一屏看下来分不出哪句是分组名、哪句是设置项名
+/// （2026-08-26 用户原话：「title 字体比较小，和其它条目的相对，条目的分割不是很明显」）。
+///
+/// 复刻这套样式的地方（塞进带按钮的行、装不下整宽 label 时）要一并引用本常量，
+/// 别再抄字面量——`widgets::override_group_card` 与「码表配置」节头就是两处复刻。
+pub(crate) const DIALOG_HEADER_SIZE: f32 = 13.5;
 
 /// 「全局方案配置」某引擎的 [设置] 按钮 + 对话框（含该 schema-group section 的设置行）。
 /// 对话框内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
@@ -1680,6 +1692,10 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
         build_dialog_button_key_action(state, item, cfg)
     } else if item.typ == "dialog_button_mix_members" {
         build_dialog_button_mix_members(state, key, item, cfg)
+    } else if item.typ == "dialog_button_comment_dicts" {
+        // 注释词库：可增删的条目列表 + 每条五个字段，manifest 的「一个 key 一个控件」
+        // 套不上，走专用对话框（销掉 capabilities 里 `ui.comment_dicts` 那条 UNCOVERED）。
+        build_dialog_button_comment_dicts(state, key, cfg)
     } else if item.typ == "dialog_button_ordered_pairs" {
         // 顺序有语义的 strlist（如 ui.toolbar.items）。与下面 `cap_ty == "strlist"` 那条
         // 通用分支的分野是**顺序是否被 core 消费**，而 capability 里只有类型没有这个信息，
@@ -2398,6 +2414,47 @@ fn build_dialog_button_ordered_pairs(
     visible
 }
 
+/// 注释词库（`ui.comment_dicts`）：可增删的条目列表，走专用对话框。
+///
+/// ★ 与 `ordered_pairs` 那条一样按**控件类型**分派而非 key——但这一项的 key 本就唯一，
+/// 之所以仍走 type，是为了让「加一个同形态的列表」不必再改分派链。
+fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::comment_dicts_dialog::{CommentDictsUi, build_comment_dicts_dialog};
+
+    let ui = CommentDictsUi::new();
+    ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
+
+    let ui_w = ui.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, ui_w.to_value());
+        }));
+
+    let ui_l = ui.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
+        }),
+    );
+
+    let ui_g = ui.clone();
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(move || ui_g.to_value()));
+
+    let visible = ui.visible;
+    register_dialog(state, build_comment_dicts_dialog(&ui));
+    visible
+}
+
 /// 自定义按钮的配置键。与 `ui.toolbar.items` 是**同一个功能的两半**，故在同一处读写。
 const BUTTONS_KEY: &str = "ui.toolbar.buttons";
 
@@ -2422,6 +2479,8 @@ fn read_buttons(c: &Config) -> Vec<crate::dialogs::toolbar_items_dialog::ButtonR
                     id: s(v, "id"),
                     label: s(v, "label"),
                     action: s(v, "action"),
+                    // 缺省 true，与 core 的 `default_true` 同源。
+                    enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true),
                 })
                 .collect()
         })
@@ -2430,8 +2489,14 @@ fn read_buttons(c: &Config) -> Vec<crate::dialogs::toolbar_items_dialog::ButtonR
 
 /// 界面的按钮列表 → 配置数组。
 ///
-/// 只写四个字段：`enabled` 刻意**不写**——界面用「在不在 items 里」表达显示与否，
-/// 再写一个 `enabled` 就是同一件事的两个真相源。core 侧该字段缺省为 true。
+/// 四个字段**全写**，包括 `enabled`。
+///
+/// ⚠️ 这里曾**刻意不写** `enabled`，理由是「界面用『在不在 items 里』表达显示与否，
+/// 再写一个就是两个真相源」。那条理由只说明**本屏不该去改它**，不等于可以把它丢掉：
+/// 写回是重建整个对象，而 core 的 `ToolbarButtonSpec::enabled` 没有
+/// `skip_serializing_if`、配置里恒有这一位 ⇒ 少写一个字段，写回值就与 base 不等，
+/// `has_unsaved_changes` 恒为真（用户只要有一个自定义按钮，打开设置什么都不动、
+/// 关窗也被拦一次；2026-08-27 真机现场）。值原样从 `ButtonRow` 带过来，本屏不解释它。
 fn buttons_to_json(rows: &[crate::dialogs::toolbar_items_dialog::ButtonRow]) -> Vec<Value> {
     rows.iter()
         .map(|b| {
@@ -2439,9 +2504,51 @@ fn buttons_to_json(rows: &[crate::dialogs::toolbar_items_dialog::ButtonRow]) -> 
             m.insert("id".into(), Value::String(b.id.clone()));
             m.insert("label".into(), Value::String(b.label.clone()));
             m.insert("action".into(), Value::String(b.action.clone()));
+            m.insert("enabled".into(), Value::Bool(b.enabled));
             Value::Object(m)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod toolbar_buttons_round_trip_tests {
+    use super::*;
+
+    /// ★★★ 自定义按钮 **读进来再写回去必须逐字段等价**。
+    ///
+    /// 写回是「按 `ButtonRow` 重建整个对象」，于是 core 结构体里任何一个本屏没带上的
+    /// 字段都会被抹掉。后果不只是丢数据——`has_unsaved_changes` 把 writer 的产物与 base
+    /// 比 diff，少一个字段就恒判脏：**用户只要有一个自定义按钮，打开设置什么都不动、
+    /// 关窗也被拦一次**（2026-08-27 真机现场，`enabled` 就是这么丢的）。
+    ///
+    /// ⚠️ mock 配置里 `ui.toolbar.buttons` 是**空数组**（与出厂一致），所以
+    /// `untouched_settings_produce_no_diff` 那条整体守门**测不到这一段**——必须显式造数据。
+    #[test]
+    fn reading_and_writing_buttons_is_lossless() {
+        let cfg = crate::config::Config::from_value(serde_json::json!({
+            "ui": { "toolbar": { "buttons": [
+                // 反斜杠原样保留：action 是 cmdbar 表达式，路径里的转义由那一层负责。
+                { "id": "sym", "label": "符", "action": "proc.run(\"D:\\a\\b.exe\")", "enabled": true },
+                { "id": "off", "label": "关", "action": "open(\"https://example.com\")", "enabled": false },
+            ] } }
+        }));
+        let src = cfg.get_array(BUTTONS_KEY).cloned().unwrap_or_default();
+        let back = buttons_to_json(&read_buttons(&cfg));
+        assert_eq!(
+            Value::Array(back),
+            Value::Array(src),
+            "按钮读写不等价 ⇒ 保存会吃掉字段，且打开设置就恒判「有未保存的更改」"
+        );
+    }
+
+    /// 缺 `enabled` 的旧配置读成 true（与 core 的 `default_true` 同源），不是 false。
+    #[test]
+    fn missing_enabled_reads_as_true() {
+        let cfg = crate::config::Config::from_value(serde_json::json!({
+            "ui": { "toolbar": { "buttons": [{ "id": "a", "label": "A", "action": "x" }] } }
+        }));
+        assert!(read_buttons(&cfg)[0].enabled);
+    }
 }
 
 /// 把配置里的 `items` 摊进界面状态（开关 + 行序）。载入与首次构建共用，避免两套算法。

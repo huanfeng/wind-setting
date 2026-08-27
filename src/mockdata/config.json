@@ -314,7 +314,8 @@
  },
  "ui": {
   "candidate": {
-   "comment_max_chars": 0,
+   "comment_max_chars_horizontal": 0,
+   "comment_max_chars_vertical": 0,
    "comment_template_horizontal": "${code_hint|code}",
    "comment_template_vertical": "${code_hint|code}",
    "custom_x": 0,

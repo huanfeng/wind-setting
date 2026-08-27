@@ -471,10 +471,7 @@ impl CtFields {
 
     /// 渲染一个分类卡片。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
-        let mut rows = Element::col().width_match();
-        for key in &group.keys {
-            rows = rows.child(self.row(manifest, key));
-        }
+        let rows: Vec<Element> = group.keys.iter().map(|k| self.row(manifest, k)).collect();
         crate::widgets::override_group_card(&group.title, self.group_summary(&group.title), rows)
     }
 

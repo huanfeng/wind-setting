@@ -1159,7 +1159,12 @@
     },
     {
       "default": 0,
-      "key": "ui.candidate.comment_max_chars",
+      "key": "ui.candidate.comment_max_chars_vertical",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.comment_max_chars_horizontal",
       "type": "int"
     },
     {

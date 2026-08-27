@@ -1528,7 +1528,17 @@ impl AppState {
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
         }
-        !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
+        let items = diff_config(&self.base_config, &probe, &self.capabilities.map_keys());
+        if !items.is_empty() {
+            // 只记**键名**，不记值：值里可能有用户的短语/热键等私人内容（见日志隐私约定）。
+            //
+            // 用途很具体：用户报「什么都没动就提示有未保存的更改」时不必再靠猜——
+            // `untouched_settings_produce_no_diff` 只覆盖 mock 数据，真实配置里触发的键
+            // 它看不到（2026-08-27 现场就是这样）。
+            let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+            tracing::debug!("is_dirty=true, 差异键({}): {:?}", keys.len(), keys);
+        }
+        !items.is_empty()
     }
 
     /// 实时按键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
@@ -1702,7 +1712,20 @@ impl AppState {
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
         }
-        !diff_config(&self.base_config, &probe, &self.capabilities.map_keys()).is_empty()
+        let items = diff_config(&self.base_config, &probe, &self.capabilities.map_keys());
+        if !items.is_empty() {
+            // 只记**键名**，不记值（值里可能有用户的短语/热键等私人内容）。
+            // 用户报「什么都没动就提示有未保存的更改」时，这一行直接给出是哪些键——
+            // `untouched_settings_produce_no_diff` 只覆盖 mock 数据，真实配置里
+            // 触发的键它看不到（2026-08-27 现场就是这样）。
+            let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+            tracing::debug!(
+                "has_unsaved_changes=true, 差异键({}): {:?}",
+                keys.len(),
+                keys
+            );
+        }
+        !items.is_empty()
     }
 
     /// 跑一遍 writers 再与 base 做 diff，返回本次保存**会提交的项**。仅供测试。
@@ -3126,14 +3149,11 @@ mod tests {
         st.refresh_theme_names();
 
         // 值 = id，label = 显示名（不再拼版本，版本改走徽章）。
-        assert_eq!(
-            st.theme_value_sig.get(),
-            vec!["default_light", "default_dark", "mono"]
-        );
-        assert_eq!(st.theme_label_sig.get(), vec!["清风·浅", "清风·深", "墨"]);
+        assert_eq!(st.theme_value_sig.get(), vec!["default", "jade", "mono"]);
+        assert_eq!(st.theme_label_sig.get(), vec!["清风·浅", "青玉", "墨"]);
         // 条目携带版本与内置标记。
         assert_eq!(st.theme_entries[0].version, "3.2.1");
-        assert!(st.theme_entries[0].builtin, "default_light 为内置");
+        assert!(st.theme_entries[0].builtin, "default 为内置");
         assert!(!st.theme_entries[2].builtin, "mono 为外部主题");
         // 富内容项：版本作徽章；仅外部主题（mono）带删除图标。
         let items = st.theme_items_sig.get();
@@ -3164,6 +3184,36 @@ mod tests {
         );
 
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// ★★★ 打开设置、**什么都不动**就关闭，不该提示「有未保存的更改」。
+    ///
+    /// `is_dirty` 的做法是「把全部 writer 跑到 current 的副本上，再与 base 比 diff」。
+    /// 于是任何一个 writer 只要写出了与 base **不完全相同**的值，就恒判脏——用户看到的是
+    /// 每次关窗都被拦一次，而他确实什么也没改。
+    ///
+    /// 最容易犯的一类：base 里**根本没有那个键**（core 侧未落盘 / 出厂预置文件里没写），
+    /// 而 writer 无条件写一个值（哪怕是空数组）⇒ `diff_value` 判为「新增」⇒ 恒脏。
+    ///
+    /// 本测试把清单里每一项都建一遍（等价于用户把每个页面都翻到），断言 diff 为空。
+    #[test]
+    fn untouched_settings_produce_no_diff() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.apply_loaded(LoadedState::fetch());
+        // 建出每一项 = 注册它的 writer。顺序按 manifest 声明序，与真实渲染一致。
+        let keys = st.manifest.order.clone();
+        for k in &keys {
+            let _ = crate::manifest::field(&st, k);
+        }
+        let items = st.debug_diff_after_writers();
+        let names: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            items.is_empty(),
+            "什么都没动却产生了 diff（这些键的 writer 写出了与 base 不同的值）：{names:?}"
+        );
     }
 
     #[test]

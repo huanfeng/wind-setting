@@ -1053,6 +1053,13 @@ label = "[ ] 方括号"
 value = "{}"
 label = "{ } 花括号"
 [[items.options]]
+# WARN `<>` 是 core 的出厂值之一（data/config.toml 的 english_pairs）。此前清单漏了它，
+# 后果有两个、都很隐蔽：① 打开设置什么都不动就恒判「有未保存的更改」（写回值少了它，
+# 与 base 不等）；② 保存一次就把用户的 `<>` 静默吃掉。
+# => checkbox_group 的选项集必须覆盖 core 出厂值的全集，见 options_cover_factory_values。
+value = "<>"
+label = "< > 尖括号"
+[[items.options]]
 value = '""'
 label = '" " 双引号'
 [[items.options]]
@@ -2112,15 +2119,34 @@ hint = "竖排候选窗每行独占一行，可放较长的注音或字根"
 dialog_extra_for = "ui.candidate.comment_template_horizontal"
 
 [[items]]
-key = "ui.candidate.comment_max_chars"
+key = "ui.candidate.comment_max_chars_horizontal"
 group = "ui"
 section = "候选窗口"
 type = "number"
-label = "注释最大字数"
+label = "横排最大字数"
 hint = "超过此字数时截断并加省略号；0 = 不限"
 min = 0
 max = 64
 dialog_extra_for = "ui.candidate.comment_template_horizontal"
+
+[[items]]
+key = "ui.candidate.comment_max_chars_vertical"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "竖排最大字数"
+hint = "竖排每行独占，通常可比横排放宽；0 = 不限"
+min = 0
+max = 64
+dialog_extra_for = "ui.candidate.comment_template_horizontal"
+
+[[items]]
+key = "ui.comment_dicts"
+group = "ui"
+section = "候选窗口"
+type = "dialog_button_comment_dicts"
+label = "注释词库"
+hint = "供注释模板 ${dict} 变量查询；词库文件放在数据目录的 schemas/comments/ 下"
 
 [[items]]
 key = "ui.candidate.index_labels"

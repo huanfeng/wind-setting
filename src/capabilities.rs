@@ -141,6 +141,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // 故按被标识字段的原类型校验：strlist（trigger_keys）或 structlist（mix_modes）。
         "dialog_button_key_action" => ty == "strlist" || ty == "structlist",
         "dialog_button_mix_members" => ty == "structlist",
+        // 注释词库：整表读写的条目列表（id/label/path/enabled/schemas 五个字段）。
+        "dialog_button_comment_dicts" => ty == "structlist",
         // ordered_pairs：与 checkbox_group 读写同一形态（strlist），差别只在**顺序是否被
         // core 消费**——那是清单声明的语义，capability 里没有这个维度，故类型校验一致。
         "dialog_button_ordered_pairs" => ty == "strlist",
@@ -326,12 +328,10 @@ mod tests {
         //    分区，且它逐字确认的两行提示本就该竖排——出厂 vertical 即最优解，横排没有
         //    使用场景。同批的临拼/临英/网址/快捷四项都已进清单，只有它刻意不暴露。
         "input.add_word.candidate_layout",
-        // ⑮ 候选注释词库挂载列表（core 侧候选注释改造新增）：**待接入，不是设计上不暴露**。
-        //    它是用户可见功能（挂载英汉释义、emoji 名称等），理应有 GUI；但形态是可增删的
-        //    条目列表（id/label/path/enabled/schemas 五个字段），manifest 的「一个 key 一个
-        //    控件」模型套不上，需要 schema_manager.rs 那种列表编辑器 + 文件选择。
-        //    在此之前由用户手写 config.toml（文档 customize/candidate-comment）。
-        "ui.comment_dicts",
+        // ⑮ 候选注释词库挂载列表 **已接入清单**（`dialog_button_comment_dicts`，
+        //    2026-08-26），故从本名单移除。它当年登记的理由写的就是「待接入，不是设计上
+        //    不暴露」——那条自陈是这次动手的直接依据。⚠️ 本名单是**双向**断言：接进清单
+        //    后若还留在这里，`uncovered_capability_keys_match_allowlist` 会以 stale 报红。
         // ⑯ `keys.schema_hotkeys` 已从这份白名单**移除**：core 侧该键已废弃并移出登记表
         //    （并入 `keys.key_actions` 的 `switch_schema:<方案id>`）。方案页「进入方式」
         //    那一节现在读写的是 key_actions，而它就在下面一条里，理由完全相同。
@@ -459,6 +459,50 @@ mod tests {
             unexpected,
             stale.len(),
             stale
+        );
+    }
+
+    /// ★★★ 勾选组（`checkbox_group`）的选项集**必须覆盖 core 的出厂值**。
+    ///
+    /// 漏一个值的后果有两个，都不会报错、也都不像是清单的问题：
+    /// 1. **打开设置什么都不动就恒判「有未保存的更改」**——`is_dirty` 把全部 writer 跑一遍
+    ///    再与 base 比，而 checkbox_group 的 writer 只写「勾选了的选项」，清单里没有的值
+    ///    根本没有勾选信号，于是写回值天生就少一项。
+    /// 2. 用户只要保存一次，那个值就被**静默吃掉**。
+    ///
+    /// 现场：`input.auto_pair.english_pairs` 的出厂值含 `<>`，清单漏了它
+    /// （2026-08-27 用户报「进入设置什么也不操作，关闭时提示有内容修改」）。
+    #[test]
+    fn checkbox_group_options_cover_factory_values() {
+        let caps = Capabilities::from_embedded();
+        let manifest = crate::manifest::Manifest::from_embedded();
+        let mut problems = Vec::new();
+        for key in &manifest.order {
+            let Some(item) = manifest.items.get(key) else {
+                continue;
+            };
+            // ⚠️ 判据是「**声明了 options** 且配置类型是 strlist」，不是 `typ == "checkbox_group"`：
+            //    `input.auto_pair.english_pairs` 的 typ 是 `dialog_button`（勾选组在对话框里渲染），
+            //    按 typ 过滤会把它整个跳过——本测试第一版就是这么写的，反向验证时（把 `<>`
+            //    从清单里删掉）它照样绿，等于白写。
+            if item.options.is_empty()
+                || caps.entries.get(key).map(|e| e.ty.as_str()) != Some("strlist")
+            {
+                continue;
+            }
+            let declared: Vec<&str> = item.options.iter().map(|o| o.value.as_str()).collect();
+            let Value::Array(factory) = caps.default_for(key) else {
+                continue;
+            };
+            for v in factory.iter().filter_map(|v| v.as_str()) {
+                if !declared.contains(&v) {
+                    problems.push(format!("{key} 的出厂值 {v:?} 不在清单选项里"));
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "这些出厂值会被设置页吃掉，并让「打开就判脏」：{problems:#?}"
         );
     }
 

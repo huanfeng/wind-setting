@@ -34,6 +34,15 @@ pub struct ButtonRow {
     pub id: String,
     pub label: String,
     pub action: String,
+    /// core 侧 `ToolbarButtonSpec::enabled`（缺省 true）。**本屏不解释、不修改它，
+    /// 只是原样带着走**——显示与否由 `items` 里的 `-` 前缀表达，这一位另有含义。
+    ///
+    /// ★ 之所以必须留这个字段：写回是**重建整个按钮对象**，不带上它就等于每次保存都把
+    /// core 写出来的 `enabled` 抹掉。而 core 的 `enabled` 没有 `skip_serializing_if`，
+    /// 配置里恒有这一位 ⇒ 只要用户有**任何一个**自定义按钮，写回值就与 base 差一个字段，
+    /// `has_unsaved_changes` 恒为真：打开设置什么都不动，关窗也被拦一次
+    /// （2026-08-27 真机现场；mock 的 buttons 是空数组，测不出来）。
+    pub enabled: bool,
 }
 
 /// 行 value：自定义按钮在 `items` 里的引用形态。
@@ -95,6 +104,13 @@ impl ToolbarItemsUi {
             id: id.clone(),
             label,
             action,
+            // 新建的按钮跟 core 的缺省一致；编辑既有按钮时把原值搬回来（见下）。
+            enabled: self
+                .buttons
+                .get()
+                .get(index)
+                .map(|b| b.enabled)
+                .unwrap_or(true),
         };
         let value = custom_value(&id);
         if index == NEW_BUTTON {

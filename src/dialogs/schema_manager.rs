@@ -141,12 +141,19 @@ pub enum SettingsSection {
     Empty,
 }
 
-/// 方案设置对话框的两个 TAB。
+/// 方案设置对话框的三个 TAB。
 ///
-/// 曾经是三个（基本信息 / 按键配置 / 方案自定义）。实测下来「按键配置」独立成一页并不好用：
-/// 它只有四行，单开一页显得空，而用户从「这个方案是什么」看到「它的键怎么按」本就是
-/// 一口气的事，中间隔一次点击反而打断。故并回基本配置。
-pub const SETTINGS_TABS: [&str; 2] = ["基本配置", "方案自定义"];
+/// ⚠️ **数量反转过两次**，两次的理由都成立、只是当时的页面不同：
+/// 1. 最初三个 → 合成两个：「按键配置」那时只有四行，单开一页显得空。
+/// 2. 两个 → 又拆回三个（2026-08-27，用户提出）：基本配置页此后长到了
+///    「元信息 + 五行按键 + 扩展词库 + 双拼参数」，按键那几行占掉大半页，
+///    而它们是**配一次就不再看**的东西，天天要看的元信息与词库反被挤下去。
+///
+/// ⇒ 判据不是「这一页够不够满」，而是「**常看的东西有没有被不常看的挤走**」。
+pub const SETTINGS_TABS: [&str; 3] = ["基本配置", "按键设置", "方案自定义"];
+
+/// 「方案自定义」在 [`SETTINGS_TABS`] 里的下标（TAB 星号打在这一页）。
+pub const CUSTOM_TAB: usize = 2;
 
 impl SettingsSection {
     /// 全部分节，供 `every_settings_section_builds_without_panicking` 遍历。
@@ -174,19 +181,21 @@ impl SettingsSection {
     /// 本节归到哪个 TAB。
     ///
     /// 分组判据是**用户想做什么**，不是数据落在哪个文件：
-    /// - 基本配置：这个方案是什么、键怎么按、带哪些词库——日常会看的都在这一页
-    /// - 方案自定义：这个方案的引擎行为要不要偏离全局（双拼布局 / 码表覆盖 / 特殊模式）
+    /// - 基本配置：这个方案是什么、带哪些词库、双拼用哪套布局——日常会看的都在这一页
+    /// - 按键设置：怎么切进来、键怎么按——**配一次就不再看**，故单独一页
+    /// - 方案自定义：这个方案的引擎行为要不要偏离全局（码表覆盖 / 特殊模式 / 本方案行为）
+    ///
+    /// ★ 双拼布局归**基本配置**而不是方案自定义：它是「这个方案是什么」的一部分
+    /// （换一套布局等于换一种打法），不是「要不要偏离全局」——方案自定义那一页的每一项
+    /// 都有「跟随全局」这个档，双拼布局没有。
     ///
     /// `Divider` 不参与分组：原先那份扁平列表里的分隔线是按「相邻两节之间」插的，分完 TAB
     /// 后相邻关系全变了，故丢弃重插（见 `split_sections_by_tab`）。
     fn tab(self) -> Option<usize> {
         match self {
-            Self::Header | Self::EntryKeys | Self::ExtensionDicts => Some(0),
-            Self::ShuangpinLayout
-            | Self::AuxCode
-            | Self::CodeTable
-            | Self::Overlay
-            | Self::Behavior => Some(1),
+            Self::Header | Self::ShuangpinLayout | Self::ExtensionDicts => Some(0),
+            Self::EntryKeys => Some(1),
+            Self::AuxCode | Self::CodeTable | Self::Overlay | Self::Behavior => Some(2),
             Self::Divider | Self::Empty => None,
         }
     }
@@ -198,8 +207,8 @@ impl SettingsSection {
 /// 照搬会出现开头就是一条分隔线、或两节之间没有线。
 ///
 /// `Header` 后面不插：它自带结尾分隔（见 `SettingsSection::Divider` 的文档）。
-fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; 2] {
-    let mut out: [Vec<SettingsSection>; 2] = [Vec::new(), Vec::new()];
+fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; SETTINGS_TABS.len()] {
+    let mut out: [Vec<SettingsSection>; SETTINGS_TABS.len()] = Default::default();
     for s in flat {
         let Some(t) = s.tab() else { continue };
         let bucket = &mut out[t];
@@ -270,24 +279,53 @@ fn overlay_layout_idx(v: &str) -> usize {
 /// ★ 越界回落**首项**（跟随全局）而不是钳到末项：钳会把用户没选过的「横排」塞给他。
 /// 与 [`overlay_layout_idx`] 对未知值的处理、以及 core `layout.rs`「下标越界回落
 /// Follow——跟随全局是安全的默认，不猜方向」同口径。
-/// 从方案配置里读出「本方案行为」三项的初值（纯函数，供测试）。
+/// 「本方案行为」节的工作态快照：既是播种产物，也是脏判定的比较对象。
 ///
-/// 返回 `(标点下标, 候选排列下标, 是否加载短语)`。
+/// 从元组换成结构体，是因为注释模板进来之后它有五项、且其中两项是三态的
+/// `Option<String>`——元组位置越多，脏判定那处 `now != at_open` 的可读性越差。
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct BehaviorSeed {
+    punct: usize,
+    layout: usize,
+    phrases: bool,
+    /// 竖排注释模板三态：`None` = 键缺失（跟随全局），`Some("")` = 本方案不显示注释。
+    comment_v: Option<String>,
+    comment_h: Option<String>,
+}
+
+impl Default for BehaviorSeed {
+    /// ★ 与 core 各段的 `Default` 同源。**别 derive**：`phrases` 的出厂值是 `true`，
+    /// derive 出来的 `false` 会让绝大多数方案在界面上显示成「不加载短语」。
+    fn default() -> Self {
+        Self {
+            punct: 0,
+            layout: 0,
+            phrases: true,
+            comment_v: None,
+            comment_h: None,
+        }
+    }
+}
+
+/// 从方案配置里读出「本方案行为」各项的初值（纯函数，供测试）。
 ///
 /// ★ **短语默认 `true`**：与 core `PhrasesSpec::default()` 同源。取 `false` 作默认会让
 /// 所有没写这段的方案（也就是绝大多数）在界面上显示成「不加载短语」，而实际是加载的
 /// ——用户照着界面去开一下，反而在 override 里写死了一个本来就生效的值。
 ///
 /// 两个下标项的未知值一律回落 0（跟随全局），理由见 [`punct_mode_idx`]。
-fn seed_behavior(cfg: &Value) -> (usize, usize, bool) {
+///
+/// ★ 注释模板读的是**有没有这个键**，不是「值空不空」：`Some("")` 是一个有意义的取值
+/// （本方案不显示注释），把它和键缺失混为一谈，三态就塌成了两态。
+fn seed_behavior(cfg: &Value) -> BehaviorSeed {
     let punct = cfg
         .get("punct")
         .and_then(|v| v.get("mode"))
         .and_then(|v| v.as_str())
         .map(punct_mode_idx)
         .unwrap_or(0);
-    let layout = cfg
-        .get("candidate")
+    let candidate = cfg.get("candidate");
+    let layout = candidate
         .and_then(|v| v.get("layout"))
         .and_then(|v| v.as_str())
         .map(overlay_layout_idx)
@@ -297,7 +335,21 @@ fn seed_behavior(cfg: &Value) -> (usize, usize, bool) {
         .and_then(|v| v.get("enabled"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    (punct, layout, phrases)
+    // `as_str()` 顺带滤掉 null：core 侧「取消覆盖」写的就是 null，读回来必须还原成
+    // 「未设置」而不是 `Some("null")` 之类。
+    let tpl = |k: &str| -> Option<String> {
+        candidate
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    BehaviorSeed {
+        punct,
+        layout,
+        phrases,
+        comment_v: tpl("comment_template_vertical"),
+        comment_h: tpl("comment_template_horizontal"),
+    }
 }
 
 /// `[punct] mode` 的字符串值 ↔ 下拉下标。
@@ -318,6 +370,136 @@ fn punct_mode_value(idx: usize) -> &'static str {
         1 => "chinese",
         2 => "english",
         _ => "follow",
+    }
+}
+
+/// 候选注释子对话框里的一行：`标签 + 说明 ······ [☑ 自定义] [模板输入框]`。
+///
+/// 三态由**两个控件**表达：勾选框回答「本方案要不要覆盖这一项」，输入框只装内容
+/// （勾上而留空 = 空串 = 本方案不显示注释）。做成三档下拉的话，「自定义 + 留空」与
+/// 「不显示」会是同一个状态的两种走法——`config-design-rules` §R3 反对的那种重复态。
+///
+/// ⚠️ 输入框用 `enabled_signal` 随勾选置灰而非隐藏：隐藏会让这一行的高度跟着跳，
+/// 且用户看不出「这里还能填东西」。`.small()` 只能给勾选框（Button/CheckBox/Switch 专属，
+/// 落到 text_input 上会在 debug 构建下当场 panic）。
+fn comment_tpl_row(label: &str, hint: &str, on: Signal<bool>, text: Signal<String>) -> Element {
+    crate::widgets::setting_row(
+        label,
+        Some(hint),
+        Element::row()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(Element::checkbox("自定义", on).small().fg_role(Role::Text))
+            .child(
+                Element::text_input(text, "留空则不显示注释")
+                    .width(190)
+                    .enabled_signal(on),
+            ),
+    )
+}
+
+/// 「候选注释」那一行的摘要（纯函数，供测试）。
+///
+/// 摘要只看**勾选态**：内容改了但没勾上等于没生效，跟着内容走会提前说「已自定义」。
+fn comment_summary(v_on: bool, h_on: bool) -> String {
+    match (v_on, h_on) {
+        (false, false) => "跟随全局".to_string(),
+        (true, false) => "竖排已自定义".to_string(),
+        (false, true) => "横排已自定义".to_string(),
+        (true, true) => "横竖均已自定义".to_string(),
+    }
+}
+
+/// 候选注释子对话框：横竖两行 + 恢复默认。
+///
+/// ★ **「恢复默认」＝回到「跟随全局」**，也就是把两个勾选都取消。不是"清空输入框"——
+/// 勾着而内容为空是三态里的第三态（本方案不显示注释），那恰恰不是默认值。
+/// 输入框里的文字一并清掉，免得下次勾上时冒出一段用户以为已经不在了的旧模板。
+fn build_comment_tpl_dialog(state: &SchemaManagerState) -> Element {
+    let visible = state.settings_bh_comment_visible;
+    let (v_on, v_txt) = (state.settings_bh_comment_v_on, state.settings_bh_comment_v);
+    let (h_on, h_txt) = (state.settings_bh_comment_h_on, state.settings_bh_comment_h);
+
+    let frame = Element::col()
+        .width(560)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("候选注释")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label(concat!(
+                "候选词右侧的灰字。不勾 = 跟随全局；勾上填模板 = 本方案改用它；",
+                "勾上留空 = 本方案不显示注释。
+",
+                "模板语法与可用变量见「外观 → 候选窗口 → 候选注释」，两处写法完全一样。",
+            ))
+            .font_size(12.0)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(4)
+            .padding_xy(18, 10),
+        )
+        .child(
+            Element::col()
+                .width_match()
+                .padding_xy(16, 2)
+                .child(crate::widgets::card(vec![
+                    comment_tpl_row("竖排注释", "竖排每行独占，放得下注音或字根", v_on, v_txt),
+                    comment_tpl_row(
+                        "横排注释",
+                        "横排候选共享一行宽度，注释长了会把窗口撑宽",
+                        h_on,
+                        h_txt,
+                    ),
+                ])),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(
+                    // 柔和描边而不是实心：它是兜底动作，与「完成」并排时实心色块会比
+                    // 主操作还抢眼。同「全部恢复跟随」那个按钮的取舍。
+                    Element::button("恢复默认")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            v_on.set(false);
+                            h_on.set(false);
+                            v_txt.set(String::new());
+                            h_txt.set(String::new());
+                        }),
+                )
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("完成")
+                        .small()
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
+}
+
+/// 注释模板三态 → 回传给 core 的 JSON 值（纯函数，供测试）。
+///
+/// `None`（未勾选）→ `null` = **取消覆盖**，回落下一层；`Some(s)` → 字符串，
+/// 其中空串是一个正常取值（本方案不显示注释），**不得**被顺手折成 null。
+fn comment_tpl_value(tpl: Option<&str>) -> Value {
+    match tpl {
+        Some(s) => json!(s),
+        None => Value::Null,
     }
 }
 
@@ -432,7 +614,7 @@ pub struct SchemaManagerState {
     ///
     /// 拆成三个信号而不是「一个信号 + 渲染时过滤」：`host_signal` 拿到的是整份 Vec、
     /// 对每个元素建一个元素，没有过滤的入口；要过滤就得在数据侧分好。
-    pub settings_sections: [Signal<Vec<SettingsSection>>; 2],
+    pub settings_sections: [Signal<Vec<SettingsSection>>; SETTINGS_TABS.len()],
     /// 当前选中的 TAB 下标。
     pub settings_tab: Signal<usize>,
     /// TAB 标签（外层 `Vec` 恒长度 1，理由见 `tab_bar` 的构建处）。「方案自定义」那一项
@@ -505,8 +687,27 @@ pub struct SchemaManagerState {
     pub settings_bh_layout: Signal<usize>,
     /// 是否加载短语（`[phrases] enabled`）。
     pub settings_bh_phrases: Signal<bool>,
-    /// 打开时的三项初值，供脏判定——没有它，打开看一眼再关掉也会入队写盘。
-    settings_bh_at_open: Rc<std::cell::Cell<(usize, usize, bool)>>,
+    /// 竖排候选注释模板是否由本方案覆盖（`[candidate] comment_template_vertical` 存不存在）。
+    ///
+    /// 与旁边三项**形态不同**：那三项各有一个显式的「跟随全局」档位（`punct.mode = "follow"`
+    /// 是个真值），注释模板的「跟随」是**键缺失**，只能用勾选框表达。勾上才写这一项。
+    pub settings_bh_comment_v_on: Signal<bool>,
+    /// 竖排注释模板内容。**留空即空串 = 本方案不显示注释**（三态的第三态），
+    /// 它与「未勾选 = 跟随全局」是两回事。
+    pub settings_bh_comment_v: Signal<String>,
+    /// 横排候选注释模板是否由本方案覆盖。横竖各自独立三态。
+    pub settings_bh_comment_h_on: Signal<bool>,
+    /// 横排注释模板内容。
+    pub settings_bh_comment_h: Signal<String>,
+    /// 候选注释子对话框的可见性。四个控件（横竖各「勾选 + 输入框」）不内联在节里：
+    /// 与旁边三行「一行一个控件」的节奏差太多，铺开就乱。
+    pub settings_bh_comment_visible: Signal<bool>,
+    /// 节内那一行的摘要（「跟随全局」/「竖排已自定义」…），随勾选态刷新。
+    pub settings_bh_comment_disp: Signal<String>,
+    /// 打开时的各项初值，供脏判定——没有它，打开看一眼再关掉也会入队写盘。
+    ///
+    /// `RefCell` 而非 `Cell`：注释模板带 `String`，`BehaviorSeed` 不再是 `Copy`。
+    settings_bh_at_open: Rc<RefCell<BehaviorSeed>>,
     pub settings_ov_show_all: Signal<bool>,
     /// 候选排列（0=跟随全局 / 1=竖排 / 2=横排），对应 `[overlay] candidate_layout`。
     pub settings_ov_layout: Signal<usize>,
@@ -614,7 +815,7 @@ impl SchemaManagerState {
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
-            settings_sections: [signal(vec![]), signal(vec![])],
+            settings_sections: [signal(vec![]), signal(vec![]), signal(vec![])],
             settings_tab: signal(0),
             settings_tab_labels: signal(vec![
                 SETTINGS_TABS.iter().map(|s| s.to_string()).collect(),
@@ -628,7 +829,13 @@ impl SchemaManagerState {
             settings_bh_punct: signal(0),
             settings_bh_layout: signal(0),
             settings_bh_phrases: signal(true),
-            settings_bh_at_open: Rc::new(std::cell::Cell::new((0, 0, true))),
+            settings_bh_comment_v_on: signal(false),
+            settings_bh_comment_v: signal(String::new()),
+            settings_bh_comment_h_on: signal(false),
+            settings_bh_comment_h: signal(String::new()),
+            settings_bh_comment_visible: signal(false),
+            settings_bh_comment_disp: signal(comment_summary(false, false)),
+            settings_bh_at_open: Rc::new(RefCell::new(BehaviorSeed::default())),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
@@ -1587,11 +1794,24 @@ impl SchemaManagerState {
         // 本方案行为：所有方案都有。三项默认「跟随全局 / 加载」，方案文件不写这三段是常态，
         // 故与 overlay 那节不同——不以「段存在」为建节条件。
         {
-            let (punct, layout, phrases) = seed_behavior(&self.settings_cfg.borrow());
-            self.settings_bh_punct.set(punct);
-            self.settings_bh_layout.set(layout);
-            self.settings_bh_phrases.set(phrases);
-            self.settings_bh_at_open.set((punct, layout, phrases));
+            let seed = seed_behavior(&self.settings_cfg.borrow());
+            self.settings_bh_punct.set(seed.punct);
+            self.settings_bh_layout.set(seed.layout);
+            self.settings_bh_phrases.set(seed.phrases);
+            // 勾选态与文本分开落：勾选问「有没有这个键」，文本框只装内容。
+            // 未设置时文本框留空——用户一勾上就是「本方案不显示注释」，这正是三态的第三态，
+            // 而不是一个需要先填点什么才生效的空状态。
+            self.settings_bh_comment_v_on.set(seed.comment_v.is_some());
+            self.settings_bh_comment_v
+                .set(seed.comment_v.clone().unwrap_or_default());
+            self.settings_bh_comment_h_on.set(seed.comment_h.is_some());
+            self.settings_bh_comment_h
+                .set(seed.comment_h.clone().unwrap_or_default());
+            self.settings_bh_comment_disp.set(comment_summary(
+                seed.comment_v.is_some(),
+                seed.comment_h.is_some(),
+            ));
+            *self.settings_bh_at_open.borrow_mut() = seed;
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::Behavior);
         }
@@ -1748,14 +1968,37 @@ impl SchemaManagerState {
         // 注：曾有 `has_config` 与 `SettingsSection::Empty`——「没有任何可配置项」的空状态。
         // 「按键功能」对所有方案都有之后，那个分支恒不可达，故一并退役（枚举项保留，
         // 将来若又出现真的空方案可直接复用）。
-        let [basic, custom] = split_sections_by_tab(&sections);
-        self.settings_sections[0].set(basic);
-        self.settings_sections[1].set(custom);
+        for (slot, list) in self
+            .settings_sections
+            .iter()
+            .zip(split_sections_by_tab(&sections))
+        {
+            slot.set(list);
+        }
         // 每次打开都回到首个 TAB：对话框服务于任意方案，停在上一个方案看过的 TAB 上
         // 会让人以为「这个方案也有那些项」，而它可能整个 TAB 都是空的。
         self.settings_tab.set(0);
 
         self.settings_visible.set(true);
+    }
+
+    /// 「本方案行为」节的当前工作态。与 [`seed_behavior`] 的产物同型，故可直接与
+    /// `settings_bh_at_open` 比较判脏。
+    ///
+    /// ★ 勾选态与文本合成三态**只在这一处**发生：勾上才 `Some`，勾上留空即 `Some("")`。
+    /// 若在渲染处也各写一遍，两处口径迟早漂移，而漂移的表现是「取消勾选却仍写了空串」
+    /// ——那会把「跟随全局」静默变成「不显示注释」。
+    fn behavior_now(&self) -> BehaviorSeed {
+        let pick = |on: Signal<bool>, text: Signal<String>| -> Option<String> {
+            on.get().then(|| text.get())
+        };
+        BehaviorSeed {
+            punct: self.settings_bh_punct.get(),
+            layout: self.settings_bh_layout.get(),
+            phrases: self.settings_bh_phrases.get(),
+            comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v),
+            comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h),
+        }
     }
 
     /// 把对话框的工作态**暂存**进待提交队列（关窗时调用）。
@@ -1844,22 +2087,36 @@ impl SchemaManagerState {
         // 本方案行为三段：与上面写进**同一份 cfg**，理由同上（saveConfig 是整份 diff
         // 后全量重写 override，分两次提交后者会把前者整个覆盖掉）。
         {
-            let now = (
-                self.settings_bh_punct.get(),
-                self.settings_bh_layout.get(),
-                self.settings_bh_phrases.get(),
-            );
-            if now != self.settings_bh_at_open.get() {
+            let now = self.behavior_now();
+            if now != *self.settings_bh_at_open.borrow() {
                 // 用 `set_json_path` 而不是取段再重建：它只 insert 叶子键，段里本 UI 不管的
                 // 项（`[phrases]` 的 categories / exclude_categories，目前只能手写）原样保留。
                 // 同 `[overlay]` 那节的教训。
-                set_json_path(&mut cfg, &["punct", "mode"], json!(punct_mode_value(now.0)));
+                set_json_path(
+                    &mut cfg,
+                    &["punct", "mode"],
+                    json!(punct_mode_value(now.punct)),
+                );
                 set_json_path(
                     &mut cfg,
                     &["candidate", "layout"],
-                    json!(overlay_layout_value(now.1)),
+                    json!(overlay_layout_value(now.layout)),
                 );
-                set_json_path(&mut cfg, &["phrases", "enabled"], json!(now.2));
+                set_json_path(&mut cfg, &["phrases", "enabled"], json!(now.phrases));
+                // ★ 注释模板的「取消覆盖」写 **null**，不是空串——空串是「本方案不显示注释」。
+                // core 侧 `json_to_toml` 跳过 null，而 `saveConfig` 拿方案文件基线做 diff，
+                // 两条既有性质合起来正好是「回传 null = 这一项不写进 override」。
+                // 与辅助码「跟随全局必须写 null」同一形态。
+                set_json_path(
+                    &mut cfg,
+                    &["candidate", "comment_template_vertical"],
+                    comment_tpl_value(now.comment_v.as_deref()),
+                );
+                set_json_path(
+                    &mut cfg,
+                    &["candidate", "comment_template_horizontal"],
+                    comment_tpl_value(now.comment_h.as_deref()),
+                );
                 cfg_changed = true;
             }
         }
@@ -3004,6 +3261,7 @@ pub fn build_schema_manager_dialog(
     let ka_dlg = build_key_actions_dialog(state);
     let sa_dlg = build_session_actions_dialog(state);
     let ko_dlg = build_keys_overview_dialog(state);
+    let cmt_dlg = build_comment_tpl_dialog(state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -3015,6 +3273,7 @@ pub fn build_schema_manager_dialog(
         .child(ka_dlg)
         .child(sa_dlg)
         .child(ko_dlg)
+        .child(cmt_dlg)
         // 按键选择浮层是**第四级**：从按键表里点「添加 / 修改」打开，故排在两张表之后。
         // 顺序反了的表现是点了没反应——浮层建出来了，被压在按键表下面。
         .child(state.settings_ka.build_picker())
@@ -3394,6 +3653,42 @@ fn ct_summary(custom: usize) -> String {
     }
 }
 
+/// 「摘要 + 按钮」行——本对话框里最常见的一种（进入方式、按键自定义、按键总览…）。
+///
+/// 用 [`crate::widgets::setting_row`] 而不是手拼 row：那是主设置页每一条设置项的标准骨架
+/// （标题 13 / 说明 12 muted / 右控件，间距取自 `FormTheme`）。本对话框此前每行各拼各的，
+/// 于是同一屏里出现了三四种略有出入的排版。⇒ 新增行一律走这里。
+///
+/// 摘要固定 114px：长热键文本（`Ctrl+Shift+\`）不该撑宽右侧挤压左列。
+fn summary_action_row(
+    label: &str,
+    desc: Option<&str>,
+    disp: Signal<String>,
+    btn_text: &str,
+    open: Signal<bool>,
+) -> Element {
+    crate::widgets::setting_row(
+        label,
+        desc,
+        Element::row()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(
+                Element::label_signal(disp)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .max_lines(1)
+                    .width(114),
+            )
+            .child(
+                Element::button(btn_text)
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| open.set(true)),
+            ),
+    )
+}
+
 fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
     match kind {
         SettingsSection::Header => {
@@ -3402,7 +3697,6 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
         }
         SettingsSection::EntryKeys => {
             let entry = state.settings_entry.borrow().clone().unwrap_or_default();
-            let disp = state.settings_hotkey_disp;
             let visible = state.settings_hotkey_visible;
             // 「清除」按钮的闭包要动这三个：raw 是真相源（commit 侧据它增删条目），
             // disp 是行内显示，enabled 是对话框内部的派生态。
@@ -3411,52 +3705,47 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 state.settings_hotkey_disp,
                 state.settings_hotkey_enabled,
             );
-            // 多数行不写说明：行名已经说清了，再挂一行灰色小字只是噪音。语义细节
-            // （切换 vs 临时进入的区别）在文档站。「切换到本方案」是例外——它写的不是
-            // 方案自己的配置，见下方那行说明。
-            let mut col = Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("按键设置"))
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("切换到本方案按键")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        .child(
-                            // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
-                            Element::label_signal(disp)
-                                .font_size(12.5)
-                                .fg_role(Role::TextMuted)
-                                .max_lines(1)
-                                .width(114),
-                        )
-                        .child(
-                            Element::button("设置")
-                                .small()
-                                .outline_soft()
-                                .on_click(move |_| visible.set(true)),
-                        )
-                        // ⛔ 这里**不要**再加「启用」复选框（2026-08-21 删除）。
-                        //
-                        // 配置模型里没有「停用但保留键位」这回事：一条方案热键就是
-                        // key_actions 里的一个条目，要么在、要么不在。而复选框天然让人
-                        // 以为取消勾选只是暂时关掉——实际是把条目删了，关掉对话框再打开
-                        // 就变成「未设置」，键位也没了。用户原话：「关闭后就清空了」。
-                        //
-                        // 真要做「停用保留」，得先在 core 给 key_actions 的值增加一种
-                        // 「停用态」的表达（`none` 不行，那是**键**维度的「禁用这个键」，
-                        // 语义不同还会占着这个键）。在那之前，UI 不该暗示一个不存在的能力。
-                        .child(Element::button("清除").small().outline_soft().on_click(
-                            move |_| {
+            let mut rows: Vec<Element> = Vec::new();
+
+            // 说明这条配置**存在哪儿**：它写的不是方案自己的 override，而是全局
+            // `keys.key_actions` 里一条指向本方案的条目。不点破的话，用户在「全局
+            // 自定义按键」里看到一条自己没加过的绑定，会以为是哪里冒出来的脏数据，
+            // 甚至手动删掉——而删掉就等于把这里的「切换到本方案」也一并清了。
+            rows.push(crate::widgets::setting_row(
+                "切换到本方案按键",
+                Some("此配置同时出现在「按键 → 全局自定义按键」中"),
+                Element::row()
+                    .cross(Align::Center)
+                    .spacing(8)
+                    .child(
+                        // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
+                        Element::label_signal(state.settings_hotkey_disp)
+                            .font_size(12.5)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(1)
+                            .width(114),
+                    )
+                    .child(
+                        Element::button("设置")
+                            .small()
+                            .outline_soft()
+                            .on_click(move |_| visible.set(true)),
+                    )
+                    // ⛔ 这里**不要**再加「启用」复选框（2026-08-21 删除）。
+                    //
+                    // 配置模型里没有「停用但保留键位」这回事：一条方案热键就是
+                    // key_actions 里的一个条目，要么在、要么不在。而复选框天然让人
+                    // 以为取消勾选只是暂时关掉——实际是把条目删了，关掉对话框再打开
+                    // 就变成「未设置」，键位也没了。用户原话：「关闭后就清空了」。
+                    //
+                    // 真要做「停用保留」，得先在 core 给 key_actions 的值增加一种
+                    // 「停用态」的表达（`none` 不行，那是**键**维度的「禁用这个键」，
+                    // 语义不同还会占着这个键）。在那之前，UI 不该暗示一个不存在的能力。
+                    .child(
+                        Element::button("清除")
+                            .small()
+                            .outline_soft()
+                            .on_click(move |_| {
                                 // 置空 raw 即解绑：commit 侧按 `raw` 为空处理为移除条目。
                                 // enabled 同步置 false——它是对话框内部的派生量
                                 // （`enabled.set(v != "none")`），不同步会让下次打开
@@ -3464,20 +3753,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 hk_enabled.set(false);
                                 hk_disp.set("未设置".to_string());
                                 hk_raw.set(String::new());
-                            },
-                        )),
-                )
-                // 说明这条配置**存在哪儿**：它写的不是方案自己的 override，而是全局
-                // `keys.key_actions` 里一条指向本方案的条目。不点破的话，用户在「全局
-                // 自定义按键」里看到一条自己没加过的绑定，会以为是哪里冒出来的脏数据，
-                // 甚至手动删掉——而删掉就等于把这里的「切换到本方案」也一并清了。
-                .child(
-                    Element::label("此配置同时出现在「按键 → 全局自定义按键」中")
-                        .font_size(11.0)
-                        .fg_role(Role::TextMuted)
-                        .width_match()
-                        .max_lines(2),
-                );
+                            }),
+                    ),
+            ));
 
             // 引导键只给 **overlay 方案**：按下引导键临时进入、打完一段自动退回原方案。
             // 普通方案没有这条通路（切过去就留在那儿），给它们显示这一行只会让人以为能配。
@@ -3486,128 +3764,56 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // （那时快符与英文都是隐藏方案），但它一直不准：隐藏方案未必有 overlay 生命周期，
             // 给这类方案配了引导键按下去什么都不会发生。现在 core 给出了真判据。
             if entry.overlay {
-                let tv = state.settings_trigger_visible;
-                col = col.child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("引导键")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        .child(
-                            // 摘要由 effect 与勾选同步刷新（见 build_schema_settings_dialog），
-                            // 不等 commit 落表——否则用户勾完看不到变化。
-                            Element::label_signal(state.settings_trigger_disp)
-                                .font_size(12.5)
-                                .fg_role(Role::TextMuted)
-                                .max_lines(1)
-                                .width(114),
-                        )
-                        .child(
-                            Element::button("设置")
-                                .small()
-                                .outline_soft()
-                                .on_click(move |_| tv.set(true)),
-                        ),
-                );
+                rows.push(summary_action_row(
+                    "引导键",
+                    Some("按住它临时进入本方案，松开回到原方案"),
+                    // 摘要由 effect 与勾选同步刷新（见 build_schema_settings_dialog），
+                    // 不等 commit 落表——否则用户勾完看不到变化。
+                    state.settings_trigger_disp,
+                    "设置",
+                    state.settings_trigger_visible,
+                ));
             }
 
-            // 按键绑定（方案顶层 `key_actions`）：与上面两行同属「这个方案怎么进、
-            // 键怎么用」，故并入本节而非另立组标题。所有方案都有。
-            let kv = state.settings_ka_visible;
-            col = col.child(
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .spacing(10)
-                    .child(
-                        Element::label("本方案-按键自定义")
-                            .font_size(13.0)
-                            .fg_role(Role::Text)
-                            .weight(1.0)
-                            .max_lines(1),
-                    )
-                    .child(
-                        Element::label_signal(state.settings_ka_disp)
-                            .font_size(12.5)
-                            .fg_role(Role::TextMuted)
-                            .max_lines(1)
-                            .width(114),
-                    )
-                    .child(
-                        Element::button("设置")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| kv.set(true)),
-                    ),
-            );
-
-            // 输入中按键（方案顶层 `session_actions`）：与上一行成对——那张管「没在输入时
-            // 按下去干什么」（引导键），这张管「输入中按下去干什么」（翻页/选词/取消）。
-            // 措辞按**用户处境**分而不是按内部表名分：用户不知道也不必知道有两张表。
-            let sv = state.settings_sa_visible;
-            col = col.child(
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .spacing(10)
-                    .child(
-                        Element::label("本方案-输入中按键自定义")
-                            .font_size(13.0)
-                            .fg_role(Role::Text)
-                            .weight(1.0)
-                            .max_lines(1),
-                    )
-                    .child(
-                        Element::label_signal(state.settings_sa_disp)
-                            .font_size(12.5)
-                            .fg_role(Role::TextMuted)
-                            .max_lines(1)
-                            .width(114),
-                    )
-                    .child(
-                        Element::button("设置")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| sv.set(true)),
-                    ),
-            );
+            // 按键绑定（方案顶层 `key_actions` / `session_actions`）：与上面两行同属
+            // 「这个方案怎么进、键怎么用」，故并入本节而非另立组标题。所有方案都有。
+            //
+            // ⛔ **说明文案照抄全局那两项**（`keys.key_actions` / `keys.session_actions`
+            // 的 hint），一字不改。两处是同一件事的全局版与方案版，各写各的必然漂移，
+            // 而漂移出来的措辞往往是错的——本行此前写过「没在输入时按下某个键做什么」，
+            // 而 `key_actions` **不是「空闲时专用」**：它在输入中同样生效
+            // （用户 2026-08-22 已纠正过一次，2026-08-27 又踩）。
+            // 见 [[project_key_resolver_unification]]「别再用『空闲时 / 未输入时』描述」。
+            rows.push(summary_action_row(
+                "本方案-按键自定义",
+                Some("为按键指定功能，如临时拼音、切换方案"),
+                state.settings_ka_disp,
+                "设置",
+                state.settings_ka_visible,
+            ));
+            rows.push(summary_action_row(
+                "本方案-输入中按键自定义",
+                Some("指定按键在输入中的功能，如翻页、选择候选"),
+                state.settings_sa_disp,
+                "设置",
+                state.settings_sa_visible,
+            ));
 
             // 按键总览：把上面两行加全局那几张表**合起来**回答「这个键现在到底干什么」。
             // 排在两个编辑入口之后 —— 它是查看用的，不是又一个编辑入口。
-            let ov = state.settings_ko_visible;
-            col = col.child(
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .spacing(10)
-                    .child(
-                        Element::label("按键总览")
-                            .font_size(13.0)
-                            .fg_role(Role::Text)
-                            .weight(1.0)
-                            .max_lines(1),
-                    )
-                    .child(
-                        Element::label_signal(state.settings_ko_disp)
-                            .font_size(12.5)
-                            .fg_role(Role::TextMuted)
-                            .max_lines(1)
-                            .width(114),
-                    )
-                    .child(
-                        Element::button("查看")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| ov.set(true)),
-                    ),
-            );
-            col
+            rows.push(summary_action_row(
+                "按键总览",
+                Some("本方案与全局各表合起来，这个键现在到底干什么"),
+                state.settings_ko_disp,
+                "查看",
+                state.settings_ko_visible,
+            ));
+
+            // ★ 与 TAB 同名是**有意的**：本节独占「按键设置」TAB，标题看着是重复了一遍，
+            // 但别的 TAB 里每一节都有小标题，唯独这里没有会让结构看着缺一块
+            // （2026-08-27 用户拍板：结构统一 > 避免这一处重复）。
+            // ⇒ 想去掉重复就给这一节换个更具体的名字，别把标题拿掉。
+            crate::widgets::dialog_section("按键设置", rows)
         }
         SettingsSection::Divider => Element::divider(),
         SettingsSection::ShuangpinLayout => {
@@ -3619,63 +3825,32 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 .collect();
             // 带分组标题，与「进入方式」「扩展词库」同构——少了它这一节就是节间唯一的
             // 裸行，视觉上像是漏排了。
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("方案参数"))
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(12)
-                        .child(
-                            Element::label("双拼布局")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        .child(Element::dropdown(labels, state.settings_layout).width(170)),
-                )
+            crate::widgets::dialog_section(
+                "方案参数",
+                vec![crate::widgets::setting_row(
+                    "双拼布局",
+                    Some("决定声母韵母怎么落到键位上"),
+                    Element::dropdown(labels, state.settings_layout).width(170),
+                )],
+            )
         }
         SettingsSection::AuxCode => {
             // 关闭态的说明随全局基线而变——「跟随全局」到底是开还是关，用户在这一屏看不到
             // 全局页，不写清就得来回切页确认。
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("辅助码"))
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(12)
-                        .child(
-                            Element::label("本方案启用辅助码")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        .child(
-                            Element::segmented(
-                                AUX_CODE_MODES.iter().map(|s| s.to_string()).collect(),
-                                state.settings_aux_idx,
-                            )
-                            .width(210),
-                        ),
-                )
-                .child(
-                    Element::label(
-                        "打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配。",
+            crate::widgets::dialog_section(
+                "辅助码",
+                vec![crate::widgets::setting_row(
+                    "本方案启用辅助码",
+                    Some(
+                        "打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配",
+                    ),
+                    Element::segmented(
+                        AUX_CODE_MODES.iter().map(|s| s.to_string()).collect(),
+                        state.settings_aux_idx,
                     )
-                    .font_size(11.5)
-                    .fg_role(Role::TextMuted)
-                    .width_match()
-                    .max_lines(2),
-                )
+                    .width(210),
+                )],
+            )
         }
         SettingsSection::CodeTable => {
             // **内联**的具体设置，而不是「勾选 + 打开子对话框」：分了 TAB 之后这一屏有的是
@@ -3712,7 +3887,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             // 字号/字重/颜色与 `manifest::dialog_group_header` 同款；
                             // 那个函数返回的是整宽 label，塞不进带按钮的行，故复刻样式。
                             Element::label("码表配置")
-                                .font_size(11.5)
+                                .font_size(crate::manifest::DIALOG_HEADER_SIZE)
                                 .font_weight(600)
                                 .fg_role(Role::Accent)
                                 .weight(1.0)
@@ -3741,164 +3916,107 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 .child(Element::col().width_match().padding_xy(0, 4).child(body))
         }
         SettingsSection::Overlay => {
-            let show_all = state.settings_ov_show_all;
-            let layout = state.settings_ov_layout;
             // 本节只在方案已声明 `[overlay]` 时出现，故无总开关、无置灰联动：
             // 两项恒可用。见 `SchemaManagerState` 里那组信号的说明。
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("特殊模式"))
-                .child(
-                    Element::label(
-                        "本方案可用引导键临时进入，打完一段自动退回原方案。引导键在上方「按键设置」里配。",
-                    )
-                    .font_size(12.0)
-                    .fg_role(Role::TextMuted)
-                    .max_lines(2),
-                )
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("进入即展示候选")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
+            crate::widgets::dialog_section_hint(
+                "特殊模式",
+                "本方案可用引导键临时进入，打完一段自动退回原方案。引导键在上方「按键设置」里配。",
+                vec![
+                    crate::widgets::setting_row(
+                        "进入即展示候选",
+                        Some("刚进入、还没敲码时就列出本方案的首页候选"),
+                        Element::checkbox("开启", state.settings_ov_show_all)
+                            .small()
+                            .fg_role(Role::Text),
+                    ),
+                    // 下拉而非分段控件：同一对话框里的「双拼布局」、码表配置里的各枚举项
+                    // 用的都是 dropdown，同类选项换个控件形态会显得没来由。宽度也对齐
+                    // 双拼布局那一行。
+                    //
+                    // ⚠️ 别加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
+                    // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`，
+                    // debug 构建下当场 panic。这类链式 API 用**运行时 downcast** 做类型
+                    // 检查，编译期一律放行——本节此前就是这么崩的。
+                    crate::widgets::setting_row(
+                        "候选排列",
+                        Some("仅本模式期间生效，退出自动恢复"),
+                        Element::dropdown(
+                            vec!["跟随全局", "竖排", "横排"],
+                            state.settings_ov_layout,
                         )
-                        .child(Element::checkbox("开启", show_all).small().fg_role(Role::Text)),
-                )
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("候选排列")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
-                        )
-                        // 下拉而非分段控件：同一对话框里的「双拼布局」、码表配置里的各枚举项
-                        // 用的都是 dropdown，同类选项换个控件形态会显得没来由。宽度也对齐
-                        // 双拼布局那一行。
-                        //
-                        // ⚠️ 别加 `.small()`：它对非 Button/CheckBox/Switch 的 widget 会落到
-                        // `config_button` 的 `debug_assert!(false, "small() 只能用于 button")`，
-                        // debug 构建下当场 panic。这类链式 API 用**运行时 downcast** 做类型
-                        // 检查，编译期一律放行——本节此前就是这么崩的。
-                        .child(
-                            Element::dropdown(vec!["跟随全局", "竖排", "横排"], layout).width(170),
-                        ),
-                )
+                        .width(170),
+                    ),
+                ],
+            )
         }
         SettingsSection::Behavior => {
-            let punct = state.settings_bh_punct;
-            let layout = state.settings_bh_layout;
-            let phrases = state.settings_bh_phrases;
             // ⚠️ dropdown / label 上别加 `.small()`：那是 Button/CheckBox/Switch 专属，
             // 落到别的 widget 会在 debug 构建下当场 panic（运行时 downcast，编译期放行）。
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("本方案行为"))
-                .child(
-                    Element::label("切到本方案时的表现。选「跟随全局」的项不受本方案影响。")
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted)
-                        .max_lines(2),
-                )
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("标点")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
+            //
+            // ★ 注释模板**不内联在本节**：它是「勾选 + 输入框」两个控件一组、横竖各一组，
+            // 四个控件铺在这一屏里，与旁边三行「一行一个控件」的节奏完全不同
+            // （2026-08-26 用户原话：「候选注释又是比较杂乱的」）。收进子对话框后，
+            // 这里只留一行摘要 + [设置]，与「按键设置」那几行同构。
+            crate::widgets::dialog_section_hint(
+                "本方案行为",
+                "切到本方案时的表现。选「跟随全局」的项不受本方案影响。",
+                vec![
+                    crate::widgets::setting_row(
+                        "标点",
+                        Some("中文标点 / 英文标点，或不干预"),
+                        Element::dropdown(
+                            vec!["跟随全局", "中文标点", "英文标点"],
+                            state.settings_bh_punct,
                         )
-                        .child(
-                            Element::dropdown(vec!["跟随全局", "中文标点", "英文标点"], punct)
-                                .width(170),
-                        ),
-                )
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::label("候选排列")
-                                .font_size(13.0)
-                                .fg_role(Role::Text)
-                                .weight(1.0)
-                                .max_lines(1),
+                        .width(170),
+                    ),
+                    crate::widgets::setting_row(
+                        "候选排列",
+                        Some("本方案期间的候选窗方向"),
+                        Element::dropdown(
+                            vec!["跟随全局", "竖排", "横排"],
+                            state.settings_bh_layout,
                         )
-                        .child(
-                            Element::dropdown(vec!["跟随全局", "竖排", "横排"], layout).width(170),
-                        ),
-                )
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            Element::col()
-                                .weight(1.0)
-                                .spacing(2)
-                                .child(
-                                    Element::label("加载短语")
-                                        .font_size(13.0)
-                                        .fg_role(Role::Text)
-                                        .max_lines(1),
-                                )
-                                .child(
-                                    Element::label("关闭后本方案不出短语候选。英文方案建议关闭：短语码常与英文词撞车")
-                                        .font_size(12.0)
-                                        .fg_role(Role::TextMuted)
-                                        .max_lines(2),
-                                ),
-                        )
-                        .child(Element::checkbox("开启", phrases).small().fg_role(Role::Text)),
-                )
+                        .width(170),
+                    ),
+                    crate::widgets::setting_row(
+                        "加载短语",
+                        Some("关闭后本方案不出短语候选。英文方案建议关闭：短语码常与英文词撞车"),
+                        Element::checkbox("开启", state.settings_bh_phrases)
+                            .small()
+                            .fg_role(Role::Text),
+                    ),
+                    summary_action_row(
+                        "候选注释",
+                        Some("候选词右侧灰字显示的内容，横排与竖排可分别设置"),
+                        state.settings_bh_comment_disp,
+                        "设置",
+                        state.settings_bh_comment_visible,
+                    ),
+                ],
+            )
         }
         SettingsSection::ExtensionDicts => {
-            let mut col = Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                .child(crate::manifest::dialog_group_header("扩展词库"));
-            for row in state.settings_dicts.borrow().iter() {
-                // 默认点击即翻转绑定的 on 信号（暂存）；实际提交在「保存」按钮统一进行。
-                let cb = Element::checkbox(row.label.clone(), row.on);
-                let mut item = Element::col()
-                    .width_match()
-                    .spacing(2)
-                    .padding_xy(0, 4)
-                    .child(cb);
-                if !row.description.is_empty() {
-                    item = item.child(
-                        Element::label(row.description.clone())
-                            .font_size(11.0)
-                            .fg_role(Role::TextMuted)
-                            .width_match()
-                            .padding_xy(24, 0)
-                            .max_lines(2),
-                    );
-                }
-                col = col.child(item);
-            }
-            col
+            // 行用与别处同一套 `setting_row`：勾选框当控件放右侧，词库名与说明落左列。
+            // 原先是「勾选框带标签 + 下面缩进一行说明」，那是这一屏独一份的排版，
+            // 与相邻各节对不齐。
+            let rows: Vec<Element> = state
+                .settings_dicts
+                .borrow()
+                .iter()
+                .map(|row| {
+                    let desc = (!row.description.is_empty()).then(|| row.description.clone());
+                    crate::widgets::setting_row(
+                        &row.label,
+                        desc.as_deref(),
+                        // 默认点击即翻转绑定的 on 信号（暂存）；实际提交在「保存」按钮统一进行。
+                        Element::checkbox("启用", row.on)
+                            .small()
+                            .fg_role(Role::Text),
+                    )
+                })
+                .collect();
+            crate::widgets::dialog_section("扩展词库", rows)
         }
         SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
             .font_size(11.0)
@@ -4012,25 +4130,41 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 「加载短语」不计入：它是个没有「跟随」档的布尔，恒有值，算不出「有没有自定义」。
     let bh_punct = state.settings_bh_punct;
     let bh_layout = state.settings_bh_layout;
+    // 注释模板只看**勾选态**：内容改了但没勾上等于没生效，星号跟着内容走会提前亮起来。
+    // 与「加载短语」不计入同一个道理——星号回答的是「有没有项脱离了跟随」。
+    let bh_cmt_v = state.settings_bh_comment_v_on;
+    let bh_cmt_h = state.settings_bh_comment_h_on;
+    let cmt_disp = state.settings_bh_comment_disp;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
         move || {
             ct_watch
                 .version_sum()
                 .wrapping_add(bh_punct.version())
                 .wrapping_add(bh_layout.version())
+                .wrapping_add(bh_cmt_v.version())
+                .wrapping_add(bh_cmt_h.version())
         },
         move || {
             let n = ct_count.custom_count();
-            let bh_custom = (bh_punct.get() != 0) as usize + (bh_layout.get() != 0) as usize;
+            let bh_custom = (bh_punct.get() != 0) as usize
+                + (bh_layout.get() != 0) as usize
+                + bh_cmt_v.get() as usize
+                + bh_cmt_h.get() as usize;
             ct_disp.set(ct_summary(n));
+            // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
+            // 另开一个 effect 只会多一处要同步的口径。
+            cmt_disp.set(comment_summary(bh_cmt_v.get(), bh_cmt_h.get()));
             // 各分类卡片标题右侧那句也在这里推——它与整段摘要同源（勾选状态），
             // 分两个 effect 只会多一次遍历，还得担心两处口径漂移。
             ct_count.refresh_group_summaries();
             // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
             // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。
+            // 星号打在「方案自定义」那一页：本 effect 统计的两类（码表覆盖、本方案行为）
+            // 都在那一页。⚠️ 用 `CUSTOM_TAB` 而不是字面下标——TAB 数量已经反转过两次，
+            // 写死的 `1` 在上一次反转里正好还指对，下一次就未必。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
             if n + bh_custom > 0 {
-                ls[1] = format!("{} *", SETTINGS_TABS[1]);
+                ls[CUSTOM_TAB] = format!("{} *", SETTINGS_TABS[CUSTOM_TAB]);
             }
             tab_labels.set(vec![ls]);
         },
@@ -4720,8 +4854,8 @@ mod ext_dict_tests {
     fn seed_behavior_defaults_match_core() {
         assert_eq!(
             seed_behavior(&json!({})),
-            (0, 0, true),
-            "三段全缺：两个下标跟随全局，短语加载"
+            BehaviorSeed::default(),
+            "三段全缺：两个下标跟随全局，短语加载，注释模板未设置"
         );
         assert_eq!(
             seed_behavior(&json!({
@@ -4729,14 +4863,95 @@ mod ext_dict_tests {
                 "candidate": { "layout": "vertical" },
                 "phrases": { "enabled": false }
             })),
-            (2, 1, false),
+            BehaviorSeed {
+                punct: 2,
+                layout: 1,
+                phrases: false,
+                ..Default::default()
+            },
             "英文方案那套写法"
         );
         assert_eq!(
             seed_behavior(&json!({ "punct": { "mode": "chinese" } })),
-            (1, 0, true),
+            BehaviorSeed {
+                punct: 1,
+                ..Default::default()
+            },
             "只写一段时另两段仍取默认"
         );
+    }
+
+    /// 「候选注释」行的摘要只看**勾选态**，且四格各不相同。
+    ///
+    /// 摘要跟着输入框内容走的话，用户打字打到一半、还没勾上「自定义」，行上就已经写着
+    /// 「已自定义」——而那时保存下去什么也不会变。
+    #[test]
+    fn comment_summary_reads_checkboxes_only() {
+        assert_eq!(comment_summary(false, false), "跟随全局");
+        assert_eq!(comment_summary(true, false), "竖排已自定义");
+        assert_eq!(comment_summary(false, true), "横排已自定义");
+        assert_eq!(comment_summary(true, true), "横竖均已自定义");
+    }
+
+    /// ★★ 注释模板是**三态**：键缺失 / 有内容 / 空串，三者互不相同。
+    ///
+    /// 最容易写错的是把 `Some("")` 当成「未设置」——那会让「本方案不显示注释」
+    /// 在重开设置页后变回「跟随全局」，用户配的东西静默消失。
+    #[test]
+    fn seed_behavior_reads_comment_tri_state() {
+        let seed = seed_behavior(&json!({}));
+        assert_eq!(seed.comment_v, None, "键缺失 = 未设置");
+        assert_eq!(seed.comment_h, None);
+
+        let seed = seed_behavior(&json!({
+            "candidate": { "comment_template_vertical": "${code_hint}" }
+        }));
+        assert_eq!(seed.comment_v.as_deref(), Some("${code_hint}"));
+        assert_eq!(seed.comment_h, None, "横竖各自独立，只配一个是常见用法");
+
+        let seed = seed_behavior(&json!({
+            "candidate": { "comment_template_horizontal": "" }
+        }));
+        assert_eq!(
+            seed.comment_h.as_deref(),
+            Some(""),
+            "空串是「本方案不显示注释」，不是「未设置」"
+        );
+
+        // core 侧「取消覆盖」回传的就是 null，读回来必须还原成未设置。
+        let seed = seed_behavior(&json!({
+            "candidate": { "comment_template_vertical": null }
+        }));
+        assert_eq!(seed.comment_v, None, "null 读回来是未设置");
+    }
+
+    /// ★★ 「取消覆盖」写 `null` 而不是空串。
+    ///
+    /// 写空串的话，用户取消勾选后得到的是「本方案不显示注释」——与他要的「跟随全局」
+    /// 恰好相反，且界面上看不出来（两者都是空输入框）。
+    #[test]
+    fn comment_tpl_value_uses_null_to_clear() {
+        assert_eq!(comment_tpl_value(None), Value::Null, "未勾选必须写 null");
+        assert_eq!(comment_tpl_value(Some("")), json!(""), "勾上留空写空串");
+        assert_eq!(comment_tpl_value(Some("${dict}")), json!("${dict}"));
+    }
+
+    /// 注释模板的 seed → 回写 → 再 seed 必须闭合，否则「保存后重开设置页，配的东西没了」。
+    #[test]
+    fn comment_tpl_round_trip() {
+        for tpl in [None, Some(""), Some("${code_hint}")] {
+            let mut cfg = json!({});
+            set_json_path(
+                &mut cfg,
+                &["candidate", "comment_template_vertical"],
+                comment_tpl_value(tpl),
+            );
+            assert_eq!(
+                seed_behavior(&cfg).comment_v.as_deref(),
+                tpl,
+                "{tpl:?} 往返不闭合"
+            );
+        }
     }
 
     /// 未知取值一律回落「跟随全局」，不猜方向。
@@ -4746,11 +4961,11 @@ mod ext_dict_tests {
     #[test]
     fn unknown_values_fall_back_to_follow() {
         assert_eq!(
-            seed_behavior(&json!({ "punct": { "mode": "englsh" } })).0,
+            seed_behavior(&json!({ "punct": { "mode": "englsh" } })).punct,
             0
         );
         assert_eq!(
-            seed_behavior(&json!({ "candidate": { "layout": "斜排" } })).1,
+            seed_behavior(&json!({ "candidate": { "layout": "斜排" } })).layout,
             0
         );
     }
@@ -4986,12 +5201,15 @@ mod section_build_tests {
     /// 原有的 `Divider` 表达的是「相邻两节之间」，分完 TAB 后相邻关系变了——照搬会出现
     /// 开头就是一条分隔线、或两节之间没有线。这条守的就是那个重插规则。
     #[test]
-    fn sections_split_into_two_tabs_with_dividers_reinserted() {
+    fn sections_split_into_tabs_with_dividers_reinserted() {
         use SettingsSection::*;
-        // 扁平表按真实构造顺序：Header, EntryKeys, |, CodeTable, |, Overlay, |, ExtensionDicts
+        // 扁平表按真实构造顺序（双拼方案：Header, EntryKeys, |, ShuangpinLayout,
+        // |, CodeTable, |, Overlay, |, ExtensionDicts）
         let flat = [
             Header,
             EntryKeys,
+            Divider,
+            ShuangpinLayout,
             Divider,
             CodeTable,
             Divider,
@@ -4999,17 +5217,29 @@ mod section_build_tests {
             Divider,
             ExtensionDicts,
         ];
-        let [basic, custom] = split_sections_by_tab(&flat);
+        let [basic, keys, custom] = split_sections_by_tab(&flat);
         assert_eq!(
             basic,
-            vec![Header, EntryKeys, Divider, ExtensionDicts],
-            "按键配置已并回基本配置；Header 自带结尾分隔故其后不插"
+            vec![Header, ShuangpinLayout, Divider, ExtensionDicts],
+            "双拼布局归基本配置；Header 自带结尾分隔故其后不插"
         );
+        assert_eq!(keys, vec![EntryKeys], "按键设置独立成页，只此一节");
         assert_eq!(
             custom,
             vec![CodeTable, Divider, Overlay],
             "方案自定义页开头不该是一条分隔线"
         );
+    }
+
+    /// ★ 星号打在**「方案自定义」**那一页上。
+    ///
+    /// TAB 数量已经反转过两次（三 → 二 → 三），而写死的下标在其中一次反转里**正好还指对**
+    /// ——那种错法不会被任何断言抓到，直到下一次反转才暴露成「星号打在按键设置上」。
+    #[test]
+    fn custom_tab_index_points_at_the_custom_tab() {
+        assert_eq!(SETTINGS_TABS[CUSTOM_TAB], "方案自定义");
+        assert_eq!(SettingsSection::Behavior.tab(), Some(CUSTOM_TAB));
+        assert_eq!(SettingsSection::CodeTable.tab(), Some(CUSTOM_TAB));
     }
 
     /// 每一节都必须有归属，且只归一页——漏一节的表现是那节在界面上整个消失。

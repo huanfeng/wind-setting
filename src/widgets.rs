@@ -368,7 +368,11 @@ pub fn override_control(
 /// 压得看不见了——分类是这一屏的骨架，得有边框把它撑住。
 ///
 /// `summary` 取信号：标题右侧报本组改过几项，随勾选实时变。
-pub fn override_group_card(title: &str, summary: Signal<String>, rows: Element) -> Element {
+/// `rows` 收 `Vec` 而不是拼好的 `Element`：**行之间要插分割线**。
+///
+/// 原先收一个已拼好的 col，于是卡片里各行紧贴在一起——只有标题下那一条线，
+/// 组内十来行连成一片（2026-08-26 用户原话：「加了 card，但也缺少分割线」）。
+pub fn override_group_card(title: &str, summary: Signal<String>, rows: Vec<Element>) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
     let mut col = Element::col().width_match();
@@ -383,7 +387,7 @@ pub fn override_group_card(title: &str, summary: Signal<String>, rows: Element) 
                     // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
                     // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
                     Element::label(title)
-                        .font_size(11.5)
+                        .font_size(12.5)
                         .font_weight(600)
                         .fg_role(Role::Accent)
                         .weight(1.0)
@@ -398,11 +402,18 @@ pub fn override_group_card(title: &str, summary: Signal<String>, rows: Element) 
         );
         col = col.child(Element::divider());
     }
+    let last = rows.len().saturating_sub(1);
+    for (i, row) in rows.into_iter().enumerate() {
+        col = col.child(row);
+        if i != last {
+            col = col.child(Element::divider());
+        }
+    }
     flat_panel()
         .width_match()
         .padding_xy(12, 6)
         .margin_xy(0, 3)
-        .child(col.child(rows))
+        .child(col)
 }
 
 /// 多选键组专用行：左侧弹性标签 + 右侧固定宽网格（靠右对齐）。
@@ -463,6 +474,72 @@ pub fn card(rows: Vec<Element>) -> Element {
         }
     }
     card
+}
+
+/// 对话框内的一节：小标题 + 卡片（**行间自动分割线**）。
+///
+/// 方案设置对话框此前每节都是手写 `col + 小标题 + 若干裸 row`：没有卡片、没有分割线，
+/// 行与行贴在一起，说明文字有的在行内、有的另起一行 ⇒ 一屏看下来分不出条目边界
+/// （2026-08-26 用户原话：「条目的分割不是很明显」「比较杂乱」）。
+///
+/// 本函数把那套统一到主设置页的观感上：**行一律用 [`setting_row`]**（标题 + 说明 + 右控件），
+/// 节用卡片包住。⇒ 新增一节时别再手写外壳，否则又会长出一种"看着像但不一样"的排版。
+pub fn dialog_section(title: &str, rows: Vec<Element>) -> Element {
+    dialog_section_full(title, None, None, rows)
+}
+
+/// 同上 + 节说明（标题下、卡片上方的一句灰字）。
+///
+/// 只写**整节共有**的话；单项的说明属于那一行自己的 `desc`（[`setting_row`] 的第二参）。
+/// 混着写会让人分不出这句管的是哪一项——本对话框此前就有几节把单项说明摆在了节级位置。
+pub fn dialog_section_hint(title: &str, hint: &str, rows: Vec<Element>) -> Element {
+    dialog_section_full(title, Some(hint), None, rows)
+}
+
+/// 完整形态：小标题（右侧可挂动作按钮）+ 可选节说明 + 卡片。
+///
+/// 按钮挂在标题行而不是单独占一行：单独一行时左边一整条空白会把它推成右上角的孤浮标。
+pub fn dialog_section_full(
+    title: &str,
+    hint: Option<&str>,
+    action: Option<Element>,
+    rows: Vec<Element>,
+) -> Element {
+    let head: Element = match action {
+        // 整宽 label 塞不进带按钮的行，故此处复刻样式而不调 `dialog_group_header`。
+        // 字号引用同一个常量，避免两处各写各的字面量再漂移。
+        Some(btn) => Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(10)
+            .child(
+                Element::label(title)
+                    .font_size(crate::manifest::DIALOG_HEADER_SIZE)
+                    .font_weight(600)
+                    .fg_role(Role::Accent)
+                    .weight(1.0)
+                    .max_lines(1)
+                    .padding_xy(0, 5),
+            )
+            .child(btn),
+        None => crate::manifest::dialog_group_header(title),
+    };
+    let mut col = Element::col()
+        .width_match()
+        .spacing(2)
+        .padding_xy(0, 4)
+        .child(head);
+    if let Some(h) = hint {
+        col = col.child(
+            Element::label(h)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2)
+                .padding_xy(0, 2),
+        );
+    }
+    col.child(card(rows))
 }
 
 /// 分组 = 分区小标题（卡片上方）+ 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。

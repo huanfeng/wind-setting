@@ -1169,8 +1169,10 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "id": "ziranma", "name": "自然码" }
         ]),
         "theme.list" => json!([
-            { "name": "default_light", "display_name": "清风·浅", "version": "3.2.1", "builtin": true },
-            { "name": "default_dark", "display_name": "清风·深", "version": "3.2.1", "builtin": true },
+            // 首项 id 必须与 mock config 的 `ui.theme.name` 对得上：对不上时主题下拉选不中
+            // 当前值、回落首项，于是「什么都没动」也会写出一个不同的值 ⇒ is_dirty 恒为真。
+            { "name": "default", "display_name": "清风·浅", "version": "3.2.1", "builtin": true },
+            { "name": "jade", "display_name": "青玉", "version": "3.2.1", "builtin": true },
             { "name": "mono", "display_name": "墨", "version": "1.0.0", "builtin": false }
         ]),
         "theme.delete" => json!({ "ok": true }),
