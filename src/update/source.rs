@@ -138,9 +138,44 @@ fn is_sha256_hex(s: &str) -> bool {
 }
 
 /// 拉取指定通道的更新元数据。
+///
+/// 按 [`Channel::metadata_urls`] 的顺序逐个尝试，**第一个能解析出合法元数据的胜出**。
+///
+/// 判据是「解析成功」而非「请求成功」，这一点必须如此：文档站对不存在的路径返回
+/// 200 加一坨首页 HTML 而不是 404，只看状态码会把那坨 HTML 当元数据交出去。同理，
+/// 通道/平台串档（`ChannelMismatch`、缺 `pkgUrl`）也算这一源不可用而继续退 ——
+/// 那种情况多半是某一边的 CDN 缓存串了档，另一源往往是好的。
 pub fn fetch_release_info(channel: Channel) -> Result<ReleaseInfo, UpdateError> {
-    let text = http_get_text(channel.metadata_url(), METADATA_TIMEOUT, MAX_METADATA_BYTES)
-        .map_err(UpdateError::Network)?;
+    let urls = channel.metadata_urls();
+    let mut last_err: Option<UpdateError> = None;
+
+    for (idx, url) in urls.iter().enumerate() {
+        match fetch_one(url, channel) {
+            Ok(info) => {
+                if idx > 0 {
+                    tracing::info!("主更新源不可用，已回退到 {url}");
+                }
+                return Ok(info);
+            }
+            Err(e) => {
+                tracing::warn!("更新源 {url} 不可用：{}", e.user_message());
+                last_err = Some(e);
+            }
+        }
+    }
+
+    // 全部失败时报**最后一个**源的错。它是最后的退路，它的失败原因对用户最有参考
+    // 价值；报主源的错会让人以为只是主源的问题，而实际上备用路径也已经断了。
+    last_err.map_or_else(
+        || Err(UpdateError::Network("没有可用的更新源".to_string())),
+        Err,
+    )
+}
+
+/// 从单个地址取回并解析元数据。
+fn fetch_one(url: &str, channel: Channel) -> Result<ReleaseInfo, UpdateError> {
+    let text =
+        http_get_text(url, METADATA_TIMEOUT, MAX_METADATA_BYTES).map_err(UpdateError::Network)?;
     parse_latest_json(&text, channel, Artifact::current())
 }
 

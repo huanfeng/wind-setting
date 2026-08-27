@@ -42,19 +42,53 @@ impl Channel {
         }
     }
 
-    /// 该通道的元数据地址。两个变体各看各的文件，互不干扰。
+    /// 该通道的元数据地址，**按优先级排列**：靠前的先试，取不到或内容不可解析就退到下一个。
+    /// 两个变体各看各的文件，互不干扰。
     ///
     /// **平台也各看各的**：Windows 的 `latest.json` 描述 `Setup.exe`，macOS 的
     /// `latest-mac.json` 描述 `.pkg`。合不成一个文件 —— 版本号、大小、sha256 都是每平台
     /// 一份，而在野的老 Windows 客户端只认顶层的那一组字段，改不动。
     ///
     /// Linux 落到 mac 分支只是形式上的：`self_update_supported()` 压根不放它进来。
-    pub fn metadata_url(self) -> &'static str {
-        match (self, cfg!(windows)) {
-            (Self::Stable, true) => "https://dl.windinput.com/latest.json",
-            (Self::Dev, true) => "https://dl.windinput.com/latest-dev.json",
-            (Self::Stable, false) => "https://dl.windinput.com/latest-mac.json",
-            (Self::Dev, false) => "https://dl.windinput.com/latest-mac-dev.json",
+    ///
+    /// # 为什么要多源
+    ///
+    /// `dl.windinput.com` 与 `windinput.com` 挂在不同的加速配置和节点上。已经观察到
+    /// 部分国内网络对前者 TLS 握手失败（`schannel: failed to receive handshake`）而
+    /// 后者正常。根因在链路不在服务端，客户端改不了，但多备一条路是能做的。
+    ///
+    /// # 为什么 dev 通道只有一个源
+    ///
+    /// 文档站的元数据由 `sync_release_notes.py` 从 **GitHub Release** 组装，而 dev 版
+    /// 走的是另一条发布链路（主仓 `dev.ps1` 直推 R2），压根不进 GitHub Release ——
+    /// 文档站没有也不该有那两个文件。
+    ///
+    /// 这里不能凭"多一个源总没坏处"随手补上：文档站对未匹配路径**返回 200 加首页
+    /// HTML**（静态托管的 SPA 回落）而不是 404，列进去只会让 dev 用户白等一次超时，
+    /// 再拿一坨 47KB 的 HTML 去解析。
+    pub fn metadata_urls(self) -> &'static [&'static str] {
+        self.metadata_urls_for(cfg!(windows))
+    }
+
+    /// [`metadata_urls`] 的纯函数版，平台作参数传入。
+    ///
+    /// 拆出来只为一件事：`cfg!(windows)` 在**编译期**取值，在 Windows 上跑测试就
+    /// 永远走不到 mac 那两个分支 —— 地址写错（漏个 `-mac`、回退链文件名不一致）
+    /// 全都测不出来，得等 mac 用户装上才暴露。同 `Artifact` 把平台作参数的理由。
+    ///
+    /// [`metadata_urls`]: Self::metadata_urls
+    fn metadata_urls_for(self, windows: bool) -> &'static [&'static str] {
+        match (self, windows) {
+            (Self::Stable, true) => &[
+                "https://windinput.com/latest.json",
+                "https://dl.windinput.com/latest.json",
+            ],
+            (Self::Dev, true) => &["https://dl.windinput.com/latest-dev.json"],
+            (Self::Stable, false) => &[
+                "https://windinput.com/latest-mac.json",
+                "https://dl.windinput.com/latest-mac.json",
+            ],
+            (Self::Dev, false) => &["https://dl.windinput.com/latest-mac-dev.json"],
         }
     }
 }
@@ -470,15 +504,80 @@ mod tests {
         assert!(should_auto_check(true, true, last, now));
     }
 
+    /// 遍历 (通道 × 平台) 全部四种组合。**不能用 `metadata_urls()`** —— 那个读
+    /// `cfg!(windows)`，在哪个平台上跑就只能测到哪一半。
+    fn all_url_sets() -> Vec<(Channel, bool, &'static [&'static str])> {
+        let mut v = Vec::new();
+        for c in [Channel::Stable, Channel::Dev] {
+            for win in [true, false] {
+                v.push((c, win, c.metadata_urls_for(win)));
+            }
+        }
+        v
+    }
+
     #[test]
     fn channel_urls_are_distinct_and_https() {
-        assert_ne!(
-            Channel::Stable.metadata_url(),
-            Channel::Dev.metadata_url(),
-            "两个通道必须指向不同文件，否则 dev 会收到 stable 包"
-        );
+        for win in [true, false] {
+            assert_ne!(
+                Channel::Stable.metadata_urls_for(win),
+                Channel::Dev.metadata_urls_for(win),
+                "两个通道必须指向不同文件，否则 dev 会收到 stable 包（windows={win}）"
+            );
+        }
+        for (c, win, urls) in all_url_sets() {
+            assert!(
+                !urls.is_empty(),
+                "{c:?}/windows={win} 一个源都没有，检查更新会直接失败"
+            );
+            for u in urls {
+                assert!(u.starts_with("https://"), "更新源必须是 https：{u}");
+            }
+        }
+    }
+
+    /// 两个平台必须指向不同文件：mac 客户端读到 Windows 元数据会拿到 `.exe` 的
+    /// sha256 与 size，反之亦然。`Artifact` 的键名之防是第二道，这里是第一道。
+    #[test]
+    fn platform_urls_are_distinct() {
         for c in [Channel::Stable, Channel::Dev] {
-            assert!(c.metadata_url().starts_with("https://"));
+            assert_ne!(
+                c.metadata_urls_for(true),
+                c.metadata_urls_for(false),
+                "{c:?} 的两个平台指向了同一组文件"
+            );
+        }
+    }
+
+    /// 同一组内的多个源必须互不相同 —— 同一个地址列两遍，回退就退了个寂寞。
+    #[test]
+    fn fallback_sources_are_not_duplicated() {
+        for (c, win, urls) in all_url_sets() {
+            let uniq: std::collections::HashSet<_> = urls.iter().collect();
+            assert_eq!(
+                uniq.len(),
+                urls.len(),
+                "{c:?}/windows={win} 的源列表有重复：{urls:?}"
+            );
+        }
+    }
+
+    /// 同一组内的各源必须指向**同名文件**。
+    ///
+    /// 回退是为了换一条网络路径，不是换一份内容。若主源写 `latest.json`、备源手滑写成
+    /// `latest-dev.json`，主源一挂，stable 用户就**静默**拿到 dev 包装上 —— 与 `channel`
+    /// 字段当初要防的是同一类事故，只是这次的漏洞开在客户端自己的常量表里。
+    #[test]
+    fn fallback_sources_point_at_same_filename() {
+        for (c, win, urls) in all_url_sets() {
+            let names: Vec<&str> = urls
+                .iter()
+                .map(|u| u.rsplit('/').next().unwrap_or(u))
+                .collect();
+            assert!(
+                names.windows(2).all(|w| w[0] == w[1]),
+                "{c:?}/windows={win} 的各源文件名不一致：{names:?}"
+            );
         }
     }
 
