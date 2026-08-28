@@ -150,6 +150,16 @@ pub struct WordRow {
     pub move_index: Option<usize>,
     /// 快捷输入专用：用户是否调整过（移动或停用，读 `adjusted`）。决定「恢复此条」能不能点。
     pub adjusted: bool,
+    /// 常用字专用：所属 Unicode 块的中文名（读 `block`），如「注音符号」。其余类别恒空。
+    pub block: String,
+    /// 常用字专用：块的码位范围（读 `blockRange`），如 `3100-312F`。整类操作的确认文案要用。
+    pub block_range: String,
+    /// 常用字专用：这一类能不能整类批量设常用/生僻（读 `blockBulkEditable`）。
+    ///
+    /// ⛔ 汉字块恒 `false`：列表里 8104 个默认字全是汉字，对着一行「我」点「将『基本汉字』
+    /// 全部设为生僻」，一次误点就是七千多条覆盖。core 也会拒绝，这里据此**灰显**——
+    /// 让一个注定失败的操作可点，用户只会以为功能坏了。
+    pub block_bulk_editable: bool,
     /// 快捷输入专用：是不是用户自己加的条目（读 `user`）。
     ///
     /// ⚠️ 与 [`Self::adjusted`] **不是一回事**，行内操作按它分流：出厂条目被调序过也是
@@ -237,6 +247,9 @@ impl WordRow {
                 // 复用 `adjusted`（与快捷输入同义：用户改过没有）。全表里绝大多数行都是
                 // false，「恢复默认」靠它只对改过的行放行。
                 adjusted: b("adjusted"),
+                block: s("block"),
+                block_range: s("blockRange"),
+                block_bulk_editable: b("blockBulkEditable"),
                 ..Default::default()
             },
         }
@@ -290,6 +303,7 @@ impl WordRow {
             WordField::Sample => self.sample.clone(),
             WordField::CommonNow => common_label(self.common_now).to_string(),
             WordField::CommonBase => common_label(self.common_base).to_string(),
+            WordField::Block => self.block.clone(),
         }
     }
 }
@@ -392,6 +406,11 @@ pub enum WordField {
     CommonNow,
     /// 常用字：**出厂**的判定。与 [`Self::CommonNow`] 并排显示，用户才看得出改了什么。
     CommonBase,
+    /// 常用字：所属 Unicode 块的中文名（「注音符号」「表意文字描述符」）。
+    ///
+    /// 光看字形分不清这些东西是什么——WindInput issue #83 的用户为此把整张码表喂给 AI
+    /// 分类、再手工逐个试，才弄明白哪些会显示哪些不会。这一列就是把那份工作内建进来。
+    Block,
 }
 
 impl WordField {
@@ -409,6 +428,7 @@ impl WordField {
             WordField::Sample => "sample",
             WordField::CommonNow => "common",
             WordField::CommonBase => "baseCommon",
+            WordField::Block => "block",
         }
     }
 
@@ -903,6 +923,12 @@ const COLS_COMMON: &[ColumnSpec] = &[
         header: "当前",
         weight: 1.0,
         field: WordField::CommonNow,
+    },
+    ColumnSpec {
+        header: "类型",
+        // 块名最长的是「带圈 CJK 字母及月份」，给得比两个判定列宽。
+        weight: 2.2,
+        field: WordField::Block,
     },
 ];
 
@@ -1502,5 +1528,56 @@ mod tests {
         assert!(usr.ops.import && usr.ops.export);
         assert!(usr.paged);
         assert_eq!(usr.rpc.list, "phrase.listUser");
+    }
+    /// 类型列：`block` 三个字段都要从 list 解析出来，并进得了单元格文本。
+    ///
+    /// ⚠️ 这里同时钉住**两处分派**：`from_json`（解析）与 `cell_text`（显示）。
+    /// 只补一处的表现是「列出来了但永远是空白」，或「解析到了但没有这一列」——
+    /// 两种都不报错，测试也照样绿，除非像这样把两头一起断言。
+    #[test]
+    fn common_chars_row_carries_block_type() {
+        let v = json!({
+            "char": "ㄅ",
+            "common": false,
+            "baseCommon": true,
+            "adjusted": true,
+            "block": "注音符号",
+            "blockRange": "3100-312F",
+            "blockBulkEditable": true,
+        });
+        let row = WordRow::from_json(WordCategory::CommonChars, &v);
+        assert_eq!(row.text, "ㄅ");
+        assert_eq!(row.block, "注音符号");
+        assert_eq!(row.block_range, "3100-312F");
+        assert!(row.block_bulk_editable);
+        assert_eq!(
+            row.cell_text(WordField::Block),
+            "注音符号",
+            "解析到了还得进得了单元格——两处分派漏一处就是一列空白"
+        );
+
+        // 汉字行：core 会把 bulk 标志置假，行结构要如实带过来。
+        let han = WordRow::from_json(
+            WordCategory::CommonChars,
+            &json!({
+                "char": "我", "common": true, "baseCommon": true, "adjusted": false,
+                "block": "基本汉字", "blockRange": "4E00-9FFF", "blockBulkEditable": false,
+            }),
+        );
+        assert!(
+            !han.block_bulk_editable,
+            "汉字块必须禁止整类操作——放行就是一个一键作废整张默认字表的按钮"
+        );
+    }
+
+    /// 类型列必须真的在常用字的列定义里，否则上面那条解析测试是空转的。
+    #[test]
+    fn common_chars_spec_has_block_column() {
+        let cols = spec_for(WordCategory::CommonChars).columns;
+        assert!(
+            cols.iter().any(|c| c.field == WordField::Block),
+            "常用字要有类型列"
+        );
+        assert_eq!(WordField::Block.rpc_key(), "block");
     }
 }

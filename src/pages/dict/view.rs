@@ -651,6 +651,38 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                 move |_ctx| m.toggle_common_row(&r),
                 false,
             ));
+            // 整类操作：一次处理这个字所属的整个 Unicode 块。
+            //
+            // 入口放在**当前行**而不是让用户填码位区间——他在候选里看见 `ㄅ` 觉得烦，
+            // 心里想的是「这类东西别出来」，而不是「3100 到 312F 别出来」。类型从行推导，
+            // 用户不必先知道它叫什么、码位在哪。
+            //
+            // ⛔ 汉字块**灰显**（`block_bulk_editable`）：列表里 8104 个默认字全是汉字，
+            // 对着一行「我」点「将『基本汉字』全部设为生僻」就是七千多条覆盖。core 也会
+            // 拒绝，这里灰显是为了别让一个注定失败的操作看起来可点——那只会让人以为坏了。
+            if !row.block.is_empty() {
+                let m = mgr.clone();
+                let r = row.clone();
+                let common = !row.common_now;
+                let enabled = row.block_bulk_editable;
+                let label = format!(
+                    "将「{}」全部设为{}…",
+                    row.block,
+                    super::spec::common_label(common)
+                );
+                // 副标题给出码位范围与禁用原因。范围让人确认「这一类」到底指什么；
+                // 灰着却不说为什么，用户只会以为功能坏了。
+                let subtitle = if enabled {
+                    format!("U+{}", r.block_range)
+                } else {
+                    "汉字由默认字表逐字管辖，不支持整类操作".to_string()
+                };
+                ops.push(
+                    MenuItem::run(label, move |_ctx| m.open_common_bulk(&r, common), false)
+                        .subtitle(subtitle)
+                        .enabled(enabled),
+                );
+            }
         } else if spec.ops.remove_rule {
             // Shadow 类别：`row.text` 是规则原文（列表显示的模板原文不能回填，见 activate_row），
             // `cand_id` 必须带上，否则提交会擦掉短语规则的稳定 id。

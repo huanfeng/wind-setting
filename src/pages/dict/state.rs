@@ -18,7 +18,9 @@ use crate::dialogs::schema_manager::engine_label;
 use crate::rpc;
 use crate::state::SchemaInfo;
 
-use super::spec::{CategorySpec, LogicalTab, WordCategory, WordField, WordRow, spec_for};
+use super::spec::{
+    CategorySpec, LogicalTab, WordCategory, WordField, WordRow, common_label, spec_for,
+};
 
 /// 客户端排序（非分页类别）：数值字段按数值，其余按展示文本字符串序。稳定排序。
 fn sort_rows(rows: &mut [WordRow], field: WordField, ord: SortOrder) {
@@ -322,6 +324,13 @@ enum PendingAction {
     Clear,
     /// 恢复默认（短语）。
     ResetDefault,
+    /// 把某个字所属的整个 Unicode 块设为常用/生僻（`char` 用来定位块，core 自己推导）。
+    ///
+    /// 只带定位用的那个字、不带扫描出来的字符清单：预览与执行**必须是同一次扫描**。
+    /// 若把清单缓存在这里，用户确认前切了方案或热插拔了扩展词库，执行时写的就不是他
+    /// 看到的那批字——而两次扫描之间隔着的正是用户的思考时间。core 侧 `apply` 开关走
+    /// 的是同一个方法，就是为了不让这两条路分叉。
+    CommonBulk { ch: String, common: bool },
 }
 
 /// 当前数据域的类型（全局域或方案 kind）。
@@ -1957,6 +1966,43 @@ impl DictManagerState {
         self.confirm_visible.set(true);
     }
 
+    /// 整类操作：先取预览，把影响面摆给用户看，确认后才写。
+    ///
+    /// ★ **预览必须报「命中多少条词条」，不能只报「多少个字符」**：虎码里全角逗号 `，`
+    /// 只是 1 个字符，却出现在 326 条词条里（词条内部的标点）。只说「1 个字符」，谁都会
+    /// 毫不犹豫地点确定，然后那 326 个词一起判非常用。字符数与影响面差着两个数量级。
+    pub fn open_common_bulk(&self, row: &WordRow, common: bool) {
+        let params = json!({ "char": row.text, "common": common, "apply": false });
+        let preview = match rpc::call_core("commonChars.bulkByBlock", &params) {
+            Ok(v) => v,
+            // core 的报错文案本身可读（如「『基本汉字』由默认字表逐字管辖」），原样透出。
+            Err(e) => return self.notify_err(&e.to_string()),
+        };
+        let n = |k: &str| preview.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        let (chars, entries) = (n("chars"), n("entries"));
+        let block = preview
+            .get("block")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&row.block)
+            .to_string();
+
+        if chars == 0 {
+            // 不是错误：这一类在当前词库里根本没出现过，本来就没什么可设的。
+            // 说成「操作失败」会让用户以为功能坏了，反复去点。
+            return self.notify_info(&format!("当前词库里没有「{block}」这一类的字符"));
+        }
+        let label = common_label(common);
+        *self.pending.borrow_mut() = Some(PendingAction::CommonBulk {
+            ch: row.text.clone(),
+            common,
+        });
+        self.confirm_msg.set(format!(
+            "将「{block}」的 {chars} 个字符全部设为{label}？\n\
+             这些字符出现在当前词库的 {entries} 条词条里。"
+        ));
+        self.confirm_visible.set(true);
+    }
+
     /// 执行待确认操作。
     pub fn confirm_pending(&self) {
         let act = self.pending.borrow_mut().take();
@@ -1966,6 +2012,13 @@ impl DictManagerState {
             Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
             Some(PendingAction::Clear) => self.do_clear(),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
+            Some(PendingAction::CommonBulk { ch, common }) => self.write(
+                "commonChars.bulkByBlock",
+                json!({ "char": ch, "common": common, "apply": true }),
+                // 这一类看不出结果——被设为生僻的字符多半根本不在当前这一页上，
+                // 不给回执用户无从判断到底生效没有。
+                "已按类型批量调整",
+            ),
             None => {}
         }
     }
