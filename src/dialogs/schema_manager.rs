@@ -486,8 +486,15 @@ fn build_schema_punct_dialog(state: &SchemaManagerState) -> Element {
 }
 
 /// 表格工作态 → 方案表（只收「与内置默认不同」的行，判据与全局那处**同一个函数**）。
-fn collect_punct_map(cells: &[[Signal<String>; 4]]) -> serde_json::Map<String, Value> {
-    let mut m = serde_json::Map::new();
+///
+/// `extra` 是方案表里 `PUNCT_DEFAULTS` **管不到的源字符**，原样带回去。
+/// ⚠️ 不带的话它们每次保存都会消失：方案表是**整表替换**，表格没覆盖到的行不是「保持
+/// 原样」而是「不存在」。全局那处能容忍丢弃（那边的归一只作用于 diff 基线），这里不能。
+fn collect_punct_map(
+    cells: &[[Signal<String>; 4]],
+    extra: &serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    let mut m = extra.clone();
     for (row, (_, tok, defs)) in cells.iter().zip(crate::manifest::PUNCT_DEFAULTS.iter()) {
         let vals: [String; 4] = std::array::from_fn(|i| row[i].get());
         if let Some(arr) = crate::manifest::punct_row_override(&vals, defs) {
@@ -495,6 +502,43 @@ fn collect_punct_map(cells: &[[Signal<String>; 4]]) -> serde_json::Map<String, V
         }
     }
     m
+}
+
+/// 方案表里 `PUNCT_DEFAULTS` 管不到的源字符（表格没有对应行，故只能原样透传）。
+fn punct_extra_rows(raw: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    raw.iter()
+        .filter(|(k, _)| {
+            !crate::manifest::PUNCT_DEFAULTS
+                .iter()
+                .any(|(_, tok, _)| tok == k)
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// ★★ 把方案表归一成「**表格反算出来的形状**」——脏判定基线必须用它，不能用配置原文。
+///
+/// 两处不对称会让「什么都没改」恒判为脏（[`crate::manifest::punct_row_override`] 的文档
+/// 里写着同一条）：
+///
+/// 1. 方案作者手写 `"." = ["。"]` 这种**缺列**的行，播种时缺格回落默认，反算回来四格全
+///    等默认 ⇒ 被裁掉，而原文里有；
+/// 2. 四格恰好全等内置默认的行，同样被裁掉。
+///
+/// 表现是**打开方案设置看一眼再关掉就提示有未保存改动、每次保存都写盘**，而用户什么
+/// 都没动。⇒ 基线走这里，与 [`collect_punct_map`] 同源。
+fn normalize_schema_punct_map(
+    raw: &serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    let mut out = punct_extra_rows(raw);
+    for (_, tok, defs) in crate::manifest::PUNCT_DEFAULTS {
+        let ov = raw.get(*tok).and_then(|v| v.as_array());
+        let vals: [String; 4] = std::array::from_fn(|i| crate::manifest::seed_cell(ov, i, defs[i]));
+        if let Some(row) = crate::manifest::punct_row_override(&vals, defs) {
+            out.insert((*tok).to_string(), row);
+        }
+    }
+    out
 }
 
 /// 候选注释子对话框：横竖两行 + 恢复默认。
@@ -818,6 +862,9 @@ pub struct SchemaManagerState {
     /// （列序是 **core 存储序** [中半, 英全, 中全, 英半]，展示换序只在 `field_dialogs`
     /// 的 `PUNCT_DISPLAY_COLS` 一处发生——★ 禁止在别处再写死下标）。
     settings_bh_punct_cells: Rc<Vec<[Signal<String>; 4]>>,
+    /// 方案表里 `PUNCT_DEFAULTS` 管不到的源字符，播种时拆出、回写时并回。
+    /// 表格没有对应行 ⇒ 不透传就等于每次保存都把方案作者写的这些行删掉。
+    settings_bh_punct_extra: Rc<RefCell<serde_json::Map<String, Value>>>,
     /// 打开时的各项初值，供脏判定——没有它，打开看一眼再关掉也会入队写盘。
     ///
     /// `RefCell` 而非 `Cell`：注释模板带 `String`，`BehaviorSeed` 不再是 `Copy`。
@@ -958,6 +1005,7 @@ impl SchemaManagerState {
                     .map(|(_, _, defs)| std::array::from_fn(|i| signal(defs[i].to_string())))
                     .collect(),
             ),
+            settings_bh_punct_extra: Rc::new(RefCell::new(serde_json::Map::new())),
             settings_bh_at_open: Rc::new(RefCell::new(BehaviorSeed::default())),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_disp: signal(String::new()),
@@ -1939,6 +1987,7 @@ impl SchemaManagerState {
             // 的表显示成这个方案的（同本函数开头那句「对话框复用同一组信号」）。
             self.settings_bh_punct_map_on.set(seed.punct_map.is_some());
             let pm = seed.punct_map.clone().unwrap_or_default();
+            *self.settings_bh_punct_extra.borrow_mut() = punct_extra_rows(&pm);
             for (row, (_, tok, defs)) in self
                 .settings_bh_punct_cells
                 .iter()
@@ -1951,6 +2000,12 @@ impl SchemaManagerState {
             }
             self.settings_bh_punct_map_disp
                 .set(punct_map_summary(seed.punct_map.is_some()));
+            // ★ 脏判定基线要用**归一后**的表，不能用配置原文——理由见
+            // `normalize_schema_punct_map`（否则打开看一眼关掉就恒判为脏）。
+            let seed = BehaviorSeed {
+                punct_map: seed.punct_map.as_ref().map(normalize_schema_punct_map),
+                ..seed
+            };
             *self.settings_bh_at_open.borrow_mut() = seed;
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::Behavior);
@@ -2140,10 +2195,12 @@ impl SchemaManagerState {
             comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h),
             // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
             // 三态合成只此一处。
-            punct_map: self
-                .settings_bh_punct_map_on
-                .get()
-                .then(|| collect_punct_map(&self.settings_bh_punct_cells)),
+            punct_map: self.settings_bh_punct_map_on.get().then(|| {
+                collect_punct_map(
+                    &self.settings_bh_punct_cells,
+                    &self.settings_bh_punct_extra.borrow(),
+                )
+            }),
         }
     }
 
@@ -5266,6 +5323,78 @@ mod ext_dict_tests {
             // null 落进 cfg 后 seed 要读回 None——这一步正是三态闭合的关键格。
             assert_eq!(seed_behavior(&cfg).punct_map, map, "三态回环必须闭合");
         }
+    }
+
+    /// ★★ 脏判定基线 = **表格反算出来的形状**，不是配置原文。
+    ///
+    /// 这条防的是「打开方案设置看一眼再关掉，就提示有未保存改动、每次保存都写盘」——
+    /// 用户什么都没动。两种触发都来自方案作者手写的方案文件：缺列的行、以及四格恰好
+    /// 全等内置默认的行，两者播种后反算回来都会被 `punct_row_override` 裁掉。
+    ///
+    /// ⚠️ 断言必须是 `normalize(normalize(x)) == normalize(x)`（幂等）**加上**
+    /// 「原文 != 归一后」——只测幂等的话，`normalize` 写成恒等函数也照样通过。
+    #[test]
+    fn normalize_schema_punct_map_matches_table_roundtrip() {
+        let raw: serde_json::Map<String, Value> = json!({
+            // 缺列：播种时后三格回落默认 ⇒ 四格全等默认 ⇒ 该行应被裁掉
+            "!": ["！"],
+            // 四格全等内置默认 ⇒ 同样应被裁掉
+            "@": ["@", "＠", "＠", "@"],
+            // 真正的自定义 ⇒ 保留
+            "%": ["％", "％", "％", "%"],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let norm = normalize_schema_punct_map(&raw);
+        assert!(
+            !norm.contains_key("!"),
+            "缺列但等价于默认的行必须被裁掉，否则与表格反算的结果对不上 ⇒ 恒判脏"
+        );
+        assert!(!norm.contains_key("@"), "四格全等默认的行同样要裁掉");
+        assert_eq!(
+            norm.get("%"),
+            Some(&json!(["％", "％", "％", "%"])),
+            "真正的自定义要留下"
+        );
+        assert_ne!(
+            norm, raw,
+            "前置条件：这份夹具必须真的会被归一改变，否则本测试测不到东西"
+        );
+        assert_eq!(
+            normalize_schema_punct_map(&norm),
+            norm,
+            "幂等：归一后的表再归一不变"
+        );
+    }
+
+    /// ★ `PUNCT_DEFAULTS` 之外的源字符必须原样透传。
+    ///
+    /// 表格没有对应行 ⇒ 丢掉它就等于「每次保存都把方案作者写的这一行删掉」。
+    /// 方案表是**整表替换**，被裁掉的行不是「保持原样」而是「不存在」——
+    /// 全局那处能容忍丢弃（那边归一只作用于 diff 基线），这里不能。
+    #[test]
+    fn punct_extra_rows_survive_normalize() {
+        let raw: serde_json::Map<String, Value> = json!({
+            "%": ["％", "％", "％", "%"],
+            "§": ["§", "§", "§", "S"],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(
+            !crate::manifest::PUNCT_DEFAULTS
+                .iter()
+                .any(|(_, tok, _)| *tok == "§"),
+            "前置条件：被测源字符必须真的不在表里"
+        );
+        let norm = normalize_schema_punct_map(&raw);
+        assert_eq!(
+            norm.get("§"),
+            Some(&json!(["§", "§", "§", "S"])),
+            "★ 表外源字符必须原样带回，否则每次保存都会静默删掉它"
+        );
     }
 
     /// 摘要只看勾选态（与候选注释同构）；行数不进摘要，理由见 `punct_map_summary`。
