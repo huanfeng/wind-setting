@@ -654,34 +654,29 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             // 整类操作：一次处理这个字所属的整个 Unicode 块。
             //
             // 入口放在**当前行**而不是让用户填码位区间——他在候选里看见 `ㄅ` 觉得烦，
-            // 心里想的是「这类东西别出来」，而不是「3100 到 312F 别出来」。类型从行推导，
-            // 用户不必先知道它叫什么、码位在哪。
+            // 心里想的是「这类东西别出来」，而不是「3100 到 312F 别出来」。
             //
-            // ⛔ 汉字块**灰显**（`block_bulk_editable`）：列表里 8104 个默认字全是汉字，
-            // 对着一行「我」点「将『基本汉字』全部设为生僻」就是七千多条覆盖。core 也会
-            // 拒绝，这里灰显是为了别让一个注定失败的操作看起来可点——那只会让人以为坏了。
-            if !row.block.is_empty() {
-                let m = mgr.clone();
-                let r = row.clone();
-                let common = !row.common_now;
-                let enabled = row.block_bulk_editable;
-                let label = format!(
-                    "将「{}」全部设为{}…",
-                    row.block,
-                    super::spec::common_label(common)
-                );
-                // 副标题给出码位范围与禁用原因。范围让人确认「这一类」到底指什么；
-                // 灰着却不说为什么，用户只会以为功能坏了。
-                let subtitle = if enabled {
-                    format!("U+{}", r.block_range)
-                } else {
-                    "汉字由默认字表逐字管辖，不支持整类操作".to_string()
-                };
-                ops.push(
-                    MenuItem::run(label, move |_ctx| m.open_common_bulk(&r, common), false)
-                        .subtitle(subtitle)
-                        .enabled(enabled),
-                );
+            // ★ **两个方向都给，不按当前行的判定取反。** 取反会造成一个死锁：域外字符
+            // 默认判常用，而它**能出现在列表里的前提就是已被设为生僻**（列表只有默认字表
+            // 加用户覆盖过的字），于是取反后永远只剩「全部设为常用」，够不着「全部设为
+            // 生僻」。整类的方向本就与某一行现在是什么无关——一类里可以有的常用有的生僻。
+            //
+            // 汉字块不出现此项（不是灰显）：整类操作对 8104 个默认字没有意义，core 也拒绝。
+            if row.block_bulk_editable {
+                // 生僻在前：来用这个功能的人十有八九是想把某类符号关掉。
+                for common in [false, true] {
+                    let m = mgr.clone();
+                    let r = row.clone();
+                    let label = format!(
+                        "将「{}」全部设为{}…",
+                        row.block,
+                        super::spec::common_label(common)
+                    );
+                    ops.push(
+                        MenuItem::run(label, move |_ctx| m.open_common_bulk(&r, common), false)
+                            .subtitle(format!("U+{}", row.block_range)),
+                    );
+                }
             }
         } else if spec.ops.remove_rule {
             // Shadow 类别：`row.text` 是规则原文（列表显示的模板原文不能回填，见 activate_row），

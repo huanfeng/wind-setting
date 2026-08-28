@@ -1580,4 +1580,31 @@ mod tests {
         );
         assert_eq!(WordField::Block.rpc_key(), "block");
     }
+    /// 整类操作必须**两个方向都提供**，不能按当前行的判定取反。
+    ///
+    /// 取反会造成一个够不着的死锁，且从代码上完全看不出来：域外字符（注音、假名、IDC）
+    /// 默认判「常用」，而它**能出现在列表里的前提就是已被设为生僻**——列表只列默认字表
+    /// 加用户覆盖过的字。于是这一行恒为「当前=生僻」，取反后菜单里只剩「全部设为常用」，
+    /// 用户永远点不到「全部设为生僻」，也就永远关不掉这一类。
+    ///
+    /// 本条钉的是那个前提：域外字符出现在列表里时，`common_now` 恒为 false。
+    #[test]
+    fn out_of_scope_rows_are_always_rare_so_bulk_needs_both_directions() {
+        // 用户把 ㄅ 设为生僻，它才进列表——这是域外字符进列表的唯一途径。
+        let row = WordRow::from_json(
+            WordCategory::CommonChars,
+            &json!({
+                "char": "ㄅ", "common": false, "baseCommon": true, "adjusted": true,
+                "block": "注音符号", "blockRange": "3100-312F", "blockBulkEditable": true,
+            }),
+        );
+        assert!(row.block_bulk_editable);
+        assert!(
+            !row.common_now && row.common_base,
+            "域外字符默认放行、被设为生僻后才进列表：取反只会得到「设为常用」"
+        );
+        // 两个方向的标签都得拼得出来，且互不相同。
+        assert_eq!(common_label(false), "生僻");
+        assert_eq!(common_label(true), "常用");
+    }
 }
