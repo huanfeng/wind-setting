@@ -2217,14 +2217,14 @@ impl DictManagerState {
     ) -> Result<(Vec<(&'static str, Value)>, &'static str), String> {
         let spec = self.current_spec();
         let t = text.trim();
-        let mut it = t.chars();
-        let Some(ch) = it.next() else {
+        if t.is_empty() {
             return Err("请填一个字".into());
-        };
-        if it.next().is_some() {
-            return Err("只能填一个字——常用/生僻是单字的属性，词组没有".into());
         }
-        let p = json!({ "char": ch.to_string(), "common": self.common_choice.get() == 0 });
+        // ⚠️ **不在这里数字符个数**。「一个字」按 Unicode 字素簇算，而 `⚽️` 是 2 个码位、
+        // `👨‍👩‍👧` 是 5 个——按 `chars().count() == 1` 拦，用户粘一个 emoji 进来就被前端直接
+        // 拒了，而 core 明明收得下。判据留在 core 一处（`single_markable_char`），
+        // 它拒绝时的报错文案本身可读，由 `run_calls` 原样显示。
+        let p = json!({ "char": t, "common": self.common_choice.get() == 0 });
         Ok((
             vec![(spec.rpc.add, p)],
             if editing { "已更新" } else { "已添加" },
@@ -3805,11 +3805,23 @@ mod tests {
         st.edit_weight.set(String::new());
 
         st.edit_text.set("  ".into());
-        assert!(st.save_calls().unwrap_err().contains("一个字"));
+        assert!(
+            st.save_calls().unwrap_err().contains("一个字"),
+            "空白仍要本地拦"
+        );
 
+        // ⚠️ **词组不在这里拦**：本地曾按 `chars().count() == 1` 判，于是 `⚽️`(2 个码位)、
+        // `👨‍👩‍👧`(5 个) 这类「屏幕上一个图形」被前端直接拒了，而 core 明明收得下。
+        // 「一个字」是 Unicode 字素簇的事，判据留在 core 一处（`single_markable_char`），
+        // 前端只管把原文发过去、把 core 的报错原样显示。
         st.edit_text.set("我们".into());
-        let e = st.save_calls().unwrap_err();
-        assert!(e.contains("一个字"), "实际报错: {e}");
+        let (calls, _) = st.save_calls().expect("非空文本一律交给 core 判");
+        assert_eq!(calls[0].0, "commonChars.set");
+        assert_eq!(
+            calls[0].1["char"],
+            json!("我们"),
+            "原文照发，不在本地截取首字"
+        );
     }
 
     /// 「恢复默认」只对**改过的行**放行。
