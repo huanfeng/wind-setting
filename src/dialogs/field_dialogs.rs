@@ -880,7 +880,23 @@ pub fn build_index_labels_dialog(
 /// 展示/存储换序只许经此常量，禁止在别处再写死下标（防两端再度错位）。
 const PUNCT_DISPLAY_COLS: [usize; 4] = [3, 1, 0, 2];
 
-/// `header`：表格上方的额外控件（方案级那处放「本方案使用自己的表」开关）；`None` = 不插。
+/// 表格上方的额外控件，连同它对整张表的授权。
+///
+/// ★ `gate` **必填**，不是 `Option`：会插 header 的唯一场景就是「一个开关决定这张表算不算
+/// 数」（方案级那处）。做成可选的话，下一个人插一个说明性 header 时会顺手不填，于是又回到
+/// 「开关没勾、表照样能改、改完不生效」——那正是本字段要根治的问题。
+/// 确实需要一个不管辖表格的 header 时，再加一个字段表达，不要把这一个放软。
+pub struct PunctTableHeader {
+    /// 插在说明与表格之间的控件（通常就是那个开关本身；它自己不受 `gate` 管辖）。
+    pub element: Element,
+    /// 授权信号：为 false 时表格与「恢复默认」整体置灰且不接事件（禁用沿父链继承，
+    /// 见 windui `Element::enabled_signal`）。「关闭」按钮不在管辖内，永远点得动。
+    pub gate: Signal<bool>,
+}
+
+/// `header`：表格上方的额外控件 + 授权信号（方案级那处放「本方案使用自己的表」开关）；
+/// `None` = 不插，且表格恒可编辑（全局那处的开关在 manifest 里以 `gate_key` 挡在门外，
+/// 关掉时连对话框都打不开，故不需要第二道）。
 /// `hint`：表格上方的说明文字（两处语义不同——全局那份是「基线是内置默认」，方案那份还要
 /// 说清「整份替换全局表」）。
 pub fn build_punct_table_dialog(
@@ -889,9 +905,11 @@ pub fn build_punct_table_dialog(
     src_labels: Vec<String>,
     cells_data: Vec<[Signal<String>; 4]>,
     defaults: Vec<[String; 4]>,
-    header: Option<Element>,
+    header: Option<PunctTableHeader>,
     hint: &str,
 ) -> Element {
+    // 授权信号：未授权时表格子树整体禁用（事件不入、置灰），编辑入口另有一道显式守卫。
+    let gate = header.as_ref().map(|h| h.gate);
     // 单元格编辑子对话框状态
     let edit_show = signal(false);
     let edit_buf = signal(String::new());
@@ -922,6 +940,12 @@ pub fn build_punct_table_dialog(
         ],
         table_cells,
         move |_ctx, r, c| {
+            // 未授权时不弹编辑框。容器禁用已经拦住了事件，这一句是第二道：表格若哪天换成
+            // 自绘 widget、走了别的投递路径，这里仍然守得住（同类缺口见方案级标点那轮的
+            // 「绕过收窄类型的直调路径」）。
+            if gate.is_some_and(|g| !g.get()) {
+                return;
+            }
             if c == 0 {
                 return;
             }
@@ -962,37 +986,49 @@ pub fn build_punct_table_dialog(
         );
     // 额外控件插在说明与表格之间：它决定整张表生不生效，得在表格之前被看到。
     let frame = match header {
-        Some(h) => frame.child(Element::col().width_match().padding_xy(18, 0).child(h)),
+        Some(h) => frame.child(
+            Element::col()
+                .width_match()
+                .padding_xy(18, 0)
+                .child(h.element),
+        ),
         None => frame,
     };
-    let frame = frame
-        .child(Element::col().width_match().padding_xy(18, 6).child(table))
-        .child(Element::divider())
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .padding_xy(16, 12)
-                .spacing(8)
-                .child(
-                    Element::button("恢复默认")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
-                            for (row, def) in cells_reset.iter().zip(defaults_reset.iter()) {
-                                for i in 0..4 {
-                                    row[i].set(def[i].clone());
-                                }
+    // 表格整体挂授权：禁用沿父链继承到每个单元格，于是「点单元格」在事件分发前就被拦下。
+    let mut table_wrap = Element::col().width_match().padding_xy(18, 6).child(table);
+    if let Some(g) = gate {
+        table_wrap = table_wrap.enabled_signal(g);
+    }
+    let frame = frame.child(table_wrap).child(Element::divider()).child(
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .padding_xy(16, 12)
+            .spacing(8)
+            .child({
+                // 「恢复默认」直接写单元格信号，是绕开表格的第二个改数据入口，同受授权管辖。
+                let btn = Element::button("恢复默认")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| {
+                        for (row, def) in cells_reset.iter().zip(defaults_reset.iter()) {
+                            for i in 0..4 {
+                                row[i].set(def[i].clone());
                             }
-                        }),
-                )
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("关闭")
-                        .small()
-                        .on_click(move |_| visible.set(false)),
-                ),
-        );
+                        }
+                    });
+                match gate {
+                    Some(g) => btn.enabled_signal(g),
+                    None => btn,
+                }
+            })
+            .child(Element::leaf().weight(1.0))
+            .child(
+                Element::button("关闭")
+                    .small()
+                    .on_click(move |_| visible.set(false)),
+            ),
+    );
     let table_dialog = Element::dialog(visible, frame);
 
     // 单元格编辑子对话框。
@@ -1273,6 +1309,62 @@ pub fn build_comment_dialog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 门控：没勾「使用本方案的标点表」时，表格必须点不动。
+    ///
+    /// 真机反馈的原话是「上方 checkbox 不勾，下方照样能改，但实际无效」——writer 那侧
+    /// 一直是对的（未勾选写 null，见 `schema_manager::punct_map_value`），坏的是界面
+    /// 放行了一次注定被丢弃的编辑：用户改完一整页、保存、毫无变化且零提示。
+    ///
+    /// ★ 断言落在「点表格中央这一下命中的节点启不启用」，而不是「树里有没有禁用节点」：
+    /// 后者把 gate 错挂到任意一个角落（比如「关闭」按钮）也照样绿，等于没测。
+    #[test]
+    fn punct_table_gate_blocks_editing_when_unchecked() {
+        use windui::core::Tree;
+        use windui::geometry::{Point, Size};
+
+        let gate = signal(false);
+        let cells: Vec<[Signal<String>; 4]> = (0..6)
+            .map(|_| std::array::from_fn(|_| signal("x".to_string())))
+            .collect();
+        let defaults: Vec<[String; 4]> = (0..6)
+            .map(|_| std::array::from_fn(|_| "d".to_string()))
+            .collect();
+        let src: Vec<String> = (0..6).map(|i| format!("s{i}")).collect();
+        let el = build_punct_table_dialog(
+            signal(true),
+            "测试标点表",
+            src,
+            cells,
+            defaults,
+            Some(PunctTableHeader {
+                element: Element::checkbox("开启", gate),
+                gate,
+            }),
+            "说明",
+        );
+
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        let mut te = windui::text::NullTextEngine;
+        let win = Size::new(900, 900);
+        tree.layout_root(win, &mut te);
+        // 对话框居中、表格占据主体，故窗口中心落在某个单元格上。
+        let center = Point::new(450, 450);
+
+        let hit = tree.hit_test(center).expect("窗口中央应命中表格里的节点");
+        assert!(
+            !tree.node_enabled(hit),
+            "没勾选却点得动表格 = 用户改完不生效且零提示"
+        );
+        assert!(tree.node_enabled(root), "禁的应是表格子树，不是整个对话框");
+
+        gate.set(true);
+        tree.layout_root(win, &mut te);
+        let hit = tree.hit_test(center).expect("窗口中央应命中表格里的节点");
+        assert!(tree.node_enabled(hit), "勾选后表格必须能编辑");
+    }
 
     #[test]
     fn spaced_strlist_roundtrip() {

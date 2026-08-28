@@ -455,7 +455,7 @@ fn punct_map_summary(on: bool) -> String {
 ///
 /// ⚠️ 于是有一条用户可见的后果，hint 里必须说：**开启后，全局表里配的那些行不再生效**。
 fn build_schema_punct_dialog(state: &SchemaManagerState) -> Element {
-    use crate::dialogs::field_dialogs::build_punct_table_dialog;
+    use crate::dialogs::field_dialogs::{PunctTableHeader, build_punct_table_dialog};
 
     let on = state.settings_bh_punct_map_on;
     let cells: Vec<[Signal<String>; 4]> = state.settings_bh_punct_cells.as_ref().clone();
@@ -480,8 +480,13 @@ fn build_schema_punct_dialog(state: &SchemaManagerState) -> Element {
         src_labels,
         cells,
         defaults,
-        Some(header),
-        "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会写进本方案。\n未开启时本方案完全跟随全局的自定义标点设置。",
+        // ★ 开关必须管住表格：未勾选时 writer 写的是 null（`punct_map_value`），表里改什么
+        // 都不落盘。不置灰的话用户改完一整页、保存、毫无变化且零提示——真机反馈即此。
+        Some(PunctTableHeader {
+            element: header,
+            gate: on,
+        }),
+        "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会写进本方案。\n未开启时表格不可编辑，本方案完全跟随全局的自定义标点设置。",
     )
 }
 
