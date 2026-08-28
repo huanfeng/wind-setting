@@ -777,7 +777,10 @@ fn shell_with_buttons(
         .child(body)
         .child(Element::divider())
         .child(bottom);
-    Element::dialog(visible, frame)
+    // 右上角小 ×：标题行右侧本就是空的（标题 `width_match` 左对齐），叠上去不挤任何东西。
+    // 与底栏的「关闭 / 取消」是同一件事，多这个入口是因为浮层拖开之后底栏可能已经被
+    // 拖出视野，而标题行按定义还留在窗口内（拖动的钳制保的就是它）。
+    Element::dialog_closable(visible, frame, move |_| visible.set(false))
 }
 
 /// 自定义序号标签对话框：10 个文本框对应序号 1-10（**每框一个完整标签**，可多字符），
