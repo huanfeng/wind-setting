@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.118.0",
+  "appVersion": "0.119.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -1228,6 +1228,25 @@
       "values": [
         "directwrite",
         "gdi"
+      ]
+    },
+    {
+      "default": [],
+      "key": "ui.font.fallback",
+      "type": "strlist"
+    },
+    {
+      "default": {},
+      "key": "ui.font.scripts",
+      "type": "map",
+      "values": [
+        "latin",
+        "greek",
+        "cyrillic",
+        "cjk",
+        "emoji",
+        "digits",
+        "punct"
       ]
     },
     {

@@ -1717,6 +1717,13 @@ fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) ->
     } else if key == COMMENT_HOST_KEY {
         // 候选注释：横/纵两份模板 + 最大字数 + 可复制的模板参考，共用一个对话框。
         build_dialog_button_comment(state, key, cfg)
+    } else if key == "ui.font.fallback" || key == "ui.font.scripts" {
+        // ⚠️ 字体名**含空格**（`Microsoft YaHei UI`），两条通用兜底都会毁数据：
+        // strlist 的空格分隔编辑把一个字体拆成三个；map 的通用控件按标量读写
+        // （`v.as_str()` / `Value::String`），而 `scripts` 的值是**字体链数组**——
+        // 读出来是空串、存回去类型都变了，core 解析不了 ⇒ 打开设置页保存一次整项就没了。
+        // 故走按**行**切分的专用对话框。
+        build_dialog_button_font(state, key, item, cfg)
     } else if cap_ty == "map" {
         build_dialog_button_map(state, key, item, cfg)
     } else if cap_ty == "strlist" && !item.options.is_empty() {
@@ -3081,6 +3088,99 @@ fn build_dialog_button_map(
 
     let hint = item.hint.clone().unwrap_or_default();
     let dlg = build_map_dialog(visible, &item.label, &hint, text, def_text);
+    register_dialog(state, dlg);
+    visible
+}
+
+/// 字体相关的两项（`ui.font.fallback` / `ui.font.scripts`）：按**行**切分的编辑对话框。
+///
+/// 一个函数管两个键，是因为它们的差别只有编解码与提示语；分成两个函数会让
+/// writer/loader/恢复默认这三处结构重复一遍，而那三处正是漏一处就静默失效的地方。
+///
+/// ⚠️ 两者都**不能**用通用兜底，理由见 `build_dialog_body` 的分派注释与
+/// `field_dialogs` 里那段字体编解码的说明。
+fn build_dialog_button_font(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::{
+        build_text_rows_dialog_with, font_list_to_rows, font_scripts_to_rows, rows_to_font_list,
+        rows_to_font_scripts,
+    };
+    let is_scripts = key == "ui.font.scripts";
+    // 类别名的值域取自 core 的 capability，**不在这里手抄一份**：抄本会滞后，
+    // core 加了新类别而设置页永远不列出来（而且没有任何测试拦得住）。
+    // 空 Vec（快照缺该字段）时 `font_scripts_to_rows` 自动退回「只列已配的」。
+    let known: Vec<String> = state
+        .capabilities
+        .entries
+        .get("ui.font.scripts")
+        .map(|e| e.values.clone())
+        .unwrap_or_default();
+    let encode = move |v: Option<&Value>| -> String {
+        if is_scripts {
+            let empty = serde_json::Map::new();
+            font_scripts_to_rows(v.and_then(|v| v.as_object()).unwrap_or(&empty), &known)
+        } else {
+            font_list_to_rows(v)
+        }
+    };
+    let text = signal(encode(cfg.get_path(key)));
+    let visible = signal(false);
+
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let v = if is_scripts {
+                Value::Object(rows_to_font_scripts(&text.get()))
+            } else {
+                Value::Array(rows_to_font_list(&text.get()))
+            };
+            c.set_path(&kw, v);
+        }));
+
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            text.set(encode(c.get_path(&kl)));
+        }),
+    );
+
+    // 出厂默认两者都是空（不覆盖），故「恢复默认」就是清空。
+    let hint = item.hint.clone().unwrap_or_default();
+    // ⚠️ 说明区是 `max_lines(4)`，超出部分**静默截断**且不加省略号——本轮截图自查里
+    // 这句原本写全了七个类别名，结果显示成「类别可填 latin / greek /」就没了。
+    // 面向用户的文案要按「四行能装下」来写，不能按「说全了才对」来写。
+    // 类别名不再列在说明里：七个类别已经**预填成行**，框里那份就是权威且不会过期的清单，
+    // 说明区再抄一遍既占掉两行、又多一处会漂的真相源。
+    let format_hint = if is_scripts {
+        "每行一条：类别 = 字体1, 字体2；留空的类别 = 不单独指定"
+    } else {
+        "每行一个字体名（字体名含空格，故按行分而不是按空格分）"
+    };
+    // ⚠️ 占位符必须各给各的：复用外壳会静默继承标点表的「，=，」，而这两项的行格式
+    // 完全不同——用户照着占位符写会得到一份空配置。它不进任何数据流，测试断言不到，
+    // 只有 `--screenshot` 看得见（本轮正是这么发现的）。
+    let placeholder = if is_scripts {
+        "latin = Segoe UI"
+    } else {
+        "Noto Sans Mongolian"
+    };
+    let dlg = build_text_rows_dialog_with(
+        visible,
+        &item.label,
+        &hint,
+        format_hint,
+        placeholder,
+        text,
+        String::new(),
+    );
     register_dialog(state, dlg);
     visible
 }

@@ -194,6 +194,109 @@ pub fn rows_to_map(text: &str) -> Map<String, Value> {
     m
 }
 
+// ─────────────────── 字体相关：**一行一项**的编解码 ───────────────────
+//
+// ⚠️ 字体名**含空格**（`Microsoft YaHei UI`），所以这两项都不能用通用兜底控件：
+// `strlist` 的空格分隔编辑会把一个字体拆成三个；`map` 的通用控件按标量读写
+// （`v.as_str()` / `Value::String`），而 `ui.font.scripts` 的值是**字体链数组**——
+// 读出来是空串、存回去类型都变了，core 解析不了 ⇒ 打开设置页保存一次，整项配置就没了。
+// 故两者各配一套按**行**切分的编解码。
+
+/// `["A", "B"]` → 每行一个字体名。
+pub fn font_list_to_rows(v: Option<&Value>) -> String {
+    v.and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// 每行一个字体名 → `["A", "B"]`。空行丢弃（顺带容忍尾随换行）。
+pub fn rows_to_font_list(text: &str) -> Vec<Value> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| Value::String(l.to_string()))
+        .collect()
+}
+
+/// `{"latin": ["A","B"]}` → 每行 `latin = A, B`，并把 `known` 里**尚未配置**的类别
+/// 以空链预填进去。
+///
+/// 链内用逗号分隔而不是空格：字体名含空格，空格分不开。
+///
+/// # 为什么要预填
+///
+/// 类别名（`latin`/`cjk`/…）是**封闭值域**，用户猜不出来也没处查——空白框加一句提示，
+/// 等于要求用户先去翻文档。预填后这个对话框自己就是那份文档：想改哪类填哪行，
+/// 留空的行在 [`rows_to_font_scripts`] 里被丢弃，什么都不填就等于没配过。
+///
+/// `known` 来自 core 的 capability（`ui.font.scripts` 的键名值域），**顺序照抄**——
+/// core 侧有测试钉住它与 `ScriptClass::ALL` 同序，这里再排一次序就把那条钉子废了，
+/// 且用户每次打开对话框会看到行序变化。`known` 为空（快照缺该字段）时退回「只列已配的」，
+/// 不会变成一个空框。
+///
+/// 用户自己写的、不在 `known` 里的键排在最后（按字典序）：core 会忽略并记一条日志，
+/// 但设置页**不能**替 core 把它删掉——那是静默丢用户数据。
+pub fn font_scripts_to_rows(map: &Map<String, Value>, known: &[String]) -> String {
+    let chain_of = |v: &Value| -> String {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    let mut rows: Vec<String> = known
+        .iter()
+        .map(|k| {
+            let chain = map.get(k).map(&chain_of).unwrap_or_default();
+            format!("{k} = {chain}")
+        })
+        .collect();
+    let mut extra: Vec<String> = map
+        .iter()
+        .filter(|(k, _)| !known.iter().any(|n| n == *k))
+        .map(|(k, v)| format!("{k} = {}", chain_of(v)))
+        .collect();
+    extra.sort(); // 未知键之间顺序稳定，避免每次打开对话框都判为脏
+    rows.extend(extra);
+    rows.join("\n")
+}
+
+/// 每行 `latin = A, B` → `{"latin": ["A","B"]}`。
+///
+/// 无 `=` 的行、空键、空链一律丢弃：空链在 core 侧会被 `FontPlan::new` 归一化掉，
+/// 留着只会让「保存后重开，那一行没了」显得像 bug。
+pub fn rows_to_font_scripts(text: &str) -> Map<String, Value> {
+    let mut m = Map::new();
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let chain: Vec<Value> = v
+            .split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(|x| Value::String(x.to_string()))
+            .collect();
+        if chain.is_empty() {
+            continue;
+        }
+        m.insert(key.to_string(), Value::Array(chain));
+    }
+    m
+}
+
 /// 映射表编辑对话框（降级实现：每行一对 `原符号=替换`）。
 /// windui 无动态增删行的 table_editable，故用 multiline text_input 替代。
 pub fn build_map_dialog(
@@ -203,10 +306,70 @@ pub fn build_map_dialog(
     text: Signal<String>,
     default_text: String,
 ) -> Element {
+    build_text_rows_dialog(
+        visible,
+        title,
+        hint,
+        "每行一对，格式：原符号=替换符号",
+        text,
+        default_text,
+    )
+}
+
+/// 多行文本编辑对话框的通用外壳。
+///
+/// `format_hint` 是「每行怎么写」那一句，由调用方给——字体那两项的行格式与标点表不同，
+/// 共用外壳但不共用说明。
+pub fn build_text_rows_dialog(
+    visible: Signal<bool>,
+    title: &str,
+    hint: &str,
+    format_hint: &str,
+    text: Signal<String>,
+    default_text: String,
+) -> Element {
+    build_text_rows_dialog_with(
+        visible,
+        title,
+        hint,
+        format_hint,
+        "，=，",
+        text,
+        default_text,
+    )
+}
+
+/// 同上，可指定输入框占位符。
+///
+/// ⚠️ 抽出这个参数是因为占位符**只有截图看得见**：复用外壳时它会静默继承标点表的
+/// `，=，`，而字体那两项的行格式完全不同——用户照着占位符写会得到一份空配置。
+/// 测试断言不到（它不进任何数据流），`--screenshot` 自查是唯一发现途径。
+#[allow(clippy::too_many_arguments)]
+pub fn build_text_rows_dialog_with(
+    visible: Signal<bool>,
+    title: &str,
+    hint: &str,
+    format_hint: &str,
+    placeholder: &str,
+    text: Signal<String>,
+    default_text: String,
+) -> Element {
+    // 输入框高度随**初始**内容长短走。写死 120 时，预填了七个类别的字体对话框一打开
+    // 就滚到了末行，第一行 `latin` 在视野外——用户第一眼看不到最常用的那一类。
+    // 上限防止将来某个键行数暴涨把对话框顶出屏幕；下限保住空内容时的手感。
+    let box_h = {
+        // 19px/行是实测值（原先写死 120 时刚好露出 6 行）。+24 给内边距与最后一行留余量。
+        const LINE_H: i32 = 19;
+        let lines = text.get().lines().count().max(1) as i32;
+        (lines * LINE_H + 24).clamp(120, 280)
+    };
     let full_hint = if hint.is_empty() {
-        "每行一对，格式：原符号=替换符号".to_string()
+        format_hint.to_string()
     } else {
-        format!("{}\n每行一对，格式：原符号=替换符号", hint)
+        format!(
+            "{hint}
+{format_hint}"
+        )
     };
     let frame = Element::col()
         .width(420)
@@ -233,10 +396,10 @@ pub fn build_map_dialog(
         )
         .child(
             Element::col().width_match().padding_xy(18, 6).child(
-                Element::text_input(text, "，=，")
+                Element::text_input(text, placeholder)
                     .multiline()
                     .width_match()
-                    .height(120),
+                    .height(box_h),
             ),
         )
         .child(Element::divider())
@@ -1307,6 +1470,122 @@ pub fn build_comment_dialog(
 }
 
 #[cfg(test)]
+mod font_rows_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// ★★ 字体名**含空格**时往返必须闭合。
+    ///
+    /// 这条守的正是「为什么不能用通用兜底控件」：`strlist` 的通用编辑器按空格分隔，
+    /// `Microsoft YaHei UI` 会被拆成三个字体，且**保存时不报任何错**——
+    /// 用户只会发现候选字体变了，而设置页显示的还是对的。
+    #[test]
+    fn font_list_round_trips_names_containing_spaces() {
+        let v = json!(["Microsoft YaHei UI", "Noto Sans Mongolian"]);
+        let rows = font_list_to_rows(Some(&v));
+        assert_eq!(rows, "Microsoft YaHei UI\nNoto Sans Mongolian");
+        assert_eq!(Value::Array(rows_to_font_list(&rows)), v, "往返未闭合");
+    }
+
+    /// 空行与尾随换行不得产生空字体项（空项会让 core 的链首变成空串）。
+    #[test]
+    fn font_list_drops_blank_lines() {
+        assert_eq!(
+            rows_to_font_list("A\n\n  \nB\n"),
+            vec![json!("A"), json!("B")]
+        );
+        assert_eq!(rows_to_font_list(""), Vec::<Value>::new());
+        assert_eq!(font_list_to_rows(None), "");
+    }
+
+    /// ★★ `scripts` 的值是**数组**，往返必须保持数组类型。
+    ///
+    /// 通用 map 控件按标量读写（`v.as_str()` / `Value::String`）：读出来是空串、
+    /// 存回去类型变了 ⇒ core 反序列化失败、整项静默丢失。**这是本轮最该守住的一条**。
+    #[test]
+    fn font_scripts_round_trips_and_keeps_arrays() {
+        let m = json!({
+            "latin": ["Segoe UI", "Arial"],
+            "cjk": ["Microsoft YaHei UI"],
+        });
+        let map = m.as_object().unwrap();
+        // known 为空 = 快照缺键名域时的退化路径：只列已配的，按字典序。
+        let rows = font_scripts_to_rows(map, &[]);
+        assert_eq!(rows, "cjk = Microsoft YaHei UI\nlatin = Segoe UI, Arial");
+        let back = rows_to_font_scripts(&rows);
+        assert_eq!(Value::Object(back.clone()), m, "往返未闭合");
+        assert!(
+            back["latin"].is_array(),
+            "值必须仍是数组——写成标量的话 core 解析不了，整项配置静默丢失"
+        );
+    }
+
+    /// 畸形输入一律丢弃而不是写进半成品：无 `=`、空键、空链。
+    #[test]
+    fn font_scripts_drops_malformed_rows() {
+        let m = rows_to_font_scripts("没有等号\n = 只有值\nlatin =\nlatin = Segoe UI\n");
+        assert_eq!(Value::Object(m), json!({ "latin": ["Segoe UI"] }));
+    }
+
+    /// 预填：`known` 里的类别**全部**成行、**照抄顺序**，已配的填上值。
+    ///
+    /// ★ 顺序不能重排：core 侧有测试钉住 capability 的类别顺序与 `ScriptClass::ALL` 同序，
+    /// 这里再 sort 一次就把那条钉子废了，且用户每次打开对话框会看到行序变化。
+    #[test]
+    fn font_scripts_prefills_every_known_category_in_order() {
+        let known: Vec<String> = ["latin", "cjk", "emoji"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let m = json!({ "cjk": ["Microsoft YaHei UI"] });
+        let rows = font_scripts_to_rows(m.as_object().unwrap(), &known);
+        assert_eq!(rows, "latin = \ncjk = Microsoft YaHei UI\nemoji = ");
+        // ★ 空行必须原样往返成「没配过」——否则光是打开一次对话框再确定，
+        // 就会给每个类别写一条空数组进配置。
+        assert_eq!(Value::Object(rows_to_font_scripts(&rows)), m, "往返未闭合");
+    }
+
+    /// 用户手写的、不在值域里的键**不得被吞掉**——设置页替 core 删数据是静默丢用户配置。
+    /// 它们排在已知类别之后，彼此按字典序。
+    #[test]
+    fn font_scripts_keeps_unknown_keys_after_the_known_ones() {
+        let known: Vec<String> = vec!["latin".to_string()];
+        let m = json!({ "zzz": ["A"], "mystery": ["B"], "latin": ["C"] });
+        let rows = font_scripts_to_rows(m.as_object().unwrap(), &known);
+        assert_eq!(rows, "latin = C\nmystery = B\nzzz = A");
+        assert_eq!(Value::Object(rows_to_font_scripts(&rows)), m, "往返未闭合");
+    }
+
+    /// ★★ 跨仓守门：预填用的类别名来自 core 的 capability，本仓**不得**手抄一份。
+    ///
+    /// 只断言「非空」是不够的——真正要拦的是「设置页列的类别 core 不认」和
+    /// 「core 认的类别设置页不列」。故这里比对的是**快照里那一份**，
+    /// 而快照由 core 的 `wind_rpc::capabilities::generate` 生成。
+    #[test]
+    fn font_script_categories_come_from_core_capability() {
+        let caps = crate::capabilities::Capabilities::from_embedded();
+        let e = caps
+            .entries
+            .get("ui.font.scripts")
+            .expect("capability 应含 ui.font.scripts");
+        assert_eq!(e.ty, "map");
+        assert!(
+            !e.values.is_empty(),
+            "键名值域为空 ⇒ 对话框会退化成空框，用户无从知道有哪些类别"
+        );
+        // 预填行数 = 类别数（没配过任何东西时）。
+        let rows = font_scripts_to_rows(&Map::new(), &e.values);
+        assert_eq!(rows.lines().count(), e.values.len());
+        for k in &e.values {
+            assert!(
+                rows.lines().any(|l| l.starts_with(&format!("{k} ="))),
+                "预填缺类别 {k}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1399,7 +1678,11 @@ mod tests {
 
     #[test]
     fn rows_to_map_skips_blank_and_no_eq() {
-        let text = "  \n，=，\nbadline\n。=。\n";
+        let text = "  
+，=，
+badline
+。=。
+";
         let m = rows_to_map(text);
         assert_eq!(m.len(), 2);
         assert_eq!(m["，"], Value::String("，".to_string()));
@@ -1412,7 +1695,11 @@ mod tests {
         m.insert("b".to_string(), Value::String("B".to_string()));
         m.insert("a".to_string(), Value::String("A".to_string()));
         let text = map_to_rows(&m);
-        assert_eq!(text, "a=A\nb=B");
+        assert_eq!(
+            text,
+            "a=A
+b=B"
+        );
     }
 
     /// 两条提示都挂在「主键」标签行右侧，不自成一行——守的是**对话框高度不因它显隐而变**。

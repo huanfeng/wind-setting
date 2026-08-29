@@ -1904,6 +1904,22 @@ options_source = "fonts"
 label = "候选窗字体"
 hint = "自定义候选窗字体，留空跟随主题字体"
 
+[[items]]
+key = "ui.font.fallback"
+group = "ui"
+section = "候选窗口"
+type = "dialog_button"
+label = "字体回退顺序"
+hint = "候选窗字体缺某个字时，按此顺序找下一个字体；一行一个字体名，留空则由系统决定"
+
+[[items]]
+key = "ui.font.scripts"
+group = "ui"
+section = "候选窗口"
+type = "dialog_button"
+label = "按文字类别指定字体"
+hint = "主字体不含某类文字、或那类字形不理想时，给它单独指定字体"
+
 # 注：ui.font.path（自定义字体文件）当前平台不支持，已隐藏（由 core 维持默认）。
 # 注：ui.font.render_mode（字体渲染方式）当前不支持，已移除（由 core 维持默认）。
 

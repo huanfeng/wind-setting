@@ -266,9 +266,37 @@ fn aux_code_value(idx: usize) -> Value {
 
 /// `[overlay] candidate_layout` 的字符串值 ↔ 分段控件下标。
 ///
-/// 值域与 core 的 `LayoutIntent` 逐字一致（`follow` / `vertical` / `horizontal`）——
-/// 跨仓契约无编译期约束，拼错的表现是 core 解析回落默认值、用户改了没反应。
+/// 值域与 core 的 `LayoutIntent` 逐字一致（`follow` / `vertical` / `horizontal` /
+/// `rotated`）——跨仓契约无编译期约束，拼错的表现是 core 解析回落默认值、用户改了没反应。
+///
+/// ⚠️ **core 加取值时这里必须跟着加**，否则不只是「选不到新值」：读取走
+/// [`overlay_layout_idx`]（未知值 → 0），保存走 [`overlay_layout_value`]（0 → `follow`）
+/// ⇒ 用户手写的新值会在**打开设置页再保存**时被静默改写成「跟随全局」。
+/// `rotated`（顺时针 90°，蒙古文等纵向书写脚本）就是这么补进来的。
 const OVERLAY_LAYOUTS: [&str; 3] = ["follow", "vertical", "horizontal"];
+
+/// 与 [`OVERLAY_LAYOUTS`] 逐项对应的中文标签。两处下拉共用，防止只改一处。
+const OVERLAY_LAYOUT_LABELS: [&str; 3] = ["跟随全局", "竖排", "横排"];
+
+/// 方案级「横排时文字排列」（`[candidate] text_orientation`）的取值与标签。
+///
+/// ⚠️ 它**不是** [`OVERLAY_LAYOUTS`] 的延长——两者是正交的两根轴。旋转 90° 与文字竖排
+/// 曾是候选排列的第三、第四个取值，作废理由见 core 的 `TextOrientation` 文档；
+/// 这里若把它们混回同一个下拉，那次拆分就白做了。
+///
+/// 无「跟随全局」档：外观页压根没有这一项（它面向所有用户，而这是极少数方案才用的），
+/// 首档就是出厂行为「默认」。
+const TEXT_ORIENTS: [&str; 3] = ["normal", "rotated", "upright"];
+const TEXT_ORIENT_LABELS: [&str; 3] = ["默认（水平）", "旋转 90°", "文字竖排（对联式）"];
+
+fn text_orient_idx(v: &str) -> usize {
+    TEXT_ORIENTS.iter().position(|x| *x == v).unwrap_or(0)
+}
+
+/// 下标 → 字符串值。越界回落首项（默认），与 [`overlay_layout_value`] 同口径。
+fn text_orient_value(idx: usize) -> &'static str {
+    TEXT_ORIENTS.get(idx).copied().unwrap_or(TEXT_ORIENTS[0])
+}
 
 fn overlay_layout_idx(v: &str) -> usize {
     OVERLAY_LAYOUTS.iter().position(|x| *x == v).unwrap_or(0)
@@ -297,6 +325,16 @@ struct BehaviorSeed {
     /// ⚠️ 与上面两个注释模板一样，三态**只能由「键在不在」区分**，不能拿空表代表跟随——
     /// 那正是 core 侧刻意不加方案级 `custom_enabled` 的理由（空表已经是第三态）。
     punct_map: Option<serde_json::Map<String, Value>>,
+    /// 方案级候选**文字**字族（`[candidate] font_family`）；空串 = 不覆盖。
+    ///
+    /// 与上面几项不同，它**不是三态**：core 侧就是朴素 `String`，空 = 不覆盖。
+    /// 「不覆盖」与「覆盖成空字体」没有区别，不必用键的有无再造一态。
+    font_family: String,
+    /// 横排时文字排列（`[candidate] text_orientation`）：0=默认 / 1=旋转 90° / 2=文字竖排。
+    ///
+    /// 与 `layout` 是**两根正交的轴**，不是同一个下拉的延长——改这里不影响横竖，
+    /// 改横竖也不影响这里。
+    text_orient: usize,
 }
 
 impl Default for BehaviorSeed {
@@ -310,6 +348,8 @@ impl Default for BehaviorSeed {
             comment_v: None,
             comment_h: None,
             punct_map: None,
+            font_family: String::new(),
+            text_orient: 0,
         }
     }
 }
@@ -350,9 +390,21 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
             .and_then(|v| v.as_str())
             .map(str::to_string)
     };
+    let font_family = candidate
+        .and_then(|v| v.get("font_family"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let text_orient = candidate
+        .and_then(|v| v.get("text_orientation"))
+        .and_then(|v| v.as_str())
+        .map(text_orient_idx)
+        .unwrap_or(0);
     BehaviorSeed {
         punct,
         layout,
+        font_family,
+        text_orient,
         phrases,
         comment_v: tpl("comment_template_vertical"),
         comment_h: tpl("comment_template_horizontal"),
@@ -835,6 +887,10 @@ pub struct SchemaManagerState {
     pub settings_bh_punct: Signal<usize>,
     /// 候选排列：0=跟随全局 / 1=竖排 / 2=横排（`[candidate] layout`）。
     pub settings_bh_layout: Signal<usize>,
+    /// 方案级候选文字字族（`[candidate] font_family`）；空串 = 不覆盖。
+    pub settings_bh_font: Signal<String>,
+    /// 横排时文字排列：0=默认 / 1=旋转 90° / 2=文字竖排（`[candidate] text_orientation`）。
+    pub settings_bh_text_orient: Signal<usize>,
     /// 是否加载短语（`[phrases] enabled`）。
     pub settings_bh_phrases: Signal<bool>,
     /// 竖排候选注释模板是否由本方案覆盖（`[candidate] comment_template_vertical` 存不存在）。
@@ -994,6 +1050,8 @@ impl SchemaManagerState {
             settings_ov_layout: signal(0),
             settings_bh_punct: signal(0),
             settings_bh_layout: signal(0),
+            settings_bh_text_orient: signal(0),
+            settings_bh_font: signal(String::new()),
             settings_bh_phrases: signal(true),
             settings_bh_comment_v_on: signal(false),
             settings_bh_comment_v: signal(String::new()),
@@ -1973,6 +2031,8 @@ impl SchemaManagerState {
             let seed = seed_behavior(&self.settings_cfg.borrow());
             self.settings_bh_punct.set(seed.punct);
             self.settings_bh_layout.set(seed.layout);
+            self.settings_bh_font.set(seed.font_family.clone());
+            self.settings_bh_text_orient.set(seed.text_orient);
             self.settings_bh_phrases.set(seed.phrases);
             // 勾选态与文本分开落：勾选问「有没有这个键」，文本框只装内容。
             // 未设置时文本框留空——用户一勾上就是「本方案不显示注释」，这正是三态的第三态，
@@ -2195,6 +2255,8 @@ impl SchemaManagerState {
         BehaviorSeed {
             punct: self.settings_bh_punct.get(),
             layout: self.settings_bh_layout.get(),
+            font_family: self.settings_bh_font.get(),
+            text_orient: self.settings_bh_text_orient.get(),
             phrases: self.settings_bh_phrases.get(),
             comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v),
             comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h),
@@ -2317,6 +2379,16 @@ impl SchemaManagerState {
                     &mut cfg,
                     &["candidate", "layout"],
                     json!(overlay_layout_value(now.layout)),
+                );
+                set_json_path(
+                    &mut cfg,
+                    &["candidate", "font_family"],
+                    json!(now.font_family),
+                );
+                set_json_path(
+                    &mut cfg,
+                    &["candidate", "text_orientation"],
+                    json!(text_orient_value(now.text_orient)),
                 );
                 set_json_path(&mut cfg, &["phrases", "enabled"], json!(now.phrases));
                 // ★ 注释模板的「取消覆盖」写 **null**，不是空串——空串是「本方案不显示注释」。
@@ -4160,11 +4232,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     crate::widgets::setting_row(
                         "候选排列",
                         Some("仅本模式期间生效，退出自动恢复"),
-                        Element::dropdown(
-                            vec!["跟随全局", "竖排", "横排"],
-                            state.settings_ov_layout,
-                        )
-                        .width(170),
+                        Element::dropdown(OVERLAY_LAYOUT_LABELS.to_vec(), state.settings_ov_layout)
+                            .width(170),
                     ),
                 ],
             )
@@ -4193,11 +4262,25 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     crate::widgets::setting_row(
                         "候选排列",
                         Some("本方案期间的候选窗方向"),
+                        Element::dropdown(OVERLAY_LAYOUT_LABELS.to_vec(), state.settings_bh_layout)
+                            .width(170),
+                    ),
+                    crate::widgets::setting_row(
+                        "横排时文字排列",
+                        // ⚠️ 一行装得下才算数（说明区超宽静默截断、不加省略号）。
+                        // 「竖排时不生效」放在前面：选哪一项从标签就看得出来，
+                        // 而「配了没反应」只有这句话能救。
+                        Some("竖排时不生效。蒙古文选旋转 90°，汉字对联式选文字竖排"),
                         Element::dropdown(
-                            vec!["跟随全局", "竖排", "横排"],
-                            state.settings_bh_layout,
+                            TEXT_ORIENT_LABELS.to_vec(),
+                            state.settings_bh_text_orient,
                         )
                         .width(170),
+                    ),
+                    crate::widgets::setting_row(
+                        "候选文字字体",
+                        Some("只改候选词本身；序号与编码栏不跟随。留空跟随外观页设置"),
+                        Element::text_input(state.settings_bh_font, "留空跟随外观页").width(170),
                     ),
                     crate::widgets::setting_row(
                         "加载短语",
@@ -5480,6 +5563,109 @@ mod overlay_tests {
         }
         assert_eq!(overlay_layout_value(99), "follow", "越界应回落跟随全局");
         assert_eq!(overlay_layout_idx("不存在的值"), 0, "未知值回落跟随全局");
+        // ★ 旋转/文字竖排**不在这条轴上**。曾把它们当成候选排列的第 3、4 个取值，
+        // 拆分后若有人「顺手补回来」，这里立刻红——两根轴合并回去就白拆了。
+        assert_eq!(
+            overlay_layout_idx("rotated"),
+            0,
+            "文字排列不该出现在候选排列的值域里"
+        );
+    }
+
+    /// ★★ 「横排时文字排列」的下标 ↔ core `TextOrientation` 值域，**逐项**比对。
+    ///
+    /// 这一条比隔壁的布局那条更硬：它直接拿 core 的类型当真相源（wind-config 在本仓是
+    /// 测试期可用的），不经 capability 快照——因为 `text_orientation` 是**方案键**，
+    /// 压根不在 `config.toml` 的注册表里，capability 里查不到它。
+    ///
+    /// 没有这条的话，跨仓拼错的表现是：用户在设置页选了「文字竖排」，core 解析不出来
+    /// 回落 `normal`，界面显示得好好的而候选一点没变。
+    #[test]
+    fn text_orient_index_maps_to_core_value_domain() {
+        use wind_config::TextOrientation;
+        let core: Vec<&str> = TextOrientation::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(
+            TEXT_ORIENTS.to_vec(),
+            core,
+            "取值与 core 漂移了（含顺序——下拉按这个顺序排）"
+        );
+        assert_eq!(
+            TEXT_ORIENT_LABELS.len(),
+            TEXT_ORIENTS.len(),
+            "标签与值域必须逐项对应"
+        );
+        for (idx, v) in TEXT_ORIENTS.iter().enumerate() {
+            assert_eq!(text_orient_value(idx), *v);
+            assert_eq!(text_orient_idx(v), idx, "反向映射应自洽");
+            // core 那侧确实认得这个字符串（拼错的话它会回落 Normal）。
+            assert_eq!(
+                TextOrientation::from_str_or_normal(v).as_str(),
+                *v,
+                "core 解析不出 {v:?}"
+            );
+        }
+        assert_eq!(text_orient_value(99), "normal", "越界应回落默认");
+        assert_eq!(text_orient_idx("不存在的值"), 0, "未知值回落默认");
+    }
+
+    /// 播种与回读：方案文件里写的 `text_orientation` 必须落到界面下标上。
+    ///
+    /// ★ 与候选排列**互不干扰**是重点：只断言自己那一项的话，一个把两项写进同一个字段的
+    /// 实现照样通过，而那正是这次要拆掉的东西。
+    #[test]
+    fn seed_reads_text_orientation_independently_of_layout() {
+        let seed = seed_behavior(&json!({
+            "candidate": { "layout": "vertical", "text_orientation": "upright" }
+        }));
+        assert_eq!(seed.layout, overlay_layout_idx("vertical"));
+        assert_eq!(seed.text_orient, text_orient_idx("upright"));
+        // 只写一项时另一项保持默认，不被牵连。
+        let only_text = seed_behavior(&json!({
+            "candidate": { "text_orientation": "rotated" }
+        }));
+        assert_eq!(only_text.layout, 0, "没写 layout 就该是跟随全局");
+        assert_eq!(only_text.text_orient, text_orient_idx("rotated"));
+        let only_layout = seed_behavior(&json!({ "candidate": { "layout": "horizontal" } }));
+        assert_eq!(
+            only_layout.text_orient, 0,
+            "没写 text_orientation 就该是默认"
+        );
+        assert_eq!(only_layout.layout, overlay_layout_idx("horizontal"));
+    }
+
+    /// ★★ 值域必须与 core 的 `LayoutIntent` **等长**。
+    ///
+    /// core 加了取值而这里没跟，后果不是「选不到新值」而是**静默改写用户配置**：
+    /// 读取时未知值回落 0，保存时 0 写回 `follow` ⇒ 方案里手写的新值，
+    /// 用户打开一次设置页再保存就没了。`rotated` 补进来之前正是这个状态。
+    ///
+    /// 跨仓无编译期约束，故拿 core 的 capability 值域当真相源逐项比对——
+    /// 只断言「条数相等」的话，两边各写了不同的四个值也照样通过。
+    #[test]
+    fn layout_value_domain_matches_core_capability() {
+        let caps = crate::capabilities::Capabilities::from_embedded();
+        let core_values = &caps
+            .entries
+            .get("input.temp_english.candidate_layout")
+            .expect("core 应登记 candidate_layout 的枚举值域")
+            .values;
+        assert_eq!(
+            OVERLAY_LAYOUTS.len(),
+            core_values.len(),
+            "值域条数与 core 不符：core={core_values:?} 本仓={OVERLAY_LAYOUTS:?}
+             —— 少一条会让用户手写的新值在「打开设置页再保存」时被静默改写"
+        );
+        for v in core_values {
+            assert!(
+                OVERLAY_LAYOUTS.contains(&v.as_str()),
+                "core 有取值 {v:?} 而本仓没有：{OVERLAY_LAYOUTS:?}"
+            );
+        }
+        assert_eq!(
+            OVERLAY_LAYOUT_LABELS.len(),
+            OVERLAY_LAYOUTS.len(),
+            "标签与值域必须逐项对应"
+        );
     }
 
     /// ★★ 保存**只改本 UI 管的两个字段**，`[overlay]` 段里其余项原样保留。

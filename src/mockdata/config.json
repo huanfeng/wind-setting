@@ -346,9 +346,11 @@
   },
   "comment_dicts": [],
   "font": {
+   "fallback": [],
    "family": "",
    "path": "",
-   "render_mode": "directwrite"
+   "render_mode": "directwrite",
+   "scripts": {}
   },
   "labels": {
    "caps_lock": "A",
