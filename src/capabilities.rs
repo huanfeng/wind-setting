@@ -602,3 +602,180 @@ mod tests {
         println!("未覆盖明细: {uncovered:?}");
     }
 }
+
+#[cfg(test)]
+mod enum_domain_gate {
+    use super::Capabilities;
+    use crate::manifest::Manifest;
+
+    /// StructList 成员字段的合成键（`表名#字段`）→ **同值域**的已登记键。
+    ///
+    /// core 的注册表不给 StructList 的成员字段单独立项（「一个配置键只能有一个 manifest 项」），
+    /// capability 里因此查不到它们的值域 —— 而它们与某个已登记键是**同一个枚举**。
+    ///
+    /// ⚠️ 没有这张表的话，这几个下拉在闸门眼里根本不存在：加 `upright` 时故意漏掉
+    /// `schema.mix_modes#candidate_layout` 一处，三条闸门全绿。**这正是本表存在的理由。**
+    const STRUCTLIST_MEMBER_DOMAIN: &[(&str, &str)] = &[(
+        "schema.mix_modes#candidate_layout",
+        "input.temp_english.candidate_layout",
+    )];
+
+    /// 合成键 → 借来的值域键；普通键返回自身。
+    fn domain_key(key: &str) -> &str {
+        STRUCTLIST_MEMBER_DOMAIN
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, d)| *d)
+            .unwrap_or(key)
+    }
+
+    /// 清单里**刻意只列一部分**取值的键：key → 为什么。
+    ///
+    /// 登记的门槛是「界面上少一个选项是有意的」，理由必须同时写在清单该项旁边——
+    /// 这里只放键名与一句话，方便下一个人知道该去哪读。
+    const NARROWED_ON_PURPOSE: &[(&str, &str)] = &[
+        (
+            "input.association.kind",
+            "不列 smart：桌面上它与 word 完全等价，摆一个没区别的选项只会让人以为选错了",
+        ),
+        (
+            "ui.langbar.punct_badge",
+            "只列两项：其余四种真机否决或待评估，放进下拉等于把已知的坏选择交给用户",
+        ),
+    ];
+
+    /// ★★ 清单的 select/segmented **不得漏掉 core 的取值**。
+    ///
+    /// 漏掉的后果不是「界面上少个选项」那么轻——读取时未知值回落下标 0、保存时把 0 写回去，
+    /// 于是**用户在配置文件里手写的那个值，打开一次设置页再保存就没了**。
+    /// `ui.candidate.layout` 已经这么丢过一次（core 值域从 3 变 4，清单滞后）。
+    ///
+    /// ⚠️ 这条闸门是补上的：此前只有 `schema_manager` 里那一处硬编码数组有守门，
+    /// 清单里同一个值域的**另外四个下拉**完全裸奔——加 `upright` 时故意漏掉一处跑全量测试，
+    /// 808 条全绿。
+    ///
+    /// **顺序不比**：呈现顺序是界面的自由（日志级别从严到松更好读）。比的是集合。
+    #[test]
+    fn manifest_never_omits_a_core_enum_value() {
+        let caps = Capabilities::from_embedded();
+        let man = Manifest::from_embedded();
+        let mut missing: Vec<String> = Vec::new();
+        for (key, item) in &man.items {
+            // options_source = 选项在运行时动态填（如方案列表），与 capability 值域无关。
+            if item.options.is_empty() || item.options_source.is_some() {
+                continue;
+            }
+            let Some(e) = caps.entries.get(domain_key(key)) else {
+                continue;
+            };
+            if e.ty != "enum" {
+                continue;
+            }
+            if NARROWED_ON_PURPOSE.iter().any(|(k, _)| k == key) {
+                continue;
+            }
+            let mine: Vec<&str> = item.options.iter().map(|o| o.value.as_str()).collect();
+            for v in &e.values {
+                if !mine.contains(&v.as_str()) {
+                    missing.push(format!("{key}: core 有 {v:?}，清单没有（{mine:?}）"));
+                }
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "清单漏了 core 的取值，用户手写这些值会在保存时被静默改写：
+{}",
+            missing.join(
+                "
+"
+            )
+        );
+    }
+
+    /// 反向：清单**不得多出** core 不认的取值——选了会写进配置，而 core 解析不了。
+    /// 这一条没有豁免：多出来的项永远是错的。
+    #[test]
+    fn manifest_never_invents_a_value_core_rejects() {
+        let caps = Capabilities::from_embedded();
+        let man = Manifest::from_embedded();
+        let mut extra: Vec<String> = Vec::new();
+        for (key, item) in &man.items {
+            if item.options.is_empty() || item.options_source.is_some() {
+                continue;
+            }
+            let Some(e) = caps.entries.get(domain_key(key)) else {
+                continue;
+            };
+            if e.ty != "enum" {
+                continue;
+            }
+            for o in &item.options {
+                if !e.values.contains(&o.value) {
+                    extra.push(format!(
+                        "{key}: 清单有 {:?}，core 不认（{:?}）",
+                        o.value, e.values
+                    ));
+                }
+            }
+        }
+        extra.sort();
+        assert!(
+            extra.is_empty(),
+            "清单编了 core 不认的取值：
+{}",
+            extra.join(
+                "
+"
+            )
+        );
+    }
+
+    /// 借域表不得过期：合成键必须还在清单里，且被借的键必须真是个 enum。
+    /// 表项失效后闸门会静默跳过那个下拉——与压根没有这张表等价。
+    #[test]
+    fn structlist_domain_table_has_no_stale_entries() {
+        let caps = Capabilities::from_embedded();
+        let man = Manifest::from_embedded();
+        for (synthetic, donor) in STRUCTLIST_MEMBER_DOMAIN {
+            let item = man
+                .items
+                .get(*synthetic)
+                .unwrap_or_else(|| panic!("借域表里的 {synthetic} 已不在清单里"));
+            assert!(
+                !item.options.is_empty(),
+                "{synthetic} 没有选项了，借域没有意义"
+            );
+            assert!(
+                caps.entries.get(*donor).map(|e| e.ty.as_str()) == Some("enum"),
+                "{synthetic} 借的 {donor} 不是 enum"
+            );
+            assert!(
+                !caps.entries.contains_key(*synthetic),
+                "{synthetic} 现在 core 自己登记了，该把它从借域表里删掉"
+            );
+        }
+    }
+
+    /// 豁免名单本身不得过期：登记的键必须真的还在窄着，否则名单会掩护将来的真漏。
+    #[test]
+    fn narrowing_allowlist_has_no_stale_entries() {
+        let caps = Capabilities::from_embedded();
+        let man = Manifest::from_embedded();
+        for (key, why) in NARROWED_ON_PURPOSE {
+            let item = man
+                .items
+                .get(*key)
+                .unwrap_or_else(|| panic!("豁免了不存在的项 {key}"));
+            let e = caps
+                .entries
+                .get(domain_key(key))
+                .unwrap_or_else(|| panic!("豁免了 core 没有的键 {key}"));
+            let mine: Vec<&str> = item.options.iter().map(|o| o.value.as_str()).collect();
+            assert!(
+                e.values.iter().any(|v| !mine.contains(&v.as_str())),
+                "{key} 已经列全了取值，该从豁免名单里删掉（登记理由：{why}）"
+            );
+        }
+    }
+}
