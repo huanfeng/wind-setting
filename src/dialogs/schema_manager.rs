@@ -1183,34 +1183,20 @@ impl SchemaManagerState {
             .collect()
     }
 
-    /// 全局 `keys.key_actions` 的动词表 = 方案级那份 ⊕ 单向 `switch_schema:<id>`。
+    /// 全局 `keys.key_actions` 的动词表。
     ///
-    /// ★ **单向切换只在全局合法**。方案级表按活跃方案查，单向切走之后目标方案没有这条
-    /// 绑定，那个键就再也按不动了（core 侧 `bound_key_decision` 为此专门让位并 warn）。
-    /// 全局表在所有方案下都生效，不存在这个问题，故这里补上、方案级那份仍不列。
-    /// 见 core 仓 docs/design/schema-key-actions.md §5。
+    /// ★ **2026-08-30 起与方案级那份完全一致**，故直接转调。此前全局多一段单向
+    /// `switch_schema:<id>`，因为 core 禁止方案级单向（`bound_key_decision` 让位并 warn）；
+    /// 那条禁令已撤销——它的理由「单向切走就回不来了」说的是**这把键**按不动，而回程
+    /// 完全可以由别的键负责，禁令挡掉了合法配法。core 侧改为「送达键在目标方案里吞掉」，
+    /// 见 core 仓 `BoundAction::SwitchSchema` 的文档。
     ///
-    /// ⚠️ 调用前确保方案列表已加载（`refresh()`）：`special:` / `toggle_schema:` /
-    /// `switch_schema:` 三类都从 `self.schemas` 枚举，列表空时下拉里就只剩固定动词，
-    /// 用户会以为「这个版本不支持切方案」。
+    /// 保留本函数而不让调用方直接用方案级那个：两层的动词表**在概念上仍是两件事**
+    /// （将来若再出现只在某一层合法的动词，改这里即可，不必回头去找调用方）。
     pub(crate) fn build_global_key_action_verbs(
         &self,
     ) -> Vec<crate::dialogs::schema_key_actions::Verb> {
-        use crate::dialogs::schema_key_actions::Verb;
-        let mut out = self.build_key_action_verbs();
-        // 与上面 `toggle_schema` 那段同样跳过 hidden：隐藏方案不进循环切换列表，
-        // 给它配直达键属于高级用法，手写配置仍然认（`seed` 会把未知值保留成当前值）。
-        for e in self.schemas.borrow().iter() {
-            if e.id.is_empty() || e.hidden {
-                continue;
-            }
-            let name = if e.name.is_empty() { &e.id } else { &e.name };
-            out.push(Verb {
-                value: format!("switch_schema:{}", e.id),
-                label: format!("切到方案（单向） - {name}"),
-            });
-        }
-        out
+        self.build_key_action_verbs()
     }
 
     /// 把某个动词的绑定键**整体换成** `new_keys`：先摘掉所有指向它的旧键，再写入新键。
@@ -1229,9 +1215,9 @@ impl SchemaManagerState {
     /// ⚠️ 首项恒为「不启用」：`Element::dropdown` 的选中值是**索引**，新建行的索引为 0，
     /// 若首项是个真动作，「添加一行还没选」就等于配了那个动作。
     ///
-    /// `toggle_schema:<id>` 刻意不列：方案级表里只允许有夺取回路或可往返的动词，
-    /// 见 core 仓 docs/design/schema-key-actions.md §5（方案级不允许单向 switch_schema，
-    /// 而 toggle_schema 属 C 类、四期才进方案级表）。
+    /// ⚠️ 这里曾写着「`toggle_schema:<id>` 刻意不列」——**与代码早已不符**（下方就在列），
+    /// 且方案级单向也已于 2026-08-30 放开。两族切方案动词现在方案级/全局都列，
+    /// `build_global_key_action_verbs` 因此退化成转调。
     pub(crate) fn build_key_action_verbs(&self) -> Vec<crate::dialogs::schema_key_actions::Verb> {
         use crate::dialogs::schema_key_actions::Verb;
         let mut out = vec![
@@ -1296,13 +1282,17 @@ impl SchemaManagerState {
                 label: format!("特殊模式 - {name}"),
             });
         }
-        // C 类：切到目标方案，再按回来。**只在修饰键上可用**——它必须在英文模式下也按得动
-        // （否则切到英文方案就回不来），而有字符的键走的 keydown 链在英文态根本到不了。
-        // 这里照常列出，由 `KeyActionFields` 在行内按所选键给提示（core 侧同样有裁决）。
+        // 切方案两族：往返（C 类）与单向。**都只在修饰键上可用**——它们必须在英文模式下
+        // 也按得动（否则切到英文方案就回不来），而有字符的键走的 keydown 链在英文态根本
+        // 到不了。这里照常列出，由 `KeyActionFields` 在行内按所选键给提示（core 侧同样有裁决）。
         //
-        // 刻意不提供全局那个单向的 `switch_schema:<id>`：方案级绑定 + 单向切换会锁死用户
-        // （A 里配了去 B，B 没配回程 ⇒ 只能去点工具栏）。往返版由运行时来源兜底，
-        // 不要求目标方案配对称的绑定。见 docs/design/schema-key-actions.md §5。
+        // ★ 单向此前**只列在全局表**，因为 core 禁止方案级单向。2026-08-30 那条禁令已撤销：
+        // 它的理由「单向切走后目标方案没这条绑定、键就按不动了」说的是**这把键**按不动，
+        // 而回程完全可以由别的键负责（真实配法：右 Shift 单向去英文方案、左 Shift 管中英文
+        // 态）。core 改为「送达键在目标方案里被吞掉」，不再落回全局链去误切中英文。
+        //
+        // ⚠️ 两族的区别要让用户看得见，故标签分别是「切换方案（可返回）」与「切到方案
+        // （单向）」——只写方案名的话，下拉里会出现两条同名项，选错了行为却完全不同。
         for e in self.schemas.borrow().iter() {
             if e.id.is_empty() || e.hidden {
                 continue;
@@ -1310,7 +1300,17 @@ impl SchemaManagerState {
             let name = if e.name.is_empty() { &e.id } else { &e.name };
             out.push(Verb {
                 value: format!("toggle_schema:{}", e.id),
-                label: format!("切换方案 - {name}"),
+                label: format!("切换方案（可返回） - {name}"),
+            });
+        }
+        for e in self.schemas.borrow().iter() {
+            if e.id.is_empty() || e.hidden {
+                continue;
+            }
+            let name = if e.name.is_empty() { &e.id } else { &e.name };
+            out.push(Verb {
+                value: format!("switch_schema:{}", e.id),
+                label: format!("切到方案（单向） - {name}"),
             });
         }
         // A 类状态切换。取值必须与 core `BoundAction::DISPATCH_ACTIONS` 逐字一致——
