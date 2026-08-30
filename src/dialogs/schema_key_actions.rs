@@ -352,11 +352,18 @@ impl KeyActionFields {
             .width_match()
             .spacing(6)
             .child(
-                Element::label("给按键指定功能。同一个键，方案里配的优先于全局。")
-                    .font_size(12.0)
-                    .fg_role(Role::TextMuted)
-                    .width_match()
-                    .max_lines(2),
+                // ⚠️ 第二句是 2026-08-30 那条「英文态跳过方案级层」的**唯一**用户可见说明
+                // （core 侧只有代码注释）。少了它，用户在英文半角态下按同一个键得到的是
+                // 全局那条绑定，而方案页这里明明写着「方案里配的优先」——两句话自相矛盾，
+                // 且现象完全看不出成因。
+                Element::label(
+                    "给按键指定功能。同一个键，方案里配的优先于全局。\
+                     英文状态下本页配置不生效，那时按全局配置执行。",
+                )
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3),
             )
             .child(list);
         BindingBody::new(content, vec![add])
