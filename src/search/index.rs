@@ -18,6 +18,7 @@
 //! 跳过去什么也不会发生，且没有任何报错。故此处显式建表 [`placement_of`]，
 //! 并由 `sections_have_placement` 守门：新增 (group, section) 组合而忘了登记就测试失败。
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 
 use crate::manifest::{MItem, Manifest};
@@ -423,6 +424,7 @@ pub fn build_index(manifest: &Manifest) -> Vec<SearchEntry> {
 ///
 /// 供 `tests/pinyin_coverage.rs` 与生成脚本使用：拼音表只需覆盖标题，
 /// 不必覆盖 hint——长句的首字母串没有检索价值，只会制造误命中。
+#[cfg(test)]
 pub fn title_chars(entries: &[SearchEntry]) -> BTreeSet<char> {
     entries
         .iter()
@@ -432,6 +434,7 @@ pub fn title_chars(entries: &[SearchEntry]) -> BTreeSet<char> {
 }
 
 /// 是否为需要转拼音的汉字（CJK 基本区 + 扩展 A）。
+#[cfg(test)]
 pub fn is_cjk(c: char) -> bool {
     matches!(c, '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}')
 }
@@ -440,6 +443,7 @@ pub fn is_cjk(c: char) -> bool {
 ///
 /// 空 = 全部有落点。非空即说明新增了分组/分区却没告诉搜索索引，那批项会静默
 /// 从搜索里消失——由 `sections_have_placement` 断言。
+#[cfg(test)]
 pub fn unplaced_sections(manifest: &Manifest) -> Vec<(String, String)> {
     let mut out = BTreeSet::new();
     for key in &manifest.order {

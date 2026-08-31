@@ -101,11 +101,13 @@ pub fn initials_find(title: &str, query: &str) -> Option<usize> {
 }
 
 /// 表里是否有这个字（供守门测试与诊断用）。
+#[cfg(test)]
 pub fn has(c: char) -> bool {
     table().contains_key(&c)
 }
 
 /// 表的字数（供守门测试报数）。
+#[cfg(test)]
 pub fn table_len() -> usize {
     table().len()
 }

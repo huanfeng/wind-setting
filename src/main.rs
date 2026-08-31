@@ -23,8 +23,6 @@ mod pages;
 mod protocol;
 mod rpc;
 mod schema_url_import;
-// P0 只落索引与匹配（纯逻辑），接线在 P1；在此之前整模块对 main 未使用。
-#[allow(dead_code)]
 mod search;
 #[allow(dead_code)]
 mod setting_config;
@@ -291,7 +289,7 @@ fn main() {
     } else {
         "清风输入法设置"
     };
-    let mut app = App::new(title, MAIN_W, MAIN_H)
+    let app = App::new(title, MAIN_W, MAIN_H)
         // 单例键要跟着这一趟承载的界面走（见 `main_window_single_key`）。
         .single_window(main_window_single_key(dict_as_main))
         .frameless()
@@ -299,6 +297,27 @@ fn main() {
         .renderer(renderer)
         .min_size(MAIN_MIN_W, MAIN_MIN_H)
         .theme(theme_def::theme_for(start_dark));
+    // 窗口级快捷键：焦点控件没要这个键时才轮到（见 `App::on_shortcut`）。
+    //
+    // ⚠ Esc 这条**必须**有。TextInput 不处理 Escape，未消费的 Escape 会被宿主当成
+    // 「关窗兜底」——不在这里拦下，用户搜索到一半按 Esc 就把整个设置窗关掉了。
+    // `on_shortcut` 排在 Tab 焦点导航与 Escape 关窗**之前**，正是为覆盖这种默认行为。
+    let shortcut_state = app_state.clone();
+    let mut app = app.on_shortcut(move |ctx, ev| {
+        let search = shortcut_state.borrow().search.clone();
+        match ev.key {
+            Key::Escape if search.open.get() => {
+                search.dismiss();
+                true
+            }
+            Key::Char('f') | Key::Char('F') if ev.ctrl => {
+                // 焦点交还给声明了 autofocus 的控件 = 搜索框（全窗只此一个）。
+                ctx.focus_main_input();
+                true
+            }
+            _ => false,
+        }
+    });
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
     *app_state.borrow().theme_handle.borrow_mut() = Some(th.clone());

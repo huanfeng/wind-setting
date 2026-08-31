@@ -90,15 +90,25 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     let ci_menu_footer = ci_menu.clone();
     let mgr_menu_footer = mgr_menu.clone();
 
-    // 左侧栏：图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
+    // 左侧栏：搜索框 + 图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
     let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
     let nav = build_nav(&names, tab_sig, app);
+    let (search_state, jump_sig) = {
+        let st = app.borrow();
+        (st.search.clone(), st.jump)
+    };
+    let search_box = crate::search::ui::build_search_box(&search_state, tab_sig, jump_sig);
+    // 查询变化即重算结果的 0×0 哨兵（TextInput 只写信号、无变更回调）。
+    let query_watcher = crate::search::ui::build_query_watcher(&search_state);
     // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
     let sidebar = Element::col()
         .width(184)
         .height_match()
         .bg_role(Role::Bg)
         .padding_xy(8, 10)
+        .spacing(8)
+        .child(search_box)
+        .child(query_watcher)
         .child(nav)
         .on_context_menu(move || {
             crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
@@ -165,6 +175,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     for dlg in field_dialogs {
         root = root.child(dlg);
     }
+    // 搜索结果浮层挂根：它要盖到内容区上，挂在侧栏里就只有 184 宽。
+    // 捕获层必须在浮层**之前**（在其下层），否则点浮层里的项会先被它吃掉。
+    let (search_scrim, search_overlay) =
+        crate::search::ui::build_results_overlay(&search_state, tab_sig, jump_sig);
+    root = root.child(search_scrim).child(search_overlay);
     // 按键冲突实时监听：每帧刷新 state.conflict（驱动常驻警告条），并对新出现的
     // 「可共存」组合写 feedback 弹一次说明 toast。
     //

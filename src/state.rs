@@ -228,6 +228,13 @@ pub struct AppState {
     pub theme_import_dialog_visible: Signal<bool>,
     /// 当前 Tab 索引。
     pub tab: Signal<usize>,
+    /// 全局搜索状态（索引 + 查询 + 结果 + 浮层开合）。
+    pub search: crate::search::SearchState,
+    /// 待执行的跳转请求：搜索确认时挂上，由目标位置的锚点认领后清空。
+    ///
+    /// 分两步而不是当场滚过去，是因为目标那一刻还不在布局里——它所在的页上一帧
+    /// 还不可见，`scroll_into_view` 拿到的会是过期 bounds。
+    pub jump: Signal<Option<crate::search::JumpRequest>>,
     /// 暗色模式（设置窗口自身明暗，运行时切换）。
     pub dark: Signal<bool>,
     /// 底栏左下角的运行态（驱动状态圆点的颜色与悬停提示）。见 [`ConnState`]。
@@ -540,6 +547,9 @@ impl AppState {
             theme_import_name_display: signal("名称提示：无".to_string()),
             theme_import_dialog_visible: signal(false),
             tab: signal(0),
+            // 搜索索引在此构建：清单是内嵌的、启动即就位，不必等 RPC。
+            search: crate::search::SearchState::new(&Manifest::from_embedded()),
+            jump: signal(None),
             dark: signal(initial_dark),
             conn: signal(ConnState::Loading),
             feedback: signal(None),

@@ -1,0 +1,533 @@
+//! 搜索框与结果浮层。
+//!
+//! 布局上是两块分开的东西：
+//! - **搜索框**挂在侧栏导航之上（`shell::build` 的 sidebar 内）；
+//! - **结果浮层**挂在**根 stack**，靠固定内边距定位到搜索框正下方。
+//!
+//! 浮层不挂在侧栏里，是因为它要盖到右边的内容区上；侧栏是固定 184 宽的列，
+//! 浮层放进去就只能有 184 宽，面包屑会挤成两行。
+//!
+//! ## 键盘为什么全都挂在输入框上
+//!
+//! `Tree::dispatch_key` 只把按键发给焦点节点、**不冒泡**（未消费也不上溯）。
+//! 焦点在输入框上时，结果列表根本收不到 ↑↓。所以选择项、回车确认全部走
+//! `on_nav_key` / `on_submit`——这两个回调的存在正是为了「查询框 + 结果列表」。
+//!
+//! Esc 是个例外：TextInput 不处理它，未消费的 Escape 会被宿主当成**关窗兜底**。
+//! 所以 Esc 收浮层必须走 `App::on_shortcut`（见 `main.rs`），否则搜索时按 Esc
+//! 会把整个设置窗关掉。
+
+use std::rc::Rc;
+
+use windui::core::{EventCtx, Widget};
+use windui::event::{Event, PointerKind};
+use windui::prelude::*;
+use windui::style::Shadow;
+
+use super::index::{JumpTarget, SearchEntry, build_index};
+use super::jump::{self, JumpRequest};
+use super::matcher::{DEFAULT_LIMIT, search};
+use crate::manifest::Manifest;
+
+/// 搜索框尺寸（侧栏宽 184 − padding_xy(8) 两侧）。
+const BOX_W: i32 = 168;
+const BOX_H: i32 = 30;
+
+/// 浮层左上角（根坐标）。都是常量：标题栏 44 + 分隔线 1 + 侧栏上内边距 10
+/// + 搜索框 30 + 间隙 4 = 89；左侧对齐侧栏内边距 8。
+///
+/// 用固定值而不是测量搜索框位置，是因为这几个量都由 `shell::build` 写死，
+/// 测量反而要引入一条「浮层依赖别的节点几何」的耦合。改了侧栏内边距或标题栏高度
+/// 时，`overlay_top_matches_layout` 会提醒同步。
+const OVERLAY_LEFT: i32 = 8;
+const OVERLAY_TOP: i32 = 89;
+const OVERLAY_W: i32 = 320;
+const OVERLAY_MAX_H: i32 = 380;
+
+/// 结果列表里的一行。
+#[derive(Clone)]
+pub struct ResultRow {
+    /// 在当前结果里的序号，用于和 `selected` 比对。
+    pub idx: usize,
+    pub title: String,
+    /// 面包屑，已拼成一行。
+    pub path: String,
+    /// 方案级条目：到不了，只能给指示。列表上标一下，免得点了觉得「没反应」。
+    pub needs_schema: bool,
+    pub target: JumpTarget,
+}
+
+/// 搜索状态。信号在 `AppState::empty()` 里创建（与 `tab`/`dark` 同级），
+/// 故不属于任何窗口的 `SignalScope`，主窗关掉再开也不会失效。
+#[derive(Clone)]
+pub struct SearchState {
+    /// 索引：启动构建一次，之后只读。
+    entries: Rc<Vec<SearchEntry>>,
+    /// 输入框绑定的查询串。
+    pub query: Signal<String>,
+    /// 当前结果（浮层的数据源）。
+    pub rows: Signal<Vec<ResultRow>>,
+    /// 高亮项下标。有结果时恒为合法值（默认 0），故 Enter 总有东西可跳。
+    pub selected: Signal<usize>,
+    /// 浮层是否展开。
+    pub open: Signal<bool>,
+}
+
+impl SearchState {
+    pub fn new(manifest: &Manifest) -> Self {
+        Self {
+            entries: Rc::new(build_index(manifest)),
+            query: signal(String::new()),
+            rows: signal(Vec::new()),
+            selected: signal(0),
+            open: signal(false),
+        }
+    }
+
+    /// 按当前 `query` 重算结果。查询为空即收起浮层。
+    pub fn refresh(&self) {
+        let q = self.query.get();
+        let hits = search(&self.entries, &q, DEFAULT_LIMIT);
+        let rows: Vec<ResultRow> = hits
+            .iter()
+            .enumerate()
+            .map(|(idx, h)| {
+                let e = &self.entries[h.index];
+                ResultRow {
+                    idx,
+                    title: e.title.clone(),
+                    path: e.path.join(" › "),
+                    needs_schema: matches!(e.target, JumpTarget::SchemaLevel { .. }),
+                    target: e.target.clone(),
+                }
+            })
+            .collect();
+        let any = !rows.is_empty();
+        self.rows.set(rows);
+        self.selected.set(0);
+        // 查询非空就展开——即使没有结果：浮层要显示「未找到匹配项」，
+        // 直接收起会让人以为搜索框坏了。
+        self.open.set(!q.trim().is_empty());
+        let _ = any;
+    }
+
+    /// 收起浮层（不清查询：用户可能还想回来点第二条）。
+    pub fn dismiss(&self) {
+        self.open.set(false);
+    }
+
+    /// 清空并收起。
+    pub fn clear(&self) {
+        self.query.set(String::new());
+        self.rows.set(Vec::new());
+        self.selected.set(0);
+        self.open.set(false);
+    }
+
+    /// 上下移动高亮项，**在首尾之间循环**。
+    fn move_selection(&self, delta: isize) {
+        let n = self.rows.with(Vec::len);
+        if n == 0 {
+            return;
+        }
+        let cur = self.selected.get() as isize;
+        let next = (cur + delta).rem_euclid(n as isize) as usize;
+        self.selected.set(next);
+    }
+
+    /// 当前高亮项的跳转目标。
+    fn selected_target(&self) -> Option<JumpTarget> {
+        let i = self.selected.get();
+        self.rows.with(|r| r.get(i).map(|row| row.target.clone()))
+    }
+}
+
+/// 点击/回车确认一条结果：切页 + 挂跳转请求 + 收浮层。
+fn commit(st: &SearchState, tab: Signal<usize>, jmp: Signal<Option<JumpRequest>>, t: JumpTarget) {
+    jump::request(tab, jmp, t);
+    st.dismiss();
+}
+
+/// 侧栏顶部的搜索框。
+pub fn build_search_box(
+    st: &SearchState,
+    tab: Signal<usize>,
+    jmp: Signal<Option<JumpRequest>>,
+) -> Element {
+    let query = st.query;
+    // ↑↓ 选择、Enter 确认。两个闭包各持一份 SearchState 克隆（内部都是 Copy 的信号
+    // 与一个 Rc，克隆很轻）。
+    let nav_st = st.clone();
+    let submit_st = st.clone();
+    let clear_st = st.clone();
+
+    let input = Element::text_input(query, "搜索设置")
+        .leading_icon('\u{1F50D}')
+        .width(BOX_W)
+        .height(BOX_H)
+        // Ctrl+F 的落点：`ShortcutCtx::focus_main_input()` 把焦点交还给声明了
+        // autofocus 的控件，全窗只此一个。副作用是打开设置窗即聚焦搜索框
+        // （与 Windows 11 设置一致）。
+        .autofocus()
+        .on_nav_key(move |_ctx, ev| match ev.key {
+            Key::Up => {
+                nav_st.move_selection(-1);
+                true
+            }
+            Key::Down => {
+                nav_st.move_selection(1);
+                true
+            }
+            // 其余（尤其 Tab）必须交回去：无脑返回 true 会吃掉 Shift+Tab，
+            // 用户就失去了离开输入框的唯一键盘途径。
+            _ => false,
+        })
+        .on_submit(move |_ctx| {
+            if let Some(t) = submit_st.selected_target() {
+                commit(&submit_st, tab, jmp, t);
+            }
+        });
+
+    // 清除按钮：只在有输入时出现，压在输入框右端。
+    //
+    // ⚠ `.clickable()` 只能加在容器（col/row/stack）上，叠到 label 这类叶子控件上会在
+    // debug 构建下**运行时** panic（链式 API 是 downcast，编译与单测都拦不住）。
+    // 故这里先用 row 包一层，再让容器可点。
+    let clear = Element::row()
+        .padding_xy(6, 6)
+        .child(
+            Element::label("✕")
+                .font_size(12.0)
+                .fg_role(Role::TextDisabled),
+        )
+        .clickable()
+        .corner(4.0)
+        .on_click(move |_| clear_st.clear())
+        .align(Align::End)
+        .visible_when(move || !query.get().is_empty());
+
+    Element::stack()
+        .width(BOX_W)
+        .height(BOX_H)
+        .child(input)
+        .child(clear)
+}
+
+/// 查询变化即重算结果的响应式哨兵（0×0，挂在侧栏里）。
+///
+/// windui 的 TextInput 只写回绑定的信号、没有变更回调，故沿用本仓既有的
+/// `reactive_effect` 模式（见 `pages::dict::reactive`）。
+pub fn build_query_watcher(st: &SearchState) -> Element {
+    let query = st.query;
+    let st = st.clone();
+    crate::pages::dict::reactive::reactive_effect(move || query.version(), move || st.refresh())
+}
+
+/// 结果浮层（挂根 stack）。返回 (点击外部的捕获层, 浮层本体)，两者都要挂，
+/// **捕获层在前**：它得在浮层之下，否则点浮层里的项会先被它吃掉。
+pub fn build_results_overlay(
+    st: &SearchState,
+    tab: Signal<usize>,
+    jmp: Signal<Option<JumpRequest>>,
+) -> (Element, Element) {
+    let open = st.open;
+    let scrim_st = st.clone();
+    // 点击浮层以外任何地方即收起。用自绘的透明层而不是 `.clickable()`：后者会画
+    // hover/press 半透明叠层，糊在全窗上就是整屏发灰。
+    let scrim = Element::leaf()
+        .fill()
+        .widget(Scrim::new(move || scrim_st.dismiss()))
+        .visible_when(move || open.get());
+
+    let rows = st.rows;
+    let selected = st.selected;
+    let row_st = st.clone();
+    let list = Element::host_signal(rows, move |row: ResultRow| {
+        build_result_row(row, selected, &row_st, tab, jmp)
+    });
+
+    let empty_hint = Element::label("未找到匹配项")
+        .font_size(12.0)
+        .fg_role(Role::TextDisabled)
+        .padding_xy(12, 14)
+        .visible_when(move || rows.with(Vec::is_empty));
+
+    let panel = Element::col()
+        .width(OVERLAY_W)
+        .max_height(OVERLAY_MAX_H)
+        .bg_role(Role::Surface)
+        .corner(8.0)
+        .border_role(Role::Border, 1)
+        .shadow(Shadow::new(0.0, 8.0, 24.0, Color::rgba(0, 0, 0, 110)))
+        .padding_xy(4, 4)
+        .child(empty_hint)
+        .child(Element::scroll().fill().child(list));
+
+    // 定位层：铺满根 stack、只靠内边距把面板推到搜索框正下方。自身无背景、
+    // 用的是纯容器 widget，故不吞指针事件（`hit_node` 的「吞命中」判据）。
+    let overlay = Element::col()
+        .fill()
+        .padding_edges(Insets::new(OVERLAY_LEFT, OVERLAY_TOP, 0, 0))
+        .child(panel)
+        .visible_when(move || open.get());
+
+    (scrim, overlay)
+}
+
+/// 一条结果：高亮底（选中时）+ 两行文字，整行可点。
+fn build_result_row(
+    row: ResultRow,
+    selected: Signal<usize>,
+    st: &SearchState,
+    tab: Signal<usize>,
+    jmp: Signal<Option<JumpRequest>>,
+) -> Element {
+    let i = row.idx;
+    // ⚠ 撑满整行靠 `Align::Stretch`，不是 `.fill()`：`arrange_frame` 判的是
+    // align == Stretch 才用父的可用尺寸，`Dimension::Match` 在这里会测成 0
+    // ——那样高亮就是一条看不见的 0 高线。
+    let highlight = Element::leaf()
+        .corner(6.0)
+        .bg_role_alpha(Role::Accent, 0.12)
+        .align(Align::Stretch)
+        .visible_when(move || selected.get() == i);
+
+    let mut title_row = Element::row()
+        .width_match()
+        .spacing(6)
+        .cross(Align::Center)
+        .child(
+            Element::label(row.title.clone())
+                .font_size(13.0)
+                .font_weight(500)
+                .max_lines(1),
+        );
+    if row.needs_schema {
+        // 方案级条目够不着：点了只会跳到方案页并给一条路径提示。先说清楚，
+        // 免得用户以为点坏了。
+        title_row = title_row.child(
+            Element::label("需先选方案")
+                .font_size(10.0)
+                // 用 accent 而不是 TextDisabled：这枚标记压在选中行的淡 accent 底上，
+                // 灰字与底几乎糊在一起（浅色主题下尤其），等于没标。
+                .fg_role(Role::Accent)
+                .bg_role_alpha(Role::Accent, 0.14)
+                .corner(4.0)
+                .padding_xy(5, 1)
+                .max_lines(1),
+        );
+    }
+
+    let content = Element::col()
+        .width_match()
+        .padding_xy(10, 6)
+        .spacing(2)
+        .child(title_row)
+        .child(
+            Element::label(row.path.clone())
+                .font_size(11.0)
+                .fg_role(Role::TextDisabled)
+                .max_lines(1),
+        )
+        .align(Align::Stretch)
+        .clickable()
+        .corner(6.0);
+
+    let click_st = st.clone();
+    let target = row.target.clone();
+    let content = content.on_click(move |_| {
+        commit(&click_st, tab, jmp, target.clone());
+    });
+
+    Element::stack()
+        .width_match()
+        .child(highlight)
+        .child(content)
+}
+
+/// 透明的全窗捕获层：吃掉一次点击并回调，自己什么都不画。
+struct Scrim {
+    on_dismiss: Box<dyn Fn()>,
+}
+
+impl Scrim {
+    fn new(f: impl Fn() + 'static) -> Self {
+        Self {
+            on_dismiss: Box::new(f),
+        }
+    }
+}
+
+impl Widget for Scrim {
+    fn on_event(&mut self, ctx: &mut EventCtx, ev: &Event) -> bool {
+        match ev {
+            Event::Pointer(p) if p.kind == PointerKind::Down => {
+                (self.on_dismiss)();
+                // 收起会改可见性 → 影响自身矩形之外的区域，故整窗失效。
+                ctx.mark_dirty_all();
+                true
+            }
+            // 其余指针事件一并吞掉：漏下去会点到浮层背后的控件上。
+            Event::Pointer(_) => true,
+            _ => false,
+        }
+    }
+
+    /// 命中即落定——没有背景色的节点默认是穿透的（`hit_node` 的判据里
+    /// `style.bg.is_some()` 与 `hit_opaque()` 并列），不这样它就形同虚设。
+    fn hit_opaque(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> SearchState {
+        SearchState::new(&Manifest::from_embedded())
+    }
+
+    #[test]
+    fn empty_query_keeps_overlay_closed() {
+        let st = state();
+        st.query.set(String::new());
+        st.refresh();
+        assert!(!st.open.get());
+        assert!(st.rows.with(Vec::is_empty));
+    }
+
+    #[test]
+    fn query_opens_overlay_with_rows() {
+        let st = state();
+        st.query.set("码表".into());
+        st.refresh();
+        assert!(st.open.get(), "有查询就该展开");
+        assert!(!st.rows.with(Vec::is_empty), "「码表」应有结果");
+        assert_eq!(st.selected.get(), 0, "刷新后高亮回到第一条");
+    }
+
+    /// 没有结果也要展开——浮层里显示「未找到匹配项」，收起会让人以为搜索坏了。
+    #[test]
+    fn no_result_still_opens() {
+        let st = state();
+        st.query.set("zzzzzzz不存在的东西".into());
+        st.refresh();
+        assert!(st.open.get());
+        assert!(st.rows.with(Vec::is_empty));
+    }
+
+    #[test]
+    fn selection_wraps_around() {
+        let st = state();
+        st.query.set("候选".into());
+        st.refresh();
+        let n = st.rows.with(Vec::len);
+        assert!(n >= 2, "这条测试需要至少两条结果");
+
+        st.move_selection(-1);
+        assert_eq!(st.selected.get(), n - 1, "从第一条上移应绕到最后一条");
+        st.move_selection(1);
+        assert_eq!(st.selected.get(), 0, "从最后一条下移应绕回第一条");
+    }
+
+    /// 没有结果时按 ↑↓ 不该 panic，也不该把 selected 推到非法值。
+    #[test]
+    fn selection_move_on_empty_is_noop() {
+        let st = state();
+        st.refresh();
+        st.move_selection(1);
+        assert_eq!(st.selected.get(), 0);
+    }
+
+    #[test]
+    fn clear_resets_everything() {
+        let st = state();
+        st.query.set("码表".into());
+        st.refresh();
+        st.clear();
+        assert!(st.query.get().is_empty());
+        assert!(st.rows.with(Vec::is_empty));
+        assert!(!st.open.get());
+    }
+
+    /// 确认一条结果后浮层收起、页面切到目标页。
+    #[test]
+    fn commit_switches_tab_and_closes() {
+        let st = state();
+        let tab = signal(0usize);
+        let jmp = signal(None);
+        st.query.set("码表".into());
+        st.refresh();
+        let target = st.selected_target().expect("应有高亮项");
+        let want = target.tab();
+        commit(&st, tab, jmp, target);
+        assert_eq!(tab.get(), want);
+        assert!(!st.open.get(), "确认后浮层应收起");
+        assert!(jmp.get().is_some(), "应挂上跳转请求供锚点认领");
+    }
+
+    /// 结果行带上「需先选方案」标记的，正是方案级条目。
+    #[test]
+    fn schema_level_rows_are_flagged() {
+        let st = state();
+        st.query.set("码表配置".into());
+        st.refresh();
+        st.rows.with(|rows| {
+            for r in rows {
+                assert_eq!(
+                    r.needs_schema,
+                    matches!(r.target, JumpTarget::SchemaLevel { .. }),
+                    "「{}」的方案级标记与目标类型不一致",
+                    r.title
+                );
+            }
+        });
+    }
+
+    /// **建树不 panic**。
+    ///
+    /// windui 的链式 API 是运行时 downcast：`.clickable()` 落到叶子控件上、
+    /// `.small()` 落到非按钮上，都会在 debug 构建下当场 panic，而
+    /// `cargo check`、`cargo clippy` 与其余单测**全绿**。本仓已因此崩过一次
+    /// （`SettingsSection::ALL` 那份手写列表就是为此存在的）。
+    ///
+    /// P1 也栽过同一个坑：清除按钮曾是 `label("✕").clickable()`，
+    /// 编译测试都过、一跑就崩。故此处把三个构建入口都走一遍。
+    #[test]
+    fn search_ui_builds_without_panicking() {
+        let st = state();
+        let tab = signal(0usize);
+        let jmp = signal(None);
+        let _ = build_search_box(&st, tab, jmp);
+        let _ = build_query_watcher(&st);
+        let _ = build_results_overlay(&st, tab, jmp);
+
+        // 结果行两种形态都要建：带「需先选方案」标记的分支是另一条路径。
+        st.query.set("码表".into());
+        st.refresh();
+        st.rows.with(|rows| {
+            for row in rows {
+                let _ = build_result_row(row.clone(), st.selected, &st, tab, jmp);
+            }
+        });
+    }
+
+    /// 浮层的固定定位与 `shell::build` 的实际布局对齐。
+    ///
+    /// 这几个量分散在两个文件里，靠常量对齐；改了侧栏内边距或标题栏高度而忘了
+    /// 同步，浮层就会错位——那种偏移在截图上不明显，但用起来别扭。
+    #[test]
+    fn overlay_top_matches_layout() {
+        const TITLEBAR_H: i32 = 44;
+        const DIVIDER_H: i32 = 1;
+        const SIDEBAR_PAD_V: i32 = 10;
+        const GAP: i32 = 4;
+        assert_eq!(
+            OVERLAY_TOP,
+            TITLEBAR_H + DIVIDER_H + SIDEBAR_PAD_V + BOX_H + GAP
+        );
+        // 侧栏宽 184、左右各 8 内边距。
+        assert_eq!(BOX_W, 184 - OVERLAY_LEFT * 2);
+    }
+}
