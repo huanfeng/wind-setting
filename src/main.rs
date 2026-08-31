@@ -23,6 +23,9 @@ mod pages;
 mod protocol;
 mod rpc;
 mod schema_url_import;
+// P0 只落索引与匹配（纯逻辑），接线在 P1；在此之前整模块对 main 未使用。
+#[allow(dead_code)]
+mod search;
 #[allow(dead_code)]
 mod setting_config;
 mod shell;

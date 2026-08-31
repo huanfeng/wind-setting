@@ -303,7 +303,8 @@ U+3007: líng,yuán,xīng  # 〇
 
 ### 7.3 守门
 
-守门测试 `tests/pinyin_coverage.rs`：构建完整索引 → 取出全部标题与关键词里的汉字 →
+守门测试 `search::pinyin::tests::table_covers_every_title_char`（本仓是 binary crate、
+没有 `tests/` 集成测试目录，测试一律内联）：构建完整索引 → 取出全部**标题**里的汉字 →
 与表求差集 → **非空即失败**，并打印缺失字列表与「跑一次生成脚本」的指引。
 
 这条与本仓既有的 `capabilities.snapshot.json` 守门是同一套路子：
@@ -433,14 +434,44 @@ placeholder「搜索设置」
 
 | MItem 特征 | target | path |
 |---|---|---|
-| 普通项 | `Row{tab(group), key}` | `[group_label, section]` |
-| `dialog_title` 宿主 | `RowInDialog` | `[group, section, dialog_title]` |
-| `dialog_extra_for = H` | `RowInDialog{host: H}` | `[group, section, H.dialog_title]` |
-| `dialog_group = G` | `RowInDialog{host: opens_dialog==G 的那项}` | `[…, "扩展设置"]`（+ `subsection`） |
-| `opens_dialog` 宿主 | `Row` | 同普通项 |
-| `gate_key` 合并行 | `Row{anchor: gate_key}` | 同普通项 |
+| 普通项 | `Row{tab(group), key}` | `[页面名, section]` |
+| `dialog_extra_for = H` | `RowInDialog{host: H}` | `[页面名, section, H 的对话框名]` |
+| `dialog_group = G` | `RowInDialog{host: opens_dialog==G 的那项}` | 同上（+ `subsection`） |
+| `opens_dialog` / `dialog_title` 宿主 | `Row` | 同普通项（宿主自己就是页面上那一行） |
+| `gate_key` 合并行的 `dialog_button` | **跳过** | 行的锚点归门控开关 |
 
-`keywords` = `hint` 首句 + 配置 key 末段。
+`keywords` = `hint` 首句（截 28 字）+ 配置 key 末两段。
+
+#### ⚠ group **不等于** Tab
+
+实现时才发现的，规划原先照 group 直接映射会全错：
+
+| group | section | 实际渲染在 |
+|---|---|---|
+| `schema` | 主方案设置 | 方案页，直接成行 |
+| `schema` | 上屏行为 | 方案页 › 全局方案配置 › **码表方案配置**对话框 |
+| `schema` | 混输行为 | 同上 › **混输方案配置** |
+| `schema` | 候选行为 / 模糊音 | 同上 › **拼音方案配置**（模糊音由 `with_fuzzy` 并入）|
+| `schema` | 英文行为 | 同上 › **英文方案配置** |
+| `general` | 默认状态 | **输入页**（`input_page` 把 general 组 extend 进去）|
+| `stats` | 统计设置 | 统计页 |
+| 其余 | * | 同名页面 |
+
+⇒ `index.rs` 里显式建表 `placement_of`，并由 `sections_have_placement` 守门：
+新增 (group, section) 组合而忘了登记，那批项会**静默**从搜索里消失——测试会红。
+
+#### 拼音首字母只对标题生效
+
+实现时的一处收敛：`title` 走拼音，`hint`/`keywords` 只做汉字子串。
+拿一句 20 字的说明去比首字母，四五个字母的查询会命中一堆不相干的项。
+副产品是拼音表只需覆盖标题的 290 个字（2.2 KB），比预估的 600–900 字还小。
+
+#### 方案级条目降权 30 分
+
+方案级条目**到不了**（「哪个方案」未定，只能给指示）。同样匹配程度下，
+能一步到位的那条更该排前面。只降 30 分故**不跨档**：方案级项若是标题前缀命中、
+全局项只是子串命中，前者仍排在前面——那时它确实更贴题，由结果列表给它一个
+「需先选方案」的标记（P1）。
 
 ### 11.2 手写页补充索引（约 40 条，手工维护）
 
@@ -467,7 +498,7 @@ placeholder「搜索设置」
 
 | 期 | 内容 | 落点 | 新增代码 | 工作量 | 可独立验收 |
 |---|---|---|---|---|---|
-| **P0** | 索引 + 匹配 + 拼音表 + 单测 | `src/search/{index,matcher,pinyin}.rs`、`src/assets/pinyin_initials.txt`、`scripts/gen-pinyin-initials.ps1`、`tests/pinyin_coverage.rs` | ~750 行 + 生成数据 | 1.0 d | `cargo test`：搜「码表」「mbfa」返回期望 id 序列 |
+| **P0** | 索引 + 匹配 + 拼音表 + 单测 | `src/search/{mod,index,matcher,pinyin}.rs`、`src/assets/pinyin_initials.txt`、`scripts/gen-pinyin-initials.ps1` | ~750 行 + 生成数据 | 1.0 d | `cargo test`：搜「码表」「mbfa」返回期望 id 序列 |
 | **P1** | 搜索框 + 浮层 + 键盘 | `src/search/ui.rs`、`src/shell.rs`、`src/main.rs`(on_shortcut) | ~400 行 | 1.0 d | 截图：浮层形态；手测 Esc 不关窗 |
 | **P2** | 锚点 + 滚动 + 闪烁（`Row`/`Card`） | `src/search/{anchor,jump}.rs`、`src/manifest.rs`、`src/widgets.rs` | ~450 行 | 1.5 d | 截图：闪烁中一帧；不可见页锚点不误滚的单测 |
 | **P3** | 对话框内项（`RowInDialog`） | `src/state.rs`(registry)、`src/manifest.rs` | ~200 行 | 0.5 d | 手测四步链路 |
