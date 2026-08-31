@@ -1351,36 +1351,61 @@ pub struct ForeignBinding {
     pub label: String,
     /// 去哪儿改（如「按键 › 中英切换键」）。
     pub source: String,
+    /// 归一化后的物理键 token，**只用于与上面那张表比对**，不显示。
+    ///
+    /// 与显示串分开存：显示要的是「Ctrl+数字」这样一行读得懂的话，比对要的是展开后的
+    /// 十个具体键（`Ctrl+0`…`Ctrl+9`）——用显示串比，`Ctrl+1` 撞上模板就检不出来。
+    pub tokens: Vec<String>,
+    /// 与上面那张表的某条绑定撞了。由 [`foreign_section`] 每次刷新时现算，不落存储。
+    pub conflict: bool,
 }
 
 /// [`ForeignBinding`] 的展示行：`[按键] [功能] [来源]`，无按钮。
 ///
 /// 列宽与 [`binding_row`] 的前两列对齐——两组上下相邻，错开一格就会显得是两张表。
+///
+/// 撞了上面那张表的行整行转 [`Role::Warning`]（橙），末列换成「上面已占用」。
+/// ★ 用 `Warning` 而不是 `Danger`：这不是错误配置，是**两处都合法、只有一处生效**
+/// ——内核有确定的裁决（上面那张赢），红色会把可解释的行为报成待修的故障。同
+/// `ConflictLevel::Coexist` 不进常驻警告条的理由。
 fn foreign_row(b: &ForeignBinding) -> Element {
+    let role = if b.conflict {
+        Role::Warning
+    } else {
+        Role::TextMuted
+    };
     Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(8)
         .padding_xy(0, 3)
         .child(
+            // 比 `binding_row` 的键列宽（130）且允许折行：本组的键列装的可能是**一整组**
+            // 的符号（`PageUp/PageDown、- =`），比单个键名长一倍不止。130 下 `PageUp/`
+            // 就断在斜杠上，`Tab/Shift+Tab` 只剩 `Tab/Shift`——看起来像配了个别的键。
+            // 与上一组差 40px 不影响阅读：中间隔着折叠头，本来就是两块。
             Element::label(&b.keys)
                 .font_size(12.5)
-                .fg_role(Role::TextMuted)
-                .width(130)
-                .max_lines(1),
+                .fg_role(role)
+                .width(170)
+                .max_lines(2),
         )
         .child(
             Element::label(&b.label)
                 .font_size(12.5)
-                .fg_role(Role::TextMuted)
+                .fg_role(role)
                 .weight(1.0)
                 .max_lines(1),
         )
         .child(
-            Element::label(&b.source)
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
-                .max_lines(1),
+            Element::label(if b.conflict {
+                "上面已占用"
+            } else {
+                &b.source
+            })
+            .font_size(11.0)
+            .fg_role(role)
+            .max_lines(1),
         )
 }
 
@@ -1388,11 +1413,19 @@ fn foreign_row(b: &ForeignBinding) -> Element {
 ///
 /// 方案级 `[key_actions]` 那个实例**不传**：专用字段全是全局的，在方案对话框里列出来
 /// 会让人以为它们也能按方案配。
+///
+/// `used_tokens` 现算「上面那张表当前占用了哪些键」（归一化后），用于逐行标橙。
+///
+/// `version` 由**调用方**组合它自己的全部依赖（行版本 ⊕ 只读组内容版本）——判变依据与
+/// 数据源必须同源：少了行版本，用户删掉一条绑定后橙色不退；少了内容版本，loader 送来的
+/// 真实热键值不会被重算。折叠态由本函数自己叠进去，调用方不必管。
 pub fn foreign_section(
     all: std::rc::Rc<RefCell<Vec<ForeignBinding>>>,
     shown: Signal<Vec<ForeignBinding>>,
     open: Signal<bool>,
     count_text: Signal<String>,
+    used_tokens: std::rc::Rc<dyn Fn() -> std::collections::HashSet<String>>,
+    version: std::rc::Rc<dyn Fn() -> u64>,
 ) -> Element {
     // 折叠开关用 checkbox 而不是「展开/收起」按钮：按钮的文案得跟着状态变，而本仓没有
     // 文案绑信号的按钮，绕出来的写法（host_signal 套单元素 Vec）比它解决的问题还长。
@@ -1414,18 +1447,37 @@ pub fn foreign_section(
 
     // 折叠只换 `shown` 的内容，不隐藏容器：`host_signal` 本来就按数据重建子树，空表
     // 就是零行，比再套一层显隐条件少一条状态。
+    //
+    // ★ 冲突**折叠时也算**：撞车数要进标题的计数里，那正是让用户知道该展开看看的东西。
+    // 只有行的渲染受折叠影响。代价是每次编辑都遍历一遍上面那张表（几十行，可忽略）。
     let refresh = {
         let all = all.clone();
+        let used_tokens = used_tokens.clone();
         move || {
-            shown.set(if open.get() {
-                all.borrow().clone()
+            let used = used_tokens();
+            let rows: Vec<ForeignBinding> = all
+                .borrow()
+                .iter()
+                .map(|b| ForeignBinding {
+                    conflict: b.tokens.iter().any(|t| used.contains(t)),
+                    ..b.clone()
+                })
+                .collect();
+            let hit = rows.iter().filter(|b| b.conflict).count();
+            count_text.set(if rows.is_empty() {
+                String::new()
+            } else if hit > 0 {
+                format!("（{} 项，其中 {hit} 项与上面重复）", rows.len())
             } else {
-                Vec::new()
-            })
+                format!("（{} 项，改动请去各自的设置项）", rows.len())
+            });
+            shown.set(if open.get() { rows } else { Vec::new() });
         }
     };
-    let sync =
-        crate::pages::dict::reactive::reactive_effect(move || u64::from(open.get()), refresh);
+    let sync = crate::pages::dict::reactive::reactive_effect(
+        move || u64::from(open.get()) | (version() << 1),
+        refresh,
+    );
 
     Element::col()
         .width_match()
@@ -1440,6 +1492,34 @@ pub fn foreign_section(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★★ 候选键组展开表的键名拼写必须落在会话态键值域内。
+    ///
+    /// `CANDIDATE_GROUP_KEYS` 与 core 的四张 `*_group_binds` 是跨仓手写清单，无编译期
+    /// 约束；拼错一个（`pgup` / `left_bracket` / 大写）的表现是**少标一个橙色**——不报错、
+    /// 不崩，只是提示悄悄失灵，正是本仓最难查的那类。
+    ///
+    /// 判据用 `session_base_keys()`：它注释里写明「与 core `session_key_to_vk` 的 match 臂
+    /// 一一对应」，是本仓离 core 键名最近的一份。两边同时写错同一个名字才骗得过它。
+    #[test]
+    fn candidate_group_keys_are_valid_session_keys() {
+        let base = session_base_keys();
+        let mut checked = 0;
+        for g in crate::key_conflict::candidate_group_names() {
+            let keys = crate::key_conflict::candidate_group_keys(g);
+            assert!(!keys.is_empty(), "组 {g:?} 展开为空，标橙时它恒不匹配");
+            for k in keys {
+                // 会话态只认 `shift+` 一种前缀（core `session_key_name_to_vk`）。
+                let bare = k.strip_prefix("shift+").unwrap_or(k);
+                assert!(
+                    base.contains(&bare),
+                    "组 {g:?} 展开出的键名 {k:?} 不在会话态键值域里——拼错的后果是这一组                     永远标不上橙色，而不会有任何报错"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 20, "只校验到 {checked} 个键名，表像是被清空了");
+    }
 
     /// 组合键的动词白名单必须与 core 的 `hotkey_action_entry` 对齐。
     ///

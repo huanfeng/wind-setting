@@ -243,6 +243,68 @@ pub const MODE_HOTKEY_FIELDS: &[(&str, &str)] = &[("input.temp_pinyin.hotkey", "
 /// 要合并，前置条件是先补上 core 的那处值域。
 pub const TOGGLE_MODE_FIELD: (&str, &str) = ("keys.toggle_mode_keys", "中英文切换");
 
+// ───────────── 候选操作键组：与 `keys.session_actions` 同域 ─────────────
+
+/// 「候选操作」那批键组字段：配置路径 → 中文名。**与 `keys.session_actions` 同域**
+/// （core 的 `effective_session_actions` 把它们折算进那张表，显式项优先）。
+///
+/// ⚠️ 与 [`HOTKEY_FIELDS`] 那批**分属两张表**，别混：这四组进「自定义输入中按键」编辑器
+/// 的只读组，那批进「全局自定义按键」的。判据是「它折算进哪张表」，不是「像不像按键」。
+pub const CANDIDATE_FIELDS: &[(&str, &str)] = &[
+    ("keys.select_key_groups", "次选/三选键"),
+    ("keys.page_keys", "翻页键"),
+    ("keys.highlight_keys", "高亮移动键"),
+    ("keys.select_char_keys", "以词定字"),
+];
+
+/// 键组名 → 它实际占用的**会话态键名**。
+///
+/// # 为什么这份表非有不可
+///
+/// [`expand_candidate_key`] 展开的是**比较用的组名 token**（`minus_equal` 原样返回），
+/// 够候选域内部两两比，但答不出「用户显式配的 `minus` 是不是落在 `minus_equal` 这一组
+/// 里」——那要的是具体键。`keys_overview` 那条注释说的「别在设置页再写一份展开表」针对的
+/// 是**完整仲裁**（算最终生效表，那必须由 core 算）；这里只用于高亮提示，判错的后果是
+/// 少标或多标一个橙色，不是显示错误的生效结果。
+///
+/// ⚠️ 与 core 的四张 `*_group_binds` 是**跨仓手写清单**，无编译期约束。守门测试
+/// `candidate_group_keys_are_valid_session_keys` 拿 `session_base_keys()` 交叉校验键名
+/// 拼写（core 那边同一批名字要过 `session_key_name_to_vk`），拼错即红。
+///
+/// ★ 同名组在 core 的四张表里展开一致（`comma_period` 恒是 comma+period），故合成一张。
+/// 各字段**能用哪些组名**由设置清单的 options 管（core 那边张冠李戴过一次：用选词键组的
+/// 解析器解以词定字配置，`brackets` 静默失效），本表不负责那道校验。
+const CANDIDATE_GROUP_KEYS: &[(&str, &[&str])] = &[
+    ("semicolon_quote", &["semicolon", "quote"]),
+    ("comma_period", &["comma", "period"]),
+    ("minus_equal", &["minus", "equal"]),
+    ("brackets", &["lbracket", "rbracket"]),
+    ("pageupdown", &["pageup", "pagedown"]),
+    // 翻页的 `shift_tab` 与高亮的 `tab` 是同一对物理键，展开结果相同。
+    ("shift_tab", &["tab", "shift+tab"]),
+    ("tab", &["tab", "shift+tab"]),
+    ("arrows", &["up", "down"]),
+    ("lrshift", &["lshift", "rshift"]),
+    ("lrctrl", &["lctrl", "rctrl"]),
+];
+
+/// 本表认得的全部组名。**仅供守门测试**遍历校验键名拼写（：产品代码里
+/// 没有「遍历全部组名」的需求，去掉这个门就是一条 dead_code 告警）。
+#[cfg(test)]
+pub fn candidate_group_names() -> impl Iterator<Item = &'static str> {
+    CANDIDATE_GROUP_KEYS.iter().map(|(n, _)| *n)
+}
+
+/// 组名 → 会话态键名；未知组名返回空（手写配置里的生僻值不该 panic，也不该乱标橙色）。
+pub fn candidate_group_keys(group: &str) -> &'static [&'static str] {
+    let g = group.trim().to_lowercase();
+    CANDIDATE_GROUP_KEYS
+        .iter()
+        .find(|(n, _)| *n == g)
+        .map(|(_, ks)| *ks)
+        .unwrap_or(&[])
+}
+
 /// 把 **Blocking** 冲突拼成一行警告文案；无 Blocking 冲突返回 None。
 /// 键名以符号呈现（见 [`key_symbol`]）。`scene` 为场景标签（如"触发键"/"候选键"），
 /// 冠于文案前区分冲突域。

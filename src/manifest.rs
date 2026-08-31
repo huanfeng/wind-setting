@@ -3456,6 +3456,11 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
             c.set_path(&kw, Value::Object(fw.to_map()));
         }));
 
+    // 只读组：「候选操作」那四组键组——core 把它们折算进本表，且**本表显式项优先**。
+    // 不列出来的话，用户在这里配了 `tab`，外面「高亮移动按键」仍勾着 Tab，两处各说各话。
+    let foreign_src = foreign_sources(state);
+    fields.set_foreign(session_foreign_bindings(&foreign_src, cfg));
+
     // loader：外部改动（恢复默认 / 重新拉取配置）后重建行。
     let (fl, kl) = (fields.clone(), key.to_string());
     state.fields.loaders.borrow_mut().insert(
@@ -3467,6 +3472,8 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
                     .cloned()
                     .unwrap_or_default(),
             );
+            // 同全局那份：构造期拿到的多半是占位配置，四组键组全是空的。
+            fl.set_foreign(session_foreign_bindings(&foreign_src, c));
         }),
     );
 
@@ -3519,7 +3526,7 @@ fn foreign_sources(state: &AppState) -> HashMap<String, String> {
 fn foreign_key_bindings(sources: &HashMap<String, String>, cfg: &Config) -> Vec<ForeignBinding> {
     use crate::dialogs::key_binding::key_display;
     use crate::key_conflict::{
-        HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, TOGGLE_MODE_FIELD, canonical_hotkey,
+        HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, TOGGLE_MODE_FIELD, canonical_hotkey, expand_hotkey,
     };
 
     let where_to = |path: &str| sources.get(path).cloned().unwrap_or_default();
@@ -3541,6 +3548,17 @@ fn foreign_key_bindings(sources: &HashMap<String, String>, cfg: &Config) -> Vec<
             keys: tm.join("、"),
             label: tm_label.to_string(),
             source: where_to(tm_path),
+            // 比对 token 走 expand_hotkey（与上面那张表同函数），不是显示串。
+            tokens: cfg
+                .get_array(tm_path)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .flat_map(expand_hotkey)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            conflict: false,
         });
     }
 
@@ -3557,6 +3575,63 @@ fn foreign_key_bindings(sources: &HashMap<String, String>, cfg: &Config) -> Vec<
             keys: canonical_hotkey(&raw),
             label: label.to_string(),
             source: where_to(path),
+            // 模板在这里**展开**（`Ctrl+数字` → 十个键）：显示不展开是为了列表长度，
+            // 比对不展开则会漏掉「把置顶配成 Ctrl+1」这种撞车。两者要的东西不同。
+            tokens: expand_hotkey(&raw),
+            conflict: false,
+        });
+    }
+    out
+}
+
+/// 会话态编辑器（`keys.session_actions`）的只读组：「候选操作」那四组键组字段。
+///
+/// ★ 范围判据与全局那份同源——**与本表编译进同一张表**。这四组由 core 的
+/// `effective_session_actions` 折算进 `session_actions`，且**显式项优先**：所以撞车时
+/// 的语义不是「一方失效」而是「上面那条盖住了这一组里的那个键」，文案与颜色都按
+/// 「需注意」而非「错误」来（见 `foreign_row`）。
+///
+/// ⚠️ `[keys]` 段那批组合键热键**不进这里**：它们走 key_down 表，与本表不同域。两个
+/// 编辑器各自对称，谁也别往对方塞——判据一松，两个只读组就都会长成同一张大杂烩。
+fn session_foreign_bindings(
+    sources: &HashMap<String, String>,
+    cfg: &Config,
+) -> Vec<ForeignBinding> {
+    use crate::key_conflict::{CANDIDATE_FIELDS, candidate_group_keys, key_symbol};
+
+    let mut out = Vec::new();
+    for (path, label) in CANDIDATE_FIELDS {
+        let groups: Vec<String> = cfg
+            .get_array(path)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if groups.is_empty() {
+            continue;
+        }
+        // 显示用组符号（`minus_equal` → `- =`）：这四项在设置页本来就是按组勾选的，
+        // 逐键铺开反而对不上用户在「候选操作」那一节看到的东西。
+        let keys = groups
+            .iter()
+            .map(|g| key_symbol(g).to_string())
+            .collect::<Vec<_>>()
+            .join("、");
+        // 比对用具体键：显式表里配的是 `minus`，与组名 `minus_equal` 字面不相等。
+        let tokens: Vec<String> = groups
+            .iter()
+            .flat_map(|g| candidate_group_keys(g))
+            .map(|k| k.to_string())
+            .collect();
+        out.push(ForeignBinding {
+            keys,
+            label: label.to_string(),
+            source: sources.get(*path).cloned().unwrap_or_default(),
+            tokens,
+            conflict: false,
         });
     }
     out
@@ -5439,6 +5514,51 @@ mod tests {
             rows.len(),
             3,
             "未设置的字段（none / 空串）或会话态键组混进来了。实际: {keys:?}"
+        );
+    }
+
+    /// 会话态只读组：候选操作四组，显示按组、比对按具体键。
+    #[test]
+    fn session_foreign_bindings_show_groups_but_compare_keys() {
+        let cfg = Config::from_value(serde_json::json!({
+            "keys": {
+                "select_key_groups": ["semicolon_quote"],
+                "page_keys": ["pageupdown", "minus_equal"],
+                "highlight_keys": ["arrows", "tab"],
+                // 出厂为空 ⇒ 不占一行（列出来等于说这个功能占了键，而它没有）。
+                "select_char_keys": [],
+                // 组合键那批属于**另一张表**，不该混进来。
+                "switch_engine": "ctrl+shift+e",
+                "toggle_mode_keys": ["lshift"],
+            }
+        }));
+        let rows = session_foreign_bindings(&HashMap::new(), &cfg);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["次选/三选键", "翻页键", "高亮移动键"],
+            "范围错了：只该收「候选操作」那四组里已设置的，组合键/中英切换属另一张表"
+        );
+
+        let page = &rows[1];
+        assert_eq!(page.keys, "PageUp/PageDown、- =", "显示应按组，不逐键铺开");
+        // 比对要的是具体键——显式表里配的是 `minus`，与组名 `minus_equal` 字面不相等。
+        for k in ["pageup", "pagedown", "minus", "equal"] {
+            assert!(
+                page.tokens.iter().any(|t| t == k),
+                "翻页组的比对 token 缺 {k:?}，用户在上面配了它也标不出橙色。实际: {:?}",
+                page.tokens
+            );
+        }
+        assert!(
+            !page.tokens.iter().any(|t| t == "minus_equal"),
+            "组名混进了比对 token —— 它永远匹配不上任何显式键，等于这一组恒不标橙"
+        );
+        // 高亮那组的 tab 展开成 tab + shift+tab（core 的 highlight_key_group_binds）。
+        assert!(
+            rows[2].tokens.iter().any(|t| t == "shift+tab"),
+            "高亮组漏了 shift+tab。实际: {:?}",
+            rows[2].tokens
         );
     }
 
