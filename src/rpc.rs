@@ -1146,8 +1146,12 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         // 正常形态，配置降级是故障。让 mock 默认带一条红色横幅，等于每次开发截图都要
         // 先无视它——而「学会无视警告」正是这条横幅最怕的结局。
         // 要验降级顶栏，把 degraded 改成 true 并填 sections（验完记得改回来）。
+        // 刻意是**健康态**：降级是故障态，不该成为开发机上的默认景象（与 `customEdition`
+        // 的取舍相反——那个非 null 是因为它是唯一的自查途径，而这个的自查走单元测试）。
+        // `unparsable` 仍要给空数组：形态恒定是跨仓契约的一部分，字段缺失与
+        // 「这版 core 还没实现」在客户端侧无从区分。
         "config.degradation" => json!({
-            "degraded": false, "sections": [], "totalFallback": false
+            "degraded": false, "sections": [], "totalFallback": false, "unparsable": []
         }),
         "schema.list" => json!([
             { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "scheme": "",

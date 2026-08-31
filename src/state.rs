@@ -2231,6 +2231,42 @@ pub(crate) fn degradation_text(v: &Value) -> String {
     if !v.get("degraded").and_then(Value::as_bool).unwrap_or(false) {
         return String::new();
     }
+    // ★ 语法故障**优先**于段级降级来讲，两条都成立时只讲这一条。
+    //
+    // 它们是两类不同的故障，修法也不同：段级降级是「某个键的类型不对」，去改那个键；
+    // 语法故障是「文件根本读不完」，去改那一行。混在一起讲会把用户支使到错误的地方，
+    // 而且语法故障更靠前——文件读不完时，后面所有判断都建立在一份残缺内容上。
+    if let Some(u) = v
+        .get("unparsable")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+    {
+        let path = u.get("path").and_then(Value::as_str).unwrap_or("配置文件");
+        let lines: Vec<String> = u
+            .get("skippedLines")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_u64)
+                    .map(|n| n.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // 行号是用户唯一能直接下手的线索——「配置有语法错误」他无从找起，
+        // 「第 6 行」可以直接跳过去。没有行号时才退回笼统说法。
+        return if lines.is_empty() {
+            format!(
+                "⚠ 配置文件语法错误，本次未能加载，你的设置都没有生效：{path}\n\
+                 修好语法后点右下角「重新加载」。原文件不会被覆盖。"
+            )
+        } else {
+            format!(
+                "⚠ 配置文件第 {} 行语法错误，该行的设置本次没有生效：{path}\n\
+                 其余设置已正常加载。修好后点右下角「重新加载」。原文件不会被覆盖。",
+                lines.join("、")
+            )
+        };
+    }
     if v.get("totalFallback")
         .and_then(Value::as_bool)
         .unwrap_or(false)
@@ -3508,6 +3544,45 @@ mod tests {
             "degraded": true, "totalFallback": false, "sections": [],
         }));
         assert!(!odd.is_empty(), "说不清哪一段也不能一声不吭");
+    }
+
+    /// ★ 语法故障要盖过段级降级来讲，并且必须带上行号。
+    ///
+    /// 两者修法不同（改那一行 vs 改那个键的类型），合成一句会把用户支使到错误的地方；
+    /// 而「配置有语法错误」这种说法用户无从下手，行号是他唯一能直接用的线索。
+    #[test]
+    fn degradation_text_prefers_syntax_error_and_names_the_line() {
+        let t = degradation_text(&serde_json::json!({
+            "degraded": true,
+            "totalFallback": false,
+            // 刻意同时给出段级降级：语法故障必须赢。
+            "sections": ["ui.font"],
+            "unparsable": [{
+                "layer": "user",
+                "path": "C:\\Users\\me\\AppData\\Roaming\\WindInput\\config.toml",
+                "error": "duplicate key `per_page`",
+                "skippedLines": [6, 12],
+                "salvagedKeys": 3,
+            }],
+        }));
+        assert!(t.contains('6') && t.contains("12"), "行号必须出现：{t}");
+        assert!(t.contains("config.toml"), "要说清是哪个文件：{t}");
+        assert!(
+            !t.contains("ui.font"),
+            "语法故障成立时不该再讲段级降级——修法不同，混讲会误导：{t}"
+        );
+        assert!(
+            t.contains("不会被覆盖"),
+            "用户最担心的是配置被改坏，这句必须在：{t}"
+        );
+
+        // 一行都没救回来时退回笼统说法，但仍要给出文件名。
+        let none = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+            "unparsable": [{ "path": "x/config.toml", "skippedLines": [] }],
+        }));
+        assert!(none.contains("x/config.toml"), "{none}");
+        assert!(none.contains("都没有生效"), "{none}");
     }
 
     #[test]
