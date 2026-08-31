@@ -184,6 +184,14 @@ pub struct AppState {
     pub capabilities: Capabilities,
     /// 系统信息（system.info）。
     pub system_info: Value,
+    /// 定制版徽章文案（关于页）；空串 = 非定制版，徽章整个不显示。
+    ///
+    /// ★ **必须是 Signal，不能让关于页直接读 `system_info`。** 页面树由 `shell::build`
+    /// 在窗口 content 构建时一次性建好，而 `system_info` 要等后台线程 fetch 完、经
+    /// channel 回调 [`AppState::apply_loaded`] 才到位——构建期读它恒为空。关于页此前
+    /// 全是静态内容（参数一直叫 `_state`），是本仓第一个消费 RPC 数据的手写页，
+    /// 于是第一次撞上这个时序。徽章不出现、测试全绿、clippy 干净，只有 `--screenshot` 看得见。
+    pub custom_edition: Signal<String>,
     /// 方案列表（schema.list）。
     pub schemas: Vec<SchemaInfo>,
     /// 主题列表（theme.list）：含 id/显示名/版本/是否内置。下拉显示名、保存 id 到 `ui.theme.name`。
@@ -512,6 +520,7 @@ impl AppState {
             manifest: Manifest::from_embedded(),
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
+            custom_edition: signal(String::new()),
             schemas: vec![],
             theme_entries: vec![],
             fonts: vec![],
@@ -1500,6 +1509,9 @@ impl AppState {
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
+        // 关于页的定制版徽章：页面树早已建好，只能靠 Signal 送进去（见字段注释）。
+        self.custom_edition
+            .set(crate::pages::custom_edition_badge(&self.system_info).unwrap_or_default());
         self.connected = data.connected;
         // 响应式：构建期数据还没回来（总为 Loading），圆点必须靠 Signal 才能在加载后改色。
         if data.connected {

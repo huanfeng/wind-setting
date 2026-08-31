@@ -663,9 +663,39 @@ fn about_link_card(
     row
 }
 
+/// 定制版徽章文案：`system.info` 的 `customEdition` → 「虎码定制版 1.2」，非定制版 `None`。
+///
+/// ★ **空值处置落在这里，不在 core。** `wind-rpc` 的 `identity_json` 刻意不做占位替换——
+/// 它的另一个消费者是报障脚本，把 `<未命名>` 塞进结构化字段会让「定制者没填 version」
+/// 变成一个看起来像版本号的字符串。于是「显示成什么」由每个 UI 自己定。
+///
+/// 取值顺序 `name` → `id`，两者皆空时**仍然出徽章**（回落到「定制版」三个字）：这一项
+/// 存在的全部理由是报障时能一眼判断本机装的是什么，而「本机是定制版」这件事本身就比
+/// 显示名叫什么更值得让截图带上。
+///
+/// 字段缺失与显式 `null` 同样处置：前者是老版本 core 还没有这个字段，后者是它明确回答
+/// 了「不是定制版」——对徽章而言结论一致。
+pub(crate) fn custom_edition_badge(system_info: &serde_json::Value) -> Option<String> {
+    let ce = system_info.get("customEdition")?;
+    if ce.is_null() {
+        return None;
+    }
+    let pick = |k: &str| {
+        ce.get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let name = pick("name").or_else(|| pick("id")).unwrap_or("定制版");
+    Some(match pick("version") {
+        Some(v) => format!("{name} {v}"),
+        None => name.to_string(),
+    })
+}
+
 /// 关于页 — 复刻品牌关于卡（对齐截图 / Vue AboutPage）：
-/// 头部（图标+名称+版本徽章+检查更新）· 官网横幅 · 2×2 链接网格 · 版权页脚。
-fn about_page(app: &Rc<RefCell<AppState>>, _state: &AppState) -> Element {
+/// 头部（图标+名称+版本徽章+定制版徽章+检查更新）· 官网横幅 · 2×2 链接网格 · 版权页脚。
+fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 「检查更新」按钮要能开对话框并起后台线程，故需共享状态而非只读快照
     let update_state = app.clone();
 
@@ -698,10 +728,21 @@ fn about_page(app: &Rc<RefCell<AppState>>, _state: &AppState) -> Element {
                         .height(30),
                 )
                 .child({
-                    let row = Element::row()
+                    let mut row = Element::row()
                         .cross(Align::Center)
                         .spacing(10)
                         .child(Element::badge(ver_badge));
+                    // 定制版身份。文案与可见性都走 `state.custom_edition` 这个 Signal：
+                    // 页面树在数据回来之前就建好了，此刻直接读 `state.system_info` 恒为空
+                    // （详见该字段注释）。空串 = 非定制版 ⇒ 徽章不占位。
+                    //
+                    // 用 Neutral 而不是默认的 Primary：两个强调蓝徽章并排会分不出主次，
+                    // 而这里版本号是主、定制版身份是辅。
+                    let ce_sig = state.custom_edition;
+                    row = row.child(
+                        Element::badge_intent(ce_sig, Intent::Neutral)
+                            .visible_when(move || !ce_sig.get().is_empty()),
+                    );
                     // 非 Windows 没有升级通路（见 update::self_update_supported）：
                     // 按钮点下去只会下到一个装不上的 .exe，不如不给。
                     if crate::update::self_update_supported() {
@@ -819,4 +860,61 @@ fn about_page(app: &Rc<RefCell<AppState>>, _state: &AppState) -> Element {
         body = body.child(crate::widgets::page_header("关于", "版本信息与支持"));
     }
     crate::widgets::page(body.child(panel))
+}
+
+#[cfg(test)]
+mod about_tests {
+    use super::custom_edition_badge;
+    use serde_json::json;
+
+    /// 「不是定制版」的两种形态都不出徽章：core 明确回答的 `null`，与老版本 core
+    /// 根本没有这个字段。跨仓契约里这两者对 UI 的结论一致。
+    #[test]
+    fn no_badge_when_not_custom_edition() {
+        assert_eq!(
+            custom_edition_badge(&json!({ "customEdition": null })),
+            None
+        );
+        assert_eq!(custom_edition_badge(&json!({ "version": "0.120.0" })), None);
+    }
+
+    #[test]
+    fn badge_prefers_name_then_id() {
+        assert_eq!(
+            custom_edition_badge(&json!({
+                "customEdition": { "name": "虎码定制版", "id": "huma", "version": "1.2" }
+            })),
+            Some("虎码定制版 1.2".to_string())
+        );
+        // 定制者没填 name（或只填了空白）：退到 id。全角空格也算没填。
+        assert_eq!(
+            custom_edition_badge(&json!({
+                "customEdition": { "name": "   ", "id": "huma", "version": "1.2" }
+            })),
+            Some("huma 1.2".to_string())
+        );
+    }
+
+    /// 清单在场但字段全空：仍要出徽章。徽章要回答的是「本机是不是定制版」，
+    /// 而不是「这个定制版叫什么」——前者即使无名也有报障价值。
+    #[test]
+    fn badge_survives_all_fields_blank() {
+        assert_eq!(
+            custom_edition_badge(&json!({
+                "customEdition": { "name": "", "id": "", "version": "" }
+            })),
+            Some("定制版".to_string())
+        );
+    }
+
+    /// 没填版本号时不留下尾随空格（`format!("{name} {v}")` 的那条路要走不到）。
+    #[test]
+    fn badge_omits_missing_version() {
+        assert_eq!(
+            custom_edition_badge(&json!({
+                "customEdition": { "name": "虎码定制版", "id": "huma" }
+            })),
+            Some("虎码定制版".to_string())
+        );
+    }
 }

@@ -1179,9 +1179,17 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "system.fonts" => json!([
             { "name": "微软雅黑" }, { "name": "思源黑体" }, { "name": "等线" }
         ]),
+        // ★ `customEdition` 刻意给成非 null：定制版徽章（关于页）在开发机上**永远**渲染不
+        // 出来——开发机装的不是定制版，core 那边恒返回 null。mock 是这个分支唯一的自查
+        // 途径，与下面词库/统计给非空样例是同一个理由。要看「非定制版」那一态，把这个键
+        // 改成 null 或整个删掉即可（两者对 UI 等价，见 `custom_edition_badge`）。
         "system.info" => json!({
             "version": "3.2.1", "platform": "windows", "arch": "x86_64",
-            "build": "release", "dataDir": "C:/Users/.../WindInput", "running": true
+            "build": "release", "dataDir": "C:/Users/.../WindInput", "running": true,
+            "customEdition": {
+                "id": "huma-edition", "name": "虎码定制版",
+                "version": "1.2", "baseVersion": "0.119.0"
+            }
         }),
         "dict.stats" => json!([]),
         "stats.daily" => mock_stats_daily(params),
