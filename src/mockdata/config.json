@@ -131,7 +131,9 @@
    "arrows",
    "tab"
   ],
-  "key_actions": {},
+  "key_actions": {
+   "ctrl+shift+k": "softkeyboard"
+  },
   "open_add_word_dialog": "ctrl+shift+equal",
   "open_settings": "ctrl+shift+]",
   "overflow": {

@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.119.0",
+  "appVersion": "0.120.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -970,7 +970,7 @@
       "type": "strlist"
     },
     {
-      "default": {},
+      "default": null,
       "key": "keys.key_actions",
       "type": "map"
     },
