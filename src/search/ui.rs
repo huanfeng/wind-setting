@@ -71,6 +71,8 @@ pub struct SearchState {
     pub selected: Signal<usize>,
     /// 浮层是否展开。
     pub open: Signal<bool>,
+    /// 方案级指示条的文案（空 = 不显示）。见 [`crate::search::hint`]。
+    pub hint: Signal<String>,
     /// 「请求打开词库窗」的计数器。
     ///
     /// 词库是独立窗，开窗要走 `AppState::request_dict_window`，而那需要 `AppState`
@@ -87,6 +89,7 @@ impl SearchState {
             rows: signal(Vec::new()),
             selected: signal(0),
             open: signal(false),
+            hint: signal(String::new()),
             dict_request: signal(0),
         }
     }
@@ -175,31 +178,37 @@ pub fn build_dict_request_watcher(
     )
 }
 
-/// 开框哨兵（0×0）：第一跳完成后，把目标所在的对话框打开。
+/// 跳转副作用汇（0×0）：锚点管不了的那两件事在这里做。
 ///
-/// 为什么不在锚点里直接开：锚点只知道自己是谁，不知道注册表；而「开哪个框」是
-/// 跳转请求的属性。让锚点只管滚动与闪烁、这里只管开框，两边都不必知道对方。
+/// - **开对话框**：第一跳完成后，把目标所在的框打开。锚点只知道自己是谁、不知道
+///   注册表，而「开哪个框」是请求的属性——两边各管一段，谁都不必知道对方。
+/// - **方案级指示**：这类目标没有锚点可落（`pending_anchor` 返回 `None`），
+///   请求会一直挂着；在此消费掉并写出指示条文案。
 ///
-/// 幂等：信号已是 true 时不再写（`Signal::set` 会推高版本，白白触发一轮重绘）。
-pub fn build_dialog_opener(
+/// 幂等：对话框信号已是 true 时不再写（`Signal::set` 会推高版本、白白触发一轮重绘）。
+pub fn build_jump_sink(
     jmp: Signal<Option<JumpRequest>>,
+    hint: Signal<String>,
     fields: std::rc::Rc<crate::state::FieldRegistry>,
 ) -> Element {
     crate::pages::dict::reactive::reactive_effect(
         move || jmp.version(),
         move || {
             let Some(req) = jmp.get() else { return };
-            if !req.dialog_opened {
-                return; // 还没到第一跳之后
-            }
-            let JumpTarget::RowInDialog { dialog, .. } = &req.target else {
-                return;
-            };
-            let opens = fields.dialog_opens.borrow();
-            if let Some(vis) = opens.get(dialog.as_str())
-                && !vis.get()
-            {
-                vis.set(true);
+            match &req.target {
+                JumpTarget::SchemaLevel { hint_path } => {
+                    hint.set(crate::search::hint::hint_text(hint_path));
+                    jmp.set(None); // 消费掉：没有锚点会来认领它
+                }
+                JumpTarget::RowInDialog { dialog, .. } if req.dialog_opened => {
+                    let opens = fields.dialog_opens.borrow();
+                    if let Some(vis) = opens.get(dialog.as_str())
+                        && !vis.get()
+                    {
+                        vis.set(true);
+                    }
+                }
+                _ => {}
             }
         },
     )

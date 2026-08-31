@@ -131,6 +131,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .fill()
         .weight(1.0)
         .child(crate::pages::conflict_bar(app.borrow().conflict))
+        // 方案级命中的指示条：与冲突条同一位置语义（滚动区之外、切页常驻、
+        // 无内容时不占位），只是语义是「指路」而非「警告」。
+        .child(crate::search::hint::build_hint_bar(search_state.hint))
         .child(pages_stack);
     let body = Element::row()
         .fill()
@@ -188,8 +191,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // ⚠ 挂在**根的末尾**而不是侧栏里：响应式哨兵按树序派发，挂在侧栏就排在内容区
     // 之前——那一帧它读到的还是锚点写入之前的值，开框要白等一帧。同 conflict_watcher
     // 与 toast_sink 之间的先后讲究。
-    root = root.child(crate::search::ui::build_dialog_opener(
+    root = root.child(crate::search::ui::build_jump_sink(
         jump_sig,
+        search_state.hint,
         app.borrow().fields.clone(),
     ));
     // 按键冲突实时监听：每帧刷新 state.conflict（驱动常驻警告条），并对新出现的
