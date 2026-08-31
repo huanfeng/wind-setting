@@ -11,6 +11,21 @@ pub struct CapEntry {
     pub ty: String,
     pub values: Vec<String>,
     pub default: Value,
+    /// 该项可被方案级配置覆盖时的提示；不可覆盖的键为 `None`。
+    ///
+    /// 它回答的是「我在全局改了，为什么某个方案里没变」。★ 这是**静态**事实（由配置模型
+    /// 决定，与本机有什么文件无关），所以随快照来，不花任何运行时代价——⛔ 别为了它去
+    /// 加 RPC 或读盘。core 侧权威是 `config_schema::SCHEMA_OVERRIDES`。
+    pub schema_override: Option<SchemaOverrideHint>,
+}
+
+/// 「此项可被方案覆盖」的提示内容。
+pub struct SchemaOverrideHint {
+    /// 方案文件里的落点段名，如 `[codetable]`。
+    pub section: String,
+    /// 给用户看的一句话，core 侧写好，设置端**原样显示不再改写**——
+    /// 两边各写一份措辞，改了一处就会分叉。
+    pub note: String,
 }
 
 /// core 能力契约：key → 条目。
@@ -50,12 +65,20 @@ impl Capabilities {
                     })
                     .unwrap_or_default();
                 let default = it.get("default").cloned().unwrap_or(Value::Null);
+                // 字段缺席 = 不可被方案覆盖（与 `values` 一样是可选字段，不是给 null）。
+                let schema_override = it.get("schemaOverride").and_then(|o| {
+                    Some(SchemaOverrideHint {
+                        section: o.get("section")?.as_str()?.to_string(),
+                        note: o.get("note")?.as_str()?.to_string(),
+                    })
+                });
                 entries.insert(
                     key.to_string(),
                     CapEntry {
                         ty,
                         values,
                         default,
+                        schema_override,
                     },
                 );
             }

@@ -14,7 +14,7 @@ use windui::prelude::*;
 
 use crate::config::Config;
 use crate::state::{AppState, SchemaInfo};
-use crate::widgets::{setting_row, setting_row_checks};
+use crate::widgets::{setting_row, setting_row_checks, setting_row_schema_hint};
 
 /// 单个清单项（来自 manifest.toml 经 system.manifest 暴露的 JSON）。
 /// 部分字段（key/group/section/unit）暂未消费，保留以备分组/单位展示。
@@ -446,9 +446,26 @@ pub fn field(state: &AppState, key: &str) -> Element {
     };
     let cfg = &state.current_config;
     let control = build_control(state, key, item, cfg);
+    // 「此项可被方案级配置覆盖」的角标（core 的 SCHEMA_OVERRIDES 经 capability 快照下发）。
+    // 静态事实 ⇒ 只查内存里的快照，不发 RPC、不读盘。
+    let schema_hint = state
+        .capabilities
+        .entries
+        .get(key)
+        .and_then(|e| e.schema_override.as_ref());
+    // ⚠️ checkbox_group 分支**没有**角标形态。当前没有可覆盖的键是这个类型（实测：
+    // toggle 11 / number 7 / select 3 / dialog_button 2 / number_select 1 / segmented 1
+    // / string 1），故不是缺口；真出现了要给 setting_row_checks 也补上，否则那一行
+    // 静默失去提示——与本仓「控件类型两处分派漏一处」是同一个形状。
+    debug_assert!(
+        !(item.typ == "checkbox_group" && schema_hint.is_some()),
+        "{key}: checkbox_group 行还没有「可被方案覆盖」角标形态"
+    );
     // 多选键组用专用行（固定宽标签 + 占满网格），避免宽网格把组名挤掉。
     let mut row = if item.typ == "checkbox_group" {
         setting_row_checks(&item.label, item.hint.as_deref(), control)
+    } else if let Some(h) = schema_hint {
+        setting_row_schema_hint(&item.label, item.hint.as_deref(), &h.note, control)
     } else {
         setting_row(&item.label, item.hint.as_deref(), control)
     };

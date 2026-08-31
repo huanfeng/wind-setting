@@ -25,7 +25,9 @@ const KEYBOARD: &str = include_str!("../res/icons/ui/keyboard.svg");
 const CONTRAST: &str = include_str!("../res/icons/ui/contrast.svg");
 const LAYERS: &str = include_str!("../res/icons/ui/layers.svg");
 const SLIDERS: &str = include_str!("../res/icons/ui/sliders.svg");
-const INFO: &str = include_str!("../res/icons/ui/info.svg");
+/// 信息角标。侧栏「关于」用它，设置行的「可被方案覆盖」提示也用它
+/// （[`crate::widgets::setting_row_schema_hint`]）。
+pub const INFO: &str = include_str!("../res/icons/ui/info.svg");
 const LIST: &str = include_str!("../res/icons/ui/list.svg");
 const CHECK: &str = include_str!("../res/icons/ui/check.svg");
 /// 「在新窗口打开」提示角标（侧栏词库项右侧）。
