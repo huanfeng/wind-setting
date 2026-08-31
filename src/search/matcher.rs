@@ -146,7 +146,17 @@ mod tests {
     #[ignore = "人工核对：cargo test demo_queries -- --ignored --nocapture"]
     fn demo_queries() {
         let e = idx();
-        for q in ["码表", "mbfa", "hxzh", "词库", "备份", "codetable", "主题"] {
+        for q in [
+            "码表",
+            "mbfa",
+            "hxzh",
+            "统计",
+            "横排",
+            "词库",
+            "备份",
+            "codetable",
+            "主题",
+        ] {
             println!("\n── 「{q}」 ──");
             for h in search(&e, q, 8) {
                 let it = &e[h.index];

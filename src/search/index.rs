@@ -98,6 +98,19 @@ enum Placement {
     },
 }
 
+/// 对话框内那一行的锚点后缀。
+///
+/// 同一个清单项可能**两处都有行**：`dialog_title` 宿主在卡片上留一行
+/// 「<标题> …… [设置]」，它自己的控件又在对话框里。两处锚点若用同一个键，
+/// 第一跳（滚到入口行）之后第二跳会被卡片上那一行再次认领——框是开了，
+/// 闪的却还是外面那一行。
+pub const IN_DIALOG_SUFFIX: &str = "#in-dialog";
+
+/// 对话框内那一行的锚点键。
+pub fn in_dialog_anchor(key: &str) -> String {
+    format!("{key}{IN_DIALOG_SUFFIX}")
+}
+
 /// 方案页「全局方案配置」四个按钮的锚点/对话框键前缀。
 ///
 /// 与 `pages::scheme_page` 里那四行一一对应；P2 给那四行挂锚点时用同一个键。
@@ -215,7 +228,12 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         let host = item
             .dialog_extra_for
             .clone()
-            .or_else(|| dialog_group_host(manifest, item));
+            .or_else(|| dialog_group_host(manifest, item))
+            // `dialog_title` 宿主：卡片上只留一行「<标题> …… [设置]」，**它自己的控件
+            // 也在框里**（见 `manifest::build_grouped_dialog_row`）。所以它是自己的宿主，
+            // 目标该是 RowInDialog——当成 Row 的话，跳过去只滚到入口行就停了，
+            // 而寄居在同一个框里的兄弟项却会开框，两者层级不一致。
+            .or_else(|| item.dialog_title.as_ref().map(|_| key.clone()));
         let (target, mut path) = match placement {
             Placement::Page(page) => {
                 let tab = page_tab(page);
@@ -230,7 +248,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                             host_anchor: row_anchor_of(manifest, h),
                             // 对话框注册表的键仍是宿主项自己的 key。
                             dialog: h.clone(),
-                            anchor: key.clone(),
+                            anchor: in_dialog_anchor(key),
                         },
                         vec![
                             page_name.to_string(),
@@ -254,7 +272,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                         tab: page_tab("schema"),
                         host_anchor: host.clone(),
                         dialog: host,
-                        anchor: key.clone(),
+                        anchor: in_dialog_anchor(key),
                     },
                     vec![
                         page_name.to_string(),
@@ -407,43 +425,72 @@ fn handwritten_entries() -> Vec<SearchEntry> {
         .collect()
 }
 
-/// 方案设置对话框里的分节（per-schema）。
+/// 方案设置对话框里的条目（per-schema）。
 ///
-/// 对应 `dialogs::schema_manager::SettingsSection` 的各变体与 `SETTINGS_TABS`。
 /// 这些设置**每个方案各有一份**，「哪个方案」在搜索时未定，故一律落
 /// [`JumpTarget::SchemaLevel`]：跳到方案页 + 指示条，由用户自己选方案。
-const SCHEMA_LEVEL: &[(&str, &str, &str)] = &[
-    // (标题, 所属 TAB, 检索词)
-    ("进入方式", "按键设置", "直达 热键 切换 快捷键"),
-    ("双拼布局", "基本配置", "方案 键位 自然码 小鹤"),
-    ("扩展词库", "基本配置", "附加 词典 挂载"),
-    ("辅助码", "方案自定义", "辅码 筛选 反查"),
-    ("码表配置", "方案自定义", "覆盖 编码 上屏"),
-    ("特殊模式", "方案自定义", "overlay 引导键 快符 生僻字"),
-    ("本方案行为", "方案自定义", "标点 候选 短语 跟随全局"),
+///
+/// 收的是**分节 + 分节里的具体字段**。只收分节名不够——用户记得的是「横排时文字排列」
+/// 这样的字段名，不是它归在哪一节；搜不到就会以为没有这个设置。
+///
+/// ⚠ **编译器不管这张表**，同 [`HANDWRITTEN`]：它对着的是
+/// `dialogs::schema_manager::build_section` 里手写的那些行，那边加了字段、这边不加，
+/// 新字段就永远搜不到。`SettingsSection::ALL` 也是同类的手写列表。
+struct SchemaLevelItem {
+    title: &'static str,
+    /// 所属 TAB，取值须在 `schema_manager::SETTINGS_TABS` 里。
+    tab: &'static str,
+    /// 所属分节（面包屑末段兼指示条落点）。
+    section: &'static str,
+    keywords: &'static str,
+}
+
+#[rustfmt::skip]
+const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
+    // ── 基本配置 ──
+    SchemaLevelItem { title: "双拼布局", tab: "基本配置", section: "方案参数", keywords: "自然码 小鹤 微软 键位" },
+    SchemaLevelItem { title: "扩展词库", tab: "基本配置", section: "扩展词库", keywords: "附加 词典 挂载 启用" },
+    // ── 按键设置 ──
+    SchemaLevelItem { title: "进入方式", tab: "按键设置", section: "进入方式", keywords: "直达 热键 切换 快捷键" },
+    SchemaLevelItem { title: "切换到本方案按键", tab: "按键设置", section: "进入方式", keywords: "热键 直达 绑定" },
+    // ── 方案自定义 ──
+    SchemaLevelItem { title: "辅助码", tab: "方案自定义", section: "辅助码", keywords: "辅码 筛选 反查" },
+    SchemaLevelItem { title: "本方案启用辅助码", tab: "方案自定义", section: "辅助码", keywords: "辅码 覆盖 跟随全局" },
+    SchemaLevelItem { title: "码表配置", tab: "方案自定义", section: "码表配置", keywords: "覆盖 编码 上屏 恢复跟随" },
+    SchemaLevelItem { title: "特殊模式", tab: "方案自定义", section: "特殊模式", keywords: "overlay 引导键 快符 生僻字 临时" },
+    SchemaLevelItem { title: "进入即展示候选", tab: "方案自定义", section: "特殊模式", keywords: "overlay 引导键 首屏" },
+    SchemaLevelItem { title: "本方案行为", tab: "方案自定义", section: "本方案行为", keywords: "标点 候选 短语 跟随全局" },
+    SchemaLevelItem { title: "标点", tab: "方案自定义", section: "本方案行为", keywords: "中文标点 英文标点 跟随全局" },
+    SchemaLevelItem { title: "候选排列", tab: "方案自定义", section: "本方案行为", keywords: "横排 竖排 方向 跟随全局" },
+    SchemaLevelItem { title: "横排时文字排列", tab: "方案自定义", section: "本方案行为", keywords: "横排 旋转 竖排 蒙古文 text_orientation" },
+    SchemaLevelItem { title: "候选文字字体", tab: "方案自定义", section: "本方案行为", keywords: "字体 字形 跟随外观" },
+    SchemaLevelItem { title: "加载短语", tab: "方案自定义", section: "本方案行为", keywords: "短语 phrases 开关" },
+    SchemaLevelItem { title: "候选注释", tab: "方案自定义", section: "本方案行为", keywords: "注释 comment 释义" },
+    SchemaLevelItem { title: "自定义标点", tab: "方案自定义", section: "本方案行为", keywords: "标点 映射 符号" },
 ];
 
 fn schema_level_entries() -> Vec<SearchEntry> {
     SCHEMA_LEVEL
         .iter()
-        .map(|(title, tab, kw)| SearchEntry {
-            id: format!("schema-level:{title}"),
-            title: (*title).to_string(),
-            keywords: kw.split_whitespace().map(str::to_string).collect(),
-            // 「<选择一个方案>」这一段是留给用户走的，指示条会把它弱化显示。
+        .map(|it| SearchEntry {
+            id: format!("schema-level:{}:{}", it.section, it.title),
+            title: it.title.to_string(),
+            keywords: it.keywords.split_whitespace().map(str::to_string).collect(),
+            // 「<选择一个方案>」这一段是留给用户走的。
             path: vec![
                 "方案".to_string(),
                 "<选择一个方案>".to_string(),
                 "方案设置…".to_string(),
-                (*tab).to_string(),
+                it.tab.to_string(),
+                it.section.to_string(),
             ],
             target: JumpTarget::SchemaLevel {
                 hint_path: vec![
                     "方案".to_string(),
                     "<选择一个方案>".to_string(),
                     "方案设置…".to_string(),
-                    (*tab).to_string(),
-                    (*title).to_string(),
+                    it.tab.to_string(),
+                    it.title.to_string(),
                 ],
             },
         })

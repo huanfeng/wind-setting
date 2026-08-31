@@ -491,7 +491,13 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     // 框内每行也挂锚点：搜索命中的可能正是这些寄居项，跳转要落到具体那一行。
     let rows: Vec<Element> = member_keys
         .iter()
-        .map(|k| crate::search::anchor::wrap(field(state, k), k.clone(), state.jump))
+        .map(|k| {
+            crate::search::anchor::wrap(
+                field(state, k),
+                crate::search::index::in_dialog_anchor(k),
+                state.jump,
+            )
+        })
         .collect();
     let visible = signal(false);
     // 登记供搜索跳转开框（键 = 宿主项 key，与 `search::index` 派生的 dialog 键一致）。
@@ -1646,7 +1652,11 @@ pub fn build_scheme_config_button(
             field(state, k)
         };
         // 框内行挂锚点：搜索命中的正是这些项（「上屏行为」等四节全在框里）。
-        rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
+        rows.push(crate::search::anchor::wrap(
+            row,
+            crate::search::index::in_dialog_anchor(k),
+            state.jump,
+        ));
     }
     if with_fuzzy {
         rows.push(dialog_group_header("模糊音"));
@@ -2078,13 +2088,13 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
     // 框内每行挂锚点（宿主自身也在框里，它那一行的键就是宿主 key）。
     let mut rows = vec![crate::search::anchor::wrap(
         field(state, key),
-        key.to_string(),
+        crate::search::index::in_dialog_anchor(key),
         state.jump,
     )];
     for k in &members {
         rows.push(crate::search::anchor::wrap(
             field(state, k),
-            k.clone(),
+            crate::search::index::in_dialog_anchor(k),
             state.jump,
         ));
     }
