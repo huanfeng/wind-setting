@@ -27,6 +27,7 @@ mod search;
 #[allow(dead_code)]
 mod setting_config;
 mod shell;
+mod shortcuts;
 mod state;
 mod theme_def;
 #[allow(dead_code)]
@@ -179,9 +180,6 @@ fn single_instance_app_id(add_word: bool) -> String {
     }
 }
 
-/// `VK_F`：Ctrl+F 的虚拟键码。见 `on_shortcut` 里那段说明。
-const VK_F: u32 = 0x46;
-
 fn main() {
     // mode::init 必须最先执行：logger 的目录路径和 RPC 管道名均依赖它。
     let args: Vec<String> = std::env::args().collect();
@@ -300,31 +298,22 @@ fn main() {
         .renderer(renderer)
         .min_size(MAIN_MIN_W, MAIN_MIN_H)
         .theme(theme_def::theme_for(start_dark));
-    // 窗口级快捷键：焦点控件没要这个键时才轮到（见 `App::on_shortcut`）。
+    // 窗口级快捷键。绑定表与分派都在 `shortcuts`——加一条快捷键在那里加一行即可。
     //
-    // ⚠ Esc 这条**必须**有。TextInput 不处理 Escape，未消费的 Escape 会被宿主当成
-    // 「关窗兜底」——不在这里拦下，用户搜索到一半按 Esc 就把整个设置窗关掉了。
-    // `on_shortcut` 排在 Tab 焦点导航与 Escape 关窗**之前**，正是为覆盖这种默认行为。
+    // ⚠ Escape 这条**必须**有人管：TextInput 不处理 Escape，未消费的 Escape 会被宿主
+    // 当成「关窗兜底」——搜索到一半按 Esc 就把整个设置窗关掉了。`on_shortcut` 排在
+    // Tab 焦点导航与 Escape 关窗**之前**，正是为覆盖这类默认行为；而浮层没开时
+    // `dispatch` 会返回「未处理」，关窗兜底照常生效。
     let shortcut_state = app_state.clone();
     let mut app = app.on_shortcut(move |ctx, ev| {
-        let search = shortcut_state.borrow().search.clone();
-        match ev.key {
-            Key::Escape if search.open.get() => {
-                search.dismiss();
-                true
-            }
-            // ⚠ Ctrl+字母在 Windows 上到达时是 `Key::Other(VK码)`，**不是** `Key::Char`
-            // ——TextInput 自己的 Ctrl+A 就写作 `Key::Other(0x41) if k.ctrl`。
-            // `App::on_shortcut` 的文档示例写的是 `Key::Char('l') if ev.ctrl`，照抄那个
-            // 分支永远匹配不到，快捷键就此静默失效（本功能第一版正是这么错的）。
-            // Char 分支一并保留，兼容按 char 送键的平台。
-            Key::Other(VK_F) | Key::Char('f') | Key::Char('F') if ev.ctrl => {
-                // 焦点交还给声明了 autofocus 的控件 = 搜索框（全窗只此一个）。
-                ctx.focus_main_input();
-                true
-            }
-            _ => false,
+        let out = shortcuts::dispatch(&ev, &shortcut_state.borrow());
+        if out.focus_main_input {
+            ctx.focus_main_input();
         }
+        if out.request_close {
+            ctx.request_close();
+        }
+        out.handled
     });
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。

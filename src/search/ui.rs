@@ -288,7 +288,9 @@ pub fn build_search_box(
     let icon_for = |on_dark: bool| {
         let pal = crate::theme_def::theme_for(on_dark).palette;
         crate::icons::tinted(crate::icons::SEARCH, 14, pal.placeholder)
-            .align(Align::Start)
+            // ⚠ `align` 在 stack 里**一个值同时管两轴**，只写 Start 会把图标顶到左上角。
+            // 要「贴左 + 垂直居中」必须分开给值。
+            .align_xy(Align::Start, Align::Center)
             .margin_xy(9, 0)
             .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
     };

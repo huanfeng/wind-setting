@@ -98,20 +98,17 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         (st.search.clone(), st.jump)
     };
     let search_box = crate::search::ui::build_search_box(&search_state, tab_sig, jump_sig);
-    // 查询变化即重算结果的 0×0 哨兵（TextInput 只写信号、无变更回调）。
-    let query_watcher = crate::search::ui::build_query_watcher(&search_state);
-    // 搜到词库条目时开独立窗（词库不是主窗的页，切过去只有空白占位）。
-    let dict_watcher = crate::search::ui::build_dict_request_watcher(&search_state, app);
     // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
     let sidebar = Element::col()
         .width(184)
         .height_match()
         .bg_role(Role::Bg)
         .padding_xy(8, 10)
-        .spacing(8)
+        // ⚠ 搜索框与导航之间只要这一档间距。**别往这个 col 里塞 0×0 哨兵**：
+        // `spacing` 是加在**每对**相邻子节点之间的，塞两个不可见节点就等于把间距
+        // 加了三次——真机上看着就是搜索框与导航离得老远。哨兵一律挂到根 stack。
+        .spacing(6)
         .child(search_box)
-        .child(query_watcher)
-        .child(dict_watcher)
         .child(nav)
         .on_context_menu(move || {
             crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
@@ -191,6 +188,13 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // ⚠ 挂在**根的末尾**而不是侧栏里：响应式哨兵按树序派发，挂在侧栏就排在内容区
     // 之前——那一帧它读到的还是锚点写入之前的值，开框要白等一帧。同 conflict_watcher
     // 与 toast_sink 之间的先后讲究。
+    // 搜索的三枚 0×0 哨兵一并挂根：查询变化即重算、词库条目开独立窗、跳转副作用汇。
+    // 挂在侧栏里会被 `spacing` 撑出间距（见那里的说明）。
+    root = root.child(crate::search::ui::build_query_watcher(&search_state));
+    root = root.child(crate::search::ui::build_dict_request_watcher(
+        &search_state,
+        app,
+    ));
     root = root.child(crate::search::ui::build_jump_sink(
         jump_sig,
         search_state.hint,
