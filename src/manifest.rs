@@ -436,8 +436,68 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
     }
 }
 
+/// 「可被方案覆盖」这条事实在一个容器里怎么呈现。见 [`schema_hint_mode`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaHintMode {
+    /// 逐行挂 ⓘ 角标（默认）。可覆盖的是少数时，角标标的是**例外**，有信息量。
+    PerRow,
+    /// 容器顶部统一说明一次，行内不再挂角标；反过来给**不可**覆盖的那几项标「仅全局」。
+    Header,
+}
+
+/// 判定一个容器该用哪种呈现。
+///
+/// ★ 判据是**这条事实在这个容器里有没有区分度**：可覆盖项占绝大多数时，逐行角标每行都
+/// 有、等于每行都没有——用户报的「一个对话框十几个提示」就是这个。占少数时才反过来，
+/// 角标标出的是例外，那才值得逐行挂。
+///
+/// 实测四个「全局方案配置」对话框的比例天差地别（码表 18/20、混输 0/9、拼音 2/14、
+/// 英文 0/8），所以**不能按容器硬编码**，也不能一刀切——现算。
+///
+/// 阈值 2/3 且至少 5 项：只有 3 项的容器里标 2 个角标算不上噪音，切模式反而多一行说明。
+/// 守门测试 `scheme_config_dialogs_pick_expected_hint_mode` 锁住当前四个对话框各落在哪一
+/// 档——core 增删可覆盖项跨过阈值时它会红，那正是需要人看一眼的时候。
+pub fn schema_hint_mode(state: &AppState, keys: &[String]) -> SchemaHintMode {
+    let (mut total, mut yes) = (0usize, 0usize);
+    for k in keys {
+        let Some(item) = state.manifest.get(k) else {
+            continue;
+        };
+        if item.hidden {
+            continue;
+        }
+        total += 1;
+        if schema_override_of(state, k).is_some() {
+            yes += 1;
+        }
+    }
+    if yes >= 5 && yes * 3 >= total * 2 {
+        SchemaHintMode::Header
+    } else {
+        SchemaHintMode::PerRow
+    }
+}
+
+/// 某项的「可被方案覆盖」声明（core `SCHEMA_OVERRIDES` 经 capability 快照下发）。
+/// 静态事实 ⇒ 只查内存里的快照，不发 RPC、不读盘。
+fn schema_override_of<'a>(
+    state: &'a AppState,
+    key: &str,
+) -> Option<&'a crate::capabilities::SchemaOverrideHint> {
+    state
+        .capabilities
+        .entries
+        .get(key)
+        .and_then(|e| e.schema_override.as_ref())
+}
+
 /// 清单缺失该 key 时返回占位行（便于发现 key 漂移）。
 pub fn field(state: &AppState, key: &str) -> Element {
+    field_with(state, key, SchemaHintMode::PerRow)
+}
+
+/// [`field`] 的带模式版本。`Header` 模式下行内不挂 ⓘ，改为给**不可**覆盖的项标「仅全局」。
+pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element {
     let Some(item) = state.manifest.get(key) else {
         return setting_row(
             key,
@@ -447,13 +507,12 @@ pub fn field(state: &AppState, key: &str) -> Element {
     };
     let cfg = &state.current_config;
     let control = build_control(state, key, item, cfg);
-    // 「此项可被方案级配置覆盖」的角标（core 的 SCHEMA_OVERRIDES 经 capability 快照下发）。
-    // 静态事实 ⇒ 只查内存里的快照，不发 RPC、不读盘。
-    let schema_hint = state
-        .capabilities
-        .entries
-        .get(key)
-        .and_then(|e| e.schema_override.as_ref());
+    // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
+    let overridable = schema_override_of(state, key);
+    let schema_hint = match mode {
+        SchemaHintMode::PerRow => overridable,
+        SchemaHintMode::Header => None,
+    };
     // ⚠️ checkbox_group 分支**没有**角标形态。当前没有可覆盖的键是这个类型（实测：
     // toggle 11 / number 7 / select 3 / dialog_button 2 / number_select 1 / segmented 1
     // / string 1），故不是缺口；真出现了要给 setting_row_checks 也补上，否则那一行
@@ -467,6 +526,10 @@ pub fn field(state: &AppState, key: &str) -> Element {
         setting_row_checks(&item.label, item.hint.as_deref(), control)
     } else if let Some(h) = schema_hint {
         setting_row_schema_hint(&item.label, item.hint.as_deref(), &h.note, control)
+    } else if mode == SchemaHintMode::Header && overridable.is_none() {
+        // 顶部那句「本页可被方案覆盖」对这一项不成立 ⇒ 必须标出来，否则统一说明就是
+        // 在传播错误信息。反向标记只在 Header 模式下出现，见 `setting_row_global_only`。
+        crate::widgets::setting_row_global_only(&item.label, item.hint.as_deref(), control)
     } else {
         setting_row(&item.label, item.hint.as_deref(), control)
     };
@@ -1581,6 +1644,48 @@ pub(crate) fn dialog_group_header(name: &str) -> Element {
         .padding_xy(0, 5)
 }
 
+/// 容器顶部那句「本页可被方案覆盖」的说明行（[`SchemaHintMode::Header`] 用）。
+///
+/// 图标 + 常驻文字，**不是悬停角标**：它说的是整个对话框的性质，用户不会想到去悬停一个
+/// 标题；而它替掉的是十几个角标，一行常驻文字换回来的空间绰绰有余。
+pub(crate) fn dialog_notice_row(note: &str) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Start)
+        .spacing(6)
+        .padding_xy(0, 4)
+        .child(
+            // 与行内角标同一枚细图标：同一件事在同一个对话框里换个画法只会让人以为是两件事。
+            crate::icons::tinted(crate::icons::INFO_THIN, 14, Color::hex(0x8A94A6))
+                .padding_xy(0, 2),
+        )
+        .child(
+            Element::label(note)
+                .font_size(12.0)
+                .fg_role(Role::TextSubtle)
+                .weight(1.0)
+                .max_lines(2),
+        )
+}
+
+/// [`SchemaHintMode::Header`] 那句统一说明的文案：取容器内出现最多的那条 `note`。
+///
+/// core 的 `SCHEMA_OVERRIDES` 按配置段给 note（`[codetable]` / `[codetable.frequency]` /
+/// `[aux_code]` 各一句），措辞不同但语义一样。取众数而不是自己新写一句：**文案的权威在
+/// core**，这边新写一句就成了第二真相源，core 改了措辞这里不会跟着变。
+fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> {
+    let mut tally: HashMap<&str, usize> = HashMap::new();
+    for k in keys {
+        if let Some(h) = schema_override_of(state, k) {
+            *tally.entry(h.note.as_str()).or_default() += 1;
+        }
+    }
+    tally
+        .into_iter()
+        .max_by_key(|(note, n)| (*n, note.len()))
+        .map(|(note, _)| note.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// 对话框内小标题的字号。
 ///
 /// ★ **必须 ≥ 条目标题**（`FormTheme::label_size`，13.0）。原先是 11.5，比它管辖的条目
@@ -1612,6 +1717,14 @@ pub fn build_scheme_config_button(
 
     let mut rows: Vec<Element> = Vec::new();
 
+    // 「可被方案覆盖」怎么呈现：几乎全可覆盖时统一说一次（见 `schema_hint_mode`）。
+    let hint_mode = schema_hint_mode(state, &keys);
+    if hint_mode == SchemaHintMode::Header
+        && let Some(note) = schema_hint_header_note(state, &keys)
+    {
+        rows.push(dialog_notice_row(&note));
+    }
+
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     rows.push(dialog_group_header(section));
 
@@ -1635,14 +1748,14 @@ pub fn build_scheme_config_button(
             && let Some(_dlg_item) = state.manifest.dialog_for_gate(k)
         {
             let mut tmp = section_rows(state, &[k.clone()]);
-            tmp.pop().unwrap_or_else(|| field(state, k))
+            tmp.pop().unwrap_or_else(|| field_with(state, k, hint_mode))
         } else if item.typ == "dialog_button"
             && let Some(g) = &item.gate_key
             && state.manifest.get(g).is_some()
         {
             continue;
         } else {
-            field(state, k)
+            field_with(state, k, hint_mode)
         };
         rows.push(row);
     }
@@ -5559,6 +5672,59 @@ mod tests {
             rows[2].tokens.iter().any(|t| t == "shift+tab"),
             "高亮组漏了 shift+tab。实际: {:?}",
             rows[2].tokens
+        );
+    }
+
+    /// ★★ 锁住四个「全局方案配置」对话框各落在哪种角标模式。
+    ///
+    /// 判据是现算的（`schema_hint_mode`），好处是 core 增删可覆盖项时界面自动适配，
+    /// 代价是**行为会随数据翻转**——某天跨过阈值，一个对话框从「十几个角标」变成
+    /// 「一句说明」，没人会注意到。本测试就是那个通知：它红的时候正是该人看一眼的时候。
+    ///
+    /// 实测比例（2026-08-31）：码表 18/20、混输 0/9、拼音 2/14、英文 0/8。差别这么大，
+    /// 所以既不能一刀切、也不能按对话框硬编码。
+    #[test]
+    fn scheme_config_dialogs_pick_expected_hint_mode() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = crate::state::AppState::empty();
+        let keys_of = |sec: &str| -> Vec<String> {
+            st.manifest
+                .sections_of("schema")
+                .into_iter()
+                .find(|(s, _)| s == sec)
+                .map(|(_, k)| k)
+                .unwrap_or_default()
+        };
+        for (sec, want, why) in [
+            (
+                "上屏行为",
+                SchemaHintMode::Header,
+                "码表 18/20 可覆盖——逐行角标每行都有，等于每行都没有",
+            ),
+            ("混输行为", SchemaHintMode::PerRow, "0 项可覆盖，无标可加"),
+            (
+                "候选行为",
+                SchemaHintMode::PerRow,
+                "拼音 2/14——这时角标标的是例外，有信息量",
+            ),
+            ("英文行为", SchemaHintMode::PerRow, "0 项可覆盖"),
+        ] {
+            let keys = keys_of(sec);
+            assert!(!keys.is_empty(), "section {sec:?} 在清单里没了");
+            assert_eq!(
+                schema_hint_mode(&st, &keys),
+                want,
+                "{sec} 的角标模式变了（{why}）。core 增删了可覆盖项跨过阈值 ⇒ 去看一眼                 那个对话框现在长什么样，确认新模式合适再改本断言"
+            );
+        }
+        // Header 模式必须取得到统一说明文案，否则那一组既没角标也没说明 = 信息凭空消失。
+        let note = schema_hint_header_note(&st, &keys_of("上屏行为"));
+        assert!(
+            note.as_deref().is_some_and(|n| n.contains("覆盖")),
+            "Header 模式取不到 note：{note:?}"
         );
     }
 

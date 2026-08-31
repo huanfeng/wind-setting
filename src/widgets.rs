@@ -191,7 +191,7 @@ fn schema_hint_badge(note: &str) -> Element {
         } else {
             Color::hex(0x8A94A6)
         };
-        crate::icons::tinted(crate::icons::INFO, 14, c)
+        crate::icons::tinted(crate::icons::INFO_THIN, 14, c)
             .tooltip(tip)
             .visible_when(move || dark_sig().get() == on_dark)
     };
@@ -224,6 +224,32 @@ pub fn setting_row_schema_hint(
     hint: &str,
     control: Element,
 ) -> Element {
+    setting_row_badged(label, sub, schema_hint_badge(hint), control)
+}
+
+/// 「这一项**不能**按方案单独设置」的行。
+///
+/// # 什么时候用它
+///
+/// 只在容器走 [`crate::manifest::SchemaHintMode::Header`] 时——那里顶部已统一说过「本页
+/// 可被方案覆盖」，剩下的几项若不加区分，那句话就把它们说错了。**反向标记的前提是正向
+/// 说明已经存在**；单独用它（在一个多数项都不可覆盖的页面上逐个标「仅全局」）就是把
+/// 噪音换了个方向。
+///
+/// 用文字不用图标：它是「例外」，要一眼读到，不该藏在悬停里。
+pub fn setting_row_global_only(label: &str, sub: Option<&str>, control: Element) -> Element {
+    let badge = Element::label("仅全局")
+        .font_size(11.0)
+        .fg_role(Role::TextSubtle)
+        .max_lines(1)
+        .tooltip("这一项不分方案，改了对所有输入方案生效");
+    setting_row_badged(label, sub, badge, control)
+}
+
+/// 标签后跟一枚角标的设置行。[`setting_row_schema_hint`] 与
+/// [`setting_row_global_only`] 的共同骨架——两者只有角标不同，行的度量必须一致，
+/// 否则同一个对话框里带标记的行会比不带的高出几像素。
+fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: Element) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
     // 标签与角标同排；标签取 weight(1.0) 把角标推到文字右边而不是行尾。
@@ -239,7 +265,7 @@ pub fn setting_row_schema_hint(
                 .max_lines(1)
                 .truncate(Truncate::End),
         )
-        .child(schema_hint_badge(hint));
+        .child(badge);
     let mut left = Element::col().weight(1.0).spacing(2).child(title);
     if let Some(s) = sub {
         left = left.child(

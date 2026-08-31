@@ -25,9 +25,21 @@ const KEYBOARD: &str = include_str!("../res/icons/ui/keyboard.svg");
 const CONTRAST: &str = include_str!("../res/icons/ui/contrast.svg");
 const LAYERS: &str = include_str!("../res/icons/ui/layers.svg");
 const SLIDERS: &str = include_str!("../res/icons/ui/sliders.svg");
-/// 信息角标。侧栏「关于」用它，设置行的「可被方案覆盖」提示也用它
-/// （[`crate::widgets::setting_row_schema_hint`]）。
+/// 信息角标。侧栏「关于」按 [`ICON_PX`] 整尺寸渲染，遵守上面的 2px 网格约定。
 pub const INFO: &str = include_str!("../res/icons/ui/info.svg");
+/// [`INFO`] 的细描边版（1.4px），**专供缩小渲染的角标**
+/// （[`crate::widgets::setting_row_schema_hint`] 按 14px 画它）。
+///
+/// # 为什么它可以不守 2px 约定
+///
+/// 那条约定的前提是「18×18 网格按 18px 渲染，1:1 落像素」。角标是**缩到 14px** 的，
+/// 2px 描边到那儿已经变成 1.56 物理像素——本来就不在整数网格上，守不守都一样软。
+/// 而线宽占比是不变的：2/18 的线画在 14px 的图上，看起来就比同一个图标画在 18px 上粗
+/// 一圈，用户报的正是这个。
+///
+/// ⚠️ 别拿它替换侧栏那个 [`INFO`]：那里是 1:1 渲染，1.4px 描边会在 150% 下摊成灰边。
+/// **两个尺寸各用各的**，这不是重复资源。
+pub const INFO_THIN: &str = include_str!("../res/icons/ui/info_thin.svg");
 const LIST: &str = include_str!("../res/icons/ui/list.svg");
 const CHECK: &str = include_str!("../res/icons/ui/check.svg");
 /// 「在新窗口打开」提示角标（侧栏词库项右侧）。
