@@ -184,6 +184,12 @@ pub struct AppState {
     pub capabilities: Capabilities,
     /// 系统信息（system.info）。
     pub system_info: Value,
+    /// 配置降级提示文案（顶栏）；空串 = 本次加载没有降级，横幅不显示。
+    ///
+    /// 来自 `config.degradation`。降级 = 某一段配置解析失败、已整段回落出厂默认，
+    /// 用户写在配置文件里的那一段**没有生效**——而他在界面上只会看到「我的设置怎么
+    /// 变回默认了」，唯一的线索此前只在日志文件里。见 [`crate::pages::degradation_bar`]。
+    pub degradation: Signal<String>,
     /// 定制版徽章文案（关于页）；空串 = 非定制版，徽章整个不显示。
     ///
     /// ★ **必须是 Signal，不能让关于页直接读 `system_info`。** 页面树由 `shell::build`
@@ -520,6 +526,7 @@ impl AppState {
             manifest: Manifest::from_embedded(),
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
+            degradation: signal(String::new()),
             custom_edition: signal(String::new()),
             schemas: vec![],
             theme_entries: vec![],
@@ -1509,6 +1516,8 @@ impl AppState {
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
+        // 降级顶栏。与下面的定制版徽章同理，页面树早已建好，只能靠 Signal 送进去。
+        self.degradation.set(degradation_text(&data.degradation));
         // 关于页的定制版徽章：页面树早已建好，只能靠 Signal 送进去（见字段注释）。
         self.custom_edition
             .set(crate::pages::custom_edition_badge(&self.system_info).unwrap_or_default());
@@ -2096,6 +2105,12 @@ fn key_action_label(verb: &str) -> String {
 pub struct LoadedState {
     pub config_value: Value,
     pub system_info: Value,
+    /// `config.degradation` 的原始回包 `{degraded, sections, totalFallback}`。
+    ///
+    /// ⚠️ 它**现读盘现算**（core 侧每次调用跑一次 `Config::load`），语义是「此刻盘上的
+    /// 配置试加载一遍会不会降级」，不是「正在跑的那份降没降级」。所以用户把配置改好后
+    /// 点「重新加载」，横幅会自己消失——这正是选它的理由。
+    pub degradation: Value,
     pub capabilities_value: Value,
     pub schemas: Vec<SchemaInfo>,
     pub theme_entries: Vec<ThemeEntry>,
@@ -2113,9 +2128,13 @@ impl LoadedState {
     pub fn fetch() -> Self {
         let t0 = std::time::Instant::now();
 
-        // 6 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
+        // 7 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
         let h_config = std::thread::spawn(|| rpc::call_core("config.get", &serde_json::json!({})));
         let h_info = std::thread::spawn(|| rpc::call_core("system.info", &serde_json::json!({})));
+        // 并行拉取 ⇒ 零额外往返（wall-clock 仍是 max(各调用延迟)）。它在 core 侧要读盘，
+        // 故不并进 system.info——那个方法当前不碰磁盘，见 dispatch.rs 里的理由。
+        let h_degr =
+            std::thread::spawn(|| rpc::call_core("config.degradation", &serde_json::json!({})));
         let h_caps =
             std::thread::spawn(|| rpc::call_core("system.capabilities", &serde_json::json!({})));
         let h_schemas = std::thread::spawn(load_schemas);
@@ -2124,6 +2143,13 @@ impl LoadedState {
 
         let config_res = h_config.join().ok().and_then(|r| r.ok());
         let system_info = h_info
+            .join()
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_else(Self::empty_obj);
+        // 取不到（老 core / 连接失败）⇒ 空对象 ⇒ 折算出空文案 ⇒ 横幅不显示。
+        // 这是对的：拿不到答案时不该吓唬用户说他的配置坏了。
+        let degradation = h_degr
             .join()
             .ok()
             .and_then(|r| r.ok())
@@ -2146,6 +2172,7 @@ impl LoadedState {
         Self {
             config_value,
             system_info,
+            degradation,
             capabilities_value,
             schemas,
             theme_entries,
@@ -2153,6 +2180,40 @@ impl LoadedState {
             connected,
         }
     }
+}
+
+/// 把 `config.degradation` 的回包折成顶栏文案；未降级（或取不到）返回空串。
+///
+/// 段名**原样列出点分路径**（`keys.key_actions` 而不是「按键设置」）：用户拿着这一行
+/// 要去配置文件里找那一段，译成界面用语反而对不上。降级粒度能细到子表，那份精度是
+/// core 侧刻意保留的（见 `config.degradation` 的注释），这里不该再截成顶层段名。
+pub(crate) fn degradation_text(v: &Value) -> String {
+    if !v.get("degraded").and_then(Value::as_bool).unwrap_or(false) {
+        return String::new();
+    }
+    if v.get("totalFallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return "⚠ 配置文件整体解析失败，本次全部回落出厂默认值——你的设置本次都没有生效。\
+                请检查配置文件的语法，修好后点右下角「重新加载」。"
+            .into();
+    }
+    let sections: Vec<&str> = v
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if sections.is_empty() {
+        // degraded 为真却没有段名：core 的两个字段本该互斥，走到这里说明契约变了。
+        // 仍要出提示——「有问题但说不清哪一段」也比一声不吭强。
+        return "⚠ 部分配置本次未生效，已回落出厂默认值。详见日志。".into();
+    }
+    format!(
+        "⚠ 配置的 {} 段解析失败，已整段回落出厂默认值——你在这一段的设置本次没有生效。\
+         修好配置文件后点右下角「重新加载」。",
+        sections.join(" / ")
+    )
 }
 
 /// 词库页数据域下拉的方案排序（三段式，仅供词库页；不影响主码表/主拼音下拉与方案管理列表）：
@@ -3250,6 +3311,7 @@ mod tests {
         let data = LoadedState {
             config_value: Value::Object(Default::default()),
             system_info: Value::Object(Default::default()),
+            degradation: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![],
             theme_entries: vec![],
@@ -3281,6 +3343,7 @@ mod tests {
         let data = LoadedState {
             config_value: Value::Object(Default::default()),
             system_info: Value::Object(Default::default()),
+            degradation: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![SchemaInfo {
                 id: "wb".into(),
@@ -3306,6 +3369,50 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 未降级、或根本拿不到回包时**不出横幅**。
+    ///
+    /// 后者尤其要紧：老 core 没有 `config.degradation` 方法、或连接失败时回包是空对象，
+    /// 此时吓唬用户说他的配置坏了是最糟的——那条提示会让人去改一个本来没问题的文件。
+    #[test]
+    fn degradation_text_is_empty_when_healthy_or_unknown() {
+        assert_eq!(degradation_text(&serde_json::json!({})), "");
+        assert_eq!(
+            degradation_text(&serde_json::json!({ "degraded": false, "sections": [] })),
+            ""
+        );
+    }
+
+    #[test]
+    fn degradation_text_lists_sections_verbatim() {
+        let t = degradation_text(&serde_json::json!({
+            "degraded": true,
+            "totalFallback": false,
+            "sections": ["keys.key_actions", "ui.font"],
+        }));
+        // 点分路径原样列出：用户拿着这一行要去配置文件里找那一段，译成界面用语就对不上了。
+        // 子表粒度（`ui.font` 而不是 `ui`）是 core 刻意保留的精度，这里不该截成顶层段名。
+        assert!(t.contains("keys.key_actions"), "段名必须原样出现：{t}");
+        assert!(t.contains("ui.font"), "子表粒度不能被截成顶层段名：{t}");
+        assert!(
+            t.contains("没有生效"),
+            "必须说清后果，而不只是说「解析失败」：{t}"
+        );
+    }
+
+    #[test]
+    fn degradation_text_handles_total_fallback_and_empty_sections() {
+        let total = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": true, "sections": [],
+        }));
+        assert!(total.contains("整体"), "整份回落要说清是整份：{total}");
+        // degraded 为真却没给段名：契约本该互斥，走到这里说明 core 变了。
+        // 仍要出提示——「有问题但说不清哪一段」也比一声不吭强。
+        let odd = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+        }));
+        assert!(!odd.is_empty(), "说不清哪一段也不能一声不吭");
+    }
+
     #[test]
     fn mock_disconnect_does_not_block() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -3314,6 +3421,7 @@ mod tests {
         let data = LoadedState {
             config_value: Value::Object(Default::default()),
             system_info: Value::Object(Default::default()),
+            degradation: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![],
             theme_entries: vec![],

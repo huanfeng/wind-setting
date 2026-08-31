@@ -1142,6 +1142,13 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({}))
         }
         "config.get" => serde_json::from_str(MOCK_CONFIG).unwrap_or_else(|_| json!({})),
+        // ★ 与 `system.info` 的 `customEdition` 相反，这里给的是**健康态**：定制版是一种
+        // 正常形态，配置降级是故障。让 mock 默认带一条红色横幅，等于每次开发截图都要
+        // 先无视它——而「学会无视警告」正是这条横幅最怕的结局。
+        // 要验降级顶栏，把 degraded 改成 true 并填 sections（验完记得改回来）。
+        "config.degradation" => json!({
+            "degraded": false, "sections": [], "totalFallback": false
+        }),
         "schema.list" => json!([
             { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "scheme": "",
               "builtin": true, "version": "2.1.0", "description": "标准五笔 86 版码表方案", "author": "王永民" },

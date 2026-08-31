@@ -108,6 +108,36 @@ pub fn conflict_bar(conflict: Signal<String>) -> Element {
         .visible_when(move || !conflict.get().is_empty())
 }
 
+/// 配置降级固定顶栏：某一段配置解析失败、已整段回落出厂默认时常驻提示。空串 = 隐藏不占位。
+///
+/// # 为什么必须有它
+///
+/// 降级发生时，用户在界面上看到的只是「我的按键设置怎么变回默认了」，而唯一的线索埋在
+/// 日志文件里。`config.degradation` 这个 RPC 早就有了，设置端此前一行都没消费。
+///
+/// # 为什么用 Danger 而不是与 [`conflict_bar`] 同样的 Warning
+///
+/// 按键冲突是「这两个功能会互相影响」，配置还在正常工作；降级是「你写的配置**没有生效**」，
+/// 而且用户不去修配置文件就一直不生效。两条同色会让人分不出哪条需要立刻动手。
+pub fn degradation_bar(degradation: Signal<String>) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 10)
+        .bg_role_alpha(Role::Danger, 0.14)
+        .border_role(Role::Divider, 1)
+        .child(
+            Element::label_signal(degradation)
+                .font_size(12.5)
+                .font_weight(500)
+                .fg_role(Role::Danger)
+                .weight(1.0)
+                // 多段同时降级时逐段列出，放宽上限避免把段名截掉——那正是用户要去修的地方。
+                .max_lines(8),
+        )
+        .visible_when(move || !degradation.get().is_empty())
+}
+
 /// 冲突实时监听：每个渲染帧跑一次 `live_conflicts`（触发键 + 候选键两域），仅当结果变化才写回
 /// `state.conflict`（避免无谓重绘）。返回挂在 shell 根的 0×0 不可见叶子。
 ///

@@ -113,10 +113,14 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     for (i, page) in pages.into_iter().enumerate() {
         pages_stack = pages_stack.child(page.fill().visible_when(move || tab_sig.get() == i));
     }
-    // 按键冲突固定顶栏：置于页面滚动区之外，切页/下滚均常驻，无冲突时隐藏不占位。
+    // 固定顶栏（两条）：置于页面滚动区之外，切页/下滚均常驻，无内容时各自隐藏不占位。
+    //
+    // 降级条排在冲突条**之前**：它说的是「你的配置没生效」，比「这两个键会互相影响」
+    // 更需要先被看见，而且两条同时出现时，降级往往正是冲突判定失真的原因。
     let content = Element::col()
         .fill()
         .weight(1.0)
+        .child(crate::pages::degradation_bar(app.borrow().degradation))
         .child(crate::pages::conflict_bar(app.borrow().conflict))
         .child(pages_stack);
     let body = Element::row()
