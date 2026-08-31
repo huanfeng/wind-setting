@@ -40,6 +40,8 @@ const BOX_H: i32 = 30;
 /// 测量反而要引入一条「浮层依赖别的节点几何」的耦合。改了侧栏内边距或标题栏高度
 /// 时，`overlay_top_matches_layout` 会提醒同步。
 const OVERLAY_LEFT: i32 = 8;
+/// 侧栏宽度（`shell::build` 写死的 184）。捕获层要在这块之上给搜索框让路。
+const SIDEBAR_W: i32 = 184;
 const OVERLAY_TOP: i32 = 89;
 const OVERLAY_W: i32 = 320;
 const OVERLAY_MAX_H: i32 = 380;
@@ -228,7 +230,8 @@ pub fn build_search_box(
     let clear_st = st.clone();
 
     let input = Element::text_input(query, "搜索设置")
-        .leading_icon('\u{1F50D}')
+        // 前置图标区留白，图标本身由下面的 SVG 叠上去（见 `icon` 的说明）。
+        .leading_icon(' ')
         .width(BOX_W)
         .height(BOX_H)
         // Ctrl+F 的落点：`ShortcutCtx::focus_main_input()` 把焦点交还给声明了
@@ -272,11 +275,85 @@ pub fn build_search_box(
         .align(Align::End)
         .visible_when(move || !query.get().is_empty());
 
+    // 放大镜用 SVG 而不是 `leading_icon` 的字形：
+    // - 🔍(U+1F50D) 是 emoji，Windows 按**彩色**字形渲染，`draw_text` 的颜色对它无效，
+    //   与整体单色风格打架（用户反馈的正是这个）；
+    // - U+2315 虽是单色，但字形细弱、与侧栏那套 2px 线性图标不是一路。
+    // 故 `leading_icon(' ')` 只借它留出左侧图标区（宽度 = 字号 + 8），真正的图标
+    // 用与导航同一套 SVG 管线画上去，颜色随主题走 placeholder。
+    //
+    // ⚠ `tint` 只吃具体颜色、没有语义色版本，而颜色是**构建时**取的——换肤后不会跟着变。
+    // 故按本仓既有做法（见 `widgets` 里那些 `dark_sig()` 双态块）备好亮暗两枚，
+    // 由 `visible_when` 切换。
+    let icon_for = |on_dark: bool| {
+        let pal = crate::theme_def::theme_for(on_dark).palette;
+        crate::icons::tinted(crate::icons::SEARCH, 14, pal.placeholder)
+            .align(Align::Start)
+            .margin_xy(9, 0)
+            .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
+    };
+
+    // ⚠ 子节点的**顺序有约定**：`FocusWatcher` 靠「父节点的第一个子就是输入框」
+    // 找到它读焦点态（见该 widget 的说明）。调整顺序前先看那里。
     Element::stack()
         .width(BOX_W)
         .height(BOX_H)
         .child(input)
+        .child(icon_for(false))
+        .child(icon_for(true))
         .child(clear)
+        .child(focus_watcher(st))
+}
+
+/// 焦点哨兵（0×0）：搜索框**重新获得焦点**时，把收起过的浮层再弹出来。
+///
+/// 没有它的话，用户按 Esc 或点别处收起浮层后回到搜索框，必须再敲一个字才会重新出结果
+/// ——而他心里那次搜索并没有结束。
+///
+/// windui 没有焦点变化事件，但 `Node::focused` 是公开字段，故每帧读一次即可。
+/// 这就是为什么本哨兵必须和输入框同一个父节点：它靠父的**首个子节点**定位输入框。
+fn focus_watcher(st: &SearchState) -> Element {
+    Element::leaf()
+        .widget(FocusWatcher {
+            st: st.clone(),
+            was_focused: false,
+        })
+        .reactive()
+        .size(0, 0)
+}
+
+struct FocusWatcher {
+    st: SearchState,
+    /// 上一帧输入框是否持有焦点。只在 false→true 那一刻动作，避免每帧重复展开
+    /// （用户主动收起后，只要焦点还在框里就不该被弹回来）。
+    was_focused: bool,
+}
+
+impl Widget for FocusWatcher {
+    fn on_update(&mut self, ctx: &mut EventCtx) {
+        let id = ctx.id();
+        let tree = ctx.tree_mut();
+        // 父的首个子 = 输入框（顺序约定见 `build_search_box`）。
+        let focused = tree
+            .get(id)
+            .and_then(|n| n.parent)
+            .and_then(|p| tree.get(p))
+            .and_then(|p| p.children.first().copied())
+            .and_then(|input| tree.get(input))
+            .map(|n| n.focused)
+            .unwrap_or(false);
+
+        if focused && !self.was_focused {
+            // 刚拿到焦点：有查询词就把结果重新亮出来（空查询本就不该有浮层）。
+            let has_query = !self.st.query.get().trim().is_empty();
+            if has_query && !self.st.open.get() {
+                self.st.open.set(true);
+                // on_update 相位的 ctx 副作用会被丢弃，故走全局请求（同 anchor.rs）。
+                windui::anim::request_relayout();
+            }
+        }
+        self.was_focused = focused;
+    }
 }
 
 /// 查询变化即重算结果的响应式哨兵（0×0，挂在侧栏里）。
@@ -297,12 +374,29 @@ pub fn build_results_overlay(
     jmp: Signal<Option<JumpRequest>>,
 ) -> (Element, Element) {
     let open = st.open;
-    let scrim_st = st.clone();
     // 点击浮层以外任何地方即收起。用自绘的透明层而不是 `.clickable()`：后者会画
     // hover/press 半透明叠层，糊在全窗上就是整屏发灰。
-    let scrim = Element::leaf()
+    //
+    // ⚠ **搜索框那一块要挖空**。捕获层挂在根 stack 的末尾（比主体更靠上层），铺满全窗
+    // 就连搜索框一起盖住了：浮层开着时点搜索框，点击被捕获层吃掉——浮层收起、
+    // 光标却没定位到点的位置。而 `hit_opaque` 拿不到坐标，没法「按位置决定吃不吃」，
+    // 故只能从几何上让开：顶部那一行的左侧留出侧栏宽度不铺。
+    let block = |st: &SearchState| {
+        let st = st.clone();
+        Element::leaf().widget(Scrim::new(move || st.dismiss()))
+    };
+    let scrim = Element::col()
         .fill()
-        .widget(Scrim::new(move || scrim_st.dismiss()))
+        .child(
+            Element::row()
+                .width_match()
+                .height(OVERLAY_TOP)
+                // 洞：纯占位、无 widget 也无背景，故不吞命中（见 `hit_node` 的判据），
+                // 点击径直落到下面的搜索框上。
+                .child(Element::leaf().width(SIDEBAR_W).height_match())
+                .child(block(st).weight(1.0).height_match()),
+        )
+        .child(block(st).fill().weight(1.0))
         .visible_when(move || open.get());
 
     let rows = st.rows;
@@ -320,14 +414,22 @@ pub fn build_results_overlay(
 
     let panel = Element::col()
         .width(OVERLAY_W)
-        .max_height(OVERLAY_MAX_H)
         .bg_role(Role::Surface)
         .corner(8.0)
         .border_role(Role::Border, 1)
         .shadow(Shadow::new(0.0, 8.0, 24.0, Color::rgba(0, 0, 0, 110)))
         .padding_xy(4, 4)
         .child(empty_hint)
-        .child(Element::scroll().fill().child(list));
+        // ⚠ 限高必须加在 **scroll 自己**身上，不能只加在外层 col 上：
+        // `measure_scroll` 返回的是**完整内容高**（同时把它记进 content_h），而
+        // `arrange_linear` 按子节点的 measured 高度排布——外层 col 被 max_height 截短了，
+        // 里面这个 scroll 仍按完整高度排，于是内容整片溢出到浮层外面，也不会滚动。
+        .child(
+            Element::scroll()
+                .width_match()
+                .max_height(OVERLAY_MAX_H)
+                .child(list),
+        );
 
     // 定位层：铺满根 stack、只靠内边距把面板推到搜索框正下方。自身无背景、
     // 用的是纯容器 widget，故不吞指针事件（`hit_node` 的「吞命中」判据）。
@@ -624,6 +726,6 @@ mod tests {
             TITLEBAR_H + DIVIDER_H + SIDEBAR_PAD_V + BOX_H + GAP
         );
         // 侧栏宽 184、左右各 8 内边距。
-        assert_eq!(BOX_W, 184 - OVERLAY_LEFT * 2);
+        assert_eq!(BOX_W, SIDEBAR_W - OVERLAY_LEFT * 2);
     }
 }

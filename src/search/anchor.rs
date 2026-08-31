@@ -40,6 +40,16 @@ const FLASH_PEAK: f32 = 0.22;
 /// 高亮圆角，与设置行的视觉节奏一致。
 const FLASH_CORNER: f32 = 6.0;
 
+/// 认领之后的「跟随窗口」时长。
+///
+/// 有些页在被切出来时才开始**异步**加载内容（统计页的图表要等 RPC 回来，在那之前
+/// 整块只有一行「加载中…」）。滚动是按当下的几何算的，等数据到位、布局一变，
+/// 先前滚到的位置就不再对着目标了。
+///
+/// 故认领后的这段时间里盯着滚动容器的 `content_h`：它一变就说明布局重排过，
+/// 重新滚一次。只认 `content_h` 变化、不认滚动位置变化，所以用户自己滚不会被拽回来。
+const FOLLOW_MS: u64 = 2000;
+
 /// 闪烁强度：距起始 `t` 毫秒时的不透明度。
 ///
 /// 三次正弦半波，起止都归零。纯函数，故可直接测波形，也不依赖任何逐帧推进
@@ -128,10 +138,45 @@ struct Anchor {
     /// 可见性门控挡的是「不可见页误滚」，挡不住「刚可见、还没布局」。故再等一帧：
     /// 置位 + 请求重排，下一帧几何就是真的了。
     armed: bool,
+    /// 跟随窗口：`(截止时刻, 上次见到的 content_h)`。见 [`FOLLOW_MS`]。
+    follow: Option<(u64, i32)>,
+}
+
+impl Anchor {
+    /// 跟随异步加载导致的重排（见 [`FOLLOW_MS`]）。
+    fn follow_layout(&mut self, ctx: &mut EventCtx) {
+        let Some((deadline, last_h)) = self.follow else {
+            return;
+        };
+        if anim::clock_ms() >= deadline {
+            self.follow = None;
+            return;
+        }
+        let id = ctx.id();
+        let tree = ctx.tree_mut();
+        if !ancestors_visible(tree, id) {
+            return;
+        }
+        let Some(host) = scroll_ancestor(tree, id) else {
+            self.follow = None; // 没有滚动祖先，无从跟随
+            return;
+        };
+        let Some(now_h) = tree.get(host).map(|n| n.content_h) else {
+            return;
+        };
+        if now_h == last_h {
+            return;
+        }
+        // 内容高变了 = 布局重排过（异步数据到位）：重新对准目标。
+        scroll_into_view_with_margin(tree, id);
+        self.follow = Some((deadline, now_h));
+        anim::request_relayout();
+    }
 }
 
 impl Widget for Anchor {
     fn on_update(&mut self, ctx: &mut EventCtx) {
+        self.follow_layout(ctx);
         // 绝大多数帧都在这里返回：常态下只读一个信号，不做父链上溯。
         let Some(req) = self.jump.get() else {
             self.armed = false;
@@ -160,6 +205,11 @@ impl Widget for Anchor {
         }
         self.armed = false;
         let scrolled = scroll_into_view_with_margin(tree, id);
+        // 开启跟随窗口：异步加载的页（如统计）滚完之后布局还会再变一次。
+        let content_h = scroll_ancestor(tree, id)
+            .and_then(|h| tree.get(h).map(|n| n.content_h))
+            .unwrap_or(0);
+        self.follow = Some((anim::clock_ms() + FOLLOW_MS, content_h));
         // 第一跳（对话框内的项，框还没开）：滚到入口行就够了，**不闪**——真正的目标
         // 在框里，闪入口行会把注意力引错地方。请求改标记后留着，交给框内那一行。
         let first_hop = matches!(req.target, JumpTarget::RowInDialog { .. }) && !req.dialog_opened;
@@ -245,6 +295,7 @@ fn anchor(key: impl Into<String>, jump: Signal<Option<JumpRequest>>) -> Element 
             jump,
             flash_start: Cell::new(None),
             armed: false,
+            follow: None,
         })
         .reactive()
         .align(Align::Stretch)
@@ -444,6 +495,7 @@ mod tests {
             jump,
             flash_start: Cell::new(None),
             armed: false,
+            follow: None,
         };
         // 跑两帧：第一帧只置位等布局，第二帧才真动手（见 `Anchor::armed`）。
         windui::testing::run_with_ctx_in(&mut tree, id, |ctx| w.on_update(ctx));
@@ -476,6 +528,7 @@ mod tests {
             jump,
             flash_start: Cell::new(None),
             armed: false,
+            follow: None,
         };
 
         windui::testing::run_with_ctx_in(&mut tree, id, |ctx| w.on_update(ctx));

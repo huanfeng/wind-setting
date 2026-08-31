@@ -28,6 +28,8 @@ const SLIDERS: &str = include_str!("../res/icons/ui/sliders.svg");
 const INFO: &str = include_str!("../res/icons/ui/info.svg");
 const LIST: &str = include_str!("../res/icons/ui/list.svg");
 const CHECK: &str = include_str!("../res/icons/ui/check.svg");
+/// 搜索框的前置放大镜（侧栏搜索框左侧）。
+pub const SEARCH: &str = include_str!("../res/icons/ui/search.svg");
 /// 「在新窗口打开」提示角标（侧栏词库项右侧）。
 pub const EXTERNAL: &str = include_str!("../res/icons/ui/external.svg");
 
@@ -97,6 +99,7 @@ mod tests {
         ("info", INFO),
         ("list", LIST),
         ("check", CHECK),
+        ("search", SEARCH),
     ];
 
     /// 取 XML 属性值（`attr="..."` 的第 `nth` 次出现）。

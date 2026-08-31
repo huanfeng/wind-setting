@@ -39,13 +39,28 @@ const S_ID: i32 = 150;
 /// 结果列表会给它一个标记说明需要先选方案（P1）。
 const P_SCHEMA_LEVEL: i32 = 30;
 
+/// 导航型条目的加成 —— 「大的优先」。
+///
+/// 搜「统计」时，用户要找的是**统计这块功能**，不是「统计英文输入」这个开关。
+/// 但按纯文本匹配，「统计英文输入」是标题前缀（800）、「使用统计」只是子串（600），
+/// 开关反而排前面——反直觉。
+///
+/// 导航型条目（手写页的整块卡片、词库窗）代表「去某个地方」，通常正是搜索时的首要
+/// 意图；具体设置项则是到了那里之后的事。故给它们跨一档的加成（250 > 前缀与子串
+/// 之间的 200），让同样命中的情况下整块优先。
+const B_NAVIGATION: i32 = 250;
+
 /// 给一条 entry 打分；0 = 不命中。
 fn score(entry: &SearchEntry, query: &str) -> i32 {
     let raw = score_match(entry, query);
-    if raw > 0 && matches!(entry.target, super::JumpTarget::SchemaLevel { .. }) {
-        return raw - P_SCHEMA_LEVEL;
+    if raw == 0 {
+        return 0;
     }
-    raw
+    match entry.target {
+        super::JumpTarget::SchemaLevel { .. } => raw - P_SCHEMA_LEVEL,
+        super::JumpTarget::Card { .. } | super::JumpTarget::DictWindow => raw + B_NAVIGATION,
+        _ => raw,
+    }
 }
 
 /// 纯匹配得分，不含可达性降权。
@@ -270,7 +285,9 @@ mod tests {
                 title: "码表配置".into(),
                 keywords: vec![],
                 path: vec![],
-                target: crate::search::JumpTarget::Card {
+                // 用 Row 而不是 Card：Card 带导航加成，会把这条测试想验证的
+                // 「同分时可直达优先」盖过去（见 B_NAVIGATION）。
+                target: crate::search::JumpTarget::Row {
                     tab: 0,
                     anchor: "r".into(),
                 },
@@ -292,7 +309,8 @@ mod tests {
                 title: "主码表方案".into(), // 子串命中
                 keywords: vec![],
                 path: vec![],
-                target: crate::search::JumpTarget::Card {
+                // 同上：这里要的是中性替身。
+                target: crate::search::JumpTarget::Row {
                     tab: 0,
                     anchor: "g".into(),
                 },
@@ -309,6 +327,44 @@ mod tests {
         ];
         let hits = search(&e, "码表", DEFAULT_LIMIT);
         assert_eq!(e[hits[0].index].title, "码表配置", "降权不该跨档位");
+    }
+
+    /// **回归**：搜「统计」时，统计这块功能本身要排在「统计英文输入」那类开关前面。
+    ///
+    /// 用户反馈的原话是「大的优先」。按纯文本匹配，开关是标题前缀、功能块只是子串，
+    /// 开关反而在前——这条钉住导航加成把次序摆正了。
+    #[test]
+    fn navigation_entries_outrank_settings() {
+        let e = idx();
+        let hits = search(&e, "统计", DEFAULT_LIMIT);
+        let t = titles(&e, &hits);
+        assert_eq!(
+            t.first().map(String::as_str),
+            Some("使用统计"),
+            "「统计」的首条应是统计功能本身，实际：{t:?}"
+        );
+    }
+
+    /// 词库同理：整块的「词库管理」压过具体设置项。
+    #[test]
+    fn dict_window_entry_ranks_first() {
+        let e = idx();
+        let hits = search(&e, "词库", DEFAULT_LIMIT);
+        let t = titles(&e, &hits);
+        assert_eq!(t.first().map(String::as_str), Some("词库管理"), "{t:?}");
+    }
+
+    /// 加成不能把不相干的整块顶上来：没命中就是没命中。
+    #[test]
+    fn navigation_bonus_needs_a_match() {
+        let e = idx();
+        let hits = search(&e, "统计", DEFAULT_LIMIT);
+        for h in &hits {
+            assert!(h.score > 0);
+        }
+        // 「备份与还原」与「统计」无关，不该出现。
+        let t = titles(&e, &hits);
+        assert!(!t.iter().any(|x| x == "备份与还原"), "{t:?}");
     }
 
     /// 同分保持索引原序（稳定排序），避免每次搜索结果顺序抖动。

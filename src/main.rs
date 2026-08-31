@@ -179,6 +179,9 @@ fn single_instance_app_id(add_word: bool) -> String {
     }
 }
 
+/// `VK_F`：Ctrl+F 的虚拟键码。见 `on_shortcut` 里那段说明。
+const VK_F: u32 = 0x46;
+
 fn main() {
     // mode::init 必须最先执行：logger 的目录路径和 RPC 管道名均依赖它。
     let args: Vec<String> = std::env::args().collect();
@@ -310,7 +313,12 @@ fn main() {
                 search.dismiss();
                 true
             }
-            Key::Char('f') | Key::Char('F') if ev.ctrl => {
+            // ⚠ Ctrl+字母在 Windows 上到达时是 `Key::Other(VK码)`，**不是** `Key::Char`
+            // ——TextInput 自己的 Ctrl+A 就写作 `Key::Other(0x41) if k.ctrl`。
+            // `App::on_shortcut` 的文档示例写的是 `Key::Char('l') if ev.ctrl`，照抄那个
+            // 分支永远匹配不到，快捷键就此静默失效（本功能第一版正是这么错的）。
+            // Char 分支一并保留，兼容按 char 送键的平台。
+            Key::Other(VK_F) | Key::Char('f') | Key::Char('F') if ev.ctrl => {
                 // 焦点交还给声明了 autofocus 的控件 = 搜索框（全窗只此一个）。
                 ctx.focus_main_input();
                 true
