@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json};
 use windui::prelude::*;
 
 use super::key_binding::{
-    Binding, BindingBody, BindingTable, KeyPicker, KeyShape, binding_row, key_shape, verb_allowed,
-    verb_requires_modifier,
+    Binding, BindingBody, BindingTable, ForeignBinding, KeyPicker, KeyShape, binding_row,
+    key_shape, verb_allowed, verb_requires_modifier,
 };
 
 pub use super::key_binding::Verb;
@@ -42,6 +42,17 @@ pub struct KeyActionFields {
     /// 随 `seed` 刷新——同一个对话框服务于任意方案，不刷会拿上一个方案的码元集去提示。
     leading_keys: Rc<RefCell<Vec<String>>>,
     picker: KeyPicker,
+    /// 只读组：住在专用字段里、与本表同域的绑定。见 [`ForeignBinding`]。
+    ///
+    /// 只有**全局**实例注入（[`Self::set_foreign`]）；方案级实例恒空且整段不渲染——
+    /// 专用字段全是全局的，在方案对话框里列出来会让人以为它们也能按方案配。
+    foreign_all: Rc<RefCell<Vec<ForeignBinding>>>,
+    foreign_shown: Signal<Vec<ForeignBinding>>,
+    foreign_open: Signal<bool>,
+    foreign_count: Signal<String>,
+    /// 是否渲染只读组。**独立于 `foreign_all` 是否为空**：全局实例在 `AppState::empty()`
+    /// 阶段注入到的可能就是空表（cfg 还没到），拿「表空」当判据会让那一组永远不出现。
+    foreign_enabled: Rc<Cell<bool>>,
 }
 
 impl Default for KeyActionFields {
@@ -53,6 +64,11 @@ impl Default for KeyActionFields {
             at_open: Rc::new(RefCell::new(Vec::new())),
             leading_keys: Rc::new(RefCell::new(Vec::new())),
             picker: KeyPicker::new(BindingTable::Lead),
+            foreign_all: Rc::new(RefCell::new(Vec::new())),
+            foreign_shown: signal(Vec::new()),
+            foreign_open: signal(false),
+            foreign_count: signal(String::new()),
+            foreign_enabled: Rc::new(Cell::new(false)),
         };
         me.wire_picker();
         me
@@ -294,6 +310,22 @@ impl KeyActionFields {
     /// 外层按无限高度测量内层、滚轮在两层间打架，结果是列表滚不动、且高度被内层写死
     /// 撑不满外壳视口。按自然高度展开后只保留外壳这一层滚动，两个问题一并消除。
     /// 判据是「父容器是否已在滚动」，不是「要不要响应式」——同文件的码表配置浮层同理。
+    /// 注入只读组的内容（只有全局实例调用）。可重复调用——loader 在配置到达时会再注入
+    /// 一遍，那时才拿得到用户真实的热键值。
+    pub fn set_foreign(&self, items: Vec<ForeignBinding>) {
+        self.foreign_enabled.set(true);
+        self.foreign_count.set(if items.is_empty() {
+            String::new()
+        } else {
+            format!("（{} 项，改动请去各自的设置项）", items.len())
+        });
+        *self.foreign_all.borrow_mut() = items;
+        // 展开着的时候要立刻反映新内容；折叠着则等展开时由 effect 取。
+        if self.foreign_open.get() {
+            self.foreign_shown.set(self.foreign_all.borrow().clone());
+        }
+    }
+
     pub fn build_body(&self) -> BindingBody {
         let rows_sig = self.rows;
         let picker = self.picker.clone();
@@ -366,6 +398,18 @@ impl KeyActionFields {
                 .max_lines(3),
             )
             .child(list);
+        // 只读组排在自定义条目**之后**：用户来这里九成是找自己配的那几条，把别处占用的
+        // 十几行顶在前面等于每次都要先翻过去。默认折叠同理。
+        let content = if self.foreign_enabled.get() {
+            content.child(super::key_binding::foreign_section(
+                self.foreign_all.clone(),
+                self.foreign_shown,
+                self.foreign_open,
+                self.foreign_count,
+            ))
+        } else {
+            content
+        };
         BindingBody::new(content, vec![add])
     }
 }

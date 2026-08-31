@@ -2006,22 +2006,11 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<KeyGroup> {
 /// 2、3 两类此前**完全没有参与检测**：把某方案的直达热键配成 `Ctrl+Shift+E`（= 切换方案的
 /// 出厂值）在对话框里是点得出来的，配完毫无提示、按下去也只有一个生效。
 fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
-    use crate::key_conflict::expand_hotkey;
+    // 字段表提到了 `key_conflict`：全局按键编辑器的只读组要认同一批字段，两处各抄一份
+    // 的话，加一个热键字段只改一处的表现是「冲突检测报得出、列表里查无此项」。
+    use crate::key_conflict::{HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, expand_hotkey};
 
-    const HOTKEYS: &[(&str, &str)] = &[
-        ("keys.switch_engine", "切换输入方案"),
-        ("keys.toggle_full_width", "切换全角/半角"),
-        ("keys.toggle_punct", "切换中/英文标点"),
-        ("keys.toggle_s2t", "切换简入繁出"),
-        ("keys.toggle_toolbar", "显示/隐藏工具栏"),
-        ("keys.open_settings", "打开设置"),
-        ("keys.add_word", "快捷加词"),
-        ("keys.open_add_word_dialog", "打开加词界面"),
-        ("keys.activate_ime", "切换到本输入法"),
-        ("keys.pin_candidate", "置顶词条"),
-        ("keys.delete_candidate", "删除词条"),
-    ];
-    let mut groups: Vec<KeyGroup> = HOTKEYS
+    let mut groups: Vec<KeyGroup> = HOTKEY_FIELDS
         .iter()
         .map(|(key, label)| {
             KeyGroup::new(key, *label, expand_hotkey(cfg.get_str(key).unwrap_or("")))
@@ -2031,11 +2020,13 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
     // 方案直达热键**不再单独收集**：`keys.schema_hotkeys` 已并入 key_actions
     // （动词 `switch_schema:<方案id>`），由下面那段统一纳入检测。core 折算后该表恒为空，
     // 留着这段只会是永不执行的死代码。
-    groups.push(KeyGroup::new(
-        "temp_pinyin_hotkey",
-        "临时拼音直达热键",
-        expand_hotkey(cfg.get_str("input.temp_pinyin.hotkey").unwrap_or("")),
-    ));
+    for (key, label) in MODE_HOTKEY_FIELDS {
+        groups.push(KeyGroup::new(
+            key,
+            *label,
+            expand_hotkey(cfg.get_str(key).unwrap_or("")),
+        ));
+    }
 
     // `keys.key_actions` 里的**组合键**条目：与上面 11 项、schema_hotkeys 在内核是同一张
     // key_down 表（见本函数文档的判据），必须同域比较。

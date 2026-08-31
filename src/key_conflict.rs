@@ -198,6 +198,51 @@ pub fn expand_hotkey(raw: &str) -> Vec<String> {
     }
 }
 
+// ─────────────── 住在专用字段里的按键绑定：配置路径 → 中文名 ───────────────
+//
+// 这三张表的共同点是**它们与 `keys.key_actions` 编译进同一张热键表**（core
+// `wind-config/src/hotkey.rs` 的 `compile`），撞了就是一方静默失效。故两处都要认它们：
+// 冲突检测要同域比（`state::collect_hotkey_groups`），全局按键编辑器要在只读组里
+// 让用户看见（`manifest::foreign_key_bindings`）。
+//
+// ★ 提到这里而不是各写一份：两处各抄一遍的话，加一个热键字段只改一处的表现是
+// 「冲突检测报得出、列表里查无此项」或反过来——两种都让人怀疑是自己看错了。
+
+/// 组合键热键字段（`[keys]` 段的「一个功能一个字段」那批）。与 `key_actions` 里的
+/// **组合键**条目同域（key_down 表，匹配走 `.find()` 先注册者赢）。
+///
+/// `pin_candidate` / `delete_candidate` 的值是**模板**（`ctrl+number`），一条展开成
+/// 10 个键，见 [`expand_hotkey`]。
+pub const HOTKEY_FIELDS: &[(&str, &str)] = &[
+    ("keys.switch_engine", "切换输入方案"),
+    ("keys.toggle_full_width", "切换全角/半角"),
+    ("keys.toggle_punct", "切换中/英文标点"),
+    ("keys.toggle_s2t", "切换简入繁出"),
+    ("keys.toggle_toolbar", "显示/隐藏工具栏"),
+    ("keys.open_settings", "打开设置"),
+    ("keys.add_word", "快捷加词"),
+    ("keys.open_add_word_dialog", "打开加词界面"),
+    ("keys.activate_ime", "切换到本输入法"),
+    ("keys.pin_candidate", "置顶词条"),
+    ("keys.delete_candidate", "删除词条"),
+];
+
+/// 模式直达热键：与 [`HOTKEY_FIELDS`] 同域，只是落点在 `input` 段。
+///
+/// 特殊模式的那份**不在这里**——它已收编进 `keys.key_actions`（`special:<方案id>`），
+/// 属于用户在全局表里自己配的条目，不是「别处占用」。
+pub const MODE_HOTKEY_FIELDS: &[(&str, &str)] = &[("input.temp_pinyin.hotkey", "临时拼音直达热键")];
+
+/// 中英切换键：**唯一**一个住在专用字段里的修饰键绑定，与 `key_actions` 的修饰键条目
+/// 编译进同一张 key_up 表（服务端 `handle_bound_modifier_key_up` 先于
+/// `is_toggle_mode_keycode`，即 `key_actions` 那条赢）。
+///
+/// ⚠️ 它的值域含 `capslock`，而 `key_actions` **表达不了 CapsLock**：core 的
+/// `route_of_key_action` 只把 `VK_LSHIFT..=VK_RCONTROL` 判为修饰键通路，CapsLock（0x14）
+/// 落引导键通路 ⇒ 配了不进热键表、静默失效。所以这个字段不能简单地并进那张表——
+/// 要合并，前置条件是先补上 core 的那处值域。
+pub const TOGGLE_MODE_FIELD: (&str, &str) = ("keys.toggle_mode_keys", "中英文切换");
+
 /// 把 **Blocking** 冲突拼成一行警告文案；无 Blocking 冲突返回 None。
 /// 键名以符号呈现（见 [`key_symbol`]）。`scene` 为场景标签（如"触发键"/"候选键"），
 /// 冠于文案前区分冲突域。
