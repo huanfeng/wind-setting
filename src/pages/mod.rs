@@ -356,13 +356,22 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let mixed = build_scheme_config_button(state, "混输方案配置", "混输行为", false);
     let pinyin = build_scheme_config_button(state, "拼音方案配置", "候选行为", true);
     let english = build_scheme_config_button(state, "英文方案配置", "英文行为", false);
+    // 四行各挂一枚锚点：搜索命中框内项时，第一跳要落到这里再把框打开。
+    // 键与 `search::index` 的 `scheme_cfg:<标签>` 约定一致。
+    let cfg_row = |label: &str, hint: &str, ctrl| {
+        crate::search::anchor::wrap(
+            setting_row(label, Some(hint), ctrl),
+            format!("scheme_cfg:{label}"),
+            state.jump,
+        )
+    };
     secs.push(section(
         "全局方案配置",
         vec![
-            setting_row("码表方案配置", Some("码表引擎的全局默认配置"), codetable),
-            setting_row("混输方案配置", Some("混输引擎的全局默认配置"), mixed),
-            setting_row("拼音方案配置", Some("拼音引擎的全局默认配置"), pinyin),
-            setting_row("英文方案配置", Some("英文引擎的全局默认配置"), english),
+            cfg_row("码表方案配置", "码表引擎的全局默认配置", codetable),
+            cfg_row("混输方案配置", "混输引擎的全局默认配置", mixed),
+            cfg_row("拼音方案配置", "拼音引擎的全局默认配置", pinyin),
+            cfg_row("英文方案配置", "英文引擎的全局默认配置", english),
         ],
     ));
 

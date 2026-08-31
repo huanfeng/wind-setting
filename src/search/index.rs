@@ -223,7 +223,12 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                     Some(h) => (
                         JumpTarget::RowInDialog {
                             tab,
-                            host_anchor: h.clone(),
+                            // 入口行的锚点未必等于宿主项自己的 key：宿主若是个被开关
+                            // 合并掉的 `dialog_button`（`gate_key`），卡片上那一行属于
+                            // **开关**，锚点也就是开关的 key。指错了第一跳无人认领，
+                            // 框永远不会开。
+                            host_anchor: row_anchor_of(manifest, h),
+                            // 对话框注册表的键仍是宿主项自己的 key。
                             dialog: h.clone(),
                             anchor: key.clone(),
                         },
@@ -272,6 +277,19 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         });
     }
     out
+}
+
+/// 宿主项在**卡片上那一行**的锚点键。
+///
+/// 通常就是它自己；但被 `gate_key` 合并进开关行的 `dialog_button` 例外——那一行是
+/// 开关的，锚点键也就是开关的 key（见 `manifest::section_rows` 的合并分支）。
+fn row_anchor_of(manifest: &Manifest, host_key: &str) -> String {
+    match manifest.get(host_key) {
+        Some(it) if is_merged_into_gate(it, manifest) => {
+            it.gate_key.clone().unwrap_or_else(|| host_key.to_string())
+        }
+        _ => host_key.to_string(),
+    }
 }
 
 /// 找 `item` 所属 `dialog_group` 的宿主项 key（`opens_dialog == item.dialog_group`）。

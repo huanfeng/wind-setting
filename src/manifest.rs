@@ -488,8 +488,18 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         })
         .cloned()
         .collect();
-    let rows: Vec<Element> = member_keys.iter().map(|k| field(state, k)).collect();
+    // 框内每行也挂锚点：搜索命中的可能正是这些寄居项，跳转要落到具体那一行。
+    let rows: Vec<Element> = member_keys
+        .iter()
+        .map(|k| crate::search::anchor::wrap(field(state, k), k.clone(), state.jump))
+        .collect();
     let visible = signal(false);
+    // 登记供搜索跳转开框（键 = 宿主项 key，与 `search::index` 派生的 dialog 键一致）。
+    state
+        .fields
+        .dialog_opens
+        .borrow_mut()
+        .insert(key.to_string(), visible);
     let dlg = build_group_dialog(visible, &format!("{} · 扩展设置", item.label), rows, None);
     register_dialog(state, dlg);
 
@@ -1587,6 +1597,12 @@ pub fn build_scheme_config_button(
 ) -> Element {
     use crate::dialogs::field_dialogs::build_group_dialog;
     let visible = signal(false);
+    // 登记供搜索跳转开框。键与 `search::index` 的 `SCHEME_CFG` 前缀约定一致。
+    state
+        .fields
+        .dialog_opens
+        .borrow_mut()
+        .insert(format!("scheme_cfg:{label}"), visible);
     let keys: Vec<String> = state
         .manifest
         .sections_of("schema")
@@ -1629,7 +1645,8 @@ pub fn build_scheme_config_button(
         } else {
             field(state, k)
         };
-        rows.push(row);
+        // 框内行挂锚点：搜索命中的正是这些项（「上屏行为」等四节全在框里）。
+        rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
     }
     if with_fuzzy {
         rows.push(dialog_group_header("模糊音"));
@@ -1682,6 +1699,25 @@ fn build_dialog_button(state: &AppState, key: &str, item: &MItem, cfg: &Config) 
 
 /// 按 capability 类型分派构建对话框主体，挂到根，返回控制其显隐的 `visible` Signal。
 fn build_dialog_body(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Signal<bool> {
+    let visible = build_dialog_body_inner(state, key, item, cfg);
+    // 登记供搜索跳转程序化开框。放在这道统一出口而不是各调用点——`dialog_button` 有
+    // 十来种子类型、三条调用路径，逐处登记迟早漏一个，而漏掉的那个只表现为
+    // 「搜到框里的项、点了却不开框」。
+    state
+        .fields
+        .dialog_opens
+        .borrow_mut()
+        .insert(key.to_string(), visible);
+    visible
+}
+
+/// 按 `type` 分派到具体的对话框构建器。见 [`build_dialog_body`]。
+fn build_dialog_body_inner(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
     let cap_ty = state
         .capabilities
         .entries
@@ -2027,15 +2063,30 @@ fn reset_to_core_defaults(state: &AppState, keys: Vec<String>) -> Box<dyn Fn() +
 fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Element {
     use crate::dialogs::field_dialogs::build_group_dialog;
     let visible = signal(false);
+    // 登记供搜索跳转开框（键 = 宿主项 key）。
+    state
+        .fields
+        .dialog_opens
+        .borrow_mut()
+        .insert(key.to_string(), visible);
     let title = item
         .dialog_title
         .clone()
         .unwrap_or_else(|| item.label.clone());
 
     let members = dialog_extra_keys(state, key);
-    let mut rows = vec![field(state, key)];
+    // 框内每行挂锚点（宿主自身也在框里，它那一行的键就是宿主 key）。
+    let mut rows = vec![crate::search::anchor::wrap(
+        field(state, key),
+        key.to_string(),
+        state.jump,
+    )];
     for k in &members {
-        rows.push(field(state, k));
+        rows.push(crate::search::anchor::wrap(
+            field(state, k),
+            k.clone(),
+            state.jump,
+        ));
     }
 
     let reset_keys: Vec<String> = std::iter::once(key.to_string()).chain(members).collect();

@@ -29,6 +29,7 @@ use windui::prelude::*;
 use windui::render::{Canvas, Paint};
 use windui::style::Style;
 
+use super::index::JumpTarget;
 use super::jump::JumpRequest;
 
 /// 闪烁总时长与次数。三下、约一秒——够看清是哪一行，又不至于闪到让人烦。
@@ -159,9 +160,19 @@ impl Widget for Anchor {
         }
         self.armed = false;
         let scrolled = scroll_into_view_with_margin(tree, id);
-        self.flash_start.set(Some(anim::clock_ms()));
-        // 认领即清：这次请求到此为止，不会再被别的锚点捡走。
-        self.jump.set(None);
+        // 第一跳（对话框内的项，框还没开）：滚到入口行就够了，**不闪**——真正的目标
+        // 在框里，闪入口行会把注意力引错地方。请求改标记后留着，交给框内那一行。
+        let first_hop = matches!(req.target, JumpTarget::RowInDialog { .. }) && !req.dialog_opened;
+        if first_hop {
+            self.jump.set(Some(JumpRequest {
+                dialog_opened: true,
+                ..req
+            }));
+        } else {
+            self.flash_start.set(Some(anim::clock_ms()));
+            // 认领即清：这次请求到此为止，不会再被别的锚点捡走。
+            self.jump.set(None);
+        }
         // 同上：on_update 相位的 ctx 副作用会被丢弃，故走全局请求。
         // 滚动后要重排让新的 scroll_y 落地；闪烁本身每帧由 `paint` 自驱。
         if scrolled {
@@ -278,7 +289,6 @@ pub fn mounted_anchors() -> std::collections::BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::index::JumpTarget;
 
     #[test]
     fn flash_starts_and_ends_at_zero() {
@@ -316,6 +326,7 @@ mod tests {
     fn pending_anchor_points_at_row() {
         let r = JumpRequest {
             seq: 1,
+            dialog_opened: false,
             target: JumpTarget::Row {
                 tab: 0,
                 anchor: "a.b".into(),
@@ -325,6 +336,7 @@ mod tests {
 
         let c = JumpRequest {
             seq: 1,
+            dialog_opened: false,
             target: JumpTarget::Card {
                 tab: 0,
                 anchor: "dict:manage".into(),
@@ -338,6 +350,7 @@ mod tests {
     fn dialog_target_waits_on_host_row() {
         let r = JumpRequest {
             seq: 1,
+            dialog_opened: false,
             target: JumpTarget::RowInDialog {
                 tab: 0,
                 host_anchor: "host".into(),
@@ -353,6 +366,7 @@ mod tests {
     fn schema_level_has_no_anchor() {
         let r = JumpRequest {
             seq: 1,
+            dialog_opened: false,
             target: JumpTarget::SchemaLevel {
                 hint_path: vec!["方案".into()],
             },
@@ -383,8 +397,11 @@ mod tests {
         let missing: std::collections::BTreeSet<&str> = idx
             .iter()
             .filter_map(|e| match &e.target {
-                // 只查手写卡片：manifest 行的锚点由 `section_rows` 统一挂，不会漏。
                 JumpTarget::Card { anchor, .. } => Some(anchor.as_str()),
+                // 对话框内项的**入口行**也必须挂着，否则第一跳无人认领——框永远不会开，
+                // 表现是「切了页就停在那儿」。方案页那四个「全局方案配置」按钮行正是
+                // 手写的，一开始就漏了。
+                JumpTarget::RowInDialog { host_anchor, .. } => Some(host_anchor.as_str()),
                 _ => None,
             })
             .filter(|a| !mounted.contains(*a))
@@ -408,7 +425,11 @@ mod tests {
     fn run_anchor(key: &str, target: JumpTarget, visible: bool) -> (bool, bool) {
         use windui::core::Tree;
 
-        let jump = signal(Some(JumpRequest { seq: 7, target }));
+        let jump = signal(Some(JumpRequest {
+            seq: 7,
+            target,
+            dialog_opened: false,
+        }));
         let mut tree = Tree::new();
         let el = if visible {
             Element::leaf()
@@ -441,6 +462,7 @@ mod tests {
 
         let jump = signal(Some(JumpRequest {
             seq: 7,
+            dialog_opened: false,
             target: JumpTarget::Row {
                 tab: 0,
                 anchor: "a.b".into(),

@@ -175,6 +175,36 @@ pub fn build_dict_request_watcher(
     )
 }
 
+/// 开框哨兵（0×0）：第一跳完成后，把目标所在的对话框打开。
+///
+/// 为什么不在锚点里直接开：锚点只知道自己是谁，不知道注册表；而「开哪个框」是
+/// 跳转请求的属性。让锚点只管滚动与闪烁、这里只管开框，两边都不必知道对方。
+///
+/// 幂等：信号已是 true 时不再写（`Signal::set` 会推高版本，白白触发一轮重绘）。
+pub fn build_dialog_opener(
+    jmp: Signal<Option<JumpRequest>>,
+    fields: std::rc::Rc<crate::state::FieldRegistry>,
+) -> Element {
+    crate::pages::dict::reactive::reactive_effect(
+        move || jmp.version(),
+        move || {
+            let Some(req) = jmp.get() else { return };
+            if !req.dialog_opened {
+                return; // 还没到第一跳之后
+            }
+            let JumpTarget::RowInDialog { dialog, .. } = &req.target else {
+                return;
+            };
+            let opens = fields.dialog_opens.borrow();
+            if let Some(vis) = opens.get(dialog.as_str())
+                && !vis.get()
+            {
+                vis.set(true);
+            }
+        },
+    )
+}
+
 /// 侧栏顶部的搜索框。
 pub fn build_search_box(
     st: &SearchState,

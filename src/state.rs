@@ -87,6 +87,14 @@ pub struct FieldRegistry {
     pub global_flags: RefCell<Vec<(String, Signal<bool>)>>,
     /// **config.toml 之外**的落点，随主保存一并提交。见 [`SideCommitter`]。
     pub side: RefCell<Vec<SideCommitter>>,
+    /// 对话框键 → 该对话框的可见信号，供搜索跳转**程序化打开**它。
+    ///
+    /// 键与 `search::index` 派生的 `JumpTarget::RowInDialog::dialog` 一致：
+    /// 寄居式对话框用宿主项的清单 key，方案页那四个全局配置框用 `scheme_cfg:<标签>`。
+    ///
+    /// 这些 `visible` 信号原本是各构建函数里的局部变量、只被按钮闭包捕获，外界拿不到；
+    /// 登记一份出来，搜索命中框内项时才能替用户把框打开。
+    pub dialog_opens: RefCell<HashMap<String, Signal<bool>>>,
 }
 
 impl FieldRegistry {
@@ -114,6 +122,7 @@ impl FieldRegistry {
         self.dialogs.borrow_mut().clear();
         self.global_flags.borrow_mut().clear();
         self.side.borrow_mut().clear();
+        self.dialog_opens.borrow_mut().clear();
     }
 }
 

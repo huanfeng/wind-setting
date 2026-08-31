@@ -183,6 +183,15 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     let (search_scrim, search_overlay) =
         crate::search::ui::build_results_overlay(&search_state, tab_sig, jump_sig);
     root = root.child(search_scrim).child(search_overlay);
+    // 跳转目标在对话框里时，第一跳完成后由它把框打开（第二跳才落到框内那一行）。
+    //
+    // ⚠ 挂在**根的末尾**而不是侧栏里：响应式哨兵按树序派发，挂在侧栏就排在内容区
+    // 之前——那一帧它读到的还是锚点写入之前的值，开框要白等一帧。同 conflict_watcher
+    // 与 toast_sink 之间的先后讲究。
+    root = root.child(crate::search::ui::build_dialog_opener(
+        jump_sig,
+        app.borrow().fields.clone(),
+    ));
     // 按键冲突实时监听：每帧刷新 state.conflict（驱动常驻警告条），并对新出现的
     // 「可共存」组合写 feedback 弹一次说明 toast。
     //

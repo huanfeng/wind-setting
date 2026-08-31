@@ -17,6 +17,11 @@ pub struct JumpRequest {
     /// 自动作废前一次——用户在动画期间再搜一条时，不会有两处同时闪。
     pub seq: u64,
     pub target: JumpTarget,
+    /// 第一跳是否已完成（宿主行已滚到、对话框已请求打开）。
+    ///
+    /// 对话框内的项要分两跳：先落到卡片上那个「设置…」按钮所在行，把框打开，
+    /// 再落到框里的那一行。一跳做不完是因为框没开之前，框内那一行根本不在布局里。
+    pub dialog_opened: bool,
 }
 
 impl JumpRequest {
@@ -27,7 +32,15 @@ impl JumpRequest {
     pub fn pending_anchor(&self) -> Option<&str> {
         match &self.target {
             JumpTarget::Row { anchor, .. } | JumpTarget::Card { anchor, .. } => Some(anchor),
-            JumpTarget::RowInDialog { host_anchor, .. } => Some(host_anchor),
+            JumpTarget::RowInDialog {
+                host_anchor,
+                anchor,
+                ..
+            } => Some(if self.dialog_opened {
+                anchor // 第二跳：框已开，落到框内那一行
+            } else {
+                host_anchor // 第一跳：先滚到卡片上的入口行
+            }),
             JumpTarget::SchemaLevel { .. } | JumpTarget::DictWindow => None,
         }
     }
@@ -51,7 +64,11 @@ pub fn request(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: Ju
     if !matches!(target, JumpTarget::DictWindow) {
         tab.set(target.tab());
     }
-    jump.set(Some(JumpRequest { seq, target }));
+    jump.set(Some(JumpRequest {
+        seq,
+        target,
+        dialog_opened: false,
+    }));
 }
 
 #[cfg(test)]
