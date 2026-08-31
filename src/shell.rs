@@ -100,6 +100,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     let search_box = crate::search::ui::build_search_box(&search_state, tab_sig, jump_sig);
     // 查询变化即重算结果的 0×0 哨兵（TextInput 只写信号、无变更回调）。
     let query_watcher = crate::search::ui::build_query_watcher(&search_state);
+    // 搜到词库条目时开独立窗（词库不是主窗的页，切过去只有空白占位）。
+    let dict_watcher = crate::search::ui::build_dict_request_watcher(&search_state, app);
     // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
     let sidebar = Element::col()
         .width(184)
@@ -109,6 +111,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .spacing(8)
         .child(search_box)
         .child(query_watcher)
+        .child(dict_watcher)
         .child(nav)
         .on_context_menu(move || {
             crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)

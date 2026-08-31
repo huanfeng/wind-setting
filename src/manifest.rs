@@ -357,7 +357,7 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
                     .any(|c| c.key != *k && keys.iter().any(|x| x == &c.key))
             })
             .unwrap_or(false);
-        rows.push(if dependent {
+        let row = if dependent {
             Element::row()
                 .width_match()
                 .cross(Align::Stretch)
@@ -365,7 +365,10 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
                 .child(row.weight(1.0))
         } else {
             row
-        });
+        };
+        // 搜索跳转锚点：每一行都盖一枚，键即清单 key（与 `search::index` 派生的
+        // `JumpTarget::anchor` 一致）。它不吃点击、静止时不绘制。
+        rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
     }
     rows
 }

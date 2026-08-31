@@ -19,6 +19,20 @@ pub struct JumpRequest {
     pub target: JumpTarget,
 }
 
+impl JumpRequest {
+    /// 这次跳转当前在等**哪个锚点**认领。
+    ///
+    /// 对话框内的项分两跳：先由宿主行（那个「设置…」按钮所在行）认领——滚过去、
+    /// 开框——再由框内那一行认领。`None` = 不走锚点（方案级只给指示条）。
+    pub fn pending_anchor(&self) -> Option<&str> {
+        match &self.target {
+            JumpTarget::Row { anchor, .. } | JumpTarget::Card { anchor, .. } => Some(anchor),
+            JumpTarget::RowInDialog { host_anchor, .. } => Some(host_anchor),
+            JumpTarget::SchemaLevel { .. } | JumpTarget::DictWindow => None,
+        }
+    }
+}
+
 thread_local! {
     static SEQ: Cell<u64> = const { Cell::new(0) };
 }
@@ -33,7 +47,10 @@ pub fn request(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: Ju
         s.set(n);
         n
     });
-    tab.set(target.tab());
+    // 词库条目开的是独立窗，主窗停在原页——切过去只会得到一屏空白占位。
+    if !matches!(target, JumpTarget::DictWindow) {
+        tab.set(target.tab());
+    }
     jump.set(Some(JumpRequest { seq, target }));
 }
 

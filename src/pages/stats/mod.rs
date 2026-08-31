@@ -179,8 +179,17 @@ pub fn build_page(state: &AppState) -> Element {
     let body = Element::col()
         .width_match()
         .spacing(18)
-        .child(data_area)
-        .child(settings_section(state))
+        // 搜索锚点：「使用统计」落在数据区，「清空统计数据」落在设置卡。
+        .child(crate::search::anchor::wrap(
+            data_area,
+            "stats:overview",
+            state.jump,
+        ))
+        .child(crate::search::anchor::wrap(
+            settings_section(state),
+            "stats:settings",
+            state.jump,
+        ))
         .child(load_effect(state));
 
     page(body)

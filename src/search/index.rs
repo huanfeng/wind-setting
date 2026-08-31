@@ -43,6 +43,12 @@ pub enum JumpTarget {
     Card { tab: usize, anchor: String },
     /// 方案级：跳到方案页，附指示条路径（「哪个方案」要用户自己选）。
     SchemaLevel { hint_path: Vec<String> },
+    /// 打开词库窗。
+    ///
+    /// 词库**不是**主窗的一页：它早已迁进独立窗口，主窗那一格只剩个永不显示的占位
+    /// （`pages::dict_page` 返回空叶子）。所以词库相关的条目不能切页——切过去是一屏
+    /// 空白——只能请求开窗，主窗停在原页不动（与侧栏那个「词库」动作项同一语义）。
+    DictWindow,
 }
 
 impl JumpTarget {
@@ -51,6 +57,9 @@ impl JumpTarget {
         match self {
             Self::Row { tab, .. } | Self::RowInDialog { tab, .. } | Self::Card { tab, .. } => *tab,
             Self::SchemaLevel { .. } => page_tab("schema"),
+            // 归属上算词库页（`every_page_has_entries` 据此计数），但**不会**被切过去：
+            // `jump::request` 对本变体不动 tab。
+            Self::DictWindow => page_tab("dict"),
         }
     }
 }
@@ -288,8 +297,14 @@ fn dialog_label(manifest: &Manifest, host_key: &str) -> String {
 
 /// 手写页的一条补充索引。
 struct Handwritten {
-    /// 锚点 id（英文 slug，P2 给对应卡片挂同名锚点）。
+    /// 索引里的唯一标识（英文 slug）。
     id: &'static str,
+    /// 界面上那块地方的锚点键。
+    ///
+    /// 与 `id` 分开是因为**多个条目常落在同一张卡片上**：方案页那五条（列表、方案设置、
+    /// 导入、导出、网址导入）都在「输入方案」卡里，各挂一个锚点没有意义，也不可能——
+    /// 一个节点只有一个锚点。
+    anchor: &'static str,
     page: &'static str,
     title: &'static str,
     /// 面包屑第二段（卡片名）。
@@ -308,34 +323,34 @@ struct Handwritten {
 /// 七行，22 条变成 150 多行，反倒看不出它是张表。
 #[rustfmt::skip]
 const HANDWRITTEN: &[Handwritten] = &[
-    // ── 方案页 ──
-    Handwritten { id: "schema:list", page: "schema", title: "方案列表", section: "输入方案", keywords: "切换 启用 排序 拖动" },
-    Handwritten { id: "schema:settings", page: "schema", title: "方案设置", section: "输入方案", keywords: "单个方案 配置 编辑" },
-    Handwritten { id: "schema:import", page: "schema", title: "导入方案包", section: "输入方案", keywords: "wpkg 安装 添加" },
-    Handwritten { id: "schema:export", page: "schema", title: "导出方案包", section: "输入方案", keywords: "wpkg 备份 分享" },
-    Handwritten { id: "schema:url-import", page: "schema", title: "从网址导入方案", section: "输入方案", keywords: "url 在线 下载" },
-    // ── 词库 ──
-    Handwritten { id: "dict:manage", page: "dict", title: "词库管理", section: "词库", keywords: "词条 编辑 删除 查找" },
-    Handwritten { id: "dict:add-word", page: "dict", title: "添加词条", section: "词库", keywords: "造词 新增 自定义" },
-    Handwritten { id: "dict:import", page: "dict", title: "导入词库", section: "词库", keywords: "文本 合并 覆盖" },
-    Handwritten { id: "dict:phrase-import", page: "dict", title: "短语导入", section: "词库", keywords: "phrase 批量" },
-    Handwritten { id: "dict:comment", page: "dict", title: "注释词库", section: "词库", keywords: "comment 提示 释义" },
+    // ── 方案页：五条都落在「输入方案」卡上 ──
+    Handwritten { id: "schema:list", anchor: "schema:list", page: "schema", title: "方案列表", section: "输入方案", keywords: "切换 启用 排序 拖动" },
+    Handwritten { id: "schema:settings", anchor: "schema:list", page: "schema", title: "方案设置", section: "输入方案", keywords: "单个方案 配置 编辑" },
+    Handwritten { id: "schema:import", anchor: "schema:list", page: "schema", title: "导入方案包", section: "输入方案", keywords: "wpkg 安装 添加" },
+    Handwritten { id: "schema:export", anchor: "schema:list", page: "schema", title: "导出方案包", section: "输入方案", keywords: "wpkg 备份 分享" },
+    Handwritten { id: "schema:url-import", anchor: "schema:list", page: "schema", title: "从网址导入方案", section: "输入方案", keywords: "url 在线 下载" },
+    // ── 词库：走开窗，锚点用不上（见 JumpTarget::DictWindow）──
+    Handwritten { id: "dict:manage", anchor: "dict:manage", page: "dict", title: "词库管理", section: "词库", keywords: "词条 编辑 删除 查找" },
+    Handwritten { id: "dict:add-word", anchor: "dict:manage", page: "dict", title: "添加词条", section: "词库", keywords: "造词 新增 自定义" },
+    Handwritten { id: "dict:import", anchor: "dict:manage", page: "dict", title: "导入词库", section: "词库", keywords: "文本 合并 覆盖" },
+    Handwritten { id: "dict:phrase-import", anchor: "dict:manage", page: "dict", title: "短语导入", section: "词库", keywords: "phrase 批量" },
+    Handwritten { id: "dict:comment", anchor: "dict:manage", page: "dict", title: "注释词库", section: "词库", keywords: "comment 提示 释义" },
     // ── 统计 ──
-    Handwritten { id: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表" },
-    Handwritten { id: "stats:clear", page: "stats", title: "清空统计数据", section: "统计", keywords: "重置 删除 归零" },
+    Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表" },
+    Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零" },
     // ── 外观 ──
-    Handwritten { id: "ui:theme-import", page: "ui", title: "导入主题", section: "主题导入", keywords: "皮肤 toml 网址 安装" },
-    Handwritten { id: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口" },
+    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "ui", title: "导入主题", section: "主题导入", keywords: "皮肤 toml 网址 安装" },
+    Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口" },
     // ── 高级 ──
-    Handwritten { id: "advanced:integration", page: "advanced", title: "桌面集成", section: "桌面集成", keywords: "协议 关联 注册" },
-    Handwritten { id: "advanced:protocol", page: "advanced", title: "协议关联", section: "桌面集成", keywords: "windinput 链接 深链" },
-    Handwritten { id: "advanced:file-assoc", page: "advanced", title: "文件关联", section: "桌面集成", keywords: "wpkg 双击 打开方式" },
-    Handwritten { id: "advanced:import-export", page: "advanced", title: "导入与导出", section: "导入与导出", keywords: "配置 迁移 剪贴板" },
-    Handwritten { id: "advanced:backup", page: "advanced", title: "备份与还原", section: "备份与还原", keywords: "快照 恢复 存档" },
-    // ── 关于 ──
-    Handwritten { id: "about:version", page: "about", title: "版本信息", section: "关于", keywords: "版本号 内部版本 构建" },
-    Handwritten { id: "about:update", page: "about", title: "检查更新", section: "关于", keywords: "升级 新版本 下载" },
-    Handwritten { id: "about:logs", page: "about", title: "日志目录", section: "关于", keywords: "log 排查 诊断" },
+    Handwritten { id: "advanced:integration", anchor: "advanced:integration", page: "advanced", title: "桌面集成", section: "桌面集成", keywords: "协议 关联 注册" },
+    Handwritten { id: "advanced:protocol", anchor: "advanced:integration", page: "advanced", title: "协议关联", section: "桌面集成", keywords: "windinput 链接 深链" },
+    Handwritten { id: "advanced:file-assoc", anchor: "advanced:integration", page: "advanced", title: "文件关联", section: "桌面集成", keywords: "wpkg 双击 打开方式" },
+    Handwritten { id: "advanced:import-export", anchor: "advanced:import-export", page: "advanced", title: "导入与导出", section: "导入与导出", keywords: "配置 迁移 剪贴板" },
+    Handwritten { id: "advanced:backup", anchor: "advanced:backup", page: "advanced", title: "备份与还原", section: "备份与还原", keywords: "快照 恢复 存档" },
+    // ── 关于（内容不多，三条共用整页锚点）──
+    Handwritten { id: "about:version", anchor: "about:main", page: "about", title: "版本信息", section: "关于", keywords: "版本号 内部版本 构建" },
+    Handwritten { id: "about:update", anchor: "about:main", page: "about", title: "检查更新", section: "关于", keywords: "升级 新版本 下载" },
+    Handwritten { id: "about:logs", anchor: "about:main", page: "about", title: "日志目录", section: "关于", keywords: "log 排查 诊断" },
 ];
 
 /// 手写页面名（面包屑首段）。
@@ -361,9 +376,14 @@ fn handwritten_entries() -> Vec<SearchEntry> {
             title: h.title.to_string(),
             keywords: h.keywords.split_whitespace().map(str::to_string).collect(),
             path: vec![page_label(h.page).to_string(), h.section.to_string()],
-            target: JumpTarget::Card {
-                tab: page_tab(h.page),
-                anchor: h.id.to_string(),
+            // 词库条目走开窗而不是切页（见 `JumpTarget::DictWindow`）。
+            target: if h.page == "dict" {
+                JumpTarget::DictWindow
+            } else {
+                JumpTarget::Card {
+                    tab: page_tab(h.page),
+                    anchor: h.anchor.to_string(),
+                }
             },
         })
         .collect()

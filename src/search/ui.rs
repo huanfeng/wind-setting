@@ -71,6 +71,12 @@ pub struct SearchState {
     pub selected: Signal<usize>,
     /// 浮层是否展开。
     pub open: Signal<bool>,
+    /// 「请求打开词库窗」的计数器。
+    ///
+    /// 词库是独立窗，开窗要走 `AppState::request_dict_window`，而那需要 `AppState`
+    /// ——它反过来持有本结构，直接存一份 `Rc<RefCell<AppState>>` 就成了循环引用。
+    /// 故这里只放一个计数信号，由 `shell` 侧的哨兵监听它去开窗。
+    pub dict_request: Signal<u64>,
 }
 
 impl SearchState {
@@ -81,6 +87,7 @@ impl SearchState {
             rows: signal(Vec::new()),
             selected: signal(0),
             open: signal(false),
+            dict_request: signal(0),
         }
     }
 
@@ -144,8 +151,28 @@ impl SearchState {
 
 /// 点击/回车确认一条结果：切页 + 挂跳转请求 + 收浮层。
 fn commit(st: &SearchState, tab: Signal<usize>, jmp: Signal<Option<JumpRequest>>, t: JumpTarget) {
+    let opens_dict = matches!(t, JumpTarget::DictWindow);
     jump::request(tab, jmp, t);
+    if opens_dict {
+        // 交给 shell 侧的哨兵去开窗（见 `SearchState::dict_request`）。
+        st.dict_request.update(|n| *n += 1);
+    }
     st.dismiss();
+}
+
+/// 「请求开词库窗」的哨兵（0×0）：计数一变就开窗。
+///
+/// 挂在 shell 里，因为只有那儿同时拿得到 `AppState` 与元素树。
+pub fn build_dict_request_watcher(
+    st: &SearchState,
+    app: &std::rc::Rc<std::cell::RefCell<crate::state::AppState>>,
+) -> Element {
+    let req = st.dict_request;
+    let app = app.clone();
+    crate::pages::dict::reactive::reactive_effect(
+        move || req.version(),
+        move || app.borrow().request_dict_window(true),
+    )
 }
 
 /// 侧栏顶部的搜索框。
@@ -465,6 +492,36 @@ mod tests {
         assert_eq!(tab.get(), want);
         assert!(!st.open.get(), "确认后浮层应收起");
         assert!(jmp.get().is_some(), "应挂上跳转请求供锚点认领");
+    }
+
+    /// 词库条目不切页、改为请求开独立窗。
+    ///
+    /// 切过去只有一屏空白：`pages::dict_page` 返回的是永不显示的占位叶子，
+    /// 词库早已迁进独立窗口。
+    #[test]
+    fn dict_entry_opens_window_instead_of_switching_tab() {
+        let st = state();
+        let tab = signal(3usize); // 停在某个非词库页
+        let jmp = signal(None);
+        let before = st.dict_request.get();
+
+        commit(&st, tab, jmp, JumpTarget::DictWindow);
+
+        assert_eq!(tab.get(), 3, "词库条目不该切页——切过去是空白占位");
+        assert_eq!(st.dict_request.get(), before + 1, "应请求开词库窗");
+    }
+
+    /// 索引里的词库条目确实都是开窗目标。
+    #[test]
+    fn dict_index_entries_are_window_targets() {
+        let st = state();
+        st.query.set("词库".into());
+        st.refresh();
+        let has_dict_window = st.rows.with(|rows| {
+            rows.iter()
+                .any(|r| matches!(r.target, JumpTarget::DictWindow))
+        });
+        assert!(has_dict_window, "搜「词库」应有开窗目标的条目");
     }
 
     /// 结果行带上「需先选方案」标记的，正是方案级条目。

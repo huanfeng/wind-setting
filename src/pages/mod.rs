@@ -72,12 +72,22 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 .child(todo_hint("（该分组暂无清单项，或 core 未运行）")),
         );
     }
-    secs.push(integration::build_integration_section(app, state));
-    secs.push(config_import::build_import_export_section(
-        &state.config_import,
-        &state.schema_mgr,
+    // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
+    secs.push(crate::search::anchor::wrap(
+        integration::build_integration_section(app, state),
+        "advanced:integration",
+        state.jump,
     ));
-    secs.push(backup::build_backup_section(&state.backup_mgr));
+    secs.push(crate::search::anchor::wrap(
+        config_import::build_import_export_section(&state.config_import, &state.schema_mgr),
+        "advanced:import-export",
+        state.jump,
+    ));
+    secs.push(crate::search::anchor::wrap(
+        backup::build_backup_section(&state.backup_mgr),
+        "advanced:backup",
+        state.jump,
+    ));
     sections_page("高级", "服务与实验性功能", secs)
 }
 
@@ -333,7 +343,12 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 Rc::new(move |v| a_sh.borrow_mut().save_show_hidden_schemas(v)),
             )
         });
-    let mut secs = vec![section("输入方案", vec![toolbar_and_list])];
+    // 搜索锚点：方案列表/方案设置/导入导出那几条手写索引都落在这张卡上。
+    let mut secs = vec![crate::search::anchor::wrap(
+        section("输入方案", vec![toolbar_and_list]),
+        "schema:list",
+        state.jump,
+    )];
 
     // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。
     // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。
@@ -382,8 +397,16 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 主题导入/编辑器直连拆两张卡：前者是日常操作，后者是面向进阶用户的连接管理，
     // 混在一张卡里容易分不清"现在按钮是要做什么"和"现在连接是什么状态"。
     let mut secs = manifest_sections(state, "ui");
-    secs.push(theme_import_card(state));
-    secs.push(theme_editor_connect_card(app, state));
+    secs.push(crate::search::anchor::wrap(
+        theme_import_card(state),
+        "ui:theme-import",
+        state.jump,
+    ));
+    secs.push(crate::search::anchor::wrap(
+        theme_editor_connect_card(app, state),
+        "ui:theme-editor",
+        state.jump,
+    ));
     // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
     // toast_sink，这里不需要（也不应该）再单独挂一份。
     let page = sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs);
@@ -859,7 +882,11 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     if crate::widgets::PAGE_HEADER_ENABLED {
         body = body.child(crate::widgets::page_header("关于", "版本信息与支持"));
     }
-    crate::widgets::page(body.child(panel))
+    // 搜索锚点：版本/检查更新/日志目录三条都落在这张品牌卡上——本页内容不多，
+    // 再往里细分锚点，闪的范围反而比读者的目光落点还小。
+    // 搜索锚点：版本/检查更新/日志目录三条都落在这张品牌卡上——本页内容不多，
+    // 再往里细分锚点，闪的范围反而比读者的目光落点还小。
+    crate::widgets::page(body.child(crate::search::anchor::wrap(panel, "about:main", state.jump)))
 }
 
 #[cfg(test)]

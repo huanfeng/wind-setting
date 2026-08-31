@@ -8,6 +8,7 @@
 //!
 //! [`ui`] 是搜索框与结果浮层；其余三层都是纯逻辑，可完整单测。
 
+pub mod anchor;
 pub mod index;
 pub mod jump;
 pub mod matcher;
