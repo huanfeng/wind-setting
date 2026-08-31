@@ -20,6 +20,7 @@ pub mod stats;
 use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{build_scheme_config_button, section_rows};
 use crate::state::AppState;
+use crate::theme_import::ThemeImportError;
 use crate::widgets::{page, section, setting_row, todo_hint};
 
 /// Tab：(标题, 内容)。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
@@ -443,6 +444,9 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
 /// toast——界面里已没有承载一次性提示的常驻状态文字位）。
 fn theme_import_card(state: &AppState) -> Element {
     let feedback = state.feedback;
+    let ov_text = state.theme_overwrite_text;
+    let ov_msg = state.theme_overwrite_msg;
+    let ov_visible = state.theme_overwrite_visible;
 
     Element::col()
         .width_match()
@@ -471,13 +475,29 @@ fn theme_import_card(state: &AppState) -> Element {
                                 move |path| {
                                     let Some(path) = path else { return };
                                     // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
-                                    match crate::theme_import::read_local_toml(&path).and_then(
-                                        |text| crate::theme_import::import_text(&text, false, None),
-                                    ) {
+                                    // 读取与导入分两步写（而非 and_then 串起来）：撞上同名主题
+                                    // 时要拿**已读到的原文**去弹覆盖确认，串起来 text 就丢了。
+                                    let text = match crate::theme_import::read_local_toml(&path) {
+                                        Ok(t) => t,
+                                        Err(err) => {
+                                            feedback
+                                                .set(Some((ToastKind::Error, err.user_message())));
+                                            return;
+                                        }
+                                    };
+                                    match crate::theme_import::import_text(&text, false, None) {
                                         Ok(result) => feedback.set(Some((
                                             ToastKind::Success,
                                             format!("已导入主题：{}", result.display_name),
                                         ))),
+                                        // 同名已存在＝「要不要更新」而非「导入不了」：转覆盖确认，
+                                        // 确认后以 force=true 重推同一份原文。早先它和读取失败共用
+                                        // 一条 toast，用户只看到「主题已存在」且无路可走。
+                                        Err(ThemeImportError::Conflict(msg)) => {
+                                            AppState::ask_overwrite_theme(
+                                                ov_text, ov_msg, ov_visible, text, &msg,
+                                            );
+                                        }
                                         Err(err) => feedback
                                             .set(Some((ToastKind::Error, err.user_message()))),
                                     }

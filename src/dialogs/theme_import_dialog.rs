@@ -6,6 +6,7 @@ use std::rc::Rc;
 use windui::prelude::*;
 
 use crate::state::AppState;
+use crate::theme_import::ThemeImportError;
 
 pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
     let state = app_state.borrow();
@@ -14,6 +15,9 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
     let name = state.pending_theme_import_name;
     let url_display = state.theme_import_url_display;
     let name_display = state.theme_import_name_display;
+    let ov_text = state.theme_overwrite_text;
+    let ov_msg = state.theme_overwrite_msg;
+    let ov_visible = state.theme_overwrite_visible;
     drop(state);
     let import_state = app_state.clone();
 
@@ -84,9 +88,17 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                     let u = url.get();
                     // 直接下载 → 导入；import_text 内部（core）已做校验，无需再单独预览
                     // （core theme.preview 只支持按已安装 name 预览，不接受原始文本）。
-                    match crate::theme_import::download_https_text(&u)
-                        .and_then(|text| crate::theme_import::import_text(&text, false, None))
-                    {
+                    //
+                    // 下载与导入分两步写（而非 and_then 串起来）：撞上同名主题时要拿**已下载的
+                    // 原文**去弹覆盖确认，串起来的话 text 在闭包里就丢了，确认后只能重下一次。
+                    let text = match crate::theme_import::download_https_text(&u) {
+                        Ok(t) => t,
+                        Err(err) => {
+                            import_state.borrow().notify_err(err.user_message());
+                            return;
+                        }
+                    };
+                    match crate::theme_import::import_text(&text, false, None) {
                         Ok(result) => {
                             let mut st = import_state.borrow_mut();
                             st.refresh_theme_names();
@@ -98,6 +110,22 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                                 name_display,
                             );
                             st.theme_import_dialog_visible.set(false);
+                        }
+                        // 同名已存在：这不是「导入不了」，而是「要不要更新」——转成覆盖确认，
+                        // 用户确认后以 force=true 重推同一份原文。早先它和下载失败共用一条
+                        // toast 出口，用户只看到「主题已存在」而没有任何前进的路，等于无法更新。
+                        //
+                        // 先收掉本框再弹确认框：两个对话框同时可见会互相遮挡，且冲突不是地址
+                        // 写错，留着本框让用户「改地址重试」并无意义。
+                        Err(ThemeImportError::Conflict(msg)) => {
+                            AppState::clear_theme_import_signals(
+                                url,
+                                name,
+                                url_display,
+                                name_display,
+                            );
+                            visible.set(false);
+                            AppState::ask_overwrite_theme(ov_text, ov_msg, ov_visible, text, &msg);
                         }
                         // 下载/预览/导入任一环节失败都保留对话框（用户可改地址重试或取消），
                         // 但错误改走 toast——早先写的是底栏常驻状态文字（现已只剩状态点），

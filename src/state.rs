@@ -321,6 +321,14 @@ pub struct AppState {
     pub theme_delete_msg: Signal<String>,
     /// 删除确认对话框可见标志。
     pub theme_delete_visible: Signal<bool>,
+    /// 待覆盖导入的主题 TOML 全文：导入撞上同名主题时暂存于此，用户确认后以 `force=true` 重推。
+    /// 存全文而不是只记来源等确认后再取一次——URL 导入重下要多一次网络往返，且拿到的可能
+    /// 已不是用户刚才确认过的那一份。
+    pub theme_overwrite_text: Signal<String>,
+    /// 覆盖确认对话框正文（含主题名）。
+    pub theme_overwrite_msg: Signal<String>,
+    /// 覆盖确认对话框可见标志。
+    pub theme_overwrite_visible: Signal<bool>,
     /// 候选窗字体下拉的响应式选项（system.fonts）。
     /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
     pub font_sig: Signal<Vec<String>>,
@@ -576,6 +584,9 @@ impl AppState {
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
             theme_delete_visible: signal(false),
+            theme_overwrite_text: signal(String::new()),
+            theme_overwrite_msg: signal(String::new()),
+            theme_overwrite_visible: signal(false),
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
             codetable_schema_val_sig: signal(vec![]),
@@ -1331,6 +1342,44 @@ impl AppState {
             Err(e) => self.notify_err(format!("删除主题失败：{e}")),
         }
         self.theme_delete_id.set(String::new());
+    }
+
+    /// 导入撞上同名主题：暂存原文并弹覆盖确认框。
+    ///
+    /// 静态方法（收 Signal 句柄而非 `&self`）：两个导入入口都在闭包里触发，其中本地文件
+    /// 导入的回调只拿得到 Signal，借不到 `AppState`——它的 `&mut` 借用在确认按钮那侧。
+    pub fn ask_overwrite_theme(
+        text_sig: Signal<String>,
+        msg_sig: Signal<String>,
+        visible: Signal<bool>,
+        toml: String,
+        conflict_msg: &str,
+    ) {
+        text_sig.set(toml);
+        msg_sig.set(format!(
+            "{conflict_msg}。覆盖会用新文件替换原主题，原内容不可恢复。确定覆盖？"
+        ));
+        visible.set(true);
+    }
+
+    /// 执行覆盖导入（覆盖确认框「覆盖」按钮触发）：以 `force=true` 重推暂存的原文。
+    ///
+    /// slug 传 None，与首次导入那次尝试一致——core 会同样按 `meta.name` 推出目录 id，
+    /// 也就是刚刚判定冲突的那个 id；显式传别的 slug 反而可能覆盖到另一个主题上。
+    pub fn confirm_overwrite_theme(&mut self) {
+        self.theme_overwrite_visible.set(false);
+        let text = self.theme_overwrite_text.get();
+        if text.is_empty() {
+            return;
+        }
+        match crate::theme_import::import_text(&text, true, None) {
+            Ok(result) => {
+                self.refresh_theme_names();
+                self.notify_ok(format!("已覆盖主题：{}", result.display_name));
+            }
+            Err(e) => self.notify_err(e.user_message()),
+        }
+        self.theme_overwrite_text.set(String::new());
     }
 
     fn sync_theme_import_display_signals(
@@ -2896,6 +2945,63 @@ mod tests {
         assert_eq!(st.theme_import_url_display.get(), "来源：");
         assert_eq!(st.theme_import_name_display.get(), "名称提示：无");
         assert!(!st.theme_import_dialog_visible.get());
+    }
+
+    /// 撞上同名主题 ⇒ 暂存原文 + 弹覆盖确认（而不是只报一条「已存在」）。
+    #[test]
+    fn ask_overwrite_theme_stashes_source_and_opens_dialog() {
+        let st = AppState::empty();
+        assert!(!st.theme_overwrite_visible.get(), "初始不该弹覆盖确认");
+
+        AppState::ask_overwrite_theme(
+            st.theme_overwrite_text,
+            st.theme_overwrite_msg,
+            st.theme_overwrite_visible,
+            "[meta]\nname = \"测试主题\"\n".to_string(),
+            "主题「测试主题」已存在",
+        );
+
+        assert!(st.theme_overwrite_visible.get());
+        // 暂存的是**原文**：确认后直接 force 重推，不重新下载/读盘。
+        assert!(st.theme_overwrite_text.get().contains("测试主题"));
+        let msg = st.theme_overwrite_msg.get();
+        assert!(msg.contains("测试主题"), "正文要点名是哪个主题，实际={msg}");
+        assert!(
+            msg.contains("覆盖"),
+            "正文要说清确认后会发生什么，实际={msg}"
+        );
+    }
+
+    /// 确认覆盖 ⇒ 以 force=true 重推暂存原文，收框并清暂存。
+    #[test]
+    fn confirm_overwrite_theme_force_pushes_and_clears_stash() {
+        // into_inner: 别的测试 panic 毒化了锁时仍继续，避免一处失败连锁放大
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let mut st = AppState::empty();
+        // 哨兵：mock 对 force=false 回冲突、force=true 回成功。暂存的这份仍带哨兵，
+        // 因此这条断言同时证明了重推用的是 force=true——否则 mock 会再回一次冲突。
+        AppState::ask_overwrite_theme(
+            st.theme_overwrite_text,
+            st.theme_overwrite_msg,
+            st.theme_overwrite_visible,
+            "[meta]\nname = \"MOCK_EXISTING\"\n".to_string(),
+            "主题「测试主题」已存在",
+        );
+        st.confirm_overwrite_theme();
+
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(!st.theme_overwrite_visible.get(), "确认后应收起对话框");
+        assert_eq!(st.theme_overwrite_text.get(), "", "确认后应清掉暂存原文");
+        let (kind, msg) = st.feedback.get().expect("应有一条结果反馈");
+        assert!(
+            matches!(kind, ToastKind::Success),
+            "force 重推应成功，实际={msg}"
+        );
+        assert!(msg.contains("测试主题"), "反馈要点名主题，实际={msg}");
     }
 
     #[test]

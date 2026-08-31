@@ -1306,11 +1306,33 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             "version": "1.0.0",
             "author": "WindInput"
         }),
-        "theme.importFromText" => json!({
-            "ok": true,
-            "slug": "test-theme",
-            "display_name": "测试主题"
-        }),
+        // 主题文本里含哨兵 MOCK_EXISTING 且未 force ⇒ 回同名冲突回执，供覆盖确认链路的
+        // 单测使用。真 core 的判据是目录已存在，mock 无文件系统，只能靠哨兵表达这个分支。
+        "theme.importFromText" => {
+            let force = params
+                .get("force")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let text = params
+                .get("yaml")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if !force && text.contains("MOCK_EXISTING") {
+                json!({
+                    "ok": false,
+                    "conflict": true,
+                    "slug": "test-theme",
+                    "display_name": "测试主题",
+                    "error": "主题「测试主题」已存在"
+                })
+            } else {
+                json!({
+                    "ok": true,
+                    "slug": "test-theme",
+                    "display_name": "测试主题"
+                })
+            }
+        }
         "theme.getText" => json!({
             "slug": "default",
             "toml": "base = \"_qingfeng\"\n\n[meta]\nname = \"清风·蓝\"\nversion = \"1.0\"\nauthor = \"清风输入法\"\n"
