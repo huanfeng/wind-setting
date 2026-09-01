@@ -92,7 +92,12 @@ mod tests {
         let t = hint_text(&path);
         assert!(t.contains("码表配置"), "{t}");
         assert!(t.contains("方案自定义"), "{t}");
-        assert!(t.contains("方案设置…"), "{t}");
+        // 顺序也要对：标题在前作主语（「『码表配置』是方案级设置：…」），
+        // TAB 在末尾收尾路径。倒过来就不成句了。
+        // （不查「方案设置…」——那是格式串里的字面量，与传入的 path 无关，
+        // 断言它等于什么都没断言。）
+        let (i_title, i_tab) = (t.find("码表配置"), t.find("方案自定义"));
+        assert!(i_title < i_tab, "标题应出现在 TAB 之前：{t}");
     }
 
     /// 路径短到不合约定也不能 panic（索引改坏时宁可给句含糊的话，也不要崩）。

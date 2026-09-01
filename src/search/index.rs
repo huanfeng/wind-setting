@@ -82,7 +82,8 @@ pub struct SearchEntry {
 /// 本就靠约定对齐，这里再手抄一份下标，将来插一页就会指到隔壁那页上。
 ///
 /// 页 id 是本模块写死的常量（都在 `PAGES` 里），故解析不出来属于编程错误，
-/// 用 0 兜底并由 `every_placement_page_is_known` 守门。
+/// 用 0 兜底并由 `every_page_has_entries` 守门（那条测试对每个页 id 都做了
+/// `page_to_index(..).expect(..)`，写错的 id 在那里当场炸）。
 fn page_tab(page: &str) -> usize {
     crate::cli::page_to_index(page).unwrap_or(0)
 }
@@ -522,8 +523,8 @@ pub fn build_index(manifest: &Manifest) -> Vec<SearchEntry> {
 
 /// 索引里**参与拼音首字母检索**的全部汉字（即所有标题里的字）。
 ///
-/// 供 `tests/pinyin_coverage.rs` 与生成脚本使用：拼音表只需覆盖标题，
-/// 不必覆盖 hint——长句的首字母串没有检索价值，只会制造误命中。
+/// 供 `pinyin::tests::table_covers_every_title_char` 与生成脚本使用：拼音表只需覆盖
+/// 标题，不必覆盖 hint——长句的首字母串没有检索价值，只会制造误命中。
 #[cfg(test)]
 pub fn title_chars(entries: &[SearchEntry]) -> BTreeSet<char> {
     entries

@@ -136,12 +136,19 @@ mod tests {
         );
     }
 
-    /// 表里不该混进非汉字条目（生成脚本出错时会看到）。
+    /// 表里不该混进非汉字条目。
+    ///
+    /// 生成脚本一旦把标点或拉丁字母也扫进来，它们就会参与 `initials_find` 的逐位比对，
+    /// 凭空造出误命中——而拼音搜索本就只对汉字成立。
+    ///
+    /// （这条测试一度只断言 `table_len() > 100`，压根没验过 `is_cjk`，名字与文档
+    /// 承诺的性质一条都没测；顺带还白建一次索引，而表是从 `include_str!` 惰性初始化的，
+    /// 与 `build_index` 毫无因果关系。规模那一问由 `table_covers_every_title_char`
+    /// 更强地覆盖着。）
     #[test]
     fn table_holds_only_cjk() {
-        let idx = build_index(&Manifest::from_embedded());
-        let _ = idx; // 仅为保证表已按真实语料生成
-        assert!(table_len() > 100, "表只有 {} 字，疑似未生成", table_len());
+        let bad: Vec<char> = table().keys().copied().filter(|c| !is_cjk(*c)).collect();
+        assert!(bad.is_empty(), "拼音表混进了非汉字条目：{bad:?}");
     }
 
     #[test]

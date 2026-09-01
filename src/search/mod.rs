@@ -16,12 +16,10 @@ pub mod matcher;
 pub mod pinyin;
 pub mod ui;
 
+// 只重导出**真有人跨模块用**的三个。`SearchEntry` / `build_index` / `SearchHit` /
+// `search` 一度也摆在这儿"留作模块出口"，但本仓是 binary crate、没有外部消费者，
+// 组内又都按具体路径引用，于是它们只能靠 `#[allow(unused_imports)]` 压住警告
+// ——那个 allow 掩盖的正是编译器在说"这行没用"。要用时按具体路径写即可。
 pub use index::JumpTarget;
 pub use jump::JumpRequest;
-// 索引门面：`ui` 内部按具体路径引用，此处留作模块出口。
-#[allow(unused_imports)]
-pub use index::{SearchEntry, build_index};
 pub use ui::SearchState;
-// 匹配层门面：目前只有 `ui` 直接用（它 use 的是具体路径），留作模块出口。
-#[allow(unused_imports)]
-pub use matcher::{SearchHit, search};

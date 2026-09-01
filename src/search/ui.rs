@@ -114,13 +114,11 @@ impl SearchState {
                 }
             })
             .collect();
-        let any = !rows.is_empty();
         self.rows.set(rows);
         self.selected.set(0);
         // 查询非空就展开——即使没有结果：浮层要显示「未找到匹配项」，
         // 直接收起会让人以为搜索框坏了。
         self.open.set(!q.trim().is_empty());
-        let _ = any;
     }
 
     /// 收起浮层（不清查询：用户可能还想回来点第二条）。
@@ -172,6 +170,15 @@ impl SearchState {
 /// 点击/回车确认一条结果：切页 + 挂跳转请求 + 收浮层。
 fn commit(st: &SearchState, tab: Signal<usize>, jmp: Signal<Option<JumpRequest>>, t: JumpTarget) {
     let opens_dict = matches!(t, JumpTarget::DictWindow);
+    // 上一条方案级指示到此为止。它说的是「去某个方案里找这一项」，而这次跳转已经把
+    // 用户送到别处了；不清的话它会一直挂在内容区顶部——**切页也不消失**，那正是它
+    // 常驻的位置语义（同 conflict_bar），于是在关于页上继续指挥用户「选中下面某个
+    // 方案」，而那一页根本没有方案列表。
+    //
+    // 方案级目标不在此列：它自己会在 jump sink 里写上新文案，先清一次是白推版本。
+    if !matches!(t, JumpTarget::SchemaLevel { .. }) && !st.hint.get().is_empty() {
+        st.hint.set(String::new());
+    }
     jump::request(tab, jmp, t);
     if opens_dict {
         // 交给 shell 侧的哨兵去开窗（见 `SearchState::dict_request`）。
@@ -224,6 +231,13 @@ pub fn build_jump_sink(
                     {
                         vis.set(true);
                     }
+                }
+                JumpTarget::DictWindow => {
+                    // 同 SchemaLevel：没有锚点会来认领它（`pending_anchor` 返回 None），
+                    // 开窗是 `dict_request` 哨兵的活。不在这儿消费掉的话，`jump` 信号会
+                    // **永久**停在 Some——锚点每帧的快速返回路径（"jump 为 None 就走人"）
+                    // 从此失效，`armed` 的复位通道也跟着少一条。
+                    jmp.set(None);
                 }
                 _ => {}
             }
