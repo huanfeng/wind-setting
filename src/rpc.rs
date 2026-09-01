@@ -32,8 +32,43 @@ pub fn ctrl_endpoint() -> String {
     }
 }
 
+/// 字节数的人读形态。上限类报错要让用户一眼看出差多少，`18874368 > 16777216` 做不到。
+fn human_bytes(n: u64) -> String {
+    const MB: f64 = (1024 * 1024) as f64;
+    if n >= 1024 * 1024 {
+        format!("{:.1} MB", n as f64 / MB)
+    } else {
+        format!("{n} 字节")
+    }
+}
+
 /// 写一帧（4 字节大端长度 + JSON payload）。
+///
+/// ## 发送前就要拦，而不是发出去让对面读不下
+///
+/// 上限是双向的：这一侧 [`read_frame`] 认 [`MAX_FRAME`]，core 侧
+/// `wind_ipc::rpc::MAX_MESSAGE_SIZE` 同值。但 core 的写侧**不检查长度**，会老实把超大
+/// 响应推出来；从前这一侧的写也不检查。于是「自己发的东西太大」这件事，只能等对面
+/// 读长度前缀时才发现，报出来的是**「读取失败: 帧长超限」——方向是反的**，用户与其说
+/// 看到一条诊断，不如说看到一条误导（issue #101 那位用户看到的正是这句）。
+///
+/// 在这里拦，错误就落在「发送」上、并带上实际大小与上限，谁太大一目了然。这对**所有**
+/// 走 `content` 的方法一次性生效，不必逐个方法去改传输方式。
+///
+/// ⚠️ 顺带封死一个静默截断：原先 `payload.len() as u32` 在 payload 超 4 GiB 时会**截断**
+/// 成一个小数字，长度前缀与实际内容对不上，对面读出的是半截垃圾而非报错。检查放在转换
+/// 之前，那条路就不存在了。
 fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
+    if payload.len() > MAX_FRAME as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "请求体 {} 超过单帧上限 {}（数据量太大，请分批或改用文件导入导出）",
+                human_bytes(payload.len() as u64),
+                human_bytes(MAX_FRAME as u64),
+            ),
+        ));
+    }
     let len = payload.len() as u32;
     w.write_all(&len.to_be_bytes())?;
     w.write_all(payload)?;
@@ -46,9 +81,15 @@ fn read_frame<R: Read>(r: &mut R) -> std::io::Result<Vec<u8>> {
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_FRAME {
+        // 说清是**对面回来的**东西太大，且报出大小——与 `write_frame` 那条合起来，
+        // 两个方向的超限从此各说各的，不会再互相冒充。
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "帧长超限",
+            format!(
+                "core 返回 {} 超过单帧上限 {}（结果太大，请改用文件导出或缩小范围）",
+                human_bytes(len as u64),
+                human_bytes(MAX_FRAME as u64),
+            ),
         ));
     }
     let mut buf = vec![0u8; len as usize];
@@ -315,6 +356,69 @@ pub fn listen_events(mut on_event: impl FnMut(CoreEvent)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★★ 超限的请求要在**写出任何字节之前**被拒。
+    ///
+    /// 若先写长度前缀再发现超限，管道里就留下 4 字节垃圾，后续帧全部错位——那是比
+    /// 「数据太大」难查得多的一类故障。断言 sink 为空，锁的就是这个顺序。
+    ///
+    /// 另一半是**报错方向**：从前这一侧的写不检查，超大请求发出去、由对面读长度前缀时
+    /// 才拒，用户看到的是「读取失败: 帧长超限」——自己发的东西太大，报得像对方的问题
+    /// （issue #101 那位用户看到的正是这句）。
+    #[test]
+    fn oversized_request_is_rejected_before_writing_anything() {
+        let mut sink: Vec<u8> = Vec::new();
+        let err = write_frame(&mut sink, &vec![b'x'; 20 * 1024 * 1024]).unwrap_err();
+        assert!(sink.is_empty(), "★ 拒绝必须发生在写出任何字节之前");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        let msg = err.to_string();
+        assert!(msg.contains("请求体"), "要说清是发送方向：{msg}");
+        assert!(
+            msg.contains("20.0 MB") && msg.contains("16.0 MB"),
+            "要报出实际大小与上限：{msg}"
+        );
+
+        // 边界：恰好等于上限放行，+1 拒绝
+        let mut sink: Vec<u8> = Vec::new();
+        assert!(write_frame(&mut sink, &vec![0u8; MAX_FRAME as usize]).is_ok());
+        assert_eq!(sink.len(), 4 + MAX_FRAME as usize);
+        assert!(write_frame(&mut Vec::new(), &vec![0u8; MAX_FRAME as usize + 1]).is_err());
+    }
+
+    /// 两个方向的超限各说各的，不互相冒充。
+    ///
+    /// 读侧只需 4 字节长度前缀就能判——**不必真造一个超大响应**，也正因如此，从前那句
+    /// 「帧长超限」看不出说的是哪一头。
+    #[test]
+    fn oversized_response_reports_the_other_direction() {
+        let mut frame = (MAX_FRAME + 1).to_be_bytes().to_vec();
+        frame.extend_from_slice("（后面的内容根本读不到）".as_bytes());
+        let err = read_frame(&mut std::io::Cursor::new(frame)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("core 返回"), "要说清是接收方向：{msg}");
+        assert!(
+            !msg.contains("请求体"),
+            "★ 不能与发送方向的措辞混用，否则又回到分不清谁太大的老样子：{msg}"
+        );
+
+        // 正常帧照常读回
+        let body = b"{\"ok\":true}";
+        let mut ok = (body.len() as u32).to_be_bytes().to_vec();
+        ok.extend_from_slice(body);
+        assert_eq!(
+            read_frame(&mut std::io::Cursor::new(ok)).unwrap(),
+            body.to_vec()
+        );
+    }
+
+    /// 人读字节数：上限类报错要让人一眼看出差多少。
+    #[test]
+    fn human_bytes_switches_unit_at_one_mb() {
+        assert_eq!(human_bytes(0), "0 字节");
+        assert_eq!(human_bytes(999), "999 字节");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(human_bytes(16 * 1024 * 1024), "16.0 MB");
+    }
 
     // 测试遮蔽：旧用例只传 method；转调真实双参实现。
     fn mock_reply(method: &str) -> Value {
