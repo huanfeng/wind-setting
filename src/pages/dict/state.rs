@@ -138,7 +138,24 @@ pub struct DictManagerState {
     /// 预览成功、可执行导入（驱动合并/替换按钮可用态）。
     pub import_ready: Signal<bool>,
     /// 待导入的文件内容（预览确认后执行导入）。
+    ///
+    /// ⚠️ 仍然读全文，但**不再拿它当 RPC 载荷**——那是 [`Self::pending_import_path`] 的活。
+    /// 这份内容留给客户端自己判格式（`wants_word_list`）与纯词列表解析，都在本进程内，
+    /// 不过 IPC，不受帧长约束。
     pending_import: Rc<RefCell<Option<String>>>,
+    /// 待导入文件的**路径**，`dict.previewImport` / `dict.import` 的首选载荷。
+    ///
+    /// ## 为什么传路径而不是内容
+    ///
+    /// 走 `content` 时整份词库要塞进一帧 JSON-RPC，而本进程的读帧上限是 16MB
+    /// （[`crate::rpc`] 的 `MAX_FRAME`）。按每条约 30 字节算，单是用户词库就在 55 万条
+    /// 左右撞墙，带上词频/候选调整等段则 25 万条起——**随词库增长必然撞上，不是偶发**。
+    /// 见 issue #101（用户实测报「导出失败: 读取失败: 帧长超限」）。
+    ///
+    /// 传路径后 payload 是 O(1)，上限**消失**。core 侧同权限同用户，直接读得到这个文件。
+    ///
+    /// `None` = 内容不来自文件（纯词列表那条路在内存里合成 TSV），此时回落 `content`。
+    pending_import_path: Rc<RefCell<Option<String>>>,
     // ── 方案级「导入/导出」统一对话框的数据类型勾选（导入导出共用；仅适用类型显示）──
     /// 导入/导出的**目标方案**下标（索引进 [`Self::folded_domains`]，即数据域下标 - 1）。
     ///
@@ -484,6 +501,7 @@ impl DictManagerState {
             import_file_name: signal(String::new()),
             import_ready: signal(false),
             pending_import: Rc::new(RefCell::new(None)),
+            pending_import_path: Rc::new(RefCell::new(None)),
             io_target: signal(0),
             io_target_items: signal(vec![]),
             io_auto_note: signal(String::new()),
@@ -2794,6 +2812,7 @@ impl DictManagerState {
         self.io_format.set(0);
         self.io_format_note.set(String::new());
         *self.pending_import.borrow_mut() = None;
+        *self.pending_import_path.borrow_mut() = None;
         *self.pending_wordlist.borrow_mut() = None;
         self.import_confirm_visible.set(true);
     }
@@ -2817,17 +2836,19 @@ impl DictManagerState {
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };
+                // ★ 把落点交给 core 直接写，而不是「core 回全文、这边再写盘」。后者要让
+                // 整份词库穿过一帧 JSON-RPC，几十万条就撞 16MB 读帧上限（issue #101 的
+                // 「导出失败: 读取失败: 帧长超限」正是在这里报的）。这一步之后 payload
+                // 是 O(1)，上限消失。文件对话框本来就已经把路径给到手了，中转纯属多余。
                 match rpc::call_core(
                     "dict.export",
-                    &json!({ "schemaId": schema, "sections": sections }),
+                    &json!({
+                        "schemaId": schema,
+                        "sections": sections,
+                        "path": path.to_string_lossy(),
+                    }),
                 ) {
-                    Ok(v) => {
-                        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                        match std::fs::write(&path, content) {
-                            Ok(_) => state.notify_ok("已导出"),
-                            Err(e) => state.notify_err(&format!("写文件失败: {e}")),
-                        }
-                    }
+                    Ok(_) => state.notify_ok("已导出"),
                     Err(e) => state.notify_err(&format!("导出失败: {e}")),
                 }
             },
@@ -2855,6 +2876,8 @@ impl DictManagerState {
                     }
                 };
                 state.import_file_name.set(name);
+                // 路径与内容都留下：路径是 RPC 载荷（不受帧长限制），内容供本进程判格式。
+                *state.pending_import_path.borrow_mut() = Some(path.to_string_lossy().into_owned());
                 *state.pending_import.borrow_mut() = Some(content.clone());
                 state.apply_picked_content(&content, true);
             },
@@ -2940,6 +2963,27 @@ impl DictManagerState {
         }
     }
 
+    /// 给 `dict.previewImport` / `dict.import` 的载荷挂上文本来源：**有路径就传路径**，
+    /// 否则回落整份内容。
+    ///
+    /// ★ 预览与导入必须共用这一个函数。两处各写各的，早晚会一处传了 path、另一处还传
+    /// content——预览通过、真导入却撞帧长上限，而这两步之间用户什么也没改，最难自查。
+    ///
+    /// 回落那条路留给纯词列表：它的 TSV 是内存里现拼的，没有文件可指。⚠️ 那条路因此仍
+    /// 受 16MB 约束（约 50 万词），本轮未处理——见 issue #101 的收尾说明。
+    fn attach_import_source(&self, params: &mut Value, content: &str) {
+        let path = self.pending_import_path.borrow().clone();
+        let obj = params.as_object_mut().expect("params 必是对象");
+        match path {
+            Some(p) => {
+                obj.insert("path".into(), Value::String(p));
+            }
+            None => {
+                obj.insert("content".into(), Value::String(content.to_string()));
+            }
+        }
+    }
+
     /// 按当前目标方案预览 `content`，把结果落到预览相关信号。
     ///
     /// `allow_redirect` 仅在「刚选完文件」时为 true：目标收不下这个文件时，按文件自报的
@@ -2955,10 +2999,9 @@ impl DictManagerState {
             self.import_ready.set(false);
             return;
         };
-        match rpc::call_core(
-            "dict.previewImport",
-            &json!({ "schemaId": schema, "content": content }),
-        ) {
+        let mut params = json!({ "schemaId": schema });
+        self.attach_import_source(&mut params, content);
+        match rpc::call_core("dict.previewImport", &params) {
             Ok(v) => {
                 let compatible = v
                     .get("compatible")
@@ -3015,6 +3058,16 @@ impl DictManagerState {
                 "\n· {pending} 条缺少音节分隔，可由程序按「音节数=字数」解出（下方可改）"
             ));
         }
+        let no_reading = Self::sum_section_field(v, "boundaryNoReading");
+        if no_reading > 0 {
+            // ★ 这一档**会导入**，措辞不能沾「不会导入 / 选错文件」的边——它多半是用户
+            // 自己加的「拼音码 → 符号」词条（`zuo ←`），那是正当用法，报警只会吓着他。
+            // 但数还是要报：从前这类行按非法拒收并告警，改判之后若某次导入这个数很大，
+            // 用户仍该有机会怀疑自己拿错了文件。
+            s.push_str(&format!(
+                "\n· {no_reading} 条含符号或外文（拼音词典里无读音），已按音节数切分导入"
+            ));
+        }
         if rejected > 0 {
             s.push_str(&format!(
                 "\n⚠ {rejected} 条无法解析为拼音音节，不会导入——可能是码表词库选错了文件"
@@ -3036,6 +3089,18 @@ impl DictManagerState {
             }
         }
         s
+    }
+
+    /// 跨全部段累加某个计数字段。缺字段按 0——core 只在拼音方案下产出这些字段。
+    fn sum_section_field(v: &Value, key: &str) -> u64 {
+        v.get("sections")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|sec| sec.get(key).and_then(|x| x.as_u64()))
+                    .sum()
+            })
+            .unwrap_or(0)
     }
 
     /// previewImport 响应 → `(可补齐行数, 判非法行数)`，跨全部段累加。纯函数便于单测。
@@ -3369,10 +3434,9 @@ impl DictManagerState {
         // fillBoundary 只在有可补齐行时才有意义，但恒传更省事也更诚实：core 侧缺省 true，
         // 传与不传对码表方案完全等价（那边根本不进求解链）。
         let fill_boundary = self.io_fill_boundary.get();
-        match rpc::call_core(
-            "dict.import",
-            &json!({ "schemaId": schema, "content": content, "strategy": strategy, "sections": sections, "fillBoundary": fill_boundary }),
-        ) {
+        let mut params = json!({ "schemaId": schema, "strategy": strategy, "sections": sections, "fillBoundary": fill_boundary });
+        self.attach_import_source(&mut params, &content);
+        match rpc::call_core("dict.import", &params) {
             Ok(v) => {
                 // 导入目标可能不是当前正看着的域（自动匹配或手动改过）。留在原地只会让人
                 // 再次得出"导了但没有"的结论——把视图带到刚写入的方案与类型上，眼见为实。
@@ -4715,6 +4779,68 @@ mod tests {
             "没有可补齐的词就不该提这件事：{msg}"
         );
         assert_eq!(DictManagerState::boundary_counts(&plain), (0, 0));
+    }
+
+    /// 「含符号/外文」这一档要报数，且**措辞不能沾拒收的边**。
+    ///
+    /// 它是 issue #97 的产物：`zuo ←` 这类「拼音码 → 符号」词条从前被判非法丢弃，现在
+    /// 照常入库。★ 用户看到的必须是「已导入」而不是「不会导入 / 选错文件」——那两句话
+    /// 会让他去查一个根本不存在的问题。
+    #[test]
+    fn import_preview_reports_no_reading_as_imported_not_rejected() {
+        let v = json!({ "format": "rime", "compatible": true, "sections": [
+            { "key": "userWords", "count": 10, "skipped": 0,
+              "boundaryFilled": 3, "boundaryNoReading": 3, "noBoundary": 0 },
+        ] });
+        let msg = DictManagerState::format_import_preview(&v, PINYIN_TYPES, "拼音");
+        assert!(msg.contains("3 条含符号或外文"), "该档要报数：{msg}");
+        assert!(
+            msg.contains("已按音节数切分导入"),
+            "★ 必须说清它导入了：{msg}"
+        );
+        assert!(
+            !msg.contains("不会导入") && !msg.contains("选错了文件"),
+            "★ 这一档不是拒收，措辞不得沾边：{msg}"
+        );
+        // 反向对照：没有这一档就一个字都不多说（同「不给码表词库凭空加音节说明」的原则）。
+        let plain = json!({ "format": "rime", "compatible": true, "sections": [
+            { "key": "userWords", "count": 3, "skipped": 0 },
+        ] });
+        let msg = DictManagerState::format_import_preview(&plain, PINYIN_TYPES, "拼音");
+        assert!(!msg.contains("符号或外文"), "没有就别提：{msg}");
+    }
+
+    /// 导入载荷：**选了文件就传路径，没有文件才回落整份内容**。
+    ///
+    /// ★ 这条守的是 issue #101 的修法本身。传 content 时整库要穿过一帧 JSON-RPC，
+    /// 几十万条就撞 `rpc::MAX_FRAME`（16MB）。回归成 content 不会有任何编译错误、
+    /// 小词库也照常绿——只有大词库用户会撞上，而那时已经发版了。
+    #[test]
+    fn import_payload_prefers_path_over_content() {
+        let st = DictManagerState::new();
+
+        // 有路径（从文件对话框选来的）⇒ 传 path，且**不带 content**
+        *st.pending_import_path.borrow_mut() = Some(r"C:\tmp\my.wdict.yaml".into());
+        let mut p = json!({ "schemaId": "pinyin" });
+        st.attach_import_source(&mut p, "整份词库内容……");
+        assert_eq!(
+            p.get("path").and_then(|x| x.as_str()),
+            Some(r"C:\tmp\my.wdict.yaml")
+        );
+        assert!(
+            p.get("content").is_none(),
+            "★ 带了 path 就不能再塞 content，否则帧长照旧超限：{p}"
+        );
+
+        // 无路径（纯词列表在内存里拼的 TSV）⇒ 回落 content
+        *st.pending_import_path.borrow_mut() = None;
+        let mut p = json!({ "schemaId": "pinyin" });
+        st.attach_import_source(&mut p, "ni\t你\t100\t0\n");
+        assert_eq!(
+            p.get("content").and_then(|x| x.as_str()),
+            Some("ni\t你\t100\t0\n")
+        );
+        assert!(p.get("path").is_none(), "没有文件就不该编一个路径出来：{p}");
     }
 
     /// 导入结果 toast 要把「少掉的词」按原因分开讲。

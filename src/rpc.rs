@@ -80,7 +80,64 @@ fn call_on_stream<S: Read + Write>(
 
 /// 单次 RPC 的整体超时上限。命名管道 read_exact 本身无超时,core 无响应时会无限
 /// 阻塞;该上限把最坏等待收敛到有限值,避免拖住 UI 线程与进程退出(见下方线程包装)。
+///
+/// ⚠️ 这只管**交互类**调用。批量方法走 [`BULK_TIMEOUT`],判据见 [`is_bulk_method`]。
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 批量方法的超时上限。
+///
+/// ## 为什么不能让它们共用 5 秒
+///
+/// 5 秒是按「设置页点一下、core 查个配置回来」定的,导入导出/备份还原却是 **O(词库条数)**
+/// 的活:几十万条写 redb 远不止 5 秒。超时后客户端只是**放弃等待**,core 那边的工作线程
+/// **照样跑到完成** —— 于是用户看到「core 无响应」以为失败了,重试一次,数据被导入两遍。
+/// 「报失败其实成功」是这里最坏的形态,比单纯的慢危险得多。
+///
+/// 取 10 分钟:够覆盖百万级词库,又不至于在 core 真的死掉时把设置页永久挂住
+/// (那种情况下用户还有关窗口这条路,而窗口关得掉正是因为 RPC 跑在工作线程上)。
+const BULK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 该方法是否属于「工作量随词库规模增长」的批量方法。
+///
+/// ★ 判据是**方法名前缀/整名白名单**,不是「参数里有没有大字符串」——后者会把
+/// 一次误传的大 payload 也放行成长任务,而前者是按语义划的,读代码就能核对。
+///
+/// 只列真正 O(n) 的:导入导出要遍历全库,备份还原要打包整个用户目录,清空与批量转正
+/// 要逐条改 redb。`*.list`/`*.listPaged` 等**有意不在内**:它们已经分页,若某天变慢了,
+/// 该修的是分页而不是把超时调大。
+fn is_bulk_method(method: &str) -> bool {
+    matches!(
+        method,
+        "dict.export"
+            | "dict.import"
+            | "dict.previewImport"
+            | "dict.clear"
+            | "dict.encodeWords"
+            | "backup.create"
+            | "backup.inspect"
+            | "backup.restore"
+            | "phrase.import"
+            | "phrase.export"
+            | "quick.import"
+            | "quick.export"
+            | "commonChars.import"
+            | "commonChars.export"
+            | "scheme.exportPackage"
+            | "scheme.importPackage"
+            | "temp.promoteAll"
+            | "temp.clear"
+            | "freq.clear"
+    )
+}
+
+/// 按方法取超时档。
+fn timeout_for(method: &str) -> std::time::Duration {
+    if is_bulk_method(method) {
+        BULK_TIMEOUT
+    } else {
+        CALL_TIMEOUT
+    }
+}
 
 /// 测试用互斥锁：`WIND_RPC_MOCK` 是**进程全局**环境变量,任何读写它的测试都必须先持有本锁。
 ///
@@ -107,9 +164,10 @@ pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     std::thread::spawn(move || {
         let _ = tx.send(call_core_inner(&endpoint, &method_owned, &params_owned));
     });
-    let result = match rx.recv_timeout(CALL_TIMEOUT) {
+    let timeout = timeout_for(method);
+    let result = match rx.recv_timeout(timeout) {
         Ok(r) => r,
-        Err(_) => Err(format!("core 无响应(超过 {}s)", CALL_TIMEOUT.as_secs())),
+        Err(_) => Err(format!("core 无响应(超过 {}s)", timeout.as_secs())),
     };
     match &result {
         Ok(_) => tracing::debug!("rpc {} ok ({:?})", method, t.elapsed()),
