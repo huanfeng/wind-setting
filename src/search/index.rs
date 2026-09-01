@@ -107,8 +107,23 @@ enum Placement {
 pub const IN_DIALOG_SUFFIX: &str = "#in-dialog";
 
 /// 对话框内那一行的锚点键。
+///
+/// 渲染成**一整块**、没有单独一行可落的项（见 [`block_anchor_of`]）统一落到块锚点上。
 pub fn in_dialog_anchor(key: &str) -> String {
-    format!("{key}{IN_DIALOG_SUFFIX}")
+    match block_anchor_of(key) {
+        Some(block) => format!("{block}{IN_DIALOG_SUFFIX}"),
+        None => format!("{key}{IN_DIALOG_SUFFIX}"),
+    }
+}
+
+/// 「这一项没有自己的行，它在某一整块里」——返回那一块的锚点基名。
+///
+/// 模糊音那 13 个开关是挤在一个**网格**里的（`manifest::build_fuzzy_group`），
+/// 每格只有一个 `zh ↔ z` 大小的方块，逐格挂锚点没有意义：闪一个小方块，
+/// 用户多半看不见。整块闪一次反而说得清「在这儿」。
+fn block_anchor_of(key: &str) -> Option<&'static str> {
+    key.starts_with("schema.pinyin.fuzzy.")
+        .then_some("schema.pinyin.fuzzy")
 }
 
 /// 方案页「全局方案配置」四个按钮的锚点/对话框键前缀。

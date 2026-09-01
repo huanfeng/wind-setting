@@ -1660,7 +1660,13 @@ pub fn build_scheme_config_button(
     }
     if with_fuzzy {
         rows.push(dialog_group_header("模糊音"));
-        rows.push(build_fuzzy_group(state, &state.current_config));
+        // 整块挂一枚锚点：那 13 个开关在网格里各占一小格，逐格闪没人看得见
+        // （见 `search::index::block_anchor_of`）。
+        rows.push(crate::search::anchor::wrap(
+            build_fuzzy_group(state, &state.current_config),
+            crate::search::index::in_dialog_anchor("schema.pinyin.fuzzy.enabled"),
+            state.jump,
+        ));
     }
 
     // 恢复默认：取 core 权威出厂配置（含折算），灌回各字段 loader。见 [`core_defaults_config`]。
@@ -1955,7 +1961,13 @@ fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
     }
     let mut col = Element::col().width_match().spacing(6);
     for k in &members {
-        col = col.child(field(state, k));
+        // 框内行同样要挂锚点，否则搜到这些寄居项跳过去只会开框、不闪那一行。
+        // 「候选注释」对话框里的两个最大字数就是这么漏掉的（都是数字控件）。
+        col = col.child(crate::search::anchor::wrap(
+            field(state, k),
+            crate::search::index::in_dialog_anchor(k),
+            state.jump,
+        ));
     }
     Some(col)
 }

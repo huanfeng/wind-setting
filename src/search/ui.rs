@@ -272,7 +272,10 @@ pub fn build_search_box(
         .clickable()
         .corner(4.0)
         .on_click(move |_| clear_st.clear())
-        .align(Align::End)
+        // ⚠ 同前置图标那处：`align` 在 stack 里**一个值同时管两轴**，只写 End
+        // 会把按钮压到右**下**角。要「贴右 + 垂直居中」必须分开给值。
+        .align_xy(Align::End, Align::Center)
+        .margin_xy(4, 0)
         .visible_when(move || !query.get().is_empty());
 
     // 放大镜用 SVG 而不是 `leading_icon` 的字形：

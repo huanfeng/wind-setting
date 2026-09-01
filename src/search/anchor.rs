@@ -32,13 +32,54 @@ use windui::style::Style;
 use super::index::JumpTarget;
 use super::jump::JumpRequest;
 
-/// 闪烁总时长与次数。三下、约一秒——够看清是哪一行，又不至于闪到让人烦。
-const FLASH_TOTAL_MS: u64 = 960;
-const FLASH_PULSES: u64 = 3;
+/// 高亮的方波段表：`(亮?, 该段时长 ms)`。
+///
+/// ⚠ **不要改回渐变**。`anim::request_repaint_in_after` 的文档把这件事说得很清楚：
+/// 方波闪烁只需在**翻面时**出两帧，报出截止时间后平台可以一直睡到那时；而渐变类动画
+/// 每帧 alpha 都在变，必须靠连续帧喂。
+///
+/// 本应用空闲零渲染，动画期间只有 `paint` 里的 `request_repaint` 在自驱，帧间隔取决于
+/// 宿主何时出下一帧——实测有过约 300ms 一帧。先前用的是 320ms 周期的正弦呼吸，正好与
+/// 之接近，于是**混叠**：连续四帧采到的 alpha 都在 0.03~0.08，肉眼看来就是「根本没闪」。
+///
+/// 方波没有这个问题：每段只需一帧，到点必然翻面，画面永远是「当前时间段该有的样子」，
+/// 与帧率无关。顺带也不再让整条渲染流水线空转。
+///
+/// 起手先**空一拍**再快闪三次。
+///
+/// 曾经把首段做成 450ms 的长亮，想着「只要被看见一次就够了」——真机上那不像提示，
+/// 像卡住了：跳转刚落定，一块颜色杵在那里不动。空一拍再闪，既让滚动动画先收尾、
+/// 也给目光追上来的时间，随后三下短闪才读得出「在动、在指这一行」。
+const FLASH_STEPS: &[(bool, u64)] = &[
+    (false, 120), // 等一拍：让滚动落定、目光跟上
+    (true, 130),
+    (false, 110),
+    (true, 130),
+    (false, 110),
+    (true, 130),
+];
+
 /// 高亮底的峰值不透明度。
 const FLASH_PEAK: f32 = 0.22;
 /// 高亮圆角，与设置行的视觉节奏一致。
 const FLASH_CORNER: f32 = 6.0;
+// 高亮**不额外内缩**：行的外面已经有 16px 的内边距了——`widgets::card` 与
+// `field_dialogs::build_group_dialog` 的内容区都是 `padding_xy(16, 2)`。
+// 再缩一次，框就比行窄一圈、看着像没对齐。曾内缩过 6px，真机上正是这个观感。
+
+/// 距起始 `t` 毫秒时：`(这一段是否点亮, 距下次翻面还有多久)`。
+///
+/// `None` = 已经结束，不必再画也不必再安排帧。
+fn flash_phase(t: u64) -> Option<(bool, u64)> {
+    let mut acc = 0;
+    for &(on, dur) in FLASH_STEPS {
+        acc += dur;
+        if t < acc {
+            return Some((on, acc - t));
+        }
+    }
+    None
+}
 
 /// 认领之后的「跟随窗口」时长。
 ///
@@ -49,19 +90,6 @@ const FLASH_CORNER: f32 = 6.0;
 /// 故认领后的这段时间里盯着滚动容器的 `content_h`：它一变就说明布局重排过，
 /// 重新滚一次。只认 `content_h` 变化、不认滚动位置变化，所以用户自己滚不会被拽回来。
 const FOLLOW_MS: u64 = 2000;
-
-/// 闪烁强度：距起始 `t` 毫秒时的不透明度。
-///
-/// 三次正弦半波，起止都归零。纯函数，故可直接测波形，也不依赖任何逐帧推进
-/// （见模块文档第 2 点）。
-fn flash_alpha(t: u64) -> f32 {
-    if t >= FLASH_TOTAL_MS {
-        return 0.0;
-    }
-    let pulse = FLASH_TOTAL_MS / FLASH_PULSES;
-    let phase = (t % pulse) as f32 / pulse as f32;
-    (phase * std::f32::consts::PI).sin() * FLASH_PEAK
-}
 
 /// 滚动到位后再多滚一点，让目标不贴着视口边缘。
 ///
@@ -244,10 +272,15 @@ impl Widget for Anchor {
             return;
         };
         let t = anim::clock_ms().saturating_sub(start);
-        if t >= FLASH_TOTAL_MS {
+        let Some((on, next_in)) = flash_phase(t) else {
             return; // 闪完就什么都不画——静止时零开销
+        };
+        // 只安排「下次翻面」那一帧，中间不再续帧（见 `FLASH_STEPS`）。
+        anim::request_repaint_in_after(bounds, next_in);
+        if !on {
+            return; // 熄灭段：这一帧什么都不画
         }
-        let a = flash_alpha(t);
+        let a = FLASH_PEAK;
         let accent = windui::theme::current().palette.accent;
         let (x, y, w, h) = (
             bounds.x as f32,
@@ -272,8 +305,6 @@ impl Widget for Anchor {
             1.0,
             &Paint::fill(accent.scale_alpha(a * 2.0)),
         );
-        // 自驱下一帧：动画期间没有别的东西会来推它（见模块文档第 2 点）。
-        anim::request_repaint();
     }
 
     /// 不吃点击：本层只是块装饰，行上的控件照常可用。
@@ -341,34 +372,74 @@ pub fn mounted_anchors() -> std::collections::BTreeSet<String> {
 mod tests {
     use super::*;
 
+    /// 起手空一拍（不亮），末了归于无。
     #[test]
-    fn flash_starts_and_ends_at_zero() {
-        assert_eq!(flash_alpha(0), 0.0);
-        assert_eq!(flash_alpha(FLASH_TOTAL_MS), 0.0);
-        assert_eq!(flash_alpha(FLASH_TOTAL_MS + 500), 0.0);
+    fn flash_waits_then_ends() {
+        assert_eq!(flash_phase(0).map(|(on, _)| on), Some(false));
+        assert_eq!(flash_phase(total_ms()), None);
+        assert_eq!(flash_phase(total_ms() + 500), None);
     }
 
-    /// 三次脉冲：每段中点都到峰值，段界都归零。
+    /// 高亮总时长（段表之和）。
+    fn total_ms() -> u64 {
+        FLASH_STEPS.iter().map(|(_, d)| d).sum()
+    }
+
+    /// 总时长在「看得清」与「不烦人」之间：太短来不及看，太长挡着操作。
     #[test]
-    fn flash_pulses_three_times() {
-        let pulse = FLASH_TOTAL_MS / FLASH_PULSES;
-        for k in 0..FLASH_PULSES {
-            let mid = k * pulse + pulse / 2;
-            assert!(
-                (flash_alpha(mid) - FLASH_PEAK).abs() < 0.01,
-                "第 {} 次脉冲的峰值不对：{}",
-                k + 1,
-                flash_alpha(mid)
-            );
-            assert!(flash_alpha(k * pulse) < 0.01, "第 {} 段起点该归零", k + 1);
+    fn total_duration_is_reasonable() {
+        assert!(
+            (500..=1200).contains(&total_ms()),
+            "高亮总时长 {}ms 不合适",
+            total_ms()
+        );
+    }
+
+    /// **回归**：任何采样间隔都能看到点亮段。
+    ///
+    /// 先前用的是 320ms 周期的正弦呼吸，而实测帧间隔约 308ms，两者接近导致混叠——
+    /// 连续四帧采到的 alpha 都在 0.03~0.08，看着就是「根本没闪」。方波没有这个问题：
+    /// 每段只需一帧，到点必然翻面。
+    #[test]
+    fn any_sampling_interval_sees_the_highlight() {
+        for step in [16, 100, 200, 308, 320, 400] {
+            let seen = (0..total_ms())
+                .step_by(step)
+                .any(|t| flash_phase(t).is_some_and(|(on, _)| on));
+            assert!(seen, "每 {step}ms 采一帧时看不到高亮");
         }
     }
 
+    /// 「距下次翻面」必须为正：报 0 等于要求连续续帧，方波的省电前提就没了。
     #[test]
-    fn flash_never_exceeds_peak() {
-        for t in 0..FLASH_TOTAL_MS {
-            let a = flash_alpha(t);
-            assert!((0.0..=FLASH_PEAK + 0.001).contains(&a), "t={t} → {a}");
+    fn next_flip_is_always_positive() {
+        for t in 0..total_ms() {
+            let (_, next) = flash_phase(t).expect("总时长内应有段");
+            assert!(next > 0, "t={t} 报出的下次翻面为 0");
+            assert!(next <= 200, "t={t} 报出的下次翻面过长：{next}");
+        }
+    }
+
+    /// 亮灭交替，起手是等待段，正好闪三次。
+    #[test]
+    fn steps_wait_then_blink_three_times() {
+        for pair in FLASH_STEPS.windows(2) {
+            assert_ne!(pair[0].0, pair[1].0, "相邻两段应亮灭交替");
+        }
+        assert!(!FLASH_STEPS[0].0, "起手应空一拍——立刻亮起看着像卡住");
+        let lit = FLASH_STEPS.iter().filter(|(on, _)| *on).count();
+        assert_eq!(lit, 3, "应闪三次");
+    }
+
+    /// 每一下都要短促。某一段过长就不像闪、像杵在那儿。
+    #[test]
+    fn each_step_is_brief() {
+        for &(on, d) in FLASH_STEPS {
+            assert!(
+                d <= 200,
+                "{}段 {d}ms 太长了",
+                if on { "点亮" } else { "熄灭" }
+            );
         }
     }
 
@@ -447,13 +518,16 @@ mod tests {
         let idx = build_index(&crate::manifest::Manifest::from_embedded());
         let missing: std::collections::BTreeSet<&str> = idx
             .iter()
-            .filter_map(|e| match &e.target {
-                JumpTarget::Card { anchor, .. } => Some(anchor.as_str()),
-                // 对话框内项的**入口行**也必须挂着，否则第一跳无人认领——框永远不会开，
-                // 表现是「切了页就停在那儿」。方案页那四个「全局方案配置」按钮行正是
-                // 手写的，一开始就漏了。
-                JumpTarget::RowInDialog { host_anchor, .. } => Some(host_anchor.as_str()),
-                _ => None,
+            .flat_map(|e| match &e.target {
+                JumpTarget::Card { anchor, .. } => vec![anchor.as_str()],
+                // 对话框内项要查**两处**：入口行漏了第一跳无人认领（框永远不开），
+                // 框内那一行漏了第二跳无人认领（框开了却不闪）。两者都静默。
+                JumpTarget::RowInDialog {
+                    host_anchor,
+                    anchor,
+                    ..
+                } => vec![host_anchor.as_str(), anchor.as_str()],
+                _ => vec![],
             })
             .filter(|a| !mounted.contains(*a))
             .collect();
