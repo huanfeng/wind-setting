@@ -1185,7 +1185,8 @@ impl SchemaManagerState {
 
     /// 全局 `keys.key_actions` 的动词表。
     ///
-    /// ★ **2026-08-30 起与方案级那份完全一致**，故直接转调。此前全局多一段单向
+    /// ★ 2026-08-30 起两层的**切方案动词**完全一致；全局仍多一项 `softkeyboard`（见函数体）。
+    /// 此前全局多一段单向
     /// `switch_schema:<id>`，因为 core 禁止方案级单向（`bound_key_decision` 让位并 warn）；
     /// 那条禁令已撤销——它的理由「单向切走就回不来了」说的是**这把键**按不动，而回程
     /// 完全可以由别的键负责，禁令挡掉了合法配法。core 侧改为「送达键在目标方案里吞掉」，
@@ -1196,7 +1197,21 @@ impl SchemaManagerState {
     pub(crate) fn build_global_key_action_verbs(
         &self,
     ) -> Vec<crate::dialogs::schema_key_actions::Verb> {
-        self.build_key_action_verbs()
+        let mut out = self.build_key_action_verbs();
+        // 软键盘：**只加在全局这一份**。core 出厂就绑着 `ctrl+shift+k`
+        // （`data/config.toml` 的 `key_actions`），不列出来的话那条出厂绑定在界面上显示成
+        // 「softkeyboard（当前值，目标可能已不存在）」——功能好好的，措辞却在说它坏了。
+        //
+        // ⚠️ 不下放到方案级：`hotkey_action_entry`（组合键白名单）是编译**全局**
+        // `keys.key_actions` 用的，方案级那条通路认不认这个动词没有验证过，列出来就是
+        // 「配得上、按下去没反应」。
+        // ⚠️ 面 id 直通车（`softkeyboard:<面id>`）也不列：面的枚举在
+        // `system.softkeyboard.toml`，是另一条数据通路，手写配置仍然有效。
+        out.push(crate::dialogs::schema_key_actions::Verb {
+            value: "softkeyboard".into(),
+            label: "软键盘".into(),
+        });
+        out
     }
 
     /// 把某个动词的绑定键**整体换成** `new_keys`：先摘掉所有指向它的旧键，再写入新键。
@@ -1216,8 +1231,10 @@ impl SchemaManagerState {
     /// 若首项是个真动作，「添加一行还没选」就等于配了那个动作。
     ///
     /// ⚠️ 这里曾写着「`toggle_schema:<id>` 刻意不列」——**与代码早已不符**（下方就在列），
-    /// 且方案级单向也已于 2026-08-30 放开。两族切方案动词现在方案级/全局都列，
-    /// `build_global_key_action_verbs` 因此退化成转调。
+    /// 且方案级单向也已于 2026-08-30 放开。两族切方案动词现在方案级/全局都列。
+    ///
+    /// ⚠️ 本函数是**两层共用**的那份，只放两层都合法的动词。只在全局合法的（当前是
+    /// `softkeyboard`）加在 [`Self::build_global_key_action_verbs`] 里。
     pub(crate) fn build_key_action_verbs(&self) -> Vec<crate::dialogs::schema_key_actions::Verb> {
         use crate::dialogs::schema_key_actions::Verb;
         let mut out = vec![

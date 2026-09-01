@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json};
 use windui::prelude::*;
 
 use super::key_binding::{
-    Binding, BindingBody, BindingTable, KeyPicker, KeyShape, binding_row, key_shape, verb_allowed,
-    verb_requires_modifier,
+    Binding, BindingBody, BindingTable, ForeignBinding, KeyPicker, KeyShape, binding_row,
+    key_shape, verb_allowed, verb_requires_modifier,
 };
 
 pub use super::key_binding::Verb;
@@ -42,6 +42,23 @@ pub struct KeyActionFields {
     /// 随 `seed` 刷新——同一个对话框服务于任意方案，不刷会拿上一个方案的码元集去提示。
     leading_keys: Rc<RefCell<Vec<String>>>,
     picker: KeyPicker,
+    /// 只读组：住在专用字段里、与本表同域的绑定。见 [`ForeignBinding`]。
+    ///
+    /// 只有**全局**实例注入（[`Self::set_foreign`]）；方案级实例恒空且整段不渲染——
+    /// 专用字段全是全局的，在方案对话框里列出来会让人以为它们也能按方案配。
+    foreign_all: Rc<RefCell<Vec<ForeignBinding>>>,
+    foreign_shown: Signal<Vec<ForeignBinding>>,
+    foreign_open: Signal<bool>,
+    foreign_count: Signal<String>,
+    /// 只读组内容的版本，[`Self::set_foreign`] 每次注入 +1。
+    ///
+    /// 折叠区的 effect 靠它判变：`foreign_all` 是 `RefCell`（不是信号），改了不会有人
+    /// 通知——loader 在配置到达时注入真实热键值那一次正是这样，少了它整组停在构造期
+    /// 那份空表上。
+    foreign_version: Rc<Cell<u64>>,
+    /// 是否渲染只读组。**独立于 `foreign_all` 是否为空**：全局实例在 `AppState::empty()`
+    /// 阶段注入到的可能就是空表（cfg 还没到），拿「表空」当判据会让那一组永远不出现。
+    foreign_enabled: Rc<Cell<bool>>,
 }
 
 impl Default for KeyActionFields {
@@ -53,6 +70,12 @@ impl Default for KeyActionFields {
             at_open: Rc::new(RefCell::new(Vec::new())),
             leading_keys: Rc::new(RefCell::new(Vec::new())),
             picker: KeyPicker::new(BindingTable::Lead),
+            foreign_all: Rc::new(RefCell::new(Vec::new())),
+            foreign_shown: signal(Vec::new()),
+            foreign_open: signal(false),
+            foreign_count: signal(String::new()),
+            foreign_version: Rc::new(Cell::new(0)),
+            foreign_enabled: Rc::new(Cell::new(false)),
         };
         me.wire_picker();
         me
@@ -294,6 +317,29 @@ impl KeyActionFields {
     /// 外层按无限高度测量内层、滚轮在两层间打架，结果是列表滚不动、且高度被内层写死
     /// 撑不满外壳视口。按自然高度展开后只保留外壳这一层滚动，两个问题一并消除。
     /// 判据是「父容器是否已在滚动」，不是「要不要响应式」——同文件的码表配置浮层同理。
+    /// 注入只读组的内容（只有全局实例调用）。可重复调用——loader 在配置到达时会再注入
+    /// 一遍，那时才拿得到用户真实的热键值。
+    pub fn set_foreign(&self, items: Vec<ForeignBinding>) {
+        self.foreign_enabled.set(true);
+        *self.foreign_all.borrow_mut() = items;
+        // 计数与撞车标记都由 `foreign_section` 的 effect 统一算——只有它同时看得见
+        // 上面那张表。这里只 bump 版本把它叫醒。
+        self.foreign_version.set(self.foreign_version.get() + 1);
+    }
+
+    /// 上面那张表当前占用的物理键（归一化）。供只读组标橙。
+    ///
+    /// 用 [`crate::key_conflict::expand_hotkey`] 归一：它同时管大小写、修饰键顺序与
+    /// **模板展开**，两边同函数才比得上——`ctrl+number` 那两条不展开的话，用户把置顶
+    /// 配成 `Ctrl+1` 撞车检不出来。
+    fn used_tokens(&self) -> std::collections::HashSet<String> {
+        self.rows
+            .get()
+            .iter()
+            .flat_map(|r| crate::key_conflict::expand_hotkey(&r.key))
+            .collect()
+    }
+
     pub fn build_body(&self) -> BindingBody {
         let rows_sig = self.rows;
         let picker = self.picker.clone();
@@ -366,6 +412,23 @@ impl KeyActionFields {
                 .max_lines(3),
             )
             .child(list);
+        // 只读组排在自定义条目**之后**：用户来这里九成是找自己配的那几条，把别处占用的
+        // 十几行顶在前面等于每次都要先翻过去。默认折叠同理。
+        let content = if self.foreign_enabled.get() {
+            let (me_tok, me_ver) = (self.clone(), self.clone());
+            let fv = self.foreign_version.clone();
+            content.child(super::key_binding::foreign_section(
+                self.foreign_all.clone(),
+                self.foreign_shown,
+                self.foreign_open,
+                self.foreign_count,
+                Rc::new(move || me_tok.used_tokens()),
+                // 两个来源都要进版本：行变了要重算橙色，只读组内容变了要重算整组。
+                Rc::new(move || (me_ver.rows_version() << 20) | fv.get()),
+            ))
+        } else {
+            content
+        };
         BindingBody::new(content, vec![add])
     }
 }

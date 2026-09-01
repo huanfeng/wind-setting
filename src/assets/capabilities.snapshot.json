@@ -27,96 +27,172 @@
     {
       "default": true,
       "key": "schema.codetable.top_code_commit",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.clear_on_empty_max",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.auto_commit_at_full",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.auto_commit_min_len",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "int"
     },
     {
       "default": true,
       "key": "schema.codetable.punct_commit",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": true,
       "key": "schema.codetable.show_code_hint",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.single_code_input",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": true,
       "key": "schema.codetable.single_code_complete",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.short_code_yield_level",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "int"
     },
     {
       "default": true,
       "key": "schema.codetable.z_key_repeat",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "bool"
     },
     {
       "default": "",
       "key": "schema.codetable.z_key_action",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "str"
     },
     {
       "default": "",
       "key": "schema.codetable.input_chars",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "str"
     },
     {
       "default": "",
       "key": "schema.codetable.leading_chars",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
       "type": "str"
     },
     {
       "default": false,
       "key": "schema.codetable.frequency.enabled",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.frequency.protect_top_n",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "int"
     },
     {
       "default": 1,
       "key": "schema.codetable.frequency.protect_top_n_len1",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "int"
     },
     {
       "default": 1,
       "key": "schema.codetable.frequency.protect_top_n_len2",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "int"
     },
     {
       "default": 0,
       "key": "schema.codetable.frequency.protect_top_n_len3",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "int"
     },
     {
       "default": "top",
       "key": "schema.codetable.frequency.strategy",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "enum",
       "values": [
         "top",
@@ -127,6 +203,10 @@
     {
       "default": "all",
       "key": "schema.codetable.frequency.promote_prefix",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "enum",
       "values": [
         "none",
@@ -137,6 +217,10 @@
     {
       "default": 0.0,
       "key": "schema.codetable.frequency.half_life",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.frequency]"
+      },
       "type": "float"
     },
     {
@@ -376,11 +460,19 @@
     {
       "default": false,
       "key": "schema.pinyin.aux_code.enabled",
+      "schemaOverride": {
+        "note": "方案可覆盖这一项；方案没写则用这里的值。",
+        "section": "[aux_code]"
+      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.pinyin.aux_code.max_phrase_len",
+      "schemaOverride": {
+        "note": "方案可覆盖这一项；方案没写则用这里的值。",
+        "section": "[aux_code]"
+      },
       "type": "int"
     },
     {
@@ -573,11 +665,19 @@
     {
       "default": false,
       "key": "input.punct.custom_enabled",
+      "schemaOverride": {
+        "note": "声明了自己标点表的方案不受这个开关约束——整表替换时连它一起换掉了。",
+        "section": "[punct]"
+      },
       "type": "bool"
     },
     {
       "default": {},
       "key": "input.punct.custom_mappings",
+      "schemaOverride": {
+        "note": "声明了自己标点表的方案**整表**不用这里的表——不是逐条合并。",
+        "section": "[punct]"
+      },
       "type": "map"
     },
     {
@@ -1050,6 +1150,10 @@
     {
       "default": "horizontal",
       "key": "ui.candidate.layout",
+      "schemaOverride": {
+        "note": "方案可覆盖候选窗排列方向；方案没写则用这里的值。",
+        "section": "[candidate]"
+      },
       "type": "enum",
       "values": [
         "horizontal",
@@ -1150,11 +1254,19 @@
     {
       "default": "${code_hint|code}",
       "key": "ui.candidate.comment_template_vertical",
+      "schemaOverride": {
+        "note": "方案可覆盖注释模板；方案没写则用这里的值。",
+        "section": "[candidate]"
+      },
       "type": "str"
     },
     {
       "default": "${code_hint|code}",
       "key": "ui.candidate.comment_template_horizontal",
+      "schemaOverride": {
+        "note": "方案可覆盖注释模板；方案没写则用这里的值。",
+        "section": "[candidate]"
+      },
       "type": "str"
     },
     {

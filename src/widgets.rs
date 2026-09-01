@@ -172,6 +172,121 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
     }
 }
 
+/// 「可被方案覆盖」提示图标：标签右侧的小信息角标，悬停出完整说明。
+///
+/// 与 [`section_header`] 同样走亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，
+/// 而两套主题下的 muted 色不是同一个。
+///
+/// 图标边长比 [`crate::icons::ICON_PX`] 小一号：它是标签的**角标**，与标签文字齐高才
+/// 不会把行撑高；用整尺寸会显得像另一个控件。
+fn schema_hint_badge(note: &str) -> Element {
+    // ⚠️ tooltip `debug_assert` 禁多行。note 来自 core 的 SCHEMA_OVERRIDES，那边都是单行，
+    // 这里仍把换行折成空格兜底——真出现多行时崩在 debug 版，比在用户机器上无声截断难查。
+    let tip = note.replace('\n', " ");
+    // ⚠️ tooltip 挂在**每个图标自己**身上，不是外层 stack：容器没有背景时不参与
+    // hit-test，挂上去永远不会触发，而且没有任何报错——只有 `--hover` 截图看得出来。
+    let one = |on_dark: bool, tip: String| {
+        let c = if on_dark {
+            Color::hex(0x9AA4B2)
+        } else {
+            Color::hex(0x8A94A6)
+        };
+        crate::icons::tinted(crate::icons::INFO_THIN, 14, c)
+            .tooltip(tip)
+            .visible_when(move || dark_sig().get() == on_dark)
+    };
+    Element::stack()
+        .size(14, 14)
+        .child(one(false, tip.clone()))
+        .child(one(true, tip))
+}
+
+/// 带「可被方案覆盖」提示的设置行：标签后跟一个信息角标，悬停显示说明。
+///
+/// # 它回答什么
+///
+/// 「我在全局改了，为什么某个方案里没变」——因为那个方案自己声明了这一项。这是本仓
+/// 配置模型里用户最常撞到的一层，而全局设置页此前**没有任何地方提示过它的存在**。
+/// [`setting_row_override`] 已经在方案设置那一端把「这项被我覆盖了」标出来了
+/// （那里的「方案自带」用琥珀色，理由同源），本函数补的是全局这一端。
+///
+/// # 为什么用中性色而不是警告色
+///
+/// 这里表达的是**可能性**（这一项存在方案级形态），不是**已发生**（某个方案确实改了它）。
+/// 用琥珀会让每个装了码表方案的用户在一屏设置里看到几十个警告色角标——而其中绝大多数
+/// 方案根本没声明那一项。真正「已发生」的提示归 [`setting_row_override`] 那一端。
+///
+/// `hint` 由 core 的 `config_schema::SCHEMA_OVERRIDES` 给出，**原样显示不再改写**：
+/// 两边各写一份措辞，改了一处就会分叉。
+pub fn setting_row_schema_hint(
+    label: &str,
+    sub: Option<&str>,
+    hint: &str,
+    control: Element,
+) -> Element {
+    setting_row_badged(label, sub, schema_hint_badge(hint), control)
+}
+
+/// 「这一项**不能**按方案单独设置」的行。
+///
+/// # 什么时候用它
+///
+/// 只在容器走 [`crate::manifest::SchemaHintMode::Header`] 时——那里顶部已统一说过「本页
+/// 可被方案覆盖」，剩下的几项若不加区分，那句话就把它们说错了。**反向标记的前提是正向
+/// 说明已经存在**；单独用它（在一个多数项都不可覆盖的页面上逐个标「仅全局」）就是把
+/// 噪音换了个方向。
+///
+/// 用文字不用图标：它是「例外」，要一眼读到，不该藏在悬停里。
+pub fn setting_row_global_only(label: &str, sub: Option<&str>, control: Element) -> Element {
+    let badge = Element::label("仅全局")
+        .font_size(11.0)
+        .fg_role(Role::TextSubtle)
+        .max_lines(1)
+        .tooltip("这一项不分方案，改了对所有输入方案生效");
+    setting_row_badged(label, sub, badge, control)
+}
+
+/// 标签后跟一枚角标的设置行。[`setting_row_schema_hint`] 与
+/// [`setting_row_global_only`] 的共同骨架——两者只有角标不同，行的度量必须一致，
+/// 否则同一个对话框里带标记的行会比不带的高出几像素。
+fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: Element) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    // 标签与角标同排；标签取 weight(1.0) 把角标推到文字右边而不是行尾。
+    let title = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(5)
+        .child(
+            Element::label(label)
+                .font_size(f.label_size(m))
+                .font_weight(f.label_weight())
+                .fg_role(Role::Text)
+                .max_lines(1)
+                .truncate(Truncate::End),
+        )
+        .child(badge);
+    let mut left = Element::col().weight(1.0).spacing(2).child(title);
+    if let Some(s) = sub {
+        left = left.child(
+            Element::label(s)
+                .font_size(f.desc_size(m))
+                .fg_role(Role::TextSubtle)
+                .width_match()
+                .max_lines(2)
+                .truncate(Truncate::End)
+                .tooltip(s),
+        );
+    }
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(0, f.row_pad_y())
+        .spacing(f.gap())
+        .child(left)
+        .child(control)
+}
+
 /// 副标题随信号变化的设置行：左标签 + 下方动态说明 + 右控件。
 ///
 /// 用于展示**运行期状态**（如 `windinput://` 关联当前指向谁）——库的

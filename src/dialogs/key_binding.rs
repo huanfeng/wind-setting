@@ -167,10 +167,18 @@ pub fn verb_allowed(shape: KeyShape, value: &str) -> bool {
     match shape {
         // 组合键走 key_down 热键表，动词受 core `hotkey_action_entry` 白名单限制。
         // ⚠ 与那张白名单是两份手写清单，加动词时两处都要改。
+        //
+        // ★ `softkeyboard` 曾漏在这里，而它**是出厂配置**（`data/config.toml` 的
+        // `key_actions = { "ctrl+shift+k" = "softkeyboard" }`）⇒ 全新安装打开这个对话框，
+        // 出厂那条就红着「组合键不支持」。漂移的方向恰是这条注释预言的那种，只是没人
+        // 在两处都看一眼——2026-08-31 由只读组的截图自查撞出来。守门测试见
+        // `combo_verbs_match_core_whitelist`。
         KeyShape::Combo => {
             value.starts_with("toggle_schema:")
                 || value.starts_with("switch_schema:")
                 || value.starts_with("special:")
+                || value == "softkeyboard"
+                || value.starts_with("softkeyboard:")
         }
         KeyShape::Char => !verb_requires_modifier(value),
         KeyShape::Modifier => true,
@@ -369,7 +377,7 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
             "temp_pinyin" | "temp_english" | "aux_code" => &mut modes,
             "toggle_mode" | "switch_engine" | "toggle_full_width" | "toggle_punct"
             | "toggle_s2t" | "toggle_toolbar" => &mut states,
-            "open_settings" | "take_screenshot" => &mut tools,
+            "open_settings" | "take_screenshot" | "softkeyboard" => &mut tools,
             s if s.starts_with("mix:") || s.starts_with("special:") => &mut modes,
             s if s.starts_with("toggle_schema:") || s.starts_with("switch_schema:") => &mut schemas,
             // 本版本不认识的动词（手写配置 / 更新前的旧配置）。不丢弃：丢弃等于用户
@@ -1316,9 +1324,234 @@ pub fn binding_row(
     )
 }
 
+/// 一条**别处占用**的按键绑定：住在专用字段里，本编辑器只展示、不写回。
+///
+/// # 为什么要在这里展示
+///
+/// 「左 Shift = 中英文切换」住在 `keys.toggle_mode_keys`，`Ctrl+Shift+E` 住在
+/// `keys.switch_engine`——它们与本表**编译进同一张热键表**，撞了就是一方静默失效，
+/// 而在本表里完全看不见。用户于是会在这里再配一个左 Shift：配完两处都指着切换，
+/// 界面上没有任何东西告诉他撞了（实际是本表赢，core 的 `handle_bound_modifier_key_up`
+/// 先于 `is_toggle_mode_keycode`）。**「看不见」才是那次困惑的根，不是「配得上」。**
+///
+/// # 为什么只读
+///
+/// 本编辑器的写回口只有一个（`keys.key_actions`），而本组条目的落点各不相同。让它可写
+/// 就要在这里决定写哪个字段 ＝ 第二真相源，正是 core `key-resolver-unification.md` §4.3
+/// 否决「可编辑总览」的那条。本组只展示 + 指路，编辑仍回各自入口。
+#[derive(Clone)]
+pub struct ForeignBinding {
+    /// 已经翻好的键名（`左 Shift、右 Shift` / `Ctrl+数字`）。
+    ///
+    /// ★ 存翻好的串而不是原始键名：本组的值有三种形态——单键名数组
+    /// （`toggle_mode_keys`）、组合键串（`switch_engine`）、模板（`ctrl+number`），
+    /// 各有各的翻法。让行渲染去认形态，等于把三处知识摊进 UI 层。
+    pub keys: String,
+    /// 功能中文名。
+    pub label: String,
+    /// 去哪儿改（如「按键 › 中英切换键」）。
+    pub source: String,
+    /// 归一化后的物理键 token，**只用于与上面那张表比对**，不显示。
+    ///
+    /// 与显示串分开存：显示要的是「Ctrl+数字」这样一行读得懂的话，比对要的是展开后的
+    /// 十个具体键（`Ctrl+0`…`Ctrl+9`）——用显示串比，`Ctrl+1` 撞上模板就检不出来。
+    pub tokens: Vec<String>,
+    /// 与上面那张表的某条绑定撞了。由 [`foreign_section`] 每次刷新时现算，不落存储。
+    pub conflict: bool,
+}
+
+/// [`ForeignBinding`] 的展示行：`[按键] [功能] [来源]`，无按钮。
+///
+/// 列宽与 [`binding_row`] 的前两列对齐——两组上下相邻，错开一格就会显得是两张表。
+///
+/// 撞了上面那张表的行整行转 [`Role::Warning`]（橙），末列换成「上面已占用」。
+/// ★ 用 `Warning` 而不是 `Danger`：这不是错误配置，是**两处都合法、只有一处生效**
+/// ——内核有确定的裁决（上面那张赢），红色会把可解释的行为报成待修的故障。同
+/// `ConflictLevel::Coexist` 不进常驻警告条的理由。
+fn foreign_row(b: &ForeignBinding) -> Element {
+    let role = if b.conflict {
+        Role::Warning
+    } else {
+        Role::TextMuted
+    };
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .padding_xy(0, 3)
+        .child(
+            // 比 `binding_row` 的键列宽（130）且允许折行：本组的键列装的可能是**一整组**
+            // 的符号（`PageUp/PageDown、- =`），比单个键名长一倍不止。130 下 `PageUp/`
+            // 就断在斜杠上，`Tab/Shift+Tab` 只剩 `Tab/Shift`——看起来像配了个别的键。
+            // 与上一组差 40px 不影响阅读：中间隔着折叠头，本来就是两块。
+            Element::label(&b.keys)
+                .font_size(12.5)
+                .fg_role(role)
+                .width(170)
+                .max_lines(2),
+        )
+        .child(
+            Element::label(&b.label)
+                .font_size(12.5)
+                .fg_role(role)
+                .weight(1.0)
+                .max_lines(1),
+        )
+        .child(
+            Element::label(if b.conflict {
+                "上面已占用"
+            } else {
+                &b.source
+            })
+            .font_size(11.0)
+            .fg_role(role)
+            .max_lines(1),
+        )
+}
+
+/// 只读组的整块（折叠头 + 列表 + 驱动折叠的 effect）。返回 `None` 表示本编辑器不带这一组。
+///
+/// 方案级 `[key_actions]` 那个实例**不传**：专用字段全是全局的，在方案对话框里列出来
+/// 会让人以为它们也能按方案配。
+///
+/// `used_tokens` 现算「上面那张表当前占用了哪些键」（归一化后），用于逐行标橙。
+///
+/// `version` 由**调用方**组合它自己的全部依赖（行版本 ⊕ 只读组内容版本）——判变依据与
+/// 数据源必须同源：少了行版本，用户删掉一条绑定后橙色不退；少了内容版本，loader 送来的
+/// 真实热键值不会被重算。折叠态由本函数自己叠进去，调用方不必管。
+pub fn foreign_section(
+    all: std::rc::Rc<RefCell<Vec<ForeignBinding>>>,
+    shown: Signal<Vec<ForeignBinding>>,
+    open: Signal<bool>,
+    count_text: Signal<String>,
+    used_tokens: std::rc::Rc<dyn Fn() -> std::collections::HashSet<String>>,
+    version: std::rc::Rc<dyn Fn() -> u64>,
+) -> Element {
+    // 折叠开关用 checkbox 而不是「展开/收起」按钮：按钮的文案得跟着状态变，而本仓没有
+    // 文案绑信号的按钮，绕出来的写法（host_signal 套单元素 Vec）比它解决的问题还长。
+    let head = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(6)
+        .child(
+            Element::checkbox("其它设置项占用的按键", open)
+                .small()
+                .fg_role(Role::TextMuted),
+        )
+        .child(
+            Element::label_signal(count_text)
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
+        );
+
+    // 折叠只换 `shown` 的内容，不隐藏容器：`host_signal` 本来就按数据重建子树，空表
+    // 就是零行，比再套一层显隐条件少一条状态。
+    //
+    // ★ 冲突**折叠时也算**：撞车数要进标题的计数里，那正是让用户知道该展开看看的东西。
+    // 只有行的渲染受折叠影响。代价是每次编辑都遍历一遍上面那张表（几十行，可忽略）。
+    let refresh = {
+        let all = all.clone();
+        let used_tokens = used_tokens.clone();
+        move || {
+            let used = used_tokens();
+            let rows: Vec<ForeignBinding> = all
+                .borrow()
+                .iter()
+                .map(|b| ForeignBinding {
+                    conflict: b.tokens.iter().any(|t| used.contains(t)),
+                    ..b.clone()
+                })
+                .collect();
+            let hit = rows.iter().filter(|b| b.conflict).count();
+            count_text.set(if rows.is_empty() {
+                String::new()
+            } else if hit > 0 {
+                format!("（{} 项，其中 {hit} 项与上面重复）", rows.len())
+            } else {
+                format!("（{} 项，改动请去各自的设置项）", rows.len())
+            });
+            shown.set(if open.get() { rows } else { Vec::new() });
+        }
+    };
+    let sync = crate::pages::dict::reactive::reactive_effect(
+        move || u64::from(open.get()) | (version() << 1),
+        refresh,
+    );
+
+    Element::col()
+        .width_match()
+        .spacing(2)
+        .child(sync)
+        .child(head)
+        .child(Element::host_signal(shown, |b: ForeignBinding| {
+            foreign_row(&b)
+        }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★★ 候选键组展开表的键名拼写必须落在会话态键值域内。
+    ///
+    /// `CANDIDATE_GROUP_KEYS` 与 core 的四张 `*_group_binds` 是跨仓手写清单，无编译期
+    /// 约束；拼错一个（`pgup` / `left_bracket` / 大写）的表现是**少标一个橙色**——不报错、
+    /// 不崩，只是提示悄悄失灵，正是本仓最难查的那类。
+    ///
+    /// 判据用 `session_base_keys()`：它注释里写明「与 core `session_key_to_vk` 的 match 臂
+    /// 一一对应」，是本仓离 core 键名最近的一份。两边同时写错同一个名字才骗得过它。
+    #[test]
+    fn candidate_group_keys_are_valid_session_keys() {
+        let base = session_base_keys();
+        let mut checked = 0;
+        for g in crate::key_conflict::candidate_group_names() {
+            let keys = crate::key_conflict::candidate_group_keys(g);
+            assert!(!keys.is_empty(), "组 {g:?} 展开为空，标橙时它恒不匹配");
+            for k in keys {
+                // 会话态只认 `shift+` 一种前缀（core `session_key_name_to_vk`）。
+                let bare = k.strip_prefix("shift+").unwrap_or(k);
+                assert!(
+                    base.contains(&bare),
+                    "组 {g:?} 展开出的键名 {k:?} 不在会话态键值域里——拼错的后果是这一组                     永远标不上橙色，而不会有任何报错"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 20, "只校验到 {checked} 个键名，表像是被清空了");
+    }
+
+    /// 组合键的动词白名单必须与 core 的 `hotkey_action_entry` 对齐。
+    ///
+    /// ★ 判据取自**出厂配置**而不是凭记忆列举：`data/config.toml` 里出厂就有
+    /// `"ctrl+shift+k" = "softkeyboard"`，任何让出厂配置显示成「不支持」的白名单
+    /// 都是错的——那是全新安装打开对话框第一眼就能看到的红字。
+    ///
+    /// ⚠️ 这张表与 core 那张没有编译期约束（跨仓、两份手写）。本测试只守「已知会出现
+    /// 在出厂配置里的动词」这条底线，core 加了新动词仍要人工同步。
+    #[test]
+    fn combo_verbs_match_core_whitelist() {
+        for v in [
+            "softkeyboard",
+            "softkeyboard:punct",
+            "toggle_schema:english",
+            "switch_schema:wubi86",
+            "special:kf",
+        ] {
+            assert!(
+                verb_allowed(KeyShape::Combo, v),
+                "组合键动词 {v:?} 被判为不支持，而 core 的 hotkey_action_entry 认它"
+            );
+        }
+        // 反向：A 类动词在组合键上确实不受支持（core 那边 warn 后忽略），别为了消红
+        // 把闸门整个放开——那样用户配得上、按下去没反应，比标红难查得多。
+        for v in ["toggle_mode", "switch_engine", "toggle_punct"] {
+            assert!(
+                !verb_allowed(KeyShape::Combo, v),
+                "{v:?} 不该在组合键上放行：core 的组合键白名单不含 A 类动词"
+            );
+        }
+    }
 
     /// 键名转义：符号显示成符号本身，组合键逐段翻译。
     #[test]

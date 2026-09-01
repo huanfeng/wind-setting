@@ -13,8 +13,9 @@ use serde_json::Value;
 use windui::prelude::*;
 
 use crate::config::Config;
+use crate::dialogs::key_binding::ForeignBinding;
 use crate::state::{AppState, SchemaInfo};
-use crate::widgets::{setting_row, setting_row_checks};
+use crate::widgets::{setting_row, setting_row_checks, setting_row_schema_hint};
 
 /// 单个清单项（来自 manifest.toml 经 system.manifest 暴露的 JSON）。
 /// 部分字段（key/group/section/unit）暂未消费，保留以备分组/单位展示。
@@ -438,8 +439,68 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
     }
 }
 
+/// 「可被方案覆盖」这条事实在一个容器里怎么呈现。见 [`schema_hint_mode`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaHintMode {
+    /// 逐行挂 ⓘ 角标（默认）。可覆盖的是少数时，角标标的是**例外**，有信息量。
+    PerRow,
+    /// 容器顶部统一说明一次，行内不再挂角标；反过来给**不可**覆盖的那几项标「仅全局」。
+    Header,
+}
+
+/// 判定一个容器该用哪种呈现。
+///
+/// ★ 判据是**这条事实在这个容器里有没有区分度**：可覆盖项占绝大多数时，逐行角标每行都
+/// 有、等于每行都没有——用户报的「一个对话框十几个提示」就是这个。占少数时才反过来，
+/// 角标标出的是例外，那才值得逐行挂。
+///
+/// 实测四个「全局方案配置」对话框的比例天差地别（码表 18/20、混输 0/9、拼音 2/14、
+/// 英文 0/8），所以**不能按容器硬编码**，也不能一刀切——现算。
+///
+/// 阈值 2/3 且至少 5 项：只有 3 项的容器里标 2 个角标算不上噪音，切模式反而多一行说明。
+/// 守门测试 `scheme_config_dialogs_pick_expected_hint_mode` 锁住当前四个对话框各落在哪一
+/// 档——core 增删可覆盖项跨过阈值时它会红，那正是需要人看一眼的时候。
+pub fn schema_hint_mode(state: &AppState, keys: &[String]) -> SchemaHintMode {
+    let (mut total, mut yes) = (0usize, 0usize);
+    for k in keys {
+        let Some(item) = state.manifest.get(k) else {
+            continue;
+        };
+        if item.hidden {
+            continue;
+        }
+        total += 1;
+        if schema_override_of(state, k).is_some() {
+            yes += 1;
+        }
+    }
+    if yes >= 5 && yes * 3 >= total * 2 {
+        SchemaHintMode::Header
+    } else {
+        SchemaHintMode::PerRow
+    }
+}
+
+/// 某项的「可被方案覆盖」声明（core `SCHEMA_OVERRIDES` 经 capability 快照下发）。
+/// 静态事实 ⇒ 只查内存里的快照，不发 RPC、不读盘。
+fn schema_override_of<'a>(
+    state: &'a AppState,
+    key: &str,
+) -> Option<&'a crate::capabilities::SchemaOverrideHint> {
+    state
+        .capabilities
+        .entries
+        .get(key)
+        .and_then(|e| e.schema_override.as_ref())
+}
+
 /// 清单缺失该 key 时返回占位行（便于发现 key 漂移）。
 pub fn field(state: &AppState, key: &str) -> Element {
+    field_with(state, key, SchemaHintMode::PerRow)
+}
+
+/// [`field`] 的带模式版本。`Header` 模式下行内不挂 ⓘ，改为给**不可**覆盖的项标「仅全局」。
+pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element {
     let Some(item) = state.manifest.get(key) else {
         return setting_row(
             key,
@@ -449,9 +510,29 @@ pub fn field(state: &AppState, key: &str) -> Element {
     };
     let cfg = &state.current_config;
     let control = build_control(state, key, item, cfg);
+    // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
+    let overridable = schema_override_of(state, key);
+    let schema_hint = match mode {
+        SchemaHintMode::PerRow => overridable,
+        SchemaHintMode::Header => None,
+    };
+    // ⚠️ checkbox_group 分支**没有**角标形态。当前没有可覆盖的键是这个类型（实测：
+    // toggle 11 / number 7 / select 3 / dialog_button 2 / number_select 1 / segmented 1
+    // / string 1），故不是缺口；真出现了要给 setting_row_checks 也补上，否则那一行
+    // 静默失去提示——与本仓「控件类型两处分派漏一处」是同一个形状。
+    debug_assert!(
+        !(item.typ == "checkbox_group" && schema_hint.is_some()),
+        "{key}: checkbox_group 行还没有「可被方案覆盖」角标形态"
+    );
     // 多选键组用专用行（固定宽标签 + 占满网格），避免宽网格把组名挤掉。
     let mut row = if item.typ == "checkbox_group" {
         setting_row_checks(&item.label, item.hint.as_deref(), control)
+    } else if let Some(h) = schema_hint {
+        setting_row_schema_hint(&item.label, item.hint.as_deref(), &h.note, control)
+    } else if mode == SchemaHintMode::Header && overridable.is_none() {
+        // 顶部那句「本页可被方案覆盖」对这一项不成立 ⇒ 必须标出来，否则统一说明就是
+        // 在传播错误信息。反向标记只在 Header 模式下出现，见 `setting_row_global_only`。
+        crate::widgets::setting_row_global_only(&item.label, item.hint.as_deref(), control)
     } else {
         setting_row(&item.label, item.hint.as_deref(), control)
     };
@@ -1582,6 +1663,48 @@ pub(crate) fn dialog_group_header(name: &str) -> Element {
         .padding_xy(0, 5)
 }
 
+/// 容器顶部那句「本页可被方案覆盖」的说明行（[`SchemaHintMode::Header`] 用）。
+///
+/// 图标 + 常驻文字，**不是悬停角标**：它说的是整个对话框的性质，用户不会想到去悬停一个
+/// 标题；而它替掉的是十几个角标，一行常驻文字换回来的空间绰绰有余。
+pub(crate) fn dialog_notice_row(note: &str) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Start)
+        .spacing(6)
+        .padding_xy(0, 4)
+        .child(
+            // 与行内角标同一枚细图标：同一件事在同一个对话框里换个画法只会让人以为是两件事。
+            crate::icons::tinted(crate::icons::INFO_THIN, 14, Color::hex(0x8A94A6))
+                .padding_xy(0, 2),
+        )
+        .child(
+            Element::label(note)
+                .font_size(12.0)
+                .fg_role(Role::TextSubtle)
+                .weight(1.0)
+                .max_lines(2),
+        )
+}
+
+/// [`SchemaHintMode::Header`] 那句统一说明的文案：取容器内出现最多的那条 `note`。
+///
+/// core 的 `SCHEMA_OVERRIDES` 按配置段给 note（`[codetable]` / `[codetable.frequency]` /
+/// `[aux_code]` 各一句），措辞不同但语义一样。取众数而不是自己新写一句：**文案的权威在
+/// core**，这边新写一句就成了第二真相源，core 改了措辞这里不会跟着变。
+fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> {
+    let mut tally: HashMap<&str, usize> = HashMap::new();
+    for k in keys {
+        if let Some(h) = schema_override_of(state, k) {
+            *tally.entry(h.note.as_str()).or_default() += 1;
+        }
+    }
+    tally
+        .into_iter()
+        .max_by_key(|(note, n)| (*n, note.len()))
+        .map(|(note, _)| note.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 /// 对话框内小标题的字号。
 ///
 /// ★ **必须 ≥ 条目标题**（`FormTheme::label_size`，13.0）。原先是 11.5，比它管辖的条目
@@ -1619,6 +1742,14 @@ pub fn build_scheme_config_button(
 
     let mut rows: Vec<Element> = Vec::new();
 
+    // 「可被方案覆盖」怎么呈现：几乎全可覆盖时统一说一次（见 `schema_hint_mode`）。
+    let hint_mode = schema_hint_mode(state, &keys);
+    if hint_mode == SchemaHintMode::Header
+        && let Some(note) = schema_hint_header_note(state, &keys)
+    {
+        rows.push(dialog_notice_row(&note));
+    }
+
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     rows.push(dialog_group_header(section));
 
@@ -1642,14 +1773,14 @@ pub fn build_scheme_config_button(
             && let Some(_dlg_item) = state.manifest.dialog_for_gate(k)
         {
             let mut tmp = section_rows(state, &[k.clone()]);
-            tmp.pop().unwrap_or_else(|| field(state, k))
+            tmp.pop().unwrap_or_else(|| field_with(state, k, hint_mode))
         } else if item.typ == "dialog_button"
             && let Some(g) = &item.gate_key
             && state.manifest.get(g).is_some()
         {
             continue;
         } else {
-            field(state, k)
+            field_with(state, k, hint_mode)
         };
         // 框内行挂锚点：搜索命中的正是这些项（「上屏行为」等四节全在框里）。
         rows.push(crate::search::anchor::wrap(
@@ -2727,6 +2858,22 @@ fn key_action_defaults_from(def: &Value, verb: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 勾选状态的版本号，供 `reactive_effect` 判变。
+///
+/// 位序即 options 序，故只在选项数 ≤ 64 时成立——引导键控件出厂 9 个符号键，清单里再加
+/// 也到不了那个量级。真超了会退化成「高位不参与判变」，表现是最后几个键勾了不生效，
+/// 故用 `debug_assert` 把它挡在开发期而不是静默截断。
+fn checked_mask(sigs: &[(String, Signal<bool>)]) -> u64 {
+    debug_assert!(
+        sigs.len() <= 64,
+        "引导键选项超过 64 个，位掩码判变会漏掉高位"
+    );
+    sigs.iter()
+        .take(64)
+        .enumerate()
+        .fold(0u64, |acc, (i, (_, s))| acc | (u64::from(s.get()) << i))
+}
+
 fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_pairs_dialog;
 
@@ -2740,10 +2887,30 @@ fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) 
         return signal(false);
     };
 
+    // 播种源 = **唯一真相源** `SchemaManagerState::key_actions`，不是 cfg。
+    //
+    // 本控件与全局「自定义按键」编辑器改的是同一张表（五c 收编后引导键的唯一落点就是
+    // `keys.key_actions`），此前两边各持一份副本、各注册一个 writer：全局那个整表覆盖，
+    // 本控件按动词切片覆盖（`retain(v != verb)` + 插回勾选项）。注册顺序上本控件在后
+    // （manifest 这批 writer 建在 `shell::build` 里，晚于 `register_schema_registrations`），
+    // 于是在全局表里删掉 `` ` `` → 临时拼音后保存，本控件那份「启动时播种、之后再没更新过」
+    // 的旧快照原样把它写回去 ⇒ diff 恒为 0 ⇒ 提示「没有变更」，而绑定确实还在。
+    //
+    // ⚠️ 守门测试 `at_most_one_writer_overwrites_key_actions_wholesale` 曾放行这三个控件：
+    // 它的哨兵是一个**不属于任何动词**的键，切片覆盖者不碰它。判据因此升级为「至多一个
+    // **覆盖式**写入者」——判据是它会不会删掉不是自己写进去的条目，与覆盖范围无关。
+    // 见 `no_slice_writer_overwrites_key_actions`。
+    //
     // 注意：cfg 可能是 AppState::empty() 的占位配置（shell::build 先于异步 fetch 完成），
-    // 此时表还是空的。writer/loader 必须**无条件注册**——否则等真实配置到达、loader 本该
+    // 此时表还是空的。loader/effect 必须**无条件注册**——否则等真实配置到达、loader 本该
     // 被 apply_loaded 调用去刷新 Signal 时，这个字段根本没登记过，永远显示/保存不出真实值。
-    let cur = key_action_keys_of(cfg, &verb);
+    let cur = if state.schema_mgr.key_actions_loaded.get() {
+        state.schema_mgr.keys_bound_to(&verb)
+    } else {
+        // 构造期那次同步 RPC 失败（离线 / 服务未就绪）时回落 cfg。它同样可能是空的，
+        // 由 loader 在真实配置到达时补齐。
+        key_action_keys_of(cfg, &verb)
+    };
     let opts = item.options.clone();
     let sigs: Vec<(String, Signal<bool>)> = opts
         .iter()
@@ -2751,31 +2918,9 @@ fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) 
         .collect();
     let visible = signal(false);
 
-    // writer：整体读出 key_actions，摘掉所有指向本动词的旧键，再写入勾选的键。
-    // 「先摘再写」——只增不减的话取消勾选毫无效果，且旧键会挡住别的模式配同一个键。
-    let sigs_w = sigs.clone();
-    let verb_w = verb.clone();
-    state
-        .fields
-        .writers
-        .borrow_mut()
-        .push(Box::new(move |c: &mut Config| {
-            let selected: Vec<String> = sigs_w
-                .iter()
-                .filter(|(_, s)| s.get())
-                .map(|(v, _)| v.clone())
-                .collect();
-            let mut map: serde_json::Map<String, Value> = c
-                .get_path(KEY_ACTIONS_PATH)
-                .and_then(|v| v.as_object())
-                .cloned()
-                .unwrap_or_default();
-            map.retain(|_, v| v.as_str() != Some(verb_w.as_str()));
-            for k in selected {
-                map.insert(k, Value::String(verb_w.clone()));
-            }
-            c.set_path(KEY_ACTIONS_PATH, Value::Object(map));
-        }));
+    // ⛔ **本控件不再注册 writer**，理由同全局编辑器（见 `build_dialog_button_key_actions`）：
+    // 它是视图，不是存储。编辑经下面的 effect 同步进 `schema_mgr.key_actions`，由那一个
+    // writer 统一落盘。
 
     // loader：注册在**清单项 key** 下（每项一个 verb，key 各不相同，互不覆盖）。
     let sigs_l = sigs.clone();
@@ -2789,6 +2934,65 @@ fn build_dialog_button_key_action(state: &AppState, item: &MItem, cfg: &Config) 
             }
         }),
     );
+
+    // ── 视图 ↔ 真相源的双向同步 ──
+    //
+    // 两个 effect 而不是一个：本控件与全局编辑器是同一份数据的两个视图，任一边改了另一边
+    // 的副本都会过期。回灌管「本控件改了要落到真相源」，播种管「别处改了本控件要看得见」。
+    // 少了后者，在全局表里删掉 `` ` `` 之后再来这里勾一个别的键，本控件那份仍勾着 `` ` ``
+    // 的旧快照就会把它带回去——与修复前同形，只是触发路径长了一步。
+    {
+        // 回灌：勾选变化 → 真相源。
+        //
+        // ★ 只摘掉**本控件列得出来的那些键**，而不是所有指向本动词的键。全局编辑器的键名
+        // 值域宽得多，用户完全可以在那边把本动词绑到 options 之外的键上（`f9` 之类）；
+        // 一律 `retain(v != verb)` 会把它静默删掉——本控件管不着的绑定不该由它裁决。
+        let owned: Vec<String> = opts.iter().map(|o| o.value.clone()).collect();
+        let sigs_e = sigs.clone();
+        let verb_e = verb.clone();
+        let mgr = state.schema_mgr.clone();
+        let dep = sigs.clone();
+        let sync = crate::pages::dict::reactive::reactive_effect(
+            move || checked_mask(&dep),
+            move || {
+                // 真相源还没成功读到过就不动它：那时它是兜底空表，回灌等于拿控件初值
+                // （全 false）去覆盖，与 `state.rs` 那个 writer 的 `loaded` 闸同一个理由。
+                if !mgr.key_actions_loaded.get() {
+                    return;
+                }
+                let mut map = mgr.key_actions.borrow_mut();
+                map.retain(|k, v| v.as_str() != verb_e.as_str() || !owned.contains(k));
+                for (k, s) in &sigs_e {
+                    if s.get() {
+                        map.insert(k.clone(), verb_e.clone());
+                    }
+                }
+            },
+        );
+        register_dialog(state, sync);
+    }
+    {
+        // 播种：对话框每次打开时从真相源重取。
+        //
+        // 挂在 `visible` 上而不是「关闭时回写」：`build_pairs_dialog` 有多条关闭路径
+        // （底栏 / ESC / 标题栏），逐个挂等于赌自己数全了——同全局编辑器那几个 effect。
+        let sigs_s = sigs.clone();
+        let verb_s = verb.clone();
+        let mgr = state.schema_mgr.clone();
+        let seed = crate::pages::dict::reactive::reactive_effect(
+            move || u64::from(visible.get()),
+            move || {
+                if !visible.get() || !mgr.key_actions_loaded.get() {
+                    return;
+                }
+                let cur = mgr.keys_bound_to(&verb_s);
+                for (k, s) in &sigs_s {
+                    s.set(cur.contains(k));
+                }
+            },
+        );
+        register_dialog(state, seed);
+    }
 
     let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
     let hint = item.hint.clone().unwrap_or_default();
@@ -3441,6 +3645,11 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
             c.set_path(&kw, Value::Object(fw.to_map()));
         }));
 
+    // 只读组：「候选操作」那四组键组——core 把它们折算进本表，且**本表显式项优先**。
+    // 不列出来的话，用户在这里配了 `tab`，外面「高亮移动按键」仍勾着 Tab，两处各说各话。
+    let foreign_src = foreign_sources(state);
+    fields.set_foreign(session_foreign_bindings(&foreign_src, cfg));
+
     // loader：外部改动（恢复默认 / 重新拉取配置）后重建行。
     let (fl, kl) = (fields.clone(), key.to_string());
     state.fields.loaders.borrow_mut().insert(
@@ -3452,6 +3661,8 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
                     .cloned()
                     .unwrap_or_default(),
             );
+            // 同全局那份：构造期拿到的多半是占位配置，四组键组全是空的。
+            fl.set_foreign(session_foreign_bindings(&foreign_src, c));
         }),
     );
 
@@ -3475,15 +3686,156 @@ fn build_dialog_button_session_actions(state: &AppState, key: &str, cfg: &Config
     visible
 }
 
+/// 「去哪儿改」的位置文案：配置路径 → `分组 › 小节`。
+///
+/// 从清单现算而不是另写一份位置表——设置项挪了分组，只读组的指路跟着变。清单里没有的
+/// 字段（如 `input.temp_pinyin.hotkey` 的直达热键项）留空：它本来也没有可去的地方。
+fn foreign_sources(state: &AppState) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (path, it) in &state.manifest.items {
+        let g = state
+            .manifest
+            .groups
+            .iter()
+            .find(|g| g.key == it.group)
+            .map(|g| g.label.as_str())
+            .unwrap_or_default();
+        if !g.is_empty() && !it.section.is_empty() {
+            out.insert(path.clone(), format!("{g} › {}", it.section));
+        }
+    }
+    out
+}
+
+/// 收集「住在专用字段里、与 `keys.key_actions` 同域」的绑定，供全局编辑器的只读组。
+///
+/// 域的边界见 `key_conflict` 那三张表：**与本表编译进同一张热键表**的才进来。
+/// `page_keys` / `select_key_groups` 那批折算进的是 `session_actions`（另一张表），
+/// 它们该出现在会话态编辑器的只读组里，不往这个对话框塞。
+fn foreign_key_bindings(sources: &HashMap<String, String>, cfg: &Config) -> Vec<ForeignBinding> {
+    use crate::dialogs::key_binding::key_display;
+    use crate::key_conflict::{
+        HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, TOGGLE_MODE_FIELD, canonical_hotkey, expand_hotkey,
+    };
+
+    let where_to = |path: &str| sources.get(path).cloned().unwrap_or_default();
+    let mut out = Vec::new();
+
+    // ── 修饰键那一组：值是**键名数组**，逐个翻再拼 ──
+    let (tm_path, tm_label) = TOGGLE_MODE_FIELD;
+    let tm: Vec<String> = cfg
+        .get_array(tm_path)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(key_display)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !tm.is_empty() {
+        out.push(ForeignBinding {
+            keys: tm.join("、"),
+            label: tm_label.to_string(),
+            source: where_to(tm_path),
+            // 比对 token 走 expand_hotkey（与上面那张表同函数），不是显示串。
+            tokens: cfg
+                .get_array(tm_path)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .flat_map(expand_hotkey)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            conflict: false,
+        });
+    }
+
+    // ── 组合键：`canonical_hotkey` 既是比较形也是显示形（`ctrl+number` → `Ctrl+数字`）──
+    //
+    // ★ 模板**不展开成 10 行**。展开是冲突检测要的（`Ctrl+1` 会与它撞），但列在这里
+    // 会让 14 行变成 32 行，把「控制列表长度」这条要求直接推翻。
+    for (path, label) in HOTKEY_FIELDS.iter().chain(MODE_HOTKEY_FIELDS) {
+        let raw = cfg.get_str(path).unwrap_or("").trim().to_string();
+        if raw.is_empty() || raw.eq_ignore_ascii_case("none") {
+            continue;
+        }
+        out.push(ForeignBinding {
+            keys: canonical_hotkey(&raw),
+            label: label.to_string(),
+            source: where_to(path),
+            // 模板在这里**展开**（`Ctrl+数字` → 十个键）：显示不展开是为了列表长度，
+            // 比对不展开则会漏掉「把置顶配成 Ctrl+1」这种撞车。两者要的东西不同。
+            tokens: expand_hotkey(&raw),
+            conflict: false,
+        });
+    }
+    out
+}
+
+/// 会话态编辑器（`keys.session_actions`）的只读组：「候选操作」那四组键组字段。
+///
+/// ★ 范围判据与全局那份同源——**与本表编译进同一张表**。这四组由 core 的
+/// `effective_session_actions` 折算进 `session_actions`，且**显式项优先**：所以撞车时
+/// 的语义不是「一方失效」而是「上面那条盖住了这一组里的那个键」，文案与颜色都按
+/// 「需注意」而非「错误」来（见 `foreign_row`）。
+///
+/// ⚠️ `[keys]` 段那批组合键热键**不进这里**：它们走 key_down 表，与本表不同域。两个
+/// 编辑器各自对称，谁也别往对方塞——判据一松，两个只读组就都会长成同一张大杂烩。
+fn session_foreign_bindings(
+    sources: &HashMap<String, String>,
+    cfg: &Config,
+) -> Vec<ForeignBinding> {
+    use crate::key_conflict::{CANDIDATE_FIELDS, candidate_group_keys, key_symbol};
+
+    let mut out = Vec::new();
+    for (path, label) in CANDIDATE_FIELDS {
+        let groups: Vec<String> = cfg
+            .get_array(path)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if groups.is_empty() {
+            continue;
+        }
+        // 显示用组符号（`minus_equal` → `- =`）：这四项在设置页本来就是按组勾选的，
+        // 逐键铺开反而对不上用户在「候选操作」那一节看到的东西。
+        let keys = groups
+            .iter()
+            .map(|g| key_symbol(g).to_string())
+            .collect::<Vec<_>>()
+            .join("、");
+        // 比对用具体键：显式表里配的是 `minus`，与组名 `minus_equal` 字面不相等。
+        let tokens: Vec<String> = groups
+            .iter()
+            .flat_map(|g| candidate_group_keys(g))
+            .map(|k| k.to_string())
+            .collect();
+        out.push(ForeignBinding {
+            keys,
+            label: label.to_string(),
+            source: sources.get(*path).cloned().unwrap_or_default(),
+            tokens,
+            conflict: false,
+        });
+    }
+    out
+}
+
 /// dialog_button（keys.key_actions）：全局按键功能表，与会话态那张同族。
 ///
 /// 复用方案级的 [`crate::dialogs::schema_key_actions::KeyActionFields`]——两处的键名值域
 /// 与行为完全一致，差别只在**动词值域**（全局多一个单向 `switch_schema:<id>`）与数据来源
 /// （裸 map vs 方案 cfg 的一个段）。再写一个编辑器就是两个长得不一样的键绑定编辑器，
 /// 正是 `capabilities.rs` 当初把本键登记进豁免清单时想避免的事。
-/// ⚠️ `_cfg` 刻意不用：播种源已改为唯一真相源 `SchemaManagerState::key_actions`（见函数体）。
-/// 参数保留是为了与同族 `build_dialog_button_*` 的签名一致（调用点按统一形态分发）。
-fn build_dialog_button_key_actions(state: &AppState, key: &str, _cfg: &Config) -> Signal<bool> {
+/// ⚠️ `cfg` **不用于播种绑定表**：那份的唯一真相源是 `SchemaManagerState::key_actions`
+/// （见函数体）。它只用来读只读组那批专用字段——那些不在 `key_actions` 里，真相源
+/// 就是配置本身。
+fn build_dialog_button_key_actions(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::schema_key_actions::KeyActionFields;
 
     let fields = KeyActionFields::default();
@@ -3518,6 +3870,11 @@ fn build_dialog_button_key_actions(state: &AppState, key: &str, _cfg: &Config) -
     // 写它的地方——否则「谁后跑谁赢」是迟早的事，而注册顺序是隐式的、没有任何东西在守。
     // 守门测试见 `no_duplicate_writer_for_key_actions`。
 
+    // 只读组：住在专用字段里、与本表同域的绑定（左右 Shift、8 个组合键功能、置顶/删词
+    // 模板…）。它们在本表里看不见，用户于是会在这里再配一个左 Shift——见 `ForeignBinding`。
+    let foreign_src = foreign_sources(state);
+    fields.set_foreign(foreign_key_bindings(&foreign_src, cfg));
+
     let (fl, kl) = (fields.clone(), key.to_string());
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
@@ -3528,6 +3885,9 @@ fn build_dialog_button_key_actions(state: &AppState, key: &str, _cfg: &Config) -
                     .cloned()
                     .unwrap_or_default(),
             );
+            // 只读组同样要跟着刷新：构造期那次拿到的多半是 `AppState::empty()` 的占位
+            // 配置，热键全是空的 ⇒ 一条都列不出来。
+            fl.set_foreign(foreign_key_bindings(&foreign_src, c));
         }),
     );
 
@@ -5045,15 +5405,28 @@ mod tests {
     /// 盖回去。真机表现：清除/重设方案切换热键后保存提示「没有变更」，重开对话框那条还在，
     /// 且 diff 恒为 0（写回 current 的正是 base 的原值）。已改为单一真相源。
     ///
-    /// # 为什么不是「一个键只能有一个 writer」
+    /// # 判据为什么从「整表覆盖」升级成「覆盖式写入」
     ///
-    /// 那条太严：引导键控件（`build_dialog_button_key_action`，单数）也写这个键，但它是
-    /// **读-改-写**——只摘掉自己动词的键再插回勾选的，保留其余。多个这样的 writer 共存是
-    /// 设计意图。危险的只有「整表覆盖」。
+    /// 上一版的原话是「多个读-改-写共存是设计意图，危险的只有整表覆盖」，并据此把三个
+    /// 引导键控件（`build_dialog_button_key_action`，单数）判为无害。**那个判定是错的**，
+    /// 2026-08-31 由用户报障推翻：在全局表里删掉 `` ` `` → 临时拼音，保存提示「没有变更」，
+    /// 绑定还在。那三个控件确实读了旧值，但接着做的是 `retain(v != verb)` ——
+    /// **按动词整段覆盖**，一样会删掉不是自己写进去的条目，只是覆盖范围小一圈。
     ///
-    /// 判据用哨兵：往表里放一个谁都不认识的键，跑一遍 writer，**被抹掉的就是整表覆盖者**。
+    /// 而本测试的哨兵是一个**不属于任何动词**的键，切片覆盖者不碰它 ⇒ 恰好被放行。
+    ///
+    /// ⇒ 判据改为：**至多一个覆盖式写入者**。判据不是「覆盖多大范围」，而是
+    /// **「它会不会删掉不是自己写进去的条目」**。两个哨兵一起下探区分得出来：
+    ///
+    /// | | 无主哨兵（`none`） | 带动词哨兵（`temp_pinyin`，键在 options 内） |
+    /// |---|---|---|
+    /// | 整表覆盖者 | 抹掉 | 抹掉 |
+    /// | 切片覆盖者 | 留着 | **抹掉** ← 差集即它 |
+    /// | 真·读-改-写 | 留着 | 留着 |
+    ///
+    /// 故断言是「两个集合相等且 ≤ 1」，不是各查各的。
     #[test]
-    fn at_most_one_writer_overwrites_key_actions_wholesale() {
+    fn at_most_one_writer_overwrites_key_actions() {
         use std::cell::RefCell;
         use std::rc::Rc;
 
@@ -5070,34 +5443,84 @@ mod tests {
         let _tabs = crate::pages::all_tabs(&app, &st);
 
         const SENTINEL: &str = "__probe_sentinel__";
+        // ⚠️ 带动词哨兵的**键必须在引导键控件的 options 里**（`slash` 是那 9 个符号键之一）。
+        // 改造后的切片 writer 只摘自己列得出来的键，用 options 之外的键当哨兵抓不到它。
+        const SENTINEL_KEY: &str = "slash";
+        const SENTINEL_VERB: &str = "temp_pinyin";
         let probe = Config::from_value(serde_json::json!({
-            "keys": { "key_actions": { SENTINEL: "none" } }
+            "keys": { "key_actions": { SENTINEL: "none", SENTINEL_KEY: SENTINEL_VERB } }
         }));
 
-        let wholesale: Vec<usize> = st
-            .fields
-            .writers
-            .borrow()
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| {
-                let mut c = probe.clone();
-                w(&mut c);
-                // 哨兵没了 = 这个 writer 不读旧值、直接整表写。
-                !c.get_object("keys.key_actions")
-                    .is_some_and(|o| o.contains_key(SENTINEL))
-            })
-            .map(|(i, _)| i)
-            .collect();
+        // 跑一个 writer，返回 (无主哨兵还在吗, 带动词哨兵还在吗)。
+        let survives = |w: &crate::state::FieldWriter| {
+            let mut c = probe.clone();
+            w(&mut c);
+            let o = c.get_object("keys.key_actions");
+            (
+                o.as_ref().is_some_and(|o| o.contains_key(SENTINEL)),
+                o.as_ref()
+                    .and_then(|o| o.get(SENTINEL_KEY))
+                    .and_then(|v| v.as_str())
+                    == Some(SENTINEL_VERB),
+            )
+        };
+        let scan = |ws: &[crate::state::FieldWriter]| -> (Vec<usize>, Vec<usize>) {
+            let (mut whole, mut any) = (vec![], vec![]);
+            for (i, w) in ws.iter().enumerate() {
+                let (free_alive, verb_alive) = survives(w);
+                if !free_alive {
+                    whole.push(i);
+                }
+                if !free_alive || !verb_alive {
+                    any.push(i);
+                }
+            }
+            (whole, any)
+        };
 
+        let (wholesale, overwriting) = scan(&st.fields.writers.borrow());
         assert!(
             wholesale.len() <= 1,
-            "有 {} 个 writer 整表覆盖 keys.key_actions（下标 {:?}）——它们会按注册顺序\
-             互相踩，后跑的那个用自己那份副本把先跑的改动盖掉。该键必须只有一个整表写入者，\
-             其余一律读-改-写或改为同步到同一真相源。",
+            "有 {} 个 writer 整表覆盖 keys.key_actions（下标 {:?}）——它们按注册顺序互相踩，\
+             后跑的那个用自己那份副本把先跑的改动盖掉。该键必须只有一个整表写入者。",
             wholesale.len(),
             wholesale
         );
+        assert_eq!(
+            overwriting,
+            wholesale,
+            "下标 {:?} 的 writer 抹掉了带动词的哨兵却留下无主哨兵 = **切片覆盖者**\
+             （多半是 `retain(v != verb)` 那种「先摘自己的动词再插回勾选项」的写法）。\
+             它与整表写入者按注册顺序互相踩，后跑的赢，表现是「在另一个入口删掉的绑定\
+             保存时被写回、提示没有变更」。改为同步到 `SchemaManagerState::key_actions`\
+             这一个真相源，由那一个 writer 落盘。",
+            overwriting
+                .iter()
+                .filter(|i| !wholesale.contains(i))
+                .collect::<Vec<_>>()
+        );
+
+        // 反事实自检：本测试若恒真就毫无价值（上一版正是在这里漏掉了三个 writer）。
+        // 造一个切片覆盖者推进去，断言这次**检得出来**。
+        {
+            let mut ws: Vec<crate::state::FieldWriter> = Vec::new();
+            ws.push(Box::new(|c: &mut Config| {
+                let mut map: serde_json::Map<String, Value> = c
+                    .get_path(KEY_ACTIONS_PATH)
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                map.retain(|_, v| v.as_str() != Some(SENTINEL_VERB));
+                c.set_path(KEY_ACTIONS_PATH, Value::Object(map));
+            }));
+            let (whole, over) = scan(&ws);
+            assert!(whole.is_empty(), "切片覆盖者不该被无主哨兵检出");
+            assert_eq!(
+                over,
+                vec![0],
+                "带动词哨兵必须检出切片覆盖者，否则本测试恒真"
+            );
+        }
     }
 
     /// ★★ 端到端回归：方案对话框删掉的热键，跑完**全部** writer 后不得复活。
@@ -5161,6 +5584,249 @@ mod tests {
             "被删的方案热键在跑完 writer 后复活了 ⇒ 又有 writer 拿旧副本整表覆盖。\
              最终表: {:?}",
             probe.get_object("keys.key_actions")
+        );
+    }
+
+    /// ★★ 端到端回归（同族第二例）：在**全局按键表**里删掉的引导键，跑完全部 writer 不得复活。
+    ///
+    /// 与上一条同形，换成用户 2026-08-31 报的那个入口：
+    /// 1. 设置页启动，临拼触发键控件按当时的表播种（勾着 `` ` ``）；
+    /// 2. 用户在全局「自定义按键」里删掉 `` ` `` → 临时拼音，effect 同步进真相源；
+    /// 3. 点保存 ⇒ 跑全部 writer。
+    ///
+    /// 修复前第 3 步会被临拼控件那份 `retain(v != "temp_pinyin")` + 插回勾选项的**切片
+    /// 覆盖** writer 把 `` ` `` 写回去，diff 恒为 0 ⇒「没有变更」，而绑定确实还在。
+    ///
+    /// ⚠️ 这条与 [`Self::at_most_one_writer_overwrites_key_actions`] 不重复：那条守的是
+    /// 「有没有第二个覆盖式写入者」的结构不变量，这条守的是**用户那条路径的实际结果**。
+    /// 结构测试再严，也答不出「按这个顺序走一遍，最后表里还剩什么」。
+    #[test]
+    fn global_table_deletion_of_trigger_key_survives_all_writers() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+        let st = app.borrow();
+
+        // ① 启动态：临拼绑在反引号上（物化后的出厂形态），快捷输入绑在分号上。
+        {
+            let mut ka = st.schema_mgr.key_actions.borrow_mut();
+            ka.clear();
+            ka.insert("backtick".into(), "temp_pinyin".into());
+            ka.insert("semicolon".into(), "mix:quick_mix".into());
+        }
+        st.schema_mgr.key_actions_loaded.set(true);
+
+        // 建设置树：三个引导键控件在此按①播种（临拼那个勾着 backtick）。
+        st.fields.reset();
+        crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+        let _tabs = crate::pages::all_tabs(&app, &st);
+
+        // ② 用户在全局表里删掉那条——全局编辑器的 effect 已把结果落到唯一真相源。
+        st.schema_mgr
+            .key_actions
+            .borrow_mut()
+            .retain(|k, _| k != "backtick");
+
+        // ③ 保存：跑全部 writer。
+        let mut probe = Config::from_value(serde_json::json!({
+            "keys": { "key_actions": {
+                "backtick": "temp_pinyin",
+                "semicolon": "mix:quick_mix",
+            } }
+        }));
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+
+        let final_map = probe.get_object("keys.key_actions");
+        assert!(
+            !final_map
+                .as_ref()
+                .is_some_and(|o| o.contains_key("backtick")),
+            "在全局表里删掉的临拼触发键复活了 ⇒ 仍有控件拿自己那份勾选快照做切片覆盖。\
+             最终表: {final_map:?}"
+        );
+        // 反向对照：没被删的那条必须还在。少了它，把 writer 全删光也能让上面那条绿。
+        assert_eq!(
+            final_map
+                .as_ref()
+                .and_then(|o| o.get("semicolon"))
+                .and_then(|v| v.as_str()),
+            Some("mix:quick_mix"),
+            "未受影响的绑定被一起抹掉了"
+        );
+    }
+
+    /// 只读组：同域的专用字段都要列出来，未设置的不列，**模板不展开**。
+    #[test]
+    fn foreign_bindings_list_same_domain_fields_only() {
+        let cfg = Config::from_value(serde_json::json!({
+            "keys": {
+                "toggle_mode_keys": ["lshift", "rshift"],
+                "switch_engine": "ctrl+shift+e",
+                "pin_candidate": "ctrl+number",
+                // 下面两条是「未设置」的两种写法，都不该占一行——列出来等于告诉用户
+                // 这个键被占了，而它根本没绑。
+                "toggle_punct": "none",
+                "open_settings": "",
+                // 会话态那张表的来源：**不属于本域**，混进来会让人以为能在这里改。
+                "page_keys": ["pageupdown", "minus_equal"],
+            }
+        }));
+        let rows = foreign_key_bindings(&HashMap::new(), &cfg);
+        let keys: Vec<&str> = rows.iter().map(|r| r.keys.as_str()).collect();
+
+        assert!(
+            keys.contains(&"左 Shift、右 Shift"),
+            "中英切换那组没列出来——它正是用户「在全局表里看不见、于是又配一个左 Shift」\
+             的那一条。实际: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"Ctrl+Shift+E"),
+            "组合键字段漏了。实际: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"Ctrl+数字"),
+            "置顶模板应按字段占一行。实际: {keys:?}"
+        );
+        assert!(
+            !keys.iter().any(|k| k.starts_with("Ctrl+1")),
+            "模板被展开成 10 行了——14 行会变成 32 行，「控制列表长度」这条要求就废了"
+        );
+        assert_eq!(
+            rows.len(),
+            3,
+            "未设置的字段（none / 空串）或会话态键组混进来了。实际: {keys:?}"
+        );
+    }
+
+    /// 会话态只读组：候选操作四组，显示按组、比对按具体键。
+    #[test]
+    fn session_foreign_bindings_show_groups_but_compare_keys() {
+        let cfg = Config::from_value(serde_json::json!({
+            "keys": {
+                "select_key_groups": ["semicolon_quote"],
+                "page_keys": ["pageupdown", "minus_equal"],
+                "highlight_keys": ["arrows", "tab"],
+                // 出厂为空 ⇒ 不占一行（列出来等于说这个功能占了键，而它没有）。
+                "select_char_keys": [],
+                // 组合键那批属于**另一张表**，不该混进来。
+                "switch_engine": "ctrl+shift+e",
+                "toggle_mode_keys": ["lshift"],
+            }
+        }));
+        let rows = session_foreign_bindings(&HashMap::new(), &cfg);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["次选/三选键", "翻页键", "高亮移动键"],
+            "范围错了：只该收「候选操作」那四组里已设置的，组合键/中英切换属另一张表"
+        );
+
+        let page = &rows[1];
+        assert_eq!(page.keys, "PageUp/PageDown、- =", "显示应按组，不逐键铺开");
+        // 比对要的是具体键——显式表里配的是 `minus`，与组名 `minus_equal` 字面不相等。
+        for k in ["pageup", "pagedown", "minus", "equal"] {
+            assert!(
+                page.tokens.iter().any(|t| t == k),
+                "翻页组的比对 token 缺 {k:?}，用户在上面配了它也标不出橙色。实际: {:?}",
+                page.tokens
+            );
+        }
+        assert!(
+            !page.tokens.iter().any(|t| t == "minus_equal"),
+            "组名混进了比对 token —— 它永远匹配不上任何显式键，等于这一组恒不标橙"
+        );
+        // 高亮那组的 tab 展开成 tab + shift+tab（core 的 highlight_key_group_binds）。
+        assert!(
+            rows[2].tokens.iter().any(|t| t == "shift+tab"),
+            "高亮组漏了 shift+tab。实际: {:?}",
+            rows[2].tokens
+        );
+    }
+
+    /// ★★ 锁住四个「全局方案配置」对话框各落在哪种角标模式。
+    ///
+    /// 判据是现算的（`schema_hint_mode`），好处是 core 增删可覆盖项时界面自动适配，
+    /// 代价是**行为会随数据翻转**——某天跨过阈值，一个对话框从「十几个角标」变成
+    /// 「一句说明」，没人会注意到。本测试就是那个通知：它红的时候正是该人看一眼的时候。
+    ///
+    /// 实测比例（2026-08-31）：码表 18/20、混输 0/9、拼音 2/14、英文 0/8。差别这么大，
+    /// 所以既不能一刀切、也不能按对话框硬编码。
+    #[test]
+    fn scheme_config_dialogs_pick_expected_hint_mode() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = crate::state::AppState::empty();
+        let keys_of = |sec: &str| -> Vec<String> {
+            st.manifest
+                .sections_of("schema")
+                .into_iter()
+                .find(|(s, _)| s == sec)
+                .map(|(_, k)| k)
+                .unwrap_or_default()
+        };
+        for (sec, want, why) in [
+            (
+                "上屏行为",
+                SchemaHintMode::Header,
+                "码表 18/20 可覆盖——逐行角标每行都有，等于每行都没有",
+            ),
+            ("混输行为", SchemaHintMode::PerRow, "0 项可覆盖，无标可加"),
+            (
+                "候选行为",
+                SchemaHintMode::PerRow,
+                "拼音 2/14——这时角标标的是例外，有信息量",
+            ),
+            ("英文行为", SchemaHintMode::PerRow, "0 项可覆盖"),
+        ] {
+            let keys = keys_of(sec);
+            assert!(!keys.is_empty(), "section {sec:?} 在清单里没了");
+            assert_eq!(
+                schema_hint_mode(&st, &keys),
+                want,
+                "{sec} 的角标模式变了（{why}）。core 增删了可覆盖项跨过阈值 ⇒ 去看一眼                 那个对话框现在长什么样，确认新模式合适再改本断言"
+            );
+        }
+        // Header 模式必须取得到统一说明文案，否则那一组既没角标也没说明 = 信息凭空消失。
+        let note = schema_hint_header_note(&st, &keys_of("上屏行为"));
+        assert!(
+            note.as_deref().is_some_and(|n| n.contains("覆盖")),
+            "Header 模式取不到 note：{note:?}"
+        );
+    }
+
+    /// 只读组的「去哪儿改」从清单现算，不另写一份位置表。
+    ///
+    /// 守的是「设置项挪了分组，指路还指向老地方」——那种错不会报任何异常，用户按提示
+    /// 翻过去找不到，只会以为自己看漏了。
+    #[test]
+    fn foreign_binding_source_comes_from_manifest() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let st = crate::state::AppState::empty();
+        let src = foreign_sources(&st);
+        let cfg = Config::from_value(serde_json::json!({
+            "keys": { "toggle_mode_keys": ["lshift"] }
+        }));
+        let rows = foreign_key_bindings(&src, &cfg);
+        let row = rows.first().expect("中英切换那行应存在");
+        assert!(
+            row.source.contains('›'),
+            "指路文案应是「分组 › 小节」，实际 {:?}——查不到位置说明 \
+             `keys.toggle_mode_keys` 不在清单里了，那时整条指路会静默变成空白",
+            row.source
         );
     }
 }

@@ -193,6 +193,12 @@ pub struct AppState {
     pub capabilities: Capabilities,
     /// 系统信息（system.info）。
     pub system_info: Value,
+    /// 配置降级提示文案（顶栏）；空串 = 本次加载没有降级，横幅不显示。
+    ///
+    /// 来自 `config.degradation`。降级 = 某一段配置解析失败、已整段回落出厂默认，
+    /// 用户写在配置文件里的那一段**没有生效**——而他在界面上只会看到「我的设置怎么
+    /// 变回默认了」，唯一的线索此前只在日志文件里。见 [`crate::pages::degradation_bar`]。
+    pub degradation: Signal<String>,
     /// 定制版徽章文案（关于页）；空串 = 非定制版，徽章整个不显示。
     ///
     /// ★ **必须是 Signal，不能让关于页直接读 `system_info`。** 页面树由 `shell::build`
@@ -331,6 +337,14 @@ pub struct AppState {
     pub theme_delete_msg: Signal<String>,
     /// 删除确认对话框可见标志。
     pub theme_delete_visible: Signal<bool>,
+    /// 待覆盖导入的主题 TOML 全文：导入撞上同名主题时暂存于此，用户确认后以 `force=true` 重推。
+    /// 存全文而不是只记来源等确认后再取一次——URL 导入重下要多一次网络往返，且拿到的可能
+    /// 已不是用户刚才确认过的那一份。
+    pub theme_overwrite_text: Signal<String>,
+    /// 覆盖确认对话框正文（含主题名）。
+    pub theme_overwrite_msg: Signal<String>,
+    /// 覆盖确认对话框可见标志。
+    pub theme_overwrite_visible: Signal<bool>,
     /// 候选窗字体下拉的响应式选项（system.fonts）。
     /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
     pub font_sig: Signal<Vec<String>>,
@@ -536,6 +550,7 @@ impl AppState {
             manifest: Manifest::from_embedded(),
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
+            degradation: signal(String::new()),
             custom_edition: signal(String::new()),
             schemas: vec![],
             theme_entries: vec![],
@@ -588,6 +603,9 @@ impl AppState {
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
             theme_delete_visible: signal(false),
+            theme_overwrite_text: signal(String::new()),
+            theme_overwrite_msg: signal(String::new()),
+            theme_overwrite_visible: signal(false),
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
             codetable_schema_val_sig: signal(vec![]),
@@ -1345,6 +1363,44 @@ impl AppState {
         self.theme_delete_id.set(String::new());
     }
 
+    /// 导入撞上同名主题：暂存原文并弹覆盖确认框。
+    ///
+    /// 静态方法（收 Signal 句柄而非 `&self`）：两个导入入口都在闭包里触发，其中本地文件
+    /// 导入的回调只拿得到 Signal，借不到 `AppState`——它的 `&mut` 借用在确认按钮那侧。
+    pub fn ask_overwrite_theme(
+        text_sig: Signal<String>,
+        msg_sig: Signal<String>,
+        visible: Signal<bool>,
+        toml: String,
+        conflict_msg: &str,
+    ) {
+        text_sig.set(toml);
+        msg_sig.set(format!(
+            "{conflict_msg}。覆盖会用新文件替换原主题，原内容不可恢复。确定覆盖？"
+        ));
+        visible.set(true);
+    }
+
+    /// 执行覆盖导入（覆盖确认框「覆盖」按钮触发）：以 `force=true` 重推暂存的原文。
+    ///
+    /// slug 传 None，与首次导入那次尝试一致——core 会同样按 `meta.name` 推出目录 id，
+    /// 也就是刚刚判定冲突的那个 id；显式传别的 slug 反而可能覆盖到另一个主题上。
+    pub fn confirm_overwrite_theme(&mut self) {
+        self.theme_overwrite_visible.set(false);
+        let text = self.theme_overwrite_text.get();
+        if text.is_empty() {
+            return;
+        }
+        match crate::theme_import::import_text(&text, true, None) {
+            Ok(result) => {
+                self.refresh_theme_names();
+                self.notify_ok(format!("已覆盖主题：{}", result.display_name));
+            }
+            Err(e) => self.notify_err(e.user_message()),
+        }
+        self.theme_overwrite_text.set(String::new());
+    }
+
     fn sync_theme_import_display_signals(
         url: Signal<String>,
         name: Signal<String>,
@@ -1528,6 +1584,8 @@ impl AppState {
         self.current_config = cfg;
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
+        // 降级顶栏。与下面的定制版徽章同理，页面树早已建好，只能靠 Signal 送进去。
+        self.degradation.set(degradation_text(&data.degradation));
         // 关于页的定制版徽章：页面树早已建好，只能靠 Signal 送进去（见字段注释）。
         self.custom_edition
             .set(crate::pages::custom_edition_badge(&self.system_info).unwrap_or_default());
@@ -2016,22 +2074,11 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<KeyGroup> {
 /// 2、3 两类此前**完全没有参与检测**：把某方案的直达热键配成 `Ctrl+Shift+E`（= 切换方案的
 /// 出厂值）在对话框里是点得出来的，配完毫无提示、按下去也只有一个生效。
 fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
-    use crate::key_conflict::expand_hotkey;
+    // 字段表提到了 `key_conflict`：全局按键编辑器的只读组要认同一批字段，两处各抄一份
+    // 的话，加一个热键字段只改一处的表现是「冲突检测报得出、列表里查无此项」。
+    use crate::key_conflict::{HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, expand_hotkey};
 
-    const HOTKEYS: &[(&str, &str)] = &[
-        ("keys.switch_engine", "切换输入方案"),
-        ("keys.toggle_full_width", "切换全角/半角"),
-        ("keys.toggle_punct", "切换中/英文标点"),
-        ("keys.toggle_s2t", "切换简入繁出"),
-        ("keys.toggle_toolbar", "显示/隐藏工具栏"),
-        ("keys.open_settings", "打开设置"),
-        ("keys.add_word", "快捷加词"),
-        ("keys.open_add_word_dialog", "打开加词界面"),
-        ("keys.activate_ime", "切换到本输入法"),
-        ("keys.pin_candidate", "置顶词条"),
-        ("keys.delete_candidate", "删除词条"),
-    ];
-    let mut groups: Vec<KeyGroup> = HOTKEYS
+    let mut groups: Vec<KeyGroup> = HOTKEY_FIELDS
         .iter()
         .map(|(key, label)| {
             KeyGroup::new(key, *label, expand_hotkey(cfg.get_str(key).unwrap_or("")))
@@ -2041,11 +2088,13 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
     // 方案直达热键**不再单独收集**：`keys.schema_hotkeys` 已并入 key_actions
     // （动词 `switch_schema:<方案id>`），由下面那段统一纳入检测。core 折算后该表恒为空，
     // 留着这段只会是永不执行的死代码。
-    groups.push(KeyGroup::new(
-        "temp_pinyin_hotkey",
-        "临时拼音直达热键",
-        expand_hotkey(cfg.get_str("input.temp_pinyin.hotkey").unwrap_or("")),
-    ));
+    for (key, label) in MODE_HOTKEY_FIELDS {
+        groups.push(KeyGroup::new(
+            key,
+            *label,
+            expand_hotkey(cfg.get_str(key).unwrap_or("")),
+        ));
+    }
 
     // `keys.key_actions` 里的**组合键**条目：与上面 11 项、schema_hotkeys 在内核是同一张
     // key_down 表（见本函数文档的判据），必须同域比较。
@@ -2115,6 +2164,12 @@ fn key_action_label(verb: &str) -> String {
 pub struct LoadedState {
     pub config_value: Value,
     pub system_info: Value,
+    /// `config.degradation` 的原始回包 `{degraded, sections, totalFallback}`。
+    ///
+    /// ⚠️ 它**现读盘现算**（core 侧每次调用跑一次 `Config::load`），语义是「此刻盘上的
+    /// 配置试加载一遍会不会降级」，不是「正在跑的那份降没降级」。所以用户把配置改好后
+    /// 点「重新加载」，横幅会自己消失——这正是选它的理由。
+    pub degradation: Value,
     pub capabilities_value: Value,
     pub schemas: Vec<SchemaInfo>,
     pub theme_entries: Vec<ThemeEntry>,
@@ -2132,9 +2187,13 @@ impl LoadedState {
     pub fn fetch() -> Self {
         let t0 = std::time::Instant::now();
 
-        // 6 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
+        // 7 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
         let h_config = std::thread::spawn(|| rpc::call_core("config.get", &serde_json::json!({})));
         let h_info = std::thread::spawn(|| rpc::call_core("system.info", &serde_json::json!({})));
+        // 并行拉取 ⇒ 零额外往返（wall-clock 仍是 max(各调用延迟)）。它在 core 侧要读盘，
+        // 故不并进 system.info——那个方法当前不碰磁盘，见 dispatch.rs 里的理由。
+        let h_degr =
+            std::thread::spawn(|| rpc::call_core("config.degradation", &serde_json::json!({})));
         let h_caps =
             std::thread::spawn(|| rpc::call_core("system.capabilities", &serde_json::json!({})));
         let h_schemas = std::thread::spawn(load_schemas);
@@ -2143,6 +2202,13 @@ impl LoadedState {
 
         let config_res = h_config.join().ok().and_then(|r| r.ok());
         let system_info = h_info
+            .join()
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_else(Self::empty_obj);
+        // 取不到（老 core / 连接失败）⇒ 空对象 ⇒ 折算出空文案 ⇒ 横幅不显示。
+        // 这是对的：拿不到答案时不该吓唬用户说他的配置坏了。
+        let degradation = h_degr
             .join()
             .ok()
             .and_then(|r| r.ok())
@@ -2165,6 +2231,7 @@ impl LoadedState {
         Self {
             config_value,
             system_info,
+            degradation,
             capabilities_value,
             schemas,
             theme_entries,
@@ -2172,6 +2239,76 @@ impl LoadedState {
             connected,
         }
     }
+}
+
+/// 把 `config.degradation` 的回包折成顶栏文案；未降级（或取不到）返回空串。
+///
+/// 段名**原样列出点分路径**（`keys.key_actions` 而不是「按键设置」）：用户拿着这一行
+/// 要去配置文件里找那一段，译成界面用语反而对不上。降级粒度能细到子表，那份精度是
+/// core 侧刻意保留的（见 `config.degradation` 的注释），这里不该再截成顶层段名。
+pub(crate) fn degradation_text(v: &Value) -> String {
+    if !v.get("degraded").and_then(Value::as_bool).unwrap_or(false) {
+        return String::new();
+    }
+    // ★ 语法故障**优先**于段级降级来讲，两条都成立时只讲这一条。
+    //
+    // 它们是两类不同的故障，修法也不同：段级降级是「某个键的类型不对」，去改那个键；
+    // 语法故障是「文件根本读不完」，去改那一行。混在一起讲会把用户支使到错误的地方，
+    // 而且语法故障更靠前——文件读不完时，后面所有判断都建立在一份残缺内容上。
+    if let Some(u) = v
+        .get("unparsable")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+    {
+        let path = u.get("path").and_then(Value::as_str).unwrap_or("配置文件");
+        let lines: Vec<String> = u
+            .get("skippedLines")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_u64)
+                    .map(|n| n.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // 行号是用户唯一能直接下手的线索——「配置有语法错误」他无从找起，
+        // 「第 6 行」可以直接跳过去。没有行号时才退回笼统说法。
+        return if lines.is_empty() {
+            format!(
+                "⚠ 配置文件语法错误，本次未能加载，你的设置都没有生效：{path}\n\
+                 修好语法后点右下角「重新加载」。原文件不会被覆盖。"
+            )
+        } else {
+            format!(
+                "⚠ 配置文件第 {} 行语法错误，该行的设置本次没有生效：{path}\n\
+                 其余设置已正常加载。修好后点右下角「重新加载」。原文件不会被覆盖。",
+                lines.join("、")
+            )
+        };
+    }
+    if v.get("totalFallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return "⚠ 配置文件整体解析失败，本次全部回落出厂默认值——你的设置本次都没有生效。\
+                请检查配置文件的语法，修好后点右下角「重新加载」。"
+            .into();
+    }
+    let sections: Vec<&str> = v
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if sections.is_empty() {
+        // degraded 为真却没有段名：core 的两个字段本该互斥，走到这里说明契约变了。
+        // 仍要出提示——「有问题但说不清哪一段」也比一声不吭强。
+        return "⚠ 部分配置本次未生效，已回落出厂默认值。详见日志。".into();
+    }
+    format!(
+        "⚠ 配置的 {} 段解析失败，已整段回落出厂默认值——你在这一段的设置本次没有生效。\
+         修好配置文件后点右下角「重新加载」。",
+        sections.join(" / ")
+    )
 }
 
 /// 词库页数据域下拉的方案排序（三段式，仅供词库页；不影响主码表/主拼音下拉与方案管理列表）：
@@ -2865,6 +3002,63 @@ mod tests {
         assert!(!st.theme_import_dialog_visible.get());
     }
 
+    /// 撞上同名主题 ⇒ 暂存原文 + 弹覆盖确认（而不是只报一条「已存在」）。
+    #[test]
+    fn ask_overwrite_theme_stashes_source_and_opens_dialog() {
+        let st = AppState::empty();
+        assert!(!st.theme_overwrite_visible.get(), "初始不该弹覆盖确认");
+
+        AppState::ask_overwrite_theme(
+            st.theme_overwrite_text,
+            st.theme_overwrite_msg,
+            st.theme_overwrite_visible,
+            "[meta]\nname = \"测试主题\"\n".to_string(),
+            "主题「测试主题」已存在",
+        );
+
+        assert!(st.theme_overwrite_visible.get());
+        // 暂存的是**原文**：确认后直接 force 重推，不重新下载/读盘。
+        assert!(st.theme_overwrite_text.get().contains("测试主题"));
+        let msg = st.theme_overwrite_msg.get();
+        assert!(msg.contains("测试主题"), "正文要点名是哪个主题，实际={msg}");
+        assert!(
+            msg.contains("覆盖"),
+            "正文要说清确认后会发生什么，实际={msg}"
+        );
+    }
+
+    /// 确认覆盖 ⇒ 以 force=true 重推暂存原文，收框并清暂存。
+    #[test]
+    fn confirm_overwrite_theme_force_pushes_and_clears_stash() {
+        // into_inner: 别的测试 panic 毒化了锁时仍继续，避免一处失败连锁放大
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let mut st = AppState::empty();
+        // 哨兵：mock 对 force=false 回冲突、force=true 回成功。暂存的这份仍带哨兵，
+        // 因此这条断言同时证明了重推用的是 force=true——否则 mock 会再回一次冲突。
+        AppState::ask_overwrite_theme(
+            st.theme_overwrite_text,
+            st.theme_overwrite_msg,
+            st.theme_overwrite_visible,
+            "[meta]\nname = \"MOCK_EXISTING\"\n".to_string(),
+            "主题「测试主题」已存在",
+        );
+        st.confirm_overwrite_theme();
+
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(!st.theme_overwrite_visible.get(), "确认后应收起对话框");
+        assert_eq!(st.theme_overwrite_text.get(), "", "确认后应清掉暂存原文");
+        let (kind, msg) = st.feedback.get().expect("应有一条结果反馈");
+        assert!(
+            matches!(kind, ToastKind::Success),
+            "force 重推应成功，实际={msg}"
+        );
+        assert!(msg.contains("测试主题"), "反馈要点名主题，实际={msg}");
+    }
+
     #[test]
     fn theme_import_display_is_derived_from_pending_state() {
         let st = AppState::empty();
@@ -3269,6 +3463,7 @@ mod tests {
         let data = LoadedState {
             config_value: Value::Object(Default::default()),
             system_info: Value::Object(Default::default()),
+            degradation: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![],
             theme_entries: vec![],
@@ -3300,6 +3495,7 @@ mod tests {
         let data = LoadedState {
             config_value: Value::Object(Default::default()),
             system_info: Value::Object(Default::default()),
+            degradation: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![SchemaInfo {
                 id: "wb".into(),
@@ -3325,6 +3521,89 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 未降级、或根本拿不到回包时**不出横幅**。
+    ///
+    /// 后者尤其要紧：老 core 没有 `config.degradation` 方法、或连接失败时回包是空对象，
+    /// 此时吓唬用户说他的配置坏了是最糟的——那条提示会让人去改一个本来没问题的文件。
+    #[test]
+    fn degradation_text_is_empty_when_healthy_or_unknown() {
+        assert_eq!(degradation_text(&serde_json::json!({})), "");
+        assert_eq!(
+            degradation_text(&serde_json::json!({ "degraded": false, "sections": [] })),
+            ""
+        );
+    }
+
+    #[test]
+    fn degradation_text_lists_sections_verbatim() {
+        let t = degradation_text(&serde_json::json!({
+            "degraded": true,
+            "totalFallback": false,
+            "sections": ["keys.key_actions", "ui.font"],
+        }));
+        // 点分路径原样列出：用户拿着这一行要去配置文件里找那一段，译成界面用语就对不上了。
+        // 子表粒度（`ui.font` 而不是 `ui`）是 core 刻意保留的精度，这里不该截成顶层段名。
+        assert!(t.contains("keys.key_actions"), "段名必须原样出现：{t}");
+        assert!(t.contains("ui.font"), "子表粒度不能被截成顶层段名：{t}");
+        assert!(
+            t.contains("没有生效"),
+            "必须说清后果，而不只是说「解析失败」：{t}"
+        );
+    }
+
+    #[test]
+    fn degradation_text_handles_total_fallback_and_empty_sections() {
+        let total = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": true, "sections": [],
+        }));
+        assert!(total.contains("整体"), "整份回落要说清是整份：{total}");
+        // degraded 为真却没给段名：契约本该互斥，走到这里说明 core 变了。
+        // 仍要出提示——「有问题但说不清哪一段」也比一声不吭强。
+        let odd = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+        }));
+        assert!(!odd.is_empty(), "说不清哪一段也不能一声不吭");
+    }
+
+    /// ★ 语法故障要盖过段级降级来讲，并且必须带上行号。
+    ///
+    /// 两者修法不同（改那一行 vs 改那个键的类型），合成一句会把用户支使到错误的地方；
+    /// 而「配置有语法错误」这种说法用户无从下手，行号是他唯一能直接用的线索。
+    #[test]
+    fn degradation_text_prefers_syntax_error_and_names_the_line() {
+        let t = degradation_text(&serde_json::json!({
+            "degraded": true,
+            "totalFallback": false,
+            // 刻意同时给出段级降级：语法故障必须赢。
+            "sections": ["ui.font"],
+            "unparsable": [{
+                "layer": "user",
+                "path": "C:\\Users\\me\\AppData\\Roaming\\WindInput\\config.toml",
+                "error": "duplicate key `per_page`",
+                "skippedLines": [6, 12],
+                "salvagedKeys": 3,
+            }],
+        }));
+        assert!(t.contains('6') && t.contains("12"), "行号必须出现：{t}");
+        assert!(t.contains("config.toml"), "要说清是哪个文件：{t}");
+        assert!(
+            !t.contains("ui.font"),
+            "语法故障成立时不该再讲段级降级——修法不同，混讲会误导：{t}"
+        );
+        assert!(
+            t.contains("不会被覆盖"),
+            "用户最担心的是配置被改坏，这句必须在：{t}"
+        );
+
+        // 一行都没救回来时退回笼统说法，但仍要给出文件名。
+        let none = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+            "unparsable": [{ "path": "x/config.toml", "skippedLines": [] }],
+        }));
+        assert!(none.contains("x/config.toml"), "{none}");
+        assert!(none.contains("都没有生效"), "{none}");
+    }
+
     #[test]
     fn mock_disconnect_does_not_block() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -3333,6 +3612,7 @@ mod tests {
         let data = LoadedState {
             config_value: Value::Object(Default::default()),
             system_info: Value::Object(Default::default()),
+            degradation: Value::Object(Default::default()),
             capabilities_value: Value::Object(Default::default()),
             schemas: vec![],
             theme_entries: vec![],

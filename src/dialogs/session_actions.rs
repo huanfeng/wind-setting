@@ -30,7 +30,11 @@ use std::rc::Rc;
 use serde_json::{Map, Value};
 use windui::prelude::*;
 
-use super::key_binding::{Binding, BindingBody, BindingTable, KeyPicker, binding_row};
+use std::cell::RefCell;
+
+use super::key_binding::{
+    Binding, BindingBody, BindingTable, ForeignBinding, KeyPicker, binding_row,
+};
 
 /// 会话态按键表的工作态。
 #[derive(Clone)]
@@ -38,6 +42,20 @@ pub struct SessionActionFields {
     rows: Signal<Vec<Binding>>,
     next_id: Rc<Cell<u64>>,
     picker: KeyPicker,
+    /// 只读组：折算进本表的「候选操作」四组键组（`keys.page_keys` 那批）。
+    ///
+    /// 与引导键那张表的只读组是同一套件（[`ForeignBinding`]），但**范围不同**：那边收的是
+    /// 与 key_down 热键表同域的字段，这边收的是折算进 `session_actions` 的键组。判据都是
+    /// 「与本表编译进同一张表」，只是本表是另一张。
+    ///
+    /// ⚠️ 撞车语义也不同：那边是「一方静默失效」，这边 core 明确规定**显式项优先**
+    /// ——上面配了 `tab`，`highlight_keys` 里的 tab 那半边就不生效。橙色标的是这个。
+    foreign_all: Rc<RefCell<Vec<ForeignBinding>>>,
+    foreign_shown: Signal<Vec<ForeignBinding>>,
+    foreign_open: Signal<bool>,
+    foreign_count: Signal<String>,
+    foreign_version: Rc<Cell<u64>>,
+    foreign_enabled: Rc<Cell<bool>>,
 }
 
 impl Default for SessionActionFields {
@@ -46,6 +64,12 @@ impl Default for SessionActionFields {
             rows: signal(Vec::new()),
             next_id: Rc::new(Cell::new(1)),
             picker: KeyPicker::new(BindingTable::Session),
+            foreign_all: Rc::new(RefCell::new(Vec::new())),
+            foreign_shown: signal(Vec::new()),
+            foreign_open: signal(false),
+            foreign_count: signal(String::new()),
+            foreign_version: Rc::new(Cell::new(0)),
+            foreign_enabled: Rc::new(Cell::new(false)),
         };
         me.wire_picker();
         me
@@ -152,6 +176,29 @@ impl SessionActionFields {
     ///
     /// 列表用 `host_signal` 而非 `list_signal`：外壳本身已是固定高的滚动区，内嵌第二层
     /// 滚动会让两层打架（列表滚不动、高度撑不满）。判据是「父容器是否已在滚动」。
+    /// 注入只读组的内容（「候选操作」四组）。可重复调用——loader 在配置到达时再注入一遍。
+    pub fn set_foreign(&self, items: Vec<ForeignBinding>) {
+        self.foreign_enabled.set(true);
+        *self.foreign_all.borrow_mut() = items;
+        self.foreign_version.set(self.foreign_version.get() + 1);
+    }
+
+    /// 上面那张表当前占用的键（小写规范名）。供只读组标橙。
+    ///
+    /// 不做归一化展开：本表的键名值域就是 core 的 `session_key_name_to_vk` 那批规范名，
+    /// 与 `candidate_group_keys` 产出的是同一批字面量，直接比即可。
+    ///
+    /// ⚠️ 手写配置里的**别名**（`pgup` / `caps`）比不上，表现是少标一个橙色。选择器不产
+    /// 别名（`session_base_keys` 刻意不列），故只影响手改过配置文件的用户；为此在设置页
+    /// 再写一份别名表，代价大于收益。
+    fn used_tokens(&self) -> std::collections::HashSet<String> {
+        self.rows
+            .get()
+            .iter()
+            .map(|r| r.key.trim().to_ascii_lowercase())
+            .collect()
+    }
+
     pub fn build_body(&self) -> BindingBody {
         let rows_sig = self.rows;
         let picker = self.picker.clone();
@@ -211,6 +258,22 @@ impl SessionActionFields {
                     .max_lines(2),
             )
             .child(list);
+        // 只读组排在自定义条目之后、默认折叠：理由同引导键那张表（用户来这里九成是找
+        // 自己配的那几条）。上面那句「这里配的键优先于外面四项」正是橙色的语义说明。
+        let content = if self.foreign_enabled.get() {
+            let (me_tok, me_ver) = (self.clone(), self.clone());
+            let fv = self.foreign_version.clone();
+            content.child(super::key_binding::foreign_section(
+                self.foreign_all.clone(),
+                self.foreign_shown,
+                self.foreign_open,
+                self.foreign_count,
+                Rc::new(move || me_tok.used_tokens()),
+                Rc::new(move || (me_ver.rows.version() << 20) | fv.get()),
+            ))
+        } else {
+            content
+        };
         BindingBody::new(content, vec![add])
     }
 }

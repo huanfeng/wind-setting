@@ -123,13 +123,17 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     for (i, page) in pages.into_iter().enumerate() {
         pages_stack = pages_stack.child(page.fill().visible_when(move || tab_sig.get() == i));
     }
-    // 按键冲突固定顶栏：置于页面滚动区之外，切页/下滚均常驻，无冲突时隐藏不占位。
+    // 固定顶栏（三条）：置于页面滚动区之外，切页/下滚均常驻，无内容时各自隐藏不占位。
+    //
+    // **排序即优先级**，越靠上的越该先被看见：
+    // 降级条说「你的配置没生效」，冲突条说「这两个键会互相影响」——两条同时出现时，
+    // 降级往往正是冲突判定失真的原因，故降级在前；指示条排末位，它是用户自己搜出来的
+    // 一句指路，读完即关，不该跟前两条的「出事了」抢第一眼。
     let content = Element::col()
         .fill()
         .weight(1.0)
+        .child(crate::pages::degradation_bar(app.borrow().degradation))
         .child(crate::pages::conflict_bar(app.borrow().conflict))
-        // 方案级命中的指示条：与冲突条同一位置语义（滚动区之外、切页常驻、
-        // 无内容时不占位），只是语义是「指路」而非「警告」。
         .child(crate::search::hint::build_hint_bar(search_state.hint))
         .child(pages_stack);
     let body = Element::row()
@@ -172,6 +176,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
         .child(build_theme_delete_dialog(app))
+        .child(build_theme_overwrite_dialog(app))
         .child(build_update_dialog(app))
         .child(build_conn_failed_dialog(app, conn_failed));
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
@@ -835,6 +840,70 @@ fn build_theme_delete_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                 .child(Element::button("删除").small().danger().on_click(move |_| {
                     if let Ok(mut s) = app_c.try_borrow_mut() {
                         s.confirm_delete_theme();
+                    }
+                })),
+        );
+    Element::dialog(visible, frame)
+}
+
+/// 「覆盖同名主题」确认对话框：导入撞上已存在的同名主题时弹出（两个导入入口共用），
+/// 确认后以 `force=true` 重推 `theme_overwrite_text` 里暂存的原文。
+///
+/// 没有它的话，同名主题只会得到一条「主题已存在」的 toast——core 一直支持 `force`，
+/// 但界面上没有任何触发它的路，用户等于无法更新已装过的主题。
+fn build_theme_overwrite_dialog(app: &Rc<RefCell<AppState>>) -> Element {
+    let st = app.borrow();
+    let visible = st.theme_overwrite_visible;
+    let msg = st.theme_overwrite_msg;
+    let text = st.theme_overwrite_text;
+    drop(st);
+    let app_c = app.clone();
+    let frame = Element::col()
+        .width(360)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("覆盖同名主题")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1)
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label_signal(msg)
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(4)
+                .padding_xy(18, 16),
+        )
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        // 取消也要清掉暂存原文：一份 TOML 最大 2 MiB，留着白占内存，
+                        // 更要紧的是别让下一次「覆盖」误推上一次放弃掉的那份。
+                        .on_click(move |_| {
+                            text.set(String::new());
+                            visible.set(false);
+                        }),
+                )
+                .child(Element::button("覆盖").small().danger().on_click(move |_| {
+                    if let Ok(mut s) = app_c.try_borrow_mut() {
+                        s.confirm_overwrite_theme();
                     }
                 })),
         );
