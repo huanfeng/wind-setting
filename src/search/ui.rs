@@ -399,7 +399,10 @@ impl Widget for FocusWatcher {
     }
 }
 
-/// 查询变化即重算结果的响应式哨兵（0×0，挂在侧栏里）。
+/// 查询变化即重算结果的响应式哨兵（0×0，挂在根 stack 上）。
+///
+/// **不能挂侧栏**：那个 col 有 `spacing`，塞 0×0 节点进去会把搜索框与导航的间距
+/// 加好几遍（见 `shell::build` 里 sidebar 处的说明）。
 ///
 /// windui 的 TextInput 只写回绑定的信号、没有变更回调，故沿用本仓既有的
 /// `reactive_effect` 模式（见 `pages::dict::reactive`）。

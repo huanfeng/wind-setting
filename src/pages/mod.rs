@@ -943,8 +943,6 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     }
     // 搜索锚点：版本/检查更新/日志目录三条都落在这张品牌卡上——本页内容不多，
     // 再往里细分锚点，闪的范围反而比读者的目光落点还小。
-    // 搜索锚点：版本/检查更新/日志目录三条都落在这张品牌卡上——本页内容不多，
-    // 再往里细分锚点，闪的范围反而比读者的目光落点还小。
     crate::widgets::page(body.child(crate::search::anchor::wrap(panel, "about:main", state.jump)))
 }
 

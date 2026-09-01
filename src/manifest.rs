@@ -309,7 +309,15 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
     let mut rows = Vec::with_capacity(keys.len());
     for k in keys {
         let Some(item) = state.manifest.get(k) else {
-            rows.push(field(state, k));
+            // 清单里没有这个 key —— `field` 会渲染一行「（清单缺失此项）」。
+            // 锚点照包：这条分支触发的时机恰恰是「key 已经漂了」，那正是最希望搜索
+            // 还能把人指过去的场合。不包的话它会成为 `section_rows` 里唯一产出
+            // 无锚点行的出口。
+            rows.push(crate::search::anchor::wrap(
+                field(state, k),
+                k.clone(),
+                state.jump,
+            ));
             continue;
         };
         // 隐藏项：不渲染也不注册 writer/loader（功能未完成或不对用户开放）。

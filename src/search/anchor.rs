@@ -550,6 +550,28 @@ mod tests {
             "这些手写卡片的锚点没在界面上挂：{missing:?}\n\
              → 在对应页面的卡片外面包一层 search::anchor::wrap(卡片, \"<键>\", state.jump)"
         );
+
+        // 还有**第三份**知识：`RowInDialog::dialog` 那个键必须能在 `dialog_opens` 里查到，
+        // 否则 jump sink 找不到可见信号，框永远不开——症状与上面漏挂入口行一模一样
+        // （「搜到了、页也滚了，框就是不开」），同样没有任何报错。
+        //
+        // 登记点散在四处对话框构建函数里，靠 index.rs 顶部一句散文约定对齐。前两份都有
+        // 集合差兜着，这一份此前只能靠人记得。
+        let opens = app.borrow().fields.dialog_opens.borrow().clone();
+        let unregistered: std::collections::BTreeSet<&str> = idx
+            .iter()
+            .filter_map(|e| match &e.target {
+                JumpTarget::RowInDialog { dialog, .. } => Some(dialog.as_str()),
+                _ => None,
+            })
+            .filter(|d| !opens.contains_key(*d))
+            .collect();
+        assert!(
+            unregistered.is_empty(),
+            "这些对话框键没登记进 dialog_opens：{unregistered:?}\n\
+             → 在对应对话框的构建函数里 \
+             state.fields.dialog_opens.borrow_mut().insert(<宿主 key>, visible)"
+        );
     }
 
     #[test]

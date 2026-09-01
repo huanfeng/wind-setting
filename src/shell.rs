@@ -48,6 +48,13 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         // 设置树一建好它们就永远缺席——症状是「别的设置能存、只有方案页存不了」：热键 /
         // 引导键改动进不了 diff，保存时提示「没有变更」。
         crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+        // 搜索态也要复位。它建在 `AppState` 上（进程级，早于任何窗口），所以句柄不会
+        // 悬垂——但**值会整份带到新窗**：带着查询词、开着的浮层、或顶着一条方案级指示条
+        // 关掉主窗，再开时新窗一亮就弹出上一次的结果、内容区顶上挂着上一次的指路；
+        // 连未被认领的 `jump` 都会再滚一次、闪一次。关窗重开该是干净的开始。
+        st.search.clear();
+        st.search.hint.set(String::new());
+        st.jump.set(None);
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
         let tabs_vec = pages::all_tabs(app, &st);
@@ -188,18 +195,21 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     let (search_scrim, search_overlay) =
         crate::search::ui::build_results_overlay(&search_state, tab_sig, jump_sig);
     root = root.child(search_scrim).child(search_overlay);
-    // 跳转目标在对话框里时，第一跳完成后由它把框打开（第二跳才落到框内那一行）。
+    // 搜索的三枚 0×0 哨兵：查询变化即重算、词库条目开独立窗、跳转副作用汇。
     //
-    // ⚠ 挂在**根的末尾**而不是侧栏里：响应式哨兵按树序派发，挂在侧栏就排在内容区
-    // 之前——那一帧它读到的还是锚点写入之前的值，开框要白等一帧。同 conflict_watcher
-    // 与 toast_sink 之间的先后讲究。
-    // 搜索的三枚 0×0 哨兵一并挂根：查询变化即重算、词库条目开独立窗、跳转副作用汇。
-    // 挂在侧栏里会被 `spacing` 撑出间距（见那里的说明）。
+    // 三枚都挂**根**而不是侧栏：侧栏那个 col 有 `spacing`，而 spacing 是加在每对相邻
+    // 子节点之间的，塞进去等于把搜索框与导航的间距加了三遍（见上面 sidebar 处的说明）。
     root = root.child(crate::search::ui::build_query_watcher(&search_state));
     root = root.child(crate::search::ui::build_dict_request_watcher(
         &search_state,
         app,
     ));
+    // ⚠ jump_sink 必须排在**锚点之后**（锚点都在 main_col 里，而它挂在根的末尾）。
+    // 响应式哨兵按树序派发：排到内容区之前的话，这一帧它读到的还是锚点写入之前的值，
+    // 开框要白等一帧。同 conflict_watcher 与 toast_sink 之间的先后讲究。
+    //
+    // 它管的是锚点管不了的两件事：跳转目标在对话框里时把框打开（第二跳才落到框内那
+    // 一行），以及方案级目标写出指示条文案。
     root = root.child(crate::search::ui::build_jump_sink(
         jump_sig,
         search_state.hint,
@@ -1075,29 +1085,52 @@ mod tests {
     #[test]
     fn registry_reset_clears_every_registration() {
         let st = AppState::empty();
-        {
-            let mut w = st.fields.writers.borrow_mut();
-            w.push(Box::new(|_cfg| {}));
-        }
+        // **七个集合都要填**。这条测试存在的全部理由就是「有人加了字段忘了在 reset 里
+        // 清」，而对着从没填过的集合断言 `is_empty()` 是空转——它在字段被漏清时照样绿。
+        // （`dialog_opens` 加进来时正是这样：实现清了，这里连提都没提。）
+        st.fields.writers.borrow_mut().push(Box::new(|_cfg| {}));
+        st.fields
+            .getters
+            .borrow_mut()
+            .insert("k".into(), Box::new(|| serde_json::Value::Bool(true)));
+        st.fields
+            .loaders
+            .borrow_mut()
+            .insert("k".into(), Box::new(|_cfg| {}));
+        st.fields
+            .dialogs
+            .borrow_mut()
+            .push(windui::prelude::Element::leaf());
         st.fields
             .global_flags
             .borrow_mut()
             .push(("dummy".into(), windui::prelude::signal(true)));
         st.fields
-            .loaders
+            .side
             .borrow_mut()
-            .insert("k".into(), Box::new(|_cfg| {}));
+            .push(crate::state::SideCommitter {
+                is_dirty: Box::new(|| false),
+                commit: Box::new(|| Ok(())),
+            });
+        st.fields
+            .dialog_opens
+            .borrow_mut()
+            .insert("dlg".into(), windui::prelude::signal(false));
 
         st.fields.reset();
 
         assert!(st.fields.writers.borrow().is_empty(), "writers 未清空");
+        assert!(st.fields.getters.borrow().is_empty(), "getters 未清空");
+        assert!(st.fields.loaders.borrow().is_empty(), "loaders 未清空");
+        assert!(st.fields.dialogs.borrow().is_empty(), "dialogs 未清空");
         assert!(
             st.fields.global_flags.borrow().is_empty(),
             "global_flags 未清空 —— 它存的是 Signal 句柄，留着就会悬垂"
         );
-        assert!(st.fields.loaders.borrow().is_empty(), "loaders 未清空");
-        assert!(st.fields.getters.borrow().is_empty(), "getters 未清空");
-        assert!(st.fields.dialogs.borrow().is_empty(), "dialogs 未清空");
         assert!(st.fields.side.borrow().is_empty(), "side 未清空");
+        assert!(
+            st.fields.dialog_opens.borrow().is_empty(),
+            "dialog_opens 未清空 —— 同 global_flags，存的是 Signal 句柄"
+        );
     }
 }
