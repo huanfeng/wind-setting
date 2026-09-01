@@ -169,6 +169,10 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // ordered_pairs：与 checkbox_group 读写同一形态（strlist），差别只在**顺序是否被
         // core 消费**——那是清单声明的语义，capability 里没有这个维度，故类型校验一致。
         "dialog_button_ordered_pairs" => ty == "strlist",
+        // open_pairs：与 ordered_pairs / checkbox_group 读写同一形态（strlist），差别在
+        // **清单列不列得全值域**——列不全故写回只增删自己列出的项。capability 里同样
+        // 没有这个维度（它只知道类型），故也只能由清单的 type 声明。
+        "dialog_button_open_pairs" => ty == "strlist",
         // select_mix_layout：下拉，但读写的是 structlist 里按 id 定位的一个字符串字段
         // （quick_mix 的 candidate_layout），故按 structlist 而非 enum 校验。
         "select_mix_layout" => ty == "structlist",
@@ -446,24 +450,12 @@ mod tests {
         //
         //    2026-08-26 之前这里写的是「设计上不做专属控件」——用户要求做，已推翻。
         "ui.toolbar.buttons",
-        // ㉔ 区块名列表两项（core 0.121 的生僻字模式与 emoji 免词频）：**待接入，不是设计上
-        //    不暴露**。两者都是「勾选一组 Unicode 区块」，用户可见、该有 GUI。
-        //    同功能的触发键已于本轮接进清单（输入页「生僻字」块），只剩这两项。
-        //
-        //    此刻登记而非直接接进清单，是因为它们要的不是一个清单项，而是一个**本仓还没有的
-        //    控件**：区块多选。两条现成的路都不能用——
-        //    · strlist 文本框：让用户手打「杂项技术符号」这类名字，拼错只在 core 启动日志里
-        //      warn，设置页什么也不说，比不接更糟；
-        //    · checkbox_group：writer 只写勾选了的选项，**清单里没列的值会被静默抹掉**。
-        //      区块表 50 项、界面上只该露几个粗粒度的组，于是用户手写的
-        //      `include_blocks = ["蒙古文"]` 打开设置页存一次就没了——`english_pairs`
-        //      已经这么吃过一次用户数据（见本文件「打开就判脏」那三种成因之一）。
-        //    ⇒ 新控件必须按**切片覆盖**写回（同 `dialog_button_key_action` 的
-        //      `retain(v != verb)` + 插回勾选项），只增删自己列出的那几个组，其余原样带回。
-        //
-        //    ⚠️ 这是**临时**豁免：接进清单时记得从本名单撤出（双向断言会提醒）。
-        "input.rare_char.include_blocks",
-        "schema.frequency.exclude_blocks",
+        // 注：㉔ 区块名列表两项（`input.rare_char.include_blocks` /
+        // `schema.frequency.exclude_blocks`）曾登记在此，注明「待接入，缺区块多选控件」。
+        // 2026-09-01 已接进清单（输入页的「生僻字」与「词频」两块），故从名单撤出。
+        // 当时记下的那条约束仍然成立、并已写进控件文档：区块表 50 项而界面只列几个粗组，
+        // 故写回必须只增删自己列出的项（`dialog_button_open_pairs`），
+        // 用 `checkbox_group` 会把用户手写的区块名静默抹掉。
         // 注：㉓ 辅助码那两个键（`schema.pinyin.aux_code.*`）曾登记在此，注明「待做 GUI，
         // 不是永久豁免」。2026-08-22 已接进清单（候选行为 → 辅助码），故从名单撤出——
         // 本名单的双向断言不容许留下已被覆盖的条目。

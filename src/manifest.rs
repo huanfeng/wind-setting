@@ -402,6 +402,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_key_action",
     "dialog_button_mix_members",
     "dialog_button_ordered_pairs",
+    "dialog_button_open_pairs",
     "dialog_button_comment_dicts",
 ];
 
@@ -426,6 +427,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "dialog_button_key_action"
         | "dialog_button_mix_members"
         | "dialog_button_ordered_pairs"
+        | "dialog_button_open_pairs"
         | "dialog_button_comment_dicts" => build_dialog_button(state, key, item, cfg),
         other => {
             // 名单说能渲染、match 却没有分支 ⇒ 名单与实现脱节，debug 构建当场炸。
@@ -1887,6 +1889,11 @@ fn build_dialog_body_inner(
         // 通用分支的分野是**顺序是否被 core 消费**，而 capability 里只有类型没有这个信息，
         // 故只能由清单的 type 声明——同 mix_members 那条「按控件类型分派而非 key」。
         build_dialog_button_ordered_pairs(state, key, item, cfg)
+    } else if item.typ == "dialog_button_open_pairs" {
+        // 值域开放的 strlist（区块名列表）：清单只列常用的几组，其余原样保留。
+        // 与下面通用 strlist 分支的分野是**清单列不列得全**，capability 里同样没有
+        // 这个维度，故只能由清单的 type 声明。
+        build_dialog_button_open_pairs(state, key, item, cfg)
     } else if key == "input.punct.custom_mappings" {
         // 自定义标点映射：map 值为 [中半,英全,中全,英半] 四元数组（core 存储序），专用 5 列表格对话框。
         build_dialog_button_punct(state, key, cfg)
@@ -2403,6 +2410,107 @@ fn build_dialog_button_pairs(
     visible
 }
 
+/// `dialog_button_open_pairs`：**值域开放**的 strlist 勾选组——清单只列常用的几项，
+/// 配置里其余的值原样保留。
+///
+/// # 与 [`build_dialog_button_pairs`] 的分野只有 writer 一行
+///
+/// 那个控件整表覆盖（`collect_checked` 的结果就是最终数组），成立的前提是**值域封闭**
+/// ——清单列全了 core 认得的每一个值。`input.auto_pair.english_pairs` 就是那样，且它
+/// 漏列一个出厂值 `<>` 时，用户保存一次就把 `<>` 吃掉了（见 capabilities.rs 的「打开
+/// 就判脏」三种成因）。补法是补全 options，并加守门测试钉住「options ⊇ 出厂值」。
+///
+/// 本控件面对的是**列不全**的值域：Unicode 区块表 50 项，而界面上只该露几个粗粒度的
+/// 组（emoji / 符号 / 其它）。此时整表覆盖不是漏了个别值的问题，而是**结构性**地会吃
+/// 掉用户手写的一切——`include_blocks = ["蒙古文"]` 打开设置页存一次就没了。
+/// ⇒ 写回走 [`open_pairs_write_value`]，只增删自己列出的那几项。
+///
+/// ⚠️ 那道「options ⊇ 出厂值」的守门对本控件**不适用也不需要**：出厂值为空，且列不全
+/// 正是它的前提。别顺手把它加进那条测试的扫描范围。
+fn build_dialog_button_open_pairs(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Signal<bool> {
+    use crate::dialogs::field_dialogs::build_pairs_dialog;
+
+    let read = |c: &Config| -> Vec<String> {
+        c.get_array(key)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let cur = read(cfg);
+    let opts = item.options.clone();
+    let managed: Vec<String> = opts.iter().map(|o| o.value.clone()).collect();
+    let sigs: Vec<(String, Signal<bool>)> = opts
+        .iter()
+        .map(|o| (o.value.clone(), signal(cur.contains(&o.value))))
+        .collect();
+    let visible = signal(false);
+
+    let sigs_w = sigs.clone();
+    let managed_w = managed.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let checked: Vec<String> = sigs_w
+                .iter()
+                .filter(|(_, s)| s.get())
+                .map(|(v, _)| v.clone())
+                .collect();
+            // ★ current 必须从**正在写的这份 Config** 读，不能捕获构建期的 cur：
+            // 用户可能在同一次会话里先改了别处再回来，捕获的那份已经过期。
+            let current: Vec<String> = c
+                .get_array(&kw)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let merged = open_pairs_write_value(&checked, &managed_w, &current);
+            c.set_path(
+                &kw,
+                Value::Array(merged.into_iter().map(Value::String).collect()),
+            );
+        }));
+
+    let sigs_l = sigs.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let cur: Vec<String> = c
+                .get_array(&kl)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (v, s) in &sigs_l {
+                s.set(cur.iter().any(|c| c == v));
+            }
+        }),
+    );
+
+    let labels: Vec<String> = opts.iter().map(|o| o.label.clone()).collect();
+    let hint = item.hint.clone().unwrap_or_default();
+    // 「恢复默认」传空：本控件的出厂值恒为空数组（两个消费者都是「额外纳入/排除」，
+    // 出厂什么都不加）。传 defaults 会让复位去勾上一些东西，那不是出厂态。
+    let dlg = build_pairs_dialog(visible, &item.label, &hint, sigs, labels, Vec::new());
+    register_dialog(state, dlg);
+    visible
+}
+
 /// 剥掉「关着」的 `-` 前缀，得到条目本名。无前缀则原样返回。
 ///
 /// 与 core 的 `parse_toolbar_items` 是**同一套编码**的两端：那边负责「不渲染带前缀的项」，
@@ -2507,6 +2615,22 @@ pub(crate) fn merge_preserving_foreign(
         out.push(s);
     }
     out
+}
+
+/// open_pairs 写回配置的**完整取值逻辑**：勾选状态 + 当前配置 → 最终数组。
+///
+/// 与 [`ordered_pairs_write_value`] 的分野：那个要编码顺序（带 `-` 前缀表示关着），
+/// 本函数不要——顺序无语义，关掉就是不出现。共用的只有
+/// [`merge_preserving_foreign`] 那一半：**保留界面不认识的条目**。
+///
+/// 抽成纯函数的理由同 `ordered_pairs_write_value`：writer 挂在 `AppState` 上而
+/// `AppState` 要 windui 运行时才立得起来，那条链端到端测不了。
+pub(crate) fn open_pairs_write_value(
+    checked: &[String],
+    managed: &[String],
+    current: &[String],
+) -> Vec<String> {
+    merge_preserving_foreign(current, managed, checked)
 }
 
 /// `dialog_button_ordered_pairs`：**顺序有语义**的 strlist 编辑——一列开关决定有无，
@@ -4285,6 +4409,53 @@ mod tests {
             got,
             s(&["mode", "-punct", "custom:sym", "settings"]),
             "关掉的格加前缀留在原位，手写的 custom:sym 也留在原位"
+        );
+    }
+
+    /// ★★★ open_pairs 的立身之本：**手写的区块名不能被吃掉**。
+    ///
+    /// 这一条正是本控件与 `dialog_button_pairs` 的全部差别。用后者（`collect_checked`
+    /// 整表覆盖）跑同样的输入，得到的是 `["emoji"]`——用户手写的「蒙古文」「注音符号」
+    /// 当场消失，而他只是勾了一下 emoji。清单列不全 50 个区块是**前提**，不是疏忽，
+    /// 所以这不是「补全 options 就能解决」的那一类（`english_pairs` 是那一类）。
+    #[test]
+    fn open_pairs_keeps_hand_written_values() {
+        let managed = s(&["emoji", "符号", "其它"]);
+        let current = s(&["蒙古文", "符号", "注音符号"]);
+        // 界面：用户勾上 emoji、取消了「符号」。他没见过、也动不了那两个手写的块名。
+        let checked = s(&["emoji"]);
+
+        let got = open_pairs_write_value(&checked, &managed, &current);
+        assert!(
+            got.contains(&"蒙古文".to_string()) && got.contains(&"注音符号".to_string()),
+            "手写的区块名必须原样保留，实得 {got:?}"
+        );
+        assert!(got.contains(&"emoji".to_string()), "勾上的要写进去");
+        assert!(
+            !got.contains(&"符号".to_string()),
+            "取消勾选的要真的去掉，否则关不掉"
+        );
+    }
+
+    /// 反向验证：整表覆盖**确实**会吃掉手写值。
+    ///
+    /// 记的是「新功能全绿证明不了闸门有效，要证明闸门必须造一次它本该拦住的错」
+    /// （`enum_domain_gate` 那轮的教训）。上面那条断言若哪天被改成整表覆盖仍会红，
+    /// 但只有本条说得清「它防的是什么」。
+    #[test]
+    fn whole_table_overwrite_would_have_eaten_them() {
+        let current = s(&["蒙古文", "符号", "注音符号"]);
+        let checked = s(&["emoji"]);
+        // `build_dialog_button_pairs` 的 writer 等价物：勾了什么就是什么。
+        let naive = checked.clone();
+        assert!(
+            !naive.contains(&"蒙古文".to_string()),
+            "这条测的就是整表覆盖会丢数据；若它不再丢，说明那个控件也改了写回方式"
+        );
+        assert_ne!(
+            naive,
+            open_pairs_write_value(&checked, &s(&["emoji", "符号", "其它"]), &current),
+            "两种写回必须给出不同结果，否则 open_pairs 没有存在意义"
         );
     }
 

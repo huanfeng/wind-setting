@@ -1465,6 +1465,21 @@ options = [
   { value = "rbracket", label = "右方括号 ( ] )" },
 ]
 
+# 值域开放：区块表 50 项，这里只列常用的几组，配置里其余的区块名原样保留
+# （dialog_button_open_pairs 的写回只增删自己列出的项）。
+[[items]]
+key = "input.rare_char.include_blocks"
+group = "input"
+section = "生僻字"
+type = "dialog_button_open_pairs"
+label = "生僻字范围"
+hint = "默认只出生僻汉字。emoji、符号这些既不算常用也不算生僻，要它们出现就在这里勾上"
+options = [
+  { value = "emoji", label = "emoji", hint = "表情、旗帜与各类图形符号（😀 ⚽ ✅ ⌚ 🇨🇳）" },
+  { value = "符号", label = "符号", hint = "标点、数学、箭头、图形、带圈数字、全角形式（— ∞ → ① ￥ ⿰）" },
+  { value = "其它", label = "其它", hint = "新版 Unicode 新增的、本程序还不认识的区块。区块表是逐块列举的，漏掉的都归这一档" },
+]
+
 # ── 网址输入 ──
 [[items]]
 key = "input.url.enabled"
@@ -1596,6 +1611,24 @@ enabled_when = "input.association.kind != off"
 
 # 注：input.association.hint（编码栏标识）不在此暴露，见 capabilities.rs 的
 #     UNCOVERED_BY_DESIGN ㉑。
+
+# ── 词频 ──
+# key 前缀是 schema.* 而落在「输入」页：它是**三个引擎都照办的同一条规则**（core 的
+# [schema.frequency] 段），不属于任何单个引擎的方案配置，放进码表/拼音/英文任一段
+# 都是在说一件不成立的事。group 与 key 前缀本就不必一致（schema.mix_modes#members
+# 同样在 input 页）。
+[[items]]
+key = "schema.frequency.exclude_blocks"
+group = "input"
+section = "词频"
+type = "dialog_button_open_pairs"
+label = "不参与词频的字符"
+hint = "这些字符选中后不记录、也不受已有记录影响。emoji 多是一次性点缀，让它参与调频会把常用字挤下去"
+options = [
+  { value = "emoji", label = "emoji", hint = "表情、旗帜与各类图形符号（😀 ⚽ ✅ ⌚ 🇨🇳）" },
+  { value = "符号", label = "符号", hint = "标点、数学、箭头、图形、带圈数字、全角形式（— ∞ → ① ￥ ⿰）" },
+  { value = "其它", label = "其它", hint = "新版 Unicode 新增的、本程序还不认识的区块" },
+]
 
 # ═══════════════════════════ 按键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。
