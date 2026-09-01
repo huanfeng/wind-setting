@@ -4818,6 +4818,38 @@ mod tests {
         );
     }
 
+    /// ★ `ui.toolbar.items` 的选项必须**逐项覆盖** core 的值域（`TOOLBAR_ITEM_KEYS`），
+    /// 顺序也一致。
+    ///
+    /// 现场（本次改动暴露）：core 往值域里加了 `soft_keyboard`，清单这边没人跟——于是
+    /// 那一格在设置页里**根本不存在**。症状不是报错而是「看不见」：
+    ///
+    /// - 出厂显示它时，用户想关掉却找不到开关；
+    /// - 出厂不显示它时，用户想要它只能手写 TOML。
+    ///
+    /// 两个方向都无声。`capabilities` 那几道守门查不出来——它们只问「这个 **key** 登记了
+    /// 没有」，而 `ui.toolbar.items` 这个 key 一直好端端登记着，缺的是它**值域里的一员**。
+    ///
+    /// 顺序也一并钉：这个键的数组顺序即渲染顺序，选项列表的顺序就是用户第一次看到的
+    /// 排布，与 core 的声明顺序岔开会让「恢复默认」后的样子对不上。
+    #[test]
+    fn toolbar_item_options_cover_core_value_domain() {
+        let m = Manifest::from_embedded();
+        let opts: Vec<&str> = m
+            .items
+            .get("ui.toolbar.items")
+            .expect("清单缺 ui.toolbar.items")
+            .options
+            .iter()
+            .map(|o| o.value.as_str())
+            .collect();
+        assert_eq!(
+            opts,
+            wind_config::TOOLBAR_ITEM_KEYS.to_vec(),
+            "工具栏条目的选项与 core 值域不一致——多出来的选项点了没反应，少掉的那格用户在界面上碰不到"
+        );
+    }
+
     /// 「混输行为」对话框的分组结构必须是**可渲染的形状**，且四个拼音项对用户可见。
     ///
     /// ★ 守三个静默失效方向，`capabilities` 那几道守门测试一个都查不出来（它们只问

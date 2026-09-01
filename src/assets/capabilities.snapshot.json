@@ -1539,7 +1539,8 @@
         "mode",
         "punct",
         "full_width",
-        "s2t",
+        "-s2t",
+        "soft_keyboard",
         "settings"
       ],
       "key": "ui.toolbar.items",

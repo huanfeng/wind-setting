@@ -495,6 +495,25 @@ mod tests {
         );
     }
 
+    /// 剥掉**值域自带的语法修饰**，还原成清单 `options` 里那个裸值。
+    ///
+    /// 目前只有 `ui.toolbar.items` 有这种修饰：`-` 前缀 = 「在这个位置，但不显示」，
+    /// 出厂的 `-s2t` 是**合法条目**而不是一个没登记的值。
+    ///
+    /// ⚠️ **按键名点名而不是对所有 strlist 一律剥 `-`**：别的键里 `-` 完全可能是值的
+    /// 一部分（符号表、成对括号那类），一律剥就把真正的漏登记放过去了。加新的带语法
+    /// 修饰的键时在这里登记一行，附上它的语法是什么。
+    ///
+    /// 放宽是安全的，因为下面那两个后果对它都不成立：`ui.toolbar.items` 的 writer
+    /// （`ordered_pairs_write_value`）写的就是「全序 + 关掉的加 `-`」，`-s2t` 正是它
+    /// 自己的输出格式，读得回也写得出，既不判脏也不会吃掉。
+    fn strip_domain_syntax<'a>(key: &str, value: &'a str) -> &'a str {
+        match key {
+            "ui.toolbar.items" => value.strip_prefix('-').unwrap_or(value),
+            _ => value,
+        }
+    }
+
     /// ★★★ 勾选组（`checkbox_group`）的选项集**必须覆盖 core 的出厂值**。
     ///
     /// 漏一个值的后果有两个，都不会报错、也都不像是清单的问题：
@@ -528,7 +547,8 @@ mod tests {
                 continue;
             };
             for v in factory.iter().filter_map(|v| v.as_str()) {
-                if !declared.contains(&v) {
+                let bare = strip_domain_syntax(key, v);
+                if !declared.contains(&bare) {
                     problems.push(format!("{key} 的出厂值 {v:?} 不在清单选项里"));
                 }
             }
