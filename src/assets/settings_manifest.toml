@@ -1133,6 +1133,14 @@ options = [
   { value = "follow_main", label = "同主键盘区数字" },
 ]
 
+[[items]]
+key = "input.numpad_half_width"
+group = "input"
+section = "按键行为"
+type = "toggle"
+label = "全角时小键盘半角输出"
+hint = "全角状态下小键盘的数字和符号使用半角输出"
+
 # ── 候选无效按键 ──
 [[items]]
 key = "keys.overflow.number_key"

@@ -60,6 +60,7 @@
   "enter_behavior": "commit",
   "filter_mode": "smart",
   "numpad_behavior": "direct",
+  "numpad_half_width": false,
   "phrase": {
    "min_prefix": 2
   },

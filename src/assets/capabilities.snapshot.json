@@ -625,6 +625,11 @@
     },
     {
       "default": false,
+      "key": "input.numpad_half_width",
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "input.default.remember_last_state",
       "type": "bool"
     },
