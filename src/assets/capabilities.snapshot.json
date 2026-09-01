@@ -571,6 +571,11 @@
       "type": "structlist"
     },
     {
+      "default": [],
+      "key": "schema.frequency.exclude_blocks",
+      "type": "strlist"
+    },
+    {
       "default": "smart",
       "key": "input.filter_mode",
       "type": "str"
@@ -866,6 +871,11 @@
         "ftp."
       ],
       "key": "input.url.prefixes",
+      "type": "strlist"
+    },
+    {
+      "default": [],
+      "key": "input.rare_char.include_blocks",
       "type": "strlist"
     },
     {

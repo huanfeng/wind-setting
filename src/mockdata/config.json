@@ -71,6 +71,9 @@
    "smart_list": ".,:"
   },
   "punct_on_empty_behavior": "clear",
+  "rare_char": {
+   "include_blocks": []
+  },
   "s2t": {
    "enabled": false,
    "variant": "s2t"
@@ -219,6 +222,9 @@
     "strategy": "position"
    },
    "raw_candidate": true
+  },
+  "frequency": {
+   "exclude_blocks": []
   },
   "mix": {
    "auto_commit_block_on_english": false,
