@@ -2261,28 +2261,48 @@ pub(crate) fn degradation_text(v: &Value) -> String {
         .and_then(|a| a.first())
     {
         let path = u.get("path").and_then(Value::as_str).unwrap_or("配置文件");
-        let lines: Vec<String> = u
+        let all: Vec<u64> = u
             .get("skippedLines")
             .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_u64)
-                    .map(|n| n.to_string())
-                    .collect()
-            })
+            .map(|a| a.iter().filter_map(Value::as_u64).collect())
             .unwrap_or_default();
+        // ★ 紧凑形态，阈值与 core 的 `UnparsableLayer::lines_phrase` 保持一致（6）。
+        // 一份完全不是 TOML 的文件会攒到 32 个行号，全列进横幅会把版面撑爆，
+        // 而那种情形下具体哪几行本来就没意义（整份都没加载）。
+        // 量词「第…行」跟着内容走：留给模板拼的话，折叠形态会拼出「等 32 处 行」的语病。
+        const LINES_LISTED_MAX: usize = 6;
+        let listed: Vec<String> = all
+            .iter()
+            .take(LINES_LISTED_MAX)
+            .map(|n| n.to_string())
+            .collect();
+        let lines_phrase = if all.is_empty() {
+            String::new()
+        } else if all.len() > LINES_LISTED_MAX {
+            format!("第 {} 行等 {} 处", listed.join("、"), all.len())
+        } else {
+            format!("第 {} 行", listed.join("、"))
+        };
+        // ★ 判据是 `salvagedKeys > 0`（真的救回了内容），**不是** 行号非空。
+        // 「跳过了几行」与「救回来了」是两件事：core 啃到上限仍失败时两者同时成立，
+        // 那时说「其余设置已正常加载」是在撒谎——一个字都没加载。
+        let salvaged = u.get("salvagedKeys").and_then(Value::as_u64).unwrap_or(0) > 0;
         // 行号是用户唯一能直接下手的线索——「配置有语法错误」他无从找起，
-        // 「第 6 行」可以直接跳过去。没有行号时才退回笼统说法。
-        return if lines.is_empty() {
+        // 「第 6 行」可以直接跳过去。
+        return if !salvaged {
+            let tried = if all.is_empty() {
+                String::new()
+            } else {
+                format!("（已尝试跳过{lines_phrase}仍无法解析）")
+            };
             format!(
-                "⚠ 配置文件语法错误，本次未能加载，你的设置都没有生效：{path}\n\
+                "⚠ 配置文件语法错误，本次未能加载，你的设置都没有生效：{path}{tried}\n\
                  修好语法后点右下角「重新加载」。原文件不会被覆盖。"
             )
         } else {
             format!(
-                "⚠ 配置文件第 {} 行语法错误，该行的设置本次没有生效：{path}\n\
-                 其余设置已正常加载。修好后点右下角「重新加载」。原文件不会被覆盖。",
-                lines.join("、")
+                "⚠ 配置文件{lines_phrase}语法错误，相应设置本次没有生效：{path}\n\
+                 其余设置已正常加载。修好后点右下角「重新加载」。原文件不会被覆盖。"
             )
         };
     }
@@ -3602,6 +3622,38 @@ mod tests {
         }));
         assert!(none.contains("x/config.toml"), "{none}");
         assert!(none.contains("都没有生效"), "{none}");
+
+        // ★ 跳过了行**却什么都没救回来**（core 啃到上限仍失败）：这两个条件同时成立，
+        // 判据若写成「有行号 ⇒ 救回来了」就会说「其余设置已正常加载」——撒谎。
+        let tried = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+            "unparsable": [{
+                "path": "x/config.toml", "skippedLines": [1, 2, 3], "salvagedKeys": 0,
+            }],
+        }));
+        assert!(
+            !tried.contains("其余设置已正常加载"),
+            "一个键都没救回来时不许说其余正常：{tried}"
+        );
+        assert!(tried.contains("都没有生效"), "{tried}");
+        assert!(
+            tried.contains('1') && tried.contains('3'),
+            "尝试跳过的行号仍要给出：{tried}"
+        );
+
+        // ★ 行号多到一定程度必须折叠：core 啃不动的文件会攒到 32 个行号，
+        // 全列进横幅会撑爆版面（截图实测过），且那时具体哪几行本就没意义。
+        // 阈值须与 core 的 `UnparsableLayer::lines_brief` 一致。
+        let many = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+            "unparsable": [{
+                "path": "x/config.toml",
+                "skippedLines": (1..=32).collect::<Vec<u32>>(),
+                "salvagedKeys": 4,
+            }],
+        }));
+        assert!(many.contains("等 32 处"), "超阈值须折叠并给出总数：{many}");
+        assert!(!many.contains("30"), "不该把第 30 个行号也列出来：{many}");
     }
 
     #[test]
