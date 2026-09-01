@@ -3376,25 +3376,109 @@ impl DictManagerState {
         *self.pending_import.borrow_mut() = None;
         *self.pending_wordlist.borrow_mut() = None;
 
-        let tsv = super::wordlist::to_tsv(&rows, weight);
-        match rpc::call_core(
-            "dict.import",
-            &json!({ "schemaId": schema, "content": tsv, "strategy": strategy, "sections": ["userWords"] }),
-        ) {
-            Ok(v) => {
-                self.navigate_to(
-                    self.io_target.get() + GLOBAL_DOMAINS,
-                    self.landing_sub(LogicalTab::UserDict),
-                );
-                self.reload();
-                let mut msg = Self::format_import_result(&v);
-                if unencodable > 0 {
-                    msg.push_str(&format!("；{unencodable} 个词出不了码已跳过"));
+        // 分批发送：这条路的 TSV 是内存里现拼的、没有文件可指，只能走 `content`，于是
+        // 仍受 16MB 读帧上限约束。词表规模由用户决定，我们无从预知，故按字节切批。
+        let batches =
+            super::wordlist::import_batches(&rows, weight, super::wordlist::IMPORT_BATCH_BYTES);
+        let mut reports: Vec<Value> = Vec::with_capacity(batches.len());
+        for (i, batch) in batches.iter().enumerate() {
+            let tsv = super::wordlist::to_tsv(batch, weight);
+            let params = Self::word_list_batch_params(&schema, &tsv, i, strategy);
+            match rpc::call_core("dict.import", &params) {
+                Ok(v) => reports.push(v),
+                Err(e) => {
+                    // 部分成功要如实说：前面几批已经落库了，不能只报一句「导入失败」，
+                    // 那会让用户以为什么都没发生，于是重来一遍、把前面的又导一次。
+                    self.reload();
+                    let done: u64 = reports
+                        .iter()
+                        .map(|v| Self::sum_section_field(v, "added"))
+                        .sum();
+                    self.notify_err(&format!(
+                        "导入中断（第 {}/{} 批）：{e}；此前已导入 {done} 条，可重新导入剩余部分（已在库的会按合并处理）",
+                        i + 1,
+                        batches.len()
+                    ));
+                    return;
                 }
-                self.notify_ok(&msg);
             }
-            Err(e) => self.notify_err(&format!("导入失败: {e}")),
         }
+        self.navigate_to(
+            self.io_target.get() + GLOBAL_DOMAINS,
+            self.landing_sub(LogicalTab::UserDict),
+        );
+        self.reload();
+        let mut msg = Self::format_import_result(&Self::merge_import_reports(&reports));
+        if unencodable > 0 {
+            msg.push_str(&format!("；{unencodable} 个词出不了码已跳过"));
+        }
+        self.notify_ok(&msg);
+    }
+
+    /// 纯词列表第 `index` 批的 `dict.import` 载荷。
+    ///
+    /// ★★ **只有第一批能用用户选的策略，其余一律 merge。**
+    ///
+    /// `replace` 的语义是「先清空所选类型，再导入」。每批都照做的话，第二批会把第一批
+    /// 刚写进去的清掉，最终库里只剩最后一批——用户选了替换、导入 50 万词、界面报成功，
+    /// 实际只进去最后几万条。
+    ///
+    /// ⚠️ 抽成纯函数正是为了能测：这个 bug 只在**切得出第二批**时出现，而日常用的词表
+    /// 都只有一批，走 RPC 的集成测试永远绿着。
+    fn word_list_batch_params(schema: &str, tsv: &str, index: usize, chosen: &str) -> Value {
+        json!({
+            "schemaId": schema,
+            "content": tsv,
+            "strategy": if index == 0 { chosen } else { "merge" },
+            "sections": ["userWords"],
+        })
+    }
+
+    /// 把多批 `dict.import` 的响应合成一份，供 [`Self::format_import_result`] 照常渲染。
+    ///
+    /// 按 `key` 分组，**所有数值字段一律累加**——不列举字段名是有意的：core 侧后来新增
+    /// 的计数档（如 `boundaryNoReading`）会自动跟上，列白名单则会在加字段那天静默漏掉，
+    /// 而表现只是某个数偏小，没人看得出来。非数值字段取首批的值。
+    fn merge_import_reports(reports: &[Value]) -> Value {
+        // 单批是绝大多数情况（19 万词也只有一批），原样返回省掉一趟重建。
+        if let [only] = reports {
+            return only.clone();
+        }
+        let mut order: Vec<String> = Vec::new();
+        let mut acc: std::collections::HashMap<String, serde_json::Map<String, Value>> =
+            std::collections::HashMap::new();
+        for rep in reports {
+            let Some(arr) = rep.get("sections").and_then(|x| x.as_array()) else {
+                continue;
+            };
+            for sec in arr {
+                let Some(obj) = sec.as_object() else { continue };
+                let key = obj
+                    .get("key")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let slot = acc.entry(key.clone()).or_insert_with(|| {
+                    order.push(key.clone());
+                    serde_json::Map::new()
+                });
+                for (k, v) in obj {
+                    match (v.as_u64(), slot.get(k).and_then(|x| x.as_u64())) {
+                        (Some(n), Some(prev)) => {
+                            slot.insert(k.clone(), json!(prev + n));
+                        }
+                        _ => {
+                            slot.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                }
+            }
+        }
+        let sections: Vec<Value> = order
+            .into_iter()
+            .filter_map(|k| acc.remove(&k).map(Value::Object))
+            .collect();
+        json!({ "sections": sections })
     }
 
     /// 目标域里 `tab` 对应的子标签下标（该域没有这一类时 None）。
@@ -4841,6 +4925,105 @@ mod tests {
             Some("ni\t你\t100\t0\n")
         );
         assert!(p.get("path").is_none(), "没有文件就不该编一个路径出来：{p}");
+    }
+
+    /// 多批导入的结果要合成一份再渲染，**所有计数字段一律累加**。
+    ///
+    /// ★ 不列白名单：core 侧后来新增的计数档会自动跟上。列举字段名的话，加字段那天
+    /// 会静默漏掉一个数，而表现只是某个数偏小——没人看得出来。
+    #[test]
+    fn multi_batch_import_reports_are_summed() {
+        let b1 = json!({ "sections": [
+            { "key": "userWords", "added": 100, "updated": 2, "unchanged": 0, "skipped": 1,
+              "boundaryNoReading": 3 },
+        ] });
+        let b2 = json!({ "sections": [
+            { "key": "userWords", "added": 50, "updated": 1, "unchanged": 4, "skipped": 2,
+              "boundaryNoReading": 1 },
+        ] });
+        let m = DictManagerState::merge_import_reports(&[b1.clone(), b2]);
+        let sec = &m["sections"][0];
+        assert_eq!(sec["added"], json!(150));
+        assert_eq!(sec["updated"], json!(3));
+        assert_eq!(sec["unchanged"], json!(4));
+        assert_eq!(sec["skipped"], json!(3));
+        assert_eq!(
+            sec["boundaryNoReading"],
+            json!(4),
+            "★ 没在合并里列举过的字段也要累加"
+        );
+        assert_eq!(sec["key"], json!("userWords"), "非数值字段取首批");
+
+        // 单批原样返回（绝大多数情况，19 万词也只有一批）
+        assert_eq!(DictManagerState::merge_import_reports(&[b1.clone()]), b1);
+
+        // toast 用合并后的数，不是最后一批的数
+        let msg = DictManagerState::format_import_result(&m);
+        assert!(msg.contains("150"), "toast 要报总数而不是某一批：{msg}");
+    }
+
+    /// ★★ 分批切法：按**字节**切，且每批非空。
+    ///
+    /// 按条数切等于用一个跟约束无关的量去逼近字节上限——行长随编码方案与词长变化很大。
+    /// 「每批至少一行」则是防死循环：单行超上限时若在那里切，start 不前进。
+    #[test]
+    fn import_batches_split_by_bytes_and_never_empty() {
+        use super::super::wordlist::import_batches;
+        let rows: Vec<(String, String)> = (0..10)
+            .map(|i| ("abcd".to_string(), format!("词{i}")))
+            .collect();
+        // 每行 = 4(code) + 6(text，3 字节/汉字 × 2) + 3(权重"100") + 3(两个\t一个\n) = 16
+        let b = import_batches(&rows, 100, 32);
+        assert_eq!(
+            b.len(),
+            5,
+            "32 字节装得下 2 行 ⇒ 10 行切 5 批：{:?}",
+            b.len()
+        );
+        assert!(b.iter().all(|x| !x.is_empty()), "不得有空批");
+        assert_eq!(b.iter().map(|x| x.len()).sum::<usize>(), 10, "不得丢行");
+
+        // 上限大到装得下全部 ⇒ 一批（19 万词的常态）
+        assert_eq!(import_batches(&rows, 100, 1 << 20).len(), 1);
+
+        // 单行就超上限 ⇒ 仍每行一批地发出去，交给 core 报错，而不是原地死循环
+        let b = import_batches(&rows, 100, 1);
+        assert_eq!(b.len(), 10);
+        assert!(b.iter().all(|x| x.len() == 1));
+
+        assert!(import_batches(&[], 100, 32).is_empty(), "空输入不产生空批");
+    }
+
+    /// ★★ 分批下 `replace` 只能清一次：首批替换，其余合并。
+    ///
+    /// 每批都 replace 的话，后一批会把前一批刚写进去的清掉——用户选了替换、导了 50 万词、
+    /// 界面报成功，库里只剩最后一批。这个 bug 只在切得出第二批时出现，日常词表都只有
+    /// 一批，走 RPC 的集成测试永远绿着，只能在这里锁。
+    #[test]
+    fn word_list_replace_only_clears_on_first_batch() {
+        let p0 = DictManagerState::word_list_batch_params("pinyin", "a\t啊\t100\n", 0, "replace");
+        assert_eq!(p0["strategy"], json!("replace"), "首批用用户选的策略");
+
+        for i in 1..4 {
+            let p =
+                DictManagerState::word_list_batch_params("pinyin", "b\t吧\t100\n", i, "replace");
+            assert_eq!(
+                p["strategy"],
+                json!("merge"),
+                "★ 第 {i} 批必须降为 merge，否则会清掉前面已导入的"
+            );
+        }
+
+        // merge 本就无副作用，各批一致
+        for i in 0..3 {
+            let p = DictManagerState::word_list_batch_params("pinyin", "c\t次\t100\n", i, "merge");
+            assert_eq!(p["strategy"], json!("merge"));
+        }
+
+        // 其余字段每批都得齐全（漏 sections 会让 core 收到空选择、回一句成功零条）
+        assert_eq!(p0["schemaId"], json!("pinyin"));
+        assert_eq!(p0["sections"], json!(["userWords"]));
+        assert_eq!(p0["content"], json!("a\t啊\t100\n"));
     }
 
     /// 导入结果 toast 要把「少掉的词」按原因分开讲。

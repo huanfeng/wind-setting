@@ -130,6 +130,46 @@ pub fn batches(words: &[String]) -> impl Iterator<Item = &[String]> {
     words.chunks(ENCODE_BATCH)
 }
 
+/// 单批导入 TSV 的字节上限。
+///
+/// 这条路的 TSV 是内存里现拼的，没有文件可指，只能走 `content`——于是仍受 RPC 读帧
+/// 上限（`rpc::MAX_FRAME`，16MB）约束。词表规模由用户决定、我们无从预知，故按字节切批。
+///
+/// 取 4MB 而不是贴着 16MB：JSON 字符串会把每行的 2 个 `\t` 与 1 个 `\n` 各转义成两
+/// 字节，行长约 15 字节时放大约 20%；再算上请求骨架与 core 侧同样 16MB 的读帧上限，
+/// 留三倍余量。代价只是多几次 RPC——19 万词的 TSV 约 3MB，根本切不出第二批。
+pub const IMPORT_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+/// 按 TSV 字节数把出好码的行切批（导入用）。
+///
+/// ★ 判据是**字节**而不是条数：撞的是字节上限，而行长随编码方案与词长变化很大，
+/// 按条数切等于用一个跟约束无关的量去逼近它。
+///
+/// ⚠️ **每批至少一行**：单行就超上限时也照发（让 core 去报错），否则切批会原地死循环。
+pub fn import_batches(
+    rows: &[(String, String)],
+    weight: i64,
+    max_bytes: usize,
+) -> Vec<&[(String, String)]> {
+    let tail = weight.to_string().len() + 3; // 2 个 \t + 1 个 \n
+    let mut out = Vec::new();
+    let (mut start, mut bytes) = (0usize, 0usize);
+    for (i, (code, text)) in rows.iter().enumerate() {
+        let line = code.len() + text.len() + tail;
+        // i > start 保证批非空：单行超限时不在这里切，留给下一轮或收尾。
+        if bytes + line > max_bytes && i > start {
+            out.push(&rows[start..i]);
+            start = i;
+            bytes = 0;
+        }
+        bytes += line;
+    }
+    if start < rows.len() {
+        out.push(&rows[start..]);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
