@@ -128,6 +128,21 @@ impl SearchState {
         self.open.set(false);
     }
 
+    /// 用户回到搜索框时，把收起过的浮层重新亮出来。**有查询词才弹**（空查询本就不该有浮层）。
+    ///
+    /// 三条路共用一个判据：Ctrl+F（[`crate::shortcuts::dispatch`]）、焦点从别处回来
+    /// （[`FocusWatcher`]）、点击输入框（[`build_search_box`] 的 on_click）。
+    /// 各写各的就迟早会分叉成「这条路弹、那条路不弹」。
+    ///
+    /// 返回**是否真的展开了**：调用方据此决定要不要请求重排，本来就开着时别白跑一趟。
+    pub fn reopen(&self) -> bool {
+        if self.open.get() || self.query.get().trim().is_empty() {
+            return false;
+        }
+        self.open.set(true);
+        true
+    }
+
     /// 清空并收起。
     pub fn clear(&self) {
         self.query.set(String::new());
@@ -228,6 +243,7 @@ pub fn build_search_box(
     let nav_st = st.clone();
     let submit_st = st.clone();
     let clear_st = st.clone();
+    let click_st = st.clone();
 
     let input = Element::text_input(query, "搜索设置")
         // 前置图标区留白，图标本身由下面的 SVG 叠上去（见 `icon` 的说明）。
@@ -255,6 +271,17 @@ pub fn build_search_box(
             if let Some(t) = submit_st.selected_target() {
                 commit(&submit_st, tab, jmp, t);
             }
+        })
+        // 点框即把收起过的浮层唤回来。
+        //
+        // 这条路 `FocusWatcher` 接不住：按 Escape 收起浮层时**焦点根本没离开输入框**，
+        // 于是没有 false→true 的跳变可看，用户再点几下都没反应——只能再敲一个字。
+        // 点击是这一路唯一的信号。
+        //
+        // （windui 的 TextInput 直到 0.14.0 之后才实现 `take_click`；在那之前这句
+        // 链上去是静默无效的，本仓因此一直缺这块。）
+        .on_click(move |_ctx| {
+            click_st.reopen();
         });
 
     // 清除按钮：只在有输入时出现，压在输入框右端。
@@ -348,14 +375,11 @@ impl Widget for FocusWatcher {
             .map(|n| n.focused)
             .unwrap_or(false);
 
-        if focused && !self.was_focused {
-            // 刚拿到焦点：有查询词就把结果重新亮出来（空查询本就不该有浮层）。
-            let has_query = !self.st.query.get().trim().is_empty();
-            if has_query && !self.st.open.get() {
-                self.st.open.set(true);
-                // on_update 相位的 ctx 副作用会被丢弃，故走全局请求（同 anchor.rs）。
-                windui::anim::request_relayout();
-            }
+        // 焦点从别处回到框里（Tab 导航等）：把结果重新亮出来。
+        // 焦点始终在框内的那一路由输入框的 on_click 接（见 `build_search_box`）。
+        if focused && !self.was_focused && self.st.reopen() {
+            // on_update 相位的 ctx 副作用会被丢弃，故走全局请求（同 anchor.rs）。
+            windui::anim::request_relayout();
         }
         self.was_focused = focused;
     }
@@ -578,6 +602,45 @@ mod tests {
         assert!(st.open.get(), "有查询就该展开");
         assert!(!st.rows.with(Vec::is_empty), "「码表」应有结果");
         assert_eq!(st.selected.get(), 0, "刷新后高亮回到第一条");
+    }
+
+    /// **回归**：Escape 收起浮层后，再点搜索框应该把它唤回来。
+    ///
+    /// 这一路 `FocusWatcher` 接不住——按 Escape 时焦点没离开输入框，没有跳变可看。
+    /// 修好之前用户只能再敲一个字才能让结果回来。
+    #[test]
+    fn reopen_brings_back_a_dismissed_overlay() {
+        let st = state();
+        st.query.set("码表".into());
+        st.refresh();
+        st.dismiss();
+        assert!(!st.open.get(), "前置：浮层已收起");
+
+        assert!(st.reopen(), "有查询词时应重新展开，并报告确实展开了");
+        assert!(st.open.get());
+    }
+
+    /// 空查询不弹空浮层。
+    #[test]
+    fn reopen_does_nothing_without_a_query() {
+        let st = state();
+        assert!(!st.reopen());
+        assert!(!st.open.get());
+
+        st.query.set("   ".into()); // 只有空白也算空
+        assert!(!st.reopen());
+        assert!(!st.open.get());
+    }
+
+    /// 已经开着就报 false：调用方据此跳过重排，别白跑一趟。
+    #[test]
+    fn reopen_reports_false_when_already_open() {
+        let st = state();
+        st.query.set("码表".into());
+        st.refresh();
+        assert!(st.open.get(), "前置：浮层开着");
+        assert!(!st.reopen(), "已经开着时不该报「我展开了」");
+        assert!(st.open.get(), "但也不能把它关掉");
     }
 
     /// 没有结果也要展开——浮层里显示「未找到匹配项」，收起会让人以为搜索坏了。

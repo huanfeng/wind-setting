@@ -112,9 +112,7 @@ pub fn dispatch(ev: &KeyEvent, st: &AppState) -> Outcome {
             // 展开在这里当场做，**不等焦点哨兵**：哨兵挂在 `on_update` 上，而那只在
             // 需要重排的帧才跑；焦点转移本身不保证后面还有这样一帧，于是浮层要等到
             // 下一次交互才弹出来——真机上表现为「按完 Ctrl+F 愣一秒才出结果」。
-            if !st.search.query.get().trim().is_empty() {
-                st.search.open.set(true);
-            }
+            st.search.reopen();
             Outcome {
                 focus_main_input: true,
                 ..Outcome::HANDLED
