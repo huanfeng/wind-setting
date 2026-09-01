@@ -5183,10 +5183,24 @@ mod tests {
             .iter()
             .map(|s| s.as_str())
             .collect();
-        assert_eq!(
-            declared, core_members,
-            "候选来源选项与 core default_mix_modes() 的成员序漂移"
-        );
+        // ★ 断言是「core 出厂成员 ⊆ 声明，且相对序一致」，**不是**两者严格相等。
+        //
+        // 原先写作 `assert_eq!(declared, core_members)`，比它要守的不变量严一档：
+        // 清单里允许存在「可选但出厂不启用」的成员（`$rare_char` 是第一个），
+        // `managed_order` 对这种成员的处理本来就是「排在后面、显示为未勾选」。
+        // 严格相等会逼着把新成员塞进 `default_mix_modes()` 才能在界面上露面
+        // ——那等于**改变出厂行为**，代价远大于这条断言想防的漂移。
+        //
+        // 反过来仍必须拦住：core 出厂成员漏声明（界面上少一个开关，用户关不掉），
+        // 或相对顺序对不上（`managed_order` 按声明序给新成员定位，序错则插错位置）。
+        let mut it = declared.iter();
+        for want in &core_members {
+            assert!(
+                it.any(|d| d == want),
+                "core 出厂成员 {want:?} 未在清单声明中，或相对顺序与 default_mix_modes() 不一致\n\
+                 声明: {declared:?}\n出厂: {core_members:?}"
+            );
+        }
     }
 
     /// 守护：触发键与候选来源是**两个独立清单项**，且读写同一个配置路径。

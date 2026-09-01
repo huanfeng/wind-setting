@@ -875,6 +875,11 @@
     },
     {
       "default": [],
+      "key": "input.rare_char.trigger_keys",
+      "type": "strlist"
+    },
+    {
+      "default": [],
       "key": "input.rare_char.include_blocks",
       "type": "strlist"
     },

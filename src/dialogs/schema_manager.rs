@@ -1259,6 +1259,13 @@ impl SchemaManagerState {
                 value: "aux_code".into(),
                 label: "辅助码筛选（拼音候选二次筛选）".into(),
             },
+            // 生僻字：用当前方案的编码输入，候选只留生僻字（core 的 `BoundAction::RareChar`）。
+            // 与临拼/临英同属「两层都合法」——方案级 `[key_actions]` 与全局共用
+            // `BoundAction::parse`，故放在本函数而非 `build_global_key_action_verbs`。
+            Verb {
+                value: "rare_char".into(),
+                label: "生僻字".into(),
+            },
         ];
         let root = rpc::call_core("config.get", &json!({})).ok();
         let arr = |seg: &str| -> Vec<Value> {

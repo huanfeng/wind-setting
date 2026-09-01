@@ -72,7 +72,8 @@
   },
   "punct_on_empty_behavior": "clear",
   "rare_char": {
-   "include_blocks": []
+   "include_blocks": [],
+   "trigger_keys": []
   },
   "s2t": {
    "enabled": false,

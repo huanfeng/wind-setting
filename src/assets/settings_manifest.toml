@@ -1236,6 +1236,7 @@ options = [
   { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
   { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
   { value = "english", label = "英文", hint = "英文词库候选" },
+  { value = "$rare_char", label = "生僻字", hint = "用当前方案的编码打生僻字，只出单字。排在拼音后面的话同一个字会先被拼音收走，想让它有存在感就往前拖" },
 ]
 
 # 候选布局：与触发键、候选来源读写同一个 core 键（schema.mix_modes 里 quick_mix 的
@@ -1440,6 +1441,29 @@ hint = "切换中英文模式时自动取消大写锁定状态；切换方案不
 # 大写锁定态在 macOS 由 HID 层维护，CGEvent 合成的 CapsLock 改不动它（要走
 # IOHIDSetModifierLockState 那条完全不同的路）。补 VK→CGKeyCode 映射也没用。
 platform = "windows"
+
+# ── 生僻字 ──
+# 没有「启用」开关：不绑触发键就进不去，那已经是关闭态，再加个开关就是两个真相源
+# （core 的 RareCharConfig 刻意没有 enabled 字段，理由同）。
+[[items]]
+key = "input.rare_char.trigger_keys"
+group = "input"
+section = "生僻字"
+type = "dialog_button_key_action"
+verb = "rare_char"
+label = "生僻字触发键"
+hint = "空码时按触发键进入，用当前方案的编码打生僻字，只出单字；出厂不绑任何键。只能选符号键——字母键请到方案页的「z 键引导功能」配"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
+]
 
 # ── 网址输入 ──
 [[items]]
