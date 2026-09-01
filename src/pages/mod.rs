@@ -651,10 +651,17 @@ fn dict_page(_state: &AppState) -> Element {
 
 // ───────────────────────── 关于 ─────────────────────────
 
-/// 仓库地址（issues/releases 在其后拼段）。与 Vue 版 `App.vue` 的 repoUrl 一致。
+/// 仓库地址。与 Vue 版 `App.vue` 的 repoUrl 一致。
 const REPO_URL: &str = "https://github.com/huanfeng/WindInput";
 /// 官网。
 const WEBSITE_URL: &str = "https://windinput.com";
+/// 社区论坛（经验交流与问题反馈的第一落点，取代原来直挂 GitHub issues 的入口）。
+const FORUM_URL: &str = "https://forum.windinput.com";
+/// 下载页。版本发布指这里而不是 GitHub releases：官网页面对非开发者更友好，
+/// 且能按平台分发定制版安装包。
+const DOWNLOAD_URL: &str = "https://windinput.com/download";
+/// 赞助页。
+const SPONSOR_URL: &str = "https://windinput.com/sponsor";
 /// 主题编辑器。
 const THEME_EDITOR_URL: &str = "https://theme.windinput.com";
 /// 主题市场。
@@ -666,9 +673,12 @@ const QQ_GROUP: &str = "1085293418";
 // AboutPage，保证与网页版逐像素一致；改图标只改 .svg 文件即可，无需动代码。
 const ICON_WEBSITE: &str = include_str!("../../res/icons/website.svg");
 const ICON_GITHUB: &str = include_str!("../../res/icons/github.svg");
-const ICON_ISSUES: &str = include_str!("../../res/icons/issues.svg");
+const ICON_FORUM: &str = include_str!("../../res/icons/forum.svg");
 const ICON_RELEASES: &str = include_str!("../../res/icons/releases.svg");
 const ICON_QQ: &str = include_str!("../../res/icons/qq.svg");
+/// 页脚赞助链接的爱心。与上面几个不同，它不进彩色图标方块，而是 `tint` 成品牌红后
+/// 直接跟在文字旁边，故按小尺寸渲染。
+const ICON_HEART: &str = include_str!("../../res/icons/heart.svg");
 
 /// 域名 chip（官网横幅右侧）：淡蓝底 + 蓝字 + pill 圆角，**普通字重**
 /// （区别于 `badge` 的 600 加粗）。蓝色与官网图标方块同源，观感协调。
@@ -858,7 +868,7 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         |ctx| ctx.open_url(WEBSITE_URL),
     );
 
-    // 2×2 链接网格：GitHub / 问题反馈 / 版本发布 / QQ 交流群。
+    // 2×2 链接网格：GitHub / 社区论坛 / 版本发布 / QQ 交流群。
     let github = about_link_card(
         Color::hex(0x24292F),
         ICON_GITHUB,
@@ -867,21 +877,21 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         None,
         |ctx| ctx.open_url(REPO_URL),
     );
-    let issues = about_link_card(
+    let forum = about_link_card(
         Color::hex(0xF59E0B),
-        ICON_ISSUES,
-        "问题反馈",
-        "报告 Bug 或建议",
+        ICON_FORUM,
+        "社区论坛",
+        "经验交流 · 报告 Bug 或建议",
         None,
-        |ctx| ctx.open_url(&format!("{REPO_URL}/issues")),
+        |ctx| ctx.open_url(FORUM_URL),
     );
     let releases = about_link_card(
         Color::hex(0x22C55E),
         ICON_RELEASES,
         "版本发布",
-        "更新日志",
+        "下载与更新日志",
         None,
-        |ctx| ctx.open_url(&format!("{REPO_URL}/releases")),
+        |ctx| ctx.open_url(DOWNLOAD_URL),
     );
     // QQ 卡：点击复制群号 + toast 反馈（脱离布局树，无需额外接线）。
     let qq = about_link_card(
@@ -907,7 +917,7 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 .spacing(10)
                 .cross(Align::Stretch)
                 .child(half(github))
-                .child(half(issues)),
+                .child(half(forum)),
         )
         .child(
             Element::row()
@@ -918,13 +928,43 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 .child(half(qq)),
         );
 
-    let footer = Element::label("© 2026 WindInput Contributors · MIT License")
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
+    // 页脚：版权 + 赞助入口。两端 flex_spacer 把这一组顶到居中——线性容器只有交叉轴
+    // 对齐（`cross`），主轴没有 justify，弹簧是这里唯一的居中手段；label 因此不能再
+    // `width_match()`（撑满就没有可分给弹簧的余量了），改由内容定宽。
+    let heart = Color::hex(0xEF4444);
+    // 胶囊圆角 + 内边距：`Clickable` 的 hover 叠层按 `style.corner_radius` 画圆角矩形，
+    // 不给 `corner` 就是直角方块——两行小字旁边贴一个方块高亮太硬。padding 同时把
+    // 点击热区从「文字本身」撑到一个能顺手点中的胶囊。
+    let sponsor = Element::row()
+        .clickable()
+        .cross(Align::Center)
+        .spacing(5)
+        .padding_xy(10, 5)
+        .corner(999.0)
+        .on_click(|ctx| ctx.open_url(SPONSOR_URL))
+        .child(crate::icons::tinted(ICON_HEART, 13, heart))
+        .child(
+            Element::label("赞助")
+                .font_size(12.0)
+                .fg(heart)
+                .max_lines(1)
+                .height(18),
+        );
+    let footer = Element::row()
         .width_match()
-        .max_lines(1)
-        .height(18)
-        .text_align(Align::Center);
+        .cross(Align::Center)
+        // 4 而不是 10：赞助胶囊自带 10px 左内边距，两者相加才是观感上的间距。
+        .spacing(4)
+        .child(Element::flex_spacer())
+        .child(
+            Element::label("© 2026 清风输入法 · MIT License")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .max_lines(1)
+                .height(18),
+        )
+        .child(sponsor)
+        .child(Element::flex_spacer());
 
     // 外层品牌卡：承载全部内容，浮于内容区 SurfaceAlt 之上。
     let panel = crate::widgets::flat_panel()
