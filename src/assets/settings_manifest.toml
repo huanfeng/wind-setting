@@ -2049,6 +2049,19 @@ options = [
 ]
 
 [[items]]
+key = "ui.candidate.first_show_mode"
+group = "ui"
+section = "候选窗口"
+type = "select"
+label = "首次显示时机"
+hint = "每串新输入的候选窗多快出现；应用给不出准确位置时，「快速」与「立即」会先按上次的位置显示。可在右键菜单里为单个应用单独设"
+options = [
+  { value = "fast", label = "快速显示" },
+  { value = "wait", label = "等待精确坐标（较慢）" },
+  { value = "instant", label = "立即显示（最快，可能抖动）" },
+]
+
+[[items]]
 key = "ui.candidate.preedit_display"
 group = "ui"
 section = "候选窗口"

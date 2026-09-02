@@ -1196,6 +1196,16 @@
       "type": "bool"
     },
     {
+      "default": "fast",
+      "key": "ui.candidate.first_show_mode",
+      "type": "enum",
+      "values": [
+        "fast",
+        "wait",
+        "instant"
+      ]
+    },
+    {
       "default": 0.8,
       "key": "ui.candidate.first_show_settle_ratio",
       "type": "float"

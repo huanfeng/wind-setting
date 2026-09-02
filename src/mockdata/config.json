@@ -332,6 +332,7 @@
    "custom_y": 0,
    "fast_first_show_fallback_ms": 25,
    "fast_typing_window_ms": 100,
+   "first_show_mode": "fast",
    "first_show_settle_ratio": 0.800000011920929,
    "flip_when_above": false,
    "font_size": 18.0,
