@@ -267,7 +267,7 @@
    "auto_learn": {
     "enabled": true,
     "max_word_length": 10,
-    "min_word_length": 0,
+    "min_word_length": 2,
     "promote_count": 0
    },
    "aux_code": {

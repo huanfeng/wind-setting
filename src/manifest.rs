@@ -4383,6 +4383,82 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 mod tests {
     use super::*;
 
+    /// ★★★ 数值控件的 `[min, max]` 区间必须**包含** core 的出厂默认值。
+    ///
+    /// 不满足时的症状不是「显示错了」而是**用户没改的值被写进配置文件**：控件把区间外的
+    /// 默认值夹进区间显示，writer 再把这个显示值写回去 ⇒ 用户打开设置页什么都不动、
+    /// 点一次「应用设置」就产生了一条 diff。
+    ///
+    /// 现场：`schema.pinyin.auto_learn.min_word_length` core 默认 `0`（哨兵，消费端
+    /// `if min_len == 0 { 2 }` 回退成 2）而控件 `min = 2`。生效值确实一直是 2，所以
+    /// 从界面上看不出任何异常，只有 `untouched_settings_produce_no_diff` 长期红着——
+    /// 那条测试报的是「有 diff」，指不到「哪个区间配错了」，查一次要翻很久。
+    ///
+    /// ⇒ 本测试直接对着区间报，诊断信息里带上 core 默认值与区间两端。
+    ///
+    /// 判据取 **core 的系统预置（L1 ⊕ data/config.toml）**，不是 manifest 自带的
+    /// `default`：真正被 writer 拿去比对的是前者，后者只是 mock 模式的兜底。
+    #[test]
+    fn number_widget_ranges_contain_core_defaults() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../WindInput/data");
+        let preset =
+            wind_config::Config::system_preset_value(Some(&data)).expect("读取 core 系统预置失败");
+        let cfg: wind_config::Config = preset.try_into().expect("系统预置反序列化失败");
+        let json = serde_json::to_value(&cfg).expect("Config 序列化失败");
+
+        let value_at = |key: &str| -> Option<f64> {
+            let mut cur = &json;
+            for seg in key.split('.') {
+                cur = cur.get(seg)?;
+            }
+            cur.as_f64()
+        };
+
+        let manifest = Manifest::from_embedded();
+        let mut checked = 0usize;
+        let mut problems = Vec::new();
+        // HashMap 无序 ⇒ 诊断按 key 排序输出，失败信息才可复现。
+        for item in manifest.items.values() {
+            if !matches!(item.typ.as_str(), "number" | "slider") {
+                continue;
+            }
+            // 取不到值 = 该键不是标量数字（或已从 core 移除）；后者由别的测试守。
+            let Some(v) = value_at(&item.key) else {
+                continue;
+            };
+            checked += 1;
+            if let Some(lo) = item.min
+                && v < lo
+            {
+                problems.push(format!(
+                    "{}: core 默认 {v} 低于控件下限 {lo}（区间 {lo}..={:?}）",
+                    item.key, item.max
+                ));
+            }
+            if let Some(hi) = item.max
+                && v > hi
+            {
+                problems.push(format!(
+                    "{}: core 默认 {v} 高于控件上限 {hi}（区间 {:?}..={hi}）",
+                    item.key, item.min
+                ));
+            }
+        }
+        problems.sort();
+        assert!(
+            checked >= 20,
+            "只校验到 {checked} 个数值控件，判据可能已失效"
+        );
+        assert!(
+            problems.is_empty(),
+            "{} 个数值控件的取值区间不含 core 出厂默认值——用户不改任何东西、             点一次「应用设置」就会把夹取后的值写进配置：
+{}",
+            problems.len(),
+            problems.join("
+")
+        );
+    }
+
     // ── ordered_pairs 的 `-` 前缀编码 ───────────────────────────
 
     fn s(v: &[&str]) -> Vec<String> {
