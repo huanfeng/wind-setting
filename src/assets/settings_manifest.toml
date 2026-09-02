@@ -1847,6 +1847,16 @@ type = "hotkey"
 label = "显示/隐藏工具栏"
 hint = "切换工具栏的显示状态"
 
+# 不设 global：softkeyboard 不在 build_global_hotkey_entries 的 supported 表里
+# （那 7 个动作都不需要按键上下文，而软键盘开启后要接管整个主键区）。
+[[items]]
+key = "keys.softkeyboard"
+group = "keys"
+section = "功能快捷键"
+type = "hotkey"
+label = "显示/隐藏软键盘"
+hint = "开关软键盘面板；面板也可从工具栏与主菜单打开"
+
 [[items]]
 key = "keys.open_settings"
 group = "keys"

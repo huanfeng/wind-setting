@@ -136,9 +136,7 @@
    "arrows",
    "tab"
   ],
-  "key_actions": {
-   "ctrl+shift+k": "softkeyboard"
-  },
+  "key_actions": {},
   "open_add_word_dialog": "ctrl+shift+equal",
   "open_settings": "ctrl+shift+]",
   "overflow": {
@@ -156,6 +154,7 @@
    "semicolon_quote"
   ],
   "session_actions": {},
+  "softkeyboard": "ctrl+shift+k",
   "switch_engine": "ctrl+shift+e",
   "take_screenshot": "ctrl+shift+f11",
   "toggle_full_width": "shift+space",

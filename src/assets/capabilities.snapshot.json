@@ -1085,12 +1085,17 @@
       "type": "str"
     },
     {
+      "default": "ctrl+shift+k",
+      "key": "keys.softkeyboard",
+      "type": "str"
+    },
+    {
       "default": [],
       "key": "keys.global_hotkeys",
       "type": "strlist"
     },
     {
-      "default": null,
+      "default": {},
       "key": "keys.key_actions",
       "type": "map"
     },

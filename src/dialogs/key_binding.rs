@@ -174,7 +174,13 @@ pub fn verb_allowed(shape: KeyShape, value: &str) -> bool {
         // 在两处都看一眼——2026-08-31 由只读组的截图自查撞出来。守门测试见
         // `combo_verbs_match_core_whitelist`。
         KeyShape::Combo => {
-            value.starts_with("toggle_schema:")
+            // ★ `none` 必须在组合键上放行，理由与其它动词不同：它不是一个「功能」，
+            // 而是**压制更低层同键绑定的唯一手段**。`keys.key_actions` 是逐键深合并的
+            // （core `merge_value`），删掉一行压不住 data/config.toml 或定制版
+            // data_custom/config.toml 里写的那一行——只有显式写 none 才是「本层表态：
+            // 别干活」。core 侧对应的是 `Compiler::compile` 里组合键分支的那道闸。
+            value == "none"
+                || value.starts_with("toggle_schema:")
                 || value.starts_with("switch_schema:")
                 || value.starts_with("special:")
                 || value == "softkeyboard"
@@ -1059,7 +1065,7 @@ impl KeyPicker {
                 // 上面辅助码那条就是这么中招的（已修）。
                 match key_shape(key) {
                     KeyShape::Combo if filtered => {
-                        "组合键只能绑「切换方案」与「特殊模式」。其它功能请改用单个按键，或到「按键 → 功能快捷键」里配。"
+                        "组合键只能绑「切换方案」「特殊模式」与「不启用」。其它功能请改用单个按键，或到「按键 → 功能快捷键」里配。"
                             .to_string()
                     }
                     // 有字符的键滤掉的是「用来离开英文态」的那几个。此前这一支恒返回空串
@@ -1537,6 +1543,10 @@ mod tests {
             "toggle_schema:english",
             "switch_schema:wubi86",
             "special:kf",
+            // 不是「功能」而是压制手段：低层（data/config.toml、定制版的
+            // data_custom/config.toml）在 key_actions 里写的组合键绑定，用户只能靠
+            // 显式 none 关掉——深合并表达不了删除。core 那侧在组合键分支静默跳过它。
+            "none",
         ] {
             assert!(
                 verb_allowed(KeyShape::Combo, v),
@@ -1604,11 +1614,12 @@ mod tests {
             "toggle_schema:english",
             "switch_schema:wubi",
             "special:fuhao",
+            // 见 `verb_allowed` 里那段：压制低层同键绑定的唯一手段，不是功能动词。
+            "none",
         ] {
             assert!(verb_allowed(KeyShape::Combo, v), "{v} 应允许绑组合键");
         }
         for v in [
-            "none",
             "temp_pinyin",
             "temp_english",
             "aux_code",
