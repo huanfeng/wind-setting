@@ -166,6 +166,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "dialog_button_mix_members" => ty == "structlist",
         // 注释词库：整表读写的条目列表（id/label/path/enabled/schemas 五个字段）。
         "dialog_button_comment_dicts" => ty == "structlist",
+        // 语言栏角标规则：整表读写的条目列表（enabled/state/corner/两个色值/scale）。
+        "dialog_button_langbar_badges" => ty == "structlist",
         // ordered_pairs：与 checkbox_group 读写同一形态（strlist），差别只在**顺序是否被
         // core 消费**——那是清单声明的语义，capability 里没有这个维度，故类型校验一致。
         "dialog_button_ordered_pairs" => ty == "strlist",
@@ -362,24 +364,15 @@ mod tests {
         // ⑯ `keys.schema_hotkeys` 已从这份白名单**移除**：core 侧该键已废弃并移出登记表
         //    （并入 `keys.key_actions` 的 `switch_schema:<方案id>`）。方案页「进入方式」
         //    那一节现在读写的是 key_actions，而它就在下面一条里，理由完全相同。
-        // ⑰ 任务栏图标标记的微调项（core 侧语言栏图标改造新增）：两个开关
-        //    （punct_badge / full_width_mark）已在清单内，这七项是它们的**外观微调**。
+        // ⑰ 任务栏图标角标的九项（core 侧语言栏图标改造新增）**已全部接入清单**，故本名单
+        //    里一条不剩。当年不暴露的理由是"这些量只能盯着 16×16 反复比对、放进去等于给
+        //    用户一排盲调旋钮"，2026-09-01 改成规则表时逐条推翻：配色有色块可看，大小与
+        //    透明度是用户明确要的自由度。
         //
-        //    不暴露的判据是「调它需要什么依据」：这些量的取值只能靠盯着 16×16 的任务栏图标
-        //    反复比对——大小差 0.1 倍、不透明度差 0.05 在设置页的预览里根本看不出来，
-        //    而放进去就等于给用户七个只能盲调的旋钮。真要调的人本来就得开着图标一点点试，
-        //    改配置文件反而更顺手（core 的 data/config.toml 每项都有注释）。
-        //
-        //    ⚠️ badge_alpha 尤其不能"顺手加个滑块"：它同时是**档位开关**（= 1.0 走实心挖空、
-        //    < 1.0 走半透明保留主字，两条互斥的路径），滑到 1.0 会整个换一种画法。
-        //    滑块表达不了这种跳变，用户拖到底会以为"最不透明"，实际得到的是另一种设计。
-        "ui.langbar.punct_badge_scale",
-        "ui.langbar.full_width_mark_scale",
-        "ui.langbar.badge_alpha",
-        "ui.langbar.colored",
-        "ui.langbar.punct_color_cn",
-        "ui.langbar.punct_color_en",
-        "ui.langbar.full_width_color",
+        //    其中 badge_alpha 曾单独留守，理由是它同时是**档位开关**（= 1.0 走实心挖空、
+        //    < 1.0 走半透明保留主字，两条互斥的画法），滑块表达不了那个跳变。推翻它的判据
+        //    是**两害相权**：一个用户看不见也改不了的出厂 0.88，比一个末端有跳变、但跳变
+        //    已写进 hint 的滑块更糟。跳变本身没有消失——改 hint 时别把那句话删了。
         // ⑱ 联想的四个「来源开关」（core 侧联想改造新增）：主干六项已在清单内，这四项决定
         //    联想候选**从哪来**，按配置文件里的书写顺序取配额。
         //
@@ -686,16 +679,10 @@ mod enum_domain_gate {
     ///
     /// 登记的门槛是「界面上少一个选项是有意的」，理由必须同时写在清单该项旁边——
     /// 这里只放键名与一句话，方便下一个人知道该去哪读。
-    const NARROWED_ON_PURPOSE: &[(&str, &str)] = &[
-        (
-            "input.association.kind",
-            "不列 smart：桌面上它与 word 完全等价，摆一个没区别的选项只会让人以为选错了",
-        ),
-        (
-            "ui.langbar.punct_badge",
-            "只列两项：其余四种真机否决或待评估，放进下拉等于把已知的坏选择交给用户",
-        ),
-    ];
+    const NARROWED_ON_PURPOSE: &[(&str, &str)] = &[(
+        "input.association.kind",
+        "不列 smart：桌面上它与 word 完全等价，摆一个没区别的选项只会让人以为选错了",
+    )];
 
     /// ★★ 清单的 select/segmented **不得漏掉 core 的取值**。
     ///

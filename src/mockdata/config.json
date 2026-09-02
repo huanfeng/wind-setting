@@ -367,15 +367,35 @@
    "english": "英"
   },
   "langbar": {
+   "badge": "none",
    "badge_alpha": 0.8799999952316284,
-   "colored": true,
-   "full_width_color": "#E0447A",
-   "full_width_mark": false,
-   "full_width_mark_scale": 1.0,
-   "punct_badge": "none",
-   "punct_badge_scale": 1.0,
-   "punct_color_cn": "#2288E0",
-   "punct_color_en": "#EE9922"
+   "badge_scale": 1.0,
+   "badges": [
+    {
+     "color_dark": "#2288E0",
+     "color_light": "#2288E0",
+     "corner": "bottom_right",
+     "enabled": true,
+     "scale": 1.0,
+     "state": "punct_cn"
+    },
+    {
+     "color_dark": "#EE9922",
+     "color_light": "#EE9922",
+     "corner": "bottom_right",
+     "enabled": true,
+     "scale": 1.0,
+     "state": "punct_en"
+    },
+    {
+     "color_dark": "#E0447A",
+     "color_light": "#E0447A",
+     "corner": "top_right",
+     "enabled": true,
+     "scale": 1.0,
+     "state": "full_width"
+    }
+   ]
   },
   "mode_indicator": {
    "style": "short"

@@ -2519,34 +2519,62 @@ unit = "s"
 enabled_when = "ui.toolbar.auto_hide == true"
 platform = "windows"
 
-# 宿主行 = 标点角标下拉 + 「设置…」按钮，成员（全角标记及以后的配色）进分组对话框。
+# 宿主行 = 角标总开关下拉 + 「设置…」按钮，尺寸与不透明度进分组对话框；
+# 规则表另起一行（它自己就是个带增删的列表，塞不进分组对话框）。
 # 宿主行必须带一个值控件（build_dialog_group_row 恒调 build_control），做不出纯标签+按钮
-# 的行；标点角标是这组里最常改的一项，故由它当宿主。
+# 的行；总开关是这组里最常改的一项，故由它当宿主。
 [[items]]
-key = "ui.langbar.punct_badge"
+key = "ui.langbar.badge"
 group = "ui"
 section = "任务栏图标"
 type = "select"
-label = "状态标记"
-hint = "在任务栏输入指示器上叠加状态标记；此项选标点状态角标的样式，其余标记在「设置」里"
-# 只列两项：core 的枚举还有 outer_ring / bottom_bar（待评估）与 circle_square / ring_dot
-# （真机否决，任务栏上像个污点），放进下拉等于把已知的坏选择交给用户。
-# 需要试的人改 config.toml，取值见 core 的 data/config.toml 注释。
+label = "状态角标"
+hint = "在任务栏图标的角上叠加状态标记；关掉则全不显示"
 options = [
   { value = "none", label = "不显示" },
-  { value = "corner_triangle", label = "右下三角" },
+  { value = "corner", label = "角标" },
 ]
-opens_dialog = "langbar_markers"
+opens_dialog = "langbar_badge"
 platform = "windows"
 
 [[items]]
-key = "ui.langbar.full_width_mark"
+key = "ui.langbar.badge_scale"
 group = "ui"
 section = "任务栏图标"
-type = "toggle"
-label = "全角标记"
-hint = "全角时在任务栏输入指示器右上角显示一个三角；半角不显示"
-dialog_group = "langbar_markers"
+type = "slider"
+label = "角标大小"
+hint = "所有角标的大小倍率；单条可在规则里再调"
+min = 0.1
+max = 3.0
+step = 0.1
+dialog_group = "langbar_badge"
+platform = "windows"
+
+# 步长 0.02 而不是 0.05 / 0.1：出厂值 0.88 必须落在格子上（0.3 + 0.02×29），
+# 否则从默认值点一下就跳到一个"回不去"的值。
+# ⚠️ hint 必须一行装得下（约 24 字），超出会被省略号截掉——而末端 1.0 的跳变
+# （变实心并挖字）正是调之前必须知道的一句，被截等于没写。
+[[items]]
+key = "ui.langbar.badge_alpha"
+group = "ui"
+section = "任务栏图标"
+type = "slider"
+label = "角标透明度"
+hint = "越小越透；调到 1 变实心，并挖掉周围一圈主字"
+min = 0.3
+max = 1.0
+step = 0.02
+dialog_group = "langbar_badge"
+platform = "windows"
+
+[[items]]
+key = "ui.langbar.badges"
+group = "ui"
+section = "任务栏图标"
+type = "dialog_button_langbar_badges"
+label = "角标规则"
+hint = "哪些状态画角标、画在哪个角、什么颜色"
+enabled_when = "ui.langbar.badge != none"
 platform = "windows"
 
 # ═══════════════════════════ 常规（并入「输入」页尾「默认状态」）═══════════════════════════

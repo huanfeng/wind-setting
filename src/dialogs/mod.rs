@@ -5,6 +5,7 @@ pub mod comment_dicts_dialog;
 pub mod field_dialogs;
 pub mod key_binding;
 pub mod keys_overview;
+pub mod langbar_badges_dialog;
 pub mod schema_codetable;
 pub mod schema_key_actions;
 pub mod schema_manager;

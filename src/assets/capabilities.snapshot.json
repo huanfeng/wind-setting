@@ -1553,30 +1553,16 @@
     },
     {
       "default": "none",
-      "key": "ui.langbar.punct_badge",
+      "key": "ui.langbar.badge",
       "type": "enum",
       "values": [
         "none",
-        "corner_triangle",
-        "outer_ring",
-        "bottom_bar",
-        "circle_square",
-        "ring_dot"
+        "corner"
       ]
     },
     {
       "default": 1.0,
-      "key": "ui.langbar.punct_badge_scale",
-      "type": "float"
-    },
-    {
-      "default": false,
-      "key": "ui.langbar.full_width_mark",
-      "type": "bool"
-    },
-    {
-      "default": 1.0,
-      "key": "ui.langbar.full_width_mark_scale",
+      "key": "ui.langbar.badge_scale",
       "type": "float"
     },
     {
@@ -1585,24 +1571,34 @@
       "type": "float"
     },
     {
-      "default": true,
-      "key": "ui.langbar.colored",
-      "type": "bool"
-    },
-    {
-      "default": "#2288E0",
-      "key": "ui.langbar.punct_color_cn",
-      "type": "str"
-    },
-    {
-      "default": "#EE9922",
-      "key": "ui.langbar.punct_color_en",
-      "type": "str"
-    },
-    {
-      "default": "#E0447A",
-      "key": "ui.langbar.full_width_color",
-      "type": "str"
+      "default": [
+        {
+          "color_dark": "#2288E0",
+          "color_light": "#2288E0",
+          "corner": "bottom_right",
+          "enabled": true,
+          "scale": 1.0,
+          "state": "punct_cn"
+        },
+        {
+          "color_dark": "#EE9922",
+          "color_light": "#EE9922",
+          "corner": "bottom_right",
+          "enabled": true,
+          "scale": 1.0,
+          "state": "punct_en"
+        },
+        {
+          "color_dark": "#E0447A",
+          "color_light": "#E0447A",
+          "corner": "top_right",
+          "enabled": true,
+          "scale": 1.0,
+          "state": "full_width"
+        }
+      ],
+      "key": "ui.langbar.badges",
+      "type": "structlist"
     },
     {
       "default": "英",

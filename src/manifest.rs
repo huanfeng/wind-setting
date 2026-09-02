@@ -412,6 +412,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_ordered_pairs",
     "dialog_button_open_pairs",
     "dialog_button_comment_dicts",
+    "dialog_button_langbar_badges",
 ];
 
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -436,7 +437,8 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_mix_members"
         | "dialog_button_ordered_pairs"
         | "dialog_button_open_pairs"
-        | "dialog_button_comment_dicts" => build_dialog_button(state, key, item, cfg),
+        | "dialog_button_comment_dicts"
+        | "dialog_button_langbar_badges" => build_dialog_button(state, key, item, cfg),
         other => {
             // 名单说能渲染、match 却没有分支 ⇒ 名单与实现脱节，debug 构建当场炸。
             // release 下仍回落占位符（灰字比崩溃好），故不用 unreachable!。
@@ -1892,6 +1894,10 @@ fn build_dialog_body_inner(
         // 注释词库：可增删的条目列表 + 每条五个字段，manifest 的「一个 key 一个控件」
         // 套不上，走专用对话框（销掉 capabilities 里 `ui.comment_dicts` 那条 UNCOVERED）。
         build_dialog_button_comment_dicts(state, key, cfg)
+    } else if item.typ == "dialog_button_langbar_badges" {
+        // 语言栏角标规则：可增删的条目列表 + 每条五个字段，与注释词库同形态，
+        // manifest 的「一个 key 一个控件」套不上，走专用对话框。
+        build_dialog_button_langbar_badges(state, key, cfg)
     } else if item.typ == "dialog_button_ordered_pairs" {
         // 顺序有语义的 strlist（如 ui.toolbar.items）。与下面 `cap_ty == "strlist"` 那条
         // 通用分支的分野是**顺序是否被 core 消费**，而 capability 里只有类型没有这个信息，
@@ -2798,6 +2804,48 @@ fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) 
 
     let visible = ui.visible;
     register_dialog(state, build_comment_dicts_dialog(&ui));
+    visible
+}
+
+/// 语言栏角标规则（`ui.langbar.badges`）：可增删的条目列表，走专用对话框。
+///
+/// 与 `comment_dicts` 逐行同构（seed / writer / loader / getter 四件套 + register_dialog）。
+/// 之所以不把两者抽成一个泛型：四件套里真正不同的只有 `XxxUi` 那个类型，抽出来要么上
+/// trait 要么上宏，读起来都比这二十行难——而这类「列表型专用对话框」总共也只有两三个。
+fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::langbar_badges_dialog::{LangBarBadgesUi, build_langbar_badges_dialog};
+
+    let ui = LangBarBadgesUi::new();
+    ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
+
+    let ui_w = ui.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, ui_w.to_value());
+        }));
+
+    let ui_l = ui.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
+        }),
+    );
+
+    let ui_g = ui.clone();
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(move || ui_g.to_value()));
+
+    let visible = ui.visible;
+    register_dialog(state, build_langbar_badges_dialog(&ui));
     visible
 }
 
