@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use windui::core::EventCtx;
 use windui::prelude::*;
 
+use crate::auto_encode::AutoEncode;
 use crate::dialogs::schema_manager::engine_label;
 use crate::rpc;
 use crate::state::SchemaInfo;
@@ -232,6 +233,9 @@ pub struct DictManagerState {
     pub edit_position: Signal<String>,
     /// 编辑模式的原始键 (code, text)；None = 新增模式。
     editing_orig: Rc<RefCell<Option<(String, String)>>>,
+    /// 自动出码状态（词条一变即反查编码）。所有**外部改写** `edit_code`/`edit_text` 的地方
+    /// 都要跟一句 `auto_encode.reseed()`，否则那次改写会被判成「用户手改编码」而停掉自动。
+    pub auto_encode: AutoEncode,
     /// 快捷输入的模板变量提示，`[(kind, [(变量名, 说明)])]`。
     ///
     /// 懒加载 + 常驻缓存：它是静态数据（core 的编译期常量），一次 RPC 取完够用整个会话，
@@ -449,9 +453,13 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
 /// `\r\n` / 裸 `\r` 一并归一：来源可能是从别处粘贴进来的 Windows 行尾，漏掉的话 core
 /// 落库的文本会带一个不可见的 `\r`，表现为上屏时多一个诡异空白，且从界面上完全看不出来。
 ///
+/// 快捷加词小窗（`add_word_window`）的词条框改多行之后同样在用它——**不要各写一份**，
+/// 两个界面提交的是同一个 `dict.add`，口径分叉的表现是「同一段文字从这个窗进去能用、
+/// 从那个窗进去多一个不可见字符」。
+///
 /// **只动换行，不动反斜杠**——用户写的 `\\`（字面反斜杠）与 `$CC(...)` 里的路径都已是
 /// 转义域写法，再转一层会让反斜杠每保存一轮翻一倍（同 `phrase_import` 那条分享路径的教训）。
-fn escape_input_newlines(s: &str) -> String {
+pub(crate) fn escape_input_newlines(s: &str) -> String {
     if !s.contains('\n') && !s.contains('\r') {
         return s.to_string();
     }
@@ -531,6 +539,7 @@ impl DictManagerState {
             edit_weight: signal("0".to_string()),
             edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
+            auto_encode: AutoEncode::new(),
             quick_vars: Rc::new(RefCell::new(None)),
             shadow_orig: Rc::new(RefCell::new(None)),
             shadow_cand_id: Rc::new(RefCell::new(String::new())),
@@ -2068,6 +2077,8 @@ impl DictManagerState {
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
         self.edit_l_text.set(lt.into());
+        // 预填字段同样会 bump 版本号，不复位就会被自动出码判成「用户手改编码」。
+        self.auto_encode.reseed();
         self.edit_visible.set(true);
     }
 
@@ -2107,13 +2118,21 @@ impl DictManagerState {
         self.navigate_to(domain, Some(sub));
 
         *self.editing_orig.borrow_mut() = None;
-        self.edit_code.set(code.to_string());
+        // core 只给词条不给码时当场出一次：自动出码的叶子以构建时版本为基线、不管预填，
+        // 少了这一步用户看到的就是「词条填好了、编码空着」。出不了码就留空。
+        let code = if code.trim().is_empty() && !text.trim().is_empty() {
+            self.encode_text_silent(text).unwrap_or_default()
+        } else {
+            code.to_string()
+        };
+        self.edit_code.set(code);
         self.edit_text.set(text.to_string());
         self.edit_weight.set("1200".to_string());
         self.edit_position.set("0".to_string());
         self.edit_title.set("添加用户词库".to_string());
         self.edit_l_code.set("编码".to_string());
         self.edit_l_text.set("词条".to_string());
+        self.auto_encode.reseed();
         self.edit_visible.set(true);
     }
 
@@ -2133,6 +2152,8 @@ impl DictManagerState {
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
         self.edit_l_text.set(lt.into());
+        // 回填已有词条不算用户手改；此后用户改词条仍会自动重算编码（改了词，旧码本就不对了）。
+        self.auto_encode.reseed();
         self.edit_visible.set(true);
     }
 
@@ -2191,9 +2212,37 @@ impl DictManagerState {
         self.cancel_view();
     }
 
-    /// 由"出码"按钮触发：用户词库下按词条反查编码填入编码框。
+    /// 按当前类别为 `text` 反查编码。`Ok(None)` = 出不了码（core 回空码，典型是纯符号）。
+    ///
+    /// **出不了码时绝不写回空串**：编码框里可能已经有一个用户手填的、能用的码，
+    /// 被一个符号抹掉是净损失。自动出码与手动按钮共用这一条判据。
+    pub fn encode_text(&self, text: &str) -> Result<Option<String>, String> {
+        let spec = self.current_spec();
+        if !spec.ops.encode || text.trim().is_empty() {
+            return Ok(None);
+        }
+        // 同 `save_calls`：`dict.encode` 也走 `store_text` 还原，收的是转义形态。
+        // 词条框改多行后这里若发真换行，core 那侧还原不动它，逐字反查会撞上一个
+        // 不可读音的字符而整条出不了码——按钮看着"没反应"。
+        let text = escape_input_newlines(text);
+        let mut p = self.scoped_params();
+        p.insert("text".into(), json!(text));
+        let v = rpc::call_core(spec.rpc.encode, &Value::Object(p))?;
+        let code = v.as_str().unwrap_or_default().trim().to_string();
+        Ok(if code.is_empty() { None } else { Some(code) })
+    }
+
+    /// 自动出码叶子用的静默版：失败一律当作「出不了码」。
+    ///
+    /// 刻意不提示：这条路每敲一个字就跑一次，把 RPC 错误弹成 toast 会变成一串刷屏，
+    /// 而用户此刻要的只是「编码框先别动」。真要知道为什么，点「生成编码」会说。
+    pub fn encode_text_silent(&self, text: &str) -> Option<String> {
+        self.encode_text(text).ok().flatten()
+    }
+
+    /// 由「生成编码」按钮触发：按词条反查编码填入编码框，并恢复自动生成。
     pub fn encode_current(&self) {
-        if self.current_category() != WordCategory::UserDict {
+        if !self.current_spec().ops.encode {
             return;
         }
         let text = self.edit_text.get();
@@ -2201,19 +2250,15 @@ impl DictManagerState {
             self.notify_info("请先填写词条");
             return;
         }
-        // 同 `save_calls`：`dict.encode` 也走 `store_text` 还原，收的是转义形态。
-        // 词条框改多行后这里若发真换行，core 那侧还原不动它，逐字反查会撞上一个
-        // 不可读音的字符而整条出不了码——按钮看着"没反应"。
-        let text = escape_input_newlines(&text);
-        let mut p = self.scoped_params();
-        p.insert("text".into(), json!(text));
-        match rpc::call_core("dict.encode", &Value::Object(p)) {
-            Ok(v) => {
-                if let Some(code) = v.as_str() {
-                    self.edit_code.set(code.to_string());
-                }
+        match self.encode_text(&text) {
+            Ok(Some(code)) => {
+                self.edit_code.set(code);
+                // 先写码再复位：这次写回不算用户手改，且把自动生成重新打开——
+                // 点这个按钮本身就表达了「我要自动算出来的那个码」。
+                self.auto_encode.reseed();
             }
-            Err(e) => self.notify_err(&format!("出码失败: {e}")),
+            Ok(None) => self.notify_info("无法为该词条生成编码，已保留原编码"),
+            Err(e) => self.notify_err(&format!("生成编码失败: {e}")),
         }
     }
 

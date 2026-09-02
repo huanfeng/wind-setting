@@ -6,6 +6,7 @@
 //! 无边框窗口 + 自定义标题栏，7 Tab 清单驱动（manifest 分组），运行时明暗换肤。
 
 mod add_word_window;
+mod auto_encode;
 mod capabilities;
 mod cli;
 mod config;

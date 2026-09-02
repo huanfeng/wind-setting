@@ -5,7 +5,8 @@
 
 use windui::prelude::*;
 
-use crate::widgets::flat_panel;
+use crate::auto_encode::auto_encode_node;
+use crate::widgets::{ENCODE_BTN_W, clear_text_button, flat_panel, paste_button};
 
 use super::state::DictManagerState;
 
@@ -26,6 +27,7 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .fill()
         .child(build_confirm_dialog(mgr))
         .child(build_edit_dialog(mgr))
+        .child(build_auto_encode(mgr))
         .child(build_quick_dialog(mgr))
         .child(build_common_dialog(mgr))
         .child(build_shadow_dialog(mgr))
@@ -422,9 +424,10 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .weight(1.0),
         )
         .child(
-            Element::button("出码")
+            Element::button("生成编码")
                 .small()
                 .outline_soft()
+                .min_width(ENCODE_BTN_W)
                 .on_click(move |_| encode.encode_current())
                 .visible_when(move || enc_vis.current_spec().ops.encode),
         );
@@ -439,13 +442,22 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
     //
     // 框里敲下的真换行由 `save_calls` 统一投影成字面 `\n` 再发给 core（core 收的是
     // 转义形态，见 `wind-webdata` 的 `ui_text`/`store_text` 一对）。
-    let text_field = Element::row().weight(1.0).cross(Align::Center).child(
-        Element::text_input(mgr.edit_text, "")
-            .multiline()
-            .wrap(true)
-            .height(88)
-            .weight(1.0),
-    );
+    //
+    // 尾部「粘贴 / 清空」与编码行的「生成编码」等宽对齐（见 `widgets::ENCODE_BTN_W`）。
+    // 这一行顶对齐而非居中：正文框有 88 高，两个小按钮吊在正中间会离标签很远。
+    let text_field = Element::row()
+        .weight(1.0)
+        .cross(Align::Start)
+        .spacing(8)
+        .child(
+            Element::text_input(mgr.edit_text, "")
+                .multiline()
+                .wrap(true)
+                .height(88)
+                .weight(1.0),
+        )
+        .child(paste_button(mgr.edit_text, false))
+        .child(clear_text_button(mgr.edit_text));
 
     let body = Element::col()
         .width_match()
@@ -498,6 +510,27 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(Element::divider())
         .child(footer);
     Element::dialog(mgr.edit_visible, frame)
+}
+
+/// 加/改词对话框的自动出码叶子（0×0 不可见）：词条一变即反查编码填进编码框。
+///
+/// 挂在对话框**外面**的同一个 stack 里，而不是塞进 `build_edit_dialog` 的面板：那是个带
+/// `spacing(10)` 的 col，多一个零尺寸子节点就多一道 10px 空隙。
+///
+/// `active` 两条缺一不可：
+/// - 对话框关着时不能跑——`edit_code`/`edit_text` 被快捷输入、常用字两个对话框**复用**成
+///   别的字段（前者存类别、后者存那个字），跑起来就是往它们身上写编码。
+/// - 当前类别不支持出码时不能跑——短语的「编码」是用户自定的缩写，没有反查这回事。
+fn build_auto_encode(mgr: &DictManagerState) -> Element {
+    let act = mgr.clone();
+    let enc = mgr.clone();
+    auto_encode_node(
+        mgr.auto_encode,
+        mgr.edit_text,
+        mgr.edit_code,
+        move || act.edit_visible.get() && act.current_spec().ops.encode,
+        move |t| enc.encode_text_silent(t),
+    )
 }
 
 /// 快捷输入格式的添加 / 编辑：类别 + 模板 + 本类可用变量提示。
@@ -926,4 +959,133 @@ fn build_confirm_dialog(mgr: &DictManagerState) -> Element {
                 ),
         );
     Element::dialog(mgr.confirm_visible, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::SchemaInfo;
+    use windui::core::Tree;
+    use windui::geometry::Size;
+
+    /// 建一个「五笔 · 用户词库」的场（同 `state.rs` 各用例的建场方式）。
+    fn user_dict_state() -> DictManagerState {
+        let st = DictManagerState::new();
+        *st.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        st.domain.set(super::super::state::GLOBAL_DOMAINS);
+        st.sub_tab.set(0); // 用户词库
+        st
+    }
+
+    fn frame(tree: &mut Tree) {
+        tree.layout_root(Size::new(900, 700), &mut windui::text::NullTextEngine);
+    }
+
+    /// 自动出码在**对话框这棵真树上**跑得起来：词条一变，编码跟着出；
+    /// 用户手改编码之后不再自动覆盖。
+    ///
+    /// 走真实 `layout_root`（`dispatch_reactive_updates` 是 `on_update` 唯一的驱动点）：
+    /// 只测 `encode_text` 的话，「叶子挂没挂进 stack、`active` 判据写没写对」这一半
+    /// 照样全绿——而那一半才是这个功能会坏的地方。
+    #[test]
+    fn edit_dialog_auto_encodes_and_yields_to_manual_edit() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let st = user_dict_state();
+        st.open_add();
+        let mut tree = Tree::new();
+        let id = build_dict_dialogs(&st).build(&mut tree);
+        tree.root = Some(id);
+        frame(&mut tree); // 基线帧（open_add 的预填在此被 reseed 吸收）
+
+        st.edit_text.set("工人".into());
+        frame(&mut tree);
+        assert_eq!(
+            st.edit_code.get(),
+            "ab",
+            "词条变化后自动出码没把编码填进去 ⇒ 叶子没挂上或 active 判据不成立"
+        );
+
+        // 再变一次：首次自动写回若被自己判成「用户手改」，这一步就不会再动。
+        st.edit_text.set("工人们".into());
+        frame(&mut tree);
+        assert_eq!(
+            st.edit_code.get(),
+            "abc",
+            "自动出码只生效一次 ⇒ 写回没记进基线"
+        );
+
+        // 用户手改编码 → 让位于手动。
+        st.edit_code.set("mine".into());
+        frame(&mut tree);
+        st.edit_text.set("工人阶级".into());
+        frame(&mut tree);
+        assert_eq!(st.edit_code.get(), "mine", "手改过编码后不得再被自动覆盖");
+
+        // 点「生成编码」（= `encode_current`）恢复自动。
+        st.encode_current();
+        frame(&mut tree);
+        assert_eq!(st.edit_code.get(), "abcd", "「生成编码」应按当前词条重算");
+        st.edit_text.set("工人".into());
+        frame(&mut tree);
+        assert_eq!(st.edit_code.get(), "ab", "「生成编码」之后应恢复自动生成");
+    }
+
+    /// 出不了码时保留原编码。mock 里 BMP 外字符出不了码（同真实的「方案未配拆字」）。
+    #[test]
+    fn unencodable_text_keeps_existing_code_in_dialog() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let st = user_dict_state();
+        st.open_add();
+        let mut tree = Tree::new();
+        let id = build_dict_dialogs(&st).build(&mut tree);
+        tree.root = Some(id);
+        frame(&mut tree);
+
+        st.edit_text.set("工人".into());
+        frame(&mut tree);
+        assert_eq!(st.edit_code.get(), "ab");
+
+        st.edit_text.set("𠀀".into()); // 扩展区生僻字：出不了码
+        frame(&mut tree);
+        assert_eq!(
+            st.edit_code.get(),
+            "ab",
+            "出不了码时必须保留原编码，不能清空"
+        );
+    }
+
+    /// 对话框关着时不许跑：`edit_code`/`edit_text` 被快捷输入、常用字两个对话框复用成
+    /// 别的字段（类别 / 那个字），跑起来就是往它们身上写编码。
+    #[test]
+    fn auto_encode_is_inert_while_dialog_hidden() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let st = user_dict_state();
+        let mut tree = Tree::new();
+        let id = build_dict_dialogs(&st).build(&mut tree);
+        tree.root = Some(id);
+        frame(&mut tree);
+
+        // 快捷输入对话框那套用法：edit_code 存类别、edit_text 存模板。
+        st.edit_code.set("date".into());
+        st.edit_text.set("今天是 ${date}".into());
+        frame(&mut tree);
+        assert_eq!(st.edit_code.get(), "date", "对话框关着时不得改写 edit_code");
+    }
 }

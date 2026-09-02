@@ -1576,8 +1576,15 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "dict.search" => json!([
             { "code": "aaaa", "text": "工", "weight": 0 }
         ]),
-        // 加词自动出码：mock 返回占位码，便于对话框演示。
-        "dict.encode" => json!("aaaa"),
+        // 加词自动出码：与批量出码同一套占位规则（每字一个字母、BMP 外字符出不了码），
+        // 而不是恒定的 "aaaa"——离线演示时词条一变编码就跟着变，才看得出"自动"这回事，
+        // 也才有一条能离线复现的「出不了码」分支（见 `mock_word_code`）。
+        "dict.encode" => json!(mock_word_code(
+            params
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+        )),
         // 批量出码（纯词列表导入）。契约要害是 **codes 与 texts 同序等长**，
         // 出不了码回空串而非省略——客户端靠下标把码配回词。mock 用「BMP 外的生僻字
         // 出不了码」来复现真实的部分失败，好让 UI 那条跳过分支也能离线验证。

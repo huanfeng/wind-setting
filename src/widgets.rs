@@ -692,6 +692,57 @@ pub fn key_chip(key: &str) -> Element {
         .border_role(Role::Border, 1)
 }
 
+// ── 加/改词表单的尾部小按钮 ────────────────────────────────────────────────
+//
+// 两处加词界面（快捷加词小窗 `add_word_window`、词库页加/改词对话框 `pages::dict::dialogs`）
+// 共用这一组，连宽度一起共用：`ENCODE_BTN_W == TEXT_BTN_W * 2 + 8`（两按钮间距 8），
+// 「编码」行与「词条」行的输入框右边线才能对齐。改宽度改这里一处。
+
+/// 「粘贴」「清空」单个按钮的最小宽度。
+pub const TEXT_BTN_W: i32 = 46;
+/// 「生成编码」按钮的最小宽度（= 两个 [`TEXT_BTN_W`] + 一个 8px 间距）。
+pub const ENCODE_BTN_W: i32 = TEXT_BTN_W * 2 + 8;
+
+/// 词条输入框尾部的「粘贴」按钮：从剪贴板取文本**整体替换** `text`。
+///
+/// `single_line=true` 时抹掉换行——单行 `text_input` 显示不了换行，粘一段多行文本进去
+/// 会得到一串看不见的控制字符，直到提交才发现词条不对。多行框只归一 `\r\n` → `\n`。
+///
+/// 用 `min_width` 而非 `width`：定宽会把文字裁掉（同下拉那个坑），这里只要一个下限来对齐。
+pub fn paste_button(text: Signal<String>, single_line: bool) -> Element {
+    Element::button("粘贴")
+        .small()
+        .outline_soft()
+        .min_width(TEXT_BTN_W)
+        .on_click(move |ctx| {
+            let raw = ctx.clipboard_get().unwrap_or_default();
+            let s = if single_line {
+                raw.replace(['\r', '\n'], "")
+            } else {
+                raw.replace("\r\n", "\n").replace('\r', "\n")
+            };
+            let s = s.trim().to_string();
+            if s.is_empty() {
+                ctx.toast("剪贴板里没有可粘贴的文本");
+                return;
+            }
+            text.set(s);
+        })
+}
+
+/// 词条输入框尾部的「清空」按钮：只清词条本身。
+///
+/// 编码不在这里清，但**会跟着空掉**——`auto_encode` 那边把「词条为空」当成「没有可算的
+/// 东西」，自动把编码一并清掉（前提是用户没手改过编码）。两件事分开写是有意的：清空按钮
+/// 只管自己那个框，编码怎么跟随由自动出码一处说了算，逐字删到空与点清空因此表现一致。
+pub fn clear_text_button(text: Signal<String>) -> Element {
+    Element::button("清空")
+        .small()
+        .outline_soft()
+        .min_width(TEXT_BTN_W)
+        .on_click(move |_| text.set(String::new()))
+}
+
 /// 待实现占位提示（标注 wind-ui-rust 能力缺口处）。
 pub fn todo_hint(text: &str) -> Element {
     Element::label(text)

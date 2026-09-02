@@ -16,9 +16,12 @@
 use serde_json::json;
 use windui::prelude::*;
 
+use crate::auto_encode::{AutoEncode, auto_encode_node};
 use crate::cli::AddWordParams;
+use crate::pages::dict::state::escape_input_newlines;
 use crate::state::{SchemaInfo, load_schemas};
 use crate::theme_def::theme_for;
+use crate::widgets::{ENCODE_BTN_W, clear_text_button, paste_button};
 
 /// 从 schema.list 解析目标方案显示名（仅用于标题，best-effort）。
 /// 精确 id 命中取其名；未命中且传入非空（可能是拼音变体 id）→ 取拼音域代表名；
@@ -61,23 +64,26 @@ pub fn run(params: AddWordParams) {
         &load_schemas(),
     )));
     let schema_id = signal(params.schema.clone());
-    let code = signal(params.code.clone());
+    let code = signal(initial_code(&params));
     let text = signal(params.text.clone());
     let weight = signal("1200".to_string());
     let error = signal(String::new());
+    let auto = AutoEncode::new();
 
-    let root = build_form(title, schema_id, code, text, weight, error);
+    let root = build_form(title, schema_id, code, text, weight, error, auto);
 
     let app_id = crate::single_instance_app_id(true);
-    App::new("添加用户词库", 400, 300)
+    App::new("添加用户词库", 400, 360)
         // 二次启动：重新解析参数并重填字段（复用同一小窗，不新起进程）。
         .single_instance(app_id, move |argv| {
             if let Some(p) = crate::cli::parse_add_word(&argv) {
                 title.set(title_text(&resolve_schema_name(&p.schema, &load_schemas())));
+                code.set(initial_code(&p));
                 schema_id.set(p.schema);
-                code.set(p.code);
                 text.set(p.text);
                 error.set(String::new());
+                // 预填不是「用户手改编码」：不复位的话第二次深链进来就再也不自动出码了。
+                auto.reseed();
             }
         })
         .frameless()
@@ -87,6 +93,23 @@ pub fn run(params: AddWordParams) {
         .screenshot_from_args()
         .content(root)
         .run();
+}
+
+/// 开窗时编码框的初值：core 给了码就用它；只给词条没给码时**当场出一次**。
+///
+/// 自动出码那个叶子以构建时的版本为基线（构建帧刻意不触发），故这一步不能指望它——
+/// 少了这一步，从输入法带着词进来看到的就是「词条填好了、编码空着」，用户还得先点一下
+/// 「生成编码」，「自动计算编码」这件事在最常见的入口上恰好不生效。
+///
+/// 出不了码就留空（同「出不了码不清空」的口径），此后照常可手填或点按钮。
+fn initial_code(p: &AddWordParams) -> String {
+    if !p.code.trim().is_empty() || p.text.trim().is_empty() {
+        return p.code.clone();
+    }
+    encode_text(&p.schema, &p.text)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// 标签 + 输入行（左标签定宽，右输入撑满）。
@@ -104,7 +127,24 @@ fn field(label: &str, input: Element) -> Element {
         .child(input)
 }
 
-/// 构建整窗表单：标题栏（可拖动 + 关闭）· 编码/出码 · 词条 · 权重 · 错误提示 · 取消/确定。
+/// 按方案反查编码。`Ok(None)` = 出不了码（core 回空码，典型是纯符号），
+/// 调用方据此**保持原编码不动**——用户可能已手填了一个能用的码，被一个符号抹掉是净损失。
+fn encode_text(schema_id: &str, text: &str) -> Result<Option<String>, String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    // 词条框是多行的，而 core 收的是**转义形态**（`store_text` 还原）。发真换行过去，
+    // core 那侧还原不动它，逐字反查会撞上一个不可读音的字符而整条出不了码——
+    // 表现是「词条明明填了，编码就是不出来」。同 `DictManagerState::encode_text`。
+    let t = escape_input_newlines(t);
+    let v = crate::rpc::call_core("dict.encode", &json!({ "schemaId": schema_id, "text": t }))?;
+    let c = v.as_str().unwrap_or_default().trim().to_string();
+    Ok(if c.is_empty() { None } else { Some(c) })
+}
+
+/// 构建整窗表单：标题栏（可拖动 + 关闭）· 编码/生成编码 · 多行词条/粘贴/清空 · 权重 ·
+/// 错误提示 · 取消/确定，外加一个不可见的自动出码叶子。
 fn build_form(
     title: Signal<String>,
     schema_id: Signal<String>,
@@ -112,6 +152,7 @@ fn build_form(
     text: Signal<String>,
     weight: Signal<String>,
     error: Signal<String>,
+    auto: AutoEncode,
 ) -> Element {
     // 标题栏：可拖动区 + 标题 + 关闭按钮（window_button::Close 内置 request_close）。
     let titlebar = Element::row()
@@ -131,47 +172,71 @@ fn build_form(
         )
         .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text));
 
-    // 编码行：输入 + 「出码」按钮（dict.encode，手动出码；core 按方案判拼音/五笔）。
+    // 编码行：输入 + 「生成编码」按钮（dict.encode，core 按方案判拼音/五笔）。
+    // 平时编码由词条自动生成（见下面的 auto 叶子），这个按钮是**手改编码之后的回头路**：
+    // 点它即重新按词条生成，并复位「用户手改」标记恢复自动。
     let code_input = Element::row()
         .weight(1.0)
         .cross(Align::Center)
         .spacing(8)
         .child(Element::text_input(code, "").height(34).weight(1.0))
         .child(
-            Element::button("出码")
+            Element::button("生成编码")
                 .small()
                 .outline_soft()
+                .min_width(ENCODE_BTN_W)
                 .on_click(move |_| {
-                    let t = text.get().trim().to_string();
-                    if t.is_empty() {
+                    let t = text.get();
+                    if t.trim().is_empty() {
                         error.set("请先填写词条".to_string());
                         return;
                     }
-                    let sid = schema_id.get();
-                    match crate::rpc::call_core(
-                        "dict.encode",
-                        &json!({ "schemaId": sid, "text": t }),
-                    ) {
-                        Ok(v) => {
-                            if let Some(s) = v.as_str() {
-                                code.set(s.to_string());
-                                error.set(String::new());
-                            }
+                    match encode_text(&schema_id.get(), &t) {
+                        Ok(Some(c)) => {
+                            code.set(c);
+                            // 先写码再复位：这次写回不算用户手改，且恢复自动生成。
+                            auto.reseed();
+                            error.set(String::new());
                         }
-                        Err(e) => error.set(format!("出码失败：{e}")),
+                        Ok(None) => error.set("无法为该词条生成编码，已保留原编码".to_string()),
+                        Err(e) => error.set(format!("生成编码失败：{e}")),
                     }
                 }),
         );
+
+    // 词条行：多行输入 + 粘贴 + 清空。与词库页加/改词对话框同款（同样的 88 高多行框、
+    // 同样的尾部按钮），两处界面做同一件事，不该一个单行一个多行。
+    // 顶对齐而非居中：正文框有 88 高，两个小按钮吊在正中间会离标签很远。
+    let text_input = Element::row()
+        .weight(1.0)
+        .cross(Align::Start)
+        .spacing(8)
+        .child(
+            Element::text_input(text, "")
+                .multiline()
+                .wrap(true)
+                .height(88)
+                .weight(1.0),
+        )
+        .child(paste_button(text, false))
+        .child(clear_text_button(text));
+
+    // 自动出码：词条一变即按当前方案反查编码；用户手改过编码后让位（见 `auto_encode`）。
+    // 小窗里没有「当前类别」这一维，恒生效。
+    let auto_node = auto_encode_node(
+        auto,
+        text,
+        code,
+        || true,
+        move |t| encode_text(&schema_id.get(), t).ok().flatten(),
+    );
 
     let body = Element::col()
         .width_match()
         .padding_xy(16, 12)
         .spacing(10)
         .child(field("编码", code_input))
-        .child(field(
-            "词条",
-            Element::text_input(text, "").height(34).weight(1.0),
-        ))
+        .child(field("词条", text_input))
         .child(field(
             "权重",
             Element::text_input(weight, "").width(90).height(34),
@@ -201,14 +266,15 @@ fn build_form(
                 .on_click(|ctx| ctx.request_close()),
         )
         .child(Element::button("确定").small().on_click(move |ctx| {
-            let t = text.get().trim().to_string();
+            // 多行框里敲下的真换行统一投影成字面 \n 再发 core（同词库页 `save_calls`）。
+            let t = escape_input_newlines(text.get().trim());
             let c = code.get().trim().to_string();
             if t.is_empty() {
                 error.set("词条不能为空".to_string());
                 return;
             }
             if c.is_empty() {
-                error.set("编码不能为空（可点「出码」生成）".to_string());
+                error.set("编码不能为空（可点「生成编码」）".to_string());
                 return;
             }
             let w: i64 = weight.get().trim().parse().unwrap_or(1200);
@@ -226,6 +292,8 @@ fn build_form(
         .child(titlebar)
         .child(Element::divider())
         .child(body)
+        // 0×0 不可见叶子，col 无 spacing 故不占位。
+        .child(auto_node)
         .child(Element::leaf().weight(1.0))
         .child(Element::divider())
         .child(footer)
