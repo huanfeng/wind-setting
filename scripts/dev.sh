@@ -48,6 +48,19 @@ TARGET="x86_64-pc-windows-gnu"
 ARTIFACT_NAME="wind_setting.exe"
 REMOTE_DIR=""   # 由 resolve_remote_dir 按 variant 填充
 
+# cargo 产物目录。不能拼 "target/" —— 本机若设了 build.target-dir / CARGO_TARGET_DIR
+# (多个 Rust 项目共用一份依赖编译产物, 省磁盘), 产物就不在项目内。向 cargo 要这个值,
+# 没设共享时返回的正是 <项目>/target, 与旧行为一致; cargo/jq 缺失则回落硬拼。
+_TDIR=""
+cargo_target_dir() {
+    if [ -z "$_TDIR" ]; then
+        _TDIR="$( cd "$PROJECT_ROOT" 2>/dev/null && cargo metadata --format-version 1 --no-deps 2>/dev/null \
+                  | jq -r '.target_directory // empty' 2>/dev/null )" || _TDIR=""
+        [ -n "$_TDIR" ] || _TDIR="$PROJECT_ROOT/target"
+    fi
+    printf '%s\n' "$_TDIR"
+}
+
 # ---------- 颜色 ----------
 if [ -t 1 ]; then
     C_CYAN='\033[36m'; C_YELLOW='\033[33m'; C_GREEN='\033[32m'
@@ -131,7 +144,7 @@ do_build() {
     local status=$?
 
     if [ $status -eq 0 ]; then
-        local dir="target/$TARGET/$targetdir"
+        local dir="$(cargo_target_dir)/$TARGET/$targetdir"
         local size
         size=$(ls -lh "$dir/$ARTIFACT_NAME" 2>/dev/null | awk '{print $5}')
         say "✓ 构建成功: $dir/$ARTIFACT_NAME ($size)"
@@ -154,7 +167,7 @@ do_push() {
         return 1
     fi
 
-    local src="target/$TARGET/$targetdir/$ARTIFACT_NAME"
+    local src="$(cargo_target_dir)/$TARGET/$targetdir/$ARTIFACT_NAME"
 
     if [ ! -f "$src" ]; then
         warn "未找到 $src, 先执行构建..."
