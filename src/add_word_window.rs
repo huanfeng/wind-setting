@@ -57,6 +57,9 @@ fn title_text(schema_name: &str) -> String {
 /// 运行加词小窗；不返回（App::run 进入消息循环，关窗即退进程）。
 pub fn run(params: AddWordParams) {
     let dark = std::env::args().any(|a| a == "--dark");
+    // 缺参补齐必须在算标题与初始编码**之前**：两者都吃 schema，补晚了标题显示不出方案名、
+    // 初始出码也会拿着空方案去问 core。
+    let params = resolve_params(&params);
 
     // 字段信号（Signal 为 Copy，可直接进多个闭包）。
     let title = signal(title_text(&resolve_schema_name(
@@ -77,6 +80,9 @@ pub fn run(params: AddWordParams) {
         // 二次启动：重新解析参数并重填字段（复用同一小窗，不新起进程）。
         .single_instance(app_id, move |argv| {
             if let Some(p) = crate::cli::parse_add_word(&argv) {
+                // 二次启动同样可能是裸 `--add-word`（用户从开始菜单再点一次），补齐口径
+                // 与首次开窗一致。
+                let p = resolve_params(&p);
                 title.set(title_text(&resolve_schema_name(&p.schema, &load_schemas())));
                 code.set(initial_code(&p));
                 schema_id.set(p.schema);
@@ -95,6 +101,99 @@ pub fn run(params: AddWordParams) {
         .run();
 }
 
+/// 向 core 取加词界面的默认上下文：`(目标方案 id, 最近上屏文本)`。
+///
+/// 取不到一律回空串（core 没起来、或旧版本没有这个方法）——窗口照常打开，只是没有默认
+/// 值，与本次改动前的行为相同。**不弹错**：用户可能就是想手填。
+fn add_word_context() -> (String, String) {
+    let Ok(v) = crate::rpc::call_core("dict.addWordContext", &json!({})) else {
+        return (String::new(), String::new());
+    };
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    (s("schemaId"), s("recentText"))
+}
+
+/// 读剪贴板并归一成词条框能用的形态（多行口径同 `widgets::paste_button`）。
+///
+/// 走 `windui::platform::Clipboard` 而不是 `EventCtx::clipboard_get`：这是**构建期**取
+/// 默认值，那时还没有事件上下文。同 `pages::dict::view` 的菜单项复制。
+fn clipboard_text() -> String {
+    use windui::core::ClipboardProvider;
+    windui::platform::Clipboard
+        .get_text()
+        .unwrap_or_default()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim()
+        .to_string()
+}
+
+/// 缺参时该用哪个来源——**纯决策**，两个来源都由调用方取好传进来。
+///
+/// 单独成函数是为了可测：`resolve_params` 要发 RPC、读剪贴板，测不了；而「哪个参数缺了
+/// 用谁补」正是本次要守住的东西。
+///
+/// 口径：**带了参数就原样用**（深链的意图已经明确，不该被默认值盖掉）；没带才补——方案
+/// 取 core 的加词目标方案，词条取剪贴板、剪贴板没有再取最近输入（与 Ctrl+Shift+= 在
+/// core 侧的优先级一致）。
+fn resolve_fields(
+    p: &AddWordParams,
+    clip: &str,
+    ctx_schema: &str,
+    ctx_recent: &str,
+) -> (String, String) {
+    let schema = if p.schema.trim().is_empty() {
+        ctx_schema.to_string()
+    } else {
+        p.schema.clone()
+    };
+    let text = if !p.text.trim().is_empty() {
+        p.text.clone()
+    } else if !clip.trim().is_empty() {
+        clip.to_string()
+    } else {
+        ctx_recent.to_string()
+    };
+    (schema, text)
+}
+
+/// 把 CLI 参数补成**能用**的一套字段。
+///
+/// `wind-setting --add-word` 这条裸入口不经输入法热键，schema 与 text 都是空的：方案为空
+/// 则 `dict.encode` 与 `dict.add` 都会失败，窗口看着正常却什么也做不了。这里按
+/// [`resolve_fields`] 的口径补齐。
+///
+/// 两个来源都**按需取**：参数齐全时一次 RPC 都不发，剪贴板就已经填上词条时也不去问
+/// core 要最近输入。
+fn resolve_params(p: &AddWordParams) -> AddWordParams {
+    let need_schema = p.schema.trim().is_empty();
+    let need_text = p.text.trim().is_empty();
+    if !need_schema && !need_text {
+        return p.clone();
+    }
+    let clip = if need_text {
+        clipboard_text()
+    } else {
+        String::new()
+    };
+    let (ctx_schema, ctx_recent) = if need_schema || (need_text && clip.is_empty()) {
+        add_word_context()
+    } else {
+        (String::new(), String::new())
+    };
+    let (schema, text) = resolve_fields(p, &clip, &ctx_schema, &ctx_recent);
+    AddWordParams {
+        text,
+        code: p.code.clone(),
+        schema,
+    }
+}
+
 /// 开窗时编码框的初值：core 给了码就用它；只给词条没给码时**当场出一次**。
 ///
 /// 自动出码那个叶子以构建时的版本为基线（构建帧刻意不触发），故这一步不能指望它——
@@ -110,6 +209,31 @@ fn initial_code(p: &AddWordParams) -> String {
         .ok()
         .flatten()
         .unwrap_or_default()
+}
+
+/// 词条框尾部的「最近」按钮：填入输入法里最近上屏的文字。
+///
+/// 与「粘贴」并列成一组 ＝ 加词的两个来源（剪贴板 / 最近输入），对应输入法端加词面板的
+/// Tab 切换。**从 Ctrl+Shift+= 进来时词条已经预填了剪贴板**，这个按钮就是那条路的另一半
+/// ——切到最近输入。
+///
+/// 取的是 core 侧**字符池上限**那么多字（`ADD_WORD_MAX_LEN`），不是两字：能整段一次上屏
+/// 的词说明词库里已经有它、本就不必加，真正要加的词散在多条上屏记录里，取末尾两字往往只
+///截到半个词。多出来的部分在多行框里删掉很便宜，少了却要回输入法重打一遍。
+fn recent_button(text: Signal<String>, error: Signal<String>) -> Element {
+    Element::button("最近")
+        .small()
+        .outline_soft()
+        .width(ENCODE_BTN_W)
+        .on_click(move |_| {
+            let (_, recent) = add_word_context();
+            if recent.trim().is_empty() {
+                error.set("输入法里还没有最近输入的文字".to_string());
+                return;
+            }
+            error.set(String::new());
+            text.set(recent);
+        })
 }
 
 /// 标签 + 输入行（左标签定宽，右输入撑满）。
@@ -218,8 +342,18 @@ fn build_form(
                 .height(88)
                 .weight(1.0),
         )
-        .child(paste_button(text, false))
-        .child(clear_text_button(text));
+        // 三个按钮竖排：词条框有 88 高，正好容得下，且输入框宽度不必再让出一截。
+        //
+        // 宽度显式取 `ENCODE_BTN_W` 与上一行的「生成编码」对齐——两行的右边缘要齐平。
+        // 原先两按钮横排时这件事由 `ENCODE_BTN_W == TEXT_BTN_W * 2 + 8` 那条等式承担
+        // （见 widgets 里的注释），竖排之后那条等式在这里失效，改由本处显式声明接手。
+        .child(
+            Element::col()
+                .spacing(6)
+                .child(paste_button(text, false).width(ENCODE_BTN_W))
+                .child(recent_button(text, error))
+                .child(clear_text_button(text).width(ENCODE_BTN_W)),
+        );
 
     // 自动出码：词条一变即按当前方案反查编码；用户手改过编码后让位（见 `auto_encode`）。
     // 小窗里没有「当前类别」这一维，恒生效。
@@ -297,4 +431,66 @@ fn build_form(
         .child(Element::leaf().weight(1.0))
         .child(Element::divider())
         .child(footer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(text: &str, schema: &str) -> AddWordParams {
+        AddWordParams {
+            text: text.to_string(),
+            code: String::new(),
+            schema: schema.to_string(),
+        }
+    }
+
+    /// 深链带齐了参数：两个默认来源一律不许插手。
+    #[test]
+    fn explicit_params_win_over_defaults() {
+        let (s, t) = resolve_fields(&params("你好", "wubi"), "剪贴板内容", "pinyin", "最近输入");
+        assert_eq!((s.as_str(), t.as_str()), ("wubi", "你好"));
+    }
+
+    /// 裸 `--add-word`：方案取 core 的加词目标方案，词条取剪贴板。
+    /// 方案补不上正是「窗口看着正常却什么都做不了」的根因。
+    #[test]
+    fn bare_launch_takes_current_schema_and_clipboard() {
+        let (s, t) = resolve_fields(&params("", ""), "量子纠缠", "wubi", "最近输入");
+        assert_eq!((s.as_str(), t.as_str()), ("wubi", "量子纠缠"));
+    }
+
+    /// 剪贴板没有可用内容 → 退到最近输入（与 Ctrl+Shift+= 在 core 侧的优先级一致）。
+    #[test]
+    fn falls_back_to_recent_when_clipboard_blank() {
+        for clip in ["", "   ", "\n\t "] {
+            let (_, t) = resolve_fields(&params("", ""), clip, "wubi", "最近输入");
+            assert_eq!(t, "最近输入", "剪贴板为 {clip:?} 时应退到最近输入");
+        }
+    }
+
+    /// 两个来源都空 → 词条留空，窗口照常打开（只是要手填）。
+    #[test]
+    fn empty_sources_leave_text_blank() {
+        let (s, t) = resolve_fields(&params("", ""), "", "wubi", "");
+        assert_eq!((s.as_str(), t.as_str()), ("wubi", ""));
+    }
+
+    /// 只缺其中一个：另一个不受影响。
+    #[test]
+    fn only_the_missing_field_is_filled() {
+        // 带了词条、没带方案
+        let (s, t) = resolve_fields(&params("你好", ""), "剪贴板", "wubi", "最近");
+        assert_eq!((s.as_str(), t.as_str()), ("wubi", "你好"));
+        // 带了方案、没带词条
+        let (s, t) = resolve_fields(&params("", "pinyin"), "剪贴板", "wubi", "最近");
+        assert_eq!((s.as_str(), t.as_str()), ("pinyin", "剪贴板"));
+    }
+
+    /// 全空白的参数等同于没带（`--text=" "` 这种）。
+    #[test]
+    fn blank_params_count_as_missing() {
+        let (s, t) = resolve_fields(&params("  ", "  "), "剪贴板", "wubi", "最近");
+        assert_eq!((s.as_str(), t.as_str()), ("wubi", "剪贴板"));
+    }
 }
