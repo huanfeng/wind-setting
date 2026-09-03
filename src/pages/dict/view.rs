@@ -664,6 +664,17 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             // 汉字块不出现此项（不是灰显）：整类操作对 8104 个默认字没有意义，core 也拒绝。
             if row.block_bulk_editable {
                 // 生僻在前：来用这个功能的人十有八九是想把某类符号关掉。
+                // 副标题给码位范围，让人点之前知道圈的是多大一片。
+                //
+                // ⚠️ 范围**可能为空**：emoji 是一个跨二十多个块的字符类（core 的
+                // `CharClass::range_text` 对它返回空串），给不出连续码位段。无脑套
+                // `U+{}` 会渲染出一个孤零零的「U+」，比不显示更糟。
+                // 措辞按「范围为空」而不是按「类名叫 emoji」分支：将来再有别的跨块字符类
+                // 时这句照样对，而写死 emoji 会在那时静默变成一句错话。
+                let subtitle = match row.block_range.as_str() {
+                    "" => "跨多个 Unicode 区块".to_string(),
+                    r => format!("U+{r}"),
+                };
                 for common in [false, true] {
                     let m = mgr.clone();
                     let r = row.clone();
@@ -674,7 +685,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                     );
                     ops.push(
                         MenuItem::run(label, move |_ctx| m.open_common_bulk(&r, common), false)
-                            .subtitle(format!("U+{}", row.block_range)),
+                            .subtitle(subtitle.clone()),
                     );
                 }
             }
