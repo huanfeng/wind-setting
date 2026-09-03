@@ -206,13 +206,10 @@ fn resolve_params(p: &AddWordParams) -> AddWordParams {
     } else {
         String::new()
     };
-    // 需要方案、或者要用剪贴板（截断得知道上限）、或者剪贴板空了要退到最近上屏——
-    // 三种情形都得问 core。参数齐全时（上面已提前返回）一次 RPC 都不发。
-    let ctx = if need_schema || need_text {
-        add_word_context()
-    } else {
-        AddWordContext::default()
-    };
+    // 走到这里必然缺了点什么（参数齐全的那一支上面已提前返回，一次 RPC 都不发），
+    // 而三种缺法都得问 core：缺方案要 schemaId、要用剪贴板得知道截断上限、剪贴板空了
+    // 还得退到最近上屏。故这里无条件调。
+    let ctx = add_word_context();
     let (schema, text) = resolve_fields(p, &clip, &ctx);
     AddWordParams {
         text,
