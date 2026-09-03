@@ -101,13 +101,25 @@ pub fn run(params: AddWordParams) {
         .run();
 }
 
-/// 向 core 取加词界面的默认上下文：`(目标方案 id, 最近上屏文本)`。
+/// 向 core 取加词界面的默认上下文。
 ///
-/// 取不到一律回空串（core 没起来、或旧版本没有这个方法）——窗口照常打开，只是没有默认
-/// 值，与本次改动前的行为相同。**不弹错**：用户可能就是想手填。
-fn add_word_context() -> (String, String) {
+/// 取不到一律回空（core 没起来、或旧版本没有这个方法）——窗口照常打开，只是没有默认值，
+/// 与本次改动前的行为相同。**不弹错**：用户可能就是想手填。
+#[derive(Default)]
+struct AddWordContext {
+    schema: String,
+    recent: String,
+    /// 加词字数上限（core 的 `ADD_WORD_MAX_LEN`）。0 = core 没说，此时不截断。
+    ///
+    /// 上限必须由 core 交代：本仓够不着那个常量（core 的 crate 在这里是 dev-dependency），
+    /// 自己猜一个数迟早与 core 分叉，而分叉的表现是「填得进去、加不进来」——词条填了 15 字，
+    /// 「生成编码」出不来、「确定」被 core 的 `check_derivable_word` 拒掉。
+    max_len: usize,
+}
+
+fn add_word_context() -> AddWordContext {
     let Ok(v) = crate::rpc::call_core("dict.addWordContext", &json!({})) else {
-        return (String::new(), String::new());
+        return AddWordContext::default();
     };
     let s = |k: &str| {
         v.get(k)
@@ -115,7 +127,21 @@ fn add_word_context() -> (String, String) {
             .unwrap_or_default()
             .to_string()
     };
-    (s("schemaId"), s("recentText"))
+    AddWordContext {
+        schema: s("schemaId"),
+        recent: s("recentText"),
+        max_len: v.get("maxLen").and_then(|x| x.as_u64()).unwrap_or_default() as usize,
+    }
+}
+
+/// 按字符数截断（`max_len == 0` 即 core 没交代上限，原样返回）。
+///
+/// 按 `chars()` 而不是字节：中文一个字三字节，按字节截会把最后一个字劈成半个。
+fn truncate_chars(s: &str, max_len: usize) -> String {
+    if max_len == 0 || s.chars().count() <= max_len {
+        return s.to_string();
+    }
+    s.chars().take(max_len).collect()
 }
 
 /// 读剪贴板并归一成词条框能用的形态（多行口径同 `widgets::paste_button`）。
@@ -141,23 +167,22 @@ fn clipboard_text() -> String {
 /// 口径：**带了参数就原样用**（深链的意图已经明确，不该被默认值盖掉）；没带才补——方案
 /// 取 core 的加词目标方案，词条取剪贴板、剪贴板没有再取最近输入（与 Ctrl+Shift+= 在
 /// core 侧的优先级一致）。
-fn resolve_fields(
-    p: &AddWordParams,
-    clip: &str,
-    ctx_schema: &str,
-    ctx_recent: &str,
-) -> (String, String) {
+fn resolve_fields(p: &AddWordParams, clip: &str, ctx: &AddWordContext) -> (String, String) {
     let schema = if p.schema.trim().is_empty() {
-        ctx_schema.to_string()
+        ctx.schema.clone()
     } else {
         p.schema.clone()
     };
     let text = if !p.text.trim().is_empty() {
+        // 深链带来的词条不截断：core 那边已经按同一个上限取好了，再截一次只会掩盖分叉。
         p.text.clone()
     } else if !clip.trim().is_empty() {
-        clip.to_string()
+        // 剪贴板是**本仓自己读的**，core 没经手 ⇒ 上限要在这里落实。取前 N 字而不是整段
+        // 作废，与 core 侧加词面板的剪贴板口径一致（那边同样是截断 + ↓ 砍尾）。
+        truncate_chars(clip.trim(), ctx.max_len)
     } else {
-        ctx_recent.to_string()
+        // 最近上屏由 core 按上限取好，原样用。
+        ctx.recent.clone()
     };
     (schema, text)
 }
@@ -181,12 +206,14 @@ fn resolve_params(p: &AddWordParams) -> AddWordParams {
     } else {
         String::new()
     };
-    let (ctx_schema, ctx_recent) = if need_schema || (need_text && clip.is_empty()) {
+    // 需要方案、或者要用剪贴板（截断得知道上限）、或者剪贴板空了要退到最近上屏——
+    // 三种情形都得问 core。参数齐全时（上面已提前返回）一次 RPC 都不发。
+    let ctx = if need_schema || need_text {
         add_word_context()
     } else {
-        (String::new(), String::new())
+        AddWordContext::default()
     };
-    let (schema, text) = resolve_fields(p, &clip, &ctx_schema, &ctx_recent);
+    let (schema, text) = resolve_fields(p, &clip, &ctx);
     AddWordParams {
         text,
         code: p.code.clone(),
@@ -226,7 +253,7 @@ fn recent_button(text: Signal<String>, error: Signal<String>) -> Element {
         .outline_soft()
         .width(ENCODE_BTN_W)
         .on_click(move |_| {
-            let (_, recent) = add_word_context();
+            let recent = add_word_context().recent;
             if recent.trim().is_empty() {
                 error.set("输入法里还没有最近输入的文字".to_string());
                 return;
@@ -445,10 +472,24 @@ mod tests {
         }
     }
 
+    /// core 交代的上下文；`max_len` 取 10（与 core 的 `ADD_WORD_MAX_LEN` 现值一致，
+    /// 但本仓不该硬依赖那个数——测试只验「给了上限就截断」这条行为）。
+    fn ctx(schema: &str, recent: &str) -> AddWordContext {
+        AddWordContext {
+            schema: schema.to_string(),
+            recent: recent.to_string(),
+            max_len: 10,
+        }
+    }
+
     /// 深链带齐了参数：两个默认来源一律不许插手。
     #[test]
     fn explicit_params_win_over_defaults() {
-        let (s, t) = resolve_fields(&params("你好", "wubi"), "剪贴板内容", "pinyin", "最近输入");
+        let (s, t) = resolve_fields(
+            &params("你好", "wubi"),
+            "剪贴板内容",
+            &ctx("pinyin", "最近输入"),
+        );
         assert_eq!((s.as_str(), t.as_str()), ("wubi", "你好"));
     }
 
@@ -456,7 +497,7 @@ mod tests {
     /// 方案补不上正是「窗口看着正常却什么都做不了」的根因。
     #[test]
     fn bare_launch_takes_current_schema_and_clipboard() {
-        let (s, t) = resolve_fields(&params("", ""), "量子纠缠", "wubi", "最近输入");
+        let (s, t) = resolve_fields(&params("", ""), "量子纠缠", &ctx("wubi", "最近输入"));
         assert_eq!((s.as_str(), t.as_str()), ("wubi", "量子纠缠"));
     }
 
@@ -464,7 +505,7 @@ mod tests {
     #[test]
     fn falls_back_to_recent_when_clipboard_blank() {
         for clip in ["", "   ", "\n\t "] {
-            let (_, t) = resolve_fields(&params("", ""), clip, "wubi", "最近输入");
+            let (_, t) = resolve_fields(&params("", ""), clip, &ctx("wubi", "最近输入"));
             assert_eq!(t, "最近输入", "剪贴板为 {clip:?} 时应退到最近输入");
         }
     }
@@ -472,7 +513,7 @@ mod tests {
     /// 两个来源都空 → 词条留空，窗口照常打开（只是要手填）。
     #[test]
     fn empty_sources_leave_text_blank() {
-        let (s, t) = resolve_fields(&params("", ""), "", "wubi", "");
+        let (s, t) = resolve_fields(&params("", ""), "", &ctx("wubi", ""));
         assert_eq!((s.as_str(), t.as_str()), ("wubi", ""));
     }
 
@@ -480,17 +521,55 @@ mod tests {
     #[test]
     fn only_the_missing_field_is_filled() {
         // 带了词条、没带方案
-        let (s, t) = resolve_fields(&params("你好", ""), "剪贴板", "wubi", "最近");
+        let (s, t) = resolve_fields(&params("你好", ""), "剪贴板", &ctx("wubi", "最近"));
         assert_eq!((s.as_str(), t.as_str()), ("wubi", "你好"));
         // 带了方案、没带词条
-        let (s, t) = resolve_fields(&params("", "pinyin"), "剪贴板", "wubi", "最近");
+        let (s, t) = resolve_fields(&params("", "pinyin"), "剪贴板", &ctx("wubi", "最近"));
         assert_eq!((s.as_str(), t.as_str()), ("pinyin", "剪贴板"));
     }
 
     /// 全空白的参数等同于没带（`--text=" "` 这种）。
     #[test]
     fn blank_params_count_as_missing() {
-        let (s, t) = resolve_fields(&params("  ", "  "), "剪贴板", "wubi", "最近");
+        let (s, t) = resolve_fields(&params("  ", "  "), "剪贴板", &ctx("wubi", "最近"));
         assert_eq!((s.as_str(), t.as_str()), ("wubi", "剪贴板"));
+    }
+
+    /// 剪贴板超过 core 交代的上限 → **取前 N 字**，不是整段作废。
+    ///
+    /// 本仓自己读的剪贴板 core 没经手，上限只能在这里落实；不落实的话词条填了十几字，
+    /// 「生成编码」出不来、「确定」被 core 拒掉——又是一个「填得进去、加不进来」。
+    #[test]
+    fn overlong_clipboard_is_truncated_to_core_limit() {
+        let long = "量子纠缠态的测量与坍缩过程";
+        assert!(long.chars().count() > 10, "夹具本身要够长");
+        let (_, t) = resolve_fields(&params("", ""), long, &ctx("wubi", "最近"));
+        assert_eq!(t.chars().count(), 10, "应截到 core 交代的上限");
+        assert_eq!(
+            t, "量子纠缠态的测量与坍",
+            "截的是**开头**，与 ↓ 砍尾的方向一致"
+        );
+    }
+
+    /// core 没交代上限（旧版本、或 core 没起来）→ 不截断，原样填。
+    /// 猜一个数比不截断更糟：与 core 分叉后表现是静默丢字。
+    #[test]
+    fn no_limit_from_core_means_no_truncation() {
+        let long = "量子纠缠态的测量与坍缩过程";
+        let c = AddWordContext {
+            schema: "wubi".into(),
+            recent: String::new(),
+            max_len: 0,
+        };
+        let (_, t) = resolve_fields(&params("", ""), long, &c);
+        assert_eq!(t, long, "core 没说上限时不得自作主张截断");
+    }
+
+    /// 深链带来的词条不截断：core 那边已按同一上限取好，再截一次只会掩盖分叉。
+    #[test]
+    fn explicit_text_is_never_truncated() {
+        let long = "量子纠缠态的测量与坍缩过程";
+        let (_, t) = resolve_fields(&params(long, "wubi"), "", &ctx("wubi", "最近"));
+        assert_eq!(t, long);
     }
 }
