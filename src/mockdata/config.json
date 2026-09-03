@@ -57,6 +57,16 @@
    "remember_last_state": false,
    "state_scope": "global"
   },
+  "emoji": {
+   "categories": false,
+   "enabled": false,
+   "learn_freq": false,
+   "max_hosts": 1,
+   "max_per_word": 3,
+   "min_word_chars": 2,
+   "scope": "exact",
+   "show_as": "after"
+  },
   "enter_behavior": "commit",
   "filter_mode": "smart",
   "numpad_behavior": "direct",

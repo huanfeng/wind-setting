@@ -889,6 +889,56 @@
       "type": "strlist"
     },
     {
+      "default": false,
+      "key": "input.emoji.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "exact",
+      "key": "input.emoji.scope",
+      "type": "enum",
+      "values": [
+        "off",
+        "exact",
+        "all"
+      ]
+    },
+    {
+      "default": "after",
+      "key": "input.emoji.show_as",
+      "type": "enum",
+      "values": [
+        "after",
+        "tail",
+        "comment"
+      ]
+    },
+    {
+      "default": 3,
+      "key": "input.emoji.max_per_word",
+      "type": "int"
+    },
+    {
+      "default": 1,
+      "key": "input.emoji.max_hosts",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "input.emoji.min_word_chars",
+      "type": "int"
+    },
+    {
+      "default": false,
+      "key": "input.emoji.categories",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.emoji.learn_freq",
+      "type": "bool"
+    },
+    {
       "default": "follow",
       "key": "input.url.candidate_layout",
       "type": "enum",

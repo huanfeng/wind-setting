@@ -1488,6 +1488,96 @@ options = [
   { value = "其它", label = "其它", hint = "新版 Unicode 新增的、本程序还不认识的区块。区块表是逐块列举的，漏掉的都归这一档" },
 ]
 
+# ── Emoji ──
+# 按候选**文字**查表，不看编码，所以所有方案自动支持，不必给每个方案单独配。
+# 词表随程序附带（data/emoji/），首次开启时在本机建一次索引缓存。
+[[items]]
+key = "input.emoji.enabled"
+group = "input"
+section = "Emoji"
+type = "toggle"
+label = "候选里追加 emoji"
+hint = "打出词组后把对应的 emoji 加进候选（「开心」→ 😄）。首次开启会在本机建一次索引，稍等一下"
+
+[[items]]
+key = "input.emoji.show_as"
+group = "input"
+section = "Emoji"
+type = "select"
+label = "摆放位置"
+hint = "「紧跟词后」最直观，但后面候选的序号会往后挪；「列表末尾」序号完全不动，适合盲打"
+enabled_when = "input.emoji.enabled == true"
+options = [
+  { value = "after", label = "紧跟词后" },
+  { value = "tail", label = "列表末尾" },
+  { value = "comment", label = "只作灰字提示" },
+]
+
+[[items]]
+key = "input.emoji.scope"
+group = "input"
+section = "Emoji"
+type = "select"
+label = "什么词给配"
+hint = "「完整的词」只给打全了的词配；「所有候选」连半截词和补全词也配，噪音明显变大"
+enabled_when = "input.emoji.enabled == true"
+options = [
+  { value = "exact", label = "完整的词" },
+  { value = "all", label = "所有候选" },
+  { value = "off", label = "不配（等同关闭）" },
+]
+
+[[items]]
+key = "input.emoji.max_hosts"
+group = "input"
+section = "Emoji"
+type = "number"
+label = "给前几个候选配"
+hint = "默认 1 = 只给首选配，后面候选的序号基本不动。想打的词常不在首位而够不着 emoji 时，调大到一页的条数"
+min = 0
+max = 20
+enabled_when = "input.emoji.enabled == true"
+
+[[items]]
+key = "input.emoji.max_per_word"
+group = "input"
+section = "Emoji"
+type = "number"
+label = "一个词最多几个"
+hint = "词表里大多数词只有一个 emoji，这个上限主要用来收着下面的分类词"
+min = 1
+max = 10
+enabled_when = "input.emoji.enabled == true"
+
+[[items]]
+key = "input.emoji.min_word_chars"
+group = "input"
+section = "Emoji"
+type = "number"
+label = "词至少几个字"
+hint = "默认 2。单字（「一」→ 1️⃣）基本都是噪音"
+min = 1
+max = 8
+enabled_when = "input.emoji.enabled == true"
+
+[[items]]
+key = "input.emoji.categories"
+group = "input"
+section = "Emoji"
+type = "toggle"
+label = "启用分类词"
+hint = "打「动物」出一串动物、打「中餐」出一串食物。这类词一个能带出几十个，开了要靠上面的上限收着"
+enabled_when = "input.emoji.enabled == true"
+
+[[items]]
+key = "input.emoji.learn_freq"
+group = "input"
+section = "Emoji"
+type = "toggle"
+label = "emoji 参与调频"
+hint = "默认关。emoji 多是一次性点缀，让它参与调频会把常用字挤下去"
+enabled_when = "input.emoji.enabled == true"
+
 # ── 网址输入 ──
 [[items]]
 key = "input.url.enabled"
