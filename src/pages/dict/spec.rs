@@ -381,7 +381,10 @@ impl WordRow {
             // 后者钉死。压成两态之后用户再也回不到第一种。
             WordField::ClassDefault => match self.class_default {
                 Some(v) => common_label(v).to_string(),
-                None => "跟随出厂".to_string(),
+                // 「未设置」而不是「跟随默认」：本页那一列的表头就是「默认判定」，
+                // 值再叫「默认」会绕回自己。它说的是**用户没给这个类设过**——
+                // 判定因此由自带的那份配置决定，将来自带的改了它也跟着改。
+                None => "未设置".to_string(),
             },
             // 范围 + 标记合成一列（见 `COLS_CHARSETS` 里那条注释）。
             WordField::ClassScope => {
@@ -1045,16 +1048,16 @@ const COLS_COMMON: &[ColumnSpec] = &[
         field: WordField::CommonNow,
     },
     ColumnSpec {
-        header: "类型",
-        // 块名最长的是「带圈 CJK 字母及月份」，给得比两个判定列宽。
-        weight: 2.2,
-        field: WordField::Block,
-    },
-    ColumnSpec {
-        // ★ 与「类型」并列而不是取代它：块决定「整类批量」扫哪个码位区间，
-        // 字符类决定「改类的默认判定」影响谁——两个不同的操作，各看一列。
-        header: "字符类",
-        weight: 2.0,
+        // ⚠️ 这里原先是**两列**：「类型」（Unicode 区块）与「字符类」。并列的理由是
+        // 「块决定整类批量扫哪个区间、类决定改默认判定影响谁」——但用户看到的是两列
+        // 内容高度相似的东西（「表情符号」对「Emoji 表情」），分不清是必然的。
+        //
+        // ★ 既然「字符集分类」那一页已经能按类改判定，这里只需要回答一个问题：
+        // **这个字的判定归哪个类管**。区块信息仍在行数据里（`blockRange` /
+        // `blockBulkEditable`），整类批量的菜单与确认文案照常用它。
+        header: "所属类",
+        // 类名最长的是「带圈 CJK 字母及月份」，给得比两个判定列宽。
+        weight: 2.6,
         field: WordField::Class,
     },
 ];
@@ -1814,15 +1817,26 @@ mod tests {
         );
     }
 
-    /// 类型列必须真的在常用字的列定义里，否则上面那条解析测试是空转的。
+    /// 「所属类」列必须真的在常用字的列定义里，否则上面那条解析测试是空转的。
+    ///
+    /// ⚠️ 这里原先要求的是 `WordField::Block`（Unicode 区块）。两列并存时用户看到的是
+    /// 两列内容高度相似的东西（「表情符号」对「Emoji 表情」），分不清；合并成一列后
+    /// 回答的是唯一要紧的那个问题：**这个字的判定归哪个类管**。
+    ///
+    /// 区块数据仍在行里（`blockRange` / `blockBulkEditable`），整类批量照常用它——
+    /// 故 `Block` 字段本身不删，只是不再单独占一列。
     #[test]
-    fn common_chars_spec_has_block_column() {
+    fn common_chars_spec_has_class_column() {
         let cols = spec_for(WordCategory::CommonChars).columns;
         assert!(
-            cols.iter().any(|c| c.field == WordField::Block),
-            "常用字要有类型列"
+            cols.iter().any(|c| c.field == WordField::Class),
+            "常用字要有「所属类」列"
         );
-        assert_eq!(WordField::Block.rpc_key(), "block");
+        assert!(
+            !cols.iter().any(|c| c.field == WordField::Block),
+            "区块不再单独占一列——两列相似内容分不清，见本测试的文档"
+        );
+        assert_eq!(WordField::Class.rpc_key(), "class");
     }
     /// 整类操作必须**两个方向都提供**，不能按当前行的判定取反。
     ///

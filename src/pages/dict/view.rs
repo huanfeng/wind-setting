@@ -636,12 +636,12 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     if spec.category == super::spec::WordCategory::Charsets {
         // ★ 三个明确的目标态，不做「点一下循环」：三态的循环顺序用户猜不出来。
         //
-        // 「跟随出厂」与「设为常用」是两回事：前者不表态、跟着出厂走，后者钉死。
+        // 「清除」与「设为常用」是两回事：前者让本类不表态、跟着自带配置走，后者钉死。
         // 菜单里必须分开，否则用户设过一次就再也回不到第一种。
         for (label, target) in [
             ("默认判为常用", Some(true)),
             ("默认判为生僻", Some(false)),
-            ("跟随出厂设置", None),
+            ("清除默认判定", None),
         ] {
             let r = row.clone();
             let m = mgr.clone();
@@ -978,7 +978,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     // 字符类：两个最常用的档直接摆出来。
     //
     // ⚠️ 三态里只放两个，是因为操作列宽度只够两枚小按钮，而表格没有「按钮弹菜单」的
-    // API。第三态「跟随出厂」在右键菜单里——它是撤销性操作，用得比另外两个少。
+    // API。第三态「清除默认判定」在右键菜单里——它是撤销性操作，用得比另外两个少。
     //
     // ★ 操作列不能空：本页的主操作全在右键菜单的话，用户第一眼会以为这页是只读的。
     if spec.category == super::spec::WordCategory::Charsets {

@@ -1974,7 +1974,7 @@ impl DictManagerState {
         value: Option<bool>,
     ) -> (&'static str, Value) {
         let spec = self.current_spec();
-        // `inherit` 是「本层不表态、跟随出厂」，与显式设成常用**不是一回事**——后者会
+        // `inherit` 是「本层不表态、跟随自带配置」，与显式设成常用**不是一回事**——后者会
         // 钉死，出厂哪天给这个类定了调，用户也跟不上。core 侧据此删掉那一行而不是写值。
         let v = match value {
             Some(true) => "common",
@@ -1997,12 +1997,12 @@ impl DictManagerState {
             WordCategory::CommonChars => {
                 Some((spec.rpc.reset_entry, json!({ "char": row.text }), ""))
             }
-            // 字符类撤掉的是用户层对这个类的**全部**调整（那份 yaml 整个删掉），
+            // 字符类撤掉的是用户层对这个类的**全部**自定义（那份 yaml 整个删掉），
             // 不只是默认判定——故这条要提示，别的字段变回去了用户看不见。
             WordCategory::Charsets => Some((
                 spec.rpc.reset_entry,
                 json!({ "key": row.code }),
-                "已恢复该类的出厂设置",
+                "已清除该类的全部自定义",
             )),
             _ => None,
         }
@@ -3967,7 +3967,7 @@ mod tests {
 
     /// `inherit` 与「设为常用」是两个不同的档，不能合并。
     ///
-    /// 前者不表态、跟随出厂更新；后者钉死。合并之后用户设过一次就再也回不到第一种。
+    /// 前者不表态、跟随自带配置更新；后者钉死。合并之后用户设过一次就再也回不到第一种。
     #[test]
     fn inherit_is_a_distinct_state_from_explicitly_common() {
         let st = charsets_state();
