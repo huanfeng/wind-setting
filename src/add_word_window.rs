@@ -92,6 +92,21 @@ pub fn run(params: AddWordParams) {
                 auto.reseed();
             }
         })
+        // 键盘提交的**兜底**：焦点落到谁也不接回车的地方（点了窗口空白处而失焦、或停在
+        // 「生成编码」这类按钮上）时，Enter / Ctrl+Enter 照样入库。
+        //
+        // `on_shortcut` 排在焦点控件**之后**（windui `App::on_key`：键先给焦点控件，
+        // 它要了就轮不到这里），所以这条兜底既抢不走多行词条框里的换行，也不会替
+        // 「取消」按钮做决定——那两处本就该按各自的语义先吃掉这个键。
+        .on_shortcut(move |ctx, ev| {
+            if ev.key != windui::event::Key::Enter {
+                return false;
+            }
+            if submit(schema_id, code, text, weight, error) {
+                ctx.request_close();
+            }
+            true
+        })
         .frameless()
         .centered()
         .theme(theme_for(dark))
@@ -291,8 +306,54 @@ fn encode_text(schema_id: &str, text: &str) -> Result<Option<String>, String> {
     Ok(if c.is_empty() { None } else { Some(c) })
 }
 
+/// 入库。返回 `true` = 已写库（调用方据此关窗）；`false` = 没写成，文案已写进 `error`。
+///
+/// 单独成函数而不是留在「确定」的 `on_click` 里，是因为提交有**三个**触发点：鼠标点
+/// 「确定」、输入框里回车（`on_submit`）、窗口级快捷键（`on_shortcut`）。前两者拿的是
+/// `EventCtx`，第三个拿的是 `ShortcutCtx`——两个类型不通用，逻辑不抽出来第三条路就复用
+/// 不了它，只能抄一份，而抄的那份迟早与这份分叉。
+fn submit(
+    schema_id: Signal<String>,
+    code: Signal<String>,
+    text: Signal<String>,
+    weight: Signal<String>,
+    error: Signal<String>,
+) -> bool {
+    // 多行框里敲下的真换行统一投影成字面 \n 再发 core（同词库页 `save_calls`）。
+    let t = escape_input_newlines(text.get().trim());
+    let c = code.get().trim().to_string();
+    if t.is_empty() {
+        error.set("词条不能为空".to_string());
+        return false;
+    }
+    if c.is_empty() {
+        error.set("编码不能为空（可点「生成编码」）".to_string());
+        return false;
+    }
+    let w: i64 = weight.get().trim().parse().unwrap_or(1200);
+    let sid = schema_id.get();
+    let p = json!({ "schemaId": sid, "code": c, "text": t, "weight": w });
+    match crate::rpc::call_core("dict.add", &p) {
+        Ok(_) => true,
+        Err(e) => {
+            error.set(format!("添加失败：{e}"));
+            false
+        }
+    }
+}
+
 /// 构建整窗表单：标题栏（可拖动 + 关闭）· 编码/生成编码 · 多行词条/粘贴/清空 · 权重 ·
 /// 错误提示 · 取消/确定，外加一个不可见的自动出码叶子。
+///
+/// ## 键盘出口（与输入法里的 `Ctrl+=` 快捷加词对齐）
+///
+/// 「确定」声明了 [`Element::autofocus`]：开窗即持焦点，故**开窗直接回车就入库**——
+/// 从 `Ctrl+Shift+=` 进来时字段已经预填好，这正是最常走的一步。窗口是非模态的
+/// （见本文件头），autofocus 才有效；模态对话框里焦点由框架强制交给焦点环首项，
+/// 那条路见 `pages::dict::dialogs`。
+///
+/// 焦点被挪走之后还有两层：单行框的回车、多行词条框的 `Ctrl+Enter` 都经 `on_submit`
+/// 提交；焦点落到谁也不接的地方时由 `run()` 里的 `on_shortcut` 兜住。
 fn build_form(
     title: Signal<String>,
     schema_id: Signal<String>,
@@ -327,7 +388,18 @@ fn build_form(
         .weight(1.0)
         .cross(Align::Center)
         .spacing(8)
-        .child(Element::text_input(code, "").height(34).weight(1.0))
+        // 单行框的回车只有 `on_submit` 这一个出口——按键分发不冒泡，挂在外层容器上
+        // 的写法编译得过但永远不触发（windui `inputs.rs` 的注释里钉着这条）。
+        .child(
+            Element::text_input(code, "")
+                .height(34)
+                .weight(1.0)
+                .on_submit(move |ctx| {
+                    if submit(schema_id, code, text, weight, error) {
+                        ctx.request_close();
+                    }
+                }),
+        )
         .child(
             Element::button("生成编码")
                 .small()
@@ -364,7 +436,14 @@ fn build_form(
                 .multiline()
                 .wrap(true)
                 .height(88)
-                .weight(1.0),
+                .weight(1.0)
+                // 多行框里裸 Enter 是换行（词条本就允许多行），**Ctrl+Enter** 才是提交
+                // ——这条臂由 windui 让出来给应用，正是为了「多行表单怎么用键盘交卷」。
+                .on_submit(move |ctx| {
+                    if submit(schema_id, code, text, weight, error) {
+                        ctx.request_close();
+                    }
+                }),
         )
         // 三个按钮竖排：词条框有 88 高，正好容得下，且输入框宽度不必再让出一截。
         //
@@ -397,7 +476,14 @@ fn build_form(
         .child(field("词条", text_input))
         .child(field(
             "权重",
-            Element::text_input(weight, "").width(90).height(34),
+            Element::text_input(weight, "")
+                .width(90)
+                .height(34)
+                .on_submit(move |ctx| {
+                    if submit(schema_id, code, text, weight, error) {
+                        ctx.request_close();
+                    }
+                }),
         ))
         // 错误提示（红字，仅在有错时显示；替代会被 on_update 丢弃的 toast）。
         .child(
@@ -410,39 +496,42 @@ fn build_form(
                 .visible_when(move || !error.get().is_empty()),
         );
 
-    // 底栏：取消（关窗）· 确定（dict.add 成功即关窗，失败显示错误保持打开）。
+    // 底栏：键盘提示 · 取消（关窗）· 确定（dict.add 成功即关窗，失败显示错误保持打开）。
     let footer = Element::row()
         .width_match()
         .cross(Align::Center)
         .padding_xy(16, 12)
         .spacing(8)
-        .child(Element::leaf().weight(1.0))
+        // 键盘出口的**唯一**可见交代：确定键持有焦点但焦点环不点亮（见那里的注释），
+        // 不写出来的话「回车能直接加词」这件事用户只能靠试。占位符本就要有个 weight(1.0)
+        // 把两个按钮推到右边，这行字顺带把位置占了，不多花版面。
+        .child(
+            Element::label("Enter 确定 · Esc 取消")
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .max_lines(1)
+                .weight(1.0),
+        )
         .child(
             Element::button("取消")
                 .small()
                 .outline_soft()
                 .on_click(|ctx| ctx.request_close()),
         )
-        .child(Element::button("确定").small().on_click(move |ctx| {
-            // 多行框里敲下的真换行统一投影成字面 \n 再发 core（同词库页 `save_calls`）。
-            let t = escape_input_newlines(text.get().trim());
-            let c = code.get().trim().to_string();
-            if t.is_empty() {
-                error.set("词条不能为空".to_string());
-                return;
-            }
-            if c.is_empty() {
-                error.set("编码不能为空（可点「生成编码」）".to_string());
-                return;
-            }
-            let w: i64 = weight.get().trim().parse().unwrap_or(1200);
-            let sid = schema_id.get();
-            let p = json!({ "schemaId": sid, "code": c, "text": t, "weight": w });
-            match crate::rpc::call_core("dict.add", &p) {
-                Ok(_) => ctx.request_close(),
-                Err(e) => error.set(format!("添加失败：{e}")),
-            }
-        }));
+        .child(
+            Element::button("确定")
+                // 开窗即持焦点 ⇒ 不碰鼠标直接回车就入库（按钮自带裸 Enter / 空格激活）。
+                // 焦点环**不点亮**（`honor_autofocus` 里那条 `:focus-visible` 判据：
+                // 程序性移交不画焦点框），故这件事在界面上看不出来——底栏那行
+                // 「Enter 确定 · Esc 取消」是它唯一的可见交代，别当装饰删掉。
+                .autofocus()
+                .small()
+                .on_click(move |ctx| {
+                    if submit(schema_id, code, text, weight, error) {
+                        ctx.request_close();
+                    }
+                }),
+        );
 
     Element::col()
         .fill()

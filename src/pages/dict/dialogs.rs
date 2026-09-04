@@ -372,6 +372,7 @@ fn position_hint() -> Element {
 /// 编辑对话框的「次序」字段（用户词库无此维度，整块隐藏）。
 fn position_field(mgr: &DictManagerState) -> Element {
     let vis = mgr.clone();
+    let submit = mgr.clone();
     let is_phrase = move || {
         matches!(
             vis.current_category(),
@@ -386,7 +387,8 @@ fn position_field(mgr: &DictManagerState) -> Element {
             "次序",
             Element::text_input(mgr.edit_position, "")
                 .width(100)
-                .height(34),
+                .height(34)
+                .on_submit(move |_| submit.submit_word()),
         ))
         .child(position_hint().visible_when(hint_vis))
         .visible_when(is_phrase)
@@ -397,6 +399,15 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
     let cancel = mgr.clone();
     let encode = mgr.clone();
     let enc_vis = mgr.clone();
+    // 回车提交：每个输入框各要一份（闭包 move 走）。
+    //
+    // 模态对话框里**不能**靠 `autofocus` 把焦点指到「确定」上——`sync_modal_focus` 在
+    // `honor_autofocus` 之前就把焦点强制交给了对话框内的焦点环首项，而 autofocus 有一条
+    // 「不抢已有焦点」的让位。首项恰好是下面的编码框，所以「开着对话框直接回车提交」
+    // 落在它的 `on_submit` 上（加词小窗那边是非模态，走的是另一条路，见 `add_word_window`）。
+    let submit_code = mgr.clone();
+    let submit_text = mgr.clone();
+    let submit_weight = mgr.clone();
 
     // 编码/词条两个标签随类别变化（`label_rc` 绑信号），故与静态标签的 `labeled_field`
     // 各留一份——共用得把标签参数抽象成两种来源，反而更绕。样式保持一致（同宽同色号）。
@@ -421,7 +432,8 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(
             Element::text_input(mgr.edit_code, "")
                 .height(34)
-                .weight(1.0),
+                .weight(1.0)
+                .on_submit(move |_| submit_code.submit_word()),
         )
         .child(
             Element::button("生成编码")
@@ -454,7 +466,10 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .multiline()
                 .wrap(true)
                 .height(88)
-                .weight(1.0),
+                .weight(1.0)
+                // 多行框里裸 Enter 是换行（正文本就允许多行，见上面那段），**Ctrl+Enter**
+                // 才是提交——那条臂由 windui 专门让出来给应用。
+                .on_submit(move |_| submit_text.submit_word()),
         )
         .child(paste_button(mgr.edit_text, false))
         .child(clear_text_button(mgr.edit_text));
@@ -469,7 +484,8 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
             "权重",
             Element::text_input(mgr.edit_weight, "")
                 .width(100)
-                .height(34),
+                .height(34)
+                .on_submit(move |_| submit_weight.submit_word()),
         ))
         .child(position_field(mgr));
 
@@ -545,6 +561,11 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
     let submit = mgr.clone();
     let cancel = mgr.clone();
     let kind_enabled = mgr.clone();
+    // ⚠️ 这个对话框的焦点环首项是「类别」下拉，不是输入框——模态把焦点交给首项，而
+    // 下拉自己要吃裸 Enter（展开菜单，那是它的固有语义）。所以这里**开着对话框直接回车
+    // 不提交**，与另外三个不同：提交要么先 Tab 到模板框回车，要么按 Ctrl+Enter
+    // （下拉不吃带修饰键的 Enter，键会上达 `App::on_shortcut` 的兜底）。
+    let submit_tpl = mgr.clone();
 
     let field = |label: &str, input: Element| {
         Element::row()
@@ -578,7 +599,8 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
             "模板",
             Element::text_input(mgr.edit_text, "如 $Y年$M月$D日")
                 .height(34)
-                .weight(1.0),
+                .weight(1.0)
+                .on_submit(move |_| submit_tpl.submit_word()),
         ))
         .child(
             Element::label("可用变量（可选中复制）")
@@ -658,6 +680,8 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
 fn build_common_dialog(mgr: &DictManagerState) -> Element {
     let submit = mgr.clone();
     let cancel = mgr.clone();
+    // 焦点环首项就是下面的「字」框（模态把焦点交给首项），故开着对话框直接回车即提交。
+    let submit_char = mgr.clone();
 
     let field = |label: &str, input: Element| {
         Element::row()
@@ -679,7 +703,10 @@ fn build_common_dialog(mgr: &DictManagerState) -> Element {
         .spacing(10)
         .child(field(
             "字",
-            Element::text_input(mgr.edit_text, "").width(80).height(34),
+            Element::text_input(mgr.edit_text, "")
+                .width(80)
+                .height(34)
+                .on_submit(move |_| submit_char.submit_word()),
         ))
         .child(field(
             "判为",
@@ -745,6 +772,11 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
     let submit = mgr.clone();
     let cancel = mgr.clone();
     let pos_enabled = mgr.clone();
+    // 回车提交（首项是编码框，故开着对话框直接回车即提交）。这张表走的是
+    // `submit_shadow` 而不是 `submit_word`——两个出口别接错。
+    let submit_code = mgr.clone();
+    let submit_text = mgr.clone();
+    let submit_pos = mgr.clone();
 
     let field = |label: &str, input: Element| {
         Element::row()
@@ -768,13 +800,15 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
             "编码",
             Element::text_input(mgr.shadow_code, "")
                 .height(34)
-                .weight(1.0),
+                .weight(1.0)
+                .on_submit(move |_| submit_code.submit_shadow()),
         ))
         .child(field(
             "词条",
             Element::text_input(mgr.shadow_word, "")
                 .height(34)
-                .weight(1.0),
+                .weight(1.0)
+                .on_submit(move |_| submit_text.submit_shadow()),
         ))
         .child(field(
             "类型",
@@ -789,7 +823,8 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
             Element::text_input(mgr.shadow_pos, "")
                 .width(100)
                 .height(34)
-                .enabled_when(move || pos_enabled.shadow_type.get() == 0),
+                .enabled_when(move || pos_enabled.shadow_type.get() == 0)
+                .on_submit(move |_| submit_pos.submit_shadow()),
         ));
 
     let footer = Element::row()

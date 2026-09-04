@@ -314,6 +314,17 @@ fn main() {
         if out.request_close {
             ctx.request_close();
         }
+        // 提交词库页的加词对话框。先把 `DictManagerState` clone 出来（它是一组信号 +
+        // `Rc`，clone 很便宜，且不回指 `AppState`），提交期间不持有 `AppState` 的
+        // 借用——那期间要发 RPC、写信号、触发重排，让一个 `RefCell` 借用横跨这些
+        // 是没必要冒的险。
+        if let Some(kind) = out.submit_dict {
+            let mgr = shortcut_state.borrow().dict_mgr.clone();
+            match kind {
+                shortcuts::DictSubmit::Word => mgr.submit_word(),
+                shortcuts::DictSubmit::Shadow => mgr.submit_shadow(),
+            }
+        }
         out.handled
     });
     let th = app.theme_handle();

@@ -40,6 +40,33 @@ pub enum Action {
     DismissSearch,
     /// 关闭窗口，走完整的关闭决策链（有未保存改动会弹确认框）。
     CloseWindow,
+    /// 提交词库页正开着的加/改词类对话框。没开着就**不处理**——Enter 在别处
+    /// （列表、按钮、搜索框）还有它自己的用途，吃掉就成了误伤。
+    SubmitDictDialog,
+}
+
+/// 词库页哪个对话框在等着提交——两张表的提交出口不是同一个函数。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DictSubmit {
+    /// 加/改词、快捷输入、常用字：`DictManagerState::submit_word`。
+    Word,
+    /// 候选调整（固定位置/隐藏）：`DictManagerState::submit_shadow`。
+    Shadow,
+}
+
+/// 此刻有没有加词类对话框在前台等着提交。
+///
+/// **只认这四个**：删除确认（`confirm_visible`）、只读查看、导入导出等对话框一概不接
+/// 回车——确认框上回车直接删东西，是拿不回来的那种误伤。
+fn pending_dict_submit(st: &AppState) -> Option<DictSubmit> {
+    let m = &st.dict_mgr;
+    if m.shadow_add_visible.get() {
+        return Some(DictSubmit::Shadow);
+    }
+    if m.edit_visible.get() || m.quick_edit_visible.get() || m.common_edit_visible.get() {
+        return Some(DictSubmit::Word);
+    }
+    None
 }
 
 /// 一条绑定。
@@ -83,6 +110,24 @@ pub const BINDINGS: &[Binding] = &[
     Binding::new(Key::Other(vk::W), true, Action::CloseWindow, "关闭窗口"),
     // Escape 不带修饰键；它只在浮层开着时才算处理（见 `Action::DismissSearch`）。
     Binding::new(Key::Escape, false, Action::DismissSearch, "收起搜索结果"),
+    // 加词类对话框的键盘出口。**两条都要**：裸 Enter 覆盖焦点停在单行框以外
+    // （对话框刚开、点过某个按钮）的情形，Ctrl+Enter 覆盖焦点在多行正文框里——
+    // 那里裸 Enter 是换行，键根本到不了这里。
+    //
+    // 这是**兜底**：`on_shortcut` 排在焦点控件之后，输入框自己的 `on_submit`
+    // （见 `pages::dict::dialogs`）先接，接不着才轮到这里。
+    Binding::new(
+        Key::Enter,
+        false,
+        Action::SubmitDictDialog,
+        "提交加词对话框",
+    ),
+    Binding::new(
+        Key::Enter,
+        true,
+        Action::SubmitDictDialog,
+        "提交加词对话框（正文框内）",
+    ),
 ];
 
 /// 分派结果：`main.rs` 据此调用 `ShortcutCtx`。
@@ -92,6 +137,11 @@ pub struct Outcome {
     pub handled: bool,
     pub request_close: bool,
     pub focus_main_input: bool,
+    /// 该提交词库页的哪张表；`None` = 这次按键与加词对话框无关。
+    ///
+    /// 与其余字段一样是**意图**而非动作：提交要发 RPC，放进 `dispatch` 就把这个纯函数
+    /// 连同它的单测一起绑到了 core 上。落地在 `main.rs`。
+    pub submit_dict: Option<DictSubmit>,
 }
 
 impl Outcome {
@@ -99,6 +149,7 @@ impl Outcome {
         handled: true,
         request_close: false,
         focus_main_input: false,
+        submit_dict: None,
     };
 }
 
@@ -130,6 +181,14 @@ pub fn dispatch(ev: &KeyEvent, st: &AppState) -> Outcome {
         Action::CloseWindow => Outcome {
             request_close: true,
             ..Outcome::HANDLED
+        },
+        Action::SubmitDictDialog => match pending_dict_submit(st) {
+            Some(kind) => Outcome {
+                submit_dict: Some(kind),
+                ..Outcome::HANDLED
+            },
+            // 没有加词对话框开着就别吃这个键——Enter 在列表、按钮、搜索框上各有各的用途。
+            None => Outcome::default(),
         },
     }
 }
@@ -172,6 +231,67 @@ mod tests {
         for b in BINDINGS {
             assert!(!b.label.is_empty());
         }
+    }
+
+    /// ★ **没有对话框开着时，回车必须放行。** 这是本条快捷键的全部风险所在：Enter 是
+    /// 全窗共享的键，门开得松一点，用户在词库列表里、在某个按钮上按回车都会莫名其妙地
+    /// 提交一次加词表单。
+    #[test]
+    fn enter_is_left_alone_when_no_add_word_dialog_is_open() {
+        let st = state();
+        for ctrl in [false, true] {
+            let out = dispatch(&ev(Key::Enter, ctrl), &st);
+            assert!(
+                !out.handled && out.submit_dict.is_none(),
+                "没有加词对话框开着时，回车（ctrl={ctrl}）不该被吃掉"
+            );
+        }
+    }
+
+    /// 三张走 `submit_word` 的表：开着哪一张，回车就提交哪一张。
+    ///
+    /// 用「名字 + 开窗闭包」而不是按字符串 match 分派：后者把某个名字拼错时会静默落进
+    /// 兜底分支，测试照绿，而那一张表其实一次都没测到。
+    #[test]
+    fn enter_submits_the_open_word_dialog() {
+        fn check(name: &str, show: impl Fn(&crate::pages::dict::state::DictManagerState)) {
+            let st = state();
+            show(&st.dict_mgr);
+            for ctrl in [false, true] {
+                let out = dispatch(&ev(Key::Enter, ctrl), &st);
+                assert!(out.handled, "{name} 开着时回车应被处理");
+                assert_eq!(
+                    out.submit_dict,
+                    Some(DictSubmit::Word),
+                    "{name}（ctrl={ctrl}）应走 submit_word"
+                );
+            }
+        }
+        check("加/改词", |m| m.edit_visible.set(true));
+        check("快捷输入", |m| m.quick_edit_visible.set(true));
+        check("常用字", |m| m.common_edit_visible.set(true));
+    }
+
+    /// 候选调整那张表的提交出口是 `submit_shadow`，不是 `submit_word`——接错了表面上
+    /// 一样「回车有反应」，写进去的却是另一张表。
+    #[test]
+    fn enter_in_shadow_dialog_routes_to_shadow_submit() {
+        let st = state();
+        st.dict_mgr.shadow_add_visible.set(true);
+        let out = dispatch(&ev(Key::Enter, false), &st);
+        assert_eq!(out.submit_dict, Some(DictSubmit::Shadow));
+    }
+
+    /// 删除确认框上回车**不提交**：那是拿不回来的误伤，只有加词类的四张表接回车。
+    #[test]
+    fn enter_does_not_touch_the_confirm_dialog() {
+        let st = state();
+        st.dict_mgr.confirm_visible.set(true);
+        let out = dispatch(&ev(Key::Enter, false), &st);
+        assert!(
+            !out.handled && out.submit_dict.is_none(),
+            "确认框开着时回车必须放行给它自己的按钮"
+        );
     }
 
     #[test]
