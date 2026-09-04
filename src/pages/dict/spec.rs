@@ -26,6 +26,18 @@ pub enum WordCategory {
     QuickFormat,
     /// 常用字覆盖（全局；只列**用户改过的字**，出厂那 8104 字不进列表）。
     CommonChars,
+    /// 字符集分类（全局；一行一个字符类，改的是**整个类**的属性）。
+    ///
+    /// ★ 与 [`Self::CommonChars`] 是同一件事的两层，差别必须让用户看见：
+    ///
+    /// | | 本类别 | 常用字 |
+    /// |---|---|---|
+    /// | 作用面 | 整个类，不问词库里有没有 | 一个字 |
+    /// | 跟随出厂更新 | ✅ 出厂给类补了成员一并生效 | ⛔ 只有当时那些 |
+    /// | 优先级 | 低 | **高**，压住前者 |
+    ///
+    /// 最后一行是「配了没反应」的现成来源，故列表要显示每个类被多少条逐条覆盖压着。
+    Charsets,
 }
 
 /// 导航子标签的逻辑单元：短语两级 + 方案内四类。映射到 (标题, 类别, 短语系统标志)。
@@ -39,6 +51,7 @@ pub enum LogicalTab {
     Shadow,
     QuickFormat,
     CommonChars,
+    Charsets,
 }
 
 impl LogicalTab {
@@ -52,6 +65,8 @@ impl LogicalTab {
             LogicalTab::Shadow => "候选调整",
             LogicalTab::QuickFormat => "快捷输入",
             LogicalTab::CommonChars => "常用字",
+            // 域名已经是「字符集分类」，tab 再叫同名就分不出层次了。
+            LogicalTab::Charsets => "字符类",
         }
     }
     pub fn category(self) -> WordCategory {
@@ -64,6 +79,7 @@ impl LogicalTab {
             LogicalTab::Shadow => WordCategory::Shadow,
             LogicalTab::QuickFormat => WordCategory::QuickFormat,
             LogicalTab::CommonChars => WordCategory::CommonChars,
+            LogicalTab::Charsets => WordCategory::Charsets,
         }
     }
     /// 短语两级：Some(true)=系统，Some(false)=用户；非短语=None。
@@ -87,6 +103,7 @@ impl LogicalTab {
             LogicalTab::Shadow => "shadow",
             LogicalTab::QuickFormat => "quick",
             LogicalTab::CommonChars => "common-chars",
+            LogicalTab::Charsets => "charsets",
         }
     }
 
@@ -100,6 +117,7 @@ impl LogicalTab {
         LogicalTab::Shadow,
         LogicalTab::QuickFormat,
         LogicalTab::CommonChars,
+        LogicalTab::Charsets,
     ];
 
     /// 由 `--type` 取值反查（大小写不敏感）。`dict` 是 `user-dict` 的顺手别名。
@@ -173,6 +191,27 @@ pub struct WordRow {
     /// 两个都要有，列表才能显示「出厂：常用 → 现在：生僻」这层对照。只给现在的话，
     /// 用户看到一行「的 · 生僻」根本不知道自己当初改的是什么、改之前是哪一边。
     pub common_base: bool,
+    /// 常用字专用：**决定这个字常用性的那个字符类**（读 `class`）。
+    ///
+    /// 与 [`Self::block`] 不是一回事：块决定「整类批量」扫哪个码位区间，类决定
+    /// 「改类的 default」影响谁。两个都显示，用户才知道该去哪一层改。
+    pub class: String,
+    /// 字符集分类专用：本类的常用性表态（读 `default`）。`None` = **不表态**。
+    ///
+    /// ⚠️ 三态不能压成两态：「不表态」跟随出厂更新，「显式设成常用」会钉死。
+    /// 压成 bool 之后，用户再也回不到第一种。
+    pub class_default: Option<bool>,
+    /// 字符集分类专用：免词频（读 `noFreq`）。
+    pub class_no_freq: bool,
+    /// 字符集分类专用：纳入生僻字模式（读 `inRare`）。
+    pub class_in_rare: bool,
+    /// 字符集分类专用：**有多少条逐条覆盖压在这个类上**（读 `overrideCount`）。
+    ///
+    /// ★ 大于 0 时界面必须提示：用户曾整类点过生僻的话，改本类的「默认」会一点反应
+    /// 都没有——逐条覆盖优先级更高，全压着。
+    pub class_override_count: usize,
+    /// 字符集分类专用：本类的成员/范围摘要（码位段 + 离散成员数）。
+    pub class_scope: String,
 }
 
 impl WordRow {
@@ -250,6 +289,22 @@ impl WordRow {
                 block: s("block"),
                 block_range: s("blockRange"),
                 block_bulk_editable: b("blockBulkEditable"),
+                class: s("class"),
+                ..Default::default()
+            },
+            // 字符集分类：`text` 存显示名，`code` 存 key（写回 RPC 用的是 key）。
+            WordCategory::Charsets => WordRow {
+                text: s("name"),
+                code: s("key"),
+                // ⚠️ 三态：字段缺席或为 null 都是「不表态」，与 false 不同。
+                class_default: v.get("default").and_then(|x| x.as_bool()),
+                class_no_freq: b("noFreq"),
+                class_in_rare: b("inRare"),
+                class_override_count: v.get("overrideCount").and_then(|x| x.as_u64()).unwrap_or(0)
+                    as usize,
+                class_scope: charset_scope_text(v),
+                enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true),
+                adjusted: b("overridden"),
                 ..Default::default()
             },
         }
@@ -289,6 +344,23 @@ impl WordRow {
         phrase_template_of(&self.cand_id).unwrap_or_else(|| self.text.clone())
     }
 
+    /// 字符类身上那几个标记的短文案。
+    ///
+    /// ⚠️ 文案要短：它与范围挤在同一列里，「生僻字模式」那样的长词会把整列顶到换行。
+    fn class_flag_labels(&self) -> Vec<&'static str> {
+        let mut f = Vec::new();
+        if self.class_no_freq {
+            f.push("免词频");
+        }
+        if self.class_in_rare {
+            f.push("生僻模式");
+        }
+        if !self.enabled {
+            f.push("已停用");
+        }
+        f
+    }
+
     /// 某列的展示文本（非交互列用；`Enabled`/`Kind` 由视图特殊渲染，这里给回退文本）。
     pub fn cell_text(&self, field: WordField) -> String {
         match field {
@@ -304,6 +376,39 @@ impl WordRow {
             WordField::CommonNow => common_label(self.common_now).to_string(),
             WordField::CommonBase => common_label(self.common_base).to_string(),
             WordField::Block => self.block.clone(),
+            WordField::Class => self.class.clone(),
+            // 三态：`None` 是「跟随出厂」，与显式设成常用不是一回事——前者跟着出厂走，
+            // 后者钉死。压成两态之后用户再也回不到第一种。
+            WordField::ClassDefault => match self.class_default {
+                Some(v) => common_label(v).to_string(),
+                None => "跟随出厂".to_string(),
+            },
+            // 范围 + 标记合成一列（见 `COLS_CHARSETS` 里那条注释）。
+            WordField::ClassScope => {
+                let mut parts = Vec::new();
+                if self.class_scope != "—" {
+                    parts.push(self.class_scope.clone());
+                }
+                parts.extend(self.class_flag_labels().into_iter().map(str::to_string));
+                if parts.is_empty() {
+                    "—".to_string()
+                } else {
+                    parts.join(" · ")
+                }
+            }
+            WordField::ClassFlags => {
+                let f = self.class_flag_labels();
+                if f.is_empty() {
+                    "—".to_string()
+                } else {
+                    f.join(" · ")
+                }
+            }
+            // 0 条不显示「0」：这一列是异常提示，恒显示数字会让人以为它总该有值。
+            WordField::ClassOverrides => match self.class_override_count {
+                0 => "—".to_string(),
+                n => format!("{n} 条"),
+            },
         }
     }
 }
@@ -411,6 +516,16 @@ pub enum WordField {
     /// 光看字形分不清这些东西是什么——WindInput issue #83 的用户为此把整张码表喂给 AI
     /// 分类、再手工逐个试，才弄明白哪些会显示哪些不会。这一列就是把那份工作内建进来。
     Block,
+    /// 常用字：决定它常用性的那个字符类。
+    Class,
+    /// 字符集分类：本类的常用性表态（常用 / 生僻 / 跟随出厂）。
+    ClassDefault,
+    /// 字符集分类：免词频 + 生僻模式两个开关的合并展示。
+    ClassFlags,
+    /// 字符集分类：范围摘要（码位段 + 成员数）。
+    ClassScope,
+    /// 字符集分类：压在本类上的逐条覆盖数。
+    ClassOverrides,
 }
 
 impl WordField {
@@ -429,6 +544,11 @@ impl WordField {
             WordField::CommonNow => "common",
             WordField::CommonBase => "baseCommon",
             WordField::Block => "block",
+            WordField::Class => "class",
+            WordField::ClassDefault => "default",
+            WordField::ClassScope => "memberCount",
+            WordField::ClassFlags => "noFreq",
+            WordField::ClassOverrides => "overrideCount",
         }
     }
 
@@ -930,7 +1050,85 @@ const COLS_COMMON: &[ColumnSpec] = &[
         weight: 2.2,
         field: WordField::Block,
     },
+    ColumnSpec {
+        // ★ 与「类型」并列而不是取代它：块决定「整类批量」扫哪个码位区间，
+        // 字符类决定「改类的默认判定」影响谁——两个不同的操作，各看一列。
+        header: "字符类",
+        weight: 2.0,
+        field: WordField::Class,
+    },
 ];
+
+/// 字符集分类的列。
+/// ⚠️ weight 要照**表头字数**给，不只看内容：四字表头（「默认判定」「逐字覆盖」）在
+/// 1.2~1.4 下会被截成「默...」「...」，而内容反而显示得下——截断的是列头，
+/// 用户于是不知道这一列是什么。
+const COLS_CHARSETS: &[ColumnSpec] = &[
+    ColumnSpec {
+        header: "类别",
+        weight: 1.8,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "默认判定",
+        // 三态文案「跟随出厂」最长，表头也是四字。
+        weight: 1.8,
+        field: WordField::ClassDefault,
+    },
+    ColumnSpec {
+        // ⚠️ 范围与标记**合成一列**：表格区只有约 570px，五列加操作列会让每一列都换行
+        // 截断（「生僻模式 · 已」）。两者都是「这个类长什么样」的描述，合并语义上成立；
+        // 而「默认判定」「逐字覆盖」是本页的操作焦点，必须独立且宽。
+        header: "范围 / 标记",
+        weight: 2.6,
+        field: WordField::ClassScope,
+    },
+    ColumnSpec {
+        // 表头两字：四字的「逐字覆盖」在这个配比下会被截成「逐字...」，而截断的是
+        // 列头——用户于是不知道这一列是什么。本页语境里「覆盖」就是指逐字覆盖。
+        header: "覆盖",
+        // ★ 这一列是「配了没反应」的解释：用户改了默认判定却看不到变化时，
+        // 答案就在这里——那些字被逐条覆盖压着。
+        weight: 1.3,
+        field: WordField::ClassOverrides,
+    },
+];
+
+/// 字符集分类。
+///
+/// 全局（不按方案）：字符类是语言学属性，与五笔/拼音无关。
+///
+/// **不分页**：类的数量是几十个量级（50 个 Unicode 区块 + emoji + 常用汉字 + 用户自建），
+/// 一次取完比分页简单，也让「按范围找一个类」这件事可以在客户端搜索里做。
+///
+/// 没有「添加」：新建一个类要填码位段、起 key，不是在这个列表里能做完的事——那条路径是
+/// 手写一份 `charsets/*.yaml`（每层同名目录，放进去就生效）。本页管的是**已有的类**。
+const SPEC_CHARSETS: CategorySpec = CategorySpec {
+    category: WordCategory::Charsets,
+    title: "字符集分类",
+    scoped_by_schema: false,
+    paged: false,
+    searchable: true,
+    client_search: true,
+    columns: COLS_CHARSETS,
+    ops: OpFlags {
+        // ⛔ **不给 `edit`**：本类别没有编辑表单，`save_calls` 会走到兜底分支报
+        // 「该类别不支持编辑」——用户点开对话框、填完、保存时被拒，是条死路。
+        //
+        // 改默认判定走右键菜单里三个明确的目标态（见 `view.rs`），那不依赖 `edit`。
+        // 改范围要新建自己的类（手写一份 charsets/*.yaml），不是这个列表能做完的事。
+        //
+        // 撤销对这个类的全部调整，回到出厂。
+        reset_entry: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "charset.list",
+        update: "charset.set",
+        reset_entry: "charset.reset",
+        ..RpcNames::EMPTY
+    },
+};
 
 /// 常用字表。
 ///
@@ -1024,6 +1222,9 @@ impl CategorySpec {
             // 与 COLS_QUICK 的三个权重是一组配比（见那里的 ⚠️）：合计 7.3，
             // 操作列占约 37%，恰好排下五个控件而不挤压类别列。
             WordCategory::QuickFormat => 2.7,
+            // 两枚小按钮（「常用」「生僻」）。默认的 1.5 只排得下一枚半，
+            // 第二枚会被切掉一半——而被切的那半正好是文字。
+            WordCategory::Charsets => 2.0,
             _ => 1.5,
         }
     }
@@ -1040,6 +1241,7 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
         WordCategory::Shadow => &SPEC_SHADOW,
         WordCategory::QuickFormat => &SPEC_QUICK,
         WordCategory::CommonChars => &SPEC_COMMON,
+        WordCategory::Charsets => &SPEC_CHARSETS,
     }
 }
 
@@ -1047,6 +1249,48 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// ★ [`LogicalTab::ALL`] 必须列全每个变体。
+    ///
+    /// 它是手写数组，而 `from_cli_id` 只在它里面找——漏一项的后果是 `--type <那个>`
+    /// 反查不到，深链变成「未知类型」。加变体时编译器不会提醒这个数组。
+    ///
+    /// 下面那个 match 是**穷尽**的：加了新变体它会编译失败，人就会看到这条测试，
+    /// 进而想起来把变体加进 `ALL`。长度断言是第二道。
+    #[test]
+    fn all_lists_every_logical_tab() {
+        const fn seq(t: LogicalTab) -> usize {
+            match t {
+                LogicalTab::PhraseSystem => 0,
+                LogicalTab::PhraseUser => 1,
+                LogicalTab::UserDict => 2,
+                LogicalTab::Temp => 3,
+                LogicalTab::Freq => 4,
+                LogicalTab::Shadow => 5,
+                LogicalTab::QuickFormat => 6,
+                LogicalTab::CommonChars => 7,
+                LogicalTab::Charsets => 8,
+            }
+        }
+        assert_eq!(
+            LogicalTab::ALL.len(),
+            9,
+            "加了新的 LogicalTab 变体就要加进 ALL，否则 --type 反查不到它"
+        );
+        let mut seen: Vec<usize> = LogicalTab::ALL.iter().map(|t| seq(*t)).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..9).collect::<Vec<_>>(), "ALL 里有重复或缺项");
+
+        // 每个 cli_id 都能反查回自己——大小写不敏感那条也顺带覆盖。
+        for t in LogicalTab::ALL {
+            assert_eq!(
+                LogicalTab::from_cli_id(t.cli_id()),
+                Some(*t),
+                "{} 反查不回来",
+                t.cli_id()
+            );
+        }
+    }
 
     #[test]
     fn phrase_from_json_maps_all_fields() {
@@ -1606,5 +1850,37 @@ mod tests {
         // 两个方向的标签都得拼得出来，且互不相同。
         assert_eq!(common_label(false), "生僻");
         assert_eq!(common_label(true), "常用");
+    }
+}
+
+/// 字符类的「范围」摘要文本。
+///
+/// 码位段与离散成员**两支都要报**：emoji 类是纯字表（1427 条、零码位段），只报段会显示
+/// 空白，用户以为这个类什么都不管；常用汉字类反过来。段多于两条时省略后面的，
+/// 完整列表在配置文件里。
+fn charset_scope_text(v: &serde_json::Value) -> String {
+    let ranges: Vec<&str> = v
+        .get("ranges")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    let members = v.get("memberCount").and_then(|x| x.as_u64()).unwrap_or(0);
+
+    let mut parts: Vec<String> = Vec::new();
+    if !ranges.is_empty() {
+        let shown = ranges.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+        parts.push(if ranges.len() > 2 {
+            format!("{shown} 等 {} 段", ranges.len())
+        } else {
+            shown
+        });
+    }
+    if members > 0 {
+        parts.push(format!("{members} 字"));
+    }
+    if parts.is_empty() {
+        "—".to_string()
+    } else {
+        parts.join(" · ")
     }
 }

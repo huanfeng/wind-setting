@@ -1367,6 +1367,30 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "dict.stats" => json!([]),
         "stats.daily" => mock_stats_daily(params),
         // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。
+        // 字符类：覆盖三态的每一档，外加「有逐字覆盖压着」那一行——那是 §7.2 说的
+        // 「改了默认判定却没反应」的现成场景，开发时看得见才不会把提示做丢。
+        "charset.list" => json!([
+            { "key": "emoji", "name": "Emoji 表情", "ranges": [], "memberCount": 1427,
+              "order": 10, "default": null, "noFreq": false, "inRare": false,
+              "enabled": true, "builtin": false, "overridden": false, "overrideCount": 1204 },
+            { "key": "common_han", "name": "常用汉字", "ranges": [], "memberCount": 8104,
+              "order": 50, "default": true, "noFreq": false, "inRare": false,
+              "enabled": true, "builtin": false, "overridden": false, "overrideCount": 0 },
+            { "key": "我的符号", "name": "我不要的符号", "ranges": ["U+2600-U+26FF"],
+              "memberCount": 3, "order": 100, "default": false, "noFreq": true,
+              "inRare": false, "enabled": true, "builtin": false, "overridden": true,
+              "overrideCount": 0 },
+            { "key": "表情符号", "name": "表情符号", "ranges": ["U+1F300-U+1FAFF"],
+              "memberCount": 0, "order": 900, "default": null, "noFreq": false,
+              "inRare": false, "enabled": true, "builtin": true, "overridden": false,
+              "overrideCount": 0 },
+            { "key": "注音符号", "name": "注音符号", "ranges": ["U+3100-U+312F"],
+              "memberCount": 0, "order": 900, "default": null, "noFreq": false,
+              "inRare": true, "enabled": false, "builtin": true, "overridden": true,
+              "overrideCount": 2 }
+        ]),
+        "charset.set" | "charset.reset" => json!({ "ok": true }),
+        "charset.clearRedundant" => json!({ "scanned": 1204, "removed": 1198 }),
         "phrase.list" => json!([
             { "code": "bj", "text": "北京", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
             { "code": "yx", "text": "example@example.com", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },

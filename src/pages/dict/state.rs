@@ -388,7 +388,8 @@ pub(crate) const GLOBAL_DOMAINS: usize = 3;
 /// 却漏了**标签列表**这一路：`domain_labels` 与 `domain_rich_items` 各自手写着两项字面量，
 /// 与 `GLOBAL_DOMAINS` 毫无编译期关联。加第三个全局域时它们照旧只产出两项，症状正是那段
 /// 注释描述的：侧栏少画一项、其后的方案域整体错位一格，且不报错不 panic。
-pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] = ["快捷短语", "快捷输入", "常用字"];
+pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] =
+    ["快捷短语", "快捷输入", "字符集分类"];
 
 /// 域下标的语义。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -432,8 +433,12 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
         // 快捷输入只有一张表（五个类别在同一列表里靠「类别」列区分，排序是组内语义）。
         DomainKind::QuickFormat => vec![QuickFormat],
-        // 常用字也只有一张表：出厂 8104 字不进列表，这里只列用户改过的那些。
-        DomainKind::CommonChars => vec![CommonChars],
+        // ★ 两层视图（设计文档 §7.4）：先按**类**，再按**字**。
+        //
+        // 顺序是「类在前」而不是沿用原来的「只有常用字一张表」——用户来这个域最常想做的
+        // 是「让这一类东西别出来」，那是一次改动；逐字调是例外处理。把例外放在第一屏，
+        // 用户会先做上千次逐字操作，再发现有个整类的开关。
+        DomainKind::CommonChars => vec![Charsets, CommonChars],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -733,7 +738,12 @@ impl DictManagerState {
         if s.eq_ignore_ascii_case("quick") {
             return Some(DOMAIN_QUICK);
         }
-        if s.eq_ignore_ascii_case("common") || s.eq_ignore_ascii_case("common-chars") {
+        // `charsets` 是这个域改名后的叫法（域标签已是「字符集分类」）；旧的两个别名
+        // 保留——用户可能把 `--schema common-chars` 写进了快捷方式，改名不该弄坏它。
+        if s.eq_ignore_ascii_case("common")
+            || s.eq_ignore_ascii_case("common-chars")
+            || s.eq_ignore_ascii_case("charsets")
+        {
             return Some(DOMAIN_COMMON);
         }
         let domains = self.folded_domains();
@@ -1947,6 +1957,57 @@ impl DictManagerState {
         )
     }
 
+    /// 把一个字符类的**默认判定**设成指定的三态之一。
+    ///
+    /// ⚠️ 三个明确的目标态，而不是「点一下循环切换」：三态的循环顺序用户猜不出来，
+    /// 点两下发现回不到原处比多一层菜单烦得多。
+    pub fn set_class_default(&self, row: &WordRow, value: Option<bool>) {
+        let (method, params) = self.set_class_default_call(row, value);
+        // 同 `toggle_common_row`：结果就在同一行的「默认判定」列上，不弹 toast。
+        self.write(method, params, "");
+    }
+
+    /// 上者要发的 (方法, 参数)。纯函数便于单测键名与三态取值。
+    pub fn set_class_default_call(
+        &self,
+        row: &WordRow,
+        value: Option<bool>,
+    ) -> (&'static str, Value) {
+        let spec = self.current_spec();
+        // `inherit` 是「本层不表态、跟随出厂」，与显式设成常用**不是一回事**——后者会
+        // 钉死，出厂哪天给这个类定了调，用户也跟不上。core 侧据此删掉那一行而不是写值。
+        let v = match value {
+            Some(true) => "common",
+            Some(false) => "rare",
+            None => "inherit",
+        };
+        // 主键是 key（`row.code`），不是显示名：显示名可被用户改，key 不会。
+        (spec.rpc.update, json!({ "key": row.code, "default": v }))
+    }
+
+    /// 恢复一行默认要发的 (方法, 参数, 提示语)；`None` = 该类别另有专用流程。
+    ///
+    /// ★ 抽成纯函数是为了**单测键名**（同 [`Self::toggle_common_call`]）：两类的主键
+    /// 完全不同——常用字是 `char`（那个字本身），字符类是 `key`。写错的话 core 报
+    /// 「缺少参数」，而用户只是点了一下「恢复默认」。
+    pub fn reset_entry_call(&self, row: &WordRow) -> Option<(&'static str, Value, &'static str)> {
+        let spec = self.current_spec();
+        match spec.category {
+            // 行内轻操作，结果就在那一行的徽章上（值翻回默认、强调色褪掉），不弹 toast。
+            WordCategory::CommonChars => {
+                Some((spec.rpc.reset_entry, json!({ "char": row.text }), ""))
+            }
+            // 字符类撤掉的是用户层对这个类的**全部**调整（那份 yaml 整个删掉），
+            // 不只是默认判定——故这条要提示，别的字段变回去了用户看不见。
+            WordCategory::Charsets => Some((
+                spec.rpc.reset_entry,
+                json!({ "key": row.code }),
+                "已恢复该类的出厂设置",
+            )),
+            _ => None,
+        }
+    }
+
     /// 恢复**一行**的默认（按类别分派）。
     ///
     /// 两类的主键完全不同：快捷输入是 `(kind, id)`，常用字是那个字本身。故不能共用
@@ -1957,8 +2018,10 @@ impl DictManagerState {
             WordCategory::QuickFormat => self.do_quick_reset_entry(row),
             // 同 `toggle_common_row`：行内轻操作，结果就在那一行的徽章上（值翻回默认、
             // 强调色褪掉），不弹 toast。整表恢复才提示——那个看不出结果。
-            WordCategory::CommonChars => {
-                self.write(spec.rpc.reset_entry, json!({ "char": row.text }), "")
+            WordCategory::CommonChars | WordCategory::Charsets => {
+                if let Some((m, p, toast)) = self.reset_entry_call(row) {
+                    self.write(m, p, toast);
+                }
             }
             _ => {}
         }
@@ -2684,7 +2747,15 @@ impl DictManagerState {
     pub fn io_entry_enabled(&self) -> bool {
         match self.domain_kind() {
             DomainKind::Phrase => self.current_category() == WordCategory::PhraseUser,
-            DomainKind::QuickFormat | DomainKind::CommonChars => true,
+            // ⚠️ 与短语域同款：这个域下有两个 tab，只有「常用字」那张表有导入导出流
+            // （commonChars.*）。字符类的定义落在 charsets/*.yaml，用户直接拷文件即可，
+            // 没有也不需要另一条导入导出。
+            //
+            // ★ 这两道判据按**域**走、不看当前 tab 的 spec——`SPEC_CHARSETS` 里没声明
+            // import/export，按钮却照样亮着。反过来的坑（声明了却不显示）本仓记过一次，
+            // 这是它的另一面。
+            DomainKind::CommonChars => self.current_category() == WordCategory::CommonChars,
+            DomainKind::QuickFormat => true,
             _ => self.current_schema_id().is_some(),
         }
     }
@@ -3847,7 +3918,163 @@ mod tests {
         assert!(st.io_entry_visible() && st.io_entry_enabled());
     }
 
+    // ───────── 字符集分类（全局域，两层视图的第一层）─────────
+
+    fn charsets_state() -> DictManagerState {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(DOMAIN_COMMON);
+        st.sub_tab.set(0);
+        st
+    }
+
+    /// 「字符类」是这个域的**第一个** tab，走 charset.* 那套 RPC。
+    #[test]
+    fn charsets_tab_is_first_and_uses_its_own_rpcs() {
+        let st = charsets_state();
+        assert_eq!(st.current_category(), WordCategory::Charsets);
+        let spec = st.current_spec();
+        assert_eq!(spec.rpc.list, "charset.list");
+        assert_eq!(spec.rpc.update, "charset.set");
+        assert_eq!(spec.rpc.reset_entry, "charset.reset");
+        // 全局域：不带 schemaId。
+        assert!(st.build_list_params().get("schemaId").is_none());
+    }
+
+    /// ★★ 三态各自发对的值，**主键是 key 不是显示名**。
+    ///
+    /// 显示名可被用户改（`name:` 字段），key 不会。发错的话 core 报「没有名为 X 的
+    /// 字符类」——而用户只是点了一下菜单。
+    #[test]
+    fn setting_a_class_default_sends_key_and_the_right_three_state_value() {
+        let st = charsets_state();
+        let row = WordRow {
+            code: "emoji".into(),
+            text: "Emoji 表情".into(),
+            ..Default::default()
+        };
+        for (target, expect) in [
+            (Some(true), "common"),
+            (Some(false), "rare"),
+            (None, "inherit"),
+        ] {
+            let (m, p) = st.set_class_default_call(&row, target);
+            assert_eq!(m, "charset.set");
+            assert_eq!(p["key"], json!("emoji"), "主键必须是 key");
+            assert_eq!(p["default"], json!(expect));
+        }
+    }
+
+    /// `inherit` 与「设为常用」是两个不同的档，不能合并。
+    ///
+    /// 前者不表态、跟随出厂更新；后者钉死。合并之后用户设过一次就再也回不到第一种。
+    #[test]
+    fn inherit_is_a_distinct_state_from_explicitly_common() {
+        let st = charsets_state();
+        let row = WordRow {
+            code: "emoji".into(),
+            ..Default::default()
+        };
+        let (_, a) = st.set_class_default_call(&row, None);
+        let (_, b) = st.set_class_default_call(&row, Some(true));
+        assert_ne!(a["default"], b["default"], "两个档必须发不同的值");
+    }
+
+    /// 恢复默认按 key 发，且**要提示**——撤掉的是整份调整，别的字段变回去用户看不见。
+    #[test]
+    fn resetting_a_class_sends_key() {
+        let st = charsets_state();
+        let row = WordRow {
+            code: "emoji".into(),
+            ..Default::default()
+        };
+        let (m, p, toast) = st.reset_entry_call(&row).expect("字符类该有恢复默认");
+        assert_eq!(m, "charset.reset");
+        assert_eq!(p["key"], json!("emoji"), "主键是 key，不是显示名");
+        assert!(!toast.is_empty(), "撤掉的是整份调整，得提示一句");
+    }
+
+    /// ★ 三态从 json 读回来：`null` / 缺席 = 不表态，与 `false`（生僻）不是一回事。
+    #[test]
+    fn class_default_reads_back_as_three_states() {
+        let common = WordRow::from_json(WordCategory::Charsets, &json!({"default": true}));
+        let rare = WordRow::from_json(WordCategory::Charsets, &json!({"default": false}));
+        let inherit = WordRow::from_json(WordCategory::Charsets, &json!({"default": null}));
+        let absent = WordRow::from_json(WordCategory::Charsets, &json!({}));
+        assert_eq!(common.class_default, Some(true));
+        assert_eq!(rare.class_default, Some(false));
+        assert_eq!(inherit.class_default, None, "null = 不表态");
+        assert_eq!(absent.class_default, None, "缺席同样是不表态");
+    }
+
+    /// 列表行把 key 与显示名分开存：写回用 key，展示用 name。
+    #[test]
+    fn class_rows_keep_key_and_display_name_apart() {
+        let r = WordRow::from_json(
+            WordCategory::Charsets,
+            &json!({"key": "emoji", "name": "Emoji 表情", "overrideCount": 1204}),
+        );
+        assert_eq!(r.code, "emoji");
+        assert_eq!(r.text, "Emoji 表情");
+        assert_eq!(r.class_override_count, 1204);
+        // ★ 压制条数要显示成「N 条」而不是裸数字——它是异常提示，不是统计值。
+        assert_eq!(r.cell_text(WordField::ClassOverrides), "1204 条");
+        // 0 条不显示 0：恒显示数字会让人以为它总该有值。
+        let clean = WordRow::from_json(WordCategory::Charsets, &json!({"key": "x"}));
+        assert_eq!(clean.cell_text(WordField::ClassOverrides), "—");
+    }
+
+    /// 范围摘要两支都报：纯字表类（emoji）只有成员数，纯段类只有码位段。
+    #[test]
+    fn class_scope_text_reports_both_ranges_and_members() {
+        let table = WordRow::from_json(WordCategory::Charsets, &json!({"memberCount": 1427}));
+        assert_eq!(table.class_scope, "1427 字");
+
+        let seg = WordRow::from_json(
+            WordCategory::Charsets,
+            &json!({"ranges": ["U+2600-U+26FF"]}),
+        );
+        assert_eq!(seg.class_scope, "U+2600-U+26FF");
+
+        let many = WordRow::from_json(
+            WordCategory::Charsets,
+            &json!({"ranges": ["U+1", "U+2", "U+3"], "memberCount": 5}),
+        );
+        assert_eq!(many.class_scope, "U+1 U+2 等 3 段 · 5 字");
+
+        let none = WordRow::from_json(WordCategory::Charsets, &json!({}));
+        assert_eq!(none.class_scope, "—", "什么都没有时给占位符，不留空白");
+    }
+
     // ───────── 常用字调整（全局域）─────────
+
+    /// ★ 导入导出按钮在「字符类」tab 下必须禁用。
+    ///
+    /// 这两道判据按**域**走、不看当前 tab 的 spec——`SPEC_CHARSETS` 里没声明
+    /// import/export，按钮却照样亮着。点下去会拿常用字的导入流处理字符类，
+    /// 而用户看到的是一个与他所做之事毫无关系的结果。
+    #[test]
+    fn io_buttons_are_disabled_on_the_charsets_tab() {
+        let st = charsets_state();
+        assert_eq!(st.current_category(), WordCategory::Charsets);
+        assert!(
+            st.io_entry_visible(),
+            "按钮该在（同短语域，灰着而不是消失）"
+        );
+        assert!(!st.io_entry_enabled(), "字符类没有导入导出流，必须禁用");
+
+        // 切到「常用字」tab 就该可用——那张表确实有 commonChars.* 的导入导出。
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
+        assert_eq!(st.current_category(), WordCategory::CommonChars);
+        assert!(st.io_entry_enabled());
+    }
+
+    /// 「字符集分类」域下**常用字**那个 tab 的下标。
+    ///
+    /// ⚠️ 不是 0——两层视图里 0 是「字符类」（先按类、再按字）。写死 0 的测试不会报错，
+    /// 只会静默测到另一个类别上去，而那个类别的 spec 恰好也有 list/update，
+    /// 断言会以「参数不对」的形态失败，看不出根因是选错了 tab。
+    const SUB_TAB_COMMON_CHARS: usize = 1;
 
     /// 常用字是**全局**域：没有 schemaId，参数里也不该出现它。
     ///
@@ -3858,12 +4085,15 @@ mod tests {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
         assert_eq!(st.domain_kind(), DomainKind::CommonChars);
         assert_eq!(st.current_category(), WordCategory::CommonChars);
         assert_eq!(st.current_schema_id(), None, "全局域没有方案");
-        assert_eq!(st.domain_label_at(DOMAIN_COMMON), "常用字");
-        assert_eq!(st.tabs_for_domain(), vec![LogicalTab::CommonChars]);
+        assert_eq!(st.domain_label_at(DOMAIN_COMMON), "字符集分类");
+        assert_eq!(
+            st.tabs_for_domain(),
+            vec![LogicalTab::Charsets, LogicalTab::CommonChars]
+        );
         let p = st.build_list_params();
         assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");
         // 导入导出入口可用（走 commonChars.* 全局流，不依赖有没有方案）。
@@ -3908,7 +4138,7 @@ mod tests {
     fn common_save_calls_emit_char_and_direction() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
 
         st.open_common_add();
         st.edit_text.set("槮".into());
@@ -3936,7 +4166,7 @@ mod tests {
     fn common_toggle_sends_opposite_direction() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
 
         let common_row = WordRow {
             text: "的".into(),
@@ -3968,7 +4198,7 @@ mod tests {
     fn common_only_modified_goes_to_server() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
         assert!(
             st.build_list_params().get("onlyModified").is_none(),
             "默认不发这个参数"
@@ -3991,7 +4221,7 @@ mod tests {
     fn common_save_calls_reject_non_single_char() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
         st.open_common_add();
         // 同 `common_save_calls_emit_char_and_direction`：空权重是这条分流的试金石，
         // 报错必须是「填一个字」而不是「权重需为整数」。
@@ -4049,7 +4279,7 @@ mod tests {
     fn common_list_is_paged_and_server_searched() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
         let spec = st.current_spec();
         assert!(spec.paged && spec.searchable && !spec.client_search);
         assert_eq!(spec.rpc.list, "commonChars.list");
@@ -4072,7 +4302,7 @@ mod tests {
     fn common_list_sends_sort_key_of_clicked_column() {
         let st = DictManagerState::new();
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_COMMON_CHARS);
 
         // 第 0 列「字」——它复用 WordField::Text，故发出去的键是 "text"
         // （core 侧两个键都认，见 `sort_common_char_rows`）。

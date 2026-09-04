@@ -629,6 +629,30 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             false,
         ));
     }
+    // ★ 字符类的默认判定：三个明确的目标态。
+    //
+    // ⚠️ 刻意**不挂在 `rops.edit` 下**：本类别没有编辑表单（`ops.edit = false`），
+    // 挂上去的话菜单会随按钮一起消失，而这三项正是本页的主操作。
+    if spec.category == super::spec::WordCategory::Charsets {
+        // ★ 三个明确的目标态，不做「点一下循环」：三态的循环顺序用户猜不出来。
+        //
+        // 「跟随出厂」与「设为常用」是两回事：前者不表态、跟着出厂走，后者钉死。
+        // 菜单里必须分开，否则用户设过一次就再也回不到第一种。
+        for (label, target) in [
+            ("默认判为常用", Some(true)),
+            ("默认判为生僻", Some(false)),
+            ("跟随出厂设置", None),
+        ] {
+            let r = row.clone();
+            let m = mgr.clone();
+            ops.push(MenuItem::run(
+                label,
+                move |_ctx| m.set_class_default(&r, target),
+                // 已经是这一档就灰掉：点它不会有任何变化，亮着只会让人以为没生效。
+                row.class_default == target,
+            ));
+        }
+    }
     if rops.edit {
         let m = mgr.clone();
         if spec.category == super::spec::WordCategory::QuickFormat {
@@ -949,6 +973,27 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                 .outline_soft()
                 .on_click(move |_| m.open_view(&c, &t, w, pos)),
         );
+    }
+
+    // 字符类：两个最常用的档直接摆出来。
+    //
+    // ⚠️ 三态里只放两个，是因为操作列宽度只够两枚小按钮，而表格没有「按钮弹菜单」的
+    // API。第三态「跟随出厂」在右键菜单里——它是撤销性操作，用得比另外两个少。
+    //
+    // ★ 操作列不能空：本页的主操作全在右键菜单的话，用户第一眼会以为这页是只读的。
+    if spec.category == super::spec::WordCategory::Charsets {
+        for (label, target) in [("常用", Some(true)), ("生僻", Some(false))] {
+            let m = mgr.clone();
+            let r2 = row.clone();
+            r = r.child(
+                Element::button(label)
+                    .small()
+                    .outline_soft()
+                    // 已经是这一档就禁掉：点它不会有任何变化，亮着只会让人以为没生效。
+                    .enabled(row.class_default != target)
+                    .on_click(move |_| m.set_class_default(&r2, target)),
+            );
+        }
     }
 
     // 编辑（快捷输入走 open_quick_edit，候选调整走 open_shadow_edit，其余走 open_edit）
