@@ -202,6 +202,8 @@ mod tests {
             key,
             ctrl,
             shift: false,
+            alt: false,
+            meta: false,
             pressed: true,
         }
     }
