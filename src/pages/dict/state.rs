@@ -433,12 +433,13 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         DomainKind::Phrase => vec![PhraseSystem, PhraseUser],
         // 快捷输入只有一张表（五个类别在同一列表里靠「类别」列区分，排序是组内语义）。
         DomainKind::QuickFormat => vec![QuickFormat],
-        // ★ 两层视图（设计文档 §7.4）：先按**类**，再按**字**。
+        // ★ 两层视图（设计文档 §7.4）：先按**字**，再按**类**。
         //
-        // 顺序是「类在前」而不是沿用原来的「只有常用字一张表」——用户来这个域最常想做的
-        // 是「让这一类东西别出来」，那是一次改动；逐字调是例外处理。把例外放在第一屏，
-        // 用户会先做上千次逐字操作，再发现有个整类的开关。
-        DomainKind::CommonChars => vec![Charsets, CommonChars],
+        // 顺序按**到达频率**定，不按抽象层级定：绝大多数人来这个域是为了调某个具体的字
+        // （右键「设为生僻字」之后来这里翻看、撤销），字符类是少数人偶尔配一次的东西。
+        // 层级上「类」确实在「字」之上，但把低频的那层摆在第一屏，等于让多数人每次都
+        // 多点一下（2026-09-05 与用户确认）。
+        DomainKind::CommonChars => vec![CommonChars, Charsets],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -1957,6 +1958,106 @@ impl DictManagerState {
         )
     }
 
+    // ── 字符类：外部编辑 / 从文件加载 / 新建 / 删除 ──────────────────────────
+    //
+    // GUI **不做**成员与范围的逐条编辑：词库这类东西在界面里一条条改效率反而低，还让
+    // 页面复杂度失控（2026-09-05 用户拍板）。改类走「文本作中介」：core 把完整视图导出
+    // 到临时文件、这里用系统默认程序打开；改完回本页「从文件加载」。文件首行写明
+    // 「不会被自动读取」——那份文件是导出的副本，不是配置。
+
+    /// 「外部编辑」：导出这个类的完整视图并打开。
+    pub fn charset_open_external(&self, row: &WordRow) {
+        match rpc::call_core("charset.exportEdit", &json!({ "key": row.code })) {
+            Ok(v) => self.open_exported_file(&v),
+            Err(e) => self.notify_err(&format!("导出失败: {e}")),
+        }
+    }
+
+    /// 「新建类」：core 写一份模板到临时文件，打开它；用户填完再「从文件加载」。
+    ///
+    /// 不做对话框：新建的全部内容（key、名称、范围、成员）本来就都在文件里，一个只填
+    /// 两项的对话框反而让用户以为建完了。
+    pub fn charset_new(&self) {
+        match rpc::call_core("charset.exportTemplate", &json!({})) {
+            Ok(v) => self.open_exported_file(&v),
+            Err(e) => self.notify_err(&format!("生成模板失败: {e}")),
+        }
+    }
+
+    fn open_exported_file(&self, v: &Value) {
+        let Some(path) = v.get("path").and_then(|p| p.as_str()) else {
+            self.notify_err("core 没有返回文件路径");
+            return;
+        };
+        match crate::open_external::open_with_default_app(std::path::Path::new(path)) {
+            // 提示里带上路径：编辑器可能在后台起、也可能没起，用户至少知道文件在哪。
+            Ok(()) => self.notify_info(&format!("已打开，改完请用「从文件加载」导入：{path}")),
+            Err(e) => self.notify_err(&format!("打不开 {path}: {e}")),
+        }
+    }
+
+    /// 「从文件加载」：选一个 yaml 交给 core。出厂有的 key 当覆盖、没有的当自建类——
+    /// 一条路，既是外部编辑的回读，也是手写文件的导入。
+    pub fn charset_load_from_file(&self, ctx: &mut EventCtx) {
+        let state = self.clone();
+        ctx.request_pick_file(
+            PickDialog::new()
+                .title("从文件加载 · 字符类")
+                .filter("YAML", &["yaml", "yml"]),
+            move |path| {
+                let Some(path) = path else { return };
+                let params = json!({ "path": path.to_string_lossy() });
+                match rpc::call_core("charset.importFile", &params) {
+                    Ok(v) => {
+                        state.reload();
+                        state.notify_ok(&Self::charset_import_summary(&v));
+                    }
+                    Err(e) => state.notify_err(&format!("加载失败: {e}")),
+                }
+            },
+        );
+    }
+
+    /// 加载结果的一句话摘要。纯函数便于单测。
+    ///
+    /// 单个类时说清「更新了出厂类」还是「新建了类」——两者用户的下一步不同：前者去
+    /// 看那一行的变化，后者去列表末尾找新行。
+    pub fn charset_import_summary(v: &Value) -> String {
+        let classes = v
+            .get("classes")
+            .and_then(|c| c.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let n = |c: &Value, k: &str| c.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+        match classes {
+            [] => "文件里没有字符类".into(),
+            [c] => {
+                let name = c.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                let what = if c.get("builtin").and_then(|x| x.as_bool()).unwrap_or(false) {
+                    "已更新"
+                } else {
+                    "已新建"
+                };
+                format!(
+                    "{what}「{name}」：+{} 字 −{} 字，{} 个字段",
+                    n(c, "added"),
+                    n(c, "removed"),
+                    n(c, "fields")
+                )
+            }
+            many => format!("已加载 {} 个字符类", many.len()),
+        }
+    }
+
+    /// 删一个自建类。出厂类没有这个入口（右键菜单按 `class_builtin` 隐藏），core 也会拒。
+    pub fn charset_delete(&self, row: &WordRow) {
+        self.write(
+            "charset.delete",
+            json!({ "key": row.code }),
+            "已删除该字符类",
+        );
+    }
+
     /// 把一个字符类的**默认判定**设成指定的三态之一。
     ///
     /// ⚠️ 三个明确的目标态，而不是「点一下循环切换」：三态的循环顺序用户猜不出来，
@@ -2747,9 +2848,10 @@ impl DictManagerState {
     pub fn io_entry_enabled(&self) -> bool {
         match self.domain_kind() {
             DomainKind::Phrase => self.current_category() == WordCategory::PhraseUser,
-            // ⚠️ 与短语域同款：这个域下有两个 tab，只有「常用字」那张表有导入导出流
-            // （commonChars.*）。字符类的定义落在 charsets/*.yaml，用户直接拷文件即可，
-            // 没有也不需要另一条导入导出。
+            // ⚠️ 与短语域同款：这个域下有两个 tab，只有「常用字」那张表走通用导入导出流
+            // （commonChars.*）。字符类的文件出入口是它自己的「新建类 / 从文件加载 /
+            // 外部编辑」三枚按钮——语义不是「导入导出整表」，而是「一个类一份文件」，
+            // 挂在通用按钮上文案对不上。
             //
             // ★ 这两道判据按**域**走、不看当前 tab 的 spec——`SPEC_CHARSETS` 里没声明
             // import/export，按钮却照样亮着。反过来的坑（声明了却不显示）本仓记过一次，
@@ -3924,13 +4026,13 @@ mod tests {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(DOMAIN_COMMON);
-        st.sub_tab.set(0);
+        st.sub_tab.set(SUB_TAB_CHARSETS);
         st
     }
 
-    /// 「字符类」是这个域的**第一个** tab，走 charset.* 那套 RPC。
+    /// 「字符类」tab 走 charset.* 那套 RPC，而不是常用字那套。
     #[test]
-    fn charsets_tab_is_first_and_uses_its_own_rpcs() {
+    fn charsets_tab_uses_its_own_rpcs() {
         let st = charsets_state();
         assert_eq!(st.current_category(), WordCategory::Charsets);
         let spec = st.current_spec();
@@ -3992,6 +4094,59 @@ mod tests {
         assert_eq!(m, "charset.reset");
         assert_eq!(p["key"], json!("emoji"), "主键是 key，不是显示名");
         assert!(!toast.is_empty(), "撤掉的是整份调整，得提示一句");
+    }
+
+    /// 「从文件加载」的摘要：单个类分「更新出厂类」与「新建类」两种说法，多个类只报数。
+    ///
+    /// 两种说法对应用户的下一步不同——前者去看那一行变了什么，后者去列表末尾找新行。
+    #[test]
+    fn charset_import_summary_distinguishes_update_from_create() {
+        let updated = json!({ "classes": [
+            { "key": "emoji", "name": "Emoji 表情", "builtin": true, "added": 1, "removed": 2, "fields": 1 }
+        ] });
+        assert_eq!(
+            DictManagerState::charset_import_summary(&updated),
+            "已更新「Emoji 表情」：+1 字 −2 字，1 个字段"
+        );
+
+        let created = json!({ "classes": [
+            { "key": "mine", "name": "我的符号", "builtin": false, "added": 3, "removed": 0, "fields": 2 }
+        ] });
+        assert_eq!(
+            DictManagerState::charset_import_summary(&created),
+            "已新建「我的符号」：+3 字 −0 字，2 个字段"
+        );
+
+        let many = json!({ "classes": [{}, {}, {}] });
+        assert_eq!(
+            DictManagerState::charset_import_summary(&many),
+            "已加载 3 个字符类"
+        );
+        assert_eq!(
+            DictManagerState::charset_import_summary(&json!({})),
+            "文件里没有字符类",
+            "缺 classes 字段也不能 panic"
+        );
+    }
+
+    /// 出厂类与自建类在行上分得开：右键「删除此类」只给后者。
+    #[test]
+    fn charset_rows_carry_the_builtin_flag() {
+        let factory = WordRow::from_json(
+            WordCategory::Charsets,
+            &json!({ "key": "emoji", "builtin": true }),
+        );
+        let mine = WordRow::from_json(
+            WordCategory::Charsets,
+            &json!({ "key": "mine", "builtin": false }),
+        );
+        let absent = WordRow::from_json(WordCategory::Charsets, &json!({ "key": "x" }));
+        assert!(factory.class_builtin);
+        assert!(!mine.class_builtin);
+        assert!(
+            !absent.class_builtin,
+            "缺席按自建算——宁可多给一个删除入口，core 会拒出厂类"
+        );
     }
 
     /// ★ 三态从 json 读回来：`null` / 缺席 = 不表态，与 `false`（生僻）不是一回事。
@@ -4069,12 +4224,13 @@ mod tests {
         assert!(st.io_entry_enabled());
     }
 
-    /// 「字符集分类」域下**常用字**那个 tab 的下标。
+    /// 「字符集分类」域下两个 tab 的下标。
     ///
-    /// ⚠️ 不是 0——两层视图里 0 是「字符类」（先按类、再按字）。写死 0 的测试不会报错，
-    /// 只会静默测到另一个类别上去，而那个类别的 spec 恰好也有 list/update，
-    /// 断言会以「参数不对」的形态失败，看不出根因是选错了 tab。
-    const SUB_TAB_COMMON_CHARS: usize = 1;
+    /// ⚠️ 写死数字的测试不会报错，只会静默测到另一个类别上去——两个类别的 spec 都有
+    /// list/update，断言会以「参数不对」的形态失败，看不出根因是选错了 tab。顺序本身
+    /// 改过一次（曾是「类在前」），常量化就是为了下次再改时只动这里。
+    const SUB_TAB_COMMON_CHARS: usize = 0;
+    const SUB_TAB_CHARSETS: usize = 1;
 
     /// 常用字是**全局**域：没有 schemaId，参数里也不该出现它。
     ///
@@ -4092,7 +4248,7 @@ mod tests {
         assert_eq!(st.domain_label_at(DOMAIN_COMMON), "字符集分类");
         assert_eq!(
             st.tabs_for_domain(),
-            vec![LogicalTab::Charsets, LogicalTab::CommonChars]
+            vec![LogicalTab::CommonChars, LogicalTab::Charsets]
         );
         let p = st.build_list_params();
         assert!(p.get("schemaId").is_none(), "全局域不该带 schemaId: {p:?}");

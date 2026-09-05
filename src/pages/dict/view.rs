@@ -147,6 +147,25 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .on_click(move |ctx| exp_open.do_export(ctx))
         .visible_when(move || exp_vis.io_entry_visible())
         .enabled_when(move || exp_en.io_entry_enabled());
+    // 字符类专用入口：「新建类」「从文件加载」，只在字符类 tab 出现。
+    //
+    // 这两个是「文本作中介」那条路的两端——GUI 不做成员/范围的逐条编辑，新建与改类
+    // 都在外部编辑器里完成，回来用「从文件加载」导入。与导入导出并排是因为用户会在
+    // 同一个位置找「文件相关的操作」。
+    let new_vis = mgr.clone();
+    let new_do = mgr.clone();
+    let charset_new = Element::button("新建类")
+        .small()
+        .outline_soft()
+        .on_click(move |_| new_do.charset_new())
+        .visible_when(move || new_vis.current_category() == super::spec::WordCategory::Charsets);
+    let load_vis = mgr.clone();
+    let load_do = mgr.clone();
+    let charset_load = Element::button("从文件加载")
+        .small()
+        .outline_soft()
+        .on_click(move |ctx| load_do.charset_load_from_file(ctx))
+        .visible_when(move || load_vis.current_category() == super::spec::WordCategory::Charsets);
     // 混输域只有「候选调整」一条分段，标签行右侧大片留白——正好安置这句说明，不占额外行高。
     //
     // 候选调整只对**已经出现过的候选**做固定/隐藏，不是加词的地方。用户在这里点「添加」
@@ -172,6 +191,8 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(seg(mgr.clone(), SEG_COMMON))
         .child(mixed_hint)
         .child(Element::leaf().weight(1.0))
+        .child(charset_new)
+        .child(charset_load)
         .child(import_entry)
         .child(export_entry);
 
@@ -652,6 +673,24 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                 row.class_default == target,
             ));
         }
+        // 改成员与范围的唯一入口。操作列上也有一枚，右键再放一份是给「习惯右键」的人。
+        let m = mgr.clone();
+        let r = row.clone();
+        ops.push(MenuItem::run(
+            "外部编辑…",
+            move |_ctx| m.charset_open_external(&r),
+            false,
+        ));
+        // 只有自建类能删；出厂类是「恢复默认」（reset_entry 那条）。
+        if !row.class_builtin {
+            let m = mgr.clone();
+            let r = row.clone();
+            ops.push(MenuItem::run(
+                "删除此类",
+                move |_ctx| m.charset_delete(&r),
+                false,
+            ));
+        }
     }
     if rops.edit {
         let m = mgr.clone();
@@ -994,6 +1033,16 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                     .on_click(move |_| m.set_class_default(&r2, target)),
             );
         }
+        // 「编辑」= 外部编辑（导出完整视图到临时文件并打开）。文案两个字是为了挤进
+        // 操作列；右键菜单里那条叫「外部编辑…」，说全了。
+        let m = mgr.clone();
+        let r2 = row.clone();
+        r = r.child(
+            Element::button("编辑")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.charset_open_external(&r2)),
+        );
     }
 
     // 编辑（快捷输入走 open_quick_edit，候选调整走 open_shadow_edit，其余走 open_edit）

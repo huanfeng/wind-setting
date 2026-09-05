@@ -212,6 +212,9 @@ pub struct WordRow {
     pub class_override_count: usize,
     /// 字符集分类专用：本类的成员/范围摘要（码位段 + 离散成员数）。
     pub class_scope: String,
+    /// 字符集分类专用：**出厂类**（读 `builtin`）。出厂类不能删、范围只读，只能
+    /// 「恢复默认」；反之是用户自建类，右键有「删除」。
+    pub class_builtin: bool,
 }
 
 impl WordRow {
@@ -303,6 +306,7 @@ impl WordRow {
                 class_override_count: v.get("overrideCount").and_then(|x| x.as_u64()).unwrap_or(0)
                     as usize,
                 class_scope: charset_scope_text(v),
+                class_builtin: b("builtin"),
                 enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true),
                 adjusted: b("overridden"),
                 ..Default::default()

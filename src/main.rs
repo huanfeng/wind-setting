@@ -20,6 +20,7 @@ mod manifest;
 mod mix_fields;
 mod mix_members;
 mod mode;
+mod open_external;
 mod pages;
 mod protocol;
 mod rpc;

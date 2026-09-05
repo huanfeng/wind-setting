@@ -1389,8 +1389,28 @@ fn mock_reply(method: &str, params: &Value) -> Value {
               "inRare": true, "enabled": false, "builtin": true, "overridden": true,
               "overrideCount": 2 }
         ]),
-        "charset.set" | "charset.reset" => json!({ "ok": true }),
+        "charset.set" | "charset.reset" | "charset.delete" => json!({ "ok": true }),
         "charset.clearRedundant" => json!({ "scanned": 1204, "removed": 1198 }),
+        // 外部编辑 / 新建类：core 把文件写到临时目录、回路径；设置页负责打开。
+        "charset.exportEdit" | "charset.exportTemplate" => {
+            let key = params
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("my_class_1");
+            let path = std::env::temp_dir()
+                .join("WindInput")
+                .join("charsets")
+                .join(format!("{key}.yaml"));
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(
+                &path,
+                "# ⚠️ 此文件不会被自动读取。改完保存后，回到设置页「字符集分类」用「从文件加载」导入。\n---\nkey: ".to_string() + key + "\n...\n★\n",
+            );
+            json!({ "path": path.to_string_lossy() })
+        }
+        "charset.importFile" => json!({ "classes": [
+            { "key": "emoji", "name": "Emoji 表情", "builtin": true, "added": 1, "removed": 2, "fields": 1 }
+        ] }),
         "phrase.list" => json!([
             { "code": "bj", "text": "北京", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
             { "code": "yx", "text": "example@example.com", "position": 0, "weight": 1000, "enabled": true, "isSystem": true },
