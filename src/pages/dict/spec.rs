@@ -1070,16 +1070,22 @@ const COLS_COMMON: &[ColumnSpec] = &[
 /// ⚠️ weight 要照**表头字数**给，不只看内容：四字表头（「默认判定」「逐字覆盖」）在
 /// 1.2~1.4 下会被截成「默...」「...」，而内容反而显示得下——截断的是列头，
 /// 用户于是不知道这一列是什么。
+///
+/// ★ 四列与操作列（`actions_weight` = 3.5）是**一组配比**，合计 10.2：默认窗口
+/// （820 宽）下表格区约 570px，操作列要排下三枚小按钮得占三分之一，于是两个四字
+/// 表头都缩成两字（「默认」「覆盖」）——四字在这个配比下会截成「默认...」。改任何
+/// 一个都用 `--size 820 640 --screenshot` 看一眼——列不会自动加宽，只会截断。
 const COLS_CHARSETS: &[ColumnSpec] = &[
     ColumnSpec {
         header: "类别",
-        weight: 1.8,
+        weight: 1.6,
         field: WordField::Text,
     },
     ColumnSpec {
-        header: "默认判定",
-        // 三态文案「跟随出厂」最长，表头也是四字。
-        weight: 1.8,
+        // 表头两字：指「默认判定」——右边的「常用」「生僻」按钮改的就是它。
+        header: "默认",
+        // 三态文案「跟随出厂」最长。
+        weight: 1.3,
         field: WordField::ClassDefault,
     },
     ColumnSpec {
@@ -1087,7 +1093,7 @@ const COLS_CHARSETS: &[ColumnSpec] = &[
         // 截断（「生僻模式 · 已」）。两者都是「这个类长什么样」的描述，合并语义上成立；
         // 而「默认判定」「逐字覆盖」是本页的操作焦点，必须独立且宽。
         header: "范围 / 标记",
-        weight: 2.6,
+        weight: 2.4,
         field: WordField::ClassScope,
     },
     ColumnSpec {
@@ -1096,7 +1102,7 @@ const COLS_CHARSETS: &[ColumnSpec] = &[
         header: "覆盖",
         // ★ 这一列是「配了没反应」的解释：用户改了默认判定却看不到变化时，
         // 答案就在这里——那些字被逐条覆盖压着。
-        weight: 1.3,
+        weight: 1.4,
         field: WordField::ClassOverrides,
     },
 ];
@@ -1229,9 +1235,11 @@ impl CategorySpec {
             // 与 COLS_QUICK 的三个权重是一组配比（见那里的 ⚠️）：合计 7.3，
             // 操作列占约 37%，恰好排下五个控件而不挤压类别列。
             WordCategory::QuickFormat => 2.7,
-            // 两枚小按钮（「常用」「生僻」）。默认的 1.5 只排得下一枚半，
-            // 第二枚会被切掉一半——而被切的那半正好是文字。
-            WordCategory::Charsets => 2.0,
+            // 三枚小按钮（「常用」「生僻」「编辑」），与 COLS_CHARSETS 的四个权重是一组
+            // 配比（合计 10.2）。原来的 2.0 只排得下两枚——第三枚「编辑」整个被挤出可视区
+            // （2026-09-06 真机：用户以为没有编辑入口）；2.8 在默认宽度下仍切掉几像素。
+            // 列不会自动加宽，只会截断，加按钮必须同步改这里。
+            WordCategory::Charsets => 3.5,
             _ => 1.5,
         }
     }
