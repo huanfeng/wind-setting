@@ -1663,6 +1663,11 @@
       "type": "int"
     },
     {
+      "default": false,
+      "key": "system.dota2_compat",
+      "type": "bool"
+    },
+    {
       "default": "smart",
       "key": "mobile.association.kind",
       "type": "enum",

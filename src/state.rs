@@ -429,6 +429,65 @@ fn mode_str_to_idx(mode: &str) -> usize {
 /// 是「别的设置能存、只有方案页存不了」**，很容易误判成方案页自己的问题。
 ///
 /// 守卫见 `builtin_registrations_survive_registry_reset`。
+
+/// 登记 `[system]` 域的落地动作。
+///
+/// # 必须可重入，且必须在每次 `FieldRegistry::reset()` 之后重新调用
+/// 与 [`register_schema_registrations`] 同一约束、同一原因（见其文档）。
+///
+/// `system.*` 的键有个共同点：**写进 config.toml 不等于生效**——真正的落点在
+/// HKLM，得由提权进程去写。所以每个这样的键都要在这里挂一个 SideCommitter，
+/// 否则界面上拧了、配置也存了，系统里什么都没变（config-design-rules 明令禁止
+/// 这种「拧了没反应的旋钮」）。
+pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
+    // Dota 2 兼容：改的是本输入法在系统里登记的显示名。
+    //
+    // ★ 只在**值确实变了**时才执行——落地要弹 UAC，每次保存都弹一次不可接受。
+    // 基线取「本次加载时的值」，由 loader 灌进 Signal 的那一份；is_dirty 拿当前值
+    // 与它比。用户改回原值再保存 ⇒ 不脏 ⇒ 不弹窗，符合直觉。
+    let baseline: Rc<std::cell::Cell<Option<bool>>> = Rc::new(std::cell::Cell::new(None));
+    let read_now = {
+        let fields = fields.clone();
+        move || -> Option<bool> {
+            let g = fields.getters.borrow();
+            g.get("system.dota2_compat").and_then(|f| f().as_bool())
+        }
+    };
+    let dirty_read = read_now.clone();
+    let dirty_base = baseline.clone();
+    let commit_read = read_now;
+    let commit_base = baseline;
+    fields.side.borrow_mut().push(SideCommitter {
+        is_dirty: Box::new(move || {
+            let Some(now) = dirty_read() else {
+                return false;
+            };
+            // 首次问到值时把它当基线：getter 是 shell::build 里晚于本函数注册的，
+            // 登记那一刻还读不到，只能惰性取。
+            match dirty_base.get() {
+                None => {
+                    dirty_base.set(Some(now));
+                    false
+                }
+                Some(base) => base != now,
+            }
+        }),
+        commit: Box::new(move || {
+            let Some(now) = commit_read() else {
+                return Ok(());
+            };
+            match commit_base.get() {
+                Some(base) if base == now => Ok(()),
+                _ => {
+                    crate::dota2_compat::apply(now)?;
+                    commit_base.set(Some(now));
+                    Ok(())
+                }
+            }
+        }),
+    });
+}
+
 pub(crate) fn register_schema_registrations(
     fields: &Rc<FieldRegistry>,
     schema_mgr: &SchemaManagerState,

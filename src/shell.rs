@@ -48,6 +48,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         // 设置树一建好它们就永远缺席——症状是「别的设置能存、只有方案页存不了」：热键 /
         // 引导键改动进不了 diff，保存时提示「没有变更」。
         crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+        crate::state::register_system_registrations(&st.fields);
         // 搜索态也要复位。它建在 `AppState` 上（进程级，早于任何窗口），所以句柄不会
         // 悬垂——但**值会整份带到新窗**：带着查询词、开着的浮层、或顶着一条方案级指示条
         // 关掉主窗，再开时新窗一亮就弹出上一次的结果、内容区顶上挂着上一次的指路；

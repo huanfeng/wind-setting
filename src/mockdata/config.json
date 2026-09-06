@@ -321,6 +321,9 @@
   "speed_factor": 0.8500000238418579,
   "track_english": true
  },
+ "system": {
+  "dota2_compat": false
+ },
  "ui": {
   "candidate": {
    "comment_max_chars_horizontal": 0,

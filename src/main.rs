@@ -12,6 +12,7 @@ mod cli;
 mod config;
 mod dialogs;
 mod dict_window;
+mod dota2_compat;
 mod file_assoc;
 mod icons;
 mod key_conflict;
