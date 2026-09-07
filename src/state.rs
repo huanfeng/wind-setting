@@ -137,13 +137,24 @@ impl FieldRegistry {
     }
 
     /// 播种 `system.*` 加载态基线。见 [`FieldRegistry::system_baseline`]。
-    pub fn seed_system_baseline(&self, cfg: &Config) {
+    ///
+    /// ★ 键**不在** `cfg` 里是**常态而非异常**：配置层写回会剔除「等于默认值」的键，
+    /// 所以把开关关掉再保存之后，整个 `[system]` 段都会从 config.toml 里消失。
+    /// 此时基线必须回落到默认值——留空会让 [`system_needs_apply`] 恒判 false，
+    /// 开关就再也拧不动了（且毫无提示，和这次修掉的老毛病表现一模一样）。
+    ///
+    /// `caps` 拿不到默认值时兜底 `false`：`SYSTEM_BASELINE_KEYS` 目前全是布尔开关，
+    /// 而 false = 未启用 = 不对系统做任何事，是唯一安全的假设。
+    pub fn seed_system_baseline(&self, cfg: &Config, caps: &Capabilities) {
         let mut b = self.system_baseline.borrow_mut();
         b.clear();
         for key in SYSTEM_BASELINE_KEYS {
-            if let Some(v) = cfg.get_path(key) {
-                b.insert((*key).to_string(), v.clone());
-            }
+            let v = cfg
+                .get_path(key)
+                .cloned()
+                .unwrap_or_else(|| caps.default_for(key));
+            let v = if v.is_null() { Value::Bool(false) } else { v };
+            b.insert((*key).to_string(), v);
         }
     }
 
@@ -1702,10 +1713,12 @@ impl AppState {
         self.consume_pending_dict_target();
         self.base_config = cfg.clone();
         self.current_config = cfg;
+        self.capabilities = Capabilities::from_value(&data.capabilities_value);
         // `system.*` 的落地基线只能在此确立——这是「本次加载的值」唯一确定的时刻。
         // 放晚了（比如惰性到第一次 `is_dirty`）会把用户的改动当成基线，开关永不生效。
-        self.fields.seed_system_baseline(&self.base_config);
-        self.capabilities = Capabilities::from_value(&data.capabilities_value);
+        // ⚠️ 必须排在 `capabilities` **之后**：键被写回剪枝掉时要靠它取默认值。
+        self.fields
+            .seed_system_baseline(&self.base_config, &self.capabilities);
         self.system_info = data.system_info;
         // 降级顶栏。与下面的定制版徽章同理，页面树早已建好，只能靠 Signal 送进去。
         self.degradation.set(degradation_text(&data.degradation));
@@ -3085,7 +3098,7 @@ mod tests {
         }
         // 加载态 = 关闭。播种走的正是 `apply_loaded` 那条路。
         let cfg = Config::from_value(serde_json::json!({"system": {"dota2_compat": false}}));
-        reg.seed_system_baseline(&cfg);
+        reg.seed_system_baseline(&cfg, &Capabilities::default());
         register_system_registrations(&reg);
 
         assert!(!reg.side_dirty(), "刚加载完、没动过，不该判脏");
@@ -3100,6 +3113,40 @@ mod tests {
         // 改回原值 ⇒ 不脏 ⇒ 不该白弹一次 UAC。
         val.set(false);
         assert!(!reg.side_dirty(), "改回原值不该再判脏");
+    }
+
+    /// ⛔ 回归：开关关掉一次之后就再也打不开。
+    ///
+    /// 配置层写回会剔除「等于默认值」的键——关掉开关保存后，`[system]` 段整段从
+    /// config.toml 里消失。若基线在键缺失时留空，`system_needs_apply` 便恒判 false，
+    /// 之后无论怎么拧都不落地，且没有任何提示。2026-09-07 真机上就是这么复现的：
+    /// 关闭成功后 `grep dota2 config.toml` 什么都搜不到。
+    #[test]
+    fn dota2_compat_survives_pruned_key() {
+        let reg = Rc::new(FieldRegistry::default());
+        let val = Rc::new(std::cell::Cell::new(false));
+        {
+            let v = val.clone();
+            reg.getters.borrow_mut().insert(
+                "system.dota2_compat".into(),
+                Box::new(move || Value::Bool(v.get())),
+            );
+        }
+        // 配置里**没有** [system] 段——等于默认值的键被写回剪枝掉了。
+        let cfg = Config::from_value(serde_json::json!({}));
+        reg.seed_system_baseline(&cfg, &Capabilities::default());
+        register_system_registrations(&reg);
+
+        assert!(
+            !reg.side_dirty(),
+            "键缺失时的基线应是默认值（关），没动过不该判脏"
+        );
+
+        val.set(true);
+        assert!(
+            reg.side_dirty(),
+            "键被剪枝掉之后仍须能开启，否则开关关一次就永久失灵"
+        );
     }
 
     /// 落地判据的边界。`commit` 会弹 UAC 测不了，判据因此抽成纯函数由本条直接守。
