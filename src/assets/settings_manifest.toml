@@ -1489,28 +1489,30 @@ options = [
 ]
 
 # ── Emoji ──
-# 按候选**文字**查表，不看编码，所以所有方案自动支持，不必给每个方案单独配。
-# 词表随程序附带（data/emoji/），首次开启时在本机建一次索引缓存。
+# 按候选文字查表，与编码无关，所有方案通用。词表随程序附带（data/emoji/），首次开启时
+# 在本机建立索引缓存。
 [[items]]
 key = "input.emoji.enabled"
 group = "input"
 section = "Emoji"
 type = "toggle"
-label = "候选里追加 emoji"
-hint = "打出词组后把对应的 emoji 加进候选（「开心」→ 😄）。首次开启会在本机建一次索引，稍等一下"
+label = "启用 emoji 候选"
+hint = "打出词语后，在候选中追加对应的 emoji（如「开心」→ 😄）。首次开启时建立索引，稍候片刻"
 
+# 不列 comment（只在注释区显示）：注释区目前没有上屏入口，选了等于什么都看不到。
+# core 侧保留该取值，待注释上屏功能落地后加回选项即可（见 capabilities.rs 的
+# NARROWED_ON_PURPOSE）。
 [[items]]
 key = "input.emoji.show_as"
 group = "input"
 section = "Emoji"
 type = "select"
-label = "摆放位置"
-hint = "「紧跟词后」最直观，但后面候选的序号会往后挪；「列表末尾」序号完全不动，适合盲打"
+label = "显示位置"
+hint = "紧随词后：插在对应词之后，其后候选的序号顺延；列表末尾：追加在常用候选之后，原有序号不变"
 enabled_when = "input.emoji.enabled == true"
 options = [
-  { value = "after", label = "紧跟词后" },
+  { value = "after", label = "紧随词后" },
   { value = "tail", label = "列表末尾" },
-  { value = "comment", label = "只作灰字提示" },
 ]
 
 [[items]]
@@ -1518,13 +1520,13 @@ key = "input.emoji.scope"
 group = "input"
 section = "Emoji"
 type = "select"
-label = "什么词给配"
-hint = "「完整的词」只给打全了的词配；「所有候选」连半截词和补全词也配，噪音明显变大"
+label = "适用范围"
+hint = "仅完整词：只为完整匹配的词追加；全部候选：补全与部分匹配的候选也追加"
 enabled_when = "input.emoji.enabled == true"
 options = [
-  { value = "exact", label = "完整的词" },
-  { value = "all", label = "所有候选" },
-  { value = "off", label = "不配（等同关闭）" },
+  { value = "exact", label = "仅完整词" },
+  { value = "all", label = "全部候选" },
+  { value = "off", label = "不追加" },
 ]
 
 [[items]]
@@ -1532,8 +1534,8 @@ key = "input.emoji.max_hosts"
 group = "input"
 section = "Emoji"
 type = "number"
-label = "给前几个候选配"
-hint = "默认 1 = 只给首选配，后面候选的序号基本不动。想打的词常不在首位而够不着 emoji 时，调大到一页的条数"
+label = "追加范围"
+hint = "只为列表前 N 个候选追加 emoji。1 = 仅首选"
 min = 0
 max = 20
 enabled_when = "input.emoji.enabled == true"
@@ -1543,8 +1545,8 @@ key = "input.emoji.max_per_word"
 group = "input"
 section = "Emoji"
 type = "number"
-label = "一个词最多几个"
-hint = "词表里大多数词只有一个 emoji，这个上限主要用来收着下面的分类词"
+label = "每词上限"
+hint = "一个词最多追加的 emoji 个数"
 min = 1
 max = 10
 enabled_when = "input.emoji.enabled == true"
@@ -1554,8 +1556,8 @@ key = "input.emoji.min_word_chars"
 group = "input"
 section = "Emoji"
 type = "number"
-label = "词至少几个字"
-hint = "默认 2。单字（「一」→ 1️⃣）基本都是噪音"
+label = "最少字数"
+hint = "候选少于此字数时不追加。默认 2，即不为单字追加"
 min = 1
 max = 8
 enabled_when = "input.emoji.enabled == true"
@@ -1566,7 +1568,7 @@ group = "input"
 section = "Emoji"
 type = "toggle"
 label = "启用分类词"
-hint = "打「动物」出一串动物、打「中餐」出一串食物。这类词一个能带出几十个，开了要靠上面的上限收着"
+hint = "「动物」「水果」等分类词会带出整组 emoji，数量受每词上限约束"
 enabled_when = "input.emoji.enabled == true"
 
 # ── 网址输入 ──

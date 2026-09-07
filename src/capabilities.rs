@@ -679,10 +679,16 @@ mod enum_domain_gate {
     ///
     /// 登记的门槛是「界面上少一个选项是有意的」，理由必须同时写在清单该项旁边——
     /// 这里只放键名与一句话，方便下一个人知道该去哪读。
-    const NARROWED_ON_PURPOSE: &[(&str, &str)] = &[(
-        "input.association.kind",
-        "不列 smart：桌面上它与 word 完全等价，摆一个没区别的选项只会让人以为选错了",
-    )];
+    const NARROWED_ON_PURPOSE: &[(&str, &str)] = &[
+        (
+            "input.association.kind",
+            "不列 smart：桌面上它与 word 完全等价，摆一个没区别的选项只会让人以为选错了",
+        ),
+        (
+            "input.emoji.show_as",
+            "不列 comment：注释区没有上屏入口，选了 emoji 只能看不能选；待注释上屏落地后加回",
+        ),
+    ];
 
     /// ★★ 清单的 select/segmented **不得漏掉 core 的取值**。
     ///
