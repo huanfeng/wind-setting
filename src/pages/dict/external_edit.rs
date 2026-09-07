@@ -27,7 +27,7 @@
 //! - **加载侧**：先 `apply=false` 试算，把「将更新「常用汉字」：+3 字 −2 字」摆出来，
 //!   点「确认加载」才写。加载是整份替换该类的用户层，而用户看不见库里现在是什么。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -89,6 +89,10 @@ pub struct ExternalEditState {
     domain: Rc<RefCell<Option<&'static ExternalEditDomain>>>,
     /// 试算过、等确认的那个文件。
     pending_path: Rc<RefCell<Option<PathBuf>>>,
+    /// 上一次探测时的下拉下标。目标下拉只写信号、无变更回调，靠 effect 轮询版本号；
+    /// 而 `idx.set` 即使值没变也会走一遍 effect——不记这个，打开对话框会探测两次，
+    /// 「确认加载」后重装下拉会把刚写好的「已更新…」状态行冲掉。
+    probed_idx: Rc<Cell<Option<usize>>>,
 }
 
 impl Default for ExternalEditState {
@@ -111,6 +115,7 @@ impl ExternalEditState {
             targets: Rc::new(RefCell::new(Vec::new())),
             domain: Rc::new(RefCell::new(None)),
             pending_path: Rc::new(RefCell::new(None)),
+            probed_idx: Rc::new(Cell::new(None)),
         }
     }
 
@@ -177,14 +182,17 @@ impl DictManagerState {
     }
 
     pub fn xedit_close(&self) {
+        self.xedit.probed_idx.set(None);
         self.xedit.visible.set(false);
         self.xedit.pending.set(false);
         *self.xedit.pending_path.borrow_mut() = None;
     }
 
-    /// 目标下拉变化 → 重新探测。挂在 `reactive_effect` 上；对话框没开时不动。
+    /// 目标下拉变化 → 重新探测。挂在 `reactive_effect` 上；对话框没开、或下标其实没变
+    /// （见 `probed_idx`）时不动。
     pub fn on_xedit_target_changed(&self) {
-        if self.xedit.visible.get() {
+        let x = &self.xedit;
+        if x.visible.get() && x.probed_idx.get() != Some(x.idx.get()) {
             self.xedit_probe();
         }
     }
@@ -195,6 +203,7 @@ impl DictManagerState {
         let Some(d) = x.domain() else { return };
         x.pending.set(false);
         *x.pending_path.borrow_mut() = None;
+        x.probed_idx.set(Some(x.idx.get()));
         match rpc::call_core(d.probe, &x.key_params(d)) {
             Ok(v) => {
                 let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -426,6 +435,24 @@ mod tests {
             "文件里没有字符类",
             "缺 classes 字段也不能 panic"
         );
+    }
+
+    /// 探测过的下标再被 `set` 一次（值没变）不算变化：effect 会因版本号跳而进来，
+    /// 这里得挡住，否则「确认加载」后重装下拉会把结果状态行冲掉。
+    #[test]
+    fn target_change_is_judged_by_index_not_by_signal_version() {
+        let st = DictManagerState::new();
+        st.xedit.visible.set(true);
+        st.xedit.idx.set(1);
+        st.xedit.probed_idx.set(Some(1));
+        // 没有 domain ⇒ 真探测会直接返回；这里只验证判据本身。
+        assert_eq!(st.xedit.probed_idx.get(), Some(1));
+        st.xedit.idx.set(1);
+        assert_eq!(st.xedit.probed_idx.get() != Some(st.xedit.idx.get()), false);
+        st.xedit.idx.set(2);
+        assert!(st.xedit.probed_idx.get() != Some(st.xedit.idx.get()));
+        st.xedit_close();
+        assert_eq!(st.xedit.probed_idx.get(), None, "关了再开必须重新探测");
     }
 
     #[test]
