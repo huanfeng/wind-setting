@@ -1392,7 +1392,26 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "charset.set" | "charset.reset" | "charset.delete" => json!({ "ok": true }),
         "charset.clearRedundant" => json!({ "scanned": 1204, "removed": 1198 }),
         // 外部编辑 / 新建类：core 把文件写到临时目录、回路径；设置页负责打开。
-        "charset.exportEdit" | "charset.exportTemplate" => {
+        // 「外部编辑」三件套（见 pages/dict/external_edit.rs）。探测只报路径与现状，不写。
+        "charset.editFile" => {
+            let key = params
+                .get("key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("my_class_1");
+            let path = std::env::temp_dir()
+                .join("WindInput")
+                .join("charsets")
+                .join(format!("{key}.yaml"));
+            json!({
+                "key": key,
+                "name": if key == "my_class_1" { "我的字符类" } else { "Emoji 表情" },
+                "builtin": key != "my_class_1",
+                "path": path.to_string_lossy(),
+                "exists": path.is_file(),
+                "modified": if path.is_file() { Value::from("2026-09-07 11:20") } else { Value::Null },
+            })
+        }
+        "charset.exportEdit" => {
             let key = params
                 .get("key")
                 .and_then(|v| v.as_str())

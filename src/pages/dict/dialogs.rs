@@ -34,6 +34,163 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_view_dialog(mgr))
         .child(build_export_dialog(mgr))
         .child(build_import_dialog(mgr))
+        .child(build_external_edit_dialog(mgr))
+}
+
+/// 「外部编辑」对话框（领域无关；状态与动作见 `external_edit` 模块）。
+///
+/// 布局：目标下拉 / 文件路径 / 一句话现状 / 说明 / 按钮行。按钮行有两态：
+/// - 平时：「外部文件编辑」（不存在 ⇒ 导出并打开；存在 ⇒ 直接打开）、「重新导出」（仅
+///   存在时）、「加载外部文件」（仅存在时可用）、「选择其它文件…」、「关闭」。
+/// - 试算后（`pending`）：只剩「取消」「确认加载」，下拉锁住——此刻改目标会让摘要
+///   与将写入的内容对不上。
+fn build_external_edit_dialog(mgr: &DictManagerState) -> Element {
+    let x = mgr.xedit.clone();
+
+    let field = |label: &'static str, input: Element| {
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(
+                Element::label(label)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .width(40),
+            )
+            .child(input)
+    };
+
+    // 目标下拉。⚠️ 选项走 `dropdown_signal`（绑信号）：对话框只构建一次，选项在
+    // `xedit_open` 时才填。
+    let pending_lock = x.pending;
+    let target = Element::dropdown_signal(x.labels, x.idx)
+        .width(240)
+        .enabled_when(move || !pending_lock.get());
+
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 12)
+        .spacing(10)
+        .child(field("目标", target))
+        .child(field(
+            "文件",
+            Element::label_signal(x.path)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2),
+        ))
+        .child(
+            Element::label_signal(x.status)
+                .font_size(12.5)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(3),
+        )
+        .child(
+            Element::label(
+                "文件不会被自动读取：在编辑器里改完保存，回到这里点「加载外部文件」。加载前会先\
+                 列出将发生的变化，确认后才写入。",
+            )
+            .font_size(11.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(3),
+        );
+
+    // ── 平时的按钮 ──
+    let m_edit = mgr.clone();
+    let m_reexp = mgr.clone();
+    let m_load = mgr.clone();
+    let m_pick = mgr.clone();
+    let m_close = mgr.clone();
+    let (p1, p2) = (x.pending, x.pending);
+    let (e1, e2) = (x.exists, x.exists);
+    let normal_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::button("外部文件编辑")
+                .small()
+                .on_click(move |_| m_edit.xedit_edit()),
+        )
+        .child(
+            Element::button("重新导出")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_reexp.xedit_export_and_open())
+                .visible_when(move || e1.get()),
+        )
+        .child(
+            Element::button("加载外部文件")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_load.xedit_load())
+                .enabled_when(move || e2.get()),
+        )
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("选择其它文件…")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| m_pick.xedit_pick_other(ctx)),
+        )
+        .child(
+            Element::button("关闭")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_close.xedit_close()),
+        )
+        .visible_when(move || !p1.get());
+
+    // ── 试算后的按钮 ──
+    let m_cancel = mgr.clone();
+    let m_confirm = mgr.clone();
+    let pending_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_cancel.xedit_cancel_pending()),
+        )
+        .child(
+            Element::button("确认加载")
+                .small()
+                .on_click(move |_| m_confirm.xedit_confirm()),
+        )
+        .visible_when(move || p2.get());
+
+    let footer = Element::col()
+        .width_match()
+        .padding_xy(16, 12)
+        .child(normal_row)
+        .child(pending_row);
+
+    let frame = Element::col()
+        .width(560)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label_signal(x.title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(footer);
+    Element::dialog(x.visible, frame)
 }
 
 /// 目标方案选择行（导入导出共用）：`verb` 为「导入到」/「导出自」。

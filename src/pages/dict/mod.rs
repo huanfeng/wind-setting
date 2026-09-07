@@ -7,6 +7,7 @@
 //! - （后续）`dialogs`：加/改词、确认对话框。
 
 pub mod dialogs;
+pub mod external_edit;
 pub mod reactive;
 pub mod sidebar;
 pub mod spec;

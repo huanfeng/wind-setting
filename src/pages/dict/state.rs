@@ -138,6 +138,9 @@ pub struct DictManagerState {
     pub import_file_name: Signal<String>,
     /// 预览成功、可执行导入（驱动合并/替换按钮可用态）。
     pub import_ready: Signal<bool>,
+
+    /// 「外部编辑」对话框（字符类首用；其它词库接入见 `external_edit` 模块文档）。
+    pub xedit: super::external_edit::ExternalEditState,
     /// 待导入的文件内容（预览确认后执行导入）。
     ///
     /// ⚠️ 仍然读全文，但**不再拿它当 RPC 载荷**——那是 [`Self::pending_import_path`] 的活。
@@ -514,6 +517,7 @@ impl DictManagerState {
             import_preview_msg: signal(String::new()),
             import_file_name: signal(String::new()),
             import_ready: signal(false),
+            xedit: super::external_edit::ExternalEditState::new(),
             pending_import: Rc::new(RefCell::new(None)),
             pending_import_path: Rc::new(RefCell::new(None)),
             io_target: signal(0),
@@ -1958,95 +1962,22 @@ impl DictManagerState {
         )
     }
 
-    // ── 字符类：外部编辑 / 从文件加载 / 新建 / 删除 ──────────────────────────
+    // ── 字符类：外部编辑 / 删除 ──────────────────────────────────────────────
     //
     // GUI **不做**成员与范围的逐条编辑：词库这类东西在界面里一条条改效率反而低，还让
-    // 页面复杂度失控（2026-09-05 用户拍板）。改类走「文本作中介」：core 把完整视图导出
-    // 到临时文件、这里用系统默认程序打开；改完回本页「从文件加载」。文件首行写明
-    // 「不会被自动读取」——那份文件是导出的副本，不是配置。
+    // 页面复杂度失控（2026-09-05 用户拍板）。改类走「文本作中介」——导出、打开编辑器、
+    // 回读全在 `external_edit` 那个对话框里（`xedit_open`），文件首行写明「不会被自动
+    // 读取」：那份文件是导出的副本，不是配置。
 
-    /// 「外部编辑」：导出这个类的完整视图并打开。
-    pub fn charset_open_external(&self, row: &WordRow) {
-        match rpc::call_core("charset.exportEdit", &json!({ "key": row.code })) {
-            Ok(v) => self.open_exported_file(&v),
-            Err(e) => self.notify_err(&format!("导出失败: {e}")),
-        }
-    }
-
-    /// 「新建类」：core 写一份模板到临时文件，打开它；用户填完再「从文件加载」。
-    ///
-    /// 不做对话框：新建的全部内容（key、名称、范围、成员）本来就都在文件里，一个只填
-    /// 两项的对话框反而让用户以为建完了。
-    pub fn charset_new(&self) {
-        match rpc::call_core("charset.exportTemplate", &json!({})) {
-            Ok(v) => self.open_exported_file(&v),
-            Err(e) => self.notify_err(&format!("生成模板失败: {e}")),
-        }
-    }
-
-    fn open_exported_file(&self, v: &Value) {
-        let Some(path) = v.get("path").and_then(|p| p.as_str()) else {
-            self.notify_err("core 没有返回文件路径");
-            return;
-        };
-        match crate::open_external::open_with_default_app(std::path::Path::new(path)) {
-            // 提示里带上路径：编辑器可能在后台起、也可能没起，用户至少知道文件在哪。
-            Ok(()) => self.notify_info(&format!("已打开，改完请用「从文件加载」导入：{path}")),
-            Err(e) => self.notify_err(&format!("打不开 {path}: {e}")),
-        }
-    }
-
-    /// 「从文件加载」：选一个 yaml 交给 core。出厂有的 key 当覆盖、没有的当自建类——
-    /// 一条路，既是外部编辑的回读，也是手写文件的导入。
-    pub fn charset_load_from_file(&self, ctx: &mut EventCtx) {
-        let state = self.clone();
-        ctx.request_pick_file(
-            PickDialog::new()
-                .title("从文件加载 · 字符类")
-                .filter("YAML", &["yaml", "yml"]),
-            move |path| {
-                let Some(path) = path else { return };
-                let params = json!({ "path": path.to_string_lossy() });
-                match rpc::call_core("charset.importFile", &params) {
-                    Ok(v) => {
-                        state.reload();
-                        state.notify_ok(&Self::charset_import_summary(&v));
-                    }
-                    Err(e) => state.notify_err(&format!("加载失败: {e}")),
-                }
-            },
-        );
-    }
-
-    /// 加载结果的一句话摘要。纯函数便于单测。
-    ///
-    /// 单个类时说清「更新了出厂类」还是「新建了类」——两者用户的下一步不同：前者去
-    /// 看那一行的变化，后者去列表末尾找新行。
-    pub fn charset_import_summary(v: &Value) -> String {
-        let classes = v
-            .get("classes")
-            .and_then(|c| c.as_array())
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let n = |c: &Value, k: &str| c.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-        match classes {
-            [] => "文件里没有字符类".into(),
-            [c] => {
-                let name = c.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                let what = if c.get("builtin").and_then(|x| x.as_bool()).unwrap_or(false) {
-                    "已更新"
-                } else {
-                    "已新建"
-                };
-                format!(
-                    "{what}「{name}」：+{} 字 −{} 字，{} 个字段",
-                    n(c, "added"),
-                    n(c, "removed"),
-                    n(c, "fields")
-                )
-            }
-            many => format!("已加载 {} 个字符类", many.len()),
-        }
+    /// 打开字符类的「外部编辑」对话框；`preselect` 为右键/行内按钮带来的那一行。
+    pub fn charset_open_external(&self, preselect: Option<&str>) {
+        let targets: Vec<(String, String)> = self
+            .rows
+            .borrow()
+            .iter()
+            .map(|r| (r.code.clone(), r.text.clone()))
+            .collect();
+        self.xedit_open(&super::external_edit::CHARSET_DOMAIN, &targets, preselect);
     }
 
     /// 删一个自建类。出厂类没有这个入口（右键菜单按 `class_builtin` 隐藏），core 也会拒。
@@ -4094,39 +4025,6 @@ mod tests {
         assert_eq!(m, "charset.reset");
         assert_eq!(p["key"], json!("emoji"), "主键是 key，不是显示名");
         assert!(!toast.is_empty(), "撤掉的是整份调整，得提示一句");
-    }
-
-    /// 「从文件加载」的摘要：单个类分「更新出厂类」与「新建类」两种说法，多个类只报数。
-    ///
-    /// 两种说法对应用户的下一步不同——前者去看那一行变了什么，后者去列表末尾找新行。
-    #[test]
-    fn charset_import_summary_distinguishes_update_from_create() {
-        let updated = json!({ "classes": [
-            { "key": "emoji", "name": "Emoji 表情", "builtin": true, "added": 1, "removed": 2, "fields": 1 }
-        ] });
-        assert_eq!(
-            DictManagerState::charset_import_summary(&updated),
-            "已更新「Emoji 表情」：+1 字 −2 字，1 个字段"
-        );
-
-        let created = json!({ "classes": [
-            { "key": "mine", "name": "我的符号", "builtin": false, "added": 3, "removed": 0, "fields": 2 }
-        ] });
-        assert_eq!(
-            DictManagerState::charset_import_summary(&created),
-            "已新建「我的符号」：+3 字 −0 字，2 个字段"
-        );
-
-        let many = json!({ "classes": [{}, {}, {}] });
-        assert_eq!(
-            DictManagerState::charset_import_summary(&many),
-            "已加载 3 个字符类"
-        );
-        assert_eq!(
-            DictManagerState::charset_import_summary(&json!({})),
-            "文件里没有字符类",
-            "缺 classes 字段也不能 panic"
-        );
     }
 
     /// 出厂类与自建类在行上分得开：右键「删除此类」只给后者。
