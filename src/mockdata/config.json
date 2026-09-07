@@ -60,7 +60,6 @@
   "emoji": {
    "categories": false,
    "enabled": false,
-   "learn_freq": false,
    "max_hosts": 1,
    "max_per_word": 3,
    "min_word_chars": 2,

@@ -1569,15 +1569,6 @@ label = "启用分类词"
 hint = "打「动物」出一串动物、打「中餐」出一串食物。这类词一个能带出几十个，开了要靠上面的上限收着"
 enabled_when = "input.emoji.enabled == true"
 
-[[items]]
-key = "input.emoji.learn_freq"
-group = "input"
-section = "Emoji"
-type = "toggle"
-label = "emoji 参与调频"
-hint = "默认关。emoji 多是一次性点缀，让它参与调频会把常用字挤下去"
-enabled_when = "input.emoji.enabled == true"
-
 # ── 网址输入 ──
 [[items]]
 key = "input.url.enabled"

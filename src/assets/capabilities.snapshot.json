@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.120.0",
+  "appVersion": "0.120.2",
   "configKeys": [
     {
       "default": "wubi86",
@@ -931,11 +931,6 @@
     {
       "default": false,
       "key": "input.emoji.categories",
-      "type": "bool"
-    },
-    {
-      "default": false,
-      "key": "input.emoji.learn_freq",
       "type": "bool"
     },
     {
