@@ -87,6 +87,16 @@ pub struct FieldRegistry {
     pub global_flags: RefCell<Vec<(String, Signal<bool>)>>,
     /// **config.toml 之外**的落点，随主保存一并提交。见 [`SideCommitter`]。
     pub side: RefCell<Vec<SideCommitter>>,
+    /// `system.*` 的**加载态**基线（键 → 加载时的值）。
+    ///
+    /// 这些键写进 config.toml 不等于生效——真正的落点在 HKLM，得由提权进程去写。
+    /// [`SideCommitter`] 靠「当前值 != 加载态」决定要不要执行那次提权动作，所以基线
+    /// 必须是**加载时**的值，且其确立时刻不能受用户操作影响。由
+    /// `AppState::apply_loaded` 播种（见 [`FieldRegistry::seed_system_baseline`]）。
+    ///
+    /// ⚠️ 刻意**不随 [`FieldRegistry::reset`] 清空**：它描述的是系统当前状态，与设置树
+    /// 的生死无关——关窗重开不会让 HKLM 里登记的名字变回去。
+    pub system_baseline: RefCell<HashMap<String, Value>>,
     /// 对话框键 → 该对话框的可见信号，供搜索跳转**程序化打开**它。
     ///
     /// 键与 `search::index` 派生的 `JumpTarget::RowInDialog::dialog` 一致：
@@ -123,6 +133,52 @@ impl FieldRegistry {
         self.global_flags.borrow_mut().clear();
         self.side.borrow_mut().clear();
         self.dialog_opens.borrow_mut().clear();
+        // ⛔ 不清 `system_baseline`：见其字段注释。
+    }
+
+    /// 播种 `system.*` 加载态基线。见 [`FieldRegistry::system_baseline`]。
+    pub fn seed_system_baseline(&self, cfg: &Config) {
+        let mut b = self.system_baseline.borrow_mut();
+        b.clear();
+        for key in SYSTEM_BASELINE_KEYS {
+            if let Some(v) = cfg.get_path(key) {
+                b.insert((*key).to_string(), v.clone());
+            }
+        }
+    }
+
+    /// 读一个 `system.*` 键的加载态。`None` = 尚未播种（数据还没加载完）。
+    pub fn system_baseline_bool(&self, key: &str) -> Option<bool> {
+        self.system_baseline
+            .borrow()
+            .get(key)
+            .and_then(|v| v.as_bool())
+    }
+
+    /// 落地成功后把基线推到新值——否则同一次会话里再点一次保存会再弹一次 UAC。
+    pub fn set_system_baseline(&self, key: &str, value: Value) {
+        self.system_baseline
+            .borrow_mut()
+            .insert(key.to_string(), value);
+    }
+}
+
+/// 需要跟踪「加载态」的 `system.*` 键。
+///
+/// 新增 `system.*` 键时**必须**登记在此，否则它的 [`SideCommitter`] 判不出脏、落地动作
+/// 永不执行——而界面上开关照样拧得动，用户只会以为设置坏了。
+pub(crate) const SYSTEM_BASELINE_KEYS: &[&str] = &["system.dota2_compat"];
+
+/// 是否需要执行落地动作。
+///
+/// 抽成纯函数是为了**可测**：`commit` 本身会弹 UAC，测试里跑不了；判据留在闭包内
+/// 就只能靠肉眼守。`is_dirty` 与 `commit` 共用它，两者不会各判各的。
+///
+/// `base` 为 `None` 表示加载态还不知道（数据没到）——此时一律不动系统。
+fn system_needs_apply(base: Option<bool>, now: bool) -> bool {
+    match base {
+        None => false,
+        Some(b) => b != now,
     }
 }
 
@@ -443,47 +499,52 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
     // Dota 2 兼容：改的是本输入法在系统里登记的显示名。
     //
     // ★ 只在**值确实变了**时才执行——落地要弹 UAC，每次保存都弹一次不可接受。
-    // 基线取「本次加载时的值」，由 loader 灌进 Signal 的那一份；is_dirty 拿当前值
-    // 与它比。用户改回原值再保存 ⇒ 不脏 ⇒ 不弹窗，符合直觉。
-    let baseline: Rc<std::cell::Cell<Option<bool>>> = Rc::new(std::cell::Cell::new(None));
+    // 基线取「本次加载时的值」，由 `AppState::apply_loaded` 播种进 `system_baseline`；
+    // is_dirty 拿当前值与它比。用户改回原值再保存 ⇒ 不脏 ⇒ 不弹窗，符合直觉。
+    //
+    // ⛔ 别改回「首次问到值时惰性播种」。那版看着更省事，实际上开关**永远不生效**：
+    // 惰性播种唯一的触发点是 `is_dirty`，而它在真实 UI 路径上只有关窗确认与
+    // 「恢复本页」两个调用点，正常的「拧开关 → 点应用」全程不经过它；于是 `save()`
+    // 里 `side_dirty()` 先跑，在那一刻才把**用户刚改的新值**当成基线，紧接着
+    // `commit_side()` 一比就判「没变」而跳过落地。症状：config.toml 写了、注册表
+    // 纹丝不动、UAC 也不弹。见 `dota2_compat_toggle_is_dirty_after_load`。
+    const KEY: &str = "system.dota2_compat";
+
     let read_now = {
         let fields = fields.clone();
         move || -> Option<bool> {
             let g = fields.getters.borrow();
-            g.get("system.dota2_compat").and_then(|f| f().as_bool())
+            g.get(KEY).and_then(|f| f().as_bool())
         }
     };
+    let base_now = {
+        let fields = fields.clone();
+        move || -> Option<bool> { fields.system_baseline_bool(KEY) }
+    };
+
     let dirty_read = read_now.clone();
-    let dirty_base = baseline.clone();
+    let dirty_base = base_now.clone();
     let commit_read = read_now;
-    let commit_base = baseline;
+    let commit_base = base_now;
+    let commit_fields = fields.clone();
+
     fields.side.borrow_mut().push(SideCommitter {
         is_dirty: Box::new(move || {
             let Some(now) = dirty_read() else {
                 return false;
             };
-            // 首次问到值时把它当基线：getter 是 shell::build 里晚于本函数注册的，
-            // 登记那一刻还读不到，只能惰性取。
-            match dirty_base.get() {
-                None => {
-                    dirty_base.set(Some(now));
-                    false
-                }
-                Some(base) => base != now,
-            }
+            system_needs_apply(dirty_base(), now)
         }),
         commit: Box::new(move || {
             let Some(now) = commit_read() else {
                 return Ok(());
             };
-            match commit_base.get() {
-                Some(base) if base == now => Ok(()),
-                _ => {
-                    crate::dota2_compat::apply(now)?;
-                    commit_base.set(Some(now));
-                    Ok(())
-                }
+            if !system_needs_apply(commit_base(), now) {
+                return Ok(());
             }
+            crate::dota2_compat::apply(now)?;
+            commit_fields.set_system_baseline(KEY, Value::Bool(now));
+            Ok(())
         }),
     });
 }
@@ -1641,6 +1702,9 @@ impl AppState {
         self.consume_pending_dict_target();
         self.base_config = cfg.clone();
         self.current_config = cfg;
+        // `system.*` 的落地基线只能在此确立——这是「本次加载的值」唯一确定的时刻。
+        // 放晚了（比如惰性到第一次 `is_dirty`）会把用户的改动当成基线，开关永不生效。
+        self.fields.seed_system_baseline(&self.base_config);
         self.capabilities = Capabilities::from_value(&data.capabilities_value);
         self.system_info = data.system_info;
         // 降级顶栏。与下面的定制版徽章同理，页面树早已建好，只能靠 Signal 送进去。
@@ -2999,6 +3063,59 @@ mod tests {
         // 任一为真即为真：多个落点时，只有一个有改动也必须提醒。
         reg.side.borrow_mut().push(probe(true, Ok(())).0);
         assert!(reg.side_dirty());
+    }
+
+    /// ⛔ 回归：「Valve 游戏兼容模式」拧了却什么都没发生。
+    ///
+    /// 旧实现把基线惰性播种在 `is_dirty` 里，而 `AppState::save` 的顺序是
+    /// `side_dirty()` 先、`commit_side()` 后——保存动作自己把**用户刚改的新值**当成了
+    /// 基线，commit 随即判「没变」跳过落地。加上 `is_dirty` 在真实 UI 路径上只有关窗
+    /// 确认与「恢复本页」两个调用点（正常的「拧开关 → 点应用」全程不经过），于是
+    /// 症状是：config.toml 写了 `dota2_compat = true`、注册表纹丝不动、UAC 也不弹。
+    #[test]
+    fn dota2_compat_toggle_is_dirty_after_load() {
+        let reg = Rc::new(FieldRegistry::default());
+        let val = Rc::new(std::cell::Cell::new(false));
+        {
+            let v = val.clone();
+            reg.getters.borrow_mut().insert(
+                "system.dota2_compat".into(),
+                Box::new(move || Value::Bool(v.get())),
+            );
+        }
+        // 加载态 = 关闭。播种走的正是 `apply_loaded` 那条路。
+        let cfg = Config::from_value(serde_json::json!({"system": {"dota2_compat": false}}));
+        reg.seed_system_baseline(&cfg);
+        register_system_registrations(&reg);
+
+        assert!(!reg.side_dirty(), "刚加载完、没动过，不该判脏");
+
+        // 用户在「高级」页拧开开关。此前没有任何东西问过脏——这正是真实路径。
+        val.set(true);
+        assert!(
+            reg.side_dirty(),
+            "拧开关后必须判脏，否则 commit 认为无事发生、apply 永不执行"
+        );
+
+        // 改回原值 ⇒ 不脏 ⇒ 不该白弹一次 UAC。
+        val.set(false);
+        assert!(!reg.side_dirty(), "改回原值不该再判脏");
+    }
+
+    /// 落地判据的边界。`commit` 会弹 UAC 测不了，判据因此抽成纯函数由本条直接守。
+    #[test]
+    fn system_needs_apply_holds_off_until_loaded() {
+        assert!(
+            !system_needs_apply(None, true),
+            "加载态未知时一律不得动系统——那时任何「差异」都是假的"
+        );
+        assert!(!system_needs_apply(None, false));
+        assert!(system_needs_apply(Some(false), true), "关→开要落地");
+        assert!(system_needs_apply(Some(true), false), "开→关同样要落地");
+        assert!(
+            !system_needs_apply(Some(true), true),
+            "同值不该重复落地，否则每次保存都白弹一次 UAC"
+        );
     }
 
     fn si(id: &str, kind: &str) -> SchemaInfo {
