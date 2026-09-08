@@ -99,7 +99,14 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     let mgr_menu_footer = mgr_menu.clone();
 
     // 左侧栏：搜索框 + 图标导航（选中 = 淡蓝底 + 渐变图标块 + 左缘指示条）。
-    let (names, pages): (Vec<String>, Vec<Element>) = tabs_vec.into_iter().unzip();
+    let mut names: Vec<String> = Vec::with_capacity(tabs_vec.len());
+    let mut pages: Vec<Element> = Vec::with_capacity(tabs_vec.len());
+    let mut subnavs: Vec<crate::subnav::SubNav> = Vec::with_capacity(tabs_vec.len());
+    for t in tabs_vec {
+        names.push(t.name);
+        pages.push(t.page);
+        subnavs.push(t.subnav);
+    }
     let nav = build_nav(&names, tab_sig, app);
     let (search_state, jump_sig) = {
         let st = app.borrow();
@@ -107,8 +114,11 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     };
     let search_box = crate::search::ui::build_search_box(&search_state, tab_sig, jump_sig);
     // 侧栏：Bg 角色 = 左栏精确色（比右内容区 SurfaceAlt 略暗）。
+    //
+    // 宽度 140（原 184）：二级导航要在右边再占一栏，一级栏必须让出空间。八个 Tab 名
+    // 都是两字，140 - 内外边距 - chip - 间距 后仍有约 70px 给文字，绰绰有余。
     let sidebar = Element::col()
-        .width(184)
+        .width(NAV_W)
         .height_match()
         .bg_role(Role::Bg)
         .padding_xy(8, 10)
@@ -144,11 +154,22 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(crate::pages::conflict_bar(app.borrow().conflict))
         .child(crate::search::hint::build_hint_bar(search_state.hint))
         .child(pages_stack);
+    // 二级导航栏 + 它与内容区之间的分隔线：两者同一个显隐条件，见 [`subnav_visible`]。
+    let two_level = app.borrow().two_level_nav;
+    let show_subnav = subnav_visible(&subnavs, tab_sig, two_level);
+    let subnav_col = build_subnav_col(&subnavs, tab_sig, show_subnav.clone());
+    let subnav_divider = Element::leaf()
+        .width(1)
+        .height_match()
+        .bg_role(Role::Divider)
+        .visible_when(show_subnav);
     let body = Element::row()
         .fill()
         .weight(1.0)
         .child(sidebar)
         .child(vdivider)
+        .child(subnav_col)
+        .child(subnav_divider)
         .child(content);
 
     let footer = build_footer(app, th, dark, conn).on_context_menu(move || {
@@ -224,6 +245,53 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     root = root.child(crate::pages::conflict_watcher(app));
     // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏只剩状态点）。
     root.child(crate::pages::dict::reactive::toast_sink(feedback))
+}
+
+/// 一级导航栏宽度（逻辑 px）。
+const NAV_W: i32 = 140;
+
+/// 二级导航栏该不该出现：总开关打开 **且** 当前页确实有得可导。
+///
+/// 后半个条件不能省。词库页是个空占位、关于页只有一整块，给它们留一条空白竖栏
+/// 只会让人以为界面坏了。判据取「可跳转的分块 ≥ 2」——只有一块时点它等于没点。
+///
+/// 返回 `Clone` 的闭包：导航栏与它右边那条分隔线要同生共死，`visible_when` 又各要一份。
+fn subnav_visible(
+    navs: &[crate::subnav::SubNav],
+    tab: Signal<usize>,
+    on: Signal<bool>,
+) -> impl Fn() -> bool + Clone + 'static {
+    let has: Rc<Vec<bool>> = Rc::new(navs.iter().map(|n| n.section_count() >= 2).collect());
+    move || on.get() && has.get(tab.get()).copied().unwrap_or(false)
+}
+
+/// 二级导航栏：各页的分块清单叠在一个 stack 里按 Tab 切换，外加每页一枚高亮解析器。
+///
+/// 清单本身走滚动容器：输入页有 15 块，窗口矮一点就装不下。
+///
+/// 解析器**故意挂在栏内**而不是根上：`on_update` 本就无视可见性（见 `subnav` 模块文档
+/// 第 1 条），栏隐着它照样每帧跑——于是关掉二级导航再打开时，高亮已经是对的，
+/// 不会先闪一下第一项。
+fn build_subnav_col(
+    navs: &[crate::subnav::SubNav],
+    tab: Signal<usize>,
+    visible: impl Fn() -> bool + 'static,
+) -> Element {
+    let mut stack = Element::stack()
+        .width(crate::subnav::SUBNAV_W)
+        .height_match()
+        .bg_role(Role::SurfaceAlt);
+    for (i, nav) in navs.iter().enumerate() {
+        let list = Element::scroll().fill().child(
+            Element::col()
+                .width_match()
+                .padding_xy(8, 10)
+                .child(crate::subnav::build_list(nav)),
+        );
+        stack = stack.child(list.fill().visible_when(move || tab.get() == i));
+        stack = stack.child(crate::subnav::resolver(nav, tab));
+    }
+    stack.visible_when(visible)
 }
 
 /// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。

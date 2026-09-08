@@ -18,22 +18,77 @@ pub mod phrase_import;
 pub mod stats;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
-use crate::manifest::{build_scheme_config_button, section_rows};
+use crate::manifest::{scheme_config_section, section_rows};
 use crate::state::AppState;
+use crate::subnav::SubNav;
 use crate::theme_import::ThemeImportError;
 use crate::widgets::{page, section, setting_row};
 
-/// Tab：(标题, 内容)。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
-pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, Element)> {
+/// 一个 Tab 的三样东西：标题、页面内容、以及这一页的二级导航（见 [`crate::subnav`]）。
+pub struct TabDef {
+    pub name: String,
+    pub page: Element,
+    pub subnav: SubNav,
+}
+
+/// 全部 Tab。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
+///
+/// 每页各自持有一个 [`SubNav`]：页面构建时逐张卡片登记进去，`shell` 再据此建二级导航栏。
+/// 下标必须与 `cli::PAGES` 一一对齐——`SubNav::new` 收的就是这个下标，错位的话解析器会
+/// 认成别的页、二级导航整条不刷新。
+pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
+    let tab = |id: &str| SubNav::new(crate::cli::page_to_index(id).unwrap_or(0));
+    let (schema, input, keys, ui, dict, stats_nav, advanced, about) = (
+        tab("schema"),
+        tab("input"),
+        tab("keys"),
+        tab("ui"),
+        tab("dict"),
+        tab("stats"),
+        tab("advanced"),
+        tab("about"),
+    );
     vec![
-        ("方案".into(), scheme_page(app, state)),
-        ("输入".into(), input_page(state)),
-        ("按键".into(), keys_page(state)),
-        ("外观".into(), appearance_page(app, state)),
-        ("词库".into(), dict_page(state)),
-        ("统计".into(), stats::build_page(state)),
-        ("高级".into(), advanced_page(app, state)),
-        ("关于".into(), about_page(app, state)),
+        TabDef {
+            name: "方案".into(),
+            page: scheme_page(app, state, &schema),
+            subnav: schema,
+        },
+        TabDef {
+            name: "输入".into(),
+            page: input_page(state, &input),
+            subnav: input,
+        },
+        TabDef {
+            name: "按键".into(),
+            page: keys_page(state, &keys),
+            subnav: keys,
+        },
+        TabDef {
+            name: "外观".into(),
+            page: appearance_page(app, state, &ui),
+            subnav: ui,
+        },
+        TabDef {
+            name: "词库".into(),
+            page: dict_page(state),
+            subnav: dict,
+        },
+        TabDef {
+            name: "统计".into(),
+            page: stats::build_page(state, &stats_nav),
+            subnav: stats_nav,
+        },
+        TabDef {
+            name: "高级".into(),
+            page: advanced_page(app, state, &advanced),
+            subnav: advanced,
+        },
+        TabDef {
+            name: "关于".into(),
+            page: about_page(app, state),
+            subnav: about,
+        },
     ]
 }
 
@@ -49,13 +104,14 @@ fn sections_page(title: &str, desc: &str, sections: Vec<Element>) -> Element {
     page(col)
 }
 
-/// 由 manifest 某分组生成若干 section 卡片（每 section 一张卡片，行按 manifest 顺序）。
-fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
+/// 由 manifest 某分组生成若干 section 卡片（每 section 一张卡片，行按 manifest 顺序），
+/// 顺带把每张卡登记进本页的二级导航。
+fn manifest_sections(state: &AppState, group: &str, nav: &SubNav) -> Vec<Element> {
     state
         .manifest
         .sections_of(group)
         .into_iter()
-        .map(|(sec, keys)| section(&sec, section_rows(state, &keys)))
+        .map(|(sec, keys)| nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))))
         .collect()
 }
 
@@ -64,7 +120,7 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
 ///
 /// 桌面集成排在备份之前：协议关联属于"这台机器上装好了没"，与备份这种一次性动作
 /// 相比更接近状态展示，放前面用户切到本页就能看到关联是否还在。
-fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     // ★ 本页的分区顺序**由本函数决定**，清单里的先后管不了：manifest 分区与三张
     // 硬编码卡片（集成 / 导入 / 备份）是两批来源，清单排到最后也只是"manifest 那批
     // 里的最后"，仍落在三张卡之前。故两个 manifest 分区都在这里显式定位：
@@ -92,34 +148,71 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
 
     let mut secs: Vec<Element> = Vec::new();
     // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
-    secs.push(crate::search::anchor::wrap(
-        integration::build_integration_section(app, state),
-        "advanced:integration",
-        state.jump,
+    secs.push(nav.wrap(
+        "系统集成",
+        0,
+        crate::search::anchor::wrap(
+            integration::build_integration_section(app, state),
+            "advanced:integration",
+            state.jump,
+        ),
     ));
-    secs.push(crate::search::anchor::wrap(
-        config_import::build_import_export_section(&state.config_import, &state.schema_mgr),
-        "advanced:import-export",
-        state.jump,
+    // 导航名与卡片标题必须一致，否则用户点了「导入与导出」滚到一张写着「导入」的卡上，
+    // 会以为跳错了地方。这张卡的标题就是「导入」（`build_import_export_section`）。
+    secs.push(nav.wrap(
+        "导入",
+        0,
+        crate::search::anchor::wrap(
+            config_import::build_import_export_section(&state.config_import, &state.schema_mgr),
+            "advanced:import-export",
+            state.jump,
+        ),
     ));
-    secs.push(crate::search::anchor::wrap(
-        backup::build_backup_section(&state.backup_mgr),
-        "advanced:backup",
-        state.jump,
+    secs.push(nav.wrap(
+        "备份与还原",
+        0,
+        crate::search::anchor::wrap(
+            backup::build_backup_section(&state.backup_mgr),
+            "advanced:backup",
+            state.jump,
+        ),
     ));
+    secs.push(nav.wrap("设置界面", 0, settings_ui_section(app, state)));
     // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
     // 那是正常状态，不是配置错误。
     for name in ["游戏兼容", "日志设置"] {
         if let Some(el) = manifest_secs.remove(name) {
-            secs.push(el);
+            secs.push(nav.wrap(name, 0, el));
         }
     }
     // 剩下的（将来新加、还没在上面排过序的 manifest 分区）接在后面，免得静默丢失。
     // 顺序不定，加新分区时请到上面那张表里点名。
-    for (_, el) in std::mem::take(&mut manifest_secs) {
-        secs.push(el);
+    for (name, el) in std::mem::take(&mut manifest_secs) {
+        secs.push(nav.wrap(&name, 0, el));
     }
     sections_page("高级", "服务与实验性功能", secs)
+}
+
+/// 「设置界面」卡：设置程序**自身**的呈现偏好，与输入法功能无关，故落在
+/// `setting_config` 而不是 core config（也就不必动 manifest / capabilities 快照）。
+fn settings_ui_section(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+    let sig = state.two_level_nav;
+    let app_save = app.clone();
+    // windui 的 switch 只双向绑一个信号，没有 on_change；副作用（写盘）靠一枚轮询
+    // version 的隐藏 effect 节点触发，与本仓其余开关同一套做法。
+    let save = dict::reactive::reactive_effect(
+        move || sig.version(),
+        move || app_save.borrow_mut().save_two_level_nav(sig.get()),
+    );
+    crate::widgets::section_with_attachment(
+        "设置界面",
+        vec![setting_row(
+            "二级导航（实验性）",
+            Some("在左栏与内容区之间显示当前页的分块清单，点击可跳转，滚动时高亮跟随"),
+            Element::switch(sig),
+        )],
+        save,
+    )
 }
 
 // ───────────────────────── 输入 ─────────────────────────
@@ -233,9 +326,9 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
 
 /// 输入页：manifest「input」分组 + 并入原「常规(general)」的启动状态等分区
 /// （已取消独立「常规」Tab；general 分组若空则无副作用）。冲突提示由全局固定顶栏承担。
-fn input_page(state: &AppState) -> Element {
-    let mut secs = manifest_sections(state, "input");
-    secs.extend(manifest_sections(state, "general"));
+fn input_page(state: &AppState, nav: &SubNav) -> Element {
+    let mut secs = manifest_sections(state, "input", nav);
+    secs.extend(manifest_sections(state, "general", nav));
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
 
@@ -271,7 +364,7 @@ fn build_list_view_menu(
     .width(132)
 }
 
-fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     let mgr = &state.schema_mgr;
 
     // 工具栏**拆成两行**：上行是作用于选中项与全局的操作按钮，下行是列表显示过滤。
@@ -405,36 +498,37 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
             )
         });
     // 搜索锚点：方案列表/方案设置/导入导出那几条手写索引都落在这张卡上。
-    let mut secs = vec![crate::search::anchor::wrap(
-        section("输入方案", vec![toolbar_and_list]),
-        "schema:list",
-        state.jump,
+    let mut secs = vec![nav.wrap(
+        "输入方案",
+        0,
+        crate::search::anchor::wrap(
+            section("输入方案", vec![toolbar_and_list]),
+            "schema:list",
+            state.jump,
+        ),
     )];
 
-    // 全局方案配置：码表 / 混输 / 拼音 / 英文 四个 [设置] 对话框。
+    // 全局方案配置：码表 / 拼音 / 混输 / 英文 四台引擎的默认配置。
+    //
+    // ★ 这四块原本是四个模态对话框（旧 `build_scheme_config_button`），页面上只留四行
+    // 「…… [设置]」。问题不在对话框本身，而在**发现不了**：整整四节、几十个开关，
+    // 界面上一个字都看不到，用户只能靠搜索碰运气。二级导航要把它们列出来，就得先让
+    // 它们真的在页面上有位置，故 2026-09 起改为页内铺开，对话框退役。
+    //
     // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。
-    let codetable = build_scheme_config_button(state, "码表方案配置", "上屏行为", false);
-    let mixed = build_scheme_config_button(state, "混输方案配置", "混输行为", false);
-    let pinyin = build_scheme_config_button(state, "拼音方案配置", "候选行为", true);
-    let english = build_scheme_config_button(state, "英文方案配置", "英文行为", false);
-    // 四行各挂一枚锚点：搜索命中框内项时，第一跳要落到这里再把框打开。
-    // 键与 `search::index` 的 `scheme_cfg:<标签>` 约定一致。
-    let cfg_row = |label: &str, hint: &str, ctrl| {
-        crate::search::anchor::wrap(
-            setting_row(label, Some(hint), ctrl),
-            format!("scheme_cfg:{label}"),
-            state.jump,
-        )
-    };
-    secs.push(section(
-        "全局方案配置",
-        vec![
-            cfg_row("码表方案配置", "码表引擎的全局默认配置", codetable),
-            cfg_row("混输方案配置", "混输引擎的全局默认配置", mixed),
-            cfg_row("拼音方案配置", "拼音引擎的全局默认配置", pinyin),
-            cfg_row("英文方案配置", "英文引擎的全局默认配置", english),
-        ],
-    ));
+    nav.group("全局方案配置");
+    for (nav_label, title, sec, with_fuzzy) in [
+        ("码表", "码表方案配置", "上屏行为", false),
+        ("拼音", "拼音方案配置", "候选行为", true),
+        ("混输", "混输方案配置", "混输行为", false),
+        ("英文", "英文方案配置", "英文行为", false),
+    ] {
+        secs.push(nav.wrap(
+            nav_label,
+            1,
+            scheme_config_section(state, title, sec, with_fuzzy),
+        ));
+    }
 
     // 主方案设置（manifest schema 分组中的"主方案设置" section）。
     if let Some((_, keys)) = state
@@ -443,7 +537,11 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         .into_iter()
         .find(|(s, _)| s == "主方案设置")
     {
-        secs.push(section("主方案设置", section_rows(state, &keys)));
+        secs.push(nav.wrap(
+            "主方案设置",
+            0,
+            section("主方案设置", section_rows(state, &keys)),
+        ));
     }
 
     sections_page("方案", "选择输入方案与引擎配置", secs)
@@ -451,31 +549,35 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
 
 // ───────────────────────── 按键 ─────────────────────────
 
-fn keys_page(state: &AppState) -> Element {
+fn keys_page(state: &AppState, nav: &SubNav) -> Element {
     sections_page(
         "按键",
         "自定义快捷键与候选选择键",
-        manifest_sections(state, "keys"),
+        manifest_sections(state, "keys", nav),
     )
 }
 
 // ───────────────────────── 外观 ─────────────────────────
 
-fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
     // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。
     // 主题导入/编辑器直连拆两张卡：前者是日常操作，后者是面向进阶用户的连接管理，
     // 混在一张卡里容易分不清"现在按钮是要做什么"和"现在连接是什么状态"。
-    let mut secs = manifest_sections(state, "ui");
-    secs.push(crate::search::anchor::wrap(
-        theme_import_card(state),
-        "ui:theme-import",
-        state.jump,
+    let mut secs = manifest_sections(state, "ui", nav);
+    secs.push(nav.wrap(
+        "主题导入",
+        0,
+        crate::search::anchor::wrap(theme_import_card(state), "ui:theme-import", state.jump),
     ));
-    secs.push(crate::search::anchor::wrap(
-        theme_editor_connect_card(app, state),
-        "ui:theme-editor",
-        state.jump,
+    secs.push(nav.wrap(
+        "编辑器直连",
+        0,
+        crate::search::anchor::wrap(
+            theme_editor_connect_card(app, state),
+            "ui:theme-editor",
+            state.jump,
+        ),
     ));
     // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
     // toast_sink，这里不需要（也不应该）再单独挂一份。

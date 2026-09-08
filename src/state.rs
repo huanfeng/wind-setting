@@ -329,6 +329,11 @@ pub struct AppState {
     pub jump: Signal<Option<crate::search::JumpRequest>>,
     /// 暗色模式（设置窗口自身明暗，运行时切换）。
     pub dark: Signal<bool>,
+    /// 二级导航（实验性）开关。见 [`crate::subnav`] 与 `setting_config::UiStateConfig`。
+    ///
+    /// 界面上是一个 switch，改动即时生效（导航栏靠 `visible_when` 显隐，不必重建窗口），
+    /// 写盘由 `pages::settings_ui_section` 挂的 effect 节点触发。
+    pub two_level_nav: Signal<bool>,
     /// 底栏左下角的运行态（驱动状态圆点的颜色与悬停提示）。见 [`ConnState`]。
     pub conn: Signal<ConnState>,
     /// 瞬时反馈（保存成功/没有变更/保存失败/已重新加载/已恢复本页等），走 toast 而非底栏。
@@ -671,6 +676,7 @@ impl AppState {
             .ui
             .dark
             .unwrap_or_else(crate::theme_def::system_dark);
+        let initial_two_level_nav = setting_load.config.ui.two_level_nav;
         // 方案列表的两个显示过滤：`new()` 内部已 refresh 过一次（当时读到的是默认值），
         // 故 show_hidden 走 set_show_hidden 重建列表，而不是只 set 信号——它决定的是
         // 「哪些方案进列表」，不重建的话开关是打开的、列表里却没有特殊方案。
@@ -716,6 +722,7 @@ impl AppState {
             search: crate::search::SearchState::new(&Manifest::from_embedded()),
             jump: signal(None),
             dark: signal(initial_dark),
+            two_level_nav: signal(initial_two_level_nav),
             conn: signal(ConnState::Loading),
             feedback: signal(None),
             conflict: signal(String::new()),
@@ -1009,6 +1016,11 @@ impl AppState {
     /// 持久化方案页「显示特殊方案」。
     pub fn save_show_hidden_schemas(&mut self, on: bool) {
         self.save_ui_state(|ui| ui.show_hidden_schemas = on);
+    }
+
+    /// 持久化「二级导航」开关。
+    pub fn save_two_level_nav(&mut self, on: bool) {
+        self.save_ui_state(|ui| ui.two_level_nav = on);
     }
 
     /// 持久化「启动时自动检查更新」开关。

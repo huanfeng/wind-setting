@@ -699,6 +699,19 @@ pub fn section(title: &str, rows: Vec<Element>) -> Element {
         .child(card(rows))
 }
 
+/// [`section`] + 标题行右侧的动作按钮（如「恢复默认」）。
+///
+/// 按钮挂在标题行而不是卡片末尾另起一行：卡片里每一行都是「设置项」，多出一行只有一个
+/// 按钮的行会被读成又一个设置项；标题行右端则天然读作「这一节的操作」。
+/// 同 [`dialog_section_full`] 的取舍，只是换成页面卡片的字号与图标。
+pub fn section_with_action(title: &str, action: Element, rows: Vec<Element>) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(6)
+        .child(section_header(title).child(action))
+        .child(card(rows))
+}
+
 /// [`section`] + 尾部挂件（toast 槽之类平时不占位的元素）。理由见
 /// [`card_with_attachment`]——挂件混进 `rows` 会让最后一条设置行下面多一条分隔线。
 pub fn section_with_attachment(title: &str, rows: Vec<Element>, attachment: Element) -> Element {

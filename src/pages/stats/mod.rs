@@ -164,7 +164,7 @@ impl StatsState {
 // ───────────────────────── 页面组装 ─────────────────────────
 
 /// 统计页。
-pub fn build_page(state: &AppState) -> Element {
+pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
     let mgr = state.stats_mgr.clone();
 
     let schema_names = mgr.schema_names;
@@ -180,15 +180,15 @@ pub fn build_page(state: &AppState) -> Element {
         .width_match()
         .spacing(18)
         // 搜索锚点：「使用统计」落在数据区，「清空统计数据」落在设置卡。
-        .child(crate::search::anchor::wrap(
-            data_area,
-            "stats:overview",
-            state.jump,
+        .child(nav.wrap(
+            "使用统计",
+            0,
+            crate::search::anchor::wrap(data_area, "stats:overview", state.jump),
         ))
-        .child(crate::search::anchor::wrap(
-            settings_section(state),
-            "stats:settings",
-            state.jump,
+        .child(nav.wrap(
+            "统计设置",
+            0,
+            crate::search::anchor::wrap(settings_section(state), "stats:settings", state.jump),
         ))
         .child(load_effect(state));
 

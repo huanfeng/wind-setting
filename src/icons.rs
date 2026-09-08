@@ -64,7 +64,9 @@ pub fn nav_icon(tab: &str) -> &'static str {
 /// 分区标题图标（section 名映射；未命中回退 sliders）。
 pub fn section_icon(title: &str) -> &'static str {
     match title {
-        "主方案设置" | "输入方案" => GRID,
+        "主方案设置" | "输入方案" | "码表方案配置" | "混输方案配置" => GRID,
+        "拼音方案配置" => LIST,
+        "英文方案配置" => LINES,
         "主题" => CONTRAST,
         "候选窗口" | "候选行为" | "候选操作" | "候选词管理" | "候选项提示信息" | "候选无效按键" => {
             LIST

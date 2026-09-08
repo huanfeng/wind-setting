@@ -2048,23 +2048,21 @@ fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> 
 /// 别再抄字面量——`widgets::override_group_card` 与「码表配置」节头就是两处复刻。
 pub(crate) const DIALOG_HEADER_SIZE: f32 = 13.5;
 
-/// 「全局方案配置」某引擎的 [设置] 按钮 + 对话框（含该 schema-group section 的设置行）。
-/// 对话框内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
-/// `with_fuzzy`=true 在末尾追加"模糊音"子组（拼音引擎用）。对话框挂根。
-pub fn build_scheme_config_button(
+/// 「全局方案配置」某引擎的整张卡片（含该 schema-group section 的设置行）。
+///
+/// 卡内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
+/// `with_fuzzy`=true 在末尾追加"模糊音"子组（拼音引擎用）。
+///
+/// ★ 2026-09 之前这里返回的是一个 [设置] 按钮 + 一个模态对话框，页面上只留一行
+/// 「码表方案配置 …… [设置]」。四台引擎、几十个开关就此在界面上完全不可见，用户
+/// 除了搜索没有别的办法遇到它们。改为页内铺开后，二级导航才有东西可指。
+/// 「恢复默认」从对话框底栏搬到卡片标题行右侧（见 `widgets::section_with_action`）。
+pub fn scheme_config_section(
     state: &AppState,
     label: &str,
     section: &str,
     with_fuzzy: bool,
 ) -> Element {
-    use crate::dialogs::field_dialogs::build_group_dialog;
-    let visible = signal(false);
-    // 登记供搜索跳转开框。键与 `search::index` 的 `SCHEME_CFG` 前缀约定一致。
-    state
-        .fields
-        .dialog_opens
-        .borrow_mut()
-        .insert(format!("scheme_cfg:{label}"), visible);
     let keys: Vec<String> = state
         .manifest
         .sections_of("schema")
@@ -2115,10 +2113,11 @@ pub fn build_scheme_config_button(
         } else {
             field_with(state, k, hint_mode)
         };
-        // 框内行挂锚点：搜索命中的正是这些项（「上屏行为」等四节全在框里）。
+        // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
+        // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
         rows.push(crate::search::anchor::wrap(
             row,
-            crate::search::index::in_dialog_anchor(k),
+            crate::search::index::page_anchor(k),
             state.jump,
         ));
     }
@@ -2128,7 +2127,7 @@ pub fn build_scheme_config_button(
         // （见 `search::index::block_anchor_of`）。
         rows.push(crate::search::anchor::wrap(
             build_fuzzy_group(state, &state.current_config),
-            crate::search::index::in_dialog_anchor("schema.pinyin.fuzzy.enabled"),
+            crate::search::index::page_anchor("schema.pinyin.fuzzy.enabled"),
             state.jump,
         ));
     }
@@ -2144,22 +2143,20 @@ pub fn build_scheme_config_button(
         }
     }
     let seed = key_action_default_bindings(state);
-    let reset_fn: Box<dyn Fn() + 'static> = Box::new(move || {
-        let def_cfg = core_defaults_config(&seed);
-        let ld = fields.loaders.borrow();
-        for k in &reset_keys {
-            if let Some(loader) = ld.get(k) {
-                loader(&def_cfg);
-            }
-        }
-    });
-
-    let dlg = build_group_dialog(visible, label, rows, Some(reset_fn));
-    register_dialog(state, dlg);
-    Element::button("设置")
+    let reset = Element::button("恢复默认")
         .small()
         .outline_soft()
-        .on_click(move |_| visible.set(true))
+        .on_click(move |_| {
+            let def_cfg = core_defaults_config(&seed);
+            let ld = fields.loaders.borrow();
+            for k in &reset_keys {
+                if let Some(loader) = ld.get(k) {
+                    loader(&def_cfg);
+                }
+            }
+        });
+
+    crate::widgets::section_with_action(label, reset, rows)
 }
 
 /// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。

@@ -11,8 +11,8 @@
 //!
 //! 最容易想当然的一处：以为 manifest 的 `group` 就是页面。实际上
 //! - `general` 组渲染在**输入页**（`pages::input_page` 把它 extend 进去）；
-//! - `schema` 组只有「主方案设置」直接成行，其余四个 section 全部收在方案页
-//!   「全局方案配置」那四个按钮的对话框里（`manifest::build_scheme_config_button`）。
+//! - `schema` 组的五个 section 分散在方案页的五张卡片上：「主方案设置」一张，
+//!   其余四节各成一张引擎卡（`manifest::scheme_config_section`）。
 //!
 //! 照 group 直接映射到 Tab，搜出来的项会指向一个根本不在那一页的锚点——
 //! 跳过去什么也不会发生，且没有任何报错。故此处显式建表 [`placement_of`]，
@@ -92,9 +92,9 @@ fn page_tab(page: &str) -> usize {
 enum Placement {
     /// 页面上直接成行。
     Page(&'static str),
-    /// 方案页「全局方案配置」卡片里某个按钮打开的对话框。
-    SchemeDialog {
-        /// 按钮标签，兼对话框标题（如「码表方案配置」）。
+    /// 方案页「全局方案配置」下那四张引擎卡片之一。
+    SchemeCard {
+        /// 卡片标题（如「码表方案配置」）。
         label: &'static str,
     },
 }
@@ -117,6 +117,14 @@ pub fn in_dialog_anchor(key: &str) -> String {
     }
 }
 
+/// 页面上直接成行的项的锚点键。
+///
+/// 通常就是 key 本身；渲染成**一整块**、没有单独一行可落的项（见 [`block_anchor_of`]）
+/// 统一落到块锚点上。[`in_dialog_anchor`] 的页面版，两者只差那个后缀。
+pub fn page_anchor(key: &str) -> String {
+    block_anchor_of(key).unwrap_or(key).to_string()
+}
+
 /// 「这一项没有自己的行，它在某一整块里」——返回那一块的锚点基名。
 ///
 /// 模糊音那 13 个开关是挤在一个**网格**里的（`manifest::build_fuzzy_group`），
@@ -127,28 +135,23 @@ fn block_anchor_of(key: &str) -> Option<&'static str> {
         .then_some("schema.pinyin.fuzzy")
 }
 
-/// 方案页「全局方案配置」四个按钮的锚点/对话框键前缀。
-///
-/// 与 `pages::scheme_page` 里那四行一一对应；P2 给那四行挂锚点时用同一个键。
-const SCHEME_CFG: &str = "scheme_cfg";
-
 /// (group, section) → 落点。返回 `None` = 未登记，由守门测试报出。
 fn placement_of(group: &str, section: &str) -> Option<Placement> {
     let p = match (group, section) {
         // ── 方案组：只有主方案设置直接成行 ──
         ("schema", "主方案设置") => Placement::Page("schema"),
-        // 其余四节收在「全局方案配置」的四个对话框里。「模糊音」由
-        // `build_scheme_config_button(.., with_fuzzy=true)` 并进拼音方案配置。
-        ("schema", "上屏行为") => Placement::SchemeDialog {
+        // 其余四节铺在「全局方案配置」下的四张引擎卡片上。「模糊音」由
+        // `scheme_config_section(.., with_fuzzy=true)` 并进拼音方案配置。
+        ("schema", "上屏行为") => Placement::SchemeCard {
             label: "码表方案配置",
         },
-        ("schema", "混输行为") => Placement::SchemeDialog {
+        ("schema", "混输行为") => Placement::SchemeCard {
             label: "混输方案配置",
         },
-        ("schema", "候选行为") | ("schema", "模糊音") => Placement::SchemeDialog {
+        ("schema", "候选行为") | ("schema", "模糊音") => Placement::SchemeCard {
             label: "拼音方案配置",
         },
-        ("schema", "英文行为") => Placement::SchemeDialog {
+        ("schema", "英文行为") => Placement::SchemeCard {
             label: "英文方案配置",
         },
         // ── 其余组：整组落在一页上 ──
@@ -281,22 +284,19 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                     ),
                 }
             }
-            Placement::SchemeDialog { label } => {
-                let host = format!("{SCHEME_CFG}:{label}");
-                (
-                    JumpTarget::RowInDialog {
-                        tab: page_tab("schema"),
-                        host_anchor: host.clone(),
-                        dialog: host,
-                        anchor: in_dialog_anchor(key),
-                    },
-                    vec![
-                        page_name.to_string(),
-                        "全局方案配置".to_string(),
-                        label.to_string(),
-                    ],
-                )
-            }
+            Placement::SchemeCard { label } => (
+                // 这四节 2026-09 起铺在方案页上（原先各在一个对话框里），故是普通的
+                // 页面行：一跳到位，不再需要「先滚到入口行、开框、再滚框内那行」。
+                JumpTarget::Row {
+                    tab: page_tab("schema"),
+                    anchor: page_anchor(key),
+                },
+                vec![
+                    page_name.to_string(),
+                    "全局方案配置".to_string(),
+                    label.to_string(),
+                ],
+            ),
         };
         // 对话框内子分区（如「词频调整」）再补一层，路径才够指到那一行。
         if let Some(sub) = item.subsection.as_deref() {
@@ -648,9 +648,13 @@ mod tests {
         assert_eq!(e.path, vec!["方案", "主方案设置"]);
     }
 
-    /// schema 组的「上屏行为」项落在方案页的码表方案配置对话框里，不是页面直出行。
+    /// schema 组的「上屏行为」项落在方案页「码表方案配置」那张卡上，一跳到位。
+    ///
+    /// 这几节曾经收在对话框里（目标是 `RowInDialog`），2026-09 铺开成页内卡片后必须是
+    /// `Row`：仍按对话框生成的话，跳转会去找一个已经不存在的入口行与对话框注册项，
+    /// 第一跳无人认领 —— 搜到了、点了、页也切了，就是不滚也不闪。
     #[test]
-    fn scheme_behavior_items_land_in_dialog() {
+    fn scheme_behavior_items_land_on_page() {
         let m = manifest();
         let idx = build_index(&m);
         let e = idx
@@ -661,12 +665,30 @@ mod tests {
             })
             .expect("上屏行为应有可索引项");
         match &e.target {
-            JumpTarget::RowInDialog { dialog, .. } => {
-                assert_eq!(dialog, "scheme_cfg:码表方案配置");
+            JumpTarget::Row { tab, anchor } => {
+                assert_eq!(*tab, crate::cli::page_to_index("schema").unwrap());
+                assert_eq!(anchor, &e.id, "锚点键就是清单 key");
             }
-            other => panic!("上屏行为应落对话框，实际 {other:?}"),
+            other => panic!("上屏行为应落页面行，实际 {other:?}"),
         }
         assert_eq!(e.path[1], "全局方案配置");
+    }
+
+    /// 模糊音那 13 个开关挤在一个网格里，索引须落到**整块**的锚点上而不是各自的 key
+    /// （逐格闪一个 `zh ↔ z` 大小的方块没人看得见）。铺开成页内卡片后不再带
+    /// `#in-dialog` 后缀，故这里把两件事一起钉住。
+    #[test]
+    fn fuzzy_items_use_block_anchor_without_dialog_suffix() {
+        let m = manifest();
+        let idx = build_index(&m);
+        let e = idx
+            .iter()
+            .find(|e| e.id.starts_with("schema.pinyin.fuzzy."))
+            .expect("模糊音应有可索引项");
+        match &e.target {
+            JumpTarget::Row { anchor, .. } => assert_eq!(anchor, "schema.pinyin.fuzzy"),
+            other => panic!("模糊音应落页面块锚点，实际 {other:?}"),
+        }
     }
 
     /// general 组渲染在输入页，面包屑与 Tab 都该是「输入」。

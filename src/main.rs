@@ -32,6 +32,7 @@ mod setting_config;
 mod shell;
 mod shortcuts;
 mod state;
+mod subnav;
 mod theme_def;
 #[allow(dead_code)]
 mod theme_editor_server;
@@ -63,9 +64,16 @@ pub enum UiRequest {
 
 /// 窗口尺寸。设置窗与词库窗**同尺寸**，`App::new`、主窗重建、词库开窗四条路共用一份，
 /// 免得各写各的、改一边漏一边。
-pub(crate) const MAIN_W: i32 = 820;
+///
+/// ★ 宽度随二级导航一起从 820 抬到 950。左侧从「184 单栏」变成「140 + 1 + 168 + 1
+/// 三栏」，多吃掉 125px；不抬宽度的话内容区只剩约 480，方案页工具栏那排按钮会**再一次**
+/// 被挤出可视区（`pages::scheme_page` 里已为同一个症状把工具栏拆过两行）。950 - 310 = 640，
+/// 与改动前的 820 - 185 = 635 基本持平，等于「内容区宽度不变，导航多了一栏」。
+pub(crate) const MAIN_W: i32 = 950;
 pub(crate) const MAIN_H: i32 = 640;
-pub(crate) const MAIN_MIN_W: i32 = 560;
+/// 最小宽度同步从 560 抬到 700：三栏导航占 310，560 下内容区只剩 250，
+/// 设置行的标题、说明与右侧控件挤在一起，等于这个下限处的界面不可用。
+pub(crate) const MAIN_MIN_W: i32 = 700;
 pub(crate) const MAIN_MIN_H: i32 = 440;
 
 /// 设置主窗的单例键。窗口在的时候，别处 `open_window(Window::single(本键))` 会把它
