@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.110.0",
+  "appVersion": "0.120.2",
   "configKeys": [
     {
       "default": "wubi86",
@@ -104,6 +104,20 @@
         "section": "[codetable]"
       },
       "type": "int"
+    },
+    {
+      "default": "all",
+      "key": "schema.codetable.word_scope",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable]"
+      },
+      "type": "enum",
+      "values": [
+        "all",
+        "char",
+        "phrase"
+      ]
     },
     {
       "default": true,
@@ -348,6 +362,16 @@
       "default": "auto",
       "key": "schema.pinyin.separator",
       "type": "str"
+    },
+    {
+      "default": "all",
+      "key": "schema.pinyin.word_scope",
+      "type": "enum",
+      "values": [
+        "all",
+        "char",
+        "phrase"
+      ]
     },
     {
       "default": false,

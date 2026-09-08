@@ -227,6 +227,7 @@
    "single_code_complete": true,
    "single_code_input": false,
    "top_code_commit": true,
+   "word_scope": "all",
    "z_key_action": "",
    "z_key_repeat": true
   },
@@ -330,7 +331,8 @@
    "shuangpin": {
     "allow_full_pinyin": false
    },
-   "use_smart_compose": true
+   "use_smart_compose": true,
+   "word_scope": "all"
   },
   "primary_codetable": "",
   "primary_pinyin": "",

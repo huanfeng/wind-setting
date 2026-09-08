@@ -184,6 +184,24 @@ options = [
   { value = "3", label = "全部简码" },
 ]
 
+# 与上面的「出简让全」同属码表专属、同一 subsection：两者都在回答「这个码位该出什么」。
+# 拼音另有一份（schema.pinyin.word_scope），刻意不共享取值——码表开单字档是为了定长盲打，
+# 拼音没有定长、开了只是不出词。
+[[items]]
+key = "schema.codetable.word_scope"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "select"
+label = "字词范围"
+hint = "只出单字时同码没有词来争首选，满码唯一即可直接上屏，不必看候选窗"
+width = 160
+options = [
+  { value = "all", label = "字词都出" },
+  { value = "char", label = "只出单字" },
+  { value = "phrase", label = "只出词组" },
+]
+
 # 词频调整
 [[items]]
 key = "schema.codetable.frequency.enabled"
@@ -405,6 +423,21 @@ options = [
 ]
 
 # 词频调整
+# 与码表那份（schema.codetable.word_scope）是两件独立的事，互不影响。
+[[items]]
+key = "schema.pinyin.word_scope"
+group = "schema"
+section = "候选行为"
+type = "select"
+label = "字词范围"
+hint = "只出单字时用来找某个字；拼音没有定长码，日常不必开"
+width = 160
+options = [
+  { value = "all", label = "字词都出" },
+  { value = "char", label = "只出单字" },
+  { value = "phrase", label = "只出词组" },
+]
+
 [[items]]
 key = "schema.pinyin.frequency.enabled"
 group = "schema"
