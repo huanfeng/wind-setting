@@ -65,8 +65,21 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
 /// 桌面集成排在备份之前：协议关联属于"这台机器上装好了没"，与备份这种一次性动作
 /// 相比更接近状态展示，放前面用户切到本页就能看到关联是否还在。
 fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
-    let mut secs = manifest_sections(state, "advanced");
-    if secs.is_empty() {
+    // 「日志设置」摘出来压到全页最后（见函数末尾）：它只在排查时才动，日常使用频度
+    // 远低于本页其它任何一项。清单里的分区顺序管不了这件事——本页在 manifest 分区
+    // 之后还接着三张硬编码卡片，光在清单里排到最后仍会落在集成/导入导出/备份前面。
+    const LAST_SECTION: &str = "日志设置";
+    let mut secs: Vec<Element> = Vec::new();
+    let mut log_sec: Option<Element> = None;
+    for (sec, keys) in state.manifest.sections_of("advanced") {
+        let el = section(&sec, section_rows(state, &keys));
+        if sec == LAST_SECTION {
+            log_sec = Some(el);
+        } else {
+            secs.push(el);
+        }
+    }
+    if secs.is_empty() && log_sec.is_none() {
         secs.push(
             Element::col()
                 .width_match()
@@ -89,6 +102,10 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         "advanced:backup",
         state.jump,
     ));
+    // 日志设置压轴。见函数开头 LAST_SECTION 的说明。
+    if let Some(el) = log_sec {
+        secs.push(el);
+    }
     sections_page("高级", "服务与实验性功能", secs)
 }
 

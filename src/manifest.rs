@@ -14,6 +14,7 @@ use windui::prelude::*;
 
 use crate::config::Config;
 use crate::dialogs::key_binding::ForeignBinding;
+use crate::mode::AppMode;
 use crate::state::{AppState, SchemaInfo};
 use crate::widgets::{setting_row, setting_row_checks, setting_row_schema_hint};
 
@@ -207,8 +208,12 @@ impl Manifest {
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
                     // 不注册 writer/loader，配置文件里的原值原样留着不动。
+                    // `variant` 同理折进 hidden：dev 专属的排查档位（如 TSF 日志的
+                    // DebugString 输出）不该出现在正式版的下拉里——那两档要靠
+                    // DebugView.exe 才看得见，对最终用户是纯噪声。
                     hidden: it.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false)
-                        || !platform_matches(opt_str(it, "platform").as_deref()),
+                        || !platform_matches(opt_str(it, "platform").as_deref())
+                        || !variant_matches(opt_str(it, "variant").as_deref()),
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -291,6 +296,35 @@ fn platform_matches(platform: Option<&str>) -> bool {
     list.split(',').map(str::trim).any(|p| match p {
         "windows" => cfg!(windows),
         "macos" => cfg!(target_os = "macos"),
+        _ => false,
+    })
+}
+
+/// 清单项的 `variant` 字段是否匹配当前构建变体。
+///
+/// 取值为逗号分隔的 `dev` / `release`，命中其一即显示；缺省（`None`）= 两种都显示。
+/// 用于「只对开发/排查有意义的档位」——如 TSF 日志的 DebugString 输出，它要配合
+/// DebugView.exe 才看得见，摆在正式版的下拉里只会让用户选中一个"看起来没生效"的选项。
+///
+/// 判据取 [`crate::mode::get`]，它由 `main` 最早期的 `mode::init` 定下（早于清单解析）。
+/// 与 [`platform_matches`] 同一条纪律：未知取值一律不匹配——写错名字宁可整项消失
+/// （一眼看得见），也不要静默当成"两种都显示"。
+fn variant_matches(variant: Option<&str>) -> bool {
+    variant_matches_mode(variant, crate::mode::get())
+}
+
+/// [`variant_matches`] 的可测形态。
+///
+/// 变体是进程级 `OnceLock`（`mode::init` 在 main 最早期定一次），测试里换不掉——
+/// 判据必须能脱离那个全局单独断言，否则 dev/release 两条分支只有一条测得到。
+/// 同一条纪律见 core 的 `capslock_hook::decide_eat`。
+fn variant_matches_mode(variant: Option<&str>, mode: AppMode) -> bool {
+    let Some(list) = variant else {
+        return true;
+    };
+    list.split(',').map(str::trim).any(|v| match v {
+        "dev" => mode == AppMode::Dev,
+        "release" => mode == AppMode::Release,
         _ => false,
     })
 }
@@ -413,6 +447,9 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_open_pairs",
     "dialog_button_comment_dicts",
     "dialog_button_langbar_badges",
+    "local_select",
+    "open_log_dir",
+    "note",
 ];
 
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -439,6 +476,14 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_open_pairs"
         | "dialog_button_comment_dicts"
         | "dialog_button_langbar_badges" => build_dialog_button(state, key, item, cfg),
+        "local_select" => build_local_select(state, key, item),
+        "open_log_dir" => build_open_log_dir(),
+        // 纯说明行：整分区共用一条提示时用它。与其在每一行的 hint 里重复同一句风险
+        // 警告，不如在分区里标一次——重复的提示会被整片略读掉，正好把该看的那句一起淹了。
+        //
+        // 文案走 `label` + `hint` 的常规行形态（`hint` 承载长句，那是副标题该干的事），
+        // 控件位留空。`Element::leaf()` 是不占位的空节点。
+        "note" => Element::leaf(),
         other => {
             // 名单说能渲染、match 却没有分支 ⇒ 名单与实现脱节，debug 构建当场炸。
             // release 下仍回落占位符（灰字比崩溃好），故不用 unreachable!。
@@ -676,6 +721,173 @@ fn select_index_for(values: &mut Vec<String>, labels: &mut Vec<String>, cur: &st
     values.push(cur.to_string());
     labels.push(format!("{cur}（当前配置）"));
     values.len() - 1
+}
+
+/// 一个**不在 config.toml 里**的字符串项的读写对。见 [`build_local_select`]。
+///
+/// 用裸函数指针而非闭包：这三项没有任何需要捕获的状态，指针让「读写必须成对」
+/// 这件事在类型上就成立——各处零散写 `if key == "..."` 才是漂移的来源。
+struct LocalField {
+    read: fn() -> String,
+    write: fn(&str) -> Result<(), String>,
+}
+
+/// 三个模块的日志开关**各自落在自己启动那一刻就读得到的地方**：
+///
+/// | 模块 | 落点 | 为什么不能进 config.toml |
+/// |---|---|---|
+/// | 输入法服务 | core `config.toml` 的 `debug.log_level` | 它本来就读这个文件（走普通 `select`，不经本函数） |
+/// | TSF DLL | `<日志根>\tsf_log_config` | 日志在 `DllMain` 里就要支起来，那时 IPC 还没连上；AppContainer 宿主里更是永远连不上 |
+/// | 设置程序 | `wind_setting.toml` 的 `[log] level` | `logger::init` 跑在 main 最早期，RPC 尚未建立 |
+///
+/// 后两者够不着 `config.toml` 的键空间，主保存的键 diff 也就看不见它们——故走
+/// `SideCommitter`（见 `state::SideCommitter`：「非 config.toml 落点一律登记
+/// SideCommitter，不加独立保存按钮」）。
+fn local_field(key: &str) -> Option<LocalField> {
+    match key {
+        "local.tsf_log_level" => Some(LocalField {
+            read: || {
+                crate::tsf_log::read(crate::mode::get())
+                    .level
+                    .as_str()
+                    .to_string()
+            },
+            write: |v| {
+                let m = crate::mode::get();
+                // read-modify-write：`level` 与 `mode` 是同一个文件里的两项，各写各的
+                // 会互相覆盖。同理，这也保住了用户手工写在里面的 `dump_hotkey` 与注释
+                // （真正的保留逻辑在 `tsf_log::merge`）。
+                let mut s = crate::tsf_log::read(m);
+                s.level = crate::tsf_log::Level::parse(v).unwrap_or(crate::tsf_log::Level::Off);
+                crate::tsf_log::write(m, s)
+            },
+        }),
+        "local.tsf_log_mode" => Some(LocalField {
+            read: || match crate::tsf_log::read(crate::mode::get()).mode {
+                crate::tsf_log::Mode::File => "file".to_string(),
+                crate::tsf_log::Mode::DebugString => "debugstring".to_string(),
+            },
+            write: |v| {
+                let m = crate::mode::get();
+                let mut s = crate::tsf_log::read(m);
+                s.mode = if v.eq_ignore_ascii_case("debugstring") {
+                    crate::tsf_log::Mode::DebugString
+                } else {
+                    crate::tsf_log::Mode::File
+                };
+                crate::tsf_log::write(m, s)
+            },
+        }),
+        "local.setting_log_level" => Some(LocalField {
+            read: || crate::setting_config::load().config.log.level,
+            write: |v| {
+                let mut cfg = crate::setting_config::load().config;
+                cfg.log.level = v.to_string();
+                crate::setting_config::save(&cfg)
+            },
+        }),
+        _ => None,
+    }
+}
+
+/// 落点在 config.toml 之外的下拉。值从 [`local_field`] 读，改动经 `SideCommitter`
+/// 随「应用设置 / 保存并退出」一并提交。
+fn build_local_select(state: &AppState, key: &str, item: &MItem) -> Element {
+    let Some(field) = local_field(key) else {
+        // 清单里写了 local_select 却没在 local_field 登记落点 ⇒ 两处脱节。
+        // 与 dialog_button_* 同一条纪律：debug 当场炸，release 回落灰字占位符。
+        debug_assert!(false, "local_select 未登记落点: {key}");
+        return Element::label(format!("（未登记的本地项 {key}）")).fg_role(Role::TextMuted);
+    };
+    let (values, labels): (Vec<String>, Vec<String>) = item
+        .options
+        .iter()
+        .map(|o| (o.value.clone(), o.label.clone()))
+        .unzip();
+    if values.is_empty() {
+        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+    }
+
+    let loaded = (field.read)();
+    let idx = values.iter().position(|v| *v == loaded).unwrap_or(0);
+    let sig = signal(idx);
+
+    // 基线 = 本次加载时的档位。
+    //
+    // ★ 没变就**一个字节都不写**：写回会碰 `tsf_log_config`——那是用户手工维护的
+    // 排查文件（注释、`dump_hotkey`）。每次点"应用设置"都重写一遍它，等于把用户
+    // 的手工编辑反复过一遍我们的格式化器，迟早出事。判据与 `system.*` 那组同源
+    // （见 `state::register_system_registrations`：落地有代价 ⇒ 值真变了才执行）。
+    let baseline = std::rc::Rc::new(std::cell::Cell::new(idx));
+
+    let dirty_vals = values.clone();
+    let dirty_base = baseline.clone();
+    let commit_vals = values.clone();
+    let commit_base = baseline.clone();
+    state
+        .fields
+        .side
+        .borrow_mut()
+        .push(crate::state::SideCommitter {
+            is_dirty: Box::new(move || sig.get() != dirty_base.get()),
+            commit: Box::new(move || {
+                let now = sig.get();
+                if now == commit_base.get() {
+                    return Ok(());
+                }
+                let Some(v) = commit_vals.get(now) else {
+                    return Ok(());
+                };
+                (field.write)(v)?;
+                // 提交成功才推进基线：失败时保持脏，用户再点一次仍会重试。
+                commit_base.set(now);
+                Ok(())
+            }),
+        });
+    let _ = dirty_vals;
+
+    // 「恢复本页」等重载路径要把值重新读回来。回调签名带 `&Config` 是登记表的形状，
+    // 本项的真值不在里面，故忽略参数直接重读文件——重载的语义是「丢弃未保存改动、
+    // 回到盘上的样子」，对本项同样成立。
+    let load_vals = values;
+    let load_base = baseline;
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |_c: &Config| {
+            let cur = (field.read)();
+            let idx = load_vals.iter().position(|v| *v == cur).unwrap_or(0);
+            sig.set(idx);
+            load_base.set(idx);
+        }),
+    );
+
+    let dd = Element::dropdown(labels, sig);
+    match item.width {
+        Some(w) => dd.width(w as i32),
+        None => dd.min_width(CTRL_W),
+    }
+}
+
+/// 「打开」按钮：在系统文件管理器里打开日志目录。
+///
+/// 三个模块的日志都在这一个目录下（TSF 的在 `tsf_log\` 子目录里），故只需要一个入口，
+/// 不必每行都挂一个按钮。
+fn build_open_log_dir() -> Element {
+    Element::button("打开")
+        .small()
+        .outline_soft()
+        .on_click(move |_| {
+            let Some(dir) = crate::tsf_log::log_dir(crate::mode::get()) else {
+                tracing::warn!("打开日志目录：无法定位本机状态目录");
+                return;
+            };
+            // 目录可能还不存在（三个模块都关着日志时）。先建再开，比弹一句
+            // 「目录不存在」有用——用户此刻多半正要往里放东西或确认位置。
+            let _ = std::fs::create_dir_all(&dir);
+            if let Err(e) = crate::open_external::open_with_default_app(&dir) {
+                tracing::warn!("打开日志目录失败: {e}");
+            }
+        })
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -4906,6 +5118,67 @@ mod tests {
         assert!(platform_matches(Some("windows, macos")));
         // 写错名字宁可整项消失（一眼看得见），也不要静默当成全平台显示。
         assert!(!platform_matches(Some("darwin")));
+    }
+
+    #[test]
+    fn variant_gate() {
+        // 缺省 = 两种变体都显示。
+        assert!(variant_matches_mode(None, AppMode::Release));
+        assert!(variant_matches_mode(None, AppMode::Dev));
+        // 各自只在自己那一侧成立。
+        assert!(variant_matches_mode(Some("dev"), AppMode::Dev));
+        assert!(!variant_matches_mode(Some("dev"), AppMode::Release));
+        assert!(variant_matches_mode(Some("release"), AppMode::Release));
+        assert!(!variant_matches_mode(Some("release"), AppMode::Dev));
+        // 逗号列表：命中其一即可，容忍空白。
+        assert!(variant_matches_mode(Some("dev, release"), AppMode::Release));
+        // 与 platform 同一条纪律：写错名字整项消失，不静默当成"都显示"。
+        assert!(!variant_matches_mode(Some("debug"), AppMode::Dev));
+    }
+
+    /// TSF 日志的「输出方式」只对 dev 变体开放：DebugString 那一档要配合
+    /// DebugView.exe 才看得见，摆在正式版里只会让用户选中一个"看起来没生效"的选项。
+    ///
+    /// 测试进程没调 `mode::init`，`mode::get()` 兜底 Release ⇒ 该项应被折进 hidden。
+    /// 顺带锁住同组另外几项：TSF 两项限 Windows（macOS 那边是 IMKit，没有 TSF），
+    /// 而服务/设置两项两个平台都要有。
+    #[test]
+    fn log_section_gating() {
+        let m = Manifest::from_embedded();
+        let hidden = |k: &str| m.get(k).map(|i| i.hidden);
+
+        assert_eq!(
+            hidden("local.tsf_log_mode"),
+            Some(true),
+            "TSF 日志输出方式在正式版里必须隐藏"
+        );
+        assert_eq!(
+            hidden("local.tsf_log_level"),
+            Some(!cfg!(windows)),
+            "TSF 日志级别只在 Windows 有落点"
+        );
+        for k in ["debug.log_level", "local.setting_log_level"] {
+            assert_eq!(hidden(k), Some(false), "{k} 不该被任何门控藏起来");
+        }
+    }
+
+    /// 三个模块的日志级别下拉必须都带「关闭」一档——「支持完全关闭」是这组设置的
+    /// 立身之本，少一个就是"这个模块关不掉"，而下拉里少一项没人会注意到。
+    #[test]
+    fn every_log_level_select_offers_off() {
+        let m = Manifest::from_embedded();
+        for k in [
+            "debug.log_level",
+            "local.tsf_log_level",
+            "local.setting_log_level",
+        ] {
+            let item = m.get(k).unwrap_or_else(|| panic!("清单缺少 {k}"));
+            assert!(
+                item.options.iter().any(|o| o.value == "off"),
+                "{k} 的值域里没有 off：{:?}",
+                item.options.iter().map(|o| &o.value).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

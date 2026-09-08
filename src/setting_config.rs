@@ -17,6 +17,38 @@ pub struct SettingConfig {
     pub protocol: ProtocolConfig,
     #[serde(default)]
     pub file_assoc: FileAssocConfig,
+    #[serde(default)]
+    pub log: LogConfig,
+}
+
+/// 设置程序**自身**的日志。
+///
+/// 落在本文件而非 core config：这是设置程序的运行偏好，与输入法功能无关；更要紧的是
+/// [`crate::logger::init`] 跑在 main 最早期，那时 RPC 还没连上，只能读得到本地文件。
+/// 同理，TSF 的日志配置落在它自己读得到的 `tsf_log_config`（见 [`crate::tsf_log`]）——
+/// 三个模块各自的日志开关，各放在各自**启动那一刻就能打开**的地方。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogConfig {
+    /// 级别：`off` / `error` / `warn` / `info` / `debug` / `trace`。默认 `info`。
+    ///
+    /// `off` = 一个文件都不建（不是"建了但空"）。此前这里是硬编码的 `debug` 且完全
+    /// 不可配——设置程序每次启动都写一份 debug 级日志，用户既关不掉也调不动。
+    ///
+    /// ⚠️ `RUST_LOG` 仍然优先于本项，与 core 服务同一条优先级链。
+    #[serde(default = "default_log_level")]
+    pub level: String,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+        }
+    }
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 /// `windinput://` 协议关联的偏好。
@@ -102,6 +134,7 @@ impl Default for SettingConfig {
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),
             file_assoc: FileAssocConfig::default(),
+            log: LogConfig::default(),
         }
     }
 }
@@ -444,6 +477,7 @@ mod tests {
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),
             file_assoc: FileAssocConfig::default(),
+            log: LogConfig::default(),
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: SettingConfig = toml::from_str(&text).unwrap();
@@ -464,6 +498,7 @@ mod tests {
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),
             file_assoc: FileAssocConfig::default(),
+            log: LogConfig::default(),
         };
         save_to_path(&config, &path).unwrap();
 

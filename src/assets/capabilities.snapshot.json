@@ -115,6 +115,33 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "schema.codetable.english_merge.enable",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文混入设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.english_merge]"
+      },
+      "type": "bool"
+    },
+    {
+      "default": 3,
+      "key": "schema.codetable.english_merge.min_length",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文混入设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.english_merge]"
+      },
+      "type": "int"
+    },
+    {
+      "default": true,
+      "key": "schema.codetable.english_merge.block_commit",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文混入设置；方案没写的项仍然用这里的值。",
+        "section": "[codetable.english_merge]"
+      },
+      "type": "bool"
+    },
+    {
       "default": "",
       "key": "schema.codetable.z_key_action",
       "schemaOverride": {
@@ -321,6 +348,16 @@
       "default": "auto",
       "key": "schema.pinyin.separator",
       "type": "str"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.english_merge.enable",
+      "type": "bool"
+    },
+    {
+      "default": 3,
+      "key": "schema.pinyin.english_merge.min_length",
+      "type": "int"
     },
     {
       "default": false,
@@ -1690,11 +1727,12 @@
       "key": "debug.log_level",
       "type": "enum",
       "values": [
-        "trace",
-        "debug",
-        "info",
+        "off",
+        "error",
         "warn",
-        "error"
+        "info",
+        "debug",
+        "trace"
       ]
     },
     {

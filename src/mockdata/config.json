@@ -200,6 +200,11 @@
     "temp_max_entries": 5000
    },
    "clear_on_empty_max": false,
+   "english_merge": {
+    "block_commit": true,
+    "enable": false,
+    "min_length": 3
+   },
    "frequency": {
     "enabled": false,
     "half_life": 0.0,
@@ -286,6 +291,10 @@
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4
+   },
+   "english_merge": {
+    "enable": false,
+    "min_length": 3
    },
    "frequency": {
     "base_scale": 0.0,

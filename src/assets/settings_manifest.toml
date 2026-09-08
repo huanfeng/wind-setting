@@ -335,6 +335,42 @@ max = 20
 hidden = true
 enabled_when = "schema.codetable.auto_phrase.enabled == true"
 
+# ── 英文混入：整串恰好是一个英文词时把它放进候选 ──
+# 与拼音那份（schema.pinyin.english_merge）取值独立：码表用户常打命令行、变量名，
+# 拼音用户的英文词与拼音串大面积重叠，是否要开是两个判断。
+[[items]]
+key = "schema.codetable.english_merge.enable"
+group = "schema"
+section = "上屏行为"
+subsection = "英文混入"
+type = "toggle"
+label = "混入英文候选"
+hint = "整串恰好是一个英文词时把它放进候选（打 hello 出 hello）；不含前缀词，想打某个词要敲完整"
+
+# 最小触发长度：预留配置，暂不对用户开放（默认 3）。
+[[items]]
+key = "schema.codetable.english_merge.min_length"
+group = "schema"
+section = "上屏行为"
+subsection = "英文混入"
+type = "number"
+label = "英文最小触发长度"
+hint = "编码达到此长度才查英文（0 表示跟随默认值 3）"
+min = 0
+max = 10
+hidden = true
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.block_commit"
+group = "schema"
+section = "上屏行为"
+subsection = "英文混入"
+type = "toggle"
+label = "有英文候选时不自动上屏"
+hint = "定长码表建议开着：4 码即满码上屏，关掉的话打 github 到第 4 键就被顶出中文"
+enabled_when = "schema.codetable.english_merge.enable == true"
+
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
 key = "schema.pinyin.show_code_hint"
@@ -506,6 +542,31 @@ hint = "超过这个字数的词组不参与筛选；0 = 不限。单字始终�
 min = 0
 max = 20
 enabled_when = "schema.pinyin.aux_code.enabled == true"
+
+# ── 英文混入：与码表那份（schema.codetable.english_merge）取值独立 ──
+# 本段没有「不自动上屏」一项：那一项否决的是满码上屏/顶码，拼音方案两者都没有。
+[[items]]
+key = "schema.pinyin.english_merge.enable"
+group = "schema"
+section = "候选行为"
+subsection = "英文混入"
+type = "toggle"
+label = "混入英文候选"
+hint = "整串恰好是一个英文词时把它放进候选（打 hello 出 hello）；不含前缀词，想打某个词要敲完整"
+
+# 最小触发长度：预留配置，暂不对用户开放（默认 3）。
+[[items]]
+key = "schema.pinyin.english_merge.min_length"
+group = "schema"
+section = "候选行为"
+subsection = "英文混入"
+type = "number"
+label = "英文最小触发长度"
+hint = "编码达到此长度才查英文（0 表示跟随默认值 3）"
+min = 0
+max = 10
+hidden = true
+enabled_when = "schema.pinyin.english_merge.enable == true"
 
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
 [[items]]
@@ -2760,22 +2821,6 @@ enabled_when = "stats.enabled == true"
 platform = "windows"
 
 # ═══════════════════════════ 高级 ═══════════════════════════
-# ── 日志设置 ──
-[[items]]
-key = "debug.log_level"
-group = "advanced"
-section = "日志设置"
-type = "select"
-label = "服务日志级别"
-hint = "重启输入法服务后生效"
-options = [
-  { value = "error", label = "error" },
-  { value = "warn", label = "warn" },
-  { value = "info", label = "info" },
-  { value = "debug", label = "debug" },
-  { value = "trace", label = "trace" },
-]
-
 # ── 游戏兼容 ──
 [[items]]
 key = "system.dota2_compat"
@@ -2784,3 +2829,94 @@ section = "游戏兼容"
 type = "toggle"
 label = "Valve 游戏兼容模式（Dota2 等）"
 hint = "部分 Valve 游戏（如 Dota 2）只给内置名单里的输入法绘制候选，本输入法不在名单内，因此游戏里看不到候选、还会多出一个左上角小窗。开启后本输入法在系统里登记的名称会改为「中文 (简体) - 郑码」，语言栏与 Windows 设置里也显示该名称；需管理员权限，重启游戏后生效"
+
+# ── 日志设置 ──
+# 放在本页**最后**：三项都只在排查时才动，日常使用频度极低。
+#
+# 三个模块的落点各不相同（理由见 manifest.rs 的 `local_field`）：
+#   输入法服务 → core config.toml 的 debug.log_level（普通 select）
+#   TSF DLL    → <日志根>/tsf_log_config（local_select，DLL 在 DllMain 里就要读到）
+#   设置程序   → wind_setting.toml 的 [log] level（local_select，logger 早于 RPC）
+# 但三者的日志文件都落在同一个 logs 目录下，故「打开」入口只要一个，不必每行挂一个。
+
+[[items]]
+key = "local.log_privacy_note"
+group = "advanced"
+section = "日志设置"
+type = "note"
+label = "隐私提示"
+hint = "debug 与 trace 级别会记录输入内容，存在信息泄露风险；排查完请调回 info 或关闭"
+
+[[items]]
+key = "debug.log_level"
+group = "advanced"
+section = "日志设置"
+type = "select"
+label = "输入法服务日志级别"
+hint = "重启输入法服务后生效；关闭后连启动轨迹文件也不再写入"
+options = [
+  { value = "off", label = "关闭" },
+  { value = "error", label = "error" },
+  { value = "warn", label = "warn" },
+  { value = "info", label = "info" },
+  { value = "debug", label = "debug" },
+  { value = "trace", label = "trace" },
+]
+
+[[items]]
+key = "local.tsf_log_level"
+group = "advanced"
+section = "日志设置"
+type = "local_select"
+label = "TSF 端日志级别"
+hint = "重启使用中的程序后生效（DLL 常驻在各宿主进程内）"
+# macOS 没有 TSF：那边的输入法层是 IMKit，日志随主程序走，没有对应落点。
+platform = "windows"
+options = [
+  { value = "off", label = "关闭" },
+  { value = "error", label = "error" },
+  { value = "warn", label = "warn" },
+  { value = "info", label = "info" },
+  { value = "debug", label = "debug" },
+  { value = "trace", label = "trace" },
+]
+
+[[items]]
+key = "local.tsf_log_mode"
+group = "advanced"
+section = "日志设置"
+type = "local_select"
+label = "TSF 端日志输出方式"
+hint = "DebugString 需配合 DebugView.exe 查看"
+platform = "windows"
+# 仅 dev 变体可见：DebugString 那一档要靠外部工具才看得见，正式版里只会让人选中一个
+# 「看起来没生效」的选项。正式版恒为「写入文件」（tsf_log_config 里手写 mode 仍然有效）。
+variant = "dev"
+options = [
+  { value = "file", label = "写入文件" },
+  { value = "debugstring", label = "DebugString" },
+]
+
+[[items]]
+key = "local.setting_log_level"
+group = "advanced"
+section = "日志设置"
+type = "local_select"
+label = "设置程序日志级别"
+hint = "重启设置程序后生效"
+options = [
+  { value = "off", label = "关闭" },
+  { value = "error", label = "error" },
+  { value = "warn", label = "warn" },
+  { value = "info", label = "info" },
+  { value = "debug", label = "debug" },
+  { value = "trace", label = "trace" },
+]
+
+[[items]]
+key = "local.open_log_dir"
+group = "advanced"
+section = "日志设置"
+type = "open_log_dir"
+label = "日志目录"
+hint = "三个模块的日志都在这里（TSF 端在 tsf_log 子目录）"

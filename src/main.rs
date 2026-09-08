@@ -37,6 +37,7 @@ mod theme_def;
 mod theme_editor_server;
 #[allow(dead_code)]
 mod theme_import;
+mod tsf_log;
 #[allow(dead_code)]
 mod update;
 mod user_dir;

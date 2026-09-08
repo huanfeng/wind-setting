@@ -120,6 +120,9 @@ impl Capabilities {
                 continue;
             };
             let key = config_path_of(key);
+            if is_local_key(key) {
+                continue;
+            }
             match self.entries.get(key) {
                 None => problems.push(format!("[缺失] 清单 key `{key}` 不在 capability 快照中")),
                 Some(entry) => {
@@ -143,6 +146,23 @@ impl Capabilities {
 /// 触发键、又编辑候选来源，而 `Manifest.items` 按 key 索引，同 key 两项后者会覆盖前者。
 pub fn config_path_of(key: &str) -> &str {
     key.split('#').next().unwrap_or(key)
+}
+
+/// 落点在 **core `config.toml` 之外**的清单项前缀。
+///
+/// 这类项由 `manifest::local_field` 直接读写各自的文件，经 `SideCommitter` 提交：
+/// TSF 的日志开关在 `tsf_log_config`（DLL 在 `DllMain` 里就要读到，那时 IPC 还没连上），
+/// 设置程序自己的在 `wind_setting.toml`（`logger::init` 早于 RPC）。另有纯说明行
+/// （`type = "note"`）与动作按钮（`open_log_dir`），它们压根没有"值"。
+///
+/// ⚠️ 它们**不在** core 的 capability 空间里，故所有拿快照校验清单的守门测试都必须
+/// 跳过本前缀——否则每加一项就是一片"缺失"误报。反向的守门（caps 有、清单没有）
+/// 不受影响：那一侧遍历的是 caps，本前缀根本不会出现。
+pub const LOCAL_KEY_PREFIX: &str = "local.";
+
+/// 见 [`LOCAL_KEY_PREFIX`]。
+pub fn is_local_key(key: &str) -> bool {
+    key.starts_with(LOCAL_KEY_PREFIX)
 }
 
 /// 控件类型 ↔ capability 类型兼容判定（见计划 Global Constraints 矩阵）。

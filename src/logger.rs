@@ -6,6 +6,9 @@
 //! 日志目录优先级：
 //!   <本机状态目录>\logs  →  <exe 同级>\logs  →  ./logs
 //!
+//! 级别：`RUST_LOG` > `wind_setting.toml` 的 `[log] level` > `info`。`off` = 整个关掉，
+//! 连文件都不创建（见 [`init`]）。
+//!
 //! 本机状态目录由 [`crate::user_dir::local_dir_for_mode`] 决定，与 core 的
 //! `Config::local_dir()` 同源：便携部署落 `<exe 目录>\userdata\logs`，
 //! 否则 `%LOCALAPPDATA%\WindInput[Dev]\logs`（macOS `~/Library/Application Support/…`）。
@@ -24,6 +27,37 @@ const KEEP: usize = 5;
 /// ⚠️ 调用点必须留在单实例闸门**之后**（`main` 里的 `claim_instance`）：轮转会动首实例
 /// 正在写的文件，只有确定自己会活下去的进程才有资格做，理由见 [`rotate`]。
 pub fn init() {
+    // 级别：`RUST_LOG` > `wind_setting.toml` 的 `[log] level` > `info`。
+    // 与 core 服务同一条优先级链（那边见 `startup_trace::effective_log_level`）。
+    //
+    // 此处读的是设置程序自己的配置文件而非 core config：本函数跑在 main 最早期，
+    // RPC 还没连上。见 `setting_config::LogConfig` 的文档。
+    let configured = crate::setting_config::load().config.log.level;
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            let l = configured.trim();
+            if l.is_empty() {
+                "info".to_string()
+            } else {
+                l.to_string()
+            }
+        });
+
+    // ★ 关闭档：目录不建、不轮转、不开 appender，直接返回。
+    //
+    // 光把 filter 设成 off 不够——`rotate` + `rolling::never` 会实打实地把
+    // `wind_setting.1.log` 建出来并把历史往后挪。用户选"关闭"要的是"这台机器上
+    // 别留痕迹"，一个空文件同样是痕迹，历史文件被挪动更是平白的意外。
+    //
+    // panic 钩子照装：它在 off 档下确实无处可写，但装着不花钱，而 `RUST_LOG`
+    // 覆盖时它必须在场。
+    if level.eq_ignore_ascii_case("off") {
+        install_panic_hook();
+        return;
+    }
+
     let log_dir = resolve_log_dir();
     let _ = std::fs::create_dir_all(&log_dir);
     rotate(&log_dir);
@@ -32,7 +66,7 @@ pub fn init() {
     let file_appender = tracing_appender::rolling::never(&log_dir, &file_name);
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+    let filter = EnvFilter::new(&level);
 
     tracing_subscriber::fmt()
         .with_writer(file_writer)
