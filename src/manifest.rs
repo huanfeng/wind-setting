@@ -877,7 +877,6 @@ fn build_local_select(state: &AppState, key: &str, item: &MItem) -> Element {
     // （见 `state::register_system_registrations`：落地有代价 ⇒ 值真变了才执行）。
     let baseline = std::rc::Rc::new(std::cell::Cell::new(idx));
 
-    let dirty_vals = values.clone();
     let dirty_base = baseline.clone();
     let commit_vals = values.clone();
     let commit_base = baseline.clone();
@@ -901,11 +900,16 @@ fn build_local_select(state: &AppState, key: &str, item: &MItem) -> Element {
                 Ok(())
             }),
         });
-    let _ = dirty_vals;
 
-    // 「恢复本页」等重载路径要把值重新读回来。回调签名带 `&Config` 是登记表的形状，
-    // 本项的真值不在里面，故忽略参数直接重读文件——重载的语义是「丢弃未保存改动、
-    // 回到盘上的样子」，对本项同样成立。
+    // 重载路径把值重新读回来。回调签名带 `&Config` 是登记表的形状，本项的真值不在
+    // 里面，故忽略参数直接重读文件。
+    //
+    // ⚠️ 登记表把两件事共用了一个回调，而它们对本项的期望并不相同：
+    //   「重新加载」（从 core 拉回配置）→ 重读文件**正是对的**；
+    //   「恢复本页」（把本页恢复出厂）→ 严格说该落回出厂值（关闭 / info）。
+    // 取重读，因为反过来的代价大得多：那会让「重新加载」把用户的日志设置一并重置，
+    // 而排查到一半被关掉日志是实打实的损失。现在的行为是「恢复本页对这几项不生效」，
+    // 用户至多觉得没反应，不丢东西。真要分开，得先给 loaders 接口区分这两种重载。
     let load_vals = values;
     let load_base = baseline;
     state.fields.loaders.borrow_mut().insert(
