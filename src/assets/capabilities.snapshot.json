@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.120.2",
+  "appVersion": "0.110.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -1002,6 +1002,11 @@
     },
     {
       "default": false,
+      "key": "input.t2s.enabled",
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "input.cmdbar.enabled",
       "type": "bool"
     },
@@ -1144,6 +1149,11 @@
     {
       "default": "ctrl+shift+j",
       "key": "keys.toggle_s2t",
+      "type": "str"
+    },
+    {
+      "default": "none",
+      "key": "keys.toggle_t2s",
       "type": "str"
     },
     {
@@ -1637,6 +1647,7 @@
         "punct",
         "full_width",
         "-s2t",
+        "-t2s",
         "soft_keyboard",
         "settings"
       ],

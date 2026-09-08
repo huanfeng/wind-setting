@@ -382,7 +382,7 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
             "none" => &mut disable,
             "temp_pinyin" | "temp_english" | "aux_code" | "rare_char" => &mut modes,
             "toggle_mode" | "switch_engine" | "toggle_full_width" | "toggle_punct"
-            | "toggle_s2t" | "toggle_toolbar" => &mut states,
+            | "toggle_s2t" | "toggle_t2s" | "toggle_toolbar" => &mut states,
             "open_settings" | "take_screenshot" | "softkeyboard" => &mut tools,
             s if s.starts_with("mix:") || s.starts_with("special:") => &mut modes,
             s if s.starts_with("toggle_schema:") || s.starts_with("switch_schema:") => &mut schemas,
@@ -1628,6 +1628,7 @@ mod tests {
             "switch_engine",
             "toggle_punct",
             "toggle_s2t",
+            "toggle_t2s",
             "open_settings",
         ] {
             assert!(!verb_allowed(KeyShape::Combo, v), "{v} 不该允许绑组合键");

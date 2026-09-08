@@ -586,6 +586,7 @@ mod tests {
         for v in [
             "toggle_punct",
             "toggle_s2t",
+            "toggle_t2s",
             "toggle_full_width",
             "toggle_toolbar",
             "open_settings",

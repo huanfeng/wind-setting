@@ -103,6 +103,9 @@
    "smart_mode": false,
    "smart_timeout_ms": 500
   },
+  "t2s": {
+   "enabled": false
+  },
   "temp_english": {
    "allow_symbols": false,
    "candidate_layout": "follow",
@@ -173,6 +176,7 @@
   ],
   "toggle_punct": "ctrl+.",
   "toggle_s2t": "ctrl+shift+j",
+  "toggle_t2s": "none",
   "toggle_toolbar": "ctrl+shift+\\"
  },
  "mobile": {
@@ -454,6 +458,7 @@
     "punct",
     "full_width",
     "-s2t",
+    "-t2s",
     "soft_keyboard",
     "settings"
    ],

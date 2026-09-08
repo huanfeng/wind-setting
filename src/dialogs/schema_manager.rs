@@ -1348,6 +1348,7 @@ impl SchemaManagerState {
             ("toggle_full_width", "全角/半角切换"),
             ("toggle_punct", "中/英标点切换"),
             ("toggle_s2t", "简体/繁体切换"),
+            ("toggle_t2s", "繁体/简体切换"),
             ("toggle_toolbar", "显示/隐藏工具栏"),
             ("open_settings", "打开设置"),
             ("take_screenshot", "截图"),

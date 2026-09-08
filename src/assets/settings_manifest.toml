@@ -1263,6 +1263,15 @@ options = [
   { value = "s2hk", label = "香港繁体" },
 ]
 
+# ── 繁入简出 ──
+[[items]]
+key = "input.t2s.enabled"
+group = "input"
+section = "繁入简出"
+type = "toggle"
+label = "启用繁入简出"
+hint = "词库和候选是繁体时，上屏转成简体。与「简入繁出」只能开一个，开这个会自动关掉那个"
+
 # ── 快捷输入 ──
 [[items]]
 key = "schema.mix_modes"
@@ -1978,6 +1987,14 @@ label = "切换简入繁出"
 hint = "开关简体输入→繁体输出（变体在「输入 → 简入繁出」中选择）"
 
 [[items]]
+key = "keys.toggle_t2s"
+group = "keys"
+section = "功能快捷键"
+type = "hotkey"
+label = "切换繁入简出"
+hint = "开关繁体输入→简体输出。出厂不绑，点开设置一个组合键即可用"
+
+[[items]]
 key = "keys.toggle_toolbar"
 group = "keys"
 section = "功能快捷键"
@@ -2654,6 +2671,7 @@ options = [
   { value = "punct", label = "标点", hint = "中文标点还是英文标点；点击切换，右键可一并调整全半角与简繁" },
   { value = "full_width", label = "全 / 半角", hint = "满月＝全角、弯月＝半角；点击切换，右键可一并调整标点与简繁" },
   { value = "s2t", label = "简 / 繁", hint = "简入繁出的开关，点击切换；出厂关着" },
+  { value = "t2s", label = "繁 → 简", hint = "繁入简出的开关，点击切换；格里恒显「简」，亮起表示正在转换。出厂关着" },
   { value = "soft_keyboard", label = "软键盘", hint = "键盘按钮，点击开关软键盘面板；右键可直接选一种键盘" },
   { value = "settings", label = "设置", hint = "齿轮按钮，点击打开功能菜单。隐藏它也不影响使用——右键工具栏任意位置同样能打开菜单" },
 ]
