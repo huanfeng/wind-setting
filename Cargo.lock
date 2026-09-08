@@ -2152,6 +2152,7 @@ name = "windui"
 version = "0.15.0"
 dependencies = [
  "embed-resource",
+ "log",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",

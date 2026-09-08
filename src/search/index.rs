@@ -402,7 +402,6 @@ const HANDWRITTEN: &[Handwritten] = &[
     // ── 关于（内容不多，三条共用整页锚点）──
     Handwritten { id: "about:version", anchor: "about:main", page: "about", title: "版本信息", section: "关于", keywords: "版本号 内部版本 构建" },
     Handwritten { id: "about:update", anchor: "about:main", page: "about", title: "检查更新", section: "关于", keywords: "升级 新版本 下载" },
-    Handwritten { id: "about:logs", anchor: "about:main", page: "about", title: "日志目录", section: "关于", keywords: "log 排查 诊断" },
 ];
 
 /// 手写页面名（面包屑首段）。
