@@ -588,7 +588,9 @@ impl CtFields {
             };
             set_path(cfg, &path, v);
         }
-        prune_empty_frequency(cfg);
+        // 两个嵌套子段各收一次空表（见 `prune_empty_section`）。
+        prune_empty_section(cfg, "frequency");
+        prune_empty_section(cfg, "english_merge");
     }
 
     /// 「全部恢复跟随」：把**所有**可覆盖字段置 null，包括界面上没有的隐藏项。
@@ -602,8 +604,9 @@ impl CtFields {
         for f in SPEC_BEHAVIOR_FIELDS {
             set_path(cfg, &["engine", "codetable", f], Value::Null);
         }
-        // 调频段整段置 null 而非逐字段——段内字段可能多于 manifest 暴露的那几个，逐个清会漏。
+        // 嵌套子段整段置 null 而非逐字段——段内字段可能多于 manifest 暴露的那几个，逐个清会漏。
         set_path(cfg, &["engine", "codetable", "frequency"], Value::Null);
+        set_path(cfg, &["engine", "codetable", "english_merge"], Value::Null);
     }
 }
 
@@ -664,20 +667,20 @@ fn build_editor(item: &crate::manifest::MItem, sig: &CtSig, width: i32) -> Eleme
     }
 }
 
-/// 调频段若逐字段全是 null，整段置 null。
+/// 嵌套子段若逐字段全是 null，整段置 null。`section` 为段名（`frequency` / `english_merge`）。
 ///
 /// 落盘形态与 0.118 的「整段清除」保持一致：留一个只含 null 的对象，`json_to_toml` 会
-/// 把它写成一个空的 `[engine.codetable.frequency]` 表——语义上等价（字段全 None ＝ 跟随），
+/// 把它写成一个空的 `[engine.codetable.<section>]` 表——语义上等价（字段全 None ＝ 跟随），
 /// 但 override 文件里会多出一段谁也不读的空表，日后手工排查时纯属干扰。
-fn prune_empty_frequency(cfg: &mut Value) {
-    let Some(freq) = cfg.pointer("/engine/codetable/frequency") else {
+fn prune_empty_section(cfg: &mut Value, section: &str) {
+    let Some(freq) = cfg.pointer(&format!("/engine/codetable/{section}")) else {
         return;
     };
     let all_null = freq
         .as_object()
         .is_some_and(|o| !o.is_empty() && o.values().all(Value::is_null));
     if all_null {
-        set_path(cfg, &["engine", "codetable", "frequency"], Value::Null);
+        set_path(cfg, &["engine", "codetable", section], Value::Null);
     }
 }
 
@@ -793,7 +796,9 @@ mod tests {
         let mut behavior: Vec<String> = rest
             .iter()
             .map(|k| k.trim_start_matches(MANIFEST_PREFIX).to_string())
-            .filter(|k| !k.starts_with("frequency."))
+            // 嵌套子段不进 SPEC_BEHAVIOR_FIELDS（那张表是扁平字段名，用来拼写回路径）；
+            // 它们由 `reset` / `prune_empty_section` 按整段处理。
+            .filter(|k| !k.starts_with("frequency.") && !k.starts_with("english_merge."))
             .collect();
         behavior.sort();
         let mut expect: Vec<String> = SPEC_BEHAVIOR_FIELDS.iter().map(|s| s.to_string()).collect();
