@@ -339,7 +339,26 @@ const CTRL_W: i32 = 150;
 ///
 /// 合并行渲染在 **gate toggle 的原始位置**（保持特性原有排序）。
 pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
+    let (rows, head) = section_rows_split(state, keys);
+    // 丢弃 head 是安全的：只有 `log_privacy_warning` 会走那条路，而它只出现在日志设置
+    // 分区，那个分区走的是 `section_rows_split`。别的分区取到的 head 恒为 None。
+    debug_assert!(
+        head.is_none(),
+        "该分区有可隐藏提示行，调用方须改用 section_rows_split"
+    );
+    rows
+}
+
+/// [`section_rows`] 的分离版：把**平时不占位的整行提示**摘出来单独返回，
+/// 供 [`crate::widgets::card_with_attachments`] 当作卡片头部挂件。
+///
+/// ★ 为什么必须摘出来：卡片的分隔线是按「不是最后一行就加」算的，它不知道哪一行会
+/// 隐藏。提示行留在 `rows` 里的话，它隐藏时留下的那条分隔线就成了无主的一横，紧贴
+/// 卡片上边框——与三张硬编码卡片上的 toast 槽是同一个形状（见
+/// `widgets::card_with_attachment`）。
+pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, Option<Element>) {
     let cfg = &state.current_config;
+    let mut head: Option<Element> = None;
     let mut rows = Vec::with_capacity(keys.len());
     for k in keys {
         let Some(item) = state.manifest.get(k) else {
@@ -356,6 +375,11 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         };
         // 隐藏项：不渲染也不注册 writer/loader（功能未完成或不对用户开放）。
         if item.hidden {
+            continue;
+        }
+        // 可隐藏的整行提示：作为卡片头部挂件返回，不进 rows（理由见函数文档）。
+        if item.typ == "log_privacy_warning" {
+            head = Some(field(state, k));
             continue;
         }
         // 子对话框成员：不在分区内独立成行（由 opens_dialog 宿主的「扩展设置」对话框承载）。
@@ -413,7 +437,7 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         // `JumpTarget::anchor` 一致）。它不吃点击、静止时不绘制。
         rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
     }
-    rows
+    (rows, head)
 }
 
 /// 按 key 构建一行设置项（label + 控件），并登记保存写回器与联动取值器。
@@ -448,8 +472,9 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_comment_dicts",
     "dialog_button_langbar_badges",
     "local_select",
+    "log_level_select",
     "open_log_dir",
-    "note",
+    "log_privacy_warning",
 ];
 
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -476,14 +501,30 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_open_pairs"
         | "dialog_button_comment_dicts"
         | "dialog_button_langbar_badges" => build_dialog_button(state, key, item, cfg),
+        // 与 `select` 完全同构，只多一件事：登记"当前档位"探针供隐私示警条读。
+        // 单独一个类型而不是在 `select` 里按 key 特判——通用控件不该认识具体业务键。
+        "log_level_select" => {
+            let el = build_select(state, key, item, cfg);
+            let fields = state.fields.clone();
+            let k = key.to_string();
+            register_log_level_probe(
+                state,
+                Box::new(move || {
+                    fields
+                        .getters
+                        .borrow()
+                        .get(&k)
+                        .and_then(|g| g().as_str().map(str::to_string))
+                        .unwrap_or_default()
+                }),
+            );
+            el
+        }
         "local_select" => build_local_select(state, key, item),
         "open_log_dir" => build_open_log_dir(),
-        // 纯说明行：整分区共用一条提示时用它。与其在每一行的 hint 里重复同一句风险
-        // 警告，不如在分区里标一次——重复的提示会被整片略读掉，正好把该看的那句一起淹了。
-        //
-        // 文案走 `label` + `hint` 的常规行形态（`hint` 承载长句，那是副标题该干的事），
-        // 控件位留空。`Element::leaf()` 是不占位的空节点。
-        "note" => Element::leaf(),
+        // 走不到这里：`field_with` 已把它整行自绘并早退（见 build_log_privacy_warning）。
+        // 仍留一条分支——渲染名单与 match 脱节时 debug 会当场炸，那道守门不该有例外。
+        "log_privacy_warning" => Element::leaf(),
         other => {
             // 名单说能渲染、match 却没有分支 ⇒ 名单与实现脱节，debug 构建当场炸。
             // release 下仍回落占位符（灰字比崩溃好），故不用 unreachable!。
@@ -565,6 +606,11 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
             Element::label("—").fg_role(Role::TextMuted),
         );
     };
+    // 警示行整行自绘，**不包 setting_row**：它没有控件，标签也要用警告色，而
+    // setting_row 的标签/说明配色是固定的。
+    if item.typ == "log_privacy_warning" {
+        return build_log_privacy_warning(state, item);
+    }
     let cfg = &state.current_config;
     let control = build_control(state, key, item, cfg);
     // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
@@ -812,6 +858,17 @@ fn build_local_select(state: &AppState, key: &str, item: &MItem) -> Element {
     let idx = values.iter().position(|v| *v == loaded).unwrap_or(0);
     let sig = signal(idx);
 
+    // 供隐私示警条读当前档位。无脑登记即可：`local.tsf_log_mode` 的值域是
+    // file/debugstring，与 debug/trace 精确比较不会命中（`level_records_input` 用的是
+    // 全等，不是 contains——"debugstring".contains("debug") 会误报）。
+    {
+        let probe_vals = values.clone();
+        register_log_level_probe(
+            state,
+            Box::new(move || probe_vals.get(sig.get()).cloned().unwrap_or_default()),
+        );
+    }
+
     // 基线 = 本次加载时的档位。
     //
     // ★ 没变就**一个字节都不写**：写回会碰 `tsf_log_config`——那是用户手工维护的
@@ -866,6 +923,54 @@ fn build_local_select(state: &AppState, key: &str, item: &MItem) -> Element {
         Some(w) => dd.width(w as i32),
         None => dd.min_width(CTRL_W),
     }
+}
+
+/// 会把输入内容写进日志的级别。低于它的级别只记运行事件，不碰用户输入。
+///
+/// 判据放在这里而不是散在两处：示警条与将来任何"这个档位有风险吗"的问题都问它。
+fn level_records_input(v: &str) -> bool {
+    v.eq_ignore_ascii_case("debug") || v.eq_ignore_ascii_case("trace")
+}
+
+/// 登记一个"当前级别是多少"的探针，供隐私示警条判断。见 `FieldRegistry::log_level_probes`。
+fn register_log_level_probe(state: &AppState, probe: Box<dyn Fn() -> String>) {
+    state.fields.log_level_probes.borrow_mut().push(probe);
+}
+
+/// 隐私示警条：**只在用户真的把某个级别调到 debug/trace 时才出现**，橙色。
+///
+/// ★ 之前是一行恒常的灰字说明。恒常提示等于没有提示——它和旁边三行说明文字长得一样，
+/// 会被整片略读掉，而它恰恰是这一屏里唯一需要用户停下来看的一句。改成"平时不在，
+/// 一旦选到有风险的档位就跳出来"，示警才和用户的动作对上。
+///
+/// 判据遍历 `log_level_probes`：三个模块的级别落点各不相同，没有共同的读取面，而提示
+/// 必须跟着**尚未保存**的选择实时变化，也就不能去读盘。构建顺序无所谓——本条通常排在
+/// 三个下拉之前，但闭包是渲染时才求值的。
+fn build_log_privacy_warning(state: &AppState, item: &MItem) -> Element {
+    let text = item.hint.clone().unwrap_or_else(|| item.label.clone());
+    let fields = state.fields.clone();
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(0, 10)
+        .spacing(8)
+        .child(Element::label("⚠").font_size(13.0).fg_role(Role::Warning))
+        .child(
+            Element::label(text)
+                .font_size(12.5)
+                .font_weight(500)
+                .fg_role(Role::Warning)
+                .weight(1.0)
+                // 三个模块可能同时调高，文案会折行——放宽上限避免静默截断。
+                .max_lines(3),
+        )
+        .visible_when(move || {
+            fields
+                .log_level_probes
+                .borrow()
+                .iter()
+                .any(|p| level_records_input(&p()))
+        })
 }
 
 /// 「打开」按钮：在系统文件管理器里打开日志目录。
@@ -5118,6 +5223,21 @@ mod tests {
         assert!(platform_matches(Some("windows, macos")));
         // 写错名字宁可整项消失（一眼看得见），也不要静默当成全平台显示。
         assert!(!platform_matches(Some("darwin")));
+    }
+
+    /// 示警判据必须是**全等**而不是包含。
+    ///
+    /// `local.tsf_log_mode` 的值域里有 `debugstring`，它是"往 OutputDebugString 输出"
+    /// 的意思，与日志详细程度无关。用 `contains("debug")` 会让用户一选它就跳出
+    /// 「当前级别会记录输入内容」——一句与事实不符的警告，而警告一旦开始说谎就作废了。
+    #[test]
+    fn privacy_warning_matches_level_exactly() {
+        assert!(level_records_input("debug"));
+        assert!(level_records_input("trace"));
+        assert!(level_records_input("DEBUG"), "大小写不敏感");
+        for safe in ["off", "error", "warn", "info", "file", "debugstring"] {
+            assert!(!level_records_input(safe), "{safe} 不该触发隐私示警");
+        }
     }
 
     #[test]

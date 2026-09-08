@@ -335,24 +335,24 @@ max = 20
 hidden = true
 enabled_when = "schema.codetable.auto_phrase.enabled == true"
 
-# ── 英文混入：整串恰好是一个英文词时把它放进候选 ──
+# ── 英文候选：与混输那三项（schema.mix.*）同名同义，只是作用于码表方案 ──
 # 与拼音那份（schema.pinyin.english_merge）取值独立：码表用户常打命令行、变量名，
 # 拼音用户的英文词与拼音串大面积重叠，是否要开是两个判断。
 [[items]]
 key = "schema.codetable.english_merge.enable"
 group = "schema"
 section = "上屏行为"
-subsection = "英文混入"
+subsection = "英文候选"
 type = "toggle"
-label = "混入英文候选"
-hint = "整串恰好是一个英文词时把它放进候选（打 hello 出 hello）；不含前缀词，想打某个词要敲完整"
+label = "启用英文候选"
+hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
 
 # 最小触发长度：预留配置，暂不对用户开放（默认 3）。
 [[items]]
 key = "schema.codetable.english_merge.min_length"
 group = "schema"
 section = "上屏行为"
-subsection = "英文混入"
+subsection = "英文候选"
 type = "number"
 label = "英文最小触发长度"
 hint = "编码达到此长度才查英文（0 表示跟随默认值 3）"
@@ -365,10 +365,10 @@ enabled_when = "schema.codetable.english_merge.enable == true"
 key = "schema.codetable.english_merge.block_commit"
 group = "schema"
 section = "上屏行为"
-subsection = "英文混入"
+subsection = "英文候选"
 type = "toggle"
-label = "有英文候选时不自动上屏"
-hint = "定长码表建议开着：4 码即满码上屏，关掉的话打 github 到第 4 键就被顶出中文"
+label = "有英文候选时否决满码上屏"
+hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；定长码表建议开着，关掉的话打 github 到第 4 键就被顶出中文"
 enabled_when = "schema.codetable.english_merge.enable == true"
 
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
@@ -543,16 +543,16 @@ min = 0
 max = 20
 enabled_when = "schema.pinyin.aux_code.enabled == true"
 
-# ── 英文混入：与码表那份（schema.codetable.english_merge）取值独立 ──
+# ── 英文候选：与混输/码表同名同义，只是作用于拼音方案 ──
 # 本段没有「不自动上屏」一项：那一项否决的是满码上屏/顶码，拼音方案两者都没有。
 [[items]]
 key = "schema.pinyin.english_merge.enable"
 group = "schema"
 section = "候选行为"
-subsection = "英文混入"
+subsection = "英文候选"
 type = "toggle"
-label = "混入英文候选"
-hint = "整串恰好是一个英文词时把它放进候选（打 hello 出 hello）；不含前缀词，想打某个词要敲完整"
+label = "启用英文候选"
+hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
 
 # 最小触发长度：预留配置，暂不对用户开放（默认 3）。
 [[items]]
@@ -2843,15 +2843,17 @@ hint = "部分 Valve 游戏（如 Dota 2）只给内置名单里的输入法绘�
 key = "local.log_privacy_note"
 group = "advanced"
 section = "日志设置"
-type = "note"
+# 只在某个级别被调到 debug/trace 时才出现（橙色），平时整行不占位。
+# 恒常的灰字提示会被整片略读掉，而这是这一屏唯一需要用户停下来看的一句。
+type = "log_privacy_warning"
 label = "隐私提示"
-hint = "debug 与 trace 级别会记录输入内容，存在信息泄露风险；排查完请调回 info 或关闭"
+hint = "当前级别会把输入内容记进日志，存在信息泄露风险；排查完请调回 info 或关闭"
 
 [[items]]
 key = "debug.log_level"
 group = "advanced"
 section = "日志设置"
-type = "select"
+type = "log_level_select"
 label = "输入法服务日志级别"
 hint = "重启输入法服务后生效；关闭后连启动轨迹文件也不再写入"
 options = [

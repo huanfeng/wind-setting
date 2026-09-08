@@ -87,6 +87,15 @@ pub struct FieldRegistry {
     pub global_flags: RefCell<Vec<(String, Signal<bool>)>>,
     /// **config.toml 之外**的落点，随主保存一并提交。见 [`SideCommitter`]。
     pub side: RefCell<Vec<SideCommitter>>,
+    /// 日志级别下拉的当前值探针，供「隐私提示」判断此刻要不要示警。
+    ///
+    /// 三个模块的级别落点各不相同（core config / tsf_log_config / wind_setting.toml，
+    /// 见 `manifest::local_field`），没有一个共同的读取面；而提示要跟着用户**尚未保存**
+    /// 的选择实时变化，也就不能去读盘。故各控件构建时各自登记一个读当前值的闭包。
+    ///
+    /// ⚠️ 闭包捕获 Signal 句柄，与 `global_flags` 同一条纪律：**必须**在
+    /// [`FieldRegistry::reset`] 里清空，留着就是悬垂。
+    pub log_level_probes: RefCell<Vec<Box<dyn Fn() -> String>>>,
     /// `system.*` 的**加载态**基线（键 → 加载时的值）。
     ///
     /// 这些键写进 config.toml 不等于生效——真正的落点在 HKLM，得由提权进程去写。
@@ -132,6 +141,7 @@ impl FieldRegistry {
         self.dialogs.borrow_mut().clear();
         self.global_flags.borrow_mut().clear();
         self.side.borrow_mut().clear();
+        self.log_level_probes.borrow_mut().clear();
         self.dialog_opens.borrow_mut().clear();
         // ⛔ 不清 `system_baseline`：见其字段注释。
     }

@@ -13,7 +13,7 @@ use windui::prelude::*;
 
 use crate::pages::dict::reactive::Feedback;
 use crate::rpc;
-use crate::widgets::{flat_panel, section, setting_row};
+use crate::widgets::{flat_panel, setting_row};
 
 /// 备份还原状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
@@ -282,7 +282,8 @@ pub fn build_backup_section(state: &BackupState) -> Element {
         .outline_soft()
         .on_click(move |ctx| m_restore.do_restore(ctx));
 
-    section(
+    // toast 槽走 attachment，理由见 widgets::card_with_attachment。
+    crate::widgets::section_with_attachment(
         "备份与还原",
         vec![
             setting_row(
@@ -295,8 +296,8 @@ pub fn build_backup_section(state: &BackupState) -> Element {
                 Some("从备份包恢复，可选还原范围与合并/替换策略"),
                 restore_ctl,
             ),
-            crate::pages::dict::reactive::toast_sink(state.feedback),
         ],
+        crate::pages::dict::reactive::toast_sink(state.feedback),
     )
 }
 

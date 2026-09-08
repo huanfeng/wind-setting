@@ -576,17 +576,49 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
 /// 卡片容器：圆角 surface + 边框，承载分区内的若干设置行（行间自动插分隔线）。
 /// 卡片内置水平/垂直内边距，分隔线随之内缩（iOS/macOS 分组列表观感）。
 pub fn card(rows: Vec<Element>) -> Element {
+    card_with_attachment(rows, None)
+}
+
+/// [`card`] + 一个**尾部挂件**：平时不占位的元素（toast 槽之类），追加在卡片末尾但
+/// **不参与分隔线计数**。
+///
+/// ★ 为什么必须与 `rows` 分开传：分隔线是按「不是最后一行就加」算的，而挂件隐藏时
+/// 不占高度——把它塞进 `rows` 的后果是真正的最后一条设置行下面多出一条分隔线，
+/// 紧贴卡片下边框，看着像画歪了。高级页那三张卡（系统集成 / 导入 / 备份与还原）
+/// 曾经都是这样，三处同一个形状。
+///
+/// 判据是**这个元素会不会隐藏**，不是它长什么样：一个恒可见的尾行照旧进 `rows`。
+pub fn card_with_attachment(rows: Vec<Element>, attachment: Option<Element>) -> Element {
+    card_with_attachments(None, rows, attachment)
+}
+
+/// [`card`] + **头尾各一个**挂件。两端的挂件都不参与分隔线计数，理由见
+/// [`card_with_attachment`]。
+///
+/// 头部挂件用于「平时不在、条件满足才跳出来」的整行提示（日志设置的隐私示警条），
+/// 尾部用于 toast 槽。两者都不能混进 `rows`。
+pub fn card_with_attachments(
+    head: Option<Element>,
+    rows: Vec<Element>,
+    tail: Option<Element>,
+) -> Element {
     let mut card = flat_panel()
         .corner(13.0)
         .width_match()
         .padding_xy(16, 2)
         .shadow(Shadow::new(0.0, 1.0, 2.0, Color::rgba(20, 30, 50, 8)));
+    if let Some(h) = head {
+        card = card.child(h);
+    }
     let last = rows.len().saturating_sub(1);
     for (i, row) in rows.into_iter().enumerate() {
         card = card.child(row);
         if i != last {
             card = card.child(Element::divider());
         }
+    }
+    if let Some(t) = tail {
+        card = card.child(t);
     }
     card
 }
@@ -667,6 +699,25 @@ pub fn section(title: &str, rows: Vec<Element>) -> Element {
         .child(card(rows))
 }
 
+/// [`section`] + 尾部挂件（toast 槽之类平时不占位的元素）。理由见
+/// [`card_with_attachment`]——挂件混进 `rows` 会让最后一条设置行下面多一条分隔线。
+pub fn section_with_attachment(title: &str, rows: Vec<Element>, attachment: Element) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(6)
+        .child(section_header(title))
+        .child(card_with_attachment(rows, Some(attachment)))
+}
+
+/// [`section`] + 头部挂件（条件满足才出现的整行提示）。理由同上。
+pub fn section_with_head(title: &str, head: Option<Element>, rows: Vec<Element>) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(6)
+        .child(section_header(title))
+        .child(card_with_attachments(head, rows, None))
+}
+
 /// 页面内容外层：纵向滚动 + 内边距 + 分区间距，承载多个 section 卡片。
 /// 内容区背景用 SurfaceAlt（右栏色），卡片用 Surface（高一档）浮于其上。
 pub fn page(body: Element) -> Element {
@@ -741,15 +792,6 @@ pub fn clear_text_button(text: Signal<String>) -> Element {
         .outline_soft()
         .min_width(TEXT_BTN_W)
         .on_click(move |_| text.set(String::new()))
-}
-
-/// 待实现占位提示（标注 wind-ui-rust 能力缺口处）。
-pub fn todo_hint(text: &str) -> Element {
-    Element::label(text)
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .padding_xy(0, 10)
 }
 
 #[cfg(test)]

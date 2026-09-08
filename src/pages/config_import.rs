@@ -30,7 +30,7 @@ use crate::pages::dict::reactive::Feedback;
 use crate::pages::phrase_import::{self, PhraseRow};
 use crate::rpc;
 use crate::state::AppState;
-use crate::widgets::{flat_panel, section, setting_row};
+use crate::widgets::{flat_panel, setting_row};
 
 /// core 判定「这段文本不是方案信封」时的错误前缀（跨仓契约，见
 /// `package-format.md` §3.4）。
@@ -769,8 +769,13 @@ pub fn build_import_export_section(
             m_clip.read_clipboard(ctx);
         });
 
-    section(
-        "导入与导出",
+    // 分区名是「导入」而不是「导入与导出」：这里两条都是导入，没有任何导出入口
+    // （配置导出走的是备份包，在下面那张卡里）。名字许诺了一个找不到的功能，
+    // 用户只会在这张卡上反复找。
+    //
+    // toast 槽走 attachment，理由见 widgets::card_with_attachment。
+    crate::widgets::section_with_attachment(
+        "导入",
         vec![
             setting_row(
                 "导入文件",
@@ -782,8 +787,8 @@ pub fn build_import_export_section(
                 Some("读取剪贴板中的配置片段，可编辑后校验应用"),
                 clip_ctl,
             ),
-            crate::pages::dict::reactive::toast_sink(import.feedback),
         ],
+        crate::pages::dict::reactive::toast_sink(import.feedback),
     )
 }
 

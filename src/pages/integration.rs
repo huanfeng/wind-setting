@@ -17,7 +17,7 @@ use windui::prelude::*;
 use crate::pages::dict::reactive::Feedback;
 use crate::protocol::Registration;
 use crate::state::AppState;
-use crate::widgets::{section, setting_row_desc_signal};
+use crate::widgets::setting_row_desc_signal;
 
 /// 桌面集成状态（Signal 为 Copy，可直接 Clone 进闭包）。
 ///
@@ -305,7 +305,9 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
                 .on_click(move |_| s_aunreg.on_assoc_unregister_clicked(&app_aunreg)),
         );
 
-    section(
+    // toast 槽走 attachment 而非 rows：它平时不占位，混进 rows 会让上面那条设置行
+    // 下面多出一条紧贴卡片边框的分隔线。见 widgets::card_with_attachment。
+    crate::widgets::section_with_attachment(
         "系统集成",
         vec![
             setting_row_desc_signal("windinput:// 协议（一键导入）", s.protocol_status, buttons),
@@ -314,8 +316,8 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
                 s.assoc_status,
                 assoc_buttons,
             ),
-            crate::pages::dict::reactive::toast_sink(s.feedback),
         ],
+        crate::pages::dict::reactive::toast_sink(s.feedback),
     )
 }
 

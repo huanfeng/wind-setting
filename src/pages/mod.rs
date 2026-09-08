@@ -21,7 +21,7 @@ use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{build_scheme_config_button, section_rows};
 use crate::state::AppState;
 use crate::theme_import::ThemeImportError;
-use crate::widgets::{page, section, setting_row, todo_hint};
+use crate::widgets::{page, section, setting_row};
 
 /// Tab：(标题, 内容)。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<(String, Element)> {
@@ -65,27 +65,32 @@ fn manifest_sections(state: &AppState, group: &str) -> Vec<Element> {
 /// 桌面集成排在备份之前：协议关联属于"这台机器上装好了没"，与备份这种一次性动作
 /// 相比更接近状态展示，放前面用户切到本页就能看到关联是否还在。
 fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
-    // 「日志设置」摘出来压到全页最后（见函数末尾）：它只在排查时才动，日常使用频度
-    // 远低于本页其它任何一项。清单里的分区顺序管不了这件事——本页在 manifest 分区
-    // 之后还接着三张硬编码卡片，光在清单里排到最后仍会落在集成/导入导出/备份前面。
-    const LAST_SECTION: &str = "日志设置";
+    // ★ 本页的分区顺序**由本函数决定**，清单里的先后管不了：manifest 分区与三张
+    // 硬编码卡片（集成 / 导入 / 备份）是两批来源，清单排到最后也只是"manifest 那批
+    // 里的最后"，仍落在三张卡之前。故两个 manifest 分区都在这里显式定位：
+    //
+    //   系统集成 → 导入 → 备份与还原 → 游戏兼容 → 日志设置
+    //
+    // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；游戏兼容是
+    // 少数人才开的兼容开关；日志设置只在排查时才动，压轴。
+    // BTreeMap 而非 HashMap：下面的"剩余分区"兜底会遍历它，HashMap 的顺序每次运行
+    // 都不同，页面会莫名其妙地换序。
+    let mut manifest_secs: std::collections::BTreeMap<String, Element> = state
+        .manifest
+        .sections_of("advanced")
+        .into_iter()
+        .map(|(sec, keys)| {
+            // 走 split 版：日志设置分区里的隐私示警条平时不占位，混进 rows 会在它
+            // 隐藏时留下一条紧贴卡片上边框的分隔线（见 widgets::card_with_attachments）。
+            let (rows, head) = crate::manifest::section_rows_split(state, &keys);
+            (
+                sec.clone(),
+                crate::widgets::section_with_head(&sec, head, rows),
+            )
+        })
+        .collect();
+
     let mut secs: Vec<Element> = Vec::new();
-    let mut log_sec: Option<Element> = None;
-    for (sec, keys) in state.manifest.sections_of("advanced") {
-        let el = section(&sec, section_rows(state, &keys));
-        if sec == LAST_SECTION {
-            log_sec = Some(el);
-        } else {
-            secs.push(el);
-        }
-    }
-    if secs.is_empty() && log_sec.is_none() {
-        secs.push(
-            Element::col()
-                .width_match()
-                .child(todo_hint("（该分组暂无清单项，或 core 未运行）")),
-        );
-    }
     // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
     secs.push(crate::search::anchor::wrap(
         integration::build_integration_section(app, state),
@@ -102,8 +107,16 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         "advanced:backup",
         state.jump,
     ));
-    // 日志设置压轴。见函数开头 LAST_SECTION 的说明。
-    if let Some(el) = log_sec {
+    // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
+    // 那是正常状态，不是配置错误。
+    for name in ["游戏兼容", "日志设置"] {
+        if let Some(el) = manifest_secs.remove(name) {
+            secs.push(el);
+        }
+    }
+    // 剩下的（将来新加、还没在上面排过序的 manifest 分区）接在后面，免得静默丢失。
+    // 顺序不定，加新分区时请到上面那张表里点名。
+    for (_, el) in std::mem::take(&mut manifest_secs) {
         secs.push(el);
     }
     sections_page("高级", "服务与实验性功能", secs)
