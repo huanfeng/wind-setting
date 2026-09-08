@@ -61,7 +61,7 @@ key = "schema.primary_pinyin"
 group = "schema"
 section = "主方案设置"
 type = "select"
-options_source = "pinyinSchemas"          # 选项运行时来自 schema.list（拼音类）
+options_source = "pinyinSchemas"                                # 选项运行时来自 schema.list（拼音类）
 label = "主拼音方案"
 hint = "临时拼音、快捷输入使用的拼音方案（可选双拼）；留空 = 全拼。混输方案的拼音由方案自身配置决定，不受此项影响"
 
@@ -160,10 +160,10 @@ type = "select"
 label = "z 键引导功能"
 hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先"
 options = [
-    { value = "", label = "不启用（作编码字母）" },
-    { value = "temp_pinyin", label = "临时拼音" },
-    { value = "temp_english", label = "临时英文" },
-    { value = "mix:quick_mix", label = "快捷输入" },
+  { value = "", label = "不启用（作编码字母）" },
+  { value = "temp_pinyin", label = "临时拼音" },
+  { value = "temp_english", label = "临时英文" },
+  { value = "mix:quick_mix", label = "快捷输入" },
 ]
 
 # 档位取「对哪几级简码生效」，故 core 侧判据是「当前码长 > 档位」而非「等于全码长」——
@@ -179,9 +179,9 @@ label = "出简让全"
 hint = "有简码的字在更长编码上把首选让给词组，自己排到候选末尾"
 width = 160
 options = [
-    { value = "0", label = "关闭" },
-    { value = "2", label = "一、二级简码" },
-    { value = "3", label = "全部简码" },
+  { value = "0", label = "关闭" },
+  { value = "2", label = "一、二级简码" },
+  { value = "3", label = "全部简码" },
 ]
 
 # 词频调整
@@ -204,9 +204,9 @@ label = "调频策略"
 hint = "置顶：用过一次即到首位；步进：按累计次数上升；位次渐进：每次前移一半位次，逐步靠前"
 enabled_when = "schema.codetable.frequency.enabled == true"
 options = [
-    { value = "top", label = "置顶" },
-    { value = "step", label = "步进" },
-    { value = "position", label = "位次渐进" },
+  { value = "top", label = "置顶" },
+  { value = "step", label = "步进" },
+  { value = "position", label = "位次渐进" },
 ]
 
 [[items]]
@@ -219,9 +219,9 @@ label = "补全词参与调频"
 hint = "仅「位次渐进」策略下生效。英文等以前缀匹配为主的方案建议选「全部」"
 enabled_when = "schema.codetable.frequency.enabled == true && schema.codetable.frequency.strategy == position"
 options = [
-    { value = "none", label = "不参与" },
-    { value = "single", label = "仅单字/单词" },
-    { value = "all", label = "全部" },
+  { value = "none", label = "不参与" },
+  { value = "single", label = "仅单字/单词" },
+  { value = "all", label = "全部" },
 ]
 
 [[items]]
@@ -425,9 +425,9 @@ label = "补全词参与调频"
 hint = "只打半个音时（如 d），补全出的候选是否也参与调频。「仅单字」让「的/得」这类单字上浮，但不让「东西」这类词组跑到单字前面"
 enabled_when = "schema.pinyin.frequency.enabled == true"
 options = [
-    { value = "none", label = "不参与" },
-    { value = "single", label = "仅单字/单词" },
-    { value = "all", label = "全部" },
+  { value = "none", label = "不参与" },
+  { value = "single", label = "仅单字/单词" },
+  { value = "all", label = "全部" },
 ]
 
 [[items]]
@@ -816,9 +816,9 @@ hint = "位次渐进：每用一次前移一半，久不用回落；一次到顶
 width = 210
 enabled_when = "schema.english.frequency.enabled == true"
 options = [
-    { value = "position", label = "位次渐进" },
-    { value = "top", label = "一次到顶" },
-    { value = "step", label = "逐次提升" },
+  { value = "position", label = "位次渐进" },
+  { value = "top", label = "一次到顶" },
+  { value = "step", label = "逐次提升" },
 ]
 
 [[items]]
@@ -831,9 +831,9 @@ hint = "打 hel 选中 hello 这类前缀补全的候选是否参与调频，仅
 width = 210
 enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
 options = [
-    { value = "all", label = "全部" },
-    { value = "single", label = "仅单词" },
-    { value = "none", label = "不参与" },
+  { value = "all", label = "全部" },
+  { value = "single", label = "仅单词" },
+  { value = "none", label = "不参与" },
 ]
 
 [[items]]
@@ -859,8 +859,8 @@ hint = "按整词：打 hel 选过 hello 后，打 he 也受益；按编码：�
 width = 210
 enabled_when = "schema.english.frequency.enabled == true"
 options = [
-    { value = "candidate", label = "按整词" },
-    { value = "input", label = "按编码" },
+  { value = "candidate", label = "按整词" },
+  { value = "input", label = "按编码" },
 ]
 
 [[items]]
@@ -1062,13 +1062,10 @@ hint = "勾选参与自动配对的中文标点对"
 gate_key = "input.auto_pair.chinese"
 [[items.options]]
 value = "（）"
-label = "（ ）全角圆括号"
+label = "（ ）圆括号"
 [[items.options]]
 value = "【】"
 label = "【 】方括号"
-[[items.options]]
-value = "｛｝"
-label = "｛ ｝花括号"
 [[items.options]]
 value = "《》"
 label = "《 》书名号"
@@ -1076,11 +1073,17 @@ label = "《 》书名号"
 value = "〈〉"
 label = "〈 〉单书名号"
 [[items.options]]
+value = "｛｝"
+label = "｛ ｝花括号"
+[[items.options]]
+value = "〔〕"
+label = "〔 〕六角符号"
+[[items.options]]
 value = "「」"
-label = "「 」引号（台）"
+label = "「 」单角引号"
 [[items.options]]
 value = "『』"
-label = "『 』双引号（台）"
+label = "『 』双角引号"
 [[items.options]]
 value = "“”"
 label = "“ ” 双引号"
@@ -1114,10 +1117,6 @@ label = "[ ] 方括号"
 value = "{}"
 label = "{ } 花括号"
 [[items.options]]
-# WARN `<>` 是 core 的出厂值之一（data/config.toml 的 english_pairs）。此前清单漏了它，
-# 后果有两个、都很隐蔽：① 打开设置什么都不动就恒判「有未保存的更改」（写回值少了它，
-# 与 base 不等）；② 保存一次就把用户的 `<>` 静默吃掉。
-# => checkbox_group 的选项集必须覆盖 core 出厂值的全集，见 options_cover_factory_values。
 value = "<>"
 label = "< > 尖括号"
 [[items.options]]
@@ -1689,10 +1688,7 @@ width = 210
 #    core 侧值域仍有 smart（移动端出厂就是它），手改 config.toml 照样能启用；
 #    已配 smart 的用户打开设置页会看到「smart（当前配置）」——select_index_for 的兜底，
 #    不会在「打开设置页、点一次保存」之间被静默换成 word。
-options = [
-  { value = "off", label = "关闭" },
-  { value = "word", label = "词语联想" },
-]
+options = [{ value = "off", label = "关闭" }, { value = "word", label = "词语联想" }]
 
 [[items]]
 key = "input.association.mode"
