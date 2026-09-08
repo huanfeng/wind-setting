@@ -347,7 +347,7 @@ type = "toggle"
 label = "启用英文候选"
 hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
 
-# 最小触发长度：预留配置，暂不对用户开放（默认 3）。
+# 最小触发长度：只约束「中文侧有候选」那一路，见 hint。
 [[items]]
 key = "schema.codetable.english_merge.min_length"
 group = "schema"
@@ -355,10 +355,9 @@ section = "上屏行为"
 subsection = "英文候选"
 type = "number"
 label = "英文最小触发长度"
-hint = "编码达到此长度才查英文（0 表示跟随默认值 3）"
+hint = "有中文候选时，编码达到此长度才查英文（0 = 默认 3）；中文候选为空时不受本项约束，2 码起就给英文补全"
 min = 0
 max = 10
-hidden = true
 enabled_when = "schema.codetable.english_merge.enable == true"
 
 [[items]]
@@ -554,7 +553,7 @@ type = "toggle"
 label = "启用英文候选"
 hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
 
-# 最小触发长度：预留配置，暂不对用户开放（默认 3）。
+# 最小触发长度：只约束「中文侧有候选」那一路，见 hint。
 [[items]]
 key = "schema.pinyin.english_merge.min_length"
 group = "schema"
@@ -562,10 +561,9 @@ section = "候选行为"
 subsection = "英文混入"
 type = "number"
 label = "英文最小触发长度"
-hint = "编码达到此长度才查英文（0 表示跟随默认值 3）"
+hint = "有中文候选时，编码达到此长度才查英文（0 = 默认 3）；中文候选为空时不受本项约束，2 码起就给英文补全"
 min = 0
 max = 10
-hidden = true
 enabled_when = "schema.pinyin.english_merge.enable == true"
 
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
