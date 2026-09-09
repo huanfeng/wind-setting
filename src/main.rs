@@ -18,6 +18,7 @@ mod icons;
 mod key_conflict;
 mod logger;
 mod manifest;
+mod memstat;
 mod mix_fields;
 mod mix_members;
 mod mode;
@@ -43,6 +44,11 @@ mod tsf_log;
 mod update;
 mod user_dir;
 mod widgets;
+
+/// 计数分配器：仅 `--features memstat` 时接管全局分配，用于把内存占用拆到具体构建阶段。
+#[cfg(feature = "memstat")]
+#[global_allocator]
+static ALLOC: memstat::Counting = memstat::Counting;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -219,7 +225,13 @@ fn main() {
         return;
     }
 
+    // 采样日志在单例闸门**之后**才清空：二次实例（切页深链）也会走到 main，
+    // 放在闸门前会把首实例的采样记录一次次抹掉。
+    memstat::reset_log();
+    memstat::mark("[进程起点]");
+
     logger::init();
+    memstat::mark("[日志就绪]");
     // 协议与 .wpkg 关联的自愈各有两道门：便携版不碰宿主机注册表，用户手动取消过
     // 注册的也不再写回去（两条关联各记各的意愿，取消其一不影响另一条）。
     // 单读一次配置而不等 AppState 建好 —— 自愈要赶在窗口出现前完成，此刻 AppState
@@ -243,6 +255,7 @@ fn main() {
 
     // 快速初始化：仅读系统主题（~86µs），不阻塞任何 RPC，UI 立即可显示。
     let app_state = Rc::new(RefCell::new(state::AppState::empty()));
+    memstat::mark("[AppState 建好]");
     {
         let st = app_state.borrow();
         if args.iter().any(|a| a == "--light") {
@@ -318,6 +331,7 @@ fn main() {
     } else {
         ("清风输入法设置", (MAIN_W, MAIN_H), (MAIN_MIN_W, MAIN_MIN_H))
     };
+    memstat::mark("[App::new 前]");
     let app = App::new(title, win_w, win_h)
         // 单例键要跟着这一趟承载的界面走（见 `main_window_single_key`）。
         .single_window(main_window_single_key(dict_as_main))
@@ -417,6 +431,7 @@ fn main() {
     let app_state_cb = app_state.clone();
     let tx = app.channel::<state::LoadedState>(move |ctx, data| {
         app_state_cb.borrow_mut().apply_loaded(data);
+        memstat::mark("[apply_loaded 后]");
         // 冷启动 `--page dict` 的落点：方案列表刚刚注入，此刻开窗左栏才有内容、
         // `--schema` 也才解析得出域下标。channel 回调的副作用走
         // `apply_dispatch_effects`，`open_window` 在这条路上是被采纳的。
@@ -548,6 +563,15 @@ fn main() {
         false
     });
 
+    // 内存诊断：运行期每 2s 打一个净堆采样点，用于分辨「切页涨的内存」到底在 Rust 堆
+    // 上还是在图形栈里。开着它会持续唤醒消息循环，与 d2d 的"空闲零 CPU"设计相冲，
+    // 所以只在 memstat 构建里挂。
+    #[cfg(feature = "memstat")]
+    let app = app.on_interval(std::time::Duration::from_secs(2), |_| {
+        memstat::mark("[运行期]")
+    });
+
+    memstat::mark("[run 之前]");
     app.bg(theme_def::theme_for(start_dark).palette.bg)
         // `--screenshot <path>` 离屏出图（配合 WIND_RPC_MOCK=1 可无 core 核对 UI）。
         .screenshot_from_args()

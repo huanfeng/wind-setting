@@ -49,49 +49,31 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         tab("about"),
     );
     vec![
-        TabDef {
-            name: "方案".into(),
-            page: scheme_page(app, state, &schema),
-            subnav: schema,
-        },
-        TabDef {
-            name: "输入".into(),
-            page: input_page(state, &input),
-            subnav: input,
-        },
-        TabDef {
-            name: "按键".into(),
-            page: keys_page(state, &keys),
-            subnav: keys,
-        },
-        TabDef {
-            name: "外观".into(),
-            page: appearance_page(app, state, &ui),
-            subnav: ui,
-        },
-        TabDef {
-            name: "统计".into(),
-            page: stats::build_page(state, &stats_nav),
-            subnav: stats_nav,
-        },
+        tab_def("方案", scheme_page(app, state, &schema), schema),
+        tab_def("输入", input_page(state, &input), input),
+        tab_def("按键", keys_page(state, &keys), keys),
+        tab_def("外观", appearance_page(app, state, &ui), ui),
+        tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
-        TabDef {
-            name: "词库".into(),
-            page: dict_page(state),
-            subnav: dict,
-        },
-        TabDef {
-            name: "高级".into(),
-            page: advanced_page(app, state, &advanced),
-            subnav: advanced,
-        },
-        TabDef {
-            name: "关于".into(),
-            page: about_page(app, state),
-            subnav: about,
-        },
+        tab_def("词库", dict_page(state), dict),
+        tab_def("高级", advanced_page(app, state, &advanced), advanced),
+        tab_def("关于", about_page(app, state), about),
     ]
+}
+
+/// 组装一个 [`TabDef`]，并在此处打一个内存采样点。
+///
+/// 采样点落在这里是因为**实参先于调用求值**：走到函数体时，这一页的整棵控件树刚好
+/// 建完、还没建下一页，于是相邻两个采样点之差就是该页控件树的净堆占用。
+/// `memstat` feature 关闭时 [`crate::memstat::mark`] 是空实现，不留指令。
+fn tab_def(name: &'static str, page: Element, subnav: SubNav) -> TabDef {
+    crate::memstat::mark(name);
+    TabDef {
+        name: name.into(),
+        page,
+        subnav,
+    }
 }
 
 /// 由若干 section 卡片组成一页（页头 + 纵向滚动，深色 bg 衬托卡片）。

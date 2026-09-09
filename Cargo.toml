@@ -39,6 +39,9 @@ winreg = "0.52"
 
 [features]
 default = []
+# 内存诊断：接管全局分配器做净堆计数，并在构建各阶段打点到 %TEMP%\wind_setting_memstat.log。
+# 仅排查用，默认关（关闭时打点函数是空实现，优化后不留指令）。
+memstat = []
 
 [build-dependencies]
 # 仅 Windows 目标嵌入图标 / 版本信息 / manifest（DPI 感知），参考 core

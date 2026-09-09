@@ -20,6 +20,7 @@ use crate::theme_def::theme_for;
 
 /// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
 pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
+    crate::memstat::mark("[build 入口]");
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
     let (
         tabs_vec,
@@ -83,6 +84,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             field_dialogs,
         )
     };
+    crate::memstat::mark("[全部对话框]");
 
     // 静态色控件（图标 tint/渐变/淡底）用它做亮暗双态，须在页面构建前注册。
     crate::widgets::init_dark_sig(dark);
@@ -245,7 +247,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // 等下一帧才被 toast_sink 读到——而渲染由交互驱动、空闲零帧，那一帧未必会来。
     root = root.child(crate::pages::conflict_watcher(app));
     // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏只剩状态点）。
-    root.child(crate::pages::dict::reactive::toast_sink(feedback))
+    let root = root.child(crate::pages::dict::reactive::toast_sink(feedback));
+    crate::memstat::mark("[build 出口]");
+    root
 }
 
 /// 一级导航栏宽度（逻辑 px）。搜索框与搜索浮层的捕获层都从它推出来，见 `search::ui`。
