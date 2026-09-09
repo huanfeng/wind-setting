@@ -743,6 +743,10 @@ fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     };
     // 互斥联动：本项被**打开**时关掉对方；关闭本项不碰对方（关掉一个不该顺手开另一个）。
     // 对方 Signal 在点击那一刻才查——两项的构建顺序因此无关紧要。
+    //
+    // ⚠️ 只有走到这个分支的 toggle 才有联动。同时是 dialog_button 门控开关的 toggle
+    // 走 `build_gated_dialog_row`（渲染 checkbox，没有 on_switch_change），声明了也白搭；
+    // 那种组合由 `exclusive_with_declarations_are_paired_and_valid` 挡掉。
     let reg = state.fields.clone();
     el.on_switch_change(move |_ctx, on| apply_exclusive(&reg, &other, on))
 }
@@ -2350,6 +2354,9 @@ fn build_gated_dialog_row(
 ) -> Element {
     let gate_sig = register_toggle(state, gate_key, cfg);
     let visible = build_dialog_body(state, &dlg_item.key, dlg_item, cfg);
+    // 注：这里渲染的是 checkbox 而非 switch，故 `MItem::exclusive_with` 在本分支**无效**。
+    // 现无此类声明，测试也挡着；真要支持，用 checkbox 的受控 `on_toggle`
+    // （自己翻转 gate_sig 后再调 apply_exclusive），别指望 on_switch_change。
 
     // 开关开启才可点「设置」：用响应式 enabled_when 置灰（windui 0.4.x 起支持闭包启用条件）。
     // `gate_soft` 例外：对话框内容不专属于这个开关（共用字符集 / 里面还寄居着别的开关），
@@ -5410,6 +5417,14 @@ mod tests {
                 other.exclusive_with.as_deref(),
                 Some(it.key.as_str()),
                 "{} 声明了与 {other_key} 互斥，但对方没有反向声明——单向互斥会让先后顺序决定结果",
+                it.key
+            );
+            // 门控开关那条路走 `build_gated_dialog_row`（渲染的是 checkbox，不是
+            // switch），它拿不到 `on_switch_change`，声明了 exclusive_with 也不会
+            // 联动——而清单照样通过校验，正是本测试要挡的那种"配了没反应"。
+            assert!(
+                m.dialog_for_gate(&it.key).is_none(),
+                "{} 既是 dialog_button 的门控开关、又声明了互斥；门控行渲染 checkbox，                 互斥联动不会生效。要么改掉声明，要么先给 build_gated_dialog_row                  接上联动（checkbox 的受控 on_toggle 可做）",
                 it.key
             );
         }
