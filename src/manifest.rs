@@ -15,7 +15,7 @@ use windui::prelude::*;
 use crate::config::Config;
 use crate::dialogs::key_binding::ForeignBinding;
 use crate::mode::AppMode;
-use crate::state::{AppState, SchemaInfo};
+use crate::state::{AppState, FieldRegistry, SchemaInfo};
 use crate::widgets::{setting_row, setting_row_checks, setting_row_schema_hint};
 
 /// 单个清单项（来自 manifest.toml 经 system.manifest 暴露的 JSON）。
@@ -42,6 +42,14 @@ pub struct MItem {
     /// 控件显式宽度（select/dropdown 选项文本较长时加宽，覆盖默认 CTRL_W）。
     pub width: Option<f64>,
     pub enabled_when: Option<String>,
+    /// 与哪个 bool 清单项**互斥**：本项被打开时，把那一项关掉（反之由那一项自己声明）。
+    ///
+    /// ★ 为什么不用 `enabled_when` 互相置灰：两个都开着的存量配置里两行会同时变灰，
+    /// 用户谁也点不动——这是工具栏简繁格栽过的同款自锁。联动改值则两行恒可点。
+    ///
+    /// 只对 `type = "toggle"` 生效。对方 key 在**点击时**才查表，故两项谁先构建都行；
+    /// 对方没被构建（不在当前页）时联动静默跳过，由 core 侧的写入归一兜底。
+    pub exclusive_with: Option<String>,
     /// dialog_button 专用：门控开关 key（该 toggle 关时按钮置灰不可点，除非 `gate_soft`）。
     pub gate_key: Option<String>,
     /// dialog_button 专用：只与 `gate_key` 合并排版、**按钮不随开关置灰**。
@@ -192,6 +200,7 @@ impl Manifest {
                     unit: opt_str(it, "unit"),
                     width: it.get("width").and_then(|x| x.as_f64()),
                     enabled_when: opt_str(it, "enabled_when"),
+                    exclusive_with: opt_str(it, "exclusive_with"),
                     gate_key: opt_str(it, "gate_key"),
                     gate_soft: it
                         .get("gate_soft")
@@ -727,8 +736,33 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     row
 }
 
-fn build_toggle(state: &AppState, key: &str, _item: &MItem, cfg: &Config) -> Element {
-    Element::switch(register_toggle(state, key, cfg))
+fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let el = Element::switch(register_toggle(state, key, cfg));
+    let Some(other) = item.exclusive_with.clone() else {
+        return el;
+    };
+    // 互斥联动：本项被**打开**时关掉对方；关闭本项不碰对方（关掉一个不该顺手开另一个）。
+    // 对方 Signal 在点击那一刻才查——两项的构建顺序因此无关紧要。
+    let reg = state.fields.clone();
+    el.on_switch_change(move |_ctx, on| apply_exclusive(&reg, &other, on))
+}
+
+/// 互斥联动的实际动作：本项被**打开**时把 `other` 关掉。
+///
+/// 独立成函数是为了**可测**：留在 `on_switch_change` 的闭包里就只能靠真起一个窗口、
+/// 合成一次点击才验得了（同 windui `screenshot_args` 独立出来的理由）。
+///
+/// 三条语义各自都能单独出错，故各有一条断言（见本文件测试）：
+/// - 关闭本项**不碰**对方——关掉一个不该顺手把另一个开起来；
+/// - 对方不在表里（不在当前页、或压根没构建）时静默跳过，不 panic。
+///   此时配置里可能仍留下两个都开的组合，由 core 侧的写入归一兜底。
+fn apply_exclusive(reg: &FieldRegistry, other: &str, on: bool) {
+    if !on {
+        return;
+    }
+    if let Some(sig) = reg.bool_signals.borrow().get(other) {
+        sig.set(false);
+    }
 }
 
 /// 为某 bool key 建 Signal 并登记 writer/getter/loader，返回该 Signal。
@@ -754,6 +788,12 @@ fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
         .getters
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::Bool(sig.get())));
+    // 互斥联动要拿得到写入端（`MItem::exclusive_with`）；getters 只有读。
+    state
+        .fields
+        .bool_signals
+        .borrow_mut()
+        .insert(key.to_string(), sig);
     let kl = key.to_string();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
@@ -5317,6 +5357,67 @@ mod tests {
         for k in ["debug.log_level", "local.setting_log_level"] {
             assert_eq!(hidden(k), Some(false), "{k} 不该被任何门控藏起来");
         }
+    }
+
+    /// 互斥联动的三条语义各测一条——它们都能单独出错，且都是静默的。
+    #[test]
+    fn exclusive_toggle_only_clears_the_other_when_turned_on() {
+        let reg = FieldRegistry::default();
+        let a = signal(true);
+        let b = signal(true);
+        reg.bool_signals.borrow_mut().insert("a".into(), a);
+        reg.bool_signals.borrow_mut().insert("b".into(), b);
+
+        // ① 打开本项 ⇒ 对方被关掉。
+        apply_exclusive(&reg, "b", true);
+        assert!(!b.get(), "打开本项应关掉互斥的对方");
+        assert!(a.get(), "不该动本项自己");
+
+        // ② 关闭本项 ⇒ 不碰对方。关掉一个不该顺手把另一个开起来。
+        b.set(true);
+        apply_exclusive(&reg, "b", false);
+        assert!(b.get(), "关闭本项时对方必须原样不动");
+
+        // ③ 对方不在表里（不在当前页/未构建）⇒ 静默跳过，不 panic。
+        apply_exclusive(&reg, "不存在的键", true);
+    }
+
+    /// ★ 互斥声明必须**成对**，且指向的是一个真实存在的 toggle。
+    ///
+    /// 单向声明是个静默的半成品：A 声明了 B，点 A 会关掉 B，而点 B 不动 A——于是
+    /// 「先点 B 再点 A」和「先点 A 再点 B」得到两种结果，用户完全无从预期。
+    /// 拼错 key 则更彻底：联动在运行时查不到表，什么也不发生，跟没配一样。
+    ///
+    /// 这两种错都不会让程序报任何错，只能靠本测试挡。
+    #[test]
+    fn exclusive_with_declarations_are_paired_and_valid() {
+        let m = Manifest::from_embedded();
+        let mut pairs = 0usize;
+        for it in m.items.values() {
+            let Some(other_key) = it.exclusive_with.as_deref() else {
+                continue;
+            };
+            pairs += 1;
+            let other = m.get(other_key).unwrap_or_else(|| {
+                panic!("{} 的 exclusive_with 指向不存在的项 {other_key}", it.key)
+            });
+            assert_eq!(
+                other.typ, "toggle",
+                "{} 的 exclusive_with 指向 {other_key}，但那不是 toggle（互斥联动只对开关生效）",
+                it.key
+            );
+            assert_eq!(
+                other.exclusive_with.as_deref(),
+                Some(it.key.as_str()),
+                "{} 声明了与 {other_key} 互斥，但对方没有反向声明——单向互斥会让先后顺序决定结果",
+                it.key
+            );
+        }
+        // 防空跑：这条断言的用途是逼人回来说明「互斥声明为什么一条都不剩了」。
+        assert!(
+            pairs >= 2,
+            "清单里至少该有一对互斥声明（简入繁出 / 繁入简出），实际 {pairs} 条"
+        );
     }
 
     /// 三个模块的日志级别下拉必须都带「关闭」一档——「支持完全关闭」是这组设置的

@@ -1267,7 +1267,8 @@ group = "input"
 section = "简入繁出"
 type = "toggle"
 label = "启用简入繁出"
-hint = "候选与上屏均输出繁体（基于 OpenCC 词典）"
+hint = "候选与上屏均输出繁体（基于 OpenCC 词典）。开启会自动关闭「繁入简出」"
+exclusive_with = "input.t2s.enabled"
 
 [[items]]
 key = "input.s2t.variant"
@@ -1291,7 +1292,8 @@ group = "input"
 section = "繁入简出"
 type = "toggle"
 label = "启用繁入简出"
-hint = "词库和候选是繁体时，上屏转成简体。与「简入繁出」只能开一个，开这个会自动关掉那个"
+hint = "词库和候选是繁体时，上屏转成简体。开启会自动关闭「简入繁出」"
+exclusive_with = "input.s2t.enabled"
 
 # ── 快捷输入 ──
 [[items]]

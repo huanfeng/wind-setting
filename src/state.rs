@@ -71,6 +71,14 @@ pub struct FieldRegistry {
     pub writers: RefCell<Vec<FieldWriter>>,
     /// key → 当前值取值器（供 enabled_when 联动）。
     pub getters: RefCell<HashMap<String, ValueGetter>>,
+    /// bool 清单项 key → 它的 Signal，供**互斥联动**跨控件改对方的值
+    /// （`MItem::exclusive_with`，见 `manifest::build_toggle`）。
+    ///
+    /// 与 `getters` 分开：那张表是只读取值器（`enabled_when` 用），拿不到写入端。
+    ///
+    /// ⚠️ 与 `global_flags` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空，
+    /// Signal 句柄留过页面重建就是悬垂。
+    pub bool_signals: RefCell<HashMap<String, Signal<bool>>>,
     /// 清单项 key → 加载器（把给定 Config 的值灌回 Signal；空 Config 时回落 manifest 默认）。
     ///
     /// 索引用的是**清单项 key**而非配置路径——`reset_current_page` 拿 manifest 的 key 反查。
@@ -138,6 +146,7 @@ impl FieldRegistry {
     pub fn reset(&self) {
         self.writers.borrow_mut().clear();
         self.getters.borrow_mut().clear();
+        self.bool_signals.borrow_mut().clear();
         self.loaders.borrow_mut().clear();
         self.dialogs.borrow_mut().clear();
         self.global_flags.borrow_mut().clear();
