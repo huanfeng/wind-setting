@@ -314,6 +314,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "schema.english.case_follow_input",
+      "type": "bool"
+    },
+    {
       "default": false,
       "key": "schema.codetable.auto_phrase.enabled",
       "type": "bool"
@@ -873,6 +878,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "input.temp_english.case_follow_input",
+      "type": "bool"
+    },
+    {
       "default": "follow",
       "key": "input.temp_english.candidate_layout",
       "type": "enum",
@@ -885,6 +895,11 @@
     {
       "default": false,
       "key": "input.capslock.cancel_on_mode_switch",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.capslock.english_case_cycle",
       "type": "bool"
     },
     {

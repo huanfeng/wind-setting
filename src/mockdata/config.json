@@ -44,7 +44,8 @@
    "state_ttl_secs": 120
   },
   "capslock": {
-   "cancel_on_mode_switch": false
+   "cancel_on_mode_switch": false,
+   "english_case_cycle": false
   },
   "cmdbar": {
    "candidate_prefix": "⚡",
@@ -109,6 +110,7 @@
   "temp_english": {
    "allow_symbols": false,
    "candidate_layout": "follow",
+   "case_follow_input": true,
    "case_variants": true,
    "enabled": true,
    "raw_candidate": true,
@@ -240,6 +242,7 @@
    "z_key_repeat": true
   },
   "english": {
+   "case_follow_input": true,
    "case_variants": false,
    "commit_space": false,
    "frequency": {

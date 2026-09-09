@@ -899,6 +899,14 @@ label = "生成大小写变形候选"
 hint = "补出全小写、首字母大写、全大写三种形态。它们各占一个候选位；临时英文的同名开关另设"
 
 [[items]]
+key = "schema.english.case_follow_input"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "候选跟随输入的大小写"
+hint = "打 Hi 出 Hill，打 WoW 出 WoWed；只跟大写，打小写时 China、iPhone 这类词保持词库原样"
+
+[[items]]
 key = "schema.english.commit_space"
 group = "schema"
 section = "英文行为"
@@ -1471,6 +1479,14 @@ label = "生成大小写变形候选"
 hint = "在候选中补出全小写、首字母大写、全大写三种形态。它们各占一个候选位，只需要词库补全时可关闭"
 
 [[items]]
+key = "input.temp_english.case_follow_input"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "候选跟随输入的大小写"
+hint = "临时英文由 Shift+字母进入，首字母恒为大写，开启后候选也随之首字母大写；只跟大写，词库自带的大写不受影响"
+
+[[items]]
 key = "input.temp_english.allow_symbols"
 group = "input"
 section = "临时英文"
@@ -1521,6 +1537,17 @@ hint = "切换中英文模式时自动取消大写锁定状态；切换方案不
 # macOS 无落点：实现手段是合成一次 CapsLock 敲击（`key_inject::tap_caps_lock`），而
 # 大写锁定态在 macOS 由 HID 层维护，CGEvent 合成的 CapsLock 改不动它（要走
 # IOHIDSetModifierLockState 那条完全不同的路）。补 VK→CGKeyCode 映射也没用。
+platform = "windows"
+
+[[items]]
+key = "input.capslock.english_case_cycle"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "Caps Lock 切换候选大小写"
+hint = "打英文时按 Caps Lock 在「跟随输入 → 全大写 → 全小写」间切换，上屏后复位；此期间给 Caps Lock 配的其它功能按不出来"
+# 与上一项同为 CapsLock 行为，故同处一节。实现靠全局低级键盘钩子拦截 CapsLock，
+# macOS 无对应落点（同上一项的理由）。
 platform = "windows"
 
 # ── 生僻字 ──
