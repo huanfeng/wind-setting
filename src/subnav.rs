@@ -15,6 +15,8 @@
 //! 1. **`on_update` 不看可见性**。八个页面全建好叠在一个 stack 里靠 `visible_when` 切，
 //!    未选中页的哨兵照样每帧被叫到。不自查祖先链的话，它们会拿上一次可见时的陈旧矩形
 //!    去覆写高亮——表现为切到 A 页、B 页的哨兵把 A 页的高亮改掉。
+//!    反过来，**祖先可见也不代表已经排过版**：`arrange` 只排 `visible_children`，切页
+//!    那一帧新页整棵子树还是零矩形。两道门都要（见 `Spy::on_update`）。
 //! 2. **`on_update` 跑在 `measure/arrange` 之前**，读到的 bounds 是上一帧的，而节点上的
 //!    `scroll_y` 已是当前值。**两者不能混着用**：高亮判定只吃 bounds（滞后一帧无感），
 //!    跳转落点也只吃 bounds（取卡片在内容列里的偏移，与 scroll_y 无关）。
@@ -307,6 +309,19 @@ impl Widget for Spy {
         else {
             return;
         };
+        // ⚠ **本页这一帧还没被 arrange 过就别上报**。
+        //
+        // `effective_visible()` 在切页的**同一帧**就翻成 true（`vis_cond` 直接读 tab 信号），
+        // 而 `arrange` 只排 `visible_children` —— 一个从没显示过的页，它整棵子树的 bounds
+        // 都还是默认的零矩形。此时每一枚哨兵算出的 `top` 都是 `0 - 0 = 0`，于是
+        // `resolve` 的「顶端已越过判定线的**最后**一个」当场选中**末项**：切到输入页，
+        // 「默认状态」先亮一下再跳回「字符与标点」——用户看到的就是闪了一下。
+        //
+        // 判据取自身宽度：哨兵是 `Align::Stretch` 的整宽覆盖层，真排过的必然 > 0。
+        // 不上报也不认领跳转——零矩形算出来的落点同样是错的。
+        if tree.get(id).is_none_or(|n| n.bounds.w <= 0) {
+            return;
+        }
         // `widgets::page` 的滚动容器自身无内边距（内边距在里面那个 col 上），故视口顶端
         // 就是它的绝对矩形顶端。改了那里的话这里要跟着改。
         let top = tree.abs_bounds(id).y - tree.abs_bounds(host).y;
@@ -550,6 +565,24 @@ mod tests {
         let nav = nav_with(3);
         nav.resolve();
         assert_eq!(nav.active().get(), 0);
+    }
+
+    /// 切页那一帧新页整棵子树还是零矩形，所有分块的 `top` 都会算成 0。若那批数据被
+    /// 报进来，「越过判定线的最后一个」当场选中**末项**——用户看到的就是切页时最后
+    /// 一条导航闪一下（2026-09-09 实测，探针确认那几帧 `bounds.w == 0`）。
+    ///
+    /// 真正的防线在 `Spy::on_update`（未排版不上报）。本测试把「一旦漏进来会怎样」
+    /// 钉住：它记录的是**故障形态**，将来谁想放宽那道门，这里会提醒代价是什么。
+    #[test]
+    fn all_zero_tops_would_select_last_item() {
+        let nav = nav_with(3);
+        report_all(&nav, &[0, 0, 0], 0, 0);
+        nav.resolve();
+        assert_eq!(
+            nav.active().get(),
+            2,
+            "全 0 会选末项 —— 故哨兵必须在页面排过版之前拒绝上报"
+        );
     }
 
     /// 导航行与分块一一对应、序号按登记顺序递增——`build_list` 直接拿 `section`
