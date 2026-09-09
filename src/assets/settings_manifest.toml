@@ -909,10 +909,10 @@ hint = "上屏英文词后补一个空格，连续打词不必手动按；回车
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
 # 输入页的分节顺序（＝导航顺序）分四段，越靠前越"每天都在起作用"：
-#   ① 字符形态：字符与标点 / 智能符号 / 标点配对 / 简繁转换 —— 打出来长什么样；
+#   ① 字符形态：字符与标点 / 智能符号 / 标点配对 —— 打出来长什么样；
 #   ② 按键：按键行为 / 候选无效按键 —— 键按下去做什么；
-#   ③ 临时切换：临时拼音 / 临时英文 / 生僻字 —— 临时换一种打法；
-#   ④ 特殊来源：快捷输入 / Emoji / 网址输入 / Unicode 输入 —— 候选从别处来；
+#   ③ 临时模式：快捷输入 / 临时拼音 / 临时英文 / 生僻字 —— 临时换一种打法；
+#   ④ 特殊：简繁转换 / Emoji / 网址输入 / Unicode 输入 —— 候选或上屏结果另有来路；
 #   末尾 联想 / 词频 是候选的后处理与统计口径，两块都不常改。
 [[items]]
 key = "input.filter_mode"
@@ -1168,42 +1168,6 @@ label = "Tab 制表键"
 value = "enter"
 label = "Enter 回车键"
 
-# ── 简繁转换 ──
-# 两个方向合一节：它们互斥（`exclusive_with`，开一个自动关另一个），分成两张卡时
-# 「开了这个那个就灭了」跨卡发生，看着像 bug；同卡三行才看得出是一个二选一开关。
-[[items]]
-key = "input.s2t.enabled"
-group = "input"
-section = "简繁转换"
-type = "toggle"
-label = "启用简入繁出"
-hint = "候选与上屏均输出繁体（基于 OpenCC 词典）。开启会自动关闭「繁入简出」"
-exclusive_with = "input.t2s.enabled"
-
-[[items]]
-key = "input.s2t.variant"
-group = "input"
-section = "简繁转换"
-type = "select"
-label = "转换变体"
-hint = "选择目标繁体字形与词汇风格"
-enabled_when = "input.s2t.enabled == true"
-options = [
-  { value = "s2t", label = "标准繁体" },
-  { value = "s2tw", label = "台湾繁体" },
-  { value = "s2twp", label = "台湾繁体（含词汇）" },
-  { value = "s2hk", label = "香港繁体" },
-]
-
-[[items]]
-key = "input.t2s.enabled"
-group = "input"
-section = "简繁转换"
-type = "toggle"
-label = "启用繁入简出"
-hint = "词库和候选是繁体时，上屏转成简体。开启会自动关闭「简入繁出」"
-exclusive_with = "input.s2t.enabled"
-
 # ── 按键行为 ──
 [[items]]
 key = "input.enter_behavior"
@@ -1301,6 +1265,103 @@ options = [
   { value = "commit", label = "上屏编码" },
   { value = "commit_and_input", label = "上屏并继续输入" },
 ]
+
+# ── 快捷输入 ──
+[[items]]
+key = "schema.mix_modes"
+group = "input"
+section = "快捷输入"
+type = "dialog_button_key_action"
+verb = "mix:quick_mix"
+label = "快捷输入触发键"
+hint = "按触发键进入快捷（日期/计算/拼音/英文融合）模式，打字中按下会先把已输入内容上屏；可多选。全部取消勾选即禁用快捷输入"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
+]
+
+# 候选来源：与触发键读写同一个 core 键（schema.mix_modes 里 quick_mix 的 members），
+# 故用视图 key `#members` 另立一项——清单按 key 索引，同 key 两项后者会覆盖前者。
+# value = core 成员 id；声明序 = 新增成员的插入位置，须与 core 的 default_mix_modes() 一致
+# （由 mix_members_options_match_core_default_order 守护）。
+[[items]]
+key = "schema.mix_modes#members"
+group = "input"
+section = "快捷输入"
+type = "dialog_button_mix_members"
+label = "快捷候选来源"
+hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选；列表顺序即候选优先级，按住行首手柄上下拖动即可调整"
+options = [
+  { value = "quick_input.calc", label = "计算", hint = "算式求值，如 1+2*3、5^2、(1+2)/4" },
+  { value = "quick_input.number", label = "数字 / 金额", hint = "中文数字、财务大写、千分位；算式结果也会转换" },
+  { value = "quick_input.date", label = "日期 / 年月", hint = "如 2026.3.5 → 2026年3月5日；12.25 → 12月25日。只有一个点时数字候选在前，多打一个点（12.25.）即可让日期优先" },
+  { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
+  { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
+  { value = "english", label = "英文", hint = "英文词库候选" },
+  { value = "$rare_char", label = "生僻字", hint = "用当前方案的编码打生僻字，只出单字。排在拼音后面的话同一个字会先被拼音收走，想让它有存在感就往前拖" },
+]
+
+# 候选布局：与触发键、候选来源读写同一个 core 键（schema.mix_modes 里 quick_mix 的
+# candidate_layout），故用视图 key `#candidate_layout` 另立一项。
+# 取代旧的 schema.quick_input.force_vertical——那个布尔挂在与实例无关的全局段，
+# 且表达不了「全局竖排但本模式横排」。三个模式的选项须一致（见下方临拼/临英/网址）。
+[[items]]
+key = "schema.mix_modes#candidate_layout"
+group = "input"
+section = "快捷输入"
+type = "select_mix_layout"
+label = "候选窗布局"
+hint = "快捷输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
+
+# 自由（字面）输入：与上面三项读写同一个 core 键（schema.mix_modes 里 quick_mix 的
+# free_input），故用视图 key `#free_input` 另立一项。
+[[items]]
+key = "schema.mix_modes#free_input"
+group = "input"
+section = "快捷输入"
+type = "select_mix_free_input"
+label = "自由输入"
+hint = "把不可能是编码的按键（大写字母、多数符号）作字面输入，原样上屏；开启后标点不再顶屏候选"
+width = 210
+options = [
+  { value = "off", label = "关闭" },
+  { value = "auto", label = "自动判断" },
+  { value = "always", label = "始终字面输入" },
+]
+
+# 夺取二三候选键：同上，视图 key `#free_input_takes_select_keys`。
+# enabled_when 用 `!=` —— 该算子是为本项加的（parse_conds 原先只有 == 与 contains）。
+[[items]]
+key = "schema.mix_modes#free_input_takes_select_keys"
+group = "input"
+section = "快捷输入"
+type = "checkbox_mix_free_select_keys"
+label = "; ' 作字面字符"
+hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 不受影响"
+enabled_when = "schema.mix_modes#free_input != off"
+
+[[items]]
+key = "schema.quick_input.decimal_places"
+group = "input"
+section = "快捷输入"
+type = "number"
+label = "小数保留位数"
+hint = "计算结果最多保留的小数位数（0 表示取整）"
+min = 0
+max = 6
 
 # ── 临时拼音 ──
 [[items]]
@@ -1488,102 +1549,41 @@ options = [
   { value = "其它", label = "其它", hint = "新版 Unicode 新增的、本程序还不认识的区块。区块表是逐块列举的，漏掉的都归这一档" },
 ]
 
-# ── 快捷输入 ──
+# ── 简繁转换 ──
+# 两个方向合一节：它们互斥（`exclusive_with`，开一个自动关另一个），分成两张卡时
+# 「开了这个那个就灭了」跨卡发生，看着像 bug；同卡三行才看得出是一个二选一开关。
 [[items]]
-key = "schema.mix_modes"
+key = "input.s2t.enabled"
 group = "input"
-section = "快捷输入"
-type = "dialog_button_key_action"
-verb = "mix:quick_mix"
-label = "快捷输入触发键"
-hint = "按触发键进入快捷（日期/计算/拼音/英文融合）模式，打字中按下会先把已输入内容上屏；可多选。全部取消勾选即禁用快捷输入"
+section = "简繁转换"
+type = "toggle"
+label = "启用简入繁出"
+hint = "候选与上屏均输出繁体（基于 OpenCC 词典）。开启会自动关闭「繁入简出」"
+exclusive_with = "input.t2s.enabled"
+
+[[items]]
+key = "input.s2t.variant"
+group = "input"
+section = "简繁转换"
+type = "select"
+label = "转换变体"
+hint = "选择目标繁体字形与词汇风格"
+enabled_when = "input.s2t.enabled == true"
 options = [
-  { value = "backtick", label = "反引号 ( ` )" },
-  { value = "semicolon", label = "分号 ( ; )" },
-  { value = "quote", label = "单引号 ( ' )" },
-  { value = "comma", label = "逗号 ( , )" },
-  { value = "period", label = "句号 ( . )" },
-  { value = "slash", label = "斜杠 ( / )" },
-  { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "lbracket", label = "左方括号 ( [ )" },
-  { value = "rbracket", label = "右方括号 ( ] )" },
+  { value = "s2t", label = "标准繁体" },
+  { value = "s2tw", label = "台湾繁体" },
+  { value = "s2twp", label = "台湾繁体（含词汇）" },
+  { value = "s2hk", label = "香港繁体" },
 ]
 
-# 候选来源：与触发键读写同一个 core 键（schema.mix_modes 里 quick_mix 的 members），
-# 故用视图 key `#members` 另立一项——清单按 key 索引，同 key 两项后者会覆盖前者。
-# value = core 成员 id；声明序 = 新增成员的插入位置，须与 core 的 default_mix_modes() 一致
-# （由 mix_members_options_match_core_default_order 守护）。
 [[items]]
-key = "schema.mix_modes#members"
+key = "input.t2s.enabled"
 group = "input"
-section = "快捷输入"
-type = "dialog_button_mix_members"
-label = "快捷候选来源"
-hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选；列表顺序即候选优先级，按住行首手柄上下拖动即可调整"
-options = [
-  { value = "quick_input.calc", label = "计算", hint = "算式求值，如 1+2*3、5^2、(1+2)/4" },
-  { value = "quick_input.number", label = "数字 / 金额", hint = "中文数字、财务大写、千分位；算式结果也会转换" },
-  { value = "quick_input.date", label = "日期 / 年月", hint = "如 2026.3.5 → 2026年3月5日；12.25 → 12月25日。只有一个点时数字候选在前，多打一个点（12.25.）即可让日期优先" },
-  { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
-  { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
-  { value = "english", label = "英文", hint = "英文词库候选" },
-  { value = "$rare_char", label = "生僻字", hint = "用当前方案的编码打生僻字，只出单字。排在拼音后面的话同一个字会先被拼音收走，想让它有存在感就往前拖" },
-]
-
-# 候选布局：与触发键、候选来源读写同一个 core 键（schema.mix_modes 里 quick_mix 的
-# candidate_layout），故用视图 key `#candidate_layout` 另立一项。
-# 取代旧的 schema.quick_input.force_vertical——那个布尔挂在与实例无关的全局段，
-# 且表达不了「全局竖排但本模式横排」。三个模式的选项须一致（见下方临拼/临英/网址）。
-[[items]]
-key = "schema.mix_modes#candidate_layout"
-group = "input"
-section = "快捷输入"
-type = "select_mix_layout"
-label = "候选窗布局"
-hint = "快捷输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
-width = 210
-options = [
-  { value = "follow", label = "跟随全局" },
-  { value = "vertical", label = "强制竖排" },
-  { value = "horizontal", label = "强制横排" },
-]
-
-# 自由（字面）输入：与上面三项读写同一个 core 键（schema.mix_modes 里 quick_mix 的
-# free_input），故用视图 key `#free_input` 另立一项。
-[[items]]
-key = "schema.mix_modes#free_input"
-group = "input"
-section = "快捷输入"
-type = "select_mix_free_input"
-label = "自由输入"
-hint = "把不可能是编码的按键（大写字母、多数符号）作字面输入，原样上屏；开启后标点不再顶屏候选"
-width = 210
-options = [
-  { value = "off", label = "关闭" },
-  { value = "auto", label = "自动判断" },
-  { value = "always", label = "始终字面输入" },
-]
-
-# 夺取二三候选键：同上，视图 key `#free_input_takes_select_keys`。
-# enabled_when 用 `!=` —— 该算子是为本项加的（parse_conds 原先只有 == 与 contains）。
-[[items]]
-key = "schema.mix_modes#free_input_takes_select_keys"
-group = "input"
-section = "快捷输入"
-type = "checkbox_mix_free_select_keys"
-label = "; ' 作字面字符"
-hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 不受影响"
-enabled_when = "schema.mix_modes#free_input != off"
-
-[[items]]
-key = "schema.quick_input.decimal_places"
-group = "input"
-section = "快捷输入"
-type = "number"
-label = "小数保留位数"
-hint = "计算结果最多保留的小数位数（0 表示取整）"
-min = 0
-max = 6
+section = "简繁转换"
+type = "toggle"
+label = "启用繁入简出"
+hint = "词库和候选是繁体时，上屏转成简体。开启会自动关闭「简入繁出」"
+exclusive_with = "input.s2t.enabled"
 
 # ── Emoji ──
 # 按候选文字查表，与编码无关，所有方案通用。词表随程序附带（data/emoji/），首次开启时
@@ -2484,12 +2484,20 @@ max = 64
 dialog_extra_for = "ui.candidate.comment_template_horizontal"
 
 [[items]]
+key = "ui.candidate.auto_comment_dicts"
+group = "ui"
+section = "候选标注"
+type = "toggle"
+label = "自动使用词库自带的注释"
+hint = "词库声明了 comment 列时，直接把它当注释源；在「注释词库」里可单独开关与排序"
+
+[[items]]
 key = "ui.comment_dicts"
 group = "ui"
 section = "候选标注"
 type = "dialog_button_comment_dicts"
 label = "注释词库"
-hint = "供注释模板 ${dict} 变量查询；词库文件放在数据目录的 schemas/comments/ 下"
+hint = "供注释模板 ${dict} 变量查询；从 schemas/comments/ 下的文件里直接选"
 
 [[items]]
 key = "ui.candidate.index_labels"

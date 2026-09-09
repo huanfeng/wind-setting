@@ -308,11 +308,30 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     )
 }
 
+/// general 组分节在输入页的插入锚点：排在这一节**之前**。锚点分节被改名/删除时，
+/// general 那批回落到页尾（即旧行为），不会丢——由 `general_anchor_exists` 守门。
+const GENERAL_ANCHOR: &str = "快捷输入";
+
 /// 输入页：manifest「input」分组 + 并入原「常规(general)」的启动状态等分区
 /// （已取消独立「常规」Tab；general 分组若空则无副作用）。冲突提示由全局固定顶栏承担。
+///
+/// general 那批**不再一律甩在页尾**：「默认状态」讲的是"每次开始打字时是中是英、
+/// 标点是全是半"，属于人人都会调的基础项，摆在十几个专项功能之后没人翻得到。故插在
+/// [`GENERAL_ANCHOR`] 那一节之前——它是「临时模式」段的段首，往后全是专项。
 fn input_page(state: &AppState, nav: &SubNav) -> Element {
-    let mut secs = manifest_sections(state, "input", nav);
-    secs.extend(manifest_sections(state, "general", nav));
+    let mut general = Some(manifest_sections(state, "general", nav));
+    let mut secs = Vec::new();
+    for (sec, keys) in state.manifest.sections_of("input") {
+        if sec == GENERAL_ANCHOR {
+            if let Some(g) = general.take() {
+                secs.extend(g);
+            }
+        }
+        secs.push(nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))));
+    }
+    if let Some(g) = general {
+        secs.extend(g);
+    }
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
 
@@ -1146,6 +1165,29 @@ mod about_tests {
                 "customEdition": { "name": "虎码定制版", "id": "huma" }
             })),
             Some("虎码定制版".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 守门：[`GENERAL_ANCHOR`] 必须真是 input 组的一个分节名。
+    ///
+    /// 不成立时「默认状态」会静默回落到页尾——页面照常渲染、测试照常全绿，只有拿眼睛
+    /// 看才发现那张卡又跑到最后去了。分节改名是常事（本次就改了三个），故立此测试。
+    #[test]
+    fn general_anchor_exists() {
+        let m = crate::manifest::Manifest::from_embedded();
+        let secs: Vec<String> = m.sections_of("input").into_iter().map(|(s, _)| s).collect();
+        assert!(
+            secs.iter().any(|s| s == GENERAL_ANCHOR),
+            "input 组里没有分节「{GENERAL_ANCHOR}」，「默认状态」会掉回页尾；             改名了就同步这个常量，现有分节：{secs:?}"
+        );
+        assert!(
+            !m.sections_of("general").is_empty(),
+            "general 组一个分节都没有——插入逻辑失去意义，确认「默认状态」是否已迁走"
         );
     }
 }
