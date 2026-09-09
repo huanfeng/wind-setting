@@ -247,8 +247,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     root.child(crate::pages::dict::reactive::toast_sink(feedback))
 }
 
-/// 一级导航栏宽度（逻辑 px）。
-const NAV_W: i32 = 140;
+/// 一级导航栏宽度（逻辑 px）。搜索框与搜索浮层的捕获层都从它推出来，见 `search::ui`。
+pub(crate) const NAV_W: i32 = 140;
 
 /// 二级导航栏该不该出现：总开关打开 **且** 当前页确实有得可导。
 ///
@@ -310,19 +310,10 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
     // 靠约定对齐，这里再手抄一个下标，将来插一页就会指到隔壁那项上。
     let dict_idx = crate::cli::page_to_index("dict");
 
+    // 顶上那行「设置」小标题已撤：窗口标题栏就写着「设置」，侧栏里再说一遍是重复，
+    // 白占 26px 还把导航整体往下推。二级导航加进来之后左边有两栏清单，少一层无谓的
+    // 标题反而更容易一眼扫完。
     let mut col = Element::col().width_match().spacing(2);
-    // 顶部小节标题。
-    col = col.child(
-        // 高度需容纳字号 + 上下 padding（固定高含 padding，给小了会截半字）。
-        Element::label("设置")
-            .font_size(11.0)
-            .font_weight(600)
-            .fg_role(Role::TextDisabled)
-            .width_match()
-            .max_lines(1)
-            .height(26)
-            .padding_xy(10, 5),
-    );
 
     for (i, name) in names.iter().enumerate() {
         if name == "高级" {
@@ -591,6 +582,33 @@ fn build_footer(
         .visible_when(move || !d_d.get());
     let theme_btn = Element::stack().child(to_light).child(to_dark);
 
+    // 二级导航开关：与明暗切换同一形态（两枚按钮叠在 stack 里按状态显隐，文字说的是
+    // **点下去会怎样**而不是当前状态）。高级页那张「设置界面」卡是同一个信号的另一个
+    // 入口，两处会互相跟随。
+    //
+    // 用 ☰ 而不是 emoji：`🌙` 在 Windows 上按彩色字形渲染，本就与整体单色风格打架；
+    // 新加的这枚没有理由再引一个（见 `search::ui` 里放大镜那段同源的取舍）。
+    let two_level = app.borrow().two_level_nav;
+    let app_hide = app.clone();
+    let nav_hide = Element::button("☰ 收起导航")
+        .small()
+        .outline_soft()
+        .on_click(move |_| {
+            two_level.set(false);
+            app_hide.borrow_mut().save_two_level_nav(false);
+        })
+        .visible_signal(two_level);
+    let app_show = app.clone();
+    let nav_show = Element::button("☰ 二级导航")
+        .small()
+        .outline_soft()
+        .on_click(move |_| {
+            two_level.set(true);
+            app_show.borrow_mut().save_two_level_nav(true);
+        })
+        .visible_when(move || !two_level.get());
+    let subnav_btn = Element::stack().child(nav_hide).child(nav_show);
+
     // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为
     // 是「重新加载配置」。放底栏而非页内浮层：浮层要么挡内容、要么得在页尾留白让位。
     let (stats_mgr, tab_sig) = {
@@ -664,6 +682,7 @@ fn build_footer(
         .bg_role(Role::SurfaceAlt)
         .child(status_dot)
         .child(theme_btn)
+        .child(subnav_btn)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
         .child(reset_btn)

@@ -291,11 +291,9 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                     tab: page_tab("schema"),
                     anchor: page_anchor(key),
                 },
-                vec![
-                    page_name.to_string(),
-                    "全局方案配置".to_string(),
-                    label.to_string(),
-                ],
+                // 面包屑跟着界面走：「全局方案配置」那一层已经撤掉（见
+                // `pages::scheme_page`），路径里再留着它就会指向一个界面上不存在的分组。
+                vec![page_name.to_string(), label.to_string()],
             ),
         };
         // 对话框内子分区（如「词频调整」）再补一层，路径才够指到那一行。
@@ -671,7 +669,7 @@ mod tests {
             }
             other => panic!("上屏行为应落页面行，实际 {other:?}"),
         }
-        assert_eq!(e.path[1], "全局方案配置");
+        assert_eq!(e.path[1], "码表方案配置", "面包屑第二段就是卡片标题");
     }
 
     /// 模糊音那 13 个开关挤在一个网格里，索引须落到**整块**的锚点上而不是各自的 key

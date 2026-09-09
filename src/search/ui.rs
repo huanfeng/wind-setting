@@ -29,8 +29,13 @@ use super::jump::{self, JumpRequest};
 use super::matcher::{DEFAULT_LIMIT, search};
 use crate::manifest::Manifest;
 
-/// 搜索框尺寸（侧栏宽 184 − padding_xy(8) 两侧）。
-const BOX_W: i32 = 168;
+/// 搜索框尺寸（侧栏宽 − padding_xy(8) 两侧）。
+///
+/// ⚠ **必须从 [`SIDEBAR_W`] 推出来，不能再写字面量**。此前这里硬编码 168（配 184 的侧栏），
+/// 而下面那条守门断言比的是 `BOX_W == SIDEBAR_W - OVERLAY_LEFT * 2` —— 两个常量都在本
+/// 文件里，一起对得上就算过，`shell` 那边把侧栏改窄了它一无所知。二级导航把侧栏压到
+/// 140 时，搜索框仍按 168 排，右端被侧栏裁掉一截。
+const BOX_W: i32 = SIDEBAR_W - OVERLAY_LEFT * 2;
 const BOX_H: i32 = 30;
 
 /// 浮层左上角（根坐标）。都是常量：标题栏 44 + 分隔线 1 + 侧栏上内边距 10
@@ -40,8 +45,11 @@ const BOX_H: i32 = 30;
 /// 测量反而要引入一条「浮层依赖别的节点几何」的耦合。改了侧栏内边距或标题栏高度
 /// 时，`overlay_top_matches_layout` 会提醒同步。
 const OVERLAY_LEFT: i32 = 8;
-/// 侧栏宽度（`shell::build` 写死的 184）。捕获层要在这块之上给搜索框让路。
-const SIDEBAR_W: i32 = 184;
+/// 一级导航栏宽度。捕获层要在这块之上给搜索框让路。
+///
+/// **直接引用 `shell` 那份**，不再抄一个字面量：搜索框宽度、捕获层让位宽度都由它推出来，
+/// 抄一份的下场见 [`BOX_W`]。
+const SIDEBAR_W: i32 = crate::shell::NAV_W;
 const OVERLAY_TOP: i32 = 89;
 const OVERLAY_W: i32 = 320;
 const OVERLAY_MAX_H: i32 = 380;
@@ -810,7 +818,9 @@ mod tests {
             OVERLAY_TOP,
             TITLEBAR_H + DIVIDER_H + SIDEBAR_PAD_V + BOX_H + GAP
         );
-        // 侧栏宽 184、左右各 8 内边距。
+        // 侧栏左右各 8 内边距。两者现在都由 `shell::NAV_W` 推出，这条断言退化成
+        // 「没人把它们改回字面量」的守门。
+        assert_eq!(SIDEBAR_W, crate::shell::NAV_W, "侧栏宽必须跟着 shell 走");
         assert_eq!(BOX_W, SIDEBAR_W - OVERLAY_LEFT * 2);
     }
 }

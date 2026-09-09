@@ -49,14 +49,19 @@ const UNSET: i32 = i32::MIN;
 /// 二级导航栏宽度（逻辑 px）。
 pub const SUBNAV_W: i32 = 168;
 
-/// 导航清单上的一行。
+/// 导航清单上的一行。每一行都对应页面上一张真卡片、都点得动。
+///
+/// ★ 曾经还有一种「纯分组标题」行（`section: None`，点不动，只把下面几行缩进归拢），
+/// 方案页拿它做过「全局方案配置」那一层。撤掉了：分组标题既不是卡片也点不动，却在
+/// 导航里占一行、把真正的目标缩进去，层次凭空多一级而信息量为零
+/// （2026-09-09 用户原话：「会让这个层次变的奇怪」）。要说明分组关系，说在卡片里。
 #[derive(Clone)]
 pub struct SubNavItem {
     pub label: String,
-    /// 缩进层级：0 = 顶层，1 = 子项（方案页四个引擎配置）。
+    /// 缩进层级。目前全是 0；留着是因为将来真有嵌套需求时，导航侧只差这一个值。
     pub depth: u8,
-    /// 对应的分块下标；`None` = 纯分组标题，只用来把下面几行归拢，点不动。
-    pub section: Option<usize>,
+    /// 对应的分块下标。
+    pub section: usize,
 }
 
 struct Inner {
@@ -94,15 +99,6 @@ impl SubNav {
         }))
     }
 
-    /// 登记一条纯分组标题（不对应任何卡片，点不动）。
-    pub fn group(&self, label: &str) {
-        self.0.items.borrow_mut().push(SubNavItem {
-            label: label.to_string(),
-            depth: 0,
-            section: None,
-        });
-    }
-
     /// 登记一个分块，并把卡片包上位置哨兵。`label` 是**导航栏上**的名字，可以比卡片
     /// 标题短（方案页导航写「码表」，卡片标题仍是「码表方案配置」）。
     ///
@@ -117,7 +113,7 @@ impl SubNav {
         self.0.items.borrow_mut().push(SubNavItem {
             label: label.to_string(),
             depth,
-            section: Some(idx),
+            section: idx,
         });
         Element::stack()
             .width_match()
@@ -346,23 +342,15 @@ pub fn build_list(nav: &SubNav) -> Element {
     let active = nav.active();
     let mut col = Element::col().width_match().spacing(1);
     for item in nav.items() {
-        let Some(idx) = item.section else {
-            // 纯分组标题：与一级栏顶部那行「设置」同款小字。
-            col = col.child(
-                Element::label(&item.label)
-                    .font_size(11.0)
-                    .font_weight(600)
-                    .fg_role(Role::TextDisabled)
-                    .width_match()
-                    .max_lines(1)
-                    .height(26)
-                    .padding_xy(10, 5),
-            );
-            continue;
-        };
+        let idx = item.section;
         let indent = 10 + i32::from(item.depth) * 12;
         // 选中/未选中两套元素 visible_when 切换：windui 没有响应式样式，同一个节点
         // 改不了 fg/bg（与一级栏 `shell::build_nav` 同一套做法）。
+        //
+        // ⚠ **两态字重必须相同（都是 500）**。选中态曾用 600，12.5px 的中文上是合成粗体，
+        // 笔画糊成一团，字面越复杂越明显；而且加粗会让整行文字变宽，选中/取消时字符
+        // 位置来回挪一两像素。区分选中已经有三重手段——accent 文字色、淡蓝底、左缘
+        // 指示条，不缺这一重。
         let on = Element::row()
             .width_match()
             .height(30)
@@ -373,7 +361,7 @@ pub fn build_list(nav: &SubNav) -> Element {
             .child(
                 Element::label(&item.label)
                     .font_size(12.5)
-                    .font_weight(600)
+                    .font_weight(500)
                     .fg_role(Role::Accent)
                     .weight(1.0)
                     .max_lines(1)
@@ -510,19 +498,19 @@ mod tests {
         assert_eq!(nav.active().get(), 0);
     }
 
-    /// 分组标题不占分块序号：它没有卡片可跳，`section` 为 None。
+    /// 导航行与分块一一对应、序号按登记顺序递增——`build_list` 直接拿 `section`
+    /// 当高亮下标用，错位的话点 A 会跳到 B。
     #[test]
-    fn group_headers_take_no_section_slot() {
+    fn items_map_one_to_one_onto_sections() {
         let nav = SubNav::new(0);
         let _ = nav.wrap("a", 0, Element::leaf());
-        nav.group("组");
-        let _ = nav.wrap("b", 1, Element::leaf());
-        assert_eq!(nav.section_count(), 2);
+        let _ = nav.wrap("b", 0, Element::leaf());
+        let _ = nav.wrap("c", 0, Element::leaf());
+        assert_eq!(nav.section_count(), 3);
         let items = nav.items();
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0].section, Some(0));
-        assert_eq!(items[1].section, None, "分组标题不可跳转");
-        assert_eq!(items[2].section, Some(1));
-        assert_eq!(items[2].depth, 1);
+        for (i, it) in items.iter().enumerate() {
+            assert_eq!(it.section, i);
+        }
     }
 }

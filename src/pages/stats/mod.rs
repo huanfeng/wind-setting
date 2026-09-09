@@ -5,8 +5,10 @@
 //! 唯二的配置项（`stats.enabled` / `stats.track_english`）仍走 manifest 行渲染，
 //! 保持与其他页一致的外观与写回路径。
 //!
-//! **数据区整体重建**：数字、条形图行数都随数据变化，逐个绑 `Signal<String>` 既繁琐又易漏，
-//! 故用 [`Element::host_signal`] 把整个数据区挂在一个信号上——数据一到就重建子树。
+//! **数据区按块重建**：数字、条形图行数都随数据变化，逐个绑 `Signal<String>` 既繁琐又易漏，
+//! 故用 [`Element::host_signal`] 把数据区挂在信号上——数据一到就重建子树。
+//! 概览 / 输入日历 / 今日时段分布 / 输入详情**各挂一个 host**，而不是整块一个：
+//! 二级导航的哨兵在建树时登记，塞进重建闭包里会每刷新一次就多登记一批（见 `build_page`）。
 //! 设置区不依赖统计数据，留在宿主外，避免无谓重建。
 
 pub mod charts;
@@ -168,22 +170,61 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
     let mgr = state.stats_mgr.clone();
 
     let schema_names = mgr.schema_names;
-    let data_area = Element::host_signal(mgr.view, move |v| match v {
-        View::Loading => hint_row("加载中…"),
-        View::Failed(e) => hint_row(&format!("统计数据加载失败：{e}")),
-        View::Ready(d) => ready_body(&d, &schema_names.get()),
-    });
+
+    // ★ 四块数据区**各挂一个 `host_signal`**，而不是整块数据区一个、里面再拼四块。
+    //
+    // 二级导航的哨兵是**建树时**登记的（`SubNav::wrap` 当场分配一个分块序号），而
+    // `host_signal` 的闭包每次数据变化都会重跑。四块挤在一个 host 里的话，哨兵要么只能
+    // 盖住整块（导航就只有「使用统计」一条，等于没分类），要么写进闭包里——那样每刷新
+    // 一次就再登记四个新分块，而 `shell` 早在建窗时就把清单快照走了，新登记的永远显示
+    // 不出来，`tops` 却在无限变长。拆成四个 host 就没有这个矛盾：哨兵在外层，重建只
+    // 发生在它包着的那一块里面。
+    //
+    // 代价是 Loading/Failed 这两态得挑一块来显示，否则同一句「加载中…」会出现四遍。
+    // 交给「概览」——它在最上面，也是数据没到时唯一该占位的地方。
+    let view = mgr.view;
+    let block = move |ready: Rc<dyn Fn(&StatsData) -> Element>, placeholder: bool| {
+        Element::host_signal(view, move |v| match v {
+            View::Ready(d) => ready(&d),
+            View::Loading if placeholder => hint_row("加载中…"),
+            View::Failed(e) if placeholder => hint_row(&format!("统计数据加载失败：{e}")),
+            // 非占位块在数据没到时整块不出：0×0 叶子，不占位也不画。
+            _ => Element::leaf(),
+        })
+    };
 
     // 刷新入口在底栏（`shell::build_footer`，仅本页可见）：页内浮层要么挡内容、
     // 要么得在页尾留一块专供让位的空白，而底栏本就是全局操作区，天然常驻可点。
     let body = Element::col()
         .width_match()
         .spacing(18)
-        // 搜索锚点：「使用统计」落在数据区，「清空统计数据」落在设置卡。
+        // 搜索锚点：「使用统计」落在概览块，「清空统计数据」落在设置卡。
         .child(nav.wrap(
-            "使用统计",
+            "概览",
             0,
-            crate::search::anchor::wrap(data_area, "stats:overview", state.jump),
+            crate::search::anchor::wrap(
+                block(Rc::new(summary_cards), true),
+                "stats:overview",
+                state.jump,
+            ),
+        ))
+        // 数据不足一天时 `calendar_section` 返回 None（画不出格子），整块不出。
+        .child(nav.wrap(
+            "输入日历",
+            0,
+            block(
+                Rc::new(|d| calendar_section(d).unwrap_or_else(Element::leaf)),
+                false,
+            ),
+        ))
+        .child(nav.wrap("今日时段分布", 0, block(Rc::new(hours_section), false)))
+        .child(nav.wrap(
+            "输入详情",
+            0,
+            block(
+                Rc::new(move |d| detail_section(d, &schema_names.get())),
+                false,
+            ),
         ))
         .child(nav.wrap(
             "统计设置",
@@ -215,19 +256,6 @@ fn load_effect(state: &AppState) -> Element {
             }
         },
     )
-}
-
-/// 数据区（加载完成后）：数字卡片 · 输入日历 · 今日时段 · 输入详情。
-fn ready_body(d: &StatsData, schema_names: &[(String, String)]) -> Element {
-    let mut col = Element::col()
-        .width_match()
-        .spacing(18)
-        .child(summary_cards(d));
-    if let Some(cal) = calendar_section(d) {
-        col = col.child(cal);
-    }
-    col.child(hours_section(d))
-        .child(detail_section(d, schema_names))
 }
 
 /// 今日时段分布卡片。今日无输入时给空态提示而非一排空柱。

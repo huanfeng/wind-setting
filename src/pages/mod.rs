@@ -516,16 +516,21 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
     // 它们真的在页面上有位置，故 2026-09 起改为页内铺开，对话框退役。
     //
     // 排在「主方案设置」之前——引擎全局配置是日常会翻的，主方案 id 通常设一次就不再动。
-    nav.group("全局方案配置");
-    for (nav_label, title, sec, with_fuzzy) in [
-        ("码表", "码表方案配置", "上屏行为", false),
-        ("拼音", "拼音方案配置", "候选行为", true),
-        ("混输", "混输方案配置", "混输行为", false),
-        ("英文", "英文方案配置", "英文行为", false),
+    //
+    // ★ 这四张卡**不再收在「全局方案配置」这个分组标题下面**。加一层分组读起来是反的：
+    // 「全局方案配置」既不是一张卡、也点不动，却在导航里占一行、把四个真目标缩进去，
+    // 层次凭空多了一级而信息量为零。导航名与卡片标题一字不差，点过去看到什么一目了然；
+    // 「这些是全局的」改由卡内第一行提示说（见 `manifest::scheme_config_section`）——
+    // 那句话本来就在那儿，只是原先没点明「全局」。
+    for (title, sec, with_fuzzy) in [
+        ("码表方案配置", "上屏行为", false),
+        ("拼音方案配置", "候选行为", true),
+        ("混输方案配置", "混输行为", false),
+        ("英文方案配置", "英文行为", false),
     ] {
         secs.push(nav.wrap(
-            nav_label,
-            1,
+            title,
+            0,
             scheme_config_section(state, title, sec, with_fuzzy),
         ));
     }
@@ -571,7 +576,7 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
         crate::search::anchor::wrap(theme_import_card(state), "ui:theme-import", state.jump),
     ));
     secs.push(nav.wrap(
-        "编辑器直连",
+        "主题编辑器直连",
         0,
         crate::search::anchor::wrap(
             theme_editor_connect_card(app, state),
@@ -612,70 +617,68 @@ fn theme_import_card(state: &AppState) -> Element {
     let ov_msg = state.theme_overwrite_msg;
     let ov_visible = state.theme_overwrite_visible;
 
-    Element::col()
-        .width_match()
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .padding_xy(16, 14)
-        .spacing(8)
-        .child(Element::label("主题导入").font_size(14.0).font_weight(600))
-        .child(
-            Element::label("从本地 .toml 文件导入主题，或前往主题市场挑选现成方案。")
-                .font_size(12.0)
-                .fg_role(Role::TextMuted),
-        )
-        .child(
-            Element::row()
-                .spacing(8)
-                .child(
-                    Element::button("导入 TOML 主题")
-                        .small()
-                        .on_click(move |ctx| {
-                            ctx.request_pick_file(
-                                PickDialog::new()
-                                    .title("导入 TOML 主题")
-                                    .filter("TOML", &["toml"]),
-                                move |path| {
-                                    let Some(path) = path else { return };
-                                    // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
-                                    // 读取与导入分两步写（而非 and_then 串起来）：撞上同名主题
-                                    // 时要拿**已读到的原文**去弹覆盖确认，串起来 text 就丢了。
-                                    let text = match crate::theme_import::read_local_toml(&path) {
-                                        Ok(t) => t,
-                                        Err(err) => {
-                                            feedback
-                                                .set(Some((ToastKind::Error, err.user_message())));
-                                            return;
-                                        }
-                                    };
-                                    match crate::theme_import::import_text(&text, false, None) {
-                                        Ok(result) => feedback.set(Some((
-                                            ToastKind::Success,
-                                            format!("已导入主题：{}", result.display_name),
-                                        ))),
-                                        // 同名已存在＝「要不要更新」而非「导入不了」：转覆盖确认，
-                                        // 确认后以 force=true 重推同一份原文。早先它和读取失败共用
-                                        // 一条 toast，用户只看到「主题已存在」且无路可走。
-                                        Err(ThemeImportError::Conflict(msg)) => {
-                                            AppState::ask_overwrite_theme(
-                                                ov_text, ov_msg, ov_visible, text, &msg,
-                                            );
-                                        }
-                                        Err(err) => feedback
-                                            .set(Some((ToastKind::Error, err.user_message()))),
+    // ★ 外观页最后这两张卡曾经是**手搓的外壳**：`col + bg + border + corner(12) + 一个
+    // 14px 粗体 label` 当标题。上面所有 manifest 分区走的是 `widgets::section`——彩色图标
+    // chip + 标题、`flat_panel` 卡片（圆角 13、带投影、行间自动分隔线）。两套壳并排放着，
+    // 差别一眼看得出：没有图标、圆角小一档、没有投影、行与行之间也没有分隔线。
+    // 现改为与其余分区同一套构件，行也统一成 `setting_row`。
+    section(
+        "主题导入",
+        vec![
+            setting_row(
+                "导入 TOML 主题",
+                Some("从本地 .toml 文件导入，导入前由 core 校验"),
+                Element::button("选择文件…")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |ctx| {
+                        ctx.request_pick_file(
+                            PickDialog::new()
+                                .title("导入 TOML 主题")
+                                .filter("TOML", &["toml"]),
+                            move |path| {
+                                let Some(path) = path else { return };
+                                // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
+                                // 读取与导入分两步写（而非 and_then 串起来）：撞上同名主题
+                                // 时要拿**已读到的原文**去弹覆盖确认，串起来 text 就丢了。
+                                let text = match crate::theme_import::read_local_toml(&path) {
+                                    Ok(t) => t,
+                                    Err(err) => {
+                                        feedback.set(Some((ToastKind::Error, err.user_message())));
+                                        return;
                                     }
-                                },
-                            );
-                        }),
-                )
-                .child(
-                    Element::button("打开主题市场")
-                        .small()
-                        .outline_soft()
-                        .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
-                ),
-        )
+                                };
+                                match crate::theme_import::import_text(&text, false, None) {
+                                    Ok(result) => feedback.set(Some((
+                                        ToastKind::Success,
+                                        format!("已导入主题：{}", result.display_name),
+                                    ))),
+                                    // 同名已存在＝「要不要更新」而非「导入不了」：转覆盖确认，
+                                    // 确认后以 force=true 重推同一份原文。早先它和读取失败共用
+                                    // 一条 toast，用户只看到「主题已存在」且无路可走。
+                                    Err(ThemeImportError::Conflict(msg)) => {
+                                        AppState::ask_overwrite_theme(
+                                            ov_text, ov_msg, ov_visible, text, &msg,
+                                        );
+                                    }
+                                    Err(err) => {
+                                        feedback.set(Some((ToastKind::Error, err.user_message())))
+                                    }
+                                }
+                            },
+                        );
+                    }),
+            ),
+            setting_row(
+                "主题市场",
+                Some("前往主题市场挑选现成方案"),
+                Element::button("打开市场")
+                    .small()
+                    .outline_soft()
+                    .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
+            ),
+        ],
+    )
 }
 
 /// 主题编辑器直连卡：Web 编辑器通过本地 loopback 服务读写主题，三态分段控件
@@ -687,85 +690,73 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
     let mode_idx = state.theme_editor_mode_idx;
     let _ = app;
 
-    Element::col()
-        .width_match()
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .padding_xy(16, 14)
-        .spacing(8)
-        .child(
-            Element::label("主题编辑器直连")
-                .font_size(14.0)
-                .font_weight(600),
-        )
-        .child(
-            Element::label(
-                "开启后可用 Web 版主题编辑器直接读写本机主题，仅监听本机地址，不对外网开放。",
-            )
-            .font_size(12.0)
-            .fg_role(Role::TextMuted),
-        )
-        .child(
-            Element::row()
-                .spacing(8)
-                .child(Element::segmented(
+    // 地址那一行的说明文字：开着时是地址本身，关着时说「尚未开启」。
+    //
+    // 原先是两个 label 靠 `visible_when` 互斥切换、并列摆在卡片里——那套只在手搓外壳里
+    // 成立。改用 `setting_row_desc_signal` 之后说明位只吃一个 `Signal<String>`，故把
+    // 「空 → 尚未开启」这一步折进一枚 0×0 effect 里。构建帧 effect 不触发（它以当前
+    // 版本为基线），所以初值要在这里直接算一次。
+    let addr_desc = signal(url_desc(&url.get()));
+    let addr_sync = dict::reactive::reactive_effect(
+        move || url.version(),
+        move || addr_desc.set(url_desc(&url.get())),
+    );
+
+    crate::widgets::section_with_attachment(
+        "主题编辑器直连",
+        vec![
+            setting_row(
+                "连接模式",
+                // 说明要短：右边那个三档分段控件占了小半行，长句会被省略号吃掉后半截
+                // （首版实测停在「仅监听本…」）。「不对外网开放」这层意思由「仅监听本机」
+                // 说全了，删掉不丢信息。
+                Some("Web 版编辑器直接读写本机主题；仅监听本机地址"),
+                Element::segmented(
                     vec![
                         "关闭".to_string(),
                         "本次开启".to_string(),
                         "自动开启".to_string(),
                     ],
                     mode_idx,
-                ))
-                .child(
-                    Element::button("打开主题编辑器")
-                        .small()
-                        .outline_soft()
-                        .on_click(|ctx| ctx.open_url(THEME_EDITOR_URL)),
                 ),
-        )
-        .child(
-            Element::row()
-                .spacing(8)
-                .cross(Align::Center)
-                .child(
-                    Element::label("本地连接地址：尚未开启")
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted)
-                        .weight(1.0)
-                        .visible_when(move || url.get().is_empty()),
-                )
-                .child(
-                    Element::row()
-                        .spacing(0)
-                        .weight(1.0)
-                        .visible_when(move || !url.get().is_empty())
-                        .child(
-                            Element::label("本地连接地址：")
-                                .font_size(12.0)
-                                .fg_role(Role::TextMuted),
-                        )
-                        .child(
-                            Element::label_signal(url)
-                                .font_size(12.0)
-                                .fg_role(Role::TextMuted)
-                                .weight(1.0),
-                        ),
-                )
-                .child(
-                    Element::button("复制地址")
-                        .small()
-                        .outline_soft()
-                        .enabled_signal(running)
-                        .on_click(move |ctx| {
-                            let u = url.get();
-                            if !u.is_empty() {
-                                ctx.clipboard_set(&u);
-                                ctx.toast_ok("已复制主题编辑器连接地址");
-                            }
-                        }),
-                ),
-        )
+            ),
+            crate::widgets::setting_row_desc_signal(
+                "本地连接地址",
+                addr_desc,
+                Element::row()
+                    .spacing(8)
+                    .child(
+                        Element::button("复制地址")
+                            .small()
+                            .outline_soft()
+                            .enabled_signal(running)
+                            .on_click(move |ctx| {
+                                let u = url.get();
+                                if !u.is_empty() {
+                                    ctx.clipboard_set(&u);
+                                    ctx.toast_ok("已复制主题编辑器连接地址");
+                                }
+                            }),
+                    )
+                    .child(
+                        Element::button("打开编辑器")
+                            .small()
+                            .outline_soft()
+                            .on_click(|ctx| ctx.open_url(THEME_EDITOR_URL)),
+                    ),
+            ),
+        ],
+        addr_sync,
+    )
+}
+
+/// 编辑器直连地址那一行的说明文字。空地址＝服务没开。
+fn url_desc(url: &str) -> String {
+    if url.is_empty() {
+        "尚未开启".to_string()
+    } else {
+        url.to_string()
+    }
 }
 
 // ───────────────────────── 词库 ─────────────────────────

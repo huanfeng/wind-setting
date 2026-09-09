@@ -2073,13 +2073,20 @@ pub fn scheme_config_section(
 
     let mut rows: Vec<Element> = Vec::new();
 
-    // 「可被方案覆盖」怎么呈现：几乎全可覆盖时统一说一次（见 `schema_hint_mode`）。
+    // 卡内第一行：先点明「这一整张卡是**全局**的」，再接上「可被方案覆盖」那句
+    // （几乎全可覆盖时统一说一次，见 `schema_hint_mode`）。
+    //
+    // 「全局」这半句是必说的。这四张卡从对话框铺回页面、导航里又不再收在「全局方案配置」
+    // 分组下之后，界面上再没有别的地方写着「全局」二字——用户看到的就是一张「码表方案
+    // 配置」，很容易读成「当前这个码表方案的配置」，改完发现另一个方案也变了。
+    // 故无论有没有覆盖说明，这一行都出。
     let hint_mode = schema_hint_mode(state, &keys);
-    if hint_mode == SchemaHintMode::Header
-        && let Some(note) = schema_hint_header_note(state, &keys)
-    {
-        rows.push(dialog_notice_row(&note));
-    }
+    let scope_note = format!("此为全局{label}。");
+    let notice = match (hint_mode, schema_hint_header_note(state, &keys)) {
+        (SchemaHintMode::Header, Some(note)) => format!("{scope_note}{note}"),
+        _ => scope_note,
+    };
+    rows.push(dialog_notice_row(&notice));
 
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     rows.push(dialog_group_header(section));
