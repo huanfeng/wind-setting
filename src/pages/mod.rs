@@ -551,7 +551,7 @@ fn keys_page(state: &AppState, nav: &SubNav) -> Element {
 fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
     // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。
-    // 主题导入/编辑器直连拆两张卡：前者是日常操作，后者是面向进阶用户的连接管理，
+    // 主题导入/主题编辑器拆两张卡：前者是日常操作，后者是面向进阶用户的连接管理，
     // 混在一张卡里容易分不清"现在按钮是要做什么"和"现在连接是什么状态"。
     let mut secs = manifest_sections(state, "ui", nav);
     secs.push(nav.wrap(
@@ -560,7 +560,7 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
         crate::search::anchor::wrap(theme_import_card(state), "ui:theme-import", state.jump),
     ));
     secs.push(nav.wrap(
-        "主题编辑器直连",
+        "主题编辑器",
         0,
         crate::search::anchor::wrap(
             theme_editor_connect_card(app, state),
@@ -665,7 +665,7 @@ fn theme_import_card(state: &AppState) -> Element {
     )
 }
 
-/// 主题编辑器直连卡：Web 编辑器通过本地 loopback 服务读写主题，三态分段控件
+/// 主题编辑器卡：Web 编辑器通过本地 loopback 服务读写主题，三态分段控件
 /// （关闭/本次开启/自动开启）取代原先 3 个平级按钮——分段控件天然高亮当前档位，
 /// 用户一眼能看出"现在是不是开着"，不必再靠地址是否为空去猜状态。
 fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
@@ -687,7 +687,7 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
     );
 
     crate::widgets::section_with_attachment(
-        "主题编辑器直连",
+        "主题编辑器",
         vec![
             setting_row(
                 "连接模式",
