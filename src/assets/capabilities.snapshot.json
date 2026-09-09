@@ -1444,6 +1444,11 @@
       "type": "int"
     },
     {
+      "default": true,
+      "key": "ui.candidate.auto_comment_dicts",
+      "type": "bool"
+    },
+    {
       "default": [],
       "key": "ui.comment_dicts",
       "type": "structlist"

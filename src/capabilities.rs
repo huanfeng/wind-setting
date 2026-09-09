@@ -342,6 +342,9 @@ mod tests {
         "schema.codetable.input_chars",
         "schema.codetable.leading_chars",
         // ⑩ core 新增键，本项目尚未接入设置界面（待评估）。
+        // ui.candidate.auto_comment_dicts：自动把词库自带的 comment 列当注释源（默认开）。
+        // 语义清楚、正好落在「候选标注」卡，接进来只差一条 manifest；先登记待用户确认。
+        "ui.candidate.auto_comment_dicts",
         "debug.log_max_files",
         "debug.log_max_size_mb",
         "input.temp_pinyin.enabled",
