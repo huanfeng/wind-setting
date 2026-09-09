@@ -342,7 +342,6 @@ mod tests {
         "schema.codetable.input_chars",
         "schema.codetable.leading_chars",
         // ⑩ core 新增键，本项目尚未接入设置界面（待评估）。
-        "keys.take_screenshot",
         "debug.log_max_files",
         "debug.log_max_size_mb",
         "input.temp_pinyin.enabled",

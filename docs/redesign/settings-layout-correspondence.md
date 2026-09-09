@@ -166,13 +166,14 @@
 | 按键/键位：切换简/繁 | `keys.toggle_s2t` | 功能快捷键 | |
 | 按键/键位：显示/隐藏工具栏 | `keys.toggle_toolbar` | 功能快捷键 | |
 | 按键/键位：打开设置 | `keys.open_settings` | 功能快捷键 | |
+| 按键/键位：截图 | `keys.take_screenshot` | 功能快捷键 | |
 | 按键/键位：造词 | `keys.add_word` | 功能快捷键 | |
 | 按键/键位：切换到本输入法 | `keys.activate_ime` | 功能快捷键 | |
 
 差异提示：
 - **满码溢出（overflow）迁出**到输入页（见第三节）。
 - 参考「功能快捷键」用 hotkey-composer（组合键编辑器），我们现为纯 string —— 控件升级待定。
-- 参考有 `打开加词界面 / 截图` 等项，我们核心是否有对应 key 待核实。
+- 参考的 `打开加词界面 / 截图` 两项核心均有对应 key（`keys.open_add_word_dialog` / `keys.take_screenshot`），已接入。
 - 「全局热键」`keys.global_hotkeys`：参考无独立卡，我们现为独立弹窗，暂保留。
 
 ---
