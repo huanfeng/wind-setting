@@ -628,7 +628,7 @@ fn build_comment_tpl_dialog(state: &SchemaManagerState) -> Element {
                 "候选词右侧的灰字。不勾 = 跟随全局；勾上填模板 = 本方案改用它；",
                 "勾上留空 = 本方案不显示注释。
 ",
-                "模板语法与可用变量见「外观 → 候选窗口 → 候选注释」，两处写法完全一样。",
+                "模板语法与可用变量见「外观 → 候选标注 → 候选注释」，两处写法完全一样。",
             ))
             .font_size(12.0)
             .fg_role(Role::TextMuted)
