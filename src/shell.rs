@@ -156,7 +156,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(pages_stack);
     // 二级导航栏 + 它与内容区之间的分隔线：两者同一个显隐条件，见 [`subnav_visible`]。
     let two_level = app.borrow().two_level_nav;
-    let show_subnav = subnav_visible(&subnavs, tab_sig, two_level);
+    let subnav_here = subnav_available(&subnavs, tab_sig);
+    let show_subnav = subnav_visible(subnav_here.clone(), two_level);
     let subnav_col = build_subnav_col(&subnavs, tab_sig, show_subnav.clone());
     let subnav_divider = Element::leaf()
         .width(1)
@@ -172,7 +173,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(subnav_divider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, conn).on_context_menu(move || {
+    let footer = build_footer(app, th, dark, conn, subnav_here).on_context_menu(move || {
         crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer)
     });
 
@@ -250,19 +251,30 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 /// 一级导航栏宽度（逻辑 px）。搜索框与搜索浮层的捕获层都从它推出来，见 `search::ui`。
 pub(crate) const NAV_W: i32 = 140;
 
-/// 二级导航栏该不该出现：总开关打开 **且** 当前页确实有得可导。
+/// 当前页**有没有**二级导航可言（与总开关无关）。
 ///
-/// 后半个条件不能省。词库页是个空占位、关于页只有一整块，给它们留一条空白竖栏
-/// 只会让人以为界面坏了。判据取「可跳转的分块 ≥ 2」——只有一块时点它等于没点。
+/// 词库页是个空占位、关于页只有一整块，给它们留一条空白竖栏只会让人以为界面坏了。
+/// 判据取「可跳转的分块 ≥ 2」——只有一块时点它等于没点。
 ///
-/// 返回 `Clone` 的闭包：导航栏与它右边那条分隔线要同生共死，`visible_when` 又各要一份。
-fn subnav_visible(
+/// 与 [`subnav_visible`] 分成两个的理由：底栏那枚开关按**本条**显隐。按 `subnav_visible`
+/// 的话，关掉导航后开关自己也跟着消失，就再也开不回来了；而无条件常驻又会在关于页
+/// 摆一个写着「收起导航」、点了却什么都不会发生的按钮。
+///
+/// 返回 `Clone` 的闭包：导航栏、它右边那条分隔线、底栏开关各要一份 `visible_when`。
+fn subnav_available(
     navs: &[crate::subnav::SubNav],
     tab: Signal<usize>,
-    on: Signal<bool>,
 ) -> impl Fn() -> bool + Clone + 'static {
     let has: Rc<Vec<bool>> = Rc::new(navs.iter().map(|n| n.section_count() >= 2).collect());
-    move || on.get() && has.get(tab.get()).copied().unwrap_or(false)
+    move || has.get(tab.get()).copied().unwrap_or(false)
+}
+
+/// 二级导航栏该不该出现：总开关打开 **且** 当前页确实有得可导（[`subnav_available`]）。
+fn subnav_visible(
+    available: impl Fn() -> bool + Clone + 'static,
+    on: Signal<bool>,
+) -> impl Fn() -> bool + Clone + 'static {
+    move || on.get() && available()
 }
 
 /// 二级导航栏：各页的分块清单叠在一个 stack 里按 Tab 切换，外加每页一枚高亮解析器。
@@ -418,7 +430,8 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
             off = off.child(tinted(EXTERNAL, 13, Color::hex(0x8A93A5)).align(Align::Center));
         }
         // 动作项永不选中，`visible_when` 恒真即可 —— 但仍写成同一个判据，免得哪天
-        // `--tab 4` 之类的路径真把 sel 设成了它，整行凭空消失。
+        // `--tab <词库下标>` 之类的路径真把 sel 设成了它，整行凭空消失。
+        // （不写死那个数字：`cli::PAGES` 的顺序改过，词库现在是 5 不是 4。）
         let off = off.visible_when(move || sel.get() != i);
 
         // 层叠顺序保持 on → off → indicator 不变（on/off 互斥显示，但指示条要压在最上）。
@@ -503,6 +516,7 @@ fn build_footer(
     th: ThemeHandle,
     dark: Signal<bool>,
     conn: Signal<ConnState>,
+    subnav_here: impl Fn() -> bool + Clone + 'static,
 ) -> Element {
     // 状态点：绿=服务就绪，琥珀=其余（加载中/离线预览/服务未运行）；外圈 22% alpha 光环。
     // 说明文字只在悬停时出现——常驻的「已连接」被不少用户读成"连上了云端服务器"，
@@ -597,7 +611,10 @@ fn build_footer(
             two_level.set(false);
             app_hide.borrow_mut().save_two_level_nav(false);
         })
-        .visible_signal(two_level);
+        .visible_when({
+            let here = subnav_here.clone();
+            move || two_level.get() && here()
+        });
     let app_show = app.clone();
     let nav_show = Element::button("☰ 二级导航")
         .small()
@@ -606,7 +623,11 @@ fn build_footer(
             two_level.set(true);
             app_show.borrow_mut().save_two_level_nav(true);
         })
-        .visible_when(move || !two_level.get());
+        // 本页压根没有二级导航时（关于页只有一整块、词库页是空占位）整枚按钮不出：
+        // 否则那里会摆一个写着「收起导航」、点了却什么都不会发生的按钮。
+        // 判据只取 `subnav_here` 而不含总开关——含了的话，关掉导航后按钮自己也消失，
+        // 就再也开不回来了。
+        .visible_when(move || !two_level.get() && subnav_here());
     let subnav_btn = Element::stack().child(nav_hide).child(nav_show);
 
     // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为

@@ -108,8 +108,9 @@ pub struct FieldRegistry {
     pub system_baseline: RefCell<HashMap<String, Value>>,
     /// 对话框键 → 该对话框的可见信号，供搜索跳转**程序化打开**它。
     ///
-    /// 键与 `search::index` 派生的 `JumpTarget::RowInDialog::dialog` 一致：
-    /// 寄居式对话框用宿主项的清单 key，方案页那四个全局配置框用 `scheme_cfg:<标签>`。
+    /// 键与 `search::index` 派生的 `JumpTarget::RowInDialog::dialog` 一致：寄居式对话框
+    /// 用宿主项的清单 key。（方案页那四个全局配置**已不再是对话框**——2026-09 起铺成页内
+    /// 卡片，`scheme_cfg:<标签>` 那批登记随之取消，那些项现在走普通的 `Row` 跳转。）
     ///
     /// 这些 `visible` 信号原本是各构建函数里的局部变量、只被按钮闭包捕获，外界拿不到；
     /// 登记一份出来，搜索命中框内项时才能替用户把框打开。
@@ -1825,16 +1826,33 @@ impl AppState {
     }
 
     /// 当前 Tab 对应的 manifest 分组（用于「恢复本页」定位 key 集合）。
-    /// 与 `pages::all_tabs` 顺序一致（统计页已隐藏）：方案0/输入1/按键2/外观3/词库4/高级5/关于6。
-    /// 自定义页（词库/关于）无清单分组。
+    /// 自定义页（词库/关于）无清单分组，返回空切片。
+    ///
+    /// ⚠ **按页 id 查，不许写数字**。这里曾经是 `match self.tab.get() { 0 => .., 5 => .. }`
+    /// 配一句「方案0/输入1/…/高级5」的注释，而那份顺序在两轮改动后早已作废：`5` 变成了
+    /// 词库那个永不可达的占位页，高级页落到 `_ => &[]`。症状是**在高级页点「恢复本页」
+    /// 一项都不恢复**，只弹一句「本页无可恢复的默认项」——不报错、没堆栈，纯静默失效。
+    /// （更早还有反向的一版：在统计页点「恢复本页」会把整个 advanced 分组重置掉。）
+    ///
+    /// 全仓别处要 Tab 下标一律走 `cli::page_to_index`，这里是最后一处漏网的字面量。
     fn current_tab_groups(&self) -> &'static [&'static str] {
-        match self.tab.get() {
-            0 => &["schema"],
-            1 => &["input", "general"],
-            2 => &["keys"],
-            3 => &["ui"],
-            5 => &["advanced"],
-            _ => &[],
+        let tab = self.tab.get();
+        let is = |id: &str| crate::cli::page_to_index(id) == Some(tab);
+        if is("schema") {
+            &["schema"]
+        } else if is("input") {
+            // general 组没有自己的页，跟着输入页渲染（见 `pages::input_page`）。
+            &["input", "general"]
+        } else if is("keys") {
+            &["keys"]
+        } else if is("ui") {
+            &["ui"]
+        } else if is("stats") {
+            &["stats"]
+        } else if is("advanced") {
+            &["advanced"]
+        } else {
+            &[]
         }
     }
 
@@ -3027,6 +3045,37 @@ mod trigger_conflict_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 「恢复本页」的分组映射必须覆盖每一个**有清单分组的**页，且不漏不错。
+    ///
+    /// 这条测试是补上一次真实失效的：`current_tab_groups` 曾按数字 match Tab 下标，
+    /// `cli::PAGES` 一改顺序，高级页就静默落到 `_ => &[]`——点「恢复本页」一项都不恢复，
+    /// 而这件事没有任何报错、也没有任何测试会红。现在改成按页 id 查，并由本测试钉住
+    /// 「每个页 id 都解析得出下标、且该页拿到的正是它自己的分组」。
+    #[test]
+    fn reset_page_groups_follow_page_ids() {
+        let expect: &[(&str, &[&str])] = &[
+            ("schema", &["schema"]),
+            ("input", &["input", "general"]),
+            ("keys", &["keys"]),
+            ("ui", &["ui"]),
+            ("stats", &["stats"]),
+            ("advanced", &["advanced"]),
+            // 自定义页没有清单分组。
+            ("dict", &[]),
+            ("about", &[]),
+        ];
+        let st = AppState::empty();
+        for (page, groups) in expect {
+            let idx = crate::cli::page_to_index(page).expect("页 id 应在 PAGES 里");
+            st.tab.set(idx);
+            assert_eq!(
+                st.current_tab_groups(),
+                *groups,
+                "页 {page}（下标 {idx}）的恢复分组不对"
+            );
+        }
+    }
 
     /// 所有涉及 WIND_RPC_MOCK 环境变量的测试必须持有此锁，防止并行 race。
     /// 锁定义在 `rpc` 模块并全 crate 共用 —— 本模块曾自建一把，与 `theme_import`

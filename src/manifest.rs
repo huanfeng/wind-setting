@@ -378,8 +378,21 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
             continue;
         }
         // 可隐藏的整行提示：作为卡片头部挂件返回，不进 rows（理由见函数文档）。
+        //
+        // 锚点照包。它同样在搜索索引里（`local.log_privacy_note`，标题「隐私提示」），
+        // 不包的话搜得到、点了页也切了，就是不滚不闪——这是本函数里唯一一条产出
+        // **无锚点行**的出口，长期静默。`handwritten_anchors_are_all_mounted` 补上
+        // `JumpTarget::Row` 那一支后当场把它抓了出来。
+        //
+        // 包一层 stack 不会让它「平时占位」：`anchor::wrap` 的外层 stack 高度取子节点
+        // 最大值，内层隐藏时就是 0，而 `flat_panel` 没有 spacing、头部挂件也不参与
+        // 分隔线计数（见 `card_with_attachments`）。
         if item.typ == "log_privacy_warning" {
-            head = Some(field(state, k));
+            head = Some(crate::search::anchor::wrap(
+                field(state, k),
+                k.clone(),
+                state.jump,
+            ));
             continue;
         }
         // 子对话框成员：不在分区内独立成行（由 opens_dialog 宿主的「扩展设置」对话框承载）。
@@ -2107,26 +2120,42 @@ pub fn scheme_config_section(
             }
             cur_subsec = subsec;
         }
-        let row = if item.typ == "toggle"
+        // ⚠ `section_rows` 出来的行**自带锚点**（键就是 `k`，见 `section_rows_split` 末尾），
+        // 这一支不能再包一层：改到页内之前外层用的是 `k#in-dialog`，与内层不撞；现在两层
+        // 同键，同一个键在 `MOUNTED` 里登记两次，跳转也变成「外层先认领、内层空转」——
+        // 眼下靠「认领即清」兜住看不出问题，但那是顺序上的巧合，不是设计。
+        let (row, already_anchored) = if item.typ == "toggle"
             && let Some(_dlg_item) = state.manifest.dialog_for_gate(k)
         {
-            let mut tmp = section_rows(state, &[k.clone()]);
-            tmp.pop().unwrap_or_else(|| field_with(state, k, hint_mode))
+            // 判据是「`section_rows` 到底给没给出行」，不是「剩下的 Vec 空不空」——
+            // 它一行都没产出时（项被跳过）走的是下面那个**没有锚点**的兜底。
+            let merged = section_rows(state, std::slice::from_ref(k)).pop();
+            let anchored = merged.is_some();
+            (
+                merged.unwrap_or_else(|| field_with(state, k, hint_mode)),
+                anchored,
+            )
         } else if item.typ == "dialog_button"
+            // ⚠ 三个条件缺一不可，必须与 `search::index::is_merged_into_gate` **逐字同构**：
+            // 那边据此决定「这一项不独立成行、锚点归门控开关」，这边据此决定不渲染。
+            // 两边判据一旦分叉，就会出现「索引说它在某一行、界面上那一行根本不存在」，
+            // 表现为搜到了、点了、页也切了，就是不滚不闪。此前这里少了 `opens_dialog`
+            // 那一条（子对话框宿主同时带 gate_key 时会被本分支误吞）。
+            && item.opens_dialog.is_none()
             && let Some(g) = &item.gate_key
             && state.manifest.get(g).is_some()
         {
             continue;
         } else {
-            field_with(state, k, hint_mode)
+            (field_with(state, k, hint_mode), false)
         };
         // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
         // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
-        rows.push(crate::search::anchor::wrap(
-            row,
-            crate::search::index::page_anchor(k),
-            state.jump,
-        ));
+        rows.push(if already_anchored {
+            row
+        } else {
+            crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
+        });
     }
     if with_fuzzy {
         rows.push(dialog_group_header("模糊音"));
@@ -5380,7 +5409,7 @@ mod tests {
     /// ★ 守三个静默失效方向，`capabilities` 那几道守门测试一个都查不出来（它们只问
     /// 「key 有没有登记」）：
     ///
-    /// 1. **`subsection = None` 不终止前一个分组**（[`build_scheme_config_button`] 只在
+    /// 1. **`subsection = None` 不终止前一个分组**（[`scheme_config_section`] 只在
     ///    `subsec != cur_subsec` 且非 None 时插标题）⇒ 无 subsection 的通用项若排在某个
     ///    分组之后，会紧跟其后渲染、**视觉上成为那个分组的成员**。`schema.pinyin.separator`
     ///    曾因此长期挂在「自动学习」下，且只在对话框里看得出来（主体页压根不读 subsection）。

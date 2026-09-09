@@ -15,9 +15,10 @@
 //! 1. **`on_update` 不看可见性**。八个页面全建好叠在一个 stack 里靠 `visible_when` 切，
 //!    未选中页的哨兵照样每帧被叫到。不自查祖先链的话，它们会拿上一次可见时的陈旧矩形
 //!    去覆写高亮——表现为切到 A 页、B 页的哨兵把 A 页的高亮改掉。
-//! 2. **`on_update` 跑在 `measure/arrange` 之前**，读到的 bounds 是上一帧的。对高亮而言
-//!    滞后一帧无感；对点击跳转而言，同页内几何本就是稳的，故这里不需要 `anchor` 那套
-//!    「等一帧再滚」的两段式。
+//! 2. **`on_update` 跑在 `measure/arrange` 之前**，读到的 bounds 是上一帧的，而节点上的
+//!    `scroll_y` 已是当前值。**两者不能混着用**：高亮判定只吃 bounds（滞后一帧无感），
+//!    跳转落点也只吃 bounds（取卡片在内容列里的偏移，与 scroll_y 无关）。
+//!    混用的后果见 `Spy::on_update` 里那段说明。
 //! 3. **`on_update` 相位的 `ctx` 副作用会被丢弃**（见 `Tree::call_on_update`）。要重排
 //!    必须走全局的 `anim::request_relayout()`，用 `ctx.mark_layout_dirty()` 那一帧永远不来。
 
@@ -66,6 +67,9 @@ pub struct SubNavItem {
     pub depth: u8,
     /// 对应的分块下标。
     pub section: usize,
+    /// 这一条现在该不该出现在导航里。恒为 true 的用 [`SubNav::wrap`]，
+    /// 随运行期状态显隐的用 [`SubNav::wrap_when`]。
+    pub visible: Rc<dyn Fn() -> bool>,
 }
 
 struct Inner {
@@ -78,9 +82,9 @@ struct Inner {
     metrics: Cell<(i32, i32)>,
     /// 当前高亮的分块序号。
     active: Signal<usize>,
-    /// 待认领的点击：`(seq, 分块序号)`。`seq` 让同一项连点两次也能重新认领。
-    request: Cell<Option<(u64, usize)>>,
-    seq: Cell<u64>,
+    /// 待认领的点击（分块序号）。同一项连点两次只是用同一个值覆盖，无需版本号区分：
+    /// 认领方只关心「是不是找我」，认领即清。
+    request: Cell<Option<usize>>,
     /// 点击跳转钉住的高亮：`(分块序号, 落定后的 scroll_y)`。见 [`SubNav::resolve`]。
     pinned: Cell<Option<(usize, i32)>>,
 }
@@ -98,7 +102,6 @@ impl SubNav {
             metrics: Cell::new((0, 0)),
             active: signal(0usize),
             request: Cell::new(None),
-            seq: Cell::new(0),
             pinned: Cell::new(None),
         }))
     }
@@ -109,6 +112,24 @@ impl SubNav {
     /// 哨兵是覆盖层而不是兄弟节点：页面那个 col 带 `spacing`，插 0×0 兄弟等于凭空多出
     /// 一档间距（`spacing` 是加在**每对**相邻子节点之间的）。
     pub fn wrap(&self, label: &str, depth: u8, content: Element) -> Element {
+        self.wrap_when(label, depth, content, || true)
+    }
+
+    /// 同 [`wrap`](Self::wrap)，但这一块**本身会隐藏**时，导航里那一条也跟着不出。
+    ///
+    /// 统计页的日历/时段/详情三块在数据没到（或加载失败、或不足一天数据）时整块隐藏。
+    /// 导航若照列不误，用户点下去只会滚到一个 0 高度的空点：哨兵在不可见子树里根本
+    /// 不会认领请求，那条请求就一直挂在 `request` 里——等数据到了、哨兵一活过来，
+    /// 页面会毫无来由地自己跳一下。
+    pub fn wrap_when(
+        &self,
+        label: &str,
+        depth: u8,
+        content: Element,
+        visible: impl Fn() -> bool + 'static,
+    ) -> Element {
+        let visible = Rc::new(visible);
+        let vis_row = visible.clone();
         let idx = {
             let mut tops = self.0.tops.borrow_mut();
             tops.push(UNSET);
@@ -118,9 +139,11 @@ impl SubNav {
             label: label.to_string(),
             depth,
             section: idx,
+            visible: vis_row,
         });
         Element::stack()
             .width_match()
+            .visible_when(move || visible())
             .child(
                 Element::leaf()
                     .widget(Spy {
@@ -163,9 +186,7 @@ impl SubNav {
 
     /// 请求跳到某个分块（导航栏的点击回调调用）。
     fn request(&self, idx: usize) {
-        let seq = self.0.seq.get().wrapping_add(1);
-        self.0.seq.set(seq);
-        self.0.request.set(Some((seq, idx)));
+        self.0.request.set(Some(idx));
         // 点击本身会让宿主置 needs_relayout，这里再请求一次是为了不依赖那条链路的细节。
         anim::request_relayout();
     }
@@ -173,7 +194,7 @@ impl SubNav {
     /// 认领属于 `idx` 的跳转请求（认领即清）。
     fn take_request(&self, idx: usize) -> bool {
         match self.0.request.get() {
-            Some((_, i)) if i == idx => {
+            Some(i) if i == idx => {
                 self.0.request.set(None);
                 true
             }
@@ -293,12 +314,30 @@ impl Widget for Spy {
         self.nav.report(self.idx, top, scroll_y, max_scroll);
 
         if self.nav.take_request(self.idx) {
-            // 直接算目标偏移而不用 `Tree::scroll_into_view`：后者是**最小滚动**，目标
-            // 擦着视口下沿就停，观感是「刚冒个头」。导航点击要的是「这张卡到顶」。
+            // ⚠ 目标偏移**不能**写成 `scroll_y + top - TOP_INSET`。
             //
-            // 这里**自己 clamp**而不是交给下一帧的 `arrange_scroll`：钉住高亮要拿落定后的
-            // 真值比对（见 `SubNav::resolve`），把越界值记进去会立刻脱钉。
-            let target = (scroll_y + top - TOP_INSET).clamp(0, max_scroll);
+            // 那两个量来自**不同帧**：`scroll_y` 是节点上的当前值（滚轮/拖动条当场就改了
+            // 它），而 `top` 由 `abs_bounds` 得出、反映的是**上一次 arrange 的结果**，也就是
+            // 改动之前那个 scroll_y 下的位置。刚滚过一下就点导航，两者错开整整一次滚动量，
+            // 页面跳到谁也没要的位置，而高亮被 `pin` 钉在用户点的那一项上——看起来就是
+            // 「导航说这儿，画面在别处」。（拖滚动条后紧接着点导航，截图回放可稳定复现。）
+            //
+            // 改取**卡片在内容列里的偏移** P = `abs(自己).y - abs(内容列).y`：滚动只是把
+            // 内容列整体平移，这个差值恒定，压根不含 scroll_y，也就无所谓帧不帧。
+            // 由 `arrange_scroll` 的 `y = inner.y - scroll_y` 可得，滚到 s 时卡顶相对视口
+            // 为 `P - s`；要它停在 `TOP_INSET`，即 `s = P - TOP_INSET`。
+            //
+            // 内容列 = 滚动容器的唯一子节点（`widgets::page` 建的那个 col）。
+            let content_top = tree
+                .get(host)
+                .and_then(|n| n.children.first().copied())
+                .map(|c| tree.abs_bounds(c).y);
+            let Some(content_top) = content_top else {
+                return;
+            };
+            // 自己 clamp 而不是交给下一帧的 `arrange_scroll`：钉住高亮要拿落定后的真值
+            // 比对（见 `SubNav::resolve`），把越界值记进去会立刻脱钉。
+            let target = (tree.abs_bounds(id).y - content_top - TOP_INSET).clamp(0, max_scroll);
             tree.set_scroll_y(host, target);
             self.nav.pin(self.idx, target);
             // on_update 相位的 ctx 副作用会被丢弃，故走全局请求（见模块文档第 3 条）。
@@ -355,7 +394,14 @@ pub fn build_list(nav: &SubNav) -> Element {
         // 笔画糊成一团，字面越复杂越明显；而且加粗会让整行文字变宽，选中/取消时字符
         // 位置来回挪一两像素。区分选中已经有三重手段——accent 文字色、淡蓝底、左缘
         // 指示条，不缺这一重。
+        // ⚠ 选中态**也必须可点**。它带 `.bg(...)` 且盖在 `off` 之上，而 `hit_node` 的吞命中
+        // 判据里 `style.bg.is_some()` 与 `hit_opaque()` 是并列的（同 `search::anchor` 模块
+        // 文档第 3 条踩过的坑）——不给它挂 on_click，当前高亮的那一项就点不动：在一张长卡
+        // 中间往下滚了半屏，想点导航回到这张卡开头，点几下都没反应。
+        let nav_on_click = nav.clone();
         let on = Element::row()
+            .clickable()
+            .on_click(move |_| nav_on_click.request(idx))
             .width_match()
             .height(30)
             .corner(7.0)
@@ -404,13 +450,17 @@ pub fn build_list(nav: &SubNav) -> Element {
                     .bg_role(Role::Accent),
             )
             .visible_when(move || active.get() == idx);
+        let vis = item.visible.clone();
         col = col.child(
             Element::stack()
                 .width_match()
                 .height(30)
                 .child(off)
                 .child(on)
-                .child(indicator),
+                .child(indicator)
+                // 隐藏的行连同它那一档 spacing 一起被 `arrange_linear` 跳过
+                // （它取的是 `visible_children`），不会在清单里留下空位。
+                .visible_when(move || vis()),
         );
     }
     col

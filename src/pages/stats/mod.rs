@@ -196,13 +196,16 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
     // 占一档——那样加载中／失败时「加载中…」下面会凭空多出三段 18px 空白。
     // 可见性必须挂在 `nav.wrap` **外面**：wrap 出来的 stack 自己是可见的，只把里面那层
     // 藏掉，stack 仍然是 col 的一个可见子节点，spacing 照吃不误。
+    let ready_now = move || view.with(|v| matches!(v.first(), Some(View::Ready(_))));
     let data_block = |label: &str, ready: Rc<dyn Fn(&StatsData) -> Element>| {
         let host = Element::host_signal(view, move |v| match v {
             View::Ready(d) => ready(&d),
             _ => Element::leaf(),
         });
-        nav.wrap(label, 0, host)
-            .visible_when(move || view.with(|v| matches!(v.first(), Some(View::Ready(_)))))
+        // `wrap_when` 而不是 `wrap` + 外挂 visible_when：块隐藏时**导航里那一条也要跟着
+        // 不出**，否则用户点下去只会滚到一个 0 高度的空点（哨兵在不可见子树里不认领
+        // 请求，那条请求还会一直挂着，等数据到了再毫无来由地跳一下）。
+        nav.wrap_when(label, 0, host, ready_now)
     };
 
     // 刷新入口在底栏（`shell::build_footer`，仅本页可见）：页内浮层要么挡内容、

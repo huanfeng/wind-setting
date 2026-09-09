@@ -533,6 +533,10 @@ mod tests {
         let missing: std::collections::BTreeSet<&str> = idx
             .iter()
             .flat_map(|e| match &e.target {
+                // 页面上直接成行的项（manifest 派生的绝大多数条目都是这一类）。
+                // 曾经**不查**这一支——方案组那五十来个 key 从 `RowInDialog` 改成 `Row`
+                // 之后，等于整批脱离了「索引里的锚点界面上真的挂着」这条校验。
+                JumpTarget::Row { anchor, .. } => vec![anchor.as_str()],
                 JumpTarget::Card { anchor, .. } => vec![anchor.as_str()],
                 // 对话框内项要查**两处**：入口行漏了第一跳无人认领（框永远不开），
                 // 框内那一行漏了第二跳无人认领（框开了却不闪）。两者都静默。
