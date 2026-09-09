@@ -1696,6 +1696,42 @@ options = [
   { value = "horizontal", label = "强制横排" },
 ]
 
+# ── Unicode 输入 ──
+# 与网址输入同属「前缀夺取式」模式（core 侧 docs/design/prefix-hijack-modes.md），
+# 故三项的形态与上面那组刻意一致——同类东西在设置页里长得一样，用户少学一次。
+[[items]]
+key = "input.unicode.enabled"
+group = "input"
+section = "Unicode 输入"
+type = "toggle"
+label = "启用 Unicode 输入"
+hint = "打出 u+ 再接十六进制码点即可出该字符（u+4e00 → 一），空格或回车上屏"
+
+[[items]]
+key = "input.unicode.prefixes"
+group = "input"
+section = "Unicode 输入"
+type = "dialog_button"
+label = "触发前缀"
+hint = "识别为码点输入的前缀（如 u+ U+），按空格分隔。区分大小写；不要填单个字母，那会占掉该字母开头的所有编码"
+gate_key = "input.unicode.enabled"
+
+# 与网址那项不同，**这一项不隐藏**：码点输入会实实在在出一条候选，布局设置有可观察的效果。
+[[items]]
+key = "input.unicode.candidate_layout"
+group = "input"
+section = "Unicode 输入"
+type = "select"
+label = "候选窗布局"
+hint = "Unicode 输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+enabled_when = "input.unicode.enabled == true"
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
+
 # ── 联想 ──
 # 上屏之后按刚上屏的内容再给一批候选。core 侧设计见 WindInput/docs/design/association.md。
 # 注：四个「来源开关」(history/bigram/prefix/punct) 不在此暴露，理由见 capabilities.rs 的

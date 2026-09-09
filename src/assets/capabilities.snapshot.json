@@ -930,6 +930,19 @@
       "type": "strlist"
     },
     {
+      "default": false,
+      "key": "input.unicode.enabled",
+      "type": "bool"
+    },
+    {
+      "default": [
+        "u+",
+        "U+"
+      ],
+      "key": "input.unicode.prefixes",
+      "type": "strlist"
+    },
+    {
       "default": [],
       "key": "input.rare_char.trigger_keys",
       "type": "strlist"
@@ -987,6 +1000,16 @@
     {
       "default": "follow",
       "key": "input.url.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
+    },
+    {
+      "default": "follow",
+      "key": "input.unicode.candidate_layout",
       "type": "enum",
       "values": [
         "follow",
