@@ -186,7 +186,7 @@
 | - | 主题选择/预览/Web编辑器（自定义卡片） | 主题列表、删除、导入、实时预览 |
 | 1 | 主题 | 主题风格 `ui.theme.style`；翻页栏显示 `ui.candidate.pager_bar_display`；显示页码 `ui.candidate.page_number_display` |
 | 2 | 候选窗口 | 字体大小/字体（手写）；每页候选数；扩展候选数；隐藏候选窗口；嵌入式编码行 `inline_preedit`；非嵌入编码显示方式；候选布局；上方反转；模式彩色边框 `mode_accent_border`；候选最大字符数；**命令直通车标注**（cmdbar 前缀，手写） |
-| 3 | 候选项提示信息 | 悬停延时；编码反查；拼音反查；拆字反查；调试信息 |
+| 3 | 候选项提示 | 悬停延时；编码反查；拼音反查；拆字反查；调试信息 |
 | 4 | 状态提示 | 启用；显示模式；显示时长；方案名显示；位置模式；水平偏移；垂直偏移；字体大小；透明度 `opacity`；圆角 `border_radius` |
 | 5 | 工具栏 | 显示工具栏；全屏隐藏 |
 
@@ -210,13 +210,13 @@
 | **高级/命令栏**：命令栏 | `input.cmdbar.enabled` | **外观/候选窗口** | **跨页迁入**（参考「命令直通车标注」） |
 | **高级/命令栏**：命令栏候选前缀 | `input.cmdbar.candidate_prefix` | **外观/候选窗口** | **跨页迁入** |
 | 外观/模式指示：模式指示样式 | `ui.mode_indicator.style` | 候选窗口或主题 | 参考无独立项，待定归属 |
-| 外观/悬停提示：提示延迟 | `ui.tooltip.delay` | 候选项提示信息 | |
-| 外观/悬停提示：显示编码 | `ui.tooltip.code_enabled` | 候选项提示信息 | |
-| 外观/悬停提示：显示拼音 | `ui.tooltip.pinyin_enabled` | 候选项提示信息 | |
-| 外观/悬停提示：显示拆字 | `ui.tooltip.chaizi_enabled` | 候选项提示信息 | |
-| 外观/悬停提示：显示调试信息 | `ui.tooltip.debug_enabled` | 候选项提示信息 | |
-| 外观/悬停提示：显示多音字所有读音 | `ui.tooltip.pinyin_heteronyms` | 候选项提示信息 | 参考无（新增） |
-| 外观/悬停提示：每字最多读音数 | `ui.tooltip.pinyin_max_readings` | 候选项提示信息 | 参考无（新增） |
+| 外观/悬停提示：提示延迟 | `ui.tooltip.delay` | 候选项提示 | |
+| 外观/悬停提示：显示编码 | `ui.tooltip.code_enabled` | 候选项提示 | |
+| 外观/悬停提示：显示拼音 | `ui.tooltip.pinyin_enabled` | 候选项提示 | |
+| 外观/悬停提示：显示拆字 | `ui.tooltip.chaizi_enabled` | 候选项提示 | |
+| 外观/悬停提示：显示调试信息 | `ui.tooltip.debug_enabled` | 候选项提示 | |
+| 外观/悬停提示：显示多音字所有读音 | `ui.tooltip.pinyin_heteronyms` | 候选项提示 | 参考无（新增） |
+| 外观/悬停提示：每字最多读音数 | `ui.tooltip.pinyin_max_readings` | 候选项提示 | 参考无（新增） |
 | 外观/状态提示：启用状态提示气泡 | `ui.status.enabled` | 状态提示 | |
 | 外观/状态提示：显示模式 | `ui.status.display_mode` | 状态提示 | |
 | 外观/状态提示：显示时长 | `ui.status.duration` | 状态提示 | |
