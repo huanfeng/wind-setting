@@ -62,8 +62,7 @@ pub enum UiRequest {
     OpenMainWindow,
 }
 
-/// 窗口尺寸。设置窗与词库窗**同尺寸**，`App::new`、主窗重建、词库开窗四条路共用一份，
-/// 免得各写各的、改一边漏一边。
+/// 设置窗尺寸。`App::new` 与主窗重建两条路共用一份，免得各写各的、改一边漏一边。
 ///
 /// ★ 宽度随二级导航一起从 820 抬到 950。左侧从「184 单栏」变成「140 + 1 + 168 + 1
 /// 三栏」，多吃掉 125px；不抬宽度的话内容区只剩约 480，方案页工具栏那排按钮会**再一次**
@@ -75,6 +74,18 @@ pub(crate) const MAIN_H: i32 = 640;
 /// 设置行的标题、说明与右侧控件挤在一起，等于这个下限处的界面不可用。
 pub(crate) const MAIN_MIN_W: i32 = 700;
 pub(crate) const MAIN_MIN_H: i32 = 440;
+
+/// 词库窗尺寸。**曾经与设置窗共用一份**，二级导航把设置窗撑宽之后拆开——
+/// 那 125px 是拿来放二级导航栏的，词库窗根本没有那一栏，跟着变宽只是白占屏幕。
+/// 故这里保留原来的 820 × 640 / 最小 560 × 440。
+///
+/// 两条路要用它：[`dict_window::open`]（从设置窗开词库），以及 `--page dict` 冷启动时
+/// 让 `App` 那个窗口**直接承载词库**的分叉（见 `main` 里的 `dict_as_main`）。漏掉后者
+/// 的症状是「托盘点词库管理开出来的窗比从设置里开的宽一圈」。
+pub(crate) const DICT_W: i32 = 820;
+pub(crate) const DICT_H: i32 = 640;
+pub(crate) const DICT_MIN_W: i32 = 560;
+pub(crate) const DICT_MIN_H: i32 = 440;
 
 /// 设置主窗的单例键。窗口在的时候，别处 `open_window(Window::single(本键))` 会把它
 /// 激活到前台而不是再开一个——[`open_main_window`] 与词库窗的两个入口都靠这条。
@@ -296,19 +307,24 @@ fn main() {
         // 设置窗这一趟压根没建过，故按"已关闭"记账：之后点「设置」才会走重建那条路。
         st.mark_main_window_closed();
     }
-    // 尺寸两者相同，只有标题不同。
-    let title = if dict_as_main {
-        dict_window::TITLE
+    // 标题与尺寸都跟着这一趟承载的界面走：设置窗要多留一栏二级导航的宽度，词库窗不要
+    // （见 [`DICT_W`]）。此前两者同尺寸，只有标题在这里分叉。
+    let (title, (win_w, win_h), (win_min_w, win_min_h)) = if dict_as_main {
+        (
+            dict_window::TITLE,
+            (DICT_W, DICT_H),
+            (DICT_MIN_W, DICT_MIN_H),
+        )
     } else {
-        "清风输入法设置"
+        ("清风输入法设置", (MAIN_W, MAIN_H), (MAIN_MIN_W, MAIN_MIN_H))
     };
-    let app = App::new(title, MAIN_W, MAIN_H)
+    let app = App::new(title, win_w, win_h)
         // 单例键要跟着这一趟承载的界面走（见 `main_window_single_key`）。
         .single_window(main_window_single_key(dict_as_main))
         .frameless()
         .centered()
         .renderer(renderer)
-        .min_size(MAIN_MIN_W, MAIN_MIN_H)
+        .min_size(win_min_w, win_min_h)
         .theme(theme_def::theme_for(start_dark));
     // 窗口级快捷键。绑定表与分派都在 `shortcuts`——加一条快捷键在那里加一行即可。
     //

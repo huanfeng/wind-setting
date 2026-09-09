@@ -64,11 +64,11 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
     let app_for_content = app.clone();
 
     ctx.open_window(
-        Window::new(TITLE, crate::MAIN_W, crate::MAIN_H)
+        Window::new(TITLE, crate::DICT_W, crate::DICT_H)
             .single(SINGLE_KEY)
             .frameless(true)
             .centered(true)
-            .min_size(crate::MAIN_MIN_W, crate::MAIN_MIN_H)
+            .min_size(crate::DICT_MIN_W, crate::DICT_MIN_H)
             .content(move || build_content(app_for_content)),
     );
 }
