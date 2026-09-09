@@ -2176,11 +2176,14 @@ options = [
   { value = "hide", label = "隐藏" },
 ]
 
-# ── 候选窗口 ──
+# ── 候选字体 ──
+# 原先字体、窗口、排版、注释四类共 28 项挤在一张「候选窗口」卡里（折叠掉两个对话框
+# 宿主后仍有 21 行），一屏装不下、也扫不出层次。按「改哪一维」拆成四张卡，manifest
+# 里的顺序即卡片顺序，故同一 section 的条目必须连续。
 [[items]]
 key = "ui.candidate.font_size_follow_theme"
 group = "ui"
-section = "候选窗口"
+section = "候选字体"
 type = "toggle"
 label = "候选字号跟随主题"
 hint = "开启后候选字号由主题决定；关闭可在下方自定义"
@@ -2188,7 +2191,7 @@ hint = "开启后候选字号由主题决定；关闭可在下方自定义"
 [[items]]
 key = "ui.candidate.font_size"
 group = "ui"
-section = "候选窗口"
+section = "候选字体"
 type = "number"
 label = "候选字号"
 hint = "候选词字体大小（0 表示由主题决定）；开启「候选字号跟随主题」时此项不可用"
@@ -2199,7 +2202,7 @@ enabled_when = "ui.candidate.font_size_follow_theme == false"
 [[items]]
 key = "ui.font.family"
 group = "ui"
-section = "候选窗口"
+section = "候选字体"
 type = "select"
 options_source = "fonts"
 label = "候选窗字体"
@@ -2208,7 +2211,7 @@ hint = "自定义候选窗字体，留空跟随主题字体"
 [[items]]
 key = "ui.font.fallback"
 group = "ui"
-section = "候选窗口"
+section = "候选字体"
 type = "dialog_button"
 label = "字体回退顺序"
 hint = "候选窗字体缺某个字时，按此顺序找下一个字体；一行一个字体名，留空则由系统决定"
@@ -2216,7 +2219,7 @@ hint = "候选窗字体缺某个字时，按此顺序找下一个字体；一行
 [[items]]
 key = "ui.font.scripts"
 group = "ui"
-section = "候选窗口"
+section = "候选字体"
 type = "dialog_button"
 label = "按文字类别指定字体"
 hint = "主字体不含某类文字、或那类字形不理想时，给它单独指定字体"
@@ -2224,6 +2227,7 @@ hint = "主字体不含某类文字、或那类字形不理想时，给它单独
 # 注：ui.font.path（自定义字体文件）当前平台不支持，已隐藏（由 core 维持默认）。
 # 注：ui.font.render_mode（字体渲染方式）当前不支持，已移除（由 core 维持默认）。
 
+# ── 候选窗口（数量/显隐/位置/尺寸下限）──
 [[items]]
 key = "ui.candidate.per_page"
 group = "ui"
@@ -2297,67 +2301,6 @@ options = [
   { value = "instant", label = "立即显示（最快，可能抖动）" },
 ]
 
-[[items]]
-key = "ui.candidate.preedit_display"
-group = "ui"
-section = "候选窗口"
-type = "select"
-label = "编码显示方式"
-hint = "编码（组合区）的显示位置；「内嵌应用光标处」时候选窗不显示编码栏"
-options = [
-  { value = "app_inline", label = "内嵌应用光标处" },
-  { value = "candidate_top", label = "候选窗顶部独立栏" },
-  { value = "candidate_inline", label = "候选窗首单元内联" },
-]
-
-[[items]]
-key = "ui.candidate.layout"
-group = "ui"
-section = "候选窗口"
-type = "segmented"
-label = "候选窗排列"
-hint = "候选词的排列方式"
-[[items.options]]
-value = "horizontal"
-label = "横排"
-[[items.options]]
-value = "vertical"
-label = "竖排"
-
-[[items]]
-key = "ui.candidate.flip_when_above"
-group = "ui"
-section = "候选窗口"
-type = "toggle"
-label = "候选窗在上方时反转候选顺序"
-hint = "候选窗显示在光标上方时，反转候选项的排列顺序（使第一候选靠近光标）；可与「编码栏置底」叠加。仅竖排 +「跟随光标」定位下生效"
-
-[[items]]
-key = "ui.candidate.swap_preedit_when_above"
-group = "ui"
-section = "候选窗口"
-type = "toggle"
-label = "候选窗在上方时编码栏置底"
-hint = "候选窗显示在光标上方时，将编码栏与候选栏上下调换，使编码栏沉到底部贴近光标。仅「跟随光标」定位下生效"
-
-[[items]]
-key = "ui.candidate.pager_in_preedit"
-group = "ui"
-section = "候选窗口"
-type = "toggle"
-label = "翻页栏并入编码栏"
-hint = "将翻页栏右对齐显示在编码栏行（竖排可省一行）；仅「编码显示方式」为「候选窗顶部独立栏」时生效"
-
-[[items]]
-key = "ui.candidate.max_chars"
-group = "ui"
-section = "候选窗口"
-type = "number"
-label = "候选文本最大字数"
-hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
-min = 0
-max = 64
-
 # 候选窗尺寸下限段：五项都是「窗口别缩得比这更小」的同一件事，且都不常改——摊在卡片上
 # 五行连排会把「候选窗排列」「最大字数」这些天天要动的项挤没。故卡片上只占一行
 # 「候选窗口最小大小 …… [设置]」，五项全在对话框里（`dialog_title` 宿主 + `dialog_extra_for`
@@ -2427,6 +2370,69 @@ min = 0
 max = 9
 dialog_extra_for = "ui.candidate.min_window_width_horizontal"
 
+# ── 候选排版（编码栏位置、横竖排、上方时的顺序）──
+[[items]]
+key = "ui.candidate.preedit_display"
+group = "ui"
+section = "候选排版"
+type = "select"
+label = "编码显示方式"
+hint = "编码（组合区）的显示位置；「内嵌应用光标处」时候选窗不显示编码栏"
+options = [
+  { value = "app_inline", label = "内嵌应用光标处" },
+  { value = "candidate_top", label = "候选窗顶部独立栏" },
+  { value = "candidate_inline", label = "候选窗首单元内联" },
+]
+
+[[items]]
+key = "ui.candidate.layout"
+group = "ui"
+section = "候选排版"
+type = "segmented"
+label = "候选窗排列"
+hint = "候选词的排列方式"
+[[items.options]]
+value = "horizontal"
+label = "横排"
+[[items.options]]
+value = "vertical"
+label = "竖排"
+
+[[items]]
+key = "ui.candidate.flip_when_above"
+group = "ui"
+section = "候选排版"
+type = "toggle"
+label = "候选窗在上方时反转候选顺序"
+hint = "候选窗显示在光标上方时，反转候选项的排列顺序（使第一候选靠近光标）；可与「编码栏置底」叠加。仅竖排 +「跟随光标」定位下生效"
+
+[[items]]
+key = "ui.candidate.swap_preedit_when_above"
+group = "ui"
+section = "候选排版"
+type = "toggle"
+label = "候选窗在上方时编码栏置底"
+hint = "候选窗显示在光标上方时，将编码栏与候选栏上下调换，使编码栏沉到底部贴近光标。仅「跟随光标」定位下生效"
+
+[[items]]
+key = "ui.candidate.pager_in_preedit"
+group = "ui"
+section = "候选排版"
+type = "toggle"
+label = "翻页栏并入编码栏"
+hint = "将翻页栏右对齐显示在编码栏行（竖排可省一行）；仅「编码显示方式」为「候选窗顶部独立栏」时生效"
+
+[[items]]
+key = "ui.candidate.max_chars"
+group = "ui"
+section = "候选排版"
+type = "number"
+label = "候选文本最大字数"
+hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
+min = 0
+max = 64
+
+# ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
 # 候选注释段（候选右侧灰字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
 # 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。
 # 宿主取**横排**模板：它是对话框里第一个出现的字段，而横排宽度由全部候选共享、最需斟酌。
@@ -2434,7 +2440,7 @@ dialog_extra_for = "ui.candidate.min_window_width_horizontal"
 [[items]]
 key = "ui.candidate.comment_template_horizontal"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "dialog_button"
 label = "候选注释"
 hint = "候选词右侧灰字显示的内容，横排与竖排可分别设置"
@@ -2442,7 +2448,7 @@ hint = "候选词右侧灰字显示的内容，横排与竖排可分别设置"
 [[items]]
 key = "ui.candidate.comment_template_vertical"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "string"
 label = "竖排注释"
 hint = "竖排候选窗每行独占一行，可放较长的注音或字根"
@@ -2451,7 +2457,7 @@ dialog_extra_for = "ui.candidate.comment_template_horizontal"
 [[items]]
 key = "ui.candidate.comment_max_chars_horizontal"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "number"
 label = "横排最大字数"
 hint = "超过此字数时截断并加省略号；0 = 不限"
@@ -2462,7 +2468,7 @@ dialog_extra_for = "ui.candidate.comment_template_horizontal"
 [[items]]
 key = "ui.candidate.comment_max_chars_vertical"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "number"
 label = "竖排最大字数"
 hint = "竖排每行独占，通常可比横排放宽；0 = 不限"
@@ -2473,7 +2479,7 @@ dialog_extra_for = "ui.candidate.comment_template_horizontal"
 [[items]]
 key = "ui.comment_dicts"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "dialog_button_comment_dicts"
 label = "注释词库"
 hint = "供注释模板 ${dict} 变量查询；词库文件放在数据目录的 schemas/comments/ 下"
@@ -2481,7 +2487,7 @@ hint = "供注释模板 ${dict} 变量查询；词库文件放在数据目录的
 [[items]]
 key = "ui.candidate.index_labels"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "dialog_button"
 label = "自定义序号标签"
 hint = "为序号 1-10 自定义标签（每框一个完整标签，可多字符）；在对话框中逐框填写，留空用默认 1-9"
@@ -2496,7 +2502,7 @@ hint = "为序号 1-10 自定义标签（每框一个完整标签，可多字符
 [[items]]
 key = "input.cmdbar.candidate_prefix"
 group = "ui"
-section = "候选窗口"
+section = "候选标注"
 type = "string"
 label = "命令栏候选前缀"
 hint = "命令候选前的提示符号"

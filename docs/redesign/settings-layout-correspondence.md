@@ -191,6 +191,11 @@
 | 4 | 状态提示 | 启用；显示模式；显示时长；方案名显示；位置模式；水平偏移；垂直偏移；字体大小；透明度 `opacity`；圆角 `border_radius` |
 | 5 | 工具栏 | 显示工具栏；全屏隐藏 |
 
+我们把参考的「候选窗口」一区拆成四张卡：**候选字体**（字号/字体/回退/分文字类别）、
+**候选窗口**（每页数/显隐/定位/首显时机/尺寸下限）、**候选排版**（编码栏位置/横竖排/
+上方时的顺序）、**候选标注**（注释/注释词库/序号标签/命令栏前缀）。参考那一区列了
+11 项，我们这边接了 28 项——照抄一张卡会排到 21 行，一屏装不下也扫不出层次。
+
 我们当前→目标映射：
 
 | 我们当前 | 我们的 key | → 目标分区 | 备注 |
@@ -200,16 +205,16 @@
 | 外观/主题（ui 组）：主题明暗 | `ui.theme.style` | 主题 | |
 | 外观/候选窗：每页候选数 | `ui.candidate.per_page` | 候选窗口 | |
 | 外观/候选窗：扩展档每页候选数 | `ui.candidate.per_page_extended` | 候选窗口 | |
-| 外观/候选窗：候选窗排列 | `ui.candidate.layout` | 候选窗口 | |
-| 外观/候选窗：编码显示方式 | `ui.candidate.preedit_display` | 候选窗口 | 对应参考「非嵌入编码显示方式」 |
+| 外观/候选窗：候选窗排列 | `ui.candidate.layout` | 候选排版 | |
+| 外观/候选窗：编码显示方式 | `ui.candidate.preedit_display` | 候选排版 | 对应参考「非嵌入编码显示方式」 |
 | 外观/候选窗：隐藏候选窗 | `ui.candidate.hide_window` | 候选窗口 | |
-| 外观/候选窗：候选字号 | `ui.candidate.font_size` | 候选窗口 | |
-| 外观/候选窗：候选字号跟随主题 | `ui.candidate.font_size_follow_theme` | 候选窗口 | 参考无（新增），暂归此卡 |
-| 外观/候选窗：候选文本最大字数 | `ui.candidate.max_chars` | 候选窗口 | |
-| 外观/候选窗：自定义序号标签 | `ui.candidate.index_labels` | 候选窗口 | 参考无（新增） |
-| 外观/候选窗：候选窗在上方时反转顺序 | `ui.candidate.flip_when_above` | 候选窗口 | |
-| **高级/命令栏**：命令栏 | `input.cmdbar.enabled` | **外观/候选窗口** | **跨页迁入**（参考「命令直通车标注」） |
-| **高级/命令栏**：命令栏候选前缀 | `input.cmdbar.candidate_prefix` | **外观/候选窗口** | **跨页迁入** |
+| 外观/候选窗：候选字号 | `ui.candidate.font_size` | 候选字体 | |
+| 外观/候选窗：候选字号跟随主题 | `ui.candidate.font_size_follow_theme` | 候选字体 | 参考无（新增），暂归此卡 |
+| 外观/候选窗：候选文本最大字数 | `ui.candidate.max_chars` | 候选排版 | |
+| 外观/候选窗：自定义序号标签 | `ui.candidate.index_labels` | 候选标注 | 参考无（新增） |
+| 外观/候选窗：候选窗在上方时反转顺序 | `ui.candidate.flip_when_above` | 候选排版 | |
+| **高级/命令栏**：命令栏 | `input.cmdbar.enabled` | **外观/候选标注** | **跨页迁入**（参考「命令直通车标注」） |
+| **高级/命令栏**：命令栏候选前缀 | `input.cmdbar.candidate_prefix` | **外观/候选标注** | **跨页迁入** |
 | 外观/模式指示：模式指示样式 | `ui.mode_indicator.style` | 候选窗口或主题 | 参考无独立项，待定归属 |
 | 外观/悬停提示：提示延迟 | `ui.tooltip.delay` | 候选项提示 | |
 | 外观/悬停提示：显示编码 | `ui.tooltip.code_enabled` | 候选项提示 | |
@@ -226,9 +231,9 @@
 | 外观/状态提示：垂直偏移 | `ui.status.offset_y` | 状态提示 | |
 | 外观/状态提示：固定位置 X/Y | `ui.status.custom_x` / `custom_y` | 状态提示 | 参考无（新增） |
 | 外观/状态提示：方案名显示样式 | `ui.status.schema_name_style` | 状态提示 | |
-| 外观/字体：候选窗字体 | `ui.font.family` | 候选窗口 | 参考「字体」在候选窗口卡 |
-| 外观/字体：自定义字体文件 | `ui.font.path` | 候选窗口 | |
-| 外观/字体：字体渲染方式 | `ui.font.render_mode` | 候选窗口 | 参考无（新增） |
+| 外观/字体：候选窗字体 | `ui.font.family` | 候选字体 | 参考「字体」在候选窗口卡 |
+| 外观/字体：自定义字体文件 | `ui.font.path` | 候选字体 | |
+| 外观/字体：字体渲染方式 | `ui.font.render_mode` | 候选字体 | 参考无（新增） |
 | 外观/工具栏：显示工具栏 | `ui.toolbar.visible` | 工具栏 | |
 | 外观/工具栏：全屏时隐藏工具栏 | `ui.toolbar.hide_in_fullscreen` | 工具栏 | |
 
