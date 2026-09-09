@@ -183,14 +183,26 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
     // 代价是 Loading/Failed 这两态得挑一块来显示，否则同一句「加载中…」会出现四遍。
     // 交给「概览」——它在最上面，也是数据没到时唯一该占位的地方。
     let view = mgr.view;
-    let block = move |ready: Rc<dyn Fn(&StatsData) -> Element>, placeholder: bool| {
-        Element::host_signal(view, move |v| match v {
+    // 「概览」块：数据没到时由它显示 加载中／失败。
+    let overview = Element::host_signal(view, move |v| match v {
+        View::Ready(d) => summary_cards(&d),
+        View::Loading => hint_row("加载中…"),
+        View::Failed(e) => hint_row(&format!("统计数据加载失败：{e}")),
+    });
+    // 其余三块：数据没到时**整块隐藏**。
+    //
+    // ⚠ 隐藏而不是返回 `Element::leaf()`。`arrange_linear` 取的是 `visible_children`，
+    // 不可见的子节点连同它那一档 `spacing` 一起被跳过；而一个**可见的 0×0 叶子**照样
+    // 占一档——那样加载中／失败时「加载中…」下面会凭空多出三段 18px 空白。
+    // 可见性必须挂在 `nav.wrap` **外面**：wrap 出来的 stack 自己是可见的，只把里面那层
+    // 藏掉，stack 仍然是 col 的一个可见子节点，spacing 照吃不误。
+    let data_block = |label: &str, ready: Rc<dyn Fn(&StatsData) -> Element>| {
+        let host = Element::host_signal(view, move |v| match v {
             View::Ready(d) => ready(&d),
-            View::Loading if placeholder => hint_row("加载中…"),
-            View::Failed(e) if placeholder => hint_row(&format!("统计数据加载失败：{e}")),
-            // 非占位块在数据没到时整块不出：0×0 叶子，不占位也不画。
             _ => Element::leaf(),
-        })
+        });
+        nav.wrap(label, 0, host)
+            .visible_when(move || view.with(|v| matches!(v.first(), Some(View::Ready(_)))))
     };
 
     // 刷新入口在底栏（`shell::build_footer`，仅本页可见）：页内浮层要么挡内容、
@@ -202,29 +214,17 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
         .child(nav.wrap(
             "概览",
             0,
-            crate::search::anchor::wrap(
-                block(Rc::new(summary_cards), true),
-                "stats:overview",
-                state.jump,
-            ),
+            crate::search::anchor::wrap(overview, "stats:overview", state.jump),
         ))
-        // 数据不足一天时 `calendar_section` 返回 None（画不出格子），整块不出。
-        .child(nav.wrap(
+        // 数据不足一天时 `calendar_section` 返回 None（画不出格子），块内为空。
+        .child(data_block(
             "输入日历",
-            0,
-            block(
-                Rc::new(|d| calendar_section(d).unwrap_or_else(Element::leaf)),
-                false,
-            ),
+            Rc::new(|d| calendar_section(d).unwrap_or_else(Element::leaf)),
         ))
-        .child(nav.wrap("今日时段分布", 0, block(Rc::new(hours_section), false)))
-        .child(nav.wrap(
+        .child(data_block("今日时段分布", Rc::new(hours_section)))
+        .child(data_block(
             "输入详情",
-            0,
-            block(
-                Rc::new(move |d| detail_section(d, &schema_names.get())),
-                false,
-            ),
+            Rc::new(move |d| detail_section(d, &schema_names.get())),
         ))
         .child(nav.wrap(
             "统计设置",
