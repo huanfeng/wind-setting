@@ -18,6 +18,11 @@
 #   拼音首字母不对 hint 生效（长句首字母串没有检索价值，只会制造误命中）。
 
 $ErrorActionPreference = 'Stop'
+
+# cargo 的输出是 UTF-8，而 `&` 捕获时 PowerShell 按**控制台输出编码**解码——中文 Windows
+# 上那是 GBK，整段汉字语料会变成乱码（表里会冒出 `亸 伅` 这类谁也搜不到的字，另有几十个
+# 字"查不到拼音"）。生成结果看着像成功，只有搜索用起来才发现失效，故在此钉死 UTF-8。
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $repo = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $repo 'src/assets/pinyin_initials.txt'
 
