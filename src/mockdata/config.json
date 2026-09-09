@@ -224,10 +224,10 @@
    "punct_commit": true,
    "short_code_yield_level": 0,
    "show_code_hint": true,
+   "single_char": false,
    "single_code_complete": true,
    "single_code_input": false,
    "top_code_commit": true,
-   "word_scope": "all",
    "z_key_action": "",
    "z_key_repeat": true
   },
@@ -331,8 +331,8 @@
    "shuangpin": {
     "allow_full_pinyin": false
    },
-   "use_smart_compose": true,
-   "word_scope": "all"
+   "single_char": false,
+   "use_smart_compose": true
   },
   "primary_codetable": "",
   "primary_pinyin": "",

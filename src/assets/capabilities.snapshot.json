@@ -106,18 +106,13 @@
       "type": "int"
     },
     {
-      "default": "all",
-      "key": "schema.codetable.word_scope",
+      "default": false,
+      "key": "schema.codetable.single_char",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
         "section": "[codetable]"
       },
-      "type": "enum",
-      "values": [
-        "all",
-        "char",
-        "phrase"
-      ]
+      "type": "bool"
     },
     {
       "default": true,
@@ -364,14 +359,9 @@
       "type": "str"
     },
     {
-      "default": "all",
-      "key": "schema.pinyin.word_scope",
-      "type": "enum",
-      "values": [
-        "all",
-        "char",
-        "phrase"
-      ]
+      "default": false,
+      "key": "schema.pinyin.single_char",
+      "type": "bool"
     },
     {
       "default": false,
