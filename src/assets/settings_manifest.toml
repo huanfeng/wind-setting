@@ -978,7 +978,7 @@ key = "input.punct.custom_enabled"
 group = "input"
 section = "字符与标点"
 type = "toggle"
-label = "启用自定义标点映射"
+label = "自定义标点映射"
 hint = "自定义英文标点的中文/全角替换；映射表在「自定义标点映射」对话框中编辑"
 
 [[items]]
@@ -989,6 +989,18 @@ type = "dialog_button"
 label = "自定义标点映射"
 hint = "按英文半角/全角、中文半角/全角四态自定义标点替换；在表格对话框中逐格编辑"
 gate_key = "input.punct.custom_enabled"
+
+# 「/ 键输出顿号」：没有自己的配置键，勾选即替用户把上面那张表的 `/` 行配好
+# （只改中文两列，英文标点状态下 `/` 仍是 `/`），并顺手打开自定义标点映射总开关。
+# 视图 key（`<配置路径>#<视图名>`）——同一配置路径的第二个清单项，`Manifest.items` 按 key
+# 索引，直接用同一个 key 会静默挤掉表格那项。
+[[items]]
+key = "input.punct.custom_mappings#slash_dun"
+group = "input"
+section = "字符与标点"
+type = "toggle_slash_dun"
+label = "/ 键输出顿号"
+hint = "中文标点状态下按 / 输出「、」；英文标点状态不变，仍是 /。开启会一并启用上面的自定义标点映射"
 
 # ── 智能符号 ──
 # 三个开关各管一种场景、互相独立，都默认关。上屏方案与时限**不挂 enabled_when**：

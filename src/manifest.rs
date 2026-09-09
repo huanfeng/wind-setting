@@ -8,6 +8,7 @@
 //! 保存时跑所有写回器把 Signal 值写回 Config 再 diff；`enabled_when` 用取值器联动。
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use serde_json::Value;
 use windui::prelude::*;
@@ -15,7 +16,7 @@ use windui::prelude::*;
 use crate::config::Config;
 use crate::dialogs::key_binding::ForeignBinding;
 use crate::mode::AppMode;
-use crate::state::{AppState, FieldRegistry, SchemaInfo};
+use crate::state::{AppState, FieldRegistry, PunctCells, SchemaInfo};
 use crate::widgets::{setting_row, setting_row_checks, setting_row_schema_hint};
 
 /// 单个清单项（来自 manifest.toml 经 system.manifest 暴露的 JSON）。
@@ -475,6 +476,7 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
 /// 清单里的每个 type 都在本名单里；本名单里的每一项都在 `build_control` 的 match 里。
 pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "toggle",
+    "toggle_slash_dun",
     "select",
     "select_mix_layout",
     "select_mix_free_input",
@@ -502,6 +504,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     match item.typ.as_str() {
         "toggle" => build_toggle(state, key, item, cfg),
+        "toggle_slash_dun" => build_toggle_slash_dun(state, key, cfg),
         "select" => build_select(state, key, item, cfg),
         "select_mix_layout" => build_select_mix_layout(state, key, item, cfg),
         "select_mix_free_input" => build_select_mix_free_input(state, key, item, cfg),
@@ -4106,6 +4109,78 @@ pub(crate) fn seed_cell(ov: Option<&Vec<Value>>, i: usize, def: &str) -> String 
 /// `input.punct.custom_mappings` 的配置路径。归一化与 diff 基线共用，防两处写死漂移。
 pub(crate) const PUNCT_MAP_KEY: &str = "input.punct.custom_mappings";
 
+/// 自定义标点映射的总开关。关掉时整张表都不生效，故「快捷开关此刻算不算开」要问它。
+pub(crate) const PUNCT_ENABLED_KEY: &str = "input.punct.custom_enabled";
+
+/// 自定义标点表的单元格信号，惰性建一次后共享（见 [`crate::state::FieldRegistry::punct_cells`]）。
+///
+/// 表格对话框与「`/` 键输出顿号」快捷开关都从这里取，于是整张表**只有表格 writer 一个
+/// 覆盖式写入者**，快捷开关只是替用户改格子。惰性而非在某一处构建时创建，是为了不让
+/// 两个清单项之间产生构建顺序依赖——谁先要谁建。
+pub(crate) fn punct_cells(state: &AppState, cfg: &Config) -> PunctCells {
+    let existing = state.fields.punct_cells.borrow().clone();
+    if let Some(c) = existing {
+        return c;
+    }
+    let cur_map = cfg
+        .get_path(PUNCT_MAP_KEY)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    // 每行 4 个可编辑信号，从「覆盖值或默认值」播种。
+    let cells: PunctCells = Rc::new(
+        PUNCT_DEFAULTS
+            .iter()
+            .map(|(_, tok, defs)| {
+                let ov = cur_map.get(*tok).and_then(|v| v.as_array());
+                std::array::from_fn(|i| signal(seed_cell(ov, i, defs[i])))
+            })
+            .collect(),
+    );
+    *state.fields.punct_cells.borrow_mut() = Some(cells.clone());
+    cells
+}
+
+/// 快捷开关经手的源字符与产物。
+const SLASH_TOKEN: &str = "/";
+const DUN: &str = "、";
+
+/// 快捷开关写入的列：中文半角(0)、中文全角(2)。**英文两列不碰**——英文标点状态下
+/// `/` 仍要原样出 `/`，那正是「不影响写代码」这个需求本身。顿号是全角字形，中文全角
+/// 列的产物同样是「、」。
+const SLASH_DUN_COLS: [usize; 2] = [0, 2];
+
+/// `/` 在 [`PUNCT_DEFAULTS`] 里的行号。
+fn slash_row_index() -> usize {
+    PUNCT_DEFAULTS
+        .iter()
+        .position(|(_, tok, _)| *tok == SLASH_TOKEN)
+        .expect("PUNCT_DEFAULTS 必须含 `/` 行")
+}
+
+/// 「`/` 键输出顿号」此刻算不算开：中文半角列的产物是顿号，**且**总开关开着。
+///
+/// ★ 判据落在「是否真的会出顿号」，而不是「表里有没有那一行」——总开关关着时整张表
+/// 都不生效，此时把开关显示成"已开启"就是又一个「配了没反应」。
+pub(crate) fn slash_dun_on(mid_cell: &str, custom_enabled: bool) -> bool {
+    custom_enabled && mid_cell == DUN
+}
+
+/// 开/关快捷开关时对 `/` 那一行的改动：开 → 中文两列写顿号；关 → **只**把我们写过的
+/// 那两格（值恰为顿号）恢复默认，其余格原样不动。
+///
+/// ★ 关闭不是「整行还原」：用户可能在同一行的英文列填过自己的东西，一刀还原就是替他
+/// 丢数据。四格若因此全等默认，[`punct_row_override`] 会让这一行自然不落盘（= 删掉那行）。
+pub(crate) fn apply_slash_dun(row: &mut [String; 4], defs: &[&str; 4], on: bool) {
+    for i in SLASH_DUN_COLS {
+        if on {
+            row[i] = DUN.to_string();
+        } else if row[i] == DUN {
+            row[i] = defs[i].to_string();
+        }
+    }
+}
+
 /// 一行四格 → 该行在 `custom_mappings` 里的落点：四格全等默认即 `None`（不落盘）。
 ///
 /// 这是「什么算自定义」的**唯一判据**，writer 与 [`punct_canonical_map`] 都问它。
@@ -4565,20 +4640,7 @@ fn build_dialog_button_index_labels(state: &AppState, key: &str, cfg: &Config) -
 fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_punct_table_dialog;
 
-    let cur_map = cfg
-        .get_path(key)
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
-
-    // 每行 4 个可编辑信号，从「覆盖值或默认值」播种。
-    let cells: Vec<[Signal<String>; 4]> = PUNCT_DEFAULTS
-        .iter()
-        .map(|(_, tok, defs)| {
-            let ov = cur_map.get(*tok).and_then(|v| v.as_array());
-            std::array::from_fn(|i| signal(seed_cell(ov, i, defs[i])))
-        })
-        .collect();
+    let cells = punct_cells(state, cfg);
     let visible = signal(false);
 
     // writer：仅存与默认不同的行 → custom_mappings 对象。
@@ -4633,13 +4695,97 @@ fn build_dialog_button_punct(state: &AppState, key: &str, cfg: &Config) -> Signa
         visible,
         "自定义标点映射",
         src_labels,
-        cells,
+        (*cells).clone(),
         defaults,
         None,
         "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会被保存。",
     );
     register_dialog(state, dlg);
     visible
+}
+
+/// toggle_slash_dun（`input.punct.custom_mappings#slash_dun`）：「`/` 键输出顿号」快捷开关。
+///
+/// 它**没有自己的配置键**，读写的就是自定义标点表里 `/` 那一行，因此有两条与普通 toggle
+/// 相反的做法：
+///   - **不注册 writer**。整张表由 [`build_dialog_button_punct`] 的 writer 写，此处只改格子；
+///     另写一份就是第二个 `set_path(custom_mappings)` 的覆盖式写入者，谁后写谁赢，用户在
+///     表格里改的行会被悄悄抹掉。
+///   - **勾选态是派生的**（见 [`slash_dun_on`]）：用户在表格里把那行改回去、或把总开关关掉，
+///     这里都会跟着灭，不会出现「开关写着开、实际不出顿号」。
+fn build_toggle_slash_dun(state: &AppState, key: &str, cfg: &Config) -> Element {
+    let cells = punct_cells(state, cfg);
+    let idx = slash_row_index();
+    let row = cells[idx];
+    let defs = PUNCT_DEFAULTS[idx].2;
+    // 总开关拿不到 Signal 时的回落值（见下面 `gate_sig` 的说明）。
+    let gate_cfg = cfg.get_bool(PUNCT_ENABLED_KEY).unwrap_or(false);
+    // 总开关的 Signal。⚠️ 它由 `build_gated_dialog_row` 在自定义标点那一行构建时登记，
+    // 清单里排在本项之前，故这里查得到；查不到时退化成「只跟着表格走」，不会 panic。
+    let gate_sig = state
+        .fields
+        .bool_signals
+        .borrow()
+        .get(PUNCT_ENABLED_KEY)
+        .copied();
+    let gate_now = move || gate_sig.map(|s| s.get()).unwrap_or(gate_cfg);
+
+    let checked = signal(slash_dun_on(&row[0].get(), gate_now()));
+
+    let el = Element::switch(checked).on_switch_change(move |_ctx, on| {
+        // 幂等守卫：期望态与现状一致就什么都不做。`checked` 被 effect 回灌时若也走到这里
+        // （程序性 set 触不触发回调随控件实现而变），不至于误改用户在这一行填过的其它格。
+        if slash_dun_on(&row[0].get(), gate_now()) == on {
+            return;
+        }
+        let mut vals: [String; 4] = std::array::from_fn(|i| row[i].get());
+        apply_slash_dun(&mut vals, &defs, on);
+        for i in 0..4 {
+            row[i].set(vals[i].clone());
+        }
+        // 开启顺手把总开关打开——否则表里写好了、整张却不生效。
+        // ⚠️ 关闭时**不**关回去：用户可能还有别的自定义行在用，关掉就是连坐。
+        if on && let Some(s) = gate_sig {
+            s.set(true);
+        }
+    });
+
+    // 反向同步：表格里那一格被改、或总开关被切，勾选态跟着重算。
+    // ★ 只监听 `/` 行的中半那**一个**信号，不并进 4×N 个格子——那是每帧遍历（同
+    // `schema_manager` 里摘要 effect 的取舍）。
+    let mid = row[0];
+    let eff = crate::pages::dict::reactive::reactive_effect(
+        move || {
+            mid.version()
+                .wrapping_add(gate_sig.map(|s| s.version()).unwrap_or(0))
+        },
+        move || checked.set(slash_dun_on(&mid.get(), gate_now())),
+    );
+
+    // loader 直接从传入的 Config 算，**不**读 cells：loaders 是 HashMap，与表格那份的
+    // 执行先后不定，读 cells 就会有一半时候拿到还没回填的旧值。
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let m = c
+                .get_path(PUNCT_MAP_KEY)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let ov = m.get(SLASH_TOKEN).and_then(|v| v.as_array());
+            let mid_cell = seed_cell(ov, 0, defs[0]);
+            checked.set(slash_dun_on(
+                &mid_cell,
+                c.get_bool(PUNCT_ENABLED_KEY).unwrap_or(false),
+            ));
+        }),
+    );
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::Bool(checked.get())),
+    );
+
+    Element::row().cross(Align::Center).child(el).child(eff)
 }
 
 /// `enabled_when` 里单个条件的比较算子。
@@ -5226,6 +5372,81 @@ mod tests {
                 .and_then(|v| v.as_object())
                 .and_then(|m| m.get("\\")),
             Some(&serde_json::json!(["、", "＼", "、", "|"])),
+        );
+    }
+
+    /// 快捷开关的落点：`/` 行必须在表里，且它的中文半角默认**不是**顿号。
+    ///
+    /// 后半句才是这条测试的价值：默认若哪天变成了顿号，[`slash_dun_on`] 会恒判为开、
+    /// 关闭动作又会把它写回顿号，开关从此拧不动——而界面上什么异常都看不出来。
+    #[test]
+    fn slash_row_exists_and_defaults_to_slash() {
+        let idx = slash_row_index();
+        let (_, tok, defs) = PUNCT_DEFAULTS[idx];
+        assert_eq!(tok, "/");
+        assert_ne!(
+            defs[0], DUN,
+            "`/` 的中半默认若已是顿号，这个快捷开关就没有两态了"
+        );
+    }
+
+    /// 勾选态问的是「此刻真的会出顿号吗」，所以总开关关着时恒为假。
+    ///
+    /// 只断言「表里配了就算开」的话，用户把总开关一关，界面照样写着"已开启"而按 `/`
+    /// 出的是 `/`——又一个「配了没反应」。
+    #[test]
+    fn slash_dun_state_requires_the_master_switch() {
+        assert!(slash_dun_on(DUN, true));
+        assert!(!slash_dun_on(DUN, false), "总开关关着时整张表都不生效");
+        assert!(!slash_dun_on("/", true));
+    }
+
+    /// 开启只碰中文两列；英文两列原样——「英文标点状态下 `/` 仍是 `/`」正是这个需求本身。
+    #[test]
+    fn slash_dun_on_touches_only_chinese_columns() {
+        let idx = slash_row_index();
+        let defs = PUNCT_DEFAULTS[idx].2;
+        let mut row: [String; 4] = std::array::from_fn(|i| defs[i].to_string());
+        apply_slash_dun(&mut row, &defs, true);
+        assert_eq!(row[0], DUN, "中半");
+        assert_eq!(row[2], DUN, "中全");
+        assert_eq!(row[1], defs[1], "英全不动");
+        assert_eq!(row[3], defs[3], "英半不动");
+        assert!(
+            punct_row_override(&row, &defs).is_some(),
+            "开启后这一行必须落盘，否则 core 侧什么都不会变"
+        );
+    }
+
+    /// 关闭是**逆操作**，不是整行还原：用户自己在这一行填过的格子必须留着。
+    ///
+    /// 断言落在「用户填的那格还在不在」——只断言「顿号没了」的话，把整行重置成默认的
+    /// 实现照样通过，而那是在替用户丢数据。
+    #[test]
+    fn slash_dun_off_keeps_what_the_user_typed_in_other_columns() {
+        let idx = slash_row_index();
+        let defs = PUNCT_DEFAULTS[idx].2;
+        let mut row: [String; 4] = std::array::from_fn(|i| defs[i].to_string());
+        row[3] = "÷".to_string(); // 用户自己给英文半角配了别的东西
+        apply_slash_dun(&mut row, &defs, true);
+        apply_slash_dun(&mut row, &defs, false);
+        assert_eq!(row[0], defs[0], "中半回到默认");
+        assert_eq!(row[2], defs[2], "中全回到默认");
+        assert_eq!(row[3], "÷", "用户自己填的那格必须还在");
+    }
+
+    /// 关闭后若整行恰好全等默认，`punct_row_override` 让它自然不落盘 —— 即「删掉那一行」，
+    /// 用户层不留残渣。这条是「关掉就等于没配过」的兑现。
+    #[test]
+    fn slash_dun_off_leaves_no_residue() {
+        let idx = slash_row_index();
+        let defs = PUNCT_DEFAULTS[idx].2;
+        let mut row: [String; 4] = std::array::from_fn(|i| defs[i].to_string());
+        apply_slash_dun(&mut row, &defs, true);
+        apply_slash_dun(&mut row, &defs, false);
+        assert!(
+            punct_row_override(&row, &defs).is_none(),
+            "关掉之后 `/` 那一行不该再出现在 custom_mappings 里"
         );
     }
 

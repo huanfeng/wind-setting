@@ -60,6 +60,9 @@ pub struct ThemeEntry {
 pub type FieldWriter = Box<dyn Fn(&mut Config)>;
 /// 当前值取值器：供 enabled_when 联动读取某 key 的当前值。
 pub type ValueGetter = Box<dyn Fn() -> Value>;
+/// 自定义标点表的单元格信号：每行 `[中半, 英全, 中全, 英半]`，行序同
+/// `manifest::PUNCT_DEFAULTS`。见 [`FieldRegistry::punct_cells`]。
+pub type PunctCells = Rc<Vec<[Signal<String>; 4]>>;
 /// 字段加载器：把某 Config（或空 Config→取默认值）灌回对应 Signal。
 /// 供「重新加载」（从服务端配置回填）与「恢复本页」（空 Config→manifest 默认值）使用。
 pub type FieldLoader = Box<dyn Fn(&Config)>;
@@ -123,6 +126,17 @@ pub struct FieldRegistry {
     /// 这些 `visible` 信号原本是各构建函数里的局部变量、只被按钮闭包捕获，外界拿不到；
     /// 登记一份出来，搜索命中框内项时才能替用户把框打开。
     pub dialog_opens: RefCell<HashMap<String, Signal<bool>>>,
+    /// 自定义标点表的单元格信号（每行 `[中半, 英全, 中全, 英半]`，行序同
+    /// `manifest::PUNCT_DEFAULTS`），由 [`crate::manifest::punct_cells`] 惰性建好后共享。
+    ///
+    /// ★ **共享是硬要求，不是省事**：表格对话框与「`/` 键输出顿号」快捷开关改的是同一份
+    /// 配置（`input.punct.custom_mappings`）。各持一份就有两个都 `set_path` 整张表的
+    /// 覆盖式写入者，谁后写谁赢——用户在表格里改的行会被开关那份悄悄抹掉。共享之后
+    /// 写入者只剩表格 writer 一个，快捷开关只是替用户改格子。
+    ///
+    /// ⚠️ 与 `bool_signals` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空，
+    /// Signal 句柄留过页面重建就是悬垂。
+    pub punct_cells: RefCell<Option<PunctCells>>,
 }
 
 impl FieldRegistry {
@@ -153,6 +167,7 @@ impl FieldRegistry {
         self.side.borrow_mut().clear();
         self.log_level_probes.borrow_mut().clear();
         self.dialog_opens.borrow_mut().clear();
+        *self.punct_cells.borrow_mut() = None;
         // ⛔ 不清 `system_baseline`：见其字段注释。
     }
 

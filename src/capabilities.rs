@@ -169,6 +169,10 @@ pub fn is_local_key(key: &str) -> bool {
 pub fn control_type_compatible(control: &str, ty: &str) -> bool {
     match control {
         "toggle" => ty == "bool",
+        // toggle_slash_dun：长得像开关，落点却是自定义标点表里的一行（map），故单列一档
+        // 而不是放宽 `toggle` —— 通用开关一旦兼容 map，任何 map 键都能被接成一个二值开关，
+        // 而那件事只在「这张表的这一行」这个语境下才成立。
+        "toggle_slash_dun" => ty == "map",
         // log_level_select 与 select 读写完全同构（只多登记一个"当前档位"探针，
         // 供隐私示警条读），故兼容性判据也一样。
         "select" | "log_level_select" => ty == "str" || ty == "enum",
