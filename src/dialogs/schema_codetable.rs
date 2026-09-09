@@ -507,10 +507,11 @@ impl CtFields {
             &reason,
             slot,
         );
-        // 「方案自带」用琥珀色挑出来（见 `setting_row_override` 的三态三色表）——
-        // 它是这一列里唯一「与全局不同、却不是你改的」状态，一屏灰字里必须看得见。
+        // 「方案自带」用满对比度正文色挑出来（见 `setting_row_override` 的三态三色表）——
+        // 它是这一列里唯一「与全局不同、却不是你改的」状态，一屏灰字里必须看得见，
+        // 但它不是错误：用琥珀会被读成「这里出问题了」，而正文色在灰字里同样跳得出来。
         let follow_role = if st.src == SRC_FROM_SCHEMA {
-            Role::Warning
+            Role::Text
         } else {
             Role::TextMuted
         };
