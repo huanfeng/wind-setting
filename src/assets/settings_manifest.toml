@@ -2841,6 +2841,29 @@ unit = "s"
 enabled_when = "ui.toolbar.auto_hide == true"
 platform = "windows"
 
+# 非中文态的模式主字。中文态的主字不在这里——它是**方案**的属性（方案文件 [schema]
+# icon_label），一个全局项表达不了「每个方案各显示什么」。
+#
+# 出厂「英」既给英文半角态、也是英文方案的标签，两者只靠颜色区分，辨识度不高；
+# 把半角态改成 En 之类即可拉开距离（论坛 #154）。
+[[items]]
+key = "ui.labels.english"
+group = "ui"
+section = "工具栏"
+type = "string"
+label = "英文半角主字"
+hint = "左右 Shift 切出的英文半角态，在工具栏与任务栏图标上显示的字；最多 2 个字符，留空用「英」"
+platform = "windows"
+
+[[items]]
+key = "ui.labels.caps_lock"
+group = "ui"
+section = "工具栏"
+type = "string"
+label = "大写锁定主字"
+hint = "大写锁定打开时显示的字；最多 2 个字符，留空用「A」"
+platform = "windows"
+
 # 宿主行 = 角标总开关下拉 + 「设置…」按钮，尺寸与不透明度进分组对话框；
 # 规则表另起一行（它自己就是个带增删的列表，塞不进分组对话框）。
 # 宿主行必须带一个值控件（build_dialog_group_row 恒调 build_control），做不出纯标签+按钮
