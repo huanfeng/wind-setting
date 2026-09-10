@@ -1540,15 +1540,27 @@ hint = "切换中英文模式时自动取消大写锁定状态；切换方案不
 platform = "windows"
 
 [[items]]
-key = "input.capslock.english_case_cycle"
+key = "input.english_case_cycle_key"
 group = "input"
 section = "临时英文"
-type = "toggle"
-label = "Caps Lock 切换候选大小写"
-hint = "打英文时按 Caps Lock 在「跟随输入 → 全大写 → 全小写」间切换，上屏后复位；此期间给 Caps Lock 配的其它功能按不出来"
-# 与上一项同为 CapsLock 行为，故同处一节。实现靠全局低级键盘钩子拦截 CapsLock，
-# macOS 无对应落点（同上一项的理由）。
-platform = "windows"
+type = "select"
+label = "切换候选大小写的键"
+hint = "打英文时按它在「跟随输入 → 全大写 → 全小写」间切换，上屏后复位；被选中的键在打英文期间用不出原本的功能"
+# ⚠️ **不标 platform**：macOS 上 Caps Lock 到不了输入法（系统只把锁定态经 toggles 传过来，
+# 按键本身走 flagsChanged 且 toWindowsVK 无映射），但 Tab 那条走正常 keydown、两个平台都通。
+# 故本项在 macOS 可用，只是 Caps Lock 那个选项在那边选了不会生效。
+[[items.options]]
+value = ""
+label = "不启用"
+[[items.options]]
+value = "capslock"
+label = "Caps Lock（macOS 无效）"
+[[items.options]]
+value = "tab"
+label = "Tab"
+[[items.options]]
+value = "escape"
+label = "Esc"
 
 # ── 生僻字 ──
 # 没有「启用」开关：不绑触发键就进不去，那已经是关闭态，再加个开关就是两个真相源

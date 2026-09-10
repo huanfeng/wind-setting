@@ -637,6 +637,11 @@
       "type": "str"
     },
     {
+      "default": "",
+      "key": "input.english_case_cycle_key",
+      "type": "str"
+    },
+    {
       "default": true,
       "key": "input.scope_relax.page_end_key",
       "type": "bool"
@@ -895,11 +900,6 @@
     {
       "default": false,
       "key": "input.capslock.cancel_on_mode_switch",
-      "type": "bool"
-    },
-    {
-      "default": false,
-      "key": "input.capslock.english_case_cycle",
       "type": "bool"
     },
     {

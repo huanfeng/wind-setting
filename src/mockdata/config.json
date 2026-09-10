@@ -44,8 +44,7 @@
    "state_ttl_secs": 120
   },
   "capslock": {
-   "cancel_on_mode_switch": false,
-   "english_case_cycle": false
+   "cancel_on_mode_switch": false
   },
   "cmdbar": {
    "candidate_prefix": "⚡",
@@ -67,6 +66,7 @@
    "scope": "exact",
    "show_as": "after"
   },
+  "english_case_cycle_key": "",
   "enter_behavior": "commit",
   "filter_mode": "smart",
   "numpad_behavior": "direct",
