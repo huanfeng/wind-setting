@@ -4308,8 +4308,10 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         Element::text_input(state.settings_bh_font, "留空跟随外观页").width(170),
                     ),
                     crate::widgets::setting_row(
-                        "加载短语",
-                        Some("关闭后本方案不出短语候选。英文方案建议关闭：短语码常与英文词撞车"),
+                        "加载快捷短语",
+                        Some(
+                            "关闭后本方案不出快捷短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
+                        ),
                         Element::checkbox("开启", state.settings_bh_phrases)
                             .small()
                             .fg_role(Role::Text),
