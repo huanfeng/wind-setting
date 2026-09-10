@@ -579,7 +579,7 @@ hint = "同时查询英文词库并显示英文候选；整串恰好是一个英
 key = "schema.pinyin.english_merge.min_length"
 group = "schema"
 section = "候选行为"
-subsection = "英文混入"
+subsection = "英文候选"
 type = "number"
 label = "英文最小触发长度"
 hint = "有中文候选时，编码达到此长度才查英文（0 = 默认 3）；中文候选为空时不受本项约束，2 码起就给英文补全"
@@ -775,7 +775,7 @@ section = "混输行为"
 subsection = "上屏设置"
 type = "toggle"
 label = "整串是拼音词时否决上屏"
-hint = "整串是完整拼音且拼音首选为真实词（如 wangba→网吧）时，不自动/顶码上屏五笔，留给你选拼音词；aipu→落实 等无强词的仍正常上屏"
+hint = "整串是完整拼音且拼音首选为真实词（如 wangba→网吧）时，不自动/顶码上屏五笔，保留拼音词供选择；aipu→落实 等无强词的仍正常上屏"
 
 # 拼音词强度权重阈值：预留配置，默认 0（仅结构判据：拼音首选须≥2汉字且消费整串）。
 [[items]]
@@ -1313,11 +1313,11 @@ hint = "快捷输入模式下出哪些候选。关掉的来源不再产出候选
 options = [
   { value = "quick_input.calc", label = "计算", hint = "算式求值，如 1+2*3、5^2、(1+2)/4" },
   { value = "quick_input.number", label = "数字 / 金额", hint = "中文数字、财务大写、千分位；算式结果也会转换" },
-  { value = "quick_input.date", label = "日期 / 年月", hint = "如 2026.3.5 → 2026年3月5日；12.25 → 12月25日。只有一个点时数字候选在前，多打一个点（12.25.）即可让日期优先" },
+  { value = "quick_input.date", label = "日期 / 年月", hint = "如 2026.3.5 → 2026年3月5日；12.25 → 12月25日。只有一个点时数字候选在前，多打一个点（12.25.）使日期优先" },
   { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
   { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
   { value = "english", label = "英文", hint = "英文词库候选" },
-  { value = "$rare_char", label = "生僻字", hint = "用当前方案的编码打生僻字，只出单字。排在拼音后面的话同一个字会先被拼音收走，想让它有存在感就往前拖" },
+  { value = "$rare_char", label = "生僻字", hint = "用当前方案的编码打生僻字，只出单字。排在拼音之后时，同一个字会先被拼音取走；需要优先显示则前移" },
 ]
 
 # 候选布局：与触发键、候选来源读写同一个 core 键（schema.mix_modes 里 quick_mix 的
@@ -2501,7 +2501,7 @@ group = "ui"
 section = "候选标注"
 type = "toggle"
 label = "自动使用词库自带的注释"
-hint = "词库声明了 comment 列时，直接把它当注释源；在「注释词库」里可单独开关与排序"
+hint = "词库声明 comment 列时将其作为注释源；可在「注释词库」中单独启停与排序"
 
 [[items]]
 key = "ui.comment_dicts"
@@ -2509,7 +2509,7 @@ group = "ui"
 section = "候选标注"
 type = "dialog_button_comment_dicts"
 label = "注释词库"
-hint = "供注释模板 ${dict} 变量查询；从 schemas/comments/ 下的文件里直接选"
+hint = "供注释模板 ${dict} 变量查询；词库文件放在 schemas/comments/ 下"
 
 [[items]]
 key = "ui.candidate.index_labels"
@@ -2771,7 +2771,7 @@ label = "显示内容"
 hint = "工具栏上显示哪些内容、按什么顺序；按住行首手柄上下拖动即可调整"
 platform = "windows"
 options = [
-  { value = "mode", label = "中英 / 方案", hint = "显示当前是中文还是英文，中文时显示方案标签（拼、五等）；点击切换中英，右键选方案，中键直接切到下一个方案" },
+  { value = "mode", label = "中英 / 方案", hint = "显示当前是中文还是英文，中文时显示方案标签（拼、五等）；点击切换中英，右键选方案，中键切换到下一个方案" },
   { value = "punct", label = "标点", hint = "中文标点还是英文标点；点击切换，右键可一并调整全半角与简繁" },
   { value = "full_width", label = "全 / 半角", hint = "满月＝全角、弯月＝半角；点击切换，右键可一并调整标点与简繁" },
   { value = "s2t", label = "简 / 繁", hint = "简入繁出的开关，点击切换；出厂关着" },

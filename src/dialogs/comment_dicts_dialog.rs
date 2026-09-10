@@ -45,8 +45,37 @@ pub struct CommentDictRow {
     pub path: String,
     /// 适用方案 id；**空 = 全部方案**（与 core 的 `applies_to` 同义）。
     pub schemas: Vec<String>,
+    /// **自动派生项**：某个方案的词库自己带了 `comment` 列，core 每次启动重新检测。
+    ///
+    /// 这类行只读 —— 路径与适用方案都是检测出来的**事实**而非偏好，用户能改的只有
+    /// 「开不开」和「排第几」。写回配置时它落成一个只带 `id`/`auto`/`enabled` 的空壳，
+    /// 由 core 按 id 认领（见 core 的 `merge_comment_dicts`）。
+    pub auto: bool,
+    /// 自动项对应的词库相对路径（仅供显示；手工项为空）。
+    pub rel: String,
     /// 读进来的原始对象，写回时在它上面 insert。见模块文档。
     pub raw: Value,
+}
+
+/// core 检测出的一个自动注释源（`comment.sources` 的 `auto` 段）。
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct AutoSource {
+    pub id: String,
+    pub label: String,
+    pub rel: String,
+    pub schemas: Vec<String>,
+}
+
+/// `schemas\comments\` 下扫到的一个候选文件（`comment.sources` 的 `files` 段）。
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct CommentFile {
+    /// 相对 `schemas\` 的路径，直接就是要写进配置的那个值。
+    pub path: String,
+    /// 词库 YAML 头里的 `name:`；空则由界面回落文件名。
+    pub label: String,
+    /// 是否真的声明了 `comment` 列。**为 false 也要列出来**：扫到却不显示，
+    /// 用户看到的是「我的文件不见了」，比「列出来并标一句缺 comment 列」难查得多。
+    pub has_comment: bool,
 }
 
 /// 新建态的 `editing` 哨兵。
@@ -61,8 +90,12 @@ pub struct DictForm {
     pub id: Signal<String>,
     pub label: Signal<String>,
     pub path: Signal<String>,
-    /// 适用方案，逗号分隔的文本。**留空 = 全部方案**。
-    pub schemas: Signal<String>,
+    /// 适用方案：方案 id → 勾选位。**一个都不勾 = 全部方案**（与 core 的 `applies_to` 同义）。
+    ///
+    /// 从「逗号分隔的文本框」换成勾选：方案 id 是内部标识（`wubi86`、`rime_frost`），
+    /// 让用户凭记忆把它拼对，拼错了还没有任何反馈（core 只是查不到而已），是这一屏
+    /// 最容易配错的一格。
+    pub schema_sigs: Rc<RefCell<HashMap<String, Signal<bool>>>>,
     /// 校验失败原因；空 = 无。就地显示，不再弹一层。
     pub error: Signal<String>,
     pub title: Signal<String>,
@@ -76,9 +109,40 @@ impl DictForm {
             id: signal(String::new()),
             label: signal(String::new()),
             path: signal(String::new()),
-            schemas: signal(String::new()),
+            schema_sigs: Rc::new(RefCell::new(HashMap::new())),
             error: signal(String::new()),
             title: signal("添加注释词库".to_string()),
+        }
+    }
+
+    /// 取某个方案的勾选位；不存在就现造一个。
+    ///
+    /// ⚠️ **不要在 `list_signal` 的行构建器里第一次调用它**：那里造出来的信号属于该行的
+    /// `SignalScope`，行重建即被回收。调用点要么早于 `schemas_all.set`
+    /// （见 [`CommentDictsUi::refresh_sources`]），要么落在已经造过的 id 上。
+    pub fn schema_sig(&self, id: &str) -> Signal<bool> {
+        if let Some(s) = self.schema_sigs.borrow().get(id) {
+            return *s;
+        }
+        let s = signal(false);
+        self.schema_sigs.borrow_mut().insert(id.to_string(), s);
+        s
+    }
+
+    /// 当前勾选的方案 id（顺序取 `order`，即界面上的顺序，写回配置才稳定）。
+    pub fn selected_schemas(&self, order: &[String]) -> Vec<String> {
+        let sigs = self.schema_sigs.borrow();
+        order
+            .iter()
+            .filter(|id| sigs.get(*id).is_some_and(|s| s.get()))
+            .cloned()
+            .collect()
+    }
+
+    /// 全部清空勾选（打开表单前调用；只清不删，信号本身要留着给已绑定的界面用）。
+    fn clear_schema_sigs(&self) {
+        for s in self.schema_sigs.borrow().values() {
+            s.set(false);
         }
     }
 
@@ -87,10 +151,25 @@ impl DictForm {
         self.id.set(String::new());
         self.label.set(String::new());
         self.path.set(String::new());
-        self.schemas.set(String::new());
+        self.clear_schema_sigs();
         self.error.set(String::new());
         self.title.set("添加注释词库".to_string());
         self.visible.set(true);
+    }
+
+    /// 从一个候选文件开门见山地新建：id / 显示名 / 路径全部预填，用户只需要点确认。
+    ///
+    /// id 取文件干并让重名的自动加序号 —— 它只用于内部定位（界面上根本不显示），
+    /// 让用户为它想一个名字是这一屏原来最没道理的一步。
+    pub fn open_new_from_file(&self, f: &CommentFile, existing_ids: &[String]) {
+        self.open_new();
+        self.id.set(fallback_id(&f.path, existing_ids));
+        self.label.set(if f.label.is_empty() {
+            file_stem_of(&f.path)
+        } else {
+            f.label.clone()
+        });
+        self.path.set(f.path.clone());
     }
 
     pub fn open_edit(&self, index: usize, row: &CommentDictRow) {
@@ -98,7 +177,10 @@ impl DictForm {
         self.id.set(row.id.clone());
         self.label.set(row.label.clone());
         self.path.set(row.path.clone());
-        self.schemas.set(row.schemas.join("，"));
+        self.clear_schema_sigs();
+        for id in &row.schemas {
+            self.schema_sig(id).set(true);
+        }
         self.error.set(String::new());
         self.title.set("编辑注释词库".to_string());
         self.visible.set(true);
@@ -119,6 +201,16 @@ pub struct CommentDictsUi {
     /// id → 启用开关。
     pub switches: Rc<RefCell<HashMap<String, Signal<bool>>>>,
     pub form: DictForm,
+    /// core 检测出的自动注释源（词库自带 `comment` 列）。
+    pub auto_sources: Signal<Vec<AutoSource>>,
+    /// `schemas\comments\` 下扫到的候选文件，供「添加词库」直接挑。
+    pub files: Signal<Vec<CommentFile>>,
+    /// 全部方案 `(id, 显示名)`，供表单里的适用方案勾选。
+    pub schemas_all: Signal<Vec<(String, String)>>,
+    /// 「从 comments 目录挑一个」弹层的可见性。
+    pub picker: Signal<bool>,
+    /// **播种时配置里本来就有引用空壳**。见 [`CommentDictsUi::to_value`]。
+    pub had_shells: Signal<bool>,
 }
 
 impl CommentDictsUi {
@@ -128,7 +220,43 @@ impl CommentDictsUi {
             rows: signal(Vec::new()),
             switches: Rc::new(RefCell::new(HashMap::new())),
             form: DictForm::new(),
+            auto_sources: signal(Vec::new()),
+            files: signal(Vec::new()),
+            schemas_all: signal(Vec::new()),
+            picker: signal(false),
+            had_shells: signal(false),
         }
+    }
+
+    /// 拉一次 core 的可选来源（自动派生项 + `comments\` 目录扫描）与方案列表。
+    ///
+    /// 放在**构建期**打一次而不是每次开对话框都打：这一屏的按钮由 manifest 通用逻辑
+    /// 绑到 `visible` 上，本模块没有「打开时」这个钩子。代价是两次轻量 RPC
+    /// （一次目录扫描 + 每个已启用词库读一次 YAML 头），比给通用分派链开一个洞划算。
+    pub fn refresh_sources(&self) {
+        let v = crate::rpc::call_core("comment.sources", &json!({})).unwrap_or(json!({}));
+        self.auto_sources.set(auto_sources_from_value(&v));
+        self.files.set(files_from_value(&v));
+        let schemas: Vec<(String, String)> = crate::state::load_schemas()
+            .into_iter()
+            .map(|s| {
+                let name = if s.name.is_empty() {
+                    s.id.clone()
+                } else {
+                    s.name
+                };
+                (s.id, name)
+            })
+            .collect();
+        // ★ 勾选位必须**在 `set` 之前**、于行作用域之外造好。
+        //
+        // `list_signal` 会把 `row_fn` 里现造的信号圈进那一行的 `SignalScope`，行一重建
+        // 就随旧行回收 —— 而 `schema_sigs` 里还留着那个句柄，下次读写它就是
+        // 「signal 句柄已失效：槽位已被回收」的 panic。惰性创建在这类列表里一律是错的。
+        for (id, _) in &schemas {
+            self.form.schema_sig(id);
+        }
+        self.schemas_all.set(schemas);
     }
 
     /// 取某条的启用开关；不存在时**当场建一个**（新建那一刻还没有）。
@@ -141,11 +269,25 @@ impl CommentDictsUi {
         s
     }
 
-    /// 用配置里的数组播种（打开对话框时调用）。
+    /// 用配置里的数组播种（构建 / 重载配置时调用），并把 core 检测出的自动项合并进来。
+    ///
+    /// ⚠️ 合并规则必须与 core 的 `merge_comment_dicts` 一致（空壳按 id 认领、认领不到就
+    /// 丢弃、没被认领的自动项追加末尾并默认启用）。两处各有一份实现是**刻意**的：core
+    /// 那份决定实际加载什么，这份决定界面显示什么，而界面还要能把「用户没动过的自动项」
+    /// 与「用户排过序的」区分开。改任一处都要改另一处 —— [`merge_rows`] 的测试钉住了
+    /// 三条关键语义。
     pub fn seed(&self, items: &[Value]) {
-        let rows = rows_from_value(items);
+        self.had_shells.set(
+            items
+                .iter()
+                .any(|it| it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false)),
+        );
+        let rows = merge_rows(items, &self.auto_sources.get());
         self.switches.borrow_mut().clear();
-        for (r, on) in rows.iter().zip(enabled_flags(items)) {
+        for (r, on) in rows
+            .iter()
+            .zip(merged_enabled_flags(items, &self.auto_sources.get()))
+        {
             self.switches.borrow_mut().insert(r.id.clone(), signal(on));
         }
         self.rows.set(rows);
@@ -182,6 +324,8 @@ impl CommentDictsUi {
                     label,
                     path,
                     schemas,
+                    auto: false,
+                    rel: String::new(),
                     raw: json!({}),
                 })
             });
@@ -222,12 +366,27 @@ impl CommentDictsUi {
     }
 
     /// 当前工作态 → 回写给 core 的数组。
+    ///
+    /// # ★ 自动项在「用户没动过」时**一条都不写**
+    ///
+    /// 空壳的全部意义是记录用户对自动项的偏离（关掉了、或拖到了别处）。没有偏离却照写，
+    /// 后果是「打开设置页什么都没动、点保存，配置里凭空多出几条」——守门测试
+    /// `untouched_settings_produce_no_diff` 当场就会红，而它拦的正是这类静默改写。
+    ///
+    /// 判据是**全或无**而非逐条：顺序信息本来就是整体的，只要有一处偏离，全部固化成
+    /// 空壳才能把那个顺序完整表达出来。
+    ///
+    /// `had_shells` 那一支是另一半：配置里本来就有空壳时一律原样写回。否则「恰好排在
+    /// 尾部且全开」的那份手写空壳会被这里判成「没动过」而抹掉 —— 用户会看到自己写进
+    /// 配置的东西保存一次就没了。
     pub fn to_value(&self) -> Value {
         let sw = self.switches.borrow();
+        let rows = self.rows.get();
+        let keep_shells =
+            self.had_shells.get() || !auto_rows_untouched(&rows, &sw, &self.auto_sources.get());
         Value::Array(
-            self.rows
-                .get()
-                .iter()
+            rows.iter()
+                .filter(|r| keep_shells || !r.auto)
                 .map(|r| {
                     let on = sw.get(&r.id).map(|s| s.get()).unwrap_or(true);
                     row_to_value(r, on)
@@ -260,7 +419,8 @@ pub fn rows_from_value(items: &[Value]) -> Vec<CommentDictRow> {
         let path = s("path");
         let mut id = s("id");
         if id.is_empty() {
-            id = fallback_id(&path, &out);
+            let taken: Vec<String> = out.iter().map(|r| r.id.clone()).collect();
+            id = fallback_id(&path, &taken);
         }
         let schemas = it
             .get("schemas")
@@ -276,6 +436,8 @@ pub fn rows_from_value(items: &[Value]) -> Vec<CommentDictRow> {
             label: s("label"),
             path,
             schemas,
+            auto: it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false),
+            rel: String::new(),
             raw: it.clone(),
         });
     }
@@ -291,18 +453,12 @@ pub fn enabled_flags(items: &[Value]) -> Vec<bool> {
 }
 
 /// 给缺 id 的条目兜一个：取路径的文件名，重了就加序号。
-fn fallback_id(path: &str, existing: &[CommentDictRow]) -> String {
-    let stem = path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .split('.')
-        .next()
-        .unwrap_or("");
-    let base = if stem.is_empty() { "dict" } else { stem };
+fn fallback_id(path: &str, existing: &[String]) -> String {
+    let stem = file_stem_of(path);
+    let base = if stem.is_empty() { "dict" } else { &stem };
     let mut id = base.to_string();
     let mut n = 2;
-    while existing.iter().any(|r| r.id == id) {
+    while existing.contains(&id) {
         id = format!("{base}{n}");
         n += 1;
     }
@@ -317,23 +473,168 @@ fn row_to_value(r: &CommentDictRow, enabled: bool) -> Value {
     }
     let obj = v.as_object_mut().expect("上面刚保证是对象");
     obj.insert("id".into(), json!(r.id));
+    obj.insert("enabled".into(), json!(enabled));
+    if r.auto {
+        // 自动项落成**空壳**：只有 id / auto / enabled / 位置归用户，`path` 与 `schemas`
+        // 每次启动由 core 重新检测。把检测结果一起写回去的话，词库换了层或方案改了声明，
+        // 配置里那份就成了过时的快照 —— 而 core 认领时用的是检测值，两者不一致时谁也
+        // 看不出来配置里那两行早已没人读。
+        obj.insert("auto".into(), json!(true));
+        obj.remove("path");
+        obj.remove("schemas");
+        return v;
+    }
     obj.insert("label".into(), json!(r.label));
     obj.insert("path".into(), json!(r.path));
-    obj.insert("enabled".into(), json!(enabled));
     obj.insert("schemas".into(), json!(r.schemas));
     v
 }
 
-/// 「适用方案」输入框 → 方案 id 列表。中英文逗号、分号、空白都当分隔符。
+/// `comment.sources` 的 `auto` 段 → 自动源列表。
+pub fn auto_sources_from_value(v: &Value) -> Vec<AutoSource> {
+    v.get("auto")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|it| {
+                    Some(AutoSource {
+                        id: it.get("id")?.as_str()?.to_string(),
+                        label: str_of(it, "label"),
+                        rel: str_of(it, "rel"),
+                        schemas: strs_of(it, "schemas"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `comment.sources` 的 `files` 段 → 候选文件列表。
+pub fn files_from_value(v: &Value) -> Vec<CommentFile> {
+    v.get("files")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|it| {
+                    Some(CommentFile {
+                        path: it.get("path")?.as_str()?.to_string(),
+                        label: str_of(it, "label"),
+                        has_comment: it
+                            .get("hasComment")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn str_of(v: &Value, k: &str) -> String {
+    v.get(k)
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn strs_of(v: &Value, k: &str) -> Vec<String> {
+    v.get(k)
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 配置数组 × 自动源 → 界面上的行序列。**与 core 的 `merge_comment_dicts` 同规则。**
 ///
-/// ⚠️ 用户会照着界面上的「，」打全角逗号，只认半角会得到一个叫「pinyin，english」的
-/// 方案 id ——它谁也匹配不上，表现是「限定了方案，结果哪个方案都不显示」。
-pub fn parse_schemas(s: &str) -> Vec<String> {
-    s.split(['，', ',', '；', ';', ' ', '\t', '、'])
-        .map(str::trim)
-        .filter(|x| !x.is_empty())
-        .map(str::to_string)
-        .collect()
+/// - `auto = true` 的条目是引用空壳：按 id 认领一个自动源，拿它的显示名/相对路径/适用
+///   方案来填这一行；认领不到就丢弃（词库被删/停用/总开关关了，都是常态而非配置错误）。
+/// - 没被认领的自动源追加**末尾**：装个新方案不该把用户排好的第一优先级挤下去。
+pub fn merge_rows(items: &[Value], auto: &[AutoSource]) -> Vec<CommentDictRow> {
+    let mut out: Vec<CommentDictRow> = Vec::new();
+    let mut claimed: Vec<String> = Vec::new();
+    for r in rows_from_value(items) {
+        if !r.auto {
+            out.push(r);
+            continue;
+        }
+        let Some(a) = auto.iter().find(|a| a.id == r.id) else {
+            continue;
+        };
+        claimed.push(a.id.clone());
+        out.push(auto_row(a, r.raw));
+    }
+    for a in auto.iter().filter(|a| !claimed.contains(&a.id)) {
+        out.push(auto_row(a, json!({})));
+    }
+    out
+}
+
+/// 与 [`merge_rows`] 配套的启用位序列（下标一一对齐）。新自动项默认开。
+pub fn merged_enabled_flags(items: &[Value], auto: &[AutoSource]) -> Vec<bool> {
+    let rows = rows_from_value(items);
+    let mut out: Vec<bool> = Vec::new();
+    let mut claimed: Vec<String> = Vec::new();
+    for (r, on) in rows.iter().zip(enabled_flags(items)) {
+        if !r.auto {
+            out.push(on);
+        } else if let Some(a) = auto.iter().find(|a| a.id == r.id) {
+            claimed.push(a.id.clone());
+            out.push(on);
+        }
+    }
+    out.extend(
+        auto.iter()
+            .filter(|a| !claimed.contains(&a.id))
+            .map(|_| true),
+    );
+    out
+}
+
+/// 自动项是否还是 [`merge_rows`] 刚合并出来的那副样子：全部启用、原样排在所有手工项
+/// 之后、相对顺序与检测顺序一致。见 [`CommentDictsUi::to_value`]。
+fn auto_rows_untouched(
+    rows: &[CommentDictRow],
+    switches: &HashMap<String, Signal<bool>>,
+    auto: &[AutoSource],
+) -> bool {
+    let split = rows.iter().position(|r| r.auto).unwrap_or(rows.len());
+    // 手工项之间夹着自动项 ⇒ 用户拖过顺序。
+    if rows[split..].iter().any(|r| !r.auto) {
+        return false;
+    }
+    let tail: Vec<&str> = rows[split..].iter().map(|r| r.id.as_str()).collect();
+    let fresh: Vec<&str> = auto.iter().map(|a| a.id.as_str()).collect();
+    tail == fresh
+        && tail
+            .iter()
+            .all(|id| switches.get(*id).is_none_or(|s| s.get()))
+}
+
+fn auto_row(a: &AutoSource, raw: Value) -> CommentDictRow {
+    CommentDictRow {
+        id: a.id.clone(),
+        label: a.label.clone(),
+        path: String::new(),
+        schemas: a.schemas.clone(),
+        auto: true,
+        rel: a.rel.clone(),
+        raw,
+    }
+}
+
+/// 路径 → 不含扩展名的文件干（供显示名与 id 兜底）。
+fn file_stem_of(path: &str) -> String {
+    path.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 校验表单，返回错误原因（`None` = 可以保存）。纯函数，供测试。
@@ -346,7 +647,7 @@ pub fn validate(id: &str, path: &str, existing_ids: &[String]) -> Option<&'stati
         return Some("标识不能含空格");
     }
     if existing_ids.iter().any(|x| x == id) {
-        return Some("标识重复，换一个");
+        return Some("标识重复");
     }
     if path.trim().is_empty() {
         return Some("请填写词库路径");
@@ -361,10 +662,13 @@ fn row_desc(r: &CommentDictRow) -> String {
     } else {
         r.schemas.join("、")
     };
-    if r.path.is_empty() {
+    // 自动项显示的是**词库**的路径（注释就长在它身上），故取 `rel` 而非 `path`
+    // ——后者对自动项恒为空，它没有自己的文件。
+    let src = if r.auto { &r.rel } else { &r.path };
+    if src.is_empty() {
         scope
     } else {
-        format!("{} · {}", r.path, scope)
+        format!("{src} · {scope}")
     }
 }
 
@@ -404,26 +708,33 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
             } else {
                 r.label.clone()
             };
-            let ctrl = Element::row()
-                .cross(Align::Center)
-                .spacing(6)
-                .child(
-                    Element::button("编辑")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
+            // ★ 自动项不给「编辑 / 删除」：它的路径与适用方案是 core **检测出来的事实**，
+            // 改了下次启动就被检测结果覆盖，删了下次启动又长回来。给一个按不动的按钮，
+            // 比不给更让人困惑。用户能改的只有开关与顺序，那两样都还在。
+            let mut ctrl = Element::row().cross(Align::Center).spacing(6);
+            if r.auto {
+                ctrl = ctrl.child(
+                    Element::label("自动")
+                        .font_size(11.0)
+                        .fg_role(Role::TextSubtle),
+                );
+            } else {
+                ctrl =
+                    ctrl.child(Element::button("编辑").small().outline_soft().on_click(
+                        move |_| {
                             if let Some(row) = e_ui.rows.get().get(idx) {
                                 e_ui.form.open_edit(idx, row);
                             }
-                        }),
-                )
-                .child(
-                    Element::button("删除")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| d_ui.delete(idx)),
-                )
-                .child(Element::switch(sig));
+                        },
+                    ))
+                    .child(
+                        Element::button("删除")
+                            .small()
+                            .outline_soft()
+                            .on_click(move |_| d_ui.delete(idx)),
+                    );
+            }
+            let ctrl = ctrl.child(Element::switch(sig));
 
             Element::col()
                 .width_match()
@@ -469,14 +780,15 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
         .child(Element::divider())
         .child(
             Element::label(
-                "供候选注释模板的 ${dict} 变量查询（英汉释义、Emoji 名称等）。\
-                 词库文件请放在数据目录的 schemas\\comments\\ 下，这里填相对 schemas\\ 的路径。\n\
-                 同一个词在多个库里都有注释时取靠前那个，可拖动左侧手柄调整顺序。",
+                "供候选注释模板的 ${dict} 变量查询。词库文件放在数据目录的 \
+                 schemas\\comments\\ 下，用「添加词库…」选取。\n\
+                 标「自动」的条目来自词库自带的 comment 列，仅可启停与排序。\n\
+                 同一词条在多个库中都有注释时取靠前者，可拖动左侧手柄调整顺序。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
             .width_match()
-            .max_lines(4)
+            .max_lines(5)
             .padding_xy(18, 10),
         )
         .child(list)
@@ -491,7 +803,7 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
                     Element::button("添加词库…")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| new_ui.form.open_new()),
+                        .on_click(move |_| new_ui.picker.set(true)),
                 )
                 .child(Element::leaf().weight(1.0))
                 .child(
@@ -503,7 +815,184 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
 
     Element::stack()
         .child(Element::dialog(visible, frame))
+        .child(build_file_picker_dialog(ui))
         .child(build_dict_form_dialog(ui))
+}
+
+/// 二级弹层：从 `schemas\comments\` 扫到的文件里挑一个。
+///
+/// # 为什么「选」比「填」值得多写这一屏
+///
+/// 原来这里只有一个路径输入框，用户得自己保证：相对的是 `schemas\` 而不是数据目录、
+/// 分隔符写对、文件名一个字母不差。三样里错任何一样，core 都只往日志里写一行
+/// 「注释词库不存在」，界面上什么都不会发生 —— 「配了没反应」这类问题在本仓反复出现，
+/// 根子多半就是这种「让用户手打一个内部标识」的输入框。
+fn build_file_picker_dialog(ui: &CommentDictsUi) -> Element {
+    let visible = ui.picker;
+    let pick_ui = ui.clone();
+
+    let list = Element::list_signal(
+        ui.files,
+        |f: &CommentFile| f.path.clone(),
+        move |f: CommentFile| {
+            let mounted = pick_ui
+                .rows
+                .get()
+                .iter()
+                .any(|r| !r.auto && paths_eq(&r.path, &f.path));
+            let name = if f.label.is_empty() {
+                file_stem_of(&f.path)
+            } else {
+                f.label.clone()
+            };
+            let desc = match (mounted, f.has_comment) {
+                (true, _) => format!("{} · 已添加", f.path),
+                // 缺 comment 列的文件照样列出来（core 加载时会整库跳过）：滤掉的话
+                // 用户看到的是「我放进去的文件不见了」，比一句说明难查得多。
+                (false, false) => format!("{} · 缺 comment 列", f.path),
+                (false, true) => f.path.clone(),
+            };
+            let sel_ui = pick_ui.clone();
+            let file = f.clone();
+            let btn = if mounted {
+                Element::label("已添加")
+                    .font_size(11.0)
+                    .fg_role(Role::TextSubtle)
+            } else {
+                Element::button("添加").small().on_click(move |_| {
+                    let taken: Vec<String> =
+                        sel_ui.rows.get().iter().map(|r| r.id.clone()).collect();
+                    sel_ui.form.open_new_from_file(&file, &taken);
+                    sel_ui.picker.set(false);
+                })
+            };
+            Element::col()
+                .width_match()
+                .child(Element::divider())
+                .child(
+                    crate::widgets::setting_row(&name, Some(&desc), btn)
+                        .width_match()
+                        .padding_xy(8, 0),
+                )
+        },
+    );
+
+    let manual_ui = ui.clone();
+    let frame = Element::col()
+        .width(520)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("选择注释词库")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(
+            Element::label(
+                "数据目录 schemas\\comments\\ 下找到的词库文件。\n\
+                 列表为空表示该目录中没有 .dict.yaml；放入后重新打开本页。",
+            )
+            .font_size(12.0)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(3)
+            .padding_xy(18, 8),
+        )
+        .child(Element::col().width_match().height(240).child(list))
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .spacing(8)
+                // 手填入口留着：词库放在 `comments\` 之外（第三方方案自带的、或用户自己
+                // 分了子目录）时扫描列表里没有它，但那条路径本身完全合法。
+                .child(
+                    Element::button("手动填写路径…")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            manual_ui.form.open_new();
+                            manual_ui.picker.set(false);
+                        }),
+                )
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("取消")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
+}
+
+/// 两个相对路径是否指同一个文件：分隔符与大小写都不该让「已添加」判错。
+///
+/// Windows 上 `comments/en.dict.yaml` 与 `comments\En.Dict.yaml` 是同一个文件，判成
+/// 两个的后果是同一个库被添加两次 —— core 按解析后路径去重，于是第二条静默失效，
+/// 用户看到的是「我添加了它，可它不生效」。
+fn paths_eq(a: &str, b: &str) -> bool {
+    let norm = |x: &str| x.replace('\\', "/").to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// 表单里的「适用方案」：每个方案一个勾选框。**一个都不勾 = 全部方案。**
+///
+/// 从逗号分隔的文本框换过来的。方案 id 是内部标识（`wubi86`、`rime_frost` 之类），
+/// 让用户凭记忆拼对、拼错了还没有任何反馈（core 只是查不到而已），是这一屏原来最容易
+/// 配错的一格；全角逗号那条陷阱也随之一起消失 —— 没有输入框就没有分隔符。
+///
+/// # ★ `host_signal` + 自己的 `scroll`，不是 `list_signal`
+///
+/// `list_signal` 内部是 `scroll().fill()`，`fill` 要靠父给确定视口，而这里的父只是对话框
+/// 里一个普通 col ⇒ 拿不到确定高度，**列表被裁掉一截却滚不动**。判据见
+/// `host_signal` 的文档：滚动容器按无限高度测量子元素。这里把滚动放在**自己这一层**
+/// （显式 `width_match` + `height`，同 `field_dialogs::shell_with_buttons` 的写法），
+/// 内层就该用非滚动的 `host_signal`。
+///
+/// ⚠️ 本仓在这个坑上已经栽过三次（`build_schema_inline_list`、`schema_key_actions::build_body`、
+/// 这里），每次的症状都一模一样：**滚不动**。选响应式列表 API 时先问一句「谁负责滚」。
+fn build_schema_picker(ui: &CommentDictsUi) -> Element {
+    let form = ui.form.clone();
+    let boxes = Element::host_signal(ui.schemas_all, move |(id, name): (String, String)| {
+        Element::checkbox(&name, form.schema_sig(&id))
+            .small()
+            .fg_role(Role::Text)
+    });
+    Element::row()
+        .width_match()
+        .spacing(8)
+        .child(Element::label("适用方案").font_size(12.5).width(72))
+        .child(
+            Element::col()
+                .weight(1.0)
+                .spacing(4)
+                .child(
+                    Element::scroll()
+                        .width_match()
+                        .height(108)
+                        .border_role(Role::Border, 1)
+                        .corner(6.0)
+                        .padding_xy(8, 6)
+                        .child(boxes),
+                )
+                // 说明贴在控件正下方而不是只写在表单顶部那段：**空列表本身没有任何形状**
+                // ——一个都不勾时界面上看不出「这是限定了零个方案」还是「这是不限定」，
+                // 而两者的行为正好相反。这句话是那个状态唯一的读法。
+                .child(
+                    Element::label("无勾选 - 对所有方案启用")
+                        .font_size(11.5)
+                        .fg_role(Role::TextMuted),
+                ),
+        )
 }
 
 /// 二级弹层：新建 / 编辑一条词库。
@@ -530,9 +1019,8 @@ fn build_dict_form_dialog(ui: &CommentDictsUi) -> Element {
         .child(Element::divider())
         .child(
             Element::label(
-                "标识只用于内部定位（不显示），同一个标识不能重复。\n\
-                 路径相对 schemas\\，如 comments\\emoji.dict.yaml。\n\
-                 适用方案留空 = 全部方案；填多个用逗号分隔，如 pinyin，wubi86。",
+                "标识仅用于内部定位，不在界面显示，且不可重复。\n\
+                 路径相对 schemas\\，如 comments\\emoji.dict.yaml。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
@@ -548,7 +1036,7 @@ fn build_dict_form_dialog(ui: &CommentDictsUi) -> Element {
                 .child(field_row("标识", form.id, "emoji"))
                 .child(field_row("显示名", form.label, "Emoji 名称"))
                 .child(field_row("路径", form.path, "comments\\emoji.dict.yaml"))
-                .child(field_row("适用方案", form.schemas, "留空 = 全部方案")),
+                .child(build_schema_picker(ui)),
         )
         .child(
             Element::label_signal(form.error)
@@ -581,12 +1069,20 @@ fn build_dict_form_dialog(ui: &CommentDictsUi) -> Element {
                         return;
                     }
                     fc.error.set(String::new());
+                    // 顺序取界面上的方案顺序（`schemas_all`），而不是 HashMap 的遍历序
+                    // ——后者每次运行都不同，会让「什么都没改，保存后配置 diff 却变了」。
+                    let order: Vec<String> = ui2
+                        .schemas_all
+                        .get()
+                        .into_iter()
+                        .map(|(id, _)| id)
+                        .collect();
                     ui2.commit_form(
                         idx,
                         id,
                         fc.label.get().trim().to_string(),
                         path,
-                        parse_schemas(&fc.schemas.get()),
+                        fc.selected_schemas(&order),
                     );
                     fc.visible.set(false);
                 })),
@@ -649,16 +1145,142 @@ mod tests {
         assert_eq!(flags, vec![true, false]);
     }
 
-    /// ⚠️ 全角逗号必须认：界面上的示例写的就是全角，只认半角会拼出一个匹配不到任何
-    /// 方案的 id，表现是「限定了方案，结果哪个方案都不显示」。
+    fn autos(ids: &[&str]) -> Vec<AutoSource> {
+        ids.iter()
+            .map(|id| AutoSource {
+                id: format!("auto:{id}"),
+                label: format!("{id} 词库"),
+                rel: id.to_string(),
+                schemas: vec!["pinyin".into()],
+            })
+            .collect()
+    }
+
+    /// 自动派生项要出现在列表里，且排在手工项**之后**。
     #[test]
-    fn parse_schemas_accepts_full_width_separators() {
-        assert_eq!(parse_schemas("pinyin，wubi86"), vec!["pinyin", "wubi86"]);
-        assert_eq!(
-            parse_schemas("pinyin, wubi86 ;english"),
-            vec!["pinyin", "wubi86", "english"]
+    fn merge_rows_appends_new_auto_sources_at_the_end() {
+        let rows = merge_rows(
+            &arr(json!([{ "id": "en", "path": "comments/en.dict.yaml" }])),
+            &autos(&["pinyin/frost.dict.yaml"]),
         );
-        assert!(parse_schemas("  ").is_empty(), "留空 = 全部方案");
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].auto && rows[0].id == "en");
+        assert!(rows[1].auto, "自动项排在手工项之后");
+        assert_eq!(
+            rows[1].rel, "pinyin/frost.dict.yaml",
+            "副标题显示的是词库路径"
+        );
+        assert_eq!(rows[1].schemas, ["pinyin"], "白名单来自检测结果");
+    }
+
+    /// 引用空壳把自动项的位置交回用户；认领不到的空壳丢弃。
+    #[test]
+    fn merge_rows_honors_shell_position_and_drops_unclaimed() {
+        let items = arr(json!([
+            { "id": "auto:pinyin/frost.dict.yaml", "auto": true, "enabled": false },
+            { "id": "auto:没了.dict.yaml", "auto": true },
+            { "id": "en", "path": "comments/en.dict.yaml" },
+        ]));
+        let auto = autos(&["pinyin/frost.dict.yaml"]);
+        let rows = merge_rows(&items, &auto);
+        assert_eq!(
+            rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["auto:pinyin/frost.dict.yaml", "en"],
+            "空壳在前 ⇒ 自动项优先级高于手工项；认领不到的那条丢弃"
+        );
+        assert_eq!(
+            merged_enabled_flags(&items, &auto),
+            vec![false, true],
+            "启用位要与行一一对齐（丢掉的那条不能把后面的错位）"
+        );
+    }
+
+    /// ★ 什么都没动就不该往配置里写空壳 —— 守门测试
+    /// `untouched_settings_produce_no_diff` 拦的正是这类静默改写。
+    #[test]
+    fn untouched_auto_rows_are_not_written_back() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["pinyin/frost.dict.yaml"]));
+        let items = arr(json!([{ "id": "en", "path": "comments/en.dict.yaml" }]));
+        ui.seed(&items);
+        assert_eq!(ui.rows.get().len(), 2, "界面上要看得见自动项");
+        assert_eq!(
+            ui.to_value().as_array().map(Vec::len),
+            Some(1),
+            "但配置里只留手工那条"
+        );
+    }
+
+    /// 动过（这里是关掉）之后就要固化成空壳，否则关掉的状态存不下来。
+    #[test]
+    fn toggling_an_auto_row_writes_a_shell() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["pinyin/frost.dict.yaml"]));
+        ui.seed(&arr(json!([])));
+        ui.switch_of("auto:pinyin/frost.dict.yaml", true).set(false);
+
+        let out = ui.to_value();
+        let a = out.as_array().expect("数组");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].get("auto").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(a[0].get("enabled").and_then(|v| v.as_bool()), Some(false));
+        assert!(
+            a[0].get("path").is_none() && a[0].get("schemas").is_none(),
+            "空壳不落 path / schemas——它们每次启动由 core 重新检测，写进去就成了过时快照"
+        );
+    }
+
+    /// 配置里本来就有空壳时原样写回，哪怕它恰好处在「默认形态」。
+    #[test]
+    fn hand_written_shell_survives_a_round_trip() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["pinyin/frost.dict.yaml"]));
+        ui.seed(&arr(json!([
+            { "id": "auto:pinyin/frost.dict.yaml", "auto": true, "enabled": true }
+        ])));
+        assert_eq!(
+            ui.to_value().as_array().map(Vec::len),
+            Some(1),
+            "用户自己写进配置的空壳不能被保存一次就抹掉"
+        );
+    }
+
+    /// 「已添加」的判定不该被分隔符或大小写骗过去 —— 判错的后果是同一个库被添加两次，
+    /// 而 core 按解析后路径去重，第二条静默失效。
+    #[test]
+    fn paths_eq_ignores_separator_and_case() {
+        assert!(paths_eq("comments/en.dict.yaml", "comments\\En.Dict.yaml"));
+        assert!(!paths_eq("comments/en.dict.yaml", "comments/en2.dict.yaml"));
+    }
+
+    /// 从候选文件新建：id / 显示名 / 路径全部预填，用户不必手打任何一个。
+    #[test]
+    fn open_new_from_file_prefills_everything() {
+        let form = DictForm::new();
+        let f = CommentFile {
+            path: "comments/en.dict.yaml".into(),
+            label: "简明英汉".into(),
+            has_comment: true,
+        };
+        form.open_new_from_file(&f, &["en".to_string()]);
+        assert_eq!(form.id.get(), "en2", "id 撞了要自动加序号");
+        assert_eq!(form.label.get(), "简明英汉");
+        assert_eq!(form.path.get(), "comments/en.dict.yaml");
+    }
+
+    /// 适用方案改成勾选后，写回顺序取界面顺序而非 HashMap 遍历序 ——
+    /// 后者每次运行都不同，会让「什么都没改，保存后配置 diff 却变了」。
+    #[test]
+    fn selected_schemas_follows_display_order() {
+        let form = DictForm::new();
+        let order = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        form.schema_sig("c").set(true);
+        form.schema_sig("a").set(true);
+        assert_eq!(form.selected_schemas(&order), vec!["a", "c"]);
+        assert!(
+            DictForm::new().selected_schemas(&order).is_empty(),
+            "一个都不勾 = 全部方案"
+        );
     }
 
     /// ★ 有行时也要能构建出来。
@@ -675,6 +1297,37 @@ mod tests {
             { "id": "emoji", "label": "Emoji 名称", "path": "comments/emoji.dict.yaml" },
             { "id": "en", "path": "comments/en.dict.yaml", "enabled": false, "schemas": ["english"] },
         ])));
+        let _ = build_comment_dicts_dialog(&ui);
+    }
+
+    /// 自动项行与「选择词库」弹层同样要能构建。
+    ///
+    /// 两段都只在数据非空时才走到（出厂配置是空数组、mock 之外没有 files），
+    /// 不造几条进去就永远测不到 —— 而 windui 的 `.small()` / `.outline_soft()` 落到
+    /// 非 Button/CheckBox/Switch 上是 debug 期 `debug_assert!(false)`，编译期一律放行。
+    #[test]
+    fn dialog_builds_with_auto_rows_and_files() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["pinyin/frost.dict.yaml"]));
+        ui.files.set(vec![
+            CommentFile {
+                path: "comments/en.dict.yaml".into(),
+                label: "简明英汉".into(),
+                has_comment: true,
+            },
+            CommentFile {
+                path: "comments/broken.dict.yaml".into(),
+                label: String::new(),
+                has_comment: false,
+            },
+        ]);
+        ui.schemas_all.set(vec![
+            ("pinyin".into(), "全拼".into()),
+            ("wubi86".into(), "五笔".into()),
+        ]);
+        ui.seed(&arr(
+            json!([{ "id": "en", "path": "comments/en.dict.yaml" }]),
+        ));
         let _ = build_comment_dicts_dialog(&ui);
     }
 

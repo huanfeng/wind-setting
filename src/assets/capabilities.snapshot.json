@@ -127,7 +127,7 @@
       "default": false,
       "key": "schema.codetable.english_merge.enable",
       "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文混入设置；方案没写的项仍然用这里的值。",
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
         "section": "[codetable.english_merge]"
       },
       "type": "bool"
@@ -136,7 +136,7 @@
       "default": 3,
       "key": "schema.codetable.english_merge.min_length",
       "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文混入设置；方案没写的项仍然用这里的值。",
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
         "section": "[codetable.english_merge]"
       },
       "type": "int"
@@ -145,7 +145,7 @@
       "default": true,
       "key": "schema.codetable.english_merge.block_commit",
       "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文混入设置；方案没写的项仍然用这里的值。",
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
         "section": "[codetable.english_merge]"
       },
       "type": "bool"

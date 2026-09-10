@@ -3178,6 +3178,9 @@ fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) 
     use crate::dialogs::comment_dicts_dialog::{CommentDictsUi, build_comment_dicts_dialog};
 
     let ui = CommentDictsUi::new();
+    // 先拉来源再 seed：`seed` 要把自动派生项合并进列表，拿不到来源的话那些行就不会出现，
+    // 而用户随后一保存，配置里已有的引用空壳会被当成「认领不到」一并抹掉。顺序不能反。
+    ui.refresh_sources();
     ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
 
     let ui_w = ui.clone();
@@ -3195,6 +3198,7 @@ fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) 
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
+            ui_l.refresh_sources();
             ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
         }),
     );

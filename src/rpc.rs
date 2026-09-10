@@ -1315,6 +1315,20 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "config.degradation" => json!({
             "degraded": false, "sections": [], "totalFallback": false, "unparsable": []
         }),
+        // 注释词库的可选来源。id 里的 `auto:` 前缀与 core 的 `auto_comment_id` 同源
+        // ——本屏靠它把自动派生项与手工项分开，前缀写错的表现是「自动项变成可删的手工项」。
+        // 两个 files 一有一无 comment 列：缺列的那份要能看到「缺 comment 列」那行说明。
+        "comment.sources" => json!({
+            "auto": [
+                { "id": "auto:pinyin/rime_frost.dict.yaml", "label": "朗月拼音词库",
+                  "rel": "pinyin/rime_frost.dict.yaml", "schemas": ["pinyin_simp"] }
+            ],
+            "files": [
+                { "path": "comments/en.dict.yaml", "label": "简明英汉", "hasComment": true },
+                { "path": "comments/emoji.dict.yaml", "label": "Emoji 名称", "hasComment": true },
+                { "path": "comments/broken.dict.yaml", "label": "", "hasComment": false }
+            ]
+        }),
         "schema.list" => json!([
             { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "scheme": "",
               "builtin": true, "version": "2.1.0", "description": "标准五笔 86 版码表方案", "author": "王永民" },
