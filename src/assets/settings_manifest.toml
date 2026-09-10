@@ -1558,9 +1558,9 @@ label = "Caps Lock（macOS 无效）"
 [[items.options]]
 value = "tab"
 label = "Tab"
-[[items.options]]
-value = "escape"
-label = "Esc"
+# 值域里还有 escape / enter / space（见 core 的 parse_case_cycle_key），但**不列进下拉**：
+# 它们在输入态都有既有语义（Esc 取消组合、回车/空格上屏），推荐给普通用户等于让他丢掉一个
+# 常用键。想用的人手写进 config.toml 仍然生效。
 
 # ── 生僻字 ──
 # 没有「启用」开关：不绑触发键就进不去，那已经是关闭态，再加个开关就是两个真相源
