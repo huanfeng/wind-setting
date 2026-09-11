@@ -2209,9 +2209,9 @@ options = [
 key = "ui.candidate.pager_bar_display"
 group = "ui"
 section = "主题"
-type = "select"
+type = "select_by_layout"
 label = "翻页栏显示"
-hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染"
+hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染。横排、竖排可分别设——横排的翻页栏要挤占候选共享的那一行，竖排多一行代价小"
 width = 200
 options = [
   { value = "", label = "默认（主题配置）" },
@@ -2224,9 +2224,9 @@ options = [
 key = "ui.candidate.page_number_display"
 group = "ui"
 section = "主题"
-type = "select"
+type = "select_by_layout"
 label = "显示页码"
-hint = "翻页栏可见时，是否显示页码文字"
+hint = "翻页栏可见时，是否显示页码文字；横排、竖排可分别设"
 width = 200
 options = [
   { value = "", label = "默认（主题配置）" },

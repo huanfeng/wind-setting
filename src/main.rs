@@ -7,6 +7,7 @@
 
 mod add_word_window;
 mod auto_encode;
+mod by_layout;
 mod capabilities;
 mod cli;
 mod config;

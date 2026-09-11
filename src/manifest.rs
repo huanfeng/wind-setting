@@ -478,6 +478,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "toggle",
     "toggle_slash_dun",
     "select",
+    "select_by_layout",
     "select_mix_layout",
     "select_mix_free_input",
     "checkbox_mix_free_select_keys",
@@ -506,6 +507,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "toggle" => build_toggle(state, key, item, cfg),
         "toggle_slash_dun" => build_toggle_slash_dun(state, key, cfg),
         "select" => build_select(state, key, item, cfg),
+        "select_by_layout" => build_select_by_layout(state, key, item, cfg),
         "select_mix_layout" => build_select_mix_layout(state, key, item, cfg),
         "select_mix_free_input" => build_select_mix_free_input(state, key, item, cfg),
         "checkbox_mix_free_select_keys" => build_checkbox_mix_free_select_keys(state, key, cfg),
@@ -1057,6 +1059,90 @@ fn build_open_log_dir() -> Element {
                 tracing::warn!("打开日志目录失败: {e}");
             }
         })
+}
+
+/// 可**按候选窗排布分档**的枚举项：渲染成「横排 [下拉] 竖排 [下拉]」两个控件。
+///
+/// core 那边这是**一个**配置键（`wind_config::by_layout::ByLayout`，值形如 `"hide"` 或
+/// `"h:hide v:always"`），但用户要设的是两件事，故一行两个控件。读时拆、写时合，拆合在
+/// [`crate::by_layout`]（与 core 的实现由测试钉住一致）。
+///
+/// ★ 两档相同时写回的是**标量**（`"hide"`），配置文件里看着就是老样子——用户没用分档
+/// 功能就不该平白多出 `h:`/`v:` 前缀。
+///
+/// ⚠️ 与 `dialog_extra_for` 那套「两个 key 各一个控件」不是一回事：那套的前提是注册表里
+/// 真有两个键（如 `min_window_width_horizontal` / `_vertical`），这里只有一个。
+fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    let (values, labels): (Vec<String>, Vec<String>) = item
+        .options
+        .iter()
+        .map(|o| (o.value.clone(), o.label.clone()))
+        .unzip();
+    if values.is_empty() {
+        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+    }
+    let def_str = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let raw = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def_str.clone());
+    let (cur_h, cur_v) = crate::by_layout::split(&raw);
+
+    let mut vh = values.clone();
+    let mut lh = labels.clone();
+    let sig_h = signal(select_index_for(&mut vh, &mut lh, &cur_h));
+    let mut vv = values.clone();
+    let mut lv = labels;
+    let sig_v = signal(select_index_for(&mut vv, &mut lv, &cur_v));
+
+    let (wh, wv, kw) = (vh.clone(), vv.clone(), key.to_string());
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            let h = wh.get(sig_h.get()).map(String::as_str).unwrap_or("");
+            let v = wv.get(sig_v.get()).map(String::as_str).unwrap_or("");
+            c.set_path(&kw, Value::String(crate::by_layout::join(h, v)));
+        }));
+
+    let (lh2, lv2, kl, def_l) = (vh.clone(), vv.clone(), key.to_string(), def_str);
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            let raw = c
+                .get_str(&kl)
+                .map(str::to_string)
+                .unwrap_or_else(|| def_l.clone());
+            let (h, v) = crate::by_layout::split(&raw);
+            sig_h.set(lh2.iter().position(|x| *x == h).unwrap_or(0));
+            sig_v.set(lv2.iter().position(|x| *x == v).unwrap_or(0));
+        }),
+    );
+
+    let (gh, gv) = (vh, vv);
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || {
+            let h = gh.get(sig_h.get()).map(String::as_str).unwrap_or("");
+            let v = gv.get(sig_v.get()).map(String::as_str).unwrap_or("");
+            Value::String(crate::by_layout::join(h, v))
+        }),
+    );
+
+    let w = item.width.map(|w| w as i32).unwrap_or(CTRL_W);
+    Element::row()
+        .cross(Align::Center)
+        .spacing(6)
+        .child(Element::label("横").fg_role(Role::TextMuted))
+        .child(Element::dropdown(lh, sig_h).width(w))
+        .child(Element::label("竖").fg_role(Role::TextMuted))
+        .child(Element::dropdown(lv, sig_v).width(w))
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {

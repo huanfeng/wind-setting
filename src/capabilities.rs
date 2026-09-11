@@ -201,6 +201,10 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // **清单列不列得全值域**——列不全故写回只增删自己列出的项。capability 里同样
         // 没有这个维度（它只知道类型），故也只能由清单的 type 声明。
         "dialog_button_open_pairs" => ty == "strlist",
+        // select_by_layout：横竖两个下拉读写**同一个** enum 键（core 的 ByLayout，值形如
+        // `"h:hide v:always"`）。故按 enum 校验——值域就是那个 enum 的值域，每一档各取
+        // 其一；core 侧另有 `byLayout` 标记位表明这个键允许分档写法。
+        "select_by_layout" => ty == "enum",
         // select_mix_layout：下拉，但读写的是 structlist 里按 id 定位的一个字符串字段
         // （quick_mix 的 candidate_layout），故按 structlist 而非 enum 校验。
         "select_mix_layout" => ty == "structlist",

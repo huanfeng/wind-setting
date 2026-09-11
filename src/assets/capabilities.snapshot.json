@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.120.2",
+  "appVersion": "0.121.1",
   "configKeys": [
     {
       "default": "wubi86",
@@ -1380,6 +1380,7 @@
       "type": "bool"
     },
     {
+      "byLayout": true,
       "default": "",
       "key": "ui.candidate.pager_bar_display",
       "type": "enum",
@@ -1391,6 +1392,7 @@
       ]
     },
     {
+      "byLayout": true,
       "default": "",
       "key": "ui.candidate.page_number_display",
       "type": "enum",
