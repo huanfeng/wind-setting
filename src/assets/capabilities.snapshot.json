@@ -1821,7 +1821,7 @@
       "type": "bool"
     },
     {
-      "default": "中文 (简体) - 郑码",
+      "default": "拼音输入法",
       "key": "system.dota2_compat_name",
       "type": "str"
     },

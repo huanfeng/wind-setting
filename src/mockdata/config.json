@@ -358,7 +358,7 @@
  },
  "system": {
   "dota2_compat": false,
-  "dota2_compat_name": "中文 (简体) - 郑码"
+  "dota2_compat_name": "拼音输入法"
  },
  "ui": {
   "candidate": {
