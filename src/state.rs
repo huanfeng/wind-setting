@@ -622,6 +622,10 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
                 Some(v) => v,
                 None => fields.system_baseline_str(NAME_KEY).unwrap_or_default(),
             };
+            // 首尾空白在这里就剪掉：core 的清洗规则头一条就是 trim，不先剪的话
+            // 「在名字后面多敲了一个空格」会被判成改名，白弹一次 UAC 去写一个与
+            // 现值完全相同的注册表项。⛔ 只做 trim，别在这儿复制 core 的其余规则。
+            let name = name.trim().to_string();
             Some(Dota2Intent { enabled, name })
         }
     };
@@ -656,6 +660,9 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
                 return Ok(());
             }
             crate::dota2_compat::apply(now.enabled, &now.name)?;
+            // ⚠️ 推进基线用的是**界面上那个串**，而注册表里落的是 core 清洗过的串。
+            // 两者只在首尾空白上可能不同，而 `read_now` 已经先 trim 过一道（见那里）；
+            // 其余清洗规则都是「要么原样通过、要么整条拒绝」，不会改写内容。
             commit_fields.set_system_baseline(KEY, Value::Bool(now.enabled));
             commit_fields.set_system_baseline(NAME_KEY, Value::String(now.name));
             Ok(())
