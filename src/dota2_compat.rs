@@ -19,19 +19,69 @@ fn core_exe() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// 把开关状态落到系统里。用户会看到一次 UAC；点「否」按失败处理。
+/// 把一个参数包成 Windows 命令行的一段。
+///
+/// **为什么必须有它**：登记名称天然带空格（`中文 (简体) - 郑码`），不加引号传过去，
+/// core 那侧的 `argv` 会把它拆成三段，`--name` 只收到第一个词——于是写进注册表的是
+/// 半截名字，游戏里照样不命中，而两边都不报错。
+///
+/// 规则按 MSVC 的 `argv` 解析反推：反斜杠只有在紧邻引号时才具转义含义，故只需在
+/// 引号前、以及串尾（那里紧跟我们自己补的收尾引号）把反斜杠加倍。
+fn quote_arg(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for c in s.chars() {
+        match c {
+            '\\' => {
+                backslashes += 1;
+                out.push(c);
+            }
+            '"' => {
+                // 加倍已攒下的反斜杠，再转义这个引号本身。
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push_str("\\\"");
+            }
+            _ => {
+                backslashes = 0;
+                out.push(c);
+            }
+        }
+    }
+    // 串尾的反斜杠紧邻下面这个收尾引号，同样要加倍，否则它会把收尾引号转义掉。
+    for _ in 0..backslashes {
+        out.push('\\');
+    }
+    out.push('"');
+    out
+}
+
+/// 把开关状态与登记名称落到系统里。用户会看到一次 UAC；点「否」按失败处理。
 ///
 /// 只在**值确实变了**时调用（见 `state::register_system_registrations`）——每次保存都弹
 /// 一次 UAC 是不可接受的。
+///
+/// `name` 不在本仓校验，原样转达给 core：清洗规则（trim / 控制字符 / 长度上限）与
+/// 出厂值都在 `wind_config::sanitize_dota2_alias`，抄第二份就是漂移源。名字不合法时
+/// core 以非零码退出——但 `ShellExecuteW` 拿不到退出码（见下），故这条路径上用户看到的
+/// 是「设置没生效」而不是一句报错。关闭时 `name` 被 core 忽略。
 #[cfg(windows)]
-pub fn apply(enabled: bool) -> Result<(), String> {
+pub fn apply(enabled: bool, name: &str) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
 
     let exe = core_exe().ok_or_else(|| {
         "找不到输入法主程序，无法应用 Dota 2 兼容设置（请确认输入法已正常安装）".to_string()
     })?;
 
-    let params = format!("system dota2-compat {}", if enabled { "on" } else { "off" });
+    let params = if enabled {
+        format!("system dota2-compat on --name {}", quote_arg(name))
+    } else {
+        // 关闭时不带名字：core 那侧也不看它，少传一个参数就少一条出错的路。
+        "system dota2-compat off".to_string()
+    };
 
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
@@ -80,6 +130,29 @@ pub fn apply(enabled: bool) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub fn apply(_enabled: bool) -> Result<(), String> {
+pub fn apply(_enabled: bool, _name: &str) -> Result<(), String> {
     Err("Dota 2 兼容仅在 Windows 上可用".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quote_arg;
+
+    #[test]
+    fn quotes_the_name_so_spaces_survive_argv() {
+        // 出厂别名带三处空格，不加引号 core 侧只会收到「中文」。
+        assert_eq!(quote_arg("中文 (简体) - 郑码"), r#""中文 (简体) - 郑码""#);
+        assert_eq!(quote_arg(""), r#""""#);
+    }
+
+    #[test]
+    fn escapes_quotes_and_trailing_backslashes() {
+        // 引号本身要转义，它前面攒下的反斜杠要加倍。
+        assert_eq!(quote_arg("a\"b"), "\"a\\\"b\"");
+        // 不挨着引号的反斜杠原样保留 —— 加倍它反而会改掉名字的内容。
+        assert_eq!(quote_arg("a\\b"), "\"a\\b\"");
+        // 串尾反斜杠紧邻我们补的收尾引号，不加倍就会把它转义掉、整条命令行从此错位。
+        assert_eq!(quote_arg("a\\"), "\"a\\\\\"");
+        assert_eq!(quote_arg("a\\\\"), "\"a\\\\\\\\\"");
+    }
 }

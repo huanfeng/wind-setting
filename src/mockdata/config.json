@@ -357,7 +357,8 @@
   "track_english": true
  },
  "system": {
-  "dota2_compat": false
+  "dota2_compat": false,
+  "dota2_compat_name": "中文 (简体) - 郑码"
  },
  "ui": {
   "candidate": {

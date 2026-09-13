@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.121.1",
+  "appVersion": "0.121.2",
   "configKeys": [
     {
       "default": "wubi86",
@@ -1819,6 +1819,11 @@
       "default": false,
       "key": "system.dota2_compat",
       "type": "bool"
+    },
+    {
+      "default": "中文 (简体) - 郑码",
+      "key": "system.dota2_compat_name",
+      "type": "str"
     },
     {
       "default": "smart",

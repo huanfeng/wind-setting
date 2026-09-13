@@ -178,17 +178,18 @@ impl FieldRegistry {
     /// 此时基线必须回落到默认值——留空会让 [`system_needs_apply`] 恒判 false，
     /// 开关就再也拧不动了（且毫无提示，和这次修掉的老毛病表现一模一样）。
     ///
-    /// `caps` 拿不到默认值时兜底 `false`：`SYSTEM_BASELINE_KEYS` 目前全是布尔开关，
-    /// 而 false = 未启用 = 不对系统做任何事，是唯一安全的假设。
+    /// `caps` 也拿不到默认值时按键的类型兜底（见 [`SYSTEM_BASELINE_KEYS`] 的第二列）：
+    /// 布尔键回 `false`（未启用 = 不对系统做任何事），字符串键回空串（core 侧把空串
+    /// 定义为「用出厂值」）。兜底值只在快照与 core 漂移时才用得上。
     pub fn seed_system_baseline(&self, cfg: &Config, caps: &Capabilities) {
         let mut b = self.system_baseline.borrow_mut();
         b.clear();
-        for key in SYSTEM_BASELINE_KEYS {
+        for (key, fallback) in SYSTEM_BASELINE_KEYS {
             let v = cfg
                 .get_path(key)
                 .cloned()
                 .unwrap_or_else(|| caps.default_for(key));
-            let v = if v.is_null() { Value::Bool(false) } else { v };
+            let v = if v.is_null() { fallback.value() } else { v };
             b.insert((*key).to_string(), v);
         }
     }
@@ -201,6 +202,14 @@ impl FieldRegistry {
             .and_then(|v| v.as_bool())
     }
 
+    /// 同上，字符串键。
+    pub fn system_baseline_str(&self, key: &str) -> Option<String> {
+        self.system_baseline
+            .borrow()
+            .get(key)
+            .and_then(|v| v.as_str().map(str::to_string))
+    }
+
     /// 落地成功后把基线推到新值——否则同一次会话里再点一次保存会再弹一次 UAC。
     pub fn set_system_baseline(&self, key: &str, value: Value) {
         self.system_baseline
@@ -209,11 +218,37 @@ impl FieldRegistry {
     }
 }
 
-/// 需要跟踪「加载态」的 `system.*` 键。
+/// `caps` 与 config 都给不出值时，一个 `system.*` 键的兜底基线。
+#[derive(Clone, Copy)]
+pub(crate) enum SystemBaselineFallback {
+    Bool(bool),
+    Str(&'static str),
+}
+
+impl SystemBaselineFallback {
+    fn value(self) -> Value {
+        match self {
+            Self::Bool(b) => Value::Bool(b),
+            Self::Str(s) => Value::String(s.to_string()),
+        }
+    }
+}
+
+/// 需要跟踪「加载态」的 `system.*` 键，及其兜底基线。
 ///
 /// 新增 `system.*` 键时**必须**登记在此，否则它的 [`SideCommitter`] 判不出脏、落地动作
 /// 永不执行——而界面上开关照样拧得动，用户只会以为设置坏了。
-pub(crate) const SYSTEM_BASELINE_KEYS: &[&str] = &["system.dota2_compat"];
+pub(crate) const SYSTEM_BASELINE_KEYS: &[(&str, SystemBaselineFallback)] = &[
+    ("system.dota2_compat", SystemBaselineFallback::Bool(false)),
+    ("system.dota2_compat_name", SystemBaselineFallback::Str("")),
+];
+
+/// Dota 2 兼容的落地意图：开关 + 要登记的名称。
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Dota2Intent {
+    pub enabled: bool,
+    pub name: String,
+}
 
 /// 是否需要执行落地动作。
 ///
@@ -221,11 +256,16 @@ pub(crate) const SYSTEM_BASELINE_KEYS: &[&str] = &["system.dota2_compat"];
 /// 就只能靠肉眼守。`is_dirty` 与 `commit` 共用它，两者不会各判各的。
 ///
 /// `base` 为 `None` 表示加载态还不知道（数据没到）——此时一律不动系统。
-fn system_needs_apply(base: Option<bool>, now: bool) -> bool {
-    match base {
-        None => false,
-        Some(b) => b != now,
+///
+/// **名称只在开着的时候算数**：关闭状态下注册表里就是真实名称，改名字改不到任何东西，
+/// 此时判脏只会白弹一次 UAC。反过来，开关没动、只改了名字**必须**落地——否则用户
+/// 换了个名字点应用，界面上写着新名字、系统里还是旧的，且没有任何提示。
+fn system_needs_apply(base: Option<&Dota2Intent>, now: &Dota2Intent) -> bool {
+    let Some(base) = base else { return false };
+    if base.enabled != now.enabled {
+        return true;
     }
+    now.enabled && base.name != now.name
 }
 
 /// 非 `config.toml` 落点的提交器 —— `writers` 之于 config.toml，`SideCommitter` 之于其余。
@@ -560,17 +600,39 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
     // `commit_side()` 一比就判「没变」而跳过落地。症状：config.toml 写了、注册表
     // 纹丝不动、UAC 也不弹。见 `dota2_compat_toggle_is_dirty_after_load`。
     const KEY: &str = "system.dota2_compat";
+    const NAME_KEY: &str = "system.dota2_compat_name";
 
+    // 名称键可能**尚未注册 getter**：它由 manifest 驱动，用户没翻到「高级」页时那批
+    // 控件还没建出来。此时回落到基线（= 加载时的值），意思是「名字没被人动过」，
+    // 于是只按开关判脏。⛔ 别回落到空串——那会让「开着 + 没翻页 + 点应用」误判成
+    // 改名，白弹一次 UAC 还把名字改成出厂值。
     let read_now = {
         let fields = fields.clone();
-        move || -> Option<bool> {
-            let g = fields.getters.borrow();
-            g.get(KEY).and_then(|f| f().as_bool())
+        move || -> Option<Dota2Intent> {
+            let enabled = {
+                let g = fields.getters.borrow();
+                g.get(KEY).and_then(|f| f().as_bool())?
+            };
+            let name = {
+                let g = fields.getters.borrow();
+                g.get(NAME_KEY)
+                    .and_then(|f| f().as_str().map(str::to_string))
+            };
+            let name = match name {
+                Some(v) => v,
+                None => fields.system_baseline_str(NAME_KEY).unwrap_or_default(),
+            };
+            Some(Dota2Intent { enabled, name })
         }
     };
     let base_now = {
         let fields = fields.clone();
-        move || -> Option<bool> { fields.system_baseline_bool(KEY) }
+        move || -> Option<Dota2Intent> {
+            Some(Dota2Intent {
+                enabled: fields.system_baseline_bool(KEY)?,
+                name: fields.system_baseline_str(NAME_KEY).unwrap_or_default(),
+            })
+        }
     };
 
     let dirty_read = read_now.clone();
@@ -584,17 +646,18 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
             let Some(now) = dirty_read() else {
                 return false;
             };
-            system_needs_apply(dirty_base(), now)
+            system_needs_apply(dirty_base().as_ref(), &now)
         }),
         commit: Box::new(move || {
             let Some(now) = commit_read() else {
                 return Ok(());
             };
-            if !system_needs_apply(commit_base(), now) {
+            if !system_needs_apply(commit_base().as_ref(), &now) {
                 return Ok(());
             }
-            crate::dota2_compat::apply(now)?;
-            commit_fields.set_system_baseline(KEY, Value::Bool(now));
+            crate::dota2_compat::apply(now.enabled, &now.name)?;
+            commit_fields.set_system_baseline(KEY, Value::Bool(now.enabled));
+            commit_fields.set_system_baseline(NAME_KEY, Value::String(now.name));
             Ok(())
         }),
     });
@@ -3244,19 +3307,50 @@ mod tests {
         );
     }
 
+    fn intent(enabled: bool, name: &str) -> Dota2Intent {
+        Dota2Intent {
+            enabled,
+            name: name.to_string(),
+        }
+    }
+
     /// 落地判据的边界。`commit` 会弹 UAC 测不了，判据因此抽成纯函数由本条直接守。
     #[test]
     fn system_needs_apply_holds_off_until_loaded() {
+        const N: &str = "中文 (简体) - 郑码";
         assert!(
-            !system_needs_apply(None, true),
+            !system_needs_apply(None, &intent(true, N)),
             "加载态未知时一律不得动系统——那时任何「差异」都是假的"
         );
-        assert!(!system_needs_apply(None, false));
-        assert!(system_needs_apply(Some(false), true), "关→开要落地");
-        assert!(system_needs_apply(Some(true), false), "开→关同样要落地");
+        assert!(!system_needs_apply(None, &intent(false, N)));
         assert!(
-            !system_needs_apply(Some(true), true),
+            system_needs_apply(Some(&intent(false, N)), &intent(true, N)),
+            "关→开要落地"
+        );
+        assert!(
+            system_needs_apply(Some(&intent(true, N)), &intent(false, N)),
+            "开→关同样要落地"
+        );
+        assert!(
+            !system_needs_apply(Some(&intent(true, N)), &intent(true, N)),
             "同值不该重复落地，否则每次保存都白弹一次 UAC"
+        );
+    }
+
+    /// 名称是落地意图的一部分：开着的时候改名必须落地，关着的时候改名不许落地。
+    #[test]
+    fn system_needs_apply_tracks_the_name_only_while_enabled() {
+        assert!(
+            system_needs_apply(Some(&intent(true, "甲")), &intent(true, "乙")),
+            "开关没动、只换了名字也必须落地，否则界面写着新名字、系统里还是旧的"
+        );
+        assert!(
+            !system_needs_apply(Some(&intent(false, "甲")), &intent(false, "乙")),
+            "关着的时候注册表里是真实名称，改名改不到任何东西，判脏只会白弹一次 UAC"
+        );
+        assert!(
+            system_needs_apply(Some(&intent(false, "甲")), &intent(true, "乙")),
+            "同时改了开关与名字，按开关那条判脏即可"
         );
     }
 
