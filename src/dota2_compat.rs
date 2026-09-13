@@ -5,23 +5,83 @@
 //! 它必须与 Dota 2 内置白名单**逐字**一致，抄第二份就是漂移源；core 那边有一条把
 //! 二进制里提取的字节钉死的测试守着，这里只负责把开关意图转达过去。
 //!
-//! ⚠️ **已知缺口：非法名字在本仓这一侧无声无息。** `ShellExecuteW` 拿不到子进程退出码
-//! （见 `apply` 末尾），core 拒掉一个名字时我们收不到任何信号，界面显示成功、基线被推到
-//! 新值，此后永远不判脏——用户看到的是「填了、应用了、游戏里没候选」，再点应用也没用。
-//! 前置校验本该用 core 同一个 `wind_config::sanitize_dota2_alias` 挡在弹 UAC 之前，但
-//! `wind-config` 在本仓只是 **dev-dependency**（见 Cargo.toml 那段「不引入新的路径前提」），
-//! 二进制里链不到。补法有三条，都要先定架构，故暂记在此而非就地抄一份校验：
-//!   ① 把 wind-config 提为正式依赖；
-//!   ② 让 core 在 `config.setItems` 那条 RPC 上校验本键——那条链路有现成的报错通道；
-//!   ③ 设置端改用 `Command::output()` 跑 `system dota2-compat status` 读回真实登记名
-//!      （设置程序无控制台，core 的 `attach_parent_console` 会失败，管道得以保留）。
-//! ⛔ 不要就地抄一份清洗规则：那是漂移源，而漂移的表现同样是「填了没反应」。
+//! ★ **判断「要不要落地」以系统实况为准，不以 config.toml 为准**（[`probe`]）。
+//! 此前基线全部来自配置，于是配置与注册表一旦漂移就永远自愈不了：`base == now` 恒成立
+//! ⇒ 不判脏 ⇒ 落地直接 return，用户唯一的出路是「关掉再打开」两次 UAC，而界面没有任何
+//! 提示说要这么做。漂移来源不止一处——升级重注册、别的输入法、手工改注册表，以及
+//! 「`ShellExecuteW` 拿不到退出码所以 core 拒掉名字我们收不到信号」这一条。
+//! 现在读回实况后，这些情况一律表现为「打开设置页就显示有未保存的更改」，点一次应用即修复。
 //!
 //! **为什么用 `ShellExecuteW` 而非 `Command::spawn`**：只有走 shell 的 `runas` 动词才会
 //! 弹 UAC；`CreateProcess` 系不会提权，会直接以 `ERROR_ELEVATION_REQUIRED` 失败。
 //! 与 `update::install` 同一理由。
 
 use std::path::PathBuf;
+
+/// 系统侧实况：注册表里此刻登记的是什么。
+///
+/// 字段与 core 的 `wind_coordinator::tsf_profile_name::AliasStatus` 一一对应，
+/// 经 `system dota2-compat status --json` 传过来。⛔ 别改成解析那条命令的人话输出：
+/// 它是中文的、随时会为可读性调整，解析错了的表现是「设置页显示的和系统里的不一样」
+/// 且无人察觉。也别在本仓自己拼注册表路径——那要把 CLSID/profile GUID 再抄一份。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SystemAlias {
+    pub description: Option<String>,
+    pub recorded: Option<String>,
+    pub real: String,
+}
+
+impl SystemAlias {
+    /// 系统里此刻是不是开着兼容。判据与 core 一致：登记名不等于真实名。
+    pub fn enabled_now(&self) -> bool {
+        self.description
+            .as_deref()
+            .is_some_and(|d| d != self.real.as_str())
+    }
+
+    /// 系统里此刻用的是哪个别名。未启用时回 `None`。
+    /// 优先取记录值（跨重注册也在），`description` 只是老装机的回退。
+    pub fn alias_now(&self) -> Option<&str> {
+        if !self.enabled_now() {
+            return None;
+        }
+        self.recorded.as_deref().or(self.description.as_deref())
+    }
+}
+
+/// 读回系统实况。任何一步失败都回 `None` —— 调用方据此退回「按配置播种」的老行为，
+/// 而不是让开关失灵。
+///
+/// 只读 HKLM，**不需要提权**，所以走 `Command::output()` 而不是 `ShellExecuteW`：
+/// 前者拿得到退出码和 stdout，后者两样都没有。
+///
+/// ★ `WIND_INPUT_CLI_PIPED=1` 不可省：core 的 CLI 分支默认会
+/// `AttachConsole(ATTACH_PARENT_PROCESS)` 把标准句柄改指控制台，我们接的管道就废了。
+/// 那个环境变量正是为「被程序拉起、输出要走管道」这种场景设的（见 core 的
+/// `handle_cmdbar::WIND_CLI_PIPED_ENV`）。设置程序是 GUI 子系统、通常没有父控制台，
+/// AttachConsole 多半会失败而侥幸无事——但那是碰运气，不是判据。
+#[cfg(windows)]
+pub fn probe() -> Option<SystemAlias> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW：否则每次打开设置页都会闪一个黑框。
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let out = std::process::Command::new(core_exe()?)
+        .args(["system", "dota2-compat", "status", "--json"])
+        .env("WIND_INPUT_CLI_PIPED", "1")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    serde_json::from_slice::<SystemAlias>(&out.stdout).ok()
+}
+
+#[cfg(not(windows))]
+pub fn probe() -> Option<SystemAlias> {
+    None
+}
 
 /// core 可执行文件（与设置程序同目录，dev 变体带 `_dev` 后缀）。
 fn core_exe() -> Option<PathBuf> {
@@ -33,7 +93,7 @@ fn core_exe() -> Option<PathBuf> {
 
 /// 把一个参数包成 Windows 命令行的一段。
 ///
-/// **为什么必须有它**：名单里**多数条目**带空格（如 `中文 (简体) - 搜狗拼音输入法`），
+/// **为什么必须有它**：名单里**多数条目**带空格（如 `中文 (简体) - 双拼`），
 /// 不加引号传过去，core 那侧的 `argv` 会把它拆成好几段，`--name` 只收到第一个词——
 /// 于是写进注册表的是半截名字，游戏里照样不命中，而两边都不报错。
 /// （出厂值「拼音输入法」恰好不含空格，正是挑它的理由之一；但用户一旦换成别的条目
@@ -167,8 +227,8 @@ mod tests {
     fn quotes_the_name_so_spaces_survive_argv() {
         // 名单里多数条目带空格，不加引号 core 侧只会收到第一个词。
         assert_eq!(
-            quote_arg("中文 (简体) - 搜狗拼音输入法"),
-            r#""中文 (简体) - 搜狗拼音输入法""#
+            quote_arg("中文 (简体) - 双拼"),
+            r#""中文 (简体) - 双拼""#
         );
         assert_eq!(quote_arg(""), r#""""#);
     }
@@ -196,8 +256,8 @@ mod tests {
     #[test]
     fn the_on_path_passes_the_name_quoted() {
         assert_eq!(
-            build_params(true, "中文 (简体) - 搜狗拼音输入法").unwrap(),
-            r#"system dota2-compat on --name "中文 (简体) - 搜狗拼音输入法""#
+            build_params(true, "中文 (简体) - 双拼").unwrap(),
+            r#"system dota2-compat on --name "中文 (简体) - 双拼""#
         );
     }
 

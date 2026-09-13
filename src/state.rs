@@ -181,7 +181,16 @@ impl FieldRegistry {
     /// `caps` 也拿不到默认值时按键的类型兜底（见 [`SYSTEM_BASELINE_KEYS`] 的第二列）：
     /// 布尔键回 `false`（未启用 = 不对系统做任何事），字符串键回空串（core 侧把空串
     /// 定义为「用出厂值」）。兜底值只在快照与 core 漂移时才用得上。
-    pub fn seed_system_baseline(&self, cfg: &Config, caps: &Capabilities) {
+    ///
+    /// ★ `sys` 是**注册表实况**（`dota2_compat::probe()`），有就以它为准 —— 基线要回答的
+    /// 是「系统现在是什么样」，而那件事 config.toml 并不知道。拿不到（core 没装好、
+    /// 命令失败）时退回按配置播种，即此前的老行为：宁可漂移不可见，也不能让开关失灵。
+    pub fn seed_system_baseline(
+        &self,
+        cfg: &Config,
+        caps: &Capabilities,
+        sys: Option<&crate::dota2_compat::SystemAlias>,
+    ) {
         let mut b = self.system_baseline.borrow_mut();
         b.clear();
         for (key, fallback) in SYSTEM_BASELINE_KEYS {
@@ -191,6 +200,15 @@ impl FieldRegistry {
                 .unwrap_or_else(|| caps.default_for(key));
             let v = if v.is_null() { fallback.value() } else { v };
             b.insert((*key).to_string(), v);
+        }
+        let Some(sys) = sys else { return };
+        // 开关的实况：登记名是不是已经不等于真实名。
+        b.insert(DOTA2_KEY.to_string(), Value::Bool(sys.enabled_now()));
+        // 名称的实况只在**开着**时有意义：关着的时候注册表里就是真实名，拿它当名称基线
+        // 会把「关着 + 界面上填了个名字」误判成改名（见 `system_needs_apply`，名称只在
+        // 开着时参与比较）。故关着时保留上面按配置播下的值。
+        if let Some(alias) = sys.alias_now() {
+            b.insert(DOTA2_NAME_KEY.to_string(), Value::String(alias.to_string()));
         }
     }
 
@@ -238,9 +256,12 @@ impl SystemBaselineFallback {
 ///
 /// 新增 `system.*` 键时**必须**登记在此，否则它的 [`SideCommitter`] 判不出脏、落地动作
 /// 永不执行——而界面上开关照样拧得动，用户只会以为设置坏了。
+pub(crate) const DOTA2_KEY: &str = "system.dota2_compat";
+pub(crate) const DOTA2_NAME_KEY: &str = "system.dota2_compat_name";
+
 pub(crate) const SYSTEM_BASELINE_KEYS: &[(&str, SystemBaselineFallback)] = &[
-    ("system.dota2_compat", SystemBaselineFallback::Bool(false)),
-    ("system.dota2_compat_name", SystemBaselineFallback::Str("")),
+    (DOTA2_KEY, SystemBaselineFallback::Bool(false)),
+    (DOTA2_NAME_KEY, SystemBaselineFallback::Str("")),
 ];
 
 /// Dota 2 兼容的落地意图：开关 + 要登记的名称。
@@ -599,8 +620,8 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
     // 里 `side_dirty()` 先跑，在那一刻才把**用户刚改的新值**当成基线，紧接着
     // `commit_side()` 一比就判「没变」而跳过落地。症状：config.toml 写了、注册表
     // 纹丝不动、UAC 也不弹。见 `dota2_compat_toggle_is_dirty_after_load`。
-    const KEY: &str = "system.dota2_compat";
-    const NAME_KEY: &str = "system.dota2_compat_name";
+    const KEY: &str = DOTA2_KEY;
+    const NAME_KEY: &str = DOTA2_NAME_KEY;
 
     // 名称键可能**尚未注册 getter**：它由 manifest 驱动，用户没翻到「高级」页时那批
     // 控件还没建出来。此时回落到基线（= 加载时的值），意思是「名字没被人动过」，
@@ -1834,8 +1855,13 @@ impl AppState {
         // `system.*` 的落地基线只能在此确立——这是「本次加载的值」唯一确定的时刻。
         // 放晚了（比如惰性到第一次 `is_dirty`）会把用户的改动当成基线，开关永不生效。
         // ⚠️ 必须排在 `capabilities` **之后**：键被写回剪枝掉时要靠它取默认值。
+        // ★ 基线以**注册表实况**为准，不以 config.toml 为准：要回答的是「系统现在是
+        // 什么样」，而配置并不知道那件事（升级重注册、别的输入法、手工改注册表都会让
+        // 两者分家）。拿不到实况时 probe() 回 None，退回按配置播种的老行为。
+        // 拉一次子进程（只读 HKLM、不提权），在本方法这一处、每次加载一次。
+        let sys = crate::dota2_compat::probe();
         self.fields
-            .seed_system_baseline(&self.base_config, &self.capabilities);
+            .seed_system_baseline(&self.base_config, &self.capabilities, sys.as_ref());
         self.system_info = data.system_info;
         // 降级顶栏。与下面的定制版徽章同理，页面树早已建好，只能靠 Signal 送进去。
         self.degradation.set(degradation_text(&data.degradation));
@@ -3263,7 +3289,8 @@ mod tests {
         }
         // 加载态 = 关闭。播种走的正是 `apply_loaded` 那条路。
         let cfg = Config::from_value(serde_json::json!({"system": {"dota2_compat": false}}));
-        reg.seed_system_baseline(&cfg, &Capabilities::default());
+        // 传 None = 拿不到注册表实况，走「按配置播种」那条回退路径 —— 本条测的正是它。
+        reg.seed_system_baseline(&cfg, &Capabilities::default(), None);
         register_system_registrations(&reg);
 
         assert!(!reg.side_dirty(), "刚加载完、没动过，不该判脏");
@@ -3299,7 +3326,8 @@ mod tests {
         }
         // 配置里**没有** [system] 段——等于默认值的键被写回剪枝掉了。
         let cfg = Config::from_value(serde_json::json!({}));
-        reg.seed_system_baseline(&cfg, &Capabilities::default());
+        // 传 None = 拿不到注册表实况，走「按配置播种」那条回退路径 —— 本条测的正是它。
+        reg.seed_system_baseline(&cfg, &Capabilities::default(), None);
         register_system_registrations(&reg);
 
         assert!(
@@ -3341,6 +3369,86 @@ mod tests {
         assert!(
             !system_needs_apply(Some(&intent(true, N)), &intent(true, N)),
             "同值不该重复落地，否则每次保存都白弹一次 UAC"
+        );
+    }
+
+    fn sys(desc: Option<&str>, rec: Option<&str>) -> crate::dota2_compat::SystemAlias {
+        crate::dota2_compat::SystemAlias {
+            description: desc.map(str::to_string),
+            recorded: rec.map(str::to_string),
+            real: "清风输入法".to_string(),
+        }
+    }
+
+    /// ⛔ 回归：配置与注册表漂移之后，设置页再也修不回来。
+    ///
+    /// 基线此前全部来自 config.toml，从不看注册表。于是注册表一旦被外部改掉
+    /// （升级重注册、别的输入法、手工改），`base == now` 恒成立 ⇒ 不判脏 ⇒ 落地直接
+    /// return。用户唯一的出路是「关掉再打开」两次 UAC，而界面没有任何提示说要这么做。
+    #[test]
+    fn baseline_follows_the_registry_not_the_config() {
+        let reg = Rc::new(FieldRegistry::default());
+        let caps = Capabilities::default();
+        // 配置说「开着，用甲」——但系统里其实已经被还原成真实名（= 兼容实际是关的）。
+        let cfg = Config::from_value(serde_json::json!({
+            "system": { "dota2_compat": true, "dota2_compat_name": "甲" }
+        }));
+
+        reg.seed_system_baseline(&cfg, &caps, Some(&sys(Some("清风输入法"), None)));
+        assert_eq!(
+            reg.system_baseline_bool(DOTA2_KEY),
+            Some(false),
+            "基线该说「系统里是关的」，而不是照抄配置里的 true"
+        );
+        // 于是「配置说开着」与基线不符 ⇒ 判脏 ⇒ 用户点一次应用就修好了。
+        assert!(
+            system_needs_apply(Some(&intent(false, "甲")), &intent(true, "甲")),
+            "漂移必须能被判出来，否则用户永远修不回去"
+        );
+    }
+
+    /// 名称基线取记录值，而不是当前 Description。
+    ///
+    /// 两者在老装机上会不一致：那时还没有记录值，只有 Description。记录值是我们自己
+    /// 写的、跨重注册也在，故优先；Description 只作回退。
+    #[test]
+    fn baseline_name_prefers_the_recorded_alias() {
+        let reg = Rc::new(FieldRegistry::default());
+        let caps = Capabilities::default();
+        let cfg = Config::from_value(serde_json::json!({}));
+
+        reg.seed_system_baseline(&cfg, &caps, Some(&sys(Some("甲"), Some("乙"))));
+        assert_eq!(
+            reg.system_baseline_str(DOTA2_NAME_KEY).as_deref(),
+            Some("乙")
+        );
+
+        // 老装机：只有 Description，没有记录值 ⇒ 回退到 Description。
+        reg.seed_system_baseline(&cfg, &caps, Some(&sys(Some("甲"), None)));
+        assert_eq!(
+            reg.system_baseline_str(DOTA2_NAME_KEY).as_deref(),
+            Some("甲")
+        );
+    }
+
+    /// 关着的时候不拿注册表里的名字当名称基线。
+    ///
+    /// 关着时注册表里就是真实名，拿它当基线会把「关着 + 界面上填了个名字」误判成改名。
+    #[test]
+    fn baseline_name_is_left_alone_while_disabled() {
+        let reg = Rc::new(FieldRegistry::default());
+        let cfg = Config::from_value(serde_json::json!({
+            "system": { "dota2_compat": false, "dota2_compat_name": "甲" }
+        }));
+        reg.seed_system_baseline(
+            &cfg,
+            &Capabilities::default(),
+            Some(&sys(Some("清风输入法"), None)),
+        );
+        assert_eq!(
+            reg.system_baseline_str(DOTA2_NAME_KEY).as_deref(),
+            Some("甲"),
+            "关着时名称基线应保留配置值，不该被真实名覆盖"
         );
     }
 
