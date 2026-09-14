@@ -1487,6 +1487,14 @@ label = "候选跟随输入的大小写"
 hint = "临时英文由 Shift+字母进入，首字母恒为大写，开启后候选也随之首字母大写；只跟大写，词库自带的大写不受影响"
 
 [[items]]
+key = "input.temp_english.commit_space"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "上屏后自动加空格"
+hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补"
+
+[[items]]
 key = "input.temp_english.allow_symbols"
 group = "input"
 section = "临时英文"

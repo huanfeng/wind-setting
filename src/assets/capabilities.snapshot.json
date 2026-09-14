@@ -878,6 +878,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "input.temp_english.commit_space",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "input.temp_english.case_variants",
       "type": "bool"
