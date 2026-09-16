@@ -2930,7 +2930,9 @@ hint = "哪些状态画角标、画在哪个角、什么颜色"
 enabled_when = "ui.langbar.badge != none"
 platform = "windows"
 
-# ═══════════════════════════ 常规（并入「输入」页尾「默认状态」）═══════════════════════════
+# ═══════════════════════════ 常规（并入「输入」页首「默认状态」）═══════════════════════════
+# 本段在文件里排最后只影响 `manifest.order`（搜索结果次序），不影响页面：
+# `input_page` 把 general 整批排在输入页最前，与二级导航一致。
 [[items]]
 key = "input.default.state_scope"
 group = "general"

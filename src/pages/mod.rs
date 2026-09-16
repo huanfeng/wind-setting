@@ -308,29 +308,23 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     )
 }
 
-/// general 组分节在输入页的插入锚点：排在这一节**之前**。锚点分节被改名/删除时，
-/// general 那批回落到页尾（即旧行为），不会丢——由 `general_anchor_exists` 守门。
-const GENERAL_ANCHOR: &str = "快捷输入";
-
-/// 输入页：manifest「input」分组 + 并入原「常规(general)」的启动状态等分区
+/// 输入页：并入原「常规(general)」的启动状态等分区 + manifest「input」分组
 /// （已取消独立「常规」Tab；general 分组若空则无副作用）。冲突提示由全局固定顶栏承担。
 ///
-/// general 那批**不再一律甩在页尾**：「默认状态」讲的是"每次开始打字时是中是英、
-/// 标点是全是半"，属于人人都会调的基础项，摆在十几个专项功能之后没人翻得到。故插在
-/// [`GENERAL_ANCHOR`] 那一节之前——它是「临时模式」段的段首，往后全是专项。
+/// general 那批（就一节：「默认状态」）排在**全页最前**。它讲的是"每次开始打字时是中
+/// 是英、标点是全是半"，属于人人都会调的基础项，摆在十几个专项功能之后没人翻得到。
+///
+/// ⚠ **`nav.wrap` 的调用顺序就是导航栏上的顺序，必须与 `secs` 的 push 顺序逐项对齐。**
+/// 这不是排版洁癖：`SubNav::resolve` 判高亮用的是「顶端已越过判定线的**最后**一个」，
+/// 靠 `tops` 的下标序 `next_back()` 实现，隐含假设下标序 == 页面纵向序。曾经这里先把
+/// general 整批 wrap 掉、再在循环里按锚点分节插进页面中部，两序就此脱钩，后果是
+/// ①导航栏「默认状态」排第一、页面上却在第六；②滚到「默认状态」那张卡时高亮停在它
+/// **上面**那一项，且这一条除点击钉住外永远不会自己亮起来。故 general 这批只能整批
+/// 排在头或尾——要插到中间，得连 wrap 一起插。
 fn input_page(state: &AppState, nav: &SubNav) -> Element {
-    let mut general = Some(manifest_sections(state, "general", nav));
-    let mut secs = Vec::new();
+    let mut secs = manifest_sections(state, "general", nav);
     for (sec, keys) in state.manifest.sections_of("input") {
-        if sec == GENERAL_ANCHOR {
-            if let Some(g) = general.take() {
-                secs.extend(g);
-            }
-        }
         secs.push(nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))));
-    }
-    if let Some(g) = general {
-        secs.extend(g);
     }
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
@@ -1171,23 +1165,24 @@ mod about_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// 守门：[`GENERAL_ANCHOR`] 必须真是 input 组的一个分节名。
+    /// 守门：general 组必须仍有分节，且只有一节。
     ///
-    /// 不成立时「默认状态」会静默回落到页尾——页面照常渲染、测试照常全绿，只有拿眼睛
-    /// 看才发现那张卡又跑到最后去了。分节改名是常事（本次就改了三个），故立此测试。
+    /// [`input_page`] 把 general 整批排在输入页最前，是拿"就『默认状态』这一节、且它
+    /// 该排第一"当前提的。哪天 general 里多出第二节，那一节会**跟着**一起挤到页首，
+    /// 页面照常渲染、测试照常全绿，只有拿眼睛看才发现输入页开头凭空多了张卡。
     #[test]
-    fn general_anchor_exists() {
+    fn general_group_is_single_leading_section() {
         let m = crate::manifest::Manifest::from_embedded();
-        let secs: Vec<String> = m.sections_of("input").into_iter().map(|(s, _)| s).collect();
-        assert!(
-            secs.iter().any(|s| s == GENERAL_ANCHOR),
-            "input 组里没有分节「{GENERAL_ANCHOR}」，「默认状态」会掉回页尾；             改名了就同步这个常量，现有分节：{secs:?}"
-        );
-        assert!(
-            !m.sections_of("general").is_empty(),
-            "general 组一个分节都没有——插入逻辑失去意义，确认「默认状态」是否已迁走"
+        let secs: Vec<String> = m
+            .sections_of("general")
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect();
+        assert_eq!(
+            secs.len(),
+            1,
+            "general 组不再是单节：input_page 会把这几节一起摆到输入页最前，\
+             确认新分节该不该排在页首，不该就去 input_page 里显式定位：{secs:?}"
         );
     }
 }
