@@ -46,10 +46,17 @@
   "capslock": {
    "cancel_on_mode_switch": false
   },
+  "caret": {
+   "add_word_via_composition": false,
+   "rare_char_via_composition": true,
+   "special_via_composition": true,
+   "temp_pinyin_via_composition": true
+  },
   "cmdbar": {
    "candidate_prefix": "⚡",
    "enabled": false
   },
+  "commit_newline": "keep",
   "default": {
    "chinese_mode": true,
    "chinese_punct": true,
@@ -112,6 +119,7 @@
    "candidate_layout": "follow",
    "case_follow_input": true,
    "case_variants": true,
+   "commit_space": false,
    "enabled": true,
    "raw_candidate": true,
    "shift_behavior": "temp_english",

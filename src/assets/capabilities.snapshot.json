@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.121.2",
+  "appVersion": "0.121.3",
   "configKeys": [
     {
       "default": "wubi86",
@@ -637,6 +637,17 @@
       "type": "str"
     },
     {
+      "default": "keep",
+      "key": "input.commit_newline",
+      "type": "enum",
+      "values": [
+        "keep",
+        "cr",
+        "lf",
+        "crlf"
+      ]
+    },
+    {
       "default": "",
       "key": "input.english_case_cycle_key",
       "type": "str"
@@ -880,6 +891,26 @@
     {
       "default": false,
       "key": "input.temp_english.commit_space",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.caret.add_word_via_composition",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.caret.temp_pinyin_via_composition",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.caret.special_via_composition",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.caret.rare_char_via_composition",
       "type": "bool"
     },
     {

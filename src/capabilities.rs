@@ -385,6 +385,29 @@ mod tests {
         //    分区，且它逐字确认的两行提示本就该竖排——出厂 vertical 即最优解，横排没有
         //    使用场景。同批的临拼/临英/网址/快捷四项都已进清单，只有它刻意不暴露。
         "input.add_word.candidate_layout",
+        // ㉓ 候选窗定位方式（core 新增 `[input.caret]`，2026-09-15）：**排障开关，不是偏好**。
+        //    这几个模式由热键激活、激活瞬间无输入内容，却要立刻显示候选窗，于是靠一个占位
+        //    composition 把 range 撑开好让 GetTextExt 出矩形；而那个占位建在当前 selection 上，
+        //    用户选中着文字时会把选中内容替换掉（t123）。关掉它则坐标退到 GUITHREADINFO/
+        //    GetCaretPos 回退链 —— 但很多宿主的那几个 API 给不出正确坐标，关了会换来候选窗错位。
+        //    也就是说这四项没有「更好」的一侧，只有「在你这台机器的这个宿主上哪边代价小」，
+        //    普通用户无从判断。出厂值 core 已按场景各自定过：**加词 false**（t123 报的就是它
+        //    吃掉选中内容，而加词弹的是预览窗、对坐标精度的敏感度低于候选列表），其余三项 true。
+        "input.caret.add_word_via_composition",
+        "input.caret.temp_pinyin_via_composition",
+        "input.caret.special_via_composition",
+        "input.caret.rare_char_via_composition",
+        // ㉔ 上屏换行形式的全局默认档（core `input.commit_newline`；本仓快照此前一直漏登记，
+        //    2026-09-16 重新生成快照时才补进来）：**不是偏好，是宿主适配**。core 的
+        //    `NewlineStyle` 写明了为什么没有全局正确值——富文本宿主（Word / WPS / RichEdit）
+        //    的段落边界**就是** CR，LF 在那个模型里根本不构成换行；而 VS Code / 终端 /
+        //    textarea 是字节即存储，做任何转换都是在改写用户的数据（t112 那个「正则直通后
+        //    行尾从 LF 变成 CR」正是这么来的），且这种失败是静默的。
+        //    真正该配的是 **per-app 覆盖**（`compat.toml` 的 `[[commit_newline]]` 段，属另一
+        //    份 schema，不归本清单管）；这里这个只是全局兜底档，出厂 `keep` ＝「不知道宿主
+        //    要什么的时候不动用户数据」。把它摆到界面上，等于请普通用户在看不见后果的地方
+        //    赌一把——赌输的那一侧还是静默的。
+        "input.commit_newline",
         // ⑮ 候选注释词库挂载列表 **已接入清单**（`dialog_button_comment_dicts`，
         //    2026-08-26），故从本名单移除。它当年登记的理由写的就是「待接入，不是设计上
         //    不暴露」——那条自陈是这次动手的直接依据。⚠️ 本名单是**双向**断言：接进清单
