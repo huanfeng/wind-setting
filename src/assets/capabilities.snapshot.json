@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.121.3",
+  "appVersion": "0.121.2",
   "configKeys": [
     {
       "default": "wubi86",
@@ -349,9 +349,15 @@
       "type": "int"
     },
     {
-      "default": true,
-      "key": "schema.pinyin.show_code_hint",
-      "type": "bool"
+      "default": "auto",
+      "key": "schema.pinyin.code_hint_source",
+      "type": "enum",
+      "values": [
+        "off",
+        "codetable",
+        "shuangpin",
+        "auto"
+      ]
     },
     {
       "default": true,
@@ -1478,7 +1484,7 @@
       "type": "int"
     },
     {
-      "default": "${code_hint|code}",
+      "default": "${code_hint|code_rev|shuangpin}",
       "key": "ui.candidate.comment_template_vertical",
       "schemaOverride": {
         "note": "方案可覆盖注释模板；方案没写则用这里的值。",
@@ -1487,7 +1493,7 @@
       "type": "str"
     },
     {
-      "default": "${code_hint|code}",
+      "default": "${code_hint|code_rev|shuangpin}",
       "key": "ui.candidate.comment_template_horizontal",
       "schemaOverride": {
         "note": "方案可覆盖注释模板；方案没写则用这里的值。",

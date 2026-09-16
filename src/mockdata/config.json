@@ -76,7 +76,6 @@
   "english_case_cycle_key": "",
   "enter_behavior": "commit",
   "filter_mode": "smart",
-  "rare_phrase": "keep",
   "numpad_behavior": "direct",
   "numpad_half_width": false,
   "phrase": {
@@ -94,6 +93,7 @@
    "include_blocks": [],
    "trigger_keys": []
   },
+  "rare_phrase": "keep",
   "s2t": {
    "enabled": false,
    "variant": "s2t"
@@ -313,6 +313,7 @@
     "enabled": false,
     "max_phrase_len": 0
    },
+   "code_hint_source": "auto",
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4
@@ -347,7 +348,6 @@
     "weight": 0.0
    },
    "separator": "auto",
-   "show_code_hint": true,
    "shuangpin": {
     "allow_full_pinyin": false
    },
@@ -374,8 +374,8 @@
    "auto_comment_dicts": true,
    "comment_max_chars_horizontal": 0,
    "comment_max_chars_vertical": 0,
-   "comment_template_horizontal": "${code_hint|code}",
-   "comment_template_vertical": "${code_hint|code}",
+   "comment_template_horizontal": "${code_hint|code_rev|shuangpin}",
+   "comment_template_vertical": "${code_hint|code_rev|shuangpin}",
    "custom_x": 0,
    "custom_y": 0,
    "fast_first_show_fallback_ms": 25,

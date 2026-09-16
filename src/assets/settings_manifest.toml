@@ -384,12 +384,18 @@ enabled_when = "schema.codetable.english_merge.enable == true"
 
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
-key = "schema.pinyin.show_code_hint"
+key = "schema.pinyin.code_hint_source"
 group = "schema"
 section = "候选行为"
-type = "toggle"
-label = "显示编码提示"
-hint = "拼音候选旁显示对应编码"
+type = "select"
+label = "编码提示来源"
+hint = "拼音候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定"
+options = [
+  { value = "auto", label = "自动" },
+  { value = "codetable", label = "码表反查" },
+  { value = "shuangpin", label = "双拼编码" },
+  { value = "off", label = "不显示" },
+]
 
 [[items]]
 key = "schema.pinyin.use_smart_compose"
