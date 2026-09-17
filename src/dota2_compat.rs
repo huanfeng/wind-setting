@@ -226,10 +226,7 @@ mod tests {
     #[test]
     fn quotes_the_name_so_spaces_survive_argv() {
         // 名单里多数条目带空格，不加引号 core 侧只会收到第一个词。
-        assert_eq!(
-            quote_arg("中文 (简体) - 双拼"),
-            r#""中文 (简体) - 双拼""#
-        );
+        assert_eq!(quote_arg("中文 (简体) - 双拼"), r#""中文 (简体) - 双拼""#);
         assert_eq!(quote_arg(""), r#""""#);
     }
 
