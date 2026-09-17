@@ -76,6 +76,7 @@
   "english_case_cycle_key": "",
   "enter_behavior": "commit",
   "filter_mode": "smart",
+  "rare_phrase": "keep",
   "numpad_behavior": "direct",
   "numpad_half_width": false,
   "phrase": {

@@ -937,6 +937,19 @@ options = [
 ]
 
 [[items]]
+key = "input.rare_phrase"
+group = "input"
+section = "字符与标点"
+type = "select"
+label = "含生僻字的词组"
+hint = "词里只要有一个字不在常用字表内，整词就被上面的检索范围滤掉。「保留」＝ 词一律不滤（含手动标为生僻的字），过滤只管单字"
+options = [
+  { value = "keep", label = "保留" },
+  { value = "filter", label = "按检索范围过滤" },
+]
+enabled_when = "input.filter_mode != gb18030"
+
+[[items]]
 key = "input.scope_relax.page_end_key"
 group = "input"
 section = "字符与标点"

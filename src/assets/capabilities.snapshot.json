@@ -638,6 +638,15 @@
     },
     {
       "default": "keep",
+      "key": "input.rare_phrase",
+      "type": "enum",
+      "values": [
+        "keep",
+        "filter"
+      ]
+    },
+    {
+      "default": "keep",
       "key": "input.commit_newline",
       "type": "enum",
       "values": [
