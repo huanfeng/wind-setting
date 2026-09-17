@@ -35,12 +35,15 @@ pub struct IntegrationState {
     /// 清除他人注册的确认框。
     pub remove_confirm: Signal<bool>,
     /// `.wpkg` 关联状态的展示文案。
-    pub assoc_status: Signal<String>,
+    pub assoc_status: [Signal<String>; crate::file_assoc::ALL.len()],
     /// `.wpkg`「注册」是否可点。
-    pub assoc_can_register: Signal<bool>,
+    pub assoc_can_register: [Signal<bool>; crate::file_assoc::ALL.len()],
     /// `.wpkg`「取消注册」是否可点。
-    pub assoc_can_unregister: Signal<bool>,
+    pub assoc_can_unregister: [Signal<bool>; crate::file_assoc::ALL.len()],
     /// 覆盖他人 `.wpkg` 关联的确认框。
+    /// 确认框问的是哪一个扩展名（索引对应 `file_assoc::ALL`）。确认框是共用的，
+    /// 不记下来的话点「覆盖」时就不知道该覆盖哪个。
+    pub assoc_pending_idx: Signal<usize>,
     pub assoc_overwrite_confirm: Signal<bool>,
     /// 解除他人 `.wpkg` 关联的确认框。
     pub assoc_remove_confirm: Signal<bool>,
@@ -63,9 +66,10 @@ impl IntegrationState {
             can_unregister: signal(false),
             overwrite_confirm: signal(false),
             remove_confirm: signal(false),
-            assoc_status: signal(String::new()),
-            assoc_can_register: signal(false),
-            assoc_can_unregister: signal(false),
+            assoc_status: [signal(String::new()), signal(String::new())],
+            assoc_can_register: [signal(false), signal(false)],
+            assoc_can_unregister: [signal(false), signal(false)],
+            assoc_pending_idx: signal(0),
             assoc_overwrite_confirm: signal(false),
             assoc_remove_confirm: signal(false),
             confirm_msg: signal(String::new()),
@@ -82,10 +86,14 @@ impl IntegrationState {
         self.protocol_status.set(status_text(&reg, portable));
         self.can_register.set(can_register(&reg));
         self.can_unregister.set(can_unregister(&reg));
-        let assoc = crate::file_assoc::current_registration();
-        self.assoc_status.set(assoc_status_text(&assoc, portable));
-        self.assoc_can_register.set(can_register(&assoc));
-        self.assoc_can_unregister.set(can_unregister(&assoc));
+        // 逐个扩展名各读各的：两者的归属可以不同（别的软件可能只抢了 .wpkg），
+        // 合成一个状态的话用户就看不出该修哪一个。
+        for (i, a) in crate::file_assoc::ALL.iter().enumerate() {
+            let reg = crate::file_assoc::registration_of(a);
+            self.assoc_status[i].set(assoc_status_text(&reg, portable));
+            self.assoc_can_register[i].set(can_register(&reg));
+            self.assoc_can_unregister[i].set(can_unregister(&reg));
+        }
     }
 
     /// 「注册」按钮：指向他人时先征得同意，其余情况直接执行。
@@ -115,24 +123,30 @@ impl IntegrationState {
     }
 
     /// `.wpkg`「注册」按钮：与协议同规则 —— 点击这一刻现读，指向他人先确认。
-    pub fn on_assoc_register_clicked(&self, app: &Rc<RefCell<AppState>>) {
-        match foreign_command(&crate::file_assoc::current_registration()) {
+    pub fn on_assoc_register_clicked(&self, app: &Rc<RefCell<AppState>>, idx: usize) {
+        match foreign_command(&crate::file_assoc::registration_of(
+            &crate::file_assoc::ALL[idx],
+        )) {
             Some(cur) => {
                 self.confirm_msg.set(assoc_overwrite_msg(cur));
+                self.assoc_pending_idx.set(idx);
                 self.assoc_overwrite_confirm.set(true);
             }
-            None => apply(app, Action::RegisterAssoc),
+            None => apply(app, Action::RegisterAssoc(idx)),
         }
     }
 
     /// `.wpkg`「取消注册」按钮：解除的若是他人关联，同样先确认。
-    pub fn on_assoc_unregister_clicked(&self, app: &Rc<RefCell<AppState>>) {
-        match foreign_command(&crate::file_assoc::current_registration()) {
+    pub fn on_assoc_unregister_clicked(&self, app: &Rc<RefCell<AppState>>, idx: usize) {
+        match foreign_command(&crate::file_assoc::registration_of(
+            &crate::file_assoc::ALL[idx],
+        )) {
             Some(cur) => {
                 self.confirm_msg.set(assoc_remove_msg(cur));
+                self.assoc_pending_idx.set(idx);
                 self.assoc_remove_confirm.set(true);
             }
-            None => apply(app, Action::UnregisterAssoc),
+            None => apply(app, Action::UnregisterAssoc(idx)),
         }
     }
 }
@@ -183,8 +197,8 @@ fn assoc_remove_msg(cur: &str) -> String {
 pub enum Action {
     Register,
     Unregister,
-    RegisterAssoc,
-    UnregisterAssoc,
+    RegisterAssoc(usize),
+    UnregisterAssoc(usize),
 }
 
 /// 执行操作 + 持久化用户意愿 + 刷新展示。
@@ -198,8 +212,8 @@ fn apply(app: &Rc<RefCell<AppState>>, action: Action) {
     match action {
         Action::Register => st.register_protocol(),
         Action::Unregister => st.unregister_protocol(),
-        Action::RegisterAssoc => st.register_file_assoc(),
-        Action::UnregisterAssoc => st.unregister_file_assoc(),
+        Action::RegisterAssoc(i) => st.register_file_assoc(i),
+        Action::UnregisterAssoc(i) => st.unregister_file_assoc(i),
     }
 }
 
@@ -281,42 +295,50 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
                 .on_click(move |_| s_unreg.on_unregister_clicked(&app_unreg)),
         );
 
-    let assoc_can_reg = s.assoc_can_register;
-    let assoc_can_unreg = s.assoc_can_unregister;
-    let app_areg = app.clone();
-    let s_areg = s.clone();
-    let app_aunreg = app.clone();
-    let s_aunreg = s.clone();
-    let assoc_buttons = Element::row()
-        .cross(Align::Center)
-        .spacing(8)
-        .child(
-            Element::button("注册")
-                .small()
-                .outline_soft()
-                .enabled_signal(assoc_can_reg)
-                .on_click(move |_| s_areg.on_assoc_register_clicked(&app_areg)),
-        )
-        .child(
-            Element::button("取消注册")
-                .small()
-                .outline_soft()
-                .enabled_signal(assoc_can_unreg)
-                .on_click(move |_| s_aunreg.on_assoc_unregister_clicked(&app_aunreg)),
-        );
+    // 每个扩展名一整行：两者的归属可以不同（别的软件可能只抢了 .wpkg），
+    // 合成一行的话用户既看不出是哪个被抢了，也没法只修那一个。
+    let assoc_rows: Vec<Element> = crate::file_assoc::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let (app_reg, s_reg) = (app.clone(), s.clone());
+            let (app_unreg, s_unreg) = (app.clone(), s.clone());
+            let buttons = Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::button("注册")
+                        .small()
+                        .outline_soft()
+                        .enabled_signal(s.assoc_can_register[i])
+                        .on_click(move |_| s_reg.on_assoc_register_clicked(&app_reg, i)),
+                )
+                .child(
+                    Element::button("取消注册")
+                        .small()
+                        .outline_soft()
+                        .enabled_signal(s.assoc_can_unregister[i])
+                        .on_click(move |_| s_unreg.on_assoc_unregister_clicked(&app_unreg, i)),
+                );
+            setting_row_desc_signal(
+                &format!("{} 文件关联（双击导入{}）", a.ext, a.short_name),
+                s.assoc_status[i],
+                buttons,
+            )
+        })
+        .collect();
 
     // toast 槽走 attachment 而非 rows：它平时不占位，混进 rows 会让上面那条设置行
     // 下面多出一条紧贴卡片边框的分隔线。见 widgets::card_with_attachment。
     crate::widgets::section_with_attachment(
         "系统集成",
-        vec![
-            setting_row_desc_signal("windinput:// 协议（一键导入）", s.protocol_status, buttons),
-            setting_row_desc_signal(
-                ".wpkg 文件关联（双击导入方案包）",
-                s.assoc_status,
-                assoc_buttons,
-            ),
-        ],
+        std::iter::once(setting_row_desc_signal(
+            "windinput:// 协议（一键导入）",
+            s.protocol_status,
+            buttons,
+        ))
+        .chain(assoc_rows)
+        .collect::<Vec<_>>(),
         crate::pages::dict::reactive::toast_sink(s.feedback),
     )
 }

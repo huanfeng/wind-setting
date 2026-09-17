@@ -388,21 +388,24 @@ fn route_of(path: &Path) -> ImportRoute {
     }
 }
 
-/// 覆盖确认要用到的三个 signal。打成一束而不是散着传：这条调用链已经够长，
+/// 主题包确认框要用到的 signal。打成一束而不是散着传：这条调用链已经够长，
 /// 再加三个平行参数，下一个读它的人得先数清楚哪个是哪个。
+///
+/// 只含「要装吗」这一步。撞名之后的覆盖确认由 `AppState::confirm_theme_package_import`
+/// 直接从 self 取——它在确认按钮那侧，手上有 `&mut AppState`。
 #[derive(Clone, Copy)]
-pub struct ThemeOverwriteSignals {
-    pub source: Signal<Option<crate::theme_import::ThemeSource>>,
-    pub msg: Signal<String>,
+pub struct ThemePkgConfirmSignals {
     pub visible: Signal<bool>,
+    pub msg: Signal<String>,
+    pub path: Signal<String>,
 }
 
-impl ThemeOverwriteSignals {
+impl ThemePkgConfirmSignals {
     pub fn of(st: &AppState) -> Self {
         Self {
-            source: st.theme_overwrite_source,
-            msg: st.theme_overwrite_msg,
-            visible: st.theme_overwrite_visible,
+            visible: st.theme_pkg_confirm_visible,
+            msg: st.theme_pkg_confirm_msg,
+            path: st.theme_pkg_confirm_path,
         }
     }
 }
@@ -412,7 +415,7 @@ pub fn pick_import_file(
     ctx: &mut EventCtx,
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
-    theme_overwrite: ThemeOverwriteSignals,
+    theme_import: ThemePkgConfirmSignals,
 ) {
     let import = import.clone();
     let schema_mgr = schema_mgr.clone();
@@ -425,7 +428,7 @@ pub fn pick_import_file(
             .filter("主题包", &["wtheme"]),
         move |path| {
             let Some(path) = path else { return };
-            dispatch_import_path(&import, &schema_mgr, theme_overwrite, path);
+            dispatch_import_path(&import, &schema_mgr, theme_import, path);
         },
     );
 }
@@ -438,7 +441,7 @@ pub fn pick_import_file(
 pub fn dispatch_import_path(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
-    theme_overwrite: ThemeOverwriteSignals,
+    theme_import: ThemePkgConfirmSignals,
     path: PathBuf,
 ) {
     match route_of(&path) {
@@ -474,24 +477,16 @@ pub fn dispatch_import_path(
             }
         }
         ImportRoute::Theme => {
-            // 与「选择文件…」导入 .toml 主题同一形状：双击文件本身就是用户的确认，
-            // 直接导入、撞名再问要不要覆盖。冲突处理共用 `try_import_theme`。
+            // 先预览再确认——与方案包双击同一形状。主题包多半是从网上下回来的，
+            // 双击就直接改掉当前外观不合适；两种包的双击体验也不该一个有确认一个没有。
             import.visible.set(false);
-            let source =
-                crate::theme_import::ThemeSource::Package(path.to_string_lossy().into_owned());
-            match crate::state::AppState::try_import_theme(
-                source,
-                theme_overwrite.source,
-                theme_overwrite.msg,
-                theme_overwrite.visible,
-            ) {
-                // 已转覆盖确认，等用户拍板。
-                None => {}
-                Some(Ok(r)) => import.notify(
-                    ToastKind::Success,
-                    format!("已导入主题：{}", r.display_name),
-                ),
-                Some(Err(e)) => import.notify(ToastKind::Error, e.user_message()),
+            match crate::theme_import::preview_package(&path.to_string_lossy()) {
+                Ok(p) => {
+                    theme_import.msg.set(p.confirm_text());
+                    theme_import.path.set(path.to_string_lossy().into_owned());
+                    theme_import.visible.set(true);
+                }
+                Err(e) => import.notify(ToastKind::Error, e.user_message()),
             }
         }
         ImportRoute::Unknown => import.notify(ToastKind::Error, "不支持的文件类型"),
@@ -503,7 +498,7 @@ pub fn dispatch_import_path(
 pub fn import_menu_items(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
-    theme_overwrite: ThemeOverwriteSignals,
+    theme_import: ThemePkgConfirmSignals,
 ) -> Vec<MenuItem> {
     let ci_clip = import.clone();
     let ci_file = import.clone();
@@ -519,7 +514,7 @@ pub fn import_menu_items(
         ),
         MenuItem::run(
             "导入文件…",
-            move |ctx| pick_import_file(ctx, &ci_file, &mgr_file, theme_overwrite),
+            move |ctx| pick_import_file(ctx, &ci_file, &mgr_file, theme_import),
             false,
         ),
     ]
@@ -562,7 +557,7 @@ pub fn import_menu_items_via_main_window(app: &Rc<RefCell<AppState>>) -> Vec<Men
                     (
                         st.config_import.clone(),
                         st.schema_mgr.clone(),
-                        ThemeOverwriteSignals::of(&st),
+                        ThemePkgConfirmSignals::of(&st),
                     )
                 };
                 pick_import_file(ctx, &ci, &mgr, ov);
@@ -805,7 +800,7 @@ pub fn info_block(title: Signal<String>, desc: Signal<String>, title_size: f32) 
 pub fn build_import_export_section(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
-    theme_overwrite: ThemeOverwriteSignals,
+    theme_import: ThemePkgConfirmSignals,
 ) -> Element {
     let m_file = import.clone();
     let mgr_file = schema_mgr.clone();
@@ -814,7 +809,7 @@ pub fn build_import_export_section(
     let file_ctl = Element::button("导入文件…")
         .small()
         .outline_soft()
-        .on_click(move |ctx| pick_import_file(ctx, &m_file, &mgr_file, theme_overwrite));
+        .on_click(move |ctx| pick_import_file(ctx, &m_file, &mgr_file, theme_import));
 
     let clip_ctl = Element::button("从剪贴板导入配置")
         .small()
@@ -859,7 +854,7 @@ pub fn build_config_import_dialog(
     let m_clip = import.clone();
     let m_file = import.clone();
     let mgr_file = schema_mgr.clone();
-    let theme_overwrite = ThemeOverwriteSignals::of(&app.borrow());
+    let theme_import = ThemePkgConfirmSignals::of(&app.borrow());
     let m_validate = import.clone();
     // 「校验预览」也可能落到方案信封那一支，需要转交方案包导入确认对话框。
     let mgr_validate = schema_mgr.clone();
@@ -976,7 +971,7 @@ pub fn build_config_import_dialog(
                         .small()
                         .outline_soft()
                         .on_click(move |ctx| {
-                            pick_import_file(ctx, &m_file, &mgr_file, theme_overwrite)
+                            pick_import_file(ctx, &m_file, &mgr_file, theme_import)
                         }),
                 )
                 .child(Element::leaf().weight(1.0)),
@@ -1119,6 +1114,40 @@ mod tests {
         assert_eq!(route_of(Path::new("noext")), ImportRoute::Unknown);
     }
 
+    /// 主题包**必须先过确认框**，不能双击就装。
+    ///
+    /// 方案包双击同样是先预览再确认；主题包多半是从网上下回来的，双击直接改掉当前
+    /// 外观并不合适。这条最初写漏了（当时按「选择文件…导入 .toml」的形状做的，
+    /// 那条路是直接导入），是用户试出来的。
+    #[test]
+    fn theme_package_goes_through_confirm_first() {
+        // into_inner: 别的测试 panic 毒化了锁时仍继续，避免一处失败连锁放大
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let import = ConfigImportState::new();
+        let mgr = SchemaManagerState::new();
+        let sig = test_overwrite_signals();
+        dispatch_import_path(
+            &import,
+            &mgr,
+            sig,
+            std::path::PathBuf::from(r"C:\down\a.wtheme"),
+        );
+
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(sig.visible.get(), "首次导入必须先弹确认，不能直接装");
+        let msg = sig.msg.get();
+        assert!(msg.contains("测试主题"), "确认框要说清装的是什么：{msg}");
+        assert_eq!(
+            sig.path.get(),
+            r"C:\down\a.wtheme",
+            "确认后要按这个路径导入"
+        );
+    }
+
     /// 扩展名分派：主题包要走自己那条路，别掉进方案包或「不支持」。
     #[test]
     fn route_of_dispatches_theme_packages() {
@@ -1145,11 +1174,11 @@ mod tests {
     }
 
     /// 测试用的空 signal 束：菜单项只看标签，不会触发到导入那一步。
-    fn test_overwrite_signals() -> ThemeOverwriteSignals {
-        ThemeOverwriteSignals {
-            source: signal(None),
-            msg: signal(String::new()),
+    fn test_overwrite_signals() -> ThemePkgConfirmSignals {
+        ThemePkgConfirmSignals {
             visible: signal(false),
+            msg: signal(String::new()),
+            path: signal(String::new()),
         }
     }
 

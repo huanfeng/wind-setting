@@ -553,6 +553,15 @@ pub struct AppState {
     pub theme_delete_msg: Signal<String>,
     /// 删除确认对话框可见标志。
     pub theme_delete_visible: Signal<bool>,
+    /// 主题包「要装这个吗」确认框的可见标志。
+    ///
+    /// 与覆盖确认分开两组 signal 而不是复用一组：两者会**接连出现**（先确认装、装的
+    /// 时候撞名再确认覆盖），共用一组的话第二个框会把第一个的内容冲掉。
+    pub theme_pkg_confirm_visible: Signal<bool>,
+    /// 确认框正文：包里装的是什么（见 `ThemePreview::confirm_text`）。
+    pub theme_pkg_confirm_msg: Signal<String>,
+    /// 待导入的包路径。
+    pub theme_pkg_confirm_path: Signal<String>,
     /// 待覆盖导入的**来源**：撞上同名主题时暂存于此，用户确认后以 `force=true` 重推。
     ///
     /// 文本来源存的是全文而不是地址——URL 导入重下要多一次网络往返，且拿到的可能已不是
@@ -921,6 +930,9 @@ impl AppState {
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
             theme_delete_visible: signal(false),
+            theme_pkg_confirm_visible: signal(false),
+            theme_pkg_confirm_msg: signal(String::new()),
+            theme_pkg_confirm_path: signal(String::new()),
             theme_overwrite_source: signal(None),
             theme_overwrite_msg: signal(String::new()),
             theme_overwrite_visible: signal(false),
@@ -1025,12 +1037,14 @@ impl AppState {
     // ── .wpkg 文件关联 ────────────────────────────────────────────────────
 
     /// 注册（或修复）`.wpkg` 关联。自愈意愿同步置回 `true`，规则同协议注册。
-    pub fn register_file_assoc(&mut self) {
-        match crate::file_assoc::register() {
+    pub fn register_file_assoc(&mut self, idx: usize) {
+        let a = &crate::file_assoc::ALL[idx];
+        match crate::file_assoc::register_one(a) {
             Ok(()) => {
+                crate::file_assoc::notify_shell_assoc_changed();
                 self.set_file_assoc_self_heal(true);
                 self.integration.refresh();
-                self.notify_ok(".wpkg 文件关联已注册");
+                self.notify_ok(format!("{} 文件关联已注册", a.ext));
             }
             Err(e) => self.notify_err(format!("文件关联注册失败：{e}")),
         }
@@ -1038,12 +1052,16 @@ impl AppState {
 
     /// 解除 `.wpkg` 关联。**必须**同时把 `file_assoc.self_heal` 置 `false` ——
     /// 否则下次启动自愈立刻把关联写回去（与协议取消注册同一条教训）。
-    pub fn unregister_file_assoc(&mut self) {
-        match crate::file_assoc::unregister() {
+    pub fn unregister_file_assoc(&mut self, idx: usize) {
+        let a = &crate::file_assoc::ALL[idx];
+        match crate::file_assoc::unregister_one(a) {
             Ok(()) => {
+                crate::file_assoc::notify_shell_assoc_changed();
+                // 自愈门控是**整体**的一个开关：解除任一关联都关掉它，否则下次启动
+                // 自愈会把刚解除的那个写回去（与协议取消注册同一条教训）。
                 self.set_file_assoc_self_heal(false);
                 self.integration.refresh();
-                self.notify_ok(".wpkg 文件关联已解除，启动时不再自动注册");
+                self.notify_ok(format!("{} 文件关联已解除，启动时不再自动注册", a.ext));
             }
             Err(e) => self.notify_err(format!("解除文件关联失败：{e}")),
         }
@@ -1703,6 +1721,34 @@ impl AppState {
         ));
         src_sig.set(Some(source));
         visible.set(true);
+    }
+
+    /// 主题包确认框点「导入」后的落点。
+    ///
+    /// 撞名会接着弹覆盖确认（`try_import_theme` 负责），于是用户看到的是两步：
+    /// 「要装吗」→「已经有同名的，要覆盖吗」。
+    pub fn confirm_theme_package_import(&mut self) {
+        self.theme_pkg_confirm_visible.set(false);
+        let path = self.theme_pkg_confirm_path.get();
+        if path.is_empty() {
+            return;
+        }
+        self.theme_pkg_confirm_path.set(String::new());
+        let outcome = Self::try_import_theme(
+            crate::theme_import::ThemeSource::Package(path),
+            self.theme_overwrite_source,
+            self.theme_overwrite_msg,
+            self.theme_overwrite_visible,
+        );
+        match outcome {
+            // 已转覆盖确认，等用户拍板。
+            None => {}
+            Some(Ok(r)) => {
+                self.refresh_theme_names();
+                self.notify_ok(format!("已导入主题：{}", r.display_name));
+            }
+            Some(Err(e)) => self.notify_err(e.user_message()),
+        }
     }
 
     /// 几个导入入口的共同落点：试着导入，撞名则转成覆盖确认。

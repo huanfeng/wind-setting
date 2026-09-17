@@ -98,7 +98,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         (
             st.config_import.clone(),
             st.schema_mgr.clone(),
-            crate::pages::config_import::ThemeOverwriteSignals::of(&st),
+            crate::pages::config_import::ThemePkgConfirmSignals::of(&st),
         )
     };
     let ci_menu_footer = ci_menu.clone();
@@ -193,6 +193,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 
     let (protocol_overwrite_dlg, protocol_remove_dlg) = build_protocol_confirm_dialogs(app);
     let (assoc_overwrite_dlg, assoc_remove_dlg) = build_assoc_confirm_dialogs(app);
+    let theme_pkg_confirm_dlg = build_theme_package_confirm_dialog(app);
 
     let mut root = Element::stack()
         .fill()
@@ -202,6 +203,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(protocol_remove_dlg)
         .child(assoc_overwrite_dlg)
         .child(assoc_remove_dlg)
+        .child(theme_pkg_confirm_dlg)
         .child(dialog)
         // 词库对话框已随词库页迁进独立窗（见 `dict_window::build_content`），不在这里挂。
         .child(theme_import_dialog)
@@ -899,15 +901,39 @@ fn build_protocol_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Elem
     (overwrite_dlg, remove_dlg)
 }
 
+/// 主题包「要装这个吗」确认框（双击 `.wtheme` / 从导入对话框选到主题包都落在这里）。
+///
+/// 方案包双击同样是先预览再确认，两种包的双击体验不该一个有一个没有；而主题包多半
+/// 是从网上下回来的，双击就直接改掉当前外观并不合适。
+///
+/// 内容一句话说得完（名字/作者/版本/几个资源），用不上方案包那个带逐键 diff 的大
+/// 对话框，复用通用确认框即可。撞名会在这一步之后再弹覆盖确认——两组 signal 分开，
+/// 后一个不会把前一个的内容冲掉。
+fn build_theme_package_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
+    let (visible, msg) = {
+        let st = app.borrow();
+        (st.theme_pkg_confirm_visible, st.theme_pkg_confirm_msg)
+    };
+    let app_im = app.clone();
+    confirm_dialog_msg(visible, "导入主题包", msg, "导入", move |_| {
+        if let Ok(mut s) = app_im.try_borrow_mut() {
+            s.confirm_theme_package_import();
+        }
+        visible.set(false);
+    })
+}
+
 /// `.wpkg` 文件关联的两个确认框，形态与协议的完全一致（共用 `confirm_msg`，
 /// 同刻只开一个框），只是落点换成 `register_file_assoc` / `unregister_file_assoc`。
 fn build_assoc_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Element) {
-    let (overwrite, remove, msg) = {
+    let (overwrite, remove, msg, pending) = {
         let st = app.borrow();
         (
             st.integration.assoc_overwrite_confirm,
             st.integration.assoc_remove_confirm,
             st.integration.confirm_msg,
+            // 两个扩展名共用这一对确认框，点下去时靠它认出问的是哪一个。
+            st.integration.assoc_pending_idx,
         )
     };
 
@@ -919,7 +945,7 @@ fn build_assoc_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Element
         "覆盖注册",
         move |_| {
             if let Ok(mut s) = app_ow.try_borrow_mut() {
-                s.register_file_assoc();
+                s.register_file_assoc(pending.get());
             }
             overwrite.set(false);
         },
@@ -933,7 +959,7 @@ fn build_assoc_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Element
         "仍然解除",
         move |_| {
             if let Ok(mut s) = app_rm.try_borrow_mut() {
-                s.unregister_file_assoc();
+                s.unregister_file_assoc(pending.get());
             }
             remove.set(false);
         },

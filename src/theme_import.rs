@@ -12,6 +12,8 @@ pub struct ThemePreview {
     pub display_name: String,
     pub version: String,
     pub author: String,
+    /// 包内资源文件数（仅主题包预览有；URL/文本那条路恒 0）。
+    pub asset_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +78,7 @@ impl ThemePreview {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
+            asset_count: v.get("asset_count").and_then(Value::as_u64).unwrap_or(0),
         })
     }
 }
@@ -160,6 +163,25 @@ pub fn import_package(path: &str, force: bool) -> Result<ThemeImportResult, Them
         return Err(ThemeImportError::Conflict(msg));
     }
     ThemeImportResult::from_value(v)
+}
+
+impl ThemePreview {
+    /// 确认框正文：装之前先说清这是什么。
+    ///
+    /// 主题包多半是从网上下回来的，双击就直接改掉当前外观不合适——方案包那边双击
+    /// 同样是先预览再确认，两种包的双击体验不该一个有一个没有。
+    pub fn confirm_text(&self) -> String {
+        let mut s = format!("主题：{}", self.display_name);
+        if !self.author.is_empty() {
+            s.push_str(&format!("\n作者：{}", self.author));
+        }
+        if !self.version.is_empty() {
+            s.push_str(&format!("\n版本：{}", self.version));
+        }
+        s.push_str(&format!("\n资源：{} 个文件", self.asset_count));
+        s.push_str("\n\n导入后可在「外观」里切换到它。");
+        s
+    }
 }
 
 /// 只读预览一个主题包。设置端在「要不要装」之前得先说得出包里是什么。
@@ -273,6 +295,22 @@ mod tests {
 
     /// WIND_RPC_MOCK 是进程全局变量，锁必须与其他模块共用一把（见 rpc.rs 的说明）。
     use crate::rpc::ENV_LOCK;
+
+    /// 确认框要说得出包里装的是什么 —— 它是用户决定装不装的**唯一**依据。
+    #[test]
+    fn confirm_text_says_what_is_in_the_package() {
+        let p = ThemePreview {
+            slug: "shuimo".to_string(),
+            display_name: "水墨风".to_string(),
+            author: "某人".to_string(),
+            version: "1.1".to_string(),
+            asset_count: 2,
+        };
+        let t = p.confirm_text();
+        for must in ["水墨风", "某人", "1.1", "2 个文件"] {
+            assert!(t.contains(must), "确认框缺了「{must}」：{t}");
+        }
+    }
 
     /// 覆盖确认要说清「要用什么覆盖」，两种来源的说法不同：文本来源手里只有一份原文，
     /// 包来源能指名道姓说是哪个文件。

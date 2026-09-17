@@ -149,7 +149,7 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             config_import::build_import_export_section(
                 &state.config_import,
                 &state.schema_mgr,
-                config_import::ThemeOverwriteSignals::of(state),
+                config_import::ThemePkgConfirmSignals::of(state),
             ),
             "advanced:import-export",
             state.jump,

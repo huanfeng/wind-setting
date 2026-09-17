@@ -27,6 +27,9 @@ pub struct Assoc {
     pub progid: &'static str,
     /// 资源管理器「类型」列显示的名字。
     pub type_name: &'static str,
+    /// 设置页那行的短名（「双击导入{短名}」）。与 `type_name` 分开：那个要在资源管理器
+    /// 里独立成立（得带品牌名），这个长在一句话里，带上就啰嗦了。
+    pub short_name: &'static str,
     /// `DefaultIcon` 用的资源 ID（由 build.rs 显式钉死）。
     pub icon_id: i32,
 }
@@ -36,6 +39,7 @@ pub const PACKAGE: Assoc = Assoc {
     ext: ".wpkg",
     progid: "WindInput.Package",
     type_name: "清风输入法方案包",
+    short_name: "方案包",
     icon_id: 2,
 };
 
@@ -48,6 +52,7 @@ pub const THEME: Assoc = Assoc {
     ext: ".wtheme",
     progid: "WindInput.Theme",
     type_name: "清风输入法主题包",
+    short_name: "主题包",
     icon_id: 2,
 };
 
@@ -139,36 +144,6 @@ pub fn registration_of(a: &Assoc) -> Registration {
     classify_assoc(ext_progid.as_deref(), cmd.as_deref(), &want, a.progid)
 }
 
-/// 全部关联聚合成一个状态 —— 设置页是**一个**开关（都是「清风的包文件」），
-/// 得有一个统一的说法。
-///
-/// - 任一被别人占着 → `Other`，并把那个占用者报出来：用户要看的就是它；
-/// - 全是我们的 → `Ours`；
-/// - 其余（含「一半注册了」的中间态）→ `Unregistered`。把中间态算作未注册是有意的：
-///   那正是点一下就能修好的状态，报成「已注册」反而让用户无从下手。
-#[cfg(windows)]
-pub fn current_registration() -> Registration {
-    let states: Vec<Registration> = ALL.iter().map(registration_of).collect();
-    aggregate_registration(&states)
-}
-
-/// 纯判定：多个扩展名的状态 → 一个。抽出以便单测（注册表那半在开发机上跑不到）。
-///
-/// 规则见 [`current_registration`]。**「一半注册了」算未注册**是有意的：那正是点一下
-/// 就能修好的状态，报成「已注册」会让开关显示成已开、用户反而无从下手。
-pub fn aggregate_registration(states: &[Registration]) -> Registration {
-    if let Some(other) = states.iter().find_map(|s| match s {
-        Registration::Other(cmd) => Some(cmd.clone()),
-        _ => None,
-    }) {
-        return Registration::Other(other);
-    }
-    if !states.is_empty() && states.iter().all(|s| matches!(s, Registration::Ours)) {
-        return Registration::Ours;
-    }
-    Registration::Unregistered
-}
-
 /// 通知 Shell「文件关联变了」。
 ///
 /// **写完注册表不等于生效**：资源管理器缓存着关联与图标，不广播这条通知的话，
@@ -177,7 +152,7 @@ pub fn aggregate_registration(states: &[Registration]) -> Registration {
 ///
 /// 只声明用得到的这一个导出，不为一次调用引入 `windows-sys`：shell32 是系统必备库。
 #[cfg(windows)]
-fn notify_shell_assoc_changed() {
+pub fn notify_shell_assoc_changed() {
     const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
     const SHCNF_IDLIST: u32 = 0x0000;
     #[link(name = "shell32")]
@@ -236,17 +211,6 @@ pub fn register_one(a: &Assoc) -> Result<(), String> {
     Ok(())
 }
 
-/// 注册全部关联。任一失败即返回，**已注册的那些保留** —— 用户再点一次会把剩下的补上，
-/// 而回滚掉已经好了的那半只会让状态更难说清。
-#[cfg(windows)]
-pub fn register() -> Result<(), String> {
-    for a in &ALL {
-        register_one(a)?;
-    }
-    notify_shell_assoc_changed();
-    Ok(())
-}
-
 /// 解除 `.wpkg` 关联：删 `.wpkg` 键 + 本程序的 ProgId 树。
 ///
 /// 键本就不存在时视作成功 —— 用户要的是"最终没有关联"这个结果。
@@ -266,17 +230,6 @@ pub fn unregister_one(a: &Assoc) -> Result<(), String> {
         }
     }
     tracing::info!("{} 文件关联已解除", a.ext);
-    Ok(())
-}
-
-/// 解除全部关联。
-#[cfg(windows)]
-pub fn unregister() -> Result<(), String> {
-    for a in &ALL {
-        unregister_one(a)?;
-    }
-    // 解除同样要通知：不发的话资源管理器还按旧关联显示图标、双击还唤起本程序。
-    notify_shell_assoc_changed();
     Ok(())
 }
 
@@ -324,23 +277,8 @@ pub fn self_heal_registration() {
 pub fn self_heal_registration() {}
 
 #[cfg(not(windows))]
-pub fn current_registration() -> Registration {
-    Registration::Unregistered
-}
-
-#[cfg(not(windows))]
 pub fn registration_of(_a: &Assoc) -> Registration {
     Registration::Unregistered
-}
-
-#[cfg(not(windows))]
-pub fn register() -> Result<(), String> {
-    Err("本平台的文件关联由应用包声明，无需手动注册".to_string())
-}
-
-#[cfg(not(windows))]
-pub fn unregister() -> Result<(), String> {
-    Err("本平台的文件关联由应用包声明，无法在此解除".to_string())
 }
 
 #[cfg(test)]
@@ -355,43 +293,16 @@ mod tests {
         assert_ne!(PACKAGE.progid, THEME.progid);
         assert_ne!(PACKAGE.ext, THEME.ext);
         assert_ne!(PACKAGE.type_name, THEME.type_name);
+        // 设置页每个扩展名一行，短名是那行唯一的区分点。
+        assert!(!PACKAGE.short_name.is_empty() && !THEME.short_name.is_empty());
         // 表里不能有重复项，否则注册会互相覆盖。
         for (i, a) in ALL.iter().enumerate() {
             for b in &ALL[i + 1..] {
                 assert_ne!(a.ext, b.ext, "扩展名重复");
                 assert_ne!(a.progid, b.progid, "ProgId 重复");
+                assert_ne!(a.short_name, b.short_name, "设置页那行的短名重复");
             }
         }
-    }
-
-    #[test]
-    fn aggregate_reports_the_foreign_owner_first() {
-        let their = "\"C:\\Other\\tool.exe\" \"%1\"".to_string();
-        let agg = aggregate_registration(&[Registration::Ours, Registration::Other(their.clone())]);
-        assert_eq!(
-            agg,
-            Registration::Other(their),
-            "被别人占着时要把占用者报出来"
-        );
-    }
-
-    #[test]
-    fn aggregate_needs_every_extension_to_be_ours() {
-        assert_eq!(
-            aggregate_registration(&[Registration::Ours, Registration::Ours]),
-            Registration::Ours
-        );
-        // 一半注册了 ⇒ 仍报未注册：那是点一下就能补齐的状态。
-        assert_eq!(
-            aggregate_registration(&[Registration::Ours, Registration::Unregistered]),
-            Registration::Unregistered
-        );
-        assert_eq!(
-            aggregate_registration(&[Registration::Unregistered, Registration::Unregistered]),
-            Registration::Unregistered
-        );
-        // 空表不能算「全是我们的」。
-        assert_eq!(aggregate_registration(&[]), Registration::Unregistered);
     }
 
     /// `.wpkg` 键缺失或空值都是未关联 —— 双击不会打开任何程序，界面要给「注册」按钮。
