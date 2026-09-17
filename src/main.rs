@@ -163,11 +163,13 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
                 let Ok(s) = guard.try_borrow() else {
                     return true;
                 };
-                if !s.has_unsaved_changes() {
+                // 清单只算一次，它自己就是守卫的判据：空 = 没有未保存改动。
+                let unsaved = s.unsaved_items();
+                if unsaved.is_empty() {
                     s.mark_main_window_closed();
                     return true;
                 }
-                s.exit_confirm.set(true);
+                s.prime_exit_confirm(&unsaved);
                 false
             })
             .content(move || shell::build(&st, th)),
@@ -558,13 +560,15 @@ fn main() {
             st.set_dict_is_main(false);
             return true;
         }
-        if !st.has_unsaved_changes() {
+        // 清单只算一次，它自己就是守卫的判据（同子窗那份）。
+        let unsaved = st.unsaved_items();
+        if unsaved.is_empty() {
             // 放行的这一刻才记下主窗已关：二次实例据此分辨该 activate 已有主窗还是
             // 重建一个。必须在**放行分支**里 —— 下面那条是拦下，主窗还在。
             st.mark_main_window_closed();
             return true;
         }
-        st.exit_confirm.set(true);
+        st.prime_exit_confirm(&unsaved);
         false
     });
 

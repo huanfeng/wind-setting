@@ -947,6 +947,7 @@ fn build_local_select(state: &AppState, key: &str, item: &MItem) -> Element {
         .side
         .borrow_mut()
         .push(crate::state::SideCommitter {
+            label: "日志级别",
             is_dirty: Box::new(move || sig.get() != dirty_base.get()),
             commit: Box::new(move || {
                 let now = sig.get();

@@ -299,6 +299,12 @@ fn system_needs_apply(base: Option<&Dota2Intent>, now: &Dota2Intent) -> bool {
 /// 用户无从知道哪个管哪些、点了哪个还有什么没存——所以改成在此登记，由「应用设置 /
 /// 保存并退出」统一提交。**新增任何非 config 落点都该登记到这里，而不是再加按钮。**
 pub struct SideCommitter {
+    /// 这个落点在「未保存项」清单里的名字（见 [`AppState::unsaved_items`]）。
+    ///
+    /// config.toml 的项报得出配置键，非 config 落点没有键可报，只能各自起一个。
+    /// 缺了它就会出现最糟的一种：`side_dirty()` 为真而 config diff 为空，对话框
+    /// 说着「有未保存的更改」却一条也列不出来——比不列更让人无从下手。
+    pub label: &'static str,
     /// 是否有待提交改动。汇总进 [`AppState::is_dirty`]，让「有未保存改动」的判断
     /// 覆盖这类数据——否则用户改完方案配置，「恢复本页」不会提醒他即将丢弃什么。
     pub is_dirty: Box<dyn Fn() -> bool>,
@@ -310,6 +316,19 @@ impl FieldRegistry {
     /// 是否有待提交的非 config 改动。
     pub fn side_dirty(&self) -> bool {
         self.side.borrow().iter().any(|s| (s.is_dirty)())
+    }
+
+    /// 有待提交改动的非 config 落点的名字，供「未保存项」清单展示。
+    ///
+    /// 与 [`Self::side_dirty`] 判的是同一件事（前者即本方法非空），拆成两个是因为
+    /// `save` 只需要那个 bool，而每次保存都去拼一遍字符串没有意义。
+    pub fn side_dirty_labels(&self) -> Vec<String> {
+        self.side
+            .borrow()
+            .iter()
+            .filter(|s| (s.is_dirty)())
+            .map(|s| s.label.to_string())
+            .collect()
     }
 
     /// 依次提交所有非 config 落点，**任一失败即中止**并返回其错误。
@@ -325,6 +344,28 @@ impl FieldRegistry {
         }
         Ok(())
     }
+}
+
+/// 悬停清单最多逐条列出几项。
+///
+/// 超过就截断：tooltip 的行数不设上限（见 windui `Element::tooltip` 的说明），几十项
+/// 会铺满一屏，而那时该做的是点一下把全量复制走、贴给维护者，不是在浮层里读。
+/// 取 8 而不是三五条——误报现场通常就那么几个键，一眼能看完的概率越高越好。
+const TIP_MAX_ITEMS: usize = 8;
+
+/// 「未保存项」悬停文案：一行一项，超量截断，末尾提示可点。
+///
+/// 抽成纯函数是为了**可测**：它的两条边界（恰好 `TIP_MAX_ITEMS` 项不截断、多一项就
+/// 截断）都是差一错易发处，而对话框本身在测试里建不出来。
+fn unsaved_tip_text(items: &[String]) -> String {
+    let mut lines: Vec<String> = items.iter().take(TIP_MAX_ITEMS).cloned().collect();
+    if items.len() > TIP_MAX_ITEMS {
+        lines.push(format!("…… 等 {} 项", items.len()));
+    }
+    // 角标没有按钮外观，不写这一句没人知道它能点（光标手型只在指到时才看得见，
+    // 而那时提示已经弹出来了）。
+    lines.push("（点击复制全部）".to_string());
+    lines.join("\n")
 }
 
 /// 底栏状态点表示的四种运行态。
@@ -486,6 +527,13 @@ pub struct AppState {
     pub reset_confirm: Signal<bool>,
     /// 关窗前「有未保存的更改」确认对话框可见标志。
     pub exit_confirm: Signal<bool>,
+    /// 关窗确认框正文那行「共 N 项未保存」。
+    ///
+    /// 由 [`AppState::prime_exit_confirm`] 在弹框那一刻填好。对话框在 `shell::build`
+    /// 时就建好了，而清单要到关窗才知道，故只能走 Signal。
+    pub unsaved_note: Signal<String>,
+    /// 关窗确认框角标的悬停文案（逐行列出未保存项，超量截断）。
+    pub unsaved_tip: Signal<String>,
     /// 启动时是否成功连接到输入法服务（core）。未连接则设置只读、保存会失败。
     pub connected: bool,
     /// [`Self::apply_loaded`] 是否已跑过一轮。区别于 `connected`：mock / 离线预览下
@@ -667,6 +715,7 @@ pub(crate) fn register_system_registrations(fields: &Rc<FieldRegistry>) {
     let commit_fields = fields.clone();
 
     fields.side.borrow_mut().push(SideCommitter {
+        label: "Valve 游戏兼容模式",
         is_dirty: Box::new(move || {
             let Some(now) = dirty_read() else {
                 return false;
@@ -701,6 +750,7 @@ pub(crate) fn register_schema_registrations(
         let dirty_mgr = schema_mgr.clone();
         let commit_mgr = schema_mgr.clone();
         fields.side.borrow_mut().push(SideCommitter {
+            label: "方案配置与词库开关",
             is_dirty: Box::new(move || dirty_mgr.has_pending_edits()),
             commit: Box::new(move || commit_mgr.commit_pending_edits()),
         });
@@ -857,6 +907,8 @@ impl AppState {
             stats_mgr: crate::pages::stats::StatsState::new(),
             reload_confirm: signal(false),
             exit_confirm: signal(false),
+            unsaved_note: signal(String::new()),
+            unsaved_tip: signal(String::new()),
             reset_confirm: signal(false),
             connected: false,
             data_loaded: false,
@@ -1885,28 +1937,76 @@ impl AppState {
         tracing::info!("apply_loaded 完成, connected={}", data.connected);
     }
 
-    /// 是否存在未保存改动：跑写回器到 current 的副本上，与 base 比对有无差异。
-    pub fn is_dirty(&self) -> bool {
-        // config.toml 之外的落点也算——否则改完方案配置点「恢复本页」，
-        // 确认框不会提醒用户即将丢弃它们。
-        if self.fields.side_dirty() {
-            return true;
-        }
+    /// 未保存项清单：非 config 落点的名字 + config.toml 的差异**键名**。
+    ///
+    /// 判脏与展示共用这一处：[`Self::is_dirty`]、[`Self::has_unsaved_changes`] 都是它
+    /// 的"非空"判定，关窗确认框列出的也是它。三者各算各的，迟早分家成「说有未保存却
+    /// 一条列不出」或反过来——而这个提示本就是用户报障的高发区。
+    ///
+    /// 只给**键名**不给值：值里可能有用户的短语/热键等私人内容（见日志隐私约定），
+    /// 且排查要回答的是"哪个键在动"，值帮不上忙。
+    ///
+    /// 键名原样给出、**不翻译成界面名称**。查不到对应控件的键恰恰是最可疑的那一类
+    /// （writer 写了一个界面上没有的键），翻译会把这条线索吃掉。
+    ///
+    /// 不带 `data_loaded` 门 —— 那是关窗守卫专有的，见 [`Self::has_unsaved_changes`]。
+    fn unsaved_items_unguarded(&self) -> Vec<String> {
+        // config.toml 之外的落点排在前面：它们是整块的（方案配置、词库开关），
+        // 比单个配置键更能说明"我改过什么"。
+        let mut out = self.fields.side_dirty_labels();
         let mut probe = self.current_config.clone();
         for w in self.fields.writers.borrow().iter() {
             w(&mut probe);
         }
         let items = diff_config(&self.base_config, &probe, &self.capabilities.map_keys());
-        if !items.is_empty() {
-            // 只记**键名**，不记值：值里可能有用户的短语/热键等私人内容（见日志隐私约定）。
+        out.extend(items.into_iter().map(|i| i.key));
+        if !out.is_empty() {
+            // ★ warn 而非 debug：用户报「什么都没动就提示有未保存的更改」时，**默认**
+            // 日志里就得有这一行。要他专门开 debug 级再复现一遍，排查链条太长——这个
+            // 问题已经反复过很多次了。
             //
-            // 用途很具体：用户报「什么都没动就提示有未保存的更改」时不必再靠猜——
-            // `untouched_settings_produce_no_diff` 只覆盖 mock 数据，真实配置里触发的键
-            // 它看不到（2026-08-27 现场就是这样）。
-            let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
-            tracing::debug!("is_dirty=true, 差异键({}): {:?}", keys.len(), keys);
+            // `untouched_settings_produce_no_diff` 只覆盖 mock 数据（出厂默认配置），
+            // 而误报一律出在**升级上来的存量 config.toml**上：老顺序、历史遗留值、
+            // core 已删的键。那个交集离线测试够不着，现场自述是唯一入口
+            // （2026-08-27 现场就是这样）。
+            tracing::warn!("未保存项({}): {:?}", out.len(), out);
         }
-        !items.is_empty()
+        out
+    }
+
+    /// 未保存项清单（关窗确认框展示用），数据未就位时为空。
+    ///
+    /// 与 [`Self::has_unsaved_changes`] 同一个门：两者在关窗路径上一前一后，判据不同
+    /// 就会出现「拦下了，却说没有未保存项」。
+    pub fn unsaved_items(&self) -> Vec<String> {
+        // 数据没到位时一律视为无改动：此刻 `base_config` 还是空的，而 `AppState::empty`
+        // 就带着四个内建 writer（方案 available、全局热键收集等），它们照样会写出
+        // `keys` / `schema` 两个键——拿这个 diff 去拦关窗纯属误报，用户根本还没机会改
+        // 任何东西。core 未响应时开了设置页又想关掉，正是最不该被拦的时候。
+        if !self.data_loaded {
+            return Vec::new();
+        }
+        self.unsaved_items_unguarded()
+    }
+
+    /// 填好关窗确认框的「未保存项」文案并置位可见。
+    ///
+    /// 与守卫合一（守卫把算好的清单传进来），清单只算一次：分开写的话，守卫先
+    /// `has_unsaved_changes()`、对话框再 `unsaved_items()`，同一份 diff 要跑两遍
+    /// 全部 writer，而这条路上还夹着 `SideCommitter` 那类有代价的判据。
+    pub fn prime_exit_confirm(&self, items: &[String]) {
+        self.unsaved_note
+            .set(format!("共 {} 项未保存", items.len()));
+        self.unsaved_tip.set(unsaved_tip_text(items));
+        self.exit_confirm.set(true);
+    }
+
+    /// 是否存在未保存改动：跑写回器到 current 的副本上，与 base 比对有无差异。
+    ///
+    /// config.toml 之外的落点也算——否则改完方案配置点「恢复本页」，确认框不会
+    /// 提醒用户即将丢弃它们。
+    pub fn is_dirty(&self) -> bool {
+        !self.unsaved_items_unguarded().is_empty()
     }
 
     /// 实时按键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
@@ -2082,35 +2182,11 @@ impl AppState {
     /// diff 跑在**副本**上：`save` 是把 writers 直接写进 `self.current_config` 的——那是
     /// 提交路径的一部分。只为问一句"要不要保存"就改掉当前配置，会让紧接着的"直接退出"
     /// 变成已经改了一半；`live_conflicts` 出于同样的理由也用副本。
+    ///
+    /// 具体是哪些项由 [`Self::unsaved_items`] 给出（关窗确认框列的就是它）。本方法
+    /// 即它的"非空"判定，两者不会分家。
     pub fn has_unsaved_changes(&self) -> bool {
-        // 数据没到位时一律视为无改动：此刻 `base_config` 还是空的，而 `AppState::empty`
-        // 就带着四个内建 writer（方案 available、全局热键收集等），它们照样会写出
-        // `keys` / `schema` 两个键——拿这个 diff 去拦关窗纯属误报，用户根本还没机会改
-        // 任何东西。core 未响应时开了设置页又想关掉，正是最不该被拦的时候。
-        if !self.data_loaded {
-            return false;
-        }
-        if self.fields.side_dirty() {
-            return true;
-        }
-        let mut probe = self.current_config.clone();
-        for w in self.fields.writers.borrow().iter() {
-            w(&mut probe);
-        }
-        let items = diff_config(&self.base_config, &probe, &self.capabilities.map_keys());
-        if !items.is_empty() {
-            // 只记**键名**，不记值（值里可能有用户的短语/热键等私人内容）。
-            // 用户报「什么都没动就提示有未保存的更改」时，这一行直接给出是哪些键——
-            // `untouched_settings_produce_no_diff` 只覆盖 mock 数据，真实配置里
-            // 触发的键它看不到（2026-08-27 现场就是这样）。
-            let keys: Vec<&str> = items.iter().map(|i| i.key.as_str()).collect();
-            tracing::debug!(
-                "has_unsaved_changes=true, 差异键({}): {:?}",
-                keys.len(),
-                keys
-            );
-        }
-        !items.is_empty()
+        !self.unsaved_items().is_empty()
     }
 
     /// 跑一遍 writers 再与 base 做 diff，返回本次保存**会提交的项**。仅供测试。
@@ -3208,6 +3284,7 @@ mod tests {
         let c = calls.clone();
         (
             SideCommitter {
+                label: "测试落点",
                 is_dirty: Box::new(move || dirty),
                 commit: Box::new(move || {
                     c.set(c.get() + 1);
@@ -3252,6 +3329,63 @@ mod tests {
         reg.side.borrow_mut().push(b);
         assert!(reg.commit_side().is_ok());
         assert_eq!((na.get(), nb.get()), (1, 1));
+    }
+
+    /// 只列**脏的**落点。干净的一并列出来的话，用户会以为自己改了从没碰过的东西。
+    #[test]
+    fn side_dirty_labels_lists_only_the_dirty_ones() {
+        let reg = FieldRegistry::default();
+        reg.side.borrow_mut().push(SideCommitter {
+            label: "没动过的",
+            is_dirty: Box::new(|| false),
+            commit: Box::new(|| Ok(())),
+        });
+        reg.side.borrow_mut().push(SideCommitter {
+            label: "改过的",
+            is_dirty: Box::new(|| true),
+            commit: Box::new(|| Ok(())),
+        });
+        assert_eq!(reg.side_dirty_labels(), vec!["改过的".to_string()]);
+    }
+
+    /// 悬停清单的两条边界：恰好 `TIP_MAX_ITEMS` 项不截断，多一项就截断。
+    ///
+    /// 差一错在这里不会报错，只会让用户看到「…… 等 8 项」而上面正好列了 8 条，
+    /// 或者反过来把最后一项悄悄吃掉。
+    #[test]
+    fn unsaved_tip_text_truncates_past_the_cap() {
+        let items = |n: usize| -> Vec<String> { (0..n).map(|i| format!("k{i}")).collect() };
+
+        let full = unsaved_tip_text(&items(TIP_MAX_ITEMS));
+        assert!(
+            !full.contains("等"),
+            "恰好 {TIP_MAX_ITEMS} 项不该截断：{full}"
+        );
+        assert_eq!(
+            full.lines().count(),
+            TIP_MAX_ITEMS + 1,
+            "每项一行 + 末尾那句「点击复制全部」"
+        );
+
+        let cut = unsaved_tip_text(&items(TIP_MAX_ITEMS + 1));
+        assert!(
+            cut.contains(&format!("等 {} 项", TIP_MAX_ITEMS + 1)),
+            "「等 N 项」报的是**总数**，不是没列出来的那几条：{cut}"
+        );
+        assert_eq!(
+            cut.lines().count(),
+            TIP_MAX_ITEMS + 2,
+            "前 N 行 + 省略行 + 提示行"
+        );
+    }
+
+    /// 一项都没有时不该拼出个只剩提示语的空壳——那种提示弹出来纯属噪音。
+    #[test]
+    fn unsaved_tip_text_of_nothing_is_just_the_hint() {
+        // 调用方（`prime_exit_confirm`）只在清单非空时才走到这里，故这里只钉住
+        // 「不会崩、也不会凭空造出条目」这一条。
+        let t = unsaved_tip_text(&[]);
+        assert!(!t.contains("等"), "空清单不该出现省略行：{t}");
     }
 
     /// 「有未保存改动」必须覆盖非 config 落点——否则用户改完方案配置点「恢复本页」，
@@ -3781,6 +3915,13 @@ mod tests {
         let (side, _) = probe(true, Ok(()));
         st2.fields.side.borrow_mut().push(side);
         assert!(st2.has_unsaved_changes(), "side committer 脏也算未保存");
+        // 判出"有"还不够，清单里得报得出是什么：否则对话框说着「有未保存的更改」却
+        // 一条也列不出来——比不列更让人无从下手（见 `SideCommitter::label`）。
+        assert!(
+            st2.unsaved_items().iter().any(|i| i == "测试落点"),
+            "脏的 side 落点须带名字进清单：{:?}",
+            st2.unsaved_items()
+        );
     }
 
     fn check_result(remote: &str) -> crate::update::CheckResult {

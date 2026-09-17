@@ -527,7 +527,9 @@ fn build_footer(
     // 而这里连的是本机输入法进程；文案因此也避开"连接"一词（详见 [`ConnState`]）。
     //
     // 两处实现约束：
-    // - `tooltip` 收的是静态文本，给不了 Signal，故四态各建一个点用 visible_when 互斥切换；
+    // - `tooltip` 收的是静态文本，给不了 Signal，故四态各建一个点用 visible_when 互斥切换
+    //   （四种状态是固定的，这样最省；文案本身要随运行期变化时走 `widgets::info_badge`
+    //   那条 `Widget::tooltip()` 的路）；
     // - 提示取命中节点自身（`Tree::node_tooltip` 不回溯父链），所以命中区/光环/实心点
     //   三层都得挂同一句，否则指针停在最上层的实心点上反而不弹。
     let dot = |c: u32, tip: &'static str, when: ConnState| {
@@ -725,9 +727,29 @@ fn build_footer(
 /// 改动"，而丢弃改动并不会消掉它们——走普通 `request_close` 会被自己的守卫再拦一次、
 /// 永远关不掉。
 fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
-    let visible = app.borrow().exit_confirm;
+    let (visible, note, tip) = {
+        let s = app.borrow();
+        (s.exit_confirm, s.unsaved_note, s.unsaved_tip)
+    };
     let app_save = app.clone();
     let app_quit = app.clone();
+    // 复制走 `unsaved_items()` 重算而不是读 `tip` 信号：那份是给人看的（截断过、
+    // 末尾还带一句提示），而贴给维护者的必须是**全量原始键名**。
+    let app_copy = app.clone();
+    let copy_keys = move |ctx: &mut EventCtx| {
+        let Ok(s) = app_copy.try_borrow() else {
+            return;
+        };
+        let items = s.unsaved_items();
+        if items.is_empty() {
+            return;
+        }
+        let n = items.len();
+        ctx.clipboard_set(&items.join("\n"));
+        // 只弹 toast，**不动**那行「共 N 项未保存」：它说的是对话框此刻的事实（还有几项
+        // 没保存），复制这个动作不该把它改掉——改了反而丢掉用户正需要看的那个数。
+        ctx.toast_ok(format!("已复制 {n} 项未保存的配置键"));
+    };
     let frame = Element::col()
         .width(380)
         .bg_role(Role::Surface)
@@ -745,12 +767,31 @@ fn build_exit_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label("关闭设置窗口前是否保存这些更改？未保存的更改将会丢失。")
-                .font_size(13.0)
-                .fg_role(Role::TextMuted)
+            Element::col()
                 .width_match()
-                .max_lines(3)
-                .padding_xy(18, 16),
+                .padding_xy(18, 16)
+                .spacing(8)
+                .child(
+                    Element::label("关闭设置窗口前是否保存这些更改？未保存的更改将会丢失。")
+                        .font_size(13.0)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .max_lines(3),
+                )
+                // 「共 N 项未保存 ⓘ」：正文不列具体项——普通用户不关心哪几个配置键在
+                // 动，一串 `input.auto_pair.english_pairs` 只会喧宾夺主。清单收进角标，
+                // 悬停能看、点击能复制，排查「什么都没动就说有未保存」时一步到位。
+                .child(
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(6)
+                        .child(
+                            Element::label_signal(note)
+                                .font_size(12.0)
+                                .fg_role(Role::TextMuted),
+                        )
+                        .child(crate::widgets::info_badge(tip, copy_keys)),
+                ),
         )
         .child(Element::divider())
         .child(
@@ -1222,6 +1263,7 @@ mod tests {
             .side
             .borrow_mut()
             .push(crate::state::SideCommitter {
+                label: "测试落点",
                 is_dirty: Box::new(|| false),
                 commit: Box::new(|| Ok(())),
             });

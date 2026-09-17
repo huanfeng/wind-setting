@@ -5,6 +5,8 @@
 
 use std::cell::Cell;
 
+use windui::core::{EventCtx, Widget};
+use windui::event::{Event, PointerKind};
 use windui::prelude::*;
 
 // 设置行的排版（字号/字重/行高/间距/限行）统一在 `theme_def::apply_form_theme` 里，
@@ -172,6 +174,122 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
     }
 }
 
+/// 悬停提示取自 `Signal` 的旁挂件。
+///
+/// [`Element::tooltip`] 收的是**构建期**的静态串，而「未保存了哪些项」要到关窗那一刻
+/// 才知道。`Widget::tooltip()` 是绘制时按当前悬停节点现取的（见 windui `app::tooltip`
+/// 的模块说明），正好接得住 Signal；同一节点上动态提示优先于静态文本。
+///
+/// ⚠️ 必须挂在**自己的叶子节点**上，不能指望父容器兜着：windui `hit_node` 的「吞命中」
+/// 判据里有静态 `n.tooltip.is_some()`，**没有**动态提示这一项，所以透明容器挂上它
+/// 永远不会触发、也不会有任何报错。带 widget 的叶子默认 `hit_opaque() == true`，
+/// 这一条正是本部件成立的前提（同 `stats::charts` 的两张图）。
+struct SignalTip {
+    tip: Signal<String>,
+    /// 点击回调。
+    ///
+    /// ⚠️ **必须自己接**：`Element::on_click` 是经 `Widget::take_click` 交给控件的，而
+    /// 那个 trait 方法的默认实现是**空操作**（windui `core.rs`），只有交互控件才实现它。
+    /// 不接就是把回调静默丢掉——不报错、类型也对，截图上什么都看不出来，只有去读剪贴板
+    /// 才发现点了没反应。本仓第一版正是这么漏的。
+    ///
+    /// 走不了 `clickable()`：那个会把本节点的 widget 整个换成 `containers::Clickable`，
+    /// 连带把动态提示挤掉（它自己的 `debug_assert` 也拦叶子控件）。同理用不了 `IconButton`
+    /// ——一个节点只有一个 widget 槽，而命中只落在最上层那一个，提示与点击必须同源。
+    on_click: Option<windui::core::ClickFn>,
+    /// 是否处于按下态，用于 `Up` 时判定「按下与抬起在同一个节点内」。
+    pressed: bool,
+}
+
+impl SignalTip {
+    fn new(tip: Signal<String>) -> Self {
+        Self {
+            tip,
+            on_click: None,
+            pressed: false,
+        }
+    }
+}
+
+impl Widget for SignalTip {
+    fn tooltip(&self) -> Option<String> {
+        let s = self.tip.get();
+        (!s.is_empty()).then_some(s)
+    }
+
+    /// 手型：这个角标是可以点的（复制清单），而光标是唯一的提示——它没有按钮外观，
+    /// 也没有 hover 底色（那些都得换掉 widget 槽，见 [`Self::on_click`]）。
+    fn cursor(&self) -> CursorShape {
+        CursorShape::Hand
+    }
+
+    fn take_click(&mut self, f: windui::core::ClickFn) {
+        self.on_click = Some(f);
+    }
+
+    /// 指针按下→抬起且仍在界内才算一次点击，与 `containers::Clickable` 同口径：
+    /// 按下后拖出去再松手是「反悔」，不该触发。
+    fn on_event(&mut self, ctx: &mut EventCtx, ev: &Event) -> bool {
+        let Event::Pointer(p) = ev else {
+            return false;
+        };
+        match p.kind {
+            PointerKind::Down => {
+                self.pressed = true;
+                ctx.capture();
+                true
+            }
+            PointerKind::Up => {
+                let fire = self.pressed && ctx.bounds().contains(p.pos);
+                self.pressed = false;
+                ctx.release_capture();
+                if fire && let Some(cb) = self.on_click.as_mut() {
+                    cb(ctx);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// 「未保存项清单」角标：info 图标 + 悬停列出 + 点击复制。
+///
+/// 为什么收进角标而不是铺在对话框正文里：绝大多数用户不关心哪几个键在动，正文里列
+/// 一串 `input.auto_pair.english_pairs` 只会喧宾夺主；可它又恰恰是排查「什么都没动
+/// 就说有未保存」的唯一现场线索，不能不给。收进一个图标，两边都成立。
+///
+/// 悬停看、点击取，这个分工是 tooltip 的形态定的：浮层跟着指针走、不可交互，鼠标
+/// 移不进去，没法在里面选中文字——所以"复制"只能挂在图标的点击上。
+///
+/// `tip` 为空串时图标仍在，只是不弹提示（[`SignalTip::tooltip`] 返回 None）。调用方
+/// 若不想让它出现，用 `visible_when` 收掉整个角标。
+pub fn info_badge(tip: Signal<String>, on_click: impl FnMut(&mut EventCtx) + 'static) -> Element {
+    // 亮/暗双态叠加，同 [`schema_hint_badge`]：`tint` 收的是静态色，换肤不跟随。
+    let icon = |on_dark: bool| {
+        let c = if on_dark {
+            Color::hex(0x9AA4B2)
+        } else {
+            Color::hex(0x8A94A6)
+        };
+        crate::icons::tinted(crate::icons::INFO_THIN, 14, c)
+            .visible_when(move || dark_sig().get() == on_dark)
+    };
+    Element::stack()
+        .size(14, 14)
+        .child(icon(false))
+        .child(icon(true))
+        // 提示层排在最后、尺寸与容器等大：`hit_node` 倒序测子节点，故它先于两个图标
+        // 被命中，提示与点击都落在它身上。图标层因此永远轮不到命中——给图标再挂静态
+        // 提示是死代码（`node_tooltip` 只沿**父链**上溯，够不着兄弟节点）。
+        .child(
+            Element::leaf()
+                .widget(SignalTip::new(tip))
+                .size(14, 14)
+                .on_click(on_click),
+        )
+}
+
 /// 「可被方案覆盖」提示图标：标签右侧的小信息角标，悬停出完整说明。
 ///
 /// 与 [`section_header`] 同样走亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，
@@ -180,8 +298,8 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
 /// 图标边长比 [`crate::icons::ICON_PX`] 小一号：它是标签的**角标**，与标签文字齐高才
 /// 不会把行撑高；用整尺寸会显得像另一个控件。
 fn schema_hint_badge(note: &str) -> Element {
-    // ⚠️ tooltip `debug_assert` 禁多行。note 来自 core 的 SCHEMA_OVERRIDES，那边都是单行，
-    // 这里仍把换行折成空格兜底——真出现多行时崩在 debug 版，比在用户机器上无声截断难查。
+    // 换行折成空格。tooltip 本身收得了多行了，但这是一句**行内说明**：note 来自 core 的
+    // SCHEMA_OVERRIDES，那边都是单行，真混进换行也该排成一句，而不是把角标提示撑成一段。
     let tip = note.replace('\n', " ");
     // ⚠️ tooltip 挂在**每个图标自己**身上，不是外层 stack：容器没有背景时不参与
     // hit-test，挂上去永远不会触发，而且没有任何报错——只有 `--hover` 截图看得出来。
@@ -296,8 +414,9 @@ fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: E
 /// 与相邻的清单行对得齐。
 ///
 /// 与库版的一处有意偏离：**不挂 tooltip**。库的 `clamp_lines` 在截断时用
-/// `tooltip(full_text)` 兜底看全文，而 tooltip 只收静态字符串（且 `debug_assert`
-/// 禁多行），动态文本给不了。故限行放宽到 3，让带完整路径的长状态尽量显示完整；
+/// `tooltip(full_text)` 兜底看全文，而 `Element::tooltip` 收的是构建期的静态串，
+/// 随注册表变化的文案给不了（要动态提示得走 [`info_badge`] 那条 `Widget::tooltip()`
+/// 的路，为一行副标题不值当）。故限行放宽到 3，让带完整路径的长状态尽量显示完整；
 /// 真被截断也不至于丢信息 —— 需要完整路径的场合（覆盖/解除确认）会在对话框里全文呈现。
 pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Element) -> Element {
     let th = windui::theme::current();
