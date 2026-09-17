@@ -21,7 +21,6 @@ use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::{scheme_config_section, section_rows};
 use crate::state::AppState;
 use crate::subnav::SubNav;
-use crate::theme_import::ThemeImportError;
 use crate::widgets::{page, section, setting_row};
 
 /// 一个 Tab 的三样东西：标题、页面内容、以及这一页的二级导航（见 [`crate::subnav`]）。
@@ -147,7 +146,11 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         "导入",
         0,
         crate::search::anchor::wrap(
-            config_import::build_import_export_section(&state.config_import, &state.schema_mgr),
+            config_import::build_import_export_section(
+                &state.config_import,
+                &state.schema_mgr,
+                config_import::ThemeOverwriteSignals::of(state),
+            ),
             "advanced:import-export",
             state.jump,
         ),
@@ -610,7 +613,7 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
 /// toast——界面里已没有承载一次性提示的常驻状态文字位）。
 fn theme_import_card(state: &AppState) -> Element {
     let feedback = state.feedback;
-    let ov_text = state.theme_overwrite_text;
+    let ov_src = state.theme_overwrite_source;
     let ov_msg = state.theme_overwrite_msg;
     let ov_visible = state.theme_overwrite_visible;
 
@@ -645,20 +648,22 @@ fn theme_import_card(state: &AppState) -> Element {
                                         return;
                                     }
                                 };
-                                match crate::theme_import::import_text(&text, false, None) {
-                                    Ok(result) => feedback.set(Some((
+                                // 撞名不是「导入不了」而是「要不要更新」，那条判断几个
+                                // 入口共用一处（见 `AppState::try_import_theme`）。
+                                let outcome = AppState::try_import_theme(
+                                    crate::theme_import::ThemeSource::Text(text),
+                                    ov_src,
+                                    ov_msg,
+                                    ov_visible,
+                                );
+                                match outcome {
+                                    // 已转覆盖确认，等用户拍板，这里不必再说什么。
+                                    None => {}
+                                    Some(Ok(result)) => feedback.set(Some((
                                         ToastKind::Success,
                                         format!("已导入主题：{}", result.display_name),
                                     ))),
-                                    // 同名已存在＝「要不要更新」而非「导入不了」：转覆盖确认，
-                                    // 确认后以 force=true 重推同一份原文。早先它和读取失败共用
-                                    // 一条 toast，用户只看到「主题已存在」且无路可走。
-                                    Err(ThemeImportError::Conflict(msg)) => {
-                                        AppState::ask_overwrite_theme(
-                                            ov_text, ov_msg, ov_visible, text, &msg,
-                                        );
-                                    }
-                                    Err(err) => {
+                                    Some(Err(err)) => {
                                         feedback.set(Some((ToastKind::Error, err.user_message())))
                                     }
                                 }

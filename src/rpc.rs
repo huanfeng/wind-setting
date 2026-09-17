@@ -1576,6 +1576,44 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                 })
             }
         }
+        // 主题包：路径里含 MOCK_EXISTING 视作撞名，与 importFromText 的哨兵同规矩，
+        // 于是「撞名转覆盖确认」那条判断在两种来源上能用同一套用例验。
+        "theme.previewPackage" => json!({
+            "display_name": "测试主题",
+            "author": "WindInput",
+            "version": "1.0",
+            "asset_count": 2,
+            "has_preview": true
+        }),
+        "theme.importPackage" => {
+            let force = params
+                .get("force")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let path = params
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if !force && path.contains("MOCK_EXISTING") {
+                json!({
+                    "ok": false,
+                    "conflict": true,
+                    "slug": "test-theme",
+                    "display_name": "测试主题",
+                    "error": "主题「测试主题」已存在"
+                })
+            } else {
+                // slug 与 importFromText 那条**刻意不同**：两种来源走错方法时，光看
+                // 「成功了」是分不出来的（哨兵在两边同样生效），得靠回执认出走的是哪条。
+                json!({
+                    "ok": true,
+                    "slug": "test-theme-pkg",
+                    "display_name": "测试主题（包）",
+                    "files": ["theme.toml", "assets/bg.png"],
+                    "reloaded": false
+                })
+            }
+        }
         "theme.getText" => json!({
             "slug": "default",
             "toml": "base = \"_qingfeng\"\n\n[meta]\nname = \"清风·蓝\"\nversion = \"1.0\"\nauthor = \"清风输入法\"\n"

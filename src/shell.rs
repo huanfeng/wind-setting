@@ -93,9 +93,13 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 
     // 快速导入右键菜单：挂在左侧栏与底栏的空白处（真机反馈：挂满整个内容区太泛，
     // 所有条目上都会弹）。内容区不再挂，页内元素的自有菜单不受影响。
-    let (ci_menu, mgr_menu) = {
+    let (ci_menu, mgr_menu, ov_menu) = {
         let st = app.borrow();
-        (st.config_import.clone(), st.schema_mgr.clone())
+        (
+            st.config_import.clone(),
+            st.schema_mgr.clone(),
+            crate::pages::config_import::ThemeOverwriteSignals::of(&st),
+        )
     };
     let ci_menu_footer = ci_menu.clone();
     let mgr_menu_footer = mgr_menu.clone();
@@ -131,7 +135,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(search_box)
         .child(nav)
         .on_context_menu(move || {
-            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu)
+            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu, ov_menu)
         });
     let vdivider = Element::leaf()
         .width(1)
@@ -176,7 +180,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(content);
 
     let footer = build_footer(app, th, dark, conn, subnav_here).on_context_menu(move || {
-        crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer)
+        crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer, ov_menu)
     });
 
     let main_col = Element::col()
@@ -1019,7 +1023,7 @@ fn build_theme_overwrite_dialog(app: &Rc<RefCell<AppState>>) -> Element {
     let st = app.borrow();
     let visible = st.theme_overwrite_visible;
     let msg = st.theme_overwrite_msg;
-    let text = st.theme_overwrite_text;
+    let source = st.theme_overwrite_source;
     drop(st);
     let app_c = app.clone();
     let frame = Element::col()
@@ -1061,7 +1065,7 @@ fn build_theme_overwrite_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                         // 取消也要清掉暂存原文：一份 TOML 最大 2 MiB，留着白占内存，
                         // 更要紧的是别让下一次「覆盖」误推上一次放弃掉的那份。
                         .on_click(move |_| {
-                            text.set(String::new());
+                            source.set(None);
                             visible.set(false);
                         }),
                 )

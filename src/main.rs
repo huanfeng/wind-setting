@@ -615,7 +615,12 @@ fn run_import_action(
             st.config_import.read_clipboard(ctx);
         }
         ImportAction::File(p) => {
-            pages::config_import::dispatch_import_path(&st.config_import, &st.schema_mgr, p);
+            let ov = pages::config_import::ThemeOverwriteSignals {
+                source: st.theme_overwrite_source,
+                msg: st.theme_overwrite_msg,
+                visible: st.theme_overwrite_visible,
+            };
+            pages::config_import::dispatch_import_path(&st.config_import, &st.schema_mgr, ov, p);
         }
     }
 }

@@ -111,6 +111,64 @@ impl ThemeImportResult {
     }
 }
 
+/// 待导入主题的来源。
+///
+/// 三个入口——HTTPS 链接、本地 `.toml`、本地 `.wtheme` 包——在这里汇合，于是「撞名了
+/// 要不要覆盖」只有一套实现。此前 URL 与本地文件各写了一遍那段冲突处理，包再来一遍
+/// 就是第三份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeSource {
+    /// 单文件主题的原文。URL 下载与本地 `.toml` 都归到这里：到这一步它们手上都是文本，
+    /// 已经没有区别。
+    Text(String),
+    /// 主题包路径。包没法像文本那样揣在手里等用户确认，只能记路径、导入时再由 core
+    /// 解包——这也是覆盖确认必须存「来源」而不是「原文」的原因。
+    Package(String),
+}
+
+impl ThemeSource {
+    /// 落盘。`force` 为真时覆盖同名主题。
+    pub fn import(&self, force: bool) -> Result<ThemeImportResult, ThemeImportError> {
+        match self {
+            Self::Text(text) => import_text(text, force, None),
+            Self::Package(path) => import_package(path, force),
+        }
+    }
+
+    /// 给用户看的来源说明（覆盖确认框里要说清「要用什么覆盖」）。
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Text(_) => "新的主题文件".to_string(),
+            Self::Package(path) => std::path::Path::new(path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "主题包".to_string()),
+        }
+    }
+}
+
+/// 导入主题包。响应形状与 [`import_text`] 一致，冲突同样走 `conflict` 字段。
+pub fn import_package(path: &str, force: bool) -> Result<ThemeImportResult, ThemeImportError> {
+    let params = json!({ "path": path, "force": force });
+    let v = crate::rpc::call_core("theme.importPackage", &params).map_err(classify_rpc_error)?;
+    if v.get("conflict").and_then(Value::as_bool) == Some(true) {
+        let msg = v
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| "该主题已存在".to_string());
+        return Err(ThemeImportError::Conflict(msg));
+    }
+    ThemeImportResult::from_value(v)
+}
+
+/// 只读预览一个主题包。设置端在「要不要装」之前得先说得出包里是什么。
+pub fn preview_package(path: &str) -> Result<ThemePreview, ThemeImportError> {
+    let v = crate::rpc::call_core("theme.previewPackage", &json!({ "path": path }))
+        .map_err(|e| ThemeImportError::InvalidTheme(format!("读取主题包失败：{e}")))?;
+    ThemePreview::from_value(v)
+}
+
 pub fn validate_https_url(url: &str) -> Result<(), ThemeImportError> {
     if url.to_ascii_lowercase().starts_with("https://") {
         Ok(())
@@ -215,6 +273,56 @@ mod tests {
 
     /// WIND_RPC_MOCK 是进程全局变量，锁必须与其他模块共用一把（见 rpc.rs 的说明）。
     use crate::rpc::ENV_LOCK;
+
+    /// 覆盖确认要说清「要用什么覆盖」，两种来源的说法不同：文本来源手里只有一份原文，
+    /// 包来源能指名道姓说是哪个文件。
+    #[test]
+    fn source_describes_itself_for_the_overwrite_prompt() {
+        assert_eq!(
+            ThemeSource::Text("[meta]\n".to_string()).describe(),
+            "新的主题文件"
+        );
+        assert_eq!(
+            ThemeSource::Package(r"C:\down\水墨.wtheme".to_string()).describe(),
+            "水墨.wtheme"
+        );
+        // 路径取不出文件名时也得有话说，不能是空串
+        assert!(!ThemeSource::Package(String::new()).describe().is_empty());
+    }
+
+    /// 两种来源都要把「撞名」认成 Conflict 而不是普通错误 —— 认错了的话，界面上
+    /// 就没有「要不要覆盖」这条路，用户等于无法更新已装过的主题。
+    #[test]
+    fn both_sources_report_conflict_as_conflict() {
+        // into_inner: 别的测试 panic 毒化了锁时仍继续，避免一处失败连锁放大
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let text = ThemeSource::Text("[meta]\nname = \"MOCK_EXISTING\"\n".to_string());
+        let pkg = ThemeSource::Package(r"C:\down\MOCK_EXISTING.wtheme".to_string());
+        let (t_first, t_forced) = (text.import(false), text.import(true));
+        let (p_first, p_forced) = (pkg.import(false), pkg.import(true));
+
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            matches!(t_first, Err(ThemeImportError::Conflict(_))),
+            "文本来源撞名该归为 Conflict"
+        );
+        assert!(
+            matches!(p_first, Err(ThemeImportError::Conflict(_))),
+            "包来源撞名该归为 Conflict"
+        );
+        // 两条路的回执刻意不同：只断言「成功了」的话，包来源误走 importFromText
+        // 也照样绿（撞名哨兵在两边同样生效）。
+        assert_eq!(t_forced.expect("force 应成功").slug, "test-theme");
+        assert_eq!(
+            p_forced.expect("force 应成功").slug,
+            "test-theme-pkg",
+            "包来源必须走 theme.importPackage"
+        );
+    }
 
     #[test]
     fn validate_https_url_accepts_https_only() {

@@ -367,6 +367,11 @@ enum ImportRoute {
     Fragment,
     /// `.zip` / `.wpkg` → `scheme.previewImport` 探测后走方案包导入。
     Package,
+    /// `.wtheme` → 主题包导入。
+    ///
+    /// 扩展名只是**路由**：真正「这是不是主题包」由 core 看包内 `package.toml` 的 kind
+    /// 判定，改了名的文件会在那一步被说清到底是什么。
+    Theme,
     Unknown,
 }
 
@@ -378,7 +383,27 @@ fn route_of(path: &Path) -> ImportRoute {
     match ext.as_deref() {
         Some("toml") => ImportRoute::Fragment,
         Some("zip") | Some("wpkg") => ImportRoute::Package,
+        Some("wtheme") => ImportRoute::Theme,
         _ => ImportRoute::Unknown,
+    }
+}
+
+/// 覆盖确认要用到的三个 signal。打成一束而不是散着传：这条调用链已经够长，
+/// 再加三个平行参数，下一个读它的人得先数清楚哪个是哪个。
+#[derive(Clone, Copy)]
+pub struct ThemeOverwriteSignals {
+    pub source: Signal<Option<crate::theme_import::ThemeSource>>,
+    pub msg: Signal<String>,
+    pub visible: Signal<bool>,
+}
+
+impl ThemeOverwriteSignals {
+    pub fn of(st: &AppState) -> Self {
+        Self {
+            source: st.theme_overwrite_source,
+            msg: st.theme_overwrite_msg,
+            visible: st.theme_overwrite_visible,
+        }
     }
 }
 
@@ -387,18 +412,20 @@ pub fn pick_import_file(
     ctx: &mut EventCtx,
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
+    theme_overwrite: ThemeOverwriteSignals,
 ) {
     let import = import.clone();
     let schema_mgr = schema_mgr.clone();
     ctx.request_pick_file(
         PickDialog::new()
             .title("导入文件")
-            .filter("可导入文件", &["toml", "zip", "wpkg"])
+            .filter("可导入文件", &["toml", "zip", "wpkg", "wtheme"])
             .filter("配置片段", &["toml"])
-            .filter("方案包", &["zip", "wpkg"]),
+            .filter("方案包", &["zip", "wpkg"])
+            .filter("主题包", &["wtheme"]),
         move |path| {
             let Some(path) = path else { return };
-            dispatch_import_path(&import, &schema_mgr, path);
+            dispatch_import_path(&import, &schema_mgr, theme_overwrite, path);
         },
     );
 }
@@ -411,6 +438,7 @@ pub fn pick_import_file(
 pub fn dispatch_import_path(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
+    theme_overwrite: ThemeOverwriteSignals,
     path: PathBuf,
 ) {
     match route_of(&path) {
@@ -445,6 +473,27 @@ pub fn dispatch_import_path(
                 Err(e) => import.notify(ToastKind::Error, format!("读取方案包失败: {e}")),
             }
         }
+        ImportRoute::Theme => {
+            // 与「选择文件…」导入 .toml 主题同一形状：双击文件本身就是用户的确认，
+            // 直接导入、撞名再问要不要覆盖。冲突处理共用 `try_import_theme`。
+            import.visible.set(false);
+            let source =
+                crate::theme_import::ThemeSource::Package(path.to_string_lossy().into_owned());
+            match crate::state::AppState::try_import_theme(
+                source,
+                theme_overwrite.source,
+                theme_overwrite.msg,
+                theme_overwrite.visible,
+            ) {
+                // 已转覆盖确认，等用户拍板。
+                None => {}
+                Some(Ok(r)) => import.notify(
+                    ToastKind::Success,
+                    format!("已导入主题：{}", r.display_name),
+                ),
+                Some(Err(e)) => import.notify(ToastKind::Error, e.user_message()),
+            }
+        }
         ImportRoute::Unknown => import.notify(ToastKind::Error, "不支持的文件类型"),
     }
 }
@@ -454,6 +503,7 @@ pub fn dispatch_import_path(
 pub fn import_menu_items(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
+    theme_overwrite: ThemeOverwriteSignals,
 ) -> Vec<MenuItem> {
     let ci_clip = import.clone();
     let ci_file = import.clone();
@@ -469,7 +519,7 @@ pub fn import_menu_items(
         ),
         MenuItem::run(
             "导入文件…",
-            move |ctx| pick_import_file(ctx, &ci_file, &mgr_file),
+            move |ctx| pick_import_file(ctx, &ci_file, &mgr_file, theme_overwrite),
             false,
         ),
     ]
@@ -507,11 +557,15 @@ pub fn import_menu_items_via_main_window(app: &Rc<RefCell<AppState>>) -> Vec<Men
             "导入文件…",
             move |ctx| {
                 crate::open_main_window(ctx, &app_file);
-                let (ci, mgr) = {
+                let (ci, mgr, ov) = {
                     let st = app_file.borrow();
-                    (st.config_import.clone(), st.schema_mgr.clone())
+                    (
+                        st.config_import.clone(),
+                        st.schema_mgr.clone(),
+                        ThemeOverwriteSignals::of(&st),
+                    )
                 };
-                pick_import_file(ctx, &ci, &mgr);
+                pick_import_file(ctx, &ci, &mgr, ov);
             },
             false,
         ),
@@ -751,6 +805,7 @@ pub fn info_block(title: Signal<String>, desc: Signal<String>, title_size: f32) 
 pub fn build_import_export_section(
     import: &ConfigImportState,
     schema_mgr: &SchemaManagerState,
+    theme_overwrite: ThemeOverwriteSignals,
 ) -> Element {
     let m_file = import.clone();
     let mgr_file = schema_mgr.clone();
@@ -759,7 +814,7 @@ pub fn build_import_export_section(
     let file_ctl = Element::button("导入文件…")
         .small()
         .outline_soft()
-        .on_click(move |ctx| pick_import_file(ctx, &m_file, &mgr_file));
+        .on_click(move |ctx| pick_import_file(ctx, &m_file, &mgr_file, theme_overwrite));
 
     let clip_ctl = Element::button("从剪贴板导入配置")
         .small()
@@ -804,6 +859,7 @@ pub fn build_config_import_dialog(
     let m_clip = import.clone();
     let m_file = import.clone();
     let mgr_file = schema_mgr.clone();
+    let theme_overwrite = ThemeOverwriteSignals::of(&app.borrow());
     let m_validate = import.clone();
     // 「校验预览」也可能落到方案信封那一支，需要转交方案包导入确认对话框。
     let mgr_validate = schema_mgr.clone();
@@ -919,7 +975,9 @@ pub fn build_config_import_dialog(
                     Element::button("选择文件…")
                         .small()
                         .outline_soft()
-                        .on_click(move |ctx| pick_import_file(ctx, &m_file, &mgr_file)),
+                        .on_click(move |ctx| {
+                            pick_import_file(ctx, &m_file, &mgr_file, theme_overwrite)
+                        }),
                 )
                 .child(Element::leaf().weight(1.0)),
         )
@@ -1061,13 +1119,47 @@ mod tests {
         assert_eq!(route_of(Path::new("noext")), ImportRoute::Unknown);
     }
 
+    /// 扩展名分派：主题包要走自己那条路，别掉进方案包或「不支持」。
+    #[test]
+    fn route_of_dispatches_theme_packages() {
+        use std::path::Path;
+        assert!(matches!(
+            route_of(Path::new("a.wtheme")),
+            ImportRoute::Theme
+        ));
+        // 大小写不敏感，与 cli::parse_import_file 同规矩
+        assert!(matches!(
+            route_of(Path::new("A.WTHEME")),
+            ImportRoute::Theme
+        ));
+        assert!(matches!(
+            route_of(Path::new("a.wpkg")),
+            ImportRoute::Package
+        ));
+        assert!(matches!(route_of(Path::new("a.zip")), ImportRoute::Package));
+        assert!(matches!(
+            route_of(Path::new("a.toml")),
+            ImportRoute::Fragment
+        ));
+        assert!(matches!(route_of(Path::new("a.exe")), ImportRoute::Unknown));
+    }
+
+    /// 测试用的空 signal 束：菜单项只看标签，不会触发到导入那一步。
+    fn test_overwrite_signals() -> ThemeOverwriteSignals {
+        ThemeOverwriteSignals {
+            source: signal(None),
+            msg: signal(String::new()),
+            visible: signal(false),
+        }
+    }
+
     /// 侧栏/底栏右键菜单恒两项、文案钉死——`shell::build` 两个挂接处只调本函数，
     /// 文案改动或项目增减都应先红在这里。
     #[test]
     fn import_menu_has_clipboard_and_file_entries() {
         let import = ConfigImportState::new();
         let mgr = SchemaManagerState::new();
-        let labels: Vec<String> = import_menu_items(&import, &mgr)
+        let labels: Vec<String> = import_menu_items(&import, &mgr, test_overwrite_signals())
             .iter()
             .filter(|i| !i.separator)
             .map(|i| i.label.clone())
@@ -1100,7 +1192,7 @@ mod tests {
 
         assert_eq!(
             labels(import_menu_items_via_main_window(&app)),
-            labels(import_menu_items(&import, &mgr))
+            labels(import_menu_items(&import, &mgr, test_overwrite_signals()))
         );
     }
 

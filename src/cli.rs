@@ -65,9 +65,14 @@ pub fn parse_import_request(argv: &[String]) -> bool {
     false
 }
 
-/// argv 里的 `.wpkg` 方案包路径(文件关联双击时 shell 按 `"<exe>" "%1"` 传入)。
+/// 本程序登记了文件关联的扩展名(见 `file_assoc::ALL`)。
 ///
-/// 只认 `.wpkg`:`.zip` 太泛,不抢通用压缩包的关联,也不从命令行猜。
+/// 不认 `.zip`:太泛,不抢通用压缩包的关联,也不从命令行猜。具体是方案还是主题由
+/// `config_import::route_of` 按扩展名分派,真正的类型判据在包内 manifest。
+const IMPORTABLE_EXTS: [&str; 2] = ["wpkg", "wtheme"];
+
+/// argv 里的包路径(文件关联双击时 shell 按 `"<exe>" "%1"` 传入)。
+///
 /// 跳过 argv[0](自身 exe 路径)与 `--` 开头的旗标。
 pub fn parse_import_file(argv: &[String]) -> Option<std::path::PathBuf> {
     argv.iter()
@@ -76,7 +81,8 @@ pub fn parse_import_file(argv: &[String]) -> Option<std::path::PathBuf> {
             !a.starts_with("--")
                 && std::path::Path::new(a.as_str())
                     .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("wpkg"))
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| IMPORTABLE_EXTS.iter().any(|w| e.eq_ignore_ascii_case(w)))
         })
         .map(std::path::PathBuf::from)
 }
@@ -251,7 +257,7 @@ mod tests {
     /// 文件关联只登记 `.wpkg`,路由也只认 `.wpkg`:.zip/.toml 不从命令行猜。
     /// 扩展名判断走 `Path::extension`,路径末尾是多字节字符也不 panic。
     #[test]
-    fn parse_import_file_only_wpkg() {
+    fn parse_import_file_takes_registered_package_exts() {
         assert_eq!(
             parse_import_file(&a(&["exe", r"C:\down\pkg.wpkg"])),
             Some(std::path::PathBuf::from(r"C:\down\pkg.wpkg"))
@@ -261,9 +267,19 @@ mod tests {
             parse_import_file(&a(&["exe", r"C:\下载\方案包.WPKG"])),
             Some(std::path::PathBuf::from(r"C:\下载\方案包.WPKG"))
         );
+        // 主题包同样认（与 file_assoc::ALL 登记的那两个扩展名对齐）
+        assert_eq!(
+            parse_import_file(&a(&["exe", r"C:\down\水墨.wtheme"])),
+            Some(std::path::PathBuf::from(r"C:\down\水墨.wtheme"))
+        );
+        assert_eq!(
+            parse_import_file(&a(&["exe", r"C:\down\x.WTHEME"])),
+            Some(std::path::PathBuf::from(r"C:\down\x.WTHEME"))
+        );
         // 旗标与其它扩展名都不认
         assert_eq!(parse_import_file(&a(&["exe", "--page", "dict"])), None);
         assert_eq!(parse_import_file(&a(&["exe", r"C:\a\b.zip"])), None);
+        assert_eq!(parse_import_file(&a(&["exe", r"C:\a\b.toml"])), None);
         assert_eq!(parse_import_file(&a(&["exe", r"C:\a\b.toml"])), None);
         // argv[0] 是自身路径,即便像 .wpkg 也跳过
         assert_eq!(parse_import_file(&a(&["weird.wpkg"])), None);
