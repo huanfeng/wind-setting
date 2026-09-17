@@ -1,4 +1,8 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
+// 发布构建走 GUI 子系统（不弹控制台窗口）；**测试构建不走**——`cargo test` 把本 crate 编成
+// 一个 test harness，GUI 子系统下它没有自己的控制台，在 wine 里跑（`dev.sh st`，交叉到
+// Windows 目标后由 wine 执行）就看不到测试输出。真 Windows 上 cargo 用管道捕获 stdout 故
+// 一直没暴露这个问题，Linux 侧一跑就撞上。加 `not(test)` 两边都对。
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 //! wind_setting — 清风输入法原生设置应用（基于 windui）。
 //!
