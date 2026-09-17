@@ -829,7 +829,7 @@ pub fn build_import_export_section(
         vec![
             setting_row(
                 "导入文件",
-                Some("导入配置片段或方案包，按内容自动识别"),
+                Some("导入配置片段、方案包或主题包，按内容自动识别"),
                 file_ctl,
             ),
             setting_row(

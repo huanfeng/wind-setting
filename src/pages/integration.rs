@@ -90,7 +90,7 @@ impl IntegrationState {
         // 合成一个状态的话用户就看不出该修哪一个。
         for (i, a) in crate::file_assoc::ALL.iter().enumerate() {
             let reg = crate::file_assoc::registration_of(a);
-            self.assoc_status[i].set(assoc_status_text(&reg, portable));
+            self.assoc_status[i].set(assoc_status_text(&reg, portable, a));
             self.assoc_can_register[i].set(can_register(&reg));
             self.assoc_can_unregister[i].set(can_unregister(&reg));
         }
@@ -240,16 +240,25 @@ fn status_text(reg: &Registration, portable: bool) -> String {
 
 /// `.wpkg` 关联的状态文案。规则同 [`status_text`]：独立成句、注册表原样回显、
 /// 便携提示只在未注册时给。
-fn assoc_status_text(reg: &Registration, portable: bool) -> String {
+/// 状态文案。**扩展名与短名由调用方给**——每行说的是它自己那个扩展名，写死一个的话
+/// 主题包那行会说「双击 .wpkg 方案包会用本程序打开」，字对不上事。
+fn assoc_status_text(reg: &Registration, portable: bool, a: &crate::file_assoc::Assoc) -> String {
     if !cfg!(windows) {
         return "本平台的文件关联由应用包声明，无需在此管理".to_string();
     }
     match reg {
-        Registration::Ours => "已注册，双击 .wpkg 方案包会用本程序打开".to_string(),
+        Registration::Ours => {
+            format!("已注册，双击 {} {} 会用本程序打开", a.ext, a.short_name)
+        }
         Registration::Unregistered if portable => {
             "未注册 —— 便携版启动不会自动注册，需要双击导入请点右侧「注册」".to_string()
         }
-        Registration::Unregistered => "未注册 —— 双击 .wpkg 方案包暂时不会唤起本程序".to_string(),
+        Registration::Unregistered => {
+            format!(
+                "未注册 —— 双击 {} {} 暂时不会唤起本程序",
+                a.ext, a.short_name
+            )
+        }
         Registration::Other(cur) => format!("已注册，但指向其它程序：{cur}"),
     }
 }
@@ -437,7 +446,7 @@ mod tests {
         assert!(rm.contains("删除"), "解除关联的后果要说明白：{rm}");
     }
 
-    /// `.wpkg` 状态文案与协议同规则：三态各自独立成句、他人命令行原样回显、
+    /// 状态文案与协议同规则：三态各自独立成句、他人命令行原样回显、
     /// 便携提示只在未注册时给。
     #[test]
     fn assoc_status_text_covers_three_states() {
@@ -445,16 +454,60 @@ mod tests {
             return;
         }
         let cmd = r#""D:\old\wind_setting.exe" "%1""#;
-        assert!(assoc_status_text(&Registration::Other(cmd.to_string()), false).contains(cmd));
-        let ours = assoc_status_text(&Registration::Ours, false);
-        let none = assoc_status_text(&Registration::Unregistered, false);
+        assert!(
+            assoc_status_text(
+                &Registration::Other(cmd.to_string()),
+                false,
+                &crate::file_assoc::PACKAGE
+            )
+            .contains(cmd)
+        );
+        let ours = assoc_status_text(&Registration::Ours, false, &crate::file_assoc::PACKAGE);
+        let none = assoc_status_text(
+            &Registration::Unregistered,
+            false,
+            &crate::file_assoc::PACKAGE,
+        );
         assert_ne!(ours, none);
         assert!(none.contains("未注册"), "{none}");
-        let portable = assoc_status_text(&Registration::Unregistered, true);
+        let portable = assoc_status_text(
+            &Registration::Unregistered,
+            true,
+            &crate::file_assoc::PACKAGE,
+        );
         assert!(portable.contains("便携版"), "{portable}");
         assert!(
-            !assoc_status_text(&Registration::Ours, true).contains("便携版"),
+            !assoc_status_text(&Registration::Ours, true, &crate::file_assoc::PACKAGE)
+                .contains("便携版"),
             "已注册的便携用户不该再被念注册提示"
+        );
+    }
+
+    /// 每行的状态文案要说**它自己**那个扩展名。
+    ///
+    /// 写死一个的话，主题包那行会说「双击 .wpkg 方案包会用本程序打开」——字对不上事，
+    /// 而这种错只有截图或真机才看得见，正是这么被发现的。
+    #[test]
+    fn assoc_status_text_names_its_own_extension() {
+        if !cfg!(windows) {
+            return;
+        }
+        for a in &crate::file_assoc::ALL {
+            for reg in [Registration::Ours, Registration::Unregistered] {
+                let t = assoc_status_text(&reg, false, a);
+                assert!(t.contains(a.ext), "{:?} 那行没提到 {}：{t}", reg, a.ext);
+                assert!(
+                    t.contains(a.short_name),
+                    "{:?} 那行没提到「{}」：{t}",
+                    reg,
+                    a.short_name
+                );
+            }
+        }
+        // 两个扩展名的文案必须不同，否则等于没分行
+        assert_ne!(
+            assoc_status_text(&Registration::Ours, false, &crate::file_assoc::PACKAGE),
+            assoc_status_text(&Registration::Ours, false, &crate::file_assoc::THEME)
         );
     }
 
