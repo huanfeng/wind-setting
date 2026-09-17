@@ -1,33 +1,82 @@
-//! `.wpkg` 方案包的文件关联（HKCU，用户级，不需管理员权限）。
+//! 本程序各类包文件的关联（HKCU，用户级，不需管理员权限）：方案包 `.wpkg` 与主题包
+//! `.wtheme`。
 //!
 //! 与 [`crate::protocol`] 的 `windinput://` 注册同一套规则与门控：便携版恒不注册、
 //! 用户取消后不自愈、指向已消失 exe 的残留才在启动时静默收回。三态判定
 //! （[`Registration`]）、命令行构造与残留判断直接复用 protocol 的纯函数 ——
 //! 它们本就与「协议还是扩展名」无关。
 //!
-//! 差异只在注册表形状：扩展名关联是**两级**间接（`.wpkg` → ProgId → 打开命令），
-//! 而协议是一级。于是"归谁"要看两跳（见 [`classify_assoc`]），解除时也只动
-//! `.wpkg` 键与**本程序的** ProgId 树 —— 别人的 ProgId 可能同时服务其它扩展名，
-//! 删它是越权。
+//! 差异只在注册表形状：扩展名关联是**两级**间接（扩展名 → ProgId → 打开命令），
+//! 而协议是一级。于是"归谁"要看两跳（见 [`classify_assoc`]），解除时也只动扩展名键
+//! 与**本程序的** ProgId 树 —— 别人的 ProgId 可能同时服务其它扩展名，删它是越权。
+//!
+//! ## 每个扩展名一棵自己的 ProgId 树
+//!
+//! 不让两个扩展名共用一个 ProgId：ProgId 是「类型」的载体，资源管理器的类型名与图标
+//! 都挂在它下面。共用的话，`.wpkg` 和 `.wtheme` 在文件列表里会长得一模一样、类型列也
+//! 是同一行字，用户分不出手上是方案还是主题——而这正是给主题包单开一个后缀的初衷。
 
 use crate::protocol::{Registration, classify};
 
-/// 本程序的 ProgId。`.wpkg` 键的默认值指向它，真正的打开命令挂在它下面。
-pub const PROGID: &str = "WindInput.Package";
+/// 一种文件关联的全部身份信息。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Assoc {
+    /// 带点的扩展名，如 `.wpkg`。
+    pub ext: &'static str,
+    /// 本程序为该扩展名建的 ProgId。**每个扩展名一个**，见模块头。
+    pub progid: &'static str,
+    /// 资源管理器「类型」列显示的名字。
+    pub type_name: &'static str,
+    /// `DefaultIcon` 用的资源 ID（由 build.rs 显式钉死）。
+    pub icon_id: i32,
+}
 
-/// 扩展名键（HKCU 下的用户级关联）。
-#[cfg(windows)]
-const EXT_KEY: &str = r"Software\Classes\.wpkg";
-/// ProgId 根键。
-#[cfg(windows)]
-const PROGID_KEY: &str = r"Software\Classes\WindInput.Package";
-/// 打开命令子键。
-#[cfg(windows)]
-const COMMAND_KEY: &str = r"Software\Classes\WindInput.Package\shell\open\command";
-/// 关联图标子键。缺它时资源管理器回落到打开命令那个 exe 的**主图标**——
-/// 于是 `.wpkg` 文件和设置程序长得一模一样，看图标分不出哪个是数据文件。
-#[cfg(windows)]
-const ICON_KEY: &str = r"Software\Classes\WindInput.Package\DefaultIcon";
+/// 方案包。
+pub const PACKAGE: Assoc = Assoc {
+    ext: ".wpkg",
+    progid: "WindInput.Package",
+    type_name: "清风输入法方案包",
+    icon_id: 2,
+};
+
+/// 主题包。
+///
+/// 图标暂与方案包共用一个资源（build.rs 里只钉了主图标 1 与方案包 2）：两种包在
+/// 资源管理器里的**类型名**已经分开，图标要等有了主题包的素材再单独钉一个 ID。
+/// 指向不存在的资源 ID 会让图标直接空掉，比暂时共用更糟。
+pub const THEME: Assoc = Assoc {
+    ext: ".wtheme",
+    progid: "WindInput.Theme",
+    type_name: "清风输入法主题包",
+    icon_id: 2,
+};
+
+/// 本程序登记的全部关联。注册/解除/自愈都按这张表来，新增一种包只改这里。
+pub const ALL: [Assoc; 2] = [PACKAGE, THEME];
+
+impl Assoc {
+    /// 扩展名键（HKCU 下的用户级关联）。
+    #[cfg(windows)]
+    fn ext_key(&self) -> String {
+        format!(r"Software\Classes\{}", self.ext)
+    }
+    /// ProgId 根键。
+    #[cfg(windows)]
+    fn progid_key(&self) -> String {
+        format!(r"Software\Classes\{}", self.progid)
+    }
+    /// 打开命令子键。
+    #[cfg(windows)]
+    fn command_key(&self) -> String {
+        format!(r"Software\Classes\{}\shell\open\command", self.progid)
+    }
+    /// 关联图标子键。缺它时资源管理器回落到打开命令那个 exe 的**主图标**——
+    /// 于是包文件和设置程序长得一模一样，看图标分不出哪个是数据文件。
+    #[cfg(windows)]
+    fn icon_key(&self) -> String {
+        format!(r"Software\Classes\{}\DefaultIcon", self.progid)
+    }
+}
 
 /// 纯判定：两跳读到的值 → 三态。抽出以便单测。
 ///
@@ -41,11 +90,12 @@ pub fn classify_assoc(
     ext_progid: Option<&str>,
     progid_cmd: Option<&str>,
     want: &str,
+    ours: &str,
 ) -> Registration {
     match ext_progid {
         None => Registration::Unregistered,
         Some(p) if p.trim().is_empty() => Registration::Unregistered,
-        Some(p) if p.eq_ignore_ascii_case(PROGID) => classify(progid_cmd, want),
+        Some(p) if p.eq_ignore_ascii_case(ours) => classify(progid_cmd, want),
         Some(p) => match progid_cmd {
             Some(cmd) if !cmd.trim().is_empty() => Registration::Other(cmd.to_string()),
             _ => Registration::Other(format!("(ProgId: {p}，无打开命令)")),
@@ -58,8 +108,8 @@ pub fn classify_assoc(
 /// **负号是关键**：正数按图标在资源表里的**位置序号**取（0 开始），会随资源顺序
 /// 变动而指错；负数按**资源 ID** 取，ID 由 build.rs 显式钉死（主图标 1、本图标 2）。
 /// 路径含空格时整体加引号，与打开命令同一处理。
-pub fn icon_value_for_exe(exe: &str) -> String {
-    format!("\"{exe}\",-2")
+pub fn icon_value_for_exe(exe: &str, icon_id: i32) -> String {
+    format!("\"{exe}\",-{icon_id}")
 }
 
 /// 读 HKCU 下某键的默认值。键不存在 / 值不存在都归 `None`。
@@ -74,19 +124,49 @@ fn read_default(path: &str) -> Option<String> {
         .and_then(|k| k.get_value::<String, _>("").ok())
 }
 
-/// 读取当前 `.wpkg` 关联状态（两跳现读注册表，不缓存）。
+/// 读取**某一个**扩展名的关联状态（两跳现读注册表，不缓存）。
 #[cfg(windows)]
-pub fn current_registration() -> Registration {
+pub fn registration_of(a: &Assoc) -> Registration {
     let Ok(exe) = std::env::current_exe() else {
         return Registration::Unregistered;
     };
     let want = crate::protocol::command_for_exe(&exe.to_string_lossy());
-    let ext_progid = read_default(EXT_KEY);
+    let ext_progid = read_default(&a.ext_key());
     let cmd = ext_progid
         .as_deref()
         .filter(|p| !p.trim().is_empty())
         .and_then(|p| read_default(&format!(r"Software\Classes\{p}\shell\open\command")));
-    classify_assoc(ext_progid.as_deref(), cmd.as_deref(), &want)
+    classify_assoc(ext_progid.as_deref(), cmd.as_deref(), &want, a.progid)
+}
+
+/// 全部关联聚合成一个状态 —— 设置页是**一个**开关（都是「清风的包文件」），
+/// 得有一个统一的说法。
+///
+/// - 任一被别人占着 → `Other`，并把那个占用者报出来：用户要看的就是它；
+/// - 全是我们的 → `Ours`；
+/// - 其余（含「一半注册了」的中间态）→ `Unregistered`。把中间态算作未注册是有意的：
+///   那正是点一下就能修好的状态，报成「已注册」反而让用户无从下手。
+#[cfg(windows)]
+pub fn current_registration() -> Registration {
+    let states: Vec<Registration> = ALL.iter().map(registration_of).collect();
+    aggregate_registration(&states)
+}
+
+/// 纯判定：多个扩展名的状态 → 一个。抽出以便单测（注册表那半在开发机上跑不到）。
+///
+/// 规则见 [`current_registration`]。**「一半注册了」算未注册**是有意的：那正是点一下
+/// 就能修好的状态，报成「已注册」会让开关显示成已开、用户反而无从下手。
+pub fn aggregate_registration(states: &[Registration]) -> Registration {
+    if let Some(other) = states.iter().find_map(|s| match s {
+        Registration::Other(cmd) => Some(cmd.clone()),
+        _ => None,
+    }) {
+        return Registration::Other(other);
+    }
+    if !states.is_empty() && states.iter().all(|s| matches!(s, Registration::Ours)) {
+        return Registration::Ours;
+    }
+    Registration::Unregistered
 }
 
 /// 通知 Shell「文件关联变了」。
@@ -125,7 +205,7 @@ fn notify_shell_assoc_changed() {
 /// 指向 —— 调用方负责在覆盖前征得用户同意（见高级页「系统集成」卡片）。
 /// 他人的 ProgId 树不动：覆盖指向已足够，删树是越权。
 #[cfg(windows)]
-pub fn register() -> Result<(), String> {
+pub fn register_one(a: &Assoc) -> Result<(), String> {
     use winreg::RegKey;
     use winreg::enums::*;
 
@@ -133,27 +213,37 @@ pub fn register() -> Result<(), String> {
     let want = crate::protocol::command_for_exe(&exe.to_string_lossy());
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (root, _) = hkcu
-        .create_subkey(PROGID_KEY)
+        .create_subkey(a.progid_key())
         .map_err(|e| format!("创建 ProgId 项失败：{e}"))?;
-    root.set_value("", &"清风输入法方案包")
+    root.set_value("", &a.type_name)
         .map_err(|e| format!("写入类型描述失败：{e}"))?;
     let (cmd, _) = hkcu
-        .create_subkey(COMMAND_KEY)
+        .create_subkey(a.command_key())
         .map_err(|e| format!("创建命令行项失败：{e}"))?;
     cmd.set_value("", &want)
         .map_err(|e| format!("写入命令行失败：{e}"))?;
     let (icon, _) = hkcu
-        .create_subkey(ICON_KEY)
+        .create_subkey(a.icon_key())
         .map_err(|e| format!("创建图标项失败：{e}"))?;
-    icon.set_value("", &icon_value_for_exe(&exe.to_string_lossy()))
+    icon.set_value("", &icon_value_for_exe(&exe.to_string_lossy(), a.icon_id))
         .map_err(|e| format!("写入关联图标失败：{e}"))?;
     let (ext, _) = hkcu
-        .create_subkey(EXT_KEY)
+        .create_subkey(a.ext_key())
         .map_err(|e| format!("创建扩展名项失败：{e}"))?;
-    ext.set_value("", &PROGID)
+    ext.set_value("", &a.progid)
         .map_err(|e| format!("写入扩展名指向失败：{e}"))?;
+    tracing::info!("{} 文件关联已注册：{want}", a.ext);
+    Ok(())
+}
+
+/// 注册全部关联。任一失败即返回，**已注册的那些保留** —— 用户再点一次会把剩下的补上，
+/// 而回滚掉已经好了的那半只会让状态更难说清。
+#[cfg(windows)]
+pub fn register() -> Result<(), String> {
+    for a in &ALL {
+        register_one(a)?;
+    }
     notify_shell_assoc_changed();
-    tracing::info!(".wpkg 文件关联已注册：{want}");
     Ok(())
 }
 
@@ -163,21 +253,30 @@ pub fn register() -> Result<(), String> {
 /// 即便 `.wpkg` 当前指向他人的 ProgId 也只删这两处（用户已在确认框里同意
 /// 解除关联本身），他人的 ProgId 树留着：它可能还服务别的扩展名。
 #[cfg(windows)]
-pub fn unregister() -> Result<(), String> {
+pub fn unregister_one(a: &Assoc) -> Result<(), String> {
     use winreg::RegKey;
     use winreg::enums::*;
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    for key in [EXT_KEY, PROGID_KEY] {
-        match hkcu.delete_subkey_all(key) {
+    for key in [a.ext_key(), a.progid_key()] {
+        match hkcu.delete_subkey_all(&key) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("删除注册表项失败：{e}")),
         }
     }
+    tracing::info!("{} 文件关联已解除", a.ext);
+    Ok(())
+}
+
+/// 解除全部关联。
+#[cfg(windows)]
+pub fn unregister() -> Result<(), String> {
+    for a in &ALL {
+        unregister_one(a)?;
+    }
     // 解除同样要通知：不发的话资源管理器还按旧关联显示图标、双击还唤起本程序。
     notify_shell_assoc_changed();
-    tracing::info!(".wpkg 文件关联已解除");
     Ok(())
 }
 
@@ -189,23 +288,34 @@ pub fn unregister() -> Result<(), String> {
 /// 活着的他人关联保持原状，留给高级页展示 + 用户确认后覆盖。
 #[cfg(windows)]
 pub fn self_heal_registration() {
-    match current_registration() {
-        Registration::Ours => {}
-        Registration::Other(cur) => {
-            if crate::protocol::is_stale_registration(&cur, |p| std::path::Path::new(p).exists()) {
-                tracing::info!(".wpkg 关联原指向已不存在的 {cur}，自愈收回");
-                if let Err(e) = register() {
-                    tracing::warn!(".wpkg 关联自愈失败：{e}");
+    // 逐个判、逐个修：两个扩展名的归属可以不同（比如别的软件只抢了 .wpkg），
+    // 按聚合状态一刀切会把「该接管的那个」和「该让出的那个」混为一谈。
+    let mut changed = false;
+    for a in &ALL {
+        match registration_of(a) {
+            Registration::Ours => {}
+            Registration::Other(cur) => {
+                if crate::protocol::is_stale_registration(&cur, |p| {
+                    std::path::Path::new(p).exists()
+                }) {
+                    tracing::info!("{} 关联原指向已不存在的 {cur}，自愈收回", a.ext);
+                    match register_one(a) {
+                        Ok(()) => changed = true,
+                        Err(e) => tracing::warn!("{} 关联自愈失败：{e}", a.ext),
+                    }
+                } else {
+                    tracing::info!("{} 关联由 {cur} 处理且该程序仍在，启动时不接管", a.ext);
                 }
-            } else {
-                tracing::info!(".wpkg 关联由 {cur} 处理且该程序仍在，启动时不接管");
             }
+            Registration::Unregistered => match register_one(a) {
+                Ok(()) => changed = true,
+                Err(e) => tracing::warn!("{} 关联注册失败：{e}", a.ext),
+            },
         }
-        Registration::Unregistered => {
-            if let Err(e) = register() {
-                tracing::warn!(".wpkg 关联注册失败：{e}");
-            }
-        }
+    }
+    // 只在真动过注册表时才广播，免得每次启动都让资源管理器白刷一遍。
+    if changed {
+        notify_shell_assoc_changed();
     }
 }
 
@@ -215,6 +325,11 @@ pub fn self_heal_registration() {}
 
 #[cfg(not(windows))]
 pub fn current_registration() -> Registration {
+    Registration::Unregistered
+}
+
+#[cfg(not(windows))]
+pub fn registration_of(_a: &Assoc) -> Registration {
     Registration::Unregistered
 }
 
@@ -233,20 +348,66 @@ mod tests {
     use super::*;
     use crate::protocol::command_for_exe;
 
+    /// 两个扩展名各有一棵自己的 ProgId 树：共用一个的话，资源管理器里两种包的类型名
+    /// 和图标都会一样，用户分不出手上是方案还是主题——那正是给主题单开后缀的初衷。
+    #[test]
+    fn each_extension_has_its_own_progid() {
+        assert_ne!(PACKAGE.progid, THEME.progid);
+        assert_ne!(PACKAGE.ext, THEME.ext);
+        assert_ne!(PACKAGE.type_name, THEME.type_name);
+        // 表里不能有重复项，否则注册会互相覆盖。
+        for (i, a) in ALL.iter().enumerate() {
+            for b in &ALL[i + 1..] {
+                assert_ne!(a.ext, b.ext, "扩展名重复");
+                assert_ne!(a.progid, b.progid, "ProgId 重复");
+            }
+        }
+    }
+
+    #[test]
+    fn aggregate_reports_the_foreign_owner_first() {
+        let their = "\"C:\\Other\\tool.exe\" \"%1\"".to_string();
+        let agg = aggregate_registration(&[Registration::Ours, Registration::Other(their.clone())]);
+        assert_eq!(
+            agg,
+            Registration::Other(their),
+            "被别人占着时要把占用者报出来"
+        );
+    }
+
+    #[test]
+    fn aggregate_needs_every_extension_to_be_ours() {
+        assert_eq!(
+            aggregate_registration(&[Registration::Ours, Registration::Ours]),
+            Registration::Ours
+        );
+        // 一半注册了 ⇒ 仍报未注册：那是点一下就能补齐的状态。
+        assert_eq!(
+            aggregate_registration(&[Registration::Ours, Registration::Unregistered]),
+            Registration::Unregistered
+        );
+        assert_eq!(
+            aggregate_registration(&[Registration::Unregistered, Registration::Unregistered]),
+            Registration::Unregistered
+        );
+        // 空表不能算「全是我们的」。
+        assert_eq!(aggregate_registration(&[]), Registration::Unregistered);
+    }
+
     /// `.wpkg` 键缺失或空值都是未关联 —— 双击不会打开任何程序，界面要给「注册」按钮。
     #[test]
     fn missing_or_blank_ext_progid_is_unregistered() {
         let want = command_for_exe(r"C:\app\wind_setting.exe");
         assert_eq!(
-            classify_assoc(None, None, &want),
+            classify_assoc(None, None, &want, PACKAGE.progid),
             Registration::Unregistered
         );
         assert_eq!(
-            classify_assoc(Some(""), None, &want),
+            classify_assoc(Some(""), None, &want, PACKAGE.progid),
             Registration::Unregistered
         );
         assert_eq!(
-            classify_assoc(Some("  "), None, &want),
+            classify_assoc(Some("  "), None, &want, PACKAGE.progid),
             Registration::Unregistered
         );
     }
@@ -258,23 +419,33 @@ mod tests {
         let want = command_for_exe(r"C:\Program Files\WindInput\wind_setting.exe");
         let same_case_diff = command_for_exe(r"c:\program files\windinput\WIND_SETTING.EXE");
         assert_eq!(
-            classify_assoc(Some(PROGID), Some(&same_case_diff), &want),
+            classify_assoc(
+                Some(PACKAGE.progid),
+                Some(&same_case_diff),
+                &want,
+                PACKAGE.progid
+            ),
             Registration::Ours
         );
         // ProgId 名大小写不同也算本程序的（注册表键名不区分大小写）。
         assert_eq!(
-            classify_assoc(Some("windinput.package"), Some(&want), &want),
+            classify_assoc(
+                Some("windinput.package"),
+                Some(&want),
+                &want,
+                PACKAGE.progid
+            ),
             Registration::Ours
         );
         // ProgId 是本程序的但命令指向旧安装路径 → 他人（残留），自愈据此收回。
         let old = command_for_exe(r"D:\old\wind_setting.exe");
         assert_eq!(
-            classify_assoc(Some(PROGID), Some(&old), &want),
+            classify_assoc(Some(PACKAGE.progid), Some(&old), &want, PACKAGE.progid),
             Registration::Other(old.clone())
         );
         // ProgId 在但命令为空 → 未关联（双击没反应，界面给「注册」）。
         assert_eq!(
-            classify_assoc(Some(PROGID), None, &want),
+            classify_assoc(Some(PACKAGE.progid), None, &want, PACKAGE.progid),
             Registration::Unregistered
         );
     }
@@ -287,10 +458,15 @@ mod tests {
         let want = command_for_exe(r"C:\app\wind_setting.exe");
         let their = command_for_exe(r"C:\other\tool.exe");
         assert_eq!(
-            classify_assoc(Some("SomeTool.Package"), Some(&their), &want),
+            classify_assoc(
+                Some("SomeTool.Package"),
+                Some(&their),
+                &want,
+                PACKAGE.progid
+            ),
             Registration::Other(their.clone())
         );
-        let no_cmd = classify_assoc(Some("SomeTool.Package"), None, &want);
+        let no_cmd = classify_assoc(Some("SomeTool.Package"), None, &want, PACKAGE.progid);
         let Registration::Other(desc) = &no_cmd else {
             panic!("指向他人 ProgId 必须是 Other：{no_cmd:?}");
         };
@@ -307,7 +483,7 @@ mod tests {
     /// 添加顺序一变就指到主图标去了——那正是本功能要消除的「文件和程序同一个图标」。
     #[test]
     fn icon_value_uses_negative_resource_id() {
-        let v = icon_value_for_exe(r"C:\Program Files\WindInput\wind_setting.exe");
+        let v = icon_value_for_exe(r"C:\Program Files\WindInput\wind_setting.exe", 2);
         assert_eq!(v, r#""C:\Program Files\WindInput\wind_setting.exe",-2"#);
         assert!(
             v.ends_with(",-2"),
