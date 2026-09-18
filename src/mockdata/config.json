@@ -476,6 +476,7 @@
    "auto_hide": false,
    "auto_hide_delay": 5,
    "buttons": [],
+   "fullscreen_watch": true,
    "hide_in_fullscreen": true,
    "items": [
     "mode",

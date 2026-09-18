@@ -2826,6 +2826,18 @@ label = "全屏时隐藏工具栏"
 hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏"
 platform = "windows"
 
+# 受 hide_in_fullscreen 门控：那项关着时「怎么发现全屏」无从谈起。引用同卡片内的 key，
+# 渲染上自动成为它的从属行。
+[[items]]
+key = "ui.toolbar.fullscreen_watch"
+group = "ui"
+section = "工具栏"
+type = "toggle"
+label = "主动检测全屏状态"
+hint = "定期主动查询前台是否全屏。关掉后，像在输入框里按 F11 这种不伴随焦点切换的全屏，输入法收不到通知，工具栏不会自动隐藏"
+enabled_when = "ui.toolbar.hide_in_fullscreen == true"
+platform = "windows"
+
 [[items]]
 key = "ui.toolbar.vertical"
 group = "ui"

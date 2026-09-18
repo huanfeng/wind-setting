@@ -1747,6 +1747,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "ui.toolbar.fullscreen_watch",
+      "type": "bool"
+    },
+    {
       "default": false,
       "key": "ui.toolbar.auto_hide",
       "type": "bool"

@@ -5778,6 +5778,7 @@ mod tests {
         let m = Manifest::from_embedded();
         for k in [
             "ui.toolbar.hide_in_fullscreen",
+            "ui.toolbar.fullscreen_watch",
             "ui.toolbar.auto_hide",
             "ui.toolbar.auto_hide_delay",
             "ui.toolbar.vertical",
