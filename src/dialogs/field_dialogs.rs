@@ -1266,6 +1266,28 @@ pub fn build_punct_table_dialog(
 /// 热键编辑对话框：修饰键勾选 + 主键下拉（+ 可选「全局」）+ [恢复默认 | 取消 确认]。
 /// 确认时合成 "ctrl+shift+e" 写回 `raw`（并更新行内显示 `disp`）；恢复默认从 `default` 反填。
 #[allow(clippy::too_many_arguments)]
+/// 功能快捷键对话框里那条系统占用提示的判定本体。抽出来是为了**可测** —— 留在
+/// `build_hotkey_dialog` 的闭包里就只能靠肉眼，而它有一条容易写错的前置条件（见下）。
+///
+/// ⚠️ **半成品状态必须返回 `None`**：同一行上还挂着「只选修饰键不构成热键」与
+/// 「单个按键会被全局吞掉」两条提示，三条靠状态天然互斥才共用一行。这里若在
+/// 「没勾修饰键」或「没选主键」时也给出档位，就会两条同时显示、叠在一起。
+///
+/// 值域与档位不在这里定义，转交 `key_binding::system_reserved_combo_notice` —— 两个
+/// 对话框列两张表的结果，是同一个键在一处提示、另一处不提示。
+fn hotkey_dialog_system_risk(
+    mods: [bool; 4],
+    key: &str,
+) -> Option<crate::dialogs::key_binding::SystemKeyRisk> {
+    if !mods.iter().any(|b| *b) || key.is_empty() {
+        return None;
+    }
+    crate::dialogs::key_binding::system_reserved_combo_notice(&crate::manifest::compose_hotkey(
+        mods, key,
+    ))
+    .map(|(r, _)| r)
+}
+
 pub fn build_hotkey_dialog(
     visible: Signal<bool>,
     title: &str,
@@ -1279,6 +1301,7 @@ pub fn build_hotkey_dialog(
     global: Option<Signal<bool>>,
     enabled: Signal<bool>,
 ) -> Element {
+    use crate::dialogs::key_binding::SystemKeyRisk;
     use crate::manifest::{compose_hotkey, format_hotkey, parse_hotkey};
     let [mc, ms, ma, mw] = mods;
 
@@ -1311,6 +1334,21 @@ pub fn build_hotkey_dialog(
             let has_mod = mc.get() || ms.get() || ma.get() || mw.get();
             let has_key = kv.get(key_idx.get()).is_some_and(|k| !k.is_empty());
             (has_mod, has_key)
+        })
+    };
+
+    // 当前这个组合键会不会被 Windows 先拿走。只在配全了（有修饰键 + 有主键）时有意义，
+    // 半成品状态由上面 `form` 那两条提示负责。
+    //
+    // 判定与值域的单一真相源在 `key_binding::system_reserved_combo_notice` —— 这里
+    // **只取档位**，不复制那张键表：两处各列一份的结果，是同一个键在两个对话框里
+    // 一个提示一个不提示，而用户不会知道该信哪个。
+    let risk: Rc<dyn Fn() -> Option<SystemKeyRisk>> = {
+        let kv = key_values.clone();
+        Rc::new(move || {
+            let m = [mc.get(), ms.get(), ma.get(), mw.get()];
+            let k = kv.get(key_idx.get()).cloned().unwrap_or_default();
+            hotkey_dialog_system_risk(m, &k)
         })
     };
 
@@ -1354,7 +1392,7 @@ pub fn build_hotkey_dialog(
                         }),
                 )
                 .child(
-                    // 两条提示互斥，同挂这一行：分挂两行的话「修饰键」那行只剩 ~100px，
+                    // 三条提示互斥，同挂这一行：分挂两行的话「修饰键」那行只剩 ~100px，
                     // 塞不下说得清后果的句子，而这句的后果（键被全局吞掉）恰恰最需要说清。
                     Element::label("单个按键会被全局吞掉，请加修饰键")
                         .font_size(11.0)
@@ -1363,6 +1401,43 @@ pub fn build_hotkey_dialog(
                         .visible_when({
                             let f = form.clone();
                             move || matches!(f(), (false, true))
+                        }),
+                )
+                .child(
+                    // ★ 第三条：键**配全了**（有修饰键 + 有主键），但 Windows 可能先把它
+                    // 拿走。与上面两条天然互斥 —— 那两条只在半成品状态出现，这条只在
+                    // (true, true) 出现 —— 所以能共用同一行，不额外改对话框高度。
+                    //
+                    // 为什么这个对话框也要有：起因那次排查里，用户把 `Ctrl+Space` 配成
+                    // 工具栏开关后「按下没反应」，而「显示/隐藏工具栏」在设置里的**主路径**
+                    // 正是本对话框（`keys.toggle_toolbar` 是个 hotkey 字段）。只在
+                    // `key_actions` 那个绑定对话框里提示的话，更容易被走到的这条路仍然
+                    // 一个字都看不到。
+                    //
+                    // 档位判定与文案的单一真相源在 `key_binding::system_reserved_combo_notice`；
+                    // 这里只取**档位**、配一句一行放得下的短语。那边有 `max_lines(3)` 的
+                    // 空间可以讲清楚「去哪改」，这一行没有，两处信息密度本就该不同 ——
+                    // 但事实（哪些键、哪一档）必须同源，不能各列一张表。
+                    Element::label("Windows 系统快捷键，输入法收不到")
+                        .font_size(11.0)
+                        .fg_role(Role::Warning)
+                        .max_lines(1)
+                        .visible_when({
+                            let r = risk.clone();
+                            move || r() == Some(SystemKeyRisk::Unreachable)
+                        }),
+                )
+                .child(
+                    // 第二档用**中性灰**而不是警告色：它多数情况下仍能正常工作
+                    // （出厂 `toggle_punct` 用的就是 `Ctrl+.`），标红会把可用配置说成坏的。
+                    // 与本模块「码元首码」那条中性措辞同一取舍。
+                    Element::label("Windows 输入法热键，可能被系统占用")
+                        .font_size(11.0)
+                        .fg_role(Role::TextMuted)
+                        .max_lines(1)
+                        .visible_when({
+                            let r = risk.clone();
+                            move || r() == Some(SystemKeyRisk::MayBeTaken)
                         }),
                 ),
         )
@@ -1485,6 +1560,85 @@ mod font_rows_tests {
         let rows = font_list_to_rows(Some(&v));
         assert_eq!(rows, "Microsoft YaHei UI\nNoto Sans Mongolian");
         assert_eq!(Value::Array(rows_to_font_list(&rows)), v, "往返未闭合");
+    }
+
+    /// ★ 同一行上三条提示的**互斥**，以及互斥真正依赖的那个事实。
+    ///
+    /// 三条挂在同一行（「只选修饰键不构成热键」/「单个按键会被全局吞掉」/ 系统占用），
+    /// 靠状态天然互斥才不会叠在一起。
+    ///
+    /// ⚠️ **这条测试的判别力有限，别高估它**：把 `hotkey_dialog_system_risk` 里那道
+    /// 「没勾修饰键就返回 None」删掉，它**仍然全绿** —— 因为 `compose_hotkey` 在无修饰键时
+    /// 产出的是裸键（`"space"`，不含 `+`），而 `system_reserved_combo_notice` 对不含 `+` 的
+    /// 串直接返回 `None`。互斥是这两个下游行为共同保证的，不是那道前置判断保证的。
+    /// （初版注释声称它守的就是那道判断，动手验了一次才发现不是 —— 假护栏比没有更坏，
+    /// 故在此写明。那道判断仍然留着：它显式表达意图，也挡住下游哪天改变行为。）
+    ///
+    /// 所以下面第二段直接钉住那个**真实依赖**：无修饰键时合成结果不得带 `+`。
+    /// 那才是改动后会真的变红的地方。
+    #[test]
+    fn the_three_row_hints_stay_mutually_exclusive() {
+        // 半成品的三种形态，系统占用这条都必须闭嘴。
+        assert_eq!(
+            hotkey_dialog_system_risk([true, false, false, false], ""),
+            None,
+            "只勾修饰键时该由「请选择主键」那条说话"
+        );
+        assert_eq!(
+            hotkey_dialog_system_risk([false; 4], "space"),
+            None,
+            "只选主键时该由「会被全局吞掉」那条说话"
+        );
+        assert_eq!(
+            hotkey_dialog_system_risk([false; 4], ""),
+            None,
+            "解绑态无提示"
+        );
+
+        // ★ 互斥真正依赖的事实：没有修饰键就合成不出组合键形态。
+        // 这一行若被改成产出 `"+space"` 之类，上面的互斥立刻破掉。
+        assert!(
+            !crate::manifest::compose_hotkey([false; 4], "space").contains('+'),
+            "无修饰键时 compose_hotkey 不得产出组合键形态，否则三条提示会同时显示"
+        );
+    }
+
+    /// 配全之后，两个入口对同一个键必须给出**同一档位**。
+    ///
+    /// 这个对话框（功能快捷键）与 `key_actions` 的绑定对话框是两条路径，用户从哪条进来
+    /// 都可能配出 `Ctrl+Space`。两处各列一张键表的话，同一个键会一处提示、一处不提示，
+    /// 而用户不会知道该信哪个 —— 故本测试直接对着 `key_binding` 那份判定比。
+    #[test]
+    fn system_risk_agrees_with_the_binding_dialog() {
+        use crate::dialogs::key_binding::{SystemKeyRisk, system_reserved_combo_notice};
+        // (修饰键, 主键, 合成后的键串)
+        let cases = [
+            ([true, false, false, false], "space", "ctrl+space"),
+            ([false, true, false, false], "space", "shift+space"),
+            ([true, false, false, false], ".", "ctrl+."),
+            ([false, false, true, false], "tab", "alt+tab"),
+            ([false, false, false, true], "a", "win+a"),
+            ([true, true, false, false], "u", "ctrl+shift+u"),
+            ([true, false, true, false], "m", "ctrl+alt+m"),
+        ];
+        for (mods, key, composed) in cases {
+            assert_eq!(
+                hotkey_dialog_system_risk(mods, key),
+                system_reserved_combo_notice(composed).map(|(r, _)| r),
+                "{composed} 在两个对话框里的档位不一致"
+            );
+        }
+        // 钉住方向：上面若两边同时退化成恒 None，比较仍会通过。
+        assert_eq!(
+            hotkey_dialog_system_risk([true, false, false, false], "space"),
+            Some(SystemKeyRisk::MayBeTaken),
+            "Ctrl+Space 应判为「可能被占」"
+        );
+        assert_eq!(
+            hotkey_dialog_system_risk([false, false, false, true], "a"),
+            Some(SystemKeyRisk::Unreachable),
+            "Win+A 应判为「收不到」"
+        );
     }
 
     /// 空行与尾随换行不得产生空字体项（空项会让 core 的链首变成空串）。

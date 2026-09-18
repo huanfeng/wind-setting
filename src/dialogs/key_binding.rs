@@ -220,6 +220,101 @@ fn aux_code_backtick_notice(verb: &str, key: &str) -> Option<String> {
     }
 }
 
+/// 组合键被 Windows 抢走的**确定性**分档。两档措辞不能混用，见
+/// [`system_reserved_combo_notice`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SystemKeyRisk {
+    /// OS / 宿主窗口层直接消费，输入法没有机会。
+    Unreachable,
+    /// Windows「输入语言热键」的默认值，**多数环境下仍能正常工作**。
+    MayBeTaken,
+}
+
+/// `Alt+<主键>` 里会被窗口层吃掉的那几个：主键 → 系统功能名。
+///
+/// ⚠️ 只有这三个，**不是所有 Alt 组合**。`Alt+<字母>` 只在当前窗口有菜单栏时打开菜单，
+/// 那是应用层行为不是 OS 截胡；把整个 Alt 族划进来会让 `alt+m` 这类正常配法挂上噪音。
+const ALT_WINDOW_KEYS: &[(&str, &str)] = &[
+    ("tab", "切换窗口"),
+    ("space", "窗口菜单"),
+    ("f4", "关闭窗口"),
+];
+
+/// Windows「输入语言的热键」对话框里那三个**默认已分配**的键：键 → 它在系统里的功能。
+///
+/// `.` 与 `period` 两种写法都列：本对话框的 Lead 表用字面 `.`（`manifest::hotkey_keys`），
+/// 而手写配置里的 `period` 经 `key_index` 的「当前值追加」路径同样到得了这里。
+///
+/// ⚠️ **`Ctrl+Shift+<数字>` 与 `左Alt+Shift+<数字>` 刻意不列**，虽然它们出自同一个系统
+/// 对话框（每个输入法的「启用键序列」槽）：那些槽**默认未分配**，只在装了多个输入法时
+/// 才可能被 Windows 指派；而本仓出厂的 `delete_candidate` 用的正是 `ctrl+shift+number`
+/// 模板 —— 给这一族挂「系统可能占用」会把一个**本程序自己占着**的键说成是 Windows 占的，
+/// 指错方向比不提示更坏。真要提示那族，该提的是重复绑定，不是系统占用。
+const IME_LANGUAGE_HOTKEYS: &[(&str, &str)] = &[
+    ("ctrl+space", "中/英文切换"),
+    ("shift+space", "全角/半角切换"),
+    ("ctrl+.", "中/英文标点切换"),
+    ("ctrl+period", "中/英文标点切换"),
+];
+
+/// Windows 可能**先于输入法**拿走这个组合键。返回 `(确定性档位, 完整提示语)`。
+///
+/// 起因是用户把 `Ctrl+Space` / `Shift+Space` 配成工具栏开关后「按下没反应」，而日志里
+/// 什么都不会有 —— 键根本没到我们这一层，和「绑定没生效」完全同形。本模块开头那条
+/// 「不过滤的后果是用户配得上、按下去没反应」在这里换了个来源：不是 core 拒绝，是 OS 截胡。
+///
+/// ⚠️ **只列这个对话框真的配得出来的键**。值域是 `manifest::hotkey_keys()`
+/// （a-z / 0-9 / f1-f12 / space / tab / enter / 几个标点）—— 没有 Delete、没有 Escape，
+/// 所以 `Ctrl+Alt+Del`、`Ctrl+Shift+Esc` 这些经典系统键在这里**配不出来**，列了就是死代码。
+/// 守门测试 `every_system_reserved_key_is_actually_configurable` 迭代上面两张 const 表本身，
+/// 往表里加一个配不出来的键会直接把它打红。
+///
+/// （Session 表更窄：只有 `shift+` 前缀且 `session_base_keys()` 里没有 space，两档一条都
+/// 命中不了，故不接这个提示 —— 那个前提由 `session_table_cannot_hit_system_keys` 钉住。）
+///
+/// ★ 第二档措辞必须留有余地：出厂的 `toggle_punct` 用的就是 `Ctrl+.`，实测能用。
+/// 写成「不要用」会把一批可用配置吓退，而那比不提示更糟。
+///
+/// ★★ 第二档是**全串精确匹配**，`Ctrl+Shift+Space` 不会命中 —— 这是有意的：Windows 的
+/// 默认值就是光 `Ctrl+Space`，多一个修饰键就是另一个键了。别「顺手」改成 `has_mod` 式的
+/// 宽松匹配，那会立刻把 `ctrl+shift+space` 这类正常配法变成误报。
+pub(crate) fn system_reserved_combo_notice(key: &str) -> Option<(SystemKeyRisk, String)> {
+    // 分段 trim 后再拼回来：两档看到的形状必须一致。只在开头 trim 整串的话，
+    // `ctrl + space` 这种手写形态会被第一档的 `has_mod`（它自己 trim 分段）认出来、
+    // 却被第二档的全串匹配漏掉。
+    let k = key
+        .split('+')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("+")
+        .to_lowercase();
+    // 没有 `+` 就不是组合键（单键与修饰键各有各的提示，不该落到这里）。
+    let base = k.rsplit_once('+')?.1;
+    let has_mod = |m: &str| k.split('+').any(|p| p == m);
+
+    if has_mod("win") {
+        return Some((
+            SystemKeyRisk::Unreachable,
+            "Win 组合键由 Windows 自己处理，输入法收不到，请换一个键。".to_string(),
+        ));
+    }
+    if has_mod("alt")
+        && let Some((_, what)) = ALT_WINDOW_KEYS.iter().find(|(b, _)| *b == base)
+    {
+        return Some((
+            SystemKeyRisk::Unreachable,
+            format!("这是 Windows 的窗口快捷键（{what}），输入法收不到，请换一个键。"),
+        ));
+    }
+    let (_, what) = IME_LANGUAGE_HOTKEYS.iter().find(|(v, _)| *v == k)?;
+    Some((
+        SystemKeyRisk::MayBeTaken,
+        format!(
+            "Windows 默认把它作为输入法的「{what}」热键，可能先被系统吃掉。多数情况下仍能正常用；按下没反应就到系统的「输入语言热键」里改掉它，或换一个键。"
+        ),
+    ))
+}
+
 // ───────────────────────────── 键名显示 ─────────────────────────────
 
 /// 键名 → 给人看的文本。`rbracket` → `]`，`ctrl+shift+rbracket` → `Ctrl + Shift + ]`。
@@ -1055,6 +1150,11 @@ impl KeyPicker {
                 // 「配了完全没反应」。这条不放进 `verb_allowed` 过滤：它只对拼音方案成立，
                 // 而这个对话框也服务码表方案，一刀切会挡掉合法配置。
                 if let Some(n) = aux_code_backtick_notice(&self.current_verb(), key) {
+                    return n;
+                }
+                // 系统占用排在形态过滤**之前**：它说的是「这个键可能根本到不了输入法」，
+                // 比「这个功能不能绑这个形态」更靠前地决定了配了有没有用。
+                if let Some((_, n)) = system_reserved_combo_notice(key) {
                     return n;
                 }
                 // ★ 说明**只在真的滤掉了东西时**才出。恒挂就成了常驻噪音，而它要传达的
@@ -1947,7 +2047,153 @@ mod tests {
         }
     }
 
-    /// 提示文案里不得混入连续空白。
+    /// ★★ 系统占用提示列的每一个键，都必须**真能在这个对话框里配出来**。
+    ///
+    /// 这条守的是本仓反复出现的一类：写一道护栏，而它的条件恒不成立 —— 护栏从没生效，
+    /// 「没报过」被当成「没问题」。这里的具体形态是「列了 `Ctrl+Alt+Del`，而基础键下拉里
+    /// 根本没有 Delete」，那条提示永远出不来，读代码的人却以为已经覆盖了。
+    ///
+    /// ⚠️ **迭代 const 表本身**，不另写一份平行的字面量清单：手写清单与实现之间没有任何
+    /// 强制对应，往实现里加一支配不出来的键，平行清单照样绿 —— 那就是把本测试要防的
+    /// 缺陷原样复制到了上一层。初版正是那么写的，而且两份清单当场就已经不同步
+    /// （实现有 `ctrl+period`，清单里没有）。
+    #[test]
+    fn every_system_reserved_key_is_actually_configurable() {
+        let base: Vec<String> = combo_base_keys(BindingTable::Lead)
+            .into_iter()
+            .map(|(v, _)| v)
+            .filter(|v| !v.is_empty())
+            .collect();
+
+        for (b, _) in ALT_WINDOW_KEYS {
+            assert!(
+                base.iter().any(|x| x == b),
+                "alt+{b} 的基础键不在组合键下拉的值域里，这条提示永远出不来"
+            );
+            assert_eq!(
+                system_reserved_combo_notice(&format!("alt+{b}")).map(|(r, _)| r),
+                Some(SystemKeyRisk::Unreachable),
+                "alt+{b} 应判为「收不到」"
+            );
+        }
+
+        for (k, _) in IME_LANGUAGE_HOTKEYS {
+            assert_eq!(
+                system_reserved_combo_notice(k).map(|(r, _)| r),
+                Some(SystemKeyRisk::MayBeTaken),
+                "{k} 应判为「可能被占」"
+            );
+            let kb = k.rsplit_once('+').expect("表里恒是组合键").1;
+            // `period` 是唯一的例外：它不在下拉值域里，靠 `key_index` 的「当前值追加」
+            // 路径到达（手写配置 `ctrl+period` 打开对话框时会被追加成一个选项）。
+            // 豁免它，而不是把它从表里删掉 —— 删了手写配置就没提示了。
+            if kb == "period" {
+                continue;
+            }
+            assert!(
+                base.iter().any(|x| x == kb),
+                "{k} 的基础键 {kb} 既不在下拉值域里、也不是已知的「当前值」豁免项"
+            );
+        }
+
+        // Win 那一支与基础键无关（任意主键都成立），单独验一条，并确认 Win 复选框
+        // 在 Lead 表**确实渲染**——Session 表只给 Shift，那边这一支恒不可达。
+        assert_eq!(
+            system_reserved_combo_notice("win+a").map(|(r, _)| r),
+            Some(SystemKeyRisk::Unreachable)
+        );
+        assert_eq!(
+            system_reserved_combo_notice("ctrl+win+a").map(|(r, _)| r),
+            Some(SystemKeyRisk::Unreachable)
+        );
+    }
+
+    /// Session 表接不上系统占用提示的**前提**：它的基础键里没有 space。
+    ///
+    /// `system_reserved_combo_notice` 的文档据此说明「Session 表一条都命中不了，故不接」。
+    /// 那是一句对**别处数据**的断言，没有任何编译期约束 —— 哪天有人往
+    /// `session_base_keys()` 加个 space，Session 表就静默少了一条本该有的提示。
+    #[test]
+    fn session_table_cannot_hit_system_keys() {
+        assert!(
+            !session_base_keys().contains(&"space"),
+            "Session 表现在配得出 shift+space 了，请把 system_reserved_combo_notice 接上去"
+        );
+    }
+
+    /// 反向：普通组合键不得挂提示，否则变成常驻噪音。
+    ///
+    /// ⚠️ `ctrl+alt+m` 与 `ctrl+shift+u` 这类是**最常见的正确配法**，误报一次就会让用户
+    /// 对整条提示失去信任 —— 那比不提示更糟。`alt+m` 也必须干净：Alt 组合只有窗口那三个
+    /// 键被系统吃，不是所有 Alt 组合。
+    #[test]
+    fn ordinary_combos_get_no_system_notice() {
+        for key in [
+            "ctrl+alt+m",
+            "ctrl+shift+u",
+            "ctrl+shift+b",
+            "alt+m",
+            "alt+1",
+            "shift+f5",
+            "ctrl+enter",
+            // 多一个修饰键就是另一个键：Windows 的默认值是光 Ctrl+Space。
+            "ctrl+shift+space",
+            // 出厂 delete_candidate 用的就是这一族，刻意不列（见 IME_LANGUAGE_HOTKEYS 注释）。
+            "ctrl+shift+1",
+            "alt+shift+1",
+            // 单键与修饰键根本不该进这个判断。
+            "backtick",
+            "rshift",
+            "",
+        ] {
+            assert!(
+                system_reserved_combo_notice(key).is_none(),
+                "{key:?} 不该挂系统占用提示"
+            );
+        }
+    }
+
+    /// 手写配置的形态（分段带空格、大小写）两档都要认，不能一档认一档漏。
+    #[test]
+    fn hand_written_spacing_and_case_hit_both_tiers() {
+        for key in ["ctrl + space", "Ctrl+Space", "CTRL + SPACE"] {
+            assert_eq!(
+                system_reserved_combo_notice(key).map(|(r, _)| r),
+                Some(SystemKeyRisk::MayBeTaken),
+                "{key:?} 应与规范形态判得一样"
+            );
+        }
+        assert_eq!(
+            system_reserved_combo_notice("win + a").map(|(r, _)| r),
+            Some(SystemKeyRisk::Unreachable)
+        );
+    }
+
+    /// 两档措辞的**确定性不同**，不能混为一谈。
+    ///
+    /// ★ `Ctrl+.` 是出厂 `toggle_punct` 的键、实测能用。若把第二档也写成「收不到」，
+    /// 等于告诉用户出厂配置是坏的。
+    #[test]
+    fn two_tiers_word_their_certainty_differently() {
+        for key in ["win+a", "alt+tab", "alt+space", "alt+f4"] {
+            let (risk, text) =
+                system_reserved_combo_notice(key).unwrap_or_else(|| panic!("{key} 应有提示"));
+            assert_eq!(risk, SystemKeyRisk::Unreachable);
+            assert!(text.contains("收不到"), "第一档应明确说收不到：{text}");
+        }
+        for (key, _) in IME_LANGUAGE_HOTKEYS {
+            let (risk, text) =
+                system_reserved_combo_notice(key).unwrap_or_else(|| panic!("{key} 应有提示"));
+            assert_eq!(risk, SystemKeyRisk::MayBeTaken);
+            assert!(
+                text.contains("多数情况下仍能正常用"),
+                "第二档必须留有余地（出厂 toggle_punct 用的就是 Ctrl+.）：{text}"
+            );
+            assert!(!text.contains("收不到"), "第二档不得写成确定收不到：{text}");
+        }
+    }
+
+    /// 提示文案里不得混入连续空白。    /// 提示文案里不得混入连续空白。
     ///
     /// 反斜杠续行会被 rustfmt 接回一行，被它吞掉的缩进随之变成字面空格——用户看到的是
     /// 句子中间夹一大段空白。本文件的辅助码那条已经这么中招过一次。
@@ -1964,6 +2210,12 @@ mod tests {
             ("backtick", "aux_code"),
             ("backslash", "none"),
             ("ctrl+shift+r", "toggle_schema:english"),
+            // ★ 系统占用那三条**必须在列**：它们是本文件最新加的文案，而这条测试原先
+            // 的键表一个都走不到 `system_reserved_combo_notice` —— 护栏对新文案根本没在跑，
+            // 与它自己要防的那类缺陷同形。三个基础键都在 `hotkey_keys()` 里，走得通。
+            ("ctrl+space", "toggle_toolbar"),
+            ("alt+tab", "toggle_toolbar"),
+            ("win+a", "toggle_toolbar"),
             ("", "none"),
         ] {
             if key.is_empty() {
@@ -1973,6 +2225,7 @@ mod tests {
             }
             let n = p.notice.get();
             assert!(!n.contains("  "), "提示里混入了连续空白：{n:?}");
+            assert!(!n.contains('\n'), "提示里混入了换行：{n:?}");
         }
         // 分类里那条也一样（它不经 notice_text，是 VerbCategory::notice）。
         for c in categorize_lead_verbs(&vs) {
