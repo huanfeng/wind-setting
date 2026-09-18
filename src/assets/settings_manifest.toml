@@ -1948,7 +1948,7 @@ group = "keys"
 section = "中英文切换"
 type = "checkbox_group"
 label = "切换按键"
-hint = "勾选用于切换中英文的修饰键（可多选，按下任意一个即切换）"
+hint = "勾选用于切换中英文的修饰键（可多选，按下任意一个即切换）。想用 Ctrl+Space 这类组合键，到「按键 → 全局自定义按键」里把它绑成「中英文切换」"
 [[items.options]]
 value = "lshift"
 label = "左 Shift"

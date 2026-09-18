@@ -165,27 +165,27 @@ pub fn verb_requires_modifier(value: &str) -> bool {
 /// 这个功能能不能绑在这个键形态上（`Lead` 表用；`Session` 表没有此限制）。
 pub fn verb_allowed(shape: KeyShape, value: &str) -> bool {
     match shape {
-        // 组合键走 key_down 热键表，动词受 core `hotkey_action_entry` 白名单限制。
-        // ⚠ 与那张白名单是两份手写清单，加动词时两处都要改。
+        // 组合键走 key_down 热键表，值域**就是** `BoundAction` 的全值域——与单键、修饰键
+        // 同一张表（core `hotkey_action_entry` 2026-09-18 合流）。
         //
-        // ★ `softkeyboard` 曾漏在这里，而它**是出厂配置**（`data/config.toml` 的
+        // 此前这里与 core 各持一份逐条追加的六项白名单，组合键能配的功能恒比单键少一大截。
+        // 那不是设计结论：组合键这条通路在按键链上位次**更早**（英文模式分水岭之前）、
+        // 不与输入争键、可全局拦截，本该是限制最少的一条。两份手写清单还漂移过一次——
+        // `softkeyboard` 漏在这里，而它**是出厂配置**（`data/config.toml` 的
         // `key_actions = { "ctrl+shift+k" = "softkeyboard" }`）⇒ 全新安装打开这个对话框，
-        // 出厂那条就红着「组合键不支持」。漂移的方向恰是这条注释预言的那种，只是没人
-        // 在两处都看一眼——2026-08-31 由只读组的截图自查撞出来。守门测试见
-        // `combo_verbs_match_core_whitelist`。
-        KeyShape::Combo => {
-            // ★ `none` 必须在组合键上放行，理由与其它动词不同：它不是一个「功能」，
-            // 而是**压制更低层同键绑定的唯一手段**。`keys.key_actions` 是逐键深合并的
-            // （core `merge_value`），删掉一行压不住 data/config.toml 或定制版
-            // data_custom/config.toml 里写的那一行——只有显式写 none 才是「本层表态：
-            // 别干活」。core 侧对应的是 `Compiler::compile` 里组合键分支的那道闸。
-            value == "none"
-                || value.starts_with("toggle_schema:")
-                || value.starts_with("switch_schema:")
-                || value.starts_with("special:")
-                || value == "softkeyboard"
-                || value.starts_with("softkeyboard:")
-        }
+        // 出厂那条就红着「组合键不支持」（2026-08-31 由只读组的截图自查撞出来）。
+        //
+        // ⚠ 仍是两份手写清单（跨仓，没有编译期约束），但现在两边都是「全放行」而不是
+        // 「逐条列举」，漂移面小了一个量级。守门测试见 `combo_verbs_match_core_whitelist`。
+        //
+        // 唯二挡住的是 `add_word` / `open_add_word_dialog`：它们要返回占位 composition
+        // 激活 C++ 转发全部按键，不符 `dispatch_hotkey` 的 bool 契约，core 的 `BoundAction`
+        // 值域里根本没有它们（配了会 warn 后忽略）。这两个键在「按键 → 功能快捷键」页配。
+        //
+        // ★ 这一条**眼下滤不掉任何东西**（功能列表本就不含加词那两项），留着是因为
+        // 「把加词加进功能列表」是个很自然的后续演进，而那时若没有这道闸，用户会配得上、
+        // 按下去没反应。写在这里比写在将来那次改动的 review 意见里可靠。
+        KeyShape::Combo => !matches!(value, "add_word" | "open_add_word_dialog"),
         KeyShape::Char => !verb_requires_modifier(value),
         KeyShape::Modifier => true,
     }
@@ -1064,8 +1064,11 @@ impl KeyPicker {
                 // 被反斜杠吞掉的缩进随之变成**字面空格**，用户看到的提示中间夹一大段空白。
                 // 上面辅助码那条就是这么中招的（已修）。
                 match key_shape(key) {
+                    // 组合键现在与单键同值域（2026-09-18 合流），只剩加词那两项配不了，
+                    // 而它们本就不在功能列表里 ⇒ 这一支实际到不了。留着是与
+                    // `verb_allowed` 那道闸配套：真滤掉了东西就得说得出原因。
                     KeyShape::Combo if filtered => {
-                        "组合键只能绑「切换方案」「特殊模式」与「不启用」。其它功能请改用单个按键，或到「按键 → 功能快捷键」里配。"
+                        "加词类功能要接管后续按键，不能在这里配，请到「按键 → 功能快捷键」里设置。"
                             .to_string()
                     }
                     // 有字符的键滤掉的是「用来离开英文态」的那几个。此前这一支恒返回空串
@@ -1527,14 +1530,14 @@ mod tests {
         assert!(checked >= 20, "只校验到 {checked} 个键名，表像是被清空了");
     }
 
-    /// 组合键的动词白名单必须与 core 的 `hotkey_action_entry` 对齐。
+    /// 组合键的值域必须与 core 的 `hotkey_action_entry` 对齐。
     ///
     /// ★ 判据取自**出厂配置**而不是凭记忆列举：`data/config.toml` 里出厂就有
-    /// `"ctrl+shift+k" = "softkeyboard"`，任何让出厂配置显示成「不支持」的白名单
+    /// `"ctrl+shift+k" = "softkeyboard"`，任何让出厂配置显示成「不支持」的闸门
     /// 都是错的——那是全新安装打开对话框第一眼就能看到的红字。
     ///
-    /// ⚠️ 这张表与 core 那张没有编译期约束（跨仓、两份手写）。本测试只守「已知会出现
-    /// 在出厂配置里的动词」这条底线，core 加了新动词仍要人工同步。
+    /// ⚠️ 这一侧与 core 那侧没有编译期约束（跨仓、两份手写）。2026-09-18 合流后两边
+    /// 都是「全放行」而不是逐条列举，漂移面小了一个量级，但仍不是零。
     #[test]
     fn combo_verbs_match_core_whitelist() {
         for v in [
@@ -1553,12 +1556,13 @@ mod tests {
                 "组合键动词 {v:?} 被判为不支持，而 core 的 hotkey_action_entry 认它"
             );
         }
-        // 反向：A 类动词在组合键上确实不受支持（core 那边 warn 后忽略），别为了消红
-        // 把闸门整个放开——那样用户配得上、按下去没反应，比标红难查得多。
-        for v in ["toggle_mode", "switch_engine", "toggle_punct"] {
+        // 反向：加词那两个在组合键上确实不受支持（不符 `dispatch_hotkey` 的 bool 契约，
+        // core 的 `BoundAction` 值域里根本没有它们）。别为了「看起来更统一」放开——
+        // 那样用户配得上、按下去没反应，比标灰难查得多。
+        for v in ["add_word", "open_add_word_dialog"] {
             assert!(
                 !verb_allowed(KeyShape::Combo, v),
-                "{v:?} 不该在组合键上放行：core 的组合键白名单不含 A 类动词"
+                "{v:?} 不该在组合键上放行：它要接管后续按键，core 那边配了也会 warn 后忽略"
             );
         }
     }
@@ -1604,33 +1608,45 @@ mod tests {
         assert_eq!(key_shape("z"), KeyShape::Char);
     }
 
-    /// ★★ 组合键的可绑功能必须与 core `hotkey_action_entry` 的白名单一致。
+    /// ★★ 组合键的可绑功能 == `BoundAction` 的全值域（2026-09-18 合流）。
     ///
-    /// 放宽的后果是用户配得上、按下去什么都不发生，core 只在日志里 warn 一句——
-    /// 与「没绑上」完全同形，无从分辨。收紧的后果是能力凭空少一半。
+    /// 收紧的后果是**能力凭空少一半**——这正是合流前的状态：用户在「自定义按键」里选
+    /// 「组合键」，能配的功能比选「单个按键」少一大截，而组合键那条通路在按键链上位次
+    /// 更早、不与输入争键，本该限制最少。放宽（把加词类也放进来）的后果则是用户配得上、
+    /// 按下去什么都不发生，core 只在日志里 warn 一句，与「没绑上」同形。
     #[test]
-    fn combo_keys_allow_exactly_the_core_whitelist() {
+    fn combo_keys_allow_the_whole_bound_action_domain() {
         for v in [
+            // C 类切方案
             "toggle_schema:english",
             "switch_schema:wubi",
+            // B 类进 overlay
             "special:fuhao",
+            "temp_pinyin",
+            "temp_english",
+            "aux_code",
+            "rare_char",
+            "mix:quick_mix",
+            "single_char",
+            "single_char:on",
+            "softkeyboard",
+            "softkeyboard:punct",
+            // A 类状态切换
+            "toggle_mode",
+            "switch_engine",
+            "toggle_full_width",
+            "toggle_punct",
+            "toggle_s2t",
+            "toggle_t2s",
+            "toggle_toolbar",
+            "open_settings",
+            "take_screenshot",
             // 见 `verb_allowed` 里那段：压制低层同键绑定的唯一手段，不是功能动词。
             "none",
         ] {
             assert!(verb_allowed(KeyShape::Combo, v), "{v} 应允许绑组合键");
         }
-        for v in [
-            "temp_pinyin",
-            "temp_english",
-            "aux_code",
-            "mix:quick_mix",
-            "toggle_mode",
-            "switch_engine",
-            "toggle_punct",
-            "toggle_s2t",
-            "toggle_t2s",
-            "open_settings",
-        ] {
+        for v in ["add_word", "open_add_word_dialog"] {
             assert!(!verb_allowed(KeyShape::Combo, v), "{v} 不该允许绑组合键");
         }
     }
@@ -1851,12 +1867,16 @@ mod tests {
         assert_eq!(before, after, "第二次 refresh 不该再改动任何信号");
     }
 
-    /// 选了组合键，功能列表就只剩 core 认的那两类，并给出一行说明。
+    /// 选了组合键，功能列表**一项都不少**——2026-09-18 合流后组合键与单键同值域。
+    ///
+    /// 这条此前断言的是相反的事（「只剩 core 认的那两类，并给出一行说明」）。那个断言
+    /// 忠实反映了当时的实现，而实现本身是演进残留：组合键这条通路位次更早、不与输入
+    /// 争键，能配的功能却恒比单键少一大截。
     #[test]
-    fn combo_selection_narrows_the_verb_list() {
+    fn combo_selection_keeps_the_whole_verb_list() {
         let p = lead_picker();
         p.open_edit(1, "ctrl+shift+r", "toggle_schema:english");
-        let names: Vec<String> = p
+        let combo_names: Vec<String> = p
             .data
             .view
             .borrow()
@@ -1864,56 +1884,67 @@ mod tests {
             .map(|c| c.name.clone())
             .collect();
         assert!(
-            names.contains(&"切换方案".to_string()),
-            "组合键应保留「切换方案」：{names:?}"
+            combo_names.contains(&"切换方案".to_string()),
+            "组合键应保留「切换方案」：{combo_names:?}"
         );
         assert!(
-            !names.contains(&"状态切换".to_string()),
-            "组合键不该出现「状态切换」：{names:?}"
+            combo_names.contains(&"状态切换".to_string()),
+            "组合键现在也能绑「状态切换」（含中英文切换）：{combo_names:?}"
         );
+        assert_eq!(p.filtered_count(), 0, "组合键上不该有功能被滤掉");
         assert!(
-            !p.notice.get().is_empty(),
-            "过滤后必须说明为什么，否则像是少了功能"
+            p.notice.get().is_empty(),
+            "没滤掉东西就不该挂说明，否则成了常驻噪音：{:?}",
+            p.notice.get()
         );
 
-        // 换回单个按键，列表要恢复。
-        p.open_edit(1, "backslash", "mix:quick_mix");
-        let names: Vec<String> = p
+        // ★ 与**修饰键**逐类比对，而不是只看「含不含某一类」：修饰键是三种形态里值域
+        // 最全的一条（`verb_allowed` 对它恒真），组合键与它一致才说明真的一项不少。
+        p.open_edit(1, "rshift", "none");
+        let modifier_names: Vec<String> = p
             .data
             .view
             .borrow()
             .iter()
             .map(|c| c.name.clone())
             .collect();
-        assert!(
-            names.contains(&"状态切换".to_string()),
-            "换回单键后应恢复完整列表：{names:?}"
+        assert_eq!(
+            combo_names, modifier_names,
+            "组合键的功能分类应与修饰键完全一致"
         );
     }
 
     /// 任何一次「功能被滤掉」都必须有说明。
     ///
     /// 没有说明的过滤 = 用户选了个键，整类功能无声消失，界面上没有一处说得出原因。
-    /// 这正是本轮改动想消灭的「配不出来还不知道为什么」，却在 Char 那一支上漏了。
+    /// 这正是那轮改动想消灭的「配不出来还不知道为什么」，却在 Char 那一支上漏了。
+    ///
+    /// ⚠️ 合流后**只剩有字符的键还在滤**（滤掉「用来离开英文态」的那几个），组合键与
+    /// 修饰键都是全放行。故这里只留 `backslash` 一个正例——把不再过滤的键留在列表里，
+    /// 前提断言会红在「测不到东西」上，而那不是缺陷。
     #[test]
     fn every_filtering_shape_explains_itself() {
         let p = lead_picker();
-        for key in ["backslash", "ctrl+shift+r"] {
+        p.open_edit(1, "backslash", "none");
+        assert!(
+            p.filtered_count() > 0,
+            "前提：有字符的键上应当有功能被滤掉，否则这条测不到东西"
+        );
+        assert!(
+            !p.notice.get().is_empty(),
+            "滤掉了功能却没有任何说明：{:?}",
+            p.notice.get()
+        );
+        // 不滤的两种形态都不该挂说明，否则成了常驻噪音。
+        for key in ["rshift", "ctrl+shift+r"] {
             p.open_edit(1, key, "none");
+            assert_eq!(p.filtered_count(), 0, "{key} 上不该有功能被滤掉");
             assert!(
-                p.filtered_count() > 0,
-                "前提：{key} 上应当有功能被滤掉，否则这条测不到东西"
-            );
-            assert!(
-                !p.notice.get().is_empty(),
-                "{key} 上滤掉了功能却没有任何说明：{:?}",
+                p.notice.get().is_empty(),
+                "{key} 没滤掉东西时不该有说明：{:?}",
                 p.notice.get()
             );
         }
-        // 修饰键什么都不滤 ⇒ 不该挂说明，否则成了常驻噪音。
-        p.open_edit(1, "rshift", "none");
-        assert_eq!(p.filtered_count(), 0, "修饰键上不该有功能被滤掉");
-        assert!(p.notice.get().is_empty(), "没滤掉东西时不该有说明");
     }
 
     /// 提示文案里不得混入连续空白。
