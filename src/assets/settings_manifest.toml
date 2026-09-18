@@ -892,9 +892,14 @@ options = [
 key = "schema.english.raw_candidate"
 group = "schema"
 section = "英文行为"
-type = "toggle"
+type = "select"
 label = "首候选为所打原文"
-hint = "把输入的字母串本身放在首位，空格直接上屏它；关闭后首位是词库补全，打生词要按回车"
+hint = "「仅当它是词库里的词」：打 hel 不再多出一条占位的 hel，而打 hell 时它恒排第一、不被用得更多的 hello 顶下去。注意打 usa 会出词库里的 USA（想要小写按回车上屏）"
+options = [
+  { value = "always", label = "总是" },
+  { value = "in_dict", label = "仅当它是词库里的词" },
+  { value = "off", label = "不显示" },
+]
 
 [[items]]
 key = "schema.english.case_variants"
@@ -1485,9 +1490,14 @@ hint = "临时英文模式下查询英文词库显示候选词"
 key = "input.temp_english.raw_candidate"
 group = "input"
 section = "临时英文"
-type = "toggle"
+type = "select"
 label = "首候选为所打原文"
-hint = "把输入的字母串本身放在首位，空格直接上屏它；关闭后只出词库候选与变形候选"
+hint = "语义同英文方案那份，两边各配各的。临时英文常用来在中文里插一个专名或缩写（词库里多半没有），故这一侧「总是」往往仍是合适的"
+options = [
+  { value = "always", label = "总是" },
+  { value = "in_dict", label = "仅当它是词库里的词" },
+  { value = "off", label = "不显示" },
+]
 
 [[items]]
 key = "input.temp_english.case_variants"

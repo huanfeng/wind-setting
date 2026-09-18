@@ -122,7 +122,7 @@
    "case_variants": true,
    "commit_space": false,
    "enabled": true,
-   "raw_candidate": true,
+   "raw_candidate": "always",
    "shift_behavior": "temp_english",
    "show_candidates": true,
    "space_as_input": false,
@@ -261,7 +261,7 @@
     "promote_prefix": "all",
     "strategy": "position"
    },
-   "raw_candidate": true
+   "raw_candidate": "always"
   },
   "frequency": {
    "exclude_blocks": []

@@ -304,9 +304,14 @@
       "type": "bool"
     },
     {
-      "default": true,
+      "default": "always",
       "key": "schema.english.raw_candidate",
-      "type": "bool"
+      "type": "enum",
+      "values": [
+        "always",
+        "in_dict",
+        "off"
+      ]
     },
     {
       "default": false,
@@ -899,9 +904,14 @@
       "type": "bool"
     },
     {
-      "default": true,
+      "default": "always",
       "key": "input.temp_english.raw_candidate",
-      "type": "bool"
+      "type": "enum",
+      "values": [
+        "always",
+        "in_dict",
+        "off"
+      ]
     },
     {
       "default": false,
