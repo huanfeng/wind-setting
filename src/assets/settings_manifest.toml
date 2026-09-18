@@ -1373,7 +1373,7 @@ group = "input"
 section = "快捷输入"
 type = "select_mix_free_input"
 label = "自由输入"
-hint = "把不可能是编码的按键（大写字母、多数符号）作字面输入，原样上屏；开启后标点不再顶屏候选"
+hint = "把不可能是编码的按键（大写字母、多数符号，以及一个候选都没有时的选词键）作字面输入，原样上屏；开启后标点不再顶屏候选"
 width = 210
 options = [
   { value = "off", label = "关闭" },
@@ -1389,7 +1389,7 @@ group = "input"
 section = "快捷输入"
 type = "checkbox_mix_free_select_keys"
 label = "; ' 作字面字符"
-hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 不受影响"
+hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 只在一个候选都没有时才作字面"
 enabled_when = "schema.mix_modes#free_input != off"
 
 [[items]]
@@ -2505,7 +2505,7 @@ group = "ui"
 section = "候选排版"
 type = "toggle"
 label = "翻页栏并入编码栏"
-hint = "将翻页栏右对齐显示在编码所在行（竖排可省一行）；「编码显示方式」取「候选窗顶部独立栏」或「编码内联候选首单元」时均生效，横排下无影响"
+hint = "将翻页栏右对齐显示在编码所在行（竖排可省一行）；「编码显示方式」取「候选窗顶部独立栏」或「候选窗首单元内联」时均生效，横排下无影响"
 
 [[items]]
 key = "ui.candidate.max_chars"
