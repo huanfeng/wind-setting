@@ -160,6 +160,10 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     // GUI 不做成员/范围的逐条编辑，新建与改类都在外部编辑器里完成；导出、打开、回读
     // 全在这一个对话框里（见 `external_edit` 模块文档）。与导入导出并排是因为用户会在
     // 同一个位置找「文件相关的操作」。
+    //
+    // ★ 传 `None` ⇒ 对话框对准目标下拉的**首项「新建类…」**（2026-09-18 起新建在首项，
+    // 落点规则见 `xedit_set_targets`）。这枚按钮因此同时是「新建一个类」的一级入口——
+    // 编辑已有类的主路径是行内「操作…」菜单与右键，它们会预选那一行。
     let xe_vis = mgr.clone();
     let xe_do = mgr.clone();
     let charset_xedit = Element::button("外部编辑")
@@ -231,6 +235,54 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
                 .child(empty_overlay),
         );
 
+    // ── 仲裁规则说明（仅字符类 tab）──
+    //
+    // ★★ 这一句回答用户最常问的「谁先生效」。三件事必须同时说到，少一件都会把人引偏：
+    //
+    // 1. **数字小的先判**——列表默认就按它排，但那是隐式的，点一下别的列头就没了；
+    // 2. **逐字覆盖压过所有类**——「改了默认判定却没反应」的头号原因（设计文档 §7.2），
+    //    右边那一列「逐字覆盖」正是它的读数；
+    // 3. **免词频 / 生僻模式不看优先级**——它们是**并集**语义（任一命中的类为真即真，
+    //    §2.2）。不写这条，用户会以为调优先级能改它们的生效顺序，而那个顺序不存在。
+    //
+    // ⚠️ 「且已表态」不能省：判据是 `order` 最小**且表态**的类赢
+    // （`charset_registry::verdict_of`）。加了「优先」列之后，表里会同时出现
+    // 「优先 5 / 默认 未设置」与「优先 10 / 默认 生僻」两行——只说「数字小的先判」，
+    // 用户会推断前者赢，而实际赢的是后者。优先级看得见之后，这层区别才第一次暴露。
+    //
+    // ⚠️⚠️ **两句拆成两个单行 label，不要写成一个 `max_lines(2)` 的长句**。
+    //
+    // 试过那个写法，820 与 560 两档截图里第二行都只露出上半截字形：`Label::measure`
+    // 在 `avail.w == 0`（col 往下传的「不限宽」）时按**单行**测高，等 arrange 收敛到真实
+    // 窄宽再折行，第二行就溢出到下面的表格卡片底下了——windui `ui/mod.rs` 那条
+    // 「换行准确仅保证于显式宽度的 Label」说的就是这个，补 `width_match()` 也没用
+    // （渲染结果字节一致）。两个各自单行的 label 在 col 里测得准，不碰这条限制。
+    //
+    // ★ 顺带解决窄窗口下的取舍：词库窗最小宽是 `DICT_MIN_W` = 560，那个宽度下第一句
+    // 会被截，但**第二句（并集那条）完整**——它正是上面第 3 点说「不写用户就会误解」
+    // 的那一句，拆开之后它不再排在被截的尾巴上。
+    //
+    // 放在工具栏与表格之间而不是标签行右侧：标签行那头已经排着「外部编辑/导入/导出」
+    // 三枚按钮，这句话挤进去只会把它们顶出可视区。`vis_cond` 为假的节点不参与布局
+    // （见 windui `Node::visible`），其余 tab 不会因此多出两条空行。
+    // 可见性挂在**外层 col** 上而不是逐行挂：`vis_cond` 为假的节点不参与布局，两个子
+    // label 各挂一个的话，容器本身仍在，其余 tab 会凭空多出一份 `main_col` 的行间距。
+    let hint_line = |text: &str| {
+        Element::label(text)
+            .font_size(12.0)
+            .fg_role(Role::TextMuted)
+            .max_lines(1)
+    };
+    let hint_vis = mgr.clone();
+    let charset_hint = Element::col()
+        .width_match()
+        .spacing(2)
+        .child(hint_line(
+            "「默认判定」按优先级仲裁：数字小、且已表态的类先判；逐字覆盖压过所有类。",
+        ))
+        .child(hint_line("免词频与生僻模式按并集生效，不看优先级。"))
+        .visible_when(move || hint_vis.current_category() == super::spec::WordCategory::Charsets);
+
     // ── 分页（仅分页类别显示）──
     let pagination = build_pagination(&mgr);
 
@@ -245,6 +297,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     let main_col = main_col
         .child(sub_tabs)
         .child(toolbar)
+        .child(charset_hint)
         .child(card)
         .child(pagination);
 
@@ -1016,34 +1069,44 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
         );
     }
 
-    // 字符类：两个最常用的档直接摆出来。
+    // 字符类：所有行操作收进一枚菜单按钮。
     //
-    // ⚠️ 三态里只放两个，是因为操作列宽度只够两枚小按钮，而表格没有「按钮弹菜单」的
-    // API。第三态「清除默认判定」在右键菜单里——它是撤销性操作，用得比另外两个少。
+    // ★ 2026-09-18 之前这里是三枚并排小按钮（「常用」「生僻」「编辑」），操作列为此
+    // 要占掉列宽配比的三分之一（`actions_weight` = 3.5），腾不出地方显示优先级。
+    // 换成菜单后列宽需求塌回一枚按钮，省出的宽度给了新的「优先」列。
+    //
+    // ⚠️ 旧注释说「表格没有『按钮弹菜单』的 API」——**那是错的**：
+    // `EventCtx::show_dropdown_menu` 一直都在（windui 的 `Dropdown` 就用它），
+    // 按钮的 `on_click` 拿到的 `ctx.bounds()` 正是按钮自身的矩形。
+    //
+    // 菜单内容与右键**同源**（`row_menu_items`），不另写一套：两处分头维护的话，
+    // 迟早只有一处跟上新操作，而用户看到的是「右键有、按钮没有」。
     //
     // ★ 操作列不能空：本页的主操作全在右键菜单的话，用户第一眼会以为这页是只读的。
+    //
+    // ⚠️ 文案用省略号而不是 `▾`：离屏截图（软渲染回退）里 `▾` 渲染成豆腐块，说明这
+    // 字形不在每条渲染路径的回退字体里都有。省略号与本页菜单项（「查看…」「外部编辑…」）
+    // 同一个记号，覆盖面最广，「点了还有后续」这层意思也一样传达得到。
+    //
+    // ⚠️ 与参照实现（windui `Dropdown::open`）**差一步**：它在弹菜单前有一行
+    // `self.hover = false`，理由是「打开后宿主独占指针，控件收不到 Leave，不清会留下
+    // 悬停边框」。`Element::button` 没有清 hover 的口子（它在 Up 分支把自己置成
+    // `BtnState::Hover`），所以菜单开着期间按钮的悬停边框会留到下次指针移动。
+    // 视觉瑕疵、不影响操作；要根治得动 windui 那边，别误以为这里已经与 Dropdown 等价。
     if spec.category == super::spec::WordCategory::Charsets {
-        for (label, target) in [("常用", Some(true)), ("生僻", Some(false))] {
-            let m = mgr.clone();
-            let r2 = row.clone();
-            r = r.child(
-                Element::button(label)
-                    .small()
-                    .outline_soft()
-                    // 已经是这一档就禁掉：点它不会有任何变化，亮着只会让人以为没生效。
-                    .enabled(row.class_default != target)
-                    .on_click(move |_| m.set_class_default(&r2, target)),
-            );
-        }
-        // 「编辑」= 打开「外部编辑」对话框并预选本行。文案两个字是为了挤进操作列；
-        // 右键菜单里那条叫「外部编辑…」，说全了。
         let m = mgr.clone();
-        let r2 = row.clone();
         r = r.child(
-            Element::button("编辑")
+            Element::button("操作…")
                 .small()
                 .outline_soft()
-                .on_click(move |_| m.charset_open_external(Some(&r2.code))),
+                .on_click(move |ctx| {
+                    let items = row_menu_items(&m, disp);
+                    // 空菜单不弹：什么都不显示的浮层比没反应更费解。行取不到时
+                    // （下标陈旧）`row_menu_items` 返回空。
+                    if !items.is_empty() {
+                        ctx.show_dropdown_menu(ctx.bounds(), items);
+                    }
+                }),
         );
     }
 

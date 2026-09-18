@@ -196,6 +196,15 @@ pub struct WordRow {
     /// 与 [`Self::block`] 不是一回事：块决定「整类批量」扫哪个码位区间，类决定
     /// 「改类的 default」影响谁。两个都显示，用户才知道该去哪一层改。
     pub class: String,
+    /// 字符集分类专用：**仲裁优先级**（读 `order`）。数字小的先判定。
+    ///
+    /// ★ 只管「默认判定」这一件事：`noFreq` / `inRare` 是**并集**语义（任一命中的类
+    /// 为真即真），与优先级无关。列头旁那句说明必须把这条说出来，否则用户会以为调
+    /// 优先级能改免词频的生效顺序——那个顺序不存在。
+    ///
+    /// `None` = RPC 没给（只出现在测试夹具里，core 恒返回）。⛔ 不折成 0：0 是合法
+    /// 且**最高**的优先级，缺席显示成 0 会让人以为这个类压过所有出厂类。
+    pub class_order: Option<i32>,
     /// 字符集分类专用：本类的常用性表态（读 `default`）。`None` = **不表态**。
     ///
     /// ⚠️ 三态不能压成两态：「不表态」跟随出厂更新，「显式设成常用」会钉死。
@@ -299,6 +308,7 @@ impl WordRow {
             WordCategory::Charsets => WordRow {
                 text: s("name"),
                 code: s("key"),
+                class_order: v.get("order").and_then(|x| x.as_i64()).map(|x| x as i32),
                 // ⚠️ 三态：字段缺席或为 null 都是「不表态」，与 false 不同。
                 class_default: v.get("default").and_then(|x| x.as_bool()),
                 class_no_freq: b("noFreq"),
@@ -381,6 +391,11 @@ impl WordRow {
             WordField::CommonBase => common_label(self.common_base).to_string(),
             WordField::Block => self.block.clone(),
             WordField::Class => self.class.clone(),
+            // 缺席给占位符而不是 0——见 `class_order` 的字段注释。
+            WordField::ClassOrder => match self.class_order {
+                Some(n) => n.to_string(),
+                None => "—".to_string(),
+            },
             // 三态：`None` 是「跟随出厂」，与显式设成常用不是一回事——前者跟着出厂走，
             // 后者钉死。压成两态之后用户再也回不到第一种。
             WordField::ClassDefault => match self.class_default {
@@ -525,6 +540,8 @@ pub enum WordField {
     Block,
     /// 常用字：决定它常用性的那个字符类。
     Class,
+    /// 字符集分类：本类的仲裁优先级（`order`，数字小的先判定）。
+    ClassOrder,
     /// 字符集分类：本类的常用性表态（常用 / 生僻 / 跟随出厂）。
     ClassDefault,
     /// 字符集分类：免词频 + 生僻模式两个开关的合并展示。
@@ -552,6 +569,7 @@ impl WordField {
             WordField::CommonBase => "baseCommon",
             WordField::Block => "block",
             WordField::Class => "class",
+            WordField::ClassOrder => "order",
             WordField::ClassDefault => "default",
             WordField::ClassScope => "memberCount",
             WordField::ClassFlags => "noFreq",
@@ -560,10 +578,13 @@ impl WordField {
     }
 
     /// 客户端排序时是否按数值比较（其余按字符串）。
+    ///
+    /// ⚠️ 优先级必须在这里：自带取值是 10 / 20 / 100 / 900，按字符串排会得到
+    /// 「10 100 20 900」——而这一列的全部意义就是让人看出先后。
     pub fn is_numeric(self) -> bool {
         matches!(
             self,
-            WordField::Weight | WordField::Count | WordField::Position
+            WordField::Weight | WordField::Count | WordField::Position | WordField::ClassOrder
         )
     }
 }
@@ -1067,14 +1088,24 @@ const COLS_COMMON: &[ColumnSpec] = &[
 ];
 
 /// 字符集分类的列。
-/// ⚠️ weight 要照**表头字数**给，不只看内容：四字表头（「默认判定」「逐字覆盖」）在
-/// 1.2~1.4 下会被截成「默...」「...」，而内容反而显示得下——截断的是列头，
-/// 用户于是不知道这一列是什么。
 ///
-/// ★ 四列与操作列（`actions_weight` = 3.5）是**一组配比**，合计 10.2：默认窗口
-/// （820 宽）下表格区约 570px，操作列要排下三枚小按钮得占三分之一，于是两个四字
-/// 表头都缩成两字（「默认」「覆盖」）——四字在这个配比下会截成「默认...」。改任何
-/// 一个都用 `--size 820 640 --screenshot` 看一眼——列不会自动加宽，只会截断。
+/// ⚠️ weight 要照**表头字数**给，不只看内容：四字表头在 1.2~1.4 下会被截成「默...」，
+/// 而内容反而显示得下——截断的是列头，用户于是不知道这一列是什么。
+///
+/// ★ 五列与操作列（`actions_weight` = 1.3）是**一组配比**，合计 9.6：默认窗口
+/// （820 宽）下表格区约 570px。改任何一个都用 `--size 820 640 --screenshot` 看一眼
+/// ——列不会自动加宽，只会截断。
+///
+/// ★ 2026-09-18 这一版的腾挪：操作列由三枚小按钮换成一枚「操作…」菜单按钮
+/// （`view.rs` 里那条 `show_dropdown_menu`），`actions_weight` 3.5 → 1.3 释放出 2.2。
+/// 去向：1.3 给新增的「优先」列，0.3 给「范围 / 标记」，剩下 0.6 让**总量缩水**
+/// （10.2 → 9.6）。⇒ 类别列的权重一个字没动（仍是 1.6），但分母小了，它的实际份额
+/// 从 15.7% 涨到 16.7%——每一列都不比改动前窄，靠的是分母而不是加权重。
+///
+/// ⚠️ 中途试过把「默认」「覆盖」两个表头还原成四字的「默认判定」「逐字覆盖」
+/// （各 1.6），**截图里被截成了「默认」「逐字」**：四字表头真实要的宽度比按字数算的
+/// 多出一个排序指示器加左右内边距。两字表头是上一版实测站得住的配置，退回去。
+/// ★ 列宽这件事只能靠截图定，不能靠算——这一版算了两次，两次都偏小。
 const COLS_CHARSETS: &[ColumnSpec] = &[
     ColumnSpec {
         header: "类别",
@@ -1082,26 +1113,37 @@ const COLS_CHARSETS: &[ColumnSpec] = &[
         field: WordField::Text,
     },
     ColumnSpec {
-        // 表头两字：指「默认判定」——右边的「常用」「生僻」按钮改的就是它。
+        // ★★ 这一列回答用户的「谁先生效」：列表本身就按它升序排（core 的
+        // `charset_rows` 排好再回），但顺序是**隐式**的——用户点一下别的列头重排之后
+        // 就彻底看不出来了。数值摆在这里，排序怎么变都还在。
+        header: "优先",
+        // ⚠️ 1.0 时**列头**被截成「…」（内容 900 反而显示得下）——截断的是列头，
+        // 用户于是不知道这一列是什么。两字表头连同排序指示器要 1.3 才排得开。
+        weight: 1.3,
+        field: WordField::ClassOrder,
+    },
+    ColumnSpec {
+        // 表头两字：指「默认判定」——「操作…」菜单（与右键同源）里那三项改的就是它。
+        // 四字会被截成「默认」，见列表头部那条 ⚠️。
         header: "默认",
-        // 三态文案「跟随出厂」最长。
+        // 三态文案「未设置」最长。
         weight: 1.3,
         field: WordField::ClassDefault,
     },
     ColumnSpec {
-        // ⚠️ 范围与标记**合成一列**：表格区只有约 570px，五列加操作列会让每一列都换行
-        // 截断（「生僻模式 · 已」）。两者都是「这个类长什么样」的描述，合并语义上成立；
+        // ⚠️ 范围与标记**合成一列**：表格区只有约 570px，拆开会让每一列都换行截断
+        // （「生僻模式 · 已」）。两者都是「这个类长什么样」的描述，合并语义上成立；
         // 而「默认判定」「逐字覆盖」是本页的操作焦点，必须独立且宽。
         header: "范围 / 标记",
-        weight: 2.4,
+        weight: 2.7,
         field: WordField::ClassScope,
     },
     ColumnSpec {
-        // 表头两字：四字的「逐字覆盖」在这个配比下会被截成「逐字...」，而截断的是
-        // 列头——用户于是不知道这一列是什么。本页语境里「覆盖」就是指逐字覆盖。
+        // 表头两字：四字的「逐字覆盖」在这个配比下会被截成「逐字」。本页语境里
+        // 「覆盖」就是指逐字覆盖，表格上方那句说明也把它说全了。
         header: "覆盖",
         // ★ 这一列是「配了没反应」的解释：用户改了默认判定却看不到变化时，
-        // 答案就在这里——那些字被逐条覆盖压着。
+        // 答案就在这里——那些字被逐条覆盖压着（逐字覆盖优先于**所有**类）。
         weight: 1.4,
         field: WordField::ClassOverrides,
     },
@@ -1114,8 +1156,9 @@ const COLS_CHARSETS: &[ColumnSpec] = &[
 /// **不分页**：类的数量是几十个量级（50 个 Unicode 区块 + emoji + 常用汉字 + 用户自建），
 /// 一次取完比分页简单，也让「按范围找一个类」这件事可以在客户端搜索里做。
 ///
-/// 没有「添加」：新建一个类要填码位段、起 key，不是在这个列表里能做完的事——那条路径是
-/// 手写一份 `charsets/*.yaml`（每层同名目录，放进去就生效）。本页管的是**已有的类**。
+/// 没有「添加」：新建一个类要填码位段、起 key，不是在这个列表里能做完的事。那条路径在
+/// 工具栏「外部编辑」→ 目标下拉**首项**「新建类…」（导出模板 → 在编辑器里填 → 回读），
+/// 手写一份 yaml 再「选择其它文件…」加载也走同一条。本页管的是**已有的类**。
 const SPEC_CHARSETS: CategorySpec = CategorySpec {
     category: WordCategory::Charsets,
     title: "字符集分类",
@@ -1235,11 +1278,16 @@ impl CategorySpec {
             // 与 COLS_QUICK 的三个权重是一组配比（见那里的 ⚠️）：合计 7.3，
             // 操作列占约 37%，恰好排下五个控件而不挤压类别列。
             WordCategory::QuickFormat => 2.7,
-            // 三枚小按钮（「常用」「生僻」「编辑」），与 COLS_CHARSETS 的四个权重是一组
-            // 配比（合计 10.2）。原来的 2.0 只排得下两枚——第三枚「编辑」整个被挤出可视区
-            // （2026-09-06 真机：用户以为没有编辑入口）；2.8 在默认宽度下仍切掉几像素。
-            // 列不会自动加宽，只会截断，加按钮必须同步改这里。
-            WordCategory::Charsets => 3.5,
+            // 一枚「操作…」菜单按钮，与 COLS_CHARSETS 的五个权重是一组配比（合计 9.5）。
+            //
+            // ★ 曾是 3.5——那时操作列上并排着三枚小按钮（「常用」「生僻」「编辑」），
+            // 而 2.0 会把第三枚整个挤出可视区（2026-09-06 真机：用户以为没有编辑入口）。
+            // 2026-09-18 换成菜单按钮后，那三枚连同右键菜单里的其余各项都进了同一份
+            // 菜单（`view.rs::row_menu_items`），列宽需求随之塌回一枚按钮。
+            //
+            // ⚠️ 要是哪天又往操作列里塞并排按钮，这个数得跟着回去——列不会自动加宽，
+            // 只会截断。
+            WordCategory::Charsets => 1.3,
             _ => 1.5,
         }
     }

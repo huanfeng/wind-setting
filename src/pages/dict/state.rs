@@ -29,6 +29,11 @@ fn sort_rows(rows: &mut [WordRow], field: WordField, ord: SortOrder) {
         WordField::Weight => r.weight,
         WordField::Count => r.count,
         WordField::Position => r.position,
+        // ⚠️ 缺席排最后而不是当 0：0 是合法且**最高**的优先级，按它排会把「RPC 没给
+        // 这个字段」的行顶到列表最前，看起来像一个压过所有出厂类的类。
+        WordField::ClassOrder => r.class_order.map_or(i64::MAX, i64::from),
+        // ⚠️ 新增数值列时这里和 `is_numeric` 要**一起**改：只改后者的话 `num` 落到这条
+        // 兜底、每行都返回 0，稳定排序于是原样不动——表现是「点了表头没反应」，不报错。
         _ => 0,
     };
     rows.sort_by(|a, b| {
@@ -4058,6 +4063,53 @@ mod tests {
         assert_eq!(rare.class_default, Some(false));
         assert_eq!(inherit.class_default, None, "null = 不表态");
         assert_eq!(absent.class_default, None, "缺席同样是不表态");
+    }
+
+    /// ★★ 优先级：读得回、缺席不装成 0、并且**按数值**排序。
+    ///
+    /// ⚠️ 数值排序是这一列的存在前提：自带取值是 10 / 20 / 100 / 900，按字符串序
+    /// 「100」会排在「20」前面——一列专门用来看先后的数字，排出来的先后却是错的。
+    /// 样本特意取 20 / 100 / 900：10 / 100 / 900 两种序恰好同结果，测不出东西。
+    #[test]
+    fn class_order_reads_back_and_sorts_numerically() {
+        let r = WordRow::from_json(
+            WordCategory::Charsets,
+            &json!({"key": "emoji", "order": 20}),
+        );
+        assert_eq!(r.class_order, Some(20));
+        assert_eq!(r.cell_text(WordField::ClassOrder), "20");
+        let absent = WordRow::from_json(WordCategory::Charsets, &json!({"key": "x"}));
+        assert_eq!(absent.class_order, None);
+        assert_eq!(
+            absent.cell_text(WordField::ClassOrder),
+            "—",
+            "缺席给占位符：0 是合法且最高的优先级，装成它会让人以为这个类压过所有出厂类"
+        );
+
+        let st = charsets_state();
+        // 「优先」列的下标，顺带钉住列序（类别 0 / 优先 1 / 默认判定 2 / 范围 3 / 覆盖 4）。
+        const COL_ORDER: usize = 1;
+        assert_eq!(
+            st.current_spec().columns[COL_ORDER].field,
+            WordField::ClassOrder
+        );
+        st.apply_rows(&json!([
+            {"key": "blk", "name": "ASCII", "order": 900},
+            {"key": "mine", "name": "我的", "order": 100},
+            {"key": "emoji", "name": "Emoji 表情", "order": 20},
+        ]));
+        st.sort.set(Some(SortKey::asc(COL_ORDER)));
+        st.on_sort_changed();
+        let cells = st.table_rows.get();
+        assert_eq!(
+            vec![
+                &cells[0][COL_ORDER],
+                &cells[1][COL_ORDER],
+                &cells[2][COL_ORDER]
+            ],
+            ["20", "100", "900"],
+            "按数值排；字符串序会给出 100 < 20 < 900"
+        );
     }
 
     /// 列表行把 key 与显示名分开存：写回用 key，展示用 name。

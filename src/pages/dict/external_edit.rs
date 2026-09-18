@@ -17,8 +17,9 @@
 //! import  <domain>.importFile {path, apply}  → 领域自定的摘要（apply=false 只试算）
 //! ```
 //!
-//! `key` 缺省 = 「新建」。其它词库要接同一个对话框，core 照这组语义实现三个方法，这里
-//! 填一份 `ExternalEditDomain` 即可——不要再各写一套导出/回读流程。
+//! `key` 缺省 = 「新建」，它是目标下拉的**首项**（[`ExternalEditDomain::new_label`]）。
+//! 其它词库要接同一个对话框，core 照这组语义实现三个方法，这里填一份
+//! `ExternalEditDomain` 即可——不要再各写一套导出/回读流程。
 //!
 //! # 两处「覆盖提示」
 //!
@@ -47,7 +48,11 @@ pub struct ExternalEditDomain {
     pub import: &'static str,
     /// 三个方法里目标的参数名。
     pub key_param: &'static str,
-    /// 下拉末尾的「新建…」项；`None` = 本域不支持从模板新建。
+    /// 下拉**首项**的「新建…」项；`None` = 本域不支持从模板新建。
+    ///
+    /// ★ 2026-09-18 从末项挪到首项（用户反馈：新建藏在 50 多个已有类后面，找不着）。
+    /// 新建是「列表里没有我要的目标」时的出路，放在开头才够得着；放末尾等于要求用户
+    /// 先把整份清单滚完才发现它。
     pub new_label: Option<&'static str>,
     /// 「选择其它文件…」的文件过滤。
     pub file_filter: (&'static str, &'static [&'static str]),
@@ -158,7 +163,20 @@ impl DictManagerState {
         self.xedit_probe();
     }
 
-    /// 装目标列表（末尾按域追加「新建…」项）并选中 `want`；找不到落首项。纯状态，不碰 RPC。
+    /// 装目标列表（**首项**按域插入「新建…」项）并选中 `want`。纯状态，不碰 RPC。
+    ///
+    /// 两条落点规则，⚠️ 分开写不是啰嗦——「新建」搬到首项之后，原来那句
+    /// `unwrap_or(0)` 的含义从「落第一个已有类」变成了「落新建」，两种 `want` 得区别对待：
+    ///
+    /// | `want` | 落点 | 为什么 |
+    /// |---|---|---|
+    /// | `None`（工具栏入口，没指名目标） | 首项 = 「新建…」 | 无目标可言时用户多半是要建新的 |
+    /// | `Some(k)` 但找不到（类刚被删/改了 key） | 第一个**真实**目标 | 指名要编辑 X 却落到新建，下一步「重新导出」导出的就是模板，用户看不出自己编辑的已经不是 X |
+    ///
+    /// ⚠️ 上表按「对话框入口」的语境写，但 [`Self::xedit_refresh_targets`]（加载后重建
+    /// 列表）走的是同一个函数：它的 `want` 取 `current_key()`，当前选中就是「新建」且
+    /// 导入结果为空时 `want` 也是 `None` ⇒ 按上表落回「新建」。行为无害（用户本来就停在
+    /// 新建那一项），但别以为 `None` 只来自工具栏。
     fn xedit_set_targets(
         &self,
         domain: &'static ExternalEditDomain,
@@ -167,15 +185,23 @@ impl DictManagerState {
     ) {
         let x = &self.xedit;
         *x.domain.borrow_mut() = Some(domain);
-        let mut keys: Vec<Option<String>> = targets.iter().map(|(k, _)| Some(k.clone())).collect();
-        let mut labels: Vec<String> = targets.iter().map(|(_, n)| n.clone()).collect();
+        let mut keys: Vec<Option<String>> = Vec::with_capacity(targets.len() + 1);
+        let mut labels: Vec<String> = Vec::with_capacity(targets.len() + 1);
         if let Some(l) = domain.new_label {
             keys.push(None);
             labels.push(l.to_string());
         }
-        let idx = want
-            .and_then(|p| keys.iter().position(|k| k.as_deref() == Some(p)))
-            .unwrap_or(0);
+        keys.extend(targets.iter().map(|(k, _)| Some(k.clone())));
+        labels.extend(targets.iter().map(|(_, n)| n.clone()));
+        let idx = match want {
+            Some(p) => keys
+                .iter()
+                .position(|k| k.as_deref() == Some(p))
+                // 找不到就退到第一个真实目标；一个都没有（空列表）时才落 0。
+                .or_else(|| keys.iter().position(|k| k.is_some()))
+                .unwrap_or(0),
+            None => 0,
+        };
         *x.targets.borrow_mut() = keys;
         x.labels.set(labels);
         x.idx.set(idx);
@@ -373,7 +399,10 @@ impl DictManagerState {
 /// 字符类加载结果的一句话摘要。纯函数便于单测。
 ///
 /// 单个类时说清「更新了出厂类」还是「新建了类」——两者用户的下一步不同：前者去看那一行
-/// 的变化，后者去列表末尾找新行。`applied=false` 是试算，用「将」而不是「已」。
+/// 的变化，后者去找新行。`applied=false` 是试算，用「将」而不是「已」。
+///
+/// ⚠️ 别在文案里写「到列表末尾找」：列表按 `order` 升序，新建类模板给的 `order` 比
+/// 出厂类都小（见 core 的 `charset_export_template`），新行落在**开头**。
 pub fn charset_import_summary(v: &Value, applied: bool) -> String {
     let classes = v
         .get("classes")
@@ -463,32 +492,60 @@ mod tests {
         assert!(DictManagerState::probe_status(true, "").contains("重新导出"));
     }
 
-    /// 装目标：预选那一行；末尾多出「新建类…」；新建项的 key 是 None，
+    /// 装目标：预选那一行；**首项**是「新建类…」；新建项的 key 是 None，
     /// 参数里因此**不带** key（core 据此出模板）。走纯状态的 `xedit_set_targets`，
     /// 不经 `xedit_open`——后者会探测（RPC）。
     #[test]
-    fn open_preselects_the_row_and_appends_the_new_item() {
+    fn open_preselects_the_row_and_puts_the_new_item_first() {
         let st = DictManagerState::new();
         let targets = vec![
             ("emoji".to_string(), "Emoji 表情".to_string()),
             ("common_han".to_string(), "常用汉字".to_string()),
         ];
         st.xedit_set_targets(&CHARSET_DOMAIN, &targets, Some("common_han"));
-        assert_eq!(st.xedit.idx.get(), 1);
+        assert_eq!(st.xedit.idx.get(), 2);
         assert_eq!(
             st.xedit.labels.get(),
-            vec!["Emoji 表情", "常用汉字", "新建类…"]
+            vec!["新建类…", "Emoji 表情", "常用汉字"]
         );
         assert_eq!(st.xedit.current_key().as_deref(), Some("common_han"));
 
-        st.xedit.idx.set(2);
-        assert_eq!(st.xedit.current_key(), None, "末项是新建");
+        st.xedit.idx.set(0);
+        assert_eq!(st.xedit.current_key(), None, "首项是新建");
         assert_eq!(st.xedit.key_params(&CHARSET_DOMAIN), json!({}));
 
-        st.xedit_set_targets(&CHARSET_DOMAIN, &targets, Some("no_such"));
-        assert_eq!(st.xedit.idx.get(), 0, "预选不到就落首项");
         st.xedit.visible.set(true);
         st.xedit_close();
         assert!(!st.xedit.visible.get());
+    }
+
+    /// ★★ 两种落点分开测——「新建」搬到首项后，`unwrap_or(0)` 的含义变了。
+    ///
+    /// 没指名目标（工具栏入口）落新建；指名了却找不到（类刚被删）必须落第一个**真实**
+    /// 目标：落到新建的话，用户下一步点「重新导出」导出的是模板，而他以为自己在编辑
+    /// 那个类——两者在对话框里长得一模一样，只有路径那一行能看出差别。
+    #[test]
+    fn missing_target_falls_back_to_a_real_one_not_to_new() {
+        let st = DictManagerState::new();
+        let targets = vec![
+            ("emoji".to_string(), "Emoji 表情".to_string()),
+            ("common_han".to_string(), "常用汉字".to_string()),
+        ];
+
+        st.xedit_set_targets(&CHARSET_DOMAIN, &targets, None);
+        assert_eq!(st.xedit.idx.get(), 0);
+        assert_eq!(st.xedit.current_key(), None, "没指名 ⇒ 对准新建");
+
+        st.xedit_set_targets(&CHARSET_DOMAIN, &targets, Some("no_such"));
+        assert_eq!(
+            st.xedit.current_key().as_deref(),
+            Some("emoji"),
+            "指名不到 ⇒ 落第一个真实目标，不是新建"
+        );
+
+        // 一个真实目标都没有时才允许落到新建（否则没有可落之处）。
+        st.xedit_set_targets(&CHARSET_DOMAIN, &[], Some("no_such"));
+        assert_eq!(st.xedit.idx.get(), 0);
+        assert_eq!(st.xedit.current_key(), None);
     }
 }
