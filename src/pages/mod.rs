@@ -609,8 +609,8 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
     )
 }
 
-/// 主题导入卡：本地 TOML 导入 + 主题市场入口。导入结果经 toast 反馈（成功/失败一致走
-/// toast——界面里已没有承载一次性提示的常驻状态文字位）。
+/// 主题导入卡：本地 TOML 导入 + 主题包导出 + 主题市场入口。结果经 toast 反馈（成功/失败
+/// 一致走 toast——界面里已没有承载一次性提示的常驻状态文字位）。
 fn theme_import_card(state: &AppState) -> Element {
     let feedback = state.feedback;
     let ov_src = state.theme_overwrite_source;
@@ -669,6 +669,83 @@ fn theme_import_card(state: &AppState) -> Element {
                                 }
                             },
                         );
+                    }),
+            ),
+            setting_row(
+                "导出当前主题",
+                Some("打成 .wtheme 主题包，连背景图一起，可直接发给别人"),
+                Element::button("导出…")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |ctx| {
+                        // 走 `defer_blocking` 而非 `request_save_file`：两者时机语义相同
+                        // （都在事件分发完全返回后才弹原生框），但前者把「取当前主题 +
+                        // 选路径 + 调 core + 报结果」整条流程留在一处，不必把后半段拆进
+                        // 对话框回调里。形态同方案包导出（见 `schema_manager::export_schema`）。
+                        ctx.defer_blocking(move || {
+                            // 当前主题**在这里实时取**，不能在构建帧把 id 算好带进闭包：
+                            // 这张卡只在页面重建时求值一次，而上面那个主题下拉随时能换一个
+                            // ——捕获来的 id 会停在用户打开设置页的那一刻，导出的就成了另一
+                            // 个主题，而回执里的名字还是对的，用户不会发现拿错了。
+                            let id = match crate::rpc::call_core(
+                                "config.get",
+                                &serde_json::json!({ "key": "ui.theme.name" }),
+                            ) {
+                                Ok(v) => v
+                                    .get("value")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                Err(e) => {
+                                    feedback.set(Some((
+                                        ToastKind::Error,
+                                        format!("读取当前主题失败: {e}"),
+                                    )));
+                                    return;
+                                }
+                            };
+                            if id.is_empty() {
+                                feedback.set(Some((
+                                    ToastKind::Error,
+                                    "没有当前主题可导出".to_string(),
+                                )));
+                                return;
+                            }
+                            let Some(path) = PickDialog::new()
+                                .title("导出主题包")
+                                .file_name(&format!("{id}.wtheme"))
+                                .filter("主题包", &["wtheme"])
+                                .save_file()
+                            else {
+                                return;
+                            };
+                            match crate::rpc::call_core(
+                                "theme.exportPackage",
+                                &serde_json::json!({
+                                    "slug": id,
+                                    "path": path.to_string_lossy(),
+                                }),
+                            ) {
+                                Ok(v) => {
+                                    let name = v
+                                        .get("display_name")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or(&id);
+                                    let n = v
+                                        .get("asset_count")
+                                        .and_then(serde_json::Value::as_u64)
+                                        .unwrap_or(0);
+                                    feedback.set(Some((
+                                        ToastKind::Success,
+                                        format!("已导出「{name}」（{n} 个资源文件）"),
+                                    )));
+                                }
+                                // 不再套一层「导出失败:」：core 那边的错误已经带了
+                                // 「导出主题「X」失败：<原因>」这层主语（RPC 出口只传
+                                // 一个字符串，原因就展开在里面），再包一层是重复。
+                                Err(e) => feedback.set(Some((ToastKind::Error, e.to_string()))),
+                            }
+                        });
                     }),
             ),
             setting_row(

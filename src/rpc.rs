@@ -1614,6 +1614,18 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                 })
             }
         }
+        "theme.exportPackage" => json!({
+            "ok": true,
+            "path": params
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("C:\\mock\\theme.wtheme"),
+            // 展示名刻意与 importPackage 那条不同:两条路走错时光看「成功了」分不出来,
+            // 得靠回执认出走的是哪条(同 importPackage 上方那段的取舍)。
+            "display_name": "测试主题（导出）",
+            "asset_count": 2,
+            "has_preview": true
+        }),
         "theme.getText" => json!({
             "slug": "default",
             "toml": "base = \"_qingfeng\"\n\n[meta]\nname = \"清风·蓝\"\nversion = \"1.0\"\nauthor = \"清风输入法\"\n"
