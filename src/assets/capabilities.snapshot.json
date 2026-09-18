@@ -325,6 +325,11 @@
     },
     {
       "default": false,
+      "key": "schema.english.phrase_seg",
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "schema.codetable.auto_phrase.enabled",
       "type": "bool"
     },
@@ -916,6 +921,11 @@
     {
       "default": false,
       "key": "input.temp_english.commit_space",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.temp_english.phrase_seg",
       "type": "bool"
     },
     {

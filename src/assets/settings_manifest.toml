@@ -918,6 +918,14 @@ label = "候选跟随输入的大小写"
 hint = "打 Hi 出 Hill，打 WoW 出 WoWed；只跟大写，打小写时 China、iPhone 这类词保持词库原样"
 
 [[items]]
+key = "schema.english.phrase_seg"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "用 ' 分词打英文词组"
+hint = "各段只打前缀：bue'air 出 Buenos Aires，ip'max 出 iPhone 15 Pro Max。可跳词，ip'pro 也能打出 iPhone 15 Pro。开启后 ' 不再是第三候选键，改用数字 3。快捷输入里的英文一并生效；临时英文另设"
+
+[[items]]
 key = "schema.english.commit_space"
 group = "schema"
 section = "英文行为"
@@ -1514,6 +1522,14 @@ section = "临时英文"
 type = "toggle"
 label = "候选跟随输入的大小写"
 hint = "临时英文由 Shift+字母进入，首字母恒为大写，开启后候选也随之首字母大写；只跟大写，词库自带的大写不受影响"
+
+[[items]]
+key = "input.temp_english.phrase_seg"
+group = "input"
+section = "临时英文"
+type = "toggle"
+label = "用 ' 分词打英文词组"
+hint = "各段只打前缀，规则与英文方案那份相同（可跳词）。开启后 ' 在临时英文里不再是第三候选键，改用数字 3"
 
 [[items]]
 key = "input.temp_english.commit_space"

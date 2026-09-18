@@ -122,6 +122,7 @@
    "case_variants": true,
    "commit_space": false,
    "enabled": true,
+   "phrase_seg": false,
    "raw_candidate": "always",
    "shift_behavior": "temp_english",
    "show_candidates": true,
@@ -261,6 +262,7 @@
     "promote_prefix": "all",
     "strategy": "position"
    },
+   "phrase_seg": false,
    "raw_candidate": "always"
   },
   "frequency": {
