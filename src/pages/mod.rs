@@ -565,16 +565,30 @@ fn keys_page(state: &AppState, nav: &SubNav) -> Element {
 // ───────────────────────── 外观 ─────────────────────────
 
 fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
-    // 主题选择已并入 manifest ui「主题」卡（ui.theme.name，options_source=themes，
-    // 下拉显示主题名、保存 slug；登记保存/加载/恢复）。
-    // 主题导入/主题编辑器拆两张卡：前者是日常操作，后者是面向进阶用户的连接管理，
-    // 混在一张卡里容易分不清"现在按钮是要做什么"和"现在连接是什么状态"。
-    let mut secs = manifest_sections(state, "ui", nav);
-    secs.push(nav.wrap(
-        "主题导入",
-        0,
-        crate::search::anchor::wrap(theme_import_card(state), "ui:theme-import", state.jump),
-    ));
+    // 「主题」卡手写：manifest 的两行（主题选择 / 主题风格）之后直接接导入、导出与市场
+    // 入口——选主题与搬主题是同一件事的两半，隔开就得让用户满页找按钮。其余 ui 分区照
+    // manifest 原样生成。
+    //
+    // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
+    // "现在按钮是要做什么"和"现在连接是什么状态"。
+    let mut secs: Vec<Element> = Vec::new();
+    for (sec, keys) in state.manifest.sections_of("ui") {
+        let rows = if sec == "主题" {
+            let mut rows = section_rows(state, &keys);
+            rows.extend(theme_transfer_rows(state));
+            rows
+        } else {
+            section_rows(state, &keys)
+        };
+        let card = section(&sec, rows);
+        // 搜索锚点仍叫 ui:theme-import（导入相关词条指向它），现在落在「主题」卡上。
+        let card = if sec == "主题" {
+            crate::search::anchor::wrap(card, "ui:theme-import", state.jump)
+        } else {
+            card
+        };
+        secs.push(nav.wrap(&sec, 0, card));
+    }
     secs.push(nav.wrap(
         "主题编辑器",
         0,
@@ -609,9 +623,14 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
     )
 }
 
-/// 主题导入卡：本地 TOML 导入 + 主题包导出 + 主题市场入口。结果经 toast 反馈（成功/失败
-/// 一致走 toast——界面里已没有承载一次性提示的常驻状态文字位）。
-fn theme_import_card(state: &AppState) -> Element {
+/// 主题的「搬进搬出」三行：本地 TOML 导入 + 主题包导出 + 主题市场入口。
+///
+/// 返回**行**而不是整张卡：它们接在 manifest「主题」卡的主题选择/风格之后，同卡呈现。
+/// 此前这是独立一张卡、且排在所有 ui 卡之后，与主题选择隔着十几张卡——用户选完主题想
+/// 导出，得一路滚到页尾才找得到按钮。
+///
+/// 结果经 toast 反馈（成功/失败一致走 toast——界面里已没有承载一次性提示的常驻状态文字位）。
+fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
     let feedback = state.feedback;
     // 导出要读「下拉里此刻选中的是哪个主题」。`fields` 是 Rc，可以进闭包；表里的 getter
     // 由 manifest 在建控件时登记，页面重建会整表 reset 再填，持 Rc 读到的始终是新的那份。
@@ -625,136 +644,133 @@ fn theme_import_card(state: &AppState) -> Element {
     // chip + 标题、`flat_panel` 卡片（圆角 13、带投影、行间自动分隔线）。两套壳并排放着，
     // 差别一眼看得出：没有图标、圆角小一档、没有投影、行与行之间也没有分隔线。
     // 现改为与其余分区同一套构件，行也统一成 `setting_row`。
-    section(
-        "主题导入",
-        vec![
-            setting_row(
-                "导入 TOML 主题",
-                Some("从本地 .toml 文件导入，导入前由 core 校验"),
-                Element::button("选择文件…")
-                    .small()
-                    .outline_soft()
-                    .on_click(move |ctx| {
-                        ctx.request_pick_file(
-                            PickDialog::new()
-                                .title("导入 TOML 主题")
-                                .filter("TOML", &["toml"]),
-                            move |path| {
-                                let Some(path) = path else { return };
-                                // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
-                                // 读取与导入分两步写（而非 and_then 串起来）：撞上同名主题
-                                // 时要拿**已读到的原文**去弹覆盖确认，串起来 text 就丢了。
-                                let text = match crate::theme_import::read_local_toml(&path) {
-                                    Ok(t) => t,
-                                    Err(err) => {
-                                        feedback.set(Some((ToastKind::Error, err.user_message())));
-                                        return;
-                                    }
-                                };
-                                // 撞名不是「导入不了」而是「要不要更新」，那条判断几个
-                                // 入口共用一处（见 `AppState::try_import_theme`）。
-                                let outcome = AppState::try_import_theme(
-                                    crate::theme_import::ThemeSource::Text(text),
-                                    ov_src,
-                                    ov_msg,
-                                    ov_visible,
-                                );
-                                match outcome {
-                                    // 已转覆盖确认，等用户拍板，这里不必再说什么。
-                                    None => {}
-                                    Some(Ok(result)) => feedback.set(Some((
-                                        ToastKind::Success,
-                                        format!("已导入主题：{}", result.display_name),
-                                    ))),
-                                    Some(Err(err)) => {
-                                        feedback.set(Some((ToastKind::Error, err.user_message())))
-                                    }
-                                }
-                            },
-                        );
-                    }),
-            ),
-            setting_row(
-                "导出当前主题",
-                Some("打成 .wtheme 主题包，连背景图一起，可直接发给别人"),
-                Element::button("导出…")
-                    .small()
-                    .outline_soft()
-                    .on_click(move |ctx| {
-                        // 在**事件线程上**先把下拉选中值读出来：getter 闭包捕获的是 Signal，
-                        // 读它得在 UI 这一侧完成，不能塞进下面那个延后执行的闭包里。
-                        let ui_selected = {
-                            let g = fields.getters.borrow();
-                            g.get("ui.theme.name")
-                                .map(|f| f())
-                                .and_then(|v| v.as_str().map(str::to_string))
-                        };
-                        // 走 `defer_blocking` 而非 `request_save_file`：两者时机语义相同
-                        // （都在事件分发完全返回后才弹原生框），但前者把「取当前主题 +
-                        // 选路径 + 调 core + 报结果」整条流程留在一处，不必把后半段拆进
-                        // 对话框回调里。形态同方案包导出（见 `schema_manager::export_schema`）。
-                        ctx.defer_blocking(move || {
-                            // 当前主题**在这里实时取**，不能在构建帧把 id 算好带进闭包：
-                            // 这张卡只在页面重建时求值一次，而上面那个主题下拉随时能换一个
-                            // ——捕获来的 id 会停在用户打开设置页的那一刻，导出的就成了另一
-                            // 个主题，而回执里的名字还是对的，用户不会发现拿错了。
-                            //
-                            // 取值走 `theme_import::theme_id_for_export`：下拉选中优先、
-                            // 生效值兜底，那里说明了为什么不能拿生效值当准。
-                            let id = match crate::theme_import::theme_id_for_export(ui_selected) {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    feedback.set(Some((ToastKind::Error, e.user_message())));
+    vec![
+        setting_row(
+            "导入 TOML 主题",
+            Some("从本地 .toml 文件导入，导入前由 core 校验"),
+            Element::button("选择文件…")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| {
+                    ctx.request_pick_file(
+                        PickDialog::new()
+                            .title("导入 TOML 主题")
+                            .filter("TOML", &["toml"]),
+                        move |path| {
+                            let Some(path) = path else { return };
+                            // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
+                            // 读取与导入分两步写（而非 and_then 串起来）：撞上同名主题
+                            // 时要拿**已读到的原文**去弹覆盖确认，串起来 text 就丢了。
+                            let text = match crate::theme_import::read_local_toml(&path) {
+                                Ok(t) => t,
+                                Err(err) => {
+                                    feedback.set(Some((ToastKind::Error, err.user_message())));
                                     return;
                                 }
                             };
-                            let Some(path) = PickDialog::new()
-                                .title("导出主题包")
-                                .file_name(&format!("{id}.wtheme"))
-                                .filter("主题包", &["wtheme"])
-                                .save_file()
-                            else {
-                                return;
-                            };
-                            match crate::rpc::call_core(
-                                "theme.exportPackage",
-                                &serde_json::json!({
-                                    "slug": id,
-                                    "path": path.to_string_lossy(),
-                                }),
-                            ) {
-                                Ok(v) => {
-                                    let name = v
-                                        .get("display_name")
-                                        .and_then(serde_json::Value::as_str)
-                                        .unwrap_or(&id);
-                                    let n = v
-                                        .get("asset_count")
-                                        .and_then(serde_json::Value::as_u64)
-                                        .unwrap_or(0);
-                                    feedback.set(Some((
-                                        ToastKind::Success,
-                                        format!("已导出「{name}」（{n} 个资源文件）"),
-                                    )));
+                            // 撞名不是「导入不了」而是「要不要更新」，那条判断几个
+                            // 入口共用一处（见 `AppState::try_import_theme`）。
+                            let outcome = AppState::try_import_theme(
+                                crate::theme_import::ThemeSource::Text(text),
+                                ov_src,
+                                ov_msg,
+                                ov_visible,
+                            );
+                            match outcome {
+                                // 已转覆盖确认，等用户拍板，这里不必再说什么。
+                                None => {}
+                                Some(Ok(result)) => feedback.set(Some((
+                                    ToastKind::Success,
+                                    format!("已导入主题：{}", result.display_name),
+                                ))),
+                                Some(Err(err)) => {
+                                    feedback.set(Some((ToastKind::Error, err.user_message())))
                                 }
-                                // 不再套一层「导出失败:」：core 那边的错误已经带了
-                                // 「导出主题「X」失败：<原因>」这层主语（RPC 出口只传
-                                // 一个字符串，原因就展开在里面），再包一层是重复。
-                                Err(e) => feedback.set(Some((ToastKind::Error, e.to_string()))),
                             }
-                        });
-                    }),
-            ),
-            setting_row(
-                "主题市场",
-                Some("前往主题市场挑选现成方案"),
-                Element::button("打开市场")
-                    .small()
-                    .outline_soft()
-                    .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
-            ),
-        ],
-    )
+                        },
+                    );
+                }),
+        ),
+        setting_row(
+            "导出当前主题",
+            Some("打成 .wtheme 主题包，连背景图一起，可直接发给别人"),
+            Element::button("导出…")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| {
+                    // 在**事件线程上**先把下拉选中值读出来：getter 闭包捕获的是 Signal，
+                    // 读它得在 UI 这一侧完成，不能塞进下面那个延后执行的闭包里。
+                    let ui_selected = {
+                        let g = fields.getters.borrow();
+                        g.get("ui.theme.name")
+                            .map(|f| f())
+                            .and_then(|v| v.as_str().map(str::to_string))
+                    };
+                    // 走 `defer_blocking` 而非 `request_save_file`：两者时机语义相同
+                    // （都在事件分发完全返回后才弹原生框），但前者把「取当前主题 +
+                    // 选路径 + 调 core + 报结果」整条流程留在一处，不必把后半段拆进
+                    // 对话框回调里。形态同方案包导出（见 `schema_manager::export_schema`）。
+                    ctx.defer_blocking(move || {
+                        // 当前主题**在这里实时取**，不能在构建帧把 id 算好带进闭包：
+                        // 这张卡只在页面重建时求值一次，而上面那个主题下拉随时能换一个
+                        // ——捕获来的 id 会停在用户打开设置页的那一刻，导出的就成了另一
+                        // 个主题，而回执里的名字还是对的，用户不会发现拿错了。
+                        //
+                        // 取值走 `theme_import::theme_id_for_export`：下拉选中优先、
+                        // 生效值兜底，那里说明了为什么不能拿生效值当准。
+                        let id = match crate::theme_import::theme_id_for_export(ui_selected) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                feedback.set(Some((ToastKind::Error, e.user_message())));
+                                return;
+                            }
+                        };
+                        let Some(path) = PickDialog::new()
+                            .title("导出主题包")
+                            .file_name(&format!("{id}.wtheme"))
+                            .filter("主题包", &["wtheme"])
+                            .save_file()
+                        else {
+                            return;
+                        };
+                        match crate::rpc::call_core(
+                            "theme.exportPackage",
+                            &serde_json::json!({
+                                "slug": id,
+                                "path": path.to_string_lossy(),
+                            }),
+                        ) {
+                            Ok(v) => {
+                                let name = v
+                                    .get("display_name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or(&id);
+                                let n = v
+                                    .get("asset_count")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0);
+                                feedback.set(Some((
+                                    ToastKind::Success,
+                                    format!("已导出「{name}」（{n} 个资源文件）"),
+                                )));
+                            }
+                            // 不再套一层「导出失败:」：core 那边的错误已经带了
+                            // 「导出主题「X」失败：<原因>」这层主语（RPC 出口只传
+                            // 一个字符串，原因就展开在里面），再包一层是重复。
+                            Err(e) => feedback.set(Some((ToastKind::Error, e.to_string()))),
+                        }
+                    });
+                }),
+        ),
+        setting_row(
+            "主题市场",
+            Some("前往主题市场挑选现成方案"),
+            Element::button("打开市场")
+                .small()
+                .outline_soft()
+                .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
+        ),
+    ]
 }
 
 /// 主题编辑器卡：Web 编辑器通过本地 loopback 服务读写主题，三态分段控件

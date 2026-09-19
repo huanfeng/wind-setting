@@ -389,7 +389,8 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表" },
     Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零" },
     // ── 外观 ──
-    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "ui", title: "导入主题", section: "主题导入", keywords: "皮肤 toml 网址 安装" },
+    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "ui", title: "导入主题", section: "主题", keywords: "皮肤 toml 网址 安装" },
+    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "ui", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份" },
     Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口" },
     // ── 高级 ──
     Handwritten { id: "advanced:integration", anchor: "advanced:integration", page: "advanced", title: "桌面集成", section: "桌面集成", keywords: "协议 关联 注册" },

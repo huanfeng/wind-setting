@@ -2273,34 +2273,6 @@ options = [
   { value = "dark", label = "深色" },
 ]
 
-[[items]]
-key = "ui.candidate.pager_bar_display"
-group = "ui"
-section = "主题"
-type = "select_by_layout"
-label = "翻页栏显示"
-hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染。横排、竖排可分别设——横排的翻页栏要挤占候选共享的那一行，竖排多一行代价小"
-width = 200
-options = [
-  { value = "", label = "默认（主题配置）" },
-  { value = "hide", label = "隐藏" },
-  { value = "auto", label = "大于一页时显示" },
-  { value = "always", label = "总是显示" },
-]
-
-[[items]]
-key = "ui.candidate.page_number_display"
-group = "ui"
-section = "主题"
-type = "select_by_layout"
-label = "显示页码"
-hint = "翻页栏可见时，是否显示页码文字；横排、竖排可分别设"
-width = 200
-options = [
-  { value = "", label = "默认（主题配置）" },
-  { value = "show", label = "显示" },
-  { value = "hide", label = "隐藏" },
-]
 
 # ── 候选字体 ──
 # 原先字体、窗口、排版、注释四类共 28 项挤在一张「候选窗口」卡里（折叠掉两个对话框
@@ -2547,6 +2519,35 @@ section = "候选排版"
 type = "toggle"
 label = "翻页栏并入编码栏"
 hint = "将翻页栏右对齐显示在编码所在行（竖排可省一行）；「编码显示方式」取「候选窗顶部独立栏」或「候选窗首单元内联」时均生效，横排下无影响"
+
+[[items]]
+key = "ui.candidate.pager_bar_display"
+group = "ui"
+section = "候选排版"
+type = "select_by_layout"
+label = "翻页栏显示"
+hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染。横排、竖排可分别设——横排的翻页栏要挤占候选共享的那一行，竖排多一行代价小"
+width = 200
+options = [
+  { value = "", label = "默认（主题配置）" },
+  { value = "hide", label = "隐藏" },
+  { value = "auto", label = "大于一页时显示" },
+  { value = "always", label = "总是显示" },
+]
+
+[[items]]
+key = "ui.candidate.page_number_display"
+group = "ui"
+section = "候选排版"
+type = "select_by_layout"
+label = "显示页码"
+hint = "翻页栏可见时，是否显示页码文字；横排、竖排可分别设"
+width = 200
+options = [
+  { value = "", label = "默认（主题配置）" },
+  { value = "show", label = "显示" },
+  { value = "hide", label = "隐藏" },
+]
 
 [[items]]
 key = "ui.candidate.max_chars"
