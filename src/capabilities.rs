@@ -339,8 +339,9 @@ mod tests {
         //    见 core 的 docs/design/freq-rerank-model.md §9.1.2。
         "schema.pinyin.frequency.base_scale",
         "schema.pinyin.frequency.recency_peak",
-        // ⑨ 拼音侧临时词晋升次数暂不暴露（码表侧的 auto_phrase.promote_count 已在清单内）。
-        "schema.pinyin.auto_learn.promote_count",
+        // ⑨ （已撤出豁免）schema.pinyin.auto_learn.promote_count 现已在清单内：出厂 0 = 不
+        //    晋升，不暴露就等于拼音自动学到的词永远出不了临时词库，而设置页原来的 hint
+        //    还写着「加入用户词库」。码表侧的 auto_phrase.promote_count 一直是暴露的。
         // ⑨' 码表造词的兜底与容量参数，普通用户无判断依据，需要时改配置文件。
         //    注：min_phrase_len / max_phrase_len 已在清单内（hidden=true）。
         "schema.codetable.auto_phrase.idle_timeout_ms",
