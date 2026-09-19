@@ -1295,6 +1295,14 @@ fn build_select_reactive(
     // [`push_unlisted_option`]），否则回落首项 + writer 写回选中项 = 静默换掉用户的配置。
     let idx = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
     let sig = signal(idx);
+    // 登记索引信号：选项列表是异步到达、且会被整份替换的（主题列表在导入/删除后重扫），
+    // 换完得有人按**值**把索引挪回去，否则同一个下标就指到别的项上了。做这件事的是
+    // `AppState::refresh_theme_names`，它只能经这张表拿到这个信号。
+    state
+        .fields
+        .select_indices
+        .borrow_mut()
+        .insert(key.to_string(), sig);
 
     // writer：按当前索引取值；列表为空（未加载）时不写，避免清空配置。
     let kw = key.to_string();

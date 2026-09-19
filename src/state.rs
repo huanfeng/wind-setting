@@ -82,6 +82,16 @@ pub struct FieldRegistry {
     /// ⚠️ 与 `global_flags` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空，
     /// Signal 句柄留过页面重建就是悬垂。
     pub bool_signals: RefCell<HashMap<String, Signal<bool>>>,
+    /// 响应式 select（`options_source`）的**选中索引**信号：key → `Signal<usize>`。
+    ///
+    /// 这类下拉的选中态是**索引**而不是值，而选项列表是异步到达、且会被整份替换的
+    /// （主题列表在导入/删除之后重扫）。列表一换、索引没跟着走，同一个下标就指到了
+    /// 别的主题上——现象是「下拉显示的不是我选的那个」，而点一次保存会把那个错的值
+    /// 写进配置。登记在这里，好让重扫列表的那一侧（[`AppState::refresh_theme_names`]）
+    /// 按**值**把索引重新定位回去。
+    ///
+    /// ⚠️ 与 `bool_signals` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空。
+    pub select_indices: RefCell<HashMap<String, Signal<usize>>>,
     /// 清单项 key → 加载器（把给定 Config 的值灌回 Signal；空 Config 时回落 manifest 默认）。
     ///
     /// 索引用的是**清单项 key**而非配置路径——`reset_current_page` 拿 manifest 的 key 反查。
@@ -161,6 +171,7 @@ impl FieldRegistry {
         self.writers.borrow_mut().clear();
         self.getters.borrow_mut().clear();
         self.bool_signals.borrow_mut().clear();
+        self.select_indices.borrow_mut().clear();
         self.loaders.borrow_mut().clear();
         self.dialogs.borrow_mut().clear();
         self.global_flags.borrow_mut().clear();
@@ -570,7 +581,12 @@ pub struct AppState {
     pub theme_pkg_confirm_visible: Signal<bool>,
     /// 确认框正文：包里装的是什么（见 `ThemePreview::confirm_text`）。
     pub theme_pkg_confirm_msg: Signal<String>,
-    /// 待导入的包路径。
+    /// 待确认导入的主题包路径。
+    ///
+    /// ⚠️ **取消不清它**（通用确认框没有取消回调，`confirm_dialog_msg` 只管确认那一侧）。
+    /// 因此每个拉起这个确认框的入口**都必须先写 path 再置 visible**——少写一步的现象是
+    /// 「确认之后装上的是上一次放弃掉的那个包」。现有入口（argv/协议分派、导入对话框选到
+    /// `.wtheme`）都照做了。
     pub theme_pkg_confirm_path: Signal<String>,
     /// 待覆盖导入的**来源**：撞上同名主题时暂存于此，用户确认后以 `force=true` 重推。
     ///
@@ -1678,6 +1694,12 @@ impl AppState {
     }
 
     pub fn refresh_theme_names(&mut self) {
+        // 列表整份替换**之前**先记住此刻选中的是哪个主题：下拉的选中态是索引不是值，
+        // 而 core 给的顺序是「内置在前 + 用户主题按 id 排序」，导入一个 id 靠前的主题、
+        // 或删掉中间某个，都会让同一个主题换一个下标。不重定位的话，下拉显示的就不再是
+        // 用户选的那个——导出会导错，而点一次保存会把那个错的值写进 ui.theme.name。
+        let selected = self.selected_theme_id();
+
         self.theme_entries = load_theme_entries();
         self.apply_theme_entries();
         // 刚被删掉 / 这一轮没扫到的主题，如果正是配置里那个，它此刻就成了「列表未列举的
@@ -1688,6 +1710,36 @@ impl AppState {
             .unwrap_or_default()
             .to_string();
         self.push_unlisted_theme(&cur);
+        // 补项可能又往列表末尾加了一条，故重定位放在它之后。
+        self.relocate_theme_index(selected.as_deref());
+    }
+
+    /// 主题下拉此刻选中的那个 id（拿不到索引信号或越界时为 `None`）。
+    fn selected_theme_id(&self) -> Option<String> {
+        let idx = self
+            .fields
+            .select_indices
+            .borrow()
+            .get("ui.theme.name")
+            .map(|s| s.get())?;
+        self.theme_value_sig.with(|v| v.get(idx).cloned())
+    }
+
+    /// 选项列表换过之后，把选中索引按**值**挪回原来那个主题。
+    ///
+    /// 找不到（那个主题刚被删掉）就不动索引：此时配置里的取值已由
+    /// [`Self::push_unlisted_theme`] 补进列表末尾，接着由 loader 那条路定位，
+    /// 这里再猜一个下标只会盖掉它。
+    fn relocate_theme_index(&self, want: Option<&str>) {
+        let sig = self
+            .fields
+            .select_indices
+            .borrow()
+            .get("ui.theme.name")
+            .copied();
+        if let Some(sig) = sig {
+            relocate_index(self.theme_value_sig, sig, want);
+        }
     }
 
     /// 依 `theme_entries` 刷新三个下拉信号：显示名（label）、id（value）、富内容项（版本徽章 +
@@ -2940,6 +2992,21 @@ pub(crate) fn load_schemas() -> Vec<SchemaInfo> {
         .unwrap_or_default()
 }
 
+/// 选项列表换过之后，把选中索引按**值**挪回原来那一项。
+///
+/// 抽成自由函数是为了测得到：这条判据错了的现象是「下拉显示的不是我选的那个」，只有
+/// 真人点开设置页才看得见，而它要的全部输入就是两个信号——不必为此造一整个 `AppState`。
+///
+/// `want` 为 `None`（列表此前未就位）或找不到（那一项刚被删掉）时**不动索引**：后者的
+/// 取值已由 [`AppState::push_unlisted_theme`] 补进列表末尾、再由 loader 那条路定位，
+/// 这里再猜一个下标只会盖掉它。
+fn relocate_index(values: Signal<Vec<String>>, index: Signal<usize>, want: Option<&str>) {
+    let Some(want) = want else { return };
+    if let Some(i) = values.with(|v| v.iter().position(|x| x == want)) {
+        index.set(i);
+    }
+}
+
 /// 加载主题列表（theme.list）→ [`ThemeEntry`]。
 /// id 取 `id`/`slug`/`name`（保存到 `ui.theme.name`）；显示名取 `display_name`/`name`（回退 id）；
 /// 版本取 `version`（下拉徽章展示）；`builtin` 缺省视为 true（保守：未知来源不给删除按钮）。
@@ -3745,6 +3812,49 @@ mod tests {
             system_needs_apply(Some(&intent(false, "甲")), &intent(true, "乙")),
             "同时改了开关与名字，按开关那条判脏即可"
         );
+    }
+
+    /// **选项列表整份换过之后，选中索引要跟着值走。**
+    ///
+    /// 主题下拉的选中态是索引不是值，而 core 给的顺序是「内置在前 + 用户主题按 id 排序」
+    /// ——导入一个 id 靠前的主题会把后面所有项往后挪一格。索引不跟着走的话：下拉显示成
+    /// 别的主题、导出导错、点一次保存还会把那个错的值写进 `ui.theme.name`。
+    #[test]
+    fn selected_index_follows_the_value_when_options_are_replaced() {
+        let values = signal(vec!["default".to_string(), "zen".to_string()]);
+        let index = signal(1); // 选中 zen
+
+        // 导入 ash（id 排在 zen 前）→ core 重扫，列表整份替换。
+        values.set(vec![
+            "default".to_string(),
+            "ash".to_string(),
+            "zen".to_string(),
+        ]);
+        // ★ 前置条件：不重定位的话这个下标此刻指的是 ash，不是用户选的 zen。
+        //   没有这条断言，下面那句「等于 2」在「插入不会打乱下标」的假设下也会绿。
+        assert_eq!(
+            values.with(|v| v[index.get()].clone()),
+            "ash",
+            "前置条件：列表换过之后，原下标确实指到了别的主题上"
+        );
+
+        relocate_index(values, index, Some("zen"));
+        assert_eq!(index.get(), 2);
+        assert_eq!(values.with(|v| v[index.get()].clone()), "zen");
+    }
+
+    /// 选中的那一项被删掉时**不动索引**：配置里的取值已由 `push_unlisted_theme` 补到
+    /// 列表末尾，这里再猜一个下标只会盖掉它。
+    #[test]
+    fn relocate_leaves_the_index_alone_when_the_value_is_gone() {
+        let values = signal(vec!["default".to_string(), "ash".to_string()]);
+        let index = signal(1);
+
+        relocate_index(values, index, Some("zen")); // zen 已被删
+        assert_eq!(index.get(), 1, "找不到就别动");
+
+        relocate_index(values, index, None); // 列表此前未就位
+        assert_eq!(index.get(), 1);
     }
 
     fn si(id: &str, kind: &str) -> SchemaInfo {

@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
 
-const MAX_THEME_BYTES: usize = 2 * 1024 * 1024;
+/// 单份主题原文的上限（2 MiB）。下载与粘贴两条路共用——只闸一条的话，另一条粘错东西
+/// 要等 core 才报，而它说的是 TOML 解析失败，指不到「你粘的东西太大了」。
+pub const MAX_THEME_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemePreview {

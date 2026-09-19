@@ -17,6 +17,24 @@ use crate::pages::config_import::ThemePkgConfirmSignals;
 use crate::state::AppState;
 use crate::theme_import::ThemeSource;
 
+/// 这个对话框要用的一束信号。
+///
+/// 打成一束而不是散着传：三条导入路径都要收框、清输入、转覆盖确认、转包确认，散着传的话
+/// 每个函数签名都是七八个同类型参数，下一个读它的人得先数清楚哪个是哪个（取舍同
+/// [`ThemePkgConfirmSignals`]，那里也是这么收的）。
+#[derive(Clone, Copy)]
+struct PickerSignals {
+    visible: Signal<bool>,
+    url: Signal<String>,
+    text: Signal<String>,
+    /// 撞名覆盖确认：待导入的来源、正文、可见性。
+    ov_src: Signal<Option<ThemeSource>>,
+    ov_msg: Signal<String>,
+    ov_visible: Signal<bool>,
+    /// 主题包「要装这个吗」确认框。
+    pkg: ThemePkgConfirmSignals,
+}
+
 /// 小节标题：三条路各起一段，免得挤成一团分不清哪个按钮配哪个输入。
 fn head(text: &str) -> Element {
     Element::label(text)
@@ -38,21 +56,19 @@ fn hint(text: &str) -> Element {
 
 pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
     let state = app_state.borrow();
-    let visible = state.theme_picker_visible;
-    let url = state.theme_picker_url;
-    let text = state.theme_picker_text;
-    let ov_src = state.theme_overwrite_source;
-    let ov_msg = state.theme_overwrite_msg;
-    let ov_visible = state.theme_overwrite_visible;
-    let pkg = ThemePkgConfirmSignals::of(&state);
+    let sig = PickerSignals {
+        visible: state.theme_picker_visible,
+        url: state.theme_picker_url,
+        text: state.theme_picker_text,
+        ov_src: state.theme_overwrite_source,
+        ov_msg: state.theme_overwrite_msg,
+        ov_visible: state.theme_overwrite_visible,
+        pkg: ThemePkgConfirmSignals::of(&state),
+    };
+    let (visible, url, text) = (sig.visible, sig.url, sig.text);
     drop(state);
 
-    let (s_file, s_url, s_text, s_cancel) = (
-        app_state.clone(),
-        app_state.clone(),
-        app_state.clone(),
-        app_state.clone(),
-    );
+    let (s_file, s_url, s_text) = (app_state.clone(), app_state.clone(), app_state.clone());
 
     let frame = Element::col()
         .width(560)
@@ -93,9 +109,7 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                                     .filter("主题文件", &["toml", "wtheme"]),
                                 move |path| {
                                     let Some(path) = path else { return };
-                                    import_picked_file(
-                                        &app, &path, ov_src, ov_msg, ov_visible, pkg, visible,
-                                    );
+                                    import_picked_file(&app, &path, sig);
                                 },
                             );
                         }),
@@ -123,17 +137,19 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                         s_url.borrow().notify_err(e.user_message());
                         return;
                     }
+                    // ⚠️ 下载在 **UI 线程上同步跑**（ureq 10s 超时 + 最多 3 次重定向），
+                    // 期间窗口不重绘、不响应，Windows 会给它贴「无响应」。至少先说一声,
+                    // 否则用户以为没点着、反复点，事件排队后可能连发几次导入。
+                    // 彻底的做法是丢工作线程、完成后经 `main.rs` 的 ui_tx 回 UI —— 那是
+                    // 更大的一笔，本仓既有的 `theme_import_dialog` 也是同样的同步写法。
+                    s_url
+                        .borrow()
+                        .feedback
+                        .set(Some((ToastKind::Info, "正在下载主题…".to_string())));
                     // 下载与导入分两步：撞名时要拿**已下载的原文**去弹覆盖确认，
                     // 串成一条链的话 text 就丢了，确认之后只能重下一次。
                     match crate::theme_import::download_https_text(&u) {
-                        Ok(t) => finish(
-                            &s_url,
-                            ThemeSource::Text(t),
-                            ov_src,
-                            ov_msg,
-                            ov_visible,
-                            visible,
-                        ),
+                        Ok(t) => finish(&s_url, ThemeSource::Text(t), sig),
                         Err(e) => s_url.borrow().notify_err(e.user_message()),
                     }
                 })),
@@ -161,14 +177,17 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                         s_text.borrow().notify_err("请先粘贴主题原文");
                         return;
                     }
-                    finish(
-                        &s_text,
-                        ThemeSource::Text(t),
-                        ov_src,
-                        ov_msg,
-                        ov_visible,
-                        visible,
-                    );
+                    // 与下载那条同一条闸（`download_https_text` 有 MAX_THEME_BYTES）：
+                    // 三条路汇到同一个 finish，只有一条有输入上限的话，粘错东西（比如
+                    // 整个词库文件）要等 core 才报，而它说的是 TOML 解析失败，指不到
+                    // 「你粘的东西太大了」。
+                    if t.len() > crate::theme_import::MAX_THEME_BYTES {
+                        s_text
+                            .borrow()
+                            .notify_err("主题内容过大（上限 2 MiB），请确认粘对了东西");
+                        return;
+                    }
+                    finish(&s_text, ThemeSource::Text(t), sig);
                 })),
         )
         .child(Element::divider())
@@ -182,9 +201,7 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                     Element::button("关闭")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| {
-                            close(&s_cancel, url, text, visible);
-                        }),
+                        .on_click(move |_| close(url, text, visible)),
                 ),
         );
 
@@ -195,23 +212,18 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
 ///
 /// `.wtheme` 不在这里落盘，而是转去包确认框——主题包多半是从网上下回来的，装之前得让
 /// 用户看清包里是什么（主题名、作者、几个资源文件），这与方案包双击的体验是同一套。
-fn import_picked_file(
-    app: &Rc<RefCell<AppState>>,
-    path: &std::path::Path,
-    ov_src: Signal<Option<ThemeSource>>,
-    ov_msg: Signal<String>,
-    ov_visible: Signal<bool>,
-    pkg: ThemePkgConfirmSignals,
-    visible: Signal<bool>,
-) {
+fn import_picked_file(app: &Rc<RefCell<AppState>>, path: &std::path::Path, sig: PickerSignals) {
     if is_theme_package(path) {
         match crate::theme_import::preview_package(&path.to_string_lossy()) {
             Ok(p) => {
-                pkg.msg.set(p.confirm_text());
-                pkg.path.set(path.to_string_lossy().into_owned());
-                // 先收本框再弹确认框：两个对话框同时可见会互相遮挡。
-                visible.set(false);
-                pkg.visible.set(true);
+                sig.pkg.msg.set(p.confirm_text());
+                sig.pkg.path.set(path.to_string_lossy().into_owned());
+                // 先收本框再弹确认框。**这是单向遮挡**：包确认框在根 stack 里排在
+                // 本框之前（见 `shell::build` 的 `.child()` 次序），两者同时可见时它会落在
+                // 本框的遮罩底下——看不见也点不到，而遮罩吞掉全部指针事件，现象是「设置窗
+                // 不响应了」。调整那处 stack 次序的人需要知道这条依赖。
+                close(sig.url, sig.text, sig.visible);
+                sig.pkg.visible.set(true);
             }
             Err(e) => app.borrow().notify_err(e.user_message()),
         }
@@ -219,14 +231,7 @@ fn import_picked_file(
     }
 
     match crate::theme_import::read_local_toml(path) {
-        Ok(t) => finish(
-            app,
-            ThemeSource::Text(t),
-            ov_src,
-            ov_msg,
-            ov_visible,
-            visible,
-        ),
+        Ok(t) => finish(app, ThemeSource::Text(t), sig),
         Err(e) => app.borrow().notify_err(e.user_message()),
     }
 }
@@ -244,37 +249,31 @@ fn is_theme_package(path: &std::path::Path) -> bool {
 }
 
 /// 三条路共用的收尾：撞名转覆盖确认、成功刷列表报 toast、失败留框让用户改。
-fn finish(
-    app: &Rc<RefCell<AppState>>,
-    source: ThemeSource,
-    ov_src: Signal<Option<ThemeSource>>,
-    ov_msg: Signal<String>,
-    ov_visible: Signal<bool>,
-    visible: Signal<bool>,
-) {
+fn finish(app: &Rc<RefCell<AppState>>, source: ThemeSource, sig: PickerSignals) {
     // 撞名不是「导入不了」而是「要不要更新」，那条判断几个入口共用一处
     // （见 `AppState::try_import_theme`）。
-    match AppState::try_import_theme(source, ov_src, ov_msg, ov_visible) {
-        // 已转覆盖确认：先收本框再让它弹，两个框同时可见会互相遮挡。
-        None => visible.set(false),
+    match AppState::try_import_theme(source, sig.ov_src, sig.ov_msg, sig.ov_visible) {
+        // 已转覆盖确认：先收本框再让它弹（遮挡关系同 `import_picked_file` 那段注释）。
+        None => close(sig.url, sig.text, sig.visible),
         Some(Ok(r)) => {
             let mut st = app.borrow_mut();
             st.refresh_theme_names();
             st.notify_ok(format!("已导入主题：{}", r.display_name));
-            visible.set(false);
+            drop(st);
+            close(sig.url, sig.text, sig.visible);
         }
         // 失败保留对话框：用户可以改链接、换文件或改那段文本再来一次。
         Some(Err(e)) => app.borrow().notify_err(e.user_message()),
     }
 }
 
-/// 关框并清空输入——留着上次的链接与整段文本，下次打开会让人以为那是待导入的内容。
-fn close(
-    _app: &Rc<RefCell<AppState>>,
-    url: Signal<String>,
-    text: Signal<String>,
-    visible: Signal<bool>,
-) {
+/// 关框并清空输入。
+///
+/// **收框的每一条路都要走这里**，而不是只挂在「关闭」按钮上：能让这个框消失的路有五条
+/// （关闭按钮、导入成功、撞名转覆盖确认、选到包转包确认、以及按 **ESC**——windui 把遮罩
+/// 登记进 `Tree::modals`，ESC 直接置 `show=false`）。清空只绑住其中一条的话，用户粘一大段
+/// 原文、改主意按 ESC，下次打开那段还原样躺在框里，看上去像是「待导入的内容」。
+fn close(url: Signal<String>, text: Signal<String>, visible: Signal<bool>) {
     url.set(String::new());
     text.set(String::new());
     visible.set(false);

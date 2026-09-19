@@ -1199,6 +1199,23 @@ mod about_tests {
 
 #[cfg(test)]
 mod tests {
+    /// 守门：ui 组必须仍有一节叫「主题」。
+    ///
+    /// [`appearance_page`] 拿 `sec == "主题"` 这个**字符串**判据往那张卡里追加「导入 /
+    /// 导出 / 主题市场」三行。清单里把这一节改个名，三行就**整体从界面上消失**——页面
+    /// 照常渲染、编译照常通过、别的测试照常全绿，只有拿眼睛看才发现主题卡上少了三个
+    /// 按钮。同 `search/index.rs` 那张手写表的风险（「⚠ 编译器不管这张表」）。
+    #[test]
+    fn ui_group_still_has_the_theme_section() {
+        let m = crate::manifest::Manifest::from_embedded();
+        let secs: Vec<String> = m.sections_of("ui").into_iter().map(|(s, _)| s).collect();
+        assert!(
+            secs.iter().any(|s| s == "主题"),
+            "ui 组里没有「主题」这一节，appearance_page 的导入/导出/市场三行会静默消失；\
+             现有分节：{secs:?}"
+        );
+    }
+
     /// 守门：general 组必须仍有分节，且只有一节。
     ///
     /// [`input_page`] 把 general 整批排在输入页最前，是拿"就『默认状态』这一节、且它
