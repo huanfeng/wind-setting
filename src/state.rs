@@ -4368,6 +4368,45 @@ mod tests {
         assert!(st.try_begin_download(), "完成后标志也应复位");
     }
 
+    /// **重扫主题列表之后，下拉选中的还得是原来那个主题。**
+    ///
+    /// 与 `selected_index_follows_the_value_when_options_are_replaced` 的分工：那条测
+    /// [`relocate_index`] 这个判据本身，这条测 [`AppState::refresh_theme_names`] **真的
+    /// 会去调它** —— 判据再对，接线断了一样出事，而删掉那行调用只有这条会红。
+    ///
+    /// 场景就是真实缺陷：选中 mono（此刻下标 1）→ 重扫后列表变成
+    /// `[default, jade, mono]`，mono 挪到了下标 2。索引不跟着走的话，下拉显示的会是
+    /// jade，导出导 jade，点保存把 `ui.theme.name` 写成 jade。
+    #[test]
+    fn refresh_theme_names_keeps_the_selection_on_the_same_theme() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+
+        // 重扫前：列表里只有两项，选中末项 mono。
+        st.theme_value_sig
+            .set(vec!["jade".to_string(), "mono".to_string()]);
+        st.theme_label_sig
+            .set(vec!["青玉".to_string(), "墨".to_string()]);
+        let idx = signal(1);
+        st.fields
+            .select_indices
+            .borrow_mut()
+            .insert("ui.theme.name".to_string(), idx);
+
+        st.refresh_theme_names();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+
+        // 前置条件：重扫确实把 mono 挪了位，否则这条用例测不到任何东西。
+        assert_eq!(st.theme_value_sig.get(), vec!["default", "jade", "mono"]);
+        assert_eq!(idx.get(), 2, "索引要跟着 mono 走到新下标");
+        assert_eq!(
+            st.theme_value_sig.with(|v| v[idx.get()].clone()),
+            "mono",
+            "选中的还得是 mono —— 不重定位的话这里是 jade"
+        );
+    }
+
     #[test]
     fn refresh_theme_names_updates_options_from_core() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
