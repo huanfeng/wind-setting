@@ -13,6 +13,7 @@ use windui::prelude::*;
 
 use crate::dialogs::schema_manager::build_schema_manager_dialog;
 use crate::dialogs::theme_import_dialog::build_theme_import_dialog;
+use crate::dialogs::theme_import_picker::build_theme_import_picker;
 use crate::dialogs::update_dialog::build_update_dialog;
 use crate::pages;
 use crate::state::{AppState, ConnState};
@@ -30,6 +31,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         feedback,
         dialog,
         theme_import_dialog,
+        theme_import_picker,
         backup_dialog,
         config_import_dialog,
         stats_confirm_dialog,
@@ -71,6 +73,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
             st.feedback,
             build_schema_manager_dialog(app, &st.schema_mgr),
             build_theme_import_dialog(app),
+            build_theme_import_picker(app),
             pages::backup::build_backup_restore_dialog(&st.backup_mgr),
             pages::config_import::build_config_import_dialog(
                 app,
@@ -207,6 +210,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(dialog)
         // 词库对话框已随词库页迁进独立窗（见 `dict_window::build_content`），不在这里挂。
         .child(theme_import_dialog)
+        .child(theme_import_picker)
         .child(backup_dialog)
         .child(config_import_dialog)
         .child(stats_confirm_dialog)

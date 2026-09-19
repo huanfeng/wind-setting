@@ -445,6 +445,15 @@ pub struct AppState {
     pub theme_import_name_display: Signal<String>,
     /// 主题导入确认对话框可见标志。
     pub theme_import_dialog_visible: Signal<bool>,
+    /// 「导入主题」对话框（用户**主动**发起的那个）是否可见。
+    ///
+    /// 与 [`Self::theme_import_dialog_visible`] 是两回事：那个由 `windinput://import/theme`
+    /// 从浏览器唤起，问的是「这个来源可信吗」；这个是用户自己点开的，问的是「你要从哪导」。
+    pub theme_picker_visible: Signal<bool>,
+    /// 「导入主题」对话框里的链接输入。
+    pub theme_picker_url: Signal<String>,
+    /// 「导入主题」对话框里粘贴的主题原文。
+    pub theme_picker_text: Signal<String>,
     /// 当前 Tab 索引。
     pub tab: Signal<usize>,
     /// 全局搜索状态（索引 + 查询 + 结果 + 浮层开合）。
@@ -894,6 +903,9 @@ impl AppState {
             theme_import_url_display: signal("来源：".to_string()),
             theme_import_name_display: signal("名称提示：无".to_string()),
             theme_import_dialog_visible: signal(false),
+            theme_picker_visible: signal(false),
+            theme_picker_url: signal(String::new()),
+            theme_picker_text: signal(String::new()),
             tab: signal(0),
             // 搜索索引在此构建：清单是内嵌的、启动即就位，不必等 RPC。
             search: crate::search::SearchState::new(&Manifest::from_embedded()),

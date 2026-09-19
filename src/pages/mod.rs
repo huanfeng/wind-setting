@@ -635,9 +635,9 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
     // 导出要读「下拉里此刻选中的是哪个主题」。`fields` 是 Rc，可以进闭包；表里的 getter
     // 由 manifest 在建控件时登记，页面重建会整表 reset 再填，持 Rc 读到的始终是新的那份。
     let fields = state.fields.clone();
-    let ov_src = state.theme_overwrite_source;
-    let ov_msg = state.theme_overwrite_msg;
-    let ov_visible = state.theme_overwrite_visible;
+    // 撞名覆盖确认的那几个 signal 不在这里取：导入已经整个搬进「导入主题」对话框，
+    // 由它持有；卡里只剩一个开框的按钮。
+    let picker_visible = state.theme_picker_visible;
 
     // ★ 外观页最后这两张卡曾经是**手搓的外壳**：`col + bg + border + corner(12) + 一个
     // 14px 粗体 label` 当标题。上面所有 manifest 分区走的是 `widgets::section`——彩色图标
@@ -646,50 +646,12 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
     // 现改为与其余分区同一套构件，行也统一成 `setting_row`。
     vec![
         setting_row(
-            "导入 TOML 主题",
-            Some("从本地 .toml 文件导入，导入前由 core 校验"),
-            Element::button("选择文件…")
+            "导入主题",
+            Some("从本地文件（.toml 主题 / .wtheme 主题包）、链接或粘贴的原文导入"),
+            Element::button("导入…")
                 .small()
                 .outline_soft()
-                .on_click(move |ctx| {
-                    ctx.request_pick_file(
-                        PickDialog::new()
-                            .title("导入 TOML 主题")
-                            .filter("TOML", &["toml"]),
-                        move |path| {
-                            let Some(path) = path else { return };
-                            // 直接读取 → 导入；import_text（core）已校验，无需单独预览。
-                            // 读取与导入分两步写（而非 and_then 串起来）：撞上同名主题
-                            // 时要拿**已读到的原文**去弹覆盖确认，串起来 text 就丢了。
-                            let text = match crate::theme_import::read_local_toml(&path) {
-                                Ok(t) => t,
-                                Err(err) => {
-                                    feedback.set(Some((ToastKind::Error, err.user_message())));
-                                    return;
-                                }
-                            };
-                            // 撞名不是「导入不了」而是「要不要更新」，那条判断几个
-                            // 入口共用一处（见 `AppState::try_import_theme`）。
-                            let outcome = AppState::try_import_theme(
-                                crate::theme_import::ThemeSource::Text(text),
-                                ov_src,
-                                ov_msg,
-                                ov_visible,
-                            );
-                            match outcome {
-                                // 已转覆盖确认，等用户拍板，这里不必再说什么。
-                                None => {}
-                                Some(Ok(result)) => feedback.set(Some((
-                                    ToastKind::Success,
-                                    format!("已导入主题：{}", result.display_name),
-                                ))),
-                                Some(Err(err)) => {
-                                    feedback.set(Some((ToastKind::Error, err.user_message())))
-                                }
-                            }
-                        },
-                    );
-                }),
+                .on_click(move |_| picker_visible.set(true)),
         ),
         setting_row(
             "导出当前主题",
@@ -727,7 +689,7 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
                         };
                         let Some(path) = PickDialog::new()
                             .title("导出主题包")
-                            .file_name(&format!("{id}.wtheme"))
+                            .file_name(format!("{id}.wtheme"))
                             .filter("主题包", &["wtheme"])
                             .save_file()
                         else {
