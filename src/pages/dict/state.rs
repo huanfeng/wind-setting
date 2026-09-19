@@ -370,6 +370,9 @@ pub enum DomainKind {
     QuickFormat,
     /// 常用字覆盖。**全局域**（core 那张表的键就是一个字，不带方案也不带编码）。
     CommonChars,
+    /// 输入补全的学习数据（邮箱后缀 / 网址历史）。**全局域**：core 那张表的键是
+    /// `{类别}\0{文本}`，不带方案——「我常用哪个邮箱后缀」与五笔拼音无关。
+    Completion,
     Pinyin,
     Codetable,
     Mixed,
@@ -387,7 +390,8 @@ pub enum DomainKind {
 pub(crate) const DOMAIN_PHRASE: usize = 0;
 pub(crate) const DOMAIN_QUICK: usize = 1;
 pub(crate) const DOMAIN_COMMON: usize = 2;
-pub(crate) const GLOBAL_DOMAINS: usize = 3;
+pub(crate) const DOMAIN_COMPLETION: usize = 3;
+pub(crate) const GLOBAL_DOMAINS: usize = 4;
 
 /// 全局域的展示名，**按槽位顺序**（`[DOMAIN_PHRASE]` / `[DOMAIN_QUICK]` / `[DOMAIN_COMMON]`）。
 ///
@@ -397,7 +401,7 @@ pub(crate) const GLOBAL_DOMAINS: usize = 3;
 /// 与 `GLOBAL_DOMAINS` 毫无编译期关联。加第三个全局域时它们照旧只产出两项，症状正是那段
 /// 注释描述的：侧栏少画一项、其后的方案域整体错位一格，且不报错不 panic。
 pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] =
-    ["快捷短语", "快捷输入", "字符集分类"];
+    ["快捷短语", "快捷输入", "字符集分类", "输入补全"];
 
 /// 域下标的语义。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -406,6 +410,8 @@ pub enum DomainSlot {
     QuickFormat,
     /// 常用字覆盖（全局：那张表的键就是一个字，不带方案）。
     CommonChars,
+    /// 输入补全的学习数据（全局：邮箱后缀 + 网址历史两张子表）。
+    Completion,
     /// 折叠后的方案域下标（**已减去全局槽位**，可直接索引 `folded_domains()`）。
     Schema(usize),
 }
@@ -416,6 +422,7 @@ pub fn domain_slot(domain: usize) -> DomainSlot {
         DOMAIN_PHRASE => DomainSlot::Phrase,
         DOMAIN_QUICK => DomainSlot::QuickFormat,
         DOMAIN_COMMON => DomainSlot::CommonChars,
+        DOMAIN_COMPLETION => DomainSlot::Completion,
         d => DomainSlot::Schema(d - GLOBAL_DOMAINS),
     }
 }
@@ -448,6 +455,9 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         // 层级上「类」确实在「字」之上，但把低频的那层摆在第一屏，等于让多数人每次都
         // 多点一下（2026-09-05 与用户确认）。
         DomainKind::CommonChars => vec![CommonChars, Charsets],
+        // 输入补全：两类学习数据一个域。顺序按「哪个更可能有内容」定——邮箱后缀跟随
+        // 邮箱模式开关即开始积累，网址历史还要多开一道 history_enabled，出厂两者都空。
+        DomainKind::Completion => vec![MailSuffix, UrlHistory],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -654,6 +664,7 @@ impl DictManagerState {
             DomainSlot::Phrase => return DomainKind::Phrase,
             DomainSlot::QuickFormat => return DomainKind::QuickFormat,
             DomainSlot::CommonChars => return DomainKind::CommonChars,
+            DomainSlot::Completion => return DomainKind::Completion,
             DomainSlot::Schema(i) => i,
         };
         match self.folded_domains().get(i).map(|e| e.kind.as_str()) {
@@ -692,6 +703,9 @@ impl DictManagerState {
             DomainSlot::Phrase => return GLOBAL_DOMAIN_LABELS[DOMAIN_PHRASE].to_string(),
             DomainSlot::QuickFormat => return GLOBAL_DOMAIN_LABELS[DOMAIN_QUICK].to_string(),
             DomainSlot::CommonChars => return GLOBAL_DOMAIN_LABELS[DOMAIN_COMMON].to_string(),
+            DomainSlot::Completion => {
+                return GLOBAL_DOMAIN_LABELS[DOMAIN_COMPLETION].to_string();
+            }
             DomainSlot::Schema(i) => i,
         };
         self.folded_domains()
@@ -2756,7 +2770,14 @@ impl DictManagerState {
             // commonChars.export/import（另外它也随整份备份走 core 的
             // `userdata/common_chars.jsonl` 段——两条路并存，前者是单独分发一份
             // 「我的常用字判断」，后者是换机还原）。
-            DomainKind::Phrase | DomainKind::QuickFormat | DomainKind::CommonChars => &[],
+            // 补全学习数据同样不走「按方案分段」的导入导出。它随整份备份走 core 的
+            // `userdata/completions.jsonl` 段（两类装一个文件，每行自带 kind），设置页
+            // 这边只提供查看与清空——单独分发一份「我打过哪些网址」没有使用场景，
+            // 而那恰恰是隐私上最不该鼓励的操作。
+            DomainKind::Phrase
+            | DomainKind::QuickFormat
+            | DomainKind::CommonChars
+            | DomainKind::Completion => &[],
         }
     }
 
@@ -3919,16 +3940,22 @@ mod tests {
         assert_eq!(domain_slot(DOMAIN_PHRASE), DomainSlot::Phrase);
         assert_eq!(domain_slot(DOMAIN_QUICK), DomainSlot::QuickFormat);
         assert_eq!(domain_slot(DOMAIN_COMMON), DomainSlot::CommonChars);
+        assert_eq!(domain_slot(DOMAIN_COMPLETION), DomainSlot::Completion);
         // 方案域从 GLOBAL_DOMAINS 起，且**已减去**全局槽位（可直接索引 folded_domains）。
         assert_eq!(domain_slot(GLOBAL_DOMAINS), DomainSlot::Schema(0));
         assert_eq!(domain_slot(GLOBAL_DOMAINS + 3), DomainSlot::Schema(3));
         // 全局槽位必须两两不同且**连续占满** [0, GLOBAL_DOMAINS)：
         // 写重会让其中一个域永远打不开，留空洞会让那一格点进去落到方案域上。
-        let slots = [DOMAIN_PHRASE, DOMAIN_QUICK, DOMAIN_COMMON];
+        let slots = [
+            DOMAIN_PHRASE,
+            DOMAIN_QUICK,
+            DOMAIN_COMMON,
+            DOMAIN_COMPLETION,
+        ];
         assert_eq!(slots.len(), GLOBAL_DOMAINS, "新增全局域要在这里补一格");
         let mut sorted = slots;
         sorted.sort_unstable();
-        assert_eq!(sorted, [0, 1, 2], "全局槽位必须从 0 起连续，不能重号或跳号");
+        assert_eq!(sorted, [0, 1, 2, 3], "全局槽位必须从 0 起连续，不能重号或跳号");
         // 标签表与槽位同长，且每格都有名字（空名字＝侧栏上一条看不见的项）。
         assert_eq!(GLOBAL_DOMAIN_LABELS.len(), GLOBAL_DOMAINS);
         assert!(GLOBAL_DOMAIN_LABELS.iter().all(|s| !s.is_empty()));

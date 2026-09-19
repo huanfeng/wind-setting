@@ -26,6 +26,17 @@ pub enum WordCategory {
     QuickFormat,
     /// 常用字覆盖（全局；只列**用户改过的字**，出厂那 8104 字不进列表）。
     CommonChars,
+    /// 邮箱后缀学习（全局；只读 + 逐条删 + 清空）。
+    ///
+    /// 记的是 `@` **之后**的域名（`qq.com`），不含用户名——所以它与网址历史虽然同属
+    /// 「输入补全」这个域，隐私量级并不一样：core 那边前者跟随邮箱模式开关，后者另有
+    /// 一道 `input.url.history_enabled`。
+    MailSuffix,
+    /// 网址输入历史（全局；只读 + 逐条删 + 清空）。
+    ///
+    /// 出厂**不产生**任何数据（`input.url.history_enabled` 默认关），所以多数用户来到
+    /// 这个标签只会看到一张空表，那是对的。
+    UrlHistory,
     /// 字符集分类（全局；一行一个字符类，改的是**整个类**的属性）。
     ///
     /// ★ 与 [`Self::CommonChars`] 是同一件事的两层，差别必须让用户看见：
@@ -52,6 +63,8 @@ pub enum LogicalTab {
     QuickFormat,
     CommonChars,
     Charsets,
+    MailSuffix,
+    UrlHistory,
 }
 
 impl LogicalTab {
@@ -67,6 +80,8 @@ impl LogicalTab {
             LogicalTab::CommonChars => "常用字",
             // 域名已经是「字符集分类」，tab 再叫同名就分不出层次了。
             LogicalTab::Charsets => "字符类",
+            LogicalTab::MailSuffix => "邮箱后缀",
+            LogicalTab::UrlHistory => "网址历史",
         }
     }
     pub fn category(self) -> WordCategory {
@@ -80,6 +95,8 @@ impl LogicalTab {
             LogicalTab::QuickFormat => WordCategory::QuickFormat,
             LogicalTab::CommonChars => WordCategory::CommonChars,
             LogicalTab::Charsets => WordCategory::Charsets,
+            LogicalTab::MailSuffix => WordCategory::MailSuffix,
+            LogicalTab::UrlHistory => WordCategory::UrlHistory,
         }
     }
     /// 短语两级：Some(true)=系统，Some(false)=用户；非短语=None。
@@ -104,6 +121,8 @@ impl LogicalTab {
             LogicalTab::QuickFormat => "quick",
             LogicalTab::CommonChars => "common-chars",
             LogicalTab::Charsets => "charsets",
+            LogicalTab::MailSuffix => "mail-suffix",
+            LogicalTab::UrlHistory => "url-history",
         }
     }
 
@@ -118,6 +137,8 @@ impl LogicalTab {
         LogicalTab::QuickFormat,
         LogicalTab::CommonChars,
         LogicalTab::Charsets,
+        LogicalTab::MailSuffix,
+        LogicalTab::UrlHistory,
     ];
 
     /// 由 `--type` 取值反查（大小写不敏感）。`dict` 是 `user-dict` 的顺手别名。
@@ -258,6 +279,13 @@ impl WordRow {
             },
             WordCategory::Freq => WordRow {
                 code: s("code"),
+                text: s("text"),
+                count: i("count"),
+                last_used: fmt_last_used(v.get("lastUsed")),
+                ..Default::default()
+            },
+            // 补全学习数据：没有「编码」这个概念，只有文本本身 + 用过几次 + 何时用的。
+            WordCategory::MailSuffix | WordCategory::UrlHistory => WordRow {
                 text: s("text"),
                 count: i("count"),
                 last_used: fmt_last_used(v.get("lastUsed")),
@@ -948,6 +976,78 @@ const SPEC_FREQ: CategorySpec = CategorySpec {
     },
 };
 
+/// 补全学习数据的列（邮箱后缀 / 网址历史共用）。
+///
+/// 没有「编码」列：这两类数据的 key 就是文本本身，core 那边也不返回 code 字段。
+const COLS_COMPLETION: &[ColumnSpec] = &[
+    ColumnSpec {
+        header: "内容",
+        weight: 3.0,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "次数",
+        weight: 0.8,
+        field: WordField::Count,
+    },
+    ColumnSpec {
+        header: "最近使用",
+        weight: 1.2,
+        field: WordField::LastUsed,
+    },
+];
+
+/// 邮箱后缀学习。
+///
+/// **全局**（`scoped_by_schema: false`）：「我常用哪个邮箱后缀」与五笔拼音无关，
+/// core 侧那张表的 key 也不带方案。
+///
+/// **服务端分页**：用户可以打出任意后缀，条数无上限（不像预置表那样封闭），理由同
+/// [`SPEC_TEMP`]。
+const SPEC_MAIL_SUFFIX: CategorySpec = CategorySpec {
+    category: WordCategory::MailSuffix,
+    title: "邮箱后缀",
+    scoped_by_schema: false,
+    paged: true,
+    searchable: true,
+    client_search: false,
+    columns: COLS_COMPLETION,
+    ops: OpFlags {
+        remove: true,
+        clear: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "mailSuffix.listPaged",
+        remove: "mailSuffix.delete",
+        clear: "mailSuffix.clear",
+        ..RpcNames::EMPTY
+    },
+};
+
+/// 网址输入历史。形态与 [`SPEC_MAIL_SUFFIX`] 完全一致，只换命名空间——两类共用
+/// core 的同一张表，分开只为让「清空网址历史」不波及邮箱学习。
+const SPEC_URL_HISTORY: CategorySpec = CategorySpec {
+    category: WordCategory::UrlHistory,
+    title: "网址历史",
+    scoped_by_schema: false,
+    paged: true,
+    searchable: true,
+    client_search: false,
+    columns: COLS_COMPLETION,
+    ops: OpFlags {
+        remove: true,
+        clear: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "urlHistory.listPaged",
+        remove: "urlHistory.delete",
+        clear: "urlHistory.clear",
+        ..RpcNames::EMPTY
+    },
+};
+
 /// 候选调整（影子规则）。
 ///
 /// **服务端分页 + 服务端搜索**（2026-08-25 由「一次全取 + 客户端过滤」改来）：规则随每次
@@ -1305,6 +1405,8 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
         WordCategory::QuickFormat => &SPEC_QUICK,
         WordCategory::CommonChars => &SPEC_COMMON,
         WordCategory::Charsets => &SPEC_CHARSETS,
+        WordCategory::MailSuffix => &SPEC_MAIL_SUFFIX,
+        WordCategory::UrlHistory => &SPEC_URL_HISTORY,
     }
 }
 
@@ -1333,16 +1435,18 @@ mod tests {
                 LogicalTab::QuickFormat => 6,
                 LogicalTab::CommonChars => 7,
                 LogicalTab::Charsets => 8,
+                LogicalTab::MailSuffix => 9,
+                LogicalTab::UrlHistory => 10,
             }
         }
         assert_eq!(
             LogicalTab::ALL.len(),
-            9,
+            11,
             "加了新的 LogicalTab 变体就要加进 ALL，否则 --type 反查不到它"
         );
         let mut seen: Vec<usize> = LogicalTab::ALL.iter().map(|t| seq(*t)).collect();
         seen.sort_unstable();
-        assert_eq!(seen, (0..9).collect::<Vec<_>>(), "ALL 里有重复或缺项");
+        assert_eq!(seen, (0..11).collect::<Vec<_>>(), "ALL 里有重复或缺项");
 
         // 每个 cli_id 都能反查回自己——大小写不敏感那条也顺带覆盖。
         for t in LogicalTab::ALL {
@@ -1798,7 +1902,14 @@ mod tests {
     /// 搜索改走服务端、list 指向 `*Paged`。
     #[test]
     fn unbounded_categories_are_server_paged() {
-        for cat in [WordCategory::Temp, WordCategory::Shadow] {
+        // 补全学习数据同样无界：用户能打出任意后缀、访问任意网址（网址历史另有
+        // history_max 封顶，但那个值用户可以调到上万，客户端过滤照样撑不住）。
+        for cat in [
+            WordCategory::Temp,
+            WordCategory::Shadow,
+            WordCategory::MailSuffix,
+            WordCategory::UrlHistory,
+        ] {
             let s = spec_for(cat);
             assert!(s.paged, "{:?} 应服务端分页", cat);
             assert!(s.searchable && !s.client_search, "{:?} 应服务端搜索", cat);
@@ -1818,6 +1929,36 @@ mod tests {
         let s = spec_for(WordCategory::Shadow);
         assert!(s.ops.clear);
         assert_eq!(s.rpc.clear, "shadow.clear");
+    }
+
+    /// 两类补全学习数据必须是**全局**的，且清空必须各走各的 RPC。
+    ///
+    /// `scoped_by_schema` 若写成 true，列表会带上 schemaId 发出去——core 侧那两个方法
+    /// 压根不看这个参数，于是「列表看起来正常、按方案筛却筛不动」，要等有人去按方案
+    /// 分组才发现。这与快捷输入那条（`quick_domain_is_global_and_sends_no_schema_id`）
+    /// 是同一个坑。
+    ///
+    /// 两个 clear 指向不同 RPC 这一条也要钉：写成同一个的话，「清空网址历史」会把用户
+    /// 的邮箱后缀学习一并抹掉，而界面上没有任何提示。
+    #[test]
+    fn completion_categories_are_global_with_separate_clear_rpcs() {
+        let mail = spec_for(WordCategory::MailSuffix);
+        let url = spec_for(WordCategory::UrlHistory);
+        for s in [mail, url] {
+            assert!(!s.scoped_by_schema, "补全学习数据是全局的，不该带 schemaId");
+            assert!(s.ops.clear && s.ops.remove, "应支持清空与逐条删");
+        }
+        assert_eq!(mail.rpc.clear, "mailSuffix.clear");
+        assert_eq!(url.rpc.clear, "urlHistory.clear");
+        assert_ne!(
+            mail.rpc.clear, url.rpc.clear,
+            "两类必须分开清 —— 清网址历史不该顺带抹掉邮箱学习"
+        );
+        // 列里没有「编码」：这两类的 key 就是文本本身，core 也不返回 code 字段。
+        assert!(
+            !mail.columns.iter().any(|c| c.field == WordField::Code),
+            "补全学习数据没有编码这个概念"
+        );
     }
 
     #[test]
