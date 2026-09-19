@@ -204,6 +204,21 @@ pub fn current_theme_id() -> Result<String, ThemeImportError> {
         .ok_or_else(|| ThemeImportError::InvalidTheme("配置里没有当前主题（ui.theme.name）".into()))
 }
 
+/// **待导出**的主题 id：优先用设置页下拉里选中的那个，取不到才回落到 core 生效值。
+///
+/// 为什么不直接用生效值：用户在下拉里换了主题、还没点保存就去导出，拿生效值导出的是
+/// 上一个主题——回执里的名字还是对的，他不会发现自己导错了。下拉里列的主题都已安装，
+/// core 按 slug 找目录必然找得到，所以「选中但未保存」照样导得出；导出本就是只读操作，
+/// 与「哪个正在生效」无关。
+///
+/// 回落仍然保留：页面刚建、清单还没就位时 getter 可能取不到值，那时生效值是对的答案。
+pub fn theme_id_for_export(ui_selected: Option<String>) -> Result<String, ThemeImportError> {
+    match ui_selected.filter(|s| !s.is_empty()) {
+        Some(id) => Ok(id),
+        None => current_theme_id(),
+    }
+}
+
 /// 只读预览一个主题包。设置端在「要不要装」之前得先说得出包里是什么。
 pub fn preview_package(path: &str) -> Result<ThemePreview, ThemeImportError> {
     let v = crate::rpc::call_core("theme.previewPackage", &json!({ "path": path }))
@@ -513,6 +528,33 @@ mod tests {
             classify_rpc_error("主题 meta.name 为空".to_string()),
             ThemeImportError::InvalidTheme(_)
         ));
+    }
+
+    /// 下拉里选中什么就导出什么，**不因为没保存而退回生效值**。
+    #[test]
+    fn export_takes_the_selected_theme_even_when_unsaved() {
+        assert_eq!(
+            theme_id_for_export(Some("水墨".into())).unwrap(),
+            "水墨",
+            "选中的主题必须原样用上，不许被生效值顶掉"
+        );
+    }
+
+    /// 取不到选中值（页面刚建、清单未就位）才回落到 core 的生效值。
+    #[test]
+    fn export_falls_back_to_the_effective_theme_when_nothing_selected() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let (none, empty) = (
+            theme_id_for_export(None),
+            theme_id_for_export(Some(String::new())),
+        );
+        let effective = current_theme_id();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+
+        let effective = effective.expect("mock 下生效值必须取得到");
+        assert_eq!(none.unwrap(), effective);
+        assert_eq!(empty.unwrap(), effective, "空串等同于没选");
     }
 
     /// `config.get` 的回执形状：**整份配置，没有 `value` 字段**。

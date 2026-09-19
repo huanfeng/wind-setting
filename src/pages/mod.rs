@@ -613,6 +613,9 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
 /// 一致走 toast——界面里已没有承载一次性提示的常驻状态文字位）。
 fn theme_import_card(state: &AppState) -> Element {
     let feedback = state.feedback;
+    // 导出要读「下拉里此刻选中的是哪个主题」。`fields` 是 Rc，可以进闭包；表里的 getter
+    // 由 manifest 在建控件时登记，页面重建会整表 reset 再填，持 Rc 读到的始终是新的那份。
+    let fields = state.fields.clone();
     let ov_src = state.theme_overwrite_source;
     let ov_msg = state.theme_overwrite_msg;
     let ov_visible = state.theme_overwrite_visible;
@@ -678,6 +681,14 @@ fn theme_import_card(state: &AppState) -> Element {
                     .small()
                     .outline_soft()
                     .on_click(move |ctx| {
+                        // 在**事件线程上**先把下拉选中值读出来：getter 闭包捕获的是 Signal，
+                        // 读它得在 UI 这一侧完成，不能塞进下面那个延后执行的闭包里。
+                        let ui_selected = {
+                            let g = fields.getters.borrow();
+                            g.get("ui.theme.name")
+                                .map(|f| f())
+                                .and_then(|v| v.as_str().map(str::to_string))
+                        };
                         // 走 `defer_blocking` 而非 `request_save_file`：两者时机语义相同
                         // （都在事件分发完全返回后才弹原生框），但前者把「取当前主题 +
                         // 选路径 + 调 core + 报结果」整条流程留在一处，不必把后半段拆进
@@ -688,9 +699,9 @@ fn theme_import_card(state: &AppState) -> Element {
                             // ——捕获来的 id 会停在用户打开设置页的那一刻，导出的就成了另一
                             // 个主题，而回执里的名字还是对的，用户不会发现拿错了。
                             //
-                            // 取值走 `theme_import::current_theme_id`，那里说明了为什么不能
-                            // 给 `config.get` 传 key（传了会被无视、且不报错）。
-                            let id = match crate::theme_import::current_theme_id() {
+                            // 取值走 `theme_import::theme_id_for_export`：下拉选中优先、
+                            // 生效值兜底，那里说明了为什么不能拿生效值当准。
+                            let id = match crate::theme_import::theme_id_for_export(ui_selected) {
                                 Ok(id) => id,
                                 Err(e) => {
                                     feedback.set(Some((ToastKind::Error, e.user_message())));
