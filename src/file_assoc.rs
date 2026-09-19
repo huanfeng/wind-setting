@@ -276,10 +276,35 @@ pub fn self_heal_registration() {
 #[cfg(not(windows))]
 pub fn self_heal_registration() {}
 
+/// 非 Windows：关联由 .app 的 Info.plist 声明，运行时无从查证，一律报未注册。
 #[cfg(not(windows))]
 pub fn registration_of(_a: &Assoc) -> Registration {
     Registration::Unregistered
 }
+
+// ★ 下面三个存根一个都不能少。本模块的 Windows 侧函数全部 `#[cfg(windows)]`，而
+//   `state.rs` 的 register_file_assoc / unregister_file_assoc 是**无条件**调用它们的
+//   （设置界面那两个按钮在哪个平台都在），少一个 macOS 就直接编译不过 —— 且这个错
+//   只有 macOS runner 报得出来，Windows 与 Linux 上的 check 全绿。
+//   同一套存根 `protocol.rs` 早就备齐了（它的 register / unregister / current_registration
+//   都有 not(windows) 版），本模块是照着它写的，补的时候漏了这三个。
+
+#[cfg(not(windows))]
+pub fn register_one(_a: &Assoc) -> Result<(), String> {
+    Err("本平台的文件关联由应用包声明，无需手动注册".to_string())
+}
+
+#[cfg(not(windows))]
+pub fn unregister_one(_a: &Assoc) -> Result<(), String> {
+    Err("本平台的文件关联由应用包声明，无法在此解除".to_string())
+}
+
+/// 非 Windows：没有需要通知的外壳关联缓存，空实现。
+///
+/// ⚠️ 它只在 register_one / unregister_one 返回 `Ok` 之后才会被调到，而本平台那两个恒
+///    返回 `Err` —— 所以这个函数实际不会执行，存在的意义只是让调用处编译得过。
+#[cfg(not(windows))]
+pub fn notify_shell_assoc_changed() {}
 
 #[cfg(test)]
 mod tests {
