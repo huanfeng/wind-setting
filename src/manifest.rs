@@ -827,8 +827,38 @@ fn select_index_for(values: &mut Vec<String>, labels: &mut Vec<String>, cur: &st
         return 0;
     }
     values.push(cur.to_string());
-    labels.push(format!("{cur}（当前配置）"));
+    labels.push(unlisted_label(cur));
     values.len() - 1
+}
+
+/// 补进去的那一项的标签。两条路径（静态 [`select_index_for`] / 响应式
+/// [`push_unlisted_option`]）共用一份，免得「（当前配置）」这个用户看得见的记号漂成两样。
+fn unlisted_label(cur: &str) -> String {
+    format!("{cur}（当前配置）")
+}
+
+/// [`select_index_for`] 的响应式版：把清单没列举的当前取值补进动态选项信号。返回是否补了。
+///
+/// 响应式 select 的选项不是本地 `Vec` 而是**共享信号**（主题/字体/方案列表异步到达后整份
+/// `set` 覆盖），所以补项得在信号填充处做，见 [`crate::state::AppState`] 的调用方。不补的
+/// 后果与静态路径逐字相同、且更常见：卸掉的第三方主题、系统里缺的字体、改过 id 的方案，
+/// 都会让 `position(...)` 落空回落索引 0，而 writer 写回的是**选中项的值** —— 用户的取值
+/// 就在「打开设置页、点一次保存」之间被静默换成下拉第一项，页面上看不出任何异常。
+///
+/// 调用方须保证 `lab_sig` 与 `val_sig` 同序等长（主题另有一份富内容信号要一并补，
+/// 见 `AppState::push_unlisted_theme`）。
+pub fn push_unlisted_option(
+    val_sig: Signal<Vec<String>>,
+    lab_sig: Signal<Vec<String>>,
+    cur: &str,
+) -> bool {
+    // 空值 = 未设置（字体的「默认」、主方案的「自动」都以空串表示），本就落在首项。
+    if cur.is_empty() || val_sig.with(|v| v.iter().any(|x| x == cur)) {
+        return false;
+    }
+    val_sig.update(|v| v.push(cur.to_string()));
+    lab_sig.update(|l| l.push(unlisted_label(cur)));
+    true
 }
 
 /// 一个**不在 config.toml 里**的字符串项的读写对。见 [`build_local_select`]。
@@ -1259,6 +1289,10 @@ fn build_select_reactive(
         .map(str::to_string)
         .unwrap_or_else(|| def_str.clone());
     // 初始索引：在当前（可能为空）值列表中定位；空则 0，待 loader 在数据到达后重定位。
+    //
+    // ⚠️ 这里的 `unwrap_or(0)` 只该在「列表尚未加载」时兜底。清单没列举的取值由
+    // `AppState::ensure_unlisted_option_values` 在**选项信号填充处**补进列表（见
+    // [`push_unlisted_option`]），否则回落首项 + writer 写回选中项 = 静默换掉用户的配置。
     let idx = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
     let sig = signal(idx);
 
@@ -1283,6 +1317,8 @@ fn build_select_reactive(
                 .get_str(&kl)
                 .map(str::to_string)
                 .unwrap_or_else(|| def_l.clone());
+            // 同上：未列举的取值须已由 `ensure_unlisted_option_values` 补进列表，
+            // 它跑在所有 loaders 之前。
             let i = val_sig.with(|v| v.iter().position(|x| *x == cur).unwrap_or(0));
             sig.set(i);
         }),
@@ -5957,6 +5993,66 @@ mod tests {
         let idx = select_index_for(&mut values, &mut labels, "smart");
         assert_eq!(values[idx], "smart", "已配 smart 的用户必须仍选中 smart");
         assert_ne!(idx, 0, "绝不能回落到首项（关闭）——保存一次就把联想关掉了");
+    }
+
+    /// [`select_keeps_unlisted_current_value`] 的响应式对位条：主题 / 候选窗字体 / 两个主
+    /// 方案下拉走的都是 [`build_select_reactive`]，而「配置里留着一个列表没列举的取值」在
+    /// 那边是**常态**——第三方主题卸了、换机器后字体没装、方案改了 id，都会让它落空。
+    ///
+    /// 守的同样是静默数据丢失：回落首项 + writer 写回**选中项的值** = 打开设置页点一次
+    /// 保存，主题/字体/主方案就被换成了下拉第一项，页面上看不出任何异常。
+    #[test]
+    fn reactive_select_keeps_unlisted_current_value() {
+        let m = Manifest::from_embedded();
+        let item = m.items.get("ui.theme.name").expect("清单缺主题选择项");
+        let cfg = Config::from_value(serde_json::json!({ "ui": { "theme": { "name": "gone" } } }));
+        let opts = || {
+            (
+                signal(vec!["default".to_string(), "jade".to_string()]),
+                signal(vec!["清风·浅".to_string(), "青玉".to_string()]),
+            )
+        };
+
+        // ① 补项本身的语义：只补真正未列举的非空取值，且不重复补。
+        let (val, lab) = opts();
+        assert!(push_unlisted_option(val, lab, "gone"), "未列举的取值该补");
+        assert!(!push_unlisted_option(val, lab, "gone"), "补过就不再重复补");
+        assert!(!push_unlisted_option(val, lab, "jade"), "已列举的不该补");
+        assert!(!push_unlisted_option(val, lab, ""), "空值 = 未设置，不该补");
+        assert_eq!(val.get().len(), 3, "只该多出 gone 这一项");
+        assert!(
+            lab.get()[2].contains("gone"),
+            "标签应能看出这是当前配置，实际: {}",
+            lab.get()[2]
+        );
+
+        // ② 补过之后：writer 写回的是原取值，不是列表第一项。
+        let state = AppState::empty();
+        build_select_reactive(&state, "ui.theme.name", item, &cfg, val, lab);
+        let mut out = Config::from_value(serde_json::json!({}));
+        for w in state.fields.writers.borrow().iter() {
+            w(&mut out);
+        }
+        assert_eq!(
+            out.get_str("ui.theme.name"),
+            Some("gone"),
+            "保存必须写回用户原来的取值"
+        );
+
+        // ③ 反证这条测试真的在钉东西：同一份配置**不补项**时，写回的就是列表第一项
+        //    ——没有这一句，上面那条断言在「回落逻辑被改成不写」时也照样绿。
+        let (bare_val, bare_lab) = opts();
+        let bare = AppState::empty();
+        build_select_reactive(&bare, "ui.theme.name", item, &cfg, bare_val, bare_lab);
+        let mut bare_out = Config::from_value(serde_json::json!({}));
+        for w in bare.fields.writers.borrow().iter() {
+            w(&mut bare_out);
+        }
+        assert_eq!(
+            bare_out.get_str("ui.theme.name"),
+            Some("default"),
+            "前提：不补项时确实会被静默换成下拉第一项"
+        );
     }
 
     /// 数值控件写回时该编码成 Value 的 Int 变体还是 Float 变体，得看 capability 登记的

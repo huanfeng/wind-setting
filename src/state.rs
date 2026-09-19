@@ -1435,6 +1435,8 @@ impl AppState {
 
         // 同一配置路径可能有多个控件（视图 key 形如 `<路径>#<视图名>`），逐个灌回。
         let cfg = self.base_config.clone();
+        // 外部送来的取值同样可能不在下拉列表里（托盘菜单切到一个设置页没扫到的主题）。
+        self.ensure_unlisted_option_values(&cfg);
         let loaders = self.fields.loaders.borrow();
         let mut hit = 0usize;
         for (k, l) in loaders.iter() {
@@ -1665,6 +1667,14 @@ impl AppState {
     pub fn refresh_theme_names(&mut self) {
         self.theme_entries = load_theme_entries();
         self.apply_theme_entries();
+        // 刚被删掉 / 这一轮没扫到的主题，如果正是配置里那个，它此刻就成了「列表未列举的
+        // 取值」——不补，点一次保存就把 ui.theme.name 换成列表第一项。
+        let cur = self
+            .current_config
+            .get_str("ui.theme.name")
+            .unwrap_or_default()
+            .to_string();
+        self.push_unlisted_theme(&cur);
     }
 
     /// 依 `theme_entries` 刷新三个下拉信号：显示名（label）、id（value）、富内容项（版本徽章 +
@@ -1685,6 +1695,50 @@ impl AppState {
         self.theme_label_sig.set(labels);
         self.theme_value_sig.set(values);
         self.theme_items_sig.set(items);
+    }
+
+    /// 把配置里那些**选项列表没有列举**的当前取值补进四个响应式下拉的选项信号。
+    ///
+    /// 静态 select 由 [`crate::manifest::select_index_for`] 在本地 `Vec` 上补这一项；响应式
+    /// select 的选项是共享信号，补项只能在填充处做（见
+    /// [`crate::manifest::push_unlisted_option`] 的说明）。不补就是一次静默的配置丢失：
+    /// 卸掉的第三方主题、系统里缺的字体、改过 id 的方案，都会在「打开设置页、点一次保存」
+    /// 之间被换成下拉第一项。
+    ///
+    /// ⚠️ 必须排在 loaders **之前**：loader 也按 `position(...)` 在值列表里重定位索引，
+    /// 选项还没补齐时它同样回落 0。
+    fn ensure_unlisted_option_values(&self, cfg: &Config) {
+        self.push_unlisted_theme(cfg.get_str("ui.theme.name").unwrap_or_default());
+        crate::manifest::push_unlisted_option(
+            self.font_sig,
+            self.font_label_sig,
+            cfg.get_str("ui.font.family").unwrap_or_default(),
+        );
+        crate::manifest::push_unlisted_option(
+            self.codetable_schema_val_sig,
+            self.codetable_schema_lab_sig,
+            cfg.get_str("schema.primary_codetable").unwrap_or_default(),
+        );
+        crate::manifest::push_unlisted_option(
+            self.pinyin_schema_val_sig,
+            self.pinyin_schema_lab_sig,
+            cfg.get_str("schema.primary_pinyin").unwrap_or_default(),
+        );
+    }
+
+    /// 主题下拉比其余三个多一份富内容信号（`theme_items_sig`，带版本徽章与删除图标），
+    /// 而索引↔取值的映射读的是 `theme_value_sig` —— 两者错位一项，下拉显示的就不是选中的
+    /// 那个主题。故补项必须同时补进去，且不带徽章、不带删除图标（它不是一个装着的主题）。
+    fn push_unlisted_theme(&self, cur: &str) {
+        if !crate::manifest::push_unlisted_option(self.theme_value_sig, self.theme_label_sig, cur) {
+            return;
+        }
+        let label = self
+            .theme_label_sig
+            .with(|l| l.last().cloned())
+            .unwrap_or_default();
+        self.theme_items_sig
+            .update(|items| items.push(DropdownItem::new(label)));
     }
 
     /// 执行主题删除（删除确认对话框「删除」按钮触发）：调 `theme.delete`，成功后刷新列表并反馈。
@@ -1952,6 +2006,8 @@ impl AppState {
             self.pinyin_schema_val_sig.set(py_vals);
             self.pinyin_schema_lab_sig.set(py_labs);
         }
+        // 选项列表已就位，补上配置里那些列表没列举的取值（必须早于 loaders，见方法文档）。
+        self.ensure_unlisted_option_values(&cfg);
         // 注：选项变更后下拉的宽度 re-measure 依赖"数据到达帧为整窗重绘"——本方法在 pump 内
         // set 信号会请求整窗重绘，启动场景(无进行中的局部动画)该帧即整窗重排，宽度正常刷新；
         // 这是 windui pump→signal→repaint 既有性质（现有字段 loader 的文本刷新同此机制）。
@@ -2193,6 +2249,9 @@ impl AppState {
         // 与 `apply_loaded` 同一道归一：重新加载后基线同样要与 writer 同构，
         // 否则「重新加载」反而把设置页留在永久判脏的状态。
         crate::manifest::canonicalize_punct_baseline(&mut cfg);
+        // 服务端这份配置里的取值未必都在当前选项列表里（主题在别处被删、配置被别的工具
+        // 改过），补项同样要早于 loaders。
+        self.ensure_unlisted_option_values(&cfg);
         {
             let loaders = self.fields.loaders.borrow();
             for l in loaders.values() {
@@ -4236,6 +4295,47 @@ mod tests {
             3,
             "删除后按 mock 重新拉取列表"
         );
+
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 配置里的主题已经不在列表里（外部主题被删 / 这一轮没扫到）时，它必须仍留在下拉里
+    /// 被选中——否则打开设置页点一次保存，`ui.theme.name` 就被静默换成列表第一项，用户
+    /// 只会说「我的主题怎么自己变了」。响应式路径的补项语义见
+    /// [`crate::manifest::push_unlisted_option`]。
+    #[test]
+    fn refresh_theme_names_keeps_a_theme_that_is_gone_from_the_list() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.current_config
+            .set_path("ui.theme.name", Value::String("gone".to_string()));
+
+        st.refresh_theme_names();
+
+        let values = st.theme_value_sig.get();
+        assert_eq!(
+            values.last().map(String::as_str),
+            Some("gone"),
+            "被删的当前主题该补在列表末尾，实际: {values:?}"
+        );
+        assert!(
+            st.theme_label_sig.get().last().unwrap().contains("gone"),
+            "标签应能看出这是当前配置"
+        );
+        // 富内容项与值列表错位一项，下拉显示的就不是选中的那个主题。
+        let items = st.theme_items_sig.get();
+        assert_eq!(items.len(), values.len(), "富内容项必须与值列表同序等长");
+        assert!(
+            items.last().unwrap().trailing_icon.is_none(),
+            "补出来的那项不是装着的主题，不该给删除图标"
+        );
+
+        // 列表里有的主题不补：补了会多出一个重复项。
+        st.current_config
+            .set_path("ui.theme.name", Value::String("jade".to_string()));
+        st.refresh_theme_names();
+        assert_eq!(st.theme_value_sig.get(), vec!["default", "jade", "mono"]);
 
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
