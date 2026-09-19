@@ -467,8 +467,9 @@ pub struct AppState {
     pub dark: Signal<bool>,
     /// 二级导航（实验性）开关。见 [`crate::subnav`] 与 `setting_config::UiStateConfig`。
     ///
-    /// 界面上是一个 switch，改动即时生效（导航栏靠 `visible_when` 显隐，不必重建窗口），
-    /// 写盘由 `pages::settings_ui_section` 挂的 effect 节点触发。
+    /// 界面上只有底栏那枚「☰ 二级导航 / 收起导航」按钮（见 `shell::build_footer`），
+    /// 改动即时生效（导航栏靠 `visible_when` 显隐，不必重建窗口），点击当场写盘。
+    /// 高级页曾有同一信号的第二个入口（「设置界面」卡），两个入口纯属重复，已撤掉。
     pub two_level_nav: Signal<bool>,
     /// 底栏左下角的运行态（驱动状态圆点的颜色与悬停提示）。见 [`ConnState`]。
     pub conn: Signal<ConnState>,

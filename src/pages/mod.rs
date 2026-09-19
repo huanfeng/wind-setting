@@ -164,7 +164,6 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             state.jump,
         ),
     ));
-    secs.push(nav.wrap("设置界面", 0, settings_ui_section(app, state)));
     // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
     // 那是正常状态，不是配置错误。
     for name in ["游戏兼容", "日志设置"] {
@@ -178,28 +177,6 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         secs.push(nav.wrap(&name, 0, el));
     }
     sections_page("高级", "服务与实验性功能", secs)
-}
-
-/// 「设置界面」卡：设置程序**自身**的呈现偏好，与输入法功能无关，故落在
-/// `setting_config` 而不是 core config（也就不必动 manifest / capabilities 快照）。
-fn settings_ui_section(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
-    let sig = state.two_level_nav;
-    let app_save = app.clone();
-    // windui 的 switch 只双向绑一个信号，没有 on_change；副作用（写盘）靠一枚轮询
-    // version 的隐藏 effect 节点触发，与本仓其余开关同一套做法。
-    let save = dict::reactive::reactive_effect(
-        move || sig.version(),
-        move || app_save.borrow_mut().save_two_level_nav(sig.get()),
-    );
-    crate::widgets::section_with_attachment(
-        "设置界面",
-        vec![setting_row(
-            "二级导航（实验性）",
-            Some("在左栏与内容区之间显示当前页的分块清单，点击可跳转，滚动时高亮跟随"),
-            Element::switch(sig),
-        )],
-        save,
-    )
 }
 
 // ───────────────────────── 输入 ─────────────────────────
