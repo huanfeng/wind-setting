@@ -2388,6 +2388,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "wind-quick-input",
+ "wind-utils",
 ]
 
 [[package]]
@@ -2440,6 +2441,10 @@ dependencies = [
  "tracing",
  "wind-config",
 ]
+
+[[package]]
+name = "wind-utils"
+version = "0.1.0"
 
 [[package]]
 name = "wind_setting"
