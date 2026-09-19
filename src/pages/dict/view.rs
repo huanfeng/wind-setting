@@ -43,6 +43,8 @@ const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
 const SEG_QUICK: &[DomainKind] = &[DomainKind::QuickFormat];
 // 常用字同理：单标签，分段只为让这一行画出来。
 const SEG_COMMON: &[DomainKind] = &[DomainKind::CommonChars];
+// 输入补全：两个标签（邮箱后缀 / 网址历史），故这一段确实要画出标签条。
+const SEG_COMPLETION: &[DomainKind] = &[DomainKind::Completion];
 /// 覆盖性校验用（顺序无关），仅测试构建需要。加新分段时记得挂进来。
 #[cfg(test)]
 const ALL_SEGMENTS: &[&[DomainKind]] = &[
@@ -53,6 +55,7 @@ const ALL_SEGMENTS: &[&[DomainKind]] = &[
     SEG_MIXED,
     SEG_QUICK,
     SEG_COMMON,
+    SEG_COMPLETION,
 ];
 
 /// 按一份 [`DictManagerState`] 构建词库页主体。
@@ -194,6 +197,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(seg(mgr.clone(), SEG_MIXED))
         .child(seg(mgr.clone(), SEG_QUICK))
         .child(seg(mgr.clone(), SEG_COMMON))
+        .child(seg(mgr.clone(), SEG_COMPLETION))
         .child(mixed_hint)
         .child(Element::leaf().weight(1.0))
         .child(charset_xedit)
@@ -1241,6 +1245,7 @@ mod tests {
             DomainKind::Other,
             DomainKind::QuickFormat,
             DomainKind::CommonChars,
+            DomainKind::Completion,
         ];
         // 穷尽性哨兵：新增变体会让这个 match 编译失败，逼人回到上面的数组补齐。
         for k in all {
@@ -1252,7 +1257,8 @@ mod tests {
                 | DomainKind::English
                 | DomainKind::Other
                 | DomainKind::QuickFormat
-                | DomainKind::CommonChars => (),
+                | DomainKind::CommonChars
+                | DomainKind::Completion => (),
             };
         }
         for k in all {

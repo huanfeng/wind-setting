@@ -370,6 +370,9 @@ pub enum DomainKind {
     QuickFormat,
     /// 常用字覆盖。**全局域**（core 那张表的键就是一个字，不带方案也不带编码）。
     CommonChars,
+    /// 输入补全的学习数据（邮箱后缀 / 网址历史）。**全局域**：core 那张表的键是
+    /// `{类别}\0{文本}`，不带方案——「我常用哪个邮箱后缀」与五笔拼音无关。
+    Completion,
     Pinyin,
     Codetable,
     Mixed,
@@ -387,9 +390,11 @@ pub enum DomainKind {
 pub(crate) const DOMAIN_PHRASE: usize = 0;
 pub(crate) const DOMAIN_QUICK: usize = 1;
 pub(crate) const DOMAIN_COMMON: usize = 2;
-pub(crate) const GLOBAL_DOMAINS: usize = 3;
+pub(crate) const DOMAIN_COMPLETION: usize = 3;
+pub(crate) const GLOBAL_DOMAINS: usize = 4;
 
-/// 全局域的展示名，**按槽位顺序**（`[DOMAIN_PHRASE]` / `[DOMAIN_QUICK]` / `[DOMAIN_COMMON]`）。
+/// 全局域的展示名，**按槽位顺序**（`[DOMAIN_PHRASE]` / `[DOMAIN_QUICK]` /
+/// `[DOMAIN_COMMON]` / `[DOMAIN_COMPLETION]`）。
 ///
 /// ★ 数组长度锁死 [`GLOBAL_DOMAINS`]：加一个全局域却忘了在这里补名字会**当场编译失败**。
 /// 这条约束是补出来的——上面那段注释当年把「域下标算术」收敛进了 [`domain_slot`]，
@@ -397,7 +402,7 @@ pub(crate) const GLOBAL_DOMAINS: usize = 3;
 /// 与 `GLOBAL_DOMAINS` 毫无编译期关联。加第三个全局域时它们照旧只产出两项，症状正是那段
 /// 注释描述的：侧栏少画一项、其后的方案域整体错位一格，且不报错不 panic。
 pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] =
-    ["快捷短语", "快捷输入", "字符集分类"];
+    ["快捷短语", "快捷输入", "字符集分类", "输入补全"];
 
 /// 域下标的语义。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -406,6 +411,8 @@ pub enum DomainSlot {
     QuickFormat,
     /// 常用字覆盖（全局：那张表的键就是一个字，不带方案）。
     CommonChars,
+    /// 输入补全的学习数据（全局：邮箱后缀 + 网址历史两张子表）。
+    Completion,
     /// 折叠后的方案域下标（**已减去全局槽位**，可直接索引 `folded_domains()`）。
     Schema(usize),
 }
@@ -416,6 +423,7 @@ pub fn domain_slot(domain: usize) -> DomainSlot {
         DOMAIN_PHRASE => DomainSlot::Phrase,
         DOMAIN_QUICK => DomainSlot::QuickFormat,
         DOMAIN_COMMON => DomainSlot::CommonChars,
+        DOMAIN_COMPLETION => DomainSlot::Completion,
         d => DomainSlot::Schema(d - GLOBAL_DOMAINS),
     }
 }
@@ -448,6 +456,9 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         // 层级上「类」确实在「字」之上，但把低频的那层摆在第一屏，等于让多数人每次都
         // 多点一下（2026-09-05 与用户确认）。
         DomainKind::CommonChars => vec![CommonChars, Charsets],
+        // 输入补全：两类学习数据一个域。顺序按「哪个更可能有内容」定——邮箱后缀跟随
+        // 邮箱模式开关即开始积累，网址历史还要多开一道 history_enabled，出厂两者都空。
+        DomainKind::Completion => vec![MailSuffix, UrlHistory],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -654,6 +665,7 @@ impl DictManagerState {
             DomainSlot::Phrase => return DomainKind::Phrase,
             DomainSlot::QuickFormat => return DomainKind::QuickFormat,
             DomainSlot::CommonChars => return DomainKind::CommonChars,
+            DomainSlot::Completion => return DomainKind::Completion,
             DomainSlot::Schema(i) => i,
         };
         match self.folded_domains().get(i).map(|e| e.kind.as_str()) {
@@ -692,6 +704,9 @@ impl DictManagerState {
             DomainSlot::Phrase => return GLOBAL_DOMAIN_LABELS[DOMAIN_PHRASE].to_string(),
             DomainSlot::QuickFormat => return GLOBAL_DOMAIN_LABELS[DOMAIN_QUICK].to_string(),
             DomainSlot::CommonChars => return GLOBAL_DOMAIN_LABELS[DOMAIN_COMMON].to_string(),
+            DomainSlot::Completion => {
+                return GLOBAL_DOMAIN_LABELS[DOMAIN_COMPLETION].to_string();
+            }
             DomainSlot::Schema(i) => i,
         };
         self.folded_domains()
@@ -755,6 +770,16 @@ impl DictManagerState {
             || s.eq_ignore_ascii_case("charsets")
         {
             return Some(DOMAIN_COMMON);
+        }
+        // 两个 tab 的 cli_id 也收进来：`--type mail-suffix` 单独给时用户多半没想过还要
+        // 再给一个 `--schema`，而少了这一档的后果不是报错而是**静默跑偏**——
+        // `LogicalTab::from_cli_id` 解析得动（`bad_tab` 为空，不会提示「未知类型」），
+        // 域却停在启动态的「快捷短语」，最后 toast 一句「『快捷短语』没有『邮箱后缀』」。
+        if s.eq_ignore_ascii_case("completion")
+            || s.eq_ignore_ascii_case("mail-suffix")
+            || s.eq_ignore_ascii_case("url-history")
+        {
+            return Some(DOMAIN_COMPLETION);
         }
         let domains = self.folded_domains();
         if let Some(i) = domains.iter().position(|d| d.rep_schema_id == s) {
@@ -2751,12 +2776,19 @@ impl DictManagerState {
             DomainKind::English => &["userWords", "freq", "shadow"],
             // 混输方案自身只有候选调整——五笔/拼音词条落在它的成员方案里。
             DomainKind::Mixed => &["shadow"],
-            // 三个全局域都不参与这套「按方案分段」的导入导出，但各有自己的一条流：
+            // 四个全局域都不参与这套「按方案分段」的导入导出，前三个各有自己的一条流：
             // 短语走原生对话框，快捷输入走 quick.export/import，常用字走
             // commonChars.export/import（另外它也随整份备份走 core 的
             // `userdata/common_chars.jsonl` 段——两条路并存，前者是单独分发一份
             // 「我的常用字判断」，后者是换机还原）。
-            DomainKind::Phrase | DomainKind::QuickFormat | DomainKind::CommonChars => &[],
+            // 补全学习数据同样不走「按方案分段」的导入导出。它随整份备份走 core 的
+            // `userdata/completions.jsonl` 段（两类装一个文件，每行自带 kind），设置页
+            // 这边只提供查看与清空——单独分发一份「我打过哪些网址」没有使用场景，
+            // 而那恰恰是隐私上最不该鼓励的操作。
+            DomainKind::Phrase
+            | DomainKind::QuickFormat
+            | DomainKind::CommonChars
+            | DomainKind::Completion => &[],
         }
     }
 
@@ -2772,9 +2804,19 @@ impl DictManagerState {
     /// 子标签行「导入/导出」按钮是否显示：方案域（有方案）或短语域。
     pub fn io_entry_visible(&self) -> bool {
         match self.domain_kind() {
-            // 三个全局域各有自己的导入导出流（短语走 phrase.*、快捷输入走 quick.*、
+            // 这三个全局域各有自己的导入导出流（短语走 phrase.*、快捷输入走 quick.*、
             // 常用字走 commonChars.*），都不依赖「当前有没有方案」。
             DomainKind::Phrase | DomainKind::QuickFormat | DomainKind::CommonChars => true,
+            // 输入补全**没有**自己的导入导出流：它随整份备份走 core 的
+            // `userdata/completions.jsonl`，而单独分发一份「我打过哪些网址」没有使用
+            // 场景，也恰恰是隐私上最不该鼓励的操作。
+            //
+            // 显式写出来而不是交给下面的 `_`：本函数是全页唯一一处**列举全局域**的
+            // 地方，交给 catch-all 的话，下一个人按这张表核对新域时会得到「没跟上」
+            // 的错觉，或者反过来照着 `_` 臂以为全局域不用管。落到 `_` 的结果
+            // （`current_schema_id()` 对全局域恒 `None` ⇒ false）碰巧是对的，但那是
+            // 巧合而不是声明。
+            DomainKind::Completion => false,
             _ => self.current_schema_id().is_some(),
         }
     }
@@ -3919,16 +3961,22 @@ mod tests {
         assert_eq!(domain_slot(DOMAIN_PHRASE), DomainSlot::Phrase);
         assert_eq!(domain_slot(DOMAIN_QUICK), DomainSlot::QuickFormat);
         assert_eq!(domain_slot(DOMAIN_COMMON), DomainSlot::CommonChars);
+        assert_eq!(domain_slot(DOMAIN_COMPLETION), DomainSlot::Completion);
         // 方案域从 GLOBAL_DOMAINS 起，且**已减去**全局槽位（可直接索引 folded_domains）。
         assert_eq!(domain_slot(GLOBAL_DOMAINS), DomainSlot::Schema(0));
         assert_eq!(domain_slot(GLOBAL_DOMAINS + 3), DomainSlot::Schema(3));
         // 全局槽位必须两两不同且**连续占满** [0, GLOBAL_DOMAINS)：
         // 写重会让其中一个域永远打不开，留空洞会让那一格点进去落到方案域上。
-        let slots = [DOMAIN_PHRASE, DOMAIN_QUICK, DOMAIN_COMMON];
+        let slots = [
+            DOMAIN_PHRASE,
+            DOMAIN_QUICK,
+            DOMAIN_COMMON,
+            DOMAIN_COMPLETION,
+        ];
         assert_eq!(slots.len(), GLOBAL_DOMAINS, "新增全局域要在这里补一格");
         let mut sorted = slots;
         sorted.sort_unstable();
-        assert_eq!(sorted, [0, 1, 2], "全局槽位必须从 0 起连续，不能重号或跳号");
+        assert_eq!(sorted, [0, 1, 2, 3], "全局槽位必须从 0 起连续，不能重号或跳号");
         // 标签表与槽位同长，且每格都有名字（空名字＝侧栏上一条看不见的项）。
         assert_eq!(GLOBAL_DOMAIN_LABELS.len(), GLOBAL_DOMAINS);
         assert!(GLOBAL_DOMAIN_LABELS.iter().all(|s| !s.is_empty()));
@@ -4804,7 +4852,29 @@ mod tests {
     fn resolve_domain_matches_id_kind_and_folded_pinyin_variant() {
         let st = deep_link_fixture();
         assert_eq!(st.resolve_domain(""), None, "空 = 不指定");
+        // 四个全局域**逐个**钉住：此前这里只有 phrase 一条，于是「加了全局域却忘了
+        // 给它留关键字」不会变红——`--type` 那一侧解析得动、深链却到不了，且不报错，
+        // 只 toast 一句「『快捷短语』没有『邮箱后缀』」。输入补全当初正是这么漏的。
         assert_eq!(st.resolve_domain("phrase"), Some(DOMAIN_PHRASE));
+        assert_eq!(st.resolve_domain("quick"), Some(DOMAIN_QUICK));
+        assert_eq!(st.resolve_domain("charsets"), Some(DOMAIN_COMMON));
+        assert_eq!(st.resolve_domain("common-chars"), Some(DOMAIN_COMMON), "旧别名");
+        assert_eq!(st.resolve_domain("completion"), Some(DOMAIN_COMPLETION));
+        // 两个 tab 的 cli_id 也该认：单给 `--type mail-suffix` 时用户多半没再给 --schema。
+        assert_eq!(st.resolve_domain("mail-suffix"), Some(DOMAIN_COMPLETION));
+        assert_eq!(st.resolve_domain("url-history"), Some(DOMAIN_COMPLETION));
+        // 每个全局域的 cli 关键字都必须指向一个**互不相同**的槽位。
+        let globals = [
+            st.resolve_domain("phrase"),
+            st.resolve_domain("quick"),
+            st.resolve_domain("charsets"),
+            st.resolve_domain("completion"),
+        ];
+        assert!(globals.iter().all(|x| x.is_some()), "每个全局域都要有 cli 关键字");
+        let mut slots: Vec<usize> = globals.into_iter().flatten().collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), GLOBAL_DOMAINS, "关键字与全局域应一一对应，不能重号");
         assert_eq!(st.resolve_domain("wb"), Some(GLOBAL_DOMAINS), "精确方案 id");
         assert_eq!(st.resolve_domain("quanpin"), Some(GLOBAL_DOMAINS + 1));
         assert_eq!(

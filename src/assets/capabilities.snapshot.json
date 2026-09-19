@@ -1017,6 +1017,51 @@
     },
     {
       "default": false,
+      "key": "input.url.history_enabled",
+      "type": "bool"
+    },
+    {
+      "default": 200,
+      "key": "input.url.history_max",
+      "type": "int"
+    },
+    {
+      "default": false,
+      "key": "input.email.enabled",
+      "type": "bool"
+    },
+    {
+      "default": [
+        "qq.com",
+        "163.com",
+        "126.com",
+        "foxmail.com",
+        "sina.com",
+        "sina.cn",
+        "sohu.com",
+        "139.com",
+        "189.cn",
+        "aliyun.com",
+        "yeah.net",
+        "21cn.com",
+        "tom.com",
+        "gmail.com",
+        "outlook.com",
+        "hotmail.com",
+        "yahoo.com",
+        "icloud.com",
+        "live.com",
+        "me.com",
+        "proton.me",
+        "protonmail.com",
+        "aol.com",
+        "gmx.com"
+      ],
+      "key": "input.email.suffixes",
+      "type": "strlist"
+    },
+    {
+      "default": false,
       "key": "input.unicode.enabled",
       "type": "bool"
     },
@@ -1086,6 +1131,16 @@
     {
       "default": "follow",
       "key": "input.url.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
+    },
+    {
+      "default": "follow",
+      "key": "input.email.candidate_layout",
       "type": "enum",
       "values": [
         "follow",

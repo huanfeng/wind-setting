@@ -1796,11 +1796,14 @@ label = "启用分类词"
 hint = "「动物」「水果」等分类词会带出整组 emoji，数量受每词上限约束"
 enabled_when = "input.emoji.enabled == true"
 
-# ── 网址输入 ──
+# ── 网址/邮箱输入 ──
+# 两个模式合成一个分区：它们共用同一个补全候选源（core 的 mode_completion.rs），
+# 开关、触发条件、候选行为逐条对位，用户学一次即可。历史与后缀的「查看/清空」入口
+# 都在词库页（那里有现成的列表 + 逐条删 + 清空确认），本分区的 hint 里指路过去。
 [[items]]
 key = "input.url.enabled"
 group = "input"
-section = "网址输入"
+section = "网址/邮箱输入"
 type = "toggle"
 label = "启用网址输入模式"
 hint = "打出完整前缀（如 http、www.）即进入网址输入模式，可自由输入网址，空格或回车上屏"
@@ -1808,25 +1811,76 @@ hint = "打出完整前缀（如 http、www.）即进入网址输入模式，可
 [[items]]
 key = "input.url.prefixes"
 group = "input"
-section = "网址输入"
+section = "网址/邮箱输入"
 type = "dialog_button"
 label = "触发前缀"
 hint = "识别为网址的前缀（如 www. http https ftp.），按空格分隔"
 gate_key = "input.url.enabled"
 
-# 暂时隐藏：网址输入模式目前不产出任何候选，候选窗根本不出现，这一项没有可观察的效果。
-# core 侧字段保留（模式级布局是统一机制，六个模式都有），将来网址若开始出候选，
-# 删掉下面的 hidden 一行即可恢复——不必重写清单项与选项表。
+[[items]]
+key = "input.url.history_enabled"
+group = "input"
+section = "网址/邮箱输入"
+type = "toggle"
+label = "记住输入过的网址"
+hint = "把上屏过的网址记下来，下次打前几个字符即可补全。记录可在「词库 → 网址历史」查看和清空"
+enabled_when = "input.url.enabled == true"
+
+[[items]]
+key = "input.url.history_max"
+group = "input"
+section = "网址/邮箱输入"
+type = "number"
+label = "历史条数上限"
+hint = "超出后按「用得少、用得旧」自动清理。0 = 不限"
+min = 0
+max = 10000
+step = 50
+unit = "条"
+enabled_when = "input.url.enabled == true && input.url.history_enabled == true"
+
+# 网址模式开始产出候选（历史补全）后，这一项才有可观察的效果，故此前的 hidden 已删。
 [[items]]
 key = "input.url.candidate_layout"
 group = "input"
-section = "网址输入"
+section = "网址/邮箱输入"
 type = "select"
-label = "候选窗布局"
+label = "网址候选窗布局"
 hint = "网址输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
 width = 210
 enabled_when = "input.url.enabled == true"
-hidden = true
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
+
+[[items]]
+key = "input.email.enabled"
+group = "input"
+section = "网址/邮箱输入"
+type = "toggle"
+label = "启用邮箱输入模式"
+hint = "打了字之后按 @ 即进入，候选给出常用后缀拼成的完整邮箱。空缓冲按 @ 不触发，照常出标点"
+
+[[items]]
+key = "input.email.suffixes"
+group = "input"
+section = "网址/邮箱输入"
+type = "dialog_button"
+label = "邮箱后缀"
+hint = "预置的后缀列表（写 @ 之后的部分，如 qq.com gmail.com），按空格分隔。表外的后缀也能直接打，用过一次就会被记住并排到前面"
+gate_key = "input.email.enabled"
+
+[[items]]
+key = "input.email.candidate_layout"
+group = "input"
+section = "网址/邮箱输入"
+type = "select"
+label = "邮箱候选窗布局"
+hint = "邮箱输入期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+enabled_when = "input.email.enabled == true"
 options = [
   { value = "follow", label = "跟随全局" },
   { value = "vertical", label = "强制竖排" },
