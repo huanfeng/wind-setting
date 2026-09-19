@@ -77,9 +77,10 @@ const MANIFEST_PREFIX: &str = "schema.codetable.";
 /// 用途只剩一个：「全部恢复跟随」（[`CtFields::reset`]）时逐个置 null 清除 override。
 /// 日常保存走逐项三态，只碰有控件的那些项。
 ///
-/// 必须是全集而**不能**从 manifest 的可见项推导：`auto_commit_min_len` 在 manifest 里是
-/// `hidden = true`（不渲染），但它照样能落进 override（0.118 的「开总开关整段写实」就会
-/// 写它）——只按可见项清除会把它留下，于是用户按了「全部恢复跟随」仍有一个字段在偷偷生效。
+/// 必须是全集而**不能**从 manifest 的可见项推导：override 里可以有界面上当下看不到的字段
+/// （0.118 的「开总开关整段写实」把这张表的每一项都写进去过），而**可见集本身会变**——
+/// `auto_commit_min_len` 到 0.122 才从 `hidden = true` 转明，同 section 的 `auto_phrase.*`
+/// 至今不渲染。按可见项清除的话，这些字段会留下继续生效，用户却在界面上找不到它们。
 ///
 /// 不含 `max_code_length` / `base_sort` / `input_chars`：那些是方案自身的定义（码表怎么
 /// 编的），不是用户偏好，不归覆盖这一层管。
@@ -576,9 +577,9 @@ impl CtFields {
     /// 所以取消覆盖之后该项回到方案作者的值，作者没写就回到全局。这一整条链是现成的，
     /// 三态模型没给 core 添任何东西。
     ///
-    /// ⚠️ 隐藏项（manifest `hidden = true`，如 `auto_commit_min_len`）没有信号，本函数
-    /// **不动它**：既不写实也不清除，原样透传。设置页不暴露的项，设置页也不该替用户
-    /// 决定它的死活；要清得走「全部恢复跟随」（[`Self::reset`]）。
+    /// ⚠️ 隐藏项（manifest `hidden = true`；本 section 现存的是 `auto_phrase.*`）没有信号，
+    /// 本函数**不动它**：既不写实也不清除，原样透传。设置页不暴露的项，设置页也不该替
+    /// 用户决定它的死活；要清得走「全部恢复跟随」（[`Self::reset`]）。
     pub fn apply(&self, cfg: &mut Value) {
         if !cfg.is_object() {
             *cfg = json!({});
@@ -599,9 +600,9 @@ impl CtFields {
         prune_empty_section(cfg, "english_merge");
     }
 
-    /// 「全部恢复跟随」：把**所有**可覆盖字段置 null，包括界面上没有的隐藏项。
+    /// 「全部恢复跟随」：把**所有**可覆盖字段置 null，包括界面上此刻没有控件的那些。
     ///
-    /// 逐项 `apply` 够不着隐藏项（它们没有控件、没有信号），而 override 里可能留着
+    /// 逐项 `apply` 够不着没有控件的字段（没控件就没信号），而 override 里可能留着
     /// 0.118 时代「开总开关整段写实」写进去的值。这个按钮是清掉它们的唯一入口。
     pub fn reset(&self, cfg: &mut Value) {
         if !cfg.is_object() {
@@ -1111,10 +1112,22 @@ mod tests {
             Some(&json!(4)),
             "引擎固定参数不归覆盖这层管，不该被动"
         );
-        // 隐藏项没有控件 ⇒ 日常保存不碰它（清它得走「全部恢复跟随」）。
+        // 隐藏项（`auto_phrase.*`）没有控件 ⇒ 日常保存不碰它：既不凭空造一个……
         assert!(
-            ct.get("auto_commit_min_len").is_none(),
+            ct.get("auto_phrase").is_none(),
             "cfg 里本来就没有的隐藏项，apply 不该凭空造一个"
+        );
+
+        // ……也不清掉 cfg 里原有的那份。设置页不暴露的项，设置页也不替用户决定它的死活；
+        // 清它的唯一入口是「全部恢复跟随」。
+        let mut cfg2 = json!({ "engine": { "codetable": {
+            "auto_phrase": { "min_phrase_len": 2 },
+        }}});
+        f.apply(&mut cfg2);
+        assert_eq!(
+            cfg2.pointer("/engine/codetable/auto_phrase/min_phrase_len"),
+            Some(&json!(2)),
+            "隐藏项在 cfg 里原有的值必须原样透传，不能被 apply 清成 null"
         );
     }
 
@@ -1149,13 +1162,12 @@ mod tests {
         );
     }
 
-    /// 「全部恢复跟随」必须清掉**所有**可覆盖字段，包括界面上没有的隐藏项。
+    /// 「全部恢复跟随」必须清掉**所有**可覆盖字段，不只是界面上此刻有控件的那些。
     ///
-    /// 隐藏项（`auto_commit_min_len`）没有控件也就没有信号，逐项 `apply` 够不着它；
-    /// 而 0.118 的「开总开关整段写实」会把它写进 override。漏清的话，用户按了
-    /// 「全部恢复跟随」仍有一个字段在偷偷生效，且界面上找不到它。
+    /// 没有控件就没有信号，逐项 `apply` 够不着；而 0.118 的「开总开关整段写实」会把
+    /// 整张表写进 override。漏清的话，那些字段仍在偷偷生效，用户却在界面上找不到它们。
     #[test]
-    fn reset_clears_every_overridable_field_including_hidden_ones() {
+    fn reset_clears_every_overridable_field() {
         let m = manifest();
         let f = CtFields::default();
         let empty = json!({});

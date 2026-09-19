@@ -74,17 +74,26 @@ type = "toggle"
 label = "全码唯一自动上屏"
 hint = "唯一精确且无更长后继时直接上屏"
 
+# 档位而不是数字步进器：核心里 `0` 的意思是「等于该方案的全码长」，这层语义在一个写着
+# 0 的数字框里读不出来。下拉能把它写成字，顺带挡住比方案全码长还大的取值——编码永远
+# 够不着门槛，等于把自动上屏整个关掉，而界面上看不出异样。
 [[items]]
 key = "schema.codetable.auto_commit_min_len"
 group = "schema"
 section = "上屏行为"
-type = "number"
+type = "number_select"
 label = "自动上屏最短码长"
-hint = "0 跟随方案 max_code_length"
-min = 0
-max = 10
+hint = "打够这个码长，唯一候选就自动上屏；「满码」= 跟随方案自己的全码长"
+width = 160
+options = [
+  { value = "0", label = "满码（跟随方案）" },
+  { value = "1", label = "1 码" },
+  { value = "2", label = "2 码" },
+  { value = "3", label = "3 码" },
+  { value = "4", label = "4 码" },
+  { value = "5", label = "5 码" },
+]
 enabled_when = "schema.codetable.auto_commit_at_full == true"
-hidden = true
 
 [[items]]
 key = "schema.codetable.clear_on_empty_max"
