@@ -184,6 +184,26 @@ impl ThemePreview {
     }
 }
 
+/// 当前生效的主题 id（配置键 `ui.theme.name`）。
+///
+/// ⚠️ **`config.get` 不接受 `key` 参数**：它无视参数、恒返回整份配置对象。传
+/// `{"key": "ui.theme.name"}` 再去读回执里的 `value` 字段，拿到的是 `None` 而**不是
+/// 错误**——调用方只会得到一个空串，症状是「功能默默不工作」。core 那边现在会把多余的
+/// `key` 参数当场拒掉（见 `wind-rpc::dispatch` 的 `config.get`），但别指望那道闸：
+/// 取单个键的正确形态就是这里这样，拉整份下来按点路径下钻。
+///
+/// 好踩在于**命令栏里那个同名的 `config.get(key)` 函数是按 key 取值的**——同名不同源，
+/// 一个是 cmdbar 函数、一个是 RPC 方法。
+pub fn current_theme_id() -> Result<String, ThemeImportError> {
+    let v = crate::rpc::call_core("config.get", &json!({}))
+        .map_err(|e| ThemeImportError::Rpc(format!("读取当前主题失败：{e}")))?;
+    crate::config::Config(v)
+        .get_str("ui.theme.name")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ThemeImportError::InvalidTheme("配置里没有当前主题（ui.theme.name）".into()))
+}
+
 /// 只读预览一个主题包。设置端在「要不要装」之前得先说得出包里是什么。
 pub fn preview_package(path: &str) -> Result<ThemePreview, ThemeImportError> {
     let v = crate::rpc::call_core("theme.previewPackage", &json!({ "path": path }))
@@ -493,6 +513,34 @@ mod tests {
             classify_rpc_error("主题 meta.name 为空".to_string()),
             ThemeImportError::InvalidTheme(_)
         ));
+    }
+
+    /// `config.get` 的回执形状：**整份配置，没有 `value` 字段**。
+    ///
+    /// 这条用例存在的理由是一个真实缺陷：导出按钮照着 CLI 里一段同样错的代码写成
+    /// `config.get {"key": ...}` 再读 `value`，于是恒空，用户点导出只看到「没有当前
+    /// 主题可导出」。错法不报错、只是静默给空值，所以要靠断言真取到了值来钉住。
+    #[test]
+    fn current_theme_id_reads_the_whole_config_not_a_value_field() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let got = current_theme_id();
+        // mock 回执里没有 `value` 字段：照错法写必然拿到空串 → Err，这条会红。
+        let raw = crate::rpc::call_core("config.get", &json!({})).unwrap();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+
+        assert!(
+            raw.get("value").is_none(),
+            "前置条件:config.get 的回执不该有 value 字段，否则本用例测不到那个错法"
+        );
+        let id = got.expect("当前主题 id 必须取得到");
+        assert!(!id.is_empty());
+        assert_eq!(
+            raw.pointer("/ui/theme/name").and_then(Value::as_str),
+            Some(id.as_str()),
+            "取到的必须就是 ui.theme.name 那个值"
+        );
     }
 
     #[test]

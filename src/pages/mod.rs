@@ -687,30 +687,16 @@ fn theme_import_card(state: &AppState) -> Element {
                             // 这张卡只在页面重建时求值一次，而上面那个主题下拉随时能换一个
                             // ——捕获来的 id 会停在用户打开设置页的那一刻，导出的就成了另一
                             // 个主题，而回执里的名字还是对的，用户不会发现拿错了。
-                            let id = match crate::rpc::call_core(
-                                "config.get",
-                                &serde_json::json!({ "key": "ui.theme.name" }),
-                            ) {
-                                Ok(v) => v
-                                    .get("value")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_string(),
+                            //
+                            // 取值走 `theme_import::current_theme_id`，那里说明了为什么不能
+                            // 给 `config.get` 传 key（传了会被无视、且不报错）。
+                            let id = match crate::theme_import::current_theme_id() {
+                                Ok(id) => id,
                                 Err(e) => {
-                                    feedback.set(Some((
-                                        ToastKind::Error,
-                                        format!("读取当前主题失败: {e}"),
-                                    )));
+                                    feedback.set(Some((ToastKind::Error, e.user_message())));
                                     return;
                                 }
                             };
-                            if id.is_empty() {
-                                feedback.set(Some((
-                                    ToastKind::Error,
-                                    "没有当前主题可导出".to_string(),
-                                )));
-                                return;
-                            }
                             let Some(path) = PickDialog::new()
                                 .title("导出主题包")
                                 .file_name(&format!("{id}.wtheme"))
