@@ -64,6 +64,36 @@
    "remember_last_state": false,
    "state_scope": "global"
   },
+  "email": {
+   "candidate_layout": "follow",
+   "enabled": false,
+   "suffixes": [
+    "qq.com",
+    "163.com",
+    "126.com",
+    "foxmail.com",
+    "sina.com",
+    "sina.cn",
+    "sohu.com",
+    "139.com",
+    "189.cn",
+    "aliyun.com",
+    "yeah.net",
+    "21cn.com",
+    "tom.com",
+    "gmail.com",
+    "outlook.com",
+    "hotmail.com",
+    "yahoo.com",
+    "icloud.com",
+    "live.com",
+    "me.com",
+    "proton.me",
+    "protonmail.com",
+    "aol.com",
+    "gmx.com"
+   ]
+  },
   "emoji": {
    "categories": false,
    "enabled": false,
@@ -150,6 +180,8 @@
   "url": {
    "candidate_layout": "follow",
    "enabled": false,
+   "history_enabled": false,
+   "history_max": 200,
    "prefixes": [
     "www.",
     "http",
