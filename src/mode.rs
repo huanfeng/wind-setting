@@ -100,6 +100,19 @@ pub fn portable_userdata_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.join("userdata")))
 }
 
+/// 便携模式下的**本机状态**根目录：exe 同目录的 `localdata`（cache / logs / state.toml）。
+///
+/// 与 [`portable_userdata_dir`] **同级**，不是它的子目录。两者曾经收敛到同一个 `userdata`，
+/// 于是备份用户数据要连带拖走上百 MB 的词库缓存和日志（论坛 t120）。
+/// 镜像 core 的 `variant::portable_localdata_dir()`，那边有完整理由。
+///
+/// 同样**不追加** [`app_dir_name_of`]，理由见 [`portable_userdata_dir`]。
+pub fn portable_localdata_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("localdata")))
+}
+
 /// 版本号后缀：标题栏与「关于」页共用，标示非常规部署形态。
 ///
 /// Release → `""`、Dev → `" (Dev)"`、便携 → `" (便携版)"`，两者叠加 → `" (Dev · 便携版)"`。

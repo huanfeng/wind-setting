@@ -10,7 +10,7 @@
 //! 连文件都不创建（见 [`init`]）。
 //!
 //! 本机状态目录由 [`crate::user_dir::local_dir_for_mode`] 决定，与 core 的
-//! `Config::local_dir()` 同源：便携部署落 `<exe 目录>\userdata\logs`，
+//! `Config::local_dir()` 同源：便携部署落 `<exe 目录>\localdata\logs`，
 //! 否则 `%LOCALAPPDATA%\WindInput[Dev]\logs`（macOS `~/Library/Application Support/…`）。
 //!
 //! 注：应用以 windows_subsystem="windows" 运行，无控制台，仅写文件。
@@ -118,7 +118,7 @@ fn install_panic_hook() {
 }
 
 fn resolve_log_dir() -> PathBuf {
-    // 目录选择整个交给 `user_dir`：便携部署要把日志一并留在 `<exe>\userdata\logs`，
+    // 目录选择整个交给 `user_dir`：便携部署要把日志一并留在 `<exe>\localdata\logs`，
     // 否则"拔盘走人不留痕"落空 —— 配置跟着便携包走了，日志还散在宿主机的
     // `%LOCALAPPDATA%` 里。内部走 `dirs` 而非直接读 `LOCALAPPDATA`：后者在
     // Windows 之外恒为空，会一路回落到 exe 同级 —— 在 macOS 的 .app 里那就是往

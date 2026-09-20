@@ -104,7 +104,7 @@ impl Default for Setting {
 /// 日志根目录：`<本机状态目录>\logs`。
 ///
 /// 与 core 的 `Config::log_dir()`、TSF 的 `CFileLogger::_BuildPaths` 同址——三者都是
-/// 「便携 ⇒ `<安装根>\userdata\logs`，否则 `%LOCALAPPDATA%\WindInput[Dev]\logs`」。
+/// 「便携 ⇒ `<安装根>\localdata\logs`，否则 `%LOCALAPPDATA%\WindInput[Dev]\logs`」。
 /// 三处各写一份判据，任何一处漂移都会表现为「设置页改了、TSF 读的是另一个文件」。
 pub fn log_dir(mode: AppMode) -> Option<PathBuf> {
     crate::user_dir::local_dir_for_mode(mode).map(|d| d.join("logs"))

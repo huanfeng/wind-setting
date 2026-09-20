@@ -55,8 +55,9 @@ pub fn default_user_dir_from_base(base: Option<PathBuf>, mode: AppMode) -> Optio
 }
 
 /// 本机状态目录（日志、缓存等机器相关数据），镜像 core 的 `Config::local_dir()`：
-/// - 便携：`<exe 目录>\userdata\`，与漫游那份同目录 —— 便携包本就该自包含，
-///   日志留在 `%LOCALAPPDATA%` 会让"拔盘走人不留痕"落空。
+/// - 便携：`<exe 目录>\localdata\` —— 便携包本就该自包含，日志留在 `%LOCALAPPDATA%`
+///   会让"拔盘走人不留痕"落空；但它与用户数据的 `userdata\` **分开**（同级，论坛 t120），
+///   否则备份用户数据要连带拖走上百 MB 的缓存与日志。
 /// - 否则：`%LOCALAPPDATA%\WindInput[Dev]`（本机数据，不随漫游同步到别的机器）
 ///
 /// ⚠️ **刻意不接 `datadir.conf`**，这与 [`user_config_dir_for_mode`] 的不对称是有意的：
@@ -65,7 +66,7 @@ pub fn default_user_dir_from_base(base: Option<PathBuf>, mode: AppMode) -> Optio
 /// 谁"顺手"把自定义数据目录也接到这里，卸载时就会漏删（或删错）目录。
 pub fn local_dir_for_mode(mode: AppMode) -> Option<PathBuf> {
     if crate::mode::is_portable() {
-        return crate::mode::portable_userdata_dir();
+        return crate::mode::portable_localdata_dir();
     }
     default_local_dir_from_base(dirs::data_local_dir(), mode)
 }
@@ -315,12 +316,24 @@ mod tests {
         }
     }
 
-    /// 便携下两者**收敛到同一个** `userdata`：core 的 `local_dir()` 便携分支
-    /// 返回的就是 `portable_userdata_dir()` 本身，日志再落进它的 `logs` 子目录。
+    /// 便携下两者**分开**：用户数据在 `userdata`，本机状态在 `localdata`（论坛 t120）。
+    ///
+    /// 这条曾经断言的正相反——两者收敛到同一个 `userdata`。代价是备份用户数据要连带拖走
+    /// 上百 MB 的词库缓存和日志，故 core 的 `local_dir()` 便携分支已改走
+    /// `portable_localdata_dir()`，这边必须跟上：三边口径不一致就是「设置页打开的日志
+    /// 目录是空的」。
     #[test]
-    fn portable_collapses_local_and_roaming_to_userdata() {
-        let dir = crate::mode::portable_userdata_dir().expect("测试进程必能定位自身 exe");
-        assert!(dir.ends_with("userdata"), "{}", dir.display());
-        assert!(dir.join("logs").ends_with("userdata/logs"));
+    fn portable_splits_local_from_roaming() {
+        let user = crate::mode::portable_userdata_dir().expect("测试进程必能定位自身 exe");
+        let local = crate::mode::portable_localdata_dir().expect("测试进程必能定位自身 exe");
+        assert!(user.ends_with("userdata"), "{}", user.display());
+        assert!(local.ends_with("localdata"), "{}", local.display());
+        assert_ne!(user, local, "两者不能再收敛到同一个目录");
+        assert_eq!(
+            user.parent(),
+            local.parent(),
+            "须同级：localdata 不是 userdata 的子目录，深度不变"
+        );
+        assert!(local.join("logs").ends_with("localdata/logs"));
     }
 }
