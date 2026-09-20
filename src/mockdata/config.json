@@ -43,6 +43,7 @@
    ],
    "state_ttl_secs": 120
   },
+  "buffer_symbol_chars": "-",
   "capslock": {
    "cancel_on_mode_switch": false
   },

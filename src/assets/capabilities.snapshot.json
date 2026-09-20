@@ -716,6 +716,11 @@
       ]
     },
     {
+      "default": "-",
+      "key": "input.buffer_symbol_chars",
+      "type": "str"
+    },
+    {
       "default": "direct",
       "key": "input.numpad_behavior",
       "type": "str"

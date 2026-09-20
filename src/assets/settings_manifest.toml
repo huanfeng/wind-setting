@@ -1283,6 +1283,14 @@ options = [
 ]
 
 [[items]]
+key = "input.buffer_symbol_chars"
+group = "input"
+section = "按键行为"
+type = "string"
+label = "编码中可直接输入的符号"
+hint = "打 sun-panel 这类带连字符的英文时，这些符号直接进入编码；留空关闭。该键另有功能（翻页、选词等）时自动让位"
+
+[[items]]
 key = "input.numpad_behavior"
 group = "input"
 section = "按键行为"
