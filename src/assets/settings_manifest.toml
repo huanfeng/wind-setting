@@ -2546,7 +2546,7 @@ group = "ui"
 section = "候选排版"
 type = "select"
 label = "编码显示方式"
-hint = "编码（组合区）的显示位置；「内嵌应用光标处」时候选窗不显示编码栏"
+hint = "编码（组合区）的显示位置；「内嵌应用光标处」时候选窗不显示编码栏，另两种依赖候选窗、在全屏游戏等宿主自绘候选的场合自动按内嵌显示"
 options = [
   { value = "app_inline", label = "内嵌应用光标处" },
   { value = "candidate_top", label = "候选窗顶部独立栏" },
