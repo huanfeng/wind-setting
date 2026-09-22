@@ -346,6 +346,15 @@ mod tests {
         //    注：min_phrase_len / max_phrase_len 已在清单内（hidden=true）。
         "schema.codetable.auto_phrase.idle_timeout_ms",
         "schema.codetable.auto_phrase.temp_max_entries",
+        // ⑨''' 滑窗草稿层的三个内部参数（core 的
+        //     docs/design/auto-phrase-draft-layer.md）。草稿是自动造词滑窗切出的猜测词，
+        //     用户用过一次才转正进临时词库——这三项是它的有效期、容量与落库批量。
+        //     同 ⑨' 的判据：普通用户无判断依据，且 draft_max_entries / draft_flush_batch
+        //     的默认值目前还是**纸面估算**、待真机数据重定，此时暴露出去只会把一个未定的
+        //     数字固化进用户配置文件。**待实测调参后再评估**要不要暴露。
+        "schema.codetable.auto_phrase.draft_ttl_hours",
+        "schema.codetable.auto_phrase.draft_max_entries",
+        "schema.codetable.auto_phrase.draft_flush_batch",
         // ⑨'' 码元字符集：core 的 REGISTRY 已注册（config_schema.rs），但消费侧仍在开发中，
         //     暂不接入设置界面。**待 core 定稿后再评估**该不该暴露、放全局清单还是方案对话框。
         "schema.codetable.input_chars",
