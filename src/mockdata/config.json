@@ -256,7 +256,7 @@
     "idle_timeout_ms": 0,
     "max_phrase_len": 5,
     "min_phrase_len": 2,
-    "promote_count": 0,
+    "promote_count": 3,
     "temp_max_entries": 5000
    },
    "clear_on_empty_max": false,

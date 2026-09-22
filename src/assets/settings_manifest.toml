@@ -315,7 +315,7 @@ section = "上屏行为"
 subsection = "自动造词"
 type = "toggle"
 label = "启用自动造词"
-hint = "连续单字上屏后自动组词，存入临时词库（立即可用）"
+hint = "打字时自动记下可能的词组，用过一次即存入临时词库"
 
 [[items]]
 key = "schema.codetable.auto_phrase.promote_count"
@@ -519,9 +519,11 @@ type = "toggle"
 label = "启用自动学习"
 hint = "连续选词后自动组词，存入临时词库（立即可用）"
 
-# 与码表侧 schema.codetable.auto_phrase.promote_count 同语义、同默认（0 = 不收录）：
-# 两边共用 core 的同一套晋升判定。此前只有码表侧暴露，拼音侧学到的词于是永远停在临时
-# 词库，而上面那句 hint 还写着「加入用户词库」——用户不手改 config.toml 就没有出路。
+# 与码表侧 schema.codetable.auto_phrase.promote_count 同语义（两边共用 core 的同一套晋升
+# 判定），⚠️ 但**出厂值自 2026-09-22 起不同**：码表侧 3，本项仍是 0。分叉的是影响面不是
+# 语义——码表侧出厂关闭（只触及主动开启的人），本项出厂就开着（全体用户）。
+# 此前只有码表侧暴露，拼音侧学到的词于是永远停在临时词库，而上面那句 hint 还写着
+# 「加入用户词库」——用户不手改 config.toml 就没有出路。
 [[items]]
 key = "schema.pinyin.auto_learn.promote_count"
 group = "schema"

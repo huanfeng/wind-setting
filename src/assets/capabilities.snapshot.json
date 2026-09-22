@@ -344,7 +344,7 @@
       "type": "int"
     },
     {
-      "default": 0,
+      "default": 3,
       "key": "schema.codetable.auto_phrase.promote_count",
       "type": "int"
     },
