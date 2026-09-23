@@ -212,8 +212,7 @@
 | 外观/候选窗：候选窗排列 | `ui.candidate.layout` | 候选排版 | |
 | 外观/候选窗：编码显示方式 | `ui.candidate.preedit_display` | 候选排版 | 对应参考「非嵌入编码显示方式」 |
 | 外观/候选窗：隐藏候选窗 | `ui.candidate.hide_window` | 候选窗口 | |
-| 外观/候选窗：候选字号 | `ui.candidate.font_size` | 候选字体 | |
-| 外观/候选窗：候选字号跟随主题 | `ui.candidate.font_size_follow_theme` | 候选字体 | 参考无（新增），暂归此卡 |
+| 外观/候选窗：候选字号 | `ui.candidate.font_size` | 候选字体 | 0 = 跟随主题（旧的 `font_size_follow_theme` 开关已并入本项） |
 | 外观/候选窗：候选文本最大字数 | `ui.candidate.max_chars` | 候选排版 | |
 | 外观/候选窗：自定义序号标签 | `ui.candidate.index_labels` | 候选标注 | 参考无（新增） |
 | 外观/候选窗：候选窗在上方时反转顺序 | `ui.candidate.flip_when_above` | 候选排版 | |

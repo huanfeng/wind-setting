@@ -2403,23 +2403,14 @@ options = [
 # 宿主后仍有 21 行），一屏装不下、也扫不出层次。按「改哪一维」拆成四张卡，manifest
 # 里的顺序即卡片顺序，故同一 section 的条目必须连续。
 [[items]]
-key = "ui.candidate.font_size_follow_theme"
-group = "ui"
-section = "候选字体"
-type = "toggle"
-label = "候选字号跟随主题"
-hint = "开启后候选字号由主题决定；关闭可在下方自定义"
-
-[[items]]
 key = "ui.candidate.font_size"
 group = "ui"
 section = "候选字体"
 type = "number"
 label = "候选字号"
-hint = "候选词字体大小（0 表示由主题决定）；开启「候选字号跟随主题」时此项不可用"
+hint = "候选词字体大小，0 = 跟随主题"
 min = 0
 max = 72
-enabled_when = "ui.candidate.font_size_follow_theme == false"
 
 [[items]]
 key = "ui.font.family"
@@ -2428,7 +2419,7 @@ section = "候选字体"
 type = "select"
 options_source = "fonts"
 label = "候选窗字体"
-hint = "自定义候选窗字体，留空跟随主题字体"
+hint = "候选窗全部文字的字体，设置后覆盖主题字体；留空跟随主题"
 
 [[items]]
 key = "ui.font.fallback"

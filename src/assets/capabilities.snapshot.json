@@ -1536,14 +1536,9 @@
       "type": "int"
     },
     {
-      "default": 18,
+      "default": 0,
       "key": "ui.candidate.font_size",
       "type": "float"
-    },
-    {
-      "default": true,
-      "key": "ui.candidate.font_size_follow_theme",
-      "type": "bool"
     },
     {
       "byLayout": true,
