@@ -422,6 +422,26 @@ type = "toggle"
 label = "组词时使用自造词"
 hint = "智能组词时把你造过的词也算进去。关闭时整句只用系统词库，自造的词打整句时不认"
 
+[[items]]
+key = "schema.pinyin.sentence_count"
+group = "schema"
+section = "候选行为"
+type = "number"
+label = "智能组词显示条数"
+hint = "候选里同时列出几种整句解读。1 = 只出一条；调大后次优的整句也会排在最前面，便于比较"
+min = 1
+max = 8
+
+[[items]]
+key = "schema.pinyin.sentence_max_count"
+group = "schema"
+section = "候选行为"
+type = "number"
+label = "智能组词备选条数"
+hint = "一共算几种整句解读，供整句切换键轮换。少于显示条数时按显示条数算"
+min = 1
+max = 8
+
 # 分隔符是所有拼音方案共用的通用项，必须留在本 section 的**无 subsection 区**（即所有
 # subsection 标题之前）。对话框渲染遇 subsection=None 不插标题、只是继续排在上一个
 # 分组末尾，所以它一旦排到某个 subsection 之后，看起来就成了那个分组的成员。

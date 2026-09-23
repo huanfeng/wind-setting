@@ -385,6 +385,8 @@
     "model": "",
     "weight": 0.0
    },
+   "sentence_count": 1,
+   "sentence_max_count": 1,
    "sentence_uses_user_words": false,
    "separator": "auto",
    "shuangpin": {

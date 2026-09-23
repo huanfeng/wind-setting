@@ -395,6 +395,16 @@
       "type": "bool"
     },
     {
+      "default": 1,
+      "key": "schema.pinyin.sentence_count",
+      "type": "int"
+    },
+    {
+      "default": 1,
+      "key": "schema.pinyin.sentence_max_count",
+      "type": "int"
+    },
+    {
       "default": "auto",
       "key": "schema.pinyin.separator",
       "type": "str"
