@@ -385,6 +385,7 @@
     "model": "",
     "weight": 0.0
    },
+   "sentence_uses_user_words": false,
    "separator": "auto",
    "shuangpin": {
     "allow_full_pinyin": false

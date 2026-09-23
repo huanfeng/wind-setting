@@ -390,6 +390,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "schema.pinyin.sentence_uses_user_words",
+      "type": "bool"
+    },
+    {
       "default": "auto",
       "key": "schema.pinyin.separator",
       "type": "str"
