@@ -488,6 +488,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "slider",
     "number_select",
     "string",
+    "color",
     "hotkey",
     "dialog_button",
     "dialog_button_key_action",
@@ -516,6 +517,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "number" | "slider" => build_number(state, key, item, cfg),
         "number_select" => build_number_select(state, key, item, cfg),
         "string" => build_string(state, key, item, cfg),
+        "color" => build_color(state, key, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
         // 三者都渲染成「设置…」按钮，差别只在 `build_dialog_body` 里按 typ 分派出的
@@ -1508,6 +1510,101 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         }),
     );
     Element::text_input(sig, item.hint.clone().unwrap_or_default()).width(200)
+}
+
+/// color 控件的输入校验：空串 = 跟随主题（原样 `""`），`#RRGGBB` / `#RRGGBBAA` 规范成
+/// 大写十六进制，其余一律报错。
+///
+/// 与角标规则对话框的区别是**不认 `auto`**：那里的 auto 是「与主字同色」，而通用色值键的
+/// 「未设置」由空串表达（config-design-rules R3 的空串哨兵），再认一个关键字就是第二种写法。
+pub(crate) fn validate_color_input(s: &str) -> Result<String, &'static str> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Ok(String::new());
+    }
+    crate::widgets::normalize_hex_color(t).ok_or("颜色要填 #RRGGBB 或 #RRGGBBAA，留空跟随主题")
+}
+
+/// 通用色值控件：色块预览 + 文本框，空 = 跟随主题。
+///
+/// 非法输入：框下出红字，writer **跳过这一键**（配置里保留原值，也就不算未保存改动）；
+/// getter 同理只报合法值，免得 `enabled_when` 联动读到半截输入。
+fn build_color(state: &AppState, key: &str, cfg: &Config) -> Element {
+    let def = state
+        .capabilities
+        .default_for(key)
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let cur = cfg
+        .get_str(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| def.clone());
+    let sig = signal(cur.clone());
+    let err = signal(String::new());
+    let preview = signal(vec![cur]);
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            if let Ok(v) = validate_color_input(&sig.get()) {
+                c.set_path(&kw, Value::String(v));
+            }
+        }));
+    let kg = key.to_string();
+    let base = cfg.clone();
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || match validate_color_input(&sig.get()) {
+            Ok(v) => Value::String(v),
+            Err(_) => Value::String(base.get_str(&kg).unwrap_or("").to_string()),
+        }),
+    );
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            sig.set(
+                c.get_str(&kl)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| def.clone()),
+            )
+        }),
+    );
+    let sync = crate::pages::dict::reactive::reactive_effect(
+        move || sig.version(),
+        move || {
+            let text = sig.get();
+            err.set(match validate_color_input(&text) {
+                Ok(_) => String::new(),
+                Err(msg) => msg.to_string(),
+            });
+            preview.set(vec![text.trim().to_string()]);
+        },
+    );
+    Element::col()
+        .spacing(2)
+        .child(
+            Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::host_signal(preview, |c: String| crate::widgets::color_swatch(&c))
+                        .width(14)
+                        .height(14),
+                )
+                .child(Element::text_input(sig, "跟随主题").width(200)),
+        )
+        .child(
+            Element::label_signal(err)
+                .font_size(12.0)
+                .fg_role(Role::Danger)
+                .max_lines(2)
+                .visible_when(move || !err.get().is_empty()),
+        )
+        .child(sync)
 }
 
 /// hotkey 主键候选 (value, 显示名)。idx 0 = 未设置（值为空 → 合成 "none"）。
@@ -5064,6 +5161,55 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// color 控件：空 = 跟随主题，六/八位十六进制规范成大写，其余（含 auto、#RGB）拒收。
+    #[test]
+    fn color_input_accepts_empty_and_hex_normalizes_case() {
+        assert_eq!(validate_color_input(""), Ok(String::new()));
+        assert_eq!(validate_color_input("  "), Ok(String::new()));
+        assert_eq!(validate_color_input("#1a2b3c"), Ok("#1A2B3C".to_string()));
+        assert_eq!(
+            validate_color_input(" #1a2b3cdd "),
+            Ok("#1A2B3CDD".to_string())
+        );
+        assert_eq!(
+            validate_color_input("1a2b3c"),
+            Ok("#1A2B3C".to_string()),
+            "# 可省，存盘补回"
+        );
+    }
+
+    #[test]
+    fn color_input_rejects_auto_short_and_malformed() {
+        for bad in ["auto", "#abc", "#1A2B3G", "#1A2B3C4", "#1A2B3CDDE"] {
+            assert!(validate_color_input(bad).is_err(), "{bad:?} 应被拒收");
+        }
+    }
+
+    /// 非法输入不写回：配置里原值保留，也就不产生未保存改动。
+    #[test]
+    fn color_control_skips_writeback_when_invalid() {
+        let key = "ui.langbar.text_color_cn_light";
+        let state = AppState::empty();
+        let mut cfg = Config::from_value(serde_json::json!({}));
+        cfg.set_path(key, Value::String("#112233".into()));
+        let _ = build_color(&state, key, &cfg);
+        let mut typed = Config::from_value(serde_json::json!({}));
+        typed.set_path(key, Value::String("#12345".into()));
+        state.fields.loaders.borrow()[key](&typed);
+        let mut probe = cfg.clone();
+        for w in state.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        assert_eq!(probe.get_str(key), Some("#112233"));
+        // 改回合法值（小写）则规范化后写回。
+        typed.set_path(key, Value::String("#aabbcc".into()));
+        state.fields.loaders.borrow()[key](&typed);
+        for w in state.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        assert_eq!(probe.get_str(key), Some("#AABBCC"));
+    }
 
     /// ★★★ 数值控件的 `[min, max]` 区间必须**包含** core 的出厂默认值。
     ///

@@ -3127,6 +3127,45 @@ hint = "哪些状态画角标、画在哪个角、什么颜色"
 enabled_when = "ui.langbar.badge != none"
 platform = "windows"
 
+# 任务栏图标主字颜色：用户值 > 主题值 > 内置（浅黑深白），四格各自回落（R3「外观覆盖主题」）。
+# 平铺四行而不收进分组对话框：分组对话框要一个带值控件的宿主行（build_dialog_group_row），
+# 这组没有天然的总开关——空串即「跟随主题」，再造一个开关就是 R3 禁止的双写法。
+[[items]]
+key = "ui.langbar.text_color_cn_light"
+group = "ui"
+section = "任务栏图标"
+type = "color"
+label = "中文主字颜色（浅色任务栏）"
+hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
+platform = "windows"
+
+[[items]]
+key = "ui.langbar.text_color_cn_dark"
+group = "ui"
+section = "任务栏图标"
+type = "color"
+label = "中文主字颜色（深色任务栏）"
+hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
+platform = "windows"
+
+[[items]]
+key = "ui.langbar.text_color_en_light"
+group = "ui"
+section = "任务栏图标"
+type = "color"
+label = "英文主字颜色（浅色任务栏）"
+hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
+platform = "windows"
+
+[[items]]
+key = "ui.langbar.text_color_en_dark"
+group = "ui"
+section = "任务栏图标"
+type = "color"
+label = "英文主字颜色（深色任务栏）"
+hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
+platform = "windows"
+
 # ═══════════════════════════ 常规（并入「输入」页首「默认状态」）═══════════════════════════
 # 本段在文件里排最后只影响 `manifest.order`（搜索结果次序），不影响页面：
 # `input_page` 把 general 整批排在输入页最前，与二级导航一致。

@@ -38,6 +38,8 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use windui::prelude::*;
 
+use crate::widgets::{color_swatch, normalize_hex_color, parse_color};
+
 /// 可选的状态，`(落盘 id, 界面名)`。**必须与 core 的 `BadgeState::as_id()` 逐字一致。**
 ///
 /// 只有这三个：它们在 core 的 `IconSpec` 里都已有对应数据。半角与英文态刻意不开放——
@@ -375,29 +377,6 @@ pub fn row_to_value(r: &BadgeRow, enabled: bool) -> Value {
     v
 }
 
-/// 色值文本 → `(RGB, 不透明度)`。`auto` 与非法值返回 `None`。
-///
-/// 第二项 `None` = **没写末两位**，这一条的不透明度跟随全局 `badge_alpha`。
-/// 这个区别必须在这里就分出来：写了 `FF` 与没写不是一回事，前者会把这一条切到
-/// 挖空档（角标实心 + 周围切掉一圈主字），core 侧的判据同样是原串长度。
-///
-/// 只认 `#RRGGBB` / `#RRGGBBAA` 两种长度，与 core 的 `parse_hex` 逐字对齐：这里放宽
-/// （比如认 `#RGB` 短写）会让用户在设置页看着好好的、装到任务栏上却退回了 auto。
-pub fn parse_color(s: &str) -> Option<(u32, Option<u8>)> {
-    let hex = s.trim().strip_prefix('#')?;
-    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    match hex.len() {
-        6 => u32::from_str_radix(hex, 16).ok().map(|v| (v, None)),
-        8 => Some((
-            u32::from_str_radix(&hex[0..6], 16).ok()?,
-            Some(u8::from_str_radix(&hex[6..8], 16).ok()?),
-        )),
-        _ => None,
-    }
-}
-
 /// 一个色值输入是否合法：`auto`、`#RRGGBB` 或 `#RRGGBBAA`。
 pub fn color_is_valid(s: &str) -> bool {
     s.trim().eq_ignore_ascii_case(AUTO_COLOR) || parse_color(s).is_some()
@@ -412,11 +391,7 @@ pub fn normalize_color(s: &str) -> String {
     if t.eq_ignore_ascii_case(AUTO_COLOR) {
         return AUTO_COLOR.to_string();
     }
-    match parse_color(t) {
-        Some((rgb, None)) => format!("#{rgb:06X}"),
-        Some((rgb, Some(a))) => format!("#{rgb:06X}{a:02X}"),
-        None => t.to_string(),
-    }
+    normalize_hex_color(t).unwrap_or_else(|| t.to_string())
 }
 
 /// 校验表单，返回解析出的倍率。纯函数，供测试。
@@ -472,24 +447,6 @@ fn color_text(s: &str) -> String {
     }
 }
 
-/// 一小块色样。`auto` 与非法值画成描边空块——颜色是这一屏最该一眼看清的东西。
-///
-/// **按色值自带的不透明度半透明绘制**：透明度是这次新加的自由度，只写在副标题里
-/// 用户得自己把 `CC` 换算成百分比才知道多淡，而色样直接把结果摆出来。没写末两位的
-/// 画成不透明——那种情况的实际淡度由全局值决定，这一屏没有权威可依。
-fn swatch(color: &str) -> Element {
-    let base = Element::leaf().width(14).height(14).corner(3.0);
-    match parse_color(color) {
-        Some((v, a)) => base.bg(Color::rgba(
-            ((v >> 16) & 0xFF) as u8,
-            ((v >> 8) & 0xFF) as u8,
-            (v & 0xFF) as u8,
-            a.unwrap_or(0xFF),
-        )),
-        None => base.border_role(Role::Border, 1),
-    }
-}
-
 /// 表单里的一行：`标签 [控件]`。
 fn form_row(label: &str, ctrl: Element) -> Element {
     Element::row()
@@ -535,7 +492,7 @@ pub fn build_langbar_badges_dialog(ui: &LangBarBadgesUi) -> Element {
             let ctrl = Element::row()
                 .cross(Align::Center)
                 .spacing(6)
-                .child(swatch(&r.color_light))
+                .child(color_swatch(&r.color_light))
                 .child(
                     Element::button("编辑")
                         .small()
@@ -845,7 +802,9 @@ mod tests {
         // 装上去却退回了 auto」。
         assert!(!color_is_valid("#28E"));
         assert!(!color_is_valid("#28EF"));
-        assert!(!color_is_valid("2288E0"));
+        // `#` 可省，与核心 parse_hex 一致；存盘时补回。
+        assert!(color_is_valid("2288E0"));
+        assert_eq!(normalize_color("2288e0"), "#2288E0");
         assert!(!color_is_valid("#2288EZ"));
         assert!(!color_is_valid("#2288E0CCC"));
         assert!(!color_is_valid(""));

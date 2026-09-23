@@ -486,7 +486,11 @@
      "scale": 1.0,
      "state": "full_width"
     }
-   ]
+   ],
+   "text_color_cn_dark": "",
+   "text_color_cn_light": "",
+   "text_color_en_dark": "",
+   "text_color_en_light": ""
   },
   "mode_indicator": {
    "style": "short"

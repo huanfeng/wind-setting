@@ -1939,6 +1939,26 @@
       "type": "structlist"
     },
     {
+      "default": "",
+      "key": "ui.langbar.text_color_cn_light",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "ui.langbar.text_color_cn_dark",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "ui.langbar.text_color_en_light",
+      "type": "str"
+    },
+    {
+      "default": "",
+      "key": "ui.langbar.text_color_en_dark",
+      "type": "str"
+    },
+    {
       "default": "英",
       "key": "ui.labels.english",
       "type": "str"

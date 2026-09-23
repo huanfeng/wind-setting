@@ -931,6 +931,62 @@ pub fn clear_text_button(text: Signal<String>) -> Element {
         .on_click(move |_| text.set(String::new()))
 }
 
+// ── 色值（`#RRGGBB` / `#RRGGBBAA`）：manifest 的 color 控件与角标规则对话框共用 ──
+
+/// 色值文本 → `(RGB, 不透明度)`。非法值（含语言栏角标的 `auto`）返回 `None`。
+///
+/// 第二项 `None` = **没写末两位**，这一条的不透明度跟随全局 `badge_alpha`。
+/// 这个区别必须在这里就分出来：写了 `FF` 与没写不是一回事，前者会把这一条切到
+/// 挖空档（角标实心 + 周围切掉一圈主字），core 侧的判据同样是原串长度。
+///
+/// 只认 `#RRGGBB` / `#RRGGBBAA` 两种长度，与 core 的 `parse_hex` 逐字对齐：这里放宽
+/// （比如认 `#RGB` 短写）会让用户在设置页看着好好的、装到任务栏上却退回了 auto。
+pub fn parse_color(s: &str) -> Option<(u32, Option<u8>)> {
+    // `#` 可省：核心 `wind_theme::palette::parse_hex` 也不强制它，两边认定一致，
+    // 手写 `FF0000` 在核心里生效、这里却报红的话，界面与实际对不上。
+    let t = s.trim();
+    let hex = t.strip_prefix('#').unwrap_or(t);
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    match hex.len() {
+        6 => u32::from_str_radix(hex, 16).ok().map(|v| (v, None)),
+        8 => Some((
+            u32::from_str_radix(&hex[0..6], 16).ok()?,
+            Some(u8::from_str_radix(&hex[6..8], 16).ok()?),
+        )),
+        _ => None,
+    }
+}
+
+/// `#RRGGBB` / `#RRGGBBAA` 的规范写法（十六进制大写、去首尾空白）；非法返回 `None`。
+///
+/// **不补也不删末两位**：长度本身是一位信息（写了 `FF` 与没写在 core 侧含义不同）。
+pub fn normalize_hex_color(s: &str) -> Option<String> {
+    match parse_color(s)? {
+        (rgb, None) => Some(format!("#{rgb:06X}")),
+        (rgb, Some(a)) => Some(format!("#{rgb:06X}{a:02X}")),
+    }
+}
+
+/// 一小块色样。非法值（含 `auto` 与空串）画成描边空块——颜色是这一屏最该一眼看清的东西。
+///
+/// **按色值自带的不透明度半透明绘制**：透明度是这次新加的自由度，只写在副标题里
+/// 用户得自己把 `CC` 换算成百分比才知道多淡，而色样直接把结果摆出来。没写末两位的
+/// 画成不透明——那种情况的实际淡度由全局值决定，这一屏没有权威可依。
+pub fn color_swatch(color: &str) -> Element {
+    let base = Element::leaf().width(14).height(14).corner(3.0);
+    match parse_color(color) {
+        Some((v, a)) => base.bg(Color::rgba(
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+            a.unwrap_or(0xFF),
+        )),
+        None => base.border_role(Role::Border, 1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
