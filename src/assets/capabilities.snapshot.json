@@ -405,6 +405,11 @@
       "type": "int"
     },
     {
+      "default": "",
+      "key": "schema.pinyin.sentence_cycle_key",
+      "type": "str"
+    },
+    {
       "default": "auto",
       "key": "schema.pinyin.separator",
       "type": "str"

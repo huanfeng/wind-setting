@@ -442,6 +442,25 @@ hint = "一共算几种整句解读，供整句切换键轮换。少于显示条
 min = 1
 max = 8
 
+[[items]]
+key = "schema.pinyin.sentence_cycle_key"
+group = "schema"
+section = "候选行为"
+type = "select"
+label = "智能组词切换键"
+hint = "打拼音时按它在几种整句解读间轮换。只在算出两条以上整句时才占用这个键，其余时候它照常"
+# ⚠️ value 必须与核心 `wind_keys::keymap` 的键名**逐字相同**（跨仓无校验，写错静默失效）。
+# 核心按 `session_key_name_to_vk` 解析：tab 在会话功能键表、backtick 在符号键表。
+[[items.options]]
+value = ""
+label = "不启用"
+[[items.options]]
+value = "tab"
+label = "Tab"
+[[items.options]]
+value = "backtick"
+label = "反引号 `"
+
 # 分隔符是所有拼音方案共用的通用项，必须留在本 section 的**无 subsection 区**（即所有
 # subsection 标题之前）。对话框渲染遇 subsection=None 不插标题、只是继续排在上一个
 # 分组末尾，所以它一旦排到某个 subsection 之后，看起来就成了那个分组的成员。
