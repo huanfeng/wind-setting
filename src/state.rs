@@ -2724,6 +2724,7 @@ fn key_action_label(verb: &str) -> String {
     match verb {
         "temp_pinyin" => "临时拼音".to_string(),
         "temp_english" => "临时英文".to_string(),
+        "rare_char" => "生僻字".to_string(),
         other => other.to_string(),
     }
 }
@@ -3452,6 +3453,13 @@ mod trigger_conflict_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 冲突报告里生僻字动词要显示人话，而不是原样回显 `rare_char`（GH#146 同批）。
+    #[test]
+    fn key_action_label_knows_rare_char() {
+        assert_eq!(key_action_label("rare_char"), "生僻字");
+        assert_eq!(key_action_label("bogus_verb"), "bogus_verb", "未知动词原样回显");
+    }
 
     /// 「恢复本页」的分组映射必须覆盖每一个**有清单分组的**页，且不漏不错。
     ///

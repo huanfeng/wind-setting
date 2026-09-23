@@ -160,6 +160,9 @@ hint = "输入z时首选为上一次上屏的内容，快速重复输入"
 # 或 z 是本方案的活码前缀时，本项让位（见 core handle_lifecycle.rs 的三重身份裁决）。
 # 融合/特殊模式的实例 id 随已安装方案增删，清单只列内置的 quick_mix；配了其他实例的
 # 用户，其取值由下拉的「保留当前配置」项兜住，不会在保存时被抹掉。
+# `rare_char` 必须列出：输入页「生僻字触发键」的提示语把字母键指路到这里（GH#146）。
+# 出厂 `zz*` 短语让首键 z 恒让位，进模式靠 core 的 z 夺取回路（`try_z_fallback`），
+# 生僻字那一臂与本项同批补上，input_flow 的 test_z_key_action_enters_rare_char 钉住。
 [[items]]
 key = "schema.codetable.z_key_action"
 group = "schema"
@@ -173,6 +176,7 @@ options = [
   { value = "temp_pinyin", label = "临时拼音" },
   { value = "temp_english", label = "临时英文" },
   { value = "mix:quick_mix", label = "快捷输入" },
+  { value = "rare_char", label = "生僻字" },
 ]
 
 # 档位取「对哪几级简码生效」，故 core 侧判据是「当前码长 > 档位」而非「等于全码长」——
