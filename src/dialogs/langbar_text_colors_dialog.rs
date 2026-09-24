@@ -5,21 +5,13 @@
 //! （windui 的 `color_picker`，带透明度），外加「跟随主题」把这一格写回 `""`。
 //! 优先级与回落见 config-design-rules R3「外观覆盖主题」：用户值 > 主题值 > 内置，逐格回落。
 //!
-//! # ★ 取色器绑的是 `Color`，配置存的是字符串，两边靠「版本回声」隔开
-//!
-//! 「跟随主题」这一格在取色器里也得有个颜色可显示（取内置默认：浅色栏黑、深色栏白），
-//! 而那个颜色**不是用户选的**。若把 `Color → 字符串` 做成无条件同步，播种 / 恢复默认 /
-//! 点「跟随主题」时程序自己写进去的颜色会被当成用户选色写回，`""` 就再也存不住了。
-//! 故每次程序写 `Color` 后记下它的版本号（[`TextColorsUi::echo_ver`]），同步时版本没变
-//! 就不写回——只有用户在面板上动过，版本才会前进。不用「颜色相等」判：用户完全可能
-//! 恰好挑中内置默认那个黑。
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! 取色器与配置字符串之间的「版本回声」隔离见 [`PickedColor`]（与角标规则对话框共用）。
 
 use windui::prelude::*;
 
-use crate::widgets::{color_swatch, normalize_hex_color, parse_color};
+use crate::widgets::{
+    PickedColor, color_from_value, color_picker_cell, color_swatch, normalize_hex_color,
+};
 
 /// 四格：`(配置键, 行名, 列名)`，按行优先排列（中浅、中深、英浅、英深）。
 pub const CELLS: [(&str, &str, &str); 4] = [
@@ -74,15 +66,7 @@ pub fn cell_text(s: &str) -> String {
 
 /// 配置值 → 取色器的初值。跟随主题 / 非法时用 [`fallback_color`]。
 pub fn color_of(s: &str, i: usize) -> Color {
-    match parse_color(s) {
-        Some((v, a)) => Color::rgba(
-            ((v >> 16) & 0xFF) as u8,
-            ((v >> 8) & 0xFF) as u8,
-            (v & 0xFF) as u8,
-            a.unwrap_or(0xFF),
-        ),
-        None => fallback_color(i),
-    }
+    color_from_value(s, fallback_color(i))
 }
 
 /// 取色器选出的颜色 → 配置值。完全不透明存六位，否则八位（`#RRGGBBAA`）。
@@ -97,34 +81,21 @@ pub fn value_of(c: Color) -> String {
 #[derive(Clone)]
 pub struct TextColorsUi {
     pub visible: Signal<bool>,
-    /// 四格的配置值（`""` = 跟随主题）。写回 / 取值 / 摘要都读它。
-    pub values: [Signal<String>; 4],
-    /// 四格取色器绑定的颜色。
-    pub colors: [Signal<Color>; 4],
-    /// 程序最后一次写 `colors[i]` 后的版本号。见模块文档。
-    echo_ver: Rc<[Cell<u64>; 4]>,
+    /// 四格（配置值 `""` = 跟随主题）。写回 / 取值 / 摘要都读 `cells[i].value`。
+    pub cells: [PickedColor; 4],
 }
 
 impl TextColorsUi {
     pub fn new() -> Self {
-        let ui = Self {
+        Self {
             visible: signal(false),
-            values: std::array::from_fn(|_| signal(String::new())),
-            colors: std::array::from_fn(fallback_color).map(signal),
-            echo_ver: Rc::new(std::array::from_fn(|_| Cell::new(0))),
-        };
-        for i in 0..4 {
-            ui.echo_ver[i].set(ui.colors[i].version());
+            cells: std::array::from_fn(|i| PickedColor::new("", fallback_color(i))),
         }
-        ui
     }
 
-    /// 程序侧设置第 `i` 格（播种 / 加载 / 恢复默认 / 跟随主题共用）：值与取色器一起改，
-    /// 并记下回声版本，免得同步把它当成用户选色。
+    /// 程序侧设置第 `i` 格（播种 / 加载 / 恢复默认 / 跟随主题共用），不会被同步回写。
     pub fn set_cell(&self, i: usize, value: &str) {
-        self.values[i].set(value.to_string());
-        self.colors[i].set(color_of(value, i));
-        self.echo_ver[i].set(self.colors[i].version());
+        self.cells[i].set(value, color_of(value, i));
     }
 
     /// 「跟随主题」：写回 `""`。
@@ -132,19 +103,9 @@ impl TextColorsUi {
         self.set_cell(i, "");
     }
 
-    /// 取色器 → 配置值。版本自上次程序写入后没动过就什么都不做（见模块文档）。
-    pub fn sync_from_picker(&self, i: usize) {
-        let ver = self.colors[i].version();
-        if ver == self.echo_ver[i].get() {
-            return;
-        }
-        self.echo_ver[i].set(ver);
-        self.values[i].set(value_of(self.colors[i].get()));
-    }
-
     /// 四格当前值（摘要用）。
     pub fn snapshot(&self) -> Vec<String> {
-        self.values.iter().map(|s| s.get()).collect()
+        self.cells.iter().map(|c| c.value.get()).collect()
     }
 }
 
@@ -164,7 +125,7 @@ fn summary_swatch(i: usize, s: &str) -> Element {
 pub fn build_summary_control(ui: &TextColorsUi) -> Element {
     let summary = signal(vec![ui.snapshot()]);
     let ui_s = ui.clone();
-    let vers = ui.values;
+    let vers = ui.cells.clone().map(|c| c.value);
     let sync = crate::pages::dict::reactive::reactive_effect(
         move || vers.iter().map(|s| s.version()).sum(),
         move || summary.set(vec![ui_s.snapshot()]),
@@ -195,41 +156,25 @@ pub fn build_summary_control(ui: &TextColorsUi) -> Element {
 }
 
 /// 对话框里的一格：取色器色块 + 当前值文字 + 「清除」（回到跟随主题）。
+///
+/// 按钮不叫「跟随主题」——跟随时旁边的状态文字已写着「跟随主题」，同名按钮读着重复。
 fn cell(ui: &TextColorsUi, i: usize) -> Element {
-    let value = ui.values[i];
+    let value = ui.cells[i].value;
     let ui_f = ui.clone();
-    let ui_p = ui.clone();
-    let colors = ui.colors[i];
-    // 取色器写 `colors[i]` → 同步进配置值。
-    let sync = crate::pages::dict::reactive::reactive_effect(
-        move || colors.version(),
-        move || ui_p.sync_from_picker(i),
-    );
-    // 一行排完：色块 + 当前值 + 「清除」。按钮不再叫「跟随主题」——跟随时旁边的
-    // 状态文字已写着「跟随主题」，同名按钮读着重复；单独占一行又让对话框松散。
-    Element::row()
-        .weight(1.0)
-        .cross(Align::Center)
-        .spacing(8)
-        .child(Element::color_picker_opts(
-            ui.colors[i],
-            ColorPickerOpts::default().trigger_text(false),
-        ))
-        .child(
-            Element::label_signal(value.map(|s| cell_text(s)))
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
-                .width(62)
-                .max_lines(1),
-        )
-        .child(
+    color_picker_cell(
+        &ui.cells[i],
+        |s| cell_text(s),
+        62,
+        |_, c| value_of(c),
+        vec![
             Element::button("清除")
                 .small()
                 .outline_soft()
                 .enabled_when(move || !value.get().trim().is_empty())
                 .on_click(move |_| ui_f.follow_theme(i)),
-        )
-        .child(sync)
+        ],
+    )
+    .weight(1.0)
 }
 
 /// 2×2 表格：表头一行（列名），其下中文 / 英文两行。
@@ -333,7 +278,7 @@ mod tests {
         let ui = TextColorsUi::new();
         ui.set_cell(2, "#AABBCC");
         assert_eq!(ui.snapshot(), ["", "", "#AABBCC", ""]);
-        assert_eq!(ui.colors[2].get(), Color::hex(0xAABBCC));
+        assert_eq!(ui.cells[2].color.get(), Color::hex(0xAABBCC));
     }
 
     /// ★ 程序写进取色器的颜色（播种 / 跟随主题）不得被同步成用户值——否则 `""` 存不住。
@@ -342,23 +287,23 @@ mod tests {
         let ui = TextColorsUi::new();
         ui.set_cell(0, "#112233");
         ui.follow_theme(0);
-        ui.sync_from_picker(0);
-        assert_eq!(ui.values[0].get(), "", "跟随主题被回写成了颜色");
+        ui.cells[0].sync(|_, c| value_of(c));
+        assert_eq!(ui.cells[0].value.get(), "", "跟随主题被回写成了颜色");
     }
 
     /// 用户在面板上选色 → 规范化后写进配置值；选中恰好等于回落色也照写。
     #[test]
     fn user_pick_is_synced_even_if_equal_to_fallback() {
         let ui = TextColorsUi::new();
-        ui.colors[1].set(Color::rgba(0x20, 0x40, 0x60, 0xCC));
-        ui.sync_from_picker(1);
-        assert_eq!(ui.values[1].get(), "#204060CC");
+        ui.cells[1].color.set(Color::rgba(0x20, 0x40, 0x60, 0xCC));
+        ui.cells[1].sync(|_, c| value_of(c));
+        assert_eq!(ui.cells[1].value.get(), "#204060CC");
 
-        ui.colors[0].set(fallback_color(0));
-        ui.sync_from_picker(0);
-        assert_eq!(ui.values[0].get(), "#000000", "挑中内置黑也是用户值");
+        ui.cells[0].color.set(fallback_color(0));
+        ui.cells[0].sync(|_, c| value_of(c));
+        assert_eq!(ui.cells[0].value.get(), "#000000", "挑中内置黑也是用户值");
 
         ui.follow_theme(1);
-        assert_eq!(ui.values[1].get(), "", "跟随主题写回空串");
+        assert_eq!(ui.cells[1].value.get(), "", "跟随主题写回空串");
     }
 }

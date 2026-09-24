@@ -38,7 +38,11 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use windui::prelude::*;
 
-use crate::widgets::{color_swatch, normalize_hex_color, parse_color};
+use crate::dialogs::langbar_text_colors_dialog::fallback_color;
+use crate::widgets::{
+    PickedColor, color_from_value, color_picker_cell, color_swatch, normalize_hex_color,
+    parse_color,
+};
 
 /// 可选的状态，`(落盘 id, 界面名)`。**必须与 core 的 `BadgeState::as_id()` 逐字一致。**
 ///
@@ -109,8 +113,9 @@ pub struct BadgeForm {
     /// 出厂三条都是这个形态——那三色本就是按「深浅两种任务栏上都立得住」挑的。
     /// 真要分开配是自由度，不该是每次新建都得填两遍的负担。
     pub same_color: Signal<bool>,
-    pub color_light: Signal<String>,
-    pub color_dark: Signal<String>,
+    /// 浅 / 深两色的取色绑定。`value` 是配置字符串（含 `auto`），见 [`badge_value_of`]。
+    pub color_light: PickedColor,
+    pub color_dark: PickedColor,
     /// 大小倍率。用 [`Element::stepper`] 而非文本框：倍率是个连续量，按 0.1 步进点
     /// 两下就到位，而文本框还得自己校验"填了个字母"。
     pub scale: Signal<f64>,
@@ -127,8 +132,14 @@ impl BadgeForm {
             state_idx: signal(0),
             corner_idx: signal(2), // 右下角：最不挡主字的一角
             same_color: signal(true),
-            color_light: signal("#2288E0".to_string()),
-            color_dark: signal("#2288E0".to_string()),
+            color_light: PickedColor::new(
+                DEFAULT_COLOR,
+                color_from_value(DEFAULT_COLOR, fallback_color(0)),
+            ),
+            color_dark: PickedColor::new(
+                DEFAULT_COLOR,
+                color_from_value(DEFAULT_COLOR, fallback_color(1)),
+            ),
             scale: signal(1.0),
             error: signal(String::new()),
             title: signal("添加角标规则".to_string()),
@@ -140,8 +151,8 @@ impl BadgeForm {
         self.state_idx.set(0);
         self.corner_idx.set(index_of(CORNERS, DEFAULT_CORNER));
         self.same_color.set(true);
-        self.color_light.set("#2288E0".to_string());
-        self.color_dark.set("#2288E0".to_string());
+        set_badge_color(&self.color_light, DEFAULT_COLOR, fallback_color(0));
+        set_badge_color(&self.color_dark, DEFAULT_COLOR, fallback_color(1));
         self.scale.set(1.0);
         self.error.set(String::new());
         self.title.set("添加角标规则".to_string());
@@ -154,8 +165,8 @@ impl BadgeForm {
         self.corner_idx.set(index_of(CORNERS, &row.corner));
         self.same_color
             .set(row.color_light.eq_ignore_ascii_case(&row.color_dark));
-        self.color_light.set(row.color_light.clone());
-        self.color_dark.set(row.color_dark.clone());
+        set_badge_color(&self.color_light, &row.color_light, fallback_color(0));
+        set_badge_color(&self.color_dark, &row.color_dark, fallback_color(1));
         self.scale.set(row.scale as f64);
         self.error.set(String::new());
         self.title.set("编辑角标规则".to_string());
@@ -447,6 +458,61 @@ fn color_text(s: &str) -> String {
     }
 }
 
+/// 新建规则的默认色（出厂「中文标点」那条的蓝）。`auto` 时取色器里显示主字的内置默认色
+/// （[`fallback_color`]：0 = 浅色栏黑、1 = 深色栏白），同主字颜色对话框。
+const DEFAULT_COLOR: &str = "#2288E0";
+fn is_auto(s: &str) -> bool {
+    s.trim().eq_ignore_ascii_case(AUTO_COLOR)
+}
+
+/// 这一条是否写了自己的透明度（八位）。
+pub fn has_own_alpha(s: &str) -> bool {
+    matches!(parse_color(s), Some((_, Some(_))))
+}
+
+/// 程序侧设置一色（播种 / 与主字同色）：`auto` / 非法值在取色器里显示 `fallback`。
+pub fn set_badge_color(pc: &PickedColor, value: &str, fallback: Color) {
+    pc.set(value, color_from_value(value, fallback));
+}
+
+/// 「跟随全局透明度」：去掉末两位，取色器回到不透明显示。
+pub fn follow_global_alpha(pc: &PickedColor) {
+    if let Some((rgb, Some(_))) = parse_color(&pc.value.get()) {
+        let v = format!("#{rgb:06X}");
+        pc.set(&v, color_from_value(&v, Color::rgba(0, 0, 0, 255)));
+    }
+}
+
+/// 取色器选出的颜色 → 配置值。
+///
+/// ★ 与主字色不同，这里**不能**「不透明就存六位」：六位 = 跟随全局透明度，八位 `FF` =
+/// 这一条钉成实心（core 切到挖空档），两者含义不同。判据是「用户动没动过透明度」：
+/// 旧值已带末两位（调过）就一直写八位，哪怕调回 100% 也写 `FF`；旧值没带（跟随全局 /
+/// `auto`）时只要不透明度仍是 100% 就还是六位——只改色相不会悄悄钉死透明度。
+pub fn badge_value_of(prev: &str, c: Color) -> String {
+    let rgb = format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b);
+    if has_own_alpha(prev) || c.a != 0xFF {
+        format!("{rgb}{:02X}", c.a)
+    } else {
+        rgb
+    }
+}
+
+/// 表单格内文字：两行——色号、透明度说明。
+pub fn badge_color_text(s: &str) -> String {
+    if is_auto(s) {
+        return "与主字同色".to_string();
+    }
+    match parse_color(s) {
+        Some((rgb, None)) => format!("#{rgb:06X}\n全局透明度"),
+        Some((rgb, Some(0xFF))) => format!("#{rgb:06X}\n实心 · 挖空"),
+        Some((rgb, Some(a))) => {
+            format!("#{rgb:06X}\n不透明度 {}%", (a as f32 / 2.55).round() as i32)
+        }
+        None => format!("{}（无效）", s.trim()),
+    }
+}
+
 /// 表单里的一行：`标签 [控件]`。
 fn form_row(label: &str, ctrl: Element) -> Element {
     Element::row()
@@ -457,14 +523,30 @@ fn form_row(label: &str, ctrl: Element) -> Element {
         .child(ctrl)
 }
 
-/// 表单里的文本输入行。
-fn field_row(label: &str, sig: Signal<String>, placeholder: &str) -> Element {
+/// 表单里的一行取色：色块 + 当前值 + 「与主字同色」「跟随全局」两个按钮。
+fn color_row(label: &str, pc: &PickedColor, fallback: Color) -> Element {
+    let value = pc.value;
+    let (pa, pg) = (pc.clone(), pc.clone());
     form_row(
         label,
-        Element::text_input(sig, placeholder)
-            .width_match()
-            .height(32)
-            .weight(1.0),
+        color_picker_cell(
+            pc,
+            |s| badge_color_text(s),
+            92,
+            badge_value_of,
+            vec![
+                Element::button("与主字同色")
+                    .small()
+                    .outline_soft()
+                    .enabled_when(move || !is_auto(&value.get()))
+                    .on_click(move |_| set_badge_color(&pa, AUTO_COLOR, fallback)),
+                Element::button("跟随全局透明度")
+                    .small()
+                    .outline_soft()
+                    .enabled_when(move || has_own_alpha(&value.get()))
+                    .on_click(move |_| follow_global_alpha(&pg)),
+            ],
+        ),
     )
 }
 
@@ -600,7 +682,7 @@ fn build_badge_form_dialog(ui: &LangBarBadgesUi) -> Element {
     let same = form.same_color;
 
     let frame = Element::col()
-        .width(500)
+        .width(540)
         .bg_role(Role::Surface)
         .border_role(Role::Border, 1)
         .corner(12.0)
@@ -616,8 +698,8 @@ fn build_badge_form_dialog(ui: &LangBarBadgesUi) -> Element {
         .child(Element::divider())
         .child(
             Element::label(
-                "颜色填 #RRGGBB，或 auto = 与主字同色；再补两位就是这一条自己的透明度。\n\
-                 不补两位用全局透明度；补成 FF 会变实心，并挖掉角标周围一圈主字。",
+                "点色块选色。没动过透明度就跟随全局透明度；调过就是这一条自己的，\n\
+                 调到 100% 会变实心，并挖掉角标周围一圈主字。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
@@ -642,13 +724,13 @@ fn build_badge_form_dialog(ui: &LangBarBadgesUi) -> Element {
                     "亮暗同色",
                     Element::checkbox("", form.same_color).fg_role(Role::Text),
                 ))
-                .child(field_row(
+                .child(color_row(
                     "浅色任务栏",
-                    form.color_light,
-                    "#2288E0 或 #2288E0CC",
+                    &form.color_light,
+                    fallback_color(0),
                 ))
                 .child(
-                    field_row("深色任务栏", form.color_dark, "#2288E0 或 #2288E0CC")
+                    color_row("深色任务栏", &form.color_dark, fallback_color(1))
                         // 勾了「亮暗同色」就置灰：留着可编辑而值会被浅色覆盖，
                         // 是最容易让人以为「填了没生效」的一种。
                         .enabled_when(move || !same.get()),
@@ -681,13 +763,13 @@ fn build_badge_form_dialog(ui: &LangBarBadgesUi) -> Element {
                         .on_click(move |_| visible.set(false)),
                 )
                 .child(Element::button("确认").small().on_click(move |_| {
-                    let light = normalize_color(&fc.color_light.get());
+                    let light = normalize_color(&fc.color_light.value.get());
                     // 勾了同色就以浅色为准，不去读深色那个框——它此刻是灰的，
                     // 里面留着的是上一次编辑的残值。
                     let dark = if fc.same_color.get() {
                         light.clone()
                     } else {
-                        normalize_color(&fc.color_dark.get())
+                        normalize_color(&fc.color_dark.value.get())
                     };
                     let scale = match validate(&light, &dark, fc.scale.get()) {
                         Ok(v) => v,
@@ -955,5 +1037,80 @@ mod tests {
         r.color_light = "#2288E0CC".to_string();
         r.color_dark = "#2288E0CC".to_string();
         assert!(row_desc(&r).contains("80%"), "0xCC 应显示成 80%");
+    }
+
+    /// 「与主字同色」按钮写 `auto`，取色器显示主字回落色；该值不会被同步成色号。
+    #[test]
+    fn auto_button_writes_auto_and_is_not_synced_back() {
+        let f = BadgeForm::new();
+        set_badge_color(&f.color_dark, AUTO_COLOR, fallback_color(1));
+        assert_eq!(f.color_dark.value.get(), "auto");
+        assert_eq!(f.color_dark.color.get(), Color::hex(0xFFFFFF));
+        f.color_dark.sync(badge_value_of);
+        assert_eq!(f.color_dark.value.get(), "auto", "auto 被回写成了色号");
+        assert_eq!(badge_color_text("auto"), "与主字同色");
+        // 从 auto 选色：没动透明度 → 六位（跟随全局）。
+        f.color_dark.color.set(Color::hex(0x336699));
+        f.color_dark.sync(badge_value_of);
+        assert_eq!(f.color_dark.value.get(), "#336699");
+    }
+
+    /// 编辑已有规则时程序播种的颜色不回写：八位 FF 与六位都原样留着。
+    #[test]
+    fn open_edit_seeds_without_writing_back() {
+        let f = BadgeForm::new();
+        let mut r = rows_from_value(&cfg_rows())[0].clone();
+        r.color_light = "#2288E0FF".into();
+        r.color_dark = "#2288E0".into();
+        f.open_edit(0, &r);
+        f.color_light.sync(badge_value_of);
+        f.color_dark.sync(badge_value_of);
+        assert_eq!(f.color_light.value.get(), "#2288E0FF");
+        assert_eq!(f.color_dark.value.get(), "#2288E0");
+        assert!(!f.same_color.get());
+    }
+
+    /// ★ 六位（跟随全局）与八位（自己的透明度，含 FF）由「动没动透明度」区分。
+    #[test]
+    fn picked_alpha_distinguishes_follow_global_from_explicit_ff() {
+        let opaque = Color::rgba(0x12, 0x34, 0x56, 0xFF);
+        let half = Color::rgba(0x12, 0x34, 0x56, 0x80);
+        // 旧值没写透明度：只改色 → 仍六位；动了透明度 → 八位。
+        assert_eq!(badge_value_of("#2288E0", opaque), "#123456");
+        assert_eq!(badge_value_of("auto", opaque), "#123456");
+        assert_eq!(badge_value_of("#2288E0", half), "#12345680");
+        // 旧值已有自己的透明度：调回 100% 也写 FF（挖空档），不悄悄退回全局。
+        assert_eq!(badge_value_of("#2288E080", opaque), "#123456FF");
+        assert_eq!(badge_value_of("#2288E0FF", opaque), "#123456FF");
+        assert_eq!(badge_color_text("#123456"), "#123456\n全局透明度");
+        assert_eq!(badge_color_text("#123456FF"), "#123456\n实心 · 挖空");
+        assert_eq!(badge_color_text("#123456CC"), "#123456\n不透明度 80%");
+    }
+
+    /// 「跟随全局透明度」去掉末两位，且不被同步写回八位。
+    #[test]
+    fn follow_global_alpha_strips_aa_and_sticks() {
+        let f = BadgeForm::new();
+        set_badge_color(&f.color_light, "#2288E0CC", fallback_color(0));
+        assert!(has_own_alpha(&f.color_light.value.get()));
+        follow_global_alpha(&f.color_light);
+        assert_eq!(f.color_light.value.get(), "#2288E0");
+        assert_eq!(f.color_light.color.get(), Color::hex(0x2288E0));
+        f.color_light.sync(badge_value_of);
+        assert_eq!(f.color_light.value.get(), "#2288E0");
+        // 之后只改色相仍跟随全局。
+        f.color_light.color.set(Color::hex(0x2288E1));
+        f.color_light.sync(badge_value_of);
+        assert_eq!(f.color_light.value.get(), "#2288E1");
+    }
+
+    /// 用户恰好选中回落色（auto 时显示的黑）也照常写回，不当成「没选」。
+    #[test]
+    fn user_pick_equal_to_fallback_is_written() {
+        let f = BadgeForm::new();
+        set_badge_color(&f.color_light, AUTO_COLOR, fallback_color(0));
+        f.color_light.color.set(fallback_color(0));
+        f.color_light.sync(badge_value_of);
+        assert_eq!(f.color_light.value.get(), "#000000");
     }
 }

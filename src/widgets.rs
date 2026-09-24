@@ -4,6 +4,7 @@
 //! 故所有控件随亮/暗主题自动适配。样式对齐 examples/ime.rs 的设置面板。
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use windui::core::{EventCtx, Widget};
 use windui::event::{Event, PointerKind};
@@ -985,6 +986,103 @@ pub fn color_swatch(color: &str) -> Element {
         )),
         None => base.border_role(Role::Border, 1),
     }
+}
+
+/// 色值文本 → 取色器颜色。非法值（空串、`auto` 等）用 `fallback`；没写末两位按不透明。
+pub fn color_from_value(s: &str, fallback: Color) -> Color {
+    match parse_color(s) {
+        Some((v, a)) => Color::rgba(
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+            a.unwrap_or(0xFF),
+        ),
+        None => fallback,
+    }
+}
+
+/// 一个「取色器 ↔ 配置字符串」的绑定：主字颜色、角标颜色两处共用。
+///
+/// # ★ 取色器绑的是 `Color`，配置存的是字符串，两边靠「版本回声」隔开
+///
+/// 特殊值（主字色的 `""` 跟随主题、角标的 `auto`）在取色器里也得显示个颜色，而那个颜色
+/// **不是用户选的**。若把 `Color → 字符串` 做成无条件同步，程序自己写进去的颜色（播种 /
+/// 加载 / 恢复默认 / 点特殊值按钮）会被当成用户选色写回，特殊值就再也存不住了。故程序每次
+/// 写 `color` 后记下它的版本号，同步时版本没变就不写回——只有用户在面板上动过，版本才前进。
+/// 不用「颜色相等」判：用户完全可能恰好挑中回落色。
+#[derive(Clone)]
+pub struct PickedColor {
+    /// 配置值。写回 / 取值 / 摘要都读它。
+    pub value: Signal<String>,
+    /// 取色器绑定的颜色。
+    pub color: Signal<Color>,
+    /// 程序最后一次写 `color` 后的版本号。
+    echo_ver: Rc<Cell<u64>>,
+}
+
+impl PickedColor {
+    pub fn new(value: &str, shown: Color) -> Self {
+        let pc = Self {
+            value: signal(value.to_string()),
+            color: signal(shown),
+            echo_ver: Rc::new(Cell::new(0)),
+        };
+        pc.echo_ver.set(pc.color.version());
+        pc
+    }
+
+    /// 程序侧设置：值与取色器显示色一起改，并记下回声版本，免得同步把它当成用户选色。
+    pub fn set(&self, value: &str, shown: Color) {
+        self.value.set(value.to_string());
+        self.color.set(shown);
+        self.echo_ver.set(self.color.version());
+    }
+
+    /// 取色器 → 配置值：用户动过才调 `to_value(旧值, 新色)` 写回；程序写入不回写。
+    pub fn sync(&self, to_value: impl FnOnce(&str, Color) -> String) {
+        let ver = self.color.version();
+        if ver == self.echo_ver.get() {
+            return;
+        }
+        self.echo_ver.set(ver);
+        let v = to_value(&self.value.get(), self.color.get());
+        self.value.set(v);
+    }
+}
+
+/// 一格取色：色块取色器 + 当前值文字（`text` 由值算出，宽 `text_w`）+ 若干按钮。
+/// 用户在面板上选色时按 `to_value` 写回 [`PickedColor::value`]。
+pub fn color_picker_cell(
+    pc: &PickedColor,
+    text: impl Fn(&String) -> String + 'static,
+    text_w: i32,
+    to_value: impl Fn(&str, Color) -> String + 'static,
+    buttons: Vec<Element>,
+) -> Element {
+    let colors = pc.color;
+    let pc_s = pc.clone();
+    let sync = crate::pages::dict::reactive::reactive_effect(
+        move || colors.version(),
+        move || pc_s.sync(&to_value),
+    );
+    let mut row = Element::row()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::color_picker_opts(
+            pc.color,
+            ColorPickerOpts::default().trigger_text(false),
+        ))
+        .child(
+            Element::label_signal(pc.value.map(text))
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width(text_w)
+                .max_lines(2),
+        );
+    for b in buttons {
+        row = row.child(b);
+    }
+    row.child(sync)
 }
 
 #[cfg(test)]

@@ -3403,7 +3403,7 @@ fn build_langbar_text_colors(state: &AppState, key: &str, cfg: &Config) -> Eleme
     let ui = TextColorsUi::new();
     for (i, (k, _, _)) in CELLS.iter().enumerate() {
         ui.set_cell(i, cfg.get_str(k).unwrap_or(""));
-        let v = ui.values[i];
+        let v = ui.cells[i].value;
         let kw = k.to_string();
         state
             .fields
