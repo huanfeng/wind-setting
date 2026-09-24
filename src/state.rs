@@ -609,6 +609,14 @@ pub struct AppState {
     ///
     /// 页面树早于数据建成，故走信号；切主题保存后由 [`AppState::refresh_theme_follow`] 重拉。
     pub theme_follow: Signal<Option<crate::theme_follow::ThemeFollow>>,
+    /// 「已被 N 个方案覆盖」（F9/R8.6）：`schema.overrideSummary` 的回包，
+    /// `配置键 → 覆盖它的方案 id 列表`（只含可见方案，按方案列表序）。
+    ///
+    /// 页面树早于数据建成，故走信号（同 [`Self::theme_follow`]）；`manifest::field_with`
+    /// 用它现算角标文案（见 `manifest::override_badge_text`）。方案设置对话框保存
+    /// （落 `schema_overrides/<id>.toml`）后由 [`Self::refresh_override_summary`] 重拉——
+    /// 那一次保存正是这份汇总唯一会变的时刻。
+    pub override_summary: Signal<HashMap<String, Vec<String>>>,
     /// 主码表方案下拉的响应式选项（schema.list 码表类，apply_loaded 后填充）。
     /// value 首项为空字符串（"自动"），其余为方案 id；label 对应。
     pub codetable_schema_val_sig: Signal<Vec<String>>,
@@ -975,6 +983,7 @@ impl AppState {
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
             theme_follow: signal(None),
+            override_summary: signal(HashMap::new()),
             codetable_schema_val_sig: signal(vec![]),
             codetable_schema_lab_sig: signal(vec![]),
             pinyin_schema_val_sig: signal(vec![]),
@@ -1820,6 +1829,12 @@ impl AppState {
         self.set_theme_follow(load_theme_follow());
     }
 
+    /// 重拉 `schema.overrideSummary`。在方案设置对话框保存（落 `schema_overrides/<id>.toml`）
+    /// 之后调——覆盖汇总只在那一刻真的变过，全局页此前显示的角标文案才会与盘上不一致。
+    pub fn refresh_override_summary(&self) {
+        self.override_summary.set(load_override_summary());
+    }
+
     /// 主题下拉比其余三个多一份富内容信号（`theme_items_sig`，带版本徽章与删除图标），
     /// 而索引↔取值的映射读的是 `theme_value_sig` —— 两者错位一项，下拉显示的就不是选中的
     /// 那个主题。故补项必须同时补进去，且不带徽章、不带删除图标（它不是一个装着的主题）。
@@ -2071,6 +2086,10 @@ impl AppState {
                 .map(|s| (s.id.clone(), s.name.clone()))
                 .collect(),
         );
+        // 「已被 N 个方案覆盖」（F9/R8.6）角标现算用的两份数据——先方案名后覆盖汇总，
+        // 保证 `override_summary` 的 map 闭包读到的 `schema_names` 已经是新的（同一次
+        // 加载内，两者一起变，不该有一帧新旧不一致）。
+        self.override_summary.set(data.override_summary);
         self.theme_entries = data.theme_entries;
         self.fonts = data.fonts;
         self.apply_theme_entries();
@@ -2432,6 +2451,11 @@ impl AppState {
             self.feedback.set(Some((ToastKind::Error, e)));
             return false;
         }
+        // 方案设置对话框保存落的是 `schema_overrides/<id>.toml`，走的正是上面这个
+        // SideCommitter——覆盖汇总只在这一刻才可能变，重拉一次让全局页角标跟上。
+        if side_changed {
+            self.refresh_override_summary();
+        }
 
         {
             let writers = reg.writers.borrow();
@@ -2778,6 +2802,8 @@ pub struct LoadedState {
     pub fonts: Vec<String>,
     /// `theme.resolved`；取不到（老 core / 连接失败 / 主题全坏）为 `None`。
     pub theme_follow: Option<crate::theme_follow::ThemeFollow>,
+    /// `schema.overrideSummary`；取不到时为空表（见 [`load_override_summary`]）。
+    pub override_summary: HashMap<String, Vec<String>>,
     pub connected: bool,
 }
 
@@ -2804,6 +2830,7 @@ impl LoadedState {
         let h_themes = std::thread::spawn(load_theme_entries);
         let h_fonts = std::thread::spawn(load_fonts);
         let h_theme_follow = std::thread::spawn(load_theme_follow);
+        let h_override_summary = std::thread::spawn(load_override_summary);
 
         let config_res = h_config.join().ok().and_then(|r| r.ok());
         let system_info = h_info
@@ -2823,6 +2850,7 @@ impl LoadedState {
         let theme_entries = h_themes.join().unwrap_or_default();
         let fonts = h_fonts.join().unwrap_or_default();
         let theme_follow = h_theme_follow.join().ok().flatten();
+        let override_summary = h_override_summary.join().unwrap_or_default();
 
         // config_value 是否为 Some 直接反映管道连接是否成功。
         let connected = config_res.is_some();
@@ -2843,6 +2871,7 @@ impl LoadedState {
             theme_entries,
             fonts,
             theme_follow,
+            override_summary,
             connected,
         }
     }
@@ -2853,6 +2882,31 @@ fn load_theme_follow() -> Option<crate::theme_follow::ThemeFollow> {
     rpc::call_core("theme.resolved", &serde_json::json!({}))
         .ok()
         .and_then(|v| crate::theme_follow::ThemeFollow::from_value(&v))
+}
+
+/// 拉「已被 N 个方案覆盖」汇总（`schema.overrideSummary`）：`配置键 → 覆盖它的方案 id 列表`。
+/// RPC 失败或回包不是对象（管道未连接/老 core）同样视为「拿不到」，退回空表——
+/// 角标退化成静态说明，不是报错也不是显示假数据。
+fn load_override_summary() -> HashMap<String, Vec<String>> {
+    let Ok(v) = rpc::call_core("schema.overrideSummary", &serde_json::json!({})) else {
+        return HashMap::new();
+    };
+    let Some(obj) = v.as_object() else {
+        return HashMap::new();
+    };
+    obj.iter()
+        .map(|(k, v)| {
+            let ids = v
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (k.clone(), ids)
+        })
+        .collect()
 }
 
 /// 把 `config.degradation` 的回包折成顶栏文案；未降级（或取不到）返回空串。
@@ -4652,6 +4706,7 @@ mod tests {
             theme_entries: vec![],
             fonts: vec![],
             theme_follow: None,
+            override_summary: HashMap::new(),
             connected: false,
         };
         st.apply_loaded(data);
@@ -4691,6 +4746,7 @@ mod tests {
             theme_entries: vec![],
             fonts: vec![],
             theme_follow: None,
+            override_summary: HashMap::new(),
             connected: true,
         };
         st.apply_loaded(data);
@@ -4835,6 +4891,7 @@ mod tests {
             theme_entries: vec![],
             fonts: vec![],
             theme_follow: None,
+            override_summary: HashMap::new(),
             connected: false,
         };
         st.apply_loaded(data);

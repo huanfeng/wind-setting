@@ -615,6 +615,39 @@ pub fn schema_hint_mode(state: &AppState, keys: &[String]) -> SchemaHintMode {
     }
 }
 
+/// 「可被方案覆盖」角标的文案：静态说明与「已被 N 个方案覆盖」二选一（F9/R8.6）。
+///
+/// `ids` 为空（尚未拉到 `schema.overrideSummary`，或该键当前没有任何方案覆盖）⇒
+/// 维持现状，原样返回 `static_note`——**不能**因为拉取延迟就让角标闪一下「已覆盖」
+/// 再消失，那比不给这条信息更糟。
+///
+/// 名字取不到（`names` 里没有这个 id：方案已卸载/隐藏，或 `schema_names` 尚未就位）
+/// 时退回显示 id 本身——好过整行消失或 panic。
+///
+/// 最多列 3 个名字，超出部分只写「等」而不逐个列完：这枚角标挂在**行**上，不是一个
+/// 独立面板，撑不下十几个方案名。
+pub fn override_badge_text(
+    static_note: &str,
+    ids: &[String],
+    names: &HashMap<String, String>,
+) -> String {
+    if ids.is_empty() {
+        return static_note.to_string();
+    }
+    let shown = ids
+        .iter()
+        .take(3)
+        .map(|id| names.get(id).cloned().unwrap_or_else(|| id.clone()))
+        .collect::<Vec<_>>()
+        .join("、");
+    let shown = if ids.len() > 3 {
+        format!("{shown} 等")
+    } else {
+        shown
+    };
+    format!("已被 {} 个方案覆盖：{shown}", ids.len())
+}
+
 /// 某项的「可被方案覆盖」声明（core `SCHEMA_OVERRIDES` 经 capability 快照下发）。
 /// 静态事实 ⇒ 只查内存里的快照，不发 RPC、不读盘。
 fn schema_override_of<'a>(
@@ -677,7 +710,35 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
     let mut row = if item.typ == "checkbox_group" {
         setting_row_checks(&item.label, item.hint.as_deref(), control)
     } else if let Some(h) = schema_hint {
-        setting_row_schema_hint(&item.label, item.hint.as_deref(), &h.note, control)
+        // 「已被 N 个方案覆盖」是运行期数据（`schema.overrideSummary`），页面树建于
+        // 数据到达之前，故走 Signal 现算——见 `override_badge_text` 与
+        // `AppState::override_summary` 的文档。
+        let tip = {
+            let key = key.to_string();
+            let note = h.note.clone();
+            let names = state.stats_mgr.schema_names;
+            state.override_summary.map(move |ov| {
+                let ids = ov.get(&key).cloned().unwrap_or_default();
+                let name_map: HashMap<String, String> = names.get().into_iter().collect();
+                override_badge_text(&note, &ids, &name_map)
+            })
+        };
+        // 点击跳到覆盖列表首个方案的设置对话框；列表为空时（尚未拉到/已恢复跟随）
+        // 空操作，角标仍只是一个提示。
+        let on_click = {
+            let key = key.to_string();
+            let ov_sig = state.override_summary;
+            let schema_mgr = state.schema_mgr.clone();
+            // ⚠️ 类型必须显式标：不标的话闭包参数的生命周期会按首次使用现场坐实，
+            // 撞上 `impl FnMut(&mut EventCtx) + 'static` 要求的 higher-ranked bound
+            // （报「implementation of FnMut is not general enough」）。
+            move |_ctx: &mut windui::core::EventCtx| {
+                if let Some(id) = ov_sig.get().get(&key).and_then(|v| v.first()) {
+                    schema_mgr.open_settings_at_id(id);
+                }
+            }
+        };
+        setting_row_schema_hint(&item.label, item.hint.as_deref(), tip, on_click, control)
     } else if mode == SchemaHintMode::Header && overridable.is_none() {
         // 顶部那句「本页可被方案覆盖」对这一项不成立 ⇒ 必须标出来，否则统一说明就是
         // 在传播错误信息。反向标记只在 Header 模式下出现，见 `setting_row_global_only`。
@@ -2392,7 +2453,10 @@ pub(crate) fn dialog_group_header(name: &str) -> Element {
 ///
 /// 图标 + 常驻文字，**不是悬停角标**：它说的是整个对话框的性质，用户不会想到去悬停一个
 /// 标题；而它替掉的是十几个角标，一行常驻文字换回来的空间绰绰有余。
-pub(crate) fn dialog_notice_row(note: &str) -> Element {
+///
+/// 文案走 Signal（R8.6 起）：`Header` 模式下用它接住「其中 N 项已被方案覆盖」那句
+/// 追加计数——这是运行期数据，页面树建于数据到达之前，取不到 Signal 就定型不了。
+pub(crate) fn dialog_notice_row(note: Signal<String>) -> Element {
     Element::row()
         .width_match()
         .cross(Align::Start)
@@ -2404,7 +2468,7 @@ pub(crate) fn dialog_notice_row(note: &str) -> Element {
                 .padding_xy(0, 2),
         )
         .child(
-            Element::label(note)
+            Element::label_signal(note)
                 .font_size(12.0)
                 .fg_role(Role::TextSubtle)
                 .weight(1.0)
@@ -2428,6 +2492,37 @@ fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> 
         .into_iter()
         .max_by_key(|(note, n)| (*n, note.len()))
         .map(|(note, _)| note.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// [`scheme_config_section`] 卡片顶部那句统一说明的完整文案（F9/R8.6）。
+///
+/// `Header` 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能因此从界面上凭空
+/// 消失——本函数把它折算成「其中 N 项已被方案覆盖」追加在统一说明之后。`PerRow` 模式
+/// 不追加：那些项各自的角标已经在说这件事，重复说一遍反而是本函数试图消除的那种噪音。
+///
+/// 抽成纯函数（而不是内联在 [`scheme_config_section`] 的 Signal 闭包里）好让它可以脱离
+/// `AppState` 单独测试——闭包本身只做「读两个 Signal、调这个函数」，没有分支要测。
+fn scheme_config_notice_text(
+    scope_note: &str,
+    header_note: &Option<String>,
+    hint_mode: SchemaHintMode,
+    keys: &[String],
+    ov: &HashMap<String, Vec<String>>,
+) -> String {
+    let mut s = match (hint_mode, header_note) {
+        (SchemaHintMode::Header, Some(note)) => format!("{scope_note}{note}"),
+        _ => scope_note.to_string(),
+    };
+    if hint_mode == SchemaHintMode::Header {
+        let overridden = keys
+            .iter()
+            .filter(|k| ov.get(*k).is_some_and(|v| !v.is_empty()))
+            .count();
+        if overridden > 0 {
+            s.push_str(&format!("其中 {overridden} 项已被方案覆盖。"));
+        }
+    }
+    s
 }
 
 /// 对话框内小标题的字号。
@@ -2474,11 +2569,17 @@ pub fn scheme_config_section(
     // 故无论有没有覆盖说明，这一行都出。
     let hint_mode = schema_hint_mode(state, &keys);
     let scope_note = format!("此为全局{label}。");
-    let notice = match (hint_mode, schema_hint_header_note(state, &keys)) {
-        (SchemaHintMode::Header, Some(note)) => format!("{scope_note}{note}"),
-        _ => scope_note,
+    let header_note = schema_hint_header_note(state, &keys);
+    // Header 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能就此凭空消失——
+    // 追加进这句统一说明的计数里。计数走 Signal：覆盖汇总（`schema.overrideSummary`）
+    // 是运行期数据，页面树建于数据到达之前，定型的字符串接不住后到的数字。
+    let notice = {
+        let keys_for_count = keys.clone();
+        state.override_summary.map(move |ov| {
+            scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
+        })
     };
-    rows.push(dialog_notice_row(&notice));
+    rows.push(dialog_notice_row(notice));
 
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     rows.push(dialog_group_header(section));
@@ -7379,6 +7480,92 @@ mod tests {
         assert!(
             note.as_deref().is_some_and(|n| n.contains("覆盖")),
             "Header 模式取不到 note：{note:?}"
+        );
+    }
+
+    /// 「已被 N 个方案覆盖」角标文案（F9/R8.6）。三条用例对应 brief 的验收条件：
+    /// 未覆盖维持原状、覆盖列出名字、超过 3 个截断为「等」。
+    #[test]
+    fn badge_text_keeps_static_note_when_not_overridden() {
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &[], &HashMap::new()),
+            "可被方案覆盖"
+        );
+    }
+
+    #[test]
+    fn badge_text_lists_overriding_schemas() {
+        let names = HashMap::from([("wubi86".to_string(), "五笔86".to_string())]);
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &["wubi86".into()], &names),
+            "已被 1 个方案覆盖：五笔86"
+        );
+    }
+
+    #[test]
+    fn badge_text_truncates_after_three() {
+        let ids: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let names: HashMap<String, String> =
+            ids.iter().map(|i| (i.clone(), i.to_uppercase())).collect();
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &ids, &names),
+            "已被 4 个方案覆盖：A、B、C 等"
+        );
+    }
+
+    /// 名字取不到（方案已卸载/隐藏）时退回显示 id，不整行消失。
+    #[test]
+    fn badge_text_falls_back_to_id_when_name_missing() {
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &["ghost".into()], &HashMap::new()),
+            "已被 1 个方案覆盖：ghost"
+        );
+    }
+
+    /// Header 模式下逐行角标收起来了，「已被 N 项覆盖」不能因此从界面上消失——
+    /// 必须追加进卡片顶部那句统一说明里；PerRow 模式不追加，那些项各自的角标已经在
+    /// 说这件事。
+    #[test]
+    fn scheme_config_notice_appends_count_only_in_header_mode() {
+        let keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let ov = HashMap::from([("a".to_string(), vec!["wubi86".to_string()])]);
+        assert_eq!(
+            scheme_config_notice_text(
+                "此为全局码表方案配置。",
+                &Some("可被方案覆盖。".to_string()),
+                SchemaHintMode::Header,
+                &keys,
+                &ov,
+            ),
+            "此为全局码表方案配置。可被方案覆盖。其中 1 项已被方案覆盖。",
+            "Header 模式：统一说明后要追加计数"
+        );
+        assert_eq!(
+            scheme_config_notice_text(
+                "此为全局混输行为。",
+                &None,
+                SchemaHintMode::PerRow,
+                &keys,
+                &ov,
+            ),
+            "此为全局混输行为。",
+            "PerRow 模式：逐行角标已经说过，不重复"
+        );
+    }
+
+    /// 没有任何键被覆盖时不追加计数句子——「其中 0 项」不比什么都不说更有信息量。
+    #[test]
+    fn scheme_config_notice_omits_count_when_nothing_overridden() {
+        let keys = vec!["a".to_string()];
+        assert_eq!(
+            scheme_config_notice_text(
+                "此为全局码表方案配置。",
+                &Some("可被方案覆盖。".to_string()),
+                SchemaHintMode::Header,
+                &keys,
+                &HashMap::new(),
+            ),
+            "此为全局码表方案配置。可被方案覆盖。"
         );
     }
 

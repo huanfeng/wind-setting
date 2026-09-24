@@ -266,7 +266,7 @@ impl Widget for SignalTip {
 /// `tip` 为空串时图标仍在，只是不弹提示（[`SignalTip::tooltip`] 返回 None）。调用方
 /// 若不想让它出现，用 `visible_when` 收掉整个角标。
 pub fn info_badge(tip: Signal<String>, on_click: impl FnMut(&mut EventCtx) + 'static) -> Element {
-    // 亮/暗双态叠加，同 [`schema_hint_badge`]：`tint` 收的是静态色，换肤不跟随。
+    // 亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，两套主题下的 muted 色不是同一个。
     let icon = |on_dark: bool| {
         let c = if on_dark {
             Color::hex(0x9AA4B2)
@@ -291,36 +291,7 @@ pub fn info_badge(tip: Signal<String>, on_click: impl FnMut(&mut EventCtx) + 'st
         )
 }
 
-/// 「可被方案覆盖」提示图标：标签右侧的小信息角标，悬停出完整说明。
-///
-/// 与 [`section_header`] 同样走亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，
-/// 而两套主题下的 muted 色不是同一个。
-///
-/// 图标边长比 [`crate::icons::ICON_PX`] 小一号：它是标签的**角标**，与标签文字齐高才
-/// 不会把行撑高；用整尺寸会显得像另一个控件。
-fn schema_hint_badge(note: &str) -> Element {
-    // 换行折成空格。tooltip 本身收得了多行了，但这是一句**行内说明**：note 来自 core 的
-    // SCHEMA_OVERRIDES，那边都是单行，真混进换行也该排成一句，而不是把角标提示撑成一段。
-    let tip = note.replace('\n', " ");
-    // ⚠️ tooltip 挂在**每个图标自己**身上，不是外层 stack：容器没有背景时不参与
-    // hit-test，挂上去永远不会触发，而且没有任何报错——只有 `--hover` 截图看得出来。
-    let one = |on_dark: bool, tip: String| {
-        let c = if on_dark {
-            Color::hex(0x9AA4B2)
-        } else {
-            Color::hex(0x8A94A6)
-        };
-        crate::icons::tinted(crate::icons::INFO_THIN, 14, c)
-            .tooltip(tip)
-            .visible_when(move || dark_sig().get() == on_dark)
-    };
-    Element::stack()
-        .size(14, 14)
-        .child(one(false, tip.clone()))
-        .child(one(true, tip))
-}
-
-/// 带「可被方案覆盖」提示的设置行：标签后跟一个信息角标，悬停显示说明。
+/// 带「可被方案覆盖」提示的设置行：标签后跟一个信息角标，悬停显示说明，点击跳转。
 ///
 /// # 它回答什么
 ///
@@ -329,6 +300,14 @@ fn schema_hint_badge(note: &str) -> Element {
 /// [`setting_row_override`] 已经在方案设置那一端把「这项被我覆盖了」标出来了，
 /// 本函数补的是全局这一端。
 ///
+/// # 为什么走 Signal 而不是静态串（R8.6 起）
+///
+/// 「可被方案覆盖」是静态事实（来自 core 的 `SCHEMA_OVERRIDES`），但「**已被**哪些方案
+/// 覆盖」是运行期数据（`schema.overrideSummary`），且页面树建于数据到达之前——
+/// 见 [`crate::state::AppState::override_summary`]。故 `tip` 必须是 `Signal<String>`，
+/// 调用方按 [`crate::manifest::override_badge_text`] 现算，静态说明与「已被 N 个方案
+/// 覆盖」共用同一枚角标，不再新增一个视觉元素。
+///
 /// # 为什么用中性色而不是警告色
 ///
 /// 这里表达的是**可能性**（这一项存在方案级形态），不是**已发生**（某个方案确实改了它）。
@@ -336,15 +315,17 @@ fn schema_hint_badge(note: &str) -> Element {
 /// 方案根本没声明那一项。真正「已发生」的提示归 [`setting_row_override`] 那一端——
 /// 那里同样不用警告色：来源不是故障，见该函数的三态三色表。
 ///
-/// `hint` 由 core 的 `config_schema::SCHEMA_OVERRIDES` 给出，**原样显示不再改写**：
-/// 两边各写一份措辞，改了一处就会分叉。
+/// 点击角标跳到（首个）覆盖方案的设置对话框——调用方传入的 `on_click` 通常就是
+/// `schema_mgr.open_settings_at_id(id)`；覆盖列表为空时调用方应做成空操作，角标仍只是
+/// 一个提示。
 pub fn setting_row_schema_hint(
     label: &str,
     sub: Option<&str>,
-    hint: &str,
+    tip: Signal<String>,
+    on_click: impl FnMut(&mut EventCtx) + 'static,
     control: Element,
 ) -> Element {
-    setting_row_badged(label, sub, schema_hint_badge(hint), control)
+    setting_row_badged(label, sub, info_badge(tip, on_click), control)
 }
 
 /// 「这一项**不能**按方案单独设置」的行。
