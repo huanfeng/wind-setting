@@ -1711,6 +1711,11 @@
       "type": "strlist"
     },
     {
+      "default": 0,
+      "key": "ui.font.weight",
+      "type": "int"
+    },
+    {
       "default": {},
       "key": "ui.font.scripts",
       "type": "map",

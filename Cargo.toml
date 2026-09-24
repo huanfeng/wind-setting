@@ -36,6 +36,9 @@ wind-transform = { path = "../WindInput/wind_input/crates/wind-transform" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+# 设置页字体下拉按 DirectWrite family 枚举（与 core 渲染端同一字体模型，见 state.rs
+# `load_fonts`）。版本与 windui 对齐，不新增编译单元。
+windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite"] }
 
 [features]
 default = []

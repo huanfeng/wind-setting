@@ -2467,6 +2467,7 @@ dependencies = [
  "wind-punct",
  "wind-rpc",
  "wind-transform",
+ "windows 0.62.2",
  "windui",
  "winreg 0.52.0",
  "winresource",

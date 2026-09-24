@@ -2438,6 +2438,30 @@ options_source = "fonts"
 label = "候选窗字体"
 hint = "候选窗全部文字的字体，设置后覆盖主题字体；留空跟随主题"
 
+# 字重独立于字体：下拉列的是 DirectWrite 的字体家族名（不含字重），旧版列表里
+# 「思源宋体 SemiBold」这类带字重的名字由 core 解析兼容（论坛 t95）。
+[[items]]
+key = "ui.font.weight"
+group = "ui"
+section = "候选字体"
+type = "number_select"
+label = "候选窗字重"
+hint = "候选窗文字的粗细；字体没有该字重时取最接近的。主题里单独设的粗细（如选中加粗）仍然生效"
+width = 160
+options = [
+  { value = "0", label = "默认" },
+  { value = "100", label = "极细 100" },
+  { value = "200", label = "特细 200" },
+  { value = "300", label = "细 300" },
+  { value = "350", label = "半细 350" },
+  { value = "400", label = "常规 400" },
+  { value = "500", label = "中等 500" },
+  { value = "600", label = "半粗 600" },
+  { value = "700", label = "粗 700" },
+  { value = "800", label = "特粗 800" },
+  { value = "900", label = "黑 900" },
+]
+
 [[items]]
 key = "ui.font.fallback"
 group = "ui"

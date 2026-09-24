@@ -4754,55 +4754,48 @@ mod tests {
         assert!(!st.conn_failed.get(), "mock 模式不应阻断");
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
+
+    /// 设置页与 core 挑本地化字体名的规则必须一致（见 [`super::pick_font_display_name`]）。
+    #[test]
+    fn font_name_pick_matches_core() {
+        let cases: Vec<Vec<(&str, &str)>> = vec![
+            vec![("en-us", "Source Han Serif SC"), ("zh-CN", "思源宋体")],
+            vec![("ja-jp", "源ノ明朝"), ("en-us", "Source Han Serif")],
+            vec![("ja-jp", "源ノ明朝")],
+            vec![("zh-cn", " "), ("en-us", "Foo")],
+            vec![],
+        ];
+        for c in cases {
+            let names: Vec<(String, String)> = c
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect();
+            assert_eq!(
+                super::pick_font_display_name(&names),
+                wind_config::font_name::pick_localized_name(&names),
+                "{names:?}"
+            );
+        }
+    }
 }
 
-/// GDI 字体枚举所需的 LOGFONTW 结构（与 Windows SDK 内存布局一致）。
-#[cfg(windows)]
-#[repr(C)]
-struct GdiLogFontW {
-    lf_height: i32,
-    lf_width: i32,
-    lf_escapement: i32,
-    lf_orientation: i32,
-    lf_weight: i32,
-    lf_italic: u8,
-    lf_underline: u8,
-    lf_strike_out: u8,
-    lf_char_set: u8,
-    lf_out_precision: u8,
-    lf_clip_precision: u8,
-    lf_quality: u8,
-    lf_pitch_and_family: u8,
-    lf_face_name: [u16; 32],
-}
-
-#[cfg(windows)]
-#[link(name = "gdi32")]
-unsafe extern "system" {
-    fn GetDC(hwnd: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn ReleaseDC(hwnd: *mut core::ffi::c_void, hdc: *mut core::ffi::c_void) -> i32;
-    fn EnumFontFamiliesExW(
-        hdc: *mut core::ffi::c_void,
-        lplf: *const GdiLogFontW,
-        lpproc: unsafe extern "system" fn(
-            *const GdiLogFontW,
-            *const core::ffi::c_void,
-            u32,
-            isize,
-        ) -> i32,
-        l_param: isize,
-        dw_flags: u32,
-    ) -> i32;
-}
-
-/// 加载系统字体列表：Windows 用 GDI EnumFontFamiliesExW 获取本地化字体名；
-/// 非 Windows 或 GDI 不可用时回退 system.fonts RPC。
+/// 加载系统字体列表：Windows 用 DirectWrite 系统字体集枚举字体**家族**；
+/// 非 Windows 或枚举失败时回退 system.fonts RPC。
+///
+/// # 为什么不用 GDI（论坛 t95 / core 看板 A2-1）
+///
+/// 候选窗渲染端用 DirectWrite `FindFamilyName` 查字体。早先这里用 GDI
+/// `EnumFontFamiliesExW` 供给下拉，而 GDI 每个 family 最多 4 个 face，七字重的「思源宋体」
+/// 被拆成「思源宋体 SemiBold」这类独立 face name 摆进下拉——DirectWrite 里查不到，
+/// 选了一律静默回落默认字体。GDI 名还受 `lfFaceName` 31 字符截断。
+/// 现在下拉列 DirectWrite family（不含字重），字重是单独一项 `ui.font.weight`；
+/// 老配置里的 GDI 名由 core 渲染端解析兼容，这里不迁移。
 fn load_fonts() -> Vec<String> {
     #[cfg(windows)]
     {
-        let gdi = load_fonts_from_gdi();
-        if !gdi.is_empty() {
-            return gdi;
+        let fonts = load_fonts_from_dwrite();
+        if !fonts.is_empty() {
+            return fonts;
         }
     }
     let list =
@@ -4822,57 +4815,91 @@ fn load_fonts() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Windows GDI 字体族枚举：EnumFontFamiliesExW（DEFAULT_CHARSET）直接返回系统
-/// 当前 locale 的字体显示名，中文系统得"微软雅黑"而非注册表英文键名。
-/// 跳过 '@' 开头的竖排 CJK 变体字体，HashSet 去重后排序。
-#[cfg(windows)]
-fn load_fonts_from_gdi() -> Vec<String> {
-    use std::collections::HashSet;
+/// 从 DirectWrite 本地化名表 `[(locale, 名字)]` 里挑下拉显示 / 存盘用的那个：
+/// zh-cn 优先、其次 en-us、都没有取第一条。
+///
+/// ⚠️ 与 core `wind_config::font_name::pick_localized_name` **同一份规则**（core 渲染端
+/// 按 face 名反查 family 时用它报名字）。wind-config 在本仓只是 dev 依赖，发布二进制不带它，
+/// 故这里抄一份，由测试 `font_name_pick_matches_core` 钉住两边不漂移。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pick_font_display_name(names: &[(String, String)]) -> Option<String> {
+    let by = |loc: &str| {
+        names
+            .iter()
+            .find(|(l, n)| l.eq_ignore_ascii_case(loc) && !n.trim().is_empty())
+            .map(|(_, n)| n.clone())
+    };
+    by("zh-cn").or_else(|| by("en-us")).or_else(|| {
+        names
+            .iter()
+            .find(|(_, n)| !n.trim().is_empty())
+            .map(|(_, n)| n.clone())
+    })
+}
 
-    unsafe extern "system" fn font_enum_cb(
-        lplf: *const GdiLogFontW,
-        _ntm: *const core::ffi::c_void,
-        _font_type: u32,
-        lp: isize,
-    ) -> i32 {
+/// DirectWrite 系统字体集的全部 family 名：每族取一个本地化名（见
+/// [`pick_font_display_name`]），去重排序。
+///
+/// 存进配置的就是这个名字：`FindFamilyName` 跨全部 locale 匹配，任何一个本地化名都能被
+/// 渲染端查回来。
+#[cfg(windows)]
+fn load_fonts_from_dwrite() -> Vec<String> {
+    use windows::Win32::Graphics::DirectWrite::{
+        DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection,
+        IDWriteLocalizedStrings,
+    };
+
+    fn localized(strings: &IDWriteLocalizedStrings) -> Vec<(String, String)> {
+        let mut out = Vec::new();
         unsafe {
-            let lf = &*lplf;
-            let families = &mut *(lp as *mut HashSet<String>);
-            let len = lf.lf_face_name.iter().position(|&c| c == 0).unwrap_or(32);
-            let name = String::from_utf16_lossy(&lf.lf_face_name[..len]).to_string();
-            if !name.starts_with('@') && !name.is_empty() {
-                families.insert(name);
+            for i in 0..strings.GetCount() {
+                let loc = strings.GetLocaleNameLength(i).ok().and_then(|len| {
+                    let mut buf = vec![0u16; len as usize + 1];
+                    strings
+                        .GetLocaleName(i, &mut buf)
+                        .ok()
+                        .map(|_| String::from_utf16_lossy(&buf[..len as usize]))
+                });
+                let name = strings.GetStringLength(i).ok().and_then(|len| {
+                    let mut buf = vec![0u16; len as usize + 1];
+                    strings
+                        .GetString(i, &mut buf)
+                        .ok()
+                        .map(|_| String::from_utf16_lossy(&buf[..len as usize]))
+                });
+                if let (Some(l), Some(n)) = (loc, name) {
+                    out.push((l, n));
+                }
             }
         }
-        1
+        out
     }
 
     unsafe {
-        let hdc = GetDC(std::ptr::null_mut());
-        if hdc.is_null() {
+        let Ok(factory) = DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) else {
+            return vec![];
+        };
+        let mut collection: Option<IDWriteFontCollection> = None;
+        if factory
+            .GetSystemFontCollection(&mut collection, false)
+            .is_err()
+        {
             return vec![];
         }
-        let lf = GdiLogFontW {
-            lf_height: 0,
-            lf_width: 0,
-            lf_escapement: 0,
-            lf_orientation: 0,
-            lf_weight: 0,
-            lf_italic: 0,
-            lf_underline: 0,
-            lf_strike_out: 0,
-            lf_char_set: 1, // DEFAULT_CHARSET — 枚举所有字体族
-            lf_out_precision: 0,
-            lf_clip_precision: 0,
-            lf_quality: 0,
-            lf_pitch_and_family: 0,
-            lf_face_name: [0u16; 32],
+        let Some(collection) = collection else {
+            return vec![];
         };
-        let mut families: HashSet<String> = HashSet::new();
-        EnumFontFamiliesExW(hdc, &lf, font_enum_cb, &mut families as *mut _ as isize, 0);
-        ReleaseDC(std::ptr::null_mut(), hdc);
-        let mut v: Vec<String> = families.into_iter().collect();
-        v.sort();
-        v
+        let mut families = std::collections::BTreeSet::new();
+        for i in 0..collection.GetFontFamilyCount() {
+            let Ok(names) = collection.GetFontFamily(i).and_then(|f| f.GetFamilyNames()) else {
+                continue;
+            };
+            if let Some(name) = pick_font_display_name(&localized(&names))
+                && !name.starts_with('@')
+            {
+                families.insert(name);
+            }
+        }
+        families.into_iter().collect()
     }
 }

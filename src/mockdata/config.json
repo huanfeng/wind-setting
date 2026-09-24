@@ -452,7 +452,8 @@
    "family": "",
    "path": "",
    "render_mode": "directwrite",
-   "scripts": {}
+   "scripts": {},
+   "weight": 0
   },
   "labels": {
    "caps_lock": "A",
