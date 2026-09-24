@@ -204,6 +204,7 @@
   ],
   "key_actions": {},
   "open_add_word_dialog": "ctrl+shift+equal",
+  "open_dictionary": "none",
   "open_settings": "ctrl+shift+]",
   "overflow": {
    "number_key": "ignore",

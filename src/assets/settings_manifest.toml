@@ -2361,6 +2361,15 @@ label = "打开设置"
 hint = "打开设置窗口"
 global = true
 
+[[items]]
+key = "keys.open_dictionary"
+group = "keys"
+section = "功能快捷键"
+type = "hotkey"
+label = "打开词库管理"
+hint = "直接跳到设置窗口的词库管理页（当前方案域）。出厂不绑，点开设置一个组合键即可用"
+global = true
+
 # 截的是输入法自己的窗口（候选窗/工具栏/状态提示…），不是屏幕截图——label 与 hint
 # 都要说清，否则用户会当成系统截图工具去按。core 侧见 wind-ui/manager.rs 的
 # `UiCommand::TakeScreenshot` 分支：逐个窗口存 PNG，候选窗那张顺带进剪贴板。

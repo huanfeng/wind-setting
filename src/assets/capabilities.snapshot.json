@@ -1376,6 +1376,11 @@
       "type": "str"
     },
     {
+      "default": "none",
+      "key": "keys.open_dictionary",
+      "type": "str"
+    },
+    {
       "default": "ctrl+equal",
       "key": "keys.add_word",
       "type": "str"
