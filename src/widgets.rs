@@ -572,6 +572,26 @@ pub fn override_control(
     reason: &str,
     width: i32,
 ) -> Element {
+    override_control_signal(
+        over,
+        gate,
+        editor,
+        signal(follow_text.to_string()),
+        reason,
+        width,
+    )
+}
+
+/// [`override_control`] 的跟随值随数据变化的版本：外观页的「跟随主题」值要等
+/// `theme.resolved` 回来、且切主题后会变，而页面树早于数据建成，只能绑信号。
+pub fn override_control_signal(
+    over: Signal<bool>,
+    gate: std::rc::Rc<dyn Fn() -> bool>,
+    editor: Element,
+    follow_text: Signal<String>,
+    reason: &str,
+    width: i32,
+) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
     let (g1, g2, g3) = (gate.clone(), gate.clone(), gate);
@@ -584,7 +604,7 @@ pub fn override_control(
         .child(Element::col().weight(1.0))
         .child(editor.visible_when(move || g1() && over.get()))
         .child(
-            Element::label(follow_text)
+            Element::label_signal(follow_text)
                 .font_size(f.label_size(m))
                 // 跟随值用**正常文字色**——它是这一项当前真实生效的值，不是残缺状态。
                 .fg_role(Role::Text)

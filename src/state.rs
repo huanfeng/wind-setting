@@ -598,10 +598,17 @@ pub struct AppState {
     pub theme_overwrite_msg: Signal<String>,
     /// 覆盖确认对话框可见标志。
     pub theme_overwrite_visible: Signal<bool>,
-    /// 候选窗字体下拉的响应式选项（system.fonts）。
-    /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
+    /// 候选窗字体下拉的响应式选项（system.fonts）：value 与 label 都是字体族名。
+    ///
+    /// 不再有空值「默认」首项：「跟随主题」由勾选行表达（R8.1），未勾选时控件整个藏起、
+    /// 落盘空串，下拉里再放一个空值档就是同一件事的第二个入口。
     pub font_sig: Signal<Vec<String>>,
     pub font_label_sig: Signal<Vec<String>>,
+    /// 当前主题对外观可覆盖键解析后的值（`theme.resolved`），外观页「跟随主题（值）」读它。
+    /// `None` = 还没拉到，或两级主题都加载失败——文案退化为「跟随主题」。
+    ///
+    /// 页面树早于数据建成，故走信号；切主题保存后由 [`AppState::refresh_theme_follow`] 重拉。
+    pub theme_follow: Signal<Option<crate::theme_follow::ThemeFollow>>,
     /// 主码表方案下拉的响应式选项（schema.list 码表类，apply_loaded 后填充）。
     /// value 首项为空字符串（"自动"），其余为方案 id；label 对应。
     pub codetable_schema_val_sig: Signal<Vec<String>>,
@@ -967,6 +974,7 @@ impl AppState {
             theme_overwrite_visible: signal(false),
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
+            theme_follow: signal(None),
             codetable_schema_val_sig: signal(vec![]),
             codetable_schema_lab_sig: signal(vec![]),
             pinyin_schema_val_sig: signal(vec![]),
@@ -1791,6 +1799,27 @@ impl AppState {
         );
     }
 
+    /// 换上新的主题跟随值。外观页的跟随行经信号自己刷新文案与勾选初值。
+    ///
+    /// 主题字体不在系统字体列表里（主题写的是英文族名、列表是本地化名，或干脆没装）时
+    /// 补进列表：否则勾选瞬间下拉按「找不到 ⇒ 首项」落到别的字体上，跟随文案说的是
+    /// A、勾上却成了 B。标签就是族名本身——它不是「当前配置」，不套 `unlisted_label`。
+    pub fn set_theme_follow(&self, tf: Option<crate::theme_follow::ThemeFollow>) {
+        if let Some(fam) = tf.as_ref().and_then(|t| t.font_family.clone())
+            && !self.font_sig.with(|v| v.contains(&fam))
+        {
+            self.font_sig.update(|v| v.push(fam.clone()));
+            self.font_label_sig.update(|l| l.push(fam));
+        }
+        self.theme_follow.set(tf);
+    }
+
+    /// 重拉 `theme.resolved`。在保存了 `ui.theme.*`（换主题、明暗）之后调——跟随值是
+    /// core 按**已生效**的配置解析的，保存前拉到的还是旧主题的值。
+    pub fn refresh_theme_follow(&self) {
+        self.set_theme_follow(load_theme_follow());
+    }
+
     /// 主题下拉比其余三个多一份富内容信号（`theme_items_sig`，带版本徽章与删除图标），
     /// 而索引↔取值的映射读的是 `theme_value_sig` —— 两者错位一项，下拉显示的就不是选中的
     /// 那个主题。故补项必须同时补进去，且不带徽章、不带删除图标（它不是一个装着的主题）。
@@ -2045,17 +2074,11 @@ impl AppState {
         self.theme_entries = data.theme_entries;
         self.fonts = data.fonts;
         self.apply_theme_entries();
-        // value：空字符串 = 使用默认字体；label：首项显示"默认"。
-        self.font_sig.set(
-            std::iter::once(String::new())
-                .chain(self.fonts.iter().cloned())
-                .collect(),
-        );
-        self.font_label_sig.set(
-            std::iter::once("默认".to_string())
-                .chain(self.fonts.iter().cloned())
-                .collect(),
-        );
+        // value 与 label 同为字体族名。没有空值首项，见 `font_sig` 字段注释。
+        self.font_sig.set(self.fonts.clone());
+        self.font_label_sig.set(self.fonts.clone());
+        // 必须在字体列表之后（主题字体要补进列表）、loaders 之前（跟随行按它播种）。
+        self.set_theme_follow(data.theme_follow);
         // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"/"默认：全拼"，其余为 id/name。
         // 必须在 loaders 跑之前就位，否则 loader 无法在选项列表中定位当前配置值。
         //
@@ -2460,6 +2483,9 @@ impl AppState {
                     .unwrap_or_default();
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
+                    if touches_theme(&items) {
+                        self.refresh_theme_follow();
+                    }
                     self.feedback.set(Some((
                         ToastKind::Success,
                         format!("已保存 {} 项变更", items_json.len()),
@@ -2486,6 +2512,13 @@ impl AppState {
             }
         }
     }
+}
+
+/// 这次保存有没有动到主题选择（`ui.theme.*`：主题名、明暗模式）。动了就得重拉跟随值。
+fn touches_theme(items: &[crate::config::ConfigItem]) -> bool {
+    items
+        .iter()
+        .any(|it| it.key == "ui.theme" || it.key.starts_with("ui.theme."))
 }
 
 /// 收集当前配置里"裸键触发"四组，供按键冲突检测用。
@@ -2743,6 +2776,8 @@ pub struct LoadedState {
     pub schemas: Vec<SchemaInfo>,
     pub theme_entries: Vec<ThemeEntry>,
     pub fonts: Vec<String>,
+    /// `theme.resolved`；取不到（老 core / 连接失败 / 主题全坏）为 `None`。
+    pub theme_follow: Option<crate::theme_follow::ThemeFollow>,
     pub connected: bool,
 }
 
@@ -2756,7 +2791,7 @@ impl LoadedState {
     pub fn fetch() -> Self {
         let t0 = std::time::Instant::now();
 
-        // 7 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
+        // 8 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
         let h_config = std::thread::spawn(|| rpc::call_core("config.get", &serde_json::json!({})));
         let h_info = std::thread::spawn(|| rpc::call_core("system.info", &serde_json::json!({})));
         // 并行拉取 ⇒ 零额外往返（wall-clock 仍是 max(各调用延迟)）。它在 core 侧要读盘，
@@ -2768,6 +2803,7 @@ impl LoadedState {
         let h_schemas = std::thread::spawn(load_schemas);
         let h_themes = std::thread::spawn(load_theme_entries);
         let h_fonts = std::thread::spawn(load_fonts);
+        let h_theme_follow = std::thread::spawn(load_theme_follow);
 
         let config_res = h_config.join().ok().and_then(|r| r.ok());
         let system_info = h_info
@@ -2786,6 +2822,7 @@ impl LoadedState {
         let schemas = h_schemas.join().unwrap_or_default();
         let theme_entries = h_themes.join().unwrap_or_default();
         let fonts = h_fonts.join().unwrap_or_default();
+        let theme_follow = h_theme_follow.join().ok().flatten();
 
         // config_value 是否为 Some 直接反映管道连接是否成功。
         let connected = config_res.is_some();
@@ -2805,9 +2842,17 @@ impl LoadedState {
             schemas,
             theme_entries,
             fonts,
+            theme_follow,
             connected,
         }
     }
+}
+
+/// 拉当前主题的跟随值（`theme.resolved`）。RPC 失败与回包 `null` 同样视为拿不到。
+fn load_theme_follow() -> Option<crate::theme_follow::ThemeFollow> {
+    rpc::call_core("theme.resolved", &serde_json::json!({}))
+        .ok()
+        .and_then(|v| crate::theme_follow::ThemeFollow::from_value(&v))
 }
 
 /// 把 `config.degradation` 的回包折成顶栏文案；未降级（或取不到）返回空串。
@@ -3458,7 +3503,11 @@ mod tests {
     #[test]
     fn key_action_label_knows_rare_char() {
         assert_eq!(key_action_label("rare_char"), "生僻字");
-        assert_eq!(key_action_label("bogus_verb"), "bogus_verb", "未知动词原样回显");
+        assert_eq!(
+            key_action_label("bogus_verb"),
+            "bogus_verb",
+            "未知动词原样回显"
+        );
     }
 
     /// 「恢复本页」的分组映射必须覆盖每一个**有清单分组的**页，且不漏不错。
@@ -4540,6 +4589,41 @@ mod tests {
         );
     }
 
+    /// 外观页「跟随主题（值）」的数据来源：加载时并行拉 `theme.resolved` 并在 loaders
+    /// 之前就位；字体下拉不再有空值「默认」首项（跟随由勾选行表达）。
+    #[test]
+    fn apply_loaded_sets_theme_follow_and_drops_default_font_entry() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.apply_loaded(LoadedState::fetch());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert_eq!(st.theme_follow.get().map(|t| t.font_size), Some(18));
+        let fonts = st.font_sig.get();
+        assert!(!fonts.is_empty(), "mock 有字体列表");
+        assert!(
+            !fonts.iter().any(String::is_empty),
+            "不该再有空值首项: {fonts:?}"
+        );
+        assert_eq!(fonts, st.font_label_sig.get(), "值与标签同为族名");
+    }
+
+    /// 只有保存了主题选择（主题名 / 明暗）才重拉跟随值。
+    #[test]
+    fn only_theme_keys_trigger_theme_follow_refresh() {
+        let item = |k: &str| crate::config::ConfigItem {
+            key: k.to_string(),
+            value: Value::Null,
+        };
+        assert!(touches_theme(&[item("ui.theme.name")]));
+        assert!(touches_theme(&[
+            item("ui.candidate.font_size"),
+            item("ui.theme")
+        ]));
+        assert!(!touches_theme(&[item("ui.candidate.font_size")]));
+        assert!(!touches_theme(&[item("ui.theme_editor")]));
+    }
+
     #[test]
     fn loaded_state_uses_embedded_manifest_in_mock() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -4567,6 +4651,7 @@ mod tests {
             schemas: vec![],
             theme_entries: vec![],
             fonts: vec![],
+            theme_follow: None,
             connected: false,
         };
         st.apply_loaded(data);
@@ -4605,6 +4690,7 @@ mod tests {
             }],
             theme_entries: vec![],
             fonts: vec![],
+            theme_follow: None,
             connected: true,
         };
         st.apply_loaded(data);
@@ -4748,6 +4834,7 @@ mod tests {
             schemas: vec![],
             theme_entries: vec![],
             fonts: vec![],
+            theme_follow: None,
             connected: false,
         };
         st.apply_loaded(data);

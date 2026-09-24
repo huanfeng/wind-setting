@@ -91,6 +91,11 @@ pub struct MItem {
     /// 隐藏此项（未完全实现 / 不对最终用户开放 / 当前平台无落点），不渲染也不注册
     /// writer/loader。清单里的 `platform` 字段在解析时折进本字段（见 [`platform_matches`]）。
     pub hidden: bool,
+    /// 哨兵值（R3：`0` / `""`）表示「跟随谁」。目前只有 `"theme"`（外观页字号、字族、
+    /// 字重、翻页栏、页码）。呈现按控件类型分两种（R8.1 / R8.2）：数值与下拉整行包成
+    /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
+    /// 「跟随主题（值）」（见 [`follow_labels`]）。
+    pub follow: Option<String>,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -215,6 +220,7 @@ impl Manifest {
                     dialog_group: opt_str(it, "dialog_group"),
                     opens_dialog: opt_str(it, "opens_dialog"),
                     subsection: opt_str(it, "subsection"),
+                    follow: opt_str(it, "follow"),
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
                     // 不注册 writer/loader，配置文件里的原值原样留着不动。
@@ -642,6 +648,16 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
         return build_log_privacy_warning(state, item);
     }
     let cfg = &state.current_config;
+    if item.follow.as_deref() == Some("theme")
+        && THEME_FOLLOW_ROW_TYPES.contains(&item.typ.as_str())
+    {
+        // 外观可覆盖项不是方案可覆盖项，勾选行也没有角标形态——两者真撞上了要先设计。
+        debug_assert!(
+            schema_override_of(state, key).is_none(),
+            "{key}: 跟随主题的勾选行还没有「可被方案覆盖」角标形态"
+        );
+        return build_theme_follow_row(state, key, item, cfg).0;
+    }
     let control = build_control(state, key, item, cfg);
     // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
     let overridable = schema_override_of(state, key);
@@ -678,6 +694,165 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
         row = row.enabled_when(f);
     }
     row
+}
+
+/// `follow = "theme"` 包成勾选行的控件类型。`select_by_layout` 不在内：一行两个下拉、
+/// 横竖各自可跟随，一个勾选框表达不了，按 R8.2 以下拉首档「跟随主题（值）」呈现。
+const THEME_FOLLOW_ROW_TYPES: &[&str] = &["number", "select", "number_select"];
+
+/// 勾选行控件位的宽度：三种控件里最宽的字重下拉（清单 `width = 160`）说了算。
+const THEME_FOLLOW_CTRL_W: i32 = 160;
+
+/// 外观页「跟随主题（值）」勾选行（R8.1，F4）。返回行与勾选信号（后者供测试）。
+///
+/// 存储不变（R3 哨兵）：不勾 = 落盘哨兵（字号 `0`、字族 `""`、字重 `0`），勾 = 控件值。
+/// 做法是**包在原控件外面**，不另写一套控件：
+///
+/// - writer：原控件的 writer 照常先跑，本函数追加的 writer 在未勾选时把哨兵盖上去；
+/// - loader：按配置值是否哨兵定勾选，勾着交给原 loader，不勾就把控件播成主题当前值；
+/// - getter：未勾选时报哨兵（联动读到的是会落盘的那个值）。
+///
+/// ★ 勾选瞬间控件里必须已经是主题值（Review Focus 5）：勾上后若是 0，保存下去等于
+/// 又回到跟随。windui 的勾选框没有变更回调，故反过来做——**未勾选期间**控件一直被
+/// 播成主题值（构建时、加载时、主题值变化或取消勾选时），勾上那一刻它自然就是。
+fn build_theme_follow_row(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> (Element, Signal<bool>) {
+    use crate::theme_follow::{
+        FOLLOW_THEME, is_sentinel, seed_opt, sentinel_of, theme_follow_text_opt,
+    };
+    let editor = build_control(state, key, item, cfg);
+    let over = signal(!is_sentinel(key, cfg.get_path(key)));
+    let tf_sig = state.theme_follow;
+
+    // 原控件的 loader 拿出来共用：本行的 loader 与播种都经它把值灌进控件信号，
+    // 不必认识控件是 stepper 还是下拉。
+    let inner: Rc<dyn Fn(&Config)> = match state.fields.loaders.borrow_mut().remove(key) {
+        Some(l) => Rc::from(l),
+        None => Rc::new(|_: &Config| {}),
+    };
+    let reseed: Rc<dyn Fn()> = {
+        let (inner, k) = (inner.clone(), key.to_string());
+        Rc::new(move || {
+            if over.get() {
+                return;
+            }
+            let mut c = Config::from_value(Value::Object(Default::default()));
+            c.set_path(&k, tf_sig.with(|tf| seed_opt(&k, tf.as_ref())));
+            inner(&c);
+        })
+    };
+    reseed();
+
+    // 哨兵按 capability 类型编码：font_size 是 float，写整数 0 会与配置里的 0.0 判不等，
+    // 什么都没动也恒判脏（同 `build_number` 的说明）。
+    let sentinel = match (
+        sentinel_of(key),
+        state.capabilities.entries.get(key).map(|e| e.ty.as_str()),
+    ) {
+        (Value::Number(n), Some("float")) => Value::from(n.as_f64().unwrap_or(0.0)),
+        (v, _) => v,
+    };
+    {
+        let (k, sentinel) = (key.to_string(), sentinel.clone());
+        state
+            .fields
+            .writers
+            .borrow_mut()
+            .push(Box::new(move |c: &mut Config| {
+                if !over.get() {
+                    c.set_path(&k, sentinel.clone());
+                }
+            }));
+    }
+    {
+        let (k, inner, reseed) = (key.to_string(), inner.clone(), reseed.clone());
+        state.fields.loaders.borrow_mut().insert(
+            key.to_string(),
+            Box::new(move |c: &Config| {
+                let custom = !is_sentinel(&k, c.get_path(&k));
+                over.set(custom);
+                if custom {
+                    inner(c);
+                } else {
+                    reseed();
+                }
+            }),
+        );
+    }
+    let inner_get = state.fields.getters.borrow_mut().remove(key);
+    if let Some(g) = inner_get {
+        let sentinel = sentinel.clone();
+        state.fields.getters.borrow_mut().insert(
+            key.to_string(),
+            Box::new(move || if over.get() { g() } else { sentinel.clone() }),
+        );
+    }
+
+    // 跟随值文案与播种都跟着主题值走；取消勾选也重播，下次勾上看到的是主题值而不是
+    // 上回改过的数。
+    let text = signal(tf_sig.with(|tf| theme_follow_text_opt(key, tf.as_ref())));
+    let k = key.to_string();
+    let watch = crate::pages::dict::reactive::reactive_effect(
+        move || {
+            tf_sig
+                .version()
+                .wrapping_mul(1_000_003)
+                .wrapping_add(over.version())
+        },
+        move || {
+            text.set(tf_sig.with(|tf| theme_follow_text_opt(&k, tf.as_ref())));
+            reseed();
+        },
+    );
+    register_dialog(state, watch);
+
+    let control = crate::widgets::override_control_signal(
+        over,
+        Rc::new(|| true),
+        editor,
+        text,
+        "",
+        THEME_FOLLOW_CTRL_W,
+    );
+    let mut row = crate::widgets::setting_row_override(
+        over,
+        &item.label,
+        item.hint.as_deref(),
+        FOLLOW_THEME,
+        Role::TextMuted,
+        control,
+    );
+    if let Some(f) = item
+        .enabled_when
+        .as_deref()
+        .and_then(|e| enabled_when_closure(state, e))
+    {
+        row = row.enabled_when(f);
+    }
+    (row, over)
+}
+
+/// 按排布分档的下拉（翻页栏 / 页码）的选项文案：空值档换成「跟随主题（值）」（R8.2，F5），
+/// 其余原样。清单没声明 `follow` 的键或本模块不认识的键原样返回。
+fn follow_labels(
+    key: &str,
+    values: &[String],
+    labels: &[String],
+    tf: Option<&crate::theme_follow::ThemeFollow>,
+) -> Vec<String> {
+    let follow = crate::theme_follow::empty_option_label(key, tf);
+    values
+        .iter()
+        .zip(labels)
+        .map(|(v, l)| match &follow {
+            Some(f) if v.is_empty() => f.clone(),
+            _ => l.clone(),
+        })
+        .collect()
 }
 
 /// 子对话框宿主行：[宿主控件][扩展设置] —— 按钮打开承载 dialog_group 成员的分组对话框。
@@ -1159,7 +1334,7 @@ fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         }),
     );
 
-    let (gh, gv) = (vh, vv);
+    let (gh, gv) = (vh.clone(), vv.clone());
     state.fields.getters.borrow_mut().insert(
         key.to_string(),
         Box::new(move || {
@@ -1170,13 +1345,34 @@ fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     );
 
     let w = item.width.map(|w| w as i32).unwrap_or(CTRL_W);
-    Element::row()
-        .cross(Align::Center)
-        .spacing(6)
-        .child(Element::label("横").fg_role(Role::TextMuted))
-        .child(Element::dropdown(lh, sig_h).width(w))
+    let row = Element::row().cross(Align::Center).spacing(6);
+    if item.follow.as_deref() != Some("theme") {
+        return row
+            .child(Element::label("横").fg_role(Role::TextMuted))
+            .child(Element::dropdown(lh, sig_h).width(w))
+            .child(Element::label("竖").fg_role(Role::TextMuted))
+            .child(Element::dropdown(lv, sig_v).width(w));
+    }
+    // 空值档文案带主题值：主题值异步到达、切主题后会变，故标签绑信号、随主题值重算。
+    let tf_sig = state.theme_follow;
+    let k = key.to_string();
+    let relabel = move |vals: &[String], labs: &[String]| {
+        tf_sig.with(|tf| follow_labels(&k, vals, labs, tf.as_ref()))
+    };
+    let lab_h = signal(relabel(&vh, &lh));
+    let lab_v = signal(relabel(&vv, &lv));
+    let watch = crate::pages::dict::reactive::reactive_effect(
+        move || tf_sig.version(),
+        move || {
+            lab_h.set(relabel(&vh, &lh));
+            lab_v.set(relabel(&vv, &lv));
+        },
+    );
+    register_dialog(state, watch);
+    row.child(Element::label("横").fg_role(Role::TextMuted))
+        .child(Element::dropdown_signal(lab_h, sig_h).width(w))
         .child(Element::label("竖").fg_role(Role::TextMuted))
-        .child(Element::dropdown(lv, sig_v).width(w))
+        .child(Element::dropdown_signal(lab_v, sig_v).width(w))
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -7199,5 +7395,175 @@ mod tests {
              `keys.toggle_mode_keys` 不在清单里了，那时整条指路会静默变成空白",
             row.source
         );
+    }
+}
+
+/// 外观页「跟随主题（值）」勾选行（R8.1 / R8.2，F4 / F5）。
+#[cfg(test)]
+mod theme_follow_row_tests {
+    use super::*;
+    use crate::theme_follow::ThemeFollow;
+    use serde_json::json;
+
+    fn tf() -> ThemeFollow {
+        ThemeFollow {
+            font_size: 20,
+            font_family: Some("思源黑体".into()),
+            font_weight: 0,
+            pager_bar_display: "hide".into(),
+            page_number_display: "show".into(),
+            langbar_text: Default::default(),
+        }
+    }
+
+    fn written(st: &AppState, cfg: &Config) -> Config {
+        let mut out = cfg.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut out);
+        }
+        out
+    }
+
+    fn item(key: &str) -> MItem {
+        Manifest::from_embedded()
+            .items
+            .get(key)
+            .cloned()
+            .expect("清单缺该项")
+    }
+
+    /// 字号 / 字族 / 字重三项声明了 `follow = "theme"`，翻页栏 / 页码两项同样声明
+    /// （它们按 R8.2 以下拉首档呈现）。漏声明 = 那一行静默退回哨兵直进控件的老样子。
+    #[test]
+    fn appearance_follow_items_are_declared() {
+        for k in [
+            "ui.candidate.font_size",
+            "ui.font.family",
+            "ui.font.weight",
+            "ui.candidate.pager_bar_display",
+            "ui.candidate.page_number_display",
+        ] {
+            assert_eq!(item(k).follow.as_deref(), Some("theme"), "{k}");
+        }
+    }
+
+    /// 未勾选写哨兵（按 capability 类型编码：font_size 是 float ⇒ `0.0`，否则恒判脏）；
+    /// 勾上写主题当前值（20），不是 0。
+    #[test]
+    fn font_size_row_unchecked_writes_sentinel_checked_writes_theme_value() {
+        let st = AppState::empty();
+        st.theme_follow.set(Some(tf()));
+        let cfg = Config::from_value(json!({ "ui": { "candidate": { "font_size": 0.0 } } }));
+        let (_, over) = build_theme_follow_row(
+            &st,
+            "ui.candidate.font_size",
+            &item("ui.candidate.font_size"),
+            &cfg,
+        );
+        assert!(!over.get(), "0 = 跟随 ⇒ 不勾");
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.candidate.font_size"),
+            Some(&json!(0.0))
+        );
+        over.set(true);
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.candidate.font_size"),
+            Some(&json!(20.0)),
+            "勾上的初值必须是主题值"
+        );
+    }
+
+    /// 已自定义的值打开时勾着、原样写回；「恢复本页」这类走 loader 回到哨兵时取消勾选。
+    #[test]
+    fn font_size_row_loads_custom_value_as_checked() {
+        let st = AppState::empty();
+        let cfg = Config::from_value(json!({ "ui": { "candidate": { "font_size": 16.0 } } }));
+        let (_, over) = build_theme_follow_row(
+            &st,
+            "ui.candidate.font_size",
+            &item("ui.candidate.font_size"),
+            &cfg,
+        );
+        assert!(over.get());
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.candidate.font_size"),
+            Some(&json!(16.0))
+        );
+        let zero = Config::from_value(json!({ "ui": { "candidate": { "font_size": 0.0 } } }));
+        (st.fields
+            .loaders
+            .borrow()
+            .get("ui.candidate.font_size")
+            .unwrap())(&zero);
+        assert!(!over.get(), "加载到哨兵 ⇒ 取消勾选");
+        // 取消勾选后再勾：初值是出厂值 18（此刻没有主题数据），不是刚才的 16。
+        over.set(true);
+        assert_eq!(
+            written(&st, &zero).get_path("ui.candidate.font_size"),
+            Some(&json!(18.0))
+        );
+    }
+
+    /// 字重下拉不再有「默认」(0) 档：跟随由勾选行表达。存量配置里的 0 打开时 = 未勾，
+    /// 原样写回 0；勾上时主题未指定字重 ⇒ 初值 400。
+    #[test]
+    fn font_weight_zero_opens_unchecked_and_checks_to_400() {
+        let it = item("ui.font.weight");
+        assert!(
+            it.options.iter().all(|o| o.value != "0"),
+            "字重下拉不该再有 0 档"
+        );
+        let st = AppState::empty();
+        st.theme_follow.set(Some(tf()));
+        let cfg = Config::from_value(json!({ "ui": { "font": { "weight": 0 } } }));
+        let (_, over) = build_theme_follow_row(&st, "ui.font.weight", &it, &cfg);
+        assert!(!over.get());
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.weight"),
+            Some(&json!(0))
+        );
+        over.set(true);
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.weight"),
+            Some(&json!(400))
+        );
+    }
+
+    /// 字族：勾上选中主题字体；主题字体不在系统字体列表里也要补进去，否则落到首项。
+    #[test]
+    fn font_family_checks_to_theme_font() {
+        let st = AppState::empty();
+        st.font_sig.set(vec!["等线".into(), "微软雅黑".into()]);
+        st.font_label_sig
+            .set(vec!["等线".into(), "微软雅黑".into()]);
+        st.set_theme_follow(Some(tf()));
+        let cfg = Config::from_value(json!({ "ui": { "font": { "family": "" } } }));
+        let (_, over) =
+            build_theme_follow_row(&st, "ui.font.family", &item("ui.font.family"), &cfg);
+        assert!(!over.get());
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.family"),
+            Some(&json!(""))
+        );
+        over.set(true);
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.family"),
+            Some(&json!("思源黑体"))
+        );
+    }
+
+    /// 翻页栏 / 页码下拉：空值档的文案带主题值，其余档不动。
+    #[test]
+    fn pager_dropdown_empty_option_carries_theme_value() {
+        let key = "ui.candidate.pager_bar_display";
+        let vals: Vec<String> = vec!["".into(), "hide".into()];
+        let labs: Vec<String> = vec!["跟随主题".into(), "隐藏".into()];
+        let labels = follow_labels(key, &vals, &labs, Some(&tf()));
+        assert_eq!(
+            labels,
+            vec!["跟随主题（隐藏）".to_string(), "隐藏".to_string()]
+        );
+        let none = follow_labels(key, &vals, &labs, None);
+        assert_eq!(none[0], "跟随主题");
     }
 }
