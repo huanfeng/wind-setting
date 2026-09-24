@@ -286,6 +286,17 @@ pub struct DictManagerState {
     /// 列表是全表（8104 条），自己动过的那几个靠翻页根本找不到；搜索也不行——用户记不住
     /// 自己改过哪些字，正是要靠这个开关**列出来**。
     pub only_modified: Signal<bool>,
+    /// 临时词库筛选（t63）：次数上限（`count ≤ N`）。空串/非数字 = 不筛。
+    pub temp_max_count: Signal<String>,
+    /// 临时词库筛选（t63）：闲置天数（最近使用早于 N 天前）。空串/非数字 = 不筛。
+    pub temp_idle_days: Signal<String>,
+    /// 多选删除（`ops.multi_select`）的已勾选行，按 `(code, text)` 去重。
+    ///
+    /// **跨页保留**：用户翻页挑词是常态；切类别、改搜索/筛选或删除完成时清空——
+    /// 选中集不在当前列表里的话，「删除选中」会删到用户看不见的东西。
+    selected: Rc<RefCell<std::collections::BTreeMap<(String, String), WordRow>>>,
+    /// 已勾选条数（驱动「删除选中 (N)」按钮文案与可用态）。
+    pub selected_count: Signal<usize>,
     /// 类别选择器的选项标签。开对话框时填充。
     ///
     /// ⚠️ 必须是信号、不能在构建期算好：对话框只构建一次，而那一刻列表数据还没加载——
@@ -351,6 +362,8 @@ enum PendingAction {
     DeleteQuickFormat { kind: String, id: String },
     /// 清空当前类别。
     Clear,
+    /// 删除多选勾中的行。
+    DeleteSelected,
     /// 恢复默认（短语）。
     ResetDefault,
     /// 把某个字所属的整个 Unicode 块设为常用/生僻（`char` 用来定位块，core 自己推导）。
@@ -580,6 +593,10 @@ impl DictManagerState {
             common_edit_visible: signal(false),
             common_choice: signal(0),
             only_modified: signal(false),
+            temp_max_count: signal(String::new()),
+            temp_idle_days: signal(String::new()),
+            selected: Rc::new(RefCell::new(Default::default())),
+            selected_count: signal(0),
             quick_kind_idx: signal(0),
             quick_kind_labels: signal(Vec::new()),
             quick_var_text: signal(String::new()),
@@ -953,7 +970,15 @@ impl DictManagerState {
             return;
         }
         *self.offset.borrow_mut() = off;
+        // 整表重建以回到顶部（t63）：滚动位置存在表格的 scroll widget 里，只换数据不换
+        // widget 的话新一页停在上一页滚到的位置。windui 不暴露滚动位置，重建是唯一出口。
+        self.bump_table_epoch();
         self.reload();
+    }
+
+    fn bump_table_epoch(&self) {
+        let epoch = self.table_epoch.get().first().copied().unwrap_or(0);
+        self.table_epoch.set(vec![epoch + 1]);
     }
 
     /// 跳页框回车提交。非数字/空串按「什么也没发生」处理（回填当前页）——为一个空框
@@ -1017,6 +1042,16 @@ impl DictManagerState {
         // 无条件发出去会让 core 侧多一个永远为 false 的参数。
         if spec.category == WordCategory::CommonChars && self.only_modified.get() {
             p.insert("onlyModified".into(), json!(true));
+        }
+        if spec.category == WordCategory::Temp {
+            let (max_count, idle_days) = self.temp_filter();
+            if let Some(n) = max_count {
+                p.insert("maxCount".into(), json!(n));
+            }
+            if let Some(d) = idle_days {
+                let now = chrono::Utc::now().timestamp();
+                p.insert("usedBefore".into(), json!(now - d as i64 * 86400));
+            }
         }
         if spec.paged {
             p.insert("offset".into(), json!(*self.offset.borrow()));
@@ -1306,14 +1341,15 @@ impl DictManagerState {
         // 不会退化成分不清"没数据"还是"没匹配"。
         self.status.set(String::new());
         self.sort.set(None);
-        let epoch = self.table_epoch.get().first().copied().unwrap_or(0);
-        self.table_epoch.set(vec![epoch + 1]);
+        self.clear_selection();
+        self.bump_table_epoch();
         self.reload();
     }
 
     /// 归零分页并重载当前搜索框内容，供输入即搜与清除调用。
     pub fn apply_search(&self) {
         *self.offset.borrow_mut() = 0;
+        self.clear_selection();
         self.reload();
     }
 
@@ -1951,6 +1987,124 @@ impl DictManagerState {
         (!q.is_empty()).then(|| q.to_string())
     }
 
+    /// 临时词库筛选的 (次数上限, 闲置天数)。非临时词库类别或未填/非数字时为 `None`。
+    fn temp_filter(&self) -> (Option<u64>, Option<u64>) {
+        if self.current_category() != WordCategory::Temp {
+            return (None, None);
+        }
+        let n = |s: Signal<String>| s.get().trim().parse::<u64>().ok();
+        (n(self.temp_max_count), n(self.temp_idle_days))
+    }
+
+    /// 当前生效的过滤条件（搜索词 + 临时词库筛选）的描述；无任何过滤时 `None`。
+    ///
+    /// 「清空」据此决定是整表 clear 还是只逐条删命中项——筛选与搜索同理（t63：先筛出
+    /// 「次数 ≤ 1、30 天没用」的，再一次删掉）。
+    pub(crate) fn active_filter(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(q) = self.active_search() {
+            parts.push(format!("匹配「{q}」"));
+        }
+        let (max_count, idle_days) = self.temp_filter();
+        if let Some(n) = max_count {
+            parts.push(format!("次数 ≤ {n}"));
+        }
+        if let Some(d) = idle_days {
+            parts.push(format!("{d} 天内未使用"));
+        }
+        (!parts.is_empty()).then(|| parts.join("、"))
+    }
+
+    /// 临时词库筛选框变化：归零分页重载（与改搜索词同一条路）。
+    pub fn on_temp_filter_changed(&self) {
+        if self.current_category() == WordCategory::Temp {
+            self.apply_search();
+        }
+    }
+
+    // ── 多选删除（ops.multi_select）──────────────────────────
+
+    pub fn is_selected(&self, row: &WordRow) -> bool {
+        self.selected
+            .borrow()
+            .contains_key(&(row.code.clone(), row.text.clone()))
+    }
+
+    /// 勾选/取消一行。
+    pub fn toggle_selected(&self, row: &WordRow) {
+        let key = (row.code.clone(), row.text.clone());
+        let mut sel = self.selected.borrow_mut();
+        if sel.remove(&key).is_none() {
+            sel.insert(key, row.clone());
+        }
+        let n = sel.len();
+        drop(sel);
+        self.selected_count.set(n);
+    }
+
+    /// 本页全选；本页已全选时改为取消本页。重建表格让行内勾选框跟上。
+    pub fn toggle_select_page(&self) {
+        let rows = self.display_rows.borrow().clone();
+        let all = !rows.is_empty() && rows.iter().all(|r| self.is_selected(r));
+        {
+            let mut sel = self.selected.borrow_mut();
+            for r in rows {
+                let key = (r.code.clone(), r.text.clone());
+                if all {
+                    sel.remove(&key);
+                } else {
+                    sel.insert(key, r);
+                }
+            }
+        }
+        self.selected_count.set(self.selected.borrow().len());
+        self.bump_table_epoch();
+    }
+
+    fn clear_selection(&self) {
+        self.selected.borrow_mut().clear();
+        if self.selected_count.get() != 0 {
+            self.selected_count.set(0);
+        }
+    }
+
+    /// 删除选中要发出的调用（纯函数，便于单测）：逐条走与清空搜索结果同一份 [`Self::clear_calls`]。
+    pub(crate) fn selected_delete_calls(&self) -> Vec<(&'static str, Value)> {
+        let rows: Vec<WordRow> = self.selected.borrow().values().cloned().collect();
+        self.clear_calls(Some(&rows))
+    }
+
+    pub fn request_delete_selected(&self) {
+        let n = self.selected_count.get();
+        if n == 0 {
+            return;
+        }
+        *self.pending.borrow_mut() = Some(PendingAction::DeleteSelected);
+        self.confirm_msg
+            .set(format!("确定删除选中的 {n} 条？此操作不可恢复。"));
+        self.confirm_visible.set(true);
+    }
+
+    fn do_delete_selected(&self) {
+        let calls = self.selected_delete_calls();
+        let n = calls.len();
+        self.run_row_calls(calls, &format!("已删除 {n} 条"));
+        self.clear_selection();
+    }
+
+    /// 逐条执行删除调用，首错即停；无论成败都重载。
+    fn run_row_calls(&self, calls: Vec<(&'static str, Value)>, ok_msg: &str) {
+        for (m, p) in calls {
+            if let Err(e) = rpc::call_core(m, &p) {
+                self.notify_err(&format!("操作失败: {e}"));
+                self.reload();
+                return;
+            }
+        }
+        self.reload();
+        self.notify_ok(ok_msg);
+    }
+
     /// 取全部搜索命中行。分页类按列表参数逐页重拉（`rows` 只有当前页）；非分页类即可见行。
     fn search_matched_rows(&self) -> Result<Vec<WordRow>, String> {
         let spec = self.current_spec();
@@ -1999,25 +2153,23 @@ impl DictManagerState {
         }
     }
 
-    /// 清空当前类别；搜索态下只删搜索结果（见 [`Self::active_search`]）。
+    /// 清空当前类别；搜索/筛选态下只删命中项（见 [`Self::active_filter`]）。
     pub fn do_clear(&self) {
         let spec = self.current_spec();
-        if self.active_search().is_some() {
+        if self.active_filter().is_some() {
             let rows = match self.search_matched_rows() {
                 Ok(r) => r,
                 Err(e) => return self.notify_err(&format!("操作失败: {e}")),
             };
             let calls = self.clear_calls(Some(&rows));
             let n = calls.len();
-            for (m, p) in calls {
-                if let Err(e) = rpc::call_core(m, &p) {
-                    self.notify_err(&format!("操作失败: {e}"));
-                    self.reload();
-                    return;
-                }
-            }
-            self.reload();
-            self.notify_ok(&format!("已删除 {n} 条搜索结果"));
+            let noun = if self.active_search().is_some() && self.temp_filter() == (None, None) {
+                "搜索结果"
+            } else {
+                "筛选结果"
+            };
+            self.run_row_calls(calls, &format!("已删除 {n} 条{noun}"));
+            self.clear_selection();
         } else if !spec.rpc.clear.is_empty() {
             for (m, p) in self.clear_calls(None) {
                 self.write(m, p, "已清空");
@@ -2177,11 +2329,16 @@ impl DictManagerState {
     pub fn request_clear(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::Clear);
         let n = self.total.get();
-        let msg = match self.active_search() {
-            Some(q) => {
+        let msg = match (self.active_search(), self.temp_filter()) {
+            (Some(q), (None, None)) => {
                 format!("确定删除匹配「{q}」的 {n} 条搜索结果？其余条目不受影响。此操作不可恢复。")
             }
-            None => format!("确定清空全部 {n} 条数据？此操作不可恢复。"),
+            _ => match self.active_filter() {
+                Some(f) => {
+                    format!("确定删除{f} 的 {n} 条筛选结果？其余条目不受影响。此操作不可恢复。")
+                }
+                None => format!("确定清空全部 {n} 条数据？此操作不可恢复。"),
+            },
         };
         self.confirm_msg.set(msg);
         self.confirm_visible.set(true);
@@ -2244,6 +2401,7 @@ impl DictManagerState {
             Some(PendingAction::DeleteRow(c, t)) => self.do_delete_row(&c, &t),
             Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
             Some(PendingAction::Clear) => self.do_clear(),
+            Some(PendingAction::DeleteSelected) => self.do_delete_selected(),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
             Some(PendingAction::CommonBulk { ch, common }) => self.write(
                 "commonChars.bulkByBlock",
@@ -5426,6 +5584,140 @@ mod tests {
         ] {
             assert!(seen.contains(c), "{c} 未被覆盖，已覆盖 {seen:?}");
         }
+    }
+
+    /// t63：翻页后回到顶部。表格的滚动位置只活在表格 widget 里，换页只换数据不换
+    /// widget 的话，第 2 页会停在第 1 页滚到的那个位置。所有分页类别共用 `goto_page`。
+    #[test]
+    fn page_change_rebuilds_table_to_reset_scroll() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        for tab in 0..st.tabs_for_domain().len() {
+            st.sub_tab.set(tab);
+            if !st.current_spec().paged {
+                continue;
+            }
+            *st.offset.borrow_mut() = 0;
+            st.total.set(PAGE_SIZE * 3);
+            let before = st.table_epoch.get()[0];
+            st.goto_page(2);
+            assert_eq!(
+                st.table_epoch.get()[0],
+                before + 1,
+                "{:?}: 换页须重建表格（滚动回顶）",
+                st.current_category()
+            );
+            let before = st.table_epoch.get()[0];
+            st.goto_page(2);
+            assert_eq!(st.table_epoch.get()[0], before, "页没变不重建");
+        }
+    }
+
+    /// t63：临时词库按次数上限 / 闲置天数筛选，参数走服务端（跨页全局有效）。
+    #[test]
+    fn temp_filter_goes_to_server() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(1); // 临时词库
+        assert_eq!(st.current_category(), WordCategory::Temp);
+        let p = st.build_list_params();
+        assert!(p.get("maxCount").is_none() && p.get("usedBefore").is_none());
+
+        st.temp_max_count.set(" 2 ".into());
+        st.temp_idle_days.set("30".into());
+        let p = st.build_list_params();
+        assert_eq!(p["maxCount"], json!(2));
+        let now = chrono::Utc::now().timestamp();
+        let cut = p["usedBefore"].as_i64().unwrap();
+        assert!(
+            (cut - (now - 30 * 86400)).abs() < 5,
+            "usedBefore = 现在 - 30 天"
+        );
+
+        // 非数字当没填，不发参数（也不报错）。
+        st.temp_max_count.set("abc".into());
+        assert!(st.build_list_params().get("maxCount").is_none());
+
+        // 「最近使用」列：core 给的 lastUsed（unix 秒）要显示出来，且可按它服务端排序。
+        let spec = st.current_spec();
+        assert!(spec.columns.iter().any(|c| c.field == WordField::LastUsed));
+        let r = WordRow::from_json(
+            WordCategory::Temp,
+            &json!({ "code": "a", "text": "工", "count": 1, "lastUsed": 1_700_000_000 }),
+        );
+        assert!(r.last_used.starts_with("2023-11-1"), "{}", r.last_used);
+
+        // 别的类别不带这组参数。
+        st.sub_tab.set(0);
+        assert!(st.build_list_params().get("usedBefore").is_none());
+    }
+
+    /// t63：筛选生效时「清空」只删筛选结果，逐条走行内删除那条调用。
+    #[test]
+    fn clear_under_temp_filter_deletes_only_matches() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(1);
+        st.temp_max_count.set("1".into());
+        st.total.set(4);
+        st.request_clear();
+        let msg = st.confirm_msg.get();
+        assert!(
+            msg.contains("4 条筛选结果") && msg.contains("次数 ≤ 1"),
+            "{msg}"
+        );
+        assert!(st.active_filter().is_some());
+    }
+
+    /// t63：多选删除。勾选跨页保留；删除逐条走 `delete_call`；切类别清空选择。
+    #[test]
+    fn temp_multi_select_deletes_each_selected_row() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(1);
+        assert!(st.current_spec().ops.multi_select, "临时词库开多选");
+        let row = |c: &str, t: &str| {
+            WordRow::from_json(
+                WordCategory::Temp,
+                &json!({ "code": c, "text": t, "count": 1 }),
+            )
+        };
+        let (a, b) = (row("aa", "工"), row("bb", "了"));
+        st.toggle_selected(&a);
+        st.toggle_selected(&b);
+        assert_eq!(st.selected_count.get(), 2);
+        assert!(st.is_selected(&a));
+        st.toggle_selected(&b);
+        assert!(!st.is_selected(&b), "再点一次取消");
+        st.toggle_selected(&b);
+
+        let calls = st.selected_delete_calls();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|(m, _)| *m == "temp.remove"));
+        assert_eq!(calls[0].1["schemaId"], json!("wb"));
+        let texts: Vec<_> = calls.iter().map(|(_, p)| p["text"].clone()).collect();
+        assert!(texts.contains(&json!("工")) && texts.contains(&json!("了")));
+
+        st.request_delete_selected();
+        assert!(st.confirm_msg.get().contains("选中的 2 条"));
+        st.cancel_confirm();
+
+        // 本页全选：已全选时再点即全不选。
+        *st.display_rows.borrow_mut() = vec![a.clone(), b.clone(), row("cc", "在")];
+        st.toggle_select_page();
+        assert_eq!(st.selected_count.get(), 3);
+        st.toggle_select_page();
+        assert_eq!(st.selected_count.get(), 0);
+
+        st.toggle_selected(&a);
+        st.sub_tab.set(0);
+        st.on_nav_changed();
+        assert_eq!(st.selected_count.get(), 0, "切类别清空选择");
+        assert!(!st.current_spec().ops.multi_select, "只在临时词库开");
     }
 
     /// t179：搜索态下「清空」只删搜索结果，不能调整表 clear。

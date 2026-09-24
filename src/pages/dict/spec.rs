@@ -275,6 +275,7 @@ impl WordRow {
                 code: s("code"),
                 text: s("text"),
                 count: i("count"),
+                last_used: fmt_last_used(v.get("lastUsed")),
                 ..Default::default()
             },
             WordCategory::Freq => WordRow {
@@ -659,6 +660,13 @@ pub struct OpFlags {
     /// 与 `reset_default`（整类/整表恢复）分开：出厂条目改坏了，用户想恢复的通常是
     /// 手上这一条，而不是把整类的排序偏好全丢掉。
     pub reset_entry: bool,
+    /// 是否支持**多选删除**（t63）：编码列前挂勾选框，工具栏出「本页全选 / 删除选中」。
+    ///
+    /// 删除逐条走 [`DictManagerState::delete_call`]，与行内删除同一条路，故对任何
+    /// `remove` 可用的类别都成立；目前只给临时词库开（反馈就是冲它来的）。
+    ///
+    /// [`DictManagerState::delete_call`]: super::state::DictManagerState::delete_call
+    pub multi_select: bool,
 }
 
 impl OpFlags {
@@ -680,6 +688,7 @@ impl OpFlags {
         reorder: false,
         reset_entry: false,
         share_text: false,
+        multi_select: false,
     };
 }
 
@@ -777,6 +786,8 @@ const COLS_USERDICT: &[ColumnSpec] = &[
     },
 ];
 
+// 「最近使用」= 词频表里的最近选中时刻与加入时间取大者（core `web_temp_list_paged`），
+// 供 t63「筛出长期没再输入的」——按它升序排，最久没用的排最前。
 const COLS_TEMP: &[ColumnSpec] = &[
     ColumnSpec {
         header: "编码",
@@ -785,13 +796,18 @@ const COLS_TEMP: &[ColumnSpec] = &[
     },
     ColumnSpec {
         header: "词条",
-        weight: 2.4,
+        weight: 1.8,
         field: WordField::Text,
     },
     ColumnSpec {
         header: "次数",
-        weight: 0.7,
+        weight: 1.0,
         field: WordField::Count,
+    },
+    ColumnSpec {
+        header: "最近使用",
+        weight: 1.2,
+        field: WordField::LastUsed,
     },
 ];
 
@@ -942,6 +958,7 @@ const SPEC_TEMP: CategorySpec = CategorySpec {
         clear: true,
         promote: true,
         promote_all: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {

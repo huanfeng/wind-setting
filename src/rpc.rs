@@ -1533,8 +1533,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         ]),
         // 设置页列表走分页版（`{items,total}`）；上面那条裸数组留给全量取用方。
         "temp.listPaged" => json!({ "items": [
-            { "code": "nihao", "text": "你好", "count": 3 },
-            { "code": "women", "text": "我们", "count": 7 }
+            { "code": "nihao", "text": "你好", "count": 3, "lastUsed": 1_758_000_000 },
+            { "code": "women", "text": "我们", "count": 7, "lastUsed": 1_750_000_000 }
         ], "total": 2 }),
         "shadow.list" => json!([
             { "code": "wm", "word": "我们", "candId": "c1", "type": "pin", "position": 0 },

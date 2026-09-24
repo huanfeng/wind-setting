@@ -85,6 +85,18 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         move || search_v.version(),
         move || mgr_se.on_search_changed(),
     );
+    // 临时词库筛选（t63）：同搜索，输入即筛。
+    let (tmc_v, tid_v) = (mgr.temp_max_count, mgr.temp_idle_days);
+    let mgr_tf = mgr.clone();
+    let temp_filter_effect = reactive_effect(
+        move || {
+            tmc_v
+                .version()
+                .wrapping_mul(1_000_003)
+                .wrapping_add(tid_v.version())
+        },
+        move || mgr_tf.on_temp_filter_changed(),
+    );
 
     // ── 响应式 effect：导入/导出目标方案变化 → 重算标题/说明/勾选，并按新目标重新预览 ──
     // 下拉只写信号、无变更回调（同 domain/sub_tab），故仍走版本轮询这条路。
@@ -311,6 +323,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(main_col)
         .child(effect)
         .child(search_effect)
+        .child(temp_filter_effect)
         .child(io_target_effect)
         .child(io_format_effect)
         .child(xedit_effect)
@@ -366,6 +379,49 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .enabled_when(move || e_clear.total.get() > 0)
         .visible_when(move || v_clear.current_spec().ops.clear);
 
+    // 多选（t63）：本页全选 / 删除选中。勾选框挂在编码列前（见 `render_cell`）。
+    let (m_sp, v_sp, e_sp) = (mgr.clone(), mgr.clone(), mgr.clone());
+    let select_page = Element::button("本页全选")
+        .small()
+        .outline_soft()
+        .on_click(move |_| m_sp.toggle_select_page())
+        .enabled_when(move || e_sp.total.get() > 0)
+        .visible_when(move || v_sp.current_spec().ops.multi_select);
+    let (m_ds, v_ds, e_ds) = (mgr.clone(), mgr.clone(), mgr.clone());
+    let delete_selected = Element::button("删除选中")
+        .small()
+        .outline()
+        .danger()
+        .on_click(move |_| m_ds.request_delete_selected())
+        .enabled_when(move || e_ds.selected_count.get() > 0)
+        .visible_when(move || v_ds.current_spec().ops.multi_select);
+
+    // 临时词库筛选（t63）：次数上限 + 闲置天数。筛选生效时「清空」只删筛选结果。
+    let v_tf = mgr.clone();
+    let muted = |t: &str| {
+        Element::label(t)
+            .font_size(11.5)
+            .fg_role(Role::TextMuted)
+            .max_lines(1)
+    };
+    let temp_filter = Element::row()
+        .cross(Align::Center)
+        .spacing(4)
+        .child(muted("次数 ≤"))
+        .child(
+            Element::text_input(mgr.temp_max_count, "")
+                .width(44)
+                .height(30),
+        )
+        .child(muted("闲置 ≥"))
+        .child(
+            Element::text_input(mgr.temp_idle_days, "")
+                .width(44)
+                .height(30),
+        )
+        .child(muted("天未用"))
+        .visible_when(move || v_tf.current_category() == super::spec::WordCategory::Temp);
+
     let m_reset = mgr.clone();
     let v_reset = mgr.clone();
     let reset_default = Element::button("恢复默认")
@@ -416,7 +472,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         })
         .visible_when(move || v_om.current_category() == super::spec::WordCategory::CommonChars);
 
-    Element::row()
+    let row1 = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(8)
@@ -427,7 +483,27 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(reset_default)
         .child(only_modified)
         .child(Element::leaf().weight(1.0))
-        .child(search)
+        .child(search);
+
+    // 第二行：多选 + 筛选（仅多选类别 / 临时词库显示）。塞进第一行的话 820 宽下
+    // 搜索框被挤出可视区（截图实测）。
+    let v_row2 = mgr.clone();
+    let row2 = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .padding_xy(0, 2)
+        .child(select_page)
+        .child(delete_selected)
+        .child(Element::leaf().weight(1.0))
+        .child(temp_filter)
+        .visible_when(move || {
+            let m = &v_row2;
+            m.current_spec().ops.multi_select
+                || m.current_category() == super::spec::WordCategory::Temp
+        });
+
+    Element::col().width_match().child(row1).child(row2)
 }
 
 /// 底栏：左侧计数文字 + 右侧翻页/跳页控件组。
@@ -599,6 +675,24 @@ fn render_cell(
                 .max_lines(1)
                 // 编码过长时末尾省略（编码前缀…），不再无差别硬裁。
                 .truncate(Truncate::End);
+            // 多选类别：编码徽章前挂勾选框（t63）。挂在单元格里而不另起一列——表头
+            // 不支持非数据列，另起一列会与排序列下标错位。
+            if mgr.current_spec().ops.multi_select
+                && let Some(r) = mgr.display_row(row)
+            {
+                let sig = signal(mgr.is_selected(&r));
+                let m = mgr.clone();
+                return Some(
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(4)
+                        .child(Element::checkbox("", sig).small().on_toggle(move |_| {
+                            sig.set(!sig.get());
+                            m.toggle_selected(&r);
+                        }))
+                        .child(badge),
+                );
+            }
             if !mgr.display_row(row).is_some_and(|r| r.overrides_system) {
                 return Some(badge);
             }
