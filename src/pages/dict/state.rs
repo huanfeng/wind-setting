@@ -1937,15 +1937,82 @@ impl DictManagerState {
         s
     }
 
-    /// 清空当前类别：有 clear RPC 走之；候选调整无 clear，循环撤销所有规则。
+    /// 当前生效的搜索词（trim 后非空且本类别可搜索），否则 `None`。
+    ///
+    /// 「清空」在搜索态下只作用于搜索结果（t179）：用户搜出几条再点清空，确认框写的是
+    /// 「当前 N 条」（N 是命中数），却调了整表 clear RPC，把整个词库都清了。
+    fn active_search(&self) -> Option<String> {
+        if !self.current_spec().searchable {
+            return None;
+        }
+        let q = self.search.get();
+        let q = q.trim();
+        (!q.is_empty()).then(|| q.to_string())
+    }
+
+    /// 取全部搜索命中行。分页类按列表参数逐页重拉（`rows` 只有当前页）；非分页类即可见行。
+    fn search_matched_rows(&self) -> Result<Vec<WordRow>, String> {
+        let spec = self.current_spec();
+        if !spec.paged {
+            return Ok(self.visible_rows());
+        }
+        let mut params = self.build_list_params();
+        let mut all = Vec::new();
+        loop {
+            params["offset"] = json!(all.len());
+            let v = rpc::call_core(spec.rpc.list, &params)?;
+            let (rows, total) = WordRow::parse_list(spec.category, true, &v);
+            if rows.is_empty() {
+                break;
+            }
+            all.extend(rows);
+            if all.len() >= total {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    /// 清空要发出的调用（纯函数，便于单测）。
+    ///
+    /// `matched = None`：无搜索，整表 clear RPC。`Some(rows)`：搜索态，逐条走与行内删除
+    /// 同一条 [`Self::delete_call`]——只删命中项，别的词条原封不动。
+    pub(crate) fn clear_calls(&self, matched: Option<&[WordRow]>) -> Vec<(&'static str, Value)> {
+        match matched {
+            Some(rows) => rows
+                .iter()
+                .map(|r| self.delete_call(&r.code, &r.text))
+                .collect(),
+            None => vec![(
+                self.current_spec().rpc.clear,
+                Value::Object(self.scoped_params()),
+            )],
+        }
+    }
+
+    /// 清空当前类别；搜索态下只删搜索结果（见 [`Self::active_search`]）。
     pub fn do_clear(&self) {
         let spec = self.current_spec();
-        if !spec.rpc.clear.is_empty() {
-            self.write(
-                spec.rpc.clear,
-                Value::Object(self.scoped_params()),
-                "已清空",
-            );
+        if self.active_search().is_some() {
+            let rows = match self.search_matched_rows() {
+                Ok(r) => r,
+                Err(e) => return self.notify_err(&format!("操作失败: {e}")),
+            };
+            let calls = self.clear_calls(Some(&rows));
+            let n = calls.len();
+            for (m, p) in calls {
+                if let Err(e) = rpc::call_core(m, &p) {
+                    self.notify_err(&format!("操作失败: {e}"));
+                    self.reload();
+                    return;
+                }
+            }
+            self.reload();
+            self.notify_ok(&format!("已删除 {n} 条搜索结果"));
+        } else if !spec.rpc.clear.is_empty() {
+            for (m, p) in self.clear_calls(None) {
+                self.write(m, p, "已清空");
+            }
         } else {
             // ⚠️ 这里曾有一条「候选调整没有 clear RPC，就循环 remove_rule 逐条撤销」的
             // 退路。它依赖 `self.rows` 是全量——候选调整改服务端分页后那里只剩当前页，
@@ -2101,8 +2168,13 @@ impl DictManagerState {
     pub fn request_clear(&self) {
         *self.pending.borrow_mut() = Some(PendingAction::Clear);
         let n = self.total.get();
-        self.confirm_msg
-            .set(format!("确定清空当前 {n} 条数据？此操作不可恢复。"));
+        let msg = match self.active_search() {
+            Some(q) => {
+                format!("确定删除匹配「{q}」的 {n} 条搜索结果？其余条目不受影响。此操作不可恢复。")
+            }
+            None => format!("确定清空全部 {n} 条数据？此操作不可恢复。"),
+        };
+        self.confirm_msg.set(msg);
         self.confirm_visible.set(true);
     }
 
@@ -3976,7 +4048,11 @@ mod tests {
         assert_eq!(slots.len(), GLOBAL_DOMAINS, "新增全局域要在这里补一格");
         let mut sorted = slots;
         sorted.sort_unstable();
-        assert_eq!(sorted, [0, 1, 2, 3], "全局槽位必须从 0 起连续，不能重号或跳号");
+        assert_eq!(
+            sorted,
+            [0, 1, 2, 3],
+            "全局槽位必须从 0 起连续，不能重号或跳号"
+        );
         // 标签表与槽位同长，且每格都有名字（空名字＝侧栏上一条看不见的项）。
         assert_eq!(GLOBAL_DOMAIN_LABELS.len(), GLOBAL_DOMAINS);
         assert!(GLOBAL_DOMAIN_LABELS.iter().all(|s| !s.is_empty()));
@@ -4858,7 +4934,11 @@ mod tests {
         assert_eq!(st.resolve_domain("phrase"), Some(DOMAIN_PHRASE));
         assert_eq!(st.resolve_domain("quick"), Some(DOMAIN_QUICK));
         assert_eq!(st.resolve_domain("charsets"), Some(DOMAIN_COMMON));
-        assert_eq!(st.resolve_domain("common-chars"), Some(DOMAIN_COMMON), "旧别名");
+        assert_eq!(
+            st.resolve_domain("common-chars"),
+            Some(DOMAIN_COMMON),
+            "旧别名"
+        );
         assert_eq!(st.resolve_domain("completion"), Some(DOMAIN_COMPLETION));
         // 两个 tab 的 cli_id 也该认：单给 `--type mail-suffix` 时用户多半没再给 --schema。
         assert_eq!(st.resolve_domain("mail-suffix"), Some(DOMAIN_COMPLETION));
@@ -4870,11 +4950,18 @@ mod tests {
             st.resolve_domain("charsets"),
             st.resolve_domain("completion"),
         ];
-        assert!(globals.iter().all(|x| x.is_some()), "每个全局域都要有 cli 关键字");
+        assert!(
+            globals.iter().all(|x| x.is_some()),
+            "每个全局域都要有 cli 关键字"
+        );
         let mut slots: Vec<usize> = globals.into_iter().flatten().collect();
         slots.sort_unstable();
         slots.dedup();
-        assert_eq!(slots.len(), GLOBAL_DOMAINS, "关键字与全局域应一一对应，不能重号");
+        assert_eq!(
+            slots.len(),
+            GLOBAL_DOMAINS,
+            "关键字与全局域应一一对应，不能重号"
+        );
         assert_eq!(st.resolve_domain("wb"), Some(GLOBAL_DOMAINS), "精确方案 id");
         assert_eq!(st.resolve_domain("quanpin"), Some(GLOBAL_DOMAINS + 1));
         assert_eq!(
@@ -5255,6 +5342,40 @@ mod tests {
             *st.pending.borrow(),
             Some(PendingAction::ResetDefault)
         ));
+    }
+
+    /// t179：搜索态下「清空」只删搜索结果，不能调整表 clear。
+    #[test]
+    fn clear_under_search_deletes_only_matches() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0); // 用户词库
+        // 无搜索：整表 clear。
+        let calls = st.clear_calls(None);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "dict.clear");
+        st.total.set(3);
+        st.request_clear();
+        assert!(st.confirm_msg.get().contains("全部 3 条"));
+
+        st.search.set(" 工 ".into());
+        assert_eq!(st.active_search().as_deref(), Some("工"));
+        st.total.set(1);
+        st.request_clear();
+        let msg = st.confirm_msg.get();
+        assert!(msg.contains("匹配「工」的 1 条搜索结果"), "{msg}");
+
+        let hit = WordRow::from_json(
+            WordCategory::UserDict,
+            &json!({ "code": "aaaa", "text": "工", "weight": 0 }),
+        );
+        let calls = st.clear_calls(Some(std::slice::from_ref(&hit)));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "dict.remove", "搜索态逐条删，不走 dict.clear");
+        assert_eq!(calls[0].1["text"], json!("工"));
+        assert_eq!(calls[0].1["code"], json!("aaaa"));
+        assert_eq!(calls[0].1["schemaId"], json!("wb"));
     }
 
     #[test]
