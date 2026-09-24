@@ -2891,6 +2891,15 @@ fn load_override_summary() -> HashMap<String, Vec<String>> {
     let Ok(v) = rpc::call_core("schema.overrideSummary", &serde_json::json!({})) else {
         return HashMap::new();
     };
+    parse_override_summary(&v)
+}
+
+/// [`load_override_summary`] 的纯解析部分：抽出来是为了不靠 RPC/mock 就能测「回包不是
+/// 对象」（`null`、老 core 给了别的形状）与「值不是字符串数组」这两条退化路径——
+/// 拉不到（`Err`）时 [`load_override_summary`] 也是喂一个等价形状（`Value::Null`）
+/// 进来，两条路共用同一份「非对象 ⇒ 空表」逻辑，不会出现「拉不到」与「拉到空」两种
+/// 退化各写一遍、迟早漂移的情况。
+fn parse_override_summary(v: &Value) -> HashMap<String, Vec<String>> {
     let Some(obj) = v.as_object() else {
         return HashMap::new();
     };
@@ -3651,6 +3660,93 @@ mod tests {
         reg.side.borrow_mut().push(b);
         assert!(reg.commit_side().is_ok());
         assert_eq!((na.get(), nb.get()), (1, 1));
+    }
+
+    /// `save()` 提交了 side 落点（方案设置对话框保存那一类）之后要重拉一次
+    /// `schema.overrideSummary`——否则全局页的角标还在显示保存前的覆盖状态（F9/R8.6）。
+    ///
+    /// 用 [`probe`] 造一个「脏且提交成功」的 SideCommitter 模拟方案设置对话框保存，
+    /// 用 `rpc::take_mock_calls()` 断言这次 `save()` 里确实发出过该调用——不断言调用
+    /// 的先后位置/次数，只断言「发过」，避免和 `commit_side()` 内建落点（方案管理
+    /// `refresh()`）等无关调用的次序耦合。
+    #[test]
+    fn save_refreshes_override_summary_when_side_committer_ran() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        let (side, _n) = probe(true, Ok(()));
+        st.fields.side.borrow_mut().push(side);
+        crate::rpc::take_mock_calls(); // 清空 empty() 期间可能已有的调用记录。
+
+        assert!(st.save(), "side 提交成功应保存成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
+            "保存了 side 改动却没有重拉 overrideSummary，实际调用: {calls:?}"
+        );
+    }
+
+    /// 反例：没有任何 side 改动时（`side_dirty()` 恒假）不应重拉——`schema.overrideSummary`
+    /// 唯一会变的时刻是方案设置对话框保存，config.toml-only 的保存不该多打这一枪。
+    #[test]
+    fn save_does_not_refresh_override_summary_without_side_changes() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        crate::rpc::take_mock_calls();
+
+        assert!(st.save(), "无 side 改动也应正常保存成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            !calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
+            "没有 side 改动却重拉了 overrideSummary，实际调用: {calls:?}"
+        );
+    }
+
+    /// [`parse_override_summary`] 的退化路径：回包不是对象（`null`、老 core 给了别的
+    /// 形状）时退回空表，不是报错也不是显示假数据——[`load_override_summary`] 拉不到
+    /// 时也是喂一个等价形状（`Value::Null`）进来，这条断言同时覆盖了那条退化路径。
+    #[test]
+    fn parse_override_summary_treats_non_object_reply_as_empty() {
+        assert!(parse_override_summary(&Value::Null).is_empty());
+        assert!(parse_override_summary(&serde_json::json!([1, 2, 3])).is_empty());
+        assert!(parse_override_summary(&serde_json::json!("not an object")).is_empty());
+    }
+
+    /// 正常形状：值不是字符串数组的键退回空列表（而不是整表报废），数组里混进非字符串
+    /// 元素时逐个跳过——防的是 core 契约漂移时界面直接 panic 或整页数据消失。
+    #[test]
+    fn parse_override_summary_reads_ids_and_tolerates_malformed_values() {
+        let v = serde_json::json!({
+            "ui.candidate.layout": ["wubi86", "pinyin", 1],
+            "input.some.key": "not-an-array",
+        });
+        let got = parse_override_summary(&v);
+        assert_eq!(
+            got.get("ui.candidate.layout"),
+            Some(&vec!["wubi86".to_string(), "pinyin".to_string()]),
+            "非字符串元素应被跳过，不是整条报废"
+        );
+        assert_eq!(
+            got.get("input.some.key"),
+            Some(&vec![]),
+            "值不是数组时退回空列表，键仍保留"
+        );
+    }
+
+    /// 拉不到（管道未连/老 core）时退回空表——不 mock、真去连一个不存在的管道，
+    /// 直接验证 [`load_override_summary`] 的 `Err` 分支，同 `non_mock_disconnect_sets_conn_failed`
+    /// 的连接失败路径。
+    #[test]
+    fn load_override_summary_returns_empty_map_when_core_unreachable() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let got = load_override_summary();
+        assert!(got.is_empty(), "core 连不上时应退回空表：{got:?}");
     }
 
     /// 只列**脏的**落点。干净的一并列出来的话，用户会以为自己改了从没碰过的东西。
