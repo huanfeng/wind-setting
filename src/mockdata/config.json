@@ -523,7 +523,7 @@
   "toolbar": {
    "auto_hide": false,
    "auto_hide_delay": 5,
-   "auto_hide_hover_reveal": true,
+   "auto_hide_hover_reveal": false,
    "buttons": [],
    "fullscreen_watch": true,
    "hide_in_english": false,

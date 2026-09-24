@@ -1888,7 +1888,7 @@
       "type": "int"
     },
     {
-      "default": true,
+      "default": false,
       "key": "ui.toolbar.auto_hide_hover_reveal",
       "type": "bool"
     },
