@@ -8,6 +8,7 @@
   "add_word": {
    "candidate_layout": "vertical"
   },
+  "alt_commit": "off",
   "association": {
    "backspace_cancels_only": true,
    "bigram": true,

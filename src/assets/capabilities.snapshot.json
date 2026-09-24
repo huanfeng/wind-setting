@@ -713,6 +713,17 @@
       "type": "str"
     },
     {
+      "default": "off",
+      "key": "input.alt_commit",
+      "type": "enum",
+      "values": [
+        "off",
+        "pinyin",
+        "pinyin_plain",
+        "comment"
+      ]
+    },
+    {
       "default": true,
       "key": "input.scope_relax.page_end_key",
       "type": "bool"

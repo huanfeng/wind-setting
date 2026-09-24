@@ -1363,6 +1363,23 @@ type = "toggle"
 label = "全角时小键盘半角输出"
 hint = "全角状态下小键盘的数字和符号使用半角输出"
 
+# 键不可配（能用的数字组合只剩 Alt），故本项同时是开关与内容选择。冲突处置见 core
+# docs/design/alt-commit.md：只在有候选时吃键，自定义按键里已绑的 Alt 组合优先。
+[[items]]
+key = "input.alt_commit"
+group = "input"
+section = "按键行为"
+type = "select"
+label = "Alt+数字上屏注释/拼音"
+hint = "有候选时按 Alt+数字 上屏该候选的拼音或注释而不是候选字，Alt+空格 上屏首选的；没有可上屏的内容时什么都不做。自定义按键里已绑的 Alt 组合优先"
+width = 180
+options = [
+  { value = "off", label = "关闭" },
+  { value = "pinyin", label = "带调拼音" },
+  { value = "pinyin_plain", label = "不带调拼音" },
+  { value = "comment", label = "候选注释" },
+]
+
 # ── 候选无效按键 ──
 [[items]]
 key = "keys.overflow.number_key"
