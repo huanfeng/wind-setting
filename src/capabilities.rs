@@ -182,8 +182,6 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // number_select：离散整数下拉（如每页候选数）。实现仅按整数解析/写回，故仅兼容 int。
         "number_select" => ty == "int",
         "string" => ty == "str",
-        // color：`#RRGGBB` / `#RRGGBBAA` 文本，空 = 跟随主题。
-        "color" => ty == "str",
         // hotkey:功能键绑定字符串（如 "ctrl+shift+e"），编辑对话框承载。
         "hotkey" => ty == "str",
         "checkbox_group" => ty == "strlist",
@@ -196,6 +194,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "dialog_button_comment_dicts" => ty == "structlist",
         // 语言栏角标规则：整表读写的条目列表（enabled/state/corner/两个色值/scale）。
         "dialog_button_langbar_badges" => ty == "structlist",
+        // 任务栏主字颜色：宿主是四个色值字符串键之一（其余三键同一对话框读写）。
+        "dialog_button_langbar_text_colors" => ty == "str",
         // ordered_pairs：与 checkbox_group 读写同一形态（strlist），差别只在**顺序是否被
         // core 消费**——那是清单声明的语义，capability 里没有这个维度，故类型校验一致。
         "dialog_button_ordered_pairs" => ty == "strlist",
@@ -494,6 +494,14 @@ mod tests {
         //
         //    2026-08-26 之前这里写的是「设计上不做专属控件」——用户要求做，已推翻。
         "ui.toolbar.buttons",
+        // ㉕ 任务栏图标主字颜色的另外三格：**已有 GUI**，但没有属于自己的清单项。
+        //    四格（中/英 × 浅/深任务栏）由 `ui.langbar.text_color_cn_light` 那一项
+        //    （外观 → 任务栏图标 → 主字颜色）的 2×2 对话框一并读写，理由同 ㉒'：
+        //    同一件事拆成四行就是用户要求消掉的「大量同类控件」。
+        //    ⚠️ 若日后给其中某格单独立项，记得从本名单撤出（双向断言会提醒）。
+        "ui.langbar.text_color_cn_dark",
+        "ui.langbar.text_color_en_light",
+        "ui.langbar.text_color_en_dark",
         // 注：㉔ 区块名列表两项（`input.rare_char.include_blocks` /
         // `schema.frequency.exclude_blocks`）曾登记在此，注明「待接入，缺区块多选控件」。
         // 2026-09-01 已接进清单（输入页的「生僻字」与「词频」两块），故从名单撤出。

@@ -3119,42 +3119,19 @@ enabled_when = "ui.langbar.badge != none"
 platform = "windows"
 
 # 任务栏图标主字颜色：用户值 > 主题值 > 内置（浅黑深白），四格各自回落（R3「外观覆盖主题」）。
-# 平铺四行而不收进分组对话框：分组对话框要一个带值控件的宿主行（build_dialog_group_row），
-# 这组没有天然的总开关——空串即「跟随主题」，再造一个开关就是 R3 禁止的双写法。
+# 卡片一行（四枚缩略色样 + [设置]），对话框里 2×2 取色（windui color_picker，带透明度）。
+# 宿主挂在 cn_light 上，另外三键**没有自己的清单项**，登记在 capabilities.rs 的
+# UNCOVERED_BY_DESIGN（与 `ui.toolbar.buttons` 同一先例：同一对话框一并读写）。不用
+# R6 那两种折叠机制：「宿主行 + 附属对话框」要一个带值控件当宿主，而这组四键平级，
+# 硬挑一格放卡片上就不对称，再造一个开关当宿主是 R3 禁止的「开关 + 值」双写法；
+# `dialog_extra_for` 已冻结。四格平铺四行则是这次要消掉的「大量同类控件」。
 [[items]]
 key = "ui.langbar.text_color_cn_light"
 group = "ui"
 section = "任务栏图标"
-type = "color"
-label = "中文主字颜色（浅色任务栏）"
-hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
-platform = "windows"
-
-[[items]]
-key = "ui.langbar.text_color_cn_dark"
-group = "ui"
-section = "任务栏图标"
-type = "color"
-label = "中文主字颜色（深色任务栏）"
-hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
-platform = "windows"
-
-[[items]]
-key = "ui.langbar.text_color_en_light"
-group = "ui"
-section = "任务栏图标"
-type = "color"
-label = "英文主字颜色（浅色任务栏）"
-hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
-platform = "windows"
-
-[[items]]
-key = "ui.langbar.text_color_en_dark"
-group = "ui"
-section = "任务栏图标"
-type = "color"
-label = "英文主字颜色（深色任务栏）"
-hint = "留空跟随主题；主题未定义时浅色任务栏为黑、深色为白"
+type = "dialog_button_langbar_text_colors"
+label = "主字颜色"
+hint = "中、英两字在浅色/深色任务栏上的颜色，默认跟随主题"
 platform = "windows"
 
 # ═══════════════════════════ 常规（并入「输入」页首「默认状态」）═══════════════════════════
