@@ -2491,6 +2491,17 @@ type = "toggle"
 label = "隐藏候选窗"
 hint = "盲打/自动上屏场景不显示候选窗口；隐藏后仍可输入"
 
+# 只认空白处（编码栏 / 内边距）：候选项按下即选词上屏、候选窗随之消失，落不到第二下。
+# macOS 候选窗由 .app 自绘，没有接这条鼠标交互，故限 Windows。
+[[items]]
+key = "ui.candidate.double_click_screenshot"
+group = "ui"
+section = "候选窗口"
+type = "toggle"
+label = "双击候选窗截图"
+hint = "双击候选窗的编码栏或空白处，把候选窗当前画面复制到剪贴板；点候选词仍是选词"
+platform = "windows"
+
 [[items]]
 key = "ui.candidate.position_mode"
 group = "ui"

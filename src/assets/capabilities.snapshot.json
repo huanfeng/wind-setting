@@ -1652,6 +1652,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "ui.candidate.double_click_screenshot",
+      "type": "bool"
+    },
+    {
       "default": "follow_caret",
       "key": "ui.candidate.position_mode",
       "type": "enum",

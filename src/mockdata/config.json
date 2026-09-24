@@ -420,6 +420,7 @@
    "comment_template_vertical": "${code_hint|code_rev|shuangpin}",
    "custom_x": 0,
    "custom_y": 0,
+   "double_click_screenshot": false,
    "fast_first_show_fallback_ms": 25,
    "fast_typing_window_ms": 100,
    "first_show_mode": "fast",
