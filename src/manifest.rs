@@ -5880,6 +5880,8 @@ mod tests {
             "ui.toolbar.fullscreen_watch",
             "ui.toolbar.auto_hide",
             "ui.toolbar.auto_hide_delay",
+            "ui.toolbar.auto_hide_hover_reveal",
+            "ui.toolbar.hide_in_english",
             "ui.toolbar.vertical",
             "input.capslock.cancel_on_mode_switch",
             "stats.track_english",

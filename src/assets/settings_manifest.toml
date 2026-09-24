@@ -3039,6 +3039,16 @@ hint = "定期主动查询前台是否全屏。关掉后，像在输入框里按
 enabled_when = "ui.toolbar.hide_in_fullscreen == true"
 platform = "windows"
 
+# 论坛 t167。「英文状态」= 中英切到英文；临时英文 / 大写锁定仍算中文态。
+[[items]]
+key = "ui.toolbar.hide_in_english"
+group = "ui"
+section = "工具栏"
+type = "toggle"
+label = "英文状态时隐藏工具栏"
+hint = "切换到英文时隐藏工具栏，切回中文即重新显示"
+platform = "windows"
+
 [[items]]
 key = "ui.toolbar.vertical"
 group = "ui"
@@ -3088,6 +3098,17 @@ hint = "工具栏显示多久后开始淡出（秒）"
 min = 1
 max = 60
 unit = "s"
+enabled_when = "ui.toolbar.auto_hide == true"
+platform = "windows"
+
+# 论坛 t167「假隐藏」：淡出后窗口仍留在原位（几乎透明、可命中），悬停即唤回。
+[[items]]
+key = "ui.toolbar.auto_hide_hover_reveal"
+group = "ui"
+section = "工具栏"
+type = "toggle"
+label = "悬停原位时重新显示"
+hint = "隐藏后工具栏仍占着原来的位置，鼠标移过去就重新显示、移开后再次淡出；关掉则彻底隐藏，只在切换中英等状态变化时出现"
 enabled_when = "ui.toolbar.auto_hide == true"
 platform = "windows"
 

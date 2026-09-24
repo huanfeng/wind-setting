@@ -1874,6 +1874,11 @@
     },
     {
       "default": false,
+      "key": "ui.toolbar.hide_in_english",
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "ui.toolbar.auto_hide",
       "type": "bool"
     },
@@ -1881,6 +1886,11 @@
       "default": 5,
       "key": "ui.toolbar.auto_hide_delay",
       "type": "int"
+    },
+    {
+      "default": true,
+      "key": "ui.toolbar.auto_hide_hover_reveal",
+      "type": "bool"
     },
     {
       "default": false,
