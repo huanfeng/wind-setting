@@ -4713,6 +4713,43 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 覆盖导入 / 删除当前主题都经 `refresh_theme_names` 刷新列表，但跟随值
+    /// （`theme.resolved`）此前不重拉——外观页「跟随主题（值）」的文案与勾选初值会继续
+    /// 挂着旧主题的数（Task 11 控制者裁定项 C）。
+    ///
+    /// 用 `rpc::take_mock_calls()` 断言确实发出过 `theme.resolved`，再断言 `theme_follow`
+    /// 信号被刷新为 mock 值（`font_size = 18`）——先把信号设成一个不同的值，只有真的
+    /// 重拉才会变回 18。
+    #[test]
+    fn refresh_theme_names_also_refreshes_theme_follow() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.theme_follow.set(Some(crate::theme_follow::ThemeFollow {
+            font_size: 99,
+            font_family: None,
+            font_weight: 0,
+            pager_bar_display: "auto".into(),
+            page_number_display: "show".into(),
+            langbar_text: Default::default(),
+        }));
+        crate::rpc::take_mock_calls(); // 清空 empty() 期间可能已有的调用记录。
+
+        st.refresh_theme_names();
+
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, _)| m == "theme.resolved"),
+            "刷新主题列表却没有重拉 theme.resolved，实际调用: {calls:?}"
+        );
+        assert_eq!(
+            st.theme_follow.get().map(|t| t.font_size),
+            Some(18),
+            "theme_follow 该被刷成 mock 的 theme.resolved 值（18），不是刷新前的 99"
+        );
+    }
+
     /// ★★★ 打开设置、**什么都不动**就关闭，不该提示「有未保存的更改」。
     ///
     /// `is_dirty` 的做法是「把全部 writer 跑到 current 的副本上，再与 base 比 diff」。
