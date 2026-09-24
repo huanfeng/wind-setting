@@ -994,6 +994,33 @@ fn apply_mock_dict_overrides(schema_id: &str, cfg: &mut Value) {
     });
 }
 
+thread_local! {
+    /// 测试专用：临时顶替 `schema.getConfig` mock 返回的 `followedBehavior.layout`。
+    ///
+    /// 生产 mock 恒定返回 `"horizontal"`（见下方 `mock_followed_layout`）——离线截图/
+    /// 手测不需要这一项会变。只有验证「下拉首项文案随每次打开对话框重算」的用例
+    /// （schema_manager.rs `follow_labels_reseeded_on_each_open`）需要在两次
+    /// `open_settings_at_id` 之间换一个不同的跟随值，模拟「全局页配置在两次打开之间
+    /// 变了」，故给它一个显式的、测试主动摆值的开关，不用不可控的调用计数
+    /// （那会让恰好共享同一测试线程的其它用例被悄悄牵连，破坏「测试要确定性」）。
+    static MOCK_FOLLOWED_LAYOUT: std::cell::Cell<Option<&'static str>> =
+        std::cell::Cell::new(None);
+}
+
+/// 供测试设置/清空上面那个顶替值。测试用完必须传 `None` 清空，否则会漏到下一个用例。
+#[cfg(test)]
+pub(crate) fn set_mock_followed_layout(v: Option<&'static str>) {
+    MOCK_FOLLOWED_LAYOUT.with(|c| c.set(v));
+}
+
+/// `schema.getConfig` mock 里 `followedBehavior.layout` 的取值：默认恒定 `"horizontal"`，
+/// 测试可用 [`set_mock_followed_layout`] 顶替。
+fn mock_followed_layout() -> &'static str {
+    MOCK_FOLLOWED_LAYOUT
+        .with(|c| c.get())
+        .unwrap_or("horizontal")
+}
+
 /// 统计样例的确定性伪随机源：同一天恒定，故截图可复现（不用 rand，避免引入依赖）。
 fn mock_noise(seed: u64, salt: u64) -> u64 {
     let mut x = seed
@@ -1660,7 +1687,7 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             // auxEnabled/auxMaxPhraseLen 给非默认值（开 / 4）：拼音族分支下面带了
             // `aux_code.files`，本节会渲染出来，得看得出跟随值不是零值才有目视意义。
             let followed = json!({
-                "layout": "horizontal", "fontFamily": "微软雅黑",
+                "layout": mock_followed_layout(), "fontFamily": "微软雅黑",
                 "auxEnabled": true, "auxMaxPhraseLen": 4
             });
             if is_codetable_family {
