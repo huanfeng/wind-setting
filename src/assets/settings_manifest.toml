@@ -1014,7 +1014,7 @@ group = "schema"
 section = "英文行为"
 type = "toggle"
 label = "用 ' 分词打英文词组"
-hint = "各段只打前缀：bue'air 出 Buenos Aires，ip'max 出 iPhone 15 Pro Max。可跳词，ip'pro 也能打出 iPhone 15 Pro。开启后 ' 不再是第三候选键，改用数字 3。快捷输入里的英文一并生效；临时英文另设"
+hint = "各段只打前缀：bue'air 出 Buenos Aires，ip'max 出 iPhone 15 Pro Max。可跳词，ip'pro 也能打出 iPhone 15 Pro。开启后 ' 不再是第三候选键，改用数字 3。只管英文方案；临时英文与快捷输入里的英文另设"
 
 [[items]]
 key = "schema.english.commit_space"
@@ -1616,7 +1616,7 @@ group = "input"
 section = "临时英文"
 type = "select"
 label = "首候选为输入原文"
-hint = "「仅词库词」= 只有输入的字母串本身就是词库里的词时才作首候选。语义同英文方案那份，两边各配各的：临时英文常用来在中文里插一个专名或缩写（词库里多半没有），故这一侧「总是」往往仍是合适的"
+hint = "「仅词库词」= 只有输入的字母串本身就是词库里的词时才作首候选。语义同英文方案那份，两边各配各的：临时英文常用来在中文里插一个专名或缩写（词库里多半没有），故这一侧「总是」往往仍是合适的。快捷输入里的英文一并生效（排在英文候选的最前，不抢拼音的位置）"
 options = [
   { value = "always", label = "总是" },
   { value = "in_dict", label = "仅词库词" },
@@ -1629,7 +1629,7 @@ group = "input"
 section = "临时英文"
 type = "toggle"
 label = "生成大小写变形候选"
-hint = "在候选中补出全小写、首字母大写、全大写三种形态。它们各占一个候选位，只需要词库补全时可关闭"
+hint = "在候选中补出全小写、首字母大写、全大写三种形态。它们各占一个候选位，只需要词库补全时可关闭。快捷输入里的英文一并生效"
 
 [[items]]
 key = "input.temp_english.case_follow_input"
@@ -1645,7 +1645,7 @@ group = "input"
 section = "临时英文"
 type = "toggle"
 label = "用 ' 分词打英文词组"
-hint = "各段只打前缀，规则与英文方案那份相同（可跳词）。开启后 ' 在临时英文里不再是第三候选键，改用数字 3"
+hint = "各段只打前缀，规则与英文方案那份相同（可跳词）。开启后 ' 在临时英文与快捷输入里不再是第三候选键，改用数字 3。快捷输入里的英文一并生效"
 
 [[items]]
 key = "input.temp_english.commit_space"
@@ -1653,7 +1653,7 @@ group = "input"
 section = "临时英文"
 type = "toggle"
 label = "上屏后自动加空格"
-hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补"
+hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选一并生效（中文候选不补）"
 
 [[items]]
 key = "input.temp_english.allow_symbols"
