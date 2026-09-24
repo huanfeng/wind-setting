@@ -2514,6 +2514,12 @@ impl AppState {
                     if touches_theme(&items) {
                         self.refresh_theme_follow();
                     }
+                    // 启用/停用方案落在 config.toml 的 `schema.available`，不走 side 落点，
+                    // 上面 `side_changed` 那一枪不会打；而覆盖汇总只列已启用方案，
+                    // 不重拉的话新启用方案的覆盖角标要等重开设置才出现。
+                    if touches_schema_available(&items) {
+                        self.refresh_override_summary();
+                    }
                     self.feedback.set(Some((
                         ToastKind::Success,
                         format!("已保存 {} 项变更", items_json.len()),
@@ -2547,6 +2553,16 @@ fn touches_theme(items: &[crate::config::ConfigItem]) -> bool {
     items
         .iter()
         .any(|it| it.key == "ui.theme" || it.key.starts_with("ui.theme."))
+}
+
+/// 这次保存有没有动到方案启用表（`schema.available`）。动了就得重拉覆盖汇总。
+///
+/// 也认整段 `schema` 项：基线里没有 `schema` 表时（全新配置），`diff_config` 不下钻，
+/// 把整个对象作为一项产出，`available` 就藏在它的 value 里。
+fn touches_schema_available(items: &[crate::config::ConfigItem]) -> bool {
+    items.iter().any(|it| {
+        it.key == "schema.available" || (it.key == "schema" && it.value.get("available").is_some())
+    })
 }
 
 /// 收集当前配置里"裸键触发"四组，供按键冲突检测用。
@@ -3692,23 +3708,97 @@ mod tests {
         );
     }
 
-    /// 反例：没有任何 side 改动时（`side_dirty()` 恒假）不应重拉——`schema.overrideSummary`
-    /// 唯一会变的时刻是方案设置对话框保存，config.toml-only 的保存不该多打这一枪。
+    /// 反例：没有任何 side 改动、config.toml 这边也没动 `schema.available` 时不应重拉——
+    /// 覆盖汇总只在方案设置对话框保存、或启用表变了时才会变，其余 config.toml 保存
+    /// 不该多打这一枪。
+    ///
+    /// 基线取 writer 跑过之后的配置，再只改一个无关键：空基线会让 `diff_config` 把整段
+    /// `schema` 表（含 `available`）当新增项产出，那就不是「没动启用表」了。
     #[test]
     fn save_does_not_refresh_override_summary_without_side_changes() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let mut st = AppState::empty();
         st.data_loaded = true;
+        let mut settled = st.current_config.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut settled);
+        }
+        st.base_config = settled.clone();
+        settled.set_path("ui.candidate.font_size", serde_json::json!(21));
+        st.current_config = settled;
         crate::rpc::take_mock_calls();
 
         assert!(st.save(), "无 side 改动也应正常保存成功");
         let calls = crate::rpc::take_mock_calls();
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
         assert!(
+            calls.iter().any(|(m, _)| m == "config.setItems"),
+            "前提：这次保存确实写了 config.toml（无关键），实际调用: {calls:?}"
+        );
+        assert!(
             !calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
             "没有 side 改动却重拉了 overrideSummary，实际调用: {calls:?}"
         );
+    }
+
+    /// 全局页启用/停用方案只改 config.toml 的 `schema.available`（不经 side 落点），
+    /// 保存成功后也要重拉 `schema.overrideSummary`——汇总只列已启用方案，不重拉的话
+    /// 新启用方案的覆盖角标要等重开设置才出现（最终审查 Important 3）。
+    #[test]
+    fn save_refreshes_override_summary_when_schema_available_changed() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        // 基线 = writer 跑过之后的配置（否则别的键也会进 diff），再把启用表改成「只有
+        // 五笔」——等价于加载后用户在全局页多启用了一个方案（`enabled_order` 那份）。
+        let mut settled = st.current_config.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut settled);
+        }
+        settled.set_path("schema.available", serde_json::json!(["wubi86"]));
+        st.base_config = settled;
+        crate::rpc::take_mock_calls(); // 清空 empty() 期间可能已有的调用记录。
+
+        assert!(st.save(), "改启用表应保存成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, p)| m == "config.setItems"
+                && p["items"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|it| it["key"] == "schema.available"))),
+            "前提：这次保存确实写了 schema.available，实际调用: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
+            "保存了 schema.available 却没有重拉 overrideSummary，实际调用: {calls:?}"
+        );
+    }
+
+    /// 只有 `schema.available` 触发重拉；别的 config.toml 键不该多打这一枪。
+    #[test]
+    fn only_schema_available_triggers_override_summary_refresh() {
+        let item = |k: &str| crate::config::ConfigItem {
+            key: k.to_string(),
+            value: Value::Null,
+        };
+        assert!(touches_schema_available(&[
+            item("ui.candidate.font_size"),
+            item("schema.available")
+        ]));
+        assert!(!touches_schema_available(&[item("schema.active")]));
+        // 基线没有 `schema` 表时整段产出，`available` 在 value 里。
+        assert!(touches_schema_available(&[crate::config::ConfigItem {
+            key: "schema".to_string(),
+            value: serde_json::json!({ "available": ["wubi86"] }),
+        }]));
+        assert!(!touches_schema_available(&[crate::config::ConfigItem {
+            key: "schema".to_string(),
+            value: serde_json::json!({ "active": "wubi86" }),
+        }]));
+        assert!(!touches_schema_available(&[item("ui.candidate.font_size")]));
     }
 
     /// [`parse_override_summary`] 的退化路径：回包不是对象（`null`、老 core 给了别的
