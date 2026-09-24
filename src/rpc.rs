@@ -1367,6 +1367,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "name": "mono", "display_name": "墨", "version": "1.0.0", "builtin": false }
         ]),
         "theme.delete" => json!({ "ok": true }),
+        // 全局键 → 覆盖它的方案 id（core `schema.overrideSummary`）。
+        "schema.overrideSummary" => json!({ "ui.candidate.layout": ["wubi86"] }),
         "theme.resolved" => json!({
             "themeId": "default", "fontSize": 18, "fontFamily": null, "fontWeight": 0,
             "pagerBarDisplay": "auto", "pageNumberDisplay": "show",
@@ -1654,10 +1656,16 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             // 未来通用码表 id 预留分支（当前 schema.list 未含此 id）。
             let is_codetable_family =
                 (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
+            // 「跟随全局（值）」的值（core 只读旁路字段，两个分支都带）。
+            let followed = json!({
+                "layout": "horizontal", "fontFamily": "微软雅黑",
+                "auxEnabled": false, "auxMaxPhraseLen": 0
+            });
             if is_codetable_family {
                 let mut v = json!({
                     "schema": { "id": id, "name": "五笔 86" },
                     "engine": { "type": "codetable" },
+                    "followedBehavior": followed,
                     "dictionaries": [
                         { "id": "wubi86_main",  "label": "极点五笔主词库", "description": "含单字与高频词组", "default": true },
                         { "id": "wubi86_extra", "label": "扩展词库", "description": "新词、网络用语、生僻词等", "default_enabled": true },
@@ -1672,7 +1680,8 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                 json!({
                     "engine": { "type": "pinyin", "pinyin": {
                         "scheme": "shuangpin", "shuangpin": { "layout": "ziranma" }
-                    } }
+                    } },
+                    "followedBehavior": followed
                 })
             }
         }
