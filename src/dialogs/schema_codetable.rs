@@ -1205,6 +1205,65 @@ mod tests {
         );
     }
 
+    /// 「全部恢复跟随」只该清界面上看得见的键（R8.5）。
+    ///
+    /// `reset` 清的不是逐项信号，而是 `SPEC_BEHAVIOR_FIELDS` 十二个扁平字段，
+    /// 外加 `frequency` / `english_merge` 两个子段**整段**置 null——整段清的话，
+    /// 子段里任何一个 `hidden = true` 的字段会跟着被清掉，却在界面上找不到：
+    /// 用户既看不见它被清过，也没法在界面上把它拨回来。
+    ///
+    /// 这条测试把「reset 实际会碰的键」与 `visible_keys()` 对齐，谁清了却不可见，
+    /// 谁就在这里炸。核实过它能红：临时把一个不存在于 manifest 的键塞进
+    /// `SPEC_BEHAVIOR_FIELDS`，这条测试会先报「界面上看不见的键」再还原（记录见
+    /// task-7-report.md）。
+    #[test]
+    fn reset_touches_only_keys_visible_for_this_engine() {
+        let m = manifest();
+        let visible = visible_keys(&m);
+        let visible_set: std::collections::HashSet<&str> =
+            visible.iter().map(String::as_str).collect();
+
+        // SPEC_BEHAVIOR_FIELDS：扁平字段名，逐个映射回 manifest key 再查可见性。
+        for f in SPEC_BEHAVIOR_FIELDS {
+            let key = format!("{MANIFEST_PREFIX}{f}");
+            assert!(
+                visible_set.contains(key.as_str()),
+                "reset 清了界面上看不见的键 {key}（R8.5）"
+            );
+        }
+
+        // frequency / english_merge：reset 把整段置 null，段内任何字段（含 hidden）
+        // 都会被一并清掉——用 section_keys（含 hidden，不过滤 auto_phrase）取段内
+        // 全集，逐个核对可见性，而不是只核对 manifest 里当前没有 hidden 项这一事实。
+        let all_keys = section_keys(&m);
+        for section in ["frequency.", "english_merge."] {
+            let prefixed: Vec<&String> = all_keys
+                .iter()
+                .filter(|k| k.trim_start_matches(MANIFEST_PREFIX).starts_with(section))
+                .collect();
+            assert!(
+                !prefixed.is_empty(),
+                "{section} 段消失了，本测试的覆盖面假设已经不成立"
+            );
+            for k in prefixed {
+                assert!(
+                    visible_set.contains(k.as_str()),
+                    "reset 整段清掉 {section}，其中 {k} 在界面上不可见（R8.5）"
+                );
+            }
+        }
+
+        // auto_phrase 原样保留：reset 不动它（不在 SPEC_BEHAVIOR_FIELDS，也不是
+        // frequency/english_merge 子段），这里只确认这组前提本身没漂——具体的透传
+        // 行为由 `apply_writes_values_for_checked_and_null_for_unchecked` 钉住。
+        assert!(
+            all_keys
+                .iter()
+                .any(|k| k.starts_with(&format!("{MANIFEST_PREFIX}auto_phrase."))),
+            "auto_phrase 组消失了，reset 的排除逻辑需要重新核实"
+        );
+    }
+
     /// `revert_all` 把控件值拨回**跟随值**，而不是留着用户刚改的那个。
     ///
     /// 界面上未勾选的行显示的就是跟随值；不拨回的话，用户按下「全部恢复跟随」看到的
