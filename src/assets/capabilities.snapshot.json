@@ -490,6 +490,16 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.un_ong",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.eng_ong",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "schema.pinyin.frequency.enabled",
       "type": "bool"

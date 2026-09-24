@@ -27,7 +27,7 @@
 | schema.pinyin.use_smart_compose | 智能组词 | bool | ≈智能组句 |
 | schema.pinyin.separator | 拼音分隔符 | enum | 我们独有（现输入页/临时拼音） |
 | schema.pinyin.fuzzy.enabled | 模糊音总开关 | bool | 我们独有 |
-| schema.pinyin.fuzzy.{an_ang,ch_c,en_eng,f_h,ian_iang,in_ing,n_l,r_l,sh_s,uan_uang,zh_z} | 11 对模糊音 | bool | 我们独有（参考无逐项） |
+| schema.pinyin.fuzzy.{an_ang,ch_c,en_eng,eng_ong,f_h,ian_iang,in_ing,n_l,r_l,sh_s,uan_uang,un_ong,zh_z} | 13 对模糊音 | bool | 我们独有（参考无逐项） |
 
 ### 通用输入行为（可归输入页，也可视作引擎全局）
 | key | 标签 | 类型 | 现位置 |

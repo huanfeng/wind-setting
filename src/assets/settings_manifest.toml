@@ -756,6 +756,20 @@ section = "模糊音"
 type = "toggle"
 label = "uan ↔ uang"
 
+[[items]]
+key = "schema.pinyin.fuzzy.un_ong"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "un ↔ ong"
+
+[[items]]
+key = "schema.pinyin.fuzzy.eng_ong"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "eng ↔ ong"
+
 # ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
 #
 # ⚠️ 项序即渲染序，且 `subsection = None` **不会终止**前一个分组（对话框渲染只在

@@ -373,6 +373,7 @@
     "ch_c": false,
     "en_eng": false,
     "enabled": false,
+    "eng_ong": false,
     "f_h": false,
     "ian_iang": false,
     "in_ing": false,
@@ -380,6 +381,7 @@
     "r_l": false,
     "sh_s": false,
     "uan_uang": false,
+    "un_ong": false,
     "zh_z": false
    },
    "grammar": {

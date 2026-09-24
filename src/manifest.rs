@@ -2102,7 +2102,7 @@ fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
-/// 模糊音紧凑组：启用开关 + 全选 checkbox + 11 对小号 checkbox（2 列），随启用置灰。
+/// 模糊音紧凑组：启用开关 + 全选 checkbox + 13 对小号 checkbox（2 列），随启用置灰。
 /// 各项经 register_toggle 登记 writer/loader（key 在清单 schema/模糊音，受「恢复本页」覆盖）。
 fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
     let en = register_toggle(state, "schema.pinyin.fuzzy.enabled", cfg);
@@ -2118,6 +2118,8 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         ("schema.pinyin.fuzzy.in_ing", "in ↔ ing"),
         ("schema.pinyin.fuzzy.ian_iang", "ian ↔ iang"),
         ("schema.pinyin.fuzzy.uan_uang", "uan ↔ uang"),
+        ("schema.pinyin.fuzzy.un_ong", "un ↔ ong"),
+        ("schema.pinyin.fuzzy.eng_ong", "eng ↔ ong"),
     ];
     let sigs: Vec<Signal<bool>> = pairs
         .iter()
@@ -2130,10 +2132,10 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         .collect();
     let grid = Element::grid(2, 10, cells).width_match().enabled_signal(en);
 
-    // 全选 checkbox：受控（on_toggle 接管点击），点击即把 11 项整体设为「取反当前是否
+    // 全选 checkbox：受控（on_toggle 接管点击），点击即把 13 项整体设为「取反当前是否
     // 全选」——已全选时点击变全不选，故同一个 checkbox 兼顾全选/取消全选，不需要
     // 额外按钮。checkbox 本身不接收 on-change，故其勾选状态需要另一条腿维持：下方
-    // reactive_effect 监听 11 项版本，任一项被单独勾/取消时都重算「是否全选」回写
+    // reactive_effect 监听 13 项版本，任一项被单独勾/取消时都重算「是否全选」回写
     // 本信号，让全选框始终如实反映当前状态（而非只在点它自己时才更新）。
     let select_all_sig = signal(sigs.iter().all(|s| s.get()));
     let click_sigs = sigs.clone();

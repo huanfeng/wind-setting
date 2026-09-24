@@ -127,7 +127,7 @@ pub fn page_anchor(key: &str) -> String {
 
 /// 「这一项没有自己的行，它在某一整块里」——返回那一块的锚点基名。
 ///
-/// 模糊音那 13 个开关是挤在一个**网格**里的（`manifest::build_fuzzy_group`），
+/// 模糊音那一组开关是挤在一个**网格**里的（`manifest::build_fuzzy_group`），
 /// 每格只有一个 `zh ↔ z` 大小的方块，逐格挂锚点没有意义：闪一个小方块，
 /// 用户多半看不见。整块闪一次反而说得清「在这儿」。
 fn block_anchor_of(key: &str) -> Option<&'static str> {
