@@ -3682,6 +3682,18 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
             .unwrap_or(DEFAULT_BADGE_ALPHA as f64) as f32,
     );
     ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
+    // 全局滑块与本对话框同页：用户拖了滑块（未保存）再开表单，跟随值要是滑块当前值，
+    // 不是上面加载时灌的那个（T9）。经 getters 取而不是捕获滑块信号——滑块是另一个
+    // 清单项，建出顺序与本项无关，打开表单时它早已登记。
+    let fields = state.fields.clone();
+    *ui.form.badge_alpha_source.borrow_mut() = Some(Box::new(move || {
+        fields
+            .getters
+            .borrow()
+            .get("ui.langbar.badge_alpha")
+            .and_then(|g| g().as_f64())
+            .map(|v| v as f32)
+    }));
 
     let ui_w = ui.clone();
     let kw = key.to_string();

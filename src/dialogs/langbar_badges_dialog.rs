@@ -89,6 +89,11 @@ const MAX_SCALE: f64 = 3.0;
 /// 出厂值 0.88 必须落在格子上）。
 const ALPHA_STEP: f64 = 0.02;
 
+/// 单条透明度覆盖的下限，与全局 `ui.langbar.badge_alpha` 滑块的 `min = 0.3` 一致
+/// （控制者裁定）：同一个量两处范围不同，用户在这里拖到 0.1 会以为全局滑块「拖不到底」。
+/// 读入钳制也用它——stepper 装不下界外值，读进来就得落在它的范围里。
+const MIN_BADGE_ALPHA: f32 = 0.3;
+
 /// 一条角标规则（对应一个 `[[ui.langbar.badges]]`）。
 ///
 /// **不含 `enabled`**：那一位存在 [`LangBarBadgesUi::switches`] 里，理由见模块文档。
@@ -144,7 +149,14 @@ pub struct BadgeForm {
     /// 全局 `ui.langbar.badge_alpha` 的当前值——未勾时勾选行显示「跟随全局（这个值）」，
     /// 勾上瞬间控件也播成这个值（同 `theme_follow` 那套「勾选瞬间必须已是跟随值」的裁决）。
     /// 由外部（`manifest.rs`）灌入，构造时先给 core 的出厂值占位。
+    ///
+    /// ⚠️ 它是**打开表单那一刻**的全局值：全局滑块与本对话框在同一页，用户可以先拖滑块
+    /// 再开表单，此时配置还没保存、`badge_alpha` 仍是加载时的数。所以每次打开都经
+    /// [`Self::badge_alpha_source`] 重取一次「当前编辑中」的滑块值。
     pub badge_alpha: Signal<f32>,
+    /// 取全局滑块**当前编辑中**的值；`None` = 拿不到（滑块尚未建出等），保留原值。
+    /// 由 `manifest.rs` 接到 `FieldRegistry::getters` 上，见 [`Self::sync_badge_alpha`]。
+    pub badge_alpha_source: Rc<RefCell<Option<Box<dyn Fn() -> Option<f32>>>>>,
     /// 大小倍率。用 [`Element::stepper`] 而非文本框：倍率是个连续量，按 0.1 步进点
     /// 两下就到位，而文本框还得自己校验"填了个字母"。
     pub scale: Signal<f64>,
@@ -174,13 +186,24 @@ impl BadgeForm {
             alpha_dark_over: signal(false),
             alpha_dark: signal(DEFAULT_BADGE_ALPHA as f64),
             badge_alpha: signal(DEFAULT_BADGE_ALPHA),
+            badge_alpha_source: Rc::new(RefCell::new(None)),
             scale: signal(1.0),
             error: signal(String::new()),
             title: signal("添加角标规则".to_string()),
         }
     }
 
+    /// 从 [`Self::badge_alpha_source`] 把全局滑块当前值同步进 `badge_alpha`。
+    /// 「跟随全局（x）」文案对 `badge_alpha` 做了响应，这里一设就跟着变。
+    pub fn sync_badge_alpha(&self) {
+        let cur = self.badge_alpha_source.borrow().as_ref().and_then(|f| f());
+        if let Some(v) = cur {
+            self.badge_alpha.set(v);
+        }
+    }
+
     pub fn open_new(&self) {
+        self.sync_badge_alpha();
         self.editing.set(NEW_BADGE);
         self.state_idx.set(0);
         self.corner_idx.set(index_of(CORNERS, DEFAULT_CORNER));
@@ -198,6 +221,7 @@ impl BadgeForm {
     }
 
     pub fn open_edit(&self, index: usize, row: &BadgeRow) {
+        self.sync_badge_alpha();
         self.editing.set(index);
         self.state_idx.set(index_of(STATES, &row.state));
         self.corner_idx.set(index_of(CORNERS, &row.corner));
@@ -397,7 +421,7 @@ fn split_legacy_color(raw: &str) -> (String, Option<f32>) {
     let hex8 = t.strip_prefix('#').unwrap_or(t);
     if hex8.len() == 8 && hex8.bytes().all(|c| c.is_ascii_hexdigit()) {
         let aa = u8::from_str_radix(&hex8[6..], 16).unwrap_or(0xFF);
-        let alpha = (f32::from(aa) / 255.0).clamp(0.0, 1.0);
+        let alpha = (f32::from(aa) / 255.0).clamp(MIN_BADGE_ALPHA, 1.0);
         return (format!("#{}", &hex8[..6]), Some(alpha));
     }
     // 其余（新写法的 `""` / `#RRGGBB`，不拘大小写，或非法值）**原样**返回，不规范大小写。
@@ -429,13 +453,13 @@ pub fn rows_from_value(items: &[Value]) -> Vec<BadgeRow> {
             };
             let (color_light, legacy_alpha_light) = split_legacy_color(&s("color_light", ""));
             let (color_dark, legacy_alpha_dark) = split_legacy_color(&s("color_dark", ""));
-            // 钳到 0..=1：手写配置里的越界值（负数、大于 1）没有意义，core 侧
-            // `wind_ui::langbar_icon::IconRenderer::badge_alpha` 按不透明度用，钳一下
-            // 免得画出诸如「负透明度」这种未定义的东西。
+            // 钳到 0.3..=1（[`MIN_BADGE_ALPHA`]）：手写配置里的越界值（负数、大于 1）
+            // 没有意义，core 侧 `wind_ui::langbar_icon::IconRenderer::badge_alpha` 按
+            // 不透明度用；下限取 0.3 与全局滑块、本表单 stepper 同一范围。
             let alpha = |k: &str, legacy: Option<f32>| {
                 it.get(k)
                     .and_then(|v| v.as_f64())
-                    .map(|v| (v as f32).clamp(0.0, 1.0))
+                    .map(|v| (v as f32).clamp(MIN_BADGE_ALPHA, 1.0))
                     .or(legacy)
             };
             BadgeRow {
@@ -688,8 +712,13 @@ fn color_row(label: &str, pc: &PickedColor, fallback: Color) -> Element {
 
 /// 表单里的一行透明度：勾选行——未勾 = 跟随全局 `badge_alpha`（文案随其值实时更新），
 /// 勾上后拖动滑块给这一条自己的不透明度（1.0 = 实心 + 挖空，见 [`BadgeRow::alpha_light`]）。
-fn alpha_row(label: &str, over: Signal<bool>, value: Signal<f64>, follow_text: Signal<String>) -> Element {
-    let editor = Element::stepper(value, 0.0, 1.0, ALPHA_STEP).width(90);
+fn alpha_row(
+    label: &str,
+    over: Signal<bool>,
+    value: Signal<f64>,
+    follow_text: Signal<String>,
+) -> Element {
+    let editor = Element::stepper(value, MIN_BADGE_ALPHA as f64, 1.0, ALPHA_STEP).width(90);
     let control = override_control_signal(over, Rc::new(|| true), editor, follow_text, "", 150);
     Element::row()
         .width_match()
@@ -697,7 +726,12 @@ fn alpha_row(label: &str, over: Signal<bool>, value: Signal<f64>, follow_text: S
         .spacing(8)
         // 空标签的勾选框：标签文字在下一列，同 `widgets::setting_row_override` 的排布。
         .child(Element::checkbox("", over).small().fg_role(Role::Text))
-        .child(Element::label(label).font_size(12.5).fg_role(Role::Text).width(80))
+        .child(
+            Element::label(label)
+                .font_size(12.5)
+                .fg_role(Role::Text)
+                .width(80),
+        )
         .child(control)
 }
 
@@ -1028,7 +1062,11 @@ mod tests {
             for k in ["enabled", "state", "corner", "color_light", "color_dark"] {
                 assert_eq!(a.get(k), b.get(k), "字段 {k} 在来回后变了");
             }
-            assert_eq!(b.get("alpha_light"), None, "跟随全局不该写出 alpha_light 键");
+            assert_eq!(
+                b.get("alpha_light"),
+                None,
+                "跟随全局不该写出 alpha_light 键"
+            );
         }
     }
 
@@ -1103,28 +1141,42 @@ mod tests {
     /// 存量配置一打开就会被误判成「有未保存的改动」。
     #[test]
     fn lowercase_six_digit_color_round_trips_verbatim() {
-        let items = vec![json!({"state": "punct_cn", "color_light": "#2288e0", "color_dark": "#2288e0"})];
+        let items =
+            vec![json!({"state": "punct_cn", "color_light": "#2288e0", "color_dark": "#2288e0"})];
         let rows = rows_from_value(&items);
         assert_eq!(rows[0].color_light, "#2288e0", "读入阶段不该改写大小写");
         let back = row_to_value(&rows[0], true);
         assert_eq!(back.get("color_light"), Some(&json!("#2288e0")));
     }
 
-    /// 手写配置里的越界透明度（负数 / 大于 1）读入时钳到 0..=1，不带出未定义的值。
+    /// 手写配置里的越界透明度（负数 / 低于全局滑块下限 / 大于 1）读入时钳到 0.3..=1，
+    /// 与全局滑块、表单 stepper 同一范围。
     #[test]
     fn explicit_alpha_out_of_range_is_clamped() {
         let items = vec![
             json!({"state": "punct_cn", "alpha_light": -0.5, "alpha_dark": 1.5}),
+            json!({"state": "punct_en", "alpha_light": 0.1, "alpha_dark": 0.3}),
         ];
         let rows = rows_from_value(&items);
-        assert_eq!(rows[0].alpha_light, Some(0.0));
+        assert_eq!(rows[0].alpha_light, Some(0.3));
         assert_eq!(rows[0].alpha_dark, Some(1.0));
+        assert_eq!(rows[1].alpha_light, Some(0.3), "低于下限的也钳到 0.3");
+        assert_eq!(rows[1].alpha_dark, Some(0.3), "恰为下限原样通过");
+    }
+
+    /// 旧写法末两位很小（`#…10` ≈ 0.06）时同样钳到下限，不绕过读入钳制。
+    #[test]
+    fn legacy_rgba8_low_alpha_is_clamped_to_min() {
+        let items = vec![json!({"state": "punct_cn", "color_light": "#2288E010"})];
+        let rows = rows_from_value(&items);
+        assert_eq!(rows[0].alpha_light, Some(0.3));
     }
 
     /// 新键（`alpha_x`）比旧色值末两位更可信：两者都出现时以新键为准。
     #[test]
     fn explicit_alpha_key_overrides_legacy_suffix() {
-        let items = vec![json!({"state": "punct_cn", "color_light": "#2288E080", "alpha_light": 0.9})];
+        let items =
+            vec![json!({"state": "punct_cn", "color_light": "#2288E080", "alpha_light": 0.9})];
         let rows = rows_from_value(&items);
         assert_eq!(rows[0].color_light, "#2288E0");
         assert_eq!(rows[0].alpha_light, Some(0.9));
@@ -1133,9 +1185,8 @@ mod tests {
     #[test]
     fn factory_badges_have_alpha_none_and_no_legacy_color() {
         // 出厂三条不在这一屏，但这一屏解析同形态的输入应得到同样干净的结果。
-        let items = vec![
-            json!({"state": "punct_cn", "color_light": "#2288E0", "color_dark": "#2288E0"}),
-        ];
+        let items =
+            vec![json!({"state": "punct_cn", "color_light": "#2288E0", "color_dark": "#2288E0"})];
         for b in rows_from_value(&items) {
             assert!(b.color_light != "auto" && b.color_dark != "auto");
             assert_eq!((b.alpha_light, b.alpha_dark), (None, None));
@@ -1389,6 +1440,39 @@ mod tests {
         assert_eq!(f.alpha_light.get(), 0.42_f32 as f64);
         assert!(!f.alpha_dark_over.get());
         assert_eq!(f.alpha_dark.get(), 0.42_f32 as f64);
+    }
+
+    /// T9：同页先拖全局滑块、再开表单，未勾时的跟随值与勾上瞬间的初值都要是滑块
+    /// **当前编辑中**的值，不是加载时灌进来的旧值。新建、编辑两个入口都要取。
+    #[test]
+    fn open_pulls_badge_alpha_from_live_source() {
+        let f = BadgeForm::new();
+        f.badge_alpha.set(0.88);
+        let live = Rc::new(Cell::new(0.5_f32));
+        let l = live.clone();
+        *f.badge_alpha_source.borrow_mut() = Some(Box::new(move || Some(l.get())));
+
+        f.open_new();
+        assert_eq!(f.badge_alpha.get(), 0.5);
+        assert_eq!(f.alpha_light.get(), 0.5_f32 as f64);
+
+        live.set(0.6);
+        let mut r = rows_from_value(&cfg_rows())[0].clone();
+        r.alpha_light = None;
+        r.alpha_dark = None;
+        f.open_edit(0, &r);
+        assert_eq!(f.badge_alpha.get(), 0.6);
+        assert_eq!(f.alpha_dark.get(), 0.6_f32 as f64);
+    }
+
+    /// 取不到滑块值（源返回 `None`）时保留原值，不能把它冲成某个占位。
+    #[test]
+    fn open_keeps_badge_alpha_when_source_unavailable() {
+        let f = BadgeForm::new();
+        f.badge_alpha.set(0.7);
+        *f.badge_alpha_source.borrow_mut() = Some(Box::new(|| None));
+        f.open_new();
+        assert_eq!(f.badge_alpha.get(), 0.7);
     }
 
     /// ★ 颜色格的取色面板必须关掉透明度条——这条钉住 `badge_value_of` 那侧的前提：
