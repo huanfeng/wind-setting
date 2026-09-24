@@ -3556,6 +3556,9 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
     use crate::dialogs::langbar_badges_dialog::{LangBarBadgesUi, build_langbar_badges_dialog};
 
     let ui = LangBarBadgesUi::new();
+    ui.form
+        .badge_alpha
+        .set(cfg.get_f64("ui.langbar.badge_alpha").unwrap_or(0.88) as f32);
     ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
 
     let ui_w = ui.clone();
@@ -3573,6 +3576,9 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
+            ui_l.form
+                .badge_alpha
+                .set(c.get_f64("ui.langbar.badge_alpha").unwrap_or(0.88) as f32);
             ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
         }),
     );
@@ -3598,7 +3604,8 @@ fn build_langbar_text_colors(state: &AppState, key: &str, cfg: &Config) -> Eleme
         CELLS, TextColorsUi, build_grid, build_summary_control,
     };
 
-    let ui = TextColorsUi::new();
+    let mut ui = TextColorsUi::new();
+    ui.theme_follow = state.theme_follow;
     for (i, (k, _, _)) in CELLS.iter().enumerate() {
         ui.set_cell(i, cfg.get_str(k).unwrap_or(""));
         let v = ui.cells[i].value;

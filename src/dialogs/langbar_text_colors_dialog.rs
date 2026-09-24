@@ -9,6 +9,7 @@
 
 use windui::prelude::*;
 
+use crate::theme_follow::ThemeFollow;
 use crate::widgets::{
     PickedColor, color_from_value, color_picker_cell, color_swatch, normalize_hex_color,
 };
@@ -21,11 +22,20 @@ pub const CELLS: [(&str, &str, &str); 4] = [
     ("ui.langbar.text_color_en_dark", "英文", "深色任务栏"),
 ];
 
-/// 第 `i` 格在「跟随主题」时取色器里显示的颜色：内置默认（浅色栏黑、深色栏白）。
+/// 第 `i` 格「跟随主题」时取色器里显示、以及格内文字带出的颜色。
 ///
-/// 只是个起点——主题可能另有定义，而设置端拿不到解析后的主题色，故不冒充「当前实际色」，
-/// 格子旁另有「跟随主题」字样说明。
-pub fn fallback_color(i: usize) -> Color {
+/// 优先取 `theme_follow.langbar_text[i]`（当前主题对这一格的实际解析值）；主题数据
+/// 缺席或该格 `None`（两级主题都没定义）时回落内置默认（浅色栏黑、深色栏白）——
+/// 与字号 / 字重那几个键共用同一套「跟随主题（值）」裁决（R8.1）。
+pub fn fallback_color(i: usize, theme_hex: Option<&str>) -> Color {
+    let builtin = builtin_fallback_color(i);
+    match theme_hex {
+        Some(s) => color_from_value(s, builtin),
+        None => builtin,
+    }
+}
+
+fn builtin_fallback_color(i: usize) -> Color {
     if i % 2 == 0 {
         Color::hex(0x000000)
     } else {
@@ -55,18 +65,21 @@ pub fn cell_state(s: &str) -> CellState {
     }
 }
 
-/// 格内文字。
-pub fn cell_text(s: &str) -> String {
+/// 格内文字：跟随主题时带上主题当前解析出的色值；拿不到主题数据只写「跟随主题」。
+pub fn cell_text_with(s: &str, theme_hex: Option<&str>) -> String {
     match cell_state(s) {
-        CellState::FollowTheme => "跟随主题".to_string(),
+        CellState::FollowTheme => match theme_hex.and_then(normalize_hex_color) {
+            Some(v) => format!("跟随主题（{v}）"),
+            None => "跟随主题".to_string(),
+        },
         CellState::Custom(v) => v,
         CellState::Invalid(v) => format!("{v}（无效，按主题）"),
     }
 }
 
 /// 配置值 → 取色器的初值。跟随主题 / 非法时用 [`fallback_color`]。
-pub fn color_of(s: &str, i: usize) -> Color {
-    color_from_value(s, fallback_color(i))
+pub fn color_of(s: &str, i: usize, theme_hex: Option<&str>) -> Color {
+    color_from_value(s, fallback_color(i, theme_hex))
 }
 
 /// 取色器选出的颜色 → 配置值。完全不透明存六位，否则八位（`#RRGGBBAA`）。
@@ -83,19 +96,30 @@ pub struct TextColorsUi {
     pub visible: Signal<bool>,
     /// 四格（配置值 `""` = 跟随主题）。写回 / 取值 / 摘要都读 `cells[i].value`。
     pub cells: [PickedColor; 4],
+    /// 当前主题的跟随值（`theme.resolved`）。外部（`manifest.rs`）接到
+    /// `AppState::theme_follow` 上；构造时先给 `None` 占位。
+    pub theme_follow: Signal<Option<ThemeFollow>>,
 }
 
 impl TextColorsUi {
     pub fn new() -> Self {
         Self {
             visible: signal(false),
-            cells: std::array::from_fn(|i| PickedColor::new("", fallback_color(i))),
+            cells: std::array::from_fn(|i| PickedColor::new("", fallback_color(i, None))),
+            theme_follow: signal(None),
         }
+    }
+
+    /// 第 `i` 格在 [`Self::theme_follow`] 里对应的主题色（拿不到为 `None`）。
+    fn theme_hex(&self, i: usize) -> Option<String> {
+        self.theme_follow
+            .with(|tf| tf.as_ref().and_then(|t| t.langbar_text[i].clone()))
     }
 
     /// 程序侧设置第 `i` 格（播种 / 加载 / 恢复默认 / 跟随主题共用），不会被同步回写。
     pub fn set_cell(&self, i: usize, value: &str) {
-        self.cells[i].set(value, color_of(value, i));
+        let theme_hex = self.theme_hex(i);
+        self.cells[i].set(value, color_of(value, i, theme_hex.as_deref()));
     }
 
     /// 「跟随主题」：写回 `""`。
@@ -115,10 +139,15 @@ impl Default for TextColorsUi {
     }
 }
 
-/// 一枚缩略色样：跟随主题 / 非法值画成描边空块（同 [`color_swatch`]），并挂提示。
-fn summary_swatch(i: usize, s: &str) -> Element {
+/// 一枚缩略色样：跟随主题 / 非法值画成描边空块（同 [`color_swatch`]），并挂提示
+/// （跟随主题时带上主题当前解析出的色值）。
+fn summary_swatch(ui: &TextColorsUi, i: usize, s: &str) -> Element {
     let (_, row, col) = CELLS[i];
-    color_swatch(s).tooltip(format!("{row} · {col}：{}", cell_text(s)))
+    let theme_hex = ui.theme_hex(i);
+    color_swatch(s).tooltip(format!(
+        "{row} · {col}：{}",
+        cell_text_with(s, theme_hex.as_deref())
+    ))
 }
 
 /// 卡片行右侧：四枚缩略色样（中浅、中深、英浅、英深）+ [设置]。
@@ -126,21 +155,26 @@ pub fn build_summary_control(ui: &TextColorsUi) -> Element {
     let summary = signal(vec![ui.snapshot()]);
     let ui_s = ui.clone();
     let vers = ui.cells.clone().map(|c| c.value);
+    let tf_sig = ui.theme_follow;
     let sync = crate::pages::dict::reactive::reactive_effect(
-        move || vers.iter().map(|s| s.version()).sum(),
+        move || {
+            let cells_ver: u64 = vers.iter().map(|s| s.version()).sum();
+            cells_ver.wrapping_add(tf_sig.version().wrapping_mul(1_000_003))
+        },
         move || summary.set(vec![ui_s.snapshot()]),
     );
     let visible = ui.visible;
+    let ui_sw = ui.clone();
     Element::row()
         .cross(Align::Center)
         .spacing(8)
         // effect 节点零宽，但放行尾仍多吃一份 spacing、把按钮推离右缘，故挂最前。
         .child(sync)
         .child(
-            Element::host_signal(summary, |vals: Vec<String>| {
+            Element::host_signal(summary, move |vals: Vec<String>| {
                 let mut r = Element::row().cross(Align::Center).spacing(4);
                 for (i, v) in vals.iter().enumerate() {
-                    r = r.child(summary_swatch(i, v));
+                    r = r.child(summary_swatch(&ui_sw, i, v));
                 }
                 r
             })
@@ -161,10 +195,14 @@ pub fn build_summary_control(ui: &TextColorsUi) -> Element {
 fn cell(ui: &TextColorsUi, i: usize) -> Element {
     let value = ui.cells[i].value;
     let ui_f = ui.clone();
+    let ui_t = ui.clone();
     color_picker_cell(
         &ui.cells[i],
-        |s| cell_text(s),
-        62,
+        move |s| {
+            let theme_hex = ui_t.theme_hex(i);
+            cell_text_with(s, theme_hex.as_deref())
+        },
+        70,
         |_, c| value_of(c),
         vec![
             Element::button("清除")
@@ -253,7 +291,7 @@ mod tests {
             CellState::Custom("#1A2B3CDD".into())
         );
         assert_eq!(cell_state("auto"), CellState::Invalid("auto".into()));
-        assert_eq!(cell_text(""), "跟随主题");
+        assert_eq!(cell_text_with("", None), "跟随主题");
     }
 
     /// alpha 规范化：不透明存六位（不写 FF），半透明存八位。
@@ -262,14 +300,44 @@ mod tests {
         assert_eq!(value_of(Color::rgba(0x12, 0x34, 0x56, 0xFF)), "#123456");
         assert_eq!(value_of(Color::rgba(0x12, 0x34, 0x56, 0x80)), "#12345680");
         // 八位往返不丢透明度。
-        assert_eq!(value_of(color_of("#12345680", 0)), "#12345680");
+        assert_eq!(value_of(color_of("#12345680", 0, None)), "#12345680");
     }
 
     #[test]
     fn follow_theme_cells_show_builtin_fallback_in_picker() {
-        assert_eq!(color_of("", 0), Color::hex(0x000000), "浅色栏回落黑");
-        assert_eq!(color_of("", 1), Color::hex(0xFFFFFF), "深色栏回落白");
-        assert_eq!(color_of("bogus", 3), Color::hex(0xFFFFFF));
+        assert_eq!(color_of("", 0, None), Color::hex(0x000000), "浅色栏回落黑");
+        assert_eq!(color_of("", 1, None), Color::hex(0xFFFFFF), "深色栏回落白");
+        assert_eq!(color_of("bogus", 3, None), Color::hex(0xFFFFFF));
+    }
+
+    /// 主题给了这一格的值时，取色器回落到主题色而不是内置默认。
+    #[test]
+    fn fallback_color_prefers_theme_over_builtin() {
+        assert_eq!(fallback_color(0, Some("#123456")), Color::hex(0x123456));
+        assert_eq!(fallback_color(0, None), Color::hex(0x000000));
+        // 主题给的值非法时仍回落内置默认，不崩溃。
+        assert_eq!(fallback_color(1, Some("bogus")), Color::hex(0xFFFFFF));
+    }
+
+    /// 跟随主题时格内文字带上主题当前解析出的色值；拿不到主题数据只写「跟随主题」。
+    #[test]
+    fn follow_theme_cell_text_carries_theme_color() {
+        assert_eq!(cell_text_with("", Some("#000000")), "跟随主题（#000000）");
+        assert_eq!(cell_text_with("", None), "跟随主题");
+        // 自定义值 / 非法值不受主题影响。
+        assert_eq!(cell_text_with("#112233", Some("#000000")), "#112233");
+    }
+
+    /// `set_cell` 播种跟随主题格时，取色器显示的是主题色而不是内置默认。
+    #[test]
+    fn set_cell_follow_theme_uses_linked_theme_signal() {
+        let ui = TextColorsUi::new();
+        ui.theme_follow.set(Some(ThemeFollow {
+            langbar_text: [Some("#ABCDEF".into()), None, None, None],
+            ..Default::default()
+        }));
+        ui.set_cell(0, "");
+        assert_eq!(ui.cells[0].color.get(), Color::hex(0xABCDEF));
     }
 
     /// 四格各自读写，互不串格。
@@ -299,7 +367,7 @@ mod tests {
         ui.cells[1].sync(|_, c| value_of(c));
         assert_eq!(ui.cells[1].value.get(), "#204060CC");
 
-        ui.cells[0].color.set(fallback_color(0));
+        ui.cells[0].color.set(fallback_color(0, None));
         ui.cells[0].sync(|_, c| value_of(c));
         assert_eq!(ui.cells[0].value.get(), "#000000", "挑中内置黑也是用户值");
 
