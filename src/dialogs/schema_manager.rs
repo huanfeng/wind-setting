@@ -222,13 +222,8 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; SET
     out
 }
 
-/// 辅助码方案级覆盖的三档。`[engine.aux_code].enabled` 是 tri-state `Option<bool>`：
-/// `None` 回落全局 `[schema.pinyin.aux_code].enabled`，`Some` 覆盖它。
-///
-/// ★ 用三档分段而不是复选框：复选框只有两态，表达不出「跟随全局」——而那恰恰是出厂态，
-/// 也是绝大多数方案该停在的地方。用复选框就必须替用户在开/关里二选一，一打开设置页
-/// 就等于把每个方案都钉死成显式值。
-const AUX_CODE_MODES: [&str; 3] = ["跟随全局", "开启", "关闭"];
+/// 辅助码勾选行控件区的统一宽度。与开关/数字框都用它，两行右侧控件左边界才能对齐。
+const AUX_CTRL_W: i32 = 150;
 
 /// 这个方案**有没有可用的辅助码表**。建节与落盘共用**同一条**判据。
 ///
@@ -246,21 +241,26 @@ fn has_aux_code_table(cfg: &Value) -> bool {
         .is_some_and(|a| !a.is_empty())
 }
 
-fn aux_code_idx(v: Option<bool>) -> usize {
-    match v {
-        None => 0,
-        Some(true) => 1,
-        Some(false) => 2,
-    }
+/// `[engine.aux_code]` 「启用」与「最长词长」两行**各自独立**的落盘值。
+///
+/// ★ 两个勾选框而不是一个三档分段：`enabled` 与 `max_phrase_len` 是方案文件里两个
+/// 各自独立的键，「跟不跟」也该各自表达——旧版用一个三档分段把两件事拧在一起，
+/// 装不下后来加的 `max_phrase_len` 覆盖需求，才有了这次改法。
+///
+/// 未勾的一位写 `Value::Null`：core 的 `json_to_toml` 跳过 null，该键不进 override，
+/// 取值回落全局——这正是「跟随全局」的落地方式，不是丢失。
+fn aux_write(on_over: bool, on: bool, len_over: bool, len: i32) -> (Value, Value) {
+    let enabled = if on_over { json!(on) } else { Value::Null };
+    let max_len = if len_over { json!(len) } else { Value::Null };
+    (enabled, max_len)
 }
 
-/// 下标 → 落盘值。`Null` 即「不写这一行」：core 的 `json_to_toml` 跳过 null，于是该键不进
-/// override，取值回落全局——这正是「跟随全局」的落地方式，不是丢失。
-fn aux_code_value(idx: usize) -> Value {
-    match idx {
-        1 => json!(true),
-        2 => json!(false),
-        _ => Value::Null,
+/// 布尔跟随值的展示文案：「开」/「关」。数字项直接 `to_string()`，用不上这一层。
+fn follow_text_bool(v: bool) -> String {
+    if v {
+        "开".to_string()
+    } else {
+        "关".to_string()
     }
 }
 
@@ -875,10 +875,22 @@ pub struct SchemaManagerState {
     // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
     // 那是方案的固有属性，由方案文件决定。这里只调段内的行为参数。
     /// 进入模式即展示候选（`[overlay] show_all_on_enter`）。
-    /// 辅助码方案级覆盖的三档下标（见 [`AUX_CODE_MODES`]）。
-    pub settings_aux_idx: Signal<usize>,
-    /// 打开时的档位快照，供脏判定。
-    settings_aux_at_open: Rc<std::cell::Cell<usize>>,
+    /// 「本方案启用辅助码」是否覆盖全局（勾选框）。
+    pub settings_aux_on_over: Signal<bool>,
+    /// 勾选时的取值。未勾选时仍保留一份初值（生效值，见 `seed_sections` 里的说明），
+    /// 供用户勾上时接着编辑，而不是从零值开始。
+    pub settings_aux_on: Signal<bool>,
+    /// 「辅助码最长词长」是否覆盖全局。
+    pub settings_aux_len_over: Signal<bool>,
+    /// 勾选时的取值。stepper 只收 `Signal<f64>`（windui 数字控件的通用形态，见
+    /// `manifest::build_number` / `schema_codetable::build_editor`），落盘前按
+    /// `aux_write` 的 `i32` 形参转一次，两处口径不冲突。
+    pub settings_aux_len: Signal<f64>,
+    /// 辅助码卡片标题右侧的摘要（「全部跟随」/「已自定义 N 项」）。
+    pub settings_aux_disp: Signal<String>,
+    /// 打开时四项的快照 `(on_over, on, len_over, len)`，供脏判定：把它与当前值各自
+    /// 代入 `aux_write`，比较两次的落盘结果（而不是逐项比对信号）是否变化。
+    settings_aux_at_open: Rc<std::cell::Cell<(bool, bool, bool, i32)>>,
     // ── 本方案行为（`[punct]` / `[candidate]` / `[phrases]` 三段）──
     //
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
@@ -1044,8 +1056,12 @@ impl SchemaManagerState {
             ]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
-            settings_aux_idx: signal(0),
-            settings_aux_at_open: Rc::new(std::cell::Cell::new(0)),
+            settings_aux_on_over: signal(false),
+            settings_aux_on: signal(false),
+            settings_aux_len_over: signal(false),
+            settings_aux_len: signal(0.0),
+            settings_aux_disp: signal(ct_summary(0)),
+            settings_aux_at_open: Rc::new(std::cell::Cell::new((false, false, false, 0))),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_bh_punct: signal(0),
@@ -2109,13 +2125,36 @@ impl SchemaManagerState {
         {
             let cfg = self.settings_cfg.borrow();
             if has_aux_code_table(&cfg) {
-                let idx = aux_code_idx(
-                    cfg.pointer("/engine/aux_code/enabled")
-                        .and_then(|v| v.as_bool()),
-                );
+                // 控件初值取**生效值**（override 有则用它，否则用跟随值）——理由同
+                // `schema_codetable::CtFields::seed` 里 `val` 取 `effectiveCodetable`
+                // 那段注释：不然用户第一次勾选时控件会显示一个陌生的零值，而不是
+                // 「这个方案现在实际生效的那个值」。
+                let followed_on = cfg
+                    .pointer("/followedBehavior/auxEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let followed_len = cfg
+                    .pointer("/followedBehavior/auxMaxPhraseLen")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let raw_on = cfg
+                    .pointer("/engine/aux_code/enabled")
+                    .and_then(Value::as_bool);
+                let raw_len = cfg
+                    .pointer("/engine/aux_code/max_phrase_len")
+                    .and_then(Value::as_i64);
+                let on_over = raw_on.is_some();
+                let on = raw_on.unwrap_or(followed_on);
+                let len_over = raw_len.is_some();
+                let len = raw_len.unwrap_or(followed_len) as i32;
                 drop(cfg);
-                self.settings_aux_idx.set(idx);
-                self.settings_aux_at_open.set(idx);
+                self.settings_aux_on_over.set(on_over);
+                self.settings_aux_on.set(on);
+                self.settings_aux_len_over.set(len_over);
+                self.settings_aux_len.set(len as f64);
+                self.settings_aux_at_open.set((on_over, on, len_over, len));
+                self.settings_aux_disp
+                    .set(ct_summary(on_over as usize + len_over as usize));
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::AuxCode);
             }
@@ -2365,18 +2404,24 @@ impl SchemaManagerState {
         }
 
         // 辅助码方案级覆盖：与其余各节写进**同一份 cfg**，理由同上。
-        // 只在本节出现过（`at_open` 被播种过）且档位变了时才写——否则给没有辅助码表的方案
-        // 也塞一个 `engine.aux_code` 段，那会让 `json_diff` 认定方案文件缺这个键，把整份
-        // 快照写进 override。
-        if self.settings_aux_idx.get() != self.settings_aux_at_open.get()
-            && has_aux_code_table(&cfg)
-        {
-            set_json_path(
-                &mut cfg,
-                &["engine", "aux_code", "enabled"],
-                aux_code_value(self.settings_aux_idx.get()),
+        // 只在本方案有表（`has_aux_code_table`）且两项落盘结果与打开时不同时才写——
+        // 否则给没有辅助码表的方案也塞一个 `engine.aux_code` 段，那会让 `json_diff`
+        // 认定方案文件缺这个键，把整份快照写进 override。
+        if has_aux_code_table(&cfg) {
+            let (on_over, on, len_over, len) = (
+                self.settings_aux_on_over.get(),
+                self.settings_aux_on.get(),
+                self.settings_aux_len_over.get(),
+                self.settings_aux_len.get() as i32,
             );
-            cfg_changed = true;
+            let now = aux_write(on_over, on, len_over, len);
+            let (at_on_over, at_on, at_len_over, at_len) = self.settings_aux_at_open.get();
+            let before = aux_write(at_on_over, at_on, at_len_over, at_len);
+            if now != before {
+                set_json_path(&mut cfg, &["engine", "aux_code", "enabled"], now.0);
+                set_json_path(&mut cfg, &["engine", "aux_code", "max_phrase_len"], now.1);
+                cfg_changed = true;
+            }
         }
 
         // 本方案行为三段：与上面写进**同一份 cfg**，理由同上（saveConfig 是整份 diff
@@ -4152,21 +4197,67 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             )
         }
         SettingsSection::AuxCode => {
-            // 关闭态的说明随全局基线而变——「跟随全局」到底是开还是关，用户在这一屏看不到
-            // 全局页，不写清就得来回切页确认。
-            crate::widgets::dialog_section(
+            // 跟随值随全局基线而变——「跟随全局」到底是开还是关、最长词长是多少，来自
+            // `followedBehavior`（core 的旁路只读字段）。用户在这一屏看不到全局页，
+            // 不把值带过来就得来回切页确认。
+            let cfg = state.settings_cfg.borrow();
+            let followed_on = cfg
+                .pointer("/followedBehavior/auxEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let followed_len = cfg
+                .pointer("/followedBehavior/auxMaxPhraseLen")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            drop(cfg);
+
+            let on_over = state.settings_aux_on_over;
+            let on = state.settings_aux_on;
+            let len_over = state.settings_aux_len_over;
+            let len = state.settings_aux_len;
+
+            let row_on = crate::widgets::setting_row_override(
+                on_over,
+                "本方案启用辅助码",
+                Some("打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配"),
+                "跟随全局",
+                Role::TextMuted,
+                crate::widgets::override_control(
+                    on_over,
+                    Rc::new(|| true),
+                    Element::switch(on),
+                    &follow_text_bool(followed_on),
+                    "",
+                    AUX_CTRL_W,
+                ),
+            );
+
+            // 第二行的可用性看**生效值**：勾选了「启用辅助码」就用它当前的控件值,
+            // 没勾就用跟随值——与 `schema_codetable::CtItemState::effective_value`
+            // 同一个道理，「上游那项现在到底是开是关」不是它控件里存着什么。
+            let gate: Rc<dyn Fn() -> bool> =
+                Rc::new(move || if on_over.get() { on.get() } else { followed_on });
+            let row_len = crate::widgets::setting_row_override(
+                len_over,
+                "辅助码最长词长",
+                Some("超过这个字数的词组不参与筛选；0 = 不限。单字始终参与"),
+                "跟随全局",
+                Role::TextMuted,
+                crate::widgets::override_control(
+                    len_over,
+                    gate.clone(),
+                    Element::stepper(len, 0.0, 20.0, 1.0).width(AUX_CTRL_W),
+                    &followed_len.to_string(),
+                    "未启用辅助码",
+                    AUX_CTRL_W,
+                ),
+            )
+            .enabled_when(move || gate());
+
+            crate::widgets::override_group_card(
                 "辅助码",
-                vec![crate::widgets::setting_row(
-                    "本方案启用辅助码",
-                    Some(
-                        "打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配",
-                    ),
-                    Element::segmented(
-                        AUX_CODE_MODES.iter().map(|s| s.to_string()).collect(),
-                        state.settings_aux_idx,
-                    )
-                    .width(210),
-                )],
+                state.settings_aux_disp,
+                vec![row_on, row_len],
             )
         }
         SettingsSection::CodeTable => {
@@ -4476,6 +4567,11 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 而这一屏已经为「每帧轮询」付过一次代价（见 punct_map_summary 的说明）。
     let bh_punct_map = state.settings_bh_punct_map_on;
     let punct_disp = state.settings_bh_punct_map_disp;
+    // 辅助码卡片摘要同理：只看两行的勾选态。`AuxCode` 也归「方案自定义」页
+    // （见 `SettingsSection::tab`），星号要一并算上它，否则用户勾了辅助码却看不到 TAB 有变化。
+    let aux_on_over = state.settings_aux_on_over;
+    let aux_len_over = state.settings_aux_len_over;
+    let aux_disp = state.settings_aux_disp;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
         move || {
             ct_watch
@@ -4485,6 +4581,8 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .wrapping_add(bh_cmt_v.version())
                 .wrapping_add(bh_cmt_h.version())
                 .wrapping_add(bh_punct_map.version())
+                .wrapping_add(aux_on_over.version())
+                .wrapping_add(aux_len_over.version())
         },
         move || {
             let n = ct_count.custom_count();
@@ -4493,22 +4591,25 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 + bh_cmt_v.get() as usize
                 + bh_cmt_h.get() as usize
                 + bh_punct_map.get() as usize;
+            let aux_custom = aux_on_over.get() as usize + aux_len_over.get() as usize;
             ct_disp.set(ct_summary(n));
             // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
             // 另开一个 effect 只会多一处要同步的口径。
             cmt_disp.set(comment_summary(bh_cmt_v.get(), bh_cmt_h.get()));
             // 自定义标点那一行同源（也只看勾选态），一并在这里推。
             punct_disp.set(punct_map_summary(bh_punct_map.get()));
+            // 辅助码卡片标题右侧那句同源，一并在这里推。
+            aux_disp.set(ct_summary(aux_custom));
             // 各分类卡片标题右侧那句也在这里推——它与整段摘要同源（勾选状态），
             // 分两个 effect 只会多一次遍历，还得担心两处口径漂移。
             ct_count.refresh_group_summaries();
             // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
             // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。
-            // 星号打在「方案自定义」那一页：本 effect 统计的两类（码表覆盖、本方案行为）
-            // 都在那一页。⚠️ 用 `CUSTOM_TAB` 而不是字面下标——TAB 数量已经反转过两次，
-            // 写死的 `1` 在上一次反转里正好还指对，下一次就未必。
+            // 星号打在「方案自定义」那一页：本 effect 统计的三类（码表覆盖、本方案行为、
+            // 辅助码）都在那一页。⚠️ 用 `CUSTOM_TAB` 而不是字面下标——TAB 数量已经反转过
+            // 两次，写死的 `1` 在上一次反转里正好还指对，下一次就未必。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
-            if n + bh_custom > 0 {
+            if n + bh_custom + aux_custom > 0 {
                 ls[CUSTOM_TAB] = format!("{} *", SETTINGS_TABS[CUSTOM_TAB]);
             }
             tab_labels.set(vec![ls]);
@@ -5733,19 +5834,30 @@ mod overlay_tests {
 mod section_build_tests {
     use super::*;
 
-    /// ★★ 辅助码的「跟随全局」必须落成 **null**，不是 false。
+    /// ★★ 未勾选的一项必须落成 **null**，不是 false/0。
     ///
-    /// core 的 `json_to_toml` 跳过 null ⇒ 该键不进 override ⇒ 取值回落全局基线。写 false
-    /// 的话就成了「显式关闭本方案」——用户明明选的是「跟随」，全局开了这个方案却不跟，
-    /// 而且从配置文件上看不出是谁写的。
+    /// core 的 `json_to_toml` 跳过 null ⇒ 该键不进 override ⇒ 取值回落全局基线。写具体值
+    /// 的话就成了「显式定值」——用户明明没勾，写回去却把这个方案钉死成一个值，
+    /// 而且从配置文件上看不出是谁写的。两行（启用 / 最长词长）各自独立，互不联动。
     #[test]
-    fn aux_code_follow_global_writes_null_not_false() {
-        assert_eq!(aux_code_value(0), Value::Null, "跟随全局必须写 null");
-        assert_eq!(aux_code_value(1), json!(true));
-        assert_eq!(aux_code_value(2), json!(false));
-        // 越界回落**跟随**而不是钳到末项：钳会把「关闭」塞给一个没选过的方案。
-        // 与 `overlay_layout_value` 的同类处置同口径。
-        assert_eq!(aux_code_value(99), Value::Null);
+    fn aux_unchecked_rows_write_null() {
+        assert_eq!(aux_write(false, true, false, 4), (Value::Null, Value::Null));
+    }
+
+    /// 勾选的一项落成勾选框当前值——与「跟随」互斥的另一态。
+    #[test]
+    fn aux_checked_rows_write_values() {
+        assert_eq!(aux_write(true, false, true, 3), (json!(false), json!(3)));
+    }
+
+    /// 来源列文案随全局基线的取值变化——「跟随全局」到底是开还是关，靠 `followedBehavior`
+    /// 带过来，不能让用户切页去确认。
+    #[test]
+    fn aux_follow_source_text_carries_global_value() {
+        assert_eq!(
+            format!("跟随全局（{}）", follow_text_bool(true)),
+            "跟随全局（开）"
+        );
     }
 
     /// ★ 建节与落盘必须**同判据**，`files = []` 不算有表。
@@ -5770,17 +5882,6 @@ mod section_build_tests {
         assert!(!has_aux_code_table(&json!({
             "engine": {"aux_code": {"files": "aux_code/stroke.txt"}}
         })));
-    }
-
-    /// tri-state 三档往返：读出来的档位写回去必须是同一个值。
-    #[test]
-    fn aux_code_tri_state_round_trips() {
-        for (v, idx) in [(None, 0), (Some(true), 1), (Some(false), 2)] {
-            assert_eq!(aux_code_idx(v), idx, "{v:?} 应落在第 {idx} 档");
-            let back = aux_code_value(idx);
-            let back = if back.is_null() { None } else { back.as_bool() };
-            assert_eq!(back, v, "第 {idx} 档写回后应仍是 {v:?}");
-        }
     }
 
     /// 每个配置节都要能**构建出来**而不 panic。
