@@ -392,14 +392,20 @@ fn split_legacy_color(raw: &str) -> (String, Option<f32>) {
     if t.eq_ignore_ascii_case("auto") {
         return (String::new(), None);
     }
-    if let Some(hex) = t
-        .strip_prefix('#')
-        .filter(|h| h.len() == 8 && h.bytes().all(|c| c.is_ascii_hexdigit()))
-    {
-        let aa = u8::from_str_radix(&hex[6..], 16).unwrap_or(0xFF);
-        return (format!("#{}", hex[..6].to_uppercase()), Some(f32::from(aa) / 255.0));
+    // 8 位旧写法：末两位是这一条自己的透明度。`#` 可省——手写配置里两种写法都见过，
+    // 与 core 的 `parse_hex` 认定一致（不写 `#` 也认）。
+    let hex8 = t.strip_prefix('#').unwrap_or(t);
+    if hex8.len() == 8 && hex8.bytes().all(|c| c.is_ascii_hexdigit()) {
+        let aa = u8::from_str_radix(&hex8[6..], 16).unwrap_or(0xFF);
+        let alpha = (f32::from(aa) / 255.0).clamp(0.0, 1.0);
+        return (format!("#{}", &hex8[..6]), Some(alpha));
     }
-    (normalize_color(t), None)
+    // 其余（新写法的 `""` / `#RRGGBB`，不拘大小写，或非法值）**原样**返回，不规范大小写。
+    // 这是读入路径：脏检查比的是「写回值与原始配置逐字是否相同」（`state.rs` 的
+    // base_config diff），读进来就把大小写改了，手写小写色的存量配置一打开就会被判成
+    // 「有未保存的改动」。大小写规范化只在用户真的在面板上选了色、要写出去的那条路径上
+    // 做（见 `normalize_color` 在表单确认里的用法），读这一侧只拆两种旧写法，不多做。
+    (t.to_string(), None)
 }
 
 /// 解析配置数组 → 条目定义（纯函数，供测试）。`uid` 由调用方补，这里恒填 0。
@@ -423,10 +429,13 @@ pub fn rows_from_value(items: &[Value]) -> Vec<BadgeRow> {
             };
             let (color_light, legacy_alpha_light) = split_legacy_color(&s("color_light", ""));
             let (color_dark, legacy_alpha_dark) = split_legacy_color(&s("color_dark", ""));
+            // 钳到 0..=1：手写配置里的越界值（负数、大于 1）没有意义，core 侧
+            // `wind_ui::langbar_icon::IconRenderer::badge_alpha` 按不透明度用，钳一下
+            // 免得画出诸如「负透明度」这种未定义的东西。
             let alpha = |k: &str, legacy: Option<f32>| {
                 it.get(k)
                     .and_then(|v| v.as_f64())
-                    .map(|v| v as f32)
+                    .map(|v| (v as f32).clamp(0.0, 1.0))
                     .or(legacy)
             };
             BadgeRow {
@@ -610,7 +619,7 @@ fn alpha_desc(light: Option<f32>, dark: Option<f32>) -> Option<String> {
 const DEFAULT_COLOR: &str = "#2288E0";
 
 /// 全局 `ui.langbar.badge_alpha` 拿不到时的占位（与 core 出厂值一致）。
-const DEFAULT_BADGE_ALPHA: f32 = 0.88;
+pub const DEFAULT_BADGE_ALPHA: f32 = 0.88;
 
 /// 程序侧设置一色（播种 / 与主字同色）：`""` / 非法值在取色器里显示 `fallback`。
 pub fn set_badge_color(pc: &PickedColor, value: &str, fallback: Color) {
@@ -619,7 +628,16 @@ pub fn set_badge_color(pc: &PickedColor, value: &str, fallback: Color) {
 
 /// 取色器选出的颜色 → 配置值。这一维只有颜色，没有透明度（见模块文档），
 /// 故直接是 6 位色号，不必判断「动没动过透明度」。
+///
+/// ★ 调用方（[`color_row`]）必须把取色面板的 `alpha` 选项关掉——面板一旦带透明度条，
+/// 用户拖它时色块会跟着变淡，而这里却把 `c.a` 直接扔掉，「拖了条却没存」会被当成控件
+/// 坏了。这条 `debug_assert` 钉住这个前提：面板真带了透明度条、用户又确实调过（`a`
+/// 就不会是满值），dev/test 构建下会立刻炸出来，而不是悄悄丢一个用户以为生效了的值。
 pub fn badge_value_of(_prev: &str, c: Color) -> String {
+    debug_assert_eq!(
+        c.a, 0xFF,
+        "badge_value_of 收到了带透明度的颜色——取色面板是不是忘了关 alpha？"
+    );
     format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
 }
 
@@ -656,6 +674,7 @@ fn color_row(label: &str, pc: &PickedColor, fallback: Color) -> Element {
             |s| badge_color_text(s),
             92,
             badge_value_of,
+            false, // 透明度走独立勾选行（alpha_row），面板里不重复放一条
             vec![
                 Element::button("与主字同色")
                     .small()
@@ -1070,6 +1089,38 @@ mod tests {
         assert_eq!(rows[0].alpha_dark, Some(1.0));
     }
 
+    /// 旧写法的 `#` 可省——手写配置里两种写法都见过，与 core 的 `parse_hex` 认定一致。
+    #[test]
+    fn legacy_rgba8_color_without_hash_prefix_also_splits() {
+        let items = vec![json!({"state": "punct_cn", "color_light": "2288E080"})];
+        let rows = rows_from_value(&items);
+        assert_eq!(rows[0].color_light, "#2288E0");
+        assert!((rows[0].alpha_light.unwrap() - 128.0 / 255.0).abs() < 1e-3);
+    }
+
+    /// ★ 读入不是写出：新写法的六位色（不拘大小写）原样穿过去，不改大小写——
+    /// 脏检查比的是写回值与原始配置逐字是否相同，读进来就改大小写，手写小写色的
+    /// 存量配置一打开就会被误判成「有未保存的改动」。
+    #[test]
+    fn lowercase_six_digit_color_round_trips_verbatim() {
+        let items = vec![json!({"state": "punct_cn", "color_light": "#2288e0", "color_dark": "#2288e0"})];
+        let rows = rows_from_value(&items);
+        assert_eq!(rows[0].color_light, "#2288e0", "读入阶段不该改写大小写");
+        let back = row_to_value(&rows[0], true);
+        assert_eq!(back.get("color_light"), Some(&json!("#2288e0")));
+    }
+
+    /// 手写配置里的越界透明度（负数 / 大于 1）读入时钳到 0..=1，不带出未定义的值。
+    #[test]
+    fn explicit_alpha_out_of_range_is_clamped() {
+        let items = vec![
+            json!({"state": "punct_cn", "alpha_light": -0.5, "alpha_dark": 1.5}),
+        ];
+        let rows = rows_from_value(&items);
+        assert_eq!(rows[0].alpha_light, Some(0.0));
+        assert_eq!(rows[0].alpha_dark, Some(1.0));
+    }
+
     /// 新键（`alpha_x`）比旧色值末两位更可信：两者都出现时以新键为准。
     #[test]
     fn explicit_alpha_key_overrides_legacy_suffix() {
@@ -1338,6 +1389,15 @@ mod tests {
         assert_eq!(f.alpha_light.get(), 0.42_f32 as f64);
         assert!(!f.alpha_dark_over.get());
         assert_eq!(f.alpha_dark.get(), 0.42_f32 as f64);
+    }
+
+    /// ★ 颜色格的取色面板必须关掉透明度条——这条钉住 `badge_value_of` 那侧的前提：
+    /// 一旦面板哪天又被打开（`color_row` 传 `alpha: true`），用户拖出的半透明色传进来，
+    /// 这里应该立刻炸而不是悄悄丢掉，免得用户以为调的透明度生效了。
+    #[test]
+    #[should_panic(expected = "alpha")]
+    fn badge_value_of_rejects_translucent_input() {
+        badge_value_of("", Color::rgba(0x11, 0x22, 0x33, 0x80));
     }
 
     /// 用户恰好选中回落色（跟随主字时显示的黑）也照常写回，不当成「没选」。

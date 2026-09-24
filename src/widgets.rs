@@ -1084,11 +1084,17 @@ impl PickedColor {
 
 /// 一格取色：色块取色器 + 当前值文字（`text` 由值算出，宽 `text_w`）+ 若干按钮。
 /// 用户在面板上选色时按 `to_value` 写回 [`PickedColor::value`]。
+///
+/// `alpha`：面板是否带透明度条。**必须**与 `to_value` 是否会把 `Color::a` 编进配置值
+/// 对齐——留 `true` 却让 `to_value` 扔掉 alpha，用户拖了条、色块跟着变淡，一松手
+/// 又变回不透明，会被当成"控件坏了"（主字颜色对话框两者都是 `true`；角标规则的
+/// 颜色格透明度走独立勾选行，这里必须是 `false`，同 `badge_value_of` 的说明）。
 pub fn color_picker_cell(
     pc: &PickedColor,
     text: impl Fn(&String) -> String + 'static,
     text_w: i32,
     to_value: impl Fn(&str, Color) -> String + 'static,
+    alpha: bool,
     buttons: Vec<Element>,
 ) -> Element {
     let colors = pc.color;
@@ -1102,7 +1108,7 @@ pub fn color_picker_cell(
         .spacing(8)
         .child(Element::color_picker_opts(
             pc.color,
-            ColorPickerOpts::default().trigger_text(false),
+            ColorPickerOpts::default().trigger_text(false).alpha(alpha),
         ))
         .child(
             Element::label_signal(pc.value.map(text))

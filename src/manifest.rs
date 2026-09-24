@@ -3553,12 +3553,15 @@ fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) 
 /// 之所以不把两者抽成一个泛型：四件套里真正不同的只有 `XxxUi` 那个类型，抽出来要么上
 /// trait 要么上宏，读起来都比这二十行难——而这类「列表型专用对话框」总共也只有两三个。
 fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::langbar_badges_dialog::{LangBarBadgesUi, build_langbar_badges_dialog};
+    use crate::dialogs::langbar_badges_dialog::{
+        DEFAULT_BADGE_ALPHA, LangBarBadgesUi, build_langbar_badges_dialog,
+    };
 
     let ui = LangBarBadgesUi::new();
-    ui.form
-        .badge_alpha
-        .set(cfg.get_f64("ui.langbar.badge_alpha").unwrap_or(0.88) as f32);
+    ui.form.badge_alpha.set(
+        cfg.get_f64("ui.langbar.badge_alpha")
+            .unwrap_or(DEFAULT_BADGE_ALPHA as f64) as f32,
+    );
     ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
 
     let ui_w = ui.clone();
@@ -3576,9 +3579,10 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            ui_l.form
-                .badge_alpha
-                .set(c.get_f64("ui.langbar.badge_alpha").unwrap_or(0.88) as f32);
+            ui_l.form.badge_alpha.set(
+                c.get_f64("ui.langbar.badge_alpha")
+                    .unwrap_or(DEFAULT_BADGE_ALPHA as f64) as f32,
+            );
             ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
         }),
     );

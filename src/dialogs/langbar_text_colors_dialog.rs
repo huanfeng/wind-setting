@@ -204,6 +204,7 @@ fn cell(ui: &TextColorsUi, i: usize) -> Element {
         },
         70,
         |_, c| value_of(c),
+        true, // 主字色带透明度（`value_of` 会把它编进 #RRGGBBAA）
         vec![
             Element::button("清除")
                 .small()
