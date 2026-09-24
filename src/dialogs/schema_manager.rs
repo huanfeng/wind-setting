@@ -222,6 +222,10 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; SET
     out
 }
 
+/// 「本方案行为」节三个下拉的统一宽度。要装得下最长的跟随档「跟随全局（沿用当前状态）」，
+/// 170 会把它折成两行（最终审查目视发现）；三个下拉同宽，右侧才对得齐。
+const BH_DD_W: i32 = 220;
+
 /// 辅助码勾选行控件区的统一宽度。与开关/数字框都用它，两行右侧控件左边界才能对齐。
 const AUX_CTRL_W: i32 = 150;
 
@@ -320,14 +324,20 @@ fn clamp_aux_len(v: i64) -> i32 {
     v.clamp(0, 20) as i32
 }
 
-/// 「全部恢复跟随」按钮的核心逻辑：两行勾选一并清空。
+/// 辅助码卡片「全部恢复跟随」按钮做的事：两行勾选一并清空，控件值拨回跟随值，
+/// 摘要归零。
 ///
-/// ★ 抽成纯函数供测：按钮的 `on_click` 闭包本身测不到（只能在真机上点），把
-/// 「清空什么」单独摘出来，这条逻辑本身留在这里过测试；闭包只管把结果写回信号、
-/// 把控件值拨回跟随值（同 `schema_codetable::CtFields::revert_all` 的做法）、
-/// 刷新摘要。
-fn aux_reset_all() -> (bool, bool) {
-    (false, false)
+/// ★ 抽出来供测：按钮的 `on_click` 闭包本身测不到（只能在真机上点），闭包只转调这里，
+/// 测试直接拿 `SchemaManagerState` 的真信号驱动它。
+///
+/// 控件值也拨回跟随值——同 `schema_codetable::CtFields::revert_all`：只清勾选不清值的话，
+/// 用户下次再勾上会看到上一次改的旧值，而不是真正的跟随值。
+fn aux_reset_all(state: &SchemaManagerState, followed_on: bool, followed_len: i32) {
+    state.settings_aux_on_over.set(false);
+    state.settings_aux_len_over.set(false);
+    state.settings_aux_on.set(followed_on);
+    state.settings_aux_len.set(followed_len as f64);
+    state.settings_aux_disp.set(ct_summary(0));
 }
 
 /// 「本方案行为」节「全部恢复跟随」的核心逻辑（R8.5）：把有「跟随」档的三项一并
@@ -337,8 +347,12 @@ fn aux_reset_all() -> (bool, bool) {
 /// 这一项），按下这个按钮不该动它——动了等于给一个不存在的状态强行赋值。
 /// 注释模板、自定义标点表也不在这里：它们是各自独立的子对话框，各有自己的清空入口，
 /// 这个按钮只清「本方案行为」节直接铺开显示的这三项（R8.5：只清本区块界面上可见的）。
-fn behavior_reset_all() -> (usize, usize, bool) {
-    (0, 0, false)
+///
+/// 抽出来的理由同 [`aux_reset_all`]：闭包测不到，测试拿真信号驱动这里。
+fn behavior_reset_all(state: &SchemaManagerState) {
+    state.settings_bh_punct.set(0);
+    state.settings_bh_layout.set(0);
+    state.settings_bh_font_over.set(false);
 }
 
 /// 候选字体（`[candidate] font_family`）的落盘值：未勾选，或勾选但留空，都写
@@ -4346,7 +4360,6 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let on = state.settings_aux_on;
             let len_over = state.settings_aux_len_over;
             let len = state.settings_aux_len;
-            let aux_disp = state.settings_aux_disp;
 
             let row_on = crate::widgets::setting_row_override(
                 on_over,
@@ -4390,20 +4403,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // （柔和描边而不是实心主按钮——它是兜底动作，不该比同行的卡片标题抢眼）。
             // 与码表那边不同的是它挂在**卡片自己的**标题行里，不是外层节头：这一节只有
             // 一张卡片，两者是同一件事，不用再分层。
+            let st = state.clone();
             let reset_btn = Element::button("全部恢复跟随")
                 .small()
                 .outline_soft()
-                .on_click(move |_| {
-                    let (o1, o2) = aux_reset_all();
-                    on_over.set(o1);
-                    len_over.set(o2);
-                    // 控件值也拨回跟随值——同 `schema_codetable::CtFields::revert_all`：
-                    // 只清勾选不清值的话，用户下次再勾上会看到上一次改的旧值，而不是
-                    // 真正的跟随值。
-                    on.set(followed_on);
-                    len.set(followed_len as f64);
-                    aux_disp.set(ct_summary(0));
-                });
+                .on_click(move |_| aux_reset_all(&st, followed_on, followed_len));
 
             crate::widgets::override_group_card(
                 "辅助码",
@@ -4539,7 +4543,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 font_over,
                 "候选文字字体",
                 Some("只改候选词本身；序号与编码栏不跟随"),
-                &follow_font_disp,
+                // 来源列只写来源；跟随值（字体名）由下面 override_control 的 follow_text 显示，
+                // 两处都写字体名会读成「微软雅黑 … 微软雅黑」。
+                "跟随全局",
                 Role::TextMuted,
                 crate::widgets::override_control(
                     font_over,
@@ -4553,18 +4559,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
 
             // 「全部恢复跟随」（R8.5）：只清标点 / 候选排列 / 候选字体这三个有跟随档的
             // 字段，见 [`behavior_reset_all`] 上的说明。样式照 `AuxCode` 卡片同名按钮。
-            let bh_punct = state.settings_bh_punct;
-            let bh_layout = state.settings_bh_layout;
-            let bh_font_over = state.settings_bh_font_over;
+            let st = state.clone();
             let reset_btn = Element::button("全部恢复跟随")
                 .small()
                 .outline_soft()
-                .on_click(move |_| {
-                    let (punct, layout, over) = behavior_reset_all();
-                    bh_punct.set(punct);
-                    bh_layout.set(layout);
-                    bh_font_over.set(over);
-                });
+                .on_click(move |_| behavior_reset_all(&st));
 
             crate::widgets::dialog_section_full(
                 "本方案行为",
@@ -4581,7 +4580,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             vec!["跟随全局（沿用当前状态）", "中文标点", "英文标点"],
                             state.settings_bh_punct,
                         )
-                        .width(170),
+                        .width(BH_DD_W),
                     ),
                     crate::widgets::setting_row(
                         "候选排列",
@@ -4592,7 +4591,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             state.settings_layout_follow_labels,
                             state.settings_bh_layout,
                         )
-                        .width(170),
+                        .width(BH_DD_W),
                     ),
                     crate::widgets::setting_row(
                         "横排时文字排列",
@@ -4604,7 +4603,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             TEXT_ORIENT_LABELS.to_vec(),
                             state.settings_bh_text_orient,
                         )
-                        .width(170),
+                        .width(BH_DD_W),
                     ),
                     font_row,
                     crate::widgets::setting_row(
@@ -5649,11 +5648,42 @@ mod ext_dict_tests {
         assert_eq!(seed_behavior(&json!({})).font_family, None);
     }
 
-    /// R8.5：「本方案行为」节的「全部恢复跟随」只清有跟随档的三项，「横排时文字排列」
-    /// 没有跟随档（设计如此），不该被这个按钮动到。
+    /// R8.5：「本方案行为」节的「全部恢复跟随」把三项拨回跟随（下标 0 / 取消勾选），
+    /// 「横排时文字排列」没有跟随档（设计如此），不该被这个按钮动到。
+    ///
+    /// 驱动的是按钮闭包实际调用的 [`behavior_reset_all`] 与 `SchemaManagerState` 的真信号。
     #[test]
     fn behavior_reset_all_clears_follow_fields() {
-        assert_eq!(behavior_reset_all(), (0, 0, false));
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        state.settings_bh_punct.set(2);
+        state.settings_bh_layout.set(1);
+        state.settings_bh_font_over.set(true);
+        state.settings_bh_font.set("楷体".to_string());
+        state.settings_bh_text_orient.set(1);
+
+        behavior_reset_all(&state);
+
+        assert_eq!(state.settings_bh_punct.get(), 0, "标点回跟随档");
+        assert_eq!(state.settings_bh_layout.get(), 0, "候选排列回跟随档");
+        assert!(!state.settings_bh_font_over.get(), "候选字体取消勾选");
+        assert_eq!(
+            font_write(
+                state.settings_bh_font_over.get(),
+                &state.settings_bh_font.get()
+            ),
+            Value::Null,
+            "取消勾选后字体落盘为 null（跟随外观页），不论文本框里残留什么"
+        );
+        assert_eq!(
+            state.settings_bh_text_orient.get(),
+            1,
+            "无跟随档的项不被动到"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 未知取值一律回落「跟随全局」，不猜方向。
@@ -6106,26 +6136,40 @@ mod section_build_tests {
         assert_eq!(aux_write(true, false, true, 3), (json!(false), json!(3)));
     }
 
-    /// 来源列文案随全局基线的取值变化——「跟随全局」到底是开还是关，靠 `followedBehavior`
-    /// 带过来，不能让用户切页去确认。
-    #[test]
-    fn aux_follow_source_text_carries_global_value() {
-        assert_eq!(
-            format!("跟随全局（{}）", follow_text_bool(true)),
-            "跟随全局（开）"
-        );
-    }
-
-    /// 「全部恢复跟随」：起点是两行都已覆盖（`over = true`），复位要把两个勾选框
-    /// 一并清空，落盘按 `aux_write` 的既有规则回落成 `null`——不管清空前控件里
-    /// 还留着什么值。
+    /// 「全部恢复跟随」：起点是两行都已覆盖、控件值与跟随值不同，复位要把两个勾选框
+    /// 一并清空、控件值拨回跟随值、摘要归零；落盘按 `aux_write` 的既有规则回落成 `null`。
+    ///
+    /// 驱动的是按钮闭包实际调用的 [`aux_reset_all`] 与 `SchemaManagerState` 的真信号。
     #[test]
     fn aux_reset_all_clears_both_rows_writes_null() {
-        let (on_over, len_over) = aux_reset_all();
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        state.settings_aux_on_over.set(true);
+        state.settings_aux_on.set(false);
+        state.settings_aux_len_over.set(true);
+        state.settings_aux_len.set(9.0);
+        state.settings_aux_disp.set(ct_summary(2));
+
+        aux_reset_all(&state, true, 4);
+
+        assert!(!state.settings_aux_on_over.get());
+        assert!(!state.settings_aux_len_over.get());
+        assert!(state.settings_aux_on.get(), "启用开关拨回跟随值");
+        assert_eq!(state.settings_aux_len.get(), 4.0, "最长词长拨回跟随值");
+        assert_eq!(state.settings_aux_disp.get(), ct_summary(0));
         assert_eq!(
-            aux_write(on_over, true, len_over, 4),
+            aux_write(
+                state.settings_aux_on_over.get(),
+                state.settings_aux_on.get(),
+                state.settings_aux_len_over.get(),
+                state.settings_aux_len.get() as i32,
+            ),
             (Value::Null, Value::Null)
         );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 全局 manifest 该项 min/max 是 0..=20；手改 `config.toml` 能写出这个范围，
