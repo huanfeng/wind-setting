@@ -1367,6 +1367,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "name": "mono", "display_name": "墨", "version": "1.0.0", "builtin": false }
         ]),
         "theme.delete" => json!({ "ok": true }),
+        "theme.resolved" => json!({
+            "themeId": "default", "fontSize": 18, "fontFamily": null, "fontWeight": 0,
+            "pagerBarDisplay": "auto", "pageNumberDisplay": "show",
+            "langbarText": ["#000000", "#FFFFFF", "#000000", "#FFFFFF"],
+        }),
         "system.fonts" => json!([
             { "name": "微软雅黑" }, { "name": "思源黑体" }, { "name": "等线" }
         ]),
