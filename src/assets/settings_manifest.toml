@@ -2450,6 +2450,7 @@ label = "每页候选数"
 hint = "每页显示的候选词数量"
 width = 120
 options = [
+  { value = "2", label = "2" },
   { value = "3", label = "3" },
   { value = "4", label = "4" },
   { value = "5", label = "5" },
@@ -2457,6 +2458,7 @@ options = [
   { value = "7", label = "7" },
   { value = "8", label = "8" },
   { value = "9", label = "9" },
+  { value = "10", label = "10" },
 ]
 
 [[items]]

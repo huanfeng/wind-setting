@@ -517,9 +517,10 @@ fn ordinal_label(prefix: &str, n: u8) -> Option<String> {
 ///
 /// 两个序号档的上限**不同**，这个不同是有意的：
 ///
-/// - 选词 `select_candidate:` 给全 1..=9——一页真有 9 个候选。此前只给 2、3 是因为
-///   「全列出来会把下拉撑成一长条」，分了类之后这个理由不成立，而截断的代价是「想把某个
-///   键配成第 5 候选」在界面上根本表达不出来。
+/// - 选词 `select_candidate:` 给全 1..=10——候选窗每页最多开到 10 个（数字键 0 选第
+///   10 个，core 侧 `SessionAction::parse` 认 1..=10）。此前只给 2、3 是因为「全列出来会
+///   把下拉撑成一长条」，分了类之后这个理由不成立，而截断的代价是「想把某个键配成第 5
+///   候选」在界面上根本表达不出来。
 /// - 以词定字 `select_char:` 只到 4。core 的 `SessionAction::parse` 认 1..=9，但那是
 ///   **解析器的宽容度**（与 `select_candidate:` 共用同一句 `Ok(n @ 1..=9)` 守卫），不是
 ///   被设计过的能力：三个既有键组 `comma_period` / `minus_equal` / `brackets` 经
@@ -563,7 +564,7 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
                 })
                 .collect(),
         ),
-        VerbCategory::new("选择候选", ord("select_candidate:", 9)),
+        VerbCategory::new("选择候选", ord("select_candidate:", 10)),
         VerbCategory::new("以词定字", ord("select_char:", 4)),
         VerbCategory::new(
             "编辑",
@@ -615,14 +616,15 @@ pub fn session_verb_label(value: &str) -> Option<String> {
     // `keys_overview` 的 `global_only_verbs_are_named`）。
     //
     // 写入侧要窄（别让人配出按下去没反应的档位），读取侧要宽（core 认什么就得显示得出
-    // 什么）——两者要求相反，故值域在此**独立**按 core 的 1..=9 判，不复用分类表。
-    for prefix in ["select_candidate:", "select_char:"] {
+    // 什么）——两者要求相反，故值域在此**独立**按 core 的上限判，不复用分类表。
+    // `select_candidate:` 认到 10（候选窗最多 10 页内项），`select_char:` 仍是 1..=9。
+    for (prefix, max) in [("select_candidate:", 10u8), ("select_char:", 9u8)] {
         if let Some(rest) = value.strip_prefix(prefix) {
             return rest
                 .trim()
                 .parse::<u8>()
                 .ok()
-                .filter(|n| (1..=9).contains(n))
+                .filter(|n| (1..=max).contains(n))
                 .and_then(|n| ordinal_label(prefix, n));
         }
     }
@@ -1844,13 +1846,13 @@ mod tests {
 
     /// 两个序号档的上限**不同**，两边都要钉住——一样的写法很容易在后续维护里被「统一」
     /// 成同一个数，而它们不同的理由各自独立（见 `session_verb_categories` 的文档）：
-    /// 选词 1..=9 是「一页真有 9 个候选」，以词定字 1..=4 是「第 5 字以上恒定落进
+    /// 选词 1..=10 是「候选窗每页最多开到 10 个」，以词定字 1..=4 是「第 5 字以上恒定落进
     /// overflow，与没绑上同形」。
     #[test]
     fn session_ordinal_verbs_cover_intended_domain() {
         let cats = session_verb_categories();
         for (name, prefix, max) in [
-            ("选择候选", "select_candidate:", 9u8),
+            ("选择候选", "select_candidate:", 10u8),
             ("以词定字", "select_char:", 4u8),
         ] {
             let c = cats.iter().find(|c| c.name == name).expect(name);
@@ -1862,10 +1864,11 @@ mod tests {
 
     /// 会话态动词值必须都在 core `SessionAction` 的值域里（拼写守门）。
     ///
-    /// ⚠️ 序号上界这里恒按 core 的 1..=9 判，**不跟着选择器的 1..=4 收窄**：本测断言的是
-    /// 「不超出 core 值域」，写入侧收窄后照样成立。改成等值比较就把两件事绑死了——以词定字
-    /// 给到第几档是产品取舍（`session_ordinal_verbs_cover_intended_domain` 管），core 认到
-    /// 第几档是拼写守门（本测管）。
+    /// ⚠️ 序号上界这里恒按 core 的上限判（`select_candidate:` 1..=10、`select_char:`
+    /// 1..=9），**不跟着选择器的收窄档位走**：本测断言的是「不超出 core 值域」，写入侧收窄
+    /// 后照样成立。改成等值比较就把两件事绑死了——各自给到第几档是产品取舍
+    /// （`session_ordinal_verbs_cover_intended_domain` 管），core 认到第几档是拼写守门
+    /// （本测管）。
     ///
     /// ⚠ 与 core 的 `SessionAction::parse` 是两份手写清单，没有编译期约束——本仓已有过
     /// 「两仓键名拼写不一致致静默不匹配」的现场。
@@ -1890,8 +1893,9 @@ mod tests {
                 ) || v
                     .value
                     .strip_prefix("select_candidate:")
-                    .or_else(|| v.value.strip_prefix("select_char:"))
-                    .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| (1..=9).contains(&n)));
+                    .map(|n| (n, 10u8))
+                    .or_else(|| v.value.strip_prefix("select_char:").map(|n| (n, 9u8)))
+                    .is_some_and(|(n, max)| n.parse::<u8>().is_ok_and(|n| (1..=max).contains(&n)));
                 assert!(ok, "动词 {:?} 不在 core SessionAction 的值域里", v.value);
             }
         }
