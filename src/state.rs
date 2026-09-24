@@ -4777,6 +4777,52 @@ mod tests {
             );
         }
     }
+
+    /// 字体下拉排序：中文名（含 CJK 字符）整组排在英文名前面，组内维持
+    /// [`super::sort_font_names`] 用的 `String` 默认序不变。
+    #[test]
+    fn sort_font_names_puts_cjk_group_first() {
+        // 混合中英
+        let mixed = vec![
+            "Arial".to_string(),
+            "微软雅黑".to_string(),
+            "Calibri".to_string(),
+            "思源宋体".to_string(),
+            "Consolas".to_string(),
+        ];
+        assert_eq!(
+            super::sort_font_names(mixed),
+            vec!["微软雅黑", "思源宋体", "Arial", "Calibri", "Consolas"]
+        );
+
+        // 全英：保持原有 String 序，不受分组影响
+        let all_en = vec!["Consolas".to_string(), "Arial".to_string()];
+        assert_eq!(super::sort_font_names(all_en), vec!["Arial", "Consolas"]);
+
+        // 全中：保持原有 String 序
+        let all_zh = vec!["思源宋体".to_string(), "微软雅黑".to_string()];
+        assert_eq!(super::sort_font_names(all_zh), vec!["微软雅黑", "思源宋体"]);
+
+        // 空列表
+        assert_eq!(super::sort_font_names(vec![]), Vec::<String>::new());
+    }
+
+    /// `@` 竖排名（如 `@微软雅黑`）在 [`super::load_fonts_from_dwrite`] 里已被现有过滤逻辑
+    /// 挡在 `sort_font_names` 之外；这里确认它本身若混进来仍按含 CJK 字符归入中文组，
+    /// 不会因为前缀 `@` 被误判成英文名。
+    #[test]
+    fn sort_font_names_vertical_name_still_counts_as_cjk() {
+        let names = vec!["Arial".to_string(), "@微软雅黑".to_string()];
+        assert_eq!(super::sort_font_names(names), vec!["@微软雅黑", "Arial"]);
+    }
+
+    #[test]
+    fn contains_cjk_detects_common_ranges() {
+        assert!(super::contains_cjk("思源宋体"));
+        assert!(super::contains_cjk("Arial 微软"));
+        assert!(!super::contains_cjk("Arial"));
+        assert!(!super::contains_cjk(""));
+    }
 }
 
 /// 加载系统字体列表：Windows 用 DirectWrite 系统字体集枚举字体**家族**；
@@ -4837,8 +4883,31 @@ fn pick_font_display_name(names: &[(String, String)]) -> Option<String> {
     })
 }
 
+/// 字体下拉排序：中文名（含 CJK 字符）排在英文名前面——输入法以中文为主，维护者要求
+/// 中文字体优先可见。组内保持原有排序规则（`String` 的默认序）。
+///
+/// 纯函数，便于单测；`load_fonts_from_dwrite` 去重后调用它排序。
+fn sort_font_names(mut names: Vec<String>) -> Vec<String> {
+    names.sort_by(|a, b| {
+        contains_cjk(b)
+            .cmp(&contains_cjk(a))
+            .then_with(|| a.cmp(b))
+    });
+    names
+}
+
+/// 名字里是否含 CJK 字符（CJK 统一表意文字及扩展 A、兼容表意文字）。
+fn contains_cjk(s: &str) -> bool {
+    s.chars().any(|c| {
+        let c = c as u32;
+        (0x4E00..=0x9FFF).contains(&c)
+            || (0x3400..=0x4DBF).contains(&c)
+            || (0xF900..=0xFAFF).contains(&c)
+    })
+}
+
 /// DirectWrite 系统字体集的全部 family 名：每族取一个本地化名（见
-/// [`pick_font_display_name`]），去重排序。
+/// [`pick_font_display_name`]），去重后按 [`sort_font_names`] 排序。
 ///
 /// 存进配置的就是这个名字：`FindFamilyName` 跨全部 locale 匹配，任何一个本地化名都能被
 /// 渲染端查回来。
@@ -4900,6 +4969,6 @@ fn load_fonts_from_dwrite() -> Vec<String> {
                 families.insert(name);
             }
         }
-        families.into_iter().collect()
+        sort_font_names(families.into_iter().collect())
     }
 }
