@@ -478,7 +478,15 @@ impl CtFields {
     /// 渲染一个分类卡片。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
         let rows: Vec<Element> = group.keys.iter().map(|k| self.row(manifest, k)).collect();
-        crate::widgets::override_group_card(&group.title, self.group_summary(&group.title), rows)
+        // `reset: None`——「全部恢复跟随」在这个 TAB 上是**整节**级别的动作（挂在外层
+        // 节头，见 `schema_manager.rs` 的 `SettingsSection::CodeTable`），不是某一张
+        // 分类卡片自己的按钮。
+        crate::widgets::override_group_card(
+            &group.title,
+            self.group_summary(&group.title),
+            rows,
+            None,
+        )
     }
 
     /// 组内一行。

@@ -264,6 +264,27 @@ fn follow_text_bool(v: bool) -> String {
     }
 }
 
+/// 「最长词长」的合法范围钳制，与全局 manifest 该项的 `min`/`max`（0..=20，见
+/// `settings_manifest.toml` 的 `schema.pinyin.aux_code.max_phrase_len`）同口径。
+///
+/// ⚠️ 手改 `config.toml` 能写出这个范围（跟随值、方案覆盖值都可能来自手写文件），
+/// 两处读取（种子取控件初值、UI 取跟随值展示）都要钳，否则界外的数字会被当作
+/// 「生效值」直接喂给 stepper（它的 min/max 只管用户在控件里拖，挡不住程序塞进去的
+/// 初值），或者原样显示在跟随值文案里。
+fn clamp_aux_len(v: i64) -> i32 {
+    v.clamp(0, 20) as i32
+}
+
+/// 「全部恢复跟随」按钮的核心逻辑：两行勾选一并清空。
+///
+/// ★ 抽成纯函数供测：按钮的 `on_click` 闭包本身测不到（只能在真机上点），把
+/// 「清空什么」单独摘出来，这条逻辑本身留在这里过测试；闭包只管把结果写回信号、
+/// 把控件值拨回跟随值（同 `schema_codetable::CtFields::revert_all` 的做法）、
+/// 刷新摘要。
+fn aux_reset_all() -> (bool, bool) {
+    (false, false)
+}
+
 /// `[overlay] candidate_layout` 的字符串值 ↔ 分段控件下标。
 ///
 /// 值域与 core 的 `LayoutIntent` 逐字一致（`follow` / `vertical` / `horizontal` /
@@ -2136,17 +2157,19 @@ impl SchemaManagerState {
                 let followed_len = cfg
                     .pointer("/followedBehavior/auxMaxPhraseLen")
                     .and_then(Value::as_i64)
+                    .map(clamp_aux_len)
                     .unwrap_or(0);
                 let raw_on = cfg
                     .pointer("/engine/aux_code/enabled")
                     .and_then(Value::as_bool);
                 let raw_len = cfg
                     .pointer("/engine/aux_code/max_phrase_len")
-                    .and_then(Value::as_i64);
+                    .and_then(Value::as_i64)
+                    .map(clamp_aux_len);
                 let on_over = raw_on.is_some();
                 let on = raw_on.unwrap_or(followed_on);
                 let len_over = raw_len.is_some();
-                let len = raw_len.unwrap_or(followed_len) as i32;
+                let len = raw_len.unwrap_or(followed_len);
                 drop(cfg);
                 self.settings_aux_on_over.set(on_over);
                 self.settings_aux_on.set(on);
@@ -4208,6 +4231,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let followed_len = cfg
                 .pointer("/followedBehavior/auxMaxPhraseLen")
                 .and_then(Value::as_i64)
+                .map(clamp_aux_len)
                 .unwrap_or(0);
             drop(cfg);
 
@@ -4215,6 +4239,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let on = state.settings_aux_on;
             let len_over = state.settings_aux_len_over;
             let len = state.settings_aux_len;
+            let aux_disp = state.settings_aux_disp;
 
             let row_on = crate::widgets::setting_row_override(
                 on_over,
@@ -4254,10 +4279,30 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             )
             .enabled_when(move || gate());
 
+            // 「全部恢复跟随」：样式/交互照 `SettingsSection::CodeTable` 那个同名按钮
+            // （柔和描边而不是实心主按钮——它是兜底动作，不该比同行的卡片标题抢眼）。
+            // 与码表那边不同的是它挂在**卡片自己的**标题行里，不是外层节头：这一节只有
+            // 一张卡片，两者是同一件事，不用再分层。
+            let reset_btn = Element::button("全部恢复跟随")
+                .small()
+                .outline_soft()
+                .on_click(move |_| {
+                    let (o1, o2) = aux_reset_all();
+                    on_over.set(o1);
+                    len_over.set(o2);
+                    // 控件值也拨回跟随值——同 `schema_codetable::CtFields::revert_all`：
+                    // 只清勾选不清值的话，用户下次再勾上会看到上一次改的旧值，而不是
+                    // 真正的跟随值。
+                    on.set(followed_on);
+                    len.set(followed_len as f64);
+                    aux_disp.set(ct_summary(0));
+                });
+
             crate::widgets::override_group_card(
                 "辅助码",
                 state.settings_aux_disp,
                 vec![row_on, row_len],
+                Some(reset_btn),
             )
         }
         SettingsSection::CodeTable => {
@@ -5858,6 +5903,27 @@ mod section_build_tests {
             format!("跟随全局（{}）", follow_text_bool(true)),
             "跟随全局（开）"
         );
+    }
+
+    /// 「全部恢复跟随」：起点是两行都已覆盖（`over = true`），复位要把两个勾选框
+    /// 一并清空，落盘按 `aux_write` 的既有规则回落成 `null`——不管清空前控件里
+    /// 还留着什么值。
+    #[test]
+    fn aux_reset_all_clears_both_rows_writes_null() {
+        let (on_over, len_over) = aux_reset_all();
+        assert_eq!(
+            aux_write(on_over, true, len_over, 4),
+            (Value::Null, Value::Null)
+        );
+    }
+
+    /// 全局 manifest 该项 min/max 是 0..=20；手改 `config.toml` 能写出这个范围，
+    /// 两处读取都要钳，不能把界外的数字当成生效值喂给 stepper 或原样显示在文案里。
+    #[test]
+    fn aux_len_out_of_manifest_range_is_clamped() {
+        assert_eq!(clamp_aux_len(-3), 0, "负数钳到下界");
+        assert_eq!(clamp_aux_len(99), 20, "越界钳到上界");
+        assert_eq!(clamp_aux_len(7), 7, "范围内原样通过");
     }
 
     /// ★ 建节与落盘必须**同判据**，`files = []` 不算有表。

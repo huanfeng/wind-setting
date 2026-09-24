@@ -1657,9 +1657,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             let is_codetable_family =
                 (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
             // 「跟随全局（值）」的值（core 只读旁路字段，两个分支都带）。
+            // auxEnabled/auxMaxPhraseLen 给非默认值（开 / 4）：拼音族分支下面带了
+            // `aux_code.files`，本节会渲染出来，得看得出跟随值不是零值才有目视意义。
             let followed = json!({
                 "layout": "horizontal", "fontFamily": "微软雅黑",
-                "auxEnabled": false, "auxMaxPhraseLen": 0
+                "auxEnabled": true, "auxMaxPhraseLen": 4
             });
             if is_codetable_family {
                 let mut v = json!({
@@ -1680,7 +1682,12 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                 json!({
                     "engine": { "type": "pinyin", "pinyin": {
                         "scheme": "shuangpin", "shuangpin": { "layout": "ziranma" }
-                    } },
+                    },
+                        // 拼音族有辅助码表（对齐真实方案，如全拼配笔画、双拼配小鹤形码）——
+                        // 给个非空 files 让 `has_aux_code_table` 判真，`SettingsSection::AuxCode`
+                        // 才在 `WIND_RPC_MOCK=1` 下有得看，不然这一节永远建不出来。
+                        "aux_code": { "files": ["aux_code/bihua.txt"] }
+                    },
                     "followedBehavior": followed
                 })
             }

@@ -612,34 +612,46 @@ pub fn override_control(
 ///
 /// 原先收一个已拼好的 col，于是卡片里各行紧贴在一起——只有标题下那一条线，
 /// 组内十来行连成一片（2026-08-26 用户原话：「加了 card，但也缺少分割线」）。
-pub fn override_group_card(title: &str, summary: Signal<String>, rows: Vec<Element>) -> Element {
+///
+/// `reset`：卡片自己的「全部恢复跟随」按钮，挂在标题行末尾，`None` 即不出这一项。
+/// 只有「一张卡片就是一整节」的调用方（如辅助码）才该传——`schema_codetable` 那边
+/// 一节铺开好几张卡片，「全部恢复跟随」是**整节**级别的兜底动作，挂在外层节头而不是
+/// 某一张卡片上，故那边仍传 `None`。
+pub fn override_group_card(
+    title: &str,
+    summary: Signal<String>,
+    rows: Vec<Element>,
+    reset: Option<Element>,
+) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
     let mut col = Element::col().width_match();
     if !title.is_empty() {
-        col = col.child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .padding_xy(0, 2)
-                .child(
-                    // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
-                    // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
-                    Element::label(title)
-                        .font_size(12.5)
-                        .font_weight(600)
-                        .fg_role(Role::Accent)
-                        .weight(1.0)
-                        .max_lines(1),
-                )
-                .child(
-                    Element::label_signal(summary)
-                        .font_size(f.desc_size(m))
-                        .fg_role(Role::TextMuted)
-                        .max_lines(1),
-                ),
-        );
+        let mut header = Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .padding_xy(0, 2)
+            .child(
+                // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
+                // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
+                Element::label(title)
+                    .font_size(12.5)
+                    .font_weight(600)
+                    .fg_role(Role::Accent)
+                    .weight(1.0)
+                    .max_lines(1),
+            )
+            .child(
+                Element::label_signal(summary)
+                    .font_size(f.desc_size(m))
+                    .fg_role(Role::TextMuted)
+                    .max_lines(1),
+            );
+        if let Some(btn) = reset {
+            header = header.child(btn);
+        }
+        col = col.child(header);
         col = col.child(Element::divider());
     }
     let last = rows.len().saturating_sub(1);
