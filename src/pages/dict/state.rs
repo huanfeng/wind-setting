@@ -1942,7 +1942,8 @@ impl DictManagerState {
     /// 「清空」在搜索态下只作用于搜索结果（t179）：用户搜出几条再点清空，确认框写的是
     /// 「当前 N 条」（N 是命中数），却调了整表 clear RPC，把整个词库都清了。
     fn active_search(&self) -> Option<String> {
-        if !self.current_spec().searchable {
+        let spec = self.current_spec();
+        if !spec.searchable && !spec.client_search {
             return None;
         }
         let q = self.search.get();
@@ -1981,7 +1982,15 @@ impl DictManagerState {
         match matched {
             Some(rows) => rows
                 .iter()
-                .map(|r| self.delete_call(&r.code, &r.text))
+                .map(|r| {
+                    let (m, mut p) = self.delete_call(&r.code, &r.text);
+                    // 候选调整：动态短语规则的 word 是写入当天的求值文本，只按 word 删不掉，
+                    // 须带上列表给出的 candId（见 core `web_shadow_remove_rule`）。
+                    if self.current_spec().ops.remove_rule && !r.cand_id.is_empty() {
+                        p["candId"] = json!(r.cand_id);
+                    }
+                    (m, p)
+                })
                 .collect(),
             None => vec![(
                 self.current_spec().rpc.clear,
@@ -5342,6 +5351,81 @@ mod tests {
             *st.pending.borrow(),
             Some(PendingAction::ResetDefault)
         ));
+    }
+
+    /// t179：词库管理里**每一个**带「清空」的类别，搜索态下都只逐条删命中项，
+    /// 绝不发整表 clear。遍历所有域 × 子标签，由 `ops.clear` 自动收集，新增类别自动纳入。
+    #[test]
+    fn clear_under_search_never_sends_table_clear_for_any_category() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔", "codetable"),
+                schema("py", "拼音", "pinyin"),
+            ],
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for d in 0..st.domain_count() {
+            for (i, tab) in st.tabs_for_domain_at(d).into_iter().enumerate() {
+                let spec = spec_for(tab.category());
+                if !spec.ops.clear {
+                    continue;
+                }
+                st.domain.set(d);
+                st.sub_tab.set(i);
+                st.search.set(String::new());
+                st.search.set("a".into());
+                st.reload();
+                crate::rpc::take_mock_calls();
+                st.request_clear();
+                assert!(
+                    st.confirm_msg.get().contains("搜索结果"),
+                    "{:?}: 确认文案须写明只删搜索结果",
+                    spec.category
+                );
+                st.confirm_pending();
+                let calls = crate::rpc::take_mock_calls();
+                assert!(
+                    calls.iter().all(|(m, _)| m != spec.rpc.clear),
+                    "{:?}: 搜索态下发了整表 {}：{calls:?}",
+                    spec.category,
+                    spec.rpc.clear
+                );
+                let del = if spec.ops.remove_rule {
+                    spec.rpc.remove_rule
+                } else {
+                    spec.rpc.remove
+                };
+                let listed = calls.iter().filter(|(m, _)| m == spec.rpc.list).count();
+                assert!(listed >= 1, "{:?}: 应先取命中行", spec.category);
+                let (hits, _) = WordRow::parse_list(
+                    spec.category,
+                    spec.paged,
+                    &crate::rpc::call_core(spec.rpc.list, &st.build_list_params()).unwrap(),
+                );
+                crate::rpc::take_mock_calls();
+                let removed = calls.iter().filter(|(m, _)| m == del).count();
+                assert_eq!(removed, hits.len(), "{:?}: 命中几条删几条", spec.category);
+                seen.insert(format!("{:?}", spec.category));
+            }
+        }
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        for c in [
+            "PhraseUser",
+            "UserDict",
+            "Temp",
+            "Freq",
+            "Shadow",
+            "MailSuffix",
+            "UrlHistory",
+        ] {
+            assert!(seen.contains(c), "{c} 未被覆盖，已覆盖 {seen:?}");
+        }
     }
 
     /// t179：搜索态下「清空」只删搜索结果，不能调整表 clear。
