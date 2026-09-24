@@ -7,6 +7,7 @@
 //! 同时把"写回器"和"取值器"登记进 [`crate::state::FieldRegistry`]：
 //! 保存时跑所有写回器把 Signal 值写回 Config 再 diff；`enabled_when` 用取值器联动。
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -776,6 +777,14 @@ const THEME_FOLLOW_CTRL_W: i32 = 160;
 /// ★ 勾选瞬间控件里必须已经是主题值（Review Focus 5）：勾上后若是 0，保存下去等于
 /// 又回到跟随。windui 的勾选框没有变更回调，故反过来做——**未勾选期间**控件一直被
 /// 播成主题值（构建时、加载时、主题值变化或取消勾选时），勾上那一刻它自然就是。
+/// number 类型勾选行的编辑器 min 至少抬到 1（见 [`build_theme_follow_row`] 内的说明）：
+/// 只影响这份副本，不改传入的 manifest 条目本身。
+fn clamp_follow_number_min(item: &MItem) -> MItem {
+    let mut clamped = item.clone();
+    clamped.min = Some(clamped.min.unwrap_or(0.0).max(1.0));
+    clamped
+}
+
 fn build_theme_follow_row(
     state: &AppState,
     key: &str,
@@ -785,7 +794,16 @@ fn build_theme_follow_row(
     use crate::theme_follow::{
         FOLLOW_THEME, is_sentinel, seed_opt, sentinel_of, theme_follow_text_opt,
     };
-    let editor = build_control(state, key, item, cfg);
+    // 勾选行下限抬到 1：number 类型不勾选时控件显示主题值（reseed），一旦勾上就是
+    // 「自定义」态，min 沿用清单原值会放行 0 —— 保存后 0 落回哨兵，下次打开又变回
+    // 「跟随」，用户看不出自己刚才是勾着的。只影响这里的编辑器副本，不改 manifest
+    // 条目本身：守门测试 number_widget_ranges_contain_core_defaults 读的是原 item.min。
+    let editor_item = if item.typ == "number" {
+        Cow::Owned(clamp_follow_number_min(item))
+    } else {
+        Cow::Borrowed(item)
+    };
+    let editor = build_control(state, key, &editor_item, cfg);
     let over = signal(!is_sentinel(key, cfg.get_path(key)));
     let tf_sig = state.theme_follow;
 
@@ -7628,6 +7646,25 @@ mod theme_follow_row_tests {
             .get(key)
             .cloned()
             .expect("清单缺该项")
+    }
+
+    /// number 勾选行的编辑器 min 至少抬到 1：manifest 原值（font_size 是 0）放行会让
+    /// 用户把已勾选的数字框拖到 0，保存后 0 落成哨兵、下次打开又变回「跟随」，用户看不出
+    /// 自己刚才是勾着的（控制者裁定项 B）。manifest 条目本身的 min 不受影响。
+    #[test]
+    fn number_follow_row_min_is_floored_to_one() {
+        let mut it = item("ui.candidate.font_size");
+        assert_eq!(it.min, Some(0.0), "manifest 原值仍是 0");
+        let clamped = clamp_follow_number_min(&it);
+        assert_eq!(clamped.min, Some(1.0), "勾选行编辑器 min 抬到 1");
+        assert_eq!(it.min, Some(0.0), "不改 manifest 条目本身");
+
+        it.min = None;
+        assert_eq!(
+            clamp_follow_number_min(&it).min,
+            Some(1.0),
+            "min 缺省时同样兜底到 1"
+        );
     }
 
     /// 字号 / 字族 / 字重三项声明了 `follow = "theme"`，翻页栏 / 页码两项同样声明
