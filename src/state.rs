@@ -1729,6 +1729,10 @@ impl AppState {
         self.push_unlisted_theme(&cur);
         // 补项可能又往列表末尾加了一条，故重定位放在它之后。
         self.relocate_theme_index(selected.as_deref());
+        // 覆盖导入 / 删除当前主题都会经这里刷新列表，但跟随值（`theme.resolved`）此前
+        // 不重拉：外观页的「跟随主题（值）」文案与勾选初值继续挂着旧主题的数，直到用户
+        // 手动切一次主题或重开设置页才更新。
+        self.refresh_theme_follow();
     }
 
     /// 主题下拉此刻选中的那个 id（拿不到索引信号或越界时为 `None`）。
