@@ -2448,9 +2448,11 @@ group = "ui"
 section = "候选字体"
 type = "number"
 label = "候选字号"
-hint = "候选词字体大小，0 = 跟随主题"
+hint = "候选词字体大小"
 min = 0
 max = 72
+# 跟随主题（R8.1）：不勾 = 落盘 0，勾选行显示主题当前字号。见 MItem::follow。
+follow = "theme"
 
 [[items]]
 key = "ui.font.family"
@@ -2459,7 +2461,8 @@ section = "候选字体"
 type = "select"
 options_source = "fonts"
 label = "候选窗字体"
-hint = "候选窗全部文字的字体，设置后覆盖主题字体；留空跟随主题"
+hint = "候选窗全部文字的字体，设置后覆盖主题字体"
+follow = "theme"
 
 # 字重独立于字体：下拉列的是 DirectWrite 的字体家族名（不含字重），旧版列表里
 # 「思源宋体 SemiBold」这类带字重的名字由 core 解析兼容（论坛 t95）。
@@ -2471,8 +2474,9 @@ type = "number_select"
 label = "候选窗字重"
 hint = "候选窗文字的粗细；字体没有该字重时取最接近的。主题里单独设的粗细（如选中加粗）仍然生效"
 width = 160
+# 0 = 跟随主题，由勾选行表达，不再列成下拉的一档（存量配置里的 0 打开时即未勾选）。
+follow = "theme"
 options = [
-  { value = "0", label = "默认" },
   { value = "100", label = "极细 100" },
   { value = "200", label = "特细 200" },
   { value = "300", label = "细 300" },
@@ -2719,9 +2723,12 @@ section = "候选排版"
 type = "select_by_layout"
 label = "翻页栏显示"
 hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染。横排、竖排可分别设——横排的翻页栏要挤占候选共享的那一行，竖排多一行代价小"
-width = 200
+# 加宽到装得下最长的跟随档「跟随主题（大于一页时显示）」，200 会折成两行。
+width = 232
+# 空值档 = 跟随主题（R8.2），渲染时文案换成「跟随主题（当前主题的档位）」。
+follow = "theme"
 options = [
-  { value = "", label = "默认（主题配置）" },
+  { value = "", label = "跟随主题" },
   { value = "hide", label = "隐藏" },
   { value = "auto", label = "大于一页时显示" },
   { value = "always", label = "总是显示" },
@@ -2734,9 +2741,11 @@ section = "候选排版"
 type = "select_by_layout"
 label = "显示页码"
 hint = "翻页栏可见时，是否显示页码文字；横排、竖排可分别设"
-width = 200
+# 与翻页栏同宽，两行的横 / 竖下拉上下对齐。
+width = 232
+follow = "theme"
 options = [
-  { value = "", label = "默认（主题配置）" },
+  { value = "", label = "跟随主题" },
   { value = "show", label = "显示" },
   { value = "hide", label = "隐藏" },
 ]

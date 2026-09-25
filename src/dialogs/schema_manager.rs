@@ -222,13 +222,12 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; SET
     out
 }
 
-/// 辅助码方案级覆盖的三档。`[engine.aux_code].enabled` 是 tri-state `Option<bool>`：
-/// `None` 回落全局 `[schema.pinyin.aux_code].enabled`，`Some` 覆盖它。
-///
-/// ★ 用三档分段而不是复选框：复选框只有两态，表达不出「跟随全局」——而那恰恰是出厂态，
-/// 也是绝大多数方案该停在的地方。用复选框就必须替用户在开/关里二选一，一打开设置页
-/// 就等于把每个方案都钉死成显式值。
-const AUX_CODE_MODES: [&str; 3] = ["跟随全局", "开启", "关闭"];
+/// 「本方案行为」节三个下拉的统一宽度。要装得下最长的跟随档「跟随全局（沿用当前状态）」，
+/// 170 会把它折成两行（最终审查目视发现）；三个下拉同宽，右侧才对得齐。
+const BH_DD_W: i32 = 220;
+
+/// 辅助码勾选行控件区的统一宽度。与开关/数字框都用它，两行右侧控件左边界才能对齐。
+const AUX_CTRL_W: i32 = 150;
 
 /// 这个方案**有没有可用的辅助码表**。建节与落盘共用**同一条**判据。
 ///
@@ -246,21 +245,127 @@ fn has_aux_code_table(cfg: &Value) -> bool {
         .is_some_and(|a| !a.is_empty())
 }
 
-fn aux_code_idx(v: Option<bool>) -> usize {
-    match v {
-        None => 0,
-        Some(true) => 1,
-        Some(false) => 2,
+/// `[engine.aux_code]` 「启用」与「最长词长」两行**各自独立**的落盘值。
+///
+/// ★ 两个勾选框而不是一个三档分段：`enabled` 与 `max_phrase_len` 是方案文件里两个
+/// 各自独立的键，「跟不跟」也该各自表达——旧版用一个三档分段把两件事拧在一起，
+/// 装不下后来加的 `max_phrase_len` 覆盖需求，才有了这次改法。
+///
+/// 未勾的一位写 `Value::Null`：core 的 `json_to_toml` 跳过 null，该键不进 override，
+/// 取值回落全局——这正是「跟随全局」的落地方式，不是丢失。
+fn aux_write(on_over: bool, on: bool, len_over: bool, len: i32) -> (Value, Value) {
+    let enabled = if on_over { json!(on) } else { Value::Null };
+    let max_len = if len_over { json!(len) } else { Value::Null };
+    (enabled, max_len)
+}
+
+/// 布尔跟随值的展示文案：「开」/「关」。数字项直接 `to_string()`，用不上这一层。
+fn follow_text_bool(v: bool) -> String {
+    if v {
+        "开".to_string()
+    } else {
+        "关".to_string()
     }
 }
 
-/// 下标 → 落盘值。`Null` 即「不写这一行」：core 的 `json_to_toml` 跳过 null，于是该键不进
-/// override，取值回落全局——这正是「跟随全局」的落地方式，不是丢失。
-fn aux_code_value(idx: usize) -> Value {
-    match idx {
-        1 => json!(true),
-        2 => json!(false),
-        _ => Value::Null,
+/// 候选字体跟随值的展示文案：空串（外观页没配字体，即系统默认）显示「系统字体」，
+/// 否则原样显示字族名。与 [`follow_text_bool`] 同类的小型展示层，不算三态本身。
+fn follow_text_font(v: &str) -> String {
+    if v.is_empty() {
+        "系统字体".to_string()
+    } else {
+        v.to_string()
+    }
+}
+
+/// 「跟随」档下拉首项的文案：`跟随{scope}（{value_label}）`（R8.2，全角括号）。
+///
+/// 值必须带出来——「跟随全局」不带值时用户不知道跟的是什么，得切到全局页才能确认；
+/// 跟随值变了这一档的文案要跟着变，故调用方每次打开对话框都要重算，不能缓存首次种下
+/// 的文案（见 `follow_labels_reseeded_on_each_open`）。
+fn follow_option_label(scope: &str, value_label: &str) -> String {
+    format!("跟随{scope}（{value_label}）")
+}
+
+/// `followedBehavior.layout`（`"horizontal"` / `"vertical"`）→ 中文标签。
+///
+/// 与 [`overlay_layout_idx`] 是两回事：那个映射的是**本方案覆盖值**的三档下标
+/// （含「跟随全局」），这个映射的是**全局当前生效值**（只有横/竖两种，没有「跟随」
+/// 这一档——全局页本身就是跟随的终点）。未知值回落「横排」，同各处「不猜方向」的口径，
+/// 但这里的输入来自 core 只读旁路字段，不是用户手写，出现未知值基本不会发生。
+fn layout_label(v: &str) -> &'static str {
+    match v {
+        "vertical" => "竖排",
+        _ => "横排",
+    }
+}
+
+/// 候选排列跟随档下拉的完整标签表：首项按 `followed_layout` 现算，其余固定。
+///
+/// 「本方案行为」的候选排列与 overlay 的候选排列是**同一个全局跟随值**，共用这一份
+/// 计算——两处各写一遍的话，其中一处忘了随 `followedBehavior` 重算，用户就会看到
+/// 两个「跟随全局」档显示不同的值。
+fn layout_dropdown_labels(followed_layout: &str) -> Vec<String> {
+    vec![
+        follow_option_label("全局", layout_label(followed_layout)),
+        "竖排".to_string(),
+        "横排".to_string(),
+    ]
+}
+
+/// 「最长词长」的合法范围钳制，与全局 manifest 该项的 `min`/`max`（0..=20，见
+/// `settings_manifest.toml` 的 `schema.pinyin.aux_code.max_phrase_len`）同口径。
+///
+/// ⚠️ 手改 `config.toml` 能写出这个范围（跟随值、方案覆盖值都可能来自手写文件），
+/// 两处读取（种子取控件初值、UI 取跟随值展示）都要钳，否则界外的数字会被当作
+/// 「生效值」直接喂给 stepper（它的 min/max 只管用户在控件里拖，挡不住程序塞进去的
+/// 初值），或者原样显示在跟随值文案里。
+fn clamp_aux_len(v: i64) -> i32 {
+    v.clamp(0, 20) as i32
+}
+
+/// 辅助码卡片「全部恢复跟随」按钮做的事：两行勾选一并清空，控件值拨回跟随值，
+/// 摘要归零。
+///
+/// ★ 抽出来供测：按钮的 `on_click` 闭包本身测不到（只能在真机上点），闭包只转调这里，
+/// 测试直接拿 `SchemaManagerState` 的真信号驱动它。
+///
+/// 控件值也拨回跟随值——同 `schema_codetable::CtFields::revert_all`：只清勾选不清值的话，
+/// 用户下次再勾上会看到上一次改的旧值，而不是真正的跟随值。
+fn aux_reset_all(state: &SchemaManagerState, followed_on: bool, followed_len: i32) {
+    state.settings_aux_on_over.set(false);
+    state.settings_aux_len_over.set(false);
+    state.settings_aux_on.set(followed_on);
+    state.settings_aux_len.set(followed_len as f64);
+    state.settings_aux_disp.set(ct_summary(0));
+}
+
+/// 「本方案行为」节「全部恢复跟随」的核心逻辑（R8.5）：把有「跟随」档的三项一并
+/// 拨回跟随（标点 / 候选排列下标回 0，候选字体取消勾选）。
+///
+/// ⚠️ 「横排时文字排列」不在这里：它没有跟随档（出厂就是「默认」，全局页压根没有
+/// 这一项），按下这个按钮不该动它——动了等于给一个不存在的状态强行赋值。
+/// 注释模板、自定义标点表也不在这里：它们是各自独立的子对话框，各有自己的清空入口，
+/// 这个按钮只清「本方案行为」节直接铺开显示的这三项（R8.5：只清本区块界面上可见的）。
+///
+/// 抽出来的理由同 [`aux_reset_all`]：闭包测不到，测试拿真信号驱动这里。
+fn behavior_reset_all(state: &SchemaManagerState) {
+    state.settings_bh_punct.set(0);
+    state.settings_bh_layout.set(0);
+    state.settings_bh_font_over.set(false);
+}
+
+/// 候选字体（`[candidate] font_family`）的落盘值：未勾选，或勾选但留空，都写
+/// `Value::Null`（core 的 `json_to_toml` 跳过 null，该键不进 override，取值回落
+/// 外观页的字体设置）。只有勾选且非空才落成具体字族。
+///
+/// 「勾了但留空」不落成空串——那会被 core 读成「本方案覆盖成空字体」，与用户实际想要
+/// 的「跟随外观页」正好相反，且界面上看不出区别（勾上的文本框本来就可能是空的）。
+fn font_write(over: bool, family: &str) -> Value {
+    if over && !family.is_empty() {
+        json!(family)
+    } else {
+        Value::Null
     }
 }
 
@@ -275,7 +380,10 @@ fn aux_code_value(idx: usize) -> Value {
 /// `rotated`（顺时针 90°，蒙古文等纵向书写脚本）就是这么补进来的。
 const OVERLAY_LAYOUTS: [&str; 3] = ["follow", "vertical", "horizontal"];
 
-/// 与 [`OVERLAY_LAYOUTS`] 逐项对应的中文标签。两处下拉共用，防止只改一处。
+/// 与 [`OVERLAY_LAYOUTS`] 逐项对应的中文标签。R8.2 改勾选首项带值之后，两处下拉
+/// 改用 [`layout_dropdown_labels`] 现算，不再直接用这份静态表——只留给
+/// `layout_value_domain_matches_core_capability` 校验标签数与值域数对得上，故标 `cfg(test)`。
+#[cfg(test)]
 const OVERLAY_LAYOUT_LABELS: [&str; 3] = ["跟随全局", "竖排", "横排"];
 
 /// 方案级「横排时文字排列」（`[candidate] text_orientation`）的取值与标签。
@@ -325,11 +433,14 @@ struct BehaviorSeed {
     /// ⚠️ 与上面两个注释模板一样，三态**只能由「键在不在」区分**，不能拿空表代表跟随——
     /// 那正是 core 侧刻意不加方案级 `custom_enabled` 的理由（空表已经是第三态）。
     punct_map: Option<serde_json::Map<String, Value>>,
-    /// 方案级候选**文字**字族（`[candidate] font_family`）；空串 = 不覆盖。
+    /// 方案级候选**文字**字族（`[candidate] font_family`）三态：`None` = 未勾选覆盖
+    /// （写回 `null`）；`Some(s)` = 本方案覆盖为 `s`。
     ///
-    /// 与上面几项不同，它**不是三态**：core 侧就是朴素 `String`，空 = 不覆盖。
-    /// 「不覆盖」与「覆盖成空字体」没有区别，不必用键的有无再造一态。
-    font_family: String,
+    /// R8.1 改勾选行之前它是朴素 `String`（空串 = 不覆盖）；改勾选行后「没有勾」与
+    /// 「勾了但没填」都写 `null`（见 [`font_write`]），这里用 `Option` 与注释模板同构，
+    /// 免得又造一个只能靠“空串”表达跟随的哨兵。读取时旧文件里的 `""` 仍视为未设置
+    /// （见 [`seed_behavior`]），兼容改字段前存下的方案文件。
+    font_family: Option<String>,
     /// 横排时文字排列（`[candidate] text_orientation`）：0=默认 / 1=旋转 90° / 2=文字竖排。
     ///
     /// 与 `layout` 是**两根正交的轴**，不是同一个下拉的延长——改这里不影响横竖，
@@ -348,7 +459,7 @@ impl Default for BehaviorSeed {
             comment_v: None,
             comment_h: None,
             punct_map: None,
-            font_family: String::new(),
+            font_family: None,
             text_orient: 0,
         }
     }
@@ -390,11 +501,13 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
             .and_then(|v| v.as_str())
             .map(str::to_string)
     };
+    // 未勾选 → `null`；旧文件（改字段前存下的）里的 `""` 同样视为未设置——
+    // 两者读回来都该是「跟随外观页」，不是「覆盖成空字体」。见 [`font_write`]。
     let font_family = candidate
         .and_then(|v| v.get("font_family"))
         .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let text_orient = candidate
         .and_then(|v| v.get("text_orientation"))
         .and_then(|v| v.as_str())
@@ -875,10 +988,22 @@ pub struct SchemaManagerState {
     // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
     // 那是方案的固有属性，由方案文件决定。这里只调段内的行为参数。
     /// 进入模式即展示候选（`[overlay] show_all_on_enter`）。
-    /// 辅助码方案级覆盖的三档下标（见 [`AUX_CODE_MODES`]）。
-    pub settings_aux_idx: Signal<usize>,
-    /// 打开时的档位快照，供脏判定。
-    settings_aux_at_open: Rc<std::cell::Cell<usize>>,
+    /// 「本方案启用辅助码」是否覆盖全局（勾选框）。
+    pub settings_aux_on_over: Signal<bool>,
+    /// 勾选时的取值。未勾选时仍保留一份初值（生效值，见 `seed_sections` 里的说明），
+    /// 供用户勾上时接着编辑，而不是从零值开始。
+    pub settings_aux_on: Signal<bool>,
+    /// 「辅助码最长词长」是否覆盖全局。
+    pub settings_aux_len_over: Signal<bool>,
+    /// 勾选时的取值。stepper 只收 `Signal<f64>`（windui 数字控件的通用形态，见
+    /// `manifest::build_number` / `schema_codetable::build_editor`），落盘前按
+    /// `aux_write` 的 `i32` 形参转一次，两处口径不冲突。
+    pub settings_aux_len: Signal<f64>,
+    /// 辅助码卡片标题右侧的摘要（「全部跟随」/「已自定义 N 项」）。
+    pub settings_aux_disp: Signal<String>,
+    /// 打开时四项的快照 `(on_over, on, len_over, len)`，供脏判定：把它与当前值各自
+    /// 代入 `aux_write`，比较两次的落盘结果（而不是逐项比对信号）是否变化。
+    settings_aux_at_open: Rc<std::cell::Cell<(bool, bool, bool, i32)>>,
     // ── 本方案行为（`[punct]` / `[candidate]` / `[phrases]` 三段）──
     //
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
@@ -887,7 +1012,14 @@ pub struct SchemaManagerState {
     pub settings_bh_punct: Signal<usize>,
     /// 候选排列：0=跟随全局 / 1=竖排 / 2=横排（`[candidate] layout`）。
     pub settings_bh_layout: Signal<usize>,
-    /// 方案级候选文字字族（`[candidate] font_family`）；空串 = 不覆盖。
+    /// 候选排列下拉的标签表：首项按 `followedBehavior.layout` 现算（R8.2），每次
+    /// `open_settings_at_id` 都要重设，不能只在构造时算一次。与「本方案行为」节和
+    /// overlay 节的候选排列下拉共用同一份（同一个全局跟随值）。
+    pub settings_layout_follow_labels: Signal<Vec<String>>,
+    /// 候选字体是否由本方案覆盖（R8.1 改勾选行：`[candidate] font_family` 这个键存不存在）。
+    pub settings_bh_font_over: Signal<bool>,
+    /// 勾选时的取值；未勾选时文本框仍保留上次编辑内容，供用户勾上时接着编辑
+    /// （同 `settings_aux_on`/`settings_aux_len` 的做法）。落盘走 [`font_write`]。
     pub settings_bh_font: Signal<String>,
     /// 横排时文字排列：0=默认 / 1=旋转 90° / 2=文字竖排（`[candidate] text_orientation`）。
     pub settings_bh_text_orient: Signal<usize>,
@@ -1044,13 +1176,19 @@ impl SchemaManagerState {
             ]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
-            settings_aux_idx: signal(0),
-            settings_aux_at_open: Rc::new(std::cell::Cell::new(0)),
+            settings_aux_on_over: signal(false),
+            settings_aux_on: signal(false),
+            settings_aux_len_over: signal(false),
+            settings_aux_len: signal(0.0),
+            settings_aux_disp: signal(ct_summary(0)),
+            settings_aux_at_open: Rc::new(std::cell::Cell::new((false, false, false, 0))),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_bh_punct: signal(0),
             settings_bh_layout: signal(0),
+            settings_layout_follow_labels: signal(layout_dropdown_labels("horizontal")),
             settings_bh_text_orient: signal(0),
+            settings_bh_font_over: signal(false),
             settings_bh_font: signal(String::new()),
             settings_bh_phrases: signal(true),
             settings_bh_comment_v_on: signal(false),
@@ -2056,7 +2194,21 @@ impl SchemaManagerState {
             let seed = seed_behavior(&self.settings_cfg.borrow());
             self.settings_bh_punct.set(seed.punct);
             self.settings_bh_layout.set(seed.layout);
-            self.settings_bh_font.set(seed.font_family.clone());
+            // 下拉首项文案按**本次打开**的跟随值现算（Review Focus 3）：跟随值是
+            // core 只读旁路字段，随全局页配置变化，不能用构造时缓存的默认值——
+            // 否则用户在全局页改了候选排列，方案设置页打开两次都还显示旧值。
+            let followed_layout = self
+                .settings_cfg
+                .borrow()
+                .pointer("/followedBehavior/layout")
+                .and_then(Value::as_str)
+                .unwrap_or("horizontal")
+                .to_string();
+            self.settings_layout_follow_labels
+                .set(layout_dropdown_labels(&followed_layout));
+            self.settings_bh_font_over.set(seed.font_family.is_some());
+            self.settings_bh_font
+                .set(seed.font_family.clone().unwrap_or_default());
             self.settings_bh_text_orient.set(seed.text_orient);
             self.settings_bh_phrases.set(seed.phrases);
             // 勾选态与文本分开落：勾选问「有没有这个键」，文本框只装内容。
@@ -2109,13 +2261,38 @@ impl SchemaManagerState {
         {
             let cfg = self.settings_cfg.borrow();
             if has_aux_code_table(&cfg) {
-                let idx = aux_code_idx(
-                    cfg.pointer("/engine/aux_code/enabled")
-                        .and_then(|v| v.as_bool()),
-                );
+                // 控件初值取**生效值**（override 有则用它，否则用跟随值）——理由同
+                // `schema_codetable::CtFields::seed` 里 `val` 取 `effectiveCodetable`
+                // 那段注释：不然用户第一次勾选时控件会显示一个陌生的零值，而不是
+                // 「这个方案现在实际生效的那个值」。
+                let followed_on = cfg
+                    .pointer("/followedBehavior/auxEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let followed_len = cfg
+                    .pointer("/followedBehavior/auxMaxPhraseLen")
+                    .and_then(Value::as_i64)
+                    .map(clamp_aux_len)
+                    .unwrap_or(0);
+                let raw_on = cfg
+                    .pointer("/engine/aux_code/enabled")
+                    .and_then(Value::as_bool);
+                let raw_len = cfg
+                    .pointer("/engine/aux_code/max_phrase_len")
+                    .and_then(Value::as_i64)
+                    .map(clamp_aux_len);
+                let on_over = raw_on.is_some();
+                let on = raw_on.unwrap_or(followed_on);
+                let len_over = raw_len.is_some();
+                let len = raw_len.unwrap_or(followed_len);
                 drop(cfg);
-                self.settings_aux_idx.set(idx);
-                self.settings_aux_at_open.set(idx);
+                self.settings_aux_on_over.set(on_over);
+                self.settings_aux_on.set(on);
+                self.settings_aux_len_over.set(len_over);
+                self.settings_aux_len.set(len as f64);
+                self.settings_aux_at_open.set((on_over, on, len_over, len));
+                self.settings_aux_disp
+                    .set(ct_summary(on_over as usize + len_over as usize));
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::AuxCode);
             }
@@ -2280,7 +2457,10 @@ impl SchemaManagerState {
         BehaviorSeed {
             punct: self.settings_bh_punct.get(),
             layout: self.settings_bh_layout.get(),
-            font_family: self.settings_bh_font.get(),
+            // 与注释模板同一个 `pick`：未勾选恒读 `None`，不管文本框里还留着什么——
+            // 否则用户勾上改了字体又取消勾选，脏判定会把这行误判成「改过」（落盘结果其实
+            // 与打开时一样都是 `null`，见 `font_write`）。
+            font_family: pick(self.settings_bh_font_over, self.settings_bh_font),
             text_orient: self.settings_bh_text_orient.get(),
             phrases: self.settings_bh_phrases.get(),
             comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v),
@@ -2365,18 +2545,24 @@ impl SchemaManagerState {
         }
 
         // 辅助码方案级覆盖：与其余各节写进**同一份 cfg**，理由同上。
-        // 只在本节出现过（`at_open` 被播种过）且档位变了时才写——否则给没有辅助码表的方案
-        // 也塞一个 `engine.aux_code` 段，那会让 `json_diff` 认定方案文件缺这个键，把整份
-        // 快照写进 override。
-        if self.settings_aux_idx.get() != self.settings_aux_at_open.get()
-            && has_aux_code_table(&cfg)
-        {
-            set_json_path(
-                &mut cfg,
-                &["engine", "aux_code", "enabled"],
-                aux_code_value(self.settings_aux_idx.get()),
+        // 只在本方案有表（`has_aux_code_table`）且两项落盘结果与打开时不同时才写——
+        // 否则给没有辅助码表的方案也塞一个 `engine.aux_code` 段，那会让 `json_diff`
+        // 认定方案文件缺这个键，把整份快照写进 override。
+        if has_aux_code_table(&cfg) {
+            let (on_over, on, len_over, len) = (
+                self.settings_aux_on_over.get(),
+                self.settings_aux_on.get(),
+                self.settings_aux_len_over.get(),
+                self.settings_aux_len.get() as i32,
             );
-            cfg_changed = true;
+            let now = aux_write(on_over, on, len_over, len);
+            let (at_on_over, at_on, at_len_over, at_len) = self.settings_aux_at_open.get();
+            let before = aux_write(at_on_over, at_on, at_len_over, at_len);
+            if now != before {
+                set_json_path(&mut cfg, &["engine", "aux_code", "enabled"], now.0);
+                set_json_path(&mut cfg, &["engine", "aux_code", "max_phrase_len"], now.1);
+                cfg_changed = true;
+            }
         }
 
         // 本方案行为三段：与上面写进**同一份 cfg**，理由同上（saveConfig 是整份 diff
@@ -2408,7 +2594,10 @@ impl SchemaManagerState {
                 set_json_path(
                     &mut cfg,
                     &["candidate", "font_family"],
-                    json!(now.font_family),
+                    font_write(
+                        now.font_family.is_some(),
+                        now.font_family.as_deref().unwrap_or(""),
+                    ),
                 );
                 set_json_path(
                     &mut cfg,
@@ -4152,21 +4341,79 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             )
         }
         SettingsSection::AuxCode => {
-            // 关闭态的说明随全局基线而变——「跟随全局」到底是开还是关，用户在这一屏看不到
-            // 全局页，不写清就得来回切页确认。
-            crate::widgets::dialog_section(
+            // 跟随值随全局基线而变——「跟随全局」到底是开还是关、最长词长是多少，来自
+            // `followedBehavior`（core 的旁路只读字段）。用户在这一屏看不到全局页，
+            // 不把值带过来就得来回切页确认。
+            let cfg = state.settings_cfg.borrow();
+            let followed_on = cfg
+                .pointer("/followedBehavior/auxEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let followed_len = cfg
+                .pointer("/followedBehavior/auxMaxPhraseLen")
+                .and_then(Value::as_i64)
+                .map(clamp_aux_len)
+                .unwrap_or(0);
+            drop(cfg);
+
+            let on_over = state.settings_aux_on_over;
+            let on = state.settings_aux_on;
+            let len_over = state.settings_aux_len_over;
+            let len = state.settings_aux_len;
+
+            let row_on = crate::widgets::setting_row_override(
+                on_over,
+                "本方案启用辅助码",
+                Some("打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配"),
+                "跟随全局",
+                Role::TextMuted,
+                crate::widgets::override_control(
+                    on_over,
+                    Rc::new(|| true),
+                    Element::switch(on),
+                    &follow_text_bool(followed_on),
+                    "",
+                    AUX_CTRL_W,
+                ),
+            );
+
+            // 第二行的可用性看**生效值**：勾选了「启用辅助码」就用它当前的控件值,
+            // 没勾就用跟随值——与 `schema_codetable::CtItemState::effective_value`
+            // 同一个道理，「上游那项现在到底是开是关」不是它控件里存着什么。
+            let gate: Rc<dyn Fn() -> bool> =
+                Rc::new(move || if on_over.get() { on.get() } else { followed_on });
+            let row_len = crate::widgets::setting_row_override(
+                len_over,
+                "辅助码最长词长",
+                Some("超过这个字数的词组不参与筛选；0 = 不限。单字始终参与"),
+                "跟随全局",
+                Role::TextMuted,
+                crate::widgets::override_control(
+                    len_over,
+                    gate.clone(),
+                    Element::stepper(len, 0.0, 20.0, 1.0).width(AUX_CTRL_W),
+                    &followed_len.to_string(),
+                    "未启用辅助码",
+                    AUX_CTRL_W,
+                ),
+            )
+            .enabled_when(move || gate());
+
+            // 「全部恢复跟随」：样式/交互照 `SettingsSection::CodeTable` 那个同名按钮
+            // （柔和描边而不是实心主按钮——它是兜底动作，不该比同行的卡片标题抢眼）。
+            // 与码表那边不同的是它挂在**卡片自己的**标题行里，不是外层节头：这一节只有
+            // 一张卡片，两者是同一件事，不用再分层。
+            let st = state.clone();
+            let reset_btn = Element::button("全部恢复跟随")
+                .small()
+                .outline_soft()
+                .on_click(move |_| aux_reset_all(&st, followed_on, followed_len));
+
+            crate::widgets::override_group_card(
                 "辅助码",
-                vec![crate::widgets::setting_row(
-                    "本方案启用辅助码",
-                    Some(
-                        "打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配",
-                    ),
-                    Element::segmented(
-                        AUX_CODE_MODES.iter().map(|s| s.to_string()).collect(),
-                        state.settings_aux_idx,
-                    )
-                    .width(210),
-                )],
+                state.settings_aux_disp,
+                vec![row_on, row_len],
+                Some(reset_btn),
             )
         }
         SettingsSection::CodeTable => {
@@ -4257,8 +4504,13 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     crate::widgets::setting_row(
                         "候选排列",
                         Some("仅本模式期间生效，退出自动恢复"),
-                        Element::dropdown(OVERLAY_LAYOUT_LABELS.to_vec(), state.settings_ov_layout)
-                            .width(170),
+                        // 首项文案带跟随值（R8.2），随 `open_settings_at_id` 每次打开重算，
+                        // 故绑 `Signal<Vec<String>>` 而不是静态 `OVERLAY_LAYOUT_LABELS`。
+                        Element::dropdown_signal(
+                            state.settings_layout_follow_labels,
+                            state.settings_ov_layout,
+                        )
+                        .width(170),
                     ),
                 ],
             )
@@ -4271,24 +4523,75 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 四个控件铺在这一屏里，与旁边三行「一行一个控件」的节奏完全不同
             // （2026-08-26 用户原话：「候选注释又是比较杂乱的」）。收进子对话框后，
             // 这里只留一行摘要 + [设置]，与「按键设置」那几行同构。
-            crate::widgets::dialog_section_hint(
+            //
+            // 候选字体跟随值从 `followedBehavior.fontFamily` 取（同 `AuxCode` 节读
+            // `followedBehavior.auxEnabled` 的做法一样，是 core 只读旁路字段）；
+            // 候选排列的跟随值已经在 `open_settings_at_id` 里算进
+            // `settings_layout_follow_labels`，这里不用再读一遍。
+            let followed_font = state
+                .settings_cfg
+                .borrow()
+                .pointer("/followedBehavior/fontFamily")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let follow_font_disp = follow_text_font(&followed_font);
+
+            let font_over = state.settings_bh_font_over;
+            let font = state.settings_bh_font;
+            let font_row = crate::widgets::setting_row_override(
+                font_over,
+                "候选文字字体",
+                Some("只改候选词本身；序号与编码栏不跟随"),
+                // 来源列只写来源；跟随值（字体名）由下面 override_control 的 follow_text 显示，
+                // 两处都写字体名会读成「微软雅黑 … 微软雅黑」。
+                "跟随全局",
+                Role::TextMuted,
+                crate::widgets::override_control(
+                    font_over,
+                    Rc::new(|| true),
+                    Element::text_input(font, "留空同未勾选").width(AUX_CTRL_W),
+                    &follow_font_disp,
+                    "",
+                    AUX_CTRL_W,
+                ),
+            );
+
+            // 「全部恢复跟随」（R8.5）：只清标点 / 候选排列 / 候选字体这三个有跟随档的
+            // 字段，见 [`behavior_reset_all`] 上的说明。样式照 `AuxCode` 卡片同名按钮。
+            let st = state.clone();
+            let reset_btn = Element::button("全部恢复跟随")
+                .small()
+                .outline_soft()
+                .on_click(move |_| behavior_reset_all(&st));
+
+            crate::widgets::dialog_section_full(
                 "本方案行为",
-                "切到本方案时的表现。选「跟随全局」的项不受本方案影响。",
+                Some("切到本方案时的表现。选「跟随全局」的项不受本方案影响。"),
+                Some(reset_btn),
                 vec![
                     crate::widgets::setting_row(
                         "标点",
                         Some("中文标点 / 英文标点，或不干预"),
                         Element::dropdown(
-                            vec!["跟随全局", "中文标点", "英文标点"],
+                            // 标点跟随值是运行时状态（当前中英文态），没有静态值可带，
+                            // 故这一档的文案固定，不像候选排列那样按 `followedBehavior`
+                            // 现算（R8.2 例外，控制者裁定）。
+                            vec!["跟随全局（沿用当前状态）", "中文标点", "英文标点"],
                             state.settings_bh_punct,
                         )
-                        .width(170),
+                        .width(BH_DD_W),
                     ),
                     crate::widgets::setting_row(
                         "候选排列",
                         Some("本方案期间的候选窗方向"),
-                        Element::dropdown(OVERLAY_LAYOUT_LABELS.to_vec(), state.settings_bh_layout)
-                            .width(170),
+                        // 首项文案带跟随值（R8.2），绑 `Signal<Vec<String>>`——
+                        // 与 overlay 节那个下拉同一份标签表，同一个全局跟随值。
+                        Element::dropdown_signal(
+                            state.settings_layout_follow_labels,
+                            state.settings_bh_layout,
+                        )
+                        .width(BH_DD_W),
                     ),
                     crate::widgets::setting_row(
                         "横排时文字排列",
@@ -4300,13 +4603,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             TEXT_ORIENT_LABELS.to_vec(),
                             state.settings_bh_text_orient,
                         )
-                        .width(170),
+                        .width(BH_DD_W),
                     ),
-                    crate::widgets::setting_row(
-                        "候选文字字体",
-                        Some("只改候选词本身；序号与编码栏不跟随。留空跟随外观页设置"),
-                        Element::text_input(state.settings_bh_font, "留空跟随外观页").width(170),
-                    ),
+                    font_row,
                     crate::widgets::setting_row(
                         "加载快捷短语",
                         Some(
@@ -4476,6 +4775,11 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 而这一屏已经为「每帧轮询」付过一次代价（见 punct_map_summary 的说明）。
     let bh_punct_map = state.settings_bh_punct_map_on;
     let punct_disp = state.settings_bh_punct_map_disp;
+    // 辅助码卡片摘要同理：只看两行的勾选态。`AuxCode` 也归「方案自定义」页
+    // （见 `SettingsSection::tab`），星号要一并算上它，否则用户勾了辅助码却看不到 TAB 有变化。
+    let aux_on_over = state.settings_aux_on_over;
+    let aux_len_over = state.settings_aux_len_over;
+    let aux_disp = state.settings_aux_disp;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
         move || {
             ct_watch
@@ -4485,6 +4789,8 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .wrapping_add(bh_cmt_v.version())
                 .wrapping_add(bh_cmt_h.version())
                 .wrapping_add(bh_punct_map.version())
+                .wrapping_add(aux_on_over.version())
+                .wrapping_add(aux_len_over.version())
         },
         move || {
             let n = ct_count.custom_count();
@@ -4493,22 +4799,25 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 + bh_cmt_v.get() as usize
                 + bh_cmt_h.get() as usize
                 + bh_punct_map.get() as usize;
+            let aux_custom = aux_on_over.get() as usize + aux_len_over.get() as usize;
             ct_disp.set(ct_summary(n));
             // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
             // 另开一个 effect 只会多一处要同步的口径。
             cmt_disp.set(comment_summary(bh_cmt_v.get(), bh_cmt_h.get()));
             // 自定义标点那一行同源（也只看勾选态），一并在这里推。
             punct_disp.set(punct_map_summary(bh_punct_map.get()));
+            // 辅助码卡片标题右侧那句同源，一并在这里推。
+            aux_disp.set(ct_summary(aux_custom));
             // 各分类卡片标题右侧那句也在这里推——它与整段摘要同源（勾选状态），
             // 分两个 effect 只会多一次遍历，还得担心两处口径漂移。
             ct_count.refresh_group_summaries();
             // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
             // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。
-            // 星号打在「方案自定义」那一页：本 effect 统计的两类（码表覆盖、本方案行为）
-            // 都在那一页。⚠️ 用 `CUSTOM_TAB` 而不是字面下标——TAB 数量已经反转过两次，
-            // 写死的 `1` 在上一次反转里正好还指对，下一次就未必。
+            // 星号打在「方案自定义」那一页：本 effect 统计的三类（码表覆盖、本方案行为、
+            // 辅助码）都在那一页。⚠️ 用 `CUSTOM_TAB` 而不是字面下标——TAB 数量已经反转过
+            // 两次，写死的 `1` 在上一次反转里正好还指对，下一次就未必。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
-            if n + bh_custom > 0 {
+            if n + bh_custom + aux_custom > 0 {
                 ls[CUSTOM_TAB] = format!("{} *", SETTINGS_TABS[CUSTOM_TAB]);
             }
             tab_labels.set(vec![ls]);
@@ -5299,6 +5608,84 @@ mod ext_dict_tests {
         }
     }
 
+    /// F2：下拉「跟随」档必须带上当前跟随值，不能只写「跟随全局」四个字。
+    #[test]
+    fn follow_label_carries_value() {
+        assert_eq!(
+            follow_option_label("全局", layout_label("horizontal")),
+            "跟随全局（横排）"
+        );
+        assert_eq!(
+            follow_option_label("全局", layout_label("vertical")),
+            "跟随全局（竖排）"
+        );
+    }
+
+    /// F3：候选字体改勾选行——未勾选、或勾选但留空，都写 `null`，绝不写空串。
+    ///
+    /// 空串曾是「不覆盖」的哨兵；改勾选行之后空串没有专属含义了，写出去只会被 core
+    /// 读成「本方案把候选字体覆盖成空字体」，与用户实际想要的「跟随外观页」正相反。
+    #[test]
+    fn font_unchecked_writes_null_not_empty_string() {
+        assert_eq!(font_write(false, "楷体"), Value::Null);
+        assert_eq!(font_write(true, ""), Value::Null);
+        assert_eq!(font_write(true, "楷体"), json!("楷体"));
+    }
+
+    /// 读取时兼容旧文件：改字段前存下的空串 `font_family = ""` 也要读成「未设置」，
+    /// 不能读成「本方案覆盖成空字体」（那样界面会显示成已勾选、内容为空，与实际想表达的
+    /// 「跟随外观页」不符）。
+    #[test]
+    fn seed_behavior_treats_legacy_empty_font_as_unset() {
+        assert_eq!(
+            seed_behavior(&json!({ "candidate": { "font_family": "" } })).font_family,
+            None
+        );
+        assert_eq!(
+            seed_behavior(&json!({ "candidate": { "font_family": "楷体" } })).font_family,
+            Some("楷体".to_string())
+        );
+        assert_eq!(seed_behavior(&json!({})).font_family, None);
+    }
+
+    /// R8.5：「本方案行为」节的「全部恢复跟随」把三项拨回跟随（下标 0 / 取消勾选），
+    /// 「横排时文字排列」没有跟随档（设计如此），不该被这个按钮动到。
+    ///
+    /// 驱动的是按钮闭包实际调用的 [`behavior_reset_all`] 与 `SchemaManagerState` 的真信号。
+    #[test]
+    fn behavior_reset_all_clears_follow_fields() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        state.settings_bh_punct.set(2);
+        state.settings_bh_layout.set(1);
+        state.settings_bh_font_over.set(true);
+        state.settings_bh_font.set("楷体".to_string());
+        state.settings_bh_text_orient.set(1);
+
+        behavior_reset_all(&state);
+
+        assert_eq!(state.settings_bh_punct.get(), 0, "标点回跟随档");
+        assert_eq!(state.settings_bh_layout.get(), 0, "候选排列回跟随档");
+        assert!(!state.settings_bh_font_over.get(), "候选字体取消勾选");
+        assert_eq!(
+            font_write(
+                state.settings_bh_font_over.get(),
+                &state.settings_bh_font.get()
+            ),
+            Value::Null,
+            "取消勾选后字体落盘为 null（跟随外观页），不论文本框里残留什么"
+        );
+        assert_eq!(
+            state.settings_bh_text_orient.get(),
+            1,
+            "无跟随档的项不被动到"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
     /// 未知取值一律回落「跟随全局」，不猜方向。
     ///
     /// 方案文件是可手写的，写错一个词（`englsh`）不该被解释成某个具体档位——那会让用户
@@ -5733,19 +6120,65 @@ mod overlay_tests {
 mod section_build_tests {
     use super::*;
 
-    /// ★★ 辅助码的「跟随全局」必须落成 **null**，不是 false。
+    /// ★★ 未勾选的一项必须落成 **null**，不是 false/0。
     ///
-    /// core 的 `json_to_toml` 跳过 null ⇒ 该键不进 override ⇒ 取值回落全局基线。写 false
-    /// 的话就成了「显式关闭本方案」——用户明明选的是「跟随」，全局开了这个方案却不跟，
-    /// 而且从配置文件上看不出是谁写的。
+    /// core 的 `json_to_toml` 跳过 null ⇒ 该键不进 override ⇒ 取值回落全局基线。写具体值
+    /// 的话就成了「显式定值」——用户明明没勾，写回去却把这个方案钉死成一个值，
+    /// 而且从配置文件上看不出是谁写的。两行（启用 / 最长词长）各自独立，互不联动。
     #[test]
-    fn aux_code_follow_global_writes_null_not_false() {
-        assert_eq!(aux_code_value(0), Value::Null, "跟随全局必须写 null");
-        assert_eq!(aux_code_value(1), json!(true));
-        assert_eq!(aux_code_value(2), json!(false));
-        // 越界回落**跟随**而不是钳到末项：钳会把「关闭」塞给一个没选过的方案。
-        // 与 `overlay_layout_value` 的同类处置同口径。
-        assert_eq!(aux_code_value(99), Value::Null);
+    fn aux_unchecked_rows_write_null() {
+        assert_eq!(aux_write(false, true, false, 4), (Value::Null, Value::Null));
+    }
+
+    /// 勾选的一项落成勾选框当前值——与「跟随」互斥的另一态。
+    #[test]
+    fn aux_checked_rows_write_values() {
+        assert_eq!(aux_write(true, false, true, 3), (json!(false), json!(3)));
+    }
+
+    /// 「全部恢复跟随」：起点是两行都已覆盖、控件值与跟随值不同，复位要把两个勾选框
+    /// 一并清空、控件值拨回跟随值、摘要归零；落盘按 `aux_write` 的既有规则回落成 `null`。
+    ///
+    /// 驱动的是按钮闭包实际调用的 [`aux_reset_all`] 与 `SchemaManagerState` 的真信号。
+    #[test]
+    fn aux_reset_all_clears_both_rows_writes_null() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        state.settings_aux_on_over.set(true);
+        state.settings_aux_on.set(false);
+        state.settings_aux_len_over.set(true);
+        state.settings_aux_len.set(9.0);
+        state.settings_aux_disp.set(ct_summary(2));
+
+        aux_reset_all(&state, true, 4);
+
+        assert!(!state.settings_aux_on_over.get());
+        assert!(!state.settings_aux_len_over.get());
+        assert!(state.settings_aux_on.get(), "启用开关拨回跟随值");
+        assert_eq!(state.settings_aux_len.get(), 4.0, "最长词长拨回跟随值");
+        assert_eq!(state.settings_aux_disp.get(), ct_summary(0));
+        assert_eq!(
+            aux_write(
+                state.settings_aux_on_over.get(),
+                state.settings_aux_on.get(),
+                state.settings_aux_len_over.get(),
+                state.settings_aux_len.get() as i32,
+            ),
+            (Value::Null, Value::Null)
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 全局 manifest 该项 min/max 是 0..=20；手改 `config.toml` 能写出这个范围，
+    /// 两处读取都要钳，不能把界外的数字当成生效值喂给 stepper 或原样显示在文案里。
+    #[test]
+    fn aux_len_out_of_manifest_range_is_clamped() {
+        assert_eq!(clamp_aux_len(-3), 0, "负数钳到下界");
+        assert_eq!(clamp_aux_len(99), 20, "越界钳到上界");
+        assert_eq!(clamp_aux_len(7), 7, "范围内原样通过");
     }
 
     /// ★ 建节与落盘必须**同判据**，`files = []` 不算有表。
@@ -5770,17 +6203,6 @@ mod section_build_tests {
         assert!(!has_aux_code_table(&json!({
             "engine": {"aux_code": {"files": "aux_code/stroke.txt"}}
         })));
-    }
-
-    /// tri-state 三档往返：读出来的档位写回去必须是同一个值。
-    #[test]
-    fn aux_code_tri_state_round_trips() {
-        for (v, idx) in [(None, 0), (Some(true), 1), (Some(false), 2)] {
-            assert_eq!(aux_code_idx(v), idx, "{v:?} 应落在第 {idx} 档");
-            let back = aux_code_value(idx);
-            let back = if back.is_null() { None } else { back.as_bool() };
-            assert_eq!(back, v, "第 {idx} 档写回后应仍是 {v:?}");
-        }
     }
 
     /// 每个配置节都要能**构建出来**而不 panic。
@@ -5869,6 +6291,48 @@ mod section_build_tests {
         for &kind in SettingsSection::ALL {
             let _ = build_section(kind, &state);
         }
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// Review Focus 3：下拉首项的跟随文案必须来自**本次打开**对话框时的
+    /// `schema.getConfig`，不能停在上一次打开时种下的标签上——否则用户去全局页把
+    /// 候选排列改了，方案设置页开两次都还显示旧值。
+    ///
+    /// mock 的 `followedBehavior.layout` 默认恒为 `"horizontal"`（离线截图不需要它变），
+    /// 故用 [`crate::rpc::set_mock_followed_layout`] 在两次 `open_settings_at_id` 之间
+    /// 显式换一个值，模拟「全局页配置在两次打开之间变了」。
+    #[test]
+    fn follow_labels_reseeded_on_each_open() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::rpc::set_mock_followed_layout(Some("horizontal"));
+
+        let state = SchemaManagerState::new();
+        *state.schemas.borrow_mut() = vec![SchemaEntry {
+            id: "wubi86".into(),
+            name: "五笔 86".into(),
+            engine_type: "codetable".into(),
+            ..Default::default()
+        }];
+
+        state.open_settings_at_id("wubi86");
+        assert_eq!(
+            state.settings_layout_follow_labels.get()[0],
+            follow_option_label("全局", "横排"),
+            "第一次打开：跟随值是横排"
+        );
+
+        crate::rpc::set_mock_followed_layout(Some("vertical"));
+        state.open_settings_at_id("wubi86");
+        assert_eq!(
+            state.settings_layout_follow_labels.get()[0],
+            follow_option_label("全局", "竖排"),
+            "第二次打开要按新的跟随值重算，不能停在第一次种下的标签上"
+        );
+
+        crate::rpc::set_mock_followed_layout(None);
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 }

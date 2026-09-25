@@ -266,7 +266,7 @@ impl Widget for SignalTip {
 /// `tip` 为空串时图标仍在，只是不弹提示（[`SignalTip::tooltip`] 返回 None）。调用方
 /// 若不想让它出现，用 `visible_when` 收掉整个角标。
 pub fn info_badge(tip: Signal<String>, on_click: impl FnMut(&mut EventCtx) + 'static) -> Element {
-    // 亮/暗双态叠加，同 [`schema_hint_badge`]：`tint` 收的是静态色，换肤不跟随。
+    // 亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，两套主题下的 muted 色不是同一个。
     let icon = |on_dark: bool| {
         let c = if on_dark {
             Color::hex(0x9AA4B2)
@@ -291,36 +291,7 @@ pub fn info_badge(tip: Signal<String>, on_click: impl FnMut(&mut EventCtx) + 'st
         )
 }
 
-/// 「可被方案覆盖」提示图标：标签右侧的小信息角标，悬停出完整说明。
-///
-/// 与 [`section_header`] 同样走亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，
-/// 而两套主题下的 muted 色不是同一个。
-///
-/// 图标边长比 [`crate::icons::ICON_PX`] 小一号：它是标签的**角标**，与标签文字齐高才
-/// 不会把行撑高；用整尺寸会显得像另一个控件。
-fn schema_hint_badge(note: &str) -> Element {
-    // 换行折成空格。tooltip 本身收得了多行了，但这是一句**行内说明**：note 来自 core 的
-    // SCHEMA_OVERRIDES，那边都是单行，真混进换行也该排成一句，而不是把角标提示撑成一段。
-    let tip = note.replace('\n', " ");
-    // ⚠️ tooltip 挂在**每个图标自己**身上，不是外层 stack：容器没有背景时不参与
-    // hit-test，挂上去永远不会触发，而且没有任何报错——只有 `--hover` 截图看得出来。
-    let one = |on_dark: bool, tip: String| {
-        let c = if on_dark {
-            Color::hex(0x9AA4B2)
-        } else {
-            Color::hex(0x8A94A6)
-        };
-        crate::icons::tinted(crate::icons::INFO_THIN, 14, c)
-            .tooltip(tip)
-            .visible_when(move || dark_sig().get() == on_dark)
-    };
-    Element::stack()
-        .size(14, 14)
-        .child(one(false, tip.clone()))
-        .child(one(true, tip))
-}
-
-/// 带「可被方案覆盖」提示的设置行：标签后跟一个信息角标，悬停显示说明。
+/// 带「可被方案覆盖」提示的设置行：标签后跟一个信息角标，悬停显示说明，点击跳转。
 ///
 /// # 它回答什么
 ///
@@ -329,6 +300,14 @@ fn schema_hint_badge(note: &str) -> Element {
 /// [`setting_row_override`] 已经在方案设置那一端把「这项被我覆盖了」标出来了，
 /// 本函数补的是全局这一端。
 ///
+/// # 为什么走 Signal 而不是静态串（R8.6 起）
+///
+/// 「可被方案覆盖」是静态事实（来自 core 的 `SCHEMA_OVERRIDES`），但「**已被**哪些方案
+/// 覆盖」是运行期数据（`schema.overrideSummary`），且页面树建于数据到达之前——
+/// 见 [`crate::state::AppState::override_summary`]。故 `tip` 必须是 `Signal<String>`，
+/// 调用方按 [`crate::manifest::override_badge_text`] 现算，静态说明与「已被 N 个方案
+/// 覆盖」共用同一枚角标，不再新增一个视觉元素。
+///
 /// # 为什么用中性色而不是警告色
 ///
 /// 这里表达的是**可能性**（这一项存在方案级形态），不是**已发生**（某个方案确实改了它）。
@@ -336,15 +315,17 @@ fn schema_hint_badge(note: &str) -> Element {
 /// 方案根本没声明那一项。真正「已发生」的提示归 [`setting_row_override`] 那一端——
 /// 那里同样不用警告色：来源不是故障，见该函数的三态三色表。
 ///
-/// `hint` 由 core 的 `config_schema::SCHEMA_OVERRIDES` 给出，**原样显示不再改写**：
-/// 两边各写一份措辞，改了一处就会分叉。
+/// 点击角标跳到（首个）覆盖方案的设置对话框——调用方传入的 `on_click` 通常就是
+/// `schema_mgr.open_settings_at_id(id)`；覆盖列表为空时调用方应做成空操作，角标仍只是
+/// 一个提示。
 pub fn setting_row_schema_hint(
     label: &str,
     sub: Option<&str>,
-    hint: &str,
+    tip: Signal<String>,
+    on_click: impl FnMut(&mut EventCtx) + 'static,
     control: Element,
 ) -> Element {
-    setting_row_badged(label, sub, schema_hint_badge(hint), control)
+    setting_row_badged(label, sub, info_badge(tip, on_click), control)
 }
 
 /// 「这一项**不能**按方案单独设置」的行。
@@ -572,6 +553,26 @@ pub fn override_control(
     reason: &str,
     width: i32,
 ) -> Element {
+    override_control_signal(
+        over,
+        gate,
+        editor,
+        signal(follow_text.to_string()),
+        reason,
+        width,
+    )
+}
+
+/// [`override_control`] 的跟随值随数据变化的版本：外观页的「跟随主题」值要等
+/// `theme.resolved` 回来、且切主题后会变，而页面树早于数据建成，只能绑信号。
+pub fn override_control_signal(
+    over: Signal<bool>,
+    gate: std::rc::Rc<dyn Fn() -> bool>,
+    editor: Element,
+    follow_text: Signal<String>,
+    reason: &str,
+    width: i32,
+) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
     let (g1, g2, g3) = (gate.clone(), gate.clone(), gate);
@@ -584,7 +585,7 @@ pub fn override_control(
         .child(Element::col().weight(1.0))
         .child(editor.visible_when(move || g1() && over.get()))
         .child(
-            Element::label(follow_text)
+            Element::label_signal(follow_text)
                 .font_size(f.label_size(m))
                 // 跟随值用**正常文字色**——它是这一项当前真实生效的值，不是残缺状态。
                 .fg_role(Role::Text)
@@ -612,34 +613,46 @@ pub fn override_control(
 ///
 /// 原先收一个已拼好的 col，于是卡片里各行紧贴在一起——只有标题下那一条线，
 /// 组内十来行连成一片（2026-08-26 用户原话：「加了 card，但也缺少分割线」）。
-pub fn override_group_card(title: &str, summary: Signal<String>, rows: Vec<Element>) -> Element {
+///
+/// `reset`：卡片自己的「全部恢复跟随」按钮，挂在标题行末尾，`None` 即不出这一项。
+/// 只有「一张卡片就是一整节」的调用方（如辅助码）才该传——`schema_codetable` 那边
+/// 一节铺开好几张卡片，「全部恢复跟随」是**整节**级别的兜底动作，挂在外层节头而不是
+/// 某一张卡片上，故那边仍传 `None`。
+pub fn override_group_card(
+    title: &str,
+    summary: Signal<String>,
+    rows: Vec<Element>,
+    reset: Option<Element>,
+) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
     let mut col = Element::col().width_match();
     if !title.is_empty() {
-        col = col.child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .padding_xy(0, 2)
-                .child(
-                    // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
-                    // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
-                    Element::label(title)
-                        .font_size(12.5)
-                        .font_weight(600)
-                        .fg_role(Role::Accent)
-                        .weight(1.0)
-                        .max_lines(1),
-                )
-                .child(
-                    Element::label_signal(summary)
-                        .font_size(f.desc_size(m))
-                        .fg_role(Role::TextMuted)
-                        .max_lines(1),
-                ),
-        );
+        let mut header = Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .padding_xy(0, 2)
+            .child(
+                // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
+                // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
+                Element::label(title)
+                    .font_size(12.5)
+                    .font_weight(600)
+                    .fg_role(Role::Accent)
+                    .weight(1.0)
+                    .max_lines(1),
+            )
+            .child(
+                Element::label_signal(summary)
+                    .font_size(f.desc_size(m))
+                    .fg_role(Role::TextMuted)
+                    .max_lines(1),
+            );
+        if let Some(btn) = reset {
+            header = header.child(btn);
+        }
+        col = col.child(header);
         col = col.child(Element::divider());
     }
     let last = rows.len().saturating_sub(1);
@@ -1052,11 +1065,17 @@ impl PickedColor {
 
 /// 一格取色：色块取色器 + 当前值文字（`text` 由值算出，宽 `text_w`）+ 若干按钮。
 /// 用户在面板上选色时按 `to_value` 写回 [`PickedColor::value`]。
+///
+/// `alpha`：面板是否带透明度条。**必须**与 `to_value` 是否会把 `Color::a` 编进配置值
+/// 对齐——留 `true` 却让 `to_value` 扔掉 alpha，用户拖了条、色块跟着变淡，一松手
+/// 又变回不透明，会被当成"控件坏了"（主字颜色对话框两者都是 `true`；角标规则的
+/// 颜色格透明度走独立勾选行，这里必须是 `false`，同 `badge_value_of` 的说明）。
 pub fn color_picker_cell(
     pc: &PickedColor,
     text: impl Fn(&String) -> String + 'static,
     text_w: i32,
     to_value: impl Fn(&str, Color) -> String + 'static,
+    alpha: bool,
     buttons: Vec<Element>,
 ) -> Element {
     let colors = pc.color;
@@ -1070,7 +1089,7 @@ pub fn color_picker_cell(
         .spacing(8)
         .child(Element::color_picker_opts(
             pc.color,
-            ColorPickerOpts::default().trigger_text(false),
+            ColorPickerOpts::default().trigger_text(false).alpha(alpha),
         ))
         .child(
             Element::label_signal(pc.value.map(text))

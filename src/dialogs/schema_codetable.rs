@@ -478,7 +478,15 @@ impl CtFields {
     /// 渲染一个分类卡片。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
         let rows: Vec<Element> = group.keys.iter().map(|k| self.row(manifest, k)).collect();
-        crate::widgets::override_group_card(&group.title, self.group_summary(&group.title), rows)
+        // `reset: None`——「全部恢复跟随」在这个 TAB 上是**整节**级别的动作（挂在外层
+        // 节头，见 `schema_manager.rs` 的 `SettingsSection::CodeTable`），不是某一张
+        // 分类卡片自己的按钮。
+        crate::widgets::override_group_card(
+            &group.title,
+            self.group_summary(&group.title),
+            rows,
+            None,
+        )
     }
 
     /// 组内一行。
@@ -1195,6 +1203,86 @@ mod tests {
             Some(&json!(4)),
             "引擎固定参数不归覆盖这层管，不该被清"
         );
+    }
+
+    /// 「全部恢复跟随」只该清界面上看得见的键（R8.5）。
+    ///
+    /// `reset` 清的不是逐项信号，而是 `SPEC_BEHAVIOR_FIELDS` 十二个扁平字段，
+    /// 外加 `frequency` / `english_merge` 两个子段**整段**置 null——整段清的话，
+    /// 子段里任何一个 `hidden = true` 的字段会跟着被清掉，却在界面上找不到：
+    /// 用户既看不见它被清过，也没法在界面上把它拨回来。
+    ///
+    /// 这条测试把「reset 实际会碰的键」与 `visible_keys()` 对齐，谁清了却不可见，
+    /// 谁就在这里炸。核实过它能红：临时把一个不存在于 manifest 的键塞进
+    /// `SPEC_BEHAVIOR_FIELDS`，这条测试会先报「界面上看不见的键」再还原；frequency /
+    /// english_merge 分支的红态见下面 `struct_field_names` 旁的说明（记录见
+    /// task-7-report.md）。
+    #[test]
+    fn reset_touches_only_keys_visible_for_this_engine() {
+        let m = manifest();
+        let visible = visible_keys(&m);
+        let visible_set: std::collections::HashSet<&str> =
+            visible.iter().map(String::as_str).collect();
+
+        // SPEC_BEHAVIOR_FIELDS：扁平字段名，逐个映射回 manifest key 再查可见性。
+        for f in SPEC_BEHAVIOR_FIELDS {
+            let key = format!("{MANIFEST_PREFIX}{f}");
+            assert!(
+                visible_set.contains(key.as_str()),
+                "reset 清了界面上看不见的键 {key}（R8.5）"
+            );
+        }
+
+        // frequency / english_merge：reset 把整段置 null，段内任何字段都会被一并清掉。
+        // 字段集**不能**从 manifest 的 section_keys 取——那只反映 manifest 里写了的
+        // 条目，「core 给 CodeTableFrequencySpec/CodeTableEnglishMergeSpec 加了字段
+        // 但 manifest 压根没补条目」这种漏配，section_keys 看不出来，reset 却照样把
+        // 那个字段一并清掉。改成直接枚举 core 结构体自身的字段名。
+        for (section, keys) in [
+            (
+                "frequency",
+                struct_field_names(&wind_config::schema::CodeTableFrequencySpec::default()),
+            ),
+            (
+                "english_merge",
+                struct_field_names(&wind_config::schema::CodeTableEnglishMergeSpec::default()),
+            ),
+        ] {
+            assert!(
+                !keys.is_empty(),
+                "{section} 的字段集取空了，struct_field_names 的取值方式需要重新核实"
+            );
+            for f in keys {
+                let key = format!("{MANIFEST_PREFIX}{section}.{f}");
+                assert!(
+                    visible_set.contains(key.as_str()),
+                    "reset 整段清掉 {section}，其中 {key} 在界面上不可见（R8.5）"
+                );
+            }
+        }
+
+        // auto_phrase 原样保留：reset 不动它（不在 SPEC_BEHAVIOR_FIELDS，也不是
+        // frequency/english_merge 子段），这里只确认这组前提本身没漂——具体的透传
+        // 行为由 `apply_writes_values_for_checked_and_null_for_unchecked` 钉住。
+        assert!(
+            section_keys(&m)
+                .iter()
+                .any(|k| k.starts_with(&format!("{MANIFEST_PREFIX}auto_phrase."))),
+            "auto_phrase 组消失了，reset 的排除逻辑需要重新核实"
+        );
+    }
+
+    /// 把一个 core 配置结构体自身的字段名取出来（不经过 manifest）。
+    ///
+    /// 用 `serde_json::to_value` 而不是手写字段名列表：这两个结构体的字段都是
+    /// `Option<T>` 且没挂 `skip_serializing_if`（见 `wind_config::schema`），序列化
+    /// 后每个字段都以 `null` 或实际值的形式出现在对象里，键名与结构体字段名逐一对应，
+    /// 用 `Default` 实例就够，不必费劲构造一个各字段都 `Some` 的实例。
+    fn struct_field_names(v: &impl serde::Serialize) -> Vec<String> {
+        serde_json::to_value(v)
+            .ok()
+            .and_then(|j| j.as_object().map(|o| o.keys().cloned().collect()))
+            .unwrap_or_default()
     }
 
     /// `revert_all` 把控件值拨回**跟随值**，而不是留着用户刚改的那个。

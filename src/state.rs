@@ -598,10 +598,25 @@ pub struct AppState {
     pub theme_overwrite_msg: Signal<String>,
     /// 覆盖确认对话框可见标志。
     pub theme_overwrite_visible: Signal<bool>,
-    /// 候选窗字体下拉的响应式选项（system.fonts）。
-    /// value：空字符串 = 系统默认，其余为字体族名；label：首项"默认"，其余同值。
+    /// 候选窗字体下拉的响应式选项（system.fonts）：value 与 label 都是字体族名。
+    ///
+    /// 不再有空值「默认」首项：「跟随主题」由勾选行表达（R8.1），未勾选时控件整个藏起、
+    /// 落盘空串，下拉里再放一个空值档就是同一件事的第二个入口。
     pub font_sig: Signal<Vec<String>>,
     pub font_label_sig: Signal<Vec<String>>,
+    /// 当前主题对外观可覆盖键解析后的值（`theme.resolved`），外观页「跟随主题（值）」读它。
+    /// `None` = 还没拉到，或两级主题都加载失败——文案退化为「跟随主题」。
+    ///
+    /// 页面树早于数据建成，故走信号；切主题保存后由 [`AppState::refresh_theme_follow`] 重拉。
+    pub theme_follow: Signal<Option<crate::theme_follow::ThemeFollow>>,
+    /// 「已被 N 个方案覆盖」（F9/R8.6）：`schema.overrideSummary` 的回包，
+    /// `配置键 → 覆盖它的方案 id 列表`（只含可见方案，按方案列表序）。
+    ///
+    /// 页面树早于数据建成，故走信号（同 [`Self::theme_follow`]）；`manifest::field_with`
+    /// 用它现算角标文案（见 `manifest::override_badge_text`）。方案设置对话框保存
+    /// （落 `schema_overrides/<id>.toml`）后由 [`Self::refresh_override_summary`] 重拉——
+    /// 那一次保存正是这份汇总唯一会变的时刻。
+    pub override_summary: Signal<HashMap<String, Vec<String>>>,
     /// 主码表方案下拉的响应式选项（schema.list 码表类，apply_loaded 后填充）。
     /// value 首项为空字符串（"自动"），其余为方案 id；label 对应。
     pub codetable_schema_val_sig: Signal<Vec<String>>,
@@ -967,6 +982,8 @@ impl AppState {
             theme_overwrite_visible: signal(false),
             font_sig: signal(vec![]),
             font_label_sig: signal(vec![]),
+            theme_follow: signal(None),
+            override_summary: signal(HashMap::new()),
             codetable_schema_val_sig: signal(vec![]),
             codetable_schema_lab_sig: signal(vec![]),
             pinyin_schema_val_sig: signal(vec![]),
@@ -1712,6 +1729,10 @@ impl AppState {
         self.push_unlisted_theme(&cur);
         // 补项可能又往列表末尾加了一条，故重定位放在它之后。
         self.relocate_theme_index(selected.as_deref());
+        // 覆盖导入 / 删除当前主题都会经这里刷新列表，但跟随值（`theme.resolved`）此前
+        // 不重拉：外观页的「跟随主题（值）」文案与勾选初值继续挂着旧主题的数，直到用户
+        // 手动切一次主题或重开设置页才更新。
+        self.refresh_theme_follow();
     }
 
     /// 主题下拉此刻选中的那个 id（拿不到索引信号或越界时为 `None`）。
@@ -1789,6 +1810,33 @@ impl AppState {
             self.pinyin_schema_lab_sig,
             cfg.get_str("schema.primary_pinyin").unwrap_or_default(),
         );
+    }
+
+    /// 换上新的主题跟随值。外观页的跟随行经信号自己刷新文案与勾选初值。
+    ///
+    /// 主题字体不在系统字体列表里（主题写的是英文族名、列表是本地化名，或干脆没装）时
+    /// 补进列表：否则勾选瞬间下拉按「找不到 ⇒ 首项」落到别的字体上，跟随文案说的是
+    /// A、勾上却成了 B。标签就是族名本身——它不是「当前配置」，不套 `unlisted_label`。
+    pub fn set_theme_follow(&self, tf: Option<crate::theme_follow::ThemeFollow>) {
+        if let Some(fam) = tf.as_ref().and_then(|t| t.font_family.clone())
+            && !self.font_sig.with(|v| v.contains(&fam))
+        {
+            self.font_sig.update(|v| v.push(fam.clone()));
+            self.font_label_sig.update(|l| l.push(fam));
+        }
+        self.theme_follow.set(tf);
+    }
+
+    /// 重拉 `theme.resolved`。在保存了 `ui.theme.*`（换主题、明暗）之后调——跟随值是
+    /// core 按**已生效**的配置解析的，保存前拉到的还是旧主题的值。
+    pub fn refresh_theme_follow(&self) {
+        self.set_theme_follow(load_theme_follow());
+    }
+
+    /// 重拉 `schema.overrideSummary`。在方案设置对话框保存（落 `schema_overrides/<id>.toml`）
+    /// 之后调——覆盖汇总只在那一刻真的变过，全局页此前显示的角标文案才会与盘上不一致。
+    pub fn refresh_override_summary(&self) {
+        self.override_summary.set(load_override_summary());
     }
 
     /// 主题下拉比其余三个多一份富内容信号（`theme_items_sig`，带版本徽章与删除图标），
@@ -2042,20 +2090,18 @@ impl AppState {
                 .map(|s| (s.id.clone(), s.name.clone()))
                 .collect(),
         );
+        // 「已被 N 个方案覆盖」（F9/R8.6）角标现算用的两份数据——先方案名后覆盖汇总，
+        // 保证 `override_summary` 的 map 闭包读到的 `schema_names` 已经是新的（同一次
+        // 加载内，两者一起变，不该有一帧新旧不一致）。
+        self.override_summary.set(data.override_summary);
         self.theme_entries = data.theme_entries;
         self.fonts = data.fonts;
         self.apply_theme_entries();
-        // value：空字符串 = 使用默认字体；label：首项显示"默认"。
-        self.font_sig.set(
-            std::iter::once(String::new())
-                .chain(self.fonts.iter().cloned())
-                .collect(),
-        );
-        self.font_label_sig.set(
-            std::iter::once("默认".to_string())
-                .chain(self.fonts.iter().cloned())
-                .collect(),
-        );
+        // value 与 label 同为字体族名。没有空值首项，见 `font_sig` 字段注释。
+        self.font_sig.set(self.fonts.clone());
+        self.font_label_sig.set(self.fonts.clone());
+        // 必须在字体列表之后（主题字体要补进列表）、loaders 之前（跟随行按它播种）。
+        self.set_theme_follow(data.theme_follow);
         // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"/"默认：全拼"，其余为 id/name。
         // 必须在 loaders 跑之前就位，否则 loader 无法在选项列表中定位当前配置值。
         //
@@ -2409,6 +2455,11 @@ impl AppState {
             self.feedback.set(Some((ToastKind::Error, e)));
             return false;
         }
+        // 方案设置对话框保存落的是 `schema_overrides/<id>.toml`，走的正是上面这个
+        // SideCommitter——覆盖汇总只在这一刻才可能变，重拉一次让全局页角标跟上。
+        if side_changed {
+            self.refresh_override_summary();
+        }
 
         {
             let writers = reg.writers.borrow();
@@ -2460,6 +2511,15 @@ impl AppState {
                     .unwrap_or_default();
                 if skipped.is_empty() {
                     self.base_config = self.current_config.clone();
+                    if touches_theme(&items) {
+                        self.refresh_theme_follow();
+                    }
+                    // 启用/停用方案落在 config.toml 的 `schema.available`，不走 side 落点，
+                    // 上面 `side_changed` 那一枪不会打；而覆盖汇总只列已启用方案，
+                    // 不重拉的话新启用方案的覆盖角标要等重开设置才出现。
+                    if touches_schema_available(&items) {
+                        self.refresh_override_summary();
+                    }
                     self.feedback.set(Some((
                         ToastKind::Success,
                         format!("已保存 {} 项变更", items_json.len()),
@@ -2486,6 +2546,23 @@ impl AppState {
             }
         }
     }
+}
+
+/// 这次保存有没有动到主题选择（`ui.theme.*`：主题名、明暗模式）。动了就得重拉跟随值。
+fn touches_theme(items: &[crate::config::ConfigItem]) -> bool {
+    items
+        .iter()
+        .any(|it| it.key == "ui.theme" || it.key.starts_with("ui.theme."))
+}
+
+/// 这次保存有没有动到方案启用表（`schema.available`）。动了就得重拉覆盖汇总。
+///
+/// 也认整段 `schema` 项：基线里没有 `schema` 表时（全新配置），`diff_config` 不下钻，
+/// 把整个对象作为一项产出，`available` 就藏在它的 value 里。
+fn touches_schema_available(items: &[crate::config::ConfigItem]) -> bool {
+    items.iter().any(|it| {
+        it.key == "schema.available" || (it.key == "schema" && it.value.get("available").is_some())
+    })
 }
 
 /// 收集当前配置里"裸键触发"四组，供按键冲突检测用。
@@ -2743,6 +2820,10 @@ pub struct LoadedState {
     pub schemas: Vec<SchemaInfo>,
     pub theme_entries: Vec<ThemeEntry>,
     pub fonts: Vec<String>,
+    /// `theme.resolved`；取不到（老 core / 连接失败 / 主题全坏）为 `None`。
+    pub theme_follow: Option<crate::theme_follow::ThemeFollow>,
+    /// `schema.overrideSummary`；取不到时为空表（见 [`load_override_summary`]）。
+    pub override_summary: HashMap<String, Vec<String>>,
     pub connected: bool,
 }
 
@@ -2756,7 +2837,7 @@ impl LoadedState {
     pub fn fetch() -> Self {
         let t0 = std::time::Instant::now();
 
-        // 7 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
+        // 8 路并行：函数项自动满足 Send + 'static，直接传递无需 move 闭包。
         let h_config = std::thread::spawn(|| rpc::call_core("config.get", &serde_json::json!({})));
         let h_info = std::thread::spawn(|| rpc::call_core("system.info", &serde_json::json!({})));
         // 并行拉取 ⇒ 零额外往返（wall-clock 仍是 max(各调用延迟)）。它在 core 侧要读盘，
@@ -2768,6 +2849,8 @@ impl LoadedState {
         let h_schemas = std::thread::spawn(load_schemas);
         let h_themes = std::thread::spawn(load_theme_entries);
         let h_fonts = std::thread::spawn(load_fonts);
+        let h_theme_follow = std::thread::spawn(load_theme_follow);
+        let h_override_summary = std::thread::spawn(load_override_summary);
 
         let config_res = h_config.join().ok().and_then(|r| r.ok());
         let system_info = h_info
@@ -2786,6 +2869,8 @@ impl LoadedState {
         let schemas = h_schemas.join().unwrap_or_default();
         let theme_entries = h_themes.join().unwrap_or_default();
         let fonts = h_fonts.join().unwrap_or_default();
+        let theme_follow = h_theme_follow.join().ok().flatten();
+        let override_summary = h_override_summary.join().unwrap_or_default();
 
         // config_value 是否为 Some 直接反映管道连接是否成功。
         let connected = config_res.is_some();
@@ -2805,9 +2890,52 @@ impl LoadedState {
             schemas,
             theme_entries,
             fonts,
+            theme_follow,
+            override_summary,
             connected,
         }
     }
+}
+
+/// 拉当前主题的跟随值（`theme.resolved`）。RPC 失败与回包 `null` 同样视为拿不到。
+fn load_theme_follow() -> Option<crate::theme_follow::ThemeFollow> {
+    rpc::call_core("theme.resolved", &serde_json::json!({}))
+        .ok()
+        .and_then(|v| crate::theme_follow::ThemeFollow::from_value(&v))
+}
+
+/// 拉「已被 N 个方案覆盖」汇总（`schema.overrideSummary`）：`配置键 → 覆盖它的方案 id 列表`。
+/// RPC 失败或回包不是对象（管道未连接/老 core）同样视为「拿不到」，退回空表——
+/// 角标退化成静态说明，不是报错也不是显示假数据。
+fn load_override_summary() -> HashMap<String, Vec<String>> {
+    let Ok(v) = rpc::call_core("schema.overrideSummary", &serde_json::json!({})) else {
+        return HashMap::new();
+    };
+    parse_override_summary(&v)
+}
+
+/// [`load_override_summary`] 的纯解析部分：抽出来是为了不靠 RPC/mock 就能测「回包不是
+/// 对象」（`null`、老 core 给了别的形状）与「值不是字符串数组」这两条退化路径——
+/// 拉不到（`Err`）时 [`load_override_summary`] 也是喂一个等价形状（`Value::Null`）
+/// 进来，两条路共用同一份「非对象 ⇒ 空表」逻辑，不会出现「拉不到」与「拉到空」两种
+/// 退化各写一遍、迟早漂移的情况。
+fn parse_override_summary(v: &Value) -> HashMap<String, Vec<String>> {
+    let Some(obj) = v.as_object() else {
+        return HashMap::new();
+    };
+    obj.iter()
+        .map(|(k, v)| {
+            let ids = v
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (k.clone(), ids)
+        })
+        .collect()
 }
 
 /// 把 `config.degradation` 的回包折成顶栏文案；未降级（或取不到）返回空串。
@@ -3458,7 +3586,11 @@ mod tests {
     #[test]
     fn key_action_label_knows_rare_char() {
         assert_eq!(key_action_label("rare_char"), "生僻字");
-        assert_eq!(key_action_label("bogus_verb"), "bogus_verb", "未知动词原样回显");
+        assert_eq!(
+            key_action_label("bogus_verb"),
+            "bogus_verb",
+            "未知动词原样回显"
+        );
     }
 
     /// 「恢复本页」的分组映射必须覆盖每一个**有清单分组的**页，且不漏不错。
@@ -3548,6 +3680,167 @@ mod tests {
         reg.side.borrow_mut().push(b);
         assert!(reg.commit_side().is_ok());
         assert_eq!((na.get(), nb.get()), (1, 1));
+    }
+
+    /// `save()` 提交了 side 落点（方案设置对话框保存那一类）之后要重拉一次
+    /// `schema.overrideSummary`——否则全局页的角标还在显示保存前的覆盖状态（F9/R8.6）。
+    ///
+    /// 用 [`probe`] 造一个「脏且提交成功」的 SideCommitter 模拟方案设置对话框保存，
+    /// 用 `rpc::take_mock_calls()` 断言这次 `save()` 里确实发出过该调用——不断言调用
+    /// 的先后位置/次数，只断言「发过」，避免和 `commit_side()` 内建落点（方案管理
+    /// `refresh()`）等无关调用的次序耦合。
+    #[test]
+    fn save_refreshes_override_summary_when_side_committer_ran() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        let (side, _n) = probe(true, Ok(()));
+        st.fields.side.borrow_mut().push(side);
+        crate::rpc::take_mock_calls(); // 清空 empty() 期间可能已有的调用记录。
+
+        assert!(st.save(), "side 提交成功应保存成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
+            "保存了 side 改动却没有重拉 overrideSummary，实际调用: {calls:?}"
+        );
+    }
+
+    /// 反例：没有任何 side 改动、config.toml 这边也没动 `schema.available` 时不应重拉——
+    /// 覆盖汇总只在方案设置对话框保存、或启用表变了时才会变，其余 config.toml 保存
+    /// 不该多打这一枪。
+    ///
+    /// 基线取 writer 跑过之后的配置，再只改一个无关键：空基线会让 `diff_config` 把整段
+    /// `schema` 表（含 `available`）当新增项产出，那就不是「没动启用表」了。
+    #[test]
+    fn save_does_not_refresh_override_summary_without_side_changes() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        let mut settled = st.current_config.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut settled);
+        }
+        st.base_config = settled.clone();
+        settled.set_path("ui.candidate.font_size", serde_json::json!(21));
+        st.current_config = settled;
+        crate::rpc::take_mock_calls();
+
+        assert!(st.save(), "无 side 改动也应正常保存成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, _)| m == "config.setItems"),
+            "前提：这次保存确实写了 config.toml（无关键），实际调用: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
+            "没有 side 改动却重拉了 overrideSummary，实际调用: {calls:?}"
+        );
+    }
+
+    /// 全局页启用/停用方案只改 config.toml 的 `schema.available`（不经 side 落点），
+    /// 保存成功后也要重拉 `schema.overrideSummary`——汇总只列已启用方案，不重拉的话
+    /// 新启用方案的覆盖角标要等重开设置才出现（最终审查 Important 3）。
+    #[test]
+    fn save_refreshes_override_summary_when_schema_available_changed() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        // 基线 = writer 跑过之后的配置（否则别的键也会进 diff），再把启用表改成「只有
+        // 五笔」——等价于加载后用户在全局页多启用了一个方案（`enabled_order` 那份）。
+        let mut settled = st.current_config.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut settled);
+        }
+        settled.set_path("schema.available", serde_json::json!(["wubi86"]));
+        st.base_config = settled;
+        crate::rpc::take_mock_calls(); // 清空 empty() 期间可能已有的调用记录。
+
+        assert!(st.save(), "改启用表应保存成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, p)| m == "config.setItems"
+                && p["items"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|it| it["key"] == "schema.available"))),
+            "前提：这次保存确实写了 schema.available，实际调用: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|(m, _)| m == "schema.overrideSummary"),
+            "保存了 schema.available 却没有重拉 overrideSummary，实际调用: {calls:?}"
+        );
+    }
+
+    /// 只有 `schema.available` 触发重拉；别的 config.toml 键不该多打这一枪。
+    #[test]
+    fn only_schema_available_triggers_override_summary_refresh() {
+        let item = |k: &str| crate::config::ConfigItem {
+            key: k.to_string(),
+            value: Value::Null,
+        };
+        assert!(touches_schema_available(&[
+            item("ui.candidate.font_size"),
+            item("schema.available")
+        ]));
+        assert!(!touches_schema_available(&[item("schema.active")]));
+        // 基线没有 `schema` 表时整段产出，`available` 在 value 里。
+        assert!(touches_schema_available(&[crate::config::ConfigItem {
+            key: "schema".to_string(),
+            value: serde_json::json!({ "available": ["wubi86"] }),
+        }]));
+        assert!(!touches_schema_available(&[crate::config::ConfigItem {
+            key: "schema".to_string(),
+            value: serde_json::json!({ "active": "wubi86" }),
+        }]));
+        assert!(!touches_schema_available(&[item("ui.candidate.font_size")]));
+    }
+
+    /// [`parse_override_summary`] 的退化路径：回包不是对象（`null`、老 core 给了别的
+    /// 形状）时退回空表，不是报错也不是显示假数据——[`load_override_summary`] 拉不到
+    /// 时也是喂一个等价形状（`Value::Null`）进来，这条断言同时覆盖了那条退化路径。
+    #[test]
+    fn parse_override_summary_treats_non_object_reply_as_empty() {
+        assert!(parse_override_summary(&Value::Null).is_empty());
+        assert!(parse_override_summary(&serde_json::json!([1, 2, 3])).is_empty());
+        assert!(parse_override_summary(&serde_json::json!("not an object")).is_empty());
+    }
+
+    /// 正常形状：值不是字符串数组的键退回空列表（而不是整表报废），数组里混进非字符串
+    /// 元素时逐个跳过——防的是 core 契约漂移时界面直接 panic 或整页数据消失。
+    #[test]
+    fn parse_override_summary_reads_ids_and_tolerates_malformed_values() {
+        let v = serde_json::json!({
+            "ui.candidate.layout": ["wubi86", "pinyin", 1],
+            "input.some.key": "not-an-array",
+        });
+        let got = parse_override_summary(&v);
+        assert_eq!(
+            got.get("ui.candidate.layout"),
+            Some(&vec!["wubi86".to_string(), "pinyin".to_string()]),
+            "非字符串元素应被跳过，不是整条报废"
+        );
+        assert_eq!(
+            got.get("input.some.key"),
+            Some(&vec![]),
+            "值不是数组时退回空列表，键仍保留"
+        );
+    }
+
+    /// 拉不到（管道未连/老 core）时退回空表——不 mock、真去连一个不存在的管道，
+    /// 直接验证 [`load_override_summary`] 的 `Err` 分支，同 `non_mock_disconnect_sets_conn_failed`
+    /// 的连接失败路径。
+    #[test]
+    fn load_override_summary_returns_empty_map_when_core_unreachable() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let got = load_override_summary();
+        assert!(got.is_empty(), "core 连不上时应退回空表：{got:?}");
     }
 
     /// 只列**脏的**落点。干净的一并列出来的话，用户会以为自己改了从没碰过的东西。
@@ -4510,6 +4803,43 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 覆盖导入 / 删除当前主题都经 `refresh_theme_names` 刷新列表，但跟随值
+    /// （`theme.resolved`）此前不重拉——外观页「跟随主题（值）」的文案与勾选初值会继续
+    /// 挂着旧主题的数（Task 11 控制者裁定项 C）。
+    ///
+    /// 用 `rpc::take_mock_calls()` 断言确实发出过 `theme.resolved`，再断言 `theme_follow`
+    /// 信号被刷新为 mock 值（`font_size = 18`）——先把信号设成一个不同的值，只有真的
+    /// 重拉才会变回 18。
+    #[test]
+    fn refresh_theme_names_also_refreshes_theme_follow() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.theme_follow.set(Some(crate::theme_follow::ThemeFollow {
+            font_size: 99,
+            font_family: None,
+            font_weight: 0,
+            pager_bar_display: "auto".into(),
+            page_number_display: "show".into(),
+            langbar_text: Default::default(),
+        }));
+        crate::rpc::take_mock_calls(); // 清空 empty() 期间可能已有的调用记录。
+
+        st.refresh_theme_names();
+
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            calls.iter().any(|(m, _)| m == "theme.resolved"),
+            "刷新主题列表却没有重拉 theme.resolved，实际调用: {calls:?}"
+        );
+        assert_eq!(
+            st.theme_follow.get().map(|t| t.font_size),
+            Some(18),
+            "theme_follow 该被刷成 mock 的 theme.resolved 值（18），不是刷新前的 99"
+        );
+    }
+
     /// ★★★ 打开设置、**什么都不动**就关闭，不该提示「有未保存的更改」。
     ///
     /// `is_dirty` 的做法是「把全部 writer 跑到 current 的副本上，再与 base 比 diff」。
@@ -4540,6 +4870,41 @@ mod tests {
         );
     }
 
+    /// 外观页「跟随主题（值）」的数据来源：加载时并行拉 `theme.resolved` 并在 loaders
+    /// 之前就位；字体下拉不再有空值「默认」首项（跟随由勾选行表达）。
+    #[test]
+    fn apply_loaded_sets_theme_follow_and_drops_default_font_entry() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.apply_loaded(LoadedState::fetch());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert_eq!(st.theme_follow.get().map(|t| t.font_size), Some(18));
+        let fonts = st.font_sig.get();
+        assert!(!fonts.is_empty(), "mock 有字体列表");
+        assert!(
+            !fonts.iter().any(String::is_empty),
+            "不该再有空值首项: {fonts:?}"
+        );
+        assert_eq!(fonts, st.font_label_sig.get(), "值与标签同为族名");
+    }
+
+    /// 只有保存了主题选择（主题名 / 明暗）才重拉跟随值。
+    #[test]
+    fn only_theme_keys_trigger_theme_follow_refresh() {
+        let item = |k: &str| crate::config::ConfigItem {
+            key: k.to_string(),
+            value: Value::Null,
+        };
+        assert!(touches_theme(&[item("ui.theme.name")]));
+        assert!(touches_theme(&[
+            item("ui.candidate.font_size"),
+            item("ui.theme")
+        ]));
+        assert!(!touches_theme(&[item("ui.candidate.font_size")]));
+        assert!(!touches_theme(&[item("ui.theme_editor")]));
+    }
+
     #[test]
     fn loaded_state_uses_embedded_manifest_in_mock() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -4567,6 +4932,8 @@ mod tests {
             schemas: vec![],
             theme_entries: vec![],
             fonts: vec![],
+            theme_follow: None,
+            override_summary: HashMap::new(),
             connected: false,
         };
         st.apply_loaded(data);
@@ -4605,6 +4972,8 @@ mod tests {
             }],
             theme_entries: vec![],
             fonts: vec![],
+            theme_follow: None,
+            override_summary: HashMap::new(),
             connected: true,
         };
         st.apply_loaded(data);
@@ -4748,6 +5117,8 @@ mod tests {
             schemas: vec![],
             theme_entries: vec![],
             fonts: vec![],
+            theme_follow: None,
+            override_summary: HashMap::new(),
             connected: false,
         };
         st.apply_loaded(data);

@@ -7,6 +7,7 @@
 //! 同时把"写回器"和"取值器"登记进 [`crate::state::FieldRegistry`]：
 //! 保存时跑所有写回器把 Signal 值写回 Config 再 diff；`enabled_when` 用取值器联动。
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -91,6 +92,11 @@ pub struct MItem {
     /// 隐藏此项（未完全实现 / 不对最终用户开放 / 当前平台无落点），不渲染也不注册
     /// writer/loader。清单里的 `platform` 字段在解析时折进本字段（见 [`platform_matches`]）。
     pub hidden: bool,
+    /// 哨兵值（R3：`0` / `""`）表示「跟随谁」。目前只有 `"theme"`（外观页字号、字族、
+    /// 字重、翻页栏、页码）。呈现按控件类型分两种（R8.1 / R8.2）：数值与下拉整行包成
+    /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
+    /// 「跟随主题（值）」（见 [`follow_labels`]）。
+    pub follow: Option<String>,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -215,6 +221,7 @@ impl Manifest {
                     dialog_group: opt_str(it, "dialog_group"),
                     opens_dialog: opt_str(it, "opens_dialog"),
                     subsection: opt_str(it, "subsection"),
+                    follow: opt_str(it, "follow"),
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
                     // 不注册 writer/loader，配置文件里的原值原样留着不动。
@@ -609,6 +616,39 @@ pub fn schema_hint_mode(state: &AppState, keys: &[String]) -> SchemaHintMode {
     }
 }
 
+/// 「可被方案覆盖」角标的文案：静态说明与「已被 N 个方案覆盖」二选一（F9/R8.6）。
+///
+/// `ids` 为空（尚未拉到 `schema.overrideSummary`，或该键当前没有任何方案覆盖）⇒
+/// 维持现状，原样返回 `static_note`——**不能**因为拉取延迟就让角标闪一下「已覆盖」
+/// 再消失，那比不给这条信息更糟。
+///
+/// 名字取不到（`names` 里没有这个 id：方案已卸载/隐藏，或 `schema_names` 尚未就位）
+/// 时退回显示 id 本身——好过整行消失或 panic。
+///
+/// 最多列 3 个名字，超出部分只写「等」而不逐个列完：这枚角标挂在**行**上，不是一个
+/// 独立面板，撑不下十几个方案名。
+pub fn override_badge_text(
+    static_note: &str,
+    ids: &[String],
+    names: &HashMap<String, String>,
+) -> String {
+    if ids.is_empty() {
+        return static_note.to_string();
+    }
+    let shown = ids
+        .iter()
+        .take(3)
+        .map(|id| names.get(id).cloned().unwrap_or_else(|| id.clone()))
+        .collect::<Vec<_>>()
+        .join("、");
+    let shown = if ids.len() > 3 {
+        format!("{shown} 等")
+    } else {
+        shown
+    };
+    format!("已被 {} 个方案覆盖：{shown}", ids.len())
+}
+
 /// 某项的「可被方案覆盖」声明（core `SCHEMA_OVERRIDES` 经 capability 快照下发）。
 /// 静态事实 ⇒ 只查内存里的快照，不发 RPC、不读盘。
 fn schema_override_of<'a>(
@@ -642,6 +682,16 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
         return build_log_privacy_warning(state, item);
     }
     let cfg = &state.current_config;
+    if item.follow.as_deref() == Some("theme")
+        && THEME_FOLLOW_ROW_TYPES.contains(&item.typ.as_str())
+    {
+        // 外观可覆盖项不是方案可覆盖项，勾选行也没有角标形态——两者真撞上了要先设计。
+        debug_assert!(
+            schema_override_of(state, key).is_none(),
+            "{key}: 跟随主题的勾选行还没有「可被方案覆盖」角标形态"
+        );
+        return build_theme_follow_row(state, key, item, cfg).0;
+    }
     let control = build_control(state, key, item, cfg);
     // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
     let overridable = schema_override_of(state, key);
@@ -661,7 +711,35 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
     let mut row = if item.typ == "checkbox_group" {
         setting_row_checks(&item.label, item.hint.as_deref(), control)
     } else if let Some(h) = schema_hint {
-        setting_row_schema_hint(&item.label, item.hint.as_deref(), &h.note, control)
+        // 「已被 N 个方案覆盖」是运行期数据（`schema.overrideSummary`），页面树建于
+        // 数据到达之前，故走 Signal 现算——见 `override_badge_text` 与
+        // `AppState::override_summary` 的文档。
+        let tip = {
+            let key = key.to_string();
+            let note = h.note.clone();
+            let names = state.stats_mgr.schema_names;
+            state.override_summary.map(move |ov| {
+                let ids = ov.get(&key).cloned().unwrap_or_default();
+                let name_map: HashMap<String, String> = names.get().into_iter().collect();
+                override_badge_text(&note, &ids, &name_map)
+            })
+        };
+        // 点击跳到覆盖列表首个方案的设置对话框；列表为空时（尚未拉到/已恢复跟随）
+        // 空操作，角标仍只是一个提示。
+        let on_click = {
+            let key = key.to_string();
+            let ov_sig = state.override_summary;
+            let schema_mgr = state.schema_mgr.clone();
+            // ⚠️ 类型必须显式标：不标的话闭包参数的生命周期会按首次使用现场坐实，
+            // 撞上 `impl FnMut(&mut EventCtx) + 'static` 要求的 higher-ranked bound
+            // （报「implementation of FnMut is not general enough」）。
+            move |_ctx: &mut windui::core::EventCtx| {
+                if let Some(id) = ov_sig.get().get(&key).and_then(|v| v.first()) {
+                    schema_mgr.open_settings_at_id(id);
+                }
+            }
+        };
+        setting_row_schema_hint(&item.label, item.hint.as_deref(), tip, on_click, control)
     } else if mode == SchemaHintMode::Header && overridable.is_none() {
         // 顶部那句「本页可被方案覆盖」对这一项不成立 ⇒ 必须标出来，否则统一说明就是
         // 在传播错误信息。反向标记只在 Header 模式下出现，见 `setting_row_global_only`。
@@ -678,6 +756,182 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
         row = row.enabled_when(f);
     }
     row
+}
+
+/// `follow = "theme"` 包成勾选行的控件类型。`select_by_layout` 不在内：一行两个下拉、
+/// 横竖各自可跟随，一个勾选框表达不了，按 R8.2 以下拉首档「跟随主题（值）」呈现。
+const THEME_FOLLOW_ROW_TYPES: &[&str] = &["number", "select", "number_select"];
+
+/// 勾选行控件位的宽度：三种控件里最宽的字重下拉（清单 `width = 160`）说了算。
+const THEME_FOLLOW_CTRL_W: i32 = 160;
+
+/// 外观页「跟随主题（值）」勾选行（R8.1，F4）。返回行与勾选信号（后者供测试）。
+///
+/// 存储不变（R3 哨兵）：不勾 = 落盘哨兵（字号 `0`、字族 `""`、字重 `0`），勾 = 控件值。
+/// 做法是**包在原控件外面**，不另写一套控件：
+///
+/// - writer：原控件的 writer 照常先跑，本函数追加的 writer 在未勾选时把哨兵盖上去；
+/// - loader：按配置值是否哨兵定勾选，勾着交给原 loader，不勾就把控件播成主题当前值；
+/// - getter：未勾选时报哨兵（联动读到的是会落盘的那个值）。
+///
+/// ★ 勾选瞬间控件里必须已经是主题值（Review Focus 5）：勾上后若是 0，保存下去等于
+/// 又回到跟随。windui 的勾选框没有变更回调，故反过来做——**未勾选期间**控件一直被
+/// 播成主题值（构建时、加载时、主题值变化或取消勾选时），勾上那一刻它自然就是。
+/// number 类型勾选行的编辑器 min 至少抬到 1（见 [`build_theme_follow_row`] 内的说明）：
+/// 只影响这份副本，不改传入的 manifest 条目本身。
+fn clamp_follow_number_min(item: &MItem) -> MItem {
+    let mut clamped = item.clone();
+    clamped.min = Some(clamped.min.unwrap_or(0.0).max(1.0));
+    clamped
+}
+
+fn build_theme_follow_row(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> (Element, Signal<bool>) {
+    use crate::theme_follow::{
+        FOLLOW_THEME, is_sentinel, seed_opt, sentinel_of, theme_follow_text_opt,
+    };
+    // 勾选行下限抬到 1：number 类型不勾选时控件显示主题值（reseed），一旦勾上就是
+    // 「自定义」态，min 沿用清单原值会放行 0 —— 保存后 0 落回哨兵，下次打开又变回
+    // 「跟随」，用户看不出自己刚才是勾着的。只影响这里的编辑器副本，不改 manifest
+    // 条目本身：守门测试 number_widget_ranges_contain_core_defaults 读的是原 item.min。
+    let editor_item = if item.typ == "number" {
+        Cow::Owned(clamp_follow_number_min(item))
+    } else {
+        Cow::Borrowed(item)
+    };
+    let editor = build_control(state, key, &editor_item, cfg);
+    let over = signal(!is_sentinel(key, cfg.get_path(key)));
+    let tf_sig = state.theme_follow;
+
+    // 原控件的 loader 拿出来共用：本行的 loader 与播种都经它把值灌进控件信号，
+    // 不必认识控件是 stepper 还是下拉。
+    let inner: Rc<dyn Fn(&Config)> = match state.fields.loaders.borrow_mut().remove(key) {
+        Some(l) => Rc::from(l),
+        None => Rc::new(|_: &Config| {}),
+    };
+    let reseed: Rc<dyn Fn()> = {
+        let (inner, k) = (inner.clone(), key.to_string());
+        Rc::new(move || {
+            if over.get() {
+                return;
+            }
+            let mut c = Config::from_value(Value::Object(Default::default()));
+            c.set_path(&k, tf_sig.with(|tf| seed_opt(&k, tf.as_ref())));
+            inner(&c);
+        })
+    };
+    reseed();
+
+    // 哨兵按 capability 类型编码：font_size 是 float，写整数 0 会与配置里的 0.0 判不等，
+    // 什么都没动也恒判脏（同 `build_number` 的说明）。
+    let sentinel = match (
+        sentinel_of(key),
+        state.capabilities.entries.get(key).map(|e| e.ty.as_str()),
+    ) {
+        (Value::Number(n), Some("float")) => Value::from(n.as_f64().unwrap_or(0.0)),
+        (v, _) => v,
+    };
+    {
+        let (k, sentinel) = (key.to_string(), sentinel.clone());
+        state
+            .fields
+            .writers
+            .borrow_mut()
+            .push(Box::new(move |c: &mut Config| {
+                if !over.get() {
+                    c.set_path(&k, sentinel.clone());
+                }
+            }));
+    }
+    {
+        let (k, inner, reseed) = (key.to_string(), inner.clone(), reseed.clone());
+        state.fields.loaders.borrow_mut().insert(
+            key.to_string(),
+            Box::new(move |c: &Config| {
+                let custom = !is_sentinel(&k, c.get_path(&k));
+                over.set(custom);
+                if custom {
+                    inner(c);
+                } else {
+                    reseed();
+                }
+            }),
+        );
+    }
+    let inner_get = state.fields.getters.borrow_mut().remove(key);
+    if let Some(g) = inner_get {
+        let sentinel = sentinel.clone();
+        state.fields.getters.borrow_mut().insert(
+            key.to_string(),
+            Box::new(move || if over.get() { g() } else { sentinel.clone() }),
+        );
+    }
+
+    // 跟随值文案与播种都跟着主题值走；取消勾选也重播，下次勾上看到的是主题值而不是
+    // 上回改过的数。
+    let text = signal(tf_sig.with(|tf| theme_follow_text_opt(key, tf.as_ref())));
+    let k = key.to_string();
+    let watch = crate::pages::dict::reactive::reactive_effect(
+        move || {
+            tf_sig
+                .version()
+                .wrapping_mul(1_000_003)
+                .wrapping_add(over.version())
+        },
+        move || {
+            text.set(tf_sig.with(|tf| theme_follow_text_opt(&k, tf.as_ref())));
+            reseed();
+        },
+    );
+    register_dialog(state, watch);
+
+    let control = crate::widgets::override_control_signal(
+        over,
+        Rc::new(|| true),
+        editor,
+        text,
+        "",
+        THEME_FOLLOW_CTRL_W,
+    );
+    let mut row = crate::widgets::setting_row_override(
+        over,
+        &item.label,
+        item.hint.as_deref(),
+        FOLLOW_THEME,
+        Role::TextMuted,
+        control,
+    );
+    if let Some(f) = item
+        .enabled_when
+        .as_deref()
+        .and_then(|e| enabled_when_closure(state, e))
+    {
+        row = row.enabled_when(f);
+    }
+    (row, over)
+}
+
+/// 按排布分档的下拉（翻页栏 / 页码）的选项文案：空值档换成「跟随主题（值）」（R8.2，F5），
+/// 其余原样。清单没声明 `follow` 的键或本模块不认识的键原样返回。
+fn follow_labels(
+    key: &str,
+    values: &[String],
+    labels: &[String],
+    tf: Option<&crate::theme_follow::ThemeFollow>,
+) -> Vec<String> {
+    let follow = crate::theme_follow::empty_option_label(key, tf);
+    values
+        .iter()
+        .zip(labels)
+        .map(|(v, l)| match &follow {
+            Some(f) if v.is_empty() => f.clone(),
+            _ => l.clone(),
+        })
+        .collect()
 }
 
 /// 子对话框宿主行：[宿主控件][扩展设置] —— 按钮打开承载 dialog_group 成员的分组对话框。
@@ -1159,7 +1413,7 @@ fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         }),
     );
 
-    let (gh, gv) = (vh, vv);
+    let (gh, gv) = (vh.clone(), vv.clone());
     state.fields.getters.borrow_mut().insert(
         key.to_string(),
         Box::new(move || {
@@ -1170,13 +1424,34 @@ fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     );
 
     let w = item.width.map(|w| w as i32).unwrap_or(CTRL_W);
-    Element::row()
-        .cross(Align::Center)
-        .spacing(6)
-        .child(Element::label("横").fg_role(Role::TextMuted))
-        .child(Element::dropdown(lh, sig_h).width(w))
+    let row = Element::row().cross(Align::Center).spacing(6);
+    if item.follow.as_deref() != Some("theme") {
+        return row
+            .child(Element::label("横").fg_role(Role::TextMuted))
+            .child(Element::dropdown(lh, sig_h).width(w))
+            .child(Element::label("竖").fg_role(Role::TextMuted))
+            .child(Element::dropdown(lv, sig_v).width(w));
+    }
+    // 空值档文案带主题值：主题值异步到达、切主题后会变，故标签绑信号、随主题值重算。
+    let tf_sig = state.theme_follow;
+    let k = key.to_string();
+    let relabel = move |vals: &[String], labs: &[String]| {
+        tf_sig.with(|tf| follow_labels(&k, vals, labs, tf.as_ref()))
+    };
+    let lab_h = signal(relabel(&vh, &lh));
+    let lab_v = signal(relabel(&vv, &lv));
+    let watch = crate::pages::dict::reactive::reactive_effect(
+        move || tf_sig.version(),
+        move || {
+            lab_h.set(relabel(&vh, &lh));
+            lab_v.set(relabel(&vv, &lv));
+        },
+    );
+    register_dialog(state, watch);
+    row.child(Element::label("横").fg_role(Role::TextMuted))
+        .child(Element::dropdown_signal(lab_h, sig_h).width(w))
         .child(Element::label("竖").fg_role(Role::TextMuted))
-        .child(Element::dropdown(lv, sig_v).width(w))
+        .child(Element::dropdown_signal(lab_v, sig_v).width(w))
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -2196,7 +2471,10 @@ pub(crate) fn dialog_group_header(name: &str) -> Element {
 ///
 /// 图标 + 常驻文字，**不是悬停角标**：它说的是整个对话框的性质，用户不会想到去悬停一个
 /// 标题；而它替掉的是十几个角标，一行常驻文字换回来的空间绰绰有余。
-pub(crate) fn dialog_notice_row(note: &str) -> Element {
+///
+/// 文案走 Signal（R8.6 起）：`Header` 模式下用它接住「其中 N 项已被方案覆盖」那句
+/// 追加计数——这是运行期数据，页面树建于数据到达之前，取不到 Signal 就定型不了。
+pub(crate) fn dialog_notice_row(note: Signal<String>) -> Element {
     Element::row()
         .width_match()
         .cross(Align::Start)
@@ -2208,7 +2486,7 @@ pub(crate) fn dialog_notice_row(note: &str) -> Element {
                 .padding_xy(0, 2),
         )
         .child(
-            Element::label(note)
+            Element::label_signal(note)
                 .font_size(12.0)
                 .fg_role(Role::TextSubtle)
                 .weight(1.0)
@@ -2232,6 +2510,37 @@ fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> 
         .into_iter()
         .max_by_key(|(note, n)| (*n, note.len()))
         .map(|(note, _)| note.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// [`scheme_config_section`] 卡片顶部那句统一说明的完整文案（F9/R8.6）。
+///
+/// `Header` 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能因此从界面上凭空
+/// 消失——本函数把它折算成「其中 N 项已被方案覆盖」追加在统一说明之后。`PerRow` 模式
+/// 不追加：那些项各自的角标已经在说这件事，重复说一遍反而是本函数试图消除的那种噪音。
+///
+/// 抽成纯函数（而不是内联在 [`scheme_config_section`] 的 Signal 闭包里）好让它可以脱离
+/// `AppState` 单独测试——闭包本身只做「读两个 Signal、调这个函数」，没有分支要测。
+fn scheme_config_notice_text(
+    scope_note: &str,
+    header_note: &Option<String>,
+    hint_mode: SchemaHintMode,
+    keys: &[String],
+    ov: &HashMap<String, Vec<String>>,
+) -> String {
+    let mut s = match (hint_mode, header_note) {
+        (SchemaHintMode::Header, Some(note)) => format!("{scope_note}{note}"),
+        _ => scope_note.to_string(),
+    };
+    if hint_mode == SchemaHintMode::Header {
+        let overridden = keys
+            .iter()
+            .filter(|k| ov.get(*k).is_some_and(|v| !v.is_empty()))
+            .count();
+        if overridden > 0 {
+            s.push_str(&format!("其中 {overridden} 项已被方案覆盖。"));
+        }
+    }
+    s
 }
 
 /// 对话框内小标题的字号。
@@ -2278,11 +2587,17 @@ pub fn scheme_config_section(
     // 故无论有没有覆盖说明，这一行都出。
     let hint_mode = schema_hint_mode(state, &keys);
     let scope_note = format!("此为全局{label}。");
-    let notice = match (hint_mode, schema_hint_header_note(state, &keys)) {
-        (SchemaHintMode::Header, Some(note)) => format!("{scope_note}{note}"),
-        _ => scope_note,
+    let header_note = schema_hint_header_note(state, &keys);
+    // Header 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能就此凭空消失——
+    // 追加进这句统一说明的计数里。计数走 Signal：覆盖汇总（`schema.overrideSummary`）
+    // 是运行期数据，页面树建于数据到达之前，定型的字符串接不住后到的数字。
+    let notice = {
+        let keys_for_count = keys.clone();
+        state.override_summary.map(move |ov| {
+            scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
+        })
     };
-    rows.push(dialog_notice_row(&notice));
+    rows.push(dialog_notice_row(notice));
 
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     rows.push(dialog_group_header(section));
@@ -3357,10 +3672,28 @@ fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) 
 /// 之所以不把两者抽成一个泛型：四件套里真正不同的只有 `XxxUi` 那个类型，抽出来要么上
 /// trait 要么上宏，读起来都比这二十行难——而这类「列表型专用对话框」总共也只有两三个。
 fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::langbar_badges_dialog::{LangBarBadgesUi, build_langbar_badges_dialog};
+    use crate::dialogs::langbar_badges_dialog::{
+        DEFAULT_BADGE_ALPHA, LangBarBadgesUi, build_langbar_badges_dialog,
+    };
 
     let ui = LangBarBadgesUi::new();
+    ui.form.badge_alpha.set(
+        cfg.get_f64("ui.langbar.badge_alpha")
+            .unwrap_or(DEFAULT_BADGE_ALPHA as f64) as f32,
+    );
     ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
+    // 全局滑块与本对话框同页：用户拖了滑块（未保存）再开表单，跟随值要是滑块当前值，
+    // 不是上面加载时灌的那个（T9）。经 getters 取而不是捕获滑块信号——滑块是另一个
+    // 清单项，建出顺序与本项无关，打开表单时它早已登记。
+    let fields = state.fields.clone();
+    *ui.form.badge_alpha_source.borrow_mut() = Some(Box::new(move || {
+        fields
+            .getters
+            .borrow()
+            .get("ui.langbar.badge_alpha")
+            .and_then(|g| g().as_f64())
+            .map(|v| v as f32)
+    }));
 
     let ui_w = ui.clone();
     let kw = key.to_string();
@@ -3377,6 +3710,10 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
+            ui_l.form.badge_alpha.set(
+                c.get_f64("ui.langbar.badge_alpha")
+                    .unwrap_or(DEFAULT_BADGE_ALPHA as f64) as f32,
+            );
             ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
         }),
     );
@@ -3402,7 +3739,8 @@ fn build_langbar_text_colors(state: &AppState, key: &str, cfg: &Config) -> Eleme
         CELLS, TextColorsUi, build_grid, build_summary_control,
     };
 
-    let ui = TextColorsUi::new();
+    let mut ui = TextColorsUi::new();
+    ui.theme_follow = state.theme_follow;
     for (i, (k, _, _)) in CELLS.iter().enumerate() {
         ui.set_cell(i, cfg.get_str(k).unwrap_or(""));
         let v = ui.cells[i].value;
@@ -7175,6 +7513,92 @@ mod tests {
         );
     }
 
+    /// 「已被 N 个方案覆盖」角标文案（F9/R8.6）。三条用例对应 brief 的验收条件：
+    /// 未覆盖维持原状、覆盖列出名字、超过 3 个截断为「等」。
+    #[test]
+    fn badge_text_keeps_static_note_when_not_overridden() {
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &[], &HashMap::new()),
+            "可被方案覆盖"
+        );
+    }
+
+    #[test]
+    fn badge_text_lists_overriding_schemas() {
+        let names = HashMap::from([("wubi86".to_string(), "五笔86".to_string())]);
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &["wubi86".into()], &names),
+            "已被 1 个方案覆盖：五笔86"
+        );
+    }
+
+    #[test]
+    fn badge_text_truncates_after_three() {
+        let ids: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let names: HashMap<String, String> =
+            ids.iter().map(|i| (i.clone(), i.to_uppercase())).collect();
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &ids, &names),
+            "已被 4 个方案覆盖：A、B、C 等"
+        );
+    }
+
+    /// 名字取不到（方案已卸载/隐藏）时退回显示 id，不整行消失。
+    #[test]
+    fn badge_text_falls_back_to_id_when_name_missing() {
+        assert_eq!(
+            override_badge_text("可被方案覆盖", &["ghost".into()], &HashMap::new()),
+            "已被 1 个方案覆盖：ghost"
+        );
+    }
+
+    /// Header 模式下逐行角标收起来了，「已被 N 项覆盖」不能因此从界面上消失——
+    /// 必须追加进卡片顶部那句统一说明里；PerRow 模式不追加，那些项各自的角标已经在
+    /// 说这件事。
+    #[test]
+    fn scheme_config_notice_appends_count_only_in_header_mode() {
+        let keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let ov = HashMap::from([("a".to_string(), vec!["wubi86".to_string()])]);
+        assert_eq!(
+            scheme_config_notice_text(
+                "此为全局码表方案配置。",
+                &Some("可被方案覆盖。".to_string()),
+                SchemaHintMode::Header,
+                &keys,
+                &ov,
+            ),
+            "此为全局码表方案配置。可被方案覆盖。其中 1 项已被方案覆盖。",
+            "Header 模式：统一说明后要追加计数"
+        );
+        assert_eq!(
+            scheme_config_notice_text(
+                "此为全局混输行为。",
+                &None,
+                SchemaHintMode::PerRow,
+                &keys,
+                &ov,
+            ),
+            "此为全局混输行为。",
+            "PerRow 模式：逐行角标已经说过，不重复"
+        );
+    }
+
+    /// 没有任何键被覆盖时不追加计数句子——「其中 0 项」不比什么都不说更有信息量。
+    #[test]
+    fn scheme_config_notice_omits_count_when_nothing_overridden() {
+        let keys = vec!["a".to_string()];
+        assert_eq!(
+            scheme_config_notice_text(
+                "此为全局码表方案配置。",
+                &Some("可被方案覆盖。".to_string()),
+                SchemaHintMode::Header,
+                &keys,
+                &HashMap::new(),
+            ),
+            "此为全局码表方案配置。可被方案覆盖。"
+        );
+    }
+
     /// 只读组的「去哪儿改」从清单现算，不另写一份位置表。
     ///
     /// 守的是「设置项挪了分组，指路还指向老地方」——那种错不会报任何异常，用户按提示
@@ -7199,5 +7623,194 @@ mod tests {
              `keys.toggle_mode_keys` 不在清单里了，那时整条指路会静默变成空白",
             row.source
         );
+    }
+}
+
+/// 外观页「跟随主题（值）」勾选行（R8.1 / R8.2，F4 / F5）。
+#[cfg(test)]
+mod theme_follow_row_tests {
+    use super::*;
+    use crate::theme_follow::ThemeFollow;
+    use serde_json::json;
+
+    fn tf() -> ThemeFollow {
+        ThemeFollow {
+            font_size: 20,
+            font_family: Some("思源黑体".into()),
+            font_weight: 0,
+            pager_bar_display: "hide".into(),
+            page_number_display: "show".into(),
+            langbar_text: Default::default(),
+        }
+    }
+
+    fn written(st: &AppState, cfg: &Config) -> Config {
+        let mut out = cfg.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut out);
+        }
+        out
+    }
+
+    fn item(key: &str) -> MItem {
+        Manifest::from_embedded()
+            .items
+            .get(key)
+            .cloned()
+            .expect("清单缺该项")
+    }
+
+    /// number 勾选行的编辑器 min 至少抬到 1：manifest 原值（font_size 是 0）放行会让
+    /// 用户把已勾选的数字框拖到 0，保存后 0 落成哨兵、下次打开又变回「跟随」，用户看不出
+    /// 自己刚才是勾着的（控制者裁定项 B）。manifest 条目本身的 min 不受影响。
+    #[test]
+    fn number_follow_row_min_is_floored_to_one() {
+        let mut it = item("ui.candidate.font_size");
+        assert_eq!(it.min, Some(0.0), "manifest 原值仍是 0");
+        let clamped = clamp_follow_number_min(&it);
+        assert_eq!(clamped.min, Some(1.0), "勾选行编辑器 min 抬到 1");
+        assert_eq!(it.min, Some(0.0), "不改 manifest 条目本身");
+
+        it.min = None;
+        assert_eq!(
+            clamp_follow_number_min(&it).min,
+            Some(1.0),
+            "min 缺省时同样兜底到 1"
+        );
+    }
+
+    /// 字号 / 字族 / 字重三项声明了 `follow = "theme"`，翻页栏 / 页码两项同样声明
+    /// （它们按 R8.2 以下拉首档呈现）。漏声明 = 那一行静默退回哨兵直进控件的老样子。
+    #[test]
+    fn appearance_follow_items_are_declared() {
+        for k in [
+            "ui.candidate.font_size",
+            "ui.font.family",
+            "ui.font.weight",
+            "ui.candidate.pager_bar_display",
+            "ui.candidate.page_number_display",
+        ] {
+            assert_eq!(item(k).follow.as_deref(), Some("theme"), "{k}");
+        }
+    }
+
+    /// 未勾选写哨兵（按 capability 类型编码：font_size 是 float ⇒ `0.0`，否则恒判脏）；
+    /// 勾上写主题当前值（20），不是 0。
+    #[test]
+    fn font_size_row_unchecked_writes_sentinel_checked_writes_theme_value() {
+        let st = AppState::empty();
+        st.theme_follow.set(Some(tf()));
+        let cfg = Config::from_value(json!({ "ui": { "candidate": { "font_size": 0.0 } } }));
+        let (_, over) = build_theme_follow_row(
+            &st,
+            "ui.candidate.font_size",
+            &item("ui.candidate.font_size"),
+            &cfg,
+        );
+        assert!(!over.get(), "0 = 跟随 ⇒ 不勾");
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.candidate.font_size"),
+            Some(&json!(0.0))
+        );
+        over.set(true);
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.candidate.font_size"),
+            Some(&json!(20.0)),
+            "勾上的初值必须是主题值"
+        );
+    }
+
+    /// 已自定义的值打开时勾着、原样写回；「恢复本页」这类走 loader 回到哨兵时取消勾选。
+    #[test]
+    fn font_size_row_loads_custom_value_as_checked() {
+        let st = AppState::empty();
+        let cfg = Config::from_value(json!({ "ui": { "candidate": { "font_size": 16.0 } } }));
+        let (_, over) = build_theme_follow_row(
+            &st,
+            "ui.candidate.font_size",
+            &item("ui.candidate.font_size"),
+            &cfg,
+        );
+        assert!(over.get());
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.candidate.font_size"),
+            Some(&json!(16.0))
+        );
+        let zero = Config::from_value(json!({ "ui": { "candidate": { "font_size": 0.0 } } }));
+        (st.fields
+            .loaders
+            .borrow()
+            .get("ui.candidate.font_size")
+            .unwrap())(&zero);
+        assert!(!over.get(), "加载到哨兵 ⇒ 取消勾选");
+        // 取消勾选后再勾：初值是出厂值 18（此刻没有主题数据），不是刚才的 16。
+        over.set(true);
+        assert_eq!(
+            written(&st, &zero).get_path("ui.candidate.font_size"),
+            Some(&json!(18.0))
+        );
+    }
+
+    /// 字重下拉不再有「默认」(0) 档：跟随由勾选行表达。存量配置里的 0 打开时 = 未勾，
+    /// 原样写回 0；勾上时主题未指定字重 ⇒ 初值 400。
+    #[test]
+    fn font_weight_zero_opens_unchecked_and_checks_to_400() {
+        let it = item("ui.font.weight");
+        assert!(
+            it.options.iter().all(|o| o.value != "0"),
+            "字重下拉不该再有 0 档"
+        );
+        let st = AppState::empty();
+        st.theme_follow.set(Some(tf()));
+        let cfg = Config::from_value(json!({ "ui": { "font": { "weight": 0 } } }));
+        let (_, over) = build_theme_follow_row(&st, "ui.font.weight", &it, &cfg);
+        assert!(!over.get());
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.weight"),
+            Some(&json!(0))
+        );
+        over.set(true);
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.weight"),
+            Some(&json!(400))
+        );
+    }
+
+    /// 字族：勾上选中主题字体；主题字体不在系统字体列表里也要补进去，否则落到首项。
+    #[test]
+    fn font_family_checks_to_theme_font() {
+        let st = AppState::empty();
+        st.font_sig.set(vec!["等线".into(), "微软雅黑".into()]);
+        st.font_label_sig
+            .set(vec!["等线".into(), "微软雅黑".into()]);
+        st.set_theme_follow(Some(tf()));
+        let cfg = Config::from_value(json!({ "ui": { "font": { "family": "" } } }));
+        let (_, over) =
+            build_theme_follow_row(&st, "ui.font.family", &item("ui.font.family"), &cfg);
+        assert!(!over.get());
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.family"),
+            Some(&json!(""))
+        );
+        over.set(true);
+        assert_eq!(
+            written(&st, &cfg).get_path("ui.font.family"),
+            Some(&json!("思源黑体"))
+        );
+    }
+
+    /// 翻页栏 / 页码下拉：空值档的文案带主题值，其余档不动。
+    #[test]
+    fn pager_dropdown_empty_option_carries_theme_value() {
+        let key = "ui.candidate.pager_bar_display";
+        let vals: Vec<String> = vec!["".into(), "hide".into()];
+        let labs: Vec<String> = vec!["跟随主题".into(), "隐藏".into()];
+        let labels = follow_labels(key, &vals, &labs, Some(&tf()));
+        assert_eq!(
+            labels,
+            vec!["跟随主题（隐藏）".to_string(), "隐藏".to_string()]
+        );
+        let none = follow_labels(key, &vals, &labs, None);
+        assert_eq!(none[0], "跟随主题");
     }
 }
