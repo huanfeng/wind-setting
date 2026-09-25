@@ -21,7 +21,7 @@ pub struct CapEntry {
 
 /// 「此项可被方案覆盖」的提示内容。
 pub struct SchemaOverrideHint {
-    /// 方案文件里的落点段名，如 `[codetable]`。
+    /// 方案文件里的落点段名，如 `[engine.codetable]`。
     pub section: String,
     /// 给用户看的一句话，core 侧写好，设置端**原样显示不再改写**——
     /// 两边各写一份措辞，改了一处就会分叉。

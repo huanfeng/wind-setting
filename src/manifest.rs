@@ -2496,8 +2496,8 @@ pub(crate) fn dialog_notice_row(note: Signal<String>) -> Element {
 
 /// [`SchemaHintMode::Header`] 那句统一说明的文案：取容器内出现最多的那条 `note`。
 ///
-/// core 的 `SCHEMA_OVERRIDES` 按配置段给 note（`[codetable]` / `[codetable.frequency]` /
-/// `[aux_code]` 各一句），措辞不同但语义一样。取众数而不是自己新写一句：**文案的权威在
+/// core 的 `SCHEMA_OVERRIDES` 按配置段给 note（`[engine.codetable]` / `[engine.codetable.frequency]` /
+/// `[engine.aux_code]` 各一句），措辞不同但语义一样。取众数而不是自己新写一句：**文案的权威在
 /// core**，这边新写一句就成了第二真相源，core 改了措辞这里不会跟着变。
 fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> {
     let mut tally: HashMap<&str, usize> = HashMap::new();

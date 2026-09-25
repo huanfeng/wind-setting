@@ -29,7 +29,7 @@
       "key": "schema.codetable.top_code_commit",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -38,7 +38,7 @@
       "key": "schema.codetable.clear_on_empty_max",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -47,7 +47,7 @@
       "key": "schema.codetable.auto_commit_at_full",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -56,7 +56,7 @@
       "key": "schema.codetable.auto_commit_min_len",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "int"
     },
@@ -65,7 +65,7 @@
       "key": "schema.codetable.punct_commit",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -74,7 +74,7 @@
       "key": "schema.codetable.show_code_hint",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -83,7 +83,7 @@
       "key": "schema.codetable.single_code_input",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -92,7 +92,7 @@
       "key": "schema.codetable.single_code_complete",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -101,7 +101,7 @@
       "key": "schema.codetable.short_code_yield_level",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "int"
     },
@@ -110,7 +110,7 @@
       "key": "schema.codetable.single_char",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -119,7 +119,7 @@
       "key": "schema.codetable.z_key_repeat",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "bool"
     },
@@ -128,7 +128,7 @@
       "key": "schema.codetable.english_merge.enable",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.english_merge]"
+        "section": "[engine.codetable.english_merge]"
       },
       "type": "bool"
     },
@@ -137,7 +137,7 @@
       "key": "schema.codetable.english_merge.min_length",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.english_merge]"
+        "section": "[engine.codetable.english_merge]"
       },
       "type": "int"
     },
@@ -146,7 +146,7 @@
       "key": "schema.codetable.english_merge.block_commit",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.english_merge]"
+        "section": "[engine.codetable.english_merge]"
       },
       "type": "bool"
     },
@@ -155,7 +155,7 @@
       "key": "schema.codetable.z_key_action",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "str"
     },
@@ -164,7 +164,7 @@
       "key": "schema.codetable.input_chars",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "str"
     },
@@ -173,7 +173,7 @@
       "key": "schema.codetable.leading_chars",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable]"
+        "section": "[engine.codetable]"
       },
       "type": "str"
     },
@@ -182,7 +182,7 @@
       "key": "schema.codetable.frequency.enabled",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "bool"
     },
@@ -191,7 +191,7 @@
       "key": "schema.codetable.frequency.protect_top_n",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "int"
     },
@@ -200,7 +200,7 @@
       "key": "schema.codetable.frequency.protect_top_n_len1",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "int"
     },
@@ -209,7 +209,7 @@
       "key": "schema.codetable.frequency.protect_top_n_len2",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "int"
     },
@@ -218,7 +218,7 @@
       "key": "schema.codetable.frequency.protect_top_n_len3",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "int"
     },
@@ -227,7 +227,7 @@
       "key": "schema.codetable.frequency.strategy",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "enum",
       "values": [
@@ -241,7 +241,7 @@
       "key": "schema.codetable.frequency.promote_prefix",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "enum",
       "values": [
@@ -255,7 +255,7 @@
       "key": "schema.codetable.frequency.half_life",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[codetable.frequency]"
+        "section": "[engine.codetable.frequency]"
       },
       "type": "float"
     },
@@ -579,7 +579,7 @@
       "key": "schema.pinyin.aux_code.enabled",
       "schemaOverride": {
         "note": "方案可覆盖这一项；方案没写则用这里的值。",
-        "section": "[aux_code]"
+        "section": "[engine.aux_code]"
       },
       "type": "bool"
     },
@@ -588,7 +588,7 @@
       "key": "schema.pinyin.aux_code.max_phrase_len",
       "schemaOverride": {
         "note": "方案可覆盖这一项；方案没写则用这里的值。",
-        "section": "[aux_code]"
+        "section": "[engine.aux_code]"
       },
       "type": "int"
     },
