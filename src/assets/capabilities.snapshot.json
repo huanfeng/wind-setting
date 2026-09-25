@@ -1269,6 +1269,11 @@
       ]
     },
     {
+      "default": true,
+      "key": "input.top_commit_learn",
+      "type": "bool"
+    },
+    {
       "default": "off",
       "key": "input.association.kind",
       "type": "enum",

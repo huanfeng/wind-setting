@@ -170,6 +170,7 @@
     "backtick"
    ]
   },
+  "top_commit_learn": true,
   "top_commit_mode": "direct_commit",
   "unicode": {
    "candidate_layout": "follow",
