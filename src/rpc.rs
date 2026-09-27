@@ -1722,10 +1722,26 @@ fn mock_reply(method: &str, params: &Value) -> Value {
                         // 才在 `WIND_RPC_MOCK=1` 下有得看，不然这一节永远建不出来。
                         "aux_code": { "files": ["aux_code/bihua.txt"] }
                     },
+                    // 方案文件自己声明的来源（core 旁路字段，不含 override）。与上面合并后的
+                    // `aux_code.files` 相同 ⇒ 「辅助码来源」那一行默认呈现为跟随。
+                    "auxCodeBaseFiles": ["aux_code/bihua.txt"],
                     "followedBehavior": followed
                 })
             }
         }
+        // 辅助码来源的可选项（对齐核心 `schema.auxCodeSources`）：码表方案 + aux_code/*.txt。
+        // 名字给中文，下拉与跟随档文字在 `WIND_RPC_MOCK=1` 下才有得看。
+        "schema.auxCodeSources" => json!({
+            "schemas": [
+                { "id": "wubi86", "name": "五笔 86" },
+                { "id": "stroke", "name": "笔画" }
+            ],
+            "files": [
+                { "path": "aux_code/bihua.txt", "label": "笔画" },
+                { "path": "aux_code/flypy_full.txt", "label": "小鹤" },
+                { "path": "aux_code/ZRM-wanxiang.txt", "label": "自然码" }
+            ]
+        }),
         "schema.setDictEnabled" => {
             let id = params
                 .get("id")

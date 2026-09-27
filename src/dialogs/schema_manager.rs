@@ -324,8 +324,8 @@ fn clamp_aux_len(v: i64) -> i32 {
     v.clamp(0, 20) as i32
 }
 
-/// 辅助码卡片「全部恢复跟随」按钮做的事：两行勾选一并清空，控件值拨回跟随值，
-/// 摘要归零。
+/// 辅助码卡片「全部恢复跟随」按钮做的事：三行勾选一并清空（含来源一行的只读态），
+/// 控件值拨回跟随值，摘要归零。
 ///
 /// ★ 抽出来供测：按钮的 `on_click` 闭包本身测不到（只能在真机上点），闭包只转调这里，
 /// 测试直接拿 `SchemaManagerState` 的真信号驱动它。
@@ -337,7 +337,131 @@ fn aux_reset_all(state: &SchemaManagerState, followed_on: bool, followed_len: i3
     state.settings_aux_len_over.set(false);
     state.settings_aux_on.set(followed_on);
     state.settings_aux_len.set(followed_len as f64);
+    // 来源这一行也清：只读态一并清掉，保存时才会走正常路径落 null（回落方案文件）。
+    state.settings_aux_src_over.set(false);
+    state.settings_aux_src_manual.set(false);
     state.settings_aux_disp.set(ct_summary(0));
+}
+
+/// 「辅助码来源」下拉的一项。`entry` 是写进 `[engine.aux_code].files` 的原文：
+/// 码表方案写 `schema:<id>`，码表文件写相对数据目录的路径——与 core `AuxCodeSpec`
+/// 解析 `files` 的口径一致，下拉选中哪项就原样落哪串，中间不做翻译。
+#[derive(Debug, Clone, Default)]
+struct AuxSourceItem {
+    entry: String,
+    label: String,
+    // Task 3 按它把下拉分成「方案 / 码表」两组；在那之前只有测试读。
+    #[cfg_attr(not(test), allow(dead_code))]
+    is_schema: bool,
+}
+
+/// `schema.auxCodeSources` 的结果：方案在前、码表在后（下拉即按此顺序）。
+///
+/// RPC 失败时是 `Default`（空表）——下游据此区分「判不了装没装」与「确实没装」，
+/// 见 [`aux_src_follow_text`]。
+#[derive(Debug, Clone, Default)]
+struct AuxSourceOpts {
+    items: Vec<AuxSourceItem>,
+}
+
+impl AuxSourceOpts {
+    fn label_of(&self, entry: &str) -> Option<&str> {
+        self.items
+            .iter()
+            .find(|i| i.entry == entry)
+            .map(|i| i.label.as_str())
+    }
+    fn index_of(&self, entry: &str) -> Option<usize> {
+        self.items.iter().position(|i| i.entry == entry)
+    }
+}
+
+/// 解析 `schema.auxCodeSources` 的返回。缺 id / path 的条目丢掉——它们写不出一条
+/// 有效的 `files` 原文，放进下拉只会让用户选中一个落盘后 core 认不出的来源。
+fn parse_aux_source_opts(v: &Value) -> AuxSourceOpts {
+    let arr = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let s = |x: &Value, k: &str| x.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let mut items: Vec<AuxSourceItem> = arr("schemas")
+        .iter()
+        .filter(|x| !s(x, "id").is_empty())
+        .map(|x| AuxSourceItem {
+            entry: format!("schema:{}", s(x, "id")),
+            label: s(x, "name"),
+            is_schema: true,
+        })
+        .collect();
+    items.extend(
+        arr("files")
+            .iter()
+            .filter(|x| !s(x, "path").is_empty())
+            .map(|x| AuxSourceItem {
+                entry: s(x, "path"),
+                label: s(x, "label"),
+                is_schema: false,
+            }),
+    );
+    AuxSourceOpts { items }
+}
+
+/// 跟随档括号里的文字：方案文件声明的来源名，多个用「+」连接；可选项里没有的标「（未安装）」。
+///
+/// 可选项整个拿不到（RPC 失败 / 空）时退回原文——那时判不了装没装，不能乱报缺失，
+/// 否则老核心（没有 `schema.auxCodeSources`）下每个方案都会显示「未安装」。
+fn aux_src_follow_text(base: &[String], opts: &AuxSourceOpts) -> String {
+    if base.is_empty() {
+        return "无".to_string();
+    }
+    base.iter()
+        .map(|e| match opts.label_of(e) {
+            Some(l) if !l.is_empty() => l.to_string(),
+            Some(_) => e.clone(),
+            None if opts.items.is_empty() => e.clone(),
+            None => format!("{e}（未安装）"),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+/// 打开时「辅助码来源」这一行的状态。
+///
+/// ★ 判据只看「合并值是否等于方案文件自己的值」（core 旁路字段 `auxCodeBaseFiles`）——
+/// 相等就是跟随。即便 override 里手写了一份相同的，core 的 `json_diff` 保存时也会把它
+/// 当无差异删掉，所以这里判成跟随与落盘结果同口径，不会出现「显示覆盖、存完变跟随」。
+#[derive(Debug)]
+enum AuxSrcSeed {
+    Follow,
+    /// 单条且在下拉里：选中第几项。
+    Pick(usize),
+    /// 多条或下拉里没有的条目：下拉表达不了，只读展示，保存原样不动。
+    // 携带的原文留给 Task 3 渲染只读态文字；在那之前没有读者。
+    Manual(#[allow(dead_code)] Vec<String>),
+}
+
+fn seed_aux_src(merged: &[String], base: &[String], opts: &AuxSourceOpts) -> AuxSrcSeed {
+    if merged == base {
+        return AuxSrcSeed::Follow;
+    }
+    match merged {
+        [one] => opts
+            .index_of(one)
+            .map_or_else(|| AuxSrcSeed::Manual(merged.to_vec()), AuxSrcSeed::Pick),
+        _ => AuxSrcSeed::Manual(merged.to_vec()),
+    }
+}
+
+/// 「辅助码来源」的落盘值：不勾写 `null`（core 跳过 null ⇒ 该键不进 override ⇒ 回落
+/// 方案文件），勾上写单元素数组。勾上却没有可选项（`pick` 为 `None`）也写 `null`——
+/// 写一个空数组等于替用户关掉辅助码表，那是另一件事。
+fn aux_src_write(over: bool, pick: Option<&str>) -> Value {
+    match (over, pick) {
+        (true, Some(e)) => json!([e]),
+        _ => Value::Null,
+    }
 }
 
 /// 「本方案行为」节「全部恢复跟随」的核心逻辑（R8.5）：把有「跟随」档的三项一并
@@ -1004,6 +1128,25 @@ pub struct SchemaManagerState {
     /// 打开时四项的快照 `(on_over, on, len_over, len)`，供脏判定：把它与当前值各自
     /// 代入 `aux_write`，比较两次的落盘结果（而不是逐项比对信号）是否变化。
     settings_aux_at_open: Rc<std::cell::Cell<(bool, bool, bool, i32)>>,
+    /// 「辅助码来源」是否覆盖方案文件（勾选框）。判据见 [`seed_aux_src`]：合并值等于
+    /// 方案文件自己的值即为跟随（不勾）。
+    // 行由 Task 3 渲染；在那之前只有 seed / 保存 / 复位用到它们，非测试构建下会报未读。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub settings_aux_src_over: Signal<bool>,
+    /// 勾选时选中的下拉项下标（指向 `settings_aux_src_opts.items`）。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub settings_aux_src_idx: Signal<usize>,
+    /// 只读态：打开时 `files` 是多条或下拉里没有的条目，下拉表达不了。此时保存原样不动，
+    /// 直到被「全部恢复跟随」清掉（那时落 null）。只读态同时 `over` 为真——它确实是覆盖。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub settings_aux_src_manual: Signal<bool>,
+    /// 下拉可选项（`schema.auxCodeSources`），每次打开重取；RPC 失败为空表。
+    settings_aux_src_opts: Rc<RefCell<AuxSourceOpts>>,
+    /// 跟随档括号里的文字（[`aux_src_follow_text`]），不含「跟随方案」前缀——前缀由行给。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub settings_aux_src_follow: Signal<String>,
+    /// 打开时 `(over, idx, manual)` 的快照，供保存时的脏判定（同 `settings_aux_at_open`）。
+    settings_aux_src_at_open: Rc<std::cell::Cell<(bool, usize, bool)>>,
     // ── 本方案行为（`[punct]` / `[candidate]` / `[phrases]` 三段）──
     //
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
@@ -1182,6 +1325,12 @@ impl SchemaManagerState {
             settings_aux_len: signal(0.0),
             settings_aux_disp: signal(ct_summary(0)),
             settings_aux_at_open: Rc::new(std::cell::Cell::new((false, false, false, 0))),
+            settings_aux_src_over: signal(false),
+            settings_aux_src_idx: signal(0),
+            settings_aux_src_manual: signal(false),
+            settings_aux_src_opts: Rc::new(RefCell::new(AuxSourceOpts::default())),
+            settings_aux_src_follow: signal(String::new()),
+            settings_aux_src_at_open: Rc::new(std::cell::Cell::new((false, 0, false))),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_bh_punct: signal(0),
@@ -2285,14 +2434,51 @@ impl SchemaManagerState {
                 let on = raw_on.unwrap_or(followed_on);
                 let len_over = raw_len.is_some();
                 let len = raw_len.unwrap_or(followed_len);
+                // 辅助码来源：合并值 vs 方案文件自己的值（core 旁路字段 `auxCodeBaseFiles`，
+                // 不含 override）。老核心没有这个字段 ⇒ 按合并值处理 ⇒ 呈现为跟随，
+                // 保存时也就不会动 `files`——宁可少显示一个覆盖，也不替用户改写。
+                let str_list = |v: Option<&Value>| -> Vec<String> {
+                    v.and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let merged = str_list(cfg.pointer("/engine/aux_code/files"));
+                let base = match cfg.get("auxCodeBaseFiles") {
+                    Some(v) => str_list(Some(v)),
+                    None => merged.clone(),
+                };
                 drop(cfg);
                 self.settings_aux_on_over.set(on_over);
                 self.settings_aux_on.set(on);
                 self.settings_aux_len_over.set(len_over);
                 self.settings_aux_len.set(len as f64);
                 self.settings_aux_at_open.set((on_over, on, len_over, len));
-                self.settings_aux_disp
-                    .set(ct_summary(on_over as usize + len_over as usize));
+
+                // 可选项每次打开重取：用户可能在两次打开之间往 aux_code/ 里放了新表。
+                // 失败给空表——跟随文字退回原文、已有覆盖进只读态，都不会误写。
+                let opts = rpc::call_core("schema.auxCodeSources", &json!({ "id": schema_id }))
+                    .map(|v| parse_aux_source_opts(&v))
+                    .unwrap_or_default();
+                let (src_over, src_idx, src_manual) = match seed_aux_src(&merged, &base, &opts) {
+                    AuxSrcSeed::Follow => (false, 0, false),
+                    AuxSrcSeed::Pick(i) => (true, i, false),
+                    AuxSrcSeed::Manual(_) => (true, 0, true),
+                };
+                self.settings_aux_src_follow
+                    .set(aux_src_follow_text(&base, &opts));
+                *self.settings_aux_src_opts.borrow_mut() = opts;
+                self.settings_aux_src_over.set(src_over);
+                self.settings_aux_src_idx.set(src_idx);
+                self.settings_aux_src_manual.set(src_manual);
+                self.settings_aux_src_at_open
+                    .set((src_over, src_idx, src_manual));
+                self.settings_aux_disp.set(ct_summary(
+                    on_over as usize + len_over as usize + src_over as usize,
+                ));
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::AuxCode);
             }
@@ -2562,6 +2748,24 @@ impl SchemaManagerState {
                 set_json_path(&mut cfg, &["engine", "aux_code", "enabled"], now.0);
                 set_json_path(&mut cfg, &["engine", "aux_code", "max_phrase_len"], now.1);
                 cfg_changed = true;
+            }
+
+            // 辅助码来源。只读态（多条 / 下拉里没有的条目）原样不动：下拉表达不了它，
+            // 写什么都是替用户改。★ 只看**当前**是否仍为只读——被「全部恢复跟随」清掉后
+            // 就该走下面的正常路径落 null，否则那个按钮对这一行点了等于没点。
+            if !self.settings_aux_src_manual.get() {
+                let opts = self.settings_aux_src_opts.borrow();
+                let pick = |i: usize| opts.items.get(i).map(|x| x.entry.as_str());
+                let now = aux_src_write(
+                    self.settings_aux_src_over.get(),
+                    pick(self.settings_aux_src_idx.get()),
+                );
+                let (at_over, at_idx, at_manual) = self.settings_aux_src_at_open.get();
+                // 打开时是只读态：它原来的值 `aux_src_write` 表达不了，离开只读态本身就是改动。
+                if at_manual || now != aux_src_write(at_over, pick(at_idx)) {
+                    set_json_path(&mut cfg, &["engine", "aux_code", "files"], now);
+                    cfg_changed = true;
+                }
             }
         }
 
@@ -4779,6 +4983,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // （见 `SettingsSection::tab`），星号要一并算上它，否则用户勾了辅助码却看不到 TAB 有变化。
     let aux_on_over = state.settings_aux_on_over;
     let aux_len_over = state.settings_aux_len_over;
+    let aux_src_over = state.settings_aux_src_over;
     let aux_disp = state.settings_aux_disp;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
         move || {
@@ -4791,6 +4996,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .wrapping_add(bh_punct_map.version())
                 .wrapping_add(aux_on_over.version())
                 .wrapping_add(aux_len_over.version())
+                .wrapping_add(aux_src_over.version())
         },
         move || {
             let n = ct_count.custom_count();
@@ -4799,7 +5005,9 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 + bh_cmt_v.get() as usize
                 + bh_cmt_h.get() as usize
                 + bh_punct_map.get() as usize;
-            let aux_custom = aux_on_over.get() as usize + aux_len_over.get() as usize;
+            let aux_custom = aux_on_over.get() as usize
+                + aux_len_over.get() as usize
+                + aux_src_over.get() as usize;
             ct_disp.set(ct_summary(n));
             // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
             // 另开一个 effect 只会多一处要同步的口径。
@@ -6333,6 +6541,238 @@ mod section_build_tests {
         );
 
         crate::rpc::set_mock_followed_layout(None);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    // ── 辅助码来源（`[engine.aux_code].files`）──
+
+    /// 测试用可选项：一个码表方案、两张码表。形状对齐 core `schema.auxCodeSources`。
+    fn aux_opts() -> AuxSourceOpts {
+        parse_aux_source_opts(&json!({
+            "schemas": [{ "id": "wubi86", "name": "五笔 86" }],
+            "files": [{ "path": "aux_code/stroke.txt", "label": "笔画" },
+                      { "path": "aux_code/flypy_full.txt", "label": "小鹤" }]
+        }))
+    }
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// 下拉顺序是「方案在前、码表在后」，`entry` 即写进 `files` 的原文（方案带 `schema:` 前缀）。
+    #[test]
+    fn aux_source_items_put_schemas_first() {
+        let o = aux_opts();
+        let e: Vec<&str> = o.items.iter().map(|i| i.entry.as_str()).collect();
+        assert_eq!(
+            e,
+            vec![
+                "schema:wubi86",
+                "aux_code/stroke.txt",
+                "aux_code/flypy_full.txt"
+            ]
+        );
+        assert!(o.items[0].is_schema && !o.items[1].is_schema);
+        assert_eq!(o.label_of("schema:wubi86"), Some("五笔 86"));
+    }
+
+    /// 跟随档括号里的文字：按方案文件声明的来源取名，多个用「+」连，没装的标出来。
+    #[test]
+    fn follow_text_names_base_sources() {
+        let o = aux_opts();
+        assert_eq!(
+            aux_src_follow_text(&strs(&["aux_code/stroke.txt"]), &o),
+            "笔画"
+        );
+        assert_eq!(
+            aux_src_follow_text(&strs(&["schema:wubi86", "aux_code/flypy_full.txt"]), &o),
+            "五笔 86+小鹤"
+        );
+        assert_eq!(
+            aux_src_follow_text(&strs(&["aux_code/gone.txt"]), &o),
+            "aux_code/gone.txt（未安装）"
+        );
+        assert_eq!(aux_src_follow_text(&[], &o), "无");
+        // 可选项拿不到（RPC 失败）时退回原文，不崩、不报未安装。
+        assert_eq!(
+            aux_src_follow_text(&strs(&["aux_code/stroke.txt"]), &AuxSourceOpts::default()),
+            "aux_code/stroke.txt"
+        );
+    }
+
+    /// 打开时三种状态的判定：合并值等于方案文件自己的值 ⇒ 跟随；单条且下拉里有 ⇒ 选中；
+    /// 多条或下拉里没有 ⇒ 只读（UI 表达不了，保存原样不动）。
+    #[test]
+    fn seed_distinguishes_follow_pick_manual() {
+        let o = aux_opts();
+        let base = strs(&["aux_code/stroke.txt"]);
+        assert!(
+            matches!(seed_aux_src(&base, &base, &o), AuxSrcSeed::Follow),
+            "合并值 = 基线 ⇒ 跟随"
+        );
+        assert!(matches!(
+            seed_aux_src(&strs(&["schema:wubi86"]), &base, &o),
+            AuxSrcSeed::Pick(0)
+        ));
+        assert!(
+            matches!(
+                seed_aux_src(&strs(&["aux_code/flypy_full.txt"]), &[], &o),
+                AuxSrcSeed::Pick(2)
+            ),
+            "方案没写、用户配了"
+        );
+        assert!(
+            matches!(
+                seed_aux_src(&strs(&["schema:wubi86", "aux_code/stroke.txt"]), &base, &o),
+                AuxSrcSeed::Manual(_)
+            ),
+            "多条 ⇒ 只读"
+        );
+        assert!(
+            matches!(
+                seed_aux_src(&strs(&["schema:nope"]), &base, &o),
+                AuxSrcSeed::Manual(_)
+            ),
+            "下拉里没有 ⇒ 只读"
+        );
+    }
+
+    /// ★ 不勾写 `null`（core 跳过 null ⇒ 删键 ⇒ 回落方案文件），不是写一份基线的拷贝——
+    /// 后者会把「跟随」钉死成当下的值，方案作者以后改了来源，这个用户也跟不上。
+    #[test]
+    fn aux_src_write_null_when_following() {
+        assert_eq!(aux_src_write(false, Some("schema:wubi86")), Value::Null);
+        assert_eq!(
+            aux_src_write(true, Some("schema:wubi86")),
+            json!(["schema:wubi86"])
+        );
+    }
+
+    /// 「全部恢复跟随」连来源这一行一起清，落盘回到 null；多条的只读态也被清掉。
+    #[test]
+    fn aux_reset_all_also_clears_source_row() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        state.settings_aux_src_over.set(true);
+        state.settings_aux_src_manual.set(true);
+        state.settings_aux_src_idx.set(1);
+
+        aux_reset_all(&state, true, 4);
+
+        assert!(!state.settings_aux_src_over.get());
+        assert!(!state.settings_aux_src_manual.get());
+        assert_eq!(
+            aux_src_write(state.settings_aux_src_over.get(), Some("x")),
+            Value::Null
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 测试用：mock 下打开拼音族方案（`auxCodeBaseFiles` 与合并后的 `files` 相同 ⇒ 跟随）。
+    fn open_mock_pinyin() -> SchemaManagerState {
+        let state = SchemaManagerState::new();
+        *state.schemas.borrow_mut() = vec![SchemaEntry {
+            id: "pinyin_simp".into(),
+            name: "全拼·简".into(),
+            engine_type: "pinyin".into(),
+            scheme: "full".into(),
+            ..Default::default()
+        }];
+        state.open_settings_at_id("pinyin_simp");
+        state
+    }
+
+    /// ★ 打开即关不脏：默认跟随时来源这一行不往 cfg 里写任何东西（尤其不写 null——
+    /// 那虽然落盘结果一样，但会让整份 cfg 进待提交队列，主保存按钮平白亮起）。
+    #[test]
+    fn aux_src_follow_seeded_from_mock_and_untouched_save_is_clean() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = open_mock_pinyin();
+        assert!(!state.settings_aux_src_over.get(), "合并值 = 方案值 ⇒ 跟随");
+        assert!(!state.settings_aux_src_manual.get());
+        assert_eq!(state.settings_aux_src_follow.get(), "笔画");
+        assert_eq!(
+            state.settings_aux_src_opts.borrow().items.len(),
+            5,
+            "可选项取自 schema.auxCodeSources"
+        );
+        assert_eq!(state.settings_aux_disp.get(), ct_summary(0));
+
+        state.stage_settings_edits();
+        assert!(
+            !state.has_pending_edits(),
+            "什么都没改，不该有待提交的方案改动"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 勾上并选一项 ⇒ `files` 写成单元素数组；再取消勾选 ⇒ 写 null（回落方案文件）。
+    #[test]
+    fn aux_src_pick_writes_single_entry_and_unpick_writes_null() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = open_mock_pinyin();
+        let flypy = state
+            .settings_aux_src_opts
+            .borrow()
+            .index_of("aux_code/flypy_full.txt")
+            .unwrap();
+        state.settings_aux_src_over.set(true);
+        state.settings_aux_src_idx.set(flypy);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["pinyin_simp"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(
+            cfg["engine"]["aux_code"]["files"],
+            json!(["aux_code/flypy_full.txt"])
+        );
+
+        // 模拟「打开时已覆盖」：基线换成勾选态，再取消勾选 ⇒ 这一次落 null。
+        let state = open_mock_pinyin();
+        state.settings_aux_src_at_open.set((true, flypy, false));
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["pinyin_simp"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(cfg["engine"]["aux_code"]["files"], Value::Null);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 只读态（多条 / 下拉里没有）保存原样不动；被「全部恢复跟随」清掉后才写 null。
+    #[test]
+    fn aux_src_manual_is_left_alone_until_reset() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        // 模拟打开时 seed 出只读态（mock 的 files 是单条已知项，造不出来，直接设信号）。
+        let state = open_mock_pinyin();
+        state.settings_aux_src_over.set(true);
+        state.settings_aux_src_manual.set(true);
+        state.settings_aux_src_at_open.set((true, 0, true));
+        state.stage_settings_edits();
+        assert!(!state.has_pending_edits(), "只读态不动 files");
+
+        aux_reset_all(&state, true, 4);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["pinyin_simp"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(cfg["engine"]["aux_code"]["files"], Value::Null);
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 }
