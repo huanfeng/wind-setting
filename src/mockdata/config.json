@@ -110,6 +110,7 @@
   "filter_mode": "smart",
   "numpad_behavior": "direct",
   "numpad_half_width": false,
+  "password_force_english": true,
   "phrase": {
    "min_prefix": 2
   },

@@ -1274,6 +1274,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "input.password_force_english",
+      "type": "bool"
+    },
+    {
       "default": "off",
       "key": "input.association.kind",
       "type": "enum",
