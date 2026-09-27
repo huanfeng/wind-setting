@@ -350,6 +350,18 @@ type QuickVarsByKind = Vec<(String, Vec<(String, String)>)>;
 /// 变量集相同的类别合并成一节（core 里 date 与 month_day 完全相同），故类别名是一组。
 type QuickVarSection = (Vec<String>, Vec<(String, String)>);
 
+/// 带筛选/搜索的「清空」在确认时固定下来的范围（见 [`PendingAction::Clear`]）。
+#[derive(Clone)]
+struct ClearFilter {
+    /// 完成提示里的名词：「搜索结果」或「筛选结果」。
+    noun: &'static str,
+    /// 非分页类别的命中行快照（分页类别为 `None`，执行时按固定的 `params` 向服务端取）。
+    rows: Option<Vec<WordRow>>,
+}
+
+/// 临时词库「闲置 ≥ N 天」的上限（100 年）。
+const TEMP_IDLE_DAYS_MAX: u64 = 36500;
+
 #[derive(Clone)]
 enum PendingAction {
     /// 删除一行（code, text/word）。
@@ -362,7 +374,13 @@ enum PendingAction {
     DeleteQuickFormat { kind: String, id: String },
     /// 清空当前类别。带确认时的列表参数：「闲置 ≥ N 天」换算出的 usedBefore 在确认那一刻
     /// 就定下来，删除沿用同一份，不在执行时按新的「现在」重算。
-    Clear(Value),
+    ///
+    /// `filtered` 同样在确认那一刻定下：确认前把筛选/搜索框清空，删的仍只是确认框里写的
+    /// 那批筛选结果，而不是在执行时重新判断、退化成整表清空。
+    Clear {
+        params: Value,
+        filtered: Option<ClearFilter>,
+    },
     /// 删除多选勾中的行。
     DeleteSelected,
     /// 恢复默认（短语）。
@@ -2004,8 +2022,14 @@ impl DictManagerState {
             return (None, None);
         }
         let n = |s: Signal<String>| s.get().trim().parse::<u64>().ok();
-        // 天数封顶 100 年：再大没有意义，且乘 86400 换算秒数时会溢出。
-        let days = n(self.temp_idle_days).filter(|d| *d <= 36500);
+        // 天数封顶 100 年：再大没有意义，且乘 86400 换算秒数时会溢出。超出（含 u64 放不下的
+        // 长串数字）按上限算，不能当没填——那样「清空」会从只删筛选结果退化成整表清空。
+        let days = self.temp_idle_days.get();
+        let days = days.trim();
+        let days = (!days.is_empty() && days.bytes().all(|b| b.is_ascii_digit())).then(|| {
+            days.parse::<u64>()
+                .map_or(TEMP_IDLE_DAYS_MAX, |d| d.min(TEMP_IDLE_DAYS_MAX))
+        });
         (n(self.temp_max_count), days)
     }
 
@@ -2031,6 +2055,15 @@ impl DictManagerState {
     /// 临时词库筛选框变化：归零分页重载（与改搜索词同一条路）。
     pub fn on_temp_filter_changed(&self) {
         if self.current_category() == WordCategory::Temp {
+            // 超上限的天数回写成上限，让输入框显示的就是实际生效的条件。回写会再触发一次
+            // 本函数，那时已是 36500，不再回写。
+            let max = TEMP_IDLE_DAYS_MAX.to_string();
+            if self.temp_filter().1 == Some(TEMP_IDLE_DAYS_MAX)
+                && self.temp_idle_days.get().trim() != max
+            {
+                self.temp_idle_days.set(max);
+                return;
+            }
             self.apply_search();
         }
     }
@@ -2188,20 +2221,19 @@ impl DictManagerState {
 
     /// 清空当前类别；搜索/筛选态下只删命中项（见 [`Self::active_filter`]）。
     /// `list_params` 为确认时定下的列表参数（见 [`PendingAction::Clear`]）。
-    fn do_clear(&self, list_params: Value) {
+    /// `filtered` 为确认时定下的筛选范围，执行时不再重新判断。
+    fn do_clear(&self, list_params: Value, filtered: Option<ClearFilter>) {
         let spec = self.current_spec();
-        if self.active_filter().is_some() {
-            let rows = match self.search_matched_rows(list_params) {
-                Ok(r) => r,
-                Err(e) => return self.notify_err(&format!("操作失败: {e}")),
+        if let Some(ClearFilter { noun, rows }) = filtered {
+            let rows = match rows {
+                Some(r) => r,
+                None => match self.search_matched_rows(list_params) {
+                    Ok(r) => r,
+                    Err(e) => return self.notify_err(&format!("操作失败: {e}")),
+                },
             };
             let calls = self.clear_calls(Some(&rows));
             let n = calls.len();
-            let noun = if self.active_search().is_some() && self.temp_filter() == (None, None) {
-                "搜索结果"
-            } else {
-                "筛选结果"
-            };
             let done = self.run_row_calls(calls, &format!("已删除 {n} 条{noun}"));
             for r in &rows[..done] {
                 self.deselect(&r.code, &r.text);
@@ -2365,7 +2397,18 @@ impl DictManagerState {
     }
 
     pub fn request_clear(&self) {
-        *self.pending.borrow_mut() = Some(PendingAction::Clear(self.build_list_params()));
+        let filtered = self.active_filter().map(|_| ClearFilter {
+            noun: if self.active_search().is_some() && self.temp_filter() == (None, None) {
+                "搜索结果"
+            } else {
+                "筛选结果"
+            },
+            rows: (!self.current_spec().paged).then(|| self.visible_rows()),
+        });
+        *self.pending.borrow_mut() = Some(PendingAction::Clear {
+            params: self.build_list_params(),
+            filtered,
+        });
         // N 是上次刷新时的计数；带闲置天数时「现在」已往后走了，实删条数可能略有出入。
         let n = if self.temp_filter().1.is_some() {
             format!("约 {}", self.total.get())
@@ -2443,7 +2486,7 @@ impl DictManagerState {
         match act {
             Some(PendingAction::DeleteRow(c, t)) => self.do_delete_row(&c, &t),
             Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
-            Some(PendingAction::Clear(p)) => self.do_clear(p),
+            Some(PendingAction::Clear { params, filtered }) => self.do_clear(params, filtered),
             Some(PendingAction::DeleteSelected) => self.do_delete_selected(),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
             Some(PendingAction::CommonBulk { ch, common }) => {
@@ -5549,7 +5592,7 @@ mod tests {
         assert!(st.confirm_msg.get().contains("42"));
         assert!(matches!(
             *st.pending.borrow(),
-            Some(PendingAction::Clear(_))
+            Some(PendingAction::Clear { .. })
         ));
 
         st.request_reset_default();
@@ -5873,7 +5916,7 @@ mod tests {
             assert!(msg.contains("闲置 ≥ 30 天"), "{msg}");
             assert!(msg.contains("约 7 条"), "{msg}");
             let pinned = match &*st.pending.borrow() {
-                Some(PendingAction::Clear(p)) => p["usedBefore"].clone(),
+                Some(PendingAction::Clear { params, .. }) => params["usedBefore"].clone(),
                 _ => panic!("应为 Clear"),
             };
             assert!(pinned.is_i64());
@@ -5889,16 +5932,47 @@ mod tests {
         });
     }
 
-    /// 闲置天数超上限当没填；上限内正常换算。
+    /// 闲置天数超上限按上限算并回写输入框，不再当没填（当没填会让「清空」退化成整表清空）。
     #[test]
-    fn temp_idle_days_is_bounded() {
+    fn temp_idle_days_is_clamped_and_written_back() {
         let st = temp_state_mock();
         st.temp_idle_days.set("36500".into());
-        assert!(st.build_list_params().get("usedBefore").is_some());
-        st.temp_idle_days.set("36501".into());
-        assert!(st.build_list_params().get("usedBefore").is_none());
-        st.temp_idle_days.set("18446744073709551615".into());
-        assert!(st.build_list_params().get("usedBefore").is_none());
+        assert_eq!(st.temp_filter().1, Some(36500));
+        for over in ["36501", "18446744073709551615", "99999999999999999999999"] {
+            st.temp_idle_days.set(over.into());
+            assert_eq!(st.temp_filter().1, Some(36500), "{over} 按上限算");
+            assert!(st.build_list_params().get("usedBefore").is_some(), "{over}");
+            st.on_temp_filter_changed();
+            assert_eq!(st.temp_idle_days.get(), "36500", "{over} 回写上限");
+        }
+        st.temp_idle_days.set("abc".into());
+        assert_eq!(st.temp_filter().1, None, "非数字仍当没填");
+    }
+
+    /// 确认前把筛选框清空：删的仍是确认时的筛选结果，不能退化成整表 clear。
+    #[test]
+    fn clear_keeps_filtered_scope_when_filter_cleared_before_confirm() {
+        with_mock(|| {
+            let st = temp_state_mock();
+            st.temp_max_count.set("1".into());
+            st.total.set(3);
+            st.request_clear();
+            assert!(st.confirm_msg.get().contains("筛选结果"));
+            st.temp_max_count.set(String::new());
+            assert!(st.active_filter().is_none());
+            crate::rpc::take_mock_calls();
+            st.confirm_pending();
+            let calls = crate::rpc::take_mock_calls();
+            assert!(
+                calls.iter().all(|(m, _)| m != "temp.clear"),
+                "不得整表清空：{calls:?}"
+            );
+            let list = calls
+                .iter()
+                .find(|(m, _)| m == "temp.listPaged")
+                .expect("应按确认时的条件取命中行");
+            assert_eq!(list.1["maxCount"], json!(1));
+        });
     }
 
     /// t179：搜索态下「清空」只删搜索结果，不能调整表 clear。
