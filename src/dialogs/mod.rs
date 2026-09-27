@@ -12,6 +12,7 @@ pub mod schema_key_actions;
 pub mod schema_manager;
 pub mod schema_session_actions;
 pub mod session_actions;
+pub mod template_assist;
 pub mod theme_import_dialog;
 pub mod theme_import_picker;
 pub mod toolbar_button_edit;

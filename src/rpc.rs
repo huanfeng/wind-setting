@@ -627,6 +627,38 @@ mod tests {
         );
     }
 
+    /// 模板预览的 mock 与真实 core 同形（字段齐全、problems 用模板偏移、气泡无选中态），
+    /// 离线截图里预览行与「插入颜色」才走得通。
+    #[test]
+    fn mock_preview_template_has_core_shape() {
+        let r = mock_reply_with(
+            "appearance.previewTemplate",
+            &json!({"template": "$[nope]{x} ${code}", "scene": "comment", "swatches": ["error"]}),
+        );
+        for k in [
+            "text", "fg", "bg", "runs", "selected", "problems", "swatches",
+        ] {
+            assert!(r.get(k).is_some(), "缺 {k}：{r}");
+        }
+        assert_eq!(r["swatches"]["error"], json!([217, 48, 37, 255]));
+        let p = &r["problems"][0];
+        assert_eq!(
+            (p["start"].as_u64(), p["end"].as_u64()),
+            (Some(2), Some(6)),
+            "模板偏移"
+        );
+        let t = mock_reply_with(
+            "appearance.previewTemplate",
+            &json!({"template": "x", "scene": "content", "swatches": ["error"]}),
+        );
+        assert_eq!(t["selected"], Value::Null, "气泡没有选中态");
+        assert_eq!(
+            t["swatches"]["error"],
+            json!([242, 139, 130, 255]),
+            "气泡取 tooltip_ 色"
+        );
+    }
+
     /// 守护：统计样例必须能被页面的数据层按 core 契约解析。
     ///
     /// mock 与 `data::DailyItem`/`Summary` 的字段名（core 的压缩缩写）一旦对不上，
@@ -1334,6 +1366,99 @@ fn mock_target_is_pinyin(params: &Value) -> bool {
         .is_some_and(|s| s.contains("pinyin") || s.contains("shuangpin"))
 }
 
+/// `appearance.previewTemplate` 的离线回包（设置端模板预览行）。
+///
+/// 真实求值要变量样例与主题，都在 core；离线只求**形状与坐标系**对：文字是固定样例（有 `$[`
+/// 时给一段强调色），`$[…]` 里既不是 `#` 色值也不是标准色名的，按 core 的口径报一条问题——
+/// 区间是**模板**里的字节偏移，截图里能看到问题落回输入框的哪一段。
+fn mock_preview_template(params: &Value) -> Value {
+    const NAMES: &[(&str, [u8; 4], [u8; 4])] = &[
+        ("text", [30, 30, 30, 255], [255, 255, 255, 255]),
+        ("text_dim", [100, 100, 100, 255], [189, 189, 189, 255]),
+        ("text_hint", [150, 150, 150, 255], [160, 160, 160, 255]),
+        ("accent", [66, 133, 244, 255], [138, 180, 248, 255]),
+        ("accent_text", [37, 99, 235, 255], [138, 180, 248, 255]),
+        ("success", [30, 142, 62, 255], [129, 201, 149, 255]),
+        ("warning", [176, 96, 0, 255], [253, 214, 99, 255]),
+        ("error", [217, 48, 37, 255], [242, 139, 130, 255]),
+        ("info", [26, 115, 232, 255], [138, 180, 248, 255]),
+    ];
+    let tpl = params
+        .get("template")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let tooltip = params.get("scene").and_then(|v| v.as_str()) != Some("comment");
+    let pick = |name: &str| {
+        NAMES
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .map(|(_, c, t)| if tooltip { *t } else { *c })
+    };
+    let mut problems = Vec::new();
+    let mut from = 0;
+    while let Some(i) = tpl[from..].find("$[").map(|i| i + from) {
+        let spec_at = i + 2;
+        let Some(len) = tpl[spec_at..].find(']') else {
+            break;
+        };
+        let spec = &tpl[spec_at..spec_at + len];
+        let hex_ok = spec.strip_prefix('#').is_some_and(|h| {
+            matches!(h.len(), 3 | 6 | 8) && h.chars().all(|c| c.is_ascii_hexdigit())
+        });
+        if !hex_ok && pick(spec).is_none() {
+            problems.push(json!({
+                "start": spec_at, "end": spec_at + len,
+                "message": format!("当前主题没有颜色「{spec}」，按正文色显示"),
+            }));
+        }
+        from = spec_at + len;
+    }
+    let scene = params.get("scene").and_then(|v| v.as_str()).unwrap_or("");
+    let (text, runs) = if scene == "label" {
+        // 段名多是字面文字：原样回显（去掉 `$[…]{` 与配对的 `}` 太费事，离线不求这个）。
+        (
+            tpl,
+            json!([{ "start": 0, "end": tpl.len(), "rgba": pick("accent_text") }]),
+        )
+    } else if tooltip {
+        (
+            "你：nǐ\n好：hǎo/hào",
+            json!([{ "start": 6, "end": 9, "rgba": pick("error") }]),
+        )
+    } else {
+        (
+            "hao (nǐ hǎo)",
+            json!([{ "start": 4, "end": 14, "rgba": pick("accent_text") }]),
+        )
+    };
+    let runs = if tpl.contains("$[") { runs } else { json!([]) };
+    let runs = &runs;
+    let swatches: serde_json::Map<String, Value> = params
+        .get("swatches")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(|n| {
+            (
+                n.to_string(),
+                json!(pick(n).unwrap_or([150, 150, 150, 255])),
+            )
+        })
+        .collect();
+    json!({
+        "text": text,
+        "fg": if tooltip { [255, 255, 255, 255] } else { [150, 150, 150, 255] },
+        "bg": if tooltip { [60, 60, 60, 240] } else { [255, 255, 255, 255] },
+        "runs": runs,
+        "selected": if tooltip { Value::Null } else {
+            json!({ "fg": [30, 30, 30, 255], "bg": [235, 242, 254, 255], "runs": runs })
+        },
+        "problems": problems,
+        "swatches": swatches,
+    })
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1401,6 +1526,7 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             { "name": "mono", "display_name": "墨", "version": "1.0.0", "builtin": false }
         ]),
         "theme.delete" => json!({ "ok": true }),
+        "appearance.previewTemplate" => mock_preview_template(params),
         // 全局键 → 覆盖它的方案 id（core `schema.overrideSummary`）。
         "schema.overrideSummary" => json!({ "ui.candidate.layout": ["wubi86"] }),
         "theme.resolved" => json!({
