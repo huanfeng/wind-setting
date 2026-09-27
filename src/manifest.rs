@@ -3171,13 +3171,18 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
     // 事），而对话框里它只是三个字段之一，得叫「横排注释」才与旁边的「竖排注释」成对。
     // 同 `build_dialog_button_index_labels` 硬编码对话框标题的先例——专用 builder 里的文案
     // 属于该对话框的版式，不是清单项的属性。
-    let mut rows = vec![comment_template_block(visible, horizontal, |control| {
-        setting_row(
-            "横排注释",
-            Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽"),
-            control,
-        )
-    })];
+    let mut rows = vec![comment_template_block(
+        visible,
+        horizontal,
+        "留空则不显示注释",
+        |control| {
+            setting_row(
+                "横排注释",
+                Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽"),
+                control,
+            )
+        },
+    )];
     // 竖排模板本是寄居项（`dialog_extra_for`），经通用 `field` 建成一个普通输入框；它同样是
     // 模板、同样要预览与插入颜色，故在这里接手自建，其余寄居项（两个最大字数）照旧。
     let extras = dialog_extra_keys(state, key);
@@ -3186,7 +3191,8 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
         let el = match state.manifest.get(k) {
             Some(item) if k == COMMENT_VERTICAL_KEY => {
                 let sig = comment_template_signal(state, k, cfg);
-                comment_template_block(visible, sig, |control| {
+                let placeholder = item.hint.clone().unwrap_or_default();
+                comment_template_block(visible, sig, &placeholder, |control| {
                     // 行外观交给通用的 `field_row`：竖排模板可被方案覆盖，角标不能丢。
                     field_row(state, k, item, control, SchemaHintMode::PerRow)
                 })
@@ -3258,9 +3264,13 @@ fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<
 }
 
 /// 一个注释模板：输入框 + 「插入颜色」（由 `row` 包成设置行），下方是预览（常态与选中态各一块）。
+///
+/// `placeholder` 各用原来的：横排「留空则不显示注释」，竖排沿用通用字段的写法（清单 hint）。
+/// 输入框宽 200（原横排 240）：旁边要放「插入颜色」，240 会把行说明挤得更短。
 fn comment_template_block(
     visible: Signal<bool>,
     text: Signal<String>,
+    placeholder: &str,
     row: impl FnOnce(Element) -> Element,
 ) -> Element {
     use crate::dialogs::template_assist::{
@@ -3270,7 +3280,7 @@ fn comment_template_block(
     let control = Element::row()
         .cross(Align::Center)
         .spacing(8)
-        .child(f.hook(Element::text_input(text, "留空则不显示注释").width(200)))
+        .child(f.hook(Element::text_input(text, placeholder).width(200)))
         .child(insert_color_button(&f, "comment"));
     let pv = preview(
         visible,

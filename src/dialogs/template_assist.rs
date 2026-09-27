@@ -24,6 +24,14 @@
 //! 触发器与色块都用富文本的可点 span（span 点击不请求焦点），外面再套一层 [`KeepFocus`]
 //! （`Widget::preserves_focus`，同菜单栏的豁免）。
 //!
+//! 例外是「自定义」的 #hex：要打字就得让那个小输入框拿焦点，插完焦点**回不到**模板输入框——
+//! windui 的 `EventCtx::request_focus` 只能把焦点给回调自己所在的节点，没有「把焦点给别的节点」
+//! 的入口（Tree 上的 `set_focused` 只改节点标志，宿主的焦点状态不跟着变）。光标位置照样摆好，
+//! 用户点回输入框（或 Tab 回去）即可接着打。
+//!
+//! 输入框节点：点击时经 `on_click` 记下；键盘 Tab 进来、没点过的，用时从触发控件往上找最近的、
+//! 正文等于本字段的输入框（[`find_input`]）。两条路都找不到才追加到末尾。
+//!
 //! 选区读自 windui `Tree::selection_of`（字符下标）。插入后光标的落点用**合成按键**摆
 //! （Home + →×n + Shift+→×m）：`TextInput::set_selection` 虽然直接，但它记成「预置选区」，
 //! 此后每次对话框隐藏再打开都会重新兑现一次——段表单是新建 / 编辑共用的，下一次打开别的段
@@ -33,7 +41,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
-use windui::core::{EventCtx, NodeId, Widget};
+use windui::core::{EventCtx, NodeId, Tree, Widget};
 use windui::event::KeyEvent;
 use windui::geometry::{Rect, Size};
 use windui::prelude::*;
@@ -195,8 +203,8 @@ fn para_of(text: &str, fg: Color, runs: &[Value], bold: bool) -> Para {
 pub struct TemplateField {
     pub text: Signal<String>,
     escaped: bool,
-    /// 输入框节点。用户点过输入框才知道（windui 没有「按 Element 查节点」的入口）；
-    /// 不知道时插入颜色追加到末尾、问题不可点选。
+    /// 输入框节点的缓存。windui 没有「按 Element 查节点」的入口，也没有聚焦通知：点击时经
+    /// `on_click` 记下；没记到（键盘 Tab 进来的）就在用时经 [`find_input`] 从触发控件往上找。
     target: Rc<Cell<Option<NodeId>>>,
 }
 
@@ -220,28 +228,71 @@ impl TemplateField {
         to_template(&self.text.get(), self.escaped)
     }
 
+    /// 本字段输入框的节点：缓存仍有效（节点还在、正文还是本字段的）就用它，否则从 `from`
+    /// （触发这次操作的控件）往上找。
+    fn locate(&self, tree: &Tree, from: NodeId) -> Option<NodeId> {
+        let text = self.text.get();
+        let cached = self
+            .target
+            .get()
+            .filter(|&id| tree.ime_text_of(id).as_deref() == Some(text.as_str()));
+        let id = cached.or_else(|| find_input(tree, from, &text))?;
+        self.target.set(Some(id));
+        Some(id)
+    }
+
     /// 在当前选区 / 光标处插入颜色，并把光标摆到该在的位置。
     fn insert_color(&self, ctx: &mut EventCtx, spec: &str) {
-        let id = self.target.get();
-        let sel = id.and_then(|id| ctx.tree_mut().selection_of(id));
-        let (text, caret) = wrap_color(&self.text.get(), sel, spec);
-        self.text.set(text);
-        if let Some(id) = id {
-            select_by_keys(ctx, id, caret, caret);
-        }
+        let from = ctx.id();
+        insert_into(ctx.tree_mut(), self, from, spec);
+        ctx.mark_dirty_all();
     }
 
     /// 在输入框里选中字符区间 `[s, e)`（点一条问题时用）。
     fn select(&self, ctx: &mut EventCtx, s: usize, e: usize) {
-        if let Some(id) = self.target.get() {
-            select_by_keys(ctx, id, s, e);
+        let from = ctx.id();
+        if let Some(id) = self.locate(ctx.tree_mut(), from) {
+            select_by_keys(ctx.tree_mut(), id, s, e);
+            ctx.mark_dirty_all();
         }
     }
 }
 
+/// 从 `from` 往上逐层找：最近的一个祖先子树里、正文等于 `text` 的输入框。
+///
+/// 触发控件（「插入颜色」的色块、预览里的问题）与它服务的输入框同在一个对话框行 / 表单里，
+/// 最近的那个就是；按正文认，是因为 windui 不暴露控件类型之外的身份——横排、竖排两个模板
+/// 正文相同时也不会认错，因为更近的那一层先被找到。
+fn find_input(tree: &Tree, from: NodeId, text: &str) -> Option<NodeId> {
+    let mut anc = tree.get(from)?.parent;
+    while let Some(a) = anc {
+        let mut stack = vec![a];
+        while let Some(id) = stack.pop() {
+            let Some(n) = tree.get(id) else { continue };
+            if tree.ime_text_of(id).as_deref() == Some(text) {
+                return Some(id);
+            }
+            stack.extend(n.children.iter().copied());
+        }
+        anc = tree.get(a)?.parent;
+    }
+    None
+}
+
+/// 插入颜色的全过程（纯树操作，可在测试里直接驱动）：读选区 → 改正文 → 摆光标。
+/// 找不到输入框（理论上不会）时追加到末尾。
+fn insert_into(tree: &mut Tree, field: &TemplateField, from: NodeId, spec: &str) {
+    let id = field.locate(tree, from);
+    let sel = id.and_then(|id| tree.selection_of(id));
+    let (text, caret) = wrap_color(&field.text.get(), sel, spec);
+    field.text.set(text);
+    if let Some(id) = id {
+        select_by_keys(tree, id, caret, caret);
+    }
+}
+
 /// 用合成按键在单行输入框里摆选区。为什么不用 `set_selection`，见模块文档。
-fn select_by_keys(ctx: &mut EventCtx, id: NodeId, s: usize, e: usize) {
-    let tree = ctx.tree_mut();
+fn select_by_keys(tree: &mut Tree, id: NodeId, s: usize, e: usize) {
     let key = |k: Key, shift: bool| {
         let mut ev = KeyEvent::pressed(k);
         ev.shift = shift;
@@ -254,7 +305,6 @@ fn select_by_keys(ctx: &mut EventCtx, id: NodeId, s: usize, e: usize) {
     for _ in s..e {
         tree.dispatch_key(key(Key::Right, true), Some(id));
     }
-    ctx.mark_dirty_all();
 }
 
 /// 点在这棵子树里不清焦点（`Widget::preserves_focus`）。见模块文档「焦点不能丢」。
@@ -407,7 +457,8 @@ pub fn preview(
                     if !src.caption.is_empty() {
                         para = para.span(format!("{}：", src.caption), SpanStyle::new());
                     }
-                    if let Some((s, e)) = range {
+                    // 空区间（主题加载失败那类整体提示）不标位置。
+                    if let Some((s, e)) = range.filter(|(s, e)| s < e) {
                         let snippet: String = display[s..e.min(display.len())].iter().collect();
                         para = para.span_id(
                             probs_at.len().to_string(),
@@ -673,6 +724,63 @@ mod tests {
         assert_eq!(c, t.chars().count() - 1);
         // 越界选区钳到文末。
         assert_eq!(wrap_color("ab", Some((5, 9)), "x").0, "ab$[x]{}");
+    }
+
+    /// 两行：各一个正文相同的输入框 + 一个触发控件（模拟横排 / 竖排两个模板）。
+    /// 返回 (树, [第一行输入框, 第一行触发], [第二行输入框, 第二行触发], 两个字段)。
+    fn two_rows() -> (Tree, [NodeId; 2], [NodeId; 2], TemplateField, TemplateField) {
+        let (a, b) = (signal("abcd".to_string()), signal("abcd".to_string()));
+        let row = |sig| {
+            Element::row()
+                .child(Element::text_input(sig, "").width(200).height(28))
+                .child(Element::leaf().width(10).height(10))
+        };
+        let el = Element::col().child(row(a)).child(row(b));
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(400, 200), &mut windui::text::NullTextEngine);
+        let rows = tree.get(root).unwrap().children.clone();
+        let kids = |r: NodeId| {
+            let c = &tree.get(r).unwrap().children;
+            [c[0], c[1]]
+        };
+        let (r0, r1) = (kids(rows[0]), kids(rows[1]));
+        (
+            tree,
+            r0,
+            r1,
+            TemplateField::new(a, false),
+            TemplateField::new(b, false),
+        )
+    }
+
+    /// 合成按键摆出的选区就是 `selection_of` 读到的选区（字符下标）。
+    #[test]
+    fn select_by_keys_places_selection() {
+        let (mut tree, [input, _], _, _, _) = two_rows();
+        select_by_keys(&mut tree, input, 1, 3);
+        assert_eq!(tree.selection_of(input), Some((1, 3)));
+        select_by_keys(&mut tree, input, 2, 2);
+        assert_eq!(tree.selection_of(input), Some((2, 2)));
+    }
+
+    /// 插入颜色：包住选区、光标落在 `}` 后；没点过输入框（键盘聚焦）也从触发控件找到它，
+    /// 且找的是**同一行**那个（两行正文相同也不串）。
+    #[test]
+    fn insert_into_wraps_selection_and_finds_nearest_input() {
+        let (mut tree, _, [input1, from1], _, f1) = two_rows();
+        select_by_keys(&mut tree, input1, 1, 3);
+        insert_into(&mut tree, &f1, from1, "error");
+        assert_eq!(f1.text.get(), "a$[error]{bc}d");
+        let caret = "a$[error]{bc}".chars().count();
+        assert_eq!(tree.selection_of(input1), Some((caret, caret)));
+        // 空选区：插在光标处，光标进花括号。
+        let (mut tree, [input0, from0], _, f0, _) = two_rows();
+        select_by_keys(&mut tree, input0, 2, 2);
+        insert_into(&mut tree, &f0, from0, "#C00");
+        assert_eq!(f0.text.get(), "ab$[#C00]{}cd");
+        assert_eq!(tree.selection_of(input0), Some((10, 10)));
     }
 
     #[test]
