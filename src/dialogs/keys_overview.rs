@@ -20,7 +20,10 @@
 use serde_json::Value;
 use windui::prelude::*;
 
-use super::key_binding::{BindingBody, Verb, key_display, session_verb_label};
+use super::key_binding::{
+    BindingBody, KeyShape, SCHEMA_COMBO_HINT, Verb, command_verb_label, key_display, key_shape,
+    session_verb_label,
+};
 
 /// 总览的一行。
 #[derive(Clone)]
@@ -33,6 +36,23 @@ struct Row {
     /// 是否属会话态那张表。只用于排序（会话态排在后面），不另起分组标题——两张表的键名
     /// 值域不重叠，排在一起已经读得出来，多一层标题只是把列表撑长。
     session: bool,
+    /// core 判定这一行**不生效**（`ineffective`）。眼下只有方案层 lead 表的组合键：core 只从
+    /// 全局 `keys.key_actions` 编组合键热键表，方案层那条按不出来。
+    ///
+    /// ★ 这样的行**不遮盖**同名全局条目：同一个键会出两行（全局那条在前、生效；方案那条
+    /// 不生效）。本表按 `Vec` 逐行存、稳定排序，不按键去重——按键建索引会把其中一行吞掉，
+    /// 而吞掉的若是全局那条，用户看到的就是「这个键不生效」，与事实相反。
+    ineffective: bool,
+}
+
+/// 不生效行的提示文案。组合键与方案按键编辑器的行提示同文案（同一个常量）；
+/// 将来 core 若对别的形态也标 `ineffective`，退回中性的「不生效」，不说错原因。
+fn ineffective_hint(key: &str) -> &'static str {
+    if key_shape(key) == KeyShape::Combo {
+        SCHEMA_COMBO_HINT
+    } else {
+        "不生效"
+    }
 }
 
 /// 方案按键总览的工作态。
@@ -79,14 +99,21 @@ impl KeysOverview {
             let session = it.get("table").and_then(|v| v.as_str()) == Some("session");
             let action = it.get("action").and_then(|v| v.as_str()).unwrap_or("");
             let from_schema = it.get("from").and_then(|v| v.as_str()) == Some("schema");
+            // 旧版 core 没有这个字段 → 按生效处理（那时它也没有区分的能力）。
+            let ineffective = it
+                .get("ineffective")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             rows.push(Row {
                 key: key.to_string(),
                 action: Self::action_label(action, session, lead_verbs),
                 from: if from_schema { "本方案" } else { "全局" }.to_string(),
                 session,
+                ineffective,
             });
         }
         // 会话态排在后面，各自内部按键名 —— core 那边已按键名有序，这里只做分组。
+        // ★ `sort_by` 是稳定排序：同键两行（全局生效 + 方案不生效）保持 core 给的先后。
         rows.sort_by(|a, b| a.session.cmp(&b.session).then_with(|| a.key.cmp(&b.key)));
         self.rows.set(rows);
     }
@@ -103,17 +130,27 @@ impl KeysOverview {
             if let Some(label) = session_verb_label(action) {
                 return label;
             }
+        } else if let Some(label) = command_verb_label(action) {
+            // 命令不在功能表里（表达式是用户写的，没法预先列举），单独翻。
+            return label;
         } else if let Some(v) = lead_verbs.iter().find(|v| v.value == action) {
             return v.label.clone();
         }
         action.to_string()
     }
 
-    /// 摘要（「未设置」/「N 项」）。
+    /// 摘要（「未设置」/「N 项」/「N 项，其中 M 项不生效」）。
+    ///
+    /// 不生效的行也计入 N（它们确实是用户配过的条目），但要单独点出来——摘要是用户
+    /// 不点开总览时唯一看得到的东西。
     pub fn summary(&self) -> String {
-        let n = self.rows.get().len();
+        let rows = self.rows.get();
+        let n = rows.len();
+        let dead = rows.iter().filter(|r| r.ineffective).count();
         if n == 0 {
             "未设置".to_string()
+        } else if dead > 0 {
+            format!("{n} 项，其中 {dead} 项不生效")
         } else {
             format!("{n} 项")
         }
@@ -125,7 +162,14 @@ impl KeysOverview {
     /// 由它统一加。
     pub fn build_body(&self) -> BindingBody {
         let list = Element::host_signal(self.rows, move |row: Row| {
-            Element::row()
+            // 不生效的行整行灰显，并在动作后挂提示：它仍要列出来（用户确实配了它），
+            // 但不能读起来像一条在工作的绑定。
+            let text_role = if row.ineffective {
+                Role::TextMuted
+            } else {
+                Role::Text
+            };
+            let mut line = Element::row()
                 .width_match()
                 .cross(Align::Center)
                 .spacing(8)
@@ -136,24 +180,32 @@ impl KeysOverview {
                     // 各写一份的结果是同一个键在总览和编辑页显示成两个名字。
                     Element::label(key_display(&row.key))
                         .font_size(12.5)
-                        .fg_role(Role::Text)
+                        .fg_role(text_role)
                         .width(150)
                         .max_lines(1),
                 )
                 .child(
                     Element::label(&row.action)
                         .font_size(12.5)
-                        .fg_role(Role::Text)
+                        .fg_role(text_role)
                         .weight(1.0)
                         .max_lines(1),
-                )
-                .child(
-                    Element::label(&row.from)
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted)
-                        .width(56)
+                );
+            if row.ineffective {
+                line = line.child(
+                    Element::label(ineffective_hint(&row.key))
+                        .font_size(11.0)
+                        .fg_role(Role::Warning)
                         .max_lines(1),
-                )
+                );
+            }
+            line.child(
+                Element::label(&row.from)
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .width(56)
+                    .max_lines(1),
+            )
         });
         let hint = Element::label(
             "本页只展示不修改。编辑请回「本方案-按键自定义」「本方案-输入中按键自定义」，或全局按键设置。",
@@ -268,6 +320,91 @@ mod tests {
             }],
         );
         assert_eq!(o.rows.get()[0].action, "切到方案（单向） - 五笔");
+    }
+
+    /// 命令直通两张表都能绑，都要翻成「运行命令：<表达式>」——它不在任何功能表里
+    /// （表达式是用户写的），只查表的话会落到「显示原值」兜底上。
+    /// `commit_highlighted` 是会话态新动词，同样要有中文名。
+    #[test]
+    fn command_and_commit_highlighted_are_named() {
+        let o = KeysOverview::default();
+        o.seed(
+            &json!({ "keysOverview": [
+                { "key": "ctrl+alt+c", "table": "lead", "action": "command:proc.run(\"charmap.exe\")", "from": "global" },
+                { "key": "tab", "table": "session", "action": "command:web.search(\"x\")", "from": "schema" },
+                { "key": "semicolon", "table": "session", "action": "commit_highlighted", "from": "global" },
+            ]}),
+            &lead_verbs(),
+        );
+        let label = |k: &str| {
+            o.rows
+                .get()
+                .iter()
+                .find(|r| r.key == k)
+                .map(|r| r.action.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(label("ctrl+alt+c"), "运行命令：proc.run(\"charmap.exe\")");
+        assert_eq!(label("tab"), "运行命令：web.search(\"x\")");
+        assert_eq!(label("semicolon"), "上屏当前高亮候选（同空格）");
+    }
+
+    /// ★★ 同键两行（全局生效 + 方案层组合键不生效）都要留下，且保持 core 给的先后：
+    /// 按键去重 / 建索引会吞掉其中一行——吞掉全局那条的话，用户看到的是「这个键不生效」，
+    /// 与事实相反。
+    #[test]
+    fn same_key_effective_and_ineffective_rows_both_survive() {
+        let o = KeysOverview::default();
+        o.seed(
+            &json!({ "keysOverview": [
+                { "key": "ctrl+shift+r", "table": "lead", "action": "temp_pinyin", "from": "global", "ineffective": false },
+                { "key": "ctrl+shift+r", "table": "lead", "action": "command:open(\"x\")", "from": "schema", "ineffective": true },
+                { "key": "ctrl+alt+q", "table": "lead", "action": "temp_pinyin", "from": "schema", "ineffective": true },
+            ]}),
+            &lead_verbs(),
+        );
+        let rows = o.rows.get();
+        let same: Vec<&Row> = rows.iter().filter(|r| r.key == "ctrl+shift+r").collect();
+        assert_eq!(same.len(), 2, "同键两行都要在");
+        assert_eq!(
+            (same[0].from.as_str(), same[0].ineffective),
+            ("全局", false),
+            "全局生效那条在前"
+        );
+        assert_eq!(
+            (same[1].from.as_str(), same[1].ineffective),
+            ("本方案", true)
+        );
+        assert_eq!(same[1].action, "运行命令：open(\"x\")");
+        let only = rows
+            .iter()
+            .find(|r| r.key == "ctrl+alt+q")
+            .expect("仅方案层那条");
+        assert!(only.ineffective);
+        assert_eq!(ineffective_hint(&only.key), SCHEMA_COMBO_HINT);
+        assert_eq!(o.summary(), "3 项，其中 2 项不生效");
+    }
+
+    /// 旧版 core 不给 `ineffective` 字段：一律按生效处理，摘要不出「不生效」。
+    #[test]
+    fn missing_ineffective_field_means_effective() {
+        let o = KeysOverview::default();
+        o.seed(
+            &json!({ "keysOverview": [
+                { "key": "ctrl+shift+r", "table": "lead", "action": "temp_pinyin", "from": "schema" },
+            ]}),
+            &lead_verbs(),
+        );
+        assert!(!o.rows.get()[0].ineffective);
+        assert_eq!(o.summary(), "1 项");
+    }
+
+    /// 不生效提示：组合键与方案按键编辑器同文案；别的形态（core 将来可能标）说中性的
+    /// 「不生效」，不把原因说错。
+    #[test]
+    fn ineffective_hint_names_the_reason_only_for_combos() {
+        assert_eq!(ineffective_hint("ctrl+shift+r"), SCHEMA_COMBO_HINT);
+        assert_eq!(ineffective_hint("rshift"), "不生效");
     }
 
     /// 键名要转义成人能读的形式，而不是配置里的内部写法。

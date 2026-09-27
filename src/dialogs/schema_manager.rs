@@ -1211,7 +1211,7 @@ impl SchemaManagerState {
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
-            settings_ka: Default::default(),
+            settings_ka: crate::dialogs::schema_key_actions::KeyActionFields::schema_scoped(),
             settings_ka_visible: signal(false),
             settings_ka_title: signal("按键自定义".to_string()),
             settings_ka_disp: signal(String::new()),

@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json};
 use windui::prelude::*;
 
 use super::key_binding::{
-    Binding, BindingBody, BindingTable, ForeignBinding, KeyPicker, KeyShape, binding_row,
-    key_shape, verb_allowed, verb_requires_modifier,
+    Binding, BindingBody, BindingTable, ForeignBinding, KeyPicker, KeyShape, SCHEMA_COMBO_HINT,
+    binding_row, command_verb_label, is_command, key_shape, verb_allowed, verb_requires_modifier,
 };
 
 pub use super::key_binding::Verb;
@@ -59,6 +59,10 @@ pub struct KeyActionFields {
     /// 是否渲染只读组。**独立于 `foreign_all` 是否为空**：全局实例在 `AppState::empty()`
     /// 阶段注入到的可能就是空表（cfg 还没到），拿「表空」当判据会让那一组永远不出现。
     foreign_enabled: Rc<Cell<bool>>,
+    /// 方案级实例（`[key_actions]`）。core 只从**全局** `keys.key_actions` 编组合键热键表，
+    /// 方案级只按单键 VK 查——方案级的组合键对任何动词都不生效。故方案级实例的选择器
+    /// 不给组合键，已有的组合键行保留但标出来。见 [`Self::schema_scoped`]。
+    schema_scope: bool,
 }
 
 impl Default for KeyActionFields {
@@ -76,6 +80,7 @@ impl Default for KeyActionFields {
             foreign_count: signal(String::new()),
             foreign_version: Rc::new(Cell::new(0)),
             foreign_enabled: Rc::new(Cell::new(false)),
+            schema_scope: false,
         };
         me.wire_picker();
         me
@@ -83,6 +88,18 @@ impl Default for KeyActionFields {
 }
 
 impl KeyActionFields {
+    /// 方案级 `[key_actions]` 的实例：选择器只给单键与修饰键（见 `schema_scope`）。
+    ///
+    /// 全局 `keys.key_actions` 用 [`Default`]——组合键只在那张表里有效。
+    pub fn schema_scoped() -> Self {
+        let me = Self {
+            schema_scope: true,
+            ..Self::default()
+        };
+        me.picker.disallow_combo();
+        me
+    }
+
     /// 把选择对话框的「确定」接到本表上。**在构造期接一次**，理由同
     /// [`super::session_actions::SessionActionFields`]：接在 `build_body` 里会挂重复回调。
     fn wire_picker(&self) {
@@ -158,6 +175,10 @@ impl KeyActionFields {
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (_, action) in &pairs {
+            // 命令不是未知动词：选择器「高级」类那一项代表全部命令，表达式回填进输入框。
+            if is_command(action) {
+                continue;
+            }
             if !self.verbs.borrow().iter().any(|v| &v.value == action) {
                 self.verbs.borrow_mut().push(Verb {
                     value: action.clone(),
@@ -216,6 +237,9 @@ impl KeyActionFields {
 
     /// 功能值 → 中文名。查不到显示原值（同 `keys_overview::action_label` 的兜底策略）。
     fn verb_label(&self, value: &str) -> String {
+        if let Some(label) = command_verb_label(value) {
+            return label;
+        }
         self.verbs
             .borrow()
             .iter()
@@ -345,36 +369,10 @@ impl KeyActionFields {
         let picker = self.picker.clone();
         let leading = self.leading_keys.clone();
         let me = self.clone();
+        let schema_scope = self.schema_scope;
 
         let list = Element::host_signal(rows_sig, move |row: Binding| {
-            let shape = key_shape(&row.key);
-            // 选择器已按键形态过滤，配不出非法组合；但**历史配置里可能有**（手写的、
-            // 或旧版设置页留下的）。行内当场标出来，否则用户只会得到一个安静不工作的
-            // 绑定——这类「配了不生效」的求助，本模块已经贡献过一次了。
-            //
-            // 组合键那一支自 2026-09-18 值域合流后只剩加词两项会命中（见 `verb_allowed`），
-            // 但历史配置里的 A/B 类组合键绑定**不再是错配**——那些行以前标红，现在正常工作。
-            let hint = if !verb_allowed(shape, &row.verb) {
-                Some(match shape {
-                    KeyShape::Combo => ("组合键不支持", Role::Danger),
-                    _ => ("需修饰键", Role::Danger),
-                })
-            } else if shape == KeyShape::Char
-                && row.verb != "none"
-                && !row.verb.is_empty()
-                && leading.borrow().contains(&row.key)
-            {
-                // 该键同时是本方案的码元首码：内核裁决「绑定优先」，于是这个符号在本方案
-                // 起不了头（组码中仍可用）。这是**同层冲突**，两条配置都不算坏，故用中性
-                // 措辞告知实际行为，不作错误标红——常驻警告会把可用的设计误报成待修问题。
-                //
-                // 与上一条互斥：那条是错配（配了不工作），优先级更高；两条一起挂在窄行上
-                // 也读不过来。
-                Some(("本方案码元", Role::TextMuted))
-            } else {
-                None
-            };
-
+            let hint = row_hint(schema_scope, &row, &leading.borrow());
             let (p, r) = (picker.clone(), row.clone());
             let id = row.id;
             binding_row(
@@ -433,6 +431,42 @@ impl KeyActionFields {
             content
         };
         BindingBody::new(content, vec![add])
+    }
+}
+
+/// 一行绑定的提示列：`(文案, 色)`；无提示为 `None`。
+///
+/// 选择器已按键形态过滤，配不出非法组合；但**历史配置里可能有**（手写的、或旧版设置页
+/// 留下的）。行内当场标出来，否则用户只会得到一个安静不工作的绑定——这类「配了不生效」
+/// 的求助，本模块已经贡献过一次了。
+///
+/// 组合键那一支自 2026-09-18 值域合流后只剩加词两项会命中（见 `verb_allowed`），
+/// 但历史配置里的 A/B 类组合键绑定**不再是错配**——那些行以前标红，现在正常工作。
+fn row_hint(schema_scope: bool, row: &Binding, leading: &[String]) -> Option<(&'static str, Role)> {
+    let shape = key_shape(&row.key);
+    if schema_scope && shape == KeyShape::Combo {
+        // 方案级组合键对任何动词都不生效（core 只从全局表编组合键热键）。行保留
+        // ——删了等于打开一次设置页就丢配置——但必须标出来，否则就是安静不工作。
+        Some((SCHEMA_COMBO_HINT, Role::Danger))
+    } else if !verb_allowed(shape, &row.verb) {
+        Some(match shape {
+            KeyShape::Combo => ("组合键不支持", Role::Danger),
+            _ => ("需修饰键", Role::Danger),
+        })
+    } else if shape == KeyShape::Char
+        && row.verb != "none"
+        && !row.verb.is_empty()
+        && leading.contains(&row.key)
+    {
+        // 该键同时是本方案的码元首码：内核裁决「绑定优先」，于是这个符号在本方案
+        // 起不了头（组码中仍可用）。这是**同层冲突**，两条配置都不算坏，故用中性
+        // 措辞告知实际行为，不作错误标红——常驻警告会把可用的设计误报成待修问题。
+        //
+        // 与上一条互斥：那条是错配（配了不工作），优先级更高；两条一起挂在窄行上
+        // 也读不过来。
+        Some(("本方案码元", Role::TextMuted))
+    } else {
+        None
     }
 }
 
@@ -496,6 +530,67 @@ mod tests {
             f.verb_label("special:gone").starts_with("special:gone"),
             "未知动词的行标签应含原值"
         );
+    }
+
+    /// 命令绑定原样往返，行里显示「运行命令：…」，且**不**被当成未知动词追加进功能表
+    /// ——追加了的话，选择器「其它」类里会多一条带「当前值」字样的重复项。
+    #[test]
+    fn command_binding_round_trips_and_is_named() {
+        let f = seeded(r#"{"key_actions":{"ctrl+alt+c":"command:proc.run(\"charmap.exe\")"}}"#);
+        assert!(!f.is_dirty());
+        let mut cfg = json!({});
+        f.apply(&mut cfg);
+        assert_eq!(
+            cfg["key_actions"]["ctrl+alt+c"],
+            "command:proc.run(\"charmap.exe\")"
+        );
+        assert_eq!(
+            f.verb_label("command:proc.run(\"charmap.exe\")"),
+            "运行命令：proc.run(\"charmap.exe\")"
+        );
+        assert!(
+            f.verbs
+                .borrow()
+                .iter()
+                .all(|v| !v.value.starts_with("command:")),
+            "命令不该进功能表"
+        );
+    }
+
+    /// ★★ 方案级组合键：已有条目**原样保留**（不丢配置），行上标「仅全局有效」；
+    /// 全局实例的同一条目不标（组合键在全局表里正常工作）。
+    #[test]
+    fn schema_level_combo_rows_are_kept_and_flagged() {
+        let json =
+            r#"{"key_actions":{"ctrl+shift+r":"toggle_schema:english","rshift":"temp_pinyin"}}"#;
+        let f = KeyActionFields::schema_scoped();
+        f.set_verbs(verbs());
+        f.seed(&serde_json::from_str(json).expect("json"));
+        assert!(!f.is_dirty(), "只是打开不该算改动");
+        let mut cfg = json!({});
+        f.apply(&mut cfg);
+        assert_eq!(
+            cfg["key_actions"]["ctrl+shift+r"], "toggle_schema:english",
+            "方案级组合键条目必须保留"
+        );
+
+        let rows = f.rows.get();
+        let combo = rows
+            .iter()
+            .find(|r| r.key == "ctrl+shift+r")
+            .expect("combo");
+        let single = rows.iter().find(|r| r.key == "rshift").expect("single");
+        assert_eq!(
+            row_hint(true, combo, &[]).map(|(t, _)| t),
+            Some(SCHEMA_COMBO_HINT)
+        );
+        assert_eq!(row_hint(true, single, &[]), None, "单键不受影响");
+        assert_eq!(
+            row_hint(false, combo, &[]),
+            None,
+            "全局表的组合键正常工作，不该标"
+        );
+        assert!(!KeyActionFields::default().schema_scope, "默认实例是全局的");
     }
 
     /// 删光所有绑定要能落盘成空表，而不是「没有改动」。

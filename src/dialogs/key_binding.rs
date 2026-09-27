@@ -17,9 +17,11 @@
 //!
 //! | 键形态 | 通路 | 能绑什么 |
 //! |---|---|---|
-//! | 组合键 | key_down 热键表 | 只有 `toggle_schema:` / `switch_schema:` / `special:` 三族（`hotkey_action_entry` 白名单） |
+//! | 组合键 | key_down 热键表（**只编全局** `keys.key_actions`） | `BoundAction` 全值域，含 `command:`；只挡加词两项（见 [`verb_allowed`]）。方案级 `[key_actions]` 不给组合键（[`KeyPicker::disallow_combo`]） |
 //! | 纯修饰键 | key_up 轻敲 | 全部 |
-//! | 单个有字符的键 | keydown 引导键链 | 除「用来离开英文态」的那几个（`BoundAction::requires_modifier_key`） |
+//! | 单个有字符的键 | keydown 引导键链 | 除「用来离开英文态」的那几个（`BoundAction::requires_modifier_key`）；`command:` 可绑 |
+//!
+//! 会话态表（`session_actions`）不按形态过滤：它只在有候选时才裁决，键值域本身已经收窄。
 //!
 //! 不过滤的后果是用户配得上、按下去没反应，且 core 只在日志里 warn 一句——正是本仓
 //! 反复出现的那类缺陷。故过滤 + 一行说明指路，而不是让人试错一次才知道。
@@ -424,9 +426,6 @@ pub fn key_choice_label(name: &str) -> String {
 pub struct VerbCategory {
     pub name: String,
     pub items: Vec<Verb>,
-    /// 选中本类即禁用「确定」，并显示 [`Self::notice`]。给「预留但未开放」的项用。
-    pub locked: bool,
-    pub notice: String,
 }
 
 impl VerbCategory {
@@ -434,35 +433,87 @@ impl VerbCategory {
         Self {
             name: name.to_string(),
             items,
-            locked: false,
-            notice: String::new(),
         }
     }
 }
 
-/// 预留项的值。**不能用空串**：`refresh` 靠「当前功能值」恢复选中项，空值恒查不到，
-/// 于是每次重算都把选择弹回第一个分类——那一类点开就跳走，里面写了什么都看不到。
+/// 命令直通的值前缀：`command:<cmdbar 表达式>`，两张表都认。
 ///
-/// 反过来也要保证它绝不落盘：出口只有 [`KeyPicker::commit_value`]，它对 `locked` 分类
-/// 一律返回 `None`（「确定」也据同一判据置灰）。
-const RESERVED_VERB: &str = "__reserved__";
+/// 表达式只 trim 首尾，大小写与内部空白原样保留（core 同判据）；空表达式无效。
+pub const COMMAND_PREFIX: &str = "command:";
 
-/// 「高级」分类：当前只有一个占位项。
+/// 「高级」分类里那一项的值：**光前缀**，表达式另由对话框的文本框提供。
 ///
-/// 露出而不实现，是为了让「一个键能不能调外部程序」这个问题在界面上有答案。整类 `locked`
-/// ——windui 的 `DropdownItem` 没有禁用位，逐项置灰做不到，故把「不可用」提到分类这一层：
-/// 选中它就显示说明并禁用「确定」，效果与置灰一致且不需要改控件。
-fn advanced_category() -> VerbCategory {
-    VerbCategory {
-        name: "高级".to_string(),
-        items: vec![Verb {
-            value: RESERVED_VERB.to_string(),
-            label: "调用直通命令（暂未开放）".to_string(),
-        }],
-        locked: true,
-        notice: "「调用直通命令」（按一个键运行外部程序或内部指令）尚未开放，将在后续版本提供。"
-            .to_string(),
+/// 光前缀本身不是合法绑定（空表达式），故它只作选择器里的标记，出口
+/// [`KeyPicker::commit_value`] 把文本框内容拼上去；文本框为空则不可提交。
+/// **不能用空串**：`refresh` 靠「当前功能值」恢复选中项，空值恒查不到，于是每次重算
+/// 都把选择弹回第一个分类——那一类点开就跳走。
+const COMMAND_MARKER: &str = COMMAND_PREFIX;
+
+/// 剥掉 `command:` 前缀，返回其后的原文（未 trim）；不是命令返回 `None`。
+///
+/// ★ 判前缀前先 `trim_start`：core 先 trim 整串再认前缀，手写配置里的 `" command:…"`
+/// 在 core 那边是命令，这边若不认，就会落成「其它」里的未知动词。**所有判前缀处都走这里**。
+fn strip_command(value: &str) -> Option<&str> {
+    value.trim_start().strip_prefix(COMMAND_PREFIX)
+}
+
+/// 是否为 `command:` 值（不论表达式是否为空）。
+pub fn is_command(value: &str) -> bool {
+    strip_command(value).is_some()
+}
+
+/// `command:` 值里的表达式（trim 首尾）；不是命令或表达式为空返回 `None`。
+fn command_expr(value: &str) -> Option<&str> {
+    strip_command(value)
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+}
+
+/// 只读侧的命令标签上限（显示宽度，全角记 2）。总览与编辑器的功能列都是单行截断，
+/// 一条 `open("https://…")` 能长到把整行挤没，故在这里先截到一眼读得完的长度。
+const COMMAND_LABEL_WIDTH: usize = 36;
+
+/// `command:` 值 → 「运行命令：<表达式>」（过长按显示宽度截断）。两张表共用。
+pub fn command_verb_label(value: &str) -> Option<String> {
+    let expr = command_expr(value)?;
+    Some(format!(
+        "运行命令：{}",
+        truncate_width(expr, COMMAND_LABEL_WIDTH)
+    ))
+}
+
+/// 按显示宽度截断，超出时以「…」收尾（「…」计入宽度）。
+///
+/// 宽度只粗分两档：ASCII 记 1，其余记 2。表达式里绝大多数是 ASCII，偶有中文路径
+/// ——按字符数截的话，一串中文会比同样字数的英文宽一倍。
+fn truncate_width(s: &str, max: usize) -> String {
+    let w = |c: char| if c.is_ascii() { 1 } else { 2 };
+    if s.chars().map(w).sum::<usize>() <= max {
+        return s.to_string();
     }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        if used + w(c) > max - 2 {
+            break;
+        }
+        used += w(c);
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
+/// 「高级」分类：调用直通命令。选中后对话框出现表达式输入框（见 [`KeyPicker`]）。
+fn advanced_category() -> VerbCategory {
+    VerbCategory::new(
+        "高级",
+        vec![Verb {
+            value: COMMAND_MARKER.to_string(),
+            label: "调用直通命令".to_string(),
+        }],
+    )
 }
 
 /// 把扁平功能表按**值的形态**分类。
@@ -481,6 +532,9 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
             "open_settings" | "take_screenshot" | "softkeyboard" => &mut tools,
             s if s.starts_with("mix:") || s.starts_with("special:") => &mut modes,
             s if s.starts_with("toggle_schema:") || s.starts_with("switch_schema:") => &mut schemas,
+            // 命令不逐条进列表：「高级」类里那一项代表**所有**命令，表达式由输入框回填
+            // （`KeyPicker::select_verb`）。落「其它」的话，同一条绑定会在两处各出现一次。
+            s if is_command(s) => continue,
             // 本版本不认识的动词（手写配置 / 更新前的旧配置）。不丢弃：丢弃等于用户
             // 打开一次设置页就静默失去配置，与两个编辑器的 seed 同策略。
             _ => &mut other,
@@ -564,7 +618,17 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
                 })
                 .collect(),
         ),
-        VerbCategory::new("选择候选", ord("select_candidate:", 10)),
+        // 「上屏当前高亮候选」即空格的功能，排在序号档之前：它不看位次，跟着高亮走，
+        // 与方向键 / 高亮移动配合时才是用户要的那个「确认」。没有候选时 core 不吃键。
+        VerbCategory::new(
+            "选择候选",
+            std::iter::once(Verb {
+                value: "commit_highlighted".into(),
+                label: "上屏当前高亮候选（同空格）".into(),
+            })
+            .chain(ord("select_candidate:", 10))
+            .collect(),
+        ),
         VerbCategory::new("以词定字", ord("select_char:", 4)),
         VerbCategory::new(
             "编辑",
@@ -601,6 +665,11 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
 
 /// 会话态功能值 → 中文名（供只读视图查）。未知值返回 `None`，由调用方兜底显示原值。
 pub fn session_verb_label(value: &str) -> Option<String> {
+    // 命令先于分类表判：分类表里那一项是光前缀的**选择器标记**，空表达式 core 不认，
+    // 查到它就会把一条无效配置显示成「调用直通命令」。
+    if is_command(value) {
+        return command_verb_label(value);
+    }
     if let Some(label) = session_verb_categories()
         .iter()
         .flat_map(|c| c.items.iter())
@@ -782,6 +851,11 @@ struct PickerData {
     /// 本方案首码集里的符号键（core `getConfig` 的 `leadingCodeKeys` 旁路字段）。
     leading: RefCell<Vec<String>>,
     editing: Cell<Option<RowId>>,
+    /// 是否提供「组合键」形态。方案级 `[key_actions]` 为 false，见 [`KeyPicker::disallow_combo`]。
+    combo_allowed: Cell<bool>,
+    /// 「修改」打开时的原功能值（「添加」为空）。命令表达式没改就原样交回它，
+    /// 见 [`KeyPicker::commit_value`]。
+    orig_verb: RefCell<String>,
     on_commit: RefCell<Option<CommitFn>>,
 }
 
@@ -810,6 +884,10 @@ pub struct KeyPicker {
     preview: Signal<String>,
     notice: Signal<String>,
     can_confirm: Signal<bool>,
+    /// 「调用直通命令」的表达式输入框。只在选中那一项时显示（[`Self::command_on`]）。
+    command_text: Signal<String>,
+    /// 当前选中的是否为「调用直通命令」。由 `refresh` 现算，驱动输入框的显隐。
+    command_on: Signal<bool>,
     data: Rc<PickerData>,
 }
 
@@ -836,6 +914,8 @@ impl KeyPicker {
             preview: signal("未设置".to_string()),
             notice: signal(String::new()),
             can_confirm: signal(false),
+            command_text: signal(String::new()),
+            command_on: signal(false),
             data: Rc::new(PickerData {
                 table,
                 single: RefCell::new(single.into_iter().map(|(v, _)| v).collect()),
@@ -844,6 +924,8 @@ impl KeyPicker {
                 view: RefCell::new(Vec::new()),
                 leading: RefCell::new(Vec::new()),
                 editing: Cell::new(None),
+                combo_allowed: Cell::new(true),
+                orig_verb: RefCell::new(String::new()),
                 on_commit: RefCell::new(None),
             }),
         };
@@ -854,6 +936,18 @@ impl KeyPicker {
     /// 灌入功能表（`Lead` 用；实例类动词随已安装方案增删，故每次打开设置都重算）。
     pub fn set_verbs(&self, verbs: &[Verb]) {
         *self.data.all.borrow_mut() = categorize_lead_verbs(verbs);
+        self.refresh();
+    }
+
+    /// 不提供「组合键」形态（方案级 `[key_actions]` 用）。
+    ///
+    /// core 只从**全局** `keys.key_actions` 编组合键热键表，方案级只按单键 VK 查——方案级
+    /// 的组合键对任何动词都不生效，而 core 不打算补这个缺口。
+    ///
+    /// 「修改」一条已有的方案级组合键时，形态切换仍会露出来（否则用户看不到自己配的是
+    /// 什么，也切不回单键），但组合键形态下不可提交，并说明原因。
+    pub fn disallow_combo(&self) {
+        self.data.combo_allowed.set(false);
         self.refresh();
     }
 
@@ -870,6 +964,7 @@ impl KeyPicker {
     /// 打开「添加」。
     pub fn open_new(&self) {
         self.data.editing.set(None);
+        self.data.orig_verb.borrow_mut().clear();
         self.title.set("添加按键".to_string());
         self.mode.set(0);
         for m in &self.mods {
@@ -879,6 +974,7 @@ impl KeyPicker {
         self.combo_idx.set(0);
         self.cat_idx.set(0);
         self.item_idx.set(0);
+        self.command_text.set(String::new());
         self.refresh();
         self.visible.set(true);
     }
@@ -886,7 +982,10 @@ impl KeyPicker {
     /// 打开「修改」，把已有绑定回填进各控件。
     pub fn open_edit(&self, id: RowId, key: &str, verb: &str) {
         self.data.editing.set(Some(id));
+        *self.data.orig_verb.borrow_mut() = verb.to_string();
         self.title.set("修改按键".to_string());
+        // 先清空：非命令绑定不该带着上一次打开时的表达式。是命令的话 `select_verb` 回填。
+        self.command_text.set(String::new());
 
         let (mods, base) = crate::manifest::parse_hotkey(key);
         if mods.iter().any(|b| *b) {
@@ -915,7 +1014,16 @@ impl KeyPicker {
     }
 
     /// 把 `value` 选中（找不到则在「其它」类里补一条「当前值」，不丢配置）。
+    ///
+    /// `command:<表达式>` 选中「高级」类的那一项并把表达式回填进输入框。
     fn select_verb(&self, value: &str) {
+        let value = match strip_command(value) {
+            Some(expr) => {
+                self.command_text.set(expr.trim().to_string());
+                COMMAND_MARKER
+            }
+            None => value,
+        };
         if let Some((c, i)) = find_verb(&self.data.view.borrow(), value) {
             self.cat_idx.set(c);
             self.item_idx.set(i);
@@ -983,7 +1091,8 @@ impl KeyPicker {
         crate::manifest::compose_hotkey(m, &base)
     }
 
-    /// 当前选中的功能值（空串 = 没有可选项 / 选中的是占位项）。
+    /// 当前选中的功能值（空串 = 没有可选项）。选中「调用直通命令」时是光前缀标记，
+    /// 表达式不在这里——要落盘的完整值只由 [`Self::commit_value`] 拼。
     fn current_verb(&self) -> String {
         self.data
             .view
@@ -994,26 +1103,32 @@ impl KeyPicker {
             .unwrap_or_default()
     }
 
-    /// 当前选中的分类是否为预留类（选中即不可提交）。
-    fn locked_now(&self) -> bool {
-        self.data
-            .view
-            .borrow()
-            .get(self.cat_idx.get())
-            .is_some_and(|c| c.locked)
-    }
-
     /// 「确定」要落下去的 `(键名, 功能值)`；不可提交时返回 `None`。
     ///
     /// **提交的唯一出口**。按钮的置灰（`can_confirm`）与这里用的是同一条判据——分两处
-    /// 各写一遍的话，只要哪天某条路径绕过了置灰（键盘回车、脚本、测试），预留项就会
-    /// 真的写进配置。这类「两处必须一致」的约束本仓已栽过四次。
+    /// 各写一遍的话，只要哪天某条路径绕过了置灰（键盘回车、脚本、测试），空表达式的
+    /// `command:` 就会真的写进配置，而 core 对它只 warn 后忽略。这类「两处必须一致」
+    /// 的约束本仓已栽过四次。
     fn commit_value(&self) -> Option<(String, String)> {
-        if self.locked_now() {
+        if !self.data.combo_allowed.get() && self.mode.get() == 1 {
             return None;
         }
-        let (key, verb) = (self.current_key(), self.current_verb());
-        (!key.is_empty() && !verb.is_empty() && verb != RESERVED_VERB).then_some((key, verb))
+        let (key, mut verb) = (self.current_key(), self.current_verb());
+        if verb == COMMAND_MARKER {
+            let text = self.command_text.get();
+            let expr = text.trim();
+            let orig = self.data.orig_verb.borrow();
+            verb = if expr.is_empty() {
+                String::new()
+            } else if command_expr(&orig) == Some(expr) {
+                // 表达式没改就交回原值：按 trim 重拼会把手写的 `" command: x "` 变成
+                // `command:x`，编辑器随之判「已修改」，而用户什么都没动。
+                orig.clone()
+            } else {
+                format!("{COMMAND_PREFIX}{expr}")
+            };
+        }
+        (!key.is_empty() && !verb.is_empty()).then_some((key, verb))
     }
 
     /// 按当前按键形态重算可选功能、预览与提示。
@@ -1047,9 +1162,7 @@ impl KeyPicker {
                 .iter()
                 .map(|c| {
                     let mut c = c.clone();
-                    if !c.locked {
-                        c.items.retain(|it| verb_allowed(shape, &it.value));
-                    }
+                    c.items.retain(|it| verb_allowed(shape, &it.value));
                     c
                 })
                 .collect();
@@ -1098,33 +1211,21 @@ impl KeyPicker {
         // 无从判断少了什么。不算的话，用户选个符号键、「切换方案」整类无声消失，界面上
         // 没有任何一处说得出原因——那正是这轮改动本想消灭的「配不出来还不知道为什么」。
         let filtered = self.filtered_count() > 0;
-        set_str_if_changed(
-            self.notice,
-            self.notice_text(&key, self.locked_now(), filtered),
-        );
+        set_str_if_changed(self.notice, self.notice_text(&key, filtered));
+        set_if_changed_bool(self.command_on, self.current_verb() == COMMAND_MARKER);
         set_if_changed_bool(self.can_confirm, self.commit_value().is_some());
     }
 
-    /// 按当前键形态被滤掉的功能条数（不含 `locked` 类，它从不参与过滤）。
+    /// 按当前键形态被滤掉的功能条数。
     fn filtered_count(&self) -> usize {
-        let live = |cats: &[VerbCategory]| -> usize {
-            cats.iter()
-                .filter(|c| !c.locked)
-                .map(|c| c.items.len())
-                .sum()
-        };
+        let live = |cats: &[VerbCategory]| -> usize { cats.iter().map(|c| c.items.len()).sum() };
         live(&self.data.all.borrow()).saturating_sub(live(&self.data.view.borrow()))
     }
 
-    fn notice_text(&self, key: &str, locked: bool, filtered: bool) -> String {
-        if locked {
-            return self
-                .data
-                .view
-                .borrow()
-                .get(self.cat_idx.get())
-                .map(|c| c.notice.clone())
-                .unwrap_or_default();
+    fn notice_text(&self, key: &str, filtered: bool) -> String {
+        // 排最前：这一条说的是「整条绑定都不会生效」，比键为空、形态过滤都更根本。
+        if !self.data.combo_allowed.get() && self.mode.get() == 1 {
+            return SCHEMA_COMBO_NOTICE.to_string();
         }
         if key.is_empty() {
             return match self.mode.get() {
@@ -1202,10 +1303,16 @@ impl KeyPicker {
         let table = self.data.table;
 
         let mode = self.mode;
-        let mode_row = Element::row().width_match().child(
-            Element::segmented(vec!["单个按键".to_string(), "组合键".to_string()], mode)
-                .weight(1.0),
-        );
+        // 不给组合键的实例（方案级）平时隐藏形态切换；正在编辑一条已有组合键时才露出来，
+        // 让用户看得见它、切得回单键。
+        let data = self.data.clone();
+        let mode_row = Element::row()
+            .width_match()
+            .child(
+                Element::segmented(vec!["单个按键".to_string(), "组合键".to_string()], mode)
+                    .weight(1.0),
+            )
+            .visible_when(move || data.combo_allowed.get() || mode.get() == 1);
 
         // Session 表只认 `shift+` 前缀（core `session_key_to_vk` 只剥这一种），故 Ctrl/Alt/Win
         // 不给：列出来就是配得上、core 解析不了、整条静默丢弃。
@@ -1258,12 +1365,32 @@ impl KeyPicker {
                     ),
             );
 
+        // 选中「调用直通命令」时，功能项下拉换成表达式输入框：那一类只有一项，
+        // 下拉留着也选不出别的，占的位置正好给输入框。
+        let command_on = self.command_on;
         let verb_col = Element::col()
             .width_match()
             .spacing(8)
             .child(section_title("功能"))
             .child(Element::dropdown_signal(self.cat_labels, self.cat_idx).width(200))
-            .child(Element::dropdown_signal(self.item_labels, self.item_idx).width(280));
+            .child(
+                Element::dropdown_signal(self.item_labels, self.item_idx)
+                    .width(280)
+                    .visible_when(move || !command_on.get()),
+            )
+            .child(
+                Element::text_input(self.command_text, "如 proc.run(\"charmap.exe\")")
+                    .width_match()
+                    .visible_when(move || command_on.get()),
+            )
+            .child(
+                Element::label(command_help(table))
+                    .font_size(11.5)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(3)
+                    .visible_when(move || command_on.get()),
+            );
 
         let notice = self.notice;
         let notice_row = Element::label_signal(notice)
@@ -1277,12 +1404,14 @@ impl KeyPicker {
         // 挂七处等于赌自己数全了，漏一处的表现是「换了键、功能列表没跟着变」。
         let eff_me = self.clone();
         let (mi, si, ci, ki) = (self.mode, self.single_idx, self.combo_idx, self.cat_idx);
+        let ct = self.command_text;
         let effect = crate::pages::dict::reactive::reactive_effect(
             move || {
                 mi.version()
                     .wrapping_add(si.version())
                     .wrapping_add(ci.version())
                     .wrapping_add(ki.version())
+                    .wrapping_add(ct.version())
                     .wrapping_add(mc.version())
                     .wrapping_add(ms.version())
                     .wrapping_add(ma.version())
@@ -1315,6 +1444,27 @@ impl KeyPicker {
                 }
             },
         )
+    }
+}
+
+/// 方案级组合键的行提示：方案按键编辑器的行与按键总览的「不生效」行共用这一句。
+/// 行里的提示列很窄，故只说结论；去哪儿配由选择器里 [`SCHEMA_COMBO_NOTICE`] 讲。
+pub const SCHEMA_COMBO_HINT: &str = "组合键仅全局有效";
+
+/// 方案级选择器停在组合键形态时的说明。⛔ 单行字面量。
+const SCHEMA_COMBO_NOTICE: &str = "组合键只在全局按键功能中有效，方案里配了不会生效。请改选单个按键，或到「按键 → 全局自定义按键」里配。";
+
+/// 「调用直通命令」输入框下的说明。
+///
+/// ⛔ 单行字面量，理由见 [`aux_code_backtick_notice`]。
+fn command_help(table: BindingTable) -> &'static str {
+    match table {
+        BindingTable::Lead => {
+            "按下该键时执行一条命令，写法同工具栏自定义按钮：如 proc.run(\"charmap.exe\")、open(\"https://…\")、key.tap(\"Ctrl+Shift+P\")，也可以直接写 $CC(…)。"
+        }
+        BindingTable::Session => {
+            "输入过程中按下该键时执行一条命令，当前输入保持不动。写法同工具栏自定义按钮：如 proc.run(\"charmap.exe\")、web.search(…)，也可以直接写 $CC(…)。"
+        }
     }
 }
 
@@ -1648,6 +1798,8 @@ mod tests {
             "toggle_schema:english",
             "switch_schema:wubi86",
             "special:kf",
+            // 命令直通：core 为它放开了组合键白名单（2026-09-27）。
+            "command:proc.run(\"charmap.exe\")",
             // 不是「功能」而是压制手段：低层（data/config.toml、定制版的
             // data_custom/config.toml）在 key_actions 里写的组合键绑定，用户只能靠
             // 显式 none 关掉——深合并表达不了删除。core 那侧在组合键分支静默跳过它。
@@ -1831,17 +1983,39 @@ mod tests {
         );
     }
 
-    /// 「高级」恒为末类且 locked——它是预留位，选中即禁用「确定」。
+    /// 「高级」恒为末类，两张表都有，且只有「调用直通命令」那一项。
     #[test]
-    fn advanced_category_is_last_and_locked() {
-        let cats = categorize_lead_verbs(&lead_verbs());
-        let last = cats.last().expect("至少有高级类");
-        assert_eq!(last.name, "高级");
-        assert!(last.locked, "高级类必须 locked，否则能选中一个不存在的功能");
-        assert!(!last.notice.is_empty(), "locked 的类必须说明为什么不能选");
+    fn advanced_category_is_last_in_both_tables() {
+        for cats in [
+            categorize_lead_verbs(&lead_verbs()),
+            session_verb_categories(),
+        ] {
+            let last = cats.last().expect("至少有高级类");
+            assert_eq!(last.name, "高级");
+            let vals: Vec<&str> = last.items.iter().map(|v| v.value.as_str()).collect();
+            assert_eq!(vals, vec![COMMAND_MARKER]);
+        }
+    }
 
-        let s = session_verb_categories();
-        assert_eq!(s.last().expect("至少有高级类").name, "高级");
+    /// 已有的 `command:` 绑定归「高级」那一项代表，不落「其它」——落了的话同一条绑定
+    /// 在选择器里出现两次，且「其它」里那条带着「当前值」字样，像是配坏了。
+    #[test]
+    fn command_verbs_fold_into_advanced() {
+        let mut vs = lead_verbs();
+        vs.push(Verb {
+            value: "command:proc.run(\"charmap.exe\")".into(),
+            label: "whatever".into(),
+        });
+        let cats = categorize_lead_verbs(&vs);
+        let other = cats.iter().find(|c| c.name == "其它").expect("应有其它类");
+        assert!(
+            other
+                .items
+                .iter()
+                .all(|v| !v.value.starts_with(COMMAND_PREFIX)),
+            "command: 不该落「其它」"
+        );
+        assert_eq!(cats.last().expect("高级").items.len(), 1);
     }
 
     /// 两个序号档的上限**不同**，两边都要钉住——一样的写法很容易在后续维护里被「统一」
@@ -1856,7 +2030,13 @@ mod tests {
             ("以词定字", "select_char:", 4u8),
         ] {
             let c = cats.iter().find(|c| c.name == name).expect(name);
-            let vals: Vec<String> = c.items.iter().map(|v| v.value.clone()).collect();
+            // 「选择候选」里还有 `commit_highlighted`，只数序号档本身。
+            let vals: Vec<String> = c
+                .items
+                .iter()
+                .map(|v| v.value.clone())
+                .filter(|v| v.starts_with(prefix))
+                .collect();
             let want: Vec<String> = (1..=max).map(|n| format!("{prefix}{n}")).collect();
             assert_eq!(vals, want, "{name} 的序号档应为 1..={max}");
         }
@@ -1875,13 +2055,14 @@ mod tests {
     #[test]
     fn session_verb_values_match_core_domain() {
         for c in session_verb_categories() {
-            if c.locked {
-                continue; // 占位项，值恒为空
-            }
             for v in c.items {
+                if v.value == COMMAND_MARKER {
+                    continue; // 选择器标记，落盘时拼上表达式（见 `commit_value`）
+                }
                 let ok = matches!(
                     v.value.as_str(),
                     "none"
+                        | "commit_highlighted"
                         | "page_prev"
                         | "page_next"
                         | "highlight_up"
@@ -2231,13 +2412,10 @@ mod tests {
             assert!(!n.contains("  "), "提示里混入了连续空白：{n:?}");
             assert!(!n.contains('\n'), "提示里混入了换行：{n:?}");
         }
-        // 分类里那条也一样（它不经 notice_text，是 VerbCategory::notice）。
-        for c in categorize_lead_verbs(&vs) {
-            assert!(
-                !c.notice.contains("  "),
-                "分类说明混入连续空白：{:?}",
-                c.notice
-            );
+        // 命令说明也一样（它不经 notice_text，是输入框下的静态标签）。
+        for table in [BindingTable::Lead, BindingTable::Session] {
+            let h = command_help(table);
+            assert!(!h.contains("  "), "命令说明混入连续空白：{h:?}");
         }
     }
 
@@ -2299,11 +2477,8 @@ mod tests {
         assert!(!p.can_confirm.get(), "此时「确定」必须不可点");
     }
 
-    /// 「高级」类选中即禁用确定——它是预留位，不能真配上去。
-    #[test]
-    fn advanced_category_blocks_confirm() {
-        let p = lead_picker();
-        p.open_edit(1, "backslash", "mix:quick_mix");
+    /// 在当前 view 里选中「调用直通命令」（模拟用户点「高级」分类）。
+    fn pick_command(p: &KeyPicker) -> usize {
         let adv = p
             .data
             .view
@@ -2313,14 +2488,320 @@ mod tests {
             .expect("应有高级类");
         p.cat_idx.set(adv);
         p.refresh();
-        assert_eq!(
-            p.cat_idx.get(),
-            adv,
-            "★ 选中高级类后不能被 refresh 弹回第一类——否则那一类点开就跳走，             用户根本看不到里面写了什么"
+        adv
+    }
+
+    /// ★★ 选中命令但表达式为空（或全是空白）时不能提交——core 对空表达式只 warn 后忽略，
+    /// 落盘了就是一条「配了没反应」的绑定。两张表都要守。
+    #[test]
+    fn command_with_empty_expression_cannot_commit() {
+        let lead = lead_picker();
+        lead.open_edit(1, "backslash", "mix:quick_mix");
+        let session = KeyPicker::new(BindingTable::Session);
+        session.open_edit(1, "tab", "page_next");
+        for p in [lead, session] {
+            let adv = pick_command(&p);
+            assert_eq!(
+                p.cat_idx.get(),
+                adv,
+                "★ 选中高级类后不能被 refresh 弹回第一类——否则那一类点开就跳走"
+            );
+            assert!(p.command_on.get(), "选中命令时应显示表达式输入框");
+            for blank in ["", "   "] {
+                p.command_text.set(blank.to_string());
+                p.refresh();
+                assert!(
+                    !p.can_confirm.get(),
+                    "表达式 {blank:?} 时「确定」必须不可点"
+                );
+                assert!(p.commit_value().is_none(), "空表达式绝不能落盘");
+            }
+        }
+    }
+
+    /// 非空表达式可提交，值为 `command:<表达式>`：首尾空白去掉，大小写与内部空白原样。
+    #[test]
+    fn command_with_expression_commits_prefixed_value() {
+        let lead = lead_picker();
+        lead.open_edit(1, "backslash", "mix:quick_mix");
+        let session = KeyPicker::new(BindingTable::Session);
+        session.open_edit(1, "tab", "page_next");
+        for (p, key) in [(lead, "backslash"), (session, "tab")] {
+            pick_command(&p);
+            p.command_text
+                .set("  web.search(\"Hello  World\")  ".to_string());
+            p.refresh();
+            assert!(p.can_confirm.get());
+            assert_eq!(
+                p.commit_value(),
+                Some((
+                    key.to_string(),
+                    "command:web.search(\"Hello  World\")".to_string()
+                ))
+            );
+        }
+        // 切走再切回来，已填的表达式不丢；切走时提交的是别的功能，不带表达式。
+        let p = lead_picker();
+        p.open_edit(1, "backslash", "command:proc.run(\"a.exe\")");
+        let none = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .position(|c| c.name == "不启用")
+            .expect("不启用");
+        p.cat_idx.set(none);
+        p.refresh();
+        assert!(!p.command_on.get());
+        assert_eq!(p.commit_value().map(|(_, v)| v), Some("none".to_string()));
+        pick_command(&p);
+        assert_eq!(p.command_text.get(), "proc.run(\"a.exe\")");
+    }
+
+    /// 「修改」已有的命令绑定：选中「高级」并把表达式回填进输入框；原样确定不变形。
+    /// 随后打开一条非命令绑定，输入框不得残留上一条的表达式。
+    #[test]
+    fn command_binding_round_trips_on_edit() {
+        let lead = lead_picker();
+        let session = KeyPicker::new(BindingTable::Session);
+        for (p, key) in [(&lead, "ctrl+alt+c"), (&session, "shift+tab")] {
+            let v = "command:$CC(\"字符映射\", proc.run(\"charmap.exe\"))";
+            p.open_edit(3, key, v);
+            assert!(p.command_on.get(), "{key}：应落在命令项");
+            assert_eq!(
+                p.command_text.get(),
+                "$CC(\"字符映射\", proc.run(\"charmap.exe\"))"
+            );
+            assert_eq!(p.commit_value(), Some((key.to_string(), v.to_string())));
+            assert!(
+                p.data
+                    .all
+                    .borrow()
+                    .iter()
+                    .flat_map(|c| c.items.iter())
+                    .all(|it| !it.label.contains("当前值")),
+                "命令绑定不该被当成未知动词追加「当前值」"
+            );
+        }
+        lead.open_edit(4, "backslash", "mix:quick_mix");
+        assert!(
+            lead.command_text.get().is_empty(),
+            "非命令绑定不得带着旧表达式"
         );
-        assert!(!p.can_confirm.get(), "选中高级类时「确定」必须不可点");
-        assert!(!p.notice.get().is_empty(), "必须说明为什么不能选");
-        assert!(p.commit_value().is_none(), "预留项绝不能落盘");
+        assert!(!lead.command_on.get());
+    }
+
+    /// 前缀前带空白的手写值（core 先 trim 整串再认前缀）同样认作命令：回填、标签、
+    /// 分类都不能把它当成未知动词。
+    #[test]
+    fn command_prefix_tolerates_leading_whitespace() {
+        let v = "  command: proc.run(\"a.exe\") ";
+        assert!(is_command(v));
+        assert_eq!(
+            session_verb_label(v).as_deref(),
+            Some("运行命令：proc.run(\"a.exe\")")
+        );
+        let mut vs = lead_verbs();
+        vs.push(Verb {
+            value: v.into(),
+            label: v.into(),
+        });
+        assert!(
+            categorize_lead_verbs(&vs)
+                .iter()
+                .all(|c| c.items.iter().all(|it| it.value != v)),
+            "带前导空白的命令不该落「其它」"
+        );
+        let p = lead_picker();
+        p.open_edit(1, "ctrl+alt+c", v);
+        assert!(p.command_on.get());
+        assert_eq!(p.command_text.get(), "proc.run(\"a.exe\")");
+    }
+
+    /// ★ 修改已有命令绑定、表达式没动就确定，必须**原样**交回原值——按 trim 重拼会把
+    /// 手写的 `" command: x "` 改写成 `command:x`，编辑器随之判「已修改」。
+    /// 表达式真改了才重拼。
+    #[test]
+    fn unchanged_command_commits_original_value() {
+        let orig = " command:  key.tap(\"Ctrl+Shift+P\")  ";
+        for p in [lead_picker(), KeyPicker::new(BindingTable::Session)] {
+            let key = if p.data.table == BindingTable::Lead {
+                "ctrl+alt+c"
+            } else {
+                "shift+tab"
+            };
+            p.open_edit(1, key, orig);
+            assert_eq!(
+                p.commit_value(),
+                Some((key.to_string(), orig.to_string())),
+                "没改表达式就该交回原值"
+            );
+            p.command_text.set("key.tap(\"Ctrl+Shift+Q\")".to_string());
+            p.refresh();
+            assert_eq!(
+                p.commit_value().map(|(_, v)| v),
+                Some("command:key.tap(\"Ctrl+Shift+Q\")".to_string())
+            );
+        }
+        // 「添加」没有原值可比，恒按 trim 重拼。
+        let p = lead_picker();
+        p.open_edit(1, "ctrl+alt+c", orig);
+        p.open_new();
+        p.open_edit_key_only("backslash", "command:x");
+        assert_eq!(
+            p.commit_value().map(|(_, v)| v),
+            Some("command:x".to_string())
+        );
+    }
+
+    /// 选中命令后换键形态（组合键 → 单键），表达式与选中项都要保留：`refresh` 按新形态
+    /// 重新过滤时，命令这一项在单键上仍合法，不该被弹回别的分类，也不该清掉用户填的字。
+    #[test]
+    fn switching_key_shape_keeps_command_selection() {
+        let p = lead_picker();
+        p.open_edit(1, "ctrl+alt+c", "command:proc.run(\"a.exe\")");
+        assert_eq!(p.mode.get(), 1);
+        p.mode.set(0);
+        p.single_idx
+            .set(key_index(&p.data.single, p.single_labels, "backslash"));
+        p.refresh();
+        assert_eq!(p.current_key(), "backslash");
+        assert!(p.command_on.get(), "换成单键后仍应选中命令");
+        assert_eq!(p.command_text.get(), "proc.run(\"a.exe\")");
+        assert_eq!(
+            p.commit_value(),
+            Some((
+                "backslash".to_string(),
+                "command:proc.run(\"a.exe\")".to_string()
+            ))
+        );
+    }
+
+    /// ★★ 走 `build_dialog` 的真实链路：只改输入框里的表达式，「确定」的可用性要跟着变。
+    ///
+    /// 直接调 `refresh` 的测试证明不了这一点——输入框只写 `command_text`，要靠挂在对话框
+    /// 里的 `reactive_effect` 监听它的版本才会重算；漏监听的表现是「填了表达式，确定仍是灰的」。
+    /// 这里把对话框建进一棵 `Tree`，由 `layout_root`（它先广播 `on_update`）驱动 effect。
+    #[test]
+    fn typing_expression_toggles_confirm_through_dialog_effect() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let p = lead_picker();
+        p.open_edit(1, "backslash", "mix:quick_mix");
+        let mut tree = Tree::new();
+        let root = p.build_dialog().build(&mut tree);
+        tree.root = Some(root);
+        let frame = |tree: &mut Tree| {
+            tree.layout_root(Size::new(800, 600), &mut windui::text::LineAwareTextEngine)
+        };
+        frame(&mut tree);
+
+        let adv = p
+            .data
+            .view
+            .borrow()
+            .iter()
+            .position(|c| c.name == "高级")
+            .expect("高级");
+        p.cat_idx.set(adv); // 只动信号，不手调 refresh
+        frame(&mut tree);
+        assert!(p.command_on.get(), "effect 应随分类切换重算");
+        assert!(!p.can_confirm.get(), "空表达式时确定应置灰");
+
+        p.command_text
+            .set("open(\"https://example.com\")".to_string());
+        frame(&mut tree);
+        assert!(p.can_confirm.get(), "填了表达式，effect 应把确定点亮");
+
+        p.command_text.set("   ".to_string());
+        frame(&mut tree);
+        assert!(!p.can_confirm.get(), "清空表达式，确定应再次置灰");
+    }
+
+    /// ★★ 方案级选择器（`disallow_combo`）：新增时停在单键档；「修改」一条已有组合键时
+    /// 显示得出它、但不可提交并说明原因；切回单键即可提交。全局选择器不受影响。
+    #[test]
+    fn schema_level_picker_refuses_combo_keys() {
+        let p = lead_picker();
+        p.disallow_combo();
+
+        p.open_new();
+        assert_eq!(p.mode.get(), 0, "新增停在单键档");
+
+        p.open_edit(1, "ctrl+shift+r", "toggle_schema:english");
+        assert_eq!(p.mode.get(), 1, "已有组合键要显示得出来");
+        assert_eq!(p.current_key(), "ctrl+shift+r");
+        assert!(!p.can_confirm.get(), "方案级组合键不可提交");
+        assert!(p.commit_value().is_none());
+        assert_eq!(p.notice.get(), SCHEMA_COMBO_NOTICE);
+
+        p.mode.set(0);
+        p.single_idx
+            .set(key_index(&p.data.single, p.single_labels, "rshift"));
+        p.refresh();
+        assert_eq!(
+            p.commit_value(),
+            Some(("rshift".to_string(), "toggle_schema:english".to_string())),
+            "切回单键后应能提交，功能保留"
+        );
+        assert_ne!(p.notice.get(), SCHEMA_COMBO_NOTICE);
+
+        // 全局实例：同一条组合键照常可提交。
+        let g = lead_picker();
+        g.open_edit(1, "ctrl+shift+r", "toggle_schema:english");
+        assert!(g.can_confirm.get(), "全局表的组合键应可提交");
+    }
+
+    /// 三种键形态都能选到命令（core 放开了组合键白名单），不被形态过滤滤掉。
+    #[test]
+    fn command_is_offered_on_every_key_shape() {
+        let p = lead_picker();
+        for key in ["ctrl+shift+c", "rshift", "backslash"] {
+            p.open_edit(1, key, "none");
+            assert!(
+                find_verb(&p.data.view.borrow(), COMMAND_MARKER).is_some(),
+                "{key} 上应选得到「调用直通命令」"
+            );
+            assert!(verb_allowed(key_shape(key), "command:open(\"x\")"));
+        }
+    }
+
+    /// 只读侧：命令显示成「运行命令：<表达式>」，过长按显示宽度截断；
+    /// `commit_highlighted` 显示中文名；空表达式不给名字（落回显示原值）。
+    #[test]
+    fn read_side_labels_for_new_verbs() {
+        assert_eq!(
+            session_verb_label("commit_highlighted").as_deref(),
+            Some("上屏当前高亮候选（同空格）")
+        );
+        assert_eq!(
+            session_verb_label("command: key.tap(\"Ctrl+Shift+P\") ").as_deref(),
+            Some("运行命令：key.tap(\"Ctrl+Shift+P\")")
+        );
+        assert_eq!(
+            command_verb_label("command:proc.run(\"a.exe\")").as_deref(),
+            Some("运行命令：proc.run(\"a.exe\")")
+        );
+        for bad in ["command:", "command:   "] {
+            assert_eq!(command_verb_label(bad), None, "{bad:?}");
+            assert_eq!(session_verb_label(bad), None, "{bad:?} 不该显示成命令项");
+        }
+
+        let long = format!("command:open(\"https://example.com/{}\")", "a".repeat(80));
+        let l = command_verb_label(&long).expect("长命令也要有名字");
+        let expr = l.strip_prefix("运行命令：").expect("前缀");
+        assert!(expr.ends_with('…'), "过长应截断：{l}");
+        let w: usize = expr.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+        assert!(w <= COMMAND_LABEL_WIDTH, "截断后宽 {w} 超出上限");
+        // 全角按 2 算：同样字数的中文路径截得更早。
+        let cjk = command_verb_label(&format!("command:{}", "字".repeat(30))).expect("中文");
+        assert_eq!(
+            cjk.strip_prefix("运行命令：")
+                .expect("前缀")
+                .chars()
+                .count(),
+            (COMMAND_LABEL_WIDTH - 2) / 2 + 1
+        );
     }
 
     /// ★ 换分类不能被 refresh 弹回。

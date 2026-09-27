@@ -2786,6 +2786,10 @@ fn is_modifier_key_name(key: &str) -> bool {
 
 /// 动词 → 冲突报告里的人话标签。未知动词原样回显，便于发现拼写错误。
 fn key_action_label(verb: &str) -> String {
+    // 命令先判：表达式可能很长，原样回显会把报告那一行撑爆；截断口径与按键编辑器同源。
+    if let Some(label) = crate::dialogs::key_binding::command_verb_label(verb) {
+        return label;
+    }
     if let Some(id) = verb.strip_prefix("special:") {
         return format!("特殊模式「{id}」");
     }
@@ -3591,6 +3595,17 @@ mod tests {
             "bogus_verb",
             "未知动词原样回显"
         );
+    }
+
+    /// 命令直通在冲突报告里显示「运行命令：…」，不原样回显一整条表达式。
+    #[test]
+    fn key_action_label_names_commands() {
+        assert_eq!(
+            key_action_label("command:proc.run(\"charmap.exe\")"),
+            "运行命令：proc.run(\"charmap.exe\")"
+        );
+        let long = format!("command:open(\"https://example.com/{}\")", "a".repeat(80));
+        assert!(key_action_label(&long).ends_with('…'), "过长应截断");
     }
 
     /// 「恢复本页」的分组映射必须覆盖每一个**有清单分组的**页，且不漏不错。
