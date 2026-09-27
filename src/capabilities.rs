@@ -194,6 +194,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "dialog_button_comment_dicts" => ty == "structlist",
         // 语言栏角标规则：整表读写的条目列表（enabled/state/corner/两个色值/scale）。
         "dialog_button_langbar_badges" => ty == "structlist",
+        // 悬停提示段列表：整表读写的条目列表（enabled/label/template/each/promote/inline）。
+        "dialog_button_tooltip_sections" => ty == "structlist",
         // 任务栏主字颜色：宿主是四个色值字符串键之一（其余三键同一对话框读写）。
         "dialog_button_langbar_text_colors" => ty == "str",
         // ordered_pairs：与 checkbox_group 读写同一形态（strlist），差别只在**顺序是否被
@@ -326,7 +328,6 @@ mod tests {
         // ⑥ 外观不支持 / 平台限制项，均由 core 维持默认值。
         "ui.font.path",
         "ui.font.render_mode",
-        "ui.tooltip.pinyin_max_readings",
         // ⑦ 命令栏始终开启，不提供关闭入口。
         "input.cmdbar.enabled",
         // ⑧ 词频打分模型的两个残留系数：**改动无任何效果**，故不暴露。

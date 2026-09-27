@@ -16,4 +16,5 @@ pub mod theme_import_dialog;
 pub mod theme_import_picker;
 pub mod toolbar_button_edit;
 pub mod toolbar_items_dialog;
+pub mod tooltip_sections_dialog;
 pub mod update_dialog;

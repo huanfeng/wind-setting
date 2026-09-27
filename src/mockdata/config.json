@@ -545,13 +545,59 @@
    "visible": true
   },
   "tooltip": {
-   "chaizi_enabled": false,
-   "code_enabled": true,
-   "debug_enabled": false,
    "delay": 200,
-   "pinyin_enabled": true,
-   "pinyin_heteronyms": true,
-   "pinyin_max_readings": 0
+   "max_chars": 200,
+   "sections": [
+    {
+     "each": "",
+     "enabled": true,
+     "inline": false,
+     "label": "完整原文",
+     "promote": "",
+     "template": "${full_text}"
+    },
+    {
+     "each": "",
+     "enabled": true,
+     "inline": false,
+     "label": "编码{(${code_source})}",
+     "promote": "",
+     "template": "${word_code}"
+    },
+    {
+     "each": "han",
+     "enabled": true,
+     "inline": false,
+     "label": "拼音",
+     "promote": "",
+     "template": "${char}：${readings}"
+    },
+    {
+     "each": "han",
+     "enabled": false,
+     "inline": false,
+     "label": "拆字",
+     "promote": "",
+     "template": "${char}：${chaizi}{ [${chaizi_code}]}"
+    },
+    {
+     "each": "char",
+     "enabled": false,
+     "inline": false,
+     "label": "Unicode",
+     "promote": "",
+     "template": "${char}：${unicode}"
+    },
+    {
+     "each": "",
+     "enabled": false,
+     "inline": false,
+     "label": "调试",
+     "promote": "",
+     "template": "${debug}"
+    }
+   ],
+   "wrap_width": 40
   }
  }
 }

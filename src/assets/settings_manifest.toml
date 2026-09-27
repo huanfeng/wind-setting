@@ -2856,48 +2856,39 @@ max = 2000
 step = 50
 unit = "ms"
 
+# 提示内容：有序段列表（StructList），每段 = 段名 + 内容模板，整表读写走专用对话框。
+# 取代了旧的 code_enabled / pinyin_enabled / pinyin_heteronyms / pinyin_max_readings /
+# chaizi_enabled / debug_enabled 六个开关（core 加载时迁移，设计见 core 仓
+# docs/design/candidate-tooltip-sections.md）。
 [[items]]
-key = "ui.tooltip.code_enabled"
+key = "ui.tooltip.sections"
 group = "ui"
 section = "候选项提示"
-type = "toggle"
-label = "编码反查"
-hint = "悬停候选时在主码表中反查该词的标准编码并显示"
+type = "dialog_button_tooltip_sections"
+label = "提示内容"
+hint = "悬停提示由若干段自上而下组成，每段可启停、排序、改写内容，或按预设添加"
 
 [[items]]
-key = "ui.tooltip.pinyin_enabled"
+key = "ui.tooltip.max_chars"
 group = "ui"
 section = "候选项提示"
-type = "toggle"
-label = "拼音反查"
-hint = "悬停候选词时显示拼音读音（多音字全部列出）"
+type = "number"
+label = "单行最大字数"
+hint = "超出部分以省略号截断；0 = 不限。复制、上屏取的仍是完整内容"
+min = 0
+max = 2000
+step = 10
 
 [[items]]
-key = "ui.tooltip.pinyin_heteronyms"
+key = "ui.tooltip.wrap_width"
 group = "ui"
 section = "候选项提示"
-type = "toggle"
-label = "显示多音字所有读音"
-hint = "关闭则仅显示首音"
-enabled_when = "ui.tooltip.pinyin_enabled == true"
-
-# 注：ui.tooltip.pinyin_max_readings（每字最多读音数）当前不支持，已移除（由 core 维持默认）。
-
-[[items]]
-key = "ui.tooltip.chaizi_enabled"
-group = "ui"
-section = "候选项提示"
-type = "toggle"
-label = "拆字反查"
-hint = "悬停候选词时显示字根拆字信息（需方案支持）"
-
-[[items]]
-key = "ui.tooltip.debug_enabled"
-group = "ui"
-section = "候选项提示"
-type = "toggle"
-label = "调试信息"
-hint = "悬停候选词时显示编码来源、权重等调试元数据"
+type = "number"
+label = "折行宽度"
+hint = "一行超过这个宽度就换行，汉字计 2、字母计 1；0 = 不折行"
+min = 0
+max = 200
+step = 2
 
 # ── 状态提示（行为/位置类；纯视觉如颜色/字号/透明度/圆角由主题 theme.toml 处理，不在此）──
 [[items]]

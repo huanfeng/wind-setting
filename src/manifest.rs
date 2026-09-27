@@ -503,6 +503,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_open_pairs",
     "dialog_button_comment_dicts",
     "dialog_button_langbar_badges",
+    "dialog_button_tooltip_sections",
     "dialog_button_langbar_text_colors",
     "local_select",
     "log_level_select",
@@ -535,7 +536,8 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_ordered_pairs"
         | "dialog_button_open_pairs"
         | "dialog_button_comment_dicts"
-        | "dialog_button_langbar_badges" => build_dialog_button(state, key, item, cfg),
+        | "dialog_button_langbar_badges"
+        | "dialog_button_tooltip_sections" => build_dialog_button(state, key, item, cfg),
         // 卡片行不是单个「设置」按钮而是「四枚缩略色样 + 设置」，故不走 build_dialog_button。
         "dialog_button_langbar_text_colors" => build_langbar_text_colors(state, key, cfg),
         // 与 `select` 完全同构，只多一件事：登记"当前档位"探针供隐私示警条读。
@@ -2750,6 +2752,9 @@ fn build_dialog_body_inner(
         // 语言栏角标规则：可增删的条目列表 + 每条五个字段，与注释词库同形态，
         // manifest 的「一个 key 一个控件」套不上，走专用对话框。
         build_dialog_button_langbar_badges(state, key, cfg)
+    } else if item.typ == "dialog_button_tooltip_sections" {
+        // 悬停提示的段列表：可增删、排序的条目列表 + 每段六个字段，与角标规则同形态。
+        build_dialog_button_tooltip_sections(state, key, cfg)
     } else if item.typ == "dialog_button_ordered_pairs" {
         // 顺序有语义的 strlist（如 ui.toolbar.items）。与下面 `cap_ty == "strlist"` 那条
         // 通用分支的分野是**顺序是否被 core 消费**，而 capability 里只有类型没有这个信息，
@@ -3727,6 +3732,56 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
 
     let visible = ui.visible;
     register_dialog(state, build_langbar_badges_dialog(&ui));
+    visible
+}
+
+/// 悬停提示的段列表（`ui.tooltip.sections`）：可增删、排序的条目列表，走专用对话框。
+///
+/// 与 `langbar_badges` 逐行同构（seed / writer / loader / getter 四件套 + register_dialog）。
+/// 出厂列表取 capability 快照的 `default`（即 core `Config::default()`，core 守门测试钉住它与
+/// `data/config.toml` 相同）——「恢复出厂」与「是否跟随出厂」都拿它比，不为此多打一次 RPC。
+fn build_dialog_button_tooltip_sections(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::tooltip_sections_dialog::{
+        TooltipSectionsUi, build_tooltip_sections_dialog,
+    };
+
+    let factory = state
+        .capabilities
+        .entries
+        .get(crate::capabilities::config_path_of(key))
+        .and_then(|e| e.default.as_array().cloned())
+        .unwrap_or_default();
+    let ui = TooltipSectionsUi::new(factory);
+    ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
+
+    let ui_w = ui.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, ui_w.to_value());
+        }));
+
+    let ui_l = ui.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
+        }),
+    );
+
+    let ui_g = ui.clone();
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(move || ui_g.to_value()));
+
+    let visible = ui.visible;
+    register_dialog(state, build_tooltip_sections_dialog(&ui));
     visible
 }
 

@@ -220,12 +220,9 @@
 | **高级/命令栏**：命令栏候选前缀 | `input.cmdbar.candidate_prefix` | **外观/候选标注** | **跨页迁入** |
 | 外观/模式指示：模式指示样式 | `ui.mode_indicator.style` | 候选窗口或主题 | 参考无独立项，待定归属 |
 | 外观/悬停提示：提示延迟 | `ui.tooltip.delay` | 候选项提示 | |
-| 外观/悬停提示：显示编码 | `ui.tooltip.code_enabled` | 候选项提示 | |
-| 外观/悬停提示：显示拼音 | `ui.tooltip.pinyin_enabled` | 候选项提示 | |
-| 外观/悬停提示：显示拆字 | `ui.tooltip.chaizi_enabled` | 候选项提示 | |
-| 外观/悬停提示：显示调试信息 | `ui.tooltip.debug_enabled` | 候选项提示 | |
-| 外观/悬停提示：显示多音字所有读音 | `ui.tooltip.pinyin_heteronyms` | 候选项提示 | 参考无（新增） |
-| 外观/悬停提示：每字最多读音数 | `ui.tooltip.pinyin_max_readings` | 候选项提示 | 参考无（新增） |
+| 外观/悬停提示：提示内容（段列表） | `ui.tooltip.sections` | 候选项提示 | 专用对话框；取代旧的 `code_enabled` / `pinyin_enabled` / `pinyin_heteronyms` / `pinyin_max_readings` / `chaizi_enabled` / `debug_enabled`（core 加载时迁移） |
+| 外观/悬停提示：单行最大字数 | `ui.tooltip.max_chars` | 候选项提示 | 参考无（新增） |
+| 外观/悬停提示：折行宽度 | `ui.tooltip.wrap_width` | 候选项提示 | 参考无（新增） |
 | 外观/状态提示：启用状态提示气泡 | `ui.status.enabled` | 状态提示 | |
 | 外观/状态提示：显示模式 | `ui.status.display_mode` | 状态提示 | |
 | 外观/状态提示：显示时长 | `ui.status.duration` | 状态提示 | |
