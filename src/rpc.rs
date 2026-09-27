@@ -1277,9 +1277,16 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
             (!mock_is_schema_text(text))
                 .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
         }
+        // 逐条删除中途失败：词条文本为此记号时 `*.remove` 报错，供离线走通「删到一半」那条路。
+        m if m.ends_with(".remove") => (params.get("text").and_then(|v| v.as_str())
+            == Some(MOCK_FAIL_TEXT))
+        .then(|| "mock: 删除失败".to_string()),
         _ => None,
     }
 }
+
+/// 见 [`mock_error`]：`*.remove` 的 `text` 为此值时 mock 报错。
+pub(crate) const MOCK_FAIL_TEXT: &str = "mock_fail";
 
 /// mock 的信封判定：只看 `kind` 是否声明为 `schema_text`（真实解析在 core 侧，
 /// 这里只需分出「信封 / 不是信封」两支供离线走通两条通路）。

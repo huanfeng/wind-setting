@@ -360,8 +360,9 @@ enum PendingAction {
     /// 而 `DeleteRow` 只带 `(code, text)`——把 kind 丢在半路，确认之后就拼不出请求了。
     /// 确认文案在入队时就已生成，故这里不必带模板原文。
     DeleteQuickFormat { kind: String, id: String },
-    /// 清空当前类别。
-    Clear,
+    /// 清空当前类别。带确认时的列表参数：「闲置 ≥ N 天」换算出的 usedBefore 在确认那一刻
+    /// 就定下来，删除沿用同一份，不在执行时按新的「现在」重算。
+    Clear(Value),
     /// 删除多选勾中的行。
     DeleteSelected,
     /// 恢复默认（短语）。
@@ -1050,7 +1051,8 @@ impl DictManagerState {
             }
             if let Some(d) = idle_days {
                 let now = chrono::Utc::now().timestamp();
-                p.insert("usedBefore".into(), json!(now - d as i64 * 86400));
+                let secs = (d as i64).saturating_mul(86400);
+                p.insert("usedBefore".into(), json!(now.saturating_sub(secs)));
             }
         }
         if spec.paged {
@@ -1370,10 +1372,11 @@ impl DictManagerState {
     /// 给「点一下就完事」的轻操作用：常用字的常用⇄生僻切换，结果就在同一行的徽章上
     /// 立刻看得见，再飘一条 toast 属于用一个更重的东西去通报一件更轻的事。
     /// 加词、导入这类看不出结果的操作仍然要提示。
-    fn write(&self, method: &str, params: Value, ok_msg: &str) {
+    /// 返回是否成功（调用方据此修剪勾选集等本地状态）。
+    fn write(&self, method: &str, params: Value, ok_msg: &str) -> bool {
         if method.is_empty() {
             self.notify_info("该操作不可用");
-            return;
+            return false;
         }
         match rpc::call_core(method, &params) {
             Ok(_) => {
@@ -1381,11 +1384,13 @@ impl DictManagerState {
                 if !ok_msg.is_empty() {
                     self.notify_ok(ok_msg);
                 }
+                true
             }
             Err(e) => {
                 // 失败也刷新：把乐观改动（如启用开关翻转）回退到服务端真实状态。
                 self.notify_err(&format!("操作失败: {e}"));
                 self.reload();
+                false
             }
         }
     }
@@ -1418,7 +1423,9 @@ impl DictManagerState {
         } else {
             "已删除"
         };
-        self.write(method, params, msg);
+        if self.write(method, params, msg) {
+            self.deselect(code, text);
+        }
     }
 
     /// 临时词转正到用户词库。
@@ -1427,17 +1434,21 @@ impl DictManagerState {
         let mut p = self.scoped_params();
         p.insert("code".into(), json!(code));
         p.insert("text".into(), json!(text));
-        self.write(spec.rpc.promote, Value::Object(p), "已转正到用户词库");
+        if self.write(spec.rpc.promote, Value::Object(p), "已转正到用户词库") {
+            self.deselect(code, text);
+        }
     }
 
     /// 临时词全部转正。
     pub fn do_promote_all(&self) {
         let spec = self.current_spec();
-        self.write(
+        if self.write(
             spec.rpc.promote_all,
             Value::Object(self.scoped_params()),
             "已全部转正",
-        );
+        ) {
+            self.clear_selection();
+        }
     }
 
     /// 短语启用/停用开关。
@@ -1993,7 +2004,9 @@ impl DictManagerState {
             return (None, None);
         }
         let n = |s: Signal<String>| s.get().trim().parse::<u64>().ok();
-        (n(self.temp_max_count), n(self.temp_idle_days))
+        // 天数封顶 100 年：再大没有意义，且乘 86400 换算秒数时会溢出。
+        let days = n(self.temp_idle_days).filter(|d| *d <= 36500);
+        (n(self.temp_max_count), days)
     }
 
     /// 当前生效的过滤条件（搜索词 + 临时词库筛选）的描述；无任何过滤时 `None`。
@@ -2010,7 +2023,7 @@ impl DictManagerState {
             parts.push(format!("次数 ≤ {n}"));
         }
         if let Some(d) = idle_days {
-            parts.push(format!("{d} 天内未使用"));
+            parts.push(format!("闲置 ≥ {d} 天"));
         }
         (!parts.is_empty()).then(|| parts.join("、"))
     }
@@ -2061,6 +2074,16 @@ impl DictManagerState {
         self.bump_table_epoch();
     }
 
+    /// 把一行移出勾选集（它已被删掉或转走）。
+    fn deselect(&self, code: &str, text: &str) {
+        let mut sel = self.selected.borrow_mut();
+        if sel.remove(&(code.to_string(), text.to_string())).is_some() {
+            let n = sel.len();
+            drop(sel);
+            self.selected_count.set(n);
+        }
+    }
+
     fn clear_selection(&self) {
         self.selected.borrow_mut().clear();
         if self.selected_count.get() != 0 {
@@ -2086,32 +2109,42 @@ impl DictManagerState {
     }
 
     fn do_delete_selected(&self) {
+        // 与 `selected_delete_calls` 同序（BTreeMap 的值序），前 k 条即已删掉的。
+        let keys: Vec<(String, String)> = self.selected.borrow().keys().cloned().collect();
         let calls = self.selected_delete_calls();
         let n = calls.len();
-        self.run_row_calls(calls, &format!("已删除 {n} 条"));
-        self.clear_selection();
+        let done = self.run_row_calls(calls, &format!("已删除 {n} 条"));
+        for (c, t) in &keys[..done] {
+            self.deselect(c, t);
+        }
     }
 
-    /// 逐条执行删除调用，首错即停；无论成败都重载。
-    fn run_row_calls(&self, calls: Vec<(&'static str, Value)>, ok_msg: &str) {
-        for (m, p) in calls {
+    /// 逐条执行删除调用，首错即停；无论成败都重载。返回已成功的条数。
+    fn run_row_calls(&self, calls: Vec<(&'static str, Value)>, ok_msg: &str) -> usize {
+        let n = calls.len();
+        for (k, (m, p)) in calls.into_iter().enumerate() {
             if let Err(e) = rpc::call_core(m, &p) {
-                self.notify_err(&format!("操作失败: {e}"));
+                self.notify_err(&format!("已删 {k}/{n} 条后失败: {e}"));
                 self.reload();
-                return;
+                return k;
             }
         }
         self.reload();
         self.notify_ok(ok_msg);
+        n
     }
 
-    /// 取全部搜索命中行。分页类按列表参数逐页重拉（`rows` 只有当前页）；非分页类即可见行。
-    fn search_matched_rows(&self) -> Result<Vec<WordRow>, String> {
+    /// 取全部搜索命中行。分页类按 `params`（列表参数）拉取（`rows` 只有当前页）；
+    /// 非分页类即可见行。
+    ///
+    /// 一次请求 `limit = total` 拉完：按 PAGE_SIZE 翻页时每页都要服务端重新筛一遍全表，
+    /// 命中多时是 O(n²/PAGE_SIZE)。循环只作服务端截断页长时的兜底。
+    fn search_matched_rows(&self, mut params: Value) -> Result<Vec<WordRow>, String> {
         let spec = self.current_spec();
         if !spec.paged {
             return Ok(self.visible_rows());
         }
-        let mut params = self.build_list_params();
+        params["limit"] = json!(self.total.get().max(PAGE_SIZE));
         let mut all = Vec::new();
         loop {
             params["offset"] = json!(all.len());
@@ -2154,10 +2187,11 @@ impl DictManagerState {
     }
 
     /// 清空当前类别；搜索/筛选态下只删命中项（见 [`Self::active_filter`]）。
-    pub fn do_clear(&self) {
+    /// `list_params` 为确认时定下的列表参数（见 [`PendingAction::Clear`]）。
+    fn do_clear(&self, list_params: Value) {
         let spec = self.current_spec();
         if self.active_filter().is_some() {
-            let rows = match self.search_matched_rows() {
+            let rows = match self.search_matched_rows(list_params) {
                 Ok(r) => r,
                 Err(e) => return self.notify_err(&format!("操作失败: {e}")),
             };
@@ -2168,11 +2202,15 @@ impl DictManagerState {
             } else {
                 "筛选结果"
             };
-            self.run_row_calls(calls, &format!("已删除 {n} 条{noun}"));
-            self.clear_selection();
+            let done = self.run_row_calls(calls, &format!("已删除 {n} 条{noun}"));
+            for r in &rows[..done] {
+                self.deselect(&r.code, &r.text);
+            }
         } else if !spec.rpc.clear.is_empty() {
             for (m, p) in self.clear_calls(None) {
-                self.write(m, p, "已清空");
+                if self.write(m, p, "已清空") {
+                    self.clear_selection();
+                }
             }
         } else {
             // ⚠️ 这里曾有一条「候选调整没有 clear RPC，就循环 remove_rule 逐条撤销」的
@@ -2327,8 +2365,13 @@ impl DictManagerState {
     }
 
     pub fn request_clear(&self) {
-        *self.pending.borrow_mut() = Some(PendingAction::Clear);
-        let n = self.total.get();
+        *self.pending.borrow_mut() = Some(PendingAction::Clear(self.build_list_params()));
+        // N 是上次刷新时的计数；带闲置天数时「现在」已往后走了，实删条数可能略有出入。
+        let n = if self.temp_filter().1.is_some() {
+            format!("约 {}", self.total.get())
+        } else {
+            self.total.get().to_string()
+        };
         let msg = match (self.active_search(), self.temp_filter()) {
             (Some(q), (None, None)) => {
                 format!("确定删除匹配「{q}」的 {n} 条搜索结果？其余条目不受影响。此操作不可恢复。")
@@ -2400,16 +2443,18 @@ impl DictManagerState {
         match act {
             Some(PendingAction::DeleteRow(c, t)) => self.do_delete_row(&c, &t),
             Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
-            Some(PendingAction::Clear) => self.do_clear(),
+            Some(PendingAction::Clear(p)) => self.do_clear(p),
             Some(PendingAction::DeleteSelected) => self.do_delete_selected(),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
-            Some(PendingAction::CommonBulk { ch, common }) => self.write(
-                "commonChars.bulkByBlock",
-                json!({ "char": ch, "common": common, "apply": true }),
-                // 这一类看不出结果——被设为生僻的字符多半根本不在当前这一页上，
-                // 不给回执用户无从判断到底生效没有。
-                "已按类型批量调整",
-            ),
+            Some(PendingAction::CommonBulk { ch, common }) => {
+                self.write(
+                    "commonChars.bulkByBlock",
+                    json!({ "char": ch, "common": common, "apply": true }),
+                    // 这一类看不出结果——被设为生僻的字符多半根本不在当前这一页上，
+                    // 不给回执用户无从判断到底生效没有。
+                    "已按类型批量调整",
+                );
+            }
             None => {}
         }
     }
@@ -5502,7 +5547,10 @@ mod tests {
         st.total.set(42);
         st.request_clear();
         assert!(st.confirm_msg.get().contains("42"));
-        assert!(matches!(*st.pending.borrow(), Some(PendingAction::Clear)));
+        assert!(matches!(
+            *st.pending.borrow(),
+            Some(PendingAction::Clear(_))
+        ));
 
         st.request_reset_default();
         assert!(matches!(
@@ -5718,6 +5766,139 @@ mod tests {
         st.on_nav_changed();
         assert_eq!(st.selected_count.get(), 0, "切类别清空选择");
         assert!(!st.current_spec().ops.multi_select, "只在临时词库开");
+    }
+
+    fn temp_state_mock() -> DictManagerState {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(1);
+        assert_eq!(st.current_category(), WordCategory::Temp);
+        st
+    }
+
+    fn temp_row(c: &str, t: &str) -> WordRow {
+        WordRow::from_json(
+            WordCategory::Temp,
+            &json!({ "code": c, "text": t, "count": 1 }),
+        )
+    }
+
+    fn with_mock<R>(f: impl FnOnce() -> R) -> R {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::rpc::take_mock_calls();
+        let r = f();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        r
+    }
+
+    /// 删选中删到一半失败：提示已删几条，勾选集只去掉真删掉的那几条。
+    #[test]
+    fn delete_selected_partial_failure_keeps_undeleted() {
+        with_mock(|| {
+            let st = temp_state_mock();
+            let (a, bad, c) = (
+                temp_row("aa", "工"),
+                temp_row("bb", crate::rpc::MOCK_FAIL_TEXT),
+                temp_row("cc", "在"),
+            );
+            for r in [&a, &bad, &c] {
+                st.toggle_selected(r);
+            }
+            st.request_delete_selected();
+            st.confirm_pending();
+            let (_, msg) = st.feedback.get().expect("应有提示");
+            assert!(msg.contains("已删 1/3 条后失败"), "{msg}");
+            assert!(!st.is_selected(&a), "已删掉的移出勾选");
+            assert!(st.is_selected(&bad) && st.is_selected(&c), "没删掉的留着");
+            assert_eq!(st.selected_count.get(), 2);
+        });
+    }
+
+    /// 取命中行一次拉完（limit = total），不按 PAGE_SIZE 反复翻页。
+    #[test]
+    fn search_matched_rows_fetches_in_one_request() {
+        with_mock(|| {
+            let st = temp_state_mock();
+            st.temp_max_count.set("1".into());
+            st.total.set(5000);
+            crate::rpc::take_mock_calls();
+            st.search_matched_rows(st.build_list_params()).unwrap();
+            let calls = crate::rpc::take_mock_calls();
+            let lists: Vec<_> = calls
+                .iter()
+                .filter(|(m, _)| m == "temp.listPaged")
+                .collect();
+            assert_eq!(lists.len(), 1, "{calls:?}");
+            assert_eq!(lists[0].1["limit"], json!(5000));
+        });
+    }
+
+    /// 行内删除 / 转正 / 全部转正 / 整表清空成功后，勾选集跟着修剪。
+    #[test]
+    fn row_ops_prune_selection() {
+        with_mock(|| {
+            let st = temp_state_mock();
+            let (a, b) = (temp_row("aa", "工"), temp_row("bb", "了"));
+            st.toggle_selected(&a);
+            st.toggle_selected(&b);
+            st.do_delete_row("aa", "工");
+            assert!(!st.is_selected(&a) && st.is_selected(&b));
+            st.do_promote("bb", "了");
+            assert_eq!(st.selected_count.get(), 0);
+
+            st.toggle_selected(&a);
+            st.do_promote_all();
+            assert_eq!(st.selected_count.get(), 0, "全部转正后清空");
+
+            st.toggle_selected(&a);
+            st.request_clear();
+            st.confirm_pending();
+            assert_eq!(st.selected_count.get(), 0, "整表清空后清空");
+        });
+    }
+
+    /// 确认时固定 usedBefore：之后再改筛选框，删的仍是用户确认时看到的那批条件。
+    #[test]
+    fn clear_pins_used_before_at_request_time() {
+        with_mock(|| {
+            let st = temp_state_mock();
+            st.temp_idle_days.set("30".into());
+            st.total.set(7);
+            st.request_clear();
+            let msg = st.confirm_msg.get();
+            assert!(msg.contains("闲置 ≥ 30 天"), "{msg}");
+            assert!(msg.contains("约 7 条"), "{msg}");
+            let pinned = match &*st.pending.borrow() {
+                Some(PendingAction::Clear(p)) => p["usedBefore"].clone(),
+                _ => panic!("应为 Clear"),
+            };
+            assert!(pinned.is_i64());
+            st.temp_idle_days.set("60".into());
+            crate::rpc::take_mock_calls();
+            st.confirm_pending();
+            let calls = crate::rpc::take_mock_calls();
+            let list = calls
+                .iter()
+                .find(|(m, _)| m == "temp.listPaged")
+                .expect("应先取命中行");
+            assert_eq!(list.1["usedBefore"], pinned);
+        });
+    }
+
+    /// 闲置天数超上限当没填；上限内正常换算。
+    #[test]
+    fn temp_idle_days_is_bounded() {
+        let st = temp_state_mock();
+        st.temp_idle_days.set("36500".into());
+        assert!(st.build_list_params().get("usedBefore").is_some());
+        st.temp_idle_days.set("36501".into());
+        assert!(st.build_list_params().get("usedBefore").is_none());
+        st.temp_idle_days.set("18446744073709551615".into());
+        assert!(st.build_list_params().get("usedBefore").is_none());
     }
 
     /// t179：搜索态下「清空」只删搜索结果，不能调整表 clear。
