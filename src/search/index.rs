@@ -470,6 +470,7 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     // ── 方案自定义 ──
     SchemaLevelItem { title: "辅助码", tab: "方案自定义", section: "辅助码", keywords: "辅码 筛选 反查" },
     SchemaLevelItem { title: "本方案启用辅助码", tab: "方案自定义", section: "辅助码", keywords: "辅码 覆盖 跟随全局" },
+    SchemaLevelItem { title: "辅助码来源", tab: "方案自定义", section: "辅助码", keywords: "辅码 码表 笔画 五笔 小鹤 自然码 跟随方案" },
     SchemaLevelItem { title: "码表配置", tab: "方案自定义", section: "码表配置", keywords: "覆盖 编码 上屏 恢复跟随" },
     SchemaLevelItem { title: "特殊模式", tab: "方案自定义", section: "特殊模式", keywords: "overlay 引导键 快符 生僻字 临时" },
     SchemaLevelItem { title: "进入即展示候选", tab: "方案自定义", section: "特殊模式", keywords: "overlay 引导键 首屏" },
