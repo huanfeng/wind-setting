@@ -54,10 +54,10 @@ const TOOLTIP_DOC_URL: &str = "https://windinput.com/docs/settings/appearance/ca
 
 /// 一个预设段：`(预设名, label, each, promote, template)`。
 ///
-/// ⛔ **不是在这里另编一套**：除「释义」外，每一条都与 core 的出厂段列表
+/// ⛔ **不是在这里另编一套**：除「词库注释」外，每一条都与 core 的出厂段列表
 /// （`default_tooltip_sections`）或旧开关迁移（`tooltip_sections_from_legacy`）产出的那一段
-/// 逐字段相同，由测试 `presets_match_core` 钉住。「释义」对应 core 气泡测试里的同名段
-/// （`${dict}` 在 core 出厂与迁移里都没有）。
+/// 逐字段相同，由测试 `presets_match_core` 钉住。「词库注释」取 `${dict}`，core 出厂与迁移里
+/// 都没有这一段，段名与设置页「注释词库」对应。
 pub const PRESETS: &[(&str, &str, &str, &str, &str)] = &[
     ("完整原文", "完整原文", "", "", "${full_text}"),
     ("编码", "编码{(${code_source})}", "", "", "${word_code}"),
@@ -77,7 +77,7 @@ pub const PRESETS: &[(&str, &str, &str, &str, &str)] = &[
         "${char}：{${chaizi}{ [${chaizi_code}]}\t}${readings}",
     ),
     ("Unicode", "Unicode", "char", "", "${char}：${unicode}"),
-    ("注释库释义", "释义", "", "", "${dict}"),
+    ("词库注释", "词库注释", "", "", "${dict}"),
     ("调试", "调试", "", "", "${debug}"),
 ];
 
@@ -89,7 +89,7 @@ const PRESET_DESCS: &[&str] = &[
     "每个汉字一行，显示字根与拆字编码",
     "拆字与读音合在一段，每字一行分两列",
     "每个字符一行，显示码位",
-    "注释词库里的释义（需先挂载注释词库）",
+    "注释词库里该词的注释（需先挂载注释词库）",
     "编码来源、权重等调试信息",
 ];
 
@@ -857,7 +857,7 @@ mod tests {
         v.as_array().cloned().unwrap()
     }
 
-    /// 预设与 core 的出厂段、旧开关迁移出的合并段逐字段相同（「释义」除外，见 [`PRESETS`]）。
+    /// 预设与 core 的出厂段、旧开关迁移出的合并段逐字段相同（「词库注释」除外，见 [`PRESETS`]）。
     ///
     /// 漂移的后果是「按预设添加」得到的段与 core 出厂的同名段长得不一样——比如 core 改了
     /// 拼音段模板，这里还是旧的，用户删了再按预设加回来，外观就变了。
@@ -873,7 +873,7 @@ mod tests {
             ..Default::default()
         }));
         for (name, label, each, promote, template) in PRESETS {
-            if *label == "释义" {
+            if *label == "词库注释" {
                 continue;
             }
             let hit = core.iter().find(|s| s.label == *label);
