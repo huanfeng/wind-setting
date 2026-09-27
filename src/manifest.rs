@@ -3738,8 +3738,8 @@ fn build_dialog_button_langbar_badges(state: &AppState, key: &str, cfg: &Config)
 /// 悬停提示的段列表（`ui.tooltip.sections`）：可增删、排序的条目列表，走专用对话框。
 ///
 /// 与 `langbar_badges` 逐行同构（seed / writer / loader / getter 四件套 + register_dialog）。
-/// 出厂列表取 capability 快照的 `default`（即 core `Config::default()`，core 守门测试钉住它与
-/// `data/config.toml` 相同）——「恢复出厂」与「是否跟随出厂」都拿它比，不为此多打一次 RPC。
+/// 出厂列表每次打开对话框时经 [`core_defaults_config`] 向 core 取（与「恢复本页」同源，
+/// 口径同 core 的「等于出厂即删键」）；取不到才用 capability 快照的 `default` 兜底。
 fn build_dialog_button_tooltip_sections(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::tooltip_sections_dialog::{
         TooltipSectionsUi, build_tooltip_sections_dialog,
@@ -3752,6 +3752,10 @@ fn build_dialog_button_tooltip_sections(state: &AppState, key: &str, cfg: &Confi
         .and_then(|e| e.default.as_array().cloned())
         .unwrap_or_default();
     let ui = TooltipSectionsUi::new(factory);
+    let kf = key.to_string();
+    *ui.factory_source.borrow_mut() = Some(Box::new(move || {
+        core_defaults_config(&[]).get_array(&kf).cloned()
+    }));
     ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
 
     let ui_w = ui.clone();

@@ -23,7 +23,15 @@
 //! 六个字段一律写全，是为了**与出厂列表逐字段可比**：core 保存时「等于出厂值即删键」
 //! （`set_user_value` 的收口）按 TOML 值整体比较，少写一个取默认值的字段就比不上，
 //! 用户点了「恢复出厂」却在用户层留下一份与出厂一模一样的冻结副本（设计 §9.1：用户层的
-//! 段列表冻结在写下的那一刻，以后新增的出厂段到不了他）。
+//! 段列表冻结在写下的那一刻；新增的出厂段有补段迁移送达，出厂段的后续调整则到不了他）。
+//!
+//! # ★ 「出厂」取 core 的 `config.getDefaults`，不取快照
+//!
+//! core 判「等于出厂值即删键」比的是系统预置（L1⊕L2⊕L2.5，`preset_for_pruning`），
+//! 快照里的 `default` 是纯 L1。两者一旦不同，「恢复出厂」保存后留下的是一份与 core 口径
+//! 不符的副本，「与出厂设置相同」的判定也跟着说错——同 `manifest.rs` 里
+//! `core_defaults_config` 那条「⛔ 不能用纯 L1」。故每次打开对话框经
+//! [`TooltipSectionsUi::factory_source`] 向 core 取一次，取不到才回落快照。
 //!
 //! # ★ 模板里的制表符与换行按转义显示
 //!
@@ -118,8 +126,13 @@ pub struct SectionForm {
     pub label: Signal<String>,
     /// 段内容，**转义后**的文本（见 [`escape_template`]）。
     pub template: Signal<String>,
-    /// 粒度在 [`EACH`] 里的下标。
+    /// 粒度下拉的选项：[`EACH`] 的三项，外加（原值未识别时）一项「原值（未识别）」。
+    pub each_options: Signal<Vec<String>>,
+    /// 粒度在 [`Self::each_options`] 里的下标。
     pub each_idx: Signal<usize>,
+    /// 打开表单时的原 `each`。未识别时下拉多出一项指向它，用户不动就原样写回——只改个段名
+    /// 就把手写的值悄悄改成 `""`，是这一屏最不该有的静默改写。
+    pub each_raw: Signal<String>,
     pub promote: Signal<String>,
     pub inline: Signal<bool>,
     /// 校验失败原因；空 = 无。就地显示，不再弹一层。
@@ -134,7 +147,9 @@ impl SectionForm {
             editing: signal(NEW_SECTION),
             label: signal(String::new()),
             template: signal(String::new()),
+            each_options: signal(each_options("")),
             each_idx: signal(0),
+            each_raw: signal(String::new()),
             promote: signal(String::new()),
             inline: signal(false),
             error: signal(String::new()),
@@ -146,7 +161,9 @@ impl SectionForm {
         self.editing.set(NEW_SECTION);
         self.label.set(String::new());
         self.template.set(String::new());
+        self.each_options.set(each_options(""));
         self.each_idx.set(0);
+        self.each_raw.set(String::new());
         self.promote.set(String::new());
         self.inline.set(false);
         self.error.set(String::new());
@@ -158,7 +175,9 @@ impl SectionForm {
         self.editing.set(index);
         self.label.set(row.label.clone());
         self.template.set(escape_template(&row.template));
+        self.each_options.set(each_options(&row.each));
         self.each_idx.set(index_of_each(&row.each));
+        self.each_raw.set(row.each.clone());
         self.promote.set(row.promote.clone());
         self.inline.set(row.inline);
         self.error.set(String::new());
@@ -173,6 +192,9 @@ impl Default for SectionForm {
     }
 }
 
+/// 向 core 取出厂段列表的回调，见 [`TooltipSectionsUi::factory_source`]。
+pub type FactorySource = Box<dyn Fn() -> Option<Vec<Value>>>;
+
 /// 「提示内容」对话框的全部可变状态。
 #[derive(Clone)]
 pub struct TooltipSectionsUi {
@@ -185,9 +207,12 @@ pub struct TooltipSectionsUi {
     pub form: SectionForm,
     /// 「按预设添加」弹层的可见性。
     pub presets: Signal<bool>,
-    /// 出厂段列表（capability 快照里的 `default`，即 core `Config::default()`）。
-    /// 供「恢复出厂」与「是否与出厂相同」的判定。
-    pub factory: Rc<Vec<Value>>,
+    /// 出厂段列表，供「恢复出厂」与「是否与出厂相同」的判定。构造时是快照里的
+    /// `default`，打开对话框时经 [`Self::factory_source`] 换成 core 的口径（见模块文档）。
+    pub factory: Rc<RefCell<Vec<Value>>>,
+    /// 向 core 取出厂段列表；`None` = 取不到（未连接等），保留原值。由 `manifest.rs` 接到
+    /// `core_defaults_config` 上。
+    pub factory_source: Rc<RefCell<Option<FactorySource>>>,
 }
 
 impl TooltipSectionsUi {
@@ -199,7 +224,8 @@ impl TooltipSectionsUi {
             next_uid: Rc::new(Cell::new(0)),
             form: SectionForm::new(),
             presets: signal(false),
-            factory: Rc::new(factory),
+            factory: Rc::new(RefCell::new(factory)),
+            factory_source: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -231,16 +257,30 @@ impl TooltipSectionsUi {
         self.rows.set(rows);
     }
 
+    /// 打开对话框时调用：经 [`Self::factory_source`] 向 core 重取一次出厂列表。
+    pub fn refresh_factory(&self) {
+        let got = self.factory_source.borrow().as_ref().and_then(|f| f());
+        if let Some(v) = got {
+            *self.factory.borrow_mut() = v;
+        }
+    }
+
     /// 恢复出厂：界面换成出厂列表；保存时 core 发现它等于出厂值，删掉用户层的这个键，
-    /// 此后跟随出厂（将来新增的出厂段也会出现）。
+    /// 此后跟随出厂（出厂内容的调整会自动生效）。
+    ///
+    /// 出厂列表为空（core 取不到、快照也没有）时什么都不做：那不是「出厂就是零段」，
+    /// 而是不知道出厂是什么，照样播种会把用户的列表清空。
     pub fn reset_to_factory(&self) {
-        let f = self.factory.clone();
+        let f = self.factory.borrow().clone();
+        if f.is_empty() {
+            return;
+        }
         self.seed(&f);
     }
 
     /// 当前列表是否与出厂列表相同（界面据此显示「跟随出厂」还是「已自定义」）。
     pub fn is_factory(&self) -> bool {
-        self.to_value().as_array().map(Vec::as_slice) == Some(self.factory.as_slice())
+        self.to_value().as_array().map(Vec::as_slice) == Some(self.factory.borrow().as_slice())
     }
 
     /// 提交表单：新建则追加（即启用），编辑则替换。`template` 是**已还原**的真实文本。
@@ -325,9 +365,27 @@ impl TooltipSectionsUi {
     }
 }
 
-/// 粒度落盘值 → [`EACH`] 下标；未知回落「整个候选」（与 core 的处置一致）。
+/// 粒度下拉的选项：[`EACH`] 的界面名；`raw` 未识别时末尾多一项「原值（未识别）」。
+fn each_options(raw: &str) -> Vec<String> {
+    let mut v: Vec<String> = EACH.iter().map(|(_, l)| l.to_string()).collect();
+    if !EACH.iter().any(|(k, _)| *k == raw) {
+        v.push(format!("{raw}（未识别）"));
+    }
+    v
+}
+
+/// 粒度落盘值 → [`each_options`] 下标；未识别的指向末尾那一项「原值（未识别）」。
 fn index_of_each(each: &str) -> usize {
-    EACH.iter().position(|(k, _)| *k == each).unwrap_or(0)
+    EACH.iter()
+        .position(|(k, _)| *k == each)
+        .unwrap_or(EACH.len())
+}
+
+/// 下拉下标 → 落盘值：[`EACH`] 之外的那一项就是原值（`raw`），原样写回。
+fn each_of_index(idx: usize, raw: &str) -> String {
+    EACH.get(idx)
+        .map(|(k, _)| k.to_string())
+        .unwrap_or_else(|| raw.to_string())
 }
 
 /// 粒度落盘值 → 界面名；未知原样返回（手写配置里可能有本屏不认识的值）。
@@ -560,14 +618,14 @@ pub fn build_tooltip_sections_dialog(ui: &TooltipSectionsUi) -> Element {
         .width_match()
         .padding_xy(18, 6)
         .child(
-            Element::label("与出厂设置相同：今后新增的出厂段会自动出现。")
+            Element::label("与出厂设置相同：保存后跟随出厂，出厂内容的调整会自动生效。")
                 .font_size(12.0)
                 .fg_role(Role::TextSubtle)
                 .max_lines(2)
                 .visible_when(move || f_ui.is_factory()),
         )
         .child(
-            Element::label("已自定义：今后新增的出厂段不会自动加入，可按预设补上或恢复出厂。")
+            Element::label("已自定义：出厂段的后续调整不会同步到这里，可恢复出厂取回。")
                 .font_size(12.0)
                 .fg_role(Role::TextSubtle)
                 .max_lines(2)
@@ -626,7 +684,20 @@ pub fn build_tooltip_sections_dialog(ui: &TooltipSectionsUi) -> Element {
                 ),
         );
 
+    // 对话框每打开一次就向 core 重取一次出厂列表（见模块文档）。本屏的「设置」按钮由
+    // manifest 的通用逻辑绑到 `visible` 上，没有「打开时」钩子，故盯 `visible` 的变化。
+    let open_ui = ui.clone();
+    let on_open = crate::pages::dict::reactive::reactive_effect(
+        move || visible.version(),
+        move || {
+            if open_ui.visible.get() {
+                open_ui.refresh_factory();
+            }
+        },
+    );
+
     Element::stack()
+        .child(on_open)
         .child(Element::dialog(visible, frame))
         .child(build_preset_picker(ui))
         .child(build_section_form_dialog(ui))
@@ -691,7 +762,6 @@ fn build_section_form_dialog(ui: &TooltipSectionsUi) -> Element {
     let fc = form.clone();
     let ui2 = ui.clone();
     let visible = form.visible;
-    let each_labels: Vec<String> = EACH.iter().map(|(_, l)| l.to_string()).collect();
 
     let input = |sig: Signal<String>, placeholder: &str| {
         Element::text_input(sig, placeholder)
@@ -721,7 +791,7 @@ fn build_section_form_dialog(ui: &TooltipSectionsUi) -> Element {
                 ))
                 .child(form_row(
                     "求值粒度",
-                    Element::dropdown(each_labels, form.each_idx).min_width(160),
+                    Element::dropdown_signal(form.each_options, form.each_idx).min_width(160),
                 ))
                 .child(form_row(
                     "优先显示",
@@ -763,10 +833,7 @@ fn build_section_form_dialog(ui: &TooltipSectionsUi) -> Element {
                         return;
                     }
                     fc.error.set(String::new());
-                    let each = EACH
-                        .get(fc.each_idx.get())
-                        .map(|(k, _)| k.to_string())
-                        .unwrap_or_default();
+                    let each = each_of_index(fc.each_idx.get(), &fc.each_raw.get());
                     ui2.commit_form(
                         fc.editing.get(),
                         fc.label.get(),
@@ -821,6 +888,15 @@ mod tests {
                 ),
                 (*each, *promote, *template, false),
                 "预设「{name}」与 core 不一致"
+            );
+        }
+        // 反向：core 出厂的每一段都要能按预设加回来——否则用户删掉某个出厂段后，
+        // 除了「恢复出厂」（连带丢掉其余自定义）没有别的路把它找回。
+        for s in default_tooltip_sections() {
+            assert!(
+                PRESETS.iter().any(|(_, label, ..)| *label == s.label),
+                "core 出厂段「{}」没有同名预设",
+                s.label
             );
         }
         assert_eq!(PRESETS.len(), PRESET_DESCS.len(), "预设与说明要一一对应");
@@ -940,8 +1016,68 @@ mod tests {
     #[test]
     fn unknown_each_survives_display() {
         assert_eq!(each_label("foo"), "foo");
-        assert_eq!(index_of_each("foo"), 0);
         assert_eq!(index_of_each("char"), 2);
+        assert_eq!(
+            each_options("char").len(),
+            EACH.len(),
+            "已识别的值不多出选项"
+        );
+    }
+
+    /// ★ `each` 未识别时只改段名，原值原样写回；用户真去下拉里选了已知项才改。
+    #[test]
+    fn unknown_each_is_kept_unless_user_picks_another() {
+        let ui = TooltipSectionsUi::new(vec![]);
+        ui.seed(&[json!({ "label": "a", "template": "x", "each": "word" })]);
+        let row = ui.rows.get()[0].clone();
+        ui.form.open_edit(0, &row);
+        let opts = ui.form.each_options.get();
+        assert_eq!(opts.last().map(String::as_str), Some("word（未识别）"));
+        assert_eq!(ui.form.each_idx.get(), opts.len() - 1, "默认指向原值那一项");
+        assert_eq!(
+            each_of_index(ui.form.each_idx.get(), &ui.form.each_raw.get()),
+            "word",
+            "不动下拉就原样写回"
+        );
+        assert_eq!(each_of_index(1, &ui.form.each_raw.get()), "han");
+        // 新建表单不带「未识别」项。
+        ui.form.open_new();
+        assert_eq!(ui.form.each_options.get().len(), EACH.len());
+    }
+
+    /// ★ 出厂以 core 的 `getDefaults` 为准：快照与之不同时，恢复出厂与「是否出厂」都跟 core。
+    #[test]
+    fn factory_follows_core_defaults_over_snapshot() {
+        let mut core_defaults = factory();
+        core_defaults[3]["enabled"] = json!(true); // 设想系统预置把拆字段打开了
+        let ui = TooltipSectionsUi::new(factory()); // 快照 = 纯 L1
+        let d = core_defaults.clone();
+        *ui.factory_source.borrow_mut() = Some(Box::new(move || Some(d.clone())));
+        ui.seed(&core_defaults);
+        ui.refresh_factory();
+        assert!(ui.is_factory(), "与 core 口径相同就是出厂");
+        ui.seed(&factory());
+        assert!(!ui.is_factory(), "与快照相同不算");
+        ui.reset_to_factory();
+        assert_eq!(ui.to_value(), Value::Array(core_defaults));
+    }
+
+    /// core 取不到时保留快照；快照也空时「恢复出厂」不清空用户的列表。
+    #[test]
+    fn factory_falls_back_to_snapshot_and_never_clears() {
+        let ui = TooltipSectionsUi::new(factory());
+        *ui.factory_source.borrow_mut() = Some(Box::new(|| None));
+        ui.refresh_factory();
+        assert_eq!(*ui.factory.borrow(), factory());
+
+        let empty = TooltipSectionsUi::new(vec![]);
+        empty.seed(&factory());
+        empty.reset_to_factory();
+        assert_eq!(
+            empty.rows.get().len(),
+            factory().len(),
+            "不知道出厂是什么就别动"
+        );
     }
 
     #[test]
