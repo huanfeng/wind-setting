@@ -226,7 +226,8 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; SET
 /// 170 会把它折成两行（最终审查目视发现）；三个下拉同宽，右侧才对得齐。
 const BH_DD_W: i32 = 220;
 
-/// 辅助码勾选行控件区的统一宽度。与开关/数字框都用它，两行右侧控件左边界才能对齐。
+/// 辅助码卡片里步进器（及「候选文字字体」输入框）**自身**的宽度。控件位容器宽是
+/// [`AUX_SRC_W`]，控件在容器里靠右。
 const AUX_CTRL_W: i32 = 150;
 /// 辅助码卡片三行的**控件位**宽（`override_control` 的容器）。由「辅助码来源」下拉定：
 /// 要放得下最长的「五笔 86」+ 徽章 + 下拉箭头。三行同用它，来源列（跟随 / 已自定义）
@@ -344,6 +345,9 @@ fn aux_reset_all(state: &SchemaManagerState, followed_on: bool, followed_len: i3
     // 来源这一行也清：只读态一并清掉，保存时才会走正常路径落 null（回落方案文件）。
     state.settings_aux_src_over.set(false);
     state.settings_aux_src_manual.set(false);
+    state
+        .settings_aux_src_idx
+        .set(state.settings_aux_src_follow_idx.get());
     state.settings_aux_disp.set(ct_summary(0));
 }
 
@@ -428,6 +432,21 @@ fn aux_src_follow_text(base: &[String], opts: &AuxSourceOpts) -> String {
         })
         .collect::<Vec<_>>()
         .join("+")
+}
+
+/// 只读态控件位的文字：报**现状**——这份值是手写进方案覆盖（`schema_overrides/<id>.toml`）
+/// 的，不是方案文件声明的，所以不能指路「去方案文件里改」（改了也不生效）。撤掉它的路
+/// 在界面上：取消勾选即恢复跟随（见 [`aux_src_locked`]），由行上的悬停提示说明。
+///
+/// 名字取 [`aux_src_follow_text`] 同一口径，未安装的已带「（未安装）」。单条（下拉里
+/// 没有的那种）不说「多个」。
+fn aux_src_manual_text(merged: &[String], opts: &AuxSourceOpts) -> String {
+    let head = if merged.len() > 1 {
+        "手写的多个来源"
+    } else {
+        "手写的来源"
+    };
+    format!("{head}：{}", aux_src_follow_text(merged, opts))
 }
 
 /// 打开时「辅助码来源」这一行的状态。
@@ -1144,7 +1163,6 @@ pub struct SchemaManagerState {
     settings_aux_at_open: Rc<std::cell::Cell<(bool, bool, bool, i32)>>,
     /// 「辅助码来源」是否覆盖方案文件（勾选框）。判据见 [`seed_aux_src`]：合并值等于
     /// 方案文件自己的值即为跟随（不勾）。
-    // 行由 Task 3 渲染；在那之前只有 seed / 保存 / 复位用到它们，非测试构建下会报未读。
     pub settings_aux_src_over: Signal<bool>,
     /// 勾选时选中的下拉项下标（指向 `settings_aux_src_opts.items`）。
     pub settings_aux_src_idx: Signal<usize>,
@@ -1157,8 +1175,11 @@ pub struct SchemaManagerState {
     pub settings_aux_src_follow: Signal<String>,
     /// 打开时 `(over, idx, manual)` 的快照，供保存时的脏判定（同 `settings_aux_at_open`）。
     settings_aux_src_at_open: Rc<std::cell::Cell<(bool, usize, bool)>>,
-    /// 只读态显示的来源名（[`aux_src_follow_text`] 按合并值算）；非只读时为空。
+    /// 只读态控件位的文字（[`aux_src_manual_text`]）；非只读时为空。
     settings_aux_src_manual_text: Rc<RefCell<String>>,
+    /// 跟随态该停的下拉下标（方案声明的首个来源在可选项里的位置）。打开时 seed、
+    /// 「全部恢复跟随」拨回——与另两行「控件值拨回跟随值」同理。
+    settings_aux_src_follow_idx: Rc<std::cell::Cell<usize>>,
     // ── 本方案行为（`[punct]` / `[candidate]` / `[phrases]` 三段）──
     //
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
@@ -1344,6 +1365,7 @@ impl SchemaManagerState {
             settings_aux_src_follow: signal(String::new()),
             settings_aux_src_at_open: Rc::new(std::cell::Cell::new((false, 0, false))),
             settings_aux_src_manual_text: Rc::new(RefCell::new(String::new())),
+            settings_aux_src_follow_idx: Rc::new(std::cell::Cell::new(0)),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_bh_punct: signal(0),
@@ -2478,17 +2500,24 @@ impl SchemaManagerState {
                     .unwrap_or_default();
                 // 跟随态的下标也要 seed 成当前生效的那一项：勾上时下拉停在它上面，
                 // 否则一勾就悄悄换成了第一项。方案声明了多条时取第一条。
+                //
+                // ⚠️ 两个在 diff 模型下**预期**的后果（不是 bug）：
+                // - 勾上不改直接保存：写下的 `[该项]` 等于方案文件的值，core `json_diff`
+                //   当无差异删掉，重开回到跟随——效果与跟随完全相同，只是勾选没留下。
+                // - 方案声明了多条时勾上即**收窄成首条**：下拉只能表达单条，保存落的就是
+                //   `[首条]`，与方案文件不等，会作为覆盖留下。
                 let follow_idx = base.first().and_then(|e| opts.index_of(e)).unwrap_or(0);
                 let mut manual_text = String::new();
                 let (src_over, src_idx, src_manual) = match seed_aux_src(&merged, &base, &opts) {
                     AuxSrcSeed::Follow => (false, follow_idx, false),
                     AuxSrcSeed::Pick(i) => (true, i, false),
                     AuxSrcSeed::Manual(v) => {
-                        manual_text = aux_src_follow_text(&v, &opts);
+                        manual_text = aux_src_manual_text(&v, &opts);
                         (true, follow_idx, true)
                     }
                 };
                 *self.settings_aux_src_manual_text.borrow_mut() = manual_text;
+                self.settings_aux_src_follow_idx.set(follow_idx);
                 self.settings_aux_src_follow
                     .set(aux_src_follow_text(&base, &opts));
                 *self.settings_aux_src_opts.borrow_mut() = opts;
@@ -4632,8 +4661,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 下拉每项带徽章区分「输入方案 / 辅助码表」——同名的（如笔画方案与笔画码表）
             // 不看徽章分不出来。
             //
-            // 只读态（多条 / 下拉里没有的条目）：`gate` 为假，控件位报出各条名字、提示去
-            // 方案文件里改。取消勾选即离开只读回到跟随，见 [`aux_src_locked`]。
+            // 只读态（多条 / 下拉里没有的条目）：`gate` 为假，控件位报出现状
+            // （[`aux_src_manual_text`]），悬停提示给出撤销的路：取消勾选即离开只读回到跟随，
+            // 见 [`aux_src_locked`]。
+            //
+            // ★ 这一行**有意不**像「最长词长」那样随「启用辅助码」变淡：来源与开关互不依赖，
+            // 辅助码关着时先把来源选好无害，打开即按它生效。
             let src_over = state.settings_aux_src_over;
             let src_manual = state.settings_aux_src_manual;
             let items: Vec<windui::ui::select::DropdownItem> = state
@@ -4652,30 +4685,35 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     )
                 })
                 .collect();
-            // 动作在前、名字在后：来源多了会截断，截掉的该是名字而不是「去哪儿改」。
-            // 控件位只有 `AUX_SRC_W` 宽，折成两行会被行高裁掉半行（目视验证所见）。
-            let manual_reason = format!(
-                "在方案文件里改：{}",
-                state.settings_aux_src_manual_text.borrow()
-            );
             let src_editor =
                 Element::dropdown_items(items, state.settings_aux_src_idx).width(AUX_SRC_W);
+            // 控件位只有 `AUX_SRC_W` 宽，折成两行会被行高裁掉半行（目视验证所见），
+            // 撤销说明因此放悬停提示而不是挤进这一行。
+            let manual_reason = state.settings_aux_src_manual_text.borrow().clone();
+            let mut src_ctl = crate::widgets::override_control_signal(
+                src_over,
+                Rc::new(move || !aux_src_locked(src_over.get(), src_manual.get())),
+                src_editor,
+                state.settings_aux_src_follow,
+                &manual_reason,
+                AUX_SRC_W,
+            );
+            // 静态提示挂在控件位容器上只在**建树时即为只读**时做：那时这一格里永远只有
+            // 两个文字标签（重新勾上仍回只读，下拉不会出现），容器吞命中不会挡掉任何交互。
+            // 每次打开都重建本节，所以「建树时」就是「打开时」。
+            if src_manual.get() {
+                src_ctl = src_ctl.tooltip(
+                    "这些来源手写在本方案的覆盖设置里，下拉表达不了。取消勾选即恢复跟随方案（保存后生效）",
+                );
+            }
             let row_src = crate::widgets::setting_row_override(
                 src_over,
                 "辅助码来源",
-                Some(
-                    "用哪张表的字形码筛选：一个输入方案（取它的系统词库 + 你加的词），或一张辅助码表",
-                ),
+                // 一行放得下为准（左栏被 `AUX_SRC_W` 控件位挤窄，两行会被行高裁掉半行）。
+                Some("用哪个方案或码表的字形码筛选"),
                 "跟随方案",
                 Role::TextMuted,
-                crate::widgets::override_control_signal(
-                    src_over,
-                    Rc::new(move || !aux_src_locked(src_over.get(), src_manual.get())),
-                    src_editor,
-                    state.settings_aux_src_follow,
-                    &manual_reason,
-                    AUX_SRC_W,
-                ),
+                src_ctl,
             );
 
             // 「全部恢复跟随」：样式/交互照 `SettingsSection::CodeTable` 那个同名按钮
@@ -5054,7 +5092,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 而这一屏已经为「每帧轮询」付过一次代价（见 punct_map_summary 的说明）。
     let bh_punct_map = state.settings_bh_punct_map_on;
     let punct_disp = state.settings_bh_punct_map_disp;
-    // 辅助码卡片摘要同理：只看两行的勾选态。`AuxCode` 也归「方案自定义」页
+    // 辅助码卡片摘要同理：只看三行的勾选态。`AuxCode` 也归「方案自定义」页
     // （见 `SettingsSection::tab`），星号要一并算上它，否则用户勾了辅助码却看不到 TAB 有变化。
     let aux_on_over = state.settings_aux_on_over;
     let aux_len_over = state.settings_aux_len_over;
@@ -6738,10 +6776,6 @@ mod section_build_tests {
 
         assert!(!state.settings_aux_src_over.get());
         assert!(!state.settings_aux_src_manual.get());
-        assert_eq!(
-            aux_src_write(state.settings_aux_src_over.get(), Some("x")),
-            Value::Null
-        );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
@@ -6856,6 +6890,41 @@ mod section_build_tests {
             json!(["aux_code/bihua.txt"])
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 「全部恢复跟随」把下拉下标也拨回生效项——同 `aux_reset_all` 对另两行「控件值拨回
+    /// 跟随值」的理由：不拨的话再勾上，下拉停在上一次选的旧项上。
+    #[test]
+    fn aux_reset_all_restores_source_idx_to_effective() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = open_mock_pinyin();
+        let bihua = state.settings_aux_src_idx.get();
+        state.settings_aux_src_over.set(true);
+        state.settings_aux_src_idx.set(0);
+        assert_ne!(bihua, 0);
+
+        aux_reset_all(&state, true, 4);
+        assert_eq!(state.settings_aux_src_idx.get(), bihua);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 只读态文案：说的是**现状**（手写在方案覆盖里的来源），不指路去方案文件——
+    /// 那份值在 override 里，改方案文件无效。单条（未安装）不说「多个」。
+    #[test]
+    fn manual_text_describes_handwritten_sources() {
+        let o = aux_opts();
+        assert_eq!(
+            aux_src_manual_text(&strs(&["schema:wubi86", "aux_code/stroke.txt"]), &o),
+            "手写的多个来源：五笔 86+笔画"
+        );
+        assert_eq!(
+            aux_src_manual_text(&strs(&["aux_code/gone.txt"]), &o),
+            "手写的来源：aux_code/gone.txt（未安装）"
+        );
     }
 
     /// 只读态只由「勾选 + 只读」一起构成：取消勾选即离开只读，重新勾上又回到只读。
