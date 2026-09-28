@@ -2983,6 +2983,35 @@ opens_dialog = "status_position"
 options = [
   { value = "follow_caret", label = "跟随光标" },
   { value = "fixed", label = "固定位置" },
+  { value = "screen_center", label = "屏幕中央" },
+  { value = "screen_top_left", label = "屏幕左上角" },
+  { value = "screen_top_right", label = "屏幕右上角" },
+  { value = "screen_bottom_left", label = "屏幕左下角" },
+  { value = "screen_bottom_right", label = "屏幕右下角" },
+  { value = "window_center", label = "窗口中央" },
+  { value = "window_bottom_left", label = "窗口左下角" },
+]
+
+# 锚点文案与 core 右键菜单「应用独立配置 → 状态提示位置」逐字一致（handle_menu.rs 的
+# status_anchor_label）。「屏幕」= 当前窗口所在显示器，「窗口」= 当前窗口的边框。
+[[items]]
+key = "ui.status.fallback_position"
+group = "ui"
+section = "状态提示"
+type = "select"
+label = "坐标不可用时"
+hint = "仅在「跟随光标」下生效：应用报不出光标位置（如部分设计软件）时气泡显示在哪里；「上次位置」即最近一次拿到光标的地方"
+enabled_when = "ui.status.enabled == true && ui.status.position_mode == follow_caret"
+options = [
+  { value = "last", label = "上次位置" },
+  { value = "hide", label = "不显示" },
+  { value = "screen_center", label = "屏幕中央" },
+  { value = "screen_top_left", label = "屏幕左上角" },
+  { value = "screen_top_right", label = "屏幕右上角" },
+  { value = "screen_bottom_left", label = "屏幕左下角" },
+  { value = "screen_bottom_right", label = "屏幕右下角" },
+  { value = "window_center", label = "窗口中央" },
+  { value = "window_bottom_left", label = "窗口左下角" },
 ]
 
 [[items]]
