@@ -395,7 +395,7 @@
    "sentence_count": 1,
    "sentence_cycle_key": "",
    "sentence_max_count": 1,
-   "sentence_uses_user_words": false,
+   "sentence_uses_user_words": true,
    "separator": "auto",
    "shuangpin": {
     "allow_full_pinyin": false
