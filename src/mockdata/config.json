@@ -508,6 +508,7 @@
    "display_mode": "temp",
    "duration": 800,
    "enabled": true,
+   "fallback_position": "last",
    "items": [
     "schema",
     "punct",
