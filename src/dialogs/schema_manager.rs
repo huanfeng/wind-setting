@@ -738,7 +738,7 @@ fn build_comment_tpl_dialog(state: &SchemaManagerState) -> Element {
         .child(Element::divider())
         .child(
             Element::label(concat!(
-                "候选词右侧的灰字。不勾 = 跟随全局；勾上填模板 = 本方案改用它；",
+                "候选词右侧的小字。不勾 = 跟随全局；勾上填模板 = 本方案改用它；",
                 "勾上留空 = 本方案不显示注释。
 ",
                 "模板语法与可用变量见「外观 → 候选标注 → 候选注释」，两处写法完全一样。",
@@ -4617,7 +4617,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     ),
                     summary_action_row(
                         "候选注释",
-                        Some("候选词右侧灰字显示的内容，横排与竖排可分别设置"),
+                        Some("候选词右侧小字显示的内容，横排与竖排可分别设置"),
                         state.settings_bh_comment_disp,
                         "设置",
                         state.settings_bh_comment_visible,
