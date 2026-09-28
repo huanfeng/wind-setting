@@ -695,6 +695,18 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
         return build_theme_follow_row(state, key, item, cfg).0;
     }
     let control = build_control(state, key, item, cfg);
+    field_row(state, key, item, control, mode)
+}
+
+/// [`field_with`] 的后半段：把控件包成设置行（方案覆盖角标、「仅全局」标记、`enabled_when`）。
+/// 拆出来给自建控件、但行的外观要与通用字段一致的专用 builder 用（候选注释的竖排模板）。
+fn field_row(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    control: Element,
+    mode: SchemaHintMode,
+) -> Element {
     // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
     let overridable = schema_override_of(state, key);
     let schema_hint = match mode {
@@ -3152,6 +3164,66 @@ const COMMENT_HOST_KEY: &str = "ui.candidate.comment_template_horizontal";
 fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::field_dialogs::build_comment_dialog;
 
+    let visible = signal(false);
+    let horizontal = comment_template_signal(state, key, cfg);
+
+    // 对话框内这一行的标签**不用 `item.label`**：那是卡片行的文案（「候选注释」，说的是整件
+    // 事），而对话框里它只是三个字段之一，得叫「横排注释」才与旁边的「竖排注释」成对。
+    // 同 `build_dialog_button_index_labels` 硬编码对话框标题的先例——专用 builder 里的文案
+    // 属于该对话框的版式，不是清单项的属性。
+    let mut rows = vec![comment_template_block(
+        visible,
+        horizontal,
+        "留空则不显示注释",
+        |control| {
+            setting_row(
+                "横排注释",
+                Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽"),
+                control,
+            )
+        },
+    )];
+    // 竖排模板本是寄居项（`dialog_extra_for`），经通用 `field` 建成一个普通输入框；它同样是
+    // 模板、同样要预览与插入颜色，故在这里接手自建，其余寄居项（两个最大字数）照旧。
+    let extras = dialog_extra_keys(state, key);
+    let mut rest = Element::col().width_match().spacing(6);
+    for k in &extras {
+        let el = match state.manifest.get(k) {
+            Some(item) if k == COMMENT_VERTICAL_KEY => {
+                let sig = comment_template_signal(state, k, cfg);
+                let placeholder = item.hint.clone().unwrap_or_default();
+                comment_template_block(visible, sig, &placeholder, |control| {
+                    // 行外观交给通用的 `field_row`：竖排模板可被方案覆盖，角标不能丢。
+                    field_row(state, k, item, control, SchemaHintMode::PerRow)
+                })
+            }
+            _ => field(state, k),
+        };
+        // 框内行同样要挂锚点，否则搜到这些寄居项跳过去只会开框、不闪那一行。
+        rest = rest.child(crate::search::anchor::wrap(
+            el,
+            crate::search::index::in_dialog_anchor(k),
+            state.jump,
+        ));
+    }
+    if !extras.is_empty() {
+        rows.push(rest);
+    }
+
+    // 恢复默认：宿主与寄居项一并复位（见 [`reset_to_core_defaults`]）。
+    let reset_keys: Vec<String> = std::iter::once(key.to_string()).chain(extras).collect();
+    let reset_fn = reset_to_core_defaults(state, reset_keys);
+
+    let dlg = build_comment_dialog(visible, "候选注释", rows, Some(reset_fn));
+    register_dialog(state, dlg);
+    visible
+}
+
+/// 竖排注释模板的 key：候选注释对话框里要自建（见 [`build_dialog_button_comment`]）。
+const COMMENT_VERTICAL_KEY: &str = "ui.candidate.comment_template_vertical";
+
+/// 注释模板字段的读写登记（writer / loader / getter），与 `build_string` 同一写法。
+fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<String> {
     let def = state
         .capabilities
         .default_for(key)
@@ -3163,7 +3235,6 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
         .map(str::to_string)
         .unwrap_or_else(|| def.clone());
     let text = signal(cur);
-    let visible = signal(false);
 
     let kw = key.to_string();
     state
@@ -3174,14 +3245,13 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
             c.set_path(&kw, Value::String(text.get()))
         }));
     let kl = key.to_string();
-    let def_l = def.clone();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
             text.set(
                 c.get_str(&kl)
                     .map(str::to_string)
-                    .unwrap_or_else(|| def_l.clone()),
+                    .unwrap_or_else(|| def.clone()),
             );
         }),
     );
@@ -3190,29 +3260,44 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
         .getters
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || Value::String(text.get())));
+    text
+}
 
-    // 对话框内这一行的标签**不用 `item.label`**：那是卡片行的文案（「候选注释」，说的是整件
-    // 事），而对话框里它只是三个字段之一，得叫「横排注释」才与旁边的「竖排注释」成对。
-    // 同 `build_dialog_button_index_labels` 硬编码对话框标题的先例——专用 builder 里的文案
-    // 属于该对话框的版式，不是清单项的属性。
-    let mut rows = vec![setting_row(
-        "横排注释",
-        Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽"),
-        Element::text_input(text, "留空则不显示注释").width(240),
-    )];
-    if let Some(extra) = dialog_extra_rows(state, key) {
-        rows.push(extra);
-    }
-
-    // 恢复默认：宿主与寄居项一并复位（见 [`reset_to_core_defaults`]）。
-    let reset_keys: Vec<String> = std::iter::once(key.to_string())
-        .chain(dialog_extra_keys(state, key))
-        .collect();
-    let reset_fn = reset_to_core_defaults(state, reset_keys);
-
-    let dlg = build_comment_dialog(visible, "候选注释", rows, Some(reset_fn));
-    register_dialog(state, dlg);
-    visible
+/// 一个注释模板：输入框 + 「插入颜色」（由 `row` 包成设置行），下方是预览（常态与选中态各一块）。
+///
+/// `placeholder` 各用原来的：横排「留空则不显示注释」，竖排沿用通用字段的写法（清单 hint）。
+/// 输入框宽 200（原横排 240）：旁边要放「插入颜色」，240 会把行说明挤得更短。
+fn comment_template_block(
+    visible: Signal<bool>,
+    text: Signal<String>,
+    placeholder: &str,
+    row: impl FnOnce(Element) -> Element,
+) -> Element {
+    use crate::dialogs::template_assist::{
+        PreviewSource, TemplateField, insert_color_button, preview,
+    };
+    let f = TemplateField::new(text, false);
+    let control = Element::row()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(f.hook(Element::text_input(text, placeholder).width(200)))
+        .child(insert_color_button(&f, "comment"));
+    let pv = preview(
+        visible,
+        vec![PreviewSource {
+            field: f,
+            scene: "comment",
+            each: None,
+            caption: "",
+            bold: false,
+        }],
+        || 0,
+    );
+    Element::col()
+        .width_match()
+        .spacing(4)
+        .child(row(control))
+        .child(pv)
 }
 
 /// dialog_button（strlist with options）：勾选配对清单。挂对话框到根，返回 visible。

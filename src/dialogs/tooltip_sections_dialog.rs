@@ -46,6 +46,8 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use windui::prelude::*;
 
+use super::template_assist::{PreviewSource, TemplateField, insert_color_button, preview};
+
 /// 求值粒度，`(落盘值, 界面名)`。**必须与 core `TooltipSection::each` 的取值逐字一致。**
 pub const EACH: &[(&str, &str)] = &[("", "整个候选"), ("han", "逐汉字"), ("char", "逐字符")];
 
@@ -769,6 +771,33 @@ fn build_section_form_dialog(ui: &TooltipSectionsUi) -> Element {
             .height(32)
             .weight(1.0)
     };
+    // 段名与段内容都是模板：各自记住输入框节点（插入颜色、点问题选中那段都要用）。
+    // 段内容显示的是转义文本，预览前要还原，problems 也要经同一张表换算回来。
+    let label_field = TemplateField::new(form.label, false);
+    let content_field = TemplateField::new(form.template, true);
+    let (each_idx, each_raw) = (form.each_idx, form.each_raw);
+    let preview_row = preview(
+        visible,
+        vec![
+            PreviewSource {
+                field: label_field.clone(),
+                scene: "label",
+                each: None,
+                caption: "段名",
+                bold: true,
+            },
+            PreviewSource {
+                field: content_field.clone(),
+                scene: "content",
+                each: Some(Rc::new(move || {
+                    each_of_index(each_idx.get(), &each_raw.get())
+                })),
+                caption: "段内容",
+                bold: false,
+            },
+        ],
+        move || each_idx.version(),
+    );
 
     let frame = dialog_frame(520)
         .child(dialog_title(form.title))
@@ -784,11 +813,21 @@ fn build_section_form_dialog(ui: &TooltipSectionsUi) -> Element {
                 .width_match()
                 .spacing(8)
                 .padding_xy(18, 6)
-                .child(form_row("段名", input(form.label, "拼音")))
+                .child(form_row(
+                    "段名",
+                    label_field.hook(input(form.label, "拼音")),
+                ))
                 .child(form_row(
                     "段内容",
-                    input(form.template, "${char}：${readings}"),
+                    Element::row()
+                        .width_match()
+                        .weight(1.0)
+                        .cross(Align::Center)
+                        .spacing(8)
+                        .child(content_field.hook(input(form.template, "${char}：${readings}")))
+                        .child(insert_color_button(&content_field, "content")),
                 ))
+                .child(form_row("预览", preview_row.weight(1.0)))
                 .child(form_row(
                     "求值粒度",
                     Element::dropdown_signal(form.each_options, form.each_idx).min_width(160),

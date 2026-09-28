@@ -110,6 +110,7 @@
   "filter_mode": "smart",
   "numpad_behavior": "direct",
   "numpad_half_width": false,
+  "password_force_english": true,
   "phrase": {
    "min_prefix": 2
   },
@@ -164,6 +165,7 @@
   },
   "temp_pinyin": {
    "candidate_layout": "follow",
+   "code_hint_source": "auto",
    "enabled": true,
    "hotkey": "",
    "trigger_keys": [
@@ -354,7 +356,7 @@
     "enabled": false,
     "max_phrase_len": 0
    },
-   "code_hint_source": "auto",
+   "code_hint_source": "off",
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4
@@ -507,6 +509,7 @@
    "display_mode": "temp",
    "duration": 800,
    "enabled": true,
+   "fallback_position": "last",
    "items": [
     "schema",
     "punct",

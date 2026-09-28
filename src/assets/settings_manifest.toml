@@ -402,7 +402,7 @@ group = "schema"
 section = "候选行为"
 type = "select"
 label = "编码提示来源"
-hint = "拼音候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定"
+hint = "拼音方案（含双拼）下，候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定。临时拼音与快捷输入另设，见「输入 → 临时拼音」"
 options = [
   { value = "auto", label = "自动" },
   { value = "codetable", label = "码表反查" },
@@ -1564,6 +1564,20 @@ options = [
   { value = "follow", label = "跟随全局" },
   { value = "vertical", label = "强制竖排" },
   { value = "horizontal", label = "强制横排" },
+]
+
+[[items]]
+key = "input.temp_pinyin.code_hint_source"
+group = "input"
+section = "临时拼音"
+type = "select"
+label = "临时拼音编码提示"
+hint = "临时拼音与快捷输入期间，拼音候选旁显示哪种编码，便于借拼音反查码表编码。与拼音方案的「编码提示来源」互不影响；显示位置与格式由「外观 → 候选注释」的模板决定"
+options = [
+  { value = "auto", label = "自动" },
+  { value = "codetable", label = "码表反查" },
+  { value = "shuangpin", label = "双拼编码" },
+  { value = "off", label = "不显示" },
 ]
 
 # ── 临时英文 ──
@@ -2761,7 +2775,7 @@ min = 0
 max = 64
 
 # ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
-# 候选注释段（候选右侧灰字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
+# 候选注释段（候选右侧的小字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
 # 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。
 # 宿主取**横排**模板：它是对话框里第一个出现的字段，而横排宽度由全部候选共享、最需斟酌。
 # 卡片行的 hint 保持一句话——模板语法属于对话框里的事，摊在卡片上没人看得完。
@@ -2771,7 +2785,7 @@ group = "ui"
 section = "候选标注"
 type = "dialog_button"
 label = "候选注释"
-hint = "候选词右侧灰字显示的内容，横排与竖排可分别设置"
+hint = "候选词右侧小字显示的内容，横排与竖排可分别设置"
 
 [[items]]
 key = "ui.candidate.comment_template_vertical"
@@ -2983,6 +2997,35 @@ opens_dialog = "status_position"
 options = [
   { value = "follow_caret", label = "跟随光标" },
   { value = "fixed", label = "固定位置" },
+  { value = "screen_center", label = "屏幕中央" },
+  { value = "screen_top_left", label = "屏幕左上角" },
+  { value = "screen_top_right", label = "屏幕右上角" },
+  { value = "screen_bottom_left", label = "屏幕左下角" },
+  { value = "screen_bottom_right", label = "屏幕右下角" },
+  { value = "window_center", label = "窗口中央" },
+  { value = "window_bottom_left", label = "窗口左下角" },
+]
+
+# 锚点文案与 core 右键菜单「应用独立配置 → 状态提示位置」逐字一致（handle_menu.rs 的
+# status_anchor_label）。「屏幕」= 当前窗口所在显示器，「窗口」= 当前窗口的边框。
+[[items]]
+key = "ui.status.fallback_position"
+group = "ui"
+section = "状态提示"
+type = "select"
+label = "坐标不可用时"
+hint = "仅在「跟随光标」下生效：应用报不出光标位置（如部分设计软件）时气泡显示在哪里；「上次位置」即最近一次拿到光标的地方"
+enabled_when = "ui.status.enabled == true && ui.status.position_mode == follow_caret"
+options = [
+  { value = "last", label = "上次位置" },
+  { value = "hide", label = "不显示" },
+  { value = "screen_center", label = "屏幕中央" },
+  { value = "screen_top_left", label = "屏幕左上角" },
+  { value = "screen_top_right", label = "屏幕右上角" },
+  { value = "screen_bottom_left", label = "屏幕左下角" },
+  { value = "screen_bottom_right", label = "屏幕右下角" },
+  { value = "window_center", label = "窗口中央" },
+  { value = "window_bottom_left", label = "窗口左下角" },
 ]
 
 [[items]]

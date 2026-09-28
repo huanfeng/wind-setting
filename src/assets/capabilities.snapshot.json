@@ -374,7 +374,7 @@
       "type": "int"
     },
     {
-      "default": "auto",
+      "default": "off",
       "key": "schema.pinyin.code_hint_source",
       "type": "enum",
       "values": [
@@ -1062,6 +1062,17 @@
       ]
     },
     {
+      "default": "auto",
+      "key": "input.temp_pinyin.code_hint_source",
+      "type": "enum",
+      "values": [
+        "off",
+        "codetable",
+        "shuangpin",
+        "auto"
+      ]
+    },
+    {
       "default": false,
       "key": "input.url.enabled",
       "type": "bool"
@@ -1271,6 +1282,11 @@
     {
       "default": true,
       "key": "input.top_commit_learn",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.password_force_english",
       "type": "bool"
     },
     {
@@ -1877,7 +1893,30 @@
       "type": "enum",
       "values": [
         "follow_caret",
-        "fixed"
+        "fixed",
+        "screen_center",
+        "screen_top_left",
+        "screen_top_right",
+        "screen_bottom_left",
+        "screen_bottom_right",
+        "window_center",
+        "window_bottom_left"
+      ]
+    },
+    {
+      "default": "last",
+      "key": "ui.status.fallback_position",
+      "type": "enum",
+      "values": [
+        "last",
+        "hide",
+        "screen_center",
+        "screen_top_left",
+        "screen_top_right",
+        "screen_bottom_left",
+        "screen_bottom_right",
+        "window_center",
+        "window_bottom_left"
       ]
     },
     {
