@@ -374,7 +374,7 @@
       "type": "int"
     },
     {
-      "default": "auto",
+      "default": "off",
       "key": "schema.pinyin.code_hint_source",
       "type": "enum",
       "values": [
@@ -1059,6 +1059,17 @@
         "follow",
         "vertical",
         "horizontal"
+      ]
+    },
+    {
+      "default": "auto",
+      "key": "input.temp_pinyin.code_hint_source",
+      "type": "enum",
+      "values": [
+        "off",
+        "codetable",
+        "shuangpin",
+        "auto"
       ]
     },
     {

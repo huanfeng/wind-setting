@@ -165,6 +165,7 @@
   },
   "temp_pinyin": {
    "candidate_layout": "follow",
+   "code_hint_source": "auto",
    "enabled": true,
    "hotkey": "",
    "trigger_keys": [
@@ -355,7 +356,7 @@
     "enabled": false,
     "max_phrase_len": 0
    },
-   "code_hint_source": "auto",
+   "code_hint_source": "off",
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4

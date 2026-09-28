@@ -402,7 +402,7 @@ group = "schema"
 section = "候选行为"
 type = "select"
 label = "编码提示来源"
-hint = "拼音候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定"
+hint = "拼音方案（含双拼）下，候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定。临时拼音与快捷输入另设，见「输入 → 临时拼音」"
 options = [
   { value = "auto", label = "自动" },
   { value = "codetable", label = "码表反查" },
@@ -1564,6 +1564,20 @@ options = [
   { value = "follow", label = "跟随全局" },
   { value = "vertical", label = "强制竖排" },
   { value = "horizontal", label = "强制横排" },
+]
+
+[[items]]
+key = "input.temp_pinyin.code_hint_source"
+group = "input"
+section = "临时拼音"
+type = "select"
+label = "临时拼音编码提示"
+hint = "临时拼音与快捷输入期间，拼音候选旁显示哪种编码，便于借拼音反查码表编码。与拼音方案的「编码提示来源」互不影响；显示位置与格式由「外观 → 候选注释」的模板决定"
+options = [
+  { value = "auto", label = "自动" },
+  { value = "codetable", label = "码表反查" },
+  { value = "shuangpin", label = "双拼编码" },
+  { value = "off", label = "不显示" },
 ]
 
 # ── 临时英文 ──
