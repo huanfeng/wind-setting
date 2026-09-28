@@ -3263,10 +3263,15 @@ fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<
     text
 }
 
-/// 一个注释模板：输入框 + 「插入颜色」（由 `row` 包成设置行），下方是预览（常态与选中态各一块）。
+/// 一个注释模板：标题行（标签 + 「插入颜色」）+ 独占一行、占满宽度的输入框，下方是预览
+/// （常态与选中态各一块）。
+///
+/// `row` 闭包本是把传入的 `control` 摆在标签同一行右端（见 `setting_row` / `field_row`）；
+/// 这里改传「插入颜色」按钮本身作 `control`，正好让它并入标题行，输入框则不再挤在它旁边、
+/// 改成下面单独一行 `width_match()`——候选注释能拼的变量已经不少（`${dict}`、颜色标记……），
+/// 原先定宽 200、还要分给按钮一截的输入框，稍长的模板进去就得横向滚动才看得全。
 ///
 /// `placeholder` 各用原来的：横排「留空则不显示注释」，竖排沿用通用字段的写法（清单 hint）。
-/// 输入框宽 200（原横排 240）：旁边要放「插入颜色」，240 会把行说明挤得更短。
 fn comment_template_block(
     visible: Signal<bool>,
     text: Signal<String>,
@@ -3277,11 +3282,8 @@ fn comment_template_block(
         PreviewSource, TemplateField, insert_color_button, preview,
     };
     let f = TemplateField::new(text, false);
-    let control = Element::row()
-        .cross(Align::Center)
-        .spacing(8)
-        .child(f.hook(Element::text_input(text, placeholder).width(200)))
-        .child(insert_color_button(&f, "comment"));
+    let input = f.hook(Element::text_input(text, placeholder).width_match());
+    let header_control = insert_color_button(&f, "comment");
     let pv = preview(
         visible,
         vec![PreviewSource {
@@ -3296,7 +3298,8 @@ fn comment_template_block(
     Element::col()
         .width_match()
         .spacing(4)
-        .child(row(control))
+        .child(row(header_control))
+        .child(input)
         .child(pv)
 }
 

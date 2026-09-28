@@ -727,6 +727,32 @@ pub fn build_group_dialog_with_link(
     reset_fn: Option<Box<dyn Fn() + 'static>>,
     doc_url: Option<&'static str>,
 ) -> Element {
+    let (content, leading) = dialog_body_with_link(rows, reset_fn, doc_url);
+    build_group_dialog_shell(visible, title, content, leading)
+}
+
+/// 同 [`build_group_dialog_with_link`]，外壳换成 [`build_group_dialog_shell_large`]
+/// （620×460）。给字段多、每个字段还各带一份预览的对话框用——默认 460×380 装得下
+/// 标签，装不下同一行还要塞得下「插入颜色」的模板输入框（候选注释：横/竖排模板各一份
+/// 预览，见 [`build_comment_dialog`]）。
+pub fn build_group_dialog_with_link_large(
+    visible: Signal<bool>,
+    title: &str,
+    rows: Vec<Element>,
+    reset_fn: Option<Box<dyn Fn() + 'static>>,
+    doc_url: Option<&'static str>,
+) -> Element {
+    let (content, leading) = dialog_body_with_link(rows, reset_fn, doc_url);
+    build_group_dialog_shell_large(visible, title, content, leading)
+}
+
+/// [`build_group_dialog_with_link`] / [`build_group_dialog_with_link_large`] 共用的内容区
+/// 与底栏左侧按钮组装——两者只有外壳尺寸不同，抽出来避免同一份拼装逻辑写两遍。
+fn dialog_body_with_link(
+    rows: Vec<Element>,
+    reset_fn: Option<Box<dyn Fn() + 'static>>,
+    doc_url: Option<&'static str>,
+) -> (Element, Vec<Element>) {
     let mut content = Element::col().width_match().padding_xy(16, 2);
     let last = rows.len().saturating_sub(1);
     for (i, r) in rows.into_iter().enumerate() {
@@ -749,7 +775,7 @@ pub fn build_group_dialog_with_link(
         leading.push(Element::link("查看文档").url(url).font_size(12.0));
     }
 
-    build_group_dialog_shell(visible, title, content, leading)
+    (content, leading)
 }
 
 /// 配置类对话框的**统一外壳**：标题栏 + 固定高滚动区 + 按钮栏。
@@ -1535,13 +1561,16 @@ const COMMENT_DOC_URL: &str = "https://windinput.com/docs/settings/appearance/ca
 ///
 /// `rows` 由调用方按序传入（横排在前——用户先看到的应是空间最紧张、最需要斟酌的那一个），
 /// 参考区固定追加在末尾。底栏沿用 [`build_group_dialog`] 的「左恢复默认 / 右关闭」。
+///
+/// 外壳用 large（620×460）而非默认 460×380：模板输入框已改为独占一行占满宽度（见
+/// `manifest::comment_template_block`），460 下这一行连同两份预览会挤得很促狭。
 pub fn build_comment_dialog(
     visible: Signal<bool>,
     title: &str,
     rows: Vec<Element>,
     reset_fn: Option<Box<dyn Fn() + 'static>>,
 ) -> Element {
-    build_group_dialog_with_link(visible, title, rows, reset_fn, Some(COMMENT_DOC_URL))
+    build_group_dialog_with_link_large(visible, title, rows, reset_fn, Some(COMMENT_DOC_URL))
 }
 
 #[cfg(test)]
