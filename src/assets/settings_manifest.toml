@@ -2642,6 +2642,41 @@ options = [
 ]
 
 [[items]]
+key = "ui.candidate.offset_x"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "水平偏移"
+hint = "在主题自带的定位基础上再微调候选窗的水平位置（正=向右）。仅「跟随光标」时生效"
+min = -400
+max = 400
+enabled_when = "ui.candidate.position_mode == follow_caret"
+
+[[items]]
+key = "ui.candidate.offset_y"
+group = "ui"
+section = "候选窗口"
+type = "number"
+label = "垂直偏移"
+hint = "在主题自带的定位基础上再微调候选窗与光标的距离（正=远离光标：在下方时向下、翻到上方时向上）。仅「跟随光标」时生效"
+min = -400
+max = 400
+enabled_when = "ui.candidate.position_mode == follow_caret"
+
+[[items]]
+key = "ui.candidate.shadow"
+group = "ui"
+section = "候选窗口"
+type = "select"
+label = "主题阴影"
+hint = "个别应用里候选窗周围出现多余的透明边、遮挡或显示异常时，可选「关闭」；关闭后窗口与内容等大，定位自动跟着调整，主题自带的位置偏移仍保留"
+platform = "windows"
+options = [
+  { value = "follow", label = "跟随主题" },
+  { value = "off", label = "关闭阴影" },
+]
+
+[[items]]
 key = "ui.candidate.first_show_mode"
 group = "ui"
 section = "候选窗口"

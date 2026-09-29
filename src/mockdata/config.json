@@ -447,6 +447,8 @@
    "min_window_height_vertical": 0,
    "min_window_width_horizontal": 0,
    "min_window_width_vertical": 0,
+   "offset_x": 0,
+   "offset_y": 0,
    "page_number_display": "",
    "pager_bar_display": "",
    "pager_in_preedit": false,
@@ -454,6 +456,7 @@
    "per_page_extended": 0,
    "position_mode": "follow_caret",
    "preedit_display": "app_inline",
+   "shadow": "follow",
    "swap_preedit_when_above": false
   },
   "comment_dicts": [],

@@ -1746,6 +1746,25 @@
     },
     {
       "default": 0,
+      "key": "ui.candidate.offset_x",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "ui.candidate.offset_y",
+      "type": "int"
+    },
+    {
+      "default": "follow",
+      "key": "ui.candidate.shadow",
+      "type": "enum",
+      "values": [
+        "follow",
+        "off"
+      ]
+    },
+    {
+      "default": 0,
       "key": "ui.candidate.custom_x",
       "type": "int"
     },
