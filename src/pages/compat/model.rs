@@ -84,6 +84,9 @@ pub struct FieldMeta {
     /// 与 `options` 同序的中文显示名（核心登记）；旧版核心没有这个字段时为空，退回原 id。
     #[serde(default)]
     pub option_labels: Vec<String>,
+    /// 三态开关三档（跟随 / 真 / 假）的显示名，与右键菜单用词一致；旧核心没有时用默认说法。
+    #[serde(default)]
+    pub tri_labels: Vec<String>,
     #[serde(default)]
     pub depends_on: Option<Dep>,
     #[serde(default)]
@@ -93,6 +96,15 @@ pub struct FieldMeta {
 }
 
 impl FieldMeta {
+    /// 三态开关的三档显示名（下标 0 = 跟随，1 = 真，2 = 假）。
+    pub fn tri_label_set(&self) -> Vec<String> {
+        if self.tri_labels.len() == 3 {
+            self.tri_labels.clone()
+        } else {
+            vec!["跟随全局".into(), "开".into(), "关".into()]
+        }
+    }
+
     /// 枚举取值的中文名；核心没给（旧版）或没登记时退回原 id。
     pub fn option_label(&self, id: &str) -> String {
         self.options

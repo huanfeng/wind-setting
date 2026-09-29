@@ -674,11 +674,11 @@ fn field_control(mgr: &CompatState, process: &str, meta: &FieldMeta, fv: &FieldV
                 },
             );
             Element::row()
-                .child(Element::dropdown(vec!["跟随全局", "开", "关"], sig).min_width(120))
+                .child(Element::dropdown(meta.tri_label_set(), sig).min_width(120))
                 .child(fx)
         }
         Kind::Enum => {
-            let mut labels = vec!["（跟随全局）".to_string()];
+            let mut labels = vec!["跟随全局".to_string()];
             labels.extend(meta.options.iter().map(|o| meta.option_label(o)));
             let idx = fv
                 .value
@@ -942,6 +942,26 @@ mod tests {
             keys(&mgr).contains(&advanced_key),
             "打开「显示高级选项」后才提供"
         );
+    }
+
+    /// 三态开关的三档说法来自核心（与右键菜单一致）；枚举的第一项统一叫「跟随全局」。
+    #[test]
+    fn tri_state_labels_follow_the_core_and_match_the_menu_wording() {
+        let _g = MockGuard::new();
+        let st = AppState::empty();
+        let mgr = st.compat_mgr.clone();
+        mgr.ensure_loaded();
+        let labels = |key: &str| {
+            mgr.schema
+                .with(|s| s.field(Section::Apps, key).map(|f| f.tri_label_set()))
+                .unwrap()
+        };
+        assert_eq!(
+            labels("ignore_host_ime_close"),
+            ["跟随内置规则", "忽略", "采纳"]
+        );
+        assert_eq!(labels("auto_pair"), ["跟随全局", "启用", "禁用"]);
+        assert_eq!(labels("password_force_english"), ["跟随全局", "开", "关"]);
     }
 
     #[test]
