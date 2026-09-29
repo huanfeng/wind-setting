@@ -2838,7 +2838,7 @@ group = "ui"
 section = "候选标注"
 type = "string"
 label = "竖排注释"
-hint = "竖排候选窗每行独占一行，可放较长的注音或字根"
+hint = "竖排候选窗每行独占一行，可放较长的注音或字根；换行写 \\n"
 dialog_extra_for = "ui.candidate.comment_template_horizontal"
 
 [[items]]

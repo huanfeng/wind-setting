@@ -2436,15 +2436,7 @@ impl SchemaManagerState {
                 .set(seed.font_family.clone().unwrap_or_default());
             self.settings_bh_text_orient.set(seed.text_orient);
             self.settings_bh_phrases.set(seed.phrases);
-            // 勾选态与文本分开落：勾选问「有没有这个键」，文本框只装内容。
-            // 未设置时文本框留空——用户一勾上就是「本方案不显示注释」，这正是三态的第三态，
-            // 而不是一个需要先填点什么才生效的空状态。
-            self.settings_bh_comment_v_on.set(seed.comment_v.is_some());
-            self.settings_bh_comment_v
-                .set(seed.comment_v.clone().unwrap_or_default());
-            self.settings_bh_comment_h_on.set(seed.comment_h.is_some());
-            self.settings_bh_comment_h
-                .set(seed.comment_h.clone().unwrap_or_default());
+            self.seed_comment_tpl(&seed);
             self.settings_bh_comment_disp.set(comment_summary(
                 seed.comment_v.is_some(),
                 seed.comment_h.is_some(),
@@ -2725,6 +2717,23 @@ impl SchemaManagerState {
         self.settings_visible.set(true);
     }
 
+    /// 注释模板两行按 `seed` 播种。
+    ///
+    /// 勾选态与文本分开落：勾选问「有没有这个键」，文本框只装内容。
+    /// 未设置时文本框留空——用户一勾上就是「本方案不显示注释」，这正是三态的第三态，
+    /// 而不是一个需要先填点什么才生效的空状态。
+    ///
+    /// ★ 文本框装的是**转义后**的显示形态（真换行显示成 `\n`，同全局注释模板与悬停提示的段
+    /// 内容），[`Self::behavior_now`] 还原。`seed` 本身保持真值，脏判定比的是真值。
+    fn seed_comment_tpl(&self, seed: &BehaviorSeed) {
+        use crate::dialogs::tooltip_sections_dialog::escape_template;
+        let shown = |t: &Option<String>| t.as_deref().map(escape_template).unwrap_or_default();
+        self.settings_bh_comment_v_on.set(seed.comment_v.is_some());
+        self.settings_bh_comment_v.set(shown(&seed.comment_v));
+        self.settings_bh_comment_h_on.set(seed.comment_h.is_some());
+        self.settings_bh_comment_h.set(shown(&seed.comment_h));
+    }
+
     /// 「本方案行为」节的当前工作态。与 [`seed_behavior`] 的产物同型，故可直接与
     /// `settings_bh_at_open` 比较判脏。
     ///
@@ -2732,6 +2741,7 @@ impl SchemaManagerState {
     /// 若在渲染处也各写一遍，两处口径迟早漂移，而漂移的表现是「取消勾选却仍写了空串」
     /// ——那会把「跟随全局」静默变成「不显示注释」。
     fn behavior_now(&self) -> BehaviorSeed {
+        use crate::dialogs::tooltip_sections_dialog::unescape_template;
         let pick = |on: Signal<bool>, text: Signal<String>| -> Option<String> {
             on.get().then(|| text.get())
         };
@@ -2744,8 +2754,11 @@ impl SchemaManagerState {
             font_family: pick(self.settings_bh_font_over, self.settings_bh_font),
             text_orient: self.settings_bh_text_orient.get(),
             phrases: self.settings_bh_phrases.get(),
-            comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v),
-            comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h),
+            // 注释模板框里是转义后的显示形态（见 [`Self::seed_comment_tpl`]），还原成真值。
+            comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v)
+                .map(|t| unescape_template(&t)),
+            comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h)
+                .map(|t| unescape_template(&t)),
             // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
             // 三态合成只此一处。
             punct_map: self.settings_bh_punct_map_on.get().then(|| {
@@ -6960,6 +6973,62 @@ mod section_build_tests {
         }];
         state.open_settings_at_id("double_pinyin");
         state
+    }
+
+    /// 方案级注释模板与全局同一套转义：输入框显示 `\n` 两个字符，方案文件里是真换行。
+    /// 打开不改不进待提交队列（含 `\\`、`\t`、不成对 `\x`），三态（未勾 / 空串）不塌。
+    #[test]
+    fn comment_tpl_escaped_in_box_and_raw_in_cfg() {
+        use crate::dialogs::tooltip_sections_dialog::escape_template;
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        // 打开时方案里已有带真换行 / 反斜杠的模板：显示转义、原样不改就不脏。
+        let raw_v = "${pinyin}\n${chaizi}";
+        let raw_h = "a\\b\tc\\x";
+        let state = open_mock_pinyin();
+        let seed = seed_behavior(&json!({ "candidate": {
+            "comment_template_vertical": raw_v,
+            "comment_template_horizontal": raw_h,
+        } }));
+        state.seed_comment_tpl(&seed);
+        {
+            let mut at = state.settings_bh_at_open.borrow_mut();
+            at.comment_v = seed.comment_v.clone();
+            at.comment_h = seed.comment_h.clone();
+        }
+        assert_eq!(state.settings_bh_comment_v.get(), "${pinyin}\\n${chaizi}");
+        assert_eq!(state.settings_bh_comment_h.get(), escape_template(raw_h));
+        assert_eq!(state.behavior_now(), *state.settings_bh_at_open.borrow());
+        state.stage_settings_edits();
+        assert!(
+            !state.has_pending_edits(),
+            "什么都没改，不该有待提交的方案改动"
+        );
+
+        // 手打 `\n` ⇒ 方案 cfg 里写真换行；勾上留空仍是空串（不被转义逻辑折成别的）。
+        let state = open_mock_pinyin();
+        state.settings_bh_comment_v_on.set(true);
+        state
+            .settings_bh_comment_v
+            .set("${pinyin}\\n${chaizi}".into());
+        state.settings_bh_comment_h_on.set(true);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["pinyin_simp"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(cfg["candidate"]["comment_template_vertical"], json!(raw_v));
+        assert_eq!(cfg["candidate"]["comment_template_horizontal"], json!(""));
+
+        // 未设置的方案：播种后两框为空、未勾。
+        let state = open_mock_pinyin();
+        state.seed_comment_tpl(&BehaviorSeed::default());
+        assert!(!state.settings_bh_comment_v_on.get());
+        assert_eq!(state.settings_bh_comment_v.get(), "");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 双拼方案：直接辅助码一行显示（`settings_is_shuangpin` 即渲染判据）、跟随全局值；

@@ -3178,7 +3178,7 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
         |control| {
             setting_row(
                 "横排注释",
-                Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽"),
+                Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽；换行写 \\n"),
                 control,
             )
         },
@@ -3223,7 +3223,15 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
 const COMMENT_VERTICAL_KEY: &str = "ui.candidate.comment_template_vertical";
 
 /// 注释模板字段的读写登记（writer / loader / getter），与 `build_string` 同一写法。
+///
+/// ★ 信号里存的是**显示形态**（[`escape_template`] 转义过：真换行显示成 `\n` 两个字符），
+/// 与悬停提示「段内容」框同一套约定——单行输入框装不下真换行，而「注释显示在候选上方」
+/// 靠的正是模板里的真换行。loader 转义、writer 还原；getter 也给**还原后的真值**：它与
+/// writer 同一口径，打开不改就不会因转义判脏（`unescape(escape(s)) == s` 恒成立）。
+///
+/// [`escape_template`]: crate::dialogs::tooltip_sections_dialog::escape_template
 fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<String> {
+    use crate::dialogs::tooltip_sections_dialog::{escape_template, unescape_template};
     let def = state
         .capabilities
         .default_for(key)
@@ -3234,7 +3242,7 @@ fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<
         .get_str(key)
         .map(str::to_string)
         .unwrap_or_else(|| def.clone());
-    let text = signal(cur);
+    let text = signal(escape_template(&cur));
 
     let kw = key.to_string();
     state
@@ -3242,24 +3250,19 @@ fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<
         .writers
         .borrow_mut()
         .push(Box::new(move |c: &mut Config| {
-            c.set_path(&kw, Value::String(text.get()))
+            c.set_path(&kw, Value::String(unescape_template(&text.get())))
         }));
     let kl = key.to_string();
     state.fields.loaders.borrow_mut().insert(
         key.to_string(),
         Box::new(move |c: &Config| {
-            text.set(
-                c.get_str(&kl)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| def.clone()),
-            );
+            text.set(escape_template(c.get_str(&kl).unwrap_or(&def)));
         }),
     );
-    state
-        .fields
-        .getters
-        .borrow_mut()
-        .insert(key.to_string(), Box::new(move || Value::String(text.get())));
+    state.fields.getters.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move || Value::String(unescape_template(&text.get()))),
+    );
     text
 }
 
@@ -3281,7 +3284,9 @@ fn comment_template_block(
     use crate::dialogs::template_assist::{
         PreviewSource, TemplateField, insert_color_button, preview,
     };
-    let f = TemplateField::new(text, false);
+    // `true`：信号是转义后的显示形态（见 [`comment_template_signal`]），预览与插入颜色按
+    // 转义还原、换算位置，与悬停提示的段内容框一致。
+    let f = TemplateField::new(text, true);
     let input = f.hook(Element::text_input(text, placeholder).width_match());
     let header_control = insert_color_button(&f, "comment");
     let pv = preview(
@@ -7959,5 +7964,82 @@ mod theme_follow_row_tests {
         );
         let none = follow_labels(key, &vals, &labs, None);
         assert_eq!(none[0], "跟随主题");
+    }
+}
+
+/// 注释模板输入框的转义约定（与悬停提示「段内容」框同一套）：输入框里显示 `\n` 两个字符，
+/// 配置里是真换行。「注释显示在候选上方」靠的正是这个真换行——单行框里原样存的话，用户在
+/// 设置页里根本写不出来。
+#[cfg(test)]
+mod comment_template_escape_tests {
+    use super::*;
+    use crate::state::AppState;
+
+    const RAW: &str = "${pinyin}\n${chaizi}";
+    const SHOWN: &str = "${pinyin}\\n${chaizi}";
+
+    fn with_state(cfg: serde_json::Value, f: impl FnOnce(&AppState, Signal<String>)) {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.base_config = Config::from_value(cfg.clone());
+        st.current_config = Config::from_value(cfg);
+        let c = st.current_config.clone();
+        let sig = comment_template_signal(&st, COMMENT_HOST_KEY, &c);
+        f(&st, sig);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    fn cfg_with(tpl: &str) -> serde_json::Value {
+        serde_json::json!({ "ui": { "candidate": { "comment_template_horizontal": tpl } } })
+    }
+
+    /// 读入转义显示；什么都不改则不判脏、getter 给真值（`\\`、`\t`、不成对 `\x` 都不丢）。
+    #[test]
+    fn untouched_template_shows_escaped_and_stays_clean() {
+        for raw in [RAW, "a\\b", "a\tb", "a\\xb", "C:\\n", "\\"] {
+            with_state(cfg_with(raw), |st, sig| {
+                assert_eq!(
+                    sig.get(),
+                    crate::dialogs::tooltip_sections_dialog::escape_template(raw),
+                    "{raw:?} 读入后应按转义显示"
+                );
+                let got = st.fields.getters.borrow()[COMMENT_HOST_KEY]();
+                assert_eq!(got, Value::String(raw.into()), "getter 要给还原后的真值");
+                // `AppState::empty()` 自带几条与本测试无关的 writer（方案、按键），只看 `ui` 段。
+                let diff: Vec<_> = st
+                    .debug_diff_after_writers()
+                    .into_iter()
+                    .filter(|i| i.key == "ui" || i.key.starts_with("ui."))
+                    .collect();
+                assert!(diff.is_empty(), "{raw:?} 什么都没改却判脏：{diff:?}");
+            });
+        }
+        with_state(cfg_with(RAW), |_, sig| assert_eq!(sig.get(), SHOWN));
+    }
+
+    /// 手打 `\n`（两个字符）写回配置是真换行。
+    #[test]
+    fn typed_backslash_n_is_written_as_newline() {
+        with_state(cfg_with(""), |st, sig| {
+            sig.set(SHOWN.to_string());
+            let mut probe = st.current_config.clone();
+            for w in st.fields.writers.borrow().iter() {
+                w(&mut probe);
+            }
+            assert_eq!(probe.get_str(COMMENT_HOST_KEY), Some(RAW));
+        });
+    }
+
+    /// loader（加载 / 恢复默认都走它）同样转义显示。
+    #[test]
+    fn loader_escapes() {
+        with_state(cfg_with(""), |st, sig| {
+            let c = Config::from_value(cfg_with(RAW));
+            st.fields.loaders.borrow()[COMMENT_HOST_KEY](&c);
+            assert_eq!(sig.get(), SHOWN);
+        });
     }
 }
