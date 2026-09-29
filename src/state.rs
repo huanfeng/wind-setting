@@ -542,7 +542,7 @@ pub struct AppState {
     pub integration: crate::pages::integration::IntegrationState,
     /// 统计页状态（数据快照 + 清理确认对话框）。
     pub stats_mgr: crate::pages::stats::StatsState,
-    /// 「应用兼容」页的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
+    /// 「应用兼容」窗的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
     pub compat_mgr: crate::pages::compat::CompatState,
     /// 「重新加载」二次确认对话框可见标志。
     pub reload_confirm: Signal<bool>,
@@ -2015,6 +2015,13 @@ impl AppState {
     /// 标记词库为 `App` 的主窗口（`--page dict` 冷启动）；它关闭时须复位。
     pub fn set_dict_is_main(&self, on: bool) {
         self.dict_is_main.set(on);
+    }
+
+    /// 请求开应用兼容窗（二次实例带 `--page compat`）。本回调拿不到 ctx，经通道让 UI 线程开。
+    pub fn request_compat_window(&self) {
+        if let Some(tx) = self.ui_tx.borrow().clone() {
+            let _ = tx.send(crate::UiRequest::OpenCompatWindow);
+        }
     }
 
     /// 取走「该开词库窗了」这个请求（取一次即清）。

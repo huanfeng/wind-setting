@@ -81,12 +81,38 @@ pub struct FieldMeta {
     pub hosts: Vec<String>,
     #[serde(default)]
     pub options: Vec<String>,
+    /// 与 `options` 同序的中文显示名（核心登记）；旧版核心没有这个字段时为空，退回原 id。
+    #[serde(default)]
+    pub option_labels: Vec<String>,
     #[serde(default)]
     pub depends_on: Option<Dep>,
     #[serde(default)]
     pub protocol: bool,
     #[serde(default)]
     pub advanced: bool,
+}
+
+impl FieldMeta {
+    /// 枚举取值的中文名；核心没给（旧版）或没登记时退回原 id。
+    pub fn option_label(&self, id: &str) -> String {
+        self.options
+            .iter()
+            .position(|o| o == id)
+            .and_then(|i| self.option_labels.get(i))
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// 联动条件是否满足：`dependsOn` 指向的字段当前生效值等于要求值才有意义。
+    pub fn dep_met(&self, rule: &RuleView) -> bool {
+        match &self.depends_on {
+            None => true,
+            Some(d) => rule
+                .fields
+                .get(&d.key)
+                .is_some_and(|v| v.value.as_str() == Some(d.value.as_str())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

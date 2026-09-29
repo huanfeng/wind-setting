@@ -16,34 +16,124 @@ const EXPORT_USER: &str = include_str!("../../mockdata/compat/export_user.toml")
 /// 备份文件名（与核心的命名同形）。
 const BACKUP: &str = "compat.toml.bak-1700000000";
 
-/// mock 里「写完就变」的最小可变层：upsert 过的新进程名。核心里 normalize 成空的补丁不会落行，
-/// 进程名为 [`MOCK_NOOP_PROCESS`] 时照此模拟。线程内独立（每个测试各一份）。
+// mock 里「写完就变」的最小可变层：用户新增的规则及其已设置的字段（键与值）。字段清空时整条规则消失。核心里 normalize 成空的补丁不会落行，
+// 进程名为 `MOCK_NOOP_PROCESS` 时照此模拟。线程内独立（每个测试各一份）。
 thread_local! {
-    static CREATED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CREATED: std::cell::RefCell<Vec<(String, Vec<(String, Value)>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 见 [`CREATED`]：这个进程名的 upsert 应答成功却不落行。
 pub(crate) const MOCK_NOOP_PROCESS: &str = "noop.exe";
 
-/// 在静态的 apps 列表上叠加 [`CREATED`] 里的新规则（拷一份现成规则改名、状态设为 user）。
+/// 在静态的 apps 列表上叠加 [`CREATED`] 里的新规则：字段视图按已设置的键逐个生成
+/// （已设置 = 用户来源，其余 = 默认来源、类型化默认值），与核心的形状一致。
 fn list_apps_with_created() -> Value {
     let mut v = parse(LIST_APPS);
+    let schema = parse(SCHEMA);
+    let kinds: Vec<(String, String)> = schema["fields"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .filter(|f| f["section"] == "apps")
+                .map(|f| {
+                    (
+                        f["key"].as_str().unwrap_or("").to_string(),
+                        f["kind"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let created = CREATED.with(|c| c.borrow().clone());
     if let Some(rules) = v.get_mut("rules").and_then(Value::as_array_mut) {
-        for p in created {
-            if rules.iter().any(|r| r["process"] == p.as_str()) {
+        for (p, set) in created {
+            if set.is_empty() || rules.iter().any(|r| r["process"] == p.as_str()) {
                 continue;
             }
-            if let Some(mut r) = rules.first().cloned() {
-                r["process"] = json!(p);
-                r["state"] = json!("user");
-                r["hasUserEntry"] = json!(true);
-                r["system"] = Value::Null;
-                rules.push(r);
+            let Some(mut r) = rules.first().cloned() else {
+                continue;
+            };
+            let mut fields = serde_json::Map::new();
+            for (k, kind) in &kinds {
+                let typed = match kind.as_str() {
+                    "bool" => json!(false),
+                    "int" => json!(0),
+                    "text_list" => json!([]),
+                    _ => Value::Null,
+                };
+                let fv = match set.iter().find(|(sk, _)| sk == k) {
+                    Some((_, val)) => json!({
+                        "source": "user", "value": val, "systemValue": Value::Null, "userValue": val
+                    }),
+                    None => json!({
+                        "source": "default", "value": typed, "systemValue": Value::Null, "userValue": Value::Null
+                    }),
+                };
+                fields.insert(k.clone(), fv);
             }
+            r["process"] = json!(p);
+            r["state"] = json!("user");
+            r["hasUserEntry"] = json!(true);
+            r["system"] = Value::Null;
+            r["fields"] = Value::Object(fields);
+            rules.push(r);
         }
     }
     v
+}
+
+/// 字段的控件类型（取自 mock 的 schema）；未知字段返回空串。
+fn kind_of(key: &str) -> String {
+    parse(SCHEMA)["fields"]
+        .as_array()
+        .and_then(|fs| {
+            fs.iter()
+                .find(|f| f["section"] == "apps" && f["key"] == key)
+        })
+        .and_then(|f| f["kind"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 把一次写入折算进 [`CREATED`]。
+fn mutate_created(method: &str, process: &str, params: &Value) {
+    CREATED.with(|c| {
+        let mut c = c.borrow_mut();
+        match method {
+            "compat.upsert" if process != MOCK_NOOP_PROCESS => {
+                let Some(patch) = params["patch"].as_object() else {
+                    return;
+                };
+                let pos = c.iter().position(|(p, _)| p == process);
+                let i = pos.unwrap_or_else(|| {
+                    c.push((process.to_string(), Vec::new()));
+                    c.len() - 1
+                });
+                for (k, v) in patch {
+                    c[i].1.retain(|(x, _)| x != k);
+                    // 核心的规范化：纯开关的 `false`、数字 `0` 与没写无差别，被丢掉；
+                    // 三态开关（tri_bool）的显式 `false` 是有意义的，保留。
+                    let plain_default = match kind_of(k).as_str() {
+                        "bool" => *v == json!(false),
+                        "int" => *v == json!(0),
+                        _ => false,
+                    };
+                    if !v.is_null() && !plain_default {
+                        c[i].1.push((k.clone(), v.clone()));
+                    }
+                }
+            }
+            "compat.resetField" => {
+                if let (Some((_, keys)), Some(k)) = (
+                    c.iter_mut().find(|(p, _)| p == process),
+                    params["key"].as_str(),
+                ) {
+                    keys.retain(|(x, _)| x != k);
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 fn parse(s: &str) -> Value {
@@ -74,14 +164,15 @@ pub(crate) fn reply(method: &str, params: &Value) -> Value {
             v
         }
         "compat.resetAll" => json!({ "ok": true, "backup": BACKUP }),
-        "compat.reset" => json!({ "ok": true, "removed": true, "rule": null }),
+        "compat.reset" => {
+            if let Some(p) = params.get("process").and_then(Value::as_str) {
+                CREATED.with(|c| c.borrow_mut().retain(|(x, _)| x != p));
+            }
+            json!({ "ok": true, "removed": true, "rule": null })
+        }
         "compat.upsert" | "compat.resetField" | "compat.setDisabled" => {
-            if method == "compat.upsert" {
-                if let Some(p) = params.get("process").and_then(Value::as_str) {
-                    if p != MOCK_NOOP_PROCESS {
-                        CREATED.with(|c| c.borrow_mut().push(p.to_string()));
-                    }
-                }
+            if let Some(p) = params.get("process").and_then(Value::as_str) {
+                mutate_created(method, p, params);
             }
             json!({ "ok": true, "rule": null })
         }

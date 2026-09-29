@@ -4,7 +4,7 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 use super::actions::IMPORT_MODES;
-use super::model::{Schema, Section};
+use super::model::{FieldSource, Schema, Section};
 use super::state::CompatState;
 use crate::pages::dict::reactive::reactive_effect;
 
@@ -16,6 +16,8 @@ pub fn build_dialogs(mgr: &CompatState) -> Vec<Element> {
         build_import_dialog(mgr),
         import_mode_effect(mgr),
         build_help_dialog(mgr),
+        build_field_dialog(mgr),
+        build_empty_dialog(mgr),
     ]
 }
 
@@ -123,10 +125,13 @@ fn build_import_dialog(mgr: &CompatState) -> Element {
                         .font_size(13.0)
                         .fg_role(Role::Text),
                 )
-                .child(Element::segmented(
-                    IMPORT_MODES.iter().map(|m| m.0).collect::<Vec<_>>(),
-                    d.import_mode,
-                )),
+                .child(
+                    Element::dropdown(
+                        IMPORT_MODES.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        d.import_mode,
+                    )
+                    .min_width(120),
+                ),
         )
         .child(
             Element::scroll()
@@ -186,6 +191,9 @@ pub struct HelpItem {
     pub summary: String,
     pub problem: String,
     pub hosts: Vec<String>,
+    /// 枚举字段的可选值：`(中文名, 配置文件里写的取值)`。界面下拉只显示中文名，
+    /// 取值原文在这里交代，手改 compat.toml 的人对得上。
+    pub values: Vec<(String, String)>,
 }
 
 /// 某一段的全部字段说明，按界面上的分组顺序。**含高级项**——帮助页要能查到详情里默认折叠的东西。
@@ -200,6 +208,11 @@ pub fn help_items(schema: &Schema, section: Section) -> Vec<HelpItem> {
                 summary: f.summary.clone(),
                 problem: f.problem.clone(),
                 hosts: f.hosts.clone(),
+                values: f
+                    .options
+                    .iter()
+                    .map(|o| (f.option_label(o), o.clone()))
+                    .collect(),
             })
         })
         .collect()
@@ -249,6 +262,21 @@ fn help_body(items: Vec<HelpItem>) -> Element {
                     .fg_role(Role::TextMuted)
                     .width_match()
                     .max_lines(8),
+            );
+        }
+        if !it.values.is_empty() {
+            let list = it
+                .values
+                .iter()
+                .map(|(zh, id)| format!("{zh}（{id}）"))
+                .collect::<Vec<_>>()
+                .join("、");
+            entry = entry.child(
+                Element::label(format!("可选值（括号内为配置文件里的写法）：{list}"))
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(4),
             );
         }
         if !it.hosts.is_empty() {
@@ -309,6 +337,218 @@ fn build_help_dialog(mgr: &CompatState) -> Element {
     )
 }
 
+/// 「添加覆盖项」里的一个候选字段。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Candidate {
+    pub key: String,
+    pub label: String,
+    pub summary: String,
+}
+
+/// 当前选中规则还能添加的覆盖项，按分组归拢。
+///
+/// 候选 = 还没被任何一层设置、也没被挑出来等值的字段；高级字段仅在打开「显示高级选项」
+/// 时提供（已设置过的高级字段本来就列在详情里，不受影响）。
+pub fn override_candidates(mgr: &CompatState) -> Vec<(String, Vec<Candidate>)> {
+    let Some(rule) = mgr.selected_rule() else {
+        return Vec::new();
+    };
+    let show_advanced = mgr.show_advanced.get();
+    let section = mgr.current_section();
+    mgr.schema.with(|schema| {
+        schema
+            .groups_of(section)
+            .into_iter()
+            .filter_map(|(group, fields)| {
+                let items: Vec<Candidate> = fields
+                    .into_iter()
+                    .filter(|f| show_advanced || !f.advanced)
+                    .filter(|f| {
+                        rule.fields
+                            .get(&f.key)
+                            .is_none_or(|v| v.source == FieldSource::Default)
+                            && !mgr.is_pending(&rule.process, &f.key)
+                    })
+                    .map(|f| Candidate {
+                        key: f.key.clone(),
+                        label: f.label.clone(),
+                        summary: f.summary.clone(),
+                    })
+                    .collect();
+                (!items.is_empty()).then(|| (group.label.clone(), items))
+            })
+            .collect()
+    })
+}
+
+fn build_field_dialog(mgr: &CompatState) -> Element {
+    let cands: Signal<Vec<Vec<(String, Vec<Candidate>)>>> = signal(vec![override_candidates(mgr)]);
+    let sync = {
+        let m = mgr.clone();
+        reactive_effect(
+            {
+                let m = m.clone();
+                move || {
+                    m.detail_epoch.version()
+                        + m.schema.version()
+                        + m.show_advanced.version()
+                        + m.dlg.field_visible.version()
+                }
+            },
+            move || cands.set(vec![override_candidates(&m)]),
+        )
+    };
+    let pick = mgr.clone();
+    let hint_adv = mgr.show_advanced;
+    let body = Element::col()
+        .width_match()
+        .spacing(6)
+        .child(
+            Element::label("选择要为这个软件单独设置的功能。选中后会出现在右侧，再给它一个值。")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3),
+        )
+        .child(
+            // 高级项只影响「能挑到哪些」，所以开关放在这里而不是全局导航里。
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::label("显示高级选项")
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted),
+                )
+                .child(Element::switch(hint_adv)),
+        )
+        .child(
+            Element::scroll()
+                .width_match()
+                .height(400)
+                .padding_xy(2, 4)
+                .child(Element::host_signal(cands, move |groups| {
+                    candidate_list(&pick, &groups)
+                })),
+        )
+        .child(sync);
+    let (close, done) = (mgr.clone(), mgr.clone());
+    let foot = footer(vec![
+        Element::button("关闭")
+            .small()
+            .outline_soft()
+            .on_click(move |_| done.dlg.field_visible.set(false)),
+    ]);
+    Element::dialog_panel(
+        mgr.dlg.field_visible,
+        "添加覆盖项",
+        520,
+        move |_: &mut EventCtx| close.dlg.field_visible.set(false),
+        body,
+        foot,
+    )
+}
+
+fn candidate_list(mgr: &CompatState, groups: &[(String, Vec<Candidate>)]) -> Element {
+    let mut col = Element::col().width_match().spacing(4);
+    if groups.is_empty() {
+        return col.child(
+            Element::label("没有更多可添加的项了。")
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .padding_xy(6, 16),
+        );
+    }
+    for (group, items) in groups {
+        col = col.child(
+            Element::label(group)
+                .font_size(12.0)
+                .font_weight(600)
+                .fg_role(Role::TextMuted)
+                .padding_xy(6, 6),
+        );
+        for c in items {
+            let m = mgr.clone();
+            let key = c.key.clone();
+            col = col.child(
+                Element::col()
+                    .width_match()
+                    .spacing(2)
+                    .padding_xy(10, 7)
+                    .corner(6.0)
+                    .clickable()
+                    .on_click(move |_| {
+                        m.dlg.field_visible.set(false);
+                        if let Some(p) = m.selected_rule().map(|r| r.process) {
+                            m.add_override(&p, &key);
+                        }
+                    })
+                    .child(
+                        Element::label(&c.label)
+                            .font_size(13.0)
+                            .font_weight(600)
+                            .fg_role(Role::Text),
+                    )
+                    .child(
+                        Element::label(&c.summary)
+                            .font_size(12.0)
+                            .fg_role(Role::TextMuted)
+                            .width_match()
+                            .max_lines(2),
+                    ),
+            );
+        }
+    }
+    col
+}
+
+/// 用户新增的规则被清空后的确认：核心里这条规则已经没了，「保留」= 留一段空白让用户
+/// 继续添加覆盖项（界面里的草稿），「删除」= 就此了结。
+fn build_empty_dialog(mgr: &CompatState) -> Element {
+    let (close, keep, del) = (mgr.clone(), mgr.clone(), mgr.clone());
+    let name = mgr.dlg.empty_name;
+    let body = Element::col()
+        .width_match()
+        .spacing(6)
+        .child(
+            Element::label_signal(name)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1),
+        )
+        .child(
+            Element::label(
+                "这条规则已经没有任何配置项。要删除它吗？\n\
+                 选「保留」会留下一段空白，可以继续为它添加覆盖项；不设置任何项就离开，它不会被保存。",
+            )
+            .font_size(13.0)
+            .fg_role(Role::Text)
+            .width_match()
+            .max_lines(5),
+        );
+    let foot = footer(vec![
+        Element::button("保留空白规则")
+            .small()
+            .outline_soft()
+            .on_click(move |_| keep.dlg.empty_visible.set(false)),
+        Element::button("删除")
+            .small()
+            .danger()
+            .on_click(move |_| del.confirm_delete_emptied()),
+    ]);
+    Element::dialog_panel(
+        mgr.dlg.empty_visible,
+        "规则已清空",
+        420,
+        move |_: &mut EventCtx| close.dlg.empty_visible.set(false),
+        body,
+        foot,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +572,21 @@ mod tests {
                 items.iter().all(|i| !i.summary.is_empty()),
                 "没有说明文字的字段等于没写帮助"
             );
+            // 枚举字段的取值必须在帮助里交代（下拉只显示中文，原文只能在这里查到）。
+            for f in s
+                .fields_of(sec)
+                .into_iter()
+                .filter(|f| !f.options.is_empty())
+            {
+                let it = items.iter().find(|i| i.label == f.label).unwrap();
+                assert_eq!(it.values.len(), f.options.len(), "{} 的取值说明", f.key);
+                assert!(
+                    it.values.iter().all(|(zh, id)| zh != id),
+                    "{} 有取值没有中文名: {:?}",
+                    f.key,
+                    it.values
+                );
+            }
         }
         assert!(
             help_items(&s, Section::Apps)
