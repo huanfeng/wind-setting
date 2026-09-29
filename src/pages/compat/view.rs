@@ -282,7 +282,8 @@ fn build_list(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Elemen
                 .padding_xy(12, 0)
                 .spacing(8)
                 .child(Element::text_input(mgr.search, "搜索进程名"))
-                .child(Element::dropdown(FILTERS.to_vec(), mgr.filter).width_match()),
+                // 状态筛选是四个固定短词、常切换，适合类 Tab 的分段；其它「选值」类控件才用下拉。
+                .child(Element::segmented(FILTERS.to_vec(), mgr.filter)),
         )
         .child(
             Element::scroll()
