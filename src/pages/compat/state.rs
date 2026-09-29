@@ -50,6 +50,8 @@ pub struct CompatState {
     /// 详情里是否列出「高级」字段（`advanced`）：默认只列常用项，已被设置过的高级字段
     /// 无论如何都会列出，免得用户看不到自己改过什么。
     pub show_advanced: Signal<bool>,
+    /// 新增 / 全部还原 / 导入的对话框状态（见 `actions.rs`）。
+    pub dlg: super::actions::Dialogs,
     pub feedback: Feedback,
 }
 
@@ -76,6 +78,7 @@ impl CompatState {
             refresh_tick: signal(0),
             draft: signal(String::new()),
             show_advanced: signal(false),
+            dlg: super::actions::Dialogs::default(),
             feedback: signal(None),
         }
     }

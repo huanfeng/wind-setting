@@ -35,6 +35,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         backup_dialog,
         config_import_dialog,
         stats_confirm_dialog,
+        compat_dialogs,
         reload_confirm,
         reset_confirm,
         conn_failed,
@@ -81,6 +82,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
                 &st.schema_mgr,
             ),
             pages::stats::build_stats_confirm_dialog(&st.stats_mgr),
+            pages::compat::dialogs::build_dialogs(&st.compat_mgr),
             st.reload_confirm,
             st.reset_confirm,
             st.conn_failed,
@@ -221,6 +223,9 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(build_theme_overwrite_dialog(app))
         .child(build_update_dialog(app))
         .child(build_conn_failed_dialog(app, conn_failed));
+    for dlg in compat_dialogs {
+        root = root.child(dlg);
+    }
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
     for dlg in field_dialogs {
         root = root.child(dlg);

@@ -144,6 +144,7 @@ fn build_left(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Elemen
             Section::ALL.iter().map(|s| s.title()).collect::<Vec<_>>(),
             mgr.section,
         ))
+        .child(toolbar(mgr))
         .child(Element::text_input(mgr.search, "搜索进程名"))
         .child(Element::segmented(FILTERS.to_vec(), mgr.filter))
         .child(
@@ -162,6 +163,38 @@ fn build_left(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Elemen
                     let e = mgr.load_error;
                     move || !e.get().is_empty()
                 }),
+        )
+}
+
+/// 左栏顶部的整体操作：新增 / 导入 / 导出 / 全部还原。
+fn toolbar(mgr: &CompatState) -> Element {
+    let (add, imp, exp, reset) = (mgr.clone(), mgr.clone(), mgr.clone(), mgr.clone());
+    Element::row()
+        .width_match()
+        .spacing(6)
+        .child(
+            Element::button("新增")
+                .small()
+                .on_click(move |_| add.open_add()),
+        )
+        .child(
+            Element::button("导入")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| imp.start_import(ctx)),
+        )
+        .child(
+            Element::button("导出")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| exp.start_export(ctx)),
+        )
+        .child(Element::flex_spacer())
+        .child(
+            Element::button("全部还原")
+                .small()
+                .outline_soft()
+                .on_click(move |_| reset.dlg.reset_visible.set(true)),
         )
 }
 
