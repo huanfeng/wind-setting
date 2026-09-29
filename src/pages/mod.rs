@@ -11,6 +11,7 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 pub mod backup;
+pub mod compat;
 pub mod config_import;
 pub mod dict;
 pub mod integration;
@@ -37,13 +38,14 @@ pub struct TabDef {
 /// 认成别的页、二级导航整条不刷新。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
     let tab = |id: &str| SubNav::new(crate::cli::page_to_index(id).unwrap_or(0));
-    let (schema, input, keys, ui, dict, stats_nav, advanced, about) = (
+    let (schema, input, keys, ui, dict, stats_nav, compat_nav, advanced, about) = (
         tab("schema"),
         tab("input"),
         tab("keys"),
         tab("ui"),
         tab("dict"),
         tab("stats"),
+        tab("compat"),
         tab("advanced"),
         tab("about"),
     );
@@ -53,6 +55,12 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         tab_def("按键", keys_page(state, &keys), keys),
         tab_def("外观", appearance_page(app, state, &ui), ui),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
+        // 「应用兼容」是纯切页项，必须排在动作项「词库」之前。
+        tab_def(
+            "应用兼容",
+            compat::build_page(state, &compat_nav),
+            compat_nav,
+        ),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
         tab_def("词库", dict_page(state), dict),
@@ -797,7 +805,7 @@ fn url_desc(url: &str) -> String {
 /// 它的下标。
 ///
 /// 保留占位而不是把这一格从 `all_tabs` 里删掉：`cli::PAGES` 与本函数的顺序是靠约定对齐的
-/// （`page_to_index("dict") == 5`），少一格就会让它后面的「高级/关于」整体前移一位，
+/// （`page_to_index("dict") == 6`），少一格就会让它后面的「高级/关于」整体前移一位，
 /// 于是 `--page about` 打开的是高级页 —— 不报错、不 panic，只是每一条深链都错一格。
 fn dict_page(_state: &AppState) -> Element {
     Element::leaf()

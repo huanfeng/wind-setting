@@ -1294,6 +1294,25 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// 测试用：让某个方法在 mock 下强制返回错误（覆盖 `mock_error` 里的常规判定）。
+    static FORCED_ERRORS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 测试用：让 `method` 在 mock 下返回 `Err(msg)`；`msg = None` 撤销。
+#[cfg(test)]
+pub(crate) fn force_mock_error(method: &str, msg: Option<&str>) {
+    FORCED_ERRORS.with(|f| {
+        let mut f = f.borrow_mut();
+        f.retain(|(m, _)| m != method);
+        if let Some(msg) = msg {
+            f.push((method.to_string(), msg.to_string()));
+        }
+    });
+}
+
 /// 取走并清空本线程记录的 mock 调用（取走语义：便于「清场 → 触发 → 断言」）。
 #[cfg(test)]
 pub(crate) fn take_mock_calls() -> Vec<(String, Value)> {
@@ -1303,6 +1322,15 @@ pub(crate) fn take_mock_calls() -> Vec<(String, Value)> {
 /// mock 侧会「失败」的调用。目前只有文本信封两法：内容不是信封时按跨仓契约回
 /// `not_schema_text:` 前缀的错误（见 `package-format.md` §3.4）。
 fn mock_error(method: &str, params: &Value) -> Option<String> {
+    #[cfg(test)]
+    if let Some(e) = FORCED_ERRORS.with(|f| {
+        f.borrow()
+            .iter()
+            .find(|(m, _)| m == method)
+            .map(|(_, e)| e.clone())
+    }) {
+        return Some(e);
+    }
     match method {
         "scheme.previewImportText" | "scheme.importText" => {
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -1313,9 +1341,19 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
         m if m.ends_with(".remove") => (params.get("text").and_then(|v| v.as_str())
             == Some(MOCK_FAIL_TEXT))
         .then(|| "mock: 删除失败".to_string()),
+        // compat.*：进程名为此记号时写方法报错（形状照核心真实的补丁被拒信息），
+        // 供离线走通「写失败 → toast 核心的中文报错」那条路。
+        m if m.starts_with("compat.")
+            && params.get("process").and_then(|v| v.as_str()) == Some(MOCK_COMPAT_FAIL_PROCESS) =>
+        {
+            Some("字段 first_show_mode 的值 \"bogus\" 无效".to_string())
+        }
         _ => None,
     }
 }
+
+/// 见 [`mock_error`]：`compat.*` 的 `process` 为此值时 mock 报错。
+pub(crate) const MOCK_COMPAT_FAIL_PROCESS: &str = "fail.exe";
 
 /// 见 [`mock_error`]：`*.remove` 的 `text` 为此值时 mock 报错。
 pub(crate) const MOCK_FAIL_TEXT: &str = "mock_fail";
@@ -2073,6 +2111,7 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             "schemasTouched": ["wb"]
         }),
         "shadow.addRule" | "shadow.removeRule" => json!({ "ok": true }),
+        m if m.starts_with("compat.") => crate::pages::compat::mock::reply(m, params),
         _ => Value::Null,
     }
 }

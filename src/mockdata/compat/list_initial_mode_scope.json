@@ -1,0 +1,95 @@
+{
+  "rules": [
+    {
+      "effective": {
+        "classes": [
+          "Progman",
+          "WorkerW",
+          "CabinetWClass"
+        ],
+        "process": "explorer.exe"
+      },
+      "fields": {
+        "classes": {
+          "source": "user",
+          "systemValue": [
+            "Progman",
+            "WorkerW"
+          ],
+          "userValue": [
+            "Progman",
+            "WorkerW",
+            "CabinetWClass"
+          ],
+          "value": [
+            "Progman",
+            "WorkerW",
+            "CabinetWClass"
+          ]
+        }
+      },
+      "hasUserEntry": true,
+      "overridden": [
+        "classes"
+      ],
+      "process": "explorer.exe",
+      "state": "modified",
+      "system": {
+        "classes": [
+          "Progman",
+          "WorkerW"
+        ],
+        "process": "explorer.exe"
+      },
+      "unknownKeys": [],
+      "user": {
+        "classes": [
+          "Progman",
+          "WorkerW",
+          "CabinetWClass"
+        ],
+        "process": "explorer.exe"
+      }
+    },
+    {
+      "effective": {
+        "classes": [
+          "Notepad"
+        ],
+        "process": "notepad.exe"
+      },
+      "fields": {
+        "classes": {
+          "source": "system",
+          "systemValue": [
+            "Notepad"
+          ],
+          "userValue": null,
+          "value": [
+            "Notepad"
+          ]
+        }
+      },
+      "hasUserEntry": false,
+      "overridden": [],
+      "process": "notepad.exe",
+      "state": "system",
+      "system": {
+        "classes": [
+          "Notepad"
+        ],
+        "process": "notepad.exe"
+      },
+      "unknownKeys": [],
+      "user": null
+    }
+  ],
+  "warnings": [
+    {
+      "key": "initial_punct",
+      "message": "字段 initial_punct 的值 \"englsh\" 无效，已忽略",
+      "process": "Tabby.exe",
+      "section": "apps"
+    }
+  ]
+}

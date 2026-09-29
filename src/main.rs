@@ -148,6 +148,7 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
     };
     let st = app.clone();
     let guard = app.clone();
+    let compat_for_activate = app.borrow().compat_mgr.clone();
     // 重建即视为主窗回来了：这一步要赶在 content 求值之前，否则窗口已经在了、
     // 标志还写着"已关闭"，下一次二次实例会再重建一个。
     app.borrow().main_window_closed.set(false);
@@ -172,6 +173,14 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
                 }
                 s.prime_exit_confirm(&unsaved);
                 false
+            })
+            // 回到设置窗就刷新「应用兼容」页：右键菜单等外部途径改过 compat.toml 而设置窗
+            // 一直开着时，这是唯一能让它看到最新值的时机（菜单的改动同时会广播事件，
+            // 但那条通道断线重连期间可能漏掉）。未加载过本页则什么也不做。
+            .on_window_activated(move |_ctx, active| {
+                if active {
+                    compat_for_activate.request_refresh();
+                }
             })
             .content(move || shell::build(&st, th)),
     );
@@ -548,6 +557,13 @@ fn main() {
     // 判据本身（有没有改动）不会因为用户选了"直接退出"就消失，走普通关闭会被自己再拦一次。
     //
     // 自绘标题栏的 × 与 Alt+F4 都会到这里（windui 0.12 起两者同走关闭决策链）。
+    let compat_for_activate = app_state.borrow().compat_mgr.clone();
+    app = app.on_window_activated(move |_ctx, active| {
+        // 同 `open_main_window` 里那一处：冷启动的主窗走这条。
+        if active {
+            compat_for_activate.request_refresh();
+        }
+    });
     let close_state = app_state.clone();
     app = app.on_close_request(move |_ctx| {
         let Ok(st) = close_state.try_borrow() else {

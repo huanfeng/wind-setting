@@ -1,0 +1,1301 @@
+{
+  "rules": [
+    {
+      "effective": {
+        "comment": "飞书：在线表格换单元格首键，探测坐标停在上一格",
+        "composition_start_pair_guard": true,
+        "process": "Feishu.exe",
+        "stale_probe_guard": true
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "first_show_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": false,
+      "overridden": [],
+      "process": "Feishu.exe",
+      "state": "system",
+      "system": {
+        "comment": "飞书：在线表格换单元格首键，探测坐标停在上一格",
+        "composition_start_pair_guard": true,
+        "process": "Feishu.exe",
+        "stale_probe_guard": true
+      },
+      "unknownKeys": [],
+      "user": null
+    },
+    {
+      "effective": {
+        "caret_use_top": true,
+        "first_show_mode": "instant",
+        "process": "Weixin.exe"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "composition_start_pair_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "first_show_mode": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": "instant",
+          "value": "instant"
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "cleared",
+          "systemValue": true,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": true,
+      "overridden": [
+        "first_show_mode",
+        "stale_probe_guard"
+      ],
+      "process": "Weixin.exe",
+      "state": "modified",
+      "system": {
+        "caret_use_top": true,
+        "process": "Weixin.exe",
+        "stale_probe_guard": true
+      },
+      "unknownKeys": [],
+      "user": {
+        "first_show_mode": "instant",
+        "process": "Weixin.exe",
+        "unset": [
+          "stale_probe_guard"
+        ]
+      }
+    },
+    {
+      "effective": {
+        "auto_pair": false,
+        "first_show_mode": "wait",
+        "process": "EXCEL.EXE"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": false,
+          "value": false
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "first_show_mode": {
+          "source": "system",
+          "systemValue": "wait",
+          "userValue": null,
+          "value": "wait"
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": true,
+      "overridden": [
+        "auto_pair"
+      ],
+      "process": "EXCEL.EXE",
+      "state": "modified",
+      "system": {
+        "first_show_mode": "wait",
+        "process": "EXCEL.EXE"
+      },
+      "unknownKeys": [],
+      "user": {
+        "auto_pair": false,
+        "process": "EXCEL.EXE"
+      }
+    },
+    {
+      "effective": {
+        "pin_anchor_when_start_drifts": true,
+        "process": "wps.exe"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "first_show_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": false,
+      "overridden": [],
+      "process": "wps.exe",
+      "state": "system",
+      "system": {
+        "pin_anchor_when_start_drifts": true,
+        "process": "wps.exe"
+      },
+      "unknownKeys": [],
+      "user": null
+    },
+    {
+      "effective": {
+        "host_render": true,
+        "process": "SearchHost.exe"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "first_show_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": false,
+      "overridden": [],
+      "process": "SearchHost.exe",
+      "state": "system",
+      "system": {
+        "host_render": true,
+        "process": "SearchHost.exe"
+      },
+      "unknownKeys": [],
+      "user": null
+    },
+    {
+      "effective": {
+        "composition_start_pair_guard": true,
+        "process": "QQ.exe"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "first_show_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": false,
+      "overridden": [],
+      "process": "QQ.exe",
+      "state": "system",
+      "system": {
+        "composition_start_pair_guard": true,
+        "process": "QQ.exe"
+      },
+      "unknownKeys": [],
+      "user": null
+    },
+    {
+      "effective": {
+        "host_drawn_candidates": true,
+        "process": "Dota2.exe"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "first_show_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_drawn_candidates": {
+          "source": "system",
+          "systemValue": true,
+          "userValue": null,
+          "value": true
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "stale_probe_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": true,
+      "overridden": [
+        "disabled"
+      ],
+      "process": "Dota2.exe",
+      "state": "disabled",
+      "system": {
+        "host_drawn_candidates": true,
+        "process": "Dota2.exe"
+      },
+      "unknownKeys": [],
+      "user": {
+        "disabled": true,
+        "process": "Dota2.exe"
+      }
+    },
+    {
+      "effective": {
+        "caret_offset_y": 4,
+        "first_show_mode": "fast",
+        "initial_mode": "english",
+        "process": "Tabby.exe",
+        "smart_method": "hold_composition"
+      },
+      "fields": {
+        "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "candidate_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "candidate_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "caret_offset_y": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": 4,
+          "value": 4
+        },
+        "caret_use_top": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "composition_start_pair_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "first_show_mode": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": "fast",
+          "value": "fast"
+        },
+        "host_drawn_candidates": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "host_render": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "ignore_host_ime_close": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "initial_mode": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": "english",
+          "value": "english"
+        },
+        "initial_punct": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "password_force_english": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "pin_anchor_when_start_drifts": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "schema": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "smart_method": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": "hold_composition",
+          "value": "hold_composition"
+        },
+        "stale_probe_guard": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": false
+        },
+        "status_fallback_position": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_position_mode": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "status_x": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        },
+        "status_y": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": 0
+        }
+      },
+      "hasUserEntry": true,
+      "overridden": [
+        "caret_offset_y",
+        "first_show_mode",
+        "initial_mode",
+        "smart_method"
+      ],
+      "process": "Tabby.exe",
+      "state": "user",
+      "system": null,
+      "unknownKeys": [
+        "future_key"
+      ],
+      "user": {
+        "caret_offset_y": 4,
+        "first_show_mode": "fast",
+        "future_key": 3,
+        "initial_mode": "english",
+        "initial_punct": "englsh",
+        "process": "Tabby.exe",
+        "smart_method": "hold_composition"
+      }
+    }
+  ],
+  "warnings": [
+    {
+      "key": "initial_punct",
+      "message": "字段 initial_punct 的值 \"englsh\" 无效，已忽略",
+      "process": "Tabby.exe",
+      "section": "apps"
+    }
+  ]
+}

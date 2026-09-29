@@ -542,6 +542,8 @@ pub struct AppState {
     pub integration: crate::pages::integration::IntegrationState,
     /// 统计页状态（数据快照 + 清理确认对话框）。
     pub stats_mgr: crate::pages::stats::StatsState,
+    /// 「应用兼容」页的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
+    pub compat_mgr: crate::pages::compat::CompatState,
     /// 「重新加载」二次确认对话框可见标志。
     pub reload_confirm: Signal<bool>,
     /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
@@ -960,6 +962,7 @@ impl AppState {
             config_import: crate::pages::config_import::ConfigImportState::new(),
             integration: crate::pages::integration::IntegrationState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
+            compat_mgr: crate::pages::compat::CompatState::new(),
             reload_confirm: signal(false),
             exit_confirm: signal(false),
             unsaved_note: signal(String::new()),
@@ -1428,6 +1431,9 @@ impl AppState {
                     self.notify_external_change(ctx, key, hit);
                 }
             }
+            // 兼容规则被改了（设置端自己写的会收到回声；右键菜单写的只能靠它得知）。
+            // 回声无害：`CompatState::reload` 只在内容真的变了才动信号，不会因此重建界面。
+            "compat.changed" => self.compat_mgr.request_refresh(),
             other => tracing::debug!("忽略 core 事件: {}", other),
         }
     }
@@ -5274,11 +5280,7 @@ fn pick_font_display_name(names: &[(String, String)]) -> Option<String> {
 ///
 /// 纯函数，便于单测；`load_fonts_from_dwrite` 去重后调用它排序。
 fn sort_font_names(mut names: Vec<String>) -> Vec<String> {
-    names.sort_by(|a, b| {
-        contains_cjk(b)
-            .cmp(&contains_cjk(a))
-            .then_with(|| a.cmp(b))
-    });
+    names.sort_by(|a, b| contains_cjk(b).cmp(&contains_cjk(a)).then_with(|| a.cmp(b)));
     names
 }
 

@@ -1,0 +1,62 @@
+{
+  "rules": [
+    {
+      "effective": {
+        "process": "WINWORD.EXE",
+        "style": "cr"
+      },
+      "fields": {
+        "style": {
+          "source": "system",
+          "systemValue": "cr",
+          "userValue": null,
+          "value": "cr"
+        }
+      },
+      "hasUserEntry": false,
+      "overridden": [],
+      "process": "WINWORD.EXE",
+      "state": "system",
+      "system": {
+        "process": "WINWORD.EXE",
+        "style": "cr"
+      },
+      "unknownKeys": [],
+      "user": null
+    },
+    {
+      "effective": {
+        "process": "Code.exe",
+        "style": "keep"
+      },
+      "fields": {
+        "style": {
+          "source": "user",
+          "systemValue": null,
+          "userValue": "keep",
+          "value": "keep"
+        }
+      },
+      "hasUserEntry": true,
+      "overridden": [
+        "style"
+      ],
+      "process": "Code.exe",
+      "state": "user",
+      "system": null,
+      "unknownKeys": [],
+      "user": {
+        "process": "Code.exe",
+        "style": "keep"
+      }
+    }
+  ],
+  "warnings": [
+    {
+      "key": "initial_punct",
+      "message": "字段 initial_punct 的值 \"englsh\" 无效，已忽略",
+      "process": "Tabby.exe",
+      "section": "apps"
+    }
+  ]
+}

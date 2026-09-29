@@ -1,0 +1,29 @@
+[[apps]]
+process = "Weixin.exe"
+first_show_mode = "instant"
+unset = ["stale_probe_guard"]
+
+[[apps]]
+process = "EXCEL.EXE"
+auto_pair = false
+
+[[apps]]
+process = "Dota2.exe"
+disabled = true
+
+[[apps]]
+process = "Tabby.exe"
+smart_method = "hold_composition"
+first_show_mode = "fast"
+initial_mode = "english"
+initial_punct = "englsh"
+caret_offset_y = 4
+future_key = 3
+
+[[initial_mode_scope]]
+process = "explorer.exe"
+classes = ["Progman", "WorkerW", "CabinetWClass"]
+
+[[commit_newline]]
+process = "Code.exe"
+style = "keep"

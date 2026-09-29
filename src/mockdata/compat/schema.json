@@ -1,0 +1,471 @@
+{
+  "fields": [
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "position",
+      "hosts": [
+        "EXCEL.EXE",
+        "et.exe"
+      ],
+      "key": "first_show_mode",
+      "kind": "enum",
+      "label": "候选窗首显策略",
+      "options": [
+        "wait",
+        "fast",
+        "instant"
+      ],
+      "problem": "有的软件收到按键后要过几十毫秒才能给出准确的光标位置。太早显示会先出现在旧位置再跳过去；等得太久又觉得迟钝。表格类软件（Excel、WPS 表格）进单元格时会先在编辑栏建临时输入区，用 wait 才能一次到位。不设置则跟随全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "新一轮输入的第一个键，候选窗何时出现：等定位准（wait）、尽快出（fast）、立即出（instant）。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "position",
+      "hosts": [],
+      "key": "candidate_position_mode",
+      "kind": "enum",
+      "label": "候选窗定位方式",
+      "options": [
+        "follow_caret",
+        "fixed"
+      ],
+      "problem": "有些软件报不出可靠的光标位置，候选窗会乱跑。固定到一个你拖好的位置就不再受影响。不设置则跟随全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "跟随光标，或固定在屏幕上你指定的位置。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": {
+        "key": "candidate_position_mode",
+        "value": "fixed"
+      },
+      "group": "position",
+      "hosts": [],
+      "key": "candidate_x",
+      "kind": "int",
+      "label": "固定位置 X",
+      "options": [],
+      "problem": "每个软件各存一份：合适的位置取决于该软件窗口在屏幕上的位置，共用一份只会让第一个配置的软件正确。(0,0) 表示还没拖过，会落到屏幕默认位置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "固定模式下候选窗左上角的屏幕横坐标（物理像素）。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": {
+        "key": "candidate_position_mode",
+        "value": "fixed"
+      },
+      "group": "position",
+      "hosts": [],
+      "key": "candidate_y",
+      "kind": "int",
+      "label": "固定位置 Y",
+      "options": [],
+      "problem": "与固定位置 X 配套。换显示器后位置会被自动限制在可见范围内，不会飞到屏幕外。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "固定模式下候选窗左上角的屏幕纵坐标（物理像素）。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "position",
+      "hosts": [
+        "WindowsTerminal.exe"
+      ],
+      "key": "caret_offset_x",
+      "kind": "int",
+      "label": "光标位置水平校正",
+      "options": [],
+      "problem": "少数软件（如 Windows Terminal）报告的光标位置本身就有系统性偏差，别的输入法在里面同样偏。用它把候选窗、状态气泡等一起挪正。单位按显示器缩放自动换算，多屏混插也一致。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "把软件报告的光标横坐标整体平移（96dpi 基准像素，正数向右）。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "position",
+      "hosts": [
+        "WindowsTerminal.exe"
+      ],
+      "key": "caret_offset_y",
+      "kind": "int",
+      "label": "光标位置垂直校正",
+      "options": [],
+      "problem": "与水平校正配套，用途相同。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "把软件报告的光标纵坐标整体平移（96dpi 基准像素，正数向下）。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "position",
+      "hosts": [
+        "Weixin.exe"
+      ],
+      "key": "caret_use_top",
+      "kind": "bool",
+      "label": "按光标上沿定位",
+      "options": [],
+      "problem": "微信这类 Web 输入框报告的光标高度会在 1 到 20 像素之间跳变，按下沿放置时候选窗会上下漂移约 20 像素，上沿则始终稳定。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "用光标矩形的上沿而不是下沿来放置候选窗。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "status",
+      "hosts": [],
+      "key": "status_position_mode",
+      "kind": "enum",
+      "label": "状态气泡定位方式",
+      "options": [
+        "follow_caret",
+        "fixed",
+        "screen_center",
+        "screen_top_left",
+        "screen_top_right",
+        "screen_bottom_left",
+        "screen_bottom_right",
+        "window_center",
+        "window_bottom_left"
+      ],
+      "problem": "在光标位置不可靠或提示会挡住内容的软件里，可以让气泡固定出现在你习惯的位置。不设置则跟随全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "中英文切换等提示气泡出现在哪里：跟随光标、固定位置，或屏幕 / 窗口的某个锚点。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": {
+        "key": "status_position_mode",
+        "value": "fixed"
+      },
+      "group": "status",
+      "hosts": [],
+      "key": "status_x",
+      "kind": "int",
+      "label": "气泡固定位置 X",
+      "options": [],
+      "problem": "(0,0) 表示已选固定但还没摆过位置，会落到光标所在的屏幕。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "固定模式下状态气泡左上角的屏幕横坐标（物理像素）。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": {
+        "key": "status_position_mode",
+        "value": "fixed"
+      },
+      "group": "status",
+      "hosts": [],
+      "key": "status_y",
+      "kind": "int",
+      "label": "气泡固定位置 Y",
+      "options": [],
+      "problem": "与气泡固定位置 X 配套。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "固定模式下状态气泡左上角的屏幕纵坐标（物理像素）。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "status",
+      "hosts": [],
+      "key": "status_fallback_position",
+      "kind": "enum",
+      "label": "光标不可信时的气泡位置",
+      "options": [
+        "last",
+        "hide",
+        "screen_center",
+        "screen_top_left",
+        "screen_top_right",
+        "screen_bottom_left",
+        "screen_bottom_right",
+        "window_center",
+        "window_bottom_left"
+      ],
+      "problem": "只在生效的气泡定位方式为「跟随光标」时起作用（该应用没设定位方式、由全局决定时同样适用，所以不做联动置灰）。避免软件刚获得焦点、光标还没报出来时，气泡出现在屏幕角落或上一个软件的位置。不设置则跟随全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "拿不到可信的光标位置时，状态气泡放在上次位置、隐藏，或某个屏幕 / 窗口锚点。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "initial",
+      "hosts": [],
+      "key": "initial_mode",
+      "kind": "enum",
+      "label": "进入软件时的中英状态",
+      "options": [
+        "english",
+        "chinese"
+      ],
+      "problem": "例如进入终端、游戏、代码编辑器时希望默认英文。这只是进入时的初始值，之后你仍可随时切换，不会被锁定。不设置则沿用全局逻辑。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "切换到这个软件时，自动设为中文或英文。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "initial",
+      "hosts": [],
+      "key": "initial_punct",
+      "kind": "enum",
+      "label": "进入软件时的标点状态",
+      "options": [
+        "english",
+        "chinese"
+      ],
+      "problem": "显式设置后优先于「标点跟随中英文」的推导；否则你配了它却恰好开着跟随时会完全无效且没有任何提示。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "切换到这个软件时，自动设为中文标点或英文标点。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "initial",
+      "hosts": [],
+      "key": "schema",
+      "kind": "text",
+      "label": "固定输入方案",
+      "options": [],
+      "problem": "例如聊天软件用拼音、写代码用五笔。在该软件里手动切换方案只影响它自己，不改全局方案。方案 id 是否存在在使用时才校验。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "这个软件固定使用某个输入方案；填 @remember 则记住它上次用的方案。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "behavior",
+      "hosts": [
+        "EXCEL.EXE",
+        "et.exe"
+      ],
+      "key": "auto_pair",
+      "kind": "tri_bool",
+      "label": "符号自动配对",
+      "options": [],
+      "problem": "表格类软件（Excel、WPS 表格）在输入状态下把方向键当作「确认单元格并移动」，配对后无法把光标退回两个符号之间，目前只能对它们关掉自动配对。不设置则沿用全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "输入左括号 / 引号时是否自动补全右半边。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "behavior",
+      "hosts": [],
+      "key": "password_force_english",
+      "kind": "tri_bool",
+      "label": "密码框强制英文",
+      "options": [],
+      "problem": "有的软件把普通输入框误报成密码框，导致无法输入中文：全局保持开启保护真密码框，只对这个软件关掉。反过来也可以全局关闭、只对某个软件开启。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "在密码框里是否强制使用英文输入。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "behavior",
+      "hosts": [
+        "Tabby.exe"
+      ],
+      "key": "smart_method",
+      "kind": "enum",
+      "label": "智能符号替换方式",
+      "options": [
+        "delete_replace",
+        "hold_composition"
+      ],
+      "problem": "在 Tabby 这类终端里，删改已输入内容会出现严重错误，改用 hold_composition 兼容性更好。不设置则沿用全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "delete_replace 会删改已输入的内容来替换符号；hold_composition 全程不删改。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "Weixin.exe",
+        "Feishu.exe"
+      ],
+      "key": "stale_probe_guard",
+      "kind": "bool",
+      "label": "拦截陈旧的光标位置",
+      "options": [],
+      "problem": "微信、飞书在线表格等软件在你移动光标或换单元格后再输入时，会把上一次输入的位置当作当前位置上报，候选窗先出现在旧位置，约 80 毫秒后才跳到新位置，表现为候选窗跳动。开启后改用输入前的光标位置首显。⚠ 不同软件的正确答案相反（有的软件是新坐标才对），所以只能按软件开启，不能全局启用。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "不采信输入过程中与「输入前光标位置」矛盾的坐标。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "QQ.exe",
+        "Code.exe",
+        "Feishu.exe"
+      ],
+      "key": "composition_start_pair_guard",
+      "kind": "tri_bool",
+      "label": "识别成对的组合帧",
+      "options": [],
+      "problem": "QQ、VS Code、飞书聊天框在长句输入时会交替上报组合起点和当前光标，候选窗因此在起点与末端之间左右闪烁。开启后固定以稳定的组合起点为准。出厂已为这些软件开启；你只需要在想关闭时显式设为「关」。",
+      "protocol": true,
+      "section": "apps",
+      "summary": "把连续两帧「组合起点」与「当前光标」识别为同一次布局采样。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "wps.exe",
+        "WINWORD.EXE"
+      ],
+      "key": "pin_anchor_when_start_drifts",
+      "kind": "tri_bool",
+      "label": "起点漂移时钉住锚点",
+      "options": [],
+      "problem": "WPS 文字、Word 里输入时起点每帧都跟着光标右移，候选窗会被越推越远（实测离输入区近 900 像素）。钉住后候选窗留在输入起点。⚠ Excel / WPS 表格的数据形态一样，但它们需要跟随单元格，钉住反而出错，所以只能按软件声明。",
+      "protocol": true,
+      "section": "apps",
+      "summary": "宿主报的组合起点跟着光标一起漂移时，把候选窗锚点钉在首帧位置。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "SearchHost.exe",
+        "searchapp.exe",
+        "startmenuexperiencehost.exe"
+      ],
+      "key": "host_render",
+      "kind": "bool",
+      "label": "由服务代绘候选窗",
+      "options": [],
+      "problem": "Win11 开始菜单、任务栏搜索这类受限进程，普通候选窗盖不住它们的窗口层级。改由服务渲染后经共享内存转交，才能正常显示。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "候选窗由输入法服务绘制，再交给软件内的组件显示。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [],
+      "key": "ignore_host_ime_close",
+      "kind": "tri_bool",
+      "label": "忽略软件关闭输入法的请求",
+      "options": [],
+      "problem": "部分 WinForms / WPF 编写的软件（如某些工具箱、游戏平台客户端）在你点一下按钮后会把输入法整体关掉，你就被切成了英文，回到文本框还不一定恢复。开启后忽略这类关闭请求。⚠ 不能全局启用：有的软件（如 gvim）依赖这个状态来保存和恢复。",
+      "protocol": true,
+      "section": "apps",
+      "summary": "软件自己要求关闭输入法时忽略它（按住 Ctrl 的系统热键仍然放行）。"
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "MapleStory.exe"
+      ],
+      "key": "host_drawn_candidates",
+      "kind": "tri_bool",
+      "label": "软件自绘候选窗",
+      "options": [],
+      "problem": "新枫之谷等游戏通过系统兼容层读走候选并画出旧式候选窗，不收起就会同时出现两个框。默认关闭：多数软件（记事本、Illustrator、EverEdit）虽然也读候选串却并不自绘，误收起会导致一个框都没有。「显式关」与「未设置」不同：关掉才能挡住出厂对该软件开启的规则。",
+      "protocol": true,
+      "section": "apps",
+      "summary": "软件把候选串读走时，视为它在自己画候选窗，并收起本输入法的候选窗。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "scope",
+      "hosts": [
+        "explorer.exe"
+      ],
+      "key": "classes",
+      "kind": "text_list",
+      "label": "允许重算的窗口类",
+      "options": [],
+      "problem": "资源管理器这类进程里有很多不同用途的窗口（文件窗口、任务栏、搜索框）。只让指定的窗口类触发初始状态，其余窗口保持现状，避免在无关窗口里被切来切去。列表为空表示任何窗口都不重算。",
+      "protocol": false,
+      "section": "initial_mode_scope",
+      "summary": "该进程下，只有这些顶层窗口类才会重新应用「进入软件时的中英状态」。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "newline",
+      "hosts": [
+        "WINWORD.EXE"
+      ],
+      "key": "style",
+      "kind": "enum",
+      "label": "上屏换行形式",
+      "options": [
+        "keep",
+        "cr",
+        "lf",
+        "crlf"
+      ],
+      "problem": "Word 这类富文本软件的文档里，段落分隔符就是 CR；直接送入 LF 它不认作换行，会在每个换行处显示成一段类似 Tab 的空白。为这类软件指定 cr，多行文本上屏才会正确分段。VS Code、终端、浏览器输入框则是写什么存什么，不要给它们转换，否则会悄悄改写你的数据。不设置则跟随全局设置。",
+      "protocol": false,
+      "section": "commit_newline",
+      "summary": "上屏文本里的换行用哪种字符表达：keep 原样、cr、lf、crlf。"
+    }
+  ],
+  "groups": [
+    {
+      "id": "position",
+      "label": "候选窗定位"
+    },
+    {
+      "id": "status",
+      "label": "状态气泡"
+    },
+    {
+      "id": "initial",
+      "label": "初始状态"
+    },
+    {
+      "id": "behavior",
+      "label": "输入行为"
+    },
+    {
+      "id": "host",
+      "label": "宿主兼容"
+    },
+    {
+      "id": "scope",
+      "label": "初始模式作用域"
+    },
+    {
+      "id": "newline",
+      "label": "上屏换行"
+    }
+  ]
+}

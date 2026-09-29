@@ -659,11 +659,24 @@ fn build_footer(
         .on_click(move |_| stats_mgr.reload())
         .visible_when(move || stats_tab == Some(tab_sig.get()));
 
+    // 「应用兼容」页每次改动立即经 `compat.*` 落盘，不走「保存时统一 diff」：底栏那三个围绕
+    // 待保存改动的按钮（恢复本页 / 重新加载 / 应用设置）对它没有意义，留着只会让人以为还要
+    // 点一下才生效。换成一个「刷新」。
+    let compat_tab = crate::cli::page_to_index("compat");
+    let compat_mgr = app.borrow().compat_mgr.clone();
+    let compat_refresh_btn = Element::button("刷新")
+        .small()
+        .outline_soft()
+        .on_click(move |_| compat_mgr.reload())
+        .visible_when(move || compat_tab == Some(tab_sig.get()));
+    let not_compat = move || compat_tab != Some(tab_sig.get());
+
     // 恢复本页：本页改默认值；有未保存改动先弹确认。
     let app_reset = app.clone();
     let reset_btn = Element::button("恢复本页")
         .small()
         .outline_soft()
+        .visible_when(not_compat)
         .on_click(move |_| {
             if let Ok(s) = app_reset.try_borrow() {
                 if s.is_dirty() {
@@ -679,6 +692,7 @@ fn build_footer(
     let reload_btn = Element::button("重新加载")
         .small()
         .outline_soft()
+        .visible_when(not_compat)
         .on_click(move |_| {
             if let Ok(s) = app_reload.try_borrow() {
                 s.reload_confirm.set(true);
@@ -690,6 +704,7 @@ fn build_footer(
     let apply_btn = Element::button("应用设置")
         .small()
         .outline_soft()
+        .visible_when(not_compat)
         .on_click(move |_| {
             if let Ok(mut s) = app_apply.try_borrow_mut() {
                 s.save();
@@ -722,6 +737,7 @@ fn build_footer(
         .child(subnav_btn)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
+        .child(compat_refresh_btn)
         .child(reset_btn)
         .child(reload_btn)
         .child(apply_btn)

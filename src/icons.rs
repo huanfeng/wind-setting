@@ -25,6 +25,7 @@ const KEYBOARD: &str = include_str!("../res/icons/ui/keyboard.svg");
 const CONTRAST: &str = include_str!("../res/icons/ui/contrast.svg");
 const LAYERS: &str = include_str!("../res/icons/ui/layers.svg");
 const SLIDERS: &str = include_str!("../res/icons/ui/sliders.svg");
+const APPS: &str = include_str!("../res/icons/ui/apps.svg");
 /// 信息角标。侧栏「关于」按 [`ICON_PX`] 整尺寸渲染，遵守上面的 2px 网格约定。
 pub const INFO: &str = include_str!("../res/icons/ui/info.svg");
 /// [`INFO`] 的细描边版（1.4px），**专供缩小渲染的角标**
@@ -54,6 +55,7 @@ pub fn nav_icon(tab: &str) -> &'static str {
         "输入" => LINES,
         "按键" => KEYBOARD,
         "外观" => CONTRAST,
+        "应用兼容" => APPS,
         "词库" => LAYERS,
         "高级" => SLIDERS,
         "关于" => INFO,
@@ -113,6 +115,7 @@ mod tests {
         ("contrast", CONTRAST),
         ("layers", LAYERS),
         ("sliders", SLIDERS),
+        ("apps", APPS),
         ("info", INFO),
         ("list", LIST),
         ("check", CHECK),

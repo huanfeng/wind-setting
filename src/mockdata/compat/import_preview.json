@@ -1,0 +1,37 @@
+{
+  "applied": false,
+  "fallbacks": [
+    "\"wiat\""
+  ],
+  "ignoredKeys": [
+    "apps.future_key"
+  ],
+  "items": [
+    {
+      "action": "add",
+      "process": "Brand.exe",
+      "section": "apps"
+    },
+    {
+      "action": "override",
+      "process": "Weixin.exe",
+      "section": "apps"
+    },
+    {
+      "action": "disable",
+      "process": "QQ.exe",
+      "section": "apps"
+    },
+    {
+      "action": "unchanged",
+      "process": "Feishu.exe",
+      "section": "apps"
+    },
+    {
+      "action": "unchanged",
+      "process": "wps.exe",
+      "section": "apps"
+    }
+  ],
+  "rejected": []
+}
