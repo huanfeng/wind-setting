@@ -163,12 +163,12 @@ impl CompatState {
         }
     }
 
-    /// 选中项保持合法：不在（筛选后的）可见集里就落到第一条；草稿名单独放行。
+    /// 选中项保持合法：不在（筛选后的）可见集里就落到第一条。草稿与其它规则一视同仁——
+    /// 被筛选 / 搜索挡住的草稿不能继续占着选中，否则右栏显示一条左栏看不到的规则。
     fn fix_selection(&self) {
         let cur = self.selected.get();
         let visible = self.visible_rules();
-        let draft = self.draft.get();
-        let ok = !cur.is_empty() && (visible.iter().any(|r| r.process == cur) || cur == draft);
+        let ok = !cur.is_empty() && visible.iter().any(|r| r.process == cur);
         if !ok {
             let next = visible
                 .first()
@@ -180,34 +180,35 @@ impl CompatState {
         }
     }
 
-    /// 按筛选与搜索词过滤后的规则，草稿（有的话）置顶。
+    /// 按筛选与搜索词过滤、按「用户动过的在前」排序后的规则。
+    ///
+    /// - 草稿（新增的、或被清空后保留的空白规则）当成一条「自定义」规则**同样过筛选与搜索**：
+    ///   此前它无条件置顶、绕过筛选，清空后的空白规则会莫名其妙排第一。
+    /// - 排序：用户层动过的（已修改 / 自定义 / 用户禁用的，含草稿）排前面，纯出厂的在后；
+    ///   各组内保持核心返回的顺序（稳定排序），草稿排在自己那组最前——刚新增的马上能看到。
     pub fn visible_rules(&self) -> Vec<RuleView> {
         let filter = self.filter.get();
         let needle = self.search.get().trim().to_lowercase();
-        let mut out: Vec<RuleView> = self.rules.with(|rules| {
-            rules
-                .iter()
-                .filter(|r| match filter {
-                    1 => r.state == RuleState::Modified,
-                    2 => r.state == RuleState::User,
-                    3 => r.state == RuleState::Disabled,
-                    _ => true,
-                })
-                .filter(|r| needle.is_empty() || r.process.to_lowercase().contains(&needle))
-                .cloned()
-                .collect()
-        });
+        let mut all: Vec<RuleView> = self.rules.with(|r| r.clone());
         let draft = self.draft.get();
-        if !draft.is_empty()
-            && !out.iter().any(|r| r.process.eq_ignore_ascii_case(&draft))
-            && (needle.is_empty() || draft.to_lowercase().contains(&needle))
-        {
-            out.insert(
+        if !draft.is_empty() && !all.iter().any(|r| r.process.eq_ignore_ascii_case(&draft)) {
+            all.insert(
                 0,
                 self.schema
                     .with(|s| RuleView::draft(&draft, s, self.current_section())),
             );
         }
+        let mut out: Vec<RuleView> = all
+            .into_iter()
+            .filter(|r| match filter {
+                1 => r.state == RuleState::Modified,
+                2 => r.state == RuleState::User,
+                3 => r.state == RuleState::Disabled,
+                _ => true,
+            })
+            .filter(|r| needle.is_empty() || r.process.to_lowercase().contains(&needle))
+            .collect();
+        out.sort_by_key(|r| !(r.has_user_entry || r.is_draft()));
         out
     }
 
@@ -1111,6 +1112,65 @@ mod tests {
         st.open_refresh();
         assert!(!st.is_pending("Weixin.exe", "initial_mode"));
         assert!(!st.dlg.field_visible.get());
+    }
+
+    /// 用户动过的排前面（含草稿），纯出厂的在后；组内保持核心给的顺序。
+    #[test]
+    fn user_touched_rules_sort_before_pure_factory_ones() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        let names = |st: &CompatState| -> Vec<(String, bool)> {
+            st.visible_rules()
+                .into_iter()
+                .map(|r| (r.process.clone(), r.has_user_entry || r.is_draft()))
+                .collect()
+        };
+        let v = names(&st);
+        let first_factory = v.iter().position(|(_, touched)| !touched).unwrap();
+        assert!(first_factory > 0, "mock 里有用户改过的规则");
+        assert!(
+            v[first_factory..].iter().all(|(_, touched)| !touched),
+            "用户改过的必须全部排在纯出厂的前面: {v:?}"
+        );
+        // 组内稳定：出厂那组的相对顺序与核心返回一致。
+        let core: Vec<String> = st.rules.with(|r| {
+            r.iter()
+                .filter(|x| !x.has_user_entry)
+                .map(|x| x.process.clone())
+                .collect()
+        });
+        let shown: Vec<String> = v[first_factory..].iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(shown, core);
+    }
+
+    /// 草稿（新增的、被清空后保留的空白规则）与其它规则一样受筛选和搜索约束，
+    /// 且排在「用户动过的」那组最前面，而不是无条件置顶。
+    #[test]
+    fn a_draft_obeys_the_filter_and_the_search_and_leads_only_its_own_group() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        let v = st.visible_rules();
+        assert_eq!(v[0].process, "Brand.exe", "草稿在用户动过的那组最前");
+        assert!(
+            v.iter().skip(1).any(|r| !r.has_user_entry),
+            "纯出厂的仍在后面"
+        );
+
+        st.filter.set(3);
+        assert!(
+            st.visible_rules().iter().all(|r| r.process != "Brand.exe"),
+            "「已禁用」筛选下草稿（自定义）不出现"
+        );
+        st.filter.set(0);
+        st.search.set("weixin".into());
+        assert!(st.visible_rules().iter().all(|r| r.process != "Brand.exe"));
+        st.refilter();
+        assert_ne!(
+            st.selected.get(),
+            "Brand.exe",
+            "被挡住的草稿不能继续占着选中"
+        );
     }
 
     #[test]

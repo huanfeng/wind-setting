@@ -55,7 +55,7 @@ pub fn nav_icon(tab: &str) -> &'static str {
         "输入" => LINES,
         "按键" => KEYBOARD,
         "外观" => CONTRAST,
-        "应用兼容" => APPS,
+        "应用兼容性与独立配置" => APPS,
         "词库" => LAYERS,
         "高级" => SLIDERS,
         "关于" => INFO,

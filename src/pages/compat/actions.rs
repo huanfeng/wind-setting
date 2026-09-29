@@ -152,7 +152,7 @@ impl CompatState {
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         ctx.request_save_file(
             PickDialog::new()
-                .title("导出 · 应用兼容")
+                .title("导出 · 应用兼容性与独立配置")
                 .file_name(format!("compat-{stamp}.toml"))
                 .filter("TOML", &["toml"]),
             move |path| {
@@ -177,7 +177,7 @@ impl CompatState {
         let st = self.clone();
         ctx.request_pick_file(
             PickDialog::new()
-                .title("导入 · 应用兼容")
+                .title("导入 · 应用兼容性与独立配置")
                 .filter("TOML", &["toml"]),
             move |path| {
                 let Some(path) = path else { return };

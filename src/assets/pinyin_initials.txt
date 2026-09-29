@@ -1,6 +1,6 @@
 # 汉字 → 拼音首字母（1-2 个，多音字取常用频率前两读）
 # 由 scripts/gen-pinyin-initials.ps1 从 core 的 build/data/pinyin_map.txt 生成，请勿手改。
-# 字数: 337
+# 字数: 333
 一 y
 三 s
 上 s
@@ -20,7 +20,6 @@
 令 l
 以 y
 件 j
-任 r
 份 f
 位 w
 住 z
@@ -134,6 +133,7 @@
 志 z
 快 k
 态 t
+性 x
 息 x
 悬 x
 想 x
@@ -141,12 +141,10 @@
 成 c
 截 j
 户 h
-所 s
 打 d
 扩 k
 折 z s
 护 h
-拆 c
 择 z
 拼 p
 指 z
@@ -201,10 +199,8 @@
 法 f
 泡 p
 注 z
-浅 q j
 测 c
 消 x
-深 s
 添 t
 清 q
 游 y
@@ -216,6 +212,7 @@
 版 b
 特 t
 状 z
+独 d
 理 l
 生 s
 用 y
@@ -238,6 +235,7 @@
 程 c
 空 k
 窗 c
+立 l
 竖 s
 端 d
 符 f
@@ -286,9 +284,7 @@
 许 x h
 设 s
 词 c
-试 s
 语 y
-读 d
 调 d t
 账 z
 超 c

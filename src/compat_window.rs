@@ -17,7 +17,7 @@ use windui::prelude::*;
 use crate::state::AppState;
 
 /// 窗口标题。`App` 主窗承载本界面时（`--page compat` 冷启动）也用这个。
-pub const TITLE: &str = "清风输入法 · 应用兼容";
+pub const TITLE: &str = "清风输入法 · 应用兼容性与独立配置";
 
 /// 单例键：同键窗口同时只存在一个，再点入口只是把已开着的那个激活到前台。
 pub(crate) const SINGLE_KEY: &str = "compat_manager";
@@ -60,7 +60,7 @@ pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
     let mgr = app.borrow().compat_mgr.clone();
     crate::pages::compat::build_content(
         &mgr,
-        crate::shell::build_titlebar("应用兼容"),
+        crate::shell::build_titlebar("应用兼容性与独立配置"),
         build_back_button(app),
     )
 }
