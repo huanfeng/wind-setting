@@ -26,6 +26,8 @@ pub struct Dialogs {
 
     pub reset_visible: Signal<bool>,
 
+    pub help_visible: Signal<bool>,
+
     pub import_visible: Signal<bool>,
     /// 0 = 合并，1 = 替换（对应 [`IMPORT_MODES`]）。
     pub import_mode: Signal<usize>,
@@ -44,6 +46,7 @@ impl Default for Dialogs {
             add_name: signal(String::new()),
             add_error: signal(String::new()),
             reset_visible: signal(false),
+            help_visible: signal(false),
             import_visible: signal(false),
             import_mode: signal(0),
             import_summary: signal(String::new()),

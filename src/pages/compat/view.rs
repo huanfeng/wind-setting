@@ -32,7 +32,7 @@ pub fn build_page(state: &AppState, _nav: &SubNav) -> Element {
     let list_sig: Signal<Vec<Vec<RuleView>>> = signal(vec![mgr.visible_rules()]);
     let detail_sig: Signal<Vec<Option<RuleView>>> = signal(vec![mgr.selected_rule()]);
 
-    let left = build_left(&mgr, list_sig);
+    let left = build_left(&mgr, state.jump, list_sig);
     let right = build_right(&mgr, detail_sig);
 
     Element::row()
@@ -131,7 +131,11 @@ fn sync_effects(
 
 // ───────────────────────── 左栏 ─────────────────────────
 
-fn build_left(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Element {
+fn build_left(
+    mgr: &CompatState,
+    jump: Signal<Option<crate::search::JumpRequest>>,
+    list_sig: Signal<Vec<Vec<RuleView>>>,
+) -> Element {
     let m = mgr.clone();
     let rows = Element::host_signal(list_sig, move |rules: Vec<RuleView>| rule_list(&m, &rules));
 
@@ -144,7 +148,12 @@ fn build_left(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Elemen
             Section::ALL.iter().map(|s| s.title()).collect::<Vec<_>>(),
             mgr.section,
         ))
-        .child(toolbar(mgr))
+        // 搜索跳转的落点：页级入口（新增 / 导入 / 导出 / 还原）都在这一排上。
+        .child(crate::search::anchor::wrap(
+            toolbar(mgr),
+            "compat:main",
+            jump,
+        ))
         .child(Element::text_input(mgr.search, "搜索进程名"))
         .child(Element::segmented(FILTERS.to_vec(), mgr.filter))
         .child(
@@ -153,6 +162,13 @@ fn build_left(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Elemen
                 .width_match()
                 .child(Element::col().width_match().spacing(2).child(rows)),
         )
+        .child({
+            let m = mgr.clone();
+            Element::button("选项说明")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.dlg.help_visible.set(true))
+        })
         .child(
             Element::label_signal(mgr.load_error)
                 .font_size(12.0)

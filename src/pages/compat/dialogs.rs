@@ -4,6 +4,7 @@ use windui::core::EventCtx;
 use windui::prelude::*;
 
 use super::actions::IMPORT_MODES;
+use super::model::{Schema, Section};
 use super::state::CompatState;
 use crate::pages::dict::reactive::reactive_effect;
 
@@ -14,6 +15,7 @@ pub fn build_dialogs(mgr: &CompatState) -> Vec<Element> {
         build_reset_dialog(mgr),
         build_import_dialog(mgr),
         import_mode_effect(mgr),
+        build_help_dialog(mgr),
     ]
 }
 
@@ -174,4 +176,168 @@ fn import_mode_effect(mgr: &CompatState) -> Element {
             }
         },
     )
+}
+
+/// 帮助里的一条：一个字段的名字、作用、解决什么问题、已知在哪些软件上用到。
+#[derive(Clone, Debug, PartialEq)]
+pub struct HelpItem {
+    pub group: String,
+    pub label: String,
+    pub summary: String,
+    pub problem: String,
+    pub hosts: Vec<String>,
+}
+
+/// 某一段的全部字段说明，按界面上的分组顺序。**含高级项**——帮助页要能查到详情里默认折叠的东西。
+pub fn help_items(schema: &Schema, section: Section) -> Vec<HelpItem> {
+    schema
+        .groups_of(section)
+        .into_iter()
+        .flat_map(|(g, fields)| {
+            fields.into_iter().map(move |f| HelpItem {
+                group: g.label.clone(),
+                label: f.label.clone(),
+                summary: f.summary.clone(),
+                problem: f.problem.clone(),
+                hosts: f.hosts.clone(),
+            })
+        })
+        .collect()
+}
+
+fn help_body(items: Vec<HelpItem>) -> Element {
+    let mut col = Element::col().width_match().spacing(10);
+    if items.is_empty() {
+        return col.child(
+            Element::label("还没有加载到选项说明。")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted),
+        );
+    }
+    let mut last_group = String::new();
+    for it in items {
+        if it.group != last_group {
+            col = col.child(
+                Element::label(&it.group)
+                    .font_size(13.0)
+                    .font_weight(700)
+                    .fg_role(Role::Accent)
+                    .padding_xy(0, 4),
+            );
+            last_group = it.group.clone();
+        }
+        let mut entry = Element::col()
+            .width_match()
+            .spacing(2)
+            .child(
+                Element::label(&it.label)
+                    .font_size(13.0)
+                    .font_weight(600)
+                    .fg_role(Role::Text),
+            )
+            .child(
+                Element::label(&it.summary)
+                    .font_size(12.5)
+                    .fg_role(Role::Text)
+                    .width_match()
+                    .max_lines(6),
+            );
+        if !it.problem.is_empty() {
+            entry = entry.child(
+                Element::label(format!("解决的问题：{}", it.problem))
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(8),
+            );
+        }
+        if !it.hosts.is_empty() {
+            entry = entry.child(
+                Element::label(format!("用到它的软件：{}", it.hosts.join("、")))
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(3),
+            );
+        }
+        col = col.child(entry);
+    }
+    col
+}
+
+/// 「选项说明」：把当前这一段的每个字段是干什么的、解决什么问题列出来。
+/// 内容全部取自核心的元数据，核心加了字段这里自动多一条。
+fn build_help_dialog(mgr: &CompatState) -> Element {
+    let items: Signal<Vec<Vec<HelpItem>>> = signal(vec![Vec::new()]);
+    let sync = {
+        let m = mgr.clone();
+        reactive_effect(
+            {
+                let m = m.clone();
+                move || m.schema.version() + m.section.version() + m.dlg.help_visible.version()
+            },
+            move || {
+                let sec = m.current_section();
+                items.set(vec![m.schema.with(|s| help_items(s, sec))]);
+            },
+        )
+    };
+    let close = mgr.clone();
+    let done = mgr.clone();
+    let body = Element::col()
+        .width_match()
+        .child(
+            Element::scroll()
+                .width_match()
+                .height(440)
+                .padding_xy(4, 4)
+                .child(Element::host_signal(items, help_body)),
+        )
+        .child(sync);
+    let foot = footer(vec![
+        Element::button("关闭")
+            .small()
+            .on_click(move |_| done.dlg.help_visible.set(false)),
+    ]);
+    Element::dialog_panel(
+        mgr.dlg.help_visible,
+        "选项说明",
+        560,
+        move |_: &mut EventCtx| close.dlg.help_visible.set(false),
+        body,
+        foot,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pages::compat::mock;
+
+    fn schema() -> Schema {
+        Schema::parse(&mock::reply("compat.schema", &serde_json::json!({}))).unwrap()
+    }
+
+    #[test]
+    fn help_covers_every_field_of_the_section_including_advanced() {
+        let s = schema();
+        for sec in Section::ALL {
+            let items = help_items(&s, sec);
+            assert_eq!(
+                items.len(),
+                s.fields_of(sec).len(),
+                "{sec:?} 每个字段都该有说明"
+            );
+            assert!(
+                items.iter().all(|i| !i.summary.is_empty()),
+                "没有说明文字的字段等于没写帮助"
+            );
+        }
+        assert!(
+            help_items(&s, Section::Apps)
+                .iter()
+                .any(|i| i.label == "拦截陈旧的光标位置"),
+            "高级项也要能在帮助里查到"
+        );
+    }
 }
