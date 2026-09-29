@@ -28,6 +28,12 @@ pub struct Dialogs {
 
     pub help_visible: Signal<bool>,
 
+    /// 「添加覆盖项」（挑字段）对话框。
+    pub field_visible: Signal<bool>,
+    /// 「规则已没有任何配置项」的删除 / 保留确认。
+    pub empty_visible: Signal<bool>,
+    pub empty_name: Signal<String>,
+
     pub import_visible: Signal<bool>,
     /// 0 = 合并，1 = 替换（对应 [`IMPORT_MODES`]）。
     pub import_mode: Signal<usize>,
@@ -47,6 +53,9 @@ impl Default for Dialogs {
             add_error: signal(String::new()),
             reset_visible: signal(false),
             help_visible: signal(false),
+            field_visible: signal(false),
+            empty_visible: signal(false),
+            empty_name: signal(String::new()),
             import_visible: signal(false),
             import_mode: signal(0),
             import_summary: signal(String::new()),

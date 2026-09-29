@@ -16,8 +16,8 @@ const EXPORT_USER: &str = include_str!("../../mockdata/compat/export_user.toml")
 /// 备份文件名（与核心的命名同形）。
 const BACKUP: &str = "compat.toml.bak-1700000000";
 
-/// mock 里「写完就变」的最小可变层：upsert 过的新进程名。核心里 normalize 成空的补丁不会落行，
-/// 进程名为 [`MOCK_NOOP_PROCESS`] 时照此模拟。线程内独立（每个测试各一份）。
+// mock 里「写完就变」的最小可变层：upsert 过的新进程名。核心里 normalize 成空的补丁不会落行，
+// 进程名为 `MOCK_NOOP_PROCESS` 时照此模拟。线程内独立（每个测试各一份）。
 thread_local! {
     static CREATED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -76,11 +76,17 @@ pub(crate) fn reply(method: &str, params: &Value) -> Value {
         "compat.resetAll" => json!({ "ok": true, "backup": BACKUP }),
         "compat.reset" => json!({ "ok": true, "removed": true, "rule": null }),
         "compat.upsert" | "compat.resetField" | "compat.setDisabled" => {
-            if method == "compat.upsert" {
-                if let Some(p) = params.get("process").and_then(Value::as_str) {
-                    if p != MOCK_NOOP_PROCESS {
-                        CREATED.with(|c| c.borrow_mut().push(p.to_string()));
-                    }
+            if let Some(p) = params.get("process").and_then(Value::as_str) {
+                let clearing = method == "compat.resetField"
+                    || (method == "compat.upsert"
+                        && params["patch"]
+                            .as_object()
+                            .is_some_and(|o| !o.is_empty() && o.values().all(Value::is_null)));
+                if clearing {
+                    // 模拟「最后一个字段被去掉，整条用户新增规则消失」。
+                    CREATED.with(|c| c.borrow_mut().retain(|x| x != p));
+                } else if method == "compat.upsert" && p != MOCK_NOOP_PROCESS {
+                    CREATED.with(|c| c.borrow_mut().push(p.to_string()));
                 }
             }
             json!({ "ok": true, "rule": null })

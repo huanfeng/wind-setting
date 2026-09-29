@@ -3,16 +3,14 @@
 
 use crate::pages::dict::spec::LogicalTab;
 
-/// 规范页 id，**顺序即侧栏顺序**：方案 / 输入 / 按键 / 外观 / 统计 / 应用兼容 / 词库 / 高级 / 关于，
+/// 规范页 id，**顺序即侧栏顺序**：方案 / 输入 / 按键 / 外观 / 统计 / 词库 / 高级 / 关于，
 /// `pages::all_tabs` 必须逐格对齐。
 ///
-/// 「应用兼容」是纯切页项，排在动作项「词库」之前（动作项一律靠后，见下）。
-///
-/// 「词库」排在「统计」「应用兼容」之后：侧栏里只有它是**动作项**——点它开的是独立窗，主窗停在
+/// 「词库」排在「统计」之后：侧栏里只有它是**动作项**——点它开的是独立窗，主窗停在
 /// 原页不动（见 `shell::build_nav` 里的 `is_action`）。把唯一一个「点了会跳出去」的
 /// 条目从配置页中间挪到末尾那组，前面五格就都是纯粹的「切页」，行为一致。
 const PAGES: &[&str] = &[
-    "schema", "input", "keys", "ui", "stats", "compat", "dict", "advanced", "about",
+    "schema", "input", "keys", "ui", "stats", "dict", "advanced", "about",
 ];
 
 /// 规范页 id → tab 索引。非法 id 返回 None(不兼容旧别名)。
@@ -40,6 +38,23 @@ pub fn parse_target(argv: &[String]) -> Option<usize> {
         }
     }
     None
+}
+
+/// argv 是否请求「应用兼容」窗（`--page compat` / `--page=compat` / `--compat`）。
+///
+/// `compat` 不是主窗的一页（PAGES 里没有）：它是独立窗，入口在「高级」页与全局搜索。
+/// 冷启动时由 `App` 的那个窗口直接承载（同 `--page dict`）。
+pub fn parse_compat_request(argv: &[String]) -> bool {
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if a == "--compat" || a == "--page=compat" {
+            return true;
+        }
+        if a == "--page" && it.next().is_some_and(|v| v == "compat") {
+            return true;
+        }
+    }
+    false
 }
 
 /// 从 argv 提取协议 URL(`windinput://` 前缀,大小写不敏感)。
@@ -214,14 +229,27 @@ mod tests {
     }
 
     #[test]
+    fn compat_request_forms() {
+        assert!(parse_compat_request(&a(&["exe", "--page", "compat"])));
+        assert!(parse_compat_request(&a(&["exe", "--page=compat"])));
+        assert!(parse_compat_request(&a(&["exe", "--compat"])));
+        assert!(!parse_compat_request(&a(&["exe", "--page", "dict"])));
+        assert!(!parse_compat_request(&a(&["exe"])));
+    }
+
+    #[test]
     fn page_mapping() {
         assert_eq!(page_to_index("schema"), Some(0));
         assert_eq!(page_to_index("keys"), Some(2));
         assert_eq!(page_to_index("stats"), Some(4));
-        assert_eq!(page_to_index("compat"), Some(5));
-        assert_eq!(page_to_index("dict"), Some(6));
-        assert_eq!(page_to_index("advanced"), Some(7));
-        assert_eq!(page_to_index("about"), Some(8));
+        assert_eq!(
+            page_to_index("compat"),
+            None,
+            "应用兼容是独立窗，不是主窗的一页"
+        );
+        assert_eq!(page_to_index("dict"), Some(5));
+        assert_eq!(page_to_index("advanced"), Some(6));
+        assert_eq!(page_to_index("about"), Some(7));
         assert_eq!(page_to_index("nope"), None);
         assert_eq!(page_to_index("general"), None); // 旧别名不再支持
     }
@@ -229,8 +257,8 @@ mod tests {
     #[test]
     fn parse_target_forms() {
         assert_eq!(parse_target(&a(&["exe", "--page", "input"])), Some(1));
-        assert_eq!(parse_target(&a(&["exe", "--page=about"])), Some(8));
-        assert_eq!(parse_target(&a(&["exe", "--about"])), Some(8));
+        assert_eq!(parse_target(&a(&["exe", "--page=about"])), Some(7));
+        assert_eq!(parse_target(&a(&["exe", "--about"])), Some(7));
         assert_eq!(parse_target(&a(&["exe", "--tab", "5"])), Some(5));
         assert_eq!(parse_target(&a(&["exe"])), None);
     }
@@ -333,8 +361,8 @@ mod tests {
         );
         assert!(parse_dict_target(&a(&["exe"])).is_none());
         // --tab 6 恰好是词库页下标：数字定位也应认深链
-        assert_eq!(page_to_index("dict"), Some(6));
-        assert!(parse_dict_target(&a(&["exe", "--tab", "6", "--type", "shadow"])).is_some());
+        assert_eq!(page_to_index("dict"), Some(5));
+        assert!(parse_dict_target(&a(&["exe", "--tab", "5", "--type", "shadow"])).is_some());
     }
 
     #[test]

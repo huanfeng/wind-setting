@@ -7,7 +7,7 @@
 //! 详情区在所选规则的视图**变化时重建**（而不是原地回填各控件的信号）：新建的控件以新值为基线，
 //! 不会把「刚从核心读回来的值」误当成用户改动再写一遍，写回循环因此无从发生。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -50,6 +50,12 @@ pub struct CompatState {
     /// 详情里是否列出「高级」字段（`advanced`）：默认只列常用项，已被设置过的高级字段
     /// 无论如何都会列出，免得用户看不到自己改过什么。
     pub show_advanced: Signal<bool>,
+    /// 「已选来覆盖、但还没给出值」的字段 `(进程名, 字段键)`。
+    ///
+    /// 详情只列被设置过的字段，用户通过「添加覆盖项」挑字段；文本 / 数字这类字段选出来的
+    /// 那一刻还没有值可写（空串、0 会被核心当成没写），所以先在界面里占一行，设置了值才落盘。
+    /// 不进核心、不跨段（切段即清）。
+    pending: Rc<RefCell<Vec<(String, String)>>>,
     /// 新增 / 全部还原 / 导入的对话框状态（见 `actions.rs`）。
     pub dlg: super::actions::Dialogs,
     pub feedback: Feedback,
@@ -78,6 +84,7 @@ impl CompatState {
             refresh_tick: signal(0),
             draft: signal(String::new()),
             show_advanced: signal(false),
+            pending: Rc::new(RefCell::new(Vec::new())),
             dlg: super::actions::Dialogs::default(),
             feedback: signal(None),
         }
@@ -192,7 +199,6 @@ impl CompatState {
         });
         let draft = self.draft.get();
         if !draft.is_empty()
-            && self.current_section() == Section::Apps
             && !out.iter().any(|r| r.process.eq_ignore_ascii_case(&draft))
             && (needle.is_empty() || draft.to_lowercase().contains(&needle))
         {
@@ -236,6 +242,7 @@ impl CompatState {
     pub fn switch_section(&self) {
         self.selected.set(String::new());
         self.draft.set(String::new());
+        self.pending.borrow_mut().clear();
         self.rules.set(Vec::new());
         self.reload();
         self.fix_selection();
@@ -290,7 +297,14 @@ impl CompatState {
             self.rebuild_after_failure();
             return false;
         }
-        self.reload_after_write();
+        // 给出了值的字段不再是「待设置」；清除（null）保留待设置状态——用户刚挑出这一项，
+        // 选回「跟随全局」不该让这一行凭空消失。
+        if let Some(obj) = patch_keys(&patch) {
+            self.pending
+                .borrow_mut()
+                .retain(|(p, k)| !(p.eq_ignore_ascii_case(process) && obj.contains(k)));
+        }
+        self.reload_after_write(true);
         true
     }
 
@@ -299,6 +313,7 @@ impl CompatState {
         self.simple_write(
             "compat.resetField",
             json!({ "process": process, "key": key }),
+            true,
         )
     }
 
@@ -306,20 +321,21 @@ impl CompatState {
         self.simple_write(
             "compat.setDisabled",
             json!({ "process": process, "disabled": disabled }),
+            false,
         )
     }
 
     /// 还原单条：删掉用户层同名条目（用户新增的规则等于删除）。
     pub fn reset_rule(&self, process: &str) -> bool {
-        self.simple_write("compat.reset", json!({ "process": process }))
+        self.simple_write("compat.reset", json!({ "process": process }), false)
     }
 
-    fn simple_write(&self, method: &str, params: Value) -> bool {
+    fn simple_write(&self, method: &str, params: Value, prompt_if_emptied: bool) -> bool {
         if self.call_write(method, params).is_err() {
             self.rebuild_after_failure();
             return false;
         }
-        self.reload_after_write();
+        self.reload_after_write(prompt_if_emptied);
         true
     }
 
@@ -330,7 +346,8 @@ impl CompatState {
             .ok()?;
         self.selected.set(String::new());
         self.draft.set(String::new());
-        self.reload_after_write();
+        self.pending.borrow_mut().clear();
+        self.reload_after_write(false);
         // 用户层本来就是空时规则集不变，`apply_list` 不会动任何信号；选中 / 草稿却已被清掉。
         Self::bump(self.list_epoch);
         Self::bump(self.detail_epoch);
@@ -342,9 +359,20 @@ impl CompatState {
         )
     }
 
-    fn reload_after_write(&self) {
+    /// 写后重拉。`prompt_if_emptied`：选中的用户新增规则因这次写入变得一个字段都不剩
+    /// （核心里整条消失）时，不直接让它凭空没了，而是保留成空白草稿并弹窗问「删除还是保留」。
+    fn reload_after_write(&self, prompt_if_emptied: bool) {
         let before = (self.selected.get(), self.draft.get());
+        let sel = before.0.clone();
+        let existed = !sel.is_empty() && self.rules.with(|r| r.iter().any(|x| x.process == sel));
         self.reload();
+        let gone = existed && !self.rules.with(|r| r.iter().any(|x| x.process == sel));
+        if gone && prompt_if_emptied {
+            self.draft.set(sel.clone());
+            self.selected.set(sel.clone());
+            self.dlg.empty_name.set(sel);
+            self.dlg.empty_visible.set(true);
+        }
         // 草稿只在核心里确实有了这条规则之后才算转正：第一次写入被 normalize 成空操作时
         // 核心不落行，草稿要留着，否则界面停在一条既不是草稿也不存在的规则上。
         let d = self.draft.get();
@@ -358,10 +386,57 @@ impl CompatState {
         // 选中项的视图变了（或被删掉了）：详情必须跟上。`apply_list` 只在内容变化时才动信号，
         // 这里再确保选中项合法；选中 / 草稿有变化而规则集没变时要自己通知界面。
         self.fix_selection();
-        if before != (self.selected.get(), self.draft.get()) {
+        if gone || before != (self.selected.get(), self.draft.get()) {
             Self::bump(self.list_epoch);
             Self::bump(self.detail_epoch);
         }
+    }
+
+    // ───────────── 覆盖项（详情只列被设置过的字段） ─────────────
+
+    /// 这个字段是不是「已挑出来、等着给值」。
+    pub fn is_pending(&self, process: &str, key: &str) -> bool {
+        self.pending
+            .borrow()
+            .iter()
+            .any(|(p, k)| p.eq_ignore_ascii_case(process) && k == key)
+    }
+
+    /// 在「添加覆盖项」里挑了一个字段。开关类直接写 `true`（没有比它更自然的初值，
+    /// 而写「关」等于没写）；其余先占一行等用户给值。
+    pub fn add_override(&self, process: &str, key: &str) {
+        let is_bool = self.schema.with(|s| {
+            s.field(self.current_section(), key)
+                .is_some_and(|f| f.kind == super::model::Kind::Bool)
+        });
+        if is_bool {
+            self.set_field(process, key, json!(true));
+            return;
+        }
+        if !self.is_pending(process, key) {
+            self.pending
+                .borrow_mut()
+                .push((process.to_string(), key.to_string()));
+        }
+        Self::bump(self.detail_epoch);
+    }
+
+    /// 去掉一个覆盖项：待设置的直接丢，已设置的清成「跟随全局」。
+    pub fn remove_override(&self, process: &str, key: &str) -> bool {
+        if self.is_pending(process, key) {
+            self.pending
+                .borrow_mut()
+                .retain(|(p, k)| !(p.eq_ignore_ascii_case(process) && k == key));
+            Self::bump(self.detail_epoch);
+            return true;
+        }
+        self.clear_field(process, key)
+    }
+
+    /// 空规则弹窗里选「删除」：草稿丢掉即可，核心里早已没有这条。
+    pub fn confirm_delete_emptied(&self) {
+        self.dlg.empty_visible.set(false);
+        self.drop_draft();
     }
 
     /// 写入失败：控件已经停在用户刚选的值上，而核心里没变。按核心的值重建详情，
@@ -370,11 +445,13 @@ impl CompatState {
         Self::bump(self.detail_epoch);
     }
 
-    /// 页面（重新）构建时：已加载过则按最新内容重拉一次。主窗关闭期间到达的
-    /// `compat.changed` 没有页面接收，重建出来的页面要自己补这一课。
-    pub fn reload_if_loaded(&self) {
+    /// 窗口（重新）打开时：没加载过就首次加载，加载过则按最新内容重拉一次。
+    /// 窗口关闭期间到达的 `compat.changed` 没有页面接收，重开的窗口要自己补这一课。
+    pub fn open_refresh(&self) {
         if self.loaded.get() {
             self.reload();
+        } else {
+            self.ensure_loaded();
         }
     }
 
@@ -699,6 +776,83 @@ mod tests {
         assert!(st.visible_rules().iter().any(|r| r.process == name));
     }
 
+    /// 「添加覆盖项」：开关直接写 true，其余先占一行等值；给了值就不再是待设置。
+    #[test]
+    fn add_override_writes_bools_at_once_and_parks_other_kinds_until_given_a_value() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.select("Weixin.exe");
+        let _ = crate::rpc::take_mock_calls();
+
+        st.add_override("Weixin.exe", "host_render");
+        let w = calls("compat.upsert");
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0]["patch"]["host_render"], json!(true));
+
+        st.add_override("Weixin.exe", "initial_mode");
+        assert!(
+            calls("compat.upsert").is_empty(),
+            "非开关字段挑出来时没有值可写"
+        );
+        assert!(st.is_pending("weixin.EXE", "initial_mode"));
+
+        st.set_field("Weixin.exe", "initial_mode", json!("english"));
+        assert!(!st.is_pending("Weixin.exe", "initial_mode"), "给了值就转正");
+    }
+
+    /// 待设置的字段被「移除」只是丢掉占位，不发请求；选回「跟随全局」也不让占位消失。
+    #[test]
+    fn removing_or_clearing_a_pending_field_behaves() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.select("Weixin.exe");
+        st.add_override("Weixin.exe", "initial_mode");
+        let _ = crate::rpc::take_mock_calls();
+        st.clear_field("Weixin.exe", "initial_mode");
+        assert!(st.is_pending("Weixin.exe", "initial_mode"));
+        let _ = crate::rpc::take_mock_calls();
+        assert!(st.remove_override("Weixin.exe", "initial_mode"));
+        assert!(calls("compat.upsert").is_empty());
+        assert!(!st.is_pending("Weixin.exe", "initial_mode"));
+    }
+
+    /// 用户新增的规则被去掉最后一项：不直接凭空消失，保留成空白草稿并请用户决定。
+    #[test]
+    fn emptying_a_user_rule_keeps_a_blank_draft_and_asks_before_it_is_gone() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        assert!(st.set_field("Brand.exe", "composition_start_pair_guard", json!(true)));
+        assert_eq!(st.draft.get(), "", "写入后规则转正");
+        assert!(!st.dlg.empty_visible.get());
+
+        assert!(st.reset_field("Brand.exe", "composition_start_pair_guard"));
+        assert!(st.dlg.empty_visible.get(), "规则被清空要先问一句");
+        assert_eq!(st.dlg.empty_name.get(), "Brand.exe");
+        assert_eq!(
+            st.draft.get(),
+            "Brand.exe",
+            "保留成可继续添加覆盖项的空白规则"
+        );
+        assert_eq!(st.selected.get(), "Brand.exe");
+        assert!(st.selected_rule().unwrap().is_draft());
+
+        st.confirm_delete_emptied();
+        assert!(!st.dlg.empty_visible.get());
+        assert_eq!(st.draft.get(), "", "选删除就丢掉");
+        assert_ne!(st.selected.get(), "Brand.exe");
+    }
+
+    /// 出厂规则怎么还原都不会消失，因此不该有这个提问。
+    #[test]
+    fn resetting_a_system_rule_never_asks_to_delete_it() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.select("Weixin.exe");
+        st.reset_field("Weixin.exe", "caret_use_top");
+        assert!(!st.dlg.empty_visible.get());
+    }
+
     #[test]
     fn a_failed_write_rebuilds_the_detail_from_core_values() {
         let _g = MockGuard::new();
@@ -725,15 +879,13 @@ mod tests {
     }
 
     #[test]
-    fn reload_if_loaded_only_fetches_after_the_page_was_loaded_once() {
+    fn open_refresh_loads_first_then_refetches_on_every_reopen() {
         let _g = MockGuard::new();
         let st = CompatState::new();
-        st.reload_if_loaded();
-        assert!(crate::rpc::take_mock_calls().is_empty(), "没加载过不拉");
-        st.ensure_loaded();
-        let _ = crate::rpc::take_mock_calls();
-        st.reload_if_loaded();
-        assert_eq!(calls("compat.list").len(), 1);
+        st.open_refresh();
+        assert_eq!(calls("compat.list").len(), 1, "首次打开加载");
+        st.open_refresh();
+        assert_eq!(calls("compat.list").len(), 1, "再次打开重拉一次");
     }
 
     #[test]
@@ -816,4 +968,16 @@ mod tests {
         assert_eq!(st.load_error.get(), "");
         assert!(st.rules.with(|r| !r.is_empty()), "恢复后元数据与规则都到位");
     }
+}
+
+/// 补丁里被设置了「非 null 值」的键（清除不算「给了值」）。
+fn patch_keys(patch: &Value) -> Option<Vec<String>> {
+    Some(
+        patch
+            .as_object()?
+            .iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, _)| k.clone())
+            .collect(),
+    )
 }

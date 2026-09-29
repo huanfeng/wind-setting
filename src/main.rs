@@ -14,6 +14,7 @@ mod auto_encode;
 mod by_layout;
 mod capabilities;
 mod cli;
+mod compat_window;
 mod config;
 mod dialogs;
 mod dict_window;
@@ -99,6 +100,13 @@ pub(crate) const DICT_H: i32 = 640;
 pub(crate) const DICT_MIN_W: i32 = 560;
 pub(crate) const DICT_MIN_H: i32 = 440;
 
+/// 应用兼容窗尺寸：三栏（分类 184 + 进程列表 270 + 配置信息），配置信息一行要放下
+/// 标题、说明与控件，所以比词库窗宽一圈。
+pub(crate) const COMPAT_W: i32 = 1040;
+pub(crate) const COMPAT_H: i32 = 680;
+pub(crate) const COMPAT_MIN_W: i32 = 900;
+pub(crate) const COMPAT_MIN_H: i32 = 480;
+
 /// 设置主窗的单例键。窗口在的时候，别处 `open_window(Window::single(本键))` 会把它
 /// 激活到前台而不是再开一个——[`open_main_window`] 与词库窗的两个入口都靠这条。
 pub(crate) const MAIN_SINGLE_KEY: &str = "main";
@@ -148,7 +156,6 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
     };
     let st = app.clone();
     let guard = app.clone();
-    let compat_for_activate = app.borrow().compat_mgr.clone();
     // 重建即视为主窗回来了：这一步要赶在 content 求值之前，否则窗口已经在了、
     // 标志还写着"已关闭"，下一次二次实例会再重建一个。
     app.borrow().main_window_closed.set(false);
@@ -173,14 +180,6 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
                 }
                 s.prime_exit_confirm(&unsaved);
                 false
-            })
-            // 回到设置窗就刷新「应用兼容」页：右键菜单等外部途径改过 compat.toml 而设置窗
-            // 一直开着时，这是唯一能让它看到最新值的时机（菜单的改动同时会广播事件，
-            // 但那条通道断线重连期间可能漏掉）。未加载过本页则什么也不做。
-            .on_window_activated(move |_ctx, active| {
-                if active {
-                    compat_for_activate.request_refresh();
-                }
             })
             .content(move || shell::build(&st, th)),
     );
@@ -337,9 +336,20 @@ fn main() {
         // 设置窗这一趟压根没建过，故按"已关闭"记账：之后点「设置」才会走重建那条路。
         st.mark_main_window_closed();
     }
+    // `--page compat` 同理：让 `App` 的窗口直接承载应用兼容窗，不再多叠一个设置窗。
+    let compat_as_main = !dict_as_main && cli::parse_compat_request(&args);
+    if compat_as_main {
+        app_state.borrow().mark_main_window_closed();
+    }
     // 标题与尺寸都跟着这一趟承载的界面走：设置窗要多留一栏二级导航的宽度，词库窗不要
     // （见 [`DICT_W`]）。此前两者同尺寸，只有标题在这里分叉。
-    let (title, (win_w, win_h), (win_min_w, win_min_h)) = if dict_as_main {
+    let (title, (win_w, win_h), (win_min_w, win_min_h)) = if compat_as_main {
+        (
+            compat_window::TITLE,
+            (COMPAT_W, COMPAT_H),
+            (COMPAT_MIN_W, COMPAT_MIN_H),
+        )
+    } else if dict_as_main {
         (
             dict_window::TITLE,
             (DICT_W, DICT_H),
@@ -351,7 +361,11 @@ fn main() {
     memstat::mark("[App::new 前]");
     let app = App::new(title, win_w, win_h)
         // 单例键要跟着这一趟承载的界面走（见 `main_window_single_key`）。
-        .single_window(main_window_single_key(dict_as_main))
+        .single_window(if compat_as_main {
+            compat_window::SINGLE_KEY
+        } else {
+            main_window_single_key(dict_as_main)
+        })
         .frameless()
         .centered()
         .renderer(renderer)
@@ -539,7 +553,11 @@ fn main() {
         }
     }
 
-    let ui = if dict_as_main {
+    let ui = if compat_as_main {
+        // 同词库窗：不建设置外壳，静态色控件的亮暗双态要自己补上。
+        crate::widgets::init_dark_sig(app_state.borrow().dark);
+        compat_window::build_content(app_state.clone())
+    } else if dict_as_main {
         // 词库窗自己不建设置外壳，但静态色控件（图标 tint / 渐变 / 淡底）的亮暗双态
         // 是全局注册的，平时由 `shell::build` 顺手做掉——走这条路就得自己补上，否则
         // 标题栏图标在暗色主题下是黑的。
@@ -557,13 +575,15 @@ fn main() {
     // 判据本身（有没有改动）不会因为用户选了"直接退出"就消失，走普通关闭会被自己再拦一次。
     //
     // 自绘标题栏的 × 与 Alt+F4 都会到这里（windui 0.12 起两者同走关闭决策链）。
-    let compat_for_activate = app_state.borrow().compat_mgr.clone();
-    app = app.on_window_activated(move |_ctx, active| {
-        // 同 `open_main_window` 里那一处：冷启动的主窗走这条。
-        if active {
-            compat_for_activate.request_refresh();
-        }
-    });
+    if compat_as_main {
+        let compat_for_activate = app_state.borrow().compat_mgr.clone();
+        app = app.on_window_activated(move |_ctx, active| {
+            // 同 `compat_window::open`：回到本窗就刷新。
+            if active {
+                compat_for_activate.request_refresh();
+            }
+        });
+    }
     let close_state = app_state.clone();
     app = app.on_close_request(move |_ctx| {
         let Ok(st) = close_state.try_borrow() else {
@@ -575,6 +595,10 @@ fn main() {
         // 「词库管理」重新开得出窗（此刻可能还有设置子窗开着，进程不一定退出）。
         if st.dict_is_main() {
             st.set_dict_is_main(false);
+            return true;
+        }
+        // 应用兼容窗的改动即时落盘，同样没有「未保存改动」。
+        if compat_as_main {
             return true;
         }
         // 清单只算一次，它自己就是守卫的判据（同子窗那份）。

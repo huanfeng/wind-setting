@@ -38,14 +38,13 @@ pub struct TabDef {
 /// 认成别的页、二级导航整条不刷新。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
     let tab = |id: &str| SubNav::new(crate::cli::page_to_index(id).unwrap_or(0));
-    let (schema, input, keys, ui, dict, stats_nav, compat_nav, advanced, about) = (
+    let (schema, input, keys, ui, dict, stats_nav, advanced, about) = (
         tab("schema"),
         tab("input"),
         tab("keys"),
         tab("ui"),
         tab("dict"),
         tab("stats"),
-        tab("compat"),
         tab("advanced"),
         tab("about"),
     );
@@ -55,12 +54,6 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         tab_def("按键", keys_page(state, &keys), keys),
         tab_def("外观", appearance_page(app, state, &ui), ui),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
-        // 「应用兼容」是纯切页项，必须排在动作项「词库」之前。
-        tab_def(
-            "应用兼容",
-            compat::build_page(state, &compat_nav),
-            compat_nav,
-        ),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
         tab_def("词库", dict_page(state), dict),
@@ -116,7 +109,7 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     // 硬编码卡片（集成 / 导入 / 备份）是两批来源，清单排到最后也只是"manifest 那批
     // 里的最后"，仍落在三张卡之前。故两个 manifest 分区都在这里显式定位：
     //
-    //   系统集成 → 导入 → 备份与还原 → 游戏兼容 → 日志设置
+    //   系统集成 → 导入 → 备份与还原 → 应用兼容 → 游戏兼容 → 日志设置
     //
     // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；游戏兼容是
     // 少数人才开的兼容开关；日志设置只在排查时才动，压轴。
@@ -172,6 +165,13 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             state.jump,
         ),
     ));
+    // 应用兼容：入口卡片，界面本身在独立窗里（规则多、三栏，放不进一页）。
+    // 排在「游戏兼容」上方——两者都是「个别软件的兼容处理」，前者按软件、后者按注册表。
+    secs.push(nav.wrap(
+        "应用兼容",
+        0,
+        crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
+    ));
     // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
     // 那是正常状态，不是配置错误。
     for name in ["游戏兼容", "日志设置"] {
@@ -185,6 +185,25 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         secs.push(nav.wrap(&name, 0, el));
     }
     sections_page("高级", "服务与实验性功能", secs)
+}
+
+/// 「应用兼容」入口卡：一行说明 + 打开独立窗的按钮。
+fn compat_entry_section(app: &Rc<RefCell<AppState>>) -> Element {
+    let app = app.clone();
+    section(
+        "应用兼容",
+        vec![setting_row(
+            "应用兼容规则",
+            Some(
+                "针对个别软件调整候选窗定位、位置探测、上屏换行、初始中英文状态等，\
+                 解决飞书、微信、Excel、WPS 等软件里候选窗跳动、错位、换行异常的问题。\
+                 出厂已内置常见软件的规则，可在这里修改、禁用、还原，也可新增、导入、导出。",
+            ),
+            Element::button("打开应用兼容设置…")
+                .small()
+                .on_click(move |ctx| crate::compat_window::open(ctx, &app)),
+        )],
+    )
 }
 
 // ───────────────────────── 输入 ─────────────────────────

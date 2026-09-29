@@ -12,4 +12,4 @@ pub mod state;
 mod view;
 
 pub use state::CompatState;
-pub use view::build_page;
+pub use view::build_content;
