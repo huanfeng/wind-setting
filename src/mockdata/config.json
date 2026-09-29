@@ -289,6 +289,8 @@
    "single_code_complete": true,
    "single_code_input": false,
    "top_code_commit": true,
+   "wildcard": false,
+   "wildcard_key": "z",
    "z_key_action": "",
    "z_key_repeat": true
   },
