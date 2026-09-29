@@ -105,6 +105,10 @@ const SPEC_BEHAVIOR_FIELDS: &[&str] = &[
     // ⚠️ 拼音那一份（schema.pinyin.single_char）**没有**方案级覆盖，不在本清单里也不该加
     // ——本清单只描述 `CodeTableSpec` 的字段。
     "single_char",
+    // 通配输入（万能键）。按方案覆盖：26 码元方案与五笔的合适通配键不同，
+    // 开不开也取决于这张码表的编码结构。
+    "wildcard",
+    "wildcard_key",
 ];
 
 /// 一个方案级配置项的**值**信号。三种形态对应 manifest 的
