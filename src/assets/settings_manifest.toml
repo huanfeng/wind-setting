@@ -1446,11 +1446,12 @@ group = "input"
 section = "候选无效按键"
 type = "select"
 label = "数字键无效时"
-hint = "按的数字超出当前页候选数量时的处理方式"
+hint = "按的数字超出当前页候选数量时的处理方式；联想候选出来后按超出联想条数的数字，则固定为收起联想并输出该数字"
 options = [
   { value = "ignore", label = "不起作用" },
   { value = "commit", label = "上屏编码" },
   { value = "commit_and_input", label = "上屏并继续输入" },
+  { value = "clear_and_input", label = "清空输入并上屏数字" },
 ]
 
 [[items]]

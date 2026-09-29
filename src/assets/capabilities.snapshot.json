@@ -1523,7 +1523,8 @@
       "values": [
         "ignore",
         "commit",
-        "commit_and_input"
+        "commit_and_input",
+        "clear_and_input"
       ]
     },
     {
