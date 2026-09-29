@@ -426,7 +426,7 @@
       ],
       "key": "host_render",
       "kind": "bool",
-      "label": "由服务代绘候选窗",
+      "label": "宿主渲染模式",
       "options": [],
       "problem": "Win11 开始菜单、任务栏搜索这类受限进程，普通候选窗盖不住它们的窗口层级。改由服务渲染后经共享内存转交，才能正常显示。",
       "protocol": false,
