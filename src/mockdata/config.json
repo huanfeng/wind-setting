@@ -424,6 +424,7 @@
  "ui": {
   "candidate": {
    "auto_comment_dicts": true,
+   "comment_above": false,
    "comment_max_chars_horizontal": 0,
    "comment_max_chars_vertical": 0,
    "comment_template_horizontal": "${code_hint|code_rev|shuangpin}",

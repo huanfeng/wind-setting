@@ -1696,6 +1696,11 @@
       "type": "int"
     },
     {
+      "default": false,
+      "key": "ui.candidate.comment_above",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "ui.candidate.auto_comment_dicts",
       "type": "bool"

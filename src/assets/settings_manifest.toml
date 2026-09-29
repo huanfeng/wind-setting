@@ -2864,6 +2864,15 @@ max = 64
 dialog_extra_for = "ui.candidate.comment_template_horizontal"
 
 [[items]]
+key = "ui.candidate.comment_above"
+group = "ui"
+section = "候选标注"
+type = "toggle"
+label = "注释首行显示在候选上方"
+hint = "开启后，模板里第一个换行（\\n）之前的内容显示在候选上方一行，其余仍在候选右侧；换行要写在 { … } 之外。"
+dialog_extra_for = "ui.candidate.comment_template_horizontal"
+
+[[items]]
 key = "ui.candidate.auto_comment_dicts"
 group = "ui"
 section = "候选标注"
