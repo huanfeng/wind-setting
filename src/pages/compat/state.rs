@@ -327,7 +327,25 @@ impl CompatState {
 
     /// 还原单条：删掉用户层同名条目（用户新增的规则等于删除）。
     pub fn reset_rule(&self, process: &str) -> bool {
-        self.simple_write("compat.reset", json!({ "process": process }), false)
+        let ok = self.simple_write("compat.reset", json!({ "process": process }), false);
+        if ok {
+            self.clear_pending_of(process);
+        }
+        ok
+    }
+
+    /// 丢掉某个进程的全部「待设置」占位（规则被删 / 草稿被丢时）。
+    fn clear_pending_of(&self, process: &str) {
+        self.pending
+            .borrow_mut()
+            .retain(|(p, _)| !p.eq_ignore_ascii_case(process));
+    }
+
+    fn has_pending(&self, process: &str) -> bool {
+        self.pending
+            .borrow()
+            .iter()
+            .any(|(p, _)| p.eq_ignore_ascii_case(process))
     }
 
     fn simple_write(&self, method: &str, params: Value, prompt_if_emptied: bool) -> bool {
@@ -368,10 +386,19 @@ impl CompatState {
         self.reload();
         let gone = existed && !self.rules.with(|r| r.iter().any(|x| x.process == sel));
         if gone && prompt_if_emptied {
+            // 草稿只有一个名字：顶掉另一条未保存的草稿时把它的占位一并清掉。
+            let old = self.draft.get();
+            if !old.is_empty() && old != sel {
+                self.clear_pending_of(&old);
+            }
+            // 还有等着给值的占位时，规则并没有真的「清空」——留着草稿继续设值，不必问。
+            let pending = self.has_pending(&sel);
             self.draft.set(sel.clone());
             self.selected.set(sel.clone());
-            self.dlg.empty_name.set(sel);
-            self.dlg.empty_visible.set(true);
+            if !pending {
+                self.dlg.empty_name.set(sel);
+                self.dlg.empty_visible.set(true);
+            }
         }
         // 草稿只在核心里确实有了这条规则之后才算转正：第一次写入被 normalize 成空操作时
         // 核心不落行，草稿要留着，否则界面停在一条既不是草稿也不存在的规则上。
@@ -405,11 +432,29 @@ impl CompatState {
     /// 在「添加覆盖项」里挑了一个字段。开关类直接写 `true`（没有比它更自然的初值，
     /// 而写「关」等于没写）；其余先占一行等用户给值。
     pub fn add_override(&self, process: &str, key: &str) {
-        let is_bool = self.schema.with(|s| {
-            s.field(self.current_section(), key)
-                .is_some_and(|f| f.kind == super::model::Kind::Bool)
-        });
-        if is_bool {
+        let section = self.current_section();
+        let meta = self.schema.with(|s| s.field(section, key).cloned());
+        let Some(meta) = meta else {
+            return;
+        };
+        // 依赖别的字段的选项：被依赖的字段要一并挑出来（否则这一行出现即置灰、给不了值）。
+        // 依赖没满足时，开关也不能直接写 `true`——写进去也不生效。
+        let mut dep_pending = false;
+        if let (Some(d), Some(rule)) = (&meta.depends_on, self.selected_rule())
+            && !meta.dep_met(&rule)
+        {
+            dep_pending = true;
+            let unset = rule
+                .fields
+                .get(&d.key)
+                .is_none_or(|v| v.source == super::model::FieldSource::Default);
+            if unset && !self.is_pending(process, &d.key) {
+                self.pending
+                    .borrow_mut()
+                    .push((process.to_string(), d.key.clone()));
+            }
+        }
+        if meta.kind == super::model::Kind::Bool && !dep_pending {
             self.set_field(process, key, json!(true));
             return;
         }
@@ -436,6 +481,8 @@ impl CompatState {
     /// 空规则弹窗里选「删除」：草稿丢掉即可，核心里早已没有这条。
     pub fn confirm_delete_emptied(&self) {
         self.dlg.empty_visible.set(false);
+        let name = self.dlg.empty_name.get();
+        self.clear_pending_of(&name);
         self.drop_draft();
     }
 
@@ -448,6 +495,10 @@ impl CompatState {
     /// 窗口（重新）打开时：没加载过就首次加载，加载过则按最新内容重拉一次。
     /// 窗口关闭期间到达的 `compat.changed` 没有页面接收，重开的窗口要自己补这一课。
     pub fn open_refresh(&self) {
+        // 状态比窗口长命：上一次关窗时可能留着「待设置」占位和开着的对话框，重开不该原样冒出来。
+        self.pending.borrow_mut().clear();
+        self.dlg.field_visible.set(false);
+        self.dlg.empty_visible.set(false);
         if self.loaded.get() {
             self.reload();
         } else {
@@ -495,6 +546,7 @@ impl CompatState {
         if self.draft.get().is_empty() {
             return;
         }
+        self.clear_pending_of(&self.draft.get());
         let was_selected = self.selected.get() == self.draft.get();
         self.draft.set(String::new());
         if was_selected {
@@ -843,14 +895,99 @@ mod tests {
         assert_ne!(st.selected.get(), "Brand.exe");
     }
 
-    /// 出厂规则怎么还原都不会消失，因此不该有这个提问。
+    /// 去掉最后一项的另一条路（界面上新增规则的按钮叫「移除」，走 upsert null）同样要问。
     #[test]
-    fn resetting_a_system_rule_never_asks_to_delete_it() {
+    fn removing_the_last_override_via_the_remove_button_also_asks() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "host_render", json!(true));
+        assert!(st.remove_override("Brand.exe", "host_render"));
+        assert!(st.dlg.empty_visible.get());
+        assert_eq!(st.draft.get(), "Brand.exe");
+    }
+
+    /// 还剩别的项时去掉一项不该问；整条删除 / 还原是明确意图，也不问。
+    #[test]
+    fn no_prompt_while_other_overrides_remain_or_on_an_explicit_delete() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "host_render", json!(true));
+        st.set_field("Brand.exe", "initial_mode", json!("english"));
+        assert!(st.remove_override("Brand.exe", "host_render"));
+        assert!(!st.dlg.empty_visible.get(), "还剩一项，不问");
+        assert!(
+            st.rules
+                .with(|r| r.iter().any(|x| x.process == "Brand.exe"))
+        );
+
+        assert!(st.reset_rule("Brand.exe"));
+        assert!(!st.dlg.empty_visible.get(), "明确删除不问");
+        assert!(
+            !st.rules
+                .with(|r| r.iter().any(|x| x.process == "Brand.exe"))
+        );
+    }
+
+    /// 还有等着给值的占位时并没有真的「清空」：留草稿继续设值，不问。
+    #[test]
+    fn a_pending_placeholder_means_the_rule_is_not_empty() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "host_render", json!(true));
+        st.add_override("Brand.exe", "initial_mode");
+        st.remove_override("Brand.exe", "host_render");
+        assert!(!st.dlg.empty_visible.get());
+        assert_eq!(st.draft.get(), "Brand.exe");
+        assert!(st.is_pending("Brand.exe", "initial_mode"));
+    }
+
+    /// 占位不能漏给同名的下一条草稿。
+    #[test]
+    fn deleting_or_dropping_a_rule_clears_its_pending_placeholders() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.add_override("Brand.exe", "initial_mode");
+        st.drop_draft();
+        assert!(!st.is_pending("Brand.exe", "initial_mode"));
+
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "host_render", json!(true));
+        st.add_override("Brand.exe", "initial_mode");
+        st.reset_rule("Brand.exe");
+        assert!(!st.is_pending("Brand.exe", "initial_mode"));
+    }
+
+    /// 挑依赖别的字段的选项：被依赖的一并挑出来；开关也不直接写 true（写了也不生效）。
+    #[test]
+    fn picking_a_dependent_field_also_picks_what_it_depends_on() {
         let _g = MockGuard::new();
         let st = loaded();
         st.select("Weixin.exe");
-        st.reset_field("Weixin.exe", "caret_use_top");
-        assert!(!st.dlg.empty_visible.get());
+        let _ = crate::rpc::take_mock_calls();
+        st.add_override("Weixin.exe", "candidate_x");
+        assert!(st.is_pending("Weixin.exe", "candidate_x"));
+        assert!(
+            st.is_pending("Weixin.exe", "candidate_position_mode"),
+            "被依赖的定位方式要一并出现"
+        );
+        assert!(calls("compat.upsert").is_empty());
+    }
+
+    /// 重开窗口不带着上次的占位和对话框。
+    #[test]
+    fn reopening_the_window_resets_placeholders_and_dialogs() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.select("Weixin.exe");
+        st.add_override("Weixin.exe", "initial_mode");
+        st.dlg.field_visible.set(true);
+        st.open_refresh();
+        assert!(!st.is_pending("Weixin.exe", "initial_mode"));
+        assert!(!st.dlg.field_visible.get());
     }
 
     #[test]

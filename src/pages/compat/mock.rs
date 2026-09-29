@@ -16,10 +16,10 @@ const EXPORT_USER: &str = include_str!("../../mockdata/compat/export_user.toml")
 /// 备份文件名（与核心的命名同形）。
 const BACKUP: &str = "compat.toml.bak-1700000000";
 
-// mock 里「写完就变」的最小可变层：upsert 过的新进程名。核心里 normalize 成空的补丁不会落行，
+// mock 里「写完就变」的最小可变层：用户新增的规则及其已设置的字段键。字段清空时整条规则消失。核心里 normalize 成空的补丁不会落行，
 // 进程名为 `MOCK_NOOP_PROCESS` 时照此模拟。线程内独立（每个测试各一份）。
 thread_local! {
-    static CREATED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CREATED: std::cell::RefCell<Vec<(String, Vec<String>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 见 [`CREATED`]：这个进程名的 upsert 应答成功却不落行。
@@ -30,8 +30,8 @@ fn list_apps_with_created() -> Value {
     let mut v = parse(LIST_APPS);
     let created = CREATED.with(|c| c.borrow().clone());
     if let Some(rules) = v.get_mut("rules").and_then(Value::as_array_mut) {
-        for p in created {
-            if rules.iter().any(|r| r["process"] == p.as_str()) {
+        for (p, keys) in created {
+            if keys.is_empty() || rules.iter().any(|r| r["process"] == p.as_str()) {
                 continue;
             }
             if let Some(mut r) = rules.first().cloned() {
@@ -44,6 +44,40 @@ fn list_apps_with_created() -> Value {
         }
     }
     v
+}
+
+/// 把一次写入折算进 [`CREATED`]。
+fn mutate_created(method: &str, process: &str, params: &Value) {
+    CREATED.with(|c| {
+        let mut c = c.borrow_mut();
+        match method {
+            "compat.upsert" if process != MOCK_NOOP_PROCESS => {
+                let Some(patch) = params["patch"].as_object() else {
+                    return;
+                };
+                let pos = c.iter().position(|(p, _)| p == process);
+                let i = pos.unwrap_or_else(|| {
+                    c.push((process.to_string(), Vec::new()));
+                    c.len() - 1
+                });
+                for (k, v) in patch {
+                    c[i].1.retain(|x| x != k);
+                    if !v.is_null() {
+                        c[i].1.push(k.clone());
+                    }
+                }
+            }
+            "compat.resetField" => {
+                if let (Some((_, keys)), Some(k)) = (
+                    c.iter_mut().find(|(p, _)| p == process),
+                    params["key"].as_str(),
+                ) {
+                    keys.retain(|x| x != k);
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 fn parse(s: &str) -> Value {
@@ -74,20 +108,15 @@ pub(crate) fn reply(method: &str, params: &Value) -> Value {
             v
         }
         "compat.resetAll" => json!({ "ok": true, "backup": BACKUP }),
-        "compat.reset" => json!({ "ok": true, "removed": true, "rule": null }),
+        "compat.reset" => {
+            if let Some(p) = params.get("process").and_then(Value::as_str) {
+                CREATED.with(|c| c.borrow_mut().retain(|(x, _)| x != p));
+            }
+            json!({ "ok": true, "removed": true, "rule": null })
+        }
         "compat.upsert" | "compat.resetField" | "compat.setDisabled" => {
             if let Some(p) = params.get("process").and_then(Value::as_str) {
-                let clearing = method == "compat.resetField"
-                    || (method == "compat.upsert"
-                        && params["patch"]
-                            .as_object()
-                            .is_some_and(|o| !o.is_empty() && o.values().all(Value::is_null)));
-                if clearing {
-                    // 模拟「最后一个字段被去掉，整条用户新增规则消失」。
-                    CREATED.with(|c| c.borrow_mut().retain(|x| x != p));
-                } else if method == "compat.upsert" && p != MOCK_NOOP_PROCESS {
-                    CREATED.with(|c| c.borrow_mut().push(p.to_string()));
-                }
+                mutate_created(method, p, params);
             }
             json!({ "ok": true, "rule": null })
         }

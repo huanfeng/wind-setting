@@ -89,7 +89,7 @@ fn sync_effects(
     let detail_fx = reactive_effect(
         {
             let m = m.clone();
-            move || m.detail_epoch.version() + m.schema.version() + m.show_advanced.version()
+            move || m.detail_epoch.version() + m.schema.version()
         },
         {
             let m = m.clone();
@@ -586,17 +586,6 @@ fn detail_header(mgr: &CompatState, rule: &RuleView) -> Element {
 
 // ───────────────────────── 字段行 ─────────────────────────
 
-/// 联动条件是否满足：`dependsOn` 指向的字段当前生效值等于要求值才有意义。
-fn dep_met(rule: &RuleView, meta: &FieldMeta) -> bool {
-    match &meta.depends_on {
-        None => true,
-        Some(d) => rule
-            .fields
-            .get(&d.key)
-            .is_some_and(|v| v.value.as_str() == Some(d.value.as_str())),
-    }
-}
-
 fn source_tag(src: FieldSource) -> Option<Element> {
     match src {
         FieldSource::Default => None,
@@ -618,7 +607,7 @@ fn field_row(
         ctl = ctl.child(tag);
     }
     ctl = ctl.child(field_control(mgr, &rule.process, meta, fv));
-    let met = dep_met(rule, meta);
+    let met = meta.dep_met(rule);
     // 「还原」放在置灰的包裹之外：依赖条件不满足时用户层可能仍留着这个字段的值，
     // 不能让它变成清不掉的孤儿。
     let pending = mgr.is_pending(&rule.process, &meta.key);

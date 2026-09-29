@@ -89,6 +89,19 @@ pub struct FieldMeta {
     pub advanced: bool,
 }
 
+impl FieldMeta {
+    /// 联动条件是否满足：`dependsOn` 指向的字段当前生效值等于要求值才有意义。
+    pub fn dep_met(&self, rule: &RuleView) -> bool {
+        match &self.depends_on {
+            None => true,
+            Some(d) => rule
+                .fields
+                .get(&d.key)
+                .is_some_and(|v| v.value.as_str() == Some(d.value.as_str())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Group {
     pub id: String,

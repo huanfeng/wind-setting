@@ -356,7 +356,7 @@ pub fn override_candidates(mgr: &CompatState) -> Vec<(String, Vec<Candidate>)> {
 }
 
 fn build_field_dialog(mgr: &CompatState) -> Element {
-    let cands: Signal<Vec<Vec<(String, Vec<Candidate>)>>> = signal(vec![Vec::new()]);
+    let cands: Signal<Vec<Vec<(String, Vec<Candidate>)>>> = signal(vec![override_candidates(mgr)]);
     let sync = {
         let m = mgr.clone();
         reactive_effect(

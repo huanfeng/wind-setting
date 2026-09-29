@@ -71,6 +71,8 @@ use windui::prelude::*;
 pub enum UiRequest {
     /// 打开词库管理窗（实际开不开取决于 `take_dict_window_request`）。
     OpenDictWindow,
+    /// 打开应用兼容窗（二次实例带 `--page compat`）。
+    OpenCompatWindow,
     /// 重新开出主窗（主窗已关、词库窗还开着时点「设置」）。
     OpenMainWindow,
 }
@@ -431,6 +433,9 @@ fn main() {
             let _ = import_tx.send(ImportAction::ClipboardDialog);
         } else if let Some(p) = cli::parse_import_file(&argv) {
             let _ = import_tx.send(ImportAction::File(p));
+        } else if cli::parse_compat_request(&argv) {
+            // 应用兼容不是主窗的一页，走开窗；单例键已存在时（含它承载在 App 窗口里）只是激活。
+            single_instance_state.borrow().request_compat_window();
         } else if let Some(idx) = cli::parse_target(&argv) {
             let st = single_instance_state.borrow();
             // 已运行的实例通常方案列表早已就绪，深链会立即生效；若恰好撞上启动
@@ -452,8 +457,10 @@ fn main() {
         // argv 想干什么无关，它是**所有**后续动作的前置条件。
         //
         // 主窗还在的话这里什么都不做：单实例监听自己会把它拉到前台。
+        //
+        // 要的是应用兼容窗时不重建：用户没要设置窗，多冒一个只会添乱。
         let st = single_instance_state.borrow();
-        if st.main_window_closed.get() {
+        if st.main_window_closed.get() && !cli::parse_compat_request(&argv) {
             st.request_main_window();
         }
     });
@@ -512,6 +519,7 @@ fn main() {
                 dict_window::open(ctx, &ui_state);
             }
         }
+        UiRequest::OpenCompatWindow => compat_window::open(ctx, &ui_state),
         UiRequest::OpenMainWindow => {
             if ui_state.borrow().take_main_window_request() {
                 open_main_window(ctx, &ui_state);

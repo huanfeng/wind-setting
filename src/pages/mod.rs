@@ -824,7 +824,7 @@ fn url_desc(url: &str) -> String {
 /// 它的下标。
 ///
 /// 保留占位而不是把这一格从 `all_tabs` 里删掉：`cli::PAGES` 与本函数的顺序是靠约定对齐的
-/// （`page_to_index("dict") == 6`），少一格就会让它后面的「高级/关于」整体前移一位，
+/// （`page_to_index("dict") == 5`），少一格就会让它后面的「高级/关于」整体前移一位，
 /// 于是 `--page about` 打开的是高级页 —— 不报错、不 panic，只是每一条深链都错一格。
 fn dict_page(_state: &AppState) -> Element {
     Element::leaf()
