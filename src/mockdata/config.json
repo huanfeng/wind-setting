@@ -353,6 +353,7 @@
     "promote_count": 0
    },
    "aux_code": {
+    "direct": false,
     "enabled": false,
     "max_phrase_len": 0
    },

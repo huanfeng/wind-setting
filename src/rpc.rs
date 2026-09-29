@@ -1817,11 +1817,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             let is_codetable_family =
                 (id.starts_with("wubi") && id != "wubi_mixed") || id == "codetable";
             // 「跟随全局（值）」的值（core 只读旁路字段，两个分支都带）。
-            // auxEnabled/auxMaxPhraseLen 给非默认值（开 / 4）：拼音族分支下面带了
+            // auxEnabled/auxMaxPhraseLen/auxDirect 给非默认值（开 / 4 / 开）：拼音族分支下面带了
             // `aux_code.files`，本节会渲染出来，得看得出跟随值不是零值才有目视意义。
             let followed = json!({
                 "layout": mock_followed_layout(), "fontFamily": "微软雅黑",
-                "auxEnabled": true, "auxMaxPhraseLen": 4
+                "auxEnabled": true, "auxMaxPhraseLen": 4, "auxDirect": true
             });
             if is_codetable_family {
                 let mut v = json!({
