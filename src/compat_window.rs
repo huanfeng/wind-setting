@@ -42,6 +42,15 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
                     compat.request_refresh();
                 }
             })
+            // Ctrl+W 关窗：`App::on_shortcut` 只归主窗，子窗要自己接（见 `shortcuts::is_close_window`）。
+            .on_shortcut(|ctx, ev| {
+                if crate::shortcuts::is_close_window(&ev) {
+                    ctx.request_close();
+                    true
+                } else {
+                    false
+                }
+            })
             .content(move || build_content(app_for_content)),
     );
 }

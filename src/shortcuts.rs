@@ -130,6 +130,18 @@ pub const BINDINGS: &[Binding] = &[
     ),
 ];
 
+/// 这次按键是不是「关闭窗口」（Ctrl+W）。
+///
+/// 给**子窗**用：`App::on_shortcut` 只归主窗，词库窗 / 应用兼容窗这类 `open_window` 出来的
+/// 子窗要靠自己的 `Window::on_shortcut`，而它们只需要这一条——搜索框、加词对话框那几条
+/// 都是设置窗里的东西，拿整张表去分派只会误触（例如在子窗里 Ctrl+F 去聚焦设置窗的搜索框）。
+pub fn is_close_window(ev: &KeyEvent) -> bool {
+    ev.pressed
+        && BINDINGS
+            .iter()
+            .any(|b| b.action == Action::CloseWindow && b.matches(ev))
+}
+
 /// 分派结果：`main.rs` 据此调用 `ShortcutCtx`。
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Outcome {
@@ -359,6 +371,17 @@ mod tests {
     fn plain_key_is_not_a_shortcut() {
         let st = state();
         assert!(!dispatch(&ev(Key::Other(vk::F), false), &st).handled);
+    }
+
+    /// 子窗只认 Ctrl+W，且按下沿才算（释放沿不能再关一次）。
+    #[test]
+    fn sub_windows_only_close_on_ctrl_w_press() {
+        assert!(is_close_window(&ev(Key::Other(vk::W), true)));
+        assert!(!is_close_window(&ev(Key::Other(vk::W), false)));
+        assert!(!is_close_window(&ev(Key::Other(vk::F), true)));
+        let mut up = ev(Key::Other(vk::W), true);
+        up.pressed = false;
+        assert!(!is_close_window(&up));
     }
 
     /// 修饰键要精确匹配：Ctrl+Shift+W 不是 Ctrl+W。
