@@ -679,6 +679,18 @@ min = 0
 max = 20
 enabled_when = "schema.pinyin.aux_code.enabled == true"
 
+# 直接辅助码：同「启用辅助码」常驻可见——只对双拼生效这件事 enabled_when 表达不了
+# （它比较不了「当前方案是哪种」），由 hint 说清；方案段的三态覆盖只在双拼方案里给。
+[[items]]
+key = "schema.pinyin.aux_code.direct"
+group = "schema"
+section = "候选行为"
+subsection = "辅助码"
+type = "toggle"
+label = "直接辅助码"
+hint = "仅双拼：音节后直接敲字形码筛选，不按引导键（如 uidu 再敲 p → 释读）。全拼方案不生效"
+enabled_when = "schema.pinyin.aux_code.enabled == true"
+
 # ── 英文候选：与混输/码表同名同义，只是作用于拼音方案 ──
 # 本段没有「不自动上屏」一项：那一项否决的是满码上屏/顶码，拼音方案两者都没有。
 [[items]]

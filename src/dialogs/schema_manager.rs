@@ -264,6 +264,31 @@ fn aux_write(on_over: bool, on: bool, len_over: bool, len: i32) -> (Value, Value
     (enabled, max_len)
 }
 
+/// 「本方案直接辅助码」（`[engine.aux_code].direct`）的落盘值，口径同 [`aux_write`]：
+/// 未勾写 `Value::Null`（回落全局）。与那两行分开算、分开写，理由见 [`seed_aux_direct`]。
+fn aux_direct_write(over: bool, on: bool) -> Value {
+    if over { json!(on) } else { Value::Null }
+}
+
+/// 「本方案直接辅助码」一行打开时的 `(勾选, 控件值)`。控件值取生效值（覆盖有则用它，
+/// 否则跟随值 `followedBehavior.auxDirect`），同「本方案启用辅助码」。
+///
+/// ★ 非双拼方案恒为「不勾」：这一行只在双拼方案显示（core 只认双拼，全拼写了也不生效）。
+/// 若全拼方案的覆盖里手写了 `direct`，勾选态报 `true` 的话，看不见的一行会计进「已自定义
+/// N 项」，「全部恢复跟随」还会把它清成 null——替用户改了一个他在界面上看不到的值。
+/// 恒为不勾则打开 / 保存前后落盘结果都是 null、不写，手写的那个键原样留着。
+fn seed_aux_direct(cfg: &Value, is_sp: bool) -> (bool, bool) {
+    let followed = cfg
+        .pointer("/followedBehavior/auxDirect")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let raw = cfg
+        .pointer("/engine/aux_code/direct")
+        .and_then(Value::as_bool)
+        .filter(|_| is_sp);
+    (raw.is_some(), raw.unwrap_or(followed))
+}
+
 /// 布尔跟随值的展示文案：「开」/「关」。数字项直接 `to_string()`，用不上这一层。
 fn follow_text_bool(v: bool) -> String {
     if v {
@@ -329,7 +354,7 @@ fn clamp_aux_len(v: i64) -> i32 {
     v.clamp(0, 20) as i32
 }
 
-/// 辅助码卡片「全部恢复跟随」按钮做的事：三行勾选一并清空（含来源一行的只读态），
+/// 辅助码卡片「全部恢复跟随」按钮做的事：各行勾选一并清空（含来源一行的只读态），
 /// 控件值拨回跟随值，摘要归零。
 ///
 /// ★ 抽出来供测：按钮的 `on_click` 闭包本身测不到（只能在真机上点），闭包只转调这里，
@@ -337,11 +362,18 @@ fn clamp_aux_len(v: i64) -> i32 {
 ///
 /// 控件值也拨回跟随值——同 `schema_codetable::CtFields::revert_all`：只清勾选不清值的话，
 /// 用户下次再勾上会看到上一次改的旧值，而不是真正的跟随值。
-fn aux_reset_all(state: &SchemaManagerState, followed_on: bool, followed_len: i32) {
+fn aux_reset_all(
+    state: &SchemaManagerState,
+    followed_on: bool,
+    followed_len: i32,
+    followed_direct: bool,
+) {
     state.settings_aux_on_over.set(false);
     state.settings_aux_len_over.set(false);
+    state.settings_aux_direct_over.set(false);
     state.settings_aux_on.set(followed_on);
     state.settings_aux_len.set(followed_len as f64);
+    state.settings_aux_direct.set(followed_direct);
     // 来源这一行也清：只读态一并清掉，保存时才会走正常路径落 null（回落方案文件）。
     state.settings_aux_src_over.set(false);
     state.settings_aux_src_manual.set(false);
@@ -1161,6 +1193,12 @@ pub struct SchemaManagerState {
     /// 打开时四项的快照 `(on_over, on, len_over, len)`，供脏判定：把它与当前值各自
     /// 代入 `aux_write`，比较两次的落盘结果（而不是逐项比对信号）是否变化。
     settings_aux_at_open: Rc<std::cell::Cell<(bool, bool, bool, i32)>>,
+    /// 「本方案直接辅助码」是否覆盖全局（勾选框）。只在双拼方案显示，见 [`seed_aux_direct`]。
+    pub settings_aux_direct_over: Signal<bool>,
+    /// 勾选时的取值；未勾时保留生效值，同 `settings_aux_on`。
+    pub settings_aux_direct: Signal<bool>,
+    /// 打开时 `(direct_over, direct)` 的快照，脏判定同 `settings_aux_at_open`。
+    settings_aux_direct_at_open: Rc<std::cell::Cell<(bool, bool)>>,
     /// 「辅助码来源」是否覆盖方案文件（勾选框）。判据见 [`seed_aux_src`]：合并值等于
     /// 方案文件自己的值即为跟随（不勾）。
     pub settings_aux_src_over: Signal<bool>,
@@ -1358,6 +1396,9 @@ impl SchemaManagerState {
             settings_aux_len: signal(0.0),
             settings_aux_disp: signal(ct_summary(0)),
             settings_aux_at_open: Rc::new(std::cell::Cell::new((false, false, false, 0))),
+            settings_aux_direct_over: signal(false),
+            settings_aux_direct: signal(false),
+            settings_aux_direct_at_open: Rc::new(std::cell::Cell::new((false, false))),
             settings_aux_src_over: signal(false),
             settings_aux_src_idx: signal(0),
             settings_aux_src_manual: signal(false),
@@ -2486,12 +2527,16 @@ impl SchemaManagerState {
                     Some(v) => str_list(Some(v)),
                     None => merged.clone(),
                 };
+                let (direct_over, direct) = seed_aux_direct(&cfg, is_sp);
                 drop(cfg);
                 self.settings_aux_on_over.set(on_over);
                 self.settings_aux_on.set(on);
                 self.settings_aux_len_over.set(len_over);
                 self.settings_aux_len.set(len as f64);
                 self.settings_aux_at_open.set((on_over, on, len_over, len));
+                self.settings_aux_direct_over.set(direct_over);
+                self.settings_aux_direct.set(direct);
+                self.settings_aux_direct_at_open.set((direct_over, direct));
 
                 // 可选项每次打开重取：用户可能在两次打开之间往 aux_code/ 里放了新表。
                 // 失败给空表——跟随文字退回原文、已有覆盖进只读态，都不会误写。
@@ -2527,7 +2572,7 @@ impl SchemaManagerState {
                 self.settings_aux_src_at_open
                     .set((src_over, src_idx, src_manual));
                 self.settings_aux_disp.set(ct_summary(
-                    on_over as usize + len_over as usize + src_over as usize,
+                    on_over as usize + len_over as usize + src_over as usize + direct_over as usize,
                 ));
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::AuxCode);
@@ -2797,6 +2842,18 @@ impl SchemaManagerState {
             if now != before {
                 set_json_path(&mut cfg, &["engine", "aux_code", "enabled"], now.0);
                 set_json_path(&mut cfg, &["engine", "aux_code", "max_phrase_len"], now.1);
+                cfg_changed = true;
+            }
+
+            // 直接辅助码：单独比、单独写。非双拼方案打开与现在都是「不勾」（见
+            // [`seed_aux_direct`]），两次都是 null ⇒ 不写，覆盖里手写的值原样留着。
+            let now = aux_direct_write(
+                self.settings_aux_direct_over.get(),
+                self.settings_aux_direct.get(),
+            );
+            let (at_over, at_on) = self.settings_aux_direct_at_open.get();
+            if now != aux_direct_write(at_over, at_on) {
+                set_json_path(&mut cfg, &["engine", "aux_code", "direct"], now);
                 cfg_changed = true;
             }
 
@@ -4612,6 +4669,10 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 .and_then(Value::as_i64)
                 .map(clamp_aux_len)
                 .unwrap_or(0);
+            let followed_direct = cfg
+                .pointer("/followedBehavior/auxDirect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             drop(cfg);
 
             let on_over = state.settings_aux_on_over;
@@ -4640,6 +4701,30 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 同一个道理，「上游那项现在到底是开是关」不是它控件里存着什么。
             let gate: Rc<dyn Fn() -> bool> =
                 Rc::new(move || if on_over.get() { on.get() } else { followed_on });
+
+            // 直接辅助码：只在双拼方案显示（core 只认双拼）。随「启用辅助码」变淡，同
+            // 「最长词长」——`enabled` 是总闸，关着时 `direct` 不起作用。
+            let direct_over = state.settings_aux_direct_over;
+            let gate_direct = gate.clone();
+            let row_direct = state.settings_is_shuangpin.get().then(|| {
+                crate::widgets::setting_row_override(
+                    direct_over,
+                    "本方案直接辅助码",
+                    Some("音节后直接敲字形码筛选，不按引导键"),
+                    "跟随全局",
+                    Role::TextMuted,
+                    crate::widgets::override_control(
+                        direct_over,
+                        gate.clone(),
+                        Element::switch(state.settings_aux_direct),
+                        &follow_text_bool(followed_direct),
+                        "未启用辅助码",
+                        AUX_SRC_W,
+                    ),
+                )
+                .enabled_when(move || gate_direct())
+            });
+
             let row_len = crate::widgets::setting_row_override(
                 len_over,
                 "辅助码最长词长",
@@ -4724,12 +4809,15 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let reset_btn = Element::button("全部恢复跟随")
                 .small()
                 .outline_soft()
-                .on_click(move |_| aux_reset_all(&st, followed_on, followed_len));
+                .on_click(move |_| aux_reset_all(&st, followed_on, followed_len, followed_direct));
 
+            let mut rows = vec![row_on];
+            rows.extend(row_direct);
+            rows.extend([row_src, row_len]);
             crate::widgets::override_group_card(
                 "辅助码",
                 state.settings_aux_disp,
-                vec![row_on, row_src, row_len],
+                rows,
                 Some(reset_btn),
             )
         }
@@ -5092,11 +5180,12 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 而这一屏已经为「每帧轮询」付过一次代价（见 punct_map_summary 的说明）。
     let bh_punct_map = state.settings_bh_punct_map_on;
     let punct_disp = state.settings_bh_punct_map_disp;
-    // 辅助码卡片摘要同理：只看三行的勾选态。`AuxCode` 也归「方案自定义」页
+    // 辅助码卡片摘要同理：只看各行的勾选态。`AuxCode` 也归「方案自定义」页
     // （见 `SettingsSection::tab`），星号要一并算上它，否则用户勾了辅助码却看不到 TAB 有变化。
     let aux_on_over = state.settings_aux_on_over;
     let aux_len_over = state.settings_aux_len_over;
     let aux_src_over = state.settings_aux_src_over;
+    let aux_direct_over = state.settings_aux_direct_over;
     let aux_disp = state.settings_aux_disp;
     let ct_effect = crate::pages::dict::reactive::reactive_effect(
         move || {
@@ -5110,6 +5199,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .wrapping_add(aux_on_over.version())
                 .wrapping_add(aux_len_over.version())
                 .wrapping_add(aux_src_over.version())
+                .wrapping_add(aux_direct_over.version())
         },
         move || {
             let n = ct_count.custom_count();
@@ -5120,7 +5210,8 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 + bh_punct_map.get() as usize;
             let aux_custom = aux_on_over.get() as usize
                 + aux_len_over.get() as usize
-                + aux_src_over.get() as usize;
+                + aux_src_over.get() as usize
+                + aux_direct_over.get() as usize;
             ct_disp.set(ct_summary(n));
             // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
             // 另开一个 effect 只会多一处要同步的口径。
@@ -6474,7 +6565,7 @@ mod section_build_tests {
         state.settings_aux_len.set(9.0);
         state.settings_aux_disp.set(ct_summary(2));
 
-        aux_reset_all(&state, true, 4);
+        aux_reset_all(&state, true, 4, false);
 
         assert!(!state.settings_aux_on_over.get());
         assert!(!state.settings_aux_len_over.get());
@@ -6489,6 +6580,70 @@ mod section_build_tests {
                 state.settings_aux_len.get() as i32,
             ),
             (Value::Null, Value::Null)
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 「本方案直接辅助码」落盘同「启用辅助码」：未勾 null（回落全局），勾上写布尔。
+    #[test]
+    fn aux_direct_unchecked_writes_null_checked_writes_value() {
+        assert_eq!(aux_direct_write(false, true), Value::Null);
+        assert_eq!(aux_direct_write(true, false), json!(false));
+        assert_eq!(aux_direct_write(true, true), json!(true));
+    }
+
+    /// 打开时的种子：双拼方案按覆盖值判勾选、控件取生效值；非双拼恒不勾（那一行不显示，
+    /// 手写的 `direct` 不能计进摘要、也不能被复位清掉）。
+    #[test]
+    fn aux_direct_seed_is_shuangpin_only() {
+        let followed_on = json!({ "followedBehavior": { "auxDirect": true } });
+        assert_eq!(
+            seed_aux_direct(&followed_on, true),
+            (false, true),
+            "跟随：控件取跟随值"
+        );
+        let over_off = json!({
+            "followedBehavior": { "auxDirect": true },
+            "engine": { "aux_code": { "direct": false } }
+        });
+        assert_eq!(
+            seed_aux_direct(&over_off, true),
+            (true, false),
+            "双拼覆盖：勾上、取覆盖值"
+        );
+        assert_eq!(
+            seed_aux_direct(&over_off, false),
+            (false, true),
+            "非双拼：手写的覆盖不认，恒不勾"
+        );
+        assert_eq!(
+            seed_aux_direct(&json!({}), true),
+            (false, false),
+            "老核心无旁路字段 ⇒ 关"
+        );
+    }
+
+    /// 「全部恢复跟随」也清直接辅助码一行：勾选清空、控件拨回跟随值、落盘回落 null。
+    #[test]
+    fn aux_reset_all_also_clears_direct_row() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        state.settings_aux_direct_over.set(true);
+        state.settings_aux_direct.set(false);
+
+        aux_reset_all(&state, true, 4, true);
+
+        assert!(!state.settings_aux_direct_over.get());
+        assert!(state.settings_aux_direct.get(), "直接辅助码拨回跟随值");
+        assert_eq!(
+            aux_direct_write(
+                state.settings_aux_direct_over.get(),
+                state.settings_aux_direct.get()
+            ),
+            Value::Null
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
@@ -6772,7 +6927,7 @@ mod section_build_tests {
         state.settings_aux_src_manual.set(true);
         state.settings_aux_src_idx.set(1);
 
-        aux_reset_all(&state, true, 4);
+        aux_reset_all(&state, true, 4, false);
 
         assert!(!state.settings_aux_src_over.get());
         assert!(!state.settings_aux_src_manual.get());
@@ -6791,6 +6946,99 @@ mod section_build_tests {
         }];
         state.open_settings_at_id("pinyin_simp");
         state
+    }
+
+    /// 测试用：mock 下打开双拼方案（mock 的 getConfig 对拼音族一律给带辅助码表的配置）。
+    fn open_mock_shuangpin() -> SchemaManagerState {
+        let state = SchemaManagerState::new();
+        *state.schemas.borrow_mut() = vec![SchemaEntry {
+            id: "double_pinyin".into(),
+            name: "双拼".into(),
+            engine_type: "pinyin".into(),
+            scheme: "shuangpin".into(),
+            ..Default::default()
+        }];
+        state.open_settings_at_id("double_pinyin");
+        state
+    }
+
+    /// 双拼方案：直接辅助码一行显示（`settings_is_shuangpin` 即渲染判据）、跟随全局值；
+    /// 打开即关不脏。勾上改值 ⇒ 写布尔、计入「已自定义 N 项」；再取消勾选 ⇒ 写 null。
+    #[test]
+    fn aux_direct_row_on_shuangpin_follows_then_writes_tristate() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = open_mock_shuangpin();
+        assert!(
+            state.settings_is_shuangpin.get(),
+            "双拼方案显示直接辅助码一行"
+        );
+        assert!(
+            !state.settings_aux_direct_over.get(),
+            "方案未写 direct ⇒ 跟随"
+        );
+        assert!(
+            state.settings_aux_direct.get(),
+            "控件取跟随值（mock auxDirect = 开）"
+        );
+        assert_eq!(state.settings_aux_disp.get(), ct_summary(0));
+        state.stage_settings_edits();
+        assert!(
+            !state.has_pending_edits(),
+            "什么都没改，不该有待提交的方案改动"
+        );
+
+        let state = open_mock_shuangpin();
+        state.settings_aux_direct_over.set(true);
+        state.settings_aux_direct.set(false);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["double_pinyin"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(cfg["engine"]["aux_code"]["direct"], json!(false));
+
+        // 模拟「打开时已覆盖」：基线换成勾选态，再取消勾选 ⇒ 这一次落 null。
+        let state = open_mock_shuangpin();
+        state.settings_aux_direct_at_open.set((true, false));
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["double_pinyin"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(cfg["engine"]["aux_code"]["direct"], Value::Null);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 全拼方案：直接辅助码一行不显示、不勾；保存不写 `direct`（连 null 都不写）。
+    #[test]
+    fn aux_direct_row_hidden_on_full_pinyin_and_never_written() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = open_mock_pinyin();
+        assert!(
+            !state.settings_is_shuangpin.get(),
+            "全拼方案不显示直接辅助码一行"
+        );
+        assert!(!state.settings_aux_direct_over.get());
+        // 改动别的行让 cfg 进待提交队列，看 `direct` 有没有被顺手写进去。
+        state.settings_aux_on_over.set(true);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["pinyin_simp"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert!(
+            cfg.pointer("/engine/aux_code/direct").is_none(),
+            "全拼方案不该出现 direct 键：{cfg}"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// ★ 打开即关不脏：默认跟随时来源这一行不往 cfg 里写任何东西（尤其不写 null——
@@ -6907,7 +7155,7 @@ mod section_build_tests {
         state.settings_aux_src_idx.set(0);
         assert_ne!(bihua, 0);
 
-        aux_reset_all(&state, true, 4);
+        aux_reset_all(&state, true, 4, false);
         assert_eq!(state.settings_aux_src_idx.get(), bihua);
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
@@ -6976,7 +7224,7 @@ mod section_build_tests {
         state.stage_settings_edits();
         assert!(!state.has_pending_edits(), "只读态不动 files");
 
-        aux_reset_all(&state, true, 4);
+        aux_reset_all(&state, true, 4, false);
         state.stage_settings_edits();
         let cfg = state.pending_edits.borrow()["pinyin_simp"]
             .cfg

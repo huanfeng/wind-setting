@@ -612,6 +612,15 @@
     },
     {
       "default": false,
+      "key": "schema.pinyin.aux_code.direct",
+      "schemaOverride": {
+        "note": "方案可覆盖这一项；方案没写则用这里的值。只对双拼方案生效。",
+        "section": "[engine.aux_code]"
+      },
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "schema.mix.show_source_hint",
       "type": "bool"
     },
