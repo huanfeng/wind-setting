@@ -11,6 +11,11 @@
       "key": "first_show_mode",
       "kind": "enum",
       "label": "候选窗首显策略",
+      "optionLabels": [
+        "等定位准再显示",
+        "尽快显示",
+        "立即显示"
+      ],
       "options": [
         "wait",
         "fast",
@@ -29,6 +34,10 @@
       "key": "candidate_position_mode",
       "kind": "enum",
       "label": "候选窗定位方式",
+      "optionLabels": [
+        "跟随光标",
+        "固定位置"
+      ],
       "options": [
         "follow_caret",
         "fixed"
@@ -128,6 +137,17 @@
       "key": "status_position_mode",
       "kind": "enum",
       "label": "状态气泡定位方式",
+      "optionLabels": [
+        "跟随光标",
+        "固定位置",
+        "屏幕中央",
+        "屏幕左上",
+        "屏幕右上",
+        "屏幕左下",
+        "屏幕右下",
+        "窗口中央",
+        "窗口左下"
+      ],
       "options": [
         "follow_caret",
         "fixed",
@@ -186,6 +206,17 @@
       "key": "status_fallback_position",
       "kind": "enum",
       "label": "光标不可信时的气泡位置",
+      "optionLabels": [
+        "沿用上次位置",
+        "隐藏",
+        "屏幕中央",
+        "屏幕左上",
+        "屏幕右上",
+        "屏幕左下",
+        "屏幕右下",
+        "窗口中央",
+        "窗口左下"
+      ],
       "options": [
         "last",
         "hide",
@@ -210,6 +241,10 @@
       "key": "initial_mode",
       "kind": "enum",
       "label": "进入软件时的中英状态",
+      "optionLabels": [
+        "英文",
+        "中文"
+      ],
       "options": [
         "english",
         "chinese"
@@ -227,6 +262,10 @@
       "key": "initial_punct",
       "kind": "enum",
       "label": "进入软件时的标点状态",
+      "optionLabels": [
+        "英文",
+        "中文"
+      ],
       "options": [
         "english",
         "chinese"
@@ -291,6 +330,10 @@
       "key": "smart_method",
       "kind": "enum",
       "label": "智能符号替换方式",
+      "optionLabels": [
+        "删除后替换",
+        "保持组合串"
+      ],
       "options": [
         "delete_replace",
         "hold_composition"
@@ -426,6 +469,12 @@
       "key": "style",
       "kind": "enum",
       "label": "上屏换行形式",
+      "optionLabels": [
+        "保持原样",
+        "回车（CR）",
+        "换行（LF）",
+        "回车换行（CRLF）"
+      ],
       "options": [
         "keep",
         "cr",

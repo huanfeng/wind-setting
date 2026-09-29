@@ -125,10 +125,13 @@ fn build_import_dialog(mgr: &CompatState) -> Element {
                         .font_size(13.0)
                         .fg_role(Role::Text),
                 )
-                .child(Element::segmented(
-                    IMPORT_MODES.iter().map(|m| m.0).collect::<Vec<_>>(),
-                    d.import_mode,
-                )),
+                .child(
+                    Element::dropdown(
+                        IMPORT_MODES.iter().map(|m| m.0).collect::<Vec<_>>(),
+                        d.import_mode,
+                    )
+                    .min_width(120),
+                ),
         )
         .child(
             Element::scroll()
@@ -188,6 +191,9 @@ pub struct HelpItem {
     pub summary: String,
     pub problem: String,
     pub hosts: Vec<String>,
+    /// 枚举字段的可选值：`(中文名, 配置文件里写的取值)`。界面下拉只显示中文名，
+    /// 取值原文在这里交代，手改 compat.toml 的人对得上。
+    pub values: Vec<(String, String)>,
 }
 
 /// 某一段的全部字段说明，按界面上的分组顺序。**含高级项**——帮助页要能查到详情里默认折叠的东西。
@@ -202,6 +208,11 @@ pub fn help_items(schema: &Schema, section: Section) -> Vec<HelpItem> {
                 summary: f.summary.clone(),
                 problem: f.problem.clone(),
                 hosts: f.hosts.clone(),
+                values: f
+                    .options
+                    .iter()
+                    .map(|o| (f.option_label(o), o.clone()))
+                    .collect(),
             })
         })
         .collect()
@@ -251,6 +262,21 @@ fn help_body(items: Vec<HelpItem>) -> Element {
                     .fg_role(Role::TextMuted)
                     .width_match()
                     .max_lines(8),
+            );
+        }
+        if !it.values.is_empty() {
+            let list = it
+                .values
+                .iter()
+                .map(|(zh, id)| format!("{zh}（{id}）"))
+                .collect::<Vec<_>>()
+                .join("、");
+            entry = entry.child(
+                Element::label(format!("可选值（括号内为配置文件里的写法）：{list}"))
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .max_lines(4),
             );
         }
         if !it.hosts.is_empty() {
@@ -385,11 +411,17 @@ fn build_field_dialog(mgr: &CompatState) -> Element {
                 .max_lines(3),
         )
         .child(
-            Element::label("更多专业选项需在左栏打开「显示高级选项」。")
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
+            // 高级项只影响「能挑到哪些」，所以开关放在这里而不是全局导航里。
+            Element::row()
                 .width_match()
-                .visible_when(move || !hint_adv.get()),
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::label("显示高级选项")
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted),
+                )
+                .child(Element::switch(hint_adv)),
         )
         .child(
             Element::scroll()
@@ -540,6 +572,17 @@ mod tests {
                 items.iter().all(|i| !i.summary.is_empty()),
                 "没有说明文字的字段等于没写帮助"
             );
+            // 枚举字段的取值必须在帮助里交代（下拉只显示中文，原文只能在这里查到）。
+            for f in s.fields_of(sec).into_iter().filter(|f| !f.options.is_empty()) {
+                let it = items.iter().find(|i| i.label == f.label).unwrap();
+                assert_eq!(it.values.len(), f.options.len(), "{} 的取值说明", f.key);
+                assert!(
+                    it.values.iter().all(|(zh, id)| zh != id),
+                    "{} 有取值没有中文名: {:?}",
+                    f.key,
+                    it.values
+                );
+            }
         }
         assert!(
             help_items(&s, Section::Apps)

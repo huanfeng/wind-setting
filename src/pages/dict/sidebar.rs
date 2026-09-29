@@ -25,7 +25,7 @@ use super::state::{DictManagerState, GLOBAL_DOMAINS};
 pub const SIDEBAR_W: i32 = 200;
 
 /// 单项行高，与主窗侧栏一致（36），保持两级导航的节奏感相同。
-const ITEM_H: i32 = 36;
+pub(crate) const ITEM_H: i32 = 36;
 
 /// 滚动区内侧的横向内缩，**同时是滚动条的让位量**。
 ///
@@ -45,11 +45,11 @@ const ITEM_H: i32 = 36;
 ///
 /// 左栏不必再避让窗口缩放边框（`scrollbar::WINDOW_EDGE_INSET`）：它右边还隔着内容区，
 /// `WM_NCHITTEST` 那 8px 判定区够不着这里。
-const SIDE_PAD: i32 = 10;
+pub(crate) const SIDE_PAD: i32 = 10;
 
 /// 条目/标题的行内左右内边距。与 [`SIDE_PAD`] 相加即文字的左基线（18，同主窗侧栏），
 /// 底栏按钮照抄这个和——两处对不齐时，底栏按钮会比上面整列条目的文字左右各错开一点点。
-const ITEM_PAD_X: i32 = 8;
+pub(crate) const ITEM_PAD_X: i32 = 8;
 
 /// 构建左栏。`back` 是底栏左侧的「返回设置」按钮，由窗口层构造（它要 `AppState`，
 /// 而本模块只认识 `DictManagerState`）。
@@ -199,14 +199,36 @@ fn group_title(text: &str) -> Element {
         .padding_xy(ITEM_PAD_X, 5)
 }
 
-/// 一个词库类型条目。选中/未选中两套元素 `visible_when` 切换（windui 无响应式样式）。
+/// 一个词库类型条目。
 fn nav_item(mgr: &DictManagerState, idx: usize, name: &str, tag: &str) -> Element {
     let sel = mgr.domain;
+    let (name, tag) = (name.to_string(), tag.to_string());
+    selectable(
+        ITEM_H,
+        move || sel.get() == idx,
+        move || sel.set(idx),
+        move |active| item_row(&name, &tag, active),
+    )
+}
 
+/// 可选中的列表条目：选中态 = accent 淡底 + 左缘指示条 + 文字转强调色（主窗侧栏同款）。
+///
+/// 选中/未选中两套元素靠 `visible_when` 切换（windui 无响应式样式），所以选中态变化**不需要
+/// 重建列表**——词库窗左栏、应用兼容窗的分类与进程列表共用这一份，保证各处选中效果一致。
+///
+/// `content(active)` 返回条目行本体（**不含**底色 / 点击 / 指示条，由这里统一加）；
+/// `height` 是整行高度（指示条按它垂直居中）。
+pub fn selectable(
+    height: i32,
+    is_selected: impl Fn() -> bool + Clone + 'static,
+    on_click: impl Fn() + 'static,
+    content: impl Fn(bool) -> Element,
+) -> Element {
     // 左缘指示条作覆盖层，不占行内宽度 —— 选中/未选中 padding 一致，切换时文字不横移。
+    let sel_ind = is_selected.clone();
     let indicator = Element::row()
         .width_match()
-        .height(ITEM_H)
+        .height(height)
         .cross(Align::Center)
         .child(
             Element::leaf()
@@ -215,20 +237,21 @@ fn nav_item(mgr: &DictManagerState, idx: usize, name: &str, tag: &str) -> Elemen
                 .corner(1.5)
                 .bg_role(Role::Accent),
         )
-        .visible_when(move || sel.get() == idx);
+        .visible_when(move || sel_ind());
 
-    let on = item_row(name, tag, true)
+    let sel_on = is_selected.clone();
+    let on = content(true)
         .bg(Color::hex(ACCENT_LIGHT).scale_alpha(0.11))
-        .visible_when(move || sel.get() == idx);
+        .visible_when(move || sel_on());
 
-    let off = item_row(name, tag, false)
+    let off = content(false)
         .clickable()
-        .on_click(move |_| sel.set(idx))
-        .visible_when(move || sel.get() != idx);
+        .on_click(move |_| on_click())
+        .visible_when(move || !is_selected());
 
     Element::stack()
         .width_match()
-        .height(ITEM_H)
+        .height(height)
         .child(on)
         .child(off)
         .child(indicator)

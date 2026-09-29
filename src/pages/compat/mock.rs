@@ -16,31 +16,67 @@ const EXPORT_USER: &str = include_str!("../../mockdata/compat/export_user.toml")
 /// 备份文件名（与核心的命名同形）。
 const BACKUP: &str = "compat.toml.bak-1700000000";
 
-// mock 里「写完就变」的最小可变层：用户新增的规则及其已设置的字段键。字段清空时整条规则消失。核心里 normalize 成空的补丁不会落行，
+// mock 里「写完就变」的最小可变层：用户新增的规则及其已设置的字段（键与值）。字段清空时整条规则消失。核心里 normalize 成空的补丁不会落行，
 // 进程名为 `MOCK_NOOP_PROCESS` 时照此模拟。线程内独立（每个测试各一份）。
 thread_local! {
-    static CREATED: std::cell::RefCell<Vec<(String, Vec<String>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CREATED: std::cell::RefCell<Vec<(String, Vec<(String, Value)>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 见 [`CREATED`]：这个进程名的 upsert 应答成功却不落行。
 pub(crate) const MOCK_NOOP_PROCESS: &str = "noop.exe";
 
-/// 在静态的 apps 列表上叠加 [`CREATED`] 里的新规则（拷一份现成规则改名、状态设为 user）。
+/// 在静态的 apps 列表上叠加 [`CREATED`] 里的新规则：字段视图按已设置的键逐个生成
+/// （已设置 = 用户来源，其余 = 默认来源、类型化默认值），与核心的形状一致。
 fn list_apps_with_created() -> Value {
     let mut v = parse(LIST_APPS);
+    let schema = parse(SCHEMA);
+    let kinds: Vec<(String, String)> = schema["fields"]
+        .as_array()
+        .map(|fs| {
+            fs.iter()
+                .filter(|f| f["section"] == "apps")
+                .map(|f| {
+                    (
+                        f["key"].as_str().unwrap_or("").to_string(),
+                        f["kind"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let created = CREATED.with(|c| c.borrow().clone());
     if let Some(rules) = v.get_mut("rules").and_then(Value::as_array_mut) {
-        for (p, keys) in created {
-            if keys.is_empty() || rules.iter().any(|r| r["process"] == p.as_str()) {
+        for (p, set) in created {
+            if set.is_empty() || rules.iter().any(|r| r["process"] == p.as_str()) {
                 continue;
             }
-            if let Some(mut r) = rules.first().cloned() {
-                r["process"] = json!(p);
-                r["state"] = json!("user");
-                r["hasUserEntry"] = json!(true);
-                r["system"] = Value::Null;
-                rules.push(r);
+            let Some(mut r) = rules.first().cloned() else {
+                continue;
+            };
+            let mut fields = serde_json::Map::new();
+            for (k, kind) in &kinds {
+                let typed = match kind.as_str() {
+                    "bool" => json!(false),
+                    "int" => json!(0),
+                    "text_list" => json!([]),
+                    _ => Value::Null,
+                };
+                let fv = match set.iter().find(|(sk, _)| sk == k) {
+                    Some((_, val)) => json!({
+                        "source": "user", "value": val, "systemValue": Value::Null, "userValue": val
+                    }),
+                    None => json!({
+                        "source": "default", "value": typed, "systemValue": Value::Null, "userValue": Value::Null
+                    }),
+                };
+                fields.insert(k.clone(), fv);
             }
+            r["process"] = json!(p);
+            r["state"] = json!("user");
+            r["hasUserEntry"] = json!(true);
+            r["system"] = Value::Null;
+            r["fields"] = Value::Object(fields);
+            rules.push(r);
         }
     }
     v
@@ -61,9 +97,10 @@ fn mutate_created(method: &str, process: &str, params: &Value) {
                     c.len() - 1
                 });
                 for (k, v) in patch {
-                    c[i].1.retain(|x| x != k);
-                    if !v.is_null() {
-                        c[i].1.push(k.clone());
+                    c[i].1.retain(|(x, _)| x != k);
+                    // 核心会把 `false` 的开关当成没写（与默认无差别）而丢掉。
+                    if !v.is_null() && *v != json!(false) {
+                        c[i].1.push((k.clone(), v.clone()));
                     }
                 }
             }
@@ -72,7 +109,7 @@ fn mutate_created(method: &str, process: &str, params: &Value) {
                     c.iter_mut().find(|(p, _)| p == process),
                     params["key"].as_str(),
                 ) {
-                    keys.retain(|x| x != k);
+                    keys.retain(|(x, _)| x != k);
                 }
             }
             _ => {}

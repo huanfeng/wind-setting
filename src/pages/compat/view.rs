@@ -16,13 +16,14 @@ use windui::prelude::*;
 use super::model::{FieldMeta, FieldSource, FieldView, Kind, RuleState, RuleView, Schema, Section};
 use super::state::{CompatState, FILTERS};
 use crate::pages::dict::reactive::{reactive_effect, toast_sink};
+use crate::pages::dict::sidebar::{ITEM_H, ITEM_PAD_X, SIDE_PAD, selectable};
 
 /// 左栏（分类 + 整体操作）宽度。
 const NAV_W: i32 = 184;
 /// 中栏（进程列表）宽度。
 const LIST_W: i32 = 270;
-/// 左栏条目的行高，与词库窗左栏一致。
-const NAV_ITEM_H: i32 = 36;
+/// 进程列表条目行高（两行：进程名 + 说明）。
+const RULE_ROW_H: i32 = 46;
 
 /// 整个窗口内容：标题栏 + 三栏主体 + 全部浮层对话框。
 ///
@@ -35,7 +36,6 @@ pub fn build_content(mgr: &CompatState, titlebar: Element, back: Element) -> Ele
     mgr.open_refresh();
     let list_sig: Signal<Vec<Vec<RuleView>>> = signal(vec![mgr.visible_rules()]);
     let detail_sig: Signal<Vec<Option<RuleView>>> = signal(vec![mgr.selected_rule()]);
-    let nav_sig: Signal<Vec<usize>> = signal(vec![mgr.section.get()]);
 
     let divider = || {
         Element::leaf()
@@ -46,12 +46,12 @@ pub fn build_content(mgr: &CompatState, titlebar: Element, back: Element) -> Ele
     let body = Element::row()
         .fill()
         .weight(1.0)
-        .child(build_nav(mgr, nav_sig, back))
+        .child(build_nav(mgr, back))
         .child(divider())
         .child(build_list(mgr, list_sig))
         .child(divider())
         .child(build_right(mgr, detail_sig))
-        .child(sync_effects(mgr, list_sig, detail_sig, nav_sig))
+        .child(sync_effects(mgr, list_sig, detail_sig))
         .child(toast_sink(mgr.feedback));
 
     let main_col = Element::col()
@@ -73,7 +73,6 @@ fn sync_effects(
     mgr: &CompatState,
     list_sig: Signal<Vec<Vec<RuleView>>>,
     detail_sig: Signal<Vec<Option<RuleView>>>,
-    nav_sig: Signal<Vec<usize>>,
 ) -> Element {
     let m = mgr.clone();
     let list_fx = reactive_effect(
@@ -94,16 +93,6 @@ fn sync_effects(
         {
             let m = m.clone();
             move || detail_sig.set(vec![m.selected_rule()])
-        },
-    );
-    let nav_fx = reactive_effect(
-        {
-            let m = m.clone();
-            move || m.section.version()
-        },
-        {
-            let m = m.clone();
-            move || nav_sig.set(vec![m.section.get()])
         },
     );
     let section_fx = reactive_effect(
@@ -138,7 +127,6 @@ fn sync_effects(
         .height(0)
         .child(list_fx)
         .child(detail_fx)
-        .child(nav_fx)
         .child(section_fx)
         .child(filter_fx)
         .child(refresh_fx)
@@ -146,9 +134,8 @@ fn sync_effects(
 
 // ───────────────────────── 左栏：分类与整体操作 ─────────────────────────
 
-fn build_nav(mgr: &CompatState, nav_sig: Signal<Vec<usize>>, back: Element) -> Element {
-    let m = mgr.clone();
-    let items = Element::host_signal(nav_sig, move |cur: usize| nav_items(&m, cur));
+fn build_nav(mgr: &CompatState, back: Element) -> Element {
+    let items = nav_items(mgr);
 
     let (add, imp, exp, reset, help, refresh) = (
         mgr.clone(),
@@ -181,20 +168,6 @@ fn build_nav(mgr: &CompatState, nav_sig: Signal<Vec<usize>>, back: Element) -> E
                 .outline_soft()
                 .width_match()
                 .on_click(move |ctx| exp.start_export(ctx)),
-        )
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .padding_xy(2, 6)
-                .child(
-                    Element::label("显示高级选项")
-                        .font_size(12.5)
-                        .fg_role(Role::TextMuted),
-                )
-                .child(Element::flex_spacer())
-                .child(Element::switch(mgr.show_advanced)),
         );
 
     let footer = Element::col()
@@ -245,7 +218,7 @@ fn build_nav(mgr: &CompatState, nav_sig: Signal<Vec<usize>>, back: Element) -> E
         .height_match()
         .bg_role(Role::Surface)
         .padding_xy(0, 10)
-        .child(items.padding_xy(10, 0))
+        .child(items.padding_xy(SIDE_PAD, 0))
         .child(Element::divider())
         .child(actions)
         .child(Element::flex_spacer())
@@ -253,37 +226,37 @@ fn build_nav(mgr: &CompatState, nav_sig: Signal<Vec<usize>>, back: Element) -> E
         .child(footer)
 }
 
-/// 三个分类。选中样式：淡底 + 粗体（与词库窗左栏同一读法）。
-fn nav_items(mgr: &CompatState, current: usize) -> Element {
+/// 三个分类。选中效果与词库窗左栏、主窗侧栏同一套（[`selectable`]）。
+fn nav_items(mgr: &CompatState) -> Element {
     let mut col = Element::col().width_match().spacing(2);
     for (i, sec) in Section::ALL.iter().enumerate() {
         let sig = mgr.section;
-        let mut row = Element::row()
-            .width_match()
-            .height(NAV_ITEM_H)
-            .cross(Align::Center)
-            .padding_xy(8, 0)
-            .corner(6.0)
-            .clickable()
-            .on_click(move |_| {
-                if sig.get() != i {
-                    sig.set(i);
-                }
-            })
-            .child(
-                Element::label(sec.title())
-                    .font_size(13.5)
-                    .font_weight(if i == current { 600 } else { 400 })
-                    .fg_role(if i == current {
-                        Role::Text
-                    } else {
-                        Role::TextMuted
-                    }),
-            );
-        if i == current {
-            row = row.bg_role(Role::Track);
-        }
-        col = col.child(row);
+        let title = sec.title();
+        col = col.child(selectable(
+            ITEM_H,
+            move || sig.get() == i,
+            move || sig.set(i),
+            move |active| {
+                Element::row()
+                    .width_match()
+                    .height(ITEM_H)
+                    .corner(9.0)
+                    .cross(Align::Center)
+                    .padding_xy(ITEM_PAD_X, 0)
+                    .child(
+                        Element::label(title)
+                            .font_size(13.0)
+                            .font_weight(if active { 600 } else { 500 })
+                            .fg_role(if active {
+                                Role::Accent
+                            } else {
+                                Role::TextMuted
+                            })
+                            .max_lines(1)
+                            .height(18),
+                    )
+            },
+        ));
     }
     col
 }
@@ -292,21 +265,30 @@ fn nav_items(mgr: &CompatState, current: usize) -> Element {
 
 fn build_list(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Element {
     let m = mgr.clone();
-    let rows = Element::host_signal(list_sig, move |rules: Vec<RuleView>| rule_list(&m, &rules));
+    let rows = Element::host_signal(list_sig, move |rules: Vec<RuleView>| rule_list(&m, &rules))
+        // 横向内缩下放到滚动区的内容上（≥ 滚动条占宽），滚动条才贴栏边而不压住条目；
+        // 同词库窗左栏（见 `dict::sidebar::SIDE_PAD` 的说明）。
+        .padding_xy(SIDE_PAD, 0);
 
     Element::col()
         .width(LIST_W)
         .height_match()
         .bg_role(Role::Surface)
-        .padding_xy(12, 12)
+        .padding_xy(0, 12)
         .spacing(8)
-        .child(Element::text_input(mgr.search, "搜索进程名"))
-        .child(Element::segmented(FILTERS.to_vec(), mgr.filter))
+        .child(
+            Element::col()
+                .width_match()
+                .padding_xy(12, 0)
+                .spacing(8)
+                .child(Element::text_input(mgr.search, "搜索进程名"))
+                .child(Element::dropdown(FILTERS.to_vec(), mgr.filter).width_match()),
+        )
         .child(
             Element::scroll()
                 .weight(1.0)
                 .width_match()
-                .child(Element::col().width_match().spacing(2).child(rows)),
+                .child(Element::col().width_match().child(rows)),
         )
 }
 
@@ -320,9 +302,8 @@ fn rule_list(mgr: &CompatState, rules: &[RuleView]) -> Element {
                 .padding_xy(6, 12),
         );
     }
-    let selected = mgr.selected.get();
     for r in rules {
-        col = col.child(rule_row(mgr, r, r.process == selected));
+        col = col.child(rule_row(mgr, r));
     }
     col
 }
@@ -347,50 +328,54 @@ fn comment_of(r: &RuleView) -> String {
         .to_string()
 }
 
-fn rule_row(mgr: &CompatState, r: &RuleView, selected: bool) -> Element {
+fn rule_row(mgr: &CompatState, r: &RuleView) -> Element {
     let m = mgr.clone();
-    let name = r.process.clone();
+    let sel_sig = mgr.selected;
+    let (name_sel, name_click, title) = (r.process.clone(), r.process.clone(), r.process.clone());
     let comment = comment_of(r);
-    let mut text = Element::col().weight(1.0).spacing(2).child(
-        Element::label(&r.process)
-            .font_size(13.0)
-            .font_weight(600)
-            .fg_role(if r.state == RuleState::Disabled {
-                Role::TextMuted
-            } else {
-                Role::Text
-            })
-            .max_lines(1)
-            .truncate(Truncate::End),
-    );
-    if !comment.is_empty() {
-        text = text.child(
-            Element::label(comment)
-                .font_size(11.5)
-                .fg_role(Role::TextMuted)
-                .max_lines(1)
-                .truncate(Truncate::End),
-        );
-    }
-    let mut row = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(6)
-        .padding_xy(8, 7)
-        .corner(6.0)
-        .clickable()
-        .on_click(move |_| m.select(&name))
-        .child(text);
-    if selected {
-        row = row.bg_role(Role::Track);
-    }
-    if r.state != RuleState::System {
-        row = row.child(Element::badge_intent(
-            r.state.label(),
-            state_intent(r.state),
-        ));
-    }
-    row
+    let state = r.state;
+    selectable(
+        RULE_ROW_H,
+        move || sel_sig.get() == name_sel,
+        move || m.select(&name_click),
+        move |active| {
+            let mut text = Element::col().weight(1.0).spacing(2).child(
+                Element::label(&title)
+                    .font_size(13.0)
+                    .font_weight(if active { 600 } else { 500 })
+                    .fg_role(if active {
+                        Role::Accent
+                    } else if state == RuleState::Disabled {
+                        Role::TextDisabled
+                    } else {
+                        Role::Text
+                    })
+                    .max_lines(1)
+                    .truncate(Truncate::End),
+            );
+            if !comment.is_empty() {
+                text = text.child(
+                    Element::label(&comment)
+                        .font_size(11.5)
+                        .fg_role(Role::TextMuted)
+                        .max_lines(1)
+                        .truncate(Truncate::End),
+                );
+            }
+            let mut row = Element::row()
+                .width_match()
+                .height(RULE_ROW_H)
+                .corner(9.0)
+                .cross(Align::Center)
+                .spacing(6)
+                .padding_xy(ITEM_PAD_X, 0)
+                .child(text);
+            if state != RuleState::System {
+                row = row.child(Element::badge_intent(state.label(), state_intent(state)));
+            }
+            row
+        },
+    )
 }
 
 // ───────────────────────── 右栏：配置信息 ─────────────────────────
@@ -618,11 +603,10 @@ fn field_row(
         // 用户新增的规则、或还没给值的覆盖项，没有「出厂」可还原，去掉就是去掉。
         let remove = pending || rule.system.is_none();
         reset_btn = Some(
-            Element::button(if remove { "移除" } else { "还原" })
-                .small()
-                .outline_soft()
+            Element::icon_button(if remove { "×" } else { "↺" })
+                .size(26, 26)
                 .tooltip(if remove {
-                    "去掉这个覆盖项，恢复为跟随全局"
+                    "移除这个覆盖项，恢复为跟随全局"
                 } else {
                     "还原为出厂设置"
                 })
@@ -642,10 +626,10 @@ fn field_row(
             let dep_label = schema
                 .field(mgr.current_section(), &d.key)
                 .map_or(d.key.as_str(), |f| f.label.as_str());
-            sub = format!(
-                "{sub}（需先把「{dep_label}」设为 {}）",
-                option_label(&d.value)
-            );
+            let dep_value = schema
+                .field(mgr.current_section(), &d.key)
+                .map_or_else(|| d.value.clone(), |f| f.option_label(&d.value));
+            sub = format!("{sub}（需先把「{dep_label}」设为「{dep_value}」）");
         }
     }
     let mut right = Element::row()
@@ -656,31 +640,6 @@ fn field_row(
         right = right.child(b);
     }
     crate::widgets::setting_row(&meta.label, Some(&sub), right).tooltip(meta.problem.clone())
-}
-
-/// 枚举值的展示名。只给语义确定的值配中文，其余原样显示（配置文件里写的就是它）。
-fn option_label(id: &str) -> String {
-    let zh = match id {
-        "english" => "英文",
-        "chinese" => "中文",
-        "follow_caret" => "跟随光标",
-        "fixed" => "固定位置",
-        "screen_center" => "屏幕中央",
-        "screen_top_left" => "屏幕左上",
-        "screen_top_right" => "屏幕右上",
-        "screen_bottom_left" => "屏幕左下",
-        "screen_bottom_right" => "屏幕右下",
-        "window_center" => "窗口中央",
-        "window_bottom_left" => "窗口左下",
-        "last" => "沿用上次位置",
-        "hide" => "隐藏",
-        "keep" => "保持原样",
-        "cr" => "CR",
-        "lf" => "LF",
-        "crlf" => "CRLF",
-        _ => return id.to_string(),
-    };
-    format!("{zh}（{id}）")
 }
 
 /// 按字段类型造控件。写入成功后详情整体重建，所以这里的局部信号只管「用户刚做了什么」。
@@ -714,12 +673,12 @@ fn field_control(mgr: &CompatState, process: &str, meta: &FieldMeta, fv: &FieldV
                 },
             );
             Element::row()
-                .child(Element::segmented(vec!["跟随全局", "开", "关"], sig))
+                .child(Element::dropdown(vec!["跟随全局", "开", "关"], sig).min_width(120))
                 .child(fx)
         }
         Kind::Enum => {
             let mut labels = vec!["（跟随全局）".to_string()];
-            labels.extend(meta.options.iter().map(|o| option_label(o)));
+            labels.extend(meta.options.iter().map(|o| meta.option_label(o)));
             let idx = fv
                 .value
                 .as_str()
@@ -988,11 +947,5 @@ mod tests {
     fn split_list_handles_mixed_separators_and_dedups() {
         assert_eq!(split_list(" A, B，C、A\nD ,, "), vec!["A", "B", "C", "D"]);
         assert!(split_list("  , ，").is_empty());
-    }
-
-    #[test]
-    fn option_label_keeps_unknown_ids_verbatim() {
-        assert_eq!(option_label("wait"), "wait");
-        assert_eq!(option_label("english"), "英文（english）");
     }
 }

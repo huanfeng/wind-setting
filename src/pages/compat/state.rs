@@ -233,8 +233,8 @@ impl CompatState {
     pub fn select(&self, process: &str) {
         if self.selected.get() != process {
             self.selected.set(process.to_string());
+            // 列表的选中高亮由 `selected` 信号直接驱动（`selectable`），不需要重建左栏。
             Self::bump(self.detail_epoch);
-            Self::bump(self.list_epoch);
         }
     }
 
@@ -297,15 +297,55 @@ impl CompatState {
             self.rebuild_after_failure();
             return false;
         }
-        // 给出了值的字段不再是「待设置」；清除（null）保留待设置状态——用户刚挑出这一项，
-        // 选回「跟随全局」不该让这一行凭空消失。
-        if let Some(obj) = patch_keys(&patch) {
-            self.pending
-                .borrow_mut()
-                .retain(|(p, k)| !(p.eq_ignore_ascii_case(process) && obj.contains(k)));
-        }
-        self.reload_after_write(true);
+        let keys: Vec<String> = patch
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        self.reload_after_write(true, Some((process, &keys)));
         true
+    }
+
+    /// 写入之后核对这几个字段：任何一层还设着的（出厂 / 用户）就不再是「待设置」；
+    /// 写完却回到「没设置」的（开关拨回关、数字回 0、下拉选回「跟随全局」）**保留成一行**——
+    /// 用户是主动改成默认值的，行不该凭空消失，要去掉走「移除」。
+    fn settle_pending(&self, process: &str, keys: &[String]) {
+        // 规则整条没了（用户新增的规则、字段全落回默认）时视为全部未设置。
+        let rule = self.selected_rule_of(process);
+        let mut pend = self.pending.borrow_mut();
+        for k in keys {
+            let unset = rule.as_ref().is_none_or(|r| {
+                r.fields
+                    .get(k)
+                    .is_none_or(|v| v.source == super::model::FieldSource::Default)
+            });
+            let has = pend
+                .iter()
+                .any(|(p, key)| p.eq_ignore_ascii_case(process) && key == k);
+            match (unset, has) {
+                (true, false) => pend.push((process.to_string(), k.clone())),
+                (false, true) => {
+                    pend.retain(|(p, key)| !(p.eq_ignore_ascii_case(process) && key == k))
+                }
+                _ => {}
+            }
+        }
+        drop(pend);
+        Self::bump(self.detail_epoch);
+    }
+
+    fn selected_rule_of(&self, process: &str) -> Option<RuleView> {
+        self.rules
+            .with(|rs| {
+                rs.iter()
+                    .find(|r| r.process.eq_ignore_ascii_case(process))
+                    .cloned()
+            })
+            .or_else(|| {
+                (self.draft.get().eq_ignore_ascii_case(process)).then(|| {
+                    self.schema
+                        .with(|s| RuleView::draft(process, s, self.current_section()))
+                })
+            })
     }
 
     /// 还原为出厂：删掉用户层关于这个字段的一切痕迹。
@@ -353,7 +393,7 @@ impl CompatState {
             self.rebuild_after_failure();
             return false;
         }
-        self.reload_after_write(prompt_if_emptied);
+        self.reload_after_write(prompt_if_emptied, None);
         true
     }
 
@@ -365,7 +405,7 @@ impl CompatState {
         self.selected.set(String::new());
         self.draft.set(String::new());
         self.pending.borrow_mut().clear();
-        self.reload_after_write(false);
+        self.reload_after_write(false, None);
         // 用户层本来就是空时规则集不变，`apply_list` 不会动任何信号；选中 / 草稿却已被清掉。
         Self::bump(self.list_epoch);
         Self::bump(self.detail_epoch);
@@ -379,11 +419,14 @@ impl CompatState {
 
     /// 写后重拉。`prompt_if_emptied`：选中的用户新增规则因这次写入变得一个字段都不剩
     /// （核心里整条消失）时，不直接让它凭空没了，而是保留成空白草稿并弹窗问「删除还是保留」。
-    fn reload_after_write(&self, prompt_if_emptied: bool) {
+    fn reload_after_write(&self, prompt_if_emptied: bool, touched: Option<(&str, &[String])>) {
         let before = (self.selected.get(), self.draft.get());
         let sel = before.0.clone();
         let existed = !sel.is_empty() && self.rules.with(|r| r.iter().any(|x| x.process == sel));
         self.reload();
+        if let Some((p, keys)) = touched {
+            self.settle_pending(p, keys);
+        }
         let gone = existed && !self.rules.with(|r| r.iter().any(|x| x.process == sel));
         if gone && prompt_if_emptied {
             // 草稿只有一个名字：顶掉另一条未保存的草稿时把它的占位一并清掉。
@@ -475,7 +518,9 @@ impl CompatState {
             Self::bump(self.detail_epoch);
             return true;
         }
-        self.clear_field(process, key)
+        // 走「还原」而不是「清除」：清除会落回默认并被保留成一行（见 `settle_pending`），
+        // 而「移除」要的是这一行真的没有。
+        self.reset_field(process, key)
     }
 
     /// 空规则弹窗里选「删除」：草稿丢掉即可，核心里早已没有这条。
@@ -833,23 +878,52 @@ mod tests {
     fn add_override_writes_bools_at_once_and_parks_other_kinds_until_given_a_value() {
         let _g = MockGuard::new();
         let st = loaded();
-        st.select("Weixin.exe");
+        st.start_draft("Brand.exe").unwrap();
         let _ = crate::rpc::take_mock_calls();
 
-        st.add_override("Weixin.exe", "host_render");
+        st.add_override("Brand.exe", "host_render");
         let w = calls("compat.upsert");
         assert_eq!(w.len(), 1);
         assert_eq!(w[0]["patch"]["host_render"], json!(true));
 
-        st.add_override("Weixin.exe", "initial_mode");
+        st.add_override("Brand.exe", "initial_mode");
         assert!(
             calls("compat.upsert").is_empty(),
             "非开关字段挑出来时没有值可写"
         );
-        assert!(st.is_pending("weixin.EXE", "initial_mode"));
+        assert!(st.is_pending("brand.EXE", "initial_mode"));
 
-        st.set_field("Weixin.exe", "initial_mode", json!("english"));
-        assert!(!st.is_pending("Weixin.exe", "initial_mode"), "给了值就转正");
+        st.set_field("Brand.exe", "initial_mode", json!("english"));
+        assert!(!st.is_pending("Brand.exe", "initial_mode"), "给了值就转正");
+    }
+
+    /// 改回默认值不让这一行消失：开关拨回关、下拉选回「跟随全局」都保留成一行，
+    /// 要去掉走「移除」。
+    #[test]
+    fn setting_a_field_back_to_its_default_keeps_the_row() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "host_render", json!(true));
+        st.set_field("Brand.exe", "initial_mode", json!("english"));
+        assert!(!st.is_pending("Brand.exe", "host_render"));
+
+        st.set_field("Brand.exe", "host_render", json!(false));
+        assert!(
+            st.is_pending("Brand.exe", "host_render"),
+            "开关拨回关，行还在"
+        );
+        st.clear_field("Brand.exe", "initial_mode");
+        assert!(
+            st.is_pending("Brand.exe", "initial_mode"),
+            "选回跟随全局，行还在"
+        );
+        assert!(!st.dlg.empty_visible.get(), "还有行在，规则不算清空");
+
+        // 再给值就转正，再「移除」才真的没有。
+        st.set_field("Brand.exe", "host_render", json!(true));
+        assert!(!st.is_pending("Brand.exe", "host_render"));
+        assert!(st.remove_override("Brand.exe", "host_render"));
     }
 
     /// 待设置的字段被「移除」只是丢掉占位，不发请求；选回「跟随全局」也不让占位消失。
@@ -1105,16 +1179,4 @@ mod tests {
         assert_eq!(st.load_error.get(), "");
         assert!(st.rules.with(|r| !r.is_empty()), "恢复后元数据与规则都到位");
     }
-}
-
-/// 补丁里被设置了「非 null 值」的键（清除不算「给了值」）。
-fn patch_keys(patch: &Value) -> Option<Vec<String>> {
-    Some(
-        patch
-            .as_object()?
-            .iter()
-            .filter(|(_, v)| !v.is_null())
-            .map(|(k, _)| k.clone())
-            .collect(),
-    )
 }
