@@ -287,10 +287,8 @@ impl CompatState {
             )
             .is_err()
         {
+            self.rebuild_after_failure();
             return false;
-        }
-        if self.draft.get().eq_ignore_ascii_case(process) {
-            self.draft.set(String::new());
         }
         self.reload_after_write();
         true
@@ -318,6 +316,7 @@ impl CompatState {
 
     fn simple_write(&self, method: &str, params: Value) -> bool {
         if self.call_write(method, params).is_err() {
+            self.rebuild_after_failure();
             return false;
         }
         self.reload_after_write();
@@ -332,6 +331,9 @@ impl CompatState {
         self.selected.set(String::new());
         self.draft.set(String::new());
         self.reload_after_write();
+        // 用户层本来就是空时规则集不变，`apply_list` 不会动任何信号；选中 / 草稿却已被清掉。
+        Self::bump(self.list_epoch);
+        Self::bump(self.detail_epoch);
         Some(
             v.get("backup")
                 .and_then(Value::as_str)
@@ -341,10 +343,39 @@ impl CompatState {
     }
 
     fn reload_after_write(&self) {
+        let before = (self.selected.get(), self.draft.get());
         self.reload();
+        // 草稿只在核心里确实有了这条规则之后才算转正：第一次写入被 normalize 成空操作时
+        // 核心不落行，草稿要留着，否则界面停在一条既不是草稿也不存在的规则上。
+        let d = self.draft.get();
+        if !d.is_empty()
+            && self
+                .rules
+                .with(|r| r.iter().any(|x| x.process.eq_ignore_ascii_case(&d)))
+        {
+            self.draft.set(String::new());
+        }
         // 选中项的视图变了（或被删掉了）：详情必须跟上。`apply_list` 只在内容变化时才动信号，
-        // 这里再确保选中项合法。
+        // 这里再确保选中项合法；选中 / 草稿有变化而规则集没变时要自己通知界面。
         self.fix_selection();
+        if before != (self.selected.get(), self.draft.get()) {
+            Self::bump(self.list_epoch);
+            Self::bump(self.detail_epoch);
+        }
+    }
+
+    /// 写入失败：控件已经停在用户刚选的值上，而核心里没变。按核心的值重建详情，
+    /// 界面才永远画核心返回的那份。
+    fn rebuild_after_failure(&self) {
+        Self::bump(self.detail_epoch);
+    }
+
+    /// 页面（重新）构建时：已加载过则按最新内容重拉一次。主窗关闭期间到达的
+    /// `compat.changed` 没有页面接收，重建出来的页面要自己补这一课。
+    pub fn reload_if_loaded(&self) {
+        if self.loaded.get() {
+            self.reload();
+        }
     }
 
     // ───────────── 草稿 ─────────────
@@ -647,6 +678,62 @@ mod tests {
         assert!(st.set_field("New.exe", "auto_pair", json!(true)));
         assert_eq!(st.draft.get(), "", "第一次设置字段后草稿转正");
         assert_eq!(calls("compat.upsert").len(), 1);
+        assert_eq!(st.selected.get(), "New.exe", "转正后仍选中它");
+        assert!(
+            !st.selected_rule().unwrap().is_draft(),
+            "详情画的是核心返回的真规则"
+        );
+    }
+
+    /// 第一次写入被核心 normalize 成空操作（不落行）：草稿要留着，界面不能停在一条不存在的规则上。
+    #[test]
+    fn a_noop_first_write_keeps_the_draft_and_the_ui_consistent() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        let name = super::super::mock::MOCK_NOOP_PROCESS;
+        st.start_draft(name).unwrap();
+        assert!(st.set_field(name, "auto_pair", json!(true)));
+        assert_eq!(st.draft.get(), name, "核心没建出这条规则，草稿不能转正");
+        assert_eq!(st.selected.get(), name);
+        assert!(st.selected_rule().unwrap().is_draft());
+        assert!(st.visible_rules().iter().any(|r| r.process == name));
+    }
+
+    #[test]
+    fn a_failed_write_rebuilds_the_detail_from_core_values() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft(crate::rpc::MOCK_COMPAT_FAIL_PROCESS)
+            .unwrap();
+        let d = st.detail_epoch.get();
+        assert!(!st.set_field(
+            crate::rpc::MOCK_COMPAT_FAIL_PROCESS,
+            "auto_pair",
+            json!(true)
+        ));
+        assert!(st.detail_epoch.get() > d, "写失败要按核心的值重建控件");
+    }
+
+    /// 用户层本来是空时 resetAll 规则集不变，选中 / 草稿却被清了，界面必须被通知。
+    #[test]
+    fn reset_all_always_notifies_the_ui_even_when_the_rule_set_is_unchanged() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        let (l, d) = (st.list_epoch.get(), st.detail_epoch.get());
+        st.reset_all().unwrap();
+        assert!(st.list_epoch.get() > l && st.detail_epoch.get() > d);
+    }
+
+    #[test]
+    fn reload_if_loaded_only_fetches_after_the_page_was_loaded_once() {
+        let _g = MockGuard::new();
+        let st = CompatState::new();
+        st.reload_if_loaded();
+        assert!(crate::rpc::take_mock_calls().is_empty(), "没加载过不拉");
+        st.ensure_loaded();
+        let _ = crate::rpc::take_mock_calls();
+        st.reload_if_loaded();
+        assert_eq!(calls("compat.list").len(), 1);
     }
 
     #[test]

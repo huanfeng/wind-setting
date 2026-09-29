@@ -28,6 +28,7 @@ pub fn build_page(state: &AppState, _nav: &SubNav) -> Element {
     //
     // 先跑 `load_effect`（`--page compat` 冷启动时它会同步加载），再按当下状态给初值：
     // effect 以构建时的版本为基线，构建帧之前发生的加载不会再触发它。
+    mgr.reload_if_loaded();
     let load_fx = load_effect(state);
     let list_sig: Signal<Vec<Vec<RuleView>>> = signal(vec![mgr.visible_rules()]);
     let detail_sig: Signal<Vec<Option<RuleView>>> = signal(vec![mgr.selected_rule()]);
@@ -517,10 +518,14 @@ fn field_row(
         ctl = ctl.child(tag);
     }
     ctl = ctl.child(field_control(mgr, &rule.process, meta, fv));
+    let met = dep_met(rule, meta);
+    // 「还原」放在置灰的包裹之外：依赖条件不满足时用户层可能仍留着这个字段的值，
+    // 不能让它变成清不掉的孤儿。
+    let mut reset_btn = None;
     if fv.can_reset() {
         let m = mgr.clone();
         let (p, k) = (rule.process.clone(), meta.key.clone());
-        ctl = ctl.child(
+        reset_btn = Some(
             Element::button("还原")
                 .small()
                 .outline_soft()
@@ -531,7 +536,6 @@ fn field_row(
         );
     }
 
-    let met = dep_met(rule, meta);
     let mut sub = meta.summary.clone();
     if !met {
         if let Some(d) = &meta.depends_on {
@@ -544,8 +548,14 @@ fn field_row(
             );
         }
     }
-    crate::widgets::setting_row(&meta.label, Some(&sub), ctl.disabled(!met))
-        .tooltip(meta.problem.clone())
+    let mut right = Element::row()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(ctl.disabled(!met));
+    if let Some(b) = reset_btn {
+        right = right.child(b);
+    }
+    crate::widgets::setting_row(&meta.label, Some(&sub), right).tooltip(meta.problem.clone())
 }
 
 /// 枚举值的展示名。只给语义确定的值配中文，其余原样显示（配置文件里写的就是它）。
@@ -635,16 +645,21 @@ fn field_control(mgr: &CompatState, process: &str, meta: &FieldMeta, fv: &FieldV
                 .child(fx)
         }
         Kind::Int => {
+            // stepper 的输入框每打一个字就回写信号，按信号变化写盘会在第一位数字后
+            // 就重建详情、丢掉焦点；改成与文本类一致的显式提交。
             let sig = signal(fv.value.as_i64().unwrap_or(0) as f64);
-            let fx = reactive_effect(
-                move || sig.version(),
-                move || {
-                    m.set_field(&proc, &key, json!(sig.get().round() as i64));
-                },
-            );
             Element::row()
+                .cross(Align::Center)
+                .spacing(6)
                 .child(Element::stepper(sig, -10000.0, 100000.0, 1.0).width(120))
-                .child(fx)
+                .child(
+                    Element::button("应用")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            m.set_field(&proc, &key, json!(sig.get().round() as i64));
+                        }),
+                )
         }
         Kind::Text => {
             let sig = signal(fv.value.as_str().unwrap_or("").to_string());
@@ -792,13 +807,17 @@ mod tests {
 
         mgr.section.set(0);
         frame(&mut tree);
+        let before = mgr.selected.get();
         mgr.filter.set(3);
         frame(&mut tree);
-        assert!(
-            mgr.visible_rules()
-                .iter()
-                .all(|r| r.state == RuleState::Disabled)
-        );
+        // `visible_rules` 直接读筛选信号，光看它不能证明 effect 接上了；
+        // 选中项被 `refilter` 修正到已禁用的规则上才是 effect 跑过的证据。
+        let now = mgr.selected.get();
+        assert_ne!(now, before, "筛选变了，effect 应把选中项挪进可见集");
+        assert!(mgr.rules.with(|r| {
+            r.iter()
+                .any(|x| x.process == now && x.state == RuleState::Disabled)
+        }));
     }
 
     #[test]

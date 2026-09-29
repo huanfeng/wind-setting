@@ -183,7 +183,9 @@ impl CompatState {
     /// 拿到文件内容后：先 dry-run 出预览再开对话框。文件本身不合法时直接 toast，不开框。
     pub fn begin_import(&self, content: String) {
         *self.dlg.import_content.borrow_mut() = content;
-        self.dlg.import_mode.set(0);
+        if self.dlg.import_mode.get() != 0 {
+            self.dlg.import_mode.set(0);
+        }
         if self.refresh_import_preview() {
             self.dlg.import_visible.set(true);
         }
@@ -212,6 +214,11 @@ impl CompatState {
                 true
             }
             Err(e) => {
+                // 预览与将要执行的必须是同一件事：重算失败就不能再留着旧预览让人点「导入」。
+                self.dlg.import_can_apply.set(false);
+                self.dlg
+                    .import_summary
+                    .set(format!("预览失败，无法导入：{e}"));
                 self.notify(ToastKind::Error, format!("无法导入: {e}"));
                 false
             }
@@ -309,6 +316,20 @@ mod tests {
             calls("compat.upsert").is_empty(),
             "草稿在第一次设置字段前不落盘"
         );
+    }
+
+    /// 切换合并 / 替换后重算预览失败：不能留着旧预览和可点的「导入」（会按新模式执行）。
+    #[test]
+    fn a_failed_preview_refresh_disables_apply_instead_of_keeping_the_stale_preview() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.begin_import("[[apps]]\nprocess = \"Brand.exe\"\n".into());
+        assert!(st.dlg.import_can_apply.get());
+        *st.dlg.import_content.borrow_mut() = format!("x {}", crate::rpc::MOCK_FAIL_TEXT);
+        st.dlg.import_mode.set(1);
+        assert!(!st.refresh_import_preview());
+        assert!(!st.dlg.import_can_apply.get());
+        assert!(st.dlg.import_summary.get().contains("预览失败"));
     }
 
     #[test]

@@ -16,6 +16,36 @@ const EXPORT_USER: &str = include_str!("../../mockdata/compat/export_user.toml")
 /// 备份文件名（与核心的命名同形）。
 const BACKUP: &str = "compat.toml.bak-1700000000";
 
+/// mock 里「写完就变」的最小可变层：upsert 过的新进程名。核心里 normalize 成空的补丁不会落行，
+/// 进程名为 [`MOCK_NOOP_PROCESS`] 时照此模拟。线程内独立（每个测试各一份）。
+thread_local! {
+    static CREATED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 见 [`CREATED`]：这个进程名的 upsert 应答成功却不落行。
+pub(crate) const MOCK_NOOP_PROCESS: &str = "noop.exe";
+
+/// 在静态的 apps 列表上叠加 [`CREATED`] 里的新规则（拷一份现成规则改名、状态设为 user）。
+fn list_apps_with_created() -> Value {
+    let mut v = parse(LIST_APPS);
+    let created = CREATED.with(|c| c.borrow().clone());
+    if let Some(rules) = v.get_mut("rules").and_then(Value::as_array_mut) {
+        for p in created {
+            if rules.iter().any(|r| r["process"] == p.as_str()) {
+                continue;
+            }
+            if let Some(mut r) = rules.first().cloned() {
+                r["process"] = json!(p);
+                r["state"] = json!("user");
+                r["hasUserEntry"] = json!(true);
+                r["system"] = Value::Null;
+                rules.push(r);
+            }
+        }
+    }
+    v
+}
+
 fn parse(s: &str) -> Value {
     serde_json::from_str(s).unwrap_or(Value::Null)
 }
@@ -28,7 +58,7 @@ pub(crate) fn reply(method: &str, params: &Value) -> Value {
         "compat.list" => match params.get("section").and_then(Value::as_str) {
             Some("initial_mode_scope") => parse(LIST_SCOPE),
             Some("commit_newline") => parse(LIST_NEWLINE),
-            _ => parse(LIST_APPS),
+            _ => list_apps_with_created(),
         },
         "compat.export" => json!({ "content": EXPORT_USER }),
         "compat.import" => {
@@ -46,6 +76,13 @@ pub(crate) fn reply(method: &str, params: &Value) -> Value {
         "compat.resetAll" => json!({ "ok": true, "backup": BACKUP }),
         "compat.reset" => json!({ "ok": true, "removed": true, "rule": null }),
         "compat.upsert" | "compat.resetField" | "compat.setDisabled" => {
+            if method == "compat.upsert" {
+                if let Some(p) = params.get("process").and_then(Value::as_str) {
+                    if p != MOCK_NOOP_PROCESS {
+                        CREATED.with(|c| c.borrow_mut().push(p.to_string()));
+                    }
+                }
+            }
             json!({ "ok": true, "rule": null })
         }
         _ => Value::Null,
