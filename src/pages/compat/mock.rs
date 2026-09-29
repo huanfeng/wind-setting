@@ -82,6 +82,19 @@ fn list_apps_with_created() -> Value {
     v
 }
 
+/// 字段的控件类型（取自 mock 的 schema）；未知字段返回空串。
+fn kind_of(key: &str) -> String {
+    parse(SCHEMA)["fields"]
+        .as_array()
+        .and_then(|fs| {
+            fs.iter()
+                .find(|f| f["section"] == "apps" && f["key"] == key)
+        })
+        .and_then(|f| f["kind"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// 把一次写入折算进 [`CREATED`]。
 fn mutate_created(method: &str, process: &str, params: &Value) {
     CREATED.with(|c| {
@@ -98,8 +111,14 @@ fn mutate_created(method: &str, process: &str, params: &Value) {
                 });
                 for (k, v) in patch {
                     c[i].1.retain(|(x, _)| x != k);
-                    // 核心会把 `false` 的开关当成没写（与默认无差别）而丢掉。
-                    if !v.is_null() && *v != json!(false) {
+                    // 核心的规范化：纯开关的 `false`、数字 `0` 与没写无差别，被丢掉；
+                    // 三态开关（tri_bool）的显式 `false` 是有意义的，保留。
+                    let plain_default = match kind_of(k).as_str() {
+                        "bool" => *v == json!(false),
+                        "int" => *v == json!(0),
+                        _ => false,
+                    };
+                    if !v.is_null() && !plain_default {
                         c[i].1.push((k.clone(), v.clone()));
                     }
                 }

@@ -573,7 +573,11 @@ mod tests {
                 "没有说明文字的字段等于没写帮助"
             );
             // 枚举字段的取值必须在帮助里交代（下拉只显示中文，原文只能在这里查到）。
-            for f in s.fields_of(sec).into_iter().filter(|f| !f.options.is_empty()) {
+            for f in s
+                .fields_of(sec)
+                .into_iter()
+                .filter(|f| !f.options.is_empty())
+            {
                 let it = items.iter().find(|i| i.label == f.label).unwrap();
                 assert_eq!(it.values.len(), f.options.len(), "{} 的取值说明", f.key);
                 assert!(

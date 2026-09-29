@@ -312,6 +312,7 @@ impl CompatState {
         // 规则整条没了（用户新增的规则、字段全落回默认）时视为全部未设置。
         let rule = self.selected_rule_of(process);
         let mut pend = self.pending.borrow_mut();
+        let mut changed = false;
         for k in keys {
             let unset = rule.as_ref().is_none_or(|r| {
                 r.fields
@@ -330,7 +331,10 @@ impl CompatState {
             }
         }
         drop(pend);
-        Self::bump(self.detail_epoch);
+        // 占位没增减就不必重建：写入内容没变时（文本框回车提交同样的文字）重建会白丢焦点。
+        if changed {
+            Self::bump(self.detail_epoch);
+        }
     }
 
     fn selected_rule_of(&self, process: &str) -> Option<RuleView> {
@@ -509,12 +513,21 @@ impl CompatState {
         Self::bump(self.detail_epoch);
     }
 
-    /// 去掉一个覆盖项：待设置的直接丢，已设置的清成「跟随全局」。
+    /// 去掉一个覆盖项：让这一行真的没有。
+    ///
+    /// 占位（还没落盘）直接丢；已被某一层设置过的走「还原」（`compat.resetField`，删掉用户层的痕迹）。
+    /// 占位与「已设置」可能并存（核心外部改动了它，如右键菜单），所以两件事都要做，
+    /// 否则第一次点击只丢了本地占位、这一行还在。
     pub fn remove_override(&self, process: &str, key: &str) -> bool {
-        if self.is_pending(process, key) {
-            self.pending
-                .borrow_mut()
-                .retain(|(p, k)| !(p.eq_ignore_ascii_case(process) && k == key));
+        self.pending
+            .borrow_mut()
+            .retain(|(p, k)| !(p.eq_ignore_ascii_case(process) && k == key));
+        let unset = self.selected_rule_of(process).is_none_or(|r| {
+            r.fields
+                .get(key)
+                .is_none_or(|v| v.source == super::model::FieldSource::Default)
+        });
+        if unset {
             Self::bump(self.detail_epoch);
             return true;
         }
@@ -606,6 +619,7 @@ impl CompatState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pages::compat::model::FieldSource;
 
     /// mock 模式 + 全 crate 唯一的锁（见 `rpc::ENV_LOCK`）；测完摘掉 mock 标记。
     struct MockGuard(std::sync::MutexGuard<'static, ()>);
@@ -923,7 +937,42 @@ mod tests {
         // 再给值就转正，再「移除」才真的没有。
         st.set_field("Brand.exe", "host_render", json!(true));
         assert!(!st.is_pending("Brand.exe", "host_render"));
+        // 「移除」才真的没有：不是占位、来源回到默认。initial_mode 仍在，规则不算清空。
         assert!(st.remove_override("Brand.exe", "host_render"));
+        assert!(!st.is_pending("Brand.exe", "host_render"));
+        let rule = st.selected_rule_of("Brand.exe").unwrap();
+        assert_eq!(rule.fields["host_render"].source, FieldSource::Default);
+        assert!(!st.dlg.empty_visible.get());
+    }
+
+    /// 三态开关的显式「关」是有意义的（核心保留），拨到关不该被当成「没设置」而变成占位。
+    #[test]
+    fn a_tri_state_off_is_a_real_override_not_a_placeholder() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "auto_pair", json!(false));
+        assert!(!st.is_pending("Brand.exe", "auto_pair"));
+        let rule = st.selected_rule_of("Brand.exe").unwrap();
+        assert_eq!(rule.fields["auto_pair"].source, FieldSource::User);
+    }
+
+    /// 占位与「已设置」并存（外部改动了它）时，第一次点「移除」就要真的去掉。
+    #[test]
+    fn remove_works_on_the_first_click_even_if_the_field_got_set_behind_our_back() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        st.start_draft("Brand.exe").unwrap();
+        st.set_field("Brand.exe", "host_render", json!(true));
+        st.set_field("Brand.exe", "initial_mode", json!("english"));
+        // 制造并存：占位还挂着，而核心里它已经有值。
+        st.pending
+            .borrow_mut()
+            .push(("Brand.exe".into(), "initial_mode".into()));
+        let _ = crate::rpc::take_mock_calls();
+        assert!(st.remove_override("Brand.exe", "initial_mode"));
+        assert_eq!(calls("compat.resetField").len(), 1, "已设置的要发还原请求");
+        assert!(!st.is_pending("Brand.exe", "initial_mode"));
     }
 
     /// 待设置的字段被「移除」只是丢掉占位，不发请求；选回「跟随全局」也不让占位消失。
