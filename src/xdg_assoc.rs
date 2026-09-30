@@ -500,15 +500,16 @@ impl Ctx<'_> {
     ///
     /// `Other` 带的是给人看的描述：应用名 + 文件名 + 它启动的程序。最常见的「他人」其实是
     /// 另一份清风输入法（装过 deb 又跑便携版），所以程序路径必须摆出来，用户才分得清。
+    ///
+    /// 默认处理者的 `.desktop` 已经不在（`mimeinfo.cache` 没跟着刷新时 xdg-mime 仍会报出这个
+    /// 名字）按**未注册**算：链接点下去谁也唤不起，而报成「别人占着」会让「注册」先弹一个
+    /// 「是否覆盖」——覆盖一个不存在的东西，没什么可确认的。
     fn classify(&self, t: &Target, default: &str) -> (Registration, bool) {
         if default.is_empty() {
             return (Registration::Unregistered, false);
         }
         let Some((path, info)) = self.find_desktop(default) else {
-            return (
-                Registration::Other(format!("{default}（文件已不存在）")),
-                false,
-            );
+            return (Registration::Unregistered, false);
         };
         if default == t.desktop && self.exec_is_us(&info.exec) {
             let system = !path.starts_with(&self.xdg.data_home);
@@ -1226,7 +1227,8 @@ mod tests {
     }
 
     /// 默认处理者是别的程序：Other 带应用名、文件名与程序，用户凭此判断；
-    /// 同名 `.desktop` 但指向另一份清风输入法也是 Other（那正是「另一份安装」）。
+    /// 同名 `.desktop` 但指向另一份清风输入法也是 Other（那正是「另一份安装」）；
+    /// 默认处理者的文件已不在则是未注册。
     #[test]
     fn foreign_defaults_are_described() {
         let sb = Sandbox::new("other");
@@ -1251,10 +1253,11 @@ mod tests {
             panic!()
         };
         assert!(d.contains(&other.to_string_lossy().into_owned()), "{d}");
-        let Registration::Other(d) = ctx.facts(&THEME).reg else {
-            panic!()
-        };
-        assert!(d.contains("不存在"), "{d}");
+        assert_eq!(
+            ctx.facts(&THEME).reg,
+            Registration::Unregistered,
+            "默认处理者的文件已不在：谁也唤不起，按未注册算，注册时不必确认覆盖"
+        );
     }
 
     /// 我们写的用户级文件指向已消失的程序（便携目录搬走了）→ 自愈改指本程序；
