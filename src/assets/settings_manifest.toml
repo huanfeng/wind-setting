@@ -171,7 +171,7 @@ section = "上屏行为"
 subsection = "常用功能"
 type = "select"
 label = "z 键引导功能"
-hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先"
+hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先。选「反查模式」需先在 输入 → 反查模式 里启用"
 options = [
   { value = "", label = "不启用（作编码字母）" },
   { value = "temp_pinyin", label = "临时拼音" },
@@ -225,7 +225,7 @@ label = "通配仅出单字"
 hint = "通配与反查模式的结果只列单字，词组不出。不影响正常打字"
 
 # 未启用的扩展词库（is_enabled()==false，如五笔「行政区域」）也参与通配、反查模式与候选注释反查；
-# 普通打字候选不变。影子层首次通配才加载（core 的 DisabledDictLayers）。
+# 普通打字候选不变。影子层在开关开着时由 core 后台预热（core 的 DisabledDictLayers）。
 [[items]]
 key = "schema.codetable.lookup_disabled_dicts"
 group = "schema"
