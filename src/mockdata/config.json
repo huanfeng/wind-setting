@@ -282,6 +282,7 @@
    },
    "input_chars": "",
    "leading_chars": "",
+   "lookup_disabled_dicts": false,
    "punct_commit": true,
    "short_code_yield_level": 0,
    "show_code_hint": true,
