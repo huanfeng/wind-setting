@@ -291,6 +291,7 @@
    "top_code_commit": true,
    "wildcard": false,
    "wildcard_key": "z",
+   "wildcard_single_only": false,
    "z_key_action": "",
    "z_key_repeat": true
   },

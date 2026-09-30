@@ -211,6 +211,17 @@ options = [
   { value = "?", label = "? 问号" },
 ]
 
+# 通配仅单字：行内通配与反查模式都受它管，故不挂 enabled_when（反查模式不看通配主开关）。
+# 单字判据是字素簇（core 的 wind_candidate::single_markable_char）。
+[[items]]
+key = "schema.codetable.wildcard_single_only"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "通配仅出单字"
+hint = "通配与反查模式的结果只列单字，词组不出。不影响正常打字"
+
 # 档位取「对哪几级简码生效」，故 core 侧判据是「当前码长 > 档位」而非「等于全码长」——
 # 非五笔方案的全码长未必是 4，用码长比较才不必知道方案的最大码长。
 # core 支持 1（仅一简），下拉不列：一简位的字本就只有 25 个，单独成档没有实际用途。
