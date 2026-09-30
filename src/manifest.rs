@@ -284,6 +284,14 @@ impl Manifest {
                 None => out.push((it.section.clone(), vec![key.clone()])),
             }
         }
+        // 整节都被门控掉（平台 / 变体 / hidden）的分区不返回：否则页面上留一张只有标题的
+        // 空卡片、二级导航里多一个点进去什么都没有的条目（Linux 的「工具栏」「游戏兼容」、
+        // macOS 的「任务栏图标」）。部分隐藏的分区照常返回完整 key 表，行级跳过仍归
+        // `section_rows`。
+        out.retain(|(_, keys)| {
+            keys.iter()
+                .any(|k| self.items.get(k).is_some_and(|it| !it.hidden))
+        });
         out
     }
 }
@@ -6408,6 +6416,30 @@ mod tests {
     ///
     /// 断言是「Linux 上隐藏、其余平台可见」，顺带钉住这批项没有被误写成
     /// `platform = "windows"`（那会连 mac 一起藏，改变 mac 的现状）。
+    /// 整节门控掉的分区不出现在 `sections_of` 里（否则渲染成只有标题的空卡片），
+    /// 部分隐藏的分区照常返回、且 key 表不删减。
+    #[test]
+    fn fully_gated_sections_are_dropped() {
+        let m = Manifest::from_embedded();
+        let names =
+            |g: &str| -> Vec<String> { m.sections_of(g).into_iter().map(|(s, _)| s).collect() };
+        let linux = cfg!(target_os = "linux");
+        assert_eq!(names("advanced").contains(&"游戏兼容".to_string()), !linux);
+        assert_eq!(names("ui").contains(&"工具栏".to_string()), !linux);
+        // 部分隐藏：「临时英文」里 capslock.cancel_on_mode_switch 仅 Windows，分区仍在、
+        // 被隐藏的 key 仍在表里（行级跳过是 section_rows 的事）。
+        let keys = m
+            .sections_of("input")
+            .into_iter()
+            .find(|(s, _)| s == "临时英文")
+            .map(|(_, k)| k)
+            .expect("临时英文分区应在");
+        assert!(
+            keys.iter()
+                .any(|k| k == "input.capslock.cancel_on_mode_switch")
+        );
+    }
+
     #[test]
     fn toolbar_indicator_items_hidden_on_linux() {
         let m = Manifest::from_embedded();
