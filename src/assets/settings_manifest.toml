@@ -2401,6 +2401,8 @@ section = "功能快捷键"
 type = "hotkey"
 label = "显示/隐藏工具栏"
 hint = "切换工具栏的显示状态"
+# Linux 无落点：同 ui.toolbar.visible——`toggle_toolbar` 只翻转那个开关。
+platform = "windows, macos"
 
 # 不设 global：softkeyboard 不在 build_global_hotkey_entries 的 supported 表里
 # （那 7 个动作都不需要按键上下文，而软键盘开启后要接管整个主键区）。
@@ -2411,6 +2413,9 @@ section = "功能快捷键"
 type = "hotkey"
 label = "显示/隐藏软键盘"
 hint = "开关软键盘面板；面板也可从工具栏与主菜单打开"
+# Linux 无落点：软键盘面板在 Windows 是服务进程自绘窗、在 macOS 是 `.app` 的 AppKit 面板，
+# Fcitx5 addon 没有对应呈现（linux-port.md §2 精简范围）。
+platform = "windows, macos"
 
 [[items]]
 key = "keys.open_settings"
@@ -2472,6 +2477,9 @@ hint = "在任意应用中一键切换到本输入法（Windows 只切当前应�
 #   macOS：  无对应机制，由服务进程自己注册 Carbon 全局热键 + TISSelectInputSource。
 #            系统没有「只改这个 app」的公开 API，故只能全局切换——差异不可消除，
 #            上面的 hint 已如实写明。
+#   Linux：  无落点。协调器的 `activate_ime` 臂只在 target_os = "macos" 下编译，Linux 落进
+#            `Unhandled hotkey` 兜底；Fcitx5 的输入法切换归它自己的触发键管。
+platform = "windows, macos"
 
 # ═══════════════════════════ 外观 ═══════════════════════════
 # ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──
@@ -3171,6 +3179,9 @@ label = "显示状态栏"
 # 菜单栏指示器——两者形态不同但语义一致（“输入法的常驻状态显示”），故不提“可拖动”
 # 之类只在一边成立的描述。清单当前不支持分平台文案，写通用的即可。
 hint = "常驻显示输入法当前状态（中英、全半角、标点、方案）"
+# Linux 无落点：Fcitx5 addon 既没有浮动工具栏也没有托盘指示器，服务端 `notify_toolbar`
+# 推出的状态帧（CMD_MODE_STATUS）addon 不接（wind_linux/AGENTS.md 差距表「工具栏」）。
+platform = "windows, macos"
 
 # 带 platform = "windows" 的几项：macOS 用菜单栏指示器，既不是浮动窗口也无法排列/自动隐藏。
 # （ui.toolbar.visible 不在此列——它在 macOS 上控制指示器的显示与否，是有落点的。）
@@ -3451,6 +3462,10 @@ group = "advanced"
 section = "游戏兼容"
 type = "toggle"
 label = "Valve 游戏兼容模式（Dota2 等）"
+# 落点是 Windows 注册表（TSF 输入法显示名，dota2_compat::apply），Linux 无从谈起。
+# ⚠️ macOS 同样无落点（probe 恒 None、apply 恒报错），但门控它会改变 mac 现有行为，
+# 不在 Linux 适配的范围内，故暂按 "windows, macos" 保持 mac 原样。
+platform = "windows, macos"
 hint = "部分 Valve 游戏（如 Dota 2）只给内置名单里的输入法绘制候选，本输入法不在名单内，因此游戏里看不到候选、还会多出一个左上角小窗。开启后本输入法在系统里登记的名称会改为下面填的那个，语言栏与 Windows 设置里也显示该名称；需管理员权限，重启游戏后生效"
 
 # ⚠️ 刻意**不加** enabled_when：用户多半是「先把名字改成想试的那条，再开开关」，
@@ -3462,6 +3477,7 @@ group = "advanced"
 section = "游戏兼容"
 type = "string"
 label = "登记名称"
+platform = "windows, macos"
 hint = "开启上面的开关后向系统登记的名称，必须与游戏内置名单里的某一条逐字一致，差一个字符就不生效且没有任何报错（名单里多数条目形如「中文 (简体) - 郑码」，抄的时候当心全角括号与多余空格）。留空则用默认的「拼音输入法」。换成名单里别的名字可能改变游戏内的行为（例如上屏后的第一个退格会不会被吞），需自行实测"
 
 # ── 日志设置 ──

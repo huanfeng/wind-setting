@@ -357,8 +357,15 @@ mod tests {
             ThemeSource::Text("[meta]\n".to_string()).describe(),
             "新的主题文件"
         );
+        // 路径来自文件对话框 / 命令行，是本机原生形态：Windows 的反斜杠在 unix 上
+        // 只是文件名里的普通字符，拿它测 unix 构建等于测一条走不到的路。
+        let pkg = if cfg!(windows) {
+            r"C:\down\水墨.wtheme"
+        } else {
+            "/home/me/down/水墨.wtheme"
+        };
         assert_eq!(
-            ThemeSource::Package(r"C:\down\水墨.wtheme".to_string()).describe(),
+            ThemeSource::Package(pkg.to_string()).describe(),
             "水墨.wtheme"
         );
         // 路径取不出文件名时也得有话说，不能是空串

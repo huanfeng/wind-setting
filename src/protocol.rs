@@ -88,7 +88,12 @@ const PROTOCOL_KEY: &str = r"Software\Classes\windinput";
 const COMMAND_KEY: &str = r"Software\Classes\windinput\shell\open\command";
 
 /// `windinput://` 协议当前归谁。
+///
+/// 非 Windows 上 `Ours` / `Other` 不会被构造：协议由应用包（`.app` 的 Info.plist / Linux
+/// 的 `.desktop`）声明，[`current_registration`] 恒报 `Unregistered`。页面仍按三态写一套
+/// 分支（跨平台共用），故只在这里对非 Windows 放行 dead_code，不动枚举本身。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum Registration {
     /// 注册表里没有这个协议 —— 一键导入链接点了不会有反应。
     Unregistered,
@@ -102,6 +107,7 @@ pub enum Registration {
 }
 
 /// 本程序应当写入的命令行。`%1` 是 shell 传入的完整 URL。
+#[cfg(any(windows, test))]
 pub fn command_for_exe(exe: &str) -> String {
     format!("\"{exe}\" \"%1\"")
 }
@@ -111,6 +117,7 @@ pub fn command_for_exe(exe: &str) -> String {
 /// 比较忽略大小写 —— Windows 路径不区分大小写，`C:\Program Files\…` 与
 /// `c:\program files\…` 是同一个文件，按字节比会把自己的注册误判成他人的，
 /// 于是每次启动都"自愈"一遍、界面上还一直显示"被其它程序注册"。
+#[cfg(any(windows, test))]
 pub fn classify(current: Option<&str>, want: &str) -> Registration {
     match current {
         None => Registration::Unregistered,
@@ -125,6 +132,7 @@ pub fn classify(current: Option<&str>, want: &str) -> Registration {
 ///
 /// 兼容没加引号的历史值（早期版本或手工改过的）：那种情况取第一个空白前的片段。
 /// 路径含空格又没引号的值本身就是坏的（shell 也唤不起来），无需迁就。
+#[cfg(any(windows, test))]
 pub fn exe_path_in_command(cmd: &str) -> Option<String> {
     let s = cmd.trim();
     let p = match s.strip_prefix('"') {
@@ -143,6 +151,7 @@ pub fn exe_path_in_command(cmd: &str) -> Option<String> {
 /// 后者留给高级页展示 + 用户确认后覆盖。
 ///
 /// `exe_exists` 注入以便单测（真实实现传 `|p| Path::new(p).exists()`）。
+#[cfg(any(windows, test))]
 pub fn is_stale_registration(cmd: &str, exe_exists: impl Fn(&str) -> bool) -> bool {
     match exe_path_in_command(cmd) {
         Some(p) => !exe_exists(&p),

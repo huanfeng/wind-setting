@@ -16,7 +16,9 @@
 //! 都挂在它下面。共用的话，`.wpkg` 和 `.wtheme` 在文件列表里会长得一模一样、类型列也
 //! 是同一行字，用户分不出手上是方案还是主题——而这正是给主题包单开一个后缀的初衷。
 
-use crate::protocol::{Registration, classify};
+use crate::protocol::Registration;
+#[cfg(any(windows, test))]
+use crate::protocol::classify;
 
 /// 一种文件关联的全部身份信息。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,6 +93,7 @@ impl Assoc {
 /// - 指向别的 ProgId 时是他人关联。展示优先给那个 ProgId 的打开命令 ——
 ///   用户凭它分辨"别的软件"还是"自己另一份安装"；命令读不到时给 ProgId 名，
 ///   这种关联本身就是死的（双击唤不起程序），自愈会按残留收回。
+#[cfg(any(windows, test))]
 pub fn classify_assoc(
     ext_progid: Option<&str>,
     progid_cmd: Option<&str>,
@@ -113,6 +116,7 @@ pub fn classify_assoc(
 /// **负号是关键**：正数按图标在资源表里的**位置序号**取（0 开始），会随资源顺序
 /// 变动而指错；负数按**资源 ID** 取，ID 由 build.rs 显式钉死（主图标 1、本图标 2）。
 /// 路径含空格时整体加引号，与打开命令同一处理。
+#[cfg(any(windows, test))]
 pub fn icon_value_for_exe(exe: &str, icon_id: i32) -> String {
     format!("\"{exe}\",-{icon_id}")
 }

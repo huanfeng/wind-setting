@@ -5222,6 +5222,24 @@ mod tests {
         assert!(!super::contains_cjk("Arial"));
         assert!(!super::contains_cjk(""));
     }
+
+    /// `system.fonts` 按 core 的真实形状解析：取本地化名、缺了退回英文族名、重名去重、
+    /// 中文组在前。旧实现只认 mock 编出来的 `name` 键，对真回包恒产出空表。
+    #[test]
+    fn font_names_from_rpc_reads_core_shape() {
+        let v = serde_json::json!([
+            { "family": "DejaVu Sans", "display_name": "DejaVu Sans" },
+            { "family": "Noto Sans CJK SC", "display_name": "思源黑体" },
+            { "family": "Source Han Sans SC", "display_name": "思源黑体" },
+            { "family": "WenQuanYi Micro Hei", "display_name": "" },
+            { "family": "", "display_name": "" },
+        ]);
+        assert_eq!(
+            super::font_names_from_rpc(&v),
+            vec!["思源黑体", "DejaVu Sans", "WenQuanYi Micro Hei"]
+        );
+        assert!(super::font_names_from_rpc(&serde_json::json!(null)).is_empty());
+    }
 }
 
 /// 加载系统字体列表：Windows 用 DirectWrite 系统字体集枚举字体**家族**；
@@ -5245,19 +5263,39 @@ fn load_fonts() -> Vec<String> {
     }
     let list =
         rpc::call_core("system.fonts", &serde_json::json!({})).unwrap_or(Value::Array(vec![]));
-    list.as_array()
+    font_names_from_rpc(&list)
+}
+
+/// `system.fonts` 回包 → 下拉用的族名表（去重，按 [`sort_font_names`] 排序）。
+///
+/// core 的形状是 `[{"family": 英文族名, "display_name": 本地化名}]`（wind-rpc
+/// `dispatch.rs`）。此前这里只认 `name` 键——那是 mock 自己编的形状，与 core 从未对上，
+/// 于是非 Windows（没有 DirectWrite 可先查的平台）上字体下拉恒为空。
+///
+/// 存盘取 `display_name`：与 Windows 存 zh-cn 本地化名同一口径；Linux 渲染端按
+/// fontconfig 查族名时本地化别名同样认（`wind-ui` `text/linux/fontconfig.rs`
+/// `family_exists`）。缺它才退回 `family`。
+fn font_names_from_rpc(list: &Value) -> Vec<String> {
+    let mut names: Vec<String> = list
+        .as_array()
         .map(|arr| {
             arr.iter()
                 .filter_map(|f| {
-                    f.get("name")
-                        .or_else(|| f.get(0))
-                        .and_then(|v| v.as_str())
+                    f.get("display_name")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                        .or_else(|| f.get("family").and_then(Value::as_str))
                         .or_else(|| f.as_str())
+                        .filter(|s| !s.trim().is_empty())
                         .map(String::from)
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // core 按英文族名去重，两个族可能共用同一个本地化名。
+    names.sort();
+    names.dedup();
+    sort_font_names(names)
 }
 
 /// 从 DirectWrite 本地化名表 `[(locale, 名字)]` 里挑下拉显示 / 存盘用的那个：

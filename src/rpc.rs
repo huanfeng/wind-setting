@@ -1581,8 +1581,11 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             "pagerBarDisplay": "auto", "pageNumberDisplay": "show",
             "langbarText": ["#000000", "#FFFFFF", "#000000", "#FFFFFF"],
         }),
+        // 形状与 core `wind-rpc` dispatch 的 `system.fonts` 一致（`family` + `display_name`）。
         "system.fonts" => json!([
-            { "name": "微软雅黑" }, { "name": "思源黑体" }, { "name": "等线" }
+            { "family": "Microsoft YaHei", "display_name": "微软雅黑" },
+            { "family": "Source Han Sans SC", "display_name": "思源黑体" },
+            { "family": "DengXian", "display_name": "等线" }
         ]),
         // ★ `customEdition` 刻意给成非 null：定制版徽章（关于页）在开发机上**永远**渲染不
         // 出来——开发机装的不是定制版，core 那边恒返回 null。mock 是这个分支唯一的自查

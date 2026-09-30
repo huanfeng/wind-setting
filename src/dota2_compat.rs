@@ -16,6 +16,7 @@
 //! 弹 UAC；`CreateProcess` 系不会提权，会直接以 `ERROR_ELEVATION_REQUIRED` 失败。
 //! 与 `update::install` 同一理由。
 
+#[cfg(windows)]
 use std::path::PathBuf;
 
 /// 系统侧实况：注册表里此刻登记的是什么。
@@ -84,6 +85,7 @@ pub fn probe() -> Option<SystemAlias> {
 }
 
 /// core 可执行文件（与设置程序同目录，dev 变体带 `_dev` 后缀）。
+#[cfg(windows)]
 fn core_exe() -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     // 变体后缀复用 mode::pipe_suffix()（"" / "_dev"），不另造一份 dev 判定

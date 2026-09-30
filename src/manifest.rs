@@ -300,9 +300,9 @@ fn opt_str(v: &Value, k: &str) -> Option<String> {
 
 /// 清单项的 `platform` 字段是否匹配当前平台。
 ///
-/// 取值为逗号分隔的平台名（`windows` / `macos`），命中其一即显示；缺省（`None`）= 全平台。
-/// 用于「该配置项在本平台没有落点」的情形——如工具栏自动隐藏（macOS 用菜单栏指示器，
-/// 没有浮动工具栏可隐藏）。**不要**用它藏「本平台还没做」的功能：那属于待办，藏起来只会
+/// 取值为逗号分隔的平台名（`windows` / `macos` / `linux`），命中其一即显示；缺省（`None`）
+/// = 全平台。用于「该配置项在本平台没有落点」的情形——如工具栏自动隐藏（macOS 用菜单栏
+/// 指示器，没有浮动工具栏可隐藏）。**不要**用它藏「本平台还没做」的功能：那属于待办，藏起来只会
 /// 让人以为不支持。
 ///
 /// 未知平台名一律不匹配：写错名字宁可整项消失（一眼看得见），也不要静默当成全平台显示。
@@ -313,9 +313,18 @@ fn platform_matches(platform: Option<&str>) -> bool {
     list.split(',').map(str::trim).any(|p| match p {
         "windows" => cfg!(windows),
         "macos" => cfg!(target_os = "macos"),
+        "linux" => cfg!(target_os = "linux"),
         _ => false,
     })
 }
+
+/// 本平台的服务能否注册「全局热键」（热键对话框里的「全局」勾选）。
+///
+/// Windows 走 `RegisterHotKey`、macOS 走 Carbon `RegisterEventHotKey`；Linux 没有：
+/// Wayland 无标准方案，服务端也没接（linux-port.md §2「全局热键」），勾了不生效。
+/// 这里只**藏勾选**，不改数据流——`keys.global_hotkeys` 的收集器照常登记，从别的
+/// 平台同步过来的取值原样写回，不因在 Linux 上打开过设置就被清空。
+const GLOBAL_HOTKEYS_SUPPORTED: bool = cfg!(any(windows, target_os = "macos"));
 
 /// 清单项的 `variant` 字段是否匹配当前构建变体。
 ///
@@ -2017,7 +2026,7 @@ fn build_hotkey(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
         key_idx,
         key_vals.clone(),
         key_labels,
-        global_sig,
+        global_sig.filter(|_| GLOBAL_HOTKEYS_SUPPORTED),
         enabled_sig,
     );
     register_dialog(state, dlg);
@@ -6203,11 +6212,16 @@ mod tests {
     fn platform_gate() {
         // 缺省 = 全平台。
         assert!(platform_matches(None));
-        // 当前平台恒有一个匹配，另一个不匹配。
+        // 三个平台名各自只在本平台匹配。
         assert_eq!(platform_matches(Some("windows")), cfg!(windows));
         assert_eq!(platform_matches(Some("macos")), cfg!(target_os = "macos"));
-        // 逗号列表：命中其一即可，容忍空白。
-        assert!(platform_matches(Some("windows, macos")));
+        assert_eq!(platform_matches(Some("linux")), cfg!(target_os = "linux"));
+        // 逗号列表：命中其一即可，容忍空白。三者全列 = 本仓支持的每个平台都显示。
+        assert!(platform_matches(Some("windows, macos, linux")));
+        assert_eq!(
+            platform_matches(Some("windows, macos")),
+            cfg!(any(windows, target_os = "macos"))
+        );
         // 写错名字宁可整项消失（一眼看得见），也不要静默当成全平台显示。
         assert!(!platform_matches(Some("darwin")));
     }
@@ -6358,14 +6372,15 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_items_hidden_on_macos() {
-        // 这些配置在 macOS 无落点，逐项理由：
-        //   toolbar.*         菜单栏指示器不是浮动窗口，无从隐藏/排列/自动淡出；
+    fn windows_only_items_hidden_elsewhere() {
+        // 这些配置只在 Windows 有落点，macOS 与 Linux 都藏。逐项理由：
+        //   toolbar.*         macOS 的菜单栏指示器不是浮动窗口，无从隐藏/排列/自动淡出；
+        //                     Linux 连指示器都没有（见 `toolbar_indicator_items_hidden_on_linux`）；
         //   capslock.cancel_* 取消大写靠合成 CapsLock 敲击，而 macOS 的锁定态由 HID 层
         //                     维护，CGEvent 改不动（要走 IOHIDSetModifierLockState）；
+        //                     Linux 的 addon 没有按键合成通路（AGENTS.md 差距表）；
         //   stats.track_english  英文输入由 Windows 侧 TSF DLL 经 CMD_INPUT_STATS 上报，
-        //                     macOS 的 `.app` 没有对应采集点。
-        // 而 ui.toolbar.visible 必须留着——它在 macOS 上控制指示器的显示与否。
+        //                     macOS 的 `.app` 与 Linux 的 addon 都没有对应采集点。
         let m = Manifest::from_embedded();
         for k in [
             "ui.toolbar.hide_in_fullscreen",
@@ -6379,19 +6394,38 @@ mod tests {
             "stats.track_english",
         ] {
             let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
+            assert_eq!(item.hidden, !cfg!(windows), "{k} 的平台门控与当前平台不符");
+        }
+    }
+
+    /// Windows 与 macOS 都有落点、只有 Linux 没有的项。
+    ///
+    /// - `ui.toolbar.visible` / `keys.toggle_toolbar`：mac 上控制菜单栏指示器；Linux 的
+    ///   addon 不接状态帧（CMD_MODE_STATUS），没有任何常驻状态显示；
+    /// - `keys.softkeyboard`：mac 有 AppKit 软键盘面板，Linux 不做软键盘；
+    /// - `keys.activate_ime`：协调器的处理臂只在 macOS 编译，Linux 落 `Unhandled hotkey`；
+    /// - `system.dota2_compat*`：落点是 Windows 注册表。
+    ///
+    /// 断言是「Linux 上隐藏、其余平台可见」，顺带钉住这批项没有被误写成
+    /// `platform = "windows"`（那会连 mac 一起藏，改变 mac 的现状）。
+    #[test]
+    fn toolbar_indicator_items_hidden_on_linux() {
+        let m = Manifest::from_embedded();
+        for k in [
+            "ui.toolbar.visible",
+            "keys.toggle_toolbar",
+            "keys.softkeyboard",
+            "keys.activate_ime",
+            "system.dota2_compat",
+            "system.dota2_compat_name",
+        ] {
+            let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
             assert_eq!(
                 item.hidden,
-                cfg!(target_os = "macos"),
+                cfg!(target_os = "linux"),
                 "{k} 的平台门控与当前平台不符"
             );
         }
-        assert!(
-            !m.items
-                .get("ui.toolbar.visible")
-                .expect("清单缺该项")
-                .hidden,
-            "ui.toolbar.visible 两平台都该显示"
-        );
     }
 
     /// ★ `ui.toolbar.items` 的选项必须**逐项覆盖** core 的值域（`TOOLBAR_ITEM_KEYS`），
