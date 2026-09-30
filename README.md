@@ -71,8 +71,25 @@ Linux 上原生构建（`cargo build` / `cargo test` 直接跑，windui 走 X11�
 
 端点与目录都与服务同一套规则：控制 socket `$XDG_RUNTIME_DIR/wind_input[_dev]_ctrl.sock`，
 用户配置 `~/.config/WindInput[Dev]`，日志 `~/.local/share/WindInput[Dev]/logs`，打开目录/链接走
-`xdg-open`。`.wpkg` / `.wtheme` / `windinput://` 的关联由包里的 `.desktop` 与 MIME 声明，高级页
-「系统集成」相应显示「由应用包声明」。
+`xdg-open`。
+
+### 系统关联（`windinput://`、`.wpkg`、`.wtheme`）
+
+高级页「系统集成」按 XDG 现查、可按当前用户注册/取消（`src/xdg_assoc.rs`，Windows 的注册表版在
+`protocol.rs` / `file_assoc.rs`，三态与门控两边同一套）：
+
+| | 做法 |
+|---|---|
+| 状态 | `xdg-mime query default <类型>` 取默认处理者，再按 XDG 查找顺序读那份 `.desktop` 的 `Exec`：是本程序 → 已注册；别的程序（含另一份清风，如装了 deb 又跑便携版）→ 显示应用名、`.desktop` 与程序路径；查不到或那份 `.desktop` 已不在 → 未注册。系统包（`/usr/share`）提供且指向本程序时注明「系统安装包提供，在此不能取消」、「取消注册」灰掉；缺 xdg-mime 时直说原因 |
+| 注册 | 系统包那份就指向本程序时只 `xdg-mime default`；否则先把包里同一份 `.desktop` 与 MIME 描述（`include_str!` 取 WindInput 仓 `scripts/linux/pkg/`）以**本程序绝对路径**写进 `$XDG_DATA_HOME/applications`、`$XDG_DATA_HOME/mime/packages`（带 `X-WindInput-UserInstall` 标记），跑 `update-mime-database` / `update-desktop-database`，再设默认；写完回读，被桌面专属 `mimeapps.list` 盖掉时报错。缺 `update-mime-database` 对包文件是硬错误（认不出类型就会按 zip 打开），缺 `update-desktop-database` 只跳过 |
+| 取消 | 只去掉 `mimeapps.list` 里指向我们 `.desktop` 的项、只删带标记的用户级文件；两种包共用 `windinput-import.desktop`，各管各的 `MimeType`，最后一个包类型取消时才删 MIME 描述。系统文件与别人的关联一律不动，所以不弹「将删除他人关联」的确认 |
+| 启动自愈 | 门控同 Windows（便携版不碰、用户取消过不再写）。只修本程序写过、`Exec` 指向已消失路径的用户级文件：改指本程序；本程序就是 deb 那份时删掉残留，让系统那份生效。从没注册过、或指向另一份还在的清风，都不动 |
+
+端到端：WindInput 仓 `scripts/linux/e2e-assoc.sh`（隔离 XDG + 私有 Xvfb：类型识别、默认处理者、
+`xdg-open` / `gio open` 拉起本程序进导入确认、首实例已开时转参、界面上注册/取消一圈、别人的关联
+逐字节不变）。未验：真桌面的文件管理器双击（Nautilus / Dolphin / Deepin 文件管理器）、KDE 下
+xdg-mime 走 ktraderclient 的查询分支、snap / flatpak 沙箱里的浏览器点链接（要经 portal 转出）。
+用户级注册不装图标：便携包的类型图标与应用图标要等打包形态（tarball / AppImage）定了再补。
 
 ### 按平台屏蔽的设置项
 
@@ -108,6 +125,8 @@ src/
   pages/dict/        词库管理页(state / view / spec / dialogs)
   rpc.rs             JSON-RPC over named pipe
   protocol.rs        自定义协议注册与自愈
+  file_assoc.rs      .wpkg / .wtheme 文件关联（Windows 注册表）
+  xdg_assoc.rs       Linux 的协议与文件关联（XDG：.desktop / MIME / mimeapps.list）
   assets/            设置清单与 capability 快照
 docs/redesign/       引擎配置对照与布局设计文档
 ```
