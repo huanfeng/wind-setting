@@ -109,7 +109,7 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     // 硬编码卡片（集成 / 导入 / 备份）是两批来源，清单排到最后也只是"manifest 那批
     // 里的最后"，仍落在三张卡之前。故两个 manifest 分区都在这里显式定位：
     //
-    //   系统集成 → 导入 → 备份与还原 → 应用兼容性与独立配置 → 游戏兼容 → 日志设置
+    //   系统集成 → 导入 → 备份与还原 → 应用兼容性 → 游戏兼容 → 日志设置
     //
     // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；游戏兼容是
     // 少数人才开的兼容开关；日志设置只在排查时才动，压轴。
@@ -168,7 +168,7 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     // 应用兼容：入口卡片，界面本身在独立窗里（规则多、三栏，放不进一页）。
     // 排在「游戏兼容」上方——两者都是「个别软件的兼容处理」，前者按软件、后者按注册表。
     secs.push(nav.wrap(
-        "应用兼容性与独立配置",
+        "应用兼容性",
         0,
         crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
     ));
@@ -191,9 +191,9 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
 fn compat_entry_section(app: &Rc<RefCell<AppState>>) -> Element {
     let app = app.clone();
     section(
-        "应用兼容性与独立配置",
+        "应用兼容性",
         vec![setting_row(
-            "应用兼容规则",
+            "应用兼容性与独立配置",
             Some(
                 "针对个别软件调整候选窗定位、位置探测、上屏换行、初始中英文状态等，\
                  解决飞书、微信、Excel、WPS 等软件里候选窗跳动、错位、换行异常的问题。\

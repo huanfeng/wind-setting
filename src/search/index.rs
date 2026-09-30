@@ -393,11 +393,11 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "ui", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份" },
     Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口" },
     // ── 应用兼容：规则本身的字段来自核心的元数据、运行时才知道，索引只收页级入口 ──
-    Handwritten { id: "compat:main", anchor: "advanced:compat", page: "advanced", title: "应用兼容性与独立配置", section: "应用兼容性与独立配置", keywords: "兼容性 软件 进程 候选窗 位置 飞书 微信 excel wps 规则 compat" },
-    Handwritten { id: "compat:add", anchor: "advanced:compat", page: "advanced", title: "新增应用规则", section: "应用兼容性与独立配置", keywords: "添加 进程名 exe 手动" },
-    Handwritten { id: "compat:import", anchor: "advanced:compat", page: "advanced", title: "导入应用兼容规则", section: "应用兼容性与独立配置", keywords: "compat.toml 分享 合并 替换" },
-    Handwritten { id: "compat:export", anchor: "advanced:compat", page: "advanced", title: "导出应用兼容规则", section: "应用兼容性与独立配置", keywords: "compat.toml 备份 分享" },
-    Handwritten { id: "compat:reset", anchor: "advanced:compat", page: "advanced", title: "还原应用兼容规则", section: "应用兼容性与独立配置", keywords: "出厂 默认 恢复 全部还原" },
+    Handwritten { id: "compat:main", anchor: "advanced:compat", page: "advanced", title: "应用兼容性与独立配置", section: "应用兼容性", keywords: "兼容性 软件 进程 候选窗 位置 飞书 微信 excel wps 规则 compat" },
+    Handwritten { id: "compat:add", anchor: "advanced:compat", page: "advanced", title: "新增应用规则", section: "应用兼容性", keywords: "添加 进程名 exe 手动" },
+    Handwritten { id: "compat:import", anchor: "advanced:compat", page: "advanced", title: "导入应用兼容规则", section: "应用兼容性", keywords: "compat.toml 分享 合并 替换" },
+    Handwritten { id: "compat:export", anchor: "advanced:compat", page: "advanced", title: "导出应用兼容规则", section: "应用兼容性", keywords: "compat.toml 备份 分享" },
+    Handwritten { id: "compat:reset", anchor: "advanced:compat", page: "advanced", title: "还原应用兼容规则", section: "应用兼容性", keywords: "出厂 默认 恢复 全部还原" },
     // ── 高级 ──
     Handwritten { id: "advanced:integration", anchor: "advanced:integration", page: "advanced", title: "桌面集成", section: "桌面集成", keywords: "协议 关联 注册" },
     Handwritten { id: "advanced:protocol", anchor: "advanced:integration", page: "advanced", title: "协议关联", section: "桌面集成", keywords: "windinput 链接 深链" },
