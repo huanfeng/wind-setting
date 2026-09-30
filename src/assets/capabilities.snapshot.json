@@ -178,6 +178,24 @@
       "type": "str"
     },
     {
+      "default": false,
+      "key": "schema.codetable.wildcard_single_only",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable]"
+      },
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.codetable.lookup_disabled_dicts",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable]"
+      },
+      "type": "bool"
+    },
+    {
       "default": "",
       "key": "schema.codetable.input_chars",
       "schemaOverride": {
@@ -1181,6 +1199,21 @@
       "default": [],
       "key": "input.rare_char.include_blocks",
       "type": "strlist"
+    },
+    {
+      "default": false,
+      "key": "input.reverse.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "follow",
+      "key": "input.reverse.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
     },
     {
       "default": false,

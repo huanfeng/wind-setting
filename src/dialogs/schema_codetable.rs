@@ -109,6 +109,9 @@ const SPEC_BEHAVIOR_FIELDS: &[&str] = &[
     // 开不开也取决于这张码表的编码结构。
     "wildcard",
     "wildcard_key",
+    // 仅单字按方案覆盖，理由同通配两项。
+    "wildcard_single_only",
+    "lookup_disabled_dicts",
 ];
 
 /// 一个方案级配置项的**值**信号。三种形态对应 manifest 的
