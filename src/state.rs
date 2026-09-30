@@ -2819,6 +2819,7 @@ fn key_action_label(verb: &str) -> String {
         "temp_pinyin" => "临时拼音".to_string(),
         "temp_english" => "临时英文".to_string(),
         "rare_char" => "生僻字".to_string(),
+        "reverse" => "反查模式".to_string(),
         other => other.to_string(),
     }
 }
@@ -3603,6 +3604,7 @@ mod tests {
     #[test]
     fn key_action_label_knows_rare_char() {
         assert_eq!(key_action_label("rare_char"), "生僻字");
+        assert_eq!(key_action_label("reverse"), "反查模式");
         assert_eq!(
             key_action_label("bogus_verb"),
             "bogus_verb",

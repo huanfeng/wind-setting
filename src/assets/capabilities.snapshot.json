@@ -1202,6 +1202,21 @@
     },
     {
       "default": false,
+      "key": "input.reverse.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "follow",
+      "key": "input.reverse.candidate_layout",
+      "type": "enum",
+      "values": [
+        "follow",
+        "vertical",
+        "horizontal"
+      ]
+    },
+    {
+      "default": false,
       "key": "input.emoji.enabled",
       "type": "bool"
     },

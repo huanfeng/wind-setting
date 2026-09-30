@@ -127,6 +127,10 @@
    "trigger_keys": []
   },
   "rare_phrase": "keep",
+  "reverse": {
+   "candidate_layout": "follow",
+   "enabled": false
+  },
   "s2t": {
    "enabled": false,
    "variant": "s2t"
