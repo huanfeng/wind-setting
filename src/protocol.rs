@@ -89,11 +89,11 @@ const COMMAND_KEY: &str = r"Software\Classes\windinput\shell\open\command";
 
 /// `windinput://` 协议当前归谁。
 ///
-/// 非 Windows 上 `Ours` / `Other` 不会被构造：协议由应用包（`.app` 的 Info.plist / Linux
-/// 的 `.desktop`）声明，[`current_registration`] 恒报 `Unregistered`。页面仍按三态写一套
-/// 分支（跨平台共用），故只在这里对非 Windows 放行 dead_code，不动枚举本身。
+/// macOS 上 `Ours` / `Other` 不会被构造：协议由 `.app` 的 Info.plist 声明，
+/// [`current_registration`] 恒报 `Unregistered`。页面仍按三态写一套分支（跨平台共用），
+/// 故只在这里对它放行 dead_code，不动枚举本身。Linux 按 XDG 现查（[`crate::xdg_assoc`]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub enum Registration {
     /// 注册表里没有这个协议 —— 一键导入链接点了不会有反应。
     Unregistered,
@@ -104,6 +104,46 @@ pub enum Registration {
     /// 最常见的来源不是"别的软件抢了"，而是**另一份清风输入法**：用户装过安装版又跑便携版、
     /// 或便携目录被移动过。所以文案要把命令行原样摆出来让用户自己判断，不能一律说成"被占用"。
     Other(String),
+}
+
+/// 一条关联此刻的全部事实——高级页据此出文案与按钮可用性。
+///
+/// Windows / macOS 只有三态（[`Facts::from_registration`]）；Linux 另有两件三态装不下的事：
+/// 关联是不是系统安装包提供的（那种取消不了），以及用户目录里有没有本程序留下、可撤的东西。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Facts {
+    pub reg: Registration,
+    /// 由系统安装包（`/usr/share` 下的 `.desktop`）提供且正指向本程序。仅 Linux 会为真。
+    pub system_managed: bool,
+    /// 「取消注册」有没有东西可撤。
+    pub removable: bool,
+    /// 查询本身失败（如缺 xdg-mime）时的原因。仅 Linux 会有。
+    pub error: Option<String>,
+}
+
+impl Facts {
+    /// 只有三态的平台：未注册之外都能取消（Windows 删的是 HKCU 键）；macOS 什么都不能做。
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub fn from_registration(reg: Registration) -> Self {
+        let removable = cfg!(windows) && reg != Registration::Unregistered;
+        Self {
+            reg,
+            system_managed: false,
+            removable,
+            error: None,
+        }
+    }
+}
+
+/// 协议关联的事实（每次现查）。
+#[cfg(not(target_os = "linux"))]
+pub fn current_facts() -> Facts {
+    Facts::from_registration(current_registration())
+}
+
+#[cfg(target_os = "linux")]
+pub fn current_facts() -> Facts {
+    crate::xdg_assoc::facts(&crate::xdg_assoc::PROTOCOL)
 }
 
 /// 本程序应当写入的命令行。`%1` 是 shell 传入的完整 URL。
@@ -264,22 +304,46 @@ pub fn self_heal_registration() {
     }
 }
 
-/// 非 Windows:协议随 .app 的 Info.plist 注册,无运行时代码。
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn current_registration() -> Registration {
+    current_facts().reg
+}
+
+/// Linux：只修本程序写过、但指向的程序已不在的用户级 `.desktop`（语义见
+/// [`crate::xdg_assoc::Ctx::self_heal`]）。门控同 Windows，由调用方先过。
+#[cfg(target_os = "linux")]
+pub fn self_heal_registration() {
+    crate::xdg_assoc::self_heal(&[crate::xdg_assoc::PROTOCOL]);
+}
+
+/// Linux：为当前用户注册（`xdg-mime default`，需要时先装用户级 `.desktop`）。
+#[cfg(target_os = "linux")]
+pub fn register() -> Result<(), String> {
+    crate::xdg_assoc::register(&crate::xdg_assoc::PROTOCOL)
+}
+
+/// Linux：撤掉本程序在用户目录留下的关联，系统包提供的与别人的都不动。
+#[cfg(target_os = "linux")]
+pub fn unregister() -> Result<(), String> {
+    crate::xdg_assoc::unregister(&crate::xdg_assoc::PROTOCOL)
+}
+
+/// macOS：协议随 .app 的 Info.plist 注册，无运行时代码。
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn self_heal_registration() {}
 
-/// 非 Windows:协议由 .app 的 Info.plist 声明，运行时无从查证，一律报未注册。
-#[cfg(not(windows))]
+/// macOS：协议由 .app 的 Info.plist 声明，运行时无从查证，一律报未注册。
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn current_registration() -> Registration {
     Registration::Unregistered
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn register() -> Result<(), String> {
     Err("本平台的协议关联由应用包声明，无需手动注册".to_string())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn unregister() -> Result<(), String> {
     Err("本平台的协议关联由应用包声明，无法在此解除".to_string())
 }

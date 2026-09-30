@@ -15,6 +15,9 @@
 //! 不让两个扩展名共用一个 ProgId：ProgId 是「类型」的载体，资源管理器的类型名与图标
 //! 都挂在它下面。共用的话，`.wpkg` 和 `.wtheme` 在文件列表里会长得一模一样、类型列也
 //! 是同一行字，用户分不出手上是方案还是主题——而这正是给主题包单开一个后缀的初衷。
+//!
+//! Linux 上不走注册表：`registration_of` / `register_one` / `unregister_one` 转给
+//! [`crate::xdg_assoc`]（XDG 的 `.desktop` + MIME 类型 + `mimeapps.list`）。
 
 use crate::protocol::Registration;
 #[cfg(any(windows, test))]
@@ -276,12 +279,50 @@ pub fn self_heal_registration() {
     }
 }
 
-/// 非 Windows：文件关联随 .app 的 Info.plist 声明，无运行时代码。
-#[cfg(not(windows))]
+/// 某个扩展名关联的事实（每次现查）。
+#[cfg(not(target_os = "linux"))]
+pub fn facts_of(a: &Assoc) -> crate::protocol::Facts {
+    crate::protocol::Facts::from_registration(registration_of(a))
+}
+
+// ── Linux：XDG 关联（语义见 crate::xdg_assoc）。两个扩展名各对一个 MIME 类型，
+//    共用一个 windinput-import.desktop，但注册/取消各管各的类型。
+
+#[cfg(target_os = "linux")]
+pub fn facts_of(a: &Assoc) -> crate::protocol::Facts {
+    crate::xdg_assoc::facts(&crate::xdg_assoc::target_for_ext(a.ext))
+}
+
+#[cfg(target_os = "linux")]
+pub fn registration_of(a: &Assoc) -> Registration {
+    facts_of(a).reg
+}
+
+#[cfg(target_os = "linux")]
+pub fn register_one(a: &Assoc) -> Result<(), String> {
+    crate::xdg_assoc::register(&crate::xdg_assoc::target_for_ext(a.ext))
+}
+
+#[cfg(target_os = "linux")]
+pub fn unregister_one(a: &Assoc) -> Result<(), String> {
+    crate::xdg_assoc::unregister(&crate::xdg_assoc::target_for_ext(a.ext))
+}
+
+#[cfg(target_os = "linux")]
+pub fn self_heal_registration() {
+    crate::xdg_assoc::self_heal(&[crate::xdg_assoc::PACKAGE, crate::xdg_assoc::THEME]);
+}
+
+/// Linux：`.desktop` 改动后已由 update-desktop-database 刷新，这里没有别的缓存要通知。
+#[cfg(target_os = "linux")]
+pub fn notify_shell_assoc_changed() {}
+
+/// macOS：文件关联随 .app 的 Info.plist 声明，无运行时代码。
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn self_heal_registration() {}
 
-/// 非 Windows：关联由 .app 的 Info.plist 声明，运行时无从查证，一律报未注册。
-#[cfg(not(windows))]
+/// macOS：关联由 .app 的 Info.plist 声明，运行时无从查证，一律报未注册。
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn registration_of(_a: &Assoc) -> Registration {
     Registration::Unregistered
 }
@@ -293,21 +334,21 @@ pub fn registration_of(_a: &Assoc) -> Registration {
 //   同一套存根 `protocol.rs` 早就备齐了（它的 register / unregister / current_registration
 //   都有 not(windows) 版），本模块是照着它写的，补的时候漏了这三个。
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn register_one(_a: &Assoc) -> Result<(), String> {
     Err("本平台的文件关联由应用包声明，无需手动注册".to_string())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn unregister_one(_a: &Assoc) -> Result<(), String> {
     Err("本平台的文件关联由应用包声明，无法在此解除".to_string())
 }
 
-/// 非 Windows：没有需要通知的外壳关联缓存，空实现。
+/// macOS：没有需要通知的外壳关联缓存，空实现。
 ///
 /// ⚠️ 它只在 register_one / unregister_one 返回 `Ok` 之后才会被调到，而本平台那两个恒
 ///    返回 `Err` —— 所以这个函数实际不会执行，存在的意义只是让调用处编译得过。
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn notify_shell_assoc_changed() {}
 
 #[cfg(test)]

@@ -51,6 +51,8 @@ mod tsf_log;
 mod update;
 mod user_dir;
 mod widgets;
+#[cfg(target_os = "linux")]
+mod xdg_assoc;
 
 /// 计数分配器：仅 `--features memstat` 时接管全局分配，用于把内存占用拆到具体构建阶段。
 #[cfg(feature = "memstat")]
