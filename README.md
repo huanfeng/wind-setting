@@ -59,6 +59,46 @@ wind_setting.exe --dict --schema pinyin                      # 拼音域,子标�
 
 方案未找到、或该数据域没有请求的类型(如拼音域没有「候选调整」)时会降级到最接近的位置并 toast 说明,不会报错阻断。
 
+## Linux
+
+Linux 上原生构建（`cargo build` / `cargo test` 直接跑，windui 走 X11；`WINDUI_BACKEND=wayland`
+才试原生 Wayland，否则在 Wayland 会话里经 XWayland 运行）。随清风输入法的 `.deb` 分发，装在
+`/usr/lib/windinput/wind_setting`（打包见 WindInput 仓 `scripts/linux/package-deb.sh`）。入口两个：
+
+- 应用菜单「清风输入法设置」（`windinput-setting.desktop`，同时声明 `windinput://` 协议）；
+- 输入时按「打开设置」热键（出厂 `Ctrl+Shift+]`）：服务推扩展信封 `settings.open`，Fcitx5 addon
+  启动本程序（`WIND_INPUT_SETTING` 可覆盖路径）。已开着时新进程只把参数转给首实例。
+
+端点与目录都与服务同一套规则：控制 socket `$XDG_RUNTIME_DIR/wind_input[_dev]_ctrl.sock`，
+用户配置 `~/.config/WindInput[Dev]`，日志 `~/.local/share/WindInput[Dev]/logs`，打开目录/链接走
+`xdg-open`。`.wpkg` / `.wtheme` / `windinput://` 的关联由包里的 `.desktop` 与 MIME 声明，高级页
+「系统集成」相应显示「由应用包声明」。
+
+### 按平台屏蔽的设置项
+
+清单项的 `platform` 字段取 `windows` / `macos` / `linux` 的逗号列表。Linux 版与 macOS 同一套
+精简范围（WindInput 仓 `docs/design/linux-port.md` §2），在其上 Linux 额外没有：
+
+| 设置项 | Linux 上为何无落点 |
+|---|---|
+| `ui.toolbar.visible`、`keys.toggle_toolbar` | addon 没有工具栏也没有托盘指示器，服务推的状态帧（`CMD_MODE_STATUS`）不接 |
+| `keys.softkeyboard` | 不做软键盘面板 |
+| `keys.activate_ime` | 协调器的处理臂只在 macOS 编译，Linux 落 `Unhandled hotkey`；切换输入法归 Fcitx5 |
+| `system.dota2_compat*` | 落点是 Windows 注册表 |
+| 热键对话框的「全局」勾选 | 服务在 Linux 不注册全局热键（`keys.global_hotkeys` 原值照常保留写回） |
+
+仅 Windows 的项（工具栏细项、`input.capslock.cancel_on_mode_switch`、`stats.track_english`、
+TSF 日志、语言栏角标等）在 Linux 上同样隐藏。**应用兼容性（按应用配置）保留**：服务按 addon
+报上来的程序名（Fcitx5 `InputContext::program()`）匹配规则，与 macOS 按 bundle id 同一机制。
+
+### 已知限制
+
+- **文件对话框**：rfd 走 xdg-desktop-portal，无门户时退回 `zenity`；两者都没有时「导入文件 / 导出」
+  点了没有反应（rfd 分不出「取消」与「不可用」）。`.deb` 已 Recommends `xdg-desktop-portal | zenity`；
+  导入还可以走剪贴板 / 链接两条不依赖对话框的路。
+- **已开着时的深链切页要等下一次输入事件才生效**（windui Linux 后端：单实例转来的 argv 在主线程
+  执行后没有触发重新布局；冷启动的深链正常）。窗口会被拉到前台，页要点一下才切过去。
+
 ## 目录结构
 
 ```
