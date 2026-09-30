@@ -19,6 +19,7 @@
 //! Linux 上不走注册表：`registration_of` / `register_one` / `unregister_one` 转给
 //! [`crate::xdg_assoc`]（XDG 的 `.desktop` + MIME 类型 + `mimeapps.list`）。
 
+#[cfg(any(not(target_os = "linux"), test))]
 use crate::protocol::Registration;
 #[cfg(any(windows, test))]
 use crate::protocol::classify;
@@ -291,11 +292,6 @@ pub fn facts_of(a: &Assoc) -> crate::protocol::Facts {
 #[cfg(target_os = "linux")]
 pub fn facts_of(a: &Assoc) -> crate::protocol::Facts {
     crate::xdg_assoc::facts(&crate::xdg_assoc::target_for_ext(a.ext))
-}
-
-#[cfg(target_os = "linux")]
-pub fn registration_of(a: &Assoc) -> Registration {
-    facts_of(a).reg
 }
 
 #[cfg(target_os = "linux")]

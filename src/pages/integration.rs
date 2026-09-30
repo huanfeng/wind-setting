@@ -4,8 +4,8 @@
 //! `.wpkg` 文件关联（双击方案包直接进导入确认）。两者同一套规则与门控，
 //! 只是注册表形状不同（见 [`crate::file_assoc`]）。
 //!
-//! 状态**每次现读注册表**（[`crate::protocol::current_registration`] /
-//! [`crate::file_assoc::current_registration`]），不缓存判断结果：
+//! 状态**每次现读注册表**（[`crate::protocol::current_facts`] /
+//! [`crate::file_assoc::facts_of`]；Linux 上是现查 XDG，见 [`crate::xdg_assoc`]），不缓存判断结果：
 //! 关联可能被别的程序、或另一份清风输入法在我们运行期间改掉，缓存下来只会让界面
 //! 显示一个早已不成立的结论。`refresh` 在建卡片时与每次操作后各调一次。
 
@@ -15,7 +15,7 @@ use std::rc::Rc;
 use windui::prelude::*;
 
 use crate::pages::dict::reactive::Feedback;
-use crate::protocol::Registration;
+use crate::protocol::{Facts, Registration};
 use crate::state::AppState;
 use crate::widgets::setting_row_desc_signal;
 
@@ -82,17 +82,17 @@ impl IntegrationState {
     /// 现读注册表并刷新展示信号（协议与 `.wpkg` 各读各的）。
     pub fn refresh(&self) {
         let portable = crate::mode::is_portable();
-        let reg = crate::protocol::current_registration();
-        self.protocol_status.set(status_text(&reg, portable));
-        self.can_register.set(can_register(&reg));
-        self.can_unregister.set(can_unregister(&reg));
+        let f = crate::protocol::current_facts();
+        self.protocol_status.set(status_text(&f, portable));
+        self.can_register.set(can_register(&f));
+        self.can_unregister.set(can_unregister(&f));
         // 逐个扩展名各读各的：两者的归属可以不同（别的软件可能只抢了 .wpkg），
         // 合成一个状态的话用户就看不出该修哪一个。
         for (i, a) in crate::file_assoc::ALL.iter().enumerate() {
-            let reg = crate::file_assoc::registration_of(a);
-            self.assoc_status[i].set(assoc_status_text(&reg, portable, a));
-            self.assoc_can_register[i].set(can_register(&reg));
-            self.assoc_can_unregister[i].set(can_unregister(&reg));
+            let f = crate::file_assoc::facts_of(a);
+            self.assoc_status[i].set(assoc_status_text(&f, portable, a));
+            self.assoc_can_register[i].set(can_register(&f));
+            self.assoc_can_unregister[i].set(can_unregister(&f));
         }
     }
 
@@ -101,7 +101,7 @@ impl IntegrationState {
     /// 状态是**点击这一刻现读**的，不用卡片上那份 —— 卡片可能已经开了几分钟，
     /// 期间关联被别的程序改掉了，照着旧状态直接覆盖就成了无声的抢占。
     pub fn on_register_clicked(&self, app: &Rc<RefCell<AppState>>) {
-        match foreign_command(&crate::protocol::current_registration()) {
+        match foreign_command(&crate::protocol::current_facts().reg) {
             Some(cur) => {
                 self.confirm_msg.set(overwrite_msg(cur));
                 self.overwrite_confirm.set(true);
@@ -112,8 +112,14 @@ impl IntegrationState {
 
     /// 「取消注册」按钮：删的若是别人写的关联，同样要先确认 ——
     /// 这一步会动到不属于本程序的注册表项，静默执行不合适。
+    ///
+    /// Linux 不弹：那边的取消只撤本程序在用户目录留下的东西，别人的关联碰都不碰
+    /// （见 [`crate::xdg_assoc::Ctx::unregister`]），「会删掉别人的关联」这句确认不成立。
     pub fn on_unregister_clicked(&self, app: &Rc<RefCell<AppState>>) {
-        match foreign_command(&crate::protocol::current_registration()) {
+        if cfg!(target_os = "linux") {
+            return apply(app, Action::Unregister);
+        }
+        match foreign_command(&crate::protocol::current_facts().reg) {
             Some(cur) => {
                 self.confirm_msg.set(remove_msg(cur));
                 self.remove_confirm.set(true);
@@ -124,9 +130,7 @@ impl IntegrationState {
 
     /// `.wpkg`「注册」按钮：与协议同规则 —— 点击这一刻现读，指向他人先确认。
     pub fn on_assoc_register_clicked(&self, app: &Rc<RefCell<AppState>>, idx: usize) {
-        match foreign_command(&crate::file_assoc::registration_of(
-            &crate::file_assoc::ALL[idx],
-        )) {
+        match foreign_command(&crate::file_assoc::facts_of(&crate::file_assoc::ALL[idx]).reg) {
             Some(cur) => {
                 self.confirm_msg.set(assoc_overwrite_msg(cur));
                 self.assoc_pending_idx.set(idx);
@@ -136,11 +140,12 @@ impl IntegrationState {
         }
     }
 
-    /// `.wpkg`「取消注册」按钮：解除的若是他人关联，同样先确认。
+    /// `.wpkg`「取消注册」按钮：解除的若是他人关联，同样先确认（Linux 不弹，理由同协议）。
     pub fn on_assoc_unregister_clicked(&self, app: &Rc<RefCell<AppState>>, idx: usize) {
-        match foreign_command(&crate::file_assoc::registration_of(
-            &crate::file_assoc::ALL[idx],
-        )) {
+        if cfg!(target_os = "linux") {
+            return apply(app, Action::UnregisterAssoc(idx));
+        }
+        match foreign_command(&crate::file_assoc::facts_of(&crate::file_assoc::ALL[idx]).reg) {
             Some(cur) => {
                 self.confirm_msg.set(assoc_remove_msg(cur));
                 self.assoc_pending_idx.set(idx);
@@ -224,29 +229,51 @@ fn apply(app: &Rc<RefCell<AppState>>, action: Action) {
 ///
 /// 便携版的"要手动注册"提示并进**未注册**这一支，而不是常驻单独一行：
 /// 已经注册好的便携用户不需要再被告知一遍怎么注册。
-fn status_text(reg: &Registration, portable: bool) -> String {
-    if !cfg!(windows) {
+///
+/// Linux 另有两支：查询失败（缺 xdg-mime）直说原因；系统安装包提供的关联注明「在此不能
+/// 取消」——那一行的「取消注册」是灰的，不说清楚用户会以为按钮坏了。
+fn status_text(f: &Facts, portable: bool) -> String {
+    if !cfg!(any(windows, target_os = "linux")) {
         return "本平台的协议关联由应用包声明，无需在此管理".to_string();
     }
-    match reg {
+    if let Some(e) = &f.error {
+        return format!("无法查询当前关联：{e}");
+    }
+    match &f.reg {
+        Registration::Ours if f.system_managed => {
+            format!("已注册，由本程序处理{SYSTEM_MANAGED_NOTE}")
+        }
         Registration::Ours => "已注册，由本程序处理".to_string(),
         Registration::Unregistered if portable => {
             "未注册 —— 便携版启动不会自动注册，需要一键导入请点右侧「注册」".to_string()
         }
         Registration::Unregistered => "未注册 —— 网页上的一键导入链接暂时唤不起本程序".to_string(),
+        Registration::Other(cur) if cfg!(target_os = "linux") => {
+            format!("默认由其它程序处理：{cur}")
+        }
         Registration::Other(cur) => format!("已注册，但指向其它程序：{cur}"),
     }
 }
+
+/// 系统安装包提供的关联的附注（Linux）。
+const SYSTEM_MANAGED_NOTE: &str = "（系统安装包提供，在此不能取消）";
 
 /// `.wpkg` 关联的状态文案。规则同 [`status_text`]：独立成句、注册表原样回显、
 /// 便携提示只在未注册时给。
 /// 状态文案。**扩展名与短名由调用方给**——每行说的是它自己那个扩展名，写死一个的话
 /// 主题包那行会说「双击 .wpkg 方案包会用本程序打开」，字对不上事。
-fn assoc_status_text(reg: &Registration, portable: bool, a: &crate::file_assoc::Assoc) -> String {
-    if !cfg!(windows) {
+fn assoc_status_text(f: &Facts, portable: bool, a: &crate::file_assoc::Assoc) -> String {
+    if !cfg!(any(windows, target_os = "linux")) {
         return "本平台的文件关联由应用包声明，无需在此管理".to_string();
     }
-    match reg {
+    if let Some(e) = &f.error {
+        return format!("无法查询当前关联：{e}");
+    }
+    match &f.reg {
+        Registration::Ours if f.system_managed => format!(
+            "已注册，双击 {} {} 会用本程序打开{SYSTEM_MANAGED_NOTE}",
+            a.ext, a.short_name
+        ),
         Registration::Ours => {
             format!("已注册，双击 {} {} 会用本程序打开", a.ext, a.short_name)
         }
@@ -259,17 +286,22 @@ fn assoc_status_text(reg: &Registration, portable: bool, a: &crate::file_assoc::
                 a.ext, a.short_name
             )
         }
+        Registration::Other(cur) if cfg!(target_os = "linux") => {
+            format!("默认由其它程序打开：{cur}")
+        }
         Registration::Other(cur) => format!("已注册，但指向其它程序：{cur}"),
     }
 }
 
 /// 已经指向本程序时没有可做的事，禁用按钮免得用户以为点了没反应。
-fn can_register(reg: &Registration) -> bool {
-    cfg!(windows) && !matches!(reg, Registration::Ours)
+fn can_register(f: &Facts) -> bool {
+    cfg!(any(windows, target_os = "linux")) && f.reg != Registration::Ours
 }
 
-fn can_unregister(reg: &Registration) -> bool {
-    cfg!(windows) && !matches!(reg, Registration::Unregistered)
+/// 有东西可撤才能点。Windows 上即「不是未注册」；Linux 上是「用户目录里有本程序留下的
+/// 关联」，系统安装包提供的那种撤不掉（卸载包才行），一律灰掉。
+fn can_unregister(f: &Facts) -> bool {
+    f.removable && !f.system_managed
 }
 
 /// 高级页「系统集成」卡片。
@@ -356,8 +388,22 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
 mod tests {
     use super::*;
 
+    /// 能管关联的平台（Windows 注册表 / Linux XDG）。macOS 由 .app 声明，界面只给一句说明。
+    const MANAGED: bool = cfg!(any(windows, target_os = "linux"));
+
+    /// 普通的一条事实：非系统包、有东西可撤、查询成功。
+    fn facts(reg: Registration) -> Facts {
+        Facts {
+            reg,
+            system_managed: false,
+            removable: true,
+            error: None,
+        }
+    }
+
     /// 已指向本程序时「注册」无事可做；未注册时「取消注册」无事可做。
     /// 两个按钮的可用性必须互补覆盖三种状态，否则会出现"两个都灰着"的死局。
+    /// （这里走三态平台的 `from_registration`；Linux 的「可撤」另有判据，见下一条。）
     #[test]
     fn button_availability_covers_every_state() {
         let cases = [
@@ -366,18 +412,41 @@ mod tests {
             Registration::Other("x".into()),
         ];
         for reg in cases {
-            let (r, u) = (can_register(&reg), can_unregister(&reg));
+            let f = Facts::from_registration(reg.clone());
+            let (r, u) = (can_register(&f), can_unregister(&f));
             if cfg!(windows) {
                 assert!(r || u, "{reg:?} 下两个按钮不能同时不可用");
-            } else {
-                assert!(!r && !u, "非 Windows 平台不提供注册表操作");
+            } else if !MANAGED {
+                assert!(!r && !u, "macOS 不提供关联操作");
             }
         }
         if cfg!(windows) {
-            assert!(!can_register(&Registration::Ours));
-            assert!(!can_unregister(&Registration::Unregistered));
-            assert!(can_register(&Registration::Other("x".into())));
-            assert!(can_unregister(&Registration::Other("x".into())));
+            let f = Facts::from_registration;
+            assert!(!can_register(&f(Registration::Ours)));
+            assert!(!can_unregister(&f(Registration::Unregistered)));
+            assert!(can_register(&f(Registration::Other("x".into()))));
+            assert!(can_unregister(&f(Registration::Other("x".into()))));
+        }
+    }
+
+    /// Linux：「取消注册」只看用户目录里有没有本程序留下的东西；系统安装包提供的
+    /// 关联撤不掉，哪怕同时有用户级痕迹也灰掉——点了也只会报错。
+    #[test]
+    fn linux_unregister_follows_removable_and_system_flags() {
+        let mut f = facts(Registration::Ours);
+        assert!(can_unregister(&f));
+        f.system_managed = true;
+        assert!(!can_unregister(&f), "系统包提供的关联在此不能取消");
+        let other_without_traces = Facts {
+            removable: false,
+            ..facts(Registration::Other("Ark（ark.desktop：ark）".into()))
+        };
+        assert!(
+            !can_unregister(&other_without_traces),
+            "别人的关联不归我们撤"
+        );
+        if MANAGED {
+            assert!(can_register(&other_without_traces), "被别人占了要能抢回来");
         }
     }
 
@@ -385,11 +454,11 @@ mod tests {
     /// "是别的软件抢了"还是"我自己另一份安装"，含糊其辞等于没给信息。
     #[test]
     fn other_status_shows_the_actual_command() {
-        if !cfg!(windows) {
+        if !MANAGED {
             return;
         }
         let cmd = r#""D:\old\wind_setting.exe" "%1""#;
-        let text = status_text(&Registration::Other(cmd.to_string()), false);
+        let text = status_text(&facts(Registration::Other(cmd.to_string())), false);
         assert!(text.contains(cmd), "{text}");
     }
 
@@ -397,11 +466,11 @@ mod tests {
     /// 它是副标题，用户看不到别处的补充说明。
     #[test]
     fn portable_unregistered_status_tells_user_to_register() {
-        if !cfg!(windows) {
+        if !MANAGED {
             return;
         }
-        let portable = status_text(&Registration::Unregistered, true);
-        let installed = status_text(&Registration::Unregistered, false);
+        let portable = status_text(&facts(Registration::Unregistered), true);
+        let installed = status_text(&facts(Registration::Unregistered), false);
         assert_ne!(portable, installed);
         assert!(portable.contains("便携版"), "{portable}");
         assert!(portable.contains("注册"), "{portable}");
@@ -410,14 +479,45 @@ mod tests {
     /// 已经注册好的便携用户不该再被念一遍"便携版要手动注册"。
     #[test]
     fn portable_hint_only_shows_when_unregistered() {
-        if !cfg!(windows) {
+        if !MANAGED {
             return;
         }
-        assert!(!status_text(&Registration::Ours, true).contains("便携版"));
+        assert!(!status_text(&facts(Registration::Ours), true).contains("便携版"));
         assert!(
-            !status_text(&Registration::Other("x".into()), true).contains("便携版"),
+            !status_text(&facts(Registration::Other("x".into())), true).contains("便携版"),
             "指向他人时该说的是占用者，不是便携提示"
         );
+    }
+
+    /// Linux：系统包提供时文案要说明「在此不能取消」（按钮是灰的，不说用户会以为坏了）；
+    /// 查询失败要说原因而不是冒充「未注册」。
+    #[test]
+    fn linux_only_states_are_explained() {
+        if !MANAGED {
+            return;
+        }
+        let sys = Facts {
+            system_managed: true,
+            removable: false,
+            ..facts(Registration::Ours)
+        };
+        for t in [
+            status_text(&sys, false),
+            assoc_status_text(&sys, false, &crate::file_assoc::PACKAGE),
+        ] {
+            assert!(t.starts_with("已注册"), "{t}");
+            assert!(t.contains("系统安装包") && t.contains("不能取消"), "{t}");
+        }
+        let err = Facts {
+            error: Some("未找到 xdg-mime（请安装 xdg-utils）".into()),
+            ..facts(Registration::Unregistered)
+        };
+        for t in [
+            status_text(&err, false),
+            assoc_status_text(&err, false, &crate::file_assoc::THEME),
+        ] {
+            assert!(t.contains("xdg-utils") && !t.starts_with("未注册"), "{t}");
+        }
     }
 
     /// 确认只加在"动了别人的东西"这一种情况上，且拿到的正是那条命令行。
@@ -450,35 +550,23 @@ mod tests {
     /// 便携提示只在未注册时给。
     #[test]
     fn assoc_status_text_covers_three_states() {
-        if !cfg!(windows) {
+        if !MANAGED {
             return;
         }
+        let pkg = &crate::file_assoc::PACKAGE;
         let cmd = r#""D:\old\wind_setting.exe" "%1""#;
         assert!(
-            assoc_status_text(
-                &Registration::Other(cmd.to_string()),
-                false,
-                &crate::file_assoc::PACKAGE
-            )
-            .contains(cmd)
+            assoc_status_text(&facts(Registration::Other(cmd.to_string())), false, pkg)
+                .contains(cmd)
         );
-        let ours = assoc_status_text(&Registration::Ours, false, &crate::file_assoc::PACKAGE);
-        let none = assoc_status_text(
-            &Registration::Unregistered,
-            false,
-            &crate::file_assoc::PACKAGE,
-        );
+        let ours = assoc_status_text(&facts(Registration::Ours), false, pkg);
+        let none = assoc_status_text(&facts(Registration::Unregistered), false, pkg);
         assert_ne!(ours, none);
         assert!(none.contains("未注册"), "{none}");
-        let portable = assoc_status_text(
-            &Registration::Unregistered,
-            true,
-            &crate::file_assoc::PACKAGE,
-        );
+        let portable = assoc_status_text(&facts(Registration::Unregistered), true, pkg);
         assert!(portable.contains("便携版"), "{portable}");
         assert!(
-            !assoc_status_text(&Registration::Ours, true, &crate::file_assoc::PACKAGE)
-                .contains("便携版"),
+            !assoc_status_text(&facts(Registration::Ours), true, pkg).contains("便携版"),
             "已注册的便携用户不该再被念注册提示"
         );
     }
@@ -489,12 +577,12 @@ mod tests {
     /// 而这种错只有截图或真机才看得见，正是这么被发现的。
     #[test]
     fn assoc_status_text_names_its_own_extension() {
-        if !cfg!(windows) {
+        if !MANAGED {
             return;
         }
         for a in &crate::file_assoc::ALL {
             for reg in [Registration::Ours, Registration::Unregistered] {
-                let t = assoc_status_text(&reg, false, a);
+                let t = assoc_status_text(&facts(reg.clone()), false, a);
                 assert!(t.contains(a.ext), "{:?} 那行没提到 {}：{t}", reg, a.ext);
                 assert!(
                     t.contains(a.short_name),
@@ -506,8 +594,12 @@ mod tests {
         }
         // 两个扩展名的文案必须不同，否则等于没分行
         assert_ne!(
-            assoc_status_text(&Registration::Ours, false, &crate::file_assoc::PACKAGE),
-            assoc_status_text(&Registration::Ours, false, &crate::file_assoc::THEME)
+            assoc_status_text(
+                &facts(Registration::Ours),
+                false,
+                &crate::file_assoc::PACKAGE
+            ),
+            assoc_status_text(&facts(Registration::Ours), false, &crate::file_assoc::THEME)
         );
     }
 
@@ -525,11 +617,11 @@ mod tests {
 
     #[test]
     fn ours_and_unregistered_have_distinct_text() {
-        if !cfg!(windows) {
+        if !MANAGED {
             return;
         }
-        let ours = status_text(&Registration::Ours, false);
-        let none = status_text(&Registration::Unregistered, false);
+        let ours = status_text(&facts(Registration::Ours), false);
+        let none = status_text(&facts(Registration::Unregistered), false);
         assert_ne!(ours, none);
         assert!(none.contains("未注册"), "{none}");
     }

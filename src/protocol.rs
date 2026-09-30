@@ -304,11 +304,6 @@ pub fn self_heal_registration() {
     }
 }
 
-#[cfg(target_os = "linux")]
-pub fn current_registration() -> Registration {
-    current_facts().reg
-}
-
 /// Linux：只修本程序写过、但指向的程序已不在的用户级 `.desktop`（语义见
 /// [`crate::xdg_assoc::Ctx::self_heal`]）。门控同 Windows，由调用方先过。
 #[cfg(target_os = "linux")]
