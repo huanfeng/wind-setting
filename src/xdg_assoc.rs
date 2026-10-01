@@ -313,7 +313,15 @@ fn exec_program(exec: &str) -> Option<String> {
 
 /// 把路径写成 `Exec=` 里的一个参数：总加双引号，引号内的 `"` `` ` `` `$` `\` 前加反斜杠，
 /// `%` 写成 `%%`（否则会被当成字段码），最后再按字符串值规则把 `\` 写成 `\\`。
-fn quote_exec_arg(path: &str) -> String {
+///
+/// 含控制字符（换行、回车等）的路径直接拒绝：desktop entry 的字符串值不许有控制字符，
+/// 换行原样写进去会断出新的一行，路径里的 `\nExec=…` 就成了一条注入的键。
+fn quote_exec_arg(path: &str) -> Result<String, String> {
+    if path.chars().any(char::is_control) {
+        return Err(format!(
+            "本程序路径含换行等控制字符，无法安全写入 .desktop，未做改动：{path:?}"
+        ));
+    }
     let mut q = String::from("\"");
     for c in path.chars() {
         match c {
@@ -326,12 +334,12 @@ fn quote_exec_arg(path: &str) -> String {
         }
     }
     q.push('"');
-    q.replace('\\', "\\\\")
+    Ok(q.replace('\\', "\\\\"))
 }
 
 /// 用户级 `.desktop` 的内容：包里那份模板，`Exec` 换成本程序、`MimeType` 换成 `mimes`，
 /// 去掉模板头上讲系统安装的注释，补上归属标记。
-fn render_desktop(template: &str, exe: &Path, mimes: &[&str]) -> String {
+fn render_desktop(template: &str, exe: &Path, mimes: &[&str]) -> Result<String, String> {
     let mut out = String::from(
         "# 由清风输入法设置程序为当前用户写入（高级 → 系统集成）；在那里取消注册会删除本文件。\n",
     );
@@ -342,7 +350,7 @@ fn render_desktop(template: &str, exe: &Path, mimes: &[&str]) -> String {
         if let Some(rest) = line.strip_prefix("Exec=") {
             let args = rest.strip_prefix(PACKAGED_EXEC).unwrap_or(rest);
             out.push_str("Exec=");
-            out.push_str(&quote_exec_arg(&exe.to_string_lossy()));
+            out.push_str(&quote_exec_arg(&exe.to_string_lossy())?);
             out.push_str(args);
         } else if line.starts_with("MimeType=") {
             out.push_str("MimeType=");
@@ -357,7 +365,7 @@ fn render_desktop(template: &str, exe: &Path, mimes: &[&str]) -> String {
     }
     out.push_str(USER_MARK);
     out.push('\n');
-    out
+    Ok(out)
 }
 
 fn render_mime_xml() -> String {
@@ -619,7 +627,7 @@ impl Ctx<'_> {
         }
         write_file(
             &path,
-            &render_desktop(template_of(t.desktop), &self.exe, &mimes),
+            &render_desktop(template_of(t.desktop), &self.exe, &mimes)?,
         )?;
         self.refresh_desktop_db();
         Ok(())
@@ -720,7 +728,7 @@ impl Ctx<'_> {
             } else {
                 write_file(
                     &path,
-                    &render_desktop(template_of(t.desktop), &self.exe, &rest),
+                    &render_desktop(template_of(t.desktop), &self.exe, &rest)?,
                 )?;
             }
             self.refresh_desktop_db();
@@ -772,7 +780,8 @@ impl Ctx<'_> {
                 let mimes: Vec<&str> = mimes_of(d)
                     .filter(|m| info.mimes.iter().any(|x| x == m))
                     .collect();
-                write_file(&path, &render_desktop(template_of(d), &self.exe, &mimes))
+                render_desktop(template_of(d), &self.exe, &mimes)
+                    .and_then(|text| write_file(&path, &text))
             };
             match result {
                 Ok(()) => self.refresh_desktop_db(),
@@ -981,12 +990,33 @@ mod tests {
             r"/tmp/back\slash/wind_setting",
             "/tmp/q\"uote/wind_setting",
         ] {
-            let text = render_desktop(IMPORT_TEMPLATE, Path::new(p), &[PACKAGE.mime]);
+            let text = render_desktop(IMPORT_TEMPLATE, Path::new(p), &[PACKAGE.mime]).unwrap();
             let i = parse_desktop(&text);
             assert_eq!(exec_program(&i.exec).as_deref(), Some(p), "{text}");
         }
         // `%` 不能裸写，否则被当成字段码
-        assert!(quote_exec_arg("/tmp/100%/x").contains("100%%"));
+        assert!(quote_exec_arg("/tmp/100%/x").unwrap().contains("100%%"));
+    }
+
+    /// 路径里的换行会在 `.desktop` 里断出新行，`\nExec=…` 就成了注入的键：拒绝注册，
+    /// 一个文件也不写。
+    #[test]
+    fn exec_quoting_rejects_control_chars() {
+        for p in [
+            "/tmp/a\nExec=evil/wind_setting",
+            "/tmp/a\rb/x",
+            "/tmp/a\tb/x",
+        ] {
+            assert!(quote_exec_arg(p).is_err(), "{p:?}");
+            assert!(render_desktop(IMPORT_TEMPLATE, Path::new(p), &[PACKAGE.mime]).is_err());
+        }
+        let sb = Sandbox::new("ctrl");
+        let r = FakeRunner::default();
+        let exe = sb.root.join("bin/x\nExec=evil");
+        std::fs::write(&exe, "").unwrap();
+        let err = sb.ctx(&r, &exe).register(&PACKAGE).unwrap_err();
+        assert!(err.contains("控制字符"), "{err}");
+        assert!(sb.read(USER_IMPORT).is_none());
     }
 
     #[test]
@@ -995,7 +1025,8 @@ mod tests {
             SETTING_TEMPLATE,
             Path::new("/p/wind_setting"),
             &[PROTOCOL.mime],
-        );
+        )
+        .unwrap();
         assert!(text.contains("Exec=\"/p/wind_setting\" %u\n"), "{text}");
         assert!(
             text.contains("MimeType=x-scheme-handler/windinput;\n"),
@@ -1283,14 +1314,14 @@ mod tests {
         let gone = sb.root.join("moved/wind_setting");
         write_file(
             &sb.root.join(USER_SETTING),
-            &render_desktop(SETTING_TEMPLATE, &gone, &[PROTOCOL.mime]),
+            &render_desktop(SETTING_TEMPLATE, &gone, &[PROTOCOL.mime]).unwrap(),
         )
         .unwrap();
         ctx.self_heal(&[PROTOCOL]);
         assert!(ctx.exec_is_us(&parse_desktop(&sb.read(USER_SETTING).unwrap()).exec));
 
         let alive = sb.exe("another_wind_setting");
-        let theirs = render_desktop(IMPORT_TEMPLATE, &alive, &[THEME.mime]);
+        let theirs = render_desktop(IMPORT_TEMPLATE, &alive, &[THEME.mime]).unwrap();
         write_file(&sb.root.join(USER_IMPORT), &theirs).unwrap();
         ctx.self_heal(&[PACKAGE, THEME]);
         assert_eq!(sb.read(USER_IMPORT).as_deref(), Some(theirs.as_str()));
@@ -1306,7 +1337,7 @@ mod tests {
         sb.install_system(&exe);
         write_file(
             &sb.root.join(USER_SETTING),
-            &render_desktop(SETTING_TEMPLATE, &sb.root.join("gone/ws"), &[PROTOCOL.mime]),
+            &render_desktop(SETTING_TEMPLATE, &sb.root.join("gone/ws"), &[PROTOCOL.mime]).unwrap(),
         )
         .unwrap();
         sb.ctx(&r, &exe).self_heal(&[PROTOCOL]);
