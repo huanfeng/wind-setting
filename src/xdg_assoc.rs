@@ -207,8 +207,22 @@ fn real_ctx() -> Result<Ctx<'static>, String> {
     Ok(Ctx {
         xdg: Xdg::from_env(),
         runner: &SystemRunner,
-        exe,
+        exe: live_exe_path(exe),
     })
+}
+
+/// 去掉 `/proc/self/exe` 在程序文件被替换后带的 ` (deleted)` 后缀。
+///
+/// dpkg 升级是「解出新文件再 rename 覆盖」，还开着的旧进程 `current_exe()` 读到的是
+/// `/usr/lib/windinput/wind_setting (deleted)`：拿它判「是不是指向本程序」必然不等，
+/// 自愈还会把这个不存在的路径写进用户级 `.desktop`。同一路径上的新文件就是升级后的
+/// 本程序，按它算。真有个文件就叫 `… (deleted)` 时（存在）原样保留。
+fn live_exe_path(exe: PathBuf) -> PathBuf {
+    const SUFFIX: &str = " (deleted)";
+    match exe.to_str().and_then(|s| s.strip_suffix(SUFFIX)) {
+        Some(live) if !exe.exists() => PathBuf::from(live),
+        _ => exe,
+    }
 }
 
 pub fn facts(t: &Target) -> Facts {
@@ -1402,5 +1416,22 @@ mod tests {
         ]));
         assert_eq!(x.data_home, PathBuf::from("/d"));
         assert_eq!(x.config_home, PathBuf::from("/c"));
+    }
+
+    /// 升级后旧进程的 `current_exe()` 带 ` (deleted)`：去掉后缀才判得出「是我们」。
+    #[test]
+    fn live_exe_path_strips_deleted_suffix() {
+        let sb = Sandbox::new("deleted");
+        let exe = sb.exe("wind_setting");
+        let stale = PathBuf::from(format!("{} (deleted)", exe.display()));
+        assert_eq!(live_exe_path(stale.clone()), exe);
+        assert_eq!(live_exe_path(exe.clone()), exe);
+        let r = FakeRunner::default();
+        let ctx = sb.ctx(&r, &live_exe_path(stale));
+        assert!(ctx.exec_is_us(&format!("\"{}\" %u", exe.display())));
+
+        // 文件名本身就以 ` (deleted)` 结尾且确实存在：不动。
+        let odd = sb.exe("odd (deleted)");
+        assert_eq!(live_exe_path(odd.clone()), odd);
     }
 }
