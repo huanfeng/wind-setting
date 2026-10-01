@@ -526,7 +526,7 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
     for v in verbs {
         let bucket = match v.value.as_str() {
             "none" => &mut disable,
-            "temp_pinyin" | "temp_english" | "aux_code" | "rare_char" => &mut modes,
+            "temp_pinyin" | "temp_english" | "aux_code" | "rare_char" | "reverse" => &mut modes,
             "toggle_mode" | "switch_engine" | "toggle_full_width" | "toggle_punct"
             | "toggle_s2t" | "toggle_t2s" | "toggle_toolbar" => &mut states,
             "open_settings" | "take_screenshot" | "softkeyboard" => &mut tools,
@@ -1880,6 +1880,7 @@ mod tests {
             "temp_english",
             "aux_code",
             "rare_char",
+            "reverse",
             "mix:quick_mix",
             "single_char",
             "single_char:on",

@@ -127,6 +127,10 @@
    "trigger_keys": []
   },
   "rare_phrase": "keep",
+  "reverse": {
+   "candidate_layout": "follow",
+   "enabled": false
+  },
   "s2t": {
    "enabled": false,
    "variant": "s2t"
@@ -282,6 +286,7 @@
    },
    "input_chars": "",
    "leading_chars": "",
+   "lookup_disabled_dicts": false,
    "punct_commit": true,
    "short_code_yield_level": 0,
    "show_code_hint": true,
@@ -291,6 +296,7 @@
    "top_code_commit": true,
    "wildcard": false,
    "wildcard_key": "z",
+   "wildcard_single_only": false,
    "z_key_action": "",
    "z_key_repeat": true
   },

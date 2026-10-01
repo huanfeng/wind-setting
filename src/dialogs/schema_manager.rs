@@ -1631,6 +1631,11 @@ impl SchemaManagerState {
                 value: "rare_char".into(),
                 label: "生僻字".into(),
             },
+            // 反查模式：core 的 `BoundAction::Reverse`，全局与方案级共用 parse。
+            Verb {
+                value: "reverse".into(),
+                label: "反查模式".into(),
+            },
         ];
         let root = rpc::call_core("config.get", &json!({})).ok();
         let arr = |seg: &str| -> Vec<Value> {

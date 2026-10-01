@@ -163,6 +163,7 @@ hint = "输入z时首选为上一次上屏的内容，快速重复输入"
 # `rare_char` 必须列出：输入页「生僻字触发键」的提示语把字母键指路到这里（GH#146）。
 # 出厂 `zz*` 短语让首键 z 恒让位，进模式靠 core 的 z 夺取回路（`try_z_fallback`），
 # 生僻字那一臂与本项同批补上，input_flow 的 test_z_key_action_enters_rare_char 钉住。
+# `reverse` 同 `rare_char`：出厂 `zz*` 短语下靠 core 的 z 夺取进入。
 [[items]]
 key = "schema.codetable.z_key_action"
 group = "schema"
@@ -170,13 +171,14 @@ section = "上屏行为"
 subsection = "常用功能"
 type = "select"
 label = "z 键引导功能"
-hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先"
+hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先。选「反查模式」需先在 输入 → 反查模式 里启用"
 options = [
   { value = "", label = "不启用（作编码字母）" },
   { value = "temp_pinyin", label = "临时拼音" },
   { value = "temp_english", label = "临时英文" },
   { value = "mix:quick_mix", label = "快捷输入" },
   { value = "rare_char", label = "生僻字" },
+  { value = "reverse", label = "反查模式" },
 ]
 
 # 通配输入（万能键）。首位 / 非首位的让位规则由 core 裁决（wind-coordinator/src/wildcard.rs），
@@ -210,6 +212,28 @@ options = [
   { value = "`", label = "` 反引号" },
   { value = "?", label = "? 问号" },
 ]
+
+# 通配仅单字：行内通配与反查模式都受它管，故不挂 enabled_when（反查模式不看通配主开关）。
+# 单字判据是字素簇（core 的 wind_candidate::single_markable_char）。
+[[items]]
+key = "schema.codetable.wildcard_single_only"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "通配仅出单字"
+hint = "通配与反查模式的结果只列单字，词组不出。不影响正常打字"
+
+# 未启用的扩展词库（is_enabled()==false，如五笔「行政区域」）也参与通配、反查模式与候选注释反查；
+# 普通打字候选不变。影子层在开关开着时由 core 后台预热（core 的 DisabledDictLayers）。
+[[items]]
+key = "schema.codetable.lookup_disabled_dicts"
+group = "schema"
+section = "上屏行为"
+subsection = "常用功能"
+type = "toggle"
+label = "通配与反查含扩展词库"
+hint = "通配、反查模式与候选注释里的编码反查，也查没有启用的扩展词库（排在已启用词库之后）；仅用于通配与反查，不影响普通候选"
 
 # 档位取「对哪几级简码生效」，故 core 侧判据是「当前码长 > 档位」而非「等于全码长」——
 # 非五笔方案的全码长未必是 4，用码长比较才不必知道方案的最大码长。
@@ -1827,6 +1851,32 @@ options = [
   { value = "emoji", label = "emoji", hint = "表情、旗帜与各类图形符号（😀 ⚽ ✅ ⌚ 🇨🇳）" },
   { value = "符号", label = "符号", hint = "标点、数学、箭头、图形、带圈数字、全角形式（— ∞ → ① ￥ ⿰）" },
   { value = "其它", label = "其它", hint = "新版 Unicode 新增的、本程序还不认识的区块。区块表是逐块列举的，漏掉的都归这一档" },
+]
+
+# ── 反查模式 ──
+# 进入方式不在这里：绑键走「全局自定义按键」（动词 reverse）或方案页「z 键引导功能」。
+# core 的 [input.reverse].enabled 是总开关，关着时绑了键也不进（reverse-mode spec §3.1）。
+[[items]]
+key = "input.reverse.enabled"
+group = "input"
+section = "反查模式"
+type = "toggle"
+label = "启用反查模式"
+hint = "绑定按键后按下进入，用本方案编码查字，通配键在任何位置都能代替一个码元，候选显示完整编码；不查拼音。进入键在「按键 → 全局自定义按键」里选「反查模式」"
+
+[[items]]
+key = "input.reverse.candidate_layout"
+group = "input"
+section = "反查模式"
+type = "select"
+label = "候选窗布局"
+hint = "反查模式期间候选窗的排列方向；退出后自动恢复"
+enabled_when = "input.reverse.enabled == true"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
 ]
 
 # ── 简繁转换 ──
