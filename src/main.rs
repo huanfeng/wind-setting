@@ -711,15 +711,15 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
             } else if req.kind == "schema" {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
-                // 白名单在下载前校验（域名不对不发请求）；临时文件的清理不在这里做——
-                // 确认对话框是异步的，文件要活到用户确认导入之后，固定文件名 + 系统
-                // 临时目录，下次下载覆盖、其余交给系统清理（见 schema_url_import）。
+                // 白名单逐跳校验（域名不对不发请求，重定向出官方域即拒）。临时文件的
+                // 生命周期跟着句柄走：确认对话框是异步的，句柄交给对话框，确认 / 取消后
+                // 随待导入项释放即删；预览失败时在这里 drop 即删（见 schema_url_import）。
                 match schema_url_import::download_schema_package(&req.url) {
-                    Ok(path) => match rpc::call_core(
+                    Ok(pkg) => match rpc::call_core(
                         "scheme.previewImport",
-                        &serde_json::json!({ "path": path.to_string_lossy() }),
+                        &serde_json::json!({ "path": pkg.path().to_string_lossy() }),
                     ) {
-                        Ok(v) => st.schema_mgr.open_import_confirm(path, &v),
+                        Ok(v) => st.schema_mgr.open_downloaded_import_confirm(pkg, &v),
                         Err(e) => st
                             .feedback
                             .set(Some((ToastKind::Error, format!("读取方案包失败：{e}")))),

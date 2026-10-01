@@ -27,6 +27,8 @@ use crate::widgets::flat_panel;
 enum PendingImport {
     /// zip / `.wpkg` 文件路径。
     Package(std::path::PathBuf),
+    /// 协议链接下载来的临时包：随待导入项释放（确认、取消或被下一个包顶替）即删文件。
+    Downloaded(Rc<crate::schema_url_import::DownloadedPackage>),
     /// 文本信封原文（`package.kind = "schema_text"`）。
     Text(String),
 }
@@ -3191,6 +3193,15 @@ impl SchemaManagerState {
         self.open_import(PendingImport::Package(path), preview);
     }
 
+    /// 同上，但包是协议链接下载来的临时文件：对话框关掉（确认 / 取消 / 被顶替）后删掉它。
+    pub fn open_downloaded_import_confirm(
+        &self,
+        pkg: crate::schema_url_import::DownloadedPackage,
+        preview: &Value,
+    ) {
+        self.open_import(PendingImport::Downloaded(Rc::new(pkg)), preview);
+    }
+
     /// 打开导入确认对话框——文本信封分支（`scheme.previewImportText` 已由调用方完成，
     /// 见 `config_import::ConfigImportState::validate`）。与 zip 共用同一个对话框：
     /// 响应形状一致，用户看到的确认内容也就该一致（`package-format.md` §3.4）。
@@ -3402,6 +3413,10 @@ impl SchemaManagerState {
             PendingImport::Package(path) => (
                 "scheme.importPackage",
                 json!({ "path": path.to_string_lossy(), "strategy": strategy }),
+            ),
+            PendingImport::Downloaded(pkg) => (
+                "scheme.importPackage",
+                json!({ "path": pkg.path().to_string_lossy(), "strategy": strategy }),
             ),
             PendingImport::Text(text) => (
                 "scheme.importText",
@@ -5747,6 +5762,47 @@ mod ext_dict_tests {
         mgr.cancel_import();
         assert!(!mgr.import_confirm_visible.get());
         assert!(mgr.import_patch_rows.get().is_empty(), "取消须清空区块");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 协议下载来的临时包跟着待导入项走：取消、被下一个包顶替、确认导入后都删掉文件；
+    /// 用户自己的本地包（`open_import_confirm` 那条）永不删。
+    #[test]
+    fn downloaded_package_is_deleted_when_dialog_done() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let dir = std::env::temp_dir().join(format!("wind_setting_dl_mgr_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = || crate::schema_url_import::save_package(&dir, b"PK").unwrap();
+        let preview = json!({ "willAdd": ["x"], "conflicts": [] });
+        let mgr = SchemaManagerState::new();
+
+        let a = save();
+        let pa = a.path().to_path_buf();
+        mgr.open_downloaded_import_confirm(a, &preview);
+        assert!(pa.exists(), "对话框开着时文件要在");
+        mgr.cancel_import();
+        assert!(!pa.exists(), "取消即删");
+
+        let b = save();
+        let pb = b.path().to_path_buf();
+        mgr.open_downloaded_import_confirm(b, &preview);
+        let c = save();
+        let pc = c.path().to_path_buf();
+        mgr.open_downloaded_import_confirm(c, &preview);
+        assert!(!pb.exists(), "被下一个包顶替即删");
+        mgr.confirm_import("merge");
+        assert!(!pc.exists(), "确认导入后删");
+
+        let local = dir.join("mine.wpkg");
+        std::fs::write(&local, b"PK").unwrap();
+        mgr.open_import_confirm(local.clone(), &preview);
+        mgr.cancel_import();
+        assert!(local.exists(), "用户自己的包不删");
+
+        let _ = std::fs::remove_dir_all(&dir);
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
