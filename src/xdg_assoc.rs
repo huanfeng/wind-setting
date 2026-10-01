@@ -110,20 +110,28 @@ pub struct Xdg {
 
 impl Xdg {
     pub fn from_env() -> Self {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
+        Self::from_vars(|k| std::env::var_os(k))
+    }
+
+    /// 规范要求忽略相对路径（按未设处理），`XDG_DATA_DIRS` 里的相对项逐项丢弃。
+    fn from_vars(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Self {
+        let home = var("HOME").map(PathBuf::from).unwrap_or_default();
+        let abs_dir = |k: &str| var(k).map(PathBuf::from).filter(|p| p.is_absolute());
+        let data_dirs: Vec<PathBuf> = var("XDG_DATA_DIRS")
+            .map(|v| {
+                std::env::split_paths(&v)
+                    .filter(|p| p.is_absolute())
+                    .collect()
+            })
             .unwrap_or_default();
-        let non_empty = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
-        let data_dirs = non_empty("XDG_DATA_DIRS")
-            .map(|v| std::env::split_paths(&v).collect())
-            .unwrap_or_else(|| vec!["/usr/local/share".into(), "/usr/share".into()]);
+        let data_dirs = if data_dirs.is_empty() {
+            vec!["/usr/local/share".into(), "/usr/share".into()]
+        } else {
+            data_dirs
+        };
         Self {
-            data_home: non_empty("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/share")),
-            config_home: non_empty("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".config")),
+            data_home: abs_dir("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")),
+            config_home: abs_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")),
             data_dirs,
         }
     }
@@ -1321,5 +1329,47 @@ mod tests {
                 t.mime
             );
         }
+    }
+    /// XDG 规范：基目录变量里的相对路径无效、应忽略（按未设处理）。否则写进的是
+    /// 「相对设置程序当前工作目录」的某处，xdg-mime 也找不到。与 wind-ui 的
+    /// `user_hicolor_dir`、addon 的 `HostUi.cpp` 同一口径。
+    #[test]
+    fn xdg_from_vars_ignores_relative_paths() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+            }
+        };
+        let x = Xdg::from_vars(env(&[
+            ("HOME", "/home/u"),
+            ("XDG_DATA_HOME", "rel/data"),
+            ("XDG_CONFIG_HOME", "./cfg"),
+            ("XDG_DATA_DIRS", "share:/opt/share:"),
+        ]));
+        assert_eq!(x.data_home, PathBuf::from("/home/u/.local/share"));
+        assert_eq!(x.config_home, PathBuf::from("/home/u/.config"));
+        assert_eq!(x.data_dirs, vec![PathBuf::from("/opt/share")]);
+
+        // 全是相对路径的 XDG_DATA_DIRS 等同未设，回落规范缺省。
+        let x = Xdg::from_vars(env(&[("HOME", "/home/u"), ("XDG_DATA_DIRS", "a:b")]));
+        assert_eq!(
+            x.data_dirs,
+            vec![
+                PathBuf::from("/usr/local/share"),
+                PathBuf::from("/usr/share")
+            ]
+        );
+
+        // 绝对路径照用。
+        let x = Xdg::from_vars(env(&[
+            ("HOME", "/home/u"),
+            ("XDG_DATA_HOME", "/d"),
+            ("XDG_CONFIG_HOME", "/c"),
+        ]));
+        assert_eq!(x.data_home, PathBuf::from("/d"));
+        assert_eq!(x.config_home, PathBuf::from("/c"));
     }
 }
