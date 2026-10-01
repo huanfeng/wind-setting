@@ -90,12 +90,14 @@ const IMPORTABLE_EXTS: [&str; 2] = ["wpkg", "wtheme"];
 
 /// argv 里的包路径(文件关联双击时 shell 按 `"<exe>" "%1"` 传入)。
 ///
-/// 跳过 argv[0](自身 exe 路径)与 `--` 开头的旗标。
+/// 跳过 argv[0](自身 exe 路径)、`--` 开头的旗标与协议 URL(含 `://`,归
+/// [`parse_protocol`] 管;查询串末尾的 `a.wpkg` 会被 `Path::extension` 误认成扩展名)。
 pub fn parse_import_file(argv: &[String]) -> Option<std::path::PathBuf> {
     argv.iter()
         .skip(1)
         .find(|a| {
             !a.starts_with("--")
+                && !a.contains("://")
                 && std::path::Path::new(a.as_str())
                     .extension()
                     .and_then(|e| e.to_str())
@@ -314,6 +316,21 @@ mod tests {
         assert_eq!(parse_import_file(&a(&["exe", r"C:\a\b.toml"])), None);
         // argv[0] 是自身路径,即便像 .wpkg 也跳过
         assert_eq!(parse_import_file(&a(&["weird.wpkg"])), None);
+    }
+
+    /// 协议 URL 不是包路径:`Path::extension` 会把查询串里的 `a.wpkg` 当扩展名,冷启动时
+    /// 同一个 argv 会先走协议路由、又被当文件导入一次,首帧多弹一条「读取方案包失败」。
+    #[test]
+    fn parse_import_file_skips_protocol_urls() {
+        let url = "windinput://import/schema?url=https%3A%2F%2Fdl.windinput.com%2Fa.wpkg";
+        assert_eq!(parse_import_file(&a(&["exe", url])), None);
+        assert_eq!(
+            parse_import_file(&a(&[
+                "exe",
+                "WindInput://import/theme?url=https://x/b.wtheme"
+            ])),
+            None
+        );
     }
 
     #[test]
