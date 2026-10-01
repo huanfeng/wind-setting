@@ -805,11 +805,47 @@ impl Ctx<'_> {
     }
 }
 
+/// 原子改写：同目录写临时文件 + `rename`，崩溃或磁盘满时原文件完好。
+///
+/// `mimeapps.list` 装着用户全部默认程序关联，截断再写的半途失败会把它清空。符号链接
+/// （dotfiles 管理常这么放）解析到真实文件再换，链接本身保住；悬空链接不猜，报错。
+/// 已有文件的权限沿用。
 fn write_file(p: &Path, content: &str) -> Result<(), String> {
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
-    }
-    std::fs::write(p, content).map_err(|e| format!("写入 {} 失败：{e}", p.display()))
+    use std::io::Write;
+    let target = match std::fs::canonicalize(p) {
+        Ok(t) => t,
+        Err(e) if is_not_found(&e) => {
+            if std::fs::symlink_metadata(p).is_ok() {
+                return Err(format!(
+                    "{} 是指向不存在位置的符号链接，未做改动",
+                    p.display()
+                ));
+            }
+            p.to_path_buf()
+        }
+        Err(e) => return Err(format!("解析 {} 失败：{e}", p.display())),
+    };
+    let dir = target.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(".{name}.wind-tmp-{}", std::process::id()));
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(content.as_bytes())?;
+        if let Ok(meta) = std::fs::metadata(&target) {
+            f.set_permissions(meta.permissions())?;
+        }
+        f.sync_all()?;
+        std::fs::rename(&tmp, &target)
+    };
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("写入 {} 失败：{e}", target.display())
+    })
 }
 
 fn remove_file(p: &Path) -> Result<(), String> {
@@ -1433,5 +1469,71 @@ mod tests {
         // 文件名本身就以 ` (deleted)` 结尾且确实存在：不动。
         let odd = sb.exe("odd (deleted)");
         assert_eq!(live_exe_path(odd.clone()), odd);
+    }
+
+    /// `mimeapps.list` 装着用户全部默认程序关联：改写必须是「同目录临时文件 + rename」，
+    /// 截断再写的话崩溃/磁盘满会把它清空。判据：改写前打开的旧句柄仍读到旧内容
+    /// （inode 被整体替换，而不是原地截断重写）；权限沿用原文件；不留临时文件。
+    #[test]
+    fn write_file_replaces_atomically_and_keeps_mode() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let sb = Sandbox::new("atomic");
+        let p = sb.root.join(MIMEAPPS);
+        write_file(&p, "[Default Applications]\nold=1\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut old = std::fs::File::open(&p).unwrap();
+
+        write_file(&p, "[Default Applications]\nnew=1\n").unwrap();
+
+        let mut seen = String::new();
+        old.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, "[Default Applications]\nold=1\n");
+        assert_eq!(
+            sb.read(MIMEAPPS).unwrap(),
+            "[Default Applications]\nnew=1\n"
+        );
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let names: Vec<_> = std::fs::read_dir(p.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("mimeapps.list")]);
+    }
+
+    /// dotfiles 管理常把 `mimeapps.list` 做成符号链接：改写落到链接指向的文件，链接本身保住；
+    /// 悬空链接不去猜，报错不动。
+    #[test]
+    fn write_file_follows_symlink_and_keeps_it() {
+        let sb = Sandbox::new("symlink");
+        let real = sb.root.join("dotfiles/mimeapps.list");
+        write_file(&real, "[Default Applications]\nold=1\n").unwrap();
+        let link = sb.root.join(MIMEAPPS);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_file(&link, "[Default Applications]\nnew=1\n").unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&real).unwrap(),
+            "[Default Applications]\nnew=1\n"
+        );
+
+        let dangling = sb.root.join("home/.config/dangling.list");
+        std::os::unix::fs::symlink(sb.root.join("nowhere/x"), &dangling).unwrap();
+        assert!(write_file(&dangling, "x").is_err());
+        assert!(
+            std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }
