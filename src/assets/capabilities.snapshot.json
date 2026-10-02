@@ -187,15 +187,6 @@
       "type": "bool"
     },
     {
-      "default": false,
-      "key": "schema.codetable.lookup_disabled_dicts",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
-      "type": "bool"
-    },
-    {
       "default": "",
       "key": "schema.codetable.input_chars",
       "schemaOverride": {
@@ -1201,11 +1192,6 @@
       "type": "strlist"
     },
     {
-      "default": false,
-      "key": "input.reverse.enabled",
-      "type": "bool"
-    },
-    {
       "default": "follow",
       "key": "input.reverse.candidate_layout",
       "type": "enum",
@@ -1214,6 +1200,11 @@
         "vertical",
         "horizontal"
       ]
+    },
+    {
+      "default": false,
+      "key": "input.reverse.lookup_disabled_dicts",
+      "type": "bool"
     },
     {
       "default": false,

@@ -171,7 +171,7 @@ section = "上屏行为"
 subsection = "常用功能"
 type = "select"
 label = "z 键引导功能"
-hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先。选「反查模式」需先在 输入 → 反查模式 里启用"
+hint = "z 在本方案是死码时（如五笔 86）可借作引导键，空码状态下按 z 进入所选模式；与「z 键重复输入」冲突时后者优先"
 options = [
   { value = "", label = "不启用（作编码字母）" },
   { value = "temp_pinyin", label = "临时拼音" },
@@ -223,17 +223,6 @@ subsection = "常用功能"
 type = "toggle"
 label = "通配仅出单字"
 hint = "通配与反查模式的结果只列单字，词组不出。不影响正常打字"
-
-# 未启用的扩展词库（is_enabled()==false，如五笔「行政区域」）也参与通配、反查模式与候选注释反查；
-# 普通打字候选不变。影子层在开关开着时由 core 后台预热（core 的 DisabledDictLayers）。
-[[items]]
-key = "schema.codetable.lookup_disabled_dicts"
-group = "schema"
-section = "上屏行为"
-subsection = "常用功能"
-type = "toggle"
-label = "通配与反查含扩展词库"
-hint = "通配、反查模式与候选注释里的编码反查，也查没有启用的扩展词库（排在已启用词库之后）；仅用于通配与反查，不影响普通候选"
 
 # 档位取「对哪几级简码生效」，故 core 侧判据是「当前码长 > 档位」而非「等于全码长」——
 # 非五笔方案的全码长未必是 4，用码长比较才不必知道方案的最大码长。
@@ -1854,30 +1843,30 @@ options = [
 ]
 
 # ── 反查模式 ──
-# 进入方式不在这里：绑键走「全局自定义按键」（动词 reverse）或方案页「z 键引导功能」。
-# core 的 [input.reverse].enabled 是总开关，关着时绑了键也不进（reverse-mode spec §3.1）。
-[[items]]
-key = "input.reverse.enabled"
-group = "input"
-section = "反查模式"
-type = "toggle"
-label = "启用反查模式"
-hint = "绑定按键后按下进入，用本方案编码查字，通配键在任何位置都能代替一个码元，候选显示完整编码；不查拼音。进入键在「按键 → 全局自定义按键」里选「反查模式」"
-
+# 进入方式不在这里：绑键走「全局自定义按键」（动词 reverse）或方案页「z 键引导功能」。没有总开关——不绑键就是不启用。
 [[items]]
 key = "input.reverse.candidate_layout"
 group = "input"
 section = "反查模式"
 type = "select"
 label = "候选窗布局"
-hint = "反查模式期间候选窗的排列方向；退出后自动恢复"
-enabled_when = "input.reverse.enabled == true"
+hint = "反查模式期间候选窗的排列方向；退出后自动恢复。反查模式要先绑进入键才能用：在「按键 → 全局自定义按键」里给一个键选「反查模式」，或在方案页「z 键引导功能」选它"
 width = 210
 options = [
   { value = "follow", label = "跟随全局" },
   { value = "vertical", label = "强制竖排" },
   { value = "horizontal", label = "强制横排" },
 ]
+
+# 反查模式专属：模式内也查未启用的扩展词库（core 的 DisabledDictLayers，开关开时后台预热）。
+# 行内通配、普通候选、候选注释里的编码反查都不受影响。
+[[items]]
+key = "input.reverse.lookup_disabled_dicts"
+group = "input"
+section = "反查模式"
+type = "toggle"
+label = "反查含扩展词库"
+hint = "仅反查模式里查没启用的扩展词库（如五笔的行政区域），排在已启用词库之后；不影响行内通配与普通候选；需先绑定反查进入键才用得上"
 
 # ── 简繁转换 ──
 # 两个方向合一节：它们互斥（`exclusive_with`，开一个自动关另一个），分成两张卡时

@@ -111,7 +111,6 @@ const SPEC_BEHAVIOR_FIELDS: &[&str] = &[
     "wildcard_key",
     // 仅单字按方案覆盖，理由同通配两项。
     "wildcard_single_only",
-    "lookup_disabled_dicts",
 ];
 
 /// 一个方案级配置项的**值**信号。三种形态对应 manifest 的
@@ -1214,7 +1213,7 @@ mod tests {
 
     /// 「全部恢复跟随」只该清界面上看得见的键（R8.5）。
     ///
-    /// `reset` 清的不是逐项信号，而是 `SPEC_BEHAVIOR_FIELDS` 十二个扁平字段，
+    /// `reset` 清的不是逐项信号，而是 `SPEC_BEHAVIOR_FIELDS` 十五个扁平字段，
     /// 外加 `frequency` / `english_merge` 两个子段**整段**置 null——整段清的话，
     /// 子段里任何一个 `hidden = true` 的字段会跟着被清掉，却在界面上找不到：
     /// 用户既看不见它被清过，也没法在界面上把它拨回来。
