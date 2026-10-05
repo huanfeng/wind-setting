@@ -139,9 +139,9 @@ mod tests {
         "quick_input.number",
         "quick_input.date",
         "quick_input.repeat",
-        "quick_input.history",
         "$primary_pinyin",
         "english",
+        "quick_input.history",
         "$rare_char",
     ];
 
@@ -212,20 +212,23 @@ mod tests {
                 "quick_input.number",
                 "quick_input.date",
                 "quick_input.repeat",
-                "quick_input.history",
                 "$primary_pinyin",
                 "english",
+                "quick_input.history",
                 "$rare_char"
             ]),
             "缺席成员按声明序补到第一个序号更大的已有成员之前"
         );
     }
 
-    /// 出厂配置打开对话框：快捷输入历史出现在「重复上次上屏」与拼音之间、未勾选；
-    /// 用户勾上它再保存，只会在那个位置插进一项，出厂成员的相对序原样不动。
+    /// 出厂配置打开对话框：快捷输入历史出现在英文之后、未勾选；用户勾上它再保存，只会在
+    /// 那个位置插进一项，出厂成员的相对序原样不动。
     ///
-    /// 守的是「可选成员不靠写进 default_mix_modes() 也能在界面露面」这件事——若补位落到
-    /// 末尾，用户勾上后它会排在英文之后，与清单声明的优先级不符。
+    /// 排在英文之后而不是拼音之前：文本透镜下计算 / 日期 / 重复都被跳过，排在拼音前面的话
+    /// 历史就成了首选，打 `;te` 空格出的是历史而不是「特」。它的主场是带符号 / 大写的
+    /// 缓冲（那里由 core 置首，与成员序无关），文本透镜下不该抢拼音与英文的位置。
+    ///
+    /// 守的另一件事是「可选成员不靠写进 default_mix_modes() 也能在界面露面」。
     #[test]
     fn optional_history_member_slots_in_unchecked_then_inserts_in_place() {
         let current = strs(&CORE_DEFAULT);
@@ -242,11 +245,11 @@ mod tests {
                 "quick_input.number",
                 "quick_input.date",
                 "quick_input.repeat",
-                "quick_input.history",
                 "$primary_pinyin",
                 "english",
+                "quick_input.history",
             ]),
-            "勾上快捷输入历史应插在重复上次上屏之后、拼音之前"
+            "勾上快捷输入历史应插在英文之后"
         );
     }
 

@@ -1532,9 +1532,9 @@ options = [
   { value = "quick_input.number", label = "数字 / 金额", hint = "中文数字、财务大写、千分位；算式结果也会转换" },
   { value = "quick_input.date", label = "日期 / 年月", hint = "如 2026.3.5 → 2026年3月5日；12.25 → 12月25日。只有一个点时数字候选在前，多打一个点（12.25.）使日期优先" },
   { value = "quick_input.repeat", label = "重复上次上屏", hint = "仅在刚进入、尚未输入时出现，空格即再上屏一次" },
-  { value = "quick_input.history", label = "快捷输入历史", hint = "按前缀补全以前在快捷输入里上屏过的文本，如 ${reset_time}、RESET_TIME。带符号或大写的历史排在原文之前；回车仍上屏原文。出厂不启用" },
   { value = "$primary_pinyin", label = "拼音", hint = "跟随主拼音方案（全拼/双拼）" },
   { value = "english", label = "英文", hint = "英文词库候选" },
+  { value = "quick_input.history", label = "快捷输入历史", hint = "按前缀补全以前在快捷输入里上屏过的文本，如 ${reset_time}、RESET_TIME。所打内容带符号或大写时，历史排在原文之前；回车仍上屏原文。出厂不启用" },
   { value = "$rare_char", label = "生僻字", hint = "用当前方案的编码打生僻字，只出单字。排在拼音之后时，同一个字会先被拼音取走；需要优先显示则前移" },
 ]
 
