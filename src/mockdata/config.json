@@ -414,7 +414,8 @@
   "primary_codetable": "",
   "primary_pinyin": "",
   "quick_input": {
-   "decimal_places": 6
+   "decimal_places": 6,
+   "history_max": 1000
   }
  },
  "stats": {

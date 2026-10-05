@@ -358,6 +358,10 @@ mod tests {
         "schema.codetable.auto_phrase.draft_ttl_hours",
         "schema.codetable.auto_phrase.draft_max_entries",
         "schema.codetable.auto_phrase.draft_flush_batch",
+        // ⑨'''' 快捷输入历史的条数上限（候选来源 `quick_input.history` 配套，出厂 1000、
+        //       0 = 不限）。同 ⑨' 的判据：容量参数普通用户无判断依据，出厂值足够宽，且
+        //       历史本身已能在「词库 → 输入补全 → 快捷输入历史」逐条删 / 清空。需要时改配置文件。
+        "schema.quick_input.history_max",
         // ⑨'' 码元字符集：core 的 REGISTRY 已注册（config_schema.rs），但消费侧仍在开发中，
         //     暂不接入设置界面。**待 core 定稿后再评估**该不该暴露、放全局清单还是方案对话框。
         "schema.codetable.input_chars",

@@ -402,7 +402,7 @@ pub enum DomainKind {
     QuickFormat,
     /// 常用字覆盖。**全局域**（core 那张表的键就是一个字，不带方案也不带编码）。
     CommonChars,
-    /// 输入补全的学习数据（邮箱后缀 / 网址历史）。**全局域**：core 那张表的键是
+    /// 输入补全的学习数据（邮箱后缀 / 网址历史 / 快捷输入历史）。**全局域**：core 那张表的键是
     /// `{类别}\0{文本}`，不带方案——「我常用哪个邮箱后缀」与五笔拼音无关。
     Completion,
     Pinyin,
@@ -443,7 +443,7 @@ pub enum DomainSlot {
     QuickFormat,
     /// 常用字覆盖（全局：那张表的键就是一个字，不带方案）。
     CommonChars,
-    /// 输入补全的学习数据（全局：邮箱后缀 + 网址历史两张子表）。
+    /// 输入补全的学习数据（全局：邮箱后缀 + 网址历史 + 快捷输入历史三张子表）。
     Completion,
     /// 折叠后的方案域下标（**已减去全局槽位**，可直接索引 `folded_domains()`）。
     Schema(usize),
@@ -488,9 +488,10 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         // 层级上「类」确实在「字」之上，但把低频的那层摆在第一屏，等于让多数人每次都
         // 多点一下（2026-09-05 与用户确认）。
         DomainKind::CommonChars => vec![CommonChars, Charsets],
-        // 输入补全：两类学习数据一个域。顺序按「哪个更可能有内容」定——邮箱后缀跟随
-        // 邮箱模式开关即开始积累，网址历史还要多开一道 history_enabled，出厂两者都空。
-        DomainKind::Completion => vec![MailSuffix, UrlHistory],
+        // 输入补全：三类学习数据一个域。顺序按「哪个更可能有内容」定——邮箱后缀跟随
+        // 邮箱模式开关即开始积累，网址历史还要多开一道 history_enabled，快捷输入历史要
+        // 用户自己在候选来源里勾上 quick_input.history，出厂三者都空。
+        DomainKind::Completion => vec![MailSuffix, UrlHistory, QuickHistory],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
         // 英文：无临时词库（无造词流程，那张表恒空）。
@@ -807,13 +808,14 @@ impl DictManagerState {
         {
             return Some(DOMAIN_COMMON);
         }
-        // 两个 tab 的 cli_id 也收进来：`--type mail-suffix` 单独给时用户多半没想过还要
+        // 各 tab 的 cli_id 也收进来：`--type mail-suffix` 单独给时用户多半没想过还要
         // 再给一个 `--schema`，而少了这一档的后果不是报错而是**静默跑偏**——
         // `LogicalTab::from_cli_id` 解析得动（`bad_tab` 为空，不会提示「未知类型」），
         // 域却停在启动态的「快捷短语」，最后 toast 一句「『快捷短语』没有『邮箱后缀』」。
         if s.eq_ignore_ascii_case("completion")
             || s.eq_ignore_ascii_case("mail-suffix")
             || s.eq_ignore_ascii_case("url-history")
+            || s.eq_ignore_ascii_case("quick-history")
         {
             return Some(DOMAIN_COMPLETION);
         }
@@ -5198,6 +5200,8 @@ mod tests {
         // 两个 tab 的 cli_id 也该认：单给 `--type mail-suffix` 时用户多半没再给 --schema。
         assert_eq!(st.resolve_domain("mail-suffix"), Some(DOMAIN_COMPLETION));
         assert_eq!(st.resolve_domain("url-history"), Some(DOMAIN_COMPLETION));
+        // 不能被前缀相同的 `quick`（快捷输入格式域）截走。
+        assert_eq!(st.resolve_domain("quick-history"), Some(DOMAIN_COMPLETION));
         // 每个全局域的 cli 关键字都必须指向一个**互不相同**的槽位。
         let globals = [
             st.resolve_domain("phrase"),
@@ -5672,6 +5676,7 @@ mod tests {
             "Shadow",
             "MailSuffix",
             "UrlHistory",
+            "QuickHistory",
         ] {
             assert!(seen.contains(c), "{c} 未被覆盖，已覆盖 {seen:?}");
         }

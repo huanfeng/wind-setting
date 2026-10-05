@@ -169,9 +169,11 @@ fn is_bulk_method(method: &str) -> bool {
             | "temp.clear"
             | "freq.clear"
             // 补全学习数据的清空同样是 O(n) 改 redb：网址历史条数上限出厂 200，但用户
-            // 可以调到上万。不进这张表就走 5 秒档，数据量大时会「报失败其实成功」。
+            // 可以调到上万（快捷输入历史出厂 1000、0 = 不限）。不进这张表就走 5 秒档，
+            // 数据量大时会「报失败其实成功」。
             | "mailSuffix.clear"
             | "urlHistory.clear"
+            | "quickHistory.clear"
     )
 }
 

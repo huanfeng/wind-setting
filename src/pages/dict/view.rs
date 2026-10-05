@@ -43,7 +43,7 @@ const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
 const SEG_QUICK: &[DomainKind] = &[DomainKind::QuickFormat];
 // 常用字同理：单标签，分段只为让这一行画出来。
 const SEG_COMMON: &[DomainKind] = &[DomainKind::CommonChars];
-// 输入补全：两个标签（邮箱后缀 / 网址历史），故这一段确实要画出标签条。
+// 输入补全：三个标签（邮箱后缀 / 网址历史 / 快捷输入历史），故这一段确实要画出标签条。
 const SEG_COMPLETION: &[DomainKind] = &[DomainKind::Completion];
 /// 覆盖性校验用（顺序无关），仅测试构建需要。加新分段时记得挂进来。
 #[cfg(test)]

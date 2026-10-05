@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.122.0",
+  "appVersion": "0.124.1-beta.2",
   "configKeys": [
     {
       "default": "wubi86",
@@ -696,6 +696,11 @@
     {
       "default": 6,
       "key": "schema.quick_input.decimal_places",
+      "type": "int"
+    },
+    {
+      "default": 1000,
+      "key": "schema.quick_input.history_max",
       "type": "int"
     },
     {
