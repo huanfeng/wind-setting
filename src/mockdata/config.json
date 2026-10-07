@@ -300,6 +300,11 @@
    "z_key_repeat": true
   },
   "english": {
+   "auto_learn": {
+    "enabled": false,
+    "promote_count": 3,
+    "temp_max_entries": 5000
+   },
    "case_follow_input": true,
    "case_variants": false,
    "commit_space": false,

@@ -1082,6 +1082,31 @@ type = "toggle"
 label = "上屏后自动加空格"
 hint = "上屏英文词后补一个空格，连续打词不必手动按；回车上屏不补"
 
+# 英文自动造词（core 的 [schema.english.auto_learn]）。**一个开关管英文方案与临时英文两处**：
+# 两者共用英文词库，临时英文不另设开关——同临时拼音跟随拼音方案的 auto_learn。
+# 快捷输入里的英文不走这条，那边有自己的「快捷输入历史」。
+# temp_max_entries（临时词库容量）是内部字段，不开放，见 capabilities.rs 的 UNCOVERED_BY_DESIGN。
+[[items]]
+key = "schema.english.auto_learn.enabled"
+group = "schema"
+section = "英文行为"
+subsection = "自动造词"
+type = "toggle"
+label = "启用自动造词"
+hint = "上屏了词库里没有的原文就记下来（选中原文候选、回车或空格上屏原码、标点顶屏原文都算），先存入临时词库，用够次数再转入用户词库。英文方案与临时英文共用此开关；快捷输入里的英文不在此列（那里有快捷输入历史）"
+
+[[items]]
+key = "schema.english.auto_learn.promote_count"
+group = "schema"
+section = "英文行为"
+subsection = "自动造词"
+type = "number"
+label = "转入用户词库次数"
+hint = "用满几次后永久收录进用户词库（含记下的那一次）；0 = 不收录，一直留在临时词库"
+min = 0
+max = 20
+enabled_when = "schema.english.auto_learn.enabled == true"
+
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
 # 输入页的分节顺序（＝导航顺序）分四段，越靠前越"每天都在起作用"：

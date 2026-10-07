@@ -357,6 +357,21 @@
     },
     {
       "default": false,
+      "key": "schema.english.auto_learn.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 3,
+      "key": "schema.english.auto_learn.promote_count",
+      "type": "int"
+    },
+    {
+      "default": 5000,
+      "key": "schema.english.auto_learn.temp_max_entries",
+      "type": "int"
+    },
+    {
+      "default": false,
       "key": "schema.codetable.auto_phrase.enabled",
       "type": "bool"
     },

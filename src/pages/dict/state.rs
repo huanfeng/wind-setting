@@ -408,8 +408,7 @@ pub enum DomainKind {
     Pinyin,
     Codetable,
     Mixed,
-    /// 英文方案。**没有临时词库**——那是自动造词的暂存区，英文没有造词流程，
-    /// 挂上去永远是空表。其余（用户词库/词频/候选调整）都有。
+    /// 英文方案。四类数据齐全：英文自动造词（`schema.english.auto_learn`）落英文临时词库。
     English,
     Other,
 }
@@ -494,8 +493,8 @@ pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
         DomainKind::Completion => vec![MailSuffix, UrlHistory, QuickHistory],
         DomainKind::Pinyin => vec![UserDict, Temp, Freq, Shadow],
         DomainKind::Mixed => vec![Shadow],
-        // 英文：无临时词库（无造词流程，那张表恒空）。
-        DomainKind::English => vec![UserDict, Freq, Shadow],
+        // 英文自动造词（schema.english.auto_learn）落英文临时词库，故与码表/拼音一样四类。
+        DomainKind::English => vec![UserDict, Temp, Freq, Shadow],
         // 码表与未知：全四类（未知从宽，不隐藏数据）。
         DomainKind::Codetable | DomainKind::Other => vec![UserDict, Temp, Freq, Shadow],
     }
@@ -3098,11 +3097,11 @@ impl DictManagerState {
     fn types_for_kind(kind: DomainKind) -> &'static [&'static str] {
         match kind {
             // 拼音与码表同口径：置顶放开后拼音同样会产生候选调整规则。
-            DomainKind::Pinyin | DomainKind::Codetable | DomainKind::Other => {
-                &["userWords", "tempWords", "freq", "shadow"]
-            }
-            // 与 tabs_for_domain_at 保持一致：英文无临时词库。
-            DomainKind::English => &["userWords", "freq", "shadow"],
+            // 英文同样四段：自动造词（schema.english.auto_learn）落英文临时词库。
+            DomainKind::Pinyin
+            | DomainKind::Codetable
+            | DomainKind::English
+            | DomainKind::Other => &["userWords", "tempWords", "freq", "shadow"],
             // 混输方案自身只有候选调整——五笔/拼音词条落在它的成员方案里。
             DomainKind::Mixed => &["shadow"],
             // 四个全局域都不参与这套「按方案分段」的导入导出，前三个各有自己的一条流：
