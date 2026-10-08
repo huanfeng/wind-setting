@@ -6427,14 +6427,14 @@ mod tests {
         let linux = cfg!(target_os = "linux");
         assert_eq!(names("advanced").contains(&"游戏兼容".to_string()), !linux);
         assert_eq!(names("ui").contains(&"工具栏".to_string()), !linux);
-        // 部分隐藏：「临时英文」里 capslock.cancel_on_mode_switch 仅 Windows，分区仍在、
+        // 部分隐藏：「中英文切换」里 capslock.cancel_on_mode_switch 仅 Windows，分区仍在、
         // 被隐藏的 key 仍在表里（行级跳过是 section_rows 的事）。
         let keys = m
-            .sections_of("input")
+            .sections_of("keys")
             .into_iter()
-            .find(|(s, _)| s == "临时英文")
+            .find(|(s, _)| s == "中英文切换")
             .map(|(_, k)| k)
-            .expect("临时英文分区应在");
+            .expect("中英文切换分区应在");
         assert!(
             keys.iter()
                 .any(|k| k == "input.capslock.cancel_on_mode_switch")
