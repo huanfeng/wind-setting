@@ -20,6 +20,16 @@ initial_punct = "englsh"
 caret_offset_y = 4
 future_key = 3
 
+[[apps]]
+process = "Tabby.exe"
+title = "SSH*"
+auto_pair = true
+
+[[apps]]
+process = "*"
+class = "MozillaWindowClass"
+composition_placeholder = "zwsp"
+
 [[initial_mode_scope]]
 process = "explorer.exe"
 classes = ["Progman", "WorkerW", "CabinetWClass"]

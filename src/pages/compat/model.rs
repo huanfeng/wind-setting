@@ -230,11 +230,173 @@ impl FieldView {
     }
 }
 
+/// 「所有应用」：`[[apps]]` 不写进程名等于写它。
+pub const ANY_PROCESS: &str = "*";
+
+/// 窗口条件模式的最大长度（字符数），与核心 `compat_admin::MAX_PATTERN_CHARS` 一致。
+pub const MAX_PATTERN_CHARS: usize = 256;
+
+/// 规范化身份（与核心 `compat_admin::rule_key_string` 逐字一致）：进程名 trim + ASCII 小写
+/// （空 = `*`），类名 / 标题 trim + 逐字符转小写（转小写后不是单个字符的保留原字符），
+/// 三者以 U+001F 连接。界面认「同一条」只用它。
+pub fn rule_key(process: &str, class: &str, title: &str) -> String {
+    let fold = |s: &str| -> String {
+        s.trim()
+            .chars()
+            .map(|c| {
+                let mut l = c.to_lowercase();
+                match (l.next(), l.next()) {
+                    (Some(x), None) => x,
+                    _ => c,
+                }
+            })
+            .collect()
+    };
+    let p = match process.trim() {
+        "" => ANY_PROCESS.to_string(),
+        p => p.to_ascii_lowercase(),
+    };
+    format!("{p}\u{1f}{}\u{1f}{}", fold(class), fold(title))
+}
+
+/// 规则身份的原样写法：写接口按它定位（核心按规范化身份认同一条）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuleIdent {
+    /// 进程名；空串或 `*` = 所有应用。
+    pub process: String,
+    /// 顶层窗口类名模式；空 = 不限。
+    pub class: String,
+    /// 顶层窗口标题模式；空 = 不限。
+    pub title: String,
+}
+
+impl RuleIdent {
+    /// 纯进程键。
+    pub fn process(p: &str) -> Self {
+        Self::new(p, "", "")
+    }
+
+    /// 各项 trim；带窗口条件、进程名留空时记成 `*`（与核心列表里的写法一致）。
+    pub fn new(process: &str, class: &str, title: &str) -> Self {
+        let (class, title) = (class.trim().to_string(), title.trim().to_string());
+        let mut process = process.trim().to_string();
+        if process.is_empty() && !(class.is_empty() && title.is_empty()) {
+            process = ANY_PROCESS.to_string();
+        }
+        Self {
+            process,
+            class,
+            title,
+        }
+    }
+
+    pub fn of(r: &RuleView) -> Self {
+        Self::new(&r.process, &r.class, &r.title)
+    }
+
+    pub fn key(&self) -> String {
+        rule_key(&self.process, &self.class, &self.title)
+    }
+
+    /// 写接口的身份参数：`process` 必带（旧核心只认它），`class` / `title` 有才带。
+    pub fn params(&self) -> serde_json::Map<String, Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("process".into(), Value::String(self.process.clone()));
+        if !self.class.is_empty() {
+            m.insert("class".into(), Value::String(self.class.clone()));
+        }
+        if !self.title.is_empty() {
+            m.insert("title".into(), Value::String(self.title.clone()));
+        }
+        m
+    }
+
+    pub fn has_window_condition(&self) -> bool {
+        !self.class.is_empty() || !self.title.is_empty()
+    }
+
+    /// 列表 / 标题里显示的名字：`*` 显示成「所有应用」。
+    pub fn display_name(&self) -> String {
+        display_process(&self.process)
+    }
+
+    /// 窗口条件的一行说明（没有条件为空串），如「类名：Chrome_WidgetWin_* · 标题：*记事本」。
+    pub fn condition_text(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.class.is_empty() {
+            parts.push(format!("类名：{}", self.class));
+        }
+        if !self.title.is_empty() {
+            parts.push(format!("标题：{}", self.title));
+        }
+        parts.join(" · ")
+    }
+
+    /// 完整的一行描述（名字 + 条件），对话框 / 导入预览用。
+    pub fn describe(&self) -> String {
+        match self.condition_text() {
+            c if c.is_empty() => self.display_name(),
+            c => format!("{}（{c}）", self.display_name()),
+        }
+    }
+
+    /// 按段校验（与核心 `compat_admin::validate_key` 同一套规则，提前在界面里拦下）。
+    pub fn validate(&self, section: Section) -> Result<(), String> {
+        let p = self.process.as_str();
+        if p.contains('/') || p.contains('\\') {
+            return Err("进程名不能含路径分隔符".into());
+        }
+        for (what, v) in [("进程名", p), ("类名", &self.class), ("标题", &self.title)] {
+            if v.chars().any(char::is_control) {
+                return Err(format!("{what}不能含控制字符"));
+            }
+        }
+        for (what, v) in [("类名", &self.class), ("标题", &self.title)] {
+            if v.chars().count() > MAX_PATTERN_CHARS {
+                return Err(format!("{what}不能超过 {MAX_PATTERN_CHARS} 个字符"));
+            }
+        }
+        if section == Section::Apps {
+            if p.is_empty() {
+                return Err("进程名、类名、标题至少要填一项".into());
+            }
+        } else {
+            if self.has_window_condition() {
+                return Err("这一类规则不支持类名 / 标题条件".into());
+            }
+            if p.is_empty() {
+                return Err("进程名不能为空".into());
+            }
+            if p == ANY_PROCESS {
+                return Err("这一类规则不支持「*」，请填具体进程名".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 进程名的显示：`*` / 空 = 「所有应用」。
+pub fn display_process(p: &str) -> String {
+    match p.trim() {
+        "" | ANY_PROCESS => "所有应用".to_string(),
+        p => p.to_string(),
+    }
+}
+
 /// 一条规则的视图（`compat.list` 的 `rules[]`）。
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleView {
     pub process: String,
+    /// 顶层窗口类名模式（原样）；没有为空串。
+    #[serde(default)]
+    pub class: String,
+    /// 顶层窗口标题模式（原样）；没有为空串。
+    #[serde(default)]
+    pub title: String,
+    /// 规范化身份（见 [`rule_key`]）。旧核心不给时解析后按 [`rule_key`] 补上。
+    #[serde(default)]
+    pub key: String,
     pub state: RuleState,
     #[serde(default)]
     pub effective: Value,
@@ -255,7 +417,7 @@ pub struct RuleView {
 impl RuleView {
     /// 新建规则的**草稿**视图：还没落盘，所以系统层没有、用户层也没有，每个字段都是
     /// 「未设置」。第一次设置字段时才 `compat.upsert`，之后核心返回的才是真规则。
-    pub fn draft(process: &str, schema: &Schema, section: Section) -> RuleView {
+    pub fn draft(ident: &RuleIdent, schema: &Schema, section: Section) -> RuleView {
         let fields = schema
             .fields_of(section)
             .into_iter()
@@ -278,9 +440,12 @@ impl RuleView {
             })
             .collect();
         RuleView {
-            process: process.to_string(),
+            process: ident.process.clone(),
+            class: ident.class.clone(),
+            title: ident.title.clone(),
+            key: ident.key(),
             state: RuleState::User,
-            effective: serde_json::json!({ "process": process }),
+            effective: serde_json::json!({ "process": ident.process }),
             system: None,
             overridden: Vec::new(),
             has_user_entry: false,
@@ -304,6 +469,15 @@ impl RuleView {
     pub fn can_reset(&self) -> bool {
         self.has_user_entry && self.system.is_some()
     }
+
+    /// 匹配条件能不能改：只有用户新增的规则（含草稿）；出厂规则只能「复制为新规则」。
+    pub fn can_rename(&self) -> bool {
+        self.system.is_none()
+    }
+
+    pub fn ident(&self) -> RuleIdent {
+        RuleIdent::of(self)
+    }
 }
 
 /// 被当成「没写」忽略的无效内容（`compat.list` 的 `warnings[]`）。
@@ -311,8 +485,22 @@ impl RuleView {
 pub struct Problem {
     pub section: String,
     pub process: String,
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub title: String,
     pub key: String,
     pub message: String,
+}
+
+impl Problem {
+    /// 是不是说的这条规则（按规范化身份比）。
+    ///
+    /// 「整条作废」类问题（核心报在 `process` 键上：身份认不出的行）不归属任何列出的规则——
+    /// 那一行根本不在列表里，按 key 硬配会挂到恰好同名的别的规则上。
+    pub fn is_about(&self, rule: &RuleView) -> bool {
+        self.key != "process" && rule_key(&self.process, &self.class, &self.title) == rule.key
+    }
 }
 
 /// `compat.list` 的响应。
@@ -322,11 +510,24 @@ pub struct ListResult {
     pub rules: Vec<RuleView>,
     #[serde(default)]
     pub warnings: Vec<Problem>,
+    /// 核心支持按类名 / 标题管理规则（每条规则都带 `key`）。旧核心不给 `key`：它的写接口只认
+    /// 进程名、会忽略 `class` / `title`，在它上面「新增带类名的规则」会写成一条 `*` 或纯进程规则，
+    /// 所以界面要藏起窗口条件的输入与「修改匹配条件」「复制为新规则」。
+    #[serde(skip)]
+    pub window_conditions: bool,
 }
 
 impl ListResult {
     pub fn parse(v: &Value) -> Result<ListResult, String> {
-        serde_json::from_value(v.clone()).map_err(|e| format!("compat.list 响应不合法: {e}"))
+        let mut l: ListResult = serde_json::from_value(v.clone())
+            .map_err(|e| format!("compat.list 响应不合法: {e}"))?;
+        l.window_conditions = l.rules.iter().all(|r| !r.key.is_empty());
+        for r in &mut l.rules {
+            if r.key.is_empty() {
+                r.key = r.ident().key();
+            }
+        }
+        Ok(l)
     }
 }
 
@@ -335,6 +536,10 @@ impl ListResult {
 pub struct ImportItem {
     pub section: String,
     pub process: String,
+    #[serde(default)]
+    pub class: String,
+    #[serde(default)]
+    pub title: String,
     /// `add` / `override` / `disable` / `unchanged` / `remove`。
     pub action: String,
 }
@@ -490,5 +695,75 @@ mod tests {
         assert_eq!(p.ignored_keys, ["apps.x"]);
         assert!(p.backup.is_none());
         assert_eq!(ImportPreview::default().changes(), 0);
+    }
+
+    /// 界面算的身份必须与核心给的 `key` 逐字一致：界面拿它比对选中项、草稿与核心返回的规则。
+    #[test]
+    fn local_rule_key_matches_the_core_key_for_every_mock_rule() {
+        for sec in Section::ALL {
+            let l = ListResult::parse(&super::super::mock::reply(
+                "compat.list",
+                &json!({"section": sec.id()}),
+            ))
+            .unwrap();
+            for r in &l.rules {
+                assert!(!r.key.is_empty());
+                assert_eq!(rule_key(&r.process, &r.class, &r.title), r.key, "{r:?}");
+                assert_eq!(r.ident().key(), r.key);
+            }
+        }
+        assert_eq!(rule_key(" A.EXE ", " Foo* ", ""), "a.exe\u{1f}foo*\u{1f}");
+        assert_eq!(
+            rule_key("", "X", ""),
+            rule_key("*", "x", ""),
+            "不写进程 = *"
+        );
+    }
+
+    #[test]
+    fn rule_ident_display_and_params() {
+        let a = RuleIdent::new("", " Chrome_WidgetWin_* ", "");
+        assert_eq!(a.process, "*");
+        assert_eq!(a.display_name(), "所有应用");
+        assert_eq!(a.condition_text(), "类名：Chrome_WidgetWin_*");
+        assert_eq!(
+            Value::Object(a.params()),
+            json!({"process": "*", "class": "Chrome_WidgetWin_*"})
+        );
+        let b = RuleIdent::new("ahk.exe", "", "Ed*");
+        assert_eq!(b.describe(), "ahk.exe（标题：Ed*）");
+        assert_eq!(RuleIdent::process("x.exe").describe(), "x.exe");
+        assert!(RuleIdent::new("", "", "").validate(Section::Apps).is_err());
+        assert!(RuleIdent::process("*").validate(Section::Apps).is_ok());
+    }
+
+    #[test]
+    fn old_core_without_key_gets_one_computed() {
+        let l = ListResult::parse(&json!({"rules": [{"process": "A.exe", "state": "system"}]}))
+            .unwrap();
+        assert_eq!(l.rules[0].key, rule_key("A.exe", "", ""));
+        assert!(!l.window_conditions, "旧核心不给 key ⇒ 不支持窗口条件");
+        let new = ListResult::parse(&json!({"rules": [{"process": "A.exe", "key": "a.exe\u{1f}\u{1f}", "state": "system"}]})).unwrap();
+        assert!(new.window_conditions);
+    }
+
+    /// 「整条作废」的提示不按 key 挂到同名规则上。
+    #[test]
+    fn whole_rule_problems_are_not_attributed_to_a_listed_rule() {
+        let r = RuleView::draft(
+            &RuleIdent::process("A.exe"),
+            &Schema::default(),
+            Section::Apps,
+        );
+        let p = |key: &str| Problem {
+            section: "apps".into(),
+            process: "A.exe".into(),
+            class: String::new(),
+            title: String::new(),
+            key: key.into(),
+            message: "m".into(),
+        };
+        assert!(p("auto_pair").is_about(&r));
+        assert!(!p("process").is_about(&r));
     }
 }

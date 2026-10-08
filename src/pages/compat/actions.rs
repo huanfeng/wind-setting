@@ -1,4 +1,4 @@
-//! 「应用兼容」页的整体操作：新增规则、全部还原、导出、导入（预览 + 确认）。
+//! 「应用兼容」页的整体操作：新增规则、改匹配条件 / 复制为新规则、全部还原、导出、导入（预览 + 确认）。
 //!
 //! 与 `state.rs` 里的单条规则写操作分开放：这些都带对话框，状态是「对话框开着 / 关着 + 一份
 //! 待确认的内容」，与规则列表的重建节奏无关。
@@ -10,19 +10,41 @@ use serde_json::{Value, json};
 use windui::core::EventCtx;
 use windui::prelude::*;
 
-use super::model::ImportPreview;
+use super::model::{ImportPreview, RuleIdent, RuleView};
 use super::state::CompatState;
 use crate::rpc;
 
 /// 导入方式，下标对应对话框里的分段控件。
 pub const IMPORT_MODES: [(&str, &str); 2] = [("合并", "merge"), ("替换", "replace")];
 
+/// 匹配条件对话框（进程名 + 类名 + 标题）的三种用途。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentMode {
+    /// 新增规则（建草稿）。
+    Add,
+    /// 修改用户规则的匹配条件（`compat.rename`）。
+    Rename,
+    /// 复制为新规则（`compat.copy`，出厂规则换条件走这里）。
+    Copy,
+}
+
 /// 各对话框的开合与待确认内容。
 #[derive(Clone)]
 pub struct Dialogs {
+    /// 三个匹配条件对话框（新增 / 修改 / 复制）各自的开合；输入框与报错共用一组信号
+    /// （同一时刻只开一个）。
     pub add_visible: Signal<bool>,
+    pub rename_visible: Signal<bool>,
+    pub copy_visible: Signal<bool>,
+    /// 进程名输入。
     pub add_name: Signal<String>,
+    /// 类名输入（仅「应用规则」段）。
+    pub add_class: Signal<String>,
+    /// 标题输入（仅「应用规则」段）。
+    pub add_title: Signal<String>,
     pub add_error: Signal<String>,
+    /// 修改 / 复制的源规则。
+    ident_from: Rc<RefCell<Option<RuleIdent>>>,
 
     pub reset_visible: Signal<bool>,
 
@@ -49,8 +71,13 @@ impl Default for Dialogs {
     fn default() -> Self {
         Self {
             add_visible: signal(false),
+            rename_visible: signal(false),
+            copy_visible: signal(false),
             add_name: signal(String::new()),
+            add_class: signal(String::new()),
+            add_title: signal(String::new()),
             add_error: signal(String::new()),
+            ident_from: Rc::new(RefCell::new(None)),
             reset_visible: signal(false),
             help_visible: signal(false),
             field_visible: signal(false),
@@ -80,7 +107,7 @@ pub fn summarize(p: &ImportPreview, replace: bool) -> String {
         p.items
             .iter()
             .filter(|i| i.action == action)
-            .map(|i| i.process.clone())
+            .map(|i| RuleIdent::new(&i.process, &i.class, &i.title).describe())
             .collect()
     };
     for (action, title) in [
@@ -115,19 +142,79 @@ pub fn summarize(p: &ImportPreview, replace: bool) -> String {
 impl CompatState {
     // ───────────── 新增 ─────────────
 
+    fn fill_ident_inputs(&self, ident: Option<&RuleIdent>) {
+        let d = &self.dlg;
+        let (p, c, t) = ident.map_or((String::new(), String::new(), String::new()), |i| {
+            (i.process.clone(), i.class.clone(), i.title.clone())
+        });
+        d.add_name.set(p);
+        d.add_class.set(c);
+        d.add_title.set(t);
+        d.add_error.set(String::new());
+        *d.ident_from.borrow_mut() = ident.cloned();
+    }
+
+    fn ident_input(&self) -> RuleIdent {
+        let d = &self.dlg;
+        // 输入框藏起来时（旧核心 / 附属段）不能让上一次留下的类名 / 标题混进来。
+        let apps = self.current_section() == super::model::Section::Apps && self.window_ok.get();
+        if apps {
+            RuleIdent::new(&d.add_name.get(), &d.add_class.get(), &d.add_title.get())
+        } else {
+            RuleIdent::process(&d.add_name.get())
+        }
+    }
+
     pub fn open_add(&self) {
-        self.dlg.add_name.set(String::new());
-        self.dlg.add_error.set(String::new());
+        self.fill_ident_inputs(None);
         self.dlg.add_visible.set(true);
     }
 
-    /// 确认新增：只建草稿，第一次设置字段时才落盘。
-    pub fn confirm_add(&self) {
-        let name = self.dlg.add_name.get();
-        match self.start_draft(&name) {
-            Ok(_) => self.dlg.add_visible.set(false),
+    /// 修改匹配条件（用户新增的规则）：以当前条件为初值。
+    pub fn open_rename(&self, rule: &RuleView) {
+        self.fill_ident_inputs(Some(&rule.ident()));
+        self.dlg.rename_visible.set(true);
+    }
+
+    /// 复制为新规则：以源规则的条件为初值，用户改成新条件。
+    pub fn open_copy(&self, rule: &RuleView) {
+        self.fill_ident_inputs(Some(&rule.ident()));
+        self.dlg.copy_visible.set(true);
+    }
+
+    /// 匹配条件对话框的「确定」。新增只建草稿（第一次设置字段时才落盘）；修改 / 复制立即落盘。
+    /// 失败时对话框不关，原因显示在框里。
+    pub fn confirm_ident(&self, mode: IdentMode) {
+        let to = self.ident_input();
+        let from = self.dlg.ident_from.borrow().clone();
+        let result = match (mode, from) {
+            (IdentMode::Add, _) => self.start_draft(to).map(|_| ()),
+            (IdentMode::Rename, Some(f)) => {
+                if f.key() == to.key() && f == to {
+                    Ok(())
+                } else {
+                    self.rename_rule(&f, to)
+                }
+            }
+            (IdentMode::Copy, Some(f)) => self.copy_rule(&f, to),
+            (_, None) => Err("没有选中规则".into()),
+        };
+        match result {
+            Ok(()) => {
+                let vis = match mode {
+                    IdentMode::Add => self.dlg.add_visible,
+                    IdentMode::Rename => self.dlg.rename_visible,
+                    IdentMode::Copy => self.dlg.copy_visible,
+                };
+                vis.set(false);
+            }
             Err(e) => self.dlg.add_error.set(e),
         }
+    }
+
+    /// 确认新增（兼容旧入口）。
+    pub fn confirm_add(&self) {
+        self.confirm_ident(IdentMode::Add);
     }
 
     // ───────────── 全部还原 ─────────────
@@ -319,8 +406,12 @@ mod tests {
         st.dlg.add_name.set(" Brand.exe ".into());
         st.confirm_add();
         assert!(!st.dlg.add_visible.get());
-        assert_eq!(st.draft.get(), "Brand.exe", "名字两端空白被去掉");
-        assert_eq!(st.selected.get(), "Brand.exe");
+        assert_eq!(
+            st.draft.get(),
+            Some(RuleIdent::process("Brand.exe")),
+            "名字两端空白被去掉"
+        );
+        assert_eq!(st.selected.get(), RuleIdent::process("brand.exe").key());
         assert!(
             calls("compat.upsert").is_empty(),
             "草稿在第一次设置字段前不落盘"
@@ -349,7 +440,7 @@ mod tests {
         st.begin_import("[[apps]]\nprocess = \"Brand.exe\"\n".into());
         assert!(st.dlg.import_visible.get());
         assert!(st.dlg.import_can_apply.get());
-        assert!(st.dlg.import_summary.get().contains("新增 1 条"));
+        assert!(st.dlg.import_summary.get().contains("新增 2 条"));
         let first = calls("compat.import");
         assert_eq!(first.len(), 1);
         assert_eq!(first[0]["dryRun"], true, "打开对话框只预览");
@@ -403,5 +494,63 @@ mod tests {
         assert!(s.contains("apps.future") && s.contains("wiat") && s.contains("坏条目"));
         assert!(!s.contains("替换模式"));
         assert!(summarize(&p, true).contains("替换模式"));
+    }
+
+    /// 修改 / 复制对话框：以当前条件为初值，确定后发对应请求并关框；失败时原因留在框里。
+    #[test]
+    fn rename_and_copy_dialogs_prefill_and_dispatch() {
+        let _g = MockGuard::new();
+        let st = loaded();
+        let tabby = RuleIdent::new("Tabby.exe", "", "SSH*");
+        st.select(&tabby.key());
+        let rule = st.selected_rule().unwrap();
+        st.open_rename(&rule);
+        assert!(st.dlg.rename_visible.get());
+        assert_eq!(
+            (
+                st.dlg.add_name.get(),
+                st.dlg.add_class.get(),
+                st.dlg.add_title.get()
+            ),
+            ("Tabby.exe".to_string(), String::new(), "SSH*".to_string())
+        );
+        st.dlg.add_class.set("Bad\u{7}".into());
+        st.confirm_ident(IdentMode::Rename);
+        assert!(st.dlg.rename_visible.get(), "校验失败不关");
+        assert!(st.dlg.add_error.get().contains("控制字符"));
+        st.dlg.add_class.set("VirtualConsoleClass".into());
+        let _ = crate::rpc::take_mock_calls();
+        st.confirm_ident(IdentMode::Rename);
+        assert!(!st.dlg.rename_visible.get());
+        assert_eq!(calls("compat.rename").len(), 1);
+
+        let weixin = RuleIdent::process("Weixin.exe");
+        st.select(&weixin.key());
+        let rule = st.selected_rule().unwrap();
+        assert!(!rule.can_rename(), "出厂规则只能复制");
+        st.open_copy(&rule);
+        st.confirm_ident(IdentMode::Copy);
+        assert!(st.dlg.copy_visible.get(), "原样复制会撞上自己");
+        assert!(st.dlg.add_error.get().contains("已有"));
+        st.dlg.add_class.set("ChatWnd".into());
+        st.confirm_ident(IdentMode::Copy);
+        assert!(!st.dlg.copy_visible.get());
+        assert_eq!(
+            st.selected.get(),
+            RuleIdent::new("Weixin.exe", "ChatWnd", "").key()
+        );
+    }
+
+    #[test]
+    fn summary_describes_window_conditions() {
+        let p = ImportPreview::parse(&json!({"items": [
+            {"section": "apps", "process": "*", "class": "Chrome_WidgetWin_*", "title": "", "action": "add"}
+        ]}))
+        .unwrap();
+        assert!(
+            summarize(&p, false).contains("新增：所有应用（类名：Chrome_WidgetWin_*）"),
+            "{}",
+            summarize(&p, false)
+        );
     }
 }

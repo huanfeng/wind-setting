@@ -9,28 +9,45 @@
   "items": [
     {
       "action": "add",
+      "class": "",
       "process": "Brand.exe",
-      "section": "apps"
+      "section": "apps",
+      "title": ""
     },
     {
       "action": "override",
+      "class": "",
       "process": "Weixin.exe",
-      "section": "apps"
+      "section": "apps",
+      "title": ""
     },
     {
       "action": "disable",
+      "class": "",
       "process": "QQ.exe",
-      "section": "apps"
+      "section": "apps",
+      "title": ""
     },
     {
       "action": "unchanged",
+      "class": "",
       "process": "Feishu.exe",
-      "section": "apps"
+      "section": "apps",
+      "title": ""
     },
     {
       "action": "unchanged",
+      "class": "",
       "process": "wps.exe",
-      "section": "apps"
+      "section": "apps",
+      "title": ""
+    },
+    {
+      "action": "add",
+      "class": "AutoHotkeyGUI",
+      "process": "*",
+      "section": "apps",
+      "title": ""
     }
   ],
   "rejected": []

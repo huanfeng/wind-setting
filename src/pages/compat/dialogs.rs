@@ -1,9 +1,10 @@
-//! 「应用兼容」页的三个对话框：新增规则、全部还原确认、导入预览。挂在设置窗根层（全窗遮罩）。
+//! 「应用兼容」页的对话框：新增规则 / 修改匹配条件 / 复制为新规则、全部还原确认、导入预览等。
+//! 挂在设置窗根层（全窗遮罩）。
 
 use windui::core::EventCtx;
 use windui::prelude::*;
 
-use super::actions::IMPORT_MODES;
+use super::actions::{IMPORT_MODES, IdentMode};
 use super::model::{FieldSource, Schema, Section};
 use super::state::CompatState;
 use crate::pages::dict::reactive::reactive_effect;
@@ -11,7 +12,9 @@ use crate::pages::dict::reactive::reactive_effect;
 /// 返回要挂到根层的所有元素（含一个切换导入方式时重算预览的 effect）。
 pub fn build_dialogs(mgr: &CompatState) -> Vec<Element> {
     vec![
-        build_add_dialog(mgr),
+        build_ident_dialog(mgr, IdentMode::Add),
+        build_ident_dialog(mgr, IdentMode::Rename),
+        build_ident_dialog(mgr, IdentMode::Copy),
         build_reset_dialog(mgr),
         build_import_dialog(mgr),
         import_mode_effect(mgr),
@@ -32,26 +35,93 @@ fn footer(buttons: Vec<Element>) -> Element {
     row
 }
 
-fn build_add_dialog(mgr: &CompatState) -> Element {
+/// 匹配条件输入框下的通配说明。
+pub const WILDCARD_HINT: &str = "类名、标题支持通配：* 代表任意多个字符，? 代表一个字符；\
+     不区分大小写，须整串匹配。进程名留空或填 * 表示所有应用。";
+
+/// 标题条件的提示：当前版本还没有上报窗口标题（设计稿 P3）。
+pub const TITLE_PENDING_HINT: &str = "标题条件暂未生效，待后续版本。";
+
+/// 新增 / 修改匹配条件 / 复制为新规则：同一套输入（进程名 + 类名 + 标题），三个对话框共用信号。
+/// 类名与标题只在「应用规则」段出现（另两段只认进程名）。
+fn build_ident_dialog(mgr: &CompatState, mode: IdentMode) -> Element {
     let (close, cancel, ok, submit) = (mgr.clone(), mgr.clone(), mgr.clone(), mgr.clone());
     let d = &mgr.dlg;
+    let (visible, title, ok_label, intro) = match mode {
+        IdentMode::Add => (
+            d.add_visible,
+            "新增规则",
+            "新增",
+            "填写软件的进程名（如 Feishu.exe，不区分大小写），可在任务管理器的「详细信息」页查到。\
+             新规则在设置任意一项后才会写入。",
+        ),
+        IdentMode::Rename => (
+            d.rename_visible,
+            "修改匹配条件",
+            "保存",
+            "修改这条规则匹配哪些窗口。已设置的各项保持不变。",
+        ),
+        IdentMode::Copy => (
+            d.copy_visible,
+            "复制为新规则",
+            "复制",
+            "出厂规则的匹配条件不能修改。复制一份当前设置，改成新的匹配条件，作为你自己的规则保存。",
+        ),
+    };
+    let (sec, window_ok) = (mgr.section, mgr.window_ok);
+    let apps_only = move || Section::from_index(sec.get()) == Section::Apps && window_ok.get();
+    let field = |label: &str, input: Element| {
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(10)
+            .child(
+                Element::label(label)
+                    .font_size(13.0)
+                    .fg_role(Role::Text)
+                    .width(52),
+            )
+            .child(input.weight(1.0))
+    };
+    let (s1, s2, s3) = (submit.clone(), submit.clone(), submit);
     let body = Element::col()
         .width_match()
         .spacing(8)
         .child(
-            Element::label(
-                "填写软件的进程名（如 Feishu.exe，不区分大小写）。\n\
-                 可在任务管理器的「详细信息」页查到。新规则在设置任意一项后才会写入。",
+            Element::label(intro)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(4),
+        )
+        .child(field(
+            "进程名",
+            Element::text_input(d.add_name, "如 Feishu.exe；* 表示所有应用")
+                .on_submit(move |_| s1.confirm_ident(mode)),
+        ))
+        .child(
+            field(
+                "类名",
+                Element::text_input(d.add_class, "顶层窗口类名，可留空，如 Chrome_WidgetWin_*")
+                    .on_submit(move |_| s2.confirm_ident(mode)),
             )
-            .font_size(12.5)
-            .fg_role(Role::TextMuted)
-            .width_match()
-            .max_lines(4),
+            .visible_when(apps_only),
         )
         .child(
-            Element::text_input(d.add_name, "进程名，如 Feishu.exe")
+            field(
+                "标题",
+                Element::text_input(d.add_title, "窗口标题，可留空")
+                    .on_submit(move |_| s3.confirm_ident(mode)),
+            )
+            .visible_when(apps_only),
+        )
+        .child(
+            Element::label(format!("{WILDCARD_HINT}\n{TITLE_PENDING_HINT}"))
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
                 .width_match()
-                .on_submit(move |_| submit.confirm_add()),
+                .max_lines(4)
+                .visible_when(apps_only),
         )
         .child(
             Element::label_signal(d.add_error)
@@ -64,19 +134,27 @@ fn build_add_dialog(mgr: &CompatState) -> Element {
         Element::button("取消")
             .small()
             .outline_soft()
-            .on_click(move |_| cancel.dlg.add_visible.set(false)),
-        Element::button("新增")
+            .on_click(move |_| cancel_ident(&cancel, mode)),
+        Element::button(ok_label)
             .small()
-            .on_click(move |_| ok.confirm_add()),
+            .on_click(move |_| ok.confirm_ident(mode)),
     ]);
     Element::dialog_panel(
-        d.add_visible,
-        "新增规则",
-        420,
-        move |_: &mut EventCtx| close.dlg.add_visible.set(false),
+        visible,
+        title,
+        460,
+        move |_: &mut EventCtx| cancel_ident(&close, mode),
         body,
         foot,
     )
+}
+
+fn cancel_ident(mgr: &CompatState, mode: IdentMode) {
+    match mode {
+        IdentMode::Add => mgr.dlg.add_visible.set(false),
+        IdentMode::Rename => mgr.dlg.rename_visible.set(false),
+        IdentMode::Copy => mgr.dlg.copy_visible.set(false),
+    }
 }
 
 fn build_reset_dialog(mgr: &CompatState) -> Element {
@@ -367,7 +445,7 @@ pub fn override_candidates(mgr: &CompatState) -> Vec<(String, Vec<Candidate>)> {
                         rule.fields
                             .get(&f.key)
                             .is_none_or(|v| v.source == FieldSource::Default)
-                            && !mgr.is_pending(&rule.process, &f.key)
+                            && !mgr.is_pending(&rule.ident(), &f.key)
                     })
                     .map(|f| Candidate {
                         key: f.key.clone(),
@@ -480,8 +558,8 @@ fn candidate_list(mgr: &CompatState, groups: &[(String, Vec<Candidate>)]) -> Ele
                     .clickable()
                     .on_click(move |_| {
                         m.dlg.field_visible.set(false);
-                        if let Some(p) = m.selected_rule().map(|r| r.process) {
-                            m.add_override(&p, &key);
+                        if let Some(r) = m.selected_rule() {
+                            m.add_override(&r.ident(), &key);
                         }
                     })
                     .child(

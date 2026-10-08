@@ -1,6 +1,7 @@
 {
   "rules": [
     {
+      "class": "",
       "effective": {
         "classes": [
           "Progman",
@@ -29,6 +30,7 @@
         }
       },
       "hasUserEntry": true,
+      "key": "explorer.exe\u001f\u001f",
       "overridden": [
         "classes"
       ],
@@ -41,6 +43,7 @@
         ],
         "process": "explorer.exe"
       },
+      "title": "",
       "unknownKeys": [],
       "user": {
         "classes": [
@@ -52,6 +55,7 @@
       }
     },
     {
+      "class": "",
       "effective": {
         "classes": [
           "Notepad"
@@ -71,6 +75,7 @@
         }
       },
       "hasUserEntry": false,
+      "key": "notepad.exe\u001f\u001f",
       "overridden": [],
       "process": "notepad.exe",
       "state": "system",
@@ -80,16 +85,19 @@
         ],
         "process": "notepad.exe"
       },
+      "title": "",
       "unknownKeys": [],
       "user": null
     }
   ],
   "warnings": [
     {
+      "class": "",
       "key": "initial_punct",
       "message": "字段 initial_punct 的值 \"englsh\" 无效，已忽略",
       "process": "Tabby.exe",
-      "section": "apps"
+      "section": "apps",
+      "title": ""
     }
   ]
 }

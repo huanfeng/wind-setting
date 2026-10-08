@@ -13,7 +13,9 @@
 use serde_json::{Value, json};
 use windui::prelude::*;
 
-use super::model::{FieldMeta, FieldSource, FieldView, Kind, RuleState, RuleView, Schema, Section};
+use super::model::{
+    FieldMeta, FieldSource, FieldView, Kind, RuleIdent, RuleState, RuleView, Schema, Section,
+};
 use super::state::{CompatState, FILTERS};
 use crate::pages::dict::reactive::{reactive_effect, toast_sink};
 use crate::pages::dict::sidebar::{ITEM_H, ITEM_PAD_X, SIDE_PAD, selectable};
@@ -281,7 +283,7 @@ fn build_list(mgr: &CompatState, list_sig: Signal<Vec<Vec<RuleView>>>) -> Elemen
                 .width_match()
                 .padding_xy(12, 0)
                 .spacing(8)
-                .child(Element::text_input(mgr.search, "搜索进程名"))
+                .child(Element::text_input(mgr.search, "搜索进程名 / 类名 / 标题"))
                 // 状态筛选是四个固定短词、常切换，适合类 Tab 的分段；其它「选值」类控件才用下拉。
                 .child(Element::segmented(FILTERS.to_vec(), mgr.filter)),
         )
@@ -329,16 +331,25 @@ fn comment_of(r: &RuleView) -> String {
         .to_string()
 }
 
+/// 列表第二行：有窗口条件时显示条件（同进程的几条靠它区分），否则显示说明。
+fn row_subtitle(r: &RuleView) -> String {
+    match r.ident().condition_text() {
+        c if c.is_empty() => comment_of(r),
+        c => c,
+    }
+}
+
 fn rule_row(mgr: &CompatState, r: &RuleView) -> Element {
     let m = mgr.clone();
     let sel_sig = mgr.selected;
-    let (name_sel, name_click, title) = (r.process.clone(), r.process.clone(), r.process.clone());
-    let comment = comment_of(r);
+    let (key_sel, key_click) = (r.key.clone(), r.key.clone());
+    let title = r.ident().display_name();
+    let comment = row_subtitle(r);
     let state = r.state;
     selectable(
         RULE_ROW_H,
-        move || sel_sig.get() == name_sel,
-        move || m.select(&name_click),
+        move || sel_sig.get() == key_sel,
+        move || m.select(&key_click),
         move |active| {
             let mut text = Element::col().weight(1.0).spacing(2).child(
                 Element::label(&title)
@@ -403,7 +414,7 @@ fn build_right(mgr: &CompatState, detail_sig: Signal<Vec<Option<RuleView>>>) -> 
 
 /// 这个字段要不要出现在详情里：被某一层设置过，或用户刚挑出来等着给值。
 fn is_shown(mgr: &CompatState, rule: &RuleView, key: &str, fv: &FieldView) -> bool {
-    fv.source != FieldSource::Default || mgr.is_pending(&rule.process, key)
+    fv.source != FieldSource::Default || mgr.is_pending(&rule.ident(), key)
 }
 
 fn build_detail(mgr: &CompatState, rule: &RuleView) -> Element {
@@ -418,7 +429,7 @@ fn build_detail(mgr: &CompatState, rule: &RuleView) -> Element {
     // 被当成「没写」忽略的无效内容：让用户知道为什么某个字段没生效。
     let warns: Vec<String> = mgr.warnings.with(|ws| {
         ws.iter()
-            .filter(|w| w.section == section.id() && w.process.eq_ignore_ascii_case(&rule.process))
+            .filter(|w| w.section == section.id() && w.is_about(rule))
             .map(|w| {
                 if w.key.is_empty() {
                     w.message.clone()
@@ -490,12 +501,13 @@ fn build_detail(mgr: &CompatState, rule: &RuleView) -> Element {
 
 fn detail_header(mgr: &CompatState, rule: &RuleView) -> Element {
     let comment = comment_of(rule);
+    let ident = rule.ident();
     let mut title = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(8)
         .child(
-            Element::label(&rule.process)
+            Element::label(ident.display_name())
                 .font_size(17.0)
                 .font_weight(600)
                 .fg_role(Role::Text),
@@ -512,7 +524,7 @@ fn detail_header(mgr: &CompatState, rule: &RuleView) -> Element {
     let disabled = rule.state == RuleState::Disabled;
     if !draft {
         let m = mgr.clone();
-        let p = rule.process.clone();
+        let p = ident.clone();
         title = title.child(
             Element::button(if disabled { "启用" } else { "禁用" })
                 .small()
@@ -524,7 +536,7 @@ fn detail_header(mgr: &CompatState, rule: &RuleView) -> Element {
     }
     if rule.can_reset() {
         let m = mgr.clone();
-        let p = rule.process.clone();
+        let p = ident.clone();
         title = title.child(
             Element::button("还原为出厂")
                 .small()
@@ -544,13 +556,63 @@ fn detail_header(mgr: &CompatState, rule: &RuleView) -> Element {
         );
     } else if rule.is_user_only() {
         let m = mgr.clone();
-        let p = rule.process.clone();
+        let p = ident.clone();
         title = title.child(Element::button("删除").small().danger().on_click(move |_| {
             m.reset_rule(&p);
         }));
     }
 
-    let mut col = Element::col().width_match().spacing(4).child(title);
+    // 匹配条件一行：用户新增的可改，出厂的只读、可复制为新规则。
+    let cond = ident.condition_text();
+    let mut match_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(
+            Element::label(if cond.is_empty() {
+                "匹配：该进程的所有窗口".to_string()
+            } else {
+                format!("匹配：{cond}")
+            })
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .weight(1.0)
+            .max_lines(2),
+        );
+    let r = rule.clone();
+    let m = mgr.clone();
+    match_row = if !mgr.window_ok.get() {
+        // 旧核心：不支持改条件 / 复制，按钮不出。
+        match_row
+    } else if rule.can_rename() {
+        match_row.child(
+            Element::button("修改匹配条件")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.open_rename(&r)),
+        )
+    } else {
+        match_row.child(
+            Element::button("复制为新规则")
+                .small()
+                .outline_soft()
+                .tooltip("出厂规则的匹配条件不能修改；复制一份当前设置，换成新的匹配条件")
+                .on_click(move |_| m.open_copy(&r)),
+        )
+    };
+
+    let mut col = Element::col()
+        .width_match()
+        .spacing(4)
+        .child(title)
+        .child(match_row);
+    if !ident.title.is_empty() {
+        col = col.child(
+            Element::label(super::dialogs::TITLE_PENDING_HINT)
+                .font_size(12.0)
+                .fg_role(Role::Warning),
+        );
+    }
     if draft {
         col = col.child(
             Element::label("新规则尚未保存：设置任意一项后才会写入。")
@@ -592,15 +654,16 @@ fn field_row(
     if let Some(tag) = source_tag(fv.source) {
         ctl = ctl.child(tag);
     }
-    ctl = ctl.child(field_control(mgr, &rule.process, meta, fv));
+    let ident = rule.ident();
+    ctl = ctl.child(field_control(mgr, &ident, meta, fv));
     let met = meta.dep_met(rule);
     // 「还原」放在置灰的包裹之外：依赖条件不满足时用户层可能仍留着这个字段的值，
     // 不能让它变成清不掉的孤儿。
-    let pending = mgr.is_pending(&rule.process, &meta.key);
+    let pending = mgr.is_pending(&ident, &meta.key);
     let mut reset_btn = None;
     if pending || fv.can_reset() {
         let m = mgr.clone();
-        let (p, k) = (rule.process.clone(), meta.key.clone());
+        let (p, k) = (ident.clone(), meta.key.clone());
         // 用户新增的规则、或还没给值的覆盖项，没有「出厂」可还原，去掉就是去掉。
         let remove = pending || rule.system.is_none();
         reset_btn = Some(
@@ -644,9 +707,14 @@ fn field_row(
 }
 
 /// 按字段类型造控件。写入成功后详情整体重建，所以这里的局部信号只管「用户刚做了什么」。
-fn field_control(mgr: &CompatState, process: &str, meta: &FieldMeta, fv: &FieldView) -> Element {
+fn field_control(
+    mgr: &CompatState,
+    ident: &RuleIdent,
+    meta: &FieldMeta,
+    fv: &FieldView,
+) -> Element {
     let key = meta.key.clone();
-    let proc = process.to_string();
+    let proc = ident.clone();
     let m = mgr.clone();
     match meta.kind {
         Kind::Bool => {
@@ -878,7 +946,7 @@ mod tests {
         assert_ne!(now, before, "筛选变了，effect 应把选中项挪进可见集");
         assert!(mgr.rules.with(|r| {
             r.iter()
-                .any(|x| x.process == now && x.state == RuleState::Disabled)
+                .any(|x| x.key == now && x.state == RuleState::Disabled)
         }));
     }
 
@@ -889,7 +957,7 @@ mod tests {
         let st = AppState::empty();
         let mgr = st.compat_mgr.clone();
         mgr.ensure_loaded();
-        mgr.select("Weixin.exe");
+        mgr.select(&RuleIdent::process("Weixin.exe").key());
         let rule = mgr.selected_rule().unwrap();
         let shown = |mgr: &CompatState, rule: &RuleView| -> Vec<String> {
             rule.fields
@@ -909,7 +977,7 @@ mod tests {
         );
         assert!(before.len() < rule.fields.len(), "不是把全部字段都摆出来");
 
-        mgr.add_override("Weixin.exe", "initial_mode");
+        mgr.add_override(&RuleIdent::process("Weixin.exe"), "initial_mode");
         let rule = mgr.selected_rule().unwrap();
         assert!(shown(&mgr, &rule).contains(&"initial_mode".to_string()));
     }
@@ -921,7 +989,7 @@ mod tests {
         let st = AppState::empty();
         let mgr = st.compat_mgr.clone();
         mgr.ensure_loaded();
-        mgr.select("Weixin.exe");
+        mgr.select(&RuleIdent::process("Weixin.exe").key());
         let keys = |mgr: &CompatState| -> Vec<String> {
             super::super::dialogs::override_candidates(mgr)
                 .into_iter()

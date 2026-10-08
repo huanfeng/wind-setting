@@ -6,6 +6,8 @@
 
 use serde_json::{Value, json};
 
+use super::model::RuleIdent;
+
 const SCHEMA: &str = include_str!("../../mockdata/compat/schema.json");
 const LIST_APPS: &str = include_str!("../../mockdata/compat/list_apps.json");
 const LIST_SCOPE: &str = include_str!("../../mockdata/compat/list_initial_mode_scope.json");
@@ -16,14 +18,25 @@ const EXPORT_USER: &str = include_str!("../../mockdata/compat/export_user.toml")
 /// 备份文件名（与核心的命名同形）。
 const BACKUP: &str = "compat.toml.bak-1700000000";
 
-// mock 里「写完就变」的最小可变层：用户新增的规则及其已设置的字段（键与值）。字段清空时整条规则消失。核心里 normalize 成空的补丁不会落行，
-// 进程名为 `MOCK_NOOP_PROCESS` 时照此模拟。线程内独立（每个测试各一份）。
+// mock 里「写完就变」的最小可变层：用户新增的规则（身份 + 已设置的字段键与值）。字段清空时整条规则消失。
+// 核心里 normalize 成空的补丁不会落行，进程名为 `MOCK_NOOP_PROCESS` 时照此模拟。线程内独立（每个测试各一份）。
+/// 一条 mock 新建的规则：身份 + 已设置的 (字段, 值)。
+type CreatedRule = (RuleIdent, Vec<(String, Value)>);
+
 thread_local! {
-    static CREATED: std::cell::RefCell<Vec<(String, Vec<(String, Value)>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CREATED: std::cell::RefCell<Vec<CreatedRule>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// 静态列表里被 `compat.rename` 改了身份的规则：(原 key, 新身份)。
+    static RENAMED: std::cell::RefCell<Vec<(String, RuleIdent)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// 见 [`CREATED`]：这个进程名的 upsert 应答成功却不落行。
 pub(crate) const MOCK_NOOP_PROCESS: &str = "noop.exe";
+
+/// 请求里的规则身份（`process` / `class` / `title`）。
+fn ident_in(v: &Value) -> RuleIdent {
+    let t = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    RuleIdent::new(&t("process"), &t("class"), &t("title"))
+}
 
 /// 在静态的 apps 列表上叠加 [`CREATED`] 里的新规则：字段视图按已设置的键逐个生成
 /// （已设置 = 用户来源，其余 = 默认来源、类型化默认值），与核心的形状一致。
@@ -45,9 +58,18 @@ fn list_apps_with_created() -> Value {
         })
         .unwrap_or_default();
     let created = CREATED.with(|c| c.borrow().clone());
+    let renamed = RENAMED.with(|c| c.borrow().clone());
     if let Some(rules) = v.get_mut("rules").and_then(Value::as_array_mut) {
-        for (p, set) in created {
-            if set.is_empty() || rules.iter().any(|r| r["process"] == p.as_str()) {
+        for r in rules.iter_mut() {
+            if let Some((_, to)) = renamed.iter().find(|(k, _)| r["key"] == k.as_str()) {
+                r["process"] = json!(to.process);
+                r["class"] = json!(to.class);
+                r["title"] = json!(to.title);
+                r["key"] = json!(to.key());
+            }
+        }
+        for (id, set) in created {
+            if set.is_empty() || rules.iter().any(|r| r["key"] == id.key().as_str()) {
                 continue;
             }
             let Some(mut r) = rules.first().cloned() else {
@@ -71,7 +93,10 @@ fn list_apps_with_created() -> Value {
                 };
                 fields.insert(k.clone(), fv);
             }
-            r["process"] = json!(p);
+            r["process"] = json!(id.process);
+            r["class"] = json!(id.class);
+            r["title"] = json!(id.title);
+            r["key"] = json!(id.key());
             r["state"] = json!("user");
             r["hasUserEntry"] = json!(true);
             r["system"] = Value::Null;
@@ -96,17 +121,18 @@ fn kind_of(key: &str) -> String {
 }
 
 /// 把一次写入折算进 [`CREATED`]。
-fn mutate_created(method: &str, process: &str, params: &Value) {
+fn mutate_created(method: &str, id: &RuleIdent, params: &Value) {
+    let key = id.key();
     CREATED.with(|c| {
         let mut c = c.borrow_mut();
         match method {
-            "compat.upsert" if process != MOCK_NOOP_PROCESS => {
+            "compat.upsert" if id.process != MOCK_NOOP_PROCESS => {
                 let Some(patch) = params["patch"].as_object() else {
                     return;
                 };
-                let pos = c.iter().position(|(p, _)| p == process);
+                let pos = c.iter().position(|(p, _)| p.key() == key);
                 let i = pos.unwrap_or_else(|| {
-                    c.push((process.to_string(), Vec::new()));
+                    c.push((id.clone(), Vec::new()));
                     c.len() - 1
                 });
                 for (k, v) in patch {
@@ -125,15 +151,51 @@ fn mutate_created(method: &str, process: &str, params: &Value) {
             }
             "compat.resetField" => {
                 if let (Some((_, keys)), Some(k)) = (
-                    c.iter_mut().find(|(p, _)| p == process),
+                    c.iter_mut().find(|(p, _)| p.key() == key),
                     params["key"].as_str(),
                 ) {
                     keys.retain(|(x, _)| x != k);
                 }
             }
+            "compat.rename" => {
+                let to = ident_in(&params["to"]);
+                match c.iter_mut().find(|(p, _)| p.key() == key) {
+                    Some((p, _)) => *p = to,
+                    None => RENAMED.with(|r| {
+                        let mut r = r.borrow_mut();
+                        // 已改过名的再改：接着原 key 记，免得链式改名找不回来。
+                        match r.iter_mut().find(|(_, t)| t.key() == key) {
+                            Some(e) => e.1 = to,
+                            None => r.push((key.clone(), to)),
+                        }
+                    }),
+                }
+            }
             _ => {}
         }
     });
+}
+
+/// `compat.copy`：源规则（静态的或 mock 新建的）里有值的字段抄成一条新规则。
+fn mock_copy(from: &RuleIdent, to: RuleIdent) {
+    let list = list_apps_with_created();
+    let Some(src) = list["rules"]
+        .as_array()
+        .and_then(|rs| rs.iter().find(|r| r["key"] == from.key().as_str()))
+        .cloned()
+    else {
+        return;
+    };
+    let set: Vec<(String, Value)> = src["fields"]
+        .as_object()
+        .map(|fs| {
+            fs.iter()
+                .filter(|(_, f)| f["source"] != "default" && f["source"] != "cleared")
+                .map(|(k, f)| (k.clone(), f["value"].clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    CREATED.with(|c| c.borrow_mut().push((to, set)));
 }
 
 fn parse(s: &str) -> Value {
@@ -165,15 +227,16 @@ pub(crate) fn reply(method: &str, params: &Value) -> Value {
         }
         "compat.resetAll" => json!({ "ok": true, "backup": BACKUP }),
         "compat.reset" => {
-            if let Some(p) = params.get("process").and_then(Value::as_str) {
-                CREATED.with(|c| c.borrow_mut().retain(|(x, _)| x != p));
-            }
+            let key = ident_in(params).key();
+            CREATED.with(|c| c.borrow_mut().retain(|(x, _)| x.key() != key));
             json!({ "ok": true, "removed": true, "rule": null })
         }
-        "compat.upsert" | "compat.resetField" | "compat.setDisabled" => {
-            if let Some(p) = params.get("process").and_then(Value::as_str) {
-                mutate_created(method, p, params);
-            }
+        "compat.upsert" | "compat.resetField" | "compat.setDisabled" | "compat.rename" => {
+            mutate_created(method, &ident_in(params), params);
+            json!({ "ok": true, "rule": null })
+        }
+        "compat.copy" => {
+            mock_copy(&ident_in(params), ident_in(&params["to"]));
             json!({ "ok": true, "rule": null })
         }
         _ => Value::Null,
@@ -217,6 +280,16 @@ composition_start_pair_guard = true
 process = "Dota2.exe"
 host_drawn_candidates = true
 
+[[apps]]
+process = "QQ.exe"
+class = "TXGuiFoundation"
+comment = "QQ 主窗：首键等精确坐标"
+first_show_mode = "wait"
+
+[[apps]]
+class = "Chrome_WidgetWin_*"
+composition_placeholder = "zwsp"
+
 [[initial_mode_scope]]
 process = "explorer.exe"
 classes = ["Progman", "WorkerW"]
@@ -254,6 +327,16 @@ initial_punct = "englsh"
 caret_offset_y = 4
 future_key = 3
 
+[[apps]]
+process = "Tabby.exe"
+title = "SSH*"
+auto_pair = true
+
+[[apps]]
+process = "*"
+class = "MozillaWindowClass"
+composition_placeholder = "zwsp"
+
 [[initial_mode_scope]]
 process = "explorer.exe"
 classes = ["Progman", "WorkerW", "CabinetWClass"]
@@ -285,6 +368,10 @@ composition_start_pair_guard = true
 process = "wps.exe"
 future_key = 1
 first_show_mode = "wiat"
+
+[[apps]]
+class = "AutoHotkeyGUI"
+first_show_mode = "fast"
 "#;
 }
 
