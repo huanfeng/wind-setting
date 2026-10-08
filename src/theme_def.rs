@@ -5,11 +5,6 @@
 
 use windui::prelude::*;
 
-/// 亮色主题强调蓝（静态渐变/淡底用；tint/渐变不走 *_role，需静态常量）。
-pub const ACCENT_LIGHT: u32 = 0x2F6BED;
-/// 暗色主题强调蓝（暗背景上提亮一档）。
-pub const ACCENT_DARK: u32 = 0x5B8CF5;
-
 /// 设置行 hint 悬浮提示的换行宽度（逻辑 px）。设置窗口比库默认场景更宽，
 /// 稍微放宽避免过短说明也被强制拆成两三行。
 pub const TOOLTIP_MAX_W: f32 = 320.0;
@@ -104,6 +99,23 @@ pub fn theme_for(dark: bool) -> Theme {
     if dark { dark_theme() } else { light_theme() }
 }
 
+/// 按明暗取主题，并换上给定的强调色组（`None` = 设置窗默认蓝）。
+///
+/// 只动强调色四个槽位：底色、卡片、文字等仍是设置窗自己的（见 [`crate::accent`] 的取舍）。
+/// 用到强调色的静态控件一律走角色色（`bg_role_alpha` / `bg_gradient_roles` / `tint_role`），
+/// 换这四个槽位即整窗跟随。
+pub fn theme_with_accent(dark: bool, accent: Option<crate::accent::AccentSet>) -> Theme {
+    let mut t = theme_for(dark);
+    if let Some(a) = accent {
+        let p = &mut t.palette;
+        p.accent = a.accent;
+        p.accent_hover = a.hover;
+        p.accent_active = a.active;
+        p.on_accent = a.on_accent;
+    }
+    t
+}
+
 /// 检测系统是否为暗色（窗口默认主题随系统，不持久化用户切换）。
 ///
 /// Windows：读注册表 `AppsUseLightTheme`（0=暗 / 1=亮）。
@@ -125,5 +137,64 @@ pub fn system_dark() -> bool {
     #[cfg(not(windows))]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 守护：强调色只能经调色板（角色色）取用。把默认蓝写成静态色的控件不会跟随
+    /// 「主题色：跟随输入法」——换了主题它还是蓝的，而且截图上要切到非默认主题才看得出来。
+    #[test]
+    fn accent_hex_only_lives_in_theme_def() {
+        let palette_hex = ["2F6BED", "4A80F0", "2159D6", "5B8CF5", "6F9BF7", "4A7CE8"];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root];
+        let mut hits = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && !p.ends_with("theme_def.rs")
+                    && !p.ends_with("accent.rs")
+                {
+                    let text = std::fs::read_to_string(&p).unwrap().to_uppercase();
+                    for h in palette_hex {
+                        if text.contains(&format!("0X{h}")) {
+                            hits.push(format!("{} 含 0x{h}", p.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "强调色要用 Role::Accent* 取，别写静态色：\n{}",
+            hits.join("\n")
+        );
+    }
+
+    #[test]
+    fn theme_with_accent_only_touches_accent_slots() {
+        let set = crate::accent::AccentSet {
+            accent: Color::hex(0x05875F),
+            hover: Color::hex(0x05A573),
+            active: Color::hex(0x036546),
+            on_accent: Color::WHITE,
+        };
+        let base = theme_for(false);
+        let t = theme_with_accent(false, Some(set));
+        assert_eq!(t.palette.accent, set.accent);
+        assert_eq!(t.palette.accent_hover, set.hover);
+        assert_eq!(t.palette.accent_active, set.active);
+        assert_eq!(t.palette.surface, base.palette.surface);
+        assert_eq!(t.palette.text, base.palette.text);
+        assert_eq!(
+            theme_with_accent(true, None).palette.accent,
+            theme_for(true).palette.accent
+        );
     }
 }

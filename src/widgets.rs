@@ -88,35 +88,28 @@ pub fn flat_panel() -> Element {
 
 /// 分区标题：强调色淡底图标块（[`crate::icons::CHIP_PX`]）+ 14px 加粗标题（参考稿 sec-head）。
 ///
-/// 图标块底色/图标色为静态 accent（tint/半透明底不走 *_role），按 [`dark_sig`]
-/// 做亮/暗双态 visible_when 跟随换肤；图标按 section 名查 [`crate::icons::section_icon`]。
+/// 图标块底色 / 图标色走 accent 角色（淡底 `bg_role_alpha` + `tint_role`），换明暗与换强调色
+/// 都自动跟随；图标按 section 名查 [`crate::icons::section_icon`]。
 ///
 /// 标题 Label `weight(1.0)` + `max_lines(1)`：windui 的 Label 在「无显式宽度」时，
 /// measure 收敛到文字紧贴宽，draw 再按该窄宽折行（见 ui/mod.rs 注释），导致明明有
 /// 空间也换行、甚至 2 字标题也折。给足整行宽度并锁单行即可根治。
 pub fn section_header(title: &str) -> Element {
     let svg = crate::icons::section_icon(title);
-    let chip = |accent: u32, on_dark: bool| {
-        Element::stack()
-            .size(crate::icons::CHIP_PX, crate::icons::CHIP_PX)
-            .corner(7.0)
-            .bg(Color::hex(accent).scale_alpha(0.12))
-            .child(
-                crate::icons::tinted(svg, crate::icons::ICON_PX, Color::hex(accent))
-                    .align(Align::Center),
-            )
-            .visible_when(move || dark_sig().get() == on_dark)
-    };
+    let chip = Element::stack()
+        .size(crate::icons::CHIP_PX, crate::icons::CHIP_PX)
+        .corner(7.0)
+        .bg_role_alpha(Role::Accent, 0.12)
+        .child(
+            crate::icons::tinted_role(svg, crate::icons::ICON_PX, Role::Accent)
+                .align(Align::Center),
+        );
     Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(9)
         .margin_xy(2, 4)
-        .child(
-            Element::stack()
-                .child(chip(crate::theme_def::ACCENT_DARK, true))
-                .child(chip(crate::theme_def::ACCENT_LIGHT, false)),
-        )
+        .child(chip)
         .child(
             Element::label(title)
                 .font_size(14.0)

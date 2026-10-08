@@ -513,6 +513,16 @@ pub struct AppState {
     /// 运行期换肤句柄。重建主窗时 `shell::build` 要用它，而 `App::theme_handle()` 只在
     /// 建窗前拿得到，故建好后存一份进来。
     pub theme_handle: RefCell<Option<ThemeHandle>>,
+    /// 底栏「主题色」下拉的选中下标（[`crate::accent::AccentMode::index`]）。
+    pub accent_idx: Signal<usize>,
+    /// 跟随模式下取到的输入法主题色（未修正的两档原色）；`None` = 还没取 / 取不到。
+    ime_accent: RefCell<Option<crate::accent::ThemeAccent>>,
+    /// 上一次取色请求的主题名（空串 = 当前主题）。与此刻要跟随的不同才重取；`None` = 没取过。
+    accent_fetched_for: RefCell<Option<String>>,
+    /// 底栏角标提示：跟随模式下说明用了什么 / 为什么没用；默认模式为空串（角标收起）。
+    pub accent_note: Signal<String>,
+    /// 上一次换上的（明暗, 强调色）。相同就不再 `ThemeHandle::set`——那会整窗重绘。
+    applied_theme: Cell<Option<(bool, Option<crate::accent::AccentSet>)>>,
     /// 词库正作为 `App` 的那个窗口（`--page dict` 冷启动时如此）。
     ///
     /// 这种启动下**不建设置窗**：从托盘点「词库管理」却弹出两个窗口（设置窗 + 词库窗）
@@ -890,6 +900,8 @@ impl AppState {
             .ui
             .dark
             .unwrap_or_else(crate::theme_def::system_dark);
+        let initial_accent =
+            crate::accent::AccentMode::from_config(setting_load.config.ui.accent.as_deref());
         // 方案列表的两个显示过滤：`new()` 内部已 refresh 过一次（当时读到的是默认值），
         // 故 show_hidden 走 set_show_hidden 重建列表，而不是只 set 信号——它决定的是
         // 「哪些方案进列表」，不重建的话开关是打开的、列表里却没有特殊方案。
@@ -948,6 +960,11 @@ impl AppState {
             ui_tx: RefCell::new(None),
             main_window_closed: signal(false),
             theme_handle: RefCell::new(None),
+            accent_idx: signal(initial_accent.index()),
+            ime_accent: RefCell::new(None),
+            accent_fetched_for: RefCell::new(None),
+            accent_note: signal(String::new()),
+            applied_theme: Cell::new(None),
             dict_is_main: Cell::new(false),
             pending_dict_target: Rc::new(RefCell::new(None)),
             backup_mgr: crate::pages::backup::BackupState::new(),
@@ -1235,6 +1252,113 @@ impl AppState {
     /// 持久化明暗选择。写 `Some` 即表示用户显式选过，此后不再跟随系统。
     pub fn save_dark_mode(&mut self, dark: bool) {
         self.save_ui_state(|ui| ui.dark = Some(dark));
+    }
+
+    /// 持久化主题色来源。
+    pub fn save_accent_mode(&mut self, mode: crate::accent::AccentMode) {
+        self.save_ui_state(|ui| ui.accent = mode.to_config());
+    }
+
+    pub fn accent_mode(&self) -> crate::accent::AccentMode {
+        crate::accent::AccentMode::from_index(self.accent_idx.get())
+    }
+
+    /// 跟随模式要取色的主题：外观页下拉此刻选中的（未保存也算，换主题即可预览），下拉还没
+    /// 建好时取配置值；都没有时为空串，由 core 取当前主题。
+    fn accent_target_theme(&self) -> String {
+        self.selected_theme_id()
+            .or_else(|| {
+                self.current_config
+                    .get_str("ui.theme.name")
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    }
+
+    /// 此刻该用的强调色组；默认模式、没取到色、近灰都为 `None`（用设置窗默认蓝）。
+    fn accent_set(&self) -> Option<crate::accent::AccentSet> {
+        if self.accent_mode() != crate::accent::AccentMode::Ime {
+            return None;
+        }
+        self.ime_accent
+            .borrow()
+            .as_ref()?
+            .derive(self.dark.get())?
+            .set()
+    }
+
+    /// 此刻该用的整窗主题（明暗 + 强调色）。建窗时用它，运行期经 [`Self::apply_ui_theme`]。
+    pub fn ui_theme(&self) -> Theme {
+        crate::theme_def::theme_with_accent(self.dark.get(), self.accent_set())
+    }
+
+    /// 把（明暗, 强调色）换上；与上次相同则不动。还没有换肤句柄（建窗前）时什么都不做。
+    pub fn apply_ui_theme(&self) {
+        let key = (self.dark.get(), self.accent_set());
+        if self.applied_theme.get() == Some(key) {
+            return;
+        }
+        if let Some(th) = self.theme_handle.borrow().as_ref() {
+            th.set(crate::theme_def::theme_with_accent(key.0, key.1));
+            self.applied_theme.set(Some(key));
+        }
+    }
+
+    /// 主题色同步：跟随模式下按需取色、刷新角标提示，再换上主题。
+    ///
+    /// 模式切换、外观页换主题（含未保存）、明暗切换都经这里（见 `shell::accent_watcher`），
+    /// 取色只在要跟随的主题变了时发生。
+    pub fn sync_accent(&self) {
+        use crate::accent::AccentMode;
+        if self.accent_mode() == AccentMode::Ime {
+            let target = self.accent_target_theme();
+            let fresh = self.accent_fetched_for.borrow().as_deref() == Some(target.as_str())
+                // 启动时按「当前主题」（空串）预取过，配置到达后目标变成了具体 id——
+                // 取回的就是它，不必再取一次。
+                || self
+                    .ime_accent
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|t| t.theme_id == target);
+            if !fresh {
+                *self.ime_accent.borrow_mut() = load_theme_accent(&target);
+                *self.accent_fetched_for.borrow_mut() = Some(target);
+            }
+            let fetched = self.ime_accent.borrow();
+            let id = fetched.as_ref().map(|t| t.theme_id.as_str()).unwrap_or("");
+            let name = self
+                .theme_entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.display.as_str())
+                .unwrap_or(id);
+            let note = crate::accent::follow_note(fetched.as_ref(), name, self.dark.get());
+            if self.accent_note.with(|n| *n != note) {
+                self.accent_note.set(note);
+            }
+        } else if self.accent_note.with(|n| !n.is_empty()) {
+            self.accent_note.set(String::new());
+        }
+        self.apply_ui_theme();
+    }
+
+    /// 建窗前预取当前主题的强调色（仅跟随模式），让窗口一亮就是跟随色、不先闪一下默认蓝。
+    ///
+    /// 只等 [`ACCENT_PREFETCH_TIMEOUT`]：core 忙时宁可先用默认色，数据到达后
+    /// [`Self::apply_loaded`] 会再同步一次。
+    pub fn prefetch_accent(&self) {
+        if self.accent_mode() != crate::accent::AccentMode::Ime {
+            return;
+        }
+        *self.ime_accent.borrow_mut() = load_theme_accent_within("", ACCENT_PREFETCH_TIMEOUT);
+        *self.accent_fetched_for.borrow_mut() = Some(String::new());
+    }
+
+    /// 让下一次 [`Self::sync_accent`] 重新取色：主题列表重扫（覆盖导入可能换了同名主题的
+    /// 颜色）、上次没取到（输入法后来才起来）时用。
+    pub fn invalidate_accent(&self) {
+        *self.accent_fetched_for.borrow_mut() = None;
+        *self.ime_accent.borrow_mut() = None;
     }
 
     /// 持久化方案页「隐藏未启用」。
@@ -1726,6 +1850,8 @@ impl AppState {
         // 不重拉：外观页的「跟随主题（值）」文案与勾选初值继续挂着旧主题的数，直到用户
         // 手动切一次主题或重开设置页才更新。
         self.refresh_theme_follow();
+        // 同理：覆盖导入换了同名主题的颜色，强调色也要重取（列表信号已变，监视节点会接着同步）。
+        self.invalidate_accent();
     }
 
     /// 主题下拉此刻选中的那个 id（拿不到索引信号或越界时为 `None`）。
@@ -2102,6 +2228,11 @@ impl AppState {
         self.font_label_sig.set(self.fonts.clone());
         // 必须在字体列表之后（主题字体要补进列表）、loaders 之前（跟随行按它播种）。
         self.set_theme_follow(data.theme_follow);
+        // 每次加载都重取一次强调色并当场同步：启动预取时输入法可能还没起来，「重新加载」前
+        // 主题编辑器可能改了当前主题的颜色。不能只指望监视节点——词库窗 / 兼容窗当主窗时
+        // 不建设置外壳，根本没有监视节点。默认模式下 `sync_accent` 不碰 core。
+        self.invalidate_accent();
+        self.sync_accent();
         // 方案下拉选项（码表/拼音类各自过滤）：首项空值="自动"/"默认：全拼"，其余为 id/name。
         // 必须在 loaders 跑之前就位，否则 loader 无法在选项列表中定位当前配置值。
         //
@@ -2900,6 +3031,29 @@ impl LoadedState {
             connected,
         }
     }
+}
+
+/// 建窗前预取强调色最多等多久（见 [`AppState::prefetch_accent`]）。本机 RPC 正常几毫秒。
+const ACCENT_PREFETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// 拉主题强调色（`theme.accent`）；`name` 为空串取当前主题。RPC 失败与回包 `null` 同样视为
+/// 拿不到。
+fn load_theme_accent(name: &str) -> Option<crate::accent::ThemeAccent> {
+    load_theme_accent_within(name, std::time::Duration::from_secs(5))
+}
+
+fn load_theme_accent_within(
+    name: &str,
+    timeout: std::time::Duration,
+) -> Option<crate::accent::ThemeAccent> {
+    let params = if name.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "name": name })
+    };
+    rpc::call_core_within("theme.accent", &params, timeout)
+        .ok()
+        .and_then(|v| crate::accent::ThemeAccent::from_value(&v))
 }
 
 /// 拉当前主题的跟随值（`theme.resolved`）。RPC 失败与回包 `null` 同样视为拿不到。
@@ -4857,6 +5011,105 @@ mod tests {
         );
     }
 
+    /// 跟随输入法主题色：同一主题只取一次色；换上的是修正后的颜色；切回默认即恢复默认蓝。
+    #[test]
+    fn accent_follow_fetches_once_per_theme_and_applies() {
+        use crate::accent::{AccentMode, derive};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let th = ThemeHandle::detached(Theme::default());
+        *st.theme_handle.borrow_mut() = Some(th.clone());
+        st.dark.set(false);
+        st.current_config
+            .set_path("ui.theme.name", Value::String("jade".into()));
+        st.accent_idx.set(AccentMode::Ime.index());
+        crate::rpc::take_mock_calls();
+
+        st.sync_accent();
+        st.sync_accent();
+
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let fetches: Vec<_> = calls.iter().filter(|(m, _)| m == "theme.accent").collect();
+        assert_eq!(fetches.len(), 1, "同一主题不该重复取色: {calls:?}");
+        assert_eq!(fetches[0].1["name"], "jade");
+        // mock jade 亮档 accentText #059669 压白字不足，换上的是调深后的颜色。
+        let want = derive(Color::hex(0x059669), false).set().unwrap().accent;
+        assert_eq!(th.current().palette.accent, want);
+        assert!(
+            st.accent_note.get().contains("已调深"),
+            "{}",
+            st.accent_note.get()
+        );
+
+        st.accent_idx.set(AccentMode::Default.index());
+        st.sync_accent();
+        assert_eq!(
+            th.current().palette.accent,
+            crate::theme_def::theme_for(false).palette.accent
+        );
+        assert_eq!(st.accent_note.get(), "", "默认模式不挂说明");
+    }
+
+    /// 默认模式根本不碰 core：不开跟随的用户不该为这个功能多付一次 RPC。
+    #[test]
+    fn accent_default_mode_never_calls_core() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = AppState::empty();
+        st.accent_idx
+            .set(crate::accent::AccentMode::Default.index());
+        crate::rpc::take_mock_calls();
+        st.sync_accent();
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(!calls.iter().any(|(m, _)| m == "theme.accent"), "{calls:?}");
+    }
+
+    /// 灰色主题（mock 的 mono）回落默认蓝，并说明原因。
+    #[test]
+    fn accent_follow_neutral_theme_falls_back_with_note() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let th = ThemeHandle::detached(Theme::default());
+        *st.theme_handle.borrow_mut() = Some(th.clone());
+        st.dark.set(true);
+        st.current_config
+            .set_path("ui.theme.name", Value::String("mono".into()));
+        st.accent_idx.set(crate::accent::AccentMode::Ime.index());
+        st.sync_accent();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert_eq!(
+            th.current().palette.accent,
+            crate::theme_def::theme_for(true).palette.accent
+        );
+        assert!(
+            st.accent_note.get().contains("接近灰色"),
+            "{}",
+            st.accent_note.get()
+        );
+    }
+
+    /// 取过一次之后 `invalidate_accent` 才会重取（底栏角标「点击重新读取」、主题列表重扫）。
+    #[test]
+    fn invalidate_accent_forces_refetch() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = AppState::empty();
+        st.accent_idx.set(crate::accent::AccentMode::Ime.index());
+        st.sync_accent();
+        crate::rpc::take_mock_calls();
+        st.sync_accent();
+        st.invalidate_accent();
+        st.sync_accent();
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let n = calls.iter().filter(|(m, _)| m == "theme.accent").count();
+        assert_eq!(n, 1, "{calls:?}");
+    }
+
     /// ★★★ 打开设置、**什么都不动**就关闭，不该提示「有未保存的更改」。
     ///
     /// `is_dirty` 的做法是「把全部 writer 跑到 current 的副本上，再与 base 比 diff」。
@@ -4930,6 +5183,27 @@ mod tests {
 
     /// 外观页「跟随主题（值）」的数据来源：加载时并行拉 `theme.resolved` 并在 loaders
     /// 之前就位；字体下拉不再有空值「默认」首项（跟随由勾选行表达）。
+    #[test]
+    fn apply_loaded_syncs_accent_without_watcher() {
+        // 词库窗 / 兼容窗当主窗时没有设置外壳、也就没有 accent_watcher：数据到达本身就要把
+        // 跟随色取回来换上，哪怕启动预取那次没取到（输入法晚于设置程序起来）。
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let th = ThemeHandle::detached(Theme::default());
+        *st.theme_handle.borrow_mut() = Some(th.clone());
+        st.dark.set(false);
+        st.accent_idx.set(crate::accent::AccentMode::Ime.index());
+        crate::rpc::take_mock_calls();
+        st.apply_loaded(LoadedState::fetch());
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(calls.iter().any(|(m, _)| m == "theme.accent"), "{calls:?}");
+        // mock 当前主题 default 的亮档 accentText #2563EB 本就达标，原样换上。
+        assert_eq!(th.current().palette.accent, Color::hex(0x2563EB));
+        assert!(!st.accent_note.get().is_empty());
+    }
+
     #[test]
     fn apply_loaded_sets_theme_follow_and_drops_default_font_entry() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -86,6 +86,10 @@ pub struct UiStateConfig {
     /// 而「跟随系统」与「我就要浅色」在配置里必须是两件事。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dark: Option<bool>,
+    /// 主题色来源，见 [`crate::accent::AccentMode`]。`None` = 默认（不落盘）；`"ime"` =
+    /// 跟随输入法主题。键名给将来的自定义色（`"#RRGGBB"`）留着。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
     /// 方案页「隐藏未启用」。
     #[serde(default)]
     pub hide_disabled_schemas: bool,
@@ -403,6 +407,23 @@ mod tests {
             back2.ui.dark,
             Some(false),
             "显式浅色不得退化成 None：\n{s2}"
+        );
+    }
+
+    /// 主题色：默认不落盘，跟随输入法落 `accent = "ime"` 并能读回。
+    #[test]
+    fn accent_mode_unset_by_default_and_roundtrips() {
+        let s = toml::to_string(&SettingConfig::default()).expect("序列化");
+        assert!(!s.contains("accent"), "默认主题色不该落盘：\n{s}");
+
+        let mut cfg = SettingConfig::default();
+        cfg.ui.accent = crate::accent::AccentMode::Ime.to_config();
+        let s = toml::to_string(&cfg).expect("序列化");
+        let back: SettingConfig = toml::from_str(&s).expect("反序列化");
+        assert_eq!(
+            crate::accent::AccentMode::from_config(back.ui.accent.as_deref()),
+            crate::accent::AccentMode::Ime,
+            "{s}"
         );
     }
 

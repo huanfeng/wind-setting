@@ -31,8 +31,6 @@ use windui::anim;
 use windui::core::{EventCtx, Layout, NodeId, Tree, Widget};
 use windui::prelude::*;
 
-use crate::theme_def::ACCENT_LIGHT;
-
 /// 分块顶端滚到视口内多深处就算「正在看它」（逻辑 px，相对滚动视口顶端）。
 ///
 /// 必须大于 [`TOP_INSET`]：点击跳转会把目标卡片的顶端停在 `TOP_INSET` 处，判定线若比它
@@ -424,7 +422,7 @@ pub fn build_list(nav: &SubNav) -> Element {
             .corner(7.0)
             .cross(Align::Center)
             .padding_xy(indent, 0)
-            .bg(Color::hex(ACCENT_LIGHT).scale_alpha(0.11))
+            .bg_role_alpha(Role::Accent, 0.11)
             .child(
                 Element::label(&item.label)
                     .font_size(12.5)

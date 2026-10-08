@@ -16,7 +16,6 @@
 use windui::prelude::*;
 
 use crate::dialogs::schema_manager::engine_label;
-use crate::theme_def::ACCENT_LIGHT;
 
 use super::state::{DictManagerState, GLOBAL_DOMAINS};
 
@@ -241,7 +240,7 @@ pub fn selectable(
 
     let sel_on = is_selected.clone();
     let on = content(true)
-        .bg(Color::hex(ACCENT_LIGHT).scale_alpha(0.11))
+        .bg_role_alpha(Role::Accent, 0.11)
         .visible_when(move || sel_on());
 
     let off = content(false)

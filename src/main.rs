@@ -9,6 +9,7 @@
 //! 通过 JSON-RPC over named pipe 与核心服务通信，不改动 core 接口。
 //! 无边框窗口 + 自定义标题栏，7 Tab 清单驱动（manifest 分组），运行时明暗换肤。
 
+mod accent;
 mod add_word_window;
 mod auto_encode;
 mod by_layout;
@@ -149,15 +150,12 @@ fn main_window_single_key(dict_as_main: bool) -> &'static str {
 /// 故调用方**不需要**先查 `main_window_closed`：那个标志只用来分辨二次实例该 activate
 /// 还是重建，不是本函数的前置条件。
 pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
-    let th = match app.borrow().theme_handle.borrow().clone() {
-        Some(h) => h,
-        // 建窗前必然已注入（见 main 里 `set_theme_handle`）。真取不到就只能放弃重建，
-        // 硬造一个新句柄会让这个窗口与其余窗口的换肤脱钩。
-        None => {
-            tracing::error!("主窗重建失败：换肤句柄缺失");
-            return;
-        }
-    };
+    // 建窗前必然已注入（见 main 里 `set_theme_handle`）。真取不到就只能放弃重建：
+    // 没有句柄，这个窗口的换肤（明暗、主题色）就与其余窗口脱钩。
+    if app.borrow().theme_handle.borrow().is_none() {
+        tracing::error!("主窗重建失败：换肤句柄缺失");
+        return;
+    }
     let st = app.clone();
     let guard = app.clone();
     // 重建即视为主窗回来了：这一步要赶在 content 求值之前，否则窗口已经在了、
@@ -185,7 +183,7 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
                 s.prime_exit_confirm(&unsaved);
                 false
             })
-            .content(move || shell::build(&st, th)),
+            .content(move || shell::build(&st)),
     );
 }
 
@@ -306,6 +304,9 @@ fn main() {
         app_state.borrow().feedback.set(Some((ToastKind::Info, w)));
     }
     let start_dark = app_state.borrow().dark.get();
+    // 跟随输入法主题色时，建窗前先取一次色：否则窗口先按默认蓝亮出来、数据到了再变色，
+    // 开窗就闪一下。限时取，取不到先用默认色（见 `prefetch_accent`）。
+    app_state.borrow().prefetch_accent();
 
     // 渲染：默认 `Renderer::Auto`（GPU 优先，远程会话 / 无可用 GPU 时由 windui 自动回退
     // 软渲染，不 panic）。命令行 --soft / --no-accel 强制软渲染。
@@ -374,7 +375,7 @@ fn main() {
         .centered()
         .renderer(renderer)
         .min_size(win_min_w, win_min_h)
-        .theme(theme_def::theme_for(start_dark));
+        .theme(app_state.borrow().ui_theme());
     // 窗口级快捷键。绑定表与分派都在 `shortcuts`——加一条快捷键在那里加一行即可。
     //
     // ⚠ Escape 这条**必须**有人管：TextInput 不处理 Escape，未消费的 Escape 会被宿主
@@ -406,6 +407,8 @@ fn main() {
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
     *app_state.borrow().theme_handle.borrow_mut() = Some(th.clone());
+    // 记下建窗用的那份（明暗, 强调色），之后同值就不再整窗换肤。
+    app_state.borrow().apply_ui_theme();
 
     // 导入意图（`--page import` 深链 / `.wpkg` 文件关联双击）统一经此通道到 UI 线程：
     // 读剪贴板要 `EventCtx`，只有 channel 回调拿得到；channel 靠出帧排空，冷启动在
@@ -574,7 +577,7 @@ fn main() {
         crate::widgets::init_dark_sig(app_state.borrow().dark);
         dict_window::build_content(app_state.clone())
     } else {
-        shell::build(&app_state, th)
+        shell::build(&app_state)
     };
 
     // 关窗守卫：有未保存改动时挡下这一次关闭，弹确认框问一句。

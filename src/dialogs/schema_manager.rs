@@ -4025,7 +4025,7 @@ fn build_compound_row(
     let sel_bg = Element::leaf()
         .align(Align::Stretch)
         .corner(8.0)
-        .bg(Color::hex(crate::theme_def::ACCENT_LIGHT).scale_alpha(0.08))
+        .bg_role_alpha(Role::Accent, 0.08)
         .visible_when(sel_when(mgr, &entry.id));
     let sel_border = Element::leaf()
         .align(Align::Stretch)

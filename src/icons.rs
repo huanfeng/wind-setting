@@ -104,6 +104,13 @@ pub fn tinted(svg: &'static str, px: i32, color: Color) -> Element {
         .tint(color)
 }
 
+/// 同 [`tinted`]，但按主题角色着色：paint 期取色，换明暗 / 换强调色自动跟随。
+pub fn tinted_role(svg: &'static str, px: i32, role: Role) -> Element {
+    Element::image_svg(svg.as_bytes(), None)
+        .size(px, px)
+        .tint_role(role)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

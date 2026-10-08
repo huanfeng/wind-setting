@@ -197,6 +197,16 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
+    call_core_within(method, params, timeout_for(method))
+}
+
+/// 同 [`call_core`]，但由调用方给超时。用于建窗前那类「拿不到就先用默认值」的调用：
+/// core 管道在、却正忙（登录后冷加载词库）时，不该让窗口等满 5 秒才出来。
+pub fn call_core_within(
+    method: &str,
+    params: &Value,
+    timeout: std::time::Duration,
+) -> Result<Value, String> {
     if std::env::var("WIND_RPC_MOCK").as_deref() == Ok("1") {
         return mock_result(method, params);
     }
@@ -211,10 +221,9 @@ pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     std::thread::spawn(move || {
         let _ = tx.send(call_core_inner(&endpoint, &method_owned, &params_owned));
     });
-    let timeout = timeout_for(method);
     let result = match rx.recv_timeout(timeout) {
         Ok(r) => r,
-        Err(_) => Err(format!("core 无响应(超过 {}s)", timeout.as_secs())),
+        Err(_) => Err(format!("core 无响应(超过 {:?})", timeout)),
     };
     match &result {
         Ok(_) => tracing::debug!("rpc {} ok ({:?})", method, t.elapsed()),

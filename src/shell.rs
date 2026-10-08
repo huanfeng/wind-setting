@@ -3,9 +3,10 @@
 //! 标题栏：渐变 Logo + 标题（可拖动）+ 窗口按钮。
 //! 左侧栏：分区导航（pill 选中）。
 //! 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换；右=恢复本页 / 重新加载 / 应用设置 / 保存并退出。
-//! 明暗切换通过 `ThemeHandle::set(theme_for(dark))` 整窗换肤（`*_role` 节点自动跟随）。
+//! 明暗切换与主题色（默认 / 跟随输入法）都经 `AppState::sync_accent` → `ThemeHandle::set` 整窗换肤
+//! （`*_role` 节点自动跟随）。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use windui::core::EventCtx;
@@ -17,10 +18,9 @@ use crate::dialogs::theme_import_picker::build_theme_import_picker;
 use crate::dialogs::update_dialog::build_update_dialog;
 use crate::pages;
 use crate::state::{AppState, ConnState};
-use crate::theme_def::theme_for;
 
-/// 构建整窗 UI。`app` 为共享状态，`th` 为换肤句柄。
-pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
+/// 构建整窗 UI。`app` 为共享状态（换肤句柄也在里面，见 [`AppState::apply_ui_theme`]）。
+pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     crate::memstat::mark("[build 入口]");
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
     let (
@@ -180,7 +180,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(subnav_divider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, conn).on_context_menu(move || {
+    let footer = build_footer(app, dark, conn).on_context_menu(move || {
         crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer, ov_menu)
     });
 
@@ -254,6 +254,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
     // ⚠ 必须挂在 toast_sink **之前**：两者都在 on_update 阶段按树序派发，watcher 在后就要
     // 等下一帧才被 toast_sink 读到——而渲染由交互驱动、空闲零帧，那一帧未必会来。
     root = root.child(crate::pages::conflict_watcher(app));
+    root = root.child(accent_watcher(app));
     // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏只剩状态点）。
     let root = root.child(crate::pages::dict::reactive::toast_sink(feedback));
     crate::memstat::mark("[build 出口]");
@@ -308,15 +309,14 @@ fn build_subnav_col(
 
 /// 侧栏导航：图标+文字项；选中态 = accent 淡底 + 渐变图标块（白图标）+ 左缘指示条。
 /// 选中/未选中为两套元素 visible_when 切换（windui 无 hover-only/响应式样式）；
-/// 渐变图标块为静态色，按 `widgets::dark_sig()` 再分亮/暗双态。
+/// 渐变图标块与淡底走 accent 角色色，换明暗 / 换强调色自动跟随。
 /// 「高级」项前插分隔线（参考稿 nav-sep）。
 ///
 /// 「词库」是**动作项**而非页项：点它开独立窗（[`crate::dict_window::open`]），主窗停在
 /// 原页不动。故它没有选中态、没有指示条，改在右侧挂一枚「外开」角标把这件事说出来——
 /// 不给提示的话，点一下侧栏而当前页纹丝不动，看着就是按钮坏了。
 fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) -> Element {
-    use crate::icons::{CHIP_PX, EXTERNAL, ICON_PX, nav_icon, tinted};
-    use crate::theme_def::{ACCENT_DARK, ACCENT_LIGHT};
+    use crate::icons::{CHIP_PX, EXTERNAL, ICON_PX, nav_icon, tinted, tinted_role};
 
     // 动作项下标经 `page_to_index` 取，不写字面量 4：PAGES 与 `all_tabs` 的顺序本来就
     // 靠约定对齐，这里再手抄一个下标，将来插一页就会指到隔壁那项上。
@@ -341,19 +341,16 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
         let svg = nav_icon(name);
         let is_action = dict_idx == Some(i);
 
-        // ── 选中态（亮/暗双态渐变图标块 + accent 文字 + 左指示条）──
-        let sel_chip = |accent: u32, active: u32, on_dark: bool| {
-            Element::stack()
-                .size(CHIP_PX, CHIP_PX)
-                .corner(7.0)
-                .bg_gradient(Gradient::linear(
-                    (0.0, 0.0),
-                    (1.0, 1.0),
-                    vec![(0.0, Color::hex(active)), (1.0, Color::hex(accent))],
-                ))
-                .child(tinted(svg, ICON_PX, Color::WHITE).align(Align::Center))
-                .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
-        };
+        // ── 选中态（渐变图标块 + accent 文字 + 左指示条）──
+        let sel_chip = Element::stack()
+            .size(CHIP_PX, CHIP_PX)
+            .corner(7.0)
+            .bg_gradient_roles(
+                (0.0, 0.0),
+                (1.0, 1.0),
+                vec![(0.0, Role::AccentActive), (1.0, Role::Accent)],
+            )
+            .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center));
         // 左缘指示条：作 stack 覆盖层贴行左缘垂直居中，不占行内宽度——
         // 选中/未选中 padding 一致，切换时图标/文字不发生横向偏移。
         let indicator = Element::row()
@@ -375,12 +372,8 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
             .cross(Align::Center)
             .spacing(9)
             .padding_xy(10, 0)
-            .bg(Color::hex(ACCENT_LIGHT).scale_alpha(0.11))
-            .child(
-                Element::stack()
-                    .child(sel_chip(ACCENT_DARK, 0x4A7CE8, true))
-                    .child(sel_chip(ACCENT_LIGHT, 0x2159D6, false)),
-            )
+            .bg_role_alpha(Role::Accent, 0.11)
+            .child(sel_chip)
             .child(
                 Element::label(name)
                     .font_size(13.0)
@@ -510,10 +503,55 @@ pub(crate) fn build_titlebar(subtitle: &str) -> Element {
         .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text))
 }
 
-/// 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换；右=恢复本页/重新加载/应用设置/保存并退出。
+/// 主题色监视：底栏「主题色」下拉、外观页主题下拉（含未保存的选择）、明暗任一变化，就
+/// 持久化主题色来源并 [`AppState::sync_accent`]（按需取色 + 换肤）。
+///
+/// 下拉只写回信号、没有变更回调，故用响应式哨兵（同 `conflict_watcher`）。外观页的主题
+/// 下拉随页面重建会换一枚索引信号，所以每帧经注册表现查，而不是建树时捕获一次。
+fn accent_watcher(app: &Rc<RefCell<AppState>>) -> Element {
+    let (accent_idx, dark, theme_values) = {
+        let st = app.borrow();
+        (st.accent_idx, st.dark, st.theme_value_sig)
+    };
+    let ver_app = app.clone();
+    // 借不到 AppState 的那一帧沿用上次的版本，免得凭空「变化」一次。
+    let theme_sel_ver = Cell::new(0u64);
+    let eff_app = app.clone();
+    crate::pages::dict::reactive::reactive_effect(
+        move || {
+            if let Ok(st) = ver_app.try_borrow() {
+                let v = st
+                    .fields
+                    .select_indices
+                    .borrow()
+                    .get("ui.theme.name")
+                    .map(|s| s.version())
+                    .unwrap_or(0);
+                theme_sel_ver.set(v);
+            }
+            [
+                accent_idx.version(),
+                dark.version(),
+                theme_values.version(),
+                theme_sel_ver.get(),
+            ]
+            .iter()
+            .fold(0u64, |h, v| h.wrapping_mul(1_000_003).wrapping_add(*v))
+        },
+        move || {
+            let Ok(mut st) = eff_app.try_borrow_mut() else {
+                return;
+            };
+            let mode = st.accent_mode();
+            st.save_accent_mode(mode);
+            st.sync_accent();
+        },
+    )
+}
+
+/// 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换 + 主题色；右=恢复本页/重新加载/应用设置/保存并退出。
 fn build_footer(
     app: &Rc<RefCell<AppState>>,
-    th: ThemeHandle,
     dark: Signal<bool>,
     conn: Signal<ConnState>,
 ) -> Element {
@@ -571,7 +609,7 @@ fn build_footer(
 
     // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
     // 切换即持久化——选择写进 wind_setting.toml 的 ui.dark，下次启动不再跟随系统。
-    let th_l = th.clone();
+    // 换肤走 `sync_accent`：跟随输入法时，强调色要按新的明暗档重新修正。
     let d_l = dark;
     let app_l = app.clone();
     let to_light = Element::button("☀ 浅色")
@@ -579,11 +617,11 @@ fn build_footer(
         .outline_soft()
         .on_click(move |_| {
             d_l.set(false);
-            th_l.set(theme_for(false));
-            app_l.borrow_mut().save_dark_mode(false);
+            let mut st = app_l.borrow_mut();
+            st.save_dark_mode(false);
+            st.sync_accent();
         })
         .visible_signal(d_l);
-    let th_d = th;
     let d_d = dark;
     let app_d = app.clone();
     let to_dark = Element::button("🌙 深色")
@@ -591,11 +629,30 @@ fn build_footer(
         .outline_soft()
         .on_click(move |_| {
             d_d.set(true);
-            th_d.set(theme_for(true));
-            app_d.borrow_mut().save_dark_mode(true);
+            let mut st = app_d.borrow_mut();
+            st.save_dark_mode(true);
+            st.sync_accent();
         })
         .visible_when(move || !d_d.get());
     let theme_btn = Element::stack().child(to_light).child(to_dark);
+
+    // 主题色：默认 / 跟随输入法。选中写回信号，持久化与换肤由 `accent_watcher` 接手。
+    // 角标只在跟随模式出现：悬停说明用了什么、为什么没用；点击重新读取（输入法后来才
+    // 起来、或在别处改了主题时用）。
+    let (accent_idx, accent_note) = {
+        let st = app.borrow();
+        (st.accent_idx, st.accent_note)
+    };
+    let accent_pick =
+        Element::dropdown(crate::accent::AccentMode::LABELS.to_vec(), accent_idx).width(184);
+    let app_reread = app.clone();
+    let accent_badge = crate::widgets::info_badge(accent_note, move |_| {
+        if let Ok(st) = app_reread.try_borrow() {
+            st.invalidate_accent();
+            st.sync_accent();
+        }
+    })
+    .visible_when(move || accent_note.with(|n| !n.is_empty()));
 
     // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为
     // 是「重新加载配置」。放底栏而非页内浮层：浮层要么挡内容、要么得在页尾留白让位。
@@ -670,6 +727,8 @@ fn build_footer(
         .bg_role(Role::SurfaceAlt)
         .child(status_dot)
         .child(theme_btn)
+        .child(accent_pick)
+        .child(accent_badge)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
         .child(reset_btn)
