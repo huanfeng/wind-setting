@@ -608,9 +608,9 @@ fn detail_header(mgr: &CompatState, rule: &RuleView) -> Element {
         .child(match_row);
     if !ident.title.is_empty() {
         col = col.child(
-            Element::label(super::dialogs::TITLE_PENDING_HINT)
+            Element::label(super::dialogs::TITLE_MATCH_HINT)
                 .font_size(12.0)
-                .fg_role(Role::Warning),
+                .fg_role(Role::TextMuted),
         );
     }
     if draft {

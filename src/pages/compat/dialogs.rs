@@ -39,8 +39,9 @@ fn footer(buttons: Vec<Element>) -> Element {
 pub const WILDCARD_HINT: &str = "类名、标题支持通配：* 代表任意多个字符，? 代表一个字符；\
      不区分大小写，须整串匹配。进程名留空或填 * 表示所有应用。";
 
-/// 标题条件的提示：当前版本还没有上报窗口标题（设计稿 P3）。
-pub const TITLE_PENDING_HINT: &str = "标题条件暂未生效，待后续版本。";
+/// 标题条件的说明：何时判定、隐私（与核心的行为一致，设计稿「标题上报」）。
+pub const TITLE_MATCH_HINT: &str = "标题条件在切换到该窗口时判定，之后窗口标题变化不会重新套用初始中英状态；\
+     只对有标题规则的软件读取窗口标题，日志不记录标题内容。";
 
 /// 新增 / 修改匹配条件 / 复制为新规则：同一套输入（进程名 + 类名 + 标题），三个对话框共用信号。
 /// 类名与标题只在「应用规则」段出现（另两段只认进程名）。
@@ -116,11 +117,11 @@ fn build_ident_dialog(mgr: &CompatState, mode: IdentMode) -> Element {
             .visible_when(apps_only),
         )
         .child(
-            Element::label(format!("{WILDCARD_HINT}\n{TITLE_PENDING_HINT}"))
+            Element::label(format!("{WILDCARD_HINT}\n{TITLE_MATCH_HINT}"))
                 .font_size(12.0)
                 .fg_role(Role::TextMuted)
                 .width_match()
-                .max_lines(4)
+                .max_lines(6)
                 .visible_when(apps_only),
         )
         .child(
