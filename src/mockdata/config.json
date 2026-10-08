@@ -361,8 +361,7 @@
   ],
   "pinyin": {
    "abbrev": {
-    "enabled": true,
-    "max_syllables": 0
+    "enabled": true
    },
    "auto_learn": {
     "enabled": true,
