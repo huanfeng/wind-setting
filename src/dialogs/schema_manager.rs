@@ -3591,7 +3591,8 @@ pub struct DictInfo {
 }
 
 /// 从方案配置 `cfg["dictionaries"]` 解析可开关的附加词库（过滤主库）。
-/// 生效值：enabled.unwrap_or(default_enabled.unwrap_or(true))。
+/// 生效值：enabled.unwrap_or(default_enabled.unwrap_or(false))——不写 `default_enabled` 视为未启用，
+/// 与引擎 `DictionarySpec::should_load` 同口径（此前这里按启用显示，界面勾着、实际没加载）。
 fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
     let Some(arr) = cfg.get("dictionaries").and_then(|v| v.as_array()) else {
         return Vec::new();
@@ -3602,7 +3603,7 @@ fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
             let default_enabled = d
                 .get("default_enabled")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+                .unwrap_or(false);
             let enabled = d
                 .get("enabled")
                 .and_then(|v| v.as_bool())
@@ -6413,7 +6414,10 @@ mod ext_dict_tests {
             !rows[2].enabled,
             "c: enabled=false 覆盖 default_enabled=true"
         );
-        assert!(rows[3].enabled, "d: 无字段 → 默认 true");
+        assert!(
+            !rows[3].enabled,
+            "d: 无字段 → 未启用（与引擎 should_load 同口径）"
+        );
         assert_eq!(rows[0].description, "描述A");
     }
 
