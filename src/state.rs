@@ -4900,6 +4900,47 @@ mod tests {
         );
     }
 
+    /// ★★ 论坛 t158：同一条守门，但 `ui.comment_dicts` 换成**真实 core 回包的形状**。
+    ///
+    /// 出厂 mock 里这个数组是空的，上面那条因此拦不住：误报只出在配了注释词库的存量
+    /// 配置上——core 序列化出的空壳带 `path: ""` / `schemas: []`、认领不到的空壳、
+    /// 省略了 `id` 的手写条目。这里把这几种形态一起塞进去。
+    #[test]
+    fn untouched_comment_dicts_in_core_shape_produce_no_diff() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let spec = |id: &str, label: &str, path: &str, enabled: bool, auto: bool| {
+            serde_json::json!({
+                "id": id, "label": label, "path": path,
+                "enabled": enabled, "auto": auto, "schemas": [],
+            })
+        };
+        let mut data = LoadedState::fetch();
+        // mock 的 `comment.sources` 只检测出 rime_frost 这一个自动源。
+        data.config_value["ui"]["comment_dicts"] = serde_json::json!([
+            spec("auto:pinyin/rime_frost.dict.yaml", "", "", true, true),
+            spec("en", "简明英汉", "comments/en.dict.yaml", true, false),
+            spec("auto:已停用.dict.yaml", "", "", false, true),
+            spec("", "", "comments/emoji.dict.yaml", false, false),
+        ]);
+        let mut st = AppState::empty();
+        st.apply_loaded(data);
+        let keys = st.manifest.order.clone();
+        for k in &keys {
+            let _ = crate::manifest::field(&st, k);
+        }
+        let items = st.debug_diff_after_writers();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert!(
+            items.is_empty(),
+            "什么都没动却产生了 diff：{:?}",
+            items
+                .iter()
+                .map(|i| format!("{} = {}", i.key, i.value))
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// 外观页「跟随主题（值）」的数据来源：加载时并行拉 `theme.resolved` 并在 loaders
     /// 之前就位；字体下拉不再有空值「默认」首项（跟随由勾选行表达）。
     #[test]

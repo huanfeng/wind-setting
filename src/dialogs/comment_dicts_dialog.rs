@@ -55,6 +55,11 @@ pub struct CommentDictRow {
     pub rel: String,
     /// 读进来的原始对象，写回时在它上面 insert。见模块文档。
     pub raw: Value,
+    /// `id` 是界面兜出来的（配置里没写），见 [`rows_from_value`]。
+    ///
+    /// 兜的 id 只是界面内部的索引（开关、挡重名），用户没改它就**不写回**：手写配置省掉
+    /// `id` 是合法的，写回一个凭空造的值就是一次「什么都没动却有未保存更改」（论坛 t158）。
+    pub id_is_fallback: bool,
 }
 
 /// core 检测出的一个自动注释源（`comment.sources` 的 `auto` 段）。
@@ -209,8 +214,11 @@ pub struct CommentDictsUi {
     pub schemas_all: Signal<Vec<(String, String)>>,
     /// 「从 comments 目录挑一个」弹层的可见性。
     pub picker: Signal<bool>,
-    /// **播种时配置里本来就有引用空壳**。见 [`CommentDictsUi::to_value`]。
-    pub had_shells: Signal<bool>,
+    /// 播种时**没进界面**的条目（认领不到的空壳、重复空壳、非对象条目，见 `ui_mask`）：
+    /// `(在配置数组里的原下标, 原值)`。写回时按原下标插回去。见 [`CommentDictsUi::to_value`]。
+    pub orphans: Signal<Vec<(usize, Value)>>,
+    /// 播种时**没被任何空壳认领**的自动源 id（检测顺序），即 core 会自己追加到末尾的那些。
+    pub fresh_auto: Signal<Vec<String>>,
 }
 
 impl CommentDictsUi {
@@ -224,7 +232,8 @@ impl CommentDictsUi {
             files: signal(Vec::new()),
             schemas_all: signal(Vec::new()),
             picker: signal(false),
-            had_shells: signal(false),
+            orphans: signal(Vec::new()),
+            fresh_auto: signal(Vec::new()),
         }
     }
 
@@ -272,17 +281,16 @@ impl CommentDictsUi {
     /// 用配置里的数组播种（构建 / 重载配置时调用），并把 core 检测出的自动项合并进来。
     ///
     /// ⚠️ 合并规则必须与 core 的 `merge_comment_dicts` 一致（空壳按 id 认领、认领不到就
-    /// 丢弃、没被认领的自动项追加末尾并默认启用）。两处各有一份实现是**刻意**的：core
+    /// 不显示、没被认领的自动项追加末尾并默认启用）。没进界面的条目只是**不显示**，写回时
+    /// 原位还原（`orphans`），见 [`Self::to_value`]。两处各有一份实现是**刻意**的：core
     /// 那份决定实际加载什么，这份决定界面显示什么，而界面还要能把「用户没动过的自动项」
     /// 与「用户排过序的」区分开。改任一处都要改另一处 —— [`merge_rows`] 的测试钉住了
     /// 三条关键语义。
     pub fn seed(&self, items: &[Value]) {
-        self.had_shells.set(
-            items
-                .iter()
-                .any(|it| it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false)),
-        );
-        let rows = merge_rows(items, &self.auto_sources.get());
+        let auto = self.auto_sources.get();
+        self.orphans.set(hidden_items(items, &auto));
+        self.fresh_auto.set(unclaimed_auto_ids(items, &auto));
+        let rows = merge_rows(items, &auto);
         self.switches.borrow_mut().clear();
         for (r, on) in rows
             .iter()
@@ -327,6 +335,7 @@ impl CommentDictsUi {
                     auto: false,
                     rel: String::new(),
                     raw: json!({}),
+                    id_is_fallback: false,
                 })
             });
             return;
@@ -344,6 +353,9 @@ impl CommentDictsUi {
         }
         self.rows.update(|v| {
             if let Some(slot) = v.get_mut(index) {
+                if slot.id != id {
+                    slot.id_is_fallback = false; // 用户亲手改了 id ⇒ 从此是真值，要写回
+                }
                 slot.id = id;
                 slot.label = label;
                 slot.path = path;
@@ -367,32 +379,46 @@ impl CommentDictsUi {
 
     /// 当前工作态 → 回写给 core 的数组。
     ///
-    /// # ★ 自动项在「用户没动过」时**一条都不写**
+    /// # ★ 不改 → 写回与读入逐字相同
     ///
-    /// 空壳的全部意义是记录用户对自动项的偏离（关掉了、或拖到了别处）。没有偏离却照写，
-    /// 后果是「打开设置页什么都没动、点保存，配置里凭空多出几条」——守门测试
-    /// `untouched_settings_produce_no_diff` 当场就会红，而它拦的正是这类静默改写。
+    /// 关窗守卫拿「全部 writer 跑一遍的结果」与 core 回包比 diff，这里多一个键、少一条、
+    /// 换个位置都会让用户什么都没动就被拦（论坛 t158）。读入时界面做过的三处加工，写回时
+    /// 各自还原：
     ///
-    /// 判据是**全或无**而非逐条：顺序信息本来就是整体的，只要有一处偏离，全部固化成
-    /// 空壳才能把那个顺序完整表达出来。
+    /// 1. **新冒出来的自动源**（没被任何空壳认领，`fresh_auto`）追加在末尾显示；用户没动
+    ///    它们（仍按检测顺序整段排在末尾、全部启用）就**不写** —— core 对没被认领的自动源
+    ///    本来就是「追加末尾、默认启用」，写不写效果相同，写了就是凭空多出几条。配置里
+    ///    一条空壳都没有时这就是全部自动项，即「打开设置页点保存，配置里凭空多出几条」那
+    ///    一类（守门测试 `untouched_settings_produce_no_diff`）。只要动过其中任何一处（关掉、
+    ///    拖走、在后面加了手工项），整段固化成空壳，顺序才能完整表达。
+    /// 2. **没进界面的条目**（`orphans`：认领不到的空壳——词库停用 / 总开关关了 /
+    ///    `comment.sources` 没拉到；同一源的重复空壳；非对象条目）不显示，但按原下标插回。丢掉它不只是假脏：词库重新启用后，用户给它排的位置和
+    ///    关掉的状态都没了。
+    /// 3. 空壳的 `path` / `schemas` 空值、兜出来的 `id`，见 [`row_to_value`]。
     ///
-    /// `had_shells` 那一支是另一半：配置里本来就有空壳时一律原样写回。否则「恰好排在
-    /// 尾部且全开」的那份手写空壳会被这里判成「没动过」而抹掉 —— 用户会看到自己写进
-    /// 配置的东西保存一次就没了。
+    /// 已认领的空壳一律原样写回，哪怕它恰好处在「默认形态」：那是用户写进配置的东西，
+    /// 保存一次就被抹掉说不过去。
     pub fn to_value(&self) -> Value {
         let sw = self.switches.borrow();
         let rows = self.rows.get();
-        let keep_shells =
-            self.had_shells.get() || !auto_rows_untouched(&rows, &sw, &self.auto_sources.get());
-        Value::Array(
-            rows.iter()
-                .filter(|r| keep_shells || !r.auto)
-                .map(|r| {
-                    let on = sw.get(&r.id).map(|s| s.get()).unwrap_or(true);
-                    row_to_value(r, on)
-                })
-                .collect(),
-        )
+        let fresh = self.fresh_auto.get();
+        let keep = if fresh_tail_untouched(&rows, &sw, &fresh) {
+            rows.len() - fresh.len()
+        } else {
+            rows.len()
+        };
+        let mut out: Vec<Value> = rows[..keep]
+            .iter()
+            .map(|r| {
+                let on = sw.get(&r.id).map(|s| s.get()).unwrap_or(true);
+                row_to_value(r, on)
+            })
+            .collect();
+        // 升序插回：前面的先就位，后面的原下标才对得上。
+        for (i, v) in self.orphans.get() {
+            out.insert(i.min(out.len()), v);
+        }
+        Value::Array(out)
     }
 }
 
@@ -418,7 +444,8 @@ pub fn rows_from_value(items: &[Value]) -> Vec<CommentDictRow> {
         };
         let path = s("path");
         let mut id = s("id");
-        if id.is_empty() {
+        let id_is_fallback = id.is_empty();
+        if id_is_fallback {
             let taken: Vec<String> = out.iter().map(|r| r.id.clone()).collect();
             id = fallback_id(&path, &taken);
         }
@@ -439,6 +466,7 @@ pub fn rows_from_value(items: &[Value]) -> Vec<CommentDictRow> {
             auto: it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false),
             rel: String::new(),
             raw: it.clone(),
+            id_is_fallback,
         });
     }
     out
@@ -472,22 +500,42 @@ fn row_to_value(r: &CommentDictRow, enabled: bool) -> Value {
         v = json!({});
     }
     let obj = v.as_object_mut().expect("上面刚保证是对象");
-    obj.insert("id".into(), json!(r.id));
+    if !r.id_is_fallback {
+        obj.insert("id".into(), json!(r.id));
+    }
     obj.insert("enabled".into(), json!(enabled));
     if r.auto {
         // 自动项落成**空壳**：只有 id / auto / enabled / 位置归用户，`path` 与 `schemas`
         // 每次启动由 core 重新检测。把检测结果一起写回去的话，词库换了层或方案改了声明，
         // 配置里那份就成了过时的快照 —— 而 core 认领时用的是检测值，两者不一致时谁也
         // 看不出来配置里那两行早已没人读。
+        //
+        // ★ 只删**有内容**的那两个键。core 的 `config.get` 把空壳序列化成带 `path: ""` /
+        // `schemas: []` 的完整形状（`CommentDictSpec` 没有 skip_serializing_if），空值与
+        // 缺键对 core 同义；连空的也删，读进来的与写回去的就恒不相等 ⇒ 打开设置什么都
+        // 不动也提示「有未保存的更改」（论坛 t158）。
         obj.insert("auto".into(), json!(true));
-        obj.remove("path");
-        obj.remove("schemas");
+        for k in ["path", "schemas"] {
+            if obj.get(k).is_some_and(|x| !is_empty_json(x)) {
+                obj.remove(k);
+            }
+        }
         return v;
     }
     obj.insert("label".into(), json!(r.label));
     obj.insert("path".into(), json!(r.path));
     obj.insert("schemas".into(), json!(r.schemas));
     v
+}
+
+/// 空串 / 空数组（core 对「没写」的序列化形状）。
+fn is_empty_json(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Null => true,
+        _ => false,
+    }
 }
 
 /// `comment.sources` 的 `auto` 段 → 自动源列表。
@@ -551,23 +599,20 @@ fn strs_of(v: &Value, k: &str) -> Vec<String> {
 /// 配置数组 × 自动源 → 界面上的行序列。**与 core 的 `merge_comment_dicts` 同规则。**
 ///
 /// - `auto = true` 的条目是引用空壳：按 id 认领一个自动源，拿它的显示名/相对路径/适用
-///   方案来填这一行；认领不到就丢弃（词库被删/停用/总开关关了，都是常态而非配置错误）。
+///   方案来填这一行；认领不到就不出行（词库被删/停用/总开关关了，都是常态而非配置错误；
+///   写回时由 [`hidden_items`] 原位还原）。
 /// - 没被认领的自动源追加**末尾**：装个新方案不该把用户排好的第一优先级挤下去。
 pub fn merge_rows(items: &[Value], auto: &[AutoSource]) -> Vec<CommentDictRow> {
     let mut out: Vec<CommentDictRow> = Vec::new();
-    let mut claimed: Vec<String> = Vec::new();
-    for r in rows_from_value(items) {
-        if !r.auto {
-            out.push(r);
-            continue;
+    for r in rows_from_value(&shown_items(items, auto)) {
+        // 进得了界面的空壳都认领到了（`ui_mask` 保证），这里的 find 对空壳恒命中。
+        match auto.iter().find(|a| r.auto && a.id == r.id) {
+            Some(a) => out.push(auto_row(a, r.raw)),
+            None => out.push(r),
         }
-        let Some(a) = auto.iter().find(|a| a.id == r.id) else {
-            continue;
-        };
-        claimed.push(a.id.clone());
-        out.push(auto_row(a, r.raw));
     }
-    for a in auto.iter().filter(|a| !claimed.contains(&a.id)) {
+    let fresh = unclaimed_auto_ids(items, auto);
+    for a in auto.iter().filter(|a| fresh.contains(&a.id)) {
         out.push(auto_row(a, json!({})));
     }
     out
@@ -575,43 +620,92 @@ pub fn merge_rows(items: &[Value], auto: &[AutoSource]) -> Vec<CommentDictRow> {
 
 /// 与 [`merge_rows`] 配套的启用位序列（下标一一对齐）。新自动项默认开。
 pub fn merged_enabled_flags(items: &[Value], auto: &[AutoSource]) -> Vec<bool> {
-    let rows = rows_from_value(items);
-    let mut out: Vec<bool> = Vec::new();
-    let mut claimed: Vec<String> = Vec::new();
-    for (r, on) in rows.iter().zip(enabled_flags(items)) {
-        if !r.auto {
-            out.push(on);
-        } else if let Some(a) = auto.iter().find(|a| a.id == r.id) {
-            claimed.push(a.id.clone());
-            out.push(on);
-        }
-    }
-    out.extend(
-        auto.iter()
-            .filter(|a| !claimed.contains(&a.id))
-            .map(|_| true),
-    );
+    let mut out = enabled_flags(&shown_items(items, auto));
+    out.extend(unclaimed_auto_ids(items, auto).iter().map(|_| true));
     out
 }
 
-/// 自动项是否还是 [`merge_rows`] 刚合并出来的那副样子：全部启用、原样排在所有手工项
-/// 之后、相对顺序与检测顺序一致。见 [`CommentDictsUi::to_value`]。
-fn auto_rows_untouched(
+/// 配置数组里 `auto = true` 的条目的 id（空壳认领的依据）。
+fn shell_id(it: &Value) -> Option<&str> {
+    if !it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    Some(it.get("id").and_then(|v| v.as_str()).unwrap_or_default())
+}
+
+/// 每个配置条目**进不进界面**——[`merge_rows`]、[`merged_enabled_flags`]、[`hidden_items`]
+/// 三者共用这**一份**判据，写回时才能把没进界面的条目逐个原位还原（判据分两份的话，
+/// 一边丢了另一边没记，插回下标就错位）。
+///
+/// 不进界面的：
+/// - 非对象条目（手写畸形配置）：界面没法表达它，但也不该替用户删掉；
+/// - 认领不到任何自动源的空壳（词库停用 / 总开关关了 / 来源没拉到）；
+/// - 同一个自动源的**第二个及以后**的空壳：一个源只出一行，否则两行共用一个按 id 索引的
+///   开关、拖序也无从表达。core 那边重复挂载按解析后路径去重，后来的那条本就不生效。
+fn ui_mask(items: &[Value], auto: &[AutoSource]) -> Vec<bool> {
+    let mut claimed: Vec<&str> = Vec::new();
+    items
+        .iter()
+        .map(|it| {
+            if !it.is_object() {
+                return false;
+            }
+            let Some(id) = shell_id(it) else {
+                return true;
+            };
+            if claimed.contains(&id) || !auto.iter().any(|a| a.id == id) {
+                return false;
+            }
+            claimed.push(id);
+            true
+        })
+        .collect()
+}
+
+/// 进界面的条目（原序）。
+fn shown_items(items: &[Value], auto: &[AutoSource]) -> Vec<Value> {
+    items
+        .iter()
+        .zip(ui_mask(items, auto))
+        .filter(|(_, show)| *show)
+        .map(|(it, _)| it.clone())
+        .collect()
+}
+
+/// 没进界面的条目：`(原下标, 原值)`，下标升序。写回时要原位还原，见
+/// [`CommentDictsUi::to_value`]。
+pub fn hidden_items(items: &[Value], auto: &[AutoSource]) -> Vec<(usize, Value)> {
+    items
+        .iter()
+        .zip(ui_mask(items, auto))
+        .enumerate()
+        .filter(|(_, (_, show))| !show)
+        .map(|(i, (it, _))| (i, it.clone()))
+        .collect()
+}
+
+/// 没被任何空壳认领的自动源 id（检测顺序）—— [`merge_rows`] 追加在末尾的正是这些。
+pub fn unclaimed_auto_ids(items: &[Value], auto: &[AutoSource]) -> Vec<String> {
+    auto.iter()
+        .filter(|a| !items.iter().any(|it| shell_id(it) == Some(a.id.as_str())))
+        .map(|a| a.id.clone())
+        .collect()
+}
+
+/// 新冒出来的自动源是否还是 [`merge_rows`] 刚合并出来的那副样子：按检测顺序整段排在
+/// 最末、全部启用。见 [`CommentDictsUi::to_value`]。
+fn fresh_tail_untouched(
     rows: &[CommentDictRow],
     switches: &HashMap<String, Signal<bool>>,
-    auto: &[AutoSource],
+    fresh: &[String],
 ) -> bool {
-    let split = rows.iter().position(|r| r.auto).unwrap_or(rows.len());
-    // 手工项之间夹着自动项 ⇒ 用户拖过顺序。
-    if rows[split..].iter().any(|r| !r.auto) {
+    let Some(start) = rows.len().checked_sub(fresh.len()) else {
         return false;
-    }
-    let tail: Vec<&str> = rows[split..].iter().map(|r| r.id.as_str()).collect();
-    let fresh: Vec<&str> = auto.iter().map(|a| a.id.as_str()).collect();
-    tail == fresh
-        && tail
-            .iter()
-            .all(|id| switches.get(*id).is_none_or(|s| s.get()))
+    };
+    rows[start..]
+        .iter()
+        .zip(fresh)
+        .all(|(r, id)| r.auto && r.id == *id && switches.get(id).is_none_or(|s| s.get()))
 }
 
 fn auto_row(a: &AutoSource, raw: Value) -> CommentDictRow {
@@ -623,6 +717,7 @@ fn auto_row(a: &AutoSource, raw: Value) -> CommentDictRow {
         auto: true,
         rel: a.rel.clone(),
         raw,
+        id_is_fallback: false,
     }
 }
 
@@ -1242,6 +1337,186 @@ mod tests {
             ui.to_value().as_array().map(Vec::len),
             Some(1),
             "用户自己写进配置的空壳不能被保存一次就抹掉"
+        );
+    }
+
+    /// core 的 `config.get` 回来的一条完整形状：`CommentDictSpec` 全部字段都在
+    /// （`path`/`schemas`/`label` 空也照样序列化，见 core `config.rs`）。
+    fn core_spec(id: &str, label: &str, path: &str, enabled: bool, auto: bool) -> Value {
+        json!({
+            "id": id, "label": label, "path": path,
+            "enabled": enabled, "auto": auto, "schemas": [],
+        })
+    }
+
+    /// ★★ 论坛 t158：配置里有引用空壳时，打开设置什么都不动也被判「有未保存的更改」。
+    ///
+    /// core 把空壳序列化成带 `path: ""` / `schemas: []` 的完整形状，写回时却把这两个键
+    /// 删了 ⇒ 数组整体不等 ⇒ 恒脏。空值与缺键对 core 同义，没理由在这里制造差异。
+    #[test]
+    fn core_shaped_shells_round_trip_without_diff() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["a.dict.yaml", "b.dict.yaml"]));
+        let items = arr(json!([
+            core_spec("auto:a.dict.yaml", "", "", false, true),
+            core_spec("en", "简明英汉", "comments/en.dict.yaml", true, false),
+            core_spec("auto:b.dict.yaml", "", "", true, true),
+        ]));
+        ui.seed(&items);
+        assert_eq!(
+            ui.to_value(),
+            Value::Array(items),
+            "什么都没动，写回必须逐字相同"
+        );
+    }
+
+    /// ★ 认领不到的空壳（词库停用 / 总开关关了 / `comment.sources` 没拉到）不显示，
+    /// 但**写回时原位保留**：丢掉它既是一次假脏，又是一次静默丢数据——词库重新启用后
+    /// 用户排好的位置与关掉的状态都没了。
+    #[test]
+    fn unclaimed_shells_are_kept_in_place() {
+        let items = arr(json!([
+            core_spec("en", "简明英汉", "comments/en.dict.yaml", true, false),
+            core_spec("auto:gone.dict.yaml", "", "", false, true),
+            core_spec("auto:a.dict.yaml", "", "", true, true),
+        ]));
+        for sources in [autos(&["a.dict.yaml"]), Vec::new()] {
+            let ui = CommentDictsUi::new();
+            ui.auto_sources.set(sources.clone());
+            ui.seed(&items);
+            assert!(
+                !ui.rows.get().iter().any(|r| r.id == "auto:gone.dict.yaml"),
+                "认领不到的不显示"
+            );
+            assert_eq!(
+                ui.to_value(),
+                Value::Array(items.clone()),
+                "来源 {} 条时写回要与读入逐字相同",
+                sources.len()
+            );
+        }
+    }
+
+    /// 手写畸形配置（同一自动源的重复空壳、非对象条目）：界面只出一行，但写回逐字不变——
+    /// 进不进界面与写回时插回哪里必须是同一份判据，否则插回下标错位、重复的那条丢失。
+    #[test]
+    fn malformed_items_survive_round_trip_in_place() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["a.dict.yaml"]));
+        let items = arr(json!([
+            core_spec("auto:a.dict.yaml", "", "", false, true),
+            42,
+            core_spec("en", "简明英汉", "comments/en.dict.yaml", true, false),
+            core_spec("auto:a.dict.yaml", "", "", true, true),
+            "不是对象",
+            core_spec("auto:gone.dict.yaml", "", "", true, true),
+        ]));
+        ui.seed(&items);
+        assert_eq!(
+            ui.rows
+                .get()
+                .iter()
+                .map(|r| r.id.clone())
+                .collect::<Vec<_>>(),
+            ["auto:a.dict.yaml", "en"],
+            "重复空壳只出一行，非对象条目不出行"
+        );
+        assert!(
+            !ui.switch_of("auto:a.dict.yaml", true).get(),
+            "开关取进界面的第一个空壳"
+        );
+        assert_eq!(ui.to_value(), Value::Array(items.clone()));
+
+        // 真动了（拖序）照样写得出来，畸形条目仍在原位。
+        ui.rows.update(|v| v.swap(0, 1));
+        let out = ui.to_value();
+        assert_eq!(out[0]["id"], json!("en"), "拖序生效：{out}");
+        assert_eq!(out[1], json!(42));
+        assert_eq!(
+            out[3]["id"],
+            json!("auto:a.dict.yaml"),
+            "重复空壳不丢：{out}"
+        );
+        assert_eq!(out.as_array().map(Vec::len), Some(items.len()));
+    }
+
+    /// ★ 配置里已有空壳、又检测出一个新自动源：它追加在末尾显示，但用户没动它就不写。
+    /// core 对没被认领的自动源本就是「追加末尾、默认启用」，写不写效果相同，写了就是假脏。
+    #[test]
+    fn new_auto_source_alongside_shells_is_not_written_until_touched() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(autos(&["a.dict.yaml", "b.dict.yaml"]));
+        let items = arr(json!([
+            core_spec("auto:a.dict.yaml", "", "", false, true),
+            core_spec("en", "简明英汉", "comments/en.dict.yaml", true, false),
+        ]));
+        ui.seed(&items);
+        assert_eq!(ui.rows.get().len(), 3, "新自动源要显示出来");
+        assert_eq!(ui.to_value(), Value::Array(items.clone()));
+
+        // 真动了（关掉新来的那个）就得落成空壳。
+        ui.switch_of("auto:b.dict.yaml", true).set(false);
+        let out = ui.to_value();
+        let a = out.as_array().expect("数组");
+        assert_eq!(a.len(), 3, "关掉的新自动源要固化成空壳：{out}");
+        assert_eq!(a[2]["id"], json!("auto:b.dict.yaml"));
+        assert_eq!(a[2]["enabled"], json!(false));
+    }
+
+    /// 手写配置里省略了 `id`（core 读成空串）：界面兜的 id 只是内部索引，没被改就不写回。
+    #[test]
+    fn manual_entry_without_id_round_trips() {
+        let ui = CommentDictsUi::new();
+        let items = arr(json!([core_spec(
+            "",
+            "",
+            "comments/en.dict.yaml",
+            true,
+            false
+        )]));
+        ui.seed(&items);
+        assert_eq!(ui.to_value(), Value::Array(items));
+
+        // 兜出来的 id 是文件干 `en`；用户在表单里把它改了 ⇒ 那就是真改动。
+        assert_eq!(ui.rows.get()[0].id, "en");
+        ui.commit_form(
+            0,
+            "my_en".into(),
+            String::new(),
+            "comments/en.dict.yaml".into(),
+            vec![],
+        );
+        assert_eq!(ui.to_value()[0]["id"], json!("my_en"));
+    }
+
+    /// 真正的改动仍要检测得到：拖序、开关、删除都得让写回与读入不同。
+    #[test]
+    fn real_edits_on_core_shaped_data_still_differ() {
+        let items = arr(json!([
+            core_spec("auto:a.dict.yaml", "", "", true, true),
+            core_spec("en", "简明英汉", "comments/en.dict.yaml", true, false),
+        ]));
+        let fresh = || {
+            let ui = CommentDictsUi::new();
+            ui.auto_sources.set(autos(&["a.dict.yaml"]));
+            ui.seed(&items);
+            ui
+        };
+        let ui = fresh();
+        ui.switch_of("auto:a.dict.yaml", true).set(false);
+        assert_ne!(ui.to_value(), Value::Array(items.clone()), "关掉自动项");
+
+        let ui = fresh();
+        ui.rows.update(|v| v.swap(0, 1));
+        let out = ui.to_value();
+        assert_eq!(out[0]["id"], json!("en"), "拖序要写出新顺序：{out}");
+
+        let ui = fresh();
+        ui.delete(1);
+        assert_eq!(
+            ui.to_value().as_array().map(Vec::len),
+            Some(1),
+            "删除手工项"
         );
     }
 
