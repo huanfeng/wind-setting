@@ -204,6 +204,7 @@
   "activate_ime": "ctrl+shift+[",
   "add_word": "ctrl+equal",
   "commit_on_switch": true,
+  "ctrl_space_toggle": true,
   "delete_candidate": "ctrl+shift+number",
   "global_hotkeys": [],
   "highlight_keys": [

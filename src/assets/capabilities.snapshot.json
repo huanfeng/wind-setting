@@ -1453,6 +1453,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "keys.ctrl_space_toggle",
+      "type": "bool"
+    },
+    {
       "default": "ctrl+shift+e",
       "key": "keys.switch_engine",
       "type": "str"

@@ -2275,6 +2275,17 @@ label = "切换时编码上屏"
 hint = "中文切换为英文、或切换输入方案时，将已输入的编码直接上屏"
 
 [[items]]
+key = "keys.ctrl_space_toggle"
+group = "keys"
+section = "中英文切换"
+type = "toggle"
+label = "Ctrl+空格 切换中英文"
+hint = "关闭后 Ctrl+空格 原样交给应用（如 IDEA、Android Studio 的代码提示）。在「全局自定义按键」里把 Ctrl+空格 设为「不启用」效果相同。若 Windows 也开着同名系统热键，应用仍收不到这个键，需到 系统设置 → 时间和语言 → 输入 → 高级键盘设置 → 输入语言热键 里关闭「输入法/非输入法切换」"
+# GH#172。落点是 TSF DLL 的吃键判定 + 系统热键翻 compartment 后的服务端拒绝，都是 Windows 专属；
+# macOS 的中英切换走系统输入源快捷键，与本项无关。
+platform = "windows"
+
+[[items]]
 key = "input.capslock.cancel_on_mode_switch"
 group = "keys"
 section = "中英文切换"
