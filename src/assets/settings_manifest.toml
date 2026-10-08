@@ -1810,6 +1810,23 @@ hint = "切换中英文模式时自动取消大写锁定状态；切换方案不
 platform = "windows"
 
 [[items]]
+key = "input.capslock.mode_after_cancel"
+group = "input"
+section = "临时英文"
+type = "select"
+label = "取消大写后进入"
+hint = "上一项开着时，切换中英文取消了大写锁定之后落到哪个模式。「中文」是原有行为：Shift 回到中文，Ctrl+空格 按它自己的切换方向"
+width = 210
+enabled_when = "input.capslock.cancel_on_mode_switch == true"
+# 平台门控同上一项：它没有落点，本项也就无从生效。
+platform = "windows"
+options = [
+  { value = "chinese", label = "中文" },
+  { value = "english", label = "英文" },
+  { value = "toggle", label = "照常切换" },
+]
+
+[[items]]
 key = "input.english_case_cycle_key"
 group = "input"
 section = "临时英文"

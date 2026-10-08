@@ -6399,6 +6399,7 @@ mod tests {
             "ui.toolbar.hide_in_english",
             "ui.toolbar.vertical",
             "input.capslock.cancel_on_mode_switch",
+            "input.capslock.mode_after_cancel",
             "stats.track_english",
         ] {
             let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));

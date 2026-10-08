@@ -1091,6 +1091,16 @@
       "type": "bool"
     },
     {
+      "default": "chinese",
+      "key": "input.capslock.mode_after_cancel",
+      "type": "enum",
+      "values": [
+        "chinese",
+        "english",
+        "toggle"
+      ]
+    },
+    {
       "default": true,
       "key": "input.temp_pinyin.enabled",
       "type": "bool"

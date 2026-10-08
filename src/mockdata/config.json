@@ -46,7 +46,8 @@
   },
   "buffer_symbol_chars": "-",
   "capslock": {
-   "cancel_on_mode_switch": false
+   "cancel_on_mode_switch": false,
+   "mode_after_cancel": "chinese"
   },
   "caret": {
    "add_word_via_composition": false,
