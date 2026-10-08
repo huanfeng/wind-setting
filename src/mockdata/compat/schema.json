@@ -474,6 +474,31 @@
       ]
     },
     {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "msedge.exe",
+        "chrome.exe",
+        "firefox.exe"
+      ],
+      "key": "composition_placeholder",
+      "kind": "enum",
+      "label": "占位字符",
+      "optionLabels": [
+        "空格",
+        "零宽空格"
+      ],
+      "options": [
+        "space",
+        "zwsp"
+      ],
+      "problem": "网页里有些输入框会自动去掉首尾空格（如番茄小说的搜索框），占位的空格一被去掉，输入就被打断，一个字都打不上去。给浏览器改用零宽空格即可避开。不设置则用空格：WPS 等软件靠它确定光标位置，不要随意更改。",
+      "protocol": true,
+      "section": "apps",
+      "summary": "编码不显示在软件里时，输入区中临时放的那个字符：空格或零宽空格。"
+    },
+    {
       "advanced": false,
       "dependsOn": null,
       "group": "scope",
