@@ -934,6 +934,34 @@ mod tests {
         );
     }
 
+    /// 守护：mock `theme.accent` 对 mock `theme.list` 的每个主题都有专属回包（换主题时离线也
+    /// 能看到变色），缺省 name 时与 mock `theme.list` 首项（即 mock config 的当前主题）一致；
+    /// 两档字段齐全，形状同 core `ThemeAccent`。
+    #[test]
+    fn mock_theme_accent_covers_mock_theme_list() {
+        let list = mock_reply("theme.list");
+        let ids: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for id in &ids {
+            let v = mock_reply_with("theme.accent", &json!({ "name": id }));
+            assert_eq!(v["themeId"].as_str(), Some(*id), "{v}");
+            for band in ["light", "dark"] {
+                for key in ["accent", "accentText"] {
+                    assert!(v[band][key].as_str().is_some(), "{id}.{band}.{key}: {v}");
+                }
+            }
+        }
+        assert_eq!(
+            mock_reply("theme.accent")["themeId"].as_str(),
+            Some(ids[0]),
+            "缺省 name 应取当前主题"
+        );
+    }
+
     #[test]
     fn mock_get_config_codetable_has_dictionaries() {
         // 码表方案返回带 dictionaries 数组，含主库 + 附加库。
@@ -1578,6 +1606,26 @@ fn mock_reply(method: &str, params: &Value) -> Value {
         "appearance.previewTemplate" => mock_preview_template(params),
         // 全局键 → 覆盖它的方案 id（core `schema.overrideSummary`）。
         "schema.overrideSummary" => json!({ "ui.candidate.layout": ["wubi86"] }),
+        // 形状同 core `ThemeAccent`。按 mock `theme.list` 的三个主题各给一套，离线也能看
+        // 跟随效果：jade 取出厂清风·绿真值（亮档主色压白字对比不足，修正路径有活干）；
+        // mono 给灰（走低饱和回落默认色那条路）；其余（含缺省）按当前主题 default。
+        "theme.accent" => match params.get("name").and_then(Value::as_str) {
+            Some("jade") => json!({
+                "themeId": "jade",
+                "light": { "accent": "#10B981", "accentText": "#059669" },
+                "dark": { "accent": "#10B981", "accentText": "#34D399" },
+            }),
+            Some("mono") => json!({
+                "themeId": "mono",
+                "light": { "accent": "#555555", "accentText": "#444444" },
+                "dark": { "accent": "#AAAAAA", "accentText": "#BBBBBB" },
+            }),
+            _ => json!({
+                "themeId": "default",
+                "light": { "accent": "#3B82F6", "accentText": "#2563EB" },
+                "dark": { "accent": "#3B82F6", "accentText": "#60A5FA" },
+            }),
+        },
         "theme.resolved" => json!({
             "themeId": "default", "fontSize": 18, "fontFamily": null, "fontWeight": 0,
             "pagerBarDisplay": "auto", "pageNumberDisplay": "show",
