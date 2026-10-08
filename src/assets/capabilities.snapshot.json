@@ -602,6 +602,16 @@
       "type": "int"
     },
     {
+      "default": true,
+      "key": "schema.pinyin.abbrev.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 0,
+      "key": "schema.pinyin.abbrev.max_syllables",
+      "type": "int"
+    },
+    {
       "default": 0.0,
       "key": "schema.pinyin.grammar.weight",
       "type": "float"

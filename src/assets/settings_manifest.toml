@@ -606,6 +606,29 @@ min = 0
 max = 10
 unit = "个音节"
 
+# 简拼（GH#180）
+[[items]]
+key = "schema.pinyin.abbrev.enabled"
+group = "schema"
+section = "候选行为"
+subsection = "简拼"
+type = "toggle"
+label = "启用简拼"
+hint = "只打声母也能出词，如 nh → 你好、bzd → 不知道，也可与全拼混打（nhao）"
+
+[[items]]
+key = "schema.pinyin.abbrev.max_syllables"
+group = "schema"
+section = "候选行为"
+subsection = "简拼"
+type = "number"
+label = "简拼音节上限"
+hint = "一个候选里最多几个音节只打声母。0 = 不限；3 = 短简拼照常，hlyb → 喝了一杯 这类四个以上的不出"
+min = 0
+max = 8
+unit = "个音节"
+enabled_when = "schema.pinyin.abbrev.enabled == true"
+
 # 自动学习
 [[items]]
 key = "schema.pinyin.auto_learn.enabled"

@@ -360,6 +360,10 @@
    }
   ],
   "pinyin": {
+   "abbrev": {
+    "enabled": true,
+    "max_syllables": 0
+   },
    "auto_learn": {
     "enabled": true,
     "max_word_length": 10,
