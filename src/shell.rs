@@ -163,10 +163,8 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(crate::pages::conflict_bar(app.borrow().conflict))
         .child(crate::search::hint::build_hint_bar(search_state.hint))
         .child(pages_stack);
-    // 二级导航栏 + 它与内容区之间的分隔线：两者同一个显隐条件，见 [`subnav_visible`]。
-    let two_level = app.borrow().two_level_nav;
-    let subnav_here = subnav_available(&subnavs, tab_sig);
-    let show_subnav = subnav_visible(subnav_here.clone(), two_level);
+    // 二级导航栏 + 它与内容区之间的分隔线：两者同一个显隐条件，见 [`subnav_available`]。
+    let show_subnav = subnav_available(&subnavs, tab_sig);
     let subnav_col = build_subnav_col(&subnavs, tab_sig, show_subnav.clone());
     let subnav_divider = Element::leaf()
         .width(1)
@@ -182,7 +180,7 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
         .child(subnav_divider)
         .child(content);
 
-    let footer = build_footer(app, th, dark, conn, subnav_here).on_context_menu(move || {
+    let footer = build_footer(app, th, dark, conn).on_context_menu(move || {
         crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer, ov_menu)
     });
 
@@ -265,16 +263,12 @@ pub fn build(app: &Rc<RefCell<AppState>>, th: ThemeHandle) -> Element {
 /// 一级导航栏宽度（逻辑 px）。搜索框与搜索浮层的捕获层都从它推出来，见 `search::ui`。
 pub(crate) const NAV_W: i32 = 140;
 
-/// 当前页**有没有**二级导航可言（与总开关无关）。
+/// 当前页**有没有**二级导航可言。
 ///
 /// 词库页是个空占位、关于页只有一整块，给它们留一条空白竖栏只会让人以为界面坏了。
 /// 判据取「可跳转的分块 ≥ 2」——只有一块时点它等于没点。
 ///
-/// 与 [`subnav_visible`] 分成两个的理由：底栏那枚开关按**本条**显隐。按 `subnav_visible`
-/// 的话，关掉导航后开关自己也跟着消失，就再也开不回来了；而无条件常驻又会在关于页
-/// 摆一个写着「收起导航」、点了却什么都不会发生的按钮。
-///
-/// 返回 `Clone` 的闭包：导航栏、它右边那条分隔线、底栏开关各要一份 `visible_when`。
+/// 返回 `Clone` 的闭包：导航栏与它右边那条分隔线各要一份 `visible_when`。
 fn subnav_available(
     navs: &[crate::subnav::SubNav],
     tab: Signal<usize>,
@@ -283,20 +277,12 @@ fn subnav_available(
     move || has.get(tab.get()).copied().unwrap_or(false)
 }
 
-/// 二级导航栏该不该出现：总开关打开 **且** 当前页确实有得可导（[`subnav_available`]）。
-fn subnav_visible(
-    available: impl Fn() -> bool + Clone + 'static,
-    on: Signal<bool>,
-) -> impl Fn() -> bool + Clone + 'static {
-    move || on.get() && available()
-}
-
 /// 二级导航栏：各页的分块清单叠在一个 stack 里按 Tab 切换，外加每页一枚高亮解析器。
 ///
 /// 清单本身走滚动容器：输入页有 15 块，窗口矮一点就装不下。
 ///
 /// 解析器**故意挂在栏内**而不是根上：`on_update` 本就无视可见性（见 `subnav` 模块文档
-/// 第 1 条），栏隐着它照样每帧跑——于是关掉二级导航再打开时，高亮已经是对的，
+/// 第 1 条），栏隐着它照样每帧跑——于是切到有导航的页时，高亮已经是对的，
 /// 不会先闪一下第一项。
 fn build_subnav_col(
     navs: &[crate::subnav::SubNav],
@@ -530,7 +516,6 @@ fn build_footer(
     th: ThemeHandle,
     dark: Signal<bool>,
     conn: Signal<ConnState>,
-    subnav_here: impl Fn() -> bool + Clone + 'static,
 ) -> Element {
     // 状态点：绿=服务就绪，琥珀=其余（加载中/离线预览/服务未运行）；外圈 22% alpha 光环。
     // 说明文字只在悬停时出现——常驻的「已连接」被不少用户读成"连上了云端服务器"，
@@ -612,40 +597,6 @@ fn build_footer(
         .visible_when(move || !d_d.get());
     let theme_btn = Element::stack().child(to_light).child(to_dark);
 
-    // 二级导航开关：与明暗切换同一形态（两枚按钮叠在 stack 里按状态显隐，文字说的是
-    // **点下去会怎样**而不是当前状态）。这里是该开关的**唯一**入口——高级页那张
-    // 「设置界面」卡曾是同一个信号的第二个入口，纯属重复，已撤掉。
-    //
-    // 用 ☰ 而不是 emoji：`🌙` 在 Windows 上按彩色字形渲染，本就与整体单色风格打架；
-    // 新加的这枚没有理由再引一个（见 `search::ui` 里放大镜那段同源的取舍）。
-    let two_level = app.borrow().two_level_nav;
-    let app_hide = app.clone();
-    let nav_hide = Element::button("☰ 收起导航")
-        .small()
-        .outline_soft()
-        .on_click(move |_| {
-            two_level.set(false);
-            app_hide.borrow_mut().save_two_level_nav(false);
-        })
-        .visible_when({
-            let here = subnav_here.clone();
-            move || two_level.get() && here()
-        });
-    let app_show = app.clone();
-    let nav_show = Element::button("☰ 二级导航")
-        .small()
-        .outline_soft()
-        .on_click(move |_| {
-            two_level.set(true);
-            app_show.borrow_mut().save_two_level_nav(true);
-        })
-        // 本页压根没有二级导航时（关于页只有一整块、词库页是空占位）整枚按钮不出：
-        // 否则那里会摆一个写着「收起导航」、点了却什么都不会发生的按钮。
-        // 判据只取 `subnav_here` 而不含总开关——含了的话，关掉导航后按钮自己也消失，
-        // 就再也开不回来了。
-        .visible_when(move || !two_level.get() && subnav_here());
-    let subnav_btn = Element::stack().child(nav_hide).child(nav_show);
-
     // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为
     // 是「重新加载配置」。放底栏而非页内浮层：浮层要么挡内容、要么得在页尾留白让位。
     let (stats_mgr, tab_sig) = {
@@ -719,7 +670,6 @@ fn build_footer(
         .bg_role(Role::SurfaceAlt)
         .child(status_dot)
         .child(theme_btn)
-        .child(subnav_btn)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
         .child(reset_btn)

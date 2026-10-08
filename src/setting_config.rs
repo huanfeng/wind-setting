@@ -78,7 +78,7 @@ pub struct FileAssocConfig {
 
 /// 设置窗口自身的界面状态。纯呈现偏好，与输入法功能无关，故留在本文件而非 core config
 /// （也就不必动 manifest / capabilities 快照）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UiStateConfig {
     /// 暗色模式。**`None` = 跟随系统**，用户显式切过之后才落成 `Some`。
     ///
@@ -92,26 +92,6 @@ pub struct UiStateConfig {
     /// 方案页「显示特殊方案」。
     #[serde(default)]
     pub show_hidden_schemas: bool,
-    /// 二级导航（实验性）：左栏与内容区之间那条分块清单。
-    ///
-    /// 默认开。`default_true` 而不是 `bool` 的默认 false：这是新布局的默认形态，
-    /// 老配置文件里没有这个字段的用户也该看到它。关掉即回到单栏。
-    #[serde(default = "default_true")]
-    pub two_level_nav: bool,
-}
-
-/// ⚠ 手写而非 `#[derive(Default)]`：`two_level_nav` 的 serde 默认是 `true`，derive 给的是
-/// `false`。两者分叉的后果不是编译错误而是**「配置文件里有这一项就开、没有就关」**——
-/// 全新安装（读不到文件、走 `Default`）与老用户（走 serde 默认）看到两种布局。
-impl Default for UiStateConfig {
-    fn default() -> Self {
-        Self {
-            dark: None,
-            hide_disabled_schemas: false,
-            show_hidden_schemas: false,
-            two_level_nav: default_true(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
