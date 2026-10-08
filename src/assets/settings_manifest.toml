@@ -2954,7 +2954,7 @@ group = "ui"
 section = "候选排版"
 type = "number"
 label = "候选文本最大字数"
-hint = "候选文本超过此字数时截断并追加省略号；0 = 不限"
+hint = "候选文本超过此字数时截断并追加省略号；0 = 不限。只管候选词本身，注释的字数上限在下方「候选注释」的设置里"
 min = 0
 max = 64
 
@@ -2969,7 +2969,7 @@ group = "ui"
 section = "候选标注"
 type = "dialog_button"
 label = "候选注释"
-hint = "候选词右侧小字显示的内容，横排与竖排可分别设置"
+hint = "候选词右侧小字的内容与最大字数，横排、竖排可分别设置"
 
 [[items]]
 key = "ui.candidate.comment_template_vertical"
@@ -3006,7 +3006,7 @@ group = "ui"
 section = "候选标注"
 type = "number"
 label = "竖排最大字数"
-hint = "竖排每行独占，通常可比横排放宽；0 = 不限"
+hint = "竖排每行独占，通常可比横排放宽；0 = 不限（行宽放不下时注释仍会截断，先保候选词完整）"
 min = 0
 max = 64
 dialog_extra_for = "ui.candidate.comment_template_horizontal"
@@ -3081,7 +3081,7 @@ group = "ui"
 section = "候选项提示"
 type = "number"
 label = "单行最大字数"
-hint = "超出部分以省略号截断；0 = 不限。复制、上屏取的仍是完整内容"
+hint = "超出部分以省略号截断；0 = 不限。复制、上屏取的仍是完整内容。只管悬停提示，候选右侧注释的字数在「外观 → 候选注释」里设"
 min = 0
 max = 2000
 step = 10
