@@ -17,6 +17,31 @@ pub mod version;
 
 use std::path::PathBuf;
 
+/// 本机平台。元数据文件、安装包字段、能否自动安装都按它分。
+///
+/// 作枚举而不是在各处读 `cfg!`：纯逻辑（地址表、解析）以它为参数，在任一平台上跑测试都能
+/// 把三个平台全部覆盖到——`cfg!` 在编译期取值，在哪个平台跑就只测得到哪一个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Platform {
+    Windows,
+    Mac,
+    Linux,
+}
+
+impl Platform {
+    pub const ALL: [Platform; 3] = [Self::Windows, Self::Mac, Self::Linux];
+
+    pub fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::Mac
+        } else {
+            Self::Linux
+        }
+    }
+}
+
 /// 更新通道。由二进制变体（`mode::AppMode`）决定，**用户不可切换** ——
 /// Dev 与 Release 是并行安装的独立产品，不存在互相升级/降级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,10 +71,9 @@ impl Channel {
     /// 两个变体各看各的文件，互不干扰。
     ///
     /// **平台也各看各的**：Windows 的 `latest.json` 描述 `Setup.exe`，macOS 的
-    /// `latest-mac.json` 描述 `.pkg`。合不成一个文件 —— 版本号、大小、sha256 都是每平台
-    /// 一份，而在野的老 Windows 客户端只认顶层的那一组字段，改不动。
-    ///
-    /// Linux 落到 mac 分支只是形式上的：`self_update_supported()` 压根不放它进来。
+    /// `latest-mac.json` 描述 `.pkg`，Linux 的 `latest-linux.json` 按架构描述两个 `.deb`。
+    /// 合不成一个文件 —— 版本号、大小、sha256 都是每平台一份，而在野的老 Windows 客户端
+    /// 只认顶层的那一组字段，改不动。
     ///
     /// # 为什么要多源
     ///
@@ -67,28 +91,36 @@ impl Channel {
     /// HTML**（静态托管的 SPA 回落）而不是 404，列进去只会让 dev 用户白等一次超时，
     /// 再拿一坨 47KB 的 HTML 去解析。
     pub fn metadata_urls(self) -> &'static [&'static str] {
-        self.metadata_urls_for(cfg!(windows))
+        self.metadata_urls_for(Platform::current())
     }
 
     /// [`metadata_urls`] 的纯函数版，平台作参数传入。
     ///
-    /// 拆出来只为一件事：`cfg!(windows)` 在**编译期**取值，在 Windows 上跑测试就
-    /// 永远走不到 mac 那两个分支 —— 地址写错（漏个 `-mac`、回退链文件名不一致）
-    /// 全都测不出来，得等 mac 用户装上才暴露。同 `Artifact` 把平台作参数的理由。
+    /// 拆出来只为一件事：平台在**编译期**取值，在 Windows 上跑测试就永远走不到另两个
+    /// 平台的分支 —— 地址写错（漏个 `-mac`、回退链文件名不一致）全都测不出来，得等那个
+    /// 平台的用户装上才暴露。同 `Artifact` 把平台作参数的理由。
+    ///
+    /// Linux 的 dev 变体没有发行渠道，列一个固定地址只为让「两个通道指向不同文件」这条
+    /// 契约在三个平台上一致；取不到就是检查失败，不会串到正式版的文件上。
     ///
     /// [`metadata_urls`]: Self::metadata_urls
-    fn metadata_urls_for(self, windows: bool) -> &'static [&'static str] {
-        match (self, windows) {
-            (Self::Stable, true) => &[
+    fn metadata_urls_for(self, platform: Platform) -> &'static [&'static str] {
+        match (self, platform) {
+            (Self::Stable, Platform::Windows) => &[
                 "https://windinput.com/latest.json",
                 "https://dl.windinput.com/latest.json",
             ],
-            (Self::Dev, true) => &["https://dl.windinput.com/latest-dev.json"],
-            (Self::Stable, false) => &[
+            (Self::Dev, Platform::Windows) => &["https://dl.windinput.com/latest-dev.json"],
+            (Self::Stable, Platform::Mac) => &[
                 "https://windinput.com/latest-mac.json",
                 "https://dl.windinput.com/latest-mac.json",
             ],
-            (Self::Dev, false) => &["https://dl.windinput.com/latest-mac-dev.json"],
+            (Self::Dev, Platform::Mac) => &["https://dl.windinput.com/latest-mac-dev.json"],
+            (Self::Stable, Platform::Linux) => &[
+                "https://windinput.com/latest-linux.json",
+                "https://dl.windinput.com/latest-linux.json",
+            ],
+            (Self::Dev, Platform::Linux) => &["https://dl.windinput.com/latest-linux-dev.json"],
         }
     }
 }
@@ -104,20 +136,41 @@ pub enum Artifact {
     Exe,
     /// macOS 安装包，键 `pkgUrl`。
     Pkg,
+    /// Linux 安装包，键 `debs.<架构>`（`amd64` / `arm64`）。地址、sha256、大小都在架构
+    /// 那一项里，顶层没有。
+    Deb(&'static str),
 }
 
 impl Artifact {
     /// 本机平台对应的产物类型。
     pub fn current() -> Self {
-        if cfg!(windows) { Self::Exe } else { Self::Pkg }
+        Self::for_platform(Platform::current())
+    }
+
+    pub fn for_platform(platform: Platform) -> Self {
+        match platform {
+            Platform::Windows => Self::Exe,
+            Platform::Mac => Self::Pkg,
+            Platform::Linux => Self::Deb(deb_arch()),
+        }
     }
 
     /// 元数据里的键名，用于出错时告诉用户到底缺了哪一个。
-    pub fn key(self) -> &'static str {
+    pub fn key(self) -> String {
         match self {
-            Self::Exe => "exeUrl",
-            Self::Pkg => "pkgUrl",
+            Self::Exe => "exeUrl".to_string(),
+            Self::Pkg => "pkgUrl".to_string(),
+            Self::Deb(arch) => format!("debs.{arch}"),
         }
+    }
+}
+
+/// 本机对应的 Debian 架构名（与 `.deb` 文件名、元数据里的键一致）。
+pub fn deb_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "amd64"
     }
 }
 
@@ -271,6 +324,13 @@ impl UpdateError {
 /// 不会出现"条件写错位置、悄悄失效"那种只在另一个平台才暴露的问题。
 pub fn self_update_supported() -> bool {
     cfg!(any(windows, target_os = "macos"))
+}
+
+/// 本平台是否检查更新。比 [`self_update_supported`] 宽：Linux 只检查并提示，不下载安装
+/// ——装 `.deb` 要 root，设置程序不该替用户提权；对话框改为引导到下载页，用户用 apt
+/// 覆盖安装。三个平台都有元数据文件（Linux 是 `latest-linux.json`），检查本身不会落空。
+pub fn update_check_supported() -> bool {
+    true
 }
 
 /// 启动时是否应发起自动检查。
@@ -506,11 +566,11 @@ mod tests {
 
     /// 遍历 (通道 × 平台) 全部四种组合。**不能用 `metadata_urls()`** —— 那个读
     /// `cfg!(windows)`，在哪个平台上跑就只能测到哪一半。
-    fn all_url_sets() -> Vec<(Channel, bool, &'static [&'static str])> {
+    fn all_url_sets() -> Vec<(Channel, Platform, &'static [&'static str])> {
         let mut v = Vec::new();
         for c in [Channel::Stable, Channel::Dev] {
-            for win in [true, false] {
-                v.push((c, win, c.metadata_urls_for(win)));
+            for p in Platform::ALL {
+                v.push((c, p, c.metadata_urls_for(p)));
             }
         }
         v
@@ -518,17 +578,17 @@ mod tests {
 
     #[test]
     fn channel_urls_are_distinct_and_https() {
-        for win in [true, false] {
+        for p in Platform::ALL {
             assert_ne!(
-                Channel::Stable.metadata_urls_for(win),
-                Channel::Dev.metadata_urls_for(win),
-                "两个通道必须指向不同文件，否则 dev 会收到 stable 包（windows={win}）"
+                Channel::Stable.metadata_urls_for(p),
+                Channel::Dev.metadata_urls_for(p),
+                "两个通道必须指向不同文件，否则 dev 会收到 stable 包（{p:?}）"
             );
         }
-        for (c, win, urls) in all_url_sets() {
+        for (c, p, urls) in all_url_sets() {
             assert!(
                 !urls.is_empty(),
-                "{c:?}/windows={win} 一个源都没有，检查更新会直接失败"
+                "{c:?}/{p:?} 一个源都没有，检查更新会直接失败"
             );
             for u in urls {
                 assert!(u.starts_with("https://"), "更新源必须是 https：{u}");
@@ -541,23 +601,27 @@ mod tests {
     #[test]
     fn platform_urls_are_distinct() {
         for c in [Channel::Stable, Channel::Dev] {
-            assert_ne!(
-                c.metadata_urls_for(true),
-                c.metadata_urls_for(false),
-                "{c:?} 的两个平台指向了同一组文件"
-            );
+            for (i, a) in Platform::ALL.iter().enumerate() {
+                for b in &Platform::ALL[i + 1..] {
+                    assert_ne!(
+                        c.metadata_urls_for(*a),
+                        c.metadata_urls_for(*b),
+                        "{c:?} 的 {a:?} 与 {b:?} 指向了同一组文件"
+                    );
+                }
+            }
         }
     }
 
     /// 同一组内的多个源必须互不相同 —— 同一个地址列两遍，回退就退了个寂寞。
     #[test]
     fn fallback_sources_are_not_duplicated() {
-        for (c, win, urls) in all_url_sets() {
+        for (c, p, urls) in all_url_sets() {
             let uniq: std::collections::HashSet<_> = urls.iter().collect();
             assert_eq!(
                 uniq.len(),
                 urls.len(),
-                "{c:?}/windows={win} 的源列表有重复：{urls:?}"
+                "{c:?}/{p:?} 的源列表有重复：{urls:?}"
             );
         }
     }
@@ -569,14 +633,14 @@ mod tests {
     /// 字段当初要防的是同一类事故，只是这次的漏洞开在客户端自己的常量表里。
     #[test]
     fn fallback_sources_point_at_same_filename() {
-        for (c, win, urls) in all_url_sets() {
+        for (c, p, urls) in all_url_sets() {
             let names: Vec<&str> = urls
                 .iter()
                 .map(|u| u.rsplit('/').next().unwrap_or(u))
                 .collect();
             assert!(
                 names.windows(2).all(|w| w[0] == w[1]),
-                "{c:?}/windows={win} 的各源文件名不一致：{names:?}"
+                "{c:?}/{p:?} 的各源文件名不一致：{names:?}"
             );
         }
     }

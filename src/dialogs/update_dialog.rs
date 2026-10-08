@@ -11,7 +11,10 @@ use std::rc::Rc;
 use windui::prelude::*;
 
 use crate::state::AppState;
-use crate::update::UpdatePhase;
+use crate::update::{self, UpdatePhase};
+
+/// 没有自动安装通路的平台（Linux）在「发现新版本」时打开的页面。
+const DOWNLOAD_PAGE_URL: &str = "https://windinput.com/download";
 
 /// 对话框宽度。发布说明常有较长条目，比常规对话框宽一档可减少折行。
 const DIALOG_W: i32 = 620;
@@ -346,7 +349,18 @@ fn footer(
             Element::button("下载更新")
                 .small()
                 .on_click(move |_| download_state.borrow().spawn_update_download())
-                .visible_when(is(UpdatePhase::HasUpdate)),
+                .visible_when(move || {
+                    phase.get() == UpdatePhase::HasUpdate && update::self_update_supported()
+                }),
+        )
+        // 没有自动安装通路的平台（Linux）：引导到下载页，由用户用 apt 覆盖安装
+        .child(
+            Element::button("打开下载页")
+                .small()
+                .on_click(|ctx| ctx.open_url(DOWNLOAD_PAGE_URL))
+                .visible_when(move || {
+                    phase.get() == UpdatePhase::HasUpdate && !update::self_update_supported()
+                }),
         )
         // NoUpdate
         .child(

@@ -41,6 +41,20 @@ struct LatestJson {
     published_at: String,
     #[serde(default, rename = "minUpgradableFrom")]
     min_upgradable_from: String,
+    /// Linux：按架构给出的安装包（`latest-linux.json`）。另两个平台没有这一项。
+    #[serde(default)]
+    debs: std::collections::HashMap<String, DebJson>,
+}
+
+/// `debs` 里的一项：一个架构的 `.deb`。
+#[derive(Debug, Default, Deserialize)]
+struct DebJson {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    sha256: String,
+    #[serde(default)]
+    size: u64,
 }
 
 /// 解析并校验更新元数据。
@@ -80,9 +94,15 @@ pub fn parse_latest_json(
 
     // 按平台取各自的键。取不到（对端是另一平台的元数据，或字段拼错）会走同一条报错，
     // 且把键名带出来 —— 「缺 pkgUrl」比「下载地址无效」更能一眼看出是串档还是发布漏填。
-    let url = match artifact {
-        Artifact::Exe => &raw.exe_url,
-        Artifact::Pkg => &raw.pkg_url,
+    // Linux 的地址、sha256、大小都在 `debs.<架构>` 里，顶层那两个字段不看。
+    let missing = DebJson::default();
+    let (url, raw_sha256, size) = match artifact {
+        Artifact::Exe => (&raw.exe_url, &raw.sha256, raw.size),
+        Artifact::Pkg => (&raw.pkg_url, &raw.sha256, raw.size),
+        Artifact::Deb(arch) => {
+            let d = raw.debs.get(arch).unwrap_or(&missing);
+            (&d.url, &d.sha256, d.size)
+        }
     };
     if !url.to_ascii_lowercase().starts_with("https://") {
         return Err(UpdateError::InvalidMetadata(format!(
@@ -91,14 +111,14 @@ pub fn parse_latest_json(
         )));
     }
 
-    let sha256 = raw.sha256.trim().to_ascii_lowercase();
+    let sha256 = raw_sha256.trim().to_ascii_lowercase();
     if !is_sha256_hex(&sha256) {
         return Err(UpdateError::InvalidMetadata(
             "缺少有效的 sha256 校验值".to_string(),
         ));
     }
 
-    if raw.size == 0 {
+    if size == 0 {
         return Err(UpdateError::InvalidMetadata("缺少安装包大小".to_string()));
     }
 
@@ -126,7 +146,7 @@ pub fn parse_latest_json(
         download_url: url.clone(),
         channel: raw.channel,
         sha256,
-        size: raw.size,
+        size,
         release_notes_url: raw.release_notes_url,
         published_at: raw.published_at,
         min_upgradable_from: raw.min_upgradable_from,
@@ -421,6 +441,59 @@ mod tests {
         assert!(
             err.user_message().contains("exeUrl"),
             "Windows 客户端读到 mac 元数据应点名缺 exeUrl，实际：{}",
+            err.user_message()
+        );
+    }
+
+    /// Linux 的 `latest-linux.json`：按架构取 `debs.<arch>`，结构与主仓 / 文档站产出的一致。
+    #[test]
+    fn parses_linux_metadata_per_arch() {
+        let linux = format!(
+            r#"{{
+              "version": "0.125.0", "tag": "v0.125.0", "channel": "stable",
+              "debs": {{
+                "amd64": {{ "url": "https://dl.windinput.com/WindInput-0.125.0-linux-amd64.deb",
+                           "sha256": "{a}", "size": 23000000 }},
+                "arm64": {{ "url": "https://dl.windinput.com/WindInput-0.125.0-linux-arm64.deb",
+                           "sha256": "{b}", "size": 22000000 }}
+              }},
+              "releaseNotesUrl": "https://dl.windinput.com/WindInput-0.125.0-Release.md",
+              "publishedAt": "2026-10-10T00:00:00Z"
+            }}"#,
+            a = "a".repeat(64),
+            b = "b".repeat(64)
+        );
+        let amd = parse_latest_json(&linux, Channel::Stable, Artifact::Deb("amd64")).unwrap();
+        assert!(amd.download_url.ends_with("-linux-amd64.deb"));
+        assert_eq!(amd.sha256, "a".repeat(64));
+        assert_eq!(amd.size, 23_000_000);
+        let arm = parse_latest_json(&linux, Channel::Stable, Artifact::Deb("arm64")).unwrap();
+        assert!(arm.download_url.ends_with("-linux-arm64.deb"));
+        assert_eq!(arm.size, 22_000_000);
+    }
+
+    /// Linux 客户端读到 Windows 元数据（只有顶层 exeUrl / sha256 / size）必须被拒，且点名
+    /// 缺的是哪个架构的键；缺本机架构那一项同理。
+    #[test]
+    fn linux_rejects_foreign_or_partial_metadata() {
+        let win = valid_json("stable");
+        let err = parse_latest_json(&win, Channel::Stable, Artifact::Deb("amd64")).unwrap_err();
+        assert!(
+            err.user_message().contains("debs.amd64"),
+            "{}",
+            err.user_message()
+        );
+
+        let only_amd = format!(
+            r#"{{ "version": "0.125.0", "channel": "stable",
+                 "debs": {{ "amd64": {{ "url": "https://x/a.deb", "sha256": "{}", "size": 1 }} }} }}"#,
+            "a".repeat(64)
+        );
+        let err =
+            parse_latest_json(&only_amd, Channel::Stable, Artifact::Deb("arm64")).unwrap_err();
+        assert!(
+            err.user_message().contains("debs.arm64"),
+            "{}",
             err.user_message()
         );
     }
