@@ -280,7 +280,7 @@ impl Draft {
         }
         drop(set);
         rebind(&mut t, VERB_QUICK, &self.quick, &cur.quick);
-        if self.kind == Kind::Codetable {
+        if self.kind == Kind::Codetable && self.temp_pinyin {
             rebind(&mut t, VERB_TEMP_PINYIN, &self.temp_key, &cur.temp_key);
         }
         if self.slash_dun != cur.slash_dun {
@@ -458,7 +458,7 @@ pub fn summary(
             on_off(cur.temp_pinyin),
             on_off(new.temp_pinyin),
         );
-        if !matches!(new.temp_key, Trigger::Keep(_)) {
+        if new.temp_pinyin && !matches!(new.temp_key, Trigger::Keep(_)) {
             push(
                 "通用",
                 "临时拼音触发键",
@@ -491,6 +491,7 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
         VERB_QUICK => d.quick != cur.quick && !matches!(d.quick, Trigger::Keep(_)),
         VERB_TEMP_PINYIN => {
             d.kind == Kind::Codetable
+                && d.temp_pinyin
                 && d.temp_key != cur.temp_key
                 && !matches!(d.temp_key, Trigger::Keep(_))
         }
@@ -890,5 +891,35 @@ mod tests {
             vec!["schema.codetable.auto_commit_at_full".to_string()]
         );
         assert!(override_hints(&items, "pinyin", &ov).is_empty());
+    }
+
+    #[test]
+    fn temp_key_change_ignored_when_temp_pinyin_off() {
+        let b = base();
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        d.temp_pinyin = false;
+        d.temp_key = Trigger::Key("quote".into());
+        let keys: Vec<String> = d.items(&b, ATOMIC).into_iter().map(|i| i.key).collect();
+        assert!(!keys.iter().any(|k| k.starts_with("keys.")), "{keys:?}");
+        let id = |s: &str| s.to_string();
+        let cur = Draft::from_current(&b, &schemas(), "x");
+        assert!(
+            !summary(&cur, &d, &id, &id)
+                .iter()
+                .any(|c| c.label == "临时拼音触发键")
+        );
+    }
+
+    #[test]
+    fn quick_keeps_quote_when_temp_pinyin_off_and_temp_key_also_quote() {
+        let b = base();
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        d.temp_key = Trigger::Key("quote".into());
+        d.quick = Trigger::Key("quote".into());
+        d.temp_pinyin = false;
+        assert!(key_conflicts(&d, &b).is_empty());
+        let t = d.to_target(&b);
+        assert_eq!(t.get_str("keys.key_actions.quote"), Some("mix:quick_mix"));
+        assert_eq!(t.get_str("keys.key_actions.backtick"), Some("temp_pinyin"));
     }
 }
