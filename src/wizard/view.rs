@@ -33,7 +33,7 @@ const DIALOG_W: i32 = 600;
 /// `LineAwareTextEngine` 量得为准（见 `tests::tallest_steps_fit_without_scrolling`），
 /// 靶机 DPI 下再目验。
 const DIALOG_H: i32 = 560;
-const KINDS: [Kind; 3] = [Kind::Codetable, Kind::Pinyin, Kind::Shuangpin];
+const KINDS: [Kind; 2] = [Kind::Codetable, Kind::Pinyin];
 /// 第 1 步方案清单的列数与行高（行高与正常尺寸勾选框 + 「默认」徽标同档）。
 const SCHEME_COLS: usize = 2;
 const SCHEME_ROW_H: i32 = 30;
@@ -63,6 +63,13 @@ enum SumLine {
 #[derive(Clone, Copy)]
 struct Controls {
     kind: Signal<usize>,
+    /// 各类别有没有可选的主方案（没有则卡片置灰），次序同 [`KINDS`]。
+    kind_avail: [Signal<bool>; 2],
+    /// 主方案下拉：当前类别的候选方案名。
+    main_opts: Signal<Vec<String>>,
+    main_idx: Signal<usize>,
+    /// 主方案是否双拼（双拼布局行、「允许按全拼输入」随它显隐）。
+    is_sp: Signal<bool>,
     layout_opts: Signal<Vec<String>>,
     layout_idx: Signal<usize>,
     /// 布局清单拿不到时只显示当前值的名字。
@@ -96,6 +103,10 @@ impl Controls {
     fn new() -> Self {
         Controls {
             kind: signal(0),
+            kind_avail: [signal(true), signal(true)],
+            main_opts: signal(vec![]),
+            main_idx: signal(0),
+            is_sp: signal(false),
             layout_opts: signal(vec![]),
             layout_idx: signal(0),
             layout_text: signal(String::new()),
@@ -126,6 +137,7 @@ impl Controls {
     fn input_version(&self) -> u64 {
         let mut v = self.kind.version();
         for x in [
+            self.main_idx.version(),
             self.layout_idx.version(),
             self.auto_commit.version(),
             self.clear_empty.version(),
@@ -201,11 +213,39 @@ fn index_of(opts: &[(Trigger, String)], t: &Trigger) -> usize {
 /// （界面改显示当前值的名字）。
 fn layout_choices(s: &WizardSession) -> Vec<(String, String)> {
     let mut v = s.layouts.clone();
-    let cur = &s.cur.layout;
-    if !v.is_empty() && !cur.is_empty() && !v.iter().any(|(id, _)| id == cur) {
-        v.push((cur.clone(), cur.clone()));
+    if v.is_empty() {
+        return v;
+    }
+    // 草稿当前值与主方案打开时的值都要选得中：后者是「改回原样」的那一项。
+    let d = &s.draft;
+    for l in [d.layout.clone(), d.catalog.layout_of(&d.active)] {
+        if !l.is_empty() && !v.iter().any(|(id, _)| *id == l) {
+            v.push((l.clone(), l));
+        }
     }
     v
+}
+
+/// 主方案下拉的选项 (id, 名称)：当前类别的候选；草稿主方案不在其中（如打开时的默认方案
+/// 是特殊方案或不在清单里）时补在末尾，否则下拉选不中它，一次回写就悄悄换掉了。
+fn main_choices(st: &AppState, d: &Draft) -> Vec<(String, String)> {
+    let name = |id: &str| {
+        st.schemas
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    let mut ids = d.catalog.candidates(d.kind);
+    if !ids.contains(&d.active) {
+        ids.push(d.active.clone());
+    }
+    ids.into_iter()
+        .map(|id| {
+            let n = name(&id);
+            (id, n)
+        })
+        .collect()
 }
 
 /// 方案勾选清单：非隐藏方案 + `english`/`stroke`（规格要求列出、不预勾）+ 已启用但不在
@@ -247,6 +287,15 @@ fn sync(app: &Rc<RefCell<AppState>>, c: &Controls) {
     let d = &s.draft;
 
     set_if(c.kind, kind_index(d.kind));
+    for (i, k) in KINDS.iter().enumerate() {
+        set_if(c.kind_avail[i], !d.catalog.candidates(*k).is_empty());
+    }
+    let mains = main_choices(&st, d);
+    set_if(c.main_opts, mains.iter().map(|(_, n)| n.clone()).collect());
+    if let Some(i) = mains.iter().position(|(id, _)| *id == d.active) {
+        set_if(c.main_idx, i);
+    }
+    set_if(c.is_sp, d.is_shuangpin());
     let layouts = layout_choices(s);
     set_if(
         c.layout_opts,
@@ -365,8 +414,14 @@ fn write_back(app: &Rc<RefCell<AppState>>, c: &Controls) {
         let kind = KINDS[c.kind.get().min(KINDS.len() - 1)];
         // 控制方裁定 #1：只在主类型真正改变时套预设——点了同一个主类型不能重套，
         // 否则把自定义码表默认方案的用户改成 wubi86。
+        let main = main_choices(&st, &s.draft)
+            .get(c.main_idx.get())
+            .map(|(id, _)| id.clone());
         let next = if kind != s.draft.kind {
-            s.draft.switch_kind(&s.cur, kind, &st.schemas)
+            s.draft.switch_kind(&s.cur, kind)
+        } else if let Some(id) = main.filter(|id| *id != s.draft.active) {
+            // 换主方案同样只做这一件事：布局控件此刻还是旧主方案的值，不能收。
+            s.draft.set_main(&s.cur, &id)
         } else {
             let mut d = s.draft.clone();
             if let Some((id, _)) = layout_choices(s).get(c.layout_idx.get()) {
@@ -711,13 +766,15 @@ fn dirty_body() -> Element {
     ))
 }
 
-/// 第 1 步的一张主类型选项卡片：整卡可点，选中时强调色描边 + 淡底。
+/// 第 1 步的一张类别选项卡片：整卡可点，选中时强调色描边 + 淡底；该类别没有可选的
+/// 主方案时置灰。只有名称——类别名本身就够直白（维护者意见）。
 ///
 /// 选中态叠层的写法照方案管理页的方案行（`dialogs/schema_manager.rs`）：描边与底色是
 /// 垫在内容下面、按选中显隐的叶子，内容层 `clickable` 吞命中。
-fn kind_card(kind: Signal<usize>, i: usize, title: &str, desc: &str) -> Element {
+fn kind_card(kind: Signal<usize>, avail: Signal<bool>, i: usize, title: &str) -> Element {
     let sel = move || kind.get() == i;
     Element::stack()
+        .enabled_when(move || avail.get())
         .child(
             Element::leaf()
                 .align(Align::Stretch)
@@ -739,8 +796,7 @@ fn kind_card(kind: Signal<usize>, i: usize, title: &str, desc: &str) -> Element 
                 .clickable()
                 .on_click(move |_| kind.set(i))
                 .corner(8.0)
-                .padding_xy(12, 10)
-                .spacing(4)
+                .padding_xy(14, 12)
                 .child(
                     Element::label(title)
                         .font_size(14.0)
@@ -748,13 +804,6 @@ fn kind_card(kind: Signal<usize>, i: usize, title: &str, desc: &str) -> Element 
                         .fg_role(Role::Text)
                         .width_match()
                         .max_lines(1),
-                )
-                .child(
-                    Element::label(desc)
-                        .font_size(12.0)
-                        .fg_role(Role::TextMuted)
-                        .width_match()
-                        .max_lines(2),
                 ),
         )
 }
@@ -800,17 +849,22 @@ fn scheme_grid(app: &Rc<RefCell<AppState>>, schemes: Signal<Vec<Vec<SchemeRow>>>
 
 fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
     let kind = c.kind;
+    let is_sp = c.is_sp;
     let cards = Element::grid(
         KINDS.len(),
         10,
         vec![
-            kind_card(kind, 0, "五笔 / 码表", "按字形编码，重码少、速度快"),
-            kind_card(kind, 1, "全拼", "直接输入完整拼音，上手即用"),
-            kind_card(kind, 2, "双拼", "每个字只需两键，选中后在下方选择双拼布局"),
+            kind_card(kind, c.kind_avail[0], 0, "五笔 / 码表"),
+            kind_card(kind, c.kind_avail[1], 1, "拼音"),
         ],
     );
+    let main_row = setting_row(
+        "主方案",
+        None,
+        Element::dropdown_signal(c.main_opts, c.main_idx).width(180),
+    );
     let layouts = c.layout_opts;
-    let layout_card = card(vec![setting_row(
+    let layout_row = setting_row(
         "双拼布局",
         None,
         Element::stack()
@@ -825,18 +879,21 @@ fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
                     .fg_role(Role::Text)
                     .visible_when(move || layouts.get().is_empty()),
             ),
-    )])
-    .visible_when(move || kind.get() == 2);
+    );
     body()
         .child(page_head(
             "选择输入方式",
-            "你平时主要用哪种方式打字？之后会以它作为默认方案。",
+            "你平时主要用哪类输入方式？再选一个主方案作为默认。",
         ))
         .child(cards)
-        .child(layout_card)
+        .child(card(vec![with_cond(
+            main_row,
+            vec![layout_row],
+            move || is_sp.get(),
+        )]))
         .child(dialog_section_hint(
             "同时启用的方案",
-            "勾选的方案可在打字时切换使用；默认方案始终启用",
+            "勾选的方案可在打字时切换使用；主方案始终启用",
             vec![scheme_grid(app, c.schemes)],
         ))
 }
@@ -850,6 +907,7 @@ const FUZZY_INDENT: i32 = 24;
 
 fn step2_body(c: Controls) -> Element {
     let kind = c.kind;
+    let is_sp = c.is_sp;
     let fuzzy = c.fuzzy;
     // 模糊音分项：与本对话框其余行同一种行型（标题 + 右侧开关），缩进挂在总开关下面，
     // 读作它的子项。
@@ -915,7 +973,7 @@ fn step2_body(c: Controls) -> Element {
                     "双拼方案下也能直接打全拼，如 zaijian → 再见",
                     c.allow_full,
                 )],
-                move || kind.get() == 2,
+                move || is_sp.get(),
             ),
         ],
     )
@@ -1219,7 +1277,8 @@ mod tests {
             write_back(&app, &c);
             let d = draft_of(&app);
             assert_eq!(d.kind, Kind::Pinyin);
-            assert_eq!(d.active, "pinyin");
+            // mock 没有 id 为 pinyin 的方案：取拼音类候选第一个
+            assert_eq!(d.active, "pinyin_simp");
             assert!(app.borrow().wizard_rev.get() != rev0, "草稿变了要推 rev");
             sync(&app, &c);
             assert!(c.emoji.get(), "拼音预设 emoji 开");
@@ -1227,6 +1286,52 @@ mod tests {
             // 控件与草稿一致后再回写一次，草稿不变。
             write_back(&app, &c);
             assert_eq!(draft_of(&app), d);
+        });
+    }
+
+    /// 主方案下拉随类别刷新；选中双拼主方案（mock 的 double_pinyin，按 scheme 认）后
+    /// 双拼布局行出现，布局取该方案打开时的布局。
+    #[test]
+    fn main_dropdown_follows_kind_and_shuangpin_shows_layout() {
+        with_mock(|| {
+            let app = mock_app();
+            open_wizard(&app);
+            let c = Controls::new();
+            sync(&app, &c);
+            assert_eq!(
+                c.main_opts.get(),
+                vec!["五笔 86", "五笔 98", "五笔拼音混输"]
+            );
+            assert!(!c.is_sp.get());
+            c.kind.set(1);
+            write_back(&app, &c);
+            sync(&app, &c);
+            assert_eq!(c.main_opts.get(), vec!["全拼·简", "双拼"]);
+            assert_eq!(c.main_idx.get(), 0);
+            assert!(!c.is_sp.get());
+            c.main_idx.set(1);
+            write_back(&app, &c);
+            sync(&app, &c);
+            let d = draft_of(&app);
+            assert_eq!(d.active, "double_pinyin");
+            assert!(d.enabled.contains(&"double_pinyin".to_string()));
+            let cur_enabled = app
+                .borrow()
+                .wizard
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .cur
+                .enabled
+                .clone();
+            assert_eq!(
+                d.enabled.contains(&"pinyin_simp".to_string()),
+                cur_enabled.contains(&"pinyin_simp".to_string()),
+                "旧主方案：原本启用的保留、向导自动加的去掉"
+            );
+            assert!(c.is_sp.get(), "双拼主方案显示布局行");
+            assert_eq!(d.layout, "ziranma", "mock 里 double_pinyin 的布局");
+            assert!(!crate::wizard::model::layout_changed(&d));
         });
     }
 
@@ -1252,7 +1357,7 @@ mod tests {
             c.kind.set(1);
             write_back(&app, &c);
             sync(&app, &c);
-            assert_eq!(draft_of(&app).active, "pinyin");
+            assert_eq!(draft_of(&app).active, "pinyin_simp");
             c.kind.set(0);
             write_back(&app, &c);
             let d = draft_of(&app);
@@ -1289,7 +1394,7 @@ mod tests {
                 let st = app.borrow();
                 let mut s = st.wizard.borrow_mut();
                 let s = s.as_mut().unwrap();
-                s.draft = s.draft.with_preset(Kind::Pinyin, &st.schemas);
+                s.draft = s.draft.with_preset(Kind::Pinyin);
             }
             crate::wizard::finish_with(&app, &mut Skips, crate::state::LoadedState::fetch);
             let st = app.borrow();
@@ -1514,6 +1619,13 @@ mod tests {
     }
 
     /// 开关组合：主类型 × 模糊音 × 临时拼音。
+    /// 第 1 步的三种形态：0 码表、1 拼音（全拼）、2 拼音（双拼主方案）。
+    fn set_shape(c: &Controls, shape: usize) {
+        c.kind.set(shape.min(1));
+        c.is_sp.set(shape == 2);
+    }
+
+    /// 开关组合：形态 × 模糊音 × 临时拼音。
     fn combos() -> Vec<(usize, bool, bool)> {
         let mut v = Vec::new();
         for kind in 0..3 {
@@ -1537,7 +1649,7 @@ mod tests {
             for p in ALL_PHASES {
                 for (kind, fuzzy, temp) in combos() {
                     phase.set(p);
-                    c.kind.set(kind);
+                    set_shape(&c, kind);
                     c.fuzzy.set(fuzzy);
                     c.temp.set(temp);
                     layout(&mut tree);
@@ -1564,7 +1676,7 @@ mod tests {
             for p in ALL_PHASES {
                 for (kind, fuzzy, temp) in combos() {
                     phase.set(p);
-                    c.kind.set(kind);
+                    set_shape(&c, kind);
                     c.fuzzy.set(fuzzy);
                     c.temp.set(temp);
                     layout(&mut tree);
@@ -1635,7 +1747,7 @@ mod tests {
                 (WizardPhase::Step(3), 4, 0, false, true),
             ] {
                 phase.set(p);
-                c.kind.set(kind);
+                set_shape(&c, kind);
                 c.fuzzy.set(fuzzy);
                 c.temp.set(temp);
                 layout(&mut tree);

@@ -1,6 +1,6 @@
 //! 向导的纯逻辑：当前配置 → 草稿 → 目标配置。不碰 RPC、不碰 UI，全部可单测。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
@@ -34,28 +34,113 @@ pub const QUICK_KEYS: &[(&str, &str)] = TRIGGER_KEYS;
 /// 临时拼音可选键。
 pub const TEMP_KEYS: &[(&str, &str)] = TRIGGER_KEYS;
 
+/// 输入方式的两类。全拼、双拼同属拼音；是否双拼看主方案的 `scheme`（[`Draft::is_shuangpin`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Codetable,
     Pinyin,
-    Shuangpin,
 }
 
-impl Kind {
-    /// 主类型对应的默认方案 id。
-    pub fn schema_id(self) -> &'static str {
-        match self {
-            Kind::Codetable => "wubi86",
-            Kind::Pinyin => "pinyin",
-            Kind::Shuangpin => "shuangpin",
+/// 出厂方案。切换类别时启用表只保留不在其中的（用户自定义 / 导入的）方案。
+const BUILTIN: [&str; 6] = [
+    "wubi86",
+    "wubi86_pinyin",
+    "pinyin",
+    "shuangpin",
+    "stroke",
+    "english",
+];
+
+/// 双拼方案没读到布局时的出厂布局。
+pub const DEFAULT_LAYOUT: &str = "xiaohe";
+
+/// 一个方案的元数据（取自 `schema.list`），只留向导判定要用的字段。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaMeta {
+    pub id: String,
+    /// `engineType`：codetable / mixed / pinyin / english …
+    pub kind: String,
+    /// 拼音方案的 full / shuangpin；其余为空。
+    pub scheme: String,
+    pub hidden: bool,
+}
+
+/// 打开向导时的方案目录：全部方案 + 各双拼方案当时的布局。草稿与基线共用一份，一次会话内不变。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Catalog {
+    pub schemas: Vec<SchemaMeta>,
+    /// 双拼方案 id → 打开时的布局 id。读不到的不在表里，按 [`DEFAULT_LAYOUT`] 算。
+    pub layouts: BTreeMap<String, String>,
+}
+
+impl Catalog {
+    pub fn new(schemas: &[SchemaInfo], layouts: BTreeMap<String, String>) -> Catalog {
+        Catalog {
+            schemas: schemas
+                .iter()
+                .map(|s| SchemaMeta {
+                    id: s.id.clone(),
+                    kind: s.kind.clone(),
+                    scheme: s.scheme.clone(),
+                    hidden: s.hidden,
+                })
+                .collect(),
+            layouts,
         }
     }
-    fn from_active(active: &str) -> Kind {
-        match active {
-            "pinyin" => Kind::Pinyin,
-            "shuangpin" => Kind::Shuangpin,
+
+    fn get(&self, id: &str) -> Option<&SchemaMeta> {
+        self.schemas.iter().find(|s| s.id == id)
+    }
+
+    /// 方案所属类别：`pinyin` 引擎为拼音，其余（含查不到）为码表。
+    pub fn kind_of(&self, id: &str) -> Kind {
+        match self.get(id) {
+            Some(s) if s.kind == "pinyin" => Kind::Pinyin,
             _ => Kind::Codetable,
         }
+    }
+
+    /// 是否双拼方案：看 `scheme`，不看 id（自建 / 导入的双拼方案 id 各不相同）。
+    pub fn is_shuangpin(&self, id: &str) -> bool {
+        self.get(id).is_some_and(|s| s.scheme == "shuangpin")
+    }
+
+    /// 类别下可选作主方案的方案（按清单顺序）：码表类为 codetable / mixed，拼音类为 pinyin；
+    /// 特殊方案（hidden）不列。
+    pub fn candidates(&self, kind: Kind) -> Vec<String> {
+        self.schemas
+            .iter()
+            .filter(|s| !s.hidden)
+            .filter(|s| match kind {
+                Kind::Codetable => s.kind == "codetable" || s.kind == "mixed",
+                Kind::Pinyin => s.kind == "pinyin",
+            })
+            .map(|s| s.id.clone())
+            .collect()
+    }
+
+    /// 切到某类别时的默认主方案：码表类优先 `wubi86`、拼音类优先 `pinyin`（全拼），
+    /// 没有就取候选第一个；该类一个候选都没有时为 None。
+    pub fn preferred(&self, kind: Kind) -> Option<String> {
+        let c = self.candidates(kind);
+        let want = match kind {
+            Kind::Codetable => "wubi86",
+            Kind::Pinyin => "pinyin",
+        };
+        c.iter().find(|id| *id == want).or(c.first()).cloned()
+    }
+
+    /// 双拼方案打开时的布局。
+    pub fn layout_of(&self, id: &str) -> String {
+        self.layouts
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_LAYOUT.to_string())
+    }
+
+    fn all_ids(&self) -> Vec<String> {
+        self.schemas.iter().map(|s| s.id.clone()).collect()
     }
 }
 
@@ -73,14 +158,15 @@ pub enum Trigger {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Draft {
     pub kind: Kind,
-    /// 默认方案。主类型是五笔时，保留用户原来的码表默认方案（例如自定义码表）。
+    /// 主方案（= 默认方案 `schema.active`），在所选类别的候选里挑。
     pub active: String,
+    /// 主方案为双拼时它的布局；切换主方案时取新主方案打开时的布局。
     pub layout: String,
     /// 启用方案，保持原有顺序。
     pub enabled: Vec<String>,
-    /// 打开时 `schema.list` 的全部方案 id（按清单顺序）。`schema.available` 为空即「全部启用」
-    /// （schema_mgr 同一语义），预填与 [`Draft::to_target`] 判变化都据此展开。
-    pub all_ids: Vec<String>,
+    /// 打开时的方案目录。`schema.available` 为空即「全部启用」（schema_mgr 同一语义），
+    /// 预填与 [`Draft::to_target`] 判变化都据此展开。
+    pub catalog: Catalog,
     // 第 2 步：码表
     pub auto_commit_at_full: bool,
     pub clear_on_empty_max: bool,
@@ -147,25 +233,28 @@ fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
 }
 
 impl Draft {
-    /// 按当前实际配置预填。`layout` 是 `shuangpin` 方案当前布局 id（拿不到时传出厂 `xiaohe`）。
-    pub fn from_current(cfg: &Config, schemas: &[SchemaInfo], layout: &str) -> Draft {
-        let ids: Vec<String> = schemas.iter().map(|s| s.id.clone()).collect();
-        Draft::from_ids(cfg, ids, layout)
+    /// 按当前实际配置预填。`layouts` 是各双拼方案当前的布局（读不到的可缺）。
+    pub fn from_current(
+        cfg: &Config,
+        schemas: &[SchemaInfo],
+        layouts: BTreeMap<String, String>,
+    ) -> Draft {
+        Draft::from_catalog(cfg, Catalog::new(schemas, layouts))
     }
 
-    fn from_ids(cfg: &Config, all_ids: Vec<String>, layout: &str) -> Draft {
+    fn from_catalog(cfg: &Config, catalog: Catalog) -> Draft {
         let active = cfg.get_str("schema.active").unwrap_or("wubi86").to_string();
         let b = |k: &str| cfg.get_bool(k).unwrap_or(false);
         let mut enabled = strs(cfg.get_array("schema.available"));
         if enabled.is_empty() {
-            enabled = all_ids.clone();
+            enabled = catalog.all_ids();
         }
         Draft {
-            kind: Kind::from_active(&active),
+            kind: catalog.kind_of(&active),
+            layout: catalog.layout_of(&active),
             enabled,
-            all_ids,
             active,
-            layout: layout.to_string(),
+            catalog,
             auto_commit_at_full: b("schema.codetable.auto_commit_at_full"),
             clear_on_empty_max: b("schema.codetable.clear_on_empty_max"),
             code_hint: cfg
@@ -182,41 +271,28 @@ impl Draft {
             temp_key: trigger_of(cfg, VERB_TEMP_PINYIN, TEMP_KEYS),
         }
     }
-}
 
-impl Draft {
-    /// 切换主类型：第 2、3 步套推荐预设，方案集按规则调整。
-    /// 自定义方案（不在出厂 6 个里）一律保留，不受预设影响。
-    pub fn with_preset(&self, kind: Kind, schemas: &[SchemaInfo]) -> Draft {
-        const BUILTIN: [&str; 6] = [
-            "wubi86",
-            "wubi86_pinyin",
-            "pinyin",
-            "shuangpin",
-            "stroke",
-            "english",
-        ];
-        let main = kind.schema_id();
-        let preset: &[&str] = match kind {
-            Kind::Codetable => &["wubi86_pinyin", "pinyin"],
-            Kind::Pinyin | Kind::Shuangpin => &[],
-        };
-        let mut enabled = vec![main.to_string()];
-        for id in self.enabled.iter() {
-            let custom = !BUILTIN.contains(&id.as_str());
-            if custom && !enabled.contains(id) {
-                enabled.push(id.clone());
-            }
-        }
-        for s in schemas {
-            if preset.contains(&s.id.as_str()) && !enabled.contains(&s.id) {
-                enabled.push(s.id.clone());
-            }
-        }
+    /// 主方案是否双拼（决定双拼布局、「允许按全拼输入」的显示与写入）。
+    pub fn is_shuangpin(&self) -> bool {
+        self.kind == Kind::Pinyin && self.catalog.is_shuangpin(&self.active)
+    }
+
+    /// 切到另一类别：主方案取该类首选，启用表只留主方案 + 自定义方案（出厂的混输、全拼等
+    /// 一律不预勾），第 2、3 步套该类推荐预设。该类没有候选时主方案与启用表不动。
+    pub fn with_preset(&self, kind: Kind) -> Draft {
         let mut d = self.clone();
         d.kind = kind;
-        d.active = main.to_string();
-        d.enabled = enabled;
+        if let Some(main) = self.catalog.preferred(kind) {
+            let mut enabled = vec![main.clone()];
+            for id in &self.enabled {
+                if !BUILTIN.contains(&id.as_str()) && !enabled.contains(id) {
+                    enabled.push(id.clone());
+                }
+            }
+            d.layout = self.catalog.layout_of(&main);
+            d.active = main;
+            d.enabled = enabled;
+        }
         match kind {
             Kind::Codetable => {
                 d.auto_commit_at_full = true;
@@ -227,7 +303,7 @@ impl Draft {
                     d.temp_key = Trigger::Key("backtick".into());
                 }
             }
-            Kind::Pinyin | Kind::Shuangpin => {
+            Kind::Pinyin => {
                 d.emoji = true;
                 // 分项不重置：总开关关着时它们隐藏，清掉就是悄悄抹掉用户的分项偏好。
                 d.fuzzy = false;
@@ -240,20 +316,39 @@ impl Draft {
         d
     }
 
-    /// 第 1 步切主类型：套预设；切回打开时的主类型，则默认方案与启用表回到打开时的样子
-    /// （自定义码表默认方案不被换成 wubi86），第 2、3 步仍按预设。
-    pub fn switch_kind(&self, cur: &Draft, kind: Kind, schemas: &[SchemaInfo]) -> Draft {
-        let mut d = self.with_preset(kind, schemas);
+    /// 第 1 步切类别：套预设；切回打开时的类别，则主方案、启用表、布局回到打开时的样子
+    /// （自定义码表主方案不被换成 wubi86），第 2、3 步仍按预设。
+    pub fn switch_kind(&self, cur: &Draft, kind: Kind) -> Draft {
+        let mut d = self.with_preset(kind);
         if kind == cur.kind {
             d.active = cur.active.clone();
             d.enabled = cur.enabled.clone();
+            d.layout = cur.layout.clone();
         }
+        d
+    }
+
+    /// 同一类别下换主方案：新主方案确保启用（原本没启用就加在首位）；旧主方案若是向导
+    /// 自动加进来的（打开时不在启用表里）就去掉，原本就启用的保留。第 2、3 步不重套预设。
+    pub fn set_main(&self, cur: &Draft, id: &str) -> Draft {
+        let mut d = self.clone();
+        if id == self.active {
+            return d;
+        }
+        let old = std::mem::replace(&mut d.active, id.to_string());
+        if !cur.enabled.contains(&old) {
+            d.enabled.retain(|x| *x != old);
+        }
+        if !d.enabled.iter().any(|x| x == id) {
+            d.enabled.insert(0, id.to_string());
+        }
+        d.layout = self.catalog.layout_of(id);
         d
     }
 
     /// 基线 + 草稿 → 目标配置。只写本主类型可见、且语义有变化的项。
     pub fn to_target(&self, base: &Config) -> Config {
-        let cur = Draft::from_ids(base, self.all_ids.clone(), &self.layout);
+        let cur = Draft::from_catalog(base, self.catalog.clone());
         let mut t = base.clone();
         let mut set = |k: &str, v: Value| t.set_path(k, v);
 
@@ -285,7 +380,7 @@ impl Draft {
                     set("input.temp_pinyin.enabled", self.temp_pinyin.into());
                 }
             }
-            Kind::Pinyin | Kind::Shuangpin => {
+            Kind::Pinyin => {
                 if self.emoji != cur.emoji {
                     set("input.emoji.enabled", self.emoji.into());
                 }
@@ -301,7 +396,7 @@ impl Draft {
                         );
                     }
                 }
-                if self.kind == Kind::Shuangpin && self.allow_full_pinyin != cur.allow_full_pinyin {
+                if self.is_shuangpin() && self.allow_full_pinyin != cur.allow_full_pinyin {
                     set(
                         "schema.pinyin.shuangpin.allow_full_pinyin",
                         self.allow_full_pinyin.into(),
@@ -410,13 +505,14 @@ pub fn summary(
         }
     };
     let list = |v: &[String]| v.iter().map(|s| names(s)).collect::<Vec<_>>().join("、");
-    push("方案", "默认方案", names(&cur.active), names(&new.active));
+    push("方案", "主方案", names(&cur.active), names(&new.active));
     push("方案", "启用的方案", list(&cur.enabled), list(&new.enabled));
-    if new.kind == Kind::Shuangpin {
+    // 与 layout_changed 同判：旧值是新主方案打开时的布局（主方案换了，旧主方案的布局不相干）。
+    if new.is_shuangpin() {
         push(
             "方案",
             "双拼布局",
-            layout_label(&cur.layout),
+            layout_label(&new.catalog.layout_of(&new.active)),
             layout_label(&new.layout),
         );
     }
@@ -441,7 +537,7 @@ pub fn summary(
                 on_off(new.code_hint),
             );
         }
-        Kind::Pinyin | Kind::Shuangpin => {
+        Kind::Pinyin => {
             push(
                 "输入习惯",
                 "Emoji 候选",
@@ -460,7 +556,7 @@ pub fn summary(
                     );
                 }
             }
-            if new.kind == Kind::Shuangpin {
+            if new.is_shuangpin() {
                 push(
                     "输入习惯",
                     "允许按全拼输入",
@@ -503,9 +599,9 @@ pub fn summary(
     out
 }
 
-/// 只有选了双拼、并且布局确实变了，才写方案级布局。
-pub fn layout_changed(cur: &Draft, new: &Draft) -> bool {
-    new.kind == Kind::Shuangpin && new.layout != cur.layout && !new.layout.is_empty()
+/// 只有主方案是双拼、并且它的布局确实变了，才写方案级布局（写到主方案上）。
+pub fn layout_changed(new: &Draft) -> bool {
+    new.is_shuangpin() && !new.layout.is_empty() && new.layout != new.catalog.layout_of(&new.active)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -519,7 +615,7 @@ pub struct Conflict {
 /// ★ 判据是「占用方会不会让出」，不是「占用方是不是向导管的动词」：拼音用户把快捷输入改到
 /// 反引号时，临时拼音不在拼音用户的向导里，不会让出，覆盖它就是悄悄删掉临拼绑定。
 pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
-    let cur = Draft::from_ids(base, d.all_ids.clone(), &d.layout);
+    let cur = Draft::from_catalog(base, d.catalog.clone());
     let moving = |verb: &str| match verb {
         VERB_QUICK => d.quick != cur.quick && !matches!(d.quick, Trigger::Keep(_)),
         VERB_TEMP_PINYIN => {
@@ -627,6 +723,7 @@ pub fn override_hints(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     fn si(id: &str, kind: &str, scheme: &str) -> SchemaInfo {
         SchemaInfo {
@@ -658,23 +755,156 @@ mod tests {
             Draft::from_current(
                 &cfg(json!({"schema": {"active": a, "available": [a]}})),
                 &s,
-                "xiaohe",
+                BTreeMap::new(),
             )
-            .kind
         };
-        assert_eq!(d("pinyin"), Kind::Pinyin);
-        assert_eq!(d("shuangpin"), Kind::Shuangpin);
-        assert_eq!(d("wubi86"), Kind::Codetable);
-        assert_eq!(d("my_custom_table"), Kind::Codetable);
+        assert_eq!(d("pinyin").kind, Kind::Pinyin);
+        assert!(!d("pinyin").is_shuangpin());
+        assert_eq!(d("shuangpin").kind, Kind::Pinyin);
+        assert!(d("shuangpin").is_shuangpin());
+        assert_eq!(d("wubi86").kind, Kind::Codetable);
+        assert_eq!(d("wubi86_pinyin").kind, Kind::Codetable, "混输归码表类");
+        assert_eq!(d("stroke").kind, Kind::Codetable);
+        assert_eq!(d("my_custom_table").kind, Kind::Codetable, "查不到按码表");
+        assert_eq!(d("my_custom_table").active, "my_custom_table");
+    }
+
+    /// 双拼看主方案的 `scheme`，不看 id：自建双拼方案 id 任意，叫 shuangpin 的全拼也不算。
+    #[test]
+    fn shuangpin_is_judged_by_scheme_not_id() {
+        let s = vec![
+            si("double_pinyin", "pinyin", "shuangpin"),
+            si("shuangpin", "pinyin", "full"),
+        ];
+        let d = |a: &str| {
+            Draft::from_current(
+                &cfg(json!({"schema": {"active": a, "available": [a]}})),
+                &s,
+                BTreeMap::new(),
+            )
+        };
+        assert!(d("double_pinyin").is_shuangpin());
+        assert!(!d("shuangpin").is_shuangpin());
+    }
+
+    /// 切到另一类别的默认主方案：码表优先 wubi86、拼音优先 pinyin，没有就取候选第一个；
+    /// 特殊方案（hidden）不当候选。
+    #[test]
+    fn switching_kind_picks_preferred_main() {
+        let full = schemas();
+        let cur = Draft::from_current(
+            &cfg(json!({"schema": {"active": "pinyin", "available": ["pinyin"]}})),
+            &full,
+            BTreeMap::new(),
+        );
+        assert_eq!(cur.with_preset(Kind::Codetable).active, "wubi86");
+        let mut english = si("english", "english", "");
+        english.hidden = true;
+        let mut hidden_table = si("zz_hidden", "codetable", "");
+        hidden_table.hidden = true;
+        let no_wubi = vec![
+            si("pinyin", "pinyin", "full"),
+            hidden_table,
+            si("my_table", "codetable", ""),
+            english,
+            si("double_pinyin", "pinyin", "shuangpin"),
+        ];
+        let cur = Draft::from_current(
+            &cfg(json!({"schema": {"active": "my_table", "available": ["my_table"]}})),
+            &no_wubi,
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            cur.catalog.candidates(Kind::Codetable),
+            vec!["my_table".to_string()]
+        );
+        let py = cur.with_preset(Kind::Pinyin);
+        assert_eq!(py.active, "pinyin");
+        assert_eq!(py.with_preset(Kind::Codetable).active, "my_table");
+        // 拼音类没有 pinyin 时取第一个候选
+        let only_sp = vec![
+            si("wubi86", "codetable", ""),
+            si("double_pinyin", "pinyin", "shuangpin"),
+        ];
+        let cur = Draft::from_current(
+            &cfg(json!({"schema": {"active": "wubi86"}})),
+            &only_sp,
+            BTreeMap::new(),
+        );
+        let py = cur.with_preset(Kind::Pinyin);
+        assert_eq!(py.active, "double_pinyin");
+        assert!(py.is_shuangpin());
+        // 一个候选都没有：主方案不动
+        let only_table = vec![si("wubi86", "codetable", "")];
+        let cur = Draft::from_current(
+            &cfg(json!({"schema": {"active": "wubi86"}})),
+            &only_table,
+            BTreeMap::new(),
+        );
+        assert_eq!(cur.catalog.preferred(Kind::Pinyin), None);
+        assert_eq!(cur.with_preset(Kind::Pinyin).active, "wubi86");
+    }
+
+    /// 同类改主方案：新主方案启用；旧主方案是向导自动加的就去掉，原本启用的保留；
+    /// 第 2、3 步不重套预设。
+    #[test]
+    fn set_main_keeps_original_and_drops_auto_added() {
+        let b = cfg(
+            json!({"schema": {"active": "wubi86", "available": ["wubi86", "wubi86_pinyin"],
+            "codetable": {"auto_commit_at_full": false}}}),
+        );
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        let d = cur.set_main(&cur, "stroke");
+        assert_eq!(d.active, "stroke");
+        assert_eq!(
+            d.enabled,
+            vec!["stroke", "wubi86", "wubi86_pinyin"],
+            "原主方案 wubi86 原本就启用，保留"
+        );
+        assert!(!d.auto_commit_at_full, "同类改主方案不重套预设");
+        let d = d.set_main(&cur, "wubi86_pinyin");
+        assert_eq!(
+            d.enabled,
+            vec!["wubi86", "wubi86_pinyin"],
+            "stroke 是向导加的，去掉；已启用的不挪位"
+        );
+        let d = d.set_main(&cur, "wubi86");
+        assert_eq!(d.enabled, cur.enabled);
+        assert!(d.items(&b, ATOMIC).is_empty(), "改回原主方案即无改动");
+    }
+
+    /// 换主方案时布局跟着换成新主方案打开时的布局；判变化也按新主方案的基线。
+    #[test]
+    fn layout_follows_main_schema() {
+        let s = vec![
+            si("pinyin", "pinyin", "full"),
+            si("shuangpin", "pinyin", "shuangpin"),
+            si("double_pinyin", "pinyin", "shuangpin"),
+        ];
+        let layouts = BTreeMap::from([
+            ("shuangpin".to_string(), "xiaohe".to_string()),
+            ("double_pinyin".to_string(), "ziranma".to_string()),
+        ]);
+        let b = cfg(json!({"schema": {"active": "pinyin", "available": ["pinyin"]}}));
+        let cur = Draft::from_current(&b, &s, layouts);
+        let d = cur.set_main(&cur, "double_pinyin");
+        assert_eq!(d.layout, "ziranma");
+        assert!(!layout_changed(&d), "没改布局不写");
+        let mut d2 = d.clone();
+        d2.layout = "xiaohe".into();
+        assert!(layout_changed(&d2), "相对 double_pinyin 自己的布局变了");
+        let d3 = d2.set_main(&cur, "shuangpin");
+        assert_eq!(d3.layout, "xiaohe");
+        assert!(!layout_changed(&d3));
     }
 
     #[test]
     fn code_hint_auto_counts_as_on() {
         let c =
             cfg(json!({"schema": {"active": "wubi86", "pinyin": {"code_hint_source": "auto"}}}));
-        assert!(Draft::from_current(&c, &schemas(), "xiaohe").code_hint);
+        assert!(Draft::from_current(&c, &schemas(), BTreeMap::new()).code_hint);
         let c = cfg(json!({"schema": {"active": "wubi86", "pinyin": {"code_hint_source": "off"}}}));
-        assert!(!Draft::from_current(&c, &schemas(), "xiaohe").code_hint);
+        assert!(!Draft::from_current(&c, &schemas(), BTreeMap::new()).code_hint);
     }
 
     #[test]
@@ -682,7 +912,7 @@ mod tests {
         let c = cfg(
             json!({"keys": {"key_actions": {"semicolon": "mix:quick_mix", "backtick": "temp_pinyin"}}}),
         );
-        let d = Draft::from_current(&c, &schemas(), "xiaohe");
+        let d = Draft::from_current(&c, &schemas(), BTreeMap::new());
         assert_eq!(d.quick, Trigger::Key("semicolon".into()));
         assert_eq!(d.temp_key, Trigger::Key("backtick".into()));
     }
@@ -692,7 +922,7 @@ mod tests {
         let c = cfg(
             json!({"keys": {"key_actions": {"semicolon": "mix:quick_mix", "quote": "mix:quick_mix"}}}),
         );
-        let d = Draft::from_current(&c, &schemas(), "xiaohe");
+        let d = Draft::from_current(&c, &schemas(), BTreeMap::new());
         assert_eq!(
             d.quick,
             Trigger::Keep(vec!["quote".into(), "semicolon".into()])
@@ -704,7 +934,7 @@ mod tests {
     fn trigger_unlisted_key_is_keep() {
         let c = cfg(json!({"keys": {"key_actions": {"tab": "mix:quick_mix"}}}));
         assert_eq!(
-            Draft::from_current(&c, &schemas(), "x").quick,
+            Draft::from_current(&c, &schemas(), BTreeMap::new()).quick,
             Trigger::Keep(vec!["tab".into()])
         );
     }
@@ -733,7 +963,7 @@ mod tests {
     fn comma_held_by_other_verb_conflicts() {
         let mut b = base();
         b.set_path("keys.key_actions.comma", json!("special:kf"));
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.quick = Trigger::Key("comma".into());
         let c = key_conflicts(&d, &b);
         assert_eq!(c.len(), 1, "{c:?}");
@@ -754,12 +984,12 @@ mod tests {
     #[test]
     fn slash_dun_already_on_conflicts_with_slash_trigger() {
         let b = dun_on_base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(d.slash_dun, "前提：基线已开顿号");
         d.quick = Trigger::Key("slash".into());
         let c = key_conflicts(&d, &b);
         assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.temp_key = Trigger::Key("slash".into());
         assert!(!key_conflicts(&d, &b).is_empty());
     }
@@ -770,7 +1000,7 @@ mod tests {
         let mut b = dun_on_base();
         b.set_path("keys.key_actions.semicolon", json!(null));
         b.set_path("keys.key_actions.slash", json!("mix:quick_mix"));
-        let d = Draft::from_current(&b, &schemas(), "x");
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(d.slash_dun);
         assert_eq!(d.quick, Trigger::Key("slash".into()), "前提：快捷原本在 /");
         assert!(
@@ -784,7 +1014,7 @@ mod tests {
     #[test]
     fn slash_dun_turned_on_conflicts_with_slash_trigger() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(!d.slash_dun, "前提：基线顿号关");
         d.slash_dun = true;
         d.quick = Trigger::Key("slash".into());
@@ -798,7 +1028,7 @@ mod tests {
         let mut b = base();
         b.set_path("keys.key_actions.semicolon", json!(null));
         b.set_path("keys.key_actions.slash", json!("mix:quick_mix"));
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert_eq!(d.quick, Trigger::Key("slash".into()), "前提：快捷原本在 /");
         d.slash_dun = true;
         let c = key_conflicts(&d, &b);
@@ -809,7 +1039,7 @@ mod tests {
     #[test]
     fn slash_trigger_without_dun_is_fine() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(!d.slash_dun);
         d.quick = Trigger::Key("slash".into());
         assert!(
@@ -824,17 +1054,17 @@ mod tests {
         let on = cfg(
             json!({"input": {"punct": {"custom_enabled": true, "custom_mappings": {"/": ["、","／","、","/"]}}}}),
         );
-        assert!(Draft::from_current(&on, &schemas(), "x").slash_dun);
+        assert!(Draft::from_current(&on, &schemas(), BTreeMap::new()).slash_dun);
         let gated = cfg(
             json!({"input": {"punct": {"custom_enabled": false, "custom_mappings": {"/": ["、","／","、","/"]}}}}),
         );
-        assert!(!Draft::from_current(&gated, &schemas(), "x").slash_dun);
+        assert!(!Draft::from_current(&gated, &schemas(), BTreeMap::new()).slash_dun);
     }
 
     #[test]
     fn enabled_follows_available_and_keeps_custom_schemas() {
         let c = cfg(json!({"schema": {"active": "wubi86", "available": ["wubi86", "my_table"]}}));
-        let d = Draft::from_current(&c, &schemas(), "x");
+        let d = Draft::from_current(&c, &schemas(), BTreeMap::new());
         assert_eq!(
             d.enabled,
             vec!["wubi86".to_string(), "my_table".to_string()]
@@ -857,7 +1087,7 @@ mod tests {
     #[test]
     fn untouched_draft_produces_no_items() {
         let b = base();
-        let d = Draft::from_current(&b, &schemas(), "xiaohe");
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(d.items(&b, ATOMIC).is_empty());
     }
 
@@ -865,14 +1095,14 @@ mod tests {
     fn untouched_pinyin_draft_produces_no_items() {
         // 键缺省时 from_current 读成 false；没动过就不能把这个 false 写回去
         let b = cfg(json!({"schema": {"active": "pinyin", "available": ["pinyin"]}}));
-        let d = Draft::from_current(&b, &schemas(), "xiaohe");
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(d.items(&b, ATOMIC).is_empty());
     }
 
     #[test]
     fn code_hint_auto_untouched_stays_auto() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "xiaohe");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.auto_commit_at_full = true; // 改别的
         let t = d.to_target(&b);
         assert_eq!(t.get_str("schema.pinyin.code_hint_source"), Some("auto"));
@@ -882,7 +1112,7 @@ mod tests {
     fn code_hint_on_from_off_writes_codetable() {
         let mut b = base();
         b.set_path("schema.pinyin.code_hint_source", json!("off"));
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.code_hint = true;
         assert_eq!(
             d.to_target(&b).get_str("schema.pinyin.code_hint_source"),
@@ -893,18 +1123,20 @@ mod tests {
     #[test]
     fn codetable_preset() {
         let d =
-            Draft::from_current(&base(), &schemas(), "x").with_preset(Kind::Codetable, &schemas());
+            Draft::from_current(&base(), &schemas(), BTreeMap::new()).with_preset(Kind::Codetable);
         assert!(d.auto_commit_at_full && d.clear_on_empty_max && d.code_hint && d.temp_pinyin);
         assert_eq!(d.active, "wubi86");
-        for id in ["wubi86", "wubi86_pinyin", "pinyin", "my_table"] {
-            assert!(d.enabled.contains(&id.to_string()), "{id}");
-        }
+        // 只预勾主方案 + 自定义方案；五笔拼音混输、全拼不预勾
+        assert_eq!(
+            d.enabled,
+            vec!["wubi86".to_string(), "my_table".to_string()]
+        );
         assert_eq!(d.quick, Trigger::Key("semicolon".into()));
     }
 
     #[test]
     fn pinyin_preset_keeps_custom_schemas_and_forces_main() {
-        let d = Draft::from_current(&base(), &schemas(), "x").with_preset(Kind::Pinyin, &schemas());
+        let d = Draft::from_current(&base(), &schemas(), BTreeMap::new()).with_preset(Kind::Pinyin);
         assert_eq!(d.active, "pinyin");
         assert_eq!(d.enabled.first().map(String::as_str), Some("pinyin"));
         assert!(d.enabled.contains(&"my_table".to_string()));
@@ -915,7 +1147,7 @@ mod tests {
     #[test]
     fn pinyin_kind_does_not_write_codetable_or_temp_pinyin_keys() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x").with_preset(Kind::Pinyin, &schemas());
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new()).with_preset(Kind::Pinyin);
         d.temp_pinyin = false; // 拼音用户界面不显示，改了也不该写
         d.auto_commit_at_full = true; // 同上
         let keys: Vec<String> = d.items(&b, ATOMIC).into_iter().map(|i| i.key).collect();
@@ -930,7 +1162,7 @@ mod tests {
     #[test]
     fn quick_off_removes_binding_and_key_moves() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.quick = Trigger::Off;
         let t = d.to_target(&b);
         assert!(t.get_path("keys.key_actions.semicolon").is_none());
@@ -944,7 +1176,7 @@ mod tests {
     #[test]
     fn keep_trigger_writes_nothing() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.quick = Trigger::Keep(vec!["semicolon".into()]);
         assert_eq!(
             d.to_target(&b).get_path("keys.key_actions"),
@@ -955,7 +1187,7 @@ mod tests {
     #[test]
     fn slash_dun_on_touches_only_slash_row_and_enables_master() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.slash_dun = true;
         let t = d.to_target(&b);
         assert_eq!(t.get_bool("input.punct.custom_enabled"), Some(true));
@@ -973,10 +1205,10 @@ mod tests {
     #[test]
     fn conflicts_between_wizard_keys_and_foreign_bindings() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.temp_key = Trigger::Key("semicolon".into()); // 与快捷输入同键
         assert!(!key_conflicts(&d, &b).is_empty());
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.quick = Trigger::Key("quote".into());
         assert!(key_conflicts(&d, &b).is_empty());
         let mut b2 = base();
@@ -992,7 +1224,7 @@ mod tests {
         let mut b = base();
         b.set_path("keys.key_actions.slash", json!("mix:quick_mix"));
         b.set_path("keys.key_actions.semicolon", json!(null));
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.slash_dun = true;
         assert!(!key_conflicts(&d, &b).is_empty());
     }
@@ -1008,7 +1240,7 @@ mod tests {
             json!({"/": ["、", "／", "、", "/"]}),
         );
         b.set_path("keys.key_actions.slash", json!("special:kf"));
-        let d = Draft::from_current(&b, &schemas(), "x");
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(d.slash_dun, "前提：基线已开顿号");
         assert!(
             key_conflicts(&d, &b).is_empty(),
@@ -1024,7 +1256,7 @@ mod tests {
             json!({"schema": {"active": "pinyin", "available": ["pinyin"],
             "pinyin": {"fuzzy": {"enabled": false, "zh_z": true, "n_l": true}}}}),
         );
-        let cur = Draft::from_current(&b, &schemas(), "x");
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
         let fuzzy_keys = |d: &Draft| -> Vec<String> {
             d.items(&b, ATOMIC)
                 .into_iter()
@@ -1032,7 +1264,7 @@ mod tests {
                 .filter(|k| k.starts_with("schema.pinyin.fuzzy."))
                 .collect()
         };
-        let d = cur.with_preset(Kind::Shuangpin, &schemas());
+        let d = cur.with_preset(Kind::Pinyin);
         assert_eq!(d.fuzzy_pairs, cur.fuzzy_pairs, "预设不动分项");
         assert!(fuzzy_keys(&d).is_empty(), "{:?}", fuzzy_keys(&d));
         // 开模糊音、改分项、再关掉：分项又隐藏了，不写
@@ -1056,10 +1288,10 @@ mod tests {
     fn switch_back_to_original_kind_restores_active_and_enabled() {
         let b =
             cfg(json!({"schema": {"active": "my_table", "available": ["my_table", "english"]}}));
-        let cur = Draft::from_current(&b, &schemas(), "x");
-        let away = cur.switch_kind(&cur, Kind::Pinyin, &schemas());
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        let away = cur.switch_kind(&cur, Kind::Pinyin);
         assert_eq!(away.active, "pinyin");
-        let back = away.switch_kind(&cur, Kind::Codetable, &schemas());
+        let back = away.switch_kind(&cur, Kind::Codetable);
         assert_eq!(back.active, "my_table");
         assert_eq!(back.enabled, cur.enabled);
         assert!(back.auto_commit_at_full, "第 2 步仍按预设");
@@ -1070,7 +1302,7 @@ mod tests {
     #[test]
     fn empty_available_means_all_enabled() {
         let b = cfg(json!({"schema": {"active": "wubi86"}}));
-        let d = Draft::from_current(&b, &schemas(), "x");
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         let all: Vec<String> = schemas().into_iter().map(|s| s.id).collect();
         assert_eq!(d.enabled, all);
         assert!(d.items(&b, ATOMIC).is_empty(), "{:?}", d.items(&b, ATOMIC));
@@ -1089,7 +1321,7 @@ mod tests {
     #[test]
     fn temp_conflict_ignored_for_pinyin_kind() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x").with_preset(Kind::Pinyin, &schemas());
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new()).with_preset(Kind::Pinyin);
         d.temp_key = Trigger::Key("semicolon".into());
         assert!(
             key_conflicts(&d, &b).is_empty(),
@@ -1101,7 +1333,7 @@ mod tests {
     fn pinyin_quick_on_temp_pinyin_key_conflicts() {
         // 拼音用户向导里看不到临拼，它不会让出 backtick；覆盖即悄悄删掉临拼绑定
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x").with_preset(Kind::Pinyin, &schemas());
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new()).with_preset(Kind::Pinyin);
         d.quick = Trigger::Key("backtick".into());
         assert!(!key_conflicts(&d, &b).is_empty());
     }
@@ -1109,7 +1341,7 @@ mod tests {
     #[test]
     fn codetable_swapping_quick_and_temp_keys_is_fine() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.quick = Trigger::Key("backtick".into());
         d.temp_key = Trigger::Key("semicolon".into());
         assert!(
@@ -1125,9 +1357,8 @@ mod tests {
         let id = |s: &str| s.to_string();
         let check = |name: &str, b: &Config, cur: &Draft, new: &Draft| {
             let sum_empty = summary(cur, new, &id, &id).is_empty();
-            let no_write = new.items(b, ATOMIC).is_empty()
-                && !layout_changed(cur, new)
-                && new.active == cur.active;
+            let no_write =
+                new.items(b, ATOMIC).is_empty() && !layout_changed(new) && new.active == cur.active;
             assert_eq!(
                 sum_empty,
                 no_write,
@@ -1138,7 +1369,7 @@ mod tests {
         };
         type Edit = fn(&mut Draft);
         let run = |b: Config, cases: &[(&str, Edit)]| {
-            let cur = Draft::from_current(&b, &schemas(), "xiaohe");
+            let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
             for (name, f) in cases {
                 let mut d = cur.clone();
                 f(&mut d);
@@ -1179,9 +1410,7 @@ mod tests {
                     d.emoji = true;
                     d.fuzzy = true;
                 }),
-                ("切拼音", |d| {
-                    *d = d.with_preset(Kind::Pinyin, &schemas())
-                }),
+                ("切拼音", |d| *d = d.with_preset(Kind::Pinyin)),
             ],
         );
 
@@ -1222,11 +1451,55 @@ mod tests {
                 ("未动", |_| {}),
                 ("布局", |d| d.layout = "ziranma".into()),
                 ("允许全拼", |d| d.allow_full_pinyin = true),
-                ("切回全拼", |d| {
-                    *d = d.with_preset(Kind::Pinyin, &schemas())
-                }),
+                ("切回全拼", |d| *d = d.with_preset(Kind::Pinyin)),
+                ("切码表", |d| *d = d.with_preset(Kind::Codetable)),
             ],
         );
+
+        // 同类改主方案、类别来回切
+        let cur_of = |b: &Config| Draft::from_current(b, &schemas(), BTreeMap::new());
+        let b = base();
+        let c = cur_of(&b);
+        for (name, d) in [
+            ("码表选自定义码表", c.set_main(&c, "my_table")),
+            ("五笔拼音为主", c.set_main(&c, "wubi86_pinyin")),
+            (
+                "改主方案再改回",
+                c.set_main(&c, "stroke").set_main(&c, "wubi86"),
+            ),
+            (
+                "切拼音再切回",
+                c.switch_kind(&c, Kind::Pinyin)
+                    .switch_kind(&c, Kind::Codetable),
+            ),
+            ("切拼音选双拼", {
+                let p = c.switch_kind(&c, Kind::Pinyin);
+                p.set_main(&c, "shuangpin")
+            }),
+            ("切拼音选双拼改布局", {
+                let mut p = c.switch_kind(&c, Kind::Pinyin).set_main(&c, "shuangpin");
+                p.layout = "ziranma".into();
+                p
+            }),
+        ] {
+            check(name, &b, &c, &d);
+        }
+        let b = cfg(json!({"schema": {"active": "pinyin", "available": ["pinyin"]}}));
+        let c = cur_of(&b);
+        for (name, d) in [
+            ("全拼改双拼", c.set_main(&c, "shuangpin")),
+            (
+                "全拼改双拼再改回",
+                c.set_main(&c, "shuangpin").set_main(&c, "pinyin"),
+            ),
+            (
+                "切码表再切回",
+                c.switch_kind(&c, Kind::Codetable)
+                    .switch_kind(&c, Kind::Pinyin),
+            ),
+        ] {
+            check(name, &b, &c, &d);
+        }
 
         // 空启用表（=全部启用）
         run(
@@ -1242,13 +1515,16 @@ mod tests {
 
     #[test]
     fn layout_change_detected_only_for_shuangpin() {
-        let cur = Draft::from_current(&base(), &schemas(), "xiaohe");
-        let mut new = cur.with_preset(Kind::Shuangpin, &schemas());
+        let cur = Draft::from_current(&base(), &schemas(), BTreeMap::new());
+        let mut new = cur.with_preset(Kind::Pinyin).set_main(&cur, "shuangpin");
         new.layout = "ziranma".into();
-        assert!(layout_changed(&cur, &new));
+        assert!(layout_changed(&new));
+        let mut full = cur.with_preset(Kind::Pinyin);
+        full.layout = "ziranma".into();
+        assert!(!layout_changed(&full), "全拼主方案不写布局");
         let mut wubi = cur.clone();
         wubi.layout = "ziranma".into();
-        assert!(!layout_changed(&cur, &wubi));
+        assert!(!layout_changed(&wubi));
     }
 
     #[test]
@@ -1272,13 +1548,13 @@ mod tests {
     #[test]
     fn temp_key_change_ignored_when_temp_pinyin_off() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.temp_pinyin = false;
         d.temp_key = Trigger::Key("quote".into());
         let keys: Vec<String> = d.items(&b, ATOMIC).into_iter().map(|i| i.key).collect();
         assert!(!keys.iter().any(|k| k.starts_with("keys.")), "{keys:?}");
         let id = |s: &str| s.to_string();
-        let cur = Draft::from_current(&b, &schemas(), "x");
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(
             !summary(&cur, &d, &id, &id)
                 .iter()
@@ -1289,7 +1565,7 @@ mod tests {
     #[test]
     fn quick_keeps_quote_when_temp_pinyin_off_and_temp_key_also_quote() {
         let b = base();
-        let mut d = Draft::from_current(&b, &schemas(), "x");
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.temp_key = Trigger::Key("quote".into());
         d.quick = Trigger::Key("quote".into());
         d.temp_pinyin = false;

@@ -21,7 +21,8 @@ impl CoreCalls for RealCore {
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub items: Vec<ConfigItem>,
-    pub layout: Option<String>,
+    /// (双拼主方案 id, 布局 id)：写到哪个方案上随主方案走，不写死 `shuangpin`。
+    pub layout: Option<(String, String)>,
     pub active: Option<String>,
 }
 
@@ -88,9 +89,9 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
         done.push("保存配置".into());
     }
 
-    if let Some(layout) = &plan.layout {
+    if let Some((schema, layout)) = &plan.layout {
         // 与方案设置对话框同一写法：取三层合并后的方案配置，改布局叶子，整份 saveConfig。
-        let mut cfg = match core.call("schema.getConfig", &json!({ "id": "shuangpin" })) {
+        let mut cfg = match core.call("schema.getConfig", &json!({ "id": schema })) {
             Ok(v) if v.is_object() => v,
             Ok(_) => json!({}),
             Err(e) => return fail("双拼布局", e, &done),
@@ -100,10 +101,7 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
             &["engine", "pinyin", "shuangpin", "layout"],
             json!(layout),
         );
-        if let Err(e) = core.call(
-            "schema.saveConfig",
-            &json!({ "id": "shuangpin", "cfg": cfg }),
-        ) {
+        if let Err(e) = core.call("schema.saveConfig", &json!({ "id": schema, "cfg": cfg })) {
             return fail("双拼布局", e, &done);
         }
         done.push("双拼布局".into());
@@ -126,12 +124,18 @@ mod tests {
 
     struct Rec {
         calls: Vec<String>,
+        /// 布局两步收到的方案 id。
+        layout_ids: Vec<String>,
         fail_on: Option<&'static str>,
         skipped: bool,
     }
     impl CoreCalls for Rec {
-        fn call(&mut self, m: &str, _p: &Value) -> Result<Value, String> {
+        fn call(&mut self, m: &str, p: &Value) -> Result<Value, String> {
             self.calls.push(m.to_string());
+            if m == "schema.getConfig" || m == "schema.saveConfig" {
+                self.layout_ids
+                    .push(p["id"].as_str().unwrap_or_default().to_string());
+            }
             if self.fail_on == Some(m) {
                 return Err("boom".into());
             }
@@ -148,6 +152,7 @@ mod tests {
     fn rec() -> Rec {
         Rec {
             calls: vec![],
+            layout_ids: vec![],
             fail_on: None,
             skipped: false,
         }
@@ -158,8 +163,8 @@ mod tests {
                 key: "input.emoji.enabled".into(),
                 value: json!(true),
             }],
-            layout: Some("ziranma".into()),
-            active: Some("shuangpin".into()),
+            layout: Some(("double_pinyin".into(), "ziranma".into())),
+            active: Some("double_pinyin".into()),
         }
     }
 
@@ -176,6 +181,14 @@ mod tests {
                 "schema.setActive"
             ]
         );
+    }
+
+    /// 布局写到主方案上：读、写都用 Plan 给的方案 id。
+    #[test]
+    fn layout_goes_to_main_schema_id() {
+        let mut r = rec();
+        assert_eq!(apply_writes(&mut r, &plan()), ApplyOutcome::Done);
+        assert_eq!(r.layout_ids, ["double_pinyin", "double_pinyin"]);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! 设置向导：按输入习惯（五笔/全拼/双拼）4 步快速配置。设计见 docs/design/setup-wizard.md。
+//! 设置向导：按输入方式（码表 / 拼音）与主方案 4 步快速配置。设计见 docs/design/setup-wizard.md。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,18 +15,21 @@ pub mod view;
 pub fn open_wizard(app: &Rc<RefCell<AppState>>) {
     let st = app.borrow();
     let layouts = crate::dialogs::schema_manager::fetch_shuangpin_layouts();
-    let layout = crate::rpc::call_core(
-        "schema.getConfig",
-        &serde_json::json!({ "id": "shuangpin" }),
-    )
-    .ok()
-    .and_then(|v| {
-        v.pointer("/engine/pinyin/shuangpin/layout")
-            .and_then(|x| x.as_str())
-            .map(str::to_string)
-    })
-    .unwrap_or_else(|| "xiaohe".into());
-    let cur = model::Draft::from_current(&st.base_config, &st.schemas, &layout);
+    // 布局是方案级的：每个双拼方案（按 scheme 认，不按 id）各读一次。读不到的不进表，
+    // 按出厂布局算。
+    let current: std::collections::BTreeMap<String, String> = st
+        .schemas
+        .iter()
+        .filter(|s| s.scheme == "shuangpin")
+        .filter_map(|s| {
+            crate::rpc::call_core("schema.getConfig", &serde_json::json!({ "id": s.id }))
+                .ok()?
+                .pointer("/engine/pinyin/shuangpin/layout")?
+                .as_str()
+                .map(|l| (s.id.clone(), l.to_string()))
+        })
+        .collect();
+    let cur = model::Draft::from_current(&st.base_config, &st.schemas, current);
     *st.wizard.borrow_mut() = Some(WizardSession {
         draft: cur.clone(),
         cur,
@@ -118,7 +121,8 @@ pub(crate) fn finish_with(
         let Some(s) = s.as_ref() else { return };
         apply::Plan {
             items: s.draft.items(&st.base_config, &st.capabilities.map_keys()),
-            layout: model::layout_changed(&s.cur, &s.draft).then(|| s.draft.layout.clone()),
+            layout: model::layout_changed(&s.draft)
+                .then(|| (s.draft.active.clone(), s.draft.layout.clone())),
             active: (s.draft.active != s.cur.active).then(|| s.draft.active.clone()),
         }
     };
@@ -235,7 +239,7 @@ mod tests {
                 let st = app.borrow();
                 let mut s = st.wizard.borrow_mut();
                 let s = s.as_mut().unwrap();
-                s.draft = s.draft.with_preset(model::Kind::Pinyin, &st.schemas);
+                s.draft = s.draft.with_preset(model::Kind::Pinyin);
                 assert_ne!(s.draft.active, s.cur.active, "前提：默认方案要变");
                 s.draft.to_target(&st.base_config)
             };
@@ -245,7 +249,8 @@ mod tests {
                 l
             });
             let st = app.borrow();
-            assert_eq!(*st.schema_mgr.active_id.borrow(), "pinyin");
+            // mock 拼音类首选：没有 id 为 pinyin 的方案，取候选第一个 pinyin_simp
+            assert_eq!(*st.schema_mgr.active_id.borrow(), "pinyin_simp");
             assert!(
                 !st.is_dirty(),
                 "重灌后设置页不应判脏：{:?}",
