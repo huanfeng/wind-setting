@@ -174,7 +174,7 @@ pub struct Draft {
     // 第 2 步：拼音
     pub emoji: bool,
     pub fuzzy: bool,
-    pub fuzzy_pairs: [bool; 4],
+    pub fuzzy_pairs: [bool; FUZZY_N],
     pub allow_full_pinyin: bool,
     // 第 3 步
     pub quick: Trigger,
@@ -183,13 +183,24 @@ pub struct Draft {
     pub temp_key: Trigger,
 }
 
-/// 模糊音常用 4 对的键名（`schema.pinyin.fuzzy.<名>`）与标签。
-pub const FUZZY_PAIRS: [(&str, &str); 4] = [
-    ("zh_z", "zh / z"),
-    ("ch_c", "ch / c"),
-    ("sh_s", "sh / s"),
-    ("n_l", "n / l"),
+/// 模糊音分项的键名（`schema.pinyin.fuzzy.<名>`）与标签：与设置页（方案设置对话框）同一组
+/// 13 对，取值、标签、次序与清单一致（由 `tests::fuzzy_pairs_match_manifest` 守护）。
+pub const FUZZY_PAIRS: [(&str, &str); FUZZY_N] = [
+    ("zh_z", "zh ↔ z"),
+    ("ch_c", "ch ↔ c"),
+    ("sh_s", "sh ↔ s"),
+    ("n_l", "n ↔ l"),
+    ("r_l", "r ↔ l"),
+    ("f_h", "f ↔ h"),
+    ("an_ang", "an ↔ ang"),
+    ("en_eng", "en ↔ eng"),
+    ("in_ing", "in ↔ ing"),
+    ("ian_iang", "ian ↔ iang"),
+    ("uan_uang", "uan ↔ uang"),
+    ("un_ong", "un ↔ ong"),
+    ("eng_ong", "eng ↔ ong"),
 ];
+pub const FUZZY_N: usize = 13;
 
 fn trigger_of(cfg: &Config, verb: &str, options: &[(&str, &str)]) -> Trigger {
     let mut keys: Vec<String> = cfg
@@ -520,7 +531,7 @@ pub fn summary(
         Kind::Codetable => {
             push(
                 "输入习惯",
-                "四码唯一时自动上屏",
+                "全码唯一自动上屏",
                 on_off(cur.auto_commit_at_full),
                 on_off(new.auto_commit_at_full),
             );
@@ -971,6 +982,52 @@ mod tests {
                 .collect();
             assert_eq!(keys.to_vec(), want, "{key}");
         }
+    }
+
+    /// 模糊音分项与清单「模糊音」一节（除总开关外）逐项一致：键名、标签、次序。
+    #[test]
+    fn fuzzy_pairs_match_manifest() {
+        let m = crate::manifest::Manifest::from_embedded();
+        let want: Vec<(String, String)> = m
+            .order
+            .iter()
+            .filter(|k| {
+                k.starts_with("schema.pinyin.fuzzy.") && *k != "schema.pinyin.fuzzy.enabled"
+            })
+            .map(|k| {
+                (
+                    k.trim_start_matches("schema.pinyin.fuzzy.").to_string(),
+                    m.get(k).unwrap().label.clone(),
+                )
+            })
+            .collect();
+        let got: Vec<(String, String)> = FUZZY_PAIRS
+            .iter()
+            .map(|(k, l)| (k.to_string(), l.to_string()))
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    /// 新增分项（如 eng ↔ ong）与原 4 对一样按「模糊音开着才写」处理。
+    #[test]
+    fn extra_fuzzy_pairs_are_read_and_written() {
+        let b = cfg(
+            json!({"schema": {"active": "pinyin", "available": ["pinyin"],
+            "pinyin": {"fuzzy": {"enabled": true, "eng_ong": true}}}}),
+        );
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        assert!(cur.fuzzy_pairs[12], "读到 eng_ong");
+        let mut d = cur.clone();
+        d.fuzzy_pairs[12] = false;
+        d.fuzzy_pairs[5] = true;
+        let keys: Vec<String> = d.items(&b, ATOMIC).into_iter().map(|i| i.key).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "schema.pinyin.fuzzy.eng_ong".to_string(),
+                "schema.pinyin.fuzzy.f_h".to_string()
+            ]
+        );
     }
 
     /// 新开放的键与其它动词的绑定冲突，走既有「被占用」判据。
@@ -1455,7 +1512,13 @@ mod tests {
                     d.fuzzy = true;
                     d.fuzzy_pairs[3] = true;
                 }),
+                ("模糊音开并改新增分项", |d| {
+                    d.fuzzy = true;
+                    d.fuzzy_pairs[12] = true;
+                    d.fuzzy_pairs[6] = true;
+                }),
                 ("隐藏分项", |d| d.fuzzy_pairs[0] = false),
+                ("隐藏的新增分项", |d| d.fuzzy_pairs[9] = true),
                 ("全拼下改双拼项（隐藏）", |d| {
                     d.allow_full_pinyin = true
                 }),

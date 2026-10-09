@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use windui::prelude::*;
 
-use super::model::{self, Draft, FUZZY_PAIRS, Kind, QUICK_KEYS, TEMP_KEYS, Trigger};
+use super::model::{self, Draft, FUZZY_N, FUZZY_PAIRS, Kind, QUICK_KEYS, TEMP_KEYS, Trigger};
 use super::{
     close, complete, discard_and_continue, finish, layout_label, save_and_continue, step3_blockers,
     summary_of,
@@ -27,10 +27,10 @@ const DIALOG_W: i32 = 600;
 /// 对话框固定高度。按内容自适应时，开关双拼、临时拼音、模糊音会让外框忽大忽小、按钮栏
 /// 跟着上下跳（靶机试用反馈）；改为定高后只有中间正文区伸缩，超出即滚动。
 ///
-/// 取值：最高的常见形态——第 2 步「双拼 + 模糊音开」（页头 + 拼音卡 7 行，3 行带说明）——
-/// 不滚动放得下，并留 24px 余量；测试文字引擎下正文视口 467、该页内容 436。再高的话主窗
-/// 默认高 640 就显得局促，欢迎页、Dirty 页也只剩大片留白。数值以测试里的
-/// `LineAwareTextEngine` 量得为准（见 `tests::tallest_steps_fit_without_scrolling`），
+/// 取值：最高的常见形态都不滚动放得下，并留 24px 余量。测试文字引擎下正文视口 467；
+/// 第 1 步（拼音 + 双拼主方案 + 8 个方案）内容 411 最高，第 2 步（双拼 + 模糊音开，13 对
+/// 分项 4 列网格）364。再高的话主窗默认高 640 就显得局促，欢迎页、Dirty 页也只剩大片留白。
+/// 数值以测试里的 `LineAwareTextEngine` 量得为准（见 `tests::tallest_steps_fit_without_scrolling`），
 /// 靶机 DPI 下再目验。
 const DIALOG_H: i32 = 560;
 const KINDS: [Kind; 2] = [Kind::Codetable, Kind::Pinyin];
@@ -81,7 +81,7 @@ struct Controls {
     code_hint: Signal<bool>,
     emoji: Signal<bool>,
     fuzzy: Signal<bool>,
-    pairs: [Signal<bool>; 4],
+    pairs: [Signal<bool>; FUZZY_N],
     allow_full: Signal<bool>,
     quick_opts: Signal<Vec<String>>,
     quick_idx: Signal<usize>,
@@ -116,7 +116,7 @@ impl Controls {
             code_hint: signal(false),
             emoji: signal(false),
             fuzzy: signal(false),
-            pairs: [signal(false), signal(false), signal(false), signal(false)],
+            pairs: std::array::from_fn(|_| signal(false)),
             allow_full: signal(false),
             quick_opts: signal(vec![]),
             quick_idx: signal(0),
@@ -902,25 +902,40 @@ fn switch_row(label: &str, sub: &str, sig: Signal<bool>) -> Element {
     item_row(label, sub, Element::switch(sig))
 }
 
-/// 模糊音分项相对总开关的缩进。
+/// 模糊音分项网格相对总开关的缩进与列数。13 对用 4 列：2 列（设置页的写法）要 7 行，
+/// 双拼 + 模糊音开时第 2 步放不下。
 const FUZZY_INDENT: i32 = 24;
+const FUZZY_COLS: usize = 4;
 
 fn step2_body(c: Controls) -> Element {
     let kind = c.kind;
     let is_sp = c.is_sp;
     let fuzzy = c.fuzzy;
-    // 模糊音分项：与本对话框其余行同一种行型（标题 + 右侧开关），缩进挂在总开关下面，
-    // 读作它的子项。
-    let pairs: Vec<Element> = FUZZY_PAIRS
+    // 模糊音分项：照设置页方案设置对话框的模糊音组（`manifest::build_fuzzy_group`）——小号
+    // 勾选框网格，挂在总开关下面、缩进；只在总开关打开时出现（关着时不写分项）。
+    let cells: Vec<Element> = FUZZY_PAIRS
         .iter()
         .enumerate()
         .map(|(i, (_, label))| {
-            Element::col()
-                .width_match()
-                .padding_edges(Insets::new(FUZZY_INDENT, 0, 0, 0))
-                .child(setting_row(label, None, Element::switch(c.pairs[i])))
+            Element::checkbox(*label, c.pairs[i])
+                .small()
+                .fg_role(Role::Text)
         })
         .collect();
+    let fuzzy_block = Element::col()
+        .width_match()
+        .child(switch_row(
+            "模糊音",
+            "分不清平翘舌、前后鼻音时开启，下方勾选要互通的音",
+            c.fuzzy,
+        ))
+        .child(
+            Element::col()
+                .width_match()
+                .padding_edges(Insets::new(FUZZY_INDENT, 0, 0, 12))
+                .child(Element::grid(FUZZY_COLS, 8, cells).width_match())
+                .visible_when(move || fuzzy.get()),
+        );
     let lead = kind.map(|k| {
         if *k == 0 {
             "几项常用的码表习惯，按你的偏好开关。"
@@ -933,7 +948,7 @@ fn step2_body(c: Controls) -> Element {
         "五笔 / 码表",
         vec![
             switch_row(
-                "四码唯一时自动上屏",
+                "全码唯一自动上屏",
                 "编码打满且只有一个候选时直接上屏，不用再按空格",
                 c.auto_commit,
             ),
@@ -953,20 +968,11 @@ fn step2_body(c: Controls) -> Element {
     let pinyin = dialog_section(
         "拼音",
         vec![
-            switch_row(
-                "Emoji 候选",
-                "打出词语后附带对应的 emoji，如「开心」→ 😄",
-                c.emoji,
-            ),
             with_cond(
-                with_cond(
-                    switch_row(
-                        "模糊音",
-                        "分不清平翘舌、前后鼻音时开启，下方选择要互通的音",
-                        c.fuzzy,
-                    ),
-                    pairs,
-                    move || fuzzy.get(),
+                switch_row(
+                    "Emoji 候选",
+                    "打出词语后附带对应的 emoji，如「开心」→ 😄",
+                    c.emoji,
                 ),
                 vec![switch_row(
                     "允许按全拼输入",
@@ -975,6 +981,8 @@ fn step2_body(c: Controls) -> Element {
                 )],
                 move || is_sp.get(),
             ),
+            // 模糊音放最后：分项网格在它下面展开，不把其它行顶下去。
+            fuzzy_block,
         ],
     )
     .visible_when(move || kind.get() != 0);

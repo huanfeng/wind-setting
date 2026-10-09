@@ -100,7 +100,7 @@
 
 | 选项（说明） | 键 | 预设 | 写入 |
 |---|---|---|---|
-| 四码唯一时自动上屏（编码打满且只有一个候选时直接上屏，不用再按空格） | `schema.codetable.auto_commit_at_full` | 开 | bool |
+| 全码唯一自动上屏（编码打满且只有一个候选时直接上屏，不用再按空格） | `schema.codetable.auto_commit_at_full` | 开 | bool |
 | 空码时自动清空（编码打满却没有候选时，自动清掉已打的编码） | `schema.codetable.clear_on_empty_max` | 开 | bool |
 | 拼音反查（打拼音时，在候选旁显示对应的码表编码，方便学习和查码） | `schema.pinyin.code_hint_source` | 开 | 开 → `codetable`，关 → `off` |
 
@@ -114,9 +114,9 @@
 | 选项（说明） | 键 | 预设 |
 |---|---|---|
 | Emoji 候选（打出词语后附带对应的 emoji，如「开心」→ 😄） | `input.emoji.enabled` | 开 |
-| 模糊音（分不清平翘舌、前后鼻音时开启，下方选择要互通的音） | `schema.pinyin.fuzzy.enabled` | 关 |
-| zh / z、ch / c、sh / s、n / l | `schema.pinyin.fuzzy.{zh_z,ch_c,sh_s,n_l}` | 关；只在模糊音开时出现，缩进列在其下 |
 | 允许按全拼输入（仅双拼主方案；双拼方案下也能直接打全拼，如 zaijian → 再见） | `schema.pinyin.shuangpin.allow_full_pinyin` | 关 |
+| 模糊音（分不清平翘舌、前后鼻音时开启，下方勾选要互通的音）——放在拼音卡片最后 | `schema.pinyin.fuzzy.enabled` | 关 |
+| 13 对分项：zh ↔ z、ch ↔ c、sh ↔ s、n ↔ l、r ↔ l、f ↔ h、an ↔ ang、en ↔ eng、in ↔ ing、ian ↔ iang、uan ↔ uang、un ↔ ong、eng ↔ ong | `schema.pinyin.fuzzy.{zh_z,…,eng_ong}` | 当前值；只在模糊音开时出现，缩进的小号勾选框 4 列网格（写法照设置页方案设置对话框的模糊音组），关着时不写 |
 
 拼音这一步的项目以后还会再定，首版先放这几项。`model` 层按「项目表」组织，加项目时不用改流程。
 
