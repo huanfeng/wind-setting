@@ -709,6 +709,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "schema.mix.pinyin_code_hint",
+      "type": "bool"
+    },
+    {
       "default": false,
       "key": "schema.mix.pinyin_partial_candidates",
       "type": "bool"

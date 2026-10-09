@@ -334,6 +334,7 @@
    "enable_pinyin_abbrev": false,
    "min_english_length": 3,
    "min_pinyin_length": 2,
+   "pinyin_code_hint": true,
    "pinyin_only_overflow": true,
    "pinyin_partial_candidates": false,
    "pinyin_partial_candidates_overflow": true,
