@@ -52,6 +52,7 @@ mod tsf_log;
 mod update;
 mod user_dir;
 mod widgets;
+mod wizard;
 #[cfg(target_os = "linux")]
 mod xdg_assoc;
 

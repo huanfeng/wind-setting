@@ -4850,7 +4850,7 @@ const DUN: &str = "、";
 const SLASH_DUN_COLS: [usize; 2] = [0, 2];
 
 /// `/` 在 [`PUNCT_DEFAULTS`] 里的行号。
-fn slash_row_index() -> usize {
+pub(crate) fn slash_row_index() -> usize {
     PUNCT_DEFAULTS
         .iter()
         .position(|(_, tok, _)| *tok == SLASH_TOKEN)
