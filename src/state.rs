@@ -396,10 +396,12 @@ pub enum ConnState {
     Down,
 }
 
-/// 设置向导所处的段：未保存修改的拦截页 → 4 步 → 二次确认 → 失败结果。
+/// 设置向导所处的段：未保存修改的拦截页 → 欢迎页 → 4 步 → 二次确认 → 失败结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizardPhase {
     Dirty,
+    /// 欢迎页：说明向导做什么、指向官网文档与主题站。不计入步数。
+    Welcome,
     /// 1..=4
     Step(u8),
     Confirm,
@@ -1034,7 +1036,7 @@ impl AppState {
             update_dialog_visible: signal(false),
             wizard_visible: signal(false),
             wizard_dont_show: signal(setting_load_wizard_dismissed),
-            wizard_phase: signal(WizardPhase::Step(1)),
+            wizard_phase: signal(WizardPhase::Welcome),
             wizard: Rc::new(RefCell::new(None)),
             wizard_rev: signal(0),
             update_phase: signal(crate::update::UpdatePhase::Checking),

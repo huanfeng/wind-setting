@@ -1,5 +1,6 @@
 //! 设置向导对话框。框架照 `dialogs/update_dialog.rs`：一个面板，各段正文与按钮按
-//! [`WizardPhase`] `visible_when` 切换。
+//! [`WizardPhase`] `visible_when` 切换。外框定宽定高（[`DIALOG_H`]），标题行与按钮栏
+//! 固定，只有中间的正文区随内容滚动。
 //!
 //! 草稿在 `AppState::wizard` 会话里，控件绑的是本模块自建的信号。两者靠两个隐藏的
 //! `reactive_effect` 双向同步：
@@ -14,12 +15,22 @@ use std::rc::Rc;
 use windui::prelude::*;
 
 use super::model::{self, Draft, FUZZY_PAIRS, Kind, QUICK_KEYS, TEMP_KEYS, Trigger};
-use super::{close, complete, finish, layout_label, open_wizard, step3_blockers, summary_of};
+use super::{
+    close, complete, discard_and_continue, finish, layout_label, save_and_continue, step3_blockers,
+    summary_of,
+};
 use crate::pages::dict::reactive::reactive_effect;
 use crate::state::{AppState, WizardPhase, WizardSession};
 use crate::widgets::{dialog_section, setting_row};
 
 const DIALOG_W: i32 = 600;
+/// 对话框固定高度。按内容自适应时，开关双拼、临时拼音、模糊音会让外框忽大忽小、按钮栏
+/// 跟着上下跳（靶机试用反馈）；改为定高后只有中间正文区伸缩，超出即滚动。
+///
+/// 取值：最高的常见形态——第 2 步「双拼 + 模糊音开」（拼音卡 7 行）——在不滚动时放得下，
+/// 再高欢迎页、Dirty 页就只剩大片留白。数值以测试里的 `LineAwareTextEngine` 量得为准
+/// （见 `tests::tallest_steps_fit_without_scrolling`），靶机 DPI 下再目验。
+const DIALOG_H: i32 = 540;
 const KINDS: [Kind; 3] = [Kind::Codetable, Kind::Pinyin, Kind::Shuangpin];
 
 /// 第 1 步的一行方案勾选。
@@ -392,7 +403,6 @@ pub fn build_wizard_dialog(app: &Rc<RefCell<AppState>>) -> Element {
     let c = Controls::new();
     // 重建外壳（主窗关掉再开）时会话可能还在：先同步一次。
     sync(app, &c);
-    let is = move |p: WizardPhase| move || phase.get() == p;
 
     let app_w = app.clone();
     let writer = reactive_effect(move || c.input_version(), move || write_back(&app_w, &c));
@@ -412,23 +422,7 @@ pub fn build_wizard_dialog(app: &Rc<RefCell<AppState>>) -> Element {
         },
     );
 
-    let frame = Element::col()
-        .width(DIALOG_W)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(title_row(phase))
-        .child(Element::divider())
-        .child(dirty_body().visible_when(is(WizardPhase::Dirty)))
-        .child(step1_body(app, c).visible_when(is(WizardPhase::Step(1))))
-        .child(step2_body(c).visible_when(is(WizardPhase::Step(2))))
-        .child(step3_body(c).visible_when(is(WizardPhase::Step(3))))
-        .child(step4_body(c).visible_when(is(WizardPhase::Step(4))))
-        .child(text_body(c.confirm_text, Role::Text).visible_when(is(WizardPhase::Confirm)))
-        .child(text_body(c.result_text, Role::Danger).visible_when(is(WizardPhase::Result)))
-        .child(Element::divider())
-        .child(footer(app, phase, c))
+    let frame = frame(app, phase, c)
         // 次序即同帧执行序：先收控件、再推草稿，套预设的那一帧就能把新值送上界面。
         .child(writer)
         .child(syncer)
@@ -438,11 +432,88 @@ pub fn build_wizard_dialog(app: &Rc<RefCell<AppState>>) -> Element {
     Element::dialog_closable(visible, frame, move |_| close(&app_x))
 }
 
+/// 对话框面板：标题行 → 正文区（`weight(1.0)`，吃掉定高减去两头后的全部高度）→ 按钮栏。
+///
+/// 正文区是一个 stack，每段正文各包一个滚动容器、按阶段显隐（同 `shell.rs` 的
+/// `pages_stack`）。不共用一个滚动容器：windui 的滚动位置没有程序化复位，共用的话
+/// 在第 2 步滚到底再点「下一步」，第 3 步会从半截开始显示。
+fn frame(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) -> Element {
+    let is = move |p: WizardPhase| move || phase.get() == p;
+    let page = move |body: Element, p: WizardPhase| {
+        Element::scroll().fill().child(body).visible_when(is(p))
+    };
+    let pages = Element::stack()
+        .fill()
+        .weight(1.0)
+        .child(page(welcome_body(), WizardPhase::Welcome))
+        .child(page(dirty_body(), WizardPhase::Dirty))
+        .child(page(step1_body(app, c), WizardPhase::Step(1)))
+        .child(page(step2_body(c), WizardPhase::Step(2)))
+        .child(page(step3_body(c), WizardPhase::Step(3)))
+        .child(page(step4_body(c), WizardPhase::Step(4)))
+        .child(page(
+            text_body(c.confirm_text, Role::Text),
+            WizardPhase::Confirm,
+        ))
+        .child(page(
+            text_body(c.result_text, Role::Danger),
+            WizardPhase::Result,
+        ));
+    Element::col()
+        .width(DIALOG_W)
+        .height(DIALOG_H)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(title_row(phase))
+        .child(Element::divider())
+        .child(pages)
+        .child(Element::divider())
+        .child(footer(app, phase, c))
+}
+
+/// 「上一步」/「返回」的去处：第 1 步回欢迎页，第 2–4 步回上一步，确认段回第 4 步。
+fn back_of(p: WizardPhase) -> Option<WizardPhase> {
+    match p {
+        WizardPhase::Step(1) => Some(WizardPhase::Welcome),
+        WizardPhase::Step(n) if (2..=4).contains(&n) => Some(WizardPhase::Step(n - 1)),
+        WizardPhase::Confirm => Some(WizardPhase::Step(4)),
+        _ => None,
+    }
+}
+
+/// 「开始」/「下一步」的去处：欢迎页进第 1 步，第 1–3 步进下一步。
+fn forward_of(p: WizardPhase) -> Option<WizardPhase> {
+    match p {
+        WizardPhase::Welcome => Some(WizardPhase::Step(1)),
+        WizardPhase::Step(n) if (1..=3).contains(&n) => Some(WizardPhase::Step(n + 1)),
+        _ => None,
+    }
+}
+
+/// 卡片里「跟在 `base` 后面、条件成立才出现」的行：分隔线与行一起挂 `when`，再和 `base`
+/// 并成卡片 `rows` 里的**一个**元素。
+///
+/// 直接把条件行塞进 `rows` 的话，[`crate::widgets::card`] 按「不是最后一个就加分隔线」
+/// 给它前面插的那条线是常显的：条件行一隐藏，可见的最后一行下面就多出一条线（条件行
+/// 连着两个时还会叠成两条）。条件可嵌套：`base` 自己也可以是 `with_cond` 的结果。
+fn with_cond(base: Element, rows: Vec<Element>, when: impl Fn() -> bool + 'static) -> Element {
+    let mut tail = Element::col().width_match();
+    for r in rows {
+        tail = tail.child(Element::divider()).child(r);
+    }
+    Element::col()
+        .width_match()
+        .child(base)
+        .child(tail.visible_when(when))
+}
+
 fn title_row(phase: Signal<WizardPhase>) -> Element {
     let title = phase.map(|p| match p {
         WizardPhase::Step(n) => format!("设置向导 · 第 {n}/4 步"),
         WizardPhase::Confirm => "设置向导 · 确认".to_string(),
-        WizardPhase::Dirty | WizardPhase::Result => "设置向导".to_string(),
+        WizardPhase::Welcome | WizardPhase::Dirty | WizardPhase::Result => "设置向导".to_string(),
     });
     Element::row()
         .width_match()
@@ -466,6 +537,62 @@ fn note(text: &str) -> Element {
         .fg_role(Role::TextMuted)
         .width_match()
         .max_lines(3)
+}
+
+/// 欢迎页的一行链接：标题 + 说明 + 右侧可点的地址。
+fn link_row(label: &str, sub: &str, text: &str, url: &'static str) -> Element {
+    setting_row(
+        label,
+        Some(sub),
+        Element::link(text)
+            .font_size(12.5)
+            .on_click(move |ctx| ctx.open_url(url)),
+    )
+}
+
+fn welcome_body() -> Element {
+    use crate::pages::{DOCS_URL, THEME_EDITOR_URL, THEME_MARKET_URL};
+    body()
+        .child(
+            Element::label("欢迎使用清风输入法")
+                .font_size(13.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match(),
+        )
+        .child(
+            Element::label(
+                "清风输入法有大量功能与选项。这个向导只按你的输入习惯（五笔 / 全拼 / 双拼）\
+                 配好最常用的几项，几步即可完成；点「完成」并确认之前，不会改动任何设置。",
+            )
+            .font_size(12.5)
+            .fg_role(Role::Text)
+            .width_match()
+            .max_lines(4),
+        )
+        .child(dialog_section(
+            "了解更多",
+            vec![
+                link_row(
+                    "功能文档",
+                    "官网文档，逐项说明各功能与设置",
+                    "windinput.com/docs",
+                    DOCS_URL,
+                ),
+                link_row(
+                    "主题市场",
+                    "浏览与下载主题",
+                    "market.windinput.com",
+                    THEME_MARKET_URL,
+                ),
+                link_row(
+                    "主题编辑器",
+                    "自己动手做主题",
+                    "theme.windinput.com",
+                    THEME_EDITOR_URL,
+                ),
+            ],
+        ))
 }
 
 fn dirty_body() -> Element {
@@ -506,8 +633,7 @@ fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
                     .fg_role(Role::Text)
                     .visible_when(move || layouts.get().is_empty()),
             ),
-    )
-    .visible_when(move || kind.get() == 2);
+    );
 
     let app_c = app.clone();
     let boxes = Element::host_signal(c.schemes, move |row: SchemeRow| {
@@ -528,19 +654,20 @@ fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
     body()
         .child(dialog_section(
             "输入习惯",
-            vec![
+            vec![with_cond(
                 Element::col()
                     .width_match()
                     .padding_xy(12, 10)
                     .child(kind_row),
-                layout_row,
-            ],
+                vec![layout_row],
+                move || kind.get() == 2,
+            )],
         ))
         .child(crate::manifest::dialog_group_header("一起启用的方案"))
+        // 不再自带定高滚动：方案多了由整段正文区滚动，免得滚动区里套滚动区。
         .child(
-            Element::scroll()
+            Element::col()
                 .width_match()
-                .height(150)
                 .border_role(Role::Border, 1)
                 .corner(6.0)
                 .padding_xy(10, 6)
@@ -553,13 +680,24 @@ fn switch_row(label: &str, sub: Option<&str>, sig: Signal<bool>) -> Element {
     setting_row(label, sub, Element::switch(sig))
 }
 
+/// 模糊音分项相对总开关的缩进。
+const FUZZY_INDENT: i32 = 24;
+
 fn step2_body(c: Controls) -> Element {
     let kind = c.kind;
     let fuzzy = c.fuzzy;
-    let mut pairs = Element::row().width_match().spacing(16).padding_xy(12, 8);
-    for (i, (_, label)) in FUZZY_PAIRS.iter().enumerate() {
-        pairs = pairs.child(Element::checkbox(*label, c.pairs[i]).small());
-    }
+    // 模糊音分项：与本对话框其余行同一种行型（标题 + 右侧开关），缩进挂在总开关下面，
+    // 读作它的子项。原先是一行四个小号勾选框，靶机上反馈「太小」。
+    let pairs: Vec<Element> = FUZZY_PAIRS
+        .iter()
+        .enumerate()
+        .map(|(i, (_, label))| {
+            Element::col()
+                .width_match()
+                .padding_edges(Insets::new(FUZZY_INDENT, 0, 0, 0))
+                .child(switch_row(label, None, c.pairs[i]))
+        })
+        .collect();
     let codetable = dialog_section(
         "五笔 / 码表",
         vec![
@@ -573,14 +711,17 @@ fn step2_body(c: Controls) -> Element {
         "拼音",
         vec![
             switch_row("emoji 候选", None, c.emoji),
-            switch_row("模糊音", None, c.fuzzy),
-            pairs.visible_when(move || fuzzy.get()),
-            switch_row(
-                "允许按全拼输入",
-                Some("双拼方案下也可直接打全拼"),
-                c.allow_full,
-            )
-            .visible_when(move || kind.get() == 2),
+            with_cond(
+                with_cond(switch_row("模糊音", None, c.fuzzy), pairs, move || {
+                    fuzzy.get()
+                }),
+                vec![switch_row(
+                    "允许按全拼输入",
+                    Some("双拼方案下也可直接打全拼"),
+                    c.allow_full,
+                )],
+                move || kind.get() == 2,
+            ),
         ],
     )
     .visible_when(move || kind.get() != 0);
@@ -600,15 +741,19 @@ fn step3_body(c: Controls) -> Element {
                     None,
                     Element::dropdown_signal(c.quick_opts, c.quick_idx).width(200),
                 ),
-                switch_row("/ 键输出顿号", None, c.slash),
-                switch_row("临时拼音", Some("五笔里临时打拼音"), c.temp)
-                    .visible_when(move || kind.get() == 0),
-                setting_row(
-                    "临时拼音触发键",
-                    None,
-                    Element::dropdown_signal(c.temp_opts, c.temp_idx).width(200),
-                )
-                .visible_when(move || kind.get() == 0 && temp.get()),
+                with_cond(
+                    switch_row("/ 键输出顿号", None, c.slash),
+                    vec![with_cond(
+                        switch_row("临时拼音", Some("五笔里临时打拼音"), c.temp),
+                        vec![setting_row(
+                            "临时拼音触发键",
+                            None,
+                            Element::dropdown_signal(c.temp_opts, c.temp_idx).width(200),
+                        )],
+                        move || temp.get(),
+                    )],
+                    move || kind.get() == 0,
+                ),
             ],
         ))
         .child(
@@ -653,10 +798,10 @@ fn step4_body(c: Controls) -> Element {
                 .width_match()
                 .visible_when(move || summary.get().is_empty()),
         )
+        // 不再自带定高滚动：摘要长了由整段正文区滚动。
         .child(
-            Element::scroll()
+            Element::col()
                 .width_match()
-                .height(240)
                 .child(list)
                 .visible_when(move || !summary.get().is_empty()),
         )
@@ -687,6 +832,13 @@ fn footer(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) 
     let step = move || match phase.get() {
         WizardPhase::Step(n) => n,
         _ => 0,
+    };
+    let go = move |f: fn(WizardPhase) -> Option<WizardPhase>| {
+        move |_: &mut windui::core::EventCtx| {
+            if let Some(p) = f(phase.get()) {
+                phase.set(p);
+            }
+        }
     };
 
     let save_app = app.clone();
@@ -719,36 +871,34 @@ fn footer(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) 
             Element::button("放弃修改")
                 .small()
                 .outline_soft()
-                .on_click(move |_| {
-                    // 与设置页「重新加载」同一条路：丢弃未保存改动（含方案 override 待提交项）。
-                    discard_app.borrow_mut().reload();
-                    open_wizard(&discard_app);
-                })
+                .on_click(move |_| discard_and_continue(&discard_app))
                 .visible_when(is(WizardPhase::Dirty)),
         )
         .child(
             Element::button("保存并继续")
                 .small()
-                .on_click(move |_| {
-                    let ok = save_app.borrow_mut().save();
-                    if ok {
-                        open_wizard(&save_app);
-                    }
-                })
+                .on_click(move |_| save_and_continue(&save_app))
                 .visible_when(is(WizardPhase::Dirty)),
+        )
+        // 欢迎页
+        .child(
+            Element::button("开始")
+                .small()
+                .on_click(go(forward_of))
+                .visible_when(is(WizardPhase::Welcome)),
         )
         // 1–4 步
         .child(
             Element::button("上一步")
                 .small()
                 .outline_soft()
-                .on_click(move |_| phase.set(WizardPhase::Step(step() - 1)))
-                .visible_when(move || (2..=4).contains(&step())),
+                .on_click(go(back_of))
+                .visible_when(move || (1..=4).contains(&step())),
         )
         .child(
             Element::button("下一步")
                 .small()
-                .on_click(move |_| phase.set(WizardPhase::Step(step() + 1)))
+                .on_click(go(forward_of))
                 .enabled_when(move || step() != 3 || blockers.get().is_empty())
                 .visible_when(move || (1..=3).contains(&step())),
         )
@@ -763,7 +913,7 @@ fn footer(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) 
             Element::button("返回")
                 .small()
                 .outline_soft()
-                .on_click(move |_| phase.set(WizardPhase::Step(4)))
+                .on_click(go(back_of))
                 .visible_when(is(WizardPhase::Confirm)),
         )
         .child(
@@ -784,6 +934,7 @@ fn footer(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wizard::open_wizard;
     use crate::wizard::tests::{mock_app, with_mock};
 
     fn draft_of(app: &Rc<RefCell<AppState>>) -> Draft {
@@ -980,6 +1131,259 @@ mod tests {
                 other.checked,
                 "点一下应翻转勾选"
             );
+        });
+    }
+
+    #[test]
+    fn welcome_and_step_one_navigate_both_ways() {
+        assert_eq!(
+            forward_of(WizardPhase::Welcome),
+            Some(WizardPhase::Step(1)),
+            "欢迎页「开始」进第 1 步"
+        );
+        assert_eq!(
+            back_of(WizardPhase::Step(1)),
+            Some(WizardPhase::Welcome),
+            "第 1 步「上一步」回欢迎页"
+        );
+        assert_eq!(back_of(WizardPhase::Step(3)), Some(WizardPhase::Step(2)));
+        assert_eq!(forward_of(WizardPhase::Step(3)), Some(WizardPhase::Step(4)));
+        assert_eq!(forward_of(WizardPhase::Step(4)), None, "第 4 步走「完成」");
+        assert_eq!(back_of(WizardPhase::Confirm), Some(WizardPhase::Step(4)));
+        assert_eq!(back_of(WizardPhase::Welcome), None);
+    }
+
+    // ── 布局：定高与分隔线 ──
+
+    use windui::core::{NodeId, Tree};
+    use windui::geometry::Size;
+    use windui::spec::Dimension;
+
+    fn is_divider(tree: &Tree, id: NodeId) -> bool {
+        let n = tree.get(id).unwrap();
+        n.children.is_empty() && n.height == Dimension::Px(1)
+    }
+
+    /// 前序遍历可见子树（不可见的整棵剪掉），记下每个可见叶子。
+    fn visible_leaves(tree: &Tree, id: NodeId, out: &mut Vec<NodeId>) {
+        let n = tree.get(id).unwrap();
+        if !n.effective_visible() {
+            return;
+        }
+        if n.children.is_empty() {
+            out.push(id);
+        }
+        for c in &n.children {
+            visible_leaves(tree, *c, out);
+        }
+    }
+
+    /// 每条可见分隔线归到最近的带边框祖先（卡片、对话框外框）；同一容器内按前序排开，
+    /// 分隔线不得打头、收尾或两条相邻——即「分隔线两侧都有可见内容」。返回违例描述。
+    fn divider_violations(tree: &Tree, root: NodeId) -> Vec<String> {
+        let mut leaves = Vec::new();
+        visible_leaves(tree, root, &mut leaves);
+        let owner = |id: NodeId| {
+            let mut p = tree.get(id).unwrap().parent;
+            while let Some(x) = p {
+                let n = tree.get(x).unwrap();
+                if n.style.border.is_some() {
+                    return Some(x);
+                }
+                p = n.parent;
+            }
+            None
+        };
+        let mut seqs: Vec<(Option<NodeId>, Vec<bool>)> = Vec::new();
+        for id in leaves {
+            let o = owner(id);
+            let d = is_divider(tree, id);
+            match seqs.iter_mut().find(|(k, _)| *k == o) {
+                Some((_, v)) => v.push(d),
+                None => seqs.push((o, vec![d])),
+            }
+        }
+        let mut bad = Vec::new();
+        for (o, v) in seqs {
+            if !v.iter().any(|d| *d) {
+                continue;
+            }
+            if v.first() == Some(&true) || v.last() == Some(&true) {
+                bad.push(format!("{o:?}：分隔线打头或收尾 {v:?}"));
+            }
+            if v.windows(2).any(|w| w[0] && w[1]) {
+                bad.push(format!("{o:?}：两条分隔线相邻 {v:?}"));
+            }
+        }
+        bad
+    }
+
+    /// 护栏自检：老写法（条件行直接进 `rows`）必须被判出来，否则下面的断言恒空过。
+    #[test]
+    fn divider_check_catches_hidden_last_row() {
+        let mut tree = Tree::new();
+        let root = crate::widgets::card(vec![
+            Element::label("常显行"),
+            Element::label("条件行").visible_when(|| false),
+        ])
+        .build(&mut tree);
+        tree.root = Some(root);
+        assert!(!divider_violations(&tree, root).is_empty());
+
+        let mut tree = Tree::new();
+        let root = crate::widgets::card(vec![with_cond(
+            Element::label("常显行"),
+            vec![Element::label("条件行")],
+            || false,
+        )])
+        .build(&mut tree);
+        tree.root = Some(root);
+        assert!(divider_violations(&tree, root).is_empty());
+    }
+
+    const ALL_PHASES: [WizardPhase; 8] = [
+        WizardPhase::Welcome,
+        WizardPhase::Dirty,
+        WizardPhase::Step(1),
+        WizardPhase::Step(2),
+        WizardPhase::Step(3),
+        WizardPhase::Step(4),
+        WizardPhase::Confirm,
+        WizardPhase::Result,
+    ];
+
+    /// 搭好整块面板（无对话框遮罩），返回 (树, 面板节点, 阶段信号, 控件信号)。
+    fn build_frame(app: &Rc<RefCell<AppState>>) -> (Tree, NodeId, Signal<WizardPhase>, Controls) {
+        let phase = app.borrow().wizard_phase;
+        let c = Controls::new();
+        sync(app, &c);
+        let mut tree = Tree::new();
+        let root = Element::stack()
+            .child(frame(app, phase, c))
+            .build(&mut tree);
+        tree.root = Some(root);
+        let panel = tree.get(root).unwrap().children[0];
+        (tree, panel, phase, c)
+    }
+
+    fn layout(tree: &mut Tree) {
+        tree.layout_root(
+            Size::new(1200, 1000),
+            &mut windui::text::LineAwareTextEngine,
+        );
+    }
+
+    /// 开关组合：主类型 × 模糊音 × 临时拼音。
+    fn combos() -> Vec<(usize, bool, bool)> {
+        let mut v = Vec::new();
+        for kind in 0..3 {
+            for fuzzy in [false, true] {
+                for temp in [false, true] {
+                    v.push((kind, fuzzy, temp));
+                }
+            }
+        }
+        v
+    }
+
+    /// 维护者反馈：「最后一个选项的最下面也有一个分割线」。任意阶段、任意开关组合下，
+    /// 卡片里都不能出现收尾、打头或叠在一起的分隔线。
+    #[test]
+    fn no_stray_dividers_in_any_phase_or_toggle_combo() {
+        with_mock(|| {
+            let app = mock_app();
+            open_wizard(&app);
+            let (mut tree, panel, phase, c) = build_frame(&app);
+            for p in ALL_PHASES {
+                for (kind, fuzzy, temp) in combos() {
+                    phase.set(p);
+                    c.kind.set(kind);
+                    c.fuzzy.set(fuzzy);
+                    c.temp.set(temp);
+                    layout(&mut tree);
+                    let bad = divider_violations(&tree, panel);
+                    assert!(
+                        bad.is_empty(),
+                        "{p:?} kind={kind} fuzzy={fuzzy} temp={temp}：{bad:?}"
+                    );
+                }
+            }
+        });
+    }
+
+    /// 维护者反馈：「开关后对话框一会大一会小」。外框高度与按钮栏位置在任何阶段、任何
+    /// 开关组合、摘要再长也不变；内容超出时溢出成正文区的滚动量。
+    #[test]
+    fn panel_size_and_footer_stay_put() {
+        with_mock(|| {
+            let app = mock_app();
+            open_wizard(&app);
+            let (mut tree, panel, phase, c) = build_frame(&app);
+            let footer = *tree.get(panel).unwrap().children.last().unwrap();
+            let mut footer_y = None;
+            for p in ALL_PHASES {
+                for (kind, fuzzy, temp) in combos() {
+                    phase.set(p);
+                    c.kind.set(kind);
+                    c.fuzzy.set(fuzzy);
+                    c.temp.set(temp);
+                    layout(&mut tree);
+                    let n = tree.get(panel).unwrap();
+                    assert_eq!(n.measured.h, DIALOG_H, "{p:?} kind={kind}");
+                    assert_eq!(n.measured.w, DIALOG_W, "{p:?} kind={kind}");
+                    let y = tree.get(footer).unwrap().bounds.y;
+                    assert_eq!(*footer_y.get_or_insert(y), y, "{p:?} 按钮栏移位");
+                }
+            }
+            // 超长摘要：外框不撑高，溢出进第 4 步的滚动量。
+            phase.set(WizardPhase::Step(4));
+            c.summary.set(
+                (0..60)
+                    .map(|i| SumLine::Row {
+                        label: format!("第 {i} 项"),
+                        old: "开".into(),
+                        new: "关".into(),
+                    })
+                    .collect(),
+            );
+            layout(&mut tree);
+            assert_eq!(tree.get(panel).unwrap().measured.h, DIALOG_H);
+            let (h, content_h) = page_scroll(&tree, panel, 5);
+            assert!(content_h > h, "长摘要应可滚动：{content_h} <= {h}");
+        });
+    }
+
+    /// 第 `i` 个阶段页的滚动容器 (视口高, 内容高)。次序同 [`frame`] 里 stack 的子项。
+    fn page_scroll(tree: &Tree, panel: NodeId, i: usize) -> (i32, i32) {
+        let pages = tree.get(panel).unwrap().children[2];
+        let sc = tree.get(pages).unwrap().children[i];
+        let n = tree.get(sc).unwrap();
+        (n.measured.h, n.content_h)
+    }
+
+    /// [`DIALOG_H`] 的取值依据：最高的常见形态（第 2 步双拼 + 模糊音开、第 3 步码表 +
+    /// 临时拼音开）以及欢迎页、第 1 步不滚动即可放下。
+    #[test]
+    fn tallest_steps_fit_without_scrolling() {
+        with_mock(|| {
+            let app = mock_app();
+            open_wizard(&app);
+            let (mut tree, panel, phase, c) = build_frame(&app);
+            for (p, i, kind, fuzzy, temp) in [
+                (WizardPhase::Welcome, 0, 0, false, false),
+                (WizardPhase::Step(1), 2, 2, false, false),
+                (WizardPhase::Step(2), 3, 2, true, false),
+                (WizardPhase::Step(3), 4, 0, false, true),
+            ] {
+                phase.set(p);
+                c.kind.set(kind);
+                c.fuzzy.set(fuzzy);
+                c.temp.set(temp);
+                layout(&mut tree);
+                let (h, content_h) = page_scroll(&tree, panel, i);
+                eprintln!("{p:?}: viewport={h} content={content_h}");
+                assert!(content_h <= h, "{p:?} 需要滚动：{content_h} > {h}");
+            }
         });
     }
 }

@@ -856,9 +856,11 @@ const DOWNLOAD_URL: &str = "https://windinput.com/download";
 /// 赞助页。
 const SPONSOR_URL: &str = "https://windinput.com/sponsor";
 /// 主题编辑器。
-const THEME_EDITOR_URL: &str = "https://theme.windinput.com";
+pub(crate) const THEME_EDITOR_URL: &str = "https://theme.windinput.com";
 /// 主题市场。
-const THEME_MARKET_URL: &str = "https://market.windinput.com";
+pub(crate) const THEME_MARKET_URL: &str = "https://market.windinput.com";
+/// 官网文档首页（设置向导欢迎页指这里）。
+pub(crate) const DOCS_URL: &str = "https://windinput.com/docs";
 /// QQ 交流群号。
 const QQ_GROUP: &str = "1085293418";
 
