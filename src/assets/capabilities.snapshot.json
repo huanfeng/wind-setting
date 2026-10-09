@@ -1011,6 +1011,15 @@
       ]
     },
     {
+      "default": "buffer",
+      "key": "input.temp_english.shift_when_composing",
+      "type": "enum",
+      "values": [
+        "buffer",
+        "commit_enter"
+      ]
+    },
+    {
       "default": [],
       "key": "input.temp_english.trigger_keys",
       "type": "strlist"

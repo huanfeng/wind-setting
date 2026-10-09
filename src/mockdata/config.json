@@ -163,6 +163,7 @@
    "phrase_seg": false,
    "raw_candidate": "always",
    "shift_behavior": "temp_english",
+   "shift_when_composing": "buffer",
    "show_candidates": true,
    "space_as_input": false,
    "symbol_chars": "0123456789+-_.@#/",

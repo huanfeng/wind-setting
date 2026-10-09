@@ -1714,6 +1714,19 @@ options = [
 ]
 
 [[items]]
+key = "input.temp_english.shift_when_composing"
+group = "input"
+section = "临时英文"
+type = "select"
+label = "输入编码时按 Shift+字母"
+hint = "已经敲了编码时再按 Shift+字母的行为。「上屏候选并进入临时英文」会先上屏高亮候选，再以该字母进入临时英文；英文方案下不生效"
+width = 210
+options = [
+  { value = "buffer", label = "大写字母进入编码" },
+  { value = "commit_enter", label = "上屏候选并进入临时英文" },
+]
+
+[[items]]
 key = "input.temp_english.show_candidates"
 group = "input"
 section = "临时英文"
