@@ -396,6 +396,26 @@ pub enum ConnState {
     Down,
 }
 
+/// 设置向导所处的段：未保存修改的拦截页 → 4 步 → 二次确认 → 失败结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WizardPhase {
+    Dirty,
+    /// 1..=4
+    Step(u8),
+    Confirm,
+    Result,
+}
+
+/// 一次向导会话：打开时按当前配置预填，关闭或写入成功后清空。
+pub struct WizardSession {
+    /// 打开时的当前配置（摘要的「旧值」一侧）。
+    pub cur: crate::wizard::model::Draft,
+    pub draft: crate::wizard::model::Draft,
+    /// 双拼布局 (id, 显示名)，取自 `schema.layouts`。
+    pub layouts: Vec<(String, String)>,
+    pub outcome: Option<crate::wizard::apply::ApplyOutcome>,
+}
+
 /// 应用全局状态。
 pub struct AppState {
     /// 从 core 加载的原始配置（用于 diff 基线）。
@@ -638,6 +658,11 @@ pub struct AppState {
     pub wizard_visible: Signal<bool>,
     /// 向导「下次不再弹出」勾选态，初值取自 `[ui] wizard_dismissed`。
     pub wizard_dont_show: Signal<bool>,
+    pub wizard_phase: Signal<WizardPhase>,
+    /// 当前向导会话；`None` = 向导没开。
+    pub wizard: Rc<RefCell<Option<WizardSession>>>,
+    /// 草稿每次修改 +1，驱动向导正文重算。
+    pub wizard_rev: Signal<u64>,
     /// 升级流程阶段。
     pub update_phase: Signal<crate::update::UpdatePhase>,
     /// 下载进度 0.0..=1.0，驱动 `Element::progress`。
@@ -1009,6 +1034,9 @@ impl AppState {
             update_dialog_visible: signal(false),
             wizard_visible: signal(false),
             wizard_dont_show: signal(setting_load_wizard_dismissed),
+            wizard_phase: signal(WizardPhase::Step(1)),
+            wizard: Rc::new(RefCell::new(None)),
+            wizard_rev: signal(0),
             update_phase: signal(crate::update::UpdatePhase::Checking),
             update_progress: signal(0.0),
             update_progress_text: signal(String::new()),
@@ -1380,6 +1408,11 @@ impl AppState {
 
     /// 持久化设置向导「下次不再弹出」。
     pub fn save_wizard_dismissed(&mut self, on: bool) {
+        // 单测不落盘：`wind_setting.toml` 的路径没有测试覆盖口，落盘就写进开发机的真实用户目录。
+        if cfg!(test) {
+            self.setting_config.ui.wizard_dismissed = on;
+            return;
+        }
         self.save_ui_state(|ui| ui.wizard_dismissed = on);
     }
 
@@ -2812,6 +2845,20 @@ fn check_domain(groups: Vec<KeyGroup>, scene: &str) -> (Option<String>, Vec<Conf
         .cloned()
         .collect();
     (crate::key_conflict::conflict_summary(&hits, scene), coexist)
+}
+
+/// 设置向导用：目标配置在触发键域**新增**的 Blocking 冲突摘要。
+///
+/// 基线自带的冲突与向导无关（用户早就配成那样了），算进来会让向导「下一步」永远点不动，
+/// 故按冲突记录与基线做差。判定与设置页常驻警告条同源（[`check_domain`] 的两半）。
+pub(crate) fn new_trigger_conflicts(base: &Config, target: &Config) -> Option<String> {
+    let old = crate::key_conflict::find_key_conflicts(&collect_trigger_key_groups(base));
+    let fresh: Vec<Conflict> =
+        crate::key_conflict::find_key_conflicts(&collect_trigger_key_groups(target))
+            .into_iter()
+            .filter(|c| c.level == ConflictLevel::Blocking && !old.contains(c))
+            .collect();
+    crate::key_conflict::conflict_summary(&fresh, "触发键")
 }
 
 /// 收集"候选操作"域各组的 (显示名, 物理键列表)，组名经 `expand_candidate_key` 展开

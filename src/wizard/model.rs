@@ -278,7 +278,6 @@ impl Draft {
                 }
             }
         }
-        drop(set);
         rebind(&mut t, VERB_QUICK, &self.quick, &cur.quick);
         if self.kind == Kind::Codetable && self.temp_pinyin {
             rebind(&mut t, VERB_TEMP_PINYIN, &self.temp_key, &cur.temp_key);
@@ -507,10 +506,11 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
     if let Trigger::Key(k) = &d.quick {
         claims.push((k.clone(), VERB_QUICK, "快捷输入"));
     }
-    if d.kind == Kind::Codetable && d.temp_pinyin {
-        if let Trigger::Key(k) = &d.temp_key {
-            claims.push((k.clone(), VERB_TEMP_PINYIN, "临时拼音"));
-        }
+    if d.kind == Kind::Codetable
+        && d.temp_pinyin
+        && let Trigger::Key(k) = &d.temp_key
+    {
+        claims.push((k.clone(), VERB_TEMP_PINYIN, "临时拼音"));
     }
     if d.slash_dun {
         claims.push(("slash".into(), "", "/ 键输出顿号"));
@@ -529,13 +529,14 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
             .and_then(|m| m.get(k))
             .and_then(|v| v.as_str())
             .filter(|v| *v != "none");
-        if let Some(v) = held {
-            if v != *verb && !moving(v) {
-                out.push(Conflict {
-                    key: k.clone(),
-                    msg: format!("「{who}」的键已被「{}」占用", label(v)),
-                });
-            }
+        if let Some(v) = held
+            && v != *verb
+            && !moving(v)
+        {
+            out.push(Conflict {
+                key: k.clone(),
+                msg: format!("「{who}」的键已被「{}」占用", label(v)),
+            });
         }
     }
     out

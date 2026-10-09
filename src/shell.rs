@@ -136,7 +136,8 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         // 加了三次——真机上看着就是搜索框与导航离得老远。哨兵一律挂到根 stack。
         .spacing(6)
         .child(search_box)
-        .child(nav)
+        .child(nav.weight(1.0))
+        .child(wizard_entry(app))
         .on_context_menu(move || {
             crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu, ov_menu)
         });
@@ -218,6 +219,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(build_theme_delete_dialog(app))
         .child(build_theme_overwrite_dialog(app))
         .child(build_update_dialog(app))
+        .child(crate::wizard::view::build_wizard_dialog(app))
         .child(build_conn_failed_dialog(app, conn_failed));
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
     for dlg in field_dialogs {
@@ -441,6 +443,51 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
         col = col.child(item);
     }
     Element::scroll().fill().child(col)
+}
+
+/// 侧栏最底部的「设置向导」动作项：样式同导航未选中态，点它弹向导、不切页。
+/// 输入法服务没连上时向导无从预填，只给提示。
+fn wizard_entry(app: &Rc<RefCell<AppState>>) -> Element {
+    use crate::icons::{CHIP_PX, ICON_PX, nav_icon, tinted};
+    let app = app.clone();
+    Element::row()
+        .clickable()
+        .on_click(move |_| {
+            let connected = app.borrow().connected;
+            if connected {
+                crate::wizard::open_wizard(&app);
+            } else {
+                app.borrow().feedback.set(Some((
+                    ToastKind::Info,
+                    "未连接输入法服务，无法使用设置向导".to_string(),
+                )));
+            }
+        })
+        .width_match()
+        .height(36)
+        .corner(9.0)
+        .cross(Align::Center)
+        .spacing(9)
+        .padding_xy(10, 0)
+        .child(
+            Element::stack()
+                .size(CHIP_PX, CHIP_PX)
+                .corner(7.0)
+                .bg_role(Role::Bg)
+                .child(
+                    tinted(nav_icon("设置向导"), ICON_PX, Color::hex(0x8A93A5))
+                        .align(Align::Center),
+                ),
+        )
+        .child(
+            Element::label("设置向导")
+                .font_size(13.0)
+                .font_weight(500)
+                .fg_role(Role::TextMuted)
+                .weight(1.0)
+                .max_lines(1)
+                .height(18),
+        )
 }
 
 /// 自定义标题栏（无边框窗口的可拖动区 + 窗口按钮）。状态与操作在底部操作栏。

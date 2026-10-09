@@ -98,6 +98,28 @@ pub struct SchemaEntry {
 // 与用户目录 schemas/shuangpin/*.toml），存于 SchemaManagerState::layouts。
 // 见 SchemaManagerState::layout_label / refresh。
 
+/// 拉双拼布局清单 (id, 显示名)；拿不到时为空。方案管理与设置向导共用。
+pub(crate) fn fetch_shuangpin_layouts() -> Vec<(String, String)> {
+    rpc::call_core("schema.layouts", &json!({}))
+        .ok()
+        .and_then(|v| {
+            v.as_array().map(|arr| {
+                arr.iter()
+                    .filter_map(|it| {
+                        let id = it.get("id")?.as_str()?.to_string();
+                        let name = it
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| id.clone());
+                        Some((id, name))
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
 /// `list_signal` 的数据项：行/分节标题/行间分隔线。
 #[derive(Clone)]
 pub enum SchemaListItem {
@@ -1951,25 +1973,7 @@ impl SchemaManagerState {
             .unwrap_or(Value::Array(vec![]));
 
         // 双拼布局清单（动态，取代硬编码）：供下拉选项/索引映射/行名后缀。
-        let layouts: Vec<(String, String)> = rpc::call_core("schema.layouts", &json!({}))
-            .ok()
-            .and_then(|v| {
-                v.as_array().map(|arr| {
-                    arr.iter()
-                        .filter_map(|it| {
-                            let id = it.get("id")?.as_str()?.to_string();
-                            let name = it
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .map(str::to_string)
-                                .unwrap_or_else(|| id.clone());
-                            Some((id, name))
-                        })
-                        .collect()
-                })
-            })
-            .unwrap_or_default();
-        *self.layouts.borrow_mut() = layouts;
+        *self.layouts.borrow_mut() = fetch_shuangpin_layouts();
 
         // 当前活跃方案：取 core 的**运行时**状态（`schema.active` RPC），而非配置里的
         // 同名键——后者只是启动初值，用户可能已在别处（托盘/快捷键）切过方案。

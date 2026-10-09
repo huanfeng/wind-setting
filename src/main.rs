@@ -474,8 +474,11 @@ fn main() {
     // 注册后台→UI 通道：数据就绪后在 UI 线程回调，更新 Signal 刷新界面。
     let app_state_cb = app_state.clone();
     let tx = app.channel::<state::LoadedState>(move |ctx, data| {
+        let connected = data.connected;
         app_state_cb.borrow_mut().apply_loaded(data);
         memstat::mark("[apply_loaded 后]");
+        // 首启自动弹设置向导：数据就绪后才能按当前配置预填。
+        wizard::maybe_auto_open(&app_state_cb, connected);
         // 冷启动 `--page dict` 的落点：方案列表刚刚注入，此刻开窗左栏才有内容、
         // `--schema` 也才解析得出域下标。channel 回调的副作用走
         // `apply_dispatch_effects`，`open_window` 在这条路上是被采纳的。
