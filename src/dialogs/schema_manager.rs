@@ -1150,6 +1150,10 @@ pub struct SchemaManagerState {
     pub settings_tab_labels: Signal<Vec<Vec<String>>>,
     /// 扩展词库行（每行含独立受控开关信号）；ExtensionDicts 分节据此渲染。
     pub settings_dicts: Rc<RefCell<Vec<DictRow>>>,
+    /// 方案声明的扩展词库发现目录（`[[dictionary_dirs]]` 的 path，相对 `schemas/`）。
+    /// 有它时即使一个扩展库都还没有，也要显示「扩展词库」一节——用户正是从这里找到该把
+    /// 词库文件放哪的（「打开扩展词库目录」按钮）。
+    pub settings_dict_dirs: Rc<RefCell<Vec<String>>>,
 
     // ── 方案直达热键：**没有独立字段**，就存在下面的 `key_actions` 里 ──
     // core 的 `keys.schema_hotkeys` 已废弃并移出登记表（`config.setItems` 不再接受它），
@@ -1413,6 +1417,7 @@ impl SchemaManagerState {
                 SETTINGS_TABS.iter().map(|s| s.to_string()).collect(),
             ]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
+            settings_dict_dirs: Rc::new(RefCell::new(Vec::new())),
             manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
             settings_aux_on_over: signal(false),
             settings_aux_on: signal(false),
@@ -2706,11 +2711,13 @@ impl SchemaManagerState {
                 on: signal(d.enabled),
             })
             .collect();
-        if !rows.is_empty() {
+        let dirs = parse_dict_dirs(&self.settings_cfg.borrow());
+        if !rows.is_empty() || !dirs.is_empty() {
             sections.push(SettingsSection::Divider);
             sections.push(SettingsSection::ExtensionDicts);
         }
         *self.settings_dicts.borrow_mut() = rows;
+        *self.settings_dict_dirs.borrow_mut() = dirs;
         // 注：曾有 `has_config` 与 `SettingsSection::Empty`——「没有任何可配置项」的空状态。
         // 「按键功能」对所有方案都有之后，那个分支恒不可达，故一并退役（枚举项保留，
         // 将来若又出现真的空方案可直接复用）。
@@ -3618,9 +3625,12 @@ fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
+                // 方案手写的库可能没写 label，行标题空着就认不出是哪一项，退回 id。
                 label: d
                     .get("label")
                     .and_then(|v| v.as_str())
+                    .filter(|l| !l.is_empty())
+                    .or_else(|| d.get("id").and_then(|v| v.as_str()))
                     .unwrap_or("")
                     .to_string(),
                 description: d
@@ -3632,6 +3642,32 @@ fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
             }
         })
         .collect()
+}
+
+/// 方案声明的扩展词库发现目录（`[[dictionary_dirs]]` 的 path），去掉首尾斜杠、跳过空值。
+fn parse_dict_dirs(cfg: &Value) -> Vec<String> {
+    cfg.get("dictionary_dirs")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| d.get("path")?.as_str())
+                .map(|p| p.trim_matches('/').to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 打开用户目录下的发现目录（`<用户目录>/schemas/<dir>`），不存在就先建。
+///
+/// 只开用户目录这一层：安装目录多半只读，且用户放进去的东西升级时会被覆盖。core 扫描时
+/// 用户层遮蔽安装层的同名文件，放这里就对。
+fn open_user_dict_dir(dir: &str) -> Result<(), String> {
+    let root = crate::user_dir::user_config_dir_for_mode(crate::mode::get())
+        .ok_or_else(|| "找不到用户配置目录".to_string())?;
+    let path = root.join("schemas").join(dir);
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败 {}: {e}", path.display()))?;
+    crate::open_external::open_with_default_app(&path)
 }
 
 // ──────────────────────── 内联复合列表 ────────────────────────
@@ -5095,6 +5131,35 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     )
                 })
                 .collect();
+            let mut rows = rows;
+            let dirs = state.settings_dict_dirs.borrow().clone();
+            if rows.is_empty() && !dirs.is_empty() {
+                rows.push(
+                    Element::label(
+                        "还没有扩展词库。把 rime 格式的词库文件（*.dict.yaml）放进扩展词库目录，\
+                         重新打开本对话框就会出现在这里，勾选后生效。",
+                    )
+                    .font_size(11.0)
+                    .fg_role(Role::TextMuted)
+                    .width_match()
+                    .padding_xy(0, 4),
+                );
+            }
+            for dir in dirs {
+                let feedback = state.feedback;
+                rows.push(crate::widgets::setting_row(
+                    "扩展词库目录",
+                    Some(&format!("schemas/{dir}（用户目录）")),
+                    Element::button("打开")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            if let Err(e) = open_user_dict_dir(&dir) {
+                                feedback.set(Some((ToastKind::Error, e)));
+                            }
+                        }),
+                ));
+            }
             crate::widgets::dialog_section("扩展词库", rows)
         }
         SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
@@ -6453,6 +6518,30 @@ mod ext_dict_tests {
     fn parse_missing_dictionaries_is_empty() {
         assert!(parse_extension_dicts(&json!({})).is_empty());
         assert!(parse_extension_dicts(&json!({ "dictionaries": [] })).is_empty());
+    }
+
+    /// 没写 label 的库，行标题退回 id——空标题的一行认不出是哪个库。
+    #[test]
+    fn extension_dict_without_label_falls_back_to_id() {
+        let rows = parse_extension_dicts(&json!({ "dictionaries": [
+            { "id": "main", "default": true },
+            { "id": "ext_a", "label": "" },
+            { "id": "ext_b", "label": "成语" },
+        ]}));
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["ext_a", "成语"]);
+    }
+
+    /// 发现目录：取 path、去首尾斜杠、跳过空值；没声明就是空（这一节随之不显示）。
+    #[test]
+    fn parse_dict_dirs_trims_and_skips_empty() {
+        assert!(parse_dict_dirs(&json!({})).is_empty());
+        let dirs = parse_dict_dirs(&json!({ "dictionary_dirs": [
+            { "path": "pinyin/cn_dicts_cell/", "type": "rime_pinyin" },
+            { "path": "" },
+            { "type": "rime_codetable" },
+        ]}));
+        assert_eq!(dirs, ["pinyin/cn_dicts_cell"]);
     }
 }
 
