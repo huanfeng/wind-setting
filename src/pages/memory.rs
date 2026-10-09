@@ -446,13 +446,32 @@ pub fn build_rows(state: &AppState) -> (Element, Element) {
     (crate::search::anchor::wrap(row, ANCHOR, state.jump), loader)
 }
 
+/// 正文四周留白（与外壳其它对话框的内容区一致）。
+const BODY_PAD_X: i32 = 18;
+const BODY_PAD_Y: i32 = 12;
+
 fn build_dialog(diag: &MemoryDiag) -> Element {
-    let content = Element::col().width_match().padding_xy(18, 12).child(
-        Element::label_signal(diag.text)
-            .font_size(12.5)
-            .fg_role(Role::Text)
-            .width_match(),
-    );
+    // 正文是只读多行框：能拖选局部、Ctrl+C / 右键「复制」，改不了。高度恰好填满外壳的
+    // 滚动视口，于是外壳那层永远不溢出，只剩文本框自己的滚动条——不会出现双重滚动条。
+    //
+    // 自动刷新期间照常改写正文，不因用户有选区而跳过：自动刷新默认关、每次打开都复位，
+    // 想定住内容取一段就把勾去掉；选区由 windui 钳到新正文的长度内，不会越界。
+    //
+    // `select_range(0, 0)`：每次重新打开（隐藏→显示会复位交互态）光标都回到开头、视口在
+    // 顶部，而不是默认的文末——诊断信息要从头读。
+    let content = Element::col()
+        .width_match()
+        .padding_xy(BODY_PAD_X, BODY_PAD_Y)
+        .child(
+            Element::text_input(diag.text, "")
+                .multiline()
+                .wrap(true)
+                .read_only()
+                .select_range(0, 0)
+                .font_size(12.5)
+                .width_match()
+                .height(crate::dialogs::field_dialogs::LARGE_SHELL_BODY_H - 2 * BODY_PAD_Y),
+        );
     let d_refresh = diag.clone();
     let text = diag.text;
     let leading = vec![
@@ -738,6 +757,75 @@ mod tests {
         assert!(!st.memory.visible.get());
         assert!(!st.memory.auto.get());
         assert!(!st.memory.loaded.get(), "重建后进页应重新取一次摘要");
+    }
+
+    /// 对话框正文是绑着 `diag.text` 的只读框：显示的恰是 `diagnostic_text`，键入 / 退格 /
+    /// 粘贴 / 剪切都改不动它，全选复制得到全文。
+    #[test]
+    fn dialog_body_is_read_only_view_of_diagnostic_text() {
+        use windui::core::{ClipboardProvider, Tree};
+        use windui::event::KeyEvent;
+        struct Clip(Rc<RefCell<String>>);
+        impl ClipboardProvider for Clip {
+            fn get_text(&self) -> Option<String> {
+                Some(self.0.borrow().clone())
+            }
+            fn set_text(&self, t: &str) {
+                *self.0.borrow_mut() = t.to_string();
+            }
+        }
+
+        let d = MemoryDiag::new();
+        d.visible.set(true);
+        d.on_reply(MemoryReply(Ok(sample())));
+        let shown = d.text.get();
+        let stamp = shown
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches(HEADER)
+            .trim();
+        assert_eq!(shown, diagnostic_text(&sample(), stamp));
+
+        let mut tree = Tree::new();
+        let root = build_dialog(&d).build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(800, 640), &mut windui::text::NullTextEngine);
+        let clip = Rc::new(RefCell::new(String::from("seed")));
+        tree.clipboard = Some(Box::new(Clip(clip.clone())));
+        // 对话框里报选区的只有正文那个文本框。
+        let mut stack = vec![root];
+        let mut inputs = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some(n) = tree.get(id) else { continue };
+            if tree.selection_of(id).is_some() {
+                inputs.push(id);
+            }
+            stack.extend(n.children.iter().copied());
+        }
+        assert_eq!(inputs.len(), 1, "对话框正文应是一个文本框");
+        let input = inputs[0];
+        // 正文列恰好填满外壳的滚动视口：外壳那层不溢出，只剩文本框自己的滚动条。
+        let body = tree.get(input).unwrap().parent.unwrap();
+        assert_eq!(
+            tree.abs_bounds(body).h,
+            crate::dialogs::field_dialogs::LARGE_SHELL_BODY_H,
+            "外壳视口不该再出一层滚动条"
+        );
+
+        let ctrl = |k: Key| {
+            let mut ev = KeyEvent::pressed(k);
+            ev.ctrl = true;
+            ev
+        };
+        tree.dispatch_key(ctrl(Key::Other(0x41)), Some(input)); // Ctrl+A
+        tree.dispatch_key(KeyEvent::pressed(Key::Char('x')), Some(input));
+        tree.dispatch_key(KeyEvent::pressed(Key::Backspace), Some(input));
+        tree.dispatch_key(ctrl(Key::Other(0x58)), Some(input)); // Ctrl+X
+        tree.dispatch_key(ctrl(Key::Other(0x56)), Some(input)); // Ctrl+V
+        assert_eq!(d.text.get(), shown, "只读：正文改不动");
+        tree.dispatch_key(ctrl(Key::Other(0x43)), Some(input)); // Ctrl+C
+        assert_eq!(*clip.borrow(), shown, "全选复制得到全文");
     }
 
     #[test]

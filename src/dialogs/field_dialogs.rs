@@ -799,6 +799,10 @@ pub fn build_group_dialog_shell(
 // 方案级覆盖的正确形态是**每项一个勾选框**（见 `dialogs::schema_codetable` 的模块文档），
 // 「整段接管」这个模型本身有问题，不该留着给下一个人复用。要做折叠区请另写。
 
+/// [`build_group_dialog_shell_large`] 中部滚动视口的高度。内容想恰好填满视口（自带滚动的
+/// 控件，免得外壳再套一层滚动条）时按它算高度。
+pub const LARGE_SHELL_BODY_H: i32 = 460;
+
 /// 尺寸放大的变体，供内容分了 TAB、默认 460×380 装不下的浮层用。
 pub fn build_group_dialog_shell_large(
     visible: Signal<bool>,
@@ -812,7 +816,7 @@ pub fn build_group_dialog_shell_large(
         content,
         bottom_leading,
         620,
-        460,
+        LARGE_SHELL_BODY_H,
     )
 }
 
