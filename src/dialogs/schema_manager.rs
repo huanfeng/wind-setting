@@ -3519,7 +3519,7 @@ fn can_activate(order: &[String], active: &str, selected: Option<&str>) -> bool 
 // ──────────────────────── 显示辅助 ────────────────────────
 
 /// 沿路径逐层确保对象存在后写入叶子值（中间层非对象时覆盖为对象；根非对象则不写）。
-fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
+pub(crate) fn set_json_path(v: &mut Value, path: &[&str], leaf: Value) {
     let Some((last, mids)) = path.split_last() else {
         return;
     };

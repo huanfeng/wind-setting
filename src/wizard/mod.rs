@@ -2,4 +2,5 @@
 // 后续任务接线后移除（Task 5）。
 #![allow(dead_code)]
 
+pub mod apply;
 pub mod model;
