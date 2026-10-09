@@ -304,10 +304,7 @@ fn sync(app: &Rc<RefCell<AppState>>, c: &Controls) {
         if changes.is_empty() {
             "当前设置已符合你的选择，无需修改。".to_string()
         } else {
-            format!(
-                "以下 {} 项设置将被修改，点「完成」后立即生效。",
-                changes.len()
-            )
+            format!("以下 {} 项设置将被修改，确认后立即生效。", changes.len())
         },
     );
     set_if(

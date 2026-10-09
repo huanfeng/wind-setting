@@ -573,9 +573,18 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
     }
     // 顿号不是 key_actions 绑定，上面「被其它动词占用」的判据查不到它，单独判。
     if d.slash_dun {
-        // 最终开着顿号（不论原本就开还是这次打开），向导认领的触发键就不能是 /。
+        // 最终开着顿号、向导认领的触发键又是 /，只在这是向导这次造成的时候报：顿号本次
+        // 由关变开，或该触发键本次被改到 /。两边都没动（原本就开顿号、原本就绑 /）是基线
+        // 自带的冲突，不挡向导（裁定 #2）。
+        let changed = |verb: &str| match verb {
+            VERB_QUICK => d.quick != cur.quick,
+            _ => d.temp_key != cur.temp_key,
+        };
         let mut taken = false;
-        for (k, _, who) in claims.iter().filter(|c| c.0 == "slash") {
+        for (k, _, who) in claims
+            .iter()
+            .filter(|c| c.0 == "slash" && (!cur.slash_dun || changed(c.1)))
+        {
             taken = true;
             out.push(Conflict {
                 key: k.clone(),
@@ -731,24 +740,44 @@ mod tests {
         assert_eq!(c[0].key, "comma");
     }
 
-    /// 顿号原本就开着，再把快捷输入设到 /：顿号不是 key_actions 绑定，也要判冲突。
-    #[test]
-    fn slash_dun_already_on_conflicts_with_slash_trigger() {
+    fn dun_on_base() -> Config {
         let mut b = base();
         b.set_path("input.punct.custom_enabled", json!(true));
         b.set_path(
             "input.punct.custom_mappings",
             json!({"/": ["、", "／", "、", "/"]}),
         );
+        b
+    }
+
+    /// 顿号原本就开着，本次把快捷输入（或临时拼音）改到 /：向导造成的冲突，要报。
+    #[test]
+    fn slash_dun_already_on_conflicts_with_slash_trigger() {
+        let b = dun_on_base();
         let mut d = Draft::from_current(&b, &schemas(), "x");
         assert!(d.slash_dun, "前提：基线已开顿号");
         d.quick = Trigger::Key("slash".into());
         let c = key_conflicts(&d, &b);
         assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
-        // 临时拼音设到 / 同理
         let mut d = Draft::from_current(&b, &schemas(), "x");
         d.temp_key = Trigger::Key("slash".into());
         assert!(!key_conflicts(&d, &b).is_empty());
+    }
+
+    /// 原本就开顿号、快捷输入原本就绑在 /：基线自带的冲突，向导没动它，不挡（裁定 #2）。
+    #[test]
+    fn slash_dun_and_slash_trigger_both_in_base_do_not_block() {
+        let mut b = dun_on_base();
+        b.set_path("keys.key_actions.semicolon", json!(null));
+        b.set_path("keys.key_actions.slash", json!("mix:quick_mix"));
+        let d = Draft::from_current(&b, &schemas(), "x");
+        assert!(d.slash_dun);
+        assert_eq!(d.quick, Trigger::Key("slash".into()), "前提：快捷原本在 /");
+        assert!(
+            key_conflicts(&d, &b).is_empty(),
+            "{:?}",
+            key_conflicts(&d, &b)
+        );
     }
 
     /// 这次打开顿号、同时把快捷输入设到 /。
@@ -759,6 +788,19 @@ mod tests {
         assert!(!d.slash_dun, "前提：基线顿号关");
         d.slash_dun = true;
         d.quick = Trigger::Key("slash".into());
+        let c = key_conflicts(&d, &b);
+        assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
+    }
+
+    /// 这次打开顿号，快捷输入原本就在 /：顿号是向导开的，要报。
+    #[test]
+    fn slash_dun_turned_on_conflicts_with_existing_slash_trigger() {
+        let mut b = base();
+        b.set_path("keys.key_actions.semicolon", json!(null));
+        b.set_path("keys.key_actions.slash", json!("mix:quick_mix"));
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        assert_eq!(d.quick, Trigger::Key("slash".into()), "前提：快捷原本在 /");
+        d.slash_dun = true;
         let c = key_conflicts(&d, &b);
         assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
     }
