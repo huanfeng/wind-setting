@@ -332,7 +332,7 @@ fn write_back(app: &Rc<RefCell<AppState>>, c: &Controls) {
         // 控制方裁定 #1：只在主类型真正改变时套预设——点了同一个主类型不能重套，
         // 否则把自定义码表默认方案的用户改成 wubi86。
         let next = if kind != s.draft.kind {
-            s.draft.with_preset(kind, &st.schemas)
+            s.draft.switch_kind(&s.cur, kind, &st.schemas)
         } else {
             let mut d = s.draft.clone();
             if let Some((id, _)) = layout_choices(s).get(c.layout_idx.get()) {
@@ -839,6 +839,78 @@ mod tests {
         });
     }
 
+    /// 第 1 步切走再切回原主类型：默认方案与启用表回到打开时的样子，而不是预设
+    /// （自定义码表用户不能被改成 wubi86）。
+    #[test]
+    fn switching_back_to_original_kind_restores_schemes() {
+        with_mock(|| {
+            let app = mock_app();
+            open_wizard(&app);
+            let (active0, enabled0) = {
+                let st = app.borrow();
+                let mut s = st.wizard.borrow_mut();
+                let s = s.as_mut().unwrap();
+                s.cur.active = "my_codetable".into();
+                s.cur.enabled = vec!["my_codetable".into(), "english".into()];
+                s.draft.active = s.cur.active.clone();
+                s.draft.enabled = s.cur.enabled.clone();
+                (s.cur.active.clone(), s.cur.enabled.clone())
+            };
+            let c = Controls::new();
+            sync(&app, &c);
+            c.kind.set(1);
+            write_back(&app, &c);
+            sync(&app, &c);
+            assert_eq!(draft_of(&app).active, "pinyin");
+            c.kind.set(0);
+            write_back(&app, &c);
+            let d = draft_of(&app);
+            assert_eq!(d.kind, Kind::Codetable);
+            assert_eq!(d.active, active0);
+            assert_eq!(d.enabled, enabled0);
+        });
+    }
+
+    /// 写入失败：进结果段，结果文案如实列出已完成的步骤。setItems 的被拒项只是跳过、合法项
+    /// 照样落盘，不能说成「没有改动任何配置」。
+    #[test]
+    fn rejected_items_report_partial_write_on_result_page() {
+        struct Skips;
+        impl crate::wizard::apply::CoreCalls for Skips {
+            fn call(
+                &mut self,
+                m: &str,
+                _p: &serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                Ok(match m {
+                    "config.setItems" => serde_json::json!({
+                        "applied": 2,
+                        "skipped": [{"key": "input.emoji.enabled", "reason": "x"}]
+                    }),
+                    _ => serde_json::json!({}),
+                })
+            }
+        }
+        with_mock(|| {
+            let app = mock_app();
+            open_wizard(&app);
+            {
+                let st = app.borrow();
+                let mut s = st.wizard.borrow_mut();
+                let s = s.as_mut().unwrap();
+                s.draft = s.draft.with_preset(Kind::Pinyin, &st.schemas);
+            }
+            crate::wizard::finish_with(&app, &mut Skips, crate::state::LoadedState::fetch);
+            let st = app.borrow();
+            assert_eq!(st.wizard_phase.get(), WizardPhase::Result);
+            let s = st.wizard.borrow();
+            let text = result_text(s.as_ref().unwrap());
+            assert!(text.contains("input.emoji.enabled"), "{text}");
+            assert!(!text.contains("没有改动任何配置"), "{text}");
+            assert!(text.contains("其余 2 项已写入"), "{text}");
+        });
+    }
+
     /// 当前布局不在 `schema.layouts` 清单里时，同步/回写不得把它悄悄换成清单里的某一项。
     #[test]
     fn unlisted_layout_survives_write_back() {
@@ -894,8 +966,9 @@ mod tests {
             let main = rows.iter().find(|r| r.locked).expect("默认方案应锁定");
             assert!(main.checked);
             let main_id = main.id.clone();
+            let before = draft_of(&app);
             toggle_scheme(&app, &main_id);
-            assert!(draft_of(&app).enabled.contains(&main_id) || draft_of(&app).active == main_id);
+            assert_eq!(draft_of(&app), before, "点锁定的默认方案不改草稿");
             let other = rows
                 .iter()
                 .find(|r| !r.locked)

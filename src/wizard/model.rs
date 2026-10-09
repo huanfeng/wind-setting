@@ -72,6 +72,9 @@ pub struct Draft {
     pub layout: String,
     /// 启用方案，保持原有顺序。
     pub enabled: Vec<String>,
+    /// 打开时 `schema.list` 的全部方案 id（按清单顺序）。`schema.available` 为空即「全部启用」
+    /// （schema_mgr 同一语义），预填与 [`Draft::to_target`] 判变化都据此展开。
+    pub all_ids: Vec<String>,
     // 第 2 步：码表
     pub auto_commit_at_full: bool,
     pub clear_on_empty_max: bool,
@@ -139,12 +142,22 @@ fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
 
 impl Draft {
     /// 按当前实际配置预填。`layout` 是 `shuangpin` 方案当前布局 id（拿不到时传出厂 `xiaohe`）。
-    pub fn from_current(cfg: &Config, _schemas: &[SchemaInfo], layout: &str) -> Draft {
+    pub fn from_current(cfg: &Config, schemas: &[SchemaInfo], layout: &str) -> Draft {
+        let ids: Vec<String> = schemas.iter().map(|s| s.id.clone()).collect();
+        Draft::from_ids(cfg, ids, layout)
+    }
+
+    fn from_ids(cfg: &Config, all_ids: Vec<String>, layout: &str) -> Draft {
         let active = cfg.get_str("schema.active").unwrap_or("wubi86").to_string();
         let b = |k: &str| cfg.get_bool(k).unwrap_or(false);
+        let mut enabled = strs(cfg.get_array("schema.available"));
+        if enabled.is_empty() {
+            enabled = all_ids.clone();
+        }
         Draft {
             kind: Kind::from_active(&active),
-            enabled: strs(cfg.get_array("schema.available")),
+            enabled,
+            all_ids,
             active,
             layout: layout.to_string(),
             auto_commit_at_full: b("schema.codetable.auto_commit_at_full"),
@@ -210,8 +223,8 @@ impl Draft {
             }
             Kind::Pinyin | Kind::Shuangpin => {
                 d.emoji = true;
+                // 分项不重置：总开关关着时它们隐藏，清掉就是悄悄抹掉用户的分项偏好。
                 d.fuzzy = false;
-                d.fuzzy_pairs = [false; 4];
                 d.allow_full_pinyin = false;
             }
         }
@@ -221,9 +234,20 @@ impl Draft {
         d
     }
 
+    /// 第 1 步切主类型：套预设；切回打开时的主类型，则默认方案与启用表回到打开时的样子
+    /// （自定义码表默认方案不被换成 wubi86），第 2、3 步仍按预设。
+    pub fn switch_kind(&self, cur: &Draft, kind: Kind, schemas: &[SchemaInfo]) -> Draft {
+        let mut d = self.with_preset(kind, schemas);
+        if kind == cur.kind {
+            d.active = cur.active.clone();
+            d.enabled = cur.enabled.clone();
+        }
+        d
+    }
+
     /// 基线 + 草稿 → 目标配置。只写本主类型可见、且语义有变化的项。
     pub fn to_target(&self, base: &Config) -> Config {
-        let cur = Draft::from_current(base, &[], &self.layout);
+        let cur = Draft::from_ids(base, self.all_ids.clone(), &self.layout);
         let mut t = base.clone();
         let mut set = |k: &str, v: Value| t.set_path(k, v);
 
@@ -262,8 +286,9 @@ impl Draft {
                 if self.fuzzy != cur.fuzzy {
                     set("schema.pinyin.fuzzy.enabled", self.fuzzy.into());
                 }
+                // 分项只在模糊音开着时可见；关着时不写，免得隐藏状态下改动用户的分项。
                 for (i, (k, _)) in FUZZY_PAIRS.iter().enumerate() {
-                    if self.fuzzy_pairs[i] != cur.fuzzy_pairs[i] {
+                    if self.fuzzy && self.fuzzy_pairs[i] != cur.fuzzy_pairs[i] {
                         set(
                             &format!("schema.pinyin.fuzzy.{k}"),
                             self.fuzzy_pairs[i].into(),
@@ -418,13 +443,16 @@ pub fn summary(
                 on_off(new.emoji),
             );
             push("输入习惯", "模糊音", on_off(cur.fuzzy), on_off(new.fuzzy));
-            for (i, (_, l)) in FUZZY_PAIRS.iter().enumerate() {
-                push(
-                    "输入习惯",
-                    &format!("模糊音 {l}"),
-                    on_off(cur.fuzzy_pairs[i]),
-                    on_off(new.fuzzy_pairs[i]),
-                );
+            // 与 to_target 同：分项只在模糊音开着时算
+            if new.fuzzy {
+                for (i, (_, l)) in FUZZY_PAIRS.iter().enumerate() {
+                    push(
+                        "输入习惯",
+                        &format!("模糊音 {l}"),
+                        on_off(cur.fuzzy_pairs[i]),
+                        on_off(new.fuzzy_pairs[i]),
+                    );
+                }
             }
             if new.kind == Kind::Shuangpin {
                 push(
@@ -485,7 +513,7 @@ pub struct Conflict {
 /// ★ 判据是「占用方会不会让出」，不是「占用方是不是向导管的动词」：拼音用户把快捷输入改到
 /// 反引号时，临时拼音不在拼音用户的向导里，不会让出，覆盖它就是悄悄删掉临拼绑定。
 pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
-    let cur = Draft::from_current(base, &[], &d.layout);
+    let cur = Draft::from_ids(base, d.all_ids.clone(), &d.layout);
     let moving = |verb: &str| match verb {
         VERB_QUICK => d.quick != cur.quick && !matches!(d.quick, Trigger::Keep(_)),
         VERB_TEMP_PINYIN => {
@@ -512,7 +540,8 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
     {
         claims.push((k.clone(), VERB_TEMP_PINYIN, "临时拼音"));
     }
-    if d.slash_dun {
+    // 只有这次由关变开才认领 /：基线已开着顿号时 / 上的占用是基线自带的，不挡向导（裁定 #2）。
+    if d.slash_dun && !cur.slash_dun {
         claims.push(("slash".into(), "", "/ 键输出顿号"));
     }
     let ka = base.get_path(KEY_ACTIONS).and_then(|v| v.as_object());
@@ -822,6 +851,95 @@ mod tests {
         assert!(!key_conflicts(&d, &b).is_empty());
     }
 
+    /// 控制方裁定 #2 的推论：基线已开顿号、/ 又绑了别的动词——这是基线自带的冲突，向导这次
+    /// 没去开顿号，不该认领 /，第 3 步不能因此永远点不动。
+    #[test]
+    fn slash_dun_already_on_does_not_claim_slash() {
+        let mut b = base();
+        b.set_path("input.punct.custom_enabled", json!(true));
+        b.set_path(
+            "input.punct.custom_mappings",
+            json!({"/": ["、", "／", "、", "/"]}),
+        );
+        b.set_path("keys.key_actions.slash", json!("special:kf"));
+        let d = Draft::from_current(&b, &schemas(), "x");
+        assert!(d.slash_dun, "前提：基线已开顿号");
+        assert!(
+            key_conflicts(&d, &b).is_empty(),
+            "{:?}",
+            key_conflicts(&d, &b)
+        );
+    }
+
+    /// 模糊音分项只在总开关开着时可见：隐藏状态下既不被预设清空，也不写出去。
+    #[test]
+    fn hidden_fuzzy_pairs_are_neither_reset_nor_written() {
+        let b = cfg(
+            json!({"schema": {"active": "pinyin", "available": ["pinyin"],
+            "pinyin": {"fuzzy": {"enabled": false, "zh_z": true, "n_l": true}}}}),
+        );
+        let cur = Draft::from_current(&b, &schemas(), "x");
+        let fuzzy_keys = |d: &Draft| -> Vec<String> {
+            d.items(&b, ATOMIC)
+                .into_iter()
+                .map(|i| i.key)
+                .filter(|k| k.starts_with("schema.pinyin.fuzzy."))
+                .collect()
+        };
+        let d = cur.with_preset(Kind::Shuangpin, &schemas());
+        assert_eq!(d.fuzzy_pairs, cur.fuzzy_pairs, "预设不动分项");
+        assert!(fuzzy_keys(&d).is_empty(), "{:?}", fuzzy_keys(&d));
+        // 开模糊音、改分项、再关掉：分项又隐藏了，不写
+        let mut d = cur.clone();
+        d.fuzzy_pairs[0] = false;
+        assert!(fuzzy_keys(&d).is_empty(), "{:?}", fuzzy_keys(&d));
+        let id = |s: &str| s.to_string();
+        assert!(summary(&cur, &d, &id, &id).is_empty());
+        // 模糊音开着时分项照常写
+        d.fuzzy = true;
+        assert_eq!(
+            fuzzy_keys(&d),
+            vec![
+                "schema.pinyin.fuzzy.enabled".to_string(),
+                "schema.pinyin.fuzzy.zh_z".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn switch_back_to_original_kind_restores_active_and_enabled() {
+        let b =
+            cfg(json!({"schema": {"active": "my_table", "available": ["my_table", "english"]}}));
+        let cur = Draft::from_current(&b, &schemas(), "x");
+        let away = cur.switch_kind(&cur, Kind::Pinyin, &schemas());
+        assert_eq!(away.active, "pinyin");
+        let back = away.switch_kind(&cur, Kind::Codetable, &schemas());
+        assert_eq!(back.active, "my_table");
+        assert_eq!(back.enabled, cur.enabled);
+        assert!(back.auto_commit_at_full, "第 2 步仍按预设");
+    }
+
+    /// `schema.available` 为空 = 全部启用（与 schema_mgr 同一语义）：展开成全部方案、保持
+    /// `schema.list` 顺序；展开本身不算改动。
+    #[test]
+    fn empty_available_means_all_enabled() {
+        let b = cfg(json!({"schema": {"active": "wubi86"}}));
+        let d = Draft::from_current(&b, &schemas(), "x");
+        let all: Vec<String> = schemas().into_iter().map(|s| s.id).collect();
+        assert_eq!(d.enabled, all);
+        assert!(d.items(&b, ATOMIC).is_empty(), "{:?}", d.items(&b, ATOMIC));
+        // 取消一个：写出其余全部
+        let mut d2 = d.clone();
+        d2.enabled.retain(|x| x != "stroke");
+        let t = d2.to_target(&b);
+        assert_eq!(
+            strs(t.get_array("schema.available")),
+            all.into_iter()
+                .filter(|x| x != "stroke")
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn temp_conflict_ignored_for_pinyin_kind() {
         let b = base();
@@ -854,15 +972,126 @@ mod tests {
         );
     }
 
+    /// 摘要与写入同判：摘要为空 ⇔ 既无配置项、布局也没变、默认方案也没换。覆盖码表/拼音/双拼
+    /// 各项、触发键 Keep/Off/Key、顿号、临拼关时改键、模糊音隐藏分项、空启用表。
     #[test]
     fn summary_matches_items() {
-        let b = base();
-        let cur = Draft::from_current(&b, &schemas(), "xiaohe");
-        let new = cur.with_preset(Kind::Shuangpin, &schemas());
         let id = |s: &str| s.to_string();
-        let ch = summary(&cur, &new, &id, &id);
-        assert!(!ch.is_empty());
-        assert!(summary(&cur, &cur, &id, &id).is_empty());
+        let check = |name: &str, b: &Config, cur: &Draft, new: &Draft| {
+            let sum_empty = summary(cur, new, &id, &id).is_empty();
+            let no_write = new.items(b, ATOMIC).is_empty()
+                && !layout_changed(cur, new)
+                && new.active == cur.active;
+            assert_eq!(
+                sum_empty,
+                no_write,
+                "{name}：summary={:?} items={:?}",
+                summary(cur, new, &id, &id),
+                new.items(b, ATOMIC)
+            );
+        };
+        type Edit = fn(&mut Draft);
+        let run = |b: Config, cases: &[(&str, Edit)]| {
+            let cur = Draft::from_current(&b, &schemas(), "xiaohe");
+            for (name, f) in cases {
+                let mut d = cur.clone();
+                f(&mut d);
+                check(name, &b, &cur, &d);
+            }
+        };
+
+        // 码表
+        run(
+            base(),
+            &[
+                ("未动", |_| {}),
+                ("全码上屏", |d| d.auto_commit_at_full = true),
+                ("空码清空", |d| d.clear_on_empty_max = true),
+                ("反查关", |d| d.code_hint = false),
+                ("临拼关", |d| d.temp_pinyin = false),
+                ("临拼键换", |d| {
+                    d.temp_key = Trigger::Key("quote".into())
+                }),
+                ("临拼键关", |d| d.temp_key = Trigger::Off),
+                ("临拼键保持", |d| {
+                    d.temp_key = Trigger::Keep(vec!["backtick".into()])
+                }),
+                ("临拼关时改键", |d| {
+                    d.temp_pinyin = false;
+                    d.temp_key = Trigger::Key("quote".into());
+                }),
+                ("快捷键换", |d| d.quick = Trigger::Key("quote".into())),
+                ("快捷键关", |d| d.quick = Trigger::Off),
+                ("快捷键保持", |d| {
+                    d.quick = Trigger::Keep(vec!["semicolon".into()])
+                }),
+                ("顿号开", |d| d.slash_dun = true),
+                ("取消一个方案", |d| {
+                    d.enabled.retain(|x| x != "my_table")
+                }),
+                ("码表下改拼音项（隐藏）", |d| {
+                    d.emoji = true;
+                    d.fuzzy = true;
+                }),
+                ("切拼音", |d| {
+                    *d = d.with_preset(Kind::Pinyin, &schemas())
+                }),
+            ],
+        );
+
+        // 拼音
+        run(
+            cfg(
+                json!({"schema": {"active": "pinyin", "available": ["pinyin"],
+                "pinyin": {"fuzzy": {"enabled": false, "zh_z": true}}}}),
+            ),
+            &[
+                ("未动", |_| {}),
+                ("emoji", |d| d.emoji = true),
+                ("模糊音开", |d| d.fuzzy = true),
+                ("模糊音开并改分项", |d| {
+                    d.fuzzy = true;
+                    d.fuzzy_pairs[3] = true;
+                }),
+                ("隐藏分项", |d| d.fuzzy_pairs[0] = false),
+                ("全拼下改双拼项（隐藏）", |d| {
+                    d.allow_full_pinyin = true
+                }),
+                ("拼音下改码表项（隐藏）", |d| {
+                    d.auto_commit_at_full = true;
+                    d.temp_pinyin = false;
+                    d.temp_key = Trigger::Key("quote".into());
+                }),
+                ("快捷键开", |d| {
+                    d.quick = Trigger::Key("semicolon".into())
+                }),
+                ("顿号开", |d| d.slash_dun = true),
+            ],
+        );
+
+        // 双拼
+        run(
+            cfg(json!({"schema": {"active": "shuangpin", "available": ["shuangpin"]}})),
+            &[
+                ("未动", |_| {}),
+                ("布局", |d| d.layout = "ziranma".into()),
+                ("允许全拼", |d| d.allow_full_pinyin = true),
+                ("切回全拼", |d| {
+                    *d = d.with_preset(Kind::Pinyin, &schemas())
+                }),
+            ],
+        );
+
+        // 空启用表（=全部启用）
+        run(
+            cfg(json!({"schema": {"active": "wubi86"}})),
+            &[
+                ("未动", |_| {}),
+                ("取消一个方案", |d| {
+                    d.enabled.retain(|x| x != "stroke")
+                }),
+            ],
+        );
     }
 
     #[test]

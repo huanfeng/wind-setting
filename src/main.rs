@@ -212,7 +212,10 @@ fn route_target(st: &state::AppState, idx: usize, notify: bool) {
 /// 若重连后仍失败，`apply_loaded` 会再次把 `conn_failed` 置 true，对话框保持。
 pub fn main_reconnect(app: &Rc<RefCell<state::AppState>>) {
     let data = state::LoadedState::fetch();
+    let connected = data.connected;
     app.borrow_mut().apply_loaded(data);
+    // 启动时 core 没起来的用户，重连成功这一刻才是首启向导该弹的时候。
+    wizard::maybe_auto_open(app, connected);
 }
 
 /// 单实例 app_id（含变体后缀，dev/release 互不干扰）。主窗口与加词小窗是两个独立单例，

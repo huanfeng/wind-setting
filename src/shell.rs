@@ -459,7 +459,7 @@ fn wizard_entry(app: &Rc<RefCell<AppState>>) -> Element {
             } else {
                 app.borrow().feedback.set(Some((
                     ToastKind::Info,
-                    "未连接输入法服务，无法使用设置向导".to_string(),
+                    "输入法未在运行，暂时无法使用设置向导".to_string(),
                 )));
             }
         })

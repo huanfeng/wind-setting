@@ -31,13 +31,14 @@ pub enum ApplyOutcome {
     Failed {
         step: &'static str,
         error: String,
-        done: Vec<&'static str>,
+        /// 已落盘的步骤（展示用文案）。
+        done: Vec<String>,
     },
 }
 
 pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
-    let mut done: Vec<&'static str> = Vec::new();
-    let fail = |step: &'static str, error: String, done: &Vec<&'static str>| ApplyOutcome::Failed {
+    let mut done: Vec<String> = Vec::new();
+    let fail = |step: &'static str, error: String, done: &Vec<String>| ApplyOutcome::Failed {
         step,
         error,
         done: done.clone(),
@@ -62,6 +63,19 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
                     })
                     .unwrap_or_default();
                 if !skipped.is_empty() {
+                    // core 对被拒项只是跳过，合法项照样落盘（wind-rpc dispatch 的 setItems 回
+                    // applied + skipped）。有写进去的就得记成已完成，不能报「没有改动任何配置」。
+                    let applied = resp
+                        .get("applied")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize)
+                        .unwrap_or(items.len().saturating_sub(skipped.len()));
+                    if applied > 0 {
+                        done.push(format!(
+                            "保存配置（{} 项被拒，其余 {applied} 项已写入）",
+                            skipped.len()
+                        ));
+                    }
                     return fail(
                         "保存配置",
                         format!("服务端拒绝了 {} 项：{}", skipped.len(), skipped.join(", ")),
@@ -71,7 +85,7 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
             }
             Err(e) => return fail("保存配置", e, &done),
         }
-        done.push("保存配置");
+        done.push("保存配置".into());
     }
 
     if let Some(layout) = &plan.layout {
@@ -92,7 +106,7 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
         ) {
             return fail("双拼布局", e, &done);
         }
-        done.push("双拼布局");
+        done.push("双拼布局".into());
     }
 
     if let Some(id) = &plan.active {
@@ -183,12 +197,33 @@ mod tests {
         match apply_writes(&mut r, &plan()) {
             ApplyOutcome::Failed { step, done, error } => {
                 assert_eq!(step, "保存配置");
-                assert!(done.is_empty());
+                assert!(done.is_empty(), "唯一一项被拒，什么都没写进去：{done:?}");
                 assert!(error.contains("x.y"));
             }
             o => panic!("{o:?}"),
         }
         assert_eq!(r.calls, ["config.setItems"]);
+    }
+
+    /// 被拒项只是跳过、其余照样落盘：已完成步骤要记下「部分写入」。
+    #[test]
+    fn partially_rejected_items_count_as_done() {
+        struct Partial;
+        impl CoreCalls for Partial {
+            fn call(&mut self, _m: &str, _p: &Value) -> Result<Value, String> {
+                Ok(json!({"applied": 3, "skipped": [{"key": "x.y"}]}))
+            }
+        }
+        match apply_writes(&mut Partial, &plan()) {
+            ApplyOutcome::Failed { step, done, .. } => {
+                assert_eq!(step, "保存配置");
+                assert_eq!(
+                    done,
+                    vec!["保存配置（1 项被拒，其余 3 项已写入）".to_string()]
+                );
+            }
+            o => panic!("{o:?}"),
+        }
     }
 
     #[test]
@@ -198,7 +233,7 @@ mod tests {
         match apply_writes(&mut r, &plan()) {
             ApplyOutcome::Failed { step, done, .. } => {
                 assert_eq!(step, "切换默认方案");
-                assert_eq!(done, vec!["保存配置", "双拼布局"]);
+                assert_eq!(done, ["保存配置", "双拼布局"]);
             }
             o => panic!("{o:?}"),
         }

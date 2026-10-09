@@ -42,9 +42,16 @@ pub fn open_wizard(app: &Rc<RefCell<AppState>>) {
     st.wizard_visible.set(true);
 }
 
+/// 启动数据就绪、或重连成功后调用。向导已开着时不动它（重开会把草稿打回预填）。
 pub fn maybe_auto_open(app: &Rc<RefCell<AppState>>, connected: bool) {
-    let dismissed = app.borrow().setting_config.ui.wizard_dismissed;
-    if should_auto_open(dismissed, connected) {
+    let (dismissed, open) = {
+        let st = app.borrow();
+        (
+            st.setting_config.ui.wizard_dismissed,
+            st.wizard.borrow().is_some(),
+        )
+    };
+    if !open && should_auto_open(dismissed, connected) {
         open_wizard(app);
     }
 }
@@ -81,6 +88,15 @@ pub fn complete(app: &Rc<RefCell<AppState>>) {
 
 /// 完成：写入 → 整体重灌（Review Focus #1：只 reload() 不刷新 schema_mgr）→ 落标志。
 pub fn finish(app: &Rc<RefCell<AppState>>) {
+    finish_with(app, &mut apply::RealCore, LoadedState::fetch);
+}
+
+/// [`finish`] 的本体。core 调用与重灌数据可注入：mock 不落盘，测试要自己造「写入后的配置」。
+pub(crate) fn finish_with(
+    app: &Rc<RefCell<AppState>>,
+    core: &mut dyn apply::CoreCalls,
+    fetch: impl FnOnce() -> LoadedState,
+) {
     let plan = {
         let st = app.borrow();
         let s = st.wizard.borrow();
@@ -91,10 +107,16 @@ pub fn finish(app: &Rc<RefCell<AppState>>) {
             active: (s.draft.active != s.cur.active).then(|| s.draft.active.clone()),
         }
     };
-    let outcome = apply::apply_writes(&mut apply::RealCore, &plan);
+    let outcome = apply::apply_writes(core, &plan);
     // 失败也重灌：已成功的步骤已经落盘，设置页要反映真实状态
-    app.borrow_mut().apply_loaded(LoadedState::fetch());
+    app.borrow_mut().apply_loaded(fetch());
     if outcome == apply::ApplyOutcome::Done {
+        // 重灌只刷新 schema_mgr 的启用表与键表，不碰 active_id；它要等 core 异步广播的
+        // schema.activeChanged。事件没到（或断开）时设置页的 schema.active writer 仍写旧方案，
+        // 判脏、一点「保存」就把默认方案改回去。同 SchemaManagerState::set_active：成功即本地落定。
+        if let Some(id) = &plan.active {
+            app.borrow().schema_mgr.set_active_from_core(id);
+        }
         end(app, true);
         app.borrow()
             .feedback
@@ -173,22 +195,47 @@ mod tests {
         r
     }
 
-    /// Review Focus #1：向导写入后，设置页 writer 的状态（schema_mgr.enabled_order / key_actions、
-    /// punct cells）必须跟上，否则用户接着点「保存」会把向导结果改回去。
+    /// 写入全部成功的假 core：不落盘，落盘效果由测试自己造的重灌数据代替。
+    pub(super) struct OkCore;
+    impl apply::CoreCalls for OkCore {
+        fn call(&mut self, m: &str, _p: &serde_json::Value) -> Result<serde_json::Value, String> {
+            Ok(match m {
+                "schema.setActive" => serde_json::json!({"ok": true}),
+                _ => serde_json::json!({}),
+            })
+        }
+    }
+
+    /// Review Focus #1：向导写入后，设置页 writer 的状态（schema_mgr.enabled_order / key_actions /
+    /// active_id、punct cells）必须跟上，否则用户接着点「保存」会把向导结果改回去。
+    ///
+    /// 重灌喂的是 `draft.to_target(base)`——模拟 core 真实落盘后的配置。mock 的 `config.get`
+    /// 不随写入变化，直接拿它重灌等于什么都没写，测不出 writer 是否跟上。
     #[test]
     fn after_finish_settings_save_does_not_revert_wizard() {
         with_mock(|| {
             let app = mock_app();
             open_wizard(&app);
-            {
+            let target = {
                 let st = app.borrow();
                 let mut s = st.wizard.borrow_mut();
                 let s = s.as_mut().unwrap();
                 s.draft = s.draft.with_preset(model::Kind::Pinyin, &st.schemas);
-            }
-            // 写入走 mock：mock 不落盘，所以这里只断言「重灌后设置页的 writer 对重灌后的基线不产生 diff」
-            finish(&app);
-            assert!(!app.borrow().is_dirty(), "重灌后设置页不应判脏");
+                assert_ne!(s.draft.active, s.cur.active, "前提：默认方案要变");
+                s.draft.to_target(&st.base_config)
+            };
+            finish_with(&app, &mut OkCore, || {
+                let mut l = LoadedState::fetch();
+                l.config_value = target.0.clone();
+                l
+            });
+            let st = app.borrow();
+            assert_eq!(*st.schema_mgr.active_id.borrow(), "pinyin");
+            assert!(
+                !st.is_dirty(),
+                "重灌后设置页不应判脏：{:?}",
+                st.unsaved_items()
+            );
         });
     }
 
@@ -261,6 +308,40 @@ mod tests {
             new_trigger_conflicts(&base, &target).is_some(),
             "目标新增的冲突要报"
         );
+    }
+
+    /// 启动时 core 没起来、后来点「重试」连上的用户，也要看到首启向导。
+    #[test]
+    fn reconnect_auto_opens_wizard() {
+        with_mock(|| {
+            let app = mock_app();
+            app.borrow_mut().setting_config.ui.wizard_dismissed = false;
+            assert!(app.borrow().wizard.borrow().is_none());
+            crate::main_reconnect(&app);
+            assert!(app.borrow().wizard_visible.get());
+            assert_eq!(app.borrow().wizard_phase.get(), WizardPhase::Step(1));
+        });
+    }
+
+    #[test]
+    fn auto_open_leaves_an_open_wizard_alone() {
+        with_mock(|| {
+            let app = mock_app();
+            app.borrow_mut().setting_config.ui.wizard_dismissed = false;
+            open_wizard(&app);
+            app.borrow().wizard_phase.set(WizardPhase::Step(3));
+            {
+                let st = app.borrow();
+                let mut s = st.wizard.borrow_mut();
+                s.as_mut().unwrap().draft.slash_dun = !s.as_ref().unwrap().cur.slash_dun;
+            }
+            maybe_auto_open(&app, true);
+            let st = app.borrow();
+            assert_eq!(st.wizard_phase.get(), WizardPhase::Step(3));
+            let s = st.wizard.borrow();
+            let s = s.as_ref().unwrap();
+            assert_ne!(s.draft, s.cur, "草稿不该被打回预填");
+        });
     }
 
     #[test]
