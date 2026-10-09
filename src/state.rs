@@ -1673,7 +1673,7 @@ impl AppState {
                     r.remote_version, r.local_version
                 ));
                 self.update_notes.set(r.release_notes.clone());
-                self.update_size_text.set(update_size_line(&r));
+                self.update_size_text.set(Self::update_size_line(&r));
                 self.update_phase.set(UpdatePhase::HasUpdate);
                 *self.update_check.borrow_mut() = Some(r);
                 self.update_dialog_visible.set(true);
@@ -1697,7 +1697,7 @@ impl AppState {
                         result.remote_version, result.local_version
                     ));
                     self.update_notes.set(result.release_notes.clone());
-                    self.update_size_text.set(update_size_line(&result));
+                    self.update_size_text.set(Self::update_size_line(&result));
                     self.update_phase.set(UpdatePhase::HasUpdate);
                 } else if result.local_unparsable {
                     // 无 tag 的开发构建：说明为何不提示，而不是谎称"已是最新"
@@ -2560,11 +2560,6 @@ impl AppState {
         !self.unsaved_items().is_empty()
     }
 
-    /// 跑一遍 writers 再与 base 做 diff，返回本次保存**会提交的项**。仅供测试。
-    ///
-    /// 与 [`Self::save`] 共用 `diff_config` 这一步，但**在副本上**跑 writers：save 是把
-    /// writers 直接写进 `self.current_config` 的（那是提交路径的一部分），测试若照做，
-    /// 一次调用就把状态改成"已保存"的样子，第二次断言便不再成立。同 `has_unsaved_changes`。
     /// 「发现新版本」对话框里那一行体积说明。Linux 不自动安装（装 .deb 要 root），
     /// 这一行顺带告诉用户怎么装。
     fn update_size_line(r: &crate::update::CheckResult) -> String {
@@ -2578,6 +2573,11 @@ impl AppState {
         }
     }
 
+    /// 跑一遍 writers 再与 base 做 diff，返回本次保存**会提交的项**。仅供测试。
+    ///
+    /// 与 [`Self::save`] 共用 `diff_config` 这一步，但**在副本上**跑 writers：save 是把
+    /// writers 直接写进 `self.current_config` 的（那是提交路径的一部分），测试若照做，
+    /// 一次调用就把状态改成"已保存"的样子，第二次断言便不再成立。同 `has_unsaved_changes`。
     #[cfg(test)]
     pub fn debug_diff_after_writers(&self) -> Vec<crate::config::ConfigItem> {
         let mut probe = self.current_config.clone();
