@@ -25,6 +25,11 @@
       "type": "str"
     },
     {
+      "default": false,
+      "key": "schema.keep_all_loaded",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "schema.codetable.top_code_commit",
       "schemaOverride": {

@@ -15,6 +15,7 @@ pub mod compat;
 pub mod config_import;
 pub mod dict;
 pub mod integration;
+pub mod memory;
 pub mod phrase_import;
 pub mod stats;
 
@@ -109,10 +110,10 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     // 硬编码卡片（集成 / 导入 / 备份）是两批来源，清单排到最后也只是"manifest 那批
     // 里的最后"，仍落在三张卡之前。故两个 manifest 分区都在这里显式定位：
     //
-    //   系统集成 → 导入 → 备份与还原 → 应用兼容性 → 游戏兼容 → 日志设置
+    //   系统集成 → 导入 → 备份与还原 → 应用兼容性 → 性能 → 游戏兼容 → 日志设置
     //
-    // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；游戏兼容是
-    // 少数人才开的兼容开关；日志设置只在排查时才动，压轴。
+    // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；性能（常驻开关 +
+    // 内存占用诊断）是取舍与自查；游戏兼容是少数人才开的兼容开关；日志设置只在排查时才动，压轴。
     // BTreeMap 而非 HashMap：下面的"剩余分区"兜底会遍历它，HashMap 的顺序每次运行
     // 都不同，页面会莫名其妙地换序。
     let mut manifest_secs: std::collections::BTreeMap<String, Element> = state
@@ -172,6 +173,17 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         0,
         crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
     ));
+    // 性能：清单里的「常驻所有方案」开关 + 手写的「内存占用」诊断卡，同一个二级导航项。
+    let mut perf = Element::col().width_match().spacing(18);
+    if let Some(el) = manifest_secs.remove("性能") {
+        perf = perf.child(el);
+    }
+    perf = perf.child(crate::search::anchor::wrap(
+        memory::build_memory_section(state),
+        memory::ANCHOR,
+        state.jump,
+    ));
+    secs.push(nav.wrap("性能", 0, perf));
     // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
     // 那是正常状态，不是配置错误。
     for name in ["游戏兼容", "日志设置"] {

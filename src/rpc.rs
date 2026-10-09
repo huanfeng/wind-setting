@@ -1547,7 +1547,7 @@ fn mock_preview_template(params: &Value) -> Value {
 
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
-fn mock_reply(method: &str, params: &Value) -> Value {
+pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
     match method {
         "system.capabilities" => {
             serde_json::from_str(MOCK_CAPABILITIES).unwrap_or_else(|_| json!({}))
@@ -1659,6 +1659,22 @@ fn mock_reply(method: &str, params: &Value) -> Value {
             }
         }),
         "dict.stats" => json!([]),
+        // 内存诊断（高级 → 性能 → 内存占用）。形状对齐 core wind-webdata `memory_stats_json`：
+        // 字段恒在，取不到的给 null / 空数组。数字取靶机量级，拆字表给 0 好看「零项不列」。
+        "system.memoryStats" => json!({
+            "process": { "bytes": 33_659_290u64, "kind": "private" },
+            "schemas": [
+                { "id": "wubi86", "type": "CodeTable",
+                  "parts": [{ "name": "sentence_index", "bytes": 1_048_576, "allocs": 3 }] },
+                { "id": "pinyin", "type": "Pinyin", "parts": [] }
+            ],
+            "reverseIndex": [{ "schema": "wubi86", "heapBytes": 2_411_724, "imageBytes": 2_411_724 }],
+            "userText": [{ "schema": "wubi86", "bytes": 4_404_019, "building": false }],
+            "userAssoc": null,
+            "singleChar": null,
+            "reverseLookup": { "chaiziBytes": 0, "pinyinBytes": 1_258_291, "commentBytes": 0 },
+            "redb": { "cacheLimitBytes": 268_435_456u64, "pageCacheDrops": 3 }
+        }),
         "stats.daily" => mock_stats_daily(params),
         // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。
         // 字符类：覆盖三态的每一档，外加「有逐字覆盖压着」那一行——那是 §7.2 说的

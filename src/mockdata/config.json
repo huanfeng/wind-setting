@@ -325,6 +325,7 @@
   "frequency": {
    "exclude_blocks": []
   },
+  "keep_all_loaded": false,
   "mix": {
    "auto_commit_block_on_english": false,
    "auto_commit_block_on_pinyin": true,
