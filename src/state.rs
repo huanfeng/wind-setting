@@ -634,6 +634,10 @@ pub struct AppState {
     // ── 在线升级 ──────────────────────────────────────────────────────────
     /// 升级对话框可见标志。
     pub update_dialog_visible: Signal<bool>,
+    /// 设置向导可见标志。
+    pub wizard_visible: Signal<bool>,
+    /// 向导「下次不再弹出」勾选态，初值取自 `[ui] wizard_dismissed`。
+    pub wizard_dont_show: Signal<bool>,
     /// 升级流程阶段。
     pub update_phase: Signal<crate::update::UpdatePhase>,
     /// 下载进度 0.0..=1.0，驱动 `Element::progress`。
@@ -893,6 +897,7 @@ impl AppState {
         let setting_load = setting_config::load();
         // 先取出，下面 setting_load.config 会被移动进结构体
         let setting_load_update_auto_check = setting_load.config.update.auto_check;
+        let setting_load_wizard_dismissed = setting_load.config.ui.wizard_dismissed;
         // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
         // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
         let initial_dark = setting_load
@@ -1002,6 +1007,8 @@ impl AppState {
             pinyin_schema_lab_sig: signal(vec![]),
 
             update_dialog_visible: signal(false),
+            wizard_visible: signal(false),
+            wizard_dont_show: signal(setting_load_wizard_dismissed),
             update_phase: signal(crate::update::UpdatePhase::Checking),
             update_progress: signal(0.0),
             update_progress_text: signal(String::new()),
@@ -1369,6 +1376,11 @@ impl AppState {
     /// 持久化方案页「显示特殊方案」。
     pub fn save_show_hidden_schemas(&mut self, on: bool) {
         self.save_ui_state(|ui| ui.show_hidden_schemas = on);
+    }
+
+    /// 持久化设置向导「下次不再弹出」。
+    pub fn save_wizard_dismissed(&mut self, on: bool) {
+        self.save_ui_state(|ui| ui.wizard_dismissed = on);
     }
 
     /// 持久化「启动时自动检查更新」开关。

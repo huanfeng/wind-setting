@@ -96,6 +96,9 @@ pub struct UiStateConfig {
     /// 方案页「显示特殊方案」。
     #[serde(default)]
     pub show_hidden_schemas: bool,
+    /// 设置向导「下次不再弹出」/ 已完成。缺省 false ⇒ 所有用户（含升级上来的）弹一次。
+    #[serde(default)]
+    pub wizard_dismissed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -254,6 +257,12 @@ fn save_to_path(config: &SettingConfig, path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::mode::AppMode;
+
+    #[test]
+    fn wizard_dismissed_defaults_false_for_old_files() {
+        let c: SettingConfig = toml::from_str("[ui]\nhide_disabled_schemas = true\n").unwrap();
+        assert!(!c.ui.wizard_dismissed);
+    }
 
     /// 期望值用 `join` 拼而非字面量：路径分隔符随平台变，写死 `\` 会让这条测试
     /// 在 macOS/Linux 上无关地红掉，掩盖它真正要守的东西（目录名与文件名）。
