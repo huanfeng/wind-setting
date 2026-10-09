@@ -455,46 +455,57 @@ pub(crate) fn build_titlebar(subtitle: &str) -> Element {
     // 半物理像素位移，150% 下会把右侧削掉一列（见 `app_icon` 文档）。
     let logo = crate::widgets::app_icon(28);
 
+    // 窗口按钮走全包式（同 wind-ui-rust 的 frameless / light_titlebar 示例）：按钮吃满
+    // 整条标题栏高度、关闭键贴死窗口右缘。靠两处布局，不改控件：
+    // - 外层 `cross(Align::Stretch)` 覆盖 `WindowButton` 自报的 32 高，hover 底色铺满
+    //   44 高，而不是浮在条中间的一枚小方块；
+    // - 内边距只挂在左侧品牌区上——挂整条 row 会把右侧按钮推离窗口边 14px。
+    // 品牌区里层重新 `cross(Center)`，免得 Stretch 把 Logo 与文字拉变形。
+    // 关闭键 hover 红底仍是方角：Win11 下由 DWM 按系统半径裁出窗口圆角。
     Element::row()
         .width_match()
         .height(44)
-        .cross(Align::Center)
-        .padding_xy(14, 0)
-        .spacing(10)
+        .cross(Align::Stretch)
         .bg_role(Role::SurfaceAlt)
         .window_drag()
-        .child(logo)
-        // 三段式标题：产品名加粗、间隔点与「设置」弱化分层（参考稿 titlebar）。
         .child(
             Element::row()
                 .cross(Align::Center)
-                .spacing(4)
+                .padding_xy(14, 0)
+                .spacing(10)
+                .child(logo)
+                // 三段式标题：产品名加粗、间隔点与「设置」弱化分层（参考稿 titlebar）。
                 .child(
-                    Element::label("清风输入法")
-                        .font_size(13.0)
-                        .font_weight(600)
-                        .fg_role(Role::Text),
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(4)
+                        .child(
+                            Element::label("清风输入法")
+                                .font_size(13.0)
+                                .font_weight(600)
+                                .fg_role(Role::Text),
+                        )
+                        .child(
+                            Element::label("·")
+                                .font_size(13.0)
+                                .fg_role(Role::TextDisabled),
+                        )
+                        .child(
+                            Element::label(subtitle)
+                                .font_size(13.0)
+                                .fg_role(Role::TextMuted),
+                        ),
                 )
+                // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）；dev 变体追加「(开发版)」。
                 .child(
-                    Element::label("·")
-                        .font_size(13.0)
-                        .fg_role(Role::TextDisabled),
-                )
-                .child(
-                    Element::label(subtitle)
-                        .font_size(13.0)
-                        .fg_role(Role::TextMuted),
+                    Element::label(format!(
+                        "{}{}",
+                        env!("WIND_SETTING_VERSION"),
+                        crate::mode::version_suffix()
+                    ))
+                    .font_size(11.0)
+                    .fg_role(Role::TextMuted),
                 ),
-        )
-        // 版本号（build 期取自 git tag/hash，弱化色小字，与标题基线对齐）；dev 变体追加「(开发版)」。
-        .child(
-            Element::label(format!(
-                "{}{}",
-                env!("WIND_SETTING_VERSION"),
-                crate::mode::version_suffix()
-            ))
-            .font_size(11.0)
-            .fg_role(Role::TextMuted),
         )
         .child(Element::leaf().weight(1.0))
         // 图标随主题明暗（否则默认深色字在暗色标题栏上不可见）。

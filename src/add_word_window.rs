@@ -364,20 +364,27 @@ fn build_form(
     auto: AutoEncode,
 ) -> Element {
     // 标题栏：可拖动区 + 标题 + 关闭按钮（window_button::Close 内置 request_close）。
+    // 关闭键全包式（同 `shell::build_titlebar`）：`Stretch` 让它吃满标题栏高度，
+    // 内边距只挂在标题那一格上，关闭键贴死窗口右缘。
     let titlebar = Element::row()
         .width_match()
         .height(40)
-        .cross(Align::Center)
-        .padding_xy(14, 0)
+        .cross(Align::Stretch)
         .bg_role(Role::SurfaceAlt)
         .window_drag()
         .child(
-            Element::label_signal(title)
-                .font_size(13.5)
-                .font_weight(600)
-                .fg_role(Role::Text)
+            Element::row()
                 .weight(1.0)
-                .max_lines(1),
+                .cross(Align::Center)
+                .padding_xy(14, 0)
+                .child(
+                    Element::label_signal(title)
+                        .font_size(13.5)
+                        .font_weight(600)
+                        .fg_role(Role::Text)
+                        .weight(1.0)
+                        .max_lines(1),
+                ),
         )
         .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text));
 
