@@ -3609,13 +3609,14 @@ enabled_when = "stats.enabled == true"
 platform = "windows"
 
 # ═══════════════════════════ 高级 ═══════════════════════════
-# ── 性能 ──
-# 分区里另有一张手写的「内存占用」卡片（只读诊断，`system.memoryStats`），见
-# `pages/memory.rs`；两者在 `advanced_page` 里拼在同一个二级导航项下。
+# ── 性能与诊断 ──
+# 卡片里在本项之后另接一行手写的「内存占用」摘要 +「诊断信息…」对话框（只读诊断，
+# `system.memoryStats`），见 `pages/memory.rs`；拼接在 `advanced_page` 里做。
+# 分区名与 `memory::SECTION` 必须一致，改一处要同改另一处。
 [[items]]
 key = "schema.keep_all_loaded"
 group = "advanced"
-section = "性能"
+section = "性能与诊断"
 type = "toggle"
 label = "常驻所有方案"
 hint = "开启：所有方案预先加载并留在内存里，切换方案零等待。关闭：只加载用到的方案，30 分钟不用自动卸载，省内存"

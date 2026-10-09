@@ -404,7 +404,9 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "advanced:file-assoc", anchor: "advanced:integration", page: "advanced", title: "文件关联", section: "桌面集成", keywords: "wpkg 双击 打开方式" },
     Handwritten { id: "advanced:import-export", anchor: "advanced:import-export", page: "advanced", title: "导入与导出", section: "导入与导出", keywords: "配置 迁移 剪贴板" },
     Handwritten { id: "advanced:backup", anchor: "advanced:backup", page: "advanced", title: "备份与还原", section: "备份与还原", keywords: "快照 恢复 存档" },
-    Handwritten { id: "advanced:memory", anchor: "advanced:memory", page: "advanced", title: "内存占用", section: "性能", keywords: "内存 诊断 复制 反馈 占用 方案 memory" },
+    // 两条都落在「内存占用」那一行（「诊断信息…」按钮所在行）；锚点即 `pages::memory::ANCHOR`。
+    Handwritten { id: "advanced:memory", anchor: "advanced:memory", page: "advanced", title: "内存占用", section: "性能与诊断", keywords: "内存 诊断 复制 反馈 占用 方案 memory" },
+    Handwritten { id: "advanced:diagnostics", anchor: "advanced:memory", page: "advanced", title: "诊断信息", section: "性能与诊断", keywords: "内存 复制 反馈 自动刷新 排查 diagnostics" },
     // ── 关于（内容不多，三条共用整页锚点）──
     Handwritten { id: "about:version", anchor: "about:main", page: "about", title: "版本信息", section: "关于", keywords: "版本号 内部版本 构建" },
     Handwritten { id: "about:update", anchor: "about:main", page: "about", title: "检查更新", section: "关于", keywords: "升级 新版本 下载" },
@@ -606,6 +608,30 @@ mod tests {
         for e in build_index(&m) {
             assert!(!e.title.is_empty(), "{} 标题为空", e.id);
             assert!(!e.path.is_empty(), "{} 面包屑为空", e.id);
+        }
+    }
+
+    /// 内存诊断的两条手写条目落在「性能与诊断」分区里「内存占用」那一行的锚点上。
+    /// 分区名 / 锚点任一改了而这里没跟，搜索就会跳到一个不存在的锚点（无报错、不滚动）。
+    #[test]
+    fn memory_entries_point_at_perf_diag_row() {
+        let idx = build_index(&manifest());
+        for id in ["advanced:memory", "advanced:diagnostics"] {
+            let e = idx.iter().find(|e| e.id == id).expect(id);
+            assert_eq!(
+                e.path,
+                vec![
+                    "高级".to_string(),
+                    crate::pages::memory::SECTION.to_string()
+                ]
+            );
+            assert_eq!(
+                e.target,
+                JumpTarget::Card {
+                    tab: page_tab("advanced"),
+                    anchor: crate::pages::memory::ANCHOR.to_string(),
+                }
+            );
         }
     }
 

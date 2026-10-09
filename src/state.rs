@@ -568,6 +568,8 @@ pub struct AppState {
     pub integration: crate::pages::integration::IntegrationState,
     /// 统计页状态（数据快照 + 清理确认对话框）。
     pub stats_mgr: crate::pages::stats::StatsState,
+    /// 高级页「性能与诊断」里的内存诊断（摘要行 + 诊断信息对话框）。
+    pub memory: crate::pages::memory::MemoryDiag,
     /// 「应用兼容」窗的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
     pub compat_mgr: crate::pages::compat::CompatState,
     /// 「重新加载」二次确认对话框可见标志。
@@ -1003,6 +1005,7 @@ impl AppState {
             config_import: crate::pages::config_import::ConfigImportState::new(),
             integration: crate::pages::integration::IntegrationState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
+            memory: crate::pages::memory::MemoryDiag::new(),
             compat_mgr: crate::pages::compat::CompatState::new(),
             reload_confirm: signal(false),
             exit_confirm: signal(false),
@@ -2588,8 +2591,13 @@ impl AppState {
     ///    本方法。不能在拦下时就置位：那次关闭被取消了，主窗还在。
     ///
     /// 第 1 类刻意绕过 `on_close_request`（见该处说明），所以把置位挂在守卫里覆盖不到它们。
+    ///
+    /// 顺带停掉诊断信息对话框的自动刷新：词库 / 兼容窗当首窗时，诊断定时器挂在那个窗口上，
+    /// 主窗关了它还在跑（见 `pages::memory`）。
     pub fn mark_main_window_closed(&self) {
         self.main_window_closed.set(true);
+        self.memory.visible.set(false);
+        self.memory.auto.set(false);
     }
 
     /// 是否有未保存的改动（关窗确认用）。

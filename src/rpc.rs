@@ -195,6 +195,10 @@ fn timeout_for(method: &str) -> std::time::Duration {
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// 连不上 core 时错误文案的固定前缀。设置端据此区分「服务未连接」与其他失败
+/// （见 `pages::memory`），改措辞要连同那边一起看。
+pub const CONNECT_FAILED: &str = "连接 core 失败";
+
 /// 连接核心并完成一次 RPC 调用。
 pub fn call_core(method: &str, params: &Value) -> Result<Value, String> {
     call_core_within(method, params, timeout_for(method))
@@ -237,13 +241,13 @@ fn call_core_inner(endpoint: &str, method: &str, params: &Value) -> Result<Value
     {
         use std::os::unix::net::UnixStream;
         let mut stream = UnixStream::connect(endpoint)
-            .map_err(|e| format!("连接 core 失败 ({endpoint}): {e}"))?;
+            .map_err(|e| format!("{CONNECT_FAILED} ({endpoint}): {e}"))?;
         call_on_stream(&mut stream, method, params)
     }
     #[cfg(windows)]
     {
-        let mut stream =
-            connect_pipe(endpoint, 100).map_err(|e| format!("连接 core 失败 ({endpoint}): {e}"))?;
+        let mut stream = connect_pipe(endpoint, 100)
+            .map_err(|e| format!("{CONNECT_FAILED} ({endpoint}): {e}"))?;
         call_on_stream(&mut stream, method, params)
     }
 }
@@ -1659,7 +1663,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             }
         }),
         "dict.stats" => json!([]),
-        // 内存诊断（高级 → 性能 → 内存占用）。形状对齐 core wind-webdata `memory_stats_json`：
+        // 内存诊断（高级 → 性能与诊断 → 内存占用 / 诊断信息对话框）。形状对齐 core wind-webdata `memory_stats_json`：
         // 字段恒在，取不到的给 null / 空数组。数字取靶机量级，拆字表给 0 好看「零项不列」。
         "system.memoryStats" => json!({
             "process": { "bytes": 33_659_290u64, "kind": "private" },

@@ -110,10 +110,10 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     // 硬编码卡片（集成 / 导入 / 备份）是两批来源，清单排到最后也只是"manifest 那批
     // 里的最后"，仍落在三张卡之前。故两个 manifest 分区都在这里显式定位：
     //
-    //   系统集成 → 导入 → 备份与还原 → 应用兼容性 → 性能 → 游戏兼容 → 日志设置
+    //   系统集成 → 导入 → 备份与还原 → 应用兼容性 → 性能与诊断 → 游戏兼容 → 日志设置
     //
-    // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；性能（常驻开关 +
-    // 内存占用诊断）是取舍与自查；游戏兼容是少数人才开的兼容开关；日志设置只在排查时才动，压轴。
+    // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；性能与诊断（常驻开关 +
+    // 内存占用摘要）是取舍与自查；游戏兼容是少数人才开的兼容开关；日志设置只在排查时才动，压轴。
     // BTreeMap 而非 HashMap：下面的"剩余分区"兜底会遍历它，HashMap 的顺序每次运行
     // 都不同，页面会莫名其妙地换序。
     let mut manifest_secs: std::collections::BTreeMap<String, Element> = state
@@ -123,70 +123,70 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         .map(|(sec, keys)| {
             // 走 split 版：日志设置分区里的隐私示警条平时不占位，混进 rows 会在它
             // 隐藏时留下一条紧贴卡片上边框的分隔线（见 widgets::card_with_attachments）。
-            let (rows, head) = crate::manifest::section_rows_split(state, &keys);
-            (
-                sec.clone(),
-                crate::widgets::section_with_head(&sec, head, rows),
-            )
+            let (mut rows, head) = crate::manifest::section_rows_split(state, &keys);
+            // 性能与诊断：清单里的开关之后接手写的「内存占用」诊断行，同一张卡片。
+            // 懒加载哨兵挂在卡片外：混进 rows 会多出一条分隔线（见 widgets::card_with_attachment）。
+            let mut loader = None;
+            if sec == memory::SECTION {
+                let (row, l) = memory::build_rows(state);
+                rows.push(row);
+                loader = Some(l);
+            }
+            let card = crate::widgets::section_with_head(&sec, head, rows);
+            let el = match loader {
+                Some(l) => Element::col().width_match().child(card).child(l),
+                None => card,
+            };
+            (sec.clone(), el)
         })
         .collect();
 
-    let mut secs: Vec<Element> = Vec::new();
-    // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
-    secs.push(nav.wrap(
-        "系统集成",
-        0,
-        crate::search::anchor::wrap(
-            integration::build_integration_section(app, state),
-            "advanced:integration",
-            state.jump,
-        ),
-    ));
-    // 导航名与卡片标题必须一致，否则用户点了「导入与导出」滚到一张写着「导入」的卡上，
-    // 会以为跳错了地方。这张卡的标题就是「导入」（`build_import_export_section`）。
-    secs.push(nav.wrap(
-        "导入",
-        0,
-        crate::search::anchor::wrap(
-            config_import::build_import_export_section(
-                &state.config_import,
-                &state.schema_mgr,
-                config_import::ThemePkgConfirmSignals::of(state),
+    let mut secs: Vec<Element> = vec![
+        // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
+        nav.wrap(
+            "系统集成",
+            0,
+            crate::search::anchor::wrap(
+                integration::build_integration_section(app, state),
+                "advanced:integration",
+                state.jump,
             ),
-            "advanced:import-export",
-            state.jump,
         ),
-    ));
-    secs.push(nav.wrap(
-        "备份与还原",
-        0,
-        crate::search::anchor::wrap(
-            backup::build_backup_section(&state.backup_mgr),
-            "advanced:backup",
-            state.jump,
+        // 导航名与卡片标题必须一致，否则用户点了「导入与导出」滚到一张写着「导入」的卡上，
+        // 会以为跳错了地方。这张卡的标题就是「导入」（`build_import_export_section`）。
+        nav.wrap(
+            "导入",
+            0,
+            crate::search::anchor::wrap(
+                config_import::build_import_export_section(
+                    &state.config_import,
+                    &state.schema_mgr,
+                    config_import::ThemePkgConfirmSignals::of(state),
+                ),
+                "advanced:import-export",
+                state.jump,
+            ),
         ),
-    ));
-    // 应用兼容：入口卡片，界面本身在独立窗里（规则多、三栏，放不进一页）。
-    // 排在「游戏兼容」上方——两者都是「个别软件的兼容处理」，前者按软件、后者按注册表。
-    secs.push(nav.wrap(
-        "应用兼容性",
-        0,
-        crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
-    ));
-    // 性能：清单里的「常驻所有方案」开关 + 手写的「内存占用」诊断卡，同一个二级导航项。
-    let mut perf = Element::col().width_match().spacing(18);
-    if let Some(el) = manifest_secs.remove("性能") {
-        perf = perf.child(el);
-    }
-    perf = perf.child(crate::search::anchor::wrap(
-        memory::build_memory_section(state),
-        memory::ANCHOR,
-        state.jump,
-    ));
-    secs.push(nav.wrap("性能", 0, perf));
+        nav.wrap(
+            "备份与还原",
+            0,
+            crate::search::anchor::wrap(
+                backup::build_backup_section(&state.backup_mgr),
+                "advanced:backup",
+                state.jump,
+            ),
+        ),
+        // 应用兼容：入口卡片，界面本身在独立窗里（规则多、三栏，放不进一页）。
+        // 排在「游戏兼容」上方——两者都是「个别软件的兼容处理」，前者按软件、后者按注册表。
+        nav.wrap(
+            "应用兼容性",
+            0,
+            crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
+        ),
+    ];
     // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
     // 那是正常状态，不是配置错误。
-    for name in ["游戏兼容", "日志设置"] {
+    for name in [memory::SECTION, "游戏兼容", "日志设置"] {
         if let Some(el) = manifest_secs.remove(name) {
             secs.push(nav.wrap(name, 0, el));
         }

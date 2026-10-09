@@ -150,6 +150,14 @@ fn main_window_single_key(dict_as_main: bool) -> &'static str {
 ///
 /// 故调用方**不需要**先查 `main_window_closed`：那个标志只用来分辨二次实例该 activate
 /// 还是重建，不是本函数的前置条件。
+/// `App` 那个窗口是不是设置主窗（决定 App 级诊断定时器挂不挂）。
+///
+/// 词库 / 兼容窗当首窗时不挂：之后开出的设置主窗由 [`open_main_window`] 自挂一份，
+/// 两份同时跑就是每 2 秒取两次。
+fn app_hosts_settings_shell(dict_as_main: bool, compat_as_main: bool) -> bool {
+    !dict_as_main && !compat_as_main
+}
+
 pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
     // 建窗前必然已注入（见 main 里 `set_theme_handle`）。真取不到就只能放弃重建：
     // 没有句柄，这个窗口的换肤（明暗、主题色）就与其余窗口脱钩。
@@ -159,6 +167,7 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
     }
     let st = app.clone();
     let guard = app.clone();
+    let tick = app.clone();
     // 重建即视为主窗回来了：这一步要赶在 content 求值之前，否则窗口已经在了、
     // 标志还写着"已关闭"，下一次二次实例会再重建一个。
     app.borrow().main_window_closed.set(false);
@@ -168,6 +177,10 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
             .frameless(true)
             .centered(true)
             .min_size(MAIN_MIN_W, MAIN_MIN_H)
+            // 同 `main` 里那份：App 级定时器挂在首个主窗上、随它关掉了，重建的要自己挂。
+            .on_interval(pages::memory::TICK, move |_ctx| {
+                pages::memory::on_tick(&tick)
+            })
             // 与 `App::on_close_request` 同一套守卫：有未保存改动就拦下弹确认框。
             // 子窗的拦截器必须自己挂——平台在 WM_CLOSE 里同步问的是「**这个**窗口能不能关」，
             // 主窗那份不代管子窗。
@@ -522,6 +535,14 @@ fn main() {
     });
     app_state.borrow().set_update_tx(update_tx);
 
+    // 内存诊断通道：`system.memoryStats` 在后台线程取（core 不在线时要等管道超时），
+    // 结果经此回 UI 线程写摘要 / 对话框（见 `pages::memory`）。
+    let memory_state = app_state.clone();
+    let memory_tx = app.channel::<pages::memory::MemoryReply>(move |_ctx, r| {
+        memory_state.borrow().memory.on_reply(r);
+    });
+    app_state.borrow().memory.set_tx(memory_tx);
+
     // UI 请求通道：`single_instance` 的 argv 回调没有 ctx，开不了窗（见 `UiRequest`），
     // 由它把请求转到这里 —— channel 的 on_message 收 `&mut EventCtx`，副作用被采纳。
     let ui_state = app_state.clone();
@@ -602,6 +623,16 @@ fn main() {
             if active {
                 compat_for_activate.request_refresh();
             }
+        });
+    }
+    // 诊断信息对话框的「每 2 秒自动刷新」。定时器挂在主窗上、随主窗生灭（重建的主窗在
+    // `open_main_window` 里另挂一份）。对话框关着或没勾时回调什么都不做——不写信号就不出帧
+    // （见 `App::on_interval` 的文档），代价只是每 2 秒一次平台定时器唤醒。
+    // 首窗不是设置主窗时不挂，保证任何时刻只有一份（见 `app_hosts_settings_shell`）。
+    if app_hosts_settings_shell(dict_as_main, compat_as_main) {
+        let tick_state = app_state.clone();
+        app = app.on_interval(pages::memory::TICK, move |_ctx| {
+            pages::memory::on_tick(&tick_state)
         });
     }
     let close_state = app_state.clone();
@@ -908,6 +939,29 @@ mod tests {
             dict_window::SINGLE_KEY,
             "两个键同值的话，设置窗与词库窗会互相顶替"
         );
+    }
+
+    /// 主窗关了，诊断对话框的自动刷新就得停：冷启动先开的是词库 / 兼容窗时，App 级
+    /// 定时器挂在那个窗口上、主窗关掉后仍在跑，不复位就会在后台一直取数。
+    #[test]
+    fn closing_main_window_stops_memory_auto_refresh() {
+        let st = state::AppState::empty();
+        st.memory.visible.set(true);
+        st.memory.auto.set(true);
+
+        st.mark_main_window_closed();
+
+        assert!(!st.memory.visible.get());
+        assert!(!st.memory.auto.get());
+    }
+
+    /// App 级的 2 秒定时器只在 `App` 那个窗口就是设置主窗时挂：词库 / 兼容窗当首窗时，
+    /// 之后开出的主窗由 `open_main_window` 自挂一份，两份同时跑就是每 2 秒取两次。
+    #[test]
+    fn app_level_memory_tick_only_when_first_window_is_settings() {
+        assert!(app_hosts_settings_shell(false, false));
+        assert!(!app_hosts_settings_shell(true, false));
+        assert!(!app_hosts_settings_shell(false, true));
     }
 
     #[test]
