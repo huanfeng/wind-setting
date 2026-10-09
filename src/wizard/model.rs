@@ -15,18 +15,24 @@ pub const VERB_QUICK: &str = "mix:quick_mix";
 pub const VERB_TEMP_PINYIN: &str = "temp_pinyin";
 pub(crate) const KEY_ACTIONS: &str = "keys.key_actions";
 
-/// 快捷输入可选键（键名, 标签）。只列常用的几个；其余绑定落在 `Trigger::Keep`。
-pub const QUICK_KEYS: &[(&str, &str)] = &[
-    ("semicolon", "分号 ( ; )"),
+/// 触发键可选键（键名, 标签）：与设置页「快捷输入触发键」「临时拼音触发键」的清单 options
+/// 同一份（取值、标签、次序都一致，由 `tests::trigger_keys_match_manifest` 守护）。
+/// 不在其中的绑定（多键、字母键等）落在 `Trigger::Keep`。
+const TRIGGER_KEYS: &[(&str, &str)] = &[
     ("backtick", "反引号 ( ` )"),
+    ("semicolon", "分号 ( ; )"),
     ("quote", "单引号 ( ' )"),
+    ("comma", "逗号 ( , )"),
+    ("period", "句号 ( . )"),
+    ("slash", "斜杠 ( / )"),
+    ("backslash", "反斜杠 ( \\ )"),
+    ("lbracket", "左方括号 ( [ )"),
+    ("rbracket", "右方括号 ( ] )"),
 ];
+/// 快捷输入可选键。
+pub const QUICK_KEYS: &[(&str, &str)] = TRIGGER_KEYS;
 /// 临时拼音可选键。
-pub const TEMP_KEYS: &[(&str, &str)] = &[
-    ("backtick", "反引号 ( ` )"),
-    ("semicolon", "分号 ( ; )"),
-    ("quote", "单引号 ( ' )"),
-];
+pub const TEMP_KEYS: &[(&str, &str)] = TRIGGER_KEYS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -467,7 +473,7 @@ pub fn summary(
     if !matches!(new.quick, Trigger::Keep(_)) {
         push(
             "通用",
-            "快捷输入启用键",
+            "快捷输入触发键",
             trigger_text(&cur.quick, QUICK_KEYS),
             trigger_text(&new.quick, QUICK_KEYS),
         );
@@ -529,7 +535,7 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
         VERB_TEMP_PINYIN => "临时拼音".to_string(),
         v => v.to_string(),
     };
-    // (键, 认领的动词, 标签)；顿号不是动词绑定，动词记空串，任何占用都算冲突。
+    // (键, 认领的动词, 标签)
     let mut claims: Vec<(String, &str, &str)> = Vec::new();
     if let Trigger::Key(k) = &d.quick {
         claims.push((k.clone(), VERB_QUICK, "快捷输入"));
@@ -540,11 +546,12 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
     {
         claims.push((k.clone(), VERB_TEMP_PINYIN, "临时拼音"));
     }
-    // 只有这次由关变开才认领 /：基线已开着顿号时 / 上的占用是基线自带的，不挡向导（裁定 #2）。
-    if d.slash_dun && !cur.slash_dun {
-        claims.push(("slash".into(), "", "/ 键输出顿号"));
-    }
     let ka = base.get_path(KEY_ACTIONS).and_then(|v| v.as_object());
+    let held_by = |k: &str| {
+        ka.and_then(|m| m.get(k))
+            .and_then(|v| v.as_str())
+            .filter(|v| *v != "none")
+    };
     let mut out = Vec::new();
     for (i, (k, verb, who)) in claims.iter().enumerate() {
         if let Some((_, _, other)) = claims[..i].iter().find(|c| &c.0 == k) {
@@ -554,17 +561,37 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
             });
             continue;
         }
-        let held = ka
-            .and_then(|m| m.get(k))
-            .and_then(|v| v.as_str())
-            .filter(|v| *v != "none");
-        if let Some(v) = held
+        if let Some(v) = held_by(k)
             && v != *verb
             && !moving(v)
         {
             out.push(Conflict {
                 key: k.clone(),
                 msg: format!("「{who}」的键已被「{}」占用", label(v)),
+            });
+        }
+    }
+    // 顿号不是 key_actions 绑定，上面「被其它动词占用」的判据查不到它，单独判。
+    if d.slash_dun {
+        // 最终开着顿号（不论原本就开还是这次打开），向导认领的触发键就不能是 /。
+        let mut taken = false;
+        for (k, _, who) in claims.iter().filter(|c| c.0 == "slash") {
+            taken = true;
+            out.push(Conflict {
+                key: k.clone(),
+                msg: format!("「{who}」用了 / 键，与「/ 键输出顿号」冲突"),
+            });
+        }
+        // 这次由关变开时，/ 若被别的动词占着、且它不会让出，也算冲突。基线已开着顿号时
+        // / 上的占用是基线自带的，不挡向导（裁定 #2）。
+        if !cur.slash_dun
+            && !taken
+            && let Some(v) = held_by("slash")
+            && !moving(v)
+        {
+            out.push(Conflict {
+                key: "slash".into(),
+                msg: format!("「/ 键输出顿号」的键已被「{}」占用", label(v)),
             });
         }
     }
@@ -666,10 +693,87 @@ mod tests {
 
     #[test]
     fn trigger_unlisted_key_is_keep() {
-        let c = cfg(json!({"keys": {"key_actions": {"lbracket": "mix:quick_mix"}}}));
+        let c = cfg(json!({"keys": {"key_actions": {"tab": "mix:quick_mix"}}}));
         assert_eq!(
             Draft::from_current(&c, &schemas(), "x").quick,
-            Trigger::Keep(vec!["lbracket".into()])
+            Trigger::Keep(vec!["tab".into()])
+        );
+    }
+
+    /// 向导的触发键下拉与设置页的触发键清单是同一份：取值、标签、次序都一致。
+    /// 只改一边，设置页能选的键在向导里就成了「保持现状」，或标签两处各写各的。
+    #[test]
+    fn trigger_keys_match_manifest() {
+        let m = crate::manifest::Manifest::from_embedded();
+        for (key, keys) in [
+            ("schema.mix_modes", QUICK_KEYS),
+            ("input.temp_pinyin.trigger_keys", TEMP_KEYS),
+        ] {
+            let item = m.get(key).unwrap_or_else(|| panic!("清单缺 {key}"));
+            let want: Vec<(&str, &str)> = item
+                .options
+                .iter()
+                .map(|o| (o.value.as_str(), o.label.as_str()))
+                .collect();
+            assert_eq!(keys.to_vec(), want, "{key}");
+        }
+    }
+
+    /// 新开放的键与其它动词的绑定冲突，走既有「被占用」判据。
+    #[test]
+    fn comma_held_by_other_verb_conflicts() {
+        let mut b = base();
+        b.set_path("keys.key_actions.comma", json!("special:kf"));
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        d.quick = Trigger::Key("comma".into());
+        let c = key_conflicts(&d, &b);
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].key, "comma");
+    }
+
+    /// 顿号原本就开着，再把快捷输入设到 /：顿号不是 key_actions 绑定，也要判冲突。
+    #[test]
+    fn slash_dun_already_on_conflicts_with_slash_trigger() {
+        let mut b = base();
+        b.set_path("input.punct.custom_enabled", json!(true));
+        b.set_path(
+            "input.punct.custom_mappings",
+            json!({"/": ["、", "／", "、", "/"]}),
+        );
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        assert!(d.slash_dun, "前提：基线已开顿号");
+        d.quick = Trigger::Key("slash".into());
+        let c = key_conflicts(&d, &b);
+        assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
+        // 临时拼音设到 / 同理
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        d.temp_key = Trigger::Key("slash".into());
+        assert!(!key_conflicts(&d, &b).is_empty());
+    }
+
+    /// 这次打开顿号、同时把快捷输入设到 /。
+    #[test]
+    fn slash_dun_turned_on_conflicts_with_slash_trigger() {
+        let b = base();
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        assert!(!d.slash_dun, "前提：基线顿号关");
+        d.slash_dun = true;
+        d.quick = Trigger::Key("slash".into());
+        let c = key_conflicts(&d, &b);
+        assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
+    }
+
+    /// 顿号关着时，/ 作触发键没有冲突。
+    #[test]
+    fn slash_trigger_without_dun_is_fine() {
+        let b = base();
+        let mut d = Draft::from_current(&b, &schemas(), "x");
+        assert!(!d.slash_dun);
+        d.quick = Trigger::Key("slash".into());
+        assert!(
+            key_conflicts(&d, &b).is_empty(),
+            "{:?}",
+            key_conflicts(&d, &b)
         );
     }
 
