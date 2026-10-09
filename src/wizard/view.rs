@@ -723,7 +723,7 @@ fn welcome_body() -> Element {
                 .width_match()
                 .spacing(8)
                 .padding_xy(2, 0)
-                .child(point(1, "选择常用的输入方式：五笔、全拼或双拼"))
+                .child(point(1, "选择输入方式（五笔 / 码表或拼音）和主方案"))
                 .child(point(2, "调整几项最常用的输入习惯与功能"))
                 .child(point(3, "最后一步确认后才会生效，中途随时可以关闭")),
         )
@@ -944,7 +944,7 @@ fn step2_body(c: Controls) -> Element {
             ),
             switch_row(
                 "拼音反查",
-                "打拼音时，在候选旁显示对应的五笔编码，方便学习和查码",
+                "打拼音时，在候选旁显示对应的码表编码，方便学习和查码",
                 c.code_hint,
             ),
         ],
@@ -1008,7 +1008,7 @@ fn step3_body(c: Controls) -> Element {
                     vec![with_cond(
                         switch_row(
                             "临时拼音",
-                            "遇到不会拆的字，按触发键临时用拼音打，候选旁会显示它的五笔编码",
+                            "遇到不会拆的字，按触发键临时用拼音打，候选旁会显示它的码表编码",
                             c.temp,
                         ),
                         vec![item_row(

@@ -672,9 +672,10 @@ pub fn key_conflicts(d: &Draft, base: &Config) -> Vec<Conflict> {
         // 最终开着顿号、向导认领的触发键又是 /，只在这是向导这次造成的时候报：顿号本次
         // 由关变开，或该触发键本次被改到 /。两边都没动（原本就开顿号、原本就绑 /）是基线
         // 自带的冲突，不挡向导（裁定 #2）。
+        // 临时拼音由关变开也算「本次造成」：键没改，但原先关着时那条 / 绑定不生效。
         let changed = |verb: &str| match verb {
             VERB_QUICK => d.quick != cur.quick,
-            _ => d.temp_key != cur.temp_key,
+            _ => d.temp_key != cur.temp_key || (d.temp_pinyin && !cur.temp_pinyin),
         };
         let mut taken = false;
         for (k, _, who) in claims
@@ -767,6 +768,20 @@ mod tests {
         assert_eq!(d("stroke").kind, Kind::Codetable);
         assert_eq!(d("my_custom_table").kind, Kind::Codetable, "查不到按码表");
         assert_eq!(d("my_custom_table").active, "my_custom_table");
+        // 清单里有、engineType 为 codetable 的自定义码表
+        let mut s2 = schemas();
+        s2.push(si("my_table", "codetable", ""));
+        let d2 = Draft::from_current(
+            &cfg(json!({"schema": {"active": "my_table", "available": ["my_table"]}})),
+            &s2,
+            BTreeMap::new(),
+        );
+        assert_eq!(d2.kind, Kind::Codetable);
+        assert!(
+            d2.catalog
+                .candidates(Kind::Codetable)
+                .contains(&"my_table".to_string())
+        );
     }
 
     /// 双拼看主方案的 `scheme`，不看 id：自建双拼方案 id 任意，叫 shuangpin 的全拼也不算。
@@ -991,7 +1006,29 @@ mod tests {
         assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
         let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.temp_key = Trigger::Key("slash".into());
-        assert!(!key_conflicts(&d, &b).is_empty());
+        let c = key_conflicts(&d, &b);
+        assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
+    }
+
+    /// 顿号开、临拼原本关着且已绑 /：本次只打开临拼不改键，/ 绑定由此生效，算向导造成的冲突。
+    #[test]
+    fn turning_temp_pinyin_on_with_slash_key_conflicts_with_dun() {
+        let mut b = dun_on_base();
+        b.set_path("input.temp_pinyin.enabled", json!(false));
+        b.set_path("keys.key_actions.backtick", json!(null));
+        b.set_path("keys.key_actions.slash", json!("temp_pinyin"));
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        assert_eq!(
+            cur.temp_key,
+            Trigger::Key("slash".into()),
+            "前提：临拼原本绑 /"
+        );
+        assert!(cur.slash_dun && !cur.temp_pinyin);
+        assert!(key_conflicts(&cur, &b).is_empty(), "什么都没动不报");
+        let mut d = cur.clone();
+        d.temp_pinyin = true;
+        let c = key_conflicts(&d, &b);
+        assert!(c.iter().any(|c| c.key == "slash"), "{c:?}");
     }
 
     /// 原本就开顿号、快捷输入原本就绑在 /：基线自带的冲突，向导没动它，不挡（裁定 #2）。
@@ -1217,16 +1254,6 @@ mod tests {
             !key_conflicts(&d, &b2).is_empty(),
             "占用其它动词的键要报冲突"
         );
-    }
-
-    #[test]
-    fn slash_dun_conflicts_with_slash_trigger() {
-        let mut b = base();
-        b.set_path("keys.key_actions.slash", json!("mix:quick_mix"));
-        b.set_path("keys.key_actions.semicolon", json!(null));
-        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
-        d.slash_dun = true;
-        assert!(!key_conflicts(&d, &b).is_empty());
     }
 
     /// 控制方裁定 #2 的推论：基线已开顿号、/ 又绑了别的动词——这是基线自带的冲突，向导这次
