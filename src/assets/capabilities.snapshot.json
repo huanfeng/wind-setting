@@ -1414,6 +1414,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "input.association.select_keys_commit",
+      "type": "bool"
+    },
+    {
       "default": false,
       "key": "input.association.enter_cancels_only",
       "type": "bool"

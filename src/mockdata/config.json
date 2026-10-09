@@ -21,6 +21,7 @@
    "mode": "one_shot",
    "prefix": true,
    "punct": false,
+   "select_keys_commit": true,
    "space_commits": true
   },
   "auto_pair": {

@@ -2209,6 +2209,15 @@ label = "空格上屏联想候选"
 hint = "空格上屏当前高亮的联想词，多数输入法如此。关掉则空格照常出空格，联想窗同时收起"
 enabled_when = "input.association.kind != off"
 
+[[items]]
+key = "input.association.select_keys_commit"
+group = "input"
+section = "联想"
+type = "toggle"
+label = "二三候选键选联想"
+hint = "开启（默认）时 ; ' 等二三候选键照常选第 2、3 条联想词。关掉则联想窗出来后按这些键不选联想：联想窗收起，该键照常输入（如出分号；若它另是快捷输入等模式的引导键，则照常进该模式）"
+enabled_when = "input.association.kind != off"
+
 # 回车与退格的默认值**相反**（回车透传、退格吃键）：回车的透传是把正事办了，退格的透传
 # 是删掉刚上屏的字、不可逆。core 侧理由见 AssociationConfig 两个字段的文档。
 [[items]]
