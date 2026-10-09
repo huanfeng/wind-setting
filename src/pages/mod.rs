@@ -746,7 +746,7 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
             Element::button("打开市场")
                 .small()
                 .outline_soft()
-                .on_click(|ctx| ctx.open_url(THEME_MARKET_URL)),
+                .on_click(|ctx| ctx.open_url(MARKET_URL)),
         ),
     ]
 }
@@ -857,8 +857,8 @@ const DOWNLOAD_URL: &str = "https://windinput.com/download";
 const SPONSOR_URL: &str = "https://windinput.com/sponsor";
 /// 主题编辑器。
 pub(crate) const THEME_EDITOR_URL: &str = "https://theme.windinput.com";
-/// 主题市场。
-pub(crate) const THEME_MARKET_URL: &str = "https://market.windinput.com";
+/// 资源市场（主题皮肤、输入方案等，不止主题）。
+pub(crate) const MARKET_URL: &str = "https://market.windinput.com";
 /// 官网文档首页（设置向导欢迎页指这里）。
 pub(crate) const DOCS_URL: &str = "https://windinput.com/docs";
 /// QQ 交流群号。

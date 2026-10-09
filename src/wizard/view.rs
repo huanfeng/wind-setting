@@ -21,17 +21,22 @@ use super::{
 };
 use crate::pages::dict::reactive::reactive_effect;
 use crate::state::{AppState, WizardPhase, WizardSession};
-use crate::widgets::{dialog_section, setting_row};
+use crate::widgets::{card, dialog_section, dialog_section_hint, setting_row};
 
 const DIALOG_W: i32 = 600;
 /// 对话框固定高度。按内容自适应时，开关双拼、临时拼音、模糊音会让外框忽大忽小、按钮栏
 /// 跟着上下跳（靶机试用反馈）；改为定高后只有中间正文区伸缩，超出即滚动。
 ///
-/// 取值：最高的常见形态——第 2 步「双拼 + 模糊音开」（拼音卡 7 行）——在不滚动时放得下，
-/// 再高欢迎页、Dirty 页就只剩大片留白。数值以测试里的 `LineAwareTextEngine` 量得为准
-/// （见 `tests::tallest_steps_fit_without_scrolling`），靶机 DPI 下再目验。
-const DIALOG_H: i32 = 540;
+/// 取值：最高的常见形态——第 2 步「双拼 + 模糊音开」（页头 + 拼音卡 7 行，3 行带说明）——
+/// 不滚动放得下，并留 24px 余量；测试文字引擎下正文视口 467、该页内容 436。再高的话主窗
+/// 默认高 640 就显得局促，欢迎页、Dirty 页也只剩大片留白。数值以测试里的
+/// `LineAwareTextEngine` 量得为准（见 `tests::tallest_steps_fit_without_scrolling`），
+/// 靶机 DPI 下再目验。
+const DIALOG_H: i32 = 560;
 const KINDS: [Kind; 3] = [Kind::Codetable, Kind::Pinyin, Kind::Shuangpin];
+/// 第 1 步方案清单的列数与行高（行高与正常尺寸勾选框 + 「默认」徽标同档）。
+const SCHEME_COLS: usize = 2;
+const SCHEME_ROW_H: i32 = 30;
 
 /// 第 1 步的一行方案勾选。
 #[derive(Clone, PartialEq)]
@@ -62,7 +67,8 @@ struct Controls {
     layout_idx: Signal<usize>,
     /// 布局清单拿不到时只显示当前值的名字。
     layout_text: Signal<String>,
-    schemes: Signal<Vec<SchemeRow>>,
+    /// 方案清单，按 [`SCHEME_COLS`] 个一行分好。
+    schemes: Signal<Vec<Vec<SchemeRow>>>,
     auto_commit: Signal<bool>,
     clear_empty: Signal<bool>,
     code_hint: Signal<bool>,
@@ -79,6 +85,8 @@ struct Controls {
     // ── 派生文案 ──
     blockers: Signal<String>,
     summary: Signal<Vec<SumLine>>,
+    /// 第 4 步导语（有无改动、几项）。
+    sum_lead: Signal<String>,
     hints: Signal<String>,
     confirm_text: Signal<String>,
     result_text: Signal<String>,
@@ -107,6 +115,7 @@ impl Controls {
             temp_idx: signal(0),
             blockers: signal(String::new()),
             summary: signal(vec![]),
+            sum_lead: signal(String::new()),
             hints: signal(String::new()),
             confirm_text: signal(String::new()),
             result_text: signal(String::new()),
@@ -247,7 +256,13 @@ fn sync(app: &Rc<RefCell<AppState>>, c: &Controls) {
         set_if(c.layout_idx, i);
     }
     set_if(c.layout_text, layout_label(&s.layouts, &d.layout));
-    set_if(c.schemes, scheme_rows(&st, d));
+    set_if(
+        c.schemes,
+        scheme_rows(&st, d)
+            .chunks(SCHEME_COLS)
+            .map(<[SchemeRow]>::to_vec)
+            .collect(),
+    );
     set_if(c.auto_commit, d.auto_commit_at_full);
     set_if(c.clear_empty, d.clear_on_empty_max);
     set_if(c.code_hint, d.code_hint);
@@ -285,8 +300,19 @@ fn sync(app: &Rc<RefCell<AppState>>, c: &Controls) {
     set_if(c.summary, lines);
     set_if(c.hints, hints_text(&st, d));
     set_if(
+        c.sum_lead,
+        if changes.is_empty() {
+            "当前设置已符合你的选择，无需修改。".to_string()
+        } else {
+            format!(
+                "以下 {} 项设置将被修改，点「完成」后立即生效。",
+                changes.len()
+            )
+        },
+    );
+    set_if(
         c.confirm_text,
-        format!("将覆盖以下 {} 项现有设置，确定吗？", changes.len()),
+        format!("将覆盖 {} 项现有设置，确定应用吗？", changes.len()),
     );
     set_if(c.result_text, result_text(s));
 }
@@ -451,14 +477,8 @@ fn frame(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) -
         .child(page(step2_body(c), WizardPhase::Step(2)))
         .child(page(step3_body(c), WizardPhase::Step(3)))
         .child(page(step4_body(c), WizardPhase::Step(4)))
-        .child(page(
-            text_body(c.confirm_text, Role::Text),
-            WizardPhase::Confirm,
-        ))
-        .child(page(
-            text_body(c.result_text, Role::Danger),
-            WizardPhase::Result,
-        ));
+        .child(page(confirm_body(c.confirm_text), WizardPhase::Confirm))
+        .child(page(result_body(c.result_text), WizardPhase::Result));
     Element::col()
         .width(DIALOG_W)
         .height(DIALOG_H)
@@ -510,115 +530,290 @@ fn with_cond(base: Element, rows: Vec<Element>, when: impl Fn() -> bool + 'stati
 }
 
 fn title_row(phase: Signal<WizardPhase>) -> Element {
-    let title = phase.map(|p| match p {
-        WizardPhase::Step(n) => format!("设置向导 · 第 {n}/4 步"),
-        WizardPhase::Confirm => "设置向导 · 确认".to_string(),
-        WizardPhase::Welcome | WizardPhase::Dirty | WizardPhase::Result => "设置向导".to_string(),
+    let step = phase.map(|p| match p {
+        WizardPhase::Step(n) => format!("{n} / 4"),
+        WizardPhase::Confirm => "确认".to_string(),
+        WizardPhase::Welcome | WizardPhase::Dirty | WizardPhase::Result => String::new(),
     });
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(18, 14)
+        // 右侧让出对话框自带的关闭按钮（24px + 外边距），步骤指示才不会压在 × 上。
+        .padding_edges(Insets::new(18, 14, 52, 14))
         .child(
-            Element::label_signal(title)
+            Element::label("设置向导")
                 .font_size(15.0)
                 .font_weight(600)
-                .fg_role(Role::Text),
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1),
+        )
+        .child(
+            Element::label_signal(step)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
         )
 }
 
 fn body() -> Element {
-    Element::col().width_match().spacing(8).padding_xy(18, 12)
+    Element::col().width_match().spacing(10).padding_xy(18, 14)
 }
 
-fn note(text: &str) -> Element {
-    Element::label(text)
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
+/// 页头：大标题 + 一行灰色导语，说清这一页要你做什么。各页正文都以它打头。
+fn page_head(title: &str, lead: impl Into<TextContent>) -> Element {
+    Element::col()
         .width_match()
-        .max_lines(3)
+        .spacing(4)
+        .padding_edges(Insets::new(0, 0, 0, 4))
+        .child(
+            Element::label(title)
+                .font_size(17.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1),
+        )
+        .child(
+            Element::label(lead)
+                .font_size(13.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2),
+        )
+}
+
+/// 设置行：标签 + 说明 + 右侧控件。说明允许两行，其余照 [`setting_row`]。
+///
+/// 不直接用 `setting_row`：它的说明按本仓 `FormTheme` 限一行，向导的说明是写给新用户的
+/// 白话（「做什么 / 什么时候有用」），右侧再放一个下拉就放不下一行。写法照
+/// [`crate::widgets::setting_row_checks`]（同样是因为限行另行拼装）。
+fn item_row(label: &str, desc: &str, control: Element) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let left = Element::col()
+        .weight(1.0)
+        .spacing(2)
+        .child(
+            Element::label(label)
+                .font_size(f.label_size(m))
+                .font_weight(f.label_weight())
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1)
+                .truncate(Truncate::End),
+        )
+        .child(
+            Element::label(desc)
+                .font_size(f.desc_size(m))
+                .fg_role(Role::TextSubtle)
+                .width_match()
+                .max_lines(2)
+                .truncate(Truncate::End)
+                .tooltip(desc),
+        );
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(0, f.row_pad_y())
+        .spacing(f.gap())
+        .child(left)
+        .child(control)
 }
 
 /// 欢迎页的一行链接：标题 + 说明 + 右侧可点的地址。
 fn link_row(label: &str, sub: &str, text: &str, url: &'static str) -> Element {
-    setting_row(
+    item_row(
         label,
-        Some(sub),
+        sub,
         Element::link(text)
             .font_size(12.5)
             .on_click(move |ctx| ctx.open_url(url)),
     )
 }
 
-fn welcome_body() -> Element {
-    use crate::pages::{DOCS_URL, THEME_EDITOR_URL, THEME_MARKET_URL};
-    body()
+/// 欢迎页的一条要点：圆形序号 + 一行短句。
+fn point(n: usize, text: &str) -> Element {
+    let num = Element::stack()
+        .size(20, 20)
+        .corner(10.0)
+        .bg_role_alpha(Role::Accent, 0.12)
         .child(
-            Element::label("欢迎使用清风输入法")
-                .font_size(13.0)
+            Element::label(n.to_string())
+                .font_size(11.5)
                 .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match(),
-        )
+                .fg_role(Role::Accent)
+                .align(Align::Center),
+        );
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(num)
         .child(
-            Element::label(
-                "清风输入法有大量功能与选项。这个向导只按你的输入习惯（五笔 / 全拼 / 双拼）\
-                 配好最常用的几项，几步即可完成；点「完成」并确认之前，不会改动任何设置。",
-            )
-            .font_size(12.5)
-            .fg_role(Role::Text)
-            .width_match()
-            .max_lines(4),
+            Element::label(text)
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1),
+        )
+}
+
+fn welcome_body() -> Element {
+    use crate::pages::{DOCS_URL, MARKET_URL, THEME_EDITOR_URL};
+    body()
+        .child(page_head(
+            "欢迎使用清风输入法",
+            "花一分钟，按你的打字习惯配好最常用的设置。",
+        ))
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(8)
+                .padding_xy(2, 0)
+                .child(point(1, "选择常用的输入方式：五笔、全拼或双拼"))
+                .child(point(2, "调整几项最常用的输入习惯与功能"))
+                .child(point(3, "最后一步确认后才会生效，中途随时可以关闭")),
         )
         .child(dialog_section(
             "了解更多",
             vec![
                 link_row(
-                    "功能文档",
-                    "官网文档，逐项说明各功能与设置",
+                    "使用文档",
+                    "每项功能、每个设置的详细说明",
                     "windinput.com/docs",
                     DOCS_URL,
                 ),
                 link_row(
-                    "主题市场",
-                    "浏览与下载主题",
+                    "资源市场",
+                    "主题皮肤、输入方案等资源，下载即用",
                     "market.windinput.com",
-                    THEME_MARKET_URL,
+                    MARKET_URL,
                 ),
                 link_row(
                     "主题编辑器",
-                    "自己动手做主题",
+                    "在线设计属于自己的皮肤",
                     "theme.windinput.com",
                     THEME_EDITOR_URL,
                 ),
             ],
         ))
+        .child(
+            Element::label("以后可随时从左侧导航最下方的「设置向导」再次打开。")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(1),
+        )
 }
 
 fn dirty_body() -> Element {
-    body()
+    body().child(page_head(
+        "设置页有未保存的修改",
+        "向导写入后会重新读取配置，未保存的修改会和它互相覆盖。请先保存或放弃这些修改，再继续。",
+    ))
+}
+
+/// 第 1 步的一张主类型选项卡片：整卡可点，选中时强调色描边 + 淡底。
+///
+/// 选中态叠层的写法照方案管理页的方案行（`dialogs/schema_manager.rs`）：描边与底色是
+/// 垫在内容下面、按选中显隐的叶子，内容层 `clickable` 吞命中。
+fn kind_card(kind: Signal<usize>, i: usize, title: &str, desc: &str) -> Element {
+    let sel = move || kind.get() == i;
+    Element::stack()
         .child(
-            Element::label("设置页有未保存的修改。")
-                .font_size(13.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match(),
+            Element::leaf()
+                .align(Align::Stretch)
+                .corner(8.0)
+                .border_role(Role::Border, 1)
+                .visible_when(move || !sel()),
         )
-        .child(note(
-            "向导写入后会重新读取配置，未保存的修改会和它互相覆盖。请先保存或放弃这些修改，再继续设置向导。",
-        ))
+        .child(
+            Element::leaf()
+                .align(Align::Stretch)
+                .corner(8.0)
+                .bg_role_alpha(Role::Accent, 0.08)
+                .border_role(Role::Accent, 2)
+                .visible_when(sel),
+        )
+        .child(
+            Element::col()
+                .align(Align::Stretch)
+                .clickable()
+                .on_click(move |_| kind.set(i))
+                .corner(8.0)
+                .padding_xy(12, 10)
+                .spacing(4)
+                .child(
+                    Element::label(title)
+                        .font_size(14.0)
+                        .font_weight(600)
+                        .fg_role(Role::Text)
+                        .width_match()
+                        .max_lines(1),
+                )
+                .child(
+                    Element::label(desc)
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .max_lines(2),
+                ),
+        )
+}
+
+/// 方案清单的一格：正常尺寸的勾选框，默认方案带「默认」徽标。
+fn scheme_cell(app: &Rc<RefCell<AppState>>, row: SchemeRow) -> Element {
+    let th = windui::theme::current();
+    let app = app.clone();
+    let id = row.id.clone();
+    let mut cell = Element::row().cross(Align::Center).spacing(6).child(
+        Element::checkbox(row.name.clone(), signal(row.checked))
+            .font_size(th.form.label_size(&th.metrics))
+            .fg_role(Role::Text)
+            .enabled(!row.locked)
+            // 接管点击：勾选态由草稿决定，改完草稿整张清单随 `sync` 重建。
+            .on_click(move |_| toggle_scheme(&app, &id)),
+    );
+    if row.locked {
+        cell = cell.child(Element::badge("默认"));
+    }
+    cell
+}
+
+/// 方案清单：两列网格。`c.schemes` 已按两个一行分好，一行一个子树。
+fn scheme_grid(app: &Rc<RefCell<AppState>>, schemes: Signal<Vec<Vec<SchemeRow>>>) -> Element {
+    let app = app.clone();
+    let rows = Element::host_signal(schemes, move |pair: Vec<SchemeRow>| {
+        let mut r = Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(12)
+            .height(SCHEME_ROW_H);
+        for i in 0..SCHEME_COLS {
+            r = r.child(match pair.get(i) {
+                Some(row) => scheme_cell(&app, row.clone()).weight(1.0),
+                None => Element::leaf().weight(1.0),
+            });
+        }
+        r
+    });
+    Element::col().width_match().padding_xy(0, 8).child(rows)
 }
 
 fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
     let kind = c.kind;
-    let kind_row = Element::row()
-        .width_match()
-        .spacing(18)
-        .child(Element::radio("五笔 / 码表", kind, 0))
-        .child(Element::radio("全拼", kind, 1))
-        .child(Element::radio("双拼", kind, 2));
+    let cards = Element::grid(
+        KINDS.len(),
+        10,
+        vec![
+            kind_card(kind, 0, "五笔 / 码表", "按字形编码，重码少、速度快"),
+            kind_card(kind, 1, "全拼", "直接输入完整拼音，上手即用"),
+            kind_card(kind, 2, "双拼", "每个字只需两键，选中后在下方选择双拼布局"),
+        ],
+    );
     let layouts = c.layout_opts;
-    let layout_row = setting_row(
+    let layout_card = card(vec![setting_row(
         "双拼布局",
         None,
         Element::stack()
@@ -633,51 +828,24 @@ fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
                     .fg_role(Role::Text)
                     .visible_when(move || layouts.get().is_empty()),
             ),
-    );
-
-    let app_c = app.clone();
-    let boxes = Element::host_signal(c.schemes, move |row: SchemeRow| {
-        let app = app_c.clone();
-        let id = row.id.clone();
-        let label = if row.locked {
-            format!("{}（默认方案）", row.name)
-        } else {
-            row.name.clone()
-        };
-        Element::checkbox(label, signal(row.checked))
-            .small()
-            .fg_role(Role::Text)
-            .enabled(!row.locked)
-            // 接管点击：勾选态由草稿决定，改完草稿整行列表随 `sync` 重建。
-            .on_click(move |_| toggle_scheme(&app, &id))
-    });
+    )])
+    .visible_when(move || kind.get() == 2);
     body()
-        .child(dialog_section(
-            "输入习惯",
-            vec![with_cond(
-                Element::col()
-                    .width_match()
-                    .padding_xy(12, 10)
-                    .child(kind_row),
-                vec![layout_row],
-                move || kind.get() == 2,
-            )],
+        .child(page_head(
+            "选择输入方式",
+            "你平时主要用哪种方式打字？之后会以它作为默认方案。",
         ))
-        .child(crate::manifest::dialog_group_header("一起启用的方案"))
-        // 不再自带定高滚动：方案多了由整段正文区滚动，免得滚动区里套滚动区。
-        .child(
-            Element::col()
-                .width_match()
-                .border_role(Role::Border, 1)
-                .corner(6.0)
-                .padding_xy(10, 6)
-                .child(boxes),
-        )
-        .child(note("主类型对应的方案会设为默认方案，并强制启用。"))
+        .child(cards)
+        .child(layout_card)
+        .child(dialog_section_hint(
+            "同时启用的方案",
+            "勾选的方案可在打字时切换使用；默认方案始终启用",
+            vec![scheme_grid(app, c.schemes)],
+        ))
 }
 
-fn switch_row(label: &str, sub: Option<&str>, sig: Signal<bool>) -> Element {
-    setting_row(label, sub, Element::switch(sig))
+fn switch_row(label: &str, sub: &str, sig: Signal<bool>) -> Element {
+    item_row(label, sub, Element::switch(sig))
 }
 
 /// 模糊音分项相对总开关的缩进。
@@ -687,7 +855,7 @@ fn step2_body(c: Controls) -> Element {
     let kind = c.kind;
     let fuzzy = c.fuzzy;
     // 模糊音分项：与本对话框其余行同一种行型（标题 + 右侧开关），缩进挂在总开关下面，
-    // 读作它的子项。原先是一行四个小号勾选框，靶机上反馈「太小」。
+    // 读作它的子项。
     let pairs: Vec<Element> = FUZZY_PAIRS
         .iter()
         .enumerate()
@@ -695,29 +863,59 @@ fn step2_body(c: Controls) -> Element {
             Element::col()
                 .width_match()
                 .padding_edges(Insets::new(FUZZY_INDENT, 0, 0, 0))
-                .child(switch_row(label, None, c.pairs[i]))
+                .child(setting_row(label, None, Element::switch(c.pairs[i])))
         })
         .collect();
+    let lead = kind.map(|k| {
+        if *k == 0 {
+            "几项常用的码表习惯，按你的偏好开关。"
+        } else {
+            "几项常用的拼音习惯，按你的偏好开关。"
+        }
+        .to_string()
+    });
     let codetable = dialog_section(
         "五笔 / 码表",
         vec![
-            switch_row("全码唯一自动上屏", None, c.auto_commit),
-            switch_row("满码空码清空", None, c.clear_empty),
-            switch_row("拼音反查", Some("打拼音时显示五笔编码"), c.code_hint),
+            switch_row(
+                "四码唯一时自动上屏",
+                "编码打满且只有一个候选时直接上屏，不用再按空格",
+                c.auto_commit,
+            ),
+            switch_row(
+                "空码时自动清空",
+                "编码打满却没有候选时，自动清掉已打的编码",
+                c.clear_empty,
+            ),
+            switch_row(
+                "拼音反查",
+                "打拼音时，在候选旁显示对应的五笔编码，方便学习和查码",
+                c.code_hint,
+            ),
         ],
     )
     .visible_when(move || kind.get() == 0);
     let pinyin = dialog_section(
         "拼音",
         vec![
-            switch_row("emoji 候选", None, c.emoji),
+            switch_row(
+                "Emoji 候选",
+                "打出词语后附带对应的 emoji，如「开心」→ 😄",
+                c.emoji,
+            ),
             with_cond(
-                with_cond(switch_row("模糊音", None, c.fuzzy), pairs, move || {
-                    fuzzy.get()
-                }),
+                with_cond(
+                    switch_row(
+                        "模糊音",
+                        "分不清平翘舌、前后鼻音时开启，下方选择要互通的音",
+                        c.fuzzy,
+                    ),
+                    pairs,
+                    move || fuzzy.get(),
+                ),
                 vec![switch_row(
                     "允许按全拼输入",
-                    Some("双拼方案下也可直接打全拼"),
+                    "双拼方案下也能直接打全拼，如 zaijian → 再见",
                     c.allow_full,
                 )],
                 move || kind.get() == 2,
@@ -725,7 +923,10 @@ fn step2_body(c: Controls) -> Element {
         ],
     )
     .visible_when(move || kind.get() != 0);
-    body().child(codetable).child(pinyin)
+    body()
+        .child(page_head("输入习惯", lead))
+        .child(codetable)
+        .child(pinyin)
 }
 
 fn step3_body(c: Controls) -> Element {
@@ -733,22 +934,32 @@ fn step3_body(c: Controls) -> Element {
     let temp = c.temp;
     let blockers = c.blockers;
     body()
+        .child(page_head("常用功能", "几个高频小功能，按一个键就能用。"))
         .child(dialog_section(
             "通用",
             vec![
-                setting_row(
-                    "快捷输入启用键",
-                    None,
-                    Element::dropdown_signal(c.quick_opts, c.quick_idx).width(200),
+                item_row(
+                    "快捷输入",
+                    "按触发键进入，可输入日期、数学计算、数字金额（大写）等；\
+                     还可在设置中加入拼音、英文、生僻字等候选来源。",
+                    Element::dropdown_signal(c.quick_opts, c.quick_idx).width(TRIGGER_W),
                 ),
                 with_cond(
-                    switch_row("/ 键输出顿号", None, c.slash),
+                    switch_row(
+                        "/ 键输出顿号",
+                        "中文标点下按 / 直接得到「、」，英文标点下不受影响",
+                        c.slash,
+                    ),
                     vec![with_cond(
-                        switch_row("临时拼音", Some("五笔里临时打拼音"), c.temp),
-                        vec![setting_row(
+                        switch_row(
+                            "临时拼音",
+                            "遇到不会拆的字，按触发键临时用拼音打，候选旁会显示它的五笔编码",
+                            c.temp,
+                        ),
+                        vec![item_row(
                             "临时拼音触发键",
-                            None,
-                            Element::dropdown_signal(c.temp_opts, c.temp_idx).width(200),
+                            "按下后进入临时拼音",
+                            Element::dropdown_signal(c.temp_opts, c.temp_idx).width(TRIGGER_W),
                         )],
                         move || temp.get(),
                     )],
@@ -766,6 +977,9 @@ fn step3_body(c: Controls) -> Element {
         )
 }
 
+/// 触发键下拉宽度：容得下「右方括号 ( ] )」与「保持现状（当前：…）」。
+const TRIGGER_W: i32 = 170;
+
 fn step4_body(c: Controls) -> Element {
     let summary = c.summary;
     let hints = c.hints;
@@ -773,32 +987,41 @@ fn step4_body(c: Controls) -> Element {
         SumLine::Group(g) => crate::manifest::dialog_group_header(&g),
         SumLine::Row { label, old, new } => Element::row()
             .width_match()
+            .cross(Align::Start)
             .spacing(10)
-            .padding_xy(4, 3)
+            .padding_xy(4, 4)
             .child(
                 Element::label(label)
-                    .font_size(12.5)
+                    .font_size(13.0)
                     .fg_role(Role::Text)
-                    .width(150)
-                    .max_lines(1),
+                    .width(170)
+                    .max_lines(1)
+                    .truncate(Truncate::End),
             )
             .child(
-                Element::label(format!("{old}  →  {new}"))
-                    .font_size(12.5)
-                    .fg_role(Role::Text)
+                Element::row()
                     .weight(1.0)
-                    .max_lines(2),
+                    .spacing(8)
+                    .child(
+                        Element::label(old)
+                            .font_size(13.0)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(2),
+                    )
+                    .child(Element::label("→").font_size(13.0).fg_role(Role::TextMuted))
+                    .child(
+                        Element::label(new)
+                            .font_size(13.0)
+                            .font_weight(600)
+                            .fg_role(Role::Accent)
+                            .weight(1.0)
+                            .max_lines(2),
+                    ),
             ),
     });
     body()
-        .child(
-            Element::label("当前配置已符合所选，无需修改")
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .width_match()
-                .visible_when(move || summary.get().is_empty()),
-        )
-        // 不再自带定高滚动：摘要长了由整段正文区滚动。
+        .child(page_head("确认修改", c.sum_lead))
+        // 不自带定高滚动：摘要长了由整段正文区滚动。
         .child(
             Element::col()
                 .width_match()
@@ -815,14 +1038,34 @@ fn step4_body(c: Controls) -> Element {
         )
 }
 
-fn text_body(text: Signal<String>, role: Role) -> Element {
+fn confirm_body(text: Signal<String>) -> Element {
     body().child(
         Element::label_signal(text)
-            .font_size(12.5)
-            .fg_role(role)
+            .font_size(15.0)
+            .font_weight(600)
+            .fg_role(Role::Text)
             .width_match()
-            .max_lines(6),
+            .max_lines(2),
     )
+}
+
+fn result_body(text: Signal<String>) -> Element {
+    body()
+        .child(
+            Element::label("设置未能全部应用")
+                .font_size(17.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1),
+        )
+        .child(
+            Element::label_signal(text)
+                .font_size(12.5)
+                .fg_role(Role::Danger)
+                .width_match()
+                .max_lines(6),
+        )
 }
 
 fn footer(app: &Rc<RefCell<AppState>>, phase: Signal<WizardPhase>, c: Controls) -> Element {
@@ -1113,7 +1356,7 @@ mod tests {
             open_wizard(&app);
             let c = Controls::new();
             sync(&app, &c);
-            let rows = c.schemes.get();
+            let rows = c.schemes.get().concat();
             let main = rows.iter().find(|r| r.locked).expect("默认方案应锁定");
             assert!(main.checked);
             let main_id = main.id.clone();
@@ -1361,14 +1604,33 @@ mod tests {
         (n.measured.h, n.content_h)
     }
 
-    /// [`DIALOG_H`] 的取值依据：最高的常见形态（第 2 步双拼 + 模糊音开、第 3 步码表 +
-    /// 临时拼音开）以及欢迎页、第 1 步不滚动即可放下。
+    /// 造 `n` 行方案（首行为锁定的默认方案），按网格列数分好。名字取较长的自定义码表名。
+    fn fake_schemes(n: usize) -> Vec<Vec<SchemeRow>> {
+        let rows: Vec<SchemeRow> = (0..n)
+            .map(|i| SchemeRow {
+                id: format!("s{i}"),
+                name: format!("五笔86（含拼音）{i}"),
+                checked: i < 3,
+                locked: i == 0,
+            })
+            .collect();
+        rows.chunks(SCHEME_COLS)
+            .map(<[SchemeRow]>::to_vec)
+            .collect()
+    }
+
+    /// 正文区底部至少留出的余量：真机字体与测试文字引擎的度量有出入，不能贴着放。
+    const FIT_MARGIN: i32 = 24;
+
+    /// [`DIALOG_H`] 的取值依据：最高的常见形态（第 1 步双拼 + 8 个方案、第 2 步双拼 +
+    /// 模糊音开、第 3 步码表 + 临时拼音开）以及欢迎页，不滚动即可放下，且留 [`FIT_MARGIN`]。
     #[test]
     fn tallest_steps_fit_without_scrolling() {
         with_mock(|| {
             let app = mock_app();
             open_wizard(&app);
             let (mut tree, panel, phase, c) = build_frame(&app);
+            c.schemes.set(fake_schemes(8));
             for (p, i, kind, fuzzy, temp) in [
                 (WizardPhase::Welcome, 0, 0, false, false),
                 (WizardPhase::Step(1), 2, 2, false, false),
@@ -1382,7 +1644,62 @@ mod tests {
                 layout(&mut tree);
                 let (h, content_h) = page_scroll(&tree, panel, i);
                 eprintln!("{p:?}: viewport={h} content={content_h}");
-                assert!(content_h <= h, "{p:?} 需要滚动：{content_h} > {h}");
+                assert!(
+                    content_h + FIT_MARGIN <= h,
+                    "{p:?} 余量不足：{content_h} + {FIT_MARGIN} > {h}"
+                );
+            }
+        });
+    }
+
+    /// 方案清单两列网格：N=1..8 时格子一个不少、都排在两列里、不越出清单右缘。
+    #[test]
+    fn scheme_grid_holds_every_row_in_two_columns() {
+        with_mock(|| {
+            let app = mock_app();
+            let schemes = signal(Vec::new());
+            // 第 1 步正文宽：对话框宽 − 正文左右内边距 − 卡片左右内边距。
+            let grid_w = DIALOG_W - 2 * 18 - 2 * 16;
+            let mut tree = Tree::new();
+            let root = Element::stack()
+                .child(scheme_grid(&app, schemes).width(grid_w))
+                .build(&mut tree);
+            tree.root = Some(root);
+            for n in 1..=8 {
+                schemes.set(fake_schemes(n));
+                layout(&mut tree);
+                let grid = tree.get(root).unwrap().children[0];
+                let host = tree.get(grid).unwrap().children[0];
+                assert!(tree.get(host).unwrap().bounds.w <= grid_w, "n={n}");
+                let mut cells = 0;
+                // bounds 相对父节点：格子不越出所在行，行不越出网格。
+                for r in tree.get(host).unwrap().children.clone() {
+                    let row = tree.get(r).unwrap();
+                    assert!(row.bounds.w <= grid_w, "n={n} 行越界 {:?}", row.bounds);
+                    assert_eq!(row.children.len(), SCHEME_COLS, "n={n}");
+                    for cell in row.children.clone() {
+                        let c = tree.get(cell).unwrap();
+                        if c.children.is_empty() {
+                            continue; // 末行补位
+                        }
+                        cells += 1;
+                        let b = c.bounds;
+                        assert!(b.w > 0 && b.h > 0, "n={n} 空格子 {b:?}");
+                        assert!(
+                            b.x >= 0 && b.x + b.w <= row.bounds.w,
+                            "n={n} 越界 {b:?} / {:?}",
+                            row.bounds
+                        );
+                        let cb = tree.get(c.children[0]).unwrap().bounds;
+                        assert!(cb.x + cb.w <= b.w, "n={n} 勾选框越出格子");
+                    }
+                }
+                assert_eq!(cells, n, "n={n} 缺项");
+                assert_eq!(
+                    tree.get(host).unwrap().children.len(),
+                    n.div_ceil(SCHEME_COLS),
+                    "n={n} 行数"
+                );
             }
         });
     }

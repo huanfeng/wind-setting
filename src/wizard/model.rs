@@ -99,10 +99,10 @@ pub struct Draft {
 
 /// 模糊音常用 4 对的键名（`schema.pinyin.fuzzy.<名>`）与标签。
 pub const FUZZY_PAIRS: [(&str, &str); 4] = [
-    ("zh_z", "zh = z"),
-    ("ch_c", "ch = c"),
-    ("sh_s", "sh = s"),
-    ("n_l", "n = l"),
+    ("zh_z", "zh / z"),
+    ("ch_c", "ch / c"),
+    ("sh_s", "sh / s"),
+    ("n_l", "n / l"),
 ];
 
 fn trigger_of(cfg: &Config, verb: &str, options: &[(&str, &str)]) -> Trigger {
@@ -424,19 +424,19 @@ pub fn summary(
         Kind::Codetable => {
             push(
                 "输入习惯",
-                "全码唯一自动上屏",
+                "四码唯一时自动上屏",
                 on_off(cur.auto_commit_at_full),
                 on_off(new.auto_commit_at_full),
             );
             push(
                 "输入习惯",
-                "满码空码清空",
+                "空码时自动清空",
                 on_off(cur.clear_on_empty_max),
                 on_off(new.clear_on_empty_max),
             );
             push(
                 "输入习惯",
-                "拼音反查（显示五笔编码）",
+                "拼音反查",
                 on_off(cur.code_hint),
                 on_off(new.code_hint),
             );
@@ -444,7 +444,7 @@ pub fn summary(
         Kind::Pinyin | Kind::Shuangpin => {
             push(
                 "输入习惯",
-                "emoji 候选",
+                "Emoji 候选",
                 on_off(cur.emoji),
                 on_off(new.emoji),
             );
