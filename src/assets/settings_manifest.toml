@@ -2969,6 +2969,19 @@ min = 0
 max = 64
 
 # ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
+# 总开关置于卡片首行，只有「候选注释」（模板对话框）随它置灰。不挂的：
+# - 序号标签、命令栏前缀：与注释无关；
+# - 「自动使用词库自带的注释」「注释词库」：它们供 `${dict}` 查询，悬停提示的段也用
+#   （设置端自带的「词库注释」悬停预设就是），而 enabled_when 表达不了
+#   「注释开 或 悬停开」这种或条件——挂上只看注释开关，会在悬停仍要用时把它们误置灰。
+[[items]]
+key = "ui.candidate.comment_enabled"
+group = "ui"
+section = "候选标注"
+type = "toggle"
+label = "显示候选注释"
+hint = "候选词右侧的编码、注音等小字；用不到可关掉以省内存"
+
 # 候选注释段（候选右侧的小字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
 # 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。
 # 宿主取**横排**模板：它是对话框里第一个出现的字段，而横排宽度由全部候选共享、最需斟酌。
@@ -2980,6 +2993,7 @@ section = "候选标注"
 type = "dialog_button"
 label = "候选注释"
 hint = "候选词右侧小字的内容与最大字数，横排、竖排可分别设置"
+enabled_when = "ui.candidate.comment_enabled == true"
 
 [[items]]
 key = "ui.candidate.comment_template_vertical"
@@ -3027,7 +3041,7 @@ group = "ui"
 section = "候选标注"
 type = "toggle"
 label = "自动使用词库自带的注释"
-hint = "词库声明 comment 列时将其作为注释源；可在「注释词库」中单独启停与排序"
+hint = "词库声明 comment 列时将其作为 ${dict} 的查询源，供注释模板与悬停提示使用；可在「注释词库」中单独启停与排序"
 
 [[items]]
 key = "ui.comment_dicts"
@@ -3035,7 +3049,7 @@ group = "ui"
 section = "候选标注"
 type = "dialog_button_comment_dicts"
 label = "注释词库"
-hint = "供注释模板 ${dict} 变量查询；词库文件放在 schemas/comments/ 下"
+hint = "供注释模板与悬停提示中的 ${dict} 变量查询；词库文件放在 schemas/comments/ 下"
 
 [[items]]
 key = "ui.candidate.index_labels"
@@ -3061,6 +3075,15 @@ label = "命令栏候选前缀"
 hint = "命令候选前的提示符号"
 
 # ── 候选项提示 ──
+# 总开关置于卡片首行，其余各行随它置灰。
+[[items]]
+key = "ui.tooltip.enabled"
+group = "ui"
+section = "候选项提示"
+type = "toggle"
+label = "显示悬停提示"
+hint = "鼠标停在候选上时弹出的编码、拼音等提示；用不到可关掉以省内存"
+
 [[items]]
 key = "ui.tooltip.delay"
 group = "ui"
@@ -3068,6 +3091,7 @@ section = "候选项提示"
 type = "number"
 label = "悬停延时"
 hint = "鼠标停留在候选上多久后弹出提示框（毫秒）；越大越不易误触"
+enabled_when = "ui.tooltip.enabled == true"
 min = 0
 max = 2000
 step = 50
@@ -3084,6 +3108,7 @@ section = "候选项提示"
 type = "dialog_button_tooltip_sections"
 label = "提示内容"
 hint = "悬停提示由若干段自上而下组成，每段可启停、排序、改写内容，或按预设添加"
+enabled_when = "ui.tooltip.enabled == true"
 
 [[items]]
 key = "ui.tooltip.max_chars"
@@ -3095,6 +3120,7 @@ hint = "超出部分以省略号截断；0 = 不限。复制、上屏取的仍�
 min = 0
 max = 2000
 step = 10
+enabled_when = "ui.tooltip.enabled == true"
 
 [[items]]
 key = "ui.tooltip.wrap_width"
@@ -3106,6 +3132,7 @@ hint = "一行超过这个宽度就换行，汉字计 2、字母计 1；0 = 不�
 min = 0
 max = 200
 step = 2
+enabled_when = "ui.tooltip.enabled == true"
 
 # ── 状态提示（行为/位置类；纯视觉如颜色/字号/透明度/圆角由主题 theme.toml 处理，不在此）──
 [[items]]

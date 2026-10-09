@@ -1733,6 +1733,11 @@
       "type": "int"
     },
     {
+      "default": true,
+      "key": "ui.candidate.comment_enabled",
+      "type": "bool"
+    },
+    {
       "default": "${code_hint|code_rev|shuangpin}",
       "key": "ui.candidate.comment_template_vertical",
       "schemaOverride": {
@@ -1900,6 +1905,11 @@
         "full",
         "none"
       ]
+    },
+    {
+      "default": true,
+      "key": "ui.tooltip.enabled",
+      "type": "bool"
     },
     {
       "default": 200,

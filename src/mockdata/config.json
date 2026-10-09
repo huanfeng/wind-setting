@@ -441,6 +441,7 @@
   "candidate": {
    "auto_comment_dicts": true,
    "comment_above": false,
+   "comment_enabled": true,
    "comment_max_chars_horizontal": 0,
    "comment_max_chars_vertical": 0,
    "comment_template_horizontal": "${code_hint|code_rev|shuangpin}",
@@ -572,6 +573,7 @@
   },
   "tooltip": {
    "delay": 200,
+   "enabled": true,
    "max_chars": 200,
    "sections": [
     {
