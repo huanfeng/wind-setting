@@ -1,6 +1,6 @@
 # 汉字 → 拼音首字母（1-2 个，多音字取常用频率前两读）
 # 由 scripts/gen-pinyin-initials.ps1 从 core 的 build/data/pinyin_map.txt 生成，请勿手改。
-# 字数: 342
+# 字数: 358
 # 注：本版是旧表与 Linux 上重算结果的并集补齐——Linux 下仅限 Windows 的设置项不进标题语料，在 Linux 上重跑脚本会把表缩掉这批字；请在 Windows 上重跑。
 一 y
 三 s
@@ -16,6 +16,7 @@
 习 x
 二 e
 亮 l
+人 r
 仅 j
 从 c z
 令 l
@@ -54,12 +55,14 @@
 别 b
 到 d
 前 q
+剧 j
 功 g
 加 j
 务 w
 动 d
 助 z
 包 b
+化 h
 匹 p
 半 b
 协 x
@@ -74,6 +77,7 @@
 发 f
 取 q
 变 b
+叠 d
 口 k
 可 k
 史 s
@@ -93,6 +97,7 @@
 在 z
 址 z
 坐 z
+块 k
 垂 c
 型 x
 域 y
@@ -118,6 +123,7 @@
 展 z
 工 g
 布 b
+希 x
 带 d
 常 c
 平 p
@@ -169,21 +175,25 @@
 断 d
 新 x
 方 f
+旁 p
 无 w m
 日 r
 时 s
 明 m
+星 x
 映 y
 是 s
 显 x
 智 z
 更 g
 最 z
+月 y
 有 y
 服 f
 期 q j
 本 b
 机 j
+杂 z
 条 t
 来 l
 查 c z
@@ -228,6 +238,7 @@
 留 l
 略 l
 登 d
+白 b
 的 d
 盘 p
 目 m
@@ -267,9 +278,11 @@
 编 b
 网 w
 置 z
+美 m
 翻 f
 联 l
 能 n
+腊 l x
 自 z
 色 s
 节 j
@@ -317,6 +330,7 @@
 通 t
 造 z
 邮 y
+部 b
 配 p
 释 s
 重 z c
@@ -324,12 +338,14 @@
 键 j
 长 z c
 阴 y
+附 f
 限 x
 除 c
 随 s
 隐 y
 隔 g
 集 j
+霜 s
 面 m
 音 y
 页 y

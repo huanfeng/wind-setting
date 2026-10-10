@@ -1306,6 +1306,11 @@
       "type": "bool"
     },
     {
+      "default": null,
+      "key": "input.emoji.modules",
+      "type": "map"
+    },
+    {
       "default": "follow",
       "key": "input.url.candidate_layout",
       "type": "enum",

@@ -192,6 +192,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "dialog_button_mix_members" => ty == "structlist",
         // 注释词库：整表读写的条目列表（id/label/path/enabled/schemas 五个字段）。
         "dialog_button_comment_dicts" => ty == "structlist",
+        // emoji 附加模块：id → bool 的整张表（键含用户放置的文件名，不是固定集合）。
+        "dialog_button_emoji_modules" => ty == "map",
         // 语言栏角标规则：整表读写的条目列表（enabled/state/corner/两个色值/scale）。
         "dialog_button_langbar_badges" => ty == "structlist",
         // 悬停提示段列表：整表读写的条目列表（enabled/label/template/each/promote/inline）。

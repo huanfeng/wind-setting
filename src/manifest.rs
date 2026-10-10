@@ -519,6 +519,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_ordered_pairs",
     "dialog_button_open_pairs",
     "dialog_button_comment_dicts",
+    "dialog_button_emoji_modules",
     "dialog_button_langbar_badges",
     "dialog_button_tooltip_sections",
     "dialog_button_langbar_text_colors",
@@ -553,6 +554,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_ordered_pairs"
         | "dialog_button_open_pairs"
         | "dialog_button_comment_dicts"
+        | "dialog_button_emoji_modules"
         | "dialog_button_langbar_badges"
         | "dialog_button_tooltip_sections" => build_dialog_button(state, key, item, cfg),
         // 卡片行不是单个「设置」按钮而是「四枚缩略色样 + 设置」，故不走 build_dialog_button。
@@ -2777,6 +2779,9 @@ fn build_dialog_body_inner(
         // 注释词库：可增删的条目列表 + 每条五个字段，manifest 的「一个 key 一个控件」
         // 套不上，走专用对话框（销掉 capabilities 里 `ui.comment_dicts` 那条 UNCOVERED）。
         build_dialog_button_comment_dicts(state, key, cfg)
+    } else if item.typ == "dialog_button_emoji_modules" {
+        // emoji 附加模块：条数不定（内置 + 用户放进 emoji\ 的文件），整张表读写。
+        build_dialog_button_emoji_modules(state, key, cfg)
     } else if item.typ == "dialog_button_langbar_badges" {
         // 语言栏角标规则：可增删的条目列表 + 每条五个字段，与注释词库同形态，
         // manifest 的「一个 key 一个控件」套不上，走专用对话框。
@@ -3778,6 +3783,49 @@ fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) 
 
     let visible = ui.visible;
     register_dialog(state, build_comment_dicts_dialog(&ui));
+    visible
+}
+
+/// emoji 附加模块（`input.emoji.modules`，id → bool）：清单来自 core，走专用对话框。
+///
+/// 四件套同 `comment_dicts`。值是整张表（Map），清单在 loader / 打开前现拉，用户新放的
+/// 文件重开设置即出现。
+fn build_dialog_button_emoji_modules(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::emoji_modules_dialog::{EmojiModulesUi, build_emoji_modules_dialog};
+
+    let ui = EmojiModulesUi::new(state.feedback);
+    ui.refresh_list();
+    ui.seed(cfg.get_object(key));
+
+    let ui_w = ui.clone();
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| {
+            c.set_path(&kw, ui_w.to_value());
+        }));
+
+    let ui_l = ui.clone();
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| {
+            ui_l.refresh_list();
+            ui_l.seed(c.get_object(&kl));
+        }),
+    );
+
+    let ui_g = ui.clone();
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(move || ui_g.to_value()));
+
+    let visible = ui.visible;
+    register_dialog(state, build_emoji_modules_dialog(&ui));
     visible
 }
 

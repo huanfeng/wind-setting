@@ -1582,6 +1582,16 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 { "path": "comments/broken.dict.yaml", "label": "", "hasComment": false }
             ]
         }),
+        // 与 core 的 EMOJI_MODULES 同序同出厂值，外加一个用户放置的文件。
+        "emoji.modules" => json!({
+            "userDir": "emoji",
+            "modules": [
+                { "id": "frost_emoji", "label": "白霜 Emoji", "description": "补充更多词语的 emoji 与符号，如「右箭头」→ ➡️", "file": "emoji/frost_emoji.txt", "user": false, "defaultOn": true },
+                { "id": "frost_radicals", "label": "偏旁部首", "description": "如「提手旁」→ 扌", "file": "emoji/frost_others.txt", "user": false, "defaultOn": false },
+                { "id": "frost_greek", "label": "希腊字母", "description": "如「阿尔法」→ alpha α Α", "file": "emoji/frost_others.txt", "user": false, "defaultOn": false },
+                { "id": "猫猫", "label": "猫猫", "description": "", "file": "emoji/猫猫.txt", "user": true, "defaultOn": false }
+            ]
+        }),
         "schema.list" => json!([
             { "id": "wubi86", "name": "五笔 86", "engineType": "codetable", "scheme": "",
               "builtin": true, "version": "2.1.0", "description": "标准五笔 86 版码表方案", "author": "王永民" },

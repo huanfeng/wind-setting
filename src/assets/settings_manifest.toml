@@ -1952,13 +1952,13 @@ label = "启用繁入简出"
 hint = "词库和候选是繁体时，上屏转成简体。开启会自动关闭「简入繁出」"
 exclusive_with = "input.s2t.enabled"
 
-# ── Emoji ──
+# ── Emoji/OpenCC ──
 # 按候选文字查表，与编码无关，所有方案通用。词表随程序附带（data/emoji/），首次开启时
 # 在本机建立索引缓存。
 [[items]]
 key = "input.emoji.enabled"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "toggle"
 label = "启用 emoji 候选"
 hint = "打出词语后，在候选中追加对应的 emoji（如「开心」→ 😄）。首次开启时建立索引，稍候片刻"
@@ -1969,7 +1969,7 @@ hint = "打出词语后，在候选中追加对应的 emoji（如「开心」→
 [[items]]
 key = "input.emoji.show_as"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "select"
 label = "显示位置"
 hint = "紧随词后：插在对应词之后，其后候选的序号顺延；列表末尾：追加在常用候选之后，原有序号不变"
@@ -1982,7 +1982,7 @@ options = [
 [[items]]
 key = "input.emoji.scope"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "select"
 label = "适用范围"
 hint = "仅完整词：只为完整匹配的词追加；全部候选：补全与部分匹配的候选也追加"
@@ -1996,7 +1996,7 @@ options = [
 [[items]]
 key = "input.emoji.max_hosts"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "number"
 label = "追加范围"
 hint = "只为列表前 N 个候选追加 emoji。1 = 仅首选"
@@ -2007,7 +2007,7 @@ enabled_when = "input.emoji.enabled == true"
 [[items]]
 key = "input.emoji.max_per_word"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "number"
 label = "每词上限"
 hint = "一个词最多追加的 emoji 个数"
@@ -2018,7 +2018,7 @@ enabled_when = "input.emoji.enabled == true"
 [[items]]
 key = "input.emoji.min_word_chars"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "number"
 label = "最少字数"
 hint = "候选少于此字数时不追加。默认 2，即不为单字追加"
@@ -2029,10 +2029,21 @@ enabled_when = "input.emoji.enabled == true"
 [[items]]
 key = "input.emoji.categories"
 group = "input"
-section = "Emoji"
+section = "Emoji/OpenCC"
 type = "toggle"
 label = "启用分类词"
 hint = "「动物」「水果」等分类词会带出整组 emoji，数量受每词上限约束"
+enabled_when = "input.emoji.enabled == true"
+
+# 附加模块（core 的 EMOJI_MODULES + 用户放进用户目录 emoji\ 的 OpenCC 表）：条数不定，走对话框，
+# 整张 input.emoji.modules 表读写。
+[[items]]
+key = "input.emoji.modules"
+group = "input"
+section = "Emoji/OpenCC"
+type = "dialog_button_emoji_modules"
+label = "附加模块"
+hint = "按模块加挂 emoji 与符号表（偏旁、希腊字母、单位等）；也可在用户目录 emoji\\ 下放 OpenCC 格式的 .txt 自行扩充"
 enabled_when = "input.emoji.enabled == true"
 
 # ── 网址/邮箱输入 ──
