@@ -5131,36 +5131,52 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     )
                 })
                 .collect();
-            let mut rows = rows;
             let dirs = state.settings_dict_dirs.borrow().clone();
-            if rows.is_empty() && !dirs.is_empty() {
+            if dirs.is_empty() {
+                return crate::widgets::dialog_section("扩展词库", rows);
+            }
+            let mut rows = rows;
+            if rows.is_empty() {
                 rows.push(
-                    Element::label(
-                        "还没有扩展词库。把 rime 格式的词库文件（*.dict.yaml）放进扩展词库目录，\
-                         重新打开本对话框就会出现在这里，勾选后生效。",
-                    )
-                    .font_size(11.0)
-                    .fg_role(Role::TextMuted)
-                    .width_match()
-                    .padding_xy(0, 4),
+                    Element::label("还没有扩展词库。")
+                        .font_size(11.0)
+                        .fg_role(Role::TextMuted)
+                        .width_match()
+                        .padding_xy(0, 4),
                 );
             }
-            for dir in dirs {
-                let feedback = state.feedback;
-                rows.push(crate::widgets::setting_row(
-                    "扩展词库目录",
-                    Some(&format!("schemas/{dir}（用户目录）")),
-                    Element::button("打开")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
-                            if let Err(e) = open_user_dict_dir(&dir) {
-                                feedback.set(Some((ToastKind::Error, e)));
-                            }
-                        }),
-                ));
-            }
-            crate::widgets::dialog_section("扩展词库", rows)
+            // 「打开」挂在节标题行、说明放标题下：词库一多，挂在列表末尾的那一行就被挤到
+            // 很下面；而且列表里大多是程序目录里的系统词库，按钮打开的却是用户目录——
+            // 不说清楚，用户会以为「列了这么多、打开却是空的」。
+            let feedback = state.feedback;
+            let open_btn = |dir: String, label: String| {
+                Element::button(label)
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| {
+                        if let Err(e) = open_user_dict_dir(&dir) {
+                            feedback.set(Some((ToastKind::Error, e)));
+                        }
+                    })
+            };
+            let action = if dirs.len() == 1 {
+                open_btn(dirs[0].clone(), "打开用户扩展词库目录".to_string())
+            } else {
+                // 方案声明了多个目录（出厂没有）：各给一个按钮，按目录末段区分
+                dirs.iter().fold(Element::row().spacing(6), |r, d| {
+                    let name = d.rsplit('/').next().unwrap_or(d).to_string();
+                    r.child(open_btn(d.clone(), format!("打开 {name}")))
+                })
+            };
+            let hint = format!(
+                "自己的词库（*.dict.yaml）放进用户目录 {}，重开本窗口后出现在下面；\
+                 系统自带的词库不在该目录。",
+                dirs.iter()
+                    .map(|d| format!("schemas/{d}"))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            );
+            crate::widgets::dialog_section_full("扩展词库", Some(&hint), Some(action), rows)
         }
         SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
             .font_size(11.0)
