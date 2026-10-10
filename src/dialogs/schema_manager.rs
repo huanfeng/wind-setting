@@ -4468,9 +4468,12 @@ fn build_settings_header(entry: &SchemaEntry) -> Element {
         .max_lines(1)
         .truncate(Truncate::End);
 
+    // 上边距：头部紧贴在 TAB 条下的分隔线后面，0 边距时方案名几乎顶着那条线
+    // （维护者：上 padding 太小）。12 与下方各节小标题到上一张卡片的距离相当。
     let mut col = Element::col()
         .width_match()
         .spacing(6)
+        .padding_edges(Insets::new(0, 12, 0, 0))
         .child(title)
         .child(meta);
     if !entry.description.is_empty() {
