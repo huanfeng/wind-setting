@@ -5138,21 +5138,27 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let mut rows = rows;
             if rows.is_empty() {
                 rows.push(
-                    Element::label("还没有扩展词库。")
+                    Element::label("还没有扩展词库。把自己的词库放进用户扩展词库目录即可。")
                         .font_size(11.0)
                         .fg_role(Role::TextMuted)
                         .width_match()
                         .padding_xy(0, 4),
                 );
             }
-            // 「打开」挂在节标题行、说明放标题下：词库一多，挂在列表末尾的那一行就被挤到
-            // 很下面；而且列表里大多是程序目录里的系统词库，按钮打开的却是用户目录——
-            // 不说清楚，用户会以为「列了这么多、打开却是空的」。
+            // 「打开」挂在节标题行：词库一多，挂在列表末尾的那一行就被挤到很下面。
+            // 列表里大多是程序目录里的系统词库，按钮打开的却是用户目录——不说清楚，用户会以为
+            // 「列了这么多、打开却是空的」。这句话放悬停提示而不是节说明：两行灰字压在
+            // 标题下太占地方（维护者：影响布局整洁）。
             let feedback = state.feedback;
             let open_btn = |dir: String, label: String| {
+                let tip = format!(
+                    "打开 schemas/{dir}（用户目录）。自己的词库（*.dict.yaml）放进去，\
+                     重开本窗口后出现在列表里；系统自带的词库不在这里"
+                );
                 Element::button(label)
                     .small()
                     .outline_soft()
+                    .tooltip(tip)
                     .on_click(move |_| {
                         if let Err(e) = open_user_dict_dir(&dir) {
                             feedback.set(Some((ToastKind::Error, e)));
@@ -5168,15 +5174,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     r.child(open_btn(d.clone(), format!("打开 {name}")))
                 })
             };
-            let hint = format!(
-                "自己的词库（*.dict.yaml）放进用户目录 {}，重开本窗口后出现在下面；\
-                 系统自带的词库不在该目录。",
-                dirs.iter()
-                    .map(|d| format!("schemas/{d}"))
-                    .collect::<Vec<_>>()
-                    .join("、")
-            );
-            crate::widgets::dialog_section_full("扩展词库", Some(&hint), Some(action), rows)
+            crate::widgets::dialog_section_full("扩展词库", None, Some(action), rows)
         }
         SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
             .font_size(11.0)
