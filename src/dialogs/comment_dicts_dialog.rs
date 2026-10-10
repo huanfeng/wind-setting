@@ -760,10 +760,13 @@ fn row_desc(r: &CommentDictRow) -> String {
     // 自动项显示的是**词库**的路径（注释就长在它身上），故取 `rel` 而非 `path`
     // ——后者对自动项恒为空，它没有自己的文件。
     let src = if r.auto { &r.rel } else { &r.path };
+    // 打头给出模板里按库取它的写法：`${dict:id}` 要填的是 **id**，而 id 在别处都看不见
+    // （行标题是显示名，编辑框得点进去），用户照着显示名或文件名写就对不上、注释为空。
+    let var = format!("${{dict:{}}}", r.id);
     if src.is_empty() {
-        scope
+        format!("{var} · {scope}")
     } else {
-        format!("{src} · {scope}")
+        format!("{var} · {src} · {scope}")
     }
 }
 
@@ -990,8 +993,8 @@ fn build_file_picker_dialog(ui: &CommentDictsUi) -> Element {
         .child(Element::divider())
         .child(
             Element::label(
-                "数据目录 schemas\\comments\\ 下找到的词库文件。\n\
-                 列表为空表示该目录中没有 .dict.yaml；放入后重新打开本页。",
+                "数据目录 schemas\\comments\\ 下找到的词库文件（.dict.yaml 或 OpenCC 的 .txt）。\n\
+                 列表为空表示该目录中还没有词库；放入后重新打开本页。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
@@ -1192,6 +1195,20 @@ mod tests {
     /// `json!([...])` → `Vec<Value>`（测试里省一次 unwrap 链）。
     fn arr(v: Value) -> Vec<Value> {
         v.as_array().cloned().unwrap_or_default()
+    }
+
+    /// 行说明打头给出 `${dict:id}`：模板按库取要填 id，而 id 在列表里别处看不见——
+    /// 靶机上照着说明填了 `${dict:en}`，实际 id 是自动生成的 `chinese_english`，注释恒空。
+    #[test]
+    fn row_desc_shows_dict_var_with_id() {
+        let rows = rows_from_value(&arr(json!([{
+            "id": "chinese_english", "label": "中英",
+            "path": "comments/chinese_english.txt", "schemas": [],
+        }])));
+        assert_eq!(
+            row_desc(&rows[0]),
+            "${dict:chinese_english} · comments/chinese_english.txt · 全部方案"
+        );
     }
 
     /// ★ 读进来的字段要原样读出去，含本 UI 不认识的那些。
