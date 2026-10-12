@@ -219,6 +219,15 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "schema.codetable.frequency.record_always",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable.frequency]"
+      },
+      "type": "bool"
+    },
+    {
       "default": 0,
       "key": "schema.codetable.frequency.protect_top_n",
       "schemaOverride": {
@@ -294,6 +303,11 @@
     {
       "default": false,
       "key": "schema.english.frequency.enabled",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.english.frequency.record_always",
       "type": "bool"
     },
     {
@@ -549,6 +563,11 @@
     {
       "default": true,
       "key": "schema.pinyin.frequency.enabled",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "schema.pinyin.frequency.record_always",
       "type": "bool"
     },
     {

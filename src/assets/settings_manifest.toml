@@ -265,6 +265,16 @@ label = "启用词频调整"
 hint = "根据使用频次动态调整候选排序"
 
 [[items]]
+key = "schema.codetable.frequency.record_always"
+group = "schema"
+section = "上屏行为"
+subsection = "词频调整"
+type = "toggle"
+label = "仅记录次数"
+hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
+enabled_when = "schema.codetable.frequency.enabled == false"
+
+[[items]]
 key = "schema.codetable.frequency.strategy"
 group = "schema"
 section = "上屏行为"
@@ -546,6 +556,16 @@ subsection = "词频调整"
 type = "toggle"
 label = "启用词频调整"
 hint = "根据使用频次动态调整候选排序"
+
+[[items]]
+key = "schema.pinyin.frequency.record_always"
+group = "schema"
+section = "候选行为"
+subsection = "词频调整"
+type = "toggle"
+label = "仅记录次数"
+hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
+enabled_when = "schema.pinyin.frequency.enabled == false"
 
 [[items]]
 key = "schema.pinyin.frequency.promote_prefix"
@@ -998,6 +1018,15 @@ section = "英文行为"
 type = "toggle"
 label = "启用词频调整"
 hint = "按使用频率调整英文候选顺序"
+
+[[items]]
+key = "schema.english.frequency.record_always"
+group = "schema"
+section = "英文行为"
+type = "toggle"
+label = "仅记录次数"
+hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
+enabled_when = "schema.english.frequency.enabled == false"
 
 [[items]]
 key = "schema.english.frequency.strategy"
