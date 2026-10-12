@@ -184,6 +184,16 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
         ),
     ];
+    // 「性能与诊断」的清单项（常驻所有方案）被定制版藏掉时，`sections_of` 会把整个分区剔掉，
+    // 可手写的「内存占用 / 诊断信息」行不是设置项、不该跟着消失（搜索里也还有它们的条目）。
+    if !manifest_secs.contains_key(memory::SECTION) {
+        let (row, loader) = memory::build_rows(state);
+        let card = crate::widgets::section_with_head(memory::SECTION, None, vec![row]);
+        manifest_secs.insert(
+            memory::SECTION.to_string(),
+            Element::col().width_match().child(card).child(loader),
+        );
+    }
     if let Some(card) = custom_hidden_section(app) {
         secs.push(nav.wrap("定制版", 0, card));
     }

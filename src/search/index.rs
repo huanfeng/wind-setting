@@ -130,6 +130,9 @@ pub fn page_anchor(key: &str) -> String {
 /// 模糊音那一组开关是挤在一个**网格**里的（`manifest::build_fuzzy_group`），
 /// 每格只有一个 `zh ↔ z` 大小的方块，逐格挂锚点没有意义：闪一个小方块，
 /// 用户多半看不见。整块闪一次反而说得清「在这儿」。
+/// 模糊音网格的总开关：网格整块显隐以它为准，见 `manifest::scheme_config_section`。
+pub const FUZZY_MASTER: &str = "schema.pinyin.fuzzy.enabled";
+
 fn block_anchor_of(key: &str) -> Option<&'static str> {
     key.starts_with("schema.pinyin.fuzzy.")
         .then_some("schema.pinyin.fuzzy")
@@ -222,7 +225,7 @@ fn is_merged_into_gate(item: &MItem, manifest: &Manifest) -> bool {
         && item
             .gate_key
             .as_deref()
-            .is_some_and(|g| manifest.get(g).is_some())
+            .is_some_and(|g| manifest.is_visible(g))
 }
 
 /// 由 manifest 派生索引条目。
@@ -233,6 +236,11 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
             continue;
         };
         if item.hidden || item.label.is_empty() {
+            continue;
+        }
+        // 模糊音网格整块以总开关可见与否为准（`manifest::scheme_config_section`），
+        // 总开关被定制版藏掉时格子虽未 hidden，界面上也没有那张网格可落。
+        if block_anchor_of(key).is_some() && !manifest.is_visible(FUZZY_MASTER) {
             continue;
         }
         if is_merged_into_gate(item, manifest) {

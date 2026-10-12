@@ -92,6 +92,10 @@ pub struct MItem {
     /// 隐藏此项（未完全实现 / 不对最终用户开放 / 当前平台无落点），不渲染也不注册
     /// writer/loader。清单里的 `platform` 字段在解析时折进本字段（见 [`platform_matches`]）。
     pub hidden: bool,
+    /// 本项是被定制版 `[settings] hide` 藏掉的（同时 `hidden = true`）。与平台 / 变体门控分开
+    /// 记：后者在本平台没有落点，前者的值照常生效，`enabled_when` 联动要按它的配置值算
+    /// （见 [`ensure_custom_hidden_getter`]）。
+    pub custom_hidden: bool,
     /// 哨兵值（R3：`0` / `""`）表示「跟随谁」。目前只有 `"theme"`（外观页字号、字族、
     /// 字重、翻页栏、页码）。呈现按控件类型分两种（R8.1 / R8.2）：数值与下拉整行包成
     /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
@@ -231,6 +235,7 @@ impl Manifest {
                     hidden: it.get("hidden").and_then(|x| x.as_bool()).unwrap_or(false)
                         || !platform_matches(opt_str(it, "platform").as_deref())
                         || !variant_matches(opt_str(it, "variant").as_deref()),
+                    custom_hidden: false,
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -262,6 +267,7 @@ impl Manifest {
             for item in self.items.values_mut() {
                 if sel.matches_key(&item.key) {
                     item.hidden = true;
+                    item.custom_hidden = true;
                     hit = true;
                 }
             }
@@ -274,11 +280,25 @@ impl Manifest {
 
     /// 返回以 `gate_key` 为门控开关的 dialog_button 项（用于「开关 + 设置」合并成一行）。
     /// 按 manifest 顺序取第一个匹配。
+    ///
+    /// 被隐藏的按钮不算（定制版只藏了按钮、没藏开关：开关照常独立成行）。
     pub fn dialog_for_gate(&self, gate_key: &str) -> Option<&MItem> {
         self.order
             .iter()
             .filter_map(|k| self.items.get(k))
-            .find(|it| it.typ == "dialog_button" && it.gate_key.as_deref() == Some(gate_key))
+            .find(|it| {
+                it.typ == "dialog_button" && !it.hidden && it.gate_key.as_deref() == Some(gate_key)
+            })
+    }
+
+    /// 该项在清单里且未被隐藏。
+    ///
+    /// 「被 gate 合并的 dialog_button 不独立成行」的判据（`section_rows`、
+    /// `scheme_config_section`、`search::index::is_merged_into_gate` 三处逐字同构）必须问
+    /// 这个，而不是 `get(..).is_some()`：开关被定制版藏掉时没有合并行可依附，按钮得自己成行，
+    /// 否则会连带着一起消失——藏掉的比定制者写的多。
+    pub fn is_visible(&self, key: &str) -> bool {
+        self.items.get(key).is_some_and(|it| !it.hidden)
     }
 
     /// 从内嵌 TOML 清单构建。TOML 先反序列化为 serde_json::Value（与 system.manifest
@@ -466,7 +486,7 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         if item.typ == "dialog_button"
             && item.opens_dialog.is_none()
             && let Some(g) = &item.gate_key
-            && state.manifest.get(g).is_some()
+            && state.manifest.is_visible(g)
         {
             continue;
         }
@@ -2638,8 +2658,7 @@ pub fn scheme_config_section(
     let with_fuzzy = with_fuzzy
         && state
             .manifest
-            .get("schema.pinyin.fuzzy.enabled")
-            .is_some_and(|it| !it.hidden);
+            .is_visible(crate::search::index::FUZZY_MASTER);
     // 整张卡的项都被隐藏了（定制版 `[settings] hide`）：不出一张只有标题和提示的空卡，
     // 调用方据此连二级导航那一条也不放。
     if keys.is_empty() && !with_fuzzy {
@@ -2711,7 +2730,7 @@ pub fn scheme_config_section(
             // 那一条（子对话框宿主同时带 gate_key 时会被本分支误吞）。
             && item.opens_dialog.is_none()
             && let Some(g) = &item.gate_key
-            && state.manifest.get(g).is_some()
+            && state.manifest.is_visible(g)
         {
             continue;
         } else {
@@ -5695,10 +5714,43 @@ pub(crate) fn cond_reason(manifest: &Manifest, c: &Cond) -> String {
     }
 }
 
+/// `enabled_when` 引用的项被**定制版**藏掉时，它没有控件、也就没有取值器，联动会退化成
+/// 「恒满足」——定制者在配置里关掉了总开关，从属项却一直可点，与实际是否生效不符。
+/// 补一个只读影子：按配置当前值播种、随 loader 刷新，**不登记 writer**（值不归设置页管）。
+///
+/// 只管定制版隐藏，不管平台 / 变体门控：那类项在本平台根本没有落点，按配置值把从属项
+/// 锁死，用户就再也够不着它了。
+fn ensure_custom_hidden_getter(state: &AppState, key: &str) {
+    if !state.manifest.get(key).is_some_and(|it| it.custom_hidden) {
+        return;
+    }
+    if state.fields.getters.borrow().contains_key(key) {
+        return;
+    }
+    let def = state.capabilities.default_for(key);
+    let read = move |c: &Config, k: &str| c.get_path(k).cloned().unwrap_or_else(|| def.clone());
+    let sig = signal(read(&state.current_config, key));
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(move || sig.get()));
+    let kl = key.to_string();
+    state
+        .fields
+        .loaders
+        .borrow_mut()
+        .entry(key.to_string())
+        .or_insert_with(|| Box::new(move |c: &Config| sig.set(read(c, &kl))));
+}
+
 /// 由 `enabled_when` 表达式构造联动闭包：全部条件满足才启用。
 /// 引用了未登记的 key 时该子句视为满足——拼写错误只该让联动失效，不该把控件永久锁死。
 fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> bool>> {
     let conds = parse_conds(expr)?;
+    for c in &conds {
+        ensure_custom_hidden_getter(state, &c.key);
+    }
     let reg = state.fields.clone();
     Some(Box::new(move || {
         let g = reg.getters.borrow();
@@ -7954,6 +8006,32 @@ mod theme_follow_row_tests {
             w(&mut out);
         }
         out
+    }
+
+    /// `enabled_when` 依赖的项被定制版藏掉：联动按配置当前值算，并随 loader 刷新，
+    /// 而不是退化成「恒满足」。平台门控的项保持原有的宽松行为。
+    #[test]
+    fn enabled_when_follows_config_of_custom_hidden_gate() {
+        let (h, errors) = wind_config::SettingsHide::parse(&["key:stats.enabled"]);
+        assert!(errors.is_empty());
+        let mut st = crate::state::AppState::empty();
+        st.manifest = crate::custom_hide::settings_manifest(&h, false);
+        st.current_config = Config::from_value(serde_json::json!({"stats": {"enabled": false}}));
+        let enabled = enabled_when_closure(&st, "stats.enabled == true").unwrap();
+        assert!(!enabled(), "总开关在配置里是关的，从属项不该可用");
+
+        let on = Config::from_value(serde_json::json!({"stats": {"enabled": true}}));
+        for l in st.fields.loaders.borrow().values() {
+            l(&on);
+        }
+        assert!(enabled(), "loader 灌入新配置后应跟着变");
+    }
+
+    #[test]
+    fn enabled_when_stays_lenient_for_non_custom_hidden_gate() {
+        let st = crate::state::AppState::empty();
+        let enabled = enabled_when_closure(&st, "stats.enabled == true").unwrap();
+        assert!(enabled(), "未登记取值器、又不是定制版隐藏的项：仍视为满足");
     }
 
     fn item(key: &str) -> MItem {

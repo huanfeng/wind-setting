@@ -51,8 +51,31 @@ pub fn settings_manifest(hide: &SettingsHide, show_all: bool) -> Manifest {
                 "定制版 [settings] hide 的 `{sel}` 没有命中任何设置项（拼错了，或该项在本版本已改名）"
             );
         }
+        for (shown, hidden) in half_hidden_exclusive_pairs(&m) {
+            tracing::warn!(
+                "定制版 [settings] hide 只藏了互斥对中的 `{hidden}`，`{shown}` 仍可见：\
+                 用户打开后者时无法联动关掉前者，两者可能同时生效。请成对隐藏"
+            );
+        }
     }
     m
+}
+
+/// 互斥对（`exclusive_with`）里一方可见、一方被藏的情形：（可见方, 被藏方）。
+///
+/// 互斥靠点击时改对方的 Signal 实现，被藏的一方没有 Signal，联动就静默跳过了。
+fn half_hidden_exclusive_pairs(m: &Manifest) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for key in &m.order {
+        let Some(it) = m.get(key) else { continue };
+        let Some(other) = &it.exclusive_with else {
+            continue;
+        };
+        if !it.hidden && m.get(other).is_some_and(|o| o.hidden) {
+            out.push((key.clone(), other.clone()));
+        }
+    }
+    out
 }
 
 /// 设置向导是否被定制版关掉（`feature:wizard`）。
@@ -192,6 +215,67 @@ mod tests {
         let (h, errors) = SettingsHide::parse(raw);
         assert!(errors.is_empty(), "{errors:?}");
         h
+    }
+
+    #[test]
+    fn half_hidden_exclusive_pair_is_detected() {
+        let full = Manifest::from_embedded();
+        let (a, b) = full
+            .order
+            .iter()
+            .find_map(|k| {
+                let it = full.get(k)?;
+                Some((k.clone(), it.exclusive_with.clone()?))
+            })
+            .expect("前提：出厂清单至少有一对互斥项");
+        let m = settings_manifest(&hide(&[&format!("key:{b}")]), false);
+        assert!(half_hidden_exclusive_pairs(&m).contains(&(a.clone(), b.clone())));
+        let both = settings_manifest(&hide(&[&format!("key:{a}"), &format!("key:{b}")]), false);
+        assert!(half_hidden_exclusive_pairs(&both).is_empty());
+    }
+
+    /// 「开关 + 设置」合并对：只藏按钮 ⇒ 开关不再找它合并；只藏开关 ⇒ 按钮自己成行、仍可搜。
+    #[test]
+    fn gated_dialog_pair_hides_only_what_was_listed() {
+        let full = Manifest::from_embedded();
+        let (dlg, gate) = full
+            .order
+            .iter()
+            .find_map(|k| {
+                let it = full.get(k)?;
+                (it.typ == "dialog_button" && it.opens_dialog.is_none() && !it.hidden)
+                    .then(|| it.gate_key.clone())
+                    .flatten()
+                    .filter(|g| full.is_visible(g))
+                    .map(|g| (k.clone(), g))
+            })
+            .expect("前提：出厂清单至少有一对开关 + 设置");
+
+        let only_dlg = settings_manifest(&hide(&[&format!("key:{dlg}")]), false);
+        assert!(
+            only_dlg.dialog_for_gate(&gate).is_none(),
+            "被藏的按钮不能再并进开关行"
+        );
+
+        let only_gate = settings_manifest(&hide(&[&format!("key:{gate}")]), false);
+        let index = crate::search::index::build_index(&only_gate);
+        assert!(
+            index.iter().any(|e| e.id == dlg),
+            "开关被藏后按钮自己成行，搜索里应有 `{dlg}`"
+        );
+    }
+
+    /// 模糊音总开关被藏 ⇒ 整张网格不出，格子也不能留在搜索里。
+    #[test]
+    fn fuzzy_cells_leave_search_with_master() {
+        let m = settings_manifest(&hide(&["key:schema.pinyin.fuzzy.enabled"]), false);
+        let index = crate::search::index::build_index(&m);
+        let leaked: Vec<&str> = index
+            .iter()
+            .map(|e| e.id.as_str())
+            .filter(|id| id.starts_with("schema.pinyin.fuzzy."))
+            .collect();
+        assert!(leaked.is_empty(), "{leaked:?}");
     }
 
     #[test]
