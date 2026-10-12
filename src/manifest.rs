@@ -512,8 +512,12 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
             .as_deref()
             .and_then(parse_conds)
             .map(|cs| {
-                cs.iter()
-                    .any(|c| c.key != *k && keys.iter().any(|x| x == &c.key))
+                cs.iter().any(|c| {
+                    c.key != *k
+                            && keys.iter().any(|x| x == &c.key)
+                            // 父项被藏（定制版 / 平台门控）时没有可挂靠的行，不缩进。
+                            && state.manifest.is_visible(&c.key)
+                })
             })
             .unwrap_or(false);
         let row = if dependent {
@@ -5735,13 +5739,15 @@ fn ensure_custom_hidden_getter(state: &AppState, key: &str) {
         .getters
         .borrow_mut()
         .insert(key.to_string(), Box::new(move || sig.get()));
+    // 登记在视图 key `<路径>#custom_hidden` 下，而不是清单 key 本身：「恢复本页 / 恢复默认」
+    // 按清单 key 精确查 loader，影子若在那里，会被灌进出厂默认值，联动从此与真实配置
+    // 对不上（值本身没变，影子没有 writer）。加载、重新加载、外部变更三条路遍历全部
+    // loader 或按 `loader_key_matches` 认视图 key，照常刷新它。
     let kl = key.to_string();
-    state
-        .fields
-        .loaders
-        .borrow_mut()
-        .entry(key.to_string())
-        .or_insert_with(|| Box::new(move |c: &Config| sig.set(read(c, &kl))));
+    state.fields.loaders.borrow_mut().insert(
+        format!("{key}#custom_hidden"),
+        Box::new(move |c: &Config| sig.set(read(c, &kl))),
+    );
 }
 
 /// 由 `enabled_when` 表达式构造联动闭包：全部条件满足才启用。
@@ -8025,6 +8031,15 @@ mod theme_follow_row_tests {
             l(&on);
         }
         assert!(enabled(), "loader 灌入新配置后应跟着变");
+
+        // 「恢复默认 / 恢复本页」按清单 key 查 loader，不能碰到影子（出厂 stats.enabled
+        // 与此刻配置不同时，碰到就会把联动改成与真实配置不符）。
+        let reset = reset_to_core_defaults(&st, vec!["stats.enabled".to_string()]);
+        st.current_config = Config::from_value(serde_json::json!({"stats": {"enabled": false}}));
+        st.apply_external_config_change("stats.enabled", serde_json::json!(false));
+        assert!(!enabled(), "外部变更应刷新影子");
+        reset();
+        assert!(!enabled(), "恢复默认不该改动被藏项的影子");
     }
 
     #[test]
