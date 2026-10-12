@@ -1325,7 +1325,17 @@
       "type": "bool"
     },
     {
-      "default": null,
+      "default": {
+        "frost_chem": false,
+        "frost_diezi": false,
+        "frost_emoji": true,
+        "frost_greek": false,
+        "frost_keys": false,
+        "frost_misc": false,
+        "frost_month": false,
+        "frost_radicals": false,
+        "frost_sitcom": false
+      },
       "key": "input.emoji.modules",
       "type": "map"
     },
