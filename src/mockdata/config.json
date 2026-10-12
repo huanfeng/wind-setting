@@ -624,6 +624,14 @@
      "template": "${char}：${chaizi}{ [${chaizi_code}]}"
     },
     {
+     "each": "",
+     "enabled": true,
+     "inline": false,
+     "label": "释义",
+     "promote": "",
+     "template": "${dict_all:\n}"
+    },
+    {
      "each": "char",
      "enabled": false,
      "inline": false,
