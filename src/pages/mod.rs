@@ -184,6 +184,9 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
         ),
     ];
+    if let Some(card) = custom_hidden_section(app) {
+        secs.push(nav.wrap("定制版", 0, card));
+    }
     // 取不到就跳过而不是报错：分区可能因平台/变体门控整片消失（清单项全 hidden），
     // 那是正常状态，不是配置错误。
     for name in [memory::SECTION, "游戏兼容", "日志设置"] {
@@ -197,6 +200,36 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         secs.push(nav.wrap(&name, 0, el));
     }
     sections_page("高级", "服务与实验性功能", secs)
+}
+
+/// 「定制版」卡：一个「显示定制版隐藏的设置」开关。只在本机定制版的 `[settings] hide`
+/// 非空时出现——非定制版、或定制版什么都没藏，这个开关没有意义。
+///
+/// 隐藏只影响显示、功能照常生效，开关是给用户找回入口用的，不改任何配置。清单折叠发生在
+/// 页面树构建时，故切换后**重新打开设置窗口**才生效，说明里与 toast 都写明。
+fn custom_hidden_section(app: &Rc<RefCell<AppState>>) -> Option<Element> {
+    if crate::custom_hide::installed().is_empty() {
+        return None;
+    }
+    let on = signal(app.borrow().setting_config.ui.show_custom_hidden_settings);
+    let app = app.clone();
+    let sw = Element::switch(on).on_switch_change(move |_ctx, v| {
+        app.borrow_mut().save_show_custom_hidden_settings(v);
+        app.borrow().feedback.set(Some((
+            ToastKind::Info,
+            "重新打开设置窗口后生效".to_string(),
+        )));
+    });
+    Some(section(
+        "定制版",
+        vec![setting_row(
+            "显示定制版隐藏的设置",
+            Some(
+                "本定制版精简了设置界面，被隐藏的设置照常生效。打开后重新打开设置窗口即可看到全部设置。",
+            ),
+            sw,
+        )],
+    ))
 }
 
 /// 「应用兼容」入口卡：一行说明 + 打开独立窗的按钮。
@@ -544,11 +577,9 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
         ("混输方案配置", "混输行为", false),
         ("英文方案配置", "英文行为", false),
     ] {
-        secs.push(nav.wrap(
-            title,
-            0,
-            scheme_config_section(state, title, sec, with_fuzzy),
-        ));
+        if let Some(card) = scheme_config_section(state, title, sec, with_fuzzy) {
+            secs.push(nav.wrap(title, 0, card));
+        }
     }
 
     // 主方案设置（manifest schema 分组中的"主方案设置" section）。

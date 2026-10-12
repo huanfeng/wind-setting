@@ -247,6 +247,31 @@ impl Manifest {
         self.items.get(key)
     }
 
+    /// 定制版 `[settings] hide`：命中的项折进 `hidden`，与 platform / variant 门控同一条判据
+    /// （行渲染、空分区剔除、搜索索引都只认 `hidden`）。配置值不动——隐藏 ≠ 关闭功能。
+    ///
+    /// 返回一项都没命中的 `key:` 选择器原文，供调用方记 WARN：定制者拼错键名、或设置项在
+    /// 新版里改了名，现象都是「写了 hide 但那一项还在」，没有这条日志就只能猜。
+    pub fn apply_custom_hide(&mut self, hide: &wind_config::SettingsHide) -> Vec<String> {
+        let mut unmatched = Vec::new();
+        for sel in hide.selectors() {
+            let wind_config::SettingsSelector::Key { pattern, prefix } = sel else {
+                continue;
+            };
+            let mut hit = false;
+            for item in self.items.values_mut() {
+                if sel.matches_key(&item.key) {
+                    item.hidden = true;
+                    hit = true;
+                }
+            }
+            if !hit {
+                unmatched.push(format!("key:{pattern}{}", if *prefix { "*" } else { "" }));
+            }
+        }
+        unmatched
+    }
+
     /// 返回以 `gate_key` 为门控开关的 dialog_button 项（用于「开关 + 设置」合并成一行）。
     /// 按 manifest 顺序取第一个匹配。
     pub fn dialog_for_gate(&self, gate_key: &str) -> Option<&MItem> {
@@ -2600,7 +2625,7 @@ pub fn scheme_config_section(
     label: &str,
     section: &str,
     with_fuzzy: bool,
-) -> Element {
+) -> Option<Element> {
     let keys: Vec<String> = state
         .manifest
         .sections_of("schema")
@@ -2608,6 +2633,18 @@ pub fn scheme_config_section(
         .find(|(s, _)| s == section)
         .map(|(_, k)| k)
         .unwrap_or_default();
+    // 模糊音是手写网格、不逐格看 `hidden`：整块以总开关可见与否为准——定制版要藏就藏整块
+    // （`key:schema.pinyin.fuzzy.*`）。只藏其中一两格的写法在这里不生效。
+    let with_fuzzy = with_fuzzy
+        && state
+            .manifest
+            .get("schema.pinyin.fuzzy.enabled")
+            .is_some_and(|it| !it.hidden);
+    // 整张卡的项都被隐藏了（定制版 `[settings] hide`）：不出一张只有标题和提示的空卡，
+    // 调用方据此连二级导航那一条也不放。
+    if keys.is_empty() && !with_fuzzy {
+        return None;
+    }
 
     let mut rows: Vec<Element> = Vec::new();
 
@@ -2723,7 +2760,7 @@ pub fn scheme_config_section(
             }
         });
 
-    crate::widgets::section_with_action(label, reset, rows)
+    Some(crate::widgets::section_with_action(label, reset, rows))
 }
 
 /// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。

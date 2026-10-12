@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 windui = { path = "../wind-ui-rust" }
 wind-ipc = { path = "../WindInput/wind_input/crates/wind-ipc" }
+# 定制版清单（`data_custom/custom.toml`）与 `[settings] hide` 选择器：与 core 同一份解析，
+# 页面树建成之前就要知道哪些设置项不建（见 `custom_hide.rs`），等不到 `system.info`。
+wind-config = { path = "../WindInput/wind_input/crates/wind-config" }
 serde = { version = "1", features = ["derive"] }
 # 用户配置/本机状态目录：与 core（wind-config）同一 crate 同一大版本，
 # 保证两边算出的目录在各平台上落到同一处。
@@ -28,7 +31,6 @@ sha2 = "0.10"
 # 与 mockdata/config.json 不与 core 漂移。
 # core 仓已因 wind-ipc 成为硬依赖，此处不引入新的路径前提。
 wind-rpc = { path = "../WindInput/wind_input/crates/wind-rpc" }
-wind-config = { path = "../WindInput/wind_input/crates/wind-config" }
 # 标点转换真相源：守护 PUNCT_DEFAULTS（设置页那份四列默认表）不与 core 的转换
 # 流水线漂移。漂移的表现是「不动也判脏」，没有堆栈、只能靠这条测试看见。
 wind-punct = { path = "../WindInput/wind_input/crates/wind-punct" }

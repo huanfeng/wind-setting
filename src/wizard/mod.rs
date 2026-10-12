@@ -69,7 +69,8 @@ pub fn maybe_auto_open(app: &Rc<RefCell<AppState>>, connected: bool) {
             st.wizard.borrow().is_some(),
         )
     };
-    if !open && should_auto_open(dismissed, connected) {
+    let custom_hidden = crate::custom_hide::wizard_hidden(crate::custom_hide::installed());
+    if !open && should_auto_open(dismissed, connected, custom_hidden) {
         open_wizard(app);
     }
 }
@@ -184,8 +185,12 @@ pub fn step3_blockers(st: &AppState, d: &model::Draft) -> Vec<String> {
 }
 
 /// 启动后是否自动弹出向导。core 连不上时不弹：向导预填需要真实配置，拿空配置预填会误导。
-pub fn should_auto_open(dismissed: bool, connected: bool) -> bool {
-    !dismissed && connected
+///
+/// 定制版用 `feature:wizard` 关掉了向导（`custom_hidden`）时永不自动弹出——即使用户打开了
+/// 「显示定制版隐藏的设置」。那个开关只把侧栏入口找回来：向导会套推荐预设写进用户层、
+/// 盖掉定制层调好的值，自己点进去是知情选择，开窗就弹不是。
+pub fn should_auto_open(dismissed: bool, connected: bool, custom_hidden: bool) -> bool {
+    !dismissed && connected && !custom_hidden
 }
 
 #[cfg(test)]
@@ -417,8 +422,13 @@ mod tests {
 
     #[test]
     fn auto_open_only_when_not_dismissed_and_connected() {
-        assert!(should_auto_open(false, true));
-        assert!(!should_auto_open(true, true));
-        assert!(!should_auto_open(false, false));
+        assert!(should_auto_open(false, true, false));
+        assert!(!should_auto_open(true, true, false));
+        assert!(!should_auto_open(false, false, false));
+    }
+
+    #[test]
+    fn custom_edition_hiding_wizard_suppresses_auto_open() {
+        assert!(!should_auto_open(false, true, true));
     }
 }

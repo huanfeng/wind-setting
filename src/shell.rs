@@ -40,6 +40,8 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         conn_failed,
         field_dialogs,
     ) = {
+        // 「显示定制版隐藏的设置」可能在上一个主窗里切过：建树前按当前值重折清单。
+        app.borrow_mut().refold_manifest_if_needed();
         let st = app.borrow();
         // 先清空上一棵设置树的登记项，再构建新的。主窗可以关掉再开（见
         // `dict_window` 与 `main::open_main_window`），本函数因此不再是"一辈子只跑一次"
@@ -126,7 +128,11 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     //
     // 宽度 140（原 184）：二级导航要在右边再占一栏，一级栏必须让出空间。八个 Tab 名
     // 都是两字，140 - 内外边距 - chip - 间距 后仍有约 70px 给文字，绰绰有余。
-    let sidebar = Element::col()
+    // 定制版用 `feature:wizard` 关掉向导时侧栏不放入口；用户打开「显示定制版隐藏的设置」
+    // 后才找回来（见 `wizard::should_auto_open` 对自动弹出的另一种处置）。
+    let show_wizard_entry = !crate::custom_hide::wizard_hidden(crate::custom_hide::installed())
+        || app.borrow().setting_config.ui.show_custom_hidden_settings;
+    let mut sidebar = Element::col()
         .width(NAV_W)
         .height_match()
         .bg_role(Role::Bg)
@@ -136,11 +142,13 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         // 加了三次——真机上看着就是搜索框与导航离得老远。哨兵一律挂到根 stack。
         .spacing(6)
         .child(search_box)
-        .child(nav.weight(1.0))
-        .child(wizard_entry(app))
-        .on_context_menu(move || {
-            crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu, ov_menu)
-        });
+        .child(nav.weight(1.0));
+    if show_wizard_entry {
+        sidebar = sidebar.child(wizard_entry(app));
+    }
+    let sidebar = sidebar.on_context_menu(move || {
+        crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu, ov_menu)
+    });
     let vdivider = Element::leaf()
         .width(1)
         .height_match()

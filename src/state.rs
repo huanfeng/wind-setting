@@ -424,8 +424,10 @@ pub struct AppState {
     pub base_config: Config,
     /// 当前编辑中的配置（保存时由写回器填充）。
     pub current_config: Config,
-    /// 设置清单（内嵌清单，启动即就位）。
+    /// 设置清单（内嵌清单，启动即就位；已按定制版 `[settings] hide` 折叠，见 [`crate::custom_hide`]）。
     pub manifest: Manifest,
+    /// `manifest` 折叠时「显示定制版隐藏的设置」的取值，见 [`Self::refold_manifest_if_needed`]。
+    pub manifest_show_all: bool,
     /// core 能力契约（system.capabilities，异步加载后就位）。
     pub capabilities: Capabilities,
     /// 系统信息（system.info）。
@@ -927,6 +929,14 @@ impl AppState {
         // 先取出，下面 setting_load.config 会被移动进结构体
         let setting_load_update_auto_check = setting_load.config.update.auto_check;
         let setting_load_wizard_dismissed = setting_load.config.ui.wizard_dismissed;
+        // 定制版隐藏的设置项（`[settings] hide`）。页面与搜索索引必须用同一份清单：
+        // 各折各的，就会搜到一项、点过去却什么都没有。
+        let manifest_show_all = setting_load.config.ui.show_custom_hidden_settings;
+        let manifest = crate::custom_hide::settings_manifest(
+            crate::custom_hide::installed(),
+            manifest_show_all,
+        );
+        let search = crate::search::SearchState::new(&manifest);
         // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
         // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
         let initial_dark = setting_load
@@ -953,7 +963,8 @@ impl AppState {
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
-            manifest: Manifest::from_embedded(),
+            manifest,
+            manifest_show_all,
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
             degradation: signal(String::new()),
@@ -980,8 +991,8 @@ impl AppState {
             theme_picker_url: signal(String::new()),
             theme_picker_text: signal(String::new()),
             tab: signal(0),
-            // 搜索索引在此构建：清单是内嵌的、启动即就位，不必等 RPC。
-            search: crate::search::SearchState::new(&Manifest::from_embedded()),
+            // 搜索索引在上面构建：清单是内嵌的、启动即就位，不必等 RPC。
+            search,
             jump: signal(None),
             dark: signal(initial_dark),
             conn: signal(ConnState::Loading),
@@ -1409,6 +1420,28 @@ impl AppState {
     /// 持久化方案页「显示特殊方案」。
     pub fn save_show_hidden_schemas(&mut self, on: bool) {
         self.save_ui_state(|ui| ui.show_hidden_schemas = on);
+    }
+
+    /// 持久化「显示定制版隐藏的设置」。只落盘、不重建当前页面：清单折叠发生在页面树构建时，
+    /// 重开设置窗口后由 [`Self::refold_manifest_if_needed`] 生效（开关旁的说明写明了这一点）。
+    pub fn save_show_custom_hidden_settings(&mut self, on: bool) {
+        self.save_ui_state(|ui| ui.show_custom_hidden_settings = on);
+    }
+
+    /// 清单按「显示定制版隐藏的设置」的当前值重折；与上次折叠时一致就什么都不做。
+    ///
+    /// 由 `shell::build` 在建树之前调用。只在 `AppState::empty()` 里折一次是不够的：
+    /// 主窗可以关掉再开而进程不退（词库窗还开着），那时开关切了也不会生效。
+    /// 搜索只换索引数据（[`crate::search::SearchState::reindex`]），不重建那批进程级 Signal。
+    pub fn refold_manifest_if_needed(&mut self) {
+        let show_all = self.setting_config.ui.show_custom_hidden_settings;
+        if show_all == self.manifest_show_all {
+            return;
+        }
+        self.manifest =
+            crate::custom_hide::settings_manifest(crate::custom_hide::installed(), show_all);
+        self.search.reindex(&self.manifest);
+        self.manifest_show_all = show_all;
     }
 
     /// 持久化设置向导「下次不再弹出」。

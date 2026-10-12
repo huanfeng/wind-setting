@@ -99,6 +99,10 @@ pub struct UiStateConfig {
     /// 设置向导「下次不再弹出」/ 已完成。缺省 false ⇒ 所有用户（含升级上来的）弹一次。
     #[serde(default)]
     pub wizard_dismissed: bool,
+    /// 「显示定制版隐藏的设置」：打开后忽略 `data_custom/custom.toml` 的 `[settings] hide`。
+    /// 非定制版或定制版没隐藏任何东西时，这个开关根本不出现。见 [`crate::custom_hide`]。
+    #[serde(default)]
+    pub show_custom_hidden_settings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

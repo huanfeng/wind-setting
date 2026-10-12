@@ -92,6 +92,14 @@ pub struct SearchState {
 }
 
 impl SearchState {
+    /// 换一份索引数据（清单重折之后），Signal 原样保留。
+    ///
+    /// 不能整个换成 `SearchState::new`：本结构建在 `AppState` 上、早于任何窗口，Signal 是
+    /// 进程级的；在某个窗口的构建期里新建，它们就归那个窗口的作用域，窗口一关句柄即悬垂。
+    pub fn reindex(&mut self, manifest: &Manifest) {
+        self.entries = Rc::new(build_index(manifest));
+    }
+
     pub fn new(manifest: &Manifest) -> Self {
         Self {
             entries: Rc::new(build_index(manifest)),
