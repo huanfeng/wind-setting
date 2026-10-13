@@ -752,6 +752,8 @@ pub fn card_with_attachments(
 ///
 /// 小标题要与行区分开传，不能预先拼成 `Element` 混进行里：它前后的分割线怎么画、
 /// 它自己长什么样，都随「界面细节」的 `subheading` 选项变（见 [`card_items`]）。
+// 只在建树时短暂存在、随即被消费，变体大小悬殊无所谓；装箱反而让每个调用点多一层。
+#[allow(clippy::large_enum_variant)]
 pub enum CardItem {
     Row(Element),
     Heading(String),
