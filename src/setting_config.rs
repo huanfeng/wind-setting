@@ -103,6 +103,9 @@ pub struct UiStateConfig {
     /// 非定制版或定制版没隐藏任何东西时，这个开关根本不出现。见 [`crate::custom_hide`]。
     #[serde(default)]
     pub show_custom_hidden_settings: bool,
+    /// 界面细节试验选项，见 [`crate::look`]。全缺省时整节不落盘。
+    #[serde(default, skip_serializing_if = "crate::look::LookConfig::is_default")]
+    pub look: crate::look::LookConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -455,6 +458,27 @@ mod tests {
         let back: SettingConfig = toml::from_str(&s).expect("反序列化");
         assert!(back.ui.hide_disabled_schemas);
         assert!(back.ui.show_hidden_schemas);
+    }
+
+    /// 界面细节：全缺省时 `[ui.look]` 不落盘；非缺省值能读回。
+    #[test]
+    fn look_section_absent_when_default_and_roundtrips() {
+        let s = toml::to_string(&SettingConfig::default()).expect("序列化");
+        assert!(!s.contains("look"), "全缺省不该落盘：\n{s}");
+
+        let mut cfg = SettingConfig::default();
+        cfg.ui.look = crate::look::LookConfig::from_indices([0, 0, 1, 1, 0, 0]);
+        let s = toml::to_string(&cfg).expect("序列化");
+        let back: SettingConfig = toml::from_str(&s).expect("反序列化");
+        assert_eq!(back.ui.look.indices(), [0, 0, 1, 1, 0, 0], "{s}");
+    }
+
+    /// 手改 / 未来版本写入的未知取值不能让整个文件加载失败（明暗、升级偏好会跟着丢）。
+    #[test]
+    fn unknown_look_value_does_not_break_loading() {
+        let back: SettingConfig =
+            toml::from_str("[ui.look]\nrow_divider = \"zigzag\"\n").expect("未知取值也应能读");
+        assert_eq!(back.ui.look.indices()[crate::look::ROW_DIVIDER], 0);
     }
 
     /// 旧版本写的文件没有 `[ui]` 段，必须能读（否则升级即报配置损坏）。

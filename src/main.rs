@@ -25,6 +25,7 @@ mod file_assoc;
 mod icons;
 mod key_conflict;
 mod logger;
+mod look;
 mod manifest;
 mod memstat;
 mod mix_fields;
