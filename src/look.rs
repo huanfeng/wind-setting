@@ -12,7 +12,6 @@ use windui::prelude::*;
 
 /// 一个选项的取值表。下标 0 = 现状 = 缺省。
 pub struct LookOption {
-    pub key: &'static str,
     pub title: &'static str,
     /// 写进 `[ui.look]` 的配置串。
     pub values: &'static [&'static str],
@@ -28,37 +27,31 @@ pub const CARD_EDGE: usize = 5;
 
 pub const OPTIONS: [LookOption; 6] = [
     LookOption {
-        key: "nav_indicator",
         title: "导航选中样式",
         values: &["bar_tint", "tint", "solid"],
         labels: &["竖条+淡底", "仅淡底", "实心"],
     },
     LookOption {
-        key: "nav_icon_chip",
         title: "主导航图标块",
         values: &["gradient", "tint_only"],
         labels: &["渐变图标块", "仅图标变色"],
     },
     LookOption {
-        key: "section_header",
         title: "分组标题",
         values: &["outside", "inside", "inside_plain"],
         labels: &["卡外", "卡内", "卡内无图标"],
     },
     LookOption {
-        key: "row_divider",
         title: "行分割线",
         values: &["inset", "full", "leading"],
         labels: &["两端内缩", "通栏", "仅左缩"],
     },
     LookOption {
-        key: "subheading",
         title: "卡内二级分类",
         values: &["accent_rule", "muted_gap", "band"],
         labels: &["强调色+线", "灰字+留白", "浅色底条"],
     },
     LookOption {
-        key: "card_edge",
         title: "卡片边界",
         values: &["border_shadow", "border", "shadow"],
         labels: &["边框+阴影", "仅边框", "仅阴影"],
@@ -177,8 +170,8 @@ mod tests {
     #[test]
     fn options_tables_are_consistent() {
         for o in &OPTIONS {
-            assert_eq!(o.values.len(), o.labels.len(), "{}", o.key);
-            assert!(o.values.len() >= 2, "{}", o.key);
+            assert_eq!(o.values.len(), o.labels.len(), "{}", o.title);
+            assert!(o.values.len() >= 2, "{}", o.title);
         }
     }
 }

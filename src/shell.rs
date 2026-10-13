@@ -93,6 +93,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
 
     // 静态色控件（图标 tint/渐变/淡底）用它做亮暗双态，须在页面构建前注册。
     crate::widgets::init_dark_sig(dark);
+    crate::widgets::init_look(app.borrow().look);
 
     let titlebar = build_titlebar("设置");
 
@@ -265,6 +266,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     // 等下一帧才被 toast_sink 读到——而渲染由交互驱动、空闲零帧，那一帧未必会来。
     root = root.child(crate::pages::conflict_watcher(app));
     root = root.child(accent_watcher(app));
+    root = root.child(look_watcher(app));
     // 全局 toast 反馈汇：保存/重载/恢复/协议路由等瞬时结果统一在此弹出（底栏只剩状态点）。
     let root = root.child(crate::pages::dict::reactive::toast_sink(feedback));
     crate::memstat::mark("[build 出口]");
@@ -611,6 +613,24 @@ fn accent_watcher(app: &Rc<RefCell<AppState>>) -> Element {
             let mode = st.accent_mode();
             st.save_accent_mode(mode);
             st.sync_accent();
+        },
+    )
+}
+
+/// 界面细节选项变化即持久化。子窗只写信号，落盘在这里（同 [`accent_watcher`]）。
+fn look_watcher(app: &Rc<RefCell<AppState>>) -> Element {
+    let look = app.borrow().look;
+    let eff_app = app.clone();
+    crate::pages::dict::reactive::reactive_effect(
+        move || {
+            look.0
+                .iter()
+                .fold(0u64, |h, s| h.wrapping_mul(1_000_003).wrapping_add(s.version()))
+        },
+        move || {
+            if let Ok(mut st) = eff_app.try_borrow_mut() {
+                st.save_look();
+            }
         },
     )
 }

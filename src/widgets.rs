@@ -25,6 +25,22 @@ pub fn init_dark_sig(sig: Signal<bool>) {
     DARK_SIG.with(|c| c.set(Some(sig)));
 }
 
+thread_local! {
+    /// 界面细节试验选项（shell::build 注册），同 `DARK_SIG`。见 [`crate::look`]。
+    static LOOK: Cell<Option<crate::look::LookSignals>> = const { Cell::new(None) };
+}
+
+/// 注册界面细节信号（shell::build 调用）。
+pub fn init_look(s: crate::look::LookSignals) {
+    LOOK.with(|c| c.set(Some(s)));
+}
+
+/// 取界面细节信号；未注册（测试 / 独立构建）时给全缺省。
+pub fn look() -> crate::look::LookSignals {
+    LOOK.with(|c| c.get())
+        .unwrap_or_else(|| crate::look::LookSignals::new([0; 6]))
+}
+
 /// 取明暗信号；未注册时返回恒亮信号（测试/独立构建兜底）。
 pub fn dark_sig() -> Signal<bool> {
     DARK_SIG.with(|c| c.get()).unwrap_or_else(|| signal(false))

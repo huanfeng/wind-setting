@@ -539,6 +539,8 @@ pub struct AppState {
     pub theme_handle: RefCell<Option<ThemeHandle>>,
     /// 底栏「主题色」下拉的选中下标（[`crate::accent::AccentMode::index`]）。
     pub accent_idx: Signal<usize>,
+    /// 「界面细节」试验选项（见 [`crate::look`]）。子窗分段控件直接绑这组信号。
+    pub look: crate::look::LookSignals,
     /// 跟随模式下取到的输入法主题色（未修正的两档原色）；`None` = 还没取 / 取不到。
     ime_accent: RefCell<Option<crate::accent::ThemeAccent>>,
     /// 上一次取色请求的主题名（空串 = 当前主题）。与此刻要跟随的不同才重取；`None` = 没取过。
@@ -946,6 +948,7 @@ impl AppState {
             .unwrap_or_else(crate::theme_def::system_dark);
         let initial_accent =
             crate::accent::AccentMode::from_config(setting_load.config.ui.accent.as_deref());
+        let initial_look = setting_load.config.ui.look.indices();
         // 方案列表的两个显示过滤：`new()` 内部已 refresh 过一次（当时读到的是默认值），
         // 故 show_hidden 走 set_show_hidden 重建列表，而不是只 set 信号——它决定的是
         // 「哪些方案进列表」，不重建的话开关是打开的、列表里却没有特殊方案。
@@ -1006,6 +1009,7 @@ impl AppState {
             main_window_closed: signal(false),
             theme_handle: RefCell::new(None),
             accent_idx: signal(initial_accent.index()),
+            look: crate::look::LookSignals::new(initial_look),
             ime_accent: RefCell::new(None),
             accent_fetched_for: RefCell::new(None),
             accent_note: signal(String::new()),
@@ -1308,6 +1312,12 @@ impl AppState {
     /// 持久化主题色来源。
     pub fn save_accent_mode(&mut self, mode: crate::accent::AccentMode) {
         self.save_ui_state(|ui| ui.accent = mode.to_config());
+    }
+
+    /// 持久化界面细节选项（`[ui.look]`）。
+    pub fn save_look(&mut self) {
+        let cfg = crate::look::LookConfig::from_indices(self.look.snapshot());
+        self.save_ui_state(|ui| ui.look = cfg);
     }
 
     pub fn accent_mode(&self) -> crate::accent::AccentMode {
@@ -2215,6 +2225,13 @@ impl AppState {
     pub fn request_compat_window(&self) {
         if let Some(tx) = self.ui_tx.borrow().clone() {
             let _ = tx.send(crate::UiRequest::OpenCompatWindow);
+        }
+    }
+
+    /// 请求开「界面细节」子窗。快捷键回调拿不到 ctx，经通道让 UI 线程开（同 `request_compat_window`）。
+    pub fn request_look_window(&self) {
+        if let Some(tx) = self.ui_tx.borrow().clone() {
+            let _ = tx.send(crate::UiRequest::OpenLookWindow);
         }
     }
 

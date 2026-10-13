@@ -26,6 +26,7 @@ mod icons;
 mod key_conflict;
 mod logger;
 mod look;
+mod look_window;
 mod manifest;
 mod memstat;
 mod mix_fields;
@@ -81,6 +82,8 @@ pub enum UiRequest {
     OpenCompatWindow,
     /// 重新开出主窗（主窗已关、词库窗还开着时点「设置」）。
     OpenMainWindow,
+    /// 打开「界面细节」试验窗（Ctrl+F8：快捷键回调同样拿不到 ctx）。
+    OpenLookWindow,
 }
 
 /// 设置窗尺寸。`App::new` 与主窗重建两条路共用一份，免得各写各的、改一边漏一边。
@@ -421,6 +424,9 @@ fn main() {
                 shortcuts::DictSubmit::Shadow => mgr.submit_shadow(),
             }
         }
+        if out.open_look_window {
+            shortcut_state.borrow().request_look_window();
+        }
         out.handled
     });
     let th = app.theme_handle();
@@ -555,6 +561,7 @@ fn main() {
             }
         }
         UiRequest::OpenCompatWindow => compat_window::open(ctx, &ui_state),
+        UiRequest::OpenLookWindow => look_window::open(ctx, &ui_state),
         UiRequest::OpenMainWindow => {
             if ui_state.borrow().take_main_window_request() {
                 open_main_window(ctx, &ui_state);
