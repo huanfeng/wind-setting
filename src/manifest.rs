@@ -2541,10 +2541,7 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
 
 /// 对话框内分组标题（section/subsection 同一层级，主题色强调，不额外缩进）。
 pub(crate) fn dialog_group_header(name: &str) -> Element {
-    Element::label(name)
-        .font_size(DIALOG_HEADER_SIZE)
-        .font_weight(600)
-        .fg_role(Role::Accent)
+    crate::widgets::subheading_label(name)
         .width_match()
         .padding_xy(0, 5)
 }
@@ -2669,7 +2666,8 @@ pub fn scheme_config_section(
         return None;
     }
 
-    let mut rows: Vec<Element> = Vec::new();
+    // 小标题与行分开传（`CardItem`）：小标题的画法与它前后的分割线随「界面细节」选项变。
+    let mut items: Vec<crate::widgets::CardItem> = Vec::new();
 
     // 卡内第一行：先点明「这一整张卡是**全局**的」，再接上「可被方案覆盖」那句
     // （几乎全可覆盖时统一说一次，见 `schema_hint_mode`）。
@@ -2690,10 +2688,10 @@ pub fn scheme_config_section(
             scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
         })
     };
-    rows.push(dialog_notice_row(notice));
+    items.push(crate::widgets::CardItem::Row(dialog_notice_row(notice)));
 
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
-    rows.push(dialog_group_header(section));
+    items.push(crate::widgets::CardItem::Heading(section.to_string()));
 
     // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
     let mut cur_subsec: Option<String> = None;
@@ -2707,7 +2705,7 @@ pub fn scheme_config_section(
         let subsec = item.subsection.clone();
         if subsec != cur_subsec {
             if let Some(ref name) = subsec {
-                rows.push(dialog_group_header(name));
+                items.push(crate::widgets::CardItem::Heading(name.clone()));
             }
             cur_subsec = subsec;
         }
@@ -2742,21 +2740,21 @@ pub fn scheme_config_section(
         };
         // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
         // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
-        rows.push(if already_anchored {
+        items.push(crate::widgets::CardItem::Row(if already_anchored {
             row
         } else {
             crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
-        });
+        }));
     }
     if with_fuzzy {
-        rows.push(dialog_group_header("模糊音"));
+        items.push(crate::widgets::CardItem::Heading("模糊音".to_string()));
         // 整块挂一枚锚点：那 13 个开关在网格里各占一小格，逐格闪没人看得见
         // （见 `search::index::block_anchor_of`）。
-        rows.push(crate::search::anchor::wrap(
+        items.push(crate::widgets::CardItem::Row(crate::search::anchor::wrap(
             build_fuzzy_group(state, &state.current_config),
             crate::search::index::page_anchor("schema.pinyin.fuzzy.enabled"),
             state.jump,
-        ));
+        )));
     }
 
     // 恢复默认：取 core 权威出厂配置（含折算），灌回各字段 loader。见 [`core_defaults_config`]。
@@ -2770,20 +2768,24 @@ pub fn scheme_config_section(
         }
     }
     let seed = key_action_default_bindings(state);
-    let reset = Element::button("恢复默认")
-        .small()
-        .outline_soft()
-        .on_click(move |_| {
-            let def_cfg = core_defaults_config(&seed);
-            let ld = fields.loaders.borrow();
-            for k in &reset_keys {
-                if let Some(loader) = ld.get(k) {
-                    loader(&def_cfg);
+    // 做成构造闭包：「界面细节」试验下标题有卡外 / 卡内两处，按钮各要一份。
+    let make_reset = move || {
+        let (fields, reset_keys, seed) = (fields.clone(), reset_keys.clone(), seed.clone());
+        Element::button("恢复默认")
+            .small()
+            .outline_soft()
+            .on_click(move |_| {
+                let def_cfg = core_defaults_config(&seed);
+                let ld = fields.loaders.borrow();
+                for k in &reset_keys {
+                    if let Some(loader) = ld.get(k) {
+                        loader(&def_cfg);
+                    }
                 }
-            }
-        });
+            })
+    };
 
-    Some(crate::widgets::section_with_action(label, reset, rows))
+    Some(crate::widgets::section_with_items(label, &make_reset, items))
 }
 
 /// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。

@@ -22,6 +22,9 @@ use crate::state::{AppState, ConnState};
 /// 构建整窗 UI。`app` 为共享状态（换肤句柄也在里面，见 [`AppState::apply_ui_theme`]）。
 pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     crate::memstat::mark("[build 入口]");
+    // 界面细节信号必须在**建页面之前**注册：页面里的卡片 / 分割线在建树时就取 `look()`，
+    // 晚注册的话它们拿到的是 `look()` 兜底新建的一组孤立信号，子窗怎么切都不动。
+    crate::widgets::init_look(app.borrow().look);
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
     let (
         tabs_vec,
@@ -93,7 +96,6 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
 
     // 静态色控件（图标 tint/渐变/淡底）用它做亮暗双态，须在页面构建前注册。
     crate::widgets::init_dark_sig(dark);
-    crate::widgets::init_look(app.borrow().look);
 
     let titlebar = build_titlebar("设置");
 

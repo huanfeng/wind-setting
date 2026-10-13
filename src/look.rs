@@ -52,7 +52,8 @@ pub const OPTIONS: [LookOption; 6] = [
         labels: &["强调色+线", "灰字+留白", "浅色底条"],
     },
     LookOption {
-        title: "卡片边界",
+        // 建树时读一次（见 `widgets::card_shell`），故标题里写明。
+        title: "卡片边界（重开生效）",
         values: &["border_shadow", "border", "shadow"],
         labels: &["边框+阴影", "仅边框", "仅阴影"],
     },

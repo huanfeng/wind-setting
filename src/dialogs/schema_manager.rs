@@ -4930,15 +4930,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .cross(Align::Center)
                         .spacing(10)
                         .child(
-                            // 字号/字重/颜色与 `manifest::dialog_group_header` 同款；
-                            // 那个函数返回的是整宽 label，塞不进带按钮的行，故复刻样式。
-                            Element::label("码表配置")
-                                .font_size(crate::manifest::DIALOG_HEADER_SIZE)
-                                .font_weight(600)
-                                .fg_role(Role::Accent)
-                                .weight(1.0)
-                                .max_lines(1)
-                                .padding_xy(0, 5),
+                            // 与 `manifest::dialog_group_header` 同一个函数（不带整宽，塞得进带按钮的行）。
+                            crate::widgets::subheading_label("码表配置").weight(1.0).padding_xy(0, 5),
                         )
                         .child(
                             // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：

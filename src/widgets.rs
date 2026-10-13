@@ -643,14 +643,10 @@ pub fn override_group_card(
             .spacing(8)
             .padding_xy(0, 2)
             .child(
-                // 字号/字重/颜色与 `manifest::dialog_group_header` 同款——设置界面里
-                // 所有小标题都是这一套强调色，卡片标题自成一格会让人以为它是另一种东西。
-                Element::label(title)
-                    .font_size(12.5)
-                    .font_weight(600)
-                    .fg_role(Role::Accent)
-                    .weight(1.0)
-                    .max_lines(1),
+                // 与 `manifest::dialog_group_header` 同一个函数——设置界面里所有小标题都是
+                // 这一套强调色，卡片标题自成一格会让人以为它是另一种东西（此前这里写的是
+                // 12.5，别处是 13.5，正是「各写各的」漂出来的）。
+                subheading_label(title).weight(1.0),
             )
             .child(
                 Element::label_signal(summary)
@@ -749,25 +745,183 @@ pub fn card_with_attachments(
     rows: Vec<Element>,
     tail: Option<Element>,
 ) -> Element {
-    let mut card = flat_panel()
-        .corner(13.0)
+    card_items(None, head, rows_to_items(rows), tail)
+}
+
+/// 卡片内的一项：设置行，或二级分类小标题。
+///
+/// 小标题要与行区分开传，不能预先拼成 `Element` 混进行里：它前后的分割线怎么画、
+/// 它自己长什么样，都随「界面细节」的 `subheading` 选项变（见 [`card_items`]）。
+pub enum CardItem {
+    Row(Element),
+    Heading(String),
+}
+
+fn rows_to_items(rows: Vec<Element>) -> Vec<CardItem> {
+    rows.into_iter().map(CardItem::Row).collect()
+}
+
+/// 卡片水平内边距。分割线的「通栏 / 仅左缩」变体要贴到卡片边上，故卡片本身不加水平
+/// padding，改由每一项自己承担（[`padded`]）。
+const CARD_PAD_X: i32 = 16;
+
+fn padded(e: Element) -> Element {
+    Element::col().width_match().padding_xy(CARD_PAD_X, 0).child(e)
+}
+
+/// 相邻两项之间的间隙类型。
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Gap {
+    /// 行—行。
+    Between,
+    /// 至少一侧是小标题。
+    AroundHeading,
+}
+
+/// `kinds[i]` = 第 i 项是不是小标题。返回 `kinds.len() - 1` 个间隙（不足两项时为空）。
+fn divider_plan(kinds: &[bool]) -> Vec<Gap> {
+    kinds
+        .windows(2)
+        .map(|w| {
+            if w[0] || w[1] {
+                Gap::AroundHeading
+            } else {
+                Gap::Between
+            }
+        })
+        .collect()
+}
+
+/// 一个间隙上的分割线。「界面细节」试验：三种画法（两端内缩 / 通栏 / 仅左缩）都建出来，
+/// 按 `row_divider` 只显示一个；挨着小标题的间隙在「灰字+留白」「浅色底条」下整条不画——
+/// 那两种小标题自己就是分隔。
+fn gap_divider(gap: Gap) -> Element {
+    let look = look();
+    let rd = look.0[crate::look::ROW_DIVIDER];
+    let sh = look.0[crate::look::SUBHEADING];
+    let shown = move || gap == Gap::Between || sh.get() == 0;
+    Element::col()
         .width_match()
-        .padding_xy(16, 2)
-        .shadow(Shadow::new(0.0, 1.0, 2.0, Color::rgba(20, 30, 50, 8)));
-    if let Some(h) = head {
-        card = card.child(h);
+        .child(padded(Element::divider()).visible_when(move || shown() && rd.get() == 0))
+        .child(Element::divider().visible_when(move || shown() && rd.get() == 1))
+        .child(
+            Element::col()
+                .width_match()
+                .padding_edges(Insets::new(CARD_PAD_X, 0, 0, 0))
+                .child(Element::divider())
+                .visible_when(move || shown() && rd.get() == 2),
+        )
+}
+
+/// 统一的小标题文字：对话框分组名、方案配置卡里的分类名、覆盖卡片标题都用它。
+///
+/// 此前三处各写各的（字号 13.5 / 12.5 混用），同一种东西看着像两种。
+///
+/// ⚠ 不带 `weight`：weight 沿父容器主轴伸展，放进纵向 col 会在**纵轴**上被压成 0 高、
+/// 整个标题消失。放进横向行（右侧挂按钮）时由调用方补 `.weight(1.0)`。
+pub fn subheading_label(title: &str) -> Element {
+    Element::label(title)
+        .font_size(crate::manifest::DIALOG_HEADER_SIZE)
+        .font_weight(600)
+        .fg_role(Role::Accent)
+        .max_lines(1)
+}
+
+/// 卡内二级分类。「界面细节」试验：三种写法按 `subheading` 显示一个——
+/// 强调色字（现状，前后靠分割线隔开）/ 次要色小字 + 上方留白 / 通栏浅色底条。
+fn card_heading(title: &str) -> Element {
+    let sh = look().0[crate::look::SUBHEADING];
+    let accent = padded(subheading_label(title).width_match().padding_xy(0, 5))
+        .visible_when(move || sh.get() == 0);
+    let muted = Element::col()
+        .width_match()
+        .padding_edges(Insets::new(CARD_PAD_X, 16, CARD_PAD_X, 4))
+        .child(
+            Element::label(title)
+                .font_size(12.0)
+                .font_weight(600)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(1),
+        )
+        .visible_when(move || sh.get() == 1);
+    let band = Element::col()
+        .width_match()
+        .padding_xy(CARD_PAD_X, 6)
+        .bg_role_alpha(Role::Accent, 0.07)
+        .child(
+            Element::label(title)
+                .font_size(crate::manifest::DIALOG_HEADER_SIZE)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1),
+        )
+        .visible_when(move || sh.get() == 2);
+    Element::col()
+        .width_match()
+        .child(accent)
+        .child(muted)
+        .child(band)
+}
+
+/// 卡片外壳：圆角 surface，边框 / 阴影按「界面细节」`card_edge` 取舍。
+///
+/// ★ 这一项**建树时读一次**，改了要重开设置窗才生效（子窗里注明）。边框与阴影都不能绑
+/// 信号；若改成「底板 / 边框各一层叠放、按信号显隐」，内容就不再是带边框容器的后代——
+/// 设置向导的分隔线护栏（`wizard::view::tests::divider_violations`）正是靠「最近的带边框
+/// 祖先」认卡片的，叠放写法会让它把整页当成一张卡、静默失效。
+fn card_shell(body: Element) -> Element {
+    let ce = look().0[crate::look::CARD_EDGE].get();
+    let mut card = Element::col()
+        .width_match()
+        .bg_role(Role::Surface)
+        .corner(13.0)
+        .child(body);
+    if ce != 2 {
+        card = card.border_role(Role::Border, 1);
     }
-    let last = rows.len().saturating_sub(1);
-    for (i, row) in rows.into_iter().enumerate() {
-        card = card.child(row);
-        if i != last {
-            card = card.child(Element::divider());
-        }
-    }
-    if let Some(t) = tail {
-        card = card.child(t);
+    if ce != 1 {
+        card = card.shadow(Shadow::new(0.0, 1.0, 2.0, Color::rgba(20, 30, 50, 8)));
     }
     card
+}
+
+/// 卡片的完整形态：可选标题块（卡内分组标题）+ 头部挂件 + 若干项 + 尾部挂件。
+///
+/// 只有 `items` 之间插分割线；挂件不参与（理由见 [`card_with_attachment`]）。
+/// `title_block` 由 [`section_impl`] 给，自带水平内边距和其下那条通栏线，这里原样挂上。
+pub fn card_items(
+    title_block: Option<Element>,
+    head: Option<Element>,
+    items: Vec<CardItem>,
+    tail: Option<Element>,
+) -> Element {
+    let kinds: Vec<bool> = items
+        .iter()
+        .map(|i| matches!(i, CardItem::Heading(_)))
+        .collect();
+    let gaps = divider_plan(&kinds);
+    let mut body = Element::col().width_match().padding_xy(0, 2);
+    if let Some(t) = title_block {
+        body = body.child(t);
+    }
+    if let Some(h) = head {
+        body = body.child(padded(h));
+    }
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            body = body.child(gap_divider(gaps[i - 1]));
+        }
+        body = body.child(match item {
+            CardItem::Row(e) => padded(e),
+            CardItem::Heading(t) => card_heading(&t),
+        });
+    }
+    if let Some(t) = tail {
+        body = body.child(padded(t));
+    }
+    card_shell(body)
 }
 
 /// 对话框内的一节：小标题 + 卡片（**行间自动分割线**）。
@@ -800,21 +954,12 @@ pub fn dialog_section_full(
     rows: Vec<Element>,
 ) -> Element {
     let head: Element = match action {
-        // 整宽 label 塞不进带按钮的行，故此处复刻样式而不调 `dialog_group_header`。
-        // 字号引用同一个常量，避免两处各写各的字面量再漂移。
+        // 整宽 label 塞不进带按钮的行，故用不带 `width_match` 的 [`subheading_label`]。
         Some(btn) => Element::row()
             .width_match()
             .cross(Align::Center)
             .spacing(10)
-            .child(
-                Element::label(title)
-                    .font_size(crate::manifest::DIALOG_HEADER_SIZE)
-                    .font_weight(600)
-                    .fg_role(Role::Accent)
-                    .weight(1.0)
-                    .max_lines(1)
-                    .padding_xy(0, 5),
-            )
+            .child(subheading_label(title).weight(1.0).padding_xy(0, 5))
             .child(btn),
         None => crate::manifest::dialog_group_header(title),
     };
@@ -836,46 +981,89 @@ pub fn dialog_section_full(
     col.child(card(rows))
 }
 
-/// 分组 = 分区小标题（卡片上方）+ 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。
+/// 分组 = 分区标题 + 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。
 /// `rows` 为已构建好的设置行（如 `setting_row(...)` 或清单引擎 `field(...)`）。
 pub fn section(title: &str, rows: Vec<Element>) -> Element {
-    Element::col()
-        .width_match()
-        .spacing(6)
-        .child(section_header(title))
-        .child(card(rows))
+    section_impl(title, None, None, rows_to_items(rows), None)
 }
 
-/// [`section`] + 标题行右侧的动作按钮（如「恢复默认」）。
+/// [`section`] + 标题行右侧的动作按钮（如「恢复默认」），卡内是带小标题的 [`CardItem`]
+/// 序列（方案配置卡）。
 ///
 /// 按钮挂在标题行而不是卡片末尾另起一行：卡片里每一行都是「设置项」，多出一行只有一个
 /// 按钮的行会被读成又一个设置项；标题行右端则天然读作「这一节的操作」。
-/// 同 [`dialog_section_full`] 的取舍，只是换成页面卡片的字号与图标。
-pub fn section_with_action(title: &str, action: Element, rows: Vec<Element>) -> Element {
-    Element::col()
-        .width_match()
-        .spacing(6)
-        .child(section_header(title).child(action))
-        .child(card(rows))
+///
+/// `action` 传**构造闭包**：「界面细节」试验下标题有卡外 / 卡内两处，按钮两处各要一份
+/// （一个 `Element` 只能挂一处）。
+pub fn section_with_items(
+    title: &str,
+    action: &dyn Fn() -> Element,
+    items: Vec<CardItem>,
+) -> Element {
+    section_impl(title, Some(action), None, items, None)
 }
 
 /// [`section`] + 尾部挂件（toast 槽之类平时不占位的元素）。理由见
 /// [`card_with_attachment`]——挂件混进 `rows` 会让最后一条设置行下面多一条分隔线。
 pub fn section_with_attachment(title: &str, rows: Vec<Element>, attachment: Element) -> Element {
-    Element::col()
-        .width_match()
-        .spacing(6)
-        .child(section_header(title))
-        .child(card_with_attachment(rows, Some(attachment)))
+    section_impl(title, None, None, rows_to_items(rows), Some(attachment))
 }
 
 /// [`section`] + 头部挂件（条件满足才出现的整行提示）。理由同上。
 pub fn section_with_head(title: &str, head: Option<Element>, rows: Vec<Element>) -> Element {
+    section_impl(title, None, head, rows_to_items(rows), None)
+}
+
+/// 全部 `section*` 的实现。「界面细节」试验 `section_header`：
+/// 0 卡外标题（现状）/ 1 卡内标题行 / 2 卡内标题行、不带图标。三种都建出来按信号显示。
+fn section_impl(
+    title: &str,
+    action: Option<&dyn Fn() -> Element>,
+    head: Option<Element>,
+    items: Vec<CardItem>,
+    tail: Option<Element>,
+) -> Element {
+    let sh = look().0[crate::look::SECTION_HEADER];
+    let with_action = |row: Element| match action {
+        Some(make) => row.child(make()),
+        None => row,
+    };
+    let outside = with_action(section_header(title)).visible_when(move || sh.get() == 0);
+    let inside_icon =
+        with_action(section_header(title).margin_xy(0, 0)).visible_when(move || sh.get() == 1);
+    let inside_plain = with_action(
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(9)
+            .child(
+                Element::label(title)
+                    .font_size(14.0)
+                    .font_weight(600)
+                    .fg_role(Role::Text)
+                    .weight(1.0)
+                    .max_lines(1)
+                    .height(20),
+            ),
+    )
+    .visible_when(move || sh.get() == 2);
+    // 标题行与其下那条通栏线整体显隐：卡外模式下两者都不该占位。
+    let title_block = Element::col()
+        .width_match()
+        .child(
+            Element::col()
+                .width_match()
+                .padding_xy(CARD_PAD_X, 10)
+                .child(inside_icon)
+                .child(inside_plain),
+        )
+        .child(Element::divider())
+        .visible_when(move || sh.get() != 0);
     Element::col()
         .width_match()
         .spacing(6)
-        .child(section_header(title))
-        .child(card_with_attachments(head, rows, None))
+        .child(outside)
+        .child(card_items(Some(title_block), head, items, tail))
 }
 
 /// 页面内容外层：纵向滚动 + 内边距 + 分区间距，承载多个 section 卡片。
@@ -1116,6 +1304,29 @@ pub fn color_picker_cell(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 小标题前后的间隙要能单独区分：「灰字+留白」「浅色底条」两种小标题下这些间隙不画线。
+    #[test]
+    fn divider_plan_marks_gaps_touching_headings() {
+        // 小标题, 行, 行, 小标题, 行
+        let kinds = [true, false, false, true, false];
+        assert_eq!(
+            divider_plan(&kinds),
+            vec![
+                Gap::AroundHeading,
+                Gap::Between,
+                Gap::AroundHeading,
+                Gap::AroundHeading
+            ]
+        );
+    }
+
+    /// 一项或零项没有间隙，不能凭空多出分割线。
+    #[test]
+    fn divider_plan_single_item_has_no_gaps() {
+        assert!(divider_plan(&[false]).is_empty());
+        assert!(divider_plan(&[]).is_empty());
+    }
 
     /// 图标必须**小于**占位框：等于就是零余量铺满，圆角顶死边界、且与 windui 的
     /// ALIASED 裁剪框重合（见 [`app_icon`] 文档）。实际调用的两处尺寸逐一钉死。
