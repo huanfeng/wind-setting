@@ -724,34 +724,42 @@ fn build_footer(
             ConnState::Down,
         ));
 
-    // 明暗切换：随状态更新的 emoji 图标（暗色显示 ☀ 转浅；亮色显示 🌙 转深）。
+    // 明暗切换：两段胶囊（☀ | 🌙），高亮的那一段就是**当前**状态。
+    // 旧版是单个按钮、显示「点了会变成什么」——浅色下写着「深色」，常被读成当前是深色。
     // 切换即持久化——选择写进 wind_setting.toml 的 ui.dark，下次启动不再跟随系统。
     // 换肤走 `sync_accent`：跟随输入法时，强调色要按新的明暗档重新修正。
-    let d_l = dark;
-    let app_l = app.clone();
-    let to_light = Element::button("☀ 浅色")
-        .small()
-        .outline_soft()
-        .on_click(move |_| {
-            d_l.set(false);
-            let mut st = app_l.borrow_mut();
-            st.save_dark_mode(false);
-            st.sync_accent();
-        })
-        .visible_signal(d_l);
-    let d_d = dark;
-    let app_d = app.clone();
-    let to_dark = Element::button("🌙 深色")
-        .small()
-        .outline_soft()
-        .on_click(move |_| {
-            d_d.set(true);
-            let mut st = app_d.borrow_mut();
-            st.save_dark_mode(true);
-            st.sync_accent();
-        })
-        .visible_when(move || !d_d.get());
-    let theme_btn = Element::stack().child(to_light).child(to_dark);
+    let seg = |glyph: &'static str, tip: &'static str, want_dark: bool| {
+        let app_c = app.clone();
+        let cell = |fg: Role| {
+            Element::stack().size(30, 22).corner(5.0).tooltip(tip).child(
+                Element::label(glyph)
+                    .font_size(12.0)
+                    .fg_role(fg)
+                    .align(Align::Center),
+            )
+        };
+        let on = cell(Role::Accent)
+            .bg_role_alpha(Role::Accent, 0.14)
+            .visible_when(move || dark.get() == want_dark);
+        let off = cell(Role::TextMuted)
+            .clickable()
+            .on_click(move |_| {
+                dark.set(want_dark);
+                let mut st = app_c.borrow_mut();
+                st.save_dark_mode(want_dark);
+                st.sync_accent();
+            })
+            .visible_when(move || dark.get() != want_dark);
+        Element::stack().child(on).child(off)
+    };
+    let theme_btn = Element::row()
+        .cross(Align::Center)
+        .spacing(2)
+        .padding(2)
+        .corner(7.0)
+        .border_role(Role::Border, 1)
+        .child(seg("☀", "浅色", false))
+        .child(seg("🌙", "深色", true));
 
     // 主题色：默认 / 跟随输入法。选中写回信号，持久化与换肤由 `accent_watcher` 接手。
     // 角标只在跟随模式出现：悬停说明用了什么、为什么没用；点击重新读取（输入法后来才
@@ -770,6 +778,20 @@ fn build_footer(
         }
     })
     .visible_when(move || accent_note.with(|n| !n.is_empty()));
+
+    // 「界面细节」试验窗入口：只在 Dev 版放图标，发布版只留 Ctrl+F8（见 `look_window`）。
+    let app_look = app.clone();
+    let look_btn = Element::stack()
+        .size(26, 26)
+        .corner(6.0)
+        .clickable()
+        .on_click(move |ctx| crate::look_window::open(ctx, &app_look))
+        .tooltip("界面细节（Ctrl+F8）")
+        .child(
+            crate::icons::tinted_role(crate::icons::nav_icon("外观"), 16, Role::TextMuted)
+                .align(Align::Center),
+        )
+        .visible(crate::mode::get() == crate::mode::AppMode::Dev);
 
     // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为
     // 是「重新加载配置」。放底栏而非页内浮层：浮层要么挡内容、要么得在页尾留白让位。
@@ -846,9 +868,17 @@ fn build_footer(
         .child(theme_btn)
         .child(accent_pick)
         .child(accent_badge)
+        .child(look_btn)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
         .child(reset_btn)
+        // 「恢复本页」会丢掉本页改动，与保存类按钮并排同权容易误点；隔一条竖线分开。
+        .child(
+            Element::leaf()
+                .size(1, 18)
+                .margin_xy(6, 0)
+                .bg_role(Role::Divider),
+        )
         .child(reload_btn)
         .child(apply_btn)
         .child(save_exit_btn)
