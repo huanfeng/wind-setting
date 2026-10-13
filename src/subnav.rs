@@ -399,6 +399,9 @@ pub fn resolver(nav: &SubNav, tab: Signal<usize>) -> Element {
 pub fn build_list(nav: &SubNav) -> Element {
     let active = nav.active();
     let mut col = Element::col().width_match().spacing(1);
+    // 「界面细节」试验：竖条只在「竖条+淡底」下显示。「实心」只作用于主导航——两列都是
+    // 实心色块太重，二级导航那一档按「仅淡底」处理。
+    let li = crate::widgets::look().0[crate::look::NAV_INDICATOR];
     for item in nav.items() {
         let idx = item.section;
         let indent = 10 + i32::from(item.depth) * 12;
@@ -464,7 +467,7 @@ pub fn build_list(nav: &SubNav) -> Element {
                     .corner(1.5)
                     .bg_role(Role::Accent),
             )
-            .visible_when(move || active.get() == idx);
+            .visible_when(move || active.get() == idx && li.get() == 0);
         let vis = item.visible.clone();
         col = col.child(
             Element::stack()

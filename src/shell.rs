@@ -354,15 +354,38 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
         let is_action = dict_idx == Some(i);
 
         // ── 选中态（渐变图标块 + accent 文字 + 左指示条）──
-        let sel_chip = Element::stack()
-            .size(CHIP_PX, CHIP_PX)
-            .corner(7.0)
-            .bg_gradient_roles(
-                (0.0, 0.0),
-                (1.0, 1.0),
-                vec![(0.0, Role::AccentActive), (1.0, Role::Accent)],
-            )
-            .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center));
+        //
+        // 「界面细节」试验（`crate::look`）：竖条 / 选中底 / 图标块各有几种写法，全部建出来、
+        // 按信号只显示一个。`li`=导航选中样式（0 竖条+淡底 / 1 仅淡底 / 2 实心），
+        // `lc`=图标块（0 渐变 / 1 仅图标变色）。
+        let look = crate::widgets::look();
+        let li = look.0[crate::look::NAV_INDICATOR];
+        let lc = look.0[crate::look::NAV_ICON_CHIP];
+        // 选中态图标三种：渐变块（现状）/ 淡底 + 强调色图标 / 实心行上的反白图标。
+        // 一个 Element 只能挂一处，而淡底行与实心行各要一份，故做成闭包各调一次。
+        let make_chip = || {
+            let gradient = Element::stack()
+                .size(CHIP_PX, CHIP_PX)
+                .corner(7.0)
+                .bg_gradient_roles(
+                    (0.0, 0.0),
+                    (1.0, 1.0),
+                    vec![(0.0, Role::AccentActive), (1.0, Role::Accent)],
+                )
+                .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center))
+                .visible_when(move || lc.get() == 0 && li.get() != 2);
+            let plain = Element::stack()
+                .size(CHIP_PX, CHIP_PX)
+                .corner(7.0)
+                .bg_role(Role::Bg)
+                .child(tinted_role(svg, ICON_PX, Role::Accent).align(Align::Center))
+                .visible_when(move || lc.get() == 1 && li.get() != 2);
+            let on_solid = Element::stack()
+                .size(CHIP_PX, CHIP_PX)
+                .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center))
+                .visible_when(move || li.get() == 2);
+            Element::stack().child(gradient).child(plain).child(on_solid)
+        };
         // 左缘指示条：作 stack 覆盖层贴行左缘垂直居中，不占行内宽度——
         // 选中/未选中 padding 一致，切换时图标/文字不发生横向偏移。
         let indicator = Element::row()
@@ -376,26 +399,32 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
                     .corner(1.5)
                     .bg_role(Role::Accent),
             )
-            .visible_when(move || sel.get() == i);
-        let on = Element::row()
-            .width_match()
-            .height(36)
-            .corner(9.0)
-            .cross(Align::Center)
-            .spacing(9)
-            .padding_xy(10, 0)
-            .bg_role_alpha(Role::Accent, 0.11)
-            .child(sel_chip)
-            .child(
+            .visible_when(move || sel.get() == i && li.get() == 0);
+        let selected_row = |bg_solid: bool| {
+            let row = Element::row()
+                .width_match()
+                .height(36)
+                .corner(9.0)
+                .cross(Align::Center)
+                .spacing(9)
+                .padding_xy(10, 0);
+            let row = if bg_solid {
+                row.bg_role(Role::Accent)
+            } else {
+                row.bg_role_alpha(Role::Accent, 0.11)
+            };
+            row.child(make_chip()).child(
                 Element::label(name)
                     .font_size(13.0)
                     .font_weight(600)
-                    .fg_role(Role::Accent)
+                    .fg_role(if bg_solid { Role::OnAccent } else { Role::Accent })
                     .weight(1.0)
                     .max_lines(1)
                     .height(18),
             )
-            .visible_when(move || sel.get() == i);
+        };
+        let on = selected_row(false).visible_when(move || sel.get() == i && li.get() != 2);
+        let on_solid = selected_row(true).visible_when(move || sel.get() == i && li.get() == 2);
 
         // ── 未选中态（可点击；图标中性灰，两主题通用）──
         let app_for_click = app.clone();
@@ -444,7 +473,7 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
         // 的子树，白占布局签名。
         let mut item = Element::stack().width_match().height(36);
         if !is_action {
-            item = item.child(on);
+            item = item.child(on).child(on_solid);
         }
         item = item.child(off);
         if !is_action {
