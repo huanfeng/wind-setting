@@ -20,6 +20,7 @@ pub(crate) const SINGLE_KEY: &str = "look_prefs";
 
 pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
     let look = app.borrow().look;
+    let app_c = app.clone();
     ctx.open_window(
         Window::new("清风输入法 · 界面细节", 460, 430)
             .single(SINGLE_KEY)
@@ -34,11 +35,11 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
                     false
                 }
             })
-            .content(move || build_content(look)),
+            .content(move || build_content(look, &app_c)),
     );
 }
 
-fn build_content(look: LookSignals) -> Element {
+fn build_content(look: LookSignals, app: &Rc<RefCell<AppState>>) -> Element {
     let rows = OPTIONS
         .iter()
         .enumerate()
@@ -54,6 +55,8 @@ fn build_content(look: LookSignals) -> Element {
         .fill()
         .bg_role(Role::SurfaceAlt)
         .child(crate::shell::build_titlebar("界面细节"))
+        // 本窗也挂一份落盘哨兵：主窗关着时切的选项要靠它写进 [ui.look]（见 `look_watcher`）。
+        .child(crate::shell::look_watcher(app))
         .child(
             Element::col()
                 .width_match()

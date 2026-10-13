@@ -386,7 +386,10 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
                 .size(CHIP_PX, CHIP_PX)
                 .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center))
                 .visible_when(move || li.get() == 2);
-            Element::stack().child(gradient).child(plain).child(on_solid)
+            Element::stack()
+                .child(gradient)
+                .child(plain)
+                .child(on_solid)
         };
         // 左缘指示条：作 stack 覆盖层贴行左缘垂直居中，不占行内宽度——
         // 选中/未选中 padding 一致，切换时图标/文字不发生横向偏移。
@@ -419,7 +422,11 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
                 Element::label(name)
                     .font_size(13.0)
                     .font_weight(600)
-                    .fg_role(if bg_solid { Role::OnAccent } else { Role::Accent })
+                    .fg_role(if bg_solid {
+                        Role::OnAccent
+                    } else {
+                        Role::Accent
+                    })
                     .weight(1.0)
                     .max_lines(1)
                     .height(18),
@@ -649,14 +656,18 @@ fn accent_watcher(app: &Rc<RefCell<AppState>>) -> Element {
 }
 
 /// 界面细节选项变化即持久化。子窗只写信号，落盘在这里（同 [`accent_watcher`]）。
-fn look_watcher(app: &Rc<RefCell<AppState>>) -> Element {
+///
+/// 主窗与「界面细节」子窗**各挂一份**：子窗可以比主窗活得久（关掉主窗、子窗还开着），
+/// 只挂主窗的话那段时间里的切换不会落盘；重建主窗时新哨兵的基线又是当时的版本号，
+/// 于是永远补不回来。两份同时触发时 `save_ui_state` 先比对再写，第二次是空操作。
+pub(crate) fn look_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     let look = app.borrow().look;
     let eff_app = app.clone();
     crate::pages::dict::reactive::reactive_effect(
         move || {
-            look.0
-                .iter()
-                .fold(0u64, |h, s| h.wrapping_mul(1_000_003).wrapping_add(s.version()))
+            look.0.iter().fold(0u64, |h, s| {
+                h.wrapping_mul(1_000_003).wrapping_add(s.version())
+            })
         },
         move || {
             if let Ok(mut st) = eff_app.try_borrow_mut() {
@@ -731,12 +742,16 @@ fn build_footer(
     let seg = |glyph: &'static str, tip: &'static str, want_dark: bool| {
         let app_c = app.clone();
         let cell = |fg: Role| {
-            Element::stack().size(30, 22).corner(5.0).tooltip(tip).child(
-                Element::label(glyph)
-                    .font_size(12.0)
-                    .fg_role(fg)
-                    .align(Align::Center),
-            )
+            Element::stack()
+                .size(30, 22)
+                .corner(5.0)
+                .tooltip(tip)
+                .child(
+                    Element::label(glyph)
+                        .font_size(12.0)
+                        .fg_role(fg)
+                        .align(Align::Center),
+                )
         };
         let on = cell(Role::Accent)
             .bg_role_alpha(Role::Accent, 0.14)

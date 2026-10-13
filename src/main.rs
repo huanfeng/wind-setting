@@ -163,6 +163,39 @@ fn app_hosts_settings_shell(dict_as_main: bool, compat_as_main: bool) -> bool {
     !dict_as_main && !compat_as_main
 }
 
+/// 主窗的窗口级快捷键处理器。绑定表与分派都在 `shortcuts`——加一条快捷键在那里加一行即可。
+///
+/// 首个主窗（`App::on_shortcut`）与重建的主窗（`Window::on_shortcut`，见 [`open_main_window`]）
+/// 各挂一份：windui 只把 `App::on_shortcut` 交给首窗，重建窗不挂就整张快捷键表失灵。
+fn main_shortcut_handler(
+    app: Rc<RefCell<state::AppState>>,
+) -> impl FnMut(&mut windui::event::ShortcutCtx, windui::event::KeyEvent) -> bool + 'static {
+    move |ctx, ev| {
+        let out = shortcuts::dispatch(&ev, &app.borrow());
+        if out.focus_main_input {
+            ctx.focus_main_input();
+        }
+        if out.request_close {
+            ctx.request_close();
+        }
+        // 提交词库页的加词对话框。先把 `DictManagerState` clone 出来（它是一组信号 +
+        // `Rc`，clone 很便宜，且不回指 `AppState`），提交期间不持有 `AppState` 的
+        // 借用——那期间要发 RPC、写信号、触发重排，让一个 `RefCell` 借用横跨这些
+        // 是没必要冒的险。
+        if let Some(kind) = out.submit_dict {
+            let mgr = app.borrow().dict_mgr.clone();
+            match kind {
+                shortcuts::DictSubmit::Word => mgr.submit_word(),
+                shortcuts::DictSubmit::Shadow => mgr.submit_shadow(),
+            }
+        }
+        if out.open_look_window {
+            app.borrow().request_look_window();
+        }
+        out.handled
+    }
+}
+
 pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppState>>) {
     // 建窗前必然已注入（见 main 里 `set_theme_handle`）。真取不到就只能放弃重建：
     // 没有句柄，这个窗口的换肤（明暗、主题色）就与其余窗口脱钩。
@@ -186,6 +219,8 @@ pub(crate) fn open_main_window(ctx: &mut EventCtx, app: &Rc<RefCell<state::AppSt
             .on_interval(pages::memory::TICK, move |_ctx| {
                 pages::memory::on_tick(&tick)
             })
+            // 同 `main` 里的 `App::on_shortcut`：那份只归首个主窗，重建的要自己挂。
+            .on_shortcut(main_shortcut_handler(app.clone()))
             // 与 `App::on_close_request` 同一套守卫：有未保存改动就拦下弹确认框。
             // 子窗的拦截器必须自己挂——平台在 WM_CLOSE 里同步问的是「**这个**窗口能不能关」，
             // 主窗那份不代管子窗。
@@ -404,31 +439,7 @@ fn main() {
     // 当成「关窗兜底」——搜索到一半按 Esc 就把整个设置窗关掉了。`on_shortcut` 排在
     // Tab 焦点导航与 Escape 关窗**之前**，正是为覆盖这类默认行为；而浮层没开时
     // `dispatch` 会返回「未处理」，关窗兜底照常生效。
-    let shortcut_state = app_state.clone();
-    let mut app = app.on_shortcut(move |ctx, ev| {
-        let out = shortcuts::dispatch(&ev, &shortcut_state.borrow());
-        if out.focus_main_input {
-            ctx.focus_main_input();
-        }
-        if out.request_close {
-            ctx.request_close();
-        }
-        // 提交词库页的加词对话框。先把 `DictManagerState` clone 出来（它是一组信号 +
-        // `Rc`，clone 很便宜，且不回指 `AppState`），提交期间不持有 `AppState` 的
-        // 借用——那期间要发 RPC、写信号、触发重排，让一个 `RefCell` 借用横跨这些
-        // 是没必要冒的险。
-        if let Some(kind) = out.submit_dict {
-            let mgr = shortcut_state.borrow().dict_mgr.clone();
-            match kind {
-                shortcuts::DictSubmit::Word => mgr.submit_word(),
-                shortcuts::DictSubmit::Shadow => mgr.submit_shadow(),
-            }
-        }
-        if out.open_look_window {
-            shortcut_state.borrow().request_look_window();
-        }
-        out.handled
-    });
+    let mut app = app.on_shortcut(main_shortcut_handler(app_state.clone()));
     let th = app.theme_handle();
     // 存一份供重建主窗用：`App::theme_handle()` 只在建窗前拿得到，而重建发生在运行期。
     *app_state.borrow().theme_handle.borrow_mut() = Some(th.clone());
@@ -798,6 +809,21 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ 重建出来的主窗必须自己挂快捷键：`App::on_shortcut` 只归首个主窗，子窗（含关掉后
+    /// 重开的设置窗）只认自己的 `Window::on_shortcut`。漏挂的后果是关窗再从托盘 / 二次实例
+    /// 打开后 Ctrl+F、Ctrl+W、Esc 全失灵，而发布版「界面细节」窗的唯一入口 Ctrl+F8 也跟着没了。
+    #[test]
+    fn rebuilt_main_window_keeps_window_shortcuts() {
+        let app = Rc::new(RefCell::new(state::AppState::empty()));
+        *app.borrow().theme_handle.borrow_mut() = Some(ThemeHandle::detached(Theme::default()));
+        let res = windui::testing::run_with_ctx(|ctx| open_main_window(ctx, &app));
+        assert_eq!(res.open_windows.len(), 1, "应当开出一个主窗");
+        assert!(
+            res.open_windows[0].shortcut.is_some(),
+            "重建的主窗没挂 on_shortcut"
+        );
+    }
 
     #[test]
     fn route_protocol_stores_theme_import_request() {

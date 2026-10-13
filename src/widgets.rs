@@ -768,7 +768,10 @@ fn rows_to_items(rows: Vec<Element>) -> Vec<CardItem> {
 const CARD_PAD_X: i32 = 16;
 
 fn padded(e: Element) -> Element {
-    Element::col().width_match().padding_xy(CARD_PAD_X, 0).child(e)
+    Element::col()
+        .width_match()
+        .padding_xy(CARD_PAD_X, 0)
+        .child(e)
 }
 
 /// 相邻两项之间的间隙类型。

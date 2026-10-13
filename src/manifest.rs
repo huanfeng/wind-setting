@@ -2785,7 +2785,11 @@ pub fn scheme_config_section(
             })
     };
 
-    Some(crate::widgets::section_with_items(label, &make_reset, items))
+    Some(crate::widgets::section_with_items(
+        label,
+        &make_reset,
+        items,
+    ))
 }
 
 /// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。

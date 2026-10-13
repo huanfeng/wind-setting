@@ -4931,7 +4931,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .spacing(10)
                         .child(
                             // 与 `manifest::dialog_group_header` 同一个函数（不带整宽，塞得进带按钮的行）。
-                            crate::widgets::subheading_label("码表配置").weight(1.0).padding_xy(0, 5),
+                            crate::widgets::subheading_label("码表配置")
+                                .weight(1.0)
+                                .padding_xy(0, 5),
                         )
                         .child(
                             // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：
