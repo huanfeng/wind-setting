@@ -158,19 +158,16 @@ pub fn build_emoji_modules_dialog(ui: &EmojiModulesUi) -> Element {
     let row_ui = ui.clone();
     let list = Element::col()
         .width_match()
-        .padding_xy(16, 2)
+        .padding_xy(0, 2)
         .child(Element::host_signal(ui.rows, move |r: ModuleRow| {
             let desc = row_desc(&r);
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(crate::widgets::setting_row(
-                    &r.label,
-                    (!desc.is_empty()).then_some(desc.as_str()),
-                    Element::checkbox("启用", row_ui.switch_of(&r.id))
-                        .small()
-                        .fg_role(Role::Text),
-                ))
+            crate::widgets::list_row(crate::widgets::setting_row(
+                &r.label,
+                (!desc.is_empty()).then_some(desc.as_str()),
+                Element::checkbox("启用", row_ui.switch_of(&r.id))
+                    .small()
+                    .fg_role(Role::Text),
+            ))
         }));
     let ui_open = ui.clone();
     let open_btn = Element::button("打开用户目录")

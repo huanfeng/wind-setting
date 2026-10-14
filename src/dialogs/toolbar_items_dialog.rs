@@ -191,7 +191,7 @@ pub fn build_toolbar_items_dialog(
 
     let row_ui = ui.clone();
     let row_meta = meta.clone();
-    let grid = Element::col().width_match().padding_xy(16, 2).child(
+    let grid = Element::col().width_match().padding_xy(0, 2).child(
         Element::reorder_list_signal(ui.order, move |value: String, handle| {
             let is_custom = value.starts_with("custom:");
             let sig = row_ui.switch_of(&value, true);
@@ -241,24 +241,21 @@ pub fn build_toolbar_items_dialog(
             }
             ctrl = ctrl.child(switch_with_floor(sig, &row_ui, min_enabled));
 
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .padding_xy(8, 0)
-                        .child(handle)
-                        .child(
-                            crate::widgets::setting_row(
-                                &label,
-                                (!desc.is_empty()).then_some(desc.as_str()),
-                                ctrl,
-                            )
-                            .weight(1.0),
-                        ),
-                )
+            crate::widgets::list_row(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .padding_xy(8, 0)
+                    .child(handle)
+                    .child(
+                        crate::widgets::setting_row(
+                            &label,
+                            (!desc.is_empty()).then_some(desc.as_str()),
+                            ctrl,
+                        )
+                        .weight(1.0),
+                    ),
+            )
         })
         .on_reorder({
             let order = ui.order;

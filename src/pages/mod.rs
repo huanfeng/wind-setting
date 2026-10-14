@@ -546,7 +546,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
     let m_list = mgr.clone();
     let toolbar_and_list = Element::col()
         .width_match()
-        .child(toolbar)
+        .child(crate::widgets::card_pad(toolbar))
         .child(list_el)
         .on_context_menu(move || {
             let (a_hd, a_sh) = (app_hd.clone(), app_sh.clone());
@@ -561,7 +561,11 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
         "输入方案",
         0,
         crate::search::anchor::wrap(
-            section("输入方案", vec![toolbar_and_list]),
+            // `Bare`：列表行自带分割线，卡片不能再给整块加水平 padding，否则「通栏」贴不到边。
+            crate::widgets::section_items(
+                "输入方案",
+                vec![crate::widgets::CardItem::Bare(toolbar_and_list)],
+            ),
             "schema:list",
             state.jump,
         ),

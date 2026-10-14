@@ -2629,7 +2629,7 @@ fn scheme_config_notice_text(
 /// （2026-08-26 用户原话：「title 字体比较小，和其它条目的相对，条目的分割不是很明显」）。
 ///
 /// 复刻这套样式的地方（塞进带按钮的行、装不下整宽 label 时）要一并引用本常量，
-/// 别再抄字面量——`widgets::override_group_card` 与「码表配置」节头就是两处复刻。
+/// 别再抄字面量——此前覆盖分组卡片与「码表配置」节头就是两处复刻。
 pub(crate) const DIALOG_HEADER_SIZE: f32 = 13.5;
 
 /// 「全局方案配置」某引擎的整张卡片（含该 schema-group section 的设置行）。

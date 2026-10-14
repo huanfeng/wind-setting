@@ -584,19 +584,14 @@ pub fn build_tooltip_sections_dialog(ui: &TooltipSectionsUi) -> Element {
             )
             .child(Element::switch(sig));
 
-        Element::col()
-            .width_match()
-            .child(Element::divider())
-            .child(
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .padding_xy(8, 0)
-                    .child(handle)
-                    .child(
-                        crate::widgets::setting_row(&title, Some(&row_desc(&r)), ctrl).weight(1.0),
-                    ),
-            )
+        crate::widgets::list_row(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(8, 0)
+                .child(handle)
+                .child(crate::widgets::setting_row(&title, Some(&row_desc(&r)), ctrl).weight(1.0)),
+        )
     })
     .on_reorder({
         let rows = ui.rows;
@@ -613,7 +608,7 @@ pub fn build_tooltip_sections_dialog(ui: &TooltipSectionsUi) -> Element {
     let list = Element::scroll()
         .width_match()
         .max_height(216)
-        .padding_xy(16, 2)
+        .padding_xy(0, 2)
         .child(list);
 
     // R8：列表与出厂相同 = 跟随出厂（保存时 core 删掉用户层的键）；否则是冻结的自定义副本。
@@ -717,17 +712,11 @@ fn build_preset_picker(ui: &TooltipSectionsUi) -> Element {
             add_ui.add_preset(i);
             add_ui.presets.set(false);
         });
-        list = list.child(
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(
-                    Element::row().width_match().padding_xy(8, 0).child(
-                        crate::widgets::setting_row(name, PRESET_DESCS.get(i).copied(), btn)
-                            .weight(1.0),
-                    ),
-                ),
-        );
+        list = list.child(crate::widgets::list_row(
+            Element::row().width_match().padding_xy(8, 0).child(
+                crate::widgets::setting_row(name, PRESET_DESCS.get(i).copied(), btn).weight(1.0),
+            ),
+        ));
     }
 
     let frame = dialog_frame(480)
@@ -741,7 +730,7 @@ fn build_preset_picker(ui: &TooltipSectionsUi) -> Element {
             Element::scroll()
                 .width_match()
                 .max_height(270)
-                .padding_xy(16, 2)
+                .padding_xy(0, 2)
                 .child(list),
         )
         .child(Element::divider())

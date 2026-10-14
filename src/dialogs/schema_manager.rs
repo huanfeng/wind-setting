@@ -3698,24 +3698,14 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
 
     let rest = Element::host_signal(state.list_data, move |item| match item {
         SchemaListItem::Row { entry, is_enabled } => {
-            build_compound_row(entry, is_enabled, &mgr, None)
+            crate::widgets::card_pad(build_compound_row(entry, is_enabled, &mgr, None))
         }
         SchemaListItem::SectionHeader {
             title,
             hidden_with_disabled,
         } => {
-            let el = Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(
-                    Element::row().width_match().padding_xy(8, 5).child(
-                        Element::label(title)
-                            .font_size(10.5)
-                            .fg_role(Role::TextMuted)
-                            .width_match()
-                            .max_lines(1),
-                    ),
-                );
+            // 与卡片里的二级分类同一套（跟随「界面细节」`subheading`），前后分割线也由它管。
+            let el = crate::widgets::list_heading(&title);
             if hidden_with_disabled {
                 el.visible_when(move || !hide_sig.get())
             } else {
@@ -3725,7 +3715,7 @@ pub fn build_schema_inline_list(state: &SchemaManagerState) -> Element {
         SchemaListItem::Divider {
             hidden_with_disabled,
         } => {
-            let d = Element::divider();
+            let d = crate::widgets::row_divider();
             if hidden_with_disabled {
                 d.visible_when(move || !hide_sig.get())
             } else {
@@ -4132,8 +4122,13 @@ fn build_compound_row(
 fn build_draggable_row(entry: SchemaEntry, mgr: &SchemaManagerState, handle: Element) -> Element {
     Element::col()
         .width_match()
-        .child(Element::divider())
-        .child(build_compound_row(entry, true, mgr, Some(handle)))
+        .child(crate::widgets::row_divider())
+        .child(crate::widgets::card_pad(build_compound_row(
+            entry,
+            true,
+            mgr,
+            Some(handle),
+        )))
 }
 
 // ──────────────────────── UI 构建 ────────────────────────
@@ -4891,11 +4886,18 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let mut rows = vec![row_on];
             rows.extend(row_direct);
             rows.extend([row_src, row_len]);
-            crate::widgets::override_group_card(
+            let disp = state.settings_aux_disp;
+            crate::widgets::dialog_section_full(
                 "辅助码",
-                state.settings_aux_disp,
+                None,
+                Some(
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(10)
+                        .child(crate::widgets::summary_label(disp))
+                        .child(reset_btn),
+                ),
                 rows,
-                Some(reset_btn),
             )
         }
         SettingsSection::CodeTable => {
@@ -4911,50 +4913,37 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let ct_reset = state.settings_ct.clone();
             let disp = state.settings_ct_disp;
             let reset_flag = state.settings_ct_reset_all.clone();
-            Element::col()
-                .width_match()
-                .spacing(4)
-                .padding_xy(0, 4)
-                // 节名是「码表配置」而不是「方案自定义」——后者是这个 TAB 的名字，
-                // 同名的小标题读起来像套娃，且说不清它与同 TAB 里「本方案行为」那节的区别。
-                //
-                // 标题与按钮**同一行**：按钮单独占一行时，左边一整条空白把它孤零零推到
-                // 右上角，看着像误放的浮标。挂到标题行尾即可，那一行本就有富余。
-                //
-                // 这一行**不重复报摘要**：每张卡片的标题右侧已各报本组的数，节头再写一遍
-                // 总数，两处都写「全部跟随」时就是纯噪音。总数仍在方案列表那一行上
-                // （`settings_ct_disp` 的另一个消费点）。
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .spacing(10)
-                        .child(
-                            // 与 `manifest::dialog_group_header` 同一个函数（不带整宽，塞得进带按钮的行）。
-                            crate::widgets::subheading_label("码表配置")
-                                .weight(1.0)
-                                .padding_xy(0, 5),
-                        )
-                        .child(
-                            // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：
-                            // 它是一个**兜底动作**，与它同行的是这一节的小标题，实心色块
-                            // 在那儿比标题还抢眼，看着像这一屏的主操作。
-                            Element::button("全部恢复跟随")
-                                .small()
-                                .outline_soft()
-                                .on_click(move |_| {
-                                    // 只动 UI（勾选清空 + 控件值拨回跟随值）。落盘统一走底栏的
-                                    // 保存——本对话框不该有自己的写盘入口，见 core 仓那条
-                                    // 「非 config.toml 落点一律登记 SideCommitter」。
-                                    ct_reset.revert_all();
-                                    // 标志给落盘那侧看：隐藏项没有控件，只能靠它去清。
-                                    reset_flag.set(true);
-                                    disp.set(ct_summary(ct_reset.custom_count()));
-                                }),
-                        ),
-                )
-                .child(Element::divider())
-                .child(Element::col().width_match().padding_xy(0, 4).child(body))
+            // 节名是「码表配置」而不是「方案自定义」——后者是这个 TAB 的名字，
+            // 同名的小标题读起来像套娃，且说不清它与同 TAB 里「本方案行为」那节的区别。
+            //
+            // 节头**不重复报摘要**：每个分类的小标题右侧已各报本组的数，节头再写一遍
+            // 总数，两处都写「全部跟随」时就是纯噪音。总数仍在方案列表那一行上
+            // （`settings_ct_disp` 的另一个消费点）。
+            //
+            // 各分类同在一张卡片里、以卡内小标题分隔（与方案配置卡同一套写法），而不是
+            // 每类一张小卡——那是本对话框里唯一一处自成一格的卡片样式。
+            crate::widgets::dialog_section_items(
+                "码表配置",
+                None,
+                Some(
+                    // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：
+                    // 它是一个**兜底动作**，与它同行的是这一节的小标题，实心色块
+                    // 在那儿比标题还抢眼，看着像这一屏的主操作。
+                    Element::button("全部恢复跟随")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| {
+                            // 只动 UI（勾选清空 + 控件值拨回跟随值）。落盘统一走底栏的
+                            // 保存——本对话框不该有自己的写盘入口，见 core 仓那条
+                            // 「非 config.toml 落点一律登记 SideCommitter」。
+                            ct_reset.revert_all();
+                            // 标志给落盘那侧看：隐藏项没有控件，只能靠它去清。
+                            reset_flag.set(true);
+                            disp.set(ct_summary(ct_reset.custom_count()));
+                        }),
+                ),
+                vec![crate::widgets::CardItem::Bare(body)],
+            )
         }
         SettingsSection::Overlay => {
             // 本节只在方案已声明 `[overlay]` 时出现，故无总开关、无置灰联动：

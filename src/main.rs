@@ -617,12 +617,16 @@ fn main() {
     let ui = if compat_as_main {
         // 同词库窗：不建设置外壳，静态色控件的亮暗双态要自己补上。
         crate::widgets::init_dark_sig(app_state.borrow().dark);
+        // 界面细节信号同理：不注册的话卡片拿到孤立的缺省信号，不跟随 `[ui.look]`。
+        crate::widgets::init_look(app_state.borrow().look);
         compat_window::build_content(app_state.clone())
     } else if dict_as_main {
         // 词库窗自己不建设置外壳，但静态色控件（图标 tint / 渐变 / 淡底）的亮暗双态
         // 是全局注册的，平时由 `shell::build` 顺手做掉——走这条路就得自己补上，否则
         // 标题栏图标在暗色主题下是黑的。
         crate::widgets::init_dark_sig(app_state.borrow().dark);
+        // 界面细节信号同理：不注册的话卡片拿到孤立的缺省信号，不跟随 `[ui.look]`。
+        crate::widgets::init_look(app_state.borrow().look);
         dict_window::build_content(app_state.clone())
     } else {
         shell::build(&app_state)

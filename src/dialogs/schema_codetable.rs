@@ -258,6 +258,8 @@ impl CtItemState {
 pub struct CtGroup {
     pub title: String,
     pub keys: Vec<String>,
+    /// 是不是第一组：首组小标题上方不画线（卡片顶边已是分隔）。
+    pub first: bool,
 }
 
 /// `seed` 的入参：`schema.getConfig` 给的四份数据 + 基线称呼。
@@ -431,6 +433,7 @@ impl CtFields {
                 _ => out.push(CtGroup {
                     title,
                     keys: vec![key.clone()],
+                    first: out.is_empty(),
                 }),
             }
         }
@@ -481,18 +484,27 @@ impl CtFields {
         }
     }
 
-    /// 渲染一个分类卡片。
+    /// 渲染一个分类：小标题（右侧报本组摘要）+ 组内各行。各分类同在「码表配置」那
+    /// **一张**卡片里（[`crate::widgets::CardItem::Bare`]），小标题与分割线跟随「界面细节」。
+    ///
+    /// 「全部恢复跟随」在这个 TAB 上是**整节**级别的动作，挂在外层节头（见
+    /// `schema_manager.rs` 的 `SettingsSection::CodeTable`），不是某一分类自己的按钮。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
-        let rows: Vec<Element> = group.keys.iter().map(|k| self.row(manifest, k)).collect();
-        // `reset: None`——「全部恢复跟随」在这个 TAB 上是**整节**级别的动作（挂在外层
-        // 节头，见 `schema_manager.rs` 的 `SettingsSection::CodeTable`），不是某一张
-        // 分类卡片自己的按钮。
-        crate::widgets::override_group_card(
-            &group.title,
-            self.group_summary(&group.title),
-            rows,
-            None,
-        )
+        let summary = self.group_summary(&group.title);
+        let mut col = Element::col()
+            .width_match()
+            .child(crate::widgets::list_heading_ext(
+                &group.title,
+                Some(&move || crate::widgets::summary_label(summary)),
+                group.first,
+            ));
+        for (i, k) in group.keys.iter().enumerate() {
+            if i > 0 {
+                col = col.child(crate::widgets::row_divider());
+            }
+            col = col.child(crate::widgets::card_pad(self.row(manifest, k)));
+        }
+        col
     }
 
     /// 组内一行。

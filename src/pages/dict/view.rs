@@ -14,8 +14,6 @@
 
 use windui::prelude::*;
 
-use crate::widgets::flat_panel;
-
 use super::reactive::{reactive_effect, toast_sink};
 use super::spec::{ColumnSpec, WordField, kind_label};
 #[cfg(test)]
@@ -239,8 +237,8 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         )
         .visible_when(move || !v_empty.empty_msg.get().is_empty());
 
-    let card = flat_panel()
-        .corner(10.0)
+    // 外框与设置卡片同一套（圆角 / 边框 / 阴影随「界面细节」`card_edge`）。
+    let card = crate::widgets::card_frame()
         .width_match()
         .weight(1.0)
         .padding_xy(4, 2)

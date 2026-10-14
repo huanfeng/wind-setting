@@ -528,35 +528,32 @@ pub fn build_toggle_rows_dialog(
     // 左右留白用 **padding** 而非 margin：`setting_row` 内部是 `width_match()` 的 row，
     // margin 下它仍按父容器全宽排布，右侧开关会被挤出对话框。padding 缩的是内容盒，
     // 行拿到的可用宽才是扣掉留白后的。数值对齐 `card()` / `build_group_dialog`。
-    let grid = Element::col().width_match().padding_xy(16, 2).child(
+    let grid = Element::col().width_match().padding_xy(0, 2).child(
         Element::reorder_list_signal(order, move |value: String, handle| {
             let Some(r) = meta.iter().find(|r| r.value == value) else {
                 // order 里混进了未知 value：不该发生，但也不能让整行塌成空白。
                 return Element::label(value).fg_role(Role::TextMuted);
             };
             let desc = (!r.desc.is_empty()).then_some(r.desc.as_str());
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        // 行内容左右各留 8：拖动中整行会浮起成一张带底色、投影与圆角的卡片，
-                        // 而行的左右两端就是手柄和开关——不留边距时它们会贴死在卡片边框上
-                        // （右侧开关尤其明显，圆角处几乎相切）。静止态这点留白也不碍事，
-                        // 分隔线仍按外层 padding 铺满，看起来是整幅分隔而非缩进线。
-                        .padding_xy(8, 0)
-                        .child(handle)
-                        .child(
-                            crate::widgets::setting_row(
-                                &r.label,
-                                desc,
-                                switch_with_floor(r.sig, &all_sigs, min_enabled.as_ref()),
-                            )
-                            .weight(1.0),
-                        ),
-                )
+            crate::widgets::list_row(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    // 行内容左右各留 8：拖动中整行会浮起成一张带底色、投影与圆角的卡片，
+                    // 而行的左右两端就是手柄和开关——不留边距时它们会贴死在卡片边框上
+                    // （右侧开关尤其明显，圆角处几乎相切）。静止态这点留白也不碍事，
+                    // 分隔线画在行外（`list_row`），随「界面细节」铺开，不受这 8px 影响。
+                    .padding_xy(8, 0)
+                    .child(handle)
+                    .child(
+                        crate::widgets::setting_row(
+                            &r.label,
+                            desc,
+                            switch_with_floor(r.sig, &all_sigs, min_enabled.as_ref()),
+                        )
+                        .weight(1.0),
+                    ),
+            )
         })
         .on_reorder(move |_ctx, from, to| {
             order.update(|v| {
@@ -753,13 +750,13 @@ fn dialog_body_with_link(
     reset_fn: Option<Box<dyn Fn() + 'static>>,
     doc_url: Option<&'static str>,
 ) -> (Element, Vec<Element>) {
-    let mut content = Element::col().width_match().padding_xy(16, 2);
-    let last = rows.len().saturating_sub(1);
+    // 水平内边距由每行自己承担（`card_pad`），分割线才能按「界面细节」贴到边。
+    let mut content = Element::col().width_match().padding_xy(0, 2);
     for (i, r) in rows.into_iter().enumerate() {
-        content = content.child(r);
-        if i != last {
-            content = content.child(Element::divider());
+        if i > 0 {
+            content = content.child(crate::widgets::row_divider());
         }
+        content = content.child(crate::widgets::card_pad(r));
     }
 
     let mut leading: Vec<Element> = Vec::new();

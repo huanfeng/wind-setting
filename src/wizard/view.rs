@@ -21,7 +21,9 @@ use super::{
 };
 use crate::pages::dict::reactive::reactive_effect;
 use crate::state::{AppState, WizardPhase, WizardSession};
-use crate::widgets::{card, dialog_section, dialog_section_hint, setting_row};
+use crate::widgets::{
+    CardItem, card_items, dialog_section, dialog_section_hint, dialog_section_items, setting_row,
+};
 
 const DIALOG_W: i32 = 600;
 /// 对话框固定高度。按内容自适应时，开关双拼、临时拼音、模糊音会让外框忽大忽小、按钮栏
@@ -570,15 +572,22 @@ fn forward_of(p: WizardPhase) -> Option<WizardPhase> {
 /// 直接把条件行塞进 `rows` 的话，[`crate::widgets::card`] 按「不是最后一个就加分隔线」
 /// 给它前面插的那条线是常显的：条件行一隐藏，可见的最后一行下面就多出一条线（条件行
 /// 连着两个时还会叠成两条）。条件可嵌套：`base` 自己也可以是 `with_cond` 的结果。
-fn with_cond(base: Element, rows: Vec<Element>, when: impl Fn() -> bool + 'static) -> Element {
+///
+/// 收发 [`CardItem`]、返回 `Bare` 整块：分割线要随「界面细节」贴到卡片边，行的水平
+/// 内边距就得由行自己承担（[`CardItem::into_element`]），不能让卡片给整块统一加。
+fn with_cond(base: CardItem, rows: Vec<CardItem>, when: impl Fn() -> bool + 'static) -> CardItem {
     let mut tail = Element::col().width_match();
     for r in rows {
-        tail = tail.child(Element::divider()).child(r);
+        tail = tail
+            .child(crate::widgets::row_divider())
+            .child(r.into_element());
     }
-    Element::col()
-        .width_match()
-        .child(base)
-        .child(tail.visible_when(when))
+    CardItem::Bare(
+        Element::col()
+            .width_match()
+            .child(base.into_element())
+            .child(tail.visible_when(when)),
+    )
 }
 
 fn title_row(phase: Signal<WizardPhase>) -> Element {
@@ -886,11 +895,16 @@ fn step1_body(app: &Rc<RefCell<AppState>>, c: Controls) -> Element {
             "你平时主要用哪类输入方式？再选一个主方案作为默认。",
         ))
         .child(cards)
-        .child(card(vec![with_cond(
-            main_row,
-            vec![layout_row],
-            move || is_sp.get(),
-        )]))
+        .child(card_items(
+            None,
+            None,
+            vec![with_cond(
+                CardItem::Row(main_row),
+                vec![CardItem::Row(layout_row)],
+                move || is_sp.get(),
+            )],
+            None,
+        ))
         .child(dialog_section_hint(
             "同时启用的方案",
             "勾选的方案可在打字时切换使用；主方案始终启用",
@@ -965,24 +979,26 @@ fn step2_body(c: Controls) -> Element {
         ],
     )
     .visible_when(move || kind.get() == 0);
-    let pinyin = dialog_section(
+    let pinyin = dialog_section_items(
         "拼音",
+        None,
+        None,
         vec![
             with_cond(
-                switch_row(
+                CardItem::Row(switch_row(
                     "Emoji 候选",
                     "打出词语后附带对应的 emoji，如「开心」→ 😄",
                     c.emoji,
-                ),
-                vec![switch_row(
+                )),
+                vec![CardItem::Row(switch_row(
                     "允许按全拼输入",
                     "双拼方案下也能直接打全拼，如 zaijian → 再见",
                     c.allow_full,
-                )],
+                ))],
                 move || is_sp.get(),
             ),
             // 模糊音放最后：分项网格在它下面展开，不把其它行顶下去。
-            fuzzy_block,
+            CardItem::Row(fuzzy_block),
         ],
     )
     .visible_when(move || kind.get() != 0);
@@ -998,32 +1014,34 @@ fn step3_body(c: Controls) -> Element {
     let blockers = c.blockers;
     body()
         .child(page_head("常用功能", "几个高频小功能，按一个键就能用。"))
-        .child(dialog_section(
+        .child(dialog_section_items(
             "通用",
+            None,
+            None,
             vec![
-                item_row(
+                CardItem::Row(item_row(
                     "快捷输入",
                     "按触发键进入，可输入日期、数学计算、数字金额（大写）等；\
                      还可在设置中加入拼音、英文、生僻字等候选来源。",
                     Element::dropdown_signal(c.quick_opts, c.quick_idx).width(TRIGGER_W),
-                ),
+                )),
                 with_cond(
-                    switch_row(
+                    CardItem::Row(switch_row(
                         "/ 键输出顿号",
                         "中文标点下按 / 直接得到「、」，英文标点下不受影响",
                         c.slash,
-                    ),
+                    )),
                     vec![with_cond(
-                        switch_row(
+                        CardItem::Row(switch_row(
                             "临时拼音",
                             "遇到不会拆的字，按触发键临时用拼音打，候选旁会显示它的码表编码",
                             c.temp,
-                        ),
-                        vec![item_row(
+                        )),
+                        vec![CardItem::Row(item_row(
                             "临时拼音触发键",
                             "按下后进入临时拼音",
                             Element::dropdown_signal(c.temp_opts, c.temp_idx).width(TRIGGER_W),
-                        )],
+                        ))],
                         move || temp.get(),
                     )],
                     move || kind.get() == 0,
@@ -1584,11 +1602,16 @@ mod tests {
         assert!(!divider_violations(&tree, root).is_empty());
 
         let mut tree = Tree::new();
-        let root = crate::widgets::card(vec![with_cond(
-            Element::label("常显行"),
-            vec![Element::label("条件行")],
-            || false,
-        )])
+        let root = crate::widgets::card_items(
+            None,
+            None,
+            vec![with_cond(
+                CardItem::Row(Element::label("常显行")),
+                vec![CardItem::Row(Element::label("条件行"))],
+                || false,
+            )],
+            None,
+        )
         .build(&mut tree);
         tree.root = Some(root);
         assert!(divider_violations(&tree, root).is_empty());

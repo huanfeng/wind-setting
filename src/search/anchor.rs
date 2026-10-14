@@ -64,7 +64,7 @@ const FLASH_PEAK: f32 = 0.22;
 /// 高亮圆角，与设置行的视觉节奏一致。
 const FLASH_CORNER: f32 = 6.0;
 // 高亮**不额外内缩**：行的外面已经有 16px 的内边距了——`widgets::card` 与
-// `field_dialogs::build_group_dialog` 的内容区都是 `padding_xy(16, 2)`。
+// `field_dialogs::build_group_dialog` 的每一行都包了 `widgets::card_pad`（16px）。
 // 再缩一次，框就比行窄一圈、看着像没对齐。曾内缩过 6px，真机上正是这个观感。
 
 /// 距起始 `t` 毫秒时：`(这一段是否点亮, 距下次翻面还有多久)`。

@@ -790,7 +790,7 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
     let visible = ui.visible;
     let row_ui = ui.clone();
 
-    let list = Element::col().width_match().padding_xy(16, 2).child(
+    let list = Element::col().width_match().padding_xy(0, 2).child(
         Element::reorder_list_signal(ui.rows, move |r: CommentDictRow, handle| {
             let idx = row_ui
                 .rows
@@ -834,20 +834,16 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
             }
             let ctrl = ctrl.child(Element::switch(sig));
 
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(
-                    Element::row()
-                        .width_match()
-                        .cross(Align::Center)
-                        .padding_xy(8, 0)
-                        .child(handle)
-                        .child(
-                            crate::widgets::setting_row(&label, Some(&row_desc(&r)), ctrl)
-                                .weight(1.0),
-                        ),
-                )
+            crate::widgets::list_row(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .padding_xy(8, 0)
+                    .child(handle)
+                    .child(
+                        crate::widgets::setting_row(&label, Some(&row_desc(&r)), ctrl).weight(1.0),
+                    ),
+            )
         })
         .on_reorder({
             let rows = ui.rows;
@@ -964,14 +960,9 @@ fn build_file_picker_dialog(ui: &CommentDictsUi) -> Element {
                     sel_ui.picker.set(false);
                 })
             };
-            Element::col()
-                .width_match()
-                .child(Element::divider())
-                .child(
-                    crate::widgets::setting_row(&name, Some(&desc), btn)
-                        .width_match()
-                        .padding_xy(8, 0),
-                )
+            crate::widgets::list_row(
+                crate::widgets::setting_row(&name, Some(&desc), btn).width_match(),
+            )
         },
     );
 
