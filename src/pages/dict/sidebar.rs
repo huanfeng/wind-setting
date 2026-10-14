@@ -224,6 +224,9 @@ pub fn selectable(
     content: impl Fn(bool) -> Element,
 ) -> Element {
     // 左缘指示条作覆盖层，不占行内宽度 —— 选中/未选中 padding 一致，切换时文字不横移。
+    // 「界面细节」`nav_indicator`：只在「竖条+淡底」下出现；「实心」只作用于主导航，
+    // 这里同二级导航按「仅淡底」处理（见 docs/design/settings-look-prefs.md §4）。
+    let li = crate::widgets::look().0[crate::look::NAV_INDICATOR];
     let sel_ind = is_selected.clone();
     let indicator = Element::row()
         .width_match()
@@ -236,7 +239,7 @@ pub fn selectable(
                 .corner(1.5)
                 .bg_role(Role::Accent),
         )
-        .visible_when(move || sel_ind());
+        .visible_when(move || sel_ind() && li.get() == 0);
 
     let sel_on = is_selected.clone();
     let on = content(true)

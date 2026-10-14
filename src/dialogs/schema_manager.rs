@@ -4062,6 +4062,9 @@ fn build_compound_row(
         .corner(8.0)
         .border_role(Role::Accent, 1)
         .visible_when(sel_when(mgr, &entry.id));
+    // 左缘指示条只在「界面细节」`nav_indicator` = 竖条+淡底时出现，与各处导航 / 列表选中一致。
+    let li = crate::widgets::look().0[crate::look::NAV_INDICATOR];
+    let sel_ind = sel_when(mgr, &entry.id);
     let indicator = Element::row()
         .align(Align::Stretch)
         .cross(Align::Center)
@@ -4072,7 +4075,7 @@ fn build_compound_row(
                 .corner(1.5)
                 .bg_role(Role::Accent),
         )
-        .visible_when(sel_when(mgr, &entry.id));
+        .visible_when(move || sel_ind() && li.get() == 0);
 
     // 两侧留 2px：选中描边贴列表容器边缘会被裁/被滚动条压住右缘。
     let mut item = Element::stack()
