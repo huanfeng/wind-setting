@@ -29,7 +29,6 @@ use crate::state::AppState;
 mod vk {
     pub const F: u32 = 0x46;
     pub const W: u32 = 0x57;
-    pub const F8: u32 = 0x77;
 }
 
 /// 快捷键要做的事。
@@ -44,8 +43,6 @@ pub enum Action {
     /// 提交词库页正开着的加/改词类对话框。没开着就**不处理**——Enter 在别处
     /// （列表、按钮、搜索框）还有它自己的用途，吃掉就成了误伤。
     SubmitDictDialog,
-    /// 打开「界面细节」试验窗。发布版底栏不放入口图标，这是唯一入口（见 `look_window`）。
-    OpenLookPrefs,
 }
 
 /// 词库页哪个对话框在等着提交——两张表的提交出口不是同一个函数。
@@ -111,7 +108,6 @@ impl Binding {
 pub const BINDINGS: &[Binding] = &[
     Binding::new(Key::Other(vk::F), true, Action::FocusSearch, "搜索设置"),
     Binding::new(Key::Other(vk::W), true, Action::CloseWindow, "关闭窗口"),
-    Binding::new(Key::Other(vk::F8), true, Action::OpenLookPrefs, "界面细节"),
     // Escape 不带修饰键；它只在浮层开着时才算处理（见 `Action::DismissSearch`）。
     Binding::new(Key::Escape, false, Action::DismissSearch, "收起搜索结果"),
     // 加词类对话框的键盘出口。**两条都要**：裸 Enter 覆盖焦点停在单行框以外
@@ -158,8 +154,6 @@ pub struct Outcome {
     /// 与其余字段一样是**意图**而非动作：提交要发 RPC，放进 `dispatch` 就把这个纯函数
     /// 连同它的单测一起绑到了 core 上。落地在 `main.rs`。
     pub submit_dict: Option<DictSubmit>,
-    /// 开「界面细节」子窗。开窗要 `EventCtx`，`ShortcutCtx` 给不了，由 `main.rs` 经 UI 通道转交。
-    pub open_look_window: bool,
 }
 
 impl Outcome {
@@ -168,7 +162,6 @@ impl Outcome {
         request_close: false,
         focus_main_input: false,
         submit_dict: None,
-        open_look_window: false,
     };
 }
 
@@ -209,10 +202,6 @@ pub fn dispatch(ev: &KeyEvent, st: &AppState) -> Outcome {
             // 没有加词对话框开着就别吃这个键——Enter 在列表、按钮、搜索框上各有各的用途。
             None => Outcome::default(),
         },
-        Action::OpenLookPrefs => Outcome {
-            open_look_window: true,
-            ..Outcome::HANDLED
-        },
     }
 }
 
@@ -233,22 +222,6 @@ mod tests {
 
     fn state() -> AppState {
         AppState::empty()
-    }
-
-    /// Ctrl+F8 是发布版打开「界面细节」试验窗的唯一入口。
-    #[test]
-    fn ctrl_f8_requests_look_window() {
-        let st = state();
-        let out = dispatch(&ev(Key::Other(vk::F8), true), &st);
-        assert!(out.handled && out.open_look_window);
-    }
-
-    /// 裸 F8 不吃：留给焦点控件 / 宿主。
-    #[test]
-    fn bare_f8_is_left_alone() {
-        let st = state();
-        let out = dispatch(&ev(Key::Other(vk::F8), false), &st);
-        assert!(!out.handled && !out.open_look_window);
     }
 
     /// 表里不能有两条撞在同一个组合上——后一条永远轮不到，且没有任何提示。

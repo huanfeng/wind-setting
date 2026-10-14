@@ -3,7 +3,7 @@
 //! 分段控件直接绑 `AppState::look` 的信号：主窗各处 `visible_when` 读的是同一组，
 //! 改即生效，主窗不重建；持久化由主窗里的 `look_watcher` 负责。
 //!
-//! 入口：Dev 版底栏图标 + Ctrl+F8；发布版只有 Ctrl+F8。
+//! 入口：主窗底栏右键菜单「界面细节…」（只在底栏，侧栏不放）。
 //! **过渡代码**，选项全部定案后删除（见 docs/design/settings-look-prefs.md §9）。
 
 use std::cell::RefCell;
@@ -15,7 +15,7 @@ use windui::prelude::*;
 use crate::look::{LookSignals, OPTIONS};
 use crate::state::AppState;
 
-/// 单例键：再按 Ctrl+F8 只把已开着的那个激活到前台。
+/// 单例键：再点一次入口只把已开着的那个激活到前台。
 pub(crate) const SINGLE_KEY: &str = "look_prefs";
 
 pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {

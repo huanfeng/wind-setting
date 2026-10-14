@@ -478,7 +478,10 @@ mod tests {
     fn unknown_look_value_does_not_break_loading() {
         let back: SettingConfig =
             toml::from_str("[ui.look]\nrow_divider = \"zigzag\"\n").expect("未知取值也应能读");
-        assert_eq!(back.ui.look.indices()[crate::look::ROW_DIVIDER], 0);
+        assert_eq!(
+            back.ui.look.indices()[crate::look::ROW_DIVIDER],
+            crate::look::DEFAULT[crate::look::ROW_DIVIDER]
+        );
     }
 
     /// 旧版本写的文件没有 `[ui]` 段，必须能读（否则升级即报配置损坏）。

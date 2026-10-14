@@ -2228,13 +2228,6 @@ impl AppState {
         }
     }
 
-    /// 请求开「界面细节」子窗。快捷键回调拿不到 ctx，经通道让 UI 线程开（同 `request_compat_window`）。
-    pub fn request_look_window(&self) {
-        if let Some(tx) = self.ui_tx.borrow().clone() {
-            let _ = tx.send(crate::UiRequest::OpenLookWindow);
-        }
-    }
-
     /// 取走「该开词库窗了」这个请求（取一次即清）。
     pub fn take_dict_window_request(&self) -> bool {
         self.pending_dict_window.replace(false)

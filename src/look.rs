@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use windui::prelude::*;
 
-/// 一个选项的取值表。下标 0 = 现状 = 缺省。
+/// 一个选项的取值表。下标 0 = 试验开始前的写法；缺省值见 [`DEFAULT`]。
 pub struct LookOption {
     pub title: &'static str,
     /// 写进 `[ui.look]` 的配置串。
@@ -24,6 +24,10 @@ pub const SECTION_HEADER: usize = 2;
 pub const ROW_DIVIDER: usize = 3;
 pub const SUBHEADING: usize = 4;
 pub const CARD_EDGE: usize = 5;
+
+/// 各选项的缺省下标（未写 `[ui.look]` 时用它）。2026-10-14 用户在真机上比较后定下：
+/// 仅淡底 / 仅图标变色 / 卡内标题 / 通栏分割线 / 浅色底条 / 边框+阴影。
+pub const DEFAULT: [usize; 6] = [1, 1, 1, 1, 2, 0];
 
 pub const OPTIONS: [LookOption; 6] = [
     LookOption {
@@ -96,14 +100,14 @@ impl LookConfig {
         std::array::from_fn(|i| {
             f[i].as_deref()
                 .and_then(|v| OPTIONS[i].values.iter().position(|x| *x == v))
-                .unwrap_or(0)
+                .unwrap_or(DEFAULT[i])
         })
     }
 
-    /// 下标 0（缺省）写成 `None`，于是全缺省时整节不落盘。
+    /// 等于 [`DEFAULT`] 的写成 `None`，于是全缺省时整节不落盘。
     pub fn from_indices(ix: [usize; 6]) -> Self {
         let v = |i: usize| {
-            (ix[i] != 0)
+            (ix[i] != DEFAULT[i])
                 .then(|| OPTIONS[i].values.get(ix[i]).map(|s| (*s).to_string()))
                 .flatten()
         };
@@ -142,12 +146,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_index_zero_and_not_serialized() {
+    fn defaults_come_from_default_table_and_are_not_serialized() {
         let c = LookConfig::default();
-        assert_eq!(c.indices(), [0; 6]);
+        assert_eq!(c.indices(), DEFAULT);
         assert!(c.is_default());
         assert_eq!(
-            LookConfig::from_indices([0; 6]),
+            LookConfig::from_indices(DEFAULT),
             c,
             "全选缺省必须回到全 None，才不落盘"
         );
@@ -165,7 +169,15 @@ mod tests {
             row_divider: Some("zigzag".into()),
             ..Default::default()
         };
-        assert_eq!(c.indices()[ROW_DIVIDER], 0);
+        assert_eq!(c.indices()[ROW_DIVIDER], DEFAULT[ROW_DIVIDER]);
+    }
+
+    #[test]
+    fn explicit_index_zero_is_kept_when_it_differs_from_default() {
+        // 缺省不再是 0：选回「试验前的写法」必须落盘，否则重开后又变回缺省。
+        let c = LookConfig::from_indices([0; 6]);
+        assert!(!c.is_default());
+        assert_eq!(c.indices(), [0; 6]);
     }
 
     #[test]

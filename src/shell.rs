@@ -192,8 +192,18 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(subnav_divider)
         .child(content);
 
+    // 底栏右键 = 侧栏那份导入菜单 + 「界面细节…」。后者**只挂底栏**：它是调设置窗自己外观的
+    // 入口，与侧栏的导航 / 导入语义无关（用户 2026-10-14 明确要求左侧导航不加）。
+    let app_look = app.clone();
     let footer = build_footer(app, dark, conn).on_context_menu(move || {
-        crate::pages::config_import::import_menu_items(&ci_menu_footer, &mgr_menu_footer, ov_menu)
+        let mut items = crate::pages::config_import::import_menu_items(
+            &ci_menu_footer,
+            &mgr_menu_footer,
+            ov_menu,
+        );
+        items.push(MenuItem::separator());
+        items.push(look_menu_item(&app_look));
+        items
     });
 
     let main_col = Element::col()
@@ -677,6 +687,16 @@ pub(crate) fn look_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     )
 }
 
+/// 底栏右键菜单里的「界面细节…」：开界面细节子窗（单例，已开则激活）。
+fn look_menu_item(app: &Rc<RefCell<AppState>>) -> MenuItem {
+    let app = app.clone();
+    MenuItem::run(
+        "界面细节…",
+        move |ctx| crate::look_window::open(ctx, &app),
+        false,
+    )
+}
+
 /// 底部操作栏（搜狗式）：左=状态点（悬停出说明）+ 明暗切换 + 主题色；右=恢复本页/重新加载/应用设置/保存并退出。
 fn build_footer(
     app: &Rc<RefCell<AppState>>,
@@ -794,20 +814,6 @@ fn build_footer(
     })
     .visible_when(move || accent_note.with(|n| !n.is_empty()));
 
-    // 「界面细节」试验窗入口：只在 Dev 版放图标，发布版只留 Ctrl+F8（见 `look_window`）。
-    let app_look = app.clone();
-    let look_btn = Element::stack()
-        .size(26, 26)
-        .corner(6.0)
-        .clickable()
-        .on_click(move |ctx| crate::look_window::open(ctx, &app_look))
-        .tooltip("界面细节（Ctrl+F8）")
-        .child(
-            crate::icons::tinted_role(crate::icons::nav_icon("外观"), 16, Role::TextMuted)
-                .align(Align::Center),
-        )
-        .visible(crate::mode::get() == crate::mode::AppMode::Dev);
-
     // 刷新数据：只在统计页出现——其余页没有需要重拉的只读数据，常驻会让人误以为
     // 是「重新加载配置」。放底栏而非页内浮层：浮层要么挡内容、要么得在页尾留白让位。
     let (stats_mgr, tab_sig) = {
@@ -883,7 +889,6 @@ fn build_footer(
         .child(theme_btn)
         .child(accent_pick)
         .child(accent_badge)
-        .child(look_btn)
         .child(Element::leaf().weight(1.0))
         .child(refresh_btn)
         .child(reset_btn)

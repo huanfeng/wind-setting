@@ -38,7 +38,7 @@ pub fn init_look(s: crate::look::LookSignals) {
 /// 取界面细节信号；未注册（测试 / 独立构建）时给全缺省。
 pub fn look() -> crate::look::LookSignals {
     LOOK.with(|c| c.get())
-        .unwrap_or_else(|| crate::look::LookSignals::new([0; 6]))
+        .unwrap_or_else(|| crate::look::LookSignals::new(crate::look::DEFAULT))
 }
 
 /// 取明暗信号；未注册时返回恒亮信号（测试/独立构建兜底）。
