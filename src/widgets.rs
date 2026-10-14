@@ -811,17 +811,23 @@ fn gap_divider(gap: Gap) -> Element {
     let look = look();
     let rd = look.0[crate::look::ROW_DIVIDER];
     let sh = look.0[crate::look::SUBHEADING];
-    let shown = move || gap == Gap::Between || sh.get() == 0;
+    let shown = move || gap == Gap::Between || sh.get() == crate::look::sub::ACCENT_RULE;
     Element::col()
         .width_match()
-        .child(padded(Element::divider()).visible_when(move || shown() && rd.get() == 0))
-        .child(Element::divider().visible_when(move || shown() && rd.get() == 1))
+        .child(
+            padded(Element::divider())
+                .visible_when(move || shown() && rd.get() == crate::look::divider::INSET),
+        )
+        .child(
+            Element::divider()
+                .visible_when(move || shown() && rd.get() == crate::look::divider::FULL),
+        )
         .child(
             Element::col()
                 .width_match()
                 .padding_edges(Insets::new(CARD_PAD_X, 0, 0, 0))
                 .child(Element::divider())
-                .visible_when(move || shown() && rd.get() == 2),
+                .visible_when(move || shown() && rd.get() == crate::look::divider::LEADING),
         )
 }
 
@@ -840,7 +846,7 @@ pub fn subheading_label(title: &str) -> Element {
 }
 
 /// 卡内二级分类。「界面细节」试验：三种写法按 `subheading` 显示一个——
-/// 强调色字（现状，前后靠分割线隔开）/ 次要色小字 + 上方留白 / 通栏浅色底条。
+/// 通栏浅色底条（缺省）/ 强调色字（前后靠分割线隔开）/ 次要色小字 + 上方留白（`look::sub`）。
 fn card_heading(title: &str) -> Element {
     card_heading_with(title, None)
 }
@@ -859,8 +865,8 @@ fn card_heading_with(title: &str, trailing: Option<&dyn Fn() -> Element>) -> Ele
             None => r,
         }
     };
-    let accent =
-        padded(line(subheading_label(title)).padding_xy(0, 5)).visible_when(move || sh.get() == 0);
+    let accent = padded(line(subheading_label(title)).padding_xy(0, 5))
+        .visible_when(move || sh.get() == crate::look::sub::ACCENT_RULE);
     let muted = Element::col()
         .width_match()
         .padding_edges(Insets::new(CARD_PAD_X, 16, CARD_PAD_X, 4))
@@ -871,7 +877,7 @@ fn card_heading_with(title: &str, trailing: Option<&dyn Fn() -> Element>) -> Ele
                 .fg_role(Role::TextMuted)
                 .max_lines(1),
         ))
-        .visible_when(move || sh.get() == 1);
+        .visible_when(move || sh.get() == crate::look::sub::MUTED_GAP);
     let band = Element::col()
         .width_match()
         .padding_xy(CARD_PAD_X, 6)
@@ -883,7 +889,7 @@ fn card_heading_with(title: &str, trailing: Option<&dyn Fn() -> Element>) -> Ele
                 .fg_role(Role::Text)
                 .max_lines(1),
         ))
-        .visible_when(move || sh.get() == 2);
+        .visible_when(move || sh.get() == crate::look::sub::BAND);
     Element::col()
         .width_match()
         .child(accent)
@@ -906,10 +912,10 @@ fn card_shell(body: Element) -> Element {
 pub fn card_frame() -> Element {
     let ce = look().0[crate::look::CARD_EDGE].get();
     let mut card = Element::col().bg_role(Role::Surface).corner(13.0);
-    if ce != 2 {
+    if ce != crate::look::edge::SHADOW {
         card = card.border_role(Role::Border, 1);
     }
-    if ce != 1 {
+    if ce != crate::look::edge::BORDER {
         card = card.shadow(Shadow::new(0.0, 1.0, 2.0, Color::rgba(20, 30, 50, 8)));
     }
     card
@@ -986,8 +992,8 @@ pub fn dialog_section_full(
 
 /// [`dialog_section_full`]，卡内是 [`CardItem`] 序列（可含 [`CardItem::Bare`] 动态块）。
 ///
-/// 「界面细节」`section_header`：0 = 小标题在卡外（现状）；1 / 2 = 标题行进卡片、其下
-/// 一条通栏线（对话框的节没有图标，两档相同），与主窗 [`section`] 的卡内写法一致。
+/// 「界面细节」`section_header`（`look::header`）：卡外 = 小标题在卡片上方；卡内 / 卡内无图标 =
+/// 标题行进卡片、其下一条通栏线（对话框的节没有图标，两档相同），与主窗 [`section`] 的卡内写法一致。
 pub fn dialog_section_items(
     title: &str,
     hint: Option<&str>,
@@ -1046,13 +1052,13 @@ pub fn dialog_section_items(
         .width_match()
         .child(inside)
         .child(Element::divider())
-        .visible_when(move || sh.get() != 0);
+        .visible_when(move || sh.get() != crate::look::header::OUTSIDE);
 
     Element::col()
         .width_match()
         .spacing(2)
         .padding_xy(0, 4)
-        .child(outside.visible_when(move || sh.get() == 0))
+        .child(outside.visible_when(move || sh.get() == crate::look::header::OUTSIDE))
         .child(card_items(Some(title_block), None, items, None))
 }
 
@@ -1095,7 +1101,7 @@ pub fn section_with_head(title: &str, head: Option<Element>, rows: Vec<Element>)
 }
 
 /// 全部 `section*` 的实现。「界面细节」试验 `section_header`：
-/// 0 卡外标题（现状）/ 1 卡内标题行 / 2 卡内标题行、不带图标。三种都建出来按信号显示。
+/// 卡内标题行（缺省）/ 卡外标题 / 卡内标题行、不带图标（`look::header`）。三种都建出来按信号显示。
 fn section_impl(
     title: &str,
     action: Option<&dyn Fn() -> Element>,
@@ -1108,9 +1114,10 @@ fn section_impl(
         Some(make) => row.child(make()),
         None => row,
     };
-    let outside = with_action(section_header(title)).visible_when(move || sh.get() == 0);
-    let inside_icon =
-        with_action(section_header(title).margin_xy(0, 0)).visible_when(move || sh.get() == 1);
+    let outside = with_action(section_header(title))
+        .visible_when(move || sh.get() == crate::look::header::OUTSIDE);
+    let inside_icon = with_action(section_header(title).margin_xy(0, 0))
+        .visible_when(move || sh.get() == crate::look::header::INSIDE);
     let inside_plain = with_action(
         Element::row()
             .width_match()
@@ -1126,7 +1133,7 @@ fn section_impl(
                     .height(20),
             ),
     )
-    .visible_when(move || sh.get() == 2);
+    .visible_when(move || sh.get() == crate::look::header::INSIDE_PLAIN);
     // 标题行与其下那条通栏线整体显隐：卡外模式下两者都不该占位。
     let title_block = Element::col()
         .width_match()
@@ -1138,7 +1145,7 @@ fn section_impl(
                 .child(inside_plain),
         )
         .child(Element::divider())
-        .visible_when(move || sh.get() != 0);
+        .visible_when(move || sh.get() != crate::look::header::OUTSIDE);
     Element::col()
         .width_match()
         .spacing(6)

@@ -10,7 +10,8 @@
 use serde::{Deserialize, Serialize};
 use windui::prelude::*;
 
-/// 一个选项的取值表。下标 0 = 试验开始前的写法；缺省值见 [`DEFAULT`]。
+/// 一个选项的取值表。**下标 0 = 缺省**（2026-10-14 用户在真机比较后定下的写法）。
+/// 代码里一律用下面各模块的具名下标比较，别写裸数字——顺序调过一次，以后还可能再调。
 pub struct LookOption {
     pub title: &'static str,
     /// 写进 `[ui.look]` 的配置串。
@@ -25,35 +26,70 @@ pub const ROW_DIVIDER: usize = 3;
 pub const SUBHEADING: usize = 4;
 pub const CARD_EDGE: usize = 5;
 
-/// 各选项的缺省下标（未写 `[ui.look]` 时用它）。2026-10-14 用户在真机上比较后定下：
-/// 仅淡底 / 仅图标变色 / 卡内标题 / 通栏分割线 / 浅色底条 / 边框+阴影。
-pub const DEFAULT: [usize; 6] = [1, 1, 1, 1, 2, 0];
+/// 各选项的缺省下标（未写 `[ui.look]` 时用它）：各表第一项。
+pub const DEFAULT: [usize; 6] = [0; 6];
+
+/// 导航选中样式的下标。
+pub mod nav {
+    pub const TINT: usize = 0;
+    pub const BAR: usize = 1;
+    pub const SOLID: usize = 2;
+}
+/// 主导航图标块的下标。
+pub mod chip {
+    pub const TINT_ONLY: usize = 0;
+    pub const GRADIENT: usize = 1;
+}
+/// 分组标题的下标。
+pub mod header {
+    pub const INSIDE: usize = 0;
+    pub const OUTSIDE: usize = 1;
+    pub const INSIDE_PLAIN: usize = 2;
+}
+/// 行分割线的下标。
+pub mod divider {
+    pub const FULL: usize = 0;
+    pub const INSET: usize = 1;
+    pub const LEADING: usize = 2;
+}
+/// 卡内二级分类的下标。
+pub mod sub {
+    pub const BAND: usize = 0;
+    pub const ACCENT_RULE: usize = 1;
+    pub const MUTED_GAP: usize = 2;
+}
+/// 卡片边界的下标。
+pub mod edge {
+    pub const BORDER_SHADOW: usize = 0;
+    pub const BORDER: usize = 1;
+    pub const SHADOW: usize = 2;
+}
 
 pub const OPTIONS: [LookOption; 6] = [
     LookOption {
         title: "导航选中样式",
-        values: &["bar_tint", "tint", "solid"],
-        labels: &["竖条+淡底", "仅淡底", "实心"],
+        values: &["tint", "bar_tint", "solid"],
+        labels: &["仅淡底", "竖条+淡底", "实心"],
     },
     LookOption {
         title: "主导航图标块",
-        values: &["gradient", "tint_only"],
-        labels: &["渐变图标块", "仅图标变色"],
+        values: &["tint_only", "gradient"],
+        labels: &["仅图标变色", "渐变图标块"],
     },
     LookOption {
         title: "分组标题",
-        values: &["outside", "inside", "inside_plain"],
-        labels: &["卡外", "卡内", "卡内无图标"],
+        values: &["inside", "outside", "inside_plain"],
+        labels: &["卡内", "卡外", "卡内无图标"],
     },
     LookOption {
         title: "行分割线",
-        values: &["inset", "full", "leading"],
-        labels: &["两端内缩", "通栏", "仅左缩"],
+        values: &["full", "inset", "leading"],
+        labels: &["通栏", "两端内缩", "仅左缩"],
     },
     LookOption {
         title: "卡内二级分类",
-        values: &["accent_rule", "muted_gap", "band"],
-        labels: &["强调色+线", "灰字+留白", "浅色底条"],
+        values: &["band", "accent_rule", "muted_gap"],
+        labels: &["浅色底条", "强调色+线", "灰字+留白"],
     },
     LookOption {
         // 建树时读一次（见 `widgets::card_shell`），故标题里写明。
@@ -172,12 +208,40 @@ mod tests {
         assert_eq!(c.indices()[ROW_DIVIDER], DEFAULT[ROW_DIVIDER]);
     }
 
+    /// 具名下标必须指向同名配置串：调顺序时漏改一处，变体就会张冠李戴。
     #[test]
-    fn explicit_index_zero_is_kept_when_it_differs_from_default() {
-        // 缺省不再是 0：选回「试验前的写法」必须落盘，否则重开后又变回缺省。
-        let c = LookConfig::from_indices([0; 6]);
-        assert!(!c.is_default());
-        assert_eq!(c.indices(), [0; 6]);
+    fn named_indices_match_config_strings() {
+        let v = |opt: usize, ix: usize| OPTIONS[opt].values[ix];
+        assert_eq!(v(NAV_INDICATOR, nav::TINT), "tint");
+        assert_eq!(v(NAV_INDICATOR, nav::BAR), "bar_tint");
+        assert_eq!(v(NAV_INDICATOR, nav::SOLID), "solid");
+        assert_eq!(v(NAV_ICON_CHIP, chip::TINT_ONLY), "tint_only");
+        assert_eq!(v(NAV_ICON_CHIP, chip::GRADIENT), "gradient");
+        assert_eq!(v(SECTION_HEADER, header::INSIDE), "inside");
+        assert_eq!(v(SECTION_HEADER, header::OUTSIDE), "outside");
+        assert_eq!(v(SECTION_HEADER, header::INSIDE_PLAIN), "inside_plain");
+        assert_eq!(v(ROW_DIVIDER, divider::FULL), "full");
+        assert_eq!(v(ROW_DIVIDER, divider::INSET), "inset");
+        assert_eq!(v(ROW_DIVIDER, divider::LEADING), "leading");
+        assert_eq!(v(SUBHEADING, sub::BAND), "band");
+        assert_eq!(v(SUBHEADING, sub::ACCENT_RULE), "accent_rule");
+        assert_eq!(v(SUBHEADING, sub::MUTED_GAP), "muted_gap");
+        assert_eq!(v(CARD_EDGE, edge::BORDER_SHADOW), "border_shadow");
+        assert_eq!(v(CARD_EDGE, edge::BORDER), "border");
+        assert_eq!(v(CARD_EDGE, edge::SHADOW), "shadow");
+    }
+
+    /// 配置里存的是串不是下标：调顺序前写下的值读回来仍是同一种写法。
+    #[test]
+    fn saved_strings_survive_reordering() {
+        let c = LookConfig {
+            row_divider: Some("inset".into()),
+            subheading: Some("accent_rule".into()),
+            ..Default::default()
+        };
+        let ix = c.indices();
+        assert_eq!(ix[ROW_DIVIDER], divider::INSET);
+        assert_eq!(ix[SUBHEADING], sub::ACCENT_RULE);
     }
 
     #[test]

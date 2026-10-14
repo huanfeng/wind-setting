@@ -45,16 +45,16 @@
 ## 4. 选项
 
 存于设置端本地 `wind_setting.toml` 的 `[ui.look]` 子表；每项 `Option`，**等于缺省不落盘**
-（同 `ui.dark` / `ui.accent` 先例）。缺省值见 `look::DEFAULT`：2026-10-14 用户在真机比较后定为
+（同 `ui.dark` / `ui.accent` 先例）。**每项第一个变体即缺省**（2026-10-14 调过顺序；代码里按 `look::nav` 等具名下标比较），用户在真机比较后定为
 **仅淡底 / 仅图标变色 / 卡内 / 通栏 / 浅色底条 / 边框+阴影**；各变体保留，仍可在窗内切换。
 
 | 键 | 变体（取值） | 作用范围 |
 |---|---|---|
-| `nav_indicator` | `bar_tint` 竖条+淡底 ／ `tint` 仅淡底 ／ `solid` 实心强调色底+`OnAccent` 字 | 主导航 + 二级导航（`solid` 只作用于主导航，二级导航按 `tint` 处理，避免两列都是实心块） |
-| `nav_icon_chip` | `gradient` 选中时渐变图标块 ／ `tint_only` 仅图标变强调色 | 主导航 |
-| `section_header` | `outside` 卡外+图标 ／ `inside` 卡内标题行+图标 ／ `inside_plain` 卡内标题行无图标 | 全部 `section*` 变体 |
-| `row_divider` | `inset` 两端内缩 ／ `full` 通栏 ／ `leading` 仅左缩 | 卡内行分割线 |
-| `subheading` | `accent_rule` 强调色小字+线 ／ `muted_gap` 次要色小字、上方加大间距、无线 ／ `band` 通栏浅色底条 | 卡内二级分类（合并后的单一函数） |
+| `nav_indicator` | `tint` 仅淡底 ／ `bar_tint` 竖条+淡底 ／ `solid` 实心强调色底+`OnAccent` 字 | 主导航 + 二级导航 + 词库 / 兼容性窗的列表选中（`solid` 只作用于主导航，其余按 `tint` 处理，避免两列都是实心块） |
+| `nav_icon_chip` | `tint_only` 仅图标变强调色 ／ `gradient` 选中时渐变图标块 | 主导航 |
+| `section_header` | `inside` 卡内标题行+图标 ／ `outside` 卡外+图标 ／ `inside_plain` 卡内标题行无图标 | 全部 `section*` / `dialog_section*` |
+| `row_divider` | `full` 通栏 ／ `inset` 两端内缩 ／ `leading` 仅左缩 | 卡内行分割线、自画列表（`row_divider` / `list_row`） |
+| `subheading` | `band` 通栏浅色底条 ／ `accent_rule` 强调色小字+线 ／ `muted_gap` 次要色小字、上方加大间距、无线 | 卡内二级分类（合并后的单一函数）、列表分组标题 |
 | `card_edge` | `border_shadow` 边框+阴影 ／ `border` 仅边框 ／ `shadow` 仅阴影 | 卡片 |
 
 变体细节：

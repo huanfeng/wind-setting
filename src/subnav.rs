@@ -467,7 +467,7 @@ pub fn build_list(nav: &SubNav) -> Element {
                     .corner(1.5)
                     .bg_role(Role::Accent),
             )
-            .visible_when(move || active.get() == idx && li.get() == 0);
+            .visible_when(move || active.get() == idx && li.get() == crate::look::nav::BAR);
         let vis = item.visible.clone();
         col = col.child(
             Element::stack()

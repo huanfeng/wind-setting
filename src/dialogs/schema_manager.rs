@@ -4075,7 +4075,7 @@ fn build_compound_row(
                 .corner(1.5)
                 .bg_role(Role::Accent),
         )
-        .visible_when(move || sel_ind() && li.get() == 0);
+        .visible_when(move || sel_ind() && li.get() == crate::look::nav::BAR);
 
     // 两侧留 2px：选中描边贴列表容器边缘会被裁/被滚动条压住右缘。
     let mut item = Element::stack()

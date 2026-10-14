@@ -368,12 +368,11 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
         // ── 选中态（渐变图标块 + accent 文字 + 左指示条）──
         //
         // 「界面细节」试验（`crate::look`）：竖条 / 选中底 / 图标块各有几种写法，全部建出来、
-        // 按信号只显示一个。`li`=导航选中样式（0 竖条+淡底 / 1 仅淡底 / 2 实心），
-        // `lc`=图标块（0 渐变 / 1 仅图标变色）。
+        // 按信号只显示一个。`li`=导航选中样式（`look::nav`），`lc`=图标块（`look::chip`）。
         let look = crate::widgets::look();
         let li = look.0[crate::look::NAV_INDICATOR];
         let lc = look.0[crate::look::NAV_ICON_CHIP];
-        // 选中态图标三种：渐变块（现状）/ 淡底 + 强调色图标 / 实心行上的反白图标。
+        // 选中态图标三种：渐变块 / 淡底 + 强调色图标 / 实心行上的反白图标。
         // 一个 Element 只能挂一处，而淡底行与实心行各要一份，故做成闭包各调一次。
         let make_chip = || {
             let gradient = Element::stack()
@@ -385,17 +384,21 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
                     vec![(0.0, Role::AccentActive), (1.0, Role::Accent)],
                 )
                 .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center))
-                .visible_when(move || lc.get() == 0 && li.get() != 2);
+                .visible_when(move || {
+                    lc.get() == crate::look::chip::GRADIENT && li.get() != crate::look::nav::SOLID
+                });
             let plain = Element::stack()
                 .size(CHIP_PX, CHIP_PX)
                 .corner(7.0)
                 .bg_role(Role::Bg)
                 .child(tinted_role(svg, ICON_PX, Role::Accent).align(Align::Center))
-                .visible_when(move || lc.get() == 1 && li.get() != 2);
+                .visible_when(move || {
+                    lc.get() == crate::look::chip::TINT_ONLY && li.get() != crate::look::nav::SOLID
+                });
             let on_solid = Element::stack()
                 .size(CHIP_PX, CHIP_PX)
                 .child(tinted_role(svg, ICON_PX, Role::OnAccent).align(Align::Center))
-                .visible_when(move || li.get() == 2);
+                .visible_when(move || li.get() == crate::look::nav::SOLID);
             Element::stack()
                 .child(gradient)
                 .child(plain)
@@ -414,7 +417,7 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
                     .corner(1.5)
                     .bg_role(Role::Accent),
             )
-            .visible_when(move || sel.get() == i && li.get() == 0);
+            .visible_when(move || sel.get() == i && li.get() == crate::look::nav::BAR);
         let selected_row = |bg_solid: bool| {
             let row = Element::row()
                 .width_match()
@@ -442,8 +445,10 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
                     .height(18),
             )
         };
-        let on = selected_row(false).visible_when(move || sel.get() == i && li.get() != 2);
-        let on_solid = selected_row(true).visible_when(move || sel.get() == i && li.get() == 2);
+        let on = selected_row(false)
+            .visible_when(move || sel.get() == i && li.get() != crate::look::nav::SOLID);
+        let on_solid = selected_row(true)
+            .visible_when(move || sel.get() == i && li.get() == crate::look::nav::SOLID);
 
         // ── 未选中态（可点击；图标中性灰，两主题通用）──
         let app_for_click = app.clone();
