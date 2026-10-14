@@ -972,48 +972,88 @@ pub fn dialog_section_hint(title: &str, hint: &str, rows: Vec<Element>) -> Eleme
 /// 完整形态：小标题（右侧可挂动作按钮）+ 可选节说明 + 卡片。
 ///
 /// 按钮挂在标题行而不是单独占一行：单独一行时左边一整条空白会把它推成右上角的孤浮标。
+///
+/// `action` 传**构造闭包**：「界面细节」`section_header` 下标题有卡外 / 卡内两处，
+/// 按钮两处各要一份（一个 `Element` 只能挂一处）。
 pub fn dialog_section_full(
     title: &str,
     hint: Option<&str>,
-    action: Option<Element>,
+    action: Option<&dyn Fn() -> Element>,
     rows: Vec<Element>,
 ) -> Element {
     dialog_section_items(title, hint, action, rows_to_items(rows))
 }
 
 /// [`dialog_section_full`]，卡内是 [`CardItem`] 序列（可含 [`CardItem::Bare`] 动态块）。
+///
+/// 「界面细节」`section_header`：0 = 小标题在卡外（现状）；1 / 2 = 标题行进卡片、其下
+/// 一条通栏线（对话框的节没有图标，两档相同），与主窗 [`section`] 的卡内写法一致。
 pub fn dialog_section_items(
     title: &str,
     hint: Option<&str>,
-    action: Option<Element>,
+    action: Option<&dyn Fn() -> Element>,
     items: Vec<CardItem>,
 ) -> Element {
-    let head: Element = match action {
+    let sh = look().0[crate::look::SECTION_HEADER];
+    let hint_label = |h: &str| {
+        Element::label(h)
+            .font_size(12.0)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(2)
+            .padding_xy(0, 2)
+    };
+    let outside_head: Element = match action {
         // 整宽 label 塞不进带按钮的行，故用不带 `width_match` 的 [`subheading_label`]。
-        Some(btn) => Element::row()
+        Some(make) => Element::row()
             .width_match()
             .cross(Align::Center)
             .spacing(10)
             .child(subheading_label(title).weight(1.0).padding_xy(0, 5))
-            .child(btn),
+            .child(make()),
         None => crate::manifest::dialog_group_header(title),
     };
-    let mut col = Element::col()
+    let mut outside = Element::col().width_match().spacing(2).child(outside_head);
+    if let Some(h) = hint {
+        outside = outside.child(hint_label(h));
+    }
+
+    let mut inside_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(
+            Element::label(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1)
+                .height(20),
+        );
+    if let Some(make) = action {
+        inside_row = inside_row.child(make());
+    }
+    let mut inside = Element::col()
+        .width_match()
+        .spacing(2)
+        .padding_xy(CARD_PAD_X, 10)
+        .child(inside_row);
+    if let Some(h) = hint {
+        inside = inside.child(hint_label(h));
+    }
+    let title_block = Element::col()
+        .width_match()
+        .child(inside)
+        .child(Element::divider())
+        .visible_when(move || sh.get() != 0);
+
+    Element::col()
         .width_match()
         .spacing(2)
         .padding_xy(0, 4)
-        .child(head);
-    if let Some(h) = hint {
-        col = col.child(
-            Element::label(h)
-                .font_size(12.0)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(2)
-                .padding_xy(0, 2),
-        );
-    }
-    col.child(card_items(None, None, items, None))
+        .child(outside.visible_when(move || sh.get() == 0))
+        .child(card_items(Some(title_block), None, items, None))
 }
 
 /// 分组 = 分区标题 + 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。

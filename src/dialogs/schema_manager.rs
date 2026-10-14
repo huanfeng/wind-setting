@@ -4878,10 +4878,15 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 与码表那边不同的是它挂在**卡片自己的**标题行里，不是外层节头：这一节只有
             // 一张卡片，两者是同一件事，不用再分层。
             let st = state.clone();
-            let reset_btn = Element::button("全部恢复跟随")
-                .small()
-                .outline_soft()
-                .on_click(move |_| aux_reset_all(&st, followed_on, followed_len, followed_direct));
+            let reset_btn = move || {
+                let st = st.clone();
+                Element::button("全部恢复跟随")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| {
+                        aux_reset_all(&st, followed_on, followed_len, followed_direct)
+                    })
+            };
 
             let mut rows = vec![row_on];
             rows.extend(row_direct);
@@ -4890,13 +4895,13 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             crate::widgets::dialog_section_full(
                 "辅助码",
                 None,
-                Some(
+                Some(&|| {
                     Element::row()
                         .cross(Align::Center)
                         .spacing(10)
                         .child(crate::widgets::summary_label(disp))
-                        .child(reset_btn),
-                ),
+                        .child(reset_btn())
+                }),
                 rows,
             )
         }
@@ -4925,7 +4930,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             crate::widgets::dialog_section_items(
                 "码表配置",
                 None,
-                Some(
+                Some(&move || {
+                    let (ct_reset, reset_flag) = (ct_reset.clone(), reset_flag.clone());
                     // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：
                     // 它是一个**兜底动作**，与它同行的是这一节的小标题，实心色块
                     // 在那儿比标题还抢眼，看着像这一屏的主操作。
@@ -4940,8 +4946,8 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             // 标志给落盘那侧看：隐藏项没有控件，只能靠它去清。
                             reset_flag.set(true);
                             disp.set(ct_summary(ct_reset.custom_count()));
-                        }),
-                ),
+                        })
+                }),
                 vec![crate::widgets::CardItem::Bare(body)],
             )
         }
@@ -5026,15 +5032,18 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 「全部恢复跟随」（R8.5）：只清标点 / 候选排列 / 候选字体这三个有跟随档的
             // 字段，见 [`behavior_reset_all`] 上的说明。样式照 `AuxCode` 卡片同名按钮。
             let st = state.clone();
-            let reset_btn = Element::button("全部恢复跟随")
-                .small()
-                .outline_soft()
-                .on_click(move |_| behavior_reset_all(&st));
+            let reset_btn = move || {
+                let st = st.clone();
+                Element::button("全部恢复跟随")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| behavior_reset_all(&st))
+            };
 
             crate::widgets::dialog_section_full(
                 "本方案行为",
                 Some("切到本方案时的表现。选「跟随全局」的项不受本方案影响。"),
-                Some(reset_btn),
+                Some(&reset_btn),
                 vec![
                     crate::widgets::setting_row(
                         "标点",
@@ -5152,16 +5161,18 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         }
                     })
             };
-            let action = if dirs.len() == 1 {
-                open_btn(dirs[0].clone(), "打开用户扩展词库目录".to_string())
-            } else {
-                // 方案声明了多个目录（出厂没有）：各给一个按钮，按目录末段区分
-                dirs.iter().fold(Element::row().spacing(6), |r, d| {
-                    let name = d.rsplit('/').next().unwrap_or(d).to_string();
-                    r.child(open_btn(d.clone(), format!("打开 {name}")))
-                })
+            let action = || {
+                if dirs.len() == 1 {
+                    open_btn(dirs[0].clone(), "打开用户扩展词库目录".to_string())
+                } else {
+                    // 方案声明了多个目录（出厂没有）：各给一个按钮，按目录末段区分
+                    dirs.iter().fold(Element::row().spacing(6), |r, d| {
+                        let name = d.rsplit('/').next().unwrap_or(d).to_string();
+                        r.child(open_btn(d.clone(), format!("打开 {name}")))
+                    })
+                }
             };
-            crate::widgets::dialog_section_full("扩展词库", None, Some(action), rows)
+            crate::widgets::dialog_section_full("扩展词库", None, Some(&action), rows)
         }
         SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
             .font_size(11.0)
