@@ -1,37 +1,84 @@
-# wind_setting
+<p align="center">
+  <img src="res/wind_setting_icon.png" alt="清风输入法设置" width="128">
+</p>
 
-清风输入法的原生设置应用,基于 [`windui`](../wind-ui-rust) 构建。
+<h1 align="center">清风输入法设置 (wind-setting)</h1>
 
-通过 JSON-RPC over named pipe 与输入法核心服务通信,不改动 core 接口。界面采用无边框窗口 + 自定义标题栏,设置项由 manifest 清单驱动(分组为多个 Tab),支持运行时明暗换肤。
+<p align="center">
+  清风输入法的原生图形设置程序
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-brightgreen" alt="Platform">
+  <img src="https://img.shields.io/badge/macOS-12%2B-blue" alt="macOS">
+  <img src="https://img.shields.io/badge/Linux-Fcitx5%20%28preview%29-orange" alt="Linux">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License">
+</p>
+
+<p align="center">
+  <a href="https://windinput.com"><b>官网</b></a> ·
+  <a href="https://windinput.com/download"><b>下载</b></a> ·
+  <a href="https://windinput.com/docs"><b>使用文档</b></a> ·
+  <a href="https://github.com/huanfeng/WindInput"><b>主仓库</b></a>
+</p>
 
 ## 特性
 
-- **清单驱动的设置界面** —— 设置项在 `src/assets/settings_manifest.toml` 中声明,按 group / section / item 映射为 Tab / 卡片 / 行。
-- **与核心解耦** —— 经 named pipe 上的 JSON-RPC 读写配置,设置应用不侵入 core。
-- **词库管理** —— 独立的词库页,支持规则的增删改与候选调整(见 `src/pages/dict/`)。
-- **运行时换肤** —— 跟随系统明暗主题,亦可通过命令行强制。
-- **单实例 + 协议激活** —— 支持自定义协议 URL 冷启动路由到指定页面。
+- **清单驱动** — 设置项在 `src/assets/settings_manifest.toml` 中声明，按 group / section / item 映射为页面 / 卡片 / 行
+- **与核心解耦** — 经 JSON-RPC（Windows 命名管道，Linux / macOS 为 Unix socket）读写配置，不改动 core 接口
+- **词库管理** — 用户词库、临时词库、快捷短语、词频与候选调整的查看与编辑
+- **应用兼容性** — 按应用配置输入行为，规则可按程序名、窗口类名、标题匹配
+- **设置搜索** — 支持拼音首字母检索设置项，结果直接跳转到对应位置
+- **亮暗主题** — 跟随系统明暗切换，也可通过命令行强制
+- **单实例 + 协议激活** — `windinput://` 协议与 `.wpkg` / `.wtheme` 文件关联，冷启动可直达指定页面
+- **跨平台** — 基于 [windui](https://github.com/huanfeng/wind-ui-rust) 自绘界面，支持 Windows、macOS 与 Linux
 
-## 构建
+## 获取
 
-需要 Rust(edition 2024)工具链。本项目依赖若干同级路径仓库(见 `Cargo.toml`):
+设置程序**不单独发版**，随清风输入法的安装包与便携包一起分发。请前往
+[windinput.com/download](https://windinput.com/download) 下载清风输入法，安装后从托盘菜单、
+语言栏或应用菜单打开「清风输入法设置」。
 
-- `windui`(`../wind-ui-rust`)
-- `wind-ipc`(`../WindInput/wind_input/crates/wind-ipc`)
+## 仓库范围
 
-请确保这些依赖已在相应位置就绪,然后:
+本仓库是清风输入法的组件之一，只负责**设置界面**。输入引擎、词库、候选与主题等功能在主仓库
+[WindInput](https://github.com/huanfeng/WindInput) 中维护，相关问题请到主仓库反馈。
+
+| 仓库 | 职责 |
+|------|------|
+| [WindInput](https://github.com/huanfeng/WindInput) | 核心服务与各平台输入法前端；本仓库经 path 依赖使用其中的 `wind-ipc` |
+| [wind-ui-rust](https://github.com/huanfeng/wind-ui-rust) | 跨平台轻量 GUI 库 `windui`，本仓库的界面基础（path 依赖） |
+| **wind-setting**（本仓库） | 图形设置程序 |
+
+## 从源码构建
+
+需要 Rust stable 工具链（edition 2024）。本仓库以 path 依赖引用两个同级仓库，请按如下布局克隆：
+
+```
+<工作目录>/
+├── wind-setting/      本仓库
+├── wind-ui-rust/      https://github.com/huanfeng/wind-ui-rust
+└── WindInput/         https://github.com/huanfeng/WindInput
+```
 
 ```sh
-cargo build            # debug 构建(opt-level=1,布局更顺滑)
+cargo build            # debug 构建（opt-level=1，保证界面流畅）
 cargo build --release  # release 构建
 cargo test             # 运行测试
 ```
 
-> 目标平台为 Windows:图标 / 版本信息 / DPI 感知 manifest 通过 `winresource` 在构建期嵌入,注册表访问使用 `winreg`。
+- **Windows**：原生构建；图标、版本信息与 DPI 感知 manifest 通过 `winresource` 在构建期嵌入
+- **Linux**：原生构建，也可用 `scripts/dev.sh` 交叉编译 Windows 产物；平台细节见 [docs/linux.md](docs/linux.md)
+- **macOS**：由主仓库的 `scripts/mac/dev.sh` 一并构建并打进 `.pkg`
 
-### 代码格式
+没有运行中的输入法服务时，可以用 `WIND_RPC_MOCK=1` 以模拟数据预览界面（改动不会保存）：
 
-本项目采用 `cargo fmt` 默认风格,提交前请先 `cargo fmt`。仓库在 `.githooks/` 提供了 `pre-commit` 钩子(跑 `cargo fmt --check`),启用一次即可在提交前自动拦住格式漂移:
+```sh
+WIND_RPC_MOCK=1 cargo run
+```
+
+提交前请运行 `cargo fmt`。仓库在 `.githooks/` 提供了 `pre-commit` 钩子（跑 `cargo fmt --check`），
+启用一次即可：
 
 ```sh
 git config core.hooksPath .githooks
@@ -43,99 +90,63 @@ git config core.hooksPath .githooks
 |---|---|
 | `--light` / `--dark` | 强制明 / 暗主题 |
 | `--page <id>` / `--<id>` | 启动时定位到指定页面 |
-| `--tab <n>` | 启动时定位到第 n 个 Tab |
-| `--schema <id>` | 仅 `--page dict`:定位到指定数据域 |
-| `--type <id>` | 仅 `--page dict`:定位到指定子标签 |
+| `--tab <n>` | 启动时定位到第 n 个页面 |
+| `--schema <id>` | 仅 `--page dict`：定位到指定数据域 |
+| `--type <id>` | 仅 `--page dict`：定位到指定子标签 |
 
-`--schema` 取方案 id(如 `wubi86`)、引擎族名(`pinyin` / `codetable` / `mixed`)或 `phrase`(快捷短语);
+`--schema` 取方案 id（如 `wubi86`）、引擎族名（`pinyin` / `codetable` / `mixed`）或 `phrase`（快捷短语）；
 双拼等被折叠的拼音变体 id 会落到「拼音」域。`--type` 取 `phrase-system` / `phrase-user` /
-`user-dict`(别名 `dict`)/ `temp` / `freq` / `shadow`。两者各自可选:
+`user-dict`（别名 `dict`）/ `temp` / `freq` / `shadow`。两者各自可选：
 
 ```sh
 wind_setting.exe --page dict --schema wubi86 --type shadow   # 五笔的候选调整
 wind_setting.exe --page dict --type freq                     # 当前数据域的词频
-wind_setting.exe --dict --schema pinyin                      # 拼音域,子标签沿用上次
+wind_setting.exe --dict --schema pinyin                      # 拼音域，子标签沿用上次
 ```
 
-方案未找到、或该数据域没有请求的类型(如拼音域没有「候选调整」)时会降级到最接近的位置并 toast 说明,不会报错阻断。
-
-## Linux
-
-Linux 上原生构建（`cargo build` / `cargo test` 直接跑，windui 走 X11；`WINDUI_BACKEND=wayland`
-才试原生 Wayland，否则在 Wayland 会话里经 XWayland 运行）。随清风输入法的 `.deb` 分发，装在
-`/usr/lib/windinput/wind_setting`（打包见 WindInput 仓 `scripts/linux/package-deb.sh`）。入口两个：
-
-- 应用菜单「清风输入法设置」（`windinput-setting.desktop`，同时声明 `windinput://` 协议）；
-- 输入时按「打开设置」热键（出厂 `Ctrl+Shift+]`）：服务推扩展信封 `settings.open`，Fcitx5 addon
-  启动本程序（`WIND_INPUT_SETTING` 可覆盖路径）。已开着时新进程只把参数转给首实例。
-
-端点与目录都与服务同一套规则：控制 socket `$XDG_RUNTIME_DIR/wind_input[_dev]_ctrl.sock`，
-用户配置 `~/.config/WindInput[Dev]`，日志 `~/.local/share/WindInput[Dev]/logs`，打开目录/链接走
-`xdg-open`。
-
-### 系统关联（`windinput://`、`.wpkg`、`.wtheme`）
-
-高级页「系统集成」按 XDG 现查、可按当前用户注册/取消（`src/xdg_assoc.rs`，Windows 的注册表版在
-`protocol.rs` / `file_assoc.rs`，三态与门控两边同一套）：
-
-| | 做法 |
-|---|---|
-| 状态 | `xdg-mime query default <类型>` 取默认处理者，再按 XDG 查找顺序读那份 `.desktop` 的 `Exec`：是本程序 → 已注册；别的程序（含另一份清风，如装了 deb 又跑便携版）→ 显示应用名、`.desktop` 与程序路径；查不到或那份 `.desktop` 已不在 → 未注册。系统包（`/usr/share`）提供且指向本程序时注明「系统安装包提供，在此不能取消」、「取消注册」灰掉；缺 xdg-mime 时直说原因 |
-| 注册 | 系统包那份就指向本程序时只 `xdg-mime default`；否则先把包里同一份 `.desktop` 与 MIME 描述（`include_str!` 取 WindInput 仓 `scripts/linux/pkg/`）以**本程序绝对路径**写进 `$XDG_DATA_HOME/applications`、`$XDG_DATA_HOME/mime/packages`（带 `X-WindInput-UserInstall` 标记），跑 `update-mime-database` / `update-desktop-database`，再设默认；写完回读，被桌面专属 `mimeapps.list` 盖掉时报错。缺 `update-mime-database` 对包文件是硬错误（认不出类型就会按 zip 打开），缺 `update-desktop-database` 只跳过 |
-| 取消 | 只去掉 `mimeapps.list` 里指向我们 `.desktop` 的项、只删带标记的用户级文件；两种包共用 `windinput-import.desktop`，各管各的 `MimeType`，最后一个包类型取消时才删 MIME 描述。系统文件与别人的关联一律不动，所以不弹「将删除他人关联」的确认 |
-| 启动自愈 | 门控同 Windows（便携版不碰、用户取消过不再写）。只修本程序写过、`Exec` 指向已消失路径的用户级文件：改指本程序；本程序就是 deb 那份时删掉残留，让系统那份生效。从没注册过、或指向另一份还在的清风，都不动 |
-
-端到端：WindInput 仓 `scripts/linux/e2e-assoc.sh`（隔离 XDG + 私有 Xvfb：类型识别、默认处理者、
-`xdg-open` / `gio open` 拉起本程序进导入确认、首实例已开时转参、界面上注册/取消一圈、别人的关联
-逐字节不变）。未验：真桌面的文件管理器双击（Nautilus / Dolphin / Deepin 文件管理器）、KDE 下
-xdg-mime 走 ktraderclient 的查询分支、snap / flatpak 沙箱里的浏览器点链接（要经 portal 转出）。
-用户级注册不装图标：便携包的类型图标与应用图标要等打包形态（tarball / AppImage）定了再补。
-
-### 按平台屏蔽的设置项
-
-清单项的 `platform` 字段取 `windows` / `macos` / `linux` 的逗号列表。Linux 版与 macOS 同一套
-精简范围（WindInput 仓 `docs/design/linux-port.md` §2），在其上 Linux 额外没有：
-
-| 设置项 | Linux 上为何无落点 |
-|---|---|
-| `ui.toolbar.visible`、`keys.toggle_toolbar` | addon 没有工具栏也没有托盘指示器，服务推的状态帧（`CMD_MODE_STATUS`）不接 |
-| `keys.softkeyboard` | 不做软键盘面板 |
-| `keys.activate_ime` | 协调器的处理臂只在 macOS 编译，Linux 落 `Unhandled hotkey`；切换输入法归 Fcitx5 |
-| `system.dota2_compat*` | 落点是 Windows 注册表 |
-| 热键对话框的「全局」勾选 | 服务在 Linux 不注册全局热键（`keys.global_hotkeys` 原值照常保留写回） |
-
-仅 Windows 的项（工具栏细项、`input.capslock.cancel_on_mode_switch`、`stats.track_english`、
-TSF 日志、语言栏角标等）在 Linux 上同样隐藏。**应用兼容性（按应用配置）保留**：服务按 addon
-报上来的程序名（Fcitx5 `InputContext::program()`）匹配规则，与 macOS 按 bundle id 同一机制。
-
-### 已知限制
-
-- **文件对话框**：rfd 走 xdg-desktop-portal，无门户时退回 `zenity`；两者都没有时「导入文件 / 导出」
-  点了没有反应（rfd 分不出「取消」与「不可用」）。`.deb` 已 Recommends `xdg-desktop-portal | zenity`；
-  导入还可以走剪贴板 / 链接两条不依赖对话框的路。
-- **已开着时的深链切页要等下一次输入事件才生效**（windui Linux 后端：单实例转来的 argv 在主线程
-  执行后没有触发重新布局；冷启动的深链正常）。窗口会被拉到前台，页要点一下才切过去。
+方案未找到、或该数据域没有请求的类型（如拼音域没有「候选调整」）时会降级到最接近的位置并 toast 说明，不会报错阻断。
 
 ## 目录结构
 
 ```
 src/
-  main.rs            入口:初始化、重连、协议路由
+  main.rs            入口：初始化、重连、协议路由
+  shell.rs           主窗口框架与导航
   manifest.rs        设置清单解析
-  pages/dict/        词库管理页(state / view / spec / dialogs)
-  rpc.rs             JSON-RPC over named pipe
-  protocol.rs        自定义协议注册与自愈
+  rpc.rs             与核心服务的 JSON-RPC 通信
+  pages/             各设置页（词库 dict/、应用兼容性 compat/ 等）
+  dialogs/           各类编辑对话框
+  search/            设置搜索
+  wizard/            设置向导（按输入方式快速配置）
+  update/            在线更新
+  protocol.rs        自定义协议注册与自愈（Windows）
   file_assoc.rs      .wpkg / .wtheme 文件关联（Windows 注册表）
-  xdg_assoc.rs       Linux 的协议与文件关联（XDG：.desktop / MIME / mimeapps.list）
+  xdg_assoc.rs       Linux 的协议与文件关联（XDG）
   assets/            设置清单与 capability 快照
-docs/redesign/       引擎配置对照与布局设计文档
+docs/                设计文档与平台说明
 ```
 
-## 许可
+## 参与贡献
+
+欢迎贡献代码、报告 Bug 或提出建议！请阅读 [贡献指南](CONTRIBUTING.md)。
+
+> 首次提交 PR 需要签署 [贡献者许可协议 (CLA)](CLA.md)。
+
+## 许可证
 
 本项目采用 [GNU 通用公共许可证第 3 版或更高版本](LICENSE)（GPL-3.0-or-later）。
 
-参与贡献请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 并签署 [CLA](CLA.md)。
+基于本项目修改并分发的作品须同样以 GPL-3.0 发布并提供完整源代码。
 
-项目名称「清风输入法」「WindInput」与 logo 的使用见主仓库的
-[项目名称与标识使用约定](https://github.com/huanfeng/WindInput/blob/main/BRANDING.md)。
+## 关于项目名称
+
+GPL 许可证授予您使用、修改与分发源代码的权利，但不包括使用项目名称与标识的权利。
+
+若您将本项目分支后公开发布，请更换项目名称与 logo，并注明为非官方分支，
+详见主仓库的 [项目名称与标识使用约定](https://github.com/huanfeng/WindInput/blob/main/BRANDING.md)。
+
+## 交流与反馈
+
+- **QQ 交流群**：[1085293418](https://qm.qq.com/q/u2A8FfafIs)
+- **社区论坛**：[forum.windinput.com](https://forum.windinput.com)
+- **GitHub Issues**：[问题反馈](../../issues)
