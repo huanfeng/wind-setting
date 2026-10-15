@@ -133,4 +133,9 @@ docs/redesign/       引擎配置对照与布局设计文档
 
 ## 许可
 
-尚未确定许可证。
+本项目采用 [GNU 通用公共许可证第 3 版或更高版本](LICENSE)（GPL-3.0-or-later）。
+
+参与贡献请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 并签署 [CLA](CLA.md)。
+
+项目名称「清风输入法」「WindInput」与 logo 的使用见主仓库的
+[项目名称与标识使用约定](https://github.com/huanfeng/WindInput/blob/main/BRANDING.md)。

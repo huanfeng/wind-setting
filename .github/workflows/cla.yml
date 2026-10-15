@@ -1,0 +1,42 @@
+name: CLA Assistant
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, synchronize]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request_target') ||
+      (github.event_name == 'issue_comment' && github.event.comment.body == 'recheck')
+    steps:
+      - name: CLA Assistant
+        # 上游仓库已归档，浮动 tag v2 随之删除，只能钉死具体版本
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_TOKEN }}
+        with:
+          path-to-signatures: "signatures/cla.json"
+          path-to-document: "https://github.com/${{ github.repository }}/blob/main/CLA.md"
+          branch: "main"
+          # 仓库所有者：自己的提交进了 fork PR 时（评审重做后强推回贡献者分支）会被自家门禁
+          # 拦下，而「所有者给自己签 CLA」没有意义。对真正的外部贡献者仍照常生效。
+          allowlist: "bot*,dependabot*,huanfeng"
+          custom-notsigned-prcomment: |
+            感谢您的贡献！在我们合并此 PR 之前，您需要签署贡献者许可协议 (CLA)。
+
+            请阅读 [CLA 文档](https://github.com/${{ github.repository }}/blob/main/CLA.md)，然后在此评论区回复以下内容以完成签署：
+
+            > I have read the CLA Document and I hereby sign the CLA
+
+          custom-pr-sign-comment: "I have read the CLA Document and I hereby sign the CLA"
