@@ -2027,6 +2027,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         }
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
+        "system.storageStatus" => json!({ "readonly": false, "issues": [] }),
         "stats.summary" => mock_stats_summary(),
         "stats.clear" => json!({ "ok": true }),
         "stats.pruneBefore" => json!({ "count": 0, "before": "" }),

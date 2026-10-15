@@ -125,6 +125,8 @@ pub struct DictManagerState {
     pub page_count_text: Signal<String>,
     /// 状态文字（操作反馈）。
     pub status: Signal<String>,
+    /// 数据文件问题提示（core `system.storageStatus` 的 `issues`）；空 = 没有问题，整行隐藏。
+    pub storage_notice: Signal<String>,
     /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
     /// (三态 kind, 文案)。
     pub feedback: super::reactive::Feedback,
@@ -557,6 +559,7 @@ impl DictManagerState {
             page_input: signal("1".to_string()),
             page_count_text: signal(String::new()),
             status: signal(String::new()),
+            storage_notice: signal(String::new()),
             feedback: signal(None),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
@@ -1216,8 +1219,16 @@ impl DictManagerState {
         "暂无数据".to_string()
     }
 
+    /// 刷新数据文件问题提示（每次重载列表时顺带取一次，core 侧只是读内存）。
+    fn refresh_storage_notice(&self) {
+        if let Ok(v) = rpc::call_core("system.storageStatus", &json!({})) {
+            self.storage_notice.set(storage_issue_text(&v));
+        }
+    }
+
     /// 拉取当前类别数据（走真实/mock RPC），刷新列表。
     pub fn reload(&self) {
+        self.refresh_storage_notice();
         let spec = self.current_spec();
         // 按方案类别但无方案：空表 + 提示。
         if spec.scoped_by_schema && self.current_schema_id().is_none() {
@@ -4184,8 +4195,54 @@ impl DictManagerState {
     }
 }
 
+/// 数据文件问题（`system.storageStatus` 的 `issues`）→ 提示文案，一条一行；没有问题为空串。
+pub(crate) fn storage_issue_text(v: &Value) -> String {
+    let Some(items) = v.get("issues").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let lines: Vec<String> = items
+        .iter()
+        .filter_map(|it| {
+            let path = it.get("path")?.as_str()?;
+            let kept = it.get("kept_as").and_then(Value::as_str).unwrap_or("");
+            let what = match it.get("kind")?.as_str()? {
+                "bad_lines" => format!(
+                    "{} 行无法解析，已跳过（原样保留在文件里）",
+                    it.get("lines").and_then(Value::as_u64).unwrap_or(0)
+                ),
+                "isolated" => "文件格式有误，已暂停写入，修复后自动恢复".to_string(),
+                "rebuilt" => format!("文件损坏，已另存为 {kept} 并恢复"),
+                _ => return None,
+            };
+            Some(format!("⚠ {path}：{what}"))
+        })
+        .collect();
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn storage_issue_text_lists_each_problem() {
+        let v = json!({ "issues": [
+            { "path": "pinyin/freq.table.yaml", "kind": "bad_lines", "lines": 3 },
+            { "path": "pinyin/temp.dict.yaml", "kind": "isolated" },
+            { "path": "stats/2026-10.toml", "kind": "rebuilt", "kept_as": "2026-10.toml.corrupt-20261015-010203" },
+        ]});
+        assert_eq!(
+            storage_issue_text(&v),
+            "⚠ pinyin/freq.table.yaml：3 行无法解析，已跳过（原样保留在文件里）\n\
+             ⚠ pinyin/temp.dict.yaml：文件格式有误，已暂停写入，修复后自动恢复\n\
+             ⚠ stats/2026-10.toml：文件损坏，已另存为 2026-10.toml.corrupt-20261015-010203 并恢复"
+        );
+        assert_eq!(storage_issue_text(&json!({ "issues": [] })), "");
+        assert_eq!(
+            storage_issue_text(&json!({ "readonly": false })),
+            "",
+            "旧 core 没有 issues 字段"
+        );
+    }
+
     use super::*;
 
     /// 预览格式化的目标口径（与 `types_for_kind` 同源，测试里直接写出以固定预期）。

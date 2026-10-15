@@ -310,6 +310,17 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     }
     let main_col = main_col
         .child(sub_tabs)
+        .child(
+            Element::label_signal(mgr.storage_notice)
+                .font_size(12.0)
+                .fg_role(Role::Warning)
+                .width_match()
+                .max_lines(6)
+                .visible_when({
+                    let n = mgr.storage_notice;
+                    move || !n.get().is_empty()
+                }),
+        )
         .child(toolbar)
         .child(charset_hint)
         .child(card)
