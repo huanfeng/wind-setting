@@ -1687,7 +1687,8 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             "userAssoc": null,
             "singleChar": null,
             "reverseLookup": { "chaiziBytes": 0, "pinyinBytes": 1_258_291, "commentBytes": 0 },
-            "redb": { "cacheLimitBytes": 268_435_456u64, "pageCacheDrops": 3 }
+            // 迁移全部完成后运行期不再打开旧库，core 给 null
+            "redb": null
         }),
         "stats.daily" => mock_stats_daily(params),
         // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。

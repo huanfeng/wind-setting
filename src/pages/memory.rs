@@ -548,12 +548,24 @@ mod tests {
             "反查索引 wubi86：常驻 2.3 MB / 镜像 2.3 MB",
             "用户词编码索引 wubi86：4.2 MB",
             "拼音表 1.2 MB · 拆字表 0 KB · 注释库 0 KB",
-            "用户词库读缓存上限 256.0 MB · 已空闲回收 3 次",
         ] {
             assert!(t.contains(needle), "缺「{needle}」：\n{t}");
         }
-        // null 的段不出行。
+        // null 的段不出行：旧库迁完后运行期不再打开，core 给 null。
         assert!(!t.contains("联想索引 "), "{t}");
+        assert!(!t.contains("读缓存"), "{t}");
+    }
+
+    /// 旧库链迁移进行中旧库还开着，此时照报它的缓存上限。
+    #[test]
+    fn diagnostic_text_lists_legacy_db_cache_while_open() {
+        let mut v = sample();
+        v["redb"] = json!({ "cacheLimitBytes": 268_435_456u64, "pageCacheDrops": 3 });
+        let t = diagnostic_text(&v, STAMP);
+        assert!(
+            t.contains("用户词库读缓存上限 256.0 MB · 已空闲回收 3 次"),
+            "{t}"
+        );
     }
 
     #[test]
