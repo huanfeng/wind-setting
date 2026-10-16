@@ -3604,12 +3604,20 @@ pub struct DictInfo {
 /// 从方案配置 `cfg["dictionaries"]` 解析可开关的附加词库（过滤主库）。
 /// 生效值：enabled.unwrap_or(default_enabled.unwrap_or(false))——不写 `default_enabled` 视为未启用，
 /// 与引擎 `DictionarySpec::should_load` 同口径（此前这里按启用显示，界面勾着、实际没加载）。
+///
+/// 用户分库（id 以 `user:` 开头）也登记在这里，但它们在词库窗的「用户词库 → 管理…」里管，
+/// 不在此列出。
 fn parse_extension_dicts(cfg: &Value) -> Vec<DictInfo> {
     let Some(arr) = cfg.get("dictionaries").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     arr.iter()
         .filter(|d| !d.get("default").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter(|d| {
+            !d.get("id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id.starts_with("user:"))
+        })
         .map(|d| {
             let default_enabled = d
                 .get("default_enabled")
@@ -6545,6 +6553,18 @@ mod ext_dict_tests {
         ]}));
         let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(labels, ["ext_a", "成语"]);
+    }
+
+    /// 用户分库（`user:` 前缀）在词库窗里管，方案管理的扩展词库列表不列它们。
+    #[test]
+    fn extension_dicts_skip_user_libraries() {
+        let rows = parse_extension_dicts(&json!({ "dictionaries": [
+            { "id": "main", "default": true },
+            { "id": "dir:ext/成语.dict.yaml", "label": "成语" },
+            { "id": "user:行业词", "label": "行业词", "enabled": true },
+        ]}));
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["dir:ext/成语.dict.yaml"]);
     }
 
     /// 发现目录：取 path、去首尾斜杠、跳过空值；没声明就是空（这一节随之不显示）。
