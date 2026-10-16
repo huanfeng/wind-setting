@@ -163,8 +163,8 @@ pub struct DictManagerState {
     /// 预览成功、可执行导入（驱动合并/替换按钮可用态）。
     pub import_ready: Signal<bool>,
 
-    /// 「外部编辑」对话框（字符类首用；其它词库接入见 `external_edit` 模块文档）。
-    pub xedit: super::external_edit::ExternalEditState,
+    /// 字符分类的新建对话框，见 [`super::charset_new`]。
+    pub charset_new: super::charset_new::CharsetNewState,
     /// 待导入的文件内容（预览确认后执行导入）。
     ///
     /// ⚠️ 仍然读全文，但**不再拿它当 RPC 载荷**——那是 [`Self::pending_import_path`] 的活。
@@ -596,7 +596,7 @@ impl DictManagerState {
             import_preview_msg: signal(String::new()),
             import_file_name: signal(String::new()),
             import_ready: signal(false),
-            xedit: super::external_edit::ExternalEditState::new(),
+            charset_new: super::charset_new::CharsetNewState::new(),
             pending_import: Rc::new(RefCell::new(None)),
             pending_import_path: Rc::new(RefCell::new(None)),
             io_target: signal(0),
@@ -2192,7 +2192,7 @@ impl DictManagerState {
     }
 
     /// 把一行移出勾选集（它已被删掉或转走）。
-    fn deselect(&self, code: &str, text: &str) {
+    pub(super) fn deselect(&self, code: &str, text: &str) {
         let mut sel = self.selected.borrow_mut();
         if sel.remove(&(code.to_string(), text.to_string())).is_some() {
             let n = sel.len();
@@ -2206,6 +2206,11 @@ impl DictManagerState {
         if self.selected_count.get() != 0 {
             self.selected_count.set(0);
         }
+    }
+
+    /// 勾选的行（按 (编码, 词) 序）。
+    pub(crate) fn selected_rows(&self) -> Vec<WordRow> {
+        self.selected.borrow().values().cloned().collect()
     }
 
     /// 删除选中要发出的调用（纯函数，便于单测）：逐条走与清空搜索结果同一份 [`Self::clear_calls`]。
@@ -2374,18 +2379,10 @@ impl DictManagerState {
         )
     }
 
-    // ── 字符类：外部编辑 / 删除 ──────────────────────────────────────────────
+    // ── 字符分类：删除 / 默认判定 ──────────────────────────────────────────────
     //
-    // GUI **不做**成员与范围的逐条编辑：词库这类东西在界面里一条条改效率反而低，还让
-    // 页面复杂度失控（2026-09-05 用户拍板）。改类走「文本作中介」——导出、打开编辑器、
-    // 回读全在 `external_edit` 那个对话框里（`xedit_open`），文件首行写明「不会被自动
-    // 读取」：那份文件是导出的副本，不是配置。
-
-    /// 打开字符类的「外部编辑」对话框；`preselect` 为右键/行内按钮带来的那一行。
-    /// 改已有分类走行上的「编辑文件」，这里只剩「新建分类…」：目标下拉只给新建那一项。
-    pub fn charset_open_external(&self, preselect: Option<&str>) {
-        self.xedit_open(&super::external_edit::CHARSET_DOMAIN, &[], preselect);
-    }
+    // GUI **不做**成员与范围的逐条编辑（2026-09-05 用户拍板）：新建只填基本信息
+    // （`charset_new`），成员与范围用这一行的「编辑文件」直接改文件。
 
     /// 删一个自建类。出厂类没有这个入口（右键菜单按 `class_builtin` 隐藏），core 也会拒。
     pub fn charset_delete(&self, row: &WordRow) {
@@ -3269,8 +3266,8 @@ impl DictManagerState {
         match self.domain_kind() {
             DomainKind::Phrase => self.current_category() == WordCategory::PhraseUser,
             // ⚠️ 与短语域同款：这个域下有两个 tab，只有「常用字」那张表走通用导入导出流
-            // （commonChars.*）。字符类的文件出入口是它自己的「新建类 / 从文件加载 /
-            // 外部编辑」三枚按钮——语义不是「导入导出整表」，而是「一个类一份文件」，
+            // （commonChars.*）。字符分类的文件出入口是「+ 添加」新建与每一行的
+            // 「编辑文件」——语义不是「导入导出整表」，而是「一个类一份文件」，
             // 挂在通用按钮上文案对不上。
             //
             // ★ 这两道判据按**域**走、不看当前 tab 的 spec——`SPEC_CHARSETS` 里没声明

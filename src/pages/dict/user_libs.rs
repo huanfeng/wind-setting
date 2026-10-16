@@ -161,6 +161,13 @@ pub(crate) fn lib_edit_target(schema: &str, name: &str) -> Value {
     json!({ "kind": "user_dict", "schemaId": schema, "name": name })
 }
 
+/// 「移动到」的目标：主词库或某个分库（文件主名）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MoveTarget {
+    Main,
+    Lib(String),
+}
+
 /// 名字对话框的用途。
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Prompt {
@@ -427,6 +434,118 @@ impl DictManagerState {
         }
     }
 
+    // ── 移动到别的词库 ─────────────────────────────────────
+
+    /// 当前表格的词条能移去哪儿：主词库与各分库，去掉当前这一个。不在用户词库、或没有
+    /// 分库能力时为空（不显示入口）。
+    pub fn move_targets(&self) -> Vec<(String, MoveTarget)> {
+        use super::spec::WordCategory;
+        let cat = self.current_category();
+        if !self.has_lib_group() || !matches!(cat, WordCategory::UserDict | WordCategory::UserLib) {
+            return Vec::new();
+        }
+        let cur = self.selected_lib();
+        let mut out = Vec::new();
+        if cur.is_some() {
+            out.push((MAIN_LABEL.to_string(), MoveTarget::Main));
+        }
+        out.extend(
+            self.libs
+                .list
+                .get()
+                .into_iter()
+                .filter(|l| Some(&l.name) != cur.as_ref())
+                .map(|l| {
+                    let label = if l.enabled {
+                        l.label
+                    } else {
+                        format!("{}（已停用）", l.label)
+                    };
+                    (label, MoveTarget::Lib(l.name))
+                }),
+        );
+        out
+    }
+
+    /// 移动一条 = 先加到目标、再从当前删（加失败则原条目不动）。没写权重的（0）不带权重，
+    /// 由目标按方案默认权重处理。
+    pub(crate) fn move_calls(
+        &self,
+        rows: &[super::spec::WordRow],
+        to: &MoveTarget,
+    ) -> Vec<[(&'static str, Value); 2]> {
+        let Some(id) = self.current_schema_id() else {
+            return Vec::new();
+        };
+        rows.iter()
+            .map(|r| {
+                let mut add = json!({ "schemaId": id, "code": r.code, "text": r.text });
+                if r.weight != 0 {
+                    add["weight"] = json!(r.weight);
+                }
+                let method = match to {
+                    MoveTarget::Main => "dict.add",
+                    MoveTarget::Lib(name) => {
+                        add["name"] = json!(name);
+                        "userDicts.addEntry"
+                    }
+                };
+                [(method, add), self.delete_call(&r.code, &r.text)]
+            })
+            .collect()
+    }
+
+    /// 把这些词条移到 `to`（`label` 是提示里的名字）。逐条执行，首错即停并报已移了几条。
+    pub fn move_rows(&self, rows: Vec<super::spec::WordRow>, to: &MoveTarget, label: &str) {
+        let calls = self.move_calls(&rows, to);
+        let n = calls.len();
+        let mut done = 0;
+        'rows: for (i, pair) in calls.into_iter().enumerate() {
+            for (step, (m, p)) in pair.into_iter().enumerate() {
+                if let Err(e) = rpc::call_core(m, &p) {
+                    // 第二步（从原处删）失败时，这一条已经加进目标：两边各有一份，要说清楚。
+                    let extra = if step == 1 {
+                        format!("；「{}」已加到目标，但没从原处删掉", rows[i].text)
+                    } else {
+                        String::new()
+                    };
+                    self.notify_err(&format!("已移动 {done}/{n} 条后失败：{e}{extra}"));
+                    break 'rows;
+                }
+            }
+            done += 1;
+        }
+        for r in &rows[..done] {
+            self.deselect(&r.code, &r.text);
+        }
+        if done == n {
+            let off = matches!(to, MoveTarget::Lib(name)
+                if self.libs.list.get().iter().any(|l| &l.name == name && !l.enabled));
+            // 菜单名里停用的分库已带「（已停用）」，挪到引号外。
+            let label = label.strip_suffix("（已停用）").unwrap_or(label);
+            let note = if off { "（已停用）" } else { "" };
+            self.notify_ok(&format!("已移动 {n} 条到「{label}」{note}"));
+        }
+        // 两边的条目数都变了。
+        self.reload_with_libs();
+    }
+
+    /// 「移动到…」的菜单项：每个目标一项，点了就移 `rows`。
+    pub fn move_menu_items(&self, rows: Vec<super::spec::WordRow>) -> Vec<MenuItem> {
+        self.move_targets()
+            .into_iter()
+            .map(|(label, to)| {
+                let (m, rows, l) = (self.clone(), rows.clone(), label.clone());
+                MenuItem::run(label, move |_| m.move_rows(rows.clone(), &to, &l), false)
+            })
+            .collect()
+    }
+
+    /// 勾选的那些词条的「移动到…」菜单。
+    pub fn move_selected_menu_items(&self) -> Vec<MenuItem> {
+        self.move_menu_items(self.selected_rows())
+    }
+
     // ── 分库操作 ───────────────────────────────────────────
 
     /// 分库操作做完：重取列表；删掉 / 改名的正好是选中的那个时表格也要换。
@@ -462,8 +581,20 @@ impl DictManagerState {
             }
             self.notify_err(&format!("切换失败：{e}"));
         }
+        let ok = failed.is_none() && !done.is_empty();
+        if ok {
+            let label = self
+                .libs
+                .list
+                .get()
+                .into_iter()
+                .find(|l| l.name == name)
+                .map_or_else(|| name.to_string(), |l| l.label);
+            let verb = if enabled { "已启用" } else { "已停用" };
+            self.notify_ok(&format!("{verb}「{label}」"));
+        }
         self.refresh_user_libs();
-        failed.is_none() && !done.is_empty()
+        ok
     }
 
     /// 分库的「编辑文件」。
@@ -1000,6 +1131,109 @@ mod tests {
         });
     }
 
+    /// 移动：主词库里看得到所有分库；分库里看得到主词库与别的分库，看不到自己。
+    #[test]
+    fn move_targets_exclude_the_current_library() {
+        with_mock(|| {
+            let st = state();
+            let names = |st: &DictManagerState| -> Vec<String> {
+                st.move_targets().into_iter().map(|(l, _)| l).collect()
+            };
+            assert_eq!(names(&st), ["成语", "行业词（已停用）"]);
+            select(&st, Some("成语"));
+            assert_eq!(names(&st), ["主词库", "行业词（已停用）"]);
+            st.sub_tab.set(1);
+            st.on_nav_changed();
+            assert!(st.move_targets().is_empty(), "临时词库上没有");
+        });
+    }
+
+    /// 移到停用的分库：提示里分库名不带后缀，「（已停用）」放在引号外。
+    #[test]
+    fn moving_to_a_disabled_library_says_so_briefly() {
+        with_mock(|| {
+            let st = state();
+            let (label, to) = st.move_targets().pop().unwrap();
+            let row = super::super::spec::WordRow {
+                code: "yzwg".into(),
+                text: "一针见血".into(),
+                ..Default::default()
+            };
+            st.move_rows(vec![row], &to, &label);
+            let (_, msg) = st.feedback.get().unwrap();
+            assert_eq!(msg, "已移动 1 条到「行业词」（已停用）");
+        });
+    }
+
+    /// 主词库 → 分库：先加到分库再从主词库删；没写权重的不带权重。
+    #[test]
+    fn moving_adds_then_removes() {
+        with_mock(|| {
+            let st = state();
+            let rows = vec![
+                super::super::spec::WordRow {
+                    code: "yzwg".into(),
+                    text: "一针见血".into(),
+                    weight: 5,
+                    ..Default::default()
+                },
+                super::super::spec::WordRow {
+                    code: "ggtt".into(),
+                    text: "一五一十".into(),
+                    ..Default::default()
+                },
+            ];
+            crate::rpc::take_mock_calls();
+            st.move_rows(rows, &MoveTarget::Lib("成语".into()), "成语");
+            let calls: Vec<(String, Value)> = crate::rpc::take_mock_calls()
+                .into_iter()
+                .filter(|(m, _)| m == "userDicts.addEntry" || m == "dict.remove")
+                .collect();
+            assert_eq!(
+                calls,
+                vec![
+                    (
+                        "userDicts.addEntry".into(),
+                        json!({"schemaId": "wb", "name": "成语", "code": "yzwg", "text": "一针见血", "weight": 5})
+                    ),
+                    ("dict.remove".into(), st.delete_call("yzwg", "一针见血").1),
+                    (
+                        "userDicts.addEntry".into(),
+                        json!({"schemaId": "wb", "name": "成语", "code": "ggtt", "text": "一五一十"})
+                    ),
+                    ("dict.remove".into(), st.delete_call("ggtt", "一五一十").1),
+                ]
+            );
+            let (_, msg) = st.feedback.get().unwrap();
+            assert_eq!(msg, "已移动 2 条到「成语」");
+        });
+    }
+
+    /// 加到目标失败：原条目不删，报已移几条。
+    #[test]
+    fn moving_stops_at_the_first_failure() {
+        with_mock(|| {
+            let st = state();
+            let row = super::super::spec::WordRow {
+                code: "yzwg".into(),
+                text: "一针见血".into(),
+                ..Default::default()
+            };
+            crate::rpc::force_mock_error("userDicts.addEntry", Some("正在外部编辑"));
+            crate::rpc::take_mock_calls();
+            st.move_rows(vec![row], &MoveTarget::Lib("成语".into()), "成语");
+            crate::rpc::force_mock_error("userDicts.addEntry", None);
+            assert!(
+                !crate::rpc::take_mock_calls()
+                    .iter()
+                    .any(|(m, _)| m == "dict.remove"),
+                "没加进去就不删"
+            );
+            let (_, msg) = st.feedback.get().unwrap();
+            assert_eq!(msg, "已移动 0/1 条后失败：正在外部编辑");
+        });
+    }
+
     /// 分库里加词 / 改权重：写分库文件（userDicts.addEntry，带分库名）。
     #[test]
     fn adding_to_a_library_writes_the_library() {
@@ -1085,6 +1319,8 @@ mod tests {
                 calls_of("userDicts.setEnabled"),
                 vec![json!({"schemaId": "wb", "name": "成语", "enabled": false})]
             );
+            let (_, msg) = st.feedback.get().expect("开关后有提示");
+            assert_eq!(msg, "已停用「成语」");
             crate::rpc::force_mock_error("userDicts.setEnabled", Some("只读模式"));
             assert!(!st.set_lib_enabled("成语", false));
             crate::rpc::force_mock_error("userDicts.setEnabled", None);

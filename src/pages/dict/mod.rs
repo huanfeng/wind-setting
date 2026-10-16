@@ -7,8 +7,8 @@
 //! - （后续）`dialogs`：加/改词、确认对话框。
 
 pub mod category_nav;
+pub mod charset_new;
 pub mod dialogs;
-pub mod external_edit;
 pub mod file_edit;
 pub mod reactive;
 pub mod sidebar;

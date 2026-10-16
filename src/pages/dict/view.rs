@@ -88,14 +88,6 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         move || mgr_ed.on_edit_dialog_closed(),
     );
 
-    // ── 响应式 effect：「外部编辑」对话框的目标下拉变化 → 重新探测编辑文件 ──
-    let xedit_v = mgr.xedit.idx;
-    let mgr_xe = mgr.clone();
-    let xedit_effect = reactive_effect(
-        move || xedit_v.version(),
-        move || mgr_xe.on_xedit_target_changed(),
-    );
-
     // ── 标题行：类别名（左）+ 这一类的文件操作（右）──
     //
     // 「导入」「导出」入口：置于标题行最右（弹簧右对齐），方案域与三个全局域均显示，
@@ -119,18 +111,6 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .on_click(move |ctx| exp_open.do_export(ctx))
         .visible_when(move || exp_vis.io_entry_visible())
         .enabled_when(move || exp_en.io_entry_enabled());
-    // 字符分类专用入口：「新建分类…」，只在字符分类上出现。
-    //
-    // 改已有分类走行内「操作…」菜单与右键的「编辑文件」（一类一个文件，直接编辑）。新建
-    // 还走「外部编辑」对话框（见 `external_edit` 模块文档）：传 `None` ⇒ 对准目标下拉的
-    // 首项「新建类…」，导出模板、改完试算再加载。
-    let xe_vis = mgr.clone();
-    let xe_do = mgr.clone();
-    let charset_xedit = Element::button("新建分类…")
-        .small()
-        .outline_soft()
-        .on_click(move |_| xe_do.charset_open_external(None))
-        .visible_when(move || xe_vis.current_category() == super::spec::WordCategory::Charsets);
     // 「编辑文件」：直接在编辑器里改这一类的数据文件（用户词库、分库、临时词库、词频、候选
     // 调整、用户短语、快捷输入、常用字）。与导入导出并排，同是「文件相关的操作」；字符分类
     // 一类一个文件，入口在行上。
@@ -167,7 +147,6 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
                 .weight(1.0),
         )
         .child(mixed_hint)
-        .child(charset_xedit)
         .child(edit_file)
         .child(import_entry)
         .child(export_entry);
@@ -234,7 +213,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     // 会被截，但**第二句（并集那条）完整**——它正是上面第 3 点说「不写用户就会误解」
     // 的那一句，拆开之后它不再排在被截的尾巴上。
     //
-    // 放在工具栏与表格之间而不是标题行右侧：标题行那头已经排着「新建分类…/导入/导出」
+    // 放在工具栏与表格之间而不是标题行右侧：标题行那头已经排着「编辑文件/导入/导出」
     // 三枚按钮，这句话挤进去只会把它们顶出可视区。`vis_cond` 为假的节点不参与布局
     // （见 windui `Node::visible`），其余 tab 不会因此多出两条空行。
     // 可见性挂在**外层 col** 上而不是逐行挂：`vis_cond` 为假的节点不参与布局，两个子
@@ -294,7 +273,6 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(temp_filter_effect)
         .child(io_target_effect)
         .child(io_format_effect)
-        .child(xedit_effect)
         .child(edit_dialog_effect)
         .child(toast_sink(mgr.feedback))
 }
@@ -335,6 +313,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
                     m_add.open_quick_add(&kind);
                 }
                 C::CommonChars => m_add.open_common_add(),
+                C::Charsets => m_add.open_charset_create(),
                 _ => m_add.open_add(),
             }
         })
@@ -376,8 +355,22 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .outline()
         .danger()
         .on_click(move |_| m_ds.request_delete_selected())
-        .enabled_when(move || e_ds.selected_count.get() > 0)
-        .visible_when(move || v_ds.current_spec().ops.multi_select);
+        // 有勾选才出现（而不是一直摆着置灰）：工具栏一行要放下搜索框，最窄窗口下按钮多一枚
+        // 搜索框就没了。
+        .visible_when(move || {
+            v_ds.current_spec().ops.multi_select && e_ds.selected_count.get() > 0
+        });
+
+    // 移动到别的词库（主词库 ⇄ 分库）：勾选的词条，目标在下拉菜单里选。
+    let (m_mv, v_mv, e_mv) = (mgr.clone(), mgr.clone(), mgr.clone());
+    let move_selected = Element::button("移动到…")
+        .small()
+        .outline_soft()
+        .on_click(move |ctx| {
+            let items = m_mv.move_selected_menu_items();
+            ctx.show_dropdown_menu(ctx.bounds(), items);
+        })
+        .visible_when(move || e_mv.selected_count.get() > 0 && !v_mv.move_targets().is_empty());
 
     // 临时词库筛选（t63）：次数上限 + 闲置天数。筛选生效时「清空」只删筛选结果。
     let v_tf = mgr.clone();
@@ -474,6 +467,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(promote_all)
         .child(select_page)
         .child(delete_selected)
+        .child(move_selected)
         .child(clear)
         .child(reset_default)
         .child(only_modified)
@@ -975,6 +969,11 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             false,
         ));
     }
+    // 主词库 ⇄ 分库：移到别的词库（只这一条；多条用工具栏「移动到…」）。
+    let moves = mgr.move_menu_items(vec![row.clone()]);
+    if !moves.is_empty() {
+        ops.push(MenuItem::submenu("移动到", moves));
+    }
     push_group(&mut items, ops);
 
     let (m_t, m_c) = (mgr.clone(), mgr.clone());
@@ -1169,7 +1168,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     // ★ 操作列不能空：本页的主操作全在右键菜单的话，用户第一眼会以为这页是只读的。
     //
     // ⚠️ 文案用省略号而不是 `▾`：离屏截图（软渲染回退）里 `▾` 渲染成豆腐块，说明这
-    // 字形不在每条渲染路径的回退字体里都有。省略号与本页菜单项（「查看…」「新建分类…」）
+    // 字形不在每条渲染路径的回退字体里都有。省略号与本页菜单项（「查看…」「移动到…」）
     // 同一个记号，覆盖面最广，「点了还有后续」这层意思也一样传达得到。
     //
     // ⚠️ 与参照实现（windui `Dropdown::open`）**差一步**：它在弹菜单前有一行
@@ -1602,7 +1601,8 @@ mod tests {
         let items = row_menu_items(&mgr, 0);
         assert_eq!(
             menu_labels(&items),
-            ["编辑…", "复制编码", "复制词条", "删除"]
+            // 「移动到」：mock 里这个方案有分库，主词库的词可以移过去。
+            ["编辑…", "移动到", "复制编码", "复制词条", "删除"]
         );
     }
 

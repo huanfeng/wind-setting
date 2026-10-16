@@ -15,7 +15,7 @@
 use windui::prelude::*;
 
 use super::sidebar::{SIDE_PAD, group_title, selectable};
-use super::spec::{LogicalTab, WordCategory};
+use super::spec::LogicalTab;
 use super::state::DictManagerState;
 use super::user_libs::{MAIN_LABEL, UserLib};
 
@@ -255,14 +255,6 @@ impl DictManagerState {
             let m = self.clone();
             items.push(MenuItem::run("编辑文件", move |_| m.do_edit_file(), false));
         }
-        if self.current_category() == WordCategory::Charsets {
-            let m = self.clone();
-            items.push(MenuItem::run(
-                "新建分类…",
-                move |_| m.charset_open_external(None),
-                false,
-            ));
-        }
         if self.io_entry_visible() && self.io_entry_enabled() {
             let (m_imp, m_exp) = (self.clone(), self.clone());
             items.push(MenuItem::run(
@@ -398,6 +390,13 @@ fn nav_row(mgr: &DictManagerState, e: NavEntry) -> Element {
             if e.depth > 0 {
                 let cell = Element::row().width(CHECK_W).cross(Align::Center);
                 row = row.child(match &toggle {
+                    // 主词库：与分库对称也有勾选框，但它总是开着、点不动。
+                    None if matches!(e.node, NavNode::Main(_)) => cell.child(
+                        Element::checkbox("", signal(true))
+                            .small()
+                            .enabled(false)
+                            .tooltip("主词库总是启用"),
+                    ),
                     Some((sig, m, name)) => {
                         let (sig, m, name) = (*sig, m.clone(), name.clone());
                         cell.child(Element::checkbox("", sig).small().on_toggle(move |_| {
@@ -449,6 +448,7 @@ fn nav_row(mgr: &DictManagerState, e: NavEntry) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use super::super::spec::WordCategory;
     use super::*;
     use serde_json::json;
 

@@ -16,8 +16,8 @@ pub enum WordCategory {
     PhraseUser,
     /// 用户词库（按方案·分页）。
     UserDict,
-    /// 用户分库（按方案·分页，只能删单条；添加修改走外部编辑）。不是独立子标签：「用户词库」
-    /// 子标签上选中某个分库时的类别，见 `user_libs`。
+    /// 用户分库（按方案·分页，增删改同主词库，写的是分库文件）。不是独立的类别入口：中栏
+    /// 「用户词库」分组下选中某个分库时的类别，见 `user_libs`。
     UserLib,
     /// 临时词库（按方案·分页）。
     Temp,
@@ -1350,9 +1350,8 @@ const COLS_CHARSETS: &[ColumnSpec] = &[
 /// **不分页**：类的数量是几十个量级（50 个 Unicode 区块 + emoji + 常用汉字 + 用户自建），
 /// 一次取完比分页简单，也让「按范围找一个类」这件事可以在客户端搜索里做。
 ///
-/// 没有「添加」：新建一个类要填码位段、起 key，不是在这个列表里能做完的事。那条路径在
-/// 工具栏「外部编辑」→ 目标下拉**首项**「新建类…」（导出模板 → 在编辑器里填 → 回读），
-/// 手写一份 yaml 再「选择其它文件…」加载也走同一条。本页管的是**已有的类**。
+/// 「+ 添加」只建一个空分类（文件名、显示名、默认判定、优先级，见 `charset_new`）；
+/// 成员与码位范围用这一行的「编辑文件」直接改那一类的文件。
 const SPEC_CHARSETS: CategorySpec = CategorySpec {
     category: WordCategory::Charsets,
     title: "字符分类",
@@ -1370,6 +1369,8 @@ const SPEC_CHARSETS: CategorySpec = CategorySpec {
         //
         // 撤销对这个类的全部调整，回到出厂。
         reset_entry: true,
+        // 「+ 添加」= 新建一个空分类（只填基本信息，见 `charset_new`）。
+        add: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
