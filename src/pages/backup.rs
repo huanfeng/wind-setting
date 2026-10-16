@@ -42,6 +42,19 @@ impl Default for BackupState {
     }
 }
 
+/// 「数据」勾选项对应的还原段，须与 core `backup_cli::RESTORE_SECTIONS` 里的用户数据段一致。
+const DATA_SECTIONS: &[&str] = &[
+    "dict",
+    "temp",
+    "phrase",
+    "freq",
+    "shadow",
+    "common_chars",
+    "quick_format",
+    "charset",
+    "completion",
+];
+
 impl BackupState {
     pub fn new() -> Self {
         Self {
@@ -163,7 +176,8 @@ impl BackupState {
             for e in contents {
                 match e.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                     "config" | "compat" => config += 1,
-                    "dict" | "temp" | "phrase" | "freq" | "shadow" => data += 1,
+                    "assoc_history" => data += 1, // core 还原时归 freq 段
+                    t if DATA_SECTIONS.contains(&t) => data += 1,
                     "schema_file" | "schema_override_file" => schemas += 1,
                     "theme_file" => themes += 1,
                     "stats" | "stats_meta" => stats += 1,
@@ -191,10 +205,7 @@ impl BackupState {
     fn selected_sections(&self) -> Option<Vec<String>> {
         let picks = [
             (self.sec_config.get(), &["config"][..]),
-            (
-                self.sec_data.get(),
-                &["dict", "temp", "phrase", "freq", "shadow"][..],
-            ),
+            (self.sec_data.get(), DATA_SECTIONS),
             (self.sec_stats.get(), &["stats"][..]),
             (self.sec_schemas.get(), &["schemas"][..]),
             (self.sec_themes.get(), &["themes"][..]),
@@ -346,7 +357,7 @@ pub fn build_backup_restore_dialog(state: &BackupState) -> Element {
         )
         .child(checks_row(vec![
             ("配置", state.sec_config),
-            ("词库数据", state.sec_data),
+            ("用户数据", state.sec_data),
             ("统计", state.sec_stats),
         ]))
         .child(checks_row(vec![
@@ -394,6 +405,11 @@ mod tests {
                 { "type": "compat", "path": "config/compat.toml" },
                 { "type": "dict", "path": "userdata/user_words/wb.wdict" },
                 { "type": "freq", "path": "userdata/freq/wb.jsonl" },
+                { "type": "assoc_history", "path": "userdata/assoc_history/wb.jsonl" },
+                { "type": "common_chars", "path": "userdata/common_chars.jsonl" },
+                { "type": "quick_format", "path": "userdata/quick_format.yaml" },
+                { "type": "completion", "path": "userdata/completions.jsonl" },
+                { "type": "charset", "path": "charsets/cjk.yaml" },
                 { "type": "schema_file", "path": "schemas/my.schema.toml" },
                 { "type": "schema_override_file", "path": "schema_overrides/my.toml" },
                 { "type": "stats", "path": "userdata/stats.jsonl" },
@@ -405,7 +421,7 @@ mod tests {
         // compat 并入「配置」计数，schema_override_file 并入「方案文件」计数——
         // 二者与 config/schema_file 是同一还原范围（见 wind-transfer::backup::section_of）。
         assert!(msg.contains("配置 2"), "{msg}");
-        assert!(msg.contains("数据 2"));
+        assert!(msg.contains("数据 7"), "{msg}");
         assert!(msg.contains("方案文件 2"), "{msg}");
         assert!(msg.contains("统计 2"));
     }
@@ -418,8 +434,8 @@ mod tests {
         let secs = st.selected_sections().unwrap();
         assert!(!secs.contains(&"state".to_string()));
         assert!(secs.contains(&"config".to_string()));
-        // 数据域展开为五个 section 名
-        for k in ["dict", "temp", "phrase", "freq", "shadow"] {
+        // 数据域展开为全部用户数据 section；少一个，取消任一勾选时那类就静默不还原
+        for k in DATA_SECTIONS {
             assert!(secs.contains(&k.to_string()), "缺 {k}");
         }
     }
