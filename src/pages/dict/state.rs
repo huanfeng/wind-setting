@@ -4195,12 +4195,23 @@ impl DictManagerState {
     }
 }
 
-/// 数据文件问题（`system.storageStatus` 的 `issues`）→ 提示文案，一条一行；没有问题为空串。
+/// 存储状态（`system.storageStatus`）→ 提示文案，一条一行：只读、写入失败、各数据文件的问题；
+/// 没有问题为空串。
 pub(crate) fn storage_issue_text(v: &Value) -> String {
-    let Some(items) = v.get("issues").and_then(Value::as_array) else {
-        return String::new();
-    };
-    let lines: Vec<String> = items
+    let mut lines: Vec<String> = Vec::new();
+    if v.get("readonly").and_then(Value::as_bool) == Some(true) {
+        let reason = v.get("reason").and_then(Value::as_str).unwrap_or("");
+        lines.push(format!("⚠ 只读模式：{reason}"));
+    }
+    if let Some(e) = v.get("write_error").and_then(Value::as_str) {
+        lines.push(format!("⚠ 用户数据写入失败，最近的修改未保存：{e}"));
+    }
+    let items = v
+        .get("issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let file_lines: Vec<String> = items
         .iter()
         .filter_map(|it| {
             let path = it.get("path")?.as_str()?;
@@ -4217,6 +4228,7 @@ pub(crate) fn storage_issue_text(v: &Value) -> String {
             Some(format!("⚠ {path}：{what}"))
         })
         .collect();
+    lines.extend(file_lines);
     lines.join("\n")
 }
 
@@ -4236,6 +4248,14 @@ mod tests {
              ⚠ stats/2026-10.toml：文件损坏，已另存为 2026-10.toml.corrupt-20261015-010203 并恢复"
         );
         assert_eq!(storage_issue_text(&json!({ "issues": [] })), "");
+        assert_eq!(
+            storage_issue_text(&json!({ "issues": [], "write_error": "No space left on device" })),
+            "⚠ 用户数据写入失败，最近的修改未保存：No space left on device"
+        );
+        assert_eq!(
+            storage_issue_text(&json!({ "issues": [], "readonly": true, "reason": "锁不可用" })),
+            "⚠ 只读模式：锁不可用"
+        );
         assert_eq!(
             storage_issue_text(&json!({ "readonly": false })),
             "",
