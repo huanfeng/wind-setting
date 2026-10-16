@@ -177,6 +177,8 @@ impl BackupState {
                 match e.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                     "config" | "compat" => config += 1,
                     "assoc_history" => data += 1, // core 还原时归 freq 段
+                    // 用户分库文件与分库开关：还原时归 dict 段
+                    "user_dict_file" | "user_dicts_meta" => data += 1,
                     t if DATA_SECTIONS.contains(&t) => data += 1,
                     "schema_file" | "schema_override_file" => schemas += 1,
                     "theme_file" => themes += 1,
@@ -424,6 +426,21 @@ mod tests {
         assert!(msg.contains("数据 7"), "{msg}");
         assert!(msg.contains("方案文件 2"), "{msg}");
         assert!(msg.contains("统计 2"));
+    }
+
+    /// 用户分库文件与分库开关文件计入「数据」（还原段归 dict，见 core `section_of`）。
+    #[test]
+    fn inspect_summary_counts_user_dict_libraries_as_data() {
+        let v = json!({ "manifest": {
+            "app_version": "1.0.0", "platform": "windows", "created_at": "2026-10-16",
+            "contents": [
+                { "type": "dict", "path": "userdata/user_words/wb.wdict" },
+                { "type": "user_dict_file", "path": "data/wb/dicts/成语.dict.yaml" },
+                { "type": "user_dicts_meta", "path": "data/wb/dicts.toml" }
+            ]
+        }});
+        let msg = BackupState::format_inspect_summary(&v);
+        assert!(msg.contains("数据 3"), "{msg}");
     }
 
     #[test]
