@@ -285,10 +285,15 @@ pub(crate) fn summary_text(v: &Value) -> String {
 
 /// 各结构自报大小的合计行，只列非零项。
 pub(crate) fn parts_text(v: &Value) -> String {
-    let engines: u64 = list(v, "schemas")
-        .flat_map(|s| list(s, "parts"))
-        .map(|p| u64_at(p, "bytes"))
-        .sum();
+    // 核心给文件映射的部件名带 `.mmap`：那些页不计入私有内存，单列，免得读者以为占了堆。
+    let (mut engines, mut mapped) = (0u64, 0u64);
+    for p in list(v, "schemas").flat_map(|s| list(s, "parts")) {
+        if str_at(p, "name").ends_with(".mmap") {
+            mapped += u64_at(p, "bytes");
+        } else {
+            engines += u64_at(p, "bytes");
+        }
+    }
     let rl = &v["reverseLookup"];
     let items = [
         ("方案引擎内索引", engines),
@@ -300,11 +305,17 @@ pub(crate) fn parts_text(v: &Value) -> String {
         ("拆字表", u64_at(rl, "chaiziBytes")),
         ("注释库", u64_at(rl, "commentBytes")),
     ];
-    let shown: Vec<String> = items
+    let mut shown: Vec<String> = items
         .iter()
         .filter(|(_, b)| *b > 0)
         .map(|(name, b)| format!("{name} {}", human_bytes(*b)))
         .collect();
+    if mapped > 0 {
+        shown.push(format!(
+            "文件映射 {}（不计入私有内存）",
+            human_bytes(mapped)
+        ));
+    }
     if shown.is_empty() {
         "暂无已建的索引".to_string()
     } else {
@@ -533,6 +544,19 @@ mod tests {
         let p = parts_text(&sample());
         assert!(p.contains("反查索引 2.3 MB"), "{p}");
         assert!(!p.contains("拆字表"), "零项不列：{p}");
+    }
+
+    /// 文件映射的部件（名带 `.mmap`）不计入私有内存，汇总里单列，不并进引擎索引。
+    #[test]
+    fn parts_list_mapped_files_apart_from_heap() {
+        let mut v = sample();
+        v["schemas"][1]["parts"] = json!([
+            { "name": "LazyPhraseIndex", "bytes": 0, "allocs": 0 },
+            { "name": "LazyPhraseIndex.mmap", "bytes": 13_303_480, "allocs": 0 }
+        ]);
+        let p = parts_text(&v);
+        assert!(p.contains("方案引擎内索引 1.0 MB"), "{p}");
+        assert!(p.ends_with("文件映射 12.7 MB（不计入私有内存）"), "{p}");
     }
 
     #[test]
