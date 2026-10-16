@@ -16,6 +16,9 @@ pub enum WordCategory {
     PhraseUser,
     /// 用户词库（按方案·分页）。
     UserDict,
+    /// 用户分库（按方案·分页，只能删单条；添加修改走外部编辑）。不是独立子标签：「用户词库」
+    /// 子标签上选中某个分库时的类别，见 `user_libs`。
+    UserLib,
     /// 临时词库（按方案·分页）。
     Temp,
     /// 词频（按方案·分页）。
@@ -84,8 +87,8 @@ impl LogicalTab {
             LogicalTab::Shadow => "候选调整",
             LogicalTab::QuickFormat => "快捷输入",
             LogicalTab::CommonChars => "常用字",
-            // 域名已经是「字符集分类」，tab 再叫同名就分不出层次了。
-            LogicalTab::Charsets => "字符类",
+            // 域名是「字符集」，tab 叫「字符分类」，两层各有其名。
+            LogicalTab::Charsets => "字符分类",
             LogicalTab::MailSuffix => "邮箱后缀",
             LogicalTab::UrlHistory => "网址历史",
             LogicalTab::QuickHistory => "快捷输入历史",
@@ -274,7 +277,7 @@ impl WordRow {
                 overrides_system: b("overridesSystem"),
                 ..Default::default()
             },
-            WordCategory::UserDict => WordRow {
+            WordCategory::UserDict | WordCategory::UserLib => WordRow {
                 code: s("code"),
                 text: s("text"),
                 weight: i("weight"),
@@ -910,6 +913,7 @@ const SPEC_PHRASE_USER: CategorySpec = CategorySpec {
         import: true,
         export: true,
         share_text: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -932,13 +936,14 @@ const SPEC_USERDICT: CategorySpec = CategorySpec {
     client_search: false,
     columns: COLS_USERDICT,
     // 导入/导出不再挂在用户词库类别下：改为方案级统一「导入/导出」对话框（多类型可选），
-    // 入口在子标签行最右（见 view::build_page），故此处不设 import/export。
+    // 入口在右栏标题行（见 view::build_page_for），故此处不设 import/export。
     ops: OpFlags {
         add: true,
         edit: true,
         remove: true,
         clear: true,
         encode: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -947,6 +952,37 @@ const SPEC_USERDICT: CategorySpec = CategorySpec {
         update: "dict.update",
         remove: "dict.remove",
         clear: "dict.clear",
+        encode: "dict.encode",
+        ..RpcNames::EMPTY
+    },
+};
+
+/// 用户分库：同用户词库的列与操作（增删改、清空、多选），都按行补丁改分库文件。
+/// 导入导出不在这里：分库的「导入」是中栏的「从文件导入为分库」，导出就是拷贝文件。
+const SPEC_USERLIB: CategorySpec = CategorySpec {
+    category: WordCategory::UserLib,
+    title: "用户分库",
+    scoped_by_schema: true,
+    paged: true,
+    searchable: true,
+    client_search: false,
+    columns: COLS_USERDICT,
+    ops: OpFlags {
+        add: true,
+        edit: true,
+        remove: true,
+        clear: true,
+        encode: true,
+        multi_select: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "userDicts.entries",
+        // 加与改同一个接口：按 (词, 编码) upsert，改权重也走它。
+        add: "userDicts.addEntry",
+        update: "userDicts.addEntry",
+        remove: "userDicts.removeEntry",
+        clear: "userDicts.clear",
         encode: "dict.encode",
         ..RpcNames::EMPTY
     },
@@ -995,6 +1031,7 @@ const SPEC_FREQ: CategorySpec = CategorySpec {
     ops: OpFlags {
         remove: true,
         clear: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1125,6 +1162,7 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
         edit: true,
         remove_rule: true,
         clear: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1317,7 +1355,7 @@ const COLS_CHARSETS: &[ColumnSpec] = &[
 /// 手写一份 yaml 再「选择其它文件…」加载也走同一条。本页管的是**已有的类**。
 const SPEC_CHARSETS: CategorySpec = CategorySpec {
     category: WordCategory::Charsets,
-    title: "字符集分类",
+    title: "字符分类",
     scoped_by_schema: false,
     paged: false,
     searchable: true,
@@ -1455,6 +1493,7 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
         WordCategory::PhraseSystem => &SPEC_PHRASE_SYSTEM,
         WordCategory::PhraseUser => &SPEC_PHRASE_USER,
         WordCategory::UserDict => &SPEC_USERDICT,
+        WordCategory::UserLib => &SPEC_USERLIB,
         WordCategory::Temp => &SPEC_TEMP,
         WordCategory::Freq => &SPEC_FREQ,
         WordCategory::Shadow => &SPEC_SHADOW,
@@ -1820,6 +1859,7 @@ mod tests {
             WordCategory::PhraseSystem,
             WordCategory::PhraseUser,
             WordCategory::UserDict,
+            WordCategory::UserLib,
             WordCategory::Temp,
             WordCategory::Freq,
             WordCategory::Shadow,

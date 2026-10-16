@@ -6,12 +6,15 @@
 //! - （后续）`view`：两级导航 + 工具栏 + 表格 + 分页。
 //! - （后续）`dialogs`：加/改词、确认对话框。
 
+pub mod category_nav;
 pub mod dialogs;
 pub mod external_edit;
+pub mod file_edit;
 pub mod reactive;
 pub mod sidebar;
 pub mod spec;
 pub mod state;
+pub mod user_libs;
 pub mod view;
 pub mod wordlist;
 

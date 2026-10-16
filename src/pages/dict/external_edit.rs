@@ -63,12 +63,12 @@ pub struct ExternalEditDomain {
 
 /// 字符类。
 pub const CHARSET_DOMAIN: ExternalEditDomain = ExternalEditDomain {
-    title: "外部编辑 · 字符类",
+    title: "外部编辑 · 字符分类",
     probe: "charset.editFile",
     export: "charset.exportEdit",
     import: "charset.importFile",
     key_param: "key",
-    new_label: Some("新建类…"),
+    new_label: Some("新建分类…"),
     file_filter: ("YAML", &["yaml", "yml"]),
     summarize: charset_import_summary,
 };
@@ -412,7 +412,7 @@ pub fn charset_import_summary(v: &Value, applied: bool) -> String {
     let n = |c: &Value, k: &str| c.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
     let tense = if applied { "已" } else { "将" };
     match classes {
-        [] => "文件里没有字符类".into(),
+        [] => "文件里没有字符分类".into(),
         [c] => {
             let name = c.get("name").and_then(|x| x.as_str()).unwrap_or("?");
             let what = if c.get("builtin").and_then(|x| x.as_bool()).unwrap_or(false) {
@@ -427,7 +427,7 @@ pub fn charset_import_summary(v: &Value, applied: bool) -> String {
                 n(c, "fields")
             )
         }
-        many => format!("{tense}加载 {} 个字符类", many.len()),
+        many => format!("{tense}加载 {} 个字符分类", many.len()),
     }
 }
 
@@ -458,10 +458,10 @@ mod tests {
         );
 
         let many = json!({ "classes": [{}, {}, {}] });
-        assert_eq!(charset_import_summary(&many, false), "将加载 3 个字符类");
+        assert_eq!(charset_import_summary(&many, false), "将加载 3 个字符分类");
         assert_eq!(
             charset_import_summary(&json!({}), true),
-            "文件里没有字符类",
+            "文件里没有字符分类",
             "缺 classes 字段也不能 panic"
         );
     }
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(st.xedit.idx.get(), 2);
         assert_eq!(
             st.xedit.labels.get(),
-            vec!["新建类…", "Emoji 表情", "常用汉字"]
+            vec!["新建分类…", "Emoji 表情", "常用汉字"]
         );
         assert_eq!(st.xedit.current_key().as_deref(), Some("common_han"));
 

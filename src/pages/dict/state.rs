@@ -68,6 +68,8 @@ pub struct DomainEntry {
     pub kind: String,
     /// 代表方案 id（拼音族取全拼优先；短语域不用此字段）。
     pub rep_schema_id: String,
+    /// 折进这个域的全部方案 id（按方案列表顺序；不折叠的域只有它自己）。
+    pub members: Vec<String>,
 }
 
 // 表格数据流：结构（列集随类别变）由 `table_epoch` 驱动整表重建；
@@ -91,6 +93,9 @@ pub struct DictManagerState {
     sub_tab_memory: Rc<RefCell<HashMap<usize, usize>>>,
     /// 上次导航所在的数据域（用于在 `on_nav_changed` 里判定"域是否变化"）。
     last_domain: Rc<Cell<usize>>,
+    /// 中栏是为哪个数据域建的；重载时与当前域不同就重建。不借 `last_domain`：`navigate_to`
+    /// 会预先对齐它，换域的跳转（导入后带过去、深链）就看不出换过域。
+    nav_built_for: Rc<Cell<usize>>,
 
     /// 当前类别原始行。
     pub rows: Rc<RefCell<Vec<WordRow>>>,
@@ -106,6 +111,10 @@ pub struct DictManagerState {
     /// 元素**调一次构建器的，挂多元素信号会得到 N 份完整列表叠在一起。同 `table_epoch`，
     /// 这里要的是「变了就整体重建」，故用单元素计数器。
     pub domain_epoch: Signal<Vec<u64>>,
+    /// 中栏版本（单元素）：切数据域、方案集或分库列表变化时递增，中栏整体重建。
+    pub nav_epoch: Signal<Vec<u64>>,
+    /// 右栏标题（「用户词库 · 成语」「临时词库」…），每次重载时按当前类别重算。
+    pub pane_title: Signal<String>,
     /// 受控排序状态（None=无排序；表头点击循环切换，导航变化时重置）。
     pub sort: Signal<Option<SortKey>>,
     /// 空态提示文本（无数据/未连接/无方案）；有数据时为空串（视图据此显隐覆盖层）。
@@ -127,6 +136,14 @@ pub struct DictManagerState {
     pub status: Signal<String>,
     /// 数据文件问题提示（core `system.storageStatus` 的 `issues`）；空 = 没有问题，整行隐藏。
     pub storage_notice: Signal<String>,
+    /// 外部编辑会话（「编辑文件」打开的文件，一个文件一个），见 [`super::file_edit`]。
+    pub edit_bars: Signal<Vec<super::file_edit::EditBar>>,
+    /// 外部编辑对话框显示的那一个（0 或 1 个元素，`publish_bars` 维护）。
+    pub edit_current: Signal<Vec<super::file_edit::EditBar>>,
+    /// 外部编辑对话框是否弹着（有会话就弹）。
+    pub edit_dialog: Signal<bool>,
+    /// 用户分库（中栏节点与名字对话框），见 [`super::user_libs`]。
+    pub libs: super::user_libs::UserLibsState,
     /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
     /// (三态 kind, 文案)。
     pub feedback: super::reactive::Feedback,
@@ -385,6 +402,10 @@ enum PendingAction {
     },
     /// 删除多选勾中的行。
     DeleteSelected,
+    /// 删除一个用户分库（分库名）。
+    DeleteUserLib(String),
+    /// 删除一个方案的全部用户数据（方案 id）。
+    PurgeSchema(String),
     /// 恢复默认（短语）。
     ResetDefault,
     /// 把某个字所属的整个 Unicode 块设为常用/生僻（`char` 用来定位块，core 自己推导）。
@@ -435,7 +456,7 @@ pub(crate) const GLOBAL_DOMAINS: usize = 4;
 /// 与 `GLOBAL_DOMAINS` 毫无编译期关联。加第三个全局域时它们照旧只产出两项，症状正是那段
 /// 注释描述的：侧栏少画一项、其后的方案域整体错位一格，且不报错不 panic。
 pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] =
-    ["快捷短语", "快捷输入", "字符集分类", "输入补全"];
+    ["快捷短语", "快捷输入", "字符集", "输入补全"];
 
 /// 域下标的语义。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -463,7 +484,7 @@ pub fn domain_slot(domain: usize) -> DomainSlot {
 
 /// 某类数据域有哪些子标签——**全页唯一真值**。
 ///
-/// 渲染层（`view.rs` 的子标签分段）的标题走这里 + [`LogicalTab::title`] 派生，**不另写一份**。
+/// 渲染层（`category_nav` 的中栏）的标题走这里 + [`LogicalTab::title`] 派生，**不另写一份**。
 /// 两处各持一份清单时，漏改任一边都很隐蔽，且症状不同：
 ///
 /// - 逻辑层有、渲染层没有 ⇒「有功能、没入口」：能加词条、能导入导出，就是看不到标签。
@@ -545,11 +566,14 @@ impl DictManagerState {
             schemas: Rc::new(RefCell::new(Vec::new())),
             sub_tab_memory: Rc::new(RefCell::new(HashMap::new())),
             last_domain: Rc::new(Cell::new(0)),
+            nav_built_for: Rc::new(Cell::new(usize::MAX)),
             rows: Rc::new(RefCell::new(Vec::new())),
             table_rows: signal(vec![]),
             display_rows: Rc::new(RefCell::new(Vec::new())),
             table_epoch: signal(vec![0]),
             domain_epoch: signal(vec![0]),
+            nav_epoch: signal(vec![0]),
+            pane_title: signal(String::new()),
             sort: signal(None),
             empty_msg: signal(String::new()),
             search: signal(String::new()),
@@ -560,6 +584,10 @@ impl DictManagerState {
             page_count_text: signal(String::new()),
             status: signal(String::new()),
             storage_notice: signal(String::new()),
+            edit_bars: signal(Vec::new()),
+            edit_current: signal(Vec::new()),
+            edit_dialog: signal(false),
+            libs: super::user_libs::UserLibsState::new(),
             feedback: signal(None),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
@@ -659,6 +687,9 @@ impl DictManagerState {
         for s in schemas.iter() {
             if s.kind == "pinyin" {
                 if pinyin_seen {
+                    if let Some(py) = out.iter_mut().find(|d| d.kind == "pinyin") {
+                        py.members.push(s.id.clone());
+                    }
                     // 已有拼音域：只在当前代表是双拼且新方案非双拼时，才升级代表
                     if pinyin_rep_is_shuangpin && s.scheme != "shuangpin" {
                         if let Some(py) = out.iter_mut().find(|d| d.kind == "pinyin") {
@@ -674,6 +705,7 @@ impl DictManagerState {
                     label: "拼音".to_string(),
                     kind: "pinyin".to_string(),
                     rep_schema_id: s.id.clone(),
+                    members: vec![s.id.clone()],
                 });
             } else {
                 let tag = engine_label(&s.kind);
@@ -690,6 +722,7 @@ impl DictManagerState {
                     },
                     kind: s.kind.clone(),
                     rep_schema_id: s.id.clone(),
+                    members: vec![s.id.clone()],
                 });
             }
         }
@@ -761,9 +794,12 @@ impl DictManagerState {
         tabs[i]
     }
 
-    /// 当前类别（由 domain + sub_tab 解析）。
+    /// 当前类别（由 domain + sub_tab 解析；「用户词库」上选中了分库时是 `UserLib`）。
     pub fn current_category(&self) -> WordCategory {
-        self.current_tab().category()
+        match self.current_tab().category() {
+            WordCategory::UserDict if self.selected_lib().is_some() => WordCategory::UserLib,
+            c => c,
+        }
     }
 
     /// 当前类别描述。
@@ -773,12 +809,28 @@ impl DictManagerState {
 
     /// 当前作用域方案 id（**两个全局域都返回 None**；拼音域返回代表方案 id）。
     pub fn current_schema_id(&self) -> Option<String> {
-        let DomainSlot::Schema(i) = domain_slot(self.domain.get()) else {
+        self.schema_id_at(self.domain.get())
+    }
+
+    /// 指定数据域的作用域方案 id（全局域 None；拼音域取代表方案）。
+    pub fn schema_id_at(&self, domain: usize) -> Option<String> {
+        let DomainSlot::Schema(i) = domain_slot(domain) else {
             return None;
         };
         self.folded_domains()
             .get(i)
             .map(|e| e.rep_schema_id.clone())
+    }
+
+    /// 当前方案域折进来的全部方案 id（全局域为空）。
+    pub(crate) fn current_domain_members(&self) -> Vec<String> {
+        let DomainSlot::Schema(i) = domain_slot(self.domain.get()) else {
+            return Vec::new();
+        };
+        self.folded_domains()
+            .get(i)
+            .map(|e| e.members.clone())
+            .unwrap_or_default()
     }
 
     // ── 程序化定位（命令行深链 / 加词小窗）─────────────────────
@@ -999,7 +1051,7 @@ impl DictManagerState {
         self.reload();
     }
 
-    fn bump_table_epoch(&self) {
+    pub(super) fn bump_table_epoch(&self) {
         let epoch = self.table_epoch.get().first().copied().unwrap_or(0);
         self.table_epoch.set(vec![epoch + 1]);
     }
@@ -1048,10 +1100,7 @@ impl DictManagerState {
     /// 构建当前类别 list RPC 的参数（纯函数，便于单测）。
     pub fn build_list_params(&self) -> Value {
         let spec = self.current_spec();
-        let mut p = serde_json::Map::new();
-        if let Some(id) = self.current_schema_id() {
-            p.insert("schemaId".into(), json!(id));
-        }
+        let mut p = self.scoped_params();
         if spec.searchable {
             let q = self.search.get();
             if !q.is_empty() {
@@ -1229,6 +1278,15 @@ impl DictManagerState {
     /// 拉取当前类别数据（走真实/mock RPC），刷新列表。
     pub fn reload(&self) {
         self.refresh_storage_notice();
+        self.refresh_edit_bars();
+        if self.nav_built_for.replace(self.domain.get()) != self.domain.get() {
+            self.bump_nav_epoch();
+        }
+        self.ensure_user_libs();
+        let title = self.pane_title_now();
+        if self.pane_title.get() != title {
+            self.pane_title.set(title);
+        }
         let spec = self.current_spec();
         // 按方案类别但无方案：空表 + 提示。
         if spec.scoped_by_schema && self.current_schema_id().is_none() {
@@ -1258,6 +1316,7 @@ impl DictManagerState {
                 }
                 // 成功不动 status：保留调用方（写操作）设置的反馈文字。
                 self.apply_rows(&v);
+                self.sync_lib_count();
             }
             Err(e) => {
                 self.rows.borrow_mut().clear();
@@ -1291,6 +1350,13 @@ impl DictManagerState {
         // 域集合已换一批，词库窗左栏须整体重建（新方案要出现、删掉的要消失）。
         let epoch = self.domain_epoch.get().first().copied().unwrap_or(0);
         self.domain_epoch.set(vec![epoch + 1]);
+        self.bump_nav_epoch();
+    }
+
+    /// 中栏整体重建（见 [`Self::nav_epoch`]）。
+    pub(crate) fn bump_nav_epoch(&self) {
+        let epoch = self.nav_epoch.get().first().copied().unwrap_or(0);
+        self.nav_epoch.set(vec![epoch + 1]);
     }
 
     /// 数据域总数（两个全局域 + 折叠后各方案域）。
@@ -1393,6 +1459,9 @@ impl DictManagerState {
         if let Some(id) = self.current_schema_id() {
             m.insert("schemaId".into(), json!(id));
         }
+        if let Some(name) = self.selected_lib() {
+            m.insert("name".into(), json!(name));
+        }
         m
     }
 
@@ -1464,6 +1533,8 @@ impl DictManagerState {
         let mut p = self.scoped_params();
         p.insert("code".into(), json!(code));
         p.insert("text".into(), json!(text));
+        // 转正写进主词库：中栏的主词库条目数要重取。
+        self.invalidate_user_libs();
         if self.write(spec.rpc.promote, Value::Object(p), "已转正到用户词库") {
             self.deselect(code, text);
         }
@@ -1472,6 +1543,7 @@ impl DictManagerState {
     /// 临时词全部转正。
     pub fn do_promote_all(&self) {
         let spec = self.current_spec();
+        self.invalidate_user_libs();
         if self.write(
             spec.rpc.promote_all,
             Value::Object(self.scoped_params()),
@@ -2129,7 +2201,7 @@ impl DictManagerState {
         }
     }
 
-    fn clear_selection(&self) {
+    pub(super) fn clear_selection(&self) {
         self.selected.borrow_mut().clear();
         if self.selected_count.get() != 0 {
             self.selected_count.set(0);
@@ -2310,14 +2382,9 @@ impl DictManagerState {
     // 读取」：那份文件是导出的副本，不是配置。
 
     /// 打开字符类的「外部编辑」对话框；`preselect` 为右键/行内按钮带来的那一行。
+    /// 改已有分类走行上的「编辑文件」，这里只剩「新建分类…」：目标下拉只给新建那一项。
     pub fn charset_open_external(&self, preselect: Option<&str>) {
-        let targets: Vec<(String, String)> = self
-            .rows
-            .borrow()
-            .iter()
-            .map(|r| (r.code.clone(), r.text.clone()))
-            .collect();
-        self.xedit_open(&super::external_edit::CHARSET_DOMAIN, &targets, preselect);
+        self.xedit_open(&super::external_edit::CHARSET_DOMAIN, &[], preselect);
     }
 
     /// 删一个自建类。出厂类没有这个入口（右键菜单按 `class_builtin` 隐藏），core 也会拒。
@@ -2325,7 +2392,7 @@ impl DictManagerState {
         self.write(
             "charset.delete",
             json!({ "key": row.code }),
-            "已删除该字符类",
+            "已删除该字符分类",
         );
     }
 
@@ -2405,6 +2472,36 @@ impl DictManagerState {
         *self.pending.borrow_mut() = Some(PendingAction::DeleteRow(code.into(), text.into()));
         self.confirm_msg
             .set(format!("确定删除「{text}」？此操作不可恢复。"));
+        self.confirm_visible.set(true);
+    }
+
+    /// 「删除此方案的用户数据…」：确认后删掉该方案的整个数据目录与覆盖配置。
+    pub fn request_purge_schema(&self, domain: usize) {
+        let Some(id) = self.schema_id_at(domain) else {
+            return;
+        };
+        let label = self.domain_label_at(domain);
+        *self.pending.borrow_mut() = Some(PendingAction::PurgeSchema(id));
+        self.confirm_msg.set(format!(
+            "确定删除「{label}」的全部用户数据？这个方案下的词库、分库、学习数据和候选调整都会删掉，\
+             个人设置（覆盖配置）也恢复默认，不能恢复。方案文件本身不受影响。"
+        ));
+        self.confirm_visible.set(true);
+    }
+
+    fn do_purge_schema(&self, id: &str) {
+        match rpc::call_core("userdata.purgeSchema", &json!({ "schemaId": id })) {
+            Ok(_) => self.notify_ok("已删除这个方案的用户数据"),
+            Err(e) => self.notify_err(&format!("删除失败：{e}")),
+        }
+        self.reload_with_libs();
+    }
+
+    /// 删除用户分库：二次确认（删的是文件）。
+    pub fn request_delete_user_lib(&self, name: &str, label: &str) {
+        *self.pending.borrow_mut() = Some(PendingAction::DeleteUserLib(name.into()));
+        self.confirm_msg
+            .set(format!("确定删除分库「{label}」？会删除文件，不能恢复。"));
         self.confirm_visible.set(true);
     }
 
@@ -2500,6 +2597,8 @@ impl DictManagerState {
             Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
             Some(PendingAction::Clear { params, filtered }) => self.do_clear(params, filtered),
             Some(PendingAction::DeleteSelected) => self.do_delete_selected(),
+            Some(PendingAction::DeleteUserLib(name)) => self.do_delete_user_lib(&name),
+            Some(PendingAction::PurgeSchema(id)) => self.do_purge_schema(&id),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
             Some(PendingAction::CommonBulk { ch, common }) => {
                 self.write(
@@ -2524,7 +2623,7 @@ impl DictManagerState {
     /// 打开"添加"对话框（清空字段，按类别设标签与默认权重）。
     pub fn open_add(&self) {
         let (title, lc, lt, w) = match self.current_category() {
-            WordCategory::UserDict => ("添加词条", "编码", "词条", "0"),
+            WordCategory::UserDict | WordCategory::UserLib => ("添加词条", "编码", "词条", "0"),
             // 短语默认 1800：主程序删除 `PHRASE_WEIGHT_BASE`(40M) 类别硬顶后，短语与码表
             // 精确候选**按权重竞争**（见主仓 docs/architecture/candidate-sorting-rules.md §5.1），
             // 这个默认值直接决定「新建的短语打不打得出」。五笔主库 median=941、p99=9000，
@@ -2604,7 +2703,7 @@ impl DictManagerState {
     /// `position` 仅短语用（用户词库无此维度，传 0 即可）。
     pub fn open_edit(&self, code: &str, text: &str, weight: i64, position: i64) {
         let (title, lc, lt) = match self.current_category() {
-            WordCategory::UserDict => ("编辑词条", "编码", "词条"),
+            WordCategory::UserDict | WordCategory::UserLib => ("编辑词条", "编码", "词条"),
             WordCategory::PhraseUser => ("编辑短语", "编码", "短语"),
             _ => return,
         };
@@ -2795,7 +2894,7 @@ impl DictManagerState {
             Err(_) => return Err("权重需为整数".into()),
         };
         match cat {
-            WordCategory::UserDict => {
+            WordCategory::UserDict | WordCategory::UserLib => {
                 if text.trim().is_empty() {
                     return Err("词条不能为空".into());
                 }
@@ -3052,7 +3151,7 @@ impl DictManagerState {
 
     // ── 用户词库导入导出（按当前方案,dict.export/previewImport/import）──
 
-    /// 子标签行「导入」入口：短语域走原生对话框；方案域打开导入对话框。
+    /// 标题行「导入」入口：短语域走原生对话框；方案域打开导入对话框。
     pub fn do_import(&self, ctx: &mut EventCtx) {
         match self.domain_kind() {
             DomainKind::Phrase => self.do_import_phrases(ctx),
@@ -3062,7 +3161,7 @@ impl DictManagerState {
         }
     }
 
-    /// 子标签行「导出」入口：短语域走原生对话框；方案域打开导出对话框。
+    /// 标题行「导出」入口：短语域走原生对话框；方案域打开导出对话框。
     pub fn do_export(&self, ctx: &mut EventCtx) {
         match self.domain_kind() {
             DomainKind::Phrase => self.do_export_phrases(ctx),
@@ -3140,8 +3239,12 @@ impl DictManagerState {
             .collect()
     }
 
-    /// 子标签行「导入/导出」按钮是否显示：方案域（有方案）或短语域。
+    /// 右栏标题行「导入/导出」按钮是否显示：方案域（有方案）或短语域；分库不显示（分库的
+    /// 导入是中栏「从文件导入为分库」，导出就是它的文件本身）。
     pub fn io_entry_visible(&self) -> bool {
+        if self.current_category() == WordCategory::UserLib {
+            return false;
+        }
         match self.domain_kind() {
             // 这三个全局域各有自己的导入导出流（短语走 phrase.*、快捷输入走 quick.*、
             // 常用字走 commonChars.*），都不依赖「当前有没有方案」。
@@ -3825,7 +3928,7 @@ impl DictManagerState {
     ///
     /// 分批而非一次全量，两个理由都是硬的：`rpc::call_core` 有 5 秒超时；core 侧单次
     /// `encode_word` 每调一次就重读一次方案文件，批量入口才会把 spec 提到循环外。
-    fn encode_word_batches(
+    pub(super) fn encode_word_batches(
         &self,
         schema: &str,
         words: &[String],
@@ -4652,7 +4755,7 @@ mod tests {
         assert_eq!(st.domain_kind(), DomainKind::CommonChars);
         assert_eq!(st.current_category(), WordCategory::CommonChars);
         assert_eq!(st.current_schema_id(), None, "全局域没有方案");
-        assert_eq!(st.domain_label_at(DOMAIN_COMMON), "字符集分类");
+        assert_eq!(st.domain_label_at(DOMAIN_COMMON), "字符集");
         assert_eq!(
             st.tabs_for_domain(),
             vec![LogicalTab::CommonChars, LogicalTab::Charsets]
@@ -5889,7 +5992,38 @@ mod tests {
         st.sub_tab.set(0);
         st.on_nav_changed();
         assert_eq!(st.selected_count.get(), 0, "切类别清空选择");
-        assert!(!st.current_spec().ops.multi_select, "只在临时词库开");
+    }
+
+    /// 能删的类别都能多选（多选删除走各自的删除接口）；不能删的不开。
+    #[test]
+    fn multi_select_follows_remove() {
+        use super::super::spec::spec_for;
+        for cat in [
+            WordCategory::PhraseUser,
+            WordCategory::UserDict,
+            WordCategory::UserLib,
+            WordCategory::Temp,
+            WordCategory::Freq,
+            WordCategory::Shadow,
+        ] {
+            let ops = spec_for(cat).ops;
+            assert!(
+                ops.multi_select && (ops.remove || ops.remove_rule),
+                "{cat:?}"
+            );
+        }
+        for cat in [
+            WordCategory::PhraseSystem,
+            WordCategory::QuickFormat,
+            WordCategory::CommonChars,
+            WordCategory::Charsets,
+            // 输入补全的列里没有编码列，勾选框挂不上去：不开多选，免得「本页全选」看不见勾。
+            WordCategory::MailSuffix,
+            WordCategory::UrlHistory,
+            WordCategory::QuickHistory,
+        ] {
+            assert!(!spec_for(cat).ops.multi_select, "{cat:?}");
+        }
     }
 
     fn temp_state_mock() -> DictManagerState {

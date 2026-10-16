@@ -154,6 +154,8 @@ fn is_bulk_method(method: &str) -> bool {
             | "dict.previewImport"
             | "dict.clear"
             | "dict.encodeWords"
+            // 导入为分库：解析整份文件、出码（纯词列表）后整写一个分库文件
+            | "userDicts.importAs"
             | "backup.create"
             | "backup.inspect"
             | "backup.restore"
@@ -1319,6 +1321,15 @@ fn mock_word_code(text: &str) -> String {
 fn mock_result(method: &str, params: &Value) -> Result<Value, String> {
     #[cfg(test)]
     MOCK_CALLS.with(|c| c.borrow_mut().push((method.to_string(), params.clone())));
+    #[cfg(test)]
+    if let Some(r) = FORCED_REPLIES.with(|f| {
+        f.borrow()
+            .iter()
+            .find(|(m, _)| m == method)
+            .map(|(_, r)| r.clone())
+    }) {
+        return Ok(r);
+    }
     match mock_error(method, params) {
         Some(e) => Err(e),
         None => Ok(mock_reply(method, params)),
@@ -1356,6 +1367,25 @@ pub(crate) fn force_mock_error(method: &str, msg: Option<&str>) {
     });
 }
 
+#[cfg(test)]
+thread_local! {
+    /// 测试用：让某个方法在 mock 下返回指定值（覆盖 `mock_reply` 的常规应答）。
+    static FORCED_REPLIES: std::cell::RefCell<Vec<(String, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 测试用：让 `method` 在 mock 下返回 `reply`；`None` 撤销。
+#[cfg(test)]
+pub(crate) fn force_mock_reply(method: &str, reply: Option<Value>) {
+    FORCED_REPLIES.with(|f| {
+        let mut f = f.borrow_mut();
+        f.retain(|(m, _)| m != method);
+        if let Some(r) = reply {
+            f.push((method.to_string(), r));
+        }
+    });
+}
+
 /// 取走并清空本线程记录的 mock 调用（取走语义：便于「清场 → 触发 → 断言」）。
 #[cfg(test)]
 pub(crate) fn take_mock_calls() -> Vec<(String, Value)> {
@@ -1379,6 +1409,15 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
             (!mock_is_schema_text(text))
                 .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
+        }
+        // 分库开关：方案 id 以 `bad` 打头时报错，供离线走通「折叠域成员改到一半失败 → 回滚」。
+        "userDicts.setEnabled"
+            if params
+                .get("schemaId")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id.starts_with("bad")) =>
+        {
+            Some("mock: 开关失败".to_string())
         }
         // 逐条删除中途失败：词条文本为此记号时 `*.remove` 报错，供离线走通「删到一半」那条路。
         m if m.ends_with(".remove") => (params.get("text").and_then(|v| v.as_str())
@@ -1729,7 +1768,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 .join(format!("{key}.yaml"));
             json!({
                 "key": key,
-                "name": if key == "my_class_1" { "我的字符类" } else { "Emoji 表情" },
+                "name": if key == "my_class_1" { "我的字符分类" } else { "Emoji 表情" },
                 "builtin": key != "my_class_1",
                 "path": path.to_string_lossy(),
                 "exists": path.is_file(),
@@ -1748,7 +1787,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let _ = std::fs::write(
                 &path,
-                "# ⚠️ 此文件不会被自动读取。改完保存后，回到设置页「字符集分类」用「从文件加载」导入。\n---\nkey: ".to_string() + key + "\n...\n★\n",
+                "# ⚠️ 此文件不会被自动读取。改完保存后，回到设置页「字符集」→「新建分类…」加载。\n---\nkey: ".to_string() + key + "\n...\n★\n",
             );
             json!({ "path": path.to_string_lossy() })
         }
@@ -2029,6 +2068,69 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "system.storageStatus" => json!({ "readonly": false, "issues": [] }),
+        // 外部编辑：文件名照参数推出来（方案域给 schemaId + kind）；路径里带 `bad` 的结束时报坏行，
+        // 供离线走通「编辑条留着显示问题」那条路。
+        "data.beginEdit" => {
+            let s = |k: &str| params.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            let file = match (s("path"), s("kind")) {
+                (p, _) if !p.is_empty() => p.to_string(),
+                (_, "words") => format!("{}/user.dict.yaml", s("schemaId")),
+                (_, "shadow") => format!("{}/shadow.dict.yaml", s("schemaId")),
+                (_, "phrases") => "phrases.dict.yaml".into(),
+                (_, "quick_format") => "quick_format.toml".into(),
+                (_, "user_dict") => format!("{}/dicts/{}.dict.yaml", s("schemaId"), s("name")),
+                (_, "temp") => format!("{}/temp.dict.yaml", s("schemaId")),
+                (_, "freq") => format!("{}/freq.table.yaml", s("schemaId")),
+                (_, "charsets") => format!("charsets/{}.yaml", s("key")),
+                (_, k) => format!("{k}.yaml"),
+            };
+            json!({ "path": format!("/mock/data/{file}"), "file": file, "kind": s("kind") })
+        }
+        "data.endEdit" => {
+            let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.contains("bad") {
+                json!({ "changed": true, "issues": [{ "path": path, "kind": "bad_lines", "lines": 2 }] })
+            } else {
+                json!({ "changed": true, "issues": [] })
+            }
+        }
+        "data.editSessions" => json!([]),
+        "data.locate" => {
+            let scoped = params.get("schemaId").is_some();
+            json!({ "path": "/mock/data", "exists": scoped, "purgeable": scoped })
+        }
+        "userdata.purgeSchema" => json!({ "ok": true, "removed": [] }),
+        "userDicts.addEntry" => json!({ "ok": true }),
+        "userDicts.clear" => json!({ "ok": true, "removed": 2 }),
+        "dict.reload" => json!({ "reloaded": ["phrases", "wubi86"] }),
+        // 用户分库：每个方案两个，一个开一个关、关的那个带坏行，离线也能看到「已关闭」与问题提示。
+        "userDicts.list" => {
+            let ds = params
+                .get("schemaId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            json!([
+                { "name": "成语", "label": "成语", "enabled": true, "entries": 3,
+                  "file": format!("{ds}/dicts/成语.dict.yaml") },
+                { "name": "hangye", "label": "行业词", "enabled": false, "entries": 2,
+                  "file": format!("{ds}/dicts/hangye.dict.yaml"),
+                  "issues": [{ "kind": "bad_lines", "lines": 1 }] }
+            ])
+        }
+        "userDicts.entries" => json!({ "items": [
+            { "code": "yzwg", "text": "一针见血", "weight": 0, "enabled": true },
+            { "code": "ggtt", "text": "一五一十", "weight": 0, "enabled": true }
+        ], "total": 2 }),
+        "userDicts.removeEntry" => json!({ "ok": true, "removed": true }),
+        "userDicts.create" => {
+            let s = |k: &str| params.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            json!({ "ok": true, "file": format!("{}/dicts/{}.dict.yaml", s("schemaId"), s("name")) })
+        }
+        "userDicts.rename" | "userDicts.delete" => json!({ "ok": true }),
+        "userDicts.importAs" => json!({
+            "ok": true, "imported": 2, "skipped": 0, "format": "rime", "rejected": 0
+        }),
+        "userDicts.setEnabled" => json!({ "ok": true, "live": true }),
         "stats.summary" => mock_stats_summary(),
         "stats.clear" => json!({ "ok": true }),
         "stats.pruneBefore" => json!({ "count": 0, "before": "" }),

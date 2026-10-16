@@ -97,16 +97,15 @@ pub(crate) const MAIN_H: i32 = 640;
 pub(crate) const MAIN_MIN_W: i32 = 700;
 pub(crate) const MAIN_MIN_H: i32 = 440;
 
-/// 词库窗尺寸。**曾经与设置窗共用一份**，二级导航把设置窗撑宽之后拆开——
-/// 那 125px 是拿来放二级导航栏的，词库窗根本没有那一栏，跟着变宽只是白占屏幕。
-/// 故这里保留原来的 820 × 640 / 最小 560 × 440。
+/// 词库窗尺寸。三栏：数据域 200 + 类别 168 + 内容；内容区与改三栏前（820 - 200）
+/// 基本持平。最小宽 760 时内容区约 390，与改前最小宽 560 时的 360 相当。
 ///
 /// 两条路要用它：[`dict_window::open`]（从设置窗开词库），以及 `--page dict` 冷启动时
 /// 让 `App` 那个窗口**直接承载词库**的分叉（见 `main` 里的 `dict_as_main`）。漏掉后者
 /// 的症状是「托盘点词库管理开出来的窗比从设置里开的宽一圈」。
-pub(crate) const DICT_W: i32 = 820;
+pub(crate) const DICT_W: i32 = 990;
 pub(crate) const DICT_H: i32 = 640;
-pub(crate) const DICT_MIN_W: i32 = 560;
+pub(crate) const DICT_MIN_W: i32 = 760;
 pub(crate) const DICT_MIN_H: i32 = 440;
 
 /// 应用兼容窗尺寸：三栏（分类 184 + 进程列表 270 + 配置信息），配置信息一行要放下
@@ -664,6 +663,8 @@ fn main() {
         // 「词库管理」重新开得出窗（此刻可能还有设置子窗开着，进程不一定退出）。
         if st.dict_is_main() {
             st.set_dict_is_main(false);
+            // 同词库子窗：关窗即结束外部编辑。
+            st.dict_mgr.end_all_edits();
             return true;
         }
         // 应用兼容窗的改动即时落盘，同样没有「未保存改动」。

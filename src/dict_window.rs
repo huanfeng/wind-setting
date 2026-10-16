@@ -62,6 +62,7 @@ pub(crate) const SINGLE_KEY: &str = "dict_manager";
 pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
     app.borrow().dict_mgr.reload();
     let app_for_content = app.clone();
+    let mgr_for_close = app.borrow().dict_mgr.clone();
 
     ctx.open_window(
         Window::new(TITLE, crate::DICT_W, crate::DICT_H)
@@ -78,21 +79,29 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
                     false
                 }
             })
+            // 关窗即结束外部编辑（设计：设置退出即结束；core 另有两小时租约兜底）。
+            // Ctrl+W、「← 设置」与标题栏 × 都走关闭决策链，到得了这里。
+            .on_close_request(move |_ctx| {
+                mgr_for_close.end_all_edits();
+                true
+            })
             .content(move || build_content(app_for_content)),
     );
 }
 
-/// 窗内容：标题栏 + 主体 + 全部浮层对话框。
+/// 窗内容：标题栏 + 三栏主体（数据域 | 类别 | 内容）+ 全部浮层对话框。
 ///
 /// 对话框挂在**本窗**的根 stack 上，不再是主窗那份（`shell::build` 里已摘掉）。挂错窗
 /// 的症状是「点删除没有任何反应」—— 遮罩确实弹了，弹在另一个窗口里。
 pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
     let mgr = app.borrow().dict_mgr.clone();
     // 竖分隔线与主窗 sidebar/content 之间那条同源（`Role::Divider`），两窗并排时对得上。
-    let vdivider = Element::leaf()
-        .width(1)
-        .height_match()
-        .bg_role(Role::Divider);
+    let vdivider = || {
+        Element::leaf()
+            .width(1)
+            .height_match()
+            .bg_role(Role::Divider)
+    };
 
     // 快速导入右键菜单：挂在左栏空白处，与主窗（`shell::build` 的侧栏与底栏）同一处
     // 语义 —— 右侧表格有自己的行菜单，整片挂上去两者会打架。
@@ -113,7 +122,9 @@ pub fn build_content(app: Rc<RefCell<AppState>>) -> Element {
         .fill()
         .weight(1.0)
         .child(sidebar)
-        .child(vdivider)
+        .child(vdivider())
+        .child(crate::pages::dict::category_nav::build_category_nav(&mgr))
+        .child(vdivider())
         // 右侧沿用词库页原有的子标签/工具栏/表格/分页。显式 `weight(1.0)` 而不只靠
         // `fill()`：在 row 里没有权重的话它按内容宽度收缩，表格会缩成窄窄一条。
         .child(build_page_for(mgr.clone()).weight(1.0));
@@ -205,6 +216,64 @@ mod tests {
             vec!["从剪贴板导入配置", "导入文件…"],
             "词库窗与主窗必须是同一份菜单（`import_menu_items`），实得 {labels:?}"
         );
+    }
+
+    /// 右击 (x, y)，返回弹出菜单的项（分隔线记作「─」）。
+    fn right_click(tree: &mut Tree, x: i32, y: i32) -> Vec<String> {
+        let (mut hover, mut capture) = (None, None);
+        let res = tree.dispatch_pointer(
+            PointerEvent::single(PointerKind::Down, Point::new(x, y), MouseButton::Right),
+            &mut hover,
+            &mut capture,
+        );
+        res.menu
+            .map(|m| {
+                m.items
+                    .iter()
+                    .map(|i| {
+                        if i.separator {
+                            "─".into()
+                        } else {
+                            i.label.clone()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 接线守护：三栏各就各位，左栏条目与中栏节点右击各弹自己的菜单（而不是左栏空白处那份
+    /// 快速导入菜单，也不是什么都不弹）。
+    #[test]
+    fn three_columns_and_their_context_menus() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = build_tree(&app);
+
+        // 根 stack → 主列 [标题栏, 分隔线, 主体]；主体 [左栏, 竖线, 中栏, 竖线, 右栏]
+        let root = tree.root.unwrap();
+        let main_col = tree.get(root).unwrap().children[0];
+        let body = tree.get(main_col).unwrap().children[2];
+        let cols = tree.get(body).unwrap().children.clone();
+        assert_eq!(cols.len(), 5, "数据域 | 类别 | 内容");
+        let side = tree.abs_bounds(cols[0]);
+        let nav = tree.abs_bounds(cols[2]);
+        assert_eq!(nav.w, crate::pages::dict::category_nav::CATNAV_W);
+        assert!(tree.abs_bounds(cols[4]).w > 300, "内容区要有宽度");
+
+        // 左栏第一项（短语）：上内边距 10 + 分组标题 26 之后的第一行
+        let item_h = crate::pages::dict::sidebar::ITEM_H;
+        let labels = right_click(&mut tree, side.x + 60, side.y + 10 + 26 + item_h / 2);
+        assert_eq!(labels, ["打开数据目录"]);
+
+        // 中栏第一项（系统短语）：上内边距 10 + 栏顶 28 + 间距 4 之后的第一行。系统短语只读，
+        // 没有编辑与导入导出，只剩打开数据目录。
+        let labels = right_click(&mut tree, nav.x + 60, nav.y + 10 + 28 + 4 + item_h / 2);
+        assert_eq!(labels, ["打开数据目录"]);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 导入的两个对话框**不**在本窗挂载：它们的 `visible` 是跨窗共享的 `Signal`，本窗

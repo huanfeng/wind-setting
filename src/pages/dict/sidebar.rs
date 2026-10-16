@@ -1,4 +1,5 @@
-//! 词库窗左栏 — 按「全局 / 输入方案」分组的词库类型列表 + 底部状态与刷新。
+//! 词库窗左栏 — 按「全局 / 输入方案」分组的数据域列表 + 底部状态与刷新。右键条目可打开
+//! 它的数据目录。
 //!
 //! 取代了原先横在页顶的「词库类型」下拉 + ‹ › 顺序切换：方案一多，下拉就得展开逐个找，
 //! 而这里全部平铺，切换是一次点击。
@@ -96,7 +97,8 @@ pub fn build_sidebar(mgr: &DictManagerState, back: Element) -> Element {
                         .small()
                         .outline_soft()
                         .weight(1.0)
-                        .on_click(move |_| mgr_refresh.reload()),
+                        .tooltip("重新读取数据文件并刷新列表（在外面改过文件后也用它）")
+                        .on_click(move |_| mgr_refresh.refresh_all()),
                 ),
         );
 
@@ -187,7 +189,7 @@ fn build_list(mgr: &DictManagerState) -> Element {
 }
 
 /// 分组小标题（同主窗侧栏顶部的「设置」）。
-fn group_title(text: &str) -> Element {
+pub(crate) fn group_title(text: &str) -> Element {
     Element::label(text)
         .font_size(11.0)
         .font_weight(600)
@@ -202,12 +204,42 @@ fn group_title(text: &str) -> Element {
 fn nav_item(mgr: &DictManagerState, idx: usize, name: &str, tag: &str) -> Element {
     let sel = mgr.domain;
     let (name, tag) = (name.to_string(), tag.to_string());
+    let m = mgr.clone();
     selectable(
         ITEM_H,
         move || sel.get() == idx,
         move || sel.set(idx),
         move |active| item_row(&name, &tag, active),
     )
+    .on_context_menu(move || m.domain_menu_items(idx))
+}
+
+impl DictManagerState {
+    /// 左栏条目的右键菜单。右键先选中该条目（同中栏），菜单开着时右键另一条，高亮跟着走。
+    pub fn domain_menu_items(&self, idx: usize) -> Vec<MenuItem> {
+        if self.domain.get() != idx {
+            self.domain.set(idx);
+        }
+        let m_dir = self.clone();
+        let mut items = vec![MenuItem::run(
+            "打开数据目录",
+            move |_| m_dir.open_data_dir_at(idx),
+            false,
+        )];
+        if self.domain_purgeable(idx) {
+            let m = self.clone();
+            items.push(MenuItem::separator());
+            items.push(
+                MenuItem::run(
+                    "删除此方案的用户数据…",
+                    move |_| m.request_purge_schema(idx),
+                    false,
+                )
+                .danger(),
+            );
+        }
+        items
+    }
 }
 
 /// 可选中的列表条目：选中态 = accent 淡底 + 左缘指示条 + 文字转强调色（主窗侧栏同款）。

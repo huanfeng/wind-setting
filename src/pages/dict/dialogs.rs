@@ -8,6 +8,7 @@ use windui::prelude::*;
 use crate::auto_encode::auto_encode_node;
 use crate::widgets::{ENCODE_BTN_W, clear_text_button, flat_panel, paste_button};
 
+use super::reactive::reactive_effect;
 use super::state::DictManagerState;
 
 /// 导入/导出对话框宽度。比其余对话框宽一档：这里要同时容纳目标方案下拉、四个类型勾选、
@@ -25,6 +26,8 @@ const IO_NOTE_VIEWPORT_H: i32 = 132;
 pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
     Element::stack()
         .fill()
+        .child(build_edit_session_dialog(mgr))
+        .child(build_lib_prompt_dialog(mgr))
         .child(build_confirm_dialog(mgr))
         .child(build_edit_dialog(mgr))
         .child(build_auto_encode(mgr))
@@ -217,8 +220,9 @@ fn io_target_row(mgr: &DictManagerState, verb: &'static str) -> Element {
 /// 下拉只给「自动识别 / 纯词列表」两项。强制指定 WindDict/Rime/TSV 需要 core 的
 /// preview/import 接受 format 参数（现在一律按内容自动识别），给了也不生效；
 /// 而纯词列表的强制指定是纯客户端能力，立即可用，也正是严格判据误伤时的救济通道。
-fn io_format_row(mgr: &DictManagerState) -> Element {
-    let note = mgr.io_format_note;
+///
+/// 「从文件导入为分库」对话框绑自己的一对信号复用这一行。
+fn io_format_row(format: Signal<usize>, note: Signal<String>) -> Element {
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -232,7 +236,7 @@ fn io_format_row(mgr: &DictManagerState) -> Element {
         .child(
             Element::dropdown(
                 vec!["自动识别".to_string(), "纯词列表（自动出码）".to_string()],
-                mgr.io_format,
+                format,
             )
             .min_width(200),
         )
@@ -250,8 +254,9 @@ fn io_format_row(mgr: &DictManagerState) -> Element {
 ///
 /// 其余格式的权重来自文件本身，摆一个输入框会造成「能覆盖」的误导；而纯词列表
 /// 压根没有权重列，不给用户一个入口就只能由代码替他拍板。
-fn io_weight_row(mgr: &DictManagerState) -> Element {
-    let vis = mgr.clone();
+///
+/// 权重值两处共用 `io_weight`；`visible` 由调用方给（两个对话框各有自己的「是不是纯词列表」）。
+fn io_weight_row(mgr: &DictManagerState, visible: impl Fn() -> bool + 'static) -> Element {
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -274,7 +279,7 @@ fn io_weight_row(mgr: &DictManagerState) -> Element {
                 .weight(1.0)
                 .max_lines(1),
         )
-        .visible_when(move || vis.is_word_list_import())
+        .visible_when(visible)
 }
 
 /// 音节分隔补齐的二选一。**只在预览报出「可补齐」行时才出现**——没有这类词的导入
@@ -444,8 +449,11 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(file_row)
         .child(io_target_row(mgr, "导入到"))
-        .child(io_format_row(mgr))
-        .child(io_weight_row(mgr))
+        .child(io_format_row(mgr.io_format, mgr.io_format_note))
+        .child({
+            let m = mgr.clone();
+            io_weight_row(mgr, move || m.is_word_list_import())
+        })
         .child(io_type_row(mgr))
         .child(io_boundary_row(mgr))
         // 提示与预览同处一个固定视口：三条的行数各自随目标/文件变动，分开放会让对话框
@@ -1107,6 +1115,189 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
     Element::dialog(mgr.view_visible, frame)
 }
 
+/// 外部编辑中的模态对话框：编辑期间挡住词库窗的其它操作，直到「完成并加载」。
+/// 结束时有问题就留着显示问题，可再次打开接着改或关掉。ESC / 关窗会先关掉它，那等同于
+/// 「完成并加载」（有问题的那个等同于「关闭」），见 `on_edit_dialog_closed`。
+fn build_edit_session_dialog(mgr: &DictManagerState) -> Element {
+    let m = mgr.clone();
+    let body = Element::host_signal(mgr.edit_current, move |bar| edit_session_body(&m, bar));
+    let content = flat_panel().width(520).padding(20).spacing(12).child(body);
+    Element::dialog(mgr.edit_dialog, content)
+}
+
+fn edit_session_body(mgr: &DictManagerState, bar: super::file_edit::EditBar) -> Element {
+    let text = |t: String, role: Role| {
+        Element::label(t)
+            .font_size(12.5)
+            .fg_role(role)
+            .width_match()
+            .max_lines(4)
+    };
+    let editing = bar.problem.is_none();
+    let mut col = Element::col()
+        .width_match()
+        .spacing(10)
+        .child(
+            Element::label(if editing {
+                "正在外部编辑"
+            } else {
+                "文件有问题"
+            })
+            .font_size(15.0)
+            .font_weight(600)
+            .fg_role(Role::Text)
+            .height(24)
+            .width_match(),
+        )
+        .child(text(bar.file.clone(), Role::TextMuted))
+        .child(Element::divider());
+    col = match &bar.problem {
+        None => col.child(text(
+            "已用默认程序打开这个文件。在编辑器里改完并保存，再点「完成并加载」。\
+             编辑期间词库窗里的其它操作暂停。"
+                .into(),
+            Role::Text,
+        )),
+        Some(p) => col.child(text(format!("⚠ {p}"), Role::Warning)).child(text(
+            "可以「再次打开文件」接着改，或者先关掉，以后再处理。".into(),
+            Role::Text,
+        )),
+    };
+    if let Some(note) = super::file_edit::edit_note(&bar.file) {
+        col = col.child(text(note.into(), Role::TextMuted));
+    }
+    let (m_dir, b_dir) = (mgr.clone(), bar.clone());
+    let (m_again, f_again) = (mgr.clone(), bar.file.clone());
+    let (m_done, f_done) = (mgr.clone(), bar.file.clone());
+    let primary = if editing {
+        Element::button("完成并加载")
+            .small()
+            .on_click(move |_| m_done.finish_edit(&f_done))
+    } else {
+        Element::button("关闭")
+            .small()
+            .outline_soft()
+            .on_click(move |_| m_done.dismiss_edit(&f_done))
+    };
+    col.child(
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(8)
+            .child(
+                Element::button("打开所在文件夹")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| m_dir.open_edit_folder(&b_dir)),
+            )
+            .child(
+                Element::button("再次打开文件")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| m_again.reopen_edit(&f_again)),
+            )
+            .child(Element::leaf().weight(1.0))
+            .child(primary),
+    )
+}
+
+/// 分库名字对话框：新建 / 重命名 / 从文件导入（多出文件、格式、权重三行）。名字即时校验。
+fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
+    let libs = mgr.libs.clone();
+    let label = |t: &'static str| {
+        Element::label(t)
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .width(52)
+    };
+    let m_submit = mgr.clone();
+    let name_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(label("名字"))
+        .child(
+            Element::text_input(libs.name, "分库名")
+                .weight(1.0)
+                .height(30)
+                .on_submit(move |_| m_submit.submit_lib_prompt()),
+        );
+    let err = libs.name_error;
+    let error = Element::label_signal(err)
+        .font_size(12.0)
+        .fg_role(Role::Danger)
+        .width_match()
+        .max_lines(1)
+        .visible_when(move || !err.get().is_empty());
+    let importing = libs.importing;
+    let file_row = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(label("文件"))
+        .child(
+            Element::label_signal(libs.file_label)
+                .font_size(12.5)
+                .fg_role(Role::Text)
+                .weight(1.0)
+                .max_lines(1),
+        )
+        .visible_when(move || importing.get());
+    let format_row =
+        io_format_row(libs.format, libs.format_note).visible_when(move || importing.get());
+    let m_wl = mgr.clone();
+    let weight_row = io_weight_row(mgr, move || m_wl.lib_import_is_word_list());
+
+    let (m_cancel, m_ok, m_ready) = (mgr.clone(), mgr.clone(), mgr.clone());
+    let footer = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_cancel.cancel_lib_prompt()),
+        )
+        .child(
+            Element::button("确定")
+                .small()
+                .on_click(move |_| m_ok.submit_lib_prompt())
+                .enabled_when(move || m_ready.lib_prompt_ready()),
+        );
+    let (name_v, fmt_v) = (libs.name, libs.format);
+    let (m_name, m_fmt) = (mgr.clone(), mgr.clone());
+    let content = flat_panel()
+        .width(IO_DIALOG_W)
+        .padding(20)
+        .spacing(12)
+        .child(
+            Element::label_signal(libs.prompt_title)
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .height(24)
+                .width_match(),
+        )
+        .child(Element::divider())
+        .child(file_row)
+        .child(name_row)
+        .child(error)
+        .child(format_row)
+        .child(weight_row)
+        .child(footer)
+        .child(reactive_effect(
+            move || name_v.version(),
+            move || m_name.on_lib_name_changed(),
+        ))
+        .child(reactive_effect(
+            move || fmt_v.version(),
+            move || m_fmt.on_lib_format_changed(),
+        ));
+    Element::dialog(libs.prompt_visible, content)
+}
+
 /// 破坏性操作二次确认：正文由 `confirm_msg` 驱动，确认执行 `confirm_pending`。
 fn build_confirm_dialog(mgr: &DictManagerState) -> Element {
     let confirm = mgr.clone();
@@ -1176,6 +1367,26 @@ mod tests {
 
     fn frame(tree: &mut Tree) {
         tree.layout_root(Size::new(900, 700), &mut windui::text::NullTextEngine);
+    }
+
+    /// 编辑中的对话框在真树上搭得起来、布局得了；有会话时弹出，结束后收起。
+    #[test]
+    fn edit_session_dialog_shows_and_hides() {
+        let st = user_dict_state();
+        st.publish_bars(vec![super::super::file_edit::EditBar {
+            file: "wb/temp.dict.yaml".into(),
+            problem: None,
+            path: "/x/wb/temp.dict.yaml".into(),
+        }]);
+        let mut tree = Tree::new();
+        let id = build_dict_dialogs(&st).build(&mut tree);
+        tree.root = Some(id);
+        frame(&mut tree);
+        assert!(st.edit_dialog.get());
+        assert_eq!(st.edit_current.get()[0].file, "wb/temp.dict.yaml");
+        st.publish_bars(Vec::new());
+        frame(&mut tree);
+        assert!(!st.edit_dialog.get());
     }
 
     /// 自动出码在**对话框这棵真树上**跑得起来：词条一变，编码跟着出；
@@ -1279,5 +1490,34 @@ mod tests {
         st.edit_text.set("今天是 ${date}".into());
         frame(&mut tree);
         assert_eq!(st.edit_code.get(), "date", "对话框关着时不得改写 edit_code");
+    }
+
+    /// 分库名字对话框在真树上：名字框的即时校验由对话框里的 effect 驱动。
+    #[test]
+    fn lib_dialogs_validate_name_live() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let st = user_dict_state();
+        st.reload();
+        st.open_lib_create();
+        let mut tree = Tree::new();
+        let id = build_dict_dialogs(&st).build(&mut tree);
+        tree.root = Some(id);
+        frame(&mut tree);
+        assert_eq!(st.libs.list.get().len(), 2);
+
+        st.libs.name.set("成语".into());
+        frame(&mut tree);
+        assert_eq!(st.libs.name_error.get(), "已有同名分库");
+        st.libs.name.set("a:b".into());
+        frame(&mut tree);
+        assert_eq!(st.libs.name_error.get(), "不能含 / \\ : * ? \" < > |");
+        st.libs.name.set("网络词".into());
+        frame(&mut tree);
+        assert!(st.lib_prompt_ready());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 }

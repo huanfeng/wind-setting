@@ -1,8 +1,8 @@
-//! 词库页视图 — 两级导航（数据域下拉 + 方案子标签）+ 可排序表格 + 工具栏（批量/搜索）+ 分页。
+//! 词库窗右栏 — 标题行（类别名 + 文件操作）+ 可排序表格 + 工具栏（批量/搜索）+ 分页。
 //!
 //! 反应式装配：
-//! - 数据域用 `dropdown_reactive`（选项随 `set_schemas` 更新）、子标签用 `segmented`；
-//!   二者变化由 [`super::reactive::reactive_effect`] 监听后触发 `on_nav_changed`（重载）。
+//! - 数据域在左栏（`sidebar`）、类别在中栏（`category_nav`），二者只写 `domain` / `sub_tab`，
+//!   变化由 [`super::reactive::reactive_effect`] 监听后触发 `on_nav_changed`（重载）。
 //! - 表格用 `table_sortable_server`：正文绑定 `table_rows` 信号随重载即时刷新；点表头由
 //!   `sort` 信号 + `on_sort_changed` 驱动（分页类走服务端排序、非分页类客户端重排）；
 //!   行悬停高亮为表格内建。列集随类别变化，由 `table_epoch` 信号驱动整表重建。
@@ -18,43 +18,10 @@ use super::reactive::{reactive_effect, toast_sink};
 use super::spec::{ColumnSpec, WordField, kind_label};
 #[cfg(test)]
 use super::state::{DOMAIN_PHRASE, DOMAIN_QUICK, GLOBAL_DOMAINS};
-use super::state::{DictManagerState, DomainKind, tabs_for_kind};
+use super::state::{DictManagerState, DomainKind};
 
 // 操作列宽度权重由类别决定，见 `CategorySpec::actions_weight`——快捷输入的用户条目
 // 最多同时有五个控件（启用 + ↑↓ + 编辑 + 删除），默认宽度装不下。
-
-/// 子标签单段固定宽度（各数据域分段等宽，总宽 = 段数 × 此值）。
-const SUB_TAB_SEG_W: i32 = 104;
-
-// 各子标签分段适用的数据域类型。**并集必须覆盖 `DomainKind` 的每个变体**——漏掉哪个，
-// 那类方案下就一个标签都不渲染，而逻辑层 `tabs_for_domain_at` 照常给出标签集，
-// 表现为「能加词条、能导入导出，就是看不到标签」。守护见
-// `sub_tab_segments_cover_every_domain_kind`。
-const SEG_PHRASE: &[DomainKind] = &[DomainKind::Phrase];
-const SEG_PINYIN: &[DomainKind] = &[DomainKind::Pinyin];
-/// 未知引擎类型挂在码表这组：逻辑层对 `Other` 也是按码表从宽给全四类，两处保持一致。
-const SEG_CODETABLE: &[DomainKind] = &[DomainKind::Codetable, DomainKind::Other];
-const SEG_ENGLISH: &[DomainKind] = &[DomainKind::English];
-const SEG_MIXED: &[DomainKind] = &[DomainKind::Mixed];
-// 快捷输入只有一个子标签，分段本身没有切换意义，但仍要有：分段的显隐决定这一行画不画，
-// 缺了它这个域就一个标签都不渲染（见 `sub_tab_segments_cover_every_domain_kind`）。
-const SEG_QUICK: &[DomainKind] = &[DomainKind::QuickFormat];
-// 常用字同理：单标签，分段只为让这一行画出来。
-const SEG_COMMON: &[DomainKind] = &[DomainKind::CommonChars];
-// 输入补全：三个标签（邮箱后缀 / 网址历史 / 快捷输入历史），故这一段确实要画出标签条。
-const SEG_COMPLETION: &[DomainKind] = &[DomainKind::Completion];
-/// 覆盖性校验用（顺序无关），仅测试构建需要。加新分段时记得挂进来。
-#[cfg(test)]
-const ALL_SEGMENTS: &[&[DomainKind]] = &[
-    SEG_PHRASE,
-    SEG_PINYIN,
-    SEG_CODETABLE,
-    SEG_ENGLISH,
-    SEG_MIXED,
-    SEG_QUICK,
-    SEG_COMMON,
-    SEG_COMPLETION,
-];
 
 /// 按一份 [`DictManagerState`] 构建词库页主体。
 ///
@@ -113,6 +80,14 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         move || mgr_fmt.on_io_format_changed(),
     );
 
+    // ── 响应式 effect：编辑中的对话框被 ESC / 关窗关掉 → 当作完成（见 `on_edit_dialog_closed`）──
+    let edit_dlg_v = mgr.edit_dialog;
+    let mgr_ed = mgr.clone();
+    let edit_dialog_effect = reactive_effect(
+        move || edit_dlg_v.version(),
+        move || mgr_ed.on_edit_dialog_closed(),
+    );
+
     // ── 响应式 effect：「外部编辑」对话框的目标下拉变化 → 重新探测编辑文件 ──
     let xedit_v = mgr.xedit.idx;
     let mgr_xe = mgr.clone();
@@ -121,33 +96,9 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         move || mgr_xe.on_xedit_target_changed(),
     );
 
-    // ── 方案子标签（按 domain_kind 动态显隐，同时只显一条）──
+    // ── 标题行：类别名（左）+ 这一类的文件操作（右）──
     //
-    // 这里只决定**哪条分段在什么时候显示**；显示哪些标题由 `tabs_for_kind` 说了算。
-    //
-    // 显隐：每条分段挂一组适用的 DomainKind 而非单个——`Other`（未知引擎类型）也必须挂在
-    // 某条上，否则那类方案下一个标签都不渲染，而逻辑层 `tabs_for_domain_at` 仍会给出标签集，
-    // 于是「有功能、没入口」：能加词条、能导入导出，就是看不到标签。英文方案正是这么漏的
-    // （`domain_kind()` 把它落到 `Other`，而这里只逐个列举了 Phrase/Pinyin/Codetable/Mixed）。
-    // 覆盖性由 `sub_tab_segments_cover_every_domain_kind` 守护。
-    //
-    // 标题：**一律派生，不在这里硬编码**。同一份清单写两遍就会漏改一遍，而漏改的症状与上面
-    // 那种同形、同样只在特定引擎类型下出现。同一分段内各 kind 的标签集必须一致
-    //（Codetable/Other 同为四类），故取 kinds[0] 即可，该前提由
-    // `segment_kinds_share_one_tab_set` 守护。
-    let seg = |mgr: DictManagerState, kinds: &'static [DomainKind]| {
-        let m = mgr.clone();
-        let titles: Vec<String> = tabs_for_kind(kinds[0])
-            .iter()
-            .map(|t| t.title().to_string())
-            .collect();
-        // 每段固定宽、总宽随段数变化：避免 1/3/4 段被均分导致各域分段宽度不一致。
-        let seg_w = titles.len() as i32 * SUB_TAB_SEG_W;
-        Element::segmented(titles, mgr.sub_tab)
-            .width(seg_w)
-            .visible_when(move || kinds.contains(&m.domain_kind()))
-    };
-    // 「导入」「导出」入口：置于子标签行最右（弹簧右对齐），方案域与三个全局域均显示，
+    // 「导入」「导出」入口：置于标题行最右（弹簧右对齐），方案域与三个全局域均显示，
     // 保持统一入口位置（全局域走原生对话框，方案打开对应对话框；分派见
     // `DictManagerState::do_import` / `do_export`）。
     let imp_open = mgr.clone();
@@ -168,23 +119,29 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .on_click(move |ctx| exp_open.do_export(ctx))
         .visible_when(move || exp_vis.io_entry_visible())
         .enabled_when(move || exp_en.io_entry_enabled());
-    // 字符类专用入口：「外部编辑」，只在字符类 tab 出现。
+    // 字符分类专用入口：「新建分类…」，只在字符分类上出现。
     //
-    // GUI 不做成员/范围的逐条编辑，新建与改类都在外部编辑器里完成；导出、打开、回读
-    // 全在这一个对话框里（见 `external_edit` 模块文档）。与导入导出并排是因为用户会在
-    // 同一个位置找「文件相关的操作」。
-    //
-    // ★ 传 `None` ⇒ 对话框对准目标下拉的**首项「新建类…」**（2026-09-18 起新建在首项，
-    // 落点规则见 `xedit_set_targets`）。这枚按钮因此同时是「新建一个类」的一级入口——
-    // 编辑已有类的主路径是行内「操作…」菜单与右键，它们会预选那一行。
+    // 改已有分类走行内「操作…」菜单与右键的「编辑文件」（一类一个文件，直接编辑）。新建
+    // 还走「外部编辑」对话框（见 `external_edit` 模块文档）：传 `None` ⇒ 对准目标下拉的
+    // 首项「新建类…」，导出模板、改完试算再加载。
     let xe_vis = mgr.clone();
     let xe_do = mgr.clone();
-    let charset_xedit = Element::button("外部编辑")
+    let charset_xedit = Element::button("新建分类…")
         .small()
         .outline_soft()
         .on_click(move |_| xe_do.charset_open_external(None))
         .visible_when(move || xe_vis.current_category() == super::spec::WordCategory::Charsets);
-    // 混输域只有「候选调整」一条分段，标签行右侧大片留白——正好安置这句说明，不占额外行高。
+    // 「编辑文件」：直接在编辑器里改这一类的数据文件（用户词库、分库、临时词库、词频、候选
+    // 调整、用户短语、快捷输入、常用字）。与导入导出并排，同是「文件相关的操作」；字符分类
+    // 一类一个文件，入口在行上。
+    let ef_vis = mgr.clone();
+    let ef_do = mgr.clone();
+    let edit_file = Element::button("编辑文件")
+        .small()
+        .outline_soft()
+        .on_click(move |_| ef_do.do_edit_file())
+        .visible_when(move || ef_vis.edit_file_target().is_some());
+    // 混输域只有「候选调整」一类，标题行中间大片留白——正好安置这句说明，不占额外行高。
     //
     // 候选调整只对**已经出现过的候选**做固定/隐藏，不是加词的地方。用户在这里点「添加」
     // 填上编码和词、看到列表里多了一行，就以为词加进去了，实际打不出来——与导入那条
@@ -195,22 +152,23 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .fg_role(Role::TextMuted)
         .max_lines(1)
         .visible_when(move || hint_vis.domain_kind() == DomainKind::Mixed);
-    let sub_tabs = Element::row()
+    let title_row = Element::row()
         .width_match()
+        .height(30)
         .cross(Align::Center)
         .spacing(8)
-        .padding_xy(0, 2)
-        .child(seg(mgr.clone(), SEG_PHRASE))
-        .child(seg(mgr.clone(), SEG_PINYIN))
-        .child(seg(mgr.clone(), SEG_CODETABLE))
-        .child(seg(mgr.clone(), SEG_ENGLISH))
-        .child(seg(mgr.clone(), SEG_MIXED))
-        .child(seg(mgr.clone(), SEG_QUICK))
-        .child(seg(mgr.clone(), SEG_COMMON))
-        .child(seg(mgr.clone(), SEG_COMPLETION))
+        .child(
+            Element::label_signal(mgr.pane_title)
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .max_lines(1)
+                // 标题占剩余宽度、长了自己截断：分库名长时不能把右边的按钮挤出可视区。
+                .weight(1.0),
+        )
         .child(mixed_hint)
-        .child(Element::leaf().weight(1.0))
         .child(charset_xedit)
+        .child(edit_file)
         .child(import_entry)
         .child(export_entry);
 
@@ -272,11 +230,11 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     // 「换行准确仅保证于显式宽度的 Label」说的就是这个，补 `width_match()` 也没用
     // （渲染结果字节一致）。两个各自单行的 label 在 col 里测得准，不碰这条限制。
     //
-    // ★ 顺带解决窄窗口下的取舍：词库窗最小宽是 `DICT_MIN_W` = 560，那个宽度下第一句
+    // ★ 顺带解决窄窗口下的取舍：词库窗缩到最小宽（`DICT_MIN_W`）时第一句
     // 会被截，但**第二句（并集那条）完整**——它正是上面第 3 点说「不写用户就会误解」
     // 的那一句，拆开之后它不再排在被截的尾巴上。
     //
-    // 放在工具栏与表格之间而不是标签行右侧：标签行那头已经排着「外部编辑/导入/导出」
+    // 放在工具栏与表格之间而不是标题行右侧：标题行那头已经排着「新建分类…/导入/导出」
     // 三枚按钮，这句话挤进去只会把它们顶出可视区。`vis_cond` 为假的节点不参与布局
     // （见 windui `Node::visible`），其余 tab 不会因此多出两条空行。
     // 可见性挂在**外层 col** 上而不是逐行挂：`vis_cond` 为假的节点不参与布局，两个子
@@ -309,7 +267,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         main_col = main_col.child(crate::widgets::page_header("词库", "管理词库与自定义词条"));
     }
     let main_col = main_col
-        .child(sub_tabs)
+        .child(title_row)
         .child(
             Element::label_signal(mgr.storage_notice)
                 .font_size(12.0)
@@ -321,6 +279,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
                     move || !n.get().is_empty()
                 }),
         )
+        .child(build_lib_notice(&mgr))
         .child(toolbar)
         .child(charset_hint)
         .child(card)
@@ -336,8 +295,23 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(io_target_effect)
         .child(io_format_effect)
         .child(xedit_effect)
+        .child(edit_dialog_effect)
         .child(toast_sink(mgr.feedback))
 }
+
+/// 选中分库有解析问题时的提示（「⚠ 分库「成语」：3 行格式不对，已跳过」）；没有问题不占位。
+fn build_lib_notice(mgr: &DictManagerState) -> Element {
+    let notice = mgr.libs.notice;
+    Element::label_signal(notice)
+        .font_size(12.0)
+        .fg_role(Role::Warning)
+        .width_match()
+        .max_lines(1)
+        .visible_when(move || !notice.get().is_empty())
+}
+
+/// 搜索框（含清除按钮）的最大宽度。
+const SEARCH_MAX_W: i32 = 260;
 
 /// 工具栏：批量操作按钮（按 ops 可见）+ 搜索框（可搜类别）。
 fn build_toolbar(mgr: &DictManagerState) -> Element {
@@ -414,6 +388,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
             .max_lines(1)
     };
     let temp_filter = Element::row()
+        .width_match()
         .cross(Align::Center)
         .spacing(4)
         .child(muted("次数 ≤"))
@@ -439,24 +414,31 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .on_click(move |_| m_reset.request_reset_default())
         .visible_when(move || v_reset.current_spec().ops.reset_default);
 
-    // 导入/导出入口已上移到子标签行（见 build_page 的 sub_tabs），工具栏不再放置。
+    // 导入/导出入口在标题行（见 build_page_for 的 title_row），工具栏不再放置。
 
     // 搜索（输入即搜，仅留清除按钮；分页类/非分页类均显示）
     let m_clr_s = mgr.clone();
     let e_clr_s = mgr.clone();
     let v_search = mgr.clone();
-    let search = Element::row()
+    // 搜索框占按钮之外的剩余宽度、封顶 SEARCH_MAX_W 并靠右：窗口窄时它让位而不是把按钮
+    // 挤出去。外面套一层 stack 吃掉剩余宽度——row 里「弹簧 + 封顶的 weight 子节点」会把
+    // 封顶后多出来的那截丢掉，搜索框就不靠右了。
+    let search_row = Element::row()
+        .width_match()
+        .max_width(SEARCH_MAX_W)
+        .align_xy(Align::End, Align::Center)
         .cross(Align::Center)
-        .spacing(8)
+        .spacing(4)
         .child(
             Element::text_input(mgr.search, "搜索编码或词条…")
-                .width(240)
+                .weight(1.0)
                 .height(30),
         )
         .child(
-            Element::button("清除")
+            Element::button("×")
                 .small()
                 .outline_soft()
+                .tooltip("清除搜索")
                 .on_click(move |_| {
                     m_clr_s.search.set(String::new());
                 })
@@ -465,6 +447,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .visible_when(move || {
             v_search.current_spec().searchable || v_search.current_spec().client_search
         });
+    let search = Element::stack().weight(1.0).child(search_row);
 
     // 「只看已修改」：全表 8104 条里自己动过的那几个，靠翻页是找不到的。
     // ⚠️ `Element::checkbox` 只负责显示、自己不翻转，必须配 on_toggle。
@@ -481,6 +464,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         })
         .visible_when(move || v_om.current_category() == super::spec::WordCategory::CommonChars);
 
+    // 一行放下全部操作与搜索：多选的两枚按钮与增删清空并排（能删的类别都能多选）。
     let row1 = Element::row()
         .width_match()
         .cross(Align::Center)
@@ -488,29 +472,22 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .padding_xy(0, 2)
         .child(add)
         .child(promote_all)
+        .child(select_page)
+        .child(delete_selected)
         .child(clear)
         .child(reset_default)
         .child(only_modified)
-        .child(Element::leaf().weight(1.0))
         .child(search);
 
-    // 第二行：多选 + 筛选（仅多选类别 / 临时词库显示）。塞进第一行的话 820 宽下
-    // 搜索框被挤出可视区（截图实测）。
+    // 第二行只剩临时词库的筛选（两个输入框加说明，一行放不下）。
     let v_row2 = mgr.clone();
     let row2 = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(8)
         .padding_xy(0, 2)
-        .child(select_page)
-        .child(delete_selected)
-        .child(Element::leaf().weight(1.0))
         .child(temp_filter)
-        .visible_when(move || {
-            let m = &v_row2;
-            m.current_spec().ops.multi_select
-                || m.current_category() == super::spec::WordCategory::Temp
-        });
+        .visible_when(move || v_row2.current_category() == super::spec::WordCategory::Temp);
 
     Element::col().width_match().child(row1).child(row2)
 }
@@ -834,13 +811,13 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
                 row.class_default == target,
             ));
         }
-        // 改成员与范围的唯一入口（预选本行）。操作列上也有一枚，右键再放一份是给
+        // 改成员与范围的入口：直接编辑这一类的文件。操作列上也有一枚，右键再放一份是给
         // 「习惯右键」的人。
         let m = mgr.clone();
         let r = row.clone();
         ops.push(MenuItem::run(
-            "外部编辑…",
-            move |_ctx| m.charset_open_external(Some(&r.code)),
+            "编辑文件",
+            move |_ctx| m.edit_charset_file(&r.code),
             false,
         ));
         // 只有自建类能删；出厂类是「恢复默认」（reset_entry 那条）。
@@ -848,7 +825,7 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
             let m = mgr.clone();
             let r = row.clone();
             ops.push(MenuItem::run(
-                "删除此类",
+                "删除此分类",
                 move |_ctx| m.charset_delete(&r),
                 false,
             ));
@@ -1192,7 +1169,7 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     // ★ 操作列不能空：本页的主操作全在右键菜单的话，用户第一眼会以为这页是只读的。
     //
     // ⚠️ 文案用省略号而不是 `▾`：离屏截图（软渲染回退）里 `▾` 渲染成豆腐块，说明这
-    // 字形不在每条渲染路径的回退字体里都有。省略号与本页菜单项（「查看…」「外部编辑…」）
+    // 字形不在每条渲染路径的回退字体里都有。省略号与本页菜单项（「查看…」「新建分类…」）
     // 同一个记号，覆盖面最广，「点了还有后续」这层意思也一样传达得到。
     //
     // ⚠️ 与参照实现（windui `Dropdown::open`）**差一步**：它在弹菜单前有一行
@@ -1329,69 +1306,79 @@ mod tests {
     use windui::core::Tree;
     use windui::geometry::Size;
 
-    /// 子标签分段必须覆盖 `DomainKind` 的**每个**变体。
-    ///
-    /// 漏掉哪个，那类方案下就一个标签都不渲染——而逻辑层 `tabs_for_domain_at` 照常给出
-    /// 标签集，于是「能加词条、能导入导出，就是看不到标签」。英文方案实际这么漏过一次：
-    /// `domain_kind()` 把它落到 `Other`，而分段只逐个列举了 Phrase/Pinyin/Codetable/Mixed。
-    ///
-    /// 枚举变体在此**逐个写死**：新增变体时这里编译不过（match 不穷尽），强制来这里
-    /// 决定它挂哪一段——比「漏了也照样编译、跑起来才发现没标签」强。
+    /// 工具栏一行：搜索框占剩余宽度、封顶 SEARCH_MAX_W，窗口窄时让位而不挤出可视区。
     #[test]
-    fn sub_tab_segments_cover_every_domain_kind() {
-        let all = [
-            DomainKind::Phrase,
-            DomainKind::Pinyin,
-            DomainKind::Codetable,
-            DomainKind::Mixed,
-            DomainKind::English,
-            DomainKind::Other,
-            DomainKind::QuickFormat,
-            DomainKind::CommonChars,
-            DomainKind::Completion,
-        ];
-        // 穷尽性哨兵：新增变体会让这个 match 编译失败，逼人回到上面的数组补齐。
-        for k in all {
-            let _: () = match k {
-                DomainKind::Phrase
-                | DomainKind::Pinyin
-                | DomainKind::Codetable
-                | DomainKind::Mixed
-                | DomainKind::English
-                | DomainKind::Other
-                | DomainKind::QuickFormat
-                | DomainKind::CommonChars
-                | DomainKind::Completion => (),
-            };
-        }
-        for k in all {
-            let n = ALL_SEGMENTS.iter().filter(|s| s.contains(&k)).count();
-            assert_eq!(
-                n, 1,
-                "{k:?} 应恰好挂在一个分段上（实际 {n} 个）——0 个 = 该类方案看不到任何标签，\
-                 多于 1 个 = 同时显示两条分段"
-            );
-        }
+    fn toolbar_search_shrinks_but_stays_inside() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![crate::state::SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(GLOBAL_DOMAINS);
+        mgr.sub_tab.set(0);
+        mgr.on_nav_changed();
+        let search_bounds = |w: i32| {
+            let mut tree = Tree::new();
+            let rid = build_toolbar(&mgr).width(w).build(&mut tree);
+            tree.root = Some(rid);
+            tree.layout_root(Size::new(w, 100), &mut windui::text::NullTextEngine);
+            let row1 = tree.get(rid).unwrap().children[0];
+            let holder = *tree.get(row1).unwrap().children.last().unwrap();
+            let search = tree.get(holder).unwrap().children[0];
+            tree.abs_bounds(search)
+        };
+        let wide = search_bounds(900);
+        assert!(wide.w <= SEARCH_MAX_W, "宽窗口封顶，实宽 {}", wide.w);
+        assert_eq!(wide.x + wide.w, 900, "靠右");
+        let narrow = search_bounds(380);
+        assert!(narrow.x + narrow.w <= 380, "窄窗口不出界：{narrow:?}");
+        assert!(narrow.w >= 60, "窄窗口仍可用：{narrow:?}");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
-    /// 渲染取 `kinds[0]` 的标签集当作整条分段的标题，故同一分段内各 kind 的标签集必须一致。
-    ///
-    /// 不成立时的表现极隐蔽：分段按 `kinds` 显隐、标题却只按第一个 kind 生成，于是某类方案
-    /// 显示的是**另一类方案的标签**——点进去还能正常加载数据（数据按 `current_category` 走），
-    /// 只是标签名对不上。目前唯一的多 kind 分段是 Codetable + Other（未知从宽，同为四类）。
+    /// 分库问题提示：选中有问题的分库才占一行，其余时候不占位。
     #[test]
-    fn segment_kinds_share_one_tab_set() {
-        for seg in ALL_SEGMENTS {
-            let head = tabs_for_kind(seg[0]);
-            for k in &seg[1..] {
-                assert_eq!(
-                    tabs_for_kind(*k),
-                    head,
-                    "{k:?} 与同分段的 {:?} 标签集不一致——渲染只取首个 kind 的标签集当标题",
-                    seg[0]
-                );
-            }
-        }
+    fn lib_notice_only_for_a_library_with_issues() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![crate::state::SchemaInfo {
+            id: "wb".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(GLOBAL_DOMAINS);
+        mgr.sub_tab.set(0);
+        mgr.reload();
+        let layout = |mgr: &DictManagerState| {
+            let root = Element::col()
+                .width(800)
+                .height(600)
+                .child(build_lib_notice(mgr))
+                .child(Element::leaf().width_match().weight(1.0));
+            let mut tree = Tree::new();
+            let rid = root.build(&mut tree);
+            tree.root = Some(rid);
+            tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
+            let kids = tree.get(rid).unwrap().children.clone();
+            (tree.abs_bounds(kids[0]).h, tree.abs_bounds(kids[1]).h)
+        };
+        let (_, rest) = layout(&mgr);
+        assert_eq!(rest, 600, "主词库上不占位");
+        mgr.select_lib(Some("hangye".into()));
+        let (bar, rest) = layout(&mgr);
+        assert!(bar > 0 && bar < 40, "提示高 {bar}");
+        assert_eq!(bar + rest, 600);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 导入/导出对话框必须能真的搭起来并完成布局。
