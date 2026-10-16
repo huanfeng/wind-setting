@@ -3188,7 +3188,7 @@ impl SchemaManagerState {
         ctx.defer_blocking(move || {
             let Some(path) = PickDialog::new()
                 .title("导入方案包")
-                .filter("方案包", &["zip"])
+                .filter("方案包", &["wpkg", "zip"])
                 .pick_file()
             else {
                 return;
