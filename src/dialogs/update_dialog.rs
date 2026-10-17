@@ -304,7 +304,7 @@ fn footer(
         .padding_xy(16, 12)
         .spacing(8)
         .child(
-            Element::checkbox("启动时自动检查更新", auto_check)
+            Element::checkbox("打开设置时自动检查更新", auto_check)
                 .font_size(12.0)
                 .visible_when(show_auto_check),
         )

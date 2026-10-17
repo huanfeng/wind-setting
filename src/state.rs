@@ -687,7 +687,7 @@ pub struct AppState {
     pub update_message: Signal<String>,
     /// 更新包体积（如「更新包 46.0 MB」），下载前告知用户流量开销。
     pub update_size_text: Signal<String>,
-    /// 「启动时自动检查更新」勾选框的绑定信号，初值取自 `setting_config.update.auto_check`。
+    /// 「打开设置时自动检查更新」勾选框的绑定信号，初值取自 `setting_config.update.auto_check`。
     /// windui 的 checkbox 只写信号无回调，故由对话框挂一个 `reactive_effect` 节点落盘。
     pub update_auto_check_sig: Signal<bool>,
     /// 发布说明（已清洗）。
@@ -1472,7 +1472,7 @@ impl AppState {
         self.save_ui_state(|ui| ui.wizard_dismissed = on);
     }
 
-    /// 持久化「启动时自动检查更新」开关。
+    /// 持久化「打开设置时自动检查更新」开关。
     pub fn save_update_auto_check(&mut self, enabled: bool) {
         if self.setting_config.update.auto_check == enabled {
             return;
