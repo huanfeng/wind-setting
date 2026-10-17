@@ -3781,9 +3781,17 @@ options = [
 ]
 
 [[items]]
-key = "local.open_log_dir"
+key = "local.open_dirs"
 group = "advanced"
 section = "日志设置"
-type = "open_log_dir"
-label = "日志目录"
-hint = "三个模块的日志都在这里（TSF 端在 tsf_log 子目录）"
+type = "open_dirs"
+label = "打开目录"
+hint = "用户数据含配置与词库；TSF 端日志在日志目录的 tsf_log 子目录"
+
+[[items]]
+key = "local.log_archive"
+group = "advanced"
+section = "日志设置"
+type = "log_archive"
+label = "日志打包"
+hint = "反馈问题时把整个日志目录打成一个 zip 发给维护者；清理会删除全部日志"

@@ -26,6 +26,8 @@ tiny_http = "0.12"
 semver = "1"
 # 升级包完整性校验
 sha2 = "0.10"
+# 日志打包（设置 › 高级 › 日志）。与 core 的 wind-transfer 同一大版本，只开 deflate。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 # 仅测试用：core 的 capability 生成器与配置真相源，供守护 capabilities.snapshot.json

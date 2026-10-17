@@ -24,6 +24,7 @@ mod dota2_compat;
 mod file_assoc;
 mod icons;
 mod key_conflict;
+mod log_tools;
 mod logger;
 mod look;
 mod look_window;
@@ -573,6 +574,14 @@ fn main() {
         }
     });
     app_state.borrow().set_ui_tx(ui_tx);
+
+    // 日志打包通道：压缩在后台线程做，完成后在这里弹提示、在文件管理器里选中压缩包。
+    let pack_state = app_state.clone();
+    let log_pack_tx = app.channel::<log_tools::PackResult>(move |ctx, r| {
+        pack_state.borrow().log_pack_busy.set(false);
+        log_tools::on_pack_done(ctx, r);
+    });
+    *app_state.borrow().log_pack_tx.borrow_mut() = Some(log_pack_tx);
 
     // 启动静默检查更新：三重门控（已同意联网 + 未关自动检查 + 距上次超 24h）。
     // 无更新或失败都不打扰用户，只有确实有新版本且未被「跳过此版本」屏蔽才弹对话框。

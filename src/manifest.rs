@@ -574,7 +574,8 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_langbar_text_colors",
     "local_select",
     "log_level_select",
-    "open_log_dir",
+    "open_dirs",
+    "log_archive",
     "log_privacy_warning",
 ];
 
@@ -628,7 +629,8 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             el
         }
         "local_select" => build_local_select(state, key, item),
-        "open_log_dir" => build_open_log_dir(),
+        "open_dirs" => build_open_dirs(),
+        "log_archive" => build_log_archive(state),
         // 走不到这里：`field_with` 已把它整行自绘并早退（见 build_log_privacy_warning）。
         // 仍留一条分支——渲染名单与 match 脱节时 debug 会当场炸，那道守门不该有例外。
         "log_privacy_warning" => Element::leaf(),
@@ -1409,26 +1411,139 @@ fn build_log_privacy_warning(state: &AppState, item: &MItem) -> Element {
         })
 }
 
-/// 「打开」按钮：在系统文件管理器里打开日志目录。
+/// 「打开目录」一行三个按钮：日志 / 用户数据 / 程序。
 ///
-/// 三个模块的日志都在这一个目录下（TSF 的在 `tsf_log\` 子目录里），故只需要一个入口，
-/// 不必每行都挂一个按钮。
-fn build_open_log_dir() -> Element {
-    Element::button("打开")
+/// 三个模块的日志都在同一个目录下（TSF 的在 `tsf_log\` 子目录里），故日志只需要一个入口。
+fn build_open_dirs() -> Element {
+    use crate::log_tools::DirKind;
+    let btn = |label: &str, kind: DirKind| {
+        Element::button(label)
+            .small()
+            .outline_soft()
+            .on_click(move |ctx| {
+                if let Err(e) = crate::log_tools::open_dir(kind) {
+                    tracing::warn!("打开目录 {kind:?} 失败: {e}");
+                    ctx.toast_err(format!("打开失败：{e}"));
+                }
+            })
+    };
+    Element::row()
+        .spacing(6)
+        .child(btn("日志", DirKind::Logs))
+        .child(btn("用户数据", DirKind::UserData))
+        .child(btn("程序", DirKind::App))
+}
+
+/// 「日志打包」一行：[打包到桌面] [清理]，各带一个确认框。
+///
+/// 打包前的确认是为了把隐私说在前头：debug / trace 档会记下输入内容与进程、窗口等设备
+/// 信息，用户要在发出去之前知道。清理不可撤销，确认按钮标红。
+///
+/// 两个框的正文都在点按钮的那一刻现算（文件数、大小、落点），不在建树时算死——
+/// 设置窗开着的这段时间里日志一直在长。
+fn build_log_archive(state: &AppState) -> Element {
+    let pack_visible = signal(false);
+    let pack_msg = signal(String::new());
+    let clear_visible = signal(false);
+    let clear_msg = signal(String::new());
+    let pack_tx = state.log_pack_tx.clone();
+    let pack_busy = state.log_pack_busy.clone();
+    let busy_on_click = pack_busy.clone();
+
+    register_dialog(
+        state,
+        crate::shell::confirm_dialog_msg(
+            pack_visible,
+            "打包日志",
+            pack_msg,
+            "打包",
+            move |ctx| {
+                pack_visible.set(false);
+                let Some(tx) = pack_tx.borrow().clone() else {
+                    ctx.toast_err("打包通道未初始化");
+                    return;
+                };
+                pack_busy.set(true);
+                ctx.toast("正在打包日志…");
+                crate::log_tools::spawn_pack(tx);
+            },
+        ),
+    );
+
+    register_dialog(
+        state,
+        crate::shell::confirm_dialog_msg_danger(
+            clear_visible,
+            "清理日志",
+            clear_msg,
+            "清理",
+            move |ctx| {
+                clear_visible.set(false);
+                let Some(logs) = crate::tsf_log::log_dir(crate::mode::get()) else {
+                    ctx.toast_err("无法定位日志目录");
+                    return;
+                };
+                let r = crate::log_tools::clear(&logs);
+                tracing::info!("清理日志: {r:?}");
+                if r.failed > 0 {
+                    ctx.toast_err(format!("有 {} 个文件未能清理，详见设置程序日志", r.failed));
+                } else {
+                    ctx.toast_ok(format!("已清理 {} 个日志文件", r.removed + r.truncated));
+                }
+            },
+        ),
+    );
+
+    // 先看目录里有没有东西：空目录弹确认框问「要不要打包 0 个文件」没有意义。
+    let current = || {
+        let dir = crate::tsf_log::log_dir(crate::mode::get())?;
+        let (n, bytes) = crate::log_tools::summarize(&dir);
+        (n > 0).then(|| (dir, n, bytes))
+    };
+
+    let pack_btn = Element::button(crate::log_tools::archive_button_label())
         .small()
         .outline_soft()
-        .on_click(move |_| {
-            let Some(dir) = crate::tsf_log::log_dir(crate::mode::get()) else {
-                tracing::warn!("打开日志目录：无法定位本机状态目录");
+        .on_click(move |ctx| {
+            if busy_on_click.get() {
+                ctx.toast("正在打包，请稍候");
+                return;
+            }
+            let Some((_, n, bytes)) = current() else {
+                ctx.toast("日志目录是空的，没有可打包的内容");
                 return;
             };
-            // 目录可能还不存在（三个模块都关着日志时）。先建再开，比弹一句
-            // 「目录不存在」有用——用户此刻多半正要往里放东西或确认位置。
-            let _ = std::fs::create_dir_all(&dir);
-            if let Err(e) = crate::open_external::open_with_default_app(&dir) {
-                tracing::warn!("打开日志目录失败: {e}");
-            }
-        })
+            let dest = crate::log_tools::archive_dest_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            pack_msg.set(format!(
+                "将把 {n} 个日志文件（共 {}）打包成 zip，保存到：\n{dest}\n\n\
+                 注意：debug / trace 级别的日志可能包含你输入的内容，以及进程名、窗口标题、\
+                 系统版本等设备信息。发送给他人前请确认可以分享。",
+                crate::log_tools::human_size(bytes)
+            ));
+            pack_visible.set(true);
+        });
+
+    let clear_btn = Element::button("清理")
+        .small()
+        .outline_soft()
+        .danger()
+        .on_click(move |ctx| {
+            let Some((dir, n, bytes)) = current() else {
+                ctx.toast("日志目录是空的，无需清理");
+                return;
+            };
+            clear_msg.set(format!(
+                "将删除 {} 下的 {n} 个日志文件（共 {}），删除后无法恢复。\n\n\
+                 正在写入的日志会被清空而不是删除，TSF 日志开关会保留。确定清理吗？",
+                dir.display(),
+                crate::log_tools::human_size(bytes)
+            ));
+            clear_visible.set(true);
+        });
+
+    Element::row().spacing(6).child(pack_btn).child(clear_btn)
 }
 
 /// 可**按候选窗排布分档**的枚举项：渲染成「横排 [下拉] 竖排 [下拉]」两个控件。

@@ -525,6 +525,12 @@ pub struct AppState {
     /// UI 请求通道：让**没有 ctx 的回调**（`single_instance` 的 argv 处理）能把
     /// 「该开词库窗了」送到一个有 ctx 的时机。`main()` 在 App 构建期注入一次。
     pub ui_tx: RefCell<Option<Sender<crate::UiRequest>>>,
+    /// 日志打包通道：压缩放在后台线程（日志多时上百 MB，在 UI 线程做会卡住窗口），
+    /// 结果经此回 UI 线程弹提示。`main()` 在 App 构建期注入一次。
+    /// `Rc` 包一层：设置页按钮的回调要 `'static`，拿不到 `&AppState`。
+    pub log_pack_tx: Rc<RefCell<Option<Sender<crate::log_tools::PackResult>>>>,
+    /// 正在打包。连点不会起第二个线程。
+    pub log_pack_busy: Rc<Cell<bool>>,
     /// 主窗是否已经关闭。**不影响词库窗**——它独立存活（见 [`crate::dict_window::open`]）。
     ///
     /// 用途只有一个：二次实例送来 argv 时，据此判断该「把已有主窗拉到前台」（windui 的
@@ -1006,6 +1012,8 @@ impl AppState {
             pending_dict_window: Cell::new(false),
             pending_main_window: Cell::new(false),
             ui_tx: RefCell::new(None),
+            log_pack_tx: Rc::new(RefCell::new(None)),
+            log_pack_busy: Rc::new(Cell::new(false)),
             main_window_closed: signal(false),
             theme_handle: RefCell::new(None),
             accent_idx: signal(initial_accent.index()),

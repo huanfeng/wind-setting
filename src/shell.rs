@@ -1362,6 +1362,7 @@ fn confirm_dialog(
         title,
         Element::label(message).max_lines(4),
         confirm_label,
+        false,
         on_confirm,
     )
 }
@@ -1371,7 +1372,7 @@ fn confirm_dialog(
 /// 单开一个入口而不是把 `&str` 那版改成泛型：静态正文是绝大多数调用点的形态。
 /// 限行放到 8 —— 命令行是完整的 exe 路径，压在 4 行里会被省略号吃掉尾巴，
 /// 而用户恰恰要靠那段路径判断"占用者是不是我自己另一份安装"。
-fn confirm_dialog_msg(
+pub(crate) fn confirm_dialog_msg(
     visible: Signal<bool>,
     title: &str,
     message: Signal<String>,
@@ -1383,6 +1384,25 @@ fn confirm_dialog_msg(
         title,
         Element::label_signal(message).max_lines(8),
         confirm_label,
+        false,
+        on_confirm,
+    )
+}
+
+/// 确认按钮标红的变体：删除类不可撤销的操作（如清理日志）。
+pub(crate) fn confirm_dialog_msg_danger(
+    visible: Signal<bool>,
+    title: &str,
+    message: Signal<String>,
+    confirm_label: &str,
+    on_confirm: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
+    confirm_dialog_body(
+        visible,
+        title,
+        Element::label_signal(message).max_lines(8),
+        confirm_label,
+        true,
         on_confirm,
     )
 }
@@ -1393,9 +1413,14 @@ fn confirm_dialog_body(
     title: &str,
     message: Element,
     confirm_label: &str,
+    danger: bool,
     on_confirm: impl FnMut(&mut EventCtx) + 'static,
 ) -> Element {
     let cancel = visible;
+    let mut confirm = Element::button(confirm_label).small();
+    if danger {
+        confirm = confirm.danger();
+    }
     let frame = Element::col()
         .width(360)
         .bg_role(Role::Surface)
@@ -1433,7 +1458,7 @@ fn confirm_dialog_body(
                         .outline_soft()
                         .on_click(move |_| cancel.set(false)),
                 )
-                .child(Element::button(confirm_label).small().on_click(on_confirm)),
+                .child(confirm.on_click(on_confirm)),
         );
     Element::dialog(visible, frame)
 }
