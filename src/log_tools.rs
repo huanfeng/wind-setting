@@ -3,20 +3,19 @@
 //! 日志目录只有一个（[`crate::tsf_log::log_dir`]）：core、设置程序、TSF（`tsf_log\` 子目录）
 //! 都写在这里，所以打包与清理都只管这一棵树。
 //!
-//! # 清理：按文件名决定截断还是删除
+//! # 清理：尽量删除
 //!
-//! 清理的典型用法是「清空 → 复现 → 打包」。正在写的日志若被删掉，写端攥着的句柄会继续
-//! 往已经没有名字的文件里写（Unix 一律如此，Windows 10 起 `DeleteFile` 也是 POSIX 语义），
-//! 复现期间的日志就全丢了，直到进程重启。而各端都是**追加模式**打开（core 的 file-rotate、
-//! 设置程序的 tracing-appender、TSF 的 `FILE_APPEND_DATA`），截成 0 字节后新内容从头续写。
-//! 规则见 [`clear_action`]，两条要点：
+//! 各写端都能承受日志被删（删掉的文件不留残余，这是清理的本意）：
 //!
-//! - ⚠️ **core 的 `wind_input.*.log` 一个都不能删，历史的也不行。** file-rotate 只在启动时
-//!   扫一次磁盘记下有哪些序号，轮转时按记忆逐个后挪并 `assert!(old_path.exists())`；
-//!   删掉 `.2.log` 之后的下一次轮转就会 panic，而 core release 是 `panic = "abort"`——
-//!   整个输入法服务崩掉。截断保留文件名，轮转照常。
-//! - 不靠「试着独占打开」去探谁在用：探测那一瞬间的独占句柄会让恰好在轮转重开的写端
-//!   打不开文件，TSF 那边会因此停摆到宿主重启。按名字认，零副作用。
+//! - core：自愈写端（`log_rotate::SelfHealingLog`）每秒对表，当前文件没了就按原路径重开，
+//!   轮转前重扫磁盘——历史被删也不会让 file-rotate 断言失败。
+//! - TSF：`CFileLogger::_ResyncFile` 同样每秒对表，被删就重开、连目录一起建回。
+//! - `startup_stage.log`：每次写都重新打开。
+//! - 设置程序历史份（`.2` 起）：启动轮转时改名失败一律忽略。
+//!
+//! 唯一例外是**设置程序自己正在写的那份**（`wind_setting.1.log`）：tracing-appender 不会
+//! 自愈，删了它本次运行剩下的日志就写进幽灵文件。它是追加模式打开的，截成 0 字节即可，
+//! 而且只有一个文件、下次启动就轮转走，谈不上残留。
 //!
 //! `tsf_log_config` 不是日志而是 TSF 的日志开关，清理时保留——删了它 TSF 日志就关了，
 //! 用户清完去复现会发现什么都没记。
@@ -27,6 +26,8 @@ use std::path::{Path, PathBuf};
 
 /// TSF 的日志开关文件，与 `tsf_log::CONFIG_NAME` 同名。清理时保留。
 const KEEP_ON_CLEAR: &str = "tsf_log_config";
+/// 本进程正在写的日志（`logger.rs` 的 `{PREFIX}.1.log`）。清理时截断而不是删除。
+const OWN_CURRENT_LOG: &str = "wind_setting.1.log";
 
 /// 日志目录下的日志文件数与总字节数（递归，不计 `tsf_log_config`）。目录不存在视为空。
 pub fn summarize(log_dir: &Path) -> (usize, u64) {
@@ -242,23 +243,10 @@ enum ClearAction {
 
 /// 按文件名决定怎么清。理由见模块文档「清理」一节。
 fn clear_action(name: &str) -> ClearAction {
-    if name == KEEP_ON_CLEAR {
-        ClearAction::Keep
-    } else if name.starts_with("wind_input.") {
-        // core 一族：历史也只截断，删了会让 file-rotate 下次轮转时崩溃。
-        ClearAction::Truncate
-    } else if name.ends_with(".old.log") {
-        // TSF 轮转下来的旧份，没有写端。
-        ClearAction::Remove
-    } else if name.starts_with("wind_tsf.")
-        || name == "wind_setting.1.log"
-        || name == "startup_stage.log"
-    {
-        // 可能正在被写：TSF 的当前份（宿主可能还活着；死进程留下的空文件由 core 按时限
-        // 回收）、设置程序自己这一份、core 的启动轨迹。
-        ClearAction::Truncate
-    } else {
-        ClearAction::Remove
+    match name {
+        KEEP_ON_CLEAR => ClearAction::Keep,
+        OWN_CURRENT_LOG => ClearAction::Truncate,
+        _ => ClearAction::Remove,
     }
 }
 
@@ -464,37 +452,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 删了 core 的历史份，file-rotate 下次轮转会 panic（core release 下即整个服务 abort）。
+    /// 除了设置程序自己正在写的那份，全都删掉——core 与 TSF 的写端都会自愈。
     #[test]
-    fn clear_never_deletes_core_logs_and_truncates_live_ones() {
+    fn clear_removes_everything_but_own_current_log() {
         let root = tmp("clear_current");
         for n in [
             "wind_input.1.log",
             "wind_input.2.log",
             "startup_stage.log",
             "wind_setting.1.log",
+            "wind_setting.2.log",
         ] {
-            write(&root.join(n), "live");
+            write(&root.join(n), "x");
         }
-        write(&root.join("wind_setting.2.log"), "old");
-        write(&root.join("tsf_log").join("wind_tsf.wps.123.log"), "live");
+        write(&root.join("tsf_log").join("wind_tsf.wps.123.log"), "x");
 
         let r = clear(&root);
         assert_eq!(
             r,
             ClearReport {
-                removed: 1,
-                truncated: 5,
+                removed: 5,
+                truncated: 1,
                 failed: 0
             }
         );
         assert_eq!(
-            std::fs::metadata(root.join("wind_input.2.log"))
+            std::fs::metadata(root.join("wind_setting.1.log"))
                 .unwrap()
                 .len(),
             0
         );
-        assert!(!root.join("wind_setting.2.log").exists());
+        assert!(!root.join("wind_input.2.log").exists());
+        assert!(!root.join("tsf_log").join("wind_tsf.wps.123.log").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -502,7 +491,7 @@ mod tests {
     #[test]
     fn truncated_file_keeps_receiving_appends_from_the_start() {
         let root = tmp("clear_held");
-        let p = root.join("tsf_log").join("wind_tsf.wps.123.log");
+        let p = root.join("wind_setting.1.log");
         write(&p, "live");
         let mut writer = File::options().append(true).open(&p).unwrap();
 

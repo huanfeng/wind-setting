@@ -1536,7 +1536,7 @@ fn build_log_archive(state: &AppState) -> Element {
             };
             clear_msg.set(format!(
                 "将删除 {} 下的 {n} 个日志文件（共 {}），删除后无法恢复。\n\n\
-                 正在写入的日志会被清空而不是删除，TSF 日志开关会保留。确定清理吗？",
+                 TSF 日志开关会保留；输入法会自动新建日志继续记录。确定清理吗？",
                 dir.display(),
                 crate::log_tools::human_size(bytes)
             ));
