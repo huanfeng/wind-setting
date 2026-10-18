@@ -182,7 +182,8 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(crate::search::hint::build_hint_bar(search_state.hint))
         .child(pages_stack);
     // 二级导航栏 + 它与内容区之间的分隔线：两者同一个显隐条件，见 [`subnav_available`]。
-    let show_subnav = subnav_available(&subnavs, tab_sig);
+    let subnav_hidden = app.borrow().manifest.feature_hidden("subnav");
+    let show_subnav = subnav_available(&subnavs, tab_sig, subnav_hidden);
     let subnav_col = build_subnav_col(&subnavs, tab_sig, show_subnav.clone());
     let subnav_divider = Element::leaf()
         .width(1)
@@ -302,12 +303,19 @@ pub(crate) const NAV_W: i32 = 140;
 /// 词库页是个空占位、关于页只有一整块，给它们留一条空白竖栏只会让人以为界面坏了。
 /// 判据取「可跳转的分块 ≥ 2」——只有一块时点它等于没点。
 ///
+/// 定制版 `feature:subnav` 整栏不要（`hidden`），各页都按「没有」处理。
+///
 /// 返回 `Clone` 的闭包：导航栏与它右边那条分隔线各要一份 `visible_when`。
 fn subnav_available(
     navs: &[crate::subnav::SubNav],
     tab: Signal<usize>,
+    hidden: bool,
 ) -> impl Fn() -> bool + Clone + 'static {
-    let has: Rc<Vec<bool>> = Rc::new(navs.iter().map(|n| n.section_count() >= 2).collect());
+    let has: Rc<Vec<bool>> = Rc::new(
+        navs.iter()
+            .map(|n| !hidden && n.section_count() >= 2)
+            .collect(),
+    );
     move || has.get(tab.get()).copied().unwrap_or(false)
 }
 
@@ -1556,6 +1564,46 @@ mod tests {
         let (side, footer) = sidebar_and_footer_menus(&["feature:config_import"]);
         assert!(side.is_empty(), "侧栏右键仍有：{side:?}");
         assert_eq!(footer, ["界面细节…"]);
+    }
+
+    /// 建整个主窗，返回内容区左缘的 x（二级导航在不在，决定它往右让多少）。
+    fn content_left(hide: &[&str]) -> i32 {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let (h, errors) = wind_config::SettingsHide::parse(hide);
+        assert!(errors.is_empty(), "{errors:?}");
+        app.borrow_mut().manifest = crate::custom_hide::settings_manifest(&h, false);
+
+        let (w, hgt) = (1000, 700);
+        let mut tree = Tree::new();
+        let root = super::build(&app).width(w).height(hgt).build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(w, hgt), &mut windui::text::NullTextEngine);
+        // 根 stack → 主列 [标题栏, 分隔线, 主体, 分隔线, 底栏]；主体 = [侧栏, 分隔线, 二级导航, 分隔线, 内容]。
+        let main_col = tree.get(root).unwrap().children[0];
+        let body = tree.get(main_col).unwrap().children[2];
+        let content = *tree.get(body).unwrap().children.last().unwrap();
+        tree.abs_bounds(content).x
+    }
+
+    /// `feature:subnav`：首页（方案，分块 ≥ 2）不再留二级导航那一栏，内容区整栏左移。
+    #[test]
+    fn subnav_hide_drops_the_middle_column() {
+        let shown = content_left(&[]);
+        let hidden = content_left(&["feature:subnav"]);
+        assert_eq!(
+            shown - hidden,
+            crate::subnav::SUBNAV_W + 1,
+            "二级导航栏 + 分隔线应整体让出：shown={shown} hidden={hidden}"
+        );
     }
 
     /// 重建设置树前必须清空 `FieldRegistry`：主窗可以关掉再开，`shell::build` 因此不再是
