@@ -275,7 +275,31 @@ impl Manifest {
                 unmatched.push(format!("key:{pattern}{}", if *prefix { "*" } else { "" }));
             }
         }
+        self.hide_orphaned_dialog_members();
         unmatched
+    }
+
+    /// 宿主被定制版藏掉 ⇒ 寄居在它对话框里的项（`dialog_group` / `dialog_extra_for`）一并藏掉。
+    ///
+    /// 这些项本来就不独立成行，宿主没了就无处可去；不折进 `hidden` 的话 `sections_of`
+    /// 会因它们「未隐藏」留下一张只有标题的空卡，搜索也还搜得到它们。
+    fn hide_orphaned_dialog_members(&mut self) {
+        let hidden_hosts: Vec<(Option<String>, String)> = self
+            .items
+            .values()
+            .filter(|it| it.custom_hidden)
+            .map(|it| (it.opens_dialog.clone(), it.key.clone()))
+            .collect();
+        for item in self.items.values_mut() {
+            let orphaned = hidden_hosts.iter().any(|(group, host)| {
+                (item.dialog_group.is_some() && item.dialog_group == *group)
+                    || item.dialog_extra_for.as_deref() == Some(host.as_str())
+            });
+            if orphaned && !item.hidden {
+                item.hidden = true;
+                item.custom_hidden = true;
+            }
+        }
     }
 
     /// 返回以 `gate_key` 为门控开关的 dialog_button 项（用于「开关 + 设置」合并成一行）。
@@ -1027,19 +1051,7 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     // 宿主控件本体（与 field() 共用 build_control，避免分派漂移）。
     let control = build_control(state, key, item, cfg);
     // 成员项（按 manifest 顺序；group id 约定全局唯一以免跨 section 误吸）→ field() 行 → 分组对话框。
-    let member_keys: Vec<String> = state
-        .manifest
-        .order
-        .iter()
-        .filter(|k| {
-            state
-                .manifest
-                .get(k)
-                .and_then(|i| i.dialog_group.as_deref())
-                == Some(group.as_str())
-        })
-        .cloned()
-        .collect();
+    let member_keys = dialog_group_keys(state, &group);
     // 框内每行也挂锚点：搜索命中的可能正是这些寄居项，跳转要落到具体那一行。
     let rows: Vec<Element> = member_keys
         .iter()
@@ -3199,7 +3211,25 @@ fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
     Some(col)
 }
 
-/// 寄居在 `host_key` 对话框里的从属项的 key，按 manifest 顺序。
+/// `dialog_group == group` 的子对话框成员 key，按 manifest 顺序；被隐藏的不算。
+fn dialog_group_keys(state: &AppState, group: &str) -> Vec<String> {
+    state
+        .manifest
+        .order
+        .iter()
+        .filter(|k| {
+            state
+                .manifest
+                .get(k)
+                .filter(|i| !i.hidden)
+                .and_then(|i| i.dialog_group.as_deref())
+                == Some(group)
+        })
+        .cloned()
+        .collect()
+}
+
+/// 寄居在 `host_key` 对话框里的从属项的 key，按 manifest 顺序；被隐藏的不算。
 fn dialog_extra_keys(state: &AppState, host_key: &str) -> Vec<String> {
     state
         .manifest
@@ -3209,6 +3239,7 @@ fn dialog_extra_keys(state: &AppState, host_key: &str) -> Vec<String> {
             state
                 .manifest
                 .get(k)
+                .filter(|i| !i.hidden)
                 .and_then(|i| i.dialog_extra_for.as_deref())
                 == Some(host_key)
         })
@@ -5892,6 +5923,28 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 定制版只藏对话框里的一项：对话框照开，那一项不再出现在框里。
+    #[test]
+    fn hidden_members_stay_out_of_their_dialog() {
+        let (hide, _) = wind_config::SettingsHide::parse(&[
+            "key:input.scope_relax.prefix",
+            "key:ui.candidate.comment_above",
+        ]);
+        let mut st = AppState::empty();
+        st.manifest = Manifest::from_embedded();
+        st.manifest.apply_custom_hide(&hide);
+        let group = dialog_group_keys(&st, "scope_relax");
+        assert!(group.iter().any(|k| k == "input.scope_relax.page_end_key"));
+        assert!(!group.iter().any(|k| k == "input.scope_relax.prefix"));
+        let extra = dialog_extra_keys(&st, "ui.candidate.comment_template_horizontal");
+        assert!(
+            extra
+                .iter()
+                .any(|k| k == "ui.candidate.comment_template_vertical")
+        );
+        assert!(!extra.iter().any(|k| k == "ui.candidate.comment_above"));
+    }
 
     /// ★★★ 数值控件的 `[min, max]` 区间必须**包含** core 的出厂默认值。
     ///

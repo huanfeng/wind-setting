@@ -278,6 +278,59 @@ mod tests {
         assert!(leaked.is_empty(), "{leaked:?}");
     }
 
+    /// 宿主被藏 ⇒ 它对话框里的成员（`dialog_group`）跟着藏：「字符与标点」里的
+    /// 「临时放宽」两项只活在「候选检索范围」的扩展设置里，藏了宿主就不能再撑住空卡。
+    #[test]
+    fn hidden_host_takes_its_dialog_members() {
+        let has = |m: &Manifest| {
+            m.sections_of("input")
+                .iter()
+                .any(|(s, _)| s == "字符与标点")
+        };
+        assert!(
+            has(&Manifest::from_embedded()),
+            "前提：出厂清单有「字符与标点」分区"
+        );
+        let m = settings_manifest(
+            &hide(&[
+                "key:input.filter_mode",
+                "key:input.rare_phrase",
+                "key:input.punct.*",
+            ]),
+            false,
+        );
+        assert!(m.get("input.scope_relax.page_end_key").unwrap().hidden);
+        assert!(!has(&m), "细项全藏后分区标题不应再出现");
+        let index = crate::search::index::build_index(&m);
+        assert!(!index.iter().any(|e| e.id.starts_with("input.scope_relax.")));
+    }
+
+    /// 寄居项（`dialog_extra_for`）同理；宿主还在时成员不受牵连。
+    #[test]
+    fn hidden_host_takes_its_extra_members() {
+        let host = "ui.candidate.comment_template_horizontal";
+        let m = settings_manifest(&hide(&[&format!("key:{host}")]), false);
+        assert!(
+            m.get("ui.candidate.comment_template_vertical")
+                .unwrap()
+                .hidden
+        );
+        let m = settings_manifest(&hide(&["key:input.rare_phrase"]), false);
+        assert!(!m.get("input.scope_relax.page_end_key").unwrap().hidden);
+    }
+
+    /// `key:schema.mix_modes.*` 要连 `schema.mix_modes` 本身与 `#视图` 项一起藏。
+    #[test]
+    fn dot_star_covers_the_key_itself_and_its_views() {
+        let m = settings_manifest(
+            &hide(&["key:schema.mix_modes.*", "key:schema.quick_input.*"]),
+            false,
+        );
+        assert!(m.get("schema.mix_modes").unwrap().hidden);
+        assert!(m.get("schema.mix_modes#members").unwrap().hidden);
+        assert!(!m.sections_of("input").iter().any(|(s, _)| s == "快捷输入"));
+    }
+
     #[test]
     fn wizard_feature() {
         assert!(wizard_hidden(&hide(&["feature:wizard"])));
