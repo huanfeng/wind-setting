@@ -882,19 +882,31 @@ fn build_footer(
         }
     });
 
+    // 明暗 / 主题色各有一个 `feature:` id（`dark_mode` / `accent`），被定制版藏掉的不放。
+    // 角标是主题色下拉的附属，随它走。
+    let (show_dark, show_accent) = {
+        let st = app.borrow();
+        (
+            !st.manifest.feature_hidden("dark_mode"),
+            !st.manifest.feature_hidden("accent"),
+        )
+    };
     // 底栏与标题栏同色(SurfaceAlt)，与内容区卡片(Surface)区分；上方分割线由 main_col 提供层次。
-    Element::row()
+    let mut bar = Element::row()
         .width_match()
         .height(48)
         .cross(Align::Center)
         .padding_xy(14, 0)
         .spacing(8)
         .bg_role(Role::SurfaceAlt)
-        .child(status_dot)
-        .child(theme_btn)
-        .child(accent_pick)
-        .child(accent_badge)
-        .child(Element::leaf().weight(1.0))
+        .child(status_dot);
+    if show_dark {
+        bar = bar.child(theme_btn);
+    }
+    if show_accent {
+        bar = bar.child(accent_pick).child(accent_badge);
+    }
+    bar.child(Element::leaf().weight(1.0))
         .child(refresh_btn)
         .child(reset_btn)
         // 「恢复本页」会丢掉本页改动，与保存类按钮并排同权容易误点；隔一条竖线分开。

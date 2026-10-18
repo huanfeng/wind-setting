@@ -369,6 +369,8 @@ struct Handwritten {
     section: &'static str,
     /// 空格分隔的附加检索词。
     keywords: &'static str,
+    /// 所在卡片的定制版 `feature:` id：卡片被藏时条目一并不进索引。`""` = 不可隐藏。
+    feature: &'static str,
 }
 
 /// 手写页卡片补充索引。
@@ -382,42 +384,41 @@ struct Handwritten {
 #[rustfmt::skip]
 const HANDWRITTEN: &[Handwritten] = &[
     // ── 方案页：五条都落在「输入方案」卡上 ──
-    Handwritten { id: "schema:list", anchor: "schema:list", page: "schema", title: "方案列表", section: "输入方案", keywords: "切换 启用 排序 拖动" },
-    Handwritten { id: "schema:settings", anchor: "schema:list", page: "schema", title: "方案设置", section: "输入方案", keywords: "单个方案 配置 编辑" },
-    Handwritten { id: "schema:import", anchor: "schema:list", page: "schema", title: "导入方案包", section: "输入方案", keywords: "wpkg 安装 添加" },
-    Handwritten { id: "schema:export", anchor: "schema:list", page: "schema", title: "导出方案包", section: "输入方案", keywords: "wpkg 备份 分享" },
-    Handwritten { id: "schema:url-import", anchor: "schema:list", page: "schema", title: "从网址导入方案", section: "输入方案", keywords: "url 在线 下载" },
+    Handwritten { id: "schema:list", anchor: "schema:list", page: "schema", title: "方案列表", section: "输入方案", keywords: "切换 启用 排序 拖动", feature: "" },
+    Handwritten { id: "schema:settings", anchor: "schema:list", page: "schema", title: "方案设置", section: "输入方案", keywords: "单个方案 配置 编辑", feature: "" },
+    Handwritten { id: "schema:import", anchor: "schema:list", page: "schema", title: "导入方案包", section: "输入方案", keywords: "wpkg 安装 添加", feature: "" },
+    Handwritten { id: "schema:export", anchor: "schema:list", page: "schema", title: "导出方案包", section: "输入方案", keywords: "wpkg 备份 分享", feature: "" },
+    Handwritten { id: "schema:url-import", anchor: "schema:list", page: "schema", title: "从网址导入方案", section: "输入方案", keywords: "url 在线 下载", feature: "" },
     // ── 词库：走开窗，锚点用不上（见 JumpTarget::DictWindow）──
-    Handwritten { id: "dict:manage", anchor: "dict:manage", page: "dict", title: "词库管理", section: "词库", keywords: "词条 编辑 删除 查找" },
-    Handwritten { id: "dict:add-word", anchor: "dict:manage", page: "dict", title: "添加词条", section: "词库", keywords: "造词 新增 自定义" },
-    Handwritten { id: "dict:import", anchor: "dict:manage", page: "dict", title: "导入词库", section: "词库", keywords: "文本 合并 覆盖" },
-    Handwritten { id: "dict:phrase-import", anchor: "dict:manage", page: "dict", title: "短语导入", section: "词库", keywords: "phrase 批量" },
-    Handwritten { id: "dict:comment", anchor: "dict:manage", page: "dict", title: "注释词库", section: "词库", keywords: "comment 提示 释义" },
+    Handwritten { id: "dict:manage", anchor: "dict:manage", page: "dict", title: "词库管理", section: "词库", keywords: "词条 编辑 删除 查找", feature: "" },
+    Handwritten { id: "dict:add-word", anchor: "dict:manage", page: "dict", title: "添加词条", section: "词库", keywords: "造词 新增 自定义", feature: "" },
+    Handwritten { id: "dict:import", anchor: "dict:manage", page: "dict", title: "导入词库", section: "词库", keywords: "文本 合并 覆盖", feature: "" },
+    Handwritten { id: "dict:phrase-import", anchor: "dict:manage", page: "dict", title: "短语导入", section: "词库", keywords: "phrase 批量", feature: "" },
     // ── 统计 ──
-    Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表" },
-    Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零" },
+    Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表", feature: "" },
+    Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零", feature: "" },
     // ── 外观 ──
-    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "ui", title: "导入主题", section: "主题", keywords: "皮肤 toml 网址 安装" },
-    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "ui", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份" },
-    Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口" },
+    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "ui", title: "导入主题", section: "主题", keywords: "皮肤 toml 网址 安装", feature: "theme_transfer" },
+    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "ui", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份", feature: "theme_transfer" },
+    Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口", feature: "theme_editor" },
     // ── 应用兼容：规则本身的字段来自核心的元数据、运行时才知道，索引只收页级入口 ──
-    Handwritten { id: "compat:main", anchor: "advanced:compat", page: "advanced", title: "应用兼容性与独立配置", section: "应用兼容性", keywords: "兼容性 软件 进程 候选窗 位置 飞书 微信 excel wps 规则 compat" },
-    Handwritten { id: "compat:add", anchor: "advanced:compat", page: "advanced", title: "新增应用规则", section: "应用兼容性", keywords: "添加 进程名 exe 手动" },
-    Handwritten { id: "compat:import", anchor: "advanced:compat", page: "advanced", title: "导入应用兼容规则", section: "应用兼容性", keywords: "compat.toml 分享 合并 替换" },
-    Handwritten { id: "compat:export", anchor: "advanced:compat", page: "advanced", title: "导出应用兼容规则", section: "应用兼容性", keywords: "compat.toml 备份 分享" },
-    Handwritten { id: "compat:reset", anchor: "advanced:compat", page: "advanced", title: "还原应用兼容规则", section: "应用兼容性", keywords: "出厂 默认 恢复 全部还原" },
+    Handwritten { id: "compat:main", anchor: "advanced:compat", page: "advanced", title: "应用兼容性与独立配置", section: "应用兼容性", keywords: "兼容性 软件 进程 候选窗 位置 飞书 微信 excel wps 规则 compat", feature: "compat" },
+    Handwritten { id: "compat:add", anchor: "advanced:compat", page: "advanced", title: "新增应用规则", section: "应用兼容性", keywords: "添加 进程名 exe 手动", feature: "compat" },
+    Handwritten { id: "compat:import", anchor: "advanced:compat", page: "advanced", title: "导入应用兼容规则", section: "应用兼容性", keywords: "compat.toml 分享 合并 替换", feature: "compat" },
+    Handwritten { id: "compat:export", anchor: "advanced:compat", page: "advanced", title: "导出应用兼容规则", section: "应用兼容性", keywords: "compat.toml 备份 分享", feature: "compat" },
+    Handwritten { id: "compat:reset", anchor: "advanced:compat", page: "advanced", title: "还原应用兼容规则", section: "应用兼容性", keywords: "出厂 默认 恢复 全部还原", feature: "compat" },
     // ── 高级 ──
-    Handwritten { id: "advanced:integration", anchor: "advanced:integration", page: "advanced", title: "桌面集成", section: "桌面集成", keywords: "协议 关联 注册" },
-    Handwritten { id: "advanced:protocol", anchor: "advanced:integration", page: "advanced", title: "协议关联", section: "桌面集成", keywords: "windinput 链接 深链" },
-    Handwritten { id: "advanced:file-assoc", anchor: "advanced:integration", page: "advanced", title: "文件关联", section: "桌面集成", keywords: "wpkg 双击 打开方式" },
-    Handwritten { id: "advanced:import-export", anchor: "advanced:import-export", page: "advanced", title: "导入与导出", section: "导入与导出", keywords: "配置 迁移 剪贴板" },
-    Handwritten { id: "advanced:backup", anchor: "advanced:backup", page: "advanced", title: "备份与还原", section: "备份与还原", keywords: "快照 恢复 存档" },
+    Handwritten { id: "advanced:integration", anchor: "advanced:integration", page: "advanced", title: "桌面集成", section: "桌面集成", keywords: "协议 关联 注册", feature: "integration" },
+    Handwritten { id: "advanced:protocol", anchor: "advanced:integration", page: "advanced", title: "协议关联", section: "桌面集成", keywords: "windinput 链接 深链", feature: "integration" },
+    Handwritten { id: "advanced:file-assoc", anchor: "advanced:integration", page: "advanced", title: "文件关联", section: "桌面集成", keywords: "wpkg 双击 打开方式", feature: "integration" },
+    Handwritten { id: "advanced:import-export", anchor: "advanced:import-export", page: "advanced", title: "导入与导出", section: "导入与导出", keywords: "配置 迁移 剪贴板", feature: "config_import" },
+    Handwritten { id: "advanced:backup", anchor: "advanced:backup", page: "advanced", title: "备份与还原", section: "备份与还原", keywords: "快照 恢复 存档", feature: "backup" },
     // 两条都落在「内存占用」那一行（「诊断信息…」按钮所在行）；锚点即 `pages::memory::ANCHOR`。
-    Handwritten { id: "advanced:memory", anchor: "advanced:memory", page: "advanced", title: "内存占用", section: "性能与诊断", keywords: "内存 诊断 复制 反馈 占用 方案 memory" },
-    Handwritten { id: "advanced:diagnostics", anchor: "advanced:memory", page: "advanced", title: "诊断信息", section: "性能与诊断", keywords: "内存 复制 反馈 自动刷新 排查 diagnostics" },
+    Handwritten { id: "advanced:memory", anchor: "advanced:memory", page: "advanced", title: "内存占用", section: "性能与诊断", keywords: "内存 诊断 复制 反馈 占用 方案 memory", feature: "memory" },
+    Handwritten { id: "advanced:diagnostics", anchor: "advanced:memory", page: "advanced", title: "诊断信息", section: "性能与诊断", keywords: "内存 复制 反馈 自动刷新 排查 diagnostics", feature: "memory" },
     // ── 关于（内容不多，三条共用整页锚点）──
-    Handwritten { id: "about:version", anchor: "about:main", page: "about", title: "版本信息", section: "关于", keywords: "版本号 内部版本 构建" },
-    Handwritten { id: "about:update", anchor: "about:main", page: "about", title: "检查更新", section: "关于", keywords: "升级 新版本 下载" },
+    Handwritten { id: "about:version", anchor: "about:main", page: "about", title: "版本信息", section: "关于", keywords: "版本号 内部版本 构建", feature: "" },
+    Handwritten { id: "about:update", anchor: "about:main", page: "about", title: "检查更新", section: "关于", keywords: "升级 新版本 下载", feature: "update_check" },
 ];
 
 /// 手写页面名（面包屑首段）。
@@ -435,9 +436,11 @@ fn page_label(page: &str) -> &'static str {
     }
 }
 
-fn handwritten_entries() -> Vec<SearchEntry> {
+fn handwritten_entries(manifest: &Manifest) -> Vec<SearchEntry> {
     HANDWRITTEN
         .iter()
+        // 被定制版 `feature:` 藏掉的卡片：页面上没有落点，搜到了点过去什么都没有。
+        .filter(|h| h.feature.is_empty() || !manifest.feature_hidden(h.feature))
         .map(|h| SearchEntry {
             id: h.id.to_string(),
             title: h.title.to_string(),
@@ -533,7 +536,7 @@ fn schema_level_entries() -> Vec<SearchEntry> {
 /// 构建完整索引（manifest + 手写 + 方案级）。启动时跑一次，之后常驻。
 pub fn build_index(manifest: &Manifest) -> Vec<SearchEntry> {
     let mut out = manifest_entries(manifest);
-    out.extend(handwritten_entries());
+    out.extend(handwritten_entries(manifest));
     out.extend(schema_level_entries());
     out
 }
@@ -584,6 +587,19 @@ mod tests {
 
     fn manifest() -> Manifest {
         Manifest::from_embedded()
+    }
+
+    /// 手写条目标的 `feature` 必须是 core 认识的 id：写错一个字，定制者照文档写的选择器
+    /// 就藏了卡片却藏不住搜索条目，且不报错。
+    #[test]
+    fn handwritten_features_are_known_ids() {
+        let bad: Vec<(&str, &str)> = HANDWRITTEN
+            .iter()
+            .filter(|h| !h.feature.is_empty())
+            .filter(|h| !wind_config::SETTINGS_FEATURES.contains(&h.feature))
+            .map(|h| (h.id, h.feature))
+            .collect();
+        assert!(bad.is_empty(), "不在 SETTINGS_FEATURES 里：{bad:?}");
     }
 
     /// 每个 (group, section) 都必须有渲染落点，否则那批项搜不到且无报错。

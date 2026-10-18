@@ -157,6 +157,9 @@ pub struct Manifest {
     /// 分组列表（已按 order 升序）。保留备用，见 [`MGroup`] 说明。
     #[allow(dead_code)]
     pub groups: Vec<MGroup>,
+    /// 定制版 `feature:` 藏掉的手写卡 id（[`Manifest::apply_custom_hide`] 填）。与 `hidden`
+    /// 同理随清单走：页面与搜索问的是同一份，「显示定制版隐藏的设置」打开时不折，自然为空。
+    hidden_features: Vec<String>,
 }
 
 impl Manifest {
@@ -245,6 +248,7 @@ impl Manifest {
             items,
             order,
             groups,
+            hidden_features: Vec::new(),
         }
     }
 
@@ -260,8 +264,12 @@ impl Manifest {
     pub fn apply_custom_hide(&mut self, hide: &wind_config::SettingsHide) -> Vec<String> {
         let mut unmatched = Vec::new();
         for sel in hide.selectors() {
-            let wind_config::SettingsSelector::Key { pattern, prefix } = sel else {
-                continue;
+            let (pattern, prefix) = match sel {
+                wind_config::SettingsSelector::Key { pattern, prefix } => (pattern, prefix),
+                wind_config::SettingsSelector::Feature(id) => {
+                    self.hidden_features.push(id.clone());
+                    continue;
+                }
             };
             let mut hit = false;
             for item in self.items.values_mut() {
@@ -300,6 +308,15 @@ impl Manifest {
                 item.custom_hidden = true;
             }
         }
+    }
+
+    /// 手写卡 `id`（`wind_config::SETTINGS_FEATURES` 之一）是否被定制版藏掉。
+    pub fn feature_hidden(&self, id: &str) -> bool {
+        debug_assert!(
+            wind_config::SETTINGS_FEATURES.contains(&id),
+            "`{id}` 不在 SETTINGS_FEATURES 里，定制者写不出能命中它的选择器"
+        );
+        self.hidden_features.iter().any(|f| f == id)
     }
 
     /// 返回以 `gate_key` 为门控开关的 dialog_button 项（用于「开关 + 设置」合并成一行）。

@@ -127,7 +127,7 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             // 性能与诊断：清单里的开关之后接手写的「内存占用」诊断行，同一张卡片。
             // 懒加载哨兵挂在卡片外：混进 rows 会多出一条分隔线（见 widgets::card_with_attachment）。
             let mut loader = None;
-            if sec == memory::SECTION {
+            if sec == memory::SECTION && !state.manifest.feature_hidden("memory") {
                 let (row, l) = memory::build_rows(state);
                 rows.push(row);
                 loader = Some(l);
@@ -141,9 +141,12 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         })
         .collect();
 
-    let mut secs: Vec<Element> = vec![
+    // 四张手写卡各有一个 `feature:` id，被定制版藏掉的不建（二级导航随之不登记）。
+    let shown = |id: &str| !state.manifest.feature_hidden(id);
+    let mut secs: Vec<Element> = Vec::new();
+    if shown("integration") {
         // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
-        nav.wrap(
+        secs.push(nav.wrap(
             "系统集成",
             0,
             crate::search::anchor::wrap(
@@ -151,10 +154,12 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
                 "advanced:integration",
                 state.jump,
             ),
-        ),
+        ));
+    }
+    if shown("config_import") {
         // 导航名与卡片标题必须一致，否则用户点了「导入与导出」滚到一张写着「导入」的卡上，
         // 会以为跳错了地方。这张卡的标题就是「导入」（`build_import_export_section`）。
-        nav.wrap(
+        secs.push(nav.wrap(
             "导入",
             0,
             crate::search::anchor::wrap(
@@ -166,8 +171,10 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
                 "advanced:import-export",
                 state.jump,
             ),
-        ),
-        nav.wrap(
+        ));
+    }
+    if shown("backup") {
+        secs.push(nav.wrap(
             "备份与还原",
             0,
             crate::search::anchor::wrap(
@@ -175,18 +182,21 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
                 "advanced:backup",
                 state.jump,
             ),
-        ),
+        ));
+    }
+    if shown("compat") {
         // 应用兼容：入口卡片，界面本身在独立窗里（规则多、三栏，放不进一页）。
         // 排在「游戏兼容」上方——两者都是「个别软件的兼容处理」，前者按软件、后者按注册表。
-        nav.wrap(
+        secs.push(nav.wrap(
             "应用兼容性",
             0,
             crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
-        ),
-    ];
+        ));
+    }
     // 「性能与诊断」的清单项（常驻所有方案）被定制版藏掉时，`sections_of` 会把整个分区剔掉，
     // 可手写的「内存占用 / 诊断信息」行不是设置项、不该跟着消失（搜索里也还有它们的条目）。
-    if !manifest_secs.contains_key(memory::SECTION) {
+    // 两者都藏了就整张卡不出。
+    if shown("memory") && !manifest_secs.contains_key(memory::SECTION) {
         let (row, loader) = memory::build_rows(state);
         let card = crate::widgets::section_with_head(memory::SECTION, None, vec![row]);
         manifest_secs.insert(
@@ -632,9 +642,16 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
     //
     // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
     // "现在按钮是要做什么"和"现在连接是什么状态"。
+    let transfer = !state.manifest.feature_hidden("theme_transfer");
+    let mut ui_secs = state.manifest.sections_of("ui");
+    // 「主题」卡的清单项全被定制版藏掉时 `sections_of` 不再给这一节，可三行手写入口没被藏
+    // 就不该跟着消失：补一张只有这三行的「主题」卡，排在原位（页首）。
+    if transfer && !ui_secs.iter().any(|(s, _)| s == "主题") {
+        ui_secs.insert(0, ("主题".to_string(), Vec::new()));
+    }
     let mut secs: Vec<Element> = Vec::new();
-    for (sec, keys) in state.manifest.sections_of("ui") {
-        let rows = if sec == "主题" {
+    for (sec, keys) in ui_secs {
+        let rows = if sec == "主题" && transfer {
             let mut rows = section_rows(state, &keys);
             rows.extend(theme_transfer_rows(state));
             rows
@@ -650,15 +667,17 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
         };
         secs.push(nav.wrap(&sec, 0, card));
     }
-    secs.push(nav.wrap(
-        "主题编辑器",
-        0,
-        crate::search::anchor::wrap(
-            theme_editor_connect_card(app, state),
-            "ui:theme-editor",
-            state.jump,
-        ),
-    ));
+    if !state.manifest.feature_hidden("theme_editor") {
+        secs.push(nav.wrap(
+            "主题编辑器",
+            0,
+            crate::search::anchor::wrap(
+                theme_editor_connect_card(app, state),
+                "ui:theme-editor",
+                state.jump,
+            ),
+        ));
+    }
     // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
     // toast_sink，这里不需要（也不应该）再单独挂一份。
     let page = sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs);
@@ -1077,7 +1096,9 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                     );
                     // 非 Windows 没有升级通路（见 update::self_update_supported）：
                     // 按钮点下去只会下到一个装不上的 .exe，不如不给。
-                    if crate::update::self_update_supported() {
+                    if crate::update::self_update_supported()
+                        && !state.manifest.feature_hidden("update_check")
+                    {
                         row.child(
                             Element::button("检查更新")
                                 .small()

@@ -597,6 +597,9 @@ fn main() {
             false
         } else if forced {
             cfg.network_consent
+        } else if custom_hide::update_check_hidden(custom_hide::installed()) {
+            // 定制版藏了「检查更新」：开窗也不自动查、不弹升级框（同 `feature:wizard`）。
+            false
         } else {
             update::should_auto_check(cfg.network_consent, cfg.auto_check, cfg.last_check_at, now)
         };

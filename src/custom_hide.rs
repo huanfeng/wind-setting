@@ -83,6 +83,12 @@ pub fn wizard_hidden(hide: &SettingsHide) -> bool {
     hide.hides_feature("wizard")
 }
 
+/// 打开设置时的自动检查更新是否被定制版关掉（`feature:update_check`）。同 [`wizard_hidden`]：
+/// 只看清单、不看逃生口——逃生口找回的是关于页的按钮，自己点是知情选择，开窗就弹升级框不是。
+pub fn update_check_hidden(hide: &SettingsHide) -> bool {
+    hide.hides_feature("update_check")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,9 +337,173 @@ mod tests {
         assert!(!m.sections_of("input").iter().any(|(s, _)| s == "快捷输入"));
     }
 
+    /// 精确写 `key:schema.mix_modes` 也连带它的 `#视图` 行（与 `.*` 一致），同分区别的键不动。
+    #[test]
+    fn exact_key_covers_its_views() {
+        let m = settings_manifest(&hide(&["key:schema.mix_modes"]), false);
+        let views: Vec<&String> = m
+            .order
+            .iter()
+            .filter(|k| k.starts_with("schema.mix_modes#"))
+            .collect();
+        assert!(views.len() >= 2, "前提：出厂清单有 mix_modes 的视图项");
+        assert!(m.get("schema.mix_modes").unwrap().hidden);
+        for k in views {
+            assert!(m.get(k).unwrap().hidden, "`{k}` 应随精确 key 一起藏");
+        }
+        assert!(
+            m.order
+                .iter()
+                .filter(|k| k.starts_with("schema.quick_input."))
+                .any(|k| !m.get(k).unwrap().hidden),
+            "同分区的 schema.quick_input.* 不应被牵连"
+        );
+    }
+
+    /// `feature:` 记在清单上，页面与搜索问同一份；逃生口打开时不折，一个都不藏。
+    #[test]
+    fn feature_selectors_are_recorded_on_the_manifest() {
+        let raw = ["feature:backup", "feature:theme_editor"];
+        let m = settings_manifest(&hide(&raw), false);
+        assert!(m.feature_hidden("backup"));
+        assert!(m.feature_hidden("theme_editor"));
+        assert!(!m.feature_hidden("integration"));
+        assert!(!settings_manifest(&hide(&raw), true).feature_hidden("backup"));
+    }
+
+    /// 被藏的手写卡搜不到，且只少它自己那几条。
+    #[test]
+    fn hidden_feature_cards_drop_out_of_search() {
+        use std::collections::BTreeSet;
+        let ids = |raw: &[String]| -> BTreeSet<String> {
+            crate::search::index::build_index(&settings_manifest(&hide_owned(raw), false))
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        let full = ids(&[]);
+        let cases: &[(&str, &[&str])] = &[
+            ("theme_transfer", &["ui:theme-import", "ui:theme-export"]),
+            ("theme_editor", &["ui:theme-editor"]),
+            (
+                "integration",
+                &[
+                    "advanced:integration",
+                    "advanced:protocol",
+                    "advanced:file-assoc",
+                ],
+            ),
+            ("config_import", &["advanced:import-export"]),
+            ("backup", &["advanced:backup"]),
+            (
+                "compat",
+                &[
+                    "compat:main",
+                    "compat:add",
+                    "compat:import",
+                    "compat:export",
+                    "compat:reset",
+                ],
+            ),
+            ("memory", &["advanced:memory", "advanced:diagnostics"]),
+            ("update_check", &["about:update"]),
+        ];
+        for (feature, gone) in cases {
+            let got = ids(&[format!("feature:{feature}")]);
+            for id in *gone {
+                assert!(full.contains(*id), "前提：索引里有 `{id}`");
+                assert!(!got.contains(*id), "藏了 `{feature}` 仍搜得到 `{id}`");
+            }
+            assert_eq!(
+                full.len() - got.len(),
+                gone.len(),
+                "藏 `{feature}` 只该少它自己的条目"
+            );
+        }
+    }
+
+    /// 按 `hide` 折清单、建整棵页面树，返回 `page` 那一页二级导航里的卡片名。
+    fn nav_labels(raw: &[String], page: &str) -> Vec<String> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+        app.borrow_mut().manifest = settings_manifest(&hide_owned(raw), false);
+        let st = app.borrow();
+        let tabs = crate::pages::all_tabs(&app, &st);
+        let i = crate::cli::page_to_index(page).expect("页 id");
+        tabs[i]
+            .subnav
+            .items()
+            .into_iter()
+            .map(|it| it.label)
+            .collect()
+    }
+
+    fn keys_of_section(group: &str, sec: &str) -> Vec<String> {
+        Manifest::from_embedded()
+            .sections_of(group)
+            .into_iter()
+            .find(|(s, _)| s == sec)
+            .map(|(_, keys)| keys.iter().map(|k| format!("key:{k}")).collect())
+            .expect("前提：出厂清单有该分区")
+    }
+
+    /// 四张独立的手写卡：藏谁谁不建，别的卡不受牵连。
+    #[test]
+    fn hidden_feature_cards_are_not_built() {
+        let full = nav_labels(&[], "advanced");
+        for (feature, card) in [
+            ("integration", "系统集成"),
+            ("config_import", "导入"),
+            ("backup", "备份与还原"),
+            ("compat", "应用兼容性"),
+        ] {
+            assert!(full.iter().any(|l| l == card), "前提：高级页有「{card}」");
+            let got = nav_labels(&[format!("feature:{feature}")], "advanced");
+            assert!(
+                !got.iter().any(|l| l == card),
+                "藏了 `{feature}` 仍有「{card}」"
+            );
+            assert_eq!(got.len() + 1, full.len(), "藏 `{feature}` 只该少一张卡");
+        }
+        assert!(nav_labels(&[], "ui").iter().any(|l| l == "主题编辑器"));
+        let ui = nav_labels(&["feature:theme_editor".into()], "ui");
+        assert!(!ui.iter().any(|l| l == "主题编辑器"));
+    }
+
+    /// 与清单项同卡的手写行：手写行与清单项都藏了卡才消失，只藏一边卡还在。
+    #[test]
+    fn shared_cards_vanish_only_when_both_halves_are_hidden() {
+        for (page, group, card, feature) in [
+            ("ui", "ui", "主题", "theme_transfer"),
+            (
+                "advanced",
+                "advanced",
+                crate::pages::memory::SECTION,
+                "memory",
+            ),
+        ] {
+            let has = |raw: &[String]| nav_labels(raw, page).iter().any(|l| l == card);
+            let mut raw = keys_of_section(group, card);
+            assert!(has(&raw), "只藏清单项，「{card}」卡应留给手写行");
+            assert!(
+                has(&[format!("feature:{feature}")]),
+                "只藏手写行，「{card}」卡还有清单项"
+            );
+            raw.push(format!("feature:{feature}"));
+            assert!(!has(&raw), "两边都藏了，「{card}」不应留下空卡");
+        }
+    }
+
     #[test]
     fn wizard_feature() {
         assert!(wizard_hidden(&hide(&["feature:wizard"])));
         assert!(!wizard_hidden(&hide(&["key:input.temp_english.*"])));
+    }
+
+    #[test]
+    fn update_check_feature() {
+        assert!(update_check_hidden(&hide(&["feature:update_check"])));
+        assert!(!update_check_hidden(&hide(&["feature:wizard"])));
     }
 }
