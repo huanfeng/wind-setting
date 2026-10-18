@@ -69,7 +69,7 @@ pub fn run(params: AddWordParams) {
     let schema_id = signal(params.schema.clone());
     let code = signal(initial_code(&params));
     let text = signal(params.text.clone());
-    let weight = signal("1200".to_string());
+    let weight = signal(DEFAULT_WEIGHT.to_string());
     let error = signal(String::new());
     let auto = AutoEncode::new();
 
@@ -330,7 +330,13 @@ fn submit(
         error.set("编码不能为空（可点「生成编码」）".to_string());
         return false;
     }
-    let w: i64 = weight.get().trim().parse().unwrap_or(1200);
+    let w = match parse_weight(&weight.get()) {
+        Ok(w) => w,
+        Err(e) => {
+            error.set(e);
+            return false;
+        }
+    };
     let sid = schema_id.get();
     let p = json!({ "schemaId": sid, "code": c, "text": t, "weight": w });
     match crate::rpc::call_core("dict.add", &p) {
@@ -339,6 +345,32 @@ fn submit(
             error.set(format!("添加失败：{e}"));
             false
         }
+    }
+}
+
+/// 权重的取值范围：core 按 `i32` 存（`dict.add` 取参后 `as i32`，用户词文本与日志两头都是
+/// `i32`）。越界的数发过去会被**静默截断**成另一个数，故在这里拦。
+const WEIGHT_MIN: i32 = i32::MIN;
+const WEIGHT_MAX: i32 = i32::MAX;
+/// 窗口预填的权重。
+const DEFAULT_WEIGHT: i32 = 1200;
+
+/// 权重输入框旁的说明：给个参照值比写出 i32 两端更有用；范围只在越界时报。
+fn weight_hint() -> String {
+    format!("整数，默认 {DEFAULT_WEIGHT}，越大越靠前")
+}
+
+/// 解析权重输入。空串与非整数报「需为整数」（同词库页的加/改词对话框），越界报范围。
+fn parse_weight(s: &str) -> Result<i32, String> {
+    use std::num::IntErrorKind;
+    match s.trim().parse::<i32>() {
+        Ok(w) => Ok(w),
+        Err(e) => match e.kind() {
+            IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => {
+                Err(format!("权重超出范围（{WEIGHT_MIN} ~ {WEIGHT_MAX}）"))
+            }
+            _ => Err("权重需为整数".to_string()),
+        },
     }
 }
 
@@ -483,14 +515,27 @@ fn build_form(
         .child(field("词条", text_input))
         .child(field(
             "权重",
-            Element::text_input(weight, "")
-                .width(90)
-                .height(34)
-                .on_submit(move |ctx| {
-                    if submit(schema_id, code, text, weight, error) {
-                        ctx.request_close();
-                    }
-                }),
+            Element::row()
+                .weight(1.0)
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::text_input(weight, "")
+                        .width(90)
+                        .height(34)
+                        .on_submit(move |ctx| {
+                            if submit(schema_id, code, text, weight, error) {
+                                ctx.request_close();
+                            }
+                        }),
+                )
+                .child(
+                    Element::label(weight_hint())
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .weight(1.0)
+                        .max_lines(2),
+                ),
         ))
         // 错误提示（红字，仅在有错时显示；替代会被 on_update 丢弃的 toast）。
         .child(
@@ -656,6 +701,45 @@ mod tests {
         };
         let (_, t) = resolve_fields(&params("", ""), long, &c);
         assert_eq!(t, long, "core 没说上限时不得自作主张截断");
+    }
+
+    /// 权重：范围内（含两端、负数、前后空白）照收。
+    #[test]
+    fn weight_within_range_is_accepted() {
+        assert_eq!(parse_weight("1200"), Ok(1200));
+        assert_eq!(parse_weight(" -5 "), Ok(-5));
+        assert_eq!(parse_weight("2147483647"), Ok(i32::MAX));
+        assert_eq!(parse_weight("-2147483648"), Ok(i32::MIN));
+    }
+
+    /// 权重越界报范围而不是静默截断（core 侧 `as i32` 会把它变成另一个数）。
+    #[test]
+    fn weight_out_of_range_is_rejected_with_range() {
+        for s in ["2147483648", "-2147483649", "99999999999"] {
+            let e = parse_weight(s).unwrap_err();
+            assert!(e.contains("超出范围"), "{s:?} 应报越界，实得 {e:?}");
+            assert!(e.contains("2147483647"), "报错要带上限：{e:?}");
+        }
+    }
+
+    /// 空串、小数、非数字报「需为整数」，不再静默当 1200 提交。
+    #[test]
+    fn weight_non_integer_is_rejected() {
+        for s in ["", "  ", "1.5", "abc", "1e3"] {
+            assert_eq!(parse_weight(s), Err("权重需为整数".to_string()), "{s:?}");
+        }
+    }
+
+    /// 提示里的参照值就是预填值，且本身能通过校验。
+    #[test]
+    fn weight_hint_names_the_default() {
+        assert!(weight_hint().contains(&DEFAULT_WEIGHT.to_string()));
+        assert_eq!(
+            parse_weight(&DEFAULT_WEIGHT.to_string()),
+            Ok(DEFAULT_WEIGHT)
+        );
+        assert!(parse_weight(&WEIGHT_MIN.to_string()).is_ok());
+        assert!(parse_weight(&WEIGHT_MAX.to_string()).is_ok());
     }
 
     /// 深链带来的词条不截断：core 那边已按同一上限取好，再截一次只会掩盖分叉。
