@@ -1670,6 +1670,15 @@
       ]
     },
     {
+      "default": "ignore",
+      "key": "keys.overflow.page_key",
+      "type": "enum",
+      "values": [
+        "ignore",
+        "commit_and_input"
+      ]
+    },
+    {
       "default": 7,
       "key": "ui.candidate.per_page",
       "type": "int"

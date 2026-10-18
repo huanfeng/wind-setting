@@ -1566,6 +1566,18 @@ options = [
   { value = "commit_and_input", label = "上屏并继续输入" },
 ]
 
+[[items]]
+key = "keys.overflow.page_key"
+group = "input"
+section = "候选无效按键"
+type = "select"
+label = "翻页键翻不动时"
+hint = "首页按上翻、末页按下翻时的处理方式。只对 - = , . [ ] 这类能出字的翻页键、且本批候选还没翻过页时生效；- 要先清空「编码中可直接输入的符号」才会生效"
+options = [
+  { value = "ignore", label = "不起作用" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
+
 # ── 快捷输入 ──
 [[items]]
 key = "schema.mix_modes"

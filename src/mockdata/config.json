@@ -230,6 +230,7 @@
   "open_settings": "ctrl+shift+]",
   "overflow": {
    "number_key": "ignore",
+   "page_key": "ignore",
    "select_char_key": "ignore",
    "select_key": "ignore"
   },
