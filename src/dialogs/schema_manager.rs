@@ -150,6 +150,9 @@ pub enum SettingsSection {
     AuxCode,
     /// 码表配置：总开关 +（开启后）子对话框。仅码表方案有。
     CodeTable,
+    /// 整句输入（实验性）：`[engine.codetable] sentence_input` 的开关。仅码表方案有，
+    /// 判据见 [`sentence_input_seed`]。
+    Sentence,
     /// 特殊模式（overlay）：把本方案变成「引导键临时进入」的快符/生僻字那类。
     /// 仅码表方案有——overlay 的价值在于一张自成体系的小码表。
     Overlay,
@@ -195,6 +198,7 @@ impl SettingsSection {
         Self::ShuangpinLayout,
         Self::AuxCode,
         Self::CodeTable,
+        Self::Sentence,
         Self::Overlay,
         Self::Behavior,
         Self::ExtensionDicts,
@@ -219,7 +223,9 @@ impl SettingsSection {
         match self {
             Self::Header | Self::ShuangpinLayout | Self::ExtensionDicts => Some(0),
             Self::EntryKeys => Some(1),
-            Self::AuxCode | Self::CodeTable | Self::Overlay | Self::Behavior => Some(2),
+            Self::AuxCode | Self::CodeTable | Self::Sentence | Self::Overlay | Self::Behavior => {
+                Some(2)
+            }
             Self::Divider | Self::Empty => None,
         }
     }
@@ -257,6 +263,20 @@ const AUX_CTRL_W: i32 = 150;
 /// 要放得下最长的「五笔 86」+ 徽章 + 下拉箭头。三行同用它，来源列（跟随 / 已自定义）
 /// 才在同一竖线上；控件在容器里靠右，开关、数字框仍按 `AUX_CTRL_W` 自身宽度画。
 const AUX_SRC_W: i32 = 220;
+
+/// 整句输入那一节的种子：码表方案给 `Some(当前合并值)`，其余方案 `None`（不建节、不落盘）。
+/// 建节与落盘共用这一条判据，理由同 [`has_aux_code_table`]。
+///
+/// 混输方案不给：它配着拼音子引擎，超码长输入由拼音接管，码表整句不会触发——core 对这种
+/// 声明只报一条告警（`EngineManager::build_engine` 的混输分支）。给一个开了没反应的开关，
+/// 比不给更糟。
+fn sentence_input_seed(cfg: &Value) -> Option<bool> {
+    (cfg.pointer("/engine/type").and_then(Value::as_str) == Some("codetable")).then(|| {
+        cfg.pointer("/engine/codetable/sentence_input")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    })
+}
 
 /// 这个方案**有没有可用的辅助码表**。建节与落盘共用**同一条**判据。
 ///
@@ -1309,6 +1329,9 @@ pub struct SchemaManagerState {
     pub settings_ov_layout: Signal<usize>,
     /// 打开对话框时的两项初值，用于脏判定——没有它，打开看一眼再关掉也会入队写盘。
     settings_ov_at_open: Rc<std::cell::Cell<(bool, usize)>>,
+    /// 整句输入开关（`[engine.codetable] sentence_input`）与打开时的初值（脏判定用）。
+    pub settings_sentence: Signal<bool>,
+    settings_sentence_at_open: Rc<std::cell::Cell<bool>>,
     /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
     /// 标题里不带方案名的话，点进去就不知道自己在配哪个表了。
     /// 行内摘要（「跟随全局配置」/「已自定义」）。**定宽**——文本随勾选变化，
@@ -1463,6 +1486,8 @@ impl SchemaManagerState {
             settings_bh_punct_extra: Rc::new(RefCell::new(serde_json::Map::new())),
             settings_bh_at_open: Rc::new(RefCell::new(BehaviorSeed::default())),
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
+            settings_sentence: signal(false),
+            settings_sentence_at_open: Rc::new(std::cell::Cell::new(false)),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
             settings_ka: crate::dialogs::schema_key_actions::KeyActionFields::schema_scoped(),
@@ -2662,6 +2687,16 @@ impl SchemaManagerState {
                 }
             }
         }
+        // 整句输入：非码表方案也要把两个信号归零——信号是整个对话框复用的一组。
+        {
+            let seed = sentence_input_seed(&self.settings_cfg.borrow());
+            self.settings_sentence.set(seed.unwrap_or(false));
+            self.settings_sentence_at_open.set(seed.unwrap_or(false));
+            if seed.is_some() {
+                sections.push(SettingsSection::Divider);
+                sections.push(SettingsSection::Sentence);
+            }
+        }
         // 按键功能表：所有方案都有（按键功能与引擎类型无关）。放在码表配置之后、
         // 扩展词库之前——它同属「这个方案怎么用」，而词库是「这个方案有什么内容」。
         {
@@ -2839,6 +2874,18 @@ impl SchemaManagerState {
                 self.settings_ct.apply(&mut cfg);
                 cfg_changed = true;
             }
+        }
+
+        // 整句输入：同一份 cfg。写实值而不是三态——它没有全局基线可跟随；与方案文件
+        // 相同时 core 的 `json_diff` 自会把它从 override 里摘掉。
+        let sentence = self.settings_sentence.get();
+        if sentence_input_seed(&cfg).is_some() && sentence != self.settings_sentence_at_open.get() {
+            set_json_path(
+                &mut cfg,
+                &["engine", "codetable", "sentence_input"],
+                json!(sentence),
+            );
+            cfg_changed = true;
         }
 
         // 按键功能表：写进同一份 cfg（理由同上——core 是整份 diff 后全量重写 override）。
@@ -4960,6 +5007,23 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         })
                 }),
                 vec![crate::widgets::CardItem::Bare(body)],
+            )
+        }
+        SettingsSection::Sentence => {
+            // 单列一节而不并进「码表配置」：那一节是逐项三态（跟随全局 / 自定义），
+            // 「全部恢复跟随」也只清那些项；整句没有全局基线，混进去会让人以为它也能跟随。
+            // 说明文字以文档站 schemas.mdx「已知限制」为准。
+            crate::widgets::dialog_section_hint(
+                "整句输入（实验性）",
+                "实验性功能，仅供研究，不建议日常使用：简码歧义下切分可能出错，需用手动分隔符\
+                 （如 q'j）划定边界；开启后顶码上屏不再生效。",
+                vec![crate::widgets::setting_row(
+                    "启用整句输入",
+                    Some("超过码长的编码自动切分并组句，保存后即生效"),
+                    Element::checkbox("开启", state.settings_sentence)
+                        .small()
+                        .fg_role(Role::Text),
+                )],
             )
         }
         SettingsSection::Overlay => {
@@ -7272,6 +7336,101 @@ mod section_build_tests {
             .clone()
             .unwrap();
         assert_eq!(cfg["engine"]["aux_code"]["direct"], Value::Null);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 整句输入只对码表方案建节；混输即便声明了也不给（core 下不生效），拼音同理。
+    #[test]
+    fn sentence_input_seed_only_for_codetable() {
+        let ct = |on: bool| json!({ "engine": { "type": "codetable", "codetable": { "sentence_input": on } } });
+        assert_eq!(sentence_input_seed(&ct(true)), Some(true), "读回合并值");
+        assert_eq!(sentence_input_seed(&ct(false)), Some(false));
+        assert_eq!(
+            sentence_input_seed(&json!({ "engine": { "type": "codetable" } })),
+            Some(false),
+            "没写 ⇒ 出厂关"
+        );
+        assert_eq!(
+            sentence_input_seed(&json!({ "engine": {
+                "type": "mixed", "codetable": { "sentence_input": true }
+            } })),
+            None,
+            "混输方案不出这一节"
+        );
+        assert_eq!(
+            sentence_input_seed(&json!({ "engine": { "type": "pinyin" } })),
+            None
+        );
+    }
+
+    /// 码表方案：节在「方案自定义」TAB；不动不写，拨开写 `true`，打开时已开再关写 `false`。
+    /// 拼音方案：不出这一节，信号被别处拨了也不写。
+    #[test]
+    fn sentence_input_section_round_trips_on_codetable_only() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let open_wubi = || {
+            let state = SchemaManagerState::new();
+            *state.schemas.borrow_mut() = vec![SchemaEntry {
+                id: "wubi86".into(),
+                name: "五笔 86".into(),
+                engine_type: "codetable".into(),
+                ..Default::default()
+            }];
+            state.open_settings_at_id("wubi86");
+            state
+        };
+        let pending = |state: &SchemaManagerState, id: &str| {
+            state.pending_edits.borrow()[id].cfg.clone().unwrap()
+        };
+
+        let state = open_wubi();
+        assert!(
+            state.settings_sections[CUSTOM_TAB]
+                .get()
+                .contains(&SettingsSection::Sentence),
+            "码表方案应有整句输入一节"
+        );
+        assert!(!state.settings_sentence.get(), "mock 方案没写 ⇒ 关");
+        state.stage_settings_edits();
+        assert!(!state.has_pending_edits(), "没动不该入队");
+
+        let state = open_wubi();
+        state.settings_sentence.set(true);
+        state.stage_settings_edits();
+        assert_eq!(
+            pending(&state, "wubi86")["engine"]["codetable"]["sentence_input"],
+            json!(true)
+        );
+
+        let state = open_wubi();
+        state.settings_sentence_at_open.set(true);
+        state.stage_settings_edits();
+        assert_eq!(
+            pending(&state, "wubi86")["engine"]["codetable"]["sentence_input"],
+            json!(false),
+            "方案里开着、用户关掉 ⇒ 写 false 盖过方案文件"
+        );
+
+        let state = open_mock_pinyin();
+        assert!(
+            state
+                .settings_sections
+                .iter()
+                .all(|s| !s.get().contains(&SettingsSection::Sentence)),
+            "拼音方案不出整句输入一节"
+        );
+        state.settings_sentence.set(true);
+        state.settings_aux_on_over.set(true);
+        state.stage_settings_edits();
+        assert!(
+            pending(&state, "pinyin_simp")
+                .pointer("/engine/codetable/sentence_input")
+                .is_none(),
+            "非码表方案不写 sentence_input"
+        );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
