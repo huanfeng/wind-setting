@@ -360,10 +360,6 @@ mod tests {
         "schema.codetable.auto_phrase.draft_ttl_hours",
         "schema.codetable.auto_phrase.draft_max_entries",
         "schema.codetable.auto_phrase.draft_flush_batch",
-        // ⑨'''' 快捷输入历史的条数上限（候选来源 `quick_input.history` 配套，出厂 1000、
-        //       0 = 不限）。同 ⑨' 的判据：容量参数普通用户无判断依据，出厂值足够宽，且
-        //       历史本身已能在「词库 → 输入补全 → 快捷输入历史」逐条删 / 清空。需要时改配置文件。
-        "schema.quick_input.history_max",
         // ⑨''''' 英文自动造词的临时词库容量（出厂 5000）。core 侧标注为内部字段；同 ⑨' 的判据：
         //        容量参数普通用户无判断依据，出厂值足够宽，临时词条也能在「词库 → 英文 → 临时
         //        词库」逐条删。开关与晋升次数已在清单内（英文行为 → 自动造词）。

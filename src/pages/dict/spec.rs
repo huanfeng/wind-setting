@@ -1119,7 +1119,7 @@ const SPEC_URL_HISTORY: CategorySpec = CategorySpec {
 ///
 /// 「内容」列是用户上屏过的**字面文本**（`${reset_time}`、`RESET_TIME` 这类），不是
 /// 编码——快捷输入历史按前缀匹配的就是这串文本本身。条数上限
-/// `schema.quick_input.history_max` 是内部键，设置页不开放。
+/// `schema.quick_input.history_max` 在「输入 → 快捷输入 → 历史条数上限」。
 const SPEC_QUICK_HISTORY: CategorySpec = CategorySpec {
     category: WordCategory::QuickHistory,
     title: "快捷输入历史",

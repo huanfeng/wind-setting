@@ -1666,6 +1666,19 @@ hint = "计算结果最多保留的小数位数（0 表示取整）"
 min = 0
 max = 6
 
+# 候选来源「快捷输入历史」的条数上限，与网址历史 input.url.history_max 同一套裁剪。
+[[items]]
+key = "schema.quick_input.history_max"
+group = "input"
+section = "快捷输入"
+type = "number"
+label = "历史条数上限"
+hint = "快捷输入历史最多保留的条数，超出后按「用得少、用得旧」自动清理。0 = 不限"
+min = 0
+max = 10000
+step = 50
+unit = "条"
+
 # ── 临时拼音 ──
 [[items]]
 key = "input.temp_pinyin.trigger_keys"

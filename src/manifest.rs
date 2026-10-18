@@ -6022,6 +6022,32 @@ mod tests {
         );
     }
 
+    /// 快捷输入历史的条数上限进了快捷输入分区，且区间含 core 默认值与「0 = 不限」。
+    /// 通用的区间测试取不到值时会静默跳过，这里对着 core 结构体字段直接钉。
+    #[test]
+    fn quick_history_max_is_exposed_under_quick_input() {
+        let m = Manifest::from_embedded();
+        let it = m
+            .items
+            .get("schema.quick_input.history_max")
+            .expect("清单缺 schema.quick_input.history_max");
+        assert_eq!(
+            (it.group.as_str(), it.section.as_str()),
+            ("input", "快捷输入")
+        );
+        assert_eq!(it.typ, "number");
+        let def = wind_config::Config::default()
+            .schema
+            .quick_input
+            .history_max as f64;
+        let (lo, hi) = (it.min.expect("缺 min"), it.max.expect("缺 max"));
+        assert!(lo <= 0.0, "0 = 不限必须可选，下限 {lo}");
+        assert!(
+            (lo..=hi).contains(&def),
+            "core 默认 {def} 不在 [{lo}, {hi}]"
+        );
+    }
+
     // ── ordered_pairs 的 `-` 前缀编码 ───────────────────────────
 
     fn s(v: &[&str]) -> Vec<String> {
