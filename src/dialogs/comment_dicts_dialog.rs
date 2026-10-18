@@ -790,71 +790,78 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
     let visible = ui.visible;
     let row_ui = ui.clone();
 
-    let list = Element::col().width_match().padding_xy(0, 2).child(
-        Element::reorder_list_signal(ui.rows, move |r: CommentDictRow, handle| {
-            let idx = row_ui
-                .rows
-                .get()
-                .iter()
-                .position(|x| x.id == r.id)
-                .unwrap_or(0);
-            let sig = row_ui.switch_of(&r.id, true);
-            let e_ui = row_ui.clone();
-            let d_ui = row_ui.clone();
-            let label = if r.label.trim().is_empty() {
-                r.id.clone()
-            } else {
-                r.label.clone()
-            };
-            // ★ 自动项不给「编辑 / 删除」：它的路径与适用方案是 core **检测出来的事实**，
-            // 改了下次启动就被检测结果覆盖，删了下次启动又长回来。给一个按不动的按钮，
-            // 比不给更让人困惑。用户能改的只有开关与顺序，那两样都还在。
-            let mut ctrl = Element::row().cross(Align::Center).spacing(6);
-            if r.auto {
-                ctrl = ctrl.child(
-                    Element::label("自动")
-                        .font_size(11.0)
-                        .fg_role(Role::TextSubtle),
-                );
-            } else {
-                ctrl =
-                    ctrl.child(Element::button("编辑").small().outline_soft().on_click(
-                        move |_| {
-                            if let Some(row) = e_ui.rows.get().get(idx) {
-                                e_ui.form.open_edit(idx, row);
-                            }
-                        },
-                    ))
-                    .child(
-                        Element::button("删除")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| d_ui.delete(idx)),
+    // 词库多了会把对话框撑出窗口（窗口拉满也看不到底栏）：列表封顶可滚，与提示气泡分段
+    // 对话框同一封顶——按主窗最小高 440 算约四行，再高则窗口最矮时底栏按钮被裁掉。
+    let list = Element::scroll()
+        .width_match()
+        .max_height(216)
+        .padding_xy(0, 2)
+        .child(
+            Element::reorder_list_signal(ui.rows, move |r: CommentDictRow, handle| {
+                let idx = row_ui
+                    .rows
+                    .get()
+                    .iter()
+                    .position(|x| x.id == r.id)
+                    .unwrap_or(0);
+                let sig = row_ui.switch_of(&r.id, true);
+                let e_ui = row_ui.clone();
+                let d_ui = row_ui.clone();
+                let label = if r.label.trim().is_empty() {
+                    r.id.clone()
+                } else {
+                    r.label.clone()
+                };
+                // ★ 自动项不给「编辑 / 删除」：它的路径与适用方案是 core **检测出来的事实**，
+                // 改了下次启动就被检测结果覆盖，删了下次启动又长回来。给一个按不动的按钮，
+                // 比不给更让人困惑。用户能改的只有开关与顺序，那两样都还在。
+                let mut ctrl = Element::row().cross(Align::Center).spacing(6);
+                if r.auto {
+                    ctrl = ctrl.child(
+                        Element::label("自动")
+                            .font_size(11.0)
+                            .fg_role(Role::TextSubtle),
                     );
-            }
-            let ctrl = ctrl.child(Element::switch(sig));
+                } else {
+                    ctrl =
+                        ctrl.child(Element::button("编辑").small().outline_soft().on_click(
+                            move |_| {
+                                if let Some(row) = e_ui.rows.get().get(idx) {
+                                    e_ui.form.open_edit(idx, row);
+                                }
+                            },
+                        ))
+                        .child(
+                            Element::button("删除")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| d_ui.delete(idx)),
+                        );
+                }
+                let ctrl = ctrl.child(Element::switch(sig));
 
-            crate::widgets::list_row(
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .padding_xy(8, 0)
-                    .child(handle)
-                    .child(
-                        crate::widgets::setting_row(&label, Some(&row_desc(&r)), ctrl).weight(1.0),
-                    ),
-            )
-        })
-        .on_reorder({
-            let rows = ui.rows;
-            move |_ctx, from, to| {
-                rows.update(|v| {
-                    let x = v.remove(from);
-                    v.insert(to.min(v.len()), x);
-                })
-            }
-        }),
-    );
+                crate::widgets::list_row(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .padding_xy(8, 0)
+                        .child(handle)
+                        .child(
+                            crate::widgets::setting_row(&label, Some(&row_desc(&r)), ctrl)
+                                .weight(1.0),
+                        ),
+                )
+            })
+            .on_reorder({
+                let rows = ui.rows;
+                move |_ctx, from, to| {
+                    rows.update(|v| {
+                        let x = v.remove(from);
+                        v.insert(to.min(v.len()), x);
+                    })
+                }
+            }),
+        );
 
     let new_ui = ui.clone();
     let frame = Element::col()
