@@ -149,7 +149,13 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     if show_wizard_entry {
         sidebar = sidebar.child(wizard_entry(app));
     }
+    // 定制版 `feature:config_import` 藏的是整条导入流程：「导入」卡、这里、底栏、词库窗的
+    // 右键菜单与 `--page import` 深链一起藏。空菜单 windui 不弹。
+    let import_shown = !app.borrow().manifest.feature_hidden("config_import");
     let sidebar = sidebar.on_context_menu(move || {
+        if !import_shown {
+            return Vec::new();
+        }
         crate::pages::config_import::import_menu_items(&ci_menu, &mgr_menu, ov_menu)
     });
     let vdivider = Element::leaf()
@@ -196,12 +202,15 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     // 入口，与侧栏的导航 / 导入语义无关（用户 2026-10-14 明确要求左侧导航不加）。
     let app_look = app.clone();
     let footer = build_footer(app, dark, conn).on_context_menu(move || {
-        let mut items = crate::pages::config_import::import_menu_items(
-            &ci_menu_footer,
-            &mgr_menu_footer,
-            ov_menu,
-        );
-        items.push(MenuItem::separator());
+        let mut items = Vec::new();
+        if import_shown {
+            items = crate::pages::config_import::import_menu_items(
+                &ci_menu_footer,
+                &mgr_menu_footer,
+                ov_menu,
+            );
+            items.push(MenuItem::separator());
+        }
         items.push(look_menu_item(&app_look));
         items
     });
@@ -1478,6 +1487,76 @@ fn confirm_dialog_body(
 #[cfg(test)]
 mod tests {
     use crate::state::AppState;
+
+    /// 建整个主窗，在侧栏下方空白与底栏中段各右击一次，返回两份菜单的项文案。
+    fn sidebar_and_footer_menus(hide: &[&str]) -> (Vec<String>, Vec<String>) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use windui::core::Tree;
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::{Point, Size};
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let (h, errors) = wind_config::SettingsHide::parse(hide);
+        assert!(errors.is_empty(), "{errors:?}");
+        app.borrow_mut().manifest = crate::custom_hide::settings_manifest(&h, false);
+
+        let (w, hgt) = (1000, 700);
+        let mut tree = Tree::new();
+        let root = super::build(&app).width(w).height(hgt).build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(w, hgt), &mut windui::text::NullTextEngine);
+        // 根 stack → 主列 [标题栏, 分隔线, 主体, 分隔线, 底栏]；主体首个子节点是侧栏。
+        let main_col = tree.get(root).unwrap().children[0];
+        let kids = tree.get(main_col).unwrap().children.clone();
+        let body = kids[2];
+        let side = tree.abs_bounds(tree.get(body).unwrap().children[0]);
+        let footer = tree.abs_bounds(kids[4]);
+
+        let mut click = |x: i32, y: i32| -> Vec<String> {
+            let (mut hover, mut capture) = (None, None);
+            let res = tree.dispatch_pointer(
+                PointerEvent::single(PointerKind::Down, Point::new(x, y), MouseButton::Right),
+                &mut hover,
+                &mut capture,
+            );
+            res.menu
+                .map(|m| {
+                    m.items
+                        .iter()
+                        .filter(|i| !i.separator)
+                        .map(|i| i.label.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let menus = (
+            click(side.x + side.w / 2, side.y + side.h - 90),
+            click(footer.x + footer.w / 2, footer.y + footer.h / 2),
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        menus
+    }
+
+    /// `feature:config_import` 连侧栏与底栏右键里的导入入口一起藏；底栏的「界面细节…」不受牵连。
+    #[test]
+    fn config_import_hide_takes_the_context_menus() {
+        let (side, footer) = sidebar_and_footer_menus(&[]);
+        assert_eq!(
+            side,
+            ["从剪贴板导入配置", "导入文件…"],
+            "前提：侧栏右键是导入菜单"
+        );
+        assert_eq!(footer, ["从剪贴板导入配置", "导入文件…", "界面细节…"]);
+
+        let (side, footer) = sidebar_and_footer_menus(&["feature:config_import"]);
+        assert!(side.is_empty(), "侧栏右键仍有：{side:?}");
+        assert_eq!(footer, ["界面细节…"]);
+    }
 
     /// 重建设置树前必须清空 `FieldRegistry`：主窗可以关掉再开，`shell::build` 因此不再是
     /// 「一辈子只跑一次」。

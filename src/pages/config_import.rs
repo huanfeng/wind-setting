@@ -534,6 +534,10 @@ pub fn import_menu_items(
 /// 主窗开着与否都调 [`crate::open_main_window`]：它带着 `single(MAIN_SINGLE_KEY)`，
 /// 开着就是激活到前台，关着才重建（见该函数说明）。
 pub fn import_menu_items_via_main_window(app: &Rc<RefCell<AppState>>) -> Vec<MenuItem> {
+    // 定制版 `feature:config_import` 连同这份菜单一起藏（同 `shell::build` 那两处）。
+    if app.borrow().manifest.feature_hidden("config_import") {
+        return Vec::new();
+    }
     let (app_clip, app_file) = (app.clone(), app.clone());
     vec![
         MenuItem::run(
@@ -1223,6 +1227,21 @@ mod tests {
             labels(import_menu_items_via_main_window(&app)),
             labels(import_menu_items(&import, &mgr, test_overwrite_signals()))
         );
+    }
+
+    /// 词库窗那份菜单也受 `feature:config_import` 管：藏了就是空表（windui 不弹空菜单）。
+    #[test]
+    fn dict_window_menu_follows_config_import_hide() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        assert!(!import_menu_items_via_main_window(&app).is_empty(), "前提");
+        let (h, _) = wind_config::SettingsHide::parse(&["feature:config_import"]);
+        app.borrow_mut().manifest = crate::custom_hide::settings_manifest(&h, false);
+        assert!(import_menu_items_via_main_window(&app).is_empty());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     #[test]

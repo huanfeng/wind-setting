@@ -731,6 +731,12 @@ fn run_import_action(
     let st = state.borrow();
     match act {
         ImportAction::ClipboardDialog => {
+            // `--page import`（命令直通车 `setting.open("import")` 也走这里）：定制版藏了
+            // `feature:config_import` 就不弹导入框，窗口照常打开。
+            if st.manifest.feature_hidden("config_import") {
+                tracing::info!("定制版已隐藏配置导入，忽略 --page import");
+                return;
+            }
             if let Some(idx) = cli::page_to_index("advanced") {
                 st.tab.set(idx);
             }
@@ -834,6 +840,27 @@ mod tests {
             res.open_windows[0].shortcut.is_some(),
             "重建的主窗没挂 on_shortcut"
         );
+    }
+
+    /// `--page import`（含命令直通车 `setting.open("import")`）在 `feature:config_import`
+    /// 下不弹导入框、不切页；没藏时照常弹。
+    #[test]
+    fn page_import_deep_link_follows_config_import_hide() {
+        let run = |hide: &[&str]| {
+            let app = Rc::new(RefCell::new(state::AppState::empty()));
+            let (h, _) = wind_config::SettingsHide::parse(hide);
+            app.borrow_mut().manifest = custom_hide::settings_manifest(&h, false);
+            windui::testing::run_with_ctx(|ctx| {
+                run_import_action(ctx, ImportAction::ClipboardDialog, &app)
+            });
+            let st = app.borrow();
+            (st.config_import.visible.get(), st.tab.get())
+        };
+        let advanced = cli::page_to_index("advanced").unwrap();
+        assert_eq!(run(&[]), (true, advanced), "前提：没藏时弹框并切到高级页");
+        let (visible, tab) = run(&["feature:config_import"]);
+        assert!(!visible, "藏了仍弹导入框");
+        assert_ne!(tab, advanced, "藏了仍切到高级页");
     }
 
     #[test]
