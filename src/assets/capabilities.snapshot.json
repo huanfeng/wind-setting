@@ -1805,6 +1805,46 @@
       "type": "int"
     },
     {
+      "default": false,
+      "key": "ui.candidate.grid_expand",
+      "type": "bool"
+    },
+    {
+      "default": 5,
+      "key": "ui.candidate.grid_rows",
+      "type": "int"
+    },
+    {
+      "default": 6,
+      "key": "ui.candidate.grid_cell_max_chars",
+      "type": "int"
+    },
+    {
+      "default": "rows",
+      "key": "ui.candidate.grid_index_fill",
+      "type": "enum",
+      "values": [
+        "rows",
+        "cells",
+        "off"
+      ]
+    },
+    {
+      "default": false,
+      "key": "ui.candidate.grid_tooltip_follows_highlight",
+      "type": "bool"
+    },
+    {
+      "default": [
+        "all",
+        "single",
+        "phrase",
+        "rare"
+      ],
+      "key": "ui.candidate.grid_categories",
+      "type": "strlist"
+    },
+    {
       "default": true,
       "key": "ui.candidate.comment_enabled",
       "type": "bool"

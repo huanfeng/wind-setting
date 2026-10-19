@@ -475,6 +475,17 @@
    "first_show_settle_ratio": 0.800000011920929,
    "flip_when_above": false,
    "font_size": 0.0,
+   "grid_categories": [
+    "all",
+    "single",
+    "phrase",
+    "rare"
+   ],
+   "grid_cell_max_chars": 6,
+   "grid_expand": false,
+   "grid_index_fill": "rows",
+   "grid_rows": 5,
+   "grid_tooltip_follows_highlight": false,
    "hide_window": false,
    "index_labels": [],
    "layout": "horizontal",
