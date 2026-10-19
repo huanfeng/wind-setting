@@ -1642,13 +1642,46 @@ fn build_log_archive(state: &AppState) -> Element {
 /// ⚠️ 与 `dialog_extra_for` 那套「两个 key 各一个控件」不是一回事：那套的前提是注册表里
 /// 真有两个键（如 `min_window_width_horizontal` / `_vertical`），这里只有一个。
 fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    match select_by_layout_controls(state, key, item, cfg) {
+        Some((h, v)) => Element::row()
+            .cross(Align::Center)
+            .spacing(6)
+            .child(Element::label("横").fg_role(Role::TextMuted))
+            .child(h)
+            .child(Element::label("竖").fg_role(Role::TextMuted))
+            .child(v),
+        None => Element::label("（无可选项）").fg_role(Role::TextMuted),
+    }
+}
+
+/// 对话框里的 `select_by_layout`：横排、竖排拆成两行，各一个下拉。
+///
+/// 页面上两个下拉挤在一行是为了省行；对话框里不缺行，拆开后每行标签说清是横排还是竖排，
+/// 也不用再加宽下拉去装「跟随主题（大于一页时显示）」这种长文案。读写仍是同一个键。
+fn select_by_layout_rows(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Vec<Element> {
+    let Some((h, v)) = select_by_layout_controls(state, key, item, cfg) else {
+        return vec![field(state, key)];
+    };
+    vec![
+        setting_row(&format!("{}（横排）", item.label), item.hint.as_deref(), h),
+        setting_row(&format!("{}（竖排）", item.label), None, v),
+    ]
+}
+
+/// `select_by_layout` 的两个下拉（横、竖），并登记读写。选项为空时返回 `None`。
+fn select_by_layout_controls(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+) -> Option<(Element, Element)> {
     let (values, labels): (Vec<String>, Vec<String>) = item
         .options
         .iter()
         .map(|o| (o.value.clone(), o.label.clone()))
         .unzip();
     if values.is_empty() {
-        return Element::label("（无可选项）").fg_role(Role::TextMuted);
+        return None;
     }
     let def_str = state
         .capabilities
@@ -1705,13 +1738,11 @@ fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Confi
     );
 
     let w = item.width.map(|w| w as i32).unwrap_or(CTRL_W);
-    let row = Element::row().cross(Align::Center).spacing(6);
     if item.follow.as_deref() != Some("theme") {
-        return row
-            .child(Element::label("横").fg_role(Role::TextMuted))
-            .child(Element::dropdown(lh, sig_h).width(w))
-            .child(Element::label("竖").fg_role(Role::TextMuted))
-            .child(Element::dropdown(lv, sig_v).width(w));
+        return Some((
+            Element::dropdown(lh, sig_h).width(w),
+            Element::dropdown(lv, sig_v).width(w),
+        ));
     }
     // 空值档文案带主题值：主题值异步到达、切主题后会变，故标签绑信号、随主题值重算。
     let tf_sig = state.theme_follow;
@@ -1729,10 +1760,10 @@ fn build_select_by_layout(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         },
     );
     register_dialog(state, watch);
-    row.child(Element::label("横").fg_role(Role::TextMuted))
-        .child(Element::dropdown_signal(lab_h, sig_h).width(w))
-        .child(Element::label("竖").fg_role(Role::TextMuted))
-        .child(Element::dropdown_signal(lab_v, sig_v).width(w))
+    Some((
+        Element::dropdown_signal(lab_h, sig_h).width(w),
+        Element::dropdown_signal(lab_v, sig_v).width(w),
+    ))
 }
 
 fn build_select(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -3615,18 +3646,32 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
         .unwrap_or_else(|| item.label.clone());
 
     let members = dialog_extra_keys(state, key);
-    // 框内每行挂锚点（宿主自身也在框里，它那一行的键就是宿主 key）。
-    let mut rows = vec![crate::search::anchor::wrap(
-        field(state, key),
-        crate::search::index::in_dialog_anchor(key),
-        state.jump,
-    )];
-    for k in &members {
+    // 框内每行挂锚点（宿主自身也在框里，它那一行的键就是宿主 key）。成员带 `subsection`
+    // 的按它分节、插小标题；横竖分设的下拉在框里拆成两行。
+    let mut rows = Vec::new();
+    let mut cur_sub: Option<String> = None;
+    for k in std::iter::once(key).chain(members.iter().map(String::as_str)) {
+        let Some(it) = state.manifest.get(k) else {
+            continue;
+        };
+        if it.subsection != cur_sub {
+            if let Some(name) = &it.subsection {
+                rows.push(dialog_group_header(name));
+            }
+            cur_sub = it.subsection.clone();
+        }
+        let mut item_rows = if it.typ == "select_by_layout" {
+            select_by_layout_rows(state, k, it, &state.current_config)
+        } else {
+            vec![field(state, k)]
+        };
+        let first = item_rows.remove(0);
         rows.push(crate::search::anchor::wrap(
-            field(state, k),
+            first,
             crate::search::index::in_dialog_anchor(k),
             state.jump,
         ));
+        rows.extend(item_rows);
     }
 
     let reset_keys: Vec<String> = std::iter::once(key.to_string()).chain(members).collect();

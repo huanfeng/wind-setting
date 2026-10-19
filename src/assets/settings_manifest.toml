@@ -2877,17 +2877,6 @@ type = "toggle"
 label = "隐藏候选窗"
 hint = "盲打/自动上屏场景不显示候选窗口；隐藏后仍可输入"
 
-# 只认空白处（编码栏 / 内边距）：候选项按下即选词上屏、候选窗随之消失，落不到第二下。
-# macOS 候选窗由 .app 自绘，没有接这条鼠标交互，故限 Windows。
-[[items]]
-key = "ui.candidate.double_click_screenshot"
-group = "ui"
-section = "候选窗口"
-type = "toggle"
-label = "双击候选窗截图"
-hint = "双击候选窗的编码栏或空白处，把候选窗当前画面复制到剪贴板；点候选词仍是选词"
-platform = "windows"
-
 [[items]]
 key = "ui.candidate.position_mode"
 group = "ui"
@@ -2926,22 +2915,12 @@ max = 400
 enabled_when = "ui.candidate.position_mode == follow_caret"
 
 [[items]]
-key = "ui.candidate.shadow"
-group = "ui"
-section = "候选窗口"
-type = "select"
-label = "主题阴影"
-hint = "个别应用里候选窗周围出现多余的透明边、遮挡或显示异常时，可选「关闭」；关闭后窗口与内容等大，定位自动跟着调整，主题自带的位置偏移仍保留"
-platform = "windows"
-options = [
-  { value = "follow", label = "跟随主题" },
-  { value = "off", label = "关闭阴影" },
-]
-
-[[items]]
 key = "ui.candidate.first_show_mode"
 group = "ui"
 section = "候选窗口"
+subsection = "显示"
+dialog_hint = "首次显示时机、主题阴影、最小尺寸、双击截图"
+dialog_title = "候选窗口高级设置"
 type = "select"
 label = "首次显示时机"
 hint = "每串新输入的候选窗多快出现；应用给不出准确位置时，「快速」与「立即」会先按上次的位置显示。可在右键菜单里为单个应用单独设"
@@ -2949,6 +2928,21 @@ options = [
   { value = "fast", label = "快速显示" },
   { value = "wait", label = "等待精确坐标（较慢）" },
   { value = "instant", label = "立即显示（最快，可能抖动）" },
+]
+
+[[items]]
+key = "ui.candidate.shadow"
+group = "ui"
+section = "候选窗口"
+subsection = "显示"
+dialog_extra_for = "ui.candidate.first_show_mode"
+type = "select"
+label = "主题阴影"
+hint = "个别应用里候选窗周围出现多余的透明边、遮挡或显示异常时，可选「关闭」；关闭后窗口与内容等大，定位自动跟着调整，主题自带的位置偏移仍保留"
+platform = "windows"
+options = [
+  { value = "follow", label = "跟随主题" },
+  { value = "off", label = "关闭阴影" },
 ]
 
 # 候选窗尺寸下限段：五项都是「窗口别缩得比这更小」的同一件事，且都不常改——摊在卡片上
@@ -2965,13 +2959,13 @@ options = [
 key = "ui.candidate.min_window_width_horizontal"
 group = "ui"
 section = "候选窗口"
+subsection = "最小尺寸"
+dialog_extra_for = "ui.candidate.first_show_mode"
 type = "number"
 label = "横排最小宽度（dp）"
 hint = "窗口不足此宽时右侧留空，候选本身不拉伸；0 = 不限，跟随内容"
 min = 0
 max = 1200
-dialog_title = "候选窗口最小大小"
-dialog_hint = "为候选窗设定宽高下限，横排、竖排各一套。单位 dp，一个汉字宽约等于字号（默认 18 dp）"
 # 单位「（dp）」写进 label 而不是 hint：对话框只有 460 宽，hint 会被截成一行（截断处
 # 有 tooltip 兜底看全文），单位藏在截断后面等于没写——而不知道填的是像素还是字数，
 # 这一格根本没法填。清单的 `unit` 字段目前无人消费（见 manifest.rs 的 MItem::unit）。
@@ -2980,45 +2974,62 @@ dialog_hint = "为候选窗设定宽高下限，横排、竖排各一套。单�
 key = "ui.candidate.min_window_width_vertical"
 group = "ui"
 section = "候选窗口"
+subsection = "最小尺寸"
 type = "number"
 label = "竖排最小宽度（dp）"
 hint = "窗口不足此宽时右侧留空，候选高亮跟随窗口铺满；0 = 不限，跟随内容"
 min = 0
 max = 1200
-dialog_extra_for = "ui.candidate.min_window_width_horizontal"
+dialog_extra_for = "ui.candidate.first_show_mode"
 
 [[items]]
 key = "ui.candidate.min_window_height_horizontal"
 group = "ui"
 section = "候选窗口"
+subsection = "最小尺寸"
 type = "number"
 label = "横排最小高度（dp）"
 hint = "窗口不足此高时留空；窗口在光标上方时空白补在顶部；0 = 不限，跟随内容"
 min = 0
 max = 1200
-dialog_extra_for = "ui.candidate.min_window_width_horizontal"
+dialog_extra_for = "ui.candidate.first_show_mode"
 
 [[items]]
 key = "ui.candidate.min_window_height_vertical"
 group = "ui"
 section = "候选窗口"
+subsection = "最小尺寸"
 type = "number"
 label = "竖排最小高度（dp）"
 hint = "窗口不足此高时留空，翻页栏的出现消失一并吸收；0 = 不限，跟随内容"
 min = 0
 max = 1200
-dialog_extra_for = "ui.candidate.min_window_width_horizontal"
+dialog_extra_for = "ui.candidate.first_show_mode"
 
 [[items]]
 key = "ui.candidate.min_rows"
 group = "ui"
 section = "候选窗口"
+subsection = "最小尺寸"
 type = "number"
 label = "竖排最小行数"
 hint = "候选数不足时补透明空行以保持候选区高度；自动钳到每页候选数；0 = 不限。仅竖排生效"
 min = 0
 max = 9
-dialog_extra_for = "ui.candidate.min_window_width_horizontal"
+dialog_extra_for = "ui.candidate.first_show_mode"
+
+# 只认空白处（编码栏 / 内边距）：候选项按下即选词上屏、候选窗随之消失，落不到第二下。
+# macOS 候选窗由 .app 自绘，没有接这条鼠标交互，故限 Windows。
+[[items]]
+key = "ui.candidate.double_click_screenshot"
+group = "ui"
+section = "候选窗口"
+subsection = "其它"
+dialog_extra_for = "ui.candidate.first_show_mode"
+type = "toggle"
+label = "双击候选窗截图"
+hint = "双击候选窗的编码栏或空白处，把候选窗当前画面复制到剪贴板；点候选词仍是选词"
+platform = "windows"
 
 # ── 候选排版（编码栏位置、横竖排、上方时的顺序）──
 [[items]]
@@ -3052,30 +3063,39 @@ label = "竖排"
 key = "ui.candidate.flip_when_above"
 group = "ui"
 section = "候选排版"
+subsection = "候选窗在光标上方时"
+dialog_hint = "候选窗在光标上方时的排列、翻页栏与页码"
+dialog_title = "候选排版高级设置"
 type = "toggle"
-label = "候选窗在上方时反转候选顺序"
+label = "反转候选顺序"
 hint = "候选窗显示在光标上方时，反转候选项的排列顺序（使第一候选靠近光标）；可与「编码栏置底」叠加。仅竖排 +「跟随光标」定位下生效"
 
 [[items]]
 key = "ui.candidate.swap_preedit_when_above"
 group = "ui"
 section = "候选排版"
+subsection = "候选窗在光标上方时"
+dialog_extra_for = "ui.candidate.flip_when_above"
 type = "toggle"
-label = "候选窗在上方时编码栏置底"
+label = "编码栏置底"
 hint = "候选窗显示在光标上方时，将编码栏与候选栏上下调换，使编码栏沉到底部贴近光标。仅「跟随光标」定位下生效"
 
 [[items]]
 key = "ui.candidate.pager_in_preedit"
 group = "ui"
 section = "候选排版"
+subsection = "翻页栏"
+dialog_extra_for = "ui.candidate.flip_when_above"
 type = "toggle"
-label = "翻页栏并入编码栏"
+label = "并入编码栏"
 hint = "将翻页栏右对齐显示在编码所在行（竖排可省一行）；「编码显示方式」取「候选窗顶部独立栏」或「候选窗首单元内联」时均生效，横排下无影响"
 
 [[items]]
 key = "ui.candidate.pager_bar_display"
 group = "ui"
 section = "候选排版"
+subsection = "翻页栏"
+dialog_extra_for = "ui.candidate.flip_when_above"
 type = "select_by_layout"
 label = "翻页栏显示"
 hint = "覆盖主题配置中翻页栏的显示方式；隐藏时整个翻页栏（含箭头）不渲染。横排、竖排可分别设——横排的翻页栏要挤占候选共享的那一行，竖排多一行代价小"
@@ -3094,6 +3114,8 @@ options = [
 key = "ui.candidate.page_number_display"
 group = "ui"
 section = "候选排版"
+subsection = "翻页栏"
+dialog_extra_for = "ui.candidate.flip_when_above"
 type = "select_by_layout"
 label = "显示页码"
 hint = "翻页栏可见时，是否显示页码文字；横排、竖排可分别设"
