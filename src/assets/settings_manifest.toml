@@ -3504,6 +3504,15 @@ label = "显示工具栏"
 # 之类只在一边成立的描述。清单当前不支持分平台文案，写通用的即可。
 hint = "常驻显示输入法当前状态（中英、全半角、标点、方案）"
 
+[[items]]
+key = "ui.toolbar.vertical"
+group = "ui"
+section = "工具栏"
+type = "toggle"
+label = "纵向排列"
+hint = "工具栏竖着摆放；适合把它靠在屏幕左右两侧"
+platform = "windows, linux"
+
 # 带 platform = "windows, linux" 的几项：macOS 用菜单栏指示器，既不是浮动窗口也无法排列/自动隐藏。
 # （ui.toolbar.visible 不在此列——它在 macOS 上控制指示器的显示与否，是有落点的。）
 # fullscreen_watch 仍只限 windows：它开关的是 Windows 的定时轮询，Linux 没有对应机制。
@@ -3540,15 +3549,6 @@ dialog_extra_for = "ui.toolbar.hide_in_fullscreen"
 type = "toggle"
 label = "英文状态时隐藏工具栏"
 hint = "切换到英文时隐藏工具栏，切回中文即重新显示"
-platform = "windows, linux"
-
-[[items]]
-key = "ui.toolbar.vertical"
-group = "ui"
-section = "工具栏"
-type = "toggle"
-label = "纵向排列"
-hint = "工具栏竖着摆放；适合把它靠在屏幕左右两侧"
 platform = "windows, linux"
 
 # 显示哪些格 + 顺序。用 ordered_pairs 而非 checkbox_group：core 侧**数组顺序即渲染顺序**，
