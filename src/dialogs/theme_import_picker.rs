@@ -147,9 +147,13 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                             // 下载在后台线程跑，点击立即返回。下载与导入分两步：撞名时要拿
                             // **已下载的原文**去弹覆盖确认，串成一条链的话 text 就丢了，
                             // 确认之后只能重下一次。
-                            AppState::start_theme_download(&s_url, u, visible, move |app, t| {
-                                finish(app, ThemeSource::Text(t), sig)
-                            });
+                            AppState::start_theme_download(
+                                &s_url,
+                                crate::state::ThemeDlOwner::Picker,
+                                u,
+                                visible,
+                                move |app, t| finish(app, ThemeSource::Text(t), sig),
+                            );
                         }),
                 ),
         )
@@ -209,7 +213,9 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
             move || visible.version(),
             move || {
                 if !visible.get() {
-                    s_cancel.borrow().cancel_theme_download();
+                    s_cancel
+                        .borrow()
+                        .cancel_theme_download(crate::state::ThemeDlOwner::Picker);
                 }
             },
         ));

@@ -419,6 +419,15 @@ pub struct WizardSession {
 }
 
 /// 应用全局状态。
+/// 主题下载的发起方：两个主题导入对话框共用同一个任务槽，取消时靠它认主。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ThemeDlOwner {
+    /// 用户主动打开的「导入主题」对话框。
+    Picker,
+    /// 协议链接唤起的主题导入确认框。
+    Protocol,
+}
+
 pub struct AppState {
     /// 从 core 加载的原始配置（用于 diff 基线）。
     pub base_config: Config,
@@ -492,8 +501,9 @@ pub struct AppState {
     /// 主题链接下载空闲（`true` = 可发起）。两个主题导入对话框共用，同一时刻只会开一个。
     /// 下载中按钮置灰：慢网下用户以为没点着、反复点，会排出一串重复导入。
     pub theme_download_idle: Signal<bool>,
-    /// 在途的主题下载任务号，关框 / 换新请求时取消用。
-    theme_download_task: Cell<Option<crate::net_task::TaskId>>,
+    /// 在途的主题下载任务号及其属主，关框 / 换新请求时取消用。属主必须记：两个对话框共用
+    /// 这一个槽，没有属主的话「一个没在下载的框被收起」也会取消另一个框的下载。
+    theme_download_task: Cell<Option<(crate::net_task::TaskId, ThemeDlOwner)>>,
     /// 在途的协议方案包下载任务号；非空时拒绝再起一个（方案包最大 64 MB，不叠着下）。
     schema_download_task: Cell<Option<crate::net_task::TaskId>>,
     /// 「正在下载方案包」对话框。协议导入没有别的界面可挂取消按钮，慢网下要给个出口。
@@ -1914,6 +1924,7 @@ impl AppState {
     /// 确认或错误 toast。取消由各对话框挂的 `reactive_effect` 调 [`Self::cancel_theme_download`]。
     pub fn start_theme_download(
         app: &Rc<RefCell<AppState>>,
+        owner: ThemeDlOwner,
         url: String,
         dialog_visible: Signal<bool>,
         on_text: impl FnOnce(&Rc<RefCell<AppState>>, String) + 'static,
@@ -1944,18 +1955,28 @@ impl AppState {
                 }
             },
         );
-        st.theme_download_task.set(Some(task));
+        st.theme_download_task.set(Some((task, owner)));
         st.theme_download_idle.set(false);
     }
 
-    /// 取消在途的主题下载（对话框关闭时调）。没有在途任务时无副作用。
-    pub fn cancel_theme_download(&self) {
-        if let Some(id) = self.theme_download_task.take() {
-            self.net.cancel(id);
+    /// 取消 `owner` 在途的主题下载（它的对话框关闭时调）。没有在途任务、或在途的是另一个
+    /// 对话框发起的，都无副作用。
+    pub fn cancel_theme_download(&self, owner: ThemeDlOwner) {
+        match self.theme_download_task.get() {
+            Some((id, o)) if o == owner => {
+                self.theme_download_task.set(None);
+                self.net.cancel(id);
+            }
+            _ => return,
         }
-        // 写前先比：`Signal::set` 无条件升版本并通知整窗重绘，而这里每次关框都会走一遍。
-        if !self.theme_download_idle.get() {
-            self.theme_download_idle.set(true);
+        self.theme_download_idle.set(true);
+    }
+
+    /// 收起协议主题导入框。写前先比：`Signal::set` 无条件升版本，而「本来就关着」时再写
+    /// 一次，会让挂在它上面的 `reactive_effect` 以为刚被关掉。
+    pub fn hide_protocol_theme_dialog(&self) {
+        if self.theme_import_dialog_visible.get() {
+            self.theme_import_dialog_visible.set(false);
         }
     }
 
@@ -1975,8 +1996,12 @@ impl AppState {
     pub fn start_schema_download(app: &Rc<RefCell<AppState>>, url: String) {
         let st = app.borrow();
         if st.schema_download_task.get().is_some() {
-            st.notify_err("上一个方案包还在下载，请稍候再试");
-            return;
+            if st.schema_download_visible.get() {
+                st.notify_err("上一个方案包还在下载，请稍候再试");
+                return;
+            }
+            // 下载框已被 ESC 收起、取消还在等下一帧的 effect：视为已取消，不拒绝新请求。
+            st.cancel_schema_download();
         }
         // 非官方域在发请求之前就拒掉：不必起线程，反馈也是即时的。
         if let Err(e) = crate::schema_url_import::check_official_url(&url) {
@@ -1991,6 +2016,10 @@ impl AppState {
             move |res| {
                 let st = app_done.borrow();
                 st.schema_download_task.set(None);
+                // 框已被收起（ESC）= 用户取消了：包随 drop 删除，不再弹确认框。
+                if !st.schema_download_visible.get() {
+                    return;
+                }
                 // 先收下载框再弹确认框：两个全窗模态同时可见会互相遮挡。
                 st.schema_download_visible.set(false);
                 match res {
@@ -4687,32 +4716,47 @@ mod tests {
         );
     }
 
+    /// 队列 sink：测试代替 channel 回调去 `on_done`。
+    type NetQueue = Arc<std::sync::Mutex<Vec<crate::net_task::NetDone>>>;
+
+    fn state_with_queue_sink() -> (Rc<RefCell<AppState>>, NetQueue) {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let queue: NetQueue = Default::default();
+        let q = queue.clone();
+        st.borrow().net.set_sink(move |m| q.lock().unwrap().push(m));
+        (st, queue)
+    }
+
+    /// 等一条结果；有截止时间，线程不回话时测试失败而不是挂住。
+    fn wait_net(queue: &NetQueue) -> crate::net_task::NetDone {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(m) = queue.lock().unwrap().pop() {
+                return m;
+            }
+            assert!(std::time::Instant::now() < deadline, "后台线程没有回结果");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     /// 主题下载走后台：点击只置「下载中」，结果回 UI 线程才进续体；失败走 toast 并恢复空闲。
     /// 用 http:// 地址让 `download_https_text` 在发请求前就失败，测试不需要网络。
     #[test]
     fn theme_download_is_async_and_failure_restores_idle() {
-        let st = Rc::new(RefCell::new(AppState::empty()));
-        let queue = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let q = queue.clone();
-        st.borrow().net.set_sink(move |m| q.lock().unwrap().push(m));
+        let (st, queue) = state_with_queue_sink();
         let visible = signal(true);
 
         AppState::start_theme_download(
             &st,
+            ThemeDlOwner::Picker,
             "http://example.com/a.toml".to_string(),
             visible,
             |_, _| panic!("下载失败不该进续体"),
         );
         assert!(!st.borrow().theme_download_idle.get(), "下载中按钮应置灰");
 
-        let msg = loop {
-            if let Some(m) = queue.lock().unwrap().pop() {
-                break m;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
         let net = st.borrow().net.clone();
-        net.on_done(msg);
+        net.on_done(wait_net(&queue));
 
         let s = st.borrow();
         assert!(s.theme_download_idle.get(), "完成后恢复空闲");
@@ -4723,14 +4767,12 @@ mod tests {
     /// 下载期间对话框被关（含 ESC）：结果直接丢弃，不弹错误也不进续体。
     #[test]
     fn theme_download_result_is_dropped_when_dialog_closed() {
-        let st = Rc::new(RefCell::new(AppState::empty()));
-        let queue = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let q = queue.clone();
-        st.borrow().net.set_sink(move |m| q.lock().unwrap().push(m));
+        let (st, queue) = state_with_queue_sink();
         let visible = signal(true);
 
         AppState::start_theme_download(
             &st,
+            ThemeDlOwner::Picker,
             "http://example.com/a.toml".to_string(),
             visible,
             |_, _| panic!("对话框已关，不该进续体"),
@@ -4738,34 +4780,68 @@ mod tests {
         st.borrow().feedback.set(None);
         visible.set(false);
 
-        let msg = loop {
-            if let Some(m) = queue.lock().unwrap().pop() {
-                break m;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
         let net = st.borrow().net.clone();
-        net.on_done(msg);
+        net.on_done(wait_net(&queue));
 
         let s = st.borrow();
         assert!(s.theme_download_idle.get());
         assert!(s.feedback.get().is_none(), "关框后不该再弹错误");
     }
 
-    /// 关框取消：续体被摘掉，按钮恢复可用。
+    /// 取消 = 摘掉续体：就算结果已经在路上，`on_done` 也不会再跑它（续体里 panic 为证）。
+    /// 先让工作线程确实跑完，再取消、再投递，覆盖「迟到结果」这条路。
     #[test]
-    fn cancel_theme_download_restores_idle() {
-        let st = Rc::new(RefCell::new(AppState::empty()));
-        st.borrow().net.set_sink(|_| {});
+    fn cancelled_theme_download_drops_late_result() {
+        let (st, queue) = state_with_queue_sink();
         AppState::start_theme_download(
             &st,
+            ThemeDlOwner::Picker,
             "http://example.com/a.toml".to_string(),
             signal(true),
-            |_, _| panic!("已取消"),
+            |_, _| panic!("已取消，不该进续体"),
         );
-        assert!(!st.borrow().theme_download_idle.get());
-        st.borrow().cancel_theme_download();
+        // 工作线程不查取消就会把结果发回：等它发回（线程已结束），再取消、再投递。
+        let msg = wait_net(&queue);
+        st.borrow().cancel_theme_download(ThemeDlOwner::Picker);
+        assert!(st.borrow().theme_download_idle.get(), "取消后按钮恢复可用");
+        st.borrow().feedback.set(None);
+        let net = st.borrow().net.clone();
+        net.on_done(msg);
+        assert!(st.borrow().feedback.get().is_none(), "迟到结果不得再弹提示");
+    }
+
+    /// 两个对话框共用一个任务槽：没在下载的那个被收起，不能取消另一个的下载。
+    #[test]
+    fn closing_the_other_theme_dialog_does_not_cancel_my_download() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        AppState::start_theme_download(
+            &st,
+            ThemeDlOwner::Picker,
+            "http://example.com/a.toml".to_string(),
+            signal(true),
+            |_, _| {},
+        );
+        st.borrow().cancel_theme_download(ThemeDlOwner::Protocol);
+        assert!(
+            !st.borrow().theme_download_idle.get(),
+            "别家对话框的关闭不该动我的下载"
+        );
+        st.borrow().cancel_theme_download(ThemeDlOwner::Picker);
         assert!(st.borrow().theme_download_idle.get());
+    }
+
+    /// 协议路由「收起」本来就关着的主题确认框：不得升版本，否则它的 effect 会把这当成
+    /// 刚被关掉、去取消别人的下载。
+    #[test]
+    fn hiding_an_already_hidden_protocol_dialog_does_not_bump_its_version() {
+        let st = AppState::empty();
+        let before = st.theme_import_dialog_visible.version();
+        st.hide_protocol_theme_dialog();
+        assert_eq!(st.theme_import_dialog_visible.version(), before);
+
+        st.theme_import_dialog_visible.set(true);
+        st.hide_protocol_theme_dialog();
+        assert!(!st.theme_import_dialog_visible.get(), "开着时要真收起");
     }
 
     /// 协议方案包下载中可取消：框收起、任务摘掉，随后可以再发起新的。
@@ -4788,6 +4864,24 @@ mod tests {
             st.borrow().feedback.get().is_none(),
             "取消后应能再起新的下载"
         );
+        assert!(
+            st.borrow().schema_download_visible.get(),
+            "新的下载应弹出下载框"
+        );
+    }
+
+    /// ESC 只把可见性置 false，取消要等下一帧的 effect：这段空窗里来的新请求
+    /// 不能被误判成「上一个还在下载」。
+    #[test]
+    fn schema_download_after_esc_is_not_rejected_as_busy() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        AppState::start_schema_download(&st, "https://windinput.com/a.zip".to_string());
+        st.borrow().schema_download_visible.set(false); // ESC，effect 尚未跑
+        st.borrow().feedback.set(None);
+
+        AppState::start_schema_download(&st, "https://windinput.com/b.zip".to_string());
+        assert!(st.borrow().feedback.get().is_none(), "不该被拒");
+        assert!(st.borrow().schema_download_visible.get());
     }
 
     /// 没撞名时不该弹任何框，结论直接交回调用方。

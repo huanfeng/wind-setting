@@ -798,7 +798,7 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                 )));
             } else if req.kind == "schema" {
                 st.clear_pending_theme_import();
-                st.theme_import_dialog_visible.set(false);
+                st.hide_protocol_theme_dialog();
                 // 白名单逐跳校验（域名不对不发请求，重定向出官方域即拒）。下载与预览在后台
                 // 线程跑，完成后弹确认框。临时文件的生命周期跟着句柄走：确认对话框是异步的，
                 // 句柄交给对话框，确认 / 取消后随待导入项释放即删；预览失败时在后台线程里
@@ -806,7 +806,7 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                 state::AppState::start_schema_download(state, req.url);
             } else {
                 st.clear_pending_theme_import();
-                st.theme_import_dialog_visible.set(false);
+                st.hide_protocol_theme_dialog();
                 st.feedback.set(Some((
                     ToastKind::Info,
                     format!("暂不支持通过协议导入 {}", req.kind),
@@ -816,7 +816,7 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
         Err(e) => {
             let st = state.borrow();
             st.clear_pending_theme_import();
-            st.theme_import_dialog_visible.set(false);
+            st.hide_protocol_theme_dialog();
             st.feedback
                 .set(Some((ToastKind::Error, format!("协议解析失败：{e}"))));
         }

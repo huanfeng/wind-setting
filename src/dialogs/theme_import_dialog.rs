@@ -91,6 +91,10 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                         .enabled_signal(download_idle)
                         .on_click(move |_| {
                             let u = url.get();
+                            if let Err(e) = crate::theme_import::validate_https_url(&u) {
+                                import_state.borrow().notify_err(e.user_message());
+                                return;
+                            }
                             // 下载在后台线程跑，完成后才进下面的导入。直接下载 → 导入；
                             // import_text 内部（core）已做校验，无需再单独预览（core
                             // theme.preview 只支持按已安装 name 预览，不接受原始文本）。
@@ -100,6 +104,7 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                             // 重下一次。
                             AppState::start_theme_download(
                                 &import_state,
+                                crate::state::ThemeDlOwner::Protocol,
                                 u,
                                 visible,
                                 move |app, text| {
@@ -157,7 +162,9 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
             move || visible.version(),
             move || {
                 if !visible.get() {
-                    cancel_state.borrow().cancel_theme_download();
+                    cancel_state
+                        .borrow()
+                        .cancel_theme_download(crate::state::ThemeDlOwner::Protocol);
                 }
             },
         ));

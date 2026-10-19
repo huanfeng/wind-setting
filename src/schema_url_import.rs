@@ -208,7 +208,17 @@ fn purge_stale(dir: &Path) {
 /// 超限、取消、读写失败时已写的部分随守卫 drop 删掉。
 pub(crate) fn save_stream(
     dir: &Path,
+    body: impl Read,
+    cancel: &AtomicBool,
+) -> Result<DownloadedPackage, String> {
+    save_stream_limited(dir, body, MAX_SCHEMA_BYTES, cancel)
+}
+
+/// [`save_stream`] 的上限可调版本，供测试用小上限覆盖超限分支。
+fn save_stream_limited(
+    dir: &Path,
     mut body: impl Read,
+    max: usize,
     cancel: &AtomicBool,
 ) -> Result<DownloadedPackage, String> {
     for _ in 0..16 {
@@ -232,7 +242,7 @@ pub(crate) fn save_stream(
         };
         // 先交给守卫：写一半失败也随 drop 删掉。
         let pkg = DownloadedPackage { path };
-        copy_limited(&mut body, &mut file, MAX_SCHEMA_BYTES, cancel).map_err(|e| match e {
+        copy_limited(&mut body, &mut file, max, cancel).map_err(|e| match e {
             ReadError::TooLarge => "方案包超过 64 MB 限制".to_string(),
             ReadError::Cancelled => "已取消下载".to_string(),
             ReadError::Io(m) => format!("读取方案包响应失败：{m}"),
@@ -280,6 +290,10 @@ pub fn download_and_preview(
     cancel: &AtomicBool,
 ) -> Result<(DownloadedPackage, serde_json::Value), String> {
     let pkg = download_schema_package(url, cancel)?;
+    // 下载完到 RPC 之间被取消：别再让 core 去解析一个没人要的包（包随 drop 删除）。
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("已取消下载".to_string());
+    }
     let preview = crate::rpc::call_core(
         "scheme.previewImport",
         &serde_json::json!({ "path": pkg.path().to_string_lossy() }),
@@ -361,6 +375,41 @@ mod tests {
             std::fs::read_dir(&dir).unwrap().count(),
             0,
             "半截文件要删掉"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写了一部分才超限 / 断流：半截文件必须删掉（文件在第一块写入后才有内容）。
+    #[test]
+    fn save_stream_removes_partial_file_when_over_limit_or_broken() {
+        let dir = scratch_dir("stream_partial");
+        let big = vec![1u8; 40_000];
+        let err = save_stream_limited(&dir, &big[..], 20_000, &AtomicBool::new(false)).unwrap_err();
+        assert!(err.contains("64 MB"), "{err}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "超限的半截文件要删"
+        );
+
+        struct Breaks(bool);
+        impl Read for Breaks {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Err(std::io::Error::other("断流"));
+                }
+                self.0 = true;
+                buf[..10].fill(7);
+                Ok(10)
+            }
+        }
+        let err =
+            save_stream_limited(&dir, Breaks(false), 1000, &AtomicBool::new(false)).unwrap_err();
+        assert!(err.contains("断流"), "{err}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "断流的半截文件要删"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

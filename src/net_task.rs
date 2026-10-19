@@ -203,27 +203,34 @@ mod tests {
         assert_eq!(got.get(), 7);
     }
 
+    /// 排队期间取消的任务不得启动：work 里 panic 为证（若启动了，会经 catch_unwind 回一条
+    /// `None`，下面的队列就不会是空的）。线程已 join，不靠 sleep 判时序。
     #[test]
     fn task_cancelled_while_queued_never_runs() {
         let tasks = NetTasks::default();
-        let id = tasks.spawn(|_| panic!("排队期间已取消，不该联网"), |_: Option<i32>| {});
+        let started = Arc::new(AtomicBool::new(false));
+        let s = started.clone();
+        let id = tasks.spawn(
+            move |_| {
+                s.store(true, Ordering::SeqCst);
+                0
+            },
+            |_: Option<i32>| {},
+        );
         tasks.cancel(id);
-        let queue = Arc::new(Mutex::new(Vec::new()));
-        let q = queue.clone();
-        tasks.set_sink(move |m| q.lock().unwrap().push(m));
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(queue.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn result_runs_continuation_on_the_calling_thread() {
-        let (tasks, queue) = tasks_with_queue();
-        let got = Rc::new(Cell::new(0));
-        let g = got.clone();
-        tasks.spawn(|_| 41 + 1, move |v: Option<i32>| g.set(v.unwrap()));
-        assert_eq!(got.get(), 0, "续体要等 on_done 才跑");
-        tasks.on_done(wait_for_one(&queue));
-        assert_eq!(got.get(), 42);
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = sent.clone();
+        tasks.set_sink(move |_| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        // 线程在 set_sink 里启动，随即因取消标志直接返回；用一个后续任务做栅栏：
+        // 它的结果到达时，前面那个线程必已结束（同一 sink、先启动先结束不保证，故再等一轮）。
+        let (tx, rx) = std::sync::mpsc::channel();
+        tasks.spawn(move |_| tx.send(()).unwrap(), |_: Option<()>| {});
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!started.load(Ordering::SeqCst), "取消的任务不该执行 work");
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "只有栅栏任务回了结果");
     }
 
     #[test]
