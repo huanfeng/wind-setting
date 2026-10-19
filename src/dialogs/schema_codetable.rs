@@ -58,7 +58,7 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use windui::prelude::*;
 
-use crate::manifest::{Manifest, cond_matches, parse_conds};
+use crate::manifest::{MItem, Manifest, cond_matches, parse_conds};
 
 /// manifest 中承载码表配置的 section 名（与全局页的「设置」按钮取同一组）。
 pub const CT_SECTION: &str = "上屏行为";
@@ -279,6 +279,28 @@ pub struct CtSeed<'a> {
     pub follow_label: &'a str,
 }
 
+/// 某项在方案级码表配置里归哪一组。
+///
+/// 全局那张「码表」卡把词频调整、自动造词、英文候选的参数收进了主开关的扩展设置
+/// （`opens_dialog` / `dialog_group`），参数本身不再带 `subsection`。这里没有对话框，
+/// 按主开关的标签把「主开关 + 它的参数」归成一组，否则参数会掉进首组「上屏行为」。
+fn ct_group_of(manifest: &Manifest, item: &MItem) -> Option<String> {
+    if item.opens_dialog.is_some() {
+        return Some(item.label.clone());
+    }
+    if let Some(g) = &item.dialog_group {
+        let host = manifest
+            .order
+            .iter()
+            .filter_map(|k| manifest.get(k))
+            .find(|h| h.opens_dialog.as_ref() == Some(g));
+        if let Some(h) = host {
+            return Some(h.label.clone());
+        }
+    }
+    item.subsection.clone()
+}
+
 /// 方案级码表配置的工作态：打开方案设置对话框时播种，点「保存」时落盘。
 #[derive(Clone, Default)]
 pub struct CtFields {
@@ -337,7 +359,7 @@ impl CtFields {
             } else {
                 seed.follow_label.to_string()
             };
-            subsecs.insert(key.clone(), item.subsection.clone());
+            subsecs.insert(key.clone(), ct_group_of(manifest, item));
             items.insert(
                 key.clone(),
                 CtItemState {
@@ -945,18 +967,34 @@ mod tests {
             groups.iter().all(|g| !g.keys.is_empty()),
             "空组说明分组逻辑漏了 key"
         );
-        // 组内的 key 必须都属于该组的 subsection——切错组比不分组更难查。
-        // 无 subsection 的项归到以 section 名命名的那一组（见 `group_title_of`）。
+        // 组内的 key 必须都属于该组——切错组比不分组更难查。
+        // 无分组的项归到以 section 名命名的那一组（见 `group_title_of`）。
         for g in &groups {
             for k in &g.keys {
                 assert_eq!(
-                    m.get(k)
-                        .and_then(|i| i.subsection.clone())
-                        .unwrap_or_else(|| CT_SECTION.to_string()),
+                    ct_group_of(&m, m.get(k).unwrap()).unwrap_or_else(|| CT_SECTION.to_string()),
                     g.title,
                     "{k} 被切进了「{}」组",
                     g.title
                 );
+            }
+        }
+        // 全局卡把这几组参数收进了扩展设置、去掉了 subsection；这里仍要按主开关成组，
+        // 参数不能掉进首组。
+        let group_of_key = |k: &str| {
+            groups
+                .iter()
+                .find(|g| g.keys.iter().any(|x| x == k))
+                .map(|g| g.title.clone())
+        };
+        for (k, want) in [
+            ("schema.codetable.frequency.enabled", "词频调整"),
+            ("schema.codetable.frequency.strategy", "词频调整"),
+            ("schema.codetable.auto_phrase.promote_count", "自动造词"),
+            ("schema.codetable.english_merge.block_commit", "英文候选"),
+        ] {
+            if visible_keys(&m).iter().any(|x| x == k) {
+                assert_eq!(group_of_key(k).as_deref(), Some(want), "{k}");
             }
         }
         // 第一组是 section 直属项（顶码上屏那些）：它们在 manifest 里排在所有 subsection
