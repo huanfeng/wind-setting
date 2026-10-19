@@ -250,6 +250,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(build_theme_delete_dialog(app))
         .child(build_theme_overwrite_dialog(app))
         .child(build_update_dialog(app))
+        .child(crate::dialogs::schema_download_dialog::build_schema_download_dialog(app))
         .child(crate::wizard::view::build_wizard_dialog(app))
         .child(build_conn_failed_dialog(app, conn_failed));
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。

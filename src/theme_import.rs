@@ -263,7 +263,7 @@ pub fn download_https_text(url: &str, cancel: &AtomicBool) -> Result<String, The
         ThemeImportError::Download(match e {
             ReadError::TooLarge => "主题文件超过 2 MiB 限制".to_string(),
             ReadError::Cancelled => "已取消下载".to_string(),
-            ReadError::Io(m) => format!("读取主题响应失败：{m}"),
+            ReadError::Io(m) | ReadError::Write(m) => format!("读取主题响应失败：{m}"),
         })
     })?;
     String::from_utf8(bytes)

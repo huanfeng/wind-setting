@@ -8,11 +8,11 @@
 //! 这里关掉自动跟随，每一跳都重新过 [`check_official_url`]，读正文前最终地址必在官方域。
 
 use std::hash::{BuildHasher, Hasher};
-use std::io::Write;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use crate::net_task::{ReadError, read_limited};
+use crate::net_task::{ReadError, copy_limited};
 
 /// 方案包体积上限（zip 内含词库，比主题大得多）。
 const MAX_SCHEMA_BYTES: usize = 64 * 1024 * 1024;
@@ -61,10 +61,13 @@ pub fn https_host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
-/// 一次 HTTP 往返的结果：重定向交回调用方逐跳校验，正文已按上限读完。
+/// 正文流。64 MB 的包不整块读进内存：边读边落盘，峰值只有一个分块。
+pub(crate) type Body = Box<dyn Read + Send>;
+
+/// 一次 HTTP 往返的结果：重定向交回调用方逐跳校验，正文是还没读的流。
 pub(crate) enum Fetched {
     Redirect(String),
-    Body(Vec<u8>),
+    Body(Body),
 }
 
 /// 第一跳的校验：https + 官方域。
@@ -100,12 +103,12 @@ fn resolve_location(current: &str, location: &str) -> Option<String> {
 pub(crate) fn fetch_official(
     url: &str,
     mut fetch: impl FnMut(&str) -> Result<Fetched, String>,
-) -> Result<Vec<u8>, String> {
+) -> Result<Body, String> {
     check_official_url(url)?;
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
         match fetch(&current)? {
-            Fetched::Body(bytes) => return Ok(bytes),
+            Fetched::Body(body) => return Ok(body),
             Fetched::Redirect(location) => {
                 let next = resolve_location(&current, &location)
                     .filter(|u| check_official_url(u).is_ok())
@@ -120,7 +123,7 @@ pub(crate) fn fetch_official(
 }
 
 /// 真实的一次往返：不自动跟随重定向，且只走 https（`https_only` 是兜底，逐跳校验已拦）。
-fn http_fetch(agent: &ureq::Agent, url: &str, cancel: &AtomicBool) -> Result<Fetched, String> {
+fn http_fetch(agent: &ureq::Agent, url: &str) -> Result<Fetched, String> {
     let response = agent
         .get(url)
         .call()
@@ -131,13 +134,7 @@ fn http_fetch(agent: &ureq::Agent, url: &str, cancel: &AtomicBool) -> Result<Fet
             .map(|l| Fetched::Redirect(l.to_string()))
             .ok_or_else(|| format!("下载方案包失败：{} 重定向缺少地址", response.status()));
     }
-    let bytes =
-        read_limited(response.into_reader(), MAX_SCHEMA_BYTES, cancel).map_err(|e| match e {
-            ReadError::TooLarge => "方案包超过 64 MB 限制".to_string(),
-            ReadError::Cancelled => "已取消下载".to_string(),
-            ReadError::Io(m) => format!("读取方案包响应失败：{m}"),
-        })?;
-    Ok(Fetched::Body(bytes))
+    Ok(Fetched::Body(Box::new(response.into_reader())))
 }
 
 /// 下载落盘的方案包。**drop 即删文件**：确认对话框是异步的，文件要活到用户确认或取消
@@ -207,8 +204,13 @@ fn purge_stale(dir: &Path) {
     }
 }
 
-/// 随机文件名 + `create_new`（O_EXCL）落盘：撞名重试，绝不打开别人预先放好的文件或链接。
-pub(crate) fn save_package(dir: &Path, bytes: &[u8]) -> Result<DownloadedPackage, String> {
+/// 随机文件名 + `create_new`（O_EXCL）流式落盘：撞名重试，绝不打开别人预先放好的文件或链接。
+/// 超限、取消、读写失败时已写的部分随守卫 drop 删掉。
+pub(crate) fn save_stream(
+    dir: &Path,
+    mut body: impl Read,
+    cancel: &AtomicBool,
+) -> Result<DownloadedPackage, String> {
     for _ in 0..16 {
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         h.write_u32(std::process::id());
@@ -230,8 +232,12 @@ pub(crate) fn save_package(dir: &Path, bytes: &[u8]) -> Result<DownloadedPackage
         };
         // 先交给守卫：写一半失败也随 drop 删掉。
         let pkg = DownloadedPackage { path };
-        file.write_all(bytes)
-            .map_err(|e| format!("写入临时文件失败：{e}"))?;
+        copy_limited(&mut body, &mut file, MAX_SCHEMA_BYTES, cancel).map_err(|e| match e {
+            ReadError::TooLarge => "方案包超过 64 MB 限制".to_string(),
+            ReadError::Cancelled => "已取消下载".to_string(),
+            ReadError::Io(m) => format!("读取方案包响应失败：{m}"),
+            ReadError::Write(m) => format!("写入临时文件失败：{m}"),
+        })?;
         return Ok(pkg);
     }
     Err("写入临时文件失败：随机文件名连续冲突".to_string())
@@ -248,6 +254,12 @@ fn download_agent() -> ureq::Agent {
         .build()
 }
 
+/// 测试与小体积调用的便捷入口：内存里的字节落盘。
+#[cfg(test)]
+pub(crate) fn save_package(dir: &Path, bytes: &[u8]) -> Result<DownloadedPackage, String> {
+    save_stream(dir, bytes, &AtomicBool::new(false))
+}
+
 /// 校验官方域（每一跳）并下载方案包到私有临时文件，返回 drop 即删的句柄。
 /// **阻塞**，只能在工作线程里调（见 [`crate::net_task`]）。
 pub fn download_schema_package(
@@ -255,10 +267,10 @@ pub fn download_schema_package(
     cancel: &AtomicBool,
 ) -> Result<DownloadedPackage, String> {
     let agent = download_agent();
-    let bytes = fetch_official(url, |u| http_fetch(&agent, u, cancel))?;
+    let body = fetch_official(url, |u| http_fetch(&agent, u))?;
     let dir = download_dir()?;
     purge_stale(&dir);
-    save_package(&dir, &bytes)
+    save_stream(&dir, body, cancel)
 }
 
 /// 下载并让 core 预览，一并在工作线程里做完——下载完紧跟的 `scheme.previewImport`
@@ -333,6 +345,35 @@ mod tests {
         );
     }
 
+    fn read_all(mut body: Body) -> Vec<u8> {
+        let mut v = Vec::new();
+        body.read_to_end(&mut v).unwrap();
+        v
+    }
+
+    /// 流式落盘：超限 / 取消时已写的部分文件随守卫删掉，不留残渣。
+    #[test]
+    fn save_stream_removes_partial_file_on_cancel() {
+        let dir = scratch_dir("stream_cancel");
+        let err = save_stream(&dir, &b"data"[..], &AtomicBool::new(true)).unwrap_err();
+        assert!(err.contains("取消"), "{err}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "半截文件要删掉"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_stream_writes_whole_body() {
+        let dir = scratch_dir("stream_ok");
+        let pkg = save_stream(&dir, &b"PKzip"[..], &AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(pkg.path()).unwrap(), b"PKzip");
+        drop(pkg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 假往返：按地址查表应答，记下实际请求过的地址。
     fn scripted<'a>(
         table: &'a [(&'a str, Result<&'a str, &'a str>)],
@@ -341,7 +382,9 @@ mod tests {
         move |u| {
             seen.borrow_mut().push(u.to_string());
             match table.iter().find(|(k, _)| *k == u) {
-                Some((_, Ok(body))) => Ok(Fetched::Body(body.as_bytes().to_vec())),
+                Some((_, Ok(body))) => Ok(Fetched::Body(Box::new(std::io::Cursor::new(
+                    body.as_bytes().to_vec(),
+                )))),
                 Some((_, Err(loc))) => Ok(Fetched::Redirect(loc.to_string())),
                 None => Err(format!("unexpected request {u}")),
             }
@@ -354,7 +397,7 @@ mod tests {
         let seen = Default::default();
         let table = [("https://windinput.com/a.zip", Ok("PK"))];
         let body = fetch_official("https://windinput.com/a.zip", scripted(&table, &seen));
-        assert_eq!(body.unwrap(), b"PK");
+        assert_eq!(read_all(body.unwrap()), b"PK");
 
         let seen = Default::default();
         let table = [
@@ -370,7 +413,7 @@ mod tests {
             ("HTTPS://CDN.windinput.com/a.zip", Ok("PK")),
         ];
         let body = fetch_official("https://windinput.com/s/a", scripted(&table, &seen));
-        assert_eq!(body.unwrap(), b"PK");
+        assert_eq!(read_all(body.unwrap()), b"PK");
         assert_eq!(seen.borrow().len(), 4);
     }
 
@@ -389,8 +432,9 @@ mod tests {
         ] {
             let seen = std::cell::RefCell::new(Vec::new());
             let table = [("https://windinput.com/a", Err(bad))];
-            let err =
-                fetch_official("https://windinput.com/a", scripted(&table, &seen)).unwrap_err();
+            let err = fetch_official("https://windinput.com/a", scripted(&table, &seen))
+                .err()
+                .unwrap();
             assert!(err.contains("已拒绝"), "{bad}: {err}");
             assert_eq!(seen.borrow().len(), 1, "{bad}: 不得请求重定向目标");
         }
@@ -400,8 +444,9 @@ mod tests {
     fn fetch_gives_up_after_max_redirects() {
         let seen = Default::default();
         let table = [("https://windinput.com/loop", Err("/loop"))];
-        let err =
-            fetch_official("https://windinput.com/loop", scripted(&table, &seen)).unwrap_err();
+        let err = fetch_official("https://windinput.com/loop", scripted(&table, &seen))
+            .err()
+            .unwrap();
         assert!(err.contains("超过"), "{err}");
         assert_eq!(seen.borrow().len(), MAX_REDIRECTS + 1);
     }
@@ -430,36 +475,17 @@ mod tests {
             }
         });
         let agent = ureq::AgentBuilder::new().redirects(0).build();
-        match http_fetch(
-            &agent,
-            &format!("http://127.0.0.1:{port}/r"),
-            &AtomicBool::new(false),
-        )
-        .unwrap()
-        {
+        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/r")).unwrap() {
             Fetched::Redirect(l) => assert_eq!(l, "https://evil.com/x"),
             Fetched::Body(_) => panic!("不应跟随重定向"),
         }
-        match http_fetch(
-            &agent,
-            &format!("http://127.0.0.1:{port}/a.zip"),
-            &AtomicBool::new(false),
-        )
-        .unwrap()
-        {
-            Fetched::Body(b) => assert_eq!(b, b"PK"),
+        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/a.zip")).unwrap() {
+            Fetched::Body(b) => assert_eq!(read_all(b), b"PK"),
             Fetched::Redirect(_) => panic!("应读到正文"),
         }
         worker.join().unwrap();
 
-        assert!(
-            http_fetch(
-                &download_agent(),
-                &format!("http://127.0.0.1:{port}/a.zip"),
-                &AtomicBool::new(false)
-            )
-            .is_err()
-        );
+        assert!(http_fetch(&download_agent(), &format!("http://127.0.0.1:{port}/a.zip")).is_err());
     }
 
     fn scratch_dir(tag: &str) -> PathBuf {

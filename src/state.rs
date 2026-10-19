@@ -496,6 +496,8 @@ pub struct AppState {
     theme_download_task: Cell<Option<crate::net_task::TaskId>>,
     /// 在途的协议方案包下载任务号；非空时拒绝再起一个（方案包最大 64 MB，不叠着下）。
     schema_download_task: Cell<Option<crate::net_task::TaskId>>,
+    /// 「正在下载方案包」对话框。协议导入没有别的界面可挂取消按钮，慢网下要给个出口。
+    pub schema_download_visible: Signal<bool>,
     /// 后台网络任务（HTTP 下载）。`main()` 在 App 构建期接上 channel。
     /// `Rc`：channel 回调要在放掉 `AppState` 借用之后再跑续体，见 `main` 里的注册处。
     pub net: Rc<crate::net_task::NetTasks>,
@@ -1012,6 +1014,7 @@ impl AppState {
             theme_download_idle: signal(true),
             theme_download_task: Cell::new(None),
             schema_download_task: Cell::new(None),
+            schema_download_visible: signal(false),
             net: Rc::new(crate::net_task::NetTasks::default()),
             tab: signal(0),
             // 搜索索引在上面构建：清单是内嵌的、启动即就位，不必等 RPC。
@@ -1956,6 +1959,16 @@ impl AppState {
         }
     }
 
+    /// 取消在途的协议方案包下载（下载框关闭时调，含 ESC）。没有在途任务时无副作用。
+    pub fn cancel_schema_download(&self) {
+        if let Some(id) = self.schema_download_task.take() {
+            self.net.cancel(id);
+        }
+        if self.schema_download_visible.get() {
+            self.schema_download_visible.set(false);
+        }
+    }
+
     /// 后台下载协议链接带来的方案包并让 core 预览，完成后在 UI 线程弹导入确认框。
     ///
     /// 已有一个在下时拒绝新的——64 MB 的包叠着下既占带宽又让确认框次序错乱。
@@ -1970,8 +1983,7 @@ impl AppState {
             st.notify_err(e);
             return;
         }
-        st.feedback
-            .set(Some((ToastKind::Info, "正在下载方案包…".to_string())));
+        st.schema_download_visible.set(true);
         let net = st.net.clone();
         let app_done = app.clone();
         let task = net.spawn(
@@ -1979,6 +1991,8 @@ impl AppState {
             move |res| {
                 let st = app_done.borrow();
                 st.schema_download_task.set(None);
+                // 先收下载框再弹确认框：两个全窗模态同时可见会互相遮挡。
+                st.schema_download_visible.set(false);
                 match res {
                     Some(Ok((pkg, preview))) => {
                         st.schema_mgr.open_downloaded_import_confirm(pkg, &preview)
@@ -4752,6 +4766,28 @@ mod tests {
         assert!(!st.borrow().theme_download_idle.get());
         st.borrow().cancel_theme_download();
         assert!(st.borrow().theme_download_idle.get());
+    }
+
+    /// 协议方案包下载中可取消：框收起、任务摘掉，随后可以再发起新的。
+    /// 不设 sink：任务只排队不起线程，测试不碰网络。
+    #[test]
+    fn schema_download_can_be_cancelled_and_restarted() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        AppState::start_schema_download(&st, "https://windinput.com/a.zip".to_string());
+        assert!(st.borrow().schema_download_visible.get(), "应弹出下载框");
+
+        AppState::start_schema_download(&st, "https://windinput.com/b.zip".to_string());
+        let (kind, _) = st.borrow().feedback.get().expect("在下时应拒绝新的");
+        assert_eq!(kind, ToastKind::Error);
+
+        st.borrow().cancel_schema_download();
+        assert!(!st.borrow().schema_download_visible.get());
+        st.borrow().feedback.set(None);
+        AppState::start_schema_download(&st, "https://windinput.com/c.zip".to_string());
+        assert!(
+            st.borrow().feedback.get().is_none(),
+            "取消后应能再起新的下载"
+        );
     }
 
     /// 没撞名时不该弹任何框，结论直接交回调用方。

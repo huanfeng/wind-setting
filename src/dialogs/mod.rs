@@ -9,6 +9,7 @@ pub mod keys_overview;
 pub mod langbar_badges_dialog;
 pub mod langbar_text_colors_dialog;
 pub mod schema_codetable;
+pub mod schema_download_dialog;
 pub mod schema_key_actions;
 pub mod schema_manager;
 pub mod schema_session_actions;

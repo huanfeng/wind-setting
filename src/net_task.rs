@@ -12,7 +12,7 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -115,37 +115,51 @@ impl NetTasks {
     }
 }
 
-/// 读取失败的三种原因，调用方各自配文案。
+/// 读写失败的几种原因，调用方各自配文案。
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadError {
     TooLarge,
     Cancelled,
+    /// 读源端失败（网络断开、超时等）。
     Io(String),
+    /// 写目的端失败（磁盘满等）。
+    Write(String),
 }
 
-/// 按分块读完 `r`，超过 `max` 字节立刻报错（不必读到尾），每块之间查一次取消标志。
-pub fn read_limited(
+/// 按分块把 `r` 拷进 `w`，超过 `max` 字节立刻报错（不必读到尾），每块之间查一次取消标志。
+/// 返回拷贝的字节数。
+pub fn copy_limited(
     mut r: impl Read,
+    w: &mut impl Write,
     max: usize,
     cancel: &AtomicBool,
-) -> Result<Vec<u8>, ReadError> {
-    let mut out = Vec::new();
+) -> Result<usize, ReadError> {
+    let mut total = 0usize;
     let mut buf = [0u8; 16 * 1024];
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(ReadError::Cancelled);
         }
         let n = match r.read(&mut buf) {
-            Ok(0) => return Ok(out),
+            Ok(0) => return Ok(total),
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(ReadError::Io(e.to_string())),
         };
-        if out.len() + n > max {
+        if total + n > max {
             return Err(ReadError::TooLarge);
         }
-        out.extend_from_slice(&buf[..n]);
+        w.write_all(&buf[..n])
+            .map_err(|e| ReadError::Write(e.to_string()))?;
+        total += n;
     }
+}
+
+/// [`copy_limited`] 到内存。只给小体积响应用（主题 ≤ 2 MiB）；大文件请直接落盘。
+pub fn read_limited(r: impl Read, max: usize, cancel: &AtomicBool) -> Result<Vec<u8>, ReadError> {
+    let mut out = Vec::new();
+    copy_limited(r, &mut out, max, cancel)?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -297,6 +311,28 @@ mod tests {
             read_limited(&data[..], 1000, &AtomicBool::new(true)),
             Err(ReadError::Cancelled)
         );
+    }
+
+    #[test]
+    fn copy_limited_streams_into_writer_and_reports_write_errors() {
+        let data = vec![9u8; 50_000];
+        let mut out = Vec::new();
+        let n = copy_limited(&data[..], &mut out, 50_000, &AtomicBool::new(false)).unwrap();
+        assert_eq!((n, out), (50_000, data.clone()));
+
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("磁盘满"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(matches!(
+            copy_limited(&data[..], &mut Full, 100_000, &AtomicBool::new(false)),
+            Err(ReadError::Write(m)) if m.contains("磁盘满")
+        ));
     }
 
     #[test]
