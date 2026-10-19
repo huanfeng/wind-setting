@@ -3060,6 +3060,16 @@ value = "vertical"
 label = "竖排"
 
 [[items]]
+key = "ui.candidate.max_chars"
+group = "ui"
+section = "候选排版"
+type = "number"
+label = "候选文本最大字数"
+hint = "候选文本超过此字数时截断并追加省略号；0 = 不限。只管候选词本身，注释的字数上限在下方「候选注释」的设置里"
+min = 0
+max = 64
+
+[[items]]
 key = "ui.candidate.flip_when_above"
 group = "ui"
 section = "候选排版"
@@ -3127,16 +3137,6 @@ options = [
   { value = "show", label = "显示" },
   { value = "hide", label = "隐藏" },
 ]
-
-[[items]]
-key = "ui.candidate.max_chars"
-group = "ui"
-section = "候选排版"
-type = "number"
-label = "候选文本最大字数"
-hint = "候选文本超过此字数时截断并追加省略号；0 = 不限。只管候选词本身，注释的字数上限在下方「候选注释」的设置里"
-min = 0
-max = 64
 
 # ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
 # 总开关置于卡片首行，只有「候选注释」（模板对话框）随它置灰。不挂的：
