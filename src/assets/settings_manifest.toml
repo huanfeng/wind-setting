@@ -3665,6 +3665,7 @@ key = "ui.langbar.badges"
 group = "ui"
 section = "任务栏图标"
 type = "dialog_button_langbar_badges"
+indent = false
 label = "角标规则"
 hint = "哪些状态画角标、画在哪个角、什么颜色"
 enabled_when = "ui.langbar.badge != none"
