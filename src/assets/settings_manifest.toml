@@ -3386,7 +3386,7 @@ section = "展开候选"
 dialog_group = "grid"
 type = "checkbox_group"
 label = "分类标签"
-hint = "展开后在候选上方显示的分类，按 Tab / Shift+Tab 或点击切换；「生僻」按常用字表划分；勾选不足两个时不显示标签栏"
+hint = "展开后在候选下方（与翻页箭头同一行）显示的分类，按 Tab / Shift+Tab 或点击切换；只有当前候选里有这一类时才出现，「生僻」按常用字表划分；勾选不足两个时不显示标签栏"
 enabled_when = "ui.candidate.grid_expand == true"
 [[items.options]]
 value = "all"
@@ -3403,16 +3403,6 @@ label = "生僻"
 [[items.options]]
 value = "symbol"
 label = "符号"
-
-[[items]]
-key = "ui.candidate.grid_tooltip_follows_highlight"
-group = "ui"
-section = "展开候选"
-dialog_group = "grid"
-type = "toggle"
-label = "提示跟随高亮"
-hint = "鼠标不在候选窗上时，悬停提示也跟着键盘高亮的那一格显示，贴在候选窗外侧"
-enabled_when = "ui.candidate.grid_expand == true"
 
 # ── 状态提示（行为/位置类；纯视觉如颜色/字号/透明度/圆角由主题 theme.toml 处理，不在此）──
 [[items]]

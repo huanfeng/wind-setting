@@ -1830,11 +1830,6 @@
       ]
     },
     {
-      "default": false,
-      "key": "ui.candidate.grid_tooltip_follows_highlight",
-      "type": "bool"
-    },
-    {
       "default": [
         "all",
         "single",

@@ -485,7 +485,6 @@
    "grid_expand": false,
    "grid_index_fill": "rows",
    "grid_rows": 5,
-   "grid_tooltip_follows_highlight": false,
    "hide_window": false,
    "index_labels": [],
    "layout": "horizontal",
