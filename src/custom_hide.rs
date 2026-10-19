@@ -104,7 +104,7 @@ mod tests {
     fn prefix_selector_hides_whole_section() {
         let full = Manifest::from_embedded();
         assert!(
-            full.sections_of("input")
+            full.sections_of("schema")
                 .iter()
                 .any(|(s, _)| s == "临时英文"),
             "前提：出厂清单有「临时英文」分区"
@@ -114,7 +114,7 @@ mod tests {
         let partly = settings_manifest(&hide(&["key:input.temp_english.*"]), false);
         assert!(
             partly
-                .sections_of("input")
+                .sections_of("schema")
                 .iter()
                 .any(|(s, _)| s == "临时英文")
         );
@@ -126,11 +126,11 @@ mod tests {
             false,
         );
         assert!(
-            !m.sections_of("input").iter().any(|(s, _)| s == "临时英文"),
+            !m.sections_of("schema").iter().any(|(s, _)| s == "临时英文"),
             "整节被隐藏后分区不应再返回"
         );
         // 别的分区不受牵连。
-        assert!(m.sections_of("input").iter().any(|(s, _)| s == "临时拼音"));
+        assert!(m.sections_of("schema").iter().any(|(s, _)| s == "临时拼音"));
     }
 
     #[test]
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn show_all_ignores_hide() {
         let m = settings_manifest(&hide(&["key:input.temp_english.*"]), true);
-        assert!(m.sections_of("input").iter().any(|(s, _)| s == "临时英文"));
+        assert!(m.sections_of("schema").iter().any(|(s, _)| s == "临时英文"));
     }
 
     #[test]
@@ -203,18 +203,18 @@ mod tests {
         let mut st = crate::state::AppState::empty();
 
         st.manifest = settings_manifest(&hide_owned(&selectors_of("混输行为")), false);
-        assert!(scheme_config_section(&st, "混输方案配置", "混输行为", false).is_none());
-        assert!(scheme_config_section(&st, "码表方案配置", "上屏行为", false).is_some());
+        assert!(scheme_config_section(&st, "混输", "混输行为", false).is_none());
+        assert!(scheme_config_section(&st, "码表", "上屏行为", false).is_some());
 
         let mut pinyin = selectors_of("候选行为");
         st.manifest = settings_manifest(&hide_owned(&pinyin), false);
         assert!(
-            scheme_config_section(&st, "拼音方案配置", "候选行为", true).is_some(),
+            scheme_config_section(&st, "拼音", "候选行为", true).is_some(),
             "模糊音还在，卡片不能消失"
         );
         pinyin.push("key:schema.pinyin.fuzzy.*".into());
         st.manifest = settings_manifest(&hide_owned(&pinyin), false);
-        assert!(scheme_config_section(&st, "拼音方案配置", "候选行为", true).is_none());
+        assert!(scheme_config_section(&st, "拼音", "候选行为", true).is_none());
     }
 
     fn hide_owned(raw: &[String]) -> SettingsHide {

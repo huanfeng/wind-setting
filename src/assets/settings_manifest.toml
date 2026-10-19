@@ -1,6 +1,7 @@
 # 统一声明式设置清单（native 内置真相源；core 已退役 manifest.toml）。
 # 字段：key(点路径,对应 Config)/group/section/type/label/hint/options/options_source/min/max/step/unit/width/enabled_when/gate_key/global
 #   width：select 下拉像素宽；options_source：动态选项来源（themes/fonts/codetableSchemas/pinyinSchemas）
+# tier："advanced" = 「界面细节 → 设置项」选「普通」时藏起（分层试验，逐页推进；缺省两种都显示）。
 # 注：默认值不在此声明，统一取自 core capability 快照（capabilities.snapshot.json）。
 #
 # 【对照来源】参考项目 WindInput/wind_setting（web 配置页）的页面/分区/字段组织与文案；
@@ -143,6 +144,7 @@ group = "schema"
 section = "上屏行为"
 subsection = "常用功能"
 type = "toggle"
+tier = "advanced"
 label = "精确匹配空码补全"
 hint = "精确匹配模式下无候选时，自动从更长编码中取首个候选"
 enabled_when = "schema.codetable.single_code_input == true"
@@ -221,6 +223,7 @@ group = "schema"
 section = "上屏行为"
 subsection = "常用功能"
 type = "toggle"
+tier = "advanced"
 label = "通配仅出单字"
 hint = "通配与反查模式的结果只列单字，词组不出。不影响正常打字"
 
@@ -233,6 +236,7 @@ group = "schema"
 section = "上屏行为"
 subsection = "常用功能"
 type = "number_select"
+tier = "advanced"
 label = "出简让全"
 hint = "有简码的字在更长编码上把首选让给词组，自己排到候选末尾"
 width = 160
@@ -259,16 +263,17 @@ hint = "只出单字。同码没有词来争首选，满码唯一即可直接上
 key = "schema.codetable.frequency.enabled"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+subsection = "学习与扩展"
+opens_dialog = "ct_freq"
 type = "toggle"
-label = "启用词频调整"
+label = "词频调整"
 hint = "根据使用频次动态调整候选排序"
 
 [[items]]
 key = "schema.codetable.frequency.record_always"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "toggle"
 label = "仅记录次数"
 hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
@@ -278,7 +283,7 @@ enabled_when = "schema.codetable.frequency.enabled == false"
 key = "schema.codetable.frequency.strategy"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "select"
 label = "调频策略"
 hint = "置顶：用过一次即到首位；步进：按累计次数上升；位次渐进：每次前移一半位次，逐步靠前"
@@ -293,7 +298,7 @@ options = [
 key = "schema.codetable.frequency.promote_prefix"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "select"
 label = "补全词参与调频"
 hint = "仅「位次渐进」策略下生效。英文等以前缀匹配为主的方案建议选「全部」"
@@ -308,7 +313,7 @@ options = [
 key = "schema.codetable.frequency.half_life"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "number"
 label = "热度衰减半衰期"
 hint = "使用记录衰减到一半所需的时间，仅「位次渐进」策略下生效。0 = 默认 72 小时"
@@ -322,7 +327,7 @@ enabled_when = "schema.codetable.frequency.enabled == true && schema.codetable.f
 key = "schema.codetable.frequency.protect_top_n_len1"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "number"
 label = "一简位保护前 N 项"
 hint = "只输入 1 个编码时（如五笔一简），词典前 N 项不参与调频。一简每个编码通常只有两个字，误选一次就会永久换掉首选，故默认保护"
@@ -334,7 +339,7 @@ enabled_when = "schema.codetable.frequency.enabled == true"
 key = "schema.codetable.frequency.protect_top_n_len2"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "number"
 label = "二简位保护前 N 项"
 hint = "输入 2 个编码时，词典前 N 项不参与调频（0 = 不保护）"
@@ -346,7 +351,7 @@ enabled_when = "schema.codetable.frequency.enabled == true"
 key = "schema.codetable.frequency.protect_top_n_len3"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "number"
 label = "三简位保护前 N 项"
 hint = "输入 3 个编码时，词典前 N 项不参与调频。默认不保护——三简的固定程度弱于一二简"
@@ -358,7 +363,7 @@ enabled_when = "schema.codetable.frequency.enabled == true"
 key = "schema.codetable.frequency.protect_top_n"
 group = "schema"
 section = "上屏行为"
-subsection = "词频调整"
+dialog_group = "ct_freq"
 type = "number"
 label = "全码位保护前 N 项"
 hint = "输入 4 个及以上编码时，词典前 N 项不参与调频。默认 0 = 不保护，让调频在全码位正常起作用"
@@ -371,16 +376,17 @@ enabled_when = "schema.codetable.frequency.enabled == true"
 key = "schema.codetable.auto_phrase.enabled"
 group = "schema"
 section = "上屏行为"
-subsection = "自动造词"
+subsection = "学习与扩展"
+opens_dialog = "ct_auto_phrase"
 type = "toggle"
-label = "启用自动造词"
+label = "自动造词"
 hint = "打字时自动记下可能的词组，用过一次即存入临时词库"
 
 [[items]]
 key = "schema.codetable.auto_phrase.promote_count"
 group = "schema"
 section = "上屏行为"
-subsection = "自动造词"
+dialog_group = "ct_auto_phrase"
 type = "number"
 label = "转入用户词库次数"
 hint = "用满几次后永久收录进用户词库；0 = 不收录，一直留在临时词库"
@@ -393,7 +399,7 @@ enabled_when = "schema.codetable.auto_phrase.enabled == true"
 key = "schema.codetable.auto_phrase.min_phrase_len"
 group = "schema"
 section = "上屏行为"
-subsection = "自动造词"
+dialog_group = "ct_auto_phrase"
 type = "number"
 label = "最短造词长度"
 hint = "至少连续选几个字才记为词组"
@@ -406,7 +412,7 @@ enabled_when = "schema.codetable.auto_phrase.enabled == true"
 key = "schema.codetable.auto_phrase.max_phrase_len"
 group = "schema"
 section = "上屏行为"
-subsection = "自动造词"
+dialog_group = "ct_auto_phrase"
 type = "number"
 label = "最长造词长度"
 hint = "最多记录几个字的词组"
@@ -422,9 +428,10 @@ enabled_when = "schema.codetable.auto_phrase.enabled == true"
 key = "schema.codetable.english_merge.enable"
 group = "schema"
 section = "上屏行为"
-subsection = "英文候选"
+subsection = "学习与扩展"
+opens_dialog = "ct_english"
 type = "toggle"
-label = "启用英文候选"
+label = "英文候选"
 hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
 
 # 最小触发长度：只约束「中文侧有候选」那一路，见 hint。
@@ -432,7 +439,7 @@ hint = "同时查询英文词库并显示英文候选；整串恰好是一个英
 key = "schema.codetable.english_merge.min_length"
 group = "schema"
 section = "上屏行为"
-subsection = "英文候选"
+dialog_group = "ct_english"
 type = "number"
 label = "英文最小触发长度"
 hint = "有中文候选时，编码达到此长度才查英文（0 = 默认 3）；中文候选为空时不受本项约束，2 码起就给英文补全"
@@ -444,7 +451,7 @@ enabled_when = "schema.codetable.english_merge.enable == true"
 key = "schema.codetable.english_merge.block_commit"
 group = "schema"
 section = "上屏行为"
-subsection = "英文候选"
+dialog_group = "ct_english"
 type = "toggle"
 label = "有英文候选时否决满码上屏"
 hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；定长码表建议开着，关掉的话打 github 到第 4 键就被顶出中文"
@@ -457,7 +464,7 @@ group = "schema"
 section = "候选行为"
 type = "select"
 label = "编码提示来源"
-hint = "拼音方案（含双拼）下，候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定。临时拼音与快捷输入另设，见「输入 → 临时拼音」；混输方案另设，见「混输方案配置 → 拼音候选显示码表编码」"
+hint = "拼音方案（含双拼）下，候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定。临时拼音与快捷输入另设，见「方案 → 临时拼音」；混输方案另设，见「方案 → 混输 → 拼音候选显示码表编码」"
 options = [
   { value = "auto", label = "自动" },
   { value = "codetable", label = "码表反查" },
@@ -469,6 +476,7 @@ options = [
 key = "schema.pinyin.use_smart_compose"
 group = "schema"
 section = "候选行为"
+opens_dialog = "py_compose"
 type = "toggle"
 label = "智能组词"
 hint = "根据上下文智能拼接候选"
@@ -477,6 +485,7 @@ hint = "根据上下文智能拼接候选"
 key = "schema.pinyin.sentence_uses_user_words"
 group = "schema"
 section = "候选行为"
+dialog_group = "py_compose"
 type = "toggle"
 label = "组词时使用自造词"
 hint = "智能组词时把你造过的词也算进去。关闭时整句只用系统词库，自造的词打整句时不认"
@@ -486,6 +495,7 @@ enabled_when = "schema.pinyin.use_smart_compose == true"
 key = "schema.pinyin.sentence_count"
 group = "schema"
 section = "候选行为"
+dialog_group = "py_compose"
 type = "number"
 label = "智能组词显示条数"
 hint = "候选里同时列出几种整句解读。1 = 只出一条；调大后次优的整句也会排在最前面，便于比较"
@@ -496,6 +506,7 @@ max = 8
 key = "schema.pinyin.sentence_max_count"
 group = "schema"
 section = "候选行为"
+dialog_group = "py_compose"
 type = "number"
 label = "智能组词备选条数"
 hint = "一共算几种整句解读，供整句切换键轮换。少于显示条数时按显示条数算"
@@ -506,6 +517,7 @@ max = 8
 key = "schema.pinyin.sentence_cycle_key"
 group = "schema"
 section = "候选行为"
+dialog_group = "py_compose"
 type = "select"
 label = "智能组词切换键"
 hint = "打拼音时按它在几种整句解读间轮换，需把「智能组词备选条数」调到 2 以上。只在算出两条以上整句时占用这个键；它若是当前的音节分隔符（全拼下反引号常是）或被方案按键绑定，则让位不生效"
@@ -548,20 +560,40 @@ type = "toggle"
 label = "单字输入"
 hint = "只出单字，用来找某个字；拼音没有定长码，日常不必开"
 
+# 简拼（GH#180）
+[[items]]
+key = "schema.pinyin.abbrev.enabled"
+group = "schema"
+section = "候选行为"
+type = "toggle"
+label = "启用简拼"
+hint = "只打声母也能出词，如 nh → 你好、bzd → 不知道，也可与全拼混打（nhao）"
+
+# 双拼：allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达「当前方案是双拼」
+# （它只能比较配置键），故常驻可见，由 hint 说明适用范围。
+[[items]]
+key = "schema.pinyin.shuangpin.allow_full_pinyin"
+group = "schema"
+section = "候选行为"
+type = "toggle"
+label = "双拼时允许全拼输入"
+hint = "双拼方案下也能按全拼打字，如 zaijian → 再见。对全拼方案无影响"
+
 [[items]]
 key = "schema.pinyin.frequency.enabled"
 group = "schema"
 section = "候选行为"
-subsection = "词频调整"
+subsection = "学习与扩展"
+opens_dialog = "py_freq"
 type = "toggle"
-label = "启用词频调整"
+label = "词频调整"
 hint = "根据使用频次动态调整候选排序"
 
 [[items]]
 key = "schema.pinyin.frequency.record_always"
 group = "schema"
 section = "候选行为"
-subsection = "词频调整"
+dialog_group = "py_freq"
 type = "toggle"
 label = "仅记录次数"
 hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
@@ -571,7 +603,7 @@ enabled_when = "schema.pinyin.frequency.enabled == false"
 key = "schema.pinyin.frequency.promote_prefix"
 group = "schema"
 section = "候选行为"
-subsection = "词频调整"
+dialog_group = "py_freq"
 type = "select"
 label = "补全词参与调频"
 hint = "只打半个音时（如 d），补全出的候选是否也参与调频。「仅单字」让「的/得」这类单字上浮，但不让「东西」这类词组跑到单字前面"
@@ -586,7 +618,7 @@ options = [
 key = "schema.pinyin.frequency.half_life"
 group = "schema"
 section = "候选行为"
-subsection = "词频调整"
+dialog_group = "py_freq"
 type = "number"
 label = "热度衰减半衰期"
 hint = "使用记录衰减到一半所需的时间。0 = 默认 72 小时"
@@ -596,6 +628,120 @@ step = 12
 unit = "小时"
 enabled_when = "schema.pinyin.frequency.enabled == true"
 
+# 自动学习
+[[items]]
+key = "schema.pinyin.auto_learn.enabled"
+group = "schema"
+section = "候选行为"
+subsection = "学习与扩展"
+opens_dialog = "py_auto_learn"
+type = "toggle"
+label = "自动学习"
+hint = "连续选词后自动组词，存入临时词库（立即可用）"
+
+# 与码表侧 schema.codetable.auto_phrase.promote_count 同语义（两边共用 core 的同一套晋升
+# 判定），⚠️ 但**出厂值自 2026-09-22 起不同**：码表侧 3，本项仍是 0。分叉的是影响面不是
+# 语义——码表侧出厂关闭（只触及主动开启的人），本项出厂就开着（全体用户）。
+# 此前只有码表侧暴露，拼音侧学到的词于是永远停在临时词库，而上面那句 hint 还写着
+# 「加入用户词库」——用户不手改 config.toml 就没有出路。
+[[items]]
+key = "schema.pinyin.auto_learn.promote_count"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_auto_learn"
+type = "number"
+label = "转入用户词库次数"
+hint = "用满几次后永久收录进用户词库；0 = 不收录，一直留在临时词库"
+min = 0
+max = 20
+enabled_when = "schema.pinyin.auto_learn.enabled == true"
+
+[[items]]
+key = "schema.pinyin.auto_learn.min_word_length"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_auto_learn"
+type = "number"
+label = "最短学习词长"
+hint = "至少几个字的词组才记录"
+min = 2
+max = 10
+enabled_when = "schema.pinyin.auto_learn.enabled == true"
+
+[[items]]
+key = "schema.pinyin.auto_learn.max_word_length"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_auto_learn"
+type = "number"
+label = "最长学习词长"
+hint = "超过这个字数就不记录；智能组句的长句主要受它约束"
+min = 2
+max = 20
+enabled_when = "schema.pinyin.auto_learn.enabled == true"
+
+# 辅助码：与「双拼」同理常驻可见——enabled_when 只能比较配置键，表达不出「当前方案是
+# 哪种」，而这里的 enabled 本就是**全局基线**，方案段 [engine.aux_code] 的 tri-state 覆盖
+# 才是那个方案的真开关（「双拼开、全拼关」正是靠它表达）。
+[[items]]
+key = "schema.pinyin.aux_code.enabled"
+group = "schema"
+section = "候选行为"
+subsection = "学习与扩展"
+opens_dialog = "py_aux"
+type = "toggle"
+label = "辅助码"
+hint = "打出候选后按触发键，用字形码进一步筛选；触发键需在按键设置里另配"
+
+[[items]]
+key = "schema.pinyin.aux_code.max_phrase_len"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_aux"
+type = "number"
+label = "参与筛选的最大词长"
+hint = "超过这个字数的词组不参与筛选；0 = 不限。单字始终参与"
+min = 0
+max = 20
+enabled_when = "schema.pinyin.aux_code.enabled == true"
+
+# 直接辅助码：同「启用辅助码」常驻可见——只对双拼生效这件事 enabled_when 表达不了
+# （它比较不了「当前方案是哪种」），由 hint 说清；方案段的三态覆盖只在双拼方案里给。
+[[items]]
+key = "schema.pinyin.aux_code.direct"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_aux"
+type = "toggle"
+label = "直接辅助码"
+hint = "仅双拼：音节后直接敲字形码筛选，不按引导键（如 uidu 再敲 p → 释读）。全拼方案不生效"
+enabled_when = "schema.pinyin.aux_code.enabled == true"
+
+# ── 英文候选：与混输/码表同名同义，只是作用于拼音方案 ──
+# 本段没有「不自动上屏」一项：那一项否决的是满码上屏/顶码，拼音方案两者都没有。
+[[items]]
+key = "schema.pinyin.english_merge.enable"
+group = "schema"
+section = "候选行为"
+subsection = "学习与扩展"
+opens_dialog = "py_english"
+type = "toggle"
+label = "英文候选"
+hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
+
+# 最小触发长度：只约束「中文侧有候选」那一路，见 hint。
+[[items]]
+key = "schema.pinyin.english_merge.min_length"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_english"
+type = "number"
+label = "英文最小触发长度"
+hint = "有中文候选时，编码达到此长度才查英文（0 = 默认 3）；中文候选为空时不受本项约束，2 码起就给英文补全"
+min = 0
+max = 10
+enabled_when = "schema.pinyin.english_merge.enable == true"
+
 # 词组补全
 [[items]]
 key = "schema.pinyin.completion.min_syllables"
@@ -603,6 +749,7 @@ group = "schema"
 section = "候选行为"
 subsection = "词组补全"
 type = "number"
+tier = "advanced"
 label = "最少音节数"
 hint = "输入达到几个音节才给出词组候选。1 = 不限制，单个字母也给"
 min = 1
@@ -617,6 +764,7 @@ group = "schema"
 section = "候选行为"
 subsection = "词组补全"
 type = "number"
+tier = "advanced"
 label = "词组最多超出"
 hint = "词组最多比已输入的内容多几个音节。数值越小，候选越贴近已打的字"
 min = 0
@@ -626,145 +774,13 @@ min = 0
 max = 10
 unit = "个音节"
 
-# 简拼（GH#180）
-[[items]]
-key = "schema.pinyin.abbrev.enabled"
-group = "schema"
-section = "候选行为"
-subsection = "简拼"
-type = "toggle"
-label = "启用简拼"
-hint = "只打声母也能出词，如 nh → 你好、bzd → 不知道，也可与全拼混打（nhao）"
-
-# 自动学习
-[[items]]
-key = "schema.pinyin.auto_learn.enabled"
-group = "schema"
-section = "候选行为"
-subsection = "自动学习"
-type = "toggle"
-label = "启用自动学习"
-hint = "连续选词后自动组词，存入临时词库（立即可用）"
-
-# 与码表侧 schema.codetable.auto_phrase.promote_count 同语义（两边共用 core 的同一套晋升
-# 判定），⚠️ 但**出厂值自 2026-09-22 起不同**：码表侧 3，本项仍是 0。分叉的是影响面不是
-# 语义——码表侧出厂关闭（只触及主动开启的人），本项出厂就开着（全体用户）。
-# 此前只有码表侧暴露，拼音侧学到的词于是永远停在临时词库，而上面那句 hint 还写着
-# 「加入用户词库」——用户不手改 config.toml 就没有出路。
-[[items]]
-key = "schema.pinyin.auto_learn.promote_count"
-group = "schema"
-section = "候选行为"
-subsection = "自动学习"
-type = "number"
-label = "转入用户词库次数"
-hint = "用满几次后永久收录进用户词库；0 = 不收录，一直留在临时词库"
-min = 0
-max = 20
-enabled_when = "schema.pinyin.auto_learn.enabled == true"
-
-[[items]]
-key = "schema.pinyin.auto_learn.min_word_length"
-group = "schema"
-section = "候选行为"
-subsection = "自动学习"
-type = "number"
-label = "最短学习词长"
-hint = "至少几个字的词组才记录"
-min = 2
-max = 10
-enabled_when = "schema.pinyin.auto_learn.enabled == true"
-
-[[items]]
-key = "schema.pinyin.auto_learn.max_word_length"
-group = "schema"
-section = "候选行为"
-subsection = "自动学习"
-type = "number"
-label = "最长学习词长"
-hint = "超过这个字数就不记录；智能组句的长句主要受它约束"
-min = 2
-max = 20
-enabled_when = "schema.pinyin.auto_learn.enabled == true"
-
-# 双拼：allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达「当前方案是双拼」
-# （它只能比较配置键），故常驻可见，由 hint 说明适用范围。
-[[items]]
-key = "schema.pinyin.shuangpin.allow_full_pinyin"
-group = "schema"
-section = "候选行为"
-subsection = "双拼"
-type = "toggle"
-label = "允许全拼输入"
-hint = "双拼方案下也能按全拼打字，如 zaijian → 再见。对全拼方案无影响"
-
-# 辅助码：与「双拼」同理常驻可见——enabled_when 只能比较配置键，表达不出「当前方案是
-# 哪种」，而这里的 enabled 本就是**全局基线**，方案段 [engine.aux_code] 的 tri-state 覆盖
-# 才是那个方案的真开关（「双拼开、全拼关」正是靠它表达）。
-[[items]]
-key = "schema.pinyin.aux_code.enabled"
-group = "schema"
-section = "候选行为"
-subsection = "辅助码"
-type = "toggle"
-label = "启用辅助码"
-hint = "打出候选后按触发键，用字形码进一步筛选；触发键需在按键设置里另配"
-
-[[items]]
-key = "schema.pinyin.aux_code.max_phrase_len"
-group = "schema"
-section = "候选行为"
-subsection = "辅助码"
-type = "number"
-label = "参与筛选的最大词长"
-hint = "超过这个字数的词组不参与筛选；0 = 不限。单字始终参与"
-min = 0
-max = 20
-enabled_when = "schema.pinyin.aux_code.enabled == true"
-
-# 直接辅助码：同「启用辅助码」常驻可见——只对双拼生效这件事 enabled_when 表达不了
-# （它比较不了「当前方案是哪种」），由 hint 说清；方案段的三态覆盖只在双拼方案里给。
-[[items]]
-key = "schema.pinyin.aux_code.direct"
-group = "schema"
-section = "候选行为"
-subsection = "辅助码"
-type = "toggle"
-label = "直接辅助码"
-hint = "仅双拼：音节后直接敲字形码筛选，不按引导键（如 uidu 再敲 p → 释读）。全拼方案不生效"
-enabled_when = "schema.pinyin.aux_code.enabled == true"
-
-# ── 英文候选：与混输/码表同名同义，只是作用于拼音方案 ──
-# 本段没有「不自动上屏」一项：那一项否决的是满码上屏/顶码，拼音方案两者都没有。
-[[items]]
-key = "schema.pinyin.english_merge.enable"
-group = "schema"
-section = "候选行为"
-subsection = "英文候选"
-type = "toggle"
-label = "启用英文候选"
-hint = "同时查询英文词库并显示英文候选；整串恰好是一个英文词时给它（打 hello 出 hello），无中文候选时按前缀补全"
-
-# 最小触发长度：只约束「中文侧有候选」那一路，见 hint。
-[[items]]
-key = "schema.pinyin.english_merge.min_length"
-group = "schema"
-section = "候选行为"
-subsection = "英文候选"
-type = "number"
-label = "英文最小触发长度"
-hint = "有中文候选时，编码达到此长度才查英文（0 = 默认 3）；中文候选为空时不受本项约束，2 码起就给英文补全"
-min = 0
-max = 10
-enabled_when = "schema.pinyin.english_merge.enable == true"
-
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
 [[items]]
 key = "schema.pinyin.fuzzy.enabled"
 group = "schema"
 section = "模糊音"
 type = "toggle"
-label = "启用模糊音"
+label = "模糊音"
 hint = "勾选下方拼音对，使其互不区分"
 
 [[items]]
@@ -900,6 +916,7 @@ group = "schema"
 section = "混输行为"
 subsection = "拼音相关"
 type = "number"
+tier = "advanced"
 label = "拼音最小触发长度"
 hint = "编码达到此长度才开始查拼音候选（0 表示跟随方案默认值 2）"
 min = 0
@@ -929,6 +946,7 @@ group = "schema"
 section = "混输行为"
 subsection = "拼音相关"
 type = "toggle"
+tier = "advanced"
 label = "超码长时显示拼音前缀匹配"
 hint = "编码超过最大码长后同上；开着可先选前半段上屏，剩余接着打"
 
@@ -939,7 +957,7 @@ section = "混输行为"
 subsection = "拼音相关"
 type = "toggle"
 label = "拼音候选显示码表编码"
-hint = "编码反查：用拼音打出的字词，旁边显示它的码表编码（如五笔拼音下打 nihao，「你好」旁显示 wqvb），方便记码。只管混输方案；纯拼音方案看「拼音方案配置 → 编码提示来源」，临时拼音看「输入 → 临时拼音」"
+hint = "编码反查：用拼音打出的字词，旁边显示它的码表编码（如五笔拼音下打 nihao，「你好」旁显示 wqvb），方便记码。只管混输方案；纯拼音方案看「方案 → 拼音 → 编码提示来源」，临时拼音看「方案 → 临时拼音」"
 
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
@@ -959,6 +977,7 @@ group = "schema"
 section = "混输行为"
 subsection = "上屏设置"
 type = "toggle"
+tier = "advanced"
 label = "有拼音候选时否决上屏"
 hint = "满码自动上屏与顶码上屏前，若整串仍能查出拼音候选则不自动上屏（不看拼音是否成词）；「顶码优先」开启时无视本项。本项同时管「满码无候选清空」：开启时有拼音候选或拼音还没打完都不清空，关闭则满码无匹配即清空"
 
@@ -968,6 +987,7 @@ group = "schema"
 section = "混输行为"
 subsection = "上屏设置"
 type = "toggle"
+tier = "advanced"
 label = "整串是拼音词时否决上屏"
 hint = "整串是完整拼音且拼音首选为真实词（如 wangba→网吧）时，不自动/顶码上屏五笔，保留拼音词供选择；aipu→落实 等无强词的仍正常上屏"
 
@@ -990,6 +1010,7 @@ group = "schema"
 section = "混输行为"
 subsection = "上屏设置"
 type = "toggle"
+tier = "advanced"
 label = "有英文候选时否决满码上屏"
 hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；仅启用英文候选时有效"
 
@@ -1004,92 +1025,12 @@ label = "顶码优先（覆盖拼音）"
 hint = "顶码上屏时优先选择码表词条而非拼音候选"
 hidden = true
 
-# ── 英文行为（英文方案的全局配置；「全局方案配置 → 英文方案配置」对话框）──
-# 英文现在是可切换方案，core 侧也有了自己的 [schema.english] 段，不再共用码表那套
-# ——此前英文用户改调频策略会连带改掉五笔的。
-#
-# 临时英文那批（大小写变形 / 符号数字 / 空格作为输入）**刻意不搬**：它们的 key 是
-# input.temp_english.*，只在临英 overlay 里被读取，英文方案走主输入路径根本不经过
-# 那段逻辑。搬过来会让用户以为改的是英文方案，实际改的是另一个模式。
-[[items]]
-key = "schema.english.frequency.enabled"
-group = "schema"
-section = "英文行为"
-type = "toggle"
-label = "启用词频调整"
-hint = "按使用频率调整英文候选顺序"
-
-[[items]]
-key = "schema.english.frequency.record_always"
-group = "schema"
-section = "英文行为"
-type = "toggle"
-label = "仅记录次数"
-hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
-enabled_when = "schema.english.frequency.enabled == false"
-
-[[items]]
-key = "schema.english.frequency.strategy"
-group = "schema"
-section = "英文行为"
-type = "select"
-label = "调频策略"
-hint = "位次渐进：每用一次前移一半，久不用回落；一次到顶 / 逐次提升：用过即排到未用过的之前"
-width = 210
-enabled_when = "schema.english.frequency.enabled == true"
-options = [
-  { value = "position", label = "位次渐进" },
-  { value = "top", label = "一次到顶" },
-  { value = "step", label = "逐次提升" },
-]
-
-[[items]]
-key = "schema.english.frequency.promote_prefix"
-group = "schema"
-section = "英文行为"
-type = "select"
-label = "补全词参与调频"
-hint = "打 hel 选中 hello 这类前缀补全的候选是否参与调频，仅「位次渐进」策略下生效"
-width = 210
-enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
-options = [
-  { value = "all", label = "全部" },
-  { value = "single", label = "仅单词" },
-  { value = "none", label = "不参与" },
-]
-
-[[items]]
-key = "schema.english.frequency.half_life"
-group = "schema"
-section = "英文行为"
-type = "number"
-label = "热度衰减半衰期"
-hint = "使用记录衰减到一半所需的时间，仅「位次渐进」策略下生效。0 = 默认 72 小时"
-min = 0
-max = 8760
-step = 12
-unit = "小时"
-enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
-
-[[items]]
-key = "schema.english.frequency.code_scope"
-group = "schema"
-section = "英文行为"
-type = "select"
-label = "调频记账方式"
-hint = "按整词：打 hel 选过 hello 后，打 he 也受益；按编码：各前缀独立学习"
-width = 210
-enabled_when = "schema.english.frequency.enabled == true"
-options = [
-  { value = "candidate", label = "按整词" },
-  { value = "input", label = "按编码" },
-]
-
 [[items]]
 key = "schema.english.raw_candidate"
 group = "schema"
 section = "英文行为"
 type = "select"
+tier = "advanced"
 label = "首候选为输入原文"
 hint = "「仅词库词」= 只有输入的字母串本身就是词库里的词时才作首候选：打 hel 不再多出一条占位的 hel，而打 hell 时它恒排第一、不被用得更多的 hello 顶下去。注意打 usa 会出词库里的 USA（想要小写按回车上屏）"
 options = [
@@ -1103,6 +1044,7 @@ key = "schema.english.case_variants"
 group = "schema"
 section = "英文行为"
 type = "toggle"
+tier = "advanced"
 label = "生成大小写变形候选"
 hint = "补出全小写、首字母大写、全大写三种形态。它们各占一个候选位；临时英文的同名开关另设"
 
@@ -1111,6 +1053,7 @@ key = "schema.english.case_follow_input"
 group = "schema"
 section = "英文行为"
 type = "toggle"
+tier = "advanced"
 label = "候选跟随输入的大小写"
 hint = "打 Hi 出 Hill，打 WoW 出 WoWed；只跟大写，打小写时 China、iPhone 这类词保持词库原样"
 
@@ -1130,6 +1073,94 @@ type = "toggle"
 label = "上屏后自动加空格"
 hint = "上屏英文词后补一个空格，连续打词不必手动按；回车上屏不补"
 
+# ── 英文行为（英文方案的全局配置；方案页「英文」卡）──
+# 英文现在是可切换方案，core 侧也有了自己的 [schema.english] 段，不再共用码表那套
+# ——此前英文用户改调频策略会连带改掉五笔的。
+#
+# 临时英文那批（大小写变形 / 符号数字 / 空格作为输入）**刻意不搬**：它们的 key 是
+# input.temp_english.*，只在临英 overlay 里被读取，英文方案走主输入路径根本不经过
+# 那段逻辑。搬过来会让用户以为改的是英文方案，实际改的是另一个模式。
+[[items]]
+key = "schema.english.frequency.enabled"
+group = "schema"
+section = "英文行为"
+subsection = "调频与造词"
+opens_dialog = "en_freq"
+type = "toggle"
+label = "词频调整"
+hint = "按使用频率调整英文候选顺序"
+
+[[items]]
+key = "schema.english.frequency.record_always"
+group = "schema"
+section = "英文行为"
+dialog_group = "en_freq"
+type = "toggle"
+label = "仅记录次数"
+hint = "不调整候选顺序，只记录每个字词的上屏次数，可在词库管理的「词频」中查看和导出。之后若开启词频调整，已记录的次数会立刻参与排序"
+enabled_when = "schema.english.frequency.enabled == false"
+
+[[items]]
+key = "schema.english.frequency.strategy"
+group = "schema"
+section = "英文行为"
+dialog_group = "en_freq"
+type = "select"
+label = "调频策略"
+hint = "位次渐进：每用一次前移一半，久不用回落；一次到顶 / 逐次提升：用过即排到未用过的之前"
+width = 210
+enabled_when = "schema.english.frequency.enabled == true"
+options = [
+  { value = "position", label = "位次渐进" },
+  { value = "top", label = "一次到顶" },
+  { value = "step", label = "逐次提升" },
+]
+
+[[items]]
+key = "schema.english.frequency.promote_prefix"
+group = "schema"
+section = "英文行为"
+dialog_group = "en_freq"
+type = "select"
+label = "补全词参与调频"
+hint = "打 hel 选中 hello 这类前缀补全的候选是否参与调频，仅「位次渐进」策略下生效"
+width = 210
+enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
+options = [
+  { value = "all", label = "全部" },
+  { value = "single", label = "仅单词" },
+  { value = "none", label = "不参与" },
+]
+
+[[items]]
+key = "schema.english.frequency.half_life"
+group = "schema"
+section = "英文行为"
+dialog_group = "en_freq"
+type = "number"
+label = "热度衰减半衰期"
+hint = "使用记录衰减到一半所需的时间，仅「位次渐进」策略下生效。0 = 默认 72 小时"
+min = 0
+max = 8760
+step = 12
+unit = "小时"
+enabled_when = "schema.english.frequency.enabled == true && schema.english.frequency.strategy == position"
+
+[[items]]
+key = "schema.english.frequency.code_scope"
+group = "schema"
+section = "英文行为"
+dialog_group = "en_freq"
+type = "select"
+label = "调频记账方式"
+hint = "按整词：打 hel 选过 hello 后，打 he 也受益；按编码：各前缀独立学习"
+width = 210
+enabled_when = "schema.english.frequency.enabled == true"
+options = [
+  { value = "candidate", label = "按整词" },
+  { value = "input", label = "按编码" },
+]
+
 # 英文自动造词（core 的 [schema.english.auto_learn]）。**一个开关管英文方案与临时英文两处**：
 # 两者共用英文词库，临时英文不另设开关——同临时拼音跟随拼音方案的 auto_learn。
 # 快捷输入里的英文不走这条，那边有自己的「快捷输入历史」。
@@ -1138,16 +1169,17 @@ hint = "上屏英文词后补一个空格，连续打词不必手动按；回车
 key = "schema.english.auto_learn.enabled"
 group = "schema"
 section = "英文行为"
-subsection = "自动造词"
+subsection = "调频与造词"
+opens_dialog = "en_auto_learn"
 type = "toggle"
-label = "启用自动造词"
+label = "自动造词"
 hint = "上屏了词库里没有的原文就记下来（选中原文候选、回车或空格上屏原码、标点顶屏原文都算），先存入临时词库，用够次数再转入用户词库。英文方案与临时英文共用此开关；快捷输入里的英文不在此列（那里有快捷输入历史）"
 
 [[items]]
 key = "schema.english.auto_learn.promote_count"
 group = "schema"
 section = "英文行为"
-subsection = "自动造词"
+dialog_group = "en_auto_learn"
 type = "number"
 label = "转入用户词库次数"
 hint = "用满几次后永久收录进用户词库（含记下的那一次）；0 = 不收录，一直留在临时词库"
@@ -1155,14 +1187,241 @@ min = 0
 max = 20
 enabled_when = "schema.english.auto_learn.enabled == true"
 
+# ── 临时拼音 / 临时英文（方案页，排在主方案设置之后）──
+# ── 临时拼音 ──
+[[items]]
+key = "input.temp_pinyin.trigger_keys"
+group = "schema"
+section = "临时拼音"
+type = "dialog_button_key_action"
+verb = "temp_pinyin"
+label = "临时拼音触发键"
+hint = "码表模式下按触发键临时切换拼音输入；可多选。只能选符号键——字母键请到方案页的「z 键引导功能」配"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
+]
+
+[[items]]
+key = "input.temp_pinyin.candidate_layout"
+group = "schema"
+section = "临时拼音"
+type = "select"
+tier = "advanced"
+label = "候选窗布局"
+hint = "临时拼音期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
+
+[[items]]
+key = "input.temp_pinyin.code_hint_source"
+group = "schema"
+section = "临时拼音"
+type = "select"
+label = "临时拼音编码提示"
+hint = "临时拼音与快捷输入期间，拼音候选旁显示哪种编码，便于借拼音反查码表编码。与拼音方案的「编码提示来源」互不影响；显示位置与格式由「外观 → 候选注释」的模板决定"
+options = [
+  { value = "auto", label = "自动" },
+  { value = "codetable", label = "码表反查" },
+  { value = "shuangpin", label = "双拼编码" },
+  { value = "off", label = "不显示" },
+]
+
+# ── 临时英文 ──
+# 注：临时英文不再设独立「启用」开关——Shift+字母 始终可进入，触发键可留空。
+# input.temp_english.enabled 由 core 维持默认（不在设置端暴露）。
+[[items]]
+key = "input.temp_english.trigger_keys"
+group = "schema"
+section = "临时英文"
+type = "dialog_button_key_action"
+verb = "temp_english"
+label = "临时英文触发键"
+hint = "中文模式下按触发键进入临时英文模式；可多选，也可留空（仍可用 Shift+字母进入）"
+options = [
+  { value = "backtick", label = "反引号 ( ` )" },
+  { value = "semicolon", label = "分号 ( ; )" },
+  { value = "quote", label = "单引号 ( ' )" },
+  { value = "comma", label = "逗号 ( , )" },
+  { value = "period", label = "句号 ( . )" },
+  { value = "slash", label = "斜杠 ( / )" },
+  { value = "backslash", label = "反斜杠 ( \\ )" },
+  { value = "lbracket", label = "左方括号 ( [ )" },
+  { value = "rbracket", label = "右方括号 ( ] )" },
+]
+
+[[items]]
+key = "input.temp_english.shift_behavior"
+group = "schema"
+section = "临时英文"
+type = "select"
+label = "Shift+字母行为"
+hint = "中文模式下按 Shift+字母时的行为"
+width = 210
+options = [
+  { value = "temp_english", label = "进入临时英文模式" },
+  { value = "direct_commit", label = "直接上屏大写字母" },
+]
+
+[[items]]
+key = "input.temp_english.shift_when_composing"
+group = "schema"
+section = "临时英文"
+type = "select"
+tier = "advanced"
+label = "输入编码时按 Shift+字母"
+hint = "已经敲了编码时再按 Shift+字母的行为。「上屏候选并进入临时英文」会先上屏高亮候选，再以该字母进入临时英文；英文方案下不生效"
+width = 210
+options = [
+  { value = "buffer", label = "大写字母进入编码" },
+  { value = "commit_enter", label = "上屏候选并进入临时英文" },
+]
+
+[[items]]
+key = "input.temp_english.show_candidates"
+group = "schema"
+section = "临时英文"
+opens_dialog = "te_cand"
+type = "toggle"
+label = "显示英文候选"
+hint = "临时英文模式下查询英文词库显示候选词"
+
+[[items]]
+key = "input.temp_english.raw_candidate"
+group = "schema"
+section = "临时英文"
+dialog_group = "te_cand"
+type = "select"
+label = "首候选为输入原文"
+hint = "「仅词库词」= 只有输入的字母串本身就是词库里的词时才作首候选。语义同英文方案那份，两边各配各的：临时英文常用来在中文里插一个专名或缩写（词库里多半没有），故这一侧「总是」往往仍是合适的。快捷输入里的英文一并生效（排在英文候选的最前，不抢拼音的位置）"
+options = [
+  { value = "always", label = "总是" },
+  { value = "in_dict", label = "仅词库词" },
+  { value = "off", label = "不显示" },
+]
+
+[[items]]
+key = "input.temp_english.case_variants"
+group = "schema"
+section = "临时英文"
+dialog_group = "te_cand"
+type = "toggle"
+label = "生成大小写变形候选"
+hint = "在候选中补出全小写、首字母大写、全大写三种形态。它们各占一个候选位，只需要词库补全时可关闭。快捷输入里的英文一并生效"
+
+[[items]]
+key = "input.temp_english.case_follow_input"
+group = "schema"
+section = "临时英文"
+dialog_group = "te_cand"
+type = "toggle"
+label = "候选跟随输入的大小写"
+hint = "临时英文由 Shift+字母进入，首字母恒为大写，开启后候选也随之首字母大写；只跟大写，词库自带的大写不受影响"
+
+[[items]]
+key = "input.temp_english.phrase_seg"
+group = "schema"
+section = "临时英文"
+dialog_group = "te_cand"
+type = "toggle"
+label = "用 ' 分词打英文词组"
+hint = "各段只打前缀，规则与英文方案那份相同（可跳词）。开启后 ' 在临时英文与快捷输入里不再是第三候选键，改用数字 3。快捷输入里的英文一并生效"
+
+[[items]]
+key = "input.temp_english.commit_space"
+group = "schema"
+section = "临时英文"
+dialog_group = "te_cand"
+type = "toggle"
+label = "上屏后自动加空格"
+hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选一并生效（中文候选不补）"
+
+[[items]]
+key = "input.temp_english.allow_symbols"
+group = "schema"
+section = "临时英文"
+type = "toggle"
+label = "允许输入符号与数字"
+hint = "符号与数字直接进入输入缓冲，而非上屏退出或选词，便于书写标识符与代码。放行哪些字符在右侧设置"
+
+# 字符集专属于上面这个开关（不像英文符号字符集要服务两个场景），故用硬 gate：
+# 开关关闭时集合无意义，置灰是对的。
+[[items]]
+key = "input.temp_english.symbol_chars"
+group = "schema"
+section = "临时英文"
+type = "dialog_button"
+label = "可输入的字符集"
+hint = "逐字符填写，一个字符就是一个字符（不支持 a-z 这类范围写法）。未列入的字符保持原有职责：符号上屏退出、分号与单引号选第 2/3 候选、减号等号方括号逗号句号翻页、数字键选词。留空则一个都不放行"
+gate_key = "input.temp_english.allow_symbols"
+
+[[items]]
+key = "input.temp_english.space_as_input"
+group = "schema"
+section = "临时英文"
+type = "toggle"
+label = "空格作为输入字符"
+hint = "空格不再上屏，可连续输入多个单词，回车上屏"
+
+[[items]]
+key = "input.temp_english.candidate_layout"
+group = "schema"
+section = "临时英文"
+type = "select"
+tier = "advanced"
+label = "候选窗布局"
+hint = "临时英文期间候选窗的排列方向；退出后自动恢复。英文候选一行放得下，全局竖排时可设横排省屏幕"
+width = 210
+options = [
+  { value = "follow", label = "跟随全局" },
+  { value = "vertical", label = "强制竖排" },
+  { value = "horizontal", label = "强制横排" },
+]
+
+[[items]]
+key = "input.english_case_cycle_key"
+group = "schema"
+section = "临时英文"
+type = "select"
+tier = "advanced"
+label = "切换候选大小写的键"
+hint = "打英文时按它在「跟随输入 → 全大写 → 全小写」间切换，上屏后复位；被选中的键在打英文期间用不出原本的功能"
+# ⚠️ **不标 platform**：macOS 上 Caps Lock 到不了输入法（系统只把锁定态经 toggles 传过来，
+# 按键本身走 flagsChanged 且 toWindowsVK 无映射），但 Tab 那条走正常 keydown、两个平台都通。
+# 故本项在 macOS 可用，只是 Caps Lock 那个选项在那边选了不会生效。
+[[items.options]]
+value = ""
+label = "不启用"
+[[items.options]]
+value = "capslock"
+label = "Caps Lock（macOS 无效）"
+[[items.options]]
+value = "tab"
+label = "Tab"
+# 值域里还有 escape / enter / space（见 core 的 parse_case_cycle_key），但**不列进下拉**：
+# 它们在输入态都有既有语义（Esc 取消组合、回车/空格上屏），推荐给普通用户等于让他丢掉一个
+# 常用键。想用的人手写进 config.toml 仍然生效。
+
 # ═══════════════════════════ 输入 ═══════════════════════════
 # ── 字符与标点 ──
-# 输入页的分节顺序（＝导航顺序）分四段，越靠前越"每天都在起作用"：
+# 输入页的分节顺序（＝导航顺序）分三段，越靠前越"每天都在起作用"：
 #   ① 字符形态：字符与标点 / 智能符号 / 标点配对 —— 打出来长什么样；
-#   ② 按键：按键行为 / 候选无效按键 —— 键按下去做什么；
-#   ③ 临时模式：快捷输入 / 临时拼音 / 临时英文 / 生僻字 —— 临时换一种打法；
-#   ④ 特殊：简繁转换 / Emoji / 网址输入 / Unicode 输入 —— 候选或上屏结果另有来路；
+#   ② 临时模式：快捷输入 / 生僻字 —— 临时换一种打法；
+#   ③ 特殊：简繁转换 / Emoji / 网址输入 / Unicode 输入 —— 候选或上屏结果另有来路；
 #   末尾 联想 / 词频 是候选的后处理与统计口径，两块都不常改。
+# 按键行为、候选无效按键在「按键」页（键按下去做什么集中在一页）；临时拼音、临时英文在
+# 「方案」页（临时换一套方案打字，触发键、候选形态都是方案级的概念）。
 [[items]]
 key = "input.filter_mode"
 group = "input"
@@ -1442,142 +1701,6 @@ label = "Tab 制表键"
 value = "enter"
 label = "Enter 回车键"
 
-# ── 按键行为 ──
-[[items]]
-key = "input.enter_behavior"
-group = "input"
-section = "按键行为"
-type = "select"
-label = "回车键功能"
-hint = "有编码时按回车键的处理方式"
-options = [
-  { value = "commit", label = "上屏编码" },
-  { value = "clear", label = "清空编码" },
-]
-
-[[items]]
-key = "input.space_on_empty_behavior"
-group = "input"
-section = "按键行为"
-type = "select"
-label = "空码时空格键功能"
-hint = "无候选词时按空格键的处理方式"
-options = [
-  { value = "commit", label = "上屏编码" },
-  { value = "clear", label = "清空编码" },
-]
-
-[[items]]
-key = "input.punct_on_empty_behavior"
-group = "input"
-section = "按键行为"
-type = "select"
-label = "空码时标点键功能"
-hint = "无候选词时按标点符号键怎么处理编码；前两项标点本身照常上屏"
-options = [
-  { value = "commit", label = "上屏编码" },
-  { value = "clear", label = "清空编码" },
-  { value = "clear_no_input", label = "清空编码，标点也不上屏" },
-]
-
-[[items]]
-key = "input.buffer_symbol_chars"
-group = "input"
-section = "按键行为"
-type = "string"
-label = "编码中可直接输入的符号"
-hint = "打 sun-panel 这类带连字符的英文时，这些符号直接进入编码；留空关闭。该键此刻另有功能时一般让位，边界见文档"
-
-[[items]]
-key = "input.numpad_behavior"
-group = "input"
-section = "按键行为"
-type = "select"
-label = "数字小键盘功能"
-hint = "控制小键盘数字键的行为，选择「同主键盘区数字」后可用于候选选择和快捷输入"
-options = [
-  { value = "direct", label = "直接输入数字" },
-  { value = "follow_main", label = "同主键盘区数字" },
-]
-
-[[items]]
-key = "input.numpad_half_width"
-group = "input"
-section = "按键行为"
-type = "toggle"
-label = "全角时小键盘半角输出"
-hint = "全角状态下小键盘的数字和符号使用半角输出"
-
-# 键不可配（能用的数字组合只剩 Alt），故本项同时是开关与内容选择。冲突处置见 core
-# docs/design/alt-commit.md：只在有候选时吃键，自定义按键里已绑的 Alt 组合优先。
-[[items]]
-key = "input.alt_commit"
-group = "input"
-section = "按键行为"
-type = "select"
-label = "Alt+数字上屏注释/拼音"
-hint = "有候选时按 Alt+数字 上屏该候选的拼音或注释而不是候选字，Alt+空格 上屏首选的；没有可上屏的内容时什么都不做。自定义按键里已绑的 Alt 组合优先"
-width = 180
-options = [
-  { value = "off", label = "关闭" },
-  { value = "pinyin", label = "带调拼音" },
-  { value = "pinyin_plain", label = "不带调拼音" },
-  { value = "comment", label = "候选注释" },
-]
-
-# ── 候选无效按键 ──
-[[items]]
-key = "keys.overflow.number_key"
-group = "input"
-section = "候选无效按键"
-type = "select"
-label = "数字键无效时"
-hint = "按的数字超出当前页候选数量时的处理方式；联想候选出来后按超出联想条数的数字，则固定为收起联想并输出该数字"
-options = [
-  { value = "ignore", label = "不起作用" },
-  { value = "commit", label = "上屏编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-  { value = "clear_and_input", label = "清空输入并上屏数字" },
-]
-
-[[items]]
-key = "keys.overflow.select_key"
-group = "input"
-section = "候选无效按键"
-type = "select"
-label = "次选三选键无效时"
-hint = "候选数量不足时按次选或三选键的处理方式"
-options = [
-  { value = "ignore", label = "不起作用" },
-  { value = "commit", label = "上屏编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-]
-
-[[items]]
-key = "keys.overflow.select_char_key"
-group = "input"
-section = "候选无效按键"
-type = "select"
-label = "以词定字键无效时"
-hint = "候选词长度不足时按以词定字键的处理方式"
-options = [
-  { value = "ignore", label = "不起作用" },
-  { value = "commit", label = "上屏编码" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-]
-
-[[items]]
-key = "keys.overflow.page_key"
-group = "input"
-section = "候选无效按键"
-type = "select"
-label = "翻页键翻不动时"
-hint = "首页按上翻、末页按下翻时的处理方式。只对 - = , . [ ] 这类能出字的翻页键、且本批候选还没翻过页时生效；- 要先清空「编码中可直接输入的符号」才会生效"
-options = [
-  { value = "ignore", label = "不起作用" },
-  { value = "commit_and_input", label = "上屏并继续输入" },
-]
-
 # ── 快捷输入 ──
 [[items]]
 key = "schema.mix_modes"
@@ -1690,221 +1813,6 @@ min = 0
 max = 10000
 step = 50
 unit = "条"
-
-# ── 临时拼音 ──
-[[items]]
-key = "input.temp_pinyin.trigger_keys"
-group = "input"
-section = "临时拼音"
-type = "dialog_button_key_action"
-verb = "temp_pinyin"
-label = "临时拼音触发键"
-hint = "码表模式下按触发键临时切换拼音输入；可多选。只能选符号键——字母键请到方案页的「z 键引导功能」配"
-options = [
-  { value = "backtick", label = "反引号 ( ` )" },
-  { value = "semicolon", label = "分号 ( ; )" },
-  { value = "quote", label = "单引号 ( ' )" },
-  { value = "comma", label = "逗号 ( , )" },
-  { value = "period", label = "句号 ( . )" },
-  { value = "slash", label = "斜杠 ( / )" },
-  { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "lbracket", label = "左方括号 ( [ )" },
-  { value = "rbracket", label = "右方括号 ( ] )" },
-]
-
-[[items]]
-key = "input.temp_pinyin.candidate_layout"
-group = "input"
-section = "临时拼音"
-type = "select"
-label = "候选窗布局"
-hint = "临时拼音期间候选窗的排列方向；退出后自动恢复。跟随全局 = 用外观页的候选布局设置"
-width = 210
-options = [
-  { value = "follow", label = "跟随全局" },
-  { value = "vertical", label = "强制竖排" },
-  { value = "horizontal", label = "强制横排" },
-]
-
-[[items]]
-key = "input.temp_pinyin.code_hint_source"
-group = "input"
-section = "临时拼音"
-type = "select"
-label = "临时拼音编码提示"
-hint = "临时拼音与快捷输入期间，拼音候选旁显示哪种编码，便于借拼音反查码表编码。与拼音方案的「编码提示来源」互不影响；显示位置与格式由「外观 → 候选注释」的模板决定"
-options = [
-  { value = "auto", label = "自动" },
-  { value = "codetable", label = "码表反查" },
-  { value = "shuangpin", label = "双拼编码" },
-  { value = "off", label = "不显示" },
-]
-
-# ── 临时英文 ──
-# 注：临时英文不再设独立「启用」开关——Shift+字母 始终可进入，触发键可留空。
-# input.temp_english.enabled 由 core 维持默认（不在设置端暴露）。
-[[items]]
-key = "input.temp_english.trigger_keys"
-group = "input"
-section = "临时英文"
-type = "dialog_button_key_action"
-verb = "temp_english"
-label = "临时英文触发键"
-hint = "中文模式下按触发键进入临时英文模式；可多选，也可留空（仍可用 Shift+字母进入）"
-options = [
-  { value = "backtick", label = "反引号 ( ` )" },
-  { value = "semicolon", label = "分号 ( ; )" },
-  { value = "quote", label = "单引号 ( ' )" },
-  { value = "comma", label = "逗号 ( , )" },
-  { value = "period", label = "句号 ( . )" },
-  { value = "slash", label = "斜杠 ( / )" },
-  { value = "backslash", label = "反斜杠 ( \\ )" },
-  { value = "lbracket", label = "左方括号 ( [ )" },
-  { value = "rbracket", label = "右方括号 ( ] )" },
-]
-
-[[items]]
-key = "input.temp_english.shift_behavior"
-group = "input"
-section = "临时英文"
-type = "select"
-label = "Shift+字母行为"
-hint = "中文模式下按 Shift+字母时的行为"
-width = 210
-options = [
-  { value = "temp_english", label = "进入临时英文模式" },
-  { value = "direct_commit", label = "直接上屏大写字母" },
-]
-
-[[items]]
-key = "input.temp_english.shift_when_composing"
-group = "input"
-section = "临时英文"
-type = "select"
-label = "输入编码时按 Shift+字母"
-hint = "已经敲了编码时再按 Shift+字母的行为。「上屏候选并进入临时英文」会先上屏高亮候选，再以该字母进入临时英文；英文方案下不生效"
-width = 210
-options = [
-  { value = "buffer", label = "大写字母进入编码" },
-  { value = "commit_enter", label = "上屏候选并进入临时英文" },
-]
-
-[[items]]
-key = "input.temp_english.show_candidates"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "显示英文候选"
-hint = "临时英文模式下查询英文词库显示候选词"
-
-[[items]]
-key = "input.temp_english.raw_candidate"
-group = "input"
-section = "临时英文"
-type = "select"
-label = "首候选为输入原文"
-hint = "「仅词库词」= 只有输入的字母串本身就是词库里的词时才作首候选。语义同英文方案那份，两边各配各的：临时英文常用来在中文里插一个专名或缩写（词库里多半没有），故这一侧「总是」往往仍是合适的。快捷输入里的英文一并生效（排在英文候选的最前，不抢拼音的位置）"
-options = [
-  { value = "always", label = "总是" },
-  { value = "in_dict", label = "仅词库词" },
-  { value = "off", label = "不显示" },
-]
-
-[[items]]
-key = "input.temp_english.case_variants"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "生成大小写变形候选"
-hint = "在候选中补出全小写、首字母大写、全大写三种形态。它们各占一个候选位，只需要词库补全时可关闭。快捷输入里的英文一并生效"
-
-[[items]]
-key = "input.temp_english.case_follow_input"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "候选跟随输入的大小写"
-hint = "临时英文由 Shift+字母进入，首字母恒为大写，开启后候选也随之首字母大写；只跟大写，词库自带的大写不受影响"
-
-[[items]]
-key = "input.temp_english.phrase_seg"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "用 ' 分词打英文词组"
-hint = "各段只打前缀，规则与英文方案那份相同（可跳词）。开启后 ' 在临时英文与快捷输入里不再是第三候选键，改用数字 3。快捷输入里的英文一并生效"
-
-[[items]]
-key = "input.temp_english.commit_space"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "上屏后自动加空格"
-hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选一并生效（中文候选不补）"
-
-[[items]]
-key = "input.temp_english.allow_symbols"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "允许输入符号与数字"
-hint = "符号与数字直接进入输入缓冲，而非上屏退出或选词，便于书写标识符与代码。放行哪些字符在右侧设置"
-
-# 字符集专属于上面这个开关（不像英文符号字符集要服务两个场景），故用硬 gate：
-# 开关关闭时集合无意义，置灰是对的。
-[[items]]
-key = "input.temp_english.symbol_chars"
-group = "input"
-section = "临时英文"
-type = "dialog_button"
-label = "可输入的字符集"
-hint = "逐字符填写，一个字符就是一个字符（不支持 a-z 这类范围写法）。未列入的字符保持原有职责：符号上屏退出、分号与单引号选第 2/3 候选、减号等号方括号逗号句号翻页、数字键选词。留空则一个都不放行"
-gate_key = "input.temp_english.allow_symbols"
-
-[[items]]
-key = "input.temp_english.space_as_input"
-group = "input"
-section = "临时英文"
-type = "toggle"
-label = "空格作为输入字符"
-hint = "空格不再上屏，可连续输入多个单词，回车上屏"
-
-[[items]]
-key = "input.temp_english.candidate_layout"
-group = "input"
-section = "临时英文"
-type = "select"
-label = "候选窗布局"
-hint = "临时英文期间候选窗的排列方向；退出后自动恢复。英文候选一行放得下，全局竖排时可设横排省屏幕"
-width = 210
-options = [
-  { value = "follow", label = "跟随全局" },
-  { value = "vertical", label = "强制竖排" },
-  { value = "horizontal", label = "强制横排" },
-]
-
-[[items]]
-key = "input.english_case_cycle_key"
-group = "input"
-section = "临时英文"
-type = "select"
-label = "切换候选大小写的键"
-hint = "打英文时按它在「跟随输入 → 全大写 → 全小写」间切换，上屏后复位；被选中的键在打英文期间用不出原本的功能"
-# ⚠️ **不标 platform**：macOS 上 Caps Lock 到不了输入法（系统只把锁定态经 toggles 传过来，
-# 按键本身走 flagsChanged 且 toWindowsVK 无映射），但 Tab 那条走正常 keydown、两个平台都通。
-# 故本项在 macOS 可用，只是 Caps Lock 那个选项在那边选了不会生效。
-[[items.options]]
-value = ""
-label = "不启用"
-[[items.options]]
-value = "capslock"
-label = "Caps Lock（macOS 无效）"
-[[items.options]]
-value = "tab"
-label = "Tab"
-# 值域里还有 escape / enter / space（见 core 的 parse_case_cycle_key），但**不列进下拉**：
-# 它们在输入态都有既有语义（Esc 取消组合、回车/空格上屏），推荐给普通用户等于让他丢掉一个
-# 常用键。想用的人手写进 config.toml 仍然生效。
 
 # ── 生僻字 ──
 # 没有「启用」开关：不绑触发键就进不去，那已经是关闭态，再加个开关就是两个真相源
@@ -2525,6 +2433,142 @@ label = "减号/等号 - ="
 [[items.options]]
 value = "brackets"
 label = "方括号 [ ]"
+
+# ── 按键行为 ──
+[[items]]
+key = "input.enter_behavior"
+group = "keys"
+section = "按键行为"
+type = "select"
+label = "回车键功能"
+hint = "有编码时按回车键的处理方式"
+options = [
+  { value = "commit", label = "上屏编码" },
+  { value = "clear", label = "清空编码" },
+]
+
+[[items]]
+key = "input.space_on_empty_behavior"
+group = "keys"
+section = "按键行为"
+type = "select"
+label = "空码时空格键功能"
+hint = "无候选词时按空格键的处理方式"
+options = [
+  { value = "commit", label = "上屏编码" },
+  { value = "clear", label = "清空编码" },
+]
+
+[[items]]
+key = "input.punct_on_empty_behavior"
+group = "keys"
+section = "按键行为"
+type = "select"
+label = "空码时标点键功能"
+hint = "无候选词时按标点符号键怎么处理编码；前两项标点本身照常上屏"
+options = [
+  { value = "commit", label = "上屏编码" },
+  { value = "clear", label = "清空编码" },
+  { value = "clear_no_input", label = "清空编码，标点也不上屏" },
+]
+
+[[items]]
+key = "input.buffer_symbol_chars"
+group = "keys"
+section = "按键行为"
+type = "string"
+label = "编码中可直接输入的符号"
+hint = "打 sun-panel 这类带连字符的英文时，这些符号直接进入编码；留空关闭。该键此刻另有功能时一般让位，边界见文档"
+
+[[items]]
+key = "input.numpad_behavior"
+group = "keys"
+section = "按键行为"
+type = "select"
+label = "数字小键盘功能"
+hint = "控制小键盘数字键的行为，选择「同主键盘区数字」后可用于候选选择和快捷输入"
+options = [
+  { value = "direct", label = "直接输入数字" },
+  { value = "follow_main", label = "同主键盘区数字" },
+]
+
+[[items]]
+key = "input.numpad_half_width"
+group = "keys"
+section = "按键行为"
+type = "toggle"
+label = "全角时小键盘半角输出"
+hint = "全角状态下小键盘的数字和符号使用半角输出"
+
+# 键不可配（能用的数字组合只剩 Alt），故本项同时是开关与内容选择。冲突处置见 core
+# docs/design/alt-commit.md：只在有候选时吃键，自定义按键里已绑的 Alt 组合优先。
+[[items]]
+key = "input.alt_commit"
+group = "keys"
+section = "按键行为"
+type = "select"
+label = "Alt+数字上屏注释/拼音"
+hint = "有候选时按 Alt+数字 上屏该候选的拼音或注释而不是候选字，Alt+空格 上屏首选的；没有可上屏的内容时什么都不做。自定义按键里已绑的 Alt 组合优先"
+width = 180
+options = [
+  { value = "off", label = "关闭" },
+  { value = "pinyin", label = "带调拼音" },
+  { value = "pinyin_plain", label = "不带调拼音" },
+  { value = "comment", label = "候选注释" },
+]
+
+# ── 候选无效按键 ──
+[[items]]
+key = "keys.overflow.number_key"
+group = "keys"
+section = "候选无效按键"
+type = "select"
+label = "数字键无效时"
+hint = "按的数字超出当前页候选数量时的处理方式；联想候选出来后按超出联想条数的数字，则固定为收起联想并输出该数字"
+options = [
+  { value = "ignore", label = "不起作用" },
+  { value = "commit", label = "上屏编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+  { value = "clear_and_input", label = "清空输入并上屏数字" },
+]
+
+[[items]]
+key = "keys.overflow.select_key"
+group = "keys"
+section = "候选无效按键"
+type = "select"
+label = "次选三选键无效时"
+hint = "候选数量不足时按次选或三选键的处理方式"
+options = [
+  { value = "ignore", label = "不起作用" },
+  { value = "commit", label = "上屏编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
+
+[[items]]
+key = "keys.overflow.select_char_key"
+group = "keys"
+section = "候选无效按键"
+type = "select"
+label = "以词定字键无效时"
+hint = "候选词长度不足时按以词定字键的处理方式"
+options = [
+  { value = "ignore", label = "不起作用" },
+  { value = "commit", label = "上屏编码" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
+
+[[items]]
+key = "keys.overflow.page_key"
+group = "keys"
+section = "候选无效按键"
+type = "select"
+label = "翻页键翻不动时"
+hint = "首页按上翻、末页按下翻时的处理方式。只对 - = , . [ ] 这类能出字的翻页键、且本批候选还没翻过页时生效；- 要先清空「编码中可直接输入的符号」才会生效"
+options = [
+  { value = "ignore", label = "不起作用" },
+  { value = "commit_and_input", label = "上屏并继续输入" },
+]
 
 # ── 自定义按键：两张表的完整逐键编辑入口 ──
 #

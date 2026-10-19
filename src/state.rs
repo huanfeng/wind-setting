@@ -428,6 +428,8 @@ pub struct AppState {
     pub manifest: Manifest,
     /// `manifest` 折叠时「显示定制版隐藏的设置」的取值，见 [`Self::refold_manifest_if_needed`]。
     pub manifest_show_all: bool,
+    /// `manifest` 折叠时是否按「普通」显示范围藏了 `tier = "advanced"` 的项（界面细节试验选项）。
+    pub manifest_basic: bool,
     /// core 能力契约（system.capabilities，异步加载后就位）。
     pub capabilities: Capabilities,
     /// 系统信息（system.info）。
@@ -950,10 +952,9 @@ impl AppState {
         // 定制版隐藏的设置项（`[settings] hide`）。页面与搜索索引必须用同一份清单：
         // 各折各的，就会搜到一项、点过去却什么都没有。
         let manifest_show_all = setting_load.config.ui.show_custom_hidden_settings;
-        let manifest = crate::custom_hide::settings_manifest(
-            crate::custom_hide::installed(),
-            manifest_show_all,
-        );
+        let manifest_basic = setting_load.config.ui.look.indices()[crate::look::SETTINGS_TIER]
+            == crate::look::tier::BASIC;
+        let manifest = fold_manifest(manifest_show_all, manifest_basic);
         let search = crate::search::SearchState::new(&manifest);
         // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
         // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
@@ -984,6 +985,7 @@ impl AppState {
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
             manifest,
             manifest_show_all,
+            manifest_basic,
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
             degradation: signal(String::new()),
@@ -1467,13 +1469,14 @@ impl AppState {
     /// 搜索只换索引数据（[`crate::search::SearchState::reindex`]），不重建那批进程级 Signal。
     pub fn refold_manifest_if_needed(&mut self) {
         let show_all = self.setting_config.ui.show_custom_hidden_settings;
-        if show_all == self.manifest_show_all {
+        let basic = self.look.0[crate::look::SETTINGS_TIER].get() == crate::look::tier::BASIC;
+        if show_all == self.manifest_show_all && basic == self.manifest_basic {
             return;
         }
-        self.manifest =
-            crate::custom_hide::settings_manifest(crate::custom_hide::installed(), show_all);
+        self.manifest = fold_manifest(show_all, basic);
         self.search.reindex(&self.manifest);
         self.manifest_show_all = show_all;
+        self.manifest_basic = basic;
     }
 
     /// 持久化设置向导「下次不再弹出」。
@@ -6015,4 +6018,13 @@ fn load_fonts_from_dwrite() -> Vec<String> {
         }
         sort_font_names(families.into_iter().collect())
     }
+}
+
+/// 按定制版隐藏与「普通 / 高级」显示范围折叠内嵌清单。页面与搜索索引必须用同一份。
+fn fold_manifest(show_all: bool, basic: bool) -> Manifest {
+    let mut m = crate::custom_hide::settings_manifest(crate::custom_hide::installed(), show_all);
+    if basic {
+        m.apply_basic_tier();
+    }
+    m
 }

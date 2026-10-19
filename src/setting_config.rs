@@ -467,10 +467,10 @@ mod tests {
         assert!(!s.contains("look"), "全缺省不该落盘：\n{s}");
 
         let mut cfg = SettingConfig::default();
-        cfg.ui.look = crate::look::LookConfig::from_indices([0, 0, 1, 1, 0, 0]);
+        cfg.ui.look = crate::look::LookConfig::from_indices([0, 0, 1, 1, 0, 0, 1]);
         let s = toml::to_string(&cfg).expect("序列化");
         let back: SettingConfig = toml::from_str(&s).expect("反序列化");
-        assert_eq!(back.ui.look.indices(), [0, 0, 1, 1, 0, 0], "{s}");
+        assert_eq!(back.ui.look.indices(), [0, 0, 1, 1, 0, 0, 1], "{s}");
     }
 
     /// 手改 / 未来版本写入的未知取值不能让整个文件加载失败（明暗、升级偏好会跟着丢）。

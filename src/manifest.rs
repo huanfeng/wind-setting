@@ -101,6 +101,9 @@ pub struct MItem {
     /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
     /// 「跟随主题（值）」（见 [`follow_labels`]）。
     pub follow: Option<String>,
+    /// 显示层级：`"advanced"` = 「普通」显示范围下藏起（界面细节试验选项，见
+    /// [`Manifest::apply_basic_tier`]）。缺省 = 两种范围都显示。
+    pub tier: Option<String>,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -229,6 +232,7 @@ impl Manifest {
                     opens_dialog: opt_str(it, "opens_dialog"),
                     subsection: opt_str(it, "subsection"),
                     follow: opt_str(it, "follow"),
+                    tier: opt_str(it, "tier"),
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
                     // 不注册 writer/loader，配置文件里的原值原样留着不动。
@@ -285,6 +289,20 @@ impl Manifest {
         }
         self.hide_orphaned_dialog_members();
         unmatched
+    }
+
+    /// 「普通」显示范围：藏起 `tier = "advanced"` 的项。
+    ///
+    /// 与定制版隐藏同一种折法（`hidden` + `custom_hidden`）：值照常生效，`enabled_when`
+    /// 联动按配置值算；宿主藏了，对话框里的成员一并藏。
+    pub fn apply_basic_tier(&mut self) {
+        for item in self.items.values_mut() {
+            if item.tier.as_deref() == Some("advanced") && !item.hidden {
+                item.hidden = true;
+                item.custom_hidden = true;
+            }
+        }
+        self.hide_orphaned_dialog_members();
     }
 
     /// 宿主被定制版藏掉 ⇒ 寄居在它对话框里的项（`dialog_group` / `dialog_extra_for`）一并藏掉。
@@ -1063,12 +1081,28 @@ fn follow_labels(
 /// 成员经各自 field() 登记 writer/loader/getter（与独立成行时一致），随主保存提交。
 /// 宿主自身的 enabled_when 仍作用于整行（如 position_mode 随状态提示开关置灰）。
 fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
+    build_dialog_group_row_with(state, key, item, cfg, SchemaHintMode::PerRow)
+}
+
+/// [`build_dialog_group_row`] 的带角标模式版：方案页引擎卡（[`scheme_config_section`]）
+/// 按整张卡的 [`SchemaHintMode`] 渲染宿主行，与卡内其余行的角标 / 「仅全局」标记一致。
+fn build_dialog_group_row_with(
+    state: &AppState,
+    key: &str,
+    item: &MItem,
+    cfg: &Config,
+    mode: SchemaHintMode,
+) -> Element {
     use crate::dialogs::field_dialogs::build_group_dialog;
     let group = item.opens_dialog.clone().unwrap_or_default();
-    // 宿主控件本体（与 field() 共用 build_control，避免分派漂移）。
-    let control = build_control(state, key, item, cfg);
     // 成员项（按 manifest 顺序；group id 约定全局唯一以免跨 section 误吸）→ field() 行 → 分组对话框。
     let member_keys = dialog_group_keys(state, &group);
+    // 成员全被藏掉（定制版 / 普通模式）：没有可点开的东西，退回普通的一行。
+    if member_keys.is_empty() {
+        return field_with(state, key, mode);
+    }
+    // 宿主控件本体（与 field() 共用 build_control，避免分派漂移）。
+    let control = build_control(state, key, item, cfg);
     // 框内每行也挂锚点：搜索命中的可能正是这些寄居项，跳转要落到具体那一行。
     let rows: Vec<Element> = member_keys
         .iter()
@@ -1099,16 +1133,8 @@ fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Confi
         .spacing(10)
         .child(control)
         .child(btn);
-    let mut row = setting_row(&item.label, item.hint.as_deref(), row_control);
-    // 宿主 enabled_when 作用于整行（含扩展按钮）。
-    if let Some(f) = item
-        .enabled_when
-        .as_deref()
-        .and_then(|e| enabled_when_closure(state, e))
-    {
-        row = row.enabled_when(f);
-    }
-    row
+    // 宿主 enabled_when 作用于整行（含扩展按钮），由 field_row 一并挂上。
+    field_row(state, key, item, row_control, mode)
 }
 
 fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -2603,30 +2629,59 @@ fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
-/// 模糊音紧凑组：启用开关 + 全选 checkbox + 13 对小号 checkbox（2 列），随启用置灰。
-/// 各项经 register_toggle 登记 writer/loader（key 在清单 schema/模糊音，受「恢复本页」覆盖）。
-fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
-    let en = register_toggle(state, "schema.pinyin.fuzzy.enabled", cfg);
-    let pairs = [
-        ("schema.pinyin.fuzzy.zh_z", "zh ↔ z"),
-        ("schema.pinyin.fuzzy.ch_c", "ch ↔ c"),
-        ("schema.pinyin.fuzzy.sh_s", "sh ↔ s"),
-        ("schema.pinyin.fuzzy.n_l", "n ↔ l"),
-        ("schema.pinyin.fuzzy.r_l", "r ↔ l"),
-        ("schema.pinyin.fuzzy.f_h", "f ↔ h"),
-        ("schema.pinyin.fuzzy.an_ang", "an ↔ ang"),
-        ("schema.pinyin.fuzzy.en_eng", "en ↔ eng"),
-        ("schema.pinyin.fuzzy.in_ing", "in ↔ ing"),
-        ("schema.pinyin.fuzzy.ian_iang", "ian ↔ iang"),
-        ("schema.pinyin.fuzzy.uan_uang", "uan ↔ uang"),
-        ("schema.pinyin.fuzzy.un_ong", "un ↔ ong"),
-        ("schema.pinyin.fuzzy.eng_ong", "eng ↔ ong"),
-    ];
-    let sigs: Vec<Signal<bool>> = pairs
+/// 模糊音的 13 组拼音对（清单 key, 网格里的标签）。
+const FUZZY_PAIRS: [(&str, &str); 13] = [
+    ("schema.pinyin.fuzzy.zh_z", "zh ↔ z"),
+    ("schema.pinyin.fuzzy.ch_c", "ch ↔ c"),
+    ("schema.pinyin.fuzzy.sh_s", "sh ↔ s"),
+    ("schema.pinyin.fuzzy.n_l", "n ↔ l"),
+    ("schema.pinyin.fuzzy.r_l", "r ↔ l"),
+    ("schema.pinyin.fuzzy.f_h", "f ↔ h"),
+    ("schema.pinyin.fuzzy.an_ang", "an ↔ ang"),
+    ("schema.pinyin.fuzzy.en_eng", "en ↔ eng"),
+    ("schema.pinyin.fuzzy.in_ing", "in ↔ ing"),
+    ("schema.pinyin.fuzzy.ian_iang", "ian ↔ iang"),
+    ("schema.pinyin.fuzzy.uan_uang", "uan ↔ uang"),
+    ("schema.pinyin.fuzzy.un_ong", "un ↔ ong"),
+    ("schema.pinyin.fuzzy.eng_ong", "eng ↔ ong"),
+];
+
+/// 模糊音入口行的说明：开着时列出已勾选的组，让用户不点开也知道现在是什么状态。
+///
+/// 只列前 4 组：这是行副标题，单行放不下 13 组；多出的写「等 N 组」。
+fn fuzzy_summary(enabled: bool, on: &[&str]) -> String {
+    if !enabled {
+        return "未开启。开启后，勾选的拼音对互不区分".to_string();
+    }
+    if on.is_empty() {
+        return "已开启，但还没有勾选拼音对".to_string();
+    }
+    let shown = on
+        .iter()
+        .take(4)
+        .map(|l| l.replace(" ↔ ", "/"))
+        .collect::<Vec<_>>()
+        .join("、");
+    if on.len() > 4 {
+        format!("{shown} 等 {} 组", on.len())
+    } else {
+        shown
+    }
+}
+
+/// 模糊音入口行：「模糊音 …… [开关][扩展设置]」，13 组拼音对收在对话框里。
+///
+/// 13 对挤在卡片上占了半屏，而多数人只开一两组、开完就不再动——放进对话框后，
+/// 行副标题写出当前勾选了哪几组（[`fuzzy_summary`]），不点开也看得到状态。
+/// 各项经 register_toggle 登记 writer/loader（key 在清单 schema/模糊音，受「恢复默认」覆盖）。
+fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::build_group_dialog;
+    let en = register_toggle(state, crate::search::index::FUZZY_MASTER, cfg);
+    let sigs: Vec<Signal<bool>> = FUZZY_PAIRS
         .iter()
         .map(|(k, _)| register_toggle(state, k, cfg))
         .collect();
-    let cells: Vec<Element> = pairs
+    let cells: Vec<Element> = FUZZY_PAIRS
         .iter()
         .zip(sigs.iter())
         .map(|((_, lbl), s)| Element::checkbox(*lbl, *s).small().fg_role(Role::Text))
@@ -2638,7 +2693,9 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
     // 额外按钮。checkbox 本身不接收 on-change，故其勾选状态需要另一条腿维持：下方
     // reactive_effect 监听 13 项版本，任一项被单独勾/取消时都重算「是否全选」回写
     // 本信号，让全选框始终如实反映当前状态（而非只在点它自己时才更新）。
+    // 同一个 effect 顺带重算入口行的说明。
     let select_all_sig = signal(sigs.iter().all(|s| s.get()));
+    let summary = signal(String::new());
     let click_sigs = sigs.clone();
     let select_all_box = Element::checkbox("全选", select_all_sig)
         .small()
@@ -2656,30 +2713,68 @@ fn build_fuzzy_group(state: &AppState, cfg: &Config) -> Element {
         move || {
             version_sigs
                 .iter()
-                .fold(0u64, |acc, s| acc.wrapping_add(s.version()))
+                .fold(en.version(), |acc, s| acc.wrapping_add(s.version()))
         },
         move || {
             let all = sync_sigs.iter().all(|s| s.get());
             if select_all_sig.get() != all {
                 select_all_sig.set(all);
             }
+            let on: Vec<&str> = FUZZY_PAIRS
+                .iter()
+                .zip(sync_sigs.iter())
+                .filter(|(_, s)| s.get())
+                .map(|((_, l), _)| *l)
+                .collect();
+            let text = fuzzy_summary(en.get(), &on);
+            if summary.get() != text {
+                summary.set(text);
+            }
         },
     );
 
+    // 网格整块挂一枚锚点：那 13 个开关各占一小格，逐格闪没人看得见
+    // （见 `search::index::block_anchor_of`）。
+    let body = Element::col()
+        .width_match()
+        .padding_xy(0, 8)
+        .spacing(10)
+        .child(select_all_box)
+        .child(grid);
+    let body = crate::search::anchor::wrap(
+        body,
+        crate::search::index::in_dialog_anchor(FUZZY_PAIRS[0].0),
+        state.jump,
+    );
+    let visible = signal(false);
+    // 登记供搜索跳转开框（键 = 总开关 key，与 `search::index` 派生的 dialog 键一致）。
+    state
+        .fields
+        .dialog_opens
+        .borrow_mut()
+        .insert(crate::search::index::FUZZY_MASTER.to_string(), visible);
+    register_dialog(
+        state,
+        build_group_dialog(visible, "模糊音 · 扩展设置", vec![body], None),
+    );
+
+    let control = Element::row()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(Element::switch(en))
+        .child(
+            Element::button("扩展设置")
+                .small()
+                .outline_soft()
+                .on_click(move |_| visible.set(true)),
+        );
     Element::col()
         .width_match()
-        .padding_xy(0, 11)
-        .spacing(10)
-        .child(setting_row(
-            "启用模糊音",
-            Some("勾选下方拼音对，使其互不区分"),
-            Element::row()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(Element::switch(en))
-                .child(select_all_box),
+        .child(crate::widgets::setting_row_desc_signal(
+            "模糊音",
+            summary,
+            control,
         ))
-        .child(grid)
         .child(sync_effect)
 }
 
@@ -2776,10 +2871,14 @@ fn scheme_config_notice_text(
 /// 别再抄字面量——此前覆盖分组卡片与「码表配置」节头就是两处复刻。
 pub(crate) const DIALOG_HEADER_SIZE: f32 = 13.5;
 
-/// 「全局方案配置」某引擎的整张卡片（含该 schema-group section 的设置行）。
+/// 方案页某引擎（码表 / 拼音 / 混输 / 英文）的全局配置整张卡片。
 ///
 /// 卡内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
-/// `with_fuzzy`=true 在末尾追加"模糊音"子组（拼音引擎用）。
+/// `with_fuzzy`=true 时加一行「模糊音」入口（拼音引擎用，见 [`build_fuzzy_row`]）。
+///
+/// 主开关带一串参数的（词频调整、自动造词、智能组词……）在清单里用 `opens_dialog` /
+/// `dialog_group` 收进「扩展设置」对话框，卡片上只留主开关那一行。铺开时这几组参数
+/// 大多随主开关置灰却照占版面，一张卡一半是灰的。
 ///
 /// ★ 2026-09 之前这里返回的是一个 [设置] 按钮 + 一个模态对话框，页面上只留一行
 /// 「码表方案配置 …… [设置]」。四台引擎、几十个开关就此在界面上完全不可见，用户
@@ -2821,7 +2920,7 @@ pub fn scheme_config_section(
     // 配置」，很容易读成「当前这个码表方案的配置」，改完发现另一个方案也变了。
     // 故无论有没有覆盖说明，这一行都出。
     let hint_mode = schema_hint_mode(state, &keys);
-    let scope_note = format!("此为全局{label}。");
+    let scope_note = format!("此为全局{label}方案配置。");
     let header_note = schema_hint_header_note(state, &keys);
     // Header 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能就此凭空消失——
     // 追加进这句统一说明的计数里。计数走 Signal：覆盖汇总（`schema.overrideSummary`）
@@ -2837,6 +2936,16 @@ pub fn scheme_config_section(
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     items.push(crate::widgets::CardItem::Heading(section.to_string()));
 
+    // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
+    // 没有小标题就放卡片最后。整行挂块锚点（见 `search::index::block_anchor_of`）。
+    let mut fuzzy_row = with_fuzzy.then(|| {
+        crate::widgets::CardItem::Row(crate::search::anchor::wrap(
+            build_fuzzy_row(state, &state.current_config),
+            crate::search::index::page_anchor(crate::search::index::FUZZY_MASTER),
+            state.jump,
+        ))
+    });
+
     // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
     let mut cur_subsec: Option<String> = None;
     for k in &keys {
@@ -2846,9 +2955,16 @@ pub fn scheme_config_section(
         if item.hidden {
             continue;
         }
+        // 收进「扩展设置」对话框的成员：由宿主行承载，不在卡片上成行，也不带出小标题。
+        if item.dialog_group.is_some() || item.dialog_extra_for.is_some() {
+            continue;
+        }
         let subsec = item.subsection.clone();
         if subsec != cur_subsec {
             if let Some(ref name) = subsec {
+                if let Some(row) = fuzzy_row.take() {
+                    items.push(row);
+                }
                 items.push(crate::widgets::CardItem::Heading(name.clone()));
             }
             cur_subsec = subsec;
@@ -2879,6 +2995,12 @@ pub fn scheme_config_section(
             && state.manifest.is_visible(g)
         {
             continue;
+        } else if item.opens_dialog.is_some() {
+            // 主开关 + 「扩展设置」：参数收进对话框，卡片上只留这一行。
+            (
+                build_dialog_group_row_with(state, k, item, &state.current_config, hint_mode),
+                false,
+            )
         } else {
             (field_with(state, k, hint_mode), false)
         };
@@ -2890,15 +3012,8 @@ pub fn scheme_config_section(
             crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
         }));
     }
-    if with_fuzzy {
-        items.push(crate::widgets::CardItem::Heading("模糊音".to_string()));
-        // 整块挂一枚锚点：那 13 个开关在网格里各占一小格，逐格闪没人看得见
-        // （见 `search::index::block_anchor_of`）。
-        items.push(crate::widgets::CardItem::Row(crate::search::anchor::wrap(
-            build_fuzzy_group(state, &state.current_config),
-            crate::search::index::page_anchor("schema.pinyin.fuzzy.enabled"),
-            state.jump,
-        )));
+    if let Some(row) = fuzzy_row {
+        items.push(row);
     }
 
     // 恢复默认：取 core 权威出厂配置（含折算），灌回各字段 loader。见 [`core_defaults_config`]。
@@ -8188,6 +8303,73 @@ mod tests {
             "此为全局混输行为。",
             "PerRow 模式：逐行角标已经说过，不重复"
         );
+    }
+
+    /// 「普通」显示范围只藏 `tier = "advanced"` 的项，值域只认这一个取值——写错了
+    /// （如 `"expert"`）该项会在两种范围下都显示，没有任何别的信号。
+    #[test]
+    fn basic_tier_hides_only_advanced_items() {
+        let full = Manifest::from_embedded();
+        let advanced: Vec<&String> = full
+            .order
+            .iter()
+            .filter(|k| full.get(k).unwrap().tier.is_some())
+            .collect();
+        assert!(!advanced.is_empty(), "前提：清单里有标了层级的项");
+        for k in &advanced {
+            assert_eq!(
+                full.get(k).unwrap().tier.as_deref(),
+                Some("advanced"),
+                "{k}"
+            );
+        }
+        let mut basic = Manifest::from_embedded();
+        basic.apply_basic_tier();
+        for k in &full.order {
+            let (a, b) = (full.get(k).unwrap(), basic.get(k).unwrap());
+            if a.tier.is_some() {
+                assert!(
+                    b.hidden && b.custom_hidden,
+                    "{k} 应在普通范围下藏起，且值照常生效"
+                );
+            } else if a.dialog_group.is_none() && a.dialog_extra_for.is_none() {
+                assert_eq!(a.hidden, b.hidden, "{k} 没标层级，不该被普通范围牵连");
+            }
+        }
+    }
+
+    /// 模糊音入口行的说明：关着说关着，开着列出勾了哪几组，多了截断。
+    #[test]
+    fn fuzzy_summary_reflects_state() {
+        assert!(fuzzy_summary(false, &["zh ↔ z"]).starts_with("未开启"));
+        assert!(fuzzy_summary(true, &[]).contains("还没有勾选"));
+        assert_eq!(fuzzy_summary(true, &["zh ↔ z", "n ↔ l"]), "zh/z、n/l");
+        let all: Vec<&str> = FUZZY_PAIRS.iter().map(|(_, l)| *l).collect();
+        assert_eq!(fuzzy_summary(true, &all), "zh/z、ch/c、sh/s、n/l 等 13 组");
+    }
+
+    /// 方案页引擎卡：收进对话框的参数不在卡片上成行，主开关那一行还在。
+    #[test]
+    fn scheme_card_rows_exclude_dialog_members() {
+        let full = Manifest::from_embedded();
+        for (_, sec, _) in crate::pages::SCHEME_ENGINE_CARDS {
+            let keys = full
+                .sections_of("schema")
+                .into_iter()
+                .find(|(s, _)| s == sec)
+                .map(|(_, k)| k)
+                .unwrap();
+            for k in &keys {
+                let it = full.get(k).unwrap();
+                if let Some(g) = &it.dialog_group {
+                    assert!(
+                        keys.iter()
+                            .any(|h| full.get(h).unwrap().opens_dialog.as_ref() == Some(g)),
+                        "{k} 的对话框宿主不在同一张卡上，卡片上就没有入口"
+                    );
+                }
+            }
+        }
     }
 
     /// 没有任何键被覆盖时不追加计数句子——「其中 0 项」不比什么都不说更有信息量。

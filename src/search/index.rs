@@ -92,9 +92,9 @@ fn page_tab(page: &str) -> usize {
 enum Placement {
     /// 页面上直接成行。
     Page(&'static str),
-    /// 方案页「全局方案配置」下那四张引擎卡片之一。
+    /// 方案页四张引擎卡片之一（`pages::SCHEME_ENGINE_CARDS`）。
     SchemeCard {
-        /// 卡片标题（如「码表方案配置」）。
+        /// 卡片标题（如「码表」）。
         label: &'static str,
     },
 }
@@ -127,7 +127,7 @@ pub fn page_anchor(key: &str) -> String {
 
 /// 「这一项没有自己的行，它在某一整块里」——返回那一块的锚点基名。
 ///
-/// 模糊音那一组开关是挤在一个**网格**里的（`manifest::build_fuzzy_group`），
+/// 模糊音那一组开关是挤在一个**网格**里的（`manifest::build_fuzzy_row` 的对话框），
 /// 每格只有一个 `zh ↔ z` 大小的方块，逐格挂锚点没有意义：闪一个小方块，
 /// 用户多半看不见。整块闪一次反而说得清「在这儿」。
 /// 模糊音网格的总开关：网格整块显隐以它为准，见 `manifest::scheme_config_section`。
@@ -140,23 +140,26 @@ fn block_anchor_of(key: &str) -> Option<&'static str> {
 
 /// (group, section) → 落点。返回 `None` = 未登记，由守门测试报出。
 fn placement_of(group: &str, section: &str) -> Option<Placement> {
+    // 方案页四张引擎卡：卡片名取 `pages::SCHEME_ENGINE_CARDS`，面包屑与界面同源。
+    // 「模糊音」那一节由拼音卡的入口行承载（`scheme_config_section(.., with_fuzzy=true)`）。
+    if group == "schema" {
+        let sec = if section == "模糊音" {
+            "候选行为"
+        } else {
+            section
+        };
+        if let Some((label, ..)) = crate::pages::SCHEME_ENGINE_CARDS
+            .iter()
+            .find(|(_, s, _)| *s == sec)
+        {
+            return Some(Placement::SchemeCard { label });
+        }
+    }
     let p = match (group, section) {
-        // ── 方案组：只有主方案设置直接成行 ──
-        ("schema", "主方案设置") => Placement::Page("schema"),
-        // 其余四节铺在「全局方案配置」下的四张引擎卡片上。「模糊音」由
-        // `scheme_config_section(.., with_fuzzy=true)` 并进拼音方案配置。
-        ("schema", "上屏行为") => Placement::SchemeCard {
-            label: "码表方案配置",
-        },
-        ("schema", "混输行为") => Placement::SchemeCard {
-            label: "混输方案配置",
-        },
-        ("schema", "候选行为") | ("schema", "模糊音") => Placement::SchemeCard {
-            label: "拼音方案配置",
-        },
-        ("schema", "英文行为") => Placement::SchemeCard {
-            label: "英文方案配置",
-        },
+        // ── 方案组其余各节直接成行：主方案设置、临时拼音、临时英文 ──
+        ("schema", "主方案设置" | "临时拼音" | "临时英文") => {
+            Placement::Page("schema")
+        }
         // ── 其余组：整组落在一页上 ──
         // general 组没有自己的页，跟着 input 页渲染（见模块文档）。
         ("input", _) | ("general", _) => Placement::Page("input"),
@@ -260,7 +263,13 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
             // 也在框里**（见 `manifest::build_grouped_dialog_row`）。所以它是自己的宿主，
             // 目标该是 RowInDialog——当成 Row 的话，跳过去只滚到入口行就停了，
             // 而寄居在同一个框里的兄弟项却会开框，两者层级不一致。
-            .or_else(|| item.dialog_title.as_ref().map(|_| key.clone()));
+            .or_else(|| item.dialog_title.as_ref().map(|_| key.clone()))
+            // 模糊音的 13 组拼音对没有清单层面的对话框声明（网格是手写的，见
+            // `manifest::build_fuzzy_row`），但它们确实在总开关那一行的对话框里。
+            .or_else(|| {
+                (block_anchor_of(key).is_some() && key != FUZZY_MASTER)
+                    .then(|| FUZZY_MASTER.to_string())
+            });
         let (target, mut path) = match placement {
             Placement::Page(page) => {
                 let tab = page_tab(page);
@@ -292,19 +301,33 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                     ),
                 }
             }
-            Placement::SchemeCard { label } => (
-                // 这四节 2026-09 起铺在方案页上（原先各在一个对话框里），故是普通的
-                // 页面行：一跳到位，不再需要「先滚到入口行、开框、再滚框内那行」。
-                JumpTarget::Row {
-                    tab: page_tab("schema"),
-                    anchor: page_anchor(key),
-                },
-                // 面包屑跟着界面走：「全局方案配置」那一层已经撤掉（见
-                // `pages::scheme_page`），路径里再留着它就会指向一个界面上不存在的分组。
-                vec![page_name.to_string(), label.to_string()],
-            ),
+            // 这四节 2026-09 起铺在方案页上（原先各在一个对话框里），主开关那一行是普通的
+            // 页面行，一跳到位；收进「扩展设置」的参数才需要先滚到入口行、再开框。
+            // 面包屑跟着界面走：「全局方案配置」那一层已经撤掉（见 `pages::scheme_page`）。
+            Placement::SchemeCard { label } => match &host {
+                Some(h) => (
+                    JumpTarget::RowInDialog {
+                        tab: page_tab("schema"),
+                        host_anchor: page_anchor(&row_anchor_of(manifest, h)),
+                        dialog: h.clone(),
+                        anchor: in_dialog_anchor(key),
+                    },
+                    vec![
+                        page_name.to_string(),
+                        label.to_string(),
+                        dialog_label(manifest, h),
+                    ],
+                ),
+                None => (
+                    JumpTarget::Row {
+                        tab: page_tab("schema"),
+                        anchor: page_anchor(key),
+                    },
+                    vec![page_name.to_string(), label.to_string()],
+                ),
+            },
         };
-        // 对话框内子分区（如「词频调整」）再补一层，路径才够指到那一行。
+        // 卡内小标题（如「学习与扩展」）再补一层，路径才够指到那一行。
         if let Some(sub) = item.subsection.as_deref() {
             path.push(sub.to_string());
         }
@@ -707,7 +730,7 @@ mod tests {
         assert_eq!(e.path, vec!["方案", "主方案设置"]);
     }
 
-    /// schema 组的「上屏行为」项落在方案页「码表方案配置」那张卡上，一跳到位。
+    /// schema 组的「上屏行为」项落在方案页「码表」那张卡上，一跳到位。
     ///
     /// 这几节曾经收在对话框里（目标是 `RowInDialog`），2026-09 铺开成页内卡片后必须是
     /// `Row`：仍按对话框生成的话，跳转会去找一个已经不存在的入口行与对话框注册项，
@@ -718,10 +741,7 @@ mod tests {
         let idx = build_index(&m);
         let e = idx
             .iter()
-            .find(|e| {
-                m.get(&e.id)
-                    .is_some_and(|i| i.group == "schema" && i.section == "上屏行为")
-            })
+            .find(|e| e.id == "schema.codetable.auto_commit_at_full")
             .expect("上屏行为应有可索引项");
         match &e.target {
             JumpTarget::Row { tab, anchor } => {
@@ -730,23 +750,82 @@ mod tests {
             }
             other => panic!("上屏行为应落页面行，实际 {other:?}"),
         }
-        assert_eq!(e.path[1], "码表方案配置", "面包屑第二段就是卡片标题");
+        assert_eq!(e.path[1], "码表", "面包屑第二段就是卡片标题");
     }
 
-    /// 模糊音那 13 个开关挤在一个网格里，索引须落到**整块**的锚点上而不是各自的 key
-    /// （逐格闪一个 `zh ↔ z` 大小的方块没人看得见）。铺开成页内卡片后不再带
-    /// `#in-dialog` 后缀，故这里把两件事一起钉住。
+    /// 收进「扩展设置」的引擎参数：先滚到主开关那一行、再开框、再闪框内那一行。
+    /// 当成页面行的话，跳过去只滚到一个不存在的锚点，搜到了却不动。
     #[test]
-    fn fuzzy_items_use_block_anchor_without_dialog_suffix() {
+    fn scheme_dialog_members_open_their_host_dialog() {
         let m = manifest();
         let idx = build_index(&m);
         let e = idx
             .iter()
-            .find(|e| e.id.starts_with("schema.pinyin.fuzzy."))
+            .find(|e| e.id == "schema.codetable.frequency.strategy")
+            .expect("调频策略应可搜到");
+        assert_eq!(
+            e.target,
+            JumpTarget::RowInDialog {
+                tab: crate::cli::page_to_index("schema").unwrap(),
+                host_anchor: "schema.codetable.frequency.enabled".into(),
+                dialog: "schema.codetable.frequency.enabled".into(),
+                anchor: "schema.codetable.frequency.strategy#in-dialog".into(),
+            }
+        );
+        assert_eq!(e.path, vec!["方案", "码表", "词频调整 · 扩展设置"]);
+    }
+
+    /// 模糊音那 13 个开关挤在对话框的一个网格里，索引须落到**整块**的锚点上而不是各自
+    /// 的 key（逐格闪一个 `zh ↔ z` 大小的方块没人看得见）；总开关则是页面上的那一行。
+    #[test]
+    fn fuzzy_items_use_block_anchor() {
+        let m = manifest();
+        let idx = build_index(&m);
+        let pair = idx
+            .iter()
+            .find(|e| e.id == "schema.pinyin.fuzzy.n_l")
             .expect("模糊音应有可索引项");
-        match &e.target {
+        assert_eq!(
+            pair.target,
+            JumpTarget::RowInDialog {
+                tab: crate::cli::page_to_index("schema").unwrap(),
+                host_anchor: "schema.pinyin.fuzzy".into(),
+                dialog: FUZZY_MASTER.into(),
+                anchor: "schema.pinyin.fuzzy#in-dialog".into(),
+            }
+        );
+        let master = idx.iter().find(|e| e.id == FUZZY_MASTER).unwrap();
+        match &master.target {
             JumpTarget::Row { anchor, .. } => assert_eq!(anchor, "schema.pinyin.fuzzy"),
-            other => panic!("模糊音应落页面块锚点，实际 {other:?}"),
+            other => panic!("模糊音总开关应落页面块锚点，实际 {other:?}"),
+        }
+    }
+
+    /// 临时拼音 / 临时英文搬到了方案页，按键行为 / 候选无效按键搬到了按键页。
+    #[test]
+    fn moved_sections_land_on_their_new_pages() {
+        let m = manifest();
+        let idx = build_index(&m);
+        for (id, page, path) in [
+            (
+                "input.temp_pinyin.candidate_layout",
+                "schema",
+                vec!["方案", "临时拼音"],
+            ),
+            ("input.enter_behavior", "keys", vec!["按键", "按键行为"]),
+            (
+                "keys.overflow.page_key",
+                "keys",
+                vec!["按键", "候选无效按键"],
+            ),
+        ] {
+            let e = idx.iter().find(|e| e.id == id).expect(id);
+            assert_eq!(
+                e.target.tab(),
+                crate::cli::page_to_index(page).unwrap(),
+                "{id}"
+            );
+            assert_eq!(e.path, path, "{id}");
         }
     }
 

@@ -25,9 +25,13 @@ pub const SECTION_HEADER: usize = 2;
 pub const ROW_DIVIDER: usize = 3;
 pub const SUBHEADING: usize = 4;
 pub const CARD_EDGE: usize = 5;
+pub const SETTINGS_TIER: usize = 6;
+
+/// 选项个数。
+pub const N: usize = 7;
 
 /// 各选项的缺省下标（未写 `[ui.look]` 时用它）：各表第一项。
-pub const DEFAULT: [usize; 6] = [0; 6];
+pub const DEFAULT: [usize; N] = [0; N];
 
 /// 导航选中样式的下标。
 pub mod nav {
@@ -64,8 +68,15 @@ pub mod edge {
     pub const BORDER: usize = 1;
     pub const SHADOW: usize = 2;
 }
+/// 设置项显示范围的下标。缺省「高级」= 全部显示，与没有这个选项时一样；
+/// 「普通」藏起清单里标了 `tier = "advanced"` 的项（见 `Manifest::apply_basic_tier`）。
+/// 分层还在逐页试，先放在这里内部迭代，定了再挪到正式位置。
+pub mod tier {
+    pub const ADVANCED: usize = 0;
+    pub const BASIC: usize = 1;
+}
 
-pub const OPTIONS: [LookOption; 6] = [
+pub const OPTIONS: [LookOption; N] = [
     LookOption {
         title: "导航选中样式",
         values: &["tint", "bar_tint", "solid"],
@@ -97,6 +108,12 @@ pub const OPTIONS: [LookOption; 6] = [
         values: &["border_shadow", "border", "shadow"],
         labels: &["边框+阴影", "仅边框", "仅阴影"],
     },
+    LookOption {
+        // 清单在建树前折叠（见 `AppState::refold_manifest_if_needed`），故同样重开生效。
+        title: "设置项（重开生效）",
+        values: &["advanced", "basic"],
+        labels: &["高级", "普通"],
+    },
 ];
 
 /// `[ui.look]`。字段用 `Option<String>` 而不是枚举：未知取值若让 serde 报错，整个
@@ -116,11 +133,13 @@ pub struct LookConfig {
     pub subheading: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_edge: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_tier: Option<String>,
 }
 
 impl LookConfig {
     /// 字段顺序必须与 [`OPTIONS`] 一致。
-    fn fields(&self) -> [&Option<String>; 6] {
+    fn fields(&self) -> [&Option<String>; N] {
         [
             &self.nav_indicator,
             &self.nav_icon_chip,
@@ -128,10 +147,11 @@ impl LookConfig {
             &self.row_divider,
             &self.subheading,
             &self.card_edge,
+            &self.settings_tier,
         ]
     }
 
-    pub fn indices(&self) -> [usize; 6] {
+    pub fn indices(&self) -> [usize; N] {
         let f = self.fields();
         std::array::from_fn(|i| {
             f[i].as_deref()
@@ -141,7 +161,7 @@ impl LookConfig {
     }
 
     /// 等于 [`DEFAULT`] 的写成 `None`，于是全缺省时整节不落盘。
-    pub fn from_indices(ix: [usize; 6]) -> Self {
+    pub fn from_indices(ix: [usize; N]) -> Self {
         let v = |i: usize| {
             (ix[i] != DEFAULT[i])
                 .then(|| OPTIONS[i].values.get(ix[i]).map(|s| (*s).to_string()))
@@ -154,6 +174,7 @@ impl LookConfig {
             row_divider: v(ROW_DIVIDER),
             subheading: v(SUBHEADING),
             card_edge: v(CARD_EDGE),
+            settings_tier: v(SETTINGS_TIER),
         }
     }
 
@@ -162,17 +183,17 @@ impl LookConfig {
     }
 }
 
-/// 六个选项的选中下标。存在 `AppState` 里、比任何窗口都长命：子窗的分段控件直接绑它们，
+/// 各选项的选中下标。存在 `AppState` 里、比任何窗口都长命：子窗的分段控件直接绑它们，
 /// 主窗各处 `visible_when` 读同一组。
 #[derive(Clone, Copy)]
-pub struct LookSignals(pub [Signal<usize>; 6]);
+pub struct LookSignals(pub [Signal<usize>; N]);
 
 impl LookSignals {
-    pub fn new(ix: [usize; 6]) -> Self {
+    pub fn new(ix: [usize; N]) -> Self {
         Self(std::array::from_fn(|i| signal(ix[i])))
     }
 
-    pub fn snapshot(&self) -> [usize; 6] {
+    pub fn snapshot(&self) -> [usize; N] {
         std::array::from_fn(|i| self.0[i].get())
     }
 }
@@ -195,7 +216,7 @@ mod tests {
 
     #[test]
     fn indices_roundtrip_through_config_strings() {
-        let ix = [2, 1, 1, 2, 1, 2];
+        let ix = [2, 1, 1, 2, 1, 2, 1];
         assert_eq!(LookConfig::from_indices(ix).indices(), ix);
     }
 
@@ -229,6 +250,8 @@ mod tests {
         assert_eq!(v(CARD_EDGE, edge::BORDER_SHADOW), "border_shadow");
         assert_eq!(v(CARD_EDGE, edge::BORDER), "border");
         assert_eq!(v(CARD_EDGE, edge::SHADOW), "shadow");
+        assert_eq!(v(SETTINGS_TIER, tier::ADVANCED), "advanced");
+        assert_eq!(v(SETTINGS_TIER, tier::BASIC), "basic");
     }
 
     /// 配置里存的是串不是下标：调顺序前写下的值读回来仍是同一种写法。

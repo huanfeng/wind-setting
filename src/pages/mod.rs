@@ -433,6 +433,15 @@ fn build_list_view_menu(
     .width(132)
 }
 
+/// 方案页四张引擎卡：(卡片 / 导航名, 清单 section, 是否带模糊音入口)。
+/// 卡片名与搜索面包屑同源（`search::index::placement_of` 引用本表）。
+pub(crate) const SCHEME_ENGINE_CARDS: [(&str, &str, bool); 4] = [
+    ("码表", "上屏行为", false),
+    ("拼音", "候选行为", true),
+    ("混输", "混输行为", false),
+    ("英文", "英文行为", false),
+];
+
 fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     let mgr = &state.schema_mgr;
 
@@ -595,29 +604,26 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
     // 层次凭空多了一级而信息量为零。导航名与卡片标题一字不差，点过去看到什么一目了然；
     // 「这些是全局的」改由卡内第一行提示说（见 `manifest::scheme_config_section`）——
     // 那句话本来就在那儿，只是原先没点明「全局」。
-    for (title, sec, with_fuzzy) in [
-        ("码表方案配置", "上屏行为", false),
-        ("拼音方案配置", "候选行为", true),
-        ("混输方案配置", "混输行为", false),
-        ("英文方案配置", "英文行为", false),
-    ] {
+    //
+    // 卡片名只写引擎名（「码表」而不是「码表方案配置」）：四张卡同处方案页，后缀在每一张上
+    // 都一样、不提供区分度，导航里还把真正的区别挤到了最后两个字之前。
+    for (title, sec, with_fuzzy) in SCHEME_ENGINE_CARDS {
         if let Some(card) = scheme_config_section(state, title, sec, with_fuzzy) {
             secs.push(nav.wrap(title, 0, card));
         }
     }
 
-    // 主方案设置（manifest schema 分组中的"主方案设置" section）。
-    if let Some((_, keys)) = state
-        .manifest
-        .sections_of("schema")
-        .into_iter()
-        .find(|(s, _)| s == "主方案设置")
-    {
-        secs.push(nav.wrap(
-            "主方案设置",
-            0,
-            section("主方案设置", section_rows(state, &keys)),
-        ));
+    // 主方案设置，然后是临时拼音 / 临时英文：后两者是「临时换一套方案打字」，触发键、
+    // 候选形态都是方案级的概念（原先在输入页）。
+    let schema_sections = state.manifest.sections_of("schema");
+    for (sec, nav_label) in [
+        ("主方案设置", "主方案"),
+        ("临时拼音", "临时拼音"),
+        ("临时英文", "临时英文"),
+    ] {
+        if let Some((_, keys)) = schema_sections.iter().find(|(s, _)| s == sec) {
+            secs.push(nav.wrap(nav_label, 0, section(sec, section_rows(state, keys))));
+        }
     }
 
     sections_page("方案", "选择输入方案与引擎配置", secs)
