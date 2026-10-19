@@ -139,6 +139,20 @@ pub fn validate(
     None
 }
 
+/// 「启动程序」的文件选择框。`.exe` 过滤只在 Windows 有意义：Linux / macOS 的可执行文件
+/// 没有扩展名，加了过滤就几乎什么都选不到。
+fn program_pick_dialog() -> PickDialog {
+    let dlg = PickDialog::new().title("选择程序");
+    match program_filter_exts() {
+        Some(exts) => dlg.filter("程序", exts),
+        None => dlg,
+    }
+}
+
+fn program_filter_exts() -> Option<&'static [&'static str]> {
+    cfg!(windows).then_some(&["exe"][..])
+}
+
 /// 动作编辑行：类型下拉 + 参数框（路径类附「浏览」）。
 ///
 /// 抽出来是为了**将来短语编辑器能直接复用**——它不认识按钮，只认识「一条动作」。
@@ -167,14 +181,11 @@ fn action_row(form: &ButtonForm) -> Element {
             .enabled_when(move || f2.kind().takes_path())
             .on_click(move |ctx| {
                 let arg = f3.arg;
-                ctx.request_pick_file(
-                    PickDialog::new().title("选择程序").filter("程序", &["exe"]),
-                    move |path| {
-                        if let Some(p) = path {
-                            arg.set(p.display().to_string());
-                        }
-                    },
-                );
+                ctx.request_pick_file(program_pick_dialog(), move |path| {
+                    if let Some(p) = path {
+                        arg.set(p.display().to_string());
+                    }
+                });
             }),
     );
 
@@ -298,6 +309,11 @@ pub fn build_button_form_dialog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exe_filter_only_on_windows() {
+        assert_eq!(program_filter_exts().is_some(), cfg!(windows));
+    }
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()

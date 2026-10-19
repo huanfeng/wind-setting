@@ -2602,8 +2602,6 @@ section = "功能快捷键"
 type = "hotkey"
 label = "显示/隐藏工具栏"
 hint = "切换工具栏的显示状态"
-# Linux 无落点：同 ui.toolbar.visible——`toggle_toolbar` 只翻转那个开关。
-platform = "windows, macos"
 
 # 不设 global：softkeyboard 不在 build_global_hotkey_entries 的 supported 表里
 # （那 7 个动作都不需要按键上下文，而软键盘开启后要接管整个主键区）。
@@ -2614,9 +2612,6 @@ section = "功能快捷键"
 type = "hotkey"
 label = "显示/隐藏软键盘"
 hint = "开关软键盘面板；面板也可从工具栏与主菜单打开"
-# Linux 无落点：软键盘面板在 Windows 是服务进程自绘窗、在 macOS 是 `.app` 的 AppKit 面板，
-# Fcitx5 addon 没有对应呈现（linux-port.md §2 精简范围）。
-platform = "windows, macos"
 
 [[items]]
 key = "keys.open_settings"
@@ -3407,20 +3402,18 @@ label = "显示状态栏"
 # 菜单栏指示器——两者形态不同但语义一致（“输入法的常驻状态显示”），故不提“可拖动”
 # 之类只在一边成立的描述。清单当前不支持分平台文案，写通用的即可。
 hint = "常驻显示输入法当前状态（中英、全半角、标点、方案）"
-# Linux 无落点：Fcitx5 addon 既没有浮动工具栏也没有托盘指示器，服务端 `notify_toolbar`
-# 推出的状态帧（CMD_MODE_STATUS）addon 不接（wind_linux/AGENTS.md 差距表「工具栏」）。
-platform = "windows, macos"
 
-# 带 platform = "windows" 的几项：macOS 用菜单栏指示器，既不是浮动窗口也无法排列/自动隐藏。
+# 带 platform = "windows, linux" 的几项：macOS 用菜单栏指示器，既不是浮动窗口也无法排列/自动隐藏。
 # （ui.toolbar.visible 不在此列——它在 macOS 上控制指示器的显示与否，是有落点的。）
+# fullscreen_watch 仍只限 windows：它开关的是 Windows 的定时轮询，Linux 没有对应机制。
 [[items]]
 key = "ui.toolbar.hide_in_fullscreen"
 group = "ui"
 section = "工具栏"
 type = "toggle"
 label = "全屏时隐藏工具栏"
-hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏"
-platform = "windows"
+hint = "当前台应用进入全屏（游戏、视频、演示等）时自动隐藏工具栏。Linux 的 Wayland 会话拿不到前台全屏状态，只是把工具栏放在全屏应用之下，效果是近似的"
+platform = "windows, linux"
 
 # 受 hide_in_fullscreen 门控：那项关着时「怎么发现全屏」无从谈起。引用同卡片内的 key，
 # 渲染上自动成为它的从属行。
@@ -3442,7 +3435,7 @@ section = "工具栏"
 type = "toggle"
 label = "英文状态时隐藏工具栏"
 hint = "切换到英文时隐藏工具栏，切回中文即重新显示"
-platform = "windows"
+platform = "windows, linux"
 
 [[items]]
 key = "ui.toolbar.vertical"
@@ -3451,7 +3444,7 @@ section = "工具栏"
 type = "toggle"
 label = "纵向排列"
 hint = "工具栏竖着摆放；适合把它靠在屏幕左右两侧"
-platform = "windows"
+platform = "windows, linux"
 
 # 显示哪些格 + 顺序。用 ordered_pairs 而非 checkbox_group：core 侧**数组顺序即渲染顺序**，
 # 而 checkbox_group 恒按声明序写回，会静默改写用户拖出来的顺序（config-design-rules §R3）。
@@ -3463,7 +3456,7 @@ section = "工具栏"
 type = "dialog_button_ordered_pairs"
 label = "显示内容"
 hint = "工具栏上显示哪些内容、按什么顺序；按住行首手柄上下拖动即可调整"
-platform = "windows"
+platform = "windows, linux"
 options = [
   { value = "mode", label = "中英 / 方案", hint = "显示当前是中文还是英文，中文时显示方案标签（拼、五等）；点击切换中英，右键选方案，中键切换到下一个方案" },
   { value = "punct", label = "标点", hint = "中文标点还是英文标点；点击切换，右键可一并调整全半角与简繁" },
@@ -3481,7 +3474,7 @@ section = "工具栏"
 type = "toggle"
 label = "自动隐藏工具栏"
 hint = "工具栏显示一段时间无交互后淡出隐藏；鼠标悬停不隐藏，切换中英等状态变化时重新显示"
-platform = "windows"
+platform = "windows, linux"
 
 [[items]]
 key = "ui.toolbar.auto_hide_delay"
@@ -3494,7 +3487,7 @@ min = 1
 max = 60
 unit = "s"
 enabled_when = "ui.toolbar.auto_hide == true"
-platform = "windows"
+platform = "windows, linux"
 
 # 论坛 t167「假隐藏」：淡出后窗口仍留在原位（几乎透明、可命中），悬停即唤回。
 [[items]]
@@ -3505,7 +3498,7 @@ type = "toggle"
 label = "悬停原位时重新显示"
 hint = "隐藏后工具栏仍占着原来的位置，鼠标移过去就重新显示、移开后再次淡出；关掉则彻底隐藏，只在切换中英等状态变化时出现"
 enabled_when = "ui.toolbar.auto_hide == true"
-platform = "windows"
+platform = "windows, linux"
 
 # 非中文态的模式主字。中文态的主字不在这里——它是**方案**的属性（方案文件 [schema]
 # icon_label），一个全局项表达不了「每个方案各显示什么」。
@@ -3518,8 +3511,8 @@ group = "ui"
 section = "工具栏"
 type = "string"
 label = "英文半角主字"
-hint = "左右 Shift 切出的英文半角态，在工具栏与任务栏图标上显示的字；最多 2 个字符，留空用「英」"
-platform = "windows"
+hint = "左右 Shift 切出的英文半角态，在工具栏（Windows 上还有任务栏图标）显示的字；最多 2 个字符，留空用「英」"
+platform = "windows, linux"
 
 [[items]]
 key = "ui.labels.caps_lock"
@@ -3528,7 +3521,7 @@ section = "工具栏"
 type = "string"
 label = "大写锁定主字"
 hint = "大写锁定打开时显示的字；最多 2 个字符，留空用「A」"
-platform = "windows"
+platform = "windows, linux"
 
 # 宿主行 = 角标总开关下拉 + 「设置…」按钮，尺寸与不透明度进分组对话框；
 # 规则表另起一行（它自己就是个带增删的列表，塞不进分组对话框）。

@@ -37,13 +37,15 @@ xdg-mime 走 ktraderclient 的查询分支、snap / flatpak 沙箱里的浏览�
 
 | 设置项 | Linux 上为何无落点 |
 |---|---|
-| `ui.toolbar.visible`、`keys.toggle_toolbar` | addon 没有工具栏也没有托盘指示器，服务推的状态帧（`CMD_MODE_STATUS`）不接 |
-| `keys.softkeyboard` | 不做软键盘面板 |
 | `keys.activate_ime` | 协调器的处理臂只在 macOS 编译，Linux 落 `Unhandled hotkey`；切换输入法归 Fcitx5 |
 | `system.dota2_compat*` | 落点是 Windows 注册表 |
 | 热键对话框的「全局」勾选 | 服务在 Linux 不注册全局热键（`keys.global_hotkeys` 原值照常保留写回） |
 
-仅 Windows 的项（工具栏细项、`input.capslock.cancel_on_mode_switch`、`stats.track_english`、
+工具栏（含 `ui.toolbar.visible`、`keys.toggle_toolbar`）与软键盘（`keys.softkeyboard`）在 Linux 上与
+Windows 一致，对应设置项全部开放；`ui.toolbar.hide_in_fullscreen` 在 X11 精确生效，Wayland 下
+拿不到前台全屏状态，只是工具栏放在全屏应用之下，属近似效果。
+
+仅 Windows 的项（`ui.toolbar.fullscreen_watch`——Windows 的定时轮询开关、`input.capslock.cancel_on_mode_switch`、`stats.track_english`、
 TSF 日志、语言栏角标等）在 Linux 上同样隐藏。**应用兼容性（按应用配置）保留**：服务按 addon
 报上来的程序名（Fcitx5 `InputContext::program()`）匹配规则，与 macOS 按 bundle id 同一机制。
 

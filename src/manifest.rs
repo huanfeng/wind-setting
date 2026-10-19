@@ -6742,22 +6742,17 @@ mod tests {
     #[test]
     fn windows_only_items_hidden_elsewhere() {
         // 这些配置只在 Windows 有落点，macOS 与 Linux 都藏。逐项理由：
-        //   toolbar.*         macOS 的菜单栏指示器不是浮动窗口，无从隐藏/排列/自动淡出；
-        //                     Linux 连指示器都没有（见 `toolbar_indicator_items_hidden_on_linux`）；
+        //   toolbar.fullscreen_watch  Windows 靠定时轮询前台是否全屏；Linux X11 由 addon 监听
+        //                     窗口属性事件、Wayland 拿不到前台状态，都没有「轮询」可开关；
         //   capslock.cancel_* 取消大写靠合成 CapsLock 敲击，而 macOS 的锁定态由 HID 层
         //                     维护，CGEvent 改不动（要走 IOHIDSetModifierLockState）；
-        //                     Linux 的 addon 没有按键合成通路（AGENTS.md 差距表）；
+        //                     Linux 的按键合成是命令直通车的 forwardKey，不带锁定键状态，
+        //                     同样做不了「取消大写」；
         //   stats.track_english  英文输入由 Windows 侧 TSF DLL 经 CMD_INPUT_STATS 上报，
         //                     macOS 的 `.app` 与 Linux 的 addon 都没有对应采集点。
         let m = Manifest::from_embedded();
         for k in [
-            "ui.toolbar.hide_in_fullscreen",
             "ui.toolbar.fullscreen_watch",
-            "ui.toolbar.auto_hide",
-            "ui.toolbar.auto_hide_delay",
-            "ui.toolbar.auto_hide_hover_reveal",
-            "ui.toolbar.hide_in_english",
-            "ui.toolbar.vertical",
             "input.capslock.cancel_on_mode_switch",
             "input.capslock.mode_after_cancel",
             "stats.track_english",
@@ -6769,9 +6764,6 @@ mod tests {
 
     /// Windows 与 macOS 都有落点、只有 Linux 没有的项。
     ///
-    /// - `ui.toolbar.visible` / `keys.toggle_toolbar`：mac 上控制菜单栏指示器；Linux 的
-    ///   addon 不接状态帧（CMD_MODE_STATUS），没有任何常驻状态显示；
-    /// - `keys.softkeyboard`：mac 有 AppKit 软键盘面板，Linux 不做软键盘；
     /// - `keys.activate_ime`：协调器的处理臂只在 macOS 编译，Linux 落 `Unhandled hotkey`；
     /// - `system.dota2_compat*`：落点是 Windows 注册表。
     ///
@@ -6786,7 +6778,9 @@ mod tests {
             |g: &str| -> Vec<String> { m.sections_of(g).into_iter().map(|(s, _)| s).collect() };
         let linux = cfg!(target_os = "linux");
         assert_eq!(names("advanced").contains(&"游戏兼容".to_string()), !linux);
-        assert_eq!(names("ui").contains(&"工具栏".to_string()), !linux);
+        // 工具栏节：Windows 与 Linux 有浮动工具栏，macOS 的 ui.toolbar.visible 仍在节内，
+        // 所以三个平台都在。
+        assert!(names("ui").contains(&"工具栏".to_string()));
         // 部分隐藏：「中英文切换」里 capslock.cancel_on_mode_switch 仅 Windows，分区仍在、
         // 被隐藏的 key 仍在表里（行级跳过是 section_rows 的事）。
         let keys = m
@@ -6801,13 +6795,47 @@ mod tests {
         );
     }
 
+    /// Linux 有浮动工具栏与软键盘：这批项在三个平台都可见；仅 Windows 的细项见
+    /// `windows_only_items_hidden_elsewhere`，仅 Windows+Linux 的细项在 macOS 隐藏
+    /// （菜单栏指示器无从排列/淡出）。
     #[test]
-    fn toolbar_indicator_items_hidden_on_linux() {
+    fn linux_shows_toolbar_section() {
         let m = Manifest::from_embedded();
-        for k in [
+        let all = [
             "ui.toolbar.visible",
             "keys.toggle_toolbar",
             "keys.softkeyboard",
+        ];
+        let not_mac = [
+            "ui.toolbar.hide_in_fullscreen",
+            "ui.toolbar.hide_in_english",
+            "ui.toolbar.vertical",
+            "ui.toolbar.items",
+            "ui.toolbar.auto_hide",
+            "ui.toolbar.auto_hide_delay",
+            "ui.toolbar.auto_hide_hover_reveal",
+            "ui.labels.english",
+            "ui.labels.caps_lock",
+        ];
+        for k in all {
+            let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
+            assert!(!item.hidden, "{k} 应在所有平台可见");
+        }
+        for k in not_mac {
+            let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
+            assert_eq!(
+                item.hidden,
+                cfg!(target_os = "macos"),
+                "{k} 应在 Windows 与 Linux 可见、macOS 隐藏"
+            );
+        }
+    }
+
+    /// 激活输入法热键与 DOTA2 兼容在 Linux 上没有对应能力，只在 Linux 隐藏。
+    #[test]
+    fn activate_ime_and_dota2_items_hidden_on_linux() {
+        let m = Manifest::from_embedded();
+        for k in [
             "keys.activate_ime",
             "system.dota2_compat",
             "system.dota2_compat_name",
