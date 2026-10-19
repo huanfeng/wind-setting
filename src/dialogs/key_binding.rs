@@ -630,12 +630,19 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
             .collect(),
         ),
         VerbCategory::new("以词定字", ord("select_char:", 4)),
+        // 「上屏编码」恒上屏编码，不跟「回车键」那项设置——那是回车这个键的配置。
         VerbCategory::new(
             "编辑",
-            vec![Verb {
-                value: "cancel".into(),
-                label: "放弃当前输入（同 Esc）".into(),
-            }],
+            vec![
+                Verb {
+                    value: "commit_code".into(),
+                    label: "上屏编码".into(),
+                },
+                Verb {
+                    value: "cancel".into(),
+                    label: "放弃当前输入（同 Esc）".into(),
+                },
+            ],
         ),
         // 辅助码同时在**两张表**里：`key_actions` 那份是既有的（双拼出厂
         // `backtick = "aux_code"`），本表这份让 Tab / PageDown / 方向键那一批也绑得上——
@@ -2064,6 +2071,7 @@ mod tests {
                     v.value.as_str(),
                     "none"
                         | "commit_highlighted"
+                        | "commit_code"
                         | "page_prev"
                         | "page_next"
                         | "highlight_up"

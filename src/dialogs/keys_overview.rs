@@ -324,7 +324,7 @@ mod tests {
 
     /// 命令直通两张表都能绑，都要翻成「运行命令：<表达式>」——它不在任何功能表里
     /// （表达式是用户写的），只查表的话会落到「显示原值」兜底上。
-    /// `commit_highlighted` 是会话态新动词，同样要有中文名。
+    /// `commit_highlighted` / `commit_code` 是会话态新动词，同样要有中文名。
     #[test]
     fn command_and_commit_highlighted_are_named() {
         let o = KeysOverview::default();
@@ -333,6 +333,7 @@ mod tests {
                 { "key": "ctrl+alt+c", "table": "lead", "action": "command:proc.run(\"charmap.exe\")", "from": "global" },
                 { "key": "tab", "table": "session", "action": "command:web.search(\"x\")", "from": "schema" },
                 { "key": "semicolon", "table": "session", "action": "commit_highlighted", "from": "global" },
+                { "key": "lctrl", "table": "session", "action": "commit_code", "from": "global" },
             ]}),
             &lead_verbs(),
         );
@@ -347,6 +348,7 @@ mod tests {
         assert_eq!(label("ctrl+alt+c"), "运行命令：proc.run(\"charmap.exe\")");
         assert_eq!(label("tab"), "运行命令：web.search(\"x\")");
         assert_eq!(label("semicolon"), "上屏当前高亮候选（同空格）");
+        assert_eq!(label("lctrl"), "上屏编码");
     }
 
     /// ★★ 同键两行（全局生效 + 方案层组合键不生效）都要留下，且保持 core 给的先后：
