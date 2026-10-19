@@ -489,6 +489,16 @@ pub struct AppState {
     pub theme_picker_url: Signal<String>,
     /// 「导入主题」对话框里粘贴的主题原文。
     pub theme_picker_text: Signal<String>,
+    /// 主题链接下载空闲（`true` = 可发起）。两个主题导入对话框共用，同一时刻只会开一个。
+    /// 下载中按钮置灰：慢网下用户以为没点着、反复点，会排出一串重复导入。
+    pub theme_download_idle: Signal<bool>,
+    /// 在途的主题下载任务号，关框 / 换新请求时取消用。
+    theme_download_task: Cell<Option<crate::net_task::TaskId>>,
+    /// 在途的协议方案包下载任务号；非空时拒绝再起一个（方案包最大 64 MB，不叠着下）。
+    schema_download_task: Cell<Option<crate::net_task::TaskId>>,
+    /// 后台网络任务（HTTP 下载）。`main()` 在 App 构建期接上 channel。
+    /// `Rc`：channel 回调要在放掉 `AppState` 借用之后再跑续体，见 `main` 里的注册处。
+    pub net: Rc<crate::net_task::NetTasks>,
     /// 当前 Tab 索引。
     pub tab: Signal<usize>,
     /// 全局搜索状态（索引 + 查询 + 结果 + 浮层开合）。
@@ -999,6 +1009,10 @@ impl AppState {
             theme_picker_visible: signal(false),
             theme_picker_url: signal(String::new()),
             theme_picker_text: signal(String::new()),
+            theme_download_idle: signal(true),
+            theme_download_task: Cell::new(None),
+            schema_download_task: Cell::new(None),
+            net: Rc::new(crate::net_task::NetTasks::default()),
             tab: signal(0),
             // 搜索索引在上面构建：清单是内嵌的、启动即就位，不必等 RPC。
             search,
@@ -1889,6 +1903,87 @@ impl AppState {
     /// 瞬时操作失败反馈：走全局 feedback/toast。
     pub fn notify_err(&self, msg: impl Into<String>) {
         self.feedback.set(Some((ToastKind::Error, msg.into())));
+    }
+
+    /// 后台下载主题链接，**不阻塞 UI**：点击立即返回，下载完成后在 UI 线程调 `on_text`。
+    ///
+    /// 对话框在下载期间被关掉（含 ESC）时结果直接丢弃——那是用户改了主意，不该再弹覆盖
+    /// 确认或错误 toast。取消由各对话框挂的 `reactive_effect` 调 [`Self::cancel_theme_download`]。
+    pub fn start_theme_download(
+        app: &Rc<RefCell<AppState>>,
+        url: String,
+        dialog_visible: Signal<bool>,
+        on_text: impl FnOnce(&Rc<RefCell<AppState>>, String) + 'static,
+    ) {
+        let st = app.borrow();
+        if !st.theme_download_idle.get() {
+            return;
+        }
+        st.feedback
+            .set(Some((ToastKind::Info, "正在下载主题…".to_string())));
+        let net = st.net.clone();
+        let app_done = app.clone();
+        let task = net.spawn(
+            move |cancel| crate::theme_import::download_https_text(&url, cancel),
+            move |res| {
+                {
+                    let st = app_done.borrow();
+                    st.theme_download_task.set(None);
+                    st.theme_download_idle.set(true);
+                }
+                if !dialog_visible.get() {
+                    return;
+                }
+                match res {
+                    Ok(text) => on_text(&app_done, text),
+                    Err(e) => app_done.borrow().notify_err(e.user_message()),
+                }
+            },
+        );
+        st.theme_download_task.set(Some(task));
+        st.theme_download_idle.set(false);
+    }
+
+    /// 取消在途的主题下载（对话框关闭时调）。没有在途任务时无副作用。
+    pub fn cancel_theme_download(&self) {
+        if let Some(id) = self.theme_download_task.take() {
+            self.net.cancel(id);
+        }
+        self.theme_download_idle.set(true);
+    }
+
+    /// 后台下载协议链接带来的方案包并让 core 预览，完成后在 UI 线程弹导入确认框。
+    ///
+    /// 已有一个在下时拒绝新的——64 MB 的包叠着下既占带宽又让确认框次序错乱。
+    pub fn start_schema_download(app: &Rc<RefCell<AppState>>, url: String) {
+        let st = app.borrow();
+        if st.schema_download_task.get().is_some() {
+            st.notify_err("上一个方案包还在下载，请稍候再试");
+            return;
+        }
+        // 非官方域在发请求之前就拒掉：不必起线程，反馈也是即时的。
+        if let Err(e) = crate::schema_url_import::check_official_url(&url) {
+            st.notify_err(e);
+            return;
+        }
+        st.feedback
+            .set(Some((ToastKind::Info, "正在下载方案包…".to_string())));
+        let net = st.net.clone();
+        let app_done = app.clone();
+        let task = net.spawn(
+            move |cancel| crate::schema_url_import::download_and_preview(&url, cancel),
+            move |res| {
+                let st = app_done.borrow();
+                st.schema_download_task.set(None);
+                match res {
+                    Ok((pkg, preview)) => {
+                        st.schema_mgr.open_downloaded_import_confirm(pkg, &preview)
+                    }
+                    Err(e) => st.notify_err(e),
+                }
+            },
+        );
+        st.schema_download_task.set(Some(task));
     }
 
     pub fn set_pending_theme_import(&self, url: String, name: String) {
@@ -4571,6 +4666,87 @@ mod tests {
             ),
             "来源要原样暂存下来供 force 重推"
         );
+    }
+
+    /// 主题下载走后台：点击只置「下载中」，结果回 UI 线程才进续体；失败走 toast 并恢复空闲。
+    /// 用 http:// 地址让 `download_https_text` 在发请求前就失败，测试不需要网络。
+    #[test]
+    fn theme_download_is_async_and_failure_restores_idle() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let queue = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let q = queue.clone();
+        st.borrow().net.set_sink(move |m| q.lock().unwrap().push(m));
+        let visible = signal(true);
+
+        AppState::start_theme_download(
+            &st,
+            "http://example.com/a.toml".to_string(),
+            visible,
+            |_, _| panic!("下载失败不该进续体"),
+        );
+        assert!(!st.borrow().theme_download_idle.get(), "下载中按钮应置灰");
+
+        let msg = loop {
+            if let Some(m) = queue.lock().unwrap().pop() {
+                break m;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let net = st.borrow().net.clone();
+        net.on_done(msg);
+
+        let s = st.borrow();
+        assert!(s.theme_download_idle.get(), "完成后恢复空闲");
+        let (kind, _) = s.feedback.get().expect("应有失败反馈");
+        assert_eq!(kind, ToastKind::Error);
+    }
+
+    /// 下载期间对话框被关（含 ESC）：结果直接丢弃，不弹错误也不进续体。
+    #[test]
+    fn theme_download_result_is_dropped_when_dialog_closed() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let queue = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let q = queue.clone();
+        st.borrow().net.set_sink(move |m| q.lock().unwrap().push(m));
+        let visible = signal(true);
+
+        AppState::start_theme_download(
+            &st,
+            "http://example.com/a.toml".to_string(),
+            visible,
+            |_, _| panic!("对话框已关，不该进续体"),
+        );
+        st.borrow().feedback.set(None);
+        visible.set(false);
+
+        let msg = loop {
+            if let Some(m) = queue.lock().unwrap().pop() {
+                break m;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let net = st.borrow().net.clone();
+        net.on_done(msg);
+
+        let s = st.borrow();
+        assert!(s.theme_download_idle.get());
+        assert!(s.feedback.get().is_none(), "关框后不该再弹错误");
+    }
+
+    /// 关框取消：续体被摘掉，按钮恢复可用。
+    #[test]
+    fn cancel_theme_download_restores_idle() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        st.borrow().net.set_sink(|_| {});
+        AppState::start_theme_download(
+            &st,
+            "http://example.com/a.toml".to_string(),
+            signal(true),
+            |_, _| panic!("已取消"),
+        );
+        assert!(!st.borrow().theme_download_idle.get());
+        st.borrow().cancel_theme_download();
+        assert!(st.borrow().theme_download_idle.get());
     }
 
     /// 没撞名时不该弹任何框，结论直接交回调用方。

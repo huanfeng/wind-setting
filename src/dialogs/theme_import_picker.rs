@@ -66,7 +66,9 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
         pkg: ThemePkgConfirmSignals::of(&state),
     };
     let (visible, url, text) = (sig.visible, sig.url, sig.text);
+    let download_idle = state.theme_download_idle;
     drop(state);
+    let s_cancel = app_state.clone();
 
     let (s_file, s_url, s_text) = (app_state.clone(), app_state.clone(), app_state.clone());
 
@@ -131,28 +133,25 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                         .width_match()
                         .weight(1.0),
                 )
-                .child(Element::button("下载并导入").small().on_click(move |_| {
-                    let u = url.get();
-                    if let Err(e) = crate::theme_import::validate_https_url(&u) {
-                        s_url.borrow().notify_err(e.user_message());
-                        return;
-                    }
-                    // ⚠️ 下载在 **UI 线程上同步跑**（ureq 10s 超时 + 最多 3 次重定向），
-                    // 期间窗口不重绘、不响应，Windows 会给它贴「无响应」。至少先说一声,
-                    // 否则用户以为没点着、反复点，事件排队后可能连发几次导入。
-                    // 彻底的做法是丢工作线程、完成后经 `main.rs` 的 ui_tx 回 UI —— 那是
-                    // 更大的一笔，本仓既有的 `theme_import_dialog` 也是同样的同步写法。
-                    s_url
-                        .borrow()
-                        .feedback
-                        .set(Some((ToastKind::Info, "正在下载主题…".to_string())));
-                    // 下载与导入分两步：撞名时要拿**已下载的原文**去弹覆盖确认，
-                    // 串成一条链的话 text 就丢了，确认之后只能重下一次。
-                    match crate::theme_import::download_https_text(&u) {
-                        Ok(t) => finish(&s_url, ThemeSource::Text(t), sig),
-                        Err(e) => s_url.borrow().notify_err(e.user_message()),
-                    }
-                })),
+                .child(
+                    Element::button("下载并导入")
+                        .small()
+                        // 下载中置灰：慢网下用户以为没点着、反复点，会排出一串重复导入。
+                        .enabled_signal(download_idle)
+                        .on_click(move |_| {
+                            let u = url.get();
+                            if let Err(e) = crate::theme_import::validate_https_url(&u) {
+                                s_url.borrow().notify_err(e.user_message());
+                                return;
+                            }
+                            // 下载在后台线程跑，点击立即返回。下载与导入分两步：撞名时要拿
+                            // **已下载的原文**去弹覆盖确认，串成一条链的话 text 就丢了，
+                            // 确认之后只能重下一次。
+                            AppState::start_theme_download(&s_url, u, visible, move |app, t| {
+                                finish(app, ThemeSource::Text(t), sig)
+                            });
+                        }),
+                ),
         )
         .child(Element::divider())
         // ── 3. 粘贴原文 ──────────────────────────────────────────
@@ -203,7 +202,17 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                         .outline_soft()
                         .on_click(move |_| close(url, text, visible)),
                 ),
-        );
+        )
+        // 框一收（关闭按钮、导入成功、转确认框、ESC 都算）就取消在途下载。挂在可见性信号
+        // 上而不是关闭按钮上，理由同 `close` 的注释：能让这个框消失的路不止一条。
+        .child(crate::pages::dict::reactive::reactive_effect(
+            move || visible.version(),
+            move || {
+                if !visible.get() {
+                    s_cancel.borrow().cancel_theme_download();
+                }
+            },
+        ));
 
     Element::dialog(visible, frame)
 }

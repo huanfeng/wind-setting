@@ -8,13 +8,19 @@
 //! 这里关掉自动跟随，每一跳都重新过 [`check_official_url`]，读正文前最终地址必在官方域。
 
 use std::hash::{BuildHasher, Hasher};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+
+use crate::net_task::{ReadError, read_limited};
 
 /// 方案包体积上限（zip 内含词库，比主题大得多）。
 const MAX_SCHEMA_BYTES: usize = 64 * 1024 * 1024;
-/// 下载超时。
-const DOWNLOAD_TIMEOUT_SECS: u64 = 30;
+/// 连接 / 单次读 / 整体三道超时。整体放得宽（64 MB 在慢网下 30s 常常不够），卡死的
+/// 连接由前两道更快兜住；下载在工作线程里跑，不再卡界面。
+const CONNECT_TIMEOUT_SECS: u64 = 8;
+const READ_TIMEOUT_SECS: u64 = 15;
+const TOTAL_TIMEOUT_SECS: u64 = 180;
 /// 最多跟随的重定向跳数（与原先交给 ureq 时的 `.redirects(3)` 同额）。
 const MAX_REDIRECTS: usize = 3;
 /// 下载落盘文件名前缀；清理陈旧残留只认这个前缀。
@@ -62,7 +68,7 @@ pub(crate) enum Fetched {
 }
 
 /// 第一跳的校验：https + 官方域。
-fn check_official_url(url: &str) -> Result<(), String> {
+pub(crate) fn check_official_url(url: &str) -> Result<(), String> {
     let host = https_host_of(url).ok_or_else(|| "方案包链接必须是 https://".to_string())?;
     if !is_official_host(&host) {
         return Err("方案包链接必须来自 windinput.com 官方域名".to_string());
@@ -114,7 +120,7 @@ pub(crate) fn fetch_official(
 }
 
 /// 真实的一次往返：不自动跟随重定向，且只走 https（`https_only` 是兜底，逐跳校验已拦）。
-fn http_fetch(agent: &ureq::Agent, url: &str) -> Result<Fetched, String> {
+fn http_fetch(agent: &ureq::Agent, url: &str, cancel: &AtomicBool) -> Result<Fetched, String> {
     let response = agent
         .get(url)
         .call()
@@ -125,14 +131,12 @@ fn http_fetch(agent: &ureq::Agent, url: &str) -> Result<Fetched, String> {
             .map(|l| Fetched::Redirect(l.to_string()))
             .ok_or_else(|| format!("下载方案包失败：{} 重定向缺少地址", response.status()));
     }
-    let mut reader = response.into_reader().take((MAX_SCHEMA_BYTES + 1) as u64);
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("读取方案包响应失败：{e}"))?;
-    if bytes.len() > MAX_SCHEMA_BYTES {
-        return Err("方案包超过 64 MB 限制".to_string());
-    }
+    let bytes =
+        read_limited(response.into_reader(), MAX_SCHEMA_BYTES, cancel).map_err(|e| match e {
+            ReadError::TooLarge => "方案包超过 64 MB 限制".to_string(),
+            ReadError::Cancelled => "已取消下载".to_string(),
+            ReadError::Io(m) => format!("读取方案包响应失败：{m}"),
+        })?;
     Ok(Fetched::Body(bytes))
 }
 
@@ -236,19 +240,40 @@ pub(crate) fn save_package(dir: &Path, bytes: &[u8]) -> Result<DownloadedPackage
 /// 生产用 agent：不自动跟随重定向（交给 [`fetch_official`] 逐跳校验），只走 https。
 fn download_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .timeout_connect(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .timeout_read(std::time::Duration::from_secs(READ_TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(TOTAL_TIMEOUT_SECS))
         .redirects(0)
         .https_only(true)
         .build()
 }
 
 /// 校验官方域（每一跳）并下载方案包到私有临时文件，返回 drop 即删的句柄。
-pub fn download_schema_package(url: &str) -> Result<DownloadedPackage, String> {
+/// **阻塞**，只能在工作线程里调（见 [`crate::net_task`]）。
+pub fn download_schema_package(
+    url: &str,
+    cancel: &AtomicBool,
+) -> Result<DownloadedPackage, String> {
     let agent = download_agent();
-    let bytes = fetch_official(url, |u| http_fetch(&agent, u))?;
+    let bytes = fetch_official(url, |u| http_fetch(&agent, u, cancel))?;
     let dir = download_dir()?;
     purge_stale(&dir);
     save_package(&dir, &bytes)
+}
+
+/// 下载并让 core 预览，一并在工作线程里做完——下载完紧跟的 `scheme.previewImport`
+/// 最长也要等 5s，放回 UI 线程等于把卡顿只挪了个位置。预览失败时包在这里 drop 即删。
+pub fn download_and_preview(
+    url: &str,
+    cancel: &AtomicBool,
+) -> Result<(DownloadedPackage, serde_json::Value), String> {
+    let pkg = download_schema_package(url, cancel)?;
+    let preview = crate::rpc::call_core(
+        "scheme.previewImport",
+        &serde_json::json!({ "path": pkg.path().to_string_lossy() }),
+    )
+    .map_err(|e| format!("读取方案包失败：{e}"))?;
+    Ok((pkg, preview))
 }
 
 #[cfg(test)]
@@ -405,17 +430,36 @@ mod tests {
             }
         });
         let agent = ureq::AgentBuilder::new().redirects(0).build();
-        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/r")).unwrap() {
+        match http_fetch(
+            &agent,
+            &format!("http://127.0.0.1:{port}/r"),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        {
             Fetched::Redirect(l) => assert_eq!(l, "https://evil.com/x"),
             Fetched::Body(_) => panic!("不应跟随重定向"),
         }
-        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/a.zip")).unwrap() {
+        match http_fetch(
+            &agent,
+            &format!("http://127.0.0.1:{port}/a.zip"),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        {
             Fetched::Body(b) => assert_eq!(b, b"PK"),
             Fetched::Redirect(_) => panic!("应读到正文"),
         }
         worker.join().unwrap();
 
-        assert!(http_fetch(&download_agent(), &format!("http://127.0.0.1:{port}/a.zip")).is_err());
+        assert!(
+            http_fetch(
+                &download_agent(),
+                &format!("http://127.0.0.1:{port}/a.zip"),
+                &AtomicBool::new(false)
+            )
+            .is_err()
+        );
     }
 
     fn scratch_dir(tag: &str) -> PathBuf {
@@ -483,9 +527,14 @@ mod tests {
     /// 白名单校验发生在任何网络请求之前——非官方域直接拒绝，不发请求。
     #[test]
     fn download_rejects_non_official_before_request() {
-        let err = download_schema_package("https://evil-windinput.com/pkg.zip").unwrap_err();
+        let err = download_schema_package(
+            "https://evil-windinput.com/pkg.zip",
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
         assert!(err.contains("官方域名"), "{err}");
-        let err = download_schema_package("http://windinput.com/pkg.zip").unwrap_err();
+        let err = download_schema_package("http://windinput.com/pkg.zip", &AtomicBool::new(false))
+            .unwrap_err();
         assert!(err.contains("https"), "{err}");
     }
 }

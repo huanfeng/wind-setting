@@ -1,8 +1,10 @@
 //! 主题 TOML 导入编排：setting 处理外部输入，core 处理主题语义。
 
 use serde_json::{Value, json};
-use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+
+use crate::net_task::{ReadError, read_limited};
 
 /// 单份主题原文的上限（2 MiB）。下载与粘贴两条路共用——只闸一条的话，另一条粘错东西
 /// 要等 core 才报，而它说的是 TOML 解析失败，指不到「你粘的东西太大了」。
@@ -238,25 +240,32 @@ pub fn validate_https_url(url: &str) -> Result<(), ThemeImportError> {
     }
 }
 
-pub fn download_https_text(url: &str) -> Result<String, ThemeImportError> {
+/// 连接 / 单次读 / 整体三道超时：慢但持续有数据的下载不被整体 10s 误杀，卡死的连接
+/// 也不必等满整体超时才失败。
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 下载 https 文本。**阻塞**，只能在工作线程里调（见 [`crate::net_task`]）；`cancel` 置位后
+/// 读取循环在下一个分块停下。
+pub fn download_https_text(url: &str, cancel: &AtomicBool) -> Result<String, ThemeImportError> {
     validate_https_url(url)?;
     let response = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .timeout(TOTAL_TIMEOUT)
         .redirects(3)
         .build()
         .get(url)
         .call()
         .map_err(|e| ThemeImportError::Download(format!("下载主题失败：{e}")))?;
-    let mut reader = response.into_reader().take((MAX_THEME_BYTES + 1) as u64);
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|e| ThemeImportError::Download(format!("读取主题响应失败：{e}")))?;
-    if bytes.len() > MAX_THEME_BYTES {
-        return Err(ThemeImportError::Download(
-            "主题文件超过 2 MiB 限制".to_string(),
-        ));
-    }
+    let bytes = read_limited(response.into_reader(), MAX_THEME_BYTES, cancel).map_err(|e| {
+        ThemeImportError::Download(match e {
+            ReadError::TooLarge => "主题文件超过 2 MiB 限制".to_string(),
+            ReadError::Cancelled => "已取消下载".to_string(),
+            ReadError::Io(m) => format!("读取主题响应失败：{m}"),
+        })
+    })?;
     String::from_utf8(bytes)
         .map_err(|_| ThemeImportError::Download("主题文件不是有效 UTF-8 文本".to_string()))
 }
@@ -416,7 +425,7 @@ mod tests {
     #[test]
     fn download_https_text_rejects_non_https_before_request() {
         assert!(matches!(
-            download_https_text("http://theme.windinput.com/a.toml"),
+            download_https_text("http://theme.windinput.com/a.toml", &AtomicBool::new(false)),
             Err(ThemeImportError::InvalidUrl(_))
         ));
     }

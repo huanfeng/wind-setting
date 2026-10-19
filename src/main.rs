@@ -33,6 +33,7 @@ mod memstat;
 mod mix_fields;
 mod mix_members;
 mod mode;
+mod net_task;
 mod open_external;
 mod pages;
 mod protocol;
@@ -549,6 +550,15 @@ fn main() {
     });
     app_state.borrow().set_update_tx(update_tx);
 
+    // 后台网络任务通道：HTTP 下载在工作线程跑，续体经此回 UI 线程执行。续体要借
+    // `AppState`，所以先把 `NetTasks` 的 Rc 克隆出来、放掉 `AppState` 的借用再调。
+    let net = app_state.borrow().net.clone();
+    let net_cb = net.clone();
+    let net_tx = app.channel::<net_task::NetDone>(move |_ctx, done| net_cb.on_done(done));
+    net.set_sink(move |done| {
+        let _ = net_tx.send(done);
+    });
+
     // 内存诊断通道：`system.memoryStats` 在后台线程取（core 不在线时要等管道超时），
     // 结果经此回 UI 线程写摘要 / 对话框（见 `pages::memory`）。
     let memory_state = app_state.clone();
@@ -789,21 +799,11 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
             } else if req.kind == "schema" {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
-                // 白名单逐跳校验（域名不对不发请求，重定向出官方域即拒）。临时文件的
-                // 生命周期跟着句柄走：确认对话框是异步的，句柄交给对话框，确认 / 取消后
-                // 随待导入项释放即删；预览失败时在这里 drop 即删（见 schema_url_import）。
-                match schema_url_import::download_schema_package(&req.url) {
-                    Ok(pkg) => match rpc::call_core(
-                        "scheme.previewImport",
-                        &serde_json::json!({ "path": pkg.path().to_string_lossy() }),
-                    ) {
-                        Ok(v) => st.schema_mgr.open_downloaded_import_confirm(pkg, &v),
-                        Err(e) => st
-                            .feedback
-                            .set(Some((ToastKind::Error, format!("读取方案包失败：{e}")))),
-                    },
-                    Err(e) => st.feedback.set(Some((ToastKind::Error, e))),
-                }
+                // 白名单逐跳校验（域名不对不发请求，重定向出官方域即拒）。下载与预览在后台
+                // 线程跑，完成后弹确认框。临时文件的生命周期跟着句柄走：确认对话框是异步的，
+                // 句柄交给对话框，确认 / 取消后随待导入项释放即删；预览失败时在后台线程里
+                // drop 即删（见 schema_url_import）。
+                state::AppState::start_schema_download(state, req.url);
             } else {
                 st.clear_pending_theme_import();
                 st.theme_import_dialog_visible.set(false);
