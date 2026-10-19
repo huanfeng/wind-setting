@@ -20,10 +20,10 @@ pub mod phrase_import;
 pub mod stats;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
-use crate::manifest::{scheme_config_section, section_row_items, section_rows};
+use crate::manifest::{scheme_config_section, section_rows};
 use crate::state::AppState;
 use crate::subnav::SubNav;
-use crate::widgets::{page, section, section_items, setting_row};
+use crate::widgets::{page, section, setting_row};
 
 /// 一个 Tab 的三样东西：标题、页面内容、以及这一页的二级导航（见 [`crate::subnav`]）。
 pub struct TabDef {
@@ -96,13 +96,7 @@ fn manifest_sections(state: &AppState, group: &str, nav: &SubNav) -> Vec<Element
         .manifest
         .sections_of(group)
         .into_iter()
-        .map(|(sec, keys)| {
-            nav.wrap(
-                &sec,
-                0,
-                section_items(&sec, section_row_items(state, &keys)),
-            )
-        })
+        .map(|(sec, keys)| nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))))
         .collect()
 }
 
@@ -402,11 +396,7 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
 fn input_page(state: &AppState, nav: &SubNav) -> Element {
     let mut secs = manifest_sections(state, "general", nav);
     for (sec, keys) in state.manifest.sections_of("input") {
-        secs.push(nav.wrap(
-            &sec,
-            0,
-            section_items(&sec, section_row_items(state, &keys)),
-        ));
+        secs.push(nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))));
     }
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
@@ -632,11 +622,7 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
         ("临时英文", "临时英文"),
     ] {
         if let Some((_, keys)) = schema_sections.iter().find(|(s, _)| s == sec) {
-            secs.push(nav.wrap(
-                nav_label,
-                0,
-                section_items(sec, section_row_items(state, keys)),
-            ));
+            secs.push(nav.wrap(nav_label, 0, section(sec, section_rows(state, keys))));
         }
     }
 

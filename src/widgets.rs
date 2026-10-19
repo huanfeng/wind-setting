@@ -41,44 +41,6 @@ pub fn look() -> crate::look::LookSignals {
         .unwrap_or_else(|| crate::look::LookSignals::new(crate::look::DEFAULT))
 }
 
-thread_local! {
-    /// 侧栏「普通 | 高级」的选择：`true` = 普通（shell::build 注册），同 `DARK_SIG`。
-    static TIER_BASIC: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
-}
-
-/// 注册「普通 | 高级」选择信号（shell::build 调用）。
-pub fn init_tier_basic(sig: Signal<bool>) {
-    TIER_BASIC.with(|c| c.set(Some(sig)));
-}
-
-/// 此刻是否按「普通」显示：侧栏切换要在界面细节里打开才算数——切换不显示时一律
-/// 按「高级」，免得用户切到「普通」后又关掉入口，从此看不到那些项、也找不到原因。
-pub fn tier_basic() -> bool {
-    let shown = look().0[crate::look::TIER_SWITCH].get() == crate::look::tier_switch::SHOW;
-    shown && TIER_BASIC.with(|c| c.get()).is_some_and(|s| s.get())
-}
-
-thread_local! {
-    /// 「普通」范围下会藏起的行的搜索锚点键。搜索跳到这些行时先切回「高级」，
-    /// 否则页面切了、行却是藏着的——不滚也不闪。
-    static TIER_ANCHORS: std::cell::RefCell<std::collections::HashSet<String>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
-}
-
-/// 登记一个会随「普通」范围藏起的行锚点（建行时调用）。
-pub fn note_tier_anchor(anchor: &str) {
-    TIER_ANCHORS.with(|s| s.borrow_mut().insert(anchor.to_string()));
-}
-
-/// 搜索要跳到 `anchor`：它在「普通」范围下藏着的话，切回「高级」让它露出来。
-pub fn reveal_tier_anchor(anchor: &str) {
-    if tier_basic() && TIER_ANCHORS.with(|s| s.borrow().contains(anchor)) {
-        if let Some(sig) = TIER_BASIC.with(|c| c.get()) {
-            sig.set(false);
-        }
-    }
-}
-
 /// 取明暗信号；未注册时返回恒亮信号（测试/独立构建兜底）。
 pub fn dark_sig() -> Signal<bool> {
     DARK_SIG.with(|c| c.get()).unwrap_or_else(|| signal(false))
@@ -742,9 +704,6 @@ pub fn card_with_attachments(
 #[allow(clippy::large_enum_variant)]
 pub enum CardItem {
     Row(Element),
-    /// 运行期会隐藏的行（如「普通」范围下藏起的 `tier = "advanced"` 项）。它前面那条
-    /// 分割线随它一起显隐，所在小标题下的行全藏时小标题也藏，见 [`card_items`]。
-    RowIf(Element, Rc<dyn Fn() -> bool>),
     Heading(String),
     /// 自管水平内边距与内部分割线的整块（可拖列表、动态列表之类）：卡片原样挂上，
     /// 不包 [`card_pad`]。块内的行要自己用 [`card_pad`] 包、行间用 [`row_divider`]，
@@ -758,7 +717,6 @@ impl CardItem {
     pub fn into_element(self) -> Element {
         match self {
             CardItem::Row(e) => padded(e),
-            CardItem::RowIf(e, f) => padded(e).visible_when(move || f()),
             CardItem::Heading(t) => card_heading(&t),
             CardItem::Bare(e) => e,
         }
@@ -821,81 +779,6 @@ pub fn list_heading_ext(
     }
     col.child(card_heading_with(title, trailing))
         .child(gap_divider(Gap::AroundHeading))
-}
-
-/// [`card_items`] 里有 [`CardItem::RowIf`] 时的排法：显隐在运行期才定，分割线与小标题
-/// 跟着现算——
-///
-/// - 第 i 项前的分割线：第 i 项可见、且它前面还有可见项时才画；画哪种看「第 i 项与它前面
-///   最近的可见项」里有没有小标题（同 [`divider_plan`]）；
-/// - 小标题：它下面（到下一个小标题之前）至少一行可见才显示。
-fn card_items_dynamic(mut body: Element, items: Vec<CardItem>, kinds: &[bool]) -> Element {
-    let n = items.len();
-    let mut row_vis: Vec<Option<Rc<dyn Fn() -> bool>>> = Vec::with_capacity(n);
-    for it in &items {
-        row_vis.push(match it {
-            CardItem::RowIf(_, f) => Some(f.clone()),
-            _ => None,
-        });
-    }
-    // 每项的可见性；小标题 = 它名下任一行可见。
-    let mut vis: Vec<Rc<dyn Fn() -> bool>> = Vec::with_capacity(n);
-    for i in 0..n {
-        if kinds[i] {
-            let end = (i + 1..n).find(|&j| kinds[j]).unwrap_or(n);
-            let under: Vec<Option<Rc<dyn Fn() -> bool>>> = row_vis[i + 1..end].to_vec();
-            vis.push(Rc::new(move || {
-                under.iter().any(|f| f.as_ref().is_none_or(|f| f()))
-            }));
-        } else {
-            vis.push(match &row_vis[i] {
-                Some(f) => f.clone(),
-                None => Rc::new(|| true),
-            });
-        }
-    }
-    let kinds: Rc<Vec<bool>> = Rc::new(kinds.to_vec());
-    let vis: Rc<Vec<Rc<dyn Fn() -> bool>>> = Rc::new(vis);
-    for (i, item) in items.into_iter().enumerate() {
-        if i > 0 {
-            // `None` = 不画；否则画哪一种。
-            let plan = {
-                let (kinds, vis) = (kinds.clone(), vis.clone());
-                Rc::new(move || -> Option<Gap> {
-                    if !vis[i]() {
-                        return None;
-                    }
-                    let prev = (0..i).rev().find(|&j| vis[j]())?;
-                    Some(if kinds[i] || kinds[prev] {
-                        Gap::AroundHeading
-                    } else {
-                        Gap::Between
-                    })
-                })
-            };
-            let (p1, p2) = (plan.clone(), plan);
-            body = body.child(
-                Element::col()
-                    .width_match()
-                    .child(
-                        gap_divider(Gap::Between).visible_when(move || p1() == Some(Gap::Between)),
-                    )
-                    .child(
-                        gap_divider(Gap::AroundHeading)
-                            .visible_when(move || p2() == Some(Gap::AroundHeading)),
-                    ),
-            );
-        }
-        let el = match item {
-            CardItem::Heading(t) => {
-                let v = vis[i].clone();
-                card_heading(&t).visible_when(move || v())
-            }
-            other => other.into_element(),
-        };
-        body = body.child(el);
-    }
-    body
 }
 
 /// 相邻两项之间的间隙类型。
@@ -1052,6 +935,7 @@ pub fn card_items(
         .iter()
         .map(|i| matches!(i, CardItem::Heading(_)))
         .collect();
+    let gaps = divider_plan(&kinds);
     let mut body = Element::col().width_match().padding_xy(0, 2);
     if let Some(t) = title_block {
         body = body.child(t);
@@ -1059,16 +943,11 @@ pub fn card_items(
     if let Some(h) = head {
         body = body.child(padded(h));
     }
-    if items.iter().any(|i| matches!(i, CardItem::RowIf(..))) {
-        body = card_items_dynamic(body, items, &kinds);
-    } else {
-        let gaps = divider_plan(&kinds);
-        for (i, item) in items.into_iter().enumerate() {
-            if i > 0 {
-                body = body.child(gap_divider(gaps[i - 1]));
-            }
-            body = body.child(item.into_element());
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            body = body.child(gap_divider(gaps[i - 1]));
         }
+        body = body.child(item.into_element());
     }
     if let Some(t) = tail {
         body = body.child(padded(t));

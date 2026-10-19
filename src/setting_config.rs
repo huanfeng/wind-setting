@@ -103,10 +103,6 @@ pub struct UiStateConfig {
     /// 非定制版或定制版没隐藏任何东西时，这个开关根本不出现。见 [`crate::custom_hide`]。
     #[serde(default)]
     pub show_custom_hidden_settings: bool,
-    /// 侧栏「普通 | 高级」选了「普通」：藏起清单里 `tier = "advanced"` 的行。
-    /// 只在界面细节打开了侧栏切换时才起作用（见 `widgets::tier_basic`）。
-    #[serde(default)]
-    pub tier_basic: bool,
     /// 界面细节试验选项，见 [`crate::look`]。全缺省时整节不落盘。
     #[serde(default, skip_serializing_if = "crate::look::LookConfig::is_default")]
     pub look: crate::look::LookConfig,
@@ -471,10 +467,10 @@ mod tests {
         assert!(!s.contains("look"), "全缺省不该落盘：\n{s}");
 
         let mut cfg = SettingConfig::default();
-        cfg.ui.look = crate::look::LookConfig::from_indices([0, 0, 1, 1, 0, 0, 1]);
+        cfg.ui.look = crate::look::LookConfig::from_indices([0, 0, 1, 1, 0, 0]);
         let s = toml::to_string(&cfg).expect("序列化");
         let back: SettingConfig = toml::from_str(&s).expect("反序列化");
-        assert_eq!(back.ui.look.indices(), [0, 0, 1, 1, 0, 0, 1], "{s}");
+        assert_eq!(back.ui.look.indices(), [0, 0, 1, 1, 0, 0], "{s}");
     }
 
     /// 手改 / 未来版本写入的未知取值不能让整个文件加载失败（明暗、升级偏好会跟着丢）。

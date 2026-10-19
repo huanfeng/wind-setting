@@ -101,9 +101,6 @@ pub struct MItem {
     /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
     /// 「跟随主题（值）」（见 [`follow_labels`]）。
     pub follow: Option<String>,
-    /// 显示层级：`"advanced"` = 侧栏切到「普通」时这一行藏起（见 `widgets::tier_basic`）。
-    /// 缺省 = 两种范围都显示。
-    pub tier: Option<String>,
     /// 依赖同卡其它项（`enabled_when`）时是否缩进成从属行。缺省缩进；`indent = false`
     /// 的照常置灰、不缩进——只有「主开关 + 紧随其后的几个细项」这种明确的从属关系才值得
     /// 缩进（如「记忆前次状态」下的三个初始状态），零散一两个依赖项缩进反而显得行没对齐。
@@ -236,7 +233,6 @@ impl Manifest {
                     opens_dialog: opt_str(it, "opens_dialog"),
                     subsection: opt_str(it, "subsection"),
                     follow: opt_str(it, "follow"),
-                    tier: opt_str(it, "tier"),
                     indent: it.get("indent").and_then(|x| x.as_bool()).unwrap_or(true),
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
@@ -486,55 +482,6 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
 /// 卡片上边框——与三张硬编码卡片上的 toast 槽是同一个形状（见
 /// `widgets::card_with_attachment`）。
 pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, Option<Element>) {
-    let (rows, head) = section_rows_inner(state, keys);
-    // 这条路的卡片按静态行排分割线；会隐藏的行在这里只能自己藏，分割线留着。
-    // 有 `tier` 项的分区走 [`section_row_items`]。
-    let rows = rows
-        .into_iter()
-        .map(|(row, tiered)| {
-            if tiered {
-                row.visible_when(|| !crate::widgets::tier_basic())
-            } else {
-                row
-            }
-        })
-        .collect();
-    (rows, head)
-}
-
-/// 同 [`section_rows`]，但产出卡片项：标了 `tier = "advanced"` 的行成为
-/// [`CardItem::RowIf`](crate::widgets::CardItem::RowIf)，侧栏切到「普通」时连同它前面的
-/// 分割线一起藏起，不必重建页面。
-pub fn section_row_items(state: &AppState, keys: &[String]) -> Vec<crate::widgets::CardItem> {
-    let (rows, head) = section_rows_inner(state, keys);
-    debug_assert!(
-        head.is_none(),
-        "该分区有可隐藏提示行，调用方须改用 section_rows_split"
-    );
-    rows.into_iter()
-        .map(|(row, tiered)| tier_item(row, tiered))
-        .collect()
-}
-
-/// 行 → 卡片项：`tiered` 的行在「普通」范围下藏起。
-fn tier_item(row: Element, tiered: bool) -> crate::widgets::CardItem {
-    if tiered {
-        crate::widgets::CardItem::RowIf(row, std::rc::Rc::new(|| !crate::widgets::tier_basic()))
-    } else {
-        crate::widgets::CardItem::Row(row)
-    }
-}
-
-/// 某项是否标了「普通」范围下藏起。
-fn is_tiered(item: &MItem) -> bool {
-    item.tier.as_deref() == Some("advanced")
-}
-
-/// 行与「是否随普通范围藏起」。见 [`section_rows_split`]。
-fn section_rows_inner(
-    state: &AppState,
-    keys: &[String],
-) -> (Vec<(Element, bool)>, Option<Element>) {
     let cfg = &state.current_config;
     let mut head: Option<Element> = None;
     let mut rows = Vec::with_capacity(keys.len());
@@ -544,9 +491,10 @@ fn section_rows_inner(
             // 锚点照包：这条分支触发的时机恰恰是「key 已经漂了」，那正是最希望搜索
             // 还能把人指过去的场合。不包的话它会成为 `section_rows` 里唯一产出
             // 无锚点行的出口。
-            rows.push((
-                crate::search::anchor::wrap(field(state, k), k.clone(), state.jump),
-                false,
+            rows.push(crate::search::anchor::wrap(
+                field(state, k),
+                k.clone(),
+                state.jump,
             ));
             continue;
         };
@@ -630,13 +578,7 @@ fn section_rows_inner(
         };
         // 搜索跳转锚点：每一行都盖一枚，键即清单 key（与 `search::index` 派生的
         // `JumpTarget::anchor` 一致）。它不吃点击、静止时不绘制。
-        if is_tiered(item) {
-            crate::widgets::note_tier_anchor(k);
-        }
-        rows.push((
-            crate::search::anchor::wrap(row, k.clone(), state.jump),
-            is_tiered(item),
-        ));
+        rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
     }
     (rows, head)
 }
@@ -3183,17 +3125,11 @@ pub fn scheme_config_section(
         };
         // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
         // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
-        if is_tiered(item) {
-            crate::widgets::note_tier_anchor(&crate::search::index::page_anchor(k));
-        }
-        items.push(tier_item(
-            if already_anchored {
-                row
-            } else {
-                crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
-            },
-            is_tiered(item),
-        ));
+        items.push(crate::widgets::CardItem::Row(if already_anchored {
+            row
+        } else {
+            crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
+        }));
     }
     if let Some(row) = fuzzy_row {
         items.push(row);
@@ -8486,22 +8422,6 @@ mod tests {
             "此为全局混输行为。",
             "PerRow 模式：逐行角标已经说过，不重复"
         );
-    }
-
-    /// 层级值域只认 `"advanced"`——写错了（如 `"expert"`）该项在两种范围下都显示，
-    /// 没有任何别的信号。
-    #[test]
-    fn tier_values_are_known() {
-        let m = Manifest::from_embedded();
-        let tagged: Vec<&String> = m
-            .order
-            .iter()
-            .filter(|k| m.get(k).unwrap().tier.is_some())
-            .collect();
-        assert!(!tagged.is_empty(), "前提：清单里有标了层级的项");
-        for k in tagged {
-            assert_eq!(m.get(k).unwrap().tier.as_deref(), Some("advanced"), "{k}");
-        }
     }
 
     /// 对话框成员只摘掉「宿主开着」那一条，别的条件与「宿主关着才可用」原样保留。
