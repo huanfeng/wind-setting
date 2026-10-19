@@ -325,6 +325,38 @@ mod tests {
         assert!(!m.get("input.scope_relax.page_end_key").unwrap().hidden);
     }
 
+    /// 分组对话框（「候选窗口高级设置」这类）的宿主只是组里排第一的项：藏它不连带其余成员，
+    /// 入口行照出，框里只少它自己；搜成员仍能开框。
+    #[test]
+    fn hidden_titled_host_keeps_its_group() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let host = "ui.candidate.first_show_mode";
+        let m = settings_manifest(&hide(&[&format!("key:{host}")]), false);
+        assert!(m.get(host).unwrap().hidden);
+        assert!(
+            !m.get("ui.candidate.min_rows").unwrap().hidden,
+            "成员不该被连带藏掉"
+        );
+        let index = crate::search::index::build_index(&m);
+        let e = index
+            .iter()
+            .find(|e| e.id == "ui.candidate.min_rows")
+            .expect("成员仍可搜");
+        assert!(
+            matches!(&e.target, crate::search::index::JumpTarget::RowInDialog { dialog, .. } if dialog == host)
+        );
+        // 建页后入口行与对话框都在（对话框以宿主 key 登记）。
+        let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+        app.borrow_mut().manifest = m;
+        let st = app.borrow();
+        let _tabs = crate::pages::all_tabs(&app, &st);
+        assert!(
+            st.fields.dialog_opens.borrow().contains_key(host),
+            "入口行没建出来"
+        );
+    }
+
     /// `key:schema.mix_modes.*` 要连 `schema.mix_modes` 本身与 `#视图` 项一起藏。
     #[test]
     fn dot_star_covers_the_key_itself_and_its_views() {

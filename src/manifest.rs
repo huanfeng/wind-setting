@@ -297,16 +297,24 @@ impl Manifest {
     /// 这些项本来就不独立成行，宿主没了就无处可去；不折进 `hidden` 的话 `sections_of`
     /// 会因它们「未隐藏」留下一张只有标题的空卡，搜索也还搜得到它们。
     fn hide_orphaned_dialog_members(&mut self) {
-        let hidden_hosts: Vec<(Option<String>, String)> = self
+        // 分组对话框（`dialog_title`，如「候选窗口高级设置」）的宿主只是排在第一的那一项，
+        // 不是成员的主开关：藏它不该连带其余各项，见 `section_rows_split` 的对应分支。
+        let hidden_hosts: Vec<(Option<String>, String, bool)> = self
             .items
             .values()
             .filter(|it| it.custom_hidden)
-            .map(|it| (it.opens_dialog.clone(), it.key.clone()))
+            .map(|it| {
+                (
+                    it.opens_dialog.clone(),
+                    it.key.clone(),
+                    it.dialog_title.is_some(),
+                )
+            })
             .collect();
         for item in self.items.values_mut() {
-            let orphaned = hidden_hosts.iter().any(|(group, host)| {
+            let orphaned = hidden_hosts.iter().any(|(group, host, titled)| {
                 (item.dialog_group.is_some() && item.dialog_group == *group)
-                    || item.dialog_extra_for.as_deref() == Some(host.as_str())
+                    || (!titled && item.dialog_extra_for.as_deref() == Some(host.as_str()))
             });
             if orphaned && !item.hidden {
                 item.hidden = true;
@@ -498,6 +506,16 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
             ));
             continue;
         };
+        // 分组对话框的宿主被藏、成员还在：入口行照出，框里只放成员。宿主只是组里排第一的
+        // 那一项（见 `dialog_title`），藏它不等于藏整组。
+        if item.hidden && item.dialog_title.is_some() && !dialog_extra_keys(state, k).is_empty() {
+            rows.push(crate::search::anchor::wrap(
+                build_grouped_dialog_row(state, k, item),
+                k.clone(),
+                state.jump,
+            ));
+            continue;
+        }
         // 隐藏项：不渲染也不注册 writer/loader（功能未完成或不对用户开放）。
         if item.hidden {
             continue;
@@ -3650,7 +3668,9 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
     // 的按它分节、插小标题；横竖分设的下拉在框里拆成两行。
     let mut rows = Vec::new();
     let mut cur_sub: Option<String> = None;
-    for k in std::iter::once(key).chain(members.iter().map(String::as_str)) {
+    // 宿主被藏时（定制版 / 平台）框里只放成员，见 `section_rows_split`。
+    let host = (!item.hidden).then_some(key);
+    for k in host.into_iter().chain(members.iter().map(String::as_str)) {
         let Some(it) = state.manifest.get(k) else {
             continue;
         };
@@ -3674,7 +3694,11 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
         rows.extend(item_rows);
     }
 
-    let reset_keys: Vec<String> = std::iter::once(key.to_string()).chain(members).collect();
+    let reset_keys: Vec<String> = host
+        .map(str::to_string)
+        .into_iter()
+        .chain(members)
+        .collect();
     let reset_fn = reset_to_core_defaults(state, reset_keys);
 
     let dlg = build_group_dialog(visible, &title, rows, Some(reset_fn));
