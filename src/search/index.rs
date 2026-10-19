@@ -215,22 +215,6 @@ fn keywords_of(key: &str, item: &MItem) -> Vec<String> {
     out
 }
 
-/// 该 manifest 项在**页面/对话框上是否独立成一行**——不成行的项跳过索引，
-/// 因为它们没有可跳转的落点。
-///
-/// 两类不成行：
-/// - `dialog_button` 且有 `gate_key`：它与门控开关合并成一行，行的锚点归开关；
-/// - 被 `dialog_extra_for` / `dialog_group` 收编的项：它们在别人的对话框里，
-///   仍然可搜（落点是那个对话框），故**不**在此跳过。
-fn is_merged_into_gate(item: &MItem, manifest: &Manifest) -> bool {
-    item.typ == "dialog_button"
-        && item.opens_dialog.is_none()
-        && item
-            .gate_key
-            .as_deref()
-            .is_some_and(|g| manifest.is_visible(g))
-}
-
 /// 由 manifest 派生索引条目。
 fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
     let mut out = Vec::new();
@@ -246,7 +230,9 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         if block_anchor_of(key).is_some() && !manifest.is_visible(FUZZY_MASTER) {
             continue;
         }
-        if is_merged_into_gate(item, manifest) {
+        // 与门控开关合并成一行的「设置」按钮没有自己的落点，行锚点归开关；收进别人对话框的项
+        // 仍然可搜（落点是那个对话框），不在此跳过。
+        if manifest.merged_into_gate(item) {
             continue;
         }
         let Some(placement) = placement_of(&item.group, &item.section) else {
@@ -255,10 +241,9 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         let page_name = group_label(&item.group);
         // 寄居在别人对话框里的项（`dialog_extra_for` / `dialog_group`），面包屑要
         // 带上宿主对话框那一层，否则用户看到的路径会停在卡片上、找不到东西。
-        let host = item
-            .dialog_extra_for
-            .clone()
-            .or_else(|| dialog_group_host(manifest, item))
+        let host = manifest
+            .dialog_host_of(item)
+            .map(|h| h.key.clone())
             // `dialog_title` 宿主：卡片上只留一行「<标题> …… [设置]」，**它自己的控件
             // 也在框里**（见 `manifest::build_grouped_dialog_row`）。所以它是自己的宿主，
             // 目标该是 RowInDialog——当成 Row 的话，跳过去只滚到入口行就停了，
@@ -348,21 +333,11 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
 /// 开关的，锚点键也就是开关的 key（见 `manifest::section_rows` 的合并分支）。
 fn row_anchor_of(manifest: &Manifest, host_key: &str) -> String {
     match manifest.get(host_key) {
-        Some(it) if is_merged_into_gate(it, manifest) => {
+        Some(it) if manifest.merged_into_gate(it) => {
             it.gate_key.clone().unwrap_or_else(|| host_key.to_string())
         }
         _ => host_key.to_string(),
     }
-}
-
-/// 找 `item` 所属 `dialog_group` 的宿主项 key（`opens_dialog == item.dialog_group`）。
-fn dialog_group_host(manifest: &Manifest, item: &MItem) -> Option<String> {
-    let g = item.dialog_group.as_deref()?;
-    manifest
-        .order
-        .iter()
-        .find(|k| manifest.get(k).and_then(|i| i.opens_dialog.as_deref()) == Some(g))
-        .cloned()
 }
 
 /// 宿主项的对话框显示名：分组对话框用 `dialog_title`，子对话框用「<label> · 扩展设置」。

@@ -30,6 +30,8 @@ pub struct TabDef {
     pub name: String,
     pub page: Element,
     pub subnav: SubNav,
+    /// 整页一张卡都没有（定制版把这页的清单项全藏了）：侧栏不给入口，见 `shell::build_nav`。
+    pub empty: bool,
 }
 
 /// 全部 Tab。manifest 分组负责主体，自定义页补充方案管理/词库/统计/关于。
@@ -51,9 +53,9 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
     );
     vec![
         tab_def("方案", scheme_page(app, state, &schema), schema),
-        tab_def("输入", input_page(state, &input), input),
-        tab_def("按键", keys_page(state, &keys), keys),
-        tab_def("外观", appearance_page(app, state, &ui), ui),
+        cards_tab_def("输入", input_page(state, &input), input),
+        cards_tab_def("按键", keys_page(state, &keys), keys),
+        cards_tab_def("外观", appearance_page(app, state, &ui), ui),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
@@ -74,6 +76,18 @@ fn tab_def(name: &'static str, page: Element, subnav: SubNav) -> TabDef {
         name: name.into(),
         page,
         subnav,
+        empty: false,
+    }
+}
+
+/// 只由卡片组成的页（每张卡都登记进二级导航）：一张都没登记就是空页。
+///
+/// 方案、统计、高级、关于另有不受定制版藏项影响的手写内容，不会空，不走这里。
+fn cards_tab_def(name: &'static str, page: Element, subnav: SubNav) -> TabDef {
+    let empty = subnav.section_count() == 0;
+    TabDef {
+        empty,
+        ..tab_def(name, page, subnav)
     }
 }
 

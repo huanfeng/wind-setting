@@ -538,4 +538,153 @@ mod tests {
         assert!(update_check_hidden(&hide(&["feature:update_check"])));
         assert!(!update_check_hidden(&hide(&["feature:wizard"])));
     }
+
+    /// 几种「压力型」藏法：只藏宿主、只藏成员、每个分区只留首项 / 末项 / 一个成员。
+    /// 定制者最容易写出的就是这几种形状，空卡也最容易从这里冒出来。
+    fn stress_hides() -> Vec<(&'static str, Vec<String>)> {
+        let m = Manifest::from_embedded();
+        let items: Vec<&crate::manifest::MItem> = m
+            .order
+            .iter()
+            .filter_map(|k| m.get(k))
+            .filter(|i| !i.hidden)
+            .collect();
+        let is_member =
+            |i: &crate::manifest::MItem| i.dialog_group.is_some() || i.dialog_extra_for.is_some();
+        let is_host = |i: &crate::manifest::MItem| {
+            i.opens_dialog.is_some()
+                || i.dialog_title.is_some()
+                || i.key == crate::search::index::FUZZY_MASTER
+                || items
+                    .iter()
+                    .any(|o| o.gate_key.as_deref() == Some(i.key.as_str()))
+        };
+        let sel = |i: &crate::manifest::MItem| format!("key:{}", i.key);
+        let mut sections: Vec<((String, String), Vec<&crate::manifest::MItem>)> = Vec::new();
+        for i in &items {
+            let id = (i.group.clone(), i.section.clone());
+            match sections.iter_mut().find(|(s, _)| *s == id) {
+                Some((_, v)) => v.push(i),
+                None => sections.push((id, vec![i])),
+            }
+        }
+        let keep = |pick: &dyn Fn(&[&crate::manifest::MItem]) -> Option<String>| {
+            sections
+                .iter()
+                .flat_map(|(_, its)| {
+                    let kept = pick(its);
+                    its.iter()
+                        .filter(move |i| kept.is_some() && Some(&i.key) != kept.as_ref())
+                        .map(|i| sel(i))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        vec![
+            (
+                "hosts",
+                items
+                    .iter()
+                    .filter(|i| is_host(i))
+                    .map(|i| sel(i))
+                    .collect(),
+            ),
+            (
+                "members",
+                items
+                    .iter()
+                    .filter(|i| is_member(i))
+                    .map(|i| sel(i))
+                    .collect(),
+            ),
+            (
+                "keep_first",
+                keep(&|its| its.iter().find(|i| !is_member(i)).map(|i| i.key.clone())),
+            ),
+            (
+                "keep_last",
+                keep(&|its| {
+                    its.iter()
+                        .rev()
+                        .find(|i| !is_member(i))
+                        .map(|i| i.key.clone())
+                }),
+            ),
+            (
+                "keep_member",
+                keep(&|its| its.iter().find(|i| is_member(i)).map(|i| i.key.clone())),
+            ),
+        ]
+    }
+
+    /// 定制版怎么藏都不能留下只有标题的空卡：凡是还在页面上（因而也在二级导航里）的卡片，
+    /// 至少要有一行。
+    #[test]
+    fn stress_hides_leave_no_empty_card() {
+        use crate::manifest::{scheme_config_section, section_rows_split};
+        let engine_secs: Vec<&str> = crate::pages::SCHEME_ENGINE_CARDS
+            .iter()
+            .map(|(_, sec, _)| *sec)
+            .collect();
+        let mut st = crate::state::AppState::empty();
+        for (name, raw) in stress_hides() {
+            st.manifest = settings_manifest(&hide_owned(&raw), false);
+            for group in ["schema", "general", "input", "keys", "ui", "advanced"] {
+                for (sec, keys) in st.manifest.sections_of(group) {
+                    if group == "schema" && engine_secs.contains(&sec.as_str()) {
+                        // 引擎卡手工拼，逐行跳过的判据相同；出卡与否由它自己按 keys 判。
+                        assert!(scheme_config_section(&st, &sec, &sec, false).is_some());
+                        continue;
+                    }
+                    let (rows, head) = section_rows_split(&st, &keys);
+                    assert!(
+                        !rows.is_empty() || head.is_some(),
+                        "[{name}] {group}/{sec} 只剩标题，没有一行"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 只由卡片组成的页被藏空后要标成空页（侧栏据此不给入口）；没藏时一页都不空。
+    #[test]
+    fn emptied_card_pages_are_flagged() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let empty_tabs = |raw: &[String]| -> Vec<String> {
+            let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+            app.borrow_mut().manifest = settings_manifest(&hide_owned(raw), false);
+            let st = app.borrow();
+            crate::pages::all_tabs(&app, &st)
+                .into_iter()
+                .filter(|t| t.empty)
+                .map(|t| t.name)
+                .collect()
+        };
+        // 按页（清单 group）藏：页上的项不一定都以页名开头（按键页里有 input.* 的项）。
+        let groups = |gs: &[&str]| -> Vec<String> {
+            let m = Manifest::from_embedded();
+            m.order
+                .iter()
+                .filter(|k| m.get(k).is_some_and(|i| gs.contains(&i.group.as_str())))
+                .map(|k| format!("key:{k}"))
+                .collect()
+        };
+        let with = |mut v: Vec<String>, extra: &[&str]| {
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+        assert!(empty_tabs(&[]).is_empty());
+        assert_eq!(empty_tabs(&groups(&["keys"])), ["按键"]);
+        // 外观页还有两张手写卡：清单项全藏了也不空，手写卡一并藏掉才空。
+        assert!(empty_tabs(&groups(&["ui"])).is_empty());
+        assert_eq!(
+            empty_tabs(&with(
+                groups(&["ui"]),
+                &["feature:theme_transfer", "feature:theme_editor"]
+            )),
+            ["外观"]
+        );
+        assert_eq!(empty_tabs(&groups(&["input", "general"])), ["输入"]);
+    }
 }

@@ -288,15 +288,8 @@ fn ct_group_of(manifest: &Manifest, item: &MItem) -> Option<String> {
     if item.opens_dialog.is_some() {
         return Some(item.label.clone());
     }
-    if let Some(g) = &item.dialog_group {
-        let host = manifest
-            .order
-            .iter()
-            .filter_map(|k| manifest.get(k))
-            .find(|h| h.opens_dialog.as_ref() == Some(g));
-        if let Some(h) = host {
-            return Some(h.label.clone());
-        }
+    if let Some(h) = manifest.dialog_host_of(item) {
+        return Some(h.label.clone());
     }
     item.subsection.clone()
 }

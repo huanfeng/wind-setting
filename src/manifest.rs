@@ -298,25 +298,19 @@ impl Manifest {
     /// 会因它们「未隐藏」留下一张只有标题的空卡，搜索也还搜得到它们。
     fn hide_orphaned_dialog_members(&mut self) {
         // 分组对话框（`dialog_title`，如「候选窗口高级设置」）的宿主只是排在第一的那一项，
-        // 不是成员的主开关：藏它不该连带其余各项，见 `section_rows_split` 的对应分支。
-        let hidden_hosts: Vec<(Option<String>, String, bool)> = self
+        // 不是成员的主开关：藏它不该连带其余各项，见 `renders_row`。
+        let orphans: Vec<String> = self
             .items
             .values()
-            .filter(|it| it.custom_hidden)
-            .map(|it| {
-                (
-                    it.opens_dialog.clone(),
-                    it.key.clone(),
-                    it.dialog_title.is_some(),
-                )
+            .filter(|it| {
+                self.dialog_host_of(it)
+                    .is_some_and(|h| h.custom_hidden && h.dialog_title.is_none())
             })
+            .map(|it| it.key.clone())
             .collect();
-        for item in self.items.values_mut() {
-            let orphaned = hidden_hosts.iter().any(|(group, host, titled)| {
-                (item.dialog_group.is_some() && item.dialog_group == *group)
-                    || (!titled && item.dialog_extra_for.as_deref() == Some(host.as_str()))
-            });
-            if orphaned && !item.hidden {
+        for key in orphans {
+            let item = self.items.get_mut(&key).expect("刚从 items 取出的 key");
+            if !item.hidden {
                 item.hidden = true;
                 item.custom_hidden = true;
             }
@@ -347,12 +341,65 @@ impl Manifest {
 
     /// 该项在清单里且未被隐藏。
     ///
-    /// 「被 gate 合并的 dialog_button 不独立成行」的判据（`section_rows`、
-    /// `scheme_config_section`、`search::index::is_merged_into_gate` 三处逐字同构）必须问
+    /// 「被 gate 合并的 dialog_button 不独立成行」的判据（[`Self::merged_into_gate`]）必须问
     /// 这个，而不是 `get(..).is_some()`：开关被定制版藏掉时没有合并行可依附，按钮得自己成行，
     /// 否则会连带着一起消失——藏掉的比定制者写的多。
     pub fn is_visible(&self, key: &str) -> bool {
         self.items.get(key).is_some_and(|it| !it.hidden)
+    }
+
+    // ── 对话框收纳 ──
+    //
+    // 一项不在卡片上独立成行，有三种去处：子对话框成员（`dialog_group`，宿主是声明同名
+    // `opens_dialog` 的那一项）、寄居项（`dialog_extra_for`，宿主是它指的那一项）、并进门控
+    // 开关行的「设置」按钮。渲染、定制版藏项、搜索、方案级码表配置都按下面这几个判据走，
+    // 别在调用处再拼一遍字段。
+
+    /// 住在别人的对话框里（子对话框成员或寄居项）。
+    pub fn lives_in_dialog(item: &MItem) -> bool {
+        item.dialog_group.is_some() || item.dialog_extra_for.is_some()
+    }
+
+    /// `item` 所在对话框的宿主；不在对话框里 ⇒ None。
+    pub fn dialog_host_of(&self, item: &MItem) -> Option<&MItem> {
+        if let Some(h) = &item.dialog_extra_for {
+            return self.items.get(h);
+        }
+        let g = item.dialog_group.as_deref()?;
+        self.order
+            .iter()
+            .filter_map(|k| self.items.get(k))
+            .find(|h| h.opens_dialog.as_deref() == Some(g))
+    }
+
+    /// `host_key` 对话框里的成员 key（两种收纳都算），按清单顺序；被隐藏的不算。
+    pub fn dialog_members(&self, host_key: &str) -> Vec<String> {
+        self.order
+            .iter()
+            .filter(|k| {
+                self.items.get(*k).is_some_and(|i| {
+                    !i.hidden && self.dialog_host_of(i).is_some_and(|h| h.key == host_key)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 并进门控开关那一行的「设置」按钮（「开关 + 设置」合并行）。三个条件缺一不可：
+    /// 自己是子对话框宿主时照常成行；开关被藏时没有合并行可依附，也得自己成行。
+    pub fn merged_into_gate(&self, item: &MItem) -> bool {
+        item.typ == "dialog_button"
+            && item.opens_dialog.is_none()
+            && item.gate_key.as_deref().is_some_and(|g| self.is_visible(g))
+    }
+
+    /// 这一项会不会在卡片上占一行。被藏的分组对话框宿主（`dialog_title`）只要框里还有成员，
+    /// 入口行照出——宿主只是组里排第一的那一项，藏它不等于藏整组。
+    pub fn renders_row(&self, item: &MItem) -> bool {
+        if item.hidden {
+            return item.dialog_title.is_some() && !self.dialog_members(&item.key).is_empty();
+        }
+        !Self::lives_in_dialog(item) && !self.merged_into_gate(item)
     }
 
     /// 从内嵌 TOML 清单构建。TOML 先反序列化为 serde_json::Value（与 system.manifest
@@ -383,13 +430,13 @@ impl Manifest {
                 None => out.push((it.section.clone(), vec![key.clone()])),
             }
         }
-        // 整节都被门控掉（平台 / 变体 / hidden）的分区不返回：否则页面上留一张只有标题的
-        // 空卡片、二级导航里多一个点进去什么都没有的条目（Linux 的「工具栏」「游戏兼容」、
-        // macOS 的「任务栏图标」）。部分隐藏的分区照常返回完整 key 表，行级跳过仍归
-        // `section_rows`。
+        // 一行都出不了的分区不返回：否则页面上留一张只有标题的空卡片、二级导航里多一个
+        // 点进去什么都没有的条目。整节被门控掉（Linux 的「工具栏」「游戏兼容」、macOS 的
+        // 「任务栏图标」）是一种；定制版藏掉了宿主、只剩对话框成员是另一种。判据与
+        // `section_rows` 逐行跳过的是同一个（`renders_row`）；部分隐藏的分区照常返回完整 key 表。
         out.retain(|(_, keys)| {
             keys.iter()
-                .any(|k| self.items.get(k).is_some_and(|it| !it.hidden))
+                .any(|k| self.items.get(k).is_some_and(|it| self.renders_row(it)))
         });
         out
     }
@@ -508,7 +555,7 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         };
         // 分组对话框的宿主被藏、成员还在：入口行照出，框里只放成员。宿主只是组里排第一的
         // 那一项（见 `dialog_title`），藏它不等于藏整组。
-        if item.hidden && item.dialog_title.is_some() && !dialog_extra_keys(state, k).is_empty() {
+        if item.hidden && state.manifest.renders_row(item) {
             rows.push(crate::search::anchor::wrap(
                 build_grouped_dialog_row(state, k, item),
                 k.clone(),
@@ -538,20 +585,8 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
             ));
             continue;
         }
-        // 子对话框成员：不在分区内独立成行（由 opens_dialog 宿主的「扩展设置」对话框承载）。
-        if item.dialog_group.is_some() {
-            continue;
-        }
-        // 寄居项：渲染在宿主 dialog_button 的对话框里（见 `dialog_extra_for`），不独立成行。
-        if item.dialog_extra_for.is_some() {
-            continue;
-        }
-        // 被 gate 合并的 dialog_button：跳过独立行（gate 存在才跳，避免误吞）。
-        if item.typ == "dialog_button"
-            && item.opens_dialog.is_none()
-            && let Some(g) = &item.gate_key
-            && state.manifest.is_visible(g)
-        {
+        // 子对话框成员、寄居项、并进开关行的「设置」按钮：都由别的行承载，不独立成行。
+        if !state.manifest.renders_row(item) {
             continue;
         }
         let row = if item.dialog_title.is_some() {
@@ -1107,9 +1142,8 @@ fn build_dialog_group_row_with(
     mode: SchemaHintMode,
 ) -> Element {
     use crate::dialogs::field_dialogs::build_group_dialog;
-    let group = item.opens_dialog.clone().unwrap_or_default();
     // 成员项（按 manifest 顺序；group id 约定全局唯一以免跨 section 误吸）→ field() 行 → 分组对话框。
-    let member_keys = dialog_group_keys(state, &group);
+    let member_keys = state.manifest.dialog_members(key);
     // 成员全被定制版藏掉：没有可点开的东西，退回普通的一行。
     if member_keys.is_empty() {
         return field_with(state, key, mode);
@@ -3133,7 +3167,7 @@ pub fn scheme_config_section(
             continue;
         }
         // 收进「扩展设置」对话框的成员：由宿主行承载，不在卡片上成行，也不带出小标题。
-        if item.dialog_group.is_some() || item.dialog_extra_for.is_some() {
+        if Manifest::lives_in_dialog(item) {
             continue;
         }
         let subsec = item.subsection.clone();
@@ -3161,16 +3195,8 @@ pub fn scheme_config_section(
                 merged.unwrap_or_else(|| field_with(state, k, hint_mode)),
                 anchored,
             )
-        } else if item.typ == "dialog_button"
-            // ⚠ 三个条件缺一不可，必须与 `search::index::is_merged_into_gate` **逐字同构**：
-            // 那边据此决定「这一项不独立成行、锚点归门控开关」，这边据此决定不渲染。
-            // 两边判据一旦分叉，就会出现「索引说它在某一行、界面上那一行根本不存在」，
-            // 表现为搜到了、点了、页也切了，就是不滚不闪。此前这里少了 `opens_dialog`
-            // 那一条（子对话框宿主同时带 gate_key 时会被本分支误吞）。
-            && item.opens_dialog.is_none()
-            && let Some(g) = &item.gate_key
-            && state.manifest.is_visible(g)
-        {
+        } else if state.manifest.merged_into_gate(item) {
+            // 与搜索索引同一个判据：那边据此把锚点归给门控开关，这边据此不渲染。
             continue;
         } else if item.opens_dialog.is_some() {
             // 主开关 + 「扩展设置」：参数收进对话框，卡片上只留这一行。
@@ -3503,7 +3529,7 @@ fn build_dialog_button_string(
 /// 成员经各自 [`field`] 登记 writer/loader，与独立成行时完全一致 —— 保存/加载/重置都自动覆盖，
 /// 不需要为「寄居」这件事另写一套读写。
 fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
-    let members = dialog_extra_keys(state, host_key);
+    let members = state.manifest.dialog_members(host_key);
     if members.is_empty() {
         return None;
     }
@@ -3518,42 +3544,6 @@ fn dialog_extra_rows(state: &AppState, host_key: &str) -> Option<Element> {
         ));
     }
     Some(col)
-}
-
-/// `dialog_group == group` 的子对话框成员 key，按 manifest 顺序；被隐藏的不算。
-fn dialog_group_keys(state: &AppState, group: &str) -> Vec<String> {
-    state
-        .manifest
-        .order
-        .iter()
-        .filter(|k| {
-            state
-                .manifest
-                .get(k)
-                .filter(|i| !i.hidden)
-                .and_then(|i| i.dialog_group.as_deref())
-                == Some(group)
-        })
-        .cloned()
-        .collect()
-}
-
-/// 寄居在 `host_key` 对话框里的从属项的 key，按 manifest 顺序；被隐藏的不算。
-fn dialog_extra_keys(state: &AppState, host_key: &str) -> Vec<String> {
-    state
-        .manifest
-        .order
-        .iter()
-        .filter(|k| {
-            state
-                .manifest
-                .get(k)
-                .filter(|i| !i.hidden)
-                .and_then(|i| i.dialog_extra_for.as_deref())
-                == Some(host_key)
-        })
-        .cloned()
-        .collect()
 }
 
 /// 「恢复默认」回调：向 core 取权威默认值，灌回 `keys` 各自的 loader。
@@ -3663,7 +3653,7 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
         .clone()
         .unwrap_or_else(|| item.label.clone());
 
-    let members = dialog_extra_keys(state, key);
+    let members = state.manifest.dialog_members(key);
     // 框内每行挂锚点（宿主自身也在框里，它那一行的键就是宿主 key）。成员带 `subsection`
     // 的按它分节、插小标题；横竖分设的下拉在框里拆成两行。
     let mut rows = Vec::new();
@@ -3748,7 +3738,7 @@ fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Sig
     )];
     // 竖排模板本是寄居项（`dialog_extra_for`），经通用 `field` 建成一个普通输入框；它同样是
     // 模板、同样要预览与插入颜色，故在这里接手自建，其余寄居项（两个最大字数）照旧。
-    let extras = dialog_extra_keys(state, key);
+    let extras = state.manifest.dialog_members(key);
     let mut rest = Element::col().width_match().spacing(6);
     for k in &extras {
         let el = match state.manifest.get(k) {
@@ -6263,10 +6253,12 @@ mod tests {
         let mut st = AppState::empty();
         st.manifest = Manifest::from_embedded();
         st.manifest.apply_custom_hide(&hide);
-        let group = dialog_group_keys(&st, "scope_relax");
+        let group = st.manifest.dialog_members("input.filter_mode");
         assert!(group.iter().any(|k| k == "input.scope_relax.page_end_key"));
         assert!(!group.iter().any(|k| k == "input.scope_relax.prefix"));
-        let extra = dialog_extra_keys(&st, "ui.candidate.comment_template_horizontal");
+        let extra = st
+            .manifest
+            .dialog_members("ui.candidate.comment_template_horizontal");
         assert!(
             extra
                 .iter()

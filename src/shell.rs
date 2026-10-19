@@ -116,12 +116,15 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     let mut names: Vec<String> = Vec::with_capacity(tabs_vec.len());
     let mut pages: Vec<Element> = Vec::with_capacity(tabs_vec.len());
     let mut subnavs: Vec<crate::subnav::SubNav> = Vec::with_capacity(tabs_vec.len());
+    let mut empty: Vec<bool> = Vec::with_capacity(tabs_vec.len());
     for t in tabs_vec {
         names.push(t.name);
         pages.push(t.page);
         subnavs.push(t.subnav);
+        empty.push(t.empty);
     }
-    let nav = build_nav(&names, tab_sig, app);
+    let nav = build_nav(&names, &empty, tab_sig, app);
+    let empty_redirect = redirect_off_empty_tabs(empty, tab_sig);
     let (search_state, jump_sig) = {
         let st = app.borrow();
         (st.search.clone(), st.jump)
@@ -252,7 +255,8 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(build_update_dialog(app))
         .child(crate::dialogs::schema_download_dialog::build_schema_download_dialog(app))
         .child(crate::wizard::view::build_wizard_dialog(app))
-        .child(build_conn_failed_dialog(app, conn_failed));
+        .child(build_conn_failed_dialog(app, conn_failed))
+        .child(empty_redirect);
     // dialog_button 的对话框挂到根：全窗模态遮罩 + 居中（否则内联在设置行格内会偏下）。
     for dlg in field_dialogs {
         root = root.child(dlg);
@@ -357,7 +361,24 @@ fn build_subnav_col(
 /// 「词库」是**动作项**而非页项：点它开独立窗（[`crate::dict_window::open`]），主窗停在
 /// 原页不动。故它没有选中态、没有指示条，改在右侧挂一枚「外开」角标把这件事说出来——
 /// 不给提示的话，点一下侧栏而当前页纹丝不动，看着就是按钮坏了。
-fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) -> Element {
+/// 定制版藏空了的页没有侧栏入口，可深链（`--page`、命令直通车）仍会切过去：落到这种页
+/// 就改回首页，免得停在一张白板上。建窗时先校一次（冷启动的深链早于建窗），之后跟着切页信号。
+fn redirect_off_empty_tabs(empty: Vec<bool>, tab: Signal<usize>) -> Element {
+    let fix = move || {
+        if empty.get(tab.get()).copied().unwrap_or(false) {
+            tab.set(0);
+        }
+    };
+    fix();
+    crate::pages::dict::reactive::reactive_effect(move || tab.version(), fix)
+}
+
+fn build_nav(
+    names: &[String],
+    empty: &[bool],
+    sel: Signal<usize>,
+    app: &Rc<RefCell<AppState>>,
+) -> Element {
     use crate::icons::{CHIP_PX, EXTERNAL, ICON_PX, nav_icon, tinted, tinted_role};
 
     // 动作项下标经 `page_to_index` 取，不写字面量 4：PAGES 与 `all_tabs` 的顺序本来就
@@ -370,6 +391,9 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
     let mut col = Element::col().width_match().spacing(2);
 
     for (i, name) in names.iter().enumerate() {
+        if empty[i] {
+            continue;
+        }
         if name == "高级" {
             col = col.child(
                 Element::col().width_match().padding_xy(10, 8).child(
