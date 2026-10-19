@@ -564,10 +564,58 @@ fn tier_switch(app: &Rc<RefCell<AppState>>) -> Element {
     Element::col()
         .width_match()
         .padding_xy(2, 4)
-        .child(Element::segmented(vec!["普通", "高级"], idx).width_match())
+        .child(tier_segments(idx))
         .child(to_basic)
         .child(to_idx)
         .visible_when(move || sw.get() == crate::look::tier_switch::SHOW)
+}
+
+/// 「普通 | 高级」两段：容器同分段控件，选中段的画法同侧栏导航的选中态（淡强调底 +
+/// 强调色粗体字）。windui 的分段控件选中段是实心强调色，放在侧栏里比导航选中项还抢眼，
+/// 而它的配色是全局主题、不能单个改，故这里自己拼。
+fn tier_segments(idx: Signal<usize>) -> Element {
+    let seg = |i: usize, name: &'static str| {
+        let on = Element::stack()
+            .width_match()
+            .height_match()
+            .corner(5.0)
+            .bg_role_alpha(Role::Accent, 0.11)
+            .child(
+                Element::label(name)
+                    .font_size(12.5)
+                    .font_weight(600)
+                    .fg_role(Role::Accent)
+                    .align(Align::Center),
+            )
+            .visible_when(move || idx.get() == i);
+        let off = Element::stack()
+            .width_match()
+            .height_match()
+            .child(
+                Element::label(name)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .align(Align::Center),
+            )
+            .visible_when(move || idx.get() != i);
+        Element::stack()
+            .weight(1.0)
+            .height_match()
+            .clickable()
+            .on_click(move |_| idx.set(i))
+            .child(on)
+            .child(off)
+    };
+    Element::row()
+        .width_match()
+        .height(30)
+        .padding_xy(2, 2)
+        .spacing(2)
+        .corner(6.0)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .child(seg(0, "普通"))
+        .child(seg(1, "高级"))
 }
 
 /// 侧栏最底部的「设置向导」动作项：样式同导航未选中态，点它弹向导、不切页。

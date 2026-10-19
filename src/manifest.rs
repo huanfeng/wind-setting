@@ -104,6 +104,10 @@ pub struct MItem {
     /// 显示层级：`"advanced"` = 侧栏切到「普通」时这一行藏起（见 `widgets::tier_basic`）。
     /// 缺省 = 两种范围都显示。
     pub tier: Option<String>,
+    /// 依赖同卡其它项（`enabled_when`）时是否缩进成从属行。缺省缩进；`indent = false`
+    /// 的照常置灰、不缩进——只有「主开关 + 紧随其后的几个细项」这种明确的从属关系才值得
+    /// 缩进（如「记忆前次状态」下的三个初始状态），零散一两个依赖项缩进反而显得行没对齐。
+    pub indent: bool,
 }
 
 /// select 的一个选项（value 写回配置，label 展示）。
@@ -233,6 +237,7 @@ impl Manifest {
                     subsection: opt_str(it, "subsection"),
                     follow: opt_str(it, "follow"),
                     tier: opt_str(it, "tier"),
+                    indent: it.get("indent").and_then(|x| x.as_bool()).unwrap_or(true),
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
                     // 不注册 writer/loader，配置文件里的原值原样留着不动。
@@ -600,19 +605,20 @@ fn section_rows_inner(
         };
         // enabled_when 引用同卡片内其它 key → 视觉从属行（仅缩进，不画连接线：
         // 多个子项连续时一排 └ 显得杂乱；缩进本身已传达从属关系，对齐 Win11/macOS 设置惯例）。
-        let dependent = item
-            .enabled_when
-            .as_deref()
-            .and_then(parse_conds)
-            .map(|cs| {
-                cs.iter().any(|c| {
-                    c.key != *k
+        let dependent = item.indent
+            && item
+                .enabled_when
+                .as_deref()
+                .and_then(parse_conds)
+                .map(|cs| {
+                    cs.iter().any(|c| {
+                        c.key != *k
                             && keys.iter().any(|x| x == &c.key)
                             // 父项被藏（定制版 / 平台门控）时没有可挂靠的行，不缩进。
                             && state.manifest.is_visible(&c.key)
+                    })
                 })
-            })
-            .unwrap_or(false);
+                .unwrap_or(false);
         let row = if dependent {
             Element::row()
                 .width_match()

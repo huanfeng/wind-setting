@@ -1,6 +1,7 @@
 # 统一声明式设置清单（native 内置真相源；core 已退役 manifest.toml）。
 # 字段：key(点路径,对应 Config)/group/section/type/label/hint/options/options_source/min/max/step/unit/width/enabled_when/gate_key/global
 #   width：select 下拉像素宽；options_source：动态选项来源（themes/fonts/codetableSchemas/pinyinSchemas）
+# indent：false = 依赖同卡其它项时不缩进（缺省缩进）。
 # tier："advanced" = 「界面细节 → 设置项」选「普通」时藏起（分层试验，逐页推进；缺省两种都显示）。
 # 注：默认值不在此声明，统一取自 core capability 快照（capabilities.snapshot.json）。
 #
@@ -1441,6 +1442,7 @@ key = "input.rare_phrase"
 group = "input"
 section = "字符与标点"
 type = "select"
+indent = false
 label = "含生僻字的词组"
 hint = "词里只要有一个字不在常用字表内，整词就被上面的检索范围滤掉。「保留」＝ 词一律不滤（含手动标为生僻的字），过滤只管单字"
 options = [
@@ -1779,6 +1781,7 @@ key = "schema.mix_modes#free_input_takes_select_keys"
 group = "input"
 section = "快捷输入"
 type = "checkbox_mix_free_select_keys"
+indent = false
 label = "; ' 作字面字符"
 hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 只在一个候选都没有时才作字面"
 enabled_when = "schema.mix_modes#free_input != off"
@@ -1887,6 +1890,7 @@ key = "input.s2t.variant"
 group = "input"
 section = "简繁转换"
 type = "select"
+indent = false
 label = "转换变体"
 hint = "选择目标繁体字形与词汇风格"
 enabled_when = "input.s2t.enabled == true"
@@ -2003,6 +2007,7 @@ key = "input.emoji.modules"
 group = "input"
 section = "Emoji/OpenCC"
 type = "dialog_button_emoji_modules"
+indent = false
 label = "附加模块"
 hint = "按模块加挂 emoji 与符号表（偏旁、希腊字母、单位等）；也可在用户目录 emoji\\ 下放 OpenCC 格式的 .txt 自行扩充"
 enabled_when = "input.emoji.enabled == true"
