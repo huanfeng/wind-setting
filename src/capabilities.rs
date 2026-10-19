@@ -182,6 +182,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // number_select：离散整数下拉（如每页候选数）。实现仅按整数解析/写回，故仅兼容 int。
         "number_select" => ty == "int",
         "string" => ty == "str",
+        // strlist_text：strlist 的行内空格分隔编辑（放在扩展设置对话框里，免得框中框）。
+        "strlist_text" => ty == "strlist",
         // hotkey:功能键绑定字符串（如 "ctrl+shift+e"），编辑对话框承载。
         "hotkey" => ty == "str",
         "checkbox_group" => ty == "strlist",

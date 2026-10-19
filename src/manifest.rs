@@ -101,8 +101,8 @@ pub struct MItem {
     /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
     /// 「跟随主题（值）」（见 [`follow_labels`]）。
     pub follow: Option<String>,
-    /// 显示层级：`"advanced"` = 「普通」显示范围下藏起（界面细节试验选项，见
-    /// [`Manifest::apply_basic_tier`]）。缺省 = 两种范围都显示。
+    /// 显示层级：`"advanced"` = 侧栏切到「普通」时这一行藏起（见 `widgets::tier_basic`）。
+    /// 缺省 = 两种范围都显示。
     pub tier: Option<String>,
 }
 
@@ -289,20 +289,6 @@ impl Manifest {
         }
         self.hide_orphaned_dialog_members();
         unmatched
-    }
-
-    /// 「普通」显示范围：藏起 `tier = "advanced"` 的项。
-    ///
-    /// 与定制版隐藏同一种折法（`hidden` + `custom_hidden`）：值照常生效，`enabled_when`
-    /// 联动按配置值算；宿主藏了，对话框里的成员一并藏。
-    pub fn apply_basic_tier(&mut self) {
-        for item in self.items.values_mut() {
-            if item.tier.as_deref() == Some("advanced") && !item.hidden {
-                item.hidden = true;
-                item.custom_hidden = true;
-            }
-        }
-        self.hide_orphaned_dialog_members();
     }
 
     /// 宿主被定制版藏掉 ⇒ 寄居在它对话框里的项（`dialog_group` / `dialog_extra_for`）一并藏掉。
@@ -495,6 +481,55 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
 /// 卡片上边框——与三张硬编码卡片上的 toast 槽是同一个形状（见
 /// `widgets::card_with_attachment`）。
 pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, Option<Element>) {
+    let (rows, head) = section_rows_inner(state, keys);
+    // 这条路的卡片按静态行排分割线；会隐藏的行在这里只能自己藏，分割线留着。
+    // 有 `tier` 项的分区走 [`section_row_items`]。
+    let rows = rows
+        .into_iter()
+        .map(|(row, tiered)| {
+            if tiered {
+                row.visible_when(|| !crate::widgets::tier_basic())
+            } else {
+                row
+            }
+        })
+        .collect();
+    (rows, head)
+}
+
+/// 同 [`section_rows`]，但产出卡片项：标了 `tier = "advanced"` 的行成为
+/// [`CardItem::RowIf`](crate::widgets::CardItem::RowIf)，侧栏切到「普通」时连同它前面的
+/// 分割线一起藏起，不必重建页面。
+pub fn section_row_items(state: &AppState, keys: &[String]) -> Vec<crate::widgets::CardItem> {
+    let (rows, head) = section_rows_inner(state, keys);
+    debug_assert!(
+        head.is_none(),
+        "该分区有可隐藏提示行，调用方须改用 section_rows_split"
+    );
+    rows.into_iter()
+        .map(|(row, tiered)| tier_item(row, tiered))
+        .collect()
+}
+
+/// 行 → 卡片项：`tiered` 的行在「普通」范围下藏起。
+fn tier_item(row: Element, tiered: bool) -> crate::widgets::CardItem {
+    if tiered {
+        crate::widgets::CardItem::RowIf(row, std::rc::Rc::new(|| !crate::widgets::tier_basic()))
+    } else {
+        crate::widgets::CardItem::Row(row)
+    }
+}
+
+/// 某项是否标了「普通」范围下藏起。
+fn is_tiered(item: &MItem) -> bool {
+    item.tier.as_deref() == Some("advanced")
+}
+
+/// 行与「是否随普通范围藏起」。见 [`section_rows_split`]。
+fn section_rows_inner(
+    state: &AppState,
+    keys: &[String],
+) -> (Vec<(Element, bool)>, Option<Element>) {
     let cfg = &state.current_config;
     let mut head: Option<Element> = None;
     let mut rows = Vec::with_capacity(keys.len());
@@ -504,10 +539,9 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
             // 锚点照包：这条分支触发的时机恰恰是「key 已经漂了」，那正是最希望搜索
             // 还能把人指过去的场合。不包的话它会成为 `section_rows` 里唯一产出
             // 无锚点行的出口。
-            rows.push(crate::search::anchor::wrap(
-                field(state, k),
-                k.clone(),
-                state.jump,
+            rows.push((
+                crate::search::anchor::wrap(field(state, k), k.clone(), state.jump),
+                false,
             ));
             continue;
         };
@@ -590,7 +624,13 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         };
         // 搜索跳转锚点：每一行都盖一枚，键即清单 key（与 `search::index` 派生的
         // `JumpTarget::anchor` 一致）。它不吃点击、静止时不绘制。
-        rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
+        if is_tiered(item) {
+            crate::widgets::note_tier_anchor(k);
+        }
+        rows.push((
+            crate::search::anchor::wrap(row, k.clone(), state.jump),
+            is_tiered(item),
+        ));
     }
     (rows, head)
 }
@@ -620,6 +660,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "slider",
     "number_select",
     "string",
+    "strlist_text",
     "hotkey",
     "dialog_button",
     "dialog_button_key_action",
@@ -652,6 +693,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "number" | "slider" => build_number(state, key, item, cfg),
         "number_select" => build_number_select(state, key, item, cfg),
         "string" => build_string(state, key, item, cfg),
+        "strlist_text" => build_strlist_text(state, key, cfg),
         "hotkey" => build_hotkey(state, key, item, cfg),
         "dialog_button" => build_dialog_button(state, key, item, cfg),
         // 三者都渲染成「设置…」按钮，差别只在 `build_dialog_body` 里按 typ 分派出的
@@ -812,6 +854,11 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
     if item.typ == "log_privacy_warning" {
         return build_log_privacy_warning(state, item);
     }
+    field_item(state, key, item, mode)
+}
+
+/// [`field_with`] 的取项版：调用方手里已有（可能改过 `enabled_when` 的）条目副本时用。
+fn field_item(state: &AppState, key: &str, item: &MItem, mode: SchemaHintMode) -> Element {
     let cfg = &state.current_config;
     if item.follow.as_deref() == Some("theme")
         && THEME_FOLLOW_ROW_TYPES.contains(&item.typ.as_str())
@@ -1103,17 +1150,42 @@ fn build_dialog_group_row_with(
     }
     // 宿主控件本体（与 field() 共用 build_control，避免分派漂移）。
     let control = build_control(state, key, item, cfg);
+    // 成员里「宿主开着才可用」那半句条件去掉：宿主关着时用户点开对话框却一项也调不了，
+    // 只能关框、开宿主、再进来。改为照常可调，顶部提示「宿主未开启，暂不生效」。
+    let mut host_clause: Option<String> = None;
     // 框内每行也挂锚点：搜索命中的可能正是这些寄居项，跳转要落到具体那一行。
-    let rows: Vec<Element> = member_keys
+    let mut rows: Vec<Element> = member_keys
         .iter()
         .map(|k| {
-            crate::search::anchor::wrap(
-                field(state, k),
-                crate::search::index::in_dialog_anchor(k),
-                state.jump,
-            )
+            let row = match state.manifest.get(k) {
+                Some(it) => {
+                    let (rest, dropped) =
+                        strip_host_clause(it.enabled_when.as_deref().unwrap_or(""), key);
+                    match dropped {
+                        Some(d) => {
+                            host_clause.get_or_insert(d);
+                            let mut it = it.clone();
+                            it.enabled_when = rest;
+                            field_item(state, k, &it, SchemaHintMode::PerRow)
+                        }
+                        None => field(state, k),
+                    }
+                }
+                None => field(state, k),
+            };
+            crate::search::anchor::wrap(row, crate::search::index::in_dialog_anchor(k), state.jump)
         })
         .collect();
+    if let Some(on) = host_clause
+        .as_deref()
+        .and_then(|c| enabled_when_closure(state, c))
+    {
+        let text = host_off_text(item, host_clause.as_deref().unwrap_or(""));
+        let notice = dialog_notice_row(signal(text)).visible_when(move || !on());
+        // 并进第一行而不是单占一行：对话框按行插分割线，单占一行的提示藏起时会留下一条孤线。
+        let first = rows.remove(0);
+        rows.insert(0, Element::col().width_match().child(notice).child(first));
+    }
     let visible = signal(false);
     // 登记供搜索跳转开框（键 = 宿主项 key，与 `search::index` 派生的 dialog 键一致）。
     state
@@ -2040,6 +2112,52 @@ fn build_string(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     Element::text_input(sig, item.hint.clone().unwrap_or_default()).width(200)
 }
 
+/// strlist 的行内编辑：一个文本框，空格分隔（网址前缀、邮箱后缀这类短列表）。
+///
+/// 与 `dialog_button` 的空格分隔编辑读写同构（见 [`build_dialog_button_spaced`]），只是不再
+/// 另开一层对话框——这几项本身就放在「扩展设置」对话框里，再套一层框就是框中框。
+fn build_strlist_text(state: &AppState, key: &str, cfg: &Config) -> Element {
+    use crate::dialogs::field_dialogs::{spaced_to_strlist, strlist_to_spaced};
+    let read = |c: &Config, key: &str, def: &[String]| -> String {
+        let cur: Vec<String> = c
+            .get_array(key)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| def.to_vec());
+        strlist_to_spaced(&cur)
+    };
+    let def = default_strlist(state, key);
+    let sig = signal(read(cfg, key, &def));
+    let to_value = move || {
+        Value::Array(
+            spaced_to_strlist(&sig.get())
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        )
+    };
+    let kw = key.to_string();
+    state
+        .fields
+        .writers
+        .borrow_mut()
+        .push(Box::new(move |c: &mut Config| c.set_path(&kw, to_value())));
+    state
+        .fields
+        .getters
+        .borrow_mut()
+        .insert(key.to_string(), Box::new(to_value));
+    let kl = key.to_string();
+    state.fields.loaders.borrow_mut().insert(
+        key.to_string(),
+        Box::new(move |c: &Config| sig.set(read(c, &kl, &def))),
+    );
+    Element::text_input(sig, "空格分隔").width(200)
+}
+
 /// hotkey 主键候选 (value, 显示名)。idx 0 = 未设置（值为空 → 合成 "none"）。
 pub(crate) fn hotkey_keys() -> Vec<(String, String)> {
     let mut v = vec![(String::new(), "（未设置）".to_string())];
@@ -2625,6 +2743,59 @@ pub(crate) fn schema_options(
 }
 
 /// 把对话框主体挂到根（登记到注册表，`shell::build` 取出挂到根窗口 stack 实现全窗模态）。
+/// 从 `enabled_when` 里摘掉「宿主 `host` 开着」那一条：返回（剩下的表达式, 摘掉的那条）。
+///
+/// 只摘**要求宿主开着**的条件（`== true`、`!= off` 之类）；`host == false`（如「仅记录次数」
+/// 只在词频调整关着时有意义）是另一回事，原样保留。
+fn strip_host_clause(expr: &str, host: &str) -> (Option<String>, Option<String>) {
+    let mut keep: Vec<&str> = Vec::new();
+    let mut dropped: Option<String> = None;
+    for part in expr.split("&&").map(str::trim).filter(|p| !p.is_empty()) {
+        let is_host_on = parse_conds(part).is_some_and(|cs| {
+            cs[0].key == host && !(cs[0].op == CondOp::Eq && cs[0].value == "false")
+        });
+        if is_host_on && dropped.is_none() {
+            dropped = Some(part.to_string());
+        } else {
+            keep.push(part);
+        }
+    }
+    let rest = (!keep.is_empty()).then(|| keep.join(" && "));
+    (rest, dropped)
+}
+
+/// 扩展设置对话框顶部的提示文案：宿主没开时，框里的设置照常可调，但暂不生效。
+///
+/// 下拉宿主按摘掉的那条条件说具体取值：`kind != off` →「为「关闭」」，
+/// `mode == smart` →「不是「智能」」。取值的显示名查宿主自己的选项表。
+fn host_off_text(host: &MItem, clause: &str) -> String {
+    let label = &host.label;
+    let cond = parse_conds(clause).and_then(|mut cs| (cs.len() == 1).then(|| cs.remove(0)));
+    let name_of = |v: &str| {
+        host.options
+            .iter()
+            .find(|o| o.value == v)
+            .map_or_else(|| v.to_string(), |o| o.label.clone())
+    };
+    match cond {
+        Some(c) if host.typ != "toggle" && c.op == CondOp::Ne => {
+            format!("「{label}」为「{}」，以下设置暂不生效。", name_of(&c.value))
+        }
+        Some(c) if host.typ != "toggle" && c.op == CondOp::Eq => {
+            format!(
+                "「{label}」不是「{}」时，以下设置不生效。",
+                name_of(&c.value)
+            )
+        }
+        _ => format!("「{label}」未开启，以下设置暂不生效。"),
+    }
+}
+
+/// 扩展设置对话框顶部的提示行。
+fn host_off_notice(label: &str) -> Element {
+    dialog_notice_row(signal(format!("「{label}」未开启，以下设置暂不生效。")))
+}
+
 fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
@@ -2686,7 +2857,7 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .zip(sigs.iter())
         .map(|((_, lbl), s)| Element::checkbox(*lbl, *s).small().fg_role(Role::Text))
         .collect();
-    let grid = Element::grid(2, 10, cells).width_match().enabled_signal(en);
+    let grid = Element::grid(2, 10, cells).width_match();
 
     // 全选 checkbox：受控（on_toggle 接管点击），点击即把 13 项整体设为「取反当前是否
     // 全选」——已全选时点击变全不选，故同一个 checkbox 兼顾全选/取消全选，不需要
@@ -2700,7 +2871,6 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
     let select_all_box = Element::checkbox("全选", select_all_sig)
         .small()
         .fg_role(Role::Text)
-        .enabled_signal(en)
         .on_toggle(move |_ctx| {
             let target = !click_sigs.iter().all(|s| s.get());
             for s in &click_sigs {
@@ -2739,6 +2909,7 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .width_match()
         .padding_xy(0, 8)
         .spacing(10)
+        .child(host_off_notice("模糊音").visible_when(move || !en.get()))
         .child(select_all_box)
         .child(grid);
     let body = crate::search::anchor::wrap(
@@ -3006,11 +3177,17 @@ pub fn scheme_config_section(
         };
         // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
         // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
-        items.push(crate::widgets::CardItem::Row(if already_anchored {
-            row
-        } else {
-            crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
-        }));
+        if is_tiered(item) {
+            crate::widgets::note_tier_anchor(&crate::search::index::page_anchor(k));
+        }
+        items.push(tier_item(
+            if already_anchored {
+                row
+            } else {
+                crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
+            },
+            is_tiered(item),
+        ));
     }
     if let Some(row) = fuzzy_row {
         items.push(row);
@@ -8305,37 +8482,47 @@ mod tests {
         );
     }
 
-    /// 「普通」显示范围只藏 `tier = "advanced"` 的项，值域只认这一个取值——写错了
-    /// （如 `"expert"`）该项会在两种范围下都显示，没有任何别的信号。
+    /// 层级值域只认 `"advanced"`——写错了（如 `"expert"`）该项在两种范围下都显示，
+    /// 没有任何别的信号。
     #[test]
-    fn basic_tier_hides_only_advanced_items() {
-        let full = Manifest::from_embedded();
-        let advanced: Vec<&String> = full
+    fn tier_values_are_known() {
+        let m = Manifest::from_embedded();
+        let tagged: Vec<&String> = m
             .order
             .iter()
-            .filter(|k| full.get(k).unwrap().tier.is_some())
+            .filter(|k| m.get(k).unwrap().tier.is_some())
             .collect();
-        assert!(!advanced.is_empty(), "前提：清单里有标了层级的项");
-        for k in &advanced {
-            assert_eq!(
-                full.get(k).unwrap().tier.as_deref(),
-                Some("advanced"),
-                "{k}"
-            );
+        assert!(!tagged.is_empty(), "前提：清单里有标了层级的项");
+        for k in tagged {
+            assert_eq!(m.get(k).unwrap().tier.as_deref(), Some("advanced"), "{k}");
         }
-        let mut basic = Manifest::from_embedded();
-        basic.apply_basic_tier();
-        for k in &full.order {
-            let (a, b) = (full.get(k).unwrap(), basic.get(k).unwrap());
-            if a.tier.is_some() {
-                assert!(
-                    b.hidden && b.custom_hidden,
-                    "{k} 应在普通范围下藏起，且值照常生效"
-                );
-            } else if a.dialog_group.is_none() && a.dialog_extra_for.is_none() {
-                assert_eq!(a.hidden, b.hidden, "{k} 没标层级，不该被普通范围牵连");
-            }
-        }
+    }
+
+    /// 对话框成员只摘掉「宿主开着」那一条，别的条件与「宿主关着才可用」原样保留。
+    #[test]
+    fn strip_host_clause_keeps_other_conditions() {
+        let h = "a.enabled";
+        assert_eq!(
+            strip_host_clause("a.enabled == true", h),
+            (None, Some("a.enabled == true".into()))
+        );
+        assert_eq!(
+            strip_host_clause("a.enabled == true && a.strategy == position", h),
+            (
+                Some("a.strategy == position".into()),
+                Some("a.enabled == true".into())
+            )
+        );
+        assert_eq!(
+            strip_host_clause("a.enabled == false", h),
+            (Some("a.enabled == false".into()), None),
+            "「仅记录次数」这类宿主关着才可用的条件不能摘"
+        );
+        assert_eq!(
+            strip_host_clause("k.kind != off", "k.kind"),
+            (None, Some("k.kind != off".into()))
+        );
+        assert_eq!(strip_host_clause("", h), (None, None));
     }
 
     /// 模糊音入口行的说明：关着说关着，开着列出勾了哪几组，多了截断。

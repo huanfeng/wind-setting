@@ -25,6 +25,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     // 界面细节信号必须在**建页面之前**注册：页面里的卡片 / 分割线在建树时就取 `look()`，
     // 晚注册的话它们拿到的是 `look()` 兜底新建的一组孤立信号，子窗怎么切都不动。
     crate::widgets::init_look(app.borrow().look);
+    crate::widgets::init_tier_basic(app.borrow().tier_basic);
     // 借用一次构建页面与对话框，随后释放，便于保存闭包再借 mut。
     let (
         tabs_vec,
@@ -145,7 +146,8 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         // 加了三次——真机上看着就是搜索框与导航离得老远。哨兵一律挂到根 stack。
         .spacing(6)
         .child(search_box)
-        .child(nav.weight(1.0));
+        .child(nav.weight(1.0))
+        .child(tier_switch(app));
     if show_wizard_entry {
         sidebar = sidebar.child(wizard_entry(app));
     }
@@ -523,6 +525,49 @@ fn build_nav(names: &[String], sel: Signal<usize>, app: &Rc<RefCell<AppState>>) 
         col = col.child(item);
     }
     Element::scroll().fill().child(col)
+}
+
+/// 侧栏底部的「普通 | 高级」切换：选「普通」时藏起清单里标了 `tier = "advanced"` 的行，
+/// 即时生效、不重建页面（见 `widgets::CardItem::RowIf`）。只在界面细节打开了这个切换时显示。
+///
+/// 分段控件绑的是下标信号，「是否普通」另有一份信号给各行读（`widgets::tier_basic`）；
+/// 两者双向同步——搜索跳到藏着的行时会从另一头把「普通」拨回「高级」。
+fn tier_switch(app: &Rc<RefCell<AppState>>) -> Element {
+    let (basic, look) = {
+        let st = app.borrow();
+        (st.tier_basic, st.look)
+    };
+    let sw = look.0[crate::look::TIER_SWITCH];
+    let idx = signal(if basic.get() { 0usize } else { 1 });
+    let to_basic = crate::pages::dict::reactive::reactive_effect(
+        move || idx.version(),
+        move || {
+            let want = idx.get() == 0;
+            if basic.get() != want {
+                basic.set(want);
+            }
+        },
+    );
+    let eff_app = app.clone();
+    let to_idx = crate::pages::dict::reactive::reactive_effect(
+        move || basic.version(),
+        move || {
+            let want = if basic.get() { 0 } else { 1 };
+            if idx.get() != want {
+                idx.set(want);
+            }
+            if let Ok(mut st) = eff_app.try_borrow_mut() {
+                st.save_tier_basic();
+            }
+        },
+    );
+    Element::col()
+        .width_match()
+        .padding_xy(2, 4)
+        .child(Element::segmented(vec!["普通", "高级"], idx).width_match())
+        .child(to_basic)
+        .child(to_idx)
+        .visible_when(move || sw.get() == crate::look::tier_switch::SHOW)
 }
 
 /// 侧栏最底部的「设置向导」动作项：样式同导航未选中态，点它弹向导、不切页。

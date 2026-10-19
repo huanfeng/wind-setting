@@ -60,6 +60,16 @@ pub fn request(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: Ju
         s.set(n);
         n
     });
+    // 目标行在「普通」范围下藏着：先切回「高级」，否则切了页也找不到那一行。
+    match &target {
+        JumpTarget::Row { anchor, .. } | JumpTarget::Card { anchor, .. } => {
+            crate::widgets::reveal_tier_anchor(anchor)
+        }
+        JumpTarget::RowInDialog { host_anchor, .. } => {
+            crate::widgets::reveal_tier_anchor(host_anchor)
+        }
+        _ => {}
+    }
     // 词库条目开的是独立窗，主窗停在原页——切过去只会得到一屏空白占位。
     if !matches!(target, JumpTarget::DictWindow) {
         tab.set(target.tab());
