@@ -1092,7 +1092,7 @@ fn build_dialog_group_row_with(
     let group = item.opens_dialog.clone().unwrap_or_default();
     // 成员项（按 manifest 顺序；group id 约定全局唯一以免跨 section 误吸）→ field() 行 → 分组对话框。
     let member_keys = dialog_group_keys(state, &group);
-    // 成员全被藏掉（定制版 / 普通模式）：没有可点开的东西，退回普通的一行。
+    // 成员全被定制版藏掉：没有可点开的东西，退回普通的一行。
     if member_keys.is_empty() {
         return field_with(state, key, mode);
     }
@@ -1102,9 +1102,18 @@ fn build_dialog_group_row_with(
     // 只能关框、开宿主、再进来。改为照常可调，顶部提示「宿主未开启，暂不生效」。
     let mut host_clause: Option<String> = None;
     // 框内每行也挂锚点：搜索命中的可能正是这些寄居项，跳转要落到具体那一行。
-    let mut rows: Vec<Element> = member_keys
-        .iter()
-        .map(|k| {
+    // 成员带 `subsection` 的，在框里按它分节、插小标题（如状态提示的「显示」「位置」）。
+    let mut cur_sub: Option<String> = None;
+    let mut rows: Vec<Element> = Vec::with_capacity(member_keys.len());
+    for k in &member_keys {
+        let sub = state.manifest.get(k).and_then(|it| it.subsection.clone());
+        if sub != cur_sub {
+            if let Some(name) = &sub {
+                rows.push(dialog_group_header(name));
+            }
+            cur_sub = sub;
+        }
+        rows.push({
             let row = match state.manifest.get(k) {
                 Some(it) => {
                     let (rest, dropped) =
@@ -1122,8 +1131,8 @@ fn build_dialog_group_row_with(
                 None => field(state, k),
             };
             crate::search::anchor::wrap(row, crate::search::index::in_dialog_anchor(k), state.jump)
-        })
-        .collect();
+        });
+    }
     if let Some(on) = host_clause
         .as_deref()
         .and_then(|c| enabled_when_closure(state, c))
