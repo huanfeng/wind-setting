@@ -1935,8 +1935,9 @@ impl AppState {
                     return;
                 }
                 match res {
-                    Ok(text) => on_text(&app_done, text),
-                    Err(e) => app_done.borrow().notify_err(e.user_message()),
+                    Some(Ok(text)) => on_text(&app_done, text),
+                    Some(Err(e)) => app_done.borrow().notify_err(e.user_message()),
+                    None => app_done.borrow().notify_err("下载线程异常中断"),
                 }
             },
         );
@@ -1949,7 +1950,10 @@ impl AppState {
         if let Some(id) = self.theme_download_task.take() {
             self.net.cancel(id);
         }
-        self.theme_download_idle.set(true);
+        // 写前先比：`Signal::set` 无条件升版本并通知整窗重绘，而这里每次关框都会走一遍。
+        if !self.theme_download_idle.get() {
+            self.theme_download_idle.set(true);
+        }
     }
 
     /// 后台下载协议链接带来的方案包并让 core 预览，完成后在 UI 线程弹导入确认框。
@@ -1976,10 +1980,11 @@ impl AppState {
                 let st = app_done.borrow();
                 st.schema_download_task.set(None);
                 match res {
-                    Ok((pkg, preview)) => {
+                    Some(Ok((pkg, preview))) => {
                         st.schema_mgr.open_downloaded_import_confirm(pkg, &preview)
                     }
-                    Err(e) => st.notify_err(e),
+                    Some(Err(e)) => st.notify_err(e),
+                    None => st.notify_err("下载线程异常中断"),
                 }
             },
         );

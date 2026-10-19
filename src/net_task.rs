@@ -55,11 +55,12 @@ impl NetTasks {
 
     /// 在后台线程跑 `work`，完成后在 UI 线程跑 `done`。通道没接上时先排队。
     ///
-    /// `work` 拿到取消标志，应当在循环里查它。
+    /// `work` 拿到取消标志，应当在循环里查它。`done` 收到 `None` 表示工作线程 panic 了——
+    /// 调用方必须在那条路上也收尾（复位忙标记等），否则界面会永远停在「下载中」。
     pub fn spawn<T: Send + 'static>(
         &self,
         work: impl FnOnce(&AtomicBool) -> T + Send + 'static,
-        done: impl FnOnce(T) + 'static,
+        done: impl FnOnce(Option<T>) + 'static,
     ) -> TaskId {
         let id = self.next_id.get() + 1;
         self.next_id.set(id);
@@ -69,7 +70,7 @@ impl NetTasks {
             Pending {
                 cancel: cancel.clone(),
                 done: Box::new(move |payload| {
-                    if let Ok(value) = payload.downcast::<T>() {
+                    if let Ok(value) = payload.downcast::<Option<T>>() {
                         done(*value);
                     }
                 }),
@@ -78,13 +79,15 @@ impl NetTasks {
         let start: Deferred = Box::new(move |sink| {
             std::thread::spawn(move || {
                 // 排队期间被取消的任务不必真去联网。
-                let value = (!cancel.load(Ordering::Relaxed)).then(|| work(&cancel));
-                if let Some(value) = value {
-                    sink(NetDone {
-                        id,
-                        payload: Box::new(value),
-                    });
+                if cancel.load(Ordering::Relaxed) {
+                    return;
                 }
+                let value =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&cancel))).ok();
+                sink(NetDone {
+                    id,
+                    payload: Box::new(value),
+                });
             });
         });
         let sink = self.sink.borrow().clone();
@@ -177,7 +180,7 @@ mod tests {
         let tasks = NetTasks::default();
         let got = Rc::new(Cell::new(0));
         let g = got.clone();
-        tasks.spawn(|_| 7, move |v: i32| g.set(v));
+        tasks.spawn(|_| 7, move |v: Option<i32>| g.set(v.unwrap()));
 
         let queue = Arc::new(Mutex::new(Vec::new()));
         let q = queue.clone();
@@ -189,7 +192,7 @@ mod tests {
     #[test]
     fn task_cancelled_while_queued_never_runs() {
         let tasks = NetTasks::default();
-        let id = tasks.spawn(|_| panic!("排队期间已取消，不该联网"), |_: i32| {});
+        let id = tasks.spawn(|_| panic!("排队期间已取消，不该联网"), |_: Option<i32>| {});
         tasks.cancel(id);
         let queue = Arc::new(Mutex::new(Vec::new()));
         let q = queue.clone();
@@ -203,7 +206,7 @@ mod tests {
         let (tasks, queue) = tasks_with_queue();
         let got = Rc::new(Cell::new(0));
         let g = got.clone();
-        tasks.spawn(|_| 41 + 1, move |v: i32| g.set(v));
+        tasks.spawn(|_| 41 + 1, move |v: Option<i32>| g.set(v.unwrap()));
         assert_eq!(got.get(), 0, "续体要等 on_done 才跑");
         tasks.on_done(wait_for_one(&queue));
         assert_eq!(got.get(), 42);
@@ -225,18 +228,32 @@ mod tests {
                 }
                 cancel.load(Ordering::Relaxed)
             },
-            move |_: bool| r.set(true),
+            move |_: Option<bool>| r.set(true),
         );
         // 线程确实跑起来之后再取消（启动前取消的任务根本不会跑，另有测试）。
         started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         tasks.cancel(id);
         let msg = wait_for_one(&queue);
         assert!(
-            *msg.payload.downcast_ref::<bool>().unwrap(),
+            msg.payload.downcast_ref::<Option<bool>>().unwrap().unwrap(),
             "工作线程应看到取消标志"
         );
         tasks.on_done(msg);
         assert!(!ran.get(), "取消后迟到的结果不得触发续体");
+    }
+
+    /// 工作线程 panic 也要回一条 `None`，否则调用方的「下载中」状态永远复位不了。
+    #[test]
+    fn worker_panic_is_reported_as_none() {
+        let (tasks, queue) = tasks_with_queue();
+        let got = Rc::new(Cell::new(None));
+        let g = got.clone();
+        tasks.spawn(
+            |_| -> i32 { panic!("模拟下载线程崩溃") },
+            move |v: Option<i32>| g.set(Some(v.is_none())),
+        );
+        tasks.on_done(wait_for_one(&queue));
+        assert_eq!(got.get(), Some(true));
     }
 
     #[test]
@@ -247,9 +264,9 @@ mod tests {
         let (t, s) = (tasks.clone(), second.clone());
         tasks.spawn(
             |_| 1,
-            move |_: i32| {
+            move |_: Option<i32>| {
                 let s = s.clone();
-                t.spawn(|_| 2, move |v: i32| s.set(v));
+                t.spawn(|_| 2, move |v: Option<i32>| s.set(v.unwrap()));
             },
         );
         tasks.on_done(wait_for_one(&queue));
