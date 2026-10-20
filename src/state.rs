@@ -3391,6 +3391,12 @@ pub(crate) fn degradation_text(v: &Value) -> String {
         .and_then(|a| a.first())
     {
         let path = u.get("path").and_then(Value::as_str).unwrap_or("配置文件");
+        if u.get("notUtf8").and_then(Value::as_bool).unwrap_or(false) {
+            return format!(
+                "⚠ 配置文件不是 UTF-8 编码，本次未能加载，你的设置都没有生效：{path}\n\
+                 用记事本等编辑器另存为「UTF-8」后点右下角「重新加载」。原文件不会被覆盖。"
+            );
+        }
         let all: Vec<u64> = u
             .get("skippedLines")
             .and_then(Value::as_array)
@@ -5844,6 +5850,18 @@ mod tests {
         }));
         assert!(none.contains("x/config.toml"), "{none}");
         assert!(none.contains("都没有生效"), "{none}");
+
+        // 编码不对时讲「另存为 UTF-8」，不讲「修语法」。
+        let enc = degradation_text(&serde_json::json!({
+            "degraded": true, "totalFallback": false, "sections": [],
+            "unparsable": [{ "path": "x/config.toml", "skippedLines": [], "notUtf8": true }],
+        }));
+        assert!(
+            enc.contains("UTF-8") && enc.contains("x/config.toml"),
+            "{enc}"
+        );
+        assert!(!enc.contains("语法"), "{enc}");
+        assert!(!none.contains("UTF-8"), "对照：语法错误不该讲编码：{none}");
 
         // ★ 跳过了行**却什么都没救回来**（core 啃到上限仍失败）：这两个条件同时成立，
         // 判据若写成「有行号 ⇒ 救回来了」就会说「其余设置已正常加载」——撒谎。

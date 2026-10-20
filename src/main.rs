@@ -46,6 +46,7 @@ mod shell;
 mod shortcuts;
 mod state;
 mod subnav;
+mod text_file;
 mod theme_def;
 #[allow(dead_code)]
 mod theme_editor_server;

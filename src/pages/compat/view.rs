@@ -162,6 +162,7 @@ fn build_nav(mgr: &CompatState, back: Element) -> Element {
                 .small()
                 .outline_soft()
                 .width_match()
+                .tooltip(crate::text_file::UTF8_ONLY)
                 .on_click(move |ctx| imp.start_import(ctx)),
         )
         .child(

@@ -453,11 +453,11 @@ pub fn dispatch_import_path(
             if !import.visible.get() {
                 import.open();
             }
-            match std::fs::read_to_string(&path) {
+            match crate::text_file::read_utf8(&path) {
                 Ok(text) => import.set_text(name, text),
                 Err(e) => {
                     import.source_desc.set(name);
-                    import.fail(format!("读取文件失败: {e}"));
+                    import.fail(e);
                 }
             }
         }
@@ -833,7 +833,7 @@ pub fn build_import_export_section(
         vec![
             setting_row(
                 "导入文件",
-                Some("导入配置片段、方案包或主题包，按内容自动识别"),
+                Some("导入配置片段、方案包或主题包，按内容自动识别；配置片段须为 UTF-8 编码"),
                 file_ctl,
             ),
             setting_row(

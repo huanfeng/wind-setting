@@ -1962,10 +1962,10 @@ impl DictManagerState {
                 .filter("TOML", &["toml"]),
             move |path| {
                 let Some(path) = path else { return };
-                let content = match std::fs::read_to_string(&path) {
+                let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
-                        state.notify_err(&format!("读文件失败: {e}"));
+                        state.notify_err(&e);
                         return;
                     }
                 };
@@ -2044,10 +2044,10 @@ impl DictManagerState {
                 .filter("常用字调整", &["toml", "jsonl"]),
             move |path| {
                 let Some(path) = path else { return };
-                let content = match std::fs::read_to_string(&path) {
+                let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
-                        state.notify_err(&format!("读文件失败: {e}"));
+                        state.notify_err(&e);
                         return;
                     }
                 };
@@ -3126,10 +3126,10 @@ impl DictManagerState {
                 .filter("WindDict", &["yaml"]),
             move |path| {
                 let Some(path) = path else { return };
-                let content = match std::fs::read_to_string(&path) {
+                let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
-                        state.notify_err(&format!("读文件失败: {e}"));
+                        state.notify_err(&e);
                         return;
                     }
                 };
@@ -3503,10 +3503,10 @@ impl DictManagerState {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let content = match std::fs::read_to_string(&path) {
+                let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
-                        state.notify_err(&format!("读文件失败: {e}"));
+                        state.notify_err(&e);
                         return;
                     }
                 };

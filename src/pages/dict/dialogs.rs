@@ -285,11 +285,13 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
         )
         .child(Element::divider())
         .child(
-            Element::label("从 WindDict / Rime / TSV / 纯词列表导入（按内容自动识别）")
-                .font_size(12.5)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(1),
+            Element::label(
+                "从 WindDict / Rime / TSV / 纯词列表导入（按内容自动识别）。文件须为 UTF-8 编码。",
+            )
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(2),
         )
         .child(file_row)
         .child(io_target_row(mgr, "导入到"))
@@ -997,7 +999,7 @@ fn edit_session_body(mgr: &DictManagerState, bar: super::file_edit::EditBar) -> 
         .child(Element::divider());
     col = match &bar.problem {
         None => col.child(text(
-            "已用默认程序打开这个文件。在编辑器里改完并保存，再点「完成并加载」。\
+            "已用默认程序打开这个文件。在编辑器里改完并保存（保持 UTF-8 编码），再点「完成并加载」。\
              编辑期间词库窗里的其它操作暂停。"
                 .into(),
             Role::Text,
@@ -1089,6 +1091,12 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
         .visible_when(move || importing.get());
     let format_row =
         io_format_row(libs.format, libs.format_note).visible_when(move || importing.get());
+    let encoding_note = Element::label(crate::text_file::UTF8_ONLY)
+        .font_size(12.0)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(1)
+        .visible_when(move || importing.get());
     let m_wl = mgr.clone();
     let weight_row = io_weight_row(mgr, move || m_wl.lib_import_is_word_list());
 
@@ -1130,6 +1138,7 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
         .child(error)
         .child(format_row)
         .child(weight_row)
+        .child(encoding_note)
         .child(footer)
         .child(reactive_effect(
             move || name_v.version(),

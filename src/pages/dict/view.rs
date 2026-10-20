@@ -102,6 +102,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     let import_entry = Element::button("导入")
         .small()
         .outline_soft()
+        .tooltip(crate::text_file::UTF8_ONLY)
         .on_click(move |ctx| imp_open.do_import(ctx))
         .visible_when(move || imp_vis.io_entry_visible())
         .enabled_when(move || imp_en.io_entry_enabled());
@@ -119,6 +120,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
     let edit_file = Element::button("编辑文件")
         .small()
         .outline_soft()
+        .tooltip("保存时保持 UTF-8 编码")
         .on_click(move |_| ef_do.do_edit_file())
         .visible_when(move || ef_vis.edit_file_target().is_some());
     // 混输域只有「候选调整」一类，标题行中间大片留白——正好安置这句说明，不占额外行高。

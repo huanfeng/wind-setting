@@ -672,10 +672,10 @@ impl DictManagerState {
 
     /// 选好文件后打开名字对话框。
     pub(crate) fn open_lib_import(&self, path: &Path) {
-        let content = match std::fs::read_to_string(path) {
+        let content = match crate::text_file::read_utf8(path) {
             Ok(c) => c,
             Err(e) => {
-                self.notify_err(&format!("读文件失败: {e}"));
+                self.notify_err(&e);
                 return;
             }
         };

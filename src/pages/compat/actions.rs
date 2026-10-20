@@ -268,9 +268,9 @@ impl CompatState {
                 .filter("TOML", &["toml"]),
             move |path| {
                 let Some(path) = path else { return };
-                match std::fs::read_to_string(&path) {
+                match crate::text_file::read_utf8(&path) {
                     Ok(content) => st.begin_import(content),
-                    Err(e) => st.notify(ToastKind::Error, format!("读文件失败: {e}")),
+                    Err(e) => st.notify(ToastKind::Error, e),
                 }
             },
         );
