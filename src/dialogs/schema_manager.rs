@@ -3427,7 +3427,7 @@ impl SchemaManagerState {
                 .filter("方案包", &["zip"])
                 .save_file()
             else {
-                return;
+                return crate::file_pick::report_failure(|m| state.notify(ToastKind::Error, m));
             };
             match rpc::call_core(
                 "scheme.exportPackage",
@@ -3463,7 +3463,7 @@ impl SchemaManagerState {
                 .filter("方案包", &["wpkg", "zip"])
                 .pick_file()
             else {
-                return;
+                return crate::file_pick::report_failure(|m| state.notify(ToastKind::Error, m));
             };
             match rpc::call_core(
                 "scheme.previewImport",

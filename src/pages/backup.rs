@@ -87,7 +87,9 @@ impl BackupState {
                 .file_name(&format!("windinput-backup-{stamp}.zip"))
                 .filter("备份包", &["zip"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify(ToastKind::Error, m));
+                };
                 match rpc::call_core(
                     "backup.create",
                     &json!({
@@ -119,7 +121,9 @@ impl BackupState {
                 .title("从备份还原")
                 .filter("备份包", &["zip"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify(ToastKind::Error, m));
+                };
                 match rpc::call_core("backup.inspect", &json!({ "path": path.to_string_lossy() })) {
                     Ok(v) => {
                         let kind = v

@@ -427,7 +427,9 @@ pub fn pick_import_file(
             .filter("方案包", &["zip", "wpkg"])
             .filter("主题包", &["wtheme"]),
         move |path| {
-            let Some(path) = path else { return };
+            let Some(path) = path else {
+                return crate::file_pick::report_failure(|m| import.notify(ToastKind::Error, m));
+            };
             dispatch_import_path(&import, &schema_mgr, theme_import, path);
         },
     );

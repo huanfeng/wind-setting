@@ -243,7 +243,9 @@ impl CompatState {
                 .file_name(format!("compat-{stamp}.toml"))
                 .filter("TOML", &["toml"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| st.notify(ToastKind::Error, m));
+                };
                 match rpc::call_core("compat.export", &json!({ "scope": "user" })) {
                     Ok(v) => {
                         let content = v.get("content").and_then(Value::as_str).unwrap_or("");
@@ -267,7 +269,9 @@ impl CompatState {
                 .title("导入 · 应用兼容性与独立配置")
                 .filter("TOML", &["toml"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| st.notify(ToastKind::Error, m));
+                };
                 match crate::text_file::read_utf8(&path) {
                     Ok(content) => st.begin_import(content),
                     Err(e) => st.notify(ToastKind::Error, e),

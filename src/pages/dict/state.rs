@@ -1959,7 +1959,9 @@ impl DictManagerState {
                 .file_name(Self::export_file_name_ext("quick-input", "toml"))
                 .filter("TOML", &["toml"]),
             move |path| {
-                let Some(path) = path else { return }; // 用户取消
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 match rpc::call_core("quick.export", &json!({})) {
                     Ok(v) => {
                         let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
@@ -1982,7 +1984,9 @@ impl DictManagerState {
                 .title("导入 · 快捷输入")
                 .filter("TOML", &["toml"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
@@ -2038,7 +2042,9 @@ impl DictManagerState {
                 .file_name(Self::export_file_name_ext("common-chars", "toml"))
                 .filter("TOML", &["toml"]),
             move |path| {
-                let Some(path) = path else { return }; // 用户取消
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 match rpc::call_core("commonChars.export", &json!({})) {
                     Ok(v) => {
                         let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
@@ -2064,7 +2070,9 @@ impl DictManagerState {
                 .title("导入 · 常用字")
                 .filter("常用字调整", &["toml", "jsonl"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
@@ -3121,7 +3129,9 @@ impl DictManagerState {
                 .file_name(Self::export_file_name("phrases"))
                 .filter("WindDict", &["yaml"]),
             move |path| {
-                let Some(path) = path else { return }; // 用户取消
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 match rpc::call_core(state.export_method(), &json!({})) {
                     Ok(v) => {
                         let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
@@ -3145,7 +3155,9 @@ impl DictManagerState {
                 .title("导入 · 用户短语")
                 .filter("WindDict", &["yaml"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 let content = match crate::text_file::read_utf8(&path) {
                     Ok(c) => c,
                     Err(e) => {
@@ -3490,7 +3502,9 @@ impl DictManagerState {
                 .file_name(Self::export_file_name(&schema))
                 .filter("WindDict", &["yaml"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 // ★ 把落点交给 core 直接写，而不是「core 回全文、这边再写盘」。后者要让
                 // 整份词库穿过一帧 JSON-RPC，几十万条就撞 16MB 读帧上限（issue #101 的
                 // 「导出失败: 读取失败: 帧长超限」正是在这里报的）。这一步之后 payload
@@ -3518,7 +3532,9 @@ impl DictManagerState {
                 .title("选择词库文件")
                 .filter("词库文件 (WindDict/Rime/TSV)", &["yaml", "txt"]),
             move |path| {
-                let Some(path) = path else { return };
+                let Some(path) = path else {
+                    return crate::file_pick::report_failure(|m| state.notify_err(m));
+                };
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())

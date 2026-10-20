@@ -662,10 +662,9 @@ impl DictManagerState {
             PickDialog::new()
                 .title("选择词库文件")
                 .filter("词库文件 (Rime/TSV/WindDict/纯词列表)", &["yaml", "txt"]),
-            move |path| {
-                if let Some(path) = path.as_deref() {
-                    state.open_lib_import(path);
-                }
+            move |path| match path {
+                Some(path) => state.open_lib_import(&path),
+                None => crate::file_pick::report_failure(|m| state.notify_err(m)),
             },
         );
     }
