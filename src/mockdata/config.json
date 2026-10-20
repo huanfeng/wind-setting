@@ -6,7 +6,8 @@
  },
  "input": {
   "add_word": {
-   "candidate_layout": "vertical"
+   "candidate_layout": "vertical",
+   "default_source": "recent"
   },
   "alt_commit": "off",
   "association": {

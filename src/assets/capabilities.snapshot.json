@@ -1390,6 +1390,15 @@
       ]
     },
     {
+      "default": "recent",
+      "key": "input.add_word.default_source",
+      "type": "enum",
+      "values": [
+        "recent",
+        "clipboard"
+      ]
+    },
+    {
       "default": false,
       "key": "input.s2t.enabled",
       "type": "bool"
