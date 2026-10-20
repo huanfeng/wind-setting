@@ -1676,12 +1676,11 @@ impl AppState {
             // 兼容规则被改了（设置端自己写的会收到回声；右键菜单写的只能靠它得知）。
             // 回声无害：`CompatState::reload` 只在内容真的变了才动信号，不会因此重建界面。
             "compat.changed" => self.compat_mgr.request_refresh(),
-            // 方案配置被改了（命令直通开关扩展词库等）：开着的方案设置对话框跟着刷新。
-            // 本端保存的回声在 `sync_dicts_from` 里按值相同滤掉，不提示。
+            // 方案配置被改了（命令直通开关扩展词库等）：开着的方案设置对话框与待提交队列
+            // 都要对账。本端保存的回声按值相同滤掉，不提示。
+            // 不带 id 的是可能动了多个方案的写入（导入方案包、整机还原），按全部处理。
             "schema.configChanged" => {
-                let Some(id) = ev.data.get("id").and_then(|v| v.as_str()) else {
-                    return;
-                };
+                let id = ev.data.get("id").and_then(|v| v.as_str());
                 let changed = self.schema_mgr.on_schema_config_changed(id);
                 if !changed.is_empty() {
                     ctx.toast(format!(

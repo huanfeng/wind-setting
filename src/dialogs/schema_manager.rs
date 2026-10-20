@@ -434,12 +434,24 @@ fn aux_reset_all(
             .settings_aux_src_idx
             .set(state.settings_aux_src_follow_idx.get());
     }
-    state.settings_aux_disp.set(ct_summary(
-        state.settings_aux_on_over.get() as usize
-            + state.settings_aux_len_over.get() as usize
-            + state.settings_aux_src_over.get() as usize
-            + state.settings_aux_direct_over.get() as usize,
-    ));
+    state
+        .settings_aux_disp
+        .set(ct_summary(aux_custom_count(state)));
+}
+
+/// 辅助码卡片标题旁「已自定义 N 项」的 N：只数界面上看得见的行。被定制版藏掉的行即使
+/// 有覆盖值也不计——用户在卡片里数不出那一项。
+fn aux_custom_count(state: &SchemaManagerState) -> usize {
+    let hidden = aux_rows_hidden(state);
+    [
+        (state.settings_aux_on_over.get(), hidden.on),
+        (state.settings_aux_len_over.get(), hidden.len),
+        (state.settings_aux_src_over.get(), hidden.src),
+        (state.settings_aux_direct_over.get(), hidden.direct),
+    ]
+    .iter()
+    .filter(|(over, hidden)| *over && !*hidden)
+    .count()
 }
 
 /// 辅助码一节各行是否被定制版 `[settings] hide` 藏掉，按各行对应的全局项判。
@@ -471,11 +483,13 @@ fn aux_rows_hidden(state: &SchemaManagerState) -> AuxRowsHidden {
     }
 }
 
-/// 「本方案行为」一节里有全局对应项的三行是否被定制版藏掉。其余几行（标点、文字排列、
-/// 字体、加载短语）全局页没有对应项，恒显示——所以这一节不会被藏空。
+/// 「本方案行为」一节里有全局对应项的四行是否被定制版藏掉。其余几行（标点、文字排列、
+/// 加载短语）全局页没有对应项，恒显示——所以这一节不会被藏空。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BehaviorRowsHidden {
     layout: bool,
+    /// 候选文字字体，对应全局 `ui.font.family`。
+    font: bool,
     /// 横竖两个模板都藏了才藏（藏横排那个时竖排随它藏，见 `hide_orphaned_dialog_members`）。
     comment: bool,
     punct_map: bool,
@@ -484,6 +498,7 @@ struct BehaviorRowsHidden {
 fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
     BehaviorRowsHidden {
         layout: state.custom_hidden("ui.candidate.layout"),
+        font: state.custom_hidden("ui.font.family"),
         comment: state.custom_hidden("ui.candidate.comment_template_horizontal")
             && state.custom_hidden("ui.candidate.comment_template_vertical"),
         punct_map: state.custom_hidden("input.punct.custom_mappings"),
@@ -648,10 +663,13 @@ fn aux_src_write(over: bool, pick: Option<&str>) -> Value {
 fn behavior_reset_all(state: &SchemaManagerState) {
     state.settings_bh_punct.set(0);
     // 定制版藏掉的行不动，同 [`aux_reset_all`]。
-    if !behavior_rows_hidden(state).layout {
+    let hidden = behavior_rows_hidden(state);
+    if !hidden.layout {
         state.settings_bh_layout.set(0);
     }
-    state.settings_bh_font_over.set(false);
+    if !hidden.font {
+        state.settings_bh_font_over.set(false);
+    }
 }
 
 /// 候选字体（`[candidate] font_family`）的落盘值：未勾选，或勾选但留空，都写
@@ -1144,7 +1162,10 @@ pub struct DictRow {
 #[derive(Clone, Default)]
 struct PendingSchemaEdit {
     cfg: Option<Value>,
-    /// 词库开关变更 (dict_id, enabled)。
+    /// `cfg` 是在哪份 `schema.getConfig` 快照上改出来的。外部改动到来时据它分出
+    /// 「哪些是本端改的」，见 [`reconcile_pending`]。
+    base: Value,
+    /// 词库开关变更 (dict_id, enabled)。只在与打开时不同才入队，故打开时的值恒为 `!enabled`。
     dicts: Vec<(String, bool)>,
 }
 
@@ -1217,6 +1238,9 @@ pub struct SchemaManagerState {
     pub settings_schema_id: Rc<RefCell<String>>,
     /// 设置对话框打开时经 schema.getConfig 拉取的完整方案配置（保存时改写后回传）。
     pub settings_cfg: Rc<RefCell<Value>>,
+    /// 对话框开着期间外部改了这个方案（`schema.configChanged`）后重拉到的配置。
+    /// 控件仍按 `settings_cfg` 显示；保存时用它对账，外部改动优先，见 [`reconcile_pending`]。
+    settings_cfg_fresh: Rc<RefCell<Option<Value>>>,
     /// 当前方案是否为双拼（决定「双拼布局」行与保存按钮的可见性）。
     pub settings_is_shuangpin: Signal<bool>,
     /// 双拼布局下拉选中索引（对应 [`SchemaManagerState::layouts`] 的顺序）。
@@ -1517,6 +1541,7 @@ impl SchemaManagerState {
             settings_entry: Rc::new(RefCell::new(None)),
             settings_schema_id: Rc::new(RefCell::new(String::new())),
             settings_cfg: Rc::new(RefCell::new(Value::Null)),
+            settings_cfg_fresh: Rc::new(RefCell::new(None)),
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
@@ -2257,20 +2282,80 @@ impl SchemaManagerState {
         self.rebuild_list();
     }
 
-    /// core 广播方案 `id` 的配置已变（`schema.configChanged`，命令直通也会触发）。
+    /// core 广播方案配置已变（`schema.configChanged`，命令直通也会触发）。`id` 为 `None`
+    /// 是一次可能动了多个方案的写入（导入方案包、整机还原），按全部处理。
     ///
-    /// 方案设置对话框开着且正是这个方案时，重拉 `schema.getConfig` 同步扩展词库行，见
-    /// [`Self::sync_dicts_from`]。返回界面上跳变了的行名，供调用方提示。
-    pub fn on_schema_config_changed(&self, id: &str) -> Vec<String> {
-        if !self.settings_visible.get() || *self.settings_schema_id.borrow() != id {
-            return Vec::new();
-        }
-        match rpc::call_core("schema.getConfig", &json!({ "id": id })) {
-            Ok(cfg) => self.sync_dicts_from(&cfg),
+    /// 两处要对账，都是外部改动优先：
+    /// - 待提交队列里这个方案的改动（对话框关着也要做），见 [`reconcile_pending`]；
+    /// - 开着的方案设置对话框：扩展词库行直接同步（[`Self::sync_dicts_from`]），其余控件
+    ///   不重播种，记下新配置留给保存时对账，并提示用户。
+    ///
+    /// 返回对话框里勾选跳变了的扩展词库名，供调用方提示。
+    pub fn on_schema_config_changed(&self, id: Option<&str>) -> Vec<String> {
+        let hit = |sid: &str| id.is_none_or(|id| id == sid);
+        let pending: Vec<String> = self
+            .pending_edits
+            .borrow()
+            .keys()
+            .filter(|k| hit(k))
+            .cloned()
+            .collect();
+        let open_id = self.settings_schema_id.borrow().clone();
+        let open = self.settings_visible.get() && !open_id.is_empty() && hit(&open_id);
+        let fetch = |sid: &str| match rpc::call_core("schema.getConfig", &json!({ "id": sid })) {
+            Ok(cfg) => Some(cfg),
             Err(e) => {
                 tracing::warn!("方案配置变更后重拉失败: {e}");
-                Vec::new()
+                None
             }
+        };
+        for sid in pending {
+            if let Some(fresh) = fetch(&sid) {
+                self.reconcile_pending_of(&sid, &fresh);
+            }
+        }
+        if !open {
+            return Vec::new();
+        }
+        let Some(fresh) = fetch(&open_id) else {
+            return Vec::new();
+        };
+        if !same_without_dicts(&self.settings_cfg.borrow(), &fresh) {
+            *self.settings_cfg_fresh.borrow_mut() = Some(fresh.clone());
+            self.notify(
+                ToastKind::Info,
+                "本方案的设置已在别处更改：保存时以外部改动为准，重新打开对话框可看到最新值",
+            );
+        }
+        self.sync_dicts_from(&fresh)
+    }
+
+    /// 待提交队列里方案 `id` 的改动与外部新配置对账；被外部顶掉的给一条提示。
+    fn reconcile_pending_of(&self, id: &str, fresh: &Value) {
+        let lost = {
+            let mut q = self.pending_edits.borrow_mut();
+            let Some(edit) = q.get_mut(id) else {
+                return;
+            };
+            let lost = reconcile_pending(edit, fresh);
+            if edit.cfg.is_none() && edit.dicts.is_empty() {
+                q.remove(id);
+            }
+            lost
+        };
+        if lost > 0 {
+            let name = self
+                .schemas
+                .borrow()
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| id.to_string());
+            self.notify(
+                ToastKind::Info,
+                format!("「{name}」有 {lost} 项未保存的设置已在别处更改，以外部改动为准"),
+            );
         }
     }
 
@@ -2570,6 +2655,7 @@ impl SchemaManagerState {
         }
         *self.settings_schema_id.borrow_mut() = entry.id.clone();
         *self.settings_cfg.borrow_mut() = cfg;
+        *self.settings_cfg_fresh.borrow_mut() = None;
         self.settings_is_shuangpin.set(is_sp);
         *self.settings_entry.borrow_mut() = Some(entry);
 
@@ -2734,9 +2820,8 @@ impl SchemaManagerState {
                 self.settings_aux_src_manual.set(src_manual);
                 self.settings_aux_src_at_open
                     .set((src_over, src_idx, src_manual));
-                self.settings_aux_disp.set(ct_summary(
-                    on_over as usize + len_over as usize + src_over as usize + direct_over as usize,
-                ));
+                self.settings_aux_disp
+                    .set(ct_summary(aux_custom_count(self)));
                 // 定制版把这一节的行全藏了就不建节（值照样播种，保存时原样不动）。
                 if !aux_rows_hidden(self).all(is_sp) {
                     sections.push(SettingsSection::Divider);
@@ -3205,12 +3290,19 @@ impl SchemaManagerState {
         if dicts.is_empty() && !cfg_changed {
             return;
         }
-        merge_pending(
-            &mut self.pending_edits.borrow_mut(),
-            &id,
-            cfg_changed.then_some(cfg),
-            dicts,
-        );
+        {
+            let mut q = self.pending_edits.borrow_mut();
+            merge_pending(&mut q, &id, cfg_changed.then_some(cfg), dicts);
+            if cfg_changed && let Some(slot) = q.get_mut(&id) {
+                slot.base = self.settings_cfg.borrow().clone();
+            }
+        }
+        // 对话框开着期间外部改过这个方案：控件是按旧快照显示的，入队的改动要对一次账，
+        // 否则 saveConfig 拿旧快照整份重写 override，外部刚写的值被静默抹掉。
+        let fresh = self.settings_cfg_fresh.borrow().clone();
+        if let Some(fresh) = fresh {
+            self.reconcile_pending_of(&id, &fresh);
+        }
     }
 
     /// 是否有待提交的方案 override 改动（供主保存的 `is_dirty` 汇总）。
@@ -4697,6 +4789,111 @@ fn drain_pending(
     Ok(())
 }
 
+/// 两份方案配置除扩展词库外是否相同（词库行另有同步路径，见 `sync_dicts_from`）。
+fn same_without_dicts(a: &Value, b: &Value) -> bool {
+    let strip = |v: &Value| {
+        let mut v = v.clone();
+        if let Some(o) = v.as_object_mut() {
+            o.remove("dictionaries");
+        }
+        v
+    };
+    strip(a) == strip(b)
+}
+
+/// 待提交的改动与外部改动后的新配置对账，外部优先。返回被外部顶掉的项数。
+///
+/// - 词库开关：与新值相同的条目已无事可做，剔除。不同的保留——队列里只有「与打开时不同」
+///   的开关，布尔值只有两态，新值与入队值不同即等于打开时的值，说明外部没动这一条。
+/// - 方案配置：`base → cfg` 的差异是本端改的，重放到新配置上（[`rebase_cfg`]）；外部也改了
+///   同一处的按外部。重放后不剩改动就整份撤掉。
+fn reconcile_pending(edit: &mut PendingSchemaEdit, fresh: &Value) -> usize {
+    let fresh_dicts = parse_extension_dicts(fresh);
+    edit.dicts.retain(|(d, want)| {
+        fresh_dicts
+            .iter()
+            .find(|x| x.id == *d)
+            .is_none_or(|x| x.enabled != *want)
+    });
+    let Some(mine) = edit.cfg.take() else {
+        return 0;
+    };
+    let r = rebase_cfg(&edit.base, &mine, fresh);
+    if r.applied > 0 {
+        edit.cfg = Some(r.cfg);
+        edit.base = fresh.clone();
+    }
+    r.conflicts
+}
+
+/// [`rebase_cfg`] 的结果。
+struct Rebased {
+    cfg: Value,
+    /// 重放上去的本端改动数。
+    applied: usize,
+    /// 本端与外部都改了、按外部处理的项数。
+    conflicts: usize,
+}
+
+/// 把 `base → mine` 的改动重放到 `fresh` 上（三方合并，按叶子比较）。
+///
+/// `null` 与缺键同义（core 的 `json_to_toml` 跳过 null）。数组按整体比较——`saveConfig`
+/// 对它也是整体 diff。
+fn rebase_cfg(base: &Value, mine: &Value, fresh: &Value) -> Rebased {
+    let mut out = fresh.clone();
+    let mut r = (0, 0);
+    rebase_slot(Some(base), Some(mine), &mut out, &mut r);
+    Rebased {
+        cfg: out,
+        applied: r.0,
+        conflicts: r.1,
+    }
+}
+
+fn rebase_slot(
+    base: Option<&Value>,
+    mine: Option<&Value>,
+    out: &mut Value,
+    r: &mut (usize, usize),
+) {
+    let b = base.filter(|v| !v.is_null());
+    let m = mine.filter(|v| !v.is_null());
+    if b == m {
+        return;
+    }
+    // 本端在对象里改了东西（含新建出这一段）：逐键下钻。基线缺这一段按空对象算，否则
+    // 外部同时往这一段里写了别的键时，整段会被当成冲突、把本端的改动一起丢掉。
+    let empty = serde_json::Map::new();
+    let bo = match b {
+        Some(Value::Object(o)) => Some(o),
+        None => Some(&empty),
+        _ => None,
+    };
+    if let (Some(bo), Some(Value::Object(mo))) = (bo, m) {
+        if out.is_null() {
+            *out = json!({});
+        }
+        if let Value::Object(oo) = out {
+            let keys: std::collections::BTreeSet<&String> = bo.keys().chain(mo.keys()).collect();
+            for k in keys {
+                let slot = oo.entry(k.clone()).or_insert(Value::Null);
+                rebase_slot(bo.get(k), mo.get(k), slot, r);
+            }
+            return;
+        }
+    }
+    let f = Some(&*out).filter(|v| !v.is_null());
+    if f == m {
+        return;
+    }
+    if f == b {
+        *out = m.cloned().unwrap_or(Value::Null);
+        r.0 += 1;
+    } else {
+        r.1 += 1;
+    }
+}
+
 /// 把一次编辑合并进待提交队列。
 ///
 /// **合并而非覆盖**：用户可以先改词库、关窗、再进去改码表配置，两次都得留下；
@@ -5287,7 +5484,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 Element::dropdown(TEXT_ORIENT_LABELS.to_vec(), state.settings_bh_text_orient)
                     .width(BH_DD_W),
             ));
-            rows.push(font_row);
+            if !hidden.font {
+                rows.push(font_row);
+            }
             rows.push(crate::widgets::setting_row(
                 "加载快捷短语",
                 Some(
@@ -7849,6 +8048,7 @@ mod section_build_tests {
         let state = SchemaManagerState::new();
         let none = BehaviorRowsHidden {
             layout: false,
+            font: false,
             comment: false,
             punct_map: false,
         };
@@ -7868,23 +8068,30 @@ mod section_build_tests {
         assert_eq!(
             behavior_rows_hidden(&state),
             BehaviorRowsHidden {
-                layout: false,
                 comment: true,
                 punct_map: true,
+                ..none
             }
+        );
+        state.set_manifest(folded(&["key:ui.font.family"]));
+        assert_eq!(
+            behavior_rows_hidden(&state),
+            BehaviorRowsHidden { font: true, ..none }
         );
     }
 
-    /// 「全部恢复跟随」不清定制版藏掉的候选排列。
+    /// 「全部恢复跟随」不清定制版藏掉的候选排列与字体。
     #[test]
-    fn behavior_reset_all_keeps_custom_hidden_layout() {
+    fn behavior_reset_all_keeps_custom_hidden_rows() {
         let state = SchemaManagerState::new();
-        state.set_manifest(folded(&["key:ui.candidate.layout"]));
+        state.set_manifest(folded(&["key:ui.candidate.layout", "key:ui.font.family"]));
         state.settings_bh_punct.set(2);
         state.settings_bh_layout.set(1);
+        state.settings_bh_font_over.set(true);
         behavior_reset_all(&state);
         assert_eq!(state.settings_bh_punct.get(), 0);
         assert_eq!(state.settings_bh_layout.get(), 1);
+        assert!(state.settings_bh_font_over.get());
     }
 
     /// 辅助码各行全藏 ⇒ 不建这一节；只藏一部分 ⇒ 节还在。
@@ -7939,7 +8146,22 @@ mod section_build_tests {
         assert!(!state.settings_aux_on_over.get());
         assert!(state.settings_aux_len_over.get());
         assert_eq!(state.settings_aux_len.get(), 9.0);
-        assert_eq!(state.settings_aux_disp.get(), ct_summary(1));
+        assert_eq!(
+            state.settings_aux_disp.get(),
+            ct_summary(0),
+            "藏掉的那行有覆盖值也不计数"
+        );
+    }
+
+    /// 打开时的计数同样不数藏掉的行。
+    #[test]
+    fn aux_count_skips_custom_hidden_rows() {
+        let state = SchemaManagerState::new();
+        state.settings_aux_on_over.set(true);
+        state.settings_aux_len_over.set(true);
+        assert_eq!(aux_custom_count(&state), 2);
+        state.set_manifest(folded(&["key:schema.pinyin.aux_code.max_phrase_len"]));
+        assert_eq!(aux_custom_count(&state), 1);
     }
 
     fn dict_row(id: &str, initial: bool, on: bool) -> DictRow {
@@ -8003,15 +8225,117 @@ mod section_build_tests {
         assert!(state.settings_dicts.borrow()[0].on.get());
     }
 
+    /// 三方合并：本端改的重放到新配置；外部改的保留；两边都改的按外部并计数。
+    #[test]
+    fn rebase_cfg_replays_own_changes_and_keeps_external_ones() {
+        let base = json!({ "engine": { "codetable": { "a": 1, "b": 1, "c": 1 } }, "x": 1 });
+        // 本端：改 a、清 b（null = 取消覆盖）。
+        let mine = json!({ "engine": { "codetable": { "a": 2, "b": null, "c": 1 } }, "x": 1 });
+        // 外部：改 b、改 c、改 x。
+        let fresh = json!({ "engine": { "codetable": { "a": 1, "b": 5, "c": 9 } }, "x": 3 });
+        let r = rebase_cfg(&base, &mine, &fresh);
+        assert_eq!(
+            r.cfg,
+            json!({ "engine": { "codetable": { "a": 2, "b": 5, "c": 9 } }, "x": 3 })
+        );
+        assert_eq!((r.applied, r.conflicts), (1, 1));
+
+        // 基线没有这一段、两边各往里写了不同的键：都留下，不算冲突。
+        let r = rebase_cfg(
+            &json!({ "engine": {} }),
+            &json!({ "engine": { "codetable": { "a": 1 } } }),
+            &json!({ "engine": { "codetable": { "b": 2 } } }),
+        );
+        assert_eq!(
+            r.cfg,
+            json!({ "engine": { "codetable": { "a": 1, "b": 2 } } })
+        );
+        assert_eq!((r.applied, r.conflicts), (1, 0));
+    }
+
+    /// 对话框开着时外部改了别的项：保存时不能拿旧快照把它抹掉。走真实的 stage 路径。
+    #[test]
+    fn stage_with_fresh_config_keeps_external_change() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        *state.schemas.borrow_mut() = vec![SchemaEntry {
+            id: "wubi86".into(),
+            name: "五笔 86".into(),
+            engine_type: "codetable".into(),
+            ..Default::default()
+        }];
+        state.open_settings_at_id("wubi86");
+        let mut fresh = state.settings_cfg.borrow().clone();
+        set_json_path(&mut fresh, &["engine", "codetable", "ext_probe"], json!(7));
+        *state.settings_cfg_fresh.borrow_mut() = Some(fresh);
+        state.settings_sentence.set(true);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["wubi86"].cfg.clone().unwrap();
+        assert_eq!(
+            cfg["engine"]["codetable"]["ext_probe"],
+            json!(7),
+            "外部改动被抹掉了"
+        );
+        assert_eq!(cfg["engine"]["codetable"]["sentence_input"], json!(true));
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 待提交队列对账：与新值相同的词库开关剔除，外部没动的保留；全部被顶掉就整条撤掉并提示。
+    #[test]
+    fn pending_is_reconciled_with_external_change() {
+        let base = json!({ "engine": { "codetable": { "a": 1 } } });
+        let mut edit = PendingSchemaEdit {
+            cfg: Some(json!({ "engine": { "codetable": { "a": 2 } } })),
+            base: base.clone(),
+            dicts: vec![("x".into(), false), ("y".into(), true)],
+        };
+        let fresh = json!({
+            "engine": { "codetable": { "a": 3 } },
+            "dictionaries": [
+                { "id": "x", "enabled": false },
+                { "id": "y", "enabled": false },
+            ],
+        });
+        assert_eq!(
+            reconcile_pending(&mut edit, &fresh),
+            1,
+            "a 两边都改了，按外部"
+        );
+        assert!(edit.cfg.is_none(), "不剩本端改动就不再 saveConfig");
+        assert_eq!(edit.dicts, vec![("y".to_string(), true)]);
+
+        let state = SchemaManagerState::new();
+        state.pending_edits.borrow_mut().insert(
+            "wubi86".into(),
+            PendingSchemaEdit {
+                cfg: Some(json!({ "engine": { "codetable": { "a": 2 } } })),
+                base,
+                dicts: vec![],
+            },
+        );
+        state.reconcile_pending_of("wubi86", &fresh);
+        assert!(!state.has_pending_edits(), "空了的条目要移出队列");
+        assert!(
+            state
+                .feedback
+                .get()
+                .is_some_and(|(_, m)| m.contains("以外部改动为准")),
+            "被顶掉要提示"
+        );
+    }
+
     /// 对话框没开、或开的是别的方案：不重拉。
     #[test]
     fn schema_config_changed_ignored_unless_that_dialog_is_open() {
         let state = SchemaManagerState::new();
         *state.settings_dicts.borrow_mut() = vec![dict_row("a", true, true)];
         *state.settings_schema_id.borrow_mut() = "wubi86".into();
-        assert!(state.on_schema_config_changed("wubi86").is_empty());
+        assert!(state.on_schema_config_changed(Some("wubi86")).is_empty());
         state.settings_visible.set(true);
-        assert!(state.on_schema_config_changed("pinyin").is_empty());
+        assert!(state.on_schema_config_changed(Some("pinyin")).is_empty());
         assert!(state.settings_dicts.borrow()[0].initial);
     }
 }
