@@ -832,10 +832,10 @@ impl DictManagerState {
                 self.notify_err("文件里没有可用的词条。");
                 return false;
             }
-            let weight: i64 = match self.io_weight.get().trim().parse() {
-                Ok(w) => w,
-                Err(_) => {
-                    self.notify_err("权重需为整数");
+            let weight = match crate::weight::parse_weight(&self.io_weight.get()) {
+                Ok(w) => i64::from(w),
+                Err(e) => {
+                    self.notify_err(&e);
                     return false;
                 }
             };

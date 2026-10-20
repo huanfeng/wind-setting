@@ -18,6 +18,7 @@ use crate::auto_encode::AutoEncode;
 use crate::dialogs::schema_manager::engine_label;
 use crate::rpc;
 use crate::state::SchemaInfo;
+use crate::weight::{parse_weight, weight_hint};
 
 use super::spec::{
     CategorySpec, LogicalTab, WordCategory, WordField, WordRow, common_label, spec_for,
@@ -70,6 +71,23 @@ pub struct DomainEntry {
     pub rep_schema_id: String,
     /// 折进这个域的全部方案 id（按方案列表顺序；不折叠的域只有它自己）。
     pub members: Vec<String>,
+}
+
+/// 从加词流程（小窗 / 快捷键）预填进对话框的权重，与加词小窗同值。
+const PREFILL_WEIGHT: i32 = 1200;
+
+/// 「添加」时预填的权重（随类别）；「编辑」时权重框旁的说明也拿它当参照。
+///
+/// 短语默认 1800：主程序删除 `PHRASE_WEIGHT_BASE`(40M) 类别硬顶后，短语与码表
+/// 精确候选**按权重竞争**（见主仓 docs/architecture/candidate-sorting-rules.md §5.1），
+/// 这个默认值直接决定「新建的短语打不打得出」。五笔主库 median=941、p99=9000，
+/// 1800 越过约 90% 的条目，又留足余量给用户手动上调（约定值域 0~10000）。
+/// 此前是 1000，只压得住一半——在 40M 时代无所谓，现在会让新短语时灵时不灵。
+fn default_add_weight(cat: WordCategory) -> i32 {
+    match cat {
+        WordCategory::PhraseUser => 1800,
+        _ => 0,
+    }
 }
 
 // 表格数据流：结构（列集随类别变）由 `table_epoch` 驱动整表重建；
@@ -254,6 +272,8 @@ pub struct DictManagerState {
     pub edit_code: Signal<String>,
     pub edit_text: Signal<String>,
     pub edit_weight: Signal<String>,
+    /// 权重框旁的说明，参照值随类别与入口（见 [`default_add_weight`]）。
+    pub edit_weight_hint: Signal<String>,
     /// 短语次序（`position`）。**仅在同编码、同权重时才决定先后**——主程序的短语层排序是
     /// 「weight 降序，然后 position 升序」，权重不同则 position 完全不起作用。
     /// 导入导出的 wdict 短语段一直带这一列，此前设置页却只能写死 0。
@@ -626,6 +646,7 @@ impl DictManagerState {
             edit_code: signal(String::new()),
             edit_text: signal(String::new()),
             edit_weight: signal("0".to_string()),
+            edit_weight_hint: signal(weight_hint(0)),
             edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
             auto_encode: AutoEncode::new(),
@@ -2619,20 +2640,18 @@ impl DictManagerState {
 
     /// 打开"添加"对话框（清空字段，按类别设标签与默认权重）。
     pub fn open_add(&self) {
-        let (title, lc, lt, w) = match self.current_category() {
-            WordCategory::UserDict | WordCategory::UserLib => ("添加词条", "编码", "词条", "0"),
-            // 短语默认 1800：主程序删除 `PHRASE_WEIGHT_BASE`(40M) 类别硬顶后，短语与码表
-            // 精确候选**按权重竞争**（见主仓 docs/architecture/candidate-sorting-rules.md §5.1），
-            // 这个默认值直接决定「新建的短语打不打得出」。五笔主库 median=941、p99=9000，
-            // 1800 越过约 90% 的条目，又留足余量给用户手动上调（约定值域 0~10000）。
-            // 此前是 1000，只压得住一半——在 40M 时代无所谓，现在会让新短语时灵时不灵。
-            WordCategory::PhraseUser => ("添加短语", "编码", "短语", "1800"),
+        let cat = self.current_category();
+        let (title, lc, lt) = match cat {
+            WordCategory::UserDict | WordCategory::UserLib => ("添加词条", "编码", "词条"),
+            WordCategory::PhraseUser => ("添加短语", "编码", "短语"),
             _ => return,
         };
+        let w = default_add_weight(cat);
         *self.editing_orig.borrow_mut() = None;
         self.edit_code.set(String::new());
         self.edit_text.set(String::new());
-        self.edit_weight.set(w.into());
+        self.edit_weight.set(w.to_string());
+        self.edit_weight_hint.set(weight_hint(w));
         self.edit_position.set("0".into());
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
@@ -2687,7 +2706,8 @@ impl DictManagerState {
         };
         self.edit_code.set(code);
         self.edit_text.set(text.to_string());
-        self.edit_weight.set("1200".to_string());
+        self.edit_weight.set(PREFILL_WEIGHT.to_string());
+        self.edit_weight_hint.set(weight_hint(PREFILL_WEIGHT));
         self.edit_position.set("0".to_string());
         self.edit_title.set("添加用户词库".to_string());
         self.edit_l_code.set("编码".to_string());
@@ -2699,7 +2719,8 @@ impl DictManagerState {
     /// 打开"编辑"对话框（回填字段，记录原始键）。
     /// `position` 仅短语用（用户词库无此维度，传 0 即可）。
     pub fn open_edit(&self, code: &str, text: &str, weight: i64, position: i64) {
-        let (title, lc, lt) = match self.current_category() {
+        let cat = self.current_category();
+        let (title, lc, lt) = match cat {
             WordCategory::UserDict | WordCategory::UserLib => ("编辑词条", "编码", "词条"),
             WordCategory::PhraseUser => ("编辑短语", "编码", "短语"),
             _ => return,
@@ -2708,6 +2729,8 @@ impl DictManagerState {
         self.edit_code.set(code.into());
         self.edit_text.set(text.into());
         self.edit_weight.set(weight.to_string());
+        self.edit_weight_hint
+            .set(weight_hint(default_add_weight(cat)));
         self.edit_position.set(position.to_string());
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
@@ -2886,10 +2909,7 @@ impl DictManagerState {
         // 放在快捷输入/常用字两条早退**之后**：那两类没有多行入口（模板单行、常用字单字），
         // 且各自的 save_calls 对 text 另有形态约定，不该被这层投影穿过。
         let text = escape_input_newlines(&text);
-        let weight: i64 = match self.edit_weight.get().trim().parse() {
-            Ok(w) => w,
-            Err(_) => return Err("权重需为整数".into()),
-        };
+        let weight = parse_weight(&self.edit_weight.get())?;
         match cat {
             WordCategory::UserDict | WordCategory::UserLib => {
                 if text.trim().is_empty() {
@@ -3982,10 +4002,10 @@ impl DictManagerState {
             self.notify_err("暂无已启用方案");
             return;
         };
-        let weight: i64 = match self.io_weight.get().trim().parse() {
-            Ok(w) => w,
-            Err(_) => {
-                self.notify_err("权重需为整数");
+        let weight = match parse_weight(&self.io_weight.get()) {
+            Ok(w) => i64::from(w),
+            Err(e) => {
+                self.notify_err(&e);
                 return;
             }
         };
@@ -7132,6 +7152,53 @@ mod tests {
         st.edit_text.set("工".into());
         st.edit_weight.set("abc".into()); // 非数字
         assert!(st.save_calls().is_err(), "非数字权重应校验失败");
+    }
+
+    /// 越界与小数都拦在设置端：core 收 `i32`，越界会被静默截成另一个数。
+    #[test]
+    fn save_calls_rejects_out_of_range_and_fractional_weight() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0);
+        st.edit_code.set("aaaa".into());
+        st.edit_text.set("工".into());
+        st.edit_weight.set("2147483648".into());
+        let e = st.save_calls().unwrap_err();
+        assert!(e.contains("超出范围"), "{e:?}");
+        st.edit_weight.set("1.5".into());
+        assert_eq!(st.save_calls().unwrap_err(), "权重需为整数");
+        st.edit_weight.set("-2147483648".into());
+        let (calls, _) = st.save_calls().unwrap();
+        assert_eq!(calls[0].1["weight"], json!(i32::MIN));
+    }
+
+    /// 权重框旁说明的参照值随类别与入口：用户词 0、短语 1800、加词流程预填 1200；
+    /// 编辑时按该类别「添加」的默认值说。
+    #[test]
+    fn weight_hint_follows_category_and_entry() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(0);
+        st.open_add();
+        assert_eq!(st.edit_weight.get(), "0");
+        assert_eq!(st.edit_weight_hint.get(), weight_hint(0));
+
+        st.open_edit("aaaa", "工", 7, 0);
+        assert_eq!(st.edit_weight_hint.get(), weight_hint(0));
+
+        st.open_add_word_prefilled("工", "aaaa", "wb");
+        assert_eq!(st.edit_weight.get(), "1200");
+        assert_eq!(st.edit_weight_hint.get(), weight_hint(1200));
+
+        st.domain.set(0);
+        st.sub_tab.set(1); // 用户短语
+        assert_eq!(st.current_category(), WordCategory::PhraseUser);
+        st.open_add();
+        assert_eq!(st.edit_weight_hint.get(), weight_hint(1800));
+        st.open_edit("zz", "短语", 5, 0);
+        assert_eq!(st.edit_weight_hint.get(), weight_hint(1800));
     }
 
     #[test]

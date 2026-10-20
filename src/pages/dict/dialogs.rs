@@ -493,10 +493,23 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(field(mgr.edit_l_text, text_field))
         .child(labeled_field(
             "权重",
-            Element::text_input(mgr.edit_weight, "")
-                .width(100)
-                .height(34)
-                .on_submit(move |_| submit_weight.submit_word()),
+            Element::row()
+                .weight(1.0)
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::text_input(mgr.edit_weight, "")
+                        .width(100)
+                        .height(34)
+                        .on_submit(move |_| submit_weight.submit_word()),
+                )
+                .child(
+                    Element::label_signal(mgr.edit_weight_hint)
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted)
+                        .weight(1.0)
+                        .max_lines(2),
+                ),
         ))
         .child(position_field(mgr));
 

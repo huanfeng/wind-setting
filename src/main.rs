@@ -57,6 +57,7 @@ mod tsf_log;
 #[allow(dead_code)]
 mod update;
 mod user_dir;
+mod weight;
 mod widgets;
 mod wizard;
 #[cfg(target_os = "linux")]
