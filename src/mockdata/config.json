@@ -48,6 +48,7 @@
   "buffer_symbol_chars": "-",
   "capslock": {
    "cancel_on_mode_switch": false,
+   "commit_upper": false,
    "mode_after_cancel": "chinese"
   },
   "caret": {

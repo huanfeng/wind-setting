@@ -1144,6 +1144,11 @@
       ]
     },
     {
+      "default": false,
+      "key": "input.capslock.commit_upper",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "input.temp_pinyin.enabled",
       "type": "bool"
