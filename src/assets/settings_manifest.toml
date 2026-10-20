@@ -2734,18 +2734,6 @@ label = "快捷加词"
 hint = "快速将输入的内容加入用户词库"
 
 [[items]]
-key = "input.add_word.default_source"
-group = "keys"
-section = "功能快捷键"
-type = "segmented"
-label = "加词首选来源"
-hint = "快捷加词面板先取哪一侧的内容，该侧为空时自动换到另一侧；面板里按 Tab 随时切换"
-options = [
-  { value = "recent", label = "最近输入优先" },
-  { value = "clipboard", label = "剪贴板优先" },
-]
-
-[[items]]
 key = "keys.open_add_word_dialog"
 group = "keys"
 section = "功能快捷键"
