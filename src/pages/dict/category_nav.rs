@@ -42,6 +42,8 @@ pub enum NavNode {
     Main(usize),
     /// 一个分库（文件主名）。
     Lib(usize, String),
+    /// 末行「词库统计」：不是类别，点击打开统计对话框（方案域才有）。
+    Stats,
 }
 
 impl NavNode {
@@ -49,7 +51,7 @@ impl NavNode {
     pub fn tab(&self) -> usize {
         match self {
             NavNode::Tab(i) | NavNode::LibGroup(i) | NavNode::Main(i) | NavNode::Lib(i, _) => *i,
-            NavNode::Heading => usize::MAX,
+            NavNode::Heading | NavNode::Stats => usize::MAX,
         }
     }
 
@@ -90,13 +92,18 @@ impl NavEntry {
 /// 「用户词库」分组之后其余类别的分组标题。
 pub(crate) const OTHER_HEADING: &str = "其他";
 
+/// 末行「词库统计」的标题。说「词库」不说「主词库」：本栏的「主词库」是用户的主分库。
+pub(crate) const STATS_TITLE: &str = "词库统计";
+
 /// 按子标签序列与分库列表排出中栏。`libs` 为 `None`（不是方案域、或 core 不认分库）时
 /// 「用户词库」只是普通的一类；否则它是一个分组（主词库 + 各分库），其余类别归到「其他」。
-/// `main_count` 是主词库的条目数（还没取到为 `None`）。
+/// `main_count` 是主词库的条目数（还没取到为 `None`）。`stats` 为真（方案域）时末尾加一行
+/// 「词库统计」。
 pub fn nav_entries(
     tabs: &[LogicalTab],
     libs: Option<&[UserLib]>,
     main_count: Option<u64>,
+    stats: bool,
 ) -> Vec<NavEntry> {
     let mut out = Vec::new();
     let mut grouped = false;
@@ -126,6 +133,9 @@ pub fn nav_entries(
             }
         }
     }
+    if stats {
+        out.push(NavEntry::plain(NavNode::Stats, STATS_TITLE, 0));
+    }
     out
 }
 
@@ -137,6 +147,7 @@ impl DictManagerState {
             &self.tabs_for_domain(),
             self.has_lib_group().then_some(libs.as_slice()),
             self.libs.main_count.get(),
+            self.current_schema_id().is_some(),
         )
     }
 
@@ -152,7 +163,7 @@ impl DictManagerState {
         let cur = self.current_tab_index();
         match node {
             NavNode::Tab(i) => cur == *i,
-            NavNode::LibGroup(_) | NavNode::Heading => false,
+            NavNode::LibGroup(_) | NavNode::Heading | NavNode::Stats => false,
             NavNode::Main(i) => cur == *i && self.libs.current.get().is_none(),
             NavNode::Lib(i, n) => cur == *i && self.libs.current.get().as_deref() == Some(n),
         }
@@ -163,6 +174,10 @@ impl DictManagerState {
     pub fn select_nav(&self, node: &NavNode) {
         match node {
             NavNode::LibGroup(_) | NavNode::Heading => return,
+            NavNode::Stats => {
+                self.open_stats_at(self.domain.get());
+                return;
+            }
             NavNode::Main(_) => self.select_lib(None),
             NavNode::Lib(_, n) => self.select_lib(Some(n.clone())),
             NavNode::Tab(_) => {}
@@ -194,10 +209,14 @@ impl DictManagerState {
     /// 节点的右键菜单。右键先选中该节点（同文件管理器），菜单项因此都按「当前」来做。
     /// 分组标题不可选，右键也不换掉正在看的那一项。
     pub fn nav_menu_items(&self, node: &NavNode) -> Vec<MenuItem> {
+        // 「词库统计」是动作行：右键不能等同于点开它。
+        if *node == NavNode::Stats {
+            return Vec::new();
+        }
         self.select_nav(node);
         match node {
             NavNode::LibGroup(_) => self.lib_add_menu_items(),
-            NavNode::Heading => Vec::new(),
+            NavNode::Heading | NavNode::Stats => Vec::new(),
             NavNode::Lib(_, name) => self.lib_menu_items(name),
             NavNode::Tab(_) | NavNode::Main(_) => self.file_menu_items(),
         }
@@ -337,6 +356,10 @@ fn build_head(mgr: &DictManagerState) -> Element {
 fn build_list(mgr: &DictManagerState) -> Element {
     let mut col = Element::col().width_match().spacing(1);
     for e in mgr.nav_entries_now() {
+        if e.node == NavNode::Stats {
+            // 与上面的类别隔开一点：它不是又一个类别。
+            col = col.child(Element::leaf().height(8));
+        }
         col = col.child(if e.node.is_heading() {
             heading_row(mgr, &e)
         } else {
@@ -476,7 +499,7 @@ mod tests {
             LogicalTab::Shadow,
         ];
         let libs = [lib("成语", true), lib("行业词", false)];
-        let v = nav_entries(&tabs, Some(&libs), Some(1203));
+        let v = nav_entries(&tabs, Some(&libs), Some(1203), false);
         assert_eq!(
             titles(&v),
             [
@@ -506,11 +529,11 @@ mod tests {
     fn without_library_support_user_dict_is_plain() {
         let tabs = [LogicalTab::UserDict, LogicalTab::Temp];
         assert_eq!(
-            titles(&nav_entries(&tabs, None, None)),
+            titles(&nav_entries(&tabs, None, None, false)),
             [("用户词库".into(), 0), ("临时词库".into(), 0)]
         );
         assert_eq!(
-            titles(&nav_entries(&tabs, Some(&[]), None)),
+            titles(&nav_entries(&tabs, Some(&[]), None, false)),
             [
                 ("用户词库".into(), 0),
                 ("主词库".into(), 1),
@@ -519,8 +542,22 @@ mod tests {
             ]
         );
         let phrase = [LogicalTab::PhraseSystem, LogicalTab::PhraseUser];
-        let v = nav_entries(&phrase, Some(&[lib("x", true)]), None);
+        let v = nav_entries(&phrase, Some(&[lib("x", true)]), None, false);
         assert_eq!(titles(&v), [("系统短语".into(), 0), ("用户短语".into(), 0)]);
+    }
+
+    /// 方案域末尾多一行「词库统计」：不是类别，下标不占子标签。
+    #[test]
+    fn schema_domain_ends_with_stats_row() {
+        let tabs = [LogicalTab::UserDict, LogicalTab::Temp];
+        let v = nav_entries(&tabs, Some(&[]), None, true);
+        let last = v.last().unwrap();
+        assert_eq!(
+            (last.title.as_str(), &last.node),
+            (STATS_TITLE, &NavNode::Stats)
+        );
+        assert_eq!(last.node.tab(), usize::MAX);
+        assert!(!last.node.is_heading());
     }
 
     // ── 状态（mock RPC）────────────────────────────────────
@@ -678,9 +715,15 @@ mod tests {
             let items = st.domain_menu_items(wb);
             assert_eq!(
                 labels(&items),
-                ["打开数据目录", "─", "删除此方案的用户数据…"]
+                ["词库统计…", "打开数据目录", "─", "删除此方案的用户数据…"]
             );
-            let windui::event::MenuAction::Run(f) = &items[2].action else {
+            let windui::event::MenuAction::Run(f) = &items[0].action else {
+                panic!("应是普通动作");
+            };
+            windui::testing::run_with_ctx(|ctx| f(ctx));
+            assert!(st.stats.visible.get(), "右键菜单与中栏末行打开同一个对话框");
+            assert_eq!(st.stats.view.borrow().schema_id, "wb");
+            let windui::event::MenuAction::Run(f) = &items[3].action else {
                 panic!("应是普通动作");
             };
             windui::testing::run_with_ctx(|ctx| f(ctx));
@@ -738,6 +781,34 @@ mod tests {
             assert_eq!(
                 calls,
                 vec![json!({"schemaId": "wb", "name": "hangye", "enabled": true})]
+            );
+        });
+    }
+
+    /// 点「词库统计」打开对话框、不切类别；右键它不弹菜单也不打开。全局域没有这一行。
+    #[test]
+    fn stats_row_opens_the_dialog() {
+        with_mock(|| {
+            let st = state();
+            let v = st.nav_entries_now();
+            assert_eq!(v.last().unwrap().node, NavNode::Stats);
+            assert!(st.nav_menu_items(&NavNode::Stats).is_empty());
+            assert!(!st.stats.visible.get(), "右键不打开");
+            let before = st.sub_tab.get();
+            click(&st, &NavNode::Stats);
+            assert!(st.stats.visible.get());
+            assert_eq!(st.sub_tab.get(), before, "不切类别");
+            assert!(!st.is_nav_selected(&NavNode::Stats));
+            assert_eq!(st.stats.view.borrow().schema_id, "wb");
+            // 取数前标题用左栏的方案名，回包后换成 core 给的
+            assert_eq!(st.stats.view.borrow().title, "五笔 86");
+
+            st.domain.set(super::super::state::DOMAIN_PHRASE);
+            assert!(
+                !st.nav_entries_now()
+                    .iter()
+                    .any(|e| e.node == NavNode::Stats),
+                "全局域没有系统词库"
             );
         });
     }

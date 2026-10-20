@@ -160,6 +160,8 @@ fn is_bulk_method(method: &str) -> bool {
             | "backup.inspect"
             | "backup.restore"
             | "phrase.import"
+            // 词库统计：结果有缓存时毫秒级，但首次可能要先把词库编译成 wdat（大词库十几秒）
+            | "dict.systemStats"
             | "phrase.export"
             | "quick.import"
             | "quick.export"
@@ -1590,6 +1592,113 @@ fn mock_preview_template(params: &Value) -> Value {
 
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
+/// `dict.systemStats` 的 mock：码表数字取自出厂五笔 86 的实测，拼音取自白霜拼音；混输把
+/// 两者并排放进 `members`（形状同 core `wind_coordinator::dict_stats_api`）。
+fn mock_system_stats(params: &Value) -> Value {
+    let id = params.get("schemaId").and_then(Value::as_str).unwrap_or("");
+    let codetable = |id: &str, name: &str| {
+        json!({
+            "schemaId": id, "schemaName": name, "engineType": "codetable",
+            "cached": false, "elapsedMs": 98, "computedAtMs": 1_792_500_000_000u64,
+            "layers": [
+                { "id": "wubi86_main", "label": "极点五笔主词库", "kind": "main", "enabled": true,
+                  "failed": false, "entries": 88526, "chars": 25863, "words": 62641, "other": 22 },
+                { "id": "wubi86_extra", "label": "扩展词库", "kind": "extra", "enabled": true,
+                  "failed": false, "entries": 1843, "chars": 38, "words": 1789, "other": 16 },
+                { "id": "wubi86_emoji", "label": "Emoji 表情", "kind": "extra", "enabled": true,
+                  "failed": false, "entries": 270, "chars": 0, "words": 0, "other": 270 },
+                { "id": "wubi86_xzqy", "label": "行政区域", "kind": "extra", "enabled": false,
+                  "failed": false }
+            ],
+            "total": {
+                "entries": 90624, "uniqueChars": 20999, "uniqueWords": 64395,
+                "byLen": { "1": 25900, "2": 50247, "3": 5523, "4": 8287, "5+": 359 },
+                "other": 308, "multiCodeChars": 4561
+            },
+            "codeLen": {
+                "char": { "1": 50, "2": 655, "3": 5350, "4": 19845 },
+                "word": { "3": 2, "4": 64414 }
+            },
+            "shortCodes": { "levels": { "1": 50, "2": 654, "3": 3748 }, "charsWithShort": 4124 },
+            "dup": {
+                "groups": 9657, "entries": 22191, "nonFirst": 12534, "max": 71, "maxCode": "emoj",
+                "charFull": { "groups": 2889, "chars": 6402, "max": 12 },
+                "top": [
+                    { "code": "emoj", "size": 71, "texts": ["😂", "🤣", "😊", "😁", "😄", "😆"] },
+                    { "code": "cccc", "size": 41, "texts": ["又", "双双", "叕", "敠", "品", "众", "森", "鑫"] },
+                    { "code": "wyve", "size": 13, "texts": ["食", "俍", "饛", "餦", "餬", "饢", "餵", "餶"] },
+                    { "code": "fpgc", "size": 12, "texts": ["彀", "觳", "嗀", "殼", "瑴", "皼", "瞉", "穀"] },
+                    { "code": "qtqt", "size": 12, "texts": ["猩猩", "猖獗", "狡猾", "狼狈", "猣", "猫猫"] }
+                ]
+            },
+            "charsets": [
+                { "key": "common_han_1", "label": "通规一级", "size": 3500, "missing": 0,
+                  "missingChars": [], "staticDup": 66, "dupGroups": 65,
+                  "dynRate": 0.000_908, "avgCodeLen": 1.806 },
+                { "key": "common_han_12", "label": "通规一二级", "size": 6500, "missing": 11,
+                  "missingChars": ["㧐", "㧟", "䏝", "𬉼", "㤘", "𠳐", "䥽", "䁖", "𥻗", "䦃", "㸆"],
+                  "staticDup": 230, "dupGroups": 222, "dynRate": 0.001_453, "avgCodeLen": 1.816 },
+                { "key": "common_han_123", "label": "通规全表", "size": 8105, "missing": 276,
+                  "missingChars": ["㧐", "㧟", "䏝", "𬉼", "㤘", "𠳐", "䥽", "䁖", "𥻗", "䦃", "㸆", "𠙶"], "staticDup": 389, "dupGroups": 372,
+                  "dynRate": 0.001_534, "avgCodeLen": 1.816 }
+            ],
+            "pinyin": null,
+            "freqSource": "白霜拼音字表（8105 + 41448）",
+            "user": { "userWords": 312, "tempWords": 48 }
+        })
+    };
+    let pinyin = |id: &str, name: &str| {
+        json!({
+            "schemaId": id, "schemaName": name, "engineType": "pinyin",
+            "cached": true, "elapsedMs": 786, "computedAtMs": 1_792_500_000_000u64,
+            "layers": [
+                { "id": "pinyin_main", "label": "rime_frost", "kind": "main", "enabled": true,
+                  "failed": false, "entries": 653953, "chars": 51855, "words": 602061, "other": 37 },
+                { "id": "cell_idiom", "label": "成语", "kind": "extra", "enabled": false,
+                  "failed": false }
+            ],
+            "total": {
+                "entries": 653779, "uniqueChars": 40596, "uniqueWords": 600210,
+                "byLen": { "1": 51855, "2": 124525, "3": 180529, "4": 206379, "5+": 90454 },
+                "other": 37, "multiCodeChars": 9042
+            },
+            "codeLen": null,
+            "shortCodes": null,
+            "dup": {
+                "groups": 41330, "entries": 170144, "nonFirst": 128814, "max": 888, "maxCode": "yi",
+                "charFull": null,
+                "top": [
+                    { "code": "yi", "size": 888, "texts": ["以", "一", "亿", "已", "亦", "易", "矣", "乙"] },
+                    { "code": "ji", "size": 764, "texts": ["及", "即", "级", "既", "集", "记", "机", "鸡"] },
+                    { "code": "yu", "size": 682, "texts": ["与", "于", "鱼", "於", "欲", "语", "雨", "余"] }
+                ]
+            },
+            "charsets": [
+                { "key": "common_han_1", "label": "通规一级", "size": 3500, "missing": 0,
+                  "missingChars": [], "staticDup": null, "dupGroups": null,
+                  "dynRate": null, "avgCodeLen": null },
+                { "key": "common_han_12", "label": "通规一二级", "size": 6500, "missing": 0,
+                  "missingChars": [], "staticDup": null, "dupGroups": null,
+                  "dynRate": null, "avgCodeLen": null },
+                { "key": "common_han_123", "label": "通规全表", "size": 8105, "missing": 0,
+                  "missingChars": [], "staticDup": null, "dupGroups": null,
+                  "dynRate": null, "avgCodeLen": null }
+            ],
+            "pinyin": { "syllables": 424, "zeroWeight": 45138 },
+            "freqSource": "白霜拼音字表（8105 + 41448）",
+            "user": { "userWords": 1203, "tempWords": 17 }
+        })
+    };
+    match id {
+        "wubi_mixed" => json!({
+            "schemaId": id, "schemaName": "五笔拼音混输", "engineType": "mixed",
+            "members": [codetable("wubi86", "五笔 86"), pinyin("pinyin_simp", "全拼·简")]
+        }),
+        "pinyin_simp" | "double_pinyin" => pinyin(id, "全拼·简"),
+        _ => codetable(id, "五笔 86"),
+    }
+}
+
 pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
     match method {
         "system.capabilities" => {
@@ -1712,6 +1821,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             }
         }),
         "dict.stats" => json!([]),
+        "dict.systemStats" => mock_system_stats(params),
         // 内存诊断（高级 → 性能与诊断 → 内存占用 / 诊断信息对话框）。形状对齐 core wind-webdata `memory_stats_json`：
         // 字段恒在，取不到的给 null / 空数组。数字取靶机量级，拆字表给 0 好看「零项不列」。
         "system.memoryStats" => json!({
