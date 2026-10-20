@@ -3087,6 +3087,81 @@ hint = "候选文本超过此字数时截断并追加省略号；0 = 不限。�
 min = 0
 max = 64
 
+# 展开候选（卷轴）：开关排在「候选排版」高级设置之上，细节进它自己的对话框并随它置灰。
+# 核心设计见 core 仓 docs/design/candidate-grid-expand.md。
+[[items]]
+key = "ui.candidate.grid_expand"
+group = "ui"
+section = "候选排版"
+opens_dialog = "grid"
+type = "toggle"
+label = "翻页时展开候选"
+hint = "候选多于一页时，按翻页键把候选窗原地展开成多行，一行就是一页；方向键在各行间移动，数字键选高亮行，Esc 先收起。仅横排生效"
+
+[[items]]
+key = "ui.candidate.grid_rows"
+group = "ui"
+section = "候选排版"
+dialog_group = "grid"
+type = "number"
+label = "可见行数"
+hint = "展开后一屏显示几行，翻页键一次滚动这么多行"
+enabled_when = "ui.candidate.grid_expand == true"
+min = 2
+max = 10
+
+[[items]]
+key = "ui.candidate.grid_cell_max_chars"
+group = "ui"
+section = "候选排版"
+dialog_group = "grid"
+type = "number"
+label = "每格最多字数"
+hint = "展开后各列对齐，长词会撑宽整列，超出部分以省略号截断，悬停提示里可看全文；0 = 只受「候选文本最大字数」约束"
+enabled_when = "ui.candidate.grid_expand == true"
+min = 0
+max = 64
+
+[[items]]
+key = "ui.candidate.grid_index_fill"
+group = "ui"
+section = "候选排版"
+dialog_group = "grid"
+type = "select"
+label = "序号顺延"
+hint = "一行用不完 1~0 十个数字键时，序号怎么往下一行顺延；数字键跟着序号选"
+enabled_when = "ui.candidate.grid_expand == true"
+options = [
+  { value = "rows", label = "只补整行" },
+  { value = "cells", label = "逐格编满十个" },
+  { value = "off", label = "只编高亮行" },
+]
+
+[[items]]
+key = "ui.candidate.grid_categories"
+group = "ui"
+section = "候选排版"
+dialog_group = "grid"
+type = "checkbox_group"
+label = "分类标签"
+hint = "展开后在候选下方（与翻页箭头同一行）显示的分类，按 Tab / Shift+Tab 或点击切换；只有当前候选里有这一类时才出现，「生僻」按常用字表划分；勾选不足两个时不显示标签栏"
+enabled_when = "ui.candidate.grid_expand == true"
+[[items.options]]
+value = "all"
+label = "全部"
+[[items.options]]
+value = "single"
+label = "单字"
+[[items.options]]
+value = "phrase"
+label = "词组"
+[[items.options]]
+value = "rare"
+label = "生僻"
+[[items.options]]
+value = "symbol"
+label = "符号"
+
 [[items]]
 key = "ui.candidate.flip_when_above"
 group = "ui"
@@ -3327,82 +3402,6 @@ min = 0
 max = 200
 step = 2
 enabled_when = "ui.tooltip.enabled == true"
-
-# ── 展开候选（卷轴）──
-# 总开关在卡片首行，其余细节进它的扩展设置对话框并随它置灰（同「候选项提示」）。
-# 核心设计见 core 仓 docs/design/candidate-grid-expand.md。
-[[items]]
-key = "ui.candidate.grid_expand"
-group = "ui"
-section = "展开候选"
-opens_dialog = "grid"
-type = "toggle"
-label = "翻页时展开候选"
-hint = "候选多于一页时，按翻页键把候选窗原地展开成多行，一行就是一页；方向键在各行间移动，数字键选高亮行，Esc 先收起。仅横排生效"
-
-[[items]]
-key = "ui.candidate.grid_rows"
-group = "ui"
-section = "展开候选"
-dialog_group = "grid"
-type = "number"
-label = "可见行数"
-hint = "展开后一屏显示几行，翻页键一次滚动这么多行"
-enabled_when = "ui.candidate.grid_expand == true"
-min = 2
-max = 10
-
-[[items]]
-key = "ui.candidate.grid_cell_max_chars"
-group = "ui"
-section = "展开候选"
-dialog_group = "grid"
-type = "number"
-label = "每格最多字数"
-hint = "展开后各列对齐，长词会撑宽整列，超出部分以省略号截断，悬停提示里可看全文；0 = 只受「候选文本最大字数」约束"
-enabled_when = "ui.candidate.grid_expand == true"
-min = 0
-max = 64
-
-[[items]]
-key = "ui.candidate.grid_index_fill"
-group = "ui"
-section = "展开候选"
-dialog_group = "grid"
-type = "select"
-label = "序号顺延"
-hint = "一行用不完 1~0 十个数字键时，序号怎么往下一行顺延；数字键跟着序号选"
-enabled_when = "ui.candidate.grid_expand == true"
-options = [
-  { value = "rows", label = "只补整行" },
-  { value = "cells", label = "逐格编满十个" },
-  { value = "off", label = "只编高亮行" },
-]
-
-[[items]]
-key = "ui.candidate.grid_categories"
-group = "ui"
-section = "展开候选"
-dialog_group = "grid"
-type = "checkbox_group"
-label = "分类标签"
-hint = "展开后在候选下方（与翻页箭头同一行）显示的分类，按 Tab / Shift+Tab 或点击切换；只有当前候选里有这一类时才出现，「生僻」按常用字表划分；勾选不足两个时不显示标签栏"
-enabled_when = "ui.candidate.grid_expand == true"
-[[items.options]]
-value = "all"
-label = "全部"
-[[items.options]]
-value = "single"
-label = "单字"
-[[items.options]]
-value = "phrase"
-label = "词组"
-[[items.options]]
-value = "rare"
-label = "生僻"
-[[items.options]]
-value = "symbol"
-label = "符号"
 
 # ── 状态提示（行为/位置类；纯视觉如颜色/字号/透明度/圆角由主题 theme.toml 处理，不在此）──
 [[items]]

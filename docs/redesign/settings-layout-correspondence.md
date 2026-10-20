@@ -216,9 +216,9 @@
 | 外观/候选窗：候选文本最大字数 | `ui.candidate.max_chars` | 候选排版 | |
 | 外观/候选窗：自定义序号标签 | `ui.candidate.index_labels` | 候选标注 | 参考无（新增） |
 | 外观/候选窗：候选窗在上方时反转顺序 | `ui.candidate.flip_when_above` | 候选排版 | |
-| 外观/候选窗：翻页时展开候选 | `ui.candidate.grid_expand` | 展开候选 | 参考无（新增）；总开关，其余四项在它的扩展设置对话框 |
-| 外观/候选窗：展开可见行数 / 每格最多字数 | `ui.candidate.grid_rows` / `grid_cell_max_chars` | 展开候选（对话框） | 参考无（新增） |
-| 外观/候选窗：序号顺延 / 分类标签 | `ui.candidate.grid_index_fill` / `grid_categories` | 展开候选（对话框） | 参考无（新增） |
+| 外观/候选窗：翻页时展开候选 | `ui.candidate.grid_expand` | 候选排版 | 参考无（新增）；排在本卡高级设置之上，其余四项在它自己的扩展设置对话框 |
+| 外观/候选窗：展开可见行数 / 每格最多字数 | `ui.candidate.grid_rows` / `grid_cell_max_chars` | 候选排版（展开候选对话框） | 参考无（新增） |
+| 外观/候选窗：序号顺延 / 分类标签 | `ui.candidate.grid_index_fill` / `grid_categories` | 候选排版（展开候选对话框） | 参考无（新增） |
 | **高级/命令栏**：命令栏 | `input.cmdbar.enabled` | **外观/候选标注** | **跨页迁入**（参考「命令直通车标注」） |
 | **高级/命令栏**：命令栏候选前缀 | `input.cmdbar.candidate_prefix` | **外观/候选标注** | **跨页迁入** |
 | 外观/模式指示：模式指示样式 | `ui.mode_indicator.style` | 候选窗口或主题 | 参考无独立项，待定归属 |
