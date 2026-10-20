@@ -412,19 +412,82 @@ fn aux_reset_all(
     followed_len: i32,
     followed_direct: bool,
 ) {
-    state.settings_aux_on_over.set(false);
-    state.settings_aux_len_over.set(false);
-    state.settings_aux_direct_over.set(false);
-    state.settings_aux_on.set(followed_on);
-    state.settings_aux_len.set(followed_len as f64);
-    state.settings_aux_direct.set(followed_direct);
-    // 来源这一行也清：只读态一并清掉，保存时才会走正常路径落 null（回落方案文件）。
-    state.settings_aux_src_over.set(false);
-    state.settings_aux_src_manual.set(false);
-    state
-        .settings_aux_src_idx
-        .set(state.settings_aux_src_follow_idx.get());
-    state.settings_aux_disp.set(ct_summary(0));
+    // 定制版藏掉的行不动：界面上看不见的覆盖值不该被一键清掉（同 `CtFields::reset`）。
+    let hidden = aux_rows_hidden(state);
+    if !hidden.on {
+        state.settings_aux_on_over.set(false);
+        state.settings_aux_on.set(followed_on);
+    }
+    if !hidden.len {
+        state.settings_aux_len_over.set(false);
+        state.settings_aux_len.set(followed_len as f64);
+    }
+    if !hidden.direct {
+        state.settings_aux_direct_over.set(false);
+        state.settings_aux_direct.set(followed_direct);
+    }
+    if !hidden.src {
+        // 来源这一行也清：只读态一并清掉，保存时才会走正常路径落 null（回落方案文件）。
+        state.settings_aux_src_over.set(false);
+        state.settings_aux_src_manual.set(false);
+        state
+            .settings_aux_src_idx
+            .set(state.settings_aux_src_follow_idx.get());
+    }
+    state.settings_aux_disp.set(ct_summary(
+        state.settings_aux_on_over.get() as usize
+            + state.settings_aux_len_over.get() as usize
+            + state.settings_aux_src_over.get() as usize
+            + state.settings_aux_direct_over.get() as usize,
+    ));
+}
+
+/// 辅助码一节各行是否被定制版 `[settings] hide` 藏掉，按各行对应的全局项判。
+///
+/// 「辅助码来源」在全局页没有对应项，跟着总开关 `schema.pinyin.aux_code.enabled` 走：
+/// 藏了总开关就是不让用户碰辅助码，单留一个来源下拉没有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AuxRowsHidden {
+    on: bool,
+    direct: bool,
+    len: bool,
+    src: bool,
+}
+
+impl AuxRowsHidden {
+    /// 一行不剩（「直接辅助码」只在双拼方案出现，非双拼不计它）。
+    fn all(&self, is_sp: bool) -> bool {
+        self.on && self.len && self.src && (self.direct || !is_sp)
+    }
+}
+
+fn aux_rows_hidden(state: &SchemaManagerState) -> AuxRowsHidden {
+    let on = state.custom_hidden("schema.pinyin.aux_code.enabled");
+    AuxRowsHidden {
+        on,
+        direct: state.custom_hidden("schema.pinyin.aux_code.direct"),
+        len: state.custom_hidden("schema.pinyin.aux_code.max_phrase_len"),
+        src: on,
+    }
+}
+
+/// 「本方案行为」一节里有全局对应项的三行是否被定制版藏掉。其余几行（标点、文字排列、
+/// 字体、加载短语）全局页没有对应项，恒显示——所以这一节不会被藏空。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BehaviorRowsHidden {
+    layout: bool,
+    /// 横竖两个模板都藏了才藏（藏横排那个时竖排随它藏，见 `hide_orphaned_dialog_members`）。
+    comment: bool,
+    punct_map: bool,
+}
+
+fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
+    BehaviorRowsHidden {
+        layout: state.custom_hidden("ui.candidate.layout"),
+        comment: state.custom_hidden("ui.candidate.comment_template_horizontal")
+            && state.custom_hidden("ui.candidate.comment_template_vertical"),
+        punct_map: state.custom_hidden("input.punct.custom_mappings"),
+    }
 }
 
 /// 「辅助码来源」下拉的一项。`entry` 是写进 `[engine.aux_code].files` 的原文：
@@ -584,7 +647,10 @@ fn aux_src_write(over: bool, pick: Option<&str>) -> Value {
 /// 抽出来的理由同 [`aux_reset_all`]：闭包测不到，测试拿真信号驱动这里。
 fn behavior_reset_all(state: &SchemaManagerState) {
     state.settings_bh_punct.set(0);
-    state.settings_bh_layout.set(0);
+    // 定制版藏掉的行不动，同 [`aux_reset_all`]。
+    if !behavior_rows_hidden(state).layout {
+        state.settings_bh_layout.set(0);
+    }
     state.settings_bh_font_over.set(false);
 }
 
@@ -1218,8 +1284,11 @@ pub struct SchemaManagerState {
 
     // ── 方案级码表配置（`engine.codetable`，见 dialogs::schema_codetable）──
     /// 设置清单：方案级码表配置与全局页**共用同一份条目定义**（label/hint/范围/联动）。
-    /// 本对话框不持有 `AppState`，故自带一份内嵌清单。
-    pub manifest: Rc<crate::manifest::Manifest>,
+    ///
+    /// 必须是全局页那份**经定制版 `[settings] hide` 折过的**清单：方案级项复用全局 key，
+    /// 全局藏了、这里还显示，等于没藏。本对话框不持有 `AppState`，由它在折叠时经
+    /// [`Self::set_manifest`] 注入；构造时先放内嵌清单（单测与注入前的兜底）。
+    manifest: Rc<RefCell<Rc<crate::manifest::Manifest>>>,
     // ── 特殊模式（方案文件 `[overlay]` 段）──
     //
     // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
@@ -1381,6 +1450,22 @@ pub struct SchemaManagerState {
 }
 
 impl SchemaManagerState {
+    /// 换上全局页当前用的清单（`AppState` 每次折叠后调）。下次打开方案设置时生效。
+    pub fn set_manifest(&self, m: Rc<crate::manifest::Manifest>) {
+        *self.manifest.borrow_mut() = m;
+    }
+
+    /// 全局 `key` 被定制版 `[settings] hide` 藏掉了。逃生口打开时清单没折，恒为假。
+    ///
+    /// 只问 `custom_hidden`、不问 `hidden`：清单自身 `hidden = true` 的全局项不代表方案级
+    /// 那一行也该藏。
+    fn custom_hidden(&self, key: &str) -> bool {
+        self.manifest
+            .borrow()
+            .get(key)
+            .is_some_and(|i| i.custom_hidden)
+    }
+
     pub fn new() -> Self {
         let available = Self::read_available();
         // 读不到与「读到空表」必须分开，见 `key_actions_loaded`。
@@ -1441,7 +1526,9 @@ impl SchemaManagerState {
             ]),
             settings_dicts: Rc::new(RefCell::new(Vec::new())),
             settings_dict_dirs: Rc::new(RefCell::new(Vec::new())),
-            manifest: Rc::new(crate::manifest::Manifest::from_embedded()),
+            manifest: Rc::new(RefCell::new(Rc::new(
+                crate::manifest::Manifest::from_embedded(),
+            ))),
             settings_aux_on_over: signal(false),
             settings_aux_on: signal(false),
             settings_aux_len_over: signal(false),
@@ -2607,8 +2694,11 @@ impl SchemaManagerState {
                 self.settings_aux_disp.set(ct_summary(
                     on_over as usize + len_over as usize + src_over as usize + direct_over as usize,
                 ));
-                sections.push(SettingsSection::Divider);
-                sections.push(SettingsSection::AuxCode);
+                // 定制版把这一节的行全藏了就不建节（值照样播种，保存时原样不动）。
+                if !aux_rows_hidden(self).all(is_sp) {
+                    sections.push(SettingsSection::Divider);
+                    sections.push(SettingsSection::AuxCode);
+                }
             }
         }
         // 码表配置：码表方案才有（含快符这类特殊方案——它们本质就是码表方案，
@@ -2641,7 +2731,7 @@ impl SchemaManagerState {
                     "跟随全局"
                 };
                 self.settings_ct.seed(
-                    &self.manifest,
+                    &self.manifest.borrow(),
                     &crate::dialogs::schema_codetable::CtSeed {
                         effective: &eff,
                         followed: &followed,
@@ -2866,7 +2956,7 @@ impl SchemaManagerState {
                 // apply 再把有控件的那些按勾选状态写一遍。反过来的话 reset 会把刚写好的
                 // 用户值又抹成 null——而用户可能是「全部恢复跟随后又勾了一两项」。
                 if reset_all {
-                    self.settings_ct.reset(&mut cfg);
+                    self.settings_ct.reset(&self.manifest.borrow(), &mut cfg);
                 }
                 // 没勾的项写入 null——core 的 json_to_toml 跳过 null，于是 override 里不含
                 // 这些键；而 saveConfig 是拿**方案文件基线**与 cfg 做 diff，故取消覆盖后
@@ -4946,9 +5036,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     })
             };
 
-            let mut rows = vec![row_on];
-            rows.extend(row_direct);
-            rows.extend([row_src, row_len]);
+            let hidden = aux_rows_hidden(state);
+            let mut rows = Vec::new();
+            rows.extend((!hidden.on).then_some(row_on));
+            rows.extend(row_direct.filter(|_| !hidden.direct));
+            rows.extend((!hidden.src).then_some(row_src));
+            rows.extend((!hidden.len).then_some(row_len));
             let disp = state.settings_aux_disp;
             crate::widgets::dialog_section_full(
                 "辅助码",
@@ -4971,7 +5064,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // **逐项**的，每行左侧一个勾选框。总开关与逐项勾选并存会语义重叠——「总开关
             // 开着但一项都没勾」说不清是什么状态。整段的入口只剩「全部恢复跟随」。
             let ct = state.settings_ct.clone();
-            let manifest = state.manifest.clone();
+            let manifest = state.manifest.borrow().clone();
             let body = Element::host_signal(state.settings_ct_plan, move |g| ct.card(&manifest, g));
             let ct_reset = state.settings_ct.clone();
             let disp = state.settings_ct_disp;
@@ -5115,71 +5208,75 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .on_click(move |_| behavior_reset_all(&st))
             };
 
+            // 有全局对应项的行跟着全局走：全局被定制版藏了，这里也不出。
+            let hidden = behavior_rows_hidden(state);
+            let mut rows = vec![crate::widgets::setting_row(
+                "标点",
+                Some("中文标点 / 英文标点，或不干预"),
+                Element::dropdown(
+                    // 标点跟随值是运行时状态（当前中英文态），没有静态值可带，
+                    // 故这一档的文案固定，不像候选排列那样按 `followedBehavior`
+                    // 现算（R8.2 例外，控制者裁定）。
+                    vec!["跟随全局（沿用当前状态）", "中文标点", "英文标点"],
+                    state.settings_bh_punct,
+                )
+                .width(BH_DD_W),
+            )];
+            if !hidden.layout {
+                rows.push(crate::widgets::setting_row(
+                    "候选排列",
+                    Some("本方案期间的候选窗方向"),
+                    // 首项文案带跟随值（R8.2），绑 `Signal<Vec<String>>`——
+                    // 与 overlay 节那个下拉同一份标签表，同一个全局跟随值。
+                    Element::dropdown_signal(
+                        state.settings_layout_follow_labels,
+                        state.settings_bh_layout,
+                    )
+                    .width(BH_DD_W),
+                ));
+            }
+            rows.push(crate::widgets::setting_row(
+                "横排时文字排列",
+                // ⚠️ 一行装得下才算数（说明区超宽静默截断、不加省略号）。
+                // 「竖排时不生效」放在前面：选哪一项从标签就看得出来，
+                // 而「配了没反应」只有这句话能救。
+                Some("竖排时不生效。蒙古文选旋转 90°，汉字对联式选文字竖排"),
+                Element::dropdown(TEXT_ORIENT_LABELS.to_vec(), state.settings_bh_text_orient)
+                    .width(BH_DD_W),
+            ));
+            rows.push(font_row);
+            rows.push(crate::widgets::setting_row(
+                "加载快捷短语",
+                Some(
+                    "关闭后本方案不出快捷短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
+                ),
+                Element::checkbox("开启", state.settings_bh_phrases)
+                    .small()
+                    .fg_role(Role::Text),
+            ));
+            if !hidden.comment {
+                rows.push(summary_action_row(
+                    "候选注释",
+                    Some("候选词右侧小字显示的内容，横排与竖排可分别设置"),
+                    state.settings_bh_comment_disp,
+                    "设置",
+                    state.settings_bh_comment_visible,
+                ));
+            }
+            if !hidden.punct_map {
+                rows.push(summary_action_row(
+                    "自定义标点",
+                    Some("本方案专用的标点映射表。开启后全局那份整份不再生效"),
+                    state.settings_bh_punct_map_disp,
+                    "设置",
+                    state.settings_bh_punct_map_visible,
+                ));
+            }
             crate::widgets::dialog_section_full(
                 "本方案行为",
                 Some("切到本方案时的表现。选「跟随全局」的项不受本方案影响。"),
                 Some(&reset_btn),
-                vec![
-                    crate::widgets::setting_row(
-                        "标点",
-                        Some("中文标点 / 英文标点，或不干预"),
-                        Element::dropdown(
-                            // 标点跟随值是运行时状态（当前中英文态），没有静态值可带，
-                            // 故这一档的文案固定，不像候选排列那样按 `followedBehavior`
-                            // 现算（R8.2 例外，控制者裁定）。
-                            vec!["跟随全局（沿用当前状态）", "中文标点", "英文标点"],
-                            state.settings_bh_punct,
-                        )
-                        .width(BH_DD_W),
-                    ),
-                    crate::widgets::setting_row(
-                        "候选排列",
-                        Some("本方案期间的候选窗方向"),
-                        // 首项文案带跟随值（R8.2），绑 `Signal<Vec<String>>`——
-                        // 与 overlay 节那个下拉同一份标签表，同一个全局跟随值。
-                        Element::dropdown_signal(
-                            state.settings_layout_follow_labels,
-                            state.settings_bh_layout,
-                        )
-                        .width(BH_DD_W),
-                    ),
-                    crate::widgets::setting_row(
-                        "横排时文字排列",
-                        // ⚠️ 一行装得下才算数（说明区超宽静默截断、不加省略号）。
-                        // 「竖排时不生效」放在前面：选哪一项从标签就看得出来，
-                        // 而「配了没反应」只有这句话能救。
-                        Some("竖排时不生效。蒙古文选旋转 90°，汉字对联式选文字竖排"),
-                        Element::dropdown(
-                            TEXT_ORIENT_LABELS.to_vec(),
-                            state.settings_bh_text_orient,
-                        )
-                        .width(BH_DD_W),
-                    ),
-                    font_row,
-                    crate::widgets::setting_row(
-                        "加载快捷短语",
-                        Some(
-                            "关闭后本方案不出快捷短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
-                        ),
-                        Element::checkbox("开启", state.settings_bh_phrases)
-                            .small()
-                            .fg_role(Role::Text),
-                    ),
-                    summary_action_row(
-                        "候选注释",
-                        Some("候选词右侧小字显示的内容，横排与竖排可分别设置"),
-                        state.settings_bh_comment_disp,
-                        "设置",
-                        state.settings_bh_comment_visible,
-                    ),
-                    summary_action_row(
-                        "自定义标点",
-                        Some("本方案专用的标点映射表。开启后全局那份整份不再生效"),
-                        state.settings_bh_punct_map_disp,
-                        "设置",
-                        state.settings_bh_punct_map_visible,
-                    ),
-                ],
+                rows,
             )
         }
         SettingsSection::ExtensionDicts => {
@@ -7653,6 +7750,153 @@ mod section_build_tests {
             .unwrap();
         assert_eq!(cfg["engine"]["aux_code"]["files"], Value::Null);
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 按定制版 `[settings] hide` 折好的清单（同全局页那份）。
+    fn folded(raw: &[&str]) -> Rc<crate::manifest::Manifest> {
+        let (h, errors) = wind_config::SettingsHide::parse(raw);
+        assert!(errors.is_empty(), "{errors:?}");
+        Rc::new(crate::custom_hide::settings_manifest(&h, false))
+    }
+
+    fn has_section(state: &SchemaManagerState, kind: SettingsSection) -> bool {
+        state
+            .settings_sections
+            .iter()
+            .any(|s| s.get().contains(&kind))
+    }
+
+    /// 全局藏了的码表项，方案对话框的「码表配置」里也不出。
+    #[test]
+    fn custom_hidden_codetable_item_leaves_scheme_dialog() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let key = "schema.codetable.top_code_commit";
+        let open = |m: Option<Rc<crate::manifest::Manifest>>| {
+            let state = SchemaManagerState::new();
+            if let Some(m) = m {
+                state.set_manifest(m);
+            }
+            *state.schemas.borrow_mut() = vec![SchemaEntry {
+                id: "wubi86".into(),
+                name: "五笔 86".into(),
+                engine_type: "codetable".into(),
+                ..Default::default()
+            }];
+            state.open_settings_at_id("wubi86");
+            state
+                .settings_ct
+                .plan()
+                .into_iter()
+                .flat_map(|g| g.keys)
+                .collect::<Vec<_>>()
+        };
+        assert!(open(None).iter().any(|k| k == key), "前提：未藏时有这一行");
+        let keys = open(Some(folded(&[&format!("key:{key}")])));
+        assert!(!keys.iter().any(|k| k == key), "{keys:?}");
+        assert!(!keys.is_empty(), "同节别的项不受牵连");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 「本方案行为」里有全局对应项的行跟着全局藏；别的行不受牵连，所以这一节不会藏空。
+    #[test]
+    fn behavior_rows_follow_global_hide() {
+        let state = SchemaManagerState::new();
+        let none = BehaviorRowsHidden {
+            layout: false,
+            comment: false,
+            punct_map: false,
+        };
+        assert_eq!(behavior_rows_hidden(&state), none);
+        state.set_manifest(folded(&["key:ui.candidate.layout"]));
+        assert_eq!(
+            behavior_rows_hidden(&state),
+            BehaviorRowsHidden {
+                layout: true,
+                ..none
+            }
+        );
+        state.set_manifest(folded(&[
+            "key:ui.candidate.comment_template_horizontal",
+            "key:input.punct.custom_mappings",
+        ]));
+        assert_eq!(
+            behavior_rows_hidden(&state),
+            BehaviorRowsHidden {
+                layout: false,
+                comment: true,
+                punct_map: true,
+            }
+        );
+    }
+
+    /// 「全部恢复跟随」不清定制版藏掉的候选排列。
+    #[test]
+    fn behavior_reset_all_keeps_custom_hidden_layout() {
+        let state = SchemaManagerState::new();
+        state.set_manifest(folded(&["key:ui.candidate.layout"]));
+        state.settings_bh_punct.set(2);
+        state.settings_bh_layout.set(1);
+        behavior_reset_all(&state);
+        assert_eq!(state.settings_bh_punct.get(), 0);
+        assert_eq!(state.settings_bh_layout.get(), 1);
+    }
+
+    /// 辅助码各行全藏 ⇒ 不建这一节；只藏一部分 ⇒ 节还在。
+    #[test]
+    fn aux_section_dropped_only_when_all_rows_hidden() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let open = |m: Rc<crate::manifest::Manifest>| {
+            let state = SchemaManagerState::new();
+            state.set_manifest(m);
+            *state.schemas.borrow_mut() = vec![SchemaEntry {
+                id: "double_pinyin".into(),
+                name: "双拼".into(),
+                engine_type: "pinyin".into(),
+                scheme: "shuangpin".into(),
+                ..Default::default()
+            }];
+            state.open_settings_at_id("double_pinyin");
+            state
+        };
+        assert!(has_section(&open(folded(&[])), SettingsSection::AuxCode));
+        let partly = open(folded(&["key:schema.pinyin.aux_code.direct"]));
+        assert!(has_section(&partly, SettingsSection::AuxCode));
+        assert_eq!(
+            aux_rows_hidden(&partly),
+            AuxRowsHidden {
+                on: false,
+                direct: true,
+                len: false,
+                src: false,
+            }
+        );
+        let all = open(folded(&["key:schema.pinyin.aux_code.*"]));
+        assert!(!has_section(&all, SettingsSection::AuxCode));
+        // 藏总开关 = 全局页连它对话框里的成员一起藏，这里同样整节不出。
+        let master = open(folded(&["key:schema.pinyin.aux_code.enabled"]));
+        assert!(!has_section(&master, SettingsSection::AuxCode));
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 辅助码「全部恢复跟随」不动藏掉的行，摘要按剩下的覆盖数算。
+    #[test]
+    fn aux_reset_all_keeps_custom_hidden_rows() {
+        let state = SchemaManagerState::new();
+        state.set_manifest(folded(&["key:schema.pinyin.aux_code.max_phrase_len"]));
+        state.settings_aux_on_over.set(true);
+        state.settings_aux_len_over.set(true);
+        state.settings_aux_len.set(9.0);
+        aux_reset_all(&state, true, 4, false);
+        assert!(!state.settings_aux_on_over.get());
+        assert!(state.settings_aux_len_over.get());
+        assert_eq!(state.settings_aux_len.get(), 9.0);
+        assert_eq!(state.settings_aux_disp.get(), ct_summary(1));
     }
 }
 

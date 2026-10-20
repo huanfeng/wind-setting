@@ -967,6 +967,8 @@ impl AppState {
             manifest_show_all,
         );
         let search = crate::search::SearchState::new(&manifest);
+        // 方案设置对话框里的方案级项复用全局 key，也要按同一份折叠结果藏。
+        schema_mgr.set_manifest(Rc::new(manifest.clone()));
         // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
         // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
         let initial_dark = setting_load
@@ -1486,6 +1488,7 @@ impl AppState {
         self.manifest =
             crate::custom_hide::settings_manifest(crate::custom_hide::installed(), show_all);
         self.search.reindex(&self.manifest);
+        self.schema_mgr.set_manifest(Rc::new(self.manifest.clone()));
         self.manifest_show_all = show_all;
     }
 
