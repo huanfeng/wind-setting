@@ -16,11 +16,10 @@ use crate::net_task::{ReadError, copy_limited};
 
 /// 方案包体积上限（zip 内含词库，比主题大得多）。
 const MAX_SCHEMA_BYTES: usize = 64 * 1024 * 1024;
-/// 连接 / 单次读 / 整体三道超时。整体放得宽（64 MB 在慢网下 30s 常常不够），卡死的
-/// 连接由前两道更快兜住；下载在工作线程里跑，不再卡界面。
+/// 连接 / 单次读两道超时。不设整体超时：64 MB 在慢网下多久都可能，卡死的连接由这两道
+/// 兜住，嫌慢由用户在下载框里取消；下载在工作线程里跑，不卡界面。
 const CONNECT_TIMEOUT_SECS: u64 = 8;
 const READ_TIMEOUT_SECS: u64 = 15;
-const TOTAL_TIMEOUT_SECS: u64 = 180;
 /// 最多跟随的重定向跳数（与原先交给 ureq 时的 `.redirects(3)` 同额）。
 const MAX_REDIRECTS: usize = 3;
 /// 下载落盘文件名前缀；清理陈旧残留只认这个前缀。
@@ -258,7 +257,6 @@ fn download_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout_read(std::time::Duration::from_secs(READ_TIMEOUT_SECS))
-        .timeout(std::time::Duration::from_secs(TOTAL_TIMEOUT_SECS))
         .redirects(0)
         .https_only(true)
         .build()
