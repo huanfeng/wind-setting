@@ -2751,7 +2751,7 @@ group = "keys"
 section = "功能快捷键"
 type = "hotkey"
 label = "打开加词界面"
-hint = "取最近输入的内容，直接弹出加词窗口"
+hint = "优先取剪贴板，为空时取最近输入，直接弹出加词窗口"
 
 [[items]]
 key = "keys.activate_ime"
