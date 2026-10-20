@@ -492,6 +492,11 @@
     },
     {
       "default": false,
+      "key": "schema.pinyin.english_merge.prefix_complete",
+      "type": "bool"
+    },
+    {
+      "default": false,
       "key": "schema.pinyin.fuzzy.enabled",
       "type": "bool"
     },
