@@ -90,6 +90,18 @@ fn default_add_weight(cat: WordCategory) -> i32 {
     }
 }
 
+/// 权重框旁的说明。用户词有两个默认值：在这里手动新增是 0，经输入时加词进来的是
+/// [`PREFILL_WEIGHT`]——只写一个会让人把另一个当成异常，故两个都写出来。
+fn weight_hint_for(cat: WordCategory) -> String {
+    match cat {
+        WordCategory::PhraseUser => weight_hint(default_add_weight(cat)),
+        _ => format!(
+            "整数，越大越靠前；手动新增默认 {}，输入时加词默认 {PREFILL_WEIGHT}",
+            default_add_weight(cat)
+        ),
+    }
+}
+
 // 表格数据流：结构（列集随类别变）由 `table_epoch` 驱动整表重建；
 // 数据（当前页行文本）由 `table_rows` 驱动表格正文重建（服务端排序模式）；
 // 排序意图由 `sort` 信号承载（表头箭头双向绑定）。
@@ -646,7 +658,7 @@ impl DictManagerState {
             edit_code: signal(String::new()),
             edit_text: signal(String::new()),
             edit_weight: signal("0".to_string()),
-            edit_weight_hint: signal(weight_hint(0)),
+            edit_weight_hint: signal(weight_hint_for(WordCategory::UserDict)),
             edit_position: signal("0".to_string()),
             editing_orig: Rc::new(RefCell::new(None)),
             auto_encode: AutoEncode::new(),
@@ -2659,7 +2671,7 @@ impl DictManagerState {
         self.edit_code.set(String::new());
         self.edit_text.set(String::new());
         self.edit_weight.set(w.to_string());
-        self.edit_weight_hint.set(weight_hint(w));
+        self.edit_weight_hint.set(weight_hint_for(cat));
         self.edit_position.set("0".into());
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
@@ -2715,7 +2727,8 @@ impl DictManagerState {
         self.edit_code.set(code);
         self.edit_text.set(text.to_string());
         self.edit_weight.set(PREFILL_WEIGHT.to_string());
-        self.edit_weight_hint.set(weight_hint(PREFILL_WEIGHT));
+        self.edit_weight_hint
+            .set(weight_hint_for(WordCategory::UserDict));
         self.edit_position.set("0".to_string());
         self.edit_title.set("添加用户词库".to_string());
         self.edit_l_code.set("编码".to_string());
@@ -2737,8 +2750,7 @@ impl DictManagerState {
         self.edit_code.set(code.into());
         self.edit_text.set(text.into());
         self.edit_weight.set(weight.to_string());
-        self.edit_weight_hint
-            .set(weight_hint(default_add_weight(cat)));
+        self.edit_weight_hint.set(weight_hint_for(cat));
         self.edit_position.set(position.to_string());
         self.edit_title.set(title.into());
         self.edit_l_code.set(lc.into());
@@ -7189,29 +7201,34 @@ mod tests {
         assert_eq!(calls[0].1["weight"], json!(i32::MIN));
     }
 
-    /// 权重框旁说明的参照值随类别与入口：用户词 0、短语 1800、加词流程预填 1200；
-    /// 编辑时按该类别「添加」的默认值说。
+    /// 权重框旁的说明随类别：用户词同时写出手动新增（0）与输入时加词（1200）两个默认值，
+    /// 短语写 1800；同一类别下新增、编辑、加词预填三个入口说法一致。
     #[test]
-    fn weight_hint_follows_category_and_entry() {
+    fn weight_hint_follows_category() {
         let st = DictManagerState::new();
         with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
         st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(0);
         st.open_add();
         assert_eq!(st.edit_weight.get(), "0");
-        assert_eq!(st.edit_weight_hint.get(), weight_hint(0));
+        let user = st.edit_weight_hint.get();
+        assert!(
+            user.contains("手动新增默认 0") && user.contains("输入时加词默认 1200"),
+            "{user}"
+        );
 
         st.open_edit("aaaa", "工", 7, 0);
-        assert_eq!(st.edit_weight_hint.get(), weight_hint(0));
+        assert_eq!(st.edit_weight_hint.get(), user);
 
         st.open_add_word_prefilled("工", "aaaa", "wb");
         assert_eq!(st.edit_weight.get(), "1200");
-        assert_eq!(st.edit_weight_hint.get(), weight_hint(1200));
+        assert_eq!(st.edit_weight_hint.get(), user);
 
         st.domain.set(0);
         st.sub_tab.set(1); // 用户短语
         assert_eq!(st.current_category(), WordCategory::PhraseUser);
         st.open_add();
+        assert_eq!(st.edit_weight.get(), "1800");
         assert_eq!(st.edit_weight_hint.get(), weight_hint(1800));
         st.open_edit("zz", "短语", 5, 0);
         assert_eq!(st.edit_weight_hint.get(), weight_hint(1800));
