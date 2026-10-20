@@ -1131,7 +1131,8 @@ pub struct DictRow {
     pub id: String,
     pub label: String,
     pub description: String,
-    /// 打开对话框时的启用状态（用于保存时计算变更差异）。
+    /// 打开对话框时的启用状态（用于保存时计算变更差异）；外部改动由
+    /// [`SchemaManagerState::sync_dicts_from`] 同步过来。
     pub initial: bool,
     pub on: Signal<bool>,
 }
@@ -2254,6 +2255,48 @@ impl SchemaManagerState {
         *self.active_id.borrow_mut() = id.to_string();
         self.bump_active();
         self.rebuild_list();
+    }
+
+    /// core 广播方案 `id` 的配置已变（`schema.configChanged`，命令直通也会触发）。
+    ///
+    /// 方案设置对话框开着且正是这个方案时，重拉 `schema.getConfig` 同步扩展词库行，见
+    /// [`Self::sync_dicts_from`]。返回界面上跳变了的行名，供调用方提示。
+    pub fn on_schema_config_changed(&self, id: &str) -> Vec<String> {
+        if !self.settings_visible.get() || *self.settings_schema_id.borrow() != id {
+            return Vec::new();
+        }
+        match rpc::call_core("schema.getConfig", &json!({ "id": id })) {
+            Ok(cfg) => self.sync_dicts_from(&cfg),
+            Err(e) => {
+                tracing::warn!("方案配置变更后重拉失败: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// 按新取到的方案配置更新扩展词库行，外部改动优先（同全局页的
+    /// `AppState::apply_external_config_change`）。
+    ///
+    /// 只动新值与打开时（`initial`）不同的行：相同就是本端保存的回声或别的字段在变，
+    /// 用户在这一行上的未保存改动保留。不同则 `initial` 跟上（否则保存时把外部改动当成
+    /// 本端的再写一遍），勾选也拨过去，覆盖掉未保存的改动；勾选因此真的变了的行才返回。
+    fn sync_dicts_from(&self, cfg: &Value) -> Vec<String> {
+        let fresh = parse_extension_dicts(cfg);
+        let mut changed = Vec::new();
+        for row in self.settings_dicts.borrow_mut().iter_mut() {
+            let Some(now) = fresh.iter().find(|d| d.id == row.id).map(|d| d.enabled) else {
+                continue;
+            };
+            if now == row.initial {
+                continue;
+            }
+            row.initial = now;
+            if row.on.get() != now {
+                row.on.set(now);
+                changed.push(row.label.clone());
+            }
+        }
+        changed
     }
 
     /// 将选中方案设为当前（工具栏按钮）。
@@ -7897,6 +7940,79 @@ mod section_build_tests {
         assert!(state.settings_aux_len_over.get());
         assert_eq!(state.settings_aux_len.get(), 9.0);
         assert_eq!(state.settings_aux_disp.get(), ct_summary(1));
+    }
+
+    fn dict_row(id: &str, initial: bool, on: bool) -> DictRow {
+        DictRow {
+            id: id.into(),
+            label: format!("词库{id}"),
+            description: String::new(),
+            initial,
+            on: signal(on),
+        }
+    }
+
+    fn dicts_cfg(list: &[(&str, bool)]) -> Value {
+        let arr: Vec<Value> = list
+            .iter()
+            .map(|(id, on)| json!({ "id": id, "label": format!("词库{id}"), "enabled": on }))
+            .collect();
+        json!({ "dictionaries": arr })
+    }
+
+    /// 外部改了扩展词库开关：勾选与 `initial` 都跟上（外部优先，未保存的改动被覆盖），
+    /// 勾选真的跳了的行才报；与打开时相同的行（回声）一概不动。
+    #[test]
+    fn external_dict_toggle_syncs_rows() {
+        let state = SchemaManagerState::new();
+        *state.settings_dicts.borrow_mut() = vec![
+            dict_row("a", true, true),   // 外部关掉：跳变
+            dict_row("b", false, true),  // 用户未保存地打开，外部没动：保留
+            dict_row("c", false, true),  // 用户未保存地打开，外部也打开：不跳
+            dict_row("d", true, false),  // 用户未保存地关掉，外部打开（= 打开时）：保留
+            dict_row("e", false, false), // 外部打开、用户没动：跳变
+        ];
+        let changed = state.sync_dicts_from(&dicts_cfg(&[
+            ("a", false),
+            ("b", false),
+            ("c", true),
+            ("d", true),
+            ("e", true),
+        ]));
+        assert_eq!(changed, vec!["词库a".to_string(), "词库e".to_string()]);
+        let rows = state.settings_dicts.borrow();
+        let got: Vec<(bool, bool)> = rows.iter().map(|r| (r.initial, r.on.get())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (false, false),
+                (false, true),
+                (true, true),
+                (true, false),
+                (true, true)
+            ]
+        );
+    }
+
+    /// 本端保存后的回声：新值等于打开时的值，什么都不动、不提示。
+    #[test]
+    fn own_save_echo_is_silent() {
+        let state = SchemaManagerState::new();
+        *state.settings_dicts.borrow_mut() = vec![dict_row("a", true, true)];
+        assert!(state.sync_dicts_from(&dicts_cfg(&[("a", true)])).is_empty());
+        assert!(state.settings_dicts.borrow()[0].on.get());
+    }
+
+    /// 对话框没开、或开的是别的方案：不重拉。
+    #[test]
+    fn schema_config_changed_ignored_unless_that_dialog_is_open() {
+        let state = SchemaManagerState::new();
+        *state.settings_dicts.borrow_mut() = vec![dict_row("a", true, true)];
+        *state.settings_schema_id.borrow_mut() = "wubi86".into();
+        assert!(state.on_schema_config_changed("wubi86").is_empty());
+        state.settings_visible.set(true);
+        assert!(state.on_schema_config_changed("pinyin").is_empty());
+        assert!(state.settings_dicts.borrow()[0].initial);
     }
 }
 
