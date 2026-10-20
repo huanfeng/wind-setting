@@ -1330,6 +1330,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "input.emoji.block_auto_commit",
+      "type": "bool"
+    },
+    {
       "default": {
         "frost_chem": false,
         "frost_diezi": false,
