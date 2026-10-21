@@ -400,7 +400,8 @@
    },
    "english_merge": {
     "enable": false,
-    "min_length": 3
+    "min_length": 3,
+    "prefix_complete": false
    },
    "frequency": {
     "base_scale": 0.0,
