@@ -992,7 +992,13 @@ mod tests {
             .order
             .iter()
             .filter(|k| {
-                k.starts_with("schema.pinyin.fuzzy.") && *k != "schema.pinyin.fuzzy.enabled"
+                k.starts_with("schema.pinyin.fuzzy.")
+                    && !matches!(
+                        k.as_str(),
+                        "schema.pinyin.fuzzy.enabled"
+                            | "schema.pinyin.fuzzy.hint"
+                            | "schema.pinyin.fuzzy.hint_scope"
+                    )
             })
             .map(|k| {
                 (

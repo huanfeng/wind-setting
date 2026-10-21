@@ -881,6 +881,29 @@ section = "模糊音"
 type = "toggle"
 label = "eng ↔ ong"
 
+# 正确拼音提示：与 13 组拼音对同在「模糊音 · 扩展设置」对话框里（手写，见 manifest::build_fuzzy_row），
+# 此处登记供「恢复本页」与覆盖守护。
+[[items]]
+key = "schema.pinyin.fuzzy.hint"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "显示正确拼音"
+hint = "靠模糊音匹配上的字，在候选里内嵌正确拼音并着色，如「苹(ping)果」；上屏不受影响"
+
+[[items]]
+key = "schema.pinyin.fuzzy.hint_scope"
+group = "schema"
+section = "模糊音"
+type = "select"
+label = "提示范围"
+hint = "只标第一个带提示的候选，或每个模糊候选都标"
+enabled_when = "schema.pinyin.fuzzy.hint == true"
+options = [
+  { value = "first", label = "首个模糊候选" },
+  { value = "all", label = "全部模糊候选" },
+]
+
 # ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
 #
 # ⚠️ 项序即渲染序，且 `subsection = None` **不会终止**前一个分组（对话框渲染只在

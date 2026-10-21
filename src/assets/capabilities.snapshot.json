@@ -566,6 +566,20 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.hint",
+      "type": "bool"
+    },
+    {
+      "default": "first",
+      "key": "schema.pinyin.fuzzy.hint_scope",
+      "type": "enum",
+      "values": [
+        "first",
+        "all"
+      ]
+    },
+    {
       "default": true,
       "key": "schema.pinyin.frequency.enabled",
       "type": "bool"

@@ -419,6 +419,8 @@
     "enabled": false,
     "eng_ong": false,
     "f_h": false,
+    "hint": false,
+    "hint_scope": "first",
     "ian_iang": false,
     "in_ing": false,
     "n_l": false,

@@ -2951,7 +2951,9 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .spacing(10)
         .child(host_off_notice("模糊音").visible_when(move || !en.get()))
         .child(select_all_box)
-        .child(grid);
+        .child(grid)
+        .child(field(state, "schema.pinyin.fuzzy.hint"))
+        .child(field(state, "schema.pinyin.fuzzy.hint_scope"));
     let body = crate::search::anchor::wrap(
         body,
         crate::search::index::in_dialog_anchor(FUZZY_PAIRS[0].0),
