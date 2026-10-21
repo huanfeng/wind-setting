@@ -904,6 +904,15 @@ options = [
   { value = "all", label = "全部模糊候选" },
 ]
 
+[[items]]
+key = "schema.pinyin.fuzzy.hint_tone"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "提示带声调"
+hint = "提示里的正确拼音带声调，如「苹(píng)果」；同音异调的字取最常用读音，查不到读音的字不带调"
+enabled_when = "schema.pinyin.fuzzy.hint == true"
+
 # ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
 #
 # ⚠️ 项序即渲染序，且 `subsection = None` **不会终止**前一个分组（对话框渲染只在

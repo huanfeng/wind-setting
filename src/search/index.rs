@@ -781,7 +781,11 @@ mod tests {
     fn fuzzy_hint_items_registered() {
         let m = manifest();
         let idx = build_index(&m);
-        for key in ["schema.pinyin.fuzzy.hint", "schema.pinyin.fuzzy.hint_scope"] {
+        for key in [
+            "schema.pinyin.fuzzy.hint",
+            "schema.pinyin.fuzzy.hint_scope",
+            "schema.pinyin.fuzzy.hint_tone",
+        ] {
             let e = idx
                 .iter()
                 .find(|e| e.id == key)
@@ -798,6 +802,13 @@ mod tests {
                 .as_deref()
                 .is_some_and(|w| w.starts_with("schema.pinyin.fuzzy.hint ")),
             "hint_scope 应依赖 hint 开启"
+        );
+        let tone = m.get("schema.pinyin.fuzzy.hint_tone").unwrap();
+        assert!(
+            tone.enabled_when
+                .as_deref()
+                .is_some_and(|w| w.starts_with("schema.pinyin.fuzzy.hint ")),
+            "hint_tone 应依赖 hint 开启"
         );
     }
 

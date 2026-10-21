@@ -2953,7 +2953,8 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .child(select_all_box)
         .child(grid)
         .child(field(state, "schema.pinyin.fuzzy.hint"))
-        .child(field(state, "schema.pinyin.fuzzy.hint_scope"));
+        .child(field(state, "schema.pinyin.fuzzy.hint_scope"))
+        .child(field(state, "schema.pinyin.fuzzy.hint_tone"));
     let body = crate::search::anchor::wrap(
         body,
         crate::search::index::in_dialog_anchor(FUZZY_PAIRS[0].0),

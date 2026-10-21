@@ -998,6 +998,7 @@ mod tests {
                         "schema.pinyin.fuzzy.enabled"
                             | "schema.pinyin.fuzzy.hint"
                             | "schema.pinyin.fuzzy.hint_scope"
+                            | "schema.pinyin.fuzzy.hint_tone"
                     )
             })
             .map(|k| {

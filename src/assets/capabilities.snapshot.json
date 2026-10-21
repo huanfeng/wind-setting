@@ -580,6 +580,11 @@
       ]
     },
     {
+      "default": false,
+      "key": "schema.pinyin.fuzzy.hint_tone",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "schema.pinyin.frequency.enabled",
       "type": "bool"
