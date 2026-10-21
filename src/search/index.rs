@@ -805,10 +805,8 @@ mod tests {
         );
         let tone = m.get("schema.pinyin.fuzzy.hint_tone").unwrap();
         assert!(
-            tone.enabled_when
-                .as_deref()
-                .is_some_and(|w| w.starts_with("schema.pinyin.fuzzy.hint ")),
-            "hint_tone 应依赖 hint 开启"
+            tone.enabled_when.is_none(),
+            "hint_tone 也作用于 ${{fuzzy_pinyin}}，不依赖 hint"
         );
     }
 
