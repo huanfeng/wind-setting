@@ -1840,6 +1840,11 @@
       ]
     },
     {
+      "default": true,
+      "key": "ui.candidate.grid_pageupdown_screen",
+      "type": "bool"
+    },
+    {
       "default": [
         "all",
         "single",
