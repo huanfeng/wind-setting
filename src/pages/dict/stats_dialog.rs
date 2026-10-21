@@ -13,6 +13,10 @@
 //! 用户在结果回来之前换了方案或点了「重新统计」，旧结果直接丢掉。通道没接上（单元测试）
 //! 或 mock 模式时就地同步取。
 //!
+//! 某个词库还没编译成 wdat 时，首次统计会先编译它（大词库十几秒），加载态的文案为此写明。
+//! **不做取消**：core 端没有中断扫描的口子，编译出的 wdat 也是正常输入要用的缓存，半途丢下
+//! 并不省什么；用户可以直接关对话框，迟到的结果按序号丢弃。
+//!
 //! # 正文
 //!
 //! 对话框正文挂在 [`StatsDialog::epoch`] 上整体重建：数据、加载态、展开态一变就重画。
@@ -38,7 +42,8 @@ const BODY_MAX_H: i32 = 460;
 /// 静态口径说明（ⓘ 那段）：数字都按词库自身的排序算，用户实际看到的候选还会被这些开关改动。
 pub const STATIC_NOTE: &str = "说明：所有数字按词库静态排序计算，未计出简让全、单字模式、\
 字符集过滤和调频。单字、词组按字数分，含 emoji、符号或字母的条目计入「其他」；\
-条目按（编码, 文字）计，一个字有简码和全码算多条。";
+条目按（编码, 文字）计，一个字有简码和全码算多条。重码不计纯 emoji 和符号条目；\
+同字有多个最长码时取序位最前者为全码。";
 
 /// 后台线程送回 UI 线程的一次取数结果。
 pub struct StatsReply {
@@ -185,7 +190,7 @@ impl StatsDialog {
                     }
                     Phase::Ready(val)
                 }
-                Err(e) => Phase::Failed(e),
+                Err(e) => Phase::Failed(failure_text(&e)),
             };
         }
         self.bump();
@@ -236,6 +241,16 @@ impl DictManagerState {
 
 fn u64_at(v: &Value, k: &str) -> u64 {
     v.get(k).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// 取数失败的文案。旧版 core 不认这个方法时，原文是 `unknown method: …`——用户看不懂，
+/// 换成能照着做的话。
+pub fn failure_text(e: &str) -> String {
+    if e.contains("unknown method") {
+        "核心版本过旧，不支持词库统计，请升级输入法".to_string()
+    } else {
+        e.to_string()
+    }
 }
 
 /// 千分位：88526 → 「88,526」。
@@ -421,6 +436,22 @@ pub fn dup_line(v: &Value) -> String {
     )
 }
 
+/// 「主库：重码组 8,913 · 涉及 20,294 条 · 最大 13 个（编码 wyve）」：合计含扩展库，
+/// 主库这一行让人看清方案本身的重码。只码表给。
+pub fn main_dup_line(v: &Value) -> Option<String> {
+    if engine_type(v) != "codetable" {
+        return None;
+    }
+    let m = v["dup"].get("main").filter(|m| m.is_object())?;
+    Some(format!(
+        "主库：重码组 {} · 涉及 {} 条 · 最大 {} 个（编码 {}）",
+        num(m, "groups"),
+        num(m, "entries"),
+        num(m, "max"),
+        m["maxCode"].as_str().unwrap_or("")
+    ))
+}
+
 /// 「单字全码：重码组 2,889 · 涉及 6,402 字 · 最大 12」；拼音给 None。
 pub fn char_full_line(v: &Value) -> Option<String> {
     let c = v["dup"].get("charFull").filter(|c| c.is_object())?;
@@ -450,17 +481,17 @@ pub fn extra_line(v: &Value) -> Option<String> {
     }
 }
 
-/// 单字：恰一个字符且是文字（汉字属 Alphabetic），emoji 与符号不算。
-fn is_single_char(t: &str) -> bool {
-    let mut it = t.chars();
-    matches!((it.next(), it.next()), (Some(c), None) if c.is_alphabetic() && !c.is_ascii())
-}
-
-/// Top 列表的一行：(编码, 组大小, 成员)。`chars_only` 只留单字成员、且只留还剩 ≥2 个的组。
+/// Top 列表的一行：(编码, 组大小, 成员)。`chars_only` 时换成 core 给的单字全码 Top
+/// （`dup.charFull.top`，与「单字全码」那一行同口径），不在客户端筛——筛前 N 组既不全、
+/// 组大小也不对。
 pub fn top_rows(v: &Value, chars_only: bool) -> Vec<(String, u64, Vec<String>)> {
+    let src = if chars_only {
+        &v["dup"]["charFull"]["top"]
+    } else {
+        &v["dup"]["top"]
+    };
     let empty = Vec::new();
-    v["dup"]["top"]
-        .as_array()
+    src.as_array()
         .unwrap_or(&empty)
         .iter()
         .filter_map(|g| {
@@ -469,14 +500,9 @@ pub fn top_rows(v: &Value, chars_only: bool) -> Vec<(String, u64, Vec<String>)> 
                 .as_array()?
                 .iter()
                 .filter_map(Value::as_str)
-                .filter(|t| !chars_only || is_single_char(t))
                 .map(str::to_string)
                 .collect();
-            if chars_only {
-                (texts.len() >= 2).then_some((code, texts.len() as u64, texts))
-            } else {
-                Some((code, u64_at(g, "size"), texts))
-            }
+            Some((code, u64_at(g, "size"), texts))
         })
         .collect()
 }
@@ -707,6 +733,9 @@ fn member_column(d: &StatsDialog, v: &Value, col_idx: usize, view: &StatsView) -
             );
         }
         c = c.child(head).child(muted(dup_line(v)));
+        if let Some(s) = main_dup_line(v) {
+            c = c.child(muted(s));
+        }
         if let Some(s) = char_full_line(v) {
             c = c.child(muted(s));
         }
@@ -739,7 +768,14 @@ fn top_panel(d: &StatsDialog, v: &Value) -> Element {
             Element::row()
                 .width_match()
                 .cross(Align::Center)
-                .child(muted("按组大小排列，成员按序位；点编码复制").weight(1.0))
+                .child(
+                    muted(if chars_only {
+                        "单字按全码分组（同「单字全码」那行），成员按序位；点编码复制"
+                    } else {
+                        "按组大小排列，成员按序位；点编码复制"
+                    })
+                    .weight(1.0),
+                )
                 .child(
                     Element::checkbox("只看单字", sig)
                         .small()
@@ -876,7 +912,7 @@ fn build_body(d: &StatsDialog) -> Element {
             return Element::col()
                 .width_match()
                 .padding_xy(18, 24)
-                .child(muted("统计中…（大词库需要一两秒）"));
+                .child(muted("统计中…首次统计可能需要先编译词库，请稍候"));
         }
         Phase::Failed(e) => {
             let dd = d.clone();
@@ -1056,7 +1092,7 @@ mod tests {
             );
             assert_eq!(
                 dup_line(&v),
-                "重码组 9,657 · 涉及 22,191 条 · 最大 71 个（编码 emoj）"
+                "重码组 9,550 · 涉及 21,814 条 · 最大 41 个（编码 cccc）"
             );
             assert_eq!(
                 char_full_line(&v).unwrap(),
@@ -1068,23 +1104,32 @@ mod tests {
         });
     }
 
+    /// 「只看单字」切到 core 给的单字全码 Top，组大小是真实值；默认 Top 已不含表情组。
     #[test]
-    fn top_rows_filter_to_single_chars() {
+    fn top_rows_switch_to_char_full_top() {
         with_mock(|| {
             let d = StatsDialog::new();
             d.open("wubi86", "五笔 86");
             let v = ready(&d);
             let all = top_rows(&v, false);
-            assert_eq!(all[0].0, "emoj");
-            assert_eq!(all[0].1, 71);
+            assert_eq!((all[0].0.as_str(), all[0].1), ("cccc", 41));
+            assert!(!all.iter().any(|(c, ..)| c == "emoj"));
             let chars = top_rows(&v, true);
-            assert!(
-                chars
-                    .iter()
-                    .all(|(_, n, t)| *n >= 2 && t.len() as u64 == *n)
+            assert_eq!((chars[0].0.as_str(), chars[0].1), ("fpgc", 12));
+            assert_eq!(
+                main_dup_line(&v).unwrap(),
+                "主库：重码组 8,913 · 涉及 20,294 条 · 最大 13 个（编码 wyve）"
             );
-            assert!(!chars.iter().any(|(c, ..)| c == "emoj"), "emoji 组没有单字");
         });
+    }
+
+    #[test]
+    fn unknown_method_reads_as_outdated_core() {
+        assert_eq!(
+            failure_text("unknown method: dict.systemStats"),
+            "核心版本过旧，不支持词库统计，请升级输入法"
+        );
+        assert_eq!(failure_text("方案不存在: x"), "方案不存在: x");
     }
 
     #[test]

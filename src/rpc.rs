@@ -1590,8 +1590,6 @@ fn mock_preview_template(params: &Value) -> Value {
     })
 }
 
-/// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
-/// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 /// `dict.systemStats` 的 mock：码表数字取自出厂五笔 86 的实测，拼音取自白霜拼音；混输把
 /// 两者并排放进 `members`（形状同 core `wind_coordinator::dict_stats_api`）。
 fn mock_system_stats(params: &Value) -> Value {
@@ -1621,10 +1619,16 @@ fn mock_system_stats(params: &Value) -> Value {
             },
             "shortCodes": { "levels": { "1": 50, "2": 654, "3": 3748 }, "charsWithShort": 4124 },
             "dup": {
-                "groups": 9657, "entries": 22191, "nonFirst": 12534, "max": 71, "maxCode": "emoj",
-                "charFull": { "groups": 2889, "chars": 6402, "max": 12 },
+                "groups": 9550, "entries": 21814, "nonFirst": 12264, "max": 41, "maxCode": "cccc",
+                "main": { "groups": 8913, "entries": 20294, "max": 13, "maxCode": "wyve" },
+                "charFull": {
+                    "groups": 2889, "chars": 6402, "max": 12,
+                    "top": [
+                        { "code": "fpgc", "size": 12, "texts": ["彀", "觳", "嗀", "殼", "瑴", "皼", "瞉", "穀"] },
+                        { "code": "ynky", "size": 8, "texts": ["赢", "嬴", "羸", "蠃", "臝", "贏", "驘", "鸁"] }
+                    ]
+                },
                 "top": [
-                    { "code": "emoj", "size": 71, "texts": ["😂", "🤣", "😊", "😁", "😄", "😆"] },
                     { "code": "cccc", "size": 41, "texts": ["又", "双双", "叕", "敠", "品", "众", "森", "鑫"] },
                     { "code": "wyve", "size": 13, "texts": ["食", "俍", "饛", "餦", "餬", "饢", "餵", "餶"] },
                     { "code": "fpgc", "size": 12, "texts": ["彀", "觳", "嗀", "殼", "瑴", "皼", "瞉", "穀"] },
@@ -1665,10 +1669,10 @@ fn mock_system_stats(params: &Value) -> Value {
             "codeLen": null,
             "shortCodes": null,
             "dup": {
-                "groups": 41330, "entries": 170144, "nonFirst": 128814, "max": 888, "maxCode": "yi",
+                "groups": 41330, "entries": 170133, "nonFirst": 128803, "max": 887, "maxCode": "yi",
                 "charFull": null,
                 "top": [
-                    { "code": "yi", "size": 888, "texts": ["以", "一", "亿", "已", "亦", "易", "矣", "乙"] },
+                    { "code": "yi", "size": 887, "texts": ["以", "一", "亿", "已", "亦", "易", "矣", "乙"] },
                     { "code": "ji", "size": 764, "texts": ["及", "即", "级", "既", "集", "记", "机", "鸡"] },
                     { "code": "yu", "size": 682, "texts": ["与", "于", "鱼", "於", "欲", "语", "雨", "余"] }
                 ]
@@ -1699,6 +1703,8 @@ fn mock_system_stats(params: &Value) -> Value {
     }
 }
 
+/// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
+/// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
     match method {
         "system.capabilities" => {
