@@ -662,10 +662,9 @@ impl DictManagerState {
             PickDialog::new()
                 .title("选择词库文件")
                 .filter("词库文件 (Rime/TSV/WindDict/纯词列表)", &["yaml", "txt"]),
-            move |path| {
-                if let Some(path) = path.as_deref() {
-                    state.open_lib_import(path);
-                }
+            move |path| match path {
+                Some(path) => state.open_lib_import(&path),
+                None => crate::file_pick::report_failure(|m| state.notify_err(m)),
             },
         );
     }
@@ -832,10 +831,10 @@ impl DictManagerState {
                 self.notify_err("文件里没有可用的词条。");
                 return false;
             }
-            let weight: i64 = match self.io_weight.get().trim().parse() {
-                Ok(w) => w,
-                Err(_) => {
-                    self.notify_err("权重需为整数");
+            let weight = match crate::weight::parse_weight(&self.io_weight.get()) {
+                Ok(w) => i64::from(w),
+                Err(e) => {
+                    self.notify_err(&e);
                     return false;
                 }
             };

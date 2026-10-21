@@ -793,7 +793,9 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
                             .filter("主题包", &["wtheme"])
                             .save_file()
                         else {
-                            return;
+                            return crate::file_pick::report_failure(|m| {
+                                feedback.set(Some((ToastKind::Error, m.to_string())))
+                            });
                         };
                         match crate::rpc::call_core(
                             "theme.exportPackage",

@@ -181,10 +181,10 @@ fn action_row(form: &ButtonForm) -> Element {
             .enabled_when(move || f2.kind().takes_path())
             .on_click(move |ctx| {
                 let arg = f3.arg;
-                ctx.request_pick_file(program_pick_dialog(), move |path| {
-                    if let Some(p) = path {
-                        arg.set(p.display().to_string());
-                    }
+                let error = f3.error;
+                ctx.request_pick_file(program_pick_dialog(), move |path| match path {
+                    Some(p) => arg.set(p.display().to_string()),
+                    None => crate::file_pick::report_failure(|m| error.set(m.to_string())),
                 });
             }),
     );

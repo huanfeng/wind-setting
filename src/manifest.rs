@@ -153,7 +153,7 @@ pub struct MGroup {
 }
 
 /// 清单：key → 项（含 manifest 原始顺序与分组，便于 (group, section) 聚合渲染）。
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Manifest {
     pub items: HashMap<String, MItem>,
     /// 项 key 的 manifest 出现顺序（HashMap 无序，渲染需按此还原）。

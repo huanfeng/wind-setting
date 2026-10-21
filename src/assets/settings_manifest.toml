@@ -1994,6 +1994,16 @@ label = "启用分类词"
 hint = "「动物」「水果」等分类词会带出整组 emoji，数量受每词上限约束"
 enabled_when = "input.emoji.enabled == true"
 
+[[items]]
+key = "input.emoji.block_auto_commit"
+group = "input"
+section = "Emoji/OpenCC"
+dialog_group = "emoji"
+type = "toggle"
+label = "有追加时不自动上屏"
+hint = "全码唯一自动上屏时，若候选追加了 emoji 或附加模块的符号（如「提手旁」→ 扌），不自动上屏，留出选择的机会"
+enabled_when = "input.emoji.enabled == true"
+
 # 附加模块（core 的 EMOJI_MODULES + 用户放进用户目录 emoji\ 的 OpenCC 表）：条数不定，走对话框，
 # 整张 input.emoji.modules 表读写。
 [[items]]
@@ -2003,7 +2013,7 @@ section = "Emoji/OpenCC"
 type = "dialog_button_emoji_modules"
 indent = false
 label = "附加模块"
-hint = "按模块加挂 emoji 与符号表（偏旁、希腊字母、单位等）；也可在用户目录 emoji\\ 下放 OpenCC 格式的 .txt 自行扩充"
+hint = "按模块加挂 emoji 与符号表（偏旁、希腊字母、单位等）；同样只为前 N 个候选追加，见「追加范围」。也可在用户目录 emoji\\ 下放 OpenCC 格式的 .txt 自行扩充"
 enabled_when = "input.emoji.enabled == true"
 
 # ── 网址/邮箱输入 ──
@@ -2741,7 +2751,7 @@ group = "keys"
 section = "功能快捷键"
 type = "hotkey"
 label = "打开加词界面"
-hint = "取最近输入的内容，直接弹出加词窗口"
+hint = "优先取剪贴板，为空时取最近输入，直接弹出加词窗口"
 
 [[items]]
 key = "keys.activate_ime"

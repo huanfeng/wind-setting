@@ -110,7 +110,11 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                                     // 那一个。
                                     .filter("主题文件", &["toml", "wtheme"]),
                                 move |path| {
-                                    let Some(path) = path else { return };
+                                    let Some(path) = path else {
+                                        return crate::file_pick::report_failure(|m| {
+                                            app.borrow().notify_err(m)
+                                        });
+                                    };
                                     import_picked_file(&app, &path, sig);
                                 },
                             );

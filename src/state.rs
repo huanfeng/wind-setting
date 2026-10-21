@@ -967,6 +967,8 @@ impl AppState {
             manifest_show_all,
         );
         let search = crate::search::SearchState::new(&manifest);
+        // 方案设置对话框里的方案级项复用全局 key，也要按同一份折叠结果藏。
+        schema_mgr.set_manifest(Rc::new(manifest.clone()));
         // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
         // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
         let initial_dark = setting_load
@@ -1486,6 +1488,7 @@ impl AppState {
         self.manifest =
             crate::custom_hide::settings_manifest(crate::custom_hide::installed(), show_all);
         self.search.reindex(&self.manifest);
+        self.schema_mgr.set_manifest(Rc::new(self.manifest.clone()));
         self.manifest_show_all = show_all;
     }
 
@@ -1673,6 +1676,19 @@ impl AppState {
             // 兼容规则被改了（设置端自己写的会收到回声；右键菜单写的只能靠它得知）。
             // 回声无害：`CompatState::reload` 只在内容真的变了才动信号，不会因此重建界面。
             "compat.changed" => self.compat_mgr.request_refresh(),
+            // 方案配置被改了（命令直通开关扩展词库等）：开着的方案设置对话框与待提交队列
+            // 都要对账。本端保存的回声按值相同滤掉，不提示。
+            // 不带 id 的是可能动了多个方案的写入（导入方案包、整机还原），按全部处理。
+            "schema.configChanged" => {
+                let id = ev.data.get("id").and_then(|v| v.as_str());
+                let changed = self.schema_mgr.on_schema_config_changed(id);
+                if !changed.is_empty() {
+                    ctx.toast(format!(
+                        "「{}」已在别处更改，页面已同步",
+                        changed.join("」「")
+                    ));
+                }
+            }
             other => tracing::debug!("忽略 core 事件: {}", other),
         }
     }

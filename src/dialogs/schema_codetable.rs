@@ -645,16 +645,38 @@ impl CtFields {
     ///
     /// 逐项 `apply` 够不着没有控件的字段（没控件就没信号），而 override 里可能留着
     /// 0.118 时代「开总开关整段写实」写进去的值。这个按钮是清掉它们的唯一入口。
-    pub fn reset(&self, cfg: &mut Value) {
+    ///
+    /// ★ 例外：被定制版 `[settings] hide` 藏掉的项**原样保留**。定制者藏它就是不让用户在
+    /// 界面上动，一键清空却能把它的方案覆盖值悄悄抹掉，与「隐藏只影响显示」相悖。
+    pub fn reset(&self, manifest: &Manifest, cfg: &mut Value) {
         if !cfg.is_object() {
             *cfg = json!({});
         }
+        let custom_hidden = |key: &str| manifest.get(key).is_some_and(|i| i.custom_hidden);
         for f in SPEC_BEHAVIOR_FIELDS {
-            set_path(cfg, &["engine", "codetable", f], Value::Null);
+            if !custom_hidden(&format!("{MANIFEST_PREFIX}{f}")) {
+                set_path(cfg, &["engine", "codetable", f], Value::Null);
+            }
         }
-        // 嵌套子段整段置 null 而非逐字段——段内字段可能多于 manifest 暴露的那几个，逐个清会漏。
-        set_path(cfg, &["engine", "codetable", "frequency"], Value::Null);
-        set_path(cfg, &["engine", "codetable", "english_merge"], Value::Null);
+        for sub in ["frequency", "english_merge"] {
+            let prefix = format!("{MANIFEST_PREFIX}{sub}.");
+            let in_sub: Vec<&MItem> = manifest
+                .items
+                .values()
+                .filter(|i| i.key.starts_with(&prefix))
+                .collect();
+            if !in_sub.iter().any(|i| i.custom_hidden) {
+                // 嵌套子段整段置 null 而非逐字段——段内字段可能多于 manifest 暴露的那几个，
+                // 逐个清会漏。
+                set_path(cfg, &["engine", "codetable", sub], Value::Null);
+                continue;
+            }
+            // 段内有被藏的项：只能逐个清没藏的那些（清单外的字段因此留下）。
+            for i in in_sub.iter().filter(|i| !i.custom_hidden) {
+                let leaf = &i.key[prefix.len()..];
+                set_path(cfg, &["engine", "codetable", sub, leaf], Value::Null);
+            }
+        }
     }
 }
 
@@ -736,7 +758,7 @@ fn prune_empty_section(cfg: &mut Value, section: &str) {
 ///
 /// 排除两类：
 /// - `hidden = true`：与全局对话框一致，不渲染（也不参与逐项落盘，只在
-///   [`CtFields::reset`] 里被清除）
+///   [`CtFields::reset`] 里被清除；定制版藏掉的连那里也不清）
 /// - `auto_phrase.*`：core 的 `CodeTableSpec` **没有**这一段，方案文件里写了也没人读。
 ///   自动造词目前只有全局一份配置。core 若补上方案级覆盖，把这条排除去掉即可，
 ///   `manifest_keys_match_spec_fields` 会提醒。
@@ -1237,7 +1259,7 @@ mod tests {
                 "frequency": { "enabled": true },
             }}
         });
-        f.reset(&mut cfg);
+        f.reset(&m, &mut cfg);
         let ct = cfg.pointer("/engine/codetable").unwrap();
         for field in SPEC_BEHAVIOR_FIELDS {
             assert_eq!(
@@ -1251,6 +1273,37 @@ mod tests {
             ct.get("max_code_length"),
             Some(&json!(4)),
             "引擎固定参数不归覆盖这层管，不该被清"
+        );
+    }
+
+    /// 定制版藏掉的项「全部恢复跟随」不清：扁平字段保留，子段里只清没藏的那几项。
+    #[test]
+    fn reset_keeps_custom_hidden_fields() {
+        let (hide, errors) = wind_config::SettingsHide::parse(&[
+            "key:schema.codetable.top_code_commit",
+            "key:schema.codetable.frequency.half_life",
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let m = crate::custom_hide::settings_manifest(&hide, false);
+        let f = CtFields::default();
+        let mut cfg = json!({
+            "engine": { "codetable": {
+                "top_code_commit": true,
+                "punct_commit": true,
+                "frequency": { "enabled": true, "half_life": 7 },
+                "english_merge": { "enable": true },
+            }}
+        });
+        f.reset(&m, &mut cfg);
+        let ct = cfg.pointer("/engine/codetable").unwrap();
+        assert_eq!(ct.get("top_code_commit"), Some(&json!(true)));
+        assert_eq!(ct.get("punct_commit"), Some(&Value::Null));
+        assert_eq!(ct.pointer("/frequency/enabled"), Some(&Value::Null));
+        assert_eq!(ct.pointer("/frequency/half_life"), Some(&json!(7)));
+        assert_eq!(
+            ct.get("english_merge"),
+            Some(&Value::Null),
+            "没藏项的子段照旧整段清"
         );
     }
 
