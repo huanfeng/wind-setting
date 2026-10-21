@@ -3127,7 +3127,7 @@ section = "候选排版"
 dialog_group = "grid"
 type = "number"
 label = "可见行数"
-hint = "展开后一屏显示几行，翻页键一次滚动这么多行"
+hint = "展开后一屏显示几行，PageUp/PageDown 翻整屏时一次滚动这么多行"
 enabled_when = "ui.candidate.grid_expand == true"
 min = 2
 max = 10
@@ -3158,6 +3158,16 @@ options = [
   { value = "cells", label = "逐格编满十个" },
   { value = "off", label = "只编高亮行" },
 ]
+
+[[items]]
+key = "ui.candidate.grid_pageupdown_screen"
+group = "ui"
+section = "候选排版"
+dialog_group = "grid"
+type = "toggle"
+label = "PageUp/PageDown 翻整屏"
+hint = "其余翻页键（如 -=）逐行移动"
+enabled_when = "ui.candidate.grid_expand == true"
 
 [[items]]
 key = "ui.candidate.grid_categories"

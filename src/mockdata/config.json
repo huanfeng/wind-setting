@@ -486,6 +486,7 @@
    "grid_cell_max_chars": 6,
    "grid_expand": false,
    "grid_index_fill": "rows",
+   "grid_pageupdown_screen": true,
    "grid_rows": 5,
    "hide_window": false,
    "index_labels": [],
