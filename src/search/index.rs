@@ -791,6 +791,14 @@ mod tests {
                 other => panic!("{key} 应落在模糊音对话框，实际 {other:?}"),
             }
         }
+        let scope = m.get("schema.pinyin.fuzzy.hint_scope").unwrap();
+        assert!(
+            scope
+                .enabled_when
+                .as_deref()
+                .is_some_and(|w| w.starts_with("schema.pinyin.fuzzy.hint ")),
+            "hint_scope 应依赖 hint 开启"
+        );
     }
 
     /// 临时拼音 / 临时英文搬到了方案页，按键行为 / 候选无效按键搬到了按键页。
