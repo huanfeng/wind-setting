@@ -221,11 +221,20 @@ impl DictManagerState {
             self.domain.set(idx);
         }
         let m_dir = self.clone();
-        let mut items = vec![MenuItem::run(
+        let mut items = Vec::new();
+        if self.schema_id_at(idx).is_some() {
+            let m = self.clone();
+            items.push(MenuItem::run(
+                "词库统计…",
+                move |_| m.open_stats_at(idx),
+                false,
+            ));
+        }
+        items.push(MenuItem::run(
             "打开数据目录",
             move |_| m_dir.open_data_dir_at(idx),
             false,
-        )];
+        ));
         if self.domain_purgeable(idx) {
             let m = self.clone();
             items.push(MenuItem::separator());

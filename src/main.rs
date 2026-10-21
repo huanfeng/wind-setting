@@ -568,6 +568,15 @@ fn main() {
     });
     app_state.borrow().memory.set_tx(memory_tx);
 
+    // 词库统计通道：`dict.systemStats` 要扫整份系统词库（拼音大词库一秒上下），在后台线程
+    // 取，结果经此回 UI 线程写对话框（见 `pages::dict::stats_dialog`）。
+    let stats_state = app_state.clone();
+    let stats_tx = app.channel::<pages::dict::stats_dialog::StatsReply>(move |_ctx, r| {
+        let stats = stats_state.borrow().dict_mgr.stats.clone();
+        stats.on_reply(r);
+    });
+    app_state.borrow().dict_mgr.stats.set_tx(stats_tx);
+
     // UI 请求通道：`single_instance` 的 argv 回调没有 ctx，开不了窗（见 `UiRequest`），
     // 由它把请求转到这里 —— channel 的 on_message 收 `&mut EventCtx`，副作用被采纳。
     let ui_state = app_state.clone();

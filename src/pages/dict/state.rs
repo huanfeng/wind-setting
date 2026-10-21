@@ -144,6 +144,8 @@ pub struct DictManagerState {
     pub edit_dialog: Signal<bool>,
     /// 用户分库（中栏节点与名字对话框），见 [`super::user_libs`]。
     pub libs: super::user_libs::UserLibsState,
+    /// 「词库统计」对话框（见 `stats_dialog`）。
+    pub stats: super::stats_dialog::StatsDialog,
     /// toast 反馈通道：写操作只写此信号，view 侧 toast_sink 在 on_update 里 ctx.toast_*。
     /// (三态 kind, 文案)。
     pub feedback: super::reactive::Feedback,
@@ -588,6 +590,7 @@ impl DictManagerState {
             edit_current: signal(Vec::new()),
             edit_dialog: signal(false),
             libs: super::user_libs::UserLibsState::new(),
+            stats: super::stats_dialog::StatsDialog::new(),
             feedback: signal(None),
             confirm_visible: signal(false),
             confirm_msg: signal(String::new()),
