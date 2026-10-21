@@ -5016,7 +5016,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             crate::widgets::dialog_section_hint(
                 "整句输入（实验性）",
                 "实验性功能，仅供研究，不建议日常使用：简码歧义下切分可能出错，需用手动分隔符\
-                 （如 q'j）划定边界；开启后顶码上屏不再生效。",
+                 （如 q'j）划定边界；开启后顶码上屏、全码唯一自动上屏、满码空码清空不再生效。",
                 vec![crate::widgets::setting_row(
                     "启用整句输入",
                     Some("超过码长的编码自动切分并组句，保存后即生效"),
