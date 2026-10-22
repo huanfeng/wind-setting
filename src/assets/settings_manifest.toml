@@ -444,27 +444,7 @@ min = 0
 max = 10
 enabled_when = "schema.codetable.english_merge.enable == true"
 
-[[items]]
-key = "schema.codetable.english_merge.block_commit"
-group = "schema"
-section = "上屏行为"
-dialog_group = "ct_english"
-type = "toggle"
-label = "有英文候选时否决上屏"
-hint = "满码自动上屏与顶码上屏前，只要有英文词以当前编码开头就不自动上屏（打 gith 时 github 还没出现也算）；关掉的话打 github 到第 4 键就被顶出中文。开启时已涵盖下一项"
-enabled_when = "schema.codetable.english_merge.enable == true"
-
-[[items]]
-key = "schema.codetable.english_merge.block_commit_on_word"
-group = "schema"
-section = "上屏行为"
-dialog_group = "ct_english"
-type = "toggle"
-label = "整串是英文单词时否决上屏"
-hint = "整串恰好是一个英文单词时不自动上屏、不顶码，保留英文供选择；只是英文词开头的编码照常上屏。上一项开启时本项无需单独开"
-enabled_when = "schema.codetable.english_merge.enable == true"
-
-# 以下三项码表与混输（schema.mix.english_*）同口径，见核心 `english_merge::select`。
+# 以下各项码表与混输（schema.mix.english_*）同口径，见核心 `english_merge::select`。
 [[items]]
 key = "schema.codetable.english_merge.complete_min_length"
 group = "schema"
@@ -511,6 +491,26 @@ label = "英文最多条数"
 hint = "有中文候选时英文最多显示几条（完整单词优先，再补前缀补全）；没有中文候选时不受此限"
 min = 1
 max = 10
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.block_commit"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "toggle"
+label = "有英文候选时否决上屏"
+hint = "满码自动上屏与顶码上屏前，只要有英文词以当前编码开头就不自动上屏（打 gith 时 github 还没出现也算）；关掉的话打 github 到第 4 键就被顶出中文。开启时已涵盖下一项"
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.block_commit_on_word"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "toggle"
+label = "整串是英文单词时否决上屏"
+hint = "整串恰好是一个英文单词时不自动上屏、不顶码，保留英文供选择；只是英文词开头的编码照常上屏。上一项开启时本项无需单独开"
 enabled_when = "schema.codetable.english_merge.enable == true"
 
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
