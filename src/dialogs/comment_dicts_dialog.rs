@@ -932,46 +932,41 @@ fn build_file_picker_dialog(ui: &CommentDictsUi) -> Element {
     let visible = ui.picker;
     let pick_ui = ui.clone();
 
-    let list = Element::list_signal(
-        ui.files,
-        |f: &CommentFile| f.path.clone(),
-        move |f: CommentFile| {
-            let mounted = pick_ui
-                .rows
-                .get()
-                .iter()
-                .any(|r| !r.auto && paths_eq(&r.path, &f.path));
-            let name = if f.label.is_empty() {
-                file_stem_of(&f.path)
-            } else {
-                f.label.clone()
-            };
-            let desc = match (mounted, f.has_comment) {
-                (true, _) => format!("{} · 已添加", f.path),
-                // 缺 comment 列的文件照样列出来（core 加载时会整库跳过）：滤掉的话
-                // 用户看到的是「我放进去的文件不见了」，比一句说明难查得多。
-                (false, false) => format!("{} · 缺 comment 列", f.path),
-                (false, true) => f.path.clone(),
-            };
-            let sel_ui = pick_ui.clone();
-            let file = f.clone();
-            let btn = if mounted {
-                Element::label("已添加")
-                    .font_size(11.0)
-                    .fg_role(Role::TextSubtle)
-            } else {
-                Element::button("添加").small().on_click(move |_| {
-                    let taken: Vec<String> =
-                        sel_ui.rows.get().iter().map(|r| r.id.clone()).collect();
-                    sel_ui.form.open_new_from_file(&file, &taken);
-                    sel_ui.picker.set(false);
-                })
-            };
-            crate::widgets::list_row(
-                crate::widgets::setting_row(&name, Some(&desc), btn).width_match(),
-            )
-        },
-    );
+    // 滚动放在自己这一层、内层用 `host_signal`：`list_signal` 拿自己的 widget 顶掉了
+    // 滚动容器的，滚轮与滚动条拖动都没人接（同 `build_schema_picker` 的说明）。
+    let list = Element::host_signal(ui.files, move |f: CommentFile| {
+        let mounted = pick_ui
+            .rows
+            .get()
+            .iter()
+            .any(|r| !r.auto && paths_eq(&r.path, &f.path));
+        let name = if f.label.is_empty() {
+            file_stem_of(&f.path)
+        } else {
+            f.label.clone()
+        };
+        let desc = match (mounted, f.has_comment) {
+            (true, _) => format!("{} · 已添加", f.path),
+            // 缺 comment 列的文件照样列出来（core 加载时会整库跳过）：滤掉的话
+            // 用户看到的是「我放进去的文件不见了」，比一句说明难查得多。
+            (false, false) => format!("{} · 缺 comment 列", f.path),
+            (false, true) => f.path.clone(),
+        };
+        let sel_ui = pick_ui.clone();
+        let file = f.clone();
+        let btn = if mounted {
+            Element::label("已添加")
+                .font_size(11.0)
+                .fg_role(Role::TextSubtle)
+        } else {
+            Element::button("添加").small().on_click(move |_| {
+                let taken: Vec<String> = sel_ui.rows.get().iter().map(|r| r.id.clone()).collect();
+                sel_ui.form.open_new_from_file(&file, &taken);
+                sel_ui.picker.set(false);
+            })
+        };
+        crate::widgets::list_row(crate::widgets::setting_row(&name, Some(&desc), btn).width_match())
+    });
 
     let manual_ui = ui.clone();
     let frame = Element::col()
@@ -1000,7 +995,7 @@ fn build_file_picker_dialog(ui: &CommentDictsUi) -> Element {
             .max_lines(3)
             .padding_xy(18, 8),
         )
-        .child(Element::col().width_match().height(240).child(list))
+        .child(Element::scroll().width_match().height(240).child(list))
         .child(Element::divider())
         .child(
             Element::row()
@@ -1048,14 +1043,13 @@ fn paths_eq(a: &str, b: &str) -> bool {
 ///
 /// # ★ `host_signal` + 自己的 `scroll`，不是 `list_signal`
 ///
-/// `list_signal` 内部是 `scroll().fill()`，`fill` 要靠父给确定视口，而这里的父只是对话框
-/// 里一个普通 col ⇒ 拿不到确定高度，**列表被裁掉一截却滚不动**。判据见
-/// `host_signal` 的文档：滚动容器按无限高度测量子元素。这里把滚动放在**自己这一层**
-/// （显式 `width_match` + `height`，同 `field_dialogs::shell_with_buttons` 的写法），
-/// 内层就该用非滚动的 `host_signal`。
+/// `list_signal` 内部是 `scroll().fill()`，但随即用自己的列表 widget 顶掉了滚动容器的
+/// `ScrollWidget`，而列表 widget 不接指针事件 ⇒ **看得见滚动条，滚轮与拖动却没人接**。
+/// （另外 `fill` 还要父给确定视口。）这里把滚动放在**自己这一层**（显式 `width_match` +
+/// `height`，同 `field_dialogs::shell_with_buttons` 的写法），内层用非滚动的 `host_signal`。
 ///
-/// ⚠️ 本仓在这个坑上已经栽过三次（`build_schema_inline_list`、`schema_key_actions::build_body`、
-/// 这里），每次的症状都一模一样：**滚不动**。选响应式列表 API 时先问一句「谁负责滚」。
+/// ⚠️ 本仓在这个坑上已经栽过四次（`build_schema_inline_list`、`schema_key_actions::build_body`、
+/// 这里、`build_file_picker_dialog`），每次的症状都一模一样：**滚不动**。选响应式列表 API 时先问一句「谁负责滚」。
 fn build_schema_picker(ui: &CommentDictsUi) -> Element {
     let form = ui.form.clone();
     let boxes = Element::host_signal(ui.schemas_all, move |(id, name): (String, String)| {
@@ -1619,6 +1613,76 @@ mod tests {
             json!([{ "id": "en", "path": "comments/en.dict.yaml" }]),
         ));
         let _ = build_comment_dicts_dialog(&ui);
+    }
+
+    /// 「选择词库」弹层里文件一多，列表要能用滚轮滚动。
+    ///
+    /// 按真实挂法建树：根 stack 里垫一层页面，主对话框与叠在其上的选择器同开，
+    /// 滚轮走 `dispatch_pointer` 的命中链路（含遮罩与叠层），不直接调滚动容器。
+    #[test]
+    fn file_picker_list_scrolls_with_wheel() {
+        use windui::core::{Layout, Tree};
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::{Point, Size};
+
+        let ui = CommentDictsUi::new();
+        ui.files.set(
+            (0..30)
+                .map(|i| CommentFile {
+                    path: format!("comments/d{i}.dict.yaml"),
+                    label: format!("词库 {i}"),
+                    has_comment: true,
+                })
+                .collect(),
+        );
+        ui.visible.set(true);
+        ui.picker.set(true);
+
+        let mut tree = Tree::new();
+        let root = Element::stack()
+            .fill()
+            .child(Element::leaf().fill())
+            .child(build_comment_dicts_dialog(&ui))
+            .build(&mut tree);
+        tree.root = Some(root);
+        let size = Size::new(800, 600);
+        let mut te = windui::text::NullTextEngine;
+        tree.layout_root(size, &mut te);
+
+        // 选择器的列表：内容最高的那个滚动容器（30 行远超 240 的视口）。
+        let mut stack = vec![root];
+        let mut list = None;
+        while let Some(id) = stack.pop() {
+            let n = tree.get(id).unwrap();
+            stack.extend(n.children.iter().copied());
+            if matches!(n.layout, Layout::Scroll)
+                && list.is_none_or(|l| tree.get(l).unwrap().content_h < n.content_h)
+            {
+                list = Some(id);
+            }
+        }
+        let list = list.expect("应有滚动容器");
+        let r = tree.abs_bounds(list);
+        let n = tree.get(list).unwrap();
+        assert!(
+            n.content_h > r.h && r.h > 0,
+            "前提：列表内容溢出视口（content_h={} 视口={}）",
+            n.content_h,
+            r.h
+        );
+
+        let at = Point::new(r.x + r.w / 2, r.y + r.h / 2);
+        let (mut hover, mut capture) = (None, None);
+        tree.dispatch_pointer(
+            PointerEvent::single(PointerKind::Wheel(-120), at, MouseButton::Left),
+            &mut hover,
+            &mut capture,
+        );
+        tree.layout_root(size, &mut te);
+        assert!(
+            tree.get(list).unwrap().scroll_y > 0,
+            "滚轮向下应滚动选择器列表"
+        );
     }
 
     /// 空列表同样要能构建（出厂状态就是这一支）。
