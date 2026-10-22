@@ -435,15 +435,24 @@ pub fn unique_template_id(base: &str, taken: &[&str]) -> String {
 
 /// 一格的选项列表：模板（库序）、不显示、跟随；横排另有同竖排。当前值是库里没有的模板时
 /// 追加在末尾，免得一打开就被改成别的值。
-fn cell_options(lib: &LibraryInfo, col: Col, current: &Choice) -> Vec<Choice> {
+///
+/// - 全局行不给「跟随」：它下面没有层了。
+/// - 出厂写了横排值的格不给「同竖排」：同竖排即删用户键，删了落回的是出厂横排值而不是竖排。
+fn cell_options(lib: &LibraryInfo, scope: &Scope, col: Col, current: &Choice) -> Vec<Choice> {
     let mut out: Vec<Choice> = lib
         .templates
         .iter()
         .map(|t| Choice::Template(t.id.clone()))
         .collect();
     out.push(Choice::Hide);
-    out.push(Choice::Follow);
-    if col.horizontal() {
+    if *scope != Scope::Global {
+        out.push(Choice::Follow);
+    }
+    let factory_h = scope
+        .cells(&lib.system_assign)
+        .and_then(|c| col.get(c))
+        .is_some();
+    if col.horizontal() && !factory_h {
         out.push(Choice::SameAsVertical);
     }
     if !out.contains(current) {
@@ -613,6 +622,9 @@ pub struct CommentSettingsUi {
     /// 模板串的**显示形态**（真换行显示成 `\n`，同悬停提示的段内容框），写回时还原。
     edit_text: Signal<String>,
     names: Rc<RefCell<Names>>,
+    /// 出厂分配：写回时判「与出厂相同」的基准。首次拉到就定下，之后的刷新失败也不会把它
+    /// 换成空表（空表会让出厂格上的「跟随」变成删键、静默回到出厂值）。
+    system: Rc<RefCell<Option<CommentAssign>>>,
 }
 
 impl CommentSettingsUi {
@@ -631,6 +643,7 @@ impl CommentSettingsUi {
             edit_name: signal(String::new()),
             edit_text: signal(String::new()),
             names: Rc::new(RefCell::new(Names::default())),
+            system: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -655,12 +668,32 @@ impl CommentSettingsUi {
         self.refresh();
     }
 
+    fn system_assign(&self) -> CommentAssign {
+        self.system.borrow().clone().unwrap_or_default()
+    }
+
     /// 按草稿向 core 重算模板库与每格结果。
     fn refresh(&self) {
         let draft = draft_json(&self.templates.get(), &self.assign.get());
-        let v = crate::rpc::call_core("comment.library", &json!({ "comment": draft }))
-            .unwrap_or(json!({}));
+        self.apply_reply(crate::rpc::call_core(
+            "comment.library",
+            &json!({ "comment": draft }),
+        ));
+    }
+
+    /// 拉取失败时保留上一次的结果（表格不塌、出厂基准不变），只记日志。
+    fn apply_reply(&self, reply: Result<Value, String>) {
+        let v = match reply {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("comment.library 拉取失败，保留上次结果: {e}");
+                return;
+            }
+        };
         let lib = library_from_value(&v);
+        if self.system.borrow().is_none() {
+            *self.system.borrow_mut() = Some(lib.system_assign.clone());
+        }
         if self.tpl_sel.get().is_empty()
             && let Some(t) = lib.templates.first()
         {
@@ -699,7 +732,7 @@ impl CommentSettingsUi {
     }
 
     fn choose(&self, scope: &Scope, col: Col, choice: &Choice) {
-        let system = self.lib().system_assign;
+        let system = self.system_assign();
         self.assign
             .update(|a| write_choice(a, &system, scope, col, choice));
         self.preview_cell.set((scope.clone(), col));
@@ -707,7 +740,7 @@ impl CommentSettingsUi {
     }
 
     fn remove(&self, scope: &Scope) {
-        let system = self.lib().system_assign;
+        let system = self.system_assign();
         self.assign.update(|a| {
             remove_row(a, &system, scope);
         });
@@ -768,11 +801,21 @@ impl CommentSettingsUi {
         }
         self.templates.update(|v| {
             if let Some(slot) = v.iter_mut().find(|u| u.id == t.id) {
+                slot.name = name.clone();
+                slot.text = text.clone();
+            }
+        });
+        // 改名、改模板串不改任何格落到哪个 id，就地改库里那一条即可：逐键打字不打 RPC。
+        self.view.update(|v| {
+            if let Some(slot) = v
+                .first_mut()
+                .and_then(|lib| lib.templates.iter_mut().find(|u| u.id == t.id))
+            {
                 slot.name = name;
                 slot.text = text;
             }
         });
-        self.refresh();
+        self.update_preview();
     }
 
     fn taken_ids(&self) -> Vec<String> {
@@ -1202,7 +1245,7 @@ fn cell_dropdown(
     col: Col,
 ) -> Element {
     let current = shown_choice(user, &lib.system_assign, scope, col);
-    let options = cell_options(lib, col, &current);
+    let options = cell_options(lib, scope, col, &current);
     let resolved = lib.effective_of(scope, col).map(|(id, _)| lib.name_of(id));
     let items: Vec<windui::ui::select::DropdownItem> = options
         .iter()
@@ -1612,7 +1655,7 @@ mod tests {
     fn options_keep_an_unknown_current_template() {
         let lib = LibraryInfo::default();
         let cur = Choice::Template("gone".into());
-        let opts = cell_options(&lib, Col::DefaultH, &cur);
+        let opts = cell_options(&lib, &Scope::Type("pinyin".into()), Col::DefaultH, &cur);
         assert_eq!(
             opts,
             [
@@ -1771,6 +1814,94 @@ mod tests {
         assert_eq!(
             ui.selected_template().map(|t| t.origin),
             Some(Origin::Builtin)
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 全局行不给跟随；出厂写了横排值的格不给同竖排。
+    #[test]
+    fn options_drop_follow_on_global_and_same_as_vertical_over_factory_horizontal() {
+        let mut lib = LibraryInfo::default();
+        lib.system_assign
+            .by_type
+            .insert("codetable".into(), cells(None, Some("pinyin"), None, None));
+        let g = cell_options(&lib, &Scope::Global, Col::DefaultV, &Choice::Hide);
+        assert!(!g.contains(&Choice::Follow));
+        let t = Scope::Type("codetable".into());
+        let h = cell_options(&lib, &t, Col::DefaultH, &Choice::Template("pinyin".into()));
+        assert!(!h.contains(&Choice::SameAsVertical));
+        assert!(h.contains(&Choice::Follow));
+        let h2 = cell_options(&lib, &t, Col::DetailH, &Choice::SameAsVertical);
+        assert!(h2.contains(&Choice::SameAsVertical), "出厂没写横排的格照给");
+    }
+
+    /// 刷新失败：保留上次结果；出厂基准是播种时定下的，出厂格上选跟随仍写 inherit。
+    #[test]
+    fn failed_refresh_keeps_view_and_factory_baseline() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let ui = CommentSettingsUi::new();
+        ui.seed(&Config::from_value(json!({})));
+        let before = ui.lib();
+        assert!(!before.templates.is_empty());
+        ui.apply_reply(Err("core 未连接".into()));
+        assert_eq!(ui.lib(), before, "失败不覆盖上次结果");
+
+        // 即便库视图被清空，写回仍以播种时的出厂分配为基准。
+        ui.view.set(vec![LibraryInfo::default()]);
+        let t = Scope::Type("codetable".into());
+        ui.choose(&t, Col::DetailV, &Choice::Follow);
+        assert_eq!(
+            ui.assign.get().by_type["codetable"]
+                .detail_vertical
+                .as_deref(),
+            Some("inherit")
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 编辑框的转义往返：带 `\\`、`\t`、不成对 `\x`、真换行的模板，打开不改就不脏；
+    /// 手打 `\n` 存真换行；改名就地更新库视图（不等 RPC）。
+    #[test]
+    fn editor_escape_round_trip_is_not_dirty() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let raws = ["a\\b\tc\\x", "${pinyin}\n${chaizi}", "\\n 字面", "末尾\\"];
+        let templates: Vec<Value> = raws
+            .iter()
+            .enumerate()
+            .map(|(i, t)| json!({ "id": format!("t{i}"), "name": "n", "text": t }))
+            .collect();
+        let cfg = Config::from_value(json!({ "ui": { "comment": { "templates": templates } } }));
+        let ui = CommentSettingsUi::new();
+        ui.seed(&cfg);
+        let base = ui.value_of(TEMPLATES_KEY);
+        assert_eq!(Some(&base), cfg.get_path(TEMPLATES_KEY));
+        for i in 0..raws.len() {
+            ui.tpl_sel.set(format!("t{i}"));
+            ui.load_editor();
+            ui.commit_editor();
+            assert_eq!(ui.value_of(TEMPLATES_KEY), base, "t{i} 打开不改却变了");
+        }
+        assert_eq!(
+            ui.edit_text.get(),
+            crate::dialogs::tooltip_sections_dialog::escape_template(raws[3])
+        );
+
+        ui.tpl_sel.set("t1".into());
+        ui.load_editor();
+        assert_eq!(ui.edit_text.get(), "${pinyin}\\n${chaizi}");
+        ui.edit_name.set("改名".into());
+        ui.commit_editor();
+        assert!(
+            ui.lib()
+                .templates
+                .iter()
+                .any(|t| t.id == "t1" && t.name == "改名")
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }

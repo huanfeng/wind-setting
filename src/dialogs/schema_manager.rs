@@ -3088,7 +3088,7 @@ impl SchemaManagerState {
                 && cfg.get("overlay").is_some_and(|v| v.is_object())
             {
                 // ★ **在原对象上改这两个字段，不重建整个 overlay**。段里还可能有本 UI 不管的
-                // 项（`kind`、`comment_template_vertical/_horizontal`，以及将来新增的）——
+                // 项（`kind`、已作废的旧注释模板键，以及将来新增的）——
                 // 用结构体/字面量重建会把它们静默抹掉，用户改一次候选排列就丢配置。
                 // 这正是已删除的 `special_modes.rs` 当年那条教训的同形。
                 if let Some(ov) = cfg.get_mut("overlay").and_then(|v| v.as_object_mut()) {
@@ -6898,9 +6898,9 @@ mod overlay_tests {
 
     /// ★★ 保存**只改本 UI 管的两个字段**，`[overlay]` 段里其余项原样保留。
     ///
-    /// 段里还可能有 `kind`、`comment_template_vertical/_horizontal`（模式级注释模板，
-    /// 无图形界面、只能手写），以及将来新增的字段。用字面量重建整个对象会把它们静默
-    /// 抹掉——用户改一次候选排列就丢掉手写的注释模板配置。
+    /// 段里还可能有 `kind`、已作废但用户文件里残留的 `comment_template_*`（core 只告警不读，
+    /// 留着是为了让用户照告警自己迁），以及将来新增的字段。用字面量重建整个对象会把它们
+    /// 静默抹掉——用户改一次候选排列，手写的内容就没了。
     ///
     /// 这与已删除的 `special_modes.rs` 当年那条教训是同一个形状，故单独钉住。
     #[test]
@@ -6924,7 +6924,7 @@ mod overlay_tests {
         assert_eq!(
             ov["comment_template_vertical"],
             json!("${dict}"),
-            "不管的字段必须原样保留，否则用户手写的注释模板会被静默抹掉"
+            "不管的字段必须原样保留，否则用户手写的内容会被静默抹掉"
         );
         assert_eq!(ov["kind"], json!("special"), "kind 同样不该被动");
     }
