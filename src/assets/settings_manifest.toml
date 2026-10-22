@@ -454,6 +454,43 @@ label = "有英文候选时否决满码上屏"
 hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；定长码表建议开着，关掉的话打 github 到第 4 键就被顶出中文"
 enabled_when = "schema.codetable.english_merge.enable == true"
 
+# 以下三项码表与混输（schema.mix.english_*）同口径，见核心 `english_merge::select`。
+[[items]]
+key = "schema.codetable.english_merge.complete_min_length"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "number"
+label = "英文补全最小码长"
+hint = "有中文候选时，编码达到此长度也按前缀补全英文（如设 4，打 gith 出 github）；0 = 只在没有中文候选时补全"
+min = 0
+max = 10
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.position"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "number"
+label = "英文最前位置"
+hint = "英文候选最靠前排在第几位；仍先让过开头的常用中文，只会更靠后（1 = 不限制）"
+min = 1
+max = 10
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.max_count"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "number"
+label = "英文最多条数"
+hint = "有中文候选时英文最多显示几条（完整单词优先，再补前缀补全）；没有中文候选时不受此限"
+min = 1
+max = 10
+enabled_when = "schema.codetable.english_merge.enable == true"
+
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
 key = "schema.pinyin.code_hint_source"
@@ -930,6 +967,7 @@ hint = "混输模式下在候选旁显示来源标识（码表/拼音）"
 key = "schema.mix.enable_english"
 group = "schema"
 section = "混输行为"
+opens_dialog = "mix_english"
 type = "toggle"
 label = "启用英文候选"
 hint = "混输模式下同时查询英文词库并显示英文候选"
@@ -939,12 +977,61 @@ hint = "混输模式下同时查询英文词库并显示英文候选"
 key = "schema.mix.min_english_length"
 group = "schema"
 section = "混输行为"
+dialog_group = "mix_english"
 type = "number"
 label = "英文最小触发长度"
 hint = "编码达到此长度才开始查英文候选（0 表示跟随默认值 3，即 2 字符以内不查）"
 min = 0
 max = 10
 hidden = true
+
+# 以下三项与码表 schema.codetable.english_merge 的同名项同口径。
+[[items]]
+key = "schema.mix.english_complete_min_length"
+group = "schema"
+section = "混输行为"
+dialog_group = "mix_english"
+type = "number"
+label = "英文补全最小码长"
+hint = "有中文候选时，编码达到此长度也按前缀补全英文（如设 4，打 gith 出 github）；0 = 只在没有中文候选时补全"
+min = 0
+max = 10
+enabled_when = "schema.mix.enable_english == true"
+
+[[items]]
+key = "schema.mix.english_position"
+group = "schema"
+section = "混输行为"
+dialog_group = "mix_english"
+type = "number"
+label = "英文最前位置"
+hint = "英文候选最靠前排在第几位；仍先让过开头的常用中文，只会更靠后（1 = 不限制）"
+min = 1
+max = 10
+enabled_when = "schema.mix.enable_english == true"
+
+[[items]]
+key = "schema.mix.english_max_count"
+group = "schema"
+section = "混输行为"
+dialog_group = "mix_english"
+type = "number"
+label = "英文最多条数"
+hint = "有中文候选时英文最多显示几条（完整单词优先，再补前缀补全）；没有中文候选时不受此限"
+min = 1
+max = 10
+enabled_when = "schema.mix.enable_english == true"
+
+# 与码表 ct_english 里的 block_commit 同位：收进英文候选对话框。
+[[items]]
+key = "schema.mix.auto_commit_block_on_english"
+group = "schema"
+section = "混输行为"
+dialog_group = "mix_english"
+type = "toggle"
+label = "有英文候选时否决满码上屏"
+hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏"
+enabled_when = "schema.mix.enable_english == true"
 
 # ── 拼音相关：拼音候选的范围有多宽 ──
 # 项序即渲染序：先「从第几码开始查拼音」，再「查出来的候选放多宽」。
@@ -1037,15 +1124,6 @@ hint = "拼音歧义拦截的词权重下限（0 表示仅用结构判据，不�
 min = 0
 max = 100000000
 hidden = true
-
-[[items]]
-key = "schema.mix.auto_commit_block_on_english"
-group = "schema"
-section = "混输行为"
-subsection = "上屏设置"
-type = "toggle"
-label = "有英文候选时否决满码上屏"
-hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；仅启用英文候选时有效"
 
 # 顶码歧义裁决（core 默认 false，保护拼音）：隐藏，不对用户开放。
 [[items]]

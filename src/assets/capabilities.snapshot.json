@@ -156,6 +156,33 @@
       "type": "bool"
     },
     {
+      "default": 0,
+      "key": "schema.codetable.english_merge.complete_min_length",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable.english_merge]"
+      },
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.codetable.english_merge.position",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable.english_merge]"
+      },
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.codetable.english_merge.max_count",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable.english_merge]"
+      },
+      "type": "int"
+    },
+    {
       "default": "",
       "key": "schema.codetable.z_key_action",
       "schemaOverride": {
@@ -734,6 +761,21 @@
     {
       "default": 3,
       "key": "schema.mix.min_english_length",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "schema.mix.english_complete_min_length",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.mix.english_position",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.mix.english_max_count",
       "type": "int"
     },
     {

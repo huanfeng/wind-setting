@@ -7253,12 +7253,18 @@ mod tests {
         for k in [
             "schema.mix.auto_commit_block_on_pinyin",
             "schema.mix.block_commit_on_pinyin_word",
-            "schema.mix.auto_commit_block_on_english",
         ] {
             let item = m.items.get(k).unwrap_or_else(|| panic!("清单缺 {k}"));
             assert!(!item.hidden, "{k} 必须对用户可见");
             assert_eq!(item.subsection.as_deref(), Some("上屏设置"), "{k} 的分组");
         }
+        // 英文守护与码表 ct_english 里的 block_commit 同位：收进英文候选对话框。
+        let en = m
+            .items
+            .get("schema.mix.auto_commit_block_on_english")
+            .expect("清单缺 schema.mix.auto_commit_block_on_english");
+        assert!(!en.hidden);
+        assert_eq!(en.dialog_group.as_deref(), Some("mix_english"));
     }
 
     /// 清单未列举的当前取值必须被保留成一个选项。
