@@ -1732,6 +1732,43 @@ fn mock_system_stats(params: &Value) -> Value {
     }
 }
 
+/// `comment.library` 的 mock：出厂模板与分配取 core 的真实数据文件，按草稿走与 core 同一份
+/// 解析（`wind_config::comment_lib`），截图里「跟随」格的落点才可信。当前方案取 `wubi86`。
+fn mock_comment_library(params: &Value) -> Value {
+    use wind_config::comment_lib::{
+        CommentLibrary, SchemaType, SystemComments, TemplateOrigin, UiCommentConfig,
+    };
+    let system = SystemComments::parse(include_str!("../../WindInput/data/system.comments.toml"))
+        .unwrap_or_default();
+    let user: UiCommentConfig = params
+        .get("comment")
+        .and_then(|c| serde_json::from_value(c.clone()).ok())
+        .unwrap_or_default();
+    let (lib, _) = CommentLibrary::build(&system, &user);
+    let templates: Vec<Value> = lib
+        .templates()
+        .map(|(t, o)| {
+            let origin = match o {
+                TemplateOrigin::Builtin => "builtin",
+                TemplateOrigin::User => "user",
+                TemplateOrigin::UserOverridesBuiltin => "user_overrides_builtin",
+            };
+            json!({ "id": t.id, "name": t.name, "text": t.text, "origin": origin })
+        })
+        .collect();
+    let type_of = |s: &str| match s {
+        "pinyin_simp" => SchemaType::Pinyin,
+        "double_pinyin" => SchemaType::Shuangpin,
+        "wubi_mixed" => SchemaType::Mixed,
+        _ => SchemaType::CodeTable,
+    };
+    json!({
+        "templates": templates,
+        "system_assign": system.assign,
+        "effective": lib.effective_table("wubi86", type_of),
+    })
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1755,6 +1792,10 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         // ——本屏靠它把自动派生项与手工项分开，前缀写错的表现是「自动项变成可删的手工项」。
         // 两个 files 一有一无 comment 列：缺列的那份要能看到「缺 comment 列」那行说明。
         "comment.sources" => json!({
+            "builtin": [
+                { "id": "en_zh", "label": "英汉释义", "rel": "comments/en_zh.txt", "origin": "builtin" },
+                { "id": "zh_en", "label": "汉英释义", "rel": "comments/zh_en.txt", "origin": "builtin" }
+            ],
             "auto": [
                 { "id": "auto:pinyin/rime_frost.dict.yaml", "label": "朗月拼音词库",
                   "rel": "pinyin/rime_frost.dict.yaml", "schemas": ["pinyin_simp"] }
@@ -1765,6 +1806,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 { "path": "comments/broken.dict.yaml", "label": "", "hasComment": false }
             ]
         }),
+        "comment.library" => mock_comment_library(params),
         // 与 core 的 EMOJI_MODULES 同序同出厂值，外加一个用户放置的文件。
         "emoji.modules" => json!({
             "userDir": "emoji",

@@ -51,7 +51,10 @@ pub struct CommentDictRow {
     /// 「开不开」和「排第几」。写回配置时它落成一个只带 `id`/`auto`/`enabled` 的空壳，
     /// 由 core 按 id 认领（见 core 的 `merge_comment_dicts`）。
     pub auto: bool,
-    /// 自动项对应的词库相对路径（仅供显示；手工项为空）。
+    /// **随包内置项**（`system.comments.toml` 的 `[[dicts]]`）：与自动项同为只读空壳，写回
+    /// `{id, builtin = true, enabled}`，由 core 按 id 认领。
+    pub builtin: bool,
+    /// 自动项 / 内置项对应的词库相对路径（仅供显示；手工项为空）。
     pub rel: String,
     /// 读进来的原始对象，写回时在它上面 insert。见模块文档。
     pub raw: Value,
@@ -62,13 +65,15 @@ pub struct CommentDictRow {
     pub id_is_fallback: bool,
 }
 
-/// core 检测出的一个自动注释源（`comment.sources` 的 `auto` 段）。
+/// core 给出的一个只读注释源：自动派生项（`comment.sources` 的 `auto` 段）或随包内置项
+/// （`builtin` 段，`builtin = true`）。两者都以空壳挂进配置数组，只差空壳上的标记键。
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct AutoSource {
     pub id: String,
     pub label: String,
     pub rel: String,
     pub schemas: Vec<String>,
+    pub builtin: bool,
 }
 
 /// `schemas\comments\` 下扫到的一个候选文件（`comment.sources` 的 `files` 段）。
@@ -201,7 +206,6 @@ impl Default for DictForm {
 /// 「注释词库」对话框的全部可变状态。
 #[derive(Clone)]
 pub struct CommentDictsUi {
-    pub visible: Signal<bool>,
     pub rows: Signal<Vec<CommentDictRow>>,
     /// id → 启用开关。
     pub switches: Rc<RefCell<HashMap<String, Signal<bool>>>>,
@@ -224,7 +228,6 @@ pub struct CommentDictsUi {
 impl CommentDictsUi {
     pub fn new() -> Self {
         Self {
-            visible: signal(false),
             rows: signal(Vec::new()),
             switches: Rc::new(RefCell::new(HashMap::new())),
             form: DictForm::new(),
@@ -333,6 +336,7 @@ impl CommentDictsUi {
                     path,
                     schemas,
                     auto: false,
+                    builtin: false,
                     rel: String::new(),
                     raw: json!({}),
                     id_is_fallback: false,
@@ -464,6 +468,7 @@ pub fn rows_from_value(items: &[Value]) -> Vec<CommentDictRow> {
             path,
             schemas,
             auto: it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false),
+            builtin: it.get("builtin").and_then(|v| v.as_bool()).unwrap_or(false),
             rel: String::new(),
             raw: it.clone(),
             id_is_fallback,
@@ -504,8 +509,8 @@ fn row_to_value(r: &CommentDictRow, enabled: bool) -> Value {
         obj.insert("id".into(), json!(r.id));
     }
     obj.insert("enabled".into(), json!(enabled));
-    if r.auto {
-        // 自动项落成**空壳**：只有 id / auto / enabled / 位置归用户，`path` 与 `schemas`
+    if r.auto || r.builtin {
+        // 自动项（内置项同理）落成**空壳**：只有 id / auto / enabled / 位置归用户，`path` 与 `schemas`
         // 每次启动由 core 重新检测。把检测结果一起写回去的话，词库换了层或方案改了声明，
         // 配置里那份就成了过时的快照 —— 而 core 认领时用的是检测值，两者不一致时谁也
         // 看不出来配置里那两行早已没人读。
@@ -514,7 +519,10 @@ fn row_to_value(r: &CommentDictRow, enabled: bool) -> Value {
         // `schemas: []` 的完整形状（`CommentDictSpec` 没有 skip_serializing_if），空值与
         // 缺键对 core 同义；连空的也删，读进来的与写回去的就恒不相等 ⇒ 打开设置什么都
         // 不动也提示「有未保存的更改」（论坛 t158）。
-        obj.insert("auto".into(), json!(true));
+        obj.insert(
+            if r.builtin { "builtin" } else { "auto" }.into(),
+            json!(true),
+        );
         for k in ["path", "schemas"] {
             if obj.get(k).is_some_and(|x| !is_empty_json(x)) {
                 obj.remove(k);
@@ -538,23 +546,30 @@ fn is_empty_json(v: &Value) -> bool {
     }
 }
 
-/// `comment.sources` 的 `auto` 段 → 自动源列表。
+/// `comment.sources` 的 `builtin` 与 `auto` 段 → 只读源列表。内置项在前：core 对没被认领的
+/// 源也是先追加内置、再追加自动（见 core 的 `merge_comment_dicts`），界面末尾的顺序要与之一致。
 pub fn auto_sources_from_value(v: &Value) -> Vec<AutoSource> {
-    v.get("auto")
-        .and_then(|a| a.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|it| {
-                    Some(AutoSource {
-                        id: it.get("id")?.as_str()?.to_string(),
-                        label: str_of(it, "label"),
-                        rel: str_of(it, "rel"),
-                        schemas: strs_of(it, "schemas"),
+    let section = |key: &str, builtin: bool| -> Vec<AutoSource> {
+        v.get(key)
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|it| {
+                        Some(AutoSource {
+                            id: it.get("id")?.as_str()?.to_string(),
+                            label: str_of(it, "label"),
+                            rel: str_of(it, "rel"),
+                            schemas: strs_of(it, "schemas"),
+                            builtin,
+                        })
                     })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut out = section("builtin", true);
+    out.extend(section("auto", false));
+    out
 }
 
 /// `comment.sources` 的 `files` 段 → 候选文件列表。
@@ -606,7 +621,10 @@ pub fn merge_rows(items: &[Value], auto: &[AutoSource]) -> Vec<CommentDictRow> {
     let mut out: Vec<CommentDictRow> = Vec::new();
     for r in rows_from_value(&shown_items(items, auto)) {
         // 进得了界面的空壳都认领到了（`ui_mask` 保证），这里的 find 对空壳恒命中。
-        match auto.iter().find(|a| r.auto && a.id == r.id) {
+        match auto
+            .iter()
+            .find(|a| (r.auto || r.builtin) && shell_kind_matches(a, r.builtin) && a.id == r.id)
+        {
             Some(a) => out.push(auto_row(a, r.raw)),
             None => out.push(r),
         }
@@ -625,12 +643,22 @@ pub fn merged_enabled_flags(items: &[Value], auto: &[AutoSource]) -> Vec<bool> {
     out
 }
 
-/// 配置数组里 `auto = true` 的条目的 id（空壳认领的依据）。
-fn shell_id(it: &Value) -> Option<&str> {
-    if !it.get("auto").and_then(|v| v.as_bool()).unwrap_or(false) {
+/// 配置数组里空壳条目的 `(id, 是否内置)`（空壳认领的依据）。`auto = true` 与
+/// `builtin = true` 各认领自己那一类源。
+fn shell_id(it: &Value) -> Option<(&str, bool)> {
+    let flag = |k: &str| it.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    let builtin = flag("builtin");
+    if !builtin && !flag("auto") {
         return None;
     }
-    Some(it.get("id").and_then(|v| v.as_str()).unwrap_or_default())
+    Some((
+        it.get("id").and_then(|v| v.as_str()).unwrap_or_default(),
+        builtin,
+    ))
+}
+
+fn shell_kind_matches(a: &AutoSource, builtin: bool) -> bool {
+    a.builtin == builtin
 }
 
 /// 每个配置条目**进不进界面**——[`merge_rows`]、[`merged_enabled_flags`]、[`hidden_items`]
@@ -643,7 +671,7 @@ fn shell_id(it: &Value) -> Option<&str> {
 /// - 同一个自动源的**第二个及以后**的空壳：一个源只出一行，否则两行共用一个按 id 索引的
 ///   开关、拖序也无从表达。core 那边重复挂载按解析后路径去重，后来的那条本就不生效。
 fn ui_mask(items: &[Value], auto: &[AutoSource]) -> Vec<bool> {
-    let mut claimed: Vec<&str> = Vec::new();
+    let mut claimed: Vec<(&str, bool)> = Vec::new();
     items
         .iter()
         .map(|it| {
@@ -653,7 +681,11 @@ fn ui_mask(items: &[Value], auto: &[AutoSource]) -> Vec<bool> {
             let Some(id) = shell_id(it) else {
                 return true;
             };
-            if claimed.contains(&id) || !auto.iter().any(|a| a.id == id) {
+            if claimed.contains(&id)
+                || !auto
+                    .iter()
+                    .any(|a| a.id == id.0 && shell_kind_matches(a, id.1))
+            {
                 return false;
             }
             claimed.push(id);
@@ -687,7 +719,11 @@ pub fn hidden_items(items: &[Value], auto: &[AutoSource]) -> Vec<(usize, Value)>
 /// 没被任何空壳认领的自动源 id（检测顺序）—— [`merge_rows`] 追加在末尾的正是这些。
 pub fn unclaimed_auto_ids(items: &[Value], auto: &[AutoSource]) -> Vec<String> {
     auto.iter()
-        .filter(|a| !items.iter().any(|it| shell_id(it) == Some(a.id.as_str())))
+        .filter(|a| {
+            !items
+                .iter()
+                .any(|it| shell_id(it) == Some((a.id.as_str(), a.builtin)))
+        })
         .map(|a| a.id.clone())
         .collect()
 }
@@ -702,10 +738,9 @@ fn fresh_tail_untouched(
     let Some(start) = rows.len().checked_sub(fresh.len()) else {
         return false;
     };
-    rows[start..]
-        .iter()
-        .zip(fresh)
-        .all(|(r, id)| r.auto && r.id == *id && switches.get(id).is_none_or(|s| s.get()))
+    rows[start..].iter().zip(fresh).all(|(r, id)| {
+        (r.auto || r.builtin) && r.id == *id && switches.get(id).is_none_or(|s| s.get())
+    })
 }
 
 fn auto_row(a: &AutoSource, raw: Value) -> CommentDictRow {
@@ -714,7 +749,8 @@ fn auto_row(a: &AutoSource, raw: Value) -> CommentDictRow {
         label: a.label.clone(),
         path: String::new(),
         schemas: a.schemas.clone(),
-        auto: true,
+        auto: !a.builtin,
+        builtin: a.builtin,
         rel: a.rel.clone(),
         raw,
         id_is_fallback: false,
@@ -759,7 +795,7 @@ fn row_desc(r: &CommentDictRow) -> String {
     };
     // 自动项显示的是**词库**的路径（注释就长在它身上），故取 `rel` 而非 `path`
     // ——后者对自动项恒为空，它没有自己的文件。
-    let src = if r.auto { &r.rel } else { &r.path };
+    let src = if r.auto || r.builtin { &r.rel } else { &r.path };
     // 打头给出模板里按库取它的写法：`${dict:id}` 要填的是 **id**，而 id 在别处都看不见
     // （行标题是显示名，编辑框得点进去），用户照着显示名或文件名写就对不上、注释为空。
     let var = format!("${{dict:{}}}", r.id);
@@ -784,9 +820,9 @@ fn field_row(label: &str, sig: Signal<String>, placeholder: &str) -> Element {
         )
 }
 
-/// 构建「注释词库」对话框（含二级的新建/编辑表单）。
-pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
-    let visible = ui.visible;
+/// 「注释词库」页（嵌在候选注释对话框的 Tab 里）：说明 + 可拖序的列表 + 「添加词库…」。
+/// 二级弹层（挑文件、新建/编辑表单）另由 [`build_comment_dicts_subdialogs`] 挂到根上。
+pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
     let row_ui = ui.clone();
 
     // 词库多了会把对话框撑出窗口（窗口拉满也看不到底栏）：列表封顶可滚，与提示气泡分段
@@ -815,9 +851,9 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
                 // 改了下次启动就被检测结果覆盖，删了下次启动又长回来。给一个按不动的按钮，
                 // 比不给更让人困惑。用户能改的只有开关与顺序，那两样都还在。
                 let mut ctrl = Element::row().cross(Align::Center).spacing(6);
-                if r.auto {
+                if r.auto || r.builtin {
                     ctrl = ctrl.child(
-                        Element::label("自动")
+                        Element::label(if r.builtin { "内置" } else { "自动" })
                             .font_size(11.0)
                             .fg_role(Role::TextSubtle),
                     );
@@ -863,58 +899,39 @@ pub fn build_comment_dicts_dialog(ui: &CommentDictsUi) -> Element {
         );
 
     let new_ui = ui.clone();
-    let frame = Element::col()
-        .width(560)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label("注释词库")
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
+    Element::col()
+        .width_match()
         .child(
             Element::label(
                 "供候选注释模板的 ${dict} 变量查询。词库文件放在数据目录的 \
                  schemas\\comments\\ 下，用「添加词库…」选取。\n\
-                 标「自动」的条目来自词库自带的 comment 列，仅可启停与排序。\n\
+                 标「内置」的随安装包提供、标「自动」的来自词库自带的 comment 列，仅可启停与排序。\n\
                  同一词条在多个库中都有注释时取靠前者，可拖动左侧手柄调整顺序。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
             .width_match()
             .max_lines(5)
-            .padding_xy(18, 10),
+            .padding_xy(2, 8),
         )
         .child(list)
-        .child(Element::divider())
         .child(
             Element::row()
                 .width_match()
                 .cross(Align::Center)
-                .padding_xy(16, 12)
-                .spacing(8)
+                .padding_xy(0, 10)
                 .child(
                     Element::button("添加词库…")
                         .small()
                         .outline_soft()
                         .on_click(move |_| new_ui.picker.set(true)),
-                )
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("完成")
-                        .small()
-                        .on_click(move |_| visible.set(false)),
                 ),
-        );
+        )
+}
 
+/// 「注释词库」页的二级弹层：挑文件、新建/编辑表单。
+pub fn build_comment_dicts_subdialogs(ui: &CommentDictsUi) -> Element {
     Element::stack()
-        .child(Element::dialog(visible, frame))
         .child(build_file_picker_dialog(ui))
         .child(build_dict_form_dialog(ui))
 }
@@ -1255,8 +1272,63 @@ mod tests {
                 label: format!("{id} 词库"),
                 rel: id.to_string(),
                 schemas: vec!["pinyin".into()],
+                builtin: false,
             })
             .collect()
+    }
+
+    fn builtins(ids: &[&str]) -> Vec<AutoSource> {
+        ids.iter()
+            .map(|id| AutoSource {
+                id: id.to_string(),
+                label: format!("{id} 释义"),
+                rel: format!("comments/{id}.txt"),
+                schemas: Vec::new(),
+                builtin: true,
+            })
+            .collect()
+    }
+
+    /// 内置项与自动项同为只读空壳：没动过不写回；关掉一个就整段固化，空壳带 `builtin`。
+    #[test]
+    fn builtin_sources_round_trip_as_builtin_shells() {
+        let ui = CommentDictsUi::new();
+        let mut src = builtins(&["en_zh", "zh_en"]);
+        src.extend(autos(&["frost"]));
+        ui.auto_sources.set(src);
+        ui.seed(&[]);
+        let rows = ui.rows.get();
+        let ids: Vec<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["en_zh", "zh_en", "auto:frost"], "内置在前，同 core");
+        assert!(rows[0].builtin && !rows[0].auto);
+        assert_eq!(ui.to_value(), json!([]), "没动过不写回");
+
+        ui.switch_of("zh_en", true).set(false);
+        assert_eq!(
+            ui.to_value(),
+            json!([
+                { "id": "en_zh", "builtin": true, "enabled": true },
+                { "id": "zh_en", "builtin": true, "enabled": false },
+                { "id": "auto:frost", "auto": true, "enabled": true },
+            ])
+        );
+    }
+
+    /// 配置里的内置空壳按 id 认领内置源；`auto` 空壳认领不了同 id 的内置源。
+    #[test]
+    fn builtin_shell_claims_only_builtin_source() {
+        let ui = CommentDictsUi::new();
+        ui.auto_sources.set(builtins(&["en_zh"]));
+        let items = arr(json!([
+            { "id": "en_zh", "auto": true, "enabled": false },
+            { "id": "en_zh", "builtin": true, "enabled": false },
+        ]));
+        ui.seed(&items);
+        let rows = ui.rows.get();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].builtin);
+        assert!(!ui.switch_of("en_zh", true).get());
+        assert_eq!(ui.to_value(), Value::Array(items), "认领不到的空壳原位保留");
     }
 
     /// 自动派生项要出现在列表里，且排在手工项**之后**。
@@ -1580,7 +1652,10 @@ mod tests {
             { "id": "emoji", "label": "Emoji 名称", "path": "comments/emoji.dict.yaml" },
             { "id": "en", "path": "comments/en.dict.yaml", "enabled": false, "schemas": ["english"] },
         ])));
-        let _ = build_comment_dicts_dialog(&ui);
+        let _ = (
+            build_comment_dicts_pane(&ui),
+            build_comment_dicts_subdialogs(&ui),
+        );
     }
 
     /// 自动项行与「选择词库」弹层同样要能构建。
@@ -1611,7 +1686,10 @@ mod tests {
         ui.seed(&arr(
             json!([{ "id": "en", "path": "comments/en.dict.yaml" }]),
         ));
-        let _ = build_comment_dicts_dialog(&ui);
+        let _ = (
+            build_comment_dicts_pane(&ui),
+            build_comment_dicts_subdialogs(&ui),
+        );
     }
 
     /// 「选择词库」弹层里文件一多，列表要能用滚轮滚动。
@@ -1687,7 +1765,11 @@ mod tests {
     /// 空列表同样要能构建（出厂状态就是这一支）。
     #[test]
     fn dialog_builds_when_empty() {
-        let _ = build_comment_dicts_dialog(&CommentDictsUi::new());
+        let ui = CommentDictsUi::new();
+        let _ = (
+            build_comment_dicts_pane(&ui),
+            build_comment_dicts_subdialogs(&ui),
+        );
     }
 
     /// 增删改与启用位的往返：这几步是「保存后配置里到底写了什么」的唯一来源。

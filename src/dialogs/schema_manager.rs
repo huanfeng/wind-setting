@@ -490,7 +490,7 @@ struct BehaviorRowsHidden {
     layout: bool,
     /// 候选文字字体，对应全局 `ui.font.family`。
     font: bool,
-    /// 横竖两个模板都藏了才藏（藏横排那个时竖排随它藏，见 `hide_orphaned_dialog_members`）。
+    /// 「候选注释」跳转行：全局那个对话框被藏了，跳过去也无处可落。
     comment: bool,
     punct_map: bool,
 }
@@ -502,8 +502,7 @@ fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
     BehaviorRowsHidden {
         layout: state.custom_hidden("ui.candidate.layout"),
         font: state.custom_hidden("ui.font.family"),
-        comment: state.custom_hidden("ui.candidate.comment_template_horizontal")
-            && state.custom_hidden("ui.candidate.comment_template_vertical"),
+        comment: state.custom_hidden(crate::dialogs::comment_settings::HOST_KEY),
         punct_map: punct_section || state.custom_hidden("input.punct.custom_mappings"),
     }
 }
@@ -744,13 +743,10 @@ struct BehaviorSeed {
     punct: usize,
     layout: usize,
     phrases: bool,
-    /// 竖排注释模板三态：`None` = 键缺失（跟随全局），`Some("")` = 本方案不显示注释。
-    comment_v: Option<String>,
-    comment_h: Option<String>,
     /// 方案级自定义标点表三态，与 core `PunctSpec::custom_mappings` 同构：
     /// `None` = 跟随全局（键缺失）；`Some(表)` = **整份替换**全局表；`Some({})` = 一条都不要。
     ///
-    /// ⚠️ 与上面两个注释模板一样，三态**只能由「键在不在」区分**，不能拿空表代表跟随——
+    /// ⚠️ 三态**只能由「键在不在」区分**，不能拿空表代表跟随——
     /// 那正是 core 侧刻意不加方案级 `custom_enabled` 的理由（空表已经是第三态）。
     punct_map: Option<serde_json::Map<String, Value>>,
     /// 方案级候选**文字**字族（`[candidate] font_family`）三态：`None` = 未勾选覆盖
@@ -776,8 +772,6 @@ impl Default for BehaviorSeed {
             punct: 0,
             layout: 0,
             phrases: true,
-            comment_v: None,
-            comment_h: None,
             punct_map: None,
             font_family: None,
             text_orient: 0,
@@ -813,14 +807,6 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         .and_then(|v| v.get("enabled"))
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    // `as_str()` 顺带滤掉 null：core 侧「取消覆盖」写的就是 null，读回来必须还原成
-    // 「未设置」而不是 `Some("null")` 之类。
-    let tpl = |k: &str| -> Option<String> {
-        candidate
-            .and_then(|v| v.get(k))
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    };
     // 未勾选 → `null`；旧文件（改字段前存下的）里的 `""` 同样视为未设置——
     // 两者读回来都该是「跟随外观页」，不是「覆盖成空字体」。见 [`font_write`]。
     let font_family = candidate
@@ -839,9 +825,7 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         font_family,
         text_orient,
         phrases,
-        comment_v: tpl("comment_template_vertical"),
-        comment_h: tpl("comment_template_horizontal"),
-        // `as_object()` 顺带滤掉 null（core「取消覆盖」写的就是 null），与上面模板同理。
+        // `as_object()` 顺带滤掉 null：core「取消覆盖」写的就是 null，读回来必须还原成未设置。
         punct_map: cfg
             .get("punct")
             .and_then(|v| v.get("custom_mappings"))
@@ -871,46 +855,9 @@ fn punct_mode_value(idx: usize) -> &'static str {
     }
 }
 
-/// 候选注释子对话框里的一行：`标签 + 说明 ······ [☑ 自定义] [模板输入框]`。
-///
-/// 三态由**两个控件**表达：勾选框回答「本方案要不要覆盖这一项」，输入框只装内容
-/// （勾上而留空 = 空串 = 本方案不显示注释）。做成三档下拉的话，「自定义 + 留空」与
-/// 「不显示」会是同一个状态的两种走法——`config-design-rules` §R3 反对的那种重复态。
-///
-/// ⚠️ 输入框用 `enabled_signal` 随勾选置灰而非隐藏：隐藏会让这一行的高度跟着跳，
-/// 且用户看不出「这里还能填东西」。`.small()` 只能给勾选框（Button/CheckBox/Switch 专属，
-/// 落到 text_input 上会在 debug 构建下当场 panic）。
-fn comment_tpl_row(label: &str, hint: &str, on: Signal<bool>, text: Signal<String>) -> Element {
-    crate::widgets::setting_row(
-        label,
-        Some(hint),
-        Element::row()
-            .cross(Align::Center)
-            .spacing(8)
-            .child(Element::checkbox("自定义", on).small().fg_role(Role::Text))
-            .child(
-                Element::text_input(text, "留空则不显示注释")
-                    .width(190)
-                    .enabled_signal(on),
-            ),
-    )
-}
-
-/// 「候选注释」那一行的摘要（纯函数，供测试）。
-///
-/// 摘要只看**勾选态**：内容改了但没勾上等于没生效，跟着内容走会提前说「已自定义」。
-fn comment_summary(v_on: bool, h_on: bool) -> String {
-    match (v_on, h_on) {
-        (false, false) => "跟随全局".to_string(),
-        (true, false) => "竖排已自定义".to_string(),
-        (false, true) => "横排已自定义".to_string(),
-        (true, true) => "横竖均已自定义".to_string(),
-    }
-}
-
 /// 「自定义标点」那一行的摘要（纯函数，供测试）。
 ///
-/// ★ 与 [`comment_summary`] 同构：**只看勾选态**，不看表里有几行。
+/// ★ **只看勾选态**，不看表里有几行。
 /// 报行数就得让摘要 effect 依赖全部 4×N 个单元格信号，那是每帧要遍历的开销，
 /// 而这一屏已经因为「每帧轮询」付过一次代价。行数打开子对话框一眼就能看见。
 ///
@@ -1031,100 +978,7 @@ fn normalize_schema_punct_map(
     out
 }
 
-/// 候选注释子对话框：横竖两行 + 恢复默认。
-///
-/// ★ **「恢复默认」＝回到「跟随全局」**，也就是把两个勾选都取消。不是"清空输入框"——
-/// 勾着而内容为空是三态里的第三态（本方案不显示注释），那恰恰不是默认值。
-/// 输入框里的文字一并清掉，免得下次勾上时冒出一段用户以为已经不在了的旧模板。
-fn build_comment_tpl_dialog(state: &SchemaManagerState) -> Element {
-    let visible = state.settings_bh_comment_visible;
-    let (v_on, v_txt) = (state.settings_bh_comment_v_on, state.settings_bh_comment_v);
-    let (h_on, h_txt) = (state.settings_bh_comment_h_on, state.settings_bh_comment_h);
-
-    let frame = Element::col()
-        .width(560)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label("候选注释")
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(
-            Element::label(concat!(
-                "候选词右侧的小字。不勾 = 跟随全局；勾上填模板 = 本方案改用它；",
-                "勾上留空 = 本方案不显示注释。
-",
-                "模板语法与可用变量见「外观 → 候选标注 → 候选注释」，两处写法完全一样。",
-            ))
-            .font_size(12.0)
-            .fg_role(Role::TextMuted)
-            .width_match()
-            .max_lines(4)
-            .padding_xy(18, 10),
-        )
-        .child(
-            Element::col()
-                .width_match()
-                .padding_xy(16, 2)
-                .child(crate::widgets::card(vec![
-                    comment_tpl_row("竖排注释", "竖排每行独占，放得下注音或字根", v_on, v_txt),
-                    comment_tpl_row(
-                        "横排注释",
-                        "横排候选共享一行宽度，注释长了会把窗口撑宽",
-                        h_on,
-                        h_txt,
-                    ),
-                ])),
-        )
-        .child(Element::divider())
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .padding_xy(16, 12)
-                .spacing(8)
-                .child(
-                    // 柔和描边而不是实心：它是兜底动作，与「完成」并排时实心色块会比
-                    // 主操作还抢眼。同「全部恢复跟随」那个按钮的取舍。
-                    Element::button("恢复默认")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
-                            v_on.set(false);
-                            h_on.set(false);
-                            v_txt.set(String::new());
-                            h_txt.set(String::new());
-                        }),
-                )
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("完成")
-                        .small()
-                        .on_click(move |_| visible.set(false)),
-                ),
-        );
-    Element::dialog(visible, frame)
-}
-
-/// 注释模板三态 → 回传给 core 的 JSON 值（纯函数，供测试）。
-///
-/// `None`（未勾选）→ `null` = **取消覆盖**，回落下一层；`Some(s)` → 字符串，
-/// 其中空串是一个正常取值（本方案不显示注释），**不得**被顺手折成 null。
-fn comment_tpl_value(tpl: Option<&str>) -> Value {
-    match tpl {
-        Some(s) => json!(s),
-        None => Value::Null,
-    }
-}
-
-/// 方案级自定义标点表三态 → 回传 JSON（与 [`comment_tpl_value`] 同构）。
+/// 方案级自定义标点表三态 → 回传 JSON。
 ///
 /// ★ **未勾选写 `null` 而不是省略这个键**：core 的 `json_to_toml` 跳过 null ⇒ override 里
 /// 不含该键 ⇒ 回落方案文件（作者写了就用作者的、没写就跟随全局）。省略则 `json_diff`
@@ -1387,23 +1241,9 @@ pub struct SchemaManagerState {
     pub settings_bh_text_orient: Signal<usize>,
     /// 是否加载短语（`[phrases] enabled`）。
     pub settings_bh_phrases: Signal<bool>,
-    /// 竖排候选注释模板是否由本方案覆盖（`[candidate] comment_template_vertical` 存不存在）。
-    ///
-    /// 与旁边三项**形态不同**：那三项各有一个显式的「跟随全局」档位（`punct.mode = "follow"`
-    /// 是个真值），注释模板的「跟随」是**键缺失**，只能用勾选框表达。勾上才写这一项。
-    pub settings_bh_comment_v_on: Signal<bool>,
-    /// 竖排注释模板内容。**留空即空串 = 本方案不显示注释**（三态的第三态），
-    /// 它与「未勾选 = 跟随全局」是两回事。
-    pub settings_bh_comment_v: Signal<String>,
-    /// 横排候选注释模板是否由本方案覆盖。横竖各自独立三态。
-    pub settings_bh_comment_h_on: Signal<bool>,
-    /// 横排注释模板内容。
-    pub settings_bh_comment_h: Signal<String>,
-    /// 候选注释子对话框的可见性。四个控件（横竖各「勾选 + 输入框」）不内联在节里：
-    /// 与旁边三行「一行一个控件」的节奏差太多，铺开就乱。
-    pub settings_bh_comment_visible: Signal<bool>,
-    /// 节内那一行的摘要（「跟随全局」/「竖排已自定义」…），随勾选态刷新。
-    pub settings_bh_comment_disp: Signal<String>,
+    /// 「在 候选注释 中配置」的跳转请求（计数）：方案设置里那一行点一下加一，由
+    /// [`build_schema_manager_dialog`] 里的 effect 关掉方案设置、跳到全局的候选注释对话框。
+    pub open_comment_settings: Signal<u64>,
     /// 本方案是否使用自己的自定义标点表（`[punct] custom_mappings` 这个键存不存在）。
     ///
     /// 形态与注释模板那两个勾选同类：「跟随全局」是**键缺失**，没有显式档位可选。
@@ -1623,12 +1463,7 @@ impl SchemaManagerState {
             settings_bh_font_over: signal(false),
             settings_bh_font: signal(String::new()),
             settings_bh_phrases: signal(true),
-            settings_bh_comment_v_on: signal(false),
-            settings_bh_comment_v: signal(String::new()),
-            settings_bh_comment_h_on: signal(false),
-            settings_bh_comment_h: signal(String::new()),
-            settings_bh_comment_visible: signal(false),
-            settings_bh_comment_disp: signal(comment_summary(false, false)),
+            open_comment_settings: signal(0),
             settings_bh_punct_map_on: signal(false),
             settings_bh_punct_map_visible: signal(false),
             settings_bh_punct_map_disp: signal(punct_map_summary(false)),
@@ -1930,6 +1765,13 @@ impl SchemaManagerState {
             ("open_settings", "打开设置"),
             ("take_screenshot", "截图"),
         ] {
+            out.push(Verb {
+                value: value.into(),
+                label: label.into(),
+            });
+        }
+        // 候选注释持久态：两层同一 `BoundAction::parse`，故放在共用这份。
+        for (value, label) in crate::dialogs::key_binding::COMMENT_STATE_VERBS {
             out.push(Verb {
                 value: value.into(),
                 label: label.into(),
@@ -2735,11 +2577,6 @@ impl SchemaManagerState {
                 .set(seed.font_family.clone().unwrap_or_default());
             self.settings_bh_text_orient.set(seed.text_orient);
             self.settings_bh_phrases.set(seed.phrases);
-            self.seed_comment_tpl(&seed);
-            self.settings_bh_comment_disp.set(comment_summary(
-                seed.comment_v.is_some(),
-                seed.comment_h.is_some(),
-            ));
             // 自定义标点表：勾选态问「键在不在」，格子按「方案表覆盖值 ⊕ 内置默认」播种。
             // ⚠️ 换方案必须逐格重播——信号是整个对话框复用的一组，不重播就会把上一个方案
             // 的表显示成这个方案的（同本函数开头那句「对话框复用同一组信号」）。
@@ -3030,48 +2867,24 @@ impl SchemaManagerState {
         self.settings_visible.set(true);
     }
 
-    /// 注释模板两行按 `seed` 播种。
-    ///
-    /// 勾选态与文本分开落：勾选问「有没有这个键」，文本框只装内容。
-    /// 未设置时文本框留空——用户一勾上就是「本方案不显示注释」，这正是三态的第三态，
-    /// 而不是一个需要先填点什么才生效的空状态。
-    ///
-    /// ★ 文本框装的是**转义后**的显示形态（真换行显示成 `\n`，同全局注释模板与悬停提示的段
-    /// 内容），[`Self::behavior_now`] 还原。`seed` 本身保持真值，脏判定比的是真值。
-    fn seed_comment_tpl(&self, seed: &BehaviorSeed) {
-        use crate::dialogs::tooltip_sections_dialog::escape_template;
-        let shown = |t: &Option<String>| t.as_deref().map(escape_template).unwrap_or_default();
-        self.settings_bh_comment_v_on.set(seed.comment_v.is_some());
-        self.settings_bh_comment_v.set(shown(&seed.comment_v));
-        self.settings_bh_comment_h_on.set(seed.comment_h.is_some());
-        self.settings_bh_comment_h.set(shown(&seed.comment_h));
-    }
-
     /// 「本方案行为」节的当前工作态。与 [`seed_behavior`] 的产物同型，故可直接与
     /// `settings_bh_at_open` 比较判脏。
     ///
-    /// ★ 勾选态与文本合成三态**只在这一处**发生：勾上才 `Some`，勾上留空即 `Some("")`。
-    /// 若在渲染处也各写一遍，两处口径迟早漂移，而漂移的表现是「取消勾选却仍写了空串」
-    /// ——那会把「跟随全局」静默变成「不显示注释」。
+    /// ★ 勾选态与值合成三态**只在这一处**发生：勾上才 `Some`。若在渲染处也各写一遍，
+    /// 两处口径迟早漂移，而漂移的表现是「取消勾选却仍写了值」——跟随被静默改成了覆盖。
     fn behavior_now(&self) -> BehaviorSeed {
-        use crate::dialogs::tooltip_sections_dialog::unescape_template;
         let pick = |on: Signal<bool>, text: Signal<String>| -> Option<String> {
             on.get().then(|| text.get())
         };
         BehaviorSeed {
             punct: self.settings_bh_punct.get(),
             layout: self.settings_bh_layout.get(),
-            // 与注释模板同一个 `pick`：未勾选恒读 `None`，不管文本框里还留着什么——
+            // 未勾选恒读 `None`，不管文本框里还留着什么——
             // 否则用户勾上改了字体又取消勾选，脏判定会把这行误判成「改过」（落盘结果其实
             // 与打开时一样都是 `null`，见 `font_write`）。
             font_family: pick(self.settings_bh_font_over, self.settings_bh_font),
             text_orient: self.settings_bh_text_orient.get(),
             phrases: self.settings_bh_phrases.get(),
-            // 注释模板框里是转义后的显示形态（见 [`Self::seed_comment_tpl`]），还原成真值。
-            comment_v: pick(self.settings_bh_comment_v_on, self.settings_bh_comment_v)
-                .map(|t| unescape_template(&t)),
-            comment_h: pick(self.settings_bh_comment_h_on, self.settings_bh_comment_h)
-                .map(|t| unescape_template(&t)),
             // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
             // 三态合成只此一处。
             punct_map: self.settings_bh_punct_map_on.get().then(|| {
@@ -3260,20 +3073,6 @@ impl SchemaManagerState {
                     json!(text_orient_value(now.text_orient)),
                 );
                 set_json_path(&mut cfg, &["phrases", "enabled"], json!(now.phrases));
-                // ★ 注释模板的「取消覆盖」写 **null**，不是空串——空串是「本方案不显示注释」。
-                // core 侧 `json_to_toml` 跳过 null，而 `saveConfig` 拿方案文件基线做 diff，
-                // 两条既有性质合起来正好是「回传 null = 这一项不写进 override」。
-                // 与辅助码「跟随全局必须写 null」同一形态。
-                set_json_path(
-                    &mut cfg,
-                    &["candidate", "comment_template_vertical"],
-                    comment_tpl_value(now.comment_v.as_deref()),
-                );
-                set_json_path(
-                    &mut cfg,
-                    &["candidate", "comment_template_horizontal"],
-                    comment_tpl_value(now.comment_h.as_deref()),
-                );
                 cfg_changed = true;
             }
         }
@@ -4461,6 +4260,26 @@ fn build_draggable_row(entry: SchemaEntry, mgr: &SchemaManagerState, handle: Ele
 // ──────────────────────── UI 构建 ────────────────────────
 
 /// 构建方案相关浮层对话框：删除确认 + 方案详情/设置。
+/// 「在 候选注释 中配置」：关掉方案设置，跳到全局的候选注释对话框（分配表那一页）。
+fn comment_settings_jump(app: &Rc<RefCell<AppState>>, state: &SchemaManagerState) -> Element {
+    let (tab, jump) = {
+        let st = app.borrow();
+        (st.tab, st.jump)
+    };
+    let st = state.clone();
+    let req = state.open_comment_settings;
+    crate::pages::dict::reactive::reactive_effect(
+        move || req.version(),
+        move || {
+            st.settings_visible.set(false);
+            let m = st.manifest.borrow().clone();
+            if let Some(t) = crate::dialogs::comment_settings::assign_jump_target(&m) {
+                crate::search::jump::request(tab, jump, t);
+            }
+        },
+    )
+}
+
 /// `app` 只为导入确认那一支所需（片段应用后回灌配置镜像）。
 pub fn build_schema_manager_dialog(
     app: &Rc<RefCell<AppState>>,
@@ -4474,8 +4293,8 @@ pub fn build_schema_manager_dialog(
     let ka_dlg = build_key_actions_dialog(state);
     let sa_dlg = build_session_actions_dialog(state);
     let ko_dlg = build_keys_overview_dialog(state);
-    let cmt_dlg = build_comment_tpl_dialog(state);
     let punct_dlg = build_schema_punct_dialog(state);
+    let cmt_jump = comment_settings_jump(app, state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -4487,7 +4306,7 @@ pub fn build_schema_manager_dialog(
         .child(ka_dlg)
         .child(sa_dlg)
         .child(ko_dlg)
-        .child(cmt_dlg)
+        .child(cmt_jump)
         // 自定义标点自带一层「单元格编辑」子对话框（在 build_punct_table_dialog 内部
         // 已叠成 stack），故整体排在这里即可，不必再拆一级。
         .child(punct_dlg)
@@ -5552,12 +5371,15 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .fg_role(Role::Text),
             ));
             if !hidden.comment {
-                rows.push(summary_action_row(
+                // 注释模板不再按方案文件配置：方案行在全局「候选注释」总表里。
+                let req = state.open_comment_settings;
+                rows.push(crate::widgets::setting_row(
                     "候选注释",
-                    Some("候选词右侧小字显示的内容，横排与竖排可分别设置"),
-                    state.settings_bh_comment_disp,
-                    "设置",
-                    state.settings_bh_comment_visible,
+                    Some("本方案的注释模板在「外观 → 候选标注 → 候选注释」的分配表里配置"),
+                    Element::button("在 候选注释 中配置")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| req.update(|n| *n += 1)),
                 ));
             }
             if !hidden.punct_map {
@@ -5755,13 +5577,9 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // 「加载短语」不计入：它是个没有「跟随」档的布尔，恒有值，算不出「有没有自定义」。
     let bh_punct = state.settings_bh_punct;
     let bh_layout = state.settings_bh_layout;
-    // 注释模板只看**勾选态**：内容改了但没勾上等于没生效，星号跟着内容走会提前亮起来。
-    // 与「加载短语」不计入同一个道理——星号回答的是「有没有项脱离了跟随」。
-    let bh_cmt_v = state.settings_bh_comment_v_on;
-    let bh_cmt_h = state.settings_bh_comment_h_on;
-    let cmt_disp = state.settings_bh_comment_disp;
-    // 自定义标点同理：只看勾选态。★ 不把 4×N 个单元格信号并进依赖——那是每帧遍历，
-    // 而这一屏已经为「每帧轮询」付过一次代价（见 punct_map_summary 的说明）。
+    // 自定义标点只看勾选态（内容改了但没勾上等于没生效）。
+    // ★ 不把 4×N 个单元格信号并进依赖——那是每帧遍历，而这一屏已经为「每帧轮询」付过一次
+    // 代价（见 punct_map_summary 的说明）。
     let bh_punct_map = state.settings_bh_punct_map_on;
     let punct_disp = state.settings_bh_punct_map_disp;
     // 辅助码卡片摘要同理：只看各行的勾选态。`AuxCode` 也归「方案自定义」页
@@ -5777,8 +5595,6 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .version_sum()
                 .wrapping_add(bh_punct.version())
                 .wrapping_add(bh_layout.version())
-                .wrapping_add(bh_cmt_v.version())
-                .wrapping_add(bh_cmt_h.version())
                 .wrapping_add(bh_punct_map.version())
                 .wrapping_add(aux_on_over.version())
                 .wrapping_add(aux_len_over.version())
@@ -5789,18 +5605,13 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             let n = ct_count.custom_count();
             let bh_custom = (bh_punct.get() != 0) as usize
                 + (bh_layout.get() != 0) as usize
-                + bh_cmt_v.get() as usize
-                + bh_cmt_h.get() as usize
                 + bh_punct_map.get() as usize;
             let aux_custom = aux_on_over.get() as usize
                 + aux_len_over.get() as usize
                 + aux_src_over.get() as usize
                 + aux_direct_over.get() as usize;
             ct_disp.set(ct_summary(n));
-            // 「候选注释」那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
-            // 另开一个 effect 只会多一处要同步的口径。
-            cmt_disp.set(comment_summary(bh_cmt_v.get(), bh_cmt_h.get()));
-            // 自定义标点那一行同源（也只看勾选态），一并在这里推。
+            // 自定义标点那一行的摘要与 TAB 星号同源（都只看勾选态），故顺带在这里推。
             punct_disp.set(punct_map_summary(bh_punct_map.get()));
             // 辅助码卡片标题右侧那句同源，一并在这里推。
             aux_disp.set(ct_summary(aux_custom));
@@ -6570,79 +6381,6 @@ mod ext_dict_tests {
             },
             "只写一段时另两段仍取默认"
         );
-    }
-
-    /// 「候选注释」行的摘要只看**勾选态**，且四格各不相同。
-    ///
-    /// 摘要跟着输入框内容走的话，用户打字打到一半、还没勾上「自定义」，行上就已经写着
-    /// 「已自定义」——而那时保存下去什么也不会变。
-    #[test]
-    fn comment_summary_reads_checkboxes_only() {
-        assert_eq!(comment_summary(false, false), "跟随全局");
-        assert_eq!(comment_summary(true, false), "竖排已自定义");
-        assert_eq!(comment_summary(false, true), "横排已自定义");
-        assert_eq!(comment_summary(true, true), "横竖均已自定义");
-    }
-
-    /// ★★ 注释模板是**三态**：键缺失 / 有内容 / 空串，三者互不相同。
-    ///
-    /// 最容易写错的是把 `Some("")` 当成「未设置」——那会让「本方案不显示注释」
-    /// 在重开设置页后变回「跟随全局」，用户配的东西静默消失。
-    #[test]
-    fn seed_behavior_reads_comment_tri_state() {
-        let seed = seed_behavior(&json!({}));
-        assert_eq!(seed.comment_v, None, "键缺失 = 未设置");
-        assert_eq!(seed.comment_h, None);
-
-        let seed = seed_behavior(&json!({
-            "candidate": { "comment_template_vertical": "${code_hint}" }
-        }));
-        assert_eq!(seed.comment_v.as_deref(), Some("${code_hint}"));
-        assert_eq!(seed.comment_h, None, "横竖各自独立，只配一个是常见用法");
-
-        let seed = seed_behavior(&json!({
-            "candidate": { "comment_template_horizontal": "" }
-        }));
-        assert_eq!(
-            seed.comment_h.as_deref(),
-            Some(""),
-            "空串是「本方案不显示注释」，不是「未设置」"
-        );
-
-        // core 侧「取消覆盖」回传的就是 null，读回来必须还原成未设置。
-        let seed = seed_behavior(&json!({
-            "candidate": { "comment_template_vertical": null }
-        }));
-        assert_eq!(seed.comment_v, None, "null 读回来是未设置");
-    }
-
-    /// ★★ 「取消覆盖」写 `null` 而不是空串。
-    ///
-    /// 写空串的话，用户取消勾选后得到的是「本方案不显示注释」——与他要的「跟随全局」
-    /// 恰好相反，且界面上看不出来（两者都是空输入框）。
-    #[test]
-    fn comment_tpl_value_uses_null_to_clear() {
-        assert_eq!(comment_tpl_value(None), Value::Null, "未勾选必须写 null");
-        assert_eq!(comment_tpl_value(Some("")), json!(""), "勾上留空写空串");
-        assert_eq!(comment_tpl_value(Some("${dict}")), json!("${dict}"));
-    }
-
-    /// 注释模板的 seed → 回写 → 再 seed 必须闭合，否则「保存后重开设置页，配的东西没了」。
-    #[test]
-    fn comment_tpl_round_trip() {
-        for tpl in [None, Some(""), Some("${code_hint}")] {
-            let mut cfg = json!({});
-            set_json_path(
-                &mut cfg,
-                &["candidate", "comment_template_vertical"],
-                comment_tpl_value(tpl),
-            );
-            assert_eq!(
-                seed_behavior(&cfg).comment_v.as_deref(),
-                tpl,
-                "{tpl:?} 往返不闭合"
-            );
-        }
     }
 
     /// F2：下拉「跟随」档必须带上当前跟随值，不能只写「跟随全局」四个字。
@@ -7626,62 +7364,6 @@ mod section_build_tests {
         state
     }
 
-    /// 方案级注释模板与全局同一套转义：输入框显示 `\n` 两个字符，方案文件里是真换行。
-    /// 打开不改不进待提交队列（含 `\\`、`\t`、不成对 `\x`），三态（未勾 / 空串）不塌。
-    #[test]
-    fn comment_tpl_escaped_in_box_and_raw_in_cfg() {
-        use crate::dialogs::tooltip_sections_dialog::escape_template;
-        let _guard = crate::rpc::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
-
-        // 打开时方案里已有带真换行 / 反斜杠的模板：显示转义、原样不改就不脏。
-        let raw_v = "${pinyin}\n${chaizi}";
-        let raw_h = "a\\b\tc\\x";
-        let state = open_mock_pinyin();
-        let seed = seed_behavior(&json!({ "candidate": {
-            "comment_template_vertical": raw_v,
-            "comment_template_horizontal": raw_h,
-        } }));
-        state.seed_comment_tpl(&seed);
-        {
-            let mut at = state.settings_bh_at_open.borrow_mut();
-            at.comment_v = seed.comment_v.clone();
-            at.comment_h = seed.comment_h.clone();
-        }
-        assert_eq!(state.settings_bh_comment_v.get(), "${pinyin}\\n${chaizi}");
-        assert_eq!(state.settings_bh_comment_h.get(), escape_template(raw_h));
-        assert_eq!(state.behavior_now(), *state.settings_bh_at_open.borrow());
-        state.stage_settings_edits();
-        assert!(
-            !state.has_pending_edits(),
-            "什么都没改，不该有待提交的方案改动"
-        );
-
-        // 手打 `\n` ⇒ 方案 cfg 里写真换行；勾上留空仍是空串（不被转义逻辑折成别的）。
-        let state = open_mock_pinyin();
-        state.settings_bh_comment_v_on.set(true);
-        state
-            .settings_bh_comment_v
-            .set("${pinyin}\\n${chaizi}".into());
-        state.settings_bh_comment_h_on.set(true);
-        state.stage_settings_edits();
-        let cfg = state.pending_edits.borrow()["pinyin_simp"]
-            .cfg
-            .clone()
-            .unwrap();
-        assert_eq!(cfg["candidate"]["comment_template_vertical"], json!(raw_v));
-        assert_eq!(cfg["candidate"]["comment_template_horizontal"], json!(""));
-
-        // 未设置的方案：播种后两框为空、未勾。
-        let state = open_mock_pinyin();
-        state.seed_comment_tpl(&BehaviorSeed::default());
-        assert!(!state.settings_bh_comment_v_on.get());
-        assert_eq!(state.settings_bh_comment_v.get(), "");
-        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
-    }
-
     /// 双拼方案：直接辅助码一行显示（`settings_is_shuangpin` 即渲染判据）、跟随全局值；
     /// 打开即关不脏。勾上改值 ⇒ 写布尔、计入「已自定义 N 项」；再取消勾选 ⇒ 写 null。
     #[test]
@@ -8117,7 +7799,7 @@ mod section_build_tests {
             }
         );
         state.set_manifest(folded(&[
-            "key:ui.candidate.comment_template_horizontal",
+            "key:ui.comment.assign.global",
             "key:input.punct.custom_mappings",
         ]));
         assert_eq!(

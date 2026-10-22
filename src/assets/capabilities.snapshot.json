@@ -2045,29 +2045,6 @@
       "type": "strlist"
     },
     {
-      "default": true,
-      "key": "ui.candidate.comment_enabled",
-      "type": "bool"
-    },
-    {
-      "default": "${code_hint|code_rev|shuangpin}",
-      "key": "ui.candidate.comment_template_vertical",
-      "schemaOverride": {
-        "note": "方案可覆盖注释模板；方案没写则用这里的值。",
-        "section": "[candidate]"
-      },
-      "type": "str"
-    },
-    {
-      "default": "${code_hint|code_rev|shuangpin}",
-      "key": "ui.candidate.comment_template_horizontal",
-      "schemaOverride": {
-        "note": "方案可覆盖注释模板；方案没写则用这里的值。",
-        "section": "[candidate]"
-      },
-      "type": "str"
-    },
-    {
       "default": 0,
       "key": "ui.candidate.comment_max_chars_vertical",
       "type": "int"
@@ -2091,6 +2068,62 @@
       "default": [],
       "key": "ui.comment_dicts",
       "type": "structlist"
+    },
+    {
+      "default": true,
+      "key": "ui.comment.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "default",
+      "key": "ui.comment.state",
+      "type": "enum",
+      "values": [
+        "default",
+        "detail"
+      ]
+    },
+    {
+      "default": "session",
+      "key": "ui.comment.alt_switch",
+      "type": "enum",
+      "values": [
+        "off",
+        "session",
+        "persist",
+        "hold"
+      ]
+    },
+    {
+      "default": [],
+      "key": "ui.comment.templates",
+      "type": "structlist"
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.global",
+      "type": "map",
+      "values": [
+        "default_vertical",
+        "default_horizontal",
+        "detail_vertical",
+        "detail_horizontal"
+      ]
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.type",
+      "type": "map"
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.schema",
+      "type": "map"
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.mode",
+      "type": "map"
     },
     {
       "default": [],

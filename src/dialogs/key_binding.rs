@@ -529,6 +529,7 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
             "temp_pinyin" | "temp_english" | "aux_code" | "rare_char" | "reverse" => &mut modes,
             "toggle_mode" | "switch_engine" | "toggle_full_width" | "toggle_punct"
             | "toggle_s2t" | "toggle_t2s" | "toggle_toolbar" => &mut states,
+            s if s == "comment_state" || s.starts_with("comment_state:") => &mut states,
             "open_settings" | "take_screenshot" | "softkeyboard" => &mut tools,
             s if s.starts_with("mix:") || s.starts_with("special:") => &mut modes,
             s if s.starts_with("toggle_schema:") || s.starts_with("switch_schema:") => &mut schemas,
@@ -666,9 +667,33 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
                 },
             ],
         ),
+        // 候选注释两态：切持久态两表都有；`comment_state:session`（只翻本次候选窗）只在
+        // 组字中有意义，只进本表。
+        VerbCategory::new(
+            "候选注释",
+            COMMENT_STATE_VERBS
+                .iter()
+                .chain(std::iter::once(&COMMENT_SESSION_VERB))
+                .map(|(v, l)| Verb {
+                    value: (*v).to_string(),
+                    label: (*l).to_string(),
+                })
+                .collect(),
+        ),
         advanced_category(),
     ]
 }
+
+/// 切注释持久态的按键动词（`key_actions` 与 `session_actions` 两表都认）。
+pub const COMMENT_STATE_VERBS: [(&str, &str); 3] = [
+    ("comment_state", "注释：切换默认 / 详细"),
+    ("comment_state:default", "注释：切到默认"),
+    ("comment_state:detail", "注释：切到详细"),
+];
+
+/// 只翻本次候选窗的注释态（只有 `session_actions` 认）。
+pub const COMMENT_SESSION_VERB: (&str, &str) =
+    ("comment_state:session", "注释：本次候选窗临时切换");
 
 /// 会话态功能值 → 中文名（供只读视图查）。未知值返回 `None`，由调用方兜底显示原值。
 pub fn session_verb_label(value: &str) -> Option<String> {
@@ -2080,6 +2105,10 @@ mod tests {
                         | "clear"
                         | "aux_code"
                         | "aux_code:page_next"
+                        | "comment_state"
+                        | "comment_state:default"
+                        | "comment_state:detail"
+                        | "comment_state:session"
                 ) || v
                     .value
                     .strip_prefix("select_candidate:")
@@ -2089,6 +2118,32 @@ mod tests {
                 assert!(ok, "动词 {:?} 不在 core SessionAction 的值域里", v.value);
             }
         }
+    }
+
+    /// 注释两态的会话动词有名字；切持久态那三个归「状态切换」，与引导键表同类。
+    #[test]
+    fn comment_state_verbs_are_named_and_categorized() {
+        for v in [
+            "comment_state",
+            "comment_state:default",
+            "comment_state:detail",
+            "comment_state:session",
+        ] {
+            assert!(
+                session_verb_label(v).is_some_and(|l| !l.is_empty()),
+                "{v} 应有中文名"
+            );
+        }
+        let verbs: Vec<Verb> = COMMENT_STATE_VERBS
+            .iter()
+            .map(|(v, l)| Verb {
+                value: (*v).into(),
+                label: (*l).into(),
+            })
+            .collect();
+        let cats = categorize_lead_verbs(&verbs);
+        assert_eq!(cats[0].name, "状态切换");
+        assert_eq!(cats[0].items.len(), 3);
     }
 
     fn lead_picker() -> KeyPicker {

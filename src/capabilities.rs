@@ -527,6 +527,14 @@ mod tests {
         "ui.langbar.text_color_cn_dark",
         "ui.langbar.text_color_en_light",
         "ui.langbar.text_color_en_dark",
+        // ㉖ 候选注释的用户模板与类型 / 方案 / 模式三层分配：**已有 GUI**，由
+        //    `ui.comment.assign.global` 那一项（外观 → 候选标注 → 候选注释）的 Tab 对话框
+        //    一并读写——分配是一张「作用范围 × 四格」的总表，模板库是同一张表的选项来源，
+        //    拆成独立清单项就是把一张表切成四处。理由同 ㉒'、㉕。
+        "ui.comment.templates",
+        "ui.comment.assign.type",
+        "ui.comment.assign.schema",
+        "ui.comment.assign.mode",
         // 注：㉔ 区块名列表两项（`input.rare_char.include_blocks` /
         // `schema.frequency.exclude_blocks`）曾登记在此，注明「待接入，缺区块多选控件」。
         // 2026-09-01 已接进清单（输入页的「生僻字」与「词频」两块），故从名单撤出。

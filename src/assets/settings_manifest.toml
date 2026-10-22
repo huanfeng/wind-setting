@@ -3628,41 +3628,55 @@ options = [
 ]
 
 # ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
-# 总开关置于卡片首行，只有「候选注释」（模板对话框）随它置灰。不挂的：
+# 总开关置于卡片首行，与「候选注释」对话框合并成一行（gate_soft：按钮不随开关置灰）。不挂的：
 # - 序号标签、命令栏前缀：与注释无关；
-# - 「自动使用词库自带的注释」「注释词库」：它们供 `${dict}` 查询，悬停提示的段也用
-#   （设置端自带的「词库注释」悬停预设就是），而 enabled_when 表达不了
-#   「注释开 或 悬停开」这种或条件——挂上只看注释开关，会在悬停仍要用时把它们误置灰。
+# - 「自动使用词库自带的注释」与对话框里的「注释词库」页：它们供 `${dict}` 查询，悬停提示的段
+#   也用（设置端自带的「词库注释」悬停预设就是），注释关着时照样要能配。
 [[items]]
-key = "ui.candidate.comment_enabled"
+key = "ui.comment.enabled"
 group = "ui"
 section = "候选标注"
 type = "toggle"
 label = "显示候选注释"
 hint = "候选词右侧的编码、注音等小字；用不到可关掉以省内存"
 
-# 候选注释段（候选右侧的小字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
-# 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。
-# 宿主取**横排**模板：它是对话框里第一个出现的字段，而横排宽度由全部候选共享、最需斟酌。
-# 卡片行的 hint 保持一句话——模板语法属于对话框里的事，摊在卡片上没人看得完。
+# 候选注释（候选右侧的小字）：卡片上与总开关合并成一行，分配表、模板库、注释词库与切换方式
+# 全在 Tab 对话框里（专用 builder，见 dialogs::comment_settings）。宿主取全局那一行的四格；
+# 其余分配键与用户模板没有自己的清单项，由同一对话框读写（见 capabilities 的豁免名单）。
 [[items]]
-key = "ui.candidate.comment_template_horizontal"
+key = "ui.comment.assign.global"
 group = "ui"
 section = "候选标注"
-gate_key = "ui.candidate.comment_enabled"
+gate_key = "ui.comment.enabled"
 gate_soft = true
 type = "dialog_button"
 label = "候选注释"
-hint = "候选词右侧小字的内容与最大字数，横排、竖排可分别设置"
+hint = "各方案、模式在默认 / 详细两态下显示哪个注释模板"
 
 [[items]]
-key = "ui.candidate.comment_template_vertical"
+key = "ui.comment.state"
 group = "ui"
 section = "候选标注"
-type = "string"
-label = "竖排注释"
-hint = "竖排候选窗每行独占一行，可放较长的注音或字根；换行写 \\n"
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+type = "segmented"
+label = "注释状态"
+hint = "默认与详细两态共用于所有方案；用快捷键或命令切换时写回这里"
+options = [{ value = "default", label = "默认" }, { value = "detail", label = "详细" }]
+dialog_extra_for = "ui.comment.assign.global"
+
+[[items]]
+key = "ui.comment.alt_switch"
+group = "ui"
+section = "候选标注"
+type = "select"
+label = "Alt 键"
+hint = "候选窗出现时单击 Alt 的作用；按住档松开即恢复"
+options = [
+  { value = "off", label = "不使用" },
+  { value = "session", label = "临时切换（本次候选窗）" },
+  { value = "persist", label = "切换当前状态" },
+  { value = "hold", label = "按住时显示另一态" },
+]
+dialog_extra_for = "ui.comment.assign.global"
 
 [[items]]
 key = "ui.candidate.comment_above"
@@ -3671,7 +3685,7 @@ section = "候选标注"
 type = "toggle"
 label = "注释首行显示在候选上方"
 hint = "开启后，模板里第一个换行（\\n）之前的内容显示在候选上方一行，其余仍在候选右侧；换行要写在 { … } 之外。"
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+dialog_extra_for = "ui.comment.assign.global"
 
 [[items]]
 key = "ui.candidate.comment_max_chars_horizontal"
@@ -3682,7 +3696,7 @@ label = "横排最大字数"
 hint = "超过此字数时截断并加省略号；0 = 不限"
 min = 0
 max = 64
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+dialog_extra_for = "ui.comment.assign.global"
 
 [[items]]
 key = "ui.candidate.comment_max_chars_vertical"
@@ -3693,7 +3707,7 @@ label = "竖排最大字数"
 hint = "竖排每行独占，通常可比横排放宽；0 = 不限（行宽放不下时注释仍会截断，先保候选词完整）"
 min = 0
 max = 64
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+dialog_extra_for = "ui.comment.assign.global"
 
 [[items]]
 key = "ui.candidate.auto_comment_dicts"
@@ -3710,6 +3724,7 @@ section = "候选标注"
 type = "dialog_button_comment_dicts"
 label = "注释词库"
 hint = "供注释模板与悬停提示中的 ${dict} 变量查询；词库文件放在 schemas/comments/ 下"
+dialog_extra_for = "ui.comment.assign.global"
 
 [[items]]
 key = "ui.candidate.index_labels"

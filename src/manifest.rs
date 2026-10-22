@@ -3780,7 +3780,7 @@ fn build_dialog_body_inner(
     } else if item.typ == "dialog_button_comment_dicts" {
         // 注释词库：可增删的条目列表 + 每条五个字段，manifest 的「一个 key 一个控件」
         // 套不上，走专用对话框（销掉 capabilities 里 `ui.comment_dicts` 那条 UNCOVERED）。
-        build_dialog_button_comment_dicts(state, key, cfg)
+        build_dialog_button_comment_dicts(state, cfg)
     } else if item.typ == "dialog_button_emoji_modules" {
         // emoji 附加模块：条数不定（内置 + 用户放进 emoji\ 的文件），整张表读写。
         build_dialog_button_emoji_modules(state, key, cfg)
@@ -3814,9 +3814,9 @@ fn build_dialog_body_inner(
     } else if key == "ui.candidate.index_labels" {
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
         build_dialog_button_index_labels(state, key, cfg)
-    } else if key == COMMENT_HOST_KEY {
-        // 候选注释：横/纵两份模板 + 最大字数 + 可复制的模板参考，共用一个对话框。
-        build_dialog_button_comment(state, key, cfg)
+    } else if key == crate::dialogs::comment_settings::HOST_KEY {
+        // 候选注释：分配总表、模板库、注释词库与切换方式，同一个 Tab 对话框。
+        crate::dialogs::comment_settings::build_dialog_button_comment(state, cfg)
     } else if key == "ui.font.fallback" || key == "ui.font.scripts" {
         // ⚠️ 字体名**含空格**（`Microsoft YaHei UI`），两条通用兜底都会毁数据：
         // strlist 的空格分隔编辑把一个字体拆成三个；map 的通用控件按标量读写
@@ -4174,125 +4174,6 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
     )
 }
 
-/// 候选注释对话框的宿主 key。宿主取**横排**模板：它是对话框里第一个出现的字段，而横排的
-/// 可用宽度由全部候选共享、最需要斟酌，该让用户先看到它。
-const COMMENT_HOST_KEY: &str = "ui.candidate.comment_template_horizontal";
-
-/// 候选注释：宿主（横排模板）自建输入行，纵排模板与最大字数经 `dialog_extra_for` 寄居，
-/// 末尾追加可复制的模板参考。
-///
-/// **为什么不直接用 `build_dialog_button_string`**（宿主是 str，本会落到那条通用分支）：
-/// 那个对话框把 `item.hint` 渲染成 `max_lines(3)` 的**标签**。而这里的说明是变量表 + 示例
-/// 模板，既超过三行，又是用户要照抄进输入框的东西——标签选不中、复制不了。参考区因此改用
-/// `text_input` 承载，见 [`crate::dialogs::field_dialogs::build_comment_dialog`]。
-///
-/// 宿主的读写按 `build_dialog_button_string` 的写法手工登记；寄居项各自经 [`field`] 登记，
-/// 与独立成行时完全一致（保存/加载/恢复默认都自动覆盖）。
-fn build_dialog_button_comment(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::field_dialogs::build_comment_dialog;
-
-    let visible = signal(false);
-    let horizontal = comment_template_signal(state, key, cfg);
-
-    // 对话框内这一行的标签**不用 `item.label`**：那是卡片行的文案（「候选注释」，说的是整件
-    // 事），而对话框里它只是三个字段之一，得叫「横排注释」才与旁边的「竖排注释」成对。
-    // 同 `build_dialog_button_index_labels` 硬编码对话框标题的先例——专用 builder 里的文案
-    // 属于该对话框的版式，不是清单项的属性。
-    let mut rows = vec![comment_template_block(
-        visible,
-        horizontal,
-        "留空则不显示注释",
-        |control| {
-            setting_row(
-                "横排注释",
-                Some("横排候选窗的宽度由全部候选共享，放注音或字根容易把窗口撑宽；换行写 \\n"),
-                control,
-            )
-        },
-    )];
-    // 竖排模板本是寄居项（`dialog_extra_for`），经通用 `field` 建成一个普通输入框；它同样是
-    // 模板、同样要预览与插入颜色，故在这里接手自建，其余寄居项（两个最大字数）照旧。
-    let extras = state.manifest.dialog_members(key);
-    let mut rest = Element::col().width_match().spacing(6);
-    for k in &extras {
-        let el = match state.manifest.get(k) {
-            Some(item) if k == COMMENT_VERTICAL_KEY => {
-                let sig = comment_template_signal(state, k, cfg);
-                let placeholder = item.hint.clone().unwrap_or_default();
-                comment_template_block(visible, sig, &placeholder, |control| {
-                    // 行外观交给通用的 `field_row`：竖排模板可被方案覆盖，角标不能丢。
-                    field_row(state, k, item, control, SchemaHintMode::PerRow)
-                })
-            }
-            _ => field(state, k),
-        };
-        // 框内行同样要挂锚点，否则搜到这些寄居项跳过去只会开框、不闪那一行。
-        rest = rest.child(crate::search::anchor::wrap(
-            el,
-            crate::search::index::in_dialog_anchor(k),
-            state.jump,
-        ));
-    }
-    if !extras.is_empty() {
-        rows.push(rest);
-    }
-
-    // 恢复默认：宿主与寄居项一并复位（见 [`reset_to_core_defaults`]）。
-    let reset_keys: Vec<String> = std::iter::once(key.to_string()).chain(extras).collect();
-    let reset_fn = reset_to_core_defaults(state, reset_keys);
-
-    let dlg = build_comment_dialog(visible, "候选注释", rows, Some(reset_fn));
-    register_dialog(state, dlg);
-    visible
-}
-
-/// 竖排注释模板的 key：候选注释对话框里要自建（见 [`build_dialog_button_comment`]）。
-const COMMENT_VERTICAL_KEY: &str = "ui.candidate.comment_template_vertical";
-
-/// 注释模板字段的读写登记（writer / loader / getter），与 `build_string` 同一写法。
-///
-/// ★ 信号里存的是**显示形态**（[`escape_template`] 转义过：真换行显示成 `\n` 两个字符），
-/// 与悬停提示「段内容」框同一套约定——单行输入框装不下真换行，而「注释显示在候选上方」
-/// 靠的正是模板里的真换行。loader 转义、writer 还原；getter 也给**还原后的真值**：它与
-/// writer 同一口径，打开不改就不会因转义判脏（`unescape(escape(s)) == s` 恒成立）。
-///
-/// [`escape_template`]: crate::dialogs::tooltip_sections_dialog::escape_template
-fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<String> {
-    use crate::dialogs::tooltip_sections_dialog::{escape_template, unescape_template};
-    let def = state
-        .capabilities
-        .default_for(key)
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let cur = cfg
-        .get_str(key)
-        .map(str::to_string)
-        .unwrap_or_else(|| def.clone());
-    let text = signal(escape_template(&cur));
-
-    let kw = key.to_string();
-    state
-        .fields
-        .writers
-        .borrow_mut()
-        .push(Box::new(move |c: &mut Config| {
-            c.set_path(&kw, Value::String(unescape_template(&text.get())))
-        }));
-    let kl = key.to_string();
-    state.fields.loaders.borrow_mut().insert(
-        key.to_string(),
-        Box::new(move |c: &Config| {
-            text.set(escape_template(c.get_str(&kl).unwrap_or(&def)));
-        }),
-    );
-    state.fields.getters.borrow_mut().insert(
-        key.to_string(),
-        Box::new(move || Value::String(unescape_template(&text.get()))),
-    );
-    text
-}
-
 /// 一个注释模板：标题行（标签 + 「插入颜色」）+ 独占一行、占满宽度的输入框，下方是预览
 /// （常态与选中态各一块）。
 ///
@@ -4302,7 +4183,7 @@ fn comment_template_signal(state: &AppState, key: &str, cfg: &Config) -> Signal<
 /// 原先定宽 200、还要分给按钮一截的输入框，稍长的模板进去就得横向滚动才看得全。
 ///
 /// `placeholder` 各用原来的：横排「留空则不显示注释」，竖排沿用通用字段的写法（清单 hint）。
-fn comment_template_block(
+pub(crate) fn comment_template_block(
     visible: Signal<bool>,
     text: Signal<String>,
     placeholder: &str,
@@ -4311,8 +4192,8 @@ fn comment_template_block(
     use crate::dialogs::template_assist::{
         PreviewSource, TemplateField, insert_color_button, preview,
     };
-    // `true`：信号是转义后的显示形态（见 [`comment_template_signal`]），预览与插入颜色按
-    // 转义还原、换算位置，与悬停提示的段内容框一致。
+    // `true`：信号是转义后的显示形态（真换行显示成 `\n`），预览与插入颜色按转义还原、
+    // 换算位置，与悬停提示的段内容框一致。
     let f = TemplateField::new(text, true);
     let input = f.hook(Element::text_input(text, placeholder).width_match());
     let header_control = insert_color_button(&f, "comment");
@@ -4746,48 +4627,26 @@ fn build_dialog_button_ordered_pairs(
     visible
 }
 
-/// 注释词库（`ui.comment_dicts`）：可增删的条目列表，走专用对话框。
-///
-/// ★ 与 `ordered_pairs` 那条一样按**控件类型**分派而非 key——但这一项的 key 本就唯一，
-/// 之所以仍走 type，是为了让「加一个同形态的列表」不必再改分派链。
-fn build_dialog_button_comment_dicts(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
-    use crate::dialogs::comment_dicts_dialog::{CommentDictsUi, build_comment_dicts_dialog};
-
-    let ui = CommentDictsUi::new();
-    // 先拉来源再 seed：`seed` 要把自动派生项合并进列表，拿不到来源的话那些行就不会出现，
-    // 而用户随后一保存，配置里已有的引用空壳会被当成「认领不到」一并抹掉。顺序不能反。
-    ui.refresh_sources();
-    ui.seed(cfg.get_array(key).map(Vec::as_slice).unwrap_or_default());
-
-    let ui_w = ui.clone();
-    let kw = key.to_string();
-    state
-        .fields
-        .writers
-        .borrow_mut()
-        .push(Box::new(move |c: &mut Config| {
-            c.set_path(&kw, ui_w.to_value());
-        }));
-
-    let ui_l = ui.clone();
-    let kl = key.to_string();
-    state.fields.loaders.borrow_mut().insert(
-        key.to_string(),
-        Box::new(move |c: &Config| {
-            ui_l.refresh_sources();
-            ui_l.seed(c.get_array(&kl).map(Vec::as_slice).unwrap_or_default());
-        }),
+/// 注释词库（`ui.comment_dicts`）独立成框时的形态。清单里它寄居在候选注释对话框的 Tab 里
+/// （见 [`crate::dialogs::comment_settings`]），只有宿主不在、它自己上了卡片时才走这里。
+fn build_dialog_button_comment_dicts(state: &AppState, cfg: &Config) -> Signal<bool> {
+    use crate::dialogs::comment_dicts_dialog::{
+        build_comment_dicts_pane, build_comment_dicts_subdialogs,
+    };
+    let ui = crate::dialogs::comment_settings::register_comment_dicts(state, cfg);
+    let visible = signal(false);
+    let shell = crate::dialogs::field_dialogs::build_group_dialog_shell_large(
+        visible,
+        "注释词库",
+        build_comment_dicts_pane(&ui),
+        vec![],
     );
-
-    let ui_g = ui.clone();
-    state
-        .fields
-        .getters
-        .borrow_mut()
-        .insert(key.to_string(), Box::new(move || ui_g.to_value()));
-
-    let visible = ui.visible;
-    register_dialog(state, build_comment_dicts_dialog(&ui));
+    register_dialog(
+        state,
+        Element::stack()
+            .child(shell)
+            .child(build_comment_dicts_subdialogs(&ui)),
+    );
     visible
 }
 
@@ -6731,14 +6590,8 @@ mod tests {
         let group = st.manifest.dialog_members("input.filter_mode");
         assert!(group.iter().any(|k| k == "input.scope_relax.page_end_key"));
         assert!(!group.iter().any(|k| k == "input.scope_relax.prefix"));
-        let extra = st
-            .manifest
-            .dialog_members("ui.candidate.comment_template_horizontal");
-        assert!(
-            extra
-                .iter()
-                .any(|k| k == "ui.candidate.comment_template_vertical")
-        );
+        let extra = st.manifest.dialog_members("ui.comment.assign.global");
+        assert!(extra.iter().any(|k| k == "ui.comment.alt_switch"));
         assert!(!extra.iter().any(|k| k == "ui.candidate.comment_above"));
     }
 
@@ -9302,84 +9155,6 @@ mod theme_follow_row_tests {
         assert_eq!(none[0], "跟随主题");
     }
 }
-
-/// 注释模板输入框的转义约定（与悬停提示「段内容」框同一套）：输入框里显示 `\n` 两个字符，
-/// 配置里是真换行。「注释显示在候选上方」靠的正是这个真换行——单行框里原样存的话，用户在
-/// 设置页里根本写不出来。
-#[cfg(test)]
-mod comment_template_escape_tests {
-    use super::*;
-    use crate::state::AppState;
-
-    const RAW: &str = "${pinyin}\n${chaizi}";
-    const SHOWN: &str = "${pinyin}\\n${chaizi}";
-
-    fn with_state(cfg: serde_json::Value, f: impl FnOnce(&AppState, Signal<String>)) {
-        let _g = crate::rpc::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
-        let mut st = AppState::empty();
-        st.base_config = Config::from_value(cfg.clone());
-        st.current_config = Config::from_value(cfg);
-        let c = st.current_config.clone();
-        let sig = comment_template_signal(&st, COMMENT_HOST_KEY, &c);
-        f(&st, sig);
-        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
-    }
-
-    fn cfg_with(tpl: &str) -> serde_json::Value {
-        serde_json::json!({ "ui": { "candidate": { "comment_template_horizontal": tpl } } })
-    }
-
-    /// 读入转义显示；什么都不改则不判脏、getter 给真值（`\\`、`\t`、不成对 `\x` 都不丢）。
-    #[test]
-    fn untouched_template_shows_escaped_and_stays_clean() {
-        for raw in [RAW, "a\\b", "a\tb", "a\\xb", "C:\\n", "\\"] {
-            with_state(cfg_with(raw), |st, sig| {
-                assert_eq!(
-                    sig.get(),
-                    crate::dialogs::tooltip_sections_dialog::escape_template(raw),
-                    "{raw:?} 读入后应按转义显示"
-                );
-                let got = st.fields.getters.borrow()[COMMENT_HOST_KEY]();
-                assert_eq!(got, Value::String(raw.into()), "getter 要给还原后的真值");
-                // `AppState::empty()` 自带几条与本测试无关的 writer（方案、按键），只看 `ui` 段。
-                let diff: Vec<_> = st
-                    .debug_diff_after_writers()
-                    .into_iter()
-                    .filter(|i| i.key == "ui" || i.key.starts_with("ui."))
-                    .collect();
-                assert!(diff.is_empty(), "{raw:?} 什么都没改却判脏：{diff:?}");
-            });
-        }
-        with_state(cfg_with(RAW), |_, sig| assert_eq!(sig.get(), SHOWN));
-    }
-
-    /// 手打 `\n`（两个字符）写回配置是真换行。
-    #[test]
-    fn typed_backslash_n_is_written_as_newline() {
-        with_state(cfg_with(""), |st, sig| {
-            sig.set(SHOWN.to_string());
-            let mut probe = st.current_config.clone();
-            for w in st.fields.writers.borrow().iter() {
-                w(&mut probe);
-            }
-            assert_eq!(probe.get_str(COMMENT_HOST_KEY), Some(RAW));
-        });
-    }
-
-    /// loader（加载 / 恢复默认都走它）同样转义显示。
-    #[test]
-    fn loader_escapes() {
-        with_state(cfg_with(""), |st, sig| {
-            let c = Config::from_value(cfg_with(RAW));
-            st.fields.loaders.borrow()[COMMENT_HOST_KEY](&c);
-            assert_eq!(sig.get(), SHOWN);
-        });
-    }
-}
-
 #[cfg(test)]
 mod scheme_card_vis_tests {
     use super::*;
