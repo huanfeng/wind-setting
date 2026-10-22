@@ -776,6 +776,40 @@ mod tests {
         }
     }
 
+    /// 正确拼音提示的两项登记在清单里、落在模糊音对话框的整块锚点上。
+    #[test]
+    fn fuzzy_hint_items_registered() {
+        let m = manifest();
+        let idx = build_index(&m);
+        for key in [
+            "schema.pinyin.fuzzy.hint",
+            "schema.pinyin.fuzzy.hint_scope",
+            "schema.pinyin.fuzzy.hint_tone",
+        ] {
+            let e = idx
+                .iter()
+                .find(|e| e.id == key)
+                .unwrap_or_else(|| panic!("{key} 应在索引里"));
+            match &e.target {
+                JumpTarget::RowInDialog { dialog, .. } => assert_eq!(dialog, FUZZY_MASTER),
+                other => panic!("{key} 应落在模糊音对话框，实际 {other:?}"),
+            }
+        }
+        let scope = m.get("schema.pinyin.fuzzy.hint_scope").unwrap();
+        assert!(
+            scope
+                .enabled_when
+                .as_deref()
+                .is_some_and(|w| w.starts_with("schema.pinyin.fuzzy.hint ")),
+            "hint_scope 应依赖 hint 开启"
+        );
+        let tone = m.get("schema.pinyin.fuzzy.hint_tone").unwrap();
+        assert!(
+            tone.enabled_when.is_none(),
+            "hint_tone 也作用于 ${{fuzzy_pinyin}}，不依赖 hint"
+        );
+    }
+
     /// 临时拼音 / 临时英文搬到了方案页，按键行为 / 候选无效按键搬到了按键页。
     #[test]
     fn moved_sections_land_on_their_new_pages() {
