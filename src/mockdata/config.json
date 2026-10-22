@@ -263,7 +263,8 @@
   "association": {
    "kind": "smart",
    "mode": "continuous",
-   "punct": true
+   "punct": true,
+   "space_commits": false
   }
  },
  "schema": {

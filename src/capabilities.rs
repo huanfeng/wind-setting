@@ -493,6 +493,7 @@ mod tests {
         "mobile.association.kind",
         "mobile.association.mode",
         "mobile.association.punct",
+        "mobile.association.space_commits",
         // ㉑ 联想的编码栏标识：纯文案定制项，出厂「联想输入」已够用。
         //    它只在「编码不嵌入宿主程序」时可见——而嵌入是出厂默认，多数用户根本看不到
         //    这个标识，却要在卡片里常占一行。要改的人手写 config.toml。

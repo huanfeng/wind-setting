@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.126.0",
+  "appVersion": "0.127.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -2432,6 +2432,11 @@
     {
       "default": true,
       "key": "mobile.association.punct",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "mobile.association.space_commits",
       "type": "bool"
     }
   ]
