@@ -165,8 +165,26 @@
       "type": "int"
     },
     {
+      "default": true,
+      "key": "schema.codetable.english_merge.block_commit_on_word",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable.english_merge]"
+      },
+      "type": "bool"
+    },
+    {
+      "default": 1,
+      "key": "schema.codetable.english_merge.exact_position",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable.english_merge]"
+      },
+      "type": "int"
+    },
+    {
       "default": 2,
-      "key": "schema.codetable.english_merge.position",
+      "key": "schema.codetable.english_merge.complete_position",
       "schemaOverride": {
         "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
         "section": "[engine.codetable.english_merge]"
@@ -754,6 +772,11 @@
       "type": "bool"
     },
     {
+      "default": true,
+      "key": "schema.mix.block_commit_on_english_word",
+      "type": "bool"
+    },
+    {
       "default": 2,
       "key": "schema.mix.min_pinyin_length",
       "type": "int"
@@ -769,8 +792,13 @@
       "type": "int"
     },
     {
+      "default": 1,
+      "key": "schema.mix.english_exact_position",
+      "type": "int"
+    },
+    {
       "default": 2,
-      "key": "schema.mix.english_position",
+      "key": "schema.mix.english_complete_position",
       "type": "int"
     },
     {

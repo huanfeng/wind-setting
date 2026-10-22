@@ -450,8 +450,18 @@ group = "schema"
 section = "上屏行为"
 dialog_group = "ct_english"
 type = "toggle"
-label = "有英文候选时否决满码上屏"
-hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏；定长码表建议开着，关掉的话打 github 到第 4 键就被顶出中文"
+label = "有英文候选时否决上屏"
+hint = "满码自动上屏与顶码上屏前，只要有英文词以当前编码开头就不自动上屏（打 gith 时 github 还没出现也算）；关掉的话打 github 到第 4 键就被顶出中文。开启时已涵盖下一项"
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.block_commit_on_word"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "toggle"
+label = "整串是英文单词时否决上屏"
+hint = "整串恰好是一个英文单词时不自动上屏、不顶码，保留英文供选择；只是英文词开头的编码照常上屏。上一项开启时本项无需单独开"
 enabled_when = "schema.codetable.english_merge.enable == true"
 
 # 以下三项码表与混输（schema.mix.english_*）同口径，见核心 `english_merge::select`。
@@ -468,13 +478,25 @@ max = 10
 enabled_when = "schema.codetable.english_merge.enable == true"
 
 [[items]]
-key = "schema.codetable.english_merge.position"
+key = "schema.codetable.english_merge.exact_position"
 group = "schema"
 section = "上屏行为"
 dialog_group = "ct_english"
 type = "number"
-label = "英文最前位置"
-hint = "英文候选最靠前排在第几位；仍先让过开头的常用中文，只会更靠后（1 = 不限制）"
+label = "英文单词最前位置"
+hint = "整串恰好是英文单词时，英文最靠前排在第几位；仍先让过开头的完整匹配中文，只会更靠后（1 = 不另加限制）"
+min = 1
+max = 10
+enabled_when = "schema.codetable.english_merge.enable == true"
+
+[[items]]
+key = "schema.codetable.english_merge.complete_position"
+group = "schema"
+section = "上屏行为"
+dialog_group = "ct_english"
+type = "number"
+label = "英文补全最前位置"
+hint = "按前缀补全出来的英文最靠前排在第几位；仍先让过开头的完整匹配中文，且总在英文单词之后"
 min = 1
 max = 10
 enabled_when = "schema.codetable.english_merge.enable == true"
@@ -999,13 +1021,25 @@ max = 10
 enabled_when = "schema.mix.enable_english == true"
 
 [[items]]
-key = "schema.mix.english_position"
+key = "schema.mix.english_exact_position"
 group = "schema"
 section = "混输行为"
 dialog_group = "mix_english"
 type = "number"
-label = "英文最前位置"
-hint = "英文候选最靠前排在第几位；仍先让过开头的常用中文，只会更靠后（1 = 不限制）"
+label = "英文单词最前位置"
+hint = "整串恰好是英文单词时，英文最靠前排在第几位；仍先让过开头的完整匹配中文，只会更靠后（1 = 不另加限制）"
+min = 1
+max = 10
+enabled_when = "schema.mix.enable_english == true"
+
+[[items]]
+key = "schema.mix.english_complete_position"
+group = "schema"
+section = "混输行为"
+dialog_group = "mix_english"
+type = "number"
+label = "英文补全最前位置"
+hint = "按前缀补全出来的英文最靠前排在第几位；仍先让过开头的完整匹配中文，且总在英文单词之后"
 min = 1
 max = 10
 enabled_when = "schema.mix.enable_english == true"
@@ -1029,8 +1063,18 @@ group = "schema"
 section = "混输行为"
 dialog_group = "mix_english"
 type = "toggle"
-label = "有英文候选时否决满码上屏"
-hint = "满码自动上屏前若存在英文候选（含前缀）则不自动上屏"
+label = "有英文候选时否决上屏"
+hint = "满码自动上屏与顶码上屏前，只要有英文词以当前编码开头就不自动上屏（打 gith 时 github 还没出现也算）。开启时已涵盖下一项"
+enabled_when = "schema.mix.enable_english == true"
+
+[[items]]
+key = "schema.mix.block_commit_on_english_word"
+group = "schema"
+section = "混输行为"
+dialog_group = "mix_english"
+type = "toggle"
+label = "整串是英文单词时否决上屏"
+hint = "整串恰好是一个英文单词时不自动上屏、不顶码，保留英文供选择；只是英文词开头的编码照常上屏。上一项开启时本项无需单独开"
 enabled_when = "schema.mix.enable_english == true"
 
 # ── 拼音相关：拼音候选的范围有多宽 ──
