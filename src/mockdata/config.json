@@ -290,7 +290,12 @@
    "clear_on_empty_max": false,
    "english_merge": {
     "block_commit": true,
+    "block_commit_on_word": true,
+    "complete_min_length": 0,
+    "complete_position": 2,
     "enable": false,
+    "exact_position": 1,
+    "max_count": 2,
     "min_length": 3
    },
    "frequency": {
@@ -346,9 +351,14 @@
   "mix": {
    "auto_commit_block_on_english": false,
    "auto_commit_block_on_pinyin": true,
+   "block_commit_on_english_word": true,
    "block_commit_on_pinyin_word": true,
    "enable_english": false,
    "enable_pinyin_abbrev": false,
+   "english_complete_min_length": 0,
+   "english_complete_position": 2,
+   "english_exact_position": 1,
+   "english_max_count": 2,
    "min_english_length": 3,
    "min_pinyin_length": 2,
    "pinyin_code_hint": true,
