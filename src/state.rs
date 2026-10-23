@@ -3142,7 +3142,9 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<KeyGroup> {
 fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
     // 字段表提到了 `key_conflict`：全局按键编辑器的只读组要认同一批字段，两处各抄一份
     // 的话，加一个热键字段只改一处的表现是「冲突检测报得出、列表里查无此项」。
-    use crate::key_conflict::{HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, expand_hotkey};
+    use crate::key_conflict::{
+        HOTKEY_FIELDS, MODE_HOTKEY_FIELDS, QUICK_SELECT_FIELD, expand_hotkey,
+    };
 
     let mut groups: Vec<KeyGroup> = HOTKEY_FIELDS
         .iter()
@@ -3161,6 +3163,14 @@ fn collect_hotkey_groups(cfg: &Config) -> Vec<KeyGroup> {
             expand_hotkey(cfg.get_str(key).unwrap_or("")),
         ));
     }
+
+    // 快捷输入选词键不在热键表里，同域比的是「谁先命中」，判据见 `QUICK_SELECT_FIELD`。
+    let (qs_key, qs_label) = QUICK_SELECT_FIELD;
+    groups.push(KeyGroup::new(
+        qs_key,
+        qs_label,
+        expand_hotkey(cfg.get_str(qs_key).unwrap_or("")),
+    ));
 
     // `keys.key_actions` 里的**组合键**条目：与上面 11 项、schema_hotkeys 在内核是同一张
     // key_down 表（见本函数文档的判据），必须同域比较。
@@ -3970,6 +3980,62 @@ mod trigger_conflict_tests {
         let msg = check_hotkey_conflicts(&cfg).expect("模板与具体数字键应检出重叠");
         assert!(msg.contains("Ctrl+1"));
         assert!(msg.contains("置顶词条") && msg.contains("打开设置"));
+    }
+
+    /// 快捷输入选词键与置顶同模板：设计如此（快捷输入里选词、其余照旧置顶），不报。
+    #[test]
+    fn test_quick_select_same_template_as_pin_is_not_conflict() {
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "quick_input_select": "ctrl+number",
+                "pin_candidate": "ctrl+number",
+                "delete_candidate": "ctrl+number"
+            }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("置顶与删除同键照旧要报");
+        assert!(!msg.contains("快捷输入选词"), "实际: {msg}");
+    }
+
+    /// 全局热键先于快捷输入的选词命中：选词键模板覆盖到的键被它遮住，要报。
+    #[test]
+    fn test_global_hotkey_shadows_quick_select() {
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "quick_input_select": "ctrl+number",
+                "pin_candidate": "ctrl+number",
+                "open_settings": "ctrl+1",
+                "global_hotkeys": ["open_settings"]
+            }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("应报选词被遮住");
+        assert!(
+            msg.contains("快捷输入里 Ctrl+1 的选词会被「打开设置」抢走"),
+            "实际: {msg}"
+        );
+    }
+
+    /// `key_actions` 的组合键同理；模板不同（修饰位不等）则碰不到。
+    #[test]
+    fn test_key_action_combo_shadows_quick_select() {
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "quick_input_select": "ctrl+alt+number",
+                "key_actions": { "ctrl+alt+1": "temp_pinyin" }
+            }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("应报选词被遮住");
+        assert!(
+            msg.contains("快捷输入里 Ctrl+Alt+1 的选词会被「临时拼音（直达热键）」抢走"),
+            "实际: {msg}"
+        );
+
+        let cfg2 = Config::from_value(json!({
+            "keys": {
+                "quick_input_select": "ctrl+number",
+                "key_actions": { "ctrl+alt+1": "temp_pinyin" }
+            }
+        }));
+        assert_eq!(check_hotkey_conflicts(&cfg2), None);
     }
 
     /// **出厂默认必须两级皆空**：既不该有警告条，也不该一打开设置页就弹共存 toast。
