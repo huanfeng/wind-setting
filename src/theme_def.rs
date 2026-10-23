@@ -36,8 +36,8 @@ pub fn light_theme() -> Theme {
     let mut t = Theme::default();
     let p = &mut t.palette;
     p.accent = Color::hex(0x2F6BED);
-    p.accent_hover = Color::hex(0x4A80F0);
-    p.accent_active = Color::hex(0x2159D6);
+    p.accent_hover = Color::hex(0x1559EB);
+    p.accent_active = Color::hex(0x114BC8);
     p.on_accent = Color::WHITE;
     // 左栏(Bg)=#F5F7FA、右内容(SurfaceAlt)=#FBFCFE、卡片(Surface)=#FFFFFF（高一档 + 边框分隔）。
     p.bg = Color::hex(0xF5F7FA);
@@ -68,8 +68,8 @@ pub fn dark_theme() -> Theme {
     let mut t = Theme::dark();
     let p = &mut t.palette;
     p.accent = Color::hex(0x5B8CF5);
-    p.accent_hover = Color::hex(0x6F9BF7);
-    p.accent_active = Color::hex(0x4A7CE8);
+    p.accent_hover = Color::hex(0x4179F3);
+    p.accent_active = Color::hex(0x1D60F1);
     p.on_accent = Color::WHITE;
     // 强调色当前景就用它本身：本仓的暗档强调色（含主题色派生的，见 `accent::derive`）已保证
     // 在卡片上 ≥ 4.5:1。windui 默认再提亮 35%，库画的焦点环、描边按钮会与本仓按
@@ -153,7 +153,7 @@ mod tests {
     /// 「主题色：跟随输入法」——换了主题它还是蓝的，而且截图上要切到非默认主题才看得出来。
     #[test]
     fn accent_hex_only_lives_in_theme_def() {
-        let palette_hex = ["2F6BED", "4A80F0", "2159D6", "5B8CF5", "6F9BF7", "4A7CE8"];
+        let palette_hex = ["2F6BED", "1559EB", "114BC8", "5B8CF5", "4179F3", "1D60F1"];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut stack = vec![root];
         let mut hits = Vec::new();

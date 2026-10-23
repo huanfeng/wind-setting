@@ -28,6 +28,11 @@ const MIN_CONTRAST: f32 = 4.5;
 /// `#5B8CF5` 就是 3.2:1。
 const DARK_WHITE_MIN: f32 = 3.0;
 
+/// 悬停态比强调色暗多少（HSL 亮度）。
+const HOVER_DARKEN: f32 = 0.055;
+/// 按下态比强调色暗多少（HSL 亮度）。
+const ACTIVE_DARKEN: f32 = 0.13;
+
 /// 设置窗亮档卡片底（`theme_def::light_theme` 的 surface）。
 const LIGHT_SURFACE: Color = Color::hex(0xFFFFFF);
 /// 设置窗暗档卡片底（`theme_def::dark_theme` 的 surface）。
@@ -97,12 +102,13 @@ pub fn derive(raw: Color, dark: bool) -> Derived {
     // 亮度没动就原样用输入色：HSL 往返在 u8 取整下不保证逐位还原，拿它比相等会误报「已调整」。
     let unchanged = l2 == l;
     let accent = if unchanged { base } else { from_hsl(h, s, l2) };
-    // 悬停 / 按下的亮度阶差对齐 `theme_def` 现有两套（亮 +6/−7 个百分点，暗 +4.5/−6）。
-    let (up, down) = if dark { (0.045, 0.06) } else { (0.06, 0.07) };
+    // 悬停 / 按下一律加深（同 windui 0.29 亮档：blue-600 → 700 → 800，约 −5.5 / −13 个百分点）。
+    // 暗档也加深而不是照库的习惯变亮：本仓暗档强调色还兼作卡片上的文字，亮度已贴着压白字
+    // 3:1 的下限，再亮就不达标；加深只会让白字更清楚。
     let set = AccentSet {
         accent,
-        hover: from_hsl(h, s, (l2 + up).min(1.0)),
-        active: from_hsl(h, s, (l2 - down).max(0.0)),
+        hover: from_hsl(h, s, (l2 - HOVER_DARKEN).max(0.0)),
+        active: from_hsl(h, s, (l2 - ACTIVE_DARKEN).max(0.0)),
         on_accent: Color::WHITE,
     };
     if unchanged {
@@ -372,17 +378,16 @@ mod tests {
         }
     }
 
-    /// 悬停 / 按下阶差与 `theme_def` 手调的两套默认值对得上（每通道误差 ≤ 16：手调时还
-    /// 顺手降了点饱和度，这里只保亮度阶差）。
+    /// 悬停 / 按下阶差与 `theme_def` 的两套默认值对得上（每通道误差 ≤ 2，只容 HSL 往返取整）。
     #[test]
     fn hover_and_active_steps_match_default_palette() {
         let close = |a: Color, b: Color| {
             let d = |x: u8, y: u8| (x as i32 - y as i32).abs();
-            d(a.r, b.r).max(d(a.g, b.g)).max(d(a.b, b.b)) <= 16
+            d(a.r, b.r).max(d(a.g, b.g)).max(d(a.b, b.b)) <= 2
         };
         for (dark, accent, hover, active) in [
-            (false, 0x2F6BED, 0x4A80F0, 0x2159D6),
-            (true, 0x5B8CF5, 0x6F9BF7, 0x4A7CE8),
+            (false, 0x2F6BED, 0x1559EB, 0x114BC8),
+            (true, 0x5B8CF5, 0x4179F3, 0x1D60F1),
         ] {
             let s = set_of(derive(Color::hex(accent), dark));
             assert_eq!(s.accent, Color::hex(accent));
@@ -392,6 +397,36 @@ mod tests {
                 "{dark}: {:?}",
                 s.active
             );
+        }
+    }
+
+    /// 悬停 / 按下压白字不低于强调色本身的门槛（亮档 4.5、暗档 3）：两态都比强调色深，
+    /// 改回「悬停变亮」会在这里红。色相扫一圈，外加出厂主题。
+    #[test]
+    fn hover_and_active_keep_white_text_contrast() {
+        let mut raws: Vec<u32> = (0..12)
+            .map(|i| from_hsl(i as f32 * 30.0, 0.8, 0.55))
+            .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
+            .collect();
+        raws.extend(BUILTIN.iter().flat_map(|&(_, l, d)| [l, d]));
+        for raw in raws {
+            for dark in [false, true] {
+                let min = if dark { DARK_WHITE_MIN } else { MIN_CONTRAST };
+                let Some(s) = derive(Color::hex(raw), dark).set() else {
+                    continue;
+                };
+                for (state, c) in [
+                    ("accent", s.accent),
+                    ("hover", s.hover),
+                    ("active", s.active),
+                ] {
+                    assert!(
+                        contrast(c, s.on_accent) >= min,
+                        "#{raw:06X} dark={dark} {state} 压白字 {:.2} < {min}",
+                        contrast(c, s.on_accent)
+                    );
+                }
+            }
         }
     }
 
