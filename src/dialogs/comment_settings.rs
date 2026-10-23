@@ -1391,17 +1391,12 @@ mod tests {
         );
     }
 
-    /// mock 的出厂分配与每格结果按横排为主：出厂写横排格，竖排同横排。core 的出厂文件翻成
-    /// 横排以后这条会红，提醒去掉 mock 里的横竖对调。
+    /// mock（core 的出厂文件与解析链原样）横排为主：出厂写横排格，竖排没写同本行横排。
     #[test]
     fn mock_library_is_horizontal_primary() {
         let lib = library_from_value(&crate::rpc::mock_reply("comment.library", &json!({})));
         let g = &lib.system_assign.global;
-        assert_eq!(
-            g.default_horizontal.as_deref(),
-            Some("code_hint"),
-            "Task 4 落地时删除 rpc.rs 的 swap_assign 及两处调用"
-        );
+        assert_eq!(g.default_horizontal.as_deref(), Some("code_hint"));
         assert_eq!(g.detail_horizontal.as_deref(), Some("detail_full"));
         assert!(g.default_vertical.is_none() && g.detail_vertical.is_none());
         assert_eq!(
