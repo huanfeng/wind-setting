@@ -22,8 +22,8 @@ const POPUP_W: i32 = 560;
 /// (i) 的说明：优先级与「跟随 / 同横排」。
 pub const ASSIGN_TIP: &str = "优先级：模式 > 方案 > 方案类型 > 全局。\n\
      全局是默认值；码表 / 拼音 / 双拼 / 混输 / 英文是方案类型；其余行是具体方案或模式的覆盖。\n\
-     「跟随」= 用下一层同排布那格；竖排没写 = 同本行横排。\n\
-     灰色斜体的格后缀的是它实际落到的模板。";
+     「跟随」= 用下一层同排布那格；竖排没写：本行横排有值时同横排，否则跟随下一层。\n\
+     灰色斜体格「·」后面是它实际落到的模板。";
 
 /// 添加覆盖的两类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,9 +309,15 @@ fn preview_button(lib: &LibraryInfo, scope: &Scope, label: &str) -> Element {
         .size(22, 22)
         .clickable()
         .corner(4.0)
-        .tooltip("预览这一行")
         .child(
             crate::icons::tinted_role(crate::icons::EYE, 14, Role::TextMuted).align(Align::Center),
+        )
+        // 提示挂在一层透明叶子上、浮层打开时藏起：否则它盖住浮层的标题。
+        .child(
+            Element::leaf()
+                .size(22, 22)
+                .tooltip("预览这一行")
+                .visible_when(move || !open.get()),
         )
         .on_click(move |_| {
             if !open.get() {
@@ -332,7 +338,7 @@ fn cell_dropdown(
     col: Col,
 ) -> Element {
     let current = shown_choice(user, &lib.system_assign, scope, col);
-    let options = cell_options(lib, scope, col, &current);
+    let options = cell_options(lib, user, scope, col, &current);
     let resolved = lib.effective_of(scope, col).map(|(id, _)| lib.name_of(id));
     let labels: Vec<String> = options
         .iter()

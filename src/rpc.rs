@@ -1746,7 +1746,8 @@ fn mock_comment_library(params: &Value) -> Value {
         .unwrap_or_default();
     // 设置端先按「横排为主」走（竖排没写 = 同本行横排），core 的解析链与出厂文件还是竖排为主。
     // 两者只差横竖对调：把用户格对调后交给 core 解，结果再把横竖对调回来；出厂文件写的竖排格
-    // 对调后就是横排为主的出厂分配。core 翻过来以后（出厂写横排格）去掉对调，直接用。
+    // 对调后就是横排为主的出厂分配。
+    // Task 4 落地时删除 swap_assign 及两处调用（core 解析链与出厂文件翻成横排为主后直接用）。
     swap_assign(&mut user.assign);
     let (lib, _) = CommentLibrary::build(&system, &user);
     let type_of = |s: &str| match s {
@@ -1782,7 +1783,7 @@ fn mock_comment_library(params: &Value) -> Value {
     })
 }
 
-/// 每一格的横竖对调（见 [`mock_comment_library`]）。
+/// 每一格的横竖对调（见 [`mock_comment_library`]）。Task 4 落地时删除本函数及两处调用。
 fn swap_assign(a: &mut wind_config::comment_lib::CommentAssign) {
     let swap = |c: &mut wind_config::comment_lib::CommentCells| {
         std::mem::swap(&mut c.default_vertical, &mut c.default_horizontal);

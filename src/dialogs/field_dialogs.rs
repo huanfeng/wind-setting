@@ -866,7 +866,7 @@ pub fn build_confirm_dialog_shell(
         content,
         Vec::new(),
         trailing,
-        460,
+        FrameWidth::Fixed(460),
         400,
     )
 }
@@ -880,9 +880,10 @@ fn shell_with_title_sized(
     title: Element,
     content: Element,
     bottom_leading: Vec<Element>,
-    width: i32,
+    width: impl Into<FrameWidth>,
     height: i32,
 ) -> Element {
+    let width = width.into();
     let close = vec![
         Element::button("关闭")
             .small()
@@ -900,6 +901,42 @@ fn shell_with_title_sized(
     )
 }
 
+/// 外壳宽度：定宽，或随窗宽伸缩（撑满窗宽减两侧外边距，封顶 `max`）。
+#[derive(Debug, Clone, Copy)]
+pub enum FrameWidth {
+    Fixed(i32),
+    Fluid { max: i32 },
+}
+
+impl From<i32> for FrameWidth {
+    fn from(w: i32) -> Self {
+        FrameWidth::Fixed(w)
+    }
+}
+
+/// 窗宽自适应外壳两侧的外边距。
+const FLUID_MARGIN: i32 = 20;
+
+/// 宽度随窗宽伸缩的动态标题外壳：窗口宽时宽到 `max_width`，窄时贴着窗边留 20px。
+/// 给列多、定宽装不下的表格类浮层用（候选注释的分配表）。
+pub fn build_group_dialog_shell_fluid(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    bottom_leading: Vec<Element>,
+    max_width: i32,
+    height: i32,
+) -> Element {
+    shell_with_title_sized(
+        visible,
+        Element::label_signal(title),
+        content,
+        bottom_leading,
+        FrameWidth::Fluid { max: max_width },
+        height,
+    )
+}
+
 /// 外壳本体（底部按钮由调用方给全）。抽出这一层是因为编辑型浮层要「确定 / 取消」而不是
 /// 「关闭」——两套底栏各写一遍框架，就会重蹈本文件开头那段注释说的「同一个设置界面里
 /// 两种弹窗」。
@@ -910,7 +947,7 @@ fn shell_with_buttons(
     content: Element,
     bottom_leading: Vec<Element>,
     bottom_trailing: Vec<Element>,
-    width: i32,
+    width: FrameWidth,
     height: i32,
 ) -> Element {
     // 内容超长时中间区域可滚动；固定视口高度确保标题栏和关闭按钮始终可见。
@@ -932,8 +969,11 @@ fn shell_with_buttons(
         bottom = bottom.child(el);
     }
 
-    let frame = Element::col()
-        .width(width)
+    let frame = match width {
+        FrameWidth::Fixed(w) => Element::col().width(w),
+        FrameWidth::Fluid { .. } => Element::col().width_match(),
+    };
+    let frame = frame
         .bg_role(Role::Surface)
         .border_role(Role::Border, 1)
         .corner(12.0)
@@ -953,7 +993,29 @@ fn shell_with_buttons(
     // 右上角小 ×：标题行右侧本就是空的（标题 `width_match` 左对齐），叠上去不挤任何东西。
     // 与底栏的「关闭 / 取消」是同一件事，多这个入口是因为浮层拖开之后底栏可能已经被
     // 拖出视野，而标题行按定义还留在窗口内（拖动的钳制保的就是它）。
-    Element::dialog_closable(visible, frame, move |_| visible.set(false))
+    match width {
+        FrameWidth::Fixed(_) => {
+            Element::dialog_closable(visible, frame, move |_| visible.set(false))
+        }
+        // 自适应宽的外边距要落在「面板 + ×」这一层外面：落在面板上的话，`dialog_closable`
+        // 把 × 摆在含外边距的外框角上，× 就跑到面板外头去了。故 × 在这里自己叠。
+        FrameWidth::Fluid { max } => {
+            let close = Element::icon_button("\u{2715}")
+                .size(24, 24)
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .align_xy(Align::End, Align::Start)
+                .margin(windui::theme::current().metrics.spacing)
+                .on_click(move |_| visible.set(false));
+            let panel = Element::stack()
+                .width_match()
+                .max_width(max)
+                .margin(FLUID_MARGIN)
+                .child(frame)
+                .child(close);
+            Element::dialog(visible, panel)
+        }
+    }
 }
 
 /// 自定义序号标签对话框：10 个文本框对应序号 1-10（**每框一个完整标签**，可多字符），

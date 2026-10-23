@@ -90,6 +90,14 @@ impl Col {
         matches!(self, Col::DefaultH | Col::DetailH)
     }
 
+    /// 同一态的横排列。
+    fn as_horizontal(self) -> Col {
+        match self {
+            Col::DefaultH | Col::DefaultV => Col::DefaultH,
+            Col::DetailH | Col::DetailV => Col::DetailH,
+        }
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Col::DefaultV => "默认·竖",
@@ -196,33 +204,52 @@ pub enum Choice {
     SameAsHorizontal,
 }
 
-/// 原始格值 → 选项。`None`（不写）横排是跟随、竖排是同横排。
-fn choice_of_raw(raw: Option<&str>, col: Col) -> Choice {
-    match raw {
-        None if col.horizontal() => Choice::Follow,
-        None => Choice::SameAsHorizontal,
-        Some("none") => Choice::Hide,
-        Some("inherit") => Choice::Follow,
-        Some(id) => Choice::Template(id.to_string()),
-    }
+/// 一格的原始值：用户值，否则出厂值，否则不写。
+fn raw_cell<'a>(
+    user: &'a CommentAssign,
+    system: &'a CommentAssign,
+    scope: &Scope,
+    col: Col,
+) -> Option<&'a str> {
+    scope
+        .cells(user)
+        .and_then(|c| col.get(c))
+        .or_else(|| scope.cells(system).and_then(|c| col.get(c)))
 }
 
-/// 一格当前显示的选项：用户值，否则出厂值，否则不写。
+/// 本行横排有没有确定值（模板或 `none`）。竖排没写时，有才同横排，没有就跟随下一层——
+/// 与 core 的 `pick` 逐层走的结果一致。
+fn row_horizontal_set(
+    user: &CommentAssign,
+    system: &CommentAssign,
+    scope: &Scope,
+    col: Col,
+) -> bool {
+    !matches!(
+        raw_cell(user, system, scope, col.as_horizontal()),
+        None | Some("inherit")
+    )
+}
+
+/// 一格当前显示的选项。不写的格：横排是跟随；竖排在本行横排有值时同横排，否则跟随。
 pub fn shown_choice(
     user: &CommentAssign,
     system: &CommentAssign,
     scope: &Scope,
     col: Col,
 ) -> Choice {
-    let raw = scope
-        .cells(user)
-        .and_then(|c| col.get(c))
-        .or_else(|| scope.cells(system).and_then(|c| col.get(c)));
-    choice_of_raw(raw, col)
+    match raw_cell(user, system, scope, col) {
+        None if !col.horizontal() && row_horizontal_set(user, system, scope, col) => {
+            Choice::SameAsHorizontal
+        }
+        None | Some("inherit") => Choice::Follow,
+        Some("none") => Choice::Hide,
+        Some(id) => Choice::Template(id.to_string()),
+    }
 }
 
-/// 选中 `choice` 后写回用户分配：与出厂值相同即删键；否则模板写 id、不显示写 `none`、
-/// 跟随写 `inherit`（压过出厂值，或让竖排跟随下层竖排）、同横排删键。
+/// 选中 `choice` 后写回用户分配：删键就能显示成 `choice`（与出厂相同、横排跟随、竖排同横排、
+/// 本行横排没值时的竖排跟随）就删键；否则模板写 id、不显示写 `none`、跟随写 `inherit`。
 pub fn write_choice(
     user: &mut CommentAssign,
     system: &CommentAssign,
@@ -230,18 +257,18 @@ pub fn write_choice(
     col: Col,
     choice: &Choice,
 ) {
-    let factory = choice_of_raw(scope.cells(system).and_then(|c| col.get(c)), col);
-    let raw = if *choice == factory {
-        None
-    } else {
-        match choice {
-            Choice::Template(id) => Some(id.clone()),
-            Choice::Hide => Some("none".to_string()),
-            Choice::Follow => Some("inherit".to_string()),
-            Choice::SameAsHorizontal => None,
-        }
+    col.set(scope.cells_mut(user), None);
+    if shown_choice(user, system, scope, col) == *choice {
+        return;
+    }
+    let raw = match choice {
+        Choice::Template(id) => id.clone(),
+        Choice::Hide => "none".to_string(),
+        Choice::Follow => "inherit".to_string(),
+        // 出厂写了竖排值、或本行横排没值时给不出同横排（选项里也不列）。
+        Choice::SameAsHorizontal => return,
     };
-    col.set(scope.cells_mut(user), raw);
+    col.set(scope.cells_mut(user), Some(raw));
 }
 
 /// 加一行覆盖（各格先不写）。已在表里的不重复加，返回是否新加了。
@@ -459,8 +486,10 @@ pub fn unique_template_id(base: &str, taken: &[&str]) -> String {
 ///
 /// - 全局行不给「跟随」：它下面没有层了。
 /// - 出厂写了竖排值的格不给「同横排」：同横排即删用户键，删了落回的是出厂竖排值而不是横排。
+/// - 本行横排没值的竖排格不给「同横排」：那时删键是跟随下一层。
 pub(super) fn cell_options(
     lib: &LibraryInfo,
+    user: &CommentAssign,
     scope: &Scope,
     col: Col,
     current: &Choice,
@@ -478,7 +507,7 @@ pub(super) fn cell_options(
         .cells(&lib.system_assign)
         .and_then(|c| col.get(c))
         .is_some();
-    if !col.horizontal() && !factory_v {
+    if !col.horizontal() && !factory_v && row_horizontal_set(user, &lib.system_assign, scope, col) {
         out.push(Choice::SameAsHorizontal);
     }
     if !out.contains(current) {
@@ -948,7 +977,7 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi
         .child(Element::divider())
         .child(body)
         .child(jump_tab);
-    let shell = crate::dialogs::field_dialogs::build_group_dialog_shell_dyn_sized(
+    let shell = crate::dialogs::field_dialogs::build_group_dialog_shell_fluid(
         ui.visible,
         signal("候选注释".to_string()),
         content,
@@ -957,7 +986,7 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi
                 .url(crate::dialogs::field_dialogs::COMMENT_DOC_URL)
                 .font_size(12.0),
         ],
-        680,
+        900,
         460,
     );
     Element::stack()
@@ -1054,15 +1083,84 @@ mod tests {
     }
 
     #[test]
-    fn unset_vertical_is_same_as_horizontal_and_unset_horizontal_follows() {
+    fn unset_vertical_follows_when_row_horizontal_is_unset_too() {
         let sys = system();
-        let user = CommentAssign::default();
+        let mut user = CommentAssign::default();
         let t = Scope::Type("pinyin".into());
+        assert_eq!(shown_choice(&user, &sys, &t, Col::DefaultV), Choice::Follow);
+        assert_eq!(shown_choice(&user, &sys, &t, Col::DefaultH), Choice::Follow);
+        assert!(
+            !cell_options(
+                &LibraryInfo::default(),
+                &user,
+                &t,
+                Col::DefaultV,
+                &Choice::Follow
+            )
+            .contains(&Choice::SameAsHorizontal),
+            "本行横排没值：不给同横排"
+        );
+        // 横排写了 inherit 也算没值。
+        write_choice(
+            &mut user,
+            &sys,
+            &t,
+            Col::DefaultH,
+            &Choice::Template("x".into()),
+        );
+        write_choice(&mut user, &sys, &t, Col::DefaultH, &Choice::Follow);
+        assert_eq!(shown_choice(&user, &sys, &t, Col::DefaultV), Choice::Follow);
+        // 出厂写了横排的行：竖排没写即同横排。
+        let g = Scope::Global;
+        assert_eq!(
+            shown_choice(&user, &sys, &g, Col::DefaultV),
+            Choice::SameAsHorizontal
+        );
+    }
+
+    /// 全局默认·竖设了「拼音」：码表行（只出厂写了详细·横）的默认·竖是跟随、落到拼音；
+    /// 码表行默认·横设值后，默认·竖变成同横排。
+    #[test]
+    fn vertical_follows_global_vertical_until_row_horizontal_is_set() {
+        let sys = library_from_value(&crate::rpc::mock_reply("comment.library", &json!({})))
+            .system_assign;
+        let mut user = CommentAssign::default();
+        write_choice(
+            &mut user,
+            &sys,
+            &Scope::Global,
+            Col::DefaultV,
+            &Choice::Template("pinyin".into()),
+        );
+        let t = Scope::Type("codetable".into());
+        assert_eq!(shown_choice(&user, &sys, &t, Col::DefaultV), Choice::Follow);
+        let lib_of = |user: &CommentAssign| {
+            library_from_value(&crate::rpc::mock_reply(
+                "comment.library",
+                &json!({ "comment": { "assign": user } }),
+            ))
+        };
+        let lib = lib_of(&user);
+        assert_eq!(
+            lib.effective_of(&t, Col::DefaultV).unwrap(),
+            &("pinyin".to_string(), "global".to_string())
+        );
+        write_choice(
+            &mut user,
+            &sys,
+            &t,
+            Col::DefaultH,
+            &Choice::Template("chaizi".into()),
+        );
         assert_eq!(
             shown_choice(&user, &sys, &t, Col::DefaultV),
             Choice::SameAsHorizontal
         );
-        assert_eq!(shown_choice(&user, &sys, &t, Col::DefaultH), Choice::Follow);
+        let lib = lib_of(&user);
+        assert_eq!(
+            lib.effective_of(&t, Col::DefaultV).unwrap(),
+            &("chaizi".to_string(), "type:codetable".to_string())
+        );
     }
 
     #[test]
@@ -1105,7 +1203,9 @@ mod tests {
                     Choice::Hide,
                     Choice::Follow,
                 ];
-                if !col.horizontal() {
+                if !col.horizontal()
+                    && row_horizontal_set(&CommentAssign::default(), &sys, &scope, col)
+                {
                     choices.push(Choice::SameAsHorizontal);
                 }
                 for c in choices {
@@ -1183,15 +1283,27 @@ mod tests {
     }
 
     #[test]
-    fn vertical_follow_on_user_row_writes_inherit() {
+    fn vertical_follow_writes_inherit_only_when_row_horizontal_is_set() {
         let sys = system();
         let mut user = CommentAssign::default();
         let s = Scope::Schema("wubi86".into());
         write_choice(&mut user, &sys, &s, Col::DetailV, &Choice::Follow);
+        assert!(
+            user.schema["wubi86"].detail_vertical.is_none(),
+            "本行横排没值：竖排不写就是跟随，删键"
+        );
+        write_choice(
+            &mut user,
+            &sys,
+            &s,
+            Col::DetailH,
+            &Choice::Template("pinyin".into()),
+        );
+        write_choice(&mut user, &sys, &s, Col::DetailV, &Choice::Follow);
         assert_eq!(
             user.schema["wubi86"].detail_vertical.as_deref(),
             Some("inherit"),
-            "竖排不写是同横排，跟随下层竖排要写 inherit"
+            "本行横排有值：竖排不写是同横排，跟随要写 inherit"
         );
     }
 
@@ -1256,16 +1368,15 @@ mod tests {
     fn options_keep_an_unknown_current_template() {
         let lib = LibraryInfo::default();
         let cur = Choice::Template("gone".into());
-        let opts = cell_options(&lib, &Scope::Type("pinyin".into()), Col::DefaultV, &cur);
-        assert_eq!(
-            opts,
-            [
-                Choice::Hide,
-                Choice::Follow,
-                Choice::SameAsHorizontal,
-                cur.clone()
-            ]
+        let user = CommentAssign::default();
+        let opts = cell_options(
+            &lib,
+            &user,
+            &Scope::Type("pinyin".into()),
+            Col::DefaultV,
+            &cur,
         );
+        assert_eq!(opts, [Choice::Hide, Choice::Follow, cur.clone()]);
         assert_eq!(choice_label(&lib, &cur, None), "gone（不存在）");
     }
 
@@ -1393,17 +1504,25 @@ mod tests {
     #[test]
     fn options_drop_follow_on_global_and_same_as_horizontal_over_factory_vertical() {
         let mut lib = LibraryInfo::default();
-        lib.system_assign
-            .by_type
-            .insert("codetable".into(), cells(Some("pinyin"), None, None, None));
-        let g = cell_options(&lib, &Scope::Global, Col::DefaultH, &Choice::Hide);
+        lib.system_assign.by_type.insert(
+            "codetable".into(),
+            cells(Some("pinyin"), Some("chaizi"), None, Some("chaizi")),
+        );
+        let user = CommentAssign::default();
+        let g = cell_options(&lib, &user, &Scope::Global, Col::DefaultH, &Choice::Hide);
         assert!(!g.contains(&Choice::Follow));
         assert!(!g.contains(&Choice::SameAsHorizontal));
         let t = Scope::Type("codetable".into());
-        let v = cell_options(&lib, &t, Col::DefaultV, &Choice::Template("pinyin".into()));
+        let v = cell_options(
+            &lib,
+            &user,
+            &t,
+            Col::DefaultV,
+            &Choice::Template("pinyin".into()),
+        );
         assert!(!v.contains(&Choice::SameAsHorizontal));
         assert!(v.contains(&Choice::Follow));
-        let v2 = cell_options(&lib, &t, Col::DetailV, &Choice::SameAsHorizontal);
+        let v2 = cell_options(&lib, &user, &t, Col::DetailV, &Choice::SameAsHorizontal);
         assert!(
             v2.contains(&Choice::SameAsHorizontal),
             "出厂没写竖排的格照给"
@@ -1416,7 +1535,11 @@ mod tests {
     fn mock_library_is_horizontal_primary() {
         let lib = library_from_value(&crate::rpc::mock_reply("comment.library", &json!({})));
         let g = &lib.system_assign.global;
-        assert_eq!(g.default_horizontal.as_deref(), Some("code_hint"));
+        assert_eq!(
+            g.default_horizontal.as_deref(),
+            Some("code_hint"),
+            "Task 4 落地时删除 rpc.rs 的 swap_assign 及两处调用"
+        );
         assert_eq!(g.detail_horizontal.as_deref(), Some("detail_full"));
         assert!(g.default_vertical.is_none() && g.detail_vertical.is_none());
         assert_eq!(
