@@ -216,10 +216,11 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         // select_mix_layout：下拉，但读写的是 structlist 里按 id 定位的一个字符串字段
         // （quick_mix 的 candidate_layout），故按 structlist 而非 enum 校验。
         "select_mix_layout" => ty == "structlist",
-        // 同理，读写 structlist 里按 id 定位的一个字段：free_input（字符串三态）与
-        // free_input_takes_select_keys（布尔）。
+        // 同理，读写 structlist 里按 id 定位的一个字段：free_input（字符串三态）、
+        // free_input_takes_select_keys 与 numeric_letter_select（布尔）。
         "select_mix_free_input" => ty == "structlist",
         "checkbox_mix_free_select_keys" => ty == "structlist",
+        "checkbox_mix_numeric_letter_select" => ty == "structlist",
         _ => false,
     }
 }

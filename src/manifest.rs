@@ -655,6 +655,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "select_mix_layout",
     "select_mix_free_input",
     "checkbox_mix_free_select_keys",
+    "checkbox_mix_numeric_letter_select",
     "segmented",
     "checkbox_group",
     "number",
@@ -688,7 +689,28 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         "select_by_layout" => build_select_by_layout(state, key, item, cfg),
         "select_mix_layout" => build_select_mix_layout(state, key, item, cfg),
         "select_mix_free_input" => build_select_mix_free_input(state, key, item, cfg),
-        "checkbox_mix_free_select_keys" => build_checkbox_mix_free_select_keys(state, key, cfg),
+        "checkbox_mix_free_select_keys" => {
+            use crate::mix_fields::{
+                FIELD_FREE_INPUT_TAKES_SELECT_KEYS, FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK,
+            };
+            build_mix_field_checkbox(
+                state,
+                key,
+                cfg,
+                FIELD_FREE_INPUT_TAKES_SELECT_KEYS,
+                FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK,
+            )
+        }
+        "checkbox_mix_numeric_letter_select" => {
+            use crate::mix_fields::{FIELD_NUMERIC_LETTER_SELECT, NUMERIC_LETTER_SELECT_FALLBACK};
+            build_mix_field_checkbox(
+                state,
+                key,
+                cfg,
+                FIELD_NUMERIC_LETTER_SELECT,
+                NUMERIC_LETTER_SELECT_FALLBACK,
+            )
+        }
         "segmented" => build_segmented(state, key, item, cfg),
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
@@ -5137,20 +5159,21 @@ fn build_mix_field_select(
     }
 }
 
-/// 内置 quick_mix 的 `free_input_takes_select_keys` 开关：自由输入时把二三候选键
-/// （默认 `;` `'`）当作字面字符。
+/// 内置 quick_mix 某个**布尔字段**的开关（按 id 打补丁）：`free_input_takes_select_keys`
+/// （自由输入时把二三候选键当作字面字符）、`numeric_letter_select`（数字透镜下字母选词）。
 ///
 /// 不能走通用 [`build_toggle`]：那个直接 `cfg.get_bool(key)` / `set_path(key, …)`，
 /// 用在这里会把整个 mix_modes 数组换成一个布尔。
-fn build_checkbox_mix_free_select_keys(state: &AppState, view_key: &str, cfg: &Config) -> Element {
-    use crate::mix_fields::{
-        FIELD_FREE_INPUT_TAKES_SELECT_KEYS, FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK,
-        mix_mode_field_bool, patch_mix_mode_field,
-    };
+fn build_mix_field_checkbox(
+    state: &AppState,
+    view_key: &str,
+    cfg: &Config,
+    field: &'static str,
+    fallback: bool,
+) -> Element {
+    use crate::mix_fields::{mix_mode_field_bool, patch_mix_mode_field};
 
     let mix_modes_path = "schema.mix_modes";
-    let field = FIELD_FREE_INPUT_TAKES_SELECT_KEYS;
-    let fallback = FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK;
 
     let cur_arr: Vec<Value> = cfg.get_array(mix_modes_path).cloned().unwrap_or_default();
     let sig =

@@ -862,6 +862,7 @@
             "english"
           ],
           "name": "快捷",
+          "numeric_letter_select": true,
           "short_name": "快",
           "trigger_keys": [
             "semicolon"
@@ -1687,6 +1688,11 @@
     {
       "default": "ctrl+shift+number",
       "key": "keys.delete_candidate",
+      "type": "str"
+    },
+    {
+      "default": "ctrl+number",
+      "key": "keys.quick_input_select",
       "type": "str"
     },
     {

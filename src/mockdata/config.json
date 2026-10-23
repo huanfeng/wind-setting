@@ -241,6 +241,7 @@
    "minus_equal"
   ],
   "pin_candidate": "ctrl+number",
+  "quick_input_select": "ctrl+number",
   "select_char_keys": [],
   "select_key_groups": [
    "semicolon_quote"
@@ -384,6 +385,7 @@
      "english"
     ],
     "name": "快捷",
+    "numeric_letter_select": true,
     "short_name": "快",
     "trigger_keys": [
      "semicolon"
