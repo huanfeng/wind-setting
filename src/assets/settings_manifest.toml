@@ -3670,7 +3670,7 @@ section = "候选标注"
 subsection = "切换"
 type = "segmented"
 label = "当前状态"
-hint = "两态所有方案共用；切换键、命令短语 cozs 切换时写回这里"
+hint = "两态所有方案共用；切换方式为「切换当前状态」时的切换键、命令短语 cozs 写回这里"
 options = [{ value = "default", label = "默认" }, { value = "detail", label = "详细" }]
 dialog_title = "注释切换与显示"
 dialog_hint = "切换键、切换方式，上方注释条与最大字数"

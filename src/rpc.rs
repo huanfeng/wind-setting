@@ -1600,7 +1600,7 @@ const MOCK_SAMPLES: &[MockSample] = &[
         "你好",
         [
             "nǐ hǎo",
-            "nihk",
+            "nihc",
             "hao",
             "wqvb",
             "亻尔",
