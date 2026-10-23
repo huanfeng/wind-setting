@@ -391,8 +391,8 @@ fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: E
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(control)
 }
@@ -436,8 +436,8 @@ pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Eleme
         .width_match()
         // Center 而非 Start：右侧是一组按钮，副标题一行时贴顶会让按钮与标签错位。
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(control)
 }
@@ -504,8 +504,8 @@ pub fn setting_row_override(
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         // 空标签的勾选框：标签文字在左列，这里只要那个方框。
         .child(Element::checkbox("", over).small().fg_role(Role::Text))
         .child(left)
@@ -658,8 +658,8 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     Element::row()
         .width_match()
         .cross(Align::Start)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(grid.width(300))
 }
