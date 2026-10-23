@@ -55,9 +55,10 @@ Coexist 只在集合**新增**成员时弹：打开设置页时配置里本来�
 
 `keys.quick_input_select`（快捷输入选词，模板同置顶）也在本域，但它不进热键表，只在快捷输入里、
 于 `match_key_down` **之后**判定（`message_handler.rs` 的 `handle_key_event`），关系不对称：
-与置顶 / 删除同模板是设计（快捷输入里归选词，其余照旧），不报；其余热键（含全局热键、
-`activate_ime`、`key_actions` 组合键）都先于它命中，同键就把快捷输入里的选词遮住，报成
-「快捷输入里 X 的选词会被「Y」抢走」。会话态键都不带 Ctrl，碰不到它的模板。
+与置顶同模板是设计（置顶在快捷输入里无事可做，其余状态照旧），不报；与删除同模板则是它遮住
+删除——快捷输入里删历史候选那一下变成选词，报成「快捷输入里用 X 删除历史候选会被「快捷输入选词」
+抢走」；其余热键（含全局热键、`activate_ime`、`key_actions` 组合键）都先于它命中，同键就把
+快捷输入里的选词遮住，报成「快捷输入里 X 的选词会被「Y」抢走」。会话态键都不带 Ctrl，碰不到它的模板。
 
 实现：`src/state.rs` 的 `collect_trigger_key_groups` / `collect_candidate_key_groups` /
 `collect_hotkey_groups`，各经 `check_domain(groups, scene)` 跑

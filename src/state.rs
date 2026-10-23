@@ -3989,11 +3989,27 @@ mod trigger_conflict_tests {
             "keys": {
                 "quick_input_select": "ctrl+number",
                 "pin_candidate": "ctrl+number",
-                "delete_candidate": "ctrl+number"
+                "delete_candidate": "ctrl+shift+number"
             }
         }));
-        let msg = check_hotkey_conflicts(&cfg).expect("置顶与删除同键照旧要报");
-        assert!(!msg.contains("快捷输入里"), "实际: {msg}");
+        assert_eq!(check_hotkey_conflicts(&cfg), None);
+    }
+
+    /// 与删除同模板就要报：快捷输入里删历史候选那一下被选词抢走。
+    #[test]
+    fn test_quick_select_same_template_as_delete_is_reported() {
+        let cfg = Config::from_value(json!({
+            "keys": {
+                "quick_input_select": "ctrl+shift+number",
+                "pin_candidate": "ctrl+number",
+                "delete_candidate": "ctrl+shift+number"
+            }
+        }));
+        let msg = check_hotkey_conflicts(&cfg).expect("应报删除被选词遮住");
+        assert!(
+            msg.contains("删除历史候选会被「快捷输入选词」抢走"),
+            "实际: {msg}"
+        );
     }
 
     /// 全局热键先于快捷输入的选词命中：选词键模板覆盖到的键被它遮住，要报。
