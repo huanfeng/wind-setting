@@ -3993,7 +3993,7 @@ mod trigger_conflict_tests {
             }
         }));
         let msg = check_hotkey_conflicts(&cfg).expect("置顶与删除同键照旧要报");
-        assert!(!msg.contains("快捷输入选词"), "实际: {msg}");
+        assert!(!msg.contains("快捷输入里"), "实际: {msg}");
     }
 
     /// 全局热键先于快捷输入的选词命中：选词键模板覆盖到的键被它遮住，要报。
