@@ -39,6 +39,8 @@ pub enum ConflictLevel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Conflict {
     pub key: String,
+    pub a_id: String,
+    pub b_id: String,
     pub a_label: String,
     pub b_label: String,
     pub level: ConflictLevel,
@@ -72,16 +74,76 @@ fn pair_level(id_a: &str, id_b: &str) -> ConflictLevel {
     }
 }
 
+/// 一对分组同键是否**本就如此设计**、不算冲突。
+///
+/// 目前唯一一条：快捷输入选词键 × 置顶词条（出厂同为 `ctrl+number`）。内核在快捷输入里先判
+/// 选词（`try_quick_input_select` 排在 `handle_candidate_action_hotkey` 之前），而置顶在快捷
+/// 输入里本就无事可做（历史候选只认删除，见 core `quick_format_or_history_op`）；快捷输入之外
+/// 选词键不生效、照旧置顶——谁也不遮谁。
+///
+/// ⚠️ 删除词条**不在豁免里**：快捷输入里它能删历史候选，同模板时这一下被选词抢走。
+fn pair_exempt(id_a: &str, id_b: &str) -> bool {
+    let qs = QUICK_SELECT_FIELD.0;
+    let other = if id_a == qs {
+        id_b
+    } else if id_b == qs {
+        id_a
+    } else {
+        return false;
+    };
+    other == "keys.pin_candidate"
+}
+
+/// 快捷输入选词键参与的冲突，换成「谁被谁抢走」的说法：它与对方不是对等地争同一个键。
+enum QuickSelectShadow {
+    /// 选词被先命中的那项（热键表里的条目）抢走。
+    SelectLostTo(String),
+    /// 删除词条在快捷输入里删历史候选的那一下，被选词抢走。
+    DeleteLostToSelect,
+}
+
+impl QuickSelectShadow {
+    fn of(c: &Conflict) -> Option<Self> {
+        let qs = QUICK_SELECT_FIELD.0;
+        let (other_id, other_label) = if c.a_id == qs {
+            (&c.b_id, &c.b_label)
+        } else if c.b_id == qs {
+            (&c.a_id, &c.a_label)
+        } else {
+            return None;
+        };
+        Some(if other_id == "keys.delete_candidate" {
+            Self::DeleteLostToSelect
+        } else {
+            Self::SelectLostTo(other_label.clone())
+        })
+    }
+
+    fn phrase(&self, shown: &str) -> String {
+        match self {
+            Self::SelectLostTo(other) => format!("快捷输入里 {shown} 的选词会被「{other}」抢走"),
+            Self::DeleteLostToSelect => {
+                format!("快捷输入里用 {shown} 删除历史候选会被「快捷输入选词」抢走")
+            }
+        }
+    }
+}
+
 /// 找出多个分组两两之间重叠的按键，每对只报一次，按 [`pair_level`] 分级。
 pub fn find_key_conflicts(groups: &[KeyGroup]) -> Vec<Conflict> {
     let mut hits = Vec::new();
     for i in 0..groups.len() {
         for j in (i + 1)..groups.len() {
             let (a, b) = (&groups[i], &groups[j]);
+            if pair_exempt(&a.id, &b.id) {
+                continue;
+            }
             for key in &a.keys {
                 if b.keys.contains(key) {
                     hits.push(Conflict {
                         key: key.clone(),
+                        a_id: a.id.clone(),
+                        b_id: b.id.clone(),
                         a_label: a.label.clone(),
                         b_label: b.label.clone(),
                         level: pair_level(&a.id, &b.id),
@@ -231,6 +293,19 @@ pub const HOTKEY_FIELDS: &[(&str, &str)] = &[
     ("keys.delete_candidate", "删除词条"),
 ];
 
+/// 快捷输入专用选词键（模板值，同置顶 / 删除）。**不进 [`HOTKEY_FIELDS`]**：它不编进热键表，
+/// 只在快捷输入里、于热键表匹配**之后**判定（core `message_handler.rs` 的 `handle_key_event`）。
+///
+/// 于是它与同域各项的关系不对称，冲突按「谁先命中」判：
+/// - 上表除置顶 / 删除外的各项、[`MODE_HOTKEY_FIELDS`]、`key_actions` 的组合键都先于它命中
+///   （热键表里带动作；`activate_ime` 由系统先截走），同键即把快捷输入里的选词**遮住**——报；
+/// - 置顶同模板是设计（见 [`pair_exempt`]）——不报；
+/// - 删除同模板反过来是**它**遮住删除：快捷输入里删历史候选那一下变成选词——报。
+///
+/// 全局热键（`keys.global_hotkeys` 勾选的那批）只是上表条目多走一层系统拦截，键值不变，
+/// 已在上表里比过。会话态键（`session_actions` 与候选操作键组）都不带 Ctrl，碰不到本键的模板。
+pub const QUICK_SELECT_FIELD: (&str, &str) = ("keys.quick_input_select", "快捷输入选词");
+
 /// 模式直达热键：与 [`HOTKEY_FIELDS`] 同域，只是落点在 `input` 段。
 ///
 /// 特殊模式的那份**不在这里**——它已收编进 `keys.key_actions`（`special:<方案id>`），
@@ -318,18 +393,21 @@ pub fn conflict_summary(hits: &[Conflict], scene: &str) -> Option<String> {
     // 同一对分组撞了多个键时合并成一条：`lrctrl` 展开后左右 Ctrl 各撞一次、
     // `Ctrl+数字` 模板展开后十个数字键各撞一次——逐条列出会把警告条刷成一屏，
     // 而用户要采取的动作是同一个（改这一对里的某一项）。
+    //
+    // 一侧是快捷输入选词键时换成「被谁抢走」的说法，见 [`QuickSelectShadow`]。
     let mut order: Vec<(String, String)> = Vec::new();
-    let mut merged: std::collections::HashMap<(String, String), Vec<String>> =
+    type Merged = (Vec<String>, Option<QuickSelectShadow>);
+    let mut merged: std::collections::HashMap<(String, String), Merged> =
         std::collections::HashMap::new();
     for c in hits.iter().filter(|c| c.level == ConflictLevel::Blocking) {
         let pair = (c.a_label.clone(), c.b_label.clone());
         if !merged.contains_key(&pair) {
             order.push(pair.clone());
         }
-        merged
+        let entry = merged
             .entry(pair)
-            .or_default()
-            .push(key_symbol(&c.key).to_string());
+            .or_insert_with(|| (Vec::new(), QuickSelectShadow::of(c)));
+        entry.0.push(key_symbol(&c.key).to_string());
     }
     if order.is_empty() {
         return None;
@@ -337,13 +415,16 @@ pub fn conflict_summary(hits: &[Conflict], scene: &str) -> Option<String> {
     let parts: Vec<String> = order
         .iter()
         .map(|pair| {
-            let keys = &merged[pair];
+            let (keys, shadowing) = &merged[pair];
             let shown = if keys.len() > 3 {
                 format!("{} 等 {} 个键", keys[..3].join("、"), keys.len())
             } else {
                 keys.join("、")
             };
-            format!("{shown} 同时被「{}」「{}」使用", pair.0, pair.1)
+            match shadowing {
+                Some(sh) => sh.phrase(&shown),
+                None => format!("{shown} 同时被「{}」「{}」使用", pair.0, pair.1),
+            }
         })
         .collect();
     Some(format!("⚠ {scene}冲突：{}", parts.join("；")))
@@ -627,6 +708,54 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key, "Ctrl+1");
         assert_eq!(hits[0].level, ConflictLevel::Blocking);
+    }
+
+    /// 快捷输入选词键 × 置顶 / 删除：豁免；× 其它热键：照报，文案说「被谁抢走」。
+    #[test]
+    fn test_quick_select_pairs() {
+        let qs = || {
+            KeyGroup::new(
+                QUICK_SELECT_FIELD.0,
+                "快捷输入选词",
+                expand_hotkey("ctrl+number"),
+            )
+        };
+        let groups = vec![
+            qs(),
+            KeyGroup::new(
+                "keys.pin_candidate",
+                "置顶词条",
+                expand_hotkey("ctrl+number"),
+            ),
+        ];
+        assert!(find_key_conflicts(&groups).is_empty(), "与置顶同模板不报");
+        // 与删除同模板：快捷输入里删历史候选那一下被选词抢走。
+        let groups = vec![
+            KeyGroup::new(
+                "keys.delete_candidate",
+                "删除词条",
+                expand_hotkey("ctrl+number"),
+            ),
+            qs(),
+        ];
+        let msg = conflict_summary(&find_key_conflicts(&groups), "快捷键").unwrap();
+        assert_eq!(
+            msg,
+            "⚠ 快捷键冲突：快捷输入里用 Ctrl+0、Ctrl+1、Ctrl+2 等 10 个键 删除历史候选会被「快捷输入选词」抢走"
+        );
+        // 选词键排在后面也一样认（方向无关）。
+        let groups = vec![
+            KeyGroup::new("keys.open_settings", "打开设置", expand_hotkey("ctrl+2")),
+            qs(),
+        ];
+        let hits = find_key_conflicts(&groups);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].level, ConflictLevel::Blocking);
+        let msg = conflict_summary(&hits, "快捷键").unwrap();
+        assert_eq!(
+            msg,
+            "⚠ 快捷键冲突：快捷输入里 Ctrl+2 的选词会被「打开设置」抢走"
+        );
     }
 
     #[test]
