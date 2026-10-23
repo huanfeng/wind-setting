@@ -71,9 +71,10 @@ pub fn light_theme() -> Theme {
 pub fn dark_theme() -> Theme {
     let mut t = Theme::dark();
     let p = &mut t.palette;
-    p.accent = Color::hex(0x5B8CF5);
-    p.accent_hover = Color::hex(0x3B76F3);
-    p.accent_active = Color::hex(0x1259F1);
+    // 取 `accent::derive` 的不动点：卡片上 4.62:1、压白字 3.41:1，悬停变亮后白字仍 ≥ 3:1。
+    p.accent = Color::hex(0x5487F5);
+    p.accent_hover = Color::hex(0x6492F6);
+    p.accent_active = Color::hex(0x3571F3);
     p.on_accent = Color::WHITE;
     // 强调色当前景就用它本身：本仓的暗档强调色（含主题色派生的，见 `accent::derive`）已保证
     // 在卡片上 ≥ 4.5:1。windui 默认再提亮 35%，库画的焦点环、描边按钮会与本仓按
@@ -160,7 +161,7 @@ mod tests {
     /// 「主题色：跟随输入法」——换了主题它还是蓝的，而且截图上要切到非默认主题才看得出来。
     #[test]
     fn accent_hex_only_lives_in_theme_def() {
-        let palette_hex = ["2F6BED", "1558EB", "114BC9", "5B8CF5", "3B76F3", "1259F1"];
+        let palette_hex = ["2F6BED", "1558EB", "114BC9", "5487F5", "6492F6", "3571F3"];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut stack = vec![root];
         let mut hits = Vec::new();
@@ -210,7 +211,7 @@ mod tests {
     fn theme_with_accent_only_touches_accent_slots() {
         let set = crate::accent::AccentSet {
             accent: Color::hex(0x05875F),
-            hover: Color::hex(0x057A56),
+            hover: Color::hex(0x047A56),
             active: Color::hex(0x046849),
             on_accent: Color::WHITE,
         };
