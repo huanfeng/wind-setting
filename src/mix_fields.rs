@@ -11,6 +11,7 @@
 //!   却是「这个 mix 实例含 quick 成员」。
 //! - `free_input`：自由（字面）输入三态。
 //! - `free_input_takes_select_keys`：自由输入是否夺取二三候选键作字面。
+//! - `numeric_letter_select`：数字透镜（数字/符号开头）下是否拿字母作选词键。
 //!
 //! 本模块原名 `mix_layout`，只为 `candidate_layout` 写死。加第二、第三个字段时若照抄，
 //! 就会有三份同构的「按 id 定位 + 读字段 / 打补丁」逻辑，故泛化为按字段名存取。
@@ -34,6 +35,10 @@ pub const FIELD_FREE_INPUT_TAKES_SELECT_KEYS: &str = "free_input_takes_select_ke
 pub const FREE_INPUT_FALLBACK: &str = "auto";
 /// `free_input_takes_select_keys` 的 core 侧 serde 默认（`default_true`）。
 pub const FREE_INPUT_TAKES_SELECT_KEYS_FALLBACK: bool = true;
+/// 数字透镜下字母选词的字段名。
+pub const FIELD_NUMERIC_LETTER_SELECT: &str = "numeric_letter_select";
+/// `numeric_letter_select` 的 core 侧 serde 默认（`default_true`）。
+pub const NUMERIC_LETTER_SELECT_FALLBACK: bool = true;
 
 /// 定位 mix_modes 数组里 `id` 等于给定值的那一项。
 fn find_mode<'a>(mix_modes: &'a [Value], id: &str) -> Option<&'a Value> {

@@ -1811,6 +1811,16 @@ label = "; ' 作字面字符"
 hint = "自由输入时 ; ' 不再选第 2/3 候选。数字键 1-9 只在一个候选都没有时才作字面"
 enabled_when = "schema.mix_modes#free_input != off"
 
+# 数字透镜下字母选词：视图 key `#numeric_letter_select`，同 `#free_input_takes_select_keys`。
+[[items]]
+key = "schema.mix_modes#numeric_letter_select"
+group = "input"
+section = "快捷输入"
+type = "checkbox_mix_numeric_letter_select"
+indent = false
+label = "以数字开始时用字母选词"
+hint = "以数字或符号开头时 a、b、c 选第 1、2、3 个候选，序号显示为字母。关闭后字母直接输入（如 2fa、1.5x），序号显示为数字，改用按键页的「快捷输入选词」或空格选"
+
 [[items]]
 key = "schema.quick_input.decimal_places"
 group = "input"
@@ -2416,7 +2426,7 @@ group = "keys"
 section = "候选词管理"
 type = "select"
 label = "置顶词条"
-hint = "将候选词固定到首位"
+hint = "将候选词固定到首位。快捷输入里另有专用的选词键（见下方「快捷输入选词」），同一组合键在那里归选词"
 width = 180
 options = [
   { value = "ctrl+number", label = "Ctrl + 数字" },
@@ -2432,6 +2442,22 @@ section = "候选词管理"
 type = "select"
 label = "删除词条"
 hint = "隐藏候选词（单字不可删除）"
+width = 180
+options = [
+  { value = "ctrl+number", label = "Ctrl + 数字" },
+  { value = "ctrl+shift+number", label = "Ctrl + Shift + 数字" },
+  { value = "ctrl+alt+number", label = "Ctrl + Alt + 数字" },
+  { value = "none", label = "不使用" },
+]
+
+# 快捷输入专用选词键：模板值域同置顶/删除，只在快捷输入里生效、优先于那两项。
+[[items]]
+key = "keys.quick_input_select"
+group = "keys"
+section = "候选词管理"
+type = "select"
+label = "快捷输入选词"
+hint = "快捷输入里按所选组合键加 1 至 9 上屏当前页第 1 至 9 个候选、加 0 上屏第 10 个，数字被算式占用时也能选。只在快捷输入里生效，优先于置顶、删除词条"
 width = 180
 options = [
   { value = "ctrl+number", label = "Ctrl + 数字" },
