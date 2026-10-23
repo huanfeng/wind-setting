@@ -175,7 +175,7 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "toggle_slash_dun" => ty == "map",
         // log_level_select 与 select 读写完全同构（只多登记一个"当前档位"探针，
         // 供隐私示警条读），故兼容性判据也一样。
-        "select" | "log_level_select" | "select_comment_switch_mode" => ty == "str" || ty == "enum",
+        "select" | "log_level_select" => ty == "str" || ty == "enum",
         // segmented 既可承载枚举，也可承载二态 bool（如「初始语言模式」分段）。
         "segmented" => ty == "str" || ty == "enum" || ty == "bool",
         "number" | "slider" => ty == "int" || ty == "float",

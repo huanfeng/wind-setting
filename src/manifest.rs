@@ -1026,7 +1026,6 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "checkbox_mix_free_select_keys",
     "checkbox_mix_numeric_letter_select",
     "segmented",
-    "select_comment_switch_mode",
     "checkbox_group",
     "number",
     "slider",
@@ -1084,10 +1083,6 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             )
         }
         "segmented" => build_segmented(state, key, item, cfg),
-        // 切换方式：切换键是 Ctrl 系时「按住」不可选，要看另一项的值。
-        "select_comment_switch_mode" => {
-            crate::dialogs::comment_switch::build_switch_mode_select(state, key, item, cfg)
-        }
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
         "number_select" => build_number_select(state, key, item, cfg),

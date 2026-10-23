@@ -3698,9 +3698,9 @@ key = "ui.comment.switch_mode"
 group = "ui"
 section = "候选标注"
 subsection = "切换"
-type = "select_comment_switch_mode"
+type = "select"
 label = "切换方式"
-hint = "单击切换键的作用；「按住」只配 Alt，松开即恢复"
+hint = "单击切换键的作用；「按住」按下即切换，松开恢复"
 options = [
   { value = "off", label = "不使用" },
   { value = "session", label = "临时切换（本次候选窗）" },
