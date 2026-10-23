@@ -490,13 +490,16 @@ mod tests {
         }
     }
 
-    /// 近黑的强调色（HSL 亮度约 5%）悬停与按下仍分得开：减定值会把两态都夹到纯黑。
     /// 暗档悬停变亮、按下变深，且悬停与基色拉开 [`HOVER_MIN_DELTA_E`]——除非基色已贴卡片
-    /// 4.5:1 的下沿、无处可挪（青、绿、黄这类亮色相区间窄，压到底也只有 ΔE 3.5–5）。
+    /// 4.5:1 的下沿、无处可挪。贴下沿的不是个例：白字 3:1 与卡片 4.5:1 夹出的亮度区间很窄，
+    /// 网格扫描里约六成暗档输入（品红、青、绿、黄等多数饱和色相）都会贴下沿，最低只有
+    /// ΔE ≈ 2.7（如 #F900DD）。这是两条约束的固有上限，豁免它是有意的。
     #[test]
     fn dark_hover_is_lighter_and_visibly_apart() {
-        let mut raws: Vec<u32> = (0..12)
-            .map(|i| from_hsl(i as f32 * 30.0, 0.8, 0.6))
+        // 饱和偏亮一圈 + 低饱和偏暗一圈（后者初始就在区间下方，走的是往亮调的那条路）。
+        let mut raws: Vec<u32> = [(0.8, 0.6), (0.3, 0.35)]
+            .into_iter()
+            .flat_map(|(s, l)| (0..12).map(move |i| from_hsl(i as f32 * 30.0, s, l)))
             .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
             .collect();
         raws.extend(BUILTIN.iter().map(|&(_, _, d)| d));
@@ -527,6 +530,7 @@ mod tests {
         assert_eq!(set_of(derive(Color::hex(0x5B8CF5), true)).accent, p.accent);
     }
 
+    /// 近黑的强调色（HSL 亮度约 5%）悬停与按下仍分得开：减定值会把两态都夹到纯黑。
     #[test]
     fn near_black_accent_keeps_hover_and_active_apart() {
         let s = set_of(derive(Color::hex(0x00001A), false));
