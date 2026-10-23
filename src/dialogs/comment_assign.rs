@@ -234,12 +234,23 @@ fn effective_template(lib: &LibraryInfo, scope: &Scope, col: Col) -> (String, St
     }
 }
 
+/// 这一行预览用哪种语种的样例：英文类型与临时英文模式出的是英文候选，其余中文。
+fn sample_lang(scope: &Scope) -> &'static str {
+    use crate::dialogs::template_assist::{LANG_EN, LANG_ZH};
+    match scope {
+        Scope::Type(k) if k == "english" => LANG_EN,
+        Scope::Mode(k) if k == "temp_english" => LANG_EN,
+        _ => LANG_ZH,
+    }
+}
+
 fn preview_blocks(lib: &LibraryInfo, scope: &Scope) -> Vec<PreviewBlock> {
     use crate::dialogs::template_assist::comment_look;
+    let lang = sample_lang(scope);
     let mut out = Vec::new();
     for col in Col::ALL {
         let (name, text) = effective_template(lib, scope, col);
-        let Some(look) = comment_look(&text) else {
+        let Some(look) = comment_look(&text, lang) else {
             return Vec::new();
         };
         out.push(PreviewBlock {
@@ -537,6 +548,16 @@ mod tests {
             column_titles(),
             ["作用范围", "默认·横", "默认·竖", "详细·横", "详细·竖"]
         );
+    }
+
+    /// 英文类型行与临时英文模式行用英文样例，其余中文。
+    #[test]
+    fn preview_language_follows_scope() {
+        assert_eq!(sample_lang(&Scope::Type("english".into())), "en");
+        assert_eq!(sample_lang(&Scope::Mode("temp_english".into())), "en");
+        assert_eq!(sample_lang(&Scope::Type("pinyin".into())), "zh");
+        assert_eq!(sample_lang(&Scope::Mode("url".into())), "zh");
+        assert_eq!(sample_lang(&Scope::Global), "zh");
     }
 
     #[test]

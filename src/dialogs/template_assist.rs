@@ -542,37 +542,60 @@ pub fn preview(
     )
 }
 
-/// 候选预览的样例候选。注释只有 core 的固定样例（「你好」）一份求值结果，三个候选共用它——
-/// 这里看的是排布与配色，不是每个词各自的注释内容。
-pub const SAMPLE_CANDIDATES: [&str; 3] = ["你好", "拟好", "你号"];
+/// 预览样例的语种（core 回包 `samples[].lang`）：英文类型与临时英文模式用英文样例，其余中文。
+pub const LANG_ZH: &str = "zh";
+pub const LANG_EN: &str = "en";
 
-/// core 下发的一份注释求值：常态与选中态各自的前景色、片段色与底色。
+/// 一个样例候选：候选词与它的注释（常态 / 选中态的片段色各一份，区间按本条注释计）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampleComment {
+    pub word: String,
+    pub text: String,
+    pub runs: Vec<Value>,
+    pub sel_runs: Vec<Value>,
+}
+
+/// core 下发的一组注释求值：每个样例一条，前景色与底色是主题的、各条共用。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommentLook {
-    pub text: String,
+    pub items: Vec<SampleComment>,
     pub fg: Color,
-    pub runs: Vec<Value>,
     pub bg: Color,
     pub sel_fg: Color,
-    pub sel_runs: Vec<Value>,
     pub sel_bg: Color,
 }
 
+/// 回包 → 一个样例候选。候选词取 `candidate`（旧 core 没有这个字段时按「你好」）。
+fn sample_comment(r: &Value) -> SampleComment {
+    let runs = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    SampleComment {
+        word: r["candidate"].as_str().unwrap_or("你好").to_string(),
+        // 首行上方的注释（`\n`）在这里压成一行：预览只示意排布，不画上方注释条。
+        text: r["text"].as_str().unwrap_or("").replace('\n', " "),
+        runs: runs(&r["runs"]),
+        sel_runs: runs(&r["selected"]["runs"]),
+    }
+}
+
 impl CommentLook {
-    /// `appearance.previewTemplate`（comment 场景）回包 → 外观；缺颜色（协议不符）时 `None`。
+    /// `appearance.previewTemplate`（comment 场景）回包 → 只有这一个样例的外观；缺颜色
+    /// （协议不符）时 `None`。
     pub fn from_reply(r: &Value) -> Option<Self> {
-        let runs = |v: &Value| v.as_array().cloned().unwrap_or_default();
         let sel = &r["selected"];
         Some(Self {
-            // 首行上方的注释（`\n`）在这里压成一行：预览只示意排布，不画上方注释条。
-            text: r["text"].as_str().unwrap_or("").replace('\n', " "),
+            items: vec![sample_comment(r)],
             fg: rgba_of(&r["fg"])?,
-            runs: runs(&r["runs"]),
             bg: rgba_of(&r["bg"])?,
             sel_fg: rgba_of(&sel["fg"]).unwrap_or(rgba_of(&r["fg"])?),
-            sel_runs: runs(&sel["runs"]),
             sel_bg: rgba_of(&sel["bg"]).unwrap_or(Color::rgba(0, 0, 0, 0)),
         })
+    }
+
+    /// 清掉全部注释（模板留空 = 不显示注释），只留候选词。
+    fn clear_text(&mut self) {
+        for it in &mut self.items {
+            it.text.clear();
+        }
     }
 
     /// 候选词的颜色：core 只下发注释色，候选词按底色深浅取近黑 / 近白。
@@ -586,7 +609,7 @@ impl CommentLook {
     }
 
     /// 一个候选：序号 + 候选词 + 注释；第一个按选中态画（带选中底色）。
-    fn candidate(&self, para: Para, i: usize, word: &str) -> Para {
+    fn candidate(&self, para: Para, i: usize, it: &SampleComment) -> Para {
         let selected = i == 0;
         let base = if selected {
             SpanStyle::new().bg(self.sel_bg)
@@ -599,64 +622,102 @@ impl CommentLook {
                 format!("{}.", i + 1),
                 base.clone().fg(word_fg.scale_alpha(0.6)),
             )
-            .span(word, base.clone().fg(word_fg));
-        if self.text.is_empty() {
+            .span(it.word.as_str(), base.clone().fg(word_fg));
+        if it.text.is_empty() {
             return para;
         }
         let para = para.span(" ", base.clone());
         if selected {
-            runs_into(para, &self.text, self.sel_fg, &self.sel_runs, base)
+            runs_into(para, &it.text, self.sel_fg, &it.sel_runs, base)
         } else {
-            runs_into(para, &self.text, self.fg, &self.runs, base)
+            runs_into(para, &it.text, self.fg, &it.runs, base)
         }
     }
 
-    /// 横排：三个候选同一行。
+    /// 横排：全部样例候选同一行。
     pub fn horizontal(&self) -> RichDoc {
         let mut para = Para::new();
-        for (i, w) in SAMPLE_CANDIDATES.iter().enumerate() {
+        for (i, it) in self.items.iter().enumerate() {
             if i > 0 {
                 para = para.span("   ", SpanStyle::new());
             }
-            para = self.candidate(para, i, w);
+            para = self.candidate(para, i, it);
         }
         RichDoc::new().para(para)
     }
 
-    /// 竖排：每个候选一行。
+    /// 竖排：每个样例候选一行。
     pub fn vertical(&self) -> RichDoc {
-        SAMPLE_CANDIDATES
+        self.items
             .iter()
             .enumerate()
-            .fold(RichDoc::new(), |doc, (i, w)| {
-                doc.para(self.candidate(Para::new(), i, w))
+            .fold(RichDoc::new(), |doc, (i, it)| {
+                doc.para(self.candidate(Para::new(), i, it))
             })
     }
 }
 
-/// 一个注释模板串在样例候选上的外观（一次 RPC）。空串 = 不显示注释：照样问一次 core 拿底色，
-/// 再清掉注释。core 不支持或未连接时 `None`。
-pub fn comment_look(template: &str) -> Option<CommentLook> {
-    let probe = if template.trim().is_empty() {
-        " "
-    } else {
-        template
-    };
-    let r =
-        crate::rpc::call_core(METHOD, &json!({ "template": probe, "scene": "comment" })).ok()?;
-    let mut look = CommentLook::from_reply(&r)?;
-    if template.trim().is_empty() {
-        look.text.clear();
-    }
-    Some(look)
+/// 回包里 `lang` 语种的样例 id（按 core 的顺序）。旧 core 不列样例时为空。
+fn sample_ids(r: &Value, lang: &str) -> Vec<String> {
+    r["samples"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["lang"] == lang)
+        .filter_map(|s| s["id"].as_str().map(str::to_string))
+        .collect()
 }
 
-/// 注释模板的候选窗预览：横排、竖排两种排布，各三个样例候选（第一个是选中态），下面是问题列表。
+/// 一个注释模板串在 `lang` 语种的各样例上的外观：先按缺省样例问一次（顺带拿样例清单与
+/// 问题列表），再每个样例一次 RPC。空串 = 不显示注释：照样问 core 拿底色，再清掉注释。
+/// 返回首个回包（`problems` 与样例无关，取它）与外观；连不上 core 时 `Err`。
+fn fetch_comment_look(template: &str, lang: &str) -> Result<(Value, Option<CommentLook>), String> {
+    let empty = template.trim().is_empty();
+    let probe = if empty { " " } else { template };
+    let ask = |sample: Option<&str>| {
+        let mut p = json!({ "template": probe, "scene": "comment" });
+        if let Some(id) = sample {
+            p["sample"] = json!(id);
+        }
+        crate::rpc::call_core(METHOD, &p)
+    };
+    let first = ask(None)?;
+    let Some(mut look) = CommentLook::from_reply(&first) else {
+        return Ok((first, None));
+    };
+    let ids = sample_ids(&first, lang);
+    if !ids.is_empty() {
+        look.items = ids
+            .iter()
+            .filter_map(|id| {
+                if first["sample"].as_str() == Some(id) {
+                    Some(sample_comment(&first))
+                } else {
+                    ask(Some(id)).ok().map(|r| sample_comment(&r))
+                }
+            })
+            .collect();
+    }
+    if empty {
+        look.clear_text();
+    }
+    Ok((first, Some(look)))
+}
+
+/// 一个注释模板串在 `lang` 语种样例候选上的外观。core 不支持或未连接时 `None`。
+pub fn comment_look(template: &str, lang: &str) -> Option<CommentLook> {
+    fetch_comment_look(template, lang).ok()?.1
+}
+
+/// 注释模板的候选窗预览：横排、竖排两种排布，各画一组样例候选（第一个是选中态；中文 / 英文
+/// 样例可切换，缺省中文），下面是问题列表。
 ///
 /// 与 [`preview`] 同一个 RPC、同一套「core 不支持就整块隐藏」的规矩；模板留空时只画候选词
 /// （留空 = 不显示注释）。`visible` 是所在对话框的可见性。
 pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> Element {
     let shown = signal(false);
+    // 样例语种：0 = 中文、1 = 英文。
+    let lang = signal(0usize);
     let bg = signal(Color::rgba(0, 0, 0, 0));
     let h_doc = signal(RichDoc::new());
     let v_doc = signal(RichDoc::new());
@@ -672,6 +733,8 @@ pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> El
             .version()
             .wrapping_mul(31)
             .wrapping_add(text.version())
+            .wrapping_mul(31)
+            .wrapping_add(lang.version())
     };
     let refresh = {
         let (field, targets, supported) = (field.clone(), targets.clone(), supported.clone());
@@ -686,17 +749,10 @@ pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> El
                 return;
             }
             let (template, map) = field.template();
-            // 空模板也问一次 core：拿到底色与选中色才画得出候选。
-            let probe = if template.trim().is_empty() {
-                " "
-            } else {
-                template.as_str()
-            };
-            let r = match crate::rpc::call_core(
-                METHOD,
-                &json!({ "template": probe, "scene": "comment" }),
-            ) {
-                Ok(r) => r,
+            // 空模板也问 core：拿到底色与选中色才画得出候选。
+            let code = if lang.get() == 1 { LANG_EN } else { LANG_ZH };
+            let (r, look) = match fetch_comment_look(&template, code) {
+                Ok(v) => v,
                 Err(_) => {
                     supported.set(Some(false));
                     shown.set(false);
@@ -704,13 +760,12 @@ pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> El
                 }
             };
             supported.set(Some(true));
-            let Some(mut look) = CommentLook::from_reply(&r).or_else(|| last.borrow().clone())
-            else {
+            let Some(mut look) = look.or_else(|| last.borrow().clone()) else {
                 shown.set(false);
                 return;
             };
             if template.trim().is_empty() {
-                look.text.clear();
+                look.clear_text();
             }
             *last.borrow_mut() = Some(look.clone());
             bg.set(look.bg);
@@ -784,6 +839,21 @@ pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> El
             .widget(KeepFocus)
             .width_match()
             .spacing(6)
+            .child(
+                Element::row()
+                    .width_match()
+                    .spacing(8)
+                    .child(
+                        Element::label("样例候选")
+                            .font_size(11.5)
+                            .fg_role(Role::TextMuted)
+                            .weight(1.0),
+                    )
+                    .child(
+                        Element::segmented(vec!["中文".to_string(), "英文".to_string()], lang)
+                            .width(120),
+                    ),
+            )
             .child(block("横排", h_doc))
             .child(block("竖排", v_doc))
             .child(problems)
@@ -911,6 +981,44 @@ pub fn insert_color_button(field: &TemplateField, scene: &'static str) -> Elemen
 mod tests {
     use super::super::tooltip_sections_dialog::{escape_template, unescape_template};
     use super::*;
+
+    /// 每个样例一次 RPC：中文三条、英文三条各是自己的候选词与注释；空模板只留候选词。
+    #[test]
+    fn comment_look_has_one_item_per_sample() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let pairs = |look: &CommentLook| -> Vec<(String, String)> {
+            look.items
+                .iter()
+                .map(|i| (i.word.clone(), i.text.clone()))
+                .collect()
+        };
+        let zh = comment_look("${pinyin}{ · ${dict:zh_en}}", LANG_ZH).unwrap();
+        assert_eq!(
+            pairs(&zh),
+            [
+                ("你好".into(), "nǐ hǎo · int. hello".into()),
+                ("中文".into(), "zhōng wén · n. Chinese language".into()),
+                ("输入法".into(), "shū rù fǎ · n. input method".into()),
+            ]
+        );
+        let en = comment_look("${dict:en_zh}{ · ${pinyin}}", LANG_EN).unwrap();
+        assert_eq!(
+            pairs(&en),
+            [
+                ("apple".into(), "n. 苹果".into()),
+                ("hello".into(), "int. 喂；你好".into()),
+                ("world".into(), "n. 世界".into()),
+            ],
+            "英文样例没有拼音，可选段整段消失"
+        );
+        let blank = comment_look("", LANG_ZH).unwrap();
+        assert_eq!(blank.items.len(), 3);
+        assert!(blank.items.iter().all(|i| i.text.is_empty()));
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
 
     /// 还原规则与段表单确认时的 `unescape_template` 逐字相同（含不成对的反斜杠）。
     #[test]

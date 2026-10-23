@@ -655,7 +655,16 @@ mod tests {
             &json!({"template": "$[nope]{x} ${code}", "scene": "comment", "swatches": ["error"]}),
         );
         for k in [
-            "text", "fg", "bg", "runs", "selected", "problems", "swatches",
+            "candidate",
+            "sample",
+            "samples",
+            "text",
+            "fg",
+            "bg",
+            "runs",
+            "selected",
+            "problems",
+            "swatches",
         ] {
             assert!(r.get(k).is_some(), "缺 {k}：{r}");
         }
@@ -1526,11 +1535,213 @@ fn mock_conflict_example(params: &Value) -> Value {
     }
 }
 
+/// 离线预览样例：id / 词 / 语种与 core `template_preview::SAMPLES` 一致，变量只抄注释常用的几个。
+struct MockSample {
+    id: &'static str,
+    text: &'static str,
+    lang: &'static str,
+    pinyin: &'static str,
+    shuangpin: &'static str,
+    code_hint: &'static str,
+    code_rev: &'static str,
+    /// 整段求值取首字，同 core。
+    chaizi: &'static str,
+    chaizi_code: &'static str,
+    dict: &'static str,
+    dict_id: &'static str,
+    dict_by_id: &'static str,
+    emoji: &'static str,
+}
+
+const fn mock_zh(
+    id: &'static str,
+    text: &'static str,
+    v: [&'static str; 8],
+    emoji: &'static str,
+) -> MockSample {
+    MockSample {
+        id,
+        text,
+        lang: "zh",
+        pinyin: v[0],
+        shuangpin: v[1],
+        code_hint: v[2],
+        code_rev: v[3],
+        chaizi: v[4],
+        chaizi_code: v[5],
+        dict: v[6],
+        dict_id: "zh_en",
+        dict_by_id: v[7],
+        emoji,
+    }
+}
+
+const fn mock_en(text: &'static str, dict: &'static str, emoji: &'static str) -> MockSample {
+    MockSample {
+        id: text,
+        text,
+        lang: "en",
+        pinyin: "",
+        shuangpin: "",
+        code_hint: "",
+        code_rev: "",
+        chaizi: "",
+        chaizi_code: "",
+        dict,
+        dict_id: "en_zh",
+        dict_by_id: dict,
+        emoji,
+    }
+}
+
+const MOCK_SAMPLES: &[MockSample] = &[
+    mock_zh(
+        "nihao",
+        "你好",
+        [
+            "nǐ hǎo",
+            "nihk",
+            "hao",
+            "wqvb",
+            "亻尔",
+            "wqiy",
+            "hello",
+            "int. hello",
+        ],
+        "👋",
+    ),
+    mock_zh(
+        "zhongwen",
+        "中文",
+        [
+            "zhōng wén",
+            "vswf",
+            "wen",
+            "khyy",
+            "口丨",
+            "khk",
+            "n. Chinese language",
+            "n. Chinese language",
+        ],
+        "🀄",
+    ),
+    mock_zh(
+        "shurufa",
+        "输入法",
+        [
+            "shū rù fǎ",
+            "uurufa",
+            "rufa",
+            "ltif",
+            "车俞",
+            "lwgj",
+            "n. input method",
+            "n. input method",
+        ],
+        "⌨️",
+    ),
+    mock_en("apple", "n. 苹果", "🍎"),
+    mock_en("hello", "int. 喂；你好", "👋"),
+    mock_en("world", "n. 世界", "🌍"),
+];
+
+impl MockSample {
+    /// 一个变量的样例值；`None` = 离线不认识（原样回显）。
+    fn var(&self, name: &str, arg: Option<&str>) -> Option<&'static str> {
+        Some(match name {
+            "pinyin" => self.pinyin,
+            "shuangpin" => self.shuangpin,
+            "code_hint" => self.code_hint,
+            "code_rev" | "code" => self.code_rev,
+            "chaizi" => self.chaizi,
+            "chaizi_code" => self.chaizi_code,
+            "emoji" => self.emoji,
+            "dict" => match arg {
+                Some(id) if id == self.dict_id => self.dict_by_id,
+                Some(_) => "",
+                None => self.dict,
+            },
+            _ => return None,
+        })
+    }
+
+    /// 离线的简化求值：`${a|b:参数}` 取第一个非空、`{…}` 里变量全空则整段消失、`$[色]{…}`
+    /// 只留正文。返回 `(文字, 有变量非空, 有变量)`。
+    fn eval(&self, tpl: &str) -> (String, bool, bool) {
+        let b = tpl.as_bytes();
+        let close_of = |from: usize| -> Option<usize> {
+            let mut depth = 0usize;
+            for (i, &c) in b.iter().enumerate().skip(from) {
+                match c {
+                    b'{' => depth += 1,
+                    b'}' if depth == 0 => return Some(i),
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            None
+        };
+        let (mut out, mut filled, mut any) = (String::new(), false, false);
+        let mut i = 0;
+        while i < b.len() {
+            if tpl[i..].starts_with("${")
+                && let Some(end) = close_of(i + 2)
+            {
+                any = true;
+                let mut known = true;
+                let v = tpl[i + 2..end]
+                    .split('|')
+                    .map(|alt| {
+                        let (n, a) = alt
+                            .split_once(':')
+                            .map_or((alt, None), |(n, a)| (n, Some(a)));
+                        let v = self.var(n.trim(), a.map(str::trim));
+                        known &= v.is_some();
+                        v.unwrap_or("")
+                    })
+                    .find(|v| !v.is_empty());
+                match v {
+                    Some(v) => {
+                        out.push_str(v);
+                        filled = true;
+                    }
+                    None if !known => out.push_str(&tpl[i..=end]),
+                    None => {}
+                }
+                i = end + 1;
+            } else if tpl[i..].starts_with("$[")
+                && let Some(spec) = tpl[i..].find("]{").map(|k| i + k)
+                && let Some(end) = close_of(spec + 2)
+            {
+                let (t, f, a) = self.eval(&tpl[spec + 2..end]);
+                out.push_str(&t);
+                (filled, any) = (filled || f, any || a);
+                i = end + 1;
+            } else if b[i] == b'{'
+                && let Some(end) = close_of(i + 1)
+            {
+                let (t, f, a) = self.eval(&tpl[i + 1..end]);
+                if f || !a {
+                    out.push_str(&t);
+                }
+                (filled, any) = (filled || f, any || a);
+                i = end + 1;
+            } else {
+                let ch = tpl[i..].chars().next().unwrap_or(' ');
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        (out, filled, any)
+    }
+}
+
 /// `appearance.previewTemplate` 的离线回包（设置端模板预览行）。
 ///
-/// 真实求值要变量样例与主题，都在 core；离线只求**形状与坐标系**对：文字是固定样例（有 `$[`
-/// 时给一段强调色），`$[…]` 里既不是 `#` 色值也不是标准色名的，按 core 的口径报一条问题——
-/// 区间是**模板**里的字节偏移，截图里能看到问题落回输入框的哪一段。
+/// 真实求值要变量样例与主题，都在 core；离线只求**形状与坐标系**对：注释按 `sample`（缺省
+/// 「你好」）用简化求值出文字（有 `$[` 时整段给强调色），`$[…]` 里既不是 `#` 色值也不是标准
+/// 色名的，按 core 的口径报一条问题——区间是**模板**里的字节偏移，截图里能看到问题落回输入框
+/// 的哪一段。
 fn mock_preview_template(params: &Value) -> Value {
     const NAMES: &[(&str, [u8; 4], [u8; 4])] = &[
         ("text", [30, 30, 30, 255], [255, 255, 255, 255]),
@@ -1573,22 +1784,39 @@ fn mock_preview_template(params: &Value) -> Value {
         }
         from = spec_at + len;
     }
+    let sample_id = params.get("sample").and_then(|v| v.as_str());
+    // 离线不报未知样例（设置端只发回包里列出的 id），退回缺省样例。
+    let preset = MOCK_SAMPLES
+        .iter()
+        .find(|s| sample_id.is_some_and(|id| s.id == id))
+        .unwrap_or(&MOCK_SAMPLES[0]);
+    let samples: Vec<Value> = MOCK_SAMPLES
+        .iter()
+        .map(|s| json!({ "id": s.id, "text": s.text, "lang": s.lang }))
+        .collect();
     let scene = params.get("scene").and_then(|v| v.as_str()).unwrap_or("");
     let (text, runs) = if scene == "label" {
         // 段名多是字面文字：原样回显（去掉 `$[…]{` 与配对的 `}` 太费事，离线不求这个）。
         (
-            tpl,
+            tpl.to_string(),
             json!([{ "start": 0, "end": tpl.len(), "rgba": pick("accent_text") }]),
         )
     } else if tooltip {
         (
-            "你：nǐ\n好：hǎo/hào",
+            "你：nǐ\n好：hǎo/hào".to_string(),
             json!([{ "start": 6, "end": 9, "rgba": pick("error") }]),
         )
     } else {
+        let (t, filled, any) = preset.eval(tpl);
+        let t = if any && !filled {
+            String::new()
+        } else {
+            t.trim().to_string()
+        };
+        let len = t.len();
         (
-            "hao (nǐ hǎo)",
-            json!([{ "start": 4, "end": 14, "rgba": pick("accent_text") }]),
+            t,
+            json!([{ "start": 0, "end": len, "rgba": pick("accent_text") }]),
         )
     };
     let runs = if tpl.contains("$[") { runs } else { json!([]) };
@@ -1607,6 +1835,9 @@ fn mock_preview_template(params: &Value) -> Value {
         })
         .collect();
     json!({
+        "candidate": preset.text,
+        "sample": preset.id,
+        "samples": samples,
         "text": text,
         "fg": if tooltip { [255, 255, 255, 255] } else { [150, 150, 150, 255] },
         "bg": if tooltip { [60, 60, 60, 240] } else { [255, 255, 255, 255] },
