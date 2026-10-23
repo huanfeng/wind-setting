@@ -3653,6 +3653,15 @@ type = "dialog_button"
 label = "候选注释"
 hint = "各方案、模式在默认 / 详细两态下显示哪个注释模板"
 
+# 注释模板库：与上一项的对话框共用一份草稿（专用 builder，见 dialogs::comment_templates）。
+[[items]]
+key = "ui.comment.templates"
+group = "ui"
+section = "候选标注"
+type = "dialog_button_comment_templates"
+label = "注释模板"
+hint = "内置模板只读，可复制为自定义后修改；分配表里的格从这里选模板"
+
 [[items]]
 key = "ui.comment.state"
 group = "ui"

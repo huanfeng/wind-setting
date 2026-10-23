@@ -1,4 +1,5 @@
-//! 「候选注释」对话框：分配 / 模板库 / 注释词库 / 切换 四个 Tab。
+//! 「候选注释」对话框：分配 / 注释词库 / 切换 三个 Tab。模板库另成一框，见
+//! [`crate::dialogs::comment_templates`]；两框共用本模块的 [`CommentSettingsUi`] 草稿。
 //!
 //! 设计见 core 仓 `docs/design/candidate-comment-templates.md` §9。
 //!
@@ -31,7 +32,7 @@ use crate::state::AppState;
 
 /// 清单宿主：全局那一行的四格。
 pub const HOST_KEY: &str = "ui.comment.assign.global";
-const TEMPLATES_KEY: &str = "ui.comment.templates";
+pub(crate) const TEMPLATES_KEY: &str = "ui.comment.templates";
 const TYPE_KEY: &str = "ui.comment.assign.type";
 const SCHEMA_KEY: &str = "ui.comment.assign.schema";
 const MODE_KEY: &str = "ui.comment.assign.mode";
@@ -45,10 +46,10 @@ const DISPLAY_KEYS: [&str; 3] = [
     "ui.candidate.comment_max_chars_vertical",
 ];
 
-const TABS: [&str; 4] = ["分配", "模板库", "注释词库", "切换"];
+const TABS: [&str; 3] = ["分配", "注释词库", "切换"];
 const TAB_ASSIGN: usize = 0;
-const TAB_DICTS: usize = 2;
-const TAB_SWITCH: usize = 3;
+const TAB_DICTS: usize = 1;
+const TAB_SWITCH: usize = 2;
 
 /// 方案类型行（常驻）：键与显示名。
 pub const TYPE_ROWS: [(&str, &str); 5] = [
@@ -271,7 +272,7 @@ pub fn remove_row(user: &mut CommentAssign, system: &CommentAssign, scope: &Scop
 
 /// 删掉用户模板后，引用它的用户格一并删掉（否则 core 只是告警后按不写处理，界面上却显示
 /// 一个不存在的模板）。
-fn drop_references(user: &mut CommentAssign, id: &str) {
+pub(super) fn drop_references(user: &mut CommentAssign, id: &str) {
     let clean = |c: &mut CommentCells| {
         for col in Col::ALL {
             if col.get(c) == Some(id) {
@@ -305,11 +306,11 @@ pub struct TplInfo {
 }
 
 impl TplInfo {
-    fn editable(&self) -> bool {
+    pub(super) fn editable(&self) -> bool {
         self.origin != Origin::Builtin
     }
 
-    fn display_name(&self) -> &str {
+    pub(super) fn display_name(&self) -> &str {
         if self.name.is_empty() {
             &self.id
         } else {
@@ -609,18 +610,12 @@ pub struct CommentSettingsUi {
     /// 用户分配草稿。
     pub assign: Signal<CommentAssign>,
     /// 按草稿算出的模板库与每格结果；单元素 Vec 供 `host_signal` 整块重建。
-    view: Signal<Vec<LibraryInfo>>,
+    pub(super) view: Signal<Vec<LibraryInfo>>,
     /// 预览的格（表格里最近改过的那一格）。
     preview_cell: Signal<(Scope, Col)>,
     preview_text: Signal<String>,
-    /// 模板库里选中的模板 id。
-    tpl_sel: Signal<String>,
-    /// 选中模板的来源（`None` = 没选中），供按钮显隐与编辑框置灰每帧读，免得每帧克隆整份库。
-    sel_origin: Signal<Option<Origin>>,
-    sel_info: Signal<String>,
-    edit_name: Signal<String>,
-    /// 模板串的**显示形态**（真换行显示成 `\n`，同悬停提示的段内容框），写回时还原。
-    edit_text: Signal<String>,
+    /// 模板库对话框的选中与编辑框。
+    pub(super) tpl: crate::dialogs::comment_templates::TplEditor,
     names: Rc<RefCell<Names>>,
     /// 出厂分配：写回时判「与出厂相同」的基准。首次拉到就定下，之后的刷新失败也不会把它
     /// 换成空表（空表会让出厂格上的「跟随」变成删键、静默回到出厂值）。
@@ -628,7 +623,7 @@ pub struct CommentSettingsUi {
 }
 
 impl CommentSettingsUi {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             visible: signal(false),
             tab: signal(TAB_ASSIGN),
@@ -637,22 +632,18 @@ impl CommentSettingsUi {
             view: signal(vec![LibraryInfo::default()]),
             preview_cell: signal((Scope::Global, Col::DefaultV)),
             preview_text: signal(String::new()),
-            tpl_sel: signal(String::new()),
-            sel_origin: signal(None),
-            sel_info: signal(String::new()),
-            edit_name: signal(String::new()),
-            edit_text: signal(String::new()),
+            tpl: crate::dialogs::comment_templates::TplEditor::new(),
             names: Rc::new(RefCell::new(Names::default())),
             system: Rc::new(RefCell::new(None)),
         }
     }
 
-    fn lib(&self) -> LibraryInfo {
+    pub(super) fn lib(&self) -> LibraryInfo {
         self.view.with(|v| v.first().cloned().unwrap_or_default())
     }
 
     /// 从配置播种草稿（构建 / 重载配置时）。
-    fn seed(&self, cfg: &Config) {
+    pub(super) fn seed(&self, cfg: &Config) {
         let get = |k: &str| cfg.get_path(k).cloned().unwrap_or(Value::Null);
         let templates: Vec<CommentTemplateDef> =
             serde_json::from_value(get(TEMPLATES_KEY)).unwrap_or_default();
@@ -673,7 +664,7 @@ impl CommentSettingsUi {
     }
 
     /// 按草稿向 core 重算模板库与每格结果。
-    fn refresh(&self) {
+    pub(super) fn refresh(&self) {
         let draft = draft_json(&self.templates.get(), &self.assign.get());
         self.apply_reply(crate::rpc::call_core(
             "comment.library",
@@ -682,7 +673,7 @@ impl CommentSettingsUi {
     }
 
     /// 拉取失败时保留上一次的结果（表格不塌、出厂基准不变），只记日志。
-    fn apply_reply(&self, reply: Result<Value, String>) {
+    pub(super) fn apply_reply(&self, reply: Result<Value, String>) {
         let v = match reply {
             Ok(v) => v,
             Err(e) => {
@@ -694,17 +685,18 @@ impl CommentSettingsUi {
         if self.system.borrow().is_none() {
             *self.system.borrow_mut() = Some(lib.system_assign.clone());
         }
-        if self.tpl_sel.get().is_empty()
+        if self.tpl.sel.get().is_empty()
             && let Some(t) = lib.templates.first()
         {
-            self.tpl_sel.set(t.id.clone());
+            self.tpl.sel.set(t.id.clone());
         }
         self.view.set(vec![lib]);
+        self.sync_tpl_rows();
         self.update_preview();
     }
 
     /// 预览框跟着「最近改过的格」实际落到的模板走。
-    fn update_preview(&self) {
+    pub(super) fn update_preview(&self) {
         use crate::dialogs::tooltip_sections_dialog::escape_template;
         let lib = self.lib();
         let (scope, col) = self.preview_cell.get();
@@ -718,7 +710,7 @@ impl CommentSettingsUi {
         }
     }
 
-    fn value_of(&self, key: &str) -> Value {
+    pub(super) fn value_of(&self, key: &str) -> Value {
         let a = self.assign.get();
         let v = match key {
             TEMPLATES_KEY => serde_json::to_value(self.templates.get()),
@@ -753,118 +745,16 @@ impl CommentSettingsUi {
         });
         self.refresh();
     }
-
-    fn selected_template(&self) -> Option<TplInfo> {
-        let id = self.tpl_sel.get();
-        self.lib().templates.into_iter().find(|t| t.id == id)
-    }
-
-    /// 选中的模板换了：编辑框、来源与说明按它重新播种。
-    fn load_editor(&self) {
-        use crate::dialogs::tooltip_sections_dialog::escape_template;
-        let t = self.selected_template();
-        let info = match &t {
-            None => "选左侧一个模板查看或编辑。".to_string(),
-            Some(t) => match t.origin {
-                Origin::Builtin => format!("内置模板 {}，只读；要改先「复制为自定义」。", t.id),
-                Origin::User => format!("自定义模板 {}。", t.id),
-                Origin::UserOverridesBuiltin => {
-                    format!("内置模板 {} 已修改；「恢复内置」丢弃修改。", t.id)
-                }
-            },
-        };
-        self.sel_origin.set(t.as_ref().map(|t| t.origin));
-        self.sel_info.set(info);
-        let (name, text) = t
-            .map(|t| (t.name, escape_template(&t.text)))
-            .unwrap_or_default();
-        if self.edit_name.get() != name {
-            self.edit_name.set(name);
-        }
-        if self.edit_text.get() != text {
-            self.edit_text.set(text);
-        }
-    }
-
-    /// 编辑框改了：写进选中的用户模板（内置模板只读，不写）。
-    fn commit_editor(&self) {
-        use crate::dialogs::tooltip_sections_dialog::unescape_template;
-        let Some(t) = self.selected_template().filter(TplInfo::editable) else {
-            return;
-        };
-        let (name, text) = (
-            self.edit_name.get(),
-            unescape_template(&self.edit_text.get()),
-        );
-        if t.name == name && t.text == text {
-            return;
-        }
-        self.templates.update(|v| {
-            if let Some(slot) = v.iter_mut().find(|u| u.id == t.id) {
-                slot.name = name.clone();
-                slot.text = text.clone();
-            }
-        });
-        // 改名、改模板串不改任何格落到哪个 id，就地改库里那一条即可：逐键打字不打 RPC。
-        self.view.update(|v| {
-            if let Some(slot) = v
-                .first_mut()
-                .and_then(|lib| lib.templates.iter_mut().find(|u| u.id == t.id))
-            {
-                slot.name = name;
-                slot.text = text;
-            }
-        });
-        self.update_preview();
-    }
-
-    fn taken_ids(&self) -> Vec<String> {
-        self.lib().templates.into_iter().map(|t| t.id).collect()
-    }
-
-    fn add_template(&self, base: &str, name: String, text: String) {
-        let taken = self.taken_ids();
-        let refs: Vec<&str> = taken.iter().map(String::as_str).collect();
-        let id = unique_template_id(base, &refs);
-        self.templates.update(|v| {
-            v.push(CommentTemplateDef {
-                id: id.clone(),
-                name,
-                text,
-            })
-        });
-        self.tpl_sel.set(id);
-        self.refresh();
-        self.load_editor();
-    }
-
-    fn copy_selected(&self) {
-        if let Some(t) = self.selected_template() {
-            self.add_template(
-                &format!("{}_copy", t.id),
-                format!("{} 副本", t.display_name()),
-                t.text,
-            );
-        }
-    }
-
-    /// 恢复内置 / 删除自定义：都是删掉同 id 的用户模板。删除自定义时引用它的格一并清掉。
-    fn drop_user_template(&self) {
-        let Some(t) = self.selected_template().filter(TplInfo::editable) else {
-            return;
-        };
-        self.templates.update(|v| v.retain(|u| u.id != t.id));
-        if t.origin == Origin::User {
-            self.assign.update(|a| drop_references(a, &t.id));
-            self.tpl_sel.set(String::new());
-        }
-        self.refresh();
-        self.load_editor();
-    }
 }
 
-/// 建对话框、登记读写，返回打开它的信号。清单宿主是 [`HOST_KEY`]。
-pub fn build_dialog_button_comment(state: &AppState, cfg: &Config) -> Signal<bool> {
+/// 两个对话框（本框与模板库）共用的草稿：第一次取时建好并登记五个键的读写，之后原样返回。
+///
+/// 共用是硬要求：两框都整键写 `ui.comment.templates`，各持一份就是两个覆盖式写入者，谁后写
+/// 谁赢；分配表的选项又来自模板库的草稿。
+pub(crate) fn shared_ui(state: &AppState, cfg: &Config) -> CommentSettingsUi {
+    if let Some(ui) = state.fields.comment_ui.borrow().as_ref() {
+        return ui.clone();
+    }
     let ui = CommentSettingsUi::new();
     ui.seed(cfg);
     for key in [TEMPLATES_KEY, HOST_KEY, TYPE_KEY, SCHEMA_KEY, MODE_KEY] {
@@ -892,7 +782,13 @@ pub fn build_dialog_button_comment(state: &AppState, cfg: &Config) -> Signal<boo
         .loaders
         .borrow_mut()
         .insert(HOST_KEY.to_string(), Box::new(move |c: &Config| ul.seed(c)));
+    *state.fields.comment_ui.borrow_mut() = Some(ui.clone());
+    ui
+}
 
+/// 建对话框，返回打开它的信号。清单宿主是 [`HOST_KEY`]。
+pub fn build_dialog_button_comment(state: &AppState, cfg: &Config) -> Signal<bool> {
+    let ui = shared_ui(state, cfg);
     let dicts = register_comment_dicts(state, cfg);
     let dlg = build_dialog(state, &ui, &dicts);
     state.fields.dialogs.borrow_mut().push(dlg);
@@ -984,13 +880,12 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi
     };
     let jump = state.jump;
     let tab = ui.tab;
-    let panes: [Element; 4] = [
+    let panes: [Element; 3] = [
         crate::search::anchor::wrap(
             build_assign_tab(ui),
             crate::search::index::in_dialog_anchor(HOST_KEY),
             jump,
         ),
-        build_templates_tab(ui),
         crate::search::anchor::wrap(
             build_comment_dicts_pane(dicts),
             crate::search::index::in_dialog_anchor(DICTS_KEY),
@@ -1300,150 +1195,6 @@ fn add_dropdown(
     Element::row()
         .child(Element::dropdown(labels, sel).width_match())
         .child(effect)
-}
-
-// ───────────────────────────── 模板库 ─────────────────────────────
-
-fn build_templates_tab(ui: &CommentSettingsUi) -> Element {
-    let u = ui.clone();
-    let list = Element::host_signal(ui.view, move |lib: LibraryInfo| build_tpl_list(&u, &lib));
-
-    let ul = ui.clone();
-    let sel = ui.tpl_sel;
-    let load = crate::pages::dict::reactive::reactive_effect(
-        move || sel.version(),
-        move || ul.load_editor(),
-    );
-    let uc = ui.clone();
-    let (n, t) = (ui.edit_name, ui.edit_text);
-    let commit = crate::pages::dict::reactive::reactive_effect(
-        move || n.version().wrapping_add(t.version()),
-        move || uc.commit_editor(),
-    );
-    ui.load_editor();
-
-    let origin = ui.sel_origin;
-    let editor_fields = Element::col()
-        .width_match()
-        .spacing(8)
-        .child(crate::widgets::setting_row(
-            "名称",
-            None,
-            Element::text_input(ui.edit_name, "模板名称").width(200),
-        ))
-        .child(crate::manifest::comment_template_block(
-            ui.visible,
-            ui.edit_text,
-            "留空则不显示注释",
-            |control| crate::widgets::setting_row("模板串", Some("换行写 \\n"), control),
-        ))
-        .enabled_when(move || origin.get().is_some_and(|o| o != Origin::Builtin));
-    let info = Element::label_signal(ui.sel_info)
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .max_lines(2);
-
-    let (u1, u2, u3) = (ui.clone(), ui.clone(), ui.clone());
-    let buttons = Element::row()
-        .spacing(8)
-        .child(
-            Element::button("复制为自定义")
-                .small()
-                .outline_soft()
-                .on_click(move |_| u1.copy_selected())
-                .enabled_when(move || origin.get().is_some()),
-        )
-        .child(
-            Element::button("恢复内置")
-                .small()
-                .outline_soft()
-                .on_click(move |_| u2.drop_user_template())
-                .visible_when(move || origin.get() == Some(Origin::UserOverridesBuiltin)),
-        )
-        .child(
-            Element::button("删除")
-                .small()
-                .outline_soft()
-                .on_click(move |_| u3.drop_user_template())
-                .visible_when(move || origin.get() == Some(Origin::User)),
-        );
-
-    let un = ui.clone();
-    let new_btn = Element::button("＋ 新建模板")
-        .small()
-        .outline_soft()
-        .on_click(move |_| un.add_template("custom", "新模板".into(), String::new()));
-
-    Element::row()
-        .width_match()
-        .spacing(12)
-        .padding_xy(0, 8)
-        .child(
-            Element::col()
-                .width(190)
-                .spacing(6)
-                .child(Element::scroll().width_match().height(360).child(list))
-                .child(new_btn),
-        )
-        .child(
-            Element::col()
-                .weight(1.0)
-                .spacing(8)
-                .child(info)
-                .child(editor_fields)
-                .child(buttons)
-                .child(load)
-                .child(commit),
-        )
-}
-
-fn build_tpl_list(ui: &CommentSettingsUi, lib: &LibraryInfo) -> Element {
-    let mut col = Element::col().width_match().spacing(2);
-    for (title, user) in [("内置", false), ("自定义", true)] {
-        col = col.child(
-            Element::label(title)
-                .font_size(11.5)
-                .font_weight(600)
-                .fg_role(Role::TextSubtle)
-                .padding_xy(6, 4),
-        );
-        for t in lib
-            .templates
-            .iter()
-            .filter(|t| (t.origin == Origin::User) == user)
-        {
-            let sel = ui.tpl_sel;
-            let id = t.id.clone();
-            let id2 = id.clone();
-            let mut label = t.display_name().to_string();
-            if t.origin == Origin::UserOverridesBuiltin {
-                label.push_str(" · 已修改");
-            }
-            col = col.child(
-                Element::row()
-                    .width_match()
-                    .padding_xy(8, 5)
-                    .corner(6.0)
-                    .bg_when(move || {
-                        let p = &windui::theme::current().palette;
-                        if sel.get() == id2 {
-                            p.surface_alt
-                        } else {
-                            Color::rgba(0, 0, 0, 0)
-                        }
-                    })
-                    .child(
-                        Element::label(label)
-                            .font_size(12.5)
-                            .fg_role(Role::Text)
-                            .max_lines(1),
-                    )
-                    .on_click(move |_| sel.set(id.clone())),
-            );
-        }
-    }
-    col
 }
 
 #[cfg(test)]
@@ -1771,53 +1522,6 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
-    /// 模板库：内置只读、复制为自定义、编辑框显示 `\n` 而存真换行、恢复内置删掉同 id 用户项。
-    #[test]
-    fn template_library_edits_user_copies_only() {
-        let _g = crate::rpc::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
-        let ui = CommentSettingsUi::new();
-        ui.seed(&Config::from_value(json!({})));
-        ui.tpl_sel.set("code_hint".into());
-        ui.load_editor();
-        ui.edit_text.set("改不动".into());
-        ui.commit_editor();
-        assert!(ui.templates.get().is_empty(), "内置模板只读");
-
-        ui.copy_selected();
-        let t = ui.templates.get();
-        assert_eq!(t.len(), 1);
-        assert_eq!(t[0].id, "code_hint_copy");
-        assert_eq!(ui.tpl_sel.get(), "code_hint_copy");
-        ui.edit_text.set("${pinyin}\\n${chaizi}".into());
-        ui.commit_editor();
-        assert_eq!(ui.templates.get()[0].text, "${pinyin}\n${chaizi}");
-
-        // 同 id 覆盖内置 → 已修改；恢复内置即删掉用户项。
-        ui.templates.update(|v| {
-            v.push(CommentTemplateDef {
-                id: "pinyin".into(),
-                name: "拼音".into(),
-                text: "x".into(),
-            })
-        });
-        ui.refresh();
-        ui.tpl_sel.set("pinyin".into());
-        assert_eq!(
-            ui.selected_template().map(|t| t.origin),
-            Some(Origin::UserOverridesBuiltin)
-        );
-        ui.drop_user_template();
-        assert!(ui.templates.get().iter().all(|t| t.id != "pinyin"));
-        assert_eq!(
-            ui.selected_template().map(|t| t.origin),
-            Some(Origin::Builtin)
-        );
-        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
-    }
-
     /// 全局行不给跟随；出厂写了横排值的格不给同竖排。
     #[test]
     fn options_drop_follow_on_global_and_same_as_vertical_over_factory_horizontal() {
@@ -1858,50 +1562,6 @@ mod tests {
                 .detail_vertical
                 .as_deref(),
             Some("inherit")
-        );
-        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
-    }
-
-    /// 编辑框的转义往返：带 `\\`、`\t`、不成对 `\x`、真换行的模板，打开不改就不脏；
-    /// 手打 `\n` 存真换行；改名就地更新库视图（不等 RPC）。
-    #[test]
-    fn editor_escape_round_trip_is_not_dirty() {
-        let _g = crate::rpc::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
-        let raws = ["a\\b\tc\\x", "${pinyin}\n${chaizi}", "\\n 字面", "末尾\\"];
-        let templates: Vec<Value> = raws
-            .iter()
-            .enumerate()
-            .map(|(i, t)| json!({ "id": format!("t{i}"), "name": "n", "text": t }))
-            .collect();
-        let cfg = Config::from_value(json!({ "ui": { "comment": { "templates": templates } } }));
-        let ui = CommentSettingsUi::new();
-        ui.seed(&cfg);
-        let base = ui.value_of(TEMPLATES_KEY);
-        assert_eq!(Some(&base), cfg.get_path(TEMPLATES_KEY));
-        for i in 0..raws.len() {
-            ui.tpl_sel.set(format!("t{i}"));
-            ui.load_editor();
-            ui.commit_editor();
-            assert_eq!(ui.value_of(TEMPLATES_KEY), base, "t{i} 打开不改却变了");
-        }
-        assert_eq!(
-            ui.edit_text.get(),
-            crate::dialogs::tooltip_sections_dialog::escape_template(raws[3])
-        );
-
-        ui.tpl_sel.set("t1".into());
-        ui.load_editor();
-        assert_eq!(ui.edit_text.get(), "${pinyin}\\n${chaizi}");
-        ui.edit_name.set("改名".into());
-        ui.commit_editor();
-        assert!(
-            ui.lib()
-                .templates
-                .iter()
-                .any(|t| t.id == "t1" && t.name == "改名")
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }

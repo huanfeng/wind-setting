@@ -194,6 +194,8 @@ pub fn control_type_compatible(control: &str, ty: &str) -> bool {
         "dialog_button_mix_members" => ty == "structlist",
         // 注释词库：整表读写的条目列表（id/label/path/enabled/schemas 五个字段）。
         "dialog_button_comment_dicts" => ty == "structlist",
+        // 注释模板库：用户模板表（同 id 覆盖内置）。
+        "dialog_button_comment_templates" => ty == "structlist",
         // emoji 附加模块：id → bool 的整张表（键含用户放置的文件名，不是固定集合）。
         "dialog_button_emoji_modules" => ty == "map",
         // 语言栏角标规则：整表读写的条目列表（enabled/state/corner/两个色值/scale）。
@@ -527,11 +529,10 @@ mod tests {
         "ui.langbar.text_color_cn_dark",
         "ui.langbar.text_color_en_light",
         "ui.langbar.text_color_en_dark",
-        // ㉖ 候选注释的用户模板与类型 / 方案 / 模式三层分配：**已有 GUI**，由
-        //    `ui.comment.assign.global` 那一项（外观 → 候选标注 → 候选注释）的 Tab 对话框
-        //    一并读写——分配是一张「作用范围 × 四格」的总表，模板库是同一张表的选项来源，
-        //    拆成独立清单项就是把一张表切成四处。理由同 ㉒'、㉕。
-        "ui.comment.templates",
+        // ㉖ 候选注释的类型 / 方案 / 模式三层分配：**已有 GUI**，由
+        //    `ui.comment.assign.global` 那一项（外观 → 候选标注 → 候选注释）的对话框
+        //    一并读写——分配是一张「作用范围 × 四格」的总表，拆成独立清单项就是把一张表
+        //    切成四处。理由同 ㉒'、㉕。（用户模板 `ui.comment.templates` 已有自己的清单项。）
         "ui.comment.assign.type",
         "ui.comment.assign.schema",
         "ui.comment.assign.mode",

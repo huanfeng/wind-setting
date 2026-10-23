@@ -1035,6 +1035,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "dialog_button_ordered_pairs",
     "dialog_button_open_pairs",
     "dialog_button_comment_dicts",
+    "dialog_button_comment_templates",
     "dialog_button_emoji_modules",
     "dialog_button_langbar_badges",
     "dialog_button_tooltip_sections",
@@ -1097,6 +1098,14 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_emoji_modules"
         | "dialog_button_langbar_badges"
         | "dialog_button_tooltip_sections" => build_dialog_button(state, key, item, cfg),
+        // 卡片行按钮写「管理…」而不是「设置」：框里是一张可增删的模板列表。
+        "dialog_button_comment_templates" => {
+            let visible = build_dialog_body(state, key, item, cfg);
+            Element::button("管理…")
+                .small()
+                .outline_soft()
+                .on_click(move |_| visible.set(true))
+        }
         // 卡片行不是单个「设置」按钮而是「四枚缩略色样 + 设置」，故不走 build_dialog_button。
         "dialog_button_langbar_text_colors" => build_langbar_text_colors(state, key, cfg),
         // 与 `select` 完全同构，只多一件事：登记"当前档位"探针供隐私示警条读。
@@ -3781,6 +3790,9 @@ fn build_dialog_body_inner(
         // 注释词库：可增删的条目列表 + 每条五个字段，manifest 的「一个 key 一个控件」
         // 套不上，走专用对话框（销掉 capabilities 里 `ui.comment_dicts` 那条 UNCOVERED）。
         build_dialog_button_comment_dicts(state, cfg)
+    } else if item.typ == "dialog_button_comment_templates" {
+        // 注释模板库：与「候选注释」对话框共用一份草稿（见 dialogs::comment_settings::shared_ui）。
+        crate::dialogs::comment_templates::build_dialog_button_templates(state, cfg)
     } else if item.typ == "dialog_button_emoji_modules" {
         // emoji 附加模块：条数不定（内置 + 用户放进 emoji\ 的文件），整张表读写。
         build_dialog_button_emoji_modules(state, key, cfg)
@@ -4172,48 +4184,6 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
         item.dialog_hint.as_deref(),
         open_dialog_button(visible),
     )
-}
-
-/// 一个注释模板：标题行（标签 + 「插入颜色」）+ 独占一行、占满宽度的输入框，下方是预览
-/// （常态与选中态各一块）。
-///
-/// `row` 闭包本是把传入的 `control` 摆在标签同一行右端（见 `setting_row` / `field_row`）；
-/// 这里改传「插入颜色」按钮本身作 `control`，正好让它并入标题行，输入框则不再挤在它旁边、
-/// 改成下面单独一行 `width_match()`——候选注释能拼的变量已经不少（`${dict}`、颜色标记……），
-/// 原先定宽 200、还要分给按钮一截的输入框，稍长的模板进去就得横向滚动才看得全。
-///
-/// `placeholder` 各用原来的：横排「留空则不显示注释」，竖排沿用通用字段的写法（清单 hint）。
-pub(crate) fn comment_template_block(
-    visible: Signal<bool>,
-    text: Signal<String>,
-    placeholder: &str,
-    row: impl FnOnce(Element) -> Element,
-) -> Element {
-    use crate::dialogs::template_assist::{
-        PreviewSource, TemplateField, insert_color_button, preview,
-    };
-    // `true`：信号是转义后的显示形态（真换行显示成 `\n`），预览与插入颜色按转义还原、
-    // 换算位置，与悬停提示的段内容框一致。
-    let f = TemplateField::new(text, true);
-    let input = f.hook(Element::text_input(text, placeholder).width_match());
-    let header_control = insert_color_button(&f, "comment");
-    let pv = preview(
-        visible,
-        vec![PreviewSource {
-            field: f,
-            scene: "comment",
-            each: None,
-            caption: "",
-            bold: false,
-        }],
-        || 0,
-    );
-    Element::col()
-        .width_match()
-        .spacing(4)
-        .child(row(header_control))
-        .child(input)
-        .child(pv)
 }
 
 /// dialog_button（strlist with options）：勾选配对清单。挂对话框到根，返回 visible。

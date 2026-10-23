@@ -156,11 +156,18 @@ fn rgba_of(v: &Value) -> Option<Color> {
 /// 一行输出 → 段落：`runs` 覆盖到的字节区间用下发的颜色，其余用 `fg`。
 /// 区间不在字符边界上（协议被破坏）时整段按 `fg` 画，不 panic。
 fn para_of(text: &str, fg: Color, runs: &[Value], bold: bool) -> Para {
-    let style = |c: Color| {
-        let s = SpanStyle::new().fg(c);
-        if bold { s.bold() } else { s }
+    let base = if bold {
+        SpanStyle::new().bold()
+    } else {
+        SpanStyle::new()
     };
-    let mut para = Para::new();
+    runs_into(Para::new(), text, fg, runs, base)
+}
+
+/// 同 [`para_of`]，但接在已有段落后面、每段在 `base` 上换前景色（候选预览要先写序号与候选词，
+/// 选中的那个还要带底色）。
+fn runs_into(mut para: Para, text: &str, fg: Color, runs: &[Value], base: SpanStyle) -> Para {
+    let style = |c: Color| base.clone().fg(c);
     let mut at = 0usize;
     let push = |p: Para, piece: &str, c: Color| p.span(piece.replace('\t', TAB_AS), style(c));
     let mut spans: Vec<(usize, usize, Color)> = runs
@@ -530,6 +537,238 @@ pub fn preview(
             .child(
                 block(selected_bg, selected_doc, "选中时").visible_when(move || has_selected.get()),
             )
+            .child(problems)
+            .visible_when(move || shown.get()),
+    )
+}
+
+/// 候选预览的样例候选。注释只有 core 的固定样例（「你好」）一份求值结果，三个候选共用它——
+/// 这里看的是排布与配色，不是每个词各自的注释内容。
+pub const SAMPLE_CANDIDATES: [&str; 3] = ["你好", "拟好", "你号"];
+
+/// core 下发的一份注释求值：常态与选中态各自的前景色、片段色与底色。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommentLook {
+    pub text: String,
+    pub fg: Color,
+    pub runs: Vec<Value>,
+    pub bg: Color,
+    pub sel_fg: Color,
+    pub sel_runs: Vec<Value>,
+    pub sel_bg: Color,
+}
+
+impl CommentLook {
+    /// `appearance.previewTemplate`（comment 场景）回包 → 外观；缺颜色（协议不符）时 `None`。
+    pub fn from_reply(r: &Value) -> Option<Self> {
+        let runs = |v: &Value| v.as_array().cloned().unwrap_or_default();
+        let sel = &r["selected"];
+        Some(Self {
+            // 首行上方的注释（`\n`）在这里压成一行：预览只示意排布，不画上方注释条。
+            text: r["text"].as_str().unwrap_or("").replace('\n', " "),
+            fg: rgba_of(&r["fg"])?,
+            runs: runs(&r["runs"]),
+            bg: rgba_of(&r["bg"])?,
+            sel_fg: rgba_of(&sel["fg"]).unwrap_or(rgba_of(&r["fg"])?),
+            sel_runs: runs(&sel["runs"]),
+            sel_bg: rgba_of(&sel["bg"]).unwrap_or(Color::rgba(0, 0, 0, 0)),
+        })
+    }
+
+    /// 候选词的颜色：core 只下发注释色，候选词按底色深浅取近黑 / 近白。
+    fn word_color(&self) -> Color {
+        let lum = 0.299 * self.bg.r as f32 + 0.587 * self.bg.g as f32 + 0.114 * self.bg.b as f32;
+        if lum > 140.0 {
+            Color::rgba(30, 30, 30, 255)
+        } else {
+            Color::rgba(235, 235, 235, 255)
+        }
+    }
+
+    /// 一个候选：序号 + 候选词 + 注释；第一个按选中态画（带选中底色）。
+    fn candidate(&self, para: Para, i: usize, word: &str) -> Para {
+        let selected = i == 0;
+        let base = if selected {
+            SpanStyle::new().bg(self.sel_bg)
+        } else {
+            SpanStyle::new()
+        };
+        let word_fg = self.word_color();
+        let para = para
+            .span(
+                format!("{}.", i + 1),
+                base.clone().fg(word_fg.scale_alpha(0.6)),
+            )
+            .span(word, base.clone().fg(word_fg));
+        if self.text.is_empty() {
+            return para;
+        }
+        let para = para.span(" ", base.clone());
+        if selected {
+            runs_into(para, &self.text, self.sel_fg, &self.sel_runs, base)
+        } else {
+            runs_into(para, &self.text, self.fg, &self.runs, base)
+        }
+    }
+
+    /// 横排：三个候选同一行。
+    pub fn horizontal(&self) -> RichDoc {
+        let mut para = Para::new();
+        for (i, w) in SAMPLE_CANDIDATES.iter().enumerate() {
+            if i > 0 {
+                para = para.span("   ", SpanStyle::new());
+            }
+            para = self.candidate(para, i, w);
+        }
+        RichDoc::new().para(para)
+    }
+
+    /// 竖排：每个候选一行。
+    pub fn vertical(&self) -> RichDoc {
+        SAMPLE_CANDIDATES
+            .iter()
+            .enumerate()
+            .fold(RichDoc::new(), |doc, (i, w)| {
+                doc.para(self.candidate(Para::new(), i, w))
+            })
+    }
+}
+
+/// 注释模板的候选窗预览：横排、竖排两种排布，各三个样例候选（第一个是选中态），下面是问题列表。
+///
+/// 与 [`preview`] 同一个 RPC、同一套「core 不支持就整块隐藏」的规矩；模板留空时只画候选词
+/// （留空 = 不显示注释）。`visible` 是所在对话框的可见性。
+pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> Element {
+    let shown = signal(false);
+    let bg = signal(Color::rgba(0, 0, 0, 0));
+    let h_doc = signal(RichDoc::new());
+    let v_doc = signal(RichDoc::new());
+    let problems_doc = signal(RichDoc::new());
+    let has_problems = signal(false);
+    let targets: Rc<std::cell::RefCell<Vec<(usize, usize)>>> = Rc::default();
+    let supported: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+    // 上一次拿到的外观：模板清空时沿用它的底色与选中色画出光秃秃的候选。
+    let last: Rc<std::cell::RefCell<Option<CommentLook>>> = Rc::default();
+    let text = field.text;
+    let versions = move || {
+        visible
+            .version()
+            .wrapping_mul(31)
+            .wrapping_add(text.version())
+    };
+    let refresh = {
+        let (field, targets, supported) = (field.clone(), targets.clone(), supported.clone());
+        let was_visible = Cell::new(false);
+        move || {
+            let now = visible.get();
+            if now && !was_visible.get() {
+                supported.set(None);
+            }
+            was_visible.set(now);
+            if !now || supported.get() == Some(false) {
+                return;
+            }
+            let (template, map) = field.template();
+            // 空模板也问一次 core：拿到底色与选中色才画得出候选。
+            let probe = if template.trim().is_empty() {
+                " "
+            } else {
+                template.as_str()
+            };
+            let r = match crate::rpc::call_core(
+                METHOD,
+                &json!({ "template": probe, "scene": "comment" }),
+            ) {
+                Ok(r) => r,
+                Err(_) => {
+                    supported.set(Some(false));
+                    shown.set(false);
+                    return;
+                }
+            };
+            supported.set(Some(true));
+            let Some(mut look) = CommentLook::from_reply(&r).or_else(|| last.borrow().clone())
+            else {
+                shown.set(false);
+                return;
+            };
+            if template.trim().is_empty() {
+                look.text.clear();
+            }
+            *last.borrow_mut() = Some(look.clone());
+            bg.set(look.bg);
+            h_doc.set(look.horizontal());
+            v_doc.set(look.vertical());
+            let display: Vec<char> = field.text.get().chars().collect();
+            let mut probs = RichDoc::new();
+            let mut probs_at = Vec::new();
+            let empty = Vec::new();
+            for p in r["problems"].as_array().unwrap_or(&empty) {
+                let msg = p["message"].as_str().unwrap_or("");
+                let range = p["start"]
+                    .as_u64()
+                    .zip(p["end"].as_u64())
+                    .and_then(|(s, e)| display_range(&map, s as usize, e as usize));
+                let mut para = Para::new();
+                if let Some((s, e)) = range.filter(|(s, e)| s < e) {
+                    let snippet: String = display[s..e.min(display.len())].iter().collect();
+                    para = para.span_id(
+                        probs_at.len().to_string(),
+                        format!("「{snippet}」"),
+                        SpanStyle::new().underline(),
+                    );
+                    probs_at.push((s, e));
+                }
+                probs = probs.para(para.span(msg, SpanStyle::new()));
+            }
+            has_problems.set(!probs_at.is_empty() || probs.plain_text().trim() != "");
+            problems_doc.set(probs);
+            *targets.borrow_mut() = probs_at;
+            shown.set(true);
+        }
+    };
+    let effect = crate::pages::dict::reactive::reactive_effect(versions, refresh);
+
+    let block = |caption: &str, doc: Signal<RichDoc>| {
+        Element::col()
+            .width_match()
+            .spacing(2)
+            .child(
+                Element::label(caption)
+                    .font_size(11.5)
+                    .fg_role(Role::TextMuted),
+            )
+            .child(
+                Element::row()
+                    .widget(SignalBg(bg))
+                    .width_match()
+                    .padding_xy(10, 8)
+                    .child(Element::rich_signal(doc).weight(1.0).copy_menu(false)),
+            )
+    };
+    let problems = Element::rich_signal(problems_doc)
+        .width_match()
+        .fg_role(Role::Danger)
+        .font_size(12.0)
+        .copy_menu(false)
+        .on_span_click(move |ctx, id| {
+            let hit = id
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| targets.borrow().get(i).copied());
+            if let Some((s, e)) = hit {
+                field.select(ctx, s, e);
+            }
+        })
+        .visible_when(move || has_problems.get());
+
+    Element::col().width_match().spacing(6).child(effect).child(
+        Element::col()
+            .widget(KeepFocus)
+            .width_match()
+            .spacing(6)
+            .child(block("横排", h_doc))
+            .child(block("竖排", v_doc))
             .child(problems)
             .visible_when(move || shown.get()),
     )
