@@ -1740,11 +1740,30 @@ fn mock_comment_library(params: &Value) -> Value {
     };
     let system = SystemComments::parse(include_str!("../../WindInput/data/system.comments.toml"))
         .unwrap_or_default();
-    let user: UiCommentConfig = params
+    let mut user: UiCommentConfig = params
         .get("comment")
         .and_then(|c| serde_json::from_value(c.clone()).ok())
         .unwrap_or_default();
+    // 设置端先按「横排为主」走（竖排没写 = 同本行横排），core 的解析链与出厂文件还是竖排为主。
+    // 两者只差横竖对调：把用户格对调后交给 core 解，结果再把横竖对调回来；出厂文件写的竖排格
+    // 对调后就是横排为主的出厂分配。core 翻过来以后（出厂写横排格）去掉对调，直接用。
+    swap_assign(&mut user.assign);
     let (lib, _) = CommentLibrary::build(&system, &user);
+    let type_of = |s: &str| match s {
+        "pinyin_simp" => SchemaType::Pinyin,
+        "double_pinyin" => SchemaType::Shuangpin,
+        "wubi_mixed" => SchemaType::Mixed,
+        _ => SchemaType::CodeTable,
+    };
+    let mut system_assign = system.assign.clone();
+    swap_assign(&mut system_assign);
+    let mut effective =
+        serde_json::to_value(lib.effective_table("wubi86", type_of)).unwrap_or(Value::Null);
+    for e in effective.as_array_mut().into_iter().flatten() {
+        if let Some(v) = e.get("vertical").and_then(Value::as_bool) {
+            e["vertical"] = Value::Bool(!v);
+        }
+    }
     let templates: Vec<Value> = lib
         .templates()
         .map(|(t, o)| {
@@ -1756,17 +1775,23 @@ fn mock_comment_library(params: &Value) -> Value {
             json!({ "id": t.id, "name": t.name, "text": t.text, "origin": origin })
         })
         .collect();
-    let type_of = |s: &str| match s {
-        "pinyin_simp" => SchemaType::Pinyin,
-        "double_pinyin" => SchemaType::Shuangpin,
-        "wubi_mixed" => SchemaType::Mixed,
-        _ => SchemaType::CodeTable,
-    };
     json!({
         "templates": templates,
-        "system_assign": system.assign,
-        "effective": lib.effective_table("wubi86", type_of),
+        "system_assign": system_assign,
+        "effective": effective,
     })
+}
+
+/// 每一格的横竖对调（见 [`mock_comment_library`]）。
+fn swap_assign(a: &mut wind_config::comment_lib::CommentAssign) {
+    let swap = |c: &mut wind_config::comment_lib::CommentCells| {
+        std::mem::swap(&mut c.default_vertical, &mut c.default_horizontal);
+        std::mem::swap(&mut c.detail_vertical, &mut c.detail_horizontal);
+    };
+    swap(&mut a.global);
+    for m in [&mut a.by_type, &mut a.schema, &mut a.mode] {
+        m.values_mut().for_each(swap);
+    }
 }
 
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，

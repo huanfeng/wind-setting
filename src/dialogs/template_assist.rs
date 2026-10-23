@@ -634,6 +634,23 @@ impl CommentLook {
     }
 }
 
+/// 一个注释模板串在样例候选上的外观（一次 RPC）。空串 = 不显示注释：照样问一次 core 拿底色，
+/// 再清掉注释。core 不支持或未连接时 `None`。
+pub fn comment_look(template: &str) -> Option<CommentLook> {
+    let probe = if template.trim().is_empty() {
+        " "
+    } else {
+        template
+    };
+    let r =
+        crate::rpc::call_core(METHOD, &json!({ "template": probe, "scene": "comment" })).ok()?;
+    let mut look = CommentLook::from_reply(&r)?;
+    if template.trim().is_empty() {
+        look.text.clear();
+    }
+    Some(look)
+}
+
 /// 注释模板的候选窗预览：横排、竖排两种排布，各三个样例候选（第一个是选中态），下面是问题列表。
 ///
 /// 与 [`preview`] 同一个 RPC、同一套「core 不支持就整块隐藏」的规矩；模板留空时只画候选词

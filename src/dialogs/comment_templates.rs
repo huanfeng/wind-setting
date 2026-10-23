@@ -209,7 +209,6 @@ impl CommentSettingsUi {
             }
         });
         self.sync_tpl_rows();
-        self.update_preview();
     }
 
     fn taken_ids(&self) -> Vec<String> {

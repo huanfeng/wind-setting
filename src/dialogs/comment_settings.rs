@@ -13,9 +13,11 @@
 //! # 格值与写回
 //!
 //! 每格显示的是**用户值，否则出厂值，否则不写**；选了什么就按 [`write_choice`] 写回：
-//! 与出厂值相同即删键（配置里只留差异），「跟随」在有出厂值的格上写 `inherit`，
-//! 「不显示」写 `none`，横排「同竖排」删键。实际落到哪个模板由 core 的 `comment.library`
-//! 按草稿算（与输入时同一条解析链），「跟随」格据此显示「跟随 · 编码提示」。
+//! 与出厂值相同即删键（配置里只留差异），「跟随」写 `inherit`（横排不写本就是跟随，
+//! 只在有出厂值的格上才要写），「不显示」写 `none`，竖排「同横排」删键。横排为主：竖排
+//! 没写 = 同本行横排。实际落到哪个模板由 core 的 `comment.library` 按草稿算（与输入时同一条
+//! 解析链），格子据此显示「跟随 · 编码提示」「同横排 · 编码提示」。分配表的界面在
+//! [`crate::dialogs::comment_assign`]。
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -74,14 +76,15 @@ pub const BASE_MODES: [(&str, &str); 5] = [
 /// 总表的四格列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Col {
-    DefaultV,
     DefaultH,
-    DetailV,
+    DefaultV,
     DetailH,
+    DetailV,
 }
 
 impl Col {
-    pub const ALL: [Col; 4] = [Col::DefaultV, Col::DefaultH, Col::DetailV, Col::DetailH];
+    /// 表格列序：横排在前（横排为主）。
+    pub const ALL: [Col; 4] = [Col::DefaultH, Col::DefaultV, Col::DetailH, Col::DetailV];
 
     pub fn horizontal(self) -> bool {
         matches!(self, Col::DefaultH | Col::DetailH)
@@ -156,9 +159,9 @@ impl Scope {
         }
     }
 
-    /// 方案行、模式行可以移除；全局与类型行常驻。
-    fn removable(&self) -> bool {
-        matches!(self, Scope::Schema(_) | Scope::Mode(_))
+    /// 用户自己加的行（出厂没有的方案 / 模式行）：可以整行删掉；其余行只能恢复出厂。
+    pub fn user_added(&self, system: &CommentAssign) -> bool {
+        matches!(self, Scope::Schema(_) | Scope::Mode(_)) && self.cells(system).is_none()
     }
 }
 
@@ -187,17 +190,17 @@ pub enum Choice {
     Template(String),
     /// 不显示（`none`）。
     Hide,
-    /// 跟随下一层（竖排不写 / `inherit`）。
+    /// 跟随下一层同排布那格（横排不写 / `inherit`）。
     Follow,
-    /// 横排同竖排（不写）。
-    SameAsVertical,
+    /// 竖排同本行横排（不写）。
+    SameAsHorizontal,
 }
 
-/// 原始格值 → 选项。`None`（不写）竖排是跟随、横排是同竖排。
+/// 原始格值 → 选项。`None`（不写）横排是跟随、竖排是同横排。
 fn choice_of_raw(raw: Option<&str>, col: Col) -> Choice {
     match raw {
-        None if col.horizontal() => Choice::SameAsVertical,
-        None => Choice::Follow,
+        None if col.horizontal() => Choice::Follow,
+        None => Choice::SameAsHorizontal,
         Some("none") => Choice::Hide,
         Some("inherit") => Choice::Follow,
         Some(id) => Choice::Template(id.to_string()),
@@ -219,7 +222,7 @@ pub fn shown_choice(
 }
 
 /// 选中 `choice` 后写回用户分配：与出厂值相同即删键；否则模板写 id、不显示写 `none`、
-/// 跟随写 `inherit`（压过出厂值，或让横排跟随下层横排）、同竖排删键。
+/// 跟随写 `inherit`（压过出厂值，或让竖排跟随下层竖排）、同横排删键。
 pub fn write_choice(
     user: &mut CommentAssign,
     system: &CommentAssign,
@@ -235,39 +238,56 @@ pub fn write_choice(
             Choice::Template(id) => Some(id.clone()),
             Choice::Hide => Some("none".to_string()),
             Choice::Follow => Some("inherit".to_string()),
-            Choice::SameAsVertical => None,
+            Choice::SameAsHorizontal => None,
         }
     };
     col.set(scope.cells_mut(user), raw);
 }
 
-/// 移除一行：用户自己加的行整行删掉；出厂行删不掉，只能把各格设成跟随（有出厂值的格写
-/// `inherit`）。返回这一行是否还在表里。
-pub fn remove_row(user: &mut CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
-    if scope.cells(system).is_none() {
-        match scope {
-            Scope::Schema(k) => {
-                user.schema.remove(k);
-            }
-            Scope::Mode(k) => {
-                user.mode.remove(k);
-            }
-            _ => {}
-        }
+/// 加一行覆盖（各格先不写）。已在表里的不重复加，返回是否新加了。
+pub fn add_row(user: &mut CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
+    if !matches!(scope, Scope::Schema(_) | Scope::Mode(_))
+        || table_rows(user, system).contains(scope)
+    {
         return false;
     }
-    // 「像这一行不存在」：竖排跟随；横排不写即同竖排（竖排跟随了它也就跟随），出厂写了横排
-    // 的才要 `inherit` 压掉。
-    let factory = scope.cells(system);
-    for col in Col::ALL {
-        let choice = if col.horizontal() && factory.and_then(|c| col.get(c)).is_none() {
-            Choice::SameAsVertical
-        } else {
-            Choice::Follow
-        };
-        write_choice(user, system, scope, col, &choice);
-    }
+    scope.cells_mut(user);
     true
+}
+
+/// 删掉用户自己加的一行；出厂行删不掉，返回 false。
+pub fn delete_row(user: &mut CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
+    if !scope.user_added(system) {
+        return false;
+    }
+    match scope {
+        Scope::Schema(k) => user.schema.remove(k).is_some(),
+        Scope::Mode(k) => user.mode.remove(k).is_some(),
+        _ => false,
+    }
+}
+
+/// 恢复出厂：清掉这一行的用户格（行本身留着）。
+pub fn restore_factory(user: &mut CommentAssign, scope: &Scope) {
+    match scope {
+        Scope::Global => user.global = CommentCells::default(),
+        Scope::Type(k) => {
+            user.by_type.remove(k);
+        }
+        Scope::Schema(k) => {
+            user.schema.remove(k);
+        }
+        Scope::Mode(k) => {
+            user.mode.remove(k);
+        }
+    }
+}
+
+/// 这一行有没有用户格（「恢复出厂」可不可点）。
+pub fn has_user_cells(user: &CommentAssign, scope: &Scope) -> bool {
+    scope
+        .cells(user)
+        .is_some_and(|c| Col::ALL.iter().any(|col| col.get(c).is_some()))
 }
 
 /// 删掉用户模板后，引用它的用户格一并删掉（否则 core 只是告警后按不写处理，界面上却显示
@@ -329,7 +349,7 @@ pub struct LibraryInfo {
 }
 
 impl LibraryInfo {
-    fn name_of(&self, id: &str) -> String {
+    pub(super) fn name_of(&self, id: &str) -> String {
         if id == "none" {
             return "不显示".into();
         }
@@ -340,7 +360,7 @@ impl LibraryInfo {
             .unwrap_or_else(|| id.to_string())
     }
 
-    fn text_of(&self, id: &str) -> String {
+    pub(super) fn text_of(&self, id: &str) -> String {
         self.templates
             .iter()
             .find(|t| t.id == id)
@@ -348,7 +368,7 @@ impl LibraryInfo {
             .unwrap_or_default()
     }
 
-    fn effective_of(&self, scope: &Scope, col: Col) -> Option<&(String, String)> {
+    pub(super) fn effective_of(&self, scope: &Scope, col: Col) -> Option<&(String, String)> {
         self.effective.get(&(scope.key(), col))
     }
 }
@@ -434,12 +454,17 @@ pub fn unique_template_id(base: &str, taken: &[&str]) -> String {
 
 // ───────────────────────────── 下拉标签 ─────────────────────────────
 
-/// 一格的选项列表：模板（库序）、不显示、跟随；横排另有同竖排。当前值是库里没有的模板时
+/// 一格的选项列表：模板（库序）、不显示、跟随；竖排另有同横排。当前值是库里没有的模板时
 /// 追加在末尾，免得一打开就被改成别的值。
 ///
 /// - 全局行不给「跟随」：它下面没有层了。
-/// - 出厂写了横排值的格不给「同竖排」：同竖排即删用户键，删了落回的是出厂横排值而不是竖排。
-fn cell_options(lib: &LibraryInfo, scope: &Scope, col: Col, current: &Choice) -> Vec<Choice> {
+/// - 出厂写了竖排值的格不给「同横排」：同横排即删用户键，删了落回的是出厂竖排值而不是横排。
+pub(super) fn cell_options(
+    lib: &LibraryInfo,
+    scope: &Scope,
+    col: Col,
+    current: &Choice,
+) -> Vec<Choice> {
     let mut out: Vec<Choice> = lib
         .templates
         .iter()
@@ -449,12 +474,12 @@ fn cell_options(lib: &LibraryInfo, scope: &Scope, col: Col, current: &Choice) ->
     if *scope != Scope::Global {
         out.push(Choice::Follow);
     }
-    let factory_h = scope
+    let factory_v = scope
         .cells(&lib.system_assign)
         .and_then(|c| col.get(c))
         .is_some();
-    if col.horizontal() && !factory_h {
-        out.push(Choice::SameAsVertical);
+    if !col.horizontal() && !factory_v {
+        out.push(Choice::SameAsHorizontal);
     }
     if !out.contains(current) {
         out.push(current.clone());
@@ -462,8 +487,8 @@ fn cell_options(lib: &LibraryInfo, scope: &Scope, col: Col, current: &Choice) ->
     out
 }
 
-/// 选项文案。跟随后缀实际生效的模板名（`resolved`）。
-fn choice_label(lib: &LibraryInfo, c: &Choice, resolved: Option<&str>) -> String {
+/// 选项文案。跟随、同横排后缀实际生效的模板名（`resolved`）。
+pub(super) fn choice_label(lib: &LibraryInfo, c: &Choice, resolved: Option<&str>) -> String {
     match c {
         Choice::Template(id) if lib.templates.iter().any(|t| &t.id == id) => lib.name_of(id),
         Choice::Template(id) => format!("{id}（不存在）"),
@@ -472,12 +497,14 @@ fn choice_label(lib: &LibraryInfo, c: &Choice, resolved: Option<&str>) -> String
             Some(r) => format!("跟随 · {r}"),
             None => "跟随".into(),
         },
-        // 同竖排不带后缀：落点就是左边那一格，格子窄，省下的宽度留给模板名。
-        Choice::SameAsVertical => "同竖排".into(),
+        Choice::SameAsHorizontal => match resolved {
+            Some(r) => format!("同横排 · {r}"),
+            None => "同横排".into(),
+        },
     }
 }
 
-fn scope_label(scope: &Scope, names: &Names) -> String {
+pub(super) fn scope_label(scope: &Scope, names: &Names) -> String {
     match scope {
         Scope::Global => "全局".into(),
         Scope::Type(k) => TYPE_ROWS
@@ -492,11 +519,11 @@ fn scope_label(scope: &Scope, names: &Names) -> String {
 
 /// 方案与模式的显示名（来自 `schema.list` 与配置里的 `schema.mix_modes`）。
 #[derive(Debug, Clone, Default)]
-struct Names {
+pub(super) struct Names {
     /// `(id, 显示名, 是否 overlay 方案)`。
-    schemas: Vec<(String, String, bool)>,
+    pub(super) schemas: Vec<(String, String, bool)>,
     /// `(mix id, 显示名)`。
-    mixes: Vec<(String, String)>,
+    pub(super) mixes: Vec<(String, String)>,
 }
 
 impl Names {
@@ -568,17 +595,20 @@ impl Names {
         format!("模式 · {name}")
     }
 
-    /// 可添加的方案行：`(id, 显示名)`，已在表里的不列。
-    fn addable_schemas(&self, rows: &[Scope]) -> Vec<(String, String)> {
-        self.schemas
-            .iter()
-            .filter(|(id, _, _)| !rows.contains(&Scope::Schema(id.clone())))
-            .map(|(id, n, _)| (id.clone(), n.clone()))
-            .collect()
+    /// 可添加的方案行：`(行, 显示名)`，已在表里的不列；`schema.list` 里重复的 id 只列一次。
+    pub(super) fn addable_schemas(&self, rows: &[Scope]) -> Vec<(Scope, String)> {
+        let mut out: Vec<(Scope, String)> = Vec::new();
+        for (id, n, _) in &self.schemas {
+            let s = Scope::Schema(id.clone());
+            if !rows.contains(&s) && out.iter().all(|(o, _)| *o != s) {
+                out.push((s, n.clone()));
+            }
+        }
+        out
     }
 
-    /// 可添加的模式行：固定模式、各快捷输入、各 overlay 方案。
-    fn addable_modes(&self, rows: &[Scope]) -> Vec<(String, String)> {
+    /// 可添加的模式行：固定模式、各快捷输入、各 overlay 方案；已在表里的不列，重复的只列一次。
+    pub(super) fn addable_modes(&self, rows: &[Scope]) -> Vec<(Scope, String)> {
         let mut keys: Vec<String> = BASE_MODES.iter().map(|(k, _)| k.to_string()).collect();
         keys.extend(self.mixes.iter().map(|(id, _)| format!("mix:{id}")));
         keys.extend(
@@ -587,14 +617,16 @@ impl Names {
                 .filter(|(_, _, ov)| *ov)
                 .map(|(id, _, _)| format!("special:{id}")),
         );
-        keys.into_iter()
-            .filter(|k| !rows.contains(&Scope::Mode(k.clone())))
-            .map(|k| {
-                let label = self.mode(&k);
-                let label = label.trim_start_matches("模式 · ").to_string();
-                (k, label)
-            })
-            .collect()
+        let mut out: Vec<(Scope, String)> = Vec::new();
+        for k in keys {
+            let s = Scope::Mode(k.clone());
+            if rows.contains(&s) || out.iter().any(|(o, _)| *o == s) {
+                continue;
+            }
+            let label = self.mode(&k);
+            out.push((s, label.trim_start_matches("模式 · ").to_string()));
+        }
+        out
     }
 }
 
@@ -611,12 +643,11 @@ pub struct CommentSettingsUi {
     pub assign: Signal<CommentAssign>,
     /// 按草稿算出的模板库与每格结果；单元素 Vec 供 `host_signal` 整块重建。
     pub(super) view: Signal<Vec<LibraryInfo>>,
-    /// 预览的格（表格里最近改过的那一格）。
-    preview_cell: Signal<(Scope, Col)>,
-    preview_text: Signal<String>,
     /// 模板库对话框的选中与编辑框。
     pub(super) tpl: crate::dialogs::comment_templates::TplEditor,
-    names: Rc<RefCell<Names>>,
+    /// 分配表「添加覆盖」的选择框。
+    pub(super) pick: crate::dialogs::comment_assign::AddPicker,
+    pub(super) names: Rc<RefCell<Names>>,
     /// 出厂分配：写回时判「与出厂相同」的基准。首次拉到就定下，之后的刷新失败也不会把它
     /// 换成空表（空表会让出厂格上的「跟随」变成删键、静默回到出厂值）。
     system: Rc<RefCell<Option<CommentAssign>>>,
@@ -630,9 +661,8 @@ impl CommentSettingsUi {
             templates: signal(Vec::new()),
             assign: signal(CommentAssign::default()),
             view: signal(vec![LibraryInfo::default()]),
-            preview_cell: signal((Scope::Global, Col::DefaultV)),
-            preview_text: signal(String::new()),
             tpl: crate::dialogs::comment_templates::TplEditor::new(),
+            pick: crate::dialogs::comment_assign::AddPicker::new(),
             names: Rc::new(RefCell::new(Names::default())),
             system: Rc::new(RefCell::new(None)),
         }
@@ -659,7 +689,7 @@ impl CommentSettingsUi {
         self.refresh();
     }
 
-    fn system_assign(&self) -> CommentAssign {
+    pub(super) fn system_assign(&self) -> CommentAssign {
         self.system.borrow().clone().unwrap_or_default()
     }
 
@@ -692,22 +722,6 @@ impl CommentSettingsUi {
         }
         self.view.set(vec![lib]);
         self.sync_tpl_rows();
-        self.update_preview();
-    }
-
-    /// 预览框跟着「最近改过的格」实际落到的模板走。
-    pub(super) fn update_preview(&self) {
-        use crate::dialogs::tooltip_sections_dialog::escape_template;
-        let lib = self.lib();
-        let (scope, col) = self.preview_cell.get();
-        let text = lib
-            .effective_of(&scope, col)
-            .map(|(id, _)| lib.text_of(id))
-            .unwrap_or_default();
-        let shown = escape_template(&text);
-        if self.preview_text.get() != shown {
-            self.preview_text.set(shown);
-        }
     }
 
     pub(super) fn value_of(&self, key: &str) -> Value {
@@ -723,27 +737,34 @@ impl CommentSettingsUi {
         v.unwrap_or(Value::Null)
     }
 
-    fn choose(&self, scope: &Scope, col: Col, choice: &Choice) {
+    pub(super) fn choose(&self, scope: &Scope, col: Col, choice: &Choice) {
         let system = self.system_assign();
         self.assign
             .update(|a| write_choice(a, &system, scope, col, choice));
-        self.preview_cell.set((scope.clone(), col));
         self.refresh();
     }
 
-    fn remove(&self, scope: &Scope) {
+    pub(super) fn delete(&self, scope: &Scope) {
         let system = self.system_assign();
-        self.assign.update(|a| {
-            remove_row(a, &system, scope);
-        });
+        let mut a = self.assign.get();
+        if delete_row(&mut a, &system, scope) {
+            self.assign.set(a);
+            self.refresh();
+        }
+    }
+
+    pub(super) fn restore(&self, scope: &Scope) {
+        self.assign.update(|a| restore_factory(a, scope));
         self.refresh();
     }
 
-    fn add_row(&self, scope: Scope) {
-        self.assign.update(|a| {
-            scope.cells_mut(a);
-        });
-        self.refresh();
+    pub(super) fn add(&self, scope: &Scope) {
+        let system = self.system_assign();
+        let mut a = self.assign.get();
+        if add_row(&mut a, &system, scope) {
+            self.assign.set(a);
+            self.refresh();
+        }
     }
 }
 
@@ -882,7 +903,7 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi
     let tab = ui.tab;
     let panes: [Element; 3] = [
         crate::search::anchor::wrap(
-            build_assign_tab(ui),
+            crate::dialogs::comment_assign::build_assign_body(ui),
             crate::search::index::in_dialog_anchor(HOST_KEY),
             jump,
         ),
@@ -942,6 +963,7 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi
     Element::stack()
         .child(shell)
         .child(build_comment_dicts_subdialogs(dicts))
+        .child(crate::dialogs::comment_assign::build_assign_subdialogs(ui))
 }
 
 // ───────────────────────────── 切换 ─────────────────────────────
@@ -991,212 +1013,6 @@ fn build_switch_tab(state: &AppState) -> Element {
         .child(crate::widgets::dialog_section("显示", display_rows))
 }
 
-// ───────────────────────────── 分配 ─────────────────────────────
-
-fn build_assign_tab(ui: &CommentSettingsUi) -> Element {
-    let u = ui.clone();
-    let table = Element::host_signal(ui.view, move |lib: LibraryInfo| build_table(&u, &lib));
-    let preview = {
-        use crate::dialogs::template_assist::{PreviewSource, TemplateField, preview};
-        let cell = ui.preview_cell;
-        let names = ui.names.clone();
-        let caption = signal(String::new());
-        let ucap = ui.clone();
-        let cap_effect = crate::pages::dict::reactive::reactive_effect(
-            move || cell.version().wrapping_add(ucap.view.version()),
-            move || {
-                let (scope, col) = cell.get();
-                caption.set(format!(
-                    "预览：{} · {}",
-                    scope_label(&scope, &names.borrow()),
-                    col.title()
-                ));
-            },
-        );
-        let (scope, col) = cell.get();
-        caption.set(format!(
-            "预览：{} · {}",
-            scope_label(&scope, &ui.names.borrow()),
-            col.title()
-        ));
-        Element::col()
-            .width_match()
-            .spacing(4)
-            .padding_xy(0, 6)
-            .child(
-                Element::label_signal(caption)
-                    .font_size(12.0)
-                    .fg_role(Role::TextMuted),
-            )
-            .child(preview(
-                ui.visible,
-                vec![PreviewSource {
-                    field: TemplateField::new(ui.preview_text, true),
-                    scene: "comment",
-                    each: None,
-                    caption: "",
-                    bold: false,
-                }],
-                || 0,
-            ))
-            .child(cap_effect)
-    };
-    Element::col()
-        .width_match()
-        .padding_xy(0, 6)
-        .child(
-            Element::label(
-                "每格选模板、「不显示」或「跟随」。跟随的格按 模式 → 方案 → 方案类型 → 全局 \
-                 往下找，灰色斜体后缀是它实际落到的模板。横排的「同竖排」即沿用本行竖排那格。",
-            )
-            .font_size(12.0)
-            .fg_role(Role::TextMuted)
-            .width_match()
-            .max_lines(3)
-            .padding_xy(2, 4),
-        )
-        .child(table)
-        .child(preview)
-}
-
-const SCOPE_W: f32 = 0.8;
-
-fn build_table(ui: &CommentSettingsUi, lib: &LibraryInfo) -> Element {
-    let user = ui.assign.get();
-    let rows = table_rows(&user, &lib.system_assign);
-    let names = ui.names.borrow().clone();
-    let mut columns = vec![("作用范围".to_string(), SCOPE_W)];
-    columns.extend(Col::ALL.iter().map(|c| (c.title().to_string(), 1.0)));
-    let body: Vec<Vec<Element>> = rows
-        .iter()
-        .map(|scope| {
-            let mut cells = vec![scope_cell(ui, lib, scope, &names)];
-            for col in Col::ALL {
-                cells.push(cell_dropdown(ui, lib, &user, scope, col));
-            }
-            cells
-        })
-        .collect();
-    let table = Element::table_custom(columns, body).height(252);
-
-    let add_schema = add_dropdown(
-        ui,
-        "＋ 添加方案覆盖…",
-        names.addable_schemas(&rows),
-        Scope::Schema,
-    );
-    let add_mode = add_dropdown(
-        ui,
-        "＋ 添加模式覆盖…",
-        names.addable_modes(&rows),
-        Scope::Mode,
-    );
-    Element::col().width_match().child(table).child(
-        Element::row()
-            .width_match()
-            .spacing(8)
-            .padding_xy(0, 8)
-            .child(add_schema.width(200))
-            .child(add_mode.width(200)),
-    )
-}
-
-fn scope_cell(ui: &CommentSettingsUi, lib: &LibraryInfo, scope: &Scope, names: &Names) -> Element {
-    let mut row = Element::row()
-        .cross(Align::Center)
-        .spacing(4)
-        .padding_xy(8, 4)
-        .child(
-            Element::label(scope_label(scope, names))
-                .font_size(12.5)
-                .fg_role(Role::Text)
-                .max_lines(1)
-                .weight(1.0),
-        );
-    if scope.removable() {
-        let factory = scope.cells(&lib.system_assign).is_some();
-        let (text, tip) = if factory {
-            ("清空", "出厂分配的行删不掉：各格改回跟随")
-        } else {
-            ("移除", "删掉这一行覆盖")
-        };
-        let (u, s) = (ui.clone(), scope.clone());
-        row = row.child(
-            Element::button(text)
-                .small()
-                .outline_soft()
-                .tooltip(tip)
-                .on_click(move |_| u.remove(&s)),
-        );
-    }
-    row
-}
-
-fn cell_dropdown(
-    ui: &CommentSettingsUi,
-    lib: &LibraryInfo,
-    user: &CommentAssign,
-    scope: &Scope,
-    col: Col,
-) -> Element {
-    let current = shown_choice(user, &lib.system_assign, scope, col);
-    let options = cell_options(lib, scope, col, &current);
-    let resolved = lib.effective_of(scope, col).map(|(id, _)| lib.name_of(id));
-    let items: Vec<windui::ui::select::DropdownItem> = options
-        .iter()
-        .map(|c| windui::ui::select::DropdownItem::new(choice_label(lib, c, resolved.as_deref())))
-        .collect();
-    let idx = options.iter().position(|c| *c == current).unwrap_or(0);
-    let sel = signal(idx);
-    let following = matches!(current, Choice::Follow | Choice::SameAsVertical);
-    let mut dd = Element::dropdown_items(items, sel)
-        .weight(1.0)
-        .font_size(12.0);
-    if following {
-        dd = dd.italic().opacity(0.6);
-    }
-    let (u, s) = (ui.clone(), scope.clone());
-    let effect = crate::pages::dict::reactive::reactive_effect(
-        move || sel.version(),
-        move || {
-            if let Some(c) = options.get(sel.get()) {
-                u.choose(&s, col, c);
-            }
-        },
-    );
-    Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(2, 3)
-        .child(dd)
-        .child(effect)
-}
-
-/// 「＋ 添加…」下拉：首项是占位标题，选中其余任一项即加一行。
-fn add_dropdown(
-    ui: &CommentSettingsUi,
-    title: &str,
-    options: Vec<(String, String)>,
-    make: fn(String) -> Scope,
-) -> Element {
-    let mut labels = vec![title.to_string()];
-    labels.extend(options.iter().map(|(_, l)| l.clone()));
-    let sel = signal(0usize);
-    let u = ui.clone();
-    let effect = crate::pages::dict::reactive::reactive_effect(
-        move || sel.version(),
-        move || {
-            let i = sel.get();
-            if let Some((k, _)) = i.checked_sub(1).and_then(|j| options.get(j)) {
-                u.add_row(make(k.clone()));
-            }
-        },
-    );
-    Element::row()
-        .child(Element::dropdown(labels, sel).width_match())
-        .child(effect)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1216,19 +1032,19 @@ mod tests {
         }
     }
 
-    /// 出厂：全局两格、码表详细竖、临时英文默认竖 = none。
+    /// 出厂（横排为主）：全局两格、码表详细横、临时英文默认横 = none。
     fn system() -> CommentAssign {
         let mut a = CommentAssign {
-            global: cells(Some("code_hint"), None, Some("detail_full"), None),
+            global: cells(None, Some("code_hint"), None, Some("detail_full")),
             ..Default::default()
         };
         a.by_type.insert(
             "codetable".into(),
-            cells(None, None, Some("chaizi_pinyin"), None),
+            cells(None, None, None, Some("chaizi_pinyin")),
         );
         a.mode.insert(
             "temp_english".into(),
-            cells(Some("none"), None, Some("en_meaning"), None),
+            cells(None, Some("none"), None, Some("en_meaning")),
         );
         a
     }
@@ -1238,19 +1054,72 @@ mod tests {
     }
 
     #[test]
-    fn same_as_vertical_removes_horizontal_key() {
+    fn unset_vertical_is_same_as_horizontal_and_unset_horizontal_follows() {
+        let sys = system();
+        let user = CommentAssign::default();
+        let t = Scope::Type("pinyin".into());
+        assert_eq!(
+            shown_choice(&user, &sys, &t, Col::DefaultV),
+            Choice::SameAsHorizontal
+        );
+        assert_eq!(shown_choice(&user, &sys, &t, Col::DefaultH), Choice::Follow);
+    }
+
+    #[test]
+    fn same_as_horizontal_removes_vertical_key() {
         let sys = system();
         let mut user = CommentAssign::default();
         user.schema.insert(
             "wubi86".into(),
-            cells(Some("pinyin"), Some("chaizi"), None, None),
+            cells(Some("chaizi"), Some("pinyin"), None, None),
         );
         let s = Scope::Schema("wubi86".into());
-        write_choice(&mut user, &sys, &s, Col::DefaultH, &Choice::SameAsVertical);
+        write_choice(
+            &mut user,
+            &sys,
+            &s,
+            Col::DefaultV,
+            &Choice::SameAsHorizontal,
+        );
         assert_eq!(
             user.schema["wubi86"],
-            cells(Some("pinyin"), None, None, None)
+            cells(None, Some("pinyin"), None, None)
         );
+        assert_eq!(
+            shown_choice(&user, &sys, &s, Col::DefaultV),
+            Choice::SameAsHorizontal
+        );
+    }
+
+    /// 每种选项写回后再读出来是同一个选项（用户行与出厂行各一遍）。
+    #[test]
+    fn write_choice_round_trips() {
+        let sys = system();
+        for scope in [
+            Scope::Schema("wubi86".into()),
+            Scope::Type("codetable".into()),
+        ] {
+            for col in Col::ALL {
+                let mut choices = vec![
+                    Choice::Template("pinyin".into()),
+                    Choice::Hide,
+                    Choice::Follow,
+                ];
+                if !col.horizontal() {
+                    choices.push(Choice::SameAsHorizontal);
+                }
+                for c in choices {
+                    let mut user = CommentAssign::default();
+                    write_choice(&mut user, &sys, &scope, col, &c);
+                    assert_eq!(
+                        shown_choice(&user, &sys, &scope, col),
+                        c,
+                        "{} {col:?}",
+                        scope.key()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1262,24 +1131,24 @@ mod tests {
             &mut user,
             &sys,
             &s,
-            Col::DetailV,
+            Col::DetailH,
             &Choice::Template("pinyin".into()),
         );
-        write_choice(&mut user, &sys, &s, Col::DetailV, &Choice::Follow);
+        write_choice(&mut user, &sys, &s, Col::DetailH, &Choice::Follow);
         assert_eq!(
             user.schema["wubi86"],
             CommentCells::default(),
-            "用户行：删键"
+            "用户行：横排跟随即删键"
         );
 
         let t = Scope::Type("codetable".into());
-        write_choice(&mut user, &sys, &t, Col::DetailV, &Choice::Follow);
+        write_choice(&mut user, &sys, &t, Col::DetailH, &Choice::Follow);
         assert_eq!(
-            user.by_type["codetable"].detail_vertical.as_deref(),
+            user.by_type["codetable"].detail_horizontal.as_deref(),
             Some("inherit"),
             "出厂格：写 inherit 才压得过出厂值"
         );
-        assert_eq!(shown_choice(&user, &sys, &t, Col::DetailV), Choice::Follow);
+        assert_eq!(shown_choice(&user, &sys, &t, Col::DetailH), Choice::Follow);
     }
 
     #[test]
@@ -1290,15 +1159,15 @@ mod tests {
             &mut user,
             &sys,
             &Scope::Global,
-            Col::DefaultV,
+            Col::DefaultH,
             &Choice::Hide,
         );
-        assert_eq!(user.global.default_vertical.as_deref(), Some("none"));
+        assert_eq!(user.global.default_horizontal.as_deref(), Some("none"));
         write_choice(
             &mut user,
             &sys,
             &Scope::Global,
-            Col::DefaultV,
+            Col::DefaultH,
             &Choice::Template("code_hint".into()),
         );
         assert_eq!(user.global, CommentCells::default(), "选回出厂值即删键");
@@ -1307,41 +1176,22 @@ mod tests {
             &mut user,
             &sys,
             &mode("temp_english"),
-            Col::DefaultV,
+            Col::DefaultH,
             &Choice::Hide,
         );
-        assert!(user.mode["temp_english"].default_vertical.is_none());
+        assert!(user.mode["temp_english"].default_horizontal.is_none());
     }
 
     #[test]
-    fn horizontal_follow_on_user_row_writes_inherit() {
+    fn vertical_follow_on_user_row_writes_inherit() {
         let sys = system();
         let mut user = CommentAssign::default();
         let s = Scope::Schema("wubi86".into());
-        write_choice(&mut user, &sys, &s, Col::DetailH, &Choice::Follow);
+        write_choice(&mut user, &sys, &s, Col::DetailV, &Choice::Follow);
         assert_eq!(
-            user.schema["wubi86"].detail_horizontal.as_deref(),
+            user.schema["wubi86"].detail_vertical.as_deref(),
             Some("inherit"),
-            "横排不写是同竖排，跟随下层横排要写 inherit"
-        );
-    }
-
-    #[test]
-    fn remove_row_deletes_user_rows_and_resets_factory_rows() {
-        let sys = system();
-        let mut user = CommentAssign::default();
-        user.mode
-            .insert("url".into(), cells(Some("pinyin"), None, None, None));
-        user.mode.insert(
-            "temp_english".into(),
-            cells(Some("pinyin"), None, None, None),
-        );
-        assert!(!remove_row(&mut user, &sys, &mode("url")));
-        assert!(!user.mode.contains_key("url"));
-        assert!(remove_row(&mut user, &sys, &mode("temp_english")));
-        assert_eq!(
-            user.mode["temp_english"],
-            cells(Some("inherit"), None, Some("inherit"), None)
+            "竖排不写是同横排，跟随下层竖排要写 inherit"
         );
     }
 
@@ -1406,17 +1256,34 @@ mod tests {
     fn options_keep_an_unknown_current_template() {
         let lib = LibraryInfo::default();
         let cur = Choice::Template("gone".into());
-        let opts = cell_options(&lib, &Scope::Type("pinyin".into()), Col::DefaultH, &cur);
+        let opts = cell_options(&lib, &Scope::Type("pinyin".into()), Col::DefaultV, &cur);
         assert_eq!(
             opts,
             [
                 Choice::Hide,
                 Choice::Follow,
-                Choice::SameAsVertical,
+                Choice::SameAsHorizontal,
                 cur.clone()
             ]
         );
         assert_eq!(choice_label(&lib, &cur, None), "gone（不存在）");
+    }
+
+    #[test]
+    fn following_cells_name_the_resolved_template() {
+        let lib = LibraryInfo::default();
+        assert_eq!(
+            choice_label(&lib, &Choice::Follow, Some("编码提示")),
+            "跟随 · 编码提示"
+        );
+        assert_eq!(
+            choice_label(&lib, &Choice::SameAsHorizontal, Some("拆字")),
+            "同横排 · 拆字"
+        );
+        assert_eq!(
+            choice_label(&lib, &Choice::SameAsHorizontal, None),
+            "同横排"
+        );
     }
 
     #[test]
@@ -1512,31 +1379,102 @@ mod tests {
             &mut user,
             &lib.system_assign,
             &Scope::Schema("wubi86".into()),
-            Col::DefaultV,
+            Col::DefaultH,
             &Choice::Hide,
         );
         assert_eq!(
             serde_json::to_value(&user.schema).unwrap(),
-            json!({ "wubi86": { "default_vertical": "none", "detail_vertical": "mine" } })
+            json!({ "wubi86": { "default_horizontal": "none", "detail_vertical": "mine" } })
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
-    /// 全局行不给跟随；出厂写了横排值的格不给同竖排。
+    /// 全局行不给跟随；出厂写了竖排值的格不给同横排；横排格从不给同横排。
     #[test]
-    fn options_drop_follow_on_global_and_same_as_vertical_over_factory_horizontal() {
+    fn options_drop_follow_on_global_and_same_as_horizontal_over_factory_vertical() {
         let mut lib = LibraryInfo::default();
         lib.system_assign
             .by_type
-            .insert("codetable".into(), cells(None, Some("pinyin"), None, None));
-        let g = cell_options(&lib, &Scope::Global, Col::DefaultV, &Choice::Hide);
+            .insert("codetable".into(), cells(Some("pinyin"), None, None, None));
+        let g = cell_options(&lib, &Scope::Global, Col::DefaultH, &Choice::Hide);
         assert!(!g.contains(&Choice::Follow));
+        assert!(!g.contains(&Choice::SameAsHorizontal));
         let t = Scope::Type("codetable".into());
-        let h = cell_options(&lib, &t, Col::DefaultH, &Choice::Template("pinyin".into()));
-        assert!(!h.contains(&Choice::SameAsVertical));
-        assert!(h.contains(&Choice::Follow));
-        let h2 = cell_options(&lib, &t, Col::DetailH, &Choice::SameAsVertical);
-        assert!(h2.contains(&Choice::SameAsVertical), "出厂没写横排的格照给");
+        let v = cell_options(&lib, &t, Col::DefaultV, &Choice::Template("pinyin".into()));
+        assert!(!v.contains(&Choice::SameAsHorizontal));
+        assert!(v.contains(&Choice::Follow));
+        let v2 = cell_options(&lib, &t, Col::DetailV, &Choice::SameAsHorizontal);
+        assert!(
+            v2.contains(&Choice::SameAsHorizontal),
+            "出厂没写竖排的格照给"
+        );
+    }
+
+    /// mock 的出厂分配与每格结果按横排为主：出厂写横排格，竖排同横排。core 的出厂文件翻成
+    /// 横排以后这条会红，提醒去掉 mock 里的横竖对调。
+    #[test]
+    fn mock_library_is_horizontal_primary() {
+        let lib = library_from_value(&crate::rpc::mock_reply("comment.library", &json!({})));
+        let g = &lib.system_assign.global;
+        assert_eq!(g.default_horizontal.as_deref(), Some("code_hint"));
+        assert_eq!(g.detail_horizontal.as_deref(), Some("detail_full"));
+        assert!(g.default_vertical.is_none() && g.detail_vertical.is_none());
+        assert_eq!(
+            lib.system_assign.by_type["pinyin"]
+                .detail_horizontal
+                .as_deref(),
+            Some("pinyin_english")
+        );
+        let t = Scope::Type("codetable".into());
+        let (id, from) = lib.effective_of(&t, Col::DetailV).unwrap();
+        assert_eq!(
+            (id.as_str(), from.as_str()),
+            ("chaizi_pinyin", "type:codetable")
+        );
+
+        // 用户只写某方案的默认·横：同行默认·竖跟着它。
+        let assign = json!({ "schema": { "wubi98": { "default_horizontal": "pinyin" } } });
+        let lib = library_from_value(&crate::rpc::mock_reply(
+            "comment.library",
+            &json!({ "comment": { "assign": assign } }),
+        ));
+        let s = Scope::Schema("wubi98".into());
+        assert_eq!(lib.effective_of(&s, Col::DefaultV).unwrap().0, "pinyin");
+    }
+
+    /// 两个对话框共用一份草稿：后建的那个不再登记第二套写回。
+    #[test]
+    fn both_dialogs_share_one_draft_and_one_templates_writer() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let data = crate::state::LoadedState::fetch();
+        let mut st = AppState::empty();
+        st.apply_loaded(data);
+        let cfg = st.current_config.clone();
+        build_dialog_button_comment(&st, &cfg);
+        let writers = st.fields.writers.borrow().len();
+        crate::dialogs::comment_templates::build_dialog_button_templates(&st, &cfg);
+        assert_eq!(
+            st.fields.writers.borrow().len(),
+            writers,
+            "模板库对话框不另登记写回"
+        );
+        let a = shared_ui(&st, &cfg);
+        let tpl = vec![CommentTemplateDef {
+            id: "mine".into(),
+            name: "我的".into(),
+            text: "x".into(),
+        }];
+        a.templates.set(tpl.clone());
+        let b = st.fields.comment_ui.borrow().clone().unwrap();
+        assert_eq!(b.templates.get(), tpl, "两框读到同一份草稿");
+        assert_eq!(
+            st.fields.getters.borrow()[TEMPLATES_KEY](),
+            serde_json::to_value(&tpl).unwrap()
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 刷新失败：保留上次结果；出厂基准是播种时定下的，出厂格上选跟随仍写 inherit。
@@ -1556,10 +1494,10 @@ mod tests {
         // 即便库视图被清空，写回仍以播种时的出厂分配为基准。
         ui.view.set(vec![LibraryInfo::default()]);
         let t = Scope::Type("codetable".into());
-        ui.choose(&t, Col::DetailV, &Choice::Follow);
+        ui.choose(&t, Col::DetailH, &Choice::Follow);
         assert_eq!(
             ui.assign.get().by_type["codetable"]
-                .detail_vertical
+                .detail_horizontal
                 .as_deref(),
             Some("inherit")
         );

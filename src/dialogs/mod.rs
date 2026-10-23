@@ -1,6 +1,7 @@
 //! 对话框模块。
 
 pub mod action_expr;
+pub mod comment_assign;
 pub mod comment_dicts_dialog;
 pub mod comment_settings;
 pub mod comment_templates;

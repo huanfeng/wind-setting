@@ -47,6 +47,8 @@ const CHECK: &str = include_str!("../res/icons/ui/check.svg");
 pub const SEARCH: &str = include_str!("../res/icons/ui/search.svg");
 /// 「在新窗口打开」提示角标（侧栏词库项右侧）。
 pub const EXTERNAL: &str = include_str!("../res/icons/ui/external.svg");
+/// 「预览」（分配表每行的预览浮层）。
+pub const EYE: &str = include_str!("../res/icons/ui/eye.svg");
 
 /// 侧栏导航图标（Tab 名精确匹配；新 Tab 回退 sliders）。
 pub fn nav_icon(tab: &str) -> &'static str {
@@ -127,6 +129,7 @@ mod tests {
         ("list", LIST),
         ("check", CHECK),
         ("search", SEARCH),
+        ("eye", EYE),
     ];
 
     /// 取 XML 属性值（`attr="..."` 的第 `nth` 次出现）。
