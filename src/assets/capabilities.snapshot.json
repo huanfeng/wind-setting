@@ -536,9 +536,24 @@
       "type": "int"
     },
     {
-      "default": false,
-      "key": "schema.pinyin.english_merge.prefix_complete",
-      "type": "bool"
+      "default": 0,
+      "key": "schema.pinyin.english_merge.complete_min_length",
+      "type": "int"
+    },
+    {
+      "default": 0,
+      "key": "schema.pinyin.english_merge.exact_position",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.pinyin.english_merge.complete_position",
+      "type": "int"
+    },
+    {
+      "default": 2,
+      "key": "schema.pinyin.english_merge.max_count",
+      "type": "int"
     },
     {
       "default": false,

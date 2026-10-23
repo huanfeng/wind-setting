@@ -798,16 +798,55 @@ min = 0
 max = 10
 enabled_when = "schema.pinyin.english_merge.enable == true"
 
-# 前缀补全：中文侧有候选时也补（出厂关）。判据在核心 `english_merge::prefix_complete_applies`，
-# hint 写的就是那条判据；双拼不生效同理由核心排除（判据按全拼音节定义）。
+# 以下各项与码表 / 混输同口径（码长 → 位置 → 条数），见核心 `english_merge::select`。
+# 补全另叠一条拼音判据（核心 `english_merge::prefix_complete_applies`），hint 写的就是它；
+# 双拼不生效同理由核心排除（判据按全拼音节定义）。
 [[items]]
-key = "schema.pinyin.english_merge.prefix_complete"
+key = "schema.pinyin.english_merge.complete_min_length"
 group = "schema"
 section = "候选行为"
 dialog_group = "py_english"
-type = "toggle"
-label = "英文前缀补全"
-hint = "有中文候选时也补至多 2 个英文词，但只在打的不是完整拼音时补：至少 5 个字母，且怎么切都切不成完整拼音（templa 补 template，shang 不补）。双拼方案不生效"
+type = "number"
+label = "英文补全最小码长"
+hint = "有中文候选时，输入达到此长度也按前缀补全英文（建议 5），但只在打的不是完整拼音时补：怎么切都切不成完整拼音（templa 补 template，shang 不补）；0 = 只在没有中文候选时补全。双拼方案不生效"
+min = 0
+max = 10
+enabled_when = "schema.pinyin.english_merge.enable == true"
+
+[[items]]
+key = "schema.pinyin.english_merge.exact_position"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_english"
+type = "number"
+label = "英文单词最前位置"
+hint = "整串恰好是英文单词时，英文最靠前排在第几位；0 = 按方案自动：全拼 1、双拼 2。仍先让过开头的完整匹配中文，只会更靠后"
+min = 0
+max = 10
+enabled_when = "schema.pinyin.english_merge.enable == true"
+
+[[items]]
+key = "schema.pinyin.english_merge.complete_position"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_english"
+type = "number"
+label = "英文补全最前位置"
+hint = "按前缀补全出来的英文最靠前排在第几位；仍先让过开头的完整匹配中文，且总在英文单词之后"
+min = 1
+max = 10
+enabled_when = "schema.pinyin.english_merge.enable == true"
+
+[[items]]
+key = "schema.pinyin.english_merge.max_count"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_english"
+type = "number"
+label = "英文最多条数"
+hint = "有中文候选时英文最多显示几条（完整单词优先，再补前缀补全）；没有中文候选时不受此限"
+min = 1
+max = 10
 enabled_when = "schema.pinyin.english_merge.enable == true"
 
 # 词组补全
