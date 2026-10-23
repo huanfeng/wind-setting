@@ -341,19 +341,11 @@ pub fn build_search_box(
     // - U+2315 虽是单色，但字形细弱、与侧栏那套 2px 线性图标不是一路。
     // 故 `leading_icon(' ')` 只借它留出左侧图标区（宽度 = 字号 + 8），真正的图标
     // 用与导航同一套 SVG 管线画上去，颜色随主题走 placeholder。
-    //
-    // ⚠ `tint` 只吃具体颜色、没有语义色版本，而颜色是**构建时**取的——换肤后不会跟着变。
-    // 故按本仓既有做法（见 `widgets` 里那些 `dark_sig()` 双态块）备好亮暗两枚，
-    // 由 `visible_when` 切换。
-    let icon_for = |on_dark: bool| {
-        let pal = crate::theme_def::theme_for(on_dark).palette;
-        crate::icons::tinted(crate::icons::SEARCH, 14, pal.placeholder)
-            // ⚠ `align` 在 stack 里**一个值同时管两轴**，只写 Start 会把图标顶到左上角。
-            // 要「贴左 + 垂直居中」必须分开给值。
-            .align_xy(Align::Start, Align::Center)
-            .margin_xy(9, 0)
-            .visible_when(move || crate::widgets::dark_sig().get() == on_dark)
-    };
+    let icon = crate::icons::tinted_role(crate::icons::SEARCH, 14, Role::Placeholder)
+        // ⚠ `align` 在 stack 里**一个值同时管两轴**，只写 Start 会把图标顶到左上角。
+        // 要「贴左 + 垂直居中」必须分开给值。
+        .align_xy(Align::Start, Align::Center)
+        .margin_xy(9, 0);
 
     // ⚠ 子节点的**顺序有约定**：`FocusWatcher` 靠「父节点的第一个子就是输入框」
     // 找到它读焦点态（见该 widget 的说明）。调整顺序前先看那里。
@@ -361,8 +353,7 @@ pub fn build_search_box(
         .width(BOX_W)
         .height(BOX_H)
         .child(input)
-        .child(icon_for(false))
-        .child(icon_for(true))
+        .child(icon)
         .child(clear)
         .child(focus_watcher(st))
 }

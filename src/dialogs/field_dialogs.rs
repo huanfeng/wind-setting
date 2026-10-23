@@ -125,11 +125,10 @@ pub fn build_text_dialog(
                 .padding_xy(18, 10),
         )
         .child(
-            Element::col().width_match().padding_xy(18, 6).child(
-                Element::text_input(text, placeholder)
-                    .width_match()
-                    .height(36),
-            ),
+            Element::col()
+                .width_match()
+                .padding_xy(18, 6)
+                .child(Element::text_input(text, placeholder).width_match()),
         );
     let frame = match extra {
         Some(e) => frame.child(Element::col().width_match().padding_xy(18, 4).child(e)),

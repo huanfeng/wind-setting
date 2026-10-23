@@ -28,17 +28,18 @@ const MIN_CONTRAST: f32 = 4.5;
 /// `#5B8CF5` 就是 3.2:1。
 const DARK_WHITE_MIN: f32 = 3.0;
 
-/// 悬停态比强调色暗多少（HSL 亮度）。
-const HOVER_DARKEN: f32 = 0.055;
-/// 按下态比强调色暗多少（HSL 亮度）。
-const ACTIVE_DARKEN: f32 = 0.13;
+/// 悬停态的 HSL 亮度按此比例收缩（l × 0.90）。按比例而非减定值：近黑的强调色减定值会
+/// 两态都夹到纯黑、分不出来。
+const HOVER_DARKEN: f32 = 0.10;
+/// 按下态的 HSL 亮度收缩比例（l × 0.77）。
+const ACTIVE_DARKEN: f32 = 0.23;
 
 /// 设置窗亮档卡片底（`theme_def::light_theme` 的 surface）。
 const LIGHT_SURFACE: Color = Color::hex(0xFFFFFF);
 /// 设置窗暗档卡片底（`theme_def::dark_theme` 的 surface）。
 const DARK_SURFACE: Color = Color::hex(0x1A2333);
 
-/// 一档的强调色组，直接落进 windui 调色板的四个槽位。
+/// 一档的强调色组，直接落进 windui 调色板的四个槽位（`accent_text` 随 `accent` 一起设）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AccentSet {
     pub accent: Color,
@@ -102,13 +103,14 @@ pub fn derive(raw: Color, dark: bool) -> Derived {
     // 亮度没动就原样用输入色：HSL 往返在 u8 取整下不保证逐位还原，拿它比相等会误报「已调整」。
     let unchanged = l2 == l;
     let accent = if unchanged { base } else { from_hsl(h, s, l2) };
-    // 悬停 / 按下一律加深（同 windui 0.29 亮档：blue-600 → 700 → 800，约 −5.5 / −13 个百分点）。
+    // 悬停 / 按下一律加深（同 windui 0.29 亮档：blue-600 → 700 → 800；默认蓝上约 −5.6 / −12.8
+    // 个百分点）。
     // 暗档也加深而不是照库的习惯变亮：本仓暗档强调色还兼作卡片上的文字，亮度已贴着压白字
     // 3:1 的下限，再亮就不达标；加深只会让白字更清楚。
     let set = AccentSet {
         accent,
-        hover: from_hsl(h, s, (l2 - HOVER_DARKEN).max(0.0)),
-        active: from_hsl(h, s, (l2 - ACTIVE_DARKEN).max(0.0)),
+        hover: from_hsl(h, s, l2 * (1.0 - HOVER_DARKEN)),
+        active: from_hsl(h, s, l2 * (1.0 - ACTIVE_DARKEN)),
         on_accent: Color::WHITE,
     };
     if unchanged {
@@ -385,18 +387,12 @@ mod tests {
             let d = |x: u8, y: u8| (x as i32 - y as i32).abs();
             d(a.r, b.r).max(d(a.g, b.g)).max(d(a.b, b.b)) <= 2
         };
-        for (dark, accent, hover, active) in [
-            (false, 0x2F6BED, 0x1559EB, 0x114BC8),
-            (true, 0x5B8CF5, 0x4179F3, 0x1D60F1),
-        ] {
-            let s = set_of(derive(Color::hex(accent), dark));
-            assert_eq!(s.accent, Color::hex(accent));
-            assert!(close(s.hover, Color::hex(hover)), "{dark}: {:?}", s.hover);
-            assert!(
-                close(s.active, Color::hex(active)),
-                "{dark}: {:?}",
-                s.active
-            );
+        for dark in [false, true] {
+            let p = crate::theme_def::theme_for(dark).palette;
+            let s = set_of(derive(p.accent, dark));
+            assert_eq!(s.accent, p.accent);
+            assert!(close(s.hover, p.accent_hover), "{dark}: {:?}", s.hover);
+            assert!(close(s.active, p.accent_active), "{dark}: {:?}", s.active);
         }
     }
 
@@ -428,6 +424,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 近黑的强调色（HSL 亮度约 5%）悬停与按下仍分得开：减定值会把两态都夹到纯黑。
+    #[test]
+    fn near_black_accent_keeps_hover_and_active_apart() {
+        let s = set_of(derive(Color::hex(0x00001A), false));
+        assert_ne!(s.hover, s.active);
+        assert_ne!(s.active, Color::hex(0x000000));
     }
 
     #[test]

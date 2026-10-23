@@ -36,8 +36,8 @@ pub fn light_theme() -> Theme {
     let mut t = Theme::default();
     let p = &mut t.palette;
     p.accent = Color::hex(0x2F6BED);
-    p.accent_hover = Color::hex(0x1559EB);
-    p.accent_active = Color::hex(0x114BC8);
+    p.accent_hover = Color::hex(0x1558EB);
+    p.accent_active = Color::hex(0x114BC9);
     p.on_accent = Color::WHITE;
     // 左栏(Bg)=#F5F7FA、右内容(SurfaceAlt)=#FBFCFE、卡片(Surface)=#FFFFFF（高一档 + 边框分隔）。
     p.bg = Color::hex(0xF5F7FA);
@@ -56,6 +56,10 @@ pub fn light_theme() -> Theme {
     // 取值与 placeholder 相同是参考稿如此，语义则分家：windui 0.12 起有正牌的
     // `Role::TextSubtle`，此前本仓借 `Role::Placeholder` 上色，把可读说明说成了待填写。
     p.text_subtle = Color::hex(0x97A1B2);
+    // 反色表面按 windui 的约定取正文色 / 窗口底：亮档 tooltip、toast 随之用本仓的蓝灰，
+    // 暗档实底按钮换深字时的深字候选也是 `on_surface_inverse`。
+    p.surface_inverse = p.text;
+    p.on_surface_inverse = p.bg;
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
@@ -68,8 +72,8 @@ pub fn dark_theme() -> Theme {
     let mut t = Theme::dark();
     let p = &mut t.palette;
     p.accent = Color::hex(0x5B8CF5);
-    p.accent_hover = Color::hex(0x4179F3);
-    p.accent_active = Color::hex(0x1D60F1);
+    p.accent_hover = Color::hex(0x3B76F3);
+    p.accent_active = Color::hex(0x1259F1);
     p.on_accent = Color::WHITE;
     // 强调色当前景就用它本身：本仓的暗档强调色（含主题色派生的，见 `accent::derive`）已保证
     // 在卡片上 ≥ 4.5:1。windui 默认再提亮 35%，库画的焦点环、描边按钮会与本仓按
@@ -91,6 +95,9 @@ pub fn dark_theme() -> Theme {
     p.placeholder = Color::hex(0x6C7890);
     // 设置行描述这类三级弱化正文（参考稿 text3 ≈ 白 42% 合成色）。选型同亮色主题。
     p.text_subtle = Color::hex(0x6C7890);
+    // 反色表面同亮档。
+    p.surface_inverse = p.text;
+    p.on_surface_inverse = p.bg;
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
@@ -105,9 +112,9 @@ pub fn theme_for(dark: bool) -> Theme {
 
 /// 按明暗取主题，并换上给定的强调色组（`None` = 设置窗默认蓝）。
 ///
-/// 只动强调色四个槽位：底色、卡片、文字等仍是设置窗自己的（见 [`crate::accent`] 的取舍）。
+/// 只动强调色五个槽位（含 `accent_text`）：底色、卡片、文字等仍是设置窗自己的（见 [`crate::accent`] 的取舍）。
 /// 用到强调色的静态控件一律走角色色（`bg_role_alpha` / `bg_gradient_roles` / `tint_role`），
-/// 换这四个槽位即整窗跟随。
+/// 换这五个槽位即整窗跟随。
 pub fn theme_with_accent(dark: bool, accent: Option<crate::accent::AccentSet>) -> Theme {
     let mut t = theme_for(dark);
     if let Some(a) = accent {
@@ -153,7 +160,7 @@ mod tests {
     /// 「主题色：跟随输入法」——换了主题它还是蓝的，而且截图上要切到非默认主题才看得出来。
     #[test]
     fn accent_hex_only_lives_in_theme_def() {
-        let palette_hex = ["2F6BED", "1559EB", "114BC8", "5B8CF5", "4179F3", "1D60F1"];
+        let palette_hex = ["2F6BED", "1558EB", "114BC9", "5B8CF5", "3B76F3", "1259F1"];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut stack = vec![root];
         let mut hits = Vec::new();
@@ -182,12 +189,29 @@ mod tests {
         );
     }
 
+    /// 默认暗档的强调前景就是强调色本身，不经 windui 的 35% 提亮（理由见 `dark_theme`）。
+    #[test]
+    fn dark_accent_text_is_accent() {
+        let p = dark_theme().palette;
+        assert_eq!(p.accent_text(), p.accent);
+    }
+
+    /// 反色表面取本仓自己的正文色 / 窗口底，不落到 windui 默认的 slate。
+    #[test]
+    fn surface_inverse_follows_own_palette() {
+        for dark in [false, true] {
+            let p = theme_for(dark).palette;
+            assert_eq!(p.surface_inverse, p.text, "dark={dark}");
+            assert_eq!(p.on_surface_inverse, p.bg, "dark={dark}");
+        }
+    }
+
     #[test]
     fn theme_with_accent_only_touches_accent_slots() {
         let set = crate::accent::AccentSet {
             accent: Color::hex(0x05875F),
-            hover: Color::hex(0x05A573),
-            active: Color::hex(0x036546),
+            hover: Color::hex(0x057A56),
+            active: Color::hex(0x046849),
             on_accent: Color::WHITE,
         };
         let base = theme_for(false);
