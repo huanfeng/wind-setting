@@ -3670,7 +3670,7 @@ section = "候选标注"
 subsection = "切换"
 type = "segmented"
 label = "当前状态"
-hint = "默认与详细两态共用于所有方案；用切换键、命令短语 cozs 或按键绑定切换时写回这里"
+hint = "两态所有方案共用；切换键、命令短语 cozs 切换时写回这里"
 options = [{ value = "default", label = "默认" }, { value = "detail", label = "详细" }]
 dialog_title = "注释切换与显示"
 dialog_hint = "切换键、切换方式，上方注释条与最大字数"
@@ -3682,7 +3682,7 @@ section = "候选标注"
 subsection = "切换"
 type = "select"
 label = "切换键"
-hint = "候选窗出现时单击它切换注释状态。选 Alt 时 Windows 上会装全局键盘钩子；F1 等功能键请到「按键」页的按键绑定里选「注释：切换默认 / 详细」（comment_state）"
+hint = "候选窗出现时单击它切换；F1 等功能键请在按键绑定里绑 comment_state"
 options = [
   { value = "ctrl", label = "任一 Ctrl" },
   { value = "lctrl", label = "左 Ctrl" },
@@ -3716,7 +3716,7 @@ section = "候选标注"
 subsection = "显示"
 type = "toggle"
 label = "注释首行显示在候选上方"
-hint = "开启后，模板里第一个换行（\\n）之前的内容显示在候选上方一行，其余仍在候选右侧；换行要写在 { … } 之外。"
+hint = "模板第一个换行（\\n）前的内容显示在候选上方一行"
 dialog_extra_for = "ui.comment.state"
 
 [[items]]
@@ -3726,7 +3726,7 @@ section = "候选标注"
 subsection = "显示"
 type = "number"
 label = "横排最大字数"
-hint = "超过此字数时截断并加省略号；0 = 不限"
+hint = "超出截断并加省略号；0 = 不限"
 min = 0
 max = 64
 dialog_extra_for = "ui.comment.state"
@@ -3738,7 +3738,7 @@ section = "候选标注"
 subsection = "显示"
 type = "number"
 label = "竖排最大字数"
-hint = "竖排每行独占，通常可比横排放宽；0 = 不限（行宽放不下时注释仍会截断，先保候选词完整）"
+hint = "竖排每行独占，可比横排放宽；0 = 不限"
 min = 0
 max = 64
 dialog_extra_for = "ui.comment.state"

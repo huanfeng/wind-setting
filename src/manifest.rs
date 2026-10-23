@@ -4189,7 +4189,11 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
         } else {
             vec![field(state, k)]
         };
-        let first = item_rows.remove(0);
+        let mut first = item_rows.remove(0);
+        // 注释切换键：行下方挂 Alt 钩子说明 / Ctrl 撞键提示（并进同一行，不多一条分割线）。
+        if k == crate::dialogs::comment_switch::SWITCH_KEY {
+            first = crate::dialogs::comment_switch::with_switch_key_note(state, first);
+        }
         rows.push(crate::search::anchor::wrap(
             first,
             crate::search::index::in_dialog_anchor(k),
@@ -4205,7 +4209,19 @@ fn build_grouped_dialog_row(state: &AppState, key: &str, item: &MItem) -> Elemen
         .collect();
     let reset_fn = reset_to_core_defaults(state, reset_keys);
 
-    let dlg = build_group_dialog(visible, &title, rows, Some(reset_fn));
+    // 「注释切换与显示」每行说明较长，默认宽度会截成半句。
+    let dlg = if key == crate::dialogs::comment_switch::HOST_KEY {
+        crate::dialogs::field_dialogs::build_group_dialog_sized(
+            visible,
+            &title,
+            rows,
+            Some(reset_fn),
+            crate::dialogs::comment_switch::DIALOG_W,
+            crate::dialogs::comment_switch::DIALOG_H,
+        )
+    } else {
+        build_group_dialog(visible, &title, rows, Some(reset_fn))
+    };
     register_dialog(state, dlg);
     setting_row(
         &title,

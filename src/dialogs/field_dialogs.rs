@@ -727,6 +727,26 @@ pub fn build_group_dialog_with_link(
     build_group_dialog_shell(visible, title, content, leading)
 }
 
+/// 同 [`build_group_dialog`]，尺寸由调用方定（行说明长、默认 460 宽会截半句的分组对话框）。
+pub fn build_group_dialog_sized(
+    visible: Signal<bool>,
+    title: &str,
+    rows: Vec<Element>,
+    reset_fn: Option<Box<dyn Fn() + 'static>>,
+    width: i32,
+    height: i32,
+) -> Element {
+    let (content, leading) = dialog_body_with_link(rows, reset_fn, None);
+    shell_with_title_sized(
+        visible,
+        Element::label(title),
+        content,
+        leading,
+        width,
+        height,
+    )
+}
+
 /// [`build_group_dialog_with_link`] 的内容区与底栏左侧按钮组装。
 fn dialog_body_with_link(
     rows: Vec<Element>,
