@@ -931,13 +931,14 @@ pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
         )
 }
 
-/// 词库文件在磁盘上的位置：自动项 / 内置项取 `rel`，手工项取 `path`；绝对路径原样用，
-/// 相对路径按 `<层>/schemas/<rel>` 在各层里找，**第一个存在的**为准（用户层遮蔽安装层，
-/// 与 core 扫描同序）。都不存在返回 `None`。
+/// 词库文件在磁盘上的位置：自动项 / 内置项取 `rel`，手工项取 `path`。绝对路径原样用（须是
+/// 文件），相对路径（相对 `schemas/`）交给 `resolve` 找；不存在返回 `None`。
 ///
-/// 不走 `data.locate`：它只认用户词文本目录，`schemas/comments/` 下的文件会被判越界。
+/// 生产上 `resolve` 是 core 的 `Config::resolve_schema_resource`（user > custom > data 逐层
+/// 找文件），与 core 加载词库同一套层序。不走 `data.locate`：它只认用户词文本目录，
+/// `schemas/comments/` 下的文件会被判越界。
 fn resolve_dict_file(
-    layers: &[std::path::PathBuf],
+    resolve: impl Fn(&str) -> Option<std::path::PathBuf>,
     r: &CommentDictRow,
 ) -> Option<std::path::PathBuf> {
     let rel = if r.auto || r.builtin { &r.rel } else { &r.path };
@@ -946,32 +947,22 @@ fn resolve_dict_file(
     }
     let p = std::path::Path::new(rel);
     if p.is_absolute() {
-        return p.exists().then(|| p.to_path_buf());
+        return p.is_file().then(|| p.to_path_buf());
     }
-    layers
-        .iter()
-        .map(|l| l.join("schemas").join(rel))
-        .find(|f| f.exists())
-}
-
-/// 数据层根目录：用户目录在前，安装目录的 `data\` 在后。
-fn data_layers() -> Vec<std::path::PathBuf> {
-    let mut v = Vec::new();
-    if let Some(u) = crate::user_dir::user_config_dir_for_mode(crate::mode::get()) {
-        v.push(u);
-    }
-    if let Some(d) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.join("data")))
-    {
-        v.push(d);
-    }
-    v
+    resolve(rel)
 }
 
 /// 条目右键菜单。文件此刻不在盘上时「打开文件所在位置」置灰（每次右击现算）。
 fn dict_row_menu_items(r: &CommentDictRow) -> Vec<MenuItem> {
-    let found = resolve_dict_file(&data_layers(), r);
+    let found = resolve_dict_file(
+        |rel| {
+            wind_config::Config::resolve_schema_resource(
+                wind_config::Config::data_dir().as_deref(),
+                rel,
+            )
+        },
+        r,
+    );
     let target = found.clone().unwrap_or_default();
     vec![
         MenuItem::run(
@@ -1263,19 +1254,13 @@ mod tests {
         v.as_array().cloned().unwrap_or_default()
     }
 
-    /// 行说明打头给出 `${dict:id}`：模板按库取要填 id，而 id 在列表里别处看不见——
-    /// 靶机上照着说明填了 `${dict:en}`，实际 id 是自动生成的 `chinese_english`，注释恒空。
     #[test]
-    fn resolve_dict_file_prefers_first_layer_with_file() {
+    fn resolve_dict_file_uses_injected_resolver_for_relative_paths() {
         let base = std::env::temp_dir().join(format!("cd_resolve_{}", std::process::id()));
-        let (u, d) = (base.join("u"), base.join("d"));
-        for l in [&u, &d] {
-            std::fs::create_dir_all(l.join("schemas/comments")).unwrap();
-        }
-        std::fs::write(d.join("schemas/comments/a.dict.yaml"), "").unwrap();
-        std::fs::write(u.join("schemas/comments/b.dict.yaml"), "").unwrap();
-        std::fs::write(d.join("schemas/comments/b.dict.yaml"), "").unwrap();
-        let layers = vec![u.clone(), d.clone()];
+        std::fs::create_dir_all(&base).unwrap();
+        let found = base.join("a.dict.yaml");
+        std::fs::write(&found, "").unwrap();
+        let resolver = |rel: &str| (rel == "comments/a.dict.yaml").then(|| found.clone());
         let row = |path: &str, builtin: bool| CommentDictRow {
             path: if builtin { String::new() } else { path.into() },
             rel: if builtin { path.into() } else { String::new() },
@@ -1283,26 +1268,32 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_dict_file(&layers, &row("comments/a.dict.yaml", true)),
-            Some(d.join("schemas/comments/a.dict.yaml"))
+            resolve_dict_file(resolver, &row("comments/a.dict.yaml", true)),
+            Some(found.clone())
         );
         assert_eq!(
-            resolve_dict_file(&layers, &row("comments/b.dict.yaml", false)),
-            Some(u.join("schemas/comments/b.dict.yaml"))
+            resolve_dict_file(resolver, &row("comments/a.dict.yaml", false)),
+            Some(found.clone())
         );
         assert_eq!(
-            resolve_dict_file(&layers, &row("comments/none.yaml", false)),
+            resolve_dict_file(resolver, &row("comments/none.yaml", false)),
             None
         );
-        assert_eq!(resolve_dict_file(&layers, &row("", false)), None);
-        let abs = d.join("schemas/comments/a.dict.yaml");
+        assert_eq!(resolve_dict_file(resolver, &row("", false)), None);
+        let abs = found.to_str().unwrap();
         assert_eq!(
-            resolve_dict_file(&[], &row(abs.to_str().unwrap(), false)),
-            Some(abs)
+            resolve_dict_file(|_| None, &row(abs, false)),
+            Some(found.clone())
+        );
+        assert_eq!(
+            resolve_dict_file(|_| None, &row(base.to_str().unwrap(), false)),
+            None
         );
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 行说明打头给出 `${dict:id}`：模板按库取要填 id，而 id 在列表里别处看不见——
+    /// 靶机上照着说明填了 `${dict:en}`，实际 id 是自动生成的 `chinese_english`，注释恒空。
     #[test]
     fn row_desc_shows_dict_var_with_id() {
         let rows = rows_from_value(&arr(json!([{
