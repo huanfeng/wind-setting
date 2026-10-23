@@ -35,7 +35,7 @@ use windui::prelude::*;
 /// 一条注释词库的条目定义（对应 core 的一个 `[[ui.comment_dicts]]`）。
 ///
 /// **不含 `enabled`**：那一位存在 [`CommentDictsUi::switches`] 里，理由见模块文档。
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Default)]
 pub struct CommentDictRow {
     /// 稳定标识。core 用它做日志定位，本屏用它索引开关与挡重名，故要求非空且唯一。
     pub id: String,
@@ -875,6 +875,7 @@ pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
                 }
                 let ctrl = ctrl.child(Element::switch(sig));
 
+                let menu_row = r.clone();
                 crate::widgets::list_row(
                     Element::row()
                         .width_match()
@@ -886,6 +887,7 @@ pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
                                 .weight(1.0),
                         ),
                 )
+                .on_context_menu(move || dict_row_menu_items(&menu_row))
             })
             .on_reorder({
                 let rows = ui.rows;
@@ -927,6 +929,62 @@ pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
                         .on_click(move |_| new_ui.picker.set(true)),
                 ),
         )
+}
+
+/// 词库文件在磁盘上的位置：自动项 / 内置项取 `rel`，手工项取 `path`；绝对路径原样用，
+/// 相对路径按 `<层>/schemas/<rel>` 在各层里找，**第一个存在的**为准（用户层遮蔽安装层，
+/// 与 core 扫描同序）。都不存在返回 `None`。
+///
+/// 不走 `data.locate`：它只认用户词文本目录，`schemas/comments/` 下的文件会被判越界。
+fn resolve_dict_file(
+    layers: &[std::path::PathBuf],
+    r: &CommentDictRow,
+) -> Option<std::path::PathBuf> {
+    let rel = if r.auto || r.builtin { &r.rel } else { &r.path };
+    if rel.trim().is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(rel);
+    if p.is_absolute() {
+        return p.exists().then(|| p.to_path_buf());
+    }
+    layers
+        .iter()
+        .map(|l| l.join("schemas").join(rel))
+        .find(|f| f.exists())
+}
+
+/// 数据层根目录：用户目录在前，安装目录的 `data\` 在后。
+fn data_layers() -> Vec<std::path::PathBuf> {
+    let mut v = Vec::new();
+    if let Some(u) = crate::user_dir::user_config_dir_for_mode(crate::mode::get()) {
+        v.push(u);
+    }
+    if let Some(d) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join("data")))
+    {
+        v.push(d);
+    }
+    v
+}
+
+/// 条目右键菜单。文件此刻不在盘上时「打开文件所在位置」置灰（每次右击现算）。
+fn dict_row_menu_items(r: &CommentDictRow) -> Vec<MenuItem> {
+    let found = resolve_dict_file(&data_layers(), r);
+    let target = found.clone().unwrap_or_default();
+    vec![
+        MenuItem::run(
+            "打开文件所在位置",
+            move |_ctx| {
+                if let Err(e) = crate::log_tools::reveal(&target) {
+                    eprintln!("打开文件所在位置失败：{e}");
+                }
+            },
+            false,
+        )
+        .enabled(found.is_some()),
+    ]
 }
 
 /// 「注释词库」页的二级弹层：挑文件、新建/编辑表单。
@@ -1207,6 +1265,44 @@ mod tests {
 
     /// 行说明打头给出 `${dict:id}`：模板按库取要填 id，而 id 在列表里别处看不见——
     /// 靶机上照着说明填了 `${dict:en}`，实际 id 是自动生成的 `chinese_english`，注释恒空。
+    #[test]
+    fn resolve_dict_file_prefers_first_layer_with_file() {
+        let base = std::env::temp_dir().join(format!("cd_resolve_{}", std::process::id()));
+        let (u, d) = (base.join("u"), base.join("d"));
+        for l in [&u, &d] {
+            std::fs::create_dir_all(l.join("schemas/comments")).unwrap();
+        }
+        std::fs::write(d.join("schemas/comments/a.dict.yaml"), "").unwrap();
+        std::fs::write(u.join("schemas/comments/b.dict.yaml"), "").unwrap();
+        std::fs::write(d.join("schemas/comments/b.dict.yaml"), "").unwrap();
+        let layers = vec![u.clone(), d.clone()];
+        let row = |path: &str, builtin: bool| CommentDictRow {
+            path: if builtin { String::new() } else { path.into() },
+            rel: if builtin { path.into() } else { String::new() },
+            builtin,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_dict_file(&layers, &row("comments/a.dict.yaml", true)),
+            Some(d.join("schemas/comments/a.dict.yaml"))
+        );
+        assert_eq!(
+            resolve_dict_file(&layers, &row("comments/b.dict.yaml", false)),
+            Some(u.join("schemas/comments/b.dict.yaml"))
+        );
+        assert_eq!(
+            resolve_dict_file(&layers, &row("comments/none.yaml", false)),
+            None
+        );
+        assert_eq!(resolve_dict_file(&layers, &row("", false)), None);
+        let abs = d.join("schemas/comments/a.dict.yaml");
+        assert_eq!(
+            resolve_dict_file(&[], &row(abs.to_str().unwrap(), false)),
+            Some(abs)
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn row_desc_shows_dict_var_with_id() {
         let rows = rows_from_value(&arr(json!([{
