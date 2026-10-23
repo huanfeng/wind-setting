@@ -780,7 +780,6 @@ fn field_row(label: &str, sig: Signal<String>, placeholder: &str) -> Element {
         .child(
             Element::text_input(sig, placeholder)
                 .width_match()
-                .height(32)
                 .weight(1.0),
         )
 }

@@ -295,6 +295,8 @@ const SEARCH_MAX_W: i32 = 260;
 
 /// 工具栏：批量操作按钮（按 ops 可见）+ 搜索框（可搜类别）。
 fn build_toolbar(mgr: &DictManagerState) -> Element {
+    // 工具栏里的输入框与两侧 `.small()` 按钮同高。
+    let small_h = windui::theme::current().metrics.control_h_sm;
     // 添加（dict/phrase/shadow 按类别分派）
     let m_add = mgr.clone();
     let v_add = mgr.clone();
@@ -389,14 +391,14 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(muted("次数 ≤"))
         .child(
             Element::text_input(mgr.temp_max_count, "")
-                .width(44)
-                .height(30),
+                .width(48)
+                .height(small_h),
         )
         .child(muted("闲置 ≥"))
         .child(
             Element::text_input(mgr.temp_idle_days, "")
-                .width(44)
-                .height(30),
+                .width(48)
+                .height(small_h),
         )
         .child(muted("天未用"))
         .visible_when(move || v_tf.current_category() == super::spec::WordCategory::Temp);
@@ -427,7 +429,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(
             Element::text_input(mgr.search, "搜索编码或词条…")
                 .weight(1.0)
-                .height(30),
+                .height(small_h),
         )
         .child(
             Element::button("×")
@@ -520,6 +522,7 @@ fn build_pagination(mgr: &DictManagerState) -> Element {
 /// 第 47 页要点 46 次。首页/末页两枚同理——「看最后攒下的那几条」是个高频动作，而它
 /// 恰恰是逐页点击代价最大的位置。
 fn build_page_nav(mgr: &DictManagerState) -> Element {
+    let small_h = windui::theme::current().metrics.control_h_sm;
     let (m_first, e_first) = (mgr.clone(), mgr.clone());
     let (m_prev, e_prev) = (mgr.clone(), mgr.clone());
     let (m_next, e_next) = (mgr.clone(), mgr.clone());
@@ -554,8 +557,8 @@ fn build_page_nav(mgr: &DictManagerState) -> Element {
             // 宽度按**四位数**留（每页 100 条 ⇒ 覆盖到近百万条），再宽输入框就该喧宾夺主了。
             // 46px 只装得下三位，页数上千时末位被框边裁掉。
             Element::text_input(mgr.page_input, "")
-                .width(62)
-                .height(26)
+                .width(66)
+                .height(small_h)
                 .on_submit(move |_| m_jump.submit_page_jump()),
         )
         .child(

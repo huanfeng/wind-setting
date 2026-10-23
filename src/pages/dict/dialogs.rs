@@ -112,11 +112,7 @@ fn io_weight_row(mgr: &DictManagerState, visible: impl Fn() -> bool + 'static) -
                 .fg_role(Role::TextMuted)
                 .width(52),
         )
-        .child(
-            Element::text_input(mgr.io_weight, "1200")
-                .width(96)
-                .height(28),
-        )
+        .child(Element::text_input(mgr.io_weight, "1200").width(96))
         .child(
             Element::label("越大越靠前；纯词列表没有权重列，全部按此值入库")
                 .font_size(12.0)
@@ -399,7 +395,6 @@ fn position_field(mgr: &DictManagerState) -> Element {
             "次序",
             Element::text_input(mgr.edit_position, "")
                 .width(100)
-                .height(34)
                 .on_submit(move |_| submit.submit_word()),
         ))
         .child(position_hint().visible_when(hint_vis))
@@ -443,7 +438,6 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .spacing(8)
         .child(
             Element::text_input(mgr.edit_code, "")
-                .height(34)
                 .weight(1.0)
                 .on_submit(move |_| submit_code.submit_word()),
         )
@@ -501,7 +495,6 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .child(
                     Element::text_input(mgr.edit_weight, "")
                         .width(100)
-                        .height(34)
                         .on_submit(move |_| submit_weight.submit_word()),
                 )
                 .child(
@@ -623,7 +616,6 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
         .child(field(
             "模板",
             Element::text_input(mgr.edit_text, "如 $Y年$M月$D日")
-                .height(34)
                 .weight(1.0)
                 .on_submit(move |_| submit_tpl.submit_word()),
         ))
@@ -730,7 +722,6 @@ fn build_common_dialog(mgr: &DictManagerState) -> Element {
             "字",
             Element::text_input(mgr.edit_text, "")
                 .width(80)
-                .height(34)
                 .on_submit(move |_| submit_char.submit_word()),
         ))
         .child(field(
@@ -824,14 +815,12 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         .child(field(
             "编码",
             Element::text_input(mgr.shadow_code, "")
-                .height(34)
                 .weight(1.0)
                 .on_submit(move |_| submit_code.submit_shadow()),
         ))
         .child(field(
             "词条",
             Element::text_input(mgr.shadow_word, "")
-                .height(34)
                 .weight(1.0)
                 .on_submit(move |_| submit_text.submit_shadow()),
         ))
@@ -847,7 +836,6 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
             "目标位置",
             Element::text_input(mgr.shadow_pos, "")
                 .width(100)
-                .height(34)
                 .enabled_when(move || pos_enabled.shadow_type.get() == 0)
                 .on_submit(move |_| submit_pos.submit_shadow()),
         ));
@@ -1079,7 +1067,6 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
         .child(
             Element::text_input(libs.name, "分库名")
                 .weight(1.0)
-                .height(30)
                 .on_submit(move |_| m_submit.submit_lib_prompt()),
         );
     let err = libs.name_error;

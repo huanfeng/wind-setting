@@ -71,6 +71,10 @@ pub fn dark_theme() -> Theme {
     p.accent_hover = Color::hex(0x6F9BF7);
     p.accent_active = Color::hex(0x4A7CE8);
     p.on_accent = Color::WHITE;
+    // 强调色当前景就用它本身：本仓的暗档强调色（含主题色派生的，见 `accent::derive`）已保证
+    // 在卡片上 ≥ 4.5:1。windui 默认再提亮 35%，库画的焦点环、描边按钮会与本仓按
+    // `Role::Accent` 画的选中字、图标分成两种蓝。
+    p.accent_text = Some(p.accent);
     // 左栏(Bg)=#10161F、右内容(SurfaceAlt)=#131A27、卡片(Surface)=#1A2333（高一档，便于卡片浮起）。
     p.bg = Color::hex(0x10161F);
     p.surface = Color::hex(0x1A2333);
@@ -112,6 +116,7 @@ pub fn theme_with_accent(dark: bool, accent: Option<crate::accent::AccentSet>) -
         p.accent_hover = a.hover;
         p.accent_active = a.active;
         p.on_accent = a.on_accent;
+        p.accent_text = Some(a.accent);
     }
     t
 }
@@ -190,6 +195,12 @@ mod tests {
         assert_eq!(t.palette.accent, set.accent);
         assert_eq!(t.palette.accent_hover, set.hover);
         assert_eq!(t.palette.accent_active, set.active);
+        assert_eq!(t.palette.accent_text(), set.accent);
+        assert_eq!(
+            theme_with_accent(true, Some(set)).palette.accent_text(),
+            set.accent,
+            "暗档强调前景不再另行提亮"
+        );
         assert_eq!(t.palette.surface, base.palette.surface);
         assert_eq!(t.palette.text, base.palette.text);
         assert_eq!(

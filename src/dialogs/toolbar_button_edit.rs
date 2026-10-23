@@ -170,7 +170,6 @@ fn action_row(form: &ButtonForm) -> Element {
         .child(
             Element::text_input(form.arg, "按所选类型填写，见上方说明")
                 .width_match()
-                .height(32)
                 .weight(1.0),
         );
     // 「浏览」只对本机路径类出现：给网址栏配一个文件选择框是误导。
@@ -213,7 +212,6 @@ fn field_row(label: &str, sig: Signal<String>, placeholder: &str) -> Element {
         .child(
             Element::text_input(sig, placeholder)
                 .width_match()
-                .height(32)
                 .weight(1.0),
         )
 }

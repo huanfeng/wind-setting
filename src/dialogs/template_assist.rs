@@ -625,7 +625,7 @@ pub fn insert_color_button(field: &TemplateField, scene: &'static str) -> Elemen
                 .child(
                     Element::text_input(hex, "#RRGGBB")
                         .width(110)
-                        .height(28)
+                        .height(windui::theme::current().metrics.control_h_sm)
                         .on_submit(move |ctx| submit(ctx)),
                 )
                 .child(

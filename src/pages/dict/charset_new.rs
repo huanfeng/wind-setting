@@ -176,11 +176,11 @@ pub fn build_charset_create_dialog(mgr: &DictManagerState) -> Element {
         .child(Element::divider())
         .child(field(
             "文件名",
-            Element::text_input(n.key, "如 my_symbols，保存为 charsets/<文件名>.yaml").height(30),
+            Element::text_input(n.key, "如 my_symbols，保存为 charsets/<文件名>.yaml"),
         ))
         .child(field(
             "显示名",
-            Element::text_input(n.name, "列表里显示的名字，留空同文件名").height(30),
+            Element::text_input(n.name, "列表里显示的名字，留空同文件名"),
         ))
         .child(field(
             "默认判定",
@@ -188,7 +188,7 @@ pub fn build_charset_create_dialog(mgr: &DictManagerState) -> Element {
         ))
         .child(field(
             "优先级",
-            Element::text_input(n.order, "数字小的先判，留空为 5（排在出厂分类前）").height(30),
+            Element::text_input(n.order, "数字小的先判，留空为 5（排在出厂分类前）"),
         ))
         .child(
             Element::label("新建的是空分类。成员与码位范围之后用这一行的「编辑文件」添加。")
