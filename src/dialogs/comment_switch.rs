@@ -8,9 +8,11 @@
 //!
 //! 按住只配 Alt：Ctrl 的按下三个平台都不送到输入法（core 把 hold + Ctrl 按 session 处理）。
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::Value;
+use wind_config::config::{BoundAction, KeysConfig, SessionAction};
 use windui::prelude::*;
 
 use crate::config::Config;
@@ -24,6 +26,7 @@ const MODE_KEY: &str = "ui.comment.switch_mode";
 /// 对话框尺寸：宽到每行说明一行读完，高到放下全部行与一条提示不出滚动条。
 pub const DIALOG_W: i32 = 620;
 pub const DIALOG_H: i32 = 420;
+const HOLD_AS_SESSION: &str = "按住只配 Alt，当前按「临时切换」生效";
 const ALT_NOTE: &str = "Windows 上选 Alt 会安装全局键盘钩子，只在候选窗出现时接管 Alt";
 const HOLD: &str = "hold";
 const HOLD_NOTE: &str = "Ctrl 的按下传不到输入法，选 Alt 系切换键才可用";
@@ -123,16 +126,9 @@ pub fn build_switch_mode_select(
         }),
     );
 
-    // 切换键的当前值从它自己那一行的取值器读（同一个框里、先建）；读不到按可配处理。
-    let reg = state.fields.clone();
-    let hold_ok = move || {
-        reg.getters
-            .borrow()
-            .get(SWITCH_KEY)
-            .map(|g| g())
-            .and_then(|v| v.as_str().map(hold_allowed))
-            .unwrap_or(true)
-    };
+    // 切换键的当前值从它自己那一行的取值器读（同一个框里、先建），取不到退回配置。
+    let read = current_reader(state);
+    let hold_ok = move || read(SWITCH_KEY).as_str().is_none_or(hold_allowed);
     let hold_ok = Rc::new(hold_ok);
     let items = signal(mode_items(&labels, hold, hold_ok()));
     let relabel = {
@@ -171,6 +167,20 @@ pub fn build_switch_mode_select(
         .child(dd)
 }
 
+/// 某项的当前值：页面上的取值器优先（改了即时反映），没建那一行时退回配置。
+fn current_reader(state: &AppState) -> Rc<dyn Fn(&str) -> Value> {
+    let reg = state.fields.clone();
+    let cfg = state.current_config.clone();
+    Rc::new(move |k: &str| {
+        reg.getters
+            .borrow()
+            .get(k)
+            .map(|g| g())
+            .or_else(|| cfg.get_path(k).cloned())
+            .unwrap_or(Value::Null)
+    })
+}
+
 /// 切换键覆盖的 Ctrl 侧：`(键名, 显示名)`。Alt 系不收进这几张表，不会撞。
 fn ctrl_sides(switch_key: &str) -> &'static [(&'static str, &'static str)] {
     const L: (&str, &str) = ("lctrl", "左 Ctrl");
@@ -183,42 +193,65 @@ fn ctrl_sides(switch_key: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+/// 键名是不是这一侧的 Ctrl。会话表的键先剥掉 `shift+`（同 core `session_key_to_vk`）。
 fn is_side(key: &str, side: &str) -> bool {
     let k = key.trim().to_ascii_lowercase();
+    let k = k.strip_prefix("shift+").map(str::trim).unwrap_or(&k);
     k == side || k == side.replace("ctrl", "control")
 }
 
-/// 别的功能对 Ctrl 单击的占用（取自配置）。
+/// 别的功能对 Ctrl 单击的占用。**只查全局表**：方案级的会话动作 / 引导键不查（设置页这里
+/// 不知道用户在用哪个方案）。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CtrlUses {
     /// `keys.toggle_mode_keys`。
     pub toggle_mode_keys: Vec<String>,
-    /// `keys.select_key_groups`（`lrctrl` 两侧都占）。
-    pub select_key_groups: Vec<String>,
-    /// `keys.session_actions` 的键。
-    pub session_keys: Vec<String>,
-    /// `keys.key_actions` 的键。
-    pub key_action_keys: Vec<String>,
+    /// 有效的会话态按键表：键组展开 ⊕ `keys.session_actions`（同 core
+    /// `KeysConfig::effective_session_actions`）。
+    pub session: BTreeMap<String, String>,
+    /// `keys.key_actions`。
+    pub key_actions: BTreeMap<String, String>,
 }
 
-/// 冲突提示：切换键的 Ctrl 侧被别的功能占用时给一句话，否则 None。切换方式是「不使用」时不提示。
-pub fn conflict_note(switch_key: &str, mode: &str, uses: &CtrlUses) -> Option<String> {
-    if mode == "off" {
-        return None;
+impl CtrlUses {
+    pub fn from_keys(keys: &KeysConfig) -> Self {
+        Self {
+            toggle_mode_keys: keys.toggle_mode_keys.clone(),
+            session: keys.effective_session_actions(),
+            key_actions: keys.key_actions.clone(),
+        }
     }
+}
+
+/// 冲突提示：切换键的 Ctrl 侧被别的功能占用时给一句话，否则 None。动作是 `none`（或不认识）
+/// 的绑定不算占用，与 core 编译热键表时跳过它们一致。
+pub fn conflict_note(switch_key: &str, uses: &CtrlUses) -> Option<String> {
     let owners_of = |side: &str| {
         let mut o: Vec<&str> = Vec::new();
+        let mut push = |x| {
+            if !o.contains(&x) {
+                o.push(x);
+            }
+        };
         if uses.toggle_mode_keys.iter().any(|k| is_side(k, side)) {
-            o.push("中英切换");
+            push("中英切换");
         }
-        if uses.select_key_groups.iter().any(|g| g == "lrctrl") {
-            o.push("选词");
+        for (k, v) in &uses.session {
+            let a = SessionAction::parse(v);
+            if a.is_enabled() && is_side(k, side) {
+                push(if a.candidate_ordinal().is_some() {
+                    "选词"
+                } else {
+                    "会话动作"
+                });
+            }
         }
-        if uses.session_keys.iter().any(|k| is_side(k, side)) {
-            o.push("会话动作");
-        }
-        if uses.key_action_keys.iter().any(|k| is_side(k, side)) {
-            o.push("引导键");
+        if uses
+            .key_actions
+            .iter()
+            .any(|(k, v)| BoundAction::parse(v).is_enabled() && is_side(k, side))
+        {
+            push("引导键");
         }
         o
     };
@@ -241,50 +274,55 @@ pub fn conflict_note(switch_key: &str, mode: &str, uses: &CtrlUses) -> Option<St
     ))
 }
 
-/// 切换键行下方的提示：选 Alt 时说明钩子，Ctrl 侧撞键时说明冲突；都没有为空串。
-pub fn switch_key_note(switch_key: &str, mode: &str, uses: &CtrlUses) -> String {
+/// 切换键行下方的提示，没有为空串。注释关着或切换方式是「不使用」时什么都不提示；
+/// 选 Alt 说明钩子；选 Ctrl 时说明「按住」按临时切换生效（存着 hold 的旧配置）与撞键。
+pub fn switch_key_note(enabled: bool, switch_key: &str, mode: &str, uses: &CtrlUses) -> String {
+    if !enabled || mode == "off" {
+        return String::new();
+    }
     if hold_allowed(switch_key) {
         return ALT_NOTE.to_string();
     }
-    conflict_note(switch_key, mode, uses).unwrap_or_default()
+    let mut parts: Vec<String> = Vec::new();
+    if mode == HOLD {
+        parts.push(HOLD_AS_SESSION.to_string());
+    }
+    parts.extend(conflict_note(switch_key, uses));
+    parts.join("；")
 }
 
-fn str_list(v: &Value) -> Vec<String> {
-    v.as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|x| x.as_str().map(str::to_string))
-        .collect()
-}
+/// 拼 [`CtrlUses`] 要的几张全局表（取不到的项不放，按 core 出厂值）。
+const KEYS_READ: [&str; 7] = [
+    "toggle_mode_keys",
+    "session_actions",
+    "key_actions",
+    "select_key_groups",
+    "page_keys",
+    "highlight_keys",
+    "select_char_keys",
+];
 
-fn map_keys(v: &Value) -> Vec<String> {
-    v.as_object()
-        .map(|m| m.keys().cloned().collect())
+fn uses_from_reader(read: &dyn Fn(&str) -> Value) -> CtrlUses {
+    let mut obj = serde_json::Map::new();
+    for k in KEYS_READ {
+        let v = read(&format!("keys.{k}"));
+        if !v.is_null() {
+            obj.insert(k.to_string(), v);
+        }
+    }
+    serde_json::from_value::<KeysConfig>(Value::Object(obj))
+        .map(|k| CtrlUses::from_keys(&k))
         .unwrap_or_default()
 }
 
-/// 切换键那一行（`row`）连同下方提示。各键的当前值优先取页面上的取值器（改了即时刷新），
-/// 没建那一页时退回配置。
+/// 切换键那一行（`row`）连同下方提示，值变了即时刷新。
 pub fn with_switch_key_note(state: &AppState, row: Element) -> Element {
-    let reg = state.fields.clone();
-    let cfg = state.current_config.clone();
-    let read = move |k: &str| -> Value {
-        reg.getters
-            .borrow()
-            .get(k)
-            .map(|g| g())
-            .or_else(|| cfg.get_path(k).cloned())
-            .unwrap_or(Value::Null)
-    };
+    let read = current_reader(state);
     let compute = move || {
         let s = |k: &str| read(k).as_str().unwrap_or("").to_string();
-        let uses = CtrlUses {
-            toggle_mode_keys: str_list(&read("keys.toggle_mode_keys")),
-            select_key_groups: str_list(&read("keys.select_key_groups")),
-            session_keys: map_keys(&read("keys.session_actions")),
-            key_action_keys: map_keys(&read("keys.key_actions")),
-        };
-        switch_key_note(&s(SWITCH_KEY), &s(MODE_KEY), &uses)
+        let enabled = read("ui.comment.enabled").as_bool().unwrap_or(true);
+        let uses = uses_from_reader(&*read);
+        switch_key_note(enabled, &s(SWITCH_KEY), &s(MODE_KEY), &uses)
     };
     let compute = Rc::new(compute);
     let text = signal(compute());
@@ -406,57 +444,108 @@ mod tests {
         assert!(matches!(target("ui.comment_dicts"), JumpTarget::Row { .. }));
     }
 
-    fn uses(toggle: &[&str], groups: &[&str], session: &[&str]) -> CtrlUses {
-        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect();
-        CtrlUses {
-            toggle_mode_keys: v(toggle),
-            select_key_groups: v(groups),
-            session_keys: v(session),
-            key_action_keys: Vec::new(),
-        }
+    fn uses(toggle: &[&str], groups: &[&str], session: &[(&str, &str)]) -> CtrlUses {
+        let keys: KeysConfig = serde_json::from_value(serde_json::json!({
+            "toggle_mode_keys": toggle,
+            "select_key_groups": groups,
+            "session_actions": session.iter().cloned().collect::<BTreeMap<_, _>>(),
+        }))
+        .unwrap();
+        CtrlUses::from_keys(&keys)
     }
+
+    const TAIL: &str = "，那些功能优先，切换键此时不生效";
 
     #[test]
     fn left_ctrl_toggle_conflicts_only_on_its_side() {
         let u = uses(&["lshift", "lctrl"], &[], &[]);
         assert_eq!(
-            conflict_note("ctrl", "session", &u).as_deref(),
-            Some("左 Ctrl 已用作中英切换，那些功能优先，切换键此时不生效")
+            conflict_note("ctrl", &u),
+            Some(format!("左 Ctrl 已用作中英切换{TAIL}"))
         );
-        assert!(conflict_note("rctrl", "session", &u).is_none(), "右侧不撞");
-        assert!(
-            conflict_note("lctrl", "off", &u).is_none(),
+        assert!(conflict_note("rctrl", &u).is_none(), "右侧不撞");
+        assert_eq!(
+            switch_key_note(true, "lctrl", "off", &u),
+            "",
             "不使用时不提示"
+        );
+        assert_eq!(
+            switch_key_note(false, "lctrl", "session", &u),
+            "",
+            "注释关着不提示"
         );
     }
 
     #[test]
     fn lrctrl_select_group_hits_both_sides() {
-        let u = uses(&[], &["semicolon_quote", "lrctrl"], &["rcontrol"]);
+        let u = uses(
+            &[],
+            &["semicolon_quote", "lrctrl"],
+            &[("rctrl", "page_next")],
+        );
         assert_eq!(
-            conflict_note("ctrl", "persist", &u).as_deref(),
-            Some(
-                "左 Ctrl 已用作选词；右 Ctrl 已用作选词、会话动作，那些功能优先，切换键此时不生效"
-            )
+            conflict_note("ctrl", &u),
+            Some(format!("左 Ctrl 已用作选词；右 Ctrl 已用作会话动作{TAIL}")),
+            "显式会话表覆盖键组展开"
         );
         let u = uses(&[], &["lrctrl"], &[]);
         assert_eq!(
-            conflict_note("ctrl", "session", &u).as_deref(),
-            Some("左右 Ctrl 已用作选词，那些功能优先，切换键此时不生效")
+            conflict_note("ctrl", &u),
+            Some(format!("左右 Ctrl 已用作选词{TAIL}"))
         );
+    }
+
+    #[test]
+    fn disabled_session_binding_does_not_conflict_and_shift_prefix_does() {
+        let u = uses(&[], &["lrctrl"], &[("lctrl", "none")]);
+        assert_eq!(
+            conflict_note("lctrl", &u),
+            None,
+            "lctrl = none 压掉了键组展开"
+        );
+        let u = uses(&[], &[], &[("shift+lctrl", "page_next")]);
+        assert_eq!(
+            conflict_note("lctrl", &u),
+            Some(format!("左 Ctrl 已用作会话动作{TAIL}"))
+        );
+    }
+
+    #[test]
+    fn hold_with_ctrl_says_it_acts_as_session() {
+        let factory = uses(&["lshift", "rshift"], &["semicolon_quote"], &[]);
+        assert_eq!(
+            switch_key_note(true, "ctrl", "hold", &factory),
+            HOLD_AS_SESSION
+        );
+        let busy = uses(&["lctrl"], &[], &[]);
+        assert_eq!(
+            switch_key_note(true, "lctrl", "hold", &busy),
+            format!("{HOLD_AS_SESSION}；左 Ctrl 已用作中英切换{TAIL}"),
+            "与撞键提示共用一行"
+        );
+        assert_eq!(switch_key_note(true, "lalt", "hold", &busy), ALT_NOTE);
     }
 
     #[test]
     fn factory_keys_do_not_conflict_and_alt_shows_hook_note() {
         let factory = uses(&["lshift", "rshift"], &["semicolon_quote"], &[]);
-        assert_eq!(switch_key_note("ctrl", "session", &factory), "");
-        let busy = uses(&["lctrl", "rctrl"], &["lrctrl"], &["lctrl"]);
+        assert_eq!(switch_key_note(true, "ctrl", "session", &factory), "");
+        let busy = uses(&["lctrl", "rctrl"], &["lrctrl"], &[("lctrl", "page_next")]);
         for k in ["alt", "lalt", "ralt"] {
             assert_eq!(
-                switch_key_note(k, "session", &busy),
+                switch_key_note(true, k, "session", &busy),
                 ALT_NOTE,
                 "Alt 不撞，只说明钩子"
             );
         }
+        assert_eq!(switch_key_note(false, "alt", "session", &busy), "");
+    }
+
+    /// 读不到的表按 core 出厂值：出厂不撞。
+    #[test]
+    fn missing_tables_fall_back_to_factory() {
+        let u = uses_from_reader(&|_| Value::Null);
+        assert_eq!(conflict_note("ctrl", &u), None);
+        assert!(u.session.contains_key("semicolon"), "出厂选词键组照样展开");
     }
 }
