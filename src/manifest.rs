@@ -58,6 +58,9 @@ pub struct MItem {
     /// 用于对话框内容不专属于该开关的情形——如「英文符号字符集」同时服务于英文标点智能符号，
     /// 「中文符号字符集」的对话框里还寄居着别的开关；置灰会让另一条路的用户够不着。
     pub gate_soft: bool,
+    /// dialog_button 专用：合并行改成「开关 + 按钮」——开关用 Switch，按钮写这段文字。
+    /// 缺省是「启用」勾选 + 「设置」。用于开关本身就是这一行主角的情形（候选注释）。
+    pub gate_button: Option<String>,
     /// 寄居在某个 dialog_button 的对话框里（值为宿主 dialog_button 的 key），不独立成行。
     /// 与 `dialog_group`/`opens_dialog` 那套「扩展设置」不同：这是把一两个从属项塞进**已有的**
     /// 值编辑对话框，不额外挂按钮，避免为一个开关多开一层套娃。
@@ -233,6 +236,7 @@ impl Manifest {
                         .get("gate_soft")
                         .and_then(|x| x.as_bool())
                         .unwrap_or(false),
+                    gate_button: opt_str(it, "gate_button"),
                     dialog_extra_for: opt_str(it, "dialog_extra_for"),
                     dialog_title: opt_str(it, "dialog_title"),
                     dialog_hint: opt_str(it, "dialog_hint"),
@@ -635,7 +639,7 @@ fn variant_matches_mode(variant: Option<&str>, mode: AppMode) -> bool {
 }
 
 /// 控件标准宽度（右侧对齐区）。
-const CTRL_W: i32 = 150;
+pub(crate) const CTRL_W: i32 = 150;
 
 /// 构建一个 section 的全部设置行，处理「开关 + 设置」合并：
 /// - 某 toggle 被某 dialog_button 用作 `gate_key` → 渲染为合并行（开关 + 设置…），
@@ -1022,6 +1026,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "checkbox_mix_free_select_keys",
     "checkbox_mix_numeric_letter_select",
     "segmented",
+    "select_comment_switch_mode",
     "checkbox_group",
     "number",
     "slider",
@@ -1079,6 +1084,10 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             )
         }
         "segmented" => build_segmented(state, key, item, cfg),
+        // 切换方式：切换键是 Ctrl 系时「按住」不可选，要看另一项的值。
+        "select_comment_switch_mode" => {
+            crate::dialogs::comment_switch::build_switch_mode_select(state, key, item, cfg)
+        }
         "checkbox_group" => build_checkbox_group(state, key, item, cfg),
         "number" | "slider" => build_number(state, key, item, cfg),
         "number_select" => build_number_select(state, key, item, cfg),
@@ -3791,7 +3800,7 @@ fn build_dialog_body_inner(
         // 套不上，走专用对话框（销掉 capabilities 里 `ui.comment_dicts` 那条 UNCOVERED）。
         build_dialog_button_comment_dicts(state, cfg)
     } else if item.typ == "dialog_button_comment_templates" {
-        // 注释模板库：与「候选注释」对话框共用一份草稿（见 dialogs::comment_settings::shared_ui）。
+        // 注释模板库：与分配对话框共用一份草稿（见 dialogs::comment_settings::shared_ui）。
         crate::dialogs::comment_templates::build_dialog_button_templates(state, cfg)
     } else if item.typ == "dialog_button_emoji_modules" {
         // emoji 附加模块：条数不定（内置 + 用户放进 emoji\ 的文件），整张表读写。
@@ -3827,7 +3836,7 @@ fn build_dialog_body_inner(
         // 自定义序号标签：字符串拆成 10 个序号槽位，专用 10 框对话框。
         build_dialog_button_index_labels(state, key, cfg)
     } else if key == crate::dialogs::comment_settings::HOST_KEY {
-        // 候选注释：分配总表、模板库、注释词库与切换方式，同一个 Tab 对话框。
+        // 候选注释的分配总表（与模板库共用一份草稿）。
         crate::dialogs::comment_settings::build_dialog_button_comment(state, cfg)
     } else if key == "ui.font.fallback" || key == "ui.font.scripts" {
         // ⚠️ 字体名**含空格**（`Microsoft YaHei UI`），两条通用兜底都会毁数据：
@@ -3874,11 +3883,30 @@ fn build_gated_dialog_row(
         open_dialog_button(visible).enabled_signal(gate_sig)
     };
 
-    let control = Element::row()
-        .cross(Align::Center)
-        .spacing(10)
-        .child(Element::checkbox("启用", gate_sig).fg_role(Role::Text))
-        .child(btn);
+    let control = match &dlg_item.gate_button {
+        // 「开关 + 按钮」：开关是这一行的主角，按钮写明打开的是什么。
+        Some(text) => {
+            let btn = Element::button(text.as_str())
+                .small()
+                .outline_soft()
+                .on_click(move |_| visible.set(true));
+            let btn = if dlg_item.gate_soft {
+                btn
+            } else {
+                btn.enabled_signal(gate_sig)
+            };
+            Element::row()
+                .cross(Align::Center)
+                .spacing(10)
+                .child(Element::switch(gate_sig))
+                .child(btn)
+        }
+        None => Element::row()
+            .cross(Align::Center)
+            .spacing(10)
+            .child(Element::checkbox("启用", gate_sig).fg_role(Role::Text))
+            .child(btn),
+    };
     setting_row(&gate_item.label, gate_item.hint.as_deref(), control)
 }
 
@@ -4597,8 +4625,7 @@ fn build_dialog_button_ordered_pairs(
     visible
 }
 
-/// 注释词库（`ui.comment_dicts`）独立成框时的形态。清单里它寄居在候选注释对话框的 Tab 里
-/// （见 [`crate::dialogs::comment_settings`]），只有宿主不在、它自己上了卡片时才走这里。
+/// 注释词库（`ui.comment_dicts`）：卡片上独立一行，框里是词库列表与它的二级弹层。
 fn build_dialog_button_comment_dicts(state: &AppState, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::comment_dicts_dialog::{
         build_comment_dicts_pane, build_comment_dicts_subdialogs,
@@ -4608,7 +4635,10 @@ fn build_dialog_button_comment_dicts(state: &AppState, cfg: &Config) -> Signal<b
     let shell = crate::dialogs::field_dialogs::build_group_dialog_shell_large(
         visible,
         "注释词库",
-        build_comment_dicts_pane(&ui),
+        Element::col()
+            .width_match()
+            .padding_xy(16, 2)
+            .child(build_comment_dicts_pane(&ui)),
         vec![],
     );
     register_dialog(
@@ -6561,8 +6591,10 @@ mod tests {
         assert!(group.iter().any(|k| k == "input.scope_relax.page_end_key"));
         assert!(!group.iter().any(|k| k == "input.scope_relax.prefix"));
         let extra = st.manifest.dialog_members("ui.comment.assign.global");
-        assert!(extra.iter().any(|k| k == "ui.comment.alt_switch"));
-        assert!(!extra.iter().any(|k| k == "ui.candidate.comment_above"));
+        assert!(extra.is_empty(), "分配框不收别的项：{extra:?}");
+        let switch = st.manifest.dialog_members("ui.comment.state");
+        assert!(switch.iter().any(|k| k == "ui.comment.switch_mode"));
+        assert!(!switch.iter().any(|k| k == "ui.candidate.comment_above"));
     }
 
     /// ★★★ 数值控件的 `[min, max]` 区间必须**包含** core 的出厂默认值。

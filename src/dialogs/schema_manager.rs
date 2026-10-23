@@ -4260,7 +4260,7 @@ fn build_draggable_row(entry: SchemaEntry, mgr: &SchemaManagerState, handle: Ele
 // ──────────────────────── UI 构建 ────────────────────────
 
 /// 构建方案相关浮层对话框：删除确认 + 方案详情/设置。
-/// 「在 候选注释 中配置」：关掉方案设置，跳到全局的候选注释对话框（分配表那一页）。
+/// 「在 候选注释 中配置」：关掉方案设置，跳到全局的候选注释对话框（分配表）。
 fn comment_settings_jump(app: &Rc<RefCell<AppState>>, state: &SchemaManagerState) -> Element {
     let (tab, jump) = {
         let st = app.borrow();

@@ -3628,32 +3628,32 @@ options = [
 ]
 
 # ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
-# 总开关置于卡片首行，与「候选注释」对话框合并成一行（gate_soft：按钮不随开关置灰）。不挂的：
+# 总开关与分配表合并成首行「候选注释 [开关][分配…]」（gate_soft：按钮不随开关置灰）。不挂的：
 # - 序号标签、命令栏前缀：与注释无关；
-# - 「自动使用词库自带的注释」与对话框里的「注释词库」页：它们供 `${dict}` 查询，悬停提示的段
-#   也用（设置端自带的「词库注释」悬停预设就是），注释关着时照样要能配。
+# - 「自动使用词库自带的注释」与「注释词库」：它们供 `${dict}` 查询，悬停提示的段也用
+#   （设置端自带的「词库注释」悬停预设就是），注释关着时照样要能配。
 [[items]]
 key = "ui.comment.enabled"
 group = "ui"
 section = "候选标注"
 type = "toggle"
-label = "显示候选注释"
+label = "候选注释"
 hint = "候选词右侧的编码、注音等小字；用不到可关掉以省内存"
 
-# 候选注释（候选右侧的小字）：卡片上与总开关合并成一行，分配表、模板库、注释词库与切换方式
-# 全在 Tab 对话框里（专用 builder，见 dialogs::comment_settings）。宿主取全局那一行的四格；
-# 其余分配键与用户模板没有自己的清单项，由同一对话框读写（见 capabilities 的豁免名单）。
+# 分配表：各作用范围 × 四格（专用 builder，见 dialogs::comment_settings）。宿主取全局那一行的
+# 四格；其余分配键与用户模板没有自己的清单项，由同一份草稿读写（见 capabilities 的豁免名单）。
 [[items]]
 key = "ui.comment.assign.global"
 group = "ui"
 section = "候选标注"
 gate_key = "ui.comment.enabled"
 gate_soft = true
+gate_button = "分配…"
 type = "dialog_button"
-label = "候选注释"
+label = "候选注释 · 分配"
 hint = "各方案、模式在默认 / 详细两态下显示哪个注释模板"
 
-# 注释模板库：与上一项的对话框共用一份草稿（专用 builder，见 dialogs::comment_templates）。
+# 注释模板库：与分配表共用一份草稿（专用 builder，见 dialogs::comment_templates）。
 [[items]]
 key = "ui.comment.templates"
 group = "ui"
@@ -3662,61 +3662,86 @@ type = "dialog_button_comment_templates"
 label = "注释模板"
 hint = "内置模板只读，可复制为自定义后修改；分配表里的格从这里选模板"
 
+# 「注释切换与显示」分组对话框：宿主是注释状态，切换键、切换方式与显示几项寄居其中。
 [[items]]
 key = "ui.comment.state"
 group = "ui"
 section = "候选标注"
+subsection = "切换"
 type = "segmented"
-label = "注释状态"
-hint = "默认与详细两态共用于所有方案；用快捷键或命令切换时写回这里"
+label = "当前状态"
+hint = "默认与详细两态共用于所有方案；用切换键、命令短语 cozs 或按键绑定切换时写回这里"
 options = [{ value = "default", label = "默认" }, { value = "detail", label = "详细" }]
-dialog_extra_for = "ui.comment.assign.global"
+dialog_title = "注释切换与显示"
+dialog_hint = "切换键、切换方式，上方注释条与最大字数"
 
 [[items]]
-key = "ui.comment.alt_switch"
+key = "ui.comment.switch_key"
 group = "ui"
 section = "候选标注"
+subsection = "切换"
 type = "select"
-label = "Alt 键"
-hint = "候选窗出现时单击 Alt 的作用；按住档松开即恢复"
+label = "切换键"
+hint = "候选窗出现时单击它切换注释状态。选 Alt 时 Windows 上会装全局键盘钩子；F1 等功能键请到「按键」页的按键绑定里选「注释：切换默认 / 详细」（comment_state）"
+options = [
+  { value = "ctrl", label = "任一 Ctrl" },
+  { value = "lctrl", label = "左 Ctrl" },
+  { value = "rctrl", label = "右 Ctrl" },
+  { value = "alt", label = "任一 Alt" },
+  { value = "lalt", label = "左 Alt" },
+  { value = "ralt", label = "右 Alt" },
+]
+dialog_extra_for = "ui.comment.state"
+
+[[items]]
+key = "ui.comment.switch_mode"
+group = "ui"
+section = "候选标注"
+subsection = "切换"
+type = "select_comment_switch_mode"
+label = "切换方式"
+hint = "单击切换键的作用；「按住」只配 Alt，松开即恢复"
 options = [
   { value = "off", label = "不使用" },
   { value = "session", label = "临时切换（本次候选窗）" },
   { value = "persist", label = "切换当前状态" },
   { value = "hold", label = "按住时显示另一态" },
 ]
-dialog_extra_for = "ui.comment.assign.global"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.comment_above"
 group = "ui"
 section = "候选标注"
+subsection = "显示"
 type = "toggle"
 label = "注释首行显示在候选上方"
 hint = "开启后，模板里第一个换行（\\n）之前的内容显示在候选上方一行，其余仍在候选右侧；换行要写在 { … } 之外。"
-dialog_extra_for = "ui.comment.assign.global"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.comment_max_chars_horizontal"
 group = "ui"
 section = "候选标注"
+subsection = "显示"
 type = "number"
 label = "横排最大字数"
 hint = "超过此字数时截断并加省略号；0 = 不限"
 min = 0
 max = 64
-dialog_extra_for = "ui.comment.assign.global"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.comment_max_chars_vertical"
 group = "ui"
 section = "候选标注"
+subsection = "显示"
 type = "number"
 label = "竖排最大字数"
 hint = "竖排每行独占，通常可比横排放宽；0 = 不限（行宽放不下时注释仍会截断，先保候选词完整）"
 min = 0
 max = 64
-dialog_extra_for = "ui.comment.assign.global"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.auto_comment_dicts"
@@ -3733,7 +3758,6 @@ section = "候选标注"
 type = "dialog_button_comment_dicts"
 label = "注释词库"
 hint = "供注释模板与悬停提示中的 ${dict} 变量查询；词库文件放在 schemas/comments/ 下"
-dialog_extra_for = "ui.comment.assign.global"
 
 [[items]]
 key = "ui.candidate.index_labels"

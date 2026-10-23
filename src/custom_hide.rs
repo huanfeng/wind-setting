@@ -339,9 +339,9 @@ mod tests {
     /// 寄居项（`dialog_extra_for`）同理；宿主还在时成员不受牵连。
     #[test]
     fn hidden_host_takes_its_extra_members() {
-        let host = "ui.comment.assign.global";
+        let host = "input.symbol.smart_chars";
         let m = settings_manifest(&hide(&[&format!("key:{host}")]), false);
-        assert!(m.get("ui.comment.alt_switch").unwrap().hidden);
+        assert!(m.get("input.symbol.english_punct_mode").unwrap().hidden);
         let m = settings_manifest(&hide(&["key:input.rare_phrase"]), false);
         assert!(!m.get("input.scope_relax.page_end_key").unwrap().hidden);
     }

@@ -2084,8 +2084,21 @@
       ]
     },
     {
+      "default": "ctrl",
+      "key": "ui.comment.switch_key",
+      "type": "enum",
+      "values": [
+        "ctrl",
+        "lctrl",
+        "rctrl",
+        "alt",
+        "lalt",
+        "ralt"
+      ]
+    },
+    {
       "default": "session",
-      "key": "ui.comment.alt_switch",
+      "key": "ui.comment.switch_mode",
       "type": "enum",
       "values": [
         "off",

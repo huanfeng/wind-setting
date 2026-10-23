@@ -4,6 +4,7 @@ pub mod action_expr;
 pub mod comment_assign;
 pub mod comment_dicts_dialog;
 pub mod comment_settings;
+pub mod comment_switch;
 pub mod comment_templates;
 pub mod emoji_modules_dialog;
 pub mod field_dialogs;

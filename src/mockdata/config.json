@@ -556,7 +556,6 @@
    "swap_preedit_when_above": false
   },
   "comment": {
-   "alt_switch": "session",
    "assign": {
     "global": {},
     "mode": {},
@@ -565,6 +564,8 @@
    },
    "enabled": true,
    "state": "default",
+   "switch_key": "ctrl",
+   "switch_mode": "session",
    "templates": []
   },
   "comment_dicts": [],

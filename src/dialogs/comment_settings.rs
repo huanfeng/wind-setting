@@ -1,5 +1,5 @@
-//! 「候选注释」对话框：分配 / 注释词库 / 切换 三个 Tab。模板库另成一框，见
-//! [`crate::dialogs::comment_templates`]；两框共用本模块的 [`CommentSettingsUi`] 草稿。
+//! 候选注释的草稿与「分配」对话框。模板库另成一框，见 [`crate::dialogs::comment_templates`]；
+//! 两框共用本模块的 [`CommentSettingsUi`] 草稿。注释词库、切换与显示各自是卡片上的一行。
 //!
 //! 设计见 core 仓 `docs/design/candidate-comment-templates.md` §9。
 //!
@@ -7,8 +7,7 @@
 //!
 //! - `ui.comment.assign.global`（清单宿主）与 `ui.comment.assign.{type,schema,mode}`：总表；
 //! - `ui.comment.templates`：用户模板（同 id 覆盖内置）；
-//! - `ui.comment_dicts`：注释词库页（逻辑在 [`crate::dialogs::comment_dicts_dialog`]）；
-//! - 切换页的几项（状态、Alt、显示）是普通清单项，经 [`crate::manifest::field`] 建。
+//! - `ui.comment_dicts`：注释词库对话框的读写登记（界面在 [`crate::dialogs::comment_dicts_dialog`]）。
 //!
 //! # 格值与写回
 //!
@@ -29,7 +28,7 @@ use windui::prelude::*;
 
 use crate::config::Config;
 use crate::dialogs::comment_dicts_dialog::CommentDictsUi;
-use crate::search::{JumpRequest, JumpTarget};
+use crate::search::JumpTarget;
 use crate::state::AppState;
 
 /// 清单宿主：全局那一行的四格。
@@ -39,19 +38,7 @@ const TYPE_KEY: &str = "ui.comment.assign.type";
 const SCHEMA_KEY: &str = "ui.comment.assign.schema";
 const MODE_KEY: &str = "ui.comment.assign.mode";
 const DICTS_KEY: &str = "ui.comment_dicts";
-
-/// 切换页里的清单项（顺序即显示顺序）。
-const SWITCH_KEYS: [&str; 2] = ["ui.comment.state", "ui.comment.alt_switch"];
-const DISPLAY_KEYS: [&str; 3] = [
-    "ui.candidate.comment_above",
-    "ui.candidate.comment_max_chars_horizontal",
-    "ui.candidate.comment_max_chars_vertical",
-];
-
-const TABS: [&str; 3] = ["分配", "注释词库", "切换"];
-const TAB_ASSIGN: usize = 0;
-const TAB_DICTS: usize = 1;
-const TAB_SWITCH: usize = 2;
+const ENABLED_KEY: &str = "ui.comment.enabled";
 
 /// 方案类型行（常驻）：键与显示名。
 pub const TYPE_ROWS: [(&str, &str); 5] = [
@@ -665,7 +652,6 @@ impl Names {
 #[derive(Clone)]
 pub struct CommentSettingsUi {
     pub visible: Signal<bool>,
-    pub tab: Signal<usize>,
     /// 用户模板草稿。
     pub templates: Signal<Vec<CommentTemplateDef>>,
     /// 用户分配草稿。
@@ -686,7 +672,6 @@ impl CommentSettingsUi {
     pub(super) fn new() -> Self {
         Self {
             visible: signal(false),
-            tab: signal(TAB_ASSIGN),
             templates: signal(Vec::new()),
             assign: signal(CommentAssign::default()),
             view: signal(vec![LibraryInfo::default()]),
@@ -836,16 +821,15 @@ pub(crate) fn shared_ui(state: &AppState, cfg: &Config) -> CommentSettingsUi {
     ui
 }
 
-/// 建对话框，返回打开它的信号。清单宿主是 [`HOST_KEY`]。
+/// 建分配对话框，返回打开它的信号。清单宿主是 [`HOST_KEY`]。
 pub fn build_dialog_button_comment(state: &AppState, cfg: &Config) -> Signal<bool> {
     let ui = shared_ui(state, cfg);
-    let dicts = register_comment_dicts(state, cfg);
-    let dlg = build_dialog(state, &ui, &dicts);
+    let dlg = build_dialog(state, &ui);
     state.fields.dialogs.borrow_mut().push(dlg);
     ui.visible
 }
 
-/// 注释词库页的读写登记，同原 `dialog_button_comment_dicts` 的四件套。
+/// 注释词库对话框的读写登记（seed / writer / loader / getter 四件套）。
 pub(crate) fn register_comment_dicts(state: &AppState, cfg: &Config) -> CommentDictsUi {
     let ui = CommentDictsUi::new();
     // 先拉来源再 seed：`seed` 要把内置 / 自动项合并进列表，顺序不能反（见 comment_dicts_dialog）。
@@ -884,102 +868,40 @@ pub(crate) fn register_comment_dicts(state: &AppState, cfg: &Config) -> CommentD
     ui
 }
 
-/// 搜索跳进本对话框时，按目标锚点切到它所在的 Tab（不在可见 Tab 里的行认领不了跳转）。
-fn tab_for_anchor(anchor: &str) -> Option<usize> {
-    use crate::search::index::in_dialog_anchor;
-    if anchor == in_dialog_anchor(HOST_KEY) {
-        return Some(TAB_ASSIGN);
-    }
-    if anchor == in_dialog_anchor(DICTS_KEY) {
-        return Some(TAB_DICTS);
-    }
-    SWITCH_KEYS
-        .iter()
-        .chain(DISPLAY_KEYS.iter())
-        .any(|k| anchor == in_dialog_anchor(k))
-        .then_some(TAB_SWITCH)
-}
-
-/// 方案设置里「在 候选注释 中配置」的跳转目标：开本对话框、落在分配表上。
+/// 方案设置里「在 候选注释 中配置」的跳转目标：滚到卡片上「候选注释」那一行、开分配框。
 ///
-/// 取「Alt 键」那一项的搜索条目改锚点：宿主与总开关合并成一行，自己不进搜索索引，而
-/// 同一个框里的成员条目带着正确的入口行与对话框键。
+/// 宿主与总开关合并成一行，自己不进搜索索引；入口行的页与锚点取总开关那一条。
 pub fn assign_jump_target(manifest: &crate::manifest::Manifest) -> Option<JumpTarget> {
     let entry = crate::search::index::build_index(manifest)
         .into_iter()
-        .find(|e| e.id == SWITCH_KEYS[1])?;
+        .find(|e| e.id == ENABLED_KEY)?;
     match entry.target {
-        JumpTarget::RowInDialog {
+        JumpTarget::Row { tab, anchor } => Some(JumpTarget::RowInDialog {
             tab,
-            host_anchor,
-            dialog,
-            ..
-        } => Some(JumpTarget::RowInDialog {
-            tab,
-            host_anchor,
-            dialog,
+            host_anchor: anchor,
+            dialog: HOST_KEY.to_string(),
             anchor: crate::search::index::in_dialog_anchor(HOST_KEY),
         }),
         _ => None,
     }
 }
 
-fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi) -> Element {
-    use crate::dialogs::comment_dicts_dialog::{
-        build_comment_dicts_pane, build_comment_dicts_subdialogs,
-    };
-    let jump = state.jump;
-    let tab = ui.tab;
-    let panes: [Element; 3] = [
-        crate::search::anchor::wrap(
-            crate::dialogs::comment_assign::build_assign_body(ui),
-            crate::search::index::in_dialog_anchor(HOST_KEY),
-            jump,
-        ),
-        crate::search::anchor::wrap(
-            build_comment_dicts_pane(dicts),
-            crate::search::index::in_dialog_anchor(DICTS_KEY),
-            jump,
-        ),
-        build_switch_tab(state),
-    ];
-    let mut body = Element::col().width_match();
-    for (i, pane) in panes.into_iter().enumerate() {
-        body = body.child(
-            Element::col()
-                .width_match()
-                .child(pane)
-                .visible_when(move || tab.get() == i),
-        );
-    }
-    let jump_tab = crate::pages::dict::reactive::reactive_effect(
-        move || jump.version(),
-        move || {
-            let want = jump
-                .get()
-                .as_ref()
-                .and_then(JumpRequest::pending_anchor)
-                .and_then(tab_for_anchor);
-            if let Some(i) = want {
-                tab.set(i);
-            }
-        },
-    );
-    let content = Element::col()
-        .width_match()
-        .padding_xy(16, 2)
-        .child(
-            Element::row()
-                .width_match()
-                .padding_xy(0, 8)
-                .child(Element::segmented(TABS.to_vec(), tab).weight(1.0)),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(jump_tab);
+/// 分配表外壳的视口高度：按钮行 + [`crate::dialogs::comment_assign::TABLE_H`]，外壳不出滚动条。
+const SHELL_H: i32 = 400;
+
+fn build_dialog(state: &AppState, ui: &CommentSettingsUi) -> Element {
+    let content =
+        Element::col()
+            .width_match()
+            .padding_xy(16, 2)
+            .child(crate::search::anchor::wrap(
+                crate::dialogs::comment_assign::build_assign_body(ui),
+                crate::search::index::in_dialog_anchor(HOST_KEY),
+                state.jump,
+            ));
     let shell = crate::dialogs::field_dialogs::build_group_dialog_shell_fluid(
         ui.visible,
-        signal("候选注释".to_string()),
+        signal("候选注释 · 分配".to_string()),
         content,
         vec![
             Element::link("查看文档")
@@ -987,59 +909,11 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi, dicts: &CommentDictsUi
                 .font_size(12.0),
         ],
         900,
-        460,
+        SHELL_H,
     );
     Element::stack()
         .child(shell)
-        .child(build_comment_dicts_subdialogs(dicts))
         .child(crate::dialogs::comment_assign::build_assign_subdialogs(ui))
-}
-
-// ───────────────────────────── 切换 ─────────────────────────────
-
-fn build_switch_tab(state: &AppState) -> Element {
-    let row = |k: &str| {
-        crate::search::anchor::wrap(
-            crate::manifest::field(state, k),
-            crate::search::index::in_dialog_anchor(k),
-            state.jump,
-        )
-    };
-    let mut switch_rows: Vec<Element> = Vec::new();
-    // 总开关的清单项在卡片上（与本对话框的入口合并成一行），这里绑同一个信号。
-    if let Some(on) = state
-        .fields
-        .bool_signals
-        .borrow()
-        .get("ui.comment.enabled")
-        .copied()
-    {
-        switch_rows.push(crate::widgets::setting_row(
-            "显示候选注释",
-            Some("关掉时两态都不显示，Alt 也不拦"),
-            Element::switch(on),
-        ));
-    }
-    switch_rows.extend(SWITCH_KEYS.iter().map(|k| row(k)));
-    switch_rows.push(
-        Element::label(
-            "命令短语：输入 cozs 选「切注释」切换当前状态。\n\
-             按键：在「按键」页的引导键或输入中按键里选「注释：…」；\
-             「本次候选窗临时切换」只能绑在输入中按键上。",
-        )
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .max_lines(4)
-        .padding_xy(2, 6),
-    );
-    let display_rows: Vec<Element> = DISPLAY_KEYS.iter().map(|k| row(k)).collect();
-    Element::col()
-        .width_match()
-        .spacing(10)
-        .padding_xy(0, 8)
-        .child(crate::widgets::dialog_section("切换", switch_rows))
-        .child(crate::widgets::dialog_section("显示", display_rows))
 }
 
 #[cfg(test)]
@@ -1421,28 +1295,16 @@ mod tests {
     }
 
     #[test]
-    fn jump_anchor_selects_the_owning_tab() {
-        use crate::search::index::in_dialog_anchor;
-        assert_eq!(
-            tab_for_anchor(&in_dialog_anchor(HOST_KEY)),
-            Some(TAB_ASSIGN)
-        );
-        assert_eq!(
-            tab_for_anchor(&in_dialog_anchor(DICTS_KEY)),
-            Some(TAB_DICTS)
-        );
-        assert_eq!(
-            tab_for_anchor(&in_dialog_anchor("ui.comment.alt_switch")),
-            Some(TAB_SWITCH)
-        );
-        assert_eq!(tab_for_anchor("ui.candidate.layout"), None);
-    }
-
-    #[test]
     fn schema_manager_jump_lands_on_the_assign_table() {
         let m = crate::manifest::Manifest::from_embedded();
         match assign_jump_target(&m) {
-            Some(JumpTarget::RowInDialog { dialog, anchor, .. }) => {
+            Some(JumpTarget::RowInDialog {
+                dialog,
+                anchor,
+                host_anchor,
+                ..
+            }) => {
+                assert_eq!(host_anchor, ENABLED_KEY, "入口行是总开关那一行");
                 assert_eq!(dialog, HOST_KEY);
                 assert_eq!(anchor, crate::search::index::in_dialog_anchor(HOST_KEY));
             }

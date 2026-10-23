@@ -820,7 +820,7 @@ fn field_row(label: &str, sig: Signal<String>, placeholder: &str) -> Element {
         )
 }
 
-/// 「注释词库」页（嵌在候选注释对话框的 Tab 里）：说明 + 可拖序的列表 + 「添加词库…」。
+/// 「注释词库」对话框正文：说明 + 可拖序的列表 + 「添加词库…」。
 /// 二级弹层（挑文件、新建/编辑表单）另由 [`build_comment_dicts_subdialogs`] 挂到根上。
 pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
     let row_ui = ui.clone();
