@@ -2529,6 +2529,16 @@
       "default": false,
       "key": "mobile.association.space_commits",
       "type": "bool"
+    },
+    {
+      "default": 0.5,
+      "key": "mobile.grammar.weight",
+      "type": "float"
+    },
+    {
+      "default": "wanxiang-mini.gram",
+      "key": "mobile.grammar.model",
+      "type": "str"
     }
   ]
 }

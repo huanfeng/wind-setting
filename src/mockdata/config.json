@@ -266,6 +266,10 @@
    "mode": "continuous",
    "punct": true,
    "space_commits": false
+  },
+  "grammar": {
+   "model": "wanxiang-mini.gram",
+   "weight": 0.5
   }
  },
  "schema": {
