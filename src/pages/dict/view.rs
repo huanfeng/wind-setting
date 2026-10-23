@@ -1582,6 +1582,11 @@ mod tests {
     /// ——两处各写一份分支，加类别时必漏一边。
     #[test]
     fn user_dict_row_menu_matches_the_action_column_ops() {
+        // 分库列表取自 mock：不开它就看运气，得等别的测试恰好开着 mock 时取到。
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let mgr = DictManagerState::new();
         *mgr.schemas.borrow_mut() = vec![SchemaInfo {
             id: "wb".into(),
@@ -1606,6 +1611,7 @@ mod tests {
             // 「移动到」：mock 里这个方案有分库，主词库的词可以移过去。
             ["编辑…", "移动到", "复制编码", "复制词条", "删除"]
         );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// ★★ 快捷输入：**出厂条目不可删、不可改模板**，用户自己加的才可以。
