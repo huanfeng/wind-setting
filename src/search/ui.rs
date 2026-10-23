@@ -518,7 +518,7 @@ fn build_result_row(
     // ——那样高亮就是一条看不见的 0 高线。
     let highlight = Element::leaf()
         .corner(6.0)
-        .bg_role_alpha(Role::Accent, 0.12)
+        .bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
         .align(Align::Stretch)
         .visible_when(move || selected.get() == i);
 

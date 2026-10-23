@@ -3036,7 +3036,7 @@ pub(crate) fn dialog_notice_row(note: Signal<String>) -> Element {
         .padding_xy(0, 4)
         .child(
             // 与行内角标同一枚细图标：同一件事在同一个对话框里换个画法只会让人以为是两件事。
-            crate::icons::tinted(crate::icons::INFO_THIN, 14, Color::hex(0x8A94A6))
+            crate::icons::tinted_role(crate::icons::INFO_THIN, 14, Role::TextSubtle)
                 .padding_xy(0, 2),
         )
         .child(

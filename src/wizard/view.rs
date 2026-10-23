@@ -795,7 +795,7 @@ fn kind_card(kind: Signal<usize>, avail: Signal<bool>, i: usize, title: &str) ->
             Element::leaf()
                 .align(Align::Stretch)
                 .corner(8.0)
-                .bg_role_alpha(Role::Accent, 0.08)
+                .bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
                 .border_role(Role::Accent, 2)
                 .visible_when(sel),
         )
