@@ -413,9 +413,12 @@
     "min_syllables": 4
    },
    "english_merge": {
+    "complete_min_length": 0,
+    "complete_position": 2,
     "enable": false,
-    "min_length": 3,
-    "prefix_complete": false
+    "exact_position": 0,
+    "max_count": 2,
+    "min_length": 3
    },
    "frequency": {
     "base_scale": 0.0,
