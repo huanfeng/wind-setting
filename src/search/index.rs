@@ -133,9 +133,26 @@ pub fn page_anchor(key: &str) -> String {
 /// 模糊音网格的总开关：网格整块显隐以它为准，见 `manifest::scheme_config_section`。
 pub const FUZZY_MASTER: &str = "schema.pinyin.fuzzy.enabled";
 
-fn block_anchor_of(key: &str) -> Option<&'static str> {
+/// 拼写纠错的总开关：「纠错与提示」一节里那一行带「扩展设置」，规则网格与自定义规则在框里
+/// （`correction_ui::build_correction_row`）。
+pub const CORRECTION_MASTER: &str = "input.correction.enabled";
+
+/// 「提示来源」那一行的锚点：三个来源勾选挤在同一行里（`correction_ui::build_hint_sources_row`）。
+pub const HINT_SOURCES_ANCHOR: &str = "input.correction.hint.sources";
+
+/// 模糊音网格那一块的项（总开关也算，它的页面锚点同是块锚点）。
+fn in_fuzzy_grid(key: &str) -> bool {
     key.starts_with("schema.pinyin.fuzzy.")
-        .then_some("schema.pinyin.fuzzy")
+}
+
+fn block_anchor_of(key: &str) -> Option<&'static str> {
+    if in_fuzzy_grid(key) {
+        return Some("schema.pinyin.fuzzy");
+    }
+    if key.starts_with("input.correction.rules.") {
+        return Some("input.correction.rules");
+    }
+    crate::correction_ui::is_hint_source(key).then_some(HINT_SOURCES_ANCHOR)
 }
 
 /// (group, section) → 落点。返回 `None` = 未登记，由守门测试报出。
@@ -227,7 +244,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         }
         // 模糊音网格整块以总开关可见与否为准（`manifest::scheme_config_section`），
         // 总开关被定制版藏掉时格子虽未 hidden，界面上也没有那张网格可落。
-        if block_anchor_of(key).is_some() && !manifest.is_visible(FUZZY_MASTER) {
+        if in_fuzzy_grid(key) && !manifest.is_visible(FUZZY_MASTER) {
             continue;
         }
         // 与门控开关合并成一行的「设置」按钮没有自己的落点，行锚点归开关；收进别人对话框的项
@@ -252,8 +269,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
             // 模糊音的 13 组拼音对没有清单层面的对话框声明（网格是手写的，见
             // `manifest::build_fuzzy_row`），但它们确实在总开关那一行的对话框里。
             .or_else(|| {
-                (block_anchor_of(key).is_some() && key != FUZZY_MASTER)
-                    .then(|| FUZZY_MASTER.to_string())
+                (in_fuzzy_grid(key) && key != FUZZY_MASTER).then(|| FUZZY_MASTER.to_string())
             });
         let (target, mut path) = match placement {
             Placement::Page(page) => {
@@ -280,7 +296,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                     None => (
                         JumpTarget::Row {
                             tab,
-                            anchor: key.clone(),
+                            anchor: page_anchor(key),
                         },
                         vec![page_name.to_string(), item.section.clone()],
                     ),
@@ -776,38 +792,105 @@ mod tests {
         }
     }
 
-    /// 正确拼音提示的两项登记在清单里、落在模糊音对话框的整块锚点上。
+    /// 「纠错与提示」一节：行序照设计，规则与自定义规则在「拼写纠错」对话框里，
+    /// 模糊音区不再有提示项。
     #[test]
-    fn fuzzy_hint_items_registered() {
+    fn correction_section_layout() {
         let m = manifest();
-        let idx = build_index(&m);
-        for key in [
+        for old in [
             "schema.pinyin.fuzzy.hint",
             "schema.pinyin.fuzzy.hint_scope",
             "schema.pinyin.fuzzy.hint_tone",
         ] {
-            let e = idx
-                .iter()
+            assert!(m.get(old).is_none(), "{old} 应已删除");
+        }
+        let (_, keys) = m
+            .sections_of("input")
+            .into_iter()
+            .find(|(s, _)| s == "纠错与提示")
+            .expect("输入页应有「纠错与提示」一节");
+        let rows: Vec<&str> = keys
+            .iter()
+            .filter(|k| m.renders_row(m.get(k).unwrap()))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                CORRECTION_MASTER,
+                "input.correction.marker",
+                "input.correction.hint.enabled",
+                "input.correction.hint.fuzzy",
+                "input.correction.hint.misread",
+                "input.correction.hint.correction",
+                "input.correction.hint.scope",
+                "input.correction.hint.tone",
+                "local.misread_table",
+            ]
+        );
+
+        let idx = build_index(&m);
+        let target = |key: &str| {
+            idx.iter()
                 .find(|e| e.id == key)
-                .unwrap_or_else(|| panic!("{key} 应在索引里"));
-            match &e.target {
-                JumpTarget::RowInDialog { dialog, .. } => assert_eq!(dialog, FUZZY_MASTER),
-                other => panic!("{key} 应落在模糊音对话框，实际 {other:?}"),
+                .unwrap_or_else(|| panic!("{key} 应在索引里"))
+                .target
+                .clone()
+        };
+        for key in [
+            "input.correction.rules.gn_ng",
+            "input.correction.rules.ai_ia",
+            "input.correction.custom",
+        ] {
+            match target(key) {
+                JumpTarget::RowInDialog { dialog, .. } => assert_eq!(dialog, CORRECTION_MASTER),
+                other => panic!("{key} 应落在拼写纠错对话框，实际 {other:?}"),
             }
         }
-        let scope = m.get("schema.pinyin.fuzzy.hint_scope").unwrap();
+        match target("input.correction.rules.on_ong") {
+            JumpTarget::RowInDialog { anchor, .. } => {
+                assert_eq!(anchor, "input.correction.rules#in-dialog")
+            }
+            other => panic!("规则网格应落整块锚点，实际 {other:?}"),
+        }
+        for key in [
+            "input.correction.hint.fuzzy",
+            "input.correction.hint.misread",
+            "input.correction.hint.correction",
+        ] {
+            match target(key) {
+                JumpTarget::Row { anchor, .. } => assert_eq!(anchor, HINT_SOURCES_ANCHOR),
+                other => panic!("{key} 应落在「提示来源」那一行，实际 {other:?}"),
+            }
+        }
+
+        let cond = |key: &str| m.get(key).unwrap().enabled_when.clone();
         assert!(
-            scope
-                .enabled_when
-                .as_deref()
-                .is_some_and(|w| w.starts_with("schema.pinyin.fuzzy.hint ")),
-            "hint_scope 应依赖 hint 开启"
+            cond("input.correction.marker")
+                .is_some_and(|w| w.starts_with("input.correction.enabled ")),
+            "标记随纠错开关"
         );
-        let tone = m.get("schema.pinyin.fuzzy.hint_tone").unwrap();
         assert!(
-            tone.enabled_when.is_none(),
-            "hint_tone 也作用于 ${{fuzzy_pinyin}}，不依赖 hint"
+            cond("input.correction.hint.scope")
+                .is_some_and(|w| w.starts_with("input.correction.hint.enabled ")),
+            "范围随「显示正确拼音」"
         );
+        for key in ["input.correction.hint.fuzzy", "input.correction.hint.tone"] {
+            assert!(cond(key).is_none(), "{key} 不依赖「显示正确拼音」");
+        }
+    }
+
+    /// 「提示来源」那一行没有自己的清单项，三个来源项都要能用这四个字搜到。
+    #[test]
+    fn hint_sources_searchable_by_row_label() {
+        let idx = build_index(&manifest());
+        let hits: Vec<&str> = crate::search::matcher::search(&idx, "提示来源", 20)
+            .iter()
+            .map(|h| idx[h.index].id.as_str())
+            .collect();
+        for (k, _) in crate::correction_ui::HINT_SOURCES {
+            assert!(hits.contains(&k), "搜「提示来源」应命中 {k}，实际 {hits:?}");
+        }
     }
 
     /// 临时拼音 / 临时英文搬到了方案页，按键行为 / 候选无效按键搬到了按键页。

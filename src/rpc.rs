@@ -1396,6 +1396,16 @@ pub(crate) fn take_mock_calls() -> Vec<(String, Value)> {
 
 /// mock 侧会「失败」的调用。目前只有文本信封两法：内容不是信封时按跨仓契约回
 /// `not_schema_text:` 前缀的错误（见 `package-format.md` §3.4）。
+/// core 的 `data.locate {path}` 在数据目录根下认的文件（`wind-store` `classify_text_path`）。
+/// 单段且无扩展名的是方案目录，也认。
+const MOCK_LOCATABLE_ROOT_FILES: &[&str] = &[
+    "phrases.dict.yaml",
+    "quick_format.toml",
+    "common_chars.yaml",
+    "completion.table.yaml",
+    "pinyin_misread.txt",
+];
+
 fn mock_error(method: &str, params: &Value) -> Option<String> {
     #[cfg(test)]
     if let Some(e) = FORCED_ERRORS.with(|f| {
@@ -1407,6 +1417,13 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
         return Some(e);
     }
     match method {
+        // 同 core `classify_text_path`：数据目录根下只认这几个文件，其余报「不在用户文本目录内」
+        "data.locate" => params
+            .get("path")
+            .and_then(|v| v.as_str())
+            .filter(|p| p.contains('.') && !p.contains('/'))
+            .filter(|p| !MOCK_LOCATABLE_ROOT_FILES.contains(p))
+            .map(|p| format!("路径不在用户文本目录内：{p}")),
         "scheme.previewImportText" | "scheme.importText" => {
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
             (!mock_is_schema_text(text))
@@ -1495,6 +1512,18 @@ fn mock_target_is_pinyin(params: &Value) -> bool {
         .get("schemaId")
         .and_then(|v| v.as_str())
         .is_some_and(|s| s.contains("pinyin") || s.contains("shuangpin"))
+}
+
+/// `correction.conflictExample` 的离线回包：只认得设计里那个例子（`uen=un`），其余无冲突。
+fn mock_conflict_example(params: &Value) -> Value {
+    let rule = params.get("rule").and_then(Value::as_str).unwrap_or("");
+    match rule.split_once('=') {
+        Some((w, c)) if !w.trim().is_empty() && !c.trim().is_empty() => {
+            let example = (rule == "uen=un").then_some("tuen = tu+en");
+            json!({ "valid": true, "example": example })
+        }
+        _ => json!({ "valid": false, "reason": "缺少 `=`" }),
+    }
 }
 
 /// `appearance.previewTemplate` 的离线回包（设置端模板预览行）。
@@ -1781,6 +1810,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         ]),
         "theme.delete" => json!({ "ok": true }),
         "appearance.previewTemplate" => mock_preview_template(params),
+        "correction.conflictExample" => mock_conflict_example(params),
         // 全局键 → 覆盖它的方案 id（core `schema.overrideSummary`）。
         "schema.overrideSummary" => json!({ "ui.candidate.layout": ["wubi86"] }),
         // 形状同 core `ThemeAccent`。按 mock `theme.list` 的三个主题各给一套，离线也能看
@@ -2175,10 +2205,16 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             }
         }
         "data.editSessions" => json!([]),
-        "data.locate" => {
-            let scoped = params.get("schemaId").is_some();
-            json!({ "path": "/mock/data", "exists": scoped, "purgeable": scoped })
-        }
+        "data.locate" => match params.get("path").and_then(|v| v.as_str()) {
+            // 同 core：带 path 时返回数据目录下那个文件（不认识的已由 mock_error 拒掉）
+            Some(p) if !p.is_empty() => {
+                json!({ "path": format!("/mock/data/{p}"), "exists": false })
+            }
+            _ => {
+                let scoped = params.get("schemaId").is_some();
+                json!({ "path": "/mock/data", "exists": scoped, "purgeable": scoped })
+            }
+        },
         "userdata.purgeSchema" => json!({ "ok": true, "removed": [] }),
         "userDicts.addEntry" => json!({ "ok": true }),
         "userDicts.clear" => json!({ "ok": true, "removed": 2 }),

@@ -62,6 +62,29 @@
    "enabled": false
   },
   "commit_newline": "keep",
+  "correction": {
+   "custom": [],
+   "enabled": true,
+   "hint": {
+    "correction": false,
+    "enabled": false,
+    "fuzzy": true,
+    "misread": true,
+    "scope": "first",
+    "tone": false
+   },
+   "marker": "*",
+   "rules": {
+    "ai_ia": false,
+    "gn_ng": false,
+    "h_misplaced": false,
+    "legacy_spelling": false,
+    "mg_ng": false,
+    "n_before_g": false,
+    "on_ong": true,
+    "vowel_swap": true
+   }
+  },
   "default": {
    "chinese_mode": true,
    "chinese_punct": true,
@@ -439,9 +462,6 @@
     "enabled": false,
     "eng_ong": false,
     "f_h": false,
-    "hint": false,
-    "hint_scope": "first",
-    "hint_tone": false,
     "ian_iang": false,
     "in_ing": false,
     "n_l": false,

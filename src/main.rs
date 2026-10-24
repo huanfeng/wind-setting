@@ -17,6 +17,7 @@ mod capabilities;
 mod cli;
 mod compat_window;
 mod config;
+mod correction_ui;
 mod custom_hide;
 mod dialogs;
 mod dict_window;
