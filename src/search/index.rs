@@ -880,6 +880,19 @@ mod tests {
         }
     }
 
+    /// 「提示来源」那一行没有自己的清单项，三个来源项都要能用这四个字搜到。
+    #[test]
+    fn hint_sources_searchable_by_row_label() {
+        let idx = build_index(&manifest());
+        let hits: Vec<&str> = crate::search::matcher::search(&idx, "提示来源", 20)
+            .iter()
+            .map(|h| idx[h.index].id.as_str())
+            .collect();
+        for (k, _) in crate::correction_ui::HINT_SOURCES {
+            assert!(hits.contains(&k), "搜「提示来源」应命中 {k}，实际 {hits:?}");
+        }
+    }
+
     /// 临时拼音 / 临时英文搬到了方案页，按键行为 / 候选无效按键搬到了按键页。
     #[test]
     fn moved_sections_land_on_their_new_pages() {

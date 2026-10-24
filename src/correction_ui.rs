@@ -75,7 +75,7 @@ const MISREAD_TEMPLATE: &str = "\
 # 例：馄饨<Tab>hun dun<Tab>hun tun
 # 第三列留空（行尾仍保留 Tab）= 这个读法不算错，不提示也不召回。
 # 同一「文字 + 错误拼音」覆盖内置表。以 # 开头的行是注释。
-# 保存后，下次应用设置或重启输入法时生效。
+# 改完后，下次保存任一设置或重启输入法时生效。
 ";
 
 /// 规则网格每格的说明：有冲突写冲突，没有写「无已知冲突」。
@@ -110,13 +110,42 @@ pub(crate) struct CustomRule {
     pub note: String,
 }
 
-/// core 回包 → 行内说明。取不到（core 未运行）时空串：不显示冲突示例，不阻止保存。
+/// 冲突查询的超时：纯计算的轻查询，core 不在时别让添加按钮卡住。
+const CONFLICT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// 问 core 这条规则的冲突示例。取不到（core 未运行）时 `None`：不显示示例，不阻止保存。
+fn query_conflict(rule: &str) -> Option<Value> {
+    crate::rpc::call_core_within(
+        "correction.conflictExample",
+        &json!({ "rule": rule }),
+        CONFLICT_TIMEOUT,
+    )
+    .ok()
+}
+
+/// 行内说明：冲突示例或无效原因；取不到 core 时空串。
 fn conflict_note(rule: &str) -> String {
-    let Ok(v) = crate::rpc::call_core("correction.conflictExample", &json!({ "rule": rule }))
-    else {
-        return String::new();
+    query_conflict(rule)
+        .map(|v| note_from_reply(&v))
+        .unwrap_or_default()
+}
+
+/// 本地语法检查，与 core 的 `parse_custom` 同口径：先去空白、转小写，单个 `=`，
+/// 两侧为非空小写字母且不相同。返回规整后的 `错误=正确`。
+pub(crate) fn normalize_rule(raw: &str) -> Result<String, String> {
+    let rule: String = raw.split_whitespace().collect::<String>().to_lowercase();
+    let mut parts = rule.split('=');
+    let (Some(wrong), Some(correct), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err("写成「错误=正确」，只能有一个 =".to_string());
     };
-    note_from_reply(&v)
+    let letters = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase());
+    if !letters(wrong) || !letters(correct) {
+        return Err("两侧须为非空的拼音字母".to_string());
+    }
+    if wrong == correct {
+        return Err("两侧相同".to_string());
+    }
+    Ok(rule)
 }
 
 /// `correction.conflictExample` 的回包 → 行内说明。
@@ -134,11 +163,12 @@ pub(crate) fn note_from_reply(v: &Value) -> String {
     }
 }
 
-/// 自定义规则列表的状态：行、输入框草稿。
+/// 自定义规则列表的状态：行、输入框草稿、添加被拒的原因。
 #[derive(Clone)]
 pub(crate) struct CustomRulesUi {
     pub rows: Signal<Vec<CustomRule>>,
     pub draft: Signal<String>,
+    pub error: Signal<String>,
 }
 
 impl CustomRulesUi {
@@ -146,6 +176,7 @@ impl CustomRulesUi {
         Self {
             rows: signal(Vec::new()),
             draft: signal(String::new()),
+            error: signal(String::new()),
         }
     }
 
@@ -162,17 +193,37 @@ impl CustomRulesUi {
         self.rows.set(rows);
     }
 
-    /// 把草稿加进列表：去空白、空的与重复的不加。返回是否加了。
+    /// 把草稿加进列表。空的、重复的不加；格式不对或 core 判无效的不加，原因写进 `error`、
+    /// 草稿留着供修改。返回是否加了。
     pub fn add_draft(&self) -> bool {
-        let rule: String = self.draft.get().split_whitespace().collect();
-        if rule.is_empty() || self.rows.get().iter().any(|r| r.rule == rule) {
+        let draft = self.draft.get();
+        if draft.trim().is_empty() {
             return false;
         }
-        let note = conflict_note(&rule);
+        let rule = match normalize_rule(&draft) {
+            Ok(r) => r,
+            Err(why) => {
+                self.error.set(format!("无效：{why}"));
+                return false;
+            }
+        };
+        if self.rows.get().iter().any(|r| r.rule == rule) {
+            self.error.set("已有这条规则".to_string());
+            return false;
+        }
+        let note = match query_conflict(&rule) {
+            Some(v) if v.get("valid").and_then(Value::as_bool) == Some(false) => {
+                self.error.set(note_from_reply(&v));
+                return false;
+            }
+            Some(v) => note_from_reply(&v),
+            None => String::new(),
+        };
         let mut rows = self.rows.get();
         rows.push(CustomRule { rule, note });
         self.rows.set(rows);
         self.draft.set(String::new());
+        self.error.set(String::new());
         true
     }
 
@@ -283,6 +334,15 @@ fn custom_rules_block(ui: &CustomRulesUi) -> Element {
         ))
         .child(list)
         .child(input_row)
+        .child({
+            let err = ui.error;
+            Element::label_signal(err)
+                .font_size(11.5)
+                .fg_role(Role::Danger)
+                .width_match()
+                .max_lines(2)
+                .visible_when(move || !err.get().is_empty())
+        })
 }
 
 /// 「拼写纠错」入口行：「拼写纠错 …… [开关][扩展设置]」，规则网格与自定义规则在对话框里。
@@ -521,13 +581,44 @@ mod tests {
         r
     }
 
+    /// 本地语法检查与 core 的 `parse_custom` 同口径：单个 `=`、两侧非空小写字母且不同；先转小写。
+    #[test]
+    fn custom_rule_syntax_checked_locally() {
+        assert_eq!(normalize_rule(" UEN = Un "), Ok("uen=un".to_string()));
+        for bad in ["ogn", "=ong", "ogn=", "a=b=c", "o1=x", "x=x", "ü=v"] {
+            assert!(normalize_rule(bad).is_err(), "{bad} 应判无效");
+        }
+    }
+
+    /// 本地格式不对、或 core 判无效时都不收，并把原因留给界面显示。
+    #[test]
+    fn invalid_custom_rule_is_rejected() {
+        with_mock(|| {
+            let ui = CustomRulesUi::new();
+            ui.draft.set("a=b=c".into());
+            assert!(!ui.add_draft());
+            assert!(!ui.error.get().is_empty());
+            crate::rpc::force_mock_reply(
+                "correction.conflictExample",
+                Some(json!({ "valid": false, "reason": "生成不出可用的错误拼写" })),
+            );
+            ui.draft.set("dui=diu".into());
+            let added = ui.add_draft();
+            crate::rpc::force_mock_reply("correction.conflictExample", None);
+            assert!(!added);
+            assert_eq!(ui.error.get(), "无效：生成不出可用的错误拼写");
+            assert!(ui.rows.get().is_empty());
+            assert_eq!(ui.draft.get(), "dui=diu", "被拒时保留草稿供修改");
+        });
+    }
+
     /// 增删与写回：去空白、去重，冲突示例取自 core（mock 下 uen=un 有冲突）。
     #[test]
     fn custom_rules_add_remove_and_write_back() {
         with_mock(|| {
             let ui = CustomRulesUi::new();
             ui.seed(&[json!("ogn=ong")]);
-            ui.draft.set(" uen = un ".into());
+            ui.draft.set(" UEN = un ".into());
             assert!(ui.add_draft());
             assert_eq!(ui.draft.get(), "");
             ui.draft.set("ogn=ong".into());

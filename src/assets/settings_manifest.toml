@@ -2567,7 +2567,7 @@ group = "input"
 section = "纠错与提示"
 type = "toggle"
 label = "模糊音提示"
-hint = "靠模糊音匹配上的字提示正确拼音（模糊音开着才有）"
+hint = "提示来源：靠模糊音匹配上的字提示正确拼音（模糊音开着才有）"
 
 [[items]]
 key = "input.correction.hint.misread"
@@ -2575,7 +2575,7 @@ group = "input"
 section = "纠错与提示"
 type = "toggle"
 label = "误读提示"
-hint = "易读错的词提示正确拼音，并在打出错误读音时带出该词，如 xinxin 带出「莘(shen)莘(shen)」"
+hint = "提示来源：易读错的词提示正确拼音，并在打出错误读音时带出该词，如 xinxin 带出「莘(shen)莘(shen)」"
 
 [[items]]
 key = "input.correction.hint.correction"
@@ -2583,7 +2583,7 @@ group = "input"
 section = "纠错与提示"
 type = "toggle"
 label = "纠错提示"
-hint = "经拼写纠错得到的候选提示正确拼音（拼写纠错开着才有）"
+hint = "提示来源：经拼写纠错得到的候选提示正确拼音（拼写纠错开着才有）"
 
 [[items]]
 key = "input.correction.hint.scope"
@@ -2613,7 +2613,7 @@ group = "input"
 section = "纠错与提示"
 type = "open_misread_table"
 label = "误读表"
-hint = "用户追加的易读错词，每行「文字、错误拼音、正确拼音」，同词同错读覆盖内置表；保存后下次应用设置时生效"
+hint = "用户追加的易读错词，每行「文字、错误拼音、正确拼音」，同词同错读覆盖内置表；改完后，下次保存任一设置或重启输入法时生效"
 
 # ═══════════════════════════ 按键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。
