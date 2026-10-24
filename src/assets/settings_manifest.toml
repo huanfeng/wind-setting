@@ -2461,7 +2461,7 @@ section = "纠错与提示"
 opens_dialog = "correction"
 type = "toggle"
 label = "拼写纠错"
-hint = "打错的拼音按纠正后的拼写也出候选，如 gogn 出「公」"
+hint = "打错的拼音按纠正后的拼写也出候选，如漏了 g 的 gonping 出「公平」"
 
 [[items]]
 key = "input.correction.rules.gn_ng"
