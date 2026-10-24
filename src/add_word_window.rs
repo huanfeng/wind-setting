@@ -409,7 +409,6 @@ fn build_form(
         // 的写法编译得过但永远不触发（windui `inputs.rs` 的注释里钉着这条）。
         .child(
             Element::text_input(code, "")
-                .height(34)
                 .weight(1.0)
                 .on_submit(move |ctx| {
                     if submit(schema_id, code, text, weight, error) {
@@ -500,7 +499,6 @@ fn build_form(
                 .child(
                     Element::text_input(weight, "")
                         .width(90)
-                        .height(34)
                         .on_submit(move |ctx| {
                             if submit(schema_id, code, text, weight, error) {
                                 ctx.request_close();

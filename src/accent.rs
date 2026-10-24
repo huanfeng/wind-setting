@@ -9,6 +9,8 @@
 //! - **暗档**：强调色既当深色卡片上的文字 / 图标（与卡片底对比 ≥ 4.5），又当按钮底压白字
 //!   （≥ [`DARK_WHITE_MIN`]）。两条约束在相对亮度约 0.22–0.30 之间同时成立，任何色相都能
 //!   沿亮度调进去，所以前景始终是白字，与设置窗暗色默认配色（蓝底白字）一致。
+//!   悬停照 windui 0.29 暗档的习惯**变亮**，但压白字同样不能低于 3:1；区间上沿的颜色没有
+//!   变亮的余地，故基色再往区间下沿挪，直到悬停与基色拉开 [`HOVER_MIN_DELTA_E`]（或已贴下沿）。
 //! - **近灰**（饱和度 < [`MIN_SATURATION`]）：主题本意就是中性色，硬套会让整个界面没有
 //!   强调层次，回落设置窗默认蓝。
 //!
@@ -24,16 +26,31 @@ pub const MIN_SATURATION: f32 = 0.15;
 const MIN_CHROMA: f32 = 0.08;
 /// 正文级对比度（WCAG AA）。
 const MIN_CONTRAST: f32 = 4.5;
-/// 暗档填充色上白字的最低对比。按钮文字字重偏大，取大字号档的 3:1——设置窗暗色默认蓝
-/// `#5B8CF5` 就是 3.2:1。
+/// 暗档填充色上白字的最低对比。按钮文字字重偏大，取大字号档的 3:1（windui 实底按钮换深字
+/// 的门槛也是它）。
 const DARK_WHITE_MIN: f32 = 3.0;
+
+/// 亮档悬停的 HSL 亮度按此比例收缩（l × 0.90）。按比例而非减定值：近黑的强调色减定值会
+/// 两态都夹到纯黑、分不出来。
+const HOVER_DARKEN: f32 = 0.10;
+/// 亮档按下的 HSL 亮度收缩比例（l × 0.77）。
+const ACTIVE_DARKEN: f32 = 0.23;
+/// 暗档悬停向白提亮剩余亮度的比例（l + (1 − l) × 0.14，同 windui 0.29 暗档 blue-600 → 500）。
+const DARK_HOVER_LIGHTEN: f32 = 0.14;
+/// 暗档按下的 HSL 亮度收缩比例（l × 0.90，同 windui 0.29 暗档 blue-600 → 700）。
+const DARK_ACTIVE_DARKEN: f32 = 0.10;
+/// 暗档悬停与基色的最小色差（CIELAB ΔE76）。约 2.3 刚可察觉；只夹 3:1 不挪基色时默认蓝仅
+/// 3.9，按钮还带淡入动画，实际看不出悬停。取 7：约三倍可察觉阈，接近 0.28 手调值（9.8）。
+const HOVER_MIN_DELTA_E: f32 = 7.0;
+/// 暗档为悬停腾余量时基色每步下挪的 HSL 亮度。
+const DARK_BASE_STEP: f32 = 0.002;
 
 /// 设置窗亮档卡片底（`theme_def::light_theme` 的 surface）。
 const LIGHT_SURFACE: Color = Color::hex(0xFFFFFF);
 /// 设置窗暗档卡片底（`theme_def::dark_theme` 的 surface）。
 const DARK_SURFACE: Color = Color::hex(0x1A2333);
 
-/// 一档的强调色组，直接落进 windui 调色板的四个槽位。
+/// 一档的强调色组，直接落进 windui 调色板的四个槽位（`accent_text` 随 `accent` 一起设）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AccentSet {
     pub accent: Color,
@@ -95,16 +112,42 @@ pub fn derive(raw: Color, dark: bool) -> Derived {
         l2 = l2.clamp(0.0, 1.0);
     }
     // 亮度没动就原样用输入色：HSL 往返在 u8 取整下不保证逐位还原，拿它比相等会误报「已调整」。
-    let unchanged = l2 == l;
-    let accent = if unchanged { base } else { from_hsl(h, s, l2) };
-    // 悬停 / 按下的亮度阶差对齐 `theme_def` 现有两套（亮 +6/−7 个百分点，暗 +4.5/−6）。
-    let (up, down) = if dark { (0.045, 0.06) } else { (0.06, 0.07) };
-    let set = AccentSet {
-        accent,
-        hover: from_hsl(h, s, (l2 + up).min(1.0)),
-        active: from_hsl(h, s, (l2 - down).max(0.0)),
-        on_accent: Color::WHITE,
+    let at = |l2: f32| if l2 == l { base } else { from_hsl(h, s, l2) };
+    let set = if dark {
+        // 暗档悬停变亮、按下变深。悬停夹在压白字 3:1 以内；与基色拉不开时基色往深挪，
+        // 但不越过卡片上 4.5:1 的下沿。
+        let hover_l = |l2: f32| {
+            let mut hl = l2 + (1.0 - l2) * DARK_HOVER_LIGHTEN;
+            while hl > l2 && contrast(from_hsl(h, s, hl), Color::WHITE) < DARK_WHITE_MIN {
+                hl -= DARK_BASE_STEP;
+            }
+            hl.max(l2)
+        };
+        for _ in 0..500 {
+            if delta_e(at(l2), from_hsl(h, s, hover_l(l2))) >= HOVER_MIN_DELTA_E
+                || contrast(from_hsl(h, s, l2 - DARK_BASE_STEP), DARK_SURFACE) < MIN_CONTRAST
+            {
+                break;
+            }
+            l2 -= DARK_BASE_STEP;
+        }
+        AccentSet {
+            accent: at(l2),
+            hover: from_hsl(h, s, hover_l(l2)),
+            active: from_hsl(h, s, l2 * (1.0 - DARK_ACTIVE_DARKEN)),
+            on_accent: Color::WHITE,
+        }
+    } else {
+        // 亮档悬停 / 按下一律加深（同 windui 0.29 亮档：blue-600 → 700 → 800；默认蓝上约
+        // −5.6 / −12.8 个百分点）。
+        AccentSet {
+            accent: at(l2),
+            hover: from_hsl(h, s, l2 * (1.0 - HOVER_DARKEN)),
+            active: from_hsl(h, s, l2 * (1.0 - ACTIVE_DARKEN)),
+            on_accent: Color::WHITE,
+        }
     };
+    let unchanged = l2 == l;
     if unchanged {
         Derived::AsIs(set)
     } else {
@@ -228,6 +271,35 @@ fn luminance(c: Color) -> f32 {
     0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
 }
 
+/// CIELAB ΔE76 色差（D65）。约 2.3 为刚可察觉的差别。
+fn delta_e(a: Color, b: Color) -> f32 {
+    fn lab(c: Color) -> (f32, f32, f32) {
+        let lin = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let (r, g, b) = (lin(c.r), lin(c.g), lin(c.b));
+        let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+        let f = |t: f32| {
+            if t > 0.008856 {
+                t.cbrt()
+            } else {
+                7.787 * t + 16.0 / 116.0
+            }
+        };
+        let (fx, fy, fz) = (f(x), f(y), f(z));
+        (116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz))
+    }
+    let (p, q) = (lab(a), lab(b));
+    ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2) + (p.2 - q.2).powi(2)).sqrt()
+}
+
 /// WCAG 对比度（1..=21）。
 pub fn contrast(a: Color, b: Color) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
@@ -321,11 +393,9 @@ mod tests {
                 "#{c:06X} 已达标，不该被改"
             );
         }
-        // 暗档：紫 #A78BFA 卡片上 5.8、压白字 2.7 不够；设置窗暗色默认蓝两条都达标。
-        assert!(matches!(
-            derive(Color::hex(0x5B8CF5), true),
-            Derived::AsIs(_)
-        ));
+        // 暗档：紫 #A78BFA 卡片上 5.8、压白字 2.7 不够；设置窗暗色默认蓝是 derive 的不动点。
+        let dark = crate::theme_def::dark_theme().palette.accent;
+        assert!(matches!(derive(dark, true), Derived::AsIs(s) if s.accent == dark));
     }
 
     #[test]
@@ -372,27 +442,100 @@ mod tests {
         }
     }
 
-    /// 悬停 / 按下阶差与 `theme_def` 手调的两套默认值对得上（每通道误差 ≤ 16：手调时还
-    /// 顺手降了点饱和度，这里只保亮度阶差）。
+    /// 悬停 / 按下阶差与 `theme_def` 的两套默认值对得上（每通道误差 ≤ 2，只容 HSL 往返取整）。
     #[test]
     fn hover_and_active_steps_match_default_palette() {
         let close = |a: Color, b: Color| {
             let d = |x: u8, y: u8| (x as i32 - y as i32).abs();
-            d(a.r, b.r).max(d(a.g, b.g)).max(d(a.b, b.b)) <= 16
+            d(a.r, b.r).max(d(a.g, b.g)).max(d(a.b, b.b)) <= 2
         };
-        for (dark, accent, hover, active) in [
-            (false, 0x2F6BED, 0x4A80F0, 0x2159D6),
-            (true, 0x5B8CF5, 0x6F9BF7, 0x4A7CE8),
-        ] {
-            let s = set_of(derive(Color::hex(accent), dark));
-            assert_eq!(s.accent, Color::hex(accent));
-            assert!(close(s.hover, Color::hex(hover)), "{dark}: {:?}", s.hover);
+        for dark in [false, true] {
+            let p = crate::theme_def::theme_for(dark).palette;
+            let s = set_of(derive(p.accent, dark));
+            assert_eq!(s.accent, p.accent);
+            assert!(close(s.hover, p.accent_hover), "{dark}: {:?}", s.hover);
+            assert!(close(s.active, p.accent_active), "{dark}: {:?}", s.active);
+        }
+    }
+
+    /// 悬停 / 按下压白字不低于强调色本身的门槛（亮档 4.5、暗档 3）。windui 实底主按钮三态
+    /// 共用一个前景、不会逐态换深字，所以每态都要白字达标：亮档悬停改回变亮、暗档悬停去掉
+    /// 3:1 夹紧，都会在这里红。色相扫一圈，外加出厂主题。
+    #[test]
+    fn hover_and_active_keep_white_text_contrast() {
+        let mut raws: Vec<u32> = (0..12)
+            .map(|i| from_hsl(i as f32 * 30.0, 0.8, 0.55))
+            .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
+            .collect();
+        raws.extend(BUILTIN.iter().flat_map(|&(_, l, d)| [l, d]));
+        raws.push(0x5B8CF5); // 0.28 时代的暗档默认蓝：贴着白字 3:1，最考验悬停变亮的夹紧
+        for raw in raws {
+            for dark in [false, true] {
+                let min = if dark { DARK_WHITE_MIN } else { MIN_CONTRAST };
+                let Some(s) = derive(Color::hex(raw), dark).set() else {
+                    continue;
+                };
+                for (state, c) in [
+                    ("accent", s.accent),
+                    ("hover", s.hover),
+                    ("active", s.active),
+                ] {
+                    assert!(
+                        contrast(c, s.on_accent) >= min,
+                        "#{raw:06X} dark={dark} {state} 压白字 {:.2} < {min}",
+                        contrast(c, s.on_accent)
+                    );
+                }
+            }
+        }
+    }
+
+    /// 暗档悬停变亮、按下变深，且悬停与基色拉开 [`HOVER_MIN_DELTA_E`]——除非基色已贴卡片
+    /// 4.5:1 的下沿、无处可挪。贴下沿的不是个例：白字 3:1 与卡片 4.5:1 夹出的亮度区间很窄，
+    /// 网格扫描里约六成暗档输入（品红、青、绿、黄等多数饱和色相）都会贴下沿，最低只有
+    /// ΔE ≈ 2.7（如 #F900DD）。这是两条约束的固有上限，豁免它是有意的。
+    #[test]
+    fn dark_hover_is_lighter_and_visibly_apart() {
+        // 饱和偏亮一圈 + 低饱和偏暗一圈（后者初始就在区间下方，走的是往亮调的那条路）。
+        let mut raws: Vec<u32> = [(0.8, 0.6), (0.3, 0.35)]
+            .into_iter()
+            .flat_map(|(s, l)| (0..12).map(move |i| from_hsl(i as f32 * 30.0, s, l)))
+            .map(|c| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32)
+            .collect();
+        raws.extend(BUILTIN.iter().map(|&(_, _, d)| d));
+        raws.push(0x5B8CF5);
+        for raw in raws {
+            let s = set_of(derive(Color::hex(raw), true));
             assert!(
-                close(s.active, Color::hex(active)),
-                "{dark}: {:?}",
-                s.active
+                luminance(s.hover) > luminance(s.accent),
+                "#{raw:06X} 悬停没变亮"
+            );
+            assert!(
+                luminance(s.active) < luminance(s.accent),
+                "#{raw:06X} 按下没变深"
+            );
+            let (h, sat, l) = to_hsl(s.accent);
+            let at_floor =
+                contrast(from_hsl(h, sat, l - DARK_BASE_STEP), DARK_SURFACE) < MIN_CONTRAST;
+            assert!(
+                delta_e(s.accent, s.hover) >= HOVER_MIN_DELTA_E || at_floor,
+                "#{raw:06X} 悬停与基色只差 ΔE {:.2}，基色还有下挪余地",
+                delta_e(s.accent, s.hover)
             );
         }
+        // 默认暗档蓝本身必须拉得开，不能靠「贴下沿」豁免；它就是 0.28 默认蓝 #5B8CF5 按本规则
+        // 下挪的结果——下限被放宽时旧蓝不再需要挪，这里会红。
+        let p = crate::theme_def::dark_theme().palette;
+        assert!(delta_e(p.accent, p.accent_hover) >= HOVER_MIN_DELTA_E);
+        assert_eq!(set_of(derive(Color::hex(0x5B8CF5), true)).accent, p.accent);
+    }
+
+    /// 近黑的强调色（HSL 亮度约 5%）悬停与按下仍分得开：减定值会把两态都夹到纯黑。
+    #[test]
+    fn near_black_accent_keeps_hover_and_active_apart() {
+        let s = set_of(derive(Color::hex(0x00001A), false));
+        assert_ne!(s.hover, s.active);
+        assert_ne!(s.active, Color::hex(0x000000));
     }
 
     #[test]

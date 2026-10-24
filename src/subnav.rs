@@ -425,7 +425,7 @@ pub fn build_list(nav: &SubNav) -> Element {
             .corner(7.0)
             .cross(Align::Center)
             .padding_xy(indent, 0)
-            .bg_role_alpha(Role::Accent, 0.11)
+            .bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
             .child(
                 Element::label(&item.label)
                     .font_size(12.5)

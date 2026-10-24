@@ -676,8 +676,8 @@ fn item_row(label: &str, desc: &str, control: Element) -> Element {
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(control)
 }
@@ -795,7 +795,7 @@ fn kind_card(kind: Signal<usize>, avail: Signal<bool>, i: usize, title: &str) ->
             Element::leaf()
                 .align(Align::Stretch)
                 .corner(8.0)
-                .bg_role_alpha(Role::Accent, 0.08)
+                .bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
                 .border_role(Role::Accent, 2)
                 .visible_when(sel),
         )

@@ -379,7 +379,7 @@ fn build_nav(
     sel: Signal<usize>,
     app: &Rc<RefCell<AppState>>,
 ) -> Element {
-    use crate::icons::{CHIP_PX, EXTERNAL, ICON_PX, nav_icon, tinted, tinted_role};
+    use crate::icons::{CHIP_PX, EXTERNAL, ICON_PX, nav_icon, tinted_role};
 
     // 动作项下标经 `page_to_index` 取，不写字面量 4：PAGES 与 `all_tabs` 的顺序本来就
     // 靠约定对齐，这里再手抄一个下标，将来插一页就会指到隔壁那项上。
@@ -471,7 +471,7 @@ fn build_nav(
             let row = if bg_solid {
                 row.bg_role(Role::Accent)
             } else {
-                row.bg_role_alpha(Role::Accent, 0.11)
+                row.bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
             };
             row.child(make_chip()).child(
                 Element::label(name)
@@ -492,7 +492,7 @@ fn build_nav(
         let on_solid = selected_row(true)
             .visible_when(move || sel.get() == i && li.get() == crate::look::nav::SOLID);
 
-        // ── 未选中态（可点击；图标中性灰，两主题通用）──
+        // ── 未选中态（可点击；图标取弱化正文色，随主题）──
         let app_for_click = app.clone();
         let mut off = Element::row()
             .clickable()
@@ -514,7 +514,7 @@ fn build_nav(
                     .size(CHIP_PX, CHIP_PX)
                     .corner(7.0)
                     .bg_role(Role::Bg)
-                    .child(tinted(svg, ICON_PX, Color::hex(0x8A93A5)).align(Align::Center)),
+                    .child(tinted_role(svg, ICON_PX, Role::TextSubtle).align(Align::Center)),
             )
             .child(
                 Element::label(name)
@@ -527,7 +527,7 @@ fn build_nav(
             );
         if is_action {
             // 角标比正文更淡：它是对「点了会发生什么」的注解，不该与条目本身争视线。
-            off = off.child(tinted(EXTERNAL, 13, Color::hex(0x8A93A5)).align(Align::Center));
+            off = off.child(tinted_role(EXTERNAL, 13, Role::TextSubtle).align(Align::Center));
         }
         // 动作项永不选中，`visible_when` 恒真即可 —— 但仍写成同一个判据，免得哪天
         // `--tab <词库下标>` 之类的路径真把 sel 设成了它，整行凭空消失。
@@ -553,7 +553,7 @@ fn build_nav(
 /// 侧栏最底部的「设置向导」动作项：样式同导航未选中态，点它弹向导、不切页。
 /// 输入法服务没连上时向导无从预填，只给提示。
 fn wizard_entry(app: &Rc<RefCell<AppState>>) -> Element {
-    use crate::icons::{CHIP_PX, ICON_PX, nav_icon, tinted};
+    use crate::icons::{CHIP_PX, ICON_PX, nav_icon, tinted_role};
     let app = app.clone();
     Element::row()
         .clickable()
@@ -580,7 +580,7 @@ fn wizard_entry(app: &Rc<RefCell<AppState>>) -> Element {
                 .corner(7.0)
                 .bg_role(Role::Bg)
                 .child(
-                    tinted(nav_icon("设置向导"), ICON_PX, Color::hex(0x8A93A5))
+                    tinted_role(nav_icon("设置向导"), ICON_PX, Role::TextSubtle)
                         .align(Align::Center),
                 ),
         )
@@ -821,7 +821,7 @@ fn build_footer(
                 )
         };
         let on = cell(Role::Accent)
-            .bg_role_alpha(Role::Accent, 0.14)
+            .bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
             .visible_when(move || dark.get() == want_dark);
         let off = cell(Role::TextMuted)
             .clickable()

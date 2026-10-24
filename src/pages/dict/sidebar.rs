@@ -284,7 +284,7 @@ pub fn selectable(
 
     let sel_on = is_selected.clone();
     let on = content(true)
-        .bg_role_alpha(Role::Accent, 0.11)
+        .bg_role_alpha(Role::Accent, windui::theme::SELECTED_ALPHA)
         .visible_when(move || sel_on());
 
     let off = content(false)

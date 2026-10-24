@@ -759,7 +759,6 @@ fn build_section_form_dialog(ui: &TooltipSectionsUi) -> Element {
     let input = |sig: Signal<String>, placeholder: &str| {
         Element::text_input(sig, placeholder)
             .width_match()
-            .height(32)
             .weight(1.0)
     };
     // 段名与段内容都是模板：各自记住输入框节点（插入颜色、点问题选中那段都要用）。

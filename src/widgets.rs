@@ -275,21 +275,14 @@ impl Widget for SignalTip {
 /// `tip` 为空串时图标仍在，只是不弹提示（[`SignalTip::tooltip`] 返回 None）。调用方
 /// 若不想让它出现，用 `visible_when` 收掉整个角标。
 pub fn info_badge(tip: Signal<String>, on_click: impl FnMut(&mut EventCtx) + 'static) -> Element {
-    // 亮/暗双态叠加：`tint` 收的是静态色，换肤不跟随，两套主题下的 muted 色不是同一个。
-    let icon = |on_dark: bool| {
-        let c = if on_dark {
-            Color::hex(0x9AA4B2)
-        } else {
-            Color::hex(0x8A94A6)
-        };
-        crate::icons::tinted(crate::icons::INFO_THIN, 14, c)
-            .visible_when(move || dark_sig().get() == on_dark)
-    };
     Element::stack()
         .size(14, 14)
-        .child(icon(false))
-        .child(icon(true))
-        // 提示层排在最后、尺寸与容器等大：`hit_node` 倒序测子节点，故它先于两个图标
+        .child(crate::icons::tinted_role(
+            crate::icons::INFO_THIN,
+            14,
+            Role::TextSubtle,
+        ))
+        // 提示层排在最后、尺寸与容器等大：`hit_node` 倒序测子节点，故它先于图标
         // 被命中，提示与点击都落在它身上。图标层因此永远轮不到命中——给图标再挂静态
         // 提示是死代码（`node_tooltip` 只沿**父链**上溯，够不着兄弟节点）。
         .child(
@@ -391,8 +384,8 @@ fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: E
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(control)
 }
@@ -436,8 +429,8 @@ pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Eleme
         .width_match()
         // Center 而非 Start：右侧是一组按钮，副标题一行时贴顶会让按钮与标签错位。
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(control)
 }
@@ -504,8 +497,8 @@ pub fn setting_row_override(
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         // 空标签的勾选框：标签文字在左列，这里只要那个方框。
         .child(Element::checkbox("", over).small().fg_role(Role::Text))
         .child(left)
@@ -658,8 +651,8 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     Element::row()
         .width_match()
         .cross(Align::Start)
-        .padding_xy(0, f.row_pad_y())
-        .spacing(f.gap())
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
         .child(left)
         .child(grid.width(300))
 }
