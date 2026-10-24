@@ -490,15 +490,20 @@ pub(crate) fn misread_table_button(state: &AppState) -> Element {
         })
 }
 
-/// 经 core 定位用户数据目录里的误读表，不存在就写入说明模板，再交给系统打开。
-fn open_misread_table() -> Result<(), String> {
+/// 经 core 定位用户数据目录里的误读表（引擎读的就是这一份）。
+fn locate_misread_table() -> Result<std::path::PathBuf, String> {
     let v = crate::rpc::call_core("data.locate", &json!({ "path": MISREAD_FILE }))
         .map_err(|e| format!("找不到用户数据目录：{e}"))?;
-    let path = v
-        .get("path")
+    v.get("path")
         .and_then(Value::as_str)
-        .ok_or("找不到用户数据目录")?;
-    let path = std::path::Path::new(path);
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "找不到用户数据目录".to_string())
+}
+
+/// 定位误读表，不存在就写入说明模板，再交给系统打开。
+fn open_misread_table() -> Result<(), String> {
+    let path = locate_misread_table()?;
+    let path = path.as_path();
     if !path.exists() {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
@@ -569,6 +574,28 @@ mod tests {
             note_from_reply(&json!({ "valid": false, "reason": "缺少 `=`" })),
             "无效：缺少 `=`"
         );
+    }
+
+    /// 误读表经 `data.locate {path}` 定位到数据目录根下的 `pinyin_misread.txt`（core 的
+    /// `classify_text_path` 认这个文件名；mock 照 core 拒收不认识的根下文件）。
+    #[test]
+    fn misread_table_is_located_in_data_dir() {
+        with_mock(|| {
+            crate::rpc::take_mock_calls();
+            let p = locate_misread_table().expect("core 应认误读表");
+            assert_eq!(p, std::path::Path::new("/mock/data/pinyin_misread.txt"));
+            assert_eq!(
+                crate::rpc::take_mock_calls(),
+                vec![(
+                    "data.locate".to_string(),
+                    json!({ "path": "pinyin_misread.txt" })
+                )]
+            );
+            assert!(
+                crate::rpc::call_core("data.locate", &json!({ "path": "misread.txt" })).is_err(),
+                "根下不认识的文件 core 会拒"
+            );
+        });
     }
 
     fn with_mock<R>(f: impl FnOnce() -> R) -> R {
