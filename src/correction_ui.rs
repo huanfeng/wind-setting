@@ -3,7 +3,7 @@
 //! - 「拼写纠错」：总开关 + 扩展设置。对话框里 8 条内置规则排成紧凑网格（仿模糊音的
 //!   对话框，见 `manifest::build_fuzzy_row`），下面是自定义规则列表（增删）。
 //! - 「提示来源」：三个来源勾选挤在一行，三个配置键各自独立。
-//! - 「误读表」：打开用户数据目录里的 `pinyin_misread.txt`（不存在就先建一份带说明的空表）。
+//! - 「误读表」：打开用户数据目录里的 `pinyin_misread.yaml`（不存在就先建一份带说明的空表）。
 //!
 //! 自定义规则的冲突示例来自 core 的 `correction.conflictExample`（判据与引擎同源，本仓不
 //! 依赖 wind-engine）；core 没在运行时取不到，就不显示。
@@ -65,17 +65,21 @@ pub(crate) const HINT_SOURCES: [(&str, &str); 3] = [
 ];
 
 /// 用户误读表的文件名（相对用户数据目录，与 core `MISREAD_FILE` 一致）。
-const MISREAD_FILE: &str = "pinyin_misread.txt";
+const MISREAD_FILE: &str = "pinyin_misread.yaml";
 
 /// 新建用户误读表时写进去的说明。
 const MISREAD_TEMPLATE: &str = "\
+---
 # 拼音误读表（用户追加）
 #
-# 格式：文字<Tab>错误拼音<Tab>正确拼音，拼音按音节以空格分隔、不带声调，ü 写作 v。
-# 例：馄饨<Tab>hun dun<Tab>hun tun
-# 第三列留空（行尾仍保留 Tab）= 这个读法不算错，不提示也不召回。
-# 同一「文字 + 错误拼音」覆盖内置表。以 # 开头的行是注释。
+# 在下面 `...` 之后一行写一项：
+#   - {text: 馄饨, wrong: hun dun, right: hun tun}
+# text 是词，wrong 是错误读音（几种读错法写成列表 [a b, c d]），right 是正确读音；
+# 读音按音节以空格分隔、不带声调，ü 写作 v。可另写 note 作说明。
+# 同一「text + wrong」覆盖内置表；格式不对的项跳过。以 # 开头的行是注释。
 # 改完后，下次保存任一设置或重启输入法时生效。
+name: pinyin_misread_user
+...
 ";
 
 /// 规则网格每格的说明：有冲突写冲突，没有写「无已知冲突」。
@@ -576,19 +580,19 @@ mod tests {
         );
     }
 
-    /// 误读表经 `data.locate {path}` 定位到数据目录根下的 `pinyin_misread.txt`（core 的
+    /// 误读表经 `data.locate {path}` 定位到数据目录根下的 `pinyin_misread.yaml`（core 的
     /// `classify_text_path` 认这个文件名；mock 照 core 拒收不认识的根下文件）。
     #[test]
     fn misread_table_is_located_in_data_dir() {
         with_mock(|| {
             crate::rpc::take_mock_calls();
             let p = locate_misread_table().expect("core 应认误读表");
-            assert_eq!(p, std::path::Path::new("/mock/data/pinyin_misread.txt"));
+            assert_eq!(p, std::path::Path::new("/mock/data/pinyin_misread.yaml"));
             assert_eq!(
                 crate::rpc::take_mock_calls(),
                 vec![(
                     "data.locate".to_string(),
-                    json!({ "path": "pinyin_misread.txt" })
+                    json!({ "path": "pinyin_misread.yaml" })
                 )]
             );
             assert!(

@@ -1403,7 +1403,7 @@ const MOCK_LOCATABLE_ROOT_FILES: &[&str] = &[
     "quick_format.toml",
     "common_chars.yaml",
     "completion.table.yaml",
-    "pinyin_misread.txt",
+    "pinyin_misread.yaml",
 ];
 
 fn mock_error(method: &str, params: &Value) -> Option<String> {
