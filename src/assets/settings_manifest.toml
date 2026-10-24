@@ -979,37 +979,6 @@ section = "模糊音"
 type = "toggle"
 label = "eng ↔ ong"
 
-# 正确拼音提示：与 13 组拼音对同在「模糊音 · 扩展设置」对话框里（手写，见 manifest::build_fuzzy_row），
-# 此处登记供「恢复本页」与覆盖守护。
-[[items]]
-key = "schema.pinyin.fuzzy.hint"
-group = "schema"
-section = "模糊音"
-type = "toggle"
-label = "显示正确拼音"
-hint = "靠模糊音匹配上的字，在候选里内嵌正确拼音并着色，如「苹(ping)果」；上屏不受影响"
-
-[[items]]
-key = "schema.pinyin.fuzzy.hint_scope"
-group = "schema"
-section = "模糊音"
-type = "select"
-label = "提示范围"
-hint = "只标第一个带提示的候选，或每个模糊候选都标"
-enabled_when = "schema.pinyin.fuzzy.hint == true"
-options = [
-  { value = "first", label = "首个模糊候选" },
-  { value = "all", label = "全部模糊候选" },
-]
-
-[[items]]
-key = "schema.pinyin.fuzzy.hint_tone"
-group = "schema"
-section = "模糊音"
-type = "toggle"
-label = "提示带声调"
-hint = "作用于正文提示与注释变量 ${fuzzy_pinyin}：正确拼音带声调，如「苹(píng)果」；同音异调的字取最常用读音，查不到读音的字不带调"
-
 # ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
 #
 # ⚠️ 项序即渲染序，且 `subsection = None` **不会终止**前一个分组（对话框渲染只在
@@ -2479,6 +2448,172 @@ options = [
   { value = "符号", label = "符号", hint = "标点、数学、箭头、图形、带圈数字、全角形式（— ∞ → ① ￥ ⿰）" },
   { value = "其它", label = "其它", hint = "新版 Unicode 新增的、本程序还不认识的区块" },
 ]
+
+# ── 纠错与提示 ──
+# 「拼写纠错」一行与「提示来源」一行是手写的（`correction_ui`）：前者是总开关 + 扩展设置，
+# 对话框里 8 条内置规则排成紧凑网格（仿模糊音），下接自定义规则列表；后者把三个来源勾选
+# 挤在一行。各键仍逐项登记在此，供搜索、覆盖守护与「恢复默认」。
+# 规则的 label / hint 与 `correction_ui::RULES` 逐项一致（hint = 冲突说明），由测试守住。
+[[items]]
+key = "input.correction.enabled"
+group = "input"
+section = "纠错与提示"
+opens_dialog = "correction"
+type = "toggle"
+label = "拼写纠错"
+hint = "打错的拼音按纠正后的拼写也出候选，如 gogn 出「公」"
+
+[[items]]
+key = "input.correction.rules.gn_ng"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "ng 打成 gn（ogn→ong）"
+hint = "冲突：简拼下 xign 也可是 xi+g+n"
+
+[[items]]
+key = "input.correction.rules.on_ong"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "漏 g：on→ong"
+hint = "冲突：lone 也可是 lo+ne"
+
+[[items]]
+key = "input.correction.rules.vowel_swap"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "韵母字母颠倒"
+hint = "无已知冲突"
+
+[[items]]
+key = "input.correction.rules.legacy_spelling"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "旧式拼写 uei/iou/uen"
+hint = "冲突：liou 也可是 li+ou"
+
+[[items]]
+key = "input.correction.rules.h_misplaced"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "h 错位（hz→zh、zih→zhi）"
+hint = "冲突：h+zi 是简拼"
+
+[[items]]
+key = "input.correction.rules.mg_ng"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "ng 打成 mg"
+hint = "冲突：m 是简拼首字母"
+
+[[items]]
+key = "input.correction.rules.n_before_g"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "ng 打成 nag 类"
+hint = "冲突：nage 也可是 na+ge"
+
+[[items]]
+key = "input.correction.rules.ai_ia"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "toggle"
+label = "简拼冲突类"
+hint = "冲突：x'ai 喜爱 会被纠成 xia"
+
+[[items]]
+key = "input.correction.custom"
+group = "input"
+section = "纠错与提示"
+dialog_group = "correction"
+type = "strlist_text"
+label = "自定义规则"
+hint = "每条「错误=正确」，如 uen=un；作用于单个音节内的片段"
+
+[[items]]
+key = "input.correction.marker"
+group = "input"
+section = "纠错与提示"
+type = "string"
+enabled_when = "input.correction.enabled == true"
+label = "纠错候选标记"
+hint = "加在只经纠错才得到的候选前，如「*公平」；留空不加"
+
+[[items]]
+key = "input.correction.hint.enabled"
+group = "input"
+section = "纠错与提示"
+type = "toggle"
+label = "显示正确拼音"
+hint = "带提示的候选在正文里内嵌正确拼音并着色，如「苹(ping)果」；上屏不受影响"
+
+[[items]]
+key = "input.correction.hint.fuzzy"
+group = "input"
+section = "纠错与提示"
+type = "toggle"
+label = "模糊音提示"
+hint = "靠模糊音匹配上的字提示正确拼音（模糊音开着才有）"
+
+[[items]]
+key = "input.correction.hint.misread"
+group = "input"
+section = "纠错与提示"
+type = "toggle"
+label = "误读提示"
+hint = "易读错的词提示正确拼音，并在打出错误读音时带出该词，如 xinxin 带出「莘(shen)莘(shen)」"
+
+[[items]]
+key = "input.correction.hint.correction"
+group = "input"
+section = "纠错与提示"
+type = "toggle"
+label = "纠错提示"
+hint = "经拼写纠错得到的候选提示正确拼音（拼写纠错开着才有）"
+
+[[items]]
+key = "input.correction.hint.scope"
+group = "input"
+section = "纠错与提示"
+type = "select"
+label = "提示范围"
+hint = "只标第一个带提示的候选，或每个带提示的候选都标"
+enabled_when = "input.correction.hint.enabled == true"
+width = 180
+options = [
+  { value = "first", label = "首个带提示的候选" },
+  { value = "all", label = "全部带提示的候选" },
+]
+
+[[items]]
+key = "input.correction.hint.tone"
+group = "input"
+section = "纠错与提示"
+type = "toggle"
+label = "提示带声调"
+hint = "作用于正文提示与注释变量 ${correct_pinyin}：正确拼音带声调，如「苹(píng)果」；同音异调的字取最常用读音"
+
+[[items]]
+key = "local.misread_table"
+group = "input"
+section = "纠错与提示"
+type = "open_misread_table"
+label = "误读表"
+hint = "用户追加的易读错词，每行「文字、错误拼音、正确拼音」，同词同错读覆盖内置表；保存后下次应用设置时生效"
 
 # ═══════════════════════════ 按键 ═══════════════════════════
 # 注：键位字符串理想用「热键合成器」对话框编辑；此处先以 string 暴露，便于查看/直填。

@@ -626,25 +626,6 @@
       "type": "bool"
     },
     {
-      "default": false,
-      "key": "schema.pinyin.fuzzy.hint",
-      "type": "bool"
-    },
-    {
-      "default": "first",
-      "key": "schema.pinyin.fuzzy.hint_scope",
-      "type": "enum",
-      "values": [
-        "first",
-        "all"
-      ]
-    },
-    {
-      "default": false,
-      "key": "schema.pinyin.fuzzy.hint_tone",
-      "type": "bool"
-    },
-    {
       "default": true,
       "key": "schema.pinyin.frequency.enabled",
       "type": "bool"
@@ -942,6 +923,95 @@
       "default": "·",
       "key": "input.scope_relax.prefix",
       "type": "str"
+    },
+    {
+      "default": true,
+      "key": "input.correction.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "*",
+      "key": "input.correction.marker",
+      "type": "str"
+    },
+    {
+      "default": [],
+      "key": "input.correction.custom",
+      "type": "strlist"
+    },
+    {
+      "default": false,
+      "key": "input.correction.rules.gn_ng",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.correction.rules.on_ong",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.correction.rules.vowel_swap",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.rules.legacy_spelling",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.rules.h_misplaced",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.rules.mg_ng",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.rules.n_before_g",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.rules.ai_ia",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.hint.enabled",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.correction.hint.fuzzy",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "input.correction.hint.misread",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.hint.correction",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.correction.hint.tone",
+      "type": "bool"
+    },
+    {
+      "default": "first",
+      "key": "input.correction.hint.scope",
+      "type": "enum",
+      "values": [
+        "first",
+        "all"
+      ]
     },
     {
       "default": "commit",

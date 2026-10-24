@@ -589,6 +589,26 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         if !state.manifest.renders_row(item) {
             continue;
         }
+        // 「纠错与提示」里手写的两行：规则网格的入口行、三个来源挤在一行的「提示来源」。
+        if k == crate::search::index::CORRECTION_MASTER {
+            rows.push(crate::search::anchor::wrap(
+                crate::correction_ui::build_correction_row(state, cfg),
+                k.clone(),
+                state.jump,
+            ));
+            continue;
+        }
+        if crate::correction_ui::is_hint_source(k) {
+            if crate::correction_ui::first_visible_hint_source(&state.manifest) == Some(k.as_str())
+            {
+                rows.push(crate::search::anchor::wrap(
+                    crate::correction_ui::build_hint_sources_row(state, cfg),
+                    crate::search::index::page_anchor(k),
+                    state.jump,
+                ));
+            }
+            continue;
+        }
         let row = if item.dialog_title.is_some() {
             // 分组对话框宿主：卡片上收成一行「<dialog_title> …… [设置]」，宿主自身与寄居项
             // 都在对话框里（见 `dialog_title` 的说明）。
@@ -679,6 +699,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "open_dirs",
     "log_archive",
     "log_privacy_warning",
+    "open_misread_table",
 ];
 
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -753,6 +774,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             el
         }
         "local_select" => build_local_select(state, key, item),
+        "open_misread_table" => crate::correction_ui::misread_table_button(state),
         "open_dirs" => build_open_dirs(),
         "log_archive" => build_log_archive(state),
         // 走不到这里：`field_with` 已把它整行自绘并早退（见 build_log_privacy_warning）。
@@ -1275,7 +1297,7 @@ fn apply_exclusive(reg: &FieldRegistry, other: &str, on: bool) {
 
 /// 为某 bool key 建 Signal 并登记 writer/getter/loader，返回该 Signal。
 /// 独立出来便于「开关 + 设置」合并行直接复用同一开关（见 [`build_gated_dialog_row`]）。
-fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
+pub(crate) fn register_toggle(state: &AppState, key: &str, cfg: &Config) -> Signal<bool> {
     let def = state
         .capabilities
         .default_for(key)
@@ -2854,11 +2876,11 @@ fn host_off_text(host: &MItem, clause: &str) -> String {
 }
 
 /// 扩展设置对话框顶部的提示行。
-fn host_off_notice(label: &str) -> Element {
+pub(crate) fn host_off_notice(label: &str) -> Element {
     dialog_notice_row(signal(format!("「{label}」未开启，以下设置暂不生效。")))
 }
 
-fn register_dialog(state: &AppState, dlg: Element) {
+pub(crate) fn register_dialog(state: &AppState, dlg: Element) {
     state.fields.dialogs.borrow_mut().push(dlg);
 }
 
@@ -2973,10 +2995,7 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .spacing(10)
         .child(host_off_notice("模糊音").visible_when(move || !en.get()))
         .child(select_all_box)
-        .child(grid)
-        .child(field(state, "schema.pinyin.fuzzy.hint"))
-        .child(field(state, "schema.pinyin.fuzzy.hint_scope"))
-        .child(field(state, "schema.pinyin.fuzzy.hint_tone"));
+        .child(grid);
     let body = crate::search::anchor::wrap(
         body,
         crate::search::index::in_dialog_anchor(FUZZY_PAIRS[0].0),

@@ -1497,6 +1497,18 @@ fn mock_target_is_pinyin(params: &Value) -> bool {
         .is_some_and(|s| s.contains("pinyin") || s.contains("shuangpin"))
 }
 
+/// `correction.conflictExample` 的离线回包：只认得设计里那个例子（`uen=un`），其余无冲突。
+fn mock_conflict_example(params: &Value) -> Value {
+    let rule = params.get("rule").and_then(Value::as_str).unwrap_or("");
+    match rule.split_once('=') {
+        Some((w, c)) if !w.trim().is_empty() && !c.trim().is_empty() => {
+            let example = (rule == "uen=un").then_some("tuen = tu+en");
+            json!({ "valid": true, "example": example })
+        }
+        _ => json!({ "valid": false, "reason": "缺少 `=`" }),
+    }
+}
+
 /// `appearance.previewTemplate` 的离线回包（设置端模板预览行）。
 ///
 /// 真实求值要变量样例与主题，都在 core；离线只求**形状与坐标系**对：文字是固定样例（有 `$[`
@@ -1781,6 +1793,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         ]),
         "theme.delete" => json!({ "ok": true }),
         "appearance.previewTemplate" => mock_preview_template(params),
+        "correction.conflictExample" => mock_conflict_example(params),
         // 全局键 → 覆盖它的方案 id（core `schema.overrideSummary`）。
         "schema.overrideSummary" => json!({ "ui.candidate.layout": ["wubi86"] }),
         // 形状同 core `ThemeAccent`。按 mock `theme.list` 的三个主题各给一套，离线也能看
