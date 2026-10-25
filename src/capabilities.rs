@@ -350,6 +350,12 @@ mod tests {
         // ⑨ （已撤出豁免）schema.pinyin.auto_learn.promote_count 现已在清单内：出厂 0 = 不
         //    晋升，不暴露就等于拼音自动学到的词永远出不了临时词库，而设置页原来的 hint
         //    还写着「加入用户词库」。码表侧的 auto_phrase.promote_count 一直是暴露的。
+        // ⑩ 翻页键「翻不动」策略的**按键级覆盖表**（keys.overflow.page_key_overrides，
+        //    core 的 docs/design/keys-overflow-per-key.md）：键名 → ignore/commit_and_input
+        //    的映射表，本期只落 core（加载期告警写错的键名 / 值），用配置文件编辑；
+        //    键 → 策略的编辑控件另案（先例：自定义标点映射对话框）。全局默认档
+        //    keys.overflow.page_key 本身已在清单内。
+        "keys.overflow.page_key_overrides",
         // ⑨' 码表造词的兜底与容量参数，普通用户无判断依据，需要时改配置文件。
         //    注：min_phrase_len / max_phrase_len 已在清单内（hidden=true）。
         "schema.codetable.auto_phrase.idle_timeout_ms",
