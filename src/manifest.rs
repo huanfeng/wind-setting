@@ -96,6 +96,10 @@ pub struct MItem {
     /// 记：后者在本平台没有落点，前者的值照常生效，`enabled_when` 联动要按它的配置值算
     /// （见 [`ensure_custom_hidden_getter`]）。
     pub custom_hidden: bool,
+    /// 本项是被**用户自己**的设置精简清单藏掉的（同时 `hidden = true`）。见
+    /// [`crate::user_hide`]。与 `custom_hidden` 分开记：两份配置各有逃生口，
+    /// 判断「谁藏的」才能决定右键「取消隐藏」该删哪一条规则。
+    pub user_hidden: bool,
     /// 哨兵值（R3：`0` / `""`）表示「跟随谁」。目前只有 `"theme"`（外观页字号、字族、
     /// 字重、翻页栏、页码）。呈现按控件类型分两种（R8.1 / R8.2）：数值与下拉整行包成
     /// 勾选行（见 [`build_theme_follow_row`]）；按排布分档的下拉把空值档的文案换成
@@ -164,6 +168,11 @@ pub struct Manifest {
     /// 定制版 `feature:` 藏掉的手写卡 id（[`Manifest::apply_custom_hide`] 填）。与 `hidden`
     /// 同理随清单走：页面与搜索问的是同一份，「显示定制版隐藏的设置」打开时不折，自然为空。
     hidden_features: Vec<String>,
+    /// 用户自己藏掉的手写卡 id（[`Manifest::apply_user_hide`] 填）。
+    user_hidden_features: Vec<String>,
+    /// 用户自己藏掉的整张卡片，元素为 `(group, section)`。
+    /// `section:` 选择器不带分组时，同一分区名在所有分组里都命中。
+    user_hidden_sections: Vec<(String, String)>,
 }
 
 impl Manifest {
@@ -244,6 +253,7 @@ impl Manifest {
                         || !platform_matches(opt_str(it, "platform").as_deref())
                         || !variant_matches(opt_str(it, "variant").as_deref()),
                     custom_hidden: false,
+                    user_hidden: false,
                 };
                 items.insert(key.to_string(), item);
                 order.push(key.to_string());
@@ -254,6 +264,8 @@ impl Manifest {
             order,
             groups,
             hidden_features: Vec::new(),
+            user_hidden_features: Vec::new(),
+            user_hidden_sections: Vec::new(),
         }
     }
 
@@ -292,21 +304,94 @@ impl Manifest {
         unmatched
     }
 
-    /// 宿主被定制版藏掉 ⇒ 寄居在它对话框里的项（`dialog_group` / `dialog_extra_for`）一并藏掉。
+    /// 用户自己的设置精简清单（[`crate::user_hide`]）。
+    ///
+    /// ★ **不折 `hidden`**，与定制版那条路的关键差别在这里。定制版是随包的静态配置，
+    /// 建树时折掉就够；用户是在设置窗里一边藏一边看效果，折掉的话改一次就得关窗重开
+    /// （见 [`crate::user_hide`] 模块文档）。所以这里只**记下**命中了哪些项 / 卡片，
+    /// 页面构建时给它们各挂一个 `visible_when` 读 [`crate::user_hide::UserHideStore`]，
+    /// 改完当场重排。
+    ///
+    /// 另两个连带差别：
+    /// - 行照常登记 writer / loader（隐藏只影响显示），保存与「恢复本页」都会带上它的值；
+    /// - 搜索索引里也保留它 —— 逃生口打开时它就在页面上，搜得到才对得上；
+    ///   `SearchState::refresh` 按当前隐藏状态过滤结果。
+    ///
+    /// 返回一条都没命中的规则原文，供调用方记 WARN（规则由界面生成，理论不会拼错；出现即
+    /// 说明设置项在版本升级后改了名）。
+    pub fn apply_user_hide(&mut self, hide: &crate::user_hide::UserHide) -> Vec<String> {
+        if !hide.is_active() {
+            return Vec::new();
+        }
+        let mut unmatched = Vec::new();
+        for rule in &hide.rules {
+            let mut hit = false;
+            match rule {
+                crate::user_hide::HideRule::Core(wind_config::SettingsSelector::Feature(id)) => {
+                    if !self.user_hidden_features.contains(id) {
+                        self.user_hidden_features.push(id.clone());
+                    }
+                    hit = true;
+                }
+                crate::user_hide::HideRule::Core(sel) => {
+                    for item in self.items.values_mut() {
+                        if sel.matches_key(&item.key) {
+                            item.user_hidden = true;
+                            hit = true;
+                        }
+                    }
+                }
+                crate::user_hide::HideRule::Section { group, section } => {
+                    let pairs: Vec<(String, String)> = self
+                        .items
+                        .values()
+                        .filter(|it| {
+                            &it.section == section && group.as_deref().is_none_or(|g| it.group == g)
+                        })
+                        .map(|it| (it.group.clone(), it.section.clone()))
+                        .collect();
+                    for (g, s) in pairs {
+                        if !self.user_hidden_sections.contains(&(g.clone(), s.clone())) {
+                            self.user_hidden_sections.push((g, s));
+                        }
+                        hit = true;
+                    }
+                    for item in self.items.values_mut() {
+                        if &item.section == section
+                            && group.as_deref().is_none_or(|g| item.group == g)
+                        {
+                            item.user_hidden = true;
+                        }
+                    }
+                }
+            }
+            if !hit {
+                unmatched.push(rule.as_selector());
+            }
+        }
+        self.hide_orphaned_dialog_members();
+        unmatched
+    }
+
+    /// 宿主被**定制版**藏掉 ⇒ 寄居在它对话框里的项（`dialog_group` / `dialog_extra_for`）
+    /// 一并折进 `hidden`。
     ///
     /// 这些项本来就不独立成行，宿主没了就无处可去；不折进 `hidden` 的话 `sections_of`
     /// 会因它们「未隐藏」留下一张只有标题的空卡，搜索也还搜得到它们。
+    ///
+    /// ★ **只管定制版**。用户精简清单是运行期显隐：宿主行藏起来时对话框不开，成员自然
+    /// 看不到；而用户随时可能打开逃生口把宿主放回来，那时成员的 `hidden` 若已在建树期
+    /// 被折成 true 就再也回不来了。
     fn hide_orphaned_dialog_members(&mut self) {
         // 分组对话框（`dialog_title`，如「候选窗口高级设置」）的宿主只是排在第一的那一项，
         // 不是成员的主开关：藏它不该连带其余各项，见 `renders_row`。
         let orphans: Vec<String> = self
             .items
             .values()
-            .filter(|it| {
-                self.dialog_host_of(it)
-                    .is_some_and(|h| h.custom_hidden && h.dialog_title.is_none())
+            .filter_map(|it| {
+                let h = self.dialog_host_of(it)?;
+                (h.custom_hidden && h.dialog_title.is_none()).then(|| it.key.clone())
             })
-            .map(|it| it.key.clone())
             .collect();
         for key in orphans {
             let item = self.items.get_mut(&key).expect("刚从 items 取出的 key");
@@ -317,13 +402,53 @@ impl Manifest {
         }
     }
 
-    /// 手写卡 `id`（`wind_config::SETTINGS_FEATURES` 之一）是否被定制版藏掉。
+    /// 手写卡 `id`（`wind_config::SETTINGS_FEATURES` 之一）是否被**定制版**藏掉。
+    ///
+    /// ★ 只回答定制版那一份。用户自己藏的手写卡走 [`Manifest::feature_user_hidden`] +
+    /// 运行期判据（`UserHideStore::hides_feature`）——用户清单可随时改，折进这里的话
+    /// 改一次就得重开窗口（见 [`crate::user_hide`] 模块文档）。
     pub fn feature_hidden(&self, id: &str) -> bool {
         debug_assert!(
             wind_config::SETTINGS_FEATURES.contains(&id),
             "`{id}` 不在 SETTINGS_FEATURES 里，定制者写不出能命中它的选择器"
         );
         self.hidden_features.iter().any(|f| f == id)
+    }
+
+    /// 该手写卡在用户精简清单里有规则（**不论开关与逃生口**）。
+    ///
+    /// 页面据此决定要不要挂运行期 `visible_when`；菜单据此判断「取消隐藏」该删哪一份。
+    pub fn feature_user_hidden(&self, id: &str) -> bool {
+        self.user_hidden_features.iter().any(|f| f == id)
+    }
+
+    /// 该分区（整张卡片）在用户精简清单里有规则（**不论开关与逃生口**）。
+    ///
+    /// 与 [`Manifest::user_hidden_sections`] 同义，供页面装配逐一挂运行期显隐。
+    pub fn section_user_hidden(&self, group: &str, section: &str) -> bool {
+        self.user_hidden_sections
+            .iter()
+            .any(|(g, s)| s == section && (g == group || g.is_empty()))
+    }
+
+    /// 用户精简清单命中了这一项（**不论开关与逃生口**）。行渲染据此挂运行期 `visible_when`。
+    pub fn item_user_hidden(&self, key: &str) -> bool {
+        self.items.get(key).is_some_and(|i| i.user_hidden)
+    }
+
+    /// 某个分区是否整个被藏（没有任何可见行）。与 [`Self::section_user_hidden`] 不同：
+    /// 这一条也覆盖「定制版把该节每一项都藏了」的情形。空分区返回 `false`（没有项可言）。
+    pub fn section_all_hidden(&self, group: &str, section: &str) -> bool {
+        let mut any = false;
+        for it in self.items.values() {
+            if it.group == group && it.section == section {
+                any = true;
+                if !it.hidden {
+                    return false;
+                }
+            }
+        }
+        any
     }
 
     /// 返回以 `gate_key` 为门控开关的 dialog_button 项（用于「开关 + 设置」合并成一行）。
@@ -526,7 +651,199 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
         head.is_none(),
         "该分区有可隐藏提示行，调用方须改用 section_rows_split"
     );
-    rows
+    rows.into_iter().map(|r| r.el).collect()
+}
+
+/// [`section_rows`] 的一行 + 它的运行期可见性（`None` = 恒可见）。
+///
+/// 可见性单带出来而不是塞进 `Element`，是因为卡片要**同时**用它算行间分隔线：
+/// 被藏起来的行不占位，夹在它前后的那两条线若照画就是无主的一横（见
+/// [`crate::widgets::card_items`]）。
+pub struct RowSpec {
+    pub el: Element,
+    pub vis: Option<crate::widgets::Vis>,
+}
+
+/// 给一项算运行期可见性（用户精简清单）。
+///
+/// ★ **每一行都挂**，不能只在建树时「已经有规则」的项上挂：用户是在窗口开着的时候
+/// 右键藏掉一项的，那一刻这棵树的节点已经建好了——判据不在节点上，新加的规则就要等到
+/// 重开窗口才生效，也就是这次改动要消灭的那个毛病。
+///
+/// 判据直接读 [`crate::user_hide::UserHideStore`]（活配置），故逃生口、总开关都即时跟随。
+///
+/// 定制版 / 平台门控的隐藏走建树期跳过（[`MItem::hidden`]），与这里正交。
+pub(crate) fn row_vis(
+    state: &AppState,
+    key: &str,
+    group: &str,
+    section: &str,
+) -> crate::widgets::Vis {
+    let store = state.user_hide_store.clone();
+    let (k, g, s) = (key.to_string(), group.to_string(), section.to_string());
+    std::rc::Rc::new(move || !(store.hides_key(&k) || store.hides_section(&g, &s)))
+}
+
+/// 「这一项被当前用户清单藏掉」的判据（**忽略**总开关与逃生口）。
+///
+/// 与 [`row_vis`] 的区别：那个回答「此刻该不该显示」（逃生口打开时为 false），
+/// 这个回答「这一项属于被隐藏的集合」——标识框要的是后者，否则一打开逃生口，
+/// 页面上每一项都会被框上（2026-10-25 真机反馈）。
+///
+/// 与 [`crate::user_hide::UserHideStore::rule_hiding_key`] 同源，但把整节规则也算进来。
+pub(crate) fn row_is_user_hidden(
+    store: &crate::user_hide::UserHideStore,
+    key: &str,
+    group: &str,
+    section: &str,
+) -> bool {
+    store.rule_hiding_key(key).is_some()
+        || store.rule_hiding_section(Some(group), section).is_some()
+}
+
+/// 给一项套上「已隐藏」标识：逃生口打开、把它临时放出来时出现一圈描边。
+///
+/// 同样**无条件**套（覆盖层默认不可见，见 [`crate::hide_marker`]）：用户可能先点开
+/// 「显示已隐藏的设置」、再右键藏一项，那一刻才需要它出现。
+fn mark_row(state: &AppState, key: &str, group: &str, section: &str, el: Element) -> Element {
+    let (k, g, s) = (key.to_string(), group.to_string(), section.to_string());
+    crate::hide_marker::mark(
+        state.user_hide_store.clone(),
+        move |store| row_is_user_hidden(store, &k, &g, &s),
+        el,
+    )
+}
+
+/// 给一行挂「Ctrl+右键」菜单：复制 key、隐藏这一项 / 这一节。
+///
+/// 包在最外层（锚点之外）而不是行内容上：这样标签、说明与控件之间的空隙都算在行内，
+/// 而文本框自己的右键菜单仍优先——`TextInput` 声明了 `wants_right_click()`，事件在它那里
+/// 就被消费掉，冒不到这里（见 `hide_menu` 模块文档）。
+pub(crate) fn wrap_row_menu(state: &AppState, key: &str, row: Element) -> Element {
+    let Some(item) = state.manifest.get(key) else {
+        // 清单缺失项没有 group/section 可写，只给「复制 key」那一半语义也没意义，
+        // 故不挂菜单。
+        return row;
+    };
+    row.on_context_menu(crate::hide_menu::menu_for(
+        state.user_hide_store.clone(),
+        crate::hide_menu::Target::Key {
+            key: key.to_string(),
+            group: item.group.clone(),
+            section: item.section.clone(),
+        },
+    ))
+}
+
+/// 一张卡片的「隐藏这一节」右键菜单构建器，供 [`crate::widgets::section_vis_with_menu`]
+/// 挂到**标题栏**上（不挂整张卡片：卡片里的空白处与操作区边缘容易被划进整节，
+/// 2026-10-25 反馈）。
+pub(crate) fn section_menu(
+    state: &AppState,
+    group: &str,
+    section: &str,
+) -> impl Fn() -> Vec<windui::event::MenuItem> + 'static {
+    crate::hide_menu::menu_for(
+        state.user_hide_store.clone(),
+        crate::hide_menu::Target::Section {
+            group: group.to_string(),
+            section: section.to_string(),
+        },
+    )
+}
+
+/// 给一张手写卡挂「Ctrl+右键」菜单：隐藏这一块（`feature:` 选择器）。
+pub(crate) fn wrap_feature_menu(state: &AppState, feature: &'static str, card: Element) -> Element {
+    card.on_context_menu(crate::hide_menu::menu_for(
+        state.user_hide_store.clone(),
+        crate::hide_menu::Target::Feature(feature),
+    ))
+}
+
+/// 整张卡片按用户精简清单运行期隐显（含「已隐藏」标识）。
+///
+/// ★ **无条件**挂判据：用户可能在窗口开着的时候右键藏掉这一节，那一刻节点已建好，
+/// 判据不在节点上就要等重开窗口才生效（见 [`crate::user_hide`] 模块文档）。
+/// 定制版 / 平台门控仍走建树期跳过，与这里正交。
+pub(crate) fn wrap_section_runtime(
+    state: &AppState,
+    group: &str,
+    section: &str,
+    card: Element,
+) -> Element {
+    let store = state.user_hide_store.clone();
+    let shown = store.clone();
+    let (g, s) = (group.to_string(), section.to_string());
+    let (mg, ms) = (g.clone(), s.clone());
+    let card = card.visible_when(move || !store.hides_section(&g, &s));
+    crate::hide_marker::mark(
+        shown,
+        move |store| store.rule_hiding_section(Some(&mg), &ms).is_some(),
+        card,
+    )
+}
+
+/// 卡片此刻该不该显示（用户精简清单）。供二级导航的 `wrap_when` 用——
+/// 卡片藏起来后导航里那一条也必须跟着消失，否则点它只会滚到一片空白。
+pub(crate) fn section_vis(state: &AppState, group: &str, section: &str) -> crate::widgets::Vis {
+    let store = state.user_hide_store.clone();
+    let (g, s) = (group.to_string(), section.to_string());
+    std::rc::Rc::new(move || !store.hides_section(&g, &s))
+}
+
+/// 方案页四张引擎卡（码表 / 拼音 / 混输 / 英文）此刻该不该显示。
+///
+/// 与 [`section_vis`] 的差别：这四张卡没有「整节规则」可依——用户是把卡里的项目逐个
+/// 藏光的。故判据是「卡里还有没有任何一行可见」（模糊音入口行也算）。全藏光就整卡
+/// 消失，不留一个只剩标题的空壳。
+pub(crate) fn scheme_card_vis(
+    state: &AppState,
+    section: &str,
+    with_fuzzy: bool,
+) -> crate::widgets::Vis {
+    let store = state.user_hide_store.clone();
+    // 这张卡里的清单项（含运行时才被藏掉的：判据在运行期现求）。
+    let acts: Vec<(String, String, String)> = state
+        .manifest
+        .sections_of("schema")
+        .into_iter()
+        .find(|(s, _)| s == section)
+        .map(|(_, ks)| ks)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|k| state.manifest.get(k))
+        .filter(|it| !it.hidden && !Manifest::lives_in_dialog(it))
+        .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
+        .collect();
+    let fuzzy_key = crate::search::index::FUZZY_MASTER;
+    std::rc::Rc::new(move || {
+        if with_fuzzy && !store.hides_key(fuzzy_key) {
+            return true;
+        }
+        acts.iter()
+            .any(|(k, g, s)| !(store.hides_key(k) || store.hides_section(g, s)))
+    })
+}
+
+/// 手写卡按用户精简清单运行期隐显（含「已隐藏」标识）。与 [`wrap_section_runtime`] 同理。
+pub(crate) fn wrap_feature_runtime(
+    state: &AppState,
+    feature: &'static str,
+    card: Element,
+) -> Element {
+    let store = state.user_hide_store.clone();
+    let shown = store.clone();
+    let card = card.visible_when(move || !store.hides_feature(feature));
+    crate::hide_marker::mark(shown, move |store| store.rule_hiding_feature(feature), card)
+}
+
+/// 手写卡里**一行**（不是整张卡）的运行期可见性，供 [`crate::widgets::section_vis`] 用。
+///
+/// 与 [`wrap_feature_runtime`] 的分工：那个隐藏整张卡（卡片自己就该消失），这个只藏卡
+/// 里的一行（同卡还有清单项要留着）。无条件挂载，理由同上。
+pub(crate) fn feature_row_vis(state: &AppState, feature: &'static str) -> crate::widgets::Vis {
+    let store = state.user_hide_store.clone();
+    std::rc::Rc::new(move || !store.hides_feature(feature))
 }
 
 /// [`section_rows`] 的分离版：把**平时不占位的整行提示**摘出来单独返回，
@@ -536,31 +853,33 @@ pub fn section_rows(state: &AppState, keys: &[String]) -> Vec<Element> {
 /// 隐藏。提示行留在 `rows` 里的话，它隐藏时留下的那条分隔线就成了无主的一横，紧贴
 /// 卡片上边框——与三张硬编码卡片上的 toast 槽是同一个形状（见
 /// `widgets::card_with_attachment`）。
-pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, Option<Element>) {
+pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<RowSpec>, Option<Element>) {
     let cfg = &state.current_config;
     let mut head: Option<Element> = None;
-    let mut rows = Vec::with_capacity(keys.len());
+    let mut rows: Vec<RowSpec> = Vec::with_capacity(keys.len());
     for k in keys {
         let Some(item) = state.manifest.get(k) else {
             // 清单里没有这个 key —— `field` 会渲染一行「（清单缺失此项）」。
             // 锚点照包：这条分支触发的时机恰恰是「key 已经漂了」，那正是最希望搜索
             // 还能把人指过去的场合。不包的话它会成为 `section_rows` 里唯一产出
-            // 无锚点行的出口。
-            rows.push(crate::search::anchor::wrap(
-                field(state, k),
-                k.clone(),
-                state.jump,
-            ));
+            // **无锚点行**的出口。
+            rows.push(RowSpec {
+                el: crate::search::anchor::wrap(field(state, k), k.clone(), state.jump),
+                vis: None,
+            });
             continue;
         };
         // 分组对话框的宿主被藏、成员还在：入口行照出，框里只放成员。宿主只是组里排第一的
         // 那一项（见 `dialog_title`），藏它不等于藏整组。
         if item.hidden && state.manifest.renders_row(item) {
-            rows.push(crate::search::anchor::wrap(
-                build_grouped_dialog_row(state, k, item),
-                k.clone(),
-                state.jump,
-            ));
+            rows.push(RowSpec {
+                el: crate::search::anchor::wrap(
+                    wrap_row_menu(state, k, build_grouped_dialog_row(state, k, item)),
+                    k.clone(),
+                    state.jump,
+                ),
+                vis: None,
+            });
             continue;
         }
         // 隐藏项：不渲染也不注册 writer/loader（功能未完成或不对用户开放）。
@@ -579,7 +898,7 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         // 分隔线计数（见 `card_with_attachments`）。
         if item.typ == "log_privacy_warning" {
             head = Some(crate::search::anchor::wrap(
-                field(state, k),
+                wrap_row_menu(state, k, field(state, k)),
                 k.clone(),
                 state.jump,
             ));
@@ -591,21 +910,35 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         }
         // 「纠错与提示」里手写的两行：规则网格的入口行、三个来源挤在一行的「提示来源」。
         if k == crate::search::index::CORRECTION_MASTER {
-            rows.push(crate::search::anchor::wrap(
-                crate::correction_ui::build_correction_row(state, cfg),
-                k.clone(),
-                state.jump,
-            ));
+            rows.push(RowSpec {
+                el: crate::search::anchor::wrap(
+                    wrap_row_menu(
+                        state,
+                        k,
+                        crate::correction_ui::build_correction_row(state, cfg),
+                    ),
+                    k.clone(),
+                    state.jump,
+                ),
+                vis: Some(row_vis(state, k, &item.group, &item.section)),
+            });
             continue;
         }
         if crate::correction_ui::is_hint_source(k) {
             if crate::correction_ui::first_visible_hint_source(&state.manifest) == Some(k.as_str())
             {
-                rows.push(crate::search::anchor::wrap(
-                    crate::correction_ui::build_hint_sources_row(state, cfg),
-                    crate::search::index::page_anchor(k),
-                    state.jump,
-                ));
+                rows.push(RowSpec {
+                    el: crate::search::anchor::wrap(
+                        wrap_row_menu(
+                            state,
+                            k,
+                            crate::correction_ui::build_hint_sources_row(state, cfg),
+                        ),
+                        crate::search::index::page_anchor(k),
+                        state.jump,
+                    ),
+                    vis: Some(row_vis(state, k, &item.group, &item.section)),
+                });
             }
             continue;
         }
@@ -624,6 +957,7 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         } else {
             field(state, k)
         };
+        let row = wrap_row_menu(state, k, row);
         // enabled_when 引用同卡片内其它 key → 视觉从属行（仅缩进，不画连接线：
         // 多个子项连续时一排 └ 显得杂乱；缩进本身已传达从属关系，对齐 Win11/macOS 设置惯例）。
         let dependent = item.indent
@@ -651,7 +985,14 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<Element>, O
         };
         // 搜索跳转锚点：每一行都盖一枚，键即清单 key（与 `search::index` 派生的
         // `JumpTarget::anchor` 一致）。它不吃点击、静止时不绘制。
-        rows.push(crate::search::anchor::wrap(row, k.clone(), state.jump));
+        let row = crate::search::anchor::wrap(row, k.clone(), state.jump);
+        // 「显示已隐藏的设置」打开时，给用户自己藏过的行加一圈描边——否则它与其余行
+        // 长得一模一样，用户不知道该取消哪一项。
+        let row = mark_row(state, k, &item.group, &item.section, row);
+        rows.push(RowSpec {
+            el: row,
+            vis: Some(row_vis(state, k, &item.group, &item.section)),
+        });
     }
     (rows, head)
 }
@@ -3175,6 +3516,54 @@ pub fn scheme_config_section(
     // 配置」，很容易读成「当前这个码表方案的配置」，改完发现另一个方案也变了。
     // 故无论有没有覆盖说明，这一行都出。
     let hint_mode = schema_hint_mode(state, &keys);
+    // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
+    //
+    // 每个小标题的可见性 = 「它下面那一组里至少还有一行可见」。用户把小节里的项目逐个
+    // 藏光之后，标题与它前后的分割线一起消失，不留一个孤零零的分类名（2026-10-25 反馈）。
+    // 预先把每组 key 收集出来，标题插入时就能拿到判据。
+    let section_vis_of = |set: &[String]| -> crate::widgets::Vis {
+        let store = state.user_hide_store.clone();
+        let acts: Vec<(String, String, String)> = set
+            .iter()
+            .filter_map(|k| state.manifest.get(k))
+            .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
+            .collect();
+        std::rc::Rc::new(move || {
+            acts.iter()
+                .any(|(k, g, s)| !(store.hides_key(k) || store.hides_section(g, s)))
+        })
+    };
+    // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
+    // 整节的行都被用户藏光时标题跟着走（与下方 subsection 标题同一判据）。
+    items.push(crate::widgets::CardItem::HeadingWhen(
+        section.to_string(),
+        section_vis_of(&keys),
+    ));
+
+    // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
+    // 没有小标题就放卡片最后。整行挂块锚点（见 `search::index::block_anchor_of`）。
+    //
+    // 用户藏掉模糊音（`key:schema.pinyin.fuzzy.enabled`）时这一行也要消失：它不是
+    // `keys` 里的项（是手写行），故单独挂判据。
+    let mut fuzzy_row = with_fuzzy.then(|| {
+        let row = crate::search::anchor::wrap(
+            build_fuzzy_row(state, &state.current_config),
+            crate::search::index::page_anchor(crate::search::index::FUZZY_MASTER),
+            state.jump,
+        );
+        let row = mark_row(
+            state,
+            crate::search::index::FUZZY_MASTER,
+            "schema",
+            section,
+            row,
+        );
+        crate::widgets::CardItem::RowWhen(
+            row,
+            row_vis(state, crate::search::index::FUZZY_MASTER, "schema", section),
+        )
+    });
+
     let scope_note = format!("此为全局{label}方案配置。");
     let header_note = schema_hint_header_note(state, &keys);
     // Header 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能就此凭空消失——
@@ -3186,22 +3575,13 @@ pub fn scheme_config_section(
             scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
         })
     };
-    items.push(crate::widgets::CardItem::Row(dialog_notice_row(notice)));
+    // 提示行也说「这一整张卡是全局的」。整节的项都被用户藏光时它一并让位，
+    // 否则卡片会剩下一句没人需要读的说明（2026-10-25 反馈）。
+    items.push(crate::widgets::CardItem::RowWhen(
+        dialog_notice_row(notice),
+        section_vis_of(&keys),
+    ));
 
-    // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
-    items.push(crate::widgets::CardItem::Heading(section.to_string()));
-
-    // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
-    // 没有小标题就放卡片最后。整行挂块锚点（见 `search::index::block_anchor_of`）。
-    let mut fuzzy_row = with_fuzzy.then(|| {
-        crate::widgets::CardItem::Row(crate::search::anchor::wrap(
-            build_fuzzy_row(state, &state.current_config),
-            crate::search::index::page_anchor(crate::search::index::FUZZY_MASTER),
-            state.jump,
-        ))
-    });
-
-    // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
     let mut cur_subsec: Option<String> = None;
     for k in &keys {
         let Some(item) = state.manifest.get(k) else {
@@ -3220,7 +3600,21 @@ pub fn scheme_config_section(
                 if let Some(row) = fuzzy_row.take() {
                     items.push(row);
                 }
-                items.push(crate::widgets::CardItem::Heading(name.clone()));
+                // 该小节下的全部项（含后面才出现的）：标题的显隐看它们。
+                let group: Vec<String> = keys
+                    .iter()
+                    .filter(|kk| {
+                        state
+                            .manifest
+                            .get(kk)
+                            .is_some_and(|i| i.subsection.as_deref() == Some(name.as_str()))
+                    })
+                    .cloned()
+                    .collect();
+                items.push(crate::widgets::CardItem::HeadingWhen(
+                    name.clone(),
+                    section_vis_of(&group),
+                ));
             }
             cur_subsec = subsec;
         }
@@ -3253,11 +3647,28 @@ pub fn scheme_config_section(
         };
         // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
         // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
-        items.push(crate::widgets::CardItem::Row(if already_anchored {
+        let row = if already_anchored {
             row
         } else {
             crate::search::anchor::wrap(row, crate::search::index::page_anchor(k), state.jump)
-        }));
+        };
+        // 行级 Ctrl+右键菜单（复制 key、隐藏这一项）。这几张卡早期只挂了卡片级的
+        // 「隐藏这一节」，于是这些行右键拿不到项级动作——用户看到的菜单与别处不一致。
+        //
+        // `already_anchored` 的行来自 `section_rows`，那里**已经**挂过行菜单；重复挂虽然
+        // 只是后写者胜（`on_context_menu` 覆盖），但保持一条路径更不容易将来改漏。
+        let row = if already_anchored {
+            row
+        } else {
+            wrap_row_menu(state, k, row)
+        };
+        // 用户精简清单：行照建，运行时隐显（改完即时生效）。卡片上带可见性的行由
+        // `CardItem::RowWhen` 承载，行间分隔线随之不画。
+        let row = mark_row(state, k, &item.group, &item.section, row);
+        items.push(crate::widgets::CardItem::RowWhen(
+            row,
+            row_vis(state, k, &item.group, &item.section),
+        ));
     }
     if let Some(row) = fuzzy_row {
         items.push(row);
@@ -3291,10 +3702,20 @@ pub fn scheme_config_section(
             })
     };
 
-    Some(crate::widgets::section_with_items(
+    // 「隐藏这一节」只挂标题栏（见 `section_vis_with_menu` 的说明）：这几张卡里的
+    // 操作区（按钮、下拉）贴着行边，把菜单挂在整卡上容易被划进整节。
+    // 菜单必须在**弹出时**才构建（它读 Ctrl 修饰键快照），不能在建树时求值。
+    let menu: Rc<dyn Fn() -> Vec<windui::event::MenuItem>> =
+        Rc::new(section_menu(state, "schema", section));
+    let wrap_menu = move |el: Element| {
+        let menu = menu.clone();
+        el.on_context_menu(move || menu())
+    };
+    Some(crate::widgets::section_with_items_menu(
         label,
         &make_reset,
         items,
+        &wrap_menu,
     ))
 }
 
@@ -8947,5 +9368,135 @@ mod comment_template_escape_tests {
             st.fields.loaders.borrow()[COMMENT_HOST_KEY](&c);
             assert_eq!(sig.get(), SHOWN);
         });
+    }
+}
+
+#[cfg(test)]
+mod scheme_card_vis_tests {
+    use super::*;
+
+    /// 这一节里**会独立成行**的项（与 `scheme_card_vis` 的判据同一套）。
+    fn acts_of(st: &crate::state::AppState, group: &str, section: &str) -> Vec<String> {
+        all_keys(st, group, section)
+            .iter()
+            .filter_map(|k| st.manifest.get(k))
+            .filter(|it| !it.hidden && !Manifest::lives_in_dialog(it))
+            .map(|it| it.key.clone())
+            .collect()
+    }
+
+    fn all_keys(st: &crate::state::AppState, group: &str, section: &str) -> Vec<String> {
+        st.manifest
+            .sections_of(group)
+            .into_iter()
+            .find(|(s, _)| s == section)
+            .map(|(_, k)| k)
+            .unwrap_or_default()
+    }
+
+    /// 卡里还有任何一项可见 ⇒ 整卡可见。逐个藏、藏到只剩一项时仍是 true。
+    #[test]
+    fn card_stays_while_any_item_is_visible() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        let vis = scheme_card_vis(&st, "上屏行为", false);
+        assert!(vis(), "没有任何规则时整卡可见");
+
+        // 只按「会独立成行的项」藏：收进对话框的成员本来就不在这张卡上成行，
+        // 判据也不看它们（见 `scheme_card_vis`）。
+        let rows: Vec<String> = acts_of(&st, "schema", "上屏行为");
+        assert!(rows.len() > 1, "前提：这一节不止一行");
+        for k in rows.iter().take(rows.len() - 1) {
+            st.user_hide_store.add(&format!("key:{k}")).unwrap();
+        }
+        assert!(vis(), "还剩最后一行可见，整卡不该消失");
+    }
+
+    /// 卡里每一项都被藏掉 ⇒ 整卡消失（不留只剩标题的空壳）。
+    #[test]
+    fn card_vanishes_when_every_item_is_hidden() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        for k in all_keys(&st, "schema", "上屏行为") {
+            st.user_hide_store.add(&format!("key:{k}")).unwrap();
+        }
+        assert!(!scheme_card_vis(&st, "上屏行为", false)());
+    }
+
+    /// 带模糊音的卡：模糊音入口行本身可见也算「卡里还有东西」。
+    #[test]
+    fn fuzzy_row_keeps_the_pinyin_card_alive() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        for k in all_keys(&st, "schema", "候选行为") {
+            st.user_hide_store.add(&format!("key:{k}")).unwrap();
+        }
+        assert!(
+            scheme_card_vis(&st, "候选行为", true)(),
+            "模糊音入口行还看得见，整卡要留着"
+        );
+        assert!(
+            !scheme_card_vis(&st, "候选行为", false)(),
+            "不算模糊音时整卡应消失"
+        );
+
+        st.user_hide_store
+            .add(&format!("key:{}", crate::search::index::FUZZY_MASTER))
+            .unwrap();
+        assert!(!scheme_card_vis(&st, "候选行为", true)(), "模糊音也藏了");
+    }
+
+    /// 逃生口打开时全部放回来（判据跟着 `hides_*` 走，不另立一套）。
+    #[test]
+    fn escape_hatch_reveals_the_card_again() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        for k in all_keys(&st, "schema", "上屏行为") {
+            st.user_hide_store.add(&format!("key:{k}")).unwrap();
+        }
+        assert!(!scheme_card_vis(&st, "上屏行为", false)());
+        st.user_hide_store.set_show_hidden(true).unwrap();
+        assert!(scheme_card_vis(&st, "上屏行为", false)(), "逃生口放回来了");
+    }
+
+    /// 标识判据只看「这一项被藏过」，**不看**逃生口与总开关——否则一打开逃生口
+    /// 全页每一项都会被框上（2026-10-25 真机反馈）。
+    #[test]
+    fn marker_predicate_ignores_the_escape_hatch() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        st.user_hide_store.add("key:ui.font.family").unwrap();
+        st.user_hide_store.set_show_hidden(true).unwrap();
+        let store = &st.user_hide_store;
+        assert!(
+            row_is_user_hidden(store, "ui.font.family", "ui", "主题"),
+            "被藏过的项即使暂时显示着也带标记"
+        );
+        assert!(
+            !row_is_user_hidden(store, "ui.theme.name", "ui", "主题"),
+            "没被藏过的项不该带标记"
+        );
+    }
+
+    /// 整节规则也让节内每一项带上标记判据。
+    #[test]
+    fn section_rule_marks_every_member() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        st.user_hide_store.add("section:input/字符与标点").unwrap();
+        let store = &st.user_hide_store;
+        let keys = all_keys(&st, "input", "字符与标点");
+        assert!(!keys.is_empty());
+        assert!(
+            keys.iter()
+                .all(|k| row_is_user_hidden(store, k, "input", "字符与标点")),
+            "整节藏掉时节内每一项都该带标记"
+        );
+        assert!(!row_is_user_hidden(
+            store,
+            "input.filter_mode",
+            "input",
+            "其它"
+        ));
     }
 }

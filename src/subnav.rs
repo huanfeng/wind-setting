@@ -166,8 +166,16 @@ impl SubNav {
     }
 
     /// 有几个**可跳转的**分块。少于两个时整条导航没有意义（见 `shell::build_subnav_col`）。
+    ///
+    /// 统计的是**此刻可见**的分块：用户精简清单藏掉一张卡后，导航栏该跟着少一条；
+    /// 只剩一条时整栏也该收起（只有一块时点它等于没点）。
     pub fn section_count(&self) -> usize {
-        self.0.tops.borrow().len()
+        self.0
+            .items
+            .borrow()
+            .iter()
+            .filter(|it| (it.visible)())
+            .count()
     }
 
     pub fn active(&self) -> Signal<usize> {

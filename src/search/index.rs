@@ -76,6 +76,19 @@ pub struct SearchEntry {
     /// 面包屑，结果列表第二行。
     pub path: Vec<String>,
     pub target: JumpTarget,
+    /// 手写条目所属的 `feature:` id（清单项为空）。
+    ///
+    /// 用户精简清单能在**运行期**藏掉这些手写卡（见 `crate::user_hide`），而索引不折
+    /// 用户清单，故结果过滤靠它反查「这一条属于哪块」。清单项为空——它们的隐藏判据
+    /// 按 key 从 `Manifest` 取。
+    pub feature: &'static str,
+}
+
+impl SearchEntry {
+    /// 该条目所属的手写卡 `feature:` id（清单项返回 `None`）。
+    pub fn target_feature(&self) -> Option<&'static str> {
+        Some(self.feature).filter(|f| !f.is_empty())
+    }
 }
 
 /// 页 id → Tab 下标。走 `cli::page_to_index` 而非字面量：`PAGES` 与 `all_tabs` 的顺序
@@ -338,6 +351,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
             keywords: keywords_of(key, item),
             path,
             target,
+            feature: "",
         });
     }
     out
@@ -469,6 +483,7 @@ fn handwritten_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                     anchor: h.anchor.to_string(),
                 }
             },
+            feature: h.feature,
         })
         .collect()
 }
@@ -535,6 +550,7 @@ fn schema_level_entries() -> Vec<SearchEntry> {
                 it.tab.to_string(),
                 it.section.to_string(),
             ],
+            feature: "",
             target: JumpTarget::SchemaLevel {
                 hint_path: vec![
                     "方案".to_string(),

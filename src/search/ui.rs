@@ -17,6 +17,7 @@
 //! 所以 Esc 收浮层必须走 `App::on_shortcut`（见 `main.rs`），否则搜索时按 Esc
 //! 会把整个设置窗关掉。
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use windui::core::{EventCtx, Widget};
@@ -73,6 +74,11 @@ pub struct ResultRow {
 pub struct SearchState {
     /// 索引：启动构建一次，之后只读。
     entries: Rc<Vec<SearchEntry>>,
+    /// 运行期过滤：返回 false 的条目**此刻**不列出来（用户精简清单藏掉的）。
+    ///
+    /// 索引本身不折用户清单（见 `crate::user_hide`：行照建、运行期显隐），故在这一层
+    /// 按当前开关状态过滤。逃生口打开时它返回 true，条目照常搜得到——与页面一致。
+    filter: Rc<RefCell<Option<Rc<dyn Fn(&SearchEntry) -> bool>>>>,
     /// 输入框绑定的查询串。
     pub query: Signal<String>,
     /// 当前结果（浮层的数据源）。
@@ -103,6 +109,7 @@ impl SearchState {
     pub fn new(manifest: &Manifest) -> Self {
         Self {
             entries: Rc::new(build_index(manifest)),
+            filter: Rc::new(RefCell::new(None)),
             query: signal(String::new()),
             rows: signal(Vec::new()),
             selected: signal(0),
@@ -112,12 +119,21 @@ impl SearchState {
         }
     }
 
+    /// 注入运行期过滤（用户精简清单）。`shell::build` 每次建树时调一次。
+    ///
+    /// 索引数据本身不变——用户清单是运行期状态，藏/放都不重建索引。
+    pub fn set_filter(&self, f: Rc<dyn Fn(&SearchEntry) -> bool>) {
+        *self.filter.borrow_mut() = Some(f);
+    }
+
     /// 按当前 `query` 重算结果。查询为空即收起浮层。
     pub fn refresh(&self) {
         let q = self.query.get();
         let hits = search(&self.entries, &q, DEFAULT_LIMIT);
+        let filter = self.filter.borrow().clone();
         let rows: Vec<ResultRow> = hits
             .iter()
+            .filter(|h| filter.as_ref().is_none_or(|f| f(&self.entries[h.index])))
             .enumerate()
             .map(|(idx, h)| {
                 let e = &self.entries[h.index];

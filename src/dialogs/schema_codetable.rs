@@ -646,15 +646,20 @@ impl CtFields {
     /// 逐项 `apply` 够不着没有控件的字段（没控件就没信号），而 override 里可能留着
     /// 0.118 时代「开总开关整段写实」写进去的值。这个按钮是清掉它们的唯一入口。
     ///
-    /// ★ 例外：被定制版 `[settings] hide` 藏掉的项**原样保留**。定制者藏它就是不让用户在
-    /// 界面上动，一键清空却能把它的方案覆盖值悄悄抹掉，与「隐藏只影响显示」相悖。
+    /// ★ 例外：被定制版 `[settings] hide` 或用户精简清单藏掉的项**原样保留**。藏起来
+    /// 就是不让人在界面上动它，一键清空却能把它的方案覆盖值悄悄抹掉，与「隐藏只影响
+    /// 显示」相悖。
     pub fn reset(&self, manifest: &Manifest, cfg: &mut Value) {
         if !cfg.is_object() {
             *cfg = json!({});
         }
-        let custom_hidden = |key: &str| manifest.get(key).is_some_and(|i| i.custom_hidden);
+        let hidden = |key: &str| {
+            manifest
+                .get(key)
+                .is_some_and(|i| i.custom_hidden || i.user_hidden)
+        };
         for f in SPEC_BEHAVIOR_FIELDS {
-            if !custom_hidden(&format!("{MANIFEST_PREFIX}{f}")) {
+            if !hidden(&format!("{MANIFEST_PREFIX}{f}")) {
                 set_path(cfg, &["engine", "codetable", f], Value::Null);
             }
         }
@@ -665,14 +670,14 @@ impl CtFields {
                 .values()
                 .filter(|i| i.key.starts_with(&prefix))
                 .collect();
-            if !in_sub.iter().any(|i| i.custom_hidden) {
+            if !in_sub.iter().any(|i| i.custom_hidden || i.user_hidden) {
                 // 嵌套子段整段置 null 而非逐字段——段内字段可能多于 manifest 暴露的那几个，
                 // 逐个清会漏。
                 set_path(cfg, &["engine", "codetable", sub], Value::Null);
                 continue;
             }
             // 段内有被藏的项：只能逐个清没藏的那些（清单外的字段因此留下）。
-            for i in in_sub.iter().filter(|i| !i.custom_hidden) {
+            for i in in_sub.iter().filter(|i| !i.custom_hidden && !i.user_hidden) {
                 let leaf = &i.key[prefix.len()..];
                 set_path(cfg, &["engine", "codetable", sub, leaf], Value::Null);
             }

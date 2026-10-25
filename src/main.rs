@@ -24,6 +24,12 @@ mod dict_window;
 mod dota2_compat;
 mod file_assoc;
 mod file_pick;
+mod hide_marker;
+mod hide_menu;
+#[cfg(test)]
+mod hide_menu_e2e;
+#[cfg(test)]
+mod hide_menu_structure;
 mod icons;
 mod key_conflict;
 mod log_tools;
@@ -59,6 +65,7 @@ mod tsf_log;
 #[allow(dead_code)]
 mod update;
 mod user_dir;
+mod user_hide;
 mod weight;
 mod widgets;
 mod wizard;

@@ -203,6 +203,7 @@ mod tests {
                     tab: 0,
                     anchor: "a".into(),
                 },
+                feature: "",
             },
             SearchEntry {
                 id: "b".into(),
@@ -213,6 +214,7 @@ mod tests {
                     tab: 0,
                     anchor: "b".into(),
                 },
+                feature: "",
             },
             SearchEntry {
                 id: "c".into(),
@@ -223,6 +225,7 @@ mod tests {
                     tab: 0,
                     anchor: "c".into(),
                 },
+                feature: "",
             },
         ];
         let hits = search(&e, "候选窗口", DEFAULT_LIMIT);
@@ -245,6 +248,7 @@ mod tests {
                     tab: 0,
                     anchor: "kw".into(),
                 },
+                feature: "",
             },
             SearchEntry {
                 id: "ti".into(),
@@ -255,6 +259,7 @@ mod tests {
                     tab: 0,
                     anchor: "ti".into(),
                 },
+                feature: "",
             },
         ];
         let hits = search(&e, "候选窗口", DEFAULT_LIMIT);
@@ -289,6 +294,7 @@ mod tests {
                 target: crate::search::JumpTarget::SchemaLevel {
                     hint_path: vec!["方案".into()],
                 },
+                feature: "",
             },
             SearchEntry {
                 id: "reachable".into(),
@@ -301,6 +307,7 @@ mod tests {
                     tab: 0,
                     anchor: "r".into(),
                 },
+                feature: "",
             },
         ];
         let hits = search(&e, "码表配置", DEFAULT_LIMIT);
@@ -324,6 +331,7 @@ mod tests {
                     tab: 0,
                     anchor: "g".into(),
                 },
+                feature: "",
             },
             SearchEntry {
                 id: "schema-level:码表配置".into(),
@@ -333,6 +341,7 @@ mod tests {
                 target: crate::search::JumpTarget::SchemaLevel {
                     hint_path: vec!["方案".into()],
                 },
+                feature: "",
             },
         ];
         let hits = search(&e, "码表", DEFAULT_LIMIT);

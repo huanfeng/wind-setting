@@ -697,27 +697,67 @@ pub fn card_with_attachments(
 #[allow(clippy::large_enum_variant)]
 pub enum CardItem {
     Row(Element),
+    /// 运行期可隐显的行：`Vis` 回答「此刻该不该显示」。
+    ///
+    /// 携带它而不是让元素自己 `visible_when` 了事，是因为**行间分隔线要跟着走**：
+    /// 被隐藏的行不占位，它前后那两条线若照画，卡片里就会留下无主的一横
+    /// （与 `card_with_attachment` 那段说的是同一个毛病）。[`card_items`] 据此算出
+    /// 「前后还有没有可见行」，只在两条可见行之间画线。
+    RowWhen(Element, Vis),
     Heading(String),
+    /// 运行期可隐显的小标题。用于「这一组下的每一项都被用户藏掉，标题也就没意义了」。
+    ///
+    /// 与 [`CardItem::RowWhen`] 同一条理由：它前后的分割线要跟着走，所以可见性必须交给
+    /// 卡片而不是自己 `visible_when`（见 [`card_items`]）。
+    HeadingWhen(String, Vis),
     /// 自管水平内边距与内部分割线的整块（可拖列表、动态列表之类）：卡片原样挂上，
     /// 不包 [`card_pad`]。块内的行要自己用 [`card_pad`] 包、行间用 [`row_divider`]，
     /// 「通栏」分割线才贴得到卡片边。
     Bare(Element),
 }
 
+/// 运行期可见性判据。用于用户「设置项精简」这类**改完即时生效**的隐藏——与定制版的
+/// 建树期折叠相对（后者静态、重开窗口才生效，见 `crate::user_hide` 模块文档）。
+pub type Vis = Rc<dyn Fn() -> bool>;
+
 impl CardItem {
     /// 按卡片里的摆法拼成元素：行包 [`card_pad`]、小标题走统一写法、`Bare` 原样。
     /// 供需要把几项先并成一块（再作为 `Bare` 交给卡片）的调用方用。
     pub fn into_element(self) -> Element {
         match self {
-            CardItem::Row(e) => padded(e),
-            CardItem::Heading(t) => card_heading(&t),
+            CardItem::Row(e) | CardItem::RowWhen(e, _) => padded(e),
+            CardItem::Heading(t) | CardItem::HeadingWhen(t, _) => card_heading(&t),
             CardItem::Bare(e) => e,
         }
+    }
+
+    /// 本项的运行期可见性；恒可见的项返回 `None`（省一次间接调用）。
+    fn vis(&self) -> Option<Vis> {
+        match self {
+            CardItem::RowWhen(_, v) | CardItem::HeadingWhen(_, v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// 是不是小标题。分割线画法按它分档（[`Gap::AroundHeading`]），带可见性的小标题
+    /// 也算。
+    fn is_heading(&self) -> bool {
+        matches!(self, CardItem::Heading(_) | CardItem::HeadingWhen(_, _))
     }
 }
 
 fn rows_to_items(rows: Vec<Element>) -> Vec<CardItem> {
     rows.into_iter().map(CardItem::Row).collect()
+}
+
+/// [`Element`] 行 + 可选运行期可见性 → [`CardItem`]。[`rows_to_items`] 的可见性版。
+pub fn rows_to_items_vis(rows: Vec<(Element, Option<Vis>)>) -> Vec<CardItem> {
+    rows.into_iter()
+        .map(|(e, v)| match v {
+            Some(v) => CardItem::RowWhen(e, v),
+            None => CardItem::Row(e),
+        })
+        .collect()
 }
 
 /// 卡片水平内边距。分割线的「通栏 / 仅左缩」变体要贴到卡片边上，故卡片本身不加水平
@@ -918,17 +958,27 @@ pub fn card_frame() -> Element {
 ///
 /// 只有 `items` 之间插分割线；挂件不参与（理由见 [`card_with_attachment`]）。
 /// `title_block` 由 [`section_impl`] 给，自带水平内边距和其下那条通栏线，这里原样挂上。
+///
+/// 运行期可隐显的行（[`CardItem::RowWhen`]）会让分隔线跟着走：每条间隙只在**前后都
+/// 有可见行**时才画。判据在布局时现求，所以用户刚藏掉一行、整卡当场收紧，不会在
+/// 空位上留一条无主的分割线。
 pub fn card_items(
     title_block: Option<Element>,
     head: Option<Element>,
     items: Vec<CardItem>,
     tail: Option<Element>,
 ) -> Element {
-    let kinds: Vec<bool> = items
-        .iter()
-        .map(|i| matches!(i, CardItem::Heading(_)))
-        .collect();
+    let kinds: Vec<bool> = items.iter().map(CardItem::is_heading).collect();
     let gaps = divider_plan(&kinds);
+    // 每项的可见性；`None` = 恒可见。`Bare`（自管整块）按恒可见算——它内部的分割线
+    // 由调用方自己管，卡片这边看不到它的行。
+    let vis: Rc<Vec<Option<Vis>>> = Rc::new(items.iter().map(CardItem::vis).collect());
+    let visible = |v: &[Option<Vis>], i: usize| -> bool {
+        v.get(i)
+            .and_then(|x| x.as_ref())
+            .map(|f| f())
+            .unwrap_or(true)
+    };
     let mut body = Element::col().width_match().padding_xy(0, 2);
     if let Some(t) = title_block {
         body = body.child(t);
@@ -938,9 +988,18 @@ pub fn card_items(
     }
     for (i, item) in items.into_iter().enumerate() {
         if i > 0 {
-            body = body.child(gap_divider(gaps[i - 1]));
+            // 只在前后两项都可见时画线；任一侧运行期隐藏，这一档不占位。
+            let (prev, cur) = (i - 1, i);
+            let all = vis.clone();
+            let divider = gap_divider(gaps[prev])
+                .visible_when(move || visible(&all, prev) && visible(&all, cur));
+            body = body.child(divider);
         }
-        body = body.child(item.into_element());
+        let el = item.into_element();
+        body = match vis.get(i).and_then(|v| v.clone()) {
+            Some(v) => body.child(el.visible_when(move || v())),
+            None => body.child(el),
+        };
     }
     if let Some(t) = tail {
         body = body.child(padded(t));
@@ -1058,60 +1117,104 @@ pub fn dialog_section_items(
 /// 分组 = 分区标题 + 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。
 /// `rows` 为已构建好的设置行（如 `setting_row(...)` 或清单引擎 `field(...)`）。
 pub fn section(title: &str, rows: Vec<Element>) -> Element {
-    section_impl(title, None, None, rows_to_items(rows), None)
+    section_impl(title, None, None, rows_to_items(rows), None, None)
 }
 
-/// [`section`] + 标题行右侧的动作按钮（如「恢复默认」），卡内是带小标题的 [`CardItem`]
-/// 序列（方案配置卡）。
-///
-/// 按钮挂在标题行而不是卡片末尾另起一行：卡片里每一行都是「设置项」，多出一行只有一个
-/// 按钮的行会被读成又一个设置项；标题行右端则天然读作「这一节的操作」。
-///
-/// `action` 传**构造闭包**：「界面细节」试验下标题有卡外 / 卡内两处，按钮两处各要一份
-/// （一个 `Element` 只能挂一处）。
-pub fn section_with_items(
+/// [`section_with_items`] + **标题栏右键菜单**（见 [`section_vis_with_menu`]）。
+pub fn section_with_items_menu(
     title: &str,
     action: &dyn Fn() -> Element,
     items: Vec<CardItem>,
+    header_menu: &dyn Fn(Element) -> Element,
 ) -> Element {
-    section_impl(title, Some(action), None, items, None)
+    section_impl(title, Some(action), None, items, None, Some(header_menu))
 }
 
 /// [`section`]，卡内是 [`CardItem`] 序列（含 [`CardItem::Bare`] 整块）。
 pub fn section_items(title: &str, items: Vec<CardItem>) -> Element {
-    section_impl(title, None, None, items, None)
+    section_impl(title, None, None, items, None, None)
 }
 
 /// [`section`] + 尾部挂件（toast 槽之类平时不占位的元素）。理由见
 /// [`card_with_attachment`]——挂件混进 `rows` 会让最后一条设置行下面多一条分隔线。
 pub fn section_with_attachment(title: &str, rows: Vec<Element>, attachment: Element) -> Element {
-    section_impl(title, None, None, rows_to_items(rows), Some(attachment))
+    section_impl(
+        title,
+        None,
+        None,
+        rows_to_items(rows),
+        Some(attachment),
+        None,
+    )
 }
 
-/// [`section`] + 头部挂件（条件满足才出现的整行提示）。理由同上。
-pub fn section_with_head(title: &str, head: Option<Element>, rows: Vec<Element>) -> Element {
-    section_impl(title, None, head, rows_to_items(rows), None)
+/// [`section`]，行自带运行期可见性（用户精简清单：改完即时生效）。
+///
+/// 与 [`section`] 的差别只有一处：行的可见性交给卡片，好让**行间分隔线**跟着隐显，
+/// 不会在空位上留一条无主的一横。见 [`card_items`]。`head` 是卡片头部挂件
+/// （平时不占位的整行提示，见 [`section_with_attachment`]）。
+pub fn section_vis(
+    title: &str,
+    rows: Vec<(Element, Option<Vis>)>,
+    head: Option<Element>,
+) -> Element {
+    section_impl(title, None, head, rows_to_items_vis(rows), None, None)
+}
+
+/// [`section_vis`] + **标题栏右键菜单**。
+///
+/// 菜单只挂在标题行上，不挂整张卡片：「隐藏这一节」属于分类级动作，挂在整卡上时，
+/// 卡片里任何一处空白（行与行之间的间隙、右侧留白）都会触发它。用户在某些操作区域
+/// 边缘右键时，很容易被划进「整节」（2026-10-25 反馈）。收进标题栏后语义也更准确——
+/// 标题就是这一节的代表。
+pub fn section_vis_with_menu(
+    title: &str,
+    rows: Vec<(Element, Option<Vis>)>,
+    head: Option<Element>,
+    menu: impl Fn() -> Vec<windui::event::MenuItem> + 'static,
+) -> Element {
+    let menu = Rc::new(menu);
+    let wrap = move |el: Element| {
+        let m = menu.clone();
+        el.on_context_menu(move || m())
+    };
+    section_impl(
+        title,
+        None,
+        head,
+        rows_to_items_vis(rows),
+        None,
+        Some(&wrap),
+    )
 }
 
 /// 全部 `section*` 的实现。「界面细节」试验 `section_header`：
 /// 卡内标题行（缺省）/ 卡外标题 / 卡内标题行、不带图标（`look::header`）。三种都建出来按信号显示。
+///
+/// `header_menu`：把右键菜单包到**标题行**上（三种标题写法各包一次）。卡片正文不挂，
+/// 见 [`section_vis_with_menu`] 的说明。
 fn section_impl(
     title: &str,
     action: Option<&dyn Fn() -> Element>,
     head: Option<Element>,
     items: Vec<CardItem>,
     tail: Option<Element>,
+    header_menu: Option<&dyn Fn(Element) -> Element>,
 ) -> Element {
     let sh = look().0[crate::look::SECTION_HEADER];
     let with_action = |row: Element| match action {
         Some(make) => row.child(make()),
         None => row,
     };
-    let outside = with_action(section_header(title))
+    let with_menu = |row: Element| match header_menu {
+        Some(f) => f(row),
+        None => row,
+    };
+    let outside = with_menu(with_action(section_header(title)))
         .visible_when(move || sh.get() == crate::look::header::OUTSIDE);
-    let inside_icon = with_action(section_header(title).margin_xy(0, 0))
+    let inside_icon = with_menu(with_action(section_header(title).margin_xy(0, 0)))
         .visible_when(move || sh.get() == crate::look::header::INSIDE);
-    let inside_plain = with_action(
+    let inside_plain = with_menu(with_action(
         Element::row()
             .width_match()
             .cross(Align::Center)
@@ -1125,7 +1228,7 @@ fn section_impl(
                     .max_lines(1)
                     .height(20),
             ),
-    )
+    ))
     .visible_when(move || sh.get() == crate::look::header::INSIDE_PLAIN);
     // 标题行与其下那条通栏线整体显隐：卡外模式下两者都不该占位。
     let title_block = Element::col()

@@ -61,6 +61,31 @@ pub fn settings_manifest(hide: &SettingsHide, show_all: bool) -> Manifest {
     m
 }
 
+/// 完整清单：定制版 `[settings] hide` 与用户自己的精简清单**依次**折叠。
+///
+/// 顺序即优先级：定制版先折，用户规则再折。两者都只置 `hidden`，所以先后不影响结果，
+/// 但「谁藏的」记在不同字段里（`custom_hidden` / `user_hidden`），右键菜单据此决定
+/// 「取消隐藏」删的是哪一份配置。
+///
+/// 两个逃生口各管自己那一份：`show_custom` 忽略定制版，`show_user` 忽略用户清单。
+/// 它们互相独立——定制版藏掉的东西，用户打开自己的逃生口也不该看见。
+pub fn settings_manifest_full(
+    hide: &SettingsHide,
+    show_custom: bool,
+    user_hide: &crate::user_hide::UserHide,
+    show_user: bool,
+) -> Manifest {
+    let mut m = settings_manifest(hide, show_custom);
+    if !show_user {
+        for sel in m.apply_user_hide(user_hide) {
+            tracing::warn!(
+                "用户设置精简清单的 `{sel}` 没有命中任何设置项（该项可能在本版本已改名）"
+            );
+        }
+    }
+    m
+}
+
 /// 互斥对（`exclusive_with`）里一方可见、一方被藏的情形：（可见方, 被藏方）。
 ///
 /// 互斥靠点击时改对方的 Signal 实现，被藏的一方没有 Signal，联动就静默跳过了。
@@ -637,6 +662,8 @@ mod tests {
                         continue;
                     }
                     let (rows, head) = section_rows_split(&st, &keys);
+                    // 用户精简清单是运行期显隐（行照建），故「有行」还要看**可见的行**：
+                    // 定制版藏掉的行根本不建，这里 `rows` 为空才是真空卡。
                     assert!(
                         !rows.is_empty() || head.is_some(),
                         "[{name}] {group}/{sec} 只剩标题，没有一行"
@@ -686,5 +713,269 @@ mod tests {
             ["外观"]
         );
         assert_eq!(empty_tabs(&groups(&["input", "general"])), ["输入"]);
+    }
+}
+
+#[cfg(test)]
+mod user_hide_tests {
+    use super::*;
+    use crate::user_hide::{UserHide, UserHideConfig};
+
+    fn uh(raw: &[&str]) -> UserHide {
+        UserHide::from_config(&UserHideConfig {
+            enabled: true,
+            show_hidden: false,
+            hide: raw.iter().map(|s| s.to_string()).collect(),
+        })
+    }
+
+    fn folded(raw: &[&str]) -> Manifest {
+        settings_manifest_full(&SettingsHide::default(), false, &uh(raw), false)
+    }
+
+    /// 用户清单与定制版**取并集**：各藏各的，互不覆盖。
+    ///
+    /// 用「临时拼音」与「字符与标点」两节：后者成员不止 `input.punct.*`（还有
+    /// `input.filter_mode` / `input.rare_phrase` / `input.scope_relax.*`），正好覆盖
+    /// `section:` 规则「整卡藏掉」这条与本文件 `key:` 规则不同的路径。
+    ///
+    /// ★ 两种藏法的**可见性判据不同**，这里分别断言：
+    /// - 定制版折进 `hidden`（建树期跳过，`sections_of` 不再返回该节）；
+    /// - 用户清单只记标记，节仍在 `sections_of` 里，由运行期判据隐藏。
+    #[test]
+    fn user_and_custom_hides_union() {
+        let (custom, _) = SettingsHide::parse(&["key:input.temp_pinyin.*"]);
+        let m = settings_manifest_full(&custom, false, &uh(&["section:input/字符与标点"]), false);
+        assert!(
+            !m.sections_of("schema").iter().any(|(s, _)| s == "临时拼音"),
+            "定制版藏的节在建树期就不出现"
+        );
+        assert!(
+            m.sections_of("input")
+                .iter()
+                .any(|(s, _)| s == "字符与标点"),
+            "用户藏的节仍在清单里（运行期隐藏，逃生口要能放回来）"
+        );
+        assert!(
+            m.section_user_hidden("input", "字符与标点"),
+            "用户那一份要留标记，页面据此挂运行期判据"
+        );
+        assert!(
+            m.sections_of("schema")
+                .iter()
+                .any(|(s, _)| s == "主方案设置"),
+            "别的分区不受牵连"
+        );
+        assert!(
+            m.sections_of("input").iter().any(|(s, _)| s == "标点配对"),
+            "输入页同组的别的节不受牵连"
+        );
+    }
+
+    /// 定制版赢在「谁藏的」上：同一项两边都藏时，`custom_hidden` 不因用户规则失效。
+    #[test]
+    fn custom_marks_win_when_both_hide() {
+        let key = "ui.candidate.layout";
+        let (custom, _) = SettingsHide::parse(&[&format!("key:{key}")]);
+        let m = settings_manifest_full(&custom, false, &uh(&[&format!("key:{key}")]), false);
+        let it = m.get(key).expect("前提：该项在清单里");
+        assert!(it.hidden);
+        assert!(it.custom_hidden, "定制版藏的要留着 custom 标记");
+        assert!(it.user_hidden, "用户也写了同一条，两边都记");
+    }
+
+    /// 用户逃生口只放回**用户自己**藏的，不影响定制版那一份。
+    #[test]
+    fn user_escape_hatch_does_not_reveal_custom() {
+        let (custom, _) = SettingsHide::parse(&["key:ui.candidate.layout"]);
+        let m = settings_manifest_full(&custom, false, &uh(&["key:ui.font.family"]), true);
+        assert!(
+            m.get("ui.font.family").is_some_and(|i| !i.hidden),
+            "用户藏的要放回"
+        );
+        assert!(
+            m.get("ui.candidate.layout").is_some_and(|i| i.hidden),
+            "定制版藏的不受用户逃生口影响"
+        );
+    }
+
+    /// 定制版逃生口只放回定制版那一份。用户藏的在清单里本来就**没折**（运行期判据），
+    /// 故这里断言的是「它的标记与生效状态不受定制版逃生口影响」。
+    #[test]
+    fn custom_escape_hatch_does_not_reveal_user() {
+        let (custom, _) = SettingsHide::parse(&["key:ui.candidate.layout"]);
+        let m = settings_manifest_full(&custom, true, &uh(&["key:ui.font.family"]), false);
+        assert!(
+            m.get("ui.candidate.layout").is_some_and(|i| !i.hidden),
+            "定制版逃生口放回它自己藏的"
+        );
+        assert!(
+            m.get("ui.font.family")
+                .is_some_and(|i| i.user_hidden && !i.hidden),
+            "用户藏的不折 `hidden`（运行期判据生效），标记仍在"
+        );
+    }
+
+    /// `section:` 规则记下整张卡，运行期据此隐藏（卡片与二级导航一并消失）。
+    #[test]
+    fn section_rule_removes_the_whole_card() {
+        let full =
+            settings_manifest_full(&SettingsHide::default(), false, &UserHide::default(), false);
+        assert!(
+            full.sections_of("keys")
+                .iter()
+                .any(|(s, _)| s == "候选操作")
+        );
+        let m = folded(&["section:keys/候选操作"]);
+        assert!(
+            m.section_user_hidden("keys", "候选操作"),
+            "整节标记要落上，页面据此挂运行期判据"
+        );
+        assert!(
+            m.sections_of("keys").iter().any(|(s, _)| s == "中英文切换"),
+            "同组别的节不受牵连"
+        );
+        // 组成员都带 user_hidden 标记（卡片整体藏的同时，逐行也标出来）。
+        let any_member_hidden = m
+            .items
+            .values()
+            .any(|i| i.section == "候选操作" && i.group == "keys" && i.user_hidden);
+        assert!(any_member_hidden, "节内成员应带用户隐藏标记");
+    }
+
+    /// 不带分组的 `section:` 在所有分组里命中同名分区。
+    #[test]
+    fn section_rule_without_group_matches_every_group() {
+        let any = uh(&["section:统计设置"]);
+        assert!(any.hides_section("stats", "统计设置"));
+        assert!(any.hides_section("advanced", "统计设置"));
+        let one = uh(&["section:stats/统计设置"]);
+        assert!(one.hides_section("stats", "统计设置"));
+        assert!(!one.hides_section("advanced", "统计设置"));
+    }
+
+    /// 手写卡的 `feature:` 与定制版**各认各的**：`feature_hidden` 只答定制版，
+    /// 用户那一份记在 `feature_user_hidden`（页面据此挂运行期判据）。
+    #[test]
+    fn feature_rule_hides_handwritten_card() {
+        let m = folded(&["feature:backup"]);
+        assert!(!m.feature_hidden("backup"), "用户藏的走运行期，不折建树期");
+        assert!(m.feature_user_hidden("backup"), "用户那份要有标记");
+        assert!(!m.feature_hidden("integration"));
+        assert!(!m.feature_user_hidden("integration"));
+    }
+
+    /// 搜索索引**保留**用户藏掉的条目（索引不折用户清单），过滤发生在
+    /// `SearchState::refresh`：按当前开关状态决定列不列出来。
+    ///
+    /// 为什么不在索引层折：用户藏完还要能打开逃生口把它们搜回来，而索引是启动时建一次
+    /// 的静态数据。这条与定制版正好相反（后者在建树期就折掉）。
+    #[test]
+    fn user_hidden_items_stay_in_index_but_are_filtered_at_query_time() {
+        let m = folded(&["key:ui.candidate.*", "feature:backup"]);
+        let idx = crate::search::index::build_index(&m);
+        assert!(
+            idx.iter().any(|e| e.id.starts_with("ui.candidate.")),
+            "索引保留被藏的项（逃生口打开时要搜得到）"
+        );
+        assert!(
+            idx.iter().any(|e| e.id == "advanced:backup"),
+            "手写条目同样保留"
+        );
+
+        // 过滤判据：与页面同一套（`hides_key` / `hides_section` / `hides_feature`）。
+        let plan = uh(&["key:ui.candidate.*", "feature:backup"]);
+        let visible = |e: &crate::search::index::SearchEntry| {
+            if let Some(f) = e.target_feature() {
+                return !plan.hides_feature(f);
+            }
+            match m.get(&e.id) {
+                Some(item) => {
+                    !plan.hides_key(&item.key) && !plan.hides_section(&item.group, &item.section)
+                }
+                None => true,
+            }
+        };
+        assert!(
+            idx.iter()
+                .filter(|e| visible(e))
+                .all(|e| !e.id.starts_with("ui.candidate.")),
+            "被藏的项查询时不该列出来"
+        );
+        assert!(
+            idx.iter()
+                .filter(|e| visible(e))
+                .all(|e| e.id != "advanced:backup"),
+            "被藏的手写卡查询时不该列出来"
+        );
+        assert!(
+            idx.iter()
+                .any(|e| e.id == "advanced:integration" && visible(e)),
+            "别的条目仍在"
+        );
+    }
+
+    /// 宿主被用户藏掉时，**不在建树期**连带藏成员：对话框由宿主行打开，宿主看不见就
+    /// 打不开；而用户随时可能打开逃生口把宿主放回来，那时成员必须还在。
+    ///
+    /// （定制版那条路仍会连带折掉，见 `hide_orphaned_dialog_members` 的说明。）
+    #[test]
+    fn user_hidden_host_keeps_its_dialog_members() {
+        let host = "ui.candidate.comment_template_horizontal";
+        let m = folded(&[&format!("key:{host}")]);
+        assert!(m.get(host).unwrap().user_hidden);
+        assert!(
+            m.get("ui.candidate.comment_template_vertical")
+                .is_some_and(|i| !i.hidden),
+            "成员不能在建树期折掉，否则逃生口放回宿主后框里是空的"
+        );
+    }
+
+    /// 用户把一整页的清单项全藏了：清单不折，故页面树仍建得出来（逃生口要能放回），
+    /// 而**运行期**侧栏入口会因所有分区不可见而消失。
+    ///
+    /// 这里断言前半段（清单仍在），后半段由 `section_vis` 的判据保证。
+    #[test]
+    fn fully_user_hidden_page_stays_buildable() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let full = Manifest::from_embedded();
+        let keys: Vec<String> = full
+            .order
+            .iter()
+            .filter(|k| full.get(k).is_some_and(|i| i.group == "keys"))
+            .map(|k| format!("key:{k}"))
+            .collect();
+        let raw: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let app = Rc::new(RefCell::new(crate::state::AppState::empty()));
+        app.borrow_mut().manifest = folded(&raw);
+        let st = app.borrow();
+        let tabs = crate::pages::all_tabs(&app, &st);
+        let i = crate::cli::page_to_index("keys").unwrap();
+        assert!(
+            !tabs[i].empty,
+            "用户隐藏不折清单：页面照样建得出来，入口消失交给运行期判据"
+        );
+        drop(st);
+        let j = crate::cli::page_to_index("input").unwrap();
+        let st = app.borrow();
+        let _ = &st;
+        assert!(
+            !crate::pages::all_tabs(&app, &st)[j].empty,
+            "输入页不受牵连"
+        );
+    }
+
+    /// 方案设置对话框里同名的方案级项跟着藏：判据是 `user_hidden` 标记（**不是**
+    /// `hidden`——用户清单是运行期显隐）。
+    ///
+    /// `SchemaManagerState::custom_hidden` 正是按 `custom_hidden || user_hidden` 判的，
+    /// 故这里钉的是那两个标记。
+    #[test]
+    fn scheme_dialog_follows_user_hide() {
+        let m = folded(&["key:schema.codetable.top_code_commit"]);
+        let it = m.get("schema.codetable.top_code_commit").unwrap();
+        assert!(!it.hidden, "用户隐藏不折建树期");
+        assert!(it.user_hidden, "运行期判据与方案对话框都靠这个标记");
     }
 }

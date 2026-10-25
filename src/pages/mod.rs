@@ -20,10 +20,10 @@ pub mod phrase_import;
 pub mod stats;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
-use crate::manifest::{scheme_config_section, section_rows};
+use crate::manifest::scheme_config_section;
 use crate::state::AppState;
 use crate::subnav::SubNav;
-use crate::widgets::{page, section, setting_row};
+use crate::widgets::{page, section, section_vis_with_menu, setting_row};
 
 /// 一个 Tab 的三样东西：标题、页面内容、以及这一页的二级导航（见 [`crate::subnav`]）。
 pub struct TabDef {
@@ -105,12 +105,27 @@ fn sections_page(title: &str, desc: &str, sections: Vec<Element>) -> Element {
 
 /// 由 manifest 某分组生成若干 section 卡片（每 section 一张卡片，行按 manifest 顺序），
 /// 顺带把每张卡登记进本页的二级导航。
+///
+/// 「隐藏这一节」只挂在**标题栏**上（[`crate::manifest::section_menu`]），不挂整张卡片：
+/// 卡片里的空白处与操作区边缘很容易被划进整节。行自己那份项级菜单在
+/// [`crate::manifest::section_rows`] 里挂。
 fn manifest_sections(state: &AppState, group: &str, nav: &SubNav) -> Vec<Element> {
     state
         .manifest
         .sections_of(group)
         .into_iter()
-        .map(|(sec, keys)| nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))))
+        .map(|(sec, keys)| {
+            let (rows, head) = crate::manifest::section_rows_split(state, &keys);
+            let card = section_vis_with_menu(
+                &sec,
+                rows.into_iter().map(|r| (r.el, r.vis)).collect(),
+                head,
+                crate::manifest::section_menu(state, group, &sec),
+            );
+            let card = crate::manifest::wrap_section_runtime(state, group, &sec, card);
+            let vis = crate::manifest::section_vis(state, group, &sec);
+            nav.wrap_when(&sec, 0, card, move || vis())
+        })
         .collect()
 }
 
@@ -143,10 +158,26 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             let mut loader = None;
             if sec == memory::SECTION && !state.manifest.feature_hidden("memory") {
                 let (row, l) = memory::build_rows(state);
-                rows.push(row);
+                // 这一行不是清单项（没有配置 key），隐藏走 `feature:memory`。
+                let row = crate::manifest::wrap_feature_menu(state, "memory", row);
+                let row = crate::hide_marker::mark(
+                    state.user_hide_store.clone(),
+                    |s| s.rule_hiding_feature("memory"),
+                    row,
+                );
+                rows.push(crate::manifest::RowSpec {
+                    el: row,
+                    vis: Some(crate::manifest::feature_row_vis(state, "memory")),
+                });
                 loader = Some(l);
             }
-            let card = crate::widgets::section_with_head(&sec, head, rows);
+            let card = crate::widgets::section_vis_with_menu(
+                &sec,
+                rows.into_iter().map(|r| (r.el, r.vis)).collect(),
+                head,
+                crate::manifest::section_menu(state, "advanced", &sec),
+            );
+            let card = crate::manifest::wrap_section_runtime(state, "advanced", &sec, card);
             let el = match loader {
                 Some(l) => Element::col().width_match().child(card).child(l),
                 None => card,
@@ -156,6 +187,8 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         .collect();
 
     // 四张手写卡各有一个 `feature:` id，被定制版藏掉的不建（二级导航随之不登记）。
+    // 用户精简清单里藏的**照建**，由 `wrap_feature_runtime` 挂运行期显隐——用户藏完要
+    // 当场看效果，不能等重开窗口（见 `crate::user_hide`）。
     let shown = |id: &str| !state.manifest.feature_hidden(id);
     let mut secs: Vec<Element> = Vec::new();
     if shown("integration") {
@@ -164,7 +197,15 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             "系统集成",
             0,
             crate::search::anchor::wrap(
-                integration::build_integration_section(app, state),
+                crate::manifest::wrap_feature_runtime(
+                    state,
+                    "integration",
+                    crate::manifest::wrap_feature_menu(
+                        state,
+                        "integration",
+                        integration::build_integration_section(app, state),
+                    ),
+                ),
                 "advanced:integration",
                 state.jump,
             ),
@@ -177,10 +218,18 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             "导入",
             0,
             crate::search::anchor::wrap(
-                config_import::build_import_export_section(
-                    &state.config_import,
-                    &state.schema_mgr,
-                    config_import::ThemePkgConfirmSignals::of(state),
+                crate::manifest::wrap_feature_runtime(
+                    state,
+                    "config_import",
+                    crate::manifest::wrap_feature_menu(
+                        state,
+                        "config_import",
+                        config_import::build_import_export_section(
+                            &state.config_import,
+                            &state.schema_mgr,
+                            config_import::ThemePkgConfirmSignals::of(state),
+                        ),
+                    ),
                 ),
                 "advanced:import-export",
                 state.jump,
@@ -192,7 +241,15 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             "备份与还原",
             0,
             crate::search::anchor::wrap(
-                backup::build_backup_section(&state.backup_mgr),
+                crate::manifest::wrap_feature_runtime(
+                    state,
+                    "backup",
+                    crate::manifest::wrap_feature_menu(
+                        state,
+                        "backup",
+                        backup::build_backup_section(&state.backup_mgr),
+                    ),
+                ),
                 "advanced:backup",
                 state.jump,
             ),
@@ -204,15 +261,30 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         secs.push(nav.wrap(
             "应用兼容性",
             0,
-            crate::search::anchor::wrap(compat_entry_section(app), "advanced:compat", state.jump),
+            crate::search::anchor::wrap(
+                crate::manifest::wrap_feature_runtime(
+                    state,
+                    "compat",
+                    crate::manifest::wrap_feature_menu(state, "compat", compat_entry_section(app)),
+                ),
+                "advanced:compat",
+                state.jump,
+            ),
         ));
     }
     // 「性能与诊断」的清单项（常驻所有方案）被定制版藏掉时，`sections_of` 会把整个分区剔掉，
     // 可手写的「内存占用 / 诊断信息」行不是设置项、不该跟着消失（搜索里也还有它们的条目）。
-    // 两者都藏了就整张卡不出。
+    // 两者都藏了就整张卡不出。用户藏掉 `feature:memory` 时卡片照建，那一行运行期隐藏。
     if shown("memory") && !manifest_secs.contains_key(memory::SECTION) {
         let (row, loader) = memory::build_rows(state);
-        let card = crate::widgets::section_with_head(memory::SECTION, None, vec![row]);
+        let row = crate::manifest::wrap_feature_menu(state, "memory", row);
+        let row = crate::hide_marker::mark(
+            state.user_hide_store.clone(),
+            |s| s.rule_hiding_feature("memory"),
+            row,
+        );
+        let rows = vec![(row, Some(crate::manifest::feature_row_vis(state, "memory")))];
+        let card = crate::widgets::section_vis(memory::SECTION, rows, None);
         manifest_secs.insert(
             memory::SECTION.to_string(),
             Element::col().width_match().child(card).child(loader),
@@ -241,29 +313,44 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
 ///
 /// 隐藏只影响显示、功能照常生效，开关是给用户找回入口用的，不改任何配置。清单折叠发生在
 /// 页面树构建时，故切换后**重新打开设置窗口**才生效，说明里与 toast 都写明。
+///
+/// **只管定制版那一份**：用户自己在「界面细节」里藏掉的设置不在这里找回——两份配置各有
+/// 逃生口，否则打开这个开关会连用户自己藏的也放出来，说不清是谁藏的。
 fn custom_hidden_section(app: &Rc<RefCell<AppState>>) -> Option<Element> {
     if crate::custom_hide::installed().is_empty() {
         return None;
     }
     let on = signal(app.borrow().setting_config.ui.show_custom_hidden_settings);
-    let app = app.clone();
+    let app_sw = app.clone();
     let sw = Element::switch(on).on_switch_change(move |_ctx, v| {
-        app.borrow_mut().save_show_custom_hidden_settings(v);
-        app.borrow().feedback.set(Some((
+        app_sw.borrow_mut().save_show_custom_hidden_settings(v);
+        app_sw.borrow().feedback.set(Some((
             ToastKind::Info,
             "重新打开设置窗口后生效".to_string(),
         )));
     });
-    Some(section(
-        "定制版",
-        vec![setting_row(
+    let app_look = app.clone();
+    let rows = vec![
+        setting_row(
             "显示定制版隐藏的设置",
             Some(
                 "本定制版精简了设置界面，被隐藏的设置照常生效。打开后重新打开设置窗口即可看到全部设置。",
             ),
             sw,
-        )],
-    ))
+        ),
+        // 用户自己藏掉的那些不在本开关的管辖范围：说明一句，免得用户以为是这个开关没生效。
+        setting_row(
+            "你自己隐藏的设置",
+            Some(
+                "在「界面细节」窗（底栏右键菜单）里可开关设置项隐藏、显示已隐藏的设置并一键恢复。",
+            ),
+            Element::button("打开界面细节…")
+                .small()
+                .outline_soft()
+                .on_click(move |ctx| crate::look_window::open(ctx, &app_look)),
+        ),
+    ];
+    Some(section("定制版", rows))
 }
 
 /// 「应用兼容」入口卡：一行说明 + 打开独立窗的按钮。
@@ -410,7 +497,16 @@ pub fn conflict_watcher(app: &Rc<RefCell<AppState>>) -> Element {
 fn input_page(state: &AppState, nav: &SubNav) -> Element {
     let mut secs = manifest_sections(state, "general", nav);
     for (sec, keys) in state.manifest.sections_of("input") {
-        secs.push(nav.wrap(&sec, 0, section(&sec, section_rows(state, &keys))));
+        let (rows, head) = crate::manifest::section_rows_split(state, &keys);
+        let card = section_vis_with_menu(
+            &sec,
+            rows.into_iter().map(|r| (r.el, r.vis)).collect(),
+            head,
+            crate::manifest::section_menu(state, "input", &sec),
+        );
+        let card = crate::manifest::wrap_section_runtime(state, "input", &sec, card);
+        let vis = crate::manifest::section_vis(state, "input", &sec);
+        secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
     }
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
@@ -623,7 +719,12 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
     // 都一样、不提供区分度，导航里还把真正的区别挤到了最后两个字之前。
     for (title, sec, with_fuzzy) in SCHEME_ENGINE_CARDS {
         if let Some(card) = scheme_config_section(state, title, sec, with_fuzzy) {
-            secs.push(nav.wrap(title, 0, card));
+            // 卡片级的运行期显隐：卡里每一项都被用户藏光时整卡消失。与 `section_vis`
+            // 不同——这四张卡没有整节规则可依（用户是逐项藏的）。
+            let vis = crate::manifest::scheme_card_vis(state, sec, with_fuzzy);
+            let vis_card = vis.clone();
+            let card = card.visible_when(move || vis_card());
+            secs.push(nav.wrap_when(title, 0, card, move || vis()));
         }
     }
 
@@ -636,7 +737,16 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
         ("临时英文", "临时英文"),
     ] {
         if let Some((_, keys)) = schema_sections.iter().find(|(s, _)| s == sec) {
-            secs.push(nav.wrap(nav_label, 0, section(sec, section_rows(state, keys))));
+            let (rows, head) = crate::manifest::section_rows_split(state, keys);
+            let card = section_vis_with_menu(
+                sec,
+                rows.into_iter().map(|r| (r.el, r.vis)).collect(),
+                head,
+                crate::manifest::section_menu(state, "schema", sec),
+            );
+            let card = crate::manifest::wrap_section_runtime(state, "schema", sec, card);
+            let vis = crate::manifest::section_vis(state, "schema", sec);
+            secs.push(nav.wrap_when(nav_label, 0, card, move || vis()));
         }
     }
 
@@ -663,6 +773,9 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
     // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
     // "现在按钮是要做什么"和"现在连接是什么状态"。
     let transfer = !state.manifest.feature_hidden("theme_transfer");
+    // 用户把 `feature:theme_transfer` 藏起来时，那三行**照建**、运行期隐显：这一卡里
+    // 还有主题选择的清单项要留着，不能整卡消失。
+    let transfer_vis = crate::manifest::feature_row_vis(state, "theme_transfer");
     let mut ui_secs = state.manifest.sections_of("ui");
     // 「主题」卡的清单项全被定制版藏掉时 `sections_of` 不再给这一节，可三行手写入口没被藏
     // 就不该跟着消失：补一张只有这三行的「主题」卡，排在原位（页首）。
@@ -671,28 +784,46 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
     }
     let mut secs: Vec<Element> = Vec::new();
     for (sec, keys) in ui_secs {
-        let rows = if sec == "主题" && transfer {
-            let mut rows = section_rows(state, &keys);
-            rows.extend(theme_transfer_rows(state));
-            rows
-        } else {
-            section_rows(state, &keys)
-        };
-        let card = section(&sec, rows);
+        let (rows, head) = crate::manifest::section_rows_split(state, &keys);
+        let mut rows: Vec<(Element, Option<crate::widgets::Vis>)> =
+            rows.into_iter().map(|r| (r.el, r.vis)).collect();
+        if sec == "主题" && transfer {
+            rows.extend(
+                theme_transfer_rows(state)
+                    .into_iter()
+                    .map(|el| (el, Some(transfer_vis.clone()))),
+            );
+        }
+        let card = section_vis_with_menu(
+            &sec,
+            rows,
+            head,
+            crate::manifest::section_menu(state, "ui", &sec),
+        );
+        let card = crate::manifest::wrap_section_runtime(state, "ui", &sec, card);
         // 搜索锚点仍叫 ui:theme-import（导入相关词条指向它），现在落在「主题」卡上。
         let card = if sec == "主题" {
             crate::search::anchor::wrap(card, "ui:theme-import", state.jump)
         } else {
             card
         };
-        secs.push(nav.wrap(&sec, 0, card));
+        let vis = crate::manifest::section_vis(state, "ui", &sec);
+        secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
     }
     if !state.manifest.feature_hidden("theme_editor") {
         secs.push(nav.wrap(
             "主题编辑器",
             0,
             crate::search::anchor::wrap(
-                theme_editor_connect_card(app, state),
+                crate::manifest::wrap_feature_runtime(
+                    state,
+                    "theme_editor",
+                    crate::manifest::wrap_feature_menu(
+                        state,
+                        "theme_editor",
+                        theme_editor_connect_card(app, state),
+                    ),
+                ),
                 "ui:theme-editor",
                 state.jump,
             ),
