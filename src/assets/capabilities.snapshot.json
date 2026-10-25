@@ -696,12 +696,17 @@
       "type": "bool"
     },
     {
-      "default": 0.0,
+      "default": false,
+      "key": "schema.pinyin.grammar.enabled",
+      "type": "bool"
+    },
+    {
+      "default": 0.5,
       "key": "schema.pinyin.grammar.weight",
       "type": "float"
     },
     {
-      "default": "",
+      "default": "wanxiang-mini.gram",
       "key": "schema.pinyin.grammar.model",
       "type": "str"
     },
@@ -2603,6 +2608,11 @@
     {
       "default": false,
       "key": "mobile.association.space_commits",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "mobile.grammar.enabled",
       "type": "bool"
     },
     {

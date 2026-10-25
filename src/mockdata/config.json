@@ -292,6 +292,7 @@
    "space_commits": false
   },
   "grammar": {
+   "enabled": true,
    "model": "wanxiang-mini.gram",
    "weight": 0.5
   }
@@ -473,8 +474,9 @@
     "zh_z": false
    },
    "grammar": {
-    "model": "",
-    "weight": 0.0
+    "enabled": false,
+    "model": "wanxiang-mini.gram",
+    "weight": 0.5
    },
    "sentence_count": 1,
    "sentence_cycle_key": "",
