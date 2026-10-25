@@ -625,6 +625,17 @@ type = "toggle"
 label = "启用简拼"
 hint = "只打声母也能出词，如 nh → 你好、bzd → 不知道，也可与全拼混打（nhao）"
 
+# 整句语法模型：随包的 wanxiang-mini.gram（5.3 MB）给整句里词与词的搭配打分。
+# 开关只写 enabled；weight / model 出厂已备好（core 的 data/config.toml），所以勾上即用，
+# 这两项本身不进清单（见 capabilities.rs ⑲）。
+[[items]]
+key = "schema.pinyin.grammar.enabled"
+group = "schema"
+section = "候选行为"
+type = "toggle"
+label = "整句语法模型"
+hint = "按上下文搭配给整句挑更通顺的结果，如 womenzaigongyuanjianmian 出「我们在公园见面」而非「公元」；实测整句首选约 +5 个点，单次转换多约 2 ms"
+
 # 双拼：allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达「当前方案是双拼」
 # （它只能比较配置键），故常驻可见，由 hint 说明适用范围。
 [[items]]

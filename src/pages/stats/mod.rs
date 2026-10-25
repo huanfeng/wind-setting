@@ -20,7 +20,6 @@ use std::rc::Rc;
 use windui::core::EventCtx;
 use windui::prelude::*;
 
-use crate::manifest::section_rows;
 use crate::pages::dict::reactive::{Feedback, reactive_effect, toast_sink};
 use crate::state::AppState;
 use crate::widgets::{page, section, setting_row};
@@ -553,7 +552,9 @@ fn settings_section(state: &AppState) -> Element {
         .into_iter()
         .flat_map(|(_, k)| k)
         .collect();
-    let mut rows = section_rows(state, &keys);
+    let (manifest_rows, head) = crate::manifest::section_rows_split(state, &keys);
+    let mut rows: Vec<(Element, Option<crate::widgets::Vis>)> =
+        manifest_rows.into_iter().map(|r| (r.el, r.vis)).collect();
 
     let mgr_prune = state.stats_mgr.clone();
     let labels: Vec<&str> = PRUNE_OPTIONS.iter().map(|(l, _)| *l).collect();
@@ -567,14 +568,17 @@ fn settings_section(state: &AppState) -> Element {
                 .danger()
                 .on_click(move |_| mgr_prune.request_prune()),
         );
-    rows.push(setting_row(
-        "数据清理",
-        Some("删除指定范围前的历史数据，不可恢复"),
-        prune_ctl,
+    rows.push((
+        setting_row(
+            "数据清理",
+            Some("删除指定范围前的历史数据，不可恢复"),
+            prune_ctl,
+        ),
+        None,
     ));
-    rows.push(toast_sink(state.stats_mgr.feedback));
+    rows.push((toast_sink(state.stats_mgr.feedback), None));
 
-    section("统计设置", rows)
+    crate::widgets::section_vis("统计设置", rows, head)
 }
 
 /// 清理确认对话框（挂在 shell 根层，覆盖整窗）。

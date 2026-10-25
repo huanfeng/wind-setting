@@ -496,12 +496,15 @@ struct BehaviorRowsHidden {
 }
 
 fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
+    // 「字符与标点」整节被藏（定制版 / 用户）时，本方案里的「自定义标点」也跟着藏：
+    // 两者编辑的是同一张映射表，全局入口都没了却留一个旁路，等于没藏。
+    let punct_section = state.section_hidden("input", "字符与标点");
     BehaviorRowsHidden {
         layout: state.custom_hidden("ui.candidate.layout"),
         font: state.custom_hidden("ui.font.family"),
         comment: state.custom_hidden("ui.candidate.comment_template_horizontal")
             && state.custom_hidden("ui.candidate.comment_template_vertical"),
-        punct_map: state.custom_hidden("input.punct.custom_mappings"),
+        punct_map: punct_section || state.custom_hidden("input.punct.custom_mappings"),
     }
 }
 
@@ -1314,6 +1317,9 @@ pub struct SchemaManagerState {
     /// 全局藏了、这里还显示，等于没藏。本对话框不持有 `AppState`，由它在折叠时经
     /// [`Self::set_manifest`] 注入；构造时先放内嵌清单（单测与注入前的兜底）。
     manifest: Rc<RefCell<Rc<crate::manifest::Manifest>>>,
+    /// 用户精简清单（运行期活配置）。由 `AppState::empty` 注入，供 [`Self::custom_hidden`]
+    /// 现读——清单快照里的 `user_hidden` 只在建窗时折一次，窗口开着时新加的规则会过时。
+    user_hide: Option<Rc<crate::user_hide::UserHideStore>>,
     // ── 特殊模式（方案文件 `[overlay]` 段）──
     //
     // 本节**只在方案已声明 `[overlay]` 时出现**，故没有「是不是特殊方案」的总开关：
@@ -1480,15 +1486,50 @@ impl SchemaManagerState {
         *self.manifest.borrow_mut() = m;
     }
 
-    /// 全局 `key` 被定制版 `[settings] hide` 藏掉了。逃生口打开时清单没折，恒为假。
+    /// 注入用户精简清单的活配置（`AppState::empty` 建好 store 后调一次）。
     ///
-    /// 只问 `custom_hidden`、不问 `hidden`：清单自身 `hidden = true` 的全局项不代表方案级
-    /// 那一行也该藏。
+    /// 与 [`Self::set_manifest`] 的不同：清单是**快照**，用户 store 是**活配置**。
+    /// 方案对话框打开时现读它，故窗口开着时新加的隐藏规则也能跟上。
+    pub fn set_user_hide(&mut self, store: Rc<crate::user_hide::UserHideStore>) {
+        self.user_hide = Some(store);
+    }
+
+    /// 全局 `key` 被定制版 `[settings] hide` 或用户精简清单藏掉了。逃生口打开时清单没折，恒为假。
+    ///
+    /// 只问 `custom_hidden` / `user_hidden`、不问 `hidden`：清单自身 `hidden = true` 的全局项
+    /// 不代表方案级那一行也该藏。
+    ///
+    /// ★ 用户那一份**现读** [`crate::user_hide::UserHideStore`]（若已注入），不用清单上的
+    /// `user_hidden` 快照：用户可能在设置窗开着时藏掉一项，而清单只在建窗时折一次，
+    /// 快照会过时。定制版那份是静态的，仍看清单。
     fn custom_hidden(&self, key: &str) -> bool {
-        self.manifest
-            .borrow()
-            .get(key)
-            .is_some_and(|i| i.custom_hidden)
+        let item = self.manifest.borrow().get(key).cloned();
+        let custom = item.as_ref().is_some_and(|i| i.custom_hidden);
+        custom || item.as_ref().is_some_and(|i| self.user_hidden_now(i))
+    }
+
+    /// 用户精简清单此刻是否藏了这一项（项级规则或它所在的整节规则）。现读 store；
+    /// 未注入时退回清单快照。
+    fn user_hidden_now(&self, item: &crate::manifest::MItem) -> bool {
+        match &self.user_hide {
+            Some(store) => {
+                store.hides_key(&item.key) || store.hides_section(&item.group, &item.section)
+            }
+            None => item.user_hidden,
+        }
+    }
+
+    /// 全局页上「这一整节」被藏掉了（定制版或用户）。方案级同名节据此整节不出。
+    ///
+    /// 与 [`Self::custom_hidden`] 同一条：用户那份现读 store，定制版看清单快照。
+    fn section_hidden(&self, group: &str, section: &str) -> bool {
+        let m = self.manifest.borrow();
+        let custom = m.section_all_hidden(group, section);
+        let user = match &self.user_hide {
+            Some(store) => store.hides_section(group, section),
+            None => false,
+        };
+        custom || user
     }
 
     pub fn new() -> Self {
@@ -1555,6 +1596,7 @@ impl SchemaManagerState {
             manifest: Rc::new(RefCell::new(Rc::new(
                 crate::manifest::Manifest::from_embedded(),
             ))),
+            user_hide: None,
             settings_aux_on_over: signal(false),
             settings_aux_on: signal(false),
             settings_aux_len_over: signal(false),
@@ -3084,7 +3126,9 @@ impl SchemaManagerState {
                 // apply 再把有控件的那些按勾选状态写一遍。反过来的话 reset 会把刚写好的
                 // 用户值又抹成 null——而用户可能是「全部恢复跟随后又勾了一两项」。
                 if reset_all {
-                    self.settings_ct.reset(&self.manifest.borrow(), &mut cfg);
+                    let user_hidden = |i: &crate::manifest::MItem| self.user_hidden_now(i);
+                    self.settings_ct
+                        .reset(&self.manifest.borrow(), &user_hidden, &mut cfg);
                 }
                 // 没勾的项写入 null——core 的 json_to_toml 跳过 null，于是 override 里不含
                 // 这些键；而 saveConfig 是拿**方案文件基线**与 cfg 做 diff，故取消覆盖后
@@ -4987,46 +5031,47 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 state.settings_hotkey_enabled,
             );
             let mut rows: Vec<Element> = Vec::new();
+            // 全局 `keys.key_actions` 被藏 ⇒ 本节里所有写它的行一起藏（见下方三行）。
+            let ka_hidden = state.custom_hidden("keys.key_actions");
+            let sa_hidden = state.custom_hidden("keys.session_actions");
 
             // 说明这条配置**存在哪儿**：它写的不是方案自己的 override，而是全局
             // `keys.key_actions` 里一条指向本方案的条目。不点破的话，用户在「全局
             // 自定义按键」里看到一条自己没加过的绑定，会以为是哪里冒出来的脏数据，
             // 甚至手动删掉——而删掉就等于把这里的「切换到本方案」也一并清了。
-            rows.push(crate::widgets::setting_row(
-                "切换到本方案按键",
-                Some("此配置同时出现在「按键 → 全局自定义按键」中"),
-                Element::row()
-                    .cross(Align::Center)
-                    .spacing(8)
-                    .child(
-                        // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
-                        Element::label_signal(state.settings_hotkey_disp)
-                            .font_size(12.5)
-                            .fg_role(Role::TextMuted)
-                            .max_lines(1)
-                            .width(114),
-                    )
-                    .child(
-                        Element::button("设置")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| visible.set(true)),
-                    )
-                    // ⛔ 这里**不要**再加「启用」复选框（2026-08-21 删除）。
-                    //
-                    // 配置模型里没有「停用但保留键位」这回事：一条方案热键就是
-                    // key_actions 里的一个条目，要么在、要么不在。而复选框天然让人
-                    // 以为取消勾选只是暂时关掉——实际是把条目删了，关掉对话框再打开
-                    // 就变成「未设置」，键位也没了。用户原话：「关闭后就清空了」。
-                    //
-                    // 真要做「停用保留」，得先在 core 给 key_actions 的值增加一种
-                    // 「停用态」的表达（`none` 不行，那是**键**维度的「禁用这个键」，
-                    // 语义不同还会占着这个键）。在那之前，UI 不该暗示一个不存在的能力。
-                    .child(
-                        Element::button("清除")
-                            .small()
-                            .outline_soft()
-                            .on_click(move |_| {
+            if !ka_hidden {
+                rows.push(crate::widgets::setting_row(
+                    "切换到本方案按键",
+                    Some("此配置同时出现在「按键 → 全局自定义按键」中"),
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(8)
+                        .child(
+                            // 固定宽度：长热键文本（如 Ctrl+Shift+\）不该撑宽右侧挤压左列。
+                            Element::label_signal(state.settings_hotkey_disp)
+                                .font_size(12.5)
+                                .fg_role(Role::TextMuted)
+                                .max_lines(1)
+                                .width(114),
+                        )
+                        .child(
+                            Element::button("设置")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| visible.set(true)),
+                        )
+                        // ⛔ 这里**不要**再加「启用」复选框（2026-08-21 删除）。
+                        //
+                        // 配置模型里没有「停用但保留键位」这回事：一条方案热键就是
+                        // key_actions 里的一个条目，要么在、要么不在。而复选框天然让人
+                        // 以为取消勾选只是暂时关掉——实际是把条目删了，关掉对话框再打开
+                        // 就变成「未设置」，键位也没了。用户原话：「关闭后就清空了」。
+                        //
+                        // 真要做「停用保留」，得先在 core 给 key_actions 的值增加一种
+                        // 「停用态」的表达（`none` 不行，那是**键**维度的「禁用这个键」，
+                        // 语义不同还会占着这个键）。在那之前，UI 不该暗示一个不存在的能力。
+                        .child(Element::button("清除").small().outline_soft().on_click(
+                            move |_| {
                                 // 置空 raw 即解绑：commit 侧按 `raw` 为空处理为移除条目。
                                 // enabled 同步置 false——它是对话框内部的派生量
                                 // （`enabled.set(v != "none")`），不同步会让下次打开
@@ -5034,9 +5079,10 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 hk_enabled.set(false);
                                 hk_disp.set("未设置".to_string());
                                 hk_raw.set(String::new());
-                            }),
-                    ),
-            ));
+                            },
+                        )),
+                ));
+            }
 
             // 引导键只给 **overlay 方案**：按下引导键临时进入、打完一段自动退回原方案。
             // 普通方案没有这条通路（切过去就留在那儿），给它们显示这一行只会让人以为能配。
@@ -5065,23 +5111,32 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 而 `key_actions` **不是「空闲时专用」**：它在输入中同样生效
             // （用户 2026-08-22 已纠正过一次，2026-08-27 又踩）。
             // 见 [[project_key_resolver_unification]]「别再用『空闲时 / 未输入时』描述」。
-            rows.push(summary_action_row(
-                "本方案-按键自定义",
-                Some("为按键指定功能，如临时拼音、切换方案"),
-                state.settings_ka_disp,
-                "设置",
-                state.settings_ka_visible,
-            ));
-            rows.push(summary_action_row(
-                "本方案-输入中按键自定义",
-                Some("指定按键在输入中的功能，如翻页、选择候选"),
-                state.settings_sa_disp,
-                "设置",
-                state.settings_sa_visible,
-            ));
+            //
+            // 全局那一项被定制版 / 用户藏掉时，这两行也一并藏：它们编辑的是**同一张表**
+            // （方案级 `[key_actions]` 与全局 `keys.key_actions` 在 core 侧合流），藏了全局
+            // 入口却留一个能改同一件事的旁路，等于没藏。
+            if !ka_hidden {
+                rows.push(summary_action_row(
+                    "本方案-按键自定义",
+                    Some("为按键指定功能，如临时拼音、切换方案"),
+                    state.settings_ka_disp,
+                    "设置",
+                    state.settings_ka_visible,
+                ));
+            }
+            if !sa_hidden {
+                rows.push(summary_action_row(
+                    "本方案-输入中按键自定义",
+                    Some("指定按键在输入中的功能，如翻页、选择候选"),
+                    state.settings_sa_disp,
+                    "设置",
+                    state.settings_sa_visible,
+                ));
+            }
 
             // 按键总览：把上面两行加全局那几张表**合起来**回答「这个键现在到底干什么」。
             // 排在两个编辑入口之后 —— 它是查看用的，不是又一个编辑入口。
+            // 只读视图，不随全局隐藏：它汇总的是**生效**按键，藏了编辑入口反而更需要它。
             rows.push(summary_action_row(
                 "按键总览",
                 Some("本方案与全局各表合起来，这个键现在到底干什么"),

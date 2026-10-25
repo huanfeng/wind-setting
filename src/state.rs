@@ -433,10 +433,14 @@ pub struct AppState {
     pub base_config: Config,
     /// 当前编辑中的配置（保存时由写回器填充）。
     pub current_config: Config,
-    /// 设置清单（内嵌清单，启动即就位；已按定制版 `[settings] hide` 折叠，见 [`crate::custom_hide`]）。
+    /// 设置清单（内嵌清单，启动即就位；已按定制版 `[settings] hide` 与用户精简清单折叠，
+    /// 见 [`crate::custom_hide`]）。
     pub manifest: Manifest,
     /// `manifest` 折叠时「显示定制版隐藏的设置」的取值，见 [`Self::refold_manifest_if_needed`]。
     pub manifest_show_all: bool,
+    /// `manifest` 折叠时用户精简清单的状态快照 `(是否生效, 规则原文)`。与
+    /// [`Self::manifest_show_all`] 一起构成「上次是按什么折的」，任一变化都要重折。
+    pub manifest_user_hide_key: (bool, Vec<String>),
     /// core 能力契约（system.capabilities，异步加载后就位）。
     pub capabilities: Capabilities,
     /// 系统信息（system.info）。
@@ -569,6 +573,9 @@ pub struct AppState {
     pub accent_idx: Signal<usize>,
     /// 「界面细节」试验选项（见 [`crate::look`]）。子窗分段控件直接绑这组信号。
     pub look: crate::look::LookSignals,
+    /// 用户自己的设置精简清单（`wind_setting_hide.toml`，见 [`crate::user_hide`]）。
+    /// 与定制版 `[settings] hide` 是两份独立配置，同时生效；页面与菜单都从这里读。
+    pub user_hide_store: Rc<crate::user_hide::UserHideStore>,
     /// 跟随模式下取到的输入法主题色（未修正的两档原色）；`None` = 还没取 / 取不到。
     ime_accent: RefCell<Option<crate::accent::ThemeAccent>>,
     /// 上一次取色请求的主题名（空串 = 当前主题）。与此刻要跟随的不同才重取；`None` = 没取过。
@@ -952,23 +959,30 @@ impl AppState {
     /// 快速初始化：仅读系统主题，其余字段置空。
     /// UI 可立即显示；真实数据由后台线程通过 [`AppState::apply_loaded`] 写入。
     pub fn empty() -> Self {
-        let schema_mgr = SchemaManagerState::new();
+        let mut schema_mgr = SchemaManagerState::new();
         let fields: Rc<FieldRegistry> = Rc::new(FieldRegistry::default());
         register_schema_registrations(&fields, &schema_mgr);
         let setting_load = setting_config::load();
         // 先取出，下面 setting_load.config 会被移动进结构体
         let setting_load_update_auto_check = setting_load.config.update.auto_check;
         let setting_load_wizard_dismissed = setting_load.config.ui.wizard_dismissed;
-        // 定制版隐藏的设置项（`[settings] hide`）。页面与搜索索引必须用同一份清单：
-        // 各折各的，就会搜到一项、点过去却什么都没有。
+        // 定制版隐藏的设置项（`[settings] hide`）与用户自己的精简清单。页面与搜索索引必须用
+        // 同一份清单：各折各的，就会搜到一项、点过去却什么都没有。
         let manifest_show_all = setting_load.config.ui.show_custom_hidden_settings;
-        let manifest = crate::custom_hide::settings_manifest(
+        let user_hide_store = Rc::new(crate::user_hide::UserHideStore::load());
+        let user_hide = user_hide_store.plan();
+        let manifest = crate::custom_hide::settings_manifest_full(
             crate::custom_hide::installed(),
             manifest_show_all,
+            &user_hide,
+            false,
         );
+        let manifest_user_hide_key = (user_hide.is_active(), user_hide.selectors());
         let search = crate::search::SearchState::new(&manifest);
         // 方案设置对话框里的方案级项复用全局 key，也要按同一份折叠结果藏。
         schema_mgr.set_manifest(Rc::new(manifest.clone()));
+        // 用户精简清单是活配置（运行期可改），方案对话框要现读它，不能只看清单快照。
+        schema_mgr.set_user_hide(user_hide_store.clone());
         // 明暗：**None = 跟随系统**。不能写成 `unwrap_or(false)` —— 那会让系统处于深色
         // 主题的用户每次启动被强制翻成浅色，且与「用户显式选了浅色」再也分不开。
         let initial_dark = setting_load
@@ -998,6 +1012,7 @@ impl AppState {
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
             manifest,
             manifest_show_all,
+            manifest_user_hide_key,
             capabilities: Capabilities::from_embedded(),
             system_info: Value::Object(serde_json::Map::new()),
             degradation: signal(String::new()),
@@ -1047,6 +1062,7 @@ impl AppState {
             theme_handle: RefCell::new(None),
             accent_idx: signal(initial_accent.index()),
             look: crate::look::LookSignals::new(initial_look),
+            user_hide_store,
             ime_accent: RefCell::new(None),
             accent_fetched_for: RefCell::new(None),
             accent_note: signal(String::new()),
@@ -1475,21 +1491,32 @@ impl AppState {
         self.save_ui_state(|ui| ui.show_custom_hidden_settings = on);
     }
 
-    /// 清单按「显示定制版隐藏的设置」的当前值重折；与上次折叠时一致就什么都不做。
+    /// 清单按「定制版隐藏」与「用户精简」的当前状态重折；与上次折叠时一致就什么都不做。
     ///
     /// 由 `shell::build` 在建树之前调用。只在 `AppState::empty()` 里折一次是不够的：
     /// 主窗可以关掉再开而进程不退（词库窗还开着），那时开关切了也不会生效。
     /// 搜索只换索引数据（[`crate::search::SearchState::reindex`]），不重建那批进程级 Signal。
+    ///
+    /// ★ 用户精简清单**不折 `hidden`**（运行期显隐，见 [`crate::user_hide`]），这里折的是
+    /// `user_hidden` 标记：方案对话框的兜底判据与测试要用它。判据取整份规则而不是
+    /// 「条数」——换一条规则而条数不变时，按条数比会漏掉这次重折。
     pub fn refold_manifest_if_needed(&mut self) {
         let show_all = self.setting_config.ui.show_custom_hidden_settings;
-        if show_all == self.manifest_show_all {
+        let user_hide = self.user_hide_store.plan();
+        let user_key = (user_hide.is_active(), user_hide.selectors());
+        if show_all == self.manifest_show_all && user_key == self.manifest_user_hide_key {
             return;
         }
-        self.manifest =
-            crate::custom_hide::settings_manifest(crate::custom_hide::installed(), show_all);
+        self.manifest = crate::custom_hide::settings_manifest_full(
+            crate::custom_hide::installed(),
+            show_all,
+            &user_hide,
+            false,
+        );
         self.search.reindex(&self.manifest);
         self.schema_mgr.set_manifest(Rc::new(self.manifest.clone()));
         self.manifest_show_all = show_all;
+        self.manifest_user_hide_key = user_key;
     }
 
     /// 持久化设置向导「下次不再弹出」。

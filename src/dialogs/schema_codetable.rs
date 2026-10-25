@@ -646,15 +646,23 @@ impl CtFields {
     /// 逐项 `apply` 够不着没有控件的字段（没控件就没信号），而 override 里可能留着
     /// 0.118 时代「开总开关整段写实」写进去的值。这个按钮是清掉它们的唯一入口。
     ///
-    /// ★ 例外：被定制版 `[settings] hide` 藏掉的项**原样保留**。定制者藏它就是不让用户在
-    /// 界面上动，一键清空却能把它的方案覆盖值悄悄抹掉，与「隐藏只影响显示」相悖。
-    pub fn reset(&self, manifest: &Manifest, cfg: &mut Value) {
+    /// ★ 例外：被定制版 `[settings] hide` 或用户精简清单藏掉的项**原样保留**。藏起来
+    /// 就是不让人在界面上动它，一键清空却能把它的方案覆盖值悄悄抹掉，与「隐藏只影响
+    /// 显示」相悖。`user_hidden` 由调用方给：用户那一份要**现读**，清单上的快照在窗口
+    /// 开着时新藏的项上是过时的。
+    pub fn reset(
+        &self,
+        manifest: &Manifest,
+        user_hidden: &dyn Fn(&MItem) -> bool,
+        cfg: &mut Value,
+    ) {
         if !cfg.is_object() {
             *cfg = json!({});
         }
-        let custom_hidden = |key: &str| manifest.get(key).is_some_and(|i| i.custom_hidden);
+        let is_hidden = |i: &MItem| i.custom_hidden || user_hidden(i);
+        let hidden = |key: &str| manifest.get(key).is_some_and(is_hidden);
         for f in SPEC_BEHAVIOR_FIELDS {
-            if !custom_hidden(&format!("{MANIFEST_PREFIX}{f}")) {
+            if !hidden(&format!("{MANIFEST_PREFIX}{f}")) {
                 set_path(cfg, &["engine", "codetable", f], Value::Null);
             }
         }
@@ -665,14 +673,14 @@ impl CtFields {
                 .values()
                 .filter(|i| i.key.starts_with(&prefix))
                 .collect();
-            if !in_sub.iter().any(|i| i.custom_hidden) {
+            if !in_sub.iter().any(|i| is_hidden(i)) {
                 // 嵌套子段整段置 null 而非逐字段——段内字段可能多于 manifest 暴露的那几个，
                 // 逐个清会漏。
                 set_path(cfg, &["engine", "codetable", sub], Value::Null);
                 continue;
             }
             // 段内有被藏的项：只能逐个清没藏的那些（清单外的字段因此留下）。
-            for i in in_sub.iter().filter(|i| !i.custom_hidden) {
+            for i in in_sub.iter().filter(|i| !is_hidden(i)) {
                 let leaf = &i.key[prefix.len()..];
                 set_path(cfg, &["engine", "codetable", sub, leaf], Value::Null);
             }
@@ -1259,7 +1267,7 @@ mod tests {
                 "frequency": { "enabled": true },
             }}
         });
-        f.reset(&m, &mut cfg);
+        f.reset(&m, &|i| i.user_hidden, &mut cfg);
         let ct = cfg.pointer("/engine/codetable").unwrap();
         for field in SPEC_BEHAVIOR_FIELDS {
             assert_eq!(
@@ -1294,7 +1302,7 @@ mod tests {
                 "english_merge": { "enable": true },
             }}
         });
-        f.reset(&m, &mut cfg);
+        f.reset(&m, &|i| i.user_hidden, &mut cfg);
         let ct = cfg.pointer("/engine/codetable").unwrap();
         assert_eq!(ct.get("top_code_commit"), Some(&json!(true)));
         assert_eq!(ct.get("punct_commit"), Some(&Value::Null));

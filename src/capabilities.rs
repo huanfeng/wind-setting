@@ -478,17 +478,11 @@ mod tests {
         "input.association.bigram",
         "input.association.prefix",
         "input.association.punct",
-        // ⑲ 拼音语法模型（core 侧 octagram 接入新增）：**实验性且模型文件不随安装包分发**。
-        //    weight = 0.0 与 model = "" 两个默认都是关，且必须两个都显式配置才生效；
-        //    模型因许可与体积（数百 MB）要用户自行获取。⇒ 在设置页放这两项，绝大多数用户
-        //    拧了完全没反应——没有模型文件时调 weight 是空转，而 model 是个要填文件名的
-        //    输入框，填什么只能去看设计文档。与 ⑧、⑱ 同一判据。
-        //    真正暴露的前提是 core 先决定模型怎么分发（见 core 的
-        //    docs/design/pinyin-grammar-model.md）；那时该配的多半也不是这两个裸键，
-        //    而是「下载/选择模型」那样的功能入口。
-        //
-        //    注：这两个键是 core 早先引入却未同步本仓的遗留项，此前因旧快照里没有它们而
-        //    一直没报红，是本次重生成把它们激活的——不是本次 core 改动带来的。
+        // ⑲ 拼音语法模型的 weight / model 两个裸键：模型现在随包（wanxiang-mini.gram，
+        //    5.3 MB），出厂 weight / model 已备好，设置页只暴露总开关
+        //    `schema.pinyin.grammar.enabled`（见清单「候选行为」）。weight 是调参用的浮点，
+        //    model 是个要填文件名的输入框，拧了要么没感觉要么指向一个不存在的文件——
+        //    与 ⑧、⑱ 同一判据，要调的人改 config.toml。
         "schema.pinyin.grammar.weight",
         "schema.pinyin.grammar.model",
         // ⑳ core 的 `[mobile.*]` 域：**移动端对桌面基线的覆盖**，桌面构建根本不读。
@@ -501,6 +495,7 @@ mod tests {
         "mobile.association.mode",
         "mobile.association.punct",
         "mobile.association.space_commits",
+        "mobile.grammar.enabled",
         "mobile.grammar.weight",
         "mobile.grammar.model",
         // ㉑ 联想的编码栏标识：纯文案定制项，出厂「联想输入」已够用。

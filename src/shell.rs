@@ -127,6 +127,27 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     let empty_redirect = redirect_off_empty_tabs(empty, tab_sig);
     let (search_state, jump_sig) = {
         let st = app.borrow();
+        // 用户精简清单不折索引（见 `crate::user_hide`），改由这一层按当前开关过滤。
+        // 逃生口打开时 `hides_*` 返回 false，被临时放出来的项照常搜得到。
+        let store = st.user_hide_store.clone();
+        let manifest = std::rc::Rc::new(st.manifest.clone());
+        st.search.set_filter(std::rc::Rc::new(
+            move |e: &crate::search::index::SearchEntry| {
+                // 手写条目：`feature` 就是它的归属卡。
+                if let Some(f) = e.target_feature() {
+                    return !store.hides_feature(f);
+                }
+                // 清单项：按 key / 所在整节判，与页面那一行同一套判据。
+                match manifest.get(&e.id) {
+                    Some(item) => {
+                        !store.hides_key(&item.key)
+                            && !store.hides_section(&item.group, &item.section)
+                    }
+                    // 方案级条目（`schema-level:*`）：没有对应的用户清单选择器，照列。
+                    None => true,
+                }
+            },
+        ));
         (st.search.clone(), st.jump)
     };
     let search_box = crate::search::ui::build_search_box(&search_state, tab_sig, jump_sig);
@@ -310,18 +331,23 @@ pub(crate) const NAV_W: i32 = 140;
 ///
 /// 定制版 `feature:subnav` 整栏不要（`hidden`），各页都按「没有」处理。
 ///
+/// 计数**每帧现求**（`section_count` 会调各分块的 `visible` 闭包）：用户精简清单藏掉
+/// 一张卡后，那一栏该当场少一条；只剩一条时整栏收起。建树时固化成 `Vec<bool>` 的话，
+/// 藏完得重开窗口才变，与「即时生效」的承诺不符。
+///
 /// 返回 `Clone` 的闭包：导航栏与它右边那条分隔线各要一份 `visible_when`。
 fn subnav_available(
     navs: &[crate::subnav::SubNav],
     tab: Signal<usize>,
     hidden: bool,
 ) -> impl Fn() -> bool + Clone + 'static {
-    let has: Rc<Vec<bool>> = Rc::new(
-        navs.iter()
-            .map(|n| !hidden && n.section_count() >= 2)
-            .collect(),
-    );
-    move || has.get(tab.get()).copied().unwrap_or(false)
+    let navs: Rc<Vec<crate::subnav::SubNav>> = Rc::new(navs.to_vec());
+    move || {
+        if hidden {
+            return false;
+        }
+        navs.get(tab.get()).is_some_and(|n| n.section_count() >= 2)
+    }
 }
 
 /// 二级导航栏：各页的分块清单叠在一个 stack 里按 Tab 切换，外加每页一枚高亮解析器。
@@ -735,6 +761,9 @@ pub(crate) fn look_watcher(app: &Rc<RefCell<AppState>>) -> Element {
 }
 
 /// 底栏右键菜单里的「界面细节…」：开界面细节子窗（单例，已开则激活）。
+///
+/// 窗里除了外观试验选项，还有「设置项精简」那一节（开关 / 显示已隐藏 / 恢复默认）。
+/// 入口只此一处：侧栏与内容区空白处的右键已被导入菜单占用，设置项自己那份是 Ctrl+右键。
 fn look_menu_item(app: &Rc<RefCell<AppState>>) -> MenuItem {
     let app = app.clone();
     MenuItem::run(
@@ -924,15 +953,32 @@ fn build_footer(
         }
     });
 
-    // 明暗 / 主题色各有一个 `feature:` id（`dark_mode` / `accent`），被定制版藏掉的不放。
-    // 角标是主题色下拉的附属，随它走。
-    let (show_dark, show_accent) = {
+    // 明暗 / 主题色各有一个 `feature:` id（`dark_mode` / `accent`），被定制版或用户藏掉的
+    // 不放。角标是主题色下拉的附属，随它走。
+    //
+    // 这两块也能用 Ctrl+右键藏（`wrap_feature_menu`）：它们是底栏控件、不在清单里，
+    // 但对用户来说同样是「一个不太用的设置」。判据走 `feature_hidden`，故两套配置都认。
+    let (show_dark, show_accent, hide_store) = {
         let st = app.borrow();
         (
             !st.manifest.feature_hidden("dark_mode"),
             !st.manifest.feature_hidden("accent"),
+            st.user_hide_store.clone(),
         )
     };
+    let feature_menu = |id: &'static str, el: Element| {
+        el.on_context_menu(crate::hide_menu::menu_for(
+            hide_store.clone(),
+            crate::hide_menu::Target::Feature(id),
+        ))
+    };
+    // 用户隐藏走运行期判据（藏了立刻消失，逃生口打开时放回）；定制版隐藏仍是建树期跳过。
+    let (s1, s2, s3) = (hide_store.clone(), hide_store.clone(), hide_store.clone());
+    let theme_btn =
+        feature_menu("dark_mode", theme_btn).visible_when(move || !s1.hides_feature("dark_mode"));
+    let accent_pick =
+        feature_menu("accent", accent_pick).visible_when(move || !s2.hides_feature("accent"));
+    let accent_badge = accent_badge.visible_when(move || !s3.hides_feature("accent"));
     // 底栏与标题栏同色(SurfaceAlt)，与内容区卡片(Surface)区分；上方分割线由 main_col 提供层次。
     let mut bar = Element::row()
         .width_match()
