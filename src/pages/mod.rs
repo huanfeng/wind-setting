@@ -193,9 +193,11 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     let mut secs: Vec<Element> = Vec::new();
     if shown("integration") {
         // 搜索锚点：桌面集成/协议关联/文件关联三条都落在集成卡上。
-        secs.push(nav.wrap(
+        secs.push(nav_feature(
+            nav,
+            state,
+            "integration",
             "系统集成",
-            0,
             crate::search::anchor::wrap(
                 crate::manifest::wrap_feature_runtime(
                     state,
@@ -214,9 +216,11 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     if shown("config_import") {
         // 导航名与卡片标题必须一致，否则用户点了「导入与导出」滚到一张写着「导入」的卡上，
         // 会以为跳错了地方。这张卡的标题就是「导入」（`build_import_export_section`）。
-        secs.push(nav.wrap(
+        secs.push(nav_feature(
+            nav,
+            state,
+            "config_import",
             "导入",
-            0,
             crate::search::anchor::wrap(
                 crate::manifest::wrap_feature_runtime(
                     state,
@@ -237,9 +241,11 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         ));
     }
     if shown("backup") {
-        secs.push(nav.wrap(
+        secs.push(nav_feature(
+            nav,
+            state,
+            "backup",
             "备份与还原",
-            0,
             crate::search::anchor::wrap(
                 crate::manifest::wrap_feature_runtime(
                     state,
@@ -258,9 +264,11 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     if shown("compat") {
         // 应用兼容：入口卡片，界面本身在独立窗里（规则多、三栏，放不进一页）。
         // 排在「游戏兼容」上方——两者都是「个别软件的兼容处理」，前者按软件、后者按注册表。
-        secs.push(nav.wrap(
+        secs.push(nav_feature(
+            nav,
+            state,
+            "compat",
             "应用兼容性",
-            0,
             crate::search::anchor::wrap(
                 crate::manifest::wrap_feature_runtime(
                     state,
@@ -811,9 +819,11 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
         secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
     }
     if !state.manifest.feature_hidden("theme_editor") {
-        secs.push(nav.wrap(
+        secs.push(nav_feature(
+            nav,
+            state,
+            "theme_editor",
             "主题编辑器",
-            0,
             crate::search::anchor::wrap(
                 crate::manifest::wrap_feature_runtime(
                     state,
@@ -1398,6 +1408,18 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // 搜索锚点：版本/检查更新/日志目录三条都落在这张品牌卡上——本页内容不多，
     // 再往里细分锚点，闪的范围反而比读者的目光落点还小。
     crate::widgets::page(body.child(crate::search::anchor::wrap(panel, "about:main", state.jump)))
+}
+
+/// 手写卡的二级导航条目：卡片被用户藏掉时，导航里那一条跟着消失（否则点它只会滚到一片空白）。
+fn nav_feature(
+    nav: &crate::subnav::SubNav,
+    state: &AppState,
+    feature: &'static str,
+    label: &str,
+    card: Element,
+) -> Element {
+    let vis = crate::manifest::feature_row_vis(state, feature);
+    nav.wrap_when(label, 0, card, move || vis())
 }
 
 #[cfg(test)]

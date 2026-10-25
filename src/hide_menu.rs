@@ -85,11 +85,26 @@ fn build_items(store: &Rc<UserHideStore>, target: &Target) -> Vec<MenuItem> {
         // 行上只给**项级**动作。整节隐藏归卡片菜单（右键落在标题行 / 卡片空白处），
         // 两份都放会让每次右键都看到一组重叠的「这一项 / 这一节」——用户在条目处本来
         // 只想藏这一项（2026-10-25 反馈）。
-        Target::Key { key, .. } => vec![
-            copy_item(&format!("key:{key}"), key),
-            MenuItem::separator(),
-            key_hide_item(store.clone(), key),
-        ],
+        Target::Key {
+            key,
+            group,
+            section,
+        } => {
+            // 这一行是被**整节规则**藏起来的（逃生口下仍显示着）：给「隐藏这一项」只会
+            // 再叠一条无用规则，真正能让它回来的是取消整节隐藏。
+            let hide = if store.rule_hiding_key(key).is_none()
+                && store.rule_hiding_section(Some(group), section).is_some()
+            {
+                section_hide_item(store.clone(), group, section)
+            } else {
+                key_hide_item(store.clone(), key)
+            };
+            vec![
+                copy_item(&format!("key:{key}"), key),
+                MenuItem::separator(),
+                hide,
+            ]
+        }
         Target::Section { group, section } => vec![
             section_hide_item(store.clone(), group, section),
             MenuItem::separator(),
@@ -266,9 +281,10 @@ mod tests {
         assert_eq!(labels(&items), ["取消隐藏这一块", "复制选择器"]);
     }
 
-    /// 功能未开启时菜单整体为空：windui 不弹空菜单，等于这一手势不存在。
+    /// 功能开关由配置决定；关闭时 `menu_for` 在入口处返回空表（windui 不弹空菜单）。
+    /// （修饰键快照在单测里写不进去，故这里只钉住判据本身。）
     #[test]
-    fn menu_is_empty_when_feature_disabled() {
+    fn hiding_enabled_follows_config() {
         let off = Rc::new(UserHideStore::in_memory(
             crate::user_hide::UserHideConfig::default(),
         ));

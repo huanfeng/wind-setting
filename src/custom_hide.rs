@@ -63,8 +63,8 @@ pub fn settings_manifest(hide: &SettingsHide, show_all: bool) -> Manifest {
 
 /// 完整清单：定制版 `[settings] hide` 与用户自己的精简清单**依次**折叠。
 ///
-/// 顺序即优先级：定制版先折，用户规则再折。两者都只置 `hidden`，所以先后不影响结果，
-/// 但「谁藏的」记在不同字段里（`custom_hidden` / `user_hidden`），右键菜单据此决定
+/// 顺序即优先级：定制版先折，用户规则再折。定制版置 `hidden`；用户规则只做标记、
+/// 不置 `hidden`（显隐交给运行期判据）。「谁藏的」记在不同字段里（`custom_hidden` / `user_hidden`），右键菜单据此决定
 /// 「取消隐藏」删的是哪一份配置。
 ///
 /// 两个逃生口各管自己那一份：`show_custom` 忽略定制版，`show_user` 忽略用户清单。
@@ -959,7 +959,6 @@ mod user_hide_tests {
         drop(st);
         let j = crate::cli::page_to_index("input").unwrap();
         let st = app.borrow();
-        let _ = &st;
         assert!(
             !crate::pages::all_tabs(&app, &st)[j].empty,
             "输入页不受牵连"

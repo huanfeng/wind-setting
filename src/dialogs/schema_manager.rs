@@ -1505,11 +1505,18 @@ impl SchemaManagerState {
     fn custom_hidden(&self, key: &str) -> bool {
         let item = self.manifest.borrow().get(key).cloned();
         let custom = item.as_ref().is_some_and(|i| i.custom_hidden);
-        let user = match &self.user_hide {
-            Some(store) => store.hides_key(key),
-            None => item.as_ref().is_some_and(|i| i.user_hidden),
-        };
-        custom || user
+        custom || item.as_ref().is_some_and(|i| self.user_hidden_now(i))
+    }
+
+    /// 用户精简清单此刻是否藏了这一项（项级规则或它所在的整节规则）。现读 store；
+    /// 未注入时退回清单快照。
+    fn user_hidden_now(&self, item: &crate::manifest::MItem) -> bool {
+        match &self.user_hide {
+            Some(store) => {
+                store.hides_key(&item.key) || store.hides_section(&item.group, &item.section)
+            }
+            None => item.user_hidden,
+        }
     }
 
     /// 全局页上「这一整节」被藏掉了（定制版或用户）。方案级同名节据此整节不出。
@@ -3119,7 +3126,9 @@ impl SchemaManagerState {
                 // apply 再把有控件的那些按勾选状态写一遍。反过来的话 reset 会把刚写好的
                 // 用户值又抹成 null——而用户可能是「全部恢复跟随后又勾了一两项」。
                 if reset_all {
-                    self.settings_ct.reset(&self.manifest.borrow(), &mut cfg);
+                    let user_hidden = |i: &crate::manifest::MItem| self.user_hidden_now(i);
+                    self.settings_ct
+                        .reset(&self.manifest.borrow(), &user_hidden, &mut cfg);
                 }
                 // 没勾的项写入 null——core 的 json_to_toml 跳过 null，于是 override 里不含
                 // 这些键；而 saveConfig 是拿**方案文件基线**与 cfg 做 diff，故取消覆盖后

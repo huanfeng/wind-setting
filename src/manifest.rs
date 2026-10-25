@@ -96,7 +96,7 @@ pub struct MItem {
     /// 记：后者在本平台没有落点，前者的值照常生效，`enabled_when` 联动要按它的配置值算
     /// （见 [`ensure_custom_hidden_getter`]）。
     pub custom_hidden: bool,
-    /// 本项是被**用户自己**的设置精简清单藏掉的（同时 `hidden = true`）。见
+    /// 本项在**用户自己**的设置精简清单里有规则（**不**置 `hidden`：显隐由运行期判据管）。见
     /// [`crate::user_hide`]。与 `custom_hidden` 分开记：两份配置各有逃生口，
     /// 判断「谁藏的」才能决定右键「取消隐藏」该删哪一条规则。
     pub user_hidden: bool,
@@ -878,7 +878,7 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<RowSpec>, O
                     k.clone(),
                     state.jump,
                 ),
-                vis: None,
+                vis: Some(row_vis(state, k, &item.group, &item.section)),
             });
             continue;
         }
@@ -897,11 +897,15 @@ pub fn section_rows_split(state: &AppState, keys: &[String]) -> (Vec<RowSpec>, O
         // 最大值，内层隐藏时就是 0，而 `flat_panel` 没有 spacing、头部挂件也不参与
         // 分隔线计数（见 `card_with_attachments`）。
         if item.typ == "log_privacy_warning" {
-            head = Some(crate::search::anchor::wrap(
-                wrap_row_menu(state, k, field(state, k)),
-                k.clone(),
-                state.jump,
-            ));
+            let vis = row_vis(state, k, &item.group, &item.section);
+            head = Some(
+                crate::search::anchor::wrap(
+                    wrap_row_menu(state, k, field(state, k)),
+                    k.clone(),
+                    state.jump,
+                )
+                .visible_when(move || vis()),
+            );
             continue;
         }
         // 子对话框成员、寄居项、并进开关行的「设置」按钮：都由别的行承载，不独立成行。
@@ -3526,6 +3530,11 @@ pub fn scheme_config_section(
         let acts: Vec<(String, String, String)> = set
             .iter()
             .filter_map(|k| state.manifest.get(k))
+            // 与下方成行的判断同口径：不成行的项（定制版隐藏、收进对话框、并入门控开关）
+            // 不能拿来撑住小标题，否则它们之外的行藏光后标题还留着。
+            .filter(|it| {
+                !it.hidden && !Manifest::lives_in_dialog(it) && !state.manifest.merged_into_gate(it)
+            })
             .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
             .collect();
         std::rc::Rc::new(move || {

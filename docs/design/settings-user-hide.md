@@ -120,7 +120,7 @@ Ctrl+右键照常落到下面那一行。给它挂 `tooltip` 或 `bg` 就会在�
   **「隐藏这一节」只挂在分类标题栏**，不挂整张卡片：挂在整卡上时，卡片里任何一处空白
   （行间间隙、右侧留白）都会触发它；贴边的操作控件更容易被误划进整节（同日反馈）。
   实现上由 `widgets::section_*_with_menu` 把菜单包到标题行，卡片正文不挂。
-  守门测试 `hide_menu_structure::section_menu_is_attached_to_short_nodes_only` 按节点
+  守门测试 `hide_menu_structure::menus_are_attached_to_short_nodes_only` 按节点
   高度判定——菜单一旦挂回卡片外壳（几百像素高），当场失败。
 
 - 功能总开关关闭时，这一手势**完全不存在**（菜单为空，windui 不弹空菜单）。

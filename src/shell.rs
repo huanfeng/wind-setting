@@ -972,8 +972,13 @@ fn build_footer(
             crate::hide_menu::Target::Feature(id),
         ))
     };
-    let theme_btn = feature_menu("dark_mode", theme_btn);
-    let accent_pick = feature_menu("accent", accent_pick);
+    // 用户隐藏走运行期判据（藏了立刻消失，逃生口打开时放回）；定制版隐藏仍是建树期跳过。
+    let (s1, s2, s3) = (hide_store.clone(), hide_store.clone(), hide_store.clone());
+    let theme_btn =
+        feature_menu("dark_mode", theme_btn).visible_when(move || !s1.hides_feature("dark_mode"));
+    let accent_pick =
+        feature_menu("accent", accent_pick).visible_when(move || !s2.hides_feature("accent"));
+    let accent_badge = accent_badge.visible_when(move || !s3.hides_feature("accent"));
     // 底栏与标题栏同色(SurfaceAlt)，与内容区卡片(Surface)区分；上方分割线由 main_col 提供层次。
     let mut bar = Element::row()
         .width_match()

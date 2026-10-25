@@ -129,11 +129,18 @@ impl SearchState {
     /// 按当前 `query` 重算结果。查询为空即收起浮层。
     pub fn refresh(&self) {
         let q = self.query.get();
-        let hits = search(&self.entries, &q, DEFAULT_LIMIT);
         let filter = self.filter.borrow().clone();
+        // 有过滤器时先不截断：被隐藏的条目若占着前 N 个名额，过滤后可见结果会凭空变少。
+        let limit = if filter.is_some() {
+            self.entries.len()
+        } else {
+            DEFAULT_LIMIT
+        };
+        let hits = search(&self.entries, &q, limit);
         let rows: Vec<ResultRow> = hits
             .iter()
             .filter(|h| filter.as_ref().is_none_or(|f| f(&self.entries[h.index])))
+            .take(DEFAULT_LIMIT)
             .enumerate()
             .map(|(idx, h)| {
                 let e = &self.entries[h.index];

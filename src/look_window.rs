@@ -4,7 +4,7 @@
 //! 1. **界面外观试验选项**（`crate::look`）：分段控件直接绑 `AppState::look` 的信号，
 //!    主窗各处 `visible_when` 读的是同一组，改即生效；持久化由 `look_watcher` 负责。
 //! 2. **设置项隐藏**（`crate::user_hide`）：开关 + 「显示已隐藏的设置」+「恢复默认」。
-//!    隐藏决定「建不建这一行」，故与定制版一样要**重开设置窗口**才生效（窗内写明）。
+//!    用户隐藏走运行期判据（`visible_when` 读 `UserHideStore`），改完即刻生效，无需重开窗口。
 //!
 //! 入口：主窗底栏右键菜单「界面细节…」（只在底栏，侧栏不放）。
 //!
@@ -195,10 +195,10 @@ fn hide_summary(store: &crate::user_hide::UserHideStore) -> String {
     let n = store.count();
     if n == 0 {
         "尚未隐藏任何设置".to_string()
-    } else if store.show_hidden() {
-        format!("已隐藏 {n} 项（当前正在显示）")
     } else if !store.enabled() {
         format!("已隐藏 {n} 项（功能已关闭，不生效）")
+    } else if store.show_hidden() {
+        format!("已隐藏 {n} 项（当前正在显示）")
     } else {
         format!("已隐藏 {n} 项")
     }

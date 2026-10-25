@@ -133,7 +133,12 @@ impl HideRule {
             Self::Section {
                 group: g,
                 section: s,
-            } => s == section && g.as_deref().is_none_or(|g| g == group),
+            } => match g.as_deref() {
+                None => s == section,
+                // 分区名本身带斜杠（如 `Emoji/OpenCC`）时，不带分组的写法会被拆成
+                // 「分组/分区」；这里把拆开的两半拼回去再比一次。
+                Some(g) => (s == section && g == group) || format!("{g}/{s}") == section,
+            },
             Self::Core(_) => false,
         }
     }
@@ -382,44 +387,64 @@ impl UserHideStore {
         self.inner.borrow().errors.clone()
     }
 
-    pub fn set_enabled(&self, on: bool) -> Result<(), String> {
-        if self.inner.borrow().cfg.enabled == on {
-            return Ok(());
+    /// 改内存态并落盘；落盘失败则整体回滚（界面上的开关据 `version` 退回去），避免
+    /// 「界面看着生效、重启后丢失」。`f` 返回 `None` 表示没有变化，不落盘。
+    fn mutate<R>(&self, f: impl FnOnce(&mut Stored) -> Option<R>) -> Result<Option<R>, String> {
+        let snapshot = {
+            let st = self.inner.borrow();
+            (st.cfg.clone(), st.rules.clone())
+        };
+        let Some(out) = f(&mut self.inner.borrow_mut()) else {
+            return Ok(None);
+        };
+        if let Err(e) = self.persist() {
+            let mut st = self.inner.borrow_mut();
+            (st.cfg, st.rules) = snapshot;
+            drop(st);
+            self.bump();
+            return Err(e);
         }
-        self.inner.borrow_mut().cfg.enabled = on;
-        self.persist()
+        Ok(Some(out))
+    }
+
+    pub fn set_enabled(&self, on: bool) -> Result<(), String> {
+        self.mutate(|st| {
+            (st.cfg.enabled != on).then(|| {
+                st.cfg.enabled = on;
+            })
+        })
+        .map(|_| ())
     }
 
     pub fn set_show_hidden(&self, on: bool) -> Result<(), String> {
-        if self.inner.borrow().cfg.show_hidden == on {
-            return Ok(());
-        }
-        self.inner.borrow_mut().cfg.show_hidden = on;
-        self.persist()
+        self.mutate(|st| {
+            (st.cfg.show_hidden != on).then(|| {
+                st.cfg.show_hidden = on;
+            })
+        })
+        .map(|_| ())
     }
 
-    /// 追加一条规则。已存在（同一条选择器，或已被更宽的规则覆盖）时返回 `Ok(false)`，
-    /// 调用方据此给「本来就藏着」的提示。
+    /// 追加一条规则。同一条选择器已存在时返回 `Ok(false)`，调用方据此给「本来就藏着」
+    /// 的提示。（被更宽的规则覆盖的窄规则仍会追加——取消宽规则后它才显出来，不算重复。）
     pub fn add(&self, selector: &str) -> Result<bool, String> {
         let rule = HideRule::parse(selector)?;
         let canonical = rule.as_selector();
-        {
-            let mut st = self.inner.borrow_mut();
+        let added = self.mutate(|st| {
             if st.rules.iter().any(|r| r == &rule) {
-                return Ok(false);
+                return None;
             }
             st.rules.push(rule);
             st.cfg.hide.push(canonical);
-        }
-        self.persist()?;
-        Ok(true)
+            Some(())
+        })?;
+        Ok(added.is_some())
     }
 
     /// 删除一条规则（按规范化后的选择器比较）。返回是否真的删掉了。
     pub fn remove(&self, selector: &str) -> Result<bool, String> {
         let target = HideRule::parse(selector)?.as_selector();
-        let removed = {
-            let mut st = self.inner.borrow_mut();
+        let removed = self.mutate(|st| {
             let before = st.cfg.hide.len();
             st.cfg.hide.retain(|s| {
                 HideRule::parse(s)
@@ -428,31 +453,26 @@ impl UserHideStore {
                     != target
             });
             if st.cfg.hide.len() == before {
-                false
-            } else {
-                st.rules.retain(|r| r.as_selector() != target);
-                true
+                return None;
             }
-        };
-        if removed {
-            self.persist()?;
-        }
-        Ok(removed)
+            st.rules.retain(|r| r.as_selector() != target);
+            Some(())
+        })?;
+        Ok(removed.is_some())
     }
 
     /// 清空全部规则。开关与逃生口保持原样。
     pub fn reset(&self) -> Result<usize, String> {
-        let n = {
-            let mut st = self.inner.borrow_mut();
+        let n = self.mutate(|st| {
             let n = st.cfg.hide.len();
+            if n == 0 {
+                return None;
+            }
             st.cfg.hide.clear();
             st.rules.clear();
-            n
-        };
-        if n > 0 {
-            self.persist()?;
-        }
-        Ok(n)
+            Some(n)
+        })?;
+        Ok(n.unwrap_or(0))
     }
 
     /// 当前藏着 `key` 的那条规则（规范化原文）。用于右键菜单的「取消隐藏」。
@@ -691,6 +711,33 @@ mod tests {
         assert!(s.show_hidden());
     }
 
+    /// 落盘失败必须整体回滚：内存里留着「已隐藏」而磁盘上没有，重启后就悄悄丢了。
+    #[test]
+    fn failed_write_rolls_back_memory_state() {
+        // 可执行文件当「目录」用：create_dir_all 在任何平台都会失败。
+        let bad = std::env::current_exe()
+            .unwrap()
+            .join("nope")
+            .join(FILE_NAME);
+        let s = UserHideStore::from_config(UserHideConfig::default(), Some(bad), Vec::new());
+        assert!(s.add("key:ui.font.family").is_err());
+        assert_eq!(s.count(), 0, "规则不得留在内存里");
+        assert!(!s.plan().hides_key("ui.font.family"));
+        assert!(s.set_show_hidden(true).is_err());
+        assert!(!s.show_hidden(), "开关也要退回去");
+    }
+
+    /// 分区名自带斜杠时，不带分组的写法会被拆开；匹配要能拼回去。
+    #[test]
+    fn section_name_containing_slash_still_matches() {
+        let r = HideRule::parse("section:Emoji/OpenCC").unwrap();
+        assert!(r.matches_section("input", "Emoji/OpenCC"));
+        assert!(!r.matches_section("input", "Emoji"));
+        let r = HideRule::parse("section:input/字符与标点").unwrap();
+        assert!(r.matches_section("input", "字符与标点"));
+        assert!(!r.matches_section("ui", "字符与标点"));
+    }
+
     #[test]
     fn version_advances_on_every_change() {
         let s = store(UserHideConfig::default());
@@ -716,7 +763,10 @@ mod tests {
     #[test]
     fn path_sits_beside_the_setting_config() {
         let mode = crate::mode::AppMode::Release;
-        let p = path_for_mode(mode).expect("本机能定位用户目录");
+        // 定位不到用户目录的环境（精简的 CI 容器等）没有可比对的路径，直接跳过。
+        let Some(p) = path_for_mode(mode) else {
+            return;
+        };
         assert!(p.ends_with(FILE_NAME), "{}", p.display());
         let cfg_path = crate::setting_config::config_path_for_mode(mode).expect("同上");
         assert_eq!(p.parent(), cfg_path.parent(), "{}", p.display());

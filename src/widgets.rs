@@ -779,7 +779,7 @@ pub fn card_pad(e: Element) -> Element {
 /// 行与行之间的分割线，跟随「界面细节」`row_divider`。供不走 [`card_items`] 的列表
 ///（可拖列表、动态列表）在行间使用；容器本身不能再加水平 padding，否则「通栏」贴不到边。
 pub fn row_divider() -> Element {
-    gap_divider(Gap::Between)
+    gap_divider(|| false)
 }
 
 /// 列表里的一行 = 顶部分割线 + 带卡片内边距的行本体。
@@ -808,59 +808,37 @@ pub fn list_heading_ext(
 ) -> Element {
     let mut col = Element::col().width_match();
     if !first {
-        col = col.child(gap_divider(Gap::AroundHeading));
+        col = col.child(gap_divider(|| true));
     }
     col.child(card_heading_with(title, trailing))
-        .child(gap_divider(Gap::AroundHeading))
-}
-
-/// 相邻两项之间的间隙类型。
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum Gap {
-    /// 行—行。
-    Between,
-    /// 至少一侧是小标题。
-    AroundHeading,
-}
-
-/// `kinds[i]` = 第 i 项是不是小标题。返回 `kinds.len() - 1` 个间隙（不足两项时为空）。
-fn divider_plan(kinds: &[bool]) -> Vec<Gap> {
-    kinds
-        .windows(2)
-        .map(|w| {
-            if w[0] || w[1] {
-                Gap::AroundHeading
-            } else {
-                Gap::Between
-            }
-        })
-        .collect()
+        .child(gap_divider(|| true))
 }
 
 /// 一个间隙上的分割线。「界面细节」试验：三种画法（两端内缩 / 通栏 / 仅左缩）都建出来，
 /// 按 `row_divider` 只显示一个；挨着小标题的间隙在「灰字+留白」「浅色底条」下整条不画——
 /// 那两种小标题自己就是分隔。
-fn gap_divider(gap: Gap) -> Element {
+fn gap_divider(around_heading: impl Fn() -> bool + 'static) -> Element {
     let look = look();
     let rd = look.0[crate::look::ROW_DIVIDER];
     let sh = look.0[crate::look::SUBHEADING];
-    let shown = move || gap == Gap::Between || sh.get() == crate::look::sub::ACCENT_RULE;
+    let shown: Rc<dyn Fn() -> bool> =
+        Rc::new(move || !around_heading() || sh.get() == crate::look::sub::ACCENT_RULE);
+    let (s1, s2, s3) = (shown.clone(), shown.clone(), shown);
     Element::col()
         .width_match()
         .child(
             padded(Element::divider())
-                .visible_when(move || shown() && rd.get() == crate::look::divider::INSET),
+                .visible_when(move || s1() && rd.get() == crate::look::divider::INSET),
         )
         .child(
-            Element::divider()
-                .visible_when(move || shown() && rd.get() == crate::look::divider::FULL),
+            Element::divider().visible_when(move || s2() && rd.get() == crate::look::divider::FULL),
         )
         .child(
             Element::col()
                 .width_match()
                 .padding_edges(Insets::new(CARD_PAD_X, 0, 0, 0))
                 .child(Element::divider())
-                .visible_when(move || shown() && rd.get() == crate::look::divider::LEADING),
+                .visible_when(move || s3() && rd.get() == crate::look::divider::LEADING),
         )
 }
 
@@ -968,8 +946,7 @@ pub fn card_items(
     items: Vec<CardItem>,
     tail: Option<Element>,
 ) -> Element {
-    let kinds: Vec<bool> = items.iter().map(CardItem::is_heading).collect();
-    let gaps = divider_plan(&kinds);
+    let kinds: Rc<Vec<bool>> = Rc::new(items.iter().map(CardItem::is_heading).collect());
     // 每项的可见性；`None` = 恒可见。`Bare`（自管整块）按恒可见算——它内部的分割线
     // 由调用方自己管，卡片这边看不到它的行。
     let vis: Rc<Vec<Option<Vis>>> = Rc::new(items.iter().map(CardItem::vis).collect());
@@ -988,11 +965,19 @@ pub fn card_items(
     }
     for (i, item) in items.into_iter().enumerate() {
         if i > 0 {
-            // 只在前后两项都可见时画线；任一侧运行期隐藏，这一档不占位。
-            let (prev, cur) = (i - 1, i);
+            // 每个可见项上方画一条线，当且仅当它前面还有可见项——中间隔着被藏的行时，
+            // 线画在「最近的可见前项」与本项之间，不会因相邻那项被藏而两头都没线。
+            // 间隙是否挨着小标题也在运行期按这对可见项判定。
             let all = vis.clone();
-            let divider = gap_divider(gaps[prev])
-                .visible_when(move || visible(&all, prev) && visible(&all, cur));
+            let (all2, ks2) = (vis.clone(), kinds.clone());
+            let divider = gap_divider(move || {
+                ks2[i]
+                    || (0..i)
+                        .rev()
+                        .find(|&j| visible(&all2, j))
+                        .is_some_and(|j| ks2[j])
+            })
+            .visible_when(move || visible(&all, i) && (0..i).any(|j| visible(&all, j)));
             body = body.child(divider);
         }
         let el = item.into_element();
@@ -1488,27 +1473,49 @@ pub fn color_picker_cell(
 mod tests {
     use super::*;
 
-    /// 小标题前后的间隙要能单独区分：「灰字+留白」「浅色底条」两种小标题下这些间隙不画线。
+    /// 夹在中间的行被藏掉后，上下两行之间仍要有一条分割线（不能两条都因「邻居不可见」而
+    /// 消失）；开头的行被藏则不留首线。
     #[test]
-    fn divider_plan_marks_gaps_touching_headings() {
-        // 小标题, 行, 行, 小标题, 行
-        let kinds = [true, false, false, true, false];
+    fn divider_survives_hidden_row_between_two_visible_rows() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let height = |shown: [bool; 3]| -> i32 {
+            let flags: Vec<Signal<bool>> = shown.iter().map(|&b| signal(b)).collect();
+            let items: Vec<CardItem> = flags
+                .iter()
+                .map(|f| {
+                    let f = *f;
+                    CardItem::RowWhen(
+                        Element::leaf().width_match().height(20),
+                        Rc::new(move || f.get()),
+                    )
+                })
+                .collect();
+            let mut tree = Tree::new();
+            // 外面套一层：根节点会被撑满视口，量卡片本身要看它的第一个子节点。
+            let root = Element::col()
+                .width(300)
+                .child(card_items(None, None, items, None))
+                .build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(Size::new(300, 400), &mut windui::text::NullTextEngine);
+            tree.abs_bounds(tree.get(root).unwrap().children[0]).h
+        };
+        let one = height([true, false, false]);
+        let all = height([true, true, true]);
+        let divider = (all - one - 40) / 2;
+        assert!(divider > 0, "前提：分割线占位（one={one}, all={all}）");
         assert_eq!(
-            divider_plan(&kinds),
-            vec![
-                Gap::AroundHeading,
-                Gap::Between,
-                Gap::AroundHeading,
-                Gap::AroundHeading
-            ]
+            height([true, false, true]),
+            one + 20 + divider,
+            "A、C 之间要有线"
         );
-    }
-
-    /// 一项或零项没有间隙，不能凭空多出分割线。
-    #[test]
-    fn divider_plan_single_item_has_no_gaps() {
-        assert!(divider_plan(&[false]).is_empty());
-        assert!(divider_plan(&[]).is_empty());
+        assert_eq!(
+            height([false, true, true]),
+            one + 20 + divider,
+            "首行被藏不留首线"
+        );
+        assert_eq!(height([false, true, false]), one, "只剩一行没有线");
     }
 
     /// 图标必须**小于**占位框：等于就是零余量铺满，圆角顶死边界、且与 windui 的
