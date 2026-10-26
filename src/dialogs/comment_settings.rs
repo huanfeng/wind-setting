@@ -85,15 +85,6 @@ impl Col {
         }
     }
 
-    pub fn title(self) -> &'static str {
-        match self {
-            Col::DefaultV => "默认·竖",
-            Col::DefaultH => "默认·横",
-            Col::DetailV => "详细·竖",
-            Col::DetailH => "详细·横",
-        }
-    }
-
     fn get(self, c: &CommentCells) -> Option<&str> {
         match self {
             Col::DefaultV => c.default_vertical.as_deref(),
@@ -154,27 +145,55 @@ impl Scope {
         }
     }
 
-    /// 用户自己加的行（出厂没有的方案 / 模式行）：可以整行删掉；其余行只能恢复出厂。
-    pub fn user_added(&self, system: &CommentAssign) -> bool {
-        matches!(self, Scope::Schema(_) | Scope::Mode(_)) && self.cells(system).is_none()
+    /// 出厂分配里有这一项。
+    pub fn in_factory(&self, system: &CommentAssign) -> bool {
+        *self != Scope::Global && self.cells(system).is_some()
     }
 }
 
-/// 表格的行：全局、五个类型常驻；方案行、模式行取出厂分配与用户分配里出现过的。
-pub fn table_rows(user: &CommentAssign, system: &CommentAssign) -> Vec<Scope> {
-    let mut out = vec![Scope::Global];
-    out.extend(TYPE_ROWS.iter().map(|(k, _)| Scope::Type(k.to_string())));
+/// 出厂项被删除：用户格四格都写 `inherit`。存储上与「两态都跟随」只差在没值的出厂格也写了
+/// `inherit`，界面据此把它当成已删除、不再列出。
+pub fn deleted_factory(user: &CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
+    scope.in_factory(system)
+        && scope
+            .cells(user)
+            .is_some_and(|c| Col::ALL.iter().all(|col| col.get(c) == Some("inherit")))
+}
+
+/// 出厂与用户分配里出现过的覆盖项（不含全局），按方案类型、方案、模式排；`with_deleted`
+/// 为假时略去已删除的出厂项。
+fn scopes_in(user: &CommentAssign, system: &CommentAssign, with_deleted: bool) -> Vec<Scope> {
     let union = |a: &std::collections::BTreeMap<String, CommentCells>,
                  b: &std::collections::BTreeMap<String, CommentCells>| {
         a.keys().chain(b.keys()).cloned().collect::<BTreeSet<_>>()
     };
+    let types = union(&system.by_type, &user.by_type);
+    let mut out: Vec<Scope> = TYPE_ROWS
+        .iter()
+        .filter(|(k, _)| types.contains(*k))
+        .map(|(k, _)| Scope::Type(k.to_string()))
+        .collect();
     out.extend(
         union(&system.schema, &user.schema)
             .into_iter()
             .map(Scope::Schema),
     );
     out.extend(union(&system.mode, &user.mode).into_iter().map(Scope::Mode));
+    out.retain(|s| with_deleted || !deleted_factory(user, system, s));
     out
+}
+
+/// 分配框列出的覆盖项。
+pub fn override_rows(user: &CommentAssign, system: &CommentAssign) -> Vec<Scope> {
+    scopes_in(user, system, false)
+}
+
+/// 已删除的出厂项（列表下方提示可找回）。
+pub fn deleted_rows(user: &CommentAssign, system: &CommentAssign) -> Vec<Scope> {
+    scopes_in(user, system, true)
+        .into_iter()
+        .filter(|s| deleted_factory(user, system, s))
+        .collect()
 }
 
 // ───────────────────────────── 格值 ─────────────────────────────
@@ -258,30 +277,42 @@ pub fn write_choice(
     col.set(scope.cells_mut(user), Some(raw));
 }
 
-/// 加一行覆盖（各格先不写）。已在表里的不重复加，返回是否新加了。
+/// 加一项覆盖（两态先跟随上级）；删过的出厂项重新加回来即恢复出厂。已列出的不重复加，
+/// 返回是否加了。
 pub fn add_row(user: &mut CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
-    if !matches!(scope, Scope::Schema(_) | Scope::Mode(_))
-        || table_rows(user, system).contains(scope)
-    {
+    if *scope == Scope::Global || override_rows(user, system).contains(scope) {
         return false;
     }
-    scope.cells_mut(user);
+    if deleted_factory(user, system, scope) {
+        restore_factory(user, scope);
+    } else {
+        scope.cells_mut(user);
+    }
     true
 }
 
-/// 删掉用户自己加的一行；出厂行删不掉，返回 false。
+/// 删掉一项覆盖，之后这一项按上级显示：用户加的整段删掉，出厂项四格写 `inherit`
+/// （见 [`deleted_factory`]）。全局删不掉，返回 false。
 pub fn delete_row(user: &mut CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
-    if !scope.user_added(system) {
+    if *scope == Scope::Global {
         return false;
     }
+    if scope.in_factory(system) {
+        let c = scope.cells_mut(user);
+        for col in Col::ALL {
+            col.set(c, Some("inherit".into()));
+        }
+        return true;
+    }
     match scope {
+        Scope::Type(k) => user.by_type.remove(k).is_some(),
         Scope::Schema(k) => user.schema.remove(k).is_some(),
         Scope::Mode(k) => user.mode.remove(k).is_some(),
-        _ => false,
+        Scope::Global => false,
     }
 }
 
-/// 恢复出厂：清掉这一行的用户格（行本身留着）。
+/// 恢复出厂：清掉这一项的用户格。
 pub fn restore_factory(user: &mut CommentAssign, scope: &Scope) {
     match scope {
         Scope::Global => user.global = CommentCells::default(),
@@ -302,6 +333,118 @@ pub fn has_user_cells(user: &CommentAssign, scope: &Scope) -> bool {
     scope
         .cells(user)
         .is_some_and(|c| Col::ALL.iter().any(|col| col.get(c).is_some()))
+}
+
+// ───────────────────────────── 两态 ─────────────────────────────
+
+/// 注释两态之一：分配框里每一项按态分两行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentState {
+    Default,
+    Detail,
+}
+
+impl CommentState {
+    pub const ALL: [CommentState; 2] = [CommentState::Default, CommentState::Detail];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CommentState::Default => "默认",
+            CommentState::Detail => "详细",
+        }
+    }
+
+    /// `(横排列, 竖排列)`。
+    pub fn cols(self) -> (Col, Col) {
+        match self {
+            CommentState::Default => (Col::DefaultH, Col::DefaultV),
+            CommentState::Detail => (Col::DetailH, Col::DetailV),
+        }
+    }
+}
+
+/// 这一态跟随上级：横竖两格都没有确定值（不写或 `inherit`）。
+pub fn state_follows(
+    user: &CommentAssign,
+    system: &CommentAssign,
+    scope: &Scope,
+    st: CommentState,
+) -> bool {
+    let (h, v) = st.cols();
+    [h, v]
+        .iter()
+        .all(|c| matches!(raw_cell(user, system, scope, *c), None | Some("inherit")))
+}
+
+/// 这一态改为跟随上级：出厂有值的格写 `inherit`，其余删键。
+pub fn set_state_follow(
+    user: &mut CommentAssign,
+    system: &CommentAssign,
+    scope: &Scope,
+    st: CommentState,
+) {
+    let (h, v) = st.cols();
+    for col in [h, v] {
+        let factory = scope.cells(system).and_then(|c| col.get(c)).is_some();
+        col.set(
+            scope.cells_mut(user),
+            factory.then(|| "inherit".to_string()),
+        );
+    }
+}
+
+/// 这一态改为自定义：横排先填上级此刻的生效值 `inherited`（模板 id 或 `none`），竖排同横排。
+/// 已是自定义的不动。
+pub fn set_state_custom(
+    user: &mut CommentAssign,
+    system: &CommentAssign,
+    scope: &Scope,
+    st: CommentState,
+    inherited: &str,
+) {
+    if !state_follows(user, system, scope, st) {
+        return;
+    }
+    let (h, v) = st.cols();
+    let choice = match inherited {
+        "none" => Choice::Hide,
+        id => Choice::Template(id.to_string()),
+    };
+    write_choice(user, system, scope, h, &choice);
+    v.set(scope.cells_mut(user), None);
+}
+
+/// 改模板标识：引用旧 id 的用户格改写成新 id，返回改了几格。
+pub(super) fn rename_references(user: &mut CommentAssign, from: &str, to: &str) -> usize {
+    let mut n = 0;
+    let mut fix = |c: &mut CommentCells| {
+        for col in Col::ALL {
+            if col.get(c) == Some(from) {
+                col.set(c, Some(to.to_string()));
+                n += 1;
+            }
+        }
+    };
+    fix(&mut user.global);
+    for m in [&mut user.by_type, &mut user.schema, &mut user.mode] {
+        m.values_mut().for_each(&mut fix);
+    }
+    n
+}
+
+/// 引用 `id` 的格数：用户格，加上没被用户格盖住的出厂格。
+pub fn reference_count(user: &CommentAssign, system: &CommentAssign, id: &str) -> usize {
+    let mut scopes = vec![Scope::Global];
+    scopes.extend(scopes_in(user, system, true));
+    scopes
+        .iter()
+        .map(|s| {
+            Col::ALL
+                .iter()
+                .filter(|c| raw_cell(user, system, s, **c) == Some(id))
+                .count()
+        })
+        .sum()
 }
 
 /// 删掉用户模板后，引用它的用户格一并删掉（否则 core 只是告警后按不写处理，界面上却显示
@@ -372,14 +515,6 @@ impl LibraryInfo {
             .find(|t| t.id == id)
             .map(|t| t.display_name().to_string())
             .unwrap_or_else(|| id.to_string())
-    }
-
-    pub(super) fn text_of(&self, id: &str) -> String {
-        self.templates
-            .iter()
-            .find(|t| t.id == id)
-            .map(|t| t.text.clone())
-            .unwrap_or_default()
     }
 
     pub(super) fn effective_of(&self, scope: &Scope, col: Col) -> Option<&(String, String)> {
@@ -468,10 +603,10 @@ pub fn unique_template_id(base: &str, taken: &[&str]) -> String {
 
 // ───────────────────────────── 下拉标签 ─────────────────────────────
 
-/// 一格的选项列表：模板（库序）、不显示、跟随；竖排另有同横排。当前值是库里没有的模板时
-/// 追加在末尾，免得一打开就被改成别的值。
+/// 自定义态（与全局）一格的选项列表：模板（库序）、不显示；竖排另有同横排，排在最前。
+/// 跟随是整态的开关（[`set_state_follow`]），不在格里选。当前值不在列表里（库里没有的模板、
+/// 手写配置里「只改竖排」留下的横排跟随）时追加在末尾，免得一打开就被改成别的值。
 ///
-/// - 全局行不给「跟随」：它下面没有层了。
 /// - 出厂写了竖排值的格不给「同横排」：同横排即删用户键，删了落回的是出厂竖排值而不是横排。
 /// - 本行横排没值的竖排格不给「同横排」：那时删键是跟随下一层。
 pub(super) fn cell_options(
@@ -487,15 +622,12 @@ pub(super) fn cell_options(
         .map(|t| Choice::Template(t.id.clone()))
         .collect();
     out.push(Choice::Hide);
-    if *scope != Scope::Global {
-        out.push(Choice::Follow);
-    }
     let factory_v = scope
         .cells(&lib.system_assign)
         .and_then(|c| col.get(c))
         .is_some();
     if !col.horizontal() && !factory_v && row_horizontal_set(user, &lib.system_assign, scope, col) {
-        out.push(Choice::SameAsHorizontal);
+        out.insert(0, Choice::SameAsHorizontal);
     }
     if !out.contains(current) {
         out.push(current.clone());
@@ -503,20 +635,14 @@ pub(super) fn cell_options(
     out
 }
 
-/// 选项文案。跟随、同横排后缀实际生效的模板名（`resolved`）。
-pub(super) fn choice_label(lib: &LibraryInfo, c: &Choice, resolved: Option<&str>) -> String {
+/// 选项文案。跟随、同横排是固定文字，不随实际落到的模板变。
+pub(super) fn choice_label(lib: &LibraryInfo, c: &Choice) -> String {
     match c {
         Choice::Template(id) if lib.templates.iter().any(|t| &t.id == id) => lib.name_of(id),
         Choice::Template(id) => format!("{id}（不存在）"),
         Choice::Hide => "不显示".into(),
-        Choice::Follow => match resolved {
-            Some(r) => format!("跟随 · {r}"),
-            None => "跟随".into(),
-        },
-        Choice::SameAsHorizontal => match resolved {
-            Some(r) => format!("同横排 · {r}"),
-            None => "同横排".into(),
-        },
+        Choice::Follow => "跟随上级".into(),
+        Choice::SameAsHorizontal => "同横排".into(),
     }
 }
 
@@ -531,6 +657,36 @@ pub(super) fn scope_label(scope: &Scope, names: &Names) -> String {
         Scope::Schema(id) => names.schema(id),
         Scope::Mode(k) => names.mode(k),
     }
+}
+
+/// 卡片上的层级标签。
+pub(super) fn scope_level(scope: &Scope) -> &'static str {
+    match scope {
+        Scope::Global => "全局",
+        Scope::Type(_) => "方案类型",
+        Scope::Schema(_) => "方案",
+        Scope::Mode(_) => "模式",
+    }
+}
+
+/// 不带层级前缀的显示名（卡片上层级另有标签）。
+pub(super) fn scope_name(scope: &Scope, names: &Names) -> String {
+    let full = scope_label(scope, names);
+    full.strip_prefix("方案 · ")
+        .or_else(|| full.strip_prefix("模式 · "))
+        .unwrap_or(&full)
+        .to_string()
+}
+
+/// `comment.library` 的来源层键（`global` / `type:<键>` / …）→ 跟随文字里的名字。
+pub(super) fn from_scope_label(key: &str, names: &Names) -> String {
+    let scope = match key.split_once(':') {
+        Some(("type", k)) => Scope::Type(k.into()),
+        Some(("schema", k)) => Scope::Schema(k.into()),
+        Some(("mode", k)) => Scope::Mode(k.into()),
+        _ => return "全局".into(),
+    };
+    format!("{}「{}」", scope_level(&scope), scope_name(&scope, names))
 }
 
 /// 方案与模式的显示名（来自 `schema.list` 与配置里的 `schema.mix_modes`）。
@@ -609,6 +765,15 @@ impl Names {
             key.to_string()
         };
         format!("模式 · {name}")
+    }
+
+    /// 可添加的方案类型：还没列出的那几个。
+    pub(super) fn addable_types(&self, rows: &[Scope]) -> Vec<(Scope, String)> {
+        TYPE_ROWS
+            .iter()
+            .map(|(k, l)| (Scope::Type(k.to_string()), l.to_string()))
+            .filter(|(s, _)| !rows.contains(s))
+            .collect()
     }
 
     /// 可添加的方案行：`(行, 显示名)`，已在表里的不列；`schema.list` 里重复的 id 只列一次。
@@ -767,6 +932,30 @@ impl CommentSettingsUi {
         }
     }
 
+    /// 一态改为跟随上级 / 自定义。自定义时横排先填上级此刻的生效值（取自当前库视图）。
+    pub(super) fn set_state(&self, scope: &Scope, st: CommentState, follow: bool) {
+        let system = self.system_assign();
+        if follow {
+            self.assign
+                .update(|a| set_state_follow(a, &system, scope, st));
+        } else {
+            let inherited = self
+                .lib()
+                .effective_of(scope, st.cols().0)
+                .map(|(id, _)| id.clone())
+                .unwrap_or_else(|| "none".into());
+            self.assign
+                .update(|a| set_state_custom(a, &system, scope, st, &inherited));
+        }
+        self.refresh();
+    }
+
+    /// 恢复默认：清空全部用户分配（模板库不动）。
+    pub(super) fn restore_all(&self) {
+        self.assign.set(CommentAssign::default());
+        self.refresh();
+    }
+
     pub(super) fn restore(&self, scope: &Scope) {
         self.assign.update(|a| restore_factory(a, scope));
         self.refresh();
@@ -886,8 +1075,8 @@ pub fn assign_jump_target(manifest: &crate::manifest::Manifest) -> Option<JumpTa
     }
 }
 
-/// 分配表外壳的视口高度：按钮行 + [`crate::dialogs::comment_assign::TABLE_H`]，外壳不出滚动条。
-const SHELL_H: i32 = 400;
+/// 分配框外壳的视口高度：覆盖项多时在框内滚动，底栏不动。
+const SHELL_H: i32 = 480;
 
 fn build_dialog(state: &AppState, ui: &CommentSettingsUi) -> Element {
     let content =
@@ -903,12 +1092,8 @@ fn build_dialog(state: &AppState, ui: &CommentSettingsUi) -> Element {
         ui.visible,
         signal("候选注释 · 分配".to_string()),
         content,
-        vec![
-            Element::link("查看文档")
-                .url(crate::dialogs::field_dialogs::COMMENT_DOC_URL)
-                .font_size(12.0),
-        ],
-        900,
+        crate::dialogs::comment_assign::build_assign_footer(ui),
+        860,
         SHELL_H,
     );
     Element::stack()
@@ -1181,24 +1366,52 @@ mod tests {
         );
     }
 
+    /// 覆盖项按方案类型、方案、模式排，只含出现过的；全局不在其中。
     #[test]
-    fn rows_are_fixed_plus_assigned_scopes() {
+    fn override_rows_list_only_assigned_scopes() {
         let mut user = CommentAssign::default();
         user.schema.insert("wubi86".into(), CommentCells::default());
-        let rows = table_rows(&user, &system());
-        let keys: Vec<String> = rows.iter().map(Scope::key).collect();
+        user.by_type
+            .insert("english".into(), CommentCells::default());
+        let keys: Vec<String> = override_rows(&user, &system())
+            .iter()
+            .map(Scope::key)
+            .collect();
         assert_eq!(
             keys,
             [
-                "global",
                 "type:codetable",
-                "type:pinyin",
-                "type:shuangpin",
-                "type:mixed",
                 "type:english",
                 "schema:wubi86",
-                "mode:temp_english",
+                "mode:temp_english"
             ]
+        );
+    }
+
+    /// 改标识：用户格里的引用改写；引用计数含没被盖住的出厂格。
+    #[test]
+    fn rename_rewrites_user_references() {
+        let mut user = CommentAssign::default();
+        user.global.detail_vertical = Some("a".into());
+        user.schema.insert(
+            "wubi86".into(),
+            CommentCells {
+                default_horizontal: Some("a".into()),
+                detail_horizontal: Some("b".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(reference_count(&user, &system(), "a"), 2);
+        assert_eq!(rename_references(&mut user, "a", "z"), 2);
+        assert_eq!(user.global.detail_vertical.as_deref(), Some("z"));
+        assert_eq!(
+            user.schema["wubi86"].detail_horizontal.as_deref(),
+            Some("b")
+        );
+        assert_eq!(reference_count(&user, &system(), "a"), 0);
+        assert!(
+            reference_count(&user, &system(), "code_hint") >= 1,
+            "出厂格也算"
         );
     }
 
@@ -1224,12 +1437,12 @@ mod tests {
             Some("code_hint")
         );
         let s = Scope::Type("pinyin".into());
-        let resolved = lib
-            .effective_of(&s, Col::DefaultV)
-            .map(|(id, _)| lib.name_of(id));
+        let (id, from) = lib.effective_of(&s, Col::DefaultV).unwrap();
+        assert_eq!(lib.name_of(id), "编码提示");
+        assert_eq!(from_scope_label(from, &Names::default()), "全局");
         assert_eq!(
-            choice_label(&lib, &Choice::Follow, resolved.as_deref()),
-            "跟随 · 编码提示"
+            from_scope_label("type:codetable", &Names::default()),
+            "方案类型「码表」"
         );
         let (id, from) = lib.effective_of(&mode("url"), Col::DetailH).unwrap();
         assert_eq!(
@@ -1250,25 +1463,16 @@ mod tests {
             Col::DefaultV,
             &cur,
         );
-        assert_eq!(opts, [Choice::Hide, Choice::Follow, cur.clone()]);
-        assert_eq!(choice_label(&lib, &cur, None), "gone（不存在）");
+        assert_eq!(opts, [Choice::Hide, cur.clone()], "跟随不在格里选");
+        assert_eq!(choice_label(&lib, &cur), "gone（不存在）");
     }
 
+    /// 跟随、同横排是固定文字，不带实际落到的模板名。
     #[test]
-    fn following_cells_name_the_resolved_template() {
+    fn follow_labels_are_fixed() {
         let lib = LibraryInfo::default();
-        assert_eq!(
-            choice_label(&lib, &Choice::Follow, Some("编码提示")),
-            "跟随 · 编码提示"
-        );
-        assert_eq!(
-            choice_label(&lib, &Choice::SameAsHorizontal, Some("拆字")),
-            "同横排 · 拆字"
-        );
-        assert_eq!(
-            choice_label(&lib, &Choice::SameAsHorizontal, None),
-            "同横排"
-        );
+        assert_eq!(choice_label(&lib, &Choice::Follow), "跟随上级");
+        assert_eq!(choice_label(&lib, &Choice::SameAsHorizontal), "同横排");
     }
 
     #[test]
@@ -1364,7 +1568,7 @@ mod tests {
 
     /// 全局行不给跟随；出厂写了竖排值的格不给同横排；横排格从不给同横排。
     #[test]
-    fn options_drop_follow_on_global_and_same_as_horizontal_over_factory_vertical() {
+    fn options_drop_follow_and_same_as_horizontal_over_factory_vertical() {
         let mut lib = LibraryInfo::default();
         lib.system_assign.by_type.insert(
             "codetable".into(),
@@ -1383,7 +1587,7 @@ mod tests {
             &Choice::Template("pinyin".into()),
         );
         assert!(!v.contains(&Choice::SameAsHorizontal));
-        assert!(v.contains(&Choice::Follow));
+        assert!(!v.contains(&Choice::Follow), "跟随是整态的开关，不在格里选");
         let v2 = cell_options(&lib, &user, &t, Col::DetailV, &Choice::SameAsHorizontal);
         assert!(
             v2.contains(&Choice::SameAsHorizontal),

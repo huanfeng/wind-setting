@@ -10,6 +10,8 @@
 //! 编辑框逐键写回选中的用户模板；切换选中走 [`CommentSettingsUi::select`]：先把编辑框写回
 //! **旧**模板，再换 id、按新模板重新播种编辑框——三步同步做完，编辑框里的字不会串到新模板。
 
+use std::rc::Rc;
+
 use windui::prelude::*;
 use windui::ui::list::ListRow;
 
@@ -19,6 +21,7 @@ use crate::config::Config;
 use crate::dialogs::comment_settings::{
     self, CommentSettingsUi, LibraryInfo, Origin, TplInfo, unique_template_id,
 };
+use crate::dialogs::template_vars::DictRef;
 use crate::state::AppState;
 
 /// 左栏的一行。
@@ -90,8 +93,13 @@ pub struct TplEditor {
     sel_origin: Signal<Option<Origin>>,
     sel_info: Signal<String>,
     pub(super) edit_name: Signal<String>,
-    /// 模板串的**显示形态**（真换行显示成 `\n`，同悬停提示的段内容框），写回时还原。
+    /// 模板串（多行框，真换行原样显示）。
     pub(super) edit_text: Signal<String>,
+    /// 标识框：失焦或回车时才改名（[`CommentSettingsUi::rename_selected`]）。
+    pub(super) edit_id: Signal<String>,
+    id_err: Signal<String>,
+    /// 「被 N 处分配使用」。
+    id_refs: Signal<String>,
 }
 
 impl TplEditor {
@@ -106,6 +114,9 @@ impl TplEditor {
             sel_info: signal(String::new()),
             edit_name: signal(String::new()),
             edit_text: signal(String::new()),
+            edit_id: signal(String::new()),
+            id_err: signal(String::new()),
+            id_refs: signal(String::new()),
         }
     }
 }
@@ -154,23 +165,32 @@ impl CommentSettingsUi {
 
     /// 选中的模板换了：编辑框、来源与说明按它重新播种。
     pub(super) fn load_editor(&self) {
-        use crate::dialogs::tooltip_sections_dialog::escape_template;
         let t = self.selected_template();
         let info = match &t {
             None => "选左侧一个模板查看或编辑。".to_string(),
             Some(t) => match t.origin {
-                Origin::Builtin => format!("内置模板 {}，只读；要改先「复制为自定义」。", t.id),
-                Origin::User => format!("自定义模板 {}。", t.id),
+                Origin::Builtin => "内置模板只读，可以看预览、切样例。要修改请先".to_string(),
+                Origin::User => String::new(),
                 Origin::UserOverridesBuiltin => {
-                    format!("内置模板 {} 已修改；「恢复内置」丢弃修改。", t.id)
+                    "这是改过的内置模板，「恢复内置」丢弃修改。".to_string()
                 }
             },
         };
         self.tpl.sel_origin.set(t.as_ref().map(|t| t.origin));
         self.tpl.sel_info.set(info);
-        let (name, text) = t
-            .map(|t| (t.name, escape_template(&t.text)))
-            .unwrap_or_default();
+        let id = t.as_ref().map(|t| t.id.clone()).unwrap_or_default();
+        let refs =
+            comment_settings::reference_count(&self.assign.get(), &self.system_assign(), &id);
+        self.tpl.id_refs.set(if refs == 0 {
+            "未被分配".into()
+        } else {
+            format!("被 {refs} 处分配使用")
+        });
+        self.tpl.id_err.set(String::new());
+        if self.tpl.edit_id.get() != id {
+            self.tpl.edit_id.set(id);
+        }
+        let (name, text) = t.map(|t| (t.name, t.text)).unwrap_or_default();
         if self.tpl.edit_name.get() != name {
             self.tpl.edit_name.set(name);
         }
@@ -181,14 +201,10 @@ impl CommentSettingsUi {
 
     /// 编辑框改了：写进选中的用户模板（内置模板只读，不写）。
     pub(super) fn commit_editor(&self) {
-        use crate::dialogs::tooltip_sections_dialog::unescape_template;
         let Some(t) = self.selected_template().filter(TplInfo::editable) else {
             return;
         };
-        let (name, text) = (
-            self.tpl.edit_name.get(),
-            unescape_template(&self.tpl.edit_text.get()),
-        );
+        let (name, text) = (self.tpl.edit_name.get(), self.tpl.edit_text.get());
         if t.name == name && t.text == text {
             return;
         }
@@ -209,6 +225,36 @@ impl CommentSettingsUi {
             }
         });
         self.sync_tpl_rows();
+    }
+
+    /// 改选中自定义模板的标识：校验后改模板与所有引用它的用户格。内置与改过的内置不能改。
+    pub(super) fn rename_selected(&self, new_id: &str) -> Result<(), String> {
+        let Some(t) = self
+            .selected_template()
+            .filter(|t| t.origin == Origin::User)
+        else {
+            return Err("内置模板的标识不能改".into());
+        };
+        let new_id = new_id.trim();
+        if new_id == t.id {
+            return Ok(());
+        }
+        let taken = self.taken_ids();
+        validate_template_id(new_id, &taken)?;
+        self.commit_editor();
+        let new = new_id.to_string();
+        self.templates.update(|v| {
+            if let Some(u) = v.iter_mut().find(|u| u.id == t.id) {
+                u.id = new.clone();
+            }
+        });
+        self.assign.update(|a| {
+            comment_settings::rename_references(a, &t.id, &new);
+        });
+        self.tpl.sel.set(new);
+        self.refresh();
+        self.load_editor();
+        Ok(())
     }
 
     fn taken_ids(&self) -> Vec<String> {
@@ -259,18 +305,47 @@ impl CommentSettingsUi {
     }
 }
 
+/// 模板标识的校验：`[a-z0-9_]`、非空、不是保留字、不与别的模板重名（内置也算：同 id 会覆盖内置）。
+pub fn validate_template_id(id: &str, taken: &[String]) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("标识不能为空".into());
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err("只能用小写字母、数字、下划线".into());
+    }
+    if matches!(id, "none" | "inherit") {
+        return Err("none / inherit 是保留字".into());
+    }
+    if taken.iter().any(|t| t == id) {
+        return Err("已有同标识的模板".into());
+    }
+    Ok(())
+}
+
 /// 建对话框，返回打开它的信号。清单项是 `ui.comment.templates`。
 pub fn build_dialog_button_templates(state: &AppState, cfg: &Config) -> Signal<bool> {
     let ui = comment_settings::shared_ui(state, cfg);
-    let dlg = build_dialog(&ui);
+    let fields = state.fields.clone();
+    let dicts: Rc<dyn Fn() -> Vec<DictRef>> =
+        Rc::new(move || crate::dialogs::template_vars::dict_refs(&fields));
+    let dlg = build_dialog(&ui, dicts);
     state.fields.dialogs.borrow_mut().push(dlg);
     ui.tpl.visible
 }
 
-/// 左栏列表高度（逻辑 px）。
-const LIST_H: i32 = 430;
+/// 对话框宽与正文视口高、左栏宽度（逻辑 px）。
+const DIALOG_W: i32 = 820;
+const DIALOG_H: i32 = 470;
+const LIST_W: i32 = 200;
+/// 左栏一行的高度：比 windui 默认行高（36）紧，模板名都很短。
+const ROW_H: i32 = 28;
+/// 右栏表单的标签列宽。
+const LABEL_W: i32 = 56;
 
-fn build_dialog(ui: &CommentSettingsUi) -> Element {
+fn build_dialog(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> Element {
     let tpl = ui.tpl.clone();
     ui.sync_tpl_rows();
     ui.load_editor();
@@ -305,62 +380,62 @@ fn build_dialog(ui: &CommentSettingsUi) -> Element {
         )
     };
 
-    let origin = tpl.sel_origin;
-    let (un, uc, ud) = (ui.clone(), ui.clone(), ui.clone());
-    let list_buttons = Element::row()
-        .spacing(6)
-        .child(
-            Element::button("＋ 新建")
-                .small()
-                .outline_soft()
-                .on_click(move |_| un.add_template("custom", "新模板".into(), String::new())),
-        )
-        .child(
-            Element::button("复制")
-                .small()
-                .outline_soft()
-                .on_click(move |_| uc.copy_selected())
-                .enabled_when(move || origin.get().is_some()),
-        )
-        .child(
-            Element::button("删除")
-                .small()
-                .outline_soft()
-                .on_click(move |_| ud.drop_user_template())
-                .enabled_when(move || origin.get() == Some(Origin::User)),
-        );
     let left = Element::col()
-        .width(210)
-        .spacing(8)
-        .child(Element::scroll().width_match().height(LIST_H).child(list))
-        .child(list_buttons);
+        .width(LIST_W)
+        .height_match()
+        .padding_xy(6, 8)
+        .child(Element::scroll().width_match().height_match().child(list));
 
-    let right = build_editor(ui);
-
-    let content = Element::col()
+    let content = Element::row()
         .width_match()
-        .padding_xy(16, 10)
+        .height(DIALOG_H)
+        .child(left)
+        // 竖分隔线：1px 宽、撑满高的色块。
         .child(
-            Element::row()
-                .width_match()
-                .spacing(16)
-                .child(left)
-                .child(right),
+            Element::leaf()
+                .width(1)
+                .height_match()
+                .bg_role(Role::Divider),
+        )
+        .child(
+            Element::scroll()
+                .weight(1.0)
+                .height_match()
+                .child(build_editor(ui, dicts)),
         )
         .child(pick)
         .child(load)
         .child(commit);
+
+    let origin = tpl.sel_origin;
+    let (un, uc, ud) = (ui.clone(), ui.clone(), ui.clone());
+    let footer = vec![
+        Element::button("＋ 新建")
+            .small()
+            .outline_soft()
+            .on_click(move |_| un.add_template("custom", "新模板".into(), String::new())),
+        Element::button("复制")
+            .small()
+            .outline_soft()
+            .on_click(move |_| uc.copy_selected())
+            .enabled_when(move || origin.get().is_some()),
+        Element::button("删除")
+            .small()
+            .outline_soft()
+            .danger()
+            .on_click(move |_| ud.drop_user_template())
+            .enabled_when(move || origin.get() == Some(Origin::User)),
+        Element::link("查看文档")
+            .url(crate::dialogs::field_dialogs::COMMENT_DOC_URL)
+            .font_size(12.0),
+    ];
     crate::dialogs::field_dialogs::build_group_dialog_shell_dyn_sized(
         tpl.visible,
         signal("注释模板".to_string()),
         content,
-        vec![
-            Element::link("查看文档")
-                .url(crate::dialogs::field_dialogs::COMMENT_DOC_URL)
-                .font_size(12.0),
-        ],
-        780,
-        520,
+        footer,
+        DIALOG_W,
+        DIALOG_H,
     )
 }
 
@@ -369,56 +444,74 @@ fn list_item(it: ListItem, sel_idx: Signal<usize>) -> Element {
     match it {
         ListItem::Header(title) => Element::label(title)
             .font_size(11.5)
-            .font_weight(600)
             .fg_role(Role::TextSubtle)
-            .padding_xy(8, 4),
+            .padding_xy(8, 6),
         ListItem::Empty => Element::label("还没有")
             .font_size(12.0)
             .fg_role(Role::TextMuted)
-            .padding_xy(16, 6),
+            .padding_xy(10, 4),
         ListItem::Row(i, label) => Element::leaf()
             .widget(ListRow::new(label, sel_idx, i).pill())
             .width_match()
-            .height(windui::theme::current().metrics.row_h),
+            .height(ROW_H),
     }
 }
 
-/// 右栏：说明、名称、模板串（插入颜色）、候选窗预览、内置模板的操作。
-fn build_editor(ui: &CommentSettingsUi) -> Element {
+/// 表单的一行：右对齐的标签列 + 控件。`top` 为真时标签贴顶（多行控件）。
+fn form_row(label: &'static str, control: Element, top: bool) -> Element {
+    let lab = Element::label(label)
+        .font_size(12.5)
+        .fg_role(Role::TextMuted)
+        .width(LABEL_W)
+        .text_align(Align::End);
+    let lab = if top { lab.padding_xy(0, 6) } else { lab };
+    Element::row()
+        .width_match()
+        .cross(if top { Align::Start } else { Align::Center })
+        .spacing(12)
+        .child(lab)
+        .child(control.weight(1.0))
+}
+
+/// 同一个信号的两个输入框：可编辑的与只读的，按 `editable` 显隐（windui 的只读是构建期
+/// 配置，切换选中时没法就地改）。
+fn editable_pair(
+    edit: Element,
+    view: Element,
+    editable: impl Fn() -> bool + Clone + 'static,
+) -> Element {
+    let e2 = editable.clone();
+    Element::stack()
+        .width_match()
+        .child(edit.visible_when(move || editable()))
+        .child(view.read_only().visible_when(move || !e2()))
+}
+
+/// 右栏：提示条、名称、标识、模板串（插入变量 / 颜色）、候选窗预览。
+fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> Element {
     use crate::dialogs::template_assist::{
         TemplateField, comment_layout_preview, insert_color_button,
     };
     let tpl = &ui.tpl;
     let origin = tpl.sel_origin;
     let editable = move || origin.get().is_some_and(|o| o != Origin::Builtin);
-
-    let info = Element::label_signal(tpl.sel_info)
-        .font_size(12.0)
-        .fg_role(Role::TextMuted)
-        .width_match()
-        .max_lines(2);
-
-    let field = TemplateField::new(tpl.edit_text, true);
-    let input = field.hook(Element::text_input(tpl.edit_text, "留空则不显示注释").width_match());
-    let fields = Element::col()
-        .width_match()
-        .spacing(6)
-        .child(crate::widgets::setting_row(
-            "名称",
-            None,
-            Element::text_input(tpl.edit_name, "模板名称").width(220),
-        ))
-        .child(crate::widgets::setting_row(
-            "模板串",
-            Some("换行写 \\n"),
-            insert_color_button(&field, "comment"),
-        ))
-        .child(input)
-        .enabled_when(editable);
+    let user_only = move || origin.get() == Some(Origin::User);
 
     let (u1, u2) = (ui.clone(), ui.clone());
-    let actions = Element::row()
-        .spacing(8)
+    let banner = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(10)
+        .padding_xy(12, 7)
+        .corner(6.0)
+        .bg_role_alpha(Role::Warning, 0.10)
+        .border_role(Role::Warning, 1)
+        .child(
+            Element::label_signal(tpl.sel_info)
+                .font_size(12.0)
+                .fg_role(Role::Text)
+                .max_lines(2),
+        )
         .child(
             Element::button("复制为自定义")
                 .small()
@@ -432,15 +525,115 @@ fn build_editor(ui: &CommentSettingsUi) -> Element {
                 .outline_soft()
                 .on_click(move |_| u2.drop_user_template())
                 .visible_when(move || origin.get() == Some(Origin::UserOverridesBuiltin)),
+        )
+        .visible_when(move || origin.get().is_some_and(|o| o != Origin::User));
+
+    let name = editable_pair(
+        Element::text_input(tpl.edit_name, "模板名称").width_match(),
+        Element::text_input(tpl.edit_name, "").width_match(),
+        editable,
+    );
+
+    let (uid, idv, err) = (ui.clone(), tpl.edit_id, tpl.id_err);
+    let id_input = editable_pair(
+        Element::text_input(tpl.edit_id, "小写字母、数字、下划线")
+            .width(220)
+            .on_commit(move |_| match uid.rename_selected(&idv.get()) {
+                Ok(()) => err.set(String::new()),
+                Err(e) => err.set(e),
+            }),
+        Element::text_input(tpl.edit_id, "").width(220),
+        user_only,
+    );
+    let id_block = Element::col()
+        .width_match()
+        .spacing(3)
+        .child(
+            Element::row()
+                .cross(Align::Center)
+                .spacing(10)
+                .child(Element::stack().width(220).child(id_input))
+                .child(
+                    Element::label_signal(tpl.id_refs)
+                        .font_size(12.0)
+                        .fg_role(Role::TextMuted),
+                ),
+        )
+        .child(
+            Element::label_signal(tpl.id_err)
+                .font_size(12.0)
+                .fg_role(Role::Danger)
+                .visible_when(move || !err.get().is_empty()),
+        )
+        .child(
+            Element::label("分配与 config.toml 用它引用模板；改了会同步更新所有引用。")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2)
+                .visible_when(move || err.get().is_empty() && user_only()),
+        )
+        .child(
+            Element::label("内置模板的标识不能改：同标识的自定义模板会覆盖内置。")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2)
+                .visible_when(move || !user_only()),
+        );
+
+    let field = TemplateField::new(tpl.edit_text, false);
+    let text_box = editable_pair(
+        field.hook(
+            Element::text_input(tpl.edit_text, "留空则不显示注释")
+                .multiline()
+                .wrap(true)
+                .width_match()
+                .height(56),
+        ),
+        Element::text_input(tpl.edit_text, "")
+            .multiline()
+            .wrap(true)
+            .width_match()
+            .height(56),
+        editable,
+    );
+    let tools = Element::col()
+        .spacing(6)
+        .child(crate::dialogs::template_vars::insert_var_button(
+            &field, false, dicts,
+        ))
+        .child(insert_color_button(&field, "comment"))
+        .enabled_when(editable);
+    let template = Element::col()
+        .width_match()
+        .spacing(4)
+        .child(
+            Element::row()
+                .width_match()
+                .spacing(8)
+                .child(text_box.weight(1.0))
+                .child(tools),
+        )
+        .child(
+            Element::label("回车即换行；长模板自动折行")
+                .font_size(12.0)
+                .fg_role(Role::TextMuted),
         );
 
     Element::col()
-        .weight(1.0)
-        .spacing(10)
-        .child(info)
-        .child(actions)
-        .child(fields)
-        .child(comment_layout_preview(tpl.visible, field))
+        .width_match()
+        .padding_xy(18, 14)
+        .spacing(12)
+        .child(banner)
+        .child(form_row("名称", name, false))
+        .child(form_row("标识", id_block, true))
+        .child(form_row("模板串", template, true))
+        .child(form_row(
+            "预览",
+            comment_layout_preview(tpl.visible, field),
+            true,
+        ))
 }
 
 #[cfg(test)]
@@ -562,7 +755,7 @@ mod tests {
             assert_eq!(t.len(), 1);
             assert_eq!(t[0].id, "code_hint_copy");
             assert_eq!(ui.tpl.sel.get(), "code_hint_copy");
-            ui.tpl.edit_text.set("${pinyin}\\n${chaizi}".into());
+            ui.tpl.edit_text.set("${pinyin}\n${chaizi}".into());
             ui.commit_editor();
             assert_eq!(ui.templates.get()[0].text, "${pinyin}\n${chaizi}");
 
@@ -589,10 +782,10 @@ mod tests {
         });
     }
 
-    /// 编辑框的转义往返：带 `\\`、`\t`、不成对 `\x`、真换行的模板，打开不改就不脏；
-    /// 手打 `\n` 存真换行；改名就地更新库视图与列表行（不等 RPC）。
+    /// 多行框原样显示模板：带 `\\`、`\t`、不成对 `\x`、真换行的模板，打开不改就不脏；
+    /// 改名就地更新库视图与列表行（不等 RPC）。
     #[test]
-    fn editor_escape_round_trip_is_not_dirty() {
+    fn editor_round_trip_is_not_dirty() {
         with_mock(|| {
             let raws = ["a\\b\tc\\x", "${pinyin}\n${chaizi}", "\\n 字面", "末尾\\"];
             let templates: Vec<Value> = raws
@@ -610,13 +803,10 @@ mod tests {
                 ui.commit_editor();
                 assert_eq!(ui.value_of(key), base, "t{i} 打开不改却变了");
             }
-            assert_eq!(
-                ui.tpl.edit_text.get(),
-                crate::dialogs::tooltip_sections_dialog::escape_template(raws[3])
-            );
+            assert_eq!(ui.tpl.edit_text.get(), raws[3]);
 
             ui.select("t1");
-            assert_eq!(ui.tpl.edit_text.get(), "${pinyin}\\n${chaizi}");
+            assert_eq!(ui.tpl.edit_text.get(), "${pinyin}\n${chaizi}");
             ui.tpl.edit_name.set("改名".into());
             ui.commit_editor();
             assert!(
@@ -626,6 +816,48 @@ mod tests {
                     .any(|t| t.id == "t1" && t.name == "改名")
             );
             assert!(ui.tpl.rows.get().iter().any(|r| r.label == "改名"));
+        });
+    }
+
+    /// 标识校验：字符集、保留字、重名。
+    #[test]
+    fn template_id_validation() {
+        let taken = vec!["code_hint".to_string(), "mine".to_string()];
+        assert!(validate_template_id("my_tpl2", &taken).is_ok());
+        assert!(validate_template_id("", &taken).is_err());
+        assert!(validate_template_id("My", &taken).is_err());
+        assert!(validate_template_id("a-b", &taken).is_err());
+        assert!(validate_template_id("none", &taken).is_err());
+        assert!(validate_template_id("inherit", &taken).is_err());
+        assert!(
+            validate_template_id("code_hint", &taken).is_err(),
+            "内置同名会覆盖内置"
+        );
+    }
+
+    /// 改自定义模板的标识：模板与分配里的引用一起改；内置模板不能改；非法值不动。
+    #[test]
+    fn rename_selected_updates_template_and_references() {
+        with_mock(|| {
+            let ui = mock_ui(json!({ "ui": { "comment": {
+                "templates": [{ "id": "a", "name": "甲", "text": "${pinyin}" }],
+                "assign": { "schema": { "wubi86": { "detail_horizontal": "a" } } },
+            } } }));
+            ui.select("a");
+            assert_eq!(ui.tpl.id_refs.get(), "被 1 处分配使用");
+            assert!(ui.rename_selected("Bad").is_err());
+            assert!(ui.templates.get().iter().any(|t| t.id == "a"), "非法值不动");
+            ui.rename_selected("zigen").unwrap();
+            assert!(ui.templates.get().iter().all(|t| t.id != "a"));
+            assert_eq!(ui.tpl.sel.get(), "zigen");
+            assert_eq!(
+                ui.assign.get().schema["wubi86"]
+                    .detail_horizontal
+                    .as_deref(),
+                Some("zigen")
+            );
+            ui.select("code_hint");
+            assert!(ui.rename_selected("x").is_err(), "内置模板的标识不能改");
         });
     }
 }

@@ -140,6 +140,27 @@ pub fn wrap_color(display: &str, sel: Option<(usize, usize)>, spec: &str) -> (St
     (out, caret)
 }
 
+/// 把 `snippet` 插进显示文本：替换选区 `[s, e)`，没有选区信息时追加到末尾。返回
+/// `(新文本, 光标字符位置)`，光标在插入段末尾往回 `back` 个字符。下标是字符下标。
+pub fn insert_at(
+    display: &str,
+    sel: Option<(usize, usize)>,
+    snippet: &str,
+    back: usize,
+) -> (String, usize) {
+    let chars: Vec<char> = display.chars().collect();
+    let n = chars.len();
+    let (s, e) = match sel {
+        Some((a, b)) => (a.min(b).min(n), a.max(b).min(n)),
+        None => (n, n),
+    };
+    let mut out: String = chars[..s].iter().collect();
+    out.push_str(snippet);
+    out.extend(&chars[e..]);
+    let len = snippet.chars().count();
+    (out, s + len - back.min(len))
+}
+
 /// 自定义颜色的写法校验：`#` + 3 / 6 / 8 位十六进制（与 core `parse_hex` 同一口径）。
 pub fn is_hex_color(s: &str) -> bool {
     s.strip_prefix('#')
@@ -213,6 +234,11 @@ pub struct TemplateField {
     /// 输入框节点的缓存。windui 没有「按 Element 查节点」的入口，也没有聚焦通知：点击时经
     /// `on_click` 记下；没记到（键盘 Tab 进来的）就在用时经 [`find_input`] 从触发控件往上找。
     target: Rc<Cell<Option<NodeId>>>,
+    /// 弹层（插入变量）打开时记下的选区：弹层里的搜索框会拿走焦点，插入时按它写。
+    saved: Rc<Cell<Option<(usize, usize)>>>,
+    /// 插入后把焦点与光标还给输入框（`select_when` 的触发计数与区间）。
+    jump: Signal<u64>,
+    range: Signal<(usize, usize)>,
 }
 
 impl TemplateField {
@@ -221,13 +247,38 @@ impl TemplateField {
             text,
             escaped,
             target: Rc::new(Cell::new(None)),
+            saved: Rc::new(Cell::new(None)),
+            jump: signal(0),
+            range: signal((0, 0)),
         }
     }
 
-    /// 给输入框挂上「记住自己是哪个节点」。**必须**挂在 `Element::text_input(..)` 上。
+    /// 给输入框挂上「记住自己是哪个节点」与「插入后取回焦点」。**必须**挂在
+    /// `Element::text_input(..)` 上。
     pub fn hook(&self, input: Element) -> Element {
         let target = self.target.clone();
-        input.on_click(move |ctx| target.set(Some(ctx.id())))
+        input
+            .on_click(move |ctx| target.set(Some(ctx.id())))
+            .select_when(self.jump, self.range)
+    }
+
+    /// 记下输入框此刻的选区（打开会拿走焦点的弹层之前调）。找不到输入框时记 `None`，
+    /// 插入就追加到末尾。
+    pub fn remember_selection(&self, ctx: &mut EventCtx) {
+        let from = ctx.id();
+        let tree = ctx.tree_mut();
+        let sel = self.locate(tree, from).and_then(|id| tree.selection_of(id));
+        self.saved.set(sel);
+    }
+
+    /// 把 `snippet` 插到记下的选区（替换选中的文字），光标落在插入段末尾往回 `caret_back`
+    /// 个字符处，并把焦点还给输入框。
+    pub fn insert_text(&self, snippet: &str, caret_back: usize) {
+        let (text, caret) = insert_at(&self.text.get(), self.saved.get(), snippet, caret_back);
+        self.text.set(text);
+        self.saved.set(Some((caret, caret)));
+        self.range.set((caret, caret));
+        self.jump.update(|n| *n += 1);
     }
 
     /// 当前显示文本对应的模板与位置表，见 [`to_template`]。
@@ -298,14 +349,18 @@ fn insert_into(tree: &mut Tree, field: &TemplateField, from: NodeId, spec: &str)
     }
 }
 
-/// 用合成按键在单行输入框里摆选区。为什么不用 `set_selection`，见模块文档。
+/// 用合成按键在输入框里摆选区。为什么不用 `set_selection`，见模块文档。回到开头用
+/// Ctrl+A 再 ←（选区收到起点）：多行框里 Home 只到当前行首。
 fn select_by_keys(tree: &mut Tree, id: NodeId, s: usize, e: usize) {
     let key = |k: Key, shift: bool| {
         let mut ev = KeyEvent::pressed(k);
         ev.shift = shift;
         ev
     };
-    tree.dispatch_key(key(Key::Home, false), Some(id));
+    let mut all = KeyEvent::pressed(Key::Other(0x41));
+    all.ctrl = true;
+    tree.dispatch_key(all, Some(id));
+    tree.dispatch_key(key(Key::Left, false), Some(id));
     for _ in 0..s {
         tree.dispatch_key(key(Key::Right, false), Some(id));
     }
@@ -704,8 +759,9 @@ fn fetch_comment_look(template: &str, lang: &str) -> Result<(Value, Option<Comme
     Ok((first, Some(look)))
 }
 
-/// 一个注释模板串在 `lang` 语种样例候选上的外观。core 不支持或未连接时 `None`。
-pub fn comment_look(template: &str, lang: &str) -> Option<CommentLook> {
+/// 一个注释模板串在 `lang` 语种样例候选上的外观（测试用）。
+#[cfg(test)]
+fn comment_look(template: &str, lang: &str) -> Option<CommentLook> {
     fetch_comment_look(template, lang).ok()?.1
 }
 
@@ -888,22 +944,19 @@ pub fn insert_color_button(field: &TemplateField, scene: &'static str) -> Elemen
     let hex = signal(String::new());
     let hex_err = signal(String::new());
 
-    let trigger = Element::rich(RichDoc::new().para(Para::new().span_id(
-        "open",
-        "插入颜色",
-        SpanStyle::new().chip(),
-    )))
-    .copy_menu(false)
-    .on_span_click(move |_, _| {
-        if !open.get() {
-            let names: Vec<&str> = SWATCHES.iter().map(|(n, _)| *n).collect();
-            let params = json!({ "template": "", "scene": scene, "swatches": names });
-            let r = crate::rpc::call_core(METHOD, &params).unwrap_or(Value::Null);
-            chips.set(swatch_doc(&r["swatches"], rgba_of(&r["bg"])));
-            hex_err.set(String::new());
-        }
-        open.set(!open.get());
-    });
+    let trigger = Element::button("插入颜色 ▾")
+        .small()
+        .outline_soft()
+        .on_click(move |_| {
+            if !open.get() {
+                let names: Vec<&str> = SWATCHES.iter().map(|(n, _)| *n).collect();
+                let params = json!({ "template": "", "scene": scene, "swatches": names });
+                let r = crate::rpc::call_core(METHOD, &params).unwrap_or(Value::Null);
+                chips.set(swatch_doc(&r["swatches"], rgba_of(&r["bg"])));
+                hex_err.set(String::new());
+            }
+            open.set(!open.get());
+        });
 
     let f_chip = field.clone();
     let f_hex = field.clone();
@@ -981,6 +1034,25 @@ pub fn insert_color_button(field: &TemplateField, scene: &'static str) -> Elemen
 mod tests {
     use super::super::tooltip_sections_dialog::{escape_template, unescape_template};
     use super::*;
+
+    /// 插入：替换选区、光标按 back 往回退；没有选区信息时追加到末尾。下标是字符下标。
+    #[test]
+    fn insert_at_replaces_selection_and_places_caret() {
+        assert_eq!(
+            insert_at("拼音abc", Some((2, 3)), "${pinyin}", 0),
+            ("拼音${pinyin}bc".to_string(), 11)
+        );
+        assert_eq!(
+            insert_at("ab", Some((1, 1)), "${|}", 2),
+            ("a${|}b".to_string(), 3)
+        );
+        assert_eq!(insert_at("ab", None, "\n", 0), ("ab\n".to_string(), 3));
+        assert_eq!(
+            insert_at("ab", Some((5, 9)), "x", 0),
+            ("abx".to_string(), 3),
+            "越界钳到末尾"
+        );
+    }
 
     /// 每个样例一次 RPC：中文三条、英文三条各是自己的候选词与注释；空模板只留候选词。
     #[test]

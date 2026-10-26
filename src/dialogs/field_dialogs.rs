@@ -867,12 +867,33 @@ pub fn build_confirm_dialog_shell(
     confirm_enabled: Signal<bool>,
     on_confirm: impl Fn() + 'static,
 ) -> Element {
+    build_confirm_dialog_shell_sized(
+        visible,
+        title,
+        content,
+        confirm_enabled,
+        on_confirm,
+        "确定",
+        400,
+    )
+}
+
+/// 同 [`build_confirm_dialog_shell`]，可换确认键文字与外壳高度（内容少的小框不必撑到 400）。
+pub fn build_confirm_dialog_shell_sized(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    confirm_enabled: Signal<bool>,
+    on_confirm: impl Fn() + 'static,
+    confirm_label: &'static str,
+    height: i32,
+) -> Element {
     let trailing = vec![
         Element::button("取消")
             .small()
             .outline_soft()
             .on_click(move |_| visible.set(false)),
-        Element::button("确定")
+        Element::button(confirm_label)
             .small()
             .enabled_signal(confirm_enabled)
             .on_click(move |_| {
@@ -887,7 +908,7 @@ pub fn build_confirm_dialog_shell(
         Vec::new(),
         trailing,
         FrameWidth::Fixed(460),
-        400,
+        height,
     )
 }
 
