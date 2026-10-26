@@ -601,7 +601,7 @@ fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
     let tools = Element::col()
         .spacing(6)
         .child(crate::dialogs::template_vars::insert_var_button(
-            &field, false, dicts,
+            &field, dicts,
         ))
         .child(insert_color_button(&field, "comment"))
         .enabled_when(editable);
@@ -696,10 +696,7 @@ mod tests {
             assert_eq!(ui.tpl.sel.get(), rows[1].id);
             assert_eq!(ui.tpl.sel_idx.get(), 1);
             let second = ui.selected_template().unwrap();
-            assert_eq!(
-                ui.tpl.edit_text.get(),
-                crate::dialogs::tooltip_sections_dialog::escape_template(&second.text)
-            );
+            assert_eq!(ui.tpl.edit_text.get(), second.text);
         });
     }
 

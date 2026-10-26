@@ -258,11 +258,8 @@ const NAME_W: i32 = 150;
 const SAMPLE_W: i32 = 110;
 
 /// 「插入变量 ▾」按钮与它的弹层。`dicts` 在每次打开时调用，取此刻挂载的词库。
-pub fn insert_var_button(
-    field: &TemplateField,
-    escaped: bool,
-    dicts: Rc<dyn Fn() -> Vec<DictRef>>,
-) -> Element {
+pub fn insert_var_button(field: &TemplateField, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> Element {
+    let escaped = field.escaped();
     let open = signal(false);
     let query = signal(String::new());
     let hl = signal(0usize);
@@ -326,7 +323,7 @@ pub fn insert_var_button(
         })
     };
 
-    let (rb_q, pick_enter) = (rebuild.clone(), pick.clone());
+    let (rb_q, rb_enter, pick_enter) = (rebuild.clone(), rebuild.clone(), pick.clone());
     let search = Element::text_input(query, "搜索：拼音 / 释义 / code…")
         .width_match()
         .focus_when(focus)
@@ -341,7 +338,11 @@ pub fn insert_var_button(
             }
             _ => false,
         })
-        .on_submit(move |_| pick_enter(hl.get()));
+        // 回车与最后一个字落在同一批事件里时过滤还没跑：先按当前查询重算，再取高亮项。
+        .on_submit(move |_| {
+            rb_enter();
+            pick_enter(hl.get());
+        });
     let refilter = crate::pages::dict::reactive::reactive_effect(
         move || query.version(),
         move || {
@@ -387,10 +388,12 @@ pub fn insert_var_button(
             }
             f.remember_selection(ctx);
             let list = var_defs(&dicts(), escaped);
+            // 样例只取一次：同一变量的样例值不随模板变，新挂的词库才补问。
             let mut s = samples.borrow_mut();
-            s.clear();
             for d in list.iter().filter(|d| !d.probe.is_empty()) {
-                s.insert(d.probe.clone(), sample_of(&d.probe));
+                if !s.contains_key(&d.probe) {
+                    s.insert(d.probe.clone(), sample_of(&d.probe));
+                }
             }
             drop(s);
             *defs.borrow_mut() = list;
@@ -533,7 +536,7 @@ mod tests {
         let root = Element::col()
             .width(600)
             .child(field.hook(Element::text_input(text, "").width(300)))
-            .child(insert_var_button(&field, false, Rc::new(Vec::new)))
+            .child(insert_var_button(&field, Rc::new(Vec::new)))
             .build(&mut tree);
         tree.root = Some(root);
         let size = Size::new(800, 700);

@@ -281,6 +281,11 @@ impl TemplateField {
         self.jump.update(|n| *n += 1);
     }
 
+    /// 输入框是否转义显示（单行框里 `\n` 两个字符代表换行）。
+    pub fn escaped(&self) -> bool {
+        self.escaped
+    }
+
     /// 当前显示文本对应的模板与位置表，见 [`to_template`]。
     pub fn template(&self) -> (String, Vec<usize>) {
         to_template(&self.text.get(), self.escaped)

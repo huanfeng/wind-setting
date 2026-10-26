@@ -809,6 +809,28 @@ mod tests {
         assert_eq!(shown_choice(&user, &sys, &s, Col::DetailH), Choice::Hide);
     }
 
+    /// 出厂写了竖排值的项：跟随后再改自定义，竖排与横排相同，不落回出厂竖排值。
+    #[test]
+    fn custom_state_over_factory_vertical_matches_horizontal() {
+        let mut sys = system();
+        sys.mode.insert(
+            "url".into(),
+            CommentCells {
+                default_vertical: Some("chaizi".into()),
+                ..Default::default()
+            },
+        );
+        let mut user = CommentAssign::default();
+        let url = Scope::Mode("url".into());
+        set_state_follow(&mut user, &sys, &url, CommentState::Default);
+        assert!(state_follows(&user, &sys, &url, CommentState::Default));
+        set_state_custom(&mut user, &sys, &url, CommentState::Default, "pinyin");
+        assert_eq!(
+            shown_choice(&user, &sys, &url, Col::DefaultV),
+            Choice::Template("pinyin".into())
+        );
+    }
+
     /// 恢复此项出厂：用户格清掉，出厂项仍列出。
     #[test]
     fn restore_factory_keeps_factory_scope() {

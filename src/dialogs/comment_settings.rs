@@ -152,7 +152,8 @@ impl Scope {
 }
 
 /// 出厂项被删除：用户格四格都写 `inherit`。存储上与「两态都跟随」只差在没值的出厂格也写了
-/// `inherit`，界面据此把它当成已删除、不再列出。
+/// `inherit`，界面据此把它当成已删除、不再列出。出厂四格都写满的项，两态都切成跟随也是这个
+/// 形态——那时两者的效果本就相同（整项按上级显示），当成已删除不丢任何设置。
 pub fn deleted_factory(user: &CommentAssign, system: &CommentAssign, scope: &Scope) -> bool {
     scope.in_factory(system)
         && scope
@@ -394,7 +395,7 @@ pub fn set_state_follow(
 }
 
 /// 这一态改为自定义：横排先填上级此刻的生效值 `inherited`（模板 id 或 `none`），竖排同横排。
-/// 已是自定义的不动。
+/// 出厂写了竖排值时删键会落回出厂值，就把竖排写成与横排相同。已是自定义的不动。
 pub fn set_state_custom(
     user: &mut CommentAssign,
     system: &CommentAssign,
@@ -412,6 +413,9 @@ pub fn set_state_custom(
     };
     write_choice(user, system, scope, h, &choice);
     v.set(scope.cells_mut(user), None);
+    if scope.cells(system).and_then(|c| v.get(c)).is_some() {
+        write_choice(user, system, scope, v, &choice);
+    }
 }
 
 /// 改模板标识：引用旧 id 的用户格改写成新 id，返回改了几格。
