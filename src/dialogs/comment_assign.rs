@@ -273,11 +273,35 @@ fn state_summary(
                 .fg_role(Role::TextMuted),
         );
     if follows {
-        return text.child(
-            Element::label("跟随上级")
+        // 跟随也写出实际落到的模板（竖排与横排不同时再加竖排），不用点开才知道。
+        text = text.child(
+            Element::label("跟随上级 ·")
                 .font_size(11.5)
                 .fg_role(Role::TextMuted),
         );
+        let eff = |c| lib.effective_of(scope, c).map(|(id, _)| id.clone());
+        let (eh, ev) = (eff(h), eff(v));
+        if let Some(id) = &eh {
+            text = text.child(
+                Element::label(lib.name_of(id))
+                    .font_size(11.5)
+                    .fg_role(Role::Text),
+            );
+        }
+        if let Some(id) = ev.filter(|v| Some(v) != eh.as_ref()) {
+            text = text
+                .child(
+                    Element::label("竖排")
+                        .font_size(11.5)
+                        .fg_role(Role::TextMuted),
+                )
+                .child(
+                    Element::label(lib.name_of(&id))
+                        .font_size(11.5)
+                        .fg_role(Role::Text),
+                );
+        }
+        return text;
     }
     text = text.child(
         Element::label(choice_label(lib, &shown_choice(user, sys, scope, h)))
@@ -448,18 +472,21 @@ fn state_row(
 /// 跟随态的说明：模式层的上级随当前方案变，只说一句；其余写出跟到谁、值是什么。
 fn follow_text(lib: &LibraryInfo, scope: &Scope, st: CommentState, names: &Names) -> Element {
     let muted = |t: String| Element::label(t).font_size(12.5).fg_role(Role::TextMuted);
-    if matches!(scope, Scope::Mode(_)) {
-        return muted("当前方案怎么显示，这里就怎么显示".into());
-    }
     let (h, v) = st.cols();
     let (Some((hid, from)), Some((vid, _))) =
         (lib.effective_of(scope, h), lib.effective_of(scope, v))
     else {
         return muted("跟随上级".into());
     };
+    // 模式的上级随当前方案变：core 按此刻的方案算，写明「现为」。
+    let lead = if matches!(scope, Scope::Mode(_)) {
+        "当前方案怎么显示，这里就怎么显示，现为：".to_string()
+    } else {
+        format!("与{}相同：", from_scope_label(from, names))
+    };
     let mut row = Element::row()
         .cross(Align::Center)
-        .child(muted(format!("与{}相同：", from_scope_label(from, names))))
+        .child(muted(lead))
         .child(
             Element::label(lib.name_of(hid))
                 .font_size(12.5)

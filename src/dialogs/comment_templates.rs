@@ -169,11 +169,9 @@ impl CommentSettingsUi {
         let info = match &t {
             None => "选左侧一个模板查看或编辑。".to_string(),
             Some(t) => match t.origin {
-                Origin::Builtin => "内置模板只读，可以看预览、切样例。要修改请先".to_string(),
+                Origin::Builtin => "内置模板只读".to_string(),
                 Origin::User => String::new(),
-                Origin::UserOverridesBuiltin => {
-                    "这是改过的内置模板，「恢复内置」丢弃修改。".to_string()
-                }
+                Origin::UserOverridesBuiltin => "改过的内置模板".to_string(),
             },
         };
         self.tpl.sel_origin.set(t.as_ref().map(|t| t.origin));
@@ -487,7 +485,7 @@ fn editable_pair(
         .child(view.read_only().visible_when(move || !e2()))
 }
 
-/// 右栏：提示条、名称、标识、模板串（插入变量 / 颜色）、候选窗预览。
+/// 右栏：名称（带内置模板的操作）、标识、模板串（插入变量 / 颜色）、候选窗预览。
 fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> Element {
     use crate::dialogs::template_assist::{
         TemplateField, comment_layout_preview, insert_color_button,
@@ -498,20 +496,16 @@ fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
     let user_only = move || origin.get() == Some(Origin::User);
 
     let (u1, u2) = (ui.clone(), ui.clone());
-    let banner = Element::row()
+    // 名称行：名称框定宽，内置模板的操作与一句说明跟在后面（名称不长，放得下）。
+    let name = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(10)
-        .padding_xy(12, 7)
-        .corner(6.0)
-        .bg_role_alpha(Role::Warning, 0.10)
-        .border_role(Role::Warning, 1)
-        .child(
-            Element::label_signal(tpl.sel_info)
-                .font_size(12.0)
-                .fg_role(Role::Text)
-                .max_lines(2),
-        )
+        .child(Element::stack().width(220).child(editable_pair(
+            Element::text_input(tpl.edit_name, "模板名称").width_match(),
+            Element::text_input(tpl.edit_name, "").width_match(),
+            editable,
+        )))
         .child(
             Element::button("复制为自定义")
                 .small()
@@ -526,13 +520,12 @@ fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
                 .on_click(move |_| u2.drop_user_template())
                 .visible_when(move || origin.get() == Some(Origin::UserOverridesBuiltin)),
         )
-        .visible_when(move || origin.get().is_some_and(|o| o != Origin::User));
-
-    let name = editable_pair(
-        Element::text_input(tpl.edit_name, "模板名称").width_match(),
-        Element::text_input(tpl.edit_name, "").width_match(),
-        editable,
-    );
+        .child(
+            Element::label_signal(tpl.sel_info)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .max_lines(1),
+        );
 
     let (uid, idv, err) = (ui.clone(), tpl.edit_id, tpl.id_err);
     let id_input = editable_pair(
@@ -625,7 +618,6 @@ fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
         .width_match()
         .padding_xy(18, 14)
         .spacing(12)
-        .child(banner)
         .child(form_row("名称", name, false))
         .child(form_row("标识", id_block, true))
         .child(form_row("模板串", template, true))
