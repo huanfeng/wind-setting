@@ -1604,14 +1604,14 @@ mod tests {
     fn mock_library_is_horizontal_primary() {
         let lib = library_from_value(&crate::rpc::mock_reply("comment.library", &json!({})));
         let g = &lib.system_assign.global;
-        assert_eq!(g.default_horizontal.as_deref(), Some("code_hint"));
-        assert_eq!(g.detail_horizontal.as_deref(), Some("detail_full"));
+        assert_eq!(g.default_horizontal.as_deref(), Some("code"));
+        assert_eq!(g.detail_horizontal.as_deref(), Some("full"));
         assert!(g.default_vertical.is_none() && g.detail_vertical.is_none());
         assert_eq!(
             lib.system_assign.by_type["pinyin"]
                 .detail_horizontal
                 .as_deref(),
-            Some("pinyin_english")
+            Some("pinyin_en")
         );
         let t = Scope::Type("codetable".into());
         let (id, from) = lib.effective_of(&t, Col::DetailV).unwrap();

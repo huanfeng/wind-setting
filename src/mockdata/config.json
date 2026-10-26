@@ -208,7 +208,6 @@
   },
   "temp_pinyin": {
    "candidate_layout": "follow",
-   "code_hint_source": "auto",
    "enabled": true,
    "hotkey": "",
    "trigger_keys": [
@@ -394,7 +393,6 @@
    "english_max_count": 2,
    "min_english_length": 3,
    "min_pinyin_length": 2,
-   "pinyin_code_hint": true,
    "pinyin_only_overflow": true,
    "pinyin_partial_candidates": false,
    "pinyin_partial_candidates_overflow": true,
@@ -439,7 +437,6 @@
     "enabled": false,
     "max_phrase_len": 0
    },
-   "code_hint_source": "off",
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4

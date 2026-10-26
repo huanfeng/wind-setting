@@ -127,7 +127,7 @@ section = "上屏行为"
 subsection = "常用功能"
 type = "toggle"
 label = "显示编码提示"
-hint = "候选旁显示对应编码"
+hint = "码表前缀候选旁显示还要打的剩余编码；显示格式在注释分配里改"
 
 [[items]]
 key = "schema.codetable.single_code_input"
@@ -515,18 +515,12 @@ enabled_when = "schema.codetable.english_merge.enable == true"
 
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
-key = "schema.pinyin.code_hint_source"
+key = "local.comment_code_pinyin"
 group = "schema"
 section = "候选行为"
-type = "select"
-label = "编码提示来源"
-hint = "拼音方案（含双拼）下，候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定。临时拼音与快捷输入另设，见「方案 → 临时拼音」；混输方案另设，见「方案 → 混输 → 拼音候选显示码表编码」"
-options = [
-  { value = "auto", label = "自动" },
-  { value = "codetable", label = "码表反查" },
-  { value = "shuangpin", label = "双拼编码" },
-  { value = "off", label = "不显示" },
-]
+type = "comment_assign_link"
+label = "编码提示"
+hint = "拼音、双拼方案下候选旁显示哪种编码，改在注释分配里"
 
 [[items]]
 key = "schema.pinyin.use_smart_compose"
@@ -1137,13 +1131,13 @@ label = "超码长时显示拼音前缀匹配"
 hint = "编码超过最大码长后同上；开着可先选前半段上屏，剩余接着打"
 
 [[items]]
-key = "schema.mix.pinyin_code_hint"
+key = "local.comment_code_mix"
 group = "schema"
 section = "混输行为"
 subsection = "拼音相关"
-type = "toggle"
-label = "拼音候选显示码表编码"
-hint = "编码反查：用拼音打出的字词，旁边显示它的码表编码（如五笔拼音下打 nihao，「你好」旁显示 wqvb），方便记码。只管混输方案；纯拼音方案看「方案 → 拼音 → 编码提示来源」，临时拼音看「方案 → 临时拼音」"
+type = "comment_assign_link"
+label = "拼音候选显示编码"
+hint = "混输方案下拼音候选旁显示码表编码，改在注释分配里"
 
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
@@ -1395,18 +1389,12 @@ options = [
 ]
 
 [[items]]
-key = "input.temp_pinyin.code_hint_source"
+key = "local.comment_code_temp_pinyin"
 group = "schema"
 section = "临时拼音"
-type = "select"
-label = "临时拼音编码提示"
-hint = "临时拼音与快捷输入期间，拼音候选旁显示哪种编码，便于借拼音反查码表编码。与拼音方案的「编码提示来源」互不影响；显示位置与格式由「外观 → 候选注释」的模板决定"
-options = [
-  { value = "auto", label = "自动" },
-  { value = "codetable", label = "码表反查" },
-  { value = "shuangpin", label = "双拼编码" },
-  { value = "off", label = "不显示" },
-]
+type = "comment_assign_link"
+label = "编码提示"
+hint = "临时拼音与快捷输入期间候选旁显示哪种编码，改在注释分配里"
 
 # ── 临时英文 ──
 # 注：临时英文不再设独立「启用」开关——Shift+字母 始终可进入，触发键可留空。

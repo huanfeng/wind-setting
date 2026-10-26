@@ -480,17 +480,6 @@
       "type": "int"
     },
     {
-      "default": "off",
-      "key": "schema.pinyin.code_hint_source",
-      "type": "enum",
-      "values": [
-        "off",
-        "codetable",
-        "shuangpin",
-        "auto"
-      ]
-    },
-    {
       "default": true,
       "key": "schema.pinyin.use_smart_compose",
       "type": "bool"
@@ -820,11 +809,6 @@
     {
       "default": false,
       "key": "schema.mix.enable_pinyin_abbrev",
-      "type": "bool"
-    },
-    {
-      "default": true,
-      "key": "schema.mix.pinyin_code_hint",
       "type": "bool"
     },
     {
@@ -1358,17 +1342,6 @@
         "follow",
         "vertical",
         "horizontal"
-      ]
-    },
-    {
-      "default": "auto",
-      "key": "input.temp_pinyin.code_hint_source",
-      "type": "enum",
-      "values": [
-        "off",
-        "codetable",
-        "shuangpin",
-        "auto"
       ]
     },
     {

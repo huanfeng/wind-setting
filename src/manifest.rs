@@ -563,9 +563,14 @@ impl Manifest {
         // 点进去什么都没有的条目。整节被门控掉（Linux 的「工具栏」「游戏兼容」、macOS 的
         // 「任务栏图标」）是一种；定制版藏掉了宿主、只剩对话框成员是另一种。判据与
         // `section_rows` 逐行跳过的是同一个（`renders_row`）；部分隐藏的分区照常返回完整 key 表。
+        // 只剩指路行（`comment_assign_link`）的分区同样不返回：那一行替被藏掉的设置指路，
+        // 节里真正的设置都没了，留它只是一张指向别处的空卡片。
         out.retain(|(_, keys)| {
-            keys.iter()
-                .any(|k| self.items.get(k).is_some_and(|it| self.renders_row(it)))
+            keys.iter().any(|k| {
+                self.items
+                    .get(k)
+                    .is_some_and(|it| self.renders_row(it) && it.typ != "comment_assign_link")
+            })
         });
         out
     }
@@ -1050,7 +1055,24 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "log_archive",
     "log_privacy_warning",
     "open_misread_table",
+    "comment_assign_link",
 ];
+
+/// 「在 候选注释 · 分配 中设置」：编码显示改由注释分配决定后，原来几处编码来源开关的位置留它
+/// 指路（core 仓设计 §13.6）。
+fn comment_assign_link(state: &AppState) -> Element {
+    let (tab, jump) = (state.tab, state.jump);
+    let target = crate::dialogs::comment_settings::assign_jump_target(&state.manifest);
+    Element::button("在 候选注释 · 分配 中设置")
+        .small()
+        .outline_soft()
+        .enabled(target.is_some())
+        .on_click(move |_| {
+            if let Some(t) = target.clone() {
+                crate::search::jump::request(tab, jump, t);
+            }
+        })
+}
 
 fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
     match item.typ.as_str() {
@@ -1133,6 +1155,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         }
         "local_select" => build_local_select(state, key, item),
         "open_misread_table" => crate::correction_ui::misread_table_button(state),
+        "comment_assign_link" => comment_assign_link(state),
         "open_dirs" => build_open_dirs(),
         "log_archive" => build_log_archive(state),
         // 走不到这里：`field_with` 已把它整行自绘并早退（见 build_log_privacy_warning）。
