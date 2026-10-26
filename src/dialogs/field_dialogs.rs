@@ -1025,7 +1025,7 @@ fn shell_with_buttons(
                 .font_size(11.0)
                 .fg_role(Role::TextMuted)
                 .align_xy(Align::End, Align::Start)
-                .margin(windui::theme::current().metrics.spacing)
+                .margin(windui::theme::current().metrics.space_sm)
                 .on_click(move |_| visible.set(false));
             let panel = Element::stack()
                 .width_match()

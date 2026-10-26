@@ -917,11 +917,11 @@ mod user_hide_tests {
     /// （定制版那条路仍会连带折掉，见 `hide_orphaned_dialog_members` 的说明。）
     #[test]
     fn user_hidden_host_keeps_its_dialog_members() {
-        let host = "ui.candidate.comment_template_horizontal";
+        let host = "input.symbol.smart_chars";
         let m = folded(&[&format!("key:{host}")]);
         assert!(m.get(host).unwrap().user_hidden);
         assert!(
-            m.get("ui.candidate.comment_template_vertical")
+            m.get("input.symbol.english_punct_mode")
                 .is_some_and(|i| !i.hidden),
             "成员不能在建树期折掉，否则逃生口放回宿主后框里是空的"
         );

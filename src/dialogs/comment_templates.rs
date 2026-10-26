@@ -11,7 +11,7 @@
 //! **旧**模板，再换 id、按新模板重新播种编辑框——三步同步做完，编辑框里的字不会串到新模板。
 
 use windui::prelude::*;
-use windui::ui::list::{self, ListRow};
+use windui::ui::list::ListRow;
 
 use wind_config::comment_lib::CommentTemplateDef;
 
@@ -379,7 +379,7 @@ fn list_item(it: ListItem, sel_idx: Signal<usize>) -> Element {
         ListItem::Row(i, label) => Element::leaf()
             .widget(ListRow::new(label, sel_idx, i).pill())
             .width_match()
-            .height(list::ROW_H),
+            .height(windui::theme::current().metrics.row_h),
     }
 }
 

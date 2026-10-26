@@ -1799,14 +1799,13 @@ mod tests {
                 })
                 .collect(),
         );
-        ui.visible.set(true);
         ui.picker.set(true);
 
         let mut tree = Tree::new();
         let root = Element::stack()
             .fill()
-            .child(Element::leaf().fill())
-            .child(build_comment_dicts_dialog(&ui))
+            .child(build_comment_dicts_pane(&ui))
+            .child(build_comment_dicts_subdialogs(&ui))
             .build(&mut tree);
         tree.root = Some(root);
         let size = Size::new(800, 600);
