@@ -2611,6 +2611,21 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "mobile.association.select_keys_commit",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "mobile.association.enter_cancels_only",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "mobile.association.backspace_cancels_only",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "mobile.grammar.enabled",
       "type": "bool"
