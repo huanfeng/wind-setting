@@ -272,10 +272,11 @@ impl Draft {
             catalog,
             auto_commit_at_full: b("schema.codetable.auto_commit_at_full"),
             clear_on_empty_max: b("schema.codetable.clear_on_empty_max"),
-            // 拼音反查 = 拼音类型的默认态分到了某个编码模板（出厂 none，见 core 设计 §13.6）。
-            code_hint: cfg
-                .get_str(PINYIN_CODE_CELL)
-                .is_some_and(|v| !matches!(v, "none" | "inherit")),
+            // 拼音反查 = 拼音或双拼类型的默认态在显示东西（出厂 none，见 core 设计 §13.6）；
+            // inherit 跟随全局，全局出厂就是编码。
+            code_hint: [PINYIN_CODE_CELL, SHUANGPIN_CODE_CELL]
+                .iter()
+                .any(|k| cfg.get_str(k).is_some_and(|v| v != "none")),
             emoji: b("input.emoji.enabled"),
             fuzzy: b("schema.pinyin.fuzzy.enabled"),
             fuzzy_pairs: FUZZY_PAIRS.map(|(k, _)| b(&format!("schema.pinyin.fuzzy.{k}"))),
@@ -387,10 +388,15 @@ impl Draft {
                         self.clear_on_empty_max.into(),
                     );
                 }
+                // 打开只补还是 none 的格，用户在注释分配里另选的模板不动；关闭两格都写 none。
                 if self.code_hint != cur.code_hint {
-                    let v = if self.code_hint { "code_rev" } else { "none" };
-                    set(PINYIN_CODE_CELL, v.into());
-                    set(SHUANGPIN_CODE_CELL, v.into());
+                    for k in [PINYIN_CODE_CELL, SHUANGPIN_CODE_CELL] {
+                        let is_none = base.get_str(k).is_none_or(|v| v == "none");
+                        if self.code_hint == is_none {
+                            let v = if self.code_hint { "code_rev" } else { "none" };
+                            set(k, v.into());
+                        }
+                    }
                 }
                 if self.temp_pinyin != cur.temp_pinyin {
                     set("input.temp_pinyin.enabled", self.temp_pinyin.into());
@@ -1223,6 +1229,35 @@ mod tests {
             d.to_target(&b).get_str(SHUANGPIN_CODE_CELL),
             Some("code_rev")
         );
+    }
+
+    #[test]
+    fn code_hint_reads_either_cell() {
+        let mut b = base();
+        b.set_path(PINYIN_CODE_CELL, json!("none"));
+        b.set_path(SHUANGPIN_CODE_CELL, json!("shuangpin"));
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        assert!(d.code_hint, "双拼格在显示编码就算开");
+        let mut b = base();
+        b.set_path(PINYIN_CODE_CELL, json!("none"));
+        b.set_path(SHUANGPIN_CODE_CELL, json!("none"));
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        d.code_hint = true;
+        let t = d.to_target(&b);
+        assert_eq!(t.get_str(PINYIN_CODE_CELL), Some("code_rev"));
+        assert_eq!(t.get_str(SHUANGPIN_CODE_CELL), Some("code_rev"));
+    }
+
+    #[test]
+    fn code_hint_off_writes_none_to_both() {
+        let mut b = base();
+        b.set_path(PINYIN_CODE_CELL, json!("code"));
+        b.set_path(SHUANGPIN_CODE_CELL, json!("shuangpin"));
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        d.code_hint = false;
+        let t = d.to_target(&b);
+        assert_eq!(t.get_str(PINYIN_CODE_CELL), Some("none"));
+        assert_eq!(t.get_str(SHUANGPIN_CODE_CELL), Some("none"));
     }
 
     #[test]

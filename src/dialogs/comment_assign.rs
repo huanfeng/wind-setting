@@ -274,13 +274,18 @@ fn state_summary(
         );
     if follows {
         // 跟随也写出实际落到的模板（竖排与横排不同时再加竖排），不用点开才知道。
+        let eff = |c| lib.effective_of(scope, c).map(|(id, _)| id.clone());
+        let (eh, ev) = (eff(h), eff(v));
+        let lead = if eh.is_some() {
+            "跟随上级 ·"
+        } else {
+            "跟随上级"
+        };
         text = text.child(
-            Element::label("跟随上级 ·")
+            Element::label(lead)
                 .font_size(11.5)
                 .fg_role(Role::TextMuted),
         );
-        let eff = |c| lib.effective_of(scope, c).map(|(id, _)| id.clone());
-        let (eh, ev) = (eff(h), eff(v));
         if let Some(id) = &eh {
             text = text.child(
                 Element::label(lib.name_of(id))
@@ -728,6 +733,7 @@ mod tests {
             keys(&picker_options(&n, &user, &system(), PickKind::Mode)),
             [
                 "mode:temp_pinyin",
+                "mode:mix",
                 "mode:url",
                 "mode:email",
                 "mode:unicode",

@@ -49,9 +49,10 @@ pub const TYPE_ROWS: [(&str, &str); 5] = [
     ("english", "英文"),
 ];
 
-/// 固定的模式键与显示名；`mix:<id>` / `special:<方案id>` 另按配置列出。
-pub const BASE_MODES: [(&str, &str); 5] = [
+/// 固定的模式键与显示名（`mix` 通配全部快捷输入）；`mix:<id>` / `special:<方案id>` 另按配置列出。
+pub const BASE_MODES: [(&str, &str); 6] = [
     ("temp_pinyin", "临时拼音"),
+    ("mix", "全部快捷输入"),
     ("temp_english", "临时英文"),
     ("url", "网址"),
     ("email", "Email"),
