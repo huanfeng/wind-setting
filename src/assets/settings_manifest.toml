@@ -518,9 +518,9 @@ enabled_when = "schema.codetable.english_merge.enable == true"
 key = "local.comment_code_pinyin"
 group = "schema"
 section = "候选行为"
-type = "comment_assign_link"
+type = "comment_code_select"
 label = "编码提示"
-hint = "拼音、双拼方案下候选旁显示哪种编码，改在注释分配里"
+hint = "拼音、双拼方案下候选旁显示哪种编码；即注释分配里拼音、双拼的默认态"
 
 [[items]]
 key = "schema.pinyin.use_smart_compose"
@@ -1135,9 +1135,9 @@ key = "local.comment_code_mix"
 group = "schema"
 section = "混输行为"
 subsection = "拼音相关"
-type = "comment_assign_link"
+type = "comment_code_select"
 label = "拼音候选显示编码"
-hint = "混输方案下拼音候选旁显示码表编码，改在注释分配里"
+hint = "混输方案下候选旁显示哪种编码；即注释分配里混输的默认态"
 
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
@@ -1392,9 +1392,9 @@ options = [
 key = "local.comment_code_temp_pinyin"
 group = "schema"
 section = "临时拼音"
-type = "comment_assign_link"
+type = "comment_code_select"
 label = "编码提示"
-hint = "临时拼音与快捷输入期间候选旁显示哪种编码，改在注释分配里"
+hint = "临时拼音与快捷输入期间候选旁显示哪种编码；即注释分配里这两个模式的默认态"
 
 # ── 临时英文 ──
 # 注：临时英文不再设独立「启用」开关——Shift+字母 始终可进入，触发键可留空。

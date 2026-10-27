@@ -1015,6 +1015,110 @@ pub(crate) fn shared_ui(state: &AppState, cfg: &Config) -> CommentSettingsUi {
     ui
 }
 
+// ───────────────────────────── 原位编码下拉 ─────────────────────────────
+
+/// 退役的编码来源开关在原位置留的下拉：`(写到的范围, 可选模板)`，选中即写这些范围默认态横排格
+/// （core 仓设计 §13.6）。`none` = 不显示。
+pub fn code_select_spec(key: &str) -> Option<(Vec<Scope>, &'static [&'static str])> {
+    let ty = |k: &str| Scope::Type(k.to_string());
+    let mode = |k: &str| Scope::Mode(k.to_string());
+    Some(match key {
+        "local.comment_code_pinyin" => (
+            vec![ty("pinyin"), ty("shuangpin")],
+            &["none", "code", "code_rev", "shuangpin"],
+        ),
+        "local.comment_code_mix" => (
+            vec![ty("mixed")],
+            &["code_rev", "code_hint", "code", "none"],
+        ),
+        "local.comment_code_temp_pinyin" => (
+            vec![mode("temp_pinyin"), mode("mix")],
+            &["code", "code_rev", "shuangpin", "none"],
+        ),
+        _ => return None,
+    })
+}
+
+/// 各范围默认态横排的生效模板；不一致（在分配里分别设过）时 `None`。
+pub(super) fn code_select_current(lib: &LibraryInfo, scopes: &[Scope]) -> Option<String> {
+    let mut ids = scopes.iter().map(|s| {
+        lib.effective_of(s, Col::DefaultH)
+            .map_or("none", |(id, _)| id.as_str())
+    });
+    let first = ids.next()?;
+    ids.all(|id| id == first).then(|| first.to_string())
+}
+
+/// 下拉的标签与选中项。当前值不在可选里时末尾补一项「其他：…」/「分别设置」，只显示、不写。
+pub(super) fn code_select_labels(
+    lib: &LibraryInfo,
+    scopes: &[Scope],
+    opts: &[&str],
+) -> (Vec<String>, usize) {
+    let mut labels: Vec<String> = opts.iter().map(|id| lib.name_of(id)).collect();
+    let cur = code_select_current(lib, scopes);
+    if let Some(i) = cur
+        .as_deref()
+        .and_then(|c| opts.iter().position(|o| *o == c))
+    {
+        return (labels, i);
+    }
+    labels.push(match &cur {
+        Some(id) => format!("其他：{}", lib.name_of(id)),
+        None => "分别设置".to_string(),
+    });
+    let last = labels.len() - 1;
+    (labels, last)
+}
+
+/// 原位编码下拉：与分配框共用草稿，两边改动互相跟随。
+pub fn build_code_select(state: &AppState, cfg: &Config, key: &str) -> Element {
+    let Some((scopes, opts)) = code_select_spec(key) else {
+        return Element::leaf();
+    };
+    let ui = shared_ui(state, cfg);
+    let (labels, idx) = code_select_labels(&ui.lib(), &scopes, opts);
+    let (lab, sel) = (signal(labels), signal(idx));
+    let (u, sc) = (ui.clone(), scopes.clone());
+    let on_pick = crate::pages::dict::reactive::reactive_effect(
+        move || sel.version(),
+        move || {
+            let Some(id) = opts.get(sel.get()) else {
+                return;
+            };
+            if code_select_current(&u.lib(), &sc).as_deref() == Some(*id) {
+                return;
+            }
+            let choice = match *id {
+                "none" => Choice::Hide,
+                id => Choice::Template(id.to_string()),
+            };
+            for s in &sc {
+                u.choose(s, Col::DefaultH, &choice);
+            }
+        },
+    );
+    // 分配框里改过、或重新载入配置：跟着刷新。
+    let u = ui.clone();
+    let on_view = crate::pages::dict::reactive::reactive_effect(
+        move || u.view.version(),
+        move || {
+            let (l, i) = code_select_labels(&u.lib(), &scopes, opts);
+            if lab.with(|v| *v != l) {
+                lab.set(l);
+            }
+            if sel.get() != i {
+                sel.set(i);
+            }
+        },
+    );
+    Element::row()
+        .cross(Align::Center)
+        .child(Element::dropdown_signal(lab, sel).min_width(140))
+        .child(on_pick)
+        .child(on_view)
+}
+
 /// 建分配对话框，返回打开它的信号。清单宿主是 [`HOST_KEY`]。
 pub fn build_dialog_button_comment(state: &AppState, cfg: &Config) -> Signal<bool> {
     let ui = shared_ui(state, cfg);
@@ -1418,6 +1522,39 @@ mod tests {
             reference_count(&user, &system(), "code_hint") >= 1,
             "出厂格也算"
         );
+    }
+
+    fn code_lib(pinyin: &str, shuangpin: &str) -> LibraryInfo {
+        let cell = |scope: &str, id: &str| {
+            json!({ "scope": scope, "state": "default", "vertical": false,
+                    "template_id": id, "from_scope": scope })
+        };
+        library_from_value(&json!({
+            "templates": [
+                { "id": "code", "name": "编码", "text": "x", "origin": "builtin" },
+                { "id": "code_rev", "name": "码表编码", "text": "x", "origin": "builtin" },
+                { "id": "shuangpin", "name": "双拼编码", "text": "x", "origin": "builtin" },
+                { "id": "mine", "name": "我的", "text": "x", "origin": "user" }
+            ],
+            "effective": [cell("type:pinyin", pinyin), cell("type:shuangpin", shuangpin)]
+        }))
+    }
+
+    /// 原位下拉：两格一致时选中对应项；分配里另选了模板或两格不同时末尾补一项只显示的。
+    #[test]
+    fn code_select_reflects_assign_cells() {
+        let (scopes, opts) = code_select_spec("local.comment_code_pinyin").unwrap();
+        let (l, i) = code_select_labels(&code_lib("code_rev", "code_rev"), &scopes, opts);
+        assert_eq!(l, ["不显示", "编码", "码表编码", "双拼编码"]);
+        assert_eq!(i, 2);
+        assert_eq!(
+            code_select_labels(&code_lib("none", "none"), &scopes, opts).1,
+            0
+        );
+        let (l, i) = code_select_labels(&code_lib("mine", "mine"), &scopes, opts);
+        assert_eq!((l[i].as_str(), i), ("其他：我的", 4));
+        let (l, i) = code_select_labels(&code_lib("code", "none"), &scopes, opts);
+        assert_eq!((l[i].as_str(), i), ("分别设置", 4));
     }
 
     #[test]
