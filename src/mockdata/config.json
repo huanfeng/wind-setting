@@ -286,9 +286,12 @@
  },
  "mobile": {
   "association": {
+   "backspace_cancels_only": false,
+   "enter_cancels_only": false,
    "kind": "smart",
    "mode": "continuous",
    "punct": true,
+   "select_keys_commit": false,
    "space_commits": false
   },
   "grammar": {
