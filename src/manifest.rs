@@ -1058,12 +1058,12 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "comment_code_current",
 ];
 
-/// 「注释分配…」：退役的编码来源开关原位只显示现状（[`crate::dialogs::comment_settings::build_code_current`]），
+/// 「去设置」：退役的编码来源开关原位只显示现状（[`crate::dialogs::comment_settings::build_code_current`]），
 /// 旁边这个按钮跳到分配框看全貌（core 仓设计 §13.6）。
 fn comment_assign_link(state: &AppState) -> Element {
     let (tab, jump) = (state.tab, state.jump);
     let target = crate::dialogs::comment_settings::assign_jump_target(&state.manifest);
-    Element::button("注释分配…")
+    Element::button("去设置")
         .small()
         .outline_soft()
         .enabled(target.is_some())
