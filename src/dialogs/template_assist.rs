@@ -775,10 +775,16 @@ fn comment_look(template: &str, lang: &str) -> Option<CommentLook> {
 ///
 /// 与 [`preview`] 同一个 RPC、同一套「core 不支持就整块隐藏」的规矩；模板留空时只画候选词
 /// （留空 = 不显示注释）。`visible` 是所在对话框的可见性。
-pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> Element {
+pub fn comment_layout_preview(
+    visible: Signal<bool>,
+    field: TemplateField,
+    vertical: bool,
+) -> Element {
     let shown = signal(false);
     // 样例语种：0 = 中文、1 = 英文。
     let lang = signal(0usize);
+    // 只显示一种排列（两种都摆出来太占地方）：0 = 横排、1 = 竖排。
+    let layout = signal(usize::from(vertical));
     let bg = signal(Color::rgba(0, 0, 0, 0));
     let h_doc = signal(RichDoc::new());
     let v_doc = signal(RichDoc::new());
@@ -862,22 +868,13 @@ pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> El
     };
     let effect = crate::pages::dict::reactive::reactive_effect(versions, refresh);
 
-    let block = |caption: &str, doc: Signal<RichDoc>| {
-        Element::col()
+    let block = |doc: Signal<RichDoc>, which: usize| {
+        Element::row()
+            .widget(SignalBg(bg))
             .width_match()
-            .spacing(2)
-            .child(
-                Element::label(caption)
-                    .font_size(11.5)
-                    .fg_role(Role::TextMuted),
-            )
-            .child(
-                Element::row()
-                    .widget(SignalBg(bg))
-                    .width_match()
-                    .padding_xy(10, 8)
-                    .child(Element::rich_signal(doc).weight(1.0).copy_menu(false)),
-            )
+            .padding_xy(10, 8)
+            .child(Element::rich_signal(doc).weight(1.0).copy_menu(false))
+            .visible_when(move || layout.get() == which)
     };
     let problems = Element::rich_signal(problems_doc)
         .width_match()
@@ -911,12 +908,16 @@ pub fn comment_layout_preview(visible: Signal<bool>, field: TemplateField) -> El
                             .weight(1.0),
                     )
                     .child(
+                        Element::segmented(vec!["横排".to_string(), "竖排".to_string()], layout)
+                            .width(120),
+                    )
+                    .child(
                         Element::segmented(vec!["中文".to_string(), "英文".to_string()], lang)
                             .width(120),
                     ),
             )
-            .child(block("横排", h_doc))
-            .child(block("竖排", v_doc))
+            .child(block(h_doc, 0))
+            .child(block(v_doc, 1))
             .child(problems)
             .visible_when(move || shown.get()),
     )

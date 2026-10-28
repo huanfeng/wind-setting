@@ -1124,10 +1124,9 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         | "dialog_button_emoji_modules"
         | "dialog_button_langbar_badges"
         | "dialog_button_tooltip_sections" => build_dialog_button(state, key, item, cfg),
-        // 卡片行按钮写「管理…」而不是「设置」：框里是一张可增删的模板列表。
         "dialog_button_comment_templates" => {
             let visible = build_dialog_body(state, key, item, cfg);
-            Element::button("管理…")
+            Element::button("设置")
                 .small()
                 .outline_soft()
                 .on_click(move |_| visible.set(true))

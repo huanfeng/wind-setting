@@ -93,6 +93,8 @@ pub struct TplEditor {
     sel_origin: Signal<Option<Origin>>,
     sel_info: Signal<String>,
     pub(super) edit_name: Signal<String>,
+    /// 一句说明：分配框选模板时显示在模板名下面。
+    pub(super) edit_desc: Signal<String>,
     /// 模板串（多行框，真换行原样显示）。
     pub(super) edit_text: Signal<String>,
     /// 标识框：失焦或回车时才改名（[`CommentSettingsUi::rename_selected`]）。
@@ -113,6 +115,7 @@ impl TplEditor {
             sel_origin: signal(None),
             sel_info: signal(String::new()),
             edit_name: signal(String::new()),
+            edit_desc: signal(String::new()),
             edit_text: signal(String::new()),
             edit_id: signal(String::new()),
             id_err: signal(String::new()),
@@ -188,9 +191,12 @@ impl CommentSettingsUi {
         if self.tpl.edit_id.get() != id {
             self.tpl.edit_id.set(id);
         }
-        let (name, text) = t.map(|t| (t.name, t.text)).unwrap_or_default();
+        let (name, desc, text) = t.map(|t| (t.name, t.desc, t.text)).unwrap_or_default();
         if self.tpl.edit_name.get() != name {
             self.tpl.edit_name.set(name);
+        }
+        if self.tpl.edit_desc.get() != desc {
+            self.tpl.edit_desc.set(desc);
         }
         if self.tpl.edit_text.get() != text {
             self.tpl.edit_text.set(text);
@@ -202,13 +208,18 @@ impl CommentSettingsUi {
         let Some(t) = self.selected_template().filter(TplInfo::editable) else {
             return;
         };
-        let (name, text) = (self.tpl.edit_name.get(), self.tpl.edit_text.get());
-        if t.name == name && t.text == text {
+        let (name, desc, text) = (
+            self.tpl.edit_name.get(),
+            self.tpl.edit_desc.get(),
+            self.tpl.edit_text.get(),
+        );
+        if t.name == name && t.desc == desc && t.text == text {
             return;
         }
         self.templates.update(|v| {
             if let Some(slot) = v.iter_mut().find(|u| u.id == t.id) {
                 slot.name = name.clone();
+                slot.desc = desc.clone();
                 slot.text = text.clone();
             }
         });
@@ -219,6 +230,7 @@ impl CommentSettingsUi {
                 .and_then(|lib| lib.templates.iter_mut().find(|u| u.id == t.id))
             {
                 slot.name = name;
+                slot.desc = desc;
                 slot.text = text;
             }
         });
@@ -259,7 +271,7 @@ impl CommentSettingsUi {
         self.lib().templates.into_iter().map(|t| t.id).collect()
     }
 
-    pub(super) fn add_template(&self, base: &str, name: String, text: String) {
+    pub(super) fn add_template(&self, base: &str, name: String, desc: String, text: String) {
         self.commit_editor();
         let taken = self.taken_ids();
         let refs: Vec<&str> = taken.iter().map(String::as_str).collect();
@@ -269,7 +281,7 @@ impl CommentSettingsUi {
                 id: id.clone(),
                 name,
                 text,
-                ..Default::default()
+                desc,
             })
         });
         self.tpl.sel.set(id);
@@ -283,6 +295,7 @@ impl CommentSettingsUi {
             self.add_template(
                 &format!("{}_copy", t.id),
                 format!("{} 副本", t.display_name()),
+                t.desc,
                 t.text,
             );
         }
@@ -330,7 +343,9 @@ pub fn build_dialog_button_templates(state: &AppState, cfg: &Config) -> Signal<b
     let fields = state.fields.clone();
     let dicts: Rc<dyn Fn() -> Vec<DictRef>> =
         Rc::new(move || crate::dialogs::template_vars::dict_refs(&fields));
-    let dlg = build_dialog(&ui, dicts);
+    // 预览先按用户当前的候选窗排列显示，框里可再切。
+    let vertical = cfg.get_str("ui.candidate.layout") == Some("vertical");
+    let dlg = build_dialog(&ui, dicts, vertical);
     state.fields.dialogs.borrow_mut().push(dlg);
     ui.tpl.visible
 }
@@ -342,9 +357,13 @@ const LIST_W: i32 = 200;
 /// 左栏一行的高度：比 windui 默认行高（36）紧，模板名都很短。
 const ROW_H: i32 = 28;
 /// 右栏表单的标签列宽。
-const LABEL_W: i32 = 56;
+const LABEL_W: i32 = 60;
 
-fn build_dialog(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> Element {
+fn build_dialog(
+    ui: &CommentSettingsUi,
+    dicts: Rc<dyn Fn() -> Vec<DictRef>>,
+    vertical: bool,
+) -> Element {
     let tpl = ui.tpl.clone();
     ui.sync_tpl_rows();
     ui.load_editor();
@@ -372,9 +391,15 @@ fn build_dialog(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
     };
     let commit = {
         let u = ui.clone();
-        let (n, t) = (tpl.edit_name, tpl.edit_text);
+        let (n, d, t) = (tpl.edit_name, tpl.edit_desc, tpl.edit_text);
         crate::pages::dict::reactive::reactive_effect(
-            move || n.version().wrapping_add(t.version()),
+            move || {
+                n.version()
+                    .wrapping_mul(31)
+                    .wrapping_add(d.version())
+                    .wrapping_mul(31)
+                    .wrapping_add(t.version())
+            },
             move || u.commit_editor(),
         )
     };
@@ -400,7 +425,7 @@ fn build_dialog(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
             Element::scroll()
                 .weight(1.0)
                 .height_match()
-                .child(build_editor(ui, dicts)),
+                .child(build_editor(ui, dicts, vertical)),
         )
         .child(pick)
         .child(load)
@@ -412,7 +437,9 @@ fn build_dialog(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
         Element::button("＋ 新建")
             .small()
             .outline_soft()
-            .on_click(move |_| un.add_template("custom", "新模板".into(), String::new())),
+            .on_click(move |_| {
+                un.add_template("custom", "新模板".into(), String::new(), String::new())
+            }),
         Element::button("复制")
             .small()
             .outline_soft()
@@ -456,13 +483,14 @@ fn list_item(it: ListItem, sel_idx: Signal<usize>) -> Element {
     }
 }
 
-/// 表单的一行：右对齐的标签列 + 控件。`top` 为真时标签贴顶（多行控件）。
+/// 表单的一行：左对齐的标签列 + 控件。`top` 为真时标签贴顶（多行控件）。标签用正文色加粗：
+/// 一眼要能看到每行配的是什么，灰色小字会被右边的输入框压下去。
 fn form_row(label: &'static str, control: Element, top: bool) -> Element {
     let lab = Element::label(label)
-        .font_size(12.5)
-        .fg_role(Role::TextMuted)
-        .width(LABEL_W)
-        .text_align(Align::End);
+        .font_size(13.0)
+        .font_weight(600)
+        .fg_role(Role::Text)
+        .width(LABEL_W);
     let lab = if top { lab.padding_xy(0, 6) } else { lab };
     Element::row()
         .width_match()
@@ -486,8 +514,12 @@ fn editable_pair(
         .child(view.read_only().visible_when(move || !e2()))
 }
 
-/// 右栏：名称（带内置模板的操作）、标识、模板串（插入变量 / 颜色）、候选窗预览。
-fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> Element {
+/// 右栏：名称（带内置模板的操作）、说明、标识、模板串（插入变量 / 颜色）、候选窗预览。
+fn build_editor(
+    ui: &CommentSettingsUi,
+    dicts: Rc<dyn Fn() -> Vec<DictRef>>,
+    vertical: bool,
+) -> Element {
     use crate::dialogs::template_assist::{
         TemplateField, comment_layout_preview, insert_color_button,
     };
@@ -620,11 +652,21 @@ fn build_editor(ui: &CommentSettingsUi, dicts: Rc<dyn Fn() -> Vec<DictRef>>) -> 
         .padding_xy(18, 14)
         .spacing(12)
         .child(form_row("名称", name, false))
+        .child(form_row(
+            "说明",
+            editable_pair(
+                Element::text_input(tpl.edit_desc, "一句话说明显示什么，选模板时显示在名称下面")
+                    .width_match(),
+                Element::text_input(tpl.edit_desc, "").width_match(),
+                editable,
+            ),
+            false,
+        ))
         .child(form_row("标识", id_block, true))
         .child(form_row("模板串", template, true))
         .child(form_row(
             "预览",
-            comment_layout_preview(tpl.visible, field),
+            comment_layout_preview(tpl.visible, field, vertical),
             true,
         ))
 }
@@ -722,7 +764,7 @@ mod tests {
         with_mock(|| {
             let ui = mock_ui(json!({}));
             ui.sync_tpl_rows();
-            ui.add_template("custom", "新模板".into(), String::new());
+            ui.add_template("custom", "新模板".into(), String::new(), String::new());
             let rows = ui.tpl.rows.get();
             let idx = ui.tpl.sel_idx.get();
             assert_eq!(rows[idx].id, "custom");
@@ -746,6 +788,10 @@ mod tests {
             assert_eq!(t.len(), 1);
             assert_eq!(t[0].id, "code_hint_copy");
             assert_eq!(ui.tpl.sel.get(), "code_hint_copy");
+            assert!(!t[0].desc.is_empty(), "复制带上内置模板的说明");
+            ui.tpl.edit_desc.set("我的说明".into());
+            ui.commit_editor();
+            assert_eq!(ui.templates.get()[0].desc, "我的说明");
             ui.tpl.edit_text.set("${pinyin}\n${chaizi}".into());
             ui.commit_editor();
             assert_eq!(ui.templates.get()[0].text, "${pinyin}\n${chaizi}");
