@@ -519,7 +519,15 @@ fn cell_field(
     let options = cell_options(lib, user, scope, col, &current);
     let items: Vec<DropdownItem> = options
         .iter()
-        .map(|c| DropdownItem::new(choice_label(lib, c)))
+        .map(|c| {
+            let item = DropdownItem::new(choice_label(lib, c));
+            match c {
+                Choice::Template(id) if !lib.desc_of(id).is_empty() => {
+                    item.subtitle(lib.desc_of(id))
+                }
+                _ => item,
+            }
+        })
         .collect();
     let sel = signal(options.iter().position(|c| *c == current).unwrap_or(0));
     let (u, s) = (ui.clone(), scope.clone());

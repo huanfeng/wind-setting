@@ -49,10 +49,10 @@ pub const TYPE_ROWS: [(&str, &str); 5] = [
     ("english", "英文"),
 ];
 
-/// 固定的模式键与显示名（`mix` 通配全部快捷输入）；`mix:<id>` / `special:<方案id>` 另按配置列出。
+/// 固定的模式键与显示名（`mix` 是快捷输入的默认）；`mix:<id>` / `special:<方案id>` 另按配置列出。
 pub const BASE_MODES: [(&str, &str); 6] = [
     ("temp_pinyin", "临时拼音"),
-    ("mix", "全部快捷输入"),
+    ("mix", "快捷输入（默认）"),
     ("temp_english", "临时英文"),
     ("url", "网址"),
     ("email", "Email"),
@@ -484,6 +484,8 @@ pub struct TplInfo {
     pub id: String,
     pub name: String,
     pub text: String,
+    /// 选模板时显示的一句说明（出厂编码模板带；用户模板通常为空）。
+    pub desc: String,
     pub origin: Origin,
 }
 
@@ -522,6 +524,13 @@ impl LibraryInfo {
             .unwrap_or_else(|| id.to_string())
     }
 
+    pub(super) fn desc_of(&self, id: &str) -> &str {
+        self.templates
+            .iter()
+            .find(|t| t.id == id)
+            .map_or("", |t| t.desc.as_str())
+    }
+
     pub(super) fn effective_of(&self, scope: &Scope, col: Col) -> Option<&(String, String)> {
         self.effective.get(&(scope.key(), col))
     }
@@ -539,6 +548,7 @@ pub fn library_from_value(v: &Value) -> LibraryInfo {
                     id: s(t, "id"),
                     name: s(t, "name"),
                     text: s(t, "text"),
+                    desc: s(t, "desc"),
                     origin: match t.get("origin").and_then(Value::as_str) {
                         Some("user") => Origin::User,
                         Some("user_overrides_builtin") => Origin::UserOverridesBuiltin,
@@ -763,7 +773,7 @@ impl Names {
                 .find(|(m, _)| m == id)
                 .map(|(_, n)| n.clone())
                 .unwrap_or_else(|| id.to_string());
-            format!("快捷输入 {n}")
+            format!("快捷输入 - {n}")
         } else if let Some(id) = key.strip_prefix("special:") {
             format!("特殊模式 {}", self.schema_name(id))
         } else {
@@ -1015,107 +1025,60 @@ pub(crate) fn shared_ui(state: &AppState, cfg: &Config) -> CommentSettingsUi {
     ui
 }
 
-// ───────────────────────────── 原位编码下拉 ─────────────────────────────
+// ───────────────────────────── 原位编码现状 ─────────────────────────────
 
-/// 退役的编码来源开关在原位置留的下拉：`(写到的范围, 可选模板)`，选中即写这些范围默认态横排格
-/// （core 仓设计 §13.6）。`none` = 不显示。
-pub fn code_select_spec(key: &str) -> Option<(Vec<Scope>, &'static [&'static str])> {
+/// 退役的编码来源开关在原位置留一行「当前：…」，对应这些范围的默认态横排格；要改跳去分配框
+/// （core 仓设计 §13.6）。
+pub fn code_current_scopes(key: &str) -> Option<Vec<Scope>> {
     let ty = |k: &str| Scope::Type(k.to_string());
     let mode = |k: &str| Scope::Mode(k.to_string());
     Some(match key {
-        "local.comment_code_pinyin" => (
-            vec![ty("pinyin"), ty("shuangpin")],
-            &["none", "code", "code_rev", "shuangpin"],
-        ),
-        "local.comment_code_mix" => (
-            vec![ty("mixed")],
-            &["code_rev", "code_hint", "code", "none"],
-        ),
-        "local.comment_code_temp_pinyin" => (
-            vec![mode("temp_pinyin"), mode("mix")],
-            &["code", "code_rev", "shuangpin", "none"],
-        ),
+        "local.comment_code_pinyin" => vec![ty("pinyin"), ty("shuangpin")],
+        "local.comment_code_mix" => vec![ty("mixed")],
+        "local.comment_code_temp_pinyin" => vec![mode("temp_pinyin"), mode("mix")],
         _ => return None,
     })
 }
 
-/// 各范围默认态横排的生效模板；不一致（在分配里分别设过）时 `None`。
-pub(super) fn code_select_current(lib: &LibraryInfo, scopes: &[Scope]) -> Option<String> {
+/// 各范围默认态横排的生效模板名；不一致（在分配里分别设过）时为「分别设置」。
+pub(super) fn code_current_label(lib: &LibraryInfo, scopes: &[Scope]) -> String {
     let mut ids = scopes.iter().map(|s| {
         lib.effective_of(s, Col::DefaultH)
             .map_or("none", |(id, _)| id.as_str())
     });
-    let first = ids.next()?;
-    ids.all(|id| id == first).then(|| first.to_string())
+    let first = ids.next().unwrap_or("none");
+    let name = if ids.all(|id| id == first) {
+        lib.name_of(first)
+    } else {
+        "分别设置".to_string()
+    };
+    format!("当前：{name}")
 }
 
-/// 下拉的标签与选中项。当前值不在可选里时末尾补一项「其他：…」/「分别设置」，只显示、不写。
-pub(super) fn code_select_labels(
-    lib: &LibraryInfo,
-    scopes: &[Scope],
-    opts: &[&str],
-) -> (Vec<String>, usize) {
-    let mut labels: Vec<String> = opts.iter().map(|id| lib.name_of(id)).collect();
-    let cur = code_select_current(lib, scopes);
-    if let Some(i) = cur
-        .as_deref()
-        .and_then(|c| opts.iter().position(|o| *o == c))
-    {
-        return (labels, i);
-    }
-    labels.push(match &cur {
-        Some(id) => format!("其他：{}", lib.name_of(id)),
-        None => "分别设置".to_string(),
-    });
-    let last = labels.len() - 1;
-    (labels, last)
-}
-
-/// 原位编码下拉：与分配框共用草稿，两边改动互相跟随。
-pub fn build_code_select(state: &AppState, cfg: &Config, key: &str) -> Element {
-    let Some((scopes, opts)) = code_select_spec(key) else {
+/// 原位编码现状：与分配框共用草稿，分配框里改过即跟着刷新。
+pub fn build_code_current(state: &AppState, cfg: &Config, key: &str) -> Element {
+    let Some(scopes) = code_current_scopes(key) else {
         return Element::leaf();
     };
     let ui = shared_ui(state, cfg);
-    let (labels, idx) = code_select_labels(&ui.lib(), &scopes, opts);
-    let (lab, sel) = (signal(labels), signal(idx));
-    let (u, sc) = (ui.clone(), scopes.clone());
-    let on_pick = crate::pages::dict::reactive::reactive_effect(
-        move || sel.version(),
-        move || {
-            let Some(id) = opts.get(sel.get()) else {
-                return;
-            };
-            if code_select_current(&u.lib(), &sc).as_deref() == Some(*id) {
-                return;
-            }
-            let choice = match *id {
-                "none" => Choice::Hide,
-                id => Choice::Template(id.to_string()),
-            };
-            for s in &sc {
-                u.choose(s, Col::DefaultH, &choice);
-            }
-        },
-    );
-    // 分配框里改过、或重新载入配置：跟着刷新。
+    let text = signal(code_current_label(&ui.lib(), &scopes));
     let u = ui.clone();
     let on_view = crate::pages::dict::reactive::reactive_effect(
         move || u.view.version(),
         move || {
-            let (l, i) = code_select_labels(&u.lib(), &scopes, opts);
-            if lab.with(|v| *v != l) {
-                lab.set(l);
-            }
-            if sel.get() != i {
-                sel.set(i);
+            let t = code_current_label(&u.lib(), &scopes);
+            if text.with(|v| *v != t) {
+                text.set(t);
             }
         },
     );
     Element::row()
         .cross(Align::Center)
-        .child(Element::dropdown_signal(lab, sel).min_width(140))
-        .child(on_pick)
+        .child(
+            Element::label_signal(text)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted),
+        )
         .child(on_view)
 }
 
@@ -1540,21 +1503,15 @@ mod tests {
         }))
     }
 
-    /// 原位下拉：两格一致时选中对应项；分配里另选了模板或两格不同时末尾补一项只显示的。
+    /// 原位现状：两格一致时显示模板名，不一致时显示「分别设置」。
     #[test]
-    fn code_select_reflects_assign_cells() {
-        let (scopes, opts) = code_select_spec("local.comment_code_pinyin").unwrap();
-        let (l, i) = code_select_labels(&code_lib("code_rev", "code_rev"), &scopes, opts);
-        assert_eq!(l, ["不显示", "编码", "码表编码", "双拼编码"]);
-        assert_eq!(i, 2);
-        assert_eq!(
-            code_select_labels(&code_lib("none", "none"), &scopes, opts).1,
-            0
-        );
-        let (l, i) = code_select_labels(&code_lib("mine", "mine"), &scopes, opts);
-        assert_eq!((l[i].as_str(), i), ("其他：我的", 4));
-        let (l, i) = code_select_labels(&code_lib("code", "none"), &scopes, opts);
-        assert_eq!((l[i].as_str(), i), ("分别设置", 4));
+    fn code_current_reflects_assign_cells() {
+        let scopes = code_current_scopes("local.comment_code_pinyin").unwrap();
+        let label = |p: &str, sp: &str| code_current_label(&code_lib(p, sp), &scopes);
+        assert_eq!(label("code_rev", "code_rev"), "当前：码表编码");
+        assert_eq!(label("none", "none"), "当前：不显示");
+        assert_eq!(label("mine", "mine"), "当前：我的");
+        assert_eq!(label("code", "none"), "当前：分别设置");
     }
 
     #[test]
@@ -1792,6 +1749,7 @@ mod tests {
             id: "mine".into(),
             name: "我的".into(),
             text: "x".into(),
+            ..Default::default()
         }];
         a.templates.set(tpl.clone());
         let b = st.fields.comment_ui.borrow().clone().unwrap();

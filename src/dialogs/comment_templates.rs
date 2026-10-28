@@ -269,6 +269,7 @@ impl CommentSettingsUi {
                 id: id.clone(),
                 name,
                 text,
+                ..Default::default()
             })
         });
         self.tpl.sel.set(id);
@@ -655,6 +656,7 @@ mod tests {
             id: id.into(),
             name: id.to_uppercase(),
             text: String::new(),
+            desc: String::new(),
             origin,
         };
         let lib = LibraryInfo {
@@ -754,6 +756,7 @@ mod tests {
                     id: "pinyin".into(),
                     name: "拼音".into(),
                     text: "x".into(),
+                    ..Default::default()
                 })
             });
             ui.refresh();

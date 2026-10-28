@@ -1990,7 +1990,7 @@ fn mock_comment_library(params: &Value) -> Value {
                 TemplateOrigin::User => "user",
                 TemplateOrigin::UserOverridesBuiltin => "user_overrides_builtin",
             };
-            json!({ "id": t.id, "name": t.name, "text": t.text, "origin": origin })
+            json!({ "id": t.id, "name": t.name, "text": t.text, "desc": t.desc, "origin": origin })
         })
         .collect();
     json!({

@@ -563,13 +563,13 @@ impl Manifest {
         // 点进去什么都没有的条目。整节被门控掉（Linux 的「工具栏」「游戏兼容」、macOS 的
         // 「任务栏图标」）是一种；定制版藏掉了宿主、只剩对话框成员是另一种。判据与
         // `section_rows` 逐行跳过的是同一个（`renders_row`）；部分隐藏的分区照常返回完整 key 表。
-        // 只剩原位编码下拉（`comment_code_select`）的分区同样不返回：它跟着所在功能走，
+        // 只剩原位编码现状（`comment_code_current`）的分区同样不返回：它跟着所在功能走，
         // 功能本身被藏了（如定制版藏掉临时拼音），单留它没有意义。
         out.retain(|(_, keys)| {
             keys.iter().any(|k| {
                 self.items
                     .get(k)
-                    .is_some_and(|it| self.renders_row(it) && it.typ != "comment_code_select")
+                    .is_some_and(|it| self.renders_row(it) && it.typ != "comment_code_current")
             })
         });
         out
@@ -1055,10 +1055,10 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "log_archive",
     "log_privacy_warning",
     "open_misread_table",
-    "comment_code_select",
+    "comment_code_current",
 ];
 
-/// 「注释分配…」：退役的编码来源开关原位保留下拉（[`crate::dialogs::comment_settings::build_code_select`]），
+/// 「注释分配…」：退役的编码来源开关原位只显示现状（[`crate::dialogs::comment_settings::build_code_current`]），
 /// 旁边这个按钮跳到分配框看全貌（core 仓设计 §13.6）。
 fn comment_assign_link(state: &AppState) -> Element {
     let (tab, jump) = (state.tab, state.jump);
@@ -1155,10 +1155,10 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
         }
         "local_select" => build_local_select(state, key, item),
         "open_misread_table" => crate::correction_ui::misread_table_button(state),
-        "comment_code_select" => Element::row()
+        "comment_code_current" => Element::row()
             .cross(Align::Center)
             .spacing(8)
-            .child(crate::dialogs::comment_settings::build_code_select(
+            .child(crate::dialogs::comment_settings::build_code_current(
                 state, cfg, key,
             ))
             .child(comment_assign_link(state)),
