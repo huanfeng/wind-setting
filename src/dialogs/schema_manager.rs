@@ -4274,7 +4274,7 @@ fn comment_settings_jump(app: &Rc<RefCell<AppState>>, state: &SchemaManagerState
             st.settings_visible.set(false);
             let m = st.manifest.borrow().clone();
             if let Some(t) = crate::dialogs::comment_settings::assign_jump_target(&m) {
-                crate::search::jump::request(tab, jump, t);
+                crate::search::jump::request_quiet(tab, jump, t);
             }
         },
     )

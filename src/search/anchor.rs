@@ -251,7 +251,9 @@ impl Widget for Anchor {
                 ..req
             }));
         } else {
-            self.flash_start.set(Some(anim::clock_ms()));
+            if req.flash {
+                self.flash_start.set(Some(anim::clock_ms()));
+            }
             // 认领即清：这次请求到此为止，不会再被别的锚点捡走。
             self.jump.set(None);
         }
@@ -463,6 +465,7 @@ mod tests {
         let r = JumpRequest {
             seq: 1,
             dialog_opened: false,
+            flash: true,
             target: JumpTarget::Row {
                 tab: 0,
                 anchor: "a.b".into(),
@@ -473,6 +476,7 @@ mod tests {
         let c = JumpRequest {
             seq: 1,
             dialog_opened: false,
+            flash: true,
             target: JumpTarget::Card {
                 tab: 0,
                 anchor: "dict:manage".into(),
@@ -487,6 +491,7 @@ mod tests {
         let r = JumpRequest {
             seq: 1,
             dialog_opened: false,
+            flash: true,
             target: JumpTarget::RowInDialog {
                 tab: 0,
                 host_anchor: "host".into(),
@@ -503,6 +508,7 @@ mod tests {
         let r = JumpRequest {
             seq: 1,
             dialog_opened: false,
+            flash: true,
             target: JumpTarget::SchemaLevel {
                 hint_path: vec!["方案".into()],
             },
@@ -588,12 +594,17 @@ mod tests {
     ///
     /// `visible` 决定那个节点可不可见，返回 (请求是否被认领, 是否开始闪烁)。
     fn run_anchor(key: &str, target: JumpTarget, visible: bool) -> (bool, bool) {
+        run_anchor_with(key, target, visible, true)
+    }
+
+    fn run_anchor_with(key: &str, target: JumpTarget, visible: bool, flash: bool) -> (bool, bool) {
         use windui::core::Tree;
 
         let jump = signal(Some(JumpRequest {
             seq: 7,
             target,
             dialog_opened: false,
+            flash,
         }));
         let mut tree = Tree::new();
         let el = if visible {
@@ -629,6 +640,7 @@ mod tests {
         let jump = signal(Some(JumpRequest {
             seq: 7,
             dialog_opened: false,
+            flash: true,
             target: JumpTarget::Row {
                 tab: 0,
                 anchor: "a.b".into(),
@@ -667,6 +679,22 @@ mod tests {
         );
         assert!(claimed, "可见的目标锚点应认领请求");
         assert!(flashing, "认领后应开始闪烁");
+    }
+
+    /// 不闪的请求照样认领、滚过去，只是不闪。
+    #[test]
+    fn quiet_request_claims_without_flash() {
+        let (claimed, flashing) = run_anchor_with(
+            "a.b",
+            JumpTarget::Row {
+                tab: 0,
+                anchor: "a.b".into(),
+            },
+            true,
+            false,
+        );
+        assert!(claimed);
+        assert!(!flashing);
     }
 
     /// **回归**：不可见页里的锚点绝不能认领。

@@ -1069,7 +1069,7 @@ fn comment_assign_link(state: &AppState) -> Element {
         .enabled(target.is_some())
         .on_click(move |_| {
             if let Some(t) = target.clone() {
-                crate::search::jump::request(tab, jump, t);
+                crate::search::jump::request_quiet(tab, jump, t);
             }
         })
 }
