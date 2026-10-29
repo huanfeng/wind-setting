@@ -561,7 +561,7 @@
    },
    "enabled": true,
    "state": "default",
-   "switch_key": "ctrl",
+   "switch_key": "f1",
    "switch_mode": "session",
    "templates": []
   },

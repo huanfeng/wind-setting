@@ -3670,8 +3670,9 @@ section = "候选标注"
 subsection = "切换"
 type = "select"
 label = "切换键"
-hint = "候选窗出现时单击它切换；F1 等功能键请在按键绑定里绑 comment_state"
+hint = "候选窗出现时按它切换默认 / 详细注释"
 options = [
+  { value = "f1", label = "F1" },
   { value = "ctrl", label = "任一 Ctrl" },
   { value = "lctrl", label = "左 Ctrl" },
   { value = "rctrl", label = "右 Ctrl" },

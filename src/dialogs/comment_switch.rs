@@ -2,7 +2,8 @@
 //!
 //! 对话框本身是清单的分组对话框（`dialog_title` 宿主 `ui.comment.state`）。
 //!
-//! 切换键那一行下方另挂两条提示：选 Alt 时说明 Windows 上的全局钩子；Ctrl 那一侧已被中英切换、
+//! 切换键那一行下方另挂提示：选 Alt 时说明 Windows 上的全局钩子；F1 选按住档时说明按临时切换处理；
+//! 切换键（F1 或 Ctrl 那一侧）已被中英切换、
 //! 选词、会话动作或引导键占用时标出冲突（那些功能优先）。
 
 use std::collections::BTreeMap;
@@ -22,6 +23,7 @@ const MODE_KEY: &str = "ui.comment.switch_mode";
 pub const DIALOG_W: i32 = 620;
 pub const DIALOG_H: i32 = 420;
 const ALT_NOTE: &str = "Windows 上选 Alt 会安装全局键盘钩子，只在候选窗出现时接管 Alt";
+const F1_HOLD_NOTE: &str = "F1 没有「按住」，按「临时切换」处理";
 
 /// 切换键是不是 Alt 系。
 fn is_alt(switch_key: &str) -> bool {
@@ -42,11 +44,13 @@ fn current_reader(state: &AppState) -> Rc<dyn Fn(&str) -> Value> {
     })
 }
 
-/// 切换键覆盖的 Ctrl 侧：`(键名, 显示名)`。Alt 系不收进这几张表，不会撞。
+/// 切换键在按键表里的键名：`(键名, 显示名)`。Alt 系不收进这几张表，不会撞。
 fn ctrl_sides(switch_key: &str) -> &'static [(&'static str, &'static str)] {
     const L: (&str, &str) = ("lctrl", "左 Ctrl");
     const R: (&str, &str) = ("rctrl", "右 Ctrl");
+    const F1: (&str, &str) = ("f1", "F1");
     match switch_key {
+        "f1" => &[F1],
         "ctrl" => &[L, R],
         "lctrl" => &[L],
         "rctrl" => &[R],
@@ -144,7 +148,11 @@ pub fn switch_key_note(enabled: bool, switch_key: &str, mode: &str, uses: &CtrlU
     if is_alt(switch_key) {
         return ALT_NOTE.to_string();
     }
-    conflict_note(switch_key, uses).unwrap_or_default()
+    let conflict = conflict_note(switch_key, uses);
+    if switch_key == "f1" && mode == "hold" {
+        return conflict.map_or(F1_HOLD_NOTE.to_string(), |c| format!("{F1_HOLD_NOTE}；{c}"));
+    }
+    conflict.unwrap_or_default()
 }
 
 /// 拼 [`CtrlUses`] 要的几张全局表（取不到的项不放，按 core 出厂值）。
@@ -323,6 +331,22 @@ mod tests {
             format!("左 Ctrl 已用作中英切换{TAIL}")
         );
         assert_eq!(switch_key_note(true, "lalt", "hold", &busy), ALT_NOTE);
+    }
+
+    #[test]
+    fn f1_conflicts_with_session_binding_and_notes_hold() {
+        let factory = uses(&["lshift", "rshift"], &["semicolon_quote"], &[]);
+        assert_eq!(switch_key_note(true, "f1", "session", &factory), "");
+        assert_eq!(switch_key_note(true, "f1", "hold", &factory), F1_HOLD_NOTE);
+        let busy = uses(&[], &[], &[("f1", "page_next")]);
+        assert_eq!(
+            conflict_note("f1", &busy),
+            Some(format!("F1 已用作会话动作{TAIL}"))
+        );
+        assert_eq!(
+            switch_key_note(true, "f1", "hold", &busy),
+            format!("{F1_HOLD_NOTE}；F1 已用作会话动作{TAIL}")
+        );
     }
 
     #[test]

@@ -2057,10 +2057,11 @@
       ]
     },
     {
-      "default": "ctrl",
+      "default": "f1",
       "key": "ui.comment.switch_key",
       "type": "enum",
       "values": [
+        "f1",
         "ctrl",
         "lctrl",
         "rctrl",
