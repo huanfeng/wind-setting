@@ -3670,9 +3670,21 @@ section = "候选标注"
 subsection = "切换"
 type = "select"
 label = "切换键"
-hint = "候选窗出现时按它切换默认 / 详细注释"
+hint = "候选窗出现时按它切换默认 / 详细注释；选「无」则只靠按键绑定切换"
 options = [
+  { value = "none", label = "无" },
   { value = "f1", label = "F1" },
+  { value = "f2", label = "F2" },
+  { value = "f3", label = "F3" },
+  { value = "f4", label = "F4" },
+  { value = "f5", label = "F5" },
+  { value = "f6", label = "F6" },
+  { value = "f7", label = "F7" },
+  { value = "f8", label = "F8" },
+  { value = "f9", label = "F9" },
+  { value = "f10", label = "F10" },
+  { value = "f11", label = "F11" },
+  { value = "f12", label = "F12" },
   { value = "ctrl", label = "任一 Ctrl" },
   { value = "lctrl", label = "左 Ctrl" },
   { value = "rctrl", label = "右 Ctrl" },
@@ -3689,9 +3701,8 @@ section = "候选标注"
 subsection = "切换"
 type = "select"
 label = "切换方式"
-hint = "单击切换键的作用；「按住」按下即切换，松开恢复"
+hint = "按切换键的作用；「按住」按下即切换、松开恢复，只对 Ctrl、Alt 有效"
 options = [
-  { value = "off", label = "不使用" },
   { value = "session", label = "临时切换（本次候选窗）" },
   { value = "persist", label = "切换当前状态" },
   { value = "hold", label = "按住时显示另一态" },
