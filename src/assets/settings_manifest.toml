@@ -3701,7 +3701,7 @@ section = "候选标注"
 subsection = "切换"
 type = "select"
 label = "切换方式"
-hint = "按切换键的作用；「按住」按下即切换、松开恢复，只对 Ctrl、Alt 有效"
+hint = "按切换键的作用；「按住」按下即切换、松开恢复"
 options = [
   { value = "session", label = "临时切换（本次候选窗）" },
   { value = "persist", label = "切换当前状态" },

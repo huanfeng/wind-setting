@@ -2,7 +2,7 @@
 //!
 //! 对话框本身是清单的分组对话框（`dialog_title` 宿主 `ui.comment.state`）。
 //!
-//! 切换键那一行下方另挂提示：选 Alt 时说明 Windows 上的全局钩子；功能键选按住档时说明按临时切换处理；
+//! 切换键那一行下方另挂提示：选 Alt 时说明 Windows 上的全局钩子；
 //! 切换键（功能键或 Ctrl 那一侧）已被中英切换、
 //! 选词、会话动作或引导键占用时标出冲突（那些功能优先）。
 
@@ -18,12 +18,10 @@ use crate::state::AppState;
 /// 「注释切换与显示」分组对话框的宿主（`dialog_title`）。
 pub const HOST_KEY: &str = "ui.comment.state";
 pub const SWITCH_KEY: &str = "ui.comment.switch_key";
-const MODE_KEY: &str = "ui.comment.switch_mode";
 /// 对话框尺寸：宽到每行说明一行读完，高到放下全部行与一条提示不出滚动条。
 pub const DIALOG_W: i32 = 620;
 pub const DIALOG_H: i32 = 420;
 const ALT_NOTE: &str = "Windows 上选 Alt 会安装全局键盘钩子，只在候选窗出现时接管 Alt";
-const FN_HOLD_NOTE: &str = "功能键没有「按住」，按「临时切换」处理";
 
 /// 切换键是不是 Alt 系。
 fn is_alt(switch_key: &str) -> bool {
@@ -148,18 +146,14 @@ pub fn conflict_note(switch_key: &str, uses: &CtrlUses) -> Option<String> {
 
 /// 切换键行下方的提示，没有为空串。注释关着或切换方式是「不使用」时什么都不提示；
 /// 选 Alt 说明钩子；选 Ctrl 时提示撞键。
-pub fn switch_key_note(enabled: bool, switch_key: &str, mode: &str, uses: &CtrlUses) -> String {
+pub fn switch_key_note(enabled: bool, switch_key: &str, uses: &CtrlUses) -> String {
     if !enabled || switch_key == "none" {
         return String::new();
     }
     if is_alt(switch_key) {
         return ALT_NOTE.to_string();
     }
-    let conflict = conflict_note(switch_key, uses);
-    if is_function_key(switch_key) && mode == "hold" {
-        return conflict.map_or(FN_HOLD_NOTE.to_string(), |c| format!("{FN_HOLD_NOTE}；{c}"));
-    }
-    conflict.unwrap_or_default()
+    conflict_note(switch_key, uses).unwrap_or_default()
 }
 
 /// 拼 [`CtrlUses`] 要的几张全局表（取不到的项不放，按 core 出厂值）。
@@ -193,7 +187,7 @@ pub fn with_switch_key_note(state: &AppState, row: Element) -> Element {
         let s = |k: &str| read(k).as_str().unwrap_or("").to_string();
         let enabled = read("ui.comment.enabled").as_bool().unwrap_or(true);
         let uses = uses_from_reader(&*read);
-        switch_key_note(enabled, &s(SWITCH_KEY), &s(MODE_KEY), &uses)
+        switch_key_note(enabled, &s(SWITCH_KEY), &uses)
     };
     let compute = Rc::new(compute);
     let text = signal(compute());
@@ -282,16 +276,8 @@ mod tests {
             Some(format!("左 Ctrl 已用作中英切换{TAIL}"))
         );
         assert!(conflict_note("rctrl", &u).is_none(), "右侧不撞");
-        assert_eq!(
-            switch_key_note(true, "none", "session", &u),
-            "",
-            "切换键为无时不提示"
-        );
-        assert_eq!(
-            switch_key_note(false, "lctrl", "session", &u),
-            "",
-            "注释关着不提示"
-        );
+        assert_eq!(switch_key_note(true, "none", &u), "", "切换键为无时不提示");
+        assert_eq!(switch_key_note(false, "lctrl", &u), "", "注释关着不提示");
     }
 
     #[test]
@@ -331,28 +317,23 @@ mod tests {
     #[test]
     fn hold_with_ctrl_has_no_extra_note() {
         let factory = uses(&["lshift", "rshift"], &["semicolon_quote"], &[]);
-        assert_eq!(switch_key_note(true, "ctrl", "hold", &factory), "");
+        assert_eq!(switch_key_note(true, "ctrl", &factory), "");
         let busy = uses(&["lctrl"], &[], &[]);
         assert_eq!(
-            switch_key_note(true, "lctrl", "hold", &busy),
+            switch_key_note(true, "lctrl", &busy),
             format!("左 Ctrl 已用作中英切换{TAIL}")
         );
-        assert_eq!(switch_key_note(true, "lalt", "hold", &busy), ALT_NOTE);
+        assert_eq!(switch_key_note(true, "lalt", &busy), ALT_NOTE);
     }
 
     #[test]
-    fn function_key_conflicts_with_session_binding_and_notes_hold() {
+    fn function_key_conflicts_with_session_binding() {
         let factory = uses(&["lshift", "rshift"], &["semicolon_quote"], &[]);
-        assert_eq!(switch_key_note(true, "f1", "session", &factory), "");
-        assert_eq!(switch_key_note(true, "f1", "hold", &factory), FN_HOLD_NOTE);
+        assert_eq!(switch_key_note(true, "f1", &factory), "");
         let busy = uses(&[], &[], &[("f1", "page_next")]);
         assert_eq!(
             conflict_note("f1", &busy),
             Some(format!("F1 已用作会话动作{TAIL}"))
-        );
-        assert_eq!(
-            switch_key_note(true, "f1", "hold", &busy),
-            format!("{FN_HOLD_NOTE}；F1 已用作会话动作{TAIL}")
         );
         let busy = uses(&[], &[], &[("f5", "page_next")]);
         assert_eq!(
@@ -365,16 +346,16 @@ mod tests {
     #[test]
     fn factory_keys_do_not_conflict_and_alt_shows_hook_note() {
         let factory = uses(&["lshift", "rshift"], &["semicolon_quote"], &[]);
-        assert_eq!(switch_key_note(true, "ctrl", "session", &factory), "");
+        assert_eq!(switch_key_note(true, "ctrl", &factory), "");
         let busy = uses(&["lctrl", "rctrl"], &["lrctrl"], &[("lctrl", "page_next")]);
         for k in ["alt", "lalt", "ralt"] {
             assert_eq!(
-                switch_key_note(true, k, "session", &busy),
+                switch_key_note(true, k, &busy),
                 ALT_NOTE,
                 "Alt 不撞，只说明钩子"
             );
         }
-        assert_eq!(switch_key_note(false, "alt", "session", &busy), "");
+        assert_eq!(switch_key_note(false, "alt", &busy), "");
     }
 
     /// 读不到的表按 core 出厂值：出厂不撞。

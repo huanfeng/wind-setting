@@ -1700,13 +1700,13 @@ mod tests {
         let lib = library_from_value(&crate::rpc::mock_reply("comment.library", &json!({})));
         let g = &lib.system_assign.global;
         assert_eq!(g.default_horizontal.as_deref(), Some("code"));
-        assert_eq!(g.detail_horizontal.as_deref(), Some("full"));
+        assert_eq!(g.detail_horizontal.as_deref(), Some("pinyin_en"));
         assert!(g.default_vertical.is_none() && g.detail_vertical.is_none());
         assert_eq!(
-            lib.system_assign.by_type["pinyin"]
+            lib.system_assign.by_type["mixed"]
                 .detail_horizontal
                 .as_deref(),
-            Some("pinyin_en")
+            Some("chaizi_pinyin")
         );
         let t = Scope::Type("codetable".into());
         let (id, from) = lib.effective_of(&t, Col::DetailV).unwrap();
