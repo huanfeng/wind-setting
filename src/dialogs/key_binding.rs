@@ -610,14 +610,26 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
         ),
         VerbCategory::new(
             "候选导航",
-            ["page_prev", "page_next", "highlight_up", "highlight_down"]
-                .iter()
-                .zip(["上一页", "下一页", "高亮上移", "高亮下移"])
-                .map(|(v, l)| Verb {
-                    value: (*v).to_string(),
-                    label: l.to_string(),
-                })
-                .collect(),
+            [
+                "page_prev",
+                "page_next",
+                "highlight_up",
+                "highlight_down",
+                "toggle_tip",
+            ]
+            .iter()
+            .zip([
+                "上一页",
+                "下一页",
+                "高亮上移",
+                "高亮下移",
+                "显示 / 收起高亮项提示",
+            ])
+            .map(|(v, l)| Verb {
+                value: (*v).to_string(),
+                label: l.to_string(),
+            })
+            .collect(),
         ),
         // 「上屏当前高亮候选」即空格的功能，排在序号档之前：它不看位次，跟着高亮走，
         // 与方向键 / 高亮移动配合时才是用户要的那个「确认」。没有候选时 core 不吃键。
@@ -791,6 +803,18 @@ fn session_base_keys() -> &'static [&'static str] {
             "right",
             "home",
             "end",
+            "f1",
+            "f2",
+            "f3",
+            "f4",
+            "f5",
+            "f6",
+            "f7",
+            "f8",
+            "f9",
+            "f10",
+            "f11",
+            "f12",
             "lshift",
             "rshift",
             "lctrl",
@@ -822,6 +846,18 @@ fn session_base_keys() -> &'static [&'static str] {
             "right",
             "home",
             "end",
+            "f1",
+            "f2",
+            "f3",
+            "f4",
+            "f5",
+            "f6",
+            "f7",
+            "f8",
+            "f9",
+            "f10",
+            "f11",
+            "f12",
             "lshift",
             "rshift",
             "lctrl",
@@ -2101,6 +2137,7 @@ mod tests {
                         | "page_next"
                         | "highlight_up"
                         | "highlight_down"
+                        | "toggle_tip"
                         | "cancel"
                         | "clear"
                         | "aux_code"
