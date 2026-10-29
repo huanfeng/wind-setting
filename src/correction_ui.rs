@@ -360,9 +360,11 @@ pub(crate) fn build_correction_row(state: &AppState, cfg: &Config) -> Element {
         .iter()
         .map(|(k, ..)| register_toggle(state, k, cfg))
         .collect();
+    // 定制版 `key:input.correction.rules.*` 藏掉的规则不画（值仍照常登记、生效）。
     let cells: Vec<Element> = RULES
         .iter()
         .zip(sigs.iter())
+        .filter(|((k, ..), _)| state.manifest.is_visible(k))
         .map(|((_, lbl, conflict), s)| {
             Element::col()
                 .width_match()
@@ -377,6 +379,7 @@ pub(crate) fn build_correction_row(state: &AppState, cfg: &Config) -> Element {
                 )
         })
         .collect();
+    let cells_empty = cells.is_empty();
     let grid = crate::search::anchor::wrap(
         Element::grid(2, 10, cells).width_match(),
         in_dialog_anchor(RULES[0].0),
@@ -385,6 +388,7 @@ pub(crate) fn build_correction_row(state: &AppState, cfg: &Config) -> Element {
 
     let custom = CustomRulesUi::new();
     register_custom(state, &custom, cfg);
+    let show_custom = state.manifest.is_visible(CUSTOM_KEY);
     let custom_block = crate::search::anchor::wrap(
         custom_rules_block(&custom),
         in_dialog_anchor(CUSTOM_KEY),
@@ -413,14 +417,20 @@ pub(crate) fn build_correction_row(state: &AppState, cfg: &Config) -> Element {
         },
     );
 
-    let body = Element::col()
+    let show_rules = !cells_empty;
+    let mut body = Element::col()
         .width_match()
         .padding_xy(0, 8)
         .spacing(10)
-        .child(host_off_notice("拼写纠错").visible_when(move || !en.get()))
-        .child(crate::manifest::dialog_group_header("内置规则"))
-        .child(grid)
-        .child(custom_block);
+        .child(host_off_notice("拼写纠错").visible_when(move || !en.get()));
+    if show_rules {
+        body = body
+            .child(crate::manifest::dialog_group_header("内置规则"))
+            .child(grid);
+    }
+    if show_custom {
+        body = body.child(custom_block);
+    }
     let visible = signal(false);
     state
         .fields

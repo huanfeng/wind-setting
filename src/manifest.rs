@@ -305,6 +305,7 @@ impl Manifest {
             }
         }
         self.hide_orphaned_dialog_members();
+        self.hide_orphaned_local_items();
         unmatched
     }
 
@@ -402,6 +403,40 @@ impl Manifest {
             if !item.hidden {
                 item.hidden = true;
                 item.custom_hidden = true;
+            }
+        }
+    }
+
+    /// 一个分区里有配置键的项**全被定制版藏掉**时，同分区的本机项（`local.*`，如「误读表」按钮）
+    /// 跟着藏。
+    ///
+    /// 本机项没有配置键，`key:` 选择器匹配不到它；不连带的话，定制者藏光 `input.correction.*`
+    /// 后分区里还剩一行按钮和分区标题。
+    fn hide_orphaned_local_items(&mut self) {
+        use std::collections::{HashMap, HashSet};
+        // 只在定制版确有隐藏时才连带，免得别的原因（平台限制等）藏光的分区被误标成定制版隐藏。
+        if !self.items.values().any(|i| i.custom_hidden) {
+            return;
+        }
+        // (group, section) → 有配置键的项是否全被藏
+        let mut all_hidden: HashMap<(String, String), bool> = HashMap::new();
+        for it in self.items.values().filter(|i| !i.key.starts_with("local.")) {
+            let e = all_hidden
+                .entry((it.group.clone(), it.section.clone()))
+                .or_insert(true);
+            *e &= it.hidden;
+        }
+        let dead: HashSet<(String, String)> = all_hidden
+            .into_iter()
+            .filter_map(|(k, v)| v.then_some(k))
+            .collect();
+        for it in self.items.values_mut() {
+            if it.key.starts_with("local.")
+                && !it.hidden
+                && dead.contains(&(it.group.clone(), it.section.clone()))
+            {
+                it.hidden = true;
+                it.custom_hidden = true;
             }
         }
     }
@@ -6615,6 +6650,31 @@ fn enabled_when_closure(state: &AppState, expr: &str) -> Option<Box<dyn Fn() -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 定制版藏光 `input.correction.*` 后，同分区没有配置键的「误读表」按钮跟着藏；
+    /// 没藏光时它照常在，没有任何定制隐藏时也不动它。
+    #[test]
+    fn local_items_follow_their_section_when_it_is_fully_hidden() {
+        let hidden_misread = |sels: &[&str]| {
+            let (hide, _) = wind_config::SettingsHide::parse(sels);
+            let mut m = Manifest::from_embedded();
+            m.apply_custom_hide(&hide);
+            m.get("local.misread_table").expect("清单缺误读表").hidden
+        };
+        assert!(
+            hidden_misread(&["key:input.correction.*"]),
+            "分区藏光，按钮也藏"
+        );
+        assert!(
+            !hidden_misread(&["key:input.correction.enabled"]),
+            "只藏一项，按钮留着"
+        );
+        let m = Manifest::from_embedded();
+        assert!(
+            !m.get("local.misread_table").unwrap().hidden,
+            "无定制隐藏不动"
+        );
+    }
 
     /// 定制版只藏对话框里的一项：对话框照开，那一项不再出现在框里。
     #[test]
