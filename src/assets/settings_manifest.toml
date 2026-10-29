@@ -127,7 +127,7 @@ section = "上屏行为"
 subsection = "常用功能"
 type = "toggle"
 label = "显示编码提示"
-hint = "候选旁显示对应编码"
+hint = "码表前缀候选旁显示还要打的剩余编码；显示格式在 外观 › 候选注释 里设置"
 
 [[items]]
 key = "schema.codetable.single_code_input"
@@ -515,18 +515,12 @@ enabled_when = "schema.codetable.english_merge.enable == true"
 
 # ── 候选行为（拼音全局基线；方案可经 schema_overrides 覆盖）──
 [[items]]
-key = "schema.pinyin.code_hint_source"
+key = "local.comment_code_pinyin"
 group = "schema"
 section = "候选行为"
-type = "select"
-label = "编码提示来源"
-hint = "拼音方案（含双拼）下，候选旁显示哪种编码。双拼编码需装有双拼方案（全拼方案下也能显示，用于对照学习）；显示位置与格式由「外观 → 候选注释」的模板决定。临时拼音与快捷输入另设，见「方案 → 临时拼音」；混输方案另设，见「方案 → 混输 → 拼音候选显示码表编码」"
-options = [
-  { value = "auto", label = "自动" },
-  { value = "codetable", label = "码表反查" },
-  { value = "shuangpin", label = "双拼编码" },
-  { value = "off", label = "不显示" },
-]
+type = "comment_code_current"
+label = "编码提示"
+hint = "拼音、双拼方案下候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
 
 [[items]]
 key = "schema.pinyin.use_smart_compose"
@@ -1137,13 +1131,13 @@ label = "超码长时显示拼音前缀匹配"
 hint = "编码超过最大码长后同上；开着可先选前半段上屏，剩余接着打"
 
 [[items]]
-key = "schema.mix.pinyin_code_hint"
+key = "local.comment_code_mix"
 group = "schema"
 section = "混输行为"
 subsection = "拼音相关"
-type = "toggle"
-label = "拼音候选显示码表编码"
-hint = "编码反查：用拼音打出的字词，旁边显示它的码表编码（如五笔拼音下打 nihao，「你好」旁显示 wqvb），方便记码。只管混输方案；纯拼音方案看「方案 → 拼音 → 编码提示来源」，临时拼音看「方案 → 临时拼音」"
+type = "comment_code_current"
+label = "拼音候选显示编码"
+hint = "混输方案下候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
 
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]
@@ -1395,18 +1389,12 @@ options = [
 ]
 
 [[items]]
-key = "input.temp_pinyin.code_hint_source"
+key = "local.comment_code_temp_pinyin"
 group = "schema"
 section = "临时拼音"
-type = "select"
-label = "临时拼音编码提示"
-hint = "临时拼音与快捷输入期间，拼音候选旁显示哪种编码，便于借拼音反查码表编码。与拼音方案的「编码提示来源」互不影响；显示位置与格式由「外观 → 候选注释」的模板决定"
-options = [
-  { value = "auto", label = "自动" },
-  { value = "codetable", label = "码表反查" },
-  { value = "shuangpin", label = "双拼编码" },
-  { value = "off", label = "不显示" },
-]
+type = "comment_code_current"
+label = "编码提示"
+hint = "临时拼音与快捷输入期间候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
 
 # ── 临时英文 ──
 # 注：临时英文不再设独立「启用」开关——Shift+字母 始终可进入，触发键可留空。
@@ -3628,72 +3616,132 @@ options = [
 ]
 
 # ── 候选标注（附在候选项上的文字：注释、序号、命令前缀）──
-# 总开关置于卡片首行，只有「候选注释」（模板对话框）随它置灰。不挂的：
+# 总开关与分配表合并成首行「候选注释 [开关][分配…]」（gate_soft：按钮不随开关置灰）。不挂的：
 # - 序号标签、命令栏前缀：与注释无关；
-# - 「自动使用词库自带的注释」「注释词库」：它们供 `${dict}` 查询，悬停提示的段也用
-#   （设置端自带的「词库注释」悬停预设就是），而 enabled_when 表达不了
-#   「注释开 或 悬停开」这种或条件——挂上只看注释开关，会在悬停仍要用时把它们误置灰。
+# - 「自动使用词库自带的注释」与「注释词库」：它们供 `${dict}` 查询，悬停提示的段也用
+#   （设置端自带的「词库注释」悬停预设就是），注释关着时照样要能配。
 [[items]]
-key = "ui.candidate.comment_enabled"
+key = "ui.comment.enabled"
 group = "ui"
 section = "候选标注"
 type = "toggle"
-label = "显示候选注释"
+label = "候选注释"
 hint = "候选词右侧的编码、注音等小字；用不到可关掉以省内存"
 
-# 候选注释段（候选右侧的小字）：卡片上只占一行「候选注释 …… [设置]」，三个字段与模板参考
-# 全在对话框里（专用 builder，见 manifest.rs 的 COMMENT_HOST_KEY）。
-# 宿主取**横排**模板：它是对话框里第一个出现的字段，而横排宽度由全部候选共享、最需斟酌。
-# 卡片行的 hint 保持一句话——模板语法属于对话框里的事，摊在卡片上没人看得完。
+# 分配表：各作用范围 × 四格（专用 builder，见 dialogs::comment_settings）。宿主取全局那一行的
+# 四格；其余分配键与用户模板没有自己的清单项，由同一份草稿读写（见 capabilities 的豁免名单）。
 [[items]]
-key = "ui.candidate.comment_template_horizontal"
+key = "ui.comment.assign.global"
 group = "ui"
 section = "候选标注"
-gate_key = "ui.candidate.comment_enabled"
+gate_key = "ui.comment.enabled"
 gate_soft = true
+gate_button = "设置"
 type = "dialog_button"
-label = "候选注释"
-hint = "候选词右侧小字的内容与最大字数，横排、竖排可分别设置"
+label = "候选注释 · 分配"
+hint = "各方案、模式在默认 / 详细两态下显示哪个注释模板"
+
+# 注释模板库：与分配表共用一份草稿（专用 builder，见 dialogs::comment_templates）。
+[[items]]
+key = "ui.comment.templates"
+group = "ui"
+section = "候选标注"
+type = "dialog_button_comment_templates"
+label = "注释模板"
+hint = "内置模板只读，可复制为自定义后修改；分配表里的格从这里选模板"
+
+# 「注释切换与显示」分组对话框：宿主是注释状态，切换键、切换方式与显示几项寄居其中。
+[[items]]
+key = "ui.comment.state"
+group = "ui"
+section = "候选标注"
+subsection = "切换"
+type = "segmented"
+label = "当前状态"
+hint = "两态所有方案共用；切换方式为「切换当前状态」时的切换键、命令短语 cozs 写回这里"
+options = [{ value = "default", label = "默认" }, { value = "detail", label = "详细" }]
+dialog_title = "注释切换与显示"
+dialog_hint = "切换键、切换方式，上方注释条与最大字数"
 
 [[items]]
-key = "ui.candidate.comment_template_vertical"
+key = "ui.comment.switch_key"
 group = "ui"
 section = "候选标注"
-type = "string"
-label = "竖排注释"
-hint = "竖排候选窗每行独占一行，可放较长的注音或字根；换行写 \\n"
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+subsection = "切换"
+type = "select"
+label = "切换键"
+hint = "候选窗出现时按它切换默认 / 详细注释；选「无」则只靠按键绑定切换"
+options = [
+  { value = "none", label = "无" },
+  { value = "f1", label = "F1" },
+  { value = "f2", label = "F2" },
+  { value = "f3", label = "F3" },
+  { value = "f4", label = "F4" },
+  { value = "f5", label = "F5" },
+  { value = "f6", label = "F6" },
+  { value = "f7", label = "F7" },
+  { value = "f8", label = "F8" },
+  { value = "f9", label = "F9" },
+  { value = "f10", label = "F10" },
+  { value = "f11", label = "F11" },
+  { value = "f12", label = "F12" },
+  { value = "ctrl", label = "任一 Ctrl" },
+  { value = "lctrl", label = "左 Ctrl" },
+  { value = "rctrl", label = "右 Ctrl" },
+  { value = "alt", label = "任一 Alt" },
+  { value = "lalt", label = "左 Alt" },
+  { value = "ralt", label = "右 Alt" },
+]
+dialog_extra_for = "ui.comment.state"
+
+[[items]]
+key = "ui.comment.switch_mode"
+group = "ui"
+section = "候选标注"
+subsection = "切换"
+type = "select"
+label = "切换方式"
+hint = "按切换键的作用；「按住」按下即切换、松开恢复"
+options = [
+  { value = "session", label = "临时切换（本次候选窗）" },
+  { value = "persist", label = "切换当前状态" },
+  { value = "hold", label = "按住时显示另一态" },
+]
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.comment_above"
 group = "ui"
 section = "候选标注"
+subsection = "显示"
 type = "toggle"
 label = "注释首行显示在候选上方"
-hint = "开启后，模板里第一个换行（\\n）之前的内容显示在候选上方一行，其余仍在候选右侧；换行要写在 { … } 之外。"
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+hint = "模板第一个换行（\\n）前的内容显示在候选上方一行"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.comment_max_chars_horizontal"
 group = "ui"
 section = "候选标注"
+subsection = "显示"
 type = "number"
 label = "横排最大字数"
-hint = "超过此字数时截断并加省略号；0 = 不限"
+hint = "超出截断并加省略号；0 = 不限"
 min = 0
 max = 64
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.comment_max_chars_vertical"
 group = "ui"
 section = "候选标注"
+subsection = "显示"
 type = "number"
 label = "竖排最大字数"
-hint = "竖排每行独占，通常可比横排放宽；0 = 不限（行宽放不下时注释仍会截断，先保候选词完整）"
+hint = "竖排每行独占，可比横排放宽；0 = 不限"
 min = 0
 max = 64
-dialog_extra_for = "ui.candidate.comment_template_horizontal"
+dialog_extra_for = "ui.comment.state"
 
 [[items]]
 key = "ui.candidate.auto_comment_dicts"
@@ -3927,6 +3975,21 @@ options = [
   { value = "window_bottom_left", label = "窗口左下角" },
 ]
 
+[[items]]
+key = "ui.status.caret_side"
+group = "ui"
+section = "状态提示"
+subsection = "位置"
+dialog_group = "status"
+type = "select"
+label = "默认位置"
+hint = "仅在「跟随光标」下生效：放不下时翻到另一侧；挡住候选窗时自动避让"
+enabled_when = "ui.status.enabled == true && ui.status.position_mode == follow_caret"
+options = [
+  { value = "below", label = "光标下方" },
+  { value = "above", label = "光标上方" },
+]
+
 # 锚点文案与 core 右键菜单「应用独立配置 → 状态提示位置」逐字一致（handle_menu.rs 的
 # status_anchor_label）。「屏幕」= 当前窗口所在显示器，「窗口」= 当前窗口的边框。
 [[items]]
@@ -3958,7 +4021,7 @@ section = "状态提示"
 subsection = "位置"
 type = "number"
 label = "水平偏移"
-hint = "相对光标下方（左边缘对齐光标）的水平偏移（像素，正=右）"
+hint = "相对默认位置（左边缘对齐光标）的水平偏移（像素，正=右）"
 min = -400
 max = 400
 enabled_when = "ui.status.position_mode == follow_caret"
@@ -3971,7 +4034,7 @@ section = "状态提示"
 subsection = "位置"
 type = "number"
 label = "垂直偏移"
-hint = "相对光标下方的垂直偏移（像素，正=下）"
+hint = "相对默认位置的垂直偏移（像素，正=下）"
 min = -400
 max = 400
 enabled_when = "ui.status.position_mode == follow_caret"

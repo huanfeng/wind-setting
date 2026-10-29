@@ -147,6 +147,12 @@ pub struct FieldRegistry {
     /// ⚠️ 与 `bool_signals` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空，
     /// Signal 句柄留过页面重建就是悬垂。
     pub punct_cells: RefCell<Option<PunctCells>>,
+    /// 「候选注释」与「注释模板」两个对话框共用的草稿，由
+    /// [`crate::dialogs::comment_settings::shared_ui`] 惰性建好。共用的理由同 `punct_cells`：
+    /// 两框都整键写 `ui.comment.templates`。
+    ///
+    /// ⚠️ 与 `punct_cells` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空。
+    pub comment_ui: RefCell<Option<crate::dialogs::comment_settings::CommentSettingsUi>>,
 }
 
 impl FieldRegistry {
@@ -179,6 +185,7 @@ impl FieldRegistry {
         self.log_level_probes.borrow_mut().clear();
         self.dialog_opens.borrow_mut().clear();
         *self.punct_cells.borrow_mut() = None;
+        *self.comment_ui.borrow_mut() = None;
         // ⛔ 不清 `system_baseline`：见其字段注释。
     }
 

@@ -22,6 +22,9 @@ pub struct JumpRequest {
     /// 对话框内的项要分两跳：先落到卡片上那个「设置…」按钮所在行，把框打开，
     /// 再落到框里的那一行。一跳做不完是因为框没开之前，框内那一行根本不在布局里。
     pub dialog_opened: bool,
+    /// 落定后是否闪目标行。搜索结果要闪（指给人看是哪一行）；设置里的「去那儿看」
+    /// 入口不闪——人是自己点过去的，知道要看哪儿。
+    pub flash: bool,
 }
 
 impl JumpRequest {
@@ -55,6 +58,15 @@ thread_local! {
 /// 方案级目标（`SchemaLevel`）也走这里——它的 `tab()` 就是方案页，请求则由 P4 的
 /// 指示条消费，不进锚点。
 pub fn request(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: JumpTarget) {
+    send(tab, jump, target, true);
+}
+
+/// 同 [`request`]，但落定后不闪。
+pub fn request_quiet(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: JumpTarget) {
+    send(tab, jump, target, false);
+}
+
+fn send(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: JumpTarget, flash: bool) {
     let seq = SEQ.with(|s| {
         let n = s.get().wrapping_add(1);
         s.set(n);
@@ -68,6 +80,7 @@ pub fn request(tab: Signal<usize>, jump: Signal<Option<JumpRequest>>, target: Ju
         seq,
         target,
         dialog_opened: false,
+        flash,
     }));
 }
 

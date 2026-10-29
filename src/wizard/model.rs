@@ -11,6 +11,10 @@ use crate::manifest::{
 };
 use crate::state::SchemaInfo;
 
+/// 向导「拼音反查」读写的注释分配格：拼音、双拼类型的默认横排格。
+const PINYIN_CODE_CELL: &str = "ui.comment.assign.type.pinyin.default_horizontal";
+const SHUANGPIN_CODE_CELL: &str = "ui.comment.assign.type.shuangpin.default_horizontal";
+
 pub const VERB_QUICK: &str = "mix:quick_mix";
 pub const VERB_TEMP_PINYIN: &str = "temp_pinyin";
 pub(crate) const KEY_ACTIONS: &str = "keys.key_actions";
@@ -268,10 +272,11 @@ impl Draft {
             catalog,
             auto_commit_at_full: b("schema.codetable.auto_commit_at_full"),
             clear_on_empty_max: b("schema.codetable.clear_on_empty_max"),
-            code_hint: cfg
-                .get_str("schema.pinyin.code_hint_source")
-                .unwrap_or("off")
-                != "off",
+            // 拼音反查 = 拼音或双拼类型的默认态在显示东西（出厂 none，见 core 设计 §13.6）；
+            // inherit 跟随全局，全局出厂就是编码。
+            code_hint: [PINYIN_CODE_CELL, SHUANGPIN_CODE_CELL]
+                .iter()
+                .any(|k| cfg.get_str(k).is_some_and(|v| v != "none")),
             emoji: b("input.emoji.enabled"),
             fuzzy: b("schema.pinyin.fuzzy.enabled"),
             fuzzy_pairs: FUZZY_PAIRS.map(|(k, _)| b(&format!("schema.pinyin.fuzzy.{k}"))),
@@ -383,9 +388,15 @@ impl Draft {
                         self.clear_on_empty_max.into(),
                     );
                 }
+                // 打开只补还是 none 的格，用户在注释分配里另选的模板不动；关闭两格都写 none。
                 if self.code_hint != cur.code_hint {
-                    let v = if self.code_hint { "codetable" } else { "off" };
-                    set("schema.pinyin.code_hint_source", v.into());
+                    for k in [PINYIN_CODE_CELL, SHUANGPIN_CODE_CELL] {
+                        let is_none = base.get_str(k).is_none_or(|v| v == "none");
+                        if self.code_hint == is_none {
+                            let v = if self.code_hint { "code_rev" } else { "none" };
+                            set(k, v.into());
+                        }
+                    }
                 }
                 if self.temp_pinyin != cur.temp_pinyin {
                     set("input.temp_pinyin.enabled", self.temp_pinyin.into());
@@ -926,11 +937,15 @@ mod tests {
 
     #[test]
     fn code_hint_auto_counts_as_on() {
-        let c =
-            cfg(json!({"schema": {"active": "wubi86", "pinyin": {"code_hint_source": "auto"}}}));
+        let c = cfg(
+            json!({"schema": {"active": "wubi86"}, "ui": {"comment": {"assign": {"type": {"pinyin": {"default_horizontal": "code"}}}}}}),
+        );
         assert!(Draft::from_current(&c, &schemas(), BTreeMap::new()).code_hint);
-        let c = cfg(json!({"schema": {"active": "wubi86", "pinyin": {"code_hint_source": "off"}}}));
-        assert!(!Draft::from_current(&c, &schemas(), BTreeMap::new()).code_hint);
+        let c = cfg(json!({"schema": {"active": "wubi86"}}));
+        assert!(
+            !Draft::from_current(&c, &schemas(), BTreeMap::new()).code_hint,
+            "出厂 none"
+        );
     }
 
     #[test]
@@ -1169,7 +1184,8 @@ mod tests {
         cfg(json!({
             "schema": {"active": "wubi86", "available": ["wubi86", "wubi86_pinyin", "my_table"],
                        "codetable": {"auto_commit_at_full": false, "clear_on_empty_max": false},
-                       "pinyin": {"code_hint_source": "auto", "fuzzy": {"enabled": false}}},
+                       "pinyin": {"fuzzy": {"enabled": false}}},
+            "ui": {"comment": {"assign": {"type": {"pinyin": {"default_horizontal": "code"}}}}},
             "input": {"emoji": {"enabled": false}, "temp_pinyin": {"enabled": true},
                       "punct": {"custom_enabled": false, "custom_mappings": {}}},
             "keys": {"key_actions": {"semicolon": "mix:quick_mix", "backtick": "temp_pinyin",
@@ -1199,19 +1215,49 @@ mod tests {
         let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.auto_commit_at_full = true; // 改别的
         let t = d.to_target(&b);
-        assert_eq!(t.get_str("schema.pinyin.code_hint_source"), Some("auto"));
+        assert_eq!(t.get_str(PINYIN_CODE_CELL), Some("code"));
     }
 
     #[test]
-    fn code_hint_on_from_off_writes_codetable() {
+    fn code_hint_on_from_off_writes_code_rev() {
         let mut b = base();
-        b.set_path("schema.pinyin.code_hint_source", json!("off"));
+        b.set_path(PINYIN_CODE_CELL, json!("none"));
         let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
         d.code_hint = true;
+        assert_eq!(d.to_target(&b).get_str(PINYIN_CODE_CELL), Some("code_rev"));
         assert_eq!(
-            d.to_target(&b).get_str("schema.pinyin.code_hint_source"),
-            Some("codetable")
+            d.to_target(&b).get_str(SHUANGPIN_CODE_CELL),
+            Some("code_rev")
         );
+    }
+
+    #[test]
+    fn code_hint_reads_either_cell() {
+        let mut b = base();
+        b.set_path(PINYIN_CODE_CELL, json!("none"));
+        b.set_path(SHUANGPIN_CODE_CELL, json!("shuangpin"));
+        let d = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        assert!(d.code_hint, "双拼格在显示编码就算开");
+        let mut b = base();
+        b.set_path(PINYIN_CODE_CELL, json!("none"));
+        b.set_path(SHUANGPIN_CODE_CELL, json!("none"));
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        d.code_hint = true;
+        let t = d.to_target(&b);
+        assert_eq!(t.get_str(PINYIN_CODE_CELL), Some("code_rev"));
+        assert_eq!(t.get_str(SHUANGPIN_CODE_CELL), Some("code_rev"));
+    }
+
+    #[test]
+    fn code_hint_off_writes_none_to_both() {
+        let mut b = base();
+        b.set_path(PINYIN_CODE_CELL, json!("code"));
+        b.set_path(SHUANGPIN_CODE_CELL, json!("shuangpin"));
+        let mut d = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        d.code_hint = false;
+        let t = d.to_target(&b);
+        assert_eq!(t.get_str(PINYIN_CODE_CELL), Some("none"));
+        assert_eq!(t.get_str(SHUANGPIN_CODE_CELL), Some("none"));
     }
 
     #[test]

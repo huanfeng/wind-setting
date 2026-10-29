@@ -655,7 +655,16 @@ mod tests {
             &json!({"template": "$[nope]{x} ${code}", "scene": "comment", "swatches": ["error"]}),
         );
         for k in [
-            "text", "fg", "bg", "runs", "selected", "problems", "swatches",
+            "candidate",
+            "sample",
+            "samples",
+            "text",
+            "fg",
+            "bg",
+            "runs",
+            "selected",
+            "problems",
+            "swatches",
         ] {
             assert!(r.get(k).is_some(), "缺 {k}：{r}");
         }
@@ -1526,11 +1535,213 @@ fn mock_conflict_example(params: &Value) -> Value {
     }
 }
 
+/// 离线预览样例：id / 词 / 语种与 core `template_preview::SAMPLES` 一致，变量只抄注释常用的几个。
+struct MockSample {
+    id: &'static str,
+    text: &'static str,
+    lang: &'static str,
+    pinyin: &'static str,
+    shuangpin: &'static str,
+    code_hint: &'static str,
+    code_rev: &'static str,
+    /// 整段求值取首字，同 core。
+    chaizi: &'static str,
+    chaizi_code: &'static str,
+    dict: &'static str,
+    dict_id: &'static str,
+    dict_by_id: &'static str,
+    emoji: &'static str,
+}
+
+const fn mock_zh(
+    id: &'static str,
+    text: &'static str,
+    v: [&'static str; 8],
+    emoji: &'static str,
+) -> MockSample {
+    MockSample {
+        id,
+        text,
+        lang: "zh",
+        pinyin: v[0],
+        shuangpin: v[1],
+        code_hint: v[2],
+        code_rev: v[3],
+        chaizi: v[4],
+        chaizi_code: v[5],
+        dict: v[6],
+        dict_id: "zh_en",
+        dict_by_id: v[7],
+        emoji,
+    }
+}
+
+const fn mock_en(text: &'static str, dict: &'static str, emoji: &'static str) -> MockSample {
+    MockSample {
+        id: text,
+        text,
+        lang: "en",
+        pinyin: "",
+        shuangpin: "",
+        code_hint: "",
+        code_rev: "",
+        chaizi: "",
+        chaizi_code: "",
+        dict,
+        dict_id: "en_zh",
+        dict_by_id: dict,
+        emoji,
+    }
+}
+
+const MOCK_SAMPLES: &[MockSample] = &[
+    mock_zh(
+        "nihao",
+        "你好",
+        [
+            "nǐ hǎo",
+            "nihc",
+            "hao",
+            "wqvb",
+            "亻尔",
+            "wqiy",
+            "hello",
+            "int. hello",
+        ],
+        "👋",
+    ),
+    mock_zh(
+        "zhongwen",
+        "中文",
+        [
+            "zhōng wén",
+            "vswf",
+            "wen",
+            "khyy",
+            "口丨",
+            "khk",
+            "n. Chinese language",
+            "n. Chinese language",
+        ],
+        "🀄",
+    ),
+    mock_zh(
+        "shurufa",
+        "输入法",
+        [
+            "shū rù fǎ",
+            "uurufa",
+            "rufa",
+            "ltif",
+            "车俞",
+            "lwgj",
+            "n. input method",
+            "n. input method",
+        ],
+        "⌨️",
+    ),
+    mock_en("apple", "n. 苹果", "🍎"),
+    mock_en("hello", "int. 喂；你好", "👋"),
+    mock_en("world", "n. 世界", "🌍"),
+];
+
+impl MockSample {
+    /// 一个变量的样例值；`None` = 离线不认识（原样回显）。
+    fn var(&self, name: &str, arg: Option<&str>) -> Option<&'static str> {
+        Some(match name {
+            "pinyin" => self.pinyin,
+            "shuangpin" => self.shuangpin,
+            "code_hint" => self.code_hint,
+            "code_rev" | "code" => self.code_rev,
+            "chaizi" => self.chaizi,
+            "chaizi_code" => self.chaizi_code,
+            "emoji" => self.emoji,
+            "dict" => match arg {
+                Some(id) if id == self.dict_id => self.dict_by_id,
+                Some(_) => "",
+                None => self.dict,
+            },
+            _ => return None,
+        })
+    }
+
+    /// 离线的简化求值：`${a|b:参数}` 取第一个非空、`{…}` 里变量全空则整段消失、`$[色]{…}`
+    /// 只留正文。返回 `(文字, 有变量非空, 有变量)`。
+    fn eval(&self, tpl: &str) -> (String, bool, bool) {
+        let b = tpl.as_bytes();
+        let close_of = |from: usize| -> Option<usize> {
+            let mut depth = 0usize;
+            for (i, &c) in b.iter().enumerate().skip(from) {
+                match c {
+                    b'{' => depth += 1,
+                    b'}' if depth == 0 => return Some(i),
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            None
+        };
+        let (mut out, mut filled, mut any) = (String::new(), false, false);
+        let mut i = 0;
+        while i < b.len() {
+            if tpl[i..].starts_with("${")
+                && let Some(end) = close_of(i + 2)
+            {
+                any = true;
+                let mut known = true;
+                let v = tpl[i + 2..end]
+                    .split('|')
+                    .map(|alt| {
+                        let (n, a) = alt
+                            .split_once(':')
+                            .map_or((alt, None), |(n, a)| (n, Some(a)));
+                        let v = self.var(n.trim(), a.map(str::trim));
+                        known &= v.is_some();
+                        v.unwrap_or("")
+                    })
+                    .find(|v| !v.is_empty());
+                match v {
+                    Some(v) => {
+                        out.push_str(v);
+                        filled = true;
+                    }
+                    None if !known => out.push_str(&tpl[i..=end]),
+                    None => {}
+                }
+                i = end + 1;
+            } else if tpl[i..].starts_with("$[")
+                && let Some(spec) = tpl[i..].find("]{").map(|k| i + k)
+                && let Some(end) = close_of(spec + 2)
+            {
+                let (t, f, a) = self.eval(&tpl[spec + 2..end]);
+                out.push_str(&t);
+                (filled, any) = (filled || f, any || a);
+                i = end + 1;
+            } else if b[i] == b'{'
+                && let Some(end) = close_of(i + 1)
+            {
+                let (t, f, a) = self.eval(&tpl[i + 1..end]);
+                if f || !a {
+                    out.push_str(&t);
+                }
+                (filled, any) = (filled || f, any || a);
+                i = end + 1;
+            } else {
+                let ch = tpl[i..].chars().next().unwrap_or(' ');
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        (out, filled, any)
+    }
+}
+
 /// `appearance.previewTemplate` 的离线回包（设置端模板预览行）。
 ///
-/// 真实求值要变量样例与主题，都在 core；离线只求**形状与坐标系**对：文字是固定样例（有 `$[`
-/// 时给一段强调色），`$[…]` 里既不是 `#` 色值也不是标准色名的，按 core 的口径报一条问题——
-/// 区间是**模板**里的字节偏移，截图里能看到问题落回输入框的哪一段。
+/// 真实求值要变量样例与主题，都在 core；离线只求**形状与坐标系**对：注释按 `sample`（缺省
+/// 「你好」）用简化求值出文字（有 `$[` 时整段给强调色），`$[…]` 里既不是 `#` 色值也不是标准
+/// 色名的，按 core 的口径报一条问题——区间是**模板**里的字节偏移，截图里能看到问题落回输入框
+/// 的哪一段。
 fn mock_preview_template(params: &Value) -> Value {
     const NAMES: &[(&str, [u8; 4], [u8; 4])] = &[
         ("text", [30, 30, 30, 255], [255, 255, 255, 255]),
@@ -1573,22 +1784,39 @@ fn mock_preview_template(params: &Value) -> Value {
         }
         from = spec_at + len;
     }
+    let sample_id = params.get("sample").and_then(|v| v.as_str());
+    // 离线不报未知样例（设置端只发回包里列出的 id），退回缺省样例。
+    let preset = MOCK_SAMPLES
+        .iter()
+        .find(|s| sample_id.is_some_and(|id| s.id == id))
+        .unwrap_or(&MOCK_SAMPLES[0]);
+    let samples: Vec<Value> = MOCK_SAMPLES
+        .iter()
+        .map(|s| json!({ "id": s.id, "text": s.text, "lang": s.lang }))
+        .collect();
     let scene = params.get("scene").and_then(|v| v.as_str()).unwrap_or("");
     let (text, runs) = if scene == "label" {
         // 段名多是字面文字：原样回显（去掉 `$[…]{` 与配对的 `}` 太费事，离线不求这个）。
         (
-            tpl,
+            tpl.to_string(),
             json!([{ "start": 0, "end": tpl.len(), "rgba": pick("accent_text") }]),
         )
     } else if tooltip {
         (
-            "你：nǐ\n好：hǎo/hào",
+            "你：nǐ\n好：hǎo/hào".to_string(),
             json!([{ "start": 6, "end": 9, "rgba": pick("error") }]),
         )
     } else {
+        let (t, filled, any) = preset.eval(tpl);
+        let t = if any && !filled {
+            String::new()
+        } else {
+            t.trim().to_string()
+        };
+        let len = t.len();
         (
-            "hao (nǐ hǎo)",
-            json!([{ "start": 4, "end": 14, "rgba": pick("accent_text") }]),
+            t,
+            json!([{ "start": 0, "end": len, "rgba": pick("accent_text") }]),
         )
     };
     let runs = if tpl.contains("$[") { runs } else { json!([]) };
@@ -1607,6 +1835,9 @@ fn mock_preview_template(params: &Value) -> Value {
         })
         .collect();
     json!({
+        "candidate": preset.text,
+        "sample": preset.id,
+        "samples": samples,
         "text": text,
         "fg": if tooltip { [255, 255, 255, 255] } else { [150, 150, 150, 255] },
         "bg": if tooltip { [60, 60, 60, 240] } else { [255, 255, 255, 255] },
@@ -1732,6 +1963,43 @@ fn mock_system_stats(params: &Value) -> Value {
     }
 }
 
+/// `comment.library` 的 mock：出厂模板与分配取 core 的真实数据文件，按草稿走与 core 同一份
+/// 解析（`wind_config::comment_lib`），截图里「跟随」格的落点才可信。当前方案取 `wubi86`。
+fn mock_comment_library(params: &Value) -> Value {
+    use wind_config::comment_lib::{
+        CommentLibrary, SchemaType, SystemComments, TemplateOrigin, UiCommentConfig,
+    };
+    let system = SystemComments::parse(include_str!("../../WindInput/data/system.comments.toml"))
+        .unwrap_or_default();
+    let user: UiCommentConfig = params
+        .get("comment")
+        .and_then(|c| serde_json::from_value(c.clone()).ok())
+        .unwrap_or_default();
+    let (lib, _) = CommentLibrary::build(&system, &user);
+    let type_of = |s: &str| match s {
+        "pinyin_simp" => SchemaType::Pinyin,
+        "double_pinyin" => SchemaType::Shuangpin,
+        "wubi_mixed" => SchemaType::Mixed,
+        _ => SchemaType::CodeTable,
+    };
+    let templates: Vec<Value> = lib
+        .templates()
+        .map(|(t, o)| {
+            let origin = match o {
+                TemplateOrigin::Builtin => "builtin",
+                TemplateOrigin::User => "user",
+                TemplateOrigin::UserOverridesBuiltin => "user_overrides_builtin",
+            };
+            json!({ "id": t.id, "name": t.name, "text": t.text, "desc": t.desc, "origin": origin })
+        })
+        .collect();
+    json!({
+        "templates": templates,
+        "system_assign": system.assign,
+        "effective": lib.effective_table("wubi86", type_of),
+    })
+}
+
 /// Mock 模式：返回形状合理的默认值；manifest/config 用内置真实数据，
 /// 方案/主题/字体/系统信息给代表性样例，便于离线核对 UI 保真度。
 pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
@@ -1755,6 +2023,10 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         // ——本屏靠它把自动派生项与手工项分开，前缀写错的表现是「自动项变成可删的手工项」。
         // 两个 files 一有一无 comment 列：缺列的那份要能看到「缺 comment 列」那行说明。
         "comment.sources" => json!({
+            "builtin": [
+                { "id": "en_zh", "label": "英汉释义", "rel": "comments/en_zh.txt", "origin": "builtin" },
+                { "id": "zh_en", "label": "汉英释义", "rel": "comments/zh_en.txt", "origin": "builtin" }
+            ],
             "auto": [
                 { "id": "auto:pinyin/rime_frost.dict.yaml", "label": "朗月拼音词库",
                   "rel": "pinyin/rime_frost.dict.yaml", "schemas": ["pinyin_simp"] }
@@ -1765,6 +2037,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 { "path": "comments/broken.dict.yaml", "label": "", "hasComment": false }
             ]
         }),
+        "comment.library" => mock_comment_library(params),
         // 与 core 的 EMOJI_MODULES 同序同出厂值，外加一个用户放置的文件。
         "emoji.modules" => json!({
             "userDir": "emoji",

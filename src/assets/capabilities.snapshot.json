@@ -480,17 +480,6 @@
       "type": "int"
     },
     {
-      "default": "off",
-      "key": "schema.pinyin.code_hint_source",
-      "type": "enum",
-      "values": [
-        "off",
-        "codetable",
-        "shuangpin",
-        "auto"
-      ]
-    },
-    {
       "default": true,
       "key": "schema.pinyin.use_smart_compose",
       "type": "bool"
@@ -820,11 +809,6 @@
     {
       "default": false,
       "key": "schema.mix.enable_pinyin_abbrev",
-      "type": "bool"
-    },
-    {
-      "default": true,
-      "key": "schema.mix.pinyin_code_hint",
       "type": "bool"
     },
     {
@@ -1358,17 +1342,6 @@
         "follow",
         "vertical",
         "horizontal"
-      ]
-    },
-    {
-      "default": "auto",
-      "key": "input.temp_pinyin.code_hint_source",
-      "type": "enum",
-      "values": [
-        "off",
-        "codetable",
-        "shuangpin",
-        "auto"
       ]
     },
     {
@@ -2045,29 +2018,6 @@
       "type": "strlist"
     },
     {
-      "default": true,
-      "key": "ui.candidate.comment_enabled",
-      "type": "bool"
-    },
-    {
-      "default": "${code_hint|code_rev|shuangpin}",
-      "key": "ui.candidate.comment_template_vertical",
-      "schemaOverride": {
-        "note": "方案可覆盖注释模板；方案没写则用这里的值。",
-        "section": "[candidate]"
-      },
-      "type": "str"
-    },
-    {
-      "default": "${code_hint|code_rev|shuangpin}",
-      "key": "ui.candidate.comment_template_horizontal",
-      "schemaOverride": {
-        "note": "方案可覆盖注释模板；方案没写则用这里的值。",
-        "section": "[candidate]"
-      },
-      "type": "str"
-    },
-    {
       "default": 0,
       "key": "ui.candidate.comment_max_chars_vertical",
       "type": "int"
@@ -2091,6 +2041,87 @@
       "default": [],
       "key": "ui.comment_dicts",
       "type": "structlist"
+    },
+    {
+      "default": true,
+      "key": "ui.comment.enabled",
+      "type": "bool"
+    },
+    {
+      "default": "default",
+      "key": "ui.comment.state",
+      "type": "enum",
+      "values": [
+        "default",
+        "detail"
+      ]
+    },
+    {
+      "default": "f1",
+      "key": "ui.comment.switch_key",
+      "type": "enum",
+      "values": [
+        "none",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "f11",
+        "f12",
+        "ctrl",
+        "lctrl",
+        "rctrl",
+        "alt",
+        "lalt",
+        "ralt"
+      ]
+    },
+    {
+      "default": "session",
+      "key": "ui.comment.switch_mode",
+      "type": "enum",
+      "values": [
+        "session",
+        "persist",
+        "hold"
+      ]
+    },
+    {
+      "default": [],
+      "key": "ui.comment.templates",
+      "type": "structlist"
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.global",
+      "type": "map",
+      "values": [
+        "default_vertical",
+        "default_horizontal",
+        "detail_vertical",
+        "detail_horizontal"
+      ]
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.type",
+      "type": "map"
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.schema",
+      "type": "map"
+    },
+    {
+      "default": {},
+      "key": "ui.comment.assign.mode",
+      "type": "map"
     },
     {
       "default": [],
@@ -2363,6 +2394,15 @@
         "screen_bottom_right",
         "window_center",
         "window_bottom_left"
+      ]
+    },
+    {
+      "default": "below",
+      "key": "ui.status.caret_side",
+      "type": "enum",
+      "values": [
+        "below",
+        "above"
       ]
     },
     {

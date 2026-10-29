@@ -208,7 +208,6 @@
   },
   "temp_pinyin": {
    "candidate_layout": "follow",
-   "code_hint_source": "auto",
    "enabled": true,
    "hotkey": "",
    "trigger_keys": [
@@ -394,7 +393,6 @@
    "english_max_count": 2,
    "min_english_length": 3,
    "min_pinyin_length": 2,
-   "pinyin_code_hint": true,
    "pinyin_only_overflow": true,
    "pinyin_partial_candidates": false,
    "pinyin_partial_candidates_overflow": true,
@@ -439,7 +437,6 @@
     "enabled": false,
     "max_phrase_len": 0
    },
-   "code_hint_source": "off",
    "completion": {
     "max_extra_syllables": 5,
     "min_syllables": 4
@@ -512,11 +509,8 @@
   "candidate": {
    "auto_comment_dicts": true,
    "comment_above": false,
-   "comment_enabled": true,
    "comment_max_chars_horizontal": 0,
    "comment_max_chars_vertical": 0,
-   "comment_template_horizontal": "${code_hint|code_rev|shuangpin}",
-   "comment_template_vertical": "${code_hint|code_rev|shuangpin}",
    "custom_x": 0,
    "custom_y": 0,
    "double_click_screenshot": false,
@@ -557,6 +551,19 @@
    "preedit_display": "app_inline",
    "shadow": "follow",
    "swap_preedit_when_above": false
+  },
+  "comment": {
+   "assign": {
+    "global": {},
+    "mode": {},
+    "schema": {},
+    "type": {}
+   },
+   "enabled": true,
+   "state": "default",
+   "switch_key": "f1",
+   "switch_mode": "session",
+   "templates": []
   },
   "comment_dicts": [],
   "font": {
@@ -610,6 +617,7 @@
    "style": "short"
   },
   "status": {
+   "caret_side": "below",
    "custom_x": 0,
    "custom_y": 0,
    "display_mode": "temp",

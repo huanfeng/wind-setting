@@ -727,23 +727,27 @@ pub fn build_group_dialog_with_link(
     build_group_dialog_shell(visible, title, content, leading)
 }
 
-/// 同 [`build_group_dialog_with_link`]，外壳换成 [`build_group_dialog_shell_large`]
-/// （620×460）。给字段多、每个字段还各带一份预览的对话框用——默认 460×380 装得下
-/// 标签，装不下同一行还要塞得下「插入颜色」的模板输入框（候选注释：横/竖排模板各一份
-/// 预览，见 [`build_comment_dialog`]）。
-pub fn build_group_dialog_with_link_large(
+/// 同 [`build_group_dialog`]，尺寸由调用方定（行说明长、默认 460 宽会截半句的分组对话框）。
+pub fn build_group_dialog_sized(
     visible: Signal<bool>,
     title: &str,
     rows: Vec<Element>,
     reset_fn: Option<Box<dyn Fn() + 'static>>,
-    doc_url: Option<&'static str>,
+    width: i32,
+    height: i32,
 ) -> Element {
-    let (content, leading) = dialog_body_with_link(rows, reset_fn, doc_url);
-    build_group_dialog_shell_large(visible, title, content, leading)
+    let (content, leading) = dialog_body_with_link(rows, reset_fn, None);
+    shell_with_title_sized(
+        visible,
+        Element::label(title),
+        content,
+        leading,
+        width,
+        height,
+    )
 }
 
-/// [`build_group_dialog_with_link`] / [`build_group_dialog_with_link_large`] 共用的内容区
-/// 与底栏左侧按钮组装——两者只有外壳尺寸不同，抽出来避免同一份拼装逻辑写两遍。
+/// [`build_group_dialog_with_link`] 的内容区与底栏左侧按钮组装。
 fn dialog_body_with_link(
     rows: Vec<Element>,
     reset_fn: Option<Box<dyn Fn() + 'static>>,
@@ -863,12 +867,33 @@ pub fn build_confirm_dialog_shell(
     confirm_enabled: Signal<bool>,
     on_confirm: impl Fn() + 'static,
 ) -> Element {
+    build_confirm_dialog_shell_sized(
+        visible,
+        title,
+        content,
+        confirm_enabled,
+        on_confirm,
+        "确定",
+        400,
+    )
+}
+
+/// 同 [`build_confirm_dialog_shell`]，可换确认键文字与外壳高度（内容少的小框不必撑到 400）。
+pub fn build_confirm_dialog_shell_sized(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    confirm_enabled: Signal<bool>,
+    on_confirm: impl Fn() + 'static,
+    confirm_label: &'static str,
+    height: i32,
+) -> Element {
     let trailing = vec![
         Element::button("取消")
             .small()
             .outline_soft()
             .on_click(move |_| visible.set(false)),
-        Element::button("确定")
+        Element::button(confirm_label)
             .small()
             .enabled_signal(confirm_enabled)
             .on_click(move |_| {
@@ -882,8 +907,8 @@ pub fn build_confirm_dialog_shell(
         content,
         Vec::new(),
         trailing,
-        460,
-        400,
+        FrameWidth::Fixed(460),
+        height,
     )
 }
 
@@ -896,9 +921,10 @@ fn shell_with_title_sized(
     title: Element,
     content: Element,
     bottom_leading: Vec<Element>,
-    width: i32,
+    width: impl Into<FrameWidth>,
     height: i32,
 ) -> Element {
+    let width = width.into();
     let close = vec![
         Element::button("关闭")
             .small()
@@ -916,6 +942,42 @@ fn shell_with_title_sized(
     )
 }
 
+/// 外壳宽度：定宽，或随窗宽伸缩（撑满窗宽减两侧外边距，封顶 `max`）。
+#[derive(Debug, Clone, Copy)]
+pub enum FrameWidth {
+    Fixed(i32),
+    Fluid { max: i32 },
+}
+
+impl From<i32> for FrameWidth {
+    fn from(w: i32) -> Self {
+        FrameWidth::Fixed(w)
+    }
+}
+
+/// 窗宽自适应外壳两侧的外边距。
+const FLUID_MARGIN: i32 = 20;
+
+/// 宽度随窗宽伸缩的动态标题外壳：窗口宽时宽到 `max_width`，窄时贴着窗边留 20px。
+/// 给列多、定宽装不下的表格类浮层用（候选注释的分配表）。
+pub fn build_group_dialog_shell_fluid(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    bottom_leading: Vec<Element>,
+    max_width: i32,
+    height: i32,
+) -> Element {
+    shell_with_title_sized(
+        visible,
+        Element::label_signal(title),
+        content,
+        bottom_leading,
+        FrameWidth::Fluid { max: max_width },
+        height,
+    )
+}
+
 /// 外壳本体（底部按钮由调用方给全）。抽出这一层是因为编辑型浮层要「确定 / 取消」而不是
 /// 「关闭」——两套底栏各写一遍框架，就会重蹈本文件开头那段注释说的「同一个设置界面里
 /// 两种弹窗」。
@@ -926,7 +988,7 @@ fn shell_with_buttons(
     content: Element,
     bottom_leading: Vec<Element>,
     bottom_trailing: Vec<Element>,
-    width: i32,
+    width: FrameWidth,
     height: i32,
 ) -> Element {
     // 内容超长时中间区域可滚动；固定视口高度确保标题栏和关闭按钮始终可见。
@@ -948,8 +1010,11 @@ fn shell_with_buttons(
         bottom = bottom.child(el);
     }
 
-    let frame = Element::col()
-        .width(width)
+    let frame = match width {
+        FrameWidth::Fixed(w) => Element::col().width(w),
+        FrameWidth::Fluid { .. } => Element::col().width_match(),
+    };
+    let frame = frame
         .bg_role(Role::Surface)
         .border_role(Role::Border, 1)
         .corner(12.0)
@@ -969,7 +1034,29 @@ fn shell_with_buttons(
     // 右上角小 ×：标题行右侧本就是空的（标题 `width_match` 左对齐），叠上去不挤任何东西。
     // 与底栏的「关闭 / 取消」是同一件事，多这个入口是因为浮层拖开之后底栏可能已经被
     // 拖出视野，而标题行按定义还留在窗口内（拖动的钳制保的就是它）。
-    Element::dialog_closable(visible, frame, move |_| visible.set(false))
+    match width {
+        FrameWidth::Fixed(_) => {
+            Element::dialog_closable(visible, frame, move |_| visible.set(false))
+        }
+        // 自适应宽的外边距要落在「面板 + ×」这一层外面：落在面板上的话，`dialog_closable`
+        // 把 × 摆在含外边距的外框角上，× 就跑到面板外头去了。故 × 在这里自己叠。
+        FrameWidth::Fluid { max } => {
+            let close = Element::icon_button("\u{2715}")
+                .size(24, 24)
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .align_xy(Align::End, Align::Start)
+                .margin(windui::theme::current().metrics.space_sm)
+                .on_click(move |_| visible.set(false));
+            let panel = Element::stack()
+                .width_match()
+                .max_width(max)
+                .margin(FLUID_MARGIN)
+                .child(frame)
+                .child(close);
+            Element::dialog(visible, panel)
+        }
+    }
 }
 
 /// 自定义序号标签对话框：10 个文本框对应序号 1-10（**每框一个完整标签**，可多字符），
@@ -1555,23 +1642,8 @@ pub fn build_hotkey_dialog(
 }
 
 /// 候选注释文档地址（模板语法、全部变量、常用示例）。
-const COMMENT_DOC_URL: &str = "https://windinput.com/docs/settings/appearance/candidate-comment";
-
-/// 候选注释设置对话框：横排模板 + 纵排模板 + 最大字数 + 模板参考。
-///
-/// `rows` 由调用方按序传入（横排在前——用户先看到的应是空间最紧张、最需要斟酌的那一个），
-/// 参考区固定追加在末尾。底栏沿用 [`build_group_dialog`] 的「左恢复默认 / 右关闭」。
-///
-/// 外壳用 large（620×460）而非默认 460×380：模板输入框已改为独占一行占满宽度（见
-/// `manifest::comment_template_block`），460 下这一行连同两份预览会挤得很促狭。
-pub fn build_comment_dialog(
-    visible: Signal<bool>,
-    title: &str,
-    rows: Vec<Element>,
-    reset_fn: Option<Box<dyn Fn() + 'static>>,
-) -> Element {
-    build_group_dialog_with_link_large(visible, title, rows, reset_fn, Some(COMMENT_DOC_URL))
-}
+pub(crate) const COMMENT_DOC_URL: &str =
+    "https://windinput.com/docs/settings/appearance/candidate-comment";
 
 #[cfg(test)]
 mod font_rows_tests {

@@ -140,6 +140,27 @@ pub fn wrap_color(display: &str, sel: Option<(usize, usize)>, spec: &str) -> (St
     (out, caret)
 }
 
+/// 把 `snippet` 插进显示文本：替换选区 `[s, e)`，没有选区信息时追加到末尾。返回
+/// `(新文本, 光标字符位置)`，光标在插入段末尾往回 `back` 个字符。下标是字符下标。
+pub fn insert_at(
+    display: &str,
+    sel: Option<(usize, usize)>,
+    snippet: &str,
+    back: usize,
+) -> (String, usize) {
+    let chars: Vec<char> = display.chars().collect();
+    let n = chars.len();
+    let (s, e) = match sel {
+        Some((a, b)) => (a.min(b).min(n), a.max(b).min(n)),
+        None => (n, n),
+    };
+    let mut out: String = chars[..s].iter().collect();
+    out.push_str(snippet);
+    out.extend(&chars[e..]);
+    let len = snippet.chars().count();
+    (out, s + len - back.min(len))
+}
+
 /// 自定义颜色的写法校验：`#` + 3 / 6 / 8 位十六进制（与 core `parse_hex` 同一口径）。
 pub fn is_hex_color(s: &str) -> bool {
     s.strip_prefix('#')
@@ -156,11 +177,18 @@ fn rgba_of(v: &Value) -> Option<Color> {
 /// 一行输出 → 段落：`runs` 覆盖到的字节区间用下发的颜色，其余用 `fg`。
 /// 区间不在字符边界上（协议被破坏）时整段按 `fg` 画，不 panic。
 fn para_of(text: &str, fg: Color, runs: &[Value], bold: bool) -> Para {
-    let style = |c: Color| {
-        let s = SpanStyle::new().fg(c);
-        if bold { s.bold() } else { s }
+    let base = if bold {
+        SpanStyle::new().bold()
+    } else {
+        SpanStyle::new()
     };
-    let mut para = Para::new();
+    runs_into(Para::new(), text, fg, runs, base)
+}
+
+/// 同 [`para_of`]，但接在已有段落后面、每段在 `base` 上换前景色（候选预览要先写序号与候选词，
+/// 选中的那个还要带底色）。
+fn runs_into(mut para: Para, text: &str, fg: Color, runs: &[Value], base: SpanStyle) -> Para {
+    let style = |c: Color| base.clone().fg(c);
     let mut at = 0usize;
     let push = |p: Para, piece: &str, c: Color| p.span(piece.replace('\t', TAB_AS), style(c));
     let mut spans: Vec<(usize, usize, Color)> = runs
@@ -206,6 +234,11 @@ pub struct TemplateField {
     /// 输入框节点的缓存。windui 没有「按 Element 查节点」的入口，也没有聚焦通知：点击时经
     /// `on_click` 记下；没记到（键盘 Tab 进来的）就在用时经 [`find_input`] 从触发控件往上找。
     target: Rc<Cell<Option<NodeId>>>,
+    /// 弹层（插入变量）打开时记下的选区：弹层里的搜索框会拿走焦点，插入时按它写。
+    saved: Rc<Cell<Option<(usize, usize)>>>,
+    /// 插入后把焦点与光标还给输入框（`select_when` 的触发计数与区间）。
+    jump: Signal<u64>,
+    range: Signal<(usize, usize)>,
 }
 
 impl TemplateField {
@@ -214,13 +247,43 @@ impl TemplateField {
             text,
             escaped,
             target: Rc::new(Cell::new(None)),
+            saved: Rc::new(Cell::new(None)),
+            jump: signal(0),
+            range: signal((0, 0)),
         }
     }
 
-    /// 给输入框挂上「记住自己是哪个节点」。**必须**挂在 `Element::text_input(..)` 上。
+    /// 给输入框挂上「记住自己是哪个节点」与「插入后取回焦点」。**必须**挂在
+    /// `Element::text_input(..)` 上。
     pub fn hook(&self, input: Element) -> Element {
         let target = self.target.clone();
-        input.on_click(move |ctx| target.set(Some(ctx.id())))
+        input
+            .on_click(move |ctx| target.set(Some(ctx.id())))
+            .select_when(self.jump, self.range)
+    }
+
+    /// 记下输入框此刻的选区（打开会拿走焦点的弹层之前调）。找不到输入框时记 `None`，
+    /// 插入就追加到末尾。
+    pub fn remember_selection(&self, ctx: &mut EventCtx) {
+        let from = ctx.id();
+        let tree = ctx.tree_mut();
+        let sel = self.locate(tree, from).and_then(|id| tree.selection_of(id));
+        self.saved.set(sel);
+    }
+
+    /// 把 `snippet` 插到记下的选区（替换选中的文字），光标落在插入段末尾往回 `caret_back`
+    /// 个字符处，并把焦点还给输入框。
+    pub fn insert_text(&self, snippet: &str, caret_back: usize) {
+        let (text, caret) = insert_at(&self.text.get(), self.saved.get(), snippet, caret_back);
+        self.text.set(text);
+        self.saved.set(Some((caret, caret)));
+        self.range.set((caret, caret));
+        self.jump.update(|n| *n += 1);
+    }
+
+    /// 输入框是否转义显示（单行框里 `\n` 两个字符代表换行）。
+    pub fn escaped(&self) -> bool {
+        self.escaped
     }
 
     /// 当前显示文本对应的模板与位置表，见 [`to_template`]。
@@ -291,14 +354,18 @@ fn insert_into(tree: &mut Tree, field: &TemplateField, from: NodeId, spec: &str)
     }
 }
 
-/// 用合成按键在单行输入框里摆选区。为什么不用 `set_selection`，见模块文档。
+/// 用合成按键在输入框里摆选区。为什么不用 `set_selection`，见模块文档。回到开头用
+/// Ctrl+A 再 ←（选区收到起点）：多行框里 Home 只到当前行首。
 fn select_by_keys(tree: &mut Tree, id: NodeId, s: usize, e: usize) {
     let key = |k: Key, shift: bool| {
         let mut ev = KeyEvent::pressed(k);
         ev.shift = shift;
         ev
     };
-    tree.dispatch_key(key(Key::Home, false), Some(id));
+    let mut all = KeyEvent::pressed(Key::Other(0x41));
+    all.ctrl = true;
+    tree.dispatch_key(all, Some(id));
+    tree.dispatch_key(key(Key::Left, false), Some(id));
     for _ in 0..s {
         tree.dispatch_key(key(Key::Right, false), Some(id));
     }
@@ -535,6 +602,327 @@ pub fn preview(
     )
 }
 
+/// 预览样例的语种（core 回包 `samples[].lang`）：英文类型与临时英文模式用英文样例，其余中文。
+pub const LANG_ZH: &str = "zh";
+pub const LANG_EN: &str = "en";
+
+/// 一个样例候选：候选词与它的注释（常态 / 选中态的片段色各一份，区间按本条注释计）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SampleComment {
+    pub word: String,
+    pub text: String,
+    pub runs: Vec<Value>,
+    pub sel_runs: Vec<Value>,
+}
+
+/// core 下发的一组注释求值：每个样例一条，前景色与底色是主题的、各条共用。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommentLook {
+    pub items: Vec<SampleComment>,
+    pub fg: Color,
+    pub bg: Color,
+    pub sel_fg: Color,
+    pub sel_bg: Color,
+}
+
+/// 回包 → 一个样例候选。候选词取 `candidate`（旧 core 没有这个字段时按「你好」）。
+fn sample_comment(r: &Value) -> SampleComment {
+    let runs = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    SampleComment {
+        word: r["candidate"].as_str().unwrap_or("你好").to_string(),
+        // 首行上方的注释（`\n`）在这里压成一行：预览只示意排布，不画上方注释条。
+        text: r["text"].as_str().unwrap_or("").replace('\n', " "),
+        runs: runs(&r["runs"]),
+        sel_runs: runs(&r["selected"]["runs"]),
+    }
+}
+
+impl CommentLook {
+    /// `appearance.previewTemplate`（comment 场景）回包 → 只有这一个样例的外观；缺颜色
+    /// （协议不符）时 `None`。
+    pub fn from_reply(r: &Value) -> Option<Self> {
+        let sel = &r["selected"];
+        Some(Self {
+            items: vec![sample_comment(r)],
+            fg: rgba_of(&r["fg"])?,
+            bg: rgba_of(&r["bg"])?,
+            sel_fg: rgba_of(&sel["fg"]).unwrap_or(rgba_of(&r["fg"])?),
+            sel_bg: rgba_of(&sel["bg"]).unwrap_or(Color::rgba(0, 0, 0, 0)),
+        })
+    }
+
+    /// 清掉全部注释（模板留空 = 不显示注释），只留候选词。
+    fn clear_text(&mut self) {
+        for it in &mut self.items {
+            it.text.clear();
+        }
+    }
+
+    /// 候选词的颜色：core 只下发注释色，候选词按底色深浅取近黑 / 近白。
+    fn word_color(&self) -> Color {
+        let lum = 0.299 * self.bg.r as f32 + 0.587 * self.bg.g as f32 + 0.114 * self.bg.b as f32;
+        if lum > 140.0 {
+            Color::rgba(30, 30, 30, 255)
+        } else {
+            Color::rgba(235, 235, 235, 255)
+        }
+    }
+
+    /// 一个候选：序号 + 候选词 + 注释；第一个按选中态画（带选中底色）。
+    fn candidate(&self, para: Para, i: usize, it: &SampleComment) -> Para {
+        let selected = i == 0;
+        let base = if selected {
+            SpanStyle::new().bg(self.sel_bg)
+        } else {
+            SpanStyle::new()
+        };
+        let word_fg = self.word_color();
+        let para = para
+            .span(
+                format!("{}.", i + 1),
+                base.clone().fg(word_fg.scale_alpha(0.6)),
+            )
+            .span(it.word.as_str(), base.clone().fg(word_fg));
+        if it.text.is_empty() {
+            return para;
+        }
+        let para = para.span(" ", base.clone());
+        if selected {
+            runs_into(para, &it.text, self.sel_fg, &it.sel_runs, base)
+        } else {
+            runs_into(para, &it.text, self.fg, &it.runs, base)
+        }
+    }
+
+    /// 横排：全部样例候选同一行。
+    pub fn horizontal(&self) -> RichDoc {
+        let mut para = Para::new();
+        for (i, it) in self.items.iter().enumerate() {
+            if i > 0 {
+                para = para.span("   ", SpanStyle::new());
+            }
+            para = self.candidate(para, i, it);
+        }
+        RichDoc::new().para(para)
+    }
+
+    /// 竖排：每个样例候选一行。
+    pub fn vertical(&self) -> RichDoc {
+        self.items
+            .iter()
+            .enumerate()
+            .fold(RichDoc::new(), |doc, (i, it)| {
+                doc.para(self.candidate(Para::new(), i, it))
+            })
+    }
+}
+
+/// 回包里 `lang` 语种的样例 id（按 core 的顺序）。旧 core 不列样例时为空。
+fn sample_ids(r: &Value, lang: &str) -> Vec<String> {
+    r["samples"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["lang"] == lang)
+        .filter_map(|s| s["id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// 一个注释模板串在 `lang` 语种的各样例上的外观：先按缺省样例问一次（顺带拿样例清单与
+/// 问题列表），再每个样例一次 RPC。空串 = 不显示注释：照样问 core 拿底色，再清掉注释。
+/// 返回首个回包（`problems` 与样例无关，取它）与外观；连不上 core 时 `Err`。
+fn fetch_comment_look(template: &str, lang: &str) -> Result<(Value, Option<CommentLook>), String> {
+    let empty = template.trim().is_empty();
+    let probe = if empty { " " } else { template };
+    let ask = |sample: Option<&str>| {
+        let mut p = json!({ "template": probe, "scene": "comment" });
+        if let Some(id) = sample {
+            p["sample"] = json!(id);
+        }
+        crate::rpc::call_core(METHOD, &p)
+    };
+    let first = ask(None)?;
+    let Some(mut look) = CommentLook::from_reply(&first) else {
+        return Ok((first, None));
+    };
+    let ids = sample_ids(&first, lang);
+    if !ids.is_empty() {
+        look.items = ids
+            .iter()
+            .filter_map(|id| {
+                if first["sample"].as_str() == Some(id) {
+                    Some(sample_comment(&first))
+                } else {
+                    ask(Some(id)).ok().map(|r| sample_comment(&r))
+                }
+            })
+            .collect();
+    }
+    if empty {
+        look.clear_text();
+    }
+    Ok((first, Some(look)))
+}
+
+/// 一个注释模板串在 `lang` 语种样例候选上的外观（测试用）。
+#[cfg(test)]
+fn comment_look(template: &str, lang: &str) -> Option<CommentLook> {
+    fetch_comment_look(template, lang).ok()?.1
+}
+
+/// 注释模板的候选窗预览：横排、竖排两种排布，各画一组样例候选（第一个是选中态；中文 / 英文
+/// 样例可切换，缺省中文），下面是问题列表。
+///
+/// 与 [`preview`] 同一个 RPC、同一套「core 不支持就整块隐藏」的规矩；模板留空时只画候选词
+/// （留空 = 不显示注释）。`visible` 是所在对话框的可见性。
+pub fn comment_layout_preview(
+    visible: Signal<bool>,
+    field: TemplateField,
+    vertical: bool,
+) -> Element {
+    let shown = signal(false);
+    // 样例语种：0 = 中文、1 = 英文。
+    let lang = signal(0usize);
+    // 只显示一种排列（两种都摆出来太占地方）：0 = 横排、1 = 竖排。
+    let layout = signal(usize::from(vertical));
+    let bg = signal(Color::rgba(0, 0, 0, 0));
+    let h_doc = signal(RichDoc::new());
+    let v_doc = signal(RichDoc::new());
+    let problems_doc = signal(RichDoc::new());
+    let has_problems = signal(false);
+    let targets: Rc<std::cell::RefCell<Vec<(usize, usize)>>> = Rc::default();
+    let supported: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+    // 上一次拿到的外观：模板清空时沿用它的底色与选中色画出光秃秃的候选。
+    let last: Rc<std::cell::RefCell<Option<CommentLook>>> = Rc::default();
+    let text = field.text;
+    let versions = move || {
+        visible
+            .version()
+            .wrapping_mul(31)
+            .wrapping_add(text.version())
+            .wrapping_mul(31)
+            .wrapping_add(lang.version())
+    };
+    let refresh = {
+        let (field, targets, supported) = (field.clone(), targets.clone(), supported.clone());
+        let was_visible = Cell::new(false);
+        move || {
+            let now = visible.get();
+            if now && !was_visible.get() {
+                supported.set(None);
+            }
+            was_visible.set(now);
+            if !now || supported.get() == Some(false) {
+                return;
+            }
+            let (template, map) = field.template();
+            // 空模板也问 core：拿到底色与选中色才画得出候选。
+            let code = if lang.get() == 1 { LANG_EN } else { LANG_ZH };
+            let (r, look) = match fetch_comment_look(&template, code) {
+                Ok(v) => v,
+                Err(_) => {
+                    supported.set(Some(false));
+                    shown.set(false);
+                    return;
+                }
+            };
+            supported.set(Some(true));
+            let Some(mut look) = look.or_else(|| last.borrow().clone()) else {
+                shown.set(false);
+                return;
+            };
+            if template.trim().is_empty() {
+                look.clear_text();
+            }
+            *last.borrow_mut() = Some(look.clone());
+            bg.set(look.bg);
+            h_doc.set(look.horizontal());
+            v_doc.set(look.vertical());
+            let display: Vec<char> = field.text.get().chars().collect();
+            let mut probs = RichDoc::new();
+            let mut probs_at = Vec::new();
+            let empty = Vec::new();
+            for p in r["problems"].as_array().unwrap_or(&empty) {
+                let msg = p["message"].as_str().unwrap_or("");
+                let range = p["start"]
+                    .as_u64()
+                    .zip(p["end"].as_u64())
+                    .and_then(|(s, e)| display_range(&map, s as usize, e as usize));
+                let mut para = Para::new();
+                if let Some((s, e)) = range.filter(|(s, e)| s < e) {
+                    let snippet: String = display[s..e.min(display.len())].iter().collect();
+                    para = para.span_id(
+                        probs_at.len().to_string(),
+                        format!("「{snippet}」"),
+                        SpanStyle::new().underline(),
+                    );
+                    probs_at.push((s, e));
+                }
+                probs = probs.para(para.span(msg, SpanStyle::new()));
+            }
+            has_problems.set(!probs_at.is_empty() || probs.plain_text().trim() != "");
+            problems_doc.set(probs);
+            *targets.borrow_mut() = probs_at;
+            shown.set(true);
+        }
+    };
+    let effect = crate::pages::dict::reactive::reactive_effect(versions, refresh);
+
+    let block = |doc: Signal<RichDoc>, which: usize| {
+        Element::row()
+            .widget(SignalBg(bg))
+            .width_match()
+            .padding_xy(10, 8)
+            .child(Element::rich_signal(doc).weight(1.0).copy_menu(false))
+            .visible_when(move || layout.get() == which)
+    };
+    let problems = Element::rich_signal(problems_doc)
+        .width_match()
+        .fg_role(Role::Danger)
+        .font_size(12.0)
+        .copy_menu(false)
+        .on_span_click(move |ctx, id| {
+            let hit = id
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| targets.borrow().get(i).copied());
+            if let Some((s, e)) = hit {
+                field.select(ctx, s, e);
+            }
+        })
+        .visible_when(move || has_problems.get());
+
+    Element::col().width_match().spacing(6).child(effect).child(
+        Element::col()
+            .widget(KeepFocus)
+            .width_match()
+            .spacing(6)
+            .child(
+                Element::row()
+                    .width_match()
+                    .spacing(8)
+                    .child(
+                        Element::label("样例候选")
+                            .font_size(11.5)
+                            .fg_role(Role::TextMuted)
+                            .weight(1.0),
+                    )
+                    .child(
+                        Element::segmented(vec!["横排".to_string(), "竖排".to_string()], layout)
+                            .width(120),
+                    )
+                    .child(
+                        Element::segmented(vec!["中文".to_string(), "英文".to_string()], lang)
+                            .width(120),
+                    ),
+            )
+            .child(block(h_doc, 0))
+            .child(block(v_doc, 1))
+            .child(problems)
+            .visible_when(move || shown.get()),
+    )
+}
+
 /// 色块文档：每个标准色一枚胶囊，写中文名、用该色写在预览底色上。`colors` 为空（core 不支持）
 /// 时用胶囊默认色——仍然可以插，只是看不到颜色。
 fn swatch_doc(colors: &Value, bg: Option<Color>) -> RichDoc {
@@ -562,22 +950,19 @@ pub fn insert_color_button(field: &TemplateField, scene: &'static str) -> Elemen
     let hex = signal(String::new());
     let hex_err = signal(String::new());
 
-    let trigger = Element::rich(RichDoc::new().para(Para::new().span_id(
-        "open",
-        "插入颜色",
-        SpanStyle::new().chip(),
-    )))
-    .copy_menu(false)
-    .on_span_click(move |_, _| {
-        if !open.get() {
-            let names: Vec<&str> = SWATCHES.iter().map(|(n, _)| *n).collect();
-            let params = json!({ "template": "", "scene": scene, "swatches": names });
-            let r = crate::rpc::call_core(METHOD, &params).unwrap_or(Value::Null);
-            chips.set(swatch_doc(&r["swatches"], rgba_of(&r["bg"])));
-            hex_err.set(String::new());
-        }
-        open.set(!open.get());
-    });
+    let trigger = Element::button("插入颜色 ▾")
+        .small()
+        .outline_soft()
+        .on_click(move |_| {
+            if !open.get() {
+                let names: Vec<&str> = SWATCHES.iter().map(|(n, _)| *n).collect();
+                let params = json!({ "template": "", "scene": scene, "swatches": names });
+                let r = crate::rpc::call_core(METHOD, &params).unwrap_or(Value::Null);
+                chips.set(swatch_doc(&r["swatches"], rgba_of(&r["bg"])));
+                hex_err.set(String::new());
+            }
+            open.set(!open.get());
+        });
 
     let f_chip = field.clone();
     let f_hex = field.clone();
@@ -655,6 +1040,63 @@ pub fn insert_color_button(field: &TemplateField, scene: &'static str) -> Elemen
 mod tests {
     use super::super::tooltip_sections_dialog::{escape_template, unescape_template};
     use super::*;
+
+    /// 插入：替换选区、光标按 back 往回退；没有选区信息时追加到末尾。下标是字符下标。
+    #[test]
+    fn insert_at_replaces_selection_and_places_caret() {
+        assert_eq!(
+            insert_at("拼音abc", Some((2, 3)), "${pinyin}", 0),
+            ("拼音${pinyin}bc".to_string(), 11)
+        );
+        assert_eq!(
+            insert_at("ab", Some((1, 1)), "${|}", 2),
+            ("a${|}b".to_string(), 3)
+        );
+        assert_eq!(insert_at("ab", None, "\n", 0), ("ab\n".to_string(), 3));
+        assert_eq!(
+            insert_at("ab", Some((5, 9)), "x", 0),
+            ("abx".to_string(), 3),
+            "越界钳到末尾"
+        );
+    }
+
+    /// 每个样例一次 RPC：中文三条、英文三条各是自己的候选词与注释；空模板只留候选词。
+    #[test]
+    fn comment_look_has_one_item_per_sample() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let pairs = |look: &CommentLook| -> Vec<(String, String)> {
+            look.items
+                .iter()
+                .map(|i| (i.word.clone(), i.text.clone()))
+                .collect()
+        };
+        let zh = comment_look("${pinyin}{ · ${dict:zh_en}}", LANG_ZH).unwrap();
+        assert_eq!(
+            pairs(&zh),
+            [
+                ("你好".into(), "nǐ hǎo · int. hello".into()),
+                ("中文".into(), "zhōng wén · n. Chinese language".into()),
+                ("输入法".into(), "shū rù fǎ · n. input method".into()),
+            ]
+        );
+        let en = comment_look("${dict:en_zh}{ · ${pinyin}}", LANG_EN).unwrap();
+        assert_eq!(
+            pairs(&en),
+            [
+                ("apple".into(), "n. 苹果".into()),
+                ("hello".into(), "int. 喂；你好".into()),
+                ("world".into(), "n. 世界".into()),
+            ],
+            "英文样例没有拼音，可选段整段消失"
+        );
+        let blank = comment_look("", LANG_ZH).unwrap();
+        assert_eq!(blank.items.len(), 3);
+        assert!(blank.items.iter().all(|i| i.text.is_empty()));
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
 
     /// 还原规则与段表单确认时的 `unescape_template` 逐字相同（含不成对的反斜杠）。
     #[test]
