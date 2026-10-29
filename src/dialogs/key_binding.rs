@@ -746,6 +746,18 @@ pub fn session_verb_label(value: &str) -> Option<String> {
 
 // ───────────────────────────── 键值域 ─────────────────────────────
 
+/// `f1`..`f12`。
+fn is_function_key(name: &str) -> bool {
+    name.strip_prefix('f')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=12).contains(&n))
+}
+
+/// 单个 a–z 字母键。
+pub fn is_letter_key(name: &str) -> bool {
+    name.len() == 1 && name.as_bytes()[0].is_ascii_lowercase()
+}
+
 /// 可作**独立绑定**的单个键（不带修饰）。
 fn single_keys(table: BindingTable) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vec![(String::new(), "（请选择）".to_string())];
@@ -765,13 +777,18 @@ fn single_keys(table: BindingTable) -> Vec<(String, String)> {
             }
             for k in [
                 "minus", "equal",
-                // 字母只列 z：其余字母在任何码表里几乎都是活码前缀，core 的活码裁决
-                // 必然让位，配了等于没配。列出来只会让人配完发现没反应。
+                // 全局表字母只列 z：其余字母是否适合借用取决于方案，只有方案级表才开放
+                // （见 `KeyPicker::allow_letters`）。
                 "z",
                 // 与 core `keymap::modifier_name_to_vk` 的规范名一一对应。
                 "lshift", "rshift", "lctrl", "rctrl",
             ] {
                 push(&mut out, k);
+            }
+            // 空闲态裸 F1–F12：core 把它们编进 key_down 热键表（`route_of_key_action`），
+            // 只有全局表有这条通路——方案级表不列，见 `KeyPicker::allow_letters`。
+            for n in 1..=12 {
+                push(&mut out, &format!("f{n}"));
             }
         }
         BindingTable::Session => {
@@ -1016,6 +1033,28 @@ impl KeyPicker {
     /// 什么，也切不回单键），但组合键形态下不可提交，并说明原因。
     pub fn disallow_combo(&self) {
         self.data.combo_allowed.set(false);
+        self.refresh();
+    }
+
+    /// 方案级 `[key_actions]` 的单键值域：开放全部字母 a–z，去掉 F1–F12。
+    ///
+    /// 字母是否适合借作引导键取决于方案（全拼里 `i` / `u` / `v` 不能起头，双拼里却全被占用），
+    /// 设置端不替用户判断，选中后只在行内提示「仅空缓冲生效」。F 键编进的是**全局**热键表，
+    /// 方案级按单键 VK 查，配了不会生效，故不列。
+    pub fn allow_letters(&self) {
+        let mut keys: Vec<(String, String)> = single_keys(self.data.table)
+            .into_iter()
+            .filter(|(v, _)| !is_function_key(v))
+            .collect();
+        for c in 'a'..='z' {
+            let k = c.to_string();
+            if !keys.iter().any(|(v, _)| *v == k) {
+                keys.push((k.clone(), key_choice_label(&k)));
+            }
+        }
+        self.single_labels
+            .set(keys.iter().map(|(_, l)| l.clone()).collect());
+        *self.data.single.borrow_mut() = keys.into_iter().map(|(v, _)| v).collect();
         self.refresh();
     }
 
@@ -3068,6 +3107,27 @@ mod tests {
                 assert_ne!(l, v, "{v:?} 的下拉标签落回了原始键名");
             }
         }
+    }
+
+    /// 全局表只列 z 一个字母并带 F1–F12；方案级开放 a–z 且不列 F 键（F 键只有全局热键表有通路）。
+    #[test]
+    fn letters_only_in_schema_scope_and_f_keys_only_in_global() {
+        let global = KeyPicker::new(BindingTable::Lead);
+        let g = global.data.single.borrow().clone();
+        assert!(g.iter().any(|k| k == "f1") && g.iter().any(|k| k == "f12"));
+        assert!(g.iter().any(|k| k == "z") && !g.iter().any(|k| k == "u"));
+
+        let schema = KeyPicker::new(BindingTable::Lead);
+        schema.allow_letters();
+        let s = schema.data.single.borrow().clone();
+        assert!(s.iter().any(|k| k == "u") && s.iter().any(|k| k == "v"));
+        assert_eq!(s.iter().filter(|k| *k == "z").count(), 1, "z 不应重复");
+        assert!(!s.iter().any(|k| is_function_key(k)), "方案级不列 F 键");
+        assert_eq!(
+            s.len(),
+            schema.single_labels.get().len(),
+            "值与标签要一一对应"
+        );
     }
 
     /// 修饰键必须都在单键值域里——「按右 Shift 切方案」是最常见的用法之一，

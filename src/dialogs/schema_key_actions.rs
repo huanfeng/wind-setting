@@ -25,7 +25,8 @@ use windui::prelude::*;
 
 use super::key_binding::{
     Binding, BindingBody, BindingTable, ForeignBinding, KeyPicker, KeyShape, SCHEMA_COMBO_HINT,
-    binding_row, command_verb_label, is_command, key_shape, verb_allowed, verb_requires_modifier,
+    binding_row, command_verb_label, is_command, is_letter_key, key_shape, verb_allowed,
+    verb_requires_modifier,
 };
 
 pub use super::key_binding::Verb;
@@ -97,6 +98,7 @@ impl KeyActionFields {
             ..Self::default()
         };
         me.picker.disallow_combo();
+        me.picker.allow_letters();
         me
     }
 
@@ -453,6 +455,11 @@ fn row_hint(schema_scope: bool, row: &Binding, leading: &[String]) -> Option<(&'
             KeyShape::Combo => ("组合键不支持", Role::Danger),
             _ => ("需修饰键", Role::Danger),
         })
+    } else if schema_scope && is_letter_key(&row.key) && row.verb != "none" && !row.verb.is_empty()
+    {
+        // 字母键只在空缓冲时当引导键，组码中间照常是编码。该字母在本方案能否起头，
+        // 设置端不判断，交给用户。
+        Some(("仅空缓冲生效", Role::TextMuted))
     } else if shape == KeyShape::Char
         && row.verb != "none"
         && !row.verb.is_empty()
@@ -617,6 +624,21 @@ mod tests {
         let mut cfg = json!({});
         f.apply(&mut cfg);
         assert_eq!(cfg["key_actions"], json!({}));
+    }
+
+    /// 方案级的字母键行内提示「仅空缓冲生效」；全局表、符号键与 `none` 不挂。
+    #[test]
+    fn letter_row_gets_empty_buffer_hint_in_schema_scope() {
+        let row = |key: &str, verb: &str| Binding {
+            id: 1,
+            key: key.into(),
+            verb: verb.into(),
+        };
+        let hint = |scope, r: &Binding| row_hint(scope, r, &[]).map(|(t, _)| t);
+        assert_eq!(hint(true, &row("u", "mix:quick_mix")), Some("仅空缓冲生效"));
+        assert_eq!(hint(false, &row("u", "mix:quick_mix")), None);
+        assert_eq!(hint(true, &row("u", "none")), None);
+        assert_eq!(hint(true, &row("backslash", "mix:quick_mix")), None);
     }
 
     /// 重复键能被检出（供保存前提示）。
