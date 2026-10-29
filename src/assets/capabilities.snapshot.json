@@ -2397,6 +2397,15 @@
       ]
     },
     {
+      "default": "below",
+      "key": "ui.status.caret_side",
+      "type": "enum",
+      "values": [
+        "below",
+        "above"
+      ]
+    },
+    {
       "default": 0,
       "key": "ui.status.offset_x",
       "type": "int"

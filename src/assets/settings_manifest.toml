@@ -3975,6 +3975,21 @@ options = [
   { value = "window_bottom_left", label = "窗口左下角" },
 ]
 
+[[items]]
+key = "ui.status.caret_side"
+group = "ui"
+section = "状态提示"
+subsection = "位置"
+dialog_group = "status"
+type = "select"
+label = "默认位置"
+hint = "仅在「跟随光标」下生效：放不下时翻到另一侧；挡住候选窗时自动避让"
+enabled_when = "ui.status.enabled == true && ui.status.position_mode == follow_caret"
+options = [
+  { value = "below", label = "光标下方" },
+  { value = "above", label = "光标上方" },
+]
+
 # 锚点文案与 core 右键菜单「应用独立配置 → 状态提示位置」逐字一致（handle_menu.rs 的
 # status_anchor_label）。「屏幕」= 当前窗口所在显示器，「窗口」= 当前窗口的边框。
 [[items]]
@@ -4006,7 +4021,7 @@ section = "状态提示"
 subsection = "位置"
 type = "number"
 label = "水平偏移"
-hint = "相对光标下方（左边缘对齐光标）的水平偏移（像素，正=右）"
+hint = "相对默认位置（左边缘对齐光标）的水平偏移（像素，正=右）"
 min = -400
 max = 400
 enabled_when = "ui.status.position_mode == follow_caret"
@@ -4019,7 +4034,7 @@ section = "状态提示"
 subsection = "位置"
 type = "number"
 label = "垂直偏移"
-hint = "相对光标下方的垂直偏移（像素，正=下）"
+hint = "相对默认位置的垂直偏移（像素，正=下）"
 min = -400
 max = 400
 enabled_when = "ui.status.position_mode == follow_caret"

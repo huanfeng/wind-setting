@@ -617,6 +617,7 @@
    "style": "short"
   },
   "status": {
+   "caret_side": "below",
    "custom_x": 0,
    "custom_y": 0,
    "display_mode": "temp",
