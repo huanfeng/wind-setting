@@ -551,7 +551,8 @@
    "position_mode": "follow_caret",
    "preedit_display": "app_inline",
    "shadow": "follow",
-   "swap_preedit_when_above": false
+   "swap_preedit_when_above": false,
+   "syllable_separator": "'"
   },
   "comment": {
    "assign": {

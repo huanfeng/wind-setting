@@ -3459,6 +3459,21 @@ options = [
 ]
 
 [[items]]
+key = "ui.candidate.syllable_separator"
+group = "ui"
+section = "候选排版"
+type = "select"
+label = "拼音音节分隔符"
+hint = "拼音编码里音节之间显示的符号（xiao'peng'you）。只改显示，不影响输入。Unreal Engine 等对名称校验严格、不接受单引号的程序，选「不显示」即可"
+options = [
+  { value = "'", label = "单引号 ( ' )" },
+  { value = "", label = "不显示" },
+  { value = "·", label = "间隔号 ( · )" },
+  { value = "-", label = "连字符 ( - )" },
+  { value = "_", label = "下划线 ( _ )" },
+]
+
+[[items]]
 key = "ui.candidate.layout"
 group = "ui"
 section = "候选排版"

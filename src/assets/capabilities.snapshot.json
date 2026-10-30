@@ -1895,6 +1895,11 @@
       ]
     },
     {
+      "default": "'",
+      "key": "ui.candidate.syllable_separator",
+      "type": "str"
+    },
+    {
       "default": false,
       "key": "ui.candidate.hide_window",
       "type": "bool"
