@@ -551,11 +551,12 @@ fn build_list_view_menu(
     .width(132)
 }
 
-/// 方案页四张引擎卡：(卡片 / 导航名, 清单 section, 是否带模糊音入口)。
+/// 方案页五张引擎卡：(卡片 / 导航名, 清单 section, 是否带模糊音入口)。
 /// 卡片名与搜索面包屑同源（`search::index::placement_of` 引用本表）。
-pub(crate) const SCHEME_ENGINE_CARDS: [(&str, &str, bool); 4] = [
+pub(crate) const SCHEME_ENGINE_CARDS: [(&str, &str, bool); 5] = [
     ("码表", "上屏行为", false),
     ("拼音", "候选行为", true),
+    ("双拼", "双拼", false),
     ("混输", "混输行为", false),
     ("英文", "英文行为", false),
 ];

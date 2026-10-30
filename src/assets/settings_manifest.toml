@@ -630,12 +630,12 @@ type = "toggle"
 label = "整句语法模型"
 hint = "按上下文搭配给整句挑更通顺的结果，如 womenzaigongyuanjianmian 出「我们在公园见面」而非「公元」；实测整句首选约 +5 个点，单次转换多约 2 ms"
 
-# 双拼：allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达「当前方案是双拼」
-# （它只能比较配置键），故常驻可见，由 hint 说明适用范围。
+# 双拼：单独一张卡，排在拼音之后。allow_full_pinyin 只对双拼方案有意义，但 enabled_when 无法表达
+# 「当前方案是双拼」（它只能比较配置键），故常驻可见，由 hint 说明适用范围。
 [[items]]
 key = "schema.pinyin.shuangpin.allow_full_pinyin"
 group = "schema"
-section = "候选行为"
+section = "双拼"
 type = "toggle"
 label = "双拼时允许全拼输入"
 hint = "双拼方案下也能按全拼打字，如 zaijian → 再见。对全拼方案无影响"
