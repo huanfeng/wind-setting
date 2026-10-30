@@ -109,11 +109,11 @@ fn weight_hint_for(cat: WordCategory) -> String {
 /// 词库管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 #[derive(Clone)]
 pub struct DictManagerState {
-    /// 数据域：0 = 快捷短语（全局）；>=1 = `schemas[idx-1]`。
+    /// 数据域：0 = 命令短语（全局）；>=1 = `schemas[idx-1]`。
     pub domain: Signal<usize>,
     /// 方案域下的子标签：0=用户词库 1=临时词库 2=词频 3=候选调整。
     pub sub_tab: Signal<usize>,
-    /// 数据域下拉的响应式选项（首项"快捷短语"，其后各方案；set_schemas 后填充）。
+    /// 数据域下拉的响应式选项（首项"命令短语"，其后各方案；set_schemas 后填充）。
     pub domain_items: Signal<Vec<String>>,
     /// 数据域下拉的富内容选项（label + 引擎类型徽章）；与 `domain_items` 同序同步刷新。
     pub domain_rich_items: Signal<Vec<DropdownItem>>,
@@ -490,7 +490,7 @@ pub(crate) const GLOBAL_DOMAINS: usize = 4;
 /// 与 `GLOBAL_DOMAINS` 毫无编译期关联。加第三个全局域时它们照旧只产出两项，症状正是那段
 /// 注释描述的：侧栏少画一项、其后的方案域整体错位一格，且不报错不 panic。
 pub(crate) const GLOBAL_DOMAIN_LABELS: [&str; GLOBAL_DOMAINS] =
-    ["快捷短语", "快捷输入", "字符集", "输入补全"];
+    ["命令短语", "快捷输入", "字符集", "输入补全"];
 
 /// 域下标的语义。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -593,9 +593,9 @@ impl DictManagerState {
         Self {
             domain: signal(0),
             sub_tab: signal(0),
-            domain_items: signal(vec!["快捷短语".to_string()]),
+            domain_items: signal(vec!["命令短语".to_string()]),
             domain_rich_items: signal(vec![
-                DropdownItem::new("快捷短语").badge("全局", Intent::Neutral),
+                DropdownItem::new("命令短语").badge("全局", Intent::Neutral),
             ]),
             schemas: Rc::new(RefCell::new(Vec::new())),
             sub_tab_memory: Rc::new(RefCell::new(HashMap::new())),
@@ -901,7 +901,7 @@ impl DictManagerState {
         // 各 tab 的 cli_id 也收进来：`--type mail-suffix` 单独给时用户多半没想过还要
         // 再给一个 `--schema`，而少了这一档的后果不是报错而是**静默跑偏**——
         // `LogicalTab::from_cli_id` 解析得动（`bad_tab` 为空，不会提示「未知类型」），
-        // 域却停在启动态的「快捷短语」，最后 toast 一句「『快捷短语』没有『邮箱后缀』」。
+        // 域却停在启动态的「命令短语」，最后 toast 一句「『命令短语』没有『邮箱后缀』」。
         if s.eq_ignore_ascii_case("completion")
             || s.eq_ignore_ascii_case("mail-suffix")
             || s.eq_ignore_ascii_case("url-history")
@@ -4491,7 +4491,7 @@ mod tests {
     // ── 程序化定位（命令行深链）──────────────────────────────
 
     /// 三条方案：五笔（码表）+ 全拼 + 自然码（双拼，会被折叠进拼音域）。
-    /// 折叠后数据域为 [0]快捷短语 [1]五笔86·码表 [2]拼音。
+    /// 折叠后数据域为 [0]命令短语 [1]五笔86·码表 [2]拼音。
     fn deep_link_fixture() -> DictManagerState {
         let st = DictManagerState::new();
         with_schemas(
@@ -5414,7 +5414,7 @@ mod tests {
         assert_eq!(st.resolve_domain(""), None, "空 = 不指定");
         // 四个全局域**逐个**钉住：此前这里只有 phrase 一条，于是「加了全局域却忘了
         // 给它留关键字」不会变红——`--type` 那一侧解析得动、深链却到不了，且不报错，
-        // 只 toast 一句「『快捷短语』没有『邮箱后缀』」。输入补全当初正是这么漏的。
+        // 只 toast 一句「『命令短语』没有『邮箱后缀』」。输入补全当初正是这么漏的。
         assert_eq!(st.resolve_domain("phrase"), Some(DOMAIN_PHRASE));
         assert_eq!(st.resolve_domain("quick"), Some(DOMAIN_QUICK));
         assert_eq!(st.resolve_domain("charsets"), Some(DOMAIN_COMMON));
@@ -5608,7 +5608,7 @@ mod tests {
         );
         let labels = st.domain_labels();
         // 前两项是全局域（不按方案），方案域从 GLOBAL_DOMAINS 起。
-        assert_eq!(labels[DOMAIN_PHRASE], "快捷短语");
+        assert_eq!(labels[DOMAIN_PHRASE], "命令短语");
         assert_eq!(labels[DOMAIN_QUICK], "快捷输入");
         assert_eq!(labels[GLOBAL_DOMAINS], "五笔86 · 码表");
         // 拼音方案折叠后统一显示"拼音"（不再拼接各方案的 name · 拼音）
@@ -7895,7 +7895,7 @@ mod tests {
         assert_eq!(items.len(), GLOBAL_DOMAINS + 2);
         // 两个全局域都标「全局」徽章——它们不按方案，徽章位不能空着，
         // 否则下拉里只有这两项没有尾标，看着像渲染缺了一块。
-        assert_eq!(items[DOMAIN_PHRASE].label, "快捷短语");
+        assert_eq!(items[DOMAIN_PHRASE].label, "命令短语");
         assert_eq!(
             items[DOMAIN_PHRASE].badge.as_ref().map(|(t, _)| t.as_str()),
             Some("全局")

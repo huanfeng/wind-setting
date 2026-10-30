@@ -1858,7 +1858,7 @@ mod tests {
             "切换后：用户词库 3 数据列 + 操作列，3 行"
         );
 
-        // 切回快捷短语（系统短语）：表格应重建回短语列集并显示数据。
+        // 切回命令短语（系统短语）：表格应重建回短语列集并显示数据。
         mgr.domain.set(DOMAIN_PHRASE);
         layout(&mut tree);
         mgr.apply_rows(&json!([

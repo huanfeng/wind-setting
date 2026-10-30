@@ -26,7 +26,7 @@
 
 - **清单驱动** — 设置项在 `src/assets/settings_manifest.toml` 中声明，按 group / section / item 映射为页面 / 卡片 / 行
 - **与核心解耦** — 经 JSON-RPC（Windows 命名管道，Linux / macOS 为 Unix socket）读写配置，不改动 core 接口
-- **词库管理** — 用户词库、临时词库、快捷短语、词频与候选调整的查看与编辑
+- **词库管理** — 用户词库、临时词库、命令短语、词频与候选调整的查看与编辑
 - **应用兼容性** — 按应用配置输入行为，规则可按程序名、窗口类名、标题匹配
 - **设置搜索** — 支持拼音首字母检索设置项，结果直接跳转到对应位置
 - **亮暗主题** — 跟随系统明暗切换，也可通过命令行强制
@@ -94,7 +94,7 @@ git config core.hooksPath .githooks
 | `--schema <id>` | 仅 `--page dict`：定位到指定数据域 |
 | `--type <id>` | 仅 `--page dict`：定位到指定子标签 |
 
-`--schema` 取方案 id（如 `wubi86`）、引擎族名（`pinyin` / `codetable` / `mixed`）或 `phrase`（快捷短语）；
+`--schema` 取方案 id（如 `wubi86`）、引擎族名（`pinyin` / `codetable` / `mixed`）或 `phrase`（命令短语）；
 双拼等被折叠的拼音变体 id 会落到「拼音」域。`--type` 取 `phrase-system` / `phrase-user` /
 `user-dict`（别名 `dict`）/ `temp` / `freq` / `shadow`。两者各自可选：
 

@@ -5480,9 +5480,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 rows.push(font_row);
             }
             rows.push(crate::widgets::setting_row(
-                "加载快捷短语",
+                "加载命令短语",
                 Some(
-                    "关闭后本方案不出快捷短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
+                    "关闭后本方案不出命令短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
                 ),
                 Element::checkbox("开启", state.settings_bh_phrases)
                     .small()
