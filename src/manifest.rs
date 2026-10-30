@@ -3644,10 +3644,14 @@ pub fn scheme_config_section(
             base
         }
     };
-    items.push(crate::widgets::CardItem::HeadingWhen(
-        section.to_string(),
-        card_vis.clone(),
-    ));
+    // 「双拼」卡暂时只有一组，卡片标题已经是「双拼」，再来一个同名小标题只是重复；
+    // 等以后有多个子分类再加回来。
+    if section != DOUBLE_PINYIN_SECTION {
+        items.push(crate::widgets::CardItem::HeadingWhen(
+            section.to_string(),
+            card_vis,
+        ));
+    }
 
     // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
     // 没有小标题就放卡片最后。整行挂块锚点（见 `search::index::block_anchor_of`）。
@@ -3684,12 +3688,7 @@ pub fn scheme_config_section(
             scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
         })
     };
-    // 提示行也说「这一整张卡是全局的」。整节的项都被用户藏光时它一并让位，
-    // 否则卡片会剩下一句没人需要读的说明（2026-10-25 反馈）。
-    items.push(crate::widgets::CardItem::RowWhen(
-        dialog_notice_row(notice),
-        card_vis,
-    ));
+    // 「这一整张卡是全局的」那句放在卡片标题之后（`notice` 传给标题栏），不再单占一行。
 
     // 双拼布局排在卡内第一行。没有可改的双拼方案时这一行不出。
     if layout_row_on {
@@ -3840,8 +3839,9 @@ pub fn scheme_config_section(
         let menu = menu.clone();
         el.on_context_menu(move || menu())
     };
-    Some(crate::widgets::section_with_items_menu(
+    Some(crate::widgets::section_with_items_menu_note(
         label,
+        notice,
         &make_reset,
         items,
         &wrap_menu,

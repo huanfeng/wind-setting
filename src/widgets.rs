@@ -111,6 +111,11 @@ pub fn flat_panel() -> Element {
 /// measure 收敛到文字紧贴宽，draw 再按该窄宽折行（见 ui/mod.rs 注释），导致明明有
 /// 空间也换行、甚至 2 字标题也折。给足整行宽度并锁单行即可根治。
 pub fn section_header(title: &str) -> Element {
+    section_header_note(title, None)
+}
+
+/// [`section_header`]，标题后可跟一句弱化说明（单行，放不下时截断）。
+pub fn section_header_note(title: &str, note: Option<Signal<String>>) -> Element {
     let svg = crate::icons::section_icon(title);
     let chip = Element::stack()
         .size(crate::icons::CHIP_PX, crate::icons::CHIP_PX)
@@ -120,21 +125,37 @@ pub fn section_header(title: &str) -> Element {
             crate::icons::tinted_role(svg, crate::icons::ICON_PX, Role::Accent)
                 .align(Align::Center),
         );
-    Element::row()
+    let row = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(9)
         .margin_xy(2, 4)
         .child(chip)
-        .child(
-            Element::label(title)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .weight(1.0)
-                .max_lines(1)
-                .height(20),
-        )
+        .child(title_label(title, note.is_none()));
+    match note {
+        Some(n) => row.child(note_label(n)),
+        None => row,
+    }
+}
+
+/// 卡片标题文字。没有后随说明时由它撑满剩余宽度（把右侧操作区顶到边）。
+fn title_label(title: &str, fill: bool) -> Element {
+    let l = Element::label(title)
+        .font_size(14.0)
+        .font_weight(600)
+        .fg_role(Role::Text)
+        .max_lines(1)
+        .height(20);
+    if fill { l.weight(1.0) } else { l }
+}
+
+/// 标题后的弱化说明：撑满剩余宽度，单行。
+fn note_label(note: Signal<String>) -> Element {
+    Element::label_signal(note)
+        .font_size(12.0)
+        .fg_role(Role::TextSubtle)
+        .weight(1.0)
+        .max_lines(1)
 }
 
 /// 页面头部全局开关（预留：后续可接设置项/命令行参数）。当前关闭——观感待打磨，
@@ -1102,7 +1123,7 @@ pub fn dialog_section_items(
 /// 分组 = 分区标题 + 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。
 /// `rows` 为已构建好的设置行（如 `setting_row(...)` 或清单引擎 `field(...)`）。
 pub fn section(title: &str, rows: Vec<Element>) -> Element {
-    section_impl(title, None, None, rows_to_items(rows), None, None)
+    section_impl(title, None, None, rows_to_items(rows), None, None, None)
 }
 
 /// [`section_with_items`] + **标题栏右键菜单**（见 [`section_vis_with_menu`]）。
@@ -1112,12 +1133,39 @@ pub fn section_with_items_menu(
     items: Vec<CardItem>,
     header_menu: &dyn Fn(Element) -> Element,
 ) -> Element {
-    section_impl(title, Some(action), None, items, None, Some(header_menu))
+    section_impl(
+        title,
+        Some(action),
+        None,
+        items,
+        None,
+        Some(header_menu),
+        None,
+    )
+}
+
+/// [`section_with_items_menu`] + 标题后的一句弱化说明（方案页引擎卡的「此为全局…配置」）。
+pub fn section_with_items_menu_note(
+    title: &str,
+    note: Signal<String>,
+    action: &dyn Fn() -> Element,
+    items: Vec<CardItem>,
+    header_menu: &dyn Fn(Element) -> Element,
+) -> Element {
+    section_impl(
+        title,
+        Some(action),
+        None,
+        items,
+        None,
+        Some(header_menu),
+        Some(note),
+    )
 }
 
 /// [`section`]，卡内是 [`CardItem`] 序列（含 [`CardItem::Bare`] 整块）。
 pub fn section_items(title: &str, items: Vec<CardItem>) -> Element {
-    section_impl(title, None, None, items, None, None)
+    section_impl(title, None, None, items, None, None, None)
 }
 
 /// [`section`] + 尾部挂件（toast 槽之类平时不占位的元素）。理由见
@@ -1129,6 +1177,7 @@ pub fn section_with_attachment(title: &str, rows: Vec<Element>, attachment: Elem
         None,
         rows_to_items(rows),
         Some(attachment),
+        None,
         None,
     )
 }
@@ -1143,7 +1192,7 @@ pub fn section_vis(
     rows: Vec<(Element, Option<Vis>)>,
     head: Option<Element>,
 ) -> Element {
-    section_impl(title, None, head, rows_to_items_vis(rows), None, None)
+    section_impl(title, None, head, rows_to_items_vis(rows), None, None, None)
 }
 
 /// [`section_vis`] + **标题栏右键菜单**。
@@ -1170,6 +1219,7 @@ pub fn section_vis_with_menu(
         rows_to_items_vis(rows),
         None,
         Some(&wrap),
+        None,
     )
 }
 
@@ -1185,6 +1235,7 @@ fn section_impl(
     items: Vec<CardItem>,
     tail: Option<Element>,
     header_menu: Option<&dyn Fn(Element) -> Element>,
+    note: Option<Signal<String>>,
 ) -> Element {
     let sh = look().0[crate::look::SECTION_HEADER];
     let with_action = |row: Element| match action {
@@ -1195,25 +1246,23 @@ fn section_impl(
         Some(f) => f(row),
         None => row,
     };
-    let outside = with_menu(with_action(section_header(title)))
+    let outside = with_menu(with_action(section_header_note(title, note)))
         .visible_when(move || sh.get() == crate::look::header::OUTSIDE);
-    let inside_icon = with_menu(with_action(section_header(title).margin_xy(0, 0)))
-        .visible_when(move || sh.get() == crate::look::header::INSIDE);
-    let inside_plain = with_menu(with_action(
-        Element::row()
+    let inside_icon = with_menu(with_action(
+        section_header_note(title, note).margin_xy(0, 0),
+    ))
+    .visible_when(move || sh.get() == crate::look::header::INSIDE);
+    let inside_plain = with_menu(with_action({
+        let r = Element::row()
             .width_match()
             .cross(Align::Center)
             .spacing(9)
-            .child(
-                Element::label(title)
-                    .font_size(14.0)
-                    .font_weight(600)
-                    .fg_role(Role::Text)
-                    .weight(1.0)
-                    .max_lines(1)
-                    .height(20),
-            ),
-    ))
+            .child(title_label(title, note.is_none()));
+        match note {
+            Some(n) => r.child(note_label(n)),
+            None => r,
+        }
+    }))
     .visible_when(move || sh.get() == crate::look::header::INSIDE_PLAIN);
     // 标题行与其下那条通栏线整体显隐：卡外模式下两者都不该占位。
     let title_block = Element::col()
