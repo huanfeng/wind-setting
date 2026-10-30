@@ -309,6 +309,8 @@ mod feature_id_tests {
             "backup",
             "compat",
             "memory",
+            // manifest::scheme_config_section
+            "shuangpin_layout",
             // pages::appearance_page
             "theme_transfer",
             "theme_editor",

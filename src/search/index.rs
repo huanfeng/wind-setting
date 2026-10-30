@@ -413,6 +413,7 @@ struct Handwritten {
 const HANDWRITTEN: &[Handwritten] = &[
     // ── 方案页：五条都落在「输入方案」卡上 ──
     Handwritten { id: "schema:list", anchor: "schema:list", page: "schema", title: "方案列表", section: "输入方案", keywords: "切换 启用 排序 拖动", feature: "" },
+    Handwritten { id: "schema:shuangpin-layout", anchor: "schema:shuangpin-layout", page: "schema", title: "双拼布局", section: "双拼", keywords: "小鹤 自然码 搜狗 微软 智能abc 声母 韵母 键位 shuangpin", feature: "shuangpin_layout" },
     Handwritten { id: "schema:settings", anchor: "schema:list", page: "schema", title: "方案设置", section: "输入方案", keywords: "单个方案 配置 编辑", feature: "" },
     Handwritten { id: "schema:import", anchor: "schema:list", page: "schema", title: "导入方案包", section: "输入方案", keywords: "wpkg 安装 添加", feature: "" },
     Handwritten { id: "schema:export", anchor: "schema:list", page: "schema", title: "导出方案包", section: "输入方案", keywords: "wpkg 备份 分享", feature: "" },

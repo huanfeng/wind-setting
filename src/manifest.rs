@@ -860,8 +860,14 @@ pub(crate) fn scheme_card_vis(
         .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
         .collect();
     let fuzzy_key = crate::search::index::FUZZY_MASTER;
+    // 「双拼」卡的手写布局行也算「卡里还有可见的行」。
+    let layout_row = section == DOUBLE_PINYIN_SECTION
+        && !state.manifest.feature_hidden(SHUANGPIN_LAYOUT_FEATURE);
     std::rc::Rc::new(move || {
         if with_fuzzy && !store.hides_key(fuzzy_key) {
+            return true;
+        }
+        if layout_row && !store.hides_feature(SHUANGPIN_LAYOUT_FEATURE) {
             return true;
         }
         acts.iter()
@@ -3547,6 +3553,11 @@ fn scheme_config_notice_text(
 /// 别再抄字面量——此前覆盖分组卡片与「码表配置」节头就是两处复刻。
 pub(crate) const DIALOG_HEADER_SIZE: f32 = 13.5;
 
+/// 方案页「双拼」卡的清单 section 名、手写布局行的 `feature:` id 与搜索锚点。
+pub(crate) const DOUBLE_PINYIN_SECTION: &str = "双拼";
+pub(crate) const SHUANGPIN_LAYOUT_FEATURE: &str = "shuangpin_layout";
+pub(crate) const SHUANGPIN_LAYOUT_ANCHOR: &str = "schema:shuangpin-layout";
+
 /// 方案页某引擎（码表 / 拼音 / 混输 / 英文）的全局配置整张卡片。
 ///
 /// 卡内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
@@ -3581,7 +3592,10 @@ pub fn scheme_config_section(
             .is_visible(crate::search::index::FUZZY_MASTER);
     // 整张卡的项都被隐藏了（定制版 `[settings] hide`）：不出一张只有标题和提示的空卡，
     // 调用方据此连二级导航那一条也不放。
-    if keys.is_empty() && !with_fuzzy {
+    // 「双拼」卡的第一行是手写的布局下拉（不是配置键，隐藏走 `feature:shuangpin_layout`）。
+    let layout_row_on = section == DOUBLE_PINYIN_SECTION
+        && !state.manifest.feature_hidden(SHUANGPIN_LAYOUT_FEATURE);
+    if keys.is_empty() && !with_fuzzy && !layout_row_on {
         return None;
     }
 
@@ -3620,9 +3634,19 @@ pub fn scheme_config_section(
     };
     // 首个标题：section 本身（如"上屏行为"），与 subsection 同级同样式。
     // 整节的行都被用户藏光时标题跟着走（与下方 subsection 标题同一判据）。
+    // 卡标题与说明行的显隐 = 清单项还有可见的，或布局行还在。
+    let card_vis: crate::widgets::Vis = {
+        let base = section_vis_of(&keys);
+        if layout_row_on {
+            let lv = feature_row_vis(state, SHUANGPIN_LAYOUT_FEATURE);
+            std::rc::Rc::new(move || base() || lv())
+        } else {
+            base
+        }
+    };
     items.push(crate::widgets::CardItem::HeadingWhen(
         section.to_string(),
-        section_vis_of(&keys),
+        card_vis.clone(),
     ));
 
     // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
@@ -3664,8 +3688,28 @@ pub fn scheme_config_section(
     // 否则卡片会剩下一句没人需要读的说明（2026-10-25 反馈）。
     items.push(crate::widgets::CardItem::RowWhen(
         dialog_notice_row(notice),
-        section_vis_of(&keys),
+        card_vis,
     ));
+
+    // 双拼布局排在卡内第一行。没有可改的双拼方案时这一行不出。
+    if layout_row_on {
+        let row = state.schema_mgr.build_page_layout_row();
+        let row = crate::search::anchor::wrap(row, SHUANGPIN_LAYOUT_ANCHOR, state.jump);
+        let row = wrap_feature_menu(state, SHUANGPIN_LAYOUT_FEATURE, row);
+        let row = crate::hide_marker::mark(
+            state.user_hide_store.clone(),
+            |s| s.rule_hiding_feature(SHUANGPIN_LAYOUT_FEATURE),
+            row,
+        );
+        let (fv, has) = (
+            feature_row_vis(state, SHUANGPIN_LAYOUT_FEATURE),
+            state.schema_mgr.page_layout_has_target,
+        );
+        items.push(crate::widgets::CardItem::RowWhen(
+            row,
+            std::rc::Rc::new(move || fv() && has.get()),
+        ));
+    }
 
     let mut cur_subsec: Option<String> = None;
     for k in &keys {

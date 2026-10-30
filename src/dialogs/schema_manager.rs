@@ -1105,6 +1105,13 @@ pub struct SchemaManagerState {
     /// 双拼布局清单 (id, 显示名)：refresh() 时经 `schema.layouts` RPC 动态拉取
     /// （合并安装目录与用户目录），取代原硬编码；下拉选项/索引映射/行名后缀均以此为准。
     pub layouts: Rc<RefCell<Vec<(String, String)>>>,
+    /// 方案页「双拼」卡里的布局下拉：选项、选中索引、是否有可改的双拼方案。
+    /// 改的是启用顺序里第一个双拼方案（见 [`Self::page_layout_target`]）。
+    pub page_layout_labels: Signal<Vec<String>>,
+    pub page_layout_idx: Signal<usize>,
+    pub page_layout_has_target: Signal<bool>,
+    /// 下拉上一次与数据对齐（或已入队）的索引，用来分清「用户拨了」和「刷新同步」。
+    page_layout_synced: Rc<std::cell::Cell<usize>>,
     /// 当前打开方案应显示的配置分节（open_settings_at_id 重算，驱动对话框 body 重建）。
     /// 两个 TAB 各自的分节表（由 [`split_sections_by_tab`] 从扁平表拆出）。
     ///
@@ -1426,6 +1433,10 @@ impl SchemaManagerState {
             settings_is_shuangpin: signal(false),
             settings_layout: signal(0),
             layouts: Rc::new(RefCell::new(Vec::new())),
+            page_layout_labels: signal(Vec::new()),
+            page_layout_idx: signal(0),
+            page_layout_has_target: signal(false),
+            page_layout_synced: Rc::new(std::cell::Cell::new(0)),
             settings_sections: [signal(vec![]), signal(vec![]), signal(vec![])],
             settings_tab: signal(0),
             settings_tab_labels: signal(vec![
@@ -2106,6 +2117,113 @@ impl SchemaManagerState {
         // 活跃方案可能在 core 侧被切换过（托盘/快捷键），bump 让工具栏按钮重估。
         self.bump_active();
         self.rebuild_list();
+        self.sync_page_layout();
+    }
+
+    /// 方案页「双拼」卡改哪个方案：启用顺序里的第一个双拼方案（`enabled_order` 空 = 全部启用，
+    /// 按列表原序）。布局属于方案，多个双拼方案时其余的在方案管理器里单独设置。
+    fn page_layout_target(&self) -> Option<SchemaEntry> {
+        let schemas = self.schemas.borrow();
+        let order = self.enabled_order.borrow();
+        if order.is_empty() {
+            schemas.iter().find(|e| e.scheme == "shuangpin").cloned()
+        } else {
+            order
+                .iter()
+                .filter_map(|id| schemas.iter().find(|e| &e.id == id))
+                .find(|e| e.scheme == "shuangpin")
+                .cloned()
+        }
+    }
+
+    /// 方案页「双拼」卡里的「双拼布局」行（下拉 + 把选择入队的 effect）。
+    pub fn build_page_layout_row(&self) -> Element {
+        let st = self.clone();
+        let stage = crate::pages::dict::reactive::reactive_effect(
+            {
+                let idx = self.page_layout_idx;
+                move || idx.version()
+            },
+            move || st.stage_page_layout(),
+        );
+        Element::col()
+            .width_match()
+            .child(crate::widgets::setting_row(
+                "双拼布局",
+                Some("决定声母韵母怎么落到键位上。有多个双拼方案时，这里改的是启用顺序里的第一个，其余请在方案管理器里单独设置"),
+                Element::dropdown_signal(self.page_layout_labels, self.page_layout_idx).width(170),
+            ))
+            .child(stage)
+    }
+
+    /// 把布局下拉对齐到数据：选项取 `schema.layouts`，选中项取待提交队列里的值（有的话），
+    /// 否则是方案当前布局。
+    pub fn sync_page_layout(&self) {
+        let layouts = self.layouts.borrow().clone();
+        self.page_layout_labels
+            .set(layouts.iter().map(|(_, n)| n.clone()).collect());
+        let Some(t) = self.page_layout_target() else {
+            self.page_layout_has_target.set(false);
+            return;
+        };
+        let pending = self
+            .pending_edits
+            .borrow()
+            .get(&t.id)
+            .and_then(|e| e.cfg.as_ref())
+            .and_then(|c| c.pointer("/engine/pinyin/shuangpin/layout"))
+            .and_then(|v| v.as_str().map(str::to_string));
+        let cur = pending.unwrap_or(t.shuangpin_layout);
+        let idx = layouts.iter().position(|(id, _)| *id == cur).unwrap_or(0);
+        self.page_layout_synced.set(idx);
+        self.page_layout_idx.set(idx);
+        self.page_layout_has_target.set(true);
+    }
+
+    /// 布局下拉被用户拨动：把新布局写进目标方案的待提交配置（随主保存落盘）。
+    pub fn stage_page_layout(&self) {
+        let idx = self.page_layout_idx.get();
+        if idx == self.page_layout_synced.get() {
+            return;
+        }
+        self.page_layout_synced.set(idx);
+        let Some(t) = self.page_layout_target() else {
+            return;
+        };
+        let layout = {
+            let layouts = self.layouts.borrow();
+            let Some((id, _)) = layouts.get(idx) else {
+                return;
+            };
+            id.clone()
+        };
+        let existing = self
+            .pending_edits
+            .borrow()
+            .get(&t.id)
+            .and_then(|e| e.cfg.clone().map(|c| (c, e.base.clone())));
+        let (mut cfg, base) = match existing {
+            Some(x) => x,
+            None => match rpc::call_core("schema.getConfig", &json!({ "id": t.id })) {
+                Ok(c) => (c.clone(), c),
+                Err(e) => {
+                    tracing::warn!("双拼布局入队失败（取方案配置 {}）：{e}", t.id);
+                    return;
+                }
+            },
+        };
+        set_json_path(
+            &mut cfg,
+            &["engine", "pinyin", "shuangpin", "layout"],
+            json!(layout),
+        );
+        let mut q = self.pending_edits.borrow_mut();
+        merge_pending(&mut q, &t.id, Some(cfg), Vec::new());
+        if let Some(slot) = q.get_mut(&t.id)
+            && slot.base.is_null()
+        {
+            slot.base = base;
+        }
     }
 
     // ── 选中模型（工具栏按钮的作用对象） ──────────────────────
@@ -7362,6 +7480,65 @@ mod section_build_tests {
         }];
         state.open_settings_at_id("double_pinyin");
         state
+    }
+
+    /// 方案页「双拼」卡的布局下拉：目标是启用顺序里的第一个双拼方案；同步取方案当前布局，
+    /// 拨动后把新布局写进该方案的待提交配置，没拨动不入队。
+    #[test]
+    fn page_layout_row_targets_first_enabled_shuangpin_and_stages_on_change() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = SchemaManagerState::new();
+        let sp = |id: &str, layout: &str| SchemaEntry {
+            id: id.into(),
+            name: id.into(),
+            engine_type: "pinyin".into(),
+            scheme: "shuangpin".into(),
+            shuangpin_layout: layout.into(),
+            ..Default::default()
+        };
+        *state.schemas.borrow_mut() = vec![sp("sp_a", "xiaohe"), sp("sp_b", "ziranma")];
+        // 启用顺序里 sp_b 在前 ⇒ 目标是 sp_b，而不是列表里排第一的 sp_a。
+        *state.enabled_order.borrow_mut() = vec!["sp_b".into(), "sp_a".into()];
+        *state.layouts.borrow_mut() = vec![
+            ("xiaohe".into(), "小鹤".into()),
+            ("ziranma".into(), "自然码".into()),
+            ("sogou".into(), "搜狗".into()),
+        ];
+        state.sync_page_layout();
+        assert!(state.page_layout_has_target.get());
+        assert_eq!(state.page_layout_labels.get().len(), 3);
+        assert_eq!(state.page_layout_idx.get(), 1, "显示目标方案 sp_b 的布局");
+
+        state.stage_page_layout();
+        assert!(!state.has_pending_edits(), "没拨动不入队");
+
+        state.page_layout_idx.set(2);
+        state.stage_page_layout();
+        let q = state.pending_edits.borrow();
+        assert!(!q.contains_key("sp_a"), "只改目标方案");
+        let cfg = q["sp_b"].cfg.clone().expect("入队");
+        assert_eq!(
+            cfg["engine"]["pinyin"]["shuangpin"]["layout"],
+            json!("sogou")
+        );
+        drop(q);
+
+        // 刷新同步取待提交的值，下拉不会跳回旧布局。
+        state.sync_page_layout();
+        assert_eq!(state.page_layout_idx.get(), 2);
+
+        // 没有双拼方案 ⇒ 无目标。
+        *state.schemas.borrow_mut() = vec![SchemaEntry {
+            id: "py".into(),
+            scheme: "full".into(),
+            ..Default::default()
+        }];
+        state.sync_page_layout();
+        assert!(!state.page_layout_has_target.get());
     }
 
     /// 双拼方案：直接辅助码一行显示（`settings_is_shuangpin` 即渲染判据）、跟随全局值；

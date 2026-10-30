@@ -438,6 +438,7 @@ mod tests {
         let cases: &[(&str, &[&str])] = &[
             ("theme_transfer", &["ui:theme-import", "ui:theme-export"]),
             ("theme_editor", &["ui:theme-editor"]),
+            ("shuangpin_layout", &["schema:shuangpin-layout"]),
             (
                 "integration",
                 &[
@@ -529,6 +530,7 @@ mod tests {
     fn shared_cards_vanish_only_when_both_halves_are_hidden() {
         for (page, group, card, feature) in [
             ("ui", "ui", "主题", "theme_transfer"),
+            ("schema", "schema", "双拼", "shuangpin_layout"),
             (
                 "advanced",
                 "advanced",
