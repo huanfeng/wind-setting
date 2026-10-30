@@ -1849,6 +1849,27 @@ label = "Tab 制表键"
 value = "enter"
 label = "Enter 回车键"
 
+# ── 命令短语 ──
+[[items]]
+key = "input.phrase.prefix_match"
+group = "input"
+section = "命令短语"
+type = "toggle"
+label = "短语前缀匹配"
+hint = "敲短语编码的前几位时，列出以它开头的短语（如敲 co 列出 cobd、coad…）。关闭后只有编码完全相同的短语才出。纯码表方案开启「精确匹配」时本来就不列前缀，不受此项影响"
+
+[[items]]
+key = "input.phrase.min_prefix"
+group = "input"
+section = "命令短语"
+type = "number"
+label = "前缀匹配最少键入"
+hint = "至少敲几位编码才列出前缀匹配的短语"
+min = 1
+max = 8
+unit = "位"
+enabled_when = "input.phrase.prefix_match == true"
+
 # ── 快捷输入 ──
 [[items]]
 key = "schema.mix_modes"

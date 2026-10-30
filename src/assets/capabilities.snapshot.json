@@ -1573,6 +1573,11 @@
       "type": "str"
     },
     {
+      "default": true,
+      "key": "input.phrase.prefix_match",
+      "type": "bool"
+    },
+    {
       "default": 2,
       "key": "input.phrase.min_prefix",
       "type": "int"

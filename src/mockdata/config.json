@@ -150,7 +150,8 @@
   "numpad_half_width": false,
   "password_force_english": true,
   "phrase": {
-   "min_prefix": 2
+   "min_prefix": 2,
+   "prefix_match": true
   },
   "punct": {
    "custom_enabled": false,

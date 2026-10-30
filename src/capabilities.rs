@@ -326,8 +326,6 @@ mod tests {
         //    available→ 行内启用勾选 + ↑↓ 排序，同样经 writer 写回。
         "schema.active",
         "schema.available",
-        // ③ 短语前缀列举：开关暂无作用，待 core 决定后再处理。
-        "input.phrase.min_prefix",
         // ④ 非独立清单项：由各功能键的「全局」勾选经收集器汇总写回。
         "keys.global_hotkeys",
         // ⑤ 临时英文不再设独立启用开关（Shift+字母 始终可进入、触发键可留空）。
