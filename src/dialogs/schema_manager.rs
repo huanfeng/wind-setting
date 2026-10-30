@@ -2345,6 +2345,7 @@ impl SchemaManagerState {
             }
             lost
         };
+        self.sync_page_layout();
         if lost > 0 {
             let name = self
                 .schemas
@@ -2638,8 +2639,17 @@ impl SchemaManagerState {
         };
 
         // 方案配置（三层合并结果）；失败按空对象处理（布局下拉回退首项）。
-        let cfg = rpc::call_core("schema.getConfig", &json!({ "id": schema_id }))
-            .unwrap_or_else(|_| json!({}));
+        // 待提交队列里已有这个方案的改动（方案页的布局下拉、上一次关窗暂存的）时以它为底：
+        // 否则关窗会拿磁盘上的旧快照整份替换队列，把先前入队的改动悄悄丢掉。
+        let queued = self
+            .pending_edits
+            .borrow()
+            .get(schema_id)
+            .and_then(|e| e.cfg.clone());
+        let cfg = queued.unwrap_or_else(|| {
+            rpc::call_core("schema.getConfig", &json!({ "id": schema_id }))
+                .unwrap_or_else(|_| json!({}))
+        });
         let is_sp = entry.scheme == "shuangpin";
         if is_sp {
             let layout = cfg
@@ -3254,10 +3264,15 @@ impl SchemaManagerState {
         {
             let mut q = self.pending_edits.borrow_mut();
             merge_pending(&mut q, &id, cfg_changed.then_some(cfg), dicts);
-            if cfg_changed && let Some(slot) = q.get_mut(&id) {
+            // base 是「队列里的 cfg 在哪份磁盘快照上改出来的」：已有就保留，别被队列自己的内容顶掉。
+            if cfg_changed
+                && let Some(slot) = q.get_mut(&id)
+                && slot.base.is_null()
+            {
                 slot.base = self.settings_cfg.borrow().clone();
             }
         }
+        self.sync_page_layout();
         // 对话框开着期间外部改过这个方案：控件是按旧快照显示的，入队的改动要对一次账，
         // 否则 saveConfig 拿旧快照整份重写 override，外部刚写的值被静默抹掉。
         let fresh = self.settings_cfg_fresh.borrow().clone();
@@ -3295,6 +3310,7 @@ impl SchemaManagerState {
     /// 丢弃待提交队列（「重新加载」时调用——那是明确的「丢弃未保存改动」操作）。
     pub fn clear_pending_edits(&self) {
         self.pending_edits.borrow_mut().clear();
+        self.sync_page_layout();
     }
 
     /// 请求删除指定 ID 方案（弹出确认对话框）。
@@ -7539,6 +7555,53 @@ mod section_build_tests {
         }];
         state.sync_page_layout();
         assert!(!state.page_layout_has_target.get());
+    }
+
+    /// 方案页下拉已入队的布局，之后再打开该方案的设置对话框、改别的项、关窗，布局不能丢；
+    /// 对话框里显示的也是入队的布局，而不是磁盘上的旧值。
+    #[test]
+    fn page_staged_layout_survives_opening_the_settings_dialog() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+
+        let state = SchemaManagerState::new();
+        *state.schemas.borrow_mut() = vec![SchemaEntry {
+            id: "double_pinyin".into(),
+            name: "双拼".into(),
+            engine_type: "pinyin".into(),
+            scheme: "shuangpin".into(),
+            shuangpin_layout: "ziranma".into(),
+            ..Default::default()
+        }];
+        *state.enabled_order.borrow_mut() = vec!["double_pinyin".into()];
+        *state.layouts.borrow_mut() = vec![
+            ("xiaohe".into(), "小鹤".into()),
+            ("ziranma".into(), "自然码".into()),
+            ("sogou".into(), "搜狗".into()),
+        ];
+        state.sync_page_layout();
+        assert_eq!(state.page_layout_idx.get(), 1, "前提：方案当前是自然码");
+        state.page_layout_idx.set(2);
+        state.stage_page_layout();
+        assert!(state.has_pending_edits(), "前提：方案页下拉已入队");
+
+        state.open_settings_at_id("double_pinyin");
+        assert_eq!(state.settings_layout.get(), 2, "对话框显示入队的布局");
+        state.settings_aux_direct_over.set(true);
+        state.settings_aux_direct.set(false);
+        state.stage_settings_edits();
+        let cfg = state.pending_edits.borrow()["double_pinyin"]
+            .cfg
+            .clone()
+            .unwrap();
+        assert_eq!(
+            cfg["engine"]["pinyin"]["shuangpin"]["layout"],
+            json!("sogou"),
+            "关窗不能把方案页入队的布局顶掉"
+        );
+        assert_eq!(cfg["engine"]["aux_code"]["direct"], json!(false));
     }
 
     /// 双拼方案：直接辅助码一行显示（`settings_is_shuangpin` 即渲染判据）、跟随全局值；

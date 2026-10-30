@@ -3677,7 +3677,11 @@ pub fn scheme_config_section(
         )
     });
 
-    let scope_note = format!("此为全局{label}方案配置。");
+    let scope_note = if section == DOUBLE_PINYIN_SECTION {
+        "双拼开关是全局配置；双拼布局属于方案，这里改的是启用顺序里的第一个双拼方案。".to_string()
+    } else {
+        format!("此为全局{label}方案配置。")
+    };
     let header_note = schema_hint_header_note(state, &keys);
     // Header 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能就此凭空消失——
     // 追加进这句统一说明的计数里。计数走 Signal：覆盖汇总（`schema.overrideSummary`）
