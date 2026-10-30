@@ -114,7 +114,7 @@ pub fn section_header(title: &str) -> Element {
     section_header_note(title, None)
 }
 
-/// [`section_header`]，标题后可跟一句弱化说明（单行，放不下时截断）。
+/// [`section_header`]，标题后可跟一枚 info 图标（悬停显示说明）。
 pub fn section_header_note(title: &str, note: Option<Signal<String>>) -> Element {
     let svg = crate::icons::section_icon(title);
     let chip = Element::stack()
@@ -149,13 +149,12 @@ fn title_label(title: &str, fill: bool) -> Element {
     if fill { l.weight(1.0) } else { l }
 }
 
-/// 标题后的弱化说明：撑满剩余宽度，单行。
+/// 标题后的说明：一枚 info 图标，悬停显示全文；所在行撑满剩余宽度，把右侧操作区顶到边。
 fn note_label(note: Signal<String>) -> Element {
-    Element::label_signal(note)
-        .font_size(12.0)
-        .fg_role(Role::TextSubtle)
+    Element::row()
         .weight(1.0)
-        .max_lines(1)
+        .cross(Align::Center)
+        .child(info_badge(note, |_| {}))
 }
 
 /// 页面头部全局开关（预留：后续可接设置项/命令行参数）。当前关闭——观感待打磨，

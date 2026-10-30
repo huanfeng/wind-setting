@@ -3688,7 +3688,7 @@ pub fn scheme_config_section(
             scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
         })
     };
-    // 「这一整张卡是全局的」那句放在卡片标题之后（`notice` 传给标题栏），不再单占一行。
+    // 「这一整张卡是全局的」那句收进卡片标题旁的 info 图标（`notice` 传给标题栏），悬停显示。
 
     // 双拼布局排在卡内第一行。没有可改的双拼方案时这一行不出。
     if layout_row_on {
