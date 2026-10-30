@@ -3471,6 +3471,7 @@ options = [
   { value = "·", label = "间隔号 ( · )" },
   { value = "-", label = "连字符 ( - )" },
   { value = "_", label = "下划线 ( _ )" },
+  { value = " ", label = "空格" },
 ]
 
 [[items]]
