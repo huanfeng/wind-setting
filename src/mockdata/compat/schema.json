@@ -293,6 +293,31 @@
       "advanced": false,
       "dependsOn": null,
       "group": "behavior",
+      "hosts": [],
+      "key": "syllable_separator",
+      "kind": "enum",
+      "label": "拼音音节分隔符",
+      "optionLabels": [
+        "单引号 ( ' )",
+        "空格",
+        "间隔号 ( · )",
+        "不显示"
+      ],
+      "options": [
+        "apostrophe",
+        "space",
+        "dot",
+        "none"
+      ],
+      "problem": "有的软件（如 Unreal Engine 的资产命名框）不接受单引号，编码里带 ' 会被拒绝或弹错。选「不显示」即可，只改显示，不影响输入和切分。不设置则跟随全局设置。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "拼音编码里音节之间显示的符号：单引号 '、空格、间隔号 · 或不显示。"
+    },
+    {
+      "advanced": false,
+      "dependsOn": null,
+      "group": "behavior",
       "hosts": [
         "EXCEL.EXE",
         "et.exe"
