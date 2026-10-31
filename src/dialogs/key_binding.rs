@@ -895,6 +895,22 @@ fn session_base_keys() -> &'static [&'static str] {
     }
 }
 
+/// 只在全局组合键里可选的编辑 / 导航键，与 core `parse_key_name` 的规范名一一对应。
+const COMBO_EDIT_KEYS: [&str; 12] = [
+    "backspace",
+    "delete",
+    "insert",
+    "esc",
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+    "up",
+    "down",
+    "left",
+    "right",
+];
+
 /// 组合键的基础键（修饰键之外的那一个）。
 fn combo_base_keys(table: BindingTable) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vec![(String::new(), "（请选择）".to_string())];
@@ -907,6 +923,11 @@ fn combo_base_keys(table: BindingTable) -> Vec<(String, String)> {
                 if !v.is_empty() {
                     out.push((v, l));
                 }
+            }
+            // 编辑 / 导航键只在组合键下开放：裸按会夺走宿主里的退格、删除与方向键，
+            // 带上修饰键才是用户有意的绑定（`parse_hotkey` 都认这些键名）。
+            for k in COMBO_EDIT_KEYS {
+                out.push((k.to_string(), key_choice_label(k)));
             }
         }
         // Session 表的组合只有 `shift+<基础键>`，基础键值域与单键相同。
@@ -2011,6 +2032,37 @@ mod tests {
         for v in ["add_word", "open_add_word_dialog"] {
             assert!(!verb_allowed(KeyShape::Combo, v), "{v} 不该允许绑组合键");
         }
+    }
+
+    /// 全局组合键的基础键里有编辑 / 导航键（Shift+Backspace 等），core 都认；单键里不列。
+    #[test]
+    fn global_combo_offers_edit_keys_core_accepts() {
+        let combo: Vec<String> = combo_base_keys(BindingTable::Lead)
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        let single: Vec<String> = single_keys(BindingTable::Lead)
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        for k in COMBO_EDIT_KEYS {
+            assert!(combo.iter().any(|v| v == k), "{k} 应在全局组合键里");
+            assert!(!single.iter().any(|v| v == k), "{k} 不该出现在单键里");
+            let key = format!("shift+{k}");
+            assert!(
+                wind_config::hotkey::parse_hotkey(&key).is_some(),
+                "core 应认 {key}"
+            );
+        }
+        let session: Vec<String> = combo_base_keys(BindingTable::Session)
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        assert!(
+            !session.iter().any(|v| v == "backspace"),
+            "会话表不开放退格"
+        );
+        assert_eq!(key_display("shift+backspace"), "Shift + Backspace");
     }
 
     /// 「用来离开英文态」的动作绑有字符的键是单程票，必须挡住；修饰键上则全放行。
