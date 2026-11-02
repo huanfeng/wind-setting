@@ -58,6 +58,7 @@
    "temp_pinyin_via_composition": true
   },
   "cmdbar": {
+   "backspace_collapse_group": true,
    "candidate_prefix": "⚡",
    "enabled": false
   },

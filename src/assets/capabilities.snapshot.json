@@ -1574,6 +1574,11 @@
     },
     {
       "default": true,
+      "key": "input.cmdbar.backspace_collapse_group",
+      "type": "bool"
+    },
+    {
+      "default": true,
       "key": "input.phrase.prefix_match",
       "type": "bool"
     },

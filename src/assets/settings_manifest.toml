@@ -1870,6 +1870,14 @@ max = 8
 unit = "位"
 enabled_when = "input.phrase.prefix_match == true"
 
+[[items]]
+key = "input.cmdbar.backspace_collapse_group"
+group = "input"
+section = "命令短语"
+type = "toggle"
+label = "退格退回折叠"
+hint = "同码有别的候选时，命令短语组（$SS/$AA）折叠成一条组名；选中组展开后，按退格先回到折叠状态，再按才删码。关闭后退格直接删码"
+
 # ── 快捷输入 ──
 [[items]]
 key = "schema.mix_modes"
