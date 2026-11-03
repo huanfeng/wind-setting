@@ -1443,6 +1443,11 @@
       "type": "bool"
     },
     {
+      "default": 16,
+      "key": "input.reverse.clip_max_chars",
+      "type": "int"
+    },
+    {
       "default": false,
       "key": "input.emoji.enabled",
       "type": "bool"

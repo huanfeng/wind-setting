@@ -373,6 +373,10 @@ mod tests {
         //        容量参数普通用户无判断依据，出厂值足够宽，临时词条也能在「词库 → 英文 → 临时
         //        词库」逐条删。开关与晋升次数已在清单内（英文行为 → 自动造词）。
         "schema.english.auto_learn.temp_max_entries",
+        // ⑳' 命令栏整串反查（dict.rev 省略 n，如剪贴板反查 cofc）的字数上限（出厂 16）。
+        //     core 侧标注为内部字段：超长视为「不是一个词」不查，属防御性阈值，普通用户
+        //     无判断依据，需要时改配置文件。
+        "input.reverse.clip_max_chars",
         // ⑨'' 码元字符集：core 的 REGISTRY 已注册（config_schema.rs），但消费侧仍在开发中，
         //     暂不接入设置界面。**待 core 定稿后再评估**该不该暴露、放全局清单还是方案对话框。
         "schema.codetable.input_chars",

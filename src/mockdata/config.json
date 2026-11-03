@@ -169,6 +169,7 @@
   "rare_phrase": "keep",
   "reverse": {
    "candidate_layout": "follow",
+   "clip_max_chars": 16,
    "lookup_disabled_dicts": false
   },
   "s2t": {
