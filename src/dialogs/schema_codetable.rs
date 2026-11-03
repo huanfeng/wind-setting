@@ -499,25 +499,54 @@ impl CtFields {
         }
     }
 
-    /// 渲染一个分类：小标题（右侧报本组摘要）+ 组内各行。各分类同在「码表配置」那
+    /// 渲染一个分类：小标题（右侧「＋ 添加覆盖」）+ 组内**已列出**的行。各分类同在「码表配置」那
     /// **一张**卡片里（[`crate::widgets::CardItem::Bare`]），小标题与分割线跟随「界面细节」。
+    ///
+    /// 方案覆盖是**稀疏**的：绝大多数方案一项都不改，所以默认只列「用户覆盖了的」（`over`）和
+    /// 「方案作者自己写了的」（来源为「方案自带」）；其余项藏着，从标题右侧的菜单勾选后才出现。
+    /// 行**预建、靠 `visible_when` 显隐**——工作态挂在 Element 上，重建会丢刚改的值。
+    /// 取消勾选行首的框 = 移除（用户覆盖的行随之消失；方案自带的行留着，只是回到只读）。
     ///
     /// 「全部恢复跟随」在这个 TAB 上是**整节**级别的动作，挂在外层节头（见
     /// `schema_manager.rs` 的 `SettingsSection::CodeTable`），不是某一分类自己的按钮。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
-        let summary = self.group_summary(&group.title);
+        let menu_items: Vec<(String, Signal<bool>)> = {
+            let items = self.items.borrow();
+            group
+                .keys
+                .iter()
+                .filter_map(|k| {
+                    let item = manifest.get(k)?;
+                    Some((item.label.clone(), items.get(k)?.over))
+                })
+                .collect()
+        };
+        let add_menu = move || {
+            let items = menu_items
+                .iter()
+                .map(|(label, over)| CheckMenuItem::check(label.as_str(), *over))
+                .collect();
+            Element::check_menu("＋ 添加覆盖", items).width(132)
+        };
         let mut col = Element::col()
             .width_match()
             .child(crate::widgets::list_heading_ext(
                 &group.title,
-                Some(&move || crate::widgets::summary_label(summary)),
+                Some(&add_menu),
                 group.first,
             ));
-        for (i, k) in group.keys.iter().enumerate() {
-            if i > 0 {
-                col = col.child(crate::widgets::row_divider());
-            }
-            col = col.child(crate::widgets::card_pad(self.row(manifest, k)));
+        for k in group.keys.iter() {
+            let Some(st) = self.items.borrow().get(k).cloned() else {
+                continue;
+            };
+            let (over, from_schema) = (st.over, st.src == SRC_FROM_SCHEMA);
+            col = col.child(
+                Element::col()
+                    .width_match()
+                    .child(crate::widgets::row_divider())
+                    .child(crate::widgets::card_pad(self.row(manifest, k)))
+                    .visible_when(move || over.get() || from_schema),
+            );
         }
         col
     }

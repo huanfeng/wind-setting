@@ -176,32 +176,40 @@ pub enum SettingsSection {
 /// 这里列的是**全集**：每个方案只显示其中分到了内容的那几个（空的整页隐藏，见
 /// `settings_sections`），顺序即显示顺序。方案类型 → TAB 集合没有单独的映射表，
 /// 由「该类型有哪些节 + [`SettingsSection::tab`]」自然决定：
-/// 全拼 / 双拼 = 基本 · 按键设置 · 方案覆盖 · 辅助码；码表 = 基本 · 按键设置 · 整句输入 · 方案覆盖 ·
-/// 码表与特殊模式；混输 = 基本 · 按键设置 · 整句输入 · 方案覆盖。
+/// 全拼 / 双拼 = 基本 · 按键设置 · 自定义行为 · 辅助码；
+/// 码表 = 基本 · 按键设置 · 整句输入 · 自定义行为 · 方案覆盖 · 特殊模式；
+/// 混输 = 基本 · 按键设置 · 整句输入 · 自定义行为。
 ///
-/// 设计见 `docs/design/schema-settings-vertical-tabs.md`。判据是「**常看的东西有没有被不常看的
-/// 挤走**」，不是「这一页够不够满」——此前横向三页的数量反转过两次，纵向后不再受横向宽度所限。
+/// 「自定义行为」与「方案覆盖」是两回事：前者是对**公共配置**（候选窗 / 标点 / 输入）做方案级的
+/// 特殊处理，各项常驻列出；后者是覆盖**引擎类型的全局配置**（码表 / 混输 / 拼音……），
+/// 绝大多数方案一项都不改，所以走「添加覆盖」。目前只有码表有方案覆盖（core 对拼音 / 混输的
+/// 全局配置不提供方案级覆盖，见 `docs/redesign/schema-config-layering.md` §3.2 / §3.3）。
+///
+/// 设计见 `docs/design/schema-settings-vertical-tabs.md`。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsTab {
     /// 方案信息 + 扩展词库（+ 双拼布局）。
     Basic,
     Keys,
     Sentence,
-    /// 方案覆盖：本方案对全局行为的偏离（现为「本方案行为」一节）。
+    /// 自定义行为：候选窗 / 标点 / 输入的方案级特殊处理（`Behavior` 一节）。
+    Behavior,
+    /// 方案覆盖：引擎类型全局配置的方案级覆盖（现仅码表：`CodeTable` 一节）。
     Overrides,
     Aux,
-    /// 码表配置 + 特殊模式（码表方案专有）。
-    CodeTable,
+    /// 特殊模式（overlay，码表方案专有）。
+    Special,
 }
 
 impl SettingsTab {
-    pub const ALL: [SettingsTab; 6] = [
+    pub const ALL: [SettingsTab; 7] = [
         Self::Basic,
         Self::Keys,
         Self::Sentence,
+        Self::Behavior,
         Self::Overrides,
         Self::Aux,
-        Self::CodeTable,
+        Self::Special,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -209,9 +217,10 @@ impl SettingsTab {
             Self::Basic => "基本",
             Self::Keys => "按键设置",
             Self::Sentence => "整句输入",
+            Self::Behavior => "自定义行为",
             Self::Overrides => "方案覆盖",
             Self::Aux => "辅助码",
-            Self::CodeTable => "码表与特殊模式",
+            Self::Special => "特殊模式",
         }
     }
 
@@ -225,9 +234,10 @@ pub const SETTINGS_TABS: [&str; SettingsTab::ALL.len()] = [
     SettingsTab::Basic.label(),
     SettingsTab::Keys.label(),
     SettingsTab::Sentence.label(),
+    SettingsTab::Behavior.label(),
     SettingsTab::Overrides.label(),
     SettingsTab::Aux.label(),
-    SettingsTab::CodeTable.label(),
+    SettingsTab::Special.label(),
 ];
 
 impl SettingsSection {
@@ -258,7 +268,7 @@ impl SettingsSection {
     ///
     /// 分组判据是**用户想做什么**，不是数据落在哪个文件：基本 = 这个方案是什么、带哪些词库、
     /// 双拼用哪套布局；按键设置 = 怎么切进来（配一次就不再看）；方案覆盖 = 要不要偏离全局；
-    /// 辅助码 / 整句输入 / 码表与特殊模式 = 各自的功能区。
+    /// 辅助码 / 整句输入 / 特殊模式 = 各自的功能区；码表配置归方案覆盖。
     ///
     /// 双拼布局归**基本**而不是方案覆盖：它是「这个方案是什么」的一部分（换一套布局等于换一种
     /// 打法），不是「要不要偏离全局」。
@@ -272,9 +282,10 @@ impl SettingsSection {
             }
             Self::EntryKeys => Some(SettingsTab::Keys.index()),
             Self::Sentence => Some(SettingsTab::Sentence.index()),
-            Self::Behavior => Some(SettingsTab::Overrides.index()),
+            Self::Behavior => Some(SettingsTab::Behavior.index()),
             Self::AuxCode => Some(SettingsTab::Aux.index()),
-            Self::CodeTable | Self::Overlay => Some(SettingsTab::CodeTable.index()),
+            Self::CodeTable => Some(SettingsTab::Overrides.index()),
+            Self::Overlay => Some(SettingsTab::Special.index()),
             Self::Divider | Self::Empty => None,
         }
     }
@@ -5899,12 +5910,12 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             ct_count.refresh_group_summaries();
             // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
             // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。星号打在各自所属的页：
-            // 码表配置 → 码表与特殊模式；本方案行为 → 方案覆盖；辅助码 → 辅助码。
+            // 码表配置 → 方案覆盖；本方案行为 → 自定义行为；辅助码 → 辅助码。
             // ⚠️ 用 `SettingsTab` 而不是字面下标——TAB 的数量和顺序都变过。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
             for (t, custom) in [
-                (SettingsTab::CodeTable, n),
-                (SettingsTab::Overrides, bh_custom),
+                (SettingsTab::Overrides, n),
+                (SettingsTab::Behavior, bh_custom),
                 (SettingsTab::Aux, aux_custom),
             ] {
                 if custom > 0 {
@@ -5959,7 +5970,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
 /// 方案设置对话框宽度与中部视口高度（纵向 TAB 条与内容区共用这个高度）。
 const VTAB_DIALOG_W: i32 = 780;
 const VTAB_BODY_H: i32 = 480;
-/// 纵向 TAB 条宽度：放得下最长的「码表与特殊模式」+ 星号。
+/// 纵向 TAB 条宽度：放得下最长的「自定义行为」+ 星号。
 const VTAB_W: i32 = 156;
 const VTAB_ROW_H: i32 = 32;
 
@@ -7471,18 +7482,16 @@ mod section_build_tests {
             Divider,
             ExtensionDicts,
         ];
-        let [basic, keys, _sentence, _overrides, _aux, codetable] = split_sections_by_tab(&flat);
+        let [basic, keys, _sentence, _behavior, overrides, _aux, special] =
+            split_sections_by_tab(&flat);
         assert_eq!(
             basic,
             vec![Header, ShuangpinLayout, Divider, ExtensionDicts],
             "双拼布局归基本配置；Header 自带结尾分隔故其后不插"
         );
         assert_eq!(keys, vec![EntryKeys], "按键设置独立成页，只此一节");
-        assert_eq!(
-            codetable,
-            vec![CodeTable, Divider, Overlay],
-            "码表与特殊模式页开头不该是一条分隔线"
-        );
+        assert_eq!(overrides, vec![CodeTable], "码表配置归方案覆盖");
+        assert_eq!(special, vec![Overlay], "特殊模式独立成页");
     }
 
     /// 各节归属的 TAB 下标必须与 [`SettingsTab`] 的显示名对得上——星号、搜索面包屑都按名字找页。
@@ -7491,9 +7500,9 @@ mod section_build_tests {
         use SettingsSection::*;
         let idx = |t: SettingsTab| Some(t.index());
         assert_eq!(SETTINGS_TABS[SettingsTab::Overrides.index()], "方案覆盖");
-        assert_eq!(Behavior.tab(), idx(SettingsTab::Overrides));
-        assert_eq!(CodeTable.tab(), idx(SettingsTab::CodeTable));
-        assert_eq!(Overlay.tab(), idx(SettingsTab::CodeTable));
+        assert_eq!(Behavior.tab(), idx(SettingsTab::Behavior));
+        assert_eq!(CodeTable.tab(), idx(SettingsTab::Overrides));
+        assert_eq!(Overlay.tab(), idx(SettingsTab::Special));
         assert_eq!(AuxCode.tab(), idx(SettingsTab::Aux));
         assert_eq!(Sentence.tab(), idx(SettingsTab::Sentence));
         assert_eq!(EntryKeys.tab(), idx(SettingsTab::Keys));
