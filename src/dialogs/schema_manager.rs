@@ -893,10 +893,17 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         .and_then(|v| v.as_i64())
         .filter(|n| *n >= 1);
     // 布尔本身没有「未设置」态：方案文件写了 false，或用户层显式写过该键，才算有覆盖。
+    // 用户层的值与方案文件层相同（文件没写按默认 true）不算覆盖：旧版本一保存就无条件写出
+    // `enabled = true`，升级后不该因此把它列成「已覆盖」。
+    let base_phrases = cfg
+        .pointer("/schemaBase/phrases/enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let phrases_set = !phrases
-        || cfg
+        || (cfg
             .pointer("/schemaUserOverride/phrases/enabled")
-            .is_some_and(|v| !v.is_null());
+            .is_some_and(|v| !v.is_null())
+            && base_phrases != phrases);
     BehaviorSeed {
         punct,
         layout,
@@ -1319,8 +1326,9 @@ pub struct SchemaManagerState {
     pub settings_bh_punct_listed: Signal<bool>,
     pub settings_bh_layout_listed: Signal<bool>,
     pub settings_bh_phrases_listed: Signal<bool>,
-    /// 方案文件里已经写了（且用户层没写）的覆盖字段：行说明里标「方案文件默认」。
-    settings_ov_file: Rc<RefCell<Vec<overrides::OvField>>>,
+    /// 方案文件里已经写了的覆盖字段（及用户层有没有再改，见 `overrides::file_level`）：
+    /// 这类字段不能移除；用户层没动过的行说明里标「方案文件默认」。
+    settings_ov_file: Rc<RefCell<Vec<(overrides::OvField, bool)>>>,
     pub settings_bh_punct: Signal<usize>,
     /// 候选排列：0=跟随全局 / 1=竖排 / 2=横排（`[candidate] layout`）。
     pub settings_bh_layout: Signal<usize>,
@@ -3313,49 +3321,52 @@ impl SchemaManagerState {
                 // ⚠️ 整张表作一个叶子写下去。core 侧 `json_diff` 对 `custom_mappings`
                 // 是**原子叶子**、`merge_toml` 对它是**整体替换**——这里若按行拆着写，
                 // override 里就只剩改过的那几行，读侧整体替换后方案作者写的其余行全丢。
-                set_json_path(
-                    &mut cfg,
-                    &["punct", "custom_mappings"],
-                    punct_map_value(now.punct_map.as_ref()),
-                );
-                set_json_path(
-                    &mut cfg,
-                    &["punct", "mode"],
-                    json!(punct_mode_value(now.punct)),
-                );
-                set_json_path(
-                    &mut cfg,
-                    &["candidate", "layout"],
-                    json!(overlay_layout_value(now.layout)),
-                );
-                set_json_path(
-                    &mut cfg,
-                    &["candidate", "font_family"],
-                    font_write(
-                        now.font_family.is_some(),
-                        now.font_family.as_deref().unwrap_or(""),
+                let writes: [([&str; 2], Value); 7] = [
+                    (
+                        ["punct", "custom_mappings"],
+                        punct_map_value(now.punct_map.as_ref()),
                     ),
-                );
-                set_json_path(
-                    &mut cfg,
-                    &["candidate", "per_page"],
-                    per_page_write(now.per_page.is_some(), now.per_page.unwrap_or(1) as f64),
-                );
-                set_json_path(
-                    &mut cfg,
-                    &["candidate", "text_orientation"],
-                    json!(text_orient_value(now.text_orient)),
-                );
-                // 未列出 = 未设置：写 null 删掉用户层的键，回到方案文件 / 全局的取值。
-                set_json_path(
-                    &mut cfg,
-                    &["phrases", "enabled"],
-                    if now.phrases_set {
-                        json!(now.phrases)
-                    } else {
-                        Value::Null
-                    },
-                );
+                    (["punct", "mode"], json!(punct_mode_value(now.punct))),
+                    (
+                        ["candidate", "layout"],
+                        json!(overlay_layout_value(now.layout)),
+                    ),
+                    (
+                        ["candidate", "font_family"],
+                        font_write(
+                            now.font_family.is_some(),
+                            now.font_family.as_deref().unwrap_or(""),
+                        ),
+                    ),
+                    (
+                        ["candidate", "per_page"],
+                        per_page_write(now.per_page.is_some(), now.per_page.unwrap_or(1) as f64),
+                    ),
+                    (
+                        ["candidate", "text_orientation"],
+                        json!(text_orient_value(now.text_orient)),
+                    ),
+                    // 未列出 = 未设置：写 null 删掉用户层的键，回到方案文件 / 全局的取值。
+                    (
+                        ["phrases", "enabled"],
+                        if now.phrases_set {
+                            json!(now.phrases)
+                        } else {
+                            Value::Null
+                        },
+                    ),
+                ];
+                for (path, value) in writes {
+                    // 同步镜像进旁路字段 `schemaUserOverride`：暂存后的 cfg 会被下次打开当
+                    // 底，那份旁路字段若还是第一次打开时的旧值，「已列出」与「方案文件默认」
+                    // 的判定都会错（添加了短语覆盖，关窗再开，行不见了）。
+                    set_json_path(
+                        &mut cfg,
+                        &["schemaUserOverride", path[0], path[1]],
+                        value.clone(),
+                    );
+                    set_json_path(&mut cfg, &path, value);
+                }
                 cfg_changed = true;
             }
         }
@@ -5646,19 +5657,22 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let tab = state.settings_tab;
     let tab_bar = build_vtab_bar(state);
 
-    let mut panes = Element::col().width_match().padding_xy(16, 8);
+    // 每页各有一个滚动区：切 TAB 时滚动位置不串（共用一个的话，在长页滚到下面再切到短页，
+    // 只看到一片空白）。
+    let mut panes = Element::col().weight(1.0).height_match();
     for i in 0..SETTINGS_TABS.len() {
         let st = state.clone();
         let sec = state.settings_sections[i];
         let body = Element::host_signal(sec, move |kind| build_section(kind, &st));
         panes = panes.child(
-            Element::col()
+            Element::scroll()
                 .width_match()
-                .child(body)
+                .height_match()
+                .child(Element::col().width_match().padding_xy(16, 8).child(body))
                 .visible_when(move || tab.get() == i),
         );
     }
-    // 右侧自己滚动：外壳的滚动视口与本区等高（见下面 `VTAB_BODY_H`），外层不会再出滚动条；
+    // 外壳的滚动视口与本区等高（见下面 `VTAB_BODY_H`），外层不会再出滚动条；
     // 左侧 TAB 条因此不随内容滚走。
     let sections = Element::row()
         .width_match()
@@ -5670,7 +5684,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
                 .height_match()
                 .bg_role(Role::Border),
         )
-        .child(Element::scroll().weight(1.0).height_match().child(panes));
+        .child(panes);
 
     // 热键工作态 → 内存 map 的落盘点。**用 effect 而非在各个「关闭」按钮上调**：
     // 对话框有多条关闭路径（footer 按钮 / 标题栏 / 保存后自动关），逐个挂等于赌自己
@@ -6688,6 +6702,24 @@ mod ext_dict_tests {
         );
     }
 
+    /// 方案文件自己设过的项不能移除：移除是空操作（行会消失、重开又出现），
+    /// 标点 / 排列甚至会被写成 follow 而改掉方案作者的值。
+    #[test]
+    fn file_set_fields_cannot_be_removed() {
+        use overrides::{OvField, remove};
+        let state = SchemaManagerState::new();
+        *state.settings_ov_file.borrow_mut() = vec![(OvField::PerPage, true)];
+        state.settings_bh_pp_over.set(true);
+        remove(&state, OvField::PerPage);
+        assert!(
+            state.settings_bh_pp_over.get(),
+            "文件级的每页候选数保持列出"
+        );
+        state.settings_bh_font_over.set(true);
+        remove(&state, OvField::Font);
+        assert!(!state.settings_bh_font_over.get(), "非文件级照常移除");
+    }
+
     /// 「加载命令短语」是布尔、没有未设置态：方案文件写了 false，或用户层写过该键，才算列出。
     #[test]
     fn phrases_listed_only_when_set_by_file_or_user() {
@@ -6702,23 +6734,40 @@ mod ext_dict_tests {
         );
         let user_true = json!({
             "phrases": { "enabled": true },
+            "schemaBase": { "phrases": { "enabled": false } },
             "schemaUserOverride": { "phrases": { "enabled": true } }
         });
         assert!(
             seed_behavior(&user_true).phrases_set,
-            "用户显式写 true 也算覆盖"
+            "方案文件关了、用户改回 true：算覆盖"
+        );
+        let legacy = json!({
+            "phrases": { "enabled": true },
+            "schemaUserOverride": { "phrases": { "enabled": true } }
+        });
+        assert!(
+            !seed_behavior(&legacy).phrases_set,
+            "旧版本无条件写下的 true 与默认相同，不算覆盖"
         );
 
         let cfg = json!({
             "schemaBase": { "phrases": { "enabled": false } },
             "schemaUserOverride": {}
         });
-        assert_eq!(file_level(&cfg), vec![OvField::Phrases], "方案文件层的覆盖");
+        assert_eq!(
+            file_level(&cfg),
+            vec![(OvField::Phrases, true)],
+            "方案文件层的覆盖，用户没动过"
+        );
         let cfg = json!({
             "schemaBase": { "phrases": { "enabled": false } },
             "schemaUserOverride": { "phrases": { "enabled": false } }
         });
-        assert!(file_level(&cfg).is_empty(), "用户层也写了：来源算用户");
+        assert_eq!(
+            file_level(&cfg),
+            vec![(OvField::Phrases, false)],
+            "用户层也写了：仍是方案文件设过的项（不可移除），但不再标「方案文件默认」"
+        );
 
         let state = SchemaManagerState::new();
         state.settings_bh_phrases_listed.set(true);
