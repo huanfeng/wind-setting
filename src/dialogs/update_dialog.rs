@@ -13,8 +13,6 @@ use windui::prelude::*;
 use crate::state::AppState;
 use crate::update::{self, UpdatePhase};
 
-/// 没有自动安装通路的平台（Linux）在「发现新版本」时打开的页面。
-
 /// 对话框宽度。发布说明常有较长条目，比常规对话框宽一档可减少折行。
 const DIALOG_W: i32 = 620;
 /// 发布说明区高度上限：超出即滚动。
@@ -53,7 +51,10 @@ pub fn build_update_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                 .visible_when(is(UpdatePhase::Downloading)),
         )
         .child(simple_body(message).visible_when(is(UpdatePhase::Ready)))
-        .child(simple_body(message).visible_when(is(UpdatePhase::Installing)))
+        .child(
+            downloading_body(message, progress, progress_text)
+                .visible_when(is(UpdatePhase::Installing)),
+        )
         .child(simple_body(message).visible_when(is(UpdatePhase::Installed)))
         .child(error_body(message).visible_when(is(UpdatePhase::Error)))
         .child(Element::divider())

@@ -39,6 +39,9 @@ wind-rpc = { path = "../WindInput/wind_input/crates/wind-rpc" }
 wind-punct = { path = "../WindInput/wind_input/crates/wind-punct" }
 wind-transform = { path = "../WindInput/wind_input/crates/wind-transform" }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 # 设置页字体下拉按 DirectWrite family 枚举（与 core 渲染端同一字体模型，见 state.rs

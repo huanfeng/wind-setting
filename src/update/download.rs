@@ -580,12 +580,31 @@ pub fn cache_dir() -> PathBuf {
                 .mode(0o700)
                 .create(&dir)
                 .is_ok();
-            if made {
+            if made && is_private_own_dir(&dir) {
                 return dir;
             }
+            tracing::warn!("升级缓存目录 {} 不是本人独占，改用临时目录", dir.display());
         }
     }
     std::env::temp_dir()
+}
+
+/// 目录属主是自己且组/其他无权限。`mode(0o700)` 只在新建时生效，已存在的目录要核对。
+#[cfg(target_os = "linux")]
+fn is_private_own_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let Ok(md) = std::fs::metadata(dir) else {
+        return false;
+    };
+    // SAFETY: geteuid 无参数、无副作用。
+    let me = unsafe { libc::geteuid() };
+    if md.uid() != me {
+        return false;
+    }
+    if md.permissions().mode() & 0o077 != 0 {
+        return std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok();
+    }
+    true
 }
 
 /// 只保留文件名安全字符，杜绝路径分隔符与父目录引用。

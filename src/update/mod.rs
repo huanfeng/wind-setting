@@ -277,6 +277,11 @@ pub enum UpdateMsg {
     DownloadCancelled,
     /// 安装线程结束（仅 Linux）。`Ok` 带给用户看的结果说明；`Err` 是可直接展示的中文错误。
     InstallDone(Result<String, String>),
+    /// 安装进度（仅 Linux）：`ratio` 为 0~1，`text` 是 apt 报告的当前步骤。
+    InstallProgress {
+        ratio: f32,
+        text: String,
+    },
 }
 
 /// 升级链路的错误分类。用户可见文案一律中文。
@@ -401,8 +406,13 @@ fn test_override_local() -> Option<String> {
 
 /// 更新链路上的地址是否可接受：`https` 恒可；`http` 仅在测试覆盖生效时。
 pub fn scheme_ok(url: &str) -> bool {
+    scheme_ok_for(url, test_override_url().is_some())
+}
+
+/// [`scheme_ok`] 的纯函数版（`mode` 是进程级单例，测试里改不了，故把开关作参数）。
+fn scheme_ok_for(url: &str, http_allowed: bool) -> bool {
     let l = url.to_ascii_lowercase();
-    l.starts_with("https://") || (l.starts_with("http://") && test_override_url().is_some())
+    l.starts_with("https://") || (http_allowed && l.starts_with("http://"))
 }
 
 /// 检查更新：拉元数据 → 判定版本 → 按需拉发布说明。
@@ -709,5 +719,13 @@ mod tests {
         assert!(scheme_ok("https://dl.windinput.com/a"));
         assert!(!scheme_ok("http://192.168.1.2/a"));
         assert!(test_override_url().is_none());
+    }
+
+    #[test]
+    fn http_is_allowed_only_when_override_active() {
+        assert!(scheme_ok_for("http://192.168.1.2/a", true));
+        assert!(!scheme_ok_for("http://192.168.1.2/a", false));
+        assert!(scheme_ok_for("HTTPS://x/a", false));
+        assert!(!scheme_ok_for("ftp://x/a", true));
     }
 }

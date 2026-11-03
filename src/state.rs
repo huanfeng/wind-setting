@@ -1265,7 +1265,10 @@ impl AppState {
         use crate::update::UpdatePhase;
         if matches!(
             self.update_phase.get(),
-            UpdatePhase::Downloading | UpdatePhase::Ready | UpdatePhase::Installing
+            UpdatePhase::Downloading
+                | UpdatePhase::Ready
+                | UpdatePhase::Installing
+                | UpdatePhase::Installed
         ) {
             self.update_dialog_visible.set(true);
             return;
@@ -1682,14 +1685,23 @@ impl AppState {
             self.fail_update("内部错误：更新通道未就绪");
             return;
         };
-        self.update_message
-            .set("正在安装…请在弹出的授权窗口中输入管理员密码。".to_string());
+        self.update_progress.set(0.0);
+        self.update_progress_text
+            .set("等待管理员授权…（请在弹出的窗口中输入密码）".to_string());
+        self.update_message.set("正在安装更新…".to_string());
         self.update_phase
             .set(crate::update::UpdatePhase::Installing);
         std::thread::spawn(move || {
-            let msg = match crate::update::install::install_deb(&deb) {
+            let ptx = tx.clone();
+            let progress = move |ratio: f32, text: &str| {
+                let _ = ptx.send(crate::update::UpdateMsg::InstallProgress {
+                    ratio,
+                    text: text.to_string(),
+                });
+            };
+            let msg = match crate::update::install::install_deb(&deb, progress) {
                 Ok(crate::update::install::DebInstall::Installed) => Ok(
-                    "安装完成。新版本在重启 Fcitx5 后生效（终端执行 fcitx5 -rd，或注销重新登录）。"
+                    "安装完成。新版本在重启 Fcitx5 后生效（终端执行 fcitx5 -rd，或注销重新登录），设置程序请重新打开。"
                         .to_string(),
                 ),
                 Ok(crate::update::install::DebInstall::HandedOff) => Ok(
@@ -1947,15 +1959,22 @@ impl AppState {
             UpdateMsg::DownloadDone(path) => {
                 *self.update_installer.borrow_mut() = Some(path);
                 self.update_progress.set(1.0);
-                // 预告窗口会关闭：安装器要终止本进程才能替换文件，事后再提示已来不及
-                self.update_message.set(
+                // Windows/macOS 预告窗口会关闭：安装器要终止本进程才能替换文件，事后再提示已来不及
+                let tip = if cfg!(target_os = "linux") {
+                    "下载完成，完整性校验通过。\n点击安装后需输入管理员密码，安装期间请勿关闭本窗口。"
+                } else {
                     "下载完成，完整性校验通过。\n点击安装后设置窗口将关闭，安装完成后可重新打开。"
-                        .to_string(),
-                );
+                };
+                self.update_message.set(tip.to_string());
                 self.update_phase.set(UpdatePhase::Ready);
             }
             UpdateMsg::DownloadFailed(e) => self.fail_update(e),
+            UpdateMsg::InstallProgress { ratio, text } => {
+                self.update_progress.set(ratio);
+                self.update_progress_text.set(text);
+            }
             UpdateMsg::InstallDone(Ok(m)) => {
+                self.update_progress.set(1.0);
                 self.update_message.set(m);
                 self.update_phase.set(UpdatePhase::Installed);
             }
@@ -5436,6 +5455,42 @@ mod tests {
     }
 
     /// 下载不许重入：一次只能有一个下载线程，两个会写同一个目标文件、进度互相打架。
+    /// Linux 安装阶段：进度消息写进度条，结束消息决定终态；安装中/装完后重开对话框不重置。
+    #[test]
+    fn install_messages_drive_phase_and_progress() {
+        use crate::update::{UpdateMsg, UpdatePhase};
+        let st = AppState::empty();
+        st.update_phase.set(UpdatePhase::Installing);
+        st.on_update_msg(UpdateMsg::InstallProgress {
+            ratio: 0.4,
+            text: "正在解压".into(),
+        });
+        assert_eq!(st.update_progress.get(), 0.4);
+        assert_eq!(st.update_progress_text.get(), "正在解压");
+
+        st.open_update_dialog();
+        assert_eq!(
+            st.update_phase.get(),
+            UpdatePhase::Installing,
+            "安装中重开不重置"
+        );
+
+        st.on_update_msg(UpdateMsg::InstallDone(Ok("安装完成".into())));
+        assert_eq!(st.update_phase.get(), UpdatePhase::Installed);
+        assert_eq!(st.update_progress.get(), 1.0);
+        st.open_update_dialog();
+        assert_eq!(
+            st.update_phase.get(),
+            UpdatePhase::Installed,
+            "装完重开不应再次检查出同一个新版本"
+        );
+
+        st.update_phase.set(UpdatePhase::Installing);
+        st.on_update_msg(UpdateMsg::InstallDone(Err("未获得授权".into())));
+        assert_eq!(st.update_phase.get(), UpdatePhase::Error);
+        assert_eq!(st.update_message.get(), "未获得授权");
+    }
+
     /// 三种终态消息（完成/失败/取消）到达后才允许再次开始。
     #[test]
     fn download_reentry_is_blocked_until_a_terminal_message() {

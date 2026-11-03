@@ -262,11 +262,15 @@ pub enum DebInstall {
 pub fn apt_args(deb: &Path) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
     vec![
-        OsString::from("env"),
+        // 绝对路径：pkexec 按调用者的 PATH 解析相对名，授权框里也只会显示解析结果
+        OsString::from("/usr/bin/env"),
         OsString::from("DEBIAN_FRONTEND=noninteractive"),
-        OsString::from("apt-get"),
+        OsString::from("/usr/bin/apt-get"),
         OsString::from("install"),
         OsString::from("-y"),
+        // 把 dpkg 的进度以 `pmstatus:包:百分比:说明` 行写到 stdout，供界面显示真实进度
+        OsString::from("-o"),
+        OsString::from("APT::Status-Fd=1"),
         deb.as_os_str().to_owned(),
     ]
 }
@@ -279,6 +283,19 @@ fn which(name: &str) -> Option<PathBuf> {
         .filter(|d| !d.is_empty())
         .map(|d| Path::new(d).join(name))
         .find(|p| p.is_file())
+}
+
+/// 解析 apt 的状态行 `pmstatus:<包>:<百分比>:<说明>`，返回 (0~1 的进度, 说明)。
+/// 其它行（`dlstatus` 等）返回 `None`。
+pub fn parse_status_line(line: &str) -> Option<(f32, String)> {
+    let mut it = line.splitn(4, ':');
+    if it.next()? != "pmstatus" {
+        return None;
+    }
+    let _pkg = it.next()?;
+    let pct: f32 = it.next()?.trim().parse().ok()?;
+    let msg = it.next()?.trim().to_string();
+    Some(((pct / 100.0).clamp(0.0, 1.0), msg))
 }
 
 /// 取 stderr 的最后几行作错误说明（apt 的真正原因总在末尾）。
@@ -296,7 +313,10 @@ fn tail_lines(bytes: &[u8], n: usize) -> String {
 ///
 /// 与 Windows/mac 不同，这里**不需要让出窗口**：postinst 只结束输入法服务，不碰设置程序，
 /// Linux 上替换正在运行的二进制也不会出事。
-pub fn install_deb(deb: &Path) -> Result<DebInstall, UpdateError> {
+pub fn install_deb(
+    deb: &Path,
+    mut progress: impl FnMut(f32, &str),
+) -> Result<DebInstall, UpdateError> {
     if !deb.is_absolute() || !deb.is_file() {
         return Err(UpdateError::Install(format!(
             "安装包不存在：{}",
@@ -307,19 +327,56 @@ pub fn install_deb(deb: &Path) -> Result<DebInstall, UpdateError> {
 
     if let Some(pkexec) = which("pkexec") {
         tracing::info!("pkexec 安装：{}", deb.display());
-        let out = std::process::Command::new(pkexec)
-            .args(apt_args(deb))
+        let mut cmd = std::process::Command::new(pkexec);
+        cmd.args(apt_args(deb))
             .stdin(std::process::Stdio::null())
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // 脱离控制终端：从终端启动时 pkexec 在没有图形授权代理的会话里会打开 /dev/tty 等密码，
+        // 界面就永远停在「等待授权」。脱离后它拿不到 tty，直接返回 127，走「未获得授权」。
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: pre_exec 里只调 async-signal-safe 的 setsid。
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
+        let mut child = cmd
+            .spawn()
             .map_err(|e| UpdateError::Install(format!("无法启动 pkexec：{e}")))?;
-        return match out.status.code() {
+        // stderr 另起线程读空，免得 apt 写满管道把自己堵住；末尾几行留作失败说明
+        let mut err_pipe = child.stderr.take();
+        let err_thread = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = err_pipe.as_mut() {
+                let _ = std::io::Read::read_to_end(p, &mut buf);
+            }
+            buf
+        });
+        if let Some(out) = child.stdout.take() {
+            for line in std::io::BufRead::lines(std::io::BufReader::new(out)).map_while(Result::ok)
+            {
+                if let Some((ratio, msg)) = parse_status_line(&line) {
+                    progress(ratio, &msg);
+                }
+            }
+        }
+        let status = child
+            .wait()
+            .map_err(|e| UpdateError::Install(format!("等待安装结束失败：{e}")))?;
+        let stderr = err_thread.join().unwrap_or_default();
+        return match status.code() {
             Some(0) => Ok(DebInstall::Installed),
             // polkit：126 = 授权对话框被取消 / 认证失败，127 = 无法授权
             Some(126) | Some(127) => Err(UpdateError::Install(format!(
                 "未获得管理员授权，已取消安装。也可在终端手动执行：{manual}"
             ))),
             _ => {
-                let detail = tail_lines(&out.stderr, 4);
+                let detail = tail_lines(&stderr, 4);
                 Err(UpdateError::Install(format!(
                     "apt 安装失败：{detail}\n可在终端手动执行：{manual}"
                 )))
@@ -332,7 +389,13 @@ pub fn install_deb(deb: &Path) -> Result<DebInstall, UpdateError> {
         return std::process::Command::new(xdg)
             .arg(deb)
             .spawn()
-            .map(|_| DebInstall::HandedOff)
+            .map(|mut c| {
+                // 回收子进程，免得留僵尸直到设置程序退出
+                std::thread::spawn(move || {
+                    let _ = c.wait();
+                });
+                DebInstall::HandedOff
+            })
             .map_err(|e| UpdateError::Install(format!("拉起系统安装器失败：{e}")));
     }
 
@@ -472,11 +535,13 @@ mod tests {
         assert_eq!(
             a,
             [
-                "env",
+                "/usr/bin/env",
                 "DEBIAN_FRONTEND=noninteractive",
-                "apt-get",
+                "/usr/bin/apt-get",
                 "install",
                 "-y",
+                "-o",
+                "APT::Status-Fd=1",
                 "/home/u/.cache/windinput/update/x.deb"
             ]
         );
@@ -484,8 +549,8 @@ mod tests {
 
     #[test]
     fn install_deb_rejects_relative_or_missing_path() {
-        assert!(install_deb(Path::new("x.deb")).is_err());
-        assert!(install_deb(Path::new("/nonexistent/x.deb")).is_err());
+        assert!(install_deb(Path::new("x.deb"), |_, _| {}).is_err());
+        assert!(install_deb(Path::new("/nonexistent/x.deb"), |_, _| {}).is_err());
     }
 
     #[test]
@@ -501,8 +566,24 @@ mod tests {
     #[ignore]
     fn install_deb_real() {
         let deb = std::env::var("WIND_TEST_DEB").expect("需要 WIND_TEST_DEB");
-        let r = install_deb(Path::new(&deb));
+        let r = install_deb(Path::new(&deb), |r, m| println!("{r:.2} {m}"));
         println!("install_deb => {r:?}");
         r.unwrap();
+    }
+
+    #[test]
+    fn status_line_parses_pmstatus_only() {
+        assert_eq!(
+            parse_status_line("pmstatus:windinput:42.5:正在设置 windinput"),
+            Some((0.425, "正在设置 windinput".to_string()))
+        );
+        // 说明里允许再出现冒号
+        assert_eq!(
+            parse_status_line("pmstatus:x:100:a:b").map(|v| v.1),
+            Some("a:b".to_string())
+        );
+        assert_eq!(parse_status_line("dlstatus:x:1:y"), None);
+        assert_eq!(parse_status_line("pmstatus:x:abc:y"), None);
+        assert_eq!(parse_status_line("随便一行"), None);
     }
 }

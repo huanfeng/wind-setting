@@ -695,11 +695,17 @@ fn main() {
         });
     }
     let close_state = app_state.clone();
-    app = app.on_close_request(move |_ctx| {
+    app = app.on_close_request(move |ctx| {
         let Ok(st) = close_state.try_borrow() else {
             // 借用不到说明正处在某个改状态的回调里，此时拦下反而更糟（用户会以为窗口卡死）。
             return true;
         };
+        // 正在装 .deb：进程一退，apt/dpkg 继承的输出管道就断了，写入即 SIGPIPE，
+        // 包会停在半配置状态。等装完再关。
+        if st.update_phase.get() == update::UpdatePhase::Installing {
+            ctx.toast("正在安装更新，请等待完成后再关闭");
+            return false;
+        }
         // 本窗承载的是词库时直接放行：词库的写操作即时生效，没有"未保存改动"这回事，
         // 拿设置页的判据拦它只会莫名其妙地弹确认框。复位标志，好让之后的
         // 「词库管理」重新开得出窗（此刻可能还有设置子窗开着，进程不一定退出）。
