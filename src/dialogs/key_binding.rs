@@ -613,6 +613,8 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
             [
                 "page_prev",
                 "page_next",
+                "page_screen_prev",
+                "page_screen_next",
                 "highlight_up",
                 "highlight_down",
                 "toggle_tip",
@@ -621,6 +623,8 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
             .zip([
                 "上一页",
                 "下一页",
+                "上一屏（候选展开后翻整屏；未展开时同上一页）",
+                "下一屏（候选展开后翻整屏；未展开时同下一页）",
                 "高亮上移",
                 "高亮下移",
                 "显示 / 收起高亮项提示",
@@ -2226,6 +2230,8 @@ mod tests {
                         | "commit_code"
                         | "page_prev"
                         | "page_next"
+                        | "page_screen_prev"
+                        | "page_screen_next"
                         | "highlight_up"
                         | "highlight_down"
                         | "toggle_tip"
