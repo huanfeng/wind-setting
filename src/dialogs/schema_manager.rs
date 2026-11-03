@@ -3033,8 +3033,12 @@ impl SchemaManagerState {
                 drop(cfg);
                 self.settings_ct_disp
                     .set(ct_summary(self.settings_ct.custom_count()));
-                sections.push(SettingsSection::Divider);
-                sections.push(SettingsSection::CodeTable);
+                // 定制版 / 用户把码表配置项全藏了 ⇒ 没有可覆盖的东西，整页（方案覆盖 TAB）都不出，
+                // 免得留一个只有标题和「添加覆盖」、点开却什么也没有的空页。
+                if !self.settings_ct.plan().is_empty() {
+                    sections.push(SettingsSection::Divider);
+                    sections.push(SettingsSection::CodeTable);
+                }
 
                 // 特殊模式：**只在方案已声明 `[overlay]` 段时**才建节。
                 //
@@ -8667,6 +8671,34 @@ mod section_build_tests {
             (fresh.punct, fresh.layout, fresh.text_orient, fresh.phrases),
             "全部不勾选 = 出厂的跟随 / 默认"
         );
+    }
+
+    /// 码表配置项全被藏掉 ⇒ 没有「方案覆盖」页，而不是一个空页。
+    #[test]
+    fn codetable_override_page_dropped_when_all_items_hidden() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let open = |m: Rc<crate::manifest::Manifest>| {
+            let state = SchemaManagerState::new();
+            state.set_manifest(m);
+            *state.schemas.borrow_mut() = vec![SchemaEntry {
+                id: "wubi86".into(),
+                name: "五笔 86".into(),
+                engine_type: "codetable".into(),
+                ..Default::default()
+            }];
+            state.open_settings_at_id("wubi86");
+            state
+        };
+        assert!(has_section(&open(folded(&[])), SettingsSection::CodeTable));
+        let all = open(folded(&["key:schema.codetable.*"]));
+        assert!(
+            !has_section(&all, SettingsSection::CodeTable),
+            "码表配置项全藏：不出这一节"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 辅助码各行全藏 ⇒ 不建这一节；只藏一部分 ⇒ 节还在。

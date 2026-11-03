@@ -143,8 +143,17 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
                         !store.hides_key(&item.key)
                             && !store.hides_section(&item.group, &item.section)
                     }
-                    // 方案级条目（`schema-level:*`）：没有对应的用户清单选择器，照列。
-                    None => true,
+                    // 方案级条目（`schema-level:*`）：按它对应的全局项判，与方案对话框里
+                    // 那一行同一套判据；没有全局对应项的照列。
+                    None => {
+                        let title = e.id.rsplit(':').next().unwrap_or("");
+                        crate::search::index::schema_level_hide_key(title)
+                            .and_then(|k| manifest.get(k))
+                            .is_none_or(|item| {
+                                !store.hides_key(&item.key)
+                                    && !store.hides_section(&item.group, &item.section)
+                            })
+                    }
                 }
             },
         ));

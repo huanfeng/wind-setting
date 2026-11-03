@@ -528,6 +528,7 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "进入即展示候选", tab: "特殊模式", section: "特殊模式", keywords: "overlay 引导键 首屏" },
     SchemaLevelItem { title: "本方案行为", tab: "自定义行为", section: "本方案行为", keywords: "标点 候选 短语 跟随全局" },
     SchemaLevelItem { title: "标点", tab: "自定义行为", section: "本方案行为", keywords: "中文标点 英文标点 跟随全局" },
+    SchemaLevelItem { title: "每页候选数", tab: "自定义行为", section: "本方案行为", keywords: "候选数 条数 一页 per_page 跟随全局" },
     SchemaLevelItem { title: "候选排列", tab: "自定义行为", section: "本方案行为", keywords: "横排 竖排 方向 跟随全局" },
     SchemaLevelItem { title: "横排时文字排列", tab: "自定义行为", section: "本方案行为", keywords: "横排 旋转 竖排 蒙古文 text_orientation" },
     SchemaLevelItem { title: "候选文字字体", tab: "自定义行为", section: "本方案行为", keywords: "字体 字形 跟随外观" },
@@ -535,9 +536,35 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "自定义标点", tab: "自定义行为", section: "本方案行为", keywords: "标点 映射 符号" },
 ];
 
-fn schema_level_entries() -> Vec<SearchEntry> {
+/// 方案级条目对应的全局设置项 key：那一项被定制版 / 用户精简藏掉时，方案对话框里的对应行也
+/// 不出（见 `schema_manager::behavior_rows_hidden` / `aux_rows_hidden`），搜索里也不该再列。
+/// 没有全局对应项的条目返回 `None`，恒列。
+///
+/// ⚠️ 与那两个函数是**同一份对应关系**，改一处要改另一处。
+pub fn schema_level_hide_key(title: &str) -> Option<&'static str> {
+    match title {
+        "每页候选数" => Some("ui.candidate.per_page"),
+        "候选排列" => Some("ui.candidate.layout"),
+        "候选文字字体" => Some("ui.font.family"),
+        "自定义标点" => Some("input.punct.custom_mappings"),
+        // 来源下拉跟着总开关走（`AuxRowsHidden` 的说明）。
+        "辅助码" | "辅助码来源" | "本方案启用辅助码" => {
+            Some("schema.pinyin.aux_code.enabled")
+        }
+        "本方案直接辅助码" => Some("schema.pinyin.aux_code.direct"),
+        _ => None,
+    }
+}
+
+fn schema_level_entries(manifest: &Manifest) -> Vec<SearchEntry> {
     SCHEMA_LEVEL
         .iter()
+        // 定制版藏掉的全局项：对应的方案级条目不进索引。
+        .filter(|it| {
+            schema_level_hide_key(it.title)
+                .and_then(|k| manifest.get(k))
+                .is_none_or(|i| !i.hidden)
+        })
         .map(|it| SearchEntry {
             id: format!("schema-level:{}:{}", it.section, it.title),
             title: it.title.to_string(),
@@ -568,7 +595,7 @@ fn schema_level_entries() -> Vec<SearchEntry> {
 pub fn build_index(manifest: &Manifest) -> Vec<SearchEntry> {
     let mut out = manifest_entries(manifest);
     out.extend(handwritten_entries(manifest));
-    out.extend(schema_level_entries());
+    out.extend(schema_level_entries(manifest));
     out
 }
 
@@ -953,7 +980,7 @@ mod tests {
     /// 方案级条目不生成跳转，只带指示路径。
     #[test]
     fn schema_level_entries_are_hint_only() {
-        let idx = schema_level_entries();
+        let idx = schema_level_entries(&manifest());
         assert_eq!(idx.len(), SCHEMA_LEVEL.len());
         for e in idx {
             match e.target {
@@ -964,6 +991,44 @@ mod tests {
                 other => panic!("方案级条目不该有直达目标：{other:?}"),
             }
         }
+    }
+
+    /// 方案级条目的 TAB 名必须是方案设置对话框里真有的 TAB——改名 / 拆页后没同步，
+    /// 搜索给出的路径就指向一个不存在的页。
+    #[test]
+    fn schema_level_tabs_exist_in_the_dialog() {
+        use crate::dialogs::schema_manager::SETTINGS_TABS;
+        for it in SCHEMA_LEVEL {
+            assert!(
+                SETTINGS_TABS.contains(&it.tab),
+                "「{}」的 TAB「{}」不在 {SETTINGS_TABS:?}",
+                it.title,
+                it.tab
+            );
+        }
+    }
+
+    /// 全局项被定制版藏掉时，对应的方案级条目也不进搜索。
+    #[test]
+    fn schema_level_entries_follow_custom_hide() {
+        let (hide, errors) = wind_config::SettingsHide::parse(&[
+            "key:ui.font.family",
+            "key:schema.pinyin.aux_code.enabled",
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let m = crate::custom_hide::settings_manifest(&hide, false);
+        let titles: Vec<String> = schema_level_entries(&m)
+            .into_iter()
+            .map(|e| e.title)
+            .collect();
+        assert!(!titles.contains(&"候选文字字体".to_string()), "字体被藏");
+        assert!(!titles.contains(&"辅助码".to_string()), "辅助码总开关被藏");
+        assert!(titles.contains(&"标点".to_string()), "别的不受牵连");
+        let all: Vec<String> = schema_level_entries(&manifest())
+            .into_iter()
+            .map(|e| e.title)
+            .collect();
+        assert!(all.contains(&"候选文字字体".to_string()));
     }
 
     /// 转储标题语料，供 `scripts/gen-pinyin-initials.ps1` 生成拼音表。
