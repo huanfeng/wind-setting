@@ -524,7 +524,7 @@ struct AuxSourceItem {
     is_schema: bool,
 }
 
-/// `schema.auxCodeSources` 的结果：方案在前、码表在后（下拉即按此顺序）。
+/// `schema.auxCodeSources` 的结果：码表文件、辅助码方案在前，普通方案在后（下拉即按此顺序）。
 ///
 /// RPC 失败时是 `Default`（空表）——下游据此区分「判不了装没装」与「确实没装」，
 /// 见 [`aux_src_follow_text`]。
@@ -555,24 +555,42 @@ fn parse_aux_source_opts(v: &Value) -> AuxSourceOpts {
             .unwrap_or_default()
     };
     let s = |x: &Value, k: &str| x.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let mut items: Vec<AuxSourceItem> = arr("schemas")
+    // 顺序：辅助码专用的（码表文件、role = aux 的方案）在前，普通输入方案在后——
+    // 选辅助码时先看到的应是专为它做的表。各组内保持 core 给的顺序。
+    let schemas: Vec<(AuxSourceItem, bool)> = arr("schemas")
         .iter()
         .filter(|x| !s(x, "id").is_empty())
+        .map(|x| {
+            (
+                AuxSourceItem {
+                    entry: format!("schema:{}", s(x, "id")),
+                    label: s(x, "name"),
+                    is_schema: true,
+                },
+                s(x, "role") == "aux",
+            )
+        })
+        .collect();
+    let mut items: Vec<AuxSourceItem> = arr("files")
+        .iter()
+        .filter(|x| !s(x, "path").is_empty())
         .map(|x| AuxSourceItem {
-            entry: format!("schema:{}", s(x, "id")),
-            label: s(x, "name"),
-            is_schema: true,
+            entry: s(x, "path"),
+            label: s(x, "label"),
+            is_schema: false,
         })
         .collect();
     items.extend(
-        arr("files")
+        schemas
             .iter()
-            .filter(|x| !s(x, "path").is_empty())
-            .map(|x| AuxSourceItem {
-                entry: s(x, "path"),
-                label: s(x, "label"),
-                is_schema: false,
-            }),
+            .filter(|(_, aux)| *aux)
+            .map(|(i, _)| i.clone()),
+    );
+    items.extend(
+        schemas
+            .iter()
+            .filter(|(_, aux)| !*aux)
+            .map(|(i, _)| i.clone()),
     );
     AuxSourceOpts { items }
 }
@@ -7501,7 +7519,8 @@ mod section_build_tests {
     /// 测试用可选项：一个码表方案、两张码表。形状对齐 core `schema.auxCodeSources`。
     fn aux_opts() -> AuxSourceOpts {
         parse_aux_source_opts(&json!({
-            "schemas": [{ "id": "wubi86", "name": "五笔 86" }],
+            "schemas": [{ "id": "wubi86", "name": "五笔 86" },
+                        { "id": "auxdemo", "name": "辅助演示", "role": "aux" }],
             "files": [{ "path": "aux_code/stroke.txt", "label": "笔画" },
                       { "path": "aux_code/flypy_full.txt", "label": "小鹤" }]
         }))
@@ -7510,20 +7529,22 @@ mod section_build_tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
-    /// 下拉顺序是「方案在前、码表在后」，`entry` 即写进 `files` 的原文（方案带 `schema:` 前缀）。
+    /// 下拉顺序：码表文件、role = aux 的方案在前，普通方案在后；`entry` 即写进 `files` 的原文
+    /// （方案带 `schema:` 前缀）。
     #[test]
-    fn aux_source_items_put_schemas_first() {
+    fn aux_source_items_put_aux_first() {
         let o = aux_opts();
         let e: Vec<&str> = o.items.iter().map(|i| i.entry.as_str()).collect();
         assert_eq!(
             e,
             vec![
-                "schema:wubi86",
                 "aux_code/stroke.txt",
-                "aux_code/flypy_full.txt"
+                "aux_code/flypy_full.txt",
+                "schema:auxdemo",
+                "schema:wubi86"
             ]
         );
-        assert!(o.items[0].is_schema && !o.items[1].is_schema);
+        assert!(!o.items[0].is_schema && o.items[3].is_schema);
         assert_eq!(o.label_of("schema:wubi86"), Some("五笔 86"));
     }
 
@@ -7563,12 +7584,12 @@ mod section_build_tests {
         );
         assert!(matches!(
             seed_aux_src(&strs(&["schema:wubi86"]), &base, &o),
-            AuxSrcSeed::Pick(0)
+            AuxSrcSeed::Pick(3)
         ));
         assert!(
             matches!(
                 seed_aux_src(&strs(&["aux_code/flypy_full.txt"]), &[], &o),
-                AuxSrcSeed::Pick(2)
+                AuxSrcSeed::Pick(1)
             ),
             "方案没写、用户配了"
         );
@@ -7993,7 +8014,7 @@ mod section_build_tests {
     }
 
     /// 跟随态的下拉下标 seed 成**当前生效**的那一项：用户勾上时下拉停在它上面，
-    /// 而不是悄悄换成第一项（mock 里第一项是「五笔 86」，生效的是「笔画」码表）。
+    /// 而不是悄悄换成第一项（mock 里第一项是「小鹤」，生效的是「笔画」码表）。
     #[test]
     fn aux_src_follow_idx_points_at_effective_source() {
         let _guard = crate::rpc::ENV_LOCK

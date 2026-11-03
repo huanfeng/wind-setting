@@ -2422,12 +2422,12 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         "schema.auxCodeSources" => json!({
             "schemas": [
                 { "id": "wubi86", "name": "五笔 86" },
-                { "id": "stroke", "name": "笔画" }
+                { "id": "stroke", "name": "笔画", "role": "aux" }
             ],
             "files": [
-                { "path": "aux_code/bihua.txt", "label": "笔画" },
                 { "path": "aux_code/flypy_full.txt", "label": "小鹤" },
-                { "path": "aux_code/ZRM-wanxiang.txt", "label": "自然码" }
+                { "path": "aux_code/ZRM-wanxiang.txt", "label": "自然码" },
+                { "path": "aux_code/bihua.txt", "label": "笔画" }
             ]
         }),
         "schema.setDictEnabled" => {
