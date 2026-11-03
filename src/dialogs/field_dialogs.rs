@@ -888,6 +888,30 @@ pub fn build_confirm_dialog_shell_sized(
     confirm_label: &'static str,
     height: i32,
 ) -> Element {
+    build_confirm_dialog_shell_dims(
+        visible,
+        title,
+        content,
+        confirm_enabled,
+        on_confirm,
+        confirm_label,
+        460,
+        height,
+    )
+}
+
+/// 同 [`build_confirm_dialog_shell_sized`]，宽度也可指定（内容是列表、460 装不下说明文字的浮层用）。
+#[allow(clippy::too_many_arguments)]
+pub fn build_confirm_dialog_shell_dims(
+    visible: Signal<bool>,
+    title: Signal<String>,
+    content: Element,
+    confirm_enabled: Signal<bool>,
+    on_confirm: impl Fn() + 'static,
+    confirm_label: &'static str,
+    width: i32,
+    height: i32,
+) -> Element {
     let trailing = vec![
         Element::button("取消")
             .small()
@@ -907,7 +931,7 @@ pub fn build_confirm_dialog_shell_sized(
         content,
         Vec::new(),
         trailing,
-        FrameWidth::Fixed(460),
+        FrameWidth::Fixed(width),
         height,
     )
 }

@@ -258,6 +258,9 @@ pub struct CtCandidate {
     pub follow: String,
     /// 跟随的来源称呼（「跟随全局」/「跟随基线」）。
     pub follow_label: String,
+    /// 它依赖、且**当前没满足**、本身也还没列出的项（`enabled_when` 引用的上游开关），
+    /// 形如 `(key, 名称)`。勾选本项时要一并添加，否则新行一出现就是灰的。
+    pub deps: Vec<(String, String)>,
 }
 
 /// 渲染计划的一项：**一个分类卡片**（标题 + 组内 key 列表）。
@@ -573,12 +576,29 @@ impl CtFields {
                             return None;
                         }
                         let item = manifest.get(k)?;
+                        // 上游条件按**生效值**判：全局本来就满足的（如全局已开调频）不用拉上游。
+                        let deps = item
+                            .enabled_when
+                            .as_deref()
+                            .and_then(parse_conds)
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|c| {
+                                let pst = items.get(&c.key)?;
+                                let listed = pst.over.get() || pst.src == SRC_FROM_SCHEMA;
+                                if listed || cond_matches(&pst.effective_value(), c) {
+                                    return None;
+                                }
+                                Some((c.key.clone(), manifest.get(&c.key)?.label.clone()))
+                            })
+                            .collect();
                         Some(CtCandidate {
                             key: k.clone(),
                             label: item.label.clone(),
                             hint: item.hint.clone().unwrap_or_default(),
                             follow: st.follow.display(item),
                             follow_label: st.src.clone(),
+                            deps,
                         })
                     })
                     .collect();
@@ -869,7 +889,7 @@ fn prune_empty_section(cfg: &mut Value, section: &str) {
 /// - `auto_phrase.*`：core 的 `CodeTableSpec` **没有**这一段，方案文件里写了也没人读。
 ///   自动造词目前只有全局一份配置。core 若补上方案级覆盖，把这条排除去掉即可，
 ///   `manifest_keys_match_spec_fields` 会提醒。
-fn visible_keys(manifest: &Manifest) -> Vec<String> {
+pub(crate) fn visible_keys(manifest: &Manifest) -> Vec<String> {
     section_keys(manifest)
         .into_iter()
         .filter(|k| !k.starts_with("schema.codetable.auto_phrase."))
@@ -1068,6 +1088,40 @@ mod tests {
     /// 这条是 0.119 那次翻车的守门：分类在数据层一直都在（`plan` 照常分组），但界面上
     /// 被行首勾选框和来源列的视觉重量压得看不见了。改成卡片之后，组的**结构**成了硬要求
     /// ——`plan` 若退回扁平序列，卡片就无从画起。
+    /// 添加依赖上游开关的项（调频策略依赖「调频」总开关）时，候选里要标出没满足的上游；
+    /// 上游已满足（全局本来就开着）则不拉。
+    #[test]
+    fn candidates_carry_unmet_dependencies() {
+        let m = manifest();
+        let off = json!({ "frequency": { "enabled": false, "strategy": "position" } });
+        let f = CtFields::default();
+        f.seed(&m, &seed_of(&off, &off, &json!({}), &json!({})));
+        let all: Vec<CtCandidate> = f.candidates(&m).into_iter().flat_map(|(_, v)| v).collect();
+        let strategy = all
+            .iter()
+            .find(|c| c.key == "schema.codetable.frequency.strategy")
+            .expect("调频策略应在候选里");
+        assert_eq!(
+            strategy
+                .deps
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>(),
+            vec!["schema.codetable.frequency.enabled"],
+            "调频关着：策略依赖总开关"
+        );
+
+        let on = json!({ "frequency": { "enabled": true, "strategy": "position" } });
+        let f = CtFields::default();
+        f.seed(&m, &seed_of(&on, &on, &json!({}), &json!({})));
+        let all: Vec<CtCandidate> = f.candidates(&m).into_iter().flat_map(|(_, v)| v).collect();
+        let strategy = all
+            .iter()
+            .find(|c| c.key == "schema.codetable.frequency.strategy")
+            .unwrap();
+        assert!(strategy.deps.is_empty(), "全局已开调频：不需要拉上游");
+    }
+
     #[test]
     fn plan_splits_into_titled_groups_by_subsection() {
         let m = manifest();

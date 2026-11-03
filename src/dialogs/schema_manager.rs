@@ -177,8 +177,8 @@ pub enum SettingsSection {
 /// `settings_sections`），顺序即显示顺序。方案类型 → TAB 集合没有单独的映射表，
 /// 由「该类型有哪些节 + [`SettingsSection::tab`]」自然决定：
 /// 全拼 / 双拼 = 基本 · 按键设置 · 自定义行为 · 辅助码；
-/// 码表 = 基本 · 按键设置 · 整句输入 · 自定义行为 · 方案覆盖 · 特殊模式；
-/// 混输 = 基本 · 按键设置 · 整句输入 · 自定义行为。
+/// 码表 = 基本 · 按键设置 · 自定义行为 · 方案覆盖 · 特殊模式 · 实验性功能；
+/// 混输 = 基本 · 按键设置 · 自定义行为 · 实验性功能。
 ///
 /// 「自定义行为」与「方案覆盖」是两回事：前者是对**公共配置**（候选窗 / 标点 / 输入）做方案级的
 /// 特殊处理，各项常驻列出；后者是覆盖**引擎类型的全局配置**（码表 / 混输 / 拼音……），
@@ -191,7 +191,8 @@ pub enum SettingsTab {
     /// 方案信息 + 扩展词库（+ 双拼布局）。
     Basic,
     Keys,
-    Sentence,
+    /// 实验性功能：整句输入等尚在试验的能力，后续同类功能放这里。
+    Experimental,
     /// 自定义行为：候选窗 / 标点 / 输入的方案级特殊处理（`Behavior` 一节）。
     Behavior,
     /// 方案覆盖：引擎类型全局配置的方案级覆盖（现仅码表：`CodeTable` 一节）。
@@ -205,7 +206,7 @@ impl SettingsTab {
     pub const ALL: [SettingsTab; 7] = [
         Self::Basic,
         Self::Keys,
-        Self::Sentence,
+        Self::Experimental,
         Self::Behavior,
         Self::Overrides,
         Self::Aux,
@@ -216,7 +217,7 @@ impl SettingsTab {
         match self {
             Self::Basic => "基本",
             Self::Keys => "按键设置",
-            Self::Sentence => "整句输入",
+            Self::Experimental => "实验性功能",
             Self::Behavior => "自定义行为",
             Self::Overrides => "方案覆盖",
             Self::Aux => "辅助码",
@@ -233,7 +234,7 @@ impl SettingsTab {
 pub const SETTINGS_TABS: [&str; SettingsTab::ALL.len()] = [
     SettingsTab::Basic.label(),
     SettingsTab::Keys.label(),
-    SettingsTab::Sentence.label(),
+    SettingsTab::Experimental.label(),
     SettingsTab::Behavior.label(),
     SettingsTab::Overrides.label(),
     SettingsTab::Aux.label(),
@@ -281,7 +282,7 @@ impl SettingsSection {
                 Some(SettingsTab::Basic.index())
             }
             Self::EntryKeys => Some(SettingsTab::Keys.index()),
-            Self::Sentence => Some(SettingsTab::Sentence.index()),
+            Self::Sentence => Some(SettingsTab::Experimental.index()),
             Self::Behavior => Some(SettingsTab::Behavior.index()),
             Self::AuxCode => Some(SettingsTab::Aux.index()),
             Self::CodeTable => Some(SettingsTab::Overrides.index()),
@@ -1337,6 +1338,12 @@ pub struct SchemaManagerState {
     /// 标点态：0=跟随全局 / 1=中文标点 / 2=英文标点（`[punct] mode`）。
     /// 「添加覆盖」弹框（码表配置）是否可见，及其候选（打开时与每次码表工作态变化时重算）。
     pub settings_ct_add_visible: Signal<bool>,
+    /// 弹框搜索框文本；按名称 / 说明过滤候选。
+    settings_ct_query: Signal<String>,
+    /// 弹框里各候选的勾选信号（按 manifest key，get-or-create：候选列表重建时勾选不丢）。
+    settings_ct_picks: Rc<RefCell<std::collections::HashMap<String, Signal<bool>>>>,
+    /// 至少勾了一项（「添加」按钮的可用判据）。
+    settings_ct_pick_any: Signal<bool>,
     settings_ct_cands:
         Signal<Vec<Vec<(String, Vec<crate::dialogs::schema_codetable::CtCandidate>)>>>,
     pub settings_bh_punct: Signal<usize>,
@@ -1578,6 +1585,9 @@ impl SchemaManagerState {
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_ct_add_visible: signal(false),
+            settings_ct_query: signal(String::new()),
+            settings_ct_picks: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            settings_ct_pick_any: signal(false),
             settings_ct_cands: signal(vec![Vec::new()]),
             settings_bh_punct: signal(0),
             settings_bh_layout: signal(0),
@@ -4601,26 +4611,117 @@ pub fn build_schema_manager_dialog(
         .child(state.settings_sa.build_picker())
 }
 
-/// 码表配置的「添加覆盖」弹框：按分类列出还没覆盖的项，每项带说明与当前跟随值，点一项即添加。
-/// 形态照应用兼容页的「添加覆盖项」。
+/// 码表配置的「添加覆盖」弹框：按分类列出还没覆盖的项，每项带说明与当前跟随值；
+/// 可勾多项一次添加，上方搜索框按名称 / 说明过滤。形态照应用兼容页的「添加覆盖项」，
+/// 但码表项有几十个，所以单击即添加换成了勾选 + 「添加」。
 fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
     let visible = state.settings_ct_add_visible;
     let cands = state.settings_ct_cands;
+    let query = state.settings_ct_query;
+    let any = state.settings_ct_pick_any;
+    let picks = state.settings_ct_picks.clone();
+    for key in crate::dialogs::schema_codetable::visible_keys(&state.manifest.borrow()) {
+        picks
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| signal(false));
+    }
     let (ct, manifest_cell) = (state.settings_ct.clone(), state.manifest.clone());
-    // 打开时、以及码表工作态变化时重算候选（添加后该项从候选里消失）。
+
+    // 依赖关系：key → 它依赖的上游项 key。每次重算候选时刷新，勾选闭包（下面的 `dep_effect`）读它。
+    let deps: Rc<RefCell<std::collections::HashMap<String, Vec<String>>>> = Rc::default();
+
+    // 打开时清空搜索与勾选、重算候选；码表工作态变化时也重算（已添加的项从候选里消失）。
     let sync = {
-        let (ct, mf) = (ct.clone(), manifest_cell.clone());
+        let (ct, mf, picks, deps) = (
+            ct.clone(),
+            manifest_cell.clone(),
+            picks.clone(),
+            deps.clone(),
+        );
         crate::pages::dict::reactive::reactive_effect(
             {
                 let ct = ct.clone();
                 move || ct.version_sum().wrapping_add(visible.version())
             },
-            move || cands.set(vec![ct.candidates(&mf.borrow())]),
+            move || {
+                if visible.get() {
+                    query.set(String::new());
+                    for sig in picks.borrow().values() {
+                        sig.set(false);
+                    }
+                }
+                let list = ct.candidates(&mf.borrow());
+                *deps.borrow_mut() = list
+                    .iter()
+                    .flat_map(|(_, items)| items.iter())
+                    .map(|c| {
+                        (
+                            c.key.clone(),
+                            c.deps.iter().map(|(k, _)| k.clone()).collect(),
+                        )
+                    })
+                    .collect();
+                cands.set(vec![list]);
+            },
         )
     };
-    let pick = ct.clone();
+    // 勾了一项就把它依赖的上游项一并勾上（直到不再变化，覆盖「A 依赖 B、B 又依赖 C」）。
+    // 副作用：上游项在依赖它的项还勾着时取消不掉——先取消下游。弹框里每项下方写明了这一点。
+    let dep_effect = {
+        let (picks, deps) = (picks.clone(), deps.clone());
+        crate::pages::dict::reactive::reactive_effect(
+            {
+                let picks = picks.clone();
+                move || {
+                    picks
+                        .borrow()
+                        .values()
+                        .fold(0u64, |acc, s| acc.wrapping_add(s.version()))
+                }
+            },
+            move || loop {
+                let mut changed = false;
+                let (p, d) = (picks.borrow(), deps.borrow());
+                for (k, parents) in d.iter() {
+                    if !p.get(k).is_some_and(|s| s.get()) {
+                        continue;
+                    }
+                    for parent in parents {
+                        if let Some(ps) = p.get(parent)
+                            && !ps.get()
+                        {
+                            ps.set(true);
+                            changed = true;
+                        }
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            },
+        )
+    };
+    // 「添加」按钮是否可点：只看勾选信号的版本，不逐帧遍历候选。
+    let any_effect = {
+        let picks = picks.clone();
+        crate::pages::dict::reactive::reactive_effect(
+            {
+                let picks = picks.clone();
+                move || {
+                    picks
+                        .borrow()
+                        .values()
+                        .fold(0u64, |acc, s| acc.wrapping_add(s.version()))
+                }
+            },
+            move || any.set(picks.borrow().values().any(|s| s.get())),
+        )
+    };
+
+    let pick_sigs = picks.clone();
     let list = Element::host_signal(cands, move |groups| {
-        let mut col = Element::col().width_match().spacing(4);
+        let mut col = Element::col().width_match().spacing(2);
         if groups.is_empty() {
             return col.child(
                 Element::label("没有更多可添加的项了。")
@@ -4629,39 +4730,55 @@ fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
                     .padding_xy(6, 16),
             );
         }
+        // 搜索：名称或说明里含关键字（不分大小写）；整组都不匹配时标题一起藏。
+        let matches = move |label: &str, hint: &str| {
+            let q = query.get().trim().to_lowercase();
+            q.is_empty() || label.to_lowercase().contains(&q) || hint.to_lowercase().contains(&q)
+        };
         for (group, items) in groups {
+            let keys: Vec<(String, String)> = items
+                .iter()
+                .map(|c| (c.label.clone(), c.hint.clone()))
+                .collect();
+            let group_matches = move || keys.iter().any(|(l, h)| matches(l, h));
             col = col.child(
                 Element::label(&group)
                     .font_size(12.0)
                     .font_weight(600)
                     .fg_role(Role::TextMuted)
-                    .padding_xy(6, 6),
+                    .padding_xy(4, 6)
+                    .visible_when(group_matches),
             );
             for c in items {
-                let (ct, key) = (pick.clone(), c.key.clone());
+                // 勾选信号在 `build_ct_add_dialog` 里按全部可见 key 预建：在这个闭包里建的信号
+                // 归本次重建的 scope，下次重建就被回收，map 里存着它会变成失效句柄。
+                let Some(sig) = pick_sigs.borrow().get(&c.key).copied() else {
+                    continue;
+                };
+                let (label, hint) = (c.label.clone(), c.hint.clone());
                 let mut row = Element::col()
                     .width_match()
                     .spacing(2)
-                    .padding_xy(10, 7)
-                    .corner(6.0)
-                    .clickable()
-                    .on_click(move |_| {
-                        visible.set(false);
-                        ct.add(&key);
-                    })
-                    .child(
-                        Element::label(&c.label)
-                            .font_size(13.0)
-                            .font_weight(600)
-                            .fg_role(Role::Text),
-                    );
+                    .padding_xy(6, 5)
+                    .child(Element::checkbox(&c.label, sig).fg_role(Role::Text));
                 if !c.hint.is_empty() {
                     row = row.child(
                         Element::label(&c.hint)
                             .font_size(12.0)
                             .fg_role(Role::TextMuted)
                             .width_match()
-                            .max_lines(2),
+                            .max_lines(2)
+                            .padding_edges(Insets::new(26, 0, 0, 0)),
+                    );
+                }
+                if !c.deps.is_empty() {
+                    let names: Vec<&str> = c.deps.iter().map(|(_, n)| n.as_str()).collect();
+                    row = row.child(
+                        Element::label(format!("依赖「{}」，将一并添加", names.join("」「")))
+                            .font_size(11.5)
+                            .fg_role(Role::Accent)
+                            .max_lines(1)
+                            .padding_edges(Insets::new(26, 0, 0, 0)),
                     );
                 }
                 col = col.child(
@@ -4669,48 +4786,51 @@ fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
                         Element::label(format!("{}：{}", c.follow_label, c.follow))
                             .font_size(11.5)
                             .fg_role(Role::TextSubtle)
-                            .max_lines(1),
-                    ),
+                            .max_lines(1)
+                            .padding_edges(Insets::new(26, 0, 0, 0)),
+                    )
+                    .visible_when(move || matches(&label, &hint)),
                 );
             }
         }
         col
     });
+
     let body = Element::col()
         .width_match()
         .spacing(6)
+        .padding_xy(12, 8)
         .child(
-            Element::label("选择要为本方案单独设置的项。选中后会出现在「方案覆盖」里，以当前值起步，再改成你要的值。")
-                .font_size(12.5)
-                .fg_role(Role::TextMuted)
-                .width_match()
-                .max_lines(3),
+            Element::label(
+                "勾选要为本方案单独设置的项（可多选）。添加后以当前值起步，再改成你要的值。",
+            )
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(2),
         )
-        .child(
-            Element::scroll()
-                .width_match()
-                .height(400)
-                .padding_xy(2, 4)
-                .child(list),
-        )
-        .child(sync);
-    let foot = Element::row()
-        .width_match()
-        .spacing(8)
-        .child(Element::flex_spacer())
-        .child(
-            Element::button("关闭")
-                .small()
-                .outline_soft()
-                .on_click(move |_| visible.set(false)),
-        );
-    Element::dialog_panel(
+        .child(Element::text_input(query, "搜索名称或说明").width_match())
+        .child(Element::scroll().width_match().height(360).child(list))
+        .child(sync)
+        .child(dep_effect)
+        .child(any_effect);
+
+    let (add_ct, add_picks) = (ct.clone(), picks.clone());
+    crate::dialogs::field_dialogs::build_confirm_dialog_shell_dims(
         visible,
-        "添加覆盖",
-        540,
-        move |_: &mut EventCtx| visible.set(false),
+        signal("添加覆盖".to_string()),
         body,
-        foot,
+        any,
+        move || {
+            for (key, sig) in add_picks.borrow().iter() {
+                if sig.get() {
+                    add_ct.add(key);
+                }
+            }
+        },
+        "添加所选",
+        700,
+        500,
     )
 }
 
@@ -5629,10 +5749,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                                 }),
                         )
                 }),
-                vec![
-                    crate::widgets::CardItem::Bare(empty_hint),
-                    crate::widgets::CardItem::Bare(body),
-                ],
+                // 提示与列表放进同一个 Bare 项：拆成两项的话，卡片会在它们之间画一条分割线，
+                // 列表为空时那条线就孤零零留在提示下面。
+                vec![crate::widgets::CardItem::Bare(
+                    Element::col().width_match().child(empty_hint).child(body),
+                )],
             )
         }
         SettingsSection::Sentence => {
@@ -7646,7 +7767,7 @@ mod section_build_tests {
         assert_eq!(CodeTable.tab(), idx(SettingsTab::Overrides));
         assert_eq!(Overlay.tab(), idx(SettingsTab::Special));
         assert_eq!(AuxCode.tab(), idx(SettingsTab::Aux));
-        assert_eq!(Sentence.tab(), idx(SettingsTab::Sentence));
+        assert_eq!(Sentence.tab(), idx(SettingsTab::Experimental));
         assert_eq!(EntryKeys.tab(), idx(SettingsTab::Keys));
         assert_eq!(ShuangpinLayout.tab(), idx(SettingsTab::Basic));
     }
@@ -8124,7 +8245,7 @@ mod section_build_tests {
 
         let state = open_wubi();
         assert!(
-            state.settings_sections[SettingsTab::Sentence.index()]
+            state.settings_sections[SettingsTab::Experimental.index()]
                 .get()
                 .contains(&SettingsSection::Sentence),
             "码表方案应有整句输入一节"
