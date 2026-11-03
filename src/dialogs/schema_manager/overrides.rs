@@ -110,16 +110,11 @@ impl OvField {
     }
 }
 
-/// 方案文件里已经写了（与默认不同）的覆盖字段，及「用户层有没有再改」。
-///
-/// 这类字段**不能移除**：core 写 null 的含义是「回到方案文件的值」，而方案文件的值本来就
-/// 在，移除是个空操作（行消失、重开又出现），标点 / 候选排列写的 `"follow"` 甚至会反过来
-/// 改掉方案作者的值。所以它们恒列出、无 ✕，只能改值。`file_only` = 用户层没动过，
-/// 行说明里标「方案文件默认」。
+/// 方案文件里已经写了、而用户层没写的覆盖字段（行说明里标「方案文件默认」）。
 ///
 /// 方案文件层的值取 core 旁路字段 `schemaBase`，用同一个 [`seed_behavior`] 读，
 /// 「非默认」的判据因此与合并值那边完全一致；用户层取 `schemaUserOverride`。
-pub(super) fn file_level(cfg: &Value) -> Vec<(OvField, bool)> {
+pub(super) fn file_level(cfg: &Value) -> Vec<OvField> {
     let Some(base) = cfg.get("schemaBase") else {
         return Vec::new();
     };
@@ -130,22 +125,15 @@ pub(super) fn file_level(cfg: &Value) -> Vec<(OvField, bool)> {
     };
     OvField::ALL
         .into_iter()
-        .filter_map(|f| {
-            let (set, user_has) = match f {
-                OvField::PerPage => (b.per_page.is_some(), user("/candidate/per_page")),
-                OvField::Layout => (b.layout != 0, user("/candidate/layout")),
-                OvField::Font => (b.font_family.is_some(), user("/candidate/font_family")),
-                OvField::Punct => (b.punct != 0, user("/punct/mode")),
-                OvField::PunctMap => (b.punct_map.is_some(), user("/punct/custom_mappings")),
-                OvField::Phrases => (!b.phrases, user("/phrases/enabled")),
-            };
-            set.then_some((f, !user_has))
+        .filter(|f| match f {
+            OvField::PerPage => b.per_page.is_some() && !user("/candidate/per_page"),
+            OvField::Layout => b.layout != 0 && !user("/candidate/layout"),
+            OvField::Font => b.font_family.is_some() && !user("/candidate/font_family"),
+            OvField::Punct => b.punct != 0 && !user("/punct/mode"),
+            OvField::PunctMap => b.punct_map.is_some() && !user("/punct/custom_mappings"),
+            OvField::Phrases => !b.phrases && !user("/phrases/enabled"),
         })
         .collect()
-}
-
-fn is_file_set(s: &SchemaManagerState, f: OvField) -> bool {
-    s.settings_ov_file.borrow().iter().any(|(x, _)| *x == f)
 }
 
 /// 添加一项：值取**当前生效值**（跟随值），添加后行为不变，用户再去改。
@@ -179,20 +167,8 @@ pub(super) fn add(s: &SchemaManagerState, f: OvField) {
         }
         // 标点跟随值是运行时状态，没有静态值：从「中文标点」起步。
         OvField::Punct => s.settings_bh_punct.set(0),
-        // 自定义标点：勾上即启用，格子与追加行一并重置为「内置默认」——移除后再添加不留上次的编辑。
-        // （全局那份自定义映射不会带进来：方案表整份替换全局表，和原来勾选「覆盖」时一样。）
-        OvField::PunctMap => {
-            *s.settings_bh_punct_extra.borrow_mut() = punct_extra_rows(&serde_json::Map::new());
-            for (row, (_, _tok, defs)) in s
-                .settings_bh_punct_cells
-                .iter()
-                .zip(crate::manifest::PUNCT_DEFAULTS.iter())
-            {
-                for i in 0..4 {
-                    row[i].set(crate::manifest::seed_cell(None, i, defs[i]));
-                }
-            }
-        }
+        // 自定义标点：勾上即启用，格子沿用已播种的「内置默认」。
+        OvField::PunctMap => {}
         OvField::Phrases => s.settings_bh_phrases.set(true),
     }
     drop(cfg);
@@ -201,11 +177,6 @@ pub(super) fn add(s: &SchemaManagerState, f: OvField) {
 
 /// 移除一项：写回「未设置」（落盘由 `behavior_now` 把未列出的字段合成成默认，再由各 `*_write` 写 null）。
 pub(super) fn remove(s: &SchemaManagerState, f: OvField) {
-    if is_file_set(s, f) {
-        // 方案文件自己写了这一项：移除是空操作（见 [`file_level`]），保持列出。
-        f.listed(s).set(true);
-        return;
-    }
     f.listed(s).set(false);
     if f == OvField::Phrases {
         s.settings_bh_phrases.set(true);
@@ -233,11 +204,7 @@ fn remove_icon(s: &SchemaManagerState, f: OvField) -> Element {
 
 /// 一个已列出字段的行：控件 + 行尾移除图标。
 fn field_row(s: &SchemaManagerState, f: OvField) -> Element {
-    let from_file = s
-        .settings_ov_file
-        .borrow()
-        .iter()
-        .any(|(x, file_only)| *x == f && *file_only);
+    let from_file = s.settings_ov_file.borrow().contains(&f);
     let desc = if from_file {
         format!("{}（方案文件默认）", f.desc())
     } else {
@@ -280,17 +247,11 @@ fn field_row(s: &SchemaManagerState, f: OvField) -> Element {
         ),
     };
     let listed = f.listed(s);
-    // 方案文件自己写了的项不给 ✕（见 [`file_level`]）；占位保持各行控件右缘对齐。
-    let tail = if is_file_set(s, f) {
-        Element::leaf().width(24).height(24)
-    } else {
-        remove_icon(s, f)
-    };
     Element::row()
         .width_match()
         .cross(Align::Center)
         .child(body.weight(1.0))
-        .child(tail)
+        .child(remove_icon(s, f))
         .visible_when(move || listed.get())
 }
 

@@ -526,15 +526,14 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "启用整句输入", tab: "整句输入", section: "整句输入（实验性）", keywords: "整句 组句 连续输入 切分 实验性 sentence_input" },
     SchemaLevelItem { title: "特殊模式", tab: "码表与特殊模式", section: "特殊模式", keywords: "overlay 引导键 快符 生僻字 临时" },
     SchemaLevelItem { title: "进入即展示候选", tab: "码表与特殊模式", section: "特殊模式", keywords: "overlay 引导键 首屏" },
-    SchemaLevelItem { title: "本方案行为", tab: "方案覆盖", section: "候选窗", keywords: "标点 候选 短语 跟随全局" },
-    SchemaLevelItem { title: "标点", tab: "方案覆盖", section: "标点", keywords: "中文标点 英文标点 跟随全局" },
-    SchemaLevelItem { title: "每页候选数", tab: "方案覆盖", section: "候选窗", keywords: "候选数 条数 一页 per_page 添加覆盖" },
-    SchemaLevelItem { title: "候选排列", tab: "方案覆盖", section: "候选窗", keywords: "横排 竖排 方向 跟随全局" },
-    SchemaLevelItem { title: "横排时文字排列", tab: "方案覆盖", section: "候选窗", keywords: "横排 旋转 竖排 蒙古文 text_orientation" },
-    SchemaLevelItem { title: "候选文字字体", tab: "方案覆盖", section: "候选窗", keywords: "字体 字形 跟随外观" },
-    SchemaLevelItem { title: "加载命令短语", tab: "方案覆盖", section: "输入", keywords: "短语 快捷短语 phrases 开关" },
-    SchemaLevelItem { title: "候选注释", tab: "方案覆盖", section: "候选窗", keywords: "注释 comment 释义" },
-    SchemaLevelItem { title: "自定义标点", tab: "方案覆盖", section: "标点", keywords: "标点 映射 符号" },
+    SchemaLevelItem { title: "本方案行为", tab: "方案覆盖", section: "本方案行为", keywords: "标点 候选 短语 跟随全局" },
+    SchemaLevelItem { title: "标点", tab: "方案覆盖", section: "本方案行为", keywords: "中文标点 英文标点 跟随全局" },
+    SchemaLevelItem { title: "候选排列", tab: "方案覆盖", section: "本方案行为", keywords: "横排 竖排 方向 跟随全局" },
+    SchemaLevelItem { title: "横排时文字排列", tab: "方案覆盖", section: "本方案行为", keywords: "横排 旋转 竖排 蒙古文 text_orientation" },
+    SchemaLevelItem { title: "候选文字字体", tab: "方案覆盖", section: "本方案行为", keywords: "字体 字形 跟随外观" },
+    SchemaLevelItem { title: "加载命令短语", tab: "方案覆盖", section: "本方案行为", keywords: "短语 快捷短语 phrases 开关" },
+    SchemaLevelItem { title: "候选注释", tab: "方案覆盖", section: "本方案行为", keywords: "注释 comment 释义" },
+    SchemaLevelItem { title: "自定义标点", tab: "方案覆盖", section: "本方案行为", keywords: "标点 映射 符号" },
 ];
 
 fn schema_level_entries() -> Vec<SearchEntry> {
