@@ -171,19 +171,64 @@ pub enum SettingsSection {
     Empty,
 }
 
-/// 方案设置对话框的三个 TAB。
+/// 方案设置对话框的 TAB（左侧纵向排列）。
 ///
-/// ⚠️ **数量反转过两次**，两次的理由都成立、只是当时的页面不同：
-/// 1. 最初三个 → 合成两个：「按键配置」那时只有四行，单开一页显得空。
-/// 2. 两个 → 又拆回三个（2026-08-27，用户提出）：基本配置页此后长到了
-///    「元信息 + 五行按键 + 扩展词库 + 双拼参数」，按键那几行占掉大半页，
-///    而它们是**配一次就不再看**的东西，天天要看的元信息与词库反被挤下去。
+/// 这里列的是**全集**：每个方案只显示其中分到了内容的那几个（空的整页隐藏，见
+/// `settings_sections`），顺序即显示顺序。方案类型 → TAB 集合没有单独的映射表，
+/// 由「该类型有哪些节 + [`SettingsSection::tab`]」自然决定：
+/// 全拼 / 双拼 = 基本 · 按键设置 · 方案覆盖 · 辅助码；码表 = 基本 · 按键设置 · 整句输入 · 方案覆盖 ·
+/// 码表与特殊模式；混输 = 基本 · 按键设置 · 整句输入 · 方案覆盖。
 ///
-/// ⇒ 判据不是「这一页够不够满」，而是「**常看的东西有没有被不常看的挤走**」。
-pub const SETTINGS_TABS: [&str; 3] = ["基本配置", "按键设置", "方案自定义"];
+/// 设计见 `docs/design/schema-settings-vertical-tabs.md`。判据是「**常看的东西有没有被不常看的
+/// 挤走**」，不是「这一页够不够满」——此前横向三页的数量反转过两次，纵向后不再受横向宽度所限。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingsTab {
+    /// 方案信息 + 扩展词库（+ 双拼布局）。
+    Basic,
+    Keys,
+    Sentence,
+    /// 方案覆盖：本方案对全局行为的偏离（现为「本方案行为」一节）。
+    Overrides,
+    Aux,
+    /// 码表配置 + 特殊模式（码表方案专有）。
+    CodeTable,
+}
 
-/// 「方案自定义」在 [`SETTINGS_TABS`] 里的下标（TAB 星号打在这一页）。
-pub const CUSTOM_TAB: usize = 2;
+impl SettingsTab {
+    pub const ALL: [SettingsTab; 6] = [
+        Self::Basic,
+        Self::Keys,
+        Self::Sentence,
+        Self::Overrides,
+        Self::Aux,
+        Self::CodeTable,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Basic => "基本",
+            Self::Keys => "按键设置",
+            Self::Sentence => "整句输入",
+            Self::Overrides => "方案覆盖",
+            Self::Aux => "辅助码",
+            Self::CodeTable => "码表与特殊模式",
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// [`SettingsTab::ALL`] 的标签表，下标 = [`SettingsTab::index`]。
+pub const SETTINGS_TABS: [&str; SettingsTab::ALL.len()] = [
+    SettingsTab::Basic.label(),
+    SettingsTab::Keys.label(),
+    SettingsTab::Sentence.label(),
+    SettingsTab::Overrides.label(),
+    SettingsTab::Aux.label(),
+    SettingsTab::CodeTable.label(),
+];
 
 impl SettingsSection {
     /// 全部分节，供 `every_settings_section_builds_without_panicking` 遍历。
@@ -211,24 +256,25 @@ impl SettingsSection {
 
     /// 本节归到哪个 TAB。
     ///
-    /// 分组判据是**用户想做什么**，不是数据落在哪个文件：
-    /// - 基本配置：这个方案是什么、带哪些词库、双拼用哪套布局——日常会看的都在这一页
-    /// - 按键设置：怎么切进来、键怎么按——**配一次就不再看**，故单独一页
-    /// - 方案自定义：这个方案的引擎行为要不要偏离全局（码表覆盖 / 特殊模式 / 本方案行为）
+    /// 分组判据是**用户想做什么**，不是数据落在哪个文件：基本 = 这个方案是什么、带哪些词库、
+    /// 双拼用哪套布局；按键设置 = 怎么切进来（配一次就不再看）；方案覆盖 = 要不要偏离全局；
+    /// 辅助码 / 整句输入 / 码表与特殊模式 = 各自的功能区。
     ///
-    /// ★ 双拼布局归**基本配置**而不是方案自定义：它是「这个方案是什么」的一部分
-    /// （换一套布局等于换一种打法），不是「要不要偏离全局」——方案自定义那一页的每一项
-    /// 都有「跟随全局」这个档，双拼布局没有。
+    /// 双拼布局归**基本**而不是方案覆盖：它是「这个方案是什么」的一部分（换一套布局等于换一种
+    /// 打法），不是「要不要偏离全局」。
     ///
     /// `Divider` 不参与分组：原先那份扁平列表里的分隔线是按「相邻两节之间」插的，分完 TAB
     /// 后相邻关系全变了，故丢弃重插（见 `split_sections_by_tab`）。
     fn tab(self) -> Option<usize> {
         match self {
-            Self::Header | Self::ShuangpinLayout | Self::ExtensionDicts => Some(0),
-            Self::EntryKeys => Some(1),
-            Self::AuxCode | Self::CodeTable | Self::Sentence | Self::Overlay | Self::Behavior => {
-                Some(2)
+            Self::Header | Self::ShuangpinLayout | Self::ExtensionDicts => {
+                Some(SettingsTab::Basic.index())
             }
+            Self::EntryKeys => Some(SettingsTab::Keys.index()),
+            Self::Sentence => Some(SettingsTab::Sentence.index()),
+            Self::Behavior => Some(SettingsTab::Overrides.index()),
+            Self::AuxCode => Some(SettingsTab::Aux.index()),
+            Self::CodeTable | Self::Overlay => Some(SettingsTab::CodeTable.index()),
             Self::Divider | Self::Empty => None,
         }
     }
@@ -1486,7 +1532,7 @@ impl SchemaManagerState {
             page_layout_idx: signal(0),
             page_layout_has_target: signal(false),
             page_layout_synced: Rc::new(std::cell::Cell::new(0)),
-            settings_sections: [signal(vec![]), signal(vec![]), signal(vec![])],
+            settings_sections: std::array::from_fn(|_| signal(vec![])),
             settings_tab: signal(0),
             settings_tab_labels: signal(vec![
                 SETTINGS_TABS.iter().map(|s| s.to_string()).collect(),
@@ -5725,52 +5771,38 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
 
     // 配置区：按 settings_sections 响应式重建（每次打开对话框按方案类型刷新）；
     // Header 恒为首节，元信息与各配置节统一由此渲染。
-    // TAB 条 + 三块内容。
+    // 左侧纵向 TAB + 右侧各页内容。
     //
-    // 三块**同时建好、靠 visible_when 切换**，不是按选中项重建：各节的工作态（勾选、
+    // 各页**同时建好、靠 visible_when 切换**，不是按选中项重建：各节的工作态（勾选、
     // 下拉、行编辑器）都挂在 Element 上，重建等于用户切个 TAB 回来就发现刚改的没了。
     let tab = state.settings_tab;
-    // TAB 标签带自定义计数（「方案自定义 · 2」）：切在「基本配置」那边时，也得能看出
-    // 另一边有没有改动——否则用户改完切走，回头完全不记得自己动过哪个方案。
-    //
-    // ⚠️ 外面套一层 `Vec` 是 `host_signal` 的签名所迫：它对 `Signal<Vec<T>>` 的**每个元素**
-    // 调一次闭包，直接喂 `Signal<Vec<String>>` 会按标签数生成同样多个 segmented。
-    // 装进单元素 Vec，闭包收到的才是整份标签表。
-    //
-    // 重建 segmented 不丢状态：选中项在 `tab` 信号里，不在 Element 上。
-    let labels = state.settings_tab_labels;
-    let tab_bar = Element::host_signal(labels, move |ls: Vec<String>| {
-        Element::row()
-            .width_match()
-            .padding_xy(0, 8)
-            .child(Element::segmented(ls, tab).weight(1.0))
-    });
+    let tab_bar = build_vtab_bar(state);
 
-    let mut panes = Element::col().width_match();
+    let mut panes = Element::col().width_match().padding_xy(16, 8);
     for i in 0..SETTINGS_TABS.len() {
         let st = state.clone();
         let sec = state.settings_sections[i];
         let body = Element::host_signal(sec, move |kind| build_section(kind, &st));
-        // 空 TAB 给一句话而不是留白：一片空白看起来像没加载出来，而「方案自定义」对
-        // 拼音/混输这类方案确实是空的（core 只对 codetable 给 effectiveCodetable）。
-        let hint = Element::label("该方案在这一类下没有可配置的项。")
-            .font_size(12.5)
-            .fg_role(Role::TextMuted)
-            .padding_xy(0, 10)
-            .visible_when(move || sec.get().is_empty());
         panes = panes.child(
             Element::col()
                 .width_match()
                 .child(body)
-                .child(hint)
                 .visible_when(move || tab.get() == i),
         );
     }
-    let sections = Element::col()
+    // 右侧自己滚动：外壳的滚动视口与本区等高（见下面 `VTAB_BODY_H`），外层不会再出滚动条；
+    // 左侧 TAB 条因此不随内容滚走。
+    let sections = Element::row()
         .width_match()
+        .height(VTAB_BODY_H)
         .child(tab_bar)
-        .child(Element::divider())
-        .child(panes);
+        .child(
+            Element::leaf()
+                .width(1)
+                .height_match()
+                .bg_role(Role::Border),
+        )
+        .child(Element::scroll().weight(1.0).height_match().child(panes));
 
     // 热键工作态 → 内存 map 的落盘点。**用 effect 而非在各个「关闭」按钮上调**：
     // 对话框有多条关闭路径（footer 按钮 / 标题栏 / 保存后自动关），逐个挂等于赌自己
@@ -5866,13 +5898,18 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             // 分两个 effect 只会多一次遍历，还得担心两处口径漂移。
             ct_count.refresh_group_summaries();
             // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
-            // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。
-            // 星号打在「方案自定义」那一页：本 effect 统计的三类（码表覆盖、本方案行为、
-            // 辅助码）都在那一页。⚠️ 用 `CUSTOM_TAB` 而不是字面下标——TAB 数量已经反转过
-            // 两次，写死的 `1` 在上一次反转里正好还指对，下一次就未必。
+            // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。星号打在各自所属的页：
+            // 码表配置 → 码表与特殊模式；本方案行为 → 方案覆盖；辅助码 → 辅助码。
+            // ⚠️ 用 `SettingsTab` 而不是字面下标——TAB 的数量和顺序都变过。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
-            if n + bh_custom + aux_custom > 0 {
-                ls[CUSTOM_TAB] = format!("{} *", SETTINGS_TABS[CUSTOM_TAB]);
+            for (t, custom) in [
+                (SettingsTab::CodeTable, n),
+                (SettingsTab::Overrides, bh_custom),
+                (SettingsTab::Aux, aux_custom),
+            ] {
+                if custom > 0 {
+                    ls[t.index()] = format!("{} *", t.label());
+                }
             }
             tab_labels.set(vec![ls]);
         },
@@ -5902,21 +5939,78 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     // dialog_panel：无滚动、标题 18px、宽 440，同一个设置界面里两种弹窗长得不一样。
     let content = Element::col()
         .width_match()
-        .padding_xy(16, 2)
         .child(sections)
         .child(hotkey_effect)
         .child(trigger_effect)
         .child(ct_effect)
         .child(stage_effect);
 
-    // 用放大的外壳：分了 TAB 之后，默认 460×380 里 TAB 条要占掉一行，剩下的高度装不下
-    // 「基本信息 + 扩展词库」那一屏。
-    crate::dialogs::field_dialogs::build_group_dialog_shell_large(
+    // 比标准大尺寸外壳再宽一些：左侧 TAB 条占去约 150，右侧仍要装得下带下拉的覆盖行。
+    crate::dialogs::field_dialogs::build_group_dialog_shell_dyn_sized(
         visible,
-        "方案设置",
+        signal("方案设置".to_string()),
         content,
         vec![],
+        VTAB_DIALOG_W,
+        VTAB_BODY_H,
     )
+}
+
+/// 方案设置对话框宽度与中部视口高度（纵向 TAB 条与内容区共用这个高度）。
+const VTAB_DIALOG_W: i32 = 780;
+const VTAB_BODY_H: i32 = 480;
+/// 纵向 TAB 条宽度：放得下最长的「码表与特殊模式」+ 星号。
+const VTAB_W: i32 = 156;
+const VTAB_ROW_H: i32 = 32;
+
+/// 纵向 TAB 条：每个 [`SettingsTab`] 一行，没分到内容的整行隐藏。
+///
+/// 选中态在 `settings_tab` 信号里，不在元素上，所以标签（带星号）变化时整条重建不丢状态。
+/// ⚠️ 外面套一层 `Vec` 是 `host_signal` 的签名所迫：它对 `Signal<Vec<T>>` 的**每个元素**
+/// 调一次闭包，`settings_tab_labels` 恒为单元素 `Vec`，闭包收到的才是整份标签表。
+fn build_vtab_bar(state: &SchemaManagerState) -> Element {
+    let tab = state.settings_tab;
+    let sections = state.settings_sections;
+    let list = Element::host_signal(state.settings_tab_labels, move |labels: Vec<String>| {
+        let mut col = Element::col().width_match().spacing(2);
+        for (i, label) in labels.into_iter().enumerate() {
+            let sec = sections[i];
+            let row = crate::pages::dict::sidebar::selectable(
+                VTAB_ROW_H,
+                move || tab.get() == i,
+                move || tab.set(i),
+                move |active| {
+                    Element::row()
+                        .width_match()
+                        .height(VTAB_ROW_H)
+                        .corner(7.0)
+                        .cross(Align::Center)
+                        .padding_xy(10, 0)
+                        .child(
+                            Element::label(label.clone())
+                                .font_size(12.5)
+                                .font_weight(500)
+                                .fg_role(if active {
+                                    Role::Accent
+                                } else {
+                                    Role::TextMuted
+                                })
+                                .weight(1.0)
+                                .max_lines(1)
+                                .height(17),
+                        )
+                },
+            );
+            col = col.child(row.visible_when(move || !sec.get().is_empty()));
+        }
+        col
+    });
+    Element::col()
+        .width(VTAB_W)
+        .height_match()
+        .bg_role(Role::SurfaceAlt)
+        .padding_xy(8, 10)
+        .child(list)
 }
 
 #[cfg(test)]
@@ -7377,7 +7471,7 @@ mod section_build_tests {
             Divider,
             ExtensionDicts,
         ];
-        let [basic, keys, custom] = split_sections_by_tab(&flat);
+        let [basic, keys, _sentence, _overrides, _aux, codetable] = split_sections_by_tab(&flat);
         assert_eq!(
             basic,
             vec![Header, ShuangpinLayout, Divider, ExtensionDicts],
@@ -7385,21 +7479,25 @@ mod section_build_tests {
         );
         assert_eq!(keys, vec![EntryKeys], "按键设置独立成页，只此一节");
         assert_eq!(
-            custom,
+            codetable,
             vec![CodeTable, Divider, Overlay],
-            "方案自定义页开头不该是一条分隔线"
+            "码表与特殊模式页开头不该是一条分隔线"
         );
     }
 
-    /// ★ 星号打在**「方案自定义」**那一页上。
-    ///
-    /// TAB 数量已经反转过两次（三 → 二 → 三），而写死的下标在其中一次反转里**正好还指对**
-    /// ——那种错法不会被任何断言抓到，直到下一次反转才暴露成「星号打在按键设置上」。
+    /// 各节归属的 TAB 下标必须与 [`SettingsTab`] 的显示名对得上——星号、搜索面包屑都按名字找页。
     #[test]
-    fn custom_tab_index_points_at_the_custom_tab() {
-        assert_eq!(SETTINGS_TABS[CUSTOM_TAB], "方案自定义");
-        assert_eq!(SettingsSection::Behavior.tab(), Some(CUSTOM_TAB));
-        assert_eq!(SettingsSection::CodeTable.tab(), Some(CUSTOM_TAB));
+    fn sections_map_to_the_intended_tabs() {
+        use SettingsSection::*;
+        let idx = |t: SettingsTab| Some(t.index());
+        assert_eq!(SETTINGS_TABS[SettingsTab::Overrides.index()], "方案覆盖");
+        assert_eq!(Behavior.tab(), idx(SettingsTab::Overrides));
+        assert_eq!(CodeTable.tab(), idx(SettingsTab::CodeTable));
+        assert_eq!(Overlay.tab(), idx(SettingsTab::CodeTable));
+        assert_eq!(AuxCode.tab(), idx(SettingsTab::Aux));
+        assert_eq!(Sentence.tab(), idx(SettingsTab::Sentence));
+        assert_eq!(EntryKeys.tab(), idx(SettingsTab::Keys));
+        assert_eq!(ShuangpinLayout.tab(), idx(SettingsTab::Basic));
     }
 
     /// 每一节都必须有归属，且只归一页——漏一节的表现是那节在界面上整个消失。
@@ -7412,6 +7510,8 @@ mod section_build_tests {
             ShuangpinLayout,
             AuxCode,
             CodeTable,
+            Sentence,
+            Behavior,
             Overlay,
             ExtensionDicts,
         ] {
@@ -7873,7 +7973,7 @@ mod section_build_tests {
 
         let state = open_wubi();
         assert!(
-            state.settings_sections[CUSTOM_TAB]
+            state.settings_sections[SettingsTab::Sentence.index()]
                 .get()
                 .contains(&SettingsSection::Sentence),
             "码表方案应有整句输入一节"
