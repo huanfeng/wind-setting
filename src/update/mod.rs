@@ -378,6 +378,33 @@ pub fn force_check_requested(argv: &[String]) -> bool {
     std::env::var("WIND_UPDATE_FORCE").is_ok_and(|v| v == "1")
 }
 
+/// 测试覆盖：`WIND_UPDATE_TEST_URL`（元数据地址，可为 `http://` 的本机/局域网服务）与
+/// `WIND_UPDATE_TEST_LOCAL`（假装的本地版本号，开发构建的版本常无法解析）。
+///
+/// **只在 Dev 变体生效**：Dev 是独立并行的开发产品，正式版不读这两个变量，也就不会被环境里
+/// 残留的变量改道到明文源。sha256 与大小校验不受影响。
+pub fn test_override_url() -> Option<String> {
+    if crate::mode::get() != crate::mode::AppMode::Dev {
+        return None;
+    }
+    std::env::var("WIND_UPDATE_TEST_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
+fn test_override_local() -> Option<String> {
+    test_override_url()?;
+    std::env::var("WIND_UPDATE_TEST_LOCAL")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
+/// 更新链路上的地址是否可接受：`https` 恒可；`http` 仅在测试覆盖生效时。
+pub fn scheme_ok(url: &str) -> bool {
+    let l = url.to_ascii_lowercase();
+    l.starts_with("https://") || (l.starts_with("http://") && test_override_url().is_some())
+}
+
 /// 检查更新：拉元数据 → 判定版本 → 按需拉发布说明。
 ///
 /// 有更新时**总是**拉发布说明（对话框必然展示它）。`notes_when_up_to_date` 控制的是
@@ -389,7 +416,8 @@ pub fn force_check_requested(argv: &[String]) -> bool {
 pub fn check_update(notes_when_up_to_date: bool) -> Result<CheckResult, UpdateError> {
     let channel = Channel::current();
     let info = source::fetch_release_info(channel)?;
-    let mut result = decide(&info, version::local_raw())?;
+    let local = test_override_local();
+    let mut result = decide(&info, local.as_deref().unwrap_or(version::local_raw()))?;
     if result.has_update || notes_when_up_to_date {
         result.release_notes = source::fetch_release_notes(&info.release_notes_url);
     }
@@ -673,5 +701,13 @@ mod tests {
         };
         let msg = e.user_message();
         assert!(msg.contains("dev") && msg.contains("stable"));
+    }
+
+    /// 非 Dev 变体（测试默认 Release）下明文 http 一律拒绝，覆盖变量也无效。
+    #[test]
+    fn plain_http_is_rejected_outside_dev_variant() {
+        assert!(scheme_ok("https://dl.windinput.com/a"));
+        assert!(!scheme_ok("http://192.168.1.2/a"));
+        assert!(test_override_url().is_none());
     }
 }

@@ -104,7 +104,7 @@ pub fn parse_latest_json(
             (&d.url, &d.sha256, d.size)
         }
     };
-    if !url.to_ascii_lowercase().starts_with("https://") {
+    if !super::scheme_ok(url) {
         return Err(UpdateError::InvalidMetadata(format!(
             "缺少有效的下载地址（字段 {}，须为 https://）",
             artifact.key()
@@ -123,12 +123,7 @@ pub fn parse_latest_json(
     }
 
     // notes 地址允许缺失（拉不到就不显示），但给了就必须是 https。
-    if !raw.release_notes_url.is_empty()
-        && !raw
-            .release_notes_url
-            .to_ascii_lowercase()
-            .starts_with("https://")
-    {
+    if !raw.release_notes_url.is_empty() && !super::scheme_ok(&raw.release_notes_url) {
         return Err(UpdateError::InvalidMetadata(
             "发布说明地址必须是 https://".to_string(),
         ));
@@ -166,7 +161,16 @@ fn is_sha256_hex(s: &str) -> bool {
 /// 通道/平台串档（`ChannelMismatch`、缺 `pkgUrl`）也算这一源不可用而继续退 ——
 /// 那种情况多半是某一边的 CDN 缓存串了档，另一源往往是好的。
 pub fn fetch_release_info(channel: Channel) -> Result<ReleaseInfo, UpdateError> {
-    let urls = channel.metadata_urls();
+    let override_url = super::test_override_url();
+    let override_slice;
+    let urls: &[&str] = match &override_url {
+        Some(u) => {
+            tracing::warn!("使用测试更新源：{u}");
+            override_slice = [u.as_str()];
+            &override_slice
+        }
+        None => channel.metadata_urls(),
+    };
     let mut last_err: Option<UpdateError> = None;
 
     for (idx, url) in urls.iter().enumerate() {
@@ -215,7 +219,7 @@ pub fn fetch_release_notes(url: &str) -> String {
 
 /// 带超时与大小上限的 HTTPS GET。仅允许 https。
 fn http_get_text(url: &str, timeout: Duration, max_bytes: usize) -> Result<String, String> {
-    if !url.to_ascii_lowercase().starts_with("https://") {
+    if !super::scheme_ok(url) {
         return Err("仅支持 https 地址".to_string());
     }
     let resp = ureq::AgentBuilder::new()

@@ -83,7 +83,7 @@ pub fn download(
     mut progress: impl FnMut(u64, u64),
 ) -> Result<PathBuf, UpdateError> {
     // 参数校验先于获取独占权：非法输入不该占着下载位，也让该分支可独立测试
-    if !url.to_ascii_lowercase().starts_with("https://") {
+    if !super::scheme_ok(url) {
         return Err(UpdateError::Download("下载地址必须是 https://".to_string()));
     }
 
