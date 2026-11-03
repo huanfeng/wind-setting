@@ -493,6 +493,8 @@ struct BehaviorRowsHidden {
     /// 「候选注释」跳转行：全局那个对话框被藏了，跳过去也无处可落。
     comment: bool,
     punct_map: bool,
+    /// 每页候选数，对应全局 `ui.candidate.per_page`。
+    per_page: bool,
 }
 
 fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
@@ -504,6 +506,7 @@ fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
         font: state.custom_hidden("ui.font.family"),
         comment: state.custom_hidden(crate::dialogs::comment_settings::HOST_KEY),
         punct_map: punct_section || state.custom_hidden("input.punct.custom_mappings"),
+        per_page: state.custom_hidden("ui.candidate.per_page"),
     }
 }
 
@@ -672,6 +675,19 @@ fn behavior_reset_all(state: &SchemaManagerState) {
     if !hidden.font {
         state.settings_bh_font_over.set(false);
     }
+    if !hidden.per_page {
+        state.settings_bh_pp_over.set(false);
+    }
+}
+
+/// 方案级每页候选数（`[candidate] per_page`）的落盘值：未勾选写 `null`（core 跳过
+/// null ⇒ 该键不进 override ⇒ 跟随全局）；勾上写 ≥1 的整数。
+fn per_page_write(over: bool, v: f64) -> Value {
+    if over {
+        json!((v.round() as i64).max(1))
+    } else {
+        Value::Null
+    }
 }
 
 /// 候选字体（`[candidate] font_family`）的落盘值：未勾选，或勾选但留空，都写
@@ -762,6 +778,8 @@ struct BehaviorSeed {
     /// 与 `layout` 是**两根正交的轴**，不是同一个下拉的延长——改这里不影响横竖，
     /// 改横竖也不影响这里。
     text_orient: usize,
+    /// 方案级每页候选数（`[candidate] per_page`）：`None` = 跟随全局；`Some(n)` = 本方案 n 条。
+    per_page: Option<i64>,
 }
 
 impl Default for BehaviorSeed {
@@ -775,6 +793,7 @@ impl Default for BehaviorSeed {
             punct_map: None,
             font_family: None,
             text_orient: 0,
+            per_page: None,
         }
     }
 }
@@ -819,11 +838,17 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         .and_then(|v| v.as_str())
         .map(text_orient_idx)
         .unwrap_or(0);
+    // 值域 ≥1，与 core 一致：0 / 负数 / 非整数在 core 是「当没写」，这里同样读成跟随。
+    let per_page = candidate
+        .and_then(|v| v.get("per_page"))
+        .and_then(|v| v.as_i64())
+        .filter(|n| *n >= 1);
     BehaviorSeed {
         punct,
         layout,
         font_family,
         text_orient,
+        per_page,
         phrases,
         // `as_object()` 顺带滤掉 null：core「取消覆盖」写的就是 null，读回来必须还原成未设置。
         punct_map: cfg
@@ -1244,6 +1269,9 @@ pub struct SchemaManagerState {
     /// 勾选时的取值；未勾选时文本框仍保留上次编辑内容，供用户勾上时接着编辑
     /// （同 `settings_aux_on`/`settings_aux_len` 的做法）。落盘走 [`font_write`]。
     pub settings_bh_font: Signal<String>,
+    /// 每页候选数是否由本方案覆盖，及覆盖值（`[candidate] per_page`，落盘走 [`per_page_write`]）。
+    pub settings_bh_pp_over: Signal<bool>,
+    pub settings_bh_pp: Signal<f64>,
     /// 横排时文字排列：0=默认 / 1=旋转 90° / 2=文字竖排（`[candidate] text_orientation`）。
     pub settings_bh_text_orient: Signal<usize>,
     /// 是否加载短语（`[phrases] enabled`）。
@@ -1473,6 +1501,8 @@ impl SchemaManagerState {
             settings_bh_text_orient: signal(0),
             settings_bh_font_over: signal(false),
             settings_bh_font: signal(String::new()),
+            settings_bh_pp_over: signal(false),
+            settings_bh_pp: signal(7.0),
             settings_bh_phrases: signal(true),
             open_comment_settings: signal(0),
             settings_bh_punct_map_on: signal(false),
@@ -2704,6 +2734,17 @@ impl SchemaManagerState {
             self.settings_bh_font
                 .set(seed.font_family.clone().unwrap_or_default());
             self.settings_bh_text_orient.set(seed.text_orient);
+            self.settings_bh_pp_over.set(seed.per_page.is_some());
+            let followed_pp = self
+                .settings_cfg
+                .borrow()
+                .pointer("/followedBehavior/perPage")
+                .and_then(Value::as_i64)
+                .filter(|n| *n >= 1)
+                .unwrap_or(7);
+            // 未勾选时文本框显示跟随值，勾上即从全局值起步改。
+            self.settings_bh_pp
+                .set(seed.per_page.unwrap_or(followed_pp) as f64);
             self.settings_bh_phrases.set(seed.phrases);
             // 自定义标点表：勾选态问「键在不在」，格子按「方案表覆盖值 ⊕ 内置默认」播种。
             // ⚠️ 换方案必须逐格重播——信号是整个对话框复用的一组，不重播就会把上一个方案
@@ -3012,6 +3053,10 @@ impl SchemaManagerState {
             // 与打开时一样都是 `null`，见 `font_write`）。
             font_family: pick(self.settings_bh_font_over, self.settings_bh_font),
             text_orient: self.settings_bh_text_orient.get(),
+            per_page: self
+                .settings_bh_pp_over
+                .get()
+                .then(|| self.settings_bh_pp.get().round() as i64),
             phrases: self.settings_bh_phrases.get(),
             // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
             // 三态合成只此一处。
@@ -3194,6 +3239,11 @@ impl SchemaManagerState {
                         now.font_family.is_some(),
                         now.font_family.as_deref().unwrap_or(""),
                     ),
+                );
+                set_json_path(
+                    &mut cfg,
+                    &["candidate", "per_page"],
+                    per_page_write(now.per_page.is_some(), now.per_page.unwrap_or(1) as f64),
                 );
                 set_json_path(
                     &mut cfg,
@@ -5445,6 +5495,30 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 ),
             );
 
+            let followed_pp = state
+                .settings_cfg
+                .borrow()
+                .pointer("/followedBehavior/perPage")
+                .and_then(Value::as_i64)
+                .filter(|n| *n >= 1)
+                .unwrap_or(7);
+            let pp_over = state.settings_bh_pp_over;
+            let pp_row = crate::widgets::setting_row_override(
+                pp_over,
+                "每页候选数",
+                Some("本方案期间每页几条；临拼、快捷等扩展档若单独设了条数则不受影响"),
+                "跟随全局",
+                Role::TextMuted,
+                crate::widgets::override_control(
+                    pp_over,
+                    Rc::new(|| true),
+                    Element::stepper(state.settings_bh_pp, 2.0, 10.0, 1.0).width(AUX_CTRL_W),
+                    &followed_pp.to_string(),
+                    "",
+                    AUX_CTRL_W,
+                ),
+            );
+
             // 「全部恢复跟随」（R8.5）：只清标点 / 候选排列 / 候选字体这三个有跟随档的
             // 字段，见 [`behavior_reset_all`] 上的说明。样式照 `AuxCode` 卡片同名按钮。
             let st = state.clone();
@@ -5492,6 +5566,9 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 Element::dropdown(TEXT_ORIENT_LABELS.to_vec(), state.settings_bh_text_orient)
                     .width(BH_DD_W),
             ));
+            if !hidden.per_page {
+                rows.push(pp_row);
+            }
             if !hidden.font {
                 rows.push(font_row);
             }
@@ -6555,6 +6632,25 @@ mod ext_dict_tests {
             Some("楷体".to_string())
         );
         assert_eq!(seed_behavior(&json!({})).font_family, None);
+    }
+
+    /// 方案级每页候选数：键在不在是三态；≥1 才算数，写回只在勾选时落整数。
+    #[test]
+    fn per_page_seed_and_write() {
+        assert_eq!(seed_behavior(&json!({})).per_page, None);
+        assert_eq!(
+            seed_behavior(&json!({"candidate": {"per_page": 9}})).per_page,
+            Some(9)
+        );
+        for bad in [json!(0), json!(-2), json!("9"), json!(null)] {
+            assert_eq!(
+                seed_behavior(&json!({"candidate": {"per_page": bad}})).per_page,
+                None
+            );
+        }
+        assert_eq!(per_page_write(false, 9.0), Value::Null);
+        assert_eq!(per_page_write(true, 9.0), json!(9));
+        assert_eq!(per_page_write(true, 0.0), json!(1));
     }
 
     /// R8.5：「本方案行为」节的「全部恢复跟随」把三项拨回跟随（下标 0 / 取消勾选），
@@ -8028,6 +8124,7 @@ mod section_build_tests {
             font: false,
             comment: false,
             punct_map: false,
+            per_page: false,
         };
         assert_eq!(behavior_rows_hidden(&state), none);
         state.set_manifest(folded(&["key:ui.candidate.layout"]));

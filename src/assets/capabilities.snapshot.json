@@ -1869,6 +1869,10 @@
     {
       "default": 7,
       "key": "ui.candidate.per_page",
+      "schemaOverride": {
+        "note": "方案可覆盖每页候选数；方案没写则用这里的值。临拼、快捷等扩展档不受影响。",
+        "section": "[candidate]"
+      },
       "type": "int"
     },
     {
