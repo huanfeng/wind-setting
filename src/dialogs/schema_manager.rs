@@ -6,6 +6,8 @@
 //! - 启用/禁用/排序变更**即时刷新列表**（Element::list_signal 驱动）
 //! - 「应用设置」时写入 schema.available（经 FieldRegistry writer）
 
+mod overrides;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -723,30 +725,6 @@ fn aux_src_write(over: bool, pick: Option<&str>) -> Value {
     }
 }
 
-/// 「本方案行为」节「全部恢复跟随」的核心逻辑（R8.5）：把有「跟随」档的三项一并
-/// 拨回跟随（标点 / 候选排列下标回 0，候选字体取消勾选）。
-///
-/// ⚠️ 「横排时文字排列」不在这里：它没有跟随档（出厂就是「默认」，全局页压根没有
-/// 这一项），按下这个按钮不该动它——动了等于给一个不存在的状态强行赋值。
-/// 注释模板、自定义标点表也不在这里：它们是各自独立的子对话框，各有自己的清空入口，
-/// 这个按钮只清「本方案行为」节直接铺开显示的这三项（R8.5：只清本区块界面上可见的）。
-///
-/// 抽出来的理由同 [`aux_reset_all`]：闭包测不到，测试拿真信号驱动这里。
-fn behavior_reset_all(state: &SchemaManagerState) {
-    state.settings_bh_punct.set(0);
-    // 定制版藏掉的行不动，同 [`aux_reset_all`]。
-    let hidden = behavior_rows_hidden(state);
-    if !hidden.layout {
-        state.settings_bh_layout.set(0);
-    }
-    if !hidden.font {
-        state.settings_bh_font_over.set(false);
-    }
-    if !hidden.per_page {
-        state.settings_bh_pp_over.set(false);
-    }
-}
-
 /// 方案级每页候选数（`[candidate] per_page`）的落盘值：未勾选写 `null`（core 跳过
 /// null ⇒ 该键不进 override ⇒ 跟随全局）；勾上写 ≥1 的整数。
 fn per_page_write(over: bool, v: f64) -> Value {
@@ -826,6 +804,9 @@ struct BehaviorSeed {
     punct: usize,
     layout: usize,
     phrases: bool,
+    /// 方案是否对「加载命令短语」有覆盖（方案文件写了 `false`，或用户层写了该键）。
+    /// 与 `phrases` 分开：布尔本身没有「未设置」态，列不列在覆盖页要单独记。
+    phrases_set: bool,
     /// 方案级自定义标点表三态，与 core `PunctSpec::custom_mappings` 同构：
     /// `None` = 跟随全局（键缺失）；`Some(表)` = **整份替换**全局表；`Some({})` = 一条都不要。
     ///
@@ -857,6 +838,7 @@ impl Default for BehaviorSeed {
             punct: 0,
             layout: 0,
             phrases: true,
+            phrases_set: false,
             punct_map: None,
             font_family: None,
             text_orient: 0,
@@ -910,6 +892,11 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         .and_then(|v| v.get("per_page"))
         .and_then(|v| v.as_i64())
         .filter(|n| *n >= 1);
+    // 布尔本身没有「未设置」态：方案文件写了 false，或用户层显式写过该键，才算有覆盖。
+    let phrases_set = !phrases
+        || cfg
+            .pointer("/schemaUserOverride/phrases/enabled")
+            .is_some_and(|v| !v.is_null());
     BehaviorSeed {
         punct,
         layout,
@@ -917,6 +904,7 @@ fn seed_behavior(cfg: &Value) -> BehaviorSeed {
         text_orient,
         per_page,
         phrases,
+        phrases_set,
         // `as_object()` 顺带滤掉 null：core「取消覆盖」写的就是 null，读回来必须还原成未设置。
         punct_map: cfg
             .get("punct")
@@ -1324,6 +1312,15 @@ pub struct SchemaManagerState {
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
     // 等于两处表达同一件事。
     /// 标点态：0=跟随全局 / 1=中文标点 / 2=英文标点（`[punct] mode`）。
+    /// 「标点」「候选排列」「加载命令短语」是否列在方案覆盖页（其余三项沿用各自既有的勾选信号，
+    /// 见 `overrides::OvField::listed`）。标点 / 排列的下拉只含具体项，故
+    /// `settings_bh_punct` / `settings_bh_layout` 的下标是 0=中文标点 / 竖排，落盘时才 +1 还原成
+    /// 「0=跟随」的口径（`behavior_now`）。
+    pub settings_bh_punct_listed: Signal<bool>,
+    pub settings_bh_layout_listed: Signal<bool>,
+    pub settings_bh_phrases_listed: Signal<bool>,
+    /// 方案文件里已经写了（且用户层没写）的覆盖字段：行说明里标「方案文件默认」。
+    settings_ov_file: Rc<RefCell<Vec<overrides::OvField>>>,
     pub settings_bh_punct: Signal<usize>,
     /// 候选排列：0=跟随全局 / 1=竖排 / 2=横排（`[candidate] layout`）。
     pub settings_bh_layout: Signal<usize>,
@@ -1562,6 +1559,10 @@ impl SchemaManagerState {
             settings_aux_src_follow_idx: Rc::new(std::cell::Cell::new(0)),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
+            settings_bh_punct_listed: signal(false),
+            settings_bh_layout_listed: signal(false),
+            settings_bh_phrases_listed: signal(false),
+            settings_ov_file: Rc::new(RefCell::new(Vec::new())),
             settings_bh_punct: signal(0),
             settings_bh_layout: signal(0),
             settings_layout_follow_labels: signal(layout_dropdown_labels("horizontal")),
@@ -2798,8 +2799,14 @@ impl SchemaManagerState {
         // 故与 overlay 那节不同——不以「段存在」为建节条件。
         {
             let seed = seed_behavior(&self.settings_cfg.borrow());
-            self.settings_bh_punct.set(seed.punct);
-            self.settings_bh_layout.set(seed.layout);
+            // 下拉只含具体项（0=中文标点 / 竖排）；「有没有覆盖」另记在 `*_listed`。
+            self.settings_bh_punct_listed.set(seed.punct != 0);
+            self.settings_bh_punct.set(seed.punct.saturating_sub(1));
+            self.settings_bh_layout_listed.set(seed.layout != 0);
+            self.settings_bh_layout.set(seed.layout.saturating_sub(1));
+            self.settings_bh_phrases_listed.set(seed.phrases_set);
+            *self.settings_ov_file.borrow_mut() =
+                overrides::file_level(&self.settings_cfg.borrow());
             // 下拉首项文案按**本次打开**的跟随值现算（Review Focus 3）：跟随值是
             // core 只读旁路字段，随全局页配置变化，不能用构造时缓存的默认值——
             // 否则用户在全局页改了候选排列，方案设置页打开两次都还显示旧值。
@@ -3127,9 +3134,15 @@ impl SchemaManagerState {
         let pick = |on: Signal<bool>, text: Signal<String>| -> Option<String> {
             on.get().then(|| text.get())
         };
+        // 未列出的字段一律合成成「未设置」，不管信号里还留着什么——同下面字体那条：
+        // 否则用户添加、改值、再移除，脏判定会把这行误判成「改过」。
+        let listed = |on: Signal<bool>, idx: Signal<usize>| {
+            if on.get() { idx.get() + 1 } else { 0 }
+        };
+        let phrases_set = self.settings_bh_phrases_listed.get();
         BehaviorSeed {
-            punct: self.settings_bh_punct.get(),
-            layout: self.settings_bh_layout.get(),
+            punct: listed(self.settings_bh_punct_listed, self.settings_bh_punct),
+            layout: listed(self.settings_bh_layout_listed, self.settings_bh_layout),
             // 未勾选恒读 `None`，不管文本框里还留着什么——
             // 否则用户勾上改了字体又取消勾选，脏判定会把这行误判成「改过」（落盘结果其实
             // 与打开时一样都是 `null`，见 `font_write`）。
@@ -3139,7 +3152,8 @@ impl SchemaManagerState {
                 .settings_bh_pp_over
                 .get()
                 .then(|| self.settings_bh_pp.get().round() as i64),
-            phrases: self.settings_bh_phrases.get(),
+            phrases: !phrases_set || self.settings_bh_phrases.get(),
+            phrases_set,
             // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
             // 三态合成只此一处。
             punct_map: self.settings_bh_punct_map_on.get().then(|| {
@@ -3332,7 +3346,16 @@ impl SchemaManagerState {
                     &["candidate", "text_orientation"],
                     json!(text_orient_value(now.text_orient)),
                 );
-                set_json_path(&mut cfg, &["phrases", "enabled"], json!(now.phrases));
+                // 未列出 = 未设置：写 null 删掉用户层的键，回到方案文件 / 全局的取值。
+                set_json_path(
+                    &mut cfg,
+                    &["phrases", "enabled"],
+                    if now.phrases_set {
+                        json!(now.phrases)
+                    } else {
+                        Value::Null
+                    },
+                );
                 cfg_changed = true;
             }
         }
@@ -5535,162 +5558,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 ],
             )
         }
-        SettingsSection::Behavior => {
-            // ⚠️ dropdown / label 上别加 `.small()`：那是 Button/CheckBox/Switch 专属，
-            // 落到别的 widget 会在 debug 构建下当场 panic（运行时 downcast，编译期放行）。
-            //
-            // ★ 注释模板**不内联在本节**：它是「勾选 + 输入框」两个控件一组、横竖各一组，
-            // 四个控件铺在这一屏里，与旁边三行「一行一个控件」的节奏完全不同
-            // （2026-08-26 用户原话：「候选注释又是比较杂乱的」）。收进子对话框后，
-            // 这里只留一行摘要 + [设置]，与「按键设置」那几行同构。
-            //
-            // 候选字体跟随值从 `followedBehavior.fontFamily` 取（同 `AuxCode` 节读
-            // `followedBehavior.auxEnabled` 的做法一样，是 core 只读旁路字段）；
-            // 候选排列的跟随值已经在 `open_settings_at_id` 里算进
-            // `settings_layout_follow_labels`，这里不用再读一遍。
-            let followed_font = state
-                .settings_cfg
-                .borrow()
-                .pointer("/followedBehavior/fontFamily")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let follow_font_disp = follow_text_font(&followed_font);
-
-            let font_over = state.settings_bh_font_over;
-            let font = state.settings_bh_font;
-            let font_row = crate::widgets::setting_row_override(
-                font_over,
-                "候选文字字体",
-                Some("只改候选词本身；序号与编码栏不跟随"),
-                // 来源列只写来源；跟随值（字体名）由下面 override_control 的 follow_text 显示，
-                // 两处都写字体名会读成「微软雅黑 … 微软雅黑」。
-                "跟随全局",
-                Role::TextMuted,
-                crate::widgets::override_control(
-                    font_over,
-                    Rc::new(|| true),
-                    Element::text_input(font, "留空同未勾选").width(AUX_CTRL_W),
-                    &follow_font_disp,
-                    "",
-                    AUX_CTRL_W,
-                ),
-            );
-
-            let followed_pp = state
-                .settings_cfg
-                .borrow()
-                .pointer("/followedBehavior/perPage")
-                .and_then(Value::as_i64)
-                .filter(|n| *n >= 1)
-                .unwrap_or(7);
-            let pp_over = state.settings_bh_pp_over;
-            let pp_row = crate::widgets::setting_row_override(
-                pp_over,
-                "每页候选数",
-                Some("本方案期间每页几条；临拼、快捷等扩展档若单独设了条数则不受影响"),
-                "跟随全局",
-                Role::TextMuted,
-                crate::widgets::override_control(
-                    pp_over,
-                    Rc::new(|| true),
-                    Element::stepper(state.settings_bh_pp, 2.0, 10.0, 1.0).width(AUX_CTRL_W),
-                    &followed_pp.to_string(),
-                    "",
-                    AUX_CTRL_W,
-                ),
-            );
-
-            // 「全部恢复跟随」（R8.5）：只清标点 / 候选排列 / 候选字体这三个有跟随档的
-            // 字段，见 [`behavior_reset_all`] 上的说明。样式照 `AuxCode` 卡片同名按钮。
-            let st = state.clone();
-            let reset_btn = move || {
-                let st = st.clone();
-                Element::button("全部恢复跟随")
-                    .small()
-                    .outline_soft()
-                    .on_click(move |_| behavior_reset_all(&st))
-            };
-
-            // 有全局对应项的行跟着全局走：全局被定制版藏了，这里也不出。
-            let hidden = behavior_rows_hidden(state);
-            let mut rows = vec![crate::widgets::setting_row(
-                "标点",
-                Some("中文标点 / 英文标点，或不干预"),
-                Element::dropdown(
-                    // 标点跟随值是运行时状态（当前中英文态），没有静态值可带，
-                    // 故这一档的文案固定，不像候选排列那样按 `followedBehavior`
-                    // 现算（R8.2 例外，控制者裁定）。
-                    vec!["跟随全局（沿用当前状态）", "中文标点", "英文标点"],
-                    state.settings_bh_punct,
-                )
-                .width(BH_DD_W),
-            )];
-            if !hidden.layout {
-                rows.push(crate::widgets::setting_row(
-                    "候选排列",
-                    Some("本方案期间的候选窗方向"),
-                    // 首项文案带跟随值（R8.2），绑 `Signal<Vec<String>>`——
-                    // 与 overlay 节那个下拉同一份标签表，同一个全局跟随值。
-                    Element::dropdown_signal(
-                        state.settings_layout_follow_labels,
-                        state.settings_bh_layout,
-                    )
-                    .width(BH_DD_W),
-                ));
-            }
-            rows.push(crate::widgets::setting_row(
-                "横排时文字排列",
-                // ⚠️ 一行装得下才算数（说明区超宽静默截断、不加省略号）。
-                // 「竖排时不生效」放在前面：选哪一项从标签就看得出来，
-                // 而「配了没反应」只有这句话能救。
-                Some("竖排时不生效。蒙古文选旋转 90°，汉字对联式选文字竖排"),
-                Element::dropdown(TEXT_ORIENT_LABELS.to_vec(), state.settings_bh_text_orient)
-                    .width(BH_DD_W),
-            ));
-            if !hidden.per_page {
-                rows.push(pp_row);
-            }
-            if !hidden.font {
-                rows.push(font_row);
-            }
-            rows.push(crate::widgets::setting_row(
-                "加载命令短语",
-                Some(
-                    "关闭后本方案不出命令短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
-                ),
-                Element::checkbox("开启", state.settings_bh_phrases)
-                    .small()
-                    .fg_role(Role::Text),
-            ));
-            if !hidden.comment {
-                // 注释模板不再按方案文件配置：方案行在全局「候选注释」总表里。
-                let req = state.open_comment_settings;
-                rows.push(crate::widgets::setting_row(
-                    "候选注释",
-                    Some("本方案的注释模板在「外观 → 候选标注 → 候选注释」的分配表里配置"),
-                    Element::button("在 候选注释 中配置")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| req.update(|n| *n += 1)),
-                ));
-            }
-            if !hidden.punct_map {
-                rows.push(summary_action_row(
-                    "自定义标点",
-                    Some("本方案专用的标点映射表。开启后全局那份整份不再生效"),
-                    state.settings_bh_punct_map_disp,
-                    "设置",
-                    state.settings_bh_punct_map_visible,
-                ));
-            }
-            crate::widgets::dialog_section_full(
-                "本方案行为",
-                Some("切到本方案时的表现。选「跟随全局」的项不受本方案影响。"),
-                Some(&reset_btn),
-                rows,
-            )
-        }
+        SettingsSection::Behavior => overrides::build(state),
         SettingsSection::ExtensionDicts => {
             // 行用与别处同一套 `setting_row`：勾选框当控件放右侧，词库名与说明落左列。
             // 原先是「勾选框带标签 + 下面缩进一行说明」，那是这一屏独一份的排版，
@@ -5849,16 +5717,14 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
     let ct_count = state.settings_ct.clone();
     let ct_disp = state.settings_ct_disp;
     let tab_labels = state.settings_tab_labels;
-    // TAB 星号要覆盖**整个 TAB**，不只是码表配置那一节：同一屏上面还有「本方案行为」的
-    // 标点与候选排列，它们各自的第 0 档就是「跟随全局」。只算码表的话，用户把标点改成
-    // 「中文标点」，TAB 上却一点痕迹都没有——那个星号就是在说谎。
+    // 方案覆盖页的 TAB 标签报**已列出的覆盖项数**（「方案覆盖 · 2」）：切在别的 TAB 时，
+    // 也一眼看得出这个方案有没有偏离全局。依赖是各字段「已列出」信号的版本号之和。
     //
-    // 「加载短语」不计入：它是个没有「跟随」档的布尔，恒有值，算不出「有没有自定义」。
-    let bh_punct = state.settings_bh_punct;
-    let bh_layout = state.settings_bh_layout;
     // 自定义标点只看勾选态（内容改了但没勾上等于没生效）。
     // ★ 不把 4×N 个单元格信号并进依赖——那是每帧遍历，而这一屏已经为「每帧轮询」付过一次
     // 代价（见 punct_map_summary 的说明）。
+    let ov_state = state.clone();
+    let ov_state_watch = state.clone();
     let bh_punct_map = state.settings_bh_punct_map_on;
     let punct_disp = state.settings_bh_punct_map_disp;
     // 辅助码卡片摘要同理：只看各行的勾选态。`AuxCode` 也归「方案自定义」页
@@ -5872,9 +5738,9 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         move || {
             ct_watch
                 .version_sum()
-                .wrapping_add(bh_punct.version())
-                .wrapping_add(bh_layout.version())
-                .wrapping_add(bh_punct_map.version())
+                .wrapping_add(overrides::OvField::ALL.iter().fold(0u64, |acc, f| {
+                    acc.wrapping_add(f.listed(&ov_state_watch).version())
+                }))
                 .wrapping_add(aux_on_over.version())
                 .wrapping_add(aux_len_over.version())
                 .wrapping_add(aux_src_over.version())
@@ -5882,9 +5748,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
         },
         move || {
             let n = ct_count.custom_count();
-            let bh_custom = (bh_punct.get() != 0) as usize
-                + (bh_layout.get() != 0) as usize
-                + bh_punct_map.get() as usize;
+            let bh_custom = overrides::listed_count(&ov_state);
             let aux_custom = aux_on_over.get() as usize
                 + aux_len_over.get() as usize
                 + aux_src_over.get() as usize
@@ -5902,14 +5766,14 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             // 码表配置 → 码表与特殊模式；本方案行为 → 方案覆盖；辅助码 → 辅助码。
             // ⚠️ 用 `SettingsTab` 而不是字面下标——TAB 的数量和顺序都变过。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
-            for (t, custom) in [
-                (SettingsTab::CodeTable, n),
-                (SettingsTab::Overrides, bh_custom),
-                (SettingsTab::Aux, aux_custom),
-            ] {
+            for (t, custom) in [(SettingsTab::CodeTable, n), (SettingsTab::Aux, aux_custom)] {
                 if custom > 0 {
                     ls[t.index()] = format!("{} *", t.label());
                 }
+            }
+            if bh_custom > 0 {
+                ls[SettingsTab::Overrides.index()] =
+                    format!("{} · {bh_custom}", SettingsTab::Overrides.label());
             }
             tab_labels.set(vec![ls]);
         },
@@ -6710,9 +6574,10 @@ mod ext_dict_tests {
                 punct: 2,
                 layout: 1,
                 phrases: false,
+                phrases_set: true,
                 ..Default::default()
             },
-            "英文方案那套写法"
+            "英文方案那套写法（关短语 = 有覆盖）"
         );
         assert_eq!(
             seed_behavior(&json!({ "punct": { "mode": "chinese" } })),
@@ -6783,42 +6648,87 @@ mod ext_dict_tests {
         assert_eq!(per_page_write(true, 0.0), json!(1));
     }
 
-    /// R8.5：「本方案行为」节的「全部恢复跟随」把三项拨回跟随（下标 0 / 取消勾选），
-    /// 「横排时文字排列」没有跟随档（设计如此），不该被这个按钮动到。
-    ///
-    /// 驱动的是按钮闭包实际调用的 [`behavior_reset_all`] 与 `SchemaManagerState` 的真信号。
+    /// 方案覆盖页：添加一项 = 以**当前生效值**列出（行为不变），移除 = 合成回「未设置」。
     #[test]
-    fn behavior_reset_all_clears_follow_fields() {
-        let _guard = crate::rpc::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+    fn override_add_uses_effective_value_and_remove_unsets() {
+        use overrides::{OvField, add, remove};
         let state = SchemaManagerState::new();
-        state.settings_bh_punct.set(2);
-        state.settings_bh_layout.set(1);
-        state.settings_bh_font_over.set(true);
-        state.settings_bh_font.set("楷体".to_string());
-        state.settings_bh_text_orient.set(1);
+        *state.settings_cfg.borrow_mut() = json!({
+            "followedBehavior": { "perPage": 9, "layout": "vertical", "fontFamily": "楷体" }
+        });
+        for f in [
+            OvField::PerPage,
+            OvField::Layout,
+            OvField::Font,
+            OvField::Punct,
+        ] {
+            add(&state, f);
+            assert!(f.listed(&state).get(), "{f:?} 添加后已列出");
+        }
+        let now = state.behavior_now();
+        assert_eq!(now.per_page, Some(9), "每页候选数取全局值");
+        assert_eq!(now.layout, 1, "候选排列取全局值（竖排 = 落盘档 1）");
+        assert_eq!(now.font_family.as_deref(), Some("楷体"), "字体取全局值");
+        assert_eq!(now.punct, 1, "标点从中文标点起步");
 
-        behavior_reset_all(&state);
+        state.settings_bh_pp.set(5.0);
+        for f in [
+            OvField::PerPage,
+            OvField::Layout,
+            OvField::Font,
+            OvField::Punct,
+        ] {
+            remove(&state, f);
+        }
+        let now = state.behavior_now();
+        assert_eq!(
+            (now.per_page, now.layout, now.font_family, now.punct),
+            (None, 0, None, 0),
+            "移除后全部合成回未设置，不论信号里残留什么"
+        );
+    }
 
-        assert_eq!(state.settings_bh_punct.get(), 0, "标点回跟随档");
-        assert_eq!(state.settings_bh_layout.get(), 0, "候选排列回跟随档");
-        assert!(!state.settings_bh_font_over.get(), "候选字体取消勾选");
-        assert_eq!(
-            font_write(
-                state.settings_bh_font_over.get(),
-                &state.settings_bh_font.get()
-            ),
-            Value::Null,
-            "取消勾选后字体落盘为 null（跟随外观页），不论文本框里残留什么"
+    /// 「加载命令短语」是布尔、没有未设置态：方案文件写了 false，或用户层写过该键，才算列出。
+    #[test]
+    fn phrases_listed_only_when_set_by_file_or_user() {
+        use overrides::{OvField, file_level, remove};
+        assert!(
+            !seed_behavior(&json!({})).phrases_set,
+            "什么都没写 = 未覆盖"
         );
-        assert_eq!(
-            state.settings_bh_text_orient.get(),
-            1,
-            "无跟随档的项不被动到"
+        assert!(
+            seed_behavior(&json!({ "phrases": { "enabled": false } })).phrases_set,
+            "方案文件关掉了短语"
         );
-        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let user_true = json!({
+            "phrases": { "enabled": true },
+            "schemaUserOverride": { "phrases": { "enabled": true } }
+        });
+        assert!(
+            seed_behavior(&user_true).phrases_set,
+            "用户显式写 true 也算覆盖"
+        );
+
+        let cfg = json!({
+            "schemaBase": { "phrases": { "enabled": false } },
+            "schemaUserOverride": {}
+        });
+        assert_eq!(file_level(&cfg), vec![OvField::Phrases], "方案文件层的覆盖");
+        let cfg = json!({
+            "schemaBase": { "phrases": { "enabled": false } },
+            "schemaUserOverride": { "phrases": { "enabled": false } }
+        });
+        assert!(file_level(&cfg).is_empty(), "用户层也写了：来源算用户");
+
+        let state = SchemaManagerState::new();
+        state.settings_bh_phrases_listed.set(true);
+        state.settings_bh_phrases.set(false);
+        remove(&state, OvField::Phrases);
+        let now = state.behavior_now();
+        assert!(
+            !now.phrases_set && now.phrases,
+            "移除后合成回默认（true、未设置）"
+        );
     }
 
     /// 未知取值一律回落「跟随全局」，不猜方向。
@@ -8327,18 +8237,16 @@ mod section_build_tests {
         );
     }
 
-    /// 「全部恢复跟随」不清定制版藏掉的候选排列与字体。
+    /// 定制版藏掉的字段不计入 TAB 标签的覆盖项数。
     #[test]
-    fn behavior_reset_all_keeps_custom_hidden_rows() {
+    fn override_count_skips_custom_hidden_fields() {
+        use overrides::{OvField, listed_count};
         let state = SchemaManagerState::new();
         state.set_manifest(folded(&["key:ui.candidate.layout", "key:ui.font.family"]));
-        state.settings_bh_punct.set(2);
-        state.settings_bh_layout.set(1);
-        state.settings_bh_font_over.set(true);
-        behavior_reset_all(&state);
-        assert_eq!(state.settings_bh_punct.get(), 0);
-        assert_eq!(state.settings_bh_layout.get(), 1);
-        assert!(state.settings_bh_font_over.get());
+        for f in [OvField::Layout, OvField::Font, OvField::Punct] {
+            f.listed(&state).set(true);
+        }
+        assert_eq!(listed_count(&state), 1, "只剩标点：排列与字体被藏");
     }
 
     /// 辅助码各行全藏 ⇒ 不建这一节；只藏一部分 ⇒ 节还在。
