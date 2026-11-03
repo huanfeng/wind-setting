@@ -1258,8 +1258,8 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                         Element::badge_intent(ce_sig, Intent::Neutral)
                             .visible_when(move || !ce_sig.get().is_empty()),
                     );
-                    // 非 Windows 没有升级通路（见 update::self_update_supported）：
-                    // 按钮点下去只会下到一个装不上的 .exe，不如不给。
+                    // 没有升级通路的平台（见 update::self_update_supported）不给按钮：
+                    // 点下去只会下到一个装不上的包。
                     if crate::update::self_update_supported()
                         && !state.manifest.feature_hidden("update_check")
                     {

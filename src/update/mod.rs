@@ -244,6 +244,10 @@ pub enum UpdatePhase {
     Downloading,
     /// 已下载并校验通过，待安装。
     Ready,
+    /// 安装进行中（仅 Linux：等 pkexec / apt 跑完，期间不可关闭对话框）。
+    Installing,
+    /// 安装已完成或已交给系统安装器（仅 Linux）。
+    Installed,
     Error,
 }
 
@@ -271,6 +275,8 @@ pub enum UpdateMsg {
     DownloadFailed(String),
     /// 用户取消。与失败分开，UI 才能退回「可重试」而不是弹错误。
     DownloadCancelled,
+    /// 安装线程结束（仅 Linux）。`Ok` 带给用户看的结果说明；`Err` 是可直接展示的中文错误。
+    InstallDone(Result<String, String>),
 }
 
 /// 升级链路的错误分类。用户可见文案一律中文。
@@ -313,9 +319,9 @@ impl UpdateError {
 
 /// 本平台是否具备自动升级通路。
 ///
-/// Windows（`Setup.exe` + `ShellExecuteW` 提权）与 macOS（`.pkg` + `open` 交给
-/// Installer.app）各有一条；其余平台没有发行产物，`install::shell_execute` 是个直接
-/// 返回「当前平台不支持自动安装」的桩。
+/// Windows（`Setup.exe` + `ShellExecuteW` 提权）、macOS（`.pkg` + `open` 交给
+/// Installer.app）与 Linux（`.deb` + `pkexec apt-get install`，无 pkexec 时退到
+/// `xdg-open` 交给桌面的软件安装器）各有一条。
 ///
 /// 这道门不能省：版本号是各平台共用的，没有门就会在没有升级通路的平台上照常判定
 /// 「有新版」，弹窗、下载、然后在安装那步报错 —— 整条链路唯一的产出是一个装不上的文件。
@@ -323,12 +329,12 @@ impl UpdateError {
 /// 用 `cfg!` 而非 `#[cfg]`：两边都参与编译，改坏了任一平台都会当场编译失败，
 /// 不会出现"条件写错位置、悄悄失效"那种只在另一个平台才暴露的问题。
 pub fn self_update_supported() -> bool {
-    cfg!(any(windows, target_os = "macos"))
+    cfg!(any(windows, target_os = "macos", target_os = "linux"))
 }
 
-/// 本平台是否检查更新。比 [`self_update_supported`] 宽：Linux 只检查并提示，不下载安装
-/// ——装 `.deb` 要 root，设置程序不该替用户提权；对话框改为引导到下载页，用户用 apt
-/// 覆盖安装。三个平台都有元数据文件（Linux 是 `latest-linux.json`），检查本身不会落空。
+/// 本平台是否检查更新。三个平台都有元数据文件（Linux 是 `latest-linux.json`），
+/// 检查本身不会落空；与 [`self_update_supported`] 分开，是为了日后某平台能查不能装时
+/// 仍可只提示。
 pub fn update_check_supported() -> bool {
     true
 }

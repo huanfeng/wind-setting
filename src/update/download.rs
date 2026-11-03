@@ -561,7 +561,31 @@ pub fn cache_path(url: &str, fallback_name: &str) -> PathBuf {
     } else {
         name
     };
-    std::env::temp_dir().join(name)
+    cache_dir().join(name)
+}
+
+/// 升级包的存放目录。
+///
+/// Linux 上安装包随后要交给 root（pkexec + apt）装，若放在全局可写的 `/tmp`，别的本地用户
+/// 能在「校验通过」与「root 读取」之间把它换掉。故改放用户私有的缓存目录并收紧到 0700。
+/// 其余平台沿用临时目录（安装器自己会提权并校验，场景不同）。取不到缓存目录时退回临时目录。
+pub fn cache_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        if let Some(base) = dirs::cache_dir() {
+            let dir = base.join("windinput").join("update");
+            let made = std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&dir)
+                .is_ok();
+            if made {
+                return dir;
+            }
+        }
+    }
+    std::env::temp_dir()
 }
 
 /// 只保留文件名安全字符，杜绝路径分隔符与父目录引用。
@@ -1087,7 +1111,7 @@ mod tests {
             "fallback.exe",
         );
         assert_eq!(p.file_name().unwrap(), "WindInput-0.107.0-Setup.exe");
-        assert_eq!(p.parent().unwrap(), std::env::temp_dir());
+        assert_eq!(p.parent().unwrap(), cache_dir());
     }
 
     #[test]
@@ -1111,7 +1135,7 @@ mod tests {
                 "文件名不得含分隔符：{name}"
             );
             assert!(!name.starts_with('.'), "文件名不得以点开头：{name}");
-            assert_eq!(p.parent().unwrap(), std::env::temp_dir());
+            assert_eq!(p.parent().unwrap(), cache_dir());
         }
     }
 }

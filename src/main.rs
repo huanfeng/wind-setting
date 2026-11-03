@@ -623,7 +623,7 @@ fn main() {
         let gate = if !update::update_check_supported() {
             // 没有元数据可查的平台不发请求。门控放在这里而不是 should_auto_check 里边 ——
             // 那是个纯函数，三重门控的语义与平台无关，掺进平台判断会让它的单测在别的平台
-            // 上集体失效。Linux 能查（只提示、不自动安装），见 update_check_supported。
+            // 上集体失效。
             false
         } else if forced {
             cfg.network_consent

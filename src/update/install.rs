@@ -237,9 +237,108 @@ fn shell_execute(pkg: &Path, _args: &str) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Install(format!("拉起系统安装器失败：{e}")))
 }
 
+/// Linux 不走 `shell_execute`：安装要等 pkexec 授权与 apt 跑完才知道成败，由
+/// [`install_deb`] 在后台线程里同步执行。这里只是让非 Windows/mac 平台能编译过。
 #[cfg(not(any(windows, target_os = "macos")))]
 fn shell_execute(_exe: &Path, _args: &str) -> Result<(), UpdateError> {
-    Err(UpdateError::Install("当前平台不支持自动安装".to_string()))
+    Err(UpdateError::Install("当前平台不支持该安装方式".to_string()))
+}
+
+/// Linux 安装结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebInstall {
+    /// `apt-get` 已装完。
+    Installed,
+    /// 没有 pkexec，已把 `.deb` 交给桌面的软件安装器，成败未知。
+    HandedOff,
+}
+
+/// 拼 `pkexec apt-get install` 的命令行（不含 `pkexec` 自身）。
+///
+/// - 用 `apt-get install <绝对路径>` 而非 `dpkg -i`：前者会顺带解决依赖。路径必须是绝对的，
+///   apt 靠「含 `/`」区分本地文件与包名。
+/// - `env DEBIAN_FRONTEND=noninteractive`：pkexec 没有终端，不能让 debconf 等输入。
+/// - `-y`：同意安装的是用户在对话框里点「立即安装」那一下，apt 不必再问。
+pub fn apt_args(deb: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    vec![
+        OsString::from("env"),
+        OsString::from("DEBIAN_FRONTEND=noninteractive"),
+        OsString::from("apt-get"),
+        OsString::from("install"),
+        OsString::from("-y"),
+        deb.as_os_str().to_owned(),
+    ]
+}
+
+/// 在 PATH 里找可执行文件。
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| Path::new(d).join(name))
+        .find(|p| p.is_file())
+}
+
+/// 取 stderr 的最后几行作错误说明（apt 的真正原因总在末尾）。
+fn tail_lines(bytes: &[u8], n: usize) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// 安装 `.deb`。**阻塞**，必须在后台线程调用。
+///
+/// 有 `pkexec`：弹 polkit 授权框后以 root 跑 `apt-get install`，等它结束并据退出码报成败。
+/// 无 `pkexec`：退到 `xdg-open`，交给桌面的软件安装器（GNOME 软件 / Discover / 深度商店等），
+/// 此时只能说「已交出」。两者都没有则报错并给出手动命令。
+///
+/// 与 Windows/mac 不同，这里**不需要让出窗口**：postinst 只结束输入法服务，不碰设置程序，
+/// Linux 上替换正在运行的二进制也不会出事。
+pub fn install_deb(deb: &Path) -> Result<DebInstall, UpdateError> {
+    if !deb.is_absolute() || !deb.is_file() {
+        return Err(UpdateError::Install(format!(
+            "安装包不存在：{}",
+            deb.display()
+        )));
+    }
+    let manual = format!("sudo apt install {}", deb.display());
+
+    if let Some(pkexec) = which("pkexec") {
+        tracing::info!("pkexec 安装：{}", deb.display());
+        let out = std::process::Command::new(pkexec)
+            .args(apt_args(deb))
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| UpdateError::Install(format!("无法启动 pkexec：{e}")))?;
+        return match out.status.code() {
+            Some(0) => Ok(DebInstall::Installed),
+            // polkit：126 = 授权对话框被取消 / 认证失败，127 = 无法授权
+            Some(126) | Some(127) => Err(UpdateError::Install(format!(
+                "未获得管理员授权，已取消安装。也可在终端手动执行：{manual}"
+            ))),
+            _ => {
+                let detail = tail_lines(&out.stderr, 4);
+                Err(UpdateError::Install(format!(
+                    "apt 安装失败：{detail}\n可在终端手动执行：{manual}"
+                )))
+            }
+        };
+    }
+
+    if let Some(xdg) = which("xdg-open") {
+        tracing::info!("无 pkexec，交给 xdg-open：{}", deb.display());
+        return std::process::Command::new(xdg)
+            .arg(deb)
+            .spawn()
+            .map(|_| DebInstall::HandedOff)
+            .map_err(|e| UpdateError::Install(format!("拉起系统安装器失败：{e}")));
+    }
+
+    Err(UpdateError::Install(format!(
+        "找不到 pkexec 或 xdg-open，请在终端手动执行：{manual}"
+    )))
 }
 
 #[cfg(test)]
@@ -364,5 +463,35 @@ mod tests {
             .to_path_buf();
         assert_eq!(p.install_dir, expected);
         assert_eq!(p.installer, installer);
+    }
+
+    #[test]
+    fn apt_args_use_absolute_path_and_noninteractive() {
+        let a = apt_args(Path::new("/home/u/.cache/windinput/update/x.deb"));
+        let a: Vec<String> = a.iter().map(|x| x.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            a,
+            [
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "apt-get",
+                "install",
+                "-y",
+                "/home/u/.cache/windinput/update/x.deb"
+            ]
+        );
+    }
+
+    #[test]
+    fn install_deb_rejects_relative_or_missing_path() {
+        assert!(install_deb(Path::new("x.deb")).is_err());
+        assert!(install_deb(Path::new("/nonexistent/x.deb")).is_err());
+    }
+
+    #[test]
+    fn tail_lines_keeps_last_non_empty_lines() {
+        let t = tail_lines(b"a\n\nb\nc\nd\ne\n", 2);
+        assert_eq!(t, "d\ne");
+        assert_eq!(tail_lines(b"", 3), "");
     }
 }

@@ -1265,7 +1265,7 @@ impl AppState {
         use crate::update::UpdatePhase;
         if matches!(
             self.update_phase.get(),
-            UpdatePhase::Downloading | UpdatePhase::Ready
+            UpdatePhase::Downloading | UpdatePhase::Ready | UpdatePhase::Installing
         ) {
             self.update_dialog_visible.set(true);
             return;
@@ -1587,6 +1587,8 @@ impl AppState {
             // 一个 .exe 后缀的 pkg 会被 Finder 当成不认识的文件而不是安装包。
             let fallback = if cfg!(windows) {
                 "wind-update.exe"
+            } else if cfg!(target_os = "linux") {
+                "wind-update.deb"
             } else {
                 "wind-update.pkg"
             };
@@ -1667,6 +1669,37 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Linux：在后台线程里装 `.deb`（pkexec 授权 + apt 要等好几秒，不能卡 UI）。
+    /// 结果经 [`UpdateMsg::InstallDone`] 回到 UI 线程。
+    pub fn begin_linux_install(&self) {
+        let Some(deb) = self.update_installer.borrow().clone() else {
+            self.fail_update("没有可安装的更新包");
+            return;
+        };
+        let Some(tx) = self.update_tx.borrow().clone() else {
+            self.fail_update("内部错误：更新通道未就绪");
+            return;
+        };
+        self.update_message
+            .set("正在安装…请在弹出的授权窗口中输入管理员密码。".to_string());
+        self.update_phase
+            .set(crate::update::UpdatePhase::Installing);
+        std::thread::spawn(move || {
+            let msg = match crate::update::install::install_deb(&deb) {
+                Ok(crate::update::install::DebInstall::Installed) => Ok(
+                    "安装完成。新版本在重启 Fcitx5 后生效（终端执行 fcitx5 -rd，或注销重新登录）。"
+                        .to_string(),
+                ),
+                Ok(crate::update::install::DebInstall::HandedOff) => Ok(
+                    "已交给系统软件安装器，请在其中完成安装；装好后重启 Fcitx5（fcitx5 -rd）生效。"
+                        .to_string(),
+                ),
+                Err(e) => Err(e.user_message()),
+            };
+            let _ = tx.send(crate::update::UpdateMsg::InstallDone(msg));
+        });
     }
 
     fn fail_update(&self, msg: impl Into<String>) {
@@ -1922,6 +1955,15 @@ impl AppState {
                 self.update_phase.set(UpdatePhase::Ready);
             }
             UpdateMsg::DownloadFailed(e) => self.fail_update(e),
+            UpdateMsg::InstallDone(Ok(m)) => {
+                self.update_message.set(m);
+                self.update_phase.set(UpdatePhase::Installed);
+            }
+            // 失败进 Error（含授权被取消）；包已缓存，重新下载会命中缓存直接通过校验
+            UpdateMsg::InstallDone(Err(e)) => {
+                self.update_message.set(e);
+                self.update_phase.set(UpdatePhase::Error);
+            }
             UpdateMsg::DownloadCancelled => {
                 // 退回到可重试的状态，不显示错误
                 self.update_progress.set(0.0);
@@ -2859,17 +2901,9 @@ impl AppState {
         !self.unsaved_items().is_empty()
     }
 
-    /// 「发现新版本」对话框里那一行体积说明。Linux 不自动安装（装 .deb 要 root），
-    /// 这一行顺带告诉用户怎么装。
+    /// 「发现新版本」对话框里那一行体积说明。
     fn update_size_line(r: &crate::update::CheckResult) -> String {
-        if crate::update::self_update_supported() {
-            format!("更新包 {}", r.size_display())
-        } else {
-            format!(
-                "安装包 {}：在下载页下载对应架构的 .deb，用 sudo apt install 覆盖安装",
-                r.size_display()
-            )
-        }
+        format!("更新包 {}", r.size_display())
     }
 
     /// 跑一遍 writers 再与 base 做 diff，返回本次保存**会提交的项**。仅供测试。

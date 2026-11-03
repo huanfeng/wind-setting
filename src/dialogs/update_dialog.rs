@@ -14,7 +14,6 @@ use crate::state::AppState;
 use crate::update::{self, UpdatePhase};
 
 /// 没有自动安装通路的平台（Linux）在「发现新版本」时打开的页面。
-const DOWNLOAD_PAGE_URL: &str = "https://windinput.com/download";
 
 /// 对话框宽度。发布说明常有较长条目，比常规对话框宽一档可减少折行。
 const DIALOG_W: i32 = 620;
@@ -54,6 +53,8 @@ pub fn build_update_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                 .visible_when(is(UpdatePhase::Downloading)),
         )
         .child(simple_body(message).visible_when(is(UpdatePhase::Ready)))
+        .child(simple_body(message).visible_when(is(UpdatePhase::Installing)))
+        .child(simple_body(message).visible_when(is(UpdatePhase::Installed)))
         .child(error_body(message).visible_when(is(UpdatePhase::Error)))
         .child(Element::divider())
         .child(footer(app_state, phase, visible))
@@ -353,15 +354,6 @@ fn footer(
                     phase.get() == UpdatePhase::HasUpdate && update::self_update_supported()
                 }),
         )
-        // 没有自动安装通路的平台（Linux）：引导到下载页，由用户用 apt 覆盖安装
-        .child(
-            Element::button("打开下载页")
-                .small()
-                .on_click(|ctx| ctx.open_url(DOWNLOAD_PAGE_URL))
-                .visible_when(move || {
-                    phase.get() == UpdatePhase::HasUpdate && !update::self_update_supported()
-                }),
-        )
         // NoUpdate
         .child(
             Element::button("重新检查")
@@ -384,6 +376,11 @@ fn footer(
                 .small()
                 .on_click(move |ctx| {
                     let st = install_state.borrow();
+                    // Linux：授权 + apt 要等结果，走后台线程，窗口不关
+                    if cfg!(target_os = "linux") {
+                        st.begin_linux_install();
+                        return;
+                    }
                     match st.launch_update_install() {
                         // 安装器随即会终止本进程，主动让出窗口比等它来杀更干净。
                         // 必须绕过未保存守卫（close_window）：安装器要等本进程退出才能
@@ -416,10 +413,13 @@ fn close_label(p: UpdatePhase) -> Option<&'static str> {
     match p {
         UpdatePhase::Consent => Some("暂不"),
         UpdatePhase::HasUpdate => Some("稍后再说"),
-        UpdatePhase::Checking | UpdatePhase::NoUpdate | UpdatePhase::Ready | UpdatePhase::Error => {
-            Some("关闭")
-        }
-        UpdatePhase::Downloading => None,
+        UpdatePhase::Checking
+        | UpdatePhase::NoUpdate
+        | UpdatePhase::Ready
+        | UpdatePhase::Installed
+        | UpdatePhase::Error => Some("关闭"),
+        // 下载中只能取消；安装中 pkexec/apt 在跑，关掉对话框只会失去结果反馈
+        UpdatePhase::Downloading | UpdatePhase::Installing => None,
     }
 }
 
@@ -449,7 +449,7 @@ mod tests {
         (n.measured.h, n.content_h)
     }
 
-    /// 关闭按钮的阶段规则：**只有下载中没有**，其余六个阶段都给，文案按语境三选一。
+    /// 关闭按钮的阶段规则：**只有下载中、安装中没有**，其余阶段都给，文案按语境三选一。
     ///
     /// 单独锁住这条，是因为"下载中不给关闭"看起来像遗漏——六个按钮合并成一个之后，
     /// 它在 `close_label` 里是一个显式的 `None` 分支，很容易被后来者顺手"补全"。
@@ -461,12 +461,18 @@ mod tests {
             None,
             "下载中只能取消，不给关闭"
         );
+        assert_eq!(
+            close_label(UpdatePhase::Installing),
+            None,
+            "安装中 pkexec/apt 在跑，关掉就看不到结果"
+        );
         for p in [
             UpdatePhase::Consent,
             UpdatePhase::Checking,
             UpdatePhase::HasUpdate,
             UpdatePhase::NoUpdate,
             UpdatePhase::Ready,
+            UpdatePhase::Installed,
             UpdatePhase::Error,
         ] {
             assert!(close_label(p).is_some(), "{p:?} 阶段应有关闭按钮");
