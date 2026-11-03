@@ -91,6 +91,9 @@ pub struct SchemaEntry {
     /// 码表方案也可能只是 mix 成员、没有 overlay 生命周期。
     /// 判据取自 core 的 `schema.list`，不在本仓再推一遍——跨仓契约无编译期约束。
     pub overlay: bool,
+    /// core `[schema].role`：空 = 普通方案；`"aux"` = 辅助码专用码表方案（如笔画）。
+    /// 与 `hidden` 不同，aux 方案仍可启用；只是未启用时默认不列，勾「显示特殊方案」才出现。
+    pub role: String,
     pub error: Option<String>,
 }
 
@@ -1928,16 +1931,26 @@ impl SchemaManagerState {
         // 三个区，**特殊方案先摘出去**：它没有「启用/未启用」这回事——不进 available、
         // 不参与循环切换，只靠引导键或直达热键进入，所以既不该出现在已启用区、也不该
         // 出现在未启用区（更不该随「隐藏未启用」一起消失，那个开关管的是普通方案）。
-        let (special, normal): (Vec<SchemaEntry>, Vec<SchemaEntry>) = self
+        let (special, mut normal): (Vec<SchemaEntry>, Vec<SchemaEntry>) = self
             .schemas
             .borrow()
             .iter()
             .cloned()
             .partition(|e| e.hidden);
 
+        // 辅助码专用方案（role = aux）：仍是普通方案，但未启用时默认不列，
+        // 勾「显示特殊方案」才放出来（已启用的恒显示）。「全部启用」态下 order 为空，
+        // 视同未启用——它不是出厂启用的方案。
+        normal.retain(|e| e.role != "aux" || show_hidden || order.contains(&e.id));
+        let aux_unenabled: Vec<SchemaEntry> = normal
+            .iter()
+            .filter(|e| e.role == "aux" && !order.contains(&e.id))
+            .cloned()
+            .collect();
+
         let mut enabled_entries: Vec<SchemaEntry> = Vec::new();
         if is_all_enabled {
-            enabled_entries = normal.clone();
+            enabled_entries = normal.iter().filter(|e| e.role != "aux").cloned().collect();
         } else {
             for id in &order {
                 if let Some(e) = normal.iter().find(|e| &e.id == id) {
@@ -1947,7 +1960,7 @@ impl SchemaManagerState {
         }
 
         let disabled_entries: Vec<SchemaEntry> = if is_all_enabled {
-            vec![]
+            aux_unenabled
         } else {
             normal
                 .into_iter()
@@ -2110,6 +2123,11 @@ impl SchemaManagerState {
                             source,
                             hidden: s.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false),
                             overlay: s.get("overlay").and_then(|v| v.as_bool()).unwrap_or(false),
+                            role: s
+                                .get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             version: s
                                 .get("version")
                                 .and_then(|v| v.as_str())
@@ -7400,6 +7418,40 @@ mod section_build_tests {
             let _ = build_section(kind, &state);
         }
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// role = aux 的方案未启用时默认不进列表，勾「显示特殊方案」或已启用才出现。
+    #[test]
+    fn aux_role_schema_listed_only_when_shown_or_enabled() {
+        let mk = |id: &str, role: &str| SchemaEntry {
+            id: id.into(),
+            name: id.into(),
+            engine_type: "codetable".into(),
+            role: role.into(),
+            ..Default::default()
+        };
+        let state = SchemaManagerState::new();
+        *state.schemas.borrow_mut() = vec![mk("wubi86", ""), mk("stroke", "aux")];
+        let ids = |s: &SchemaManagerState| -> Vec<String> {
+            s.list_data
+                .get()
+                .iter()
+                .filter_map(|i| match i {
+                    SchemaListItem::Row { entry, .. } => Some(entry.id.clone()),
+                    _ => None,
+                })
+                .chain(s.enabled_rows.get().iter().map(|e| e.id.clone()))
+                .collect()
+        };
+        *state.enabled_order.borrow_mut() = vec!["wubi86".into()];
+        state.rebuild_list();
+        assert!(!ids(&state).contains(&"stroke".to_string()), "默认隐藏");
+        state.set_show_hidden(true);
+        assert!(ids(&state).contains(&"stroke".to_string()), "开关放出来");
+        state.set_show_hidden(false);
+        *state.enabled_order.borrow_mut() = vec!["wubi86".into(), "stroke".into()];
+        state.rebuild_list();
+        assert!(ids(&state).contains(&"stroke".to_string()), "已启用恒显示");
     }
 
     /// Review Focus 3：下拉首项的跟随文案必须来自**本次打开**对话框时的
