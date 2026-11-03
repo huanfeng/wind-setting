@@ -545,6 +545,67 @@ pub fn setting_row_override(
         .child(control)
 }
 
+/// [`setting_row_override`] 的「可移除」形态：没有行首勾选框，行尾一个 ✕ 把这一项从覆盖里去掉。
+///
+/// 用于稀疏的覆盖列表：行存在就等于「已自定义」，所以不需要那个勾选框；来源列恒写「已自定义」。
+/// 控件区仍走 [`override_control`]（门控原因文字等），`over` 在行可见期间恒为真。
+pub fn setting_row_override_removable(
+    label: &str,
+    sub: Option<&str>,
+    control: Element,
+    on_remove: impl Fn() + 'static,
+) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let mut left = Element::col().weight(1.0).spacing(2).child(
+        Element::label(label)
+            .font_size(f.label_size(m))
+            .font_weight(f.label_weight())
+            .fg_role(Role::Text)
+            .width_match()
+            .max_lines(1)
+            .truncate(Truncate::End),
+    );
+    if let Some(s) = sub {
+        left = left.child(
+            Element::label(s)
+                .font_size(f.desc_size(m))
+                .fg_role(Role::TextSubtle)
+                .width_match()
+                .max_lines(2)
+                .truncate(Truncate::End),
+        );
+    }
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(0, f.row_pad_y(m))
+        .spacing(f.gap(m))
+        .child(left)
+        .child(
+            Element::row().width(SOURCE_W).cross(Align::Center).child(
+                Element::label("已自定义")
+                    .font_size(f.desc_size(m))
+                    .fg_role(Role::Accent)
+                    .max_lines(1),
+            ),
+        )
+        .child(control)
+        .child(
+            Element::icon_button("\u{2715}")
+                .size(24, 24)
+                .font_size(11.0)
+                .fg_role(Role::TextMuted)
+                .tooltip("移除此覆盖")
+                .on_click(move |_| on_remove()),
+        )
+}
+
+/// 与 [`setting_row_override_removable`] 行尾 ✕ 等宽的占位，供不可移除的行（方案自带）对齐控件列。
+pub fn removable_tail_spacer() -> Element {
+    Element::leaf().width(24).height(24)
+}
+
 /// 来源文案列宽。**定宽**：文案随勾选在「已自定义」「跟随全局」「方案自带」之间变，
 /// 不定宽的话右侧控件会跟着左右跳。
 const SOURCE_W: i32 = 64;

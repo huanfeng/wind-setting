@@ -1335,6 +1335,10 @@ pub struct SchemaManagerState {
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
     // 等于两处表达同一件事。
     /// 标点态：0=跟随全局 / 1=中文标点 / 2=英文标点（`[punct] mode`）。
+    /// 「添加覆盖」弹框（码表配置）是否可见，及其候选（打开时与每次码表工作态变化时重算）。
+    pub settings_ct_add_visible: Signal<bool>,
+    settings_ct_cands:
+        Signal<Vec<Vec<(String, Vec<crate::dialogs::schema_codetable::CtCandidate>)>>>,
     pub settings_bh_punct: Signal<usize>,
     /// 候选排列：0=跟随全局 / 1=竖排 / 2=横排（`[candidate] layout`）。
     pub settings_bh_layout: Signal<usize>,
@@ -1573,6 +1577,8 @@ impl SchemaManagerState {
             settings_aux_src_follow_idx: Rc::new(std::cell::Cell::new(0)),
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
+            settings_ct_add_visible: signal(false),
+            settings_ct_cands: signal(vec![Vec::new()]),
             settings_bh_punct: signal(0),
             settings_bh_layout: signal(0),
             settings_layout_follow_labels: signal(layout_dropdown_labels("horizontal")),
@@ -4571,6 +4577,7 @@ pub fn build_schema_manager_dialog(
     let sa_dlg = build_session_actions_dialog(state);
     let ko_dlg = build_keys_overview_dialog(state);
     let punct_dlg = build_schema_punct_dialog(state);
+    let ct_add_dlg = build_ct_add_dialog(state);
     let cmt_jump = comment_settings_jump(app, state);
     Element::stack()
         .fill()
@@ -4587,10 +4594,124 @@ pub fn build_schema_manager_dialog(
         // 自定义标点自带一层「单元格编辑」子对话框（在 build_punct_table_dialog 内部
         // 已叠成 stack），故整体排在这里即可，不必再拆一级。
         .child(punct_dlg)
+        .child(ct_add_dlg)
         // 按键选择浮层是**第四级**：从按键表里点「添加 / 修改」打开，故排在两张表之后。
         // 顺序反了的表现是点了没反应——浮层建出来了，被压在按键表下面。
         .child(state.settings_ka.build_picker())
         .child(state.settings_sa.build_picker())
+}
+
+/// 码表配置的「添加覆盖」弹框：按分类列出还没覆盖的项，每项带说明与当前跟随值，点一项即添加。
+/// 形态照应用兼容页的「添加覆盖项」。
+fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
+    let visible = state.settings_ct_add_visible;
+    let cands = state.settings_ct_cands;
+    let (ct, manifest_cell) = (state.settings_ct.clone(), state.manifest.clone());
+    // 打开时、以及码表工作态变化时重算候选（添加后该项从候选里消失）。
+    let sync = {
+        let (ct, mf) = (ct.clone(), manifest_cell.clone());
+        crate::pages::dict::reactive::reactive_effect(
+            {
+                let ct = ct.clone();
+                move || ct.version_sum().wrapping_add(visible.version())
+            },
+            move || cands.set(vec![ct.candidates(&mf.borrow())]),
+        )
+    };
+    let pick = ct.clone();
+    let list = Element::host_signal(cands, move |groups| {
+        let mut col = Element::col().width_match().spacing(4);
+        if groups.is_empty() {
+            return col.child(
+                Element::label("没有更多可添加的项了。")
+                    .font_size(13.0)
+                    .fg_role(Role::TextMuted)
+                    .padding_xy(6, 16),
+            );
+        }
+        for (group, items) in groups {
+            col = col.child(
+                Element::label(&group)
+                    .font_size(12.0)
+                    .font_weight(600)
+                    .fg_role(Role::TextMuted)
+                    .padding_xy(6, 6),
+            );
+            for c in items {
+                let (ct, key) = (pick.clone(), c.key.clone());
+                let mut row = Element::col()
+                    .width_match()
+                    .spacing(2)
+                    .padding_xy(10, 7)
+                    .corner(6.0)
+                    .clickable()
+                    .on_click(move |_| {
+                        visible.set(false);
+                        ct.add(&key);
+                    })
+                    .child(
+                        Element::label(&c.label)
+                            .font_size(13.0)
+                            .font_weight(600)
+                            .fg_role(Role::Text),
+                    );
+                if !c.hint.is_empty() {
+                    row = row.child(
+                        Element::label(&c.hint)
+                            .font_size(12.0)
+                            .fg_role(Role::TextMuted)
+                            .width_match()
+                            .max_lines(2),
+                    );
+                }
+                col = col.child(
+                    row.child(
+                        Element::label(format!("{}：{}", c.follow_label, c.follow))
+                            .font_size(11.5)
+                            .fg_role(Role::TextSubtle)
+                            .max_lines(1),
+                    ),
+                );
+            }
+        }
+        col
+    });
+    let body = Element::col()
+        .width_match()
+        .spacing(6)
+        .child(
+            Element::label("选择要为本方案单独设置的项。选中后会出现在「方案覆盖」里，以当前值起步，再改成你要的值。")
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3),
+        )
+        .child(
+            Element::scroll()
+                .width_match()
+                .height(400)
+                .padding_xy(2, 4)
+                .child(list),
+        )
+        .child(sync);
+    let foot = Element::row()
+        .width_match()
+        .spacing(8)
+        .child(Element::flex_spacer())
+        .child(
+            Element::button("关闭")
+                .small()
+                .outline_soft()
+                .on_click(move |_| visible.set(false)),
+        );
+    Element::dialog_panel(
+        visible,
+        "添加覆盖",
+        540,
+        move |_: &mut EventCtx| visible.set(false),
+        body,
+        foot,
+    )
 }
 
 /// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
@@ -5469,28 +5590,49 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             //
             // 各分类同在一张卡片里、以卡内小标题分隔（与方案配置卡同一套写法），而不是
             // 每类一张小卡——那是本对话框里唯一一处自成一格的卡片样式。
+            let add_visible = state.settings_ct_add_visible;
+            let ct_hint = state.settings_ct.clone();
+            let empty_hint = Element::label(
+                "没有覆盖项。点右上角「添加覆盖」，选择要为本方案单独设置的项；其余都跟随全局。",
+            )
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .padding_xy(14, 12)
+            .visible_when(move || !ct_hint.any_listed());
             crate::widgets::dialog_section_items(
                 "码表配置",
                 None,
                 Some(&move || {
                     let (ct_reset, reset_flag) = (ct_reset.clone(), reset_flag.clone());
-                    // 柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮：
-                    // 它是一个**兜底动作**，与它同行的是这一节的小标题，实心色块
-                    // 在那儿比标题还抢眼，看着像这一屏的主操作。
-                    Element::button("全部恢复跟随")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| {
-                            // 只动 UI（勾选清空 + 控件值拨回跟随值）。落盘统一走底栏的
-                            // 保存——本对话框不该有自己的写盘入口，见 core 仓那条
-                            // 「非 config.toml 落点一律登记 SideCommitter」。
-                            ct_reset.revert_all();
-                            // 标志给落盘那侧看：隐藏项没有控件，只能靠它去清。
-                            reset_flag.set(true);
-                            disp.set(ct_summary(ct_reset.custom_count()));
-                        })
+                    // 「添加覆盖」是主操作，只此一个入口（点开弹框挑项）；「全部恢复跟随」是兜底，
+                    // 用柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮，免得比标题还抢眼。
+                    Element::row()
+                        .cross(Align::Center)
+                        .spacing(8)
+                        .child(
+                            Element::button("＋ 添加覆盖")
+                                .small()
+                                .on_click(move |_| add_visible.set(true)),
+                        )
+                        .child(
+                            Element::button("全部恢复跟随")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| {
+                                    // 只动 UI（勾选清空 + 控件值拨回跟随值）。落盘统一走底栏的
+                                    // 保存——本对话框不该有自己的写盘入口，见 core 仓那条
+                                    // 「非 config.toml 落点一律登记 SideCommitter」。
+                                    ct_reset.revert_all();
+                                    // 标志给落盘那侧看：隐藏项没有控件，只能靠它去清。
+                                    reset_flag.set(true);
+                                    disp.set(ct_summary(ct_reset.custom_count()));
+                                }),
+                        )
                 }),
-                vec![crate::widgets::CardItem::Bare(body)],
+                vec![
+                    crate::widgets::CardItem::Bare(empty_hint),
+                    crate::widgets::CardItem::Bare(body),
+                ],
             )
         }
         SettingsSection::Sentence => {

@@ -247,6 +247,19 @@ impl CtItemState {
     }
 }
 
+/// 「添加覆盖」弹框里的一个候选项。
+#[derive(Clone, Debug, PartialEq)]
+pub struct CtCandidate {
+    pub key: String,
+    pub label: String,
+    /// manifest 里的说明；可能为空。
+    pub hint: String,
+    /// 当前跟随值的显示文案（添加后控件就从它起步）。
+    pub follow: String,
+    /// 跟随的来源称呼（「跟随全局」/「跟随基线」）。
+    pub follow_label: String,
+}
+
 /// 渲染计划的一项：**一个分类卡片**（标题 + 组内 key 列表）。
 ///
 /// 存 key 而非 Element，因为 `Element::host_signal` 的数据项要求 `Clone`。
@@ -499,47 +512,40 @@ impl CtFields {
         }
     }
 
-    /// 渲染一个分类：小标题（右侧「＋ 添加覆盖」）+ 组内**已列出**的行。各分类同在「码表配置」那
-    /// **一张**卡片里（[`crate::widgets::CardItem::Bare`]），小标题与分割线跟随「界面细节」。
+    /// 渲染一个分类：小标题 + 组内**已列出**的行；整组一行都没列出时连标题一起藏。
     ///
     /// 方案覆盖是**稀疏**的：绝大多数方案一项都不改，所以默认只列「用户覆盖了的」（`over`）和
-    /// 「方案作者自己写了的」（来源为「方案自带」）；其余项藏着，从标题右侧的菜单勾选后才出现。
+    /// 「方案作者自己写了的」（来源为「方案自带」，不可移除）；其余项经节头的「添加覆盖」弹框挑出来。
     /// 行**预建、靠 `visible_when` 显隐**——工作态挂在 Element 上，重建会丢刚改的值。
-    /// 取消勾选行首的框 = 移除（用户覆盖的行随之消失；方案自带的行留着，只是回到只读）。
     ///
     /// 「全部恢复跟随」在这个 TAB 上是**整节**级别的动作，挂在外层节头（见
     /// `schema_manager.rs` 的 `SettingsSection::CodeTable`），不是某一分类自己的按钮。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
-        let menu_items: Vec<(String, Signal<bool>)> = {
+        let listed: Vec<(Signal<bool>, bool)> = {
             let items = self.items.borrow();
             group
                 .keys
                 .iter()
-                .filter_map(|k| {
-                    let item = manifest.get(k)?;
-                    Some((item.label.clone(), items.get(k)?.over))
-                })
+                .filter_map(|k| items.get(k).map(|st| (st.over, st.src == SRC_FROM_SCHEMA)))
                 .collect()
-        };
-        let add_menu = move || {
-            let items = menu_items
-                .iter()
-                .map(|(label, over)| CheckMenuItem::check(label.as_str(), *over))
-                .collect();
-            Element::check_menu("＋ 添加覆盖", items).width(132)
         };
         let mut col = Element::col()
             .width_match()
             .child(crate::widgets::list_heading_ext(
                 &group.title,
-                Some(&add_menu),
+                None,
                 group.first,
             ));
         for k in group.keys.iter() {
-            let Some(st) = self.items.borrow().get(k).cloned() else {
+            let Some(&(over, from_schema)) = self
+                .items
+                .borrow()
+                .get(k)
+                .map(|st| (st.over, st.src == SRC_FROM_SCHEMA))
+                .as_ref()
+            else {
                 continue;
             };
-            let (over, from_schema) = (st.over, st.src == SRC_FROM_SCHEMA);
             col = col.child(
                 Element::col()
                     .width_match()
@@ -548,7 +554,52 @@ impl CtFields {
                     .visible_when(move || over.get() || from_schema),
             );
         }
-        col
+        col.visible_when(move || listed.iter().any(|(over, file)| over.get() || *file))
+    }
+
+    /// 「添加覆盖」弹框的候选：还没列出的项（用户没覆盖、方案文件也没写），按分类归拢，
+    /// 带说明与当前跟随值——只给一个标题挑不出东西。分类与顺序同 [`Self::plan`]。
+    pub fn candidates(&self, manifest: &Manifest) -> Vec<(String, Vec<CtCandidate>)> {
+        let items = self.items.borrow();
+        self.plan()
+            .into_iter()
+            .filter_map(|g| {
+                let list: Vec<CtCandidate> = g
+                    .keys
+                    .iter()
+                    .filter_map(|k| {
+                        let st = items.get(k)?;
+                        if st.over.get() || st.src == SRC_FROM_SCHEMA {
+                            return None;
+                        }
+                        let item = manifest.get(k)?;
+                        Some(CtCandidate {
+                            key: k.clone(),
+                            label: item.label.clone(),
+                            hint: item.hint.clone().unwrap_or_default(),
+                            follow: st.follow.display(item),
+                            follow_label: st.src.clone(),
+                        })
+                    })
+                    .collect();
+                (!list.is_empty()).then_some((g.title, list))
+            })
+            .collect()
+    }
+
+    /// 添加一项覆盖：控件值已在 `seed` 时按**生效值**播种，所以勾上即「以当前值起步」，行为不变。
+    pub fn add(&self, key: &str) {
+        if let Some(st) = self.items.borrow().get(key) {
+            st.over.set(true);
+        }
+    }
+
+    /// 当前是否有任何一项列在覆盖页里（用户覆盖的，或方案自带的）。
+    pub fn any_listed(&self) -> bool {
+        self.items
+            .borrow()
+            .values()
+            .any(|st| st.over.get() || st.src == SRC_FROM_SCHEMA)
     }
 
     /// 组内一行。
@@ -586,14 +637,33 @@ impl CtFields {
         } else {
             Role::TextMuted
         };
-        let row = crate::widgets::setting_row_override(
-            over,
-            &item.label,
-            item.hint.as_deref(),
-            &st.src,
-            follow_role,
-            control,
-        );
+        // 方案自带的项不可移除（移除是空操作：回到的还是方案文件里的值），保留行首勾选框——
+        // 勾上 = 在方案值之上再覆盖，取消 = 回到只读的方案值；行本身一直在。
+        // 其余是用户添加的项：行存在即「已自定义」，不要勾选框，行尾 ✕ 移除。
+        let row = if st.src == SRC_FROM_SCHEMA {
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .child(
+                    crate::widgets::setting_row_override(
+                        over,
+                        &item.label,
+                        item.hint.as_deref(),
+                        &st.src,
+                        follow_role,
+                        control,
+                    )
+                    .weight(1.0),
+                )
+                .child(crate::widgets::removable_tail_spacer())
+        } else {
+            crate::widgets::setting_row_override_removable(
+                &item.label,
+                item.hint.as_deref(),
+                control,
+                move || over.set(false),
+            )
+        };
         // ★ `enabled_when` **只表达真禁用**（上游开关没开），此时勾选框也一并置灰——
         // 上游关着时这一项连覆盖都不该谈。「未勾选」不走这条路：它是正常状态，
         // 置灰会让整屏发灰（见 `widgets::override_control` 的论证）。
