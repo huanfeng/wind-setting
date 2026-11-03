@@ -820,16 +820,16 @@ fn field_row(label: &str, sig: Signal<String>, placeholder: &str) -> Element {
         )
 }
 
-/// 「注释词库」对话框正文：说明 + 可拖序的列表 + 「添加词库…」。
+/// 「注释词库」对话框正文：说明 + 可拖序的列表（「添加词库…」在底栏，见 [`build_comment_dicts_footer`]）。
 /// 二级弹层（挑文件、新建/编辑表单）另由 [`build_comment_dicts_subdialogs`] 挂到根上。
 pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
     let row_ui = ui.clone();
 
-    // 词库多了会把对话框撑出窗口（窗口拉满也看不到底栏）：列表封顶可滚，与提示气泡分段
-    // 对话框同一封顶——按主窗最小高 440 算约四行，再高则窗口最矮时底栏按钮被裁掉。
+    // 词库多了会把对话框撑出窗口：列表封顶可滚。封顶按外壳中部视口（LARGE_SHELL_BODY_H）
+    // 减去说明文字与上下边距算，让列表尽量铺满中部；「添加词库…」在底栏，不占中部。
     let list = Element::scroll()
         .width_match()
-        .max_height(216)
+        .max_height(crate::dialogs::field_dialogs::LARGE_SHELL_BODY_H - 120)
         .padding_xy(0, 2)
         .child(
             Element::reorder_list_signal(ui.rows, move |r: CommentDictRow, handle| {
@@ -900,7 +900,6 @@ pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
             }),
         );
 
-    let new_ui = ui.clone();
     Element::col()
         .width_match()
         .child(
@@ -917,18 +916,17 @@ pub fn build_comment_dicts_pane(ui: &CommentDictsUi) -> Element {
             .padding_xy(2, 8),
         )
         .child(list)
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .padding_xy(0, 10)
-                .child(
-                    Element::button("添加词库…")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| new_ui.picker.set(true)),
-                ),
-        )
+}
+
+/// 「注释词库」对话框底栏左侧的按钮（交给外壳的 `bottom_leading`）。
+pub fn build_comment_dicts_footer(ui: &CommentDictsUi) -> Vec<Element> {
+    let new_ui = ui.clone();
+    vec![
+        Element::button("添加词库…")
+            .small()
+            .outline_soft()
+            .on_click(move |_| new_ui.picker.set(true)),
+    ]
 }
 
 /// 词库文件在磁盘上的位置：自动项 / 内置项取 `rel`，手工项取 `path`。绝对路径原样用（须是

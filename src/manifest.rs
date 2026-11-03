@@ -4750,7 +4750,7 @@ fn build_dialog_button_ordered_pairs(
 /// 注释词库（`ui.comment_dicts`）：卡片上独立一行，框里是词库列表与它的二级弹层。
 fn build_dialog_button_comment_dicts(state: &AppState, cfg: &Config) -> Signal<bool> {
     use crate::dialogs::comment_dicts_dialog::{
-        build_comment_dicts_pane, build_comment_dicts_subdialogs,
+        build_comment_dicts_footer, build_comment_dicts_pane, build_comment_dicts_subdialogs,
     };
     let ui = crate::dialogs::comment_settings::register_comment_dicts(state, cfg);
     let visible = signal(false);
@@ -4761,7 +4761,7 @@ fn build_dialog_button_comment_dicts(state: &AppState, cfg: &Config) -> Signal<b
             .width_match()
             .padding_xy(16, 2)
             .child(build_comment_dicts_pane(&ui)),
-        vec![],
+        build_comment_dicts_footer(&ui),
     );
     register_dialog(
         state,
