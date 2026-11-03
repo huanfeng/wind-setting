@@ -313,10 +313,6 @@ fn split_sections_by_tab(flat: &[SettingsSection]) -> [Vec<SettingsSection>; SET
     out
 }
 
-/// 「本方案行为」节三个下拉的统一宽度。要装得下最长的跟随档「跟随全局（沿用当前状态）」，
-/// 170 会把它折成两行（最终审查目视发现）；三个下拉同宽，右侧才对得齐。
-const BH_DD_W: i32 = 220;
-
 /// 辅助码卡片里步进器（及「候选文字字体」输入框）**自身**的宽度。控件位容器宽是
 /// [`AUX_SRC_W`]，控件在容器里靠右。
 const AUX_CTRL_W: i32 = 150;
@@ -551,8 +547,6 @@ struct BehaviorRowsHidden {
     layout: bool,
     /// 候选文字字体，对应全局 `ui.font.family`。
     font: bool,
-    /// 「候选注释」跳转行：全局那个对话框被藏了，跳过去也无处可落。
-    comment: bool,
     punct_map: bool,
     /// 每页候选数，对应全局 `ui.candidate.per_page`。
     per_page: bool,
@@ -565,7 +559,6 @@ fn behavior_rows_hidden(state: &SchemaManagerState) -> BehaviorRowsHidden {
     BehaviorRowsHidden {
         layout: state.custom_hidden("ui.candidate.layout"),
         font: state.custom_hidden("ui.font.family"),
-        comment: state.custom_hidden(crate::dialogs::comment_settings::HOST_KEY),
         punct_map: punct_section || state.custom_hidden("input.punct.custom_mappings"),
         per_page: state.custom_hidden("ui.candidate.per_page"),
     }
@@ -998,17 +991,9 @@ fn punct_map_summary(on: bool) -> String {
 ///
 /// ⚠️ 于是有一条用户可见的后果，hint 里必须说：**开启后，全局表里配的那些行不再生效**。
 fn build_schema_punct_dialog(state: &SchemaManagerState) -> Element {
-    use crate::dialogs::field_dialogs::{PunctTableHeader, build_punct_table_dialog};
+    use crate::dialogs::field_dialogs::build_punct_table_dialog;
 
-    let on = state.settings_bh_punct_map_on;
     let cells: Vec<[Signal<String>; 4]> = state.settings_bh_punct_cells.as_ref().clone();
-    // 摘要不在这里推：它随勾选态走，由「码表覆盖计数 + 候选注释摘要」那个统一 effect
-    // 一并刷新（另开一个 effect 只会多一处要同步的口径）。
-    let header = crate::widgets::setting_row(
-        "使用本方案的标点表",
-        Some("开启后全局的自定义标点整份不再生效；关闭则完全跟随全局"),
-        Element::checkbox("开启", on).small().fg_role(Role::Text),
-    );
     let src_labels: Vec<String> = crate::manifest::PUNCT_DEFAULTS
         .iter()
         .map(|(s, _, _)| s.to_string())
@@ -1023,13 +1008,9 @@ fn build_schema_punct_dialog(state: &SchemaManagerState) -> Element {
         src_labels,
         cells,
         defaults,
-        // ★ 开关必须管住表格：未勾选时 writer 写的是 null（`punct_map_value`），表里改什么
-        // 都不落盘。不置灰的话用户改完一整页、保存、毫无变化且零提示——真机反馈即此。
-        Some(PunctTableHeader {
-            element: header,
-            gate: on,
-        }),
-        "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会写进本方案。\n未开启时表格不可编辑，本方案完全跟随全局的自定义标点设置。",
+        // 开关已挪到外层的「自定义」勾选行：[设置] 只在勾上时可点，表格里改的一定会落盘。
+        None,
+        "点单元格编辑替换字符（留空恢复该格默认）；仅与默认不同的行会写进本方案。",
     )
 }
 
@@ -1379,9 +1360,6 @@ pub struct SchemaManagerState {
     pub settings_bh_text_orient: Signal<usize>,
     /// 是否加载短语（`[phrases] enabled`）。
     pub settings_bh_phrases: Signal<bool>,
-    /// 「在 候选注释 中配置」的跳转请求（计数）：方案设置里那一行点一下加一，由
-    /// [`build_schema_manager_dialog`] 里的 effect 关掉方案设置、跳到全局的候选注释对话框。
-    pub open_comment_settings: Signal<u64>,
     /// 本方案是否使用自己的自定义标点表（`[punct] custom_mappings` 这个键存不存在）。
     ///
     /// 形态与注释模板那两个勾选同类：「跟随全局」是**键缺失**，没有显式档位可选。
@@ -1616,7 +1594,6 @@ impl SchemaManagerState {
             settings_bh_pp_over: signal(false),
             settings_bh_pp: signal(7.0),
             settings_bh_phrases: signal(true),
-            open_comment_settings: signal(0),
             settings_bh_punct_map_on: signal(false),
             settings_bh_punct_map_visible: signal(false),
             settings_bh_punct_map_disp: signal(punct_map_summary(false)),
@@ -4578,27 +4555,6 @@ fn build_draggable_row(entry: SchemaEntry, mgr: &SchemaManagerState, handle: Ele
 
 // ──────────────────────── UI 构建 ────────────────────────
 
-/// 构建方案相关浮层对话框：删除确认 + 方案详情/设置。
-/// 「在 候选注释 中配置」：关掉方案设置，跳到全局的候选注释对话框（分配表）。
-fn comment_settings_jump(app: &Rc<RefCell<AppState>>, state: &SchemaManagerState) -> Element {
-    let (tab, jump) = {
-        let st = app.borrow();
-        (st.tab, st.jump)
-    };
-    let st = state.clone();
-    let req = state.open_comment_settings;
-    crate::pages::dict::reactive::reactive_effect(
-        move || req.version(),
-        move || {
-            st.settings_visible.set(false);
-            let m = st.manifest.borrow().clone();
-            if let Some(t) = crate::dialogs::comment_settings::assign_jump_target(&m) {
-                crate::search::jump::request_quiet(tab, jump, t);
-            }
-        },
-    )
-}
-
 /// `app` 只为导入确认那一支所需（片段应用后回灌配置镜像）。
 pub fn build_schema_manager_dialog(
     app: &Rc<RefCell<AppState>>,
@@ -4614,7 +4570,6 @@ pub fn build_schema_manager_dialog(
     let ko_dlg = build_keys_overview_dialog(state);
     let punct_dlg = build_schema_punct_dialog(state);
     let ct_add_dlg = build_ct_add_dialog(state);
-    let cmt_jump = comment_settings_jump(app, state);
     Element::stack()
         .fill()
         .child(confirm_dlg)
@@ -4626,7 +4581,6 @@ pub fn build_schema_manager_dialog(
         .child(ka_dlg)
         .child(sa_dlg)
         .child(ko_dlg)
-        .child(cmt_jump)
         // 自定义标点自带一层「单元格编辑」子对话框（在 build_punct_table_dialog 内部
         // 已叠成 stack），故整体排在这里即可，不必再拆一级。
         .child(punct_dlg)
@@ -5973,8 +5927,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 // 而「配了没反应」只有这句话能救。
                 "竖排时不生效。蒙古文选旋转 90°，汉字对联式选文字竖排",
                 "默认",
-                Element::dropdown(vec!["旋转 90°", "文字竖排"], state.settings_bh_text_orient)
-                    .width(AUX_CTRL_W),
+                Element::dropdown(
+                    TEXT_ORIENT_LABELS[1..].to_vec(),
+                    state.settings_bh_text_orient,
+                )
+                .width(AUX_CTRL_W),
                 "水平",
             ));
             if !hidden.per_page {
@@ -5993,25 +5950,19 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     .fg_role(Role::Text),
                 "开启",
             ));
-            if !hidden.comment {
-                // 注释模板不再按方案文件配置：方案行在全局「候选注释」总表里。
-                let req = state.open_comment_settings;
-                rows.push(crate::widgets::setting_row(
-                    "候选注释",
-                    Some("本方案的注释模板在「外观 → 候选标注 → 候选注释」的分配表里配置"),
-                    Element::button("在 候选注释 中配置")
+            if !hidden.punct_map {
+                // 与其它行同一形态：勾上才用本方案自己的标点表（整份替换全局表），[设置] 打开表格。
+                let open = state.settings_bh_punct_map_visible;
+                rows.push(ov_row(
+                    state.settings_bh_punct_map_on,
+                    "自定义标点",
+                    "本方案专用的标点映射表。勾上后全局那份整份不再生效",
+                    "跟随全局",
+                    Element::button("设置")
                         .small()
                         .outline_soft()
-                        .on_click(move |_| req.update(|n| *n += 1)),
-                ));
-            }
-            if !hidden.punct_map {
-                rows.push(summary_action_row(
-                    "自定义标点",
-                    Some("本方案专用的标点映射表。开启后全局那份整份不再生效"),
-                    state.settings_bh_punct_map_disp,
-                    "设置",
-                    state.settings_bh_punct_map_visible,
+                        .on_click(move |_| open.set(true)),
+                    "全局的标点表",
                 ));
             }
             crate::widgets::dialog_section_full(
@@ -8643,7 +8594,6 @@ mod section_build_tests {
         let none = BehaviorRowsHidden {
             layout: false,
             font: false,
-            comment: false,
             punct_map: false,
             per_page: false,
         };
@@ -8656,14 +8606,10 @@ mod section_build_tests {
                 ..none
             }
         );
-        state.set_manifest(folded(&[
-            "key:ui.comment.assign.global",
-            "key:input.punct.custom_mappings",
-        ]));
+        state.set_manifest(folded(&["key:input.punct.custom_mappings"]));
         assert_eq!(
             behavior_rows_hidden(&state),
             BehaviorRowsHidden {
-                comment: true,
                 punct_map: true,
                 ..none
             }

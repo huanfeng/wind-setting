@@ -532,7 +532,6 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "横排时文字排列", tab: "自定义行为", section: "本方案行为", keywords: "横排 旋转 竖排 蒙古文 text_orientation" },
     SchemaLevelItem { title: "候选文字字体", tab: "自定义行为", section: "本方案行为", keywords: "字体 字形 跟随外观" },
     SchemaLevelItem { title: "加载命令短语", tab: "自定义行为", section: "本方案行为", keywords: "短语 快捷短语 phrases 开关" },
-    SchemaLevelItem { title: "候选注释", tab: "自定义行为", section: "本方案行为", keywords: "注释 comment 释义" },
     SchemaLevelItem { title: "自定义标点", tab: "自定义行为", section: "本方案行为", keywords: "标点 映射 符号" },
 ];
 
