@@ -251,7 +251,7 @@ fn global_card(ui: &CommentSettingsUi, lib: &LibraryInfo, user: &CommentAssign) 
         .child(body)
 }
 
-/// 折叠行上一态的概括：「默认 跟随上级」「详细 拼音+英文」（竖排单独指定时再加「竖排 …」）。
+/// 折叠行上一态的概括：「默认 跟随上级」「详细 拼音+英文」（竖排单独指定时写成「横排 … 竖排 …」）。
 fn state_summary(
     lib: &LibraryInfo,
     user: &CommentAssign,
@@ -286,14 +286,25 @@ fn state_summary(
                 .font_size(11.5)
                 .fg_role(Role::TextMuted),
         );
+        let ev = ev.filter(|v| Some(v) != eh.as_ref());
+        // 竖排另有指定时，横排那一项要点明是「横排」，否则会读成整态的值。
+        if ev.is_some() {
+            text = text.child(
+                Element::label("横排")
+                    .font_size(11.5)
+                    .fg_role(Role::TextMuted),
+            );
+        }
         if let Some(id) = &eh {
             text = text.child(
                 Element::label(lib.name_of(id))
                     .font_size(11.5)
                     .fg_role(Role::Text),
             );
+        } else if ev.is_some() {
+            text = text.child(Element::label("不显示").font_size(11.5).fg_role(Role::Text));
         }
-        if let Some(id) = ev.filter(|v| Some(v) != eh.as_ref()) {
+        if let Some(id) = ev {
             text = text
                 .child(
                     Element::label("竖排")
@@ -308,12 +319,19 @@ fn state_summary(
         }
         return text;
     }
+    let vc = shown_choice(user, sys, scope, v);
+    if vc != Choice::SameAsHorizontal {
+        text = text.child(
+            Element::label("横排")
+                .font_size(11.5)
+                .fg_role(Role::TextMuted),
+        );
+    }
     text = text.child(
         Element::label(choice_label(lib, &shown_choice(user, sys, scope, h)))
             .font_size(11.5)
             .fg_role(Role::Text),
     );
-    let vc = shown_choice(user, sys, scope, v);
     if vc != Choice::SameAsHorizontal {
         text = text
             .child(
