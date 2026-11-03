@@ -494,4 +494,15 @@ mod tests {
         assert_eq!(t, "d\ne");
         assert_eq!(tail_lines(b"", 3), "");
     }
+
+    /// 真机验证用：`WIND_TEST_DEB=/abs/x.deb cargo test install_deb_real -- --ignored --nocapture`。
+    /// 会弹 polkit 授权并真的装包，故默认忽略。
+    #[test]
+    #[ignore]
+    fn install_deb_real() {
+        let deb = std::env::var("WIND_TEST_DEB").expect("需要 WIND_TEST_DEB");
+        let r = install_deb(Path::new(&deb));
+        println!("install_deb => {r:?}");
+        r.unwrap();
+    }
 }
