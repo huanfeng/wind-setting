@@ -1358,8 +1358,6 @@ pub struct SchemaManagerState {
     pub settings_bh_pp: Signal<f64>,
     /// 横排时文字排列：0=默认 / 1=旋转 90° / 2=文字竖排（`[candidate] text_orientation`）。
     pub settings_bh_text_orient: Signal<usize>,
-    /// 是否加载短语（`[phrases] enabled`）。
-    pub settings_bh_phrases: Signal<bool>,
     /// 本方案是否使用自己的自定义标点表（`[punct] custom_mappings` 这个键存不存在）。
     ///
     /// 形态与注释模板那两个勾选同类：「跟随全局」是**键缺失**，没有显式档位可选。
@@ -1593,7 +1591,6 @@ impl SchemaManagerState {
             settings_bh_font: signal(String::new()),
             settings_bh_pp_over: signal(false),
             settings_bh_pp: signal(7.0),
-            settings_bh_phrases: signal(true),
             settings_bh_punct_map_on: signal(false),
             settings_bh_punct_map_visible: signal(false),
             settings_bh_punct_map_disp: signal(punct_map_summary(false)),
@@ -2853,9 +2850,10 @@ impl SchemaManagerState {
             // 未勾选时文本框显示跟随值，勾上即从全局值起步改。
             self.settings_bh_pp
                 .set(seed.per_page.unwrap_or(followed_pp) as f64);
-            // 短语开关存储上恒有值：出厂 true，关掉（false）才算「自定义」。
+            // 勾选 ＝ 本方案不加载命令短语（`[phrases] enabled = false`）。没有可翻回「开启」的
+            // 控件：存储上「开启」是出厂值、保存时会与方案文件 diff 掉，勾着一个等于默认的值
+            // 重开必然读成未勾——让勾选与存储值一一对应才不会变。
             self.settings_bh_phrases_over.set(!seed.phrases);
-            self.settings_bh_phrases.set(seed.phrases);
             // 自定义标点表：勾选态问「键在不在」，格子按「方案表覆盖值 ⊕ 内置默认」播种。
             // ⚠️ 换方案必须逐格重播——信号是整个对话框复用的一组，不重播就会把上一个方案
             // 的表显示成这个方案的（同本函数开头那句「对话框复用同一组信号」）。
@@ -3173,7 +3171,7 @@ impl SchemaManagerState {
                 .settings_bh_pp_over
                 .get()
                 .then(|| self.settings_bh_pp.get().round() as i64),
-            phrases: !self.settings_bh_phrases_over.get() || self.settings_bh_phrases.get(),
+            phrases: !self.settings_bh_phrases_over.get(),
             // 同上：勾上才 `Some`，勾上而一行都没改即 `Some({})`＝本方案一条自定义都不要。
             // 三态合成只此一处。
             punct_map: self.settings_bh_punct_map_on.get().then(|| {
@@ -5949,9 +5947,11 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 "加载命令短语",
                 "关闭后本方案不出命令短语候选（与词库里的词组无关）。英文方案建议关闭：短语码常与英文词撞车",
                 "默认",
-                Element::checkbox("开启", state.settings_bh_phrases)
-                    .small()
-                    .fg_role(Role::Text),
+                // 勾上 ＝ 关闭，所以控件位只是一句话，不是可翻回「开启」的开关（理由见 seed 处）。
+                Element::label("关闭")
+                    .font_size(12.5)
+                    .fg_role(Role::Text)
+                    .max_lines(1),
                 "开启",
             ));
             if !hidden.punct_map {
@@ -7093,7 +7093,6 @@ mod ext_dict_tests {
         state.settings_bh_orient_over.set(true);
         state.settings_bh_text_orient.set(1);
         state.settings_bh_phrases_over.set(true);
-        state.settings_bh_phrases.set(false);
         state.settings_bh_font_over.set(true);
         state.settings_bh_font.set("楷体".to_string());
 
@@ -8657,7 +8656,6 @@ mod section_build_tests {
             .settings_bh_text_orient
             .set(seed.text_orient.saturating_sub(1));
         state.settings_bh_phrases_over.set(!seed.phrases);
-        state.settings_bh_phrases.set(seed.phrases);
         let now = state.behavior_now();
         assert_eq!(
             (now.punct, now.layout, now.text_orient, now.phrases),
