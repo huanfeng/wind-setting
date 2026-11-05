@@ -1076,8 +1076,8 @@ fn dict_page(_state: &AppState) -> Element {
 const REPO_URL: &str = "https://github.com/huanfeng/WindInput";
 /// 官网。
 const WEBSITE_URL: &str = "https://windinput.com";
-/// 社区论坛（经验交流与问题反馈的第一落点，取代原来直挂 GitHub issues 的入口）。
-const FORUM_URL: &str = "https://forum.windinput.com";
+/// 问题反馈入口（GitHub Issues）。
+const ISSUES_URL: &str = "https://github.com/huanfeng/WindInput/issues";
 /// 下载页。版本发布指这里而不是 GitHub releases：官网页面对非开发者更友好，
 /// 且能按平台分发定制版安装包。
 const DOWNLOAD_URL: &str = "https://windinput.com/download";
@@ -1096,7 +1096,7 @@ const QQ_GROUP: &str = "1085293418";
 // AboutPage，保证与网页版逐像素一致；改图标只改 .svg 文件即可，无需动代码。
 const ICON_WEBSITE: &str = include_str!("../../res/icons/website.svg");
 const ICON_GITHUB: &str = include_str!("../../res/icons/github.svg");
-const ICON_FORUM: &str = include_str!("../../res/icons/forum.svg");
+const ICON_FEEDBACK: &str = include_str!("../../res/icons/feedback.svg");
 const ICON_RELEASES: &str = include_str!("../../res/icons/releases.svg");
 const ICON_QQ: &str = include_str!("../../res/icons/qq.svg");
 /// 页脚赞助链接的爱心。与上面几个不同，它不进彩色图标方块，而是 `tint` 成品牌红后
@@ -1293,7 +1293,7 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         |ctx| ctx.open_url(WEBSITE_URL),
     );
 
-    // 2×2 链接网格：GitHub / 社区论坛 / 版本发布 / QQ 交流群。
+    // 2×2 链接网格：GitHub / Issues / 版本发布 / QQ 交流群。
     let github = about_link_card(
         Color::hex(0x24292F),
         ICON_GITHUB,
@@ -1302,13 +1302,13 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         None,
         |ctx| ctx.open_url(REPO_URL),
     );
-    let forum = about_link_card(
+    let issues = about_link_card(
         Color::hex(0xF59E0B),
-        ICON_FORUM,
-        "社区论坛",
-        "经验交流 · 报告 Bug 或建议",
+        ICON_FEEDBACK,
+        "GitHub Issues",
+        "报告 Bug 或建议",
         None,
-        |ctx| ctx.open_url(FORUM_URL),
+        |ctx| ctx.open_url(ISSUES_URL),
     );
     let releases = about_link_card(
         Color::hex(0x22C55E),
@@ -1342,7 +1342,7 @@ fn about_page(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 .spacing(10)
                 .cross(Align::Stretch)
                 .child(half(github))
-                .child(half(forum)),
+                .child(half(issues)),
         )
         .child(
             Element::row()

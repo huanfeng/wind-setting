@@ -148,5 +148,4 @@ GPL 许可证授予您使用、修改与分发源代码的权利，但不包括�
 ## 交流与反馈
 
 - **QQ 交流群**：[1085293418](https://qm.qq.com/q/u2A8FfafIs)
-- **社区论坛**：[forum.windinput.com](https://forum.windinput.com)
 - **GitHub Issues**：[问题反馈](../../issues)
