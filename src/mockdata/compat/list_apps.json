@@ -15,6 +15,12 @@
           "userValue": null,
           "value": null
         },
+        "auto_spacing": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "candidate_position_mode": {
           "source": "default",
           "systemValue": null,
@@ -190,6 +196,12 @@
       },
       "fields": {
         "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "auto_spacing": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -383,6 +395,12 @@
           "userValue": false,
           "value": false
         },
+        "auto_spacing": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "candidate_position_mode": {
           "source": "default",
           "systemValue": null,
@@ -565,6 +583,12 @@
           "userValue": null,
           "value": null
         },
+        "auto_spacing": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "candidate_position_mode": {
           "source": "default",
           "systemValue": null,
@@ -737,6 +761,12 @@
       },
       "fields": {
         "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "auto_spacing": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -919,6 +949,12 @@
           "userValue": null,
           "value": null
         },
+        "auto_spacing": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "candidate_position_mode": {
           "source": "default",
           "systemValue": null,
@@ -1091,6 +1127,12 @@
       },
       "fields": {
         "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "auto_spacing": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1279,6 +1321,12 @@
           "userValue": null,
           "value": null
         },
+        "auto_spacing": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "candidate_position_mode": {
           "source": "default",
           "systemValue": null,
@@ -1452,6 +1500,12 @@
       },
       "fields": {
         "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "auto_spacing": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1632,6 +1686,12 @@
       },
       "fields": {
         "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "auto_spacing": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1826,6 +1886,12 @@
           "userValue": true,
           "value": true
         },
+        "auto_spacing": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "candidate_position_mode": {
           "source": "default",
           "systemValue": null,
@@ -2001,6 +2067,12 @@
       },
       "fields": {
         "auto_pair": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
+        "auto_spacing": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
