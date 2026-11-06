@@ -323,6 +323,50 @@ pub(crate) fn parts_text(v: &Value) -> String {
     }
 }
 
+/// 「词库缓存策略」的实际效果一行：生效的策略，加上该策略下的数字——锁定列已锁定 / 失败各多少
+/// （失败非 0 说明系统配额不够，那部分仍可能被回收），预加载列已载入多少，关闭不带数字；
+/// 锁定 / 预加载都带预算，超出预算而没处理的部分另列。旧核心没有 `dictCache` 段，不出行。
+pub(crate) fn dict_cache_text(v: &Value) -> Option<String> {
+    let r = v.get("dictCache").filter(|r| r.is_object())?;
+    let budget = r
+        .get("budgetBytes")
+        .and_then(Value::as_u64)
+        .map(|b| format!("（预算 {}）", human_bytes(b)))
+        .unwrap_or_default();
+    let over = u64_at(r, "overBudgetBytes");
+    let over_text = |what: &str| {
+        if over > 0 {
+            format!("，{} 超出预算未{what}", human_bytes(over))
+        } else {
+            String::new()
+        }
+    };
+    Some(match str_at(r, "policy") {
+        "lock" => {
+            let failed = u64_at(r, "lockFailedBytes");
+            let mut t = format!(
+                "词库缓存：锁定，已锁定 {}{budget}",
+                human_bytes(u64_at(r, "lockedBytes"))
+            );
+            t.push_str(&over_text("锁定"));
+            if failed > 0 {
+                t.push_str(&format!(
+                    "，{} 锁定失败（系统配额不够，仍可能被回收）",
+                    human_bytes(failed)
+                ));
+            }
+            t
+        }
+        "preload" => format!(
+            "词库缓存：预加载，已载入 {}{budget}{}",
+            human_bytes(u64_at(r, "preloadedBytes")),
+            over_text("预加载")
+        ),
+        "off" => "词库缓存：关闭".to_string(),
+        other => format!("词库缓存：{other}"),
+    })
+}
+
 const HEADER: &str = "[清风输入法 内存诊断]";
 
 /// 对话框正文 = 「复制」的全文。只含方案 id 与数字，不含用户内容。
@@ -409,6 +453,9 @@ pub(crate) fn diagnostic_text(v: &Value, stamp: &str) -> String {
             human_bytes(u64_at(r, "cacheLimitBytes")),
             u64_at(r, "pageCacheDrops")
         ));
+    }
+    if let Some(line) = dict_cache_text(v) {
+        o.push(line);
     }
     o.join("\n")
 }
@@ -572,6 +619,7 @@ mod tests {
             "反查索引 wubi86：常驻 2.3 MB / 镜像 2.3 MB",
             "用户词编码索引 wubi86：4.2 MB",
             "拼音表 1.2 MB · 拆字表 0 KB · 注释库 0 KB",
+            "词库缓存：锁定，已锁定 164.0 MB（预算 512.0 MB）",
         ] {
             assert!(t.contains(needle), "缺「{needle}」：\n{t}");
         }
@@ -590,6 +638,35 @@ mod tests {
             t.contains("用户词库读缓存上限 256.0 MB · 已空闲回收 3 次"),
             "{t}"
         );
+    }
+
+    #[test]
+    fn dict_cache_text_follows_the_policy() {
+        let mb = 1024 * 1024u64;
+        let mut v = sample();
+        v["dictCache"] = json!({ "policy": "lock", "budgetBytes": 512 * mb, "lockedBytes": 10 * mb,
+            "lockFailedBytes": 2 * mb, "preloadedBytes": 0, "overBudgetBytes": 0 });
+        assert_eq!(
+            dict_cache_text(&v).unwrap(),
+            "词库缓存：锁定，已锁定 10.0 MB（预算 512.0 MB），2.0 MB 锁定失败（系统配额不够，仍可能被回收）"
+        );
+        v["dictCache"]["overBudgetBytes"] = json!(100 * mb);
+        v["dictCache"]["lockFailedBytes"] = json!(0);
+        assert_eq!(
+            dict_cache_text(&v).unwrap(),
+            "词库缓存：锁定，已锁定 10.0 MB（预算 512.0 MB），100.0 MB 超出预算未锁定"
+        );
+        v["dictCache"] = json!({ "policy": "preload", "budgetBytes": 512 * mb, "lockedBytes": 0,
+            "lockFailedBytes": 0, "preloadedBytes": 3 * mb, "overBudgetBytes": 0 });
+        assert_eq!(
+            dict_cache_text(&v).unwrap(),
+            "词库缓存：预加载，已载入 3.0 MB（预算 512.0 MB）"
+        );
+        v["dictCache"] = json!({ "policy": "off", "budgetBytes": null, "lockedBytes": 0,
+            "lockFailedBytes": 0, "preloadedBytes": 0, "overBudgetBytes": 0 });
+        assert_eq!(dict_cache_text(&v).unwrap(), "词库缓存：关闭");
+        v.as_object_mut().unwrap().remove("dictCache");
+        assert!(dict_cache_text(&v).is_none(), "旧核心没有此段时不出行");
     }
 
     #[test]

@@ -30,6 +30,16 @@
       "type": "bool"
     },
     {
+      "default": "lock",
+      "key": "schema.dict_cache_policy",
+      "type": "enum",
+      "values": [
+        "lock",
+        "preload",
+        "off"
+      ]
+    },
+    {
       "default": true,
       "key": "schema.codetable.top_code_commit",
       "schemaOverride": {

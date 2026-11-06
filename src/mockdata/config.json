@@ -359,6 +359,7 @@
    "z_key_action": "",
    "z_key_repeat": true
   },
+  "dict_cache_policy": "lock",
   "english": {
    "auto_learn": {
     "enabled": false,

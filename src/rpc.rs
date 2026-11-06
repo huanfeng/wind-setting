@@ -2146,7 +2146,8 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             "singleChar": null,
             "reverseLookup": { "chaiziBytes": 0, "pinyinBytes": 1_258_291, "commentBytes": 0 },
             // 迁移全部完成后运行期不再打开旧库，core 给 null
-            "redb": null
+            "redb": null,
+            "dictCache": { "policy": "lock", "budgetBytes": 536_870_912u64, "lockedBytes": 171_966_464u64, "lockFailedBytes": 0, "preloadedBytes": 0, "overBudgetBytes": 0 }
         }),
         "stats.daily" => mock_stats_daily(params),
         // 词库管理离线样例：便于截图核对非空界面（形状对齐 core webdata.rs）。

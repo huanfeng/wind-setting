@@ -4395,6 +4395,19 @@ type = "toggle"
 label = "常驻所有方案"
 hint = "开启：所有方案预先加载并留在内存里，切换方案零等待。关闭：只加载用到的方案，30 分钟不用自动卸载，省内存"
 
+[[items]]
+key = "schema.dict_cache_policy"
+group = "advanced"
+section = "性能与诊断"
+type = "select"
+label = "词库缓存策略"
+hint = "锁定：不让系统回收缓存。预加载：启动时载入缓存，允许系统回收。关闭：不做处理。改后需重启服务"
+options = [
+  { value = "lock", label = "锁定" },
+  { value = "preload", label = "预加载" },
+  { value = "off", label = "关闭" },
+]
+
 # ── 游戏兼容 ──
 [[items]]
 key = "system.dota2_compat"
