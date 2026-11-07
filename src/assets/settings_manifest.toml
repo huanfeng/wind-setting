@@ -3209,6 +3209,14 @@ options = [
   { value = "dark", label = "深色" },
 ]
 
+[[items]]
+key = "ui.theme.animation"
+group = "ui"
+section = "主题"
+type = "toggle"
+label = "主题动画"
+hint = "主题里会动的装饰按输入切换动作；关掉后停在静止画面。系统关了动画效果时也不播放"
+
 
 # ── 候选字体 ──
 # 原先字体、窗口、排版、注释四类共 28 项挤在一张「候选窗口」卡里（折叠掉两个对话框

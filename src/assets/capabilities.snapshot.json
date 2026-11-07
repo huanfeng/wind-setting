@@ -2325,6 +2325,11 @@
       "type": "str"
     },
     {
+      "default": true,
+      "key": "ui.theme.animation",
+      "type": "bool"
+    },
+    {
       "default": "short",
       "key": "ui.mode_indicator.style",
       "type": "enum",
