@@ -1933,11 +1933,6 @@
       ]
     },
     {
-      "default": {},
-      "key": "keys.overflow.page_key_overrides",
-      "type": "map"
-    },
-    {
       "default": 7,
       "key": "ui.candidate.per_page",
       "schemaOverride": {

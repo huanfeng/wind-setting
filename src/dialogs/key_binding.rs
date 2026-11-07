@@ -613,6 +613,10 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
             [
                 "page_prev",
                 "page_next",
+                "page_prev:commit_and_input",
+                "page_next:commit_and_input",
+                "page_prev:ignore",
+                "page_next:ignore",
                 "page_screen_prev",
                 "page_screen_next",
                 "highlight_up",
@@ -623,6 +627,10 @@ pub fn session_verb_categories() -> Vec<VerbCategory> {
             .zip([
                 "上一页",
                 "下一页",
+                "上一页（翻不动时上屏并继续输入）",
+                "下一页（翻不动时上屏并继续输入）",
+                "上一页（翻不动时不起作用）",
+                "下一页（翻不动时不起作用）",
                 "上一屏（展开时翻整屏，否则同上一页）",
                 "下一屏（展开时翻整屏，否则同下一页）",
                 "高亮上移",
@@ -2230,6 +2238,10 @@ mod tests {
                         | "commit_code"
                         | "page_prev"
                         | "page_next"
+                        | "page_prev:commit_and_input"
+                        | "page_next:commit_and_input"
+                        | "page_prev:ignore"
+                        | "page_next:ignore"
                         | "page_screen_prev"
                         | "page_screen_next"
                         | "highlight_up"
