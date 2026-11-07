@@ -75,6 +75,9 @@ pub struct DomainEntry {
 
 /// 从加词流程（小窗 / 快捷键）预填进对话框的权重，与加词小窗同值。
 const PREFILL_WEIGHT: i32 = 1200;
+/// 自动造词进临时词库的权重 / 晋升到用户词库后的权重（主仓 coordinator / wind-store temp_words）。
+const AUTO_LEARN_WEIGHT: i32 = 800;
+const PROMOTED_WEIGHT: i32 = 1000;
 
 /// 「添加」时预填的权重（随类别）；「编辑」时权重框旁的说明也拿它当参照。
 ///
@@ -91,12 +94,13 @@ fn default_add_weight(cat: WordCategory) -> i32 {
 }
 
 /// 权重框旁的说明。用户词有两个默认值：在这里手动新增是 0，经输入时加词进来的是
-/// [`PREFILL_WEIGHT`]——只写一个会让人把另一个当成异常，故两个都写出来。
+/// [`PREFILL_WEIGHT`]，自动造词另有两档——只写一个会让人把另几个当成异常，故都写出来。
 fn weight_hint_for(cat: WordCategory) -> String {
     match cat {
         WordCategory::PhraseUser => weight_hint(default_add_weight(cat)),
         _ => format!(
-            "整数，越大越靠前；手动新增默认 {}，输入时加词默认 {PREFILL_WEIGHT}",
+            "整数，越大越靠前；手动新增默认 {}，输入时加词默认 {PREFILL_WEIGHT}，\
+             自动造词默认 {AUTO_LEARN_WEIGHT}（临时词库）、晋升后 {PROMOTED_WEIGHT}",
             default_add_weight(cat)
         ),
     }
@@ -7216,7 +7220,9 @@ mod tests {
         assert_eq!(st.edit_weight.get(), "0");
         let user = st.edit_weight_hint.get();
         assert!(
-            user.contains("手动新增默认 0") && user.contains("输入时加词默认 1200"),
+            user.contains("手动新增默认 0")
+                && user.contains("输入时加词默认 1200")
+                && user.contains("自动造词默认 800（临时词库）、晋升后 1000"),
             "{user}"
         );
 
