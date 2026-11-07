@@ -1502,7 +1502,7 @@ section = "临时英文"
 dialog_group = "te_cand"
 type = "toggle"
 label = "上屏后自动加空格"
-hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选一并生效（中文候选不补）"
+hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选、五笔 / 拼音里混入的英文候选一并生效（中文候选不补）"
 
 [[items]]
 key = "input.temp_english.allow_symbols"
@@ -1654,10 +1654,10 @@ hint = "英文单词后的指定标点输出英文形态（Node.js、a/b、snake
 key = "input.punct.latin_smart_list"
 group = "input"
 section = "字符与标点"
-type = "string"
-label = "英文后的英文标点"
+type = "dialog_button"
+label = "英文后保持英文的标点"
 hint = "英文后保持英文形态的标点集合，默认 ./_:@。不含逗号：中文句子里英文词后常接中文逗号"
-enabled_when = "input.punct.smart_after_latin == true"
+gate_key = "input.punct.smart_after_latin"
 
 [[items]]
 key = "input.spacing.cjk_latin"
