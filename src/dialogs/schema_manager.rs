@@ -156,6 +156,9 @@ pub enum SettingsSection {
     /// 整句输入（实验性）：`[engine.codetable] sentence_input` 的开关。仅码表方案有，
     /// 判据见 [`sentence_input_seed`]。
     Sentence,
+    /// 空码组词（实验性）：`[engine.codetable] compose_input` 的开关。码表与混输方案有，
+    /// 判据见 [`compose_input_seed`]。与整句互斥，见 [`exclusive_toggle_enabled`]。
+    Compose,
     /// 特殊模式（overlay）：把本方案变成「引导键临时进入」的快符/生僻字那类。
     /// 仅码表方案有——overlay 的价值在于一张自成体系的小码表。
     Overlay,
@@ -282,7 +285,7 @@ impl SettingsSection {
                 Some(SettingsTab::Basic.index())
             }
             Self::EntryKeys => Some(SettingsTab::Keys.index()),
-            Self::Sentence => Some(SettingsTab::Experimental.index()),
+            Self::Sentence | Self::Compose => Some(SettingsTab::Experimental.index()),
             Self::Behavior => Some(SettingsTab::Behavior.index()),
             Self::AuxCode => Some(SettingsTab::Aux.index()),
             Self::CodeTable => Some(SettingsTab::Overrides.index()),
@@ -333,6 +336,28 @@ fn sentence_input_seed(cfg: &Value) -> Option<bool> {
             .and_then(Value::as_bool)
             .unwrap_or(false)
     })
+}
+
+/// 空码组词那一节的种子：码表与混输方案给 `Some(当前合并值)`，其余 `None`。
+///
+/// 与整句不同，混输也给：码长以内的输入混输照常经过主码表，组词在那里生效（候选排在
+/// 拼音之后）。混输读的是混输方案自己的 `[engine.codetable]`，与 core 的取值口径一致。
+fn compose_input_seed(cfg: &Value) -> Option<bool> {
+    matches!(
+        cfg.pointer("/engine/type").and_then(Value::as_str),
+        Some("codetable" | "mixed")
+    )
+    .then(|| {
+        cfg.pointer("/engine/codetable/compose_input")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    })
+}
+
+/// 整句与空码组词互斥：对方开着、自己关着时置灰。自己开着时恒可点——两项都开着（手写的
+/// 方案文件）也能各自关掉，不会锁死。core 遇到同开以整句为准。
+fn exclusive_toggle_enabled(mine: bool, other: bool) -> bool {
+    mine || !other
 }
 
 /// 这个方案**有没有可用的辅助码表**。建节与落盘共用**同一条**判据。
@@ -1386,6 +1411,9 @@ pub struct SchemaManagerState {
     /// 整句输入开关（`[engine.codetable] sentence_input`）与打开时的初值（脏判定用）。
     pub settings_sentence: Signal<bool>,
     settings_sentence_at_open: Rc<std::cell::Cell<bool>>,
+    /// 空码组词开关（`[engine.codetable] compose_input`）与打开时的初值。
+    pub settings_compose: Signal<bool>,
+    settings_compose_at_open: Rc<std::cell::Cell<bool>>,
     /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
     /// 标题里不带方案名的话，点进去就不知道自己在配哪个表了。
     /// 行内摘要（「跟随全局配置」/「已自定义」）。**定宽**——文本随勾选变化，
@@ -1605,6 +1633,8 @@ impl SchemaManagerState {
             settings_ov_at_open: Rc::new(std::cell::Cell::new((false, 0))),
             settings_sentence: signal(false),
             settings_sentence_at_open: Rc::new(std::cell::Cell::new(false)),
+            settings_compose: signal(false),
+            settings_compose_at_open: Rc::new(std::cell::Cell::new(false)),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
             settings_ka: crate::dialogs::schema_key_actions::KeyActionFields::schema_scoped(),
@@ -3075,6 +3105,16 @@ impl SchemaManagerState {
                 sections.push(SettingsSection::Sentence);
             }
         }
+        // 空码组词：紧挨整句（两者互斥，放一起看得见），同样每次归零。
+        {
+            let seed = compose_input_seed(&self.settings_cfg.borrow());
+            self.settings_compose.set(seed.unwrap_or(false));
+            self.settings_compose_at_open.set(seed.unwrap_or(false));
+            if seed.is_some() {
+                sections.push(SettingsSection::Divider);
+                sections.push(SettingsSection::Compose);
+            }
+        }
         // 按键功能表：所有方案都有（按键功能与引擎类型无关）。放在码表配置之后、
         // 扩展词库之前——它同属「这个方案怎么用」，而词库是「这个方案有什么内容」。
         {
@@ -3246,6 +3286,15 @@ impl SchemaManagerState {
                 &mut cfg,
                 &["engine", "codetable", "sentence_input"],
                 json!(sentence),
+            );
+            cfg_changed = true;
+        }
+        let compose = self.settings_compose.get();
+        if compose_input_seed(&cfg).is_some() && compose != self.settings_compose_at_open.get() {
+            set_json_path(
+                &mut cfg,
+                &["engine", "codetable", "compose_input"],
+                json!(compose),
             );
             cfg_changed = true;
         }
@@ -5751,7 +5800,30 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     Some("超过码长的编码自动切分并组句，保存后即生效"),
                     Element::checkbox("开启", state.settings_sentence)
                         .small()
-                        .fg_role(Role::Text),
+                        .fg_role(Role::Text)
+                        .enabled_when({
+                            let (me, other) = (state.settings_sentence, state.settings_compose);
+                            move || exclusive_toggle_enabled(me.get(), other.get())
+                        }),
+                )],
+            )
+        }
+        SettingsSection::Compose => {
+            // 说明文字以文档站 schemas.mdx「空码组词」为准。
+            crate::widgets::dialog_section_hint(
+                "空码组词（实验性）",
+                "编码空码时，按构词规则或拆开编码补出码表没收的词，只显示、不自动上屏，\
+                 顶码也不会把它顶上屏。与整句输入互斥。",
+                vec![crate::widgets::setting_row(
+                    "启用空码组词",
+                    Some("码长以内的空码补出词库里的词，保存后即生效"),
+                    Element::checkbox("开启", state.settings_compose)
+                        .small()
+                        .fg_role(Role::Text)
+                        .enabled_when({
+                            let (me, other) = (state.settings_compose, state.settings_sentence);
+                            move || exclusive_toggle_enabled(me.get(), other.get())
+                        }),
                 )],
             )
         }
@@ -8317,6 +8389,69 @@ mod section_build_tests {
                 .pointer("/engine/codetable/sentence_input")
                 .is_none(),
             "非码表方案不写 sentence_input"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 空码组词：码表与混输方案建节（混输下码长以内照常经过主码表），拼音不建。
+    #[test]
+    fn compose_input_seed_for_codetable_and_mixed() {
+        let of = |ty: &str, on: bool| json!({ "engine": { "type": ty, "codetable": { "compose_input": on } } });
+        assert_eq!(compose_input_seed(&of("codetable", true)), Some(true));
+        assert_eq!(compose_input_seed(&of("mixed", true)), Some(true));
+        assert_eq!(
+            compose_input_seed(&json!({ "engine": { "type": "codetable" } })),
+            Some(false),
+            "没写 ⇒ 出厂关"
+        );
+        assert_eq!(compose_input_seed(&of("pinyin", true)), None);
+    }
+
+    /// 互斥：对方开着、自己关着才置灰；两项都开着时都能点，不会锁死。
+    #[test]
+    fn sentence_and_compose_toggles_are_exclusive_without_deadlock() {
+        assert!(exclusive_toggle_enabled(false, false));
+        assert!(!exclusive_toggle_enabled(false, true), "对方开着 ⇒ 置灰");
+        assert!(exclusive_toggle_enabled(true, false));
+        assert!(exclusive_toggle_enabled(true, true), "都开着 ⇒ 各自还能关");
+    }
+
+    /// 码表方案：节在「实验性功能」TAB、紧跟整句；不动不写，拨开写 `true`。
+    #[test]
+    fn compose_input_section_round_trips_on_codetable() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let open_wubi = || {
+            let state = SchemaManagerState::new();
+            *state.schemas.borrow_mut() = vec![SchemaEntry {
+                id: "wubi86".into(),
+                name: "五笔 86".into(),
+                engine_type: "codetable".into(),
+                ..Default::default()
+            }];
+            state.open_settings_at_id("wubi86");
+            state
+        };
+        let state = open_wubi();
+        let sections = state.settings_sections[SettingsTab::Experimental.index()].get();
+        let at = |x| sections.iter().position(|s| *s == x);
+        assert_eq!(
+            at(SettingsSection::Compose),
+            at(SettingsSection::Sentence).map(|i| i + 2),
+            "紧跟整句（中间一条分隔线）：{sections:?}"
+        );
+        assert!(!state.settings_compose.get(), "mock 方案没写 ⇒ 关");
+        state.stage_settings_edits();
+        assert!(!state.has_pending_edits(), "没动不该入队");
+
+        let state = open_wubi();
+        state.settings_compose.set(true);
+        state.stage_settings_edits();
+        assert_eq!(
+            state.pending_edits.borrow()["wubi86"].cfg.clone().unwrap()["engine"]["codetable"]["compose_input"],
+            json!(true)
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }

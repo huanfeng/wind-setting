@@ -381,6 +381,12 @@ mod tests {
         //     暂不接入设置界面。**待 core 定稿后再评估**该不该暴露、放全局清单还是方案对话框。
         "schema.codetable.input_chars",
         "schema.codetable.leading_chars",
+        // 码表整句的条数 / 切换键 / 语法模型权重：只在方案开了整句（实验性功能页）时有用。
+        // 放全局码表页还是方案的实验性功能页尚未定，暂不暴露，需要时改配置文件。
+        "schema.codetable.sentence_count",
+        "schema.codetable.sentence_max_count",
+        "schema.codetable.sentence_cycle_key",
+        "schema.codetable.sentence_grammar_weight",
         "debug.log_max_files",
         "debug.log_max_size_mb",
         "input.temp_pinyin.enabled",

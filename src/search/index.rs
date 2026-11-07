@@ -524,6 +524,7 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "辅助码来源", tab: "辅助码", section: "辅助码", keywords: "辅码 码表 笔画 五笔 小鹤 自然码 跟随方案" },
     SchemaLevelItem { title: "码表配置", tab: "方案覆盖", section: "码表配置", keywords: "覆盖 编码 上屏 恢复跟随" },
     SchemaLevelItem { title: "启用整句输入", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 组句 连续输入 切分 实验性 sentence_input" },
+    SchemaLevelItem { title: "启用空码组词", tab: "实验性功能", section: "空码组词（实验性）", keywords: "空码 组词 造词 词组码 实验性 compose_input" },
     SchemaLevelItem { title: "特殊模式", tab: "特殊模式", section: "特殊模式", keywords: "overlay 引导键 快符 生僻字 临时" },
     SchemaLevelItem { title: "进入即展示候选", tab: "特殊模式", section: "特殊模式", keywords: "overlay 引导键 首屏" },
     SchemaLevelItem { title: "本方案行为", tab: "自定义行为", section: "本方案行为", keywords: "标点 候选 短语 跟随全局" },

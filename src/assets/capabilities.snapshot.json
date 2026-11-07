@@ -247,6 +247,42 @@
       "type": "bool"
     },
     {
+      "default": 1,
+      "key": "schema.codetable.sentence_count",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable]"
+      },
+      "type": "int"
+    },
+    {
+      "default": 1,
+      "key": "schema.codetable.sentence_max_count",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable]"
+      },
+      "type": "int"
+    },
+    {
+      "default": "",
+      "key": "schema.codetable.sentence_cycle_key",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable]"
+      },
+      "type": "str"
+    },
+    {
+      "default": 0.5,
+      "key": "schema.codetable.sentence_grammar_weight",
+      "schemaOverride": {
+        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
+        "section": "[engine.codetable]"
+      },
+      "type": "float"
+    },
+    {
       "default": "",
       "key": "schema.codetable.input_chars",
       "schemaOverride": {
