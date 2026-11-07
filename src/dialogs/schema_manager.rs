@@ -354,6 +354,80 @@ fn compose_input_seed(cfg: &Value) -> Option<bool> {
     })
 }
 
+/// 码表整句的切换键可选值：`(核心键名, 显示名)`。值必须与核心 `wind_keys::keymap` 的键名
+/// 逐字相同，同拼音那份（`settings_manifest.toml` 的 `schema.pinyin.sentence_cycle_key`）。
+const SENTENCE_CYCLE_KEYS: [(&str, &str); 3] =
+    [("", "不启用"), ("tab", "Tab"), ("backtick", "反引号 `")];
+
+/// 码表整句的调参项（`schema.codetable.sentence_*`，方案可在 `[engine.codetable]` 覆盖）。
+///
+/// 初值取核心给的 `effectiveCodetable`（全局 ⊕ 方案），保存时只写改动过的那几项——
+/// 没动的项继续跟随全局。
+#[derive(Clone, Debug, PartialEq)]
+struct SentenceTuning {
+    count: u8,
+    max_count: u8,
+    cycle_key: String,
+    grammar_weight: f64,
+}
+
+impl Default for SentenceTuning {
+    /// 核心出厂值。
+    fn default() -> Self {
+        Self {
+            count: 1,
+            max_count: 1,
+            cycle_key: String::new(),
+            grammar_weight: 0.5,
+        }
+    }
+}
+
+impl SentenceTuning {
+    fn from_effective(eff: &Value) -> Self {
+        let d = Self::default();
+        let int = |k: &str, def: u8| {
+            eff.get(k)
+                .and_then(Value::as_u64)
+                .map_or(def, |n| n.clamp(1, 8) as u8)
+        };
+        Self {
+            count: int("sentence_count", d.count),
+            max_count: int("sentence_max_count", d.max_count),
+            cycle_key: eff
+                .get("sentence_cycle_key")
+                .and_then(Value::as_str)
+                .map_or(d.cycle_key, str::to_string),
+            grammar_weight: eff
+                .get("sentence_grammar_weight")
+                .and_then(Value::as_f64)
+                .unwrap_or(d.grammar_weight),
+        }
+    }
+
+    /// 与打开时不同的项写进 `[engine.codetable]`，返回是否写了。
+    fn write_changed(&self, at_open: &Self, cfg: &mut Value) -> bool {
+        let mut changed = false;
+        let mut put = |k: &str, v: Value| {
+            set_json_path(cfg, &["engine", "codetable", k], v);
+            changed = true;
+        };
+        if self.count != at_open.count {
+            put("sentence_count", json!(self.count));
+        }
+        if self.max_count != at_open.max_count {
+            put("sentence_max_count", json!(self.max_count));
+        }
+        if self.cycle_key != at_open.cycle_key {
+            put("sentence_cycle_key", json!(self.cycle_key));
+        }
+        if (self.grammar_weight - at_open.grammar_weight).abs() > 1e-9 {
+            put("sentence_grammar_weight", json!(self.grammar_weight));
+        }
+        changed
+    }
+}
+
 /// 整句与空码组词互斥：对方开着、自己关着时置灰。自己开着时恒可点——两项都开着（手写的
 /// 方案文件）也能各自关掉，不会锁死。core 遇到同开以整句为准。
 fn exclusive_toggle_enabled(mine: bool, other: bool) -> bool {
@@ -1414,6 +1488,15 @@ pub struct SchemaManagerState {
     /// 空码组词开关（`[engine.codetable] compose_input`）与打开时的初值。
     pub settings_compose: Signal<bool>,
     settings_compose_at_open: Rc<std::cell::Cell<bool>>,
+    /// 整句调参（露几条 / 算几条 / 切换键 / 语法模型权重），见 [`SentenceTuning`]。
+    pub settings_st_count: Signal<f64>,
+    pub settings_st_max: Signal<f64>,
+    /// 切换键下拉的选中索引，指向 `settings_st_key_vals`。
+    pub settings_st_key: Signal<usize>,
+    /// 切换键下拉的取值（[`SENTENCE_CYCLE_KEYS`]，方案里写了别的键名时追加在末尾，免得被冲掉）。
+    settings_st_key_vals: Rc<RefCell<Vec<String>>>,
+    pub settings_st_weight: Signal<f64>,
+    settings_st_at_open: Rc<RefCell<SentenceTuning>>,
     /// 子对话框标题（「码表配置 - 五笔」）：同一个浮层服务于任意方案，
     /// 标题里不带方案名的话，点进去就不知道自己在配哪个表了。
     /// 行内摘要（「跟随全局配置」/「已自定义」）。**定宽**——文本随勾选变化，
@@ -1635,6 +1718,12 @@ impl SchemaManagerState {
             settings_sentence_at_open: Rc::new(std::cell::Cell::new(false)),
             settings_compose: signal(false),
             settings_compose_at_open: Rc::new(std::cell::Cell::new(false)),
+            settings_st_count: signal(1.0),
+            settings_st_max: signal(1.0),
+            settings_st_key: signal(0),
+            settings_st_key_vals: Rc::new(RefCell::new(Vec::new())),
+            settings_st_weight: signal(0.5),
+            settings_st_at_open: Rc::new(RefCell::new(SentenceTuning::default())),
             settings_ct_disp: signal(String::new()),
             settings_ct: Default::default(),
             settings_ka: crate::dialogs::schema_key_actions::KeyActionFields::schema_scoped(),
@@ -3100,6 +3189,13 @@ impl SchemaManagerState {
             let seed = sentence_input_seed(&self.settings_cfg.borrow());
             self.settings_sentence.set(seed.unwrap_or(false));
             self.settings_sentence_at_open.set(seed.unwrap_or(false));
+            let tuning = SentenceTuning::from_effective(
+                self.settings_cfg
+                    .borrow()
+                    .get("effectiveCodetable")
+                    .unwrap_or(&Value::Null),
+            );
+            self.seed_sentence_tuning(&tuning);
             if seed.is_some() {
                 sections.push(SettingsSection::Divider);
                 sections.push(SettingsSection::Sentence);
@@ -3230,6 +3326,39 @@ impl SchemaManagerState {
     /// 提交，见 [`Self::commit_pending_edits`] 与 `state::SideCommitter`。
     ///
     /// 无改动则不入队——否则打开看一眼再关掉也会让整个设置界面变成「有未保存改动」。
+    /// 整句调参的控件按 `t` 播种，并记下打开时的值（脏判定用）。
+    fn seed_sentence_tuning(&self, t: &SentenceTuning) {
+        let mut vals: Vec<String> = SENTENCE_CYCLE_KEYS
+            .iter()
+            .map(|(v, _)| v.to_string())
+            .collect();
+        if !vals.contains(&t.cycle_key) {
+            vals.push(t.cycle_key.clone());
+        }
+        let idx = vals.iter().position(|v| *v == t.cycle_key).unwrap_or(0);
+        *self.settings_st_key_vals.borrow_mut() = vals;
+        self.settings_st_count.set(f64::from(t.count));
+        self.settings_st_max.set(f64::from(t.max_count));
+        self.settings_st_key.set(idx);
+        self.settings_st_weight.set(t.grammar_weight);
+        *self.settings_st_at_open.borrow_mut() = t.clone();
+    }
+
+    /// 控件当前值。
+    fn sentence_tuning(&self) -> SentenceTuning {
+        let vals = self.settings_st_key_vals.borrow();
+        SentenceTuning {
+            count: self.settings_st_count.get().round().clamp(1.0, 8.0) as u8,
+            max_count: self.settings_st_max.get().round().clamp(1.0, 8.0) as u8,
+            cycle_key: vals
+                .get(self.settings_st_key.get())
+                .cloned()
+                .unwrap_or_default(),
+            // 步进 0.1；存一位小数，免得浮点累加写出 0.30000000000000004。
+            grammar_weight: (self.settings_st_weight.get() * 10.0).round() / 10.0,
+        }
+    }
+
     pub fn stage_settings_edits(&self) {
         let id = self.settings_schema_id.borrow().clone();
         if id.is_empty() {
@@ -3287,6 +3416,13 @@ impl SchemaManagerState {
                 &["engine", "codetable", "sentence_input"],
                 json!(sentence),
             );
+            cfg_changed = true;
+        }
+        if sentence_input_seed(&cfg).is_some()
+            && self
+                .sentence_tuning()
+                .write_changed(&self.settings_st_at_open.borrow(), &mut cfg)
+        {
             cfg_changed = true;
         }
         let compose = self.settings_compose.get();
@@ -5795,17 +5931,66 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 "整句输入（实验性）",
                 "实验性功能，仅供研究，不建议日常使用：简码歧义下切分可能出错，需用手动分隔符\
                  （如 q'j）划定边界；开启后顶码上屏、全码唯一自动上屏、满码空码清空不再生效。",
-                vec![crate::widgets::setting_row(
-                    "启用整句输入",
-                    Some("超过码长的编码自动切分并组句，保存后即生效"),
-                    Element::checkbox("开启", state.settings_sentence)
-                        .small()
-                        .fg_role(Role::Text)
-                        .enabled_when({
-                            let (me, other) = (state.settings_sentence, state.settings_compose);
-                            move || exclusive_toggle_enabled(me.get(), other.get())
-                        }),
-                )],
+                {
+                    let on = state.settings_sentence;
+                    let key_labels: Vec<String> = state
+                        .settings_st_key_vals
+                        .borrow()
+                        .iter()
+                        .map(|v| {
+                            SENTENCE_CYCLE_KEYS
+                                .iter()
+                                .find(|(k, _)| k == v)
+                                .map_or_else(|| v.clone(), |(_, l)| l.to_string())
+                        })
+                        .collect();
+                    vec![
+                        crate::widgets::setting_row(
+                            "启用整句输入",
+                            Some("超过码长的编码自动切分并组句，保存后即生效"),
+                            Element::checkbox("开启", state.settings_sentence)
+                                .small()
+                                .fg_role(Role::Text)
+                                .enabled_when({
+                                    let (me, other) =
+                                        (state.settings_sentence, state.settings_compose);
+                                    move || exclusive_toggle_enabled(me.get(), other.get())
+                                }),
+                        ),
+                        crate::widgets::setting_row(
+                            "整句显示条数",
+                            Some("候选里同时列出几种整句解读，1 = 只出一条"),
+                            Element::stepper(state.settings_st_count, 1.0, 8.0, 1.0)
+                                .width(AUX_CTRL_W)
+                                .enabled_when(move || on.get()),
+                        ),
+                        crate::widgets::setting_row(
+                            "整句备选条数",
+                            Some("一共算几种整句解读，供切换键轮换；少于显示条数时按显示条数算"),
+                            Element::stepper(state.settings_st_max, 1.0, 8.0, 1.0)
+                                .width(AUX_CTRL_W)
+                                .enabled_when(move || on.get()),
+                        ),
+                        crate::widgets::setting_row(
+                            "整句切换键",
+                            Some(
+                                "在几种整句解读间轮换，需把备选条数调到 2 以上；只在算出两条以上时占用这个键",
+                            ),
+                            Element::dropdown(key_labels, state.settings_st_key)
+                                .width(AUX_CTRL_W)
+                                .enabled_when(move || on.get()),
+                        ),
+                        crate::widgets::setting_row(
+                            "语法模型权重",
+                            Some(
+                                "整句挂语法模型的力度，0 = 不挂；出厂 0.5，调到 1 反而会把逐字打的句子带偏",
+                            ),
+                            Element::stepper(state.settings_st_weight, 0.0, 1.0, 0.1)
+                                .width(AUX_CTRL_W)
+                                .enabled_when(move || on.get()),
+                        ),
+                    ]
+                },
             )
         }
         SettingsSection::Compose => {
@@ -8391,6 +8576,50 @@ mod section_build_tests {
             "非码表方案不写 sentence_input"
         );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 整句调参：初值取生效值，缺项回落出厂；只写改动过的项（没动的继续跟随全局）。
+    #[test]
+    fn sentence_tuning_seeds_from_effective_and_writes_only_changes() {
+        let t = SentenceTuning::from_effective(&json!({
+            "sentence_count": 2, "sentence_cycle_key": "tab", "sentence_max_count": 99
+        }));
+        assert_eq!(
+            t,
+            SentenceTuning {
+                count: 2,
+                max_count: 8,
+                cycle_key: "tab".into(),
+                grammar_weight: 0.5,
+            },
+            "越界夹到 8，缺项回落出厂"
+        );
+        let mut cfg = json!({});
+        assert!(!t.write_changed(&t, &mut cfg), "没动不写");
+        assert_eq!(cfg, json!({}));
+        let edited = SentenceTuning {
+            grammar_weight: 0.3,
+            ..t.clone()
+        };
+        assert!(edited.write_changed(&t, &mut cfg));
+        assert_eq!(
+            cfg,
+            json!({ "engine": { "codetable": { "sentence_grammar_weight": 0.3 } } })
+        );
+    }
+
+    /// 方案里写了不在下拉里的键名：追加成一项，原样保留，不被冲成「不启用」。
+    #[test]
+    fn unknown_cycle_key_survives_round_trip() {
+        let state = SchemaManagerState::new();
+        let t = SentenceTuning {
+            cycle_key: "shift+tab".into(),
+            ..Default::default()
+        };
+        state.seed_sentence_tuning(&t);
+        assert_eq!(state.sentence_tuning(), t);
+        let mut cfg = json!({});
+        assert!(!state.sentence_tuning().write_changed(&t, &mut cfg));
     }
 
     /// 空码组词：码表与混输方案建节（混输下码长以内照常经过主码表），拼音不建。
