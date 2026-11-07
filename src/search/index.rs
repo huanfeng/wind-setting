@@ -528,7 +528,6 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "整句备选条数", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 条数 轮换 sentence_max_count" },
     SchemaLevelItem { title: "整句切换键", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 切换 轮换 tab 反引号 sentence_cycle_key" },
     SchemaLevelItem { title: "语法模型权重", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 语法模型 权重 sentence_grammar_weight" },
-    SchemaLevelItem { title: "启用空码组词", tab: "实验性功能", section: "空码组词（实验性）", keywords: "空码 组词 造词 词组码 实验性 compose_input" },
     SchemaLevelItem { title: "特殊模式", tab: "特殊模式", section: "特殊模式", keywords: "overlay 引导键 快符 生僻字 临时" },
     SchemaLevelItem { title: "进入即展示候选", tab: "特殊模式", section: "特殊模式", keywords: "overlay 引导键 首屏" },
     SchemaLevelItem { title: "本方案行为", tab: "自定义行为", section: "本方案行为", keywords: "标点 候选 短语 跟随全局" },
