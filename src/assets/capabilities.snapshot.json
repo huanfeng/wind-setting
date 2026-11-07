@@ -1137,6 +1137,16 @@
     },
     {
       "default": false,
+      "key": "input.punct.smart_after_latin",
+      "type": "bool"
+    },
+    {
+      "default": "./_:@",
+      "key": "input.punct.latin_smart_list",
+      "type": "str"
+    },
+    {
+      "default": false,
       "key": "input.punct.custom_enabled",
       "schemaOverride": {
         "note": "声明了自己标点表的方案不受这个开关约束——整表替换时连它一起换掉了。",
@@ -1152,6 +1162,16 @@
         "section": "[punct]"
       },
       "type": "map"
+    },
+    {
+      "default": false,
+      "key": "input.spacing.cjk_latin",
+      "type": "bool"
+    },
+    {
+      "default": false,
+      "key": "input.spacing.cjk_digit",
+      "type": "bool"
     },
     {
       "default": false,

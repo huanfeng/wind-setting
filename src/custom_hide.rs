@@ -327,6 +327,7 @@ mod tests {
                 "key:input.filter_mode",
                 "key:input.rare_phrase",
                 "key:input.punct.*",
+                "key:input.spacing.*",
             ]),
             false,
         );

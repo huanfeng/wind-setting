@@ -158,7 +158,9 @@
    "custom_enabled": false,
    "custom_mappings": {},
    "follow_mode": false,
+   "latin_smart_list": "./_:@",
    "smart_after_digit": true,
+   "smart_after_latin": false,
    "smart_list": ".,:"
   },
   "punct_on_empty_behavior": "clear",
@@ -181,6 +183,10 @@
    "prefix": "·"
   },
   "space_on_empty_behavior": "commit",
+  "spacing": {
+   "cjk_digit": false,
+   "cjk_latin": false
+  },
   "symbol": {
    "english_chars": ".,?!:;",
    "english_mode": false,

@@ -1502,7 +1502,7 @@ section = "临时英文"
 dialog_group = "te_cand"
 type = "toggle"
 label = "上屏后自动加空格"
-hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选一并生效（中文候选不补）"
+hint = "临时英文选词上屏后补一个空格。与「英文行为」里那份各自独立——中文里插一个英文词时，补上的空格往往还要退格删掉；回车上屏不补。快捷输入里选英文候选、五笔 / 拼音里混入的英文候选一并生效（中文候选不补）"
 
 [[items]]
 key = "input.temp_english.allow_symbols"
@@ -1641,6 +1641,39 @@ type = "dialog_button"
 label = "数字后保持英文的标点"
 hint = "数字后保持英文形态的标点集合，默认 .,:"
 gate_key = "input.punct.smart_after_digit"
+
+[[items]]
+key = "input.punct.smart_after_latin"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "英文后智能标点"
+hint = "英文单词后的指定标点输出英文形态（Node.js、a/b、snake_case），可配置参与的标点；自己按过空格后不再算英文后"
+
+[[items]]
+key = "input.punct.latin_smart_list"
+group = "input"
+section = "字符与标点"
+type = "dialog_button"
+label = "英文后保持英文的标点"
+hint = "英文后保持英文形态的标点集合，默认 ./_:@。不含逗号：中文句子里英文词后常接中文逗号"
+gate_key = "input.punct.smart_after_latin"
+
+[[items]]
+key = "input.spacing.cjk_latin"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "中英文自动加空格"
+hint = "汉字与英文切换处自动补一个空格（中 en 中），接标点时不补；连续的英文之间不管，要词间空格请开英文的「上屏后自动加空格」。英文模式下直接打的字母暂不处理。自带空格处理的软件可在应用兼容设置里单独关闭"
+
+[[items]]
+key = "input.spacing.cjk_digit"
+group = "input"
+section = "字符与标点"
+type = "toggle"
+label = "中文与数字自动加空格"
+hint = "汉字与数字之间自动补一个空格（共 3 个）。汉字后用主键盘打的数字也会补（小键盘暂不处理）。规则同中英文自动加空格"
 
 [[items]]
 key = "input.punct.custom_enabled"
