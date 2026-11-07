@@ -1831,6 +1831,9 @@ impl AppState {
                 hit += 1;
             }
         }
+        drop(loaders);
+        // 方案管理自持的内存态没有 loader，单独跟上（否则下次保存整份写回旧值）。
+        self.schema_mgr.sync_external_change(key, &cfg);
         tracing::debug!("外部配置变更 {} → 回填 {} 个控件", key, hit);
         hit
     }
@@ -4435,6 +4438,58 @@ mod tests {
             value: serde_json::json!({ "active": "wubi86" }),
         }]));
         assert!(!touches_schema_available(&[item("ui.candidate.font_size")]));
+    }
+
+    /// 方案管理自持内存态的两个键（启用表、按键功能表）被外部改了——导入方案包的配置
+    /// 片段回灌、命令行、别的设置窗口——之后用户保存别的设置，不能把旧值整份写回去。
+    /// 两者的 writer 都是整值覆盖，内存态不跟上就等于回滚外部改动。
+    #[test]
+    fn external_change_to_schema_mgr_keys_survives_next_save() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.data_loaded = true;
+        *st.schema_mgr.enabled_order.borrow_mut() = vec!["pinyin".into()];
+        st.schema_mgr.key_actions_loaded.set(true);
+        let mut settled = st.current_config.clone();
+        for w in st.fields.writers.borrow().iter() {
+            w(&mut settled);
+        }
+        st.base_config = settled.clone();
+        st.current_config = settled;
+
+        st.apply_external_config_change(
+            "schema.available",
+            serde_json::json!(["wbnew", "wbnew_pinyin"]),
+        );
+        st.apply_external_config_change(
+            "keys.key_actions",
+            serde_json::json!({ "semicolon": "special:kf" }),
+        );
+        st.current_config
+            .set_path("ui.candidate.font_size", serde_json::json!(23));
+        crate::rpc::take_mock_calls();
+
+        assert!(st.save(), "保存应成功");
+        let calls = crate::rpc::take_mock_calls();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        let keys: Vec<String> = calls
+            .iter()
+            .filter(|(m, _)| m == "config.setItems")
+            .flat_map(|(_, p)| p["items"].as_array().cloned().unwrap_or_default())
+            .filter_map(|it| it["key"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            keys.iter()
+                .any(|k| "ui.candidate.font_size".starts_with(k.as_str())),
+            "前提：这次保存确实写了别的设置，实际写入: {keys:?}"
+        );
+        for k in ["schema.available", "keys.key_actions"] {
+            assert!(
+                !keys.iter().any(|x| x == k),
+                "{k} 被旧值写回，实际写入: {keys:?}"
+            );
+        }
     }
 
     /// [`parse_override_summary`] 的退化路径：回包不是对象（`null`、老 core 给了别的

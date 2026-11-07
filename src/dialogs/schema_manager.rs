@@ -2195,6 +2195,34 @@ impl SchemaManagerState {
 
     /// apply_loaded 时调用：从配置更新启用排序，并重建列表。
     pub fn apply_config(&self, cfg: &Config) {
+        self.load_enabled_order(cfg);
+        // 与 enabled_order 同批刷新：构造期那次同步 RPC 可能失败，而这张表此前没有任何
+        // 后续刷新点 —— 一次失败就永久是空表，再被 writer 整表覆盖回 core。
+        self.refresh_key_actions(cfg);
+        self.rebuild_list();
+    }
+
+    /// 外部写入的配置项（core 广播、导入片段回灌）落到本模块自持的内存态。
+    ///
+    /// 启用表、按键功能表的 writer 都是整值覆盖，内存态不跟上的话，用户下次保存任何
+    /// 设置都会把外部改动整份写回旧值。当前方案不在此列：保存前的 [`Self::refresh`]
+    /// 本就从 core 运行时重取。`key` 可能是祖先段（基线缺表时整段产出），故按
+    /// 「`key` 是不是该路径本身或其祖先」判断。
+    pub fn sync_external_change(&self, key: &str, cfg: &Config) {
+        let touches = |path: &str| {
+            path.strip_prefix(key)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        };
+        if touches("schema.available") {
+            self.load_enabled_order(cfg);
+            self.rebuild_list();
+        }
+        if touches("keys.key_actions") {
+            self.refresh_key_actions(cfg);
+        }
+    }
+
+    fn load_enabled_order(&self, cfg: &Config) {
         let available: Vec<String> = cfg
             .get_array("schema.available")
             .map(|arr| {
@@ -2212,10 +2240,6 @@ impl SchemaManagerState {
             available
         };
         *self.enabled_order.borrow_mut() = new_order;
-        // 与 enabled_order 同批刷新：构造期那次同步 RPC 可能失败，而这张表此前没有任何
-        // 后续刷新点 —— 一次失败就永久是空表，再被 writer 整表覆盖回 core。
-        self.refresh_key_actions(cfg);
-        self.rebuild_list();
     }
 
     /// 刷新方案列表（调用 schema.list RPC）。
