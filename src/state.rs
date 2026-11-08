@@ -484,6 +484,8 @@ pub struct AppState {
     pub theme_editor_running: Signal<bool>,
     /// 主题编辑器连接服务地址。
     pub theme_editor_url: Signal<String>,
+    /// 「打开编辑器」的地址：服务开着时带 fragment（端口 + 配对 token），关着时为空。
+    pub theme_editor_open_url: Signal<String>,
     /// 主题编辑器连接模式：off / once / auto。
     pub theme_editor_mode: Signal<String>,
     /// 主题编辑器连接模式的分段控件索引镜像（0=关闭/1=本次开启/2=自动开启），
@@ -1041,6 +1043,7 @@ impl AppState {
             )),
             theme_editor_running: signal(false),
             theme_editor_url: signal(String::new()),
+            theme_editor_open_url: signal(String::new()),
             theme_editor_mode_idx: signal(mode_str_to_idx(&initial_mode)),
             theme_editor_mode: signal(initial_mode),
             pending_theme_import_url: signal(String::new()),
@@ -1147,6 +1150,8 @@ impl AppState {
             Ok(s) => {
                 self.theme_editor_running.set(s.running);
                 self.theme_editor_url.set(s.url.unwrap_or_default());
+                self.theme_editor_open_url
+                    .set(s.editor_url.unwrap_or_default());
                 self.theme_editor_mode
                     .set(if auto { "auto" } else { "once" }.to_string());
                 self.notify_ok("主题编辑器连接已开启");
@@ -1165,6 +1170,7 @@ impl AppState {
         self.theme_editor_server.borrow_mut().stop();
         self.theme_editor_running.set(false);
         self.theme_editor_url.set(String::new());
+        self.theme_editor_open_url.set(String::new());
         self.theme_editor_mode.set("off".to_string());
         self.notify_ok("主题编辑器连接已关闭");
     }

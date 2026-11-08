@@ -24,6 +24,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
 toml = "0.8"
 ureq = "2"
+# 主题编辑器连接的一次性配对 token。版本与 Cargo.lock 里现有的一致。
+getrandom = "0.2"
 # 官方域校验与 ureq 必须用同一个 URL 解析器（ureq 底下就是它），见 `schema_url_import::parse_official_https`。
 url = "2.5"
 tiny_http = "0.12"

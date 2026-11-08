@@ -1013,6 +1013,7 @@ pub(crate) fn export_theme_package(id: String, feedback: dict::reactive::Feedbac
 fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let running = state.theme_editor_running;
     let url = state.theme_editor_url;
+    let open_url = state.theme_editor_open_url;
     let mode_idx = state.theme_editor_mode_idx;
     let _ = app;
 
@@ -1068,7 +1069,11 @@ fn theme_editor_connect_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> E
                         Element::button("打开编辑器")
                             .small()
                             .outline_soft()
-                            .on_click(|ctx| ctx.open_url(THEME_EDITOR_URL)),
+                            // 服务开着时带上端口与配对 token（fragment），编辑器据此连接。
+                            .on_click(move |ctx| {
+                                let u = open_url.get();
+                                ctx.open_url(if u.is_empty() { THEME_EDITOR_URL } else { &u })
+                            }),
                     ),
             ),
         ],

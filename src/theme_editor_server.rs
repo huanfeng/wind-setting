@@ -1,13 +1,16 @@
 //! 本地主题编辑器 HTTP 服务：只监听 loopback，并限制 Host/Origin。
 //!
-//! 安全模型（每条路由都一样，新路由不得绕开 [`guard_request`]）：
+//! 安全模型（每条路由都一样，新路由不得绕开 [`guard_request`] 与 [`authorize`]）：
 //! - 只绑 `127.0.0.1`，外机连不进来；
 //! - `Host` 必须是本机名（挡 DNS 重绑定：恶意域名解析到 127.0.0.1 后，浏览器发来的
 //!   `Host` 仍是那个域名）；
-//! - 带了 `Origin` 就必须是官方站或本机开发服，否则 403——浏览器跨源 POST 一定带
-//!   `Origin`，网页借用户的浏览器往这里推东西会在这一步被拒；不带 `Origin` 的是本机进程
-//!   或同源导航，读不到跨源响应（没有 `Access-Control-Allow-Origin`）。
-//! - 校验在读请求体**之前**做；请求体一律限长读取。
+//! - 带了 `Origin` 就必须在精确白名单里（[`is_allowed_origin`]），否则 403；
+//! - 除 OPTIONS 预检外都要配对 token（`X-Wind-Token` 头，常量时间比较）。token 每次开服务
+//!   随机生成，经「打开编辑器」按钮的 URL fragment 交给编辑器（fragment 不随请求发出、
+//!   不进服务器日志）。**过渡**：已上线的编辑器不会带 token，三条旧路由在缺 token 时
+//!   退回「`Origin` 必须存在且正好是线上编辑器」（[`LEGACY_ORIGINS`]）；收包 / 出包两条
+//!   新路由只认 token；
+//! - 校验在读请求体**之前**做；请求体一律限长读取；连接有读写超时（vendored tiny_http）。
 
 use std::io::Read;
 use std::net::IpAddr;
@@ -27,6 +30,20 @@ use crate::theme_import::{
     import_package_via, import_text,
 };
 
+/// 配对 token 的请求头。
+pub const TOKEN_HEADER: &str = "X-Wind-Token";
+
+/// 线上编辑器的源。已发布的编辑器不带 token，只有它在缺 token 时还能用三条旧路由。
+/// 编辑器带 token 的版本上线后，这条过渡可以删掉。
+const LEGACY_ORIGINS: &[&str] = &["https://theme.windinput.com"];
+
+/// CORS 白名单里的线上源（精确匹配，不认任意子域）：编辑器 `theme.windinput.com`
+/// （见编辑器仓 README 的部署表）与官网 `windinput.com`。本机开发服另判。
+const PROD_ORIGINS: &[&str] = &["https://theme.windinput.com", "https://windinput.com"];
+
+/// 停服务时最多等工作线程这么久；它卡在一个慢请求上就放手不等，免得把界面拖住。
+const STOP_WAIT: Duration = Duration::from_millis(1500);
+
 /// `/api/theme/push` 的请求体上限：主题原文 2 MiB，JSON 转义（引号、反斜杠、换行）最多
 /// 把它撑大一倍，再留 64 KiB 给其余字段。
 const MAX_PUSH_BODY: usize = MAX_THEME_BYTES * 2 + 64 * 1024;
@@ -35,6 +52,8 @@ const MAX_PUSH_BODY: usize = MAX_THEME_BYTES * 2 + 64 * 1024;
 /// 下载用的私有目录。
 struct Backend<'a> {
     rpc: &'a (dyn Fn(&str, &Value) -> Result<Value, String> + Sync),
+    /// 本次服务的配对 token。
+    token: &'a str,
     /// `None` = 生产目录（`schema_url_import::download_dir`，Linux 下 0700）。
     tmp_dir: Option<&'a Path>,
 }
@@ -57,12 +76,56 @@ pub struct ThemeEditorServerStatus {
     pub running: bool,
     pub url: Option<String>,
     pub port: Option<u16>,
+    /// 「打开编辑器」用的地址：编辑器站点 + fragment 里的端口与配对 token。
+    pub editor_url: Option<String>,
 }
 
 pub struct ThemeEditorServer {
     status: Arc<Mutex<ThemeEditorServerStatus>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    /// 工作线程退出时发一声；`stop` 据此限时等待。
+    done: Option<std::sync::mpsc::Receiver<()>>,
+}
+
+/// 16 字节随机数的十六进制串。
+fn new_token() -> Result<String, String> {
+    let mut b = [0u8; 16];
+    getrandom::getrandom(&mut b).map_err(|e| format!("生成配对码失败：{e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// 编辑器连接地址。token 放 fragment：浏览器不会把它发给 theme.windinput.com 的服务器。
+pub fn editor_connect_url(port: u16, token: &str) -> String {
+    format!(
+        "{}/#wind-port={port}&wind-token={token}",
+        crate::pages::THEME_EDITOR_URL
+    )
+}
+
+/// 常量时间比较（长度固定为 32，长度不同直接判否不泄露内容）。
+fn token_matches(given: &str, expected: &str) -> bool {
+    let (a, b) = (given.as_bytes(), expected.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// 请求凭什么被放行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// 带了正确的配对 token。
+    Paired,
+    /// 没带 token，但 `Origin` 正好是线上编辑器（过渡，只对旧路由有效）。
+    Legacy,
+}
+
+/// 认证：token 头优先（带了就必须对）；没带时只认线上编辑器的 `Origin`。
+fn authorize(token: Option<&str>, origin: Option<&str>, expected: &str) -> Option<Access> {
+    match token {
+        Some(t) => token_matches(t.trim(), expected).then_some(Access::Paired),
+        None => origin
+            .filter(|o| LEGACY_ORIGINS.contains(o))
+            .map(|_| Access::Legacy),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +141,7 @@ impl Default for ThemeEditorServer {
             status: Arc::new(Mutex::new(ThemeEditorServerStatus::default())),
             stop: Arc::new(AtomicBool::new(false)),
             handle: None,
+            done: None,
         }
     }
 }
@@ -104,13 +168,21 @@ impl ThemeEditorServer {
         }
         let (port, server) = selected
             .ok_or_else(|| "无法启动主题编辑器连接：29731-29733 端口均被占用".to_string())?;
+        let token = new_token()?;
 
-        self.stop.store(false, Ordering::Relaxed);
+        // 每次开服务都换新的停止标志与状态：上一次 `stop` 没等到的旧线程（卡在慢请求上）
+        // 仍持有旧的那一份，它收尾时不会把新服务的状态清掉，也不会因为新服务清了停止
+        // 标志而继续接活。
+        self.stop = Arc::new(AtomicBool::new(false));
+        self.status = Arc::new(Mutex::new(ThemeEditorServerStatus::default()));
         let stop = Arc::clone(&self.stop);
         let status_handle = Arc::clone(&self.status);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let thread_token = token.clone();
         let handle = std::thread::spawn(move || {
             let backend = Backend {
                 rpc: &call_core,
+                token: &thread_token,
                 tmp_dir: None,
             };
             while !stop.load(Ordering::Relaxed) {
@@ -123,25 +195,43 @@ impl ThemeEditorServer {
             if let Ok(mut s) = status_handle.lock() {
                 *s = ThemeEditorServerStatus::default();
             }
+            let _ = done_tx.send(());
         });
 
         let status = ThemeEditorServerStatus {
             running: true,
             url: Some(format!("http://localhost:{port}")),
             port: Some(port),
+            editor_url: Some(editor_connect_url(port, &token)),
         };
         *self
             .status
             .lock()
             .map_err(|_| "主题编辑器状态锁异常".to_string())? = status.clone();
         self.handle = Some(handle);
+        self.done = Some(done_rx);
         Ok(status)
     }
 
+    /// 停服务。限时等工作线程退出（释放端口）；它卡在一个慢请求上（读请求体、等 core）
+    /// 就放手不等——界面线程不能被一个本机请求拖住。没等到的线程处理完手上那个请求就会
+    /// 退出，端口随之释放；在那之前再开服务会落到下一个端口。
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            let exited = self.done.take().is_none_or(|rx| {
+                !matches!(
+                    rx.recv_timeout(STOP_WAIT),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                )
+            });
+            if exited {
+                let _ = handle.join();
+            } else {
+                tracing::warn!(
+                    "主题编辑器服务线程 {STOP_WAIT:?} 内未退出（还在处理请求），不再等待"
+                );
+            }
         }
         if let Ok(mut s) = self.status.lock() {
             *s = ThemeEditorServerStatus::default();
@@ -177,21 +267,22 @@ pub fn is_loopback_host(host: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// CORS 白名单，精确匹配：线上源只认 [`PROD_ORIGINS`]（不认任意 `*.windinput.com`——
+/// 任何一个子域出问题都不该连带这里）；本机开发服认 `http://localhost` / `127.0.0.1` /
+/// `[::1]` 加可选的纯数字端口。浏览器发的 `Origin` 本就是规范小写形式，不做大小写折叠。
 pub fn is_allowed_origin(origin: &str) -> bool {
-    let lower = origin.trim().to_ascii_lowercase();
-    if lower.starts_with("http://localhost:") || lower == "http://localhost" {
+    if PROD_ORIGINS.contains(&origin) {
         return true;
     }
-    if lower.starts_with("http://127.0.0.1:") || lower == "http://127.0.0.1" {
-        return true;
-    }
-    if lower.starts_with("http://[::1]:") || lower == "http://[::1]" {
-        return true;
-    }
-    if lower == "https://windinput.com" {
-        return true;
-    }
-    lower.starts_with("https://") && lower.ends_with(".windinput.com")
+    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .iter()
+        .any(|base| match origin.strip_prefix(base) {
+            Some("") => true,
+            Some(rest) => rest.strip_prefix(':').is_some_and(|p| {
+                !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit())
+            }),
+            None => false,
+        })
 }
 
 // 取 request-target 中的路径部分（丢弃 ?query）。fragment 不会由客户端发出，无需处理。
@@ -236,12 +327,33 @@ fn query_param(url: &str, key: &str) -> Option<Option<String>> {
     })
 }
 
+/// 主题 id 只能是普通名字。与 core `wind_theme::theme::is_plain_slug` 同一判据（不依赖
+/// wind-theme 是为了不把整套主题解析拉进设置端）；core 那边改了这里要跟着改。
 pub fn validate_slug(slug: &str) -> bool {
     !slug.is_empty()
+        && slug != "."
         && !slug.contains("..")
-        && !slug.contains('/')
-        && !slug.contains('\\')
+        && !slug.ends_with(['.', ' '])
+        && !is_windows_reserved_name(slug)
+        && !slug
+            .chars()
+            .any(|c| matches!(c, '/' | '\\' | ':') || c.is_control())
         && !Path::new(slug).is_absolute()
+}
+
+/// Windows 保留设备名（不分大小写，带不带扩展名都算）。同 core。
+fn is_windows_reserved_name(s: &str) -> bool {
+    let stem = s
+        .split('.')
+        .next()
+        .unwrap_or(s)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
 fn json_reply(status: u16, body: &str, allow_origin: Option<String>) -> HttpReply {
@@ -303,9 +415,22 @@ fn handle_request(req: tiny_http::Request, be: &Backend) {
         return;
     }
 
+    let token = header_value(&req, TOKEN_HEADER);
+    let Some(access) = authorize(token.as_deref(), origin.as_deref(), be.token) else {
+        respond(req, unpaired_reply(allow_origin));
+        return;
+    };
+    // 收包 / 出包是新路由，只有带 token 的新编辑器会用：不给过渡。
+
     let package_slug = url
         .strip_prefix("/api/theme/")
         .and_then(|rest| rest.strip_suffix("/package"));
+    let package_route = (method == "POST" && url == "/api/theme/package")
+        || (method == "GET" && package_slug.is_some());
+    if package_route && access != Access::Paired {
+        respond(req, unpaired_reply(allow_origin));
+        return;
+    }
     let reply = if method == "GET" && url == "/api/themes" {
         match (be.rpc)("theme.list", &serde_json::json!({})) {
             Ok(v) => json_reply(200, &v.to_string(), allow_origin),
@@ -388,8 +513,12 @@ fn send<R: Read>(
     }
     if let Ok(header) = tiny_http::Header::from_bytes(
         b"Access-Control-Allow-Headers" as &[u8],
-        b"Content-Type" as &[u8],
+        b"Content-Type, X-Wind-Token" as &[u8],
     ) {
+        response = response.with_header(header);
+    }
+    // ACAO 是按请求的 Origin 反射的：告诉缓存这份响应随 Origin 而变，别拿给别的源。
+    if let Ok(header) = tiny_http::Header::from_bytes(b"Vary" as &[u8], b"Origin" as &[u8]) {
         response = response.with_header(header);
     }
     if let Some(origin) = allow_origin
@@ -401,6 +530,21 @@ fn send<R: Read>(
         response = response.with_header(header);
     }
     let _ = req.respond(response);
+}
+
+/// 401：没配对或配对码不对。`pairing_required` 给编辑器认（据此提示「从输入法设置里
+/// 点『打开编辑器』重新连接」）。
+fn unpaired_reply(allow_origin: Option<String>) -> HttpReply {
+    json_reply(
+        401,
+        &serde_json::json!({
+            "ok": false,
+            "pairing_required": true,
+            "error": "未配对：请从输入法设置的「主题编辑器」里点「打开编辑器」重新连接",
+        })
+        .to_string(),
+        allow_origin,
+    )
 }
 
 fn error_reply(status: u16, msg: &str, allow_origin: Option<String>) -> HttpReply {
@@ -517,6 +661,10 @@ fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
         .unwrap_or(false);
     // slug：主题唯一 id（编辑器拉取时记住的原始 id）。传入则由 core 就地写回该 id 目录。
     let slug = payload.get("slug").and_then(serde_json::Value::as_str);
+    if slug.is_some_and(|s| !validate_slug(s)) {
+        respond(req, error_reply(400, "非法主题 slug", allow_origin));
+        return;
+    }
 
     let reply = import_reply(import_text(text, force, slug), allow_origin);
     respond(req, reply);
@@ -777,6 +925,9 @@ mod route_tests {
 
     type Calls = Mutex<Vec<(String, Value)>>;
 
+    /// 测试用配对 token（与生产同为 32 位十六进制）。
+    const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
     struct Reply {
         status: u16,
         headers: String,
@@ -834,7 +985,11 @@ mod route_tests {
 
     /// 起服务处理 `n` 个请求，`client` 拿端口去发。返回时服务线程已收尾（临时文件已删）。
     fn serve(n: usize, be: &Backend, client: impl FnOnce(u16)) {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        serve_with_timeout(n, be, Duration::from_secs(10), client)
+    }
+
+    fn serve_with_timeout(n: usize, be: &Backend, timeout: Duration, client: impl FnOnce(u16)) {
+        let server = tiny_http::Server::http_with_socket_timeout("127.0.0.1:0", timeout).unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         std::thread::scope(|s| {
             s.spawn(|| {
@@ -852,7 +1007,18 @@ mod route_tests {
         s
     }
 
+    /// 发请求，自动在请求行后补上正确的配对 token。
     fn request(port: u16, head: &str, body: &[u8]) -> Reply {
+        let (line, rest) = head.split_once("\r\n").unwrap();
+        request_raw(
+            port,
+            &format!("{line}\r\n{TOKEN_HEADER}: {TOKEN}\r\n{rest}"),
+            body,
+        )
+    }
+
+    /// 原样发请求（不补 token）。
+    fn request_raw(port: u16, head: &str, body: &[u8]) -> Reply {
         let mut s = connect(port);
         s.write_all(head.replace("{port}", &port.to_string()).as_bytes())
             .unwrap();
@@ -928,6 +1094,7 @@ mod route_tests {
             Ok(json!({"ok": true, "slug": "shuimo", "display_name": "水墨", "reloaded": true}))
         };
         let be = Backend {
+            token: TOKEN,
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -969,6 +1136,7 @@ mod route_tests {
             Ok(json!({"ok": true, "slug": "a", "display_name": "A"}))
         };
         let be = Backend {
+            token: TOKEN,
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -987,6 +1155,7 @@ mod route_tests {
         let dir = scratch("upload_err");
         let conflict = |_: &str, _: &Value| Ok(json!({"ok": false, "conflict": true, "slug": "a"}));
         let be = Backend {
+            token: TOKEN,
             rpc: &conflict,
             tmp_dir: Some(&dir),
         };
@@ -999,6 +1168,7 @@ mod route_tests {
 
         let broken = |_: &str, _: &Value| Err("主题包缺少 theme.toml".to_string());
         let be = Backend {
+            token: TOKEN,
             rpc: &broken,
             tmp_dir: Some(&dir),
         };
@@ -1016,6 +1186,7 @@ mod route_tests {
     fn package_upload_rejects_declared_oversize_before_reading() {
         let dir = scratch("upload_413");
         let be = Backend {
+            token: TOKEN,
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1023,7 +1194,7 @@ mod route_tests {
             let mut s = connect(port);
             write!(
                 s,
-                "POST /api/theme/package HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                "POST /api/theme/package HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Wind-Token: {TOKEN}\r\n\
                  Content-Length: {}\r\n\r\nPK\x03\x04",
                 MAX_THEME_PACKAGE_BYTES + 1
             )
@@ -1043,6 +1214,7 @@ mod route_tests {
     fn package_upload_rejects_chunked_oversize() {
         let dir = scratch("upload_chunked");
         let be = Backend {
+            token: TOKEN,
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1050,7 +1222,7 @@ mod route_tests {
             let mut s = connect(port);
             write!(
                 s,
-                "POST /api/theme/package HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+                "POST /api/theme/package HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Wind-Token: {TOKEN}\r\n\
                  Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
@@ -1073,6 +1245,7 @@ mod route_tests {
     fn package_upload_rejects_empty_body_and_bad_slug() {
         let dir = scratch("upload_bad");
         let be = Backend {
+            token: TOKEN,
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1091,6 +1264,7 @@ mod route_tests {
     fn package_routes_are_guarded_like_the_rest() {
         let dir = scratch("guard");
         let be = Backend {
+            token: TOKEN,
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1137,6 +1311,7 @@ mod route_tests {
             Ok(json!({"ok": true, "path": p["path"]}))
         };
         let be = Backend {
+            token: TOKEN,
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -1170,6 +1345,7 @@ mod route_tests {
             }
         };
         let be = Backend {
+            token: TOKEN,
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -1207,6 +1383,7 @@ mod route_tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let be = Backend {
+            token: TOKEN,
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1236,6 +1413,7 @@ mod route_tests {
     #[test]
     fn legacy_push_is_size_limited() {
         let be = Backend {
+            token: TOKEN,
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1243,7 +1421,7 @@ mod route_tests {
             let mut s = connect(port);
             write!(
                 s,
-                "POST /api/theme/push HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                "POST /api/theme/push HTTP/1.1\r\nHost: localhost:{port}\r\nX-Wind-Token: {TOKEN}\r\n\
                  Content-Length: {}\r\n\r\n{{",
                 MAX_PUSH_BODY + 1
             )
@@ -1272,5 +1450,325 @@ mod route_tests {
         assert_eq!(query_param("/p", "slug"), None);
         assert_eq!(query_param("/p?slug=%zz", "slug"), Some(None));
         assert_eq!(query_param("/p?force", "force"), Some(Some(String::new())));
+    }
+
+    fn themes_rpc(m: &str, _: &Value) -> Result<Value, String> {
+        assert_eq!(m, "theme.list");
+        Ok(json!([]))
+    }
+
+    /// 配对：没 token 也不是线上编辑器 → 401；token 不对 → 401（即便 Origin 是线上编辑器）；
+    /// 本机开发服也得带 token。
+    #[test]
+    fn routes_require_pairing_token() {
+        let be = Backend {
+            token: TOKEN,
+            rpc: &no_rpc,
+            tmp_dir: None,
+        };
+        serve(4, &be, |port| {
+            let head = |extra: &str| {
+                format!(
+                    "GET /api/themes HTTP/1.1\r\nHost: localhost:{{port}}\r\n{extra}\
+                     Connection: close\r\n\r\n"
+                )
+            };
+            for extra in [
+                String::new(),
+                "Origin: http://localhost:5173\r\n".to_string(),
+                format!("{TOKEN_HEADER}: {}\r\n", "0".repeat(32)),
+                format!("{TOKEN_HEADER}: wrong\r\nOrigin: https://theme.windinput.com\r\n"),
+            ] {
+                let r = request_raw(port, &head(&extra), b"");
+                assert_eq!(r.status, 401, "{extra:?}");
+                assert_eq!(r.json()["pairing_required"], true);
+            }
+        });
+    }
+
+    /// 过渡：已上线的编辑器（`https://theme.windinput.com`）不带 token 仍能用三条旧路由，
+    /// 但新的收包 / 出包路由不行。
+    #[test]
+    fn legacy_editor_origin_keeps_old_routes_only() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let be = Backend {
+            token: TOKEN,
+            rpc: &themes_rpc,
+            tmp_dir: None,
+        };
+        let legacy = "Origin: https://theme.windinput.com\r\n";
+        let mut got = Vec::new();
+        serve(4, &be, |port| {
+            got.push(request_raw(
+                port,
+                &format!(
+                    "GET /api/themes HTTP/1.1\r\nHost: localhost:{{port}}\r\n{legacy}\
+                     Connection: close\r\n\r\n"
+                ),
+                b"",
+            ));
+            let body = json!({"toml": "[meta]\nname = \"测试主题\"\n"}).to_string();
+            got.push(request_raw(
+                port,
+                &format!(
+                    "POST /api/theme/push HTTP/1.1\r\nHost: localhost:{{port}}\r\n{legacy}\
+                     Content-Type: application/json\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n",
+                    body.len()
+                ),
+                body.as_bytes(),
+            ));
+            got.push(request_raw(
+                port,
+                &format!(
+                    "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{{port}}\r\n{legacy}\
+                     Content-Length: 4\r\nConnection: close\r\n\r\n"
+                ),
+                b"PK\x03\x04",
+            ));
+            got.push(request_raw(
+                port,
+                &format!(
+                    "GET /api/theme/default/package HTTP/1.1\r\nHost: localhost:{{port}}\r\n\
+                     {legacy}Connection: close\r\n\r\n"
+                ),
+                b"",
+            ));
+        });
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert_eq!(got[0].status, 200);
+        assert_eq!(got[1].status, 200);
+        assert_eq!(got[1].json()["slug"], "test-theme");
+        assert_eq!(got[2].status, 401, "收包只认 token");
+        assert_eq!(got[3].status, 401, "出包只认 token");
+    }
+
+    /// 预检不要 token，且放行 `X-Wind-Token` 头；反射 ACAO 时带 `Vary: Origin`。
+    #[test]
+    fn preflight_allows_token_header_and_varies_on_origin() {
+        let be = Backend {
+            token: TOKEN,
+            rpc: &no_rpc,
+            tmp_dir: None,
+        };
+        serve(1, &be, |port| {
+            let r = request_raw(
+                port,
+                "OPTIONS /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 Origin: https://theme.windinput.com\r\n\
+                 Access-Control-Request-Method: POST\r\n\
+                 Access-Control-Request-Headers: content-type, x-wind-token\r\n\
+                 Connection: close\r\n\r\n",
+                b"",
+            );
+            assert_eq!(r.status, 204);
+            assert!(
+                r.header("Access-Control-Allow-Headers")
+                    .unwrap()
+                    .contains("X-Wind-Token")
+            );
+            assert_eq!(
+                r.header("Access-Control-Allow-Origin").as_deref(),
+                Some("https://theme.windinput.com")
+            );
+            assert_eq!(r.header("Vary").as_deref(), Some("Origin"));
+        });
+    }
+
+    /// 离谱的 Content-Length：回 413、进程不 abort（原 tiny_http 按声明长度一次性分配），
+    /// 服务接着能处理下一个请求。
+    #[test]
+    fn absurd_content_length_does_not_take_the_server_down() {
+        let be = Backend {
+            token: TOKEN,
+            rpc: &themes_rpc,
+            tmp_dir: None,
+        };
+        serve_with_timeout(2, &be, Duration::from_millis(500), |port| {
+            let mut s = connect(port);
+            write!(
+                s,
+                "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 X-Wind-Token: {TOKEN}\r\nContent-Length: {}\r\n\r\nPK",
+                1u64 << 60
+            )
+            .unwrap();
+            assert_eq!(read_reply(&mut s).status, 413);
+            // 不断开、也不再发：服务端丢弃余量的那段读要靠读超时收手，不能挂死线程。
+            let r = get(port, "/api/themes");
+            assert_eq!(r.status, 200, "服务应仍然可用");
+            drop(s);
+        });
+    }
+
+    /// 请求体发一半就不动了：读超时到点就回错误，工作线程不被无限期占住。
+    #[test]
+    fn stalled_request_body_times_out() {
+        let dir = scratch("stalled");
+        let be = Backend {
+            token: TOKEN,
+            rpc: &no_rpc,
+            tmp_dir: Some(&dir),
+        };
+        serve_with_timeout(1, &be, Duration::from_millis(300), |port| {
+            let mut s = connect(port);
+            write!(
+                s,
+                "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 X-Wind-Token: {TOKEN}\r\nContent-Length: 100000\r\n\r\nPK\x03\x04"
+            )
+            .unwrap();
+            let t = std::time::Instant::now();
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 400);
+            assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        });
+        assert!(is_empty(&dir), "半截临时文件要删");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 旧 push 带的 slug 也过校验。
+    #[test]
+    fn legacy_push_rejects_bad_slug() {
+        let be = Backend {
+            token: TOKEN,
+            rpc: &no_rpc,
+            tmp_dir: None,
+        };
+        serve(2, &be, |port| {
+            for slug in ["../x", "CON"] {
+                let r = post_push(
+                    port,
+                    json!({"toml": "[meta]\n", "slug": slug})
+                        .to_string()
+                        .as_bytes(),
+                );
+                assert_eq!(r.status, 400, "{slug}");
+            }
+        });
+    }
+
+    /// 卡在一个慢请求上的工作线程不拖住 `stop()`。
+    #[test]
+    fn stop_does_not_wait_for_a_stuck_request() {
+        let mut server = ThemeEditorServer::default();
+        let st = server.start().expect("应能启动");
+        let port = st.port.unwrap();
+        let token = st
+            .editor_url
+            .as_deref()
+            .and_then(|u| u.split("wind-token=").nth(1))
+            .unwrap()
+            .to_string();
+        let mut s = connect(port);
+        write!(
+            s,
+            "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+             X-Wind-Token: {token}\r\nContent-Length: 100000\r\n\r\nPK"
+        )
+        .unwrap();
+        // 等服务线程收下请求、进入读请求体。
+        std::thread::sleep(Duration::from_millis(500));
+        let t = std::time::Instant::now();
+        server.stop();
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(!server.status().running);
+        drop(s);
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    #[test]
+    fn origin_whitelist_is_exact() {
+        for ok in [
+            "https://theme.windinput.com",
+            "https://windinput.com",
+            "http://localhost",
+            "http://localhost:5173",
+            "http://127.0.0.1:8080",
+            "http://[::1]:3000",
+        ] {
+            assert!(is_allowed_origin(ok), "{ok}");
+        }
+        for bad in [
+            "https://market.windinput.com",
+            "https://evil.windinput.com",
+            "https://windinput.com.evil.com",
+            "http://windinput.com",
+            "https://theme.windinput.com:8443",
+            "http://localhost:5173.evil.com",
+            "http://localhost:",
+            "http://localhost:123456",
+            "http://localhost.evil.com",
+            "https://localhost:5173",
+            "null",
+            "",
+        ] {
+            assert!(!is_allowed_origin(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn token_comparison_and_shape() {
+        let t = new_token().unwrap();
+        assert_eq!(t.len(), 32);
+        assert!(t.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(t, new_token().unwrap(), "每次都是新的");
+        assert!(token_matches(&t, &t));
+        assert!(!token_matches(&t[..31], &t));
+        assert!(!token_matches("", &t));
+        let mut other = t.clone().into_bytes();
+        other[31] = if other[31] == b'0' { b'1' } else { b'0' };
+        assert!(!token_matches(std::str::from_utf8(&other).unwrap(), &t));
+    }
+
+    #[test]
+    fn authorize_prefers_token_and_limits_legacy_to_live_editor() {
+        let t = "0123456789abcdef0123456789abcdef";
+        assert_eq!(authorize(Some(t), None, t), Some(Access::Paired));
+        assert_eq!(
+            authorize(Some("bad"), Some("https://theme.windinput.com"), t),
+            None,
+            "带了错的 token 不退回过渡规则"
+        );
+        assert_eq!(
+            authorize(None, Some("https://theme.windinput.com"), t),
+            Some(Access::Legacy)
+        );
+        for o in [
+            None,
+            Some("https://windinput.com"),
+            Some("http://localhost:5173"),
+        ] {
+            assert_eq!(authorize(None, o, t), None, "{o:?}");
+        }
+    }
+
+    #[test]
+    fn editor_url_carries_port_and_token_in_fragment() {
+        assert_eq!(
+            editor_connect_url(29732, "ab"),
+            "https://theme.windinput.com/#wind-port=29732&wind-token=ab"
+        );
+    }
+
+    /// 与 core `is_plain_slug` 同一判据。
+    #[test]
+    fn slug_rules_match_core() {
+        for ok in ["default", "水墨", "a.b", "CONSOLE", "COM0", "my theme"] {
+            assert!(validate_slug(ok), "{ok}");
+        }
+        for bad in [
+            "", ".", "..", "a..b", "a/b", r"a\b", "C:x", "a.", "a ", "CON", "con.txt", "Nul",
+            "COM1", "lpt9.x", "a\u{0}b", "a\nb",
+        ] {
+            assert!(!validate_slug(bad), "{bad:?}");
+        }
     }
 }
