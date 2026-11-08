@@ -695,6 +695,18 @@ fn main() {
             pages::memory::on_tick(&tick_state)
         });
     }
+    // 主题风格跟随系统时，系统明暗一变候选窗就换了一套颜色：主题页的缩略图跟着重取。
+    let theme_state = app_state.clone();
+    app = app.on_system_theme_changed(move |_ctx, _dark| {
+        if let Ok(st) = theme_state.try_borrow()
+            && st
+                .current_config
+                .get_str("ui.theme.style")
+                .is_none_or(|s| s.is_empty() || s == "system")
+        {
+            st.theme_gallery.invalidate();
+        }
+    });
     let close_state = app_state.clone();
     app = app.on_close_request(move |ctx| {
         let Ok(st) = close_state.try_borrow() else {

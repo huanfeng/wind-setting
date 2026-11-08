@@ -1731,6 +1731,8 @@ impl AppState {
     pub fn on_core_event(&mut self, ctx: &mut EventCtx, ev: &crate::rpc::CoreEvent) {
         match ev.event.as_str() {
             "schema.activeChanged" => {
+                // 方案级的候选窗覆盖（布局、每页条数、字体）会改缩略图。
+                self.theme_gallery.invalidate();
                 if let Some(id) = ev.data.get("id").and_then(|v| v.as_str()) {
                     tracing::debug!("core 活跃方案变更 → {}", id);
                     self.schema_mgr.set_active_from_core(id);
@@ -1745,6 +1747,8 @@ impl AppState {
                     ev.data.get("key").and_then(|v| v.as_str()),
                     ev.data.get("value"),
                 ) else {
+                    // 不带 key 的是整份重载：哪一项都可能变了。
+                    self.theme_gallery.invalidate();
                     return;
                 };
                 // 与本端当前值比对**必须在回填之前**做：值相同即本端刚写下去的回声，
@@ -1767,6 +1771,7 @@ impl AppState {
             // 都要对账。本端保存的回声按值相同滤掉，不提示。
             // 不带 id 的是可能动了多个方案的写入（导入方案包、整机还原），按全部处理。
             "schema.configChanged" => {
+                self.theme_gallery.invalidate();
                 let id = ev.data.get("id").and_then(|v| v.as_str());
                 let changed = self.schema_mgr.on_schema_config_changed(id);
                 if !changed.is_empty() {
@@ -2274,6 +2279,9 @@ impl AppState {
                 })
                 .collect(),
         );
+        // 无条件重取：覆盖导入同名主题（id 不变、内容变了）、服务起来后重新加载都走这里，
+        // 列表相同也可能换了像素。
+        self.theme_gallery.invalidate();
     }
 
     /// 把配置里那些**选项列表没有列举**的当前取值补进四个响应式下拉的选项信号。

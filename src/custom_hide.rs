@@ -526,6 +526,15 @@ mod tests {
         assert!(!theme.iter().any(|l| l == "主题编辑器"));
     }
 
+    /// 画廊点格即改 `ui.theme.name`：定制版藏了这一项，画廊也不建（锁主题的定制才锁得住）。
+    #[test]
+    fn gallery_is_not_built_when_theme_name_is_custom_hidden() {
+        let gallery = crate::theme_gallery::SECTION_TITLE;
+        assert!(nav_labels(&[], "theme").iter().any(|l| l == gallery));
+        let got = nav_labels(&["key:ui.theme.name".into()], "theme");
+        assert!(!got.iter().any(|l| l == gallery), "{got:?}");
+    }
+
     /// 与清单项同卡的手写行：手写行与清单项都藏了卡才消失，只藏一边卡还在。
     #[test]
     fn shared_cards_vanish_only_when_both_halves_are_hidden() {

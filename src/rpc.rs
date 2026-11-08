@@ -181,10 +181,16 @@ fn is_bulk_method(method: &str) -> bool {
     )
 }
 
+/// 主题预览渲染的超时上限。服务端一批最多等 20 秒（3 秒 + 每张未命中 1 秒，封顶），
+/// 升级后首开全不命中时正好会顶到那里；5 秒档会让客户端先放弃、服务端照画，名额白占。
+const RENDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// 按方法取超时档。
 fn timeout_for(method: &str) -> std::time::Duration {
     if is_bulk_method(method) {
         BULK_TIMEOUT
+    } else if matches!(method, "theme.renderPreview" | "theme.renderPreviews") {
+        RENDER_TIMEOUT
     } else {
         CALL_TIMEOUT
     }

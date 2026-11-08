@@ -3,17 +3,22 @@
 //! 缩略图由服务端用实时候选窗的渲染器出 PNG（`theme.renderPreview(s)`，协议见 WindInput
 //! `docs/design/wind-scene-extraction.md` §7.2），像素与实机一致；设置端只负责取图、摆格子。
 //!
-//! - **取图不占 UI 线程**：RPC 与读缓存文件都在 [`NetTasks`] 的工作线程里做，结果回 UI 线程
-//!   只写一个信号。
-//! - **防抖**：外观相关配置变更、主题增删都只是「标脏」，由页内一枚哨兵在本页可见时发起
-//!   取图；工作线程先等 [`DEBOUNCE`] 再发 RPC，期间再来一次就取消旧的重排。连续改几项
-//!   字号 / 颜色只换来一次往返（服务端有缓存，没变的主题直接命中）。
-//! - **失败不打扰**：服务端不在、回执 `ok:false`、文件读不到，都只让那一格显示占位文字。
+//! - **取图不占 UI 线程**：RPC 在 [`NetTasks`] 的工作线程里做，结果回 UI 线程只写信号。
+//!   一律要内联 PNG（`inline: true`），不读服务端缓存目录里的文件。
+//! - **小批、一次只一个在途**：每批 [`CHUNK`] 条（= 服务端同时交给 UI 线程的上限），一批回来
+//!   就合并进图表，图逐格出现。服务端的名额按进程算，客户端取消只是不再等、那边照样在画；
+//!   同时再发一批只会换来「忙」，所以在途时再标脏只记一笔，等这批回来再重来。
+//! - **防抖**：外观相关配置变更、主题增删都只是「标脏」，由页内一枚哨兵在本页可见时发起；
+//!   先等 [`DEBOUNCE`]，期间再标脏就重新计时，连改几项只换来一轮（服务端有缓存，没变的主题
+//!   直接命中）。
+//! - **失败不打扰**：服务端不在、整批出错时已有的图照留，没图的格显示占位；单条「忙」/「超时」
+//!   约 1 秒后重试，至多 [`MAX_RETRIES`] 次；只有服务端明确说这张画不了（`ok:false`）才置失败。
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -27,6 +32,7 @@ use windui::style::Style;
 use crate::net_task::{NetTasks, TaskId};
 use crate::pages::dict::reactive::Feedback;
 use crate::state::{AppState, FieldRegistry};
+use crate::widgets::Vis;
 
 /// 画廊卡片的标题（二级导航里也叫这个）。
 pub const SECTION_TITLE: &str = "已装主题";
@@ -43,10 +49,21 @@ const RING: i32 = 2;
 const THUMB_H: i32 = 120;
 /// 防抖时长：标脏到真正发 RPC 之间至少隔这么久。
 const DEBOUNCE: Duration = Duration::from_millis(300);
-/// `theme.renderPreviews` 一次最多几条（服务端 `MAX_BATCH`）。
-const MAX_BATCH: usize = 64;
+/// 每批几条：服务端全进程同时交给 UI 线程的预览至多 8 张（`MAX_IN_FLIGHT`）。
+const CHUNK: usize = 8;
+/// 单条「忙」/「超时」后隔多久重试、至多几次。
+const RETRY_DELAY: Duration = Duration::from_millis(1000);
+const MAX_RETRIES: u32 = 3;
 /// 导入框里预览图的最大高度。
 const IMPORT_PREVIEW_MAX_H: i32 = 160;
+
+/// 主题编辑器经本机服务改了主题文件的次数（服务线程里加，哨兵在 UI 线程比对）。
+static EXTERNAL_EDITS: AtomicU64 = AtomicU64::new(0);
+
+/// 主题文件在设置窗之外被改过（主题编辑器推送）：画廊下次排版时重取。
+pub fn note_external_edit() {
+    EXTERNAL_EDITS.fetch_add(1, Ordering::Relaxed);
+}
 
 /// 画廊里的一个已装主题。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -59,22 +76,49 @@ pub struct GalleryEntry {
 /// 一格的图。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Thumb {
-    /// 还没取到（首轮在途）。
+    /// 还没取到（首轮在途、或「忙」了等重试）。
     Pending,
     Ready(Png),
-    /// 取不到：服务端不可用、回执失败或文件读不到。
+    /// 取不到：服务端不可用且还没有旧图，或服务端明确说画不了。
     Failed,
 }
 
-/// 一张取到手的预览图。`width` / `height` 是物理像素，`scale` 是请求时的缩放。
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// 一张取到手的预览图。`width` / `height` 是物理像素。
+///
+/// 相等与哈希只看服务端给的内容哈希与缩放（哈希为空时看是不是同一份字节），不逐字节比
+/// PNG：网格每次重取都要拿它当重建键比一遍。
+#[derive(Clone, Debug)]
 pub struct Png {
     pub hash: String,
     pub bytes: Rc<[u8]>,
     pub width: u32,
     pub height: u32,
-    /// 缩放 ×100（存整数好派生 `Eq` / `Hash`）。
+    /// 请求时的缩放 ×100。
     pub scale_pct: u32,
+}
+
+impl PartialEq for Png {
+    fn eq(&self, o: &Self) -> bool {
+        self.scale_pct == o.scale_pct
+            && if self.hash.is_empty() || o.hash.is_empty() {
+                Rc::ptr_eq(&self.bytes, &o.bytes)
+            } else {
+                self.hash == o.hash
+            }
+    }
+}
+
+impl Eq for Png {}
+
+impl Hash for Png {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        self.scale_pct.hash(h);
+        if self.hash.is_empty() {
+            (self.bytes.as_ptr() as usize).hash(h);
+        } else {
+            self.hash.hash(h);
+        }
+    }
 }
 
 /// 工作线程交回的一张图（`Rc` 不能跨线程，回到 UI 线程再转成 [`Png`]）。
@@ -98,6 +142,16 @@ impl RawPng {
     }
 }
 
+/// 一条回执的结论。
+#[derive(Debug, PartialEq, Eq)]
+pub enum Receipt {
+    Ready(RawPng),
+    /// 服务端「忙」或「超时」：这次没画，过会儿再要。
+    Retry,
+    /// 画不了（找不到主题、主题坏了……），或回执里没有图。
+    Failed,
+}
+
 fn scale_pct(scale: f32) -> u32 {
     (scale * 100.0).round().max(1.0) as u32
 }
@@ -118,23 +172,33 @@ pub fn affects_previews(key: &str) -> bool {
         .any(|p| key == *p || key.strip_prefix(p).is_some_and(|r| r.starts_with('.')))
 }
 
-/// 解析一条回执。有内联 `png` 就直接用，否则按 `path` 读缓存文件；`ok` 不为真、两者都取不到
-/// 时为 `None`。宽高缺失时从 PNG 头里取。
-pub fn parse_receipt(v: &Value, read: &dyn Fn(&str) -> Option<Vec<u8>>) -> Option<RawPng> {
+/// 解析一条回执。只认内联 `png`（请求都带 `inline: true`）；宽高缺失时从 PNG 头里取。
+pub fn parse_receipt(v: &Value) -> Receipt {
     use base64::Engine;
     if v.get("ok").and_then(Value::as_bool) != Some(true) {
-        return None;
+        let e = v.get("error").and_then(Value::as_str).unwrap_or_default();
+        return if e.contains('忙') || e.contains("超时") {
+            Receipt::Retry
+        } else {
+            Receipt::Failed
+        };
     }
-    let bytes = match v.get("png").and_then(Value::as_str) {
-        Some(b64) => base64::engine::general_purpose::STANDARD.decode(b64).ok()?,
-        None => read(v.get("path").and_then(Value::as_str)?)?,
+    let Some(bytes) = v
+        .get("png")
+        .and_then(Value::as_str)
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+    else {
+        return Receipt::Failed;
     };
     let dim = |k: &str| v.get(k).and_then(Value::as_u64).map(|n| n as u32);
     let (width, height) = match (dim("width"), dim("height")) {
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
-        _ => png_size(&bytes)?,
+        _ => match png_size(&bytes) {
+            Some(d) => d,
+            None => return Receipt::Failed,
+        },
     };
-    Some(RawPng {
+    Receipt::Ready(RawPng {
         hash: v
             .get("hash")
             .and_then(Value::as_str)
@@ -156,24 +220,16 @@ fn png_size(b: &[u8]) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
-/// 解析批量回执：与请求同序，缺条或失败的位置为 `None`。
-pub fn parse_batch(
-    v: &Value,
-    n: usize,
-    read: &dyn Fn(&str) -> Option<Vec<u8>>,
-) -> Vec<Option<RawPng>> {
+/// 解析批量回执：与请求同序，缺条的位置按失败。
+pub fn parse_batch(v: &Value, n: usize) -> Vec<Receipt> {
     let items = v.get("items").and_then(Value::as_array);
     (0..n)
         .map(|i| {
             items
                 .and_then(|a| a.get(i))
-                .and_then(|r| parse_receipt(r, read))
+                .map_or(Receipt::Failed, parse_receipt)
         })
         .collect()
-}
-
-fn read_file(path: &str) -> Option<Vec<u8>> {
-    std::fs::read(path).ok()
 }
 
 /// 先等 `delay`（每 10 ms 查一次取消），没被取消才跑 `work`。被取消时为 `None`。
@@ -195,64 +251,69 @@ pub fn after_debounce<T>(
     (!cancel.load(Ordering::Relaxed)).then(work)
 }
 
-/// 整批取图（工作线程里跑）。整批 RPC 失败（服务端不在等）时为 `Err`。
-fn fetch_batch(ids: &[String], scale: f32) -> Result<Vec<Option<RawPng>>, String> {
-    let mut out = Vec::with_capacity(ids.len());
-    for chunk in ids.chunks(MAX_BATCH) {
-        let items: Vec<Value> = chunk
-            .iter()
-            .map(|id| json!({ "name": id, "scale": scale }))
-            .collect();
-        let v = crate::rpc::call_core("theme.renderPreviews", &json!({ "items": items }))?;
-        out.extend(parse_batch(&v, chunk.len(), &read_file));
-    }
-    Ok(out)
+/// 一批取图（工作线程里跑）。整批 RPC 失败（服务端不在等）时为 `Err`。
+fn fetch_chunk(ids: &[String], scale: f32) -> Result<Vec<Receipt>, String> {
+    let items: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({ "name": id, "scale": scale, "inline": true }))
+        .collect();
+    let v = crate::rpc::call_core("theme.renderPreviews", &json!({ "items": items }))?;
+    Ok(parse_batch(&v, ids.len()))
 }
 
-/// 把一轮取图的结果落成「主题 id → 图」。整批失败时每格都是 [`Thumb::Failed`]。
-pub fn thumbs_from(
+/// 把一批结果并进图表，返回这批里有没有要重试的。
+///
+/// 整批出错（`Err` / 工作线程 panic）与单条「忙」都**保留已有的图**：服务端一时不可用不该把
+/// 满屏缩略图换成占位。没图的格在整批出错时置失败（显示占位），「忙」的留在待取等重试。
+pub fn merge_chunk(
+    map: &mut HashMap<String, Thumb>,
     ids: &[String],
-    result: Option<Result<Vec<Option<RawPng>>, String>>,
+    result: Option<Result<Vec<Receipt>, String>>,
     scale: f32,
-) -> HashMap<String, Thumb> {
-    let mut items = match result {
+) -> bool {
+    let receipts = match result {
         Some(Ok(v)) => v,
-        Some(Err(e)) => {
-            tracing::debug!("主题预览取图失败：{e}");
-            Vec::new()
+        other => {
+            if let Some(Err(e)) = other {
+                tracing::debug!("主题预览取图失败：{e}");
+            }
+            for id in ids {
+                if !matches!(map.get(id), Some(Thumb::Ready(_))) {
+                    map.insert(id.clone(), Thumb::Failed);
+                }
+            }
+            return false;
         }
-        None => Vec::new(),
+    };
+    let mut retry = false;
+    let mut receipts = receipts.into_iter();
+    for id in ids {
+        match receipts.next().unwrap_or(Receipt::Failed) {
+            Receipt::Ready(raw) => {
+                map.insert(id.clone(), Thumb::Ready(raw.into_png(scale)));
+            }
+            Receipt::Failed => {
+                map.insert(id.clone(), Thumb::Failed);
+            }
+            Receipt::Retry => {
+                retry = true;
+                map.entry(id.clone()).or_insert(Thumb::Pending);
+            }
+        }
     }
-    .into_iter();
-    ids.iter()
-        .map(|id| {
-            let t = match items.next().flatten() {
-                Some(raw) => Thumb::Ready(raw.into_png(scale)),
-                None => Thumb::Failed,
-            };
-            (id.clone(), t)
-        })
-        .collect()
+    retry
 }
 
-/// 图在格子里的显示尺寸（逻辑 px）：按宽缩放、保持比例，不放大超过原图的逻辑尺寸，
-/// 并收进 `max_w × max_h`。
-pub fn fit_size(png: &Png, max_w: i32, max_h: i32) -> (i32, i32) {
-    let s = png.scale_pct.max(1) as f32 / 100.0;
-    let (nw, nh) = (png.width as f32 / s, png.height as f32 / s);
-    if nw <= 0.0 || nh <= 0.0 {
-        return (0, 0);
+/// 一轮收尾：去掉已不在列表里的主题；不再重试时，还在等的格改成占位。
+pub fn finish_round(map: &mut HashMap<String, Thumb>, ids: &[String], give_up: bool) {
+    map.retain(|k, _| ids.contains(k));
+    if give_up {
+        for t in map.values_mut() {
+            if *t == Thumb::Pending {
+                *t = Thumb::Failed;
+            }
+        }
     }
-    let k = (max_w as f32 / nw).min(max_h as f32 / nh).min(1.0);
-    (
-        ((nw * k).round() as i32).max(1),
-        ((nh * k).round() as i32).max(1),
-    )
-}
-
-/// 可用宽度 `w`（逻辑 px）下分几列：让每格最接近 [`CELL_W`]，至少一列。
-pub fn cols_for(w: i32) -> usize {
-    (((w + GAP) as f32 / (CELL_W + GAP) as f32).round() as usize).max(1)
 }
 
 /// 图的逻辑尺寸（物理像素 ÷ 请求时的缩放）。
@@ -262,6 +323,36 @@ pub fn natural_size(png: &Png) -> (i32, i32) {
         (png.width as f32 / s).round() as i32,
         (png.height as f32 / s).round() as i32,
     )
+}
+
+/// 图在固定宽度的框里的显示尺寸（逻辑 px）：按宽缩放、保持比例，不放大，收进 `max_w × max_h`。
+pub fn fit_size(png: &Png, max_w: i32, max_h: i32) -> (i32, i32) {
+    let (nw, nh) = natural_size(png);
+    if nw <= 0 || nh <= 0 {
+        return (0, 0);
+    }
+    let k = (max_w as f32 / nw as f32)
+        .min(max_h as f32 / nh as f32)
+        .min(1.0);
+    (
+        ((nw as f32 * k).round() as i32).max(1),
+        ((nh as f32 * k).round() as i32).max(1),
+    )
+}
+
+/// 可用宽度 `w`（逻辑 px）下分几列：让每格最接近 [`CELL_W`]，至少一列。
+pub fn cols_for(w: i32) -> usize {
+    (((w + GAP) as f32 / (CELL_W + GAP) as f32).round() as usize).max(1)
+}
+
+/// 取图流程走到哪了。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Idle,
+    /// 防抖计时中（还没碰服务端，可以随便取消重来）。
+    Debounce(TaskId),
+    /// 有一批在服务端。
+    Fetch(TaskId),
 }
 
 /// 画廊状态。克隆即共享（内部全是信号与 `Rc`）。
@@ -274,8 +365,13 @@ pub struct ThemeGallery {
     layout: Signal<(Vec<GalleryEntry>, usize)>,
     /// 每标脏一次加一：哨兵据此知道要重取（信号写入也负责唤起下一帧）。
     rev: Signal<u64>,
-    /// 在途的取图任务。
-    task: Rc<Cell<Option<TaskId>>>,
+    phase: Rc<Cell<Phase>>,
+    /// 在途时又标脏了：记下要用的缩放，这批回来就重来一轮。
+    pending: Rc<Cell<Option<f32>>>,
+    /// 本轮因「忙」重试过几次（外部标脏时清零）。
+    retries: Rc<Cell<u32>>,
+    /// 设置窗口所在屏的缩放（哨兵绘制时更新；导入框的预览也用它）。
+    scale: Rc<Cell<f32>>,
 }
 
 impl ThemeGallery {
@@ -286,16 +382,18 @@ impl ThemeGallery {
             thumbs: signal(HashMap::new()),
             layout: signal((Vec::new(), 3)),
             rev: signal(0),
-            task: Rc::new(Cell::new(None)),
+            phase: Rc::new(Cell::new(Phase::Idle)),
+            pending: Rc::new(Cell::new(None)),
+            retries: Rc::new(Cell::new(0)),
+            scale: Rc::new(Cell::new(1.0)),
         }
     }
 
-    /// 换上新的主题列表（导入 / 删除之后经 `AppState::apply_theme_entries` 调）。
+    /// 换上新的主题列表（`AppState::apply_theme_entries` 调，之后它会无条件标脏一次）。
     pub fn set_entries(&self, entries: Vec<GalleryEntry>) {
         if self.entries.with(|e| *e != entries) {
             self.entries.set(entries.clone());
             self.layout.update(|l| l.0 = entries);
-            self.invalidate();
         }
     }
 
@@ -307,49 +405,131 @@ impl ThemeGallery {
 
     /// 标脏：下一次本页可见时（防抖后）整批重取。
     pub fn invalidate(&self) {
+        self.retries.set(0);
         self.rev.update(|r| *r += 1);
     }
 
-    /// 发起一轮取图（取消上一轮）。工作线程先防抖再发 RPC。
-    fn fetch(&self, scale: f32) {
-        if let Some(t) = self.task.take() {
-            self.net.cancel(t);
+    /// 请求一轮取图：空闲就开始防抖；防抖中重新计时；有批在途只记一笔。
+    fn request(&self, scale: f32) {
+        match self.phase.get() {
+            Phase::Fetch(_) => self.pending.set(Some(scale)),
+            Phase::Debounce(t) => {
+                self.net.cancel(t);
+                self.start_debounce(scale);
+            }
+            Phase::Idle => self.start_debounce(scale),
         }
-        let ids: Vec<String> = self
-            .entries
-            .with(|e| e.iter().map(|x| x.id.clone()).collect());
+    }
+
+    fn start_debounce(&self, scale: f32) {
+        let g = self.clone();
+        let id = self.net.spawn(
+            move |cancel| after_debounce(cancel, DEBOUNCE, || ()),
+            move |_: Option<Option<()>>| g.start_round(scale),
+        );
+        self.phase.set(Phase::Debounce(id));
+    }
+
+    /// 防抖到点：按此刻的主题列表从头取。
+    fn start_round(&self, scale: f32) {
+        let ids: Rc<Vec<String>> = Rc::new(
+            self.entries
+                .with(|e| e.iter().map(|x| x.id.clone()).collect()),
+        );
         if ids.is_empty() {
             self.thumbs.set(HashMap::new());
+            self.phase.set(Phase::Idle);
             return;
         }
-        let (thumbs, task) = (self.thumbs, self.task.clone());
-        let ids_done = ids.clone();
+        self.fetch_chunk_at(ids, 0, scale, false);
+    }
+
+    fn fetch_chunk_at(&self, ids: Rc<Vec<String>>, at: usize, scale: f32, retry: bool) {
+        let chunk: Vec<String> = ids[at..(at + CHUNK).min(ids.len())].to_vec();
+        let g = self.clone();
         let id = self.net.spawn(
-            move |cancel| after_debounce(cancel, DEBOUNCE, || fetch_batch(&ids, scale)),
-            move |r: Option<Option<Result<Vec<Option<RawPng>>, String>>>| {
-                task.set(None);
-                thumbs.set(thumbs_from(&ids_done, r.flatten(), scale));
+            move |cancel| {
+                // 发每一批之前查一次：被取消（窗口关了之类）就别再占服务端的名额。
+                (!cancel.load(Ordering::Relaxed)).then(|| fetch_chunk(&chunk, scale))
+            },
+            move |r: Option<Option<Result<Vec<Receipt>, String>>>| {
+                g.chunk_done(ids, at, scale, retry, r.flatten())
             },
         );
-        self.task.set(Some(id));
+        self.phase.set(Phase::Fetch(id));
+    }
+
+    /// 一批回来：合并，然后看是重来一轮（在途时被标脏过）、接着取下一批，还是收尾。
+    fn chunk_done(
+        &self,
+        ids: Rc<Vec<String>>,
+        at: usize,
+        scale: f32,
+        retry: bool,
+        result: Option<Result<Vec<Receipt>, String>>,
+    ) {
+        let end = (at + CHUNK).min(ids.len());
+        // 整批出错多半是服务端不在：剩下的批不必再一批批等超时。
+        let broken = !matches!(result, Some(Ok(_)));
+        let mut retry_now = false;
+        self.thumbs
+            .update(|m| retry_now = merge_chunk(m, &ids[at..end], result, scale));
+        let retry = retry || retry_now;
+        if let Some(s) = self.pending.take() {
+            self.phase.set(Phase::Idle);
+            self.start_debounce(s);
+            return;
+        }
+        if broken {
+            self.thumbs.update(|m| {
+                merge_chunk(m, &ids[end..], None, scale);
+                finish_round(m, &ids, false);
+            });
+            self.phase.set(Phase::Idle);
+            return;
+        }
+        if end < ids.len() {
+            self.fetch_chunk_at(ids, end, scale, retry);
+            return;
+        }
+        self.phase.set(Phase::Idle);
+        let again = retry && self.retries.get() < MAX_RETRIES;
+        self.thumbs
+            .update(|m| finish_round(m, &ids, retry && !again));
+        if again {
+            self.retries.set(self.retries.get() + 1);
+            let rev = self.rev;
+            self.net.spawn(
+                |cancel| after_debounce(cancel, RETRY_DELAY, || ()),
+                // 不走 `invalidate`：那会把重试计数清零。
+                move |_: Option<Option<()>>| rev.update(|r| *r += 1),
+            );
+        }
+    }
+
+    /// 设置窗口所在屏的缩放（还没画过时为 1）。
+    pub fn scale_cell(&self) -> Rc<Cell<f32>> {
+        self.scale.clone()
     }
 }
 
-/// 页内哨兵（整宽、1 px 高、不画东西）：绘制时记下窗口所在屏的缩放、按自己的宽度定列数；
-/// 本页可见且标脏过或缩放变了，就发起一轮取图。不可见时只攒着，不替用户没打开的页去渲染。
+/// 页内哨兵（整宽、1 px 高、不画东西，排在网格之前免得被裁掉不绘制）：绘制时记下窗口所在屏
+/// 的缩放、按自己的宽度定列数；本页可见、画廊没被藏，且标脏过或缩放变了，就请求一轮取图。
+/// 不可见时只攒着，不替用户没打开的页去渲染。
 struct Driver {
     gallery: ThemeGallery,
     tab: Signal<usize>,
     page: usize,
+    vis: Vis,
     /// 最近一次绘制时画布的缩放（0 = 还没画过）。
     painted: Cell<f32>,
-    /// 已按哪一版、哪个缩放发过请求。
-    fetched: Option<(u64, f32)>,
+    /// 已按哪一版（标脏次数、外部改动次数、缩放）请求过。
+    fetched: Option<(u64, u64, f32)>,
 }
 
 impl Widget for Driver {
     fn on_update(&mut self, ctx: &mut EventCtx) {
-        if self.tab.get() != self.page {
+        if self.tab.get() != self.page || !(self.vis)() {
             return;
         }
         // 上一帧排出来的宽度（on_update 在 measure 之前跑）。没排过时为 0，先按默认列数。
@@ -358,10 +538,14 @@ impl Widget for Driver {
         if w > 0 {
             self.gallery.set_cols(cols_for(w));
         }
-        let want = (self.gallery.rev.get(), clamp_scale(self.painted.get()));
+        let want = (
+            self.gallery.rev.get(),
+            EXTERNAL_EDITS.load(Ordering::Relaxed),
+            clamp_scale(self.painted.get()),
+        );
         if self.fetched != Some(want) {
             self.fetched = Some(want);
-            self.gallery.fetch(want.1);
+            self.gallery.request(want.2);
         }
     }
 
@@ -377,8 +561,9 @@ impl Widget for Driver {
         let s = canvas.dpi_scale();
         let before = clamp_scale(self.painted.get());
         self.painted.set(s);
+        self.gallery.scale.set(clamp_scale(s));
         // 缩放变了（首帧发现不是 1、拖到别的屏）：标脏好让下一帧的 on_update 按新缩放重取。
-        // 首帧前按 1 取的那轮还在防抖里，会被这一轮取消，不多一次渲染。
+        // 首帧前按 1 请求的那轮还在防抖里，会被重新计时，不多一次渲染。
         if (clamp_scale(s) - before).abs() > f32::EPSILON {
             self.gallery.invalidate();
         }
@@ -389,8 +574,8 @@ impl Widget for Driver {
     }
 }
 
-/// 画廊卡片：网格 + 页内哨兵。
-pub fn build_card(state: &AppState) -> Element {
+/// 画廊卡片：页内哨兵 + 网格。`vis` 为假（画廊被用户藏掉）时不取图。
+pub fn build_card(state: &AppState, vis: Vis) -> Element {
     let gallery = state.theme_gallery.clone();
     let ctx = CellCtx {
         fields: state.fields.clone(),
@@ -400,6 +585,9 @@ pub fn build_card(state: &AppState) -> Element {
         del_id: state.theme_delete_id,
         del_msg: state.theme_delete_msg,
         del_visible: state.theme_delete_visible,
+        // 导出跟着「主题导入导出」走：定制版藏了就不建，用户藏了就运行期不出。
+        export: (!state.manifest.feature_hidden("theme_transfer"))
+            .then(|| crate::manifest::feature_row_vis(state, "theme_transfer")),
     };
     let grid = Element::switcher(gallery.layout, move |(list, cols)| {
         if list.is_empty() {
@@ -413,6 +601,7 @@ pub fn build_card(state: &AppState) -> Element {
             gallery,
             tab: state.tab,
             page: crate::cli::page_to_index("theme").unwrap_or(usize::MAX),
+            vis,
             painted: Cell::new(0.0),
             fetched: None,
         })
@@ -423,8 +612,8 @@ pub fn build_card(state: &AppState) -> Element {
         .width_match()
         .padding_xy(0, 14)
         .spacing(4)
-        .child(grid)
-        .child(driver);
+        .child(driver)
+        .child(grid);
     crate::widgets::section_items(
         SECTION_TITLE,
         vec![crate::widgets::CardItem::Bare(crate::widgets::card_pad(
@@ -443,6 +632,8 @@ struct CellCtx {
     del_id: Signal<String>,
     del_msg: Signal<String>,
     del_visible: Signal<bool>,
+    /// 右键菜单里的「导出」此刻能不能出（`None` = 定制版藏了，永远不出）。
+    export: Option<Vis>,
 }
 
 impl CellCtx {
@@ -457,7 +648,7 @@ impl CellCtx {
         self.values.with(|v| v.get(idx).cloned())
     }
 
-    /// 选中某个主题：写下拉的索引信号（未保存改动的口径与下拉一致，点「应用」才落盘）。
+    /// 选中某个主题：只写下拉的索引信号（未保存改动的口径与下拉一致，点「应用」才落盘）。
     fn select(&self, id: &str) {
         let Some(sig) = self
             .fields
@@ -559,21 +750,25 @@ fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
         .child(body)
 }
 
-/// 每格的右键菜单：使用 / 导出 / 删除（内置主题不能删）。
+/// 每格的右键菜单：使用 / 导出 / 删除（内置主题不能删；导出跟着 `feature:theme_transfer`）。
 fn cell_menu(ctx: &CellCtx, e: &GalleryEntry) -> Vec<MenuItem> {
     let (use_ctx, use_id) = (ctx.clone(), e.id.clone());
-    let (export_id, feedback) = (e.id.clone(), ctx.feedback);
-    let mut items = vec![
-        MenuItem::run("使用此主题", move |_| use_ctx.select(&use_id), false),
-        MenuItem::run(
+    let mut items = vec![MenuItem::run(
+        "使用此主题",
+        move |_| use_ctx.select(&use_id),
+        false,
+    )];
+    if ctx.export.as_ref().is_some_and(|v| v()) {
+        let (export_id, feedback) = (e.id.clone(), ctx.feedback);
+        items.push(MenuItem::run(
             "导出主题包…",
             move |c: &mut EventCtx| {
                 let id = export_id.clone();
                 c.defer_blocking(move || crate::pages::export_theme_package(id, feedback));
             },
             false,
-        ),
-    ];
+        ));
+    }
     if !e.builtin {
         let (id, disp) = (e.id.clone(), e.display.clone());
         let (del_id, del_msg, del_visible) = (ctx.del_id, ctx.del_msg, ctx.del_visible);
@@ -590,8 +785,13 @@ fn cell_menu(ctx: &CellCtx, e: &GalleryEntry) -> Vec<MenuItem> {
 // ───────────────────────── 主题包导入框的预览 ─────────────────────────
 
 /// 主题包确认框里的预览图：`path` 一换就按新包取一张，框收起就取消在途请求。
-/// 失败只是不出图，不挡导入。
-pub fn package_preview(net: Rc<NetTasks>, path: Signal<String>, visible: Signal<bool>) -> Element {
+/// 缩放取设置窗口所在屏的（`scale`，同画廊）。失败只是不出图，不挡导入。
+pub fn package_preview(
+    net: Rc<NetTasks>,
+    path: Signal<String>,
+    visible: Signal<bool>,
+    scale: Rc<Cell<f32>>,
+) -> Element {
     let thumb: Signal<Thumb> = signal(Thumb::Failed);
     let task: Rc<Cell<Option<TaskId>>> = Rc::new(Cell::new(None));
     let image = Element::switcher(thumb, |t: Thumb| match t {
@@ -623,17 +823,21 @@ pub fn package_preview(net: Rc<NetTasks>, path: Signal<String>, visible: Signal<
             if !visible.get() || p.is_empty() {
                 return;
             }
+            let s = clamp_scale(scale.get());
             let task_done = task.clone();
             let id = net.spawn(
                 move |_| {
-                    crate::rpc::call_core("theme.renderPreview", &json!({ "package": p }))
-                        .ok()
-                        .and_then(|v| parse_receipt(&v, &read_file))
+                    crate::rpc::call_core(
+                        "theme.renderPreview",
+                        &json!({ "package": p, "scale": s, "inline": true }),
+                    )
+                    .ok()
+                    .map(|v| parse_receipt(&v))
                 },
-                move |r: Option<Option<RawPng>>| {
+                move |r: Option<Option<Receipt>>| {
                     task_done.set(None);
-                    if let Some(raw) = r.flatten() {
-                        thumb.set(Thumb::Ready(raw.into_png(1.0)));
+                    if let Some(Receipt::Ready(raw)) = r.flatten() {
+                        thumb.set(Thumb::Ready(raw.into_png(s)));
                     }
                 },
             );
@@ -649,8 +853,29 @@ mod tests {
 
     const PNG: &[u8] = include_bytes!("mockdata/theme_previews/default.png");
 
-    fn no_read(_: &str) -> Option<Vec<u8>> {
-        None
+    fn b64(b: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(b)
+    }
+
+    fn raw(hash: &str) -> RawPng {
+        RawPng {
+            hash: hash.into(),
+            bytes: PNG.to_vec(),
+            width: 240,
+            height: 64,
+        }
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn ready(m: &HashMap<String, Thumb>, id: &str) -> Option<String> {
+        match m.get(id) {
+            Some(Thumb::Ready(p)) => Some(p.hash.clone()),
+            _ => None,
+        }
     }
 
     #[test]
@@ -677,77 +902,111 @@ mod tests {
     }
 
     #[test]
-    fn receipt_prefers_inline_png_over_path() {
-        use base64::Engine;
-        let v = json!({
-            "ok": true, "hash": "h1", "width": 240, "height": 64, "cached": true,
-            "path": "/nope.png",
-            "png": base64::engine::general_purpose::STANDARD.encode(PNG),
-        });
-        let read = |_: &str| -> Option<Vec<u8>> { panic!("有内联数据就不该读文件") };
-        let r = parse_receipt(&v, &read).unwrap();
-        assert_eq!(r.bytes, PNG);
-        assert_eq!((r.width, r.height, r.hash.as_str()), (240, 64, "h1"));
+    fn receipt_uses_inline_png_and_falls_back_to_png_header_size() {
+        let v = json!({ "ok": true, "hash": "h1", "width": 240, "height": 64, "png": b64(PNG) });
+        assert_eq!(parse_receipt(&v), Receipt::Ready(raw("h1")));
+        let v = json!({ "ok": true, "hash": "h2", "png": b64(PNG) });
+        match parse_receipt(&v) {
+            Receipt::Ready(r) => assert_eq!((r.width, r.height), (240, 64), "宽高缺失时取 PNG 头"),
+            r => panic!("{r:?}"),
+        }
     }
 
     #[test]
-    fn receipt_reads_path_and_falls_back_to_png_header_size() {
-        let v = json!({ "ok": true, "hash": "h2", "path": "/cache/a.png", "cached": false });
-        let read = |p: &str| (p == "/cache/a.png").then(|| PNG.to_vec());
-        let r = parse_receipt(&v, &read).unwrap();
-        assert_eq!((r.width, r.height), (240, 64), "宽高缺失时取 PNG 头");
+    fn receipt_without_inline_png_is_a_failure() {
+        let v =
+            json!({ "ok": true, "hash": "h", "path": "/cache/a.png", "width": 240, "height": 64 });
+        assert_eq!(parse_receipt(&v), Receipt::Failed, "不读服务端回的 path");
+        assert_eq!(
+            parse_receipt(&json!({ "ok": true, "png": "!!!" })),
+            Receipt::Failed
+        );
+        assert_eq!(parse_receipt(&json!({})), Receipt::Failed);
     }
 
     #[test]
-    fn failed_or_unreadable_receipts_are_none() {
-        assert!(parse_receipt(&json!({ "ok": false, "error": "找不到主题" }), &no_read).is_none());
-        assert!(parse_receipt(&json!({ "ok": true, "path": "/x.png" }), &no_read).is_none());
-        assert!(parse_receipt(&json!({ "ok": true, "png": "!!!" }), &no_read).is_none());
-        assert!(parse_receipt(&json!({}), &no_read).is_none());
+    fn busy_and_timeout_are_retryable_other_errors_are_not() {
+        let e = |m: &str| parse_receipt(&json!({ "ok": false, "error": m }));
+        assert_eq!(e("预览渲染忙，稍后再试"), Receipt::Retry);
+        assert_eq!(e("预览渲染超时（3 秒）"), Receipt::Retry);
+        assert_eq!(e("找不到主题"), Receipt::Failed);
     }
 
     #[test]
     fn batch_keeps_request_order_and_pads_missing_items() {
-        let read = |p: &str| (p == "/a.png").then(|| PNG.to_vec());
         let v = json!({ "items": [
             { "ok": false, "error": "x" },
-            { "ok": true, "path": "/a.png", "width": 240, "height": 64, "hash": "a" },
+            { "ok": true, "png": b64(PNG), "width": 240, "height": 64, "hash": "a" },
         ]});
-        let out = parse_batch(&v, 3, &read);
-        assert_eq!(out.len(), 3);
-        assert!(out[0].is_none());
-        assert_eq!(out[1].as_ref().unwrap().hash, "a");
-        assert!(out[2].is_none(), "回执短了一截，缺的那格按失败");
+        let out = parse_batch(&v, 3);
+        assert_eq!(out[0], Receipt::Failed);
+        assert_eq!(out[1], Receipt::Ready(raw("a")));
+        assert_eq!(out[2], Receipt::Failed, "回执短了一截，缺的那格按失败");
     }
 
     #[test]
-    fn whole_batch_failure_turns_every_cell_into_placeholder() {
-        let ids = vec!["default".to_string(), "jade".to_string()];
-        let m = thumbs_from(&ids, Some(Err("连接 core 失败".into())), 1.0);
-        assert_eq!(m.len(), 2);
-        assert!(m.values().all(|t| *t == Thumb::Failed));
-        let m = thumbs_from(&ids, None, 1.0);
-        assert!(
-            m.values().all(|t| *t == Thumb::Failed),
-            "工作线程 panic 同样只出占位"
+    fn whole_batch_failure_keeps_old_images() {
+        let mut m = HashMap::new();
+        m.insert(
+            "default".to_string(),
+            Thumb::Ready(raw("old").into_png(1.0)),
+        );
+        let all = ids(&["default", "jade"]);
+        assert!(!merge_chunk(
+            &mut m,
+            &all,
+            Some(Err("连接 core 失败".into())),
+            1.0
+        ));
+        assert_eq!(ready(&m, "default").as_deref(), Some("old"), "旧图照留");
+        assert_eq!(m["jade"], Thumb::Failed, "没图的格出占位");
+        merge_chunk(&mut m, &all, None, 1.0);
+        assert_eq!(
+            ready(&m, "default").as_deref(),
+            Some("old"),
+            "工作线程 panic 同理"
         );
     }
 
     #[test]
-    fn thumbs_map_by_id_with_scale() {
-        let ids = vec!["default".to_string(), "gone".to_string()];
-        let raw = RawPng {
-            hash: "a".into(),
-            bytes: PNG.to_vec(),
-            width: 480,
-            height: 128,
-        };
-        let m = thumbs_from(&ids, Some(Ok(vec![Some(raw), None])), 2.0);
-        match &m["default"] {
-            Thumb::Ready(p) => assert_eq!(p.scale_pct, 200),
-            t => panic!("应取到图：{t:?}"),
-        }
-        assert_eq!(m["gone"], Thumb::Failed);
+    fn busy_item_keeps_old_image_and_asks_for_retry() {
+        let mut m = HashMap::new();
+        m.insert(
+            "default".to_string(),
+            Thumb::Ready(raw("old").into_png(1.0)),
+        );
+        let all = ids(&["default", "jade", "mono"]);
+        let got = Some(Ok(vec![Receipt::Retry, Receipt::Retry, Receipt::Failed]));
+        assert!(merge_chunk(&mut m, &all, got, 1.0));
+        assert_eq!(ready(&m, "default").as_deref(), Some("old"));
+        assert_eq!(m["jade"], Thumb::Pending, "忙的格等重试");
+        assert_eq!(m["mono"], Thumb::Failed, "只有 ok:false 置失败");
+        finish_round(&mut m, &all, true);
+        assert_eq!(m["jade"], Thumb::Failed, "重试用完改占位");
+        assert_eq!(ready(&m, "default").as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn finish_round_drops_themes_no_longer_listed() {
+        let mut m = HashMap::new();
+        m.insert("gone".to_string(), Thumb::Failed);
+        m.insert("default".to_string(), Thumb::Pending);
+        finish_round(&mut m, &ids(&["default"]), false);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m["default"], Thumb::Pending, "还要重试的不动");
+    }
+
+    #[test]
+    fn png_equality_compares_hash_and_scale_not_bytes() {
+        let a = raw("h").into_png(1.0);
+        let mut b = raw("h").into_png(1.0);
+        b.bytes = Rc::from(&[1u8, 2, 3][..]);
+        assert_eq!(a, b, "同哈希同缩放即相等");
+        assert_ne!(a, raw("h").into_png(2.0));
+        assert_ne!(a, raw("x").into_png(1.0));
+        let c = raw("").into_png(1.0);
+        assert_eq!(c, c.clone(), "无哈希时同一份字节相等");
+        assert_ne!(c, raw("").into_png(1.0), "无哈希时不同份不相等");
     }
 
     #[test]
@@ -759,12 +1018,10 @@ mod tests {
             height: h,
             scale_pct: pct,
         };
-        // 2× 屏上 960×128 物理 = 480×64 逻辑，按宽收进 240 ⇒ 240×32。
         assert_eq!(fit_size(&png(960, 128, 200), 240, 120), (240, 32));
-        // 小图不放大。
         assert_eq!(fit_size(&png(200, 50, 100), 240, 120), (200, 50));
-        // 竖排高图按高收。
         assert_eq!(fit_size(&png(200, 600, 100), 240, 120), (40, 120));
+        assert_eq!(natural_size(&png(960, 128, 200)), (480, 64));
     }
 
     #[test]
@@ -793,14 +1050,6 @@ mod tests {
         assert_eq!(cols_for(544), 2, "两格正好各 266");
         assert_eq!(cols_for(900), 3);
         assert_eq!(cols_for(1200), 4);
-        let png = Png {
-            hash: String::new(),
-            bytes: Rc::from(&[][..]),
-            width: 960,
-            height: 128,
-            scale_pct: 200,
-        };
-        assert_eq!(natural_size(&png), (480, 64));
     }
 
     #[test]
@@ -812,29 +1061,229 @@ mod tests {
     }
 
     #[test]
-    fn mock_batch_reply_parses_into_inline_images() {
+    fn mock_replies_are_inline_images() {
         let items = json!({ "items": [{ "name": "default" }, { "name": "no-such-theme" }] });
         let v = crate::rpc::mock_reply("theme.renderPreviews", &items);
-        let out = parse_batch(&v, 2, &no_read);
-        assert!(out[0].is_some(), "mock 回内联 PNG，不读 path 也能出图");
-        assert!(out[1].is_none());
+        let out = parse_batch(&v, 2);
+        assert!(matches!(out[0], Receipt::Ready(_)));
+        assert_eq!(out[1], Receipt::Failed);
         let one = crate::rpc::mock_reply("theme.renderPreview", &json!({ "package": "/x.wtheme" }));
-        assert!(parse_receipt(&one, &no_read).is_some());
+        assert!(matches!(parse_receipt(&one), Receipt::Ready(_)));
+    }
+
+    fn gallery_with(list: &[&str]) -> ThemeGallery {
+        let g = ThemeGallery::new(Rc::new(NetTasks::default()));
+        g.set_entries(
+            list.iter()
+                .map(|id| GalleryEntry {
+                    id: id.to_string(),
+                    display: id.to_string(),
+                    builtin: true,
+                })
+                .collect(),
+        );
+        g
+    }
+
+    /// 在途时再标脏：不另发一批，只记一笔；这批回来后先合并、再重新防抖。
+    #[test]
+    fn marking_dirty_while_in_flight_queues_exactly_one_rerun() {
+        let g = gallery_with(&["default", "jade"]);
+        g.start_round(1.0);
+        let Phase::Fetch(first) = g.phase.get() else {
+            panic!("应有一批在途：{:?}", g.phase.get());
+        };
+        g.request(1.0);
+        g.request(1.5);
+        assert_eq!(g.phase.get(), Phase::Fetch(first), "在途时不另发");
+        assert_eq!(g.pending.get(), Some(1.5), "只记最后一笔");
+
+        let all = Rc::new(ids(&["default", "jade"]));
+        g.chunk_done(
+            all,
+            0,
+            1.0,
+            false,
+            Some(Ok(vec![Receipt::Ready(raw("a")), Receipt::Failed])),
+        );
+        assert_eq!(
+            ready(&g.thumbs.get(), "default").as_deref(),
+            Some("a"),
+            "结果先并进去"
+        );
+        assert!(matches!(g.phase.get(), Phase::Debounce(_)), "随后重新防抖");
+        assert_eq!(g.pending.get(), None);
+    }
+
+    /// 防抖中再标脏只是重新计时，不碰服务端。
+    #[test]
+    fn marking_dirty_during_debounce_restarts_the_timer() {
+        let g = gallery_with(&["default"]);
+        g.request(1.0);
+        let Phase::Debounce(a) = g.phase.get() else {
+            panic!()
+        };
+        g.request(1.0);
+        let Phase::Debounce(b) = g.phase.get() else {
+            panic!()
+        };
+        assert_ne!(a, b);
+    }
+
+    /// 多于一批时逐批接着取；全部取完回到空闲。
+    #[test]
+    fn rounds_walk_the_list_in_chunks_of_eight() {
+        let names: Vec<String> = (0..10).map(|i| format!("t{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let g = gallery_with(&refs);
+        g.start_round(1.0);
+        let all = Rc::new(names.clone());
+        let oks = |n: usize| Some(Ok((0..n).map(|_| Receipt::Failed).collect()));
+        g.chunk_done(all.clone(), 0, 1.0, false, oks(CHUNK));
+        assert!(matches!(g.phase.get(), Phase::Fetch(_)), "还有第二批");
+        g.chunk_done(all, CHUNK, 1.0, false, oks(2));
+        assert_eq!(g.phase.get(), Phase::Idle);
+        assert_eq!(g.thumbs.get().len(), 10);
+    }
+
+    /// 整批出错就不再接着取后面的批，剩下没图的格直接出占位。
+    #[test]
+    fn broken_batch_stops_the_round() {
+        let names: Vec<String> = (0..10).map(|i| format!("t{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let g = gallery_with(&refs);
+        g.start_round(1.0);
+        g.chunk_done(
+            Rc::new(names),
+            0,
+            1.0,
+            false,
+            Some(Err("连接 core 失败".into())),
+        );
+        assert_eq!(g.phase.get(), Phase::Idle);
+        assert!(g.thumbs.get().values().all(|t| *t == Thumb::Failed));
+        assert_eq!(g.thumbs.get().len(), 10);
+    }
+
+    /// 「忙」的格隔一会儿重试，至多三次，之后改占位。
+    #[test]
+    fn busy_items_retry_at_most_three_times() {
+        let g = gallery_with(&["default"]);
+        let all = Rc::new(ids(&["default"]));
+        for n in 1..=MAX_RETRIES {
+            g.start_round(1.0);
+            g.chunk_done(all.clone(), 0, 1.0, false, Some(Ok(vec![Receipt::Retry])));
+            assert_eq!(g.retries.get(), n);
+            assert_eq!(g.thumbs.get()["default"], Thumb::Pending);
+        }
+        g.start_round(1.0);
+        g.chunk_done(all, 0, 1.0, false, Some(Ok(vec![Receipt::Retry])));
+        assert_eq!(g.retries.get(), MAX_RETRIES);
+        assert_eq!(g.thumbs.get()["default"], Thumb::Failed);
+        g.invalidate();
+        assert_eq!(g.retries.get(), 0, "外部标脏清零重试计数");
+    }
+
+    /// 点一格只改下拉的索引信号：不发 RPC、不动配置镜像。
+    #[test]
+    fn clicking_a_cell_only_moves_the_dropdown_index() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = AppState::empty();
+        st.theme_value_sig.set(ids(&["default", "jade", "mono"]));
+        let idx = signal(0usize);
+        st.fields
+            .select_indices
+            .borrow_mut()
+            .insert("ui.theme.name".into(), idx);
+        let before = st.current_config.get_path("ui.theme.name").cloned();
+        let ctx = CellCtx {
+            fields: st.fields.clone(),
+            values: st.theme_value_sig,
+            thumbs: st.theme_gallery.thumbs,
+            feedback: st.feedback,
+            del_id: st.theme_delete_id,
+            del_msg: st.theme_delete_msg,
+            del_visible: st.theme_delete_visible,
+            export: None,
+        };
+        crate::rpc::take_mock_calls();
+        ctx.select("jade");
+        assert_eq!(idx.get(), 1);
+        assert_eq!(ctx.selected().as_deref(), Some("jade"));
+        assert!(crate::rpc::take_mock_calls().is_empty(), "不落盘、不发 RPC");
+        assert_eq!(st.current_config.get_path("ui.theme.name").cloned(), before);
+    }
+
+    fn menu_labels(export: Option<Vis>) -> Vec<String> {
+        let st = AppState::empty();
+        let ctx = CellCtx {
+            fields: st.fields.clone(),
+            values: st.theme_value_sig,
+            thumbs: st.theme_gallery.thumbs,
+            feedback: st.feedback,
+            del_id: st.theme_delete_id,
+            del_msg: st.theme_delete_msg,
+            del_visible: st.theme_delete_visible,
+            export,
+        };
+        let e = GalleryEntry {
+            id: "mono".into(),
+            display: "墨".into(),
+            builtin: false,
+        };
+        cell_menu(&ctx, &e).into_iter().map(|m| m.label).collect()
     }
 
     #[test]
-    fn set_entries_only_invalidates_on_real_change() {
-        let g = ThemeGallery::new(Rc::new(NetTasks::default()));
-        let e = vec![GalleryEntry {
-            id: "a".into(),
-            display: "A".into(),
+    fn export_menu_follows_theme_transfer_feature() {
+        let has = |l: &[String]| l.iter().any(|s| s == "导出主题包…");
+        assert!(has(&menu_labels(Some(Rc::new(|| true)))));
+        assert!(
+            !has(&menu_labels(Some(Rc::new(|| false)))),
+            "用户藏了就不出"
+        );
+        assert!(!has(&menu_labels(None)), "定制版藏了就不建");
+        assert!(menu_labels(None).iter().any(|s| s == "删除主题…"));
+    }
+
+    /// 本页不可见（或画廊被藏）时哨兵不发请求；切过来才发。
+    #[test]
+    fn no_request_until_the_page_is_shown() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let st = AppState::empty();
+        st.theme_gallery.set_entries(vec![GalleryEntry {
+            id: "default".into(),
+            display: "默认".into(),
             builtin: true,
-        }];
-        g.set_entries(e.clone());
-        let r = g.rev.get();
-        g.set_entries(e);
-        assert_eq!(g.rev.get(), r, "同一份列表不该再取一次");
-        g.set_entries(Vec::new());
-        assert_eq!(g.rev.get(), r + 1);
+        }]);
+        let shown = Rc::new(Cell::new(true));
+        let s = shown.clone();
+        let card = build_card(&st, Rc::new(move || s.get()));
+        let mut tree = Tree::new();
+        let root = Element::col()
+            .width(800)
+            .height(600)
+            .child(card)
+            .build(&mut tree);
+        tree.root = Some(root);
+        let layout =
+            |t: &mut Tree| t.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
+
+        st.tab.set(0);
+        layout(&mut tree);
+        assert_eq!(st.theme_gallery.phase.get(), Phase::Idle, "别的页不取");
+
+        st.tab.set(crate::cli::page_to_index("theme").unwrap());
+        shown.set(false);
+        layout(&mut tree);
+        assert_eq!(st.theme_gallery.phase.get(), Phase::Idle, "画廊被藏不取");
+
+        shown.set(true);
+        layout(&mut tree);
+        assert!(matches!(st.theme_gallery.phase.get(), Phase::Debounce(_)));
     }
 }

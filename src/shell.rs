@@ -1204,13 +1204,14 @@ fn build_protocol_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Elem
 /// 对话框，复用通用确认框即可。撞名会在这一步之后再弹覆盖确认——两组 signal 分开，
 /// 后一个不会把前一个的内容冲掉。
 fn build_theme_package_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
-    let (visible, msg, path, net) = {
+    let (visible, msg, path, net, scale) = {
         let st = app.borrow();
         (
             st.theme_pkg_confirm_visible,
             st.theme_pkg_confirm_msg,
             st.theme_pkg_confirm_path,
             st.net.clone(),
+            st.theme_gallery.scale_cell(),
         )
     };
     let app_im = app.clone();
@@ -1219,7 +1220,9 @@ fn build_theme_package_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
         visible,
         "导入主题包",
         Element::label_signal(msg).max_lines(8),
-        Some(crate::theme_gallery::package_preview(net, path, visible)),
+        Some(crate::theme_gallery::package_preview(
+            net, path, visible, scale,
+        )),
         "导入",
         false,
         move |_| {

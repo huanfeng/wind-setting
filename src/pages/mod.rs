@@ -835,7 +835,7 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
     // 定制等于没锁），用户藏了它就运行期一起藏。
     if state.manifest.is_visible("ui.theme.name") {
         let vis = crate::manifest::row_vis(state, "ui.theme.name", "theme", "主题");
-        let card = crate::theme_gallery::build_card(state).visible_when({
+        let card = crate::theme_gallery::build_card(state, vis.clone()).visible_when({
             let vis = vis.clone();
             move || vis()
         });

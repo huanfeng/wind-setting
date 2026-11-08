@@ -374,7 +374,9 @@ fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
     // slug：主题唯一 id（编辑器拉取时记住的原始 id）。传入则由 core 就地写回该 id 目录。
     let slug = payload.get("slug").and_then(serde_json::Value::as_str);
 
-    let reply = match import_text(text, force, slug) {
+    let reply = match import_text(text, force, slug)
+        .inspect(|_| crate::theme_gallery::note_external_edit())
+    {
         Ok(result) => json_reply(
             200,
             &serde_json::json!({
