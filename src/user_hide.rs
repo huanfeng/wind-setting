@@ -79,6 +79,18 @@ pub enum HideRule {
     },
 }
 
+/// 已发布过的分区搬了分组：`(旧分组, 分区名, 新分组)`。用户清单里写着旧分组的
+/// `section:` 规则按新分组解析，规范形态也随之写成新的。
+const MOVED_SECTIONS: &[(&str, &str, &str)] = &[("ui", "主题", "theme")];
+
+fn relocate_group(group: &str, section: &str) -> String {
+    MOVED_SECTIONS
+        .iter()
+        .find(|(g, s, _)| *g == group && *s == section)
+        .map_or(group, |(_, _, to)| to)
+        .to_string()
+}
+
 impl HideRule {
     pub fn parse(raw: &str) -> Result<Self, String> {
         let s = raw.trim();
@@ -95,7 +107,7 @@ impl HideRule {
                             "`{s}` 的分组/分区名不能为空。写成 `section:<分组>/<分区>`。"
                         ));
                     }
-                    (Some(g.to_string()), sec.to_string())
+                    (Some(relocate_group(g, sec)), sec.to_string())
                 }
                 None => (None, body.to_string()),
             };
@@ -588,10 +600,42 @@ mod tests {
         let any = HideRule::parse("section:统计设置").unwrap();
         assert!(any.matches_section("stats", "统计设置"));
         assert!(any.matches_section("advanced", "统计设置"));
-        let one = HideRule::parse("section:ui/主题").unwrap();
-        assert!(one.matches_section("ui", "主题"));
-        assert!(!one.matches_section("advanced", "主题"));
-        assert_eq!(one.as_selector(), "section:ui/主题");
+        let one = HideRule::parse("section:ui/候选字体").unwrap();
+        assert!(one.matches_section("ui", "候选字体"));
+        assert!(!one.matches_section("advanced", "候选字体"));
+        assert_eq!(one.as_selector(), "section:ui/候选字体");
+    }
+
+    /// 「主题」卡从 ui 组搬到了 theme 组：发布版写下的 `section:ui/主题` 仍要藏住它，
+    /// 也能被「取消隐藏」按新写法删掉。
+    #[test]
+    fn moved_theme_section_keeps_old_selector_working() {
+        let old = HideRule::parse("section:ui/主题").unwrap();
+        assert!(old.matches_section("theme", "主题"));
+        assert!(!old.matches_section("ui", "主题"));
+        assert_eq!(old.as_selector(), "section:theme/主题");
+        // 只认这一节：ui 组的其它分区不受影响。
+        assert!(
+            HideRule::parse("section:ui/候选字体")
+                .unwrap()
+                .matches_section("ui", "候选字体")
+        );
+
+        let s = store(UserHideConfig {
+            enabled: true,
+            hide: vec!["section:ui/主题".into()],
+            ..Default::default()
+        });
+        assert!(s.hides_section("theme", "主题"));
+        assert_eq!(
+            s.rule_hiding_section(Some("theme"), "主题").as_deref(),
+            Some("section:theme/主题")
+        );
+        assert!(
+            s.remove("section:theme/主题").unwrap(),
+            "旧写法按新规范形态可删"
+        );
+        assert!(!s.hides_section("theme", "主题"));
     }
 
     #[test]
@@ -635,7 +679,7 @@ mod tests {
         assert!(!h.hides_key("backup"));
     }
 
-    /// 去重：同一规则写两遍只留一条；不同写法（`section:ui/主题` 与 `section:主题`）
+    /// 去重：同一规则写两遍只留一条；不同写法（`section:ui/候选字体` 与 `section:候选字体`）
     /// 是两条规则，各自可删。
     #[test]
     fn duplicate_rules_collapse() {
@@ -653,15 +697,15 @@ mod tests {
         let s = store(UserHideConfig::default());
         assert!(s.add("key:ui.font.family").unwrap());
         assert!(!s.add("key:ui.font.family").unwrap(), "重复添加是空操作");
-        assert!(s.add("section:ui/主题").unwrap());
+        assert!(s.add("section:ui/候选字体").unwrap());
         assert_eq!(s.count(), 2);
         assert_eq!(
             s.rule_hiding_key("ui.font.family").as_deref(),
             Some("key:ui.font.family")
         );
         assert_eq!(
-            s.rule_hiding_section(Some("ui"), "主题").as_deref(),
-            Some("section:ui/主题")
+            s.rule_hiding_section(Some("ui"), "候选字体").as_deref(),
+            Some("section:ui/候选字体")
         );
         assert!(s.remove("key:ui.font.family").unwrap());
         assert!(!s.remove("key:ui.font.family").unwrap());
