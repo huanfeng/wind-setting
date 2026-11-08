@@ -828,7 +828,11 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
                 req.url,
                 req.name
             );
-            if req.kind == "theme" {
+            if req.kind == "theme" && st.theme_pkg_confirm_busy() {
+                // 主题包确认 / 覆盖确认开着时不接新链接：新导入框会盖在确认框上，用户
+                // 分不清手里点的是哪一个（见 `AppState::open_downloaded_theme_package`）。
+                st.notify_err("上一个主题包还在等待确认，请先处理完再导入新的");
+            } else if req.kind == "theme" {
                 st.set_pending_theme_import(req.url, req.name);
                 st.theme_import_dialog_visible.set(true);
                 st.feedback.set(Some((
@@ -926,6 +930,23 @@ mod tests {
                 "收到主题导入请求，请确认来源后导入".to_string()
             ))
         );
+    }
+
+    /// 主题包确认框开着时来了新的主题链接：不弹导入框盖住它，只提示。
+    #[test]
+    fn route_protocol_theme_waits_for_open_package_confirm() {
+        let state = Rc::new(RefCell::new(state::AppState::empty()));
+        state.borrow().theme_pkg_confirm_visible.set(true);
+
+        route_protocol(
+            "windinput://import/theme?url=https%3A%2F%2Fwindinput.com%2Fb.wtheme",
+            &state,
+        );
+
+        let st = state.borrow();
+        assert!(!st.theme_import_dialog_visible.get());
+        assert_eq!(st.pending_theme_import_url.get(), "");
+        assert!(matches!(st.feedback.get(), Some((ToastKind::Error, _))));
     }
 
     #[test]

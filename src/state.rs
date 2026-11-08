@@ -2110,6 +2110,12 @@ impl AppState {
         pkg: crate::schema_url_import::DownloadedPackage,
         preview: &crate::theme_import::ThemePreview,
     ) {
+        // 上一个包还在等用户拍板：不换掉它（用户正要点「导入 / 覆盖」时被换成另一个包，
+        // 装上的就不是他看过的那个）。新包随 drop 删掉。
+        if self.theme_pkg_confirm_busy() {
+            self.notify_err("上一个主题包还在等待确认，请先处理完再导入新的");
+            return;
+        }
         self.theme_pkg_confirm_msg.set(preview.confirm_text());
         self.theme_pkg_confirm_path
             .set(pkg.path().to_string_lossy().into_owned());
@@ -2118,12 +2124,17 @@ impl AppState {
         self.theme_pkg_confirm_visible.set(true);
     }
 
+    /// 主题包确认框或随后的覆盖确认还开着。
+    pub fn theme_pkg_confirm_busy(&self) -> bool {
+        self.theme_pkg_confirm_visible.get() || self.theme_overwrite_visible.get()
+    }
+
     /// 主题包确认框与覆盖确认框都收起了，就删掉链接下载来的包。
     ///
     /// 两框接连出现（先确认装、撞名再确认覆盖），覆盖确认里存的也只是路径——只看第一个框
     /// 就删的话，用户点「覆盖」时文件已经没了。
     pub fn release_downloaded_theme_pkg_if_idle(&self) {
-        if !self.theme_pkg_confirm_visible.get() && !self.theme_overwrite_visible.get() {
+        if !self.theme_pkg_confirm_busy() {
             self.theme_downloaded_pkg.borrow_mut().take();
         }
     }
@@ -5253,6 +5264,45 @@ mod tests {
         st.theme_overwrite_visible.set(false);
         st.release_downloaded_theme_pkg_if_idle();
         assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 确认框开着时又下回一个包：不换掉用户正在看的那个，新包当场删掉。
+    #[test]
+    fn second_downloaded_package_does_not_replace_the_one_being_confirmed() {
+        let dir = std::env::temp_dir().join(format!("wind_setting_dl_pkg2_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = || {
+            crate::schema_url_import::save_stream(
+                &dir,
+                &b"PK\x03\x04"[..],
+                &crate::theme_import::THEME_PKG,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let preview = |name: &str| crate::theme_import::ThemePreview {
+            slug: String::new(),
+            display_name: name.to_string(),
+            version: String::new(),
+            author: String::new(),
+            asset_count: 0,
+        };
+        let st = AppState::empty();
+        let first = save();
+        let first_path = first.path().to_string_lossy().into_owned();
+        st.open_downloaded_theme_package(first, &preview("甲"));
+        let second = save();
+        let second_path = second.path().to_path_buf();
+        st.open_downloaded_theme_package(second, &preview("乙"));
+
+        assert_eq!(st.theme_pkg_confirm_path.get(), first_path);
+        assert!(st.theme_pkg_confirm_msg.get().contains("甲"));
+        assert!(!second_path.exists(), "被拒的新包当场删掉");
+        assert!(std::path::Path::new(&first_path).exists());
+        let (kind, _) = st.feedback.get().expect("应提示");
+        assert_eq!(kind, ToastKind::Error);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -482,6 +482,15 @@ pub fn dispatch_import_path(
             // 先预览再确认——与方案包双击同一形状。主题包多半是从网上下回来的，
             // 双击就直接改掉当前外观不合适；两种包的双击体验也不该一个有确认一个没有。
             import.visible.set(false);
+            // 确认框还开着：不把它换成另一个包（用户正要点「导入」时被换掉，装上的就不是
+            // 他看过的那个）。
+            if theme_import.visible.get() {
+                import.notify(
+                    ToastKind::Error,
+                    "上一个主题包还在等待确认，请先处理完再导入新的",
+                );
+                return;
+            }
             match crate::theme_import::preview_package(&path.to_string_lossy()) {
                 Ok(p) => {
                     theme_import.msg.set(p.confirm_text());
