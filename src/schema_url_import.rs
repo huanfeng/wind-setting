@@ -14,16 +14,35 @@ use std::sync::atomic::AtomicBool;
 
 use crate::net_task::{ReadError, copy_limited};
 
-/// 方案包体积上限（zip 内含词库，比主题大得多）。
-const MAX_SCHEMA_BYTES: usize = 64 * 1024 * 1024;
+/// 一类下载包的落盘参数。方案包与主题包共用这套下载 / 落盘逻辑，只有文案、前缀与上限不同。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PkgKind {
+    /// 报错文案里的主语（「方案包」「主题包」）。
+    pub label: &'static str,
+    /// 落盘文件名前缀；清理陈旧残留只认这个前缀。
+    pub prefix: &'static str,
+    /// 落盘文件扩展名（不含点）。
+    pub ext: &'static str,
+    /// 正文上限（字节）。
+    pub max: usize,
+    /// 超限时的报错。
+    pub too_large: &'static str,
+}
+
+/// 方案包（zip 内含词库，比主题大得多）。
+pub(crate) const SCHEMA_PKG: PkgKind = PkgKind {
+    label: "方案包",
+    prefix: "windinput_schema_import-",
+    ext: "zip",
+    max: 64 * 1024 * 1024,
+    too_large: "方案包超过 64 MB 限制",
+};
 /// 连接 / 单次读两道超时。不设整体超时：64 MB 在慢网下多久都可能，卡死的连接由这两道
 /// 兜住，嫌慢由用户在下载框里取消；下载在工作线程里跑，不卡界面。
 const CONNECT_TIMEOUT_SECS: u64 = 8;
 const READ_TIMEOUT_SECS: u64 = 15;
 /// 最多跟随的重定向跳数（与原先交给 ureq 时的 `.redirects(3)` 同额）。
 const MAX_REDIRECTS: usize = 3;
-/// 下载落盘文件名前缀；清理陈旧残留只认这个前缀。
-const FILE_PREFIX: &str = "windinput_schema_import-";
 /// 早于这个时长的残留（进程在确认框开着时被杀）下次下载时顺手删掉。
 const STALE_SECS: u64 = 24 * 60 * 60;
 
@@ -71,9 +90,14 @@ pub(crate) enum Fetched {
 
 /// 第一跳的校验：https + 官方域。
 pub(crate) fn check_official_url(url: &str) -> Result<(), String> {
+    check_official_url_as(url, SCHEMA_PKG.label)
+}
+
+/// [`check_official_url`] 的通用版，`label` 是报错里的主语。
+pub(crate) fn check_official_url_as(url: &str, label: &str) -> Result<(), String> {
     parse_official_https(url)
         .map(|_| ())
-        .map_err(|e| format!("方案包{e}"))
+        .map_err(|e| format!("{label}{e}"))
 }
 
 /// 按「每一跳先校验、再请求」的次序取方案包正文。`fetch` 只做一次往返、不跟随重定向。
@@ -81,9 +105,10 @@ pub(crate) fn check_official_url(url: &str) -> Result<(), String> {
 /// 拆出 `fetch` 是为了单测：真 TLS 起不了本地服务，注入假往返就能覆盖跨域与降级重定向。
 pub(crate) fn fetch_official(
     url: &str,
+    label: &str,
     mut fetch: impl FnMut(&str) -> Result<Fetched, String>,
 ) -> Result<Body, String> {
-    let mut current = parse_official_https(url).map_err(|e| format!("方案包{e}"))?;
+    let mut current = parse_official_https(url).map_err(|e| format!("{label}{e}"))?;
     for _ in 0..=MAX_REDIRECTS {
         // 请求用解析后的规范串：发出去的就是校验过的那一个地址。
         match fetch(current.as_str())? {
@@ -95,25 +120,25 @@ pub(crate) fn fetch_official(
                     .ok()
                     .and_then(|u| parse_official_https(u.as_str()).ok())
                     .ok_or_else(|| {
-                        format!("方案包链接重定向到了非官方或非 https 地址，已拒绝：{location}")
+                        format!("{label}链接重定向到了非官方或非 https 地址，已拒绝：{location}")
                     })?;
             }
         }
     }
-    Err(format!("方案包链接重定向超过 {MAX_REDIRECTS} 次，已放弃"))
+    Err(format!("{label}链接重定向超过 {MAX_REDIRECTS} 次，已放弃"))
 }
 
 /// 真实的一次往返：不自动跟随重定向，且只走 https（`https_only` 是兜底，逐跳校验已拦）。
-fn http_fetch(agent: &ureq::Agent, url: &str) -> Result<Fetched, String> {
+pub(crate) fn http_fetch(agent: &ureq::Agent, url: &str, label: &str) -> Result<Fetched, String> {
     let response = agent
         .get(url)
         .call()
-        .map_err(|e| format!("下载方案包失败：{e}"))?;
+        .map_err(|e| format!("下载{label}失败：{e}"))?;
     if (300..400).contains(&response.status()) {
         return response
             .header("location")
             .map(|l| Fetched::Redirect(l.to_string()))
-            .ok_or_else(|| format!("下载方案包失败：{} 重定向缺少地址", response.status()));
+            .ok_or_else(|| format!("下载{label}失败：{} 重定向缺少地址", response.status()));
     }
     Ok(Fetched::Body(Box::new(response.into_reader())))
 }
@@ -143,7 +168,7 @@ impl Drop for DownloadedPackage {
 /// 别的用户先占住（确定性拒绝服务），没开 `fs.protected_regular` 时还能在确认前换包。
 /// Windows / macOS：系统临时目录本就是每用户私有（`%LOCALAPPDATA%\Temp`、`$TMPDIR`），
 /// 沿用；随机文件名与用后即删照样适用。
-fn download_dir() -> Result<PathBuf, String> {
+pub(crate) fn download_dir() -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -167,15 +192,15 @@ fn download_dir() -> Result<PathBuf, String> {
     }
 }
 
-/// 删掉 `dir` 里本模块留下的陈旧残留（只认 [`FILE_PREFIX`]、只删早于 [`STALE_SECS`] 的）。
+/// 删掉 `dir` 里 `prefix` 开头的陈旧残留（只删早于 [`STALE_SECS`] 的）。
 /// 刚下的、确认框还开着的不碰。
-fn purge_stale(dir: &Path) {
+pub(crate) fn purge_stale(dir: &Path, prefix: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let max_age = std::time::Duration::from_secs(STALE_SECS);
     for e in entries.flatten() {
-        let stale = e.file_name().to_string_lossy().starts_with(FILE_PREFIX)
+        let stale = e.file_name().to_string_lossy().starts_with(prefix)
             && e.metadata()
                 .and_then(|m| m.modified())
                 .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > max_age));
@@ -190,18 +215,24 @@ fn purge_stale(dir: &Path) {
 pub(crate) fn save_stream(
     dir: &Path,
     body: impl Read,
+    kind: &PkgKind,
     cancel: &AtomicBool,
 ) -> Result<DownloadedPackage, String> {
-    save_stream_limited(dir, body, MAX_SCHEMA_BYTES, cancel)
+    save_stream_raw(dir, body, kind, cancel).map_err(|e| match e {
+        ReadError::TooLarge => kind.too_large.to_string(),
+        ReadError::Cancelled => "已取消下载".to_string(),
+        ReadError::Io(m) => format!("读取{}响应失败：{m}", kind.label),
+        ReadError::Write(m) => format!("写入临时文件失败：{m}"),
+    })
 }
 
-/// [`save_stream`] 的上限可调版本，供测试用小上限覆盖超限分支。
-fn save_stream_limited(
+/// [`save_stream`] 不配文案的版本：调用方要按失败种类分流时用（本机 HTTP 服务超限回 413）。
+pub(crate) fn save_stream_raw(
     dir: &Path,
     mut body: impl Read,
-    max: usize,
+    kind: &PkgKind,
     cancel: &AtomicBool,
-) -> Result<DownloadedPackage, String> {
+) -> Result<DownloadedPackage, ReadError> {
     for _ in 0..16 {
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         h.write_u32(std::process::id());
@@ -211,7 +242,7 @@ fn save_stream_limited(
                 .map(|d| d.as_nanos())
                 .unwrap_or_default(),
         );
-        let path = dir.join(format!("{FILE_PREFIX}{:016x}.zip", h.finish()));
+        let path = dir.join(format!("{}{:016x}.{}", kind.prefix, h.finish(), kind.ext));
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
         #[cfg(unix)]
@@ -219,23 +250,18 @@ fn save_stream_limited(
         let mut file = match opts.open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("写入临时文件失败：{e}")),
+            Err(e) => return Err(ReadError::Write(e.to_string())),
         };
         // 先交给守卫：写一半失败也随 drop 删掉。
         let pkg = DownloadedPackage { path };
-        copy_limited(&mut body, &mut file, max, cancel).map_err(|e| match e {
-            ReadError::TooLarge => "方案包超过 64 MB 限制".to_string(),
-            ReadError::Cancelled => "已取消下载".to_string(),
-            ReadError::Io(m) => format!("读取方案包响应失败：{m}"),
-            ReadError::Write(m) => format!("写入临时文件失败：{m}"),
-        })?;
+        copy_limited(&mut body, &mut file, kind.max, cancel)?;
         return Ok(pkg);
     }
-    Err("写入临时文件失败：随机文件名连续冲突".to_string())
+    Err(ReadError::Write("随机文件名连续冲突".to_string()))
 }
 
 /// 生产用 agent：不自动跟随重定向（交给 [`fetch_official`] 逐跳校验），只走 https。
-fn download_agent() -> ureq::Agent {
+pub(crate) fn download_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout_read(std::time::Duration::from_secs(READ_TIMEOUT_SECS))
@@ -247,7 +273,7 @@ fn download_agent() -> ureq::Agent {
 /// 测试与小体积调用的便捷入口：内存里的字节落盘。
 #[cfg(test)]
 pub(crate) fn save_package(dir: &Path, bytes: &[u8]) -> Result<DownloadedPackage, String> {
-    save_stream(dir, bytes, &AtomicBool::new(false))
+    save_stream(dir, bytes, &SCHEMA_PKG, &AtomicBool::new(false))
 }
 
 /// 校验官方域（每一跳）并下载方案包到私有临时文件，返回 drop 即删的句柄。
@@ -257,10 +283,12 @@ pub fn download_schema_package(
     cancel: &AtomicBool,
 ) -> Result<DownloadedPackage, String> {
     let agent = download_agent();
-    let body = fetch_official(url, |u| http_fetch(&agent, u))?;
+    let body = fetch_official(url, SCHEMA_PKG.label, |u| {
+        http_fetch(&agent, u, SCHEMA_PKG.label)
+    })?;
     let dir = download_dir()?;
-    purge_stale(&dir);
-    save_stream(&dir, body, cancel)
+    purge_stale(&dir, SCHEMA_PKG.prefix);
+    save_stream(&dir, body, &SCHEMA_PKG, cancel)
 }
 
 /// 下载并让 core 预览，一并在工作线程里做完——下载完紧跟的 `scheme.previewImport`
@@ -377,7 +405,7 @@ mod tests {
     #[test]
     fn save_stream_removes_partial_file_on_cancel() {
         let dir = scratch_dir("stream_cancel");
-        let err = save_stream(&dir, &b"data"[..], &AtomicBool::new(true)).unwrap_err();
+        let err = save_stream(&dir, &b"data"[..], &SCHEMA_PKG, &AtomicBool::new(true)).unwrap_err();
         assert!(err.contains("取消"), "{err}");
         assert_eq!(
             std::fs::read_dir(&dir).unwrap().count(),
@@ -392,7 +420,11 @@ mod tests {
     fn save_stream_removes_partial_file_when_over_limit_or_broken() {
         let dir = scratch_dir("stream_partial");
         let big = vec![1u8; 40_000];
-        let err = save_stream_limited(&dir, &big[..], 20_000, &AtomicBool::new(false)).unwrap_err();
+        let small = PkgKind {
+            max: 20_000,
+            ..SCHEMA_PKG
+        };
+        let err = save_stream(&dir, &big[..], &small, &AtomicBool::new(false)).unwrap_err();
         assert!(err.contains("64 MB"), "{err}");
         assert_eq!(
             std::fs::read_dir(&dir).unwrap().count(),
@@ -411,8 +443,7 @@ mod tests {
                 Ok(10)
             }
         }
-        let err =
-            save_stream_limited(&dir, Breaks(false), 1000, &AtomicBool::new(false)).unwrap_err();
+        let err = save_stream(&dir, Breaks(false), &small, &AtomicBool::new(false)).unwrap_err();
         assert!(err.contains("断流"), "{err}");
         assert_eq!(
             std::fs::read_dir(&dir).unwrap().count(),
@@ -425,7 +456,7 @@ mod tests {
     #[test]
     fn save_stream_writes_whole_body() {
         let dir = scratch_dir("stream_ok");
-        let pkg = save_stream(&dir, &b"PKzip"[..], &AtomicBool::new(false)).unwrap();
+        let pkg = save_stream(&dir, &b"PKzip"[..], &SCHEMA_PKG, &AtomicBool::new(false)).unwrap();
         assert_eq!(std::fs::read(pkg.path()).unwrap(), b"PKzip");
         drop(pkg);
         let _ = std::fs::remove_dir_all(&dir);
@@ -453,7 +484,11 @@ mod tests {
     fn fetch_follows_official_redirects() {
         let seen = Default::default();
         let table = [("https://windinput.com/a.zip", Ok("PK"))];
-        let body = fetch_official("https://windinput.com/a.zip", scripted(&table, &seen));
+        let body = fetch_official(
+            "https://windinput.com/a.zip",
+            "方案包",
+            scripted(&table, &seen),
+        );
         assert_eq!(read_all(body.unwrap()), b"PK");
 
         let seen = Default::default();
@@ -469,7 +504,11 @@ mod tests {
             ),
             ("https://cdn.windinput.com/a.zip", Ok("PK")),
         ];
-        let body = fetch_official("https://windinput.com/s/a", scripted(&table, &seen));
+        let body = fetch_official(
+            "https://windinput.com/s/a",
+            "方案包",
+            scripted(&table, &seen),
+        );
         assert_eq!(read_all(body.unwrap()), b"PK");
         assert_eq!(seen.borrow().len(), 4);
 
@@ -479,7 +518,11 @@ mod tests {
             ("https://windinput.com/d/a", Err("b.zip")),
             ("https://windinput.com/d/b.zip", Ok("PK")),
         ];
-        let body = fetch_official("https://windinput.com/d/a", scripted(&table, &seen));
+        let body = fetch_official(
+            "https://windinput.com/d/a",
+            "方案包",
+            scripted(&table, &seen),
+        );
         assert_eq!(read_all(body.unwrap()), b"PK");
     }
 
@@ -499,7 +542,7 @@ mod tests {
         ] {
             let seen = std::cell::RefCell::new(Vec::new());
             let table = [("https://windinput.com/a", Err(bad))];
-            let err = fetch_official("https://windinput.com/a", scripted(&table, &seen))
+            let err = fetch_official("https://windinput.com/a", "方案包", scripted(&table, &seen))
                 .err()
                 .unwrap();
             assert!(err.contains("已拒绝"), "{bad}: {err}");
@@ -511,9 +554,13 @@ mod tests {
     fn fetch_gives_up_after_max_redirects() {
         let seen = Default::default();
         let table = [("https://windinput.com/loop", Err("/loop"))];
-        let err = fetch_official("https://windinput.com/loop", scripted(&table, &seen))
-            .err()
-            .unwrap();
+        let err = fetch_official(
+            "https://windinput.com/loop",
+            "方案包",
+            scripted(&table, &seen),
+        )
+        .err()
+        .unwrap();
         assert!(err.contains("超过"), "{err}");
         assert_eq!(seen.borrow().len(), MAX_REDIRECTS + 1);
     }
@@ -542,17 +589,24 @@ mod tests {
             }
         });
         let agent = ureq::AgentBuilder::new().redirects(0).build();
-        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/r")).unwrap() {
+        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/r"), "方案包").unwrap() {
             Fetched::Redirect(l) => assert_eq!(l, "https://evil.com/x"),
             Fetched::Body(_) => panic!("不应跟随重定向"),
         }
-        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/a.zip")).unwrap() {
+        match http_fetch(&agent, &format!("http://127.0.0.1:{port}/a.zip"), "方案包").unwrap() {
             Fetched::Body(b) => assert_eq!(read_all(b), b"PK"),
             Fetched::Redirect(_) => panic!("应读到正文"),
         }
         worker.join().unwrap();
 
-        assert!(http_fetch(&download_agent(), &format!("http://127.0.0.1:{port}/a.zip")).is_err());
+        assert!(
+            http_fetch(
+                &download_agent(),
+                &format!("http://127.0.0.1:{port}/a.zip"),
+                "方案包"
+            )
+            .is_err()
+        );
     }
 
     fn scratch_dir(tag: &str) -> PathBuf {
@@ -577,7 +631,7 @@ mod tests {
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with(FILE_PREFIX)
+                .starts_with(SCHEMA_PKG.prefix)
         );
         assert_eq!(std::fs::read(a.path()).unwrap(), b"one");
         #[cfg(unix)]
@@ -599,7 +653,7 @@ mod tests {
     #[test]
     fn purge_stale_only_touches_our_old_files() {
         let dir = scratch_dir("purge");
-        let ours = dir.join(format!("{FILE_PREFIX}old.zip"));
+        let ours = dir.join(format!("{}old.zip", SCHEMA_PKG.prefix));
         let other = dir.join("someone_else.zip");
         let fresh = save_package(&dir, b"x").unwrap();
         for p in [&ours, &other] {
@@ -609,7 +663,7 @@ mod tests {
             )
             .unwrap();
         }
-        purge_stale(&dir);
+        purge_stale(&dir, SCHEMA_PKG.prefix);
         assert!(!ours.exists());
         assert!(other.exists());
         assert!(fresh.path().exists(), "刚下的不删");
