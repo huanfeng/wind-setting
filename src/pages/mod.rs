@@ -41,11 +41,12 @@ pub struct TabDef {
 /// 认成别的页、二级导航整条不刷新。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
     let tab = |id: &str| SubNav::new(crate::cli::page_to_index(id).unwrap_or(0));
-    let (schema, input, keys, ui, dict, stats_nav, advanced, about) = (
+    let (schema, input, keys, ui, theme, dict, stats_nav, advanced, about) = (
         tab("schema"),
         tab("input"),
         tab("keys"),
         tab("ui"),
+        tab("theme"),
         tab("dict"),
         tab("stats"),
         tab("advanced"),
@@ -55,7 +56,8 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         tab_def("方案", scheme_page(app, state, &schema), schema),
         cards_tab_def("输入", input_page(state, &input), input),
         cards_tab_def("按键", keys_page(state, &keys), keys),
-        cards_tab_def("外观", appearance_page(app, state, &ui), ui),
+        cards_tab_def("外观", appearance_page(state, &ui), ui),
+        cards_tab_def("主题", theme_page(app, state, &theme), theme),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
@@ -774,10 +776,19 @@ fn keys_page(state: &AppState, nav: &SubNav) -> Element {
 
 // ───────────────────────── 外观 ─────────────────────────
 
-fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
-    // 「主题」卡手写：manifest 的两行（主题选择 / 主题风格）之后直接接导入、导出与市场
-    // 入口——选主题与搬主题是同一件事的两半，隔开就得让用户满页找按钮。其余 ui 分区照
-    // manifest 原样生成。
+fn appearance_page(state: &AppState, nav: &SubNav) -> Element {
+    sections_page(
+        "外观",
+        "自定义候选窗与工具栏的视觉呈现",
+        manifest_sections(state, "ui", nav),
+    )
+}
+
+// ───────────────────────── 主题 ─────────────────────────
+
+fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
+    // 「主题」卡手写：manifest 的三行（主题选择 / 主题风格 / 主题动画）之后直接接导入、导出
+    // 与市场入口——选主题与搬主题是同一件事的两半，隔开就得让用户满页找按钮。
     //
     // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
     // "现在按钮是要做什么"和"现在连接是什么状态"。
@@ -785,14 +796,14 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
     // 用户把 `feature:theme_transfer` 藏起来时，那三行**照建**、运行期隐显：这一卡里
     // 还有主题选择的清单项要留着，不能整卡消失。
     let transfer_vis = crate::manifest::feature_row_vis(state, "theme_transfer");
-    let mut ui_secs = state.manifest.sections_of("ui");
+    let mut theme_secs = state.manifest.sections_of("theme");
     // 「主题」卡的清单项全被定制版藏掉时 `sections_of` 不再给这一节，可三行手写入口没被藏
     // 就不该跟着消失：补一张只有这三行的「主题」卡，排在原位（页首）。
-    if transfer && !ui_secs.iter().any(|(s, _)| s == "主题") {
-        ui_secs.insert(0, ("主题".to_string(), Vec::new()));
+    if transfer && !theme_secs.iter().any(|(s, _)| s == "主题") {
+        theme_secs.insert(0, ("主题".to_string(), Vec::new()));
     }
     let mut secs: Vec<Element> = Vec::new();
-    for (sec, keys) in ui_secs {
+    for (sec, keys) in theme_secs {
         let (rows, head) = crate::manifest::section_rows_split(state, &keys);
         let mut rows: Vec<(Element, Option<crate::widgets::Vis>)> =
             rows.into_iter().map(|r| (r.el, r.vis)).collect();
@@ -807,16 +818,16 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
             &sec,
             rows,
             head,
-            crate::manifest::section_menu(state, "ui", &sec),
+            crate::manifest::section_menu(state, "theme", &sec),
         );
-        let card = crate::manifest::wrap_section_runtime(state, "ui", &sec, card);
-        // 搜索锚点仍叫 ui:theme-import（导入相关词条指向它），现在落在「主题」卡上。
+        let card = crate::manifest::wrap_section_runtime(state, "theme", &sec, card);
+        // 搜索锚点叫 ui:theme-import（导入相关词条指向它），落在「主题」卡上。
         let card = if sec == "主题" {
             crate::search::anchor::wrap(card, "ui:theme-import", state.jump)
         } else {
             card
         };
-        let vis = crate::manifest::section_vis(state, "ui", &sec);
+        let vis = crate::manifest::section_vis(state, "theme", &sec);
         secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
     }
     if !state.manifest.feature_hidden("theme_editor") {
@@ -842,7 +853,7 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
     }
     // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
     // toast_sink，这里不需要（也不应该）再单独挂一份。
-    let page = sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs);
+    let page = sections_page("主题", "挑选、导入与管理候选窗和工具栏的主题", secs);
     Element::stack()
         .fill()
         .child(page)
@@ -929,42 +940,7 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
                                 return;
                             }
                         };
-                        let Some(path) = PickDialog::new()
-                            .title("导出主题包")
-                            .file_name(format!("{id}.wtheme"))
-                            .filter("主题包", &["wtheme"])
-                            .save_file()
-                        else {
-                            return crate::file_pick::report_failure(|m| {
-                                feedback.set(Some((ToastKind::Error, m.to_string())))
-                            });
-                        };
-                        match crate::rpc::call_core(
-                            "theme.exportPackage",
-                            &serde_json::json!({
-                                "slug": id,
-                                "path": path.to_string_lossy(),
-                            }),
-                        ) {
-                            Ok(v) => {
-                                let name = v
-                                    .get("display_name")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or(&id);
-                                let n = v
-                                    .get("asset_count")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .unwrap_or(0);
-                                feedback.set(Some((
-                                    ToastKind::Success,
-                                    format!("已导出「{name}」（{n} 个资源文件）"),
-                                )));
-                            }
-                            // 不再套一层「导出失败:」：core 那边的错误已经带了
-                            // 「导出主题「X」失败：<原因>」这层主语（RPC 出口只传
-                            // 一个字符串，原因就展开在里面），再包一层是重复。
-                            Err(e) => feedback.set(Some((ToastKind::Error, e.to_string()))),
-                        }
+                        export_theme_package(id, feedback);
                     });
                 }),
         ),
@@ -977,6 +953,47 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
                 .on_click(|ctx| ctx.open_url(MARKET_URL)),
         ),
     ]
+}
+
+/// 选路径、把主题 `id` 打成 `.wtheme` 包，结果经 toast 报。会弹原生存盘框，须在
+/// `defer_blocking` 里调。
+pub(crate) fn export_theme_package(id: String, feedback: dict::reactive::Feedback) {
+    let Some(path) = PickDialog::new()
+        .title("导出主题包")
+        .file_name(format!("{id}.wtheme"))
+        .filter("主题包", &["wtheme"])
+        .save_file()
+    else {
+        return crate::file_pick::report_failure(|m| {
+            feedback.set(Some((ToastKind::Error, m.to_string())))
+        });
+    };
+    match crate::rpc::call_core(
+        "theme.exportPackage",
+        &serde_json::json!({
+            "slug": id,
+            "path": path.to_string_lossy(),
+        }),
+    ) {
+        Ok(v) => {
+            let name = v
+                .get("display_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&id);
+            let n = v
+                .get("asset_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            feedback.set(Some((
+                ToastKind::Success,
+                format!("已导出「{name}」（{n} 个资源文件）"),
+            )));
+        }
+        // 不再套一层「导出失败:」：core 那边的错误已经带了
+        // 「导出主题「X」失败：<原因>」这层主语（RPC 出口只传
+        // 一个字符串，原因就展开在里面），再包一层是重复。
+        Err(e) => feedback.set(Some((ToastKind::Error, e.to_string()))),
+    }
 }
 
 /// 主题编辑器卡：Web 编辑器通过本地 loopback 服务读写主题，三态分段控件
@@ -1482,19 +1499,19 @@ mod about_tests {
 
 #[cfg(test)]
 mod tests {
-    /// 守门：ui 组必须仍有一节叫「主题」。
+    /// 守门：theme 组必须仍有一节叫「主题」。
     ///
-    /// [`appearance_page`] 拿 `sec == "主题"` 这个**字符串**判据往那张卡里追加「导入 /
+    /// [`theme_page`] 拿 `sec == "主题"` 这个**字符串**判据往那张卡里追加「导入 /
     /// 导出 / 主题市场」三行。清单里把这一节改个名，三行就**整体从界面上消失**——页面
     /// 照常渲染、编译照常通过、别的测试照常全绿，只有拿眼睛看才发现主题卡上少了三个
     /// 按钮。同 `search/index.rs` 那张手写表的风险（「⚠ 编译器不管这张表」）。
     #[test]
-    fn ui_group_still_has_the_theme_section() {
+    fn theme_group_still_has_the_theme_section() {
         let m = crate::manifest::Manifest::from_embedded();
-        let secs: Vec<String> = m.sections_of("ui").into_iter().map(|(s, _)| s).collect();
+        let secs: Vec<String> = m.sections_of("theme").into_iter().map(|(s, _)| s).collect();
         assert!(
             secs.iter().any(|s| s == "主题"),
-            "ui 组里没有「主题」这一节，appearance_page 的导入/导出/市场三行会静默消失；\
+            "theme 组里没有「主题」这一节，theme_page 的导入/导出/市场三行与画廊会静默消失；\
              现有分节：{secs:?}"
         );
     }

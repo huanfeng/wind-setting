@@ -23,6 +23,7 @@ const GRID: &str = include_str!("../res/icons/ui/grid.svg");
 const LINES: &str = include_str!("../res/icons/ui/lines.svg");
 const KEYBOARD: &str = include_str!("../res/icons/ui/keyboard.svg");
 const CONTRAST: &str = include_str!("../res/icons/ui/contrast.svg");
+const PALETTE: &str = include_str!("../res/icons/ui/palette.svg");
 const LAYERS: &str = include_str!("../res/icons/ui/layers.svg");
 const SLIDERS: &str = include_str!("../res/icons/ui/sliders.svg");
 const APPS: &str = include_str!("../res/icons/ui/apps.svg");
@@ -55,6 +56,7 @@ pub fn nav_icon(tab: &str) -> &'static str {
         "输入" => LINES,
         "按键" => KEYBOARD,
         "外观" => CONTRAST,
+        "主题" => PALETTE,
         "应用兼容性" => APPS,
         "词库" => LAYERS,
         "高级" => SLIDERS,

@@ -195,6 +195,7 @@ fn placement_of(group: &str, section: &str) -> Option<Placement> {
         ("input", _) | ("general", _) => Placement::Page("input"),
         ("keys", _) => Placement::Page("keys"),
         ("ui", _) => Placement::Page("ui"),
+        ("theme", _) => Placement::Page("theme"),
         ("advanced", _) => Placement::Page("advanced"),
         ("stats", _) => Placement::Page("stats"),
         _ => return None,
@@ -211,6 +212,7 @@ fn group_label(group: &str) -> &'static str {
         "input" | "general" => "输入",
         "keys" => "按键",
         "ui" => "外观",
+        "theme" => "主题",
         "stats" => "统计",
         "advanced" => "高级",
         _ => "设置",
@@ -427,9 +429,9 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表", feature: "" },
     Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零", feature: "" },
     // ── 外观 ──
-    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "ui", title: "导入主题", section: "主题", keywords: "皮肤 toml 网址 安装", feature: "theme_transfer" },
-    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "ui", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份", feature: "theme_transfer" },
-    Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "ui", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口", feature: "theme_editor" },
+    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "theme", title: "导入主题", section: "主题", keywords: "皮肤 toml 网址 安装", feature: "theme_transfer" },
+    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "theme", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份", feature: "theme_transfer" },
+    Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "theme", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口", feature: "theme_editor" },
     // ── 应用兼容：规则本身的字段来自核心的元数据、运行时才知道，索引只收页级入口 ──
     Handwritten { id: "compat:main", anchor: "advanced:compat", page: "advanced", title: "应用兼容性与独立配置", section: "应用兼容性", keywords: "兼容性 软件 进程 候选窗 位置 飞书 微信 excel wps 规则 compat", feature: "compat" },
     Handwritten { id: "compat:add", anchor: "advanced:compat", page: "advanced", title: "新增应用规则", section: "应用兼容性", keywords: "添加 进程名 exe 手动", feature: "compat" },
@@ -457,6 +459,7 @@ fn page_label(page: &str) -> &'static str {
         "input" => "输入",
         "keys" => "按键",
         "ui" => "外观",
+        "theme" => "主题",
         "dict" => "词库",
         "stats" => "统计",
         "advanced" => "高级",
@@ -738,7 +741,7 @@ mod tests {
         let m = manifest();
         let idx = build_index(&m);
         for page in [
-            "schema", "input", "keys", "ui", "dict", "stats", "advanced", "about",
+            "schema", "input", "keys", "ui", "theme", "dict", "stats", "advanced", "about",
         ] {
             let tab = crate::cli::page_to_index(page).expect("页 id 应在 PAGES 里");
             assert!(

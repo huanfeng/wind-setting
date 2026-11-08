@@ -521,16 +521,16 @@ mod tests {
             );
             assert_eq!(got.len() + 1, full.len(), "藏 `{feature}` 只该少一张卡");
         }
-        assert!(nav_labels(&[], "ui").iter().any(|l| l == "主题编辑器"));
-        let ui = nav_labels(&["feature:theme_editor".into()], "ui");
-        assert!(!ui.iter().any(|l| l == "主题编辑器"));
+        assert!(nav_labels(&[], "theme").iter().any(|l| l == "主题编辑器"));
+        let theme = nav_labels(&["feature:theme_editor".into()], "theme");
+        assert!(!theme.iter().any(|l| l == "主题编辑器"));
     }
 
     /// 与清单项同卡的手写行：手写行与清单项都藏了卡才消失，只藏一边卡还在。
     #[test]
     fn shared_cards_vanish_only_when_both_halves_are_hidden() {
         for (page, group, card, feature) in [
-            ("ui", "ui", "主题", "theme_transfer"),
+            ("theme", "theme", "主题", "theme_transfer"),
             ("schema", "schema", "双拼", "shuangpin_layout"),
             (
                 "advanced",
@@ -653,7 +653,9 @@ mod tests {
         let mut st = crate::state::AppState::empty();
         for (name, raw) in stress_hides() {
             st.manifest = settings_manifest(&hide_owned(&raw), false);
-            for group in ["schema", "general", "input", "keys", "ui", "advanced"] {
+            for group in [
+                "schema", "general", "input", "keys", "ui", "theme", "advanced",
+            ] {
                 for (sec, keys) in st.manifest.sections_of(group) {
                     if group == "schema" && engine_secs.contains(&sec.as_str()) {
                         // 引擎卡手工拼，逐行跳过的判据相同；出卡与否由它自己按 keys 判。
@@ -702,14 +704,16 @@ mod tests {
         };
         assert!(empty_tabs(&[]).is_empty());
         assert_eq!(empty_tabs(&groups(&["keys"])), ["按键"]);
-        // 外观页还有两张手写卡：清单项全藏了也不空，手写卡一并藏掉才空。
-        assert!(empty_tabs(&groups(&["ui"])).is_empty());
+        assert_eq!(empty_tabs(&groups(&["ui"])), ["外观"]);
+        // 主题页还有两张手写卡：清单项全藏了也不空（画廊跟着主题选择一起藏），手写卡一并
+        // 藏掉才空。
+        assert!(empty_tabs(&groups(&["theme"])).is_empty());
         assert_eq!(
             empty_tabs(&with(
-                groups(&["ui"]),
+                groups(&["theme"]),
                 &["feature:theme_transfer", "feature:theme_editor"]
             )),
-            ["外观"]
+            ["主题"]
         );
         assert_eq!(empty_tabs(&groups(&["input", "general"])), ["输入"]);
     }

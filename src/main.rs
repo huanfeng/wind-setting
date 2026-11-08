@@ -795,14 +795,14 @@ fn route_protocol(raw: &str, state: &Rc<RefCell<state::AppState>>) {
         Ok(req) => {
             let st = state.borrow();
             // 切到**这类导入的落点页**，让用户看得见接下来要确认的东西：主题导入的对话框
-            // 属于外观页、方案包导入的确认框属于方案页。不认识的 kind 不切页——只弹一句
+            // 属于主题页、方案包导入的确认框属于方案页。不认识的 kind 不切页——只弹一句
             // "暂不支持"，把用户留在原处。
             //
             // 此前这里是"theme 去 3、其余一律去 4"的两档粗分，schema 落到 4 纯属遗留：
             // 4 是词库，与方案包导入毫无关系；而词库现在已迁出主窗、那一格是永不显示的
             // 占位，再送过去就是一屏空白——用户点了个导入链接，设置窗跳出来却什么都没有。
             let target_page = match req.kind.as_str() {
-                "theme" => cli::page_to_index("ui"),
+                "theme" => cli::page_to_index("theme"),
                 "schema" => cli::page_to_index("schema"),
                 _ => None,
             };
@@ -899,7 +899,7 @@ mod tests {
         );
 
         let st = state.borrow();
-        assert_eq!(st.tab.get(), crate::cli::page_to_index("ui").unwrap());
+        assert_eq!(st.tab.get(), crate::cli::page_to_index("theme").unwrap());
         assert_eq!(
             st.pending_theme_import_url.get(),
             "https://example.com/dark.toml"
@@ -929,9 +929,9 @@ mod tests {
         );
 
         let st = state.borrow();
-        // 不支持的 kind **不切页**：停在上一次主题请求切到的外观页，而不是被送去词库
+        // 不支持的 kind **不切页**：停在上一次主题请求切到的主题页，而不是被送去词库
         // 那一格永不显示的占位（切过去就是一屏空白）。
-        assert_eq!(st.tab.get(), crate::cli::page_to_index("ui").unwrap());
+        assert_eq!(st.tab.get(), crate::cli::page_to_index("theme").unwrap());
         assert_eq!(st.pending_theme_import_url.get(), "");
         assert_eq!(st.pending_theme_import_name.get(), "");
         assert!(!st.theme_import_dialog_visible.get());

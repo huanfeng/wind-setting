@@ -183,7 +183,7 @@ impl ThemePreview {
             s.push_str(&format!("\n版本：{}", self.version));
         }
         s.push_str(&format!("\n资源：{} 个文件", self.asset_count));
-        s.push_str("\n\n导入后可在「外观」里切换到它。");
+        s.push_str("\n\n导入后可在「主题」里切换到它。");
         s
     }
 }

@@ -701,10 +701,10 @@ pub(crate) fn build_titlebar(subtitle: &str) -> Element {
         .child(Element::window_button(WindowButtonKind::Close).fg_role(Role::Text))
 }
 
-/// 主题色监视：底栏「主题色」下拉、外观页主题下拉（含未保存的选择）、明暗任一变化，就
+/// 主题色监视：底栏「主题色」下拉、主题页主题下拉（含未保存的选择）、明暗任一变化，就
 /// 持久化主题色来源并 [`AppState::sync_accent`]（按需取色 + 换肤）。
 ///
-/// 下拉只写回信号、没有变更回调，故用响应式哨兵（同 `conflict_watcher`）。外观页的主题
+/// 下拉只写回信号、没有变更回调，故用响应式哨兵（同 `conflict_watcher`）。主题页的主题
 /// 下拉随页面重建会换一枚索引信号，所以每帧经注册表现查，而不是建树时捕获一次。
 fn accent_watcher(app: &Rc<RefCell<AppState>>) -> Element {
     let (accent_idx, dark, theme_values) = {

@@ -1387,7 +1387,7 @@ impl AppState {
         crate::accent::AccentMode::from_index(self.accent_idx.get())
     }
 
-    /// 跟随模式要取色的主题：外观页下拉此刻选中的（未保存也算，换主题即可预览），下拉还没
+    /// 跟随模式要取色的主题：主题页下拉此刻选中的（未保存也算，换主题即可预览），下拉还没
     /// 建好时取配置值；都没有时为空串，由 core 取当前主题。
     fn accent_target_theme(&self) -> String {
         self.selected_theme_id()
@@ -1430,7 +1430,7 @@ impl AppState {
 
     /// 主题色同步：跟随模式下按需取色、刷新角标提示，再换上主题。
     ///
-    /// 模式切换、外观页换主题（含未保存）、明暗切换都经这里（见 `shell::accent_watcher`），
+    /// 模式切换、主题页换主题（含未保存）、明暗切换都经这里（见 `shell::accent_watcher`），
     /// 取色只在要跟随的主题变了时发生。
     pub fn sync_accent(&self) {
         use crate::accent::AccentMode;
@@ -2793,6 +2793,8 @@ impl AppState {
             &["keys"]
         } else if is("ui") {
             &["ui"]
+        } else if is("theme") {
+            &["theme"]
         } else if is("stats") {
             &["stats"]
         } else if is("advanced") {
@@ -4245,6 +4247,7 @@ mod tests {
             ("input", &["input", "general"]),
             ("keys", &["keys"]),
             ("ui", &["ui"]),
+            ("theme", &["theme"]),
             ("stats", &["stats"]),
             ("advanced", &["advanced"]),
             // 自定义页没有清单分组。

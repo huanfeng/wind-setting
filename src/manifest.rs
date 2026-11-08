@@ -8477,8 +8477,8 @@ mod tests {
     #[test]
     fn from_embedded_parses_groups_and_items() {
         let m = Manifest::from_embedded();
-        // 6 个分组：schema/input/keys/ui/general/advanced
-        assert_eq!(m.groups.len(), 6, "应解析出 6 个分组");
+        // 7 个分组：schema/input/keys/ui/theme/general/advanced
+        assert_eq!(m.groups.len(), 7, "应解析出 7 个分组");
         // 代表性 key 存在且类型/标签正确
         let it = m
             .get("input.auto_pair.chinese")

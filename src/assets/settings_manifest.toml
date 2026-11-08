@@ -37,14 +37,19 @@ label = "外观"
 order = 4
 
 [[groups]]
+key = "theme"
+label = "主题"
+order = 5
+
+[[groups]]
 key = "general"
 label = "常规"
-order = 5
+order = 6
 
 [[groups]]
 key = "advanced"
 label = "高级"
-order = 6
+order = 7
 
 # ═══════════════════════════ 方案 ═══════════════════════════
 # ── 主方案设置 ──
@@ -3185,11 +3190,12 @@ hint = "在任意应用中一键切换到本输入法（Windows 只切当前应�
 #            `Unhandled hotkey` 兜底；Fcitx5 的输入法切换归它自己的触发键管。
 platform = "windows, macos"
 
-# ═══════════════════════════ 外观 ═══════════════════════════
+# ═══════════════════════════ 主题 ═══════════════════════════
+# 独立成页（排在外观之后）：页内手写画廊接在这张卡之后，见 `pages::theme_page`。
 # ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──
 [[items]]
 key = "ui.theme.name"
-group = "ui"
+group = "theme"
 section = "主题"
 type = "select"
 options_source = "themes"
@@ -3198,7 +3204,7 @@ hint = "候选窗与工具栏的主题样式"
 
 [[items]]
 key = "ui.theme.style"
-group = "ui"
+group = "theme"
 section = "主题"
 type = "select"
 label = "主题风格"
@@ -3211,12 +3217,13 @@ options = [
 
 [[items]]
 key = "ui.theme.animation"
-group = "ui"
+group = "theme"
 section = "主题"
 type = "toggle"
 label = "主题动画"
 hint = "主题里会动的装饰按输入切换动作；关掉后停在静止画面。系统关了动画效果时也不播放"
 
+# ═══════════════════════════ 外观 ═══════════════════════════
 
 # ── 候选字体 ──
 # 原先字体、窗口、排版、注释四类共 28 项挤在一张「候选窗口」卡里（折叠掉两个对话框
