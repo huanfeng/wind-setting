@@ -716,7 +716,7 @@ mod tests {
         for url in [
             "https://evil.com/a.wtheme",
             "https://evil-windinput.com/a.wtheme",
-            "https://windinput.com@evil.com/a.wtheme",
+            "https://evil.com\\.windinput.com/a.wtheme",
         ] {
             let err = download_theme(url, &no).unwrap_err();
             assert!(err.user_message().contains("官方域名"), "{url}: {err:?}");
