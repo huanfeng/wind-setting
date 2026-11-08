@@ -1329,6 +1329,26 @@ fn mock_word_code(text: &str) -> String {
 /// 没有这一层的话 mock 只会 `Ok`，而统一导入通路恰恰靠「`scheme.previewImportText`
 /// 报 `not_schema_text:`」来回落片段管线——离线模式下每段文本都会被当成方案信封，
 /// 片段导入整条路走不到。
+/// mock 的主题预览回执：按 mock `theme.list` 的三个主题各一张小图，其余（包 / 文本 / 缺省）
+/// 用 default 那张；`no-such-theme` 回失败，离线也看得到占位格。
+fn mock_theme_preview(item: &Value) -> Value {
+    use base64::Engine;
+    let png: &[u8] = match item.get("name").and_then(Value::as_str) {
+        Some("no-such-theme") => return json!({ "ok": false, "error": "找不到主题" }),
+        Some("jade") => include_bytes!("mockdata/theme_previews/jade.png"),
+        Some("mono") => include_bytes!("mockdata/theme_previews/mono.png"),
+        _ => include_bytes!("mockdata/theme_previews/default.png"),
+    };
+    json!({
+        "ok": true,
+        "width": 240,
+        "height": 64,
+        "hash": format!("mock-{}", png.len()),
+        "cached": false,
+        "png": base64::engine::general_purpose::STANDARD.encode(png),
+    })
+}
+
 fn mock_result(method: &str, params: &Value) -> Result<Value, String> {
     #[cfg(test)]
     MOCK_CALLS.with(|c| c.borrow_mut().push((method.to_string(), params.clone())));
@@ -2359,6 +2379,16 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             "display_name": "测试主题（导出）",
             "asset_count": 2,
             "has_preview": true
+        }),
+        // 形状同 core `wind-webdata::theme_render`。mock 一律内联回传（不落缓存目录），
+        // 于是设置端「有 `png` 就不读 `path`」那条路在离线预览里天天有人走。
+        "theme.renderPreview" => mock_theme_preview(params),
+        "theme.renderPreviews" => json!({
+            "items": params
+                .get("items")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(mock_theme_preview).collect::<Vec<_>>())
+                .unwrap_or_default()
         }),
         "theme.getText" => json!({
             "slug": "default",

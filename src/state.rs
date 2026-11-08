@@ -650,6 +650,8 @@ pub struct AppState {
     pub theme_delete_msg: Signal<String>,
     /// 删除确认对话框可见标志。
     pub theme_delete_visible: Signal<bool>,
+    /// 「主题」页的已装主题画廊（缩略图取自服务端渲染，见 `theme_gallery`）。
+    pub theme_gallery: crate::theme_gallery::ThemeGallery,
     /// 主题包「要装这个吗」确认框的可见标志。
     ///
     /// 与覆盖确认分开两组 signal 而不是复用一组：两者会**接连出现**（先确认装、装的
@@ -1013,6 +1015,7 @@ impl AppState {
             "off"
         }
         .to_string();
+        let net = Rc::new(crate::net_task::NetTasks::default());
 
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
@@ -1049,7 +1052,7 @@ impl AppState {
             theme_download_task: Cell::new(None),
             schema_download_task: Cell::new(None),
             schema_download_visible: signal(false),
-            net: Rc::new(crate::net_task::NetTasks::default()),
+            net: net.clone(),
             tab: signal(0),
             // 搜索索引在上面构建：清单是内嵌的、启动即就位，不必等 RPC。
             search,
@@ -1096,6 +1099,7 @@ impl AppState {
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
             theme_delete_visible: signal(false),
+            theme_gallery: crate::theme_gallery::ThemeGallery::new(net.clone()),
             theme_pkg_confirm_visible: signal(false),
             theme_pkg_confirm_msg: signal(String::new()),
             theme_pkg_confirm_path: signal(String::new()),
@@ -1747,6 +1751,10 @@ impl AppState {
                 // 界面不会有任何跳变，提示纯属噪音（用户在对话框里改一项、点保存，
                 // 转头就被告知"已在别处更改"）。
                 let differs = self.current_config.get_path(key) != Some(value);
+                // 本端保存的回声也要重取：保存正是缩略图该跟着变的时候（换了主题、改了字号）。
+                if crate::theme_gallery::affects_previews(key) {
+                    self.theme_gallery.invalidate();
+                }
                 let hit = self.apply_external_config_change(key, value.clone());
                 if differs {
                     self.notify_external_change(ctx, key, hit);
@@ -2256,6 +2264,16 @@ impl AppState {
         self.theme_label_sig.set(labels);
         self.theme_value_sig.set(values);
         self.theme_items_sig.set(items);
+        self.theme_gallery.set_entries(
+            self.theme_entries
+                .iter()
+                .map(|e| crate::theme_gallery::GalleryEntry {
+                    id: e.id.clone(),
+                    display: e.display.clone(),
+                    builtin: e.builtin,
+                })
+                .collect(),
+        );
     }
 
     /// 把配置里那些**选项列表没有列举**的当前取值补进四个响应式下拉的选项信号。
@@ -3756,14 +3774,25 @@ fn build_theme_items(
             if !e.builtin {
                 let (id, disp) = (e.id.clone(), e.display.clone());
                 it = it.trailing_icon("✕", move |_ctx| {
-                    del_id.set(id.clone());
-                    del_msg.set(format!("确定删除外部主题「{disp}」？删除后不可恢复。"));
-                    del_visible.set(true);
+                    ask_delete_theme(del_id, del_msg, del_visible, &id, &disp)
                 });
             }
             it
         })
         .collect()
+}
+
+/// 弹删除主题的确认框（下拉的删除图标与画廊右键菜单共用）。
+pub fn ask_delete_theme(
+    del_id: Signal<String>,
+    del_msg: Signal<String>,
+    del_visible: Signal<bool>,
+    id: &str,
+    display: &str,
+) {
+    del_id.set(id.to_string());
+    del_msg.set(format!("确定删除外部主题「{display}」？删除后不可恢复。"));
+    del_visible.set(true);
 }
 
 #[cfg(test)]

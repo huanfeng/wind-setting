@@ -59,6 +59,7 @@ mod theme_def;
 #[allow(dead_code)]
 mod theme_editor_server;
 mod theme_follow;
+mod theme_gallery;
 #[allow(dead_code)]
 mod theme_import;
 mod tsf_log;

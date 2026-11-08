@@ -1204,17 +1204,31 @@ fn build_protocol_confirm_dialogs(app: &Rc<RefCell<AppState>>) -> (Element, Elem
 /// 对话框，复用通用确认框即可。撞名会在这一步之后再弹覆盖确认——两组 signal 分开，
 /// 后一个不会把前一个的内容冲掉。
 fn build_theme_package_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
-    let (visible, msg) = {
+    let (visible, msg, path, net) = {
         let st = app.borrow();
-        (st.theme_pkg_confirm_visible, st.theme_pkg_confirm_msg)
+        (
+            st.theme_pkg_confirm_visible,
+            st.theme_pkg_confirm_msg,
+            st.theme_pkg_confirm_path,
+            st.net.clone(),
+        )
     };
     let app_im = app.clone();
-    confirm_dialog_msg(visible, "导入主题包", msg, "导入", move |_| {
-        if let Ok(mut s) = app_im.try_borrow_mut() {
-            s.confirm_theme_package_import();
-        }
-        visible.set(false);
-    })
+    // 预览图（服务端按包渲染）在确认按钮上方；取不到就不出图，不挡导入。
+    confirm_dialog_frame(
+        visible,
+        "导入主题包",
+        Element::label_signal(msg).max_lines(8),
+        Some(crate::theme_gallery::package_preview(net, path, visible)),
+        "导入",
+        false,
+        move |_| {
+            if let Ok(mut s) = app_im.try_borrow_mut() {
+                s.confirm_theme_package_import();
+            }
+            visible.set(false);
+        },
+    )
 }
 
 /// `.wpkg` 文件关联的两个确认框，形态与协议的完全一致（共用 `confirm_msg`，
@@ -1525,6 +1539,27 @@ fn confirm_dialog_body(
     danger: bool,
     on_confirm: impl FnMut(&mut EventCtx) + 'static,
 ) -> Element {
+    confirm_dialog_frame(
+        visible,
+        title,
+        message,
+        None,
+        confirm_label,
+        danger,
+        on_confirm,
+    )
+}
+
+/// [`confirm_dialog_body`] 的外壳，`extra` 摆在正文与按钮行之间（主题包确认框的预览图）。
+fn confirm_dialog_frame(
+    visible: Signal<bool>,
+    title: &str,
+    message: Element,
+    extra: Option<Element>,
+    confirm_label: &str,
+    danger: bool,
+    on_confirm: impl FnMut(&mut EventCtx) + 'static,
+) -> Element {
     let cancel = visible;
     let mut confirm = Element::button(confirm_label).small();
     if danger {
@@ -1552,23 +1587,26 @@ fn confirm_dialog_body(
                 .fg_role(Role::TextMuted)
                 .width_match()
                 .padding_xy(18, 16),
-        )
-        .child(Element::divider())
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .padding_xy(16, 12)
-                .spacing(8)
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("取消")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| cancel.set(false)),
-                )
-                .child(confirm.on_click(on_confirm)),
         );
+    let frame = match extra {
+        Some(e) => frame.child(e),
+        None => frame,
+    };
+    let frame = frame.child(Element::divider()).child(
+        Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .padding_xy(16, 12)
+            .spacing(8)
+            .child(Element::leaf().weight(1.0))
+            .child(
+                Element::button("取消")
+                    .small()
+                    .outline_soft()
+                    .on_click(move |_| cancel.set(false)),
+            )
+            .child(confirm.on_click(on_confirm)),
+    );
     Element::dialog(visible, frame)
 }
 

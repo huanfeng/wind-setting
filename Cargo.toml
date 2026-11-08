@@ -15,6 +15,9 @@ serde = { version = "1", features = ["derive"] }
 # 保证两边算出的目录在各平台上落到同一处。
 dirs = "6"
 serde_json = "1"
+# 主题预览图回执里的内联 PNG（`theme.renderPreview(s)` 的 `png` 字段）。与 ureq 依赖的同一版本，
+# 不新增编译单元。
+base64 = "0.22"
 chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }

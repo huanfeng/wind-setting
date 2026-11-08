@@ -788,7 +788,8 @@ fn appearance_page(state: &AppState, nav: &SubNav) -> Element {
 
 fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     // 「主题」卡手写：manifest 的三行（主题选择 / 主题风格 / 主题动画）之后直接接导入、导出
-    // 与市场入口——选主题与搬主题是同一件事的两半，隔开就得让用户满页找按钮。
+    // 与市场入口——选主题与搬主题是同一件事的两半，隔开就得让用户满页找按钮。卡后是已装
+    // 主题的画廊（缩略图由服务端渲染，见 `theme_gallery`）。
     //
     // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
     // "现在按钮是要做什么"和"现在连接是什么状态"。
@@ -829,6 +830,16 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
         };
         let vis = crate::manifest::section_vis(state, "theme", &sec);
         secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
+    }
+    // 画廊点一格就是改 `ui.theme.name`，跟着那一行走：定制版藏了它就不建（否则锁定主题的
+    // 定制等于没锁），用户藏了它就运行期一起藏。
+    if state.manifest.is_visible("ui.theme.name") {
+        let vis = crate::manifest::row_vis(state, "ui.theme.name", "theme", "主题");
+        let card = crate::theme_gallery::build_card(state).visible_when({
+            let vis = vis.clone();
+            move || vis()
+        });
+        secs.push(nav.wrap_when(crate::theme_gallery::SECTION_TITLE, 0, card, move || vis()));
     }
     if !state.manifest.feature_hidden("theme_editor") {
         secs.push(nav_feature(
@@ -956,7 +967,7 @@ fn theme_transfer_rows(state: &AppState) -> Vec<Element> {
 }
 
 /// 选路径、把主题 `id` 打成 `.wtheme` 包，结果经 toast 报。会弹原生存盘框，须在
-/// `defer_blocking` 里调。
+/// `defer_blocking` 里调（主题卡的「导出当前主题」与画廊右键菜单共用）。
 pub(crate) fn export_theme_package(id: String, feedback: dict::reactive::Feedback) {
     let Some(path) = PickDialog::new()
         .title("导出主题包")
