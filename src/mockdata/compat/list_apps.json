@@ -9,6 +9,12 @@
         "stale_probe_guard": true
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -195,6 +201,12 @@
         "process": "Weixin.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -389,6 +401,12 @@
         "process": "EXCEL.EXE"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "user",
           "systemValue": null,
@@ -577,6 +595,12 @@
         "process": "wps.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -760,6 +784,12 @@
         "process": "SearchHost.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -943,6 +973,12 @@
         "process": "QQ.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -1126,6 +1162,12 @@
         "process": "Dota2.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -1315,6 +1357,12 @@
         "process": "QQ.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -1499,6 +1547,12 @@
         "process": ""
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -1685,6 +1739,12 @@
         "smart_method": "hold_composition"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
@@ -1880,6 +1940,12 @@
         "process": "Tabby.exe"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "user",
           "systemValue": null,
@@ -2066,6 +2132,12 @@
         "process": "*"
       },
       "fields": {
+        "assoc_placeholder": {
+          "source": "default",
+          "systemValue": null,
+          "userValue": null,
+          "value": null
+        },
         "auto_pair": {
           "source": "default",
           "systemValue": null,
