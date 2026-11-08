@@ -259,6 +259,13 @@ impl Iterator for ClientConnection {
                 _ => (),
             };
 
+            // [wind-setting 补丁] 一连接一请求：丢弃请求体有字节 / 时间预算（见
+            // util/equal_reader.rs），预算用完时连接上还留着没读的请求体。若继续在这条
+            // 连接上解析下一个请求，残留字节会被当成一个新请求（请求走私：网页把伪造
+            // Host / Origin 的请求藏进请求体里）。所以每条连接只处理一个请求，响应带
+            // `Connection: close`（见 response.rs）。
+            self.no_more_requests = true;
+
             // returning the request
             return Some(rq);
         }

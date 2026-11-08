@@ -34,12 +34,36 @@ use crate::theme_import::{
 pub const TOKEN_HEADER: &str = "X-Wind-Token";
 
 /// 线上编辑器的源。已发布的编辑器不带 token，只有它在缺 token 时还能用三条旧路由。
-/// 编辑器带 token 的版本上线后，这条过渡可以删掉。
+///
+/// **撤除条件**：带 token 的编辑器（W3.4 发包那版）上线后，再过一个设置端发布版本就删掉
+/// 这条过渡（连同 [`Access::Legacy`]）——届时线上编辑器都带 token，留着它只剩攻击面。
 const LEGACY_ORIGINS: &[&str] = &["https://theme.windinput.com"];
 
 /// CORS 白名单里的线上源（精确匹配，不认任意子域）：编辑器 `theme.windinput.com`
 /// （见编辑器仓 README 的部署表）与官网 `windinput.com`。本机开发服另判。
 const PROD_ORIGINS: &[&str] = &["https://theme.windinput.com", "https://windinput.com"];
+
+/// 读 push / 收包请求体的总时限。每次读另有 tiny_http 的 30 秒读超时，但滴灌（隔一会儿
+/// 发几个字节）每次读都不超时，靠这一道收手。本机回环上 65 MiB 一秒都用不了。
+const BODY_TIME_LIMIT: Duration = Duration::from_secs(60);
+
+/// 带总截止时间的读：过了截止时间，下一次读直接报超时。
+struct DeadlineReader<R> {
+    inner: R,
+    deadline: std::time::Instant,
+}
+
+impl<R: Read> Read for DeadlineReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() > self.deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "请求体传输超时",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
 
 /// 停服务时最多等工作线程这么久；它卡在一个慢请求上就放手不等，免得把界面拖住。
 const STOP_WAIT: Duration = Duration::from_millis(1500);
@@ -56,9 +80,18 @@ struct Backend<'a> {
     token: &'a str,
     /// `None` = 生产目录（`schema_url_import::download_dir`，Linux 下 0700）。
     tmp_dir: Option<&'a Path>,
+    /// 读请求体的总时限（生产 [`BODY_TIME_LIMIT`]）。
+    body_time: Duration,
 }
 
 impl Backend<'_> {
+    fn body_reader<'r>(&self, req: &'r mut tiny_http::Request) -> DeadlineReader<&'r mut dyn Read> {
+        DeadlineReader {
+            inner: req.as_reader(),
+            deadline: std::time::Instant::now() + self.body_time,
+        }
+    }
+
     fn tmp_dir(&self) -> Result<PathBuf, String> {
         match self.tmp_dir {
             Some(d) => Ok(d.to_path_buf()),
@@ -184,6 +217,7 @@ impl ThemeEditorServer {
                 rpc: &call_core,
                 token: &thread_token,
                 tmp_dir: None,
+                body_time: BODY_TIME_LIMIT,
             };
             while !stop.load(Ordering::Relaxed) {
                 match server.recv_timeout(Duration::from_millis(200)) {
@@ -464,7 +498,7 @@ fn handle_request(req: tiny_http::Request, be: &Backend) {
             }
         }
     } else if method == "POST" && url == "/api/theme/push" {
-        handle_push(req, allow_origin);
+        handle_push(req, allow_origin, be);
         return;
     } else if method == "POST" && url == "/api/theme/package" {
         handle_import_package(req, &raw_url, allow_origin, be);
@@ -590,13 +624,17 @@ fn import_reply(
     }
 }
 
-fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>) {
+fn handle_push(mut req: tiny_http::Request, allow_origin: Option<String>, be: &Backend) {
     const TOO_LARGE: &str = "主题内容超过 2 MiB 限制";
     if declared_too_large(&req, MAX_PUSH_BODY) {
         respond(req, error_reply(413, TOO_LARGE, allow_origin));
         return;
     }
-    let read = read_limited(req.as_reader(), MAX_PUSH_BODY, &AtomicBool::new(false));
+    let read = read_limited(
+        be.body_reader(&mut req),
+        MAX_PUSH_BODY,
+        &AtomicBool::new(false),
+    );
     let body = match read.map(String::from_utf8) {
         Ok(Ok(body)) => body,
         Ok(Err(_)) => {
@@ -703,7 +741,12 @@ fn handle_import_package(
             return;
         }
     };
-    let saved = save_stream_raw(&dir, req.as_reader(), &THEME_PKG, &AtomicBool::new(false));
+    let saved = save_stream_raw(
+        &dir,
+        be.body_reader(&mut req),
+        &THEME_PKG,
+        &AtomicBool::new(false),
+    );
     let pkg = match saved {
         Ok(pkg) => pkg,
         Err(e) => {
@@ -1095,6 +1138,7 @@ mod route_tests {
         };
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -1137,6 +1181,7 @@ mod route_tests {
         };
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -1156,6 +1201,7 @@ mod route_tests {
         let conflict = |_: &str, _: &Value| Ok(json!({"ok": false, "conflict": true, "slug": "a"}));
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &conflict,
             tmp_dir: Some(&dir),
         };
@@ -1169,6 +1215,7 @@ mod route_tests {
         let broken = |_: &str, _: &Value| Err("主题包缺少 theme.toml".to_string());
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &broken,
             tmp_dir: Some(&dir),
         };
@@ -1187,6 +1234,7 @@ mod route_tests {
         let dir = scratch("upload_413");
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1215,6 +1263,7 @@ mod route_tests {
         let dir = scratch("upload_chunked");
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1246,6 +1295,7 @@ mod route_tests {
         let dir = scratch("upload_bad");
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1265,6 +1315,7 @@ mod route_tests {
         let dir = scratch("guard");
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1312,6 +1363,7 @@ mod route_tests {
         };
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -1346,6 +1398,7 @@ mod route_tests {
         };
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &rpc,
             tmp_dir: Some(&dir),
         };
@@ -1384,6 +1437,7 @@ mod route_tests {
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1414,6 +1468,7 @@ mod route_tests {
     fn legacy_push_is_size_limited() {
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1463,6 +1518,7 @@ mod route_tests {
     fn routes_require_pairing_token() {
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1496,6 +1552,7 @@ mod route_tests {
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &themes_rpc,
             tmp_dir: None,
         };
@@ -1551,6 +1608,7 @@ mod route_tests {
     fn preflight_allows_token_header_and_varies_on_origin() {
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1584,6 +1642,7 @@ mod route_tests {
     fn absurd_content_length_does_not_take_the_server_down() {
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &themes_rpc,
             tmp_dir: None,
         };
@@ -1610,6 +1669,7 @@ mod route_tests {
         let dir = scratch("stalled");
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: Some(&dir),
         };
@@ -1635,6 +1695,7 @@ mod route_tests {
     fn legacy_push_rejects_bad_slug() {
         let be = Backend {
             token: TOKEN,
+            body_time: Duration::from_secs(60),
             rpc: &no_rpc,
             tmp_dir: None,
         };
@@ -1677,6 +1738,191 @@ mod route_tests {
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
         assert!(!server.status().running);
         drop(s);
+    }
+
+    /// 在一条连接上收请求直到对端关、或 `idle` 内没有新请求，返回处理了几个。
+    fn serve_counting(be: &Backend, client: impl FnOnce(u16)) -> usize {
+        let server =
+            tiny_http::Server::http_with_socket_timeout("127.0.0.1:0", Duration::from_secs(5))
+                .unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while let Ok(Some(req)) = server.recv_timeout(Duration::from_millis(1500)) {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    handle_request(req, be);
+                }
+            });
+            client(port);
+        });
+        count.into_inner()
+    }
+
+    /// 藏在请求体里的第二个请求：线上编辑器的 Origin + 本机 Host，走过渡规则就能用旧路由。
+    const SMUGGLED: &str = "GET /api/themes HTTP/1.1\r\nHost: localhost\r\n\
+                            Origin: https://theme.windinput.com\r\n\r\n";
+
+    fn recording_rpc(calls: &Calls) -> impl Fn(&str, &Value) -> Result<Value, String> + Sync + '_ {
+        move |m: &str, p: &Value| {
+            calls.lock().unwrap().push((m.to_string(), p.clone()));
+            Ok(json!([]))
+        }
+    }
+
+    /// 请求走私（声明长度）：被拒的请求体超过丢弃预算（1 MiB），剩下的字节不得被当成
+    /// 同一连接上的下一个请求。
+    #[test]
+    fn body_past_discard_budget_is_not_parsed_as_next_request() {
+        let calls = Calls::default();
+        let rpc = recording_rpc(&calls);
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &rpc,
+            tmp_dir: None,
+        };
+        let n = serve_counting(&be, |port| {
+            let mut body = vec![b'a'; 1024 * 1024];
+            body.extend_from_slice(SMUGGLED.as_bytes());
+            let mut s = connect(port);
+            // 外域 Origin：被 guard 拒，请求体一字不读，交给 tiny_http 丢弃。
+            write!(
+                s,
+                "POST /api/theme/push HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 Origin: https://evil.com\r\nContent-Type: text/plain\r\n\
+                 Content-Length: {}\r\n\r\n",
+                body.len() + 4096
+            )
+            .unwrap();
+            s.write_all(&body).unwrap();
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 403);
+            assert_eq!(r.header("Connection").as_deref(), Some("close"));
+            // 连接随后被服务端关掉，读不到第二个响应。
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest);
+            assert!(
+                rest.is_empty(),
+                "不该有第二个响应：{}",
+                String::from_utf8_lossy(&rest)
+            );
+        });
+        assert_eq!(n, 1, "服务端只该看到一个请求");
+        assert!(calls.lock().unwrap().is_empty(), "走私的请求不得走到 RPC");
+    }
+
+    /// 请求走私（分块）：分块请求体不经丢弃逻辑，残留字节同样不得被当成下一个请求。
+    #[test]
+    fn chunked_leftover_is_not_parsed_as_next_request() {
+        let calls = Calls::default();
+        let rpc = recording_rpc(&calls);
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &rpc,
+            tmp_dir: None,
+        };
+        let n = serve_counting(&be, |port| {
+            let mut s = connect(port);
+            write!(
+                s,
+                "POST /api/theme/push HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 Origin: https://evil.com\r\nTransfer-Encoding: chunked\r\n\r\n{SMUGGLED}"
+            )
+            .unwrap();
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 403);
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest);
+            assert!(
+                rest.is_empty(),
+                "不该有第二个响应：{}",
+                String::from_utf8_lossy(&rest)
+            );
+        });
+        assert_eq!(n, 1);
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// 起一个线程每隔 `every` 往连接上滴一个字节，直到写失败或 `stop` 置位。
+    fn trickle(s: &TcpStream, every: Duration) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+        let mut w = s.try_clone().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let h = std::thread::spawn(move || {
+            while !stop2.load(Ordering::Relaxed) {
+                if w.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(every);
+            }
+        });
+        (stop, h)
+    }
+
+    /// 应用侧总时限：请求体滴灌（每次读都不超时）也会在截止时间到点后回错误。
+    #[test]
+    fn trickled_body_hits_the_body_time_limit() {
+        let dir = scratch("trickle_body");
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_millis(500),
+            rpc: &no_rpc,
+            tmp_dir: Some(&dir),
+        };
+        let t = std::time::Instant::now();
+        serve_with_timeout(1, &be, Duration::from_secs(5), |port| {
+            let mut s = connect(port);
+            write!(
+                s,
+                "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 X-Wind-Token: {TOKEN}\r\nContent-Length: 100000\r\n\r\nPK"
+            )
+            .unwrap();
+            let (stop, h) = trickle(&s, Duration::from_millis(50));
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 400);
+            assert!(r.json()["error"].as_str().unwrap().contains("超时"));
+            stop.store(true, Ordering::Relaxed);
+            h.join().unwrap();
+        });
+        // 回错误之后 tiny_http 丢弃余量也有总时限（2 秒），工作线程不会被滴灌拖住。
+        assert!(t.elapsed() < Duration::from_secs(6), "{:?}", t.elapsed());
+        assert!(is_empty(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// tiny_http 丢弃余量的总时限：回了 413 之后对端还在滴灌，丢弃也会在约 2 秒后收手。
+    #[test]
+    fn trickled_discard_stops_after_time_limit() {
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &no_rpc,
+            tmp_dir: None,
+        };
+        let t = std::time::Instant::now();
+        let mut keep = None;
+        serve_with_timeout(1, &be, Duration::from_secs(5), |port| {
+            let mut s = connect(port);
+            write!(
+                s,
+                "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 X-Wind-Token: {TOKEN}\r\nContent-Length: {}\r\n\r\n",
+                MAX_THEME_PACKAGE_BYTES + 1
+            )
+            .unwrap();
+            assert_eq!(read_reply(&mut s).status, 413);
+            keep = Some((trickle(&s, Duration::from_millis(50)), s));
+        });
+        // serve 返回 = 工作线程已处理完这个请求（含丢弃余量）。
+        let elapsed = t.elapsed();
+        if let Some(((stop, h), _s)) = keep {
+            stop.store(true, Ordering::Relaxed);
+            h.join().unwrap();
+        }
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
     }
 }
 

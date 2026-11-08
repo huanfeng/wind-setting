@@ -372,6 +372,12 @@ where
                 Header::from_bytes(&b"Connection"[..], &b"upgrade"[..]).unwrap(),
             );
             transfer_encoding = None;
+        } else {
+            // [wind-setting 补丁] 一连接一请求（见 client.rs），告诉客户端别复用连接。
+            self.headers.insert(
+                0,
+                Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap(),
+            );
         }
 
         // if the transfer encoding is identity, the content length must be known ; therefore if

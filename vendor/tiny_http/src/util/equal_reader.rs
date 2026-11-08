@@ -65,15 +65,18 @@ where
 {
     // [wind-setting 补丁] 原实现按剩余声明长度一次性 `vec![0; remaining]`：离谱的
     // Content-Length 会让分配失败、整个进程 abort。改为固定 8 KiB 缓冲，且最多再丢弃
-    // DRAIN_BUDGET 字节；超出预算就不再读，连接上残留的字节会让下一次请求解析失败、
-    // 连接随之关闭。见仓库根 vendor/tiny_http/PATCHES.md。
+    // DRAIN_BUDGET 字节、最多再读 DRAIN_TIME；超出就不再读。连接上残留的字节不会被
+    // 当成下一个请求：client.rs 已改成一连接一请求。见 vendor/tiny_http/PATCHES.md。
     fn drop(&mut self) {
         const DRAIN_BUDGET: usize = 1024 * 1024;
+        // 滴灌（隔一会儿发几个字节）每次读都不超时，靠总时限收手。
+        const DRAIN_TIME: std::time::Duration = std::time::Duration::from_secs(2);
         let mut buf = [0u8; 8 * 1024];
         let mut budget = DRAIN_BUDGET;
+        let started = std::time::Instant::now();
 
         while self.size > 0 {
-            if budget == 0 {
+            if budget == 0 || started.elapsed() > DRAIN_TIME {
                 let err = std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "request body too large to discard",
