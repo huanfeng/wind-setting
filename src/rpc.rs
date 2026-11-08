@@ -169,6 +169,11 @@ fn is_bulk_method(method: &str) -> bool {
             | "commonChars.export"
             | "scheme.exportPackage"
             | "scheme.importPackage"
+            // 主题包：带图主题可达 64 MiB，解包 / 校验 / 打包都不是 5 秒档的活
+            // （本机编辑器推包、链接导入都会碰上接近上限的包）。
+            | "theme.previewPackage"
+            | "theme.importPackage"
+            | "theme.exportPackage"
             | "temp.promoteAll"
             | "temp.clear"
             | "freq.clear"
