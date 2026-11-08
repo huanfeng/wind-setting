@@ -5,10 +5,24 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use crate::net_task::{ReadError, read_limited};
+use crate::schema_url_import::{DownloadedPackage, PkgKind};
 
 /// 单份主题原文的上限（2 MiB）。下载与粘贴两条路共用——只闸一条的话，另一条粘错东西
 /// 要等 core 才报，而它说的是 TOML 解析失败，指不到「你粘的东西太大了」。
 pub const MAX_THEME_BYTES: usize = 2 * 1024 * 1024;
+
+/// 主题包落盘的上限：`wind-transfer` 解压总量 64 MiB，再加 1 MiB 给 zip 目录与条目头。
+/// 链接下载与本机编辑器推包共用。真正的包格式校验在 core，这里只防「无限读」。
+pub const MAX_THEME_PACKAGE_BYTES: usize = 65 * 1024 * 1024;
+
+/// 主题包落盘参数（下载与编辑器推包 / 拉包的临时文件共用）。
+pub(crate) const THEME_PKG: PkgKind = PkgKind {
+    label: "主题包",
+    prefix: "windinput_theme_import-",
+    ext: "wtheme",
+    max: MAX_THEME_PACKAGE_BYTES,
+    too_large: "主题包超过 64 MiB 限制",
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemePreview {
@@ -146,18 +160,36 @@ impl ThemeSource {
     pub fn describe(&self) -> String {
         match self {
             Self::Text(_) => "新的主题文件".to_string(),
-            Self::Package(path) => std::path::Path::new(path)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "主题包".to_string()),
+            Self::Package(path) => match std::path::Path::new(path).file_name() {
+                // 链接下载的包落在随机名的临时文件里，那个名字对用户毫无意义。
+                Some(n) if n.to_string_lossy().starts_with(THEME_PKG.prefix) => {
+                    "下载的主题包".to_string()
+                }
+                Some(n) => n.to_string_lossy().into_owned(),
+                None => "主题包".to_string(),
+            },
         }
     }
 }
 
 /// 导入主题包。响应形状与 [`import_text`] 一致，冲突同样走 `conflict` 字段。
 pub fn import_package(path: &str, force: bool) -> Result<ThemeImportResult, ThemeImportError> {
-    let params = json!({ "path": path, "force": force });
-    let v = crate::rpc::call_core("theme.importPackage", &params).map_err(classify_rpc_error)?;
+    import_package_via(&crate::rpc::call_core, path, None, force)
+}
+
+/// [`import_package`] 的可注入版：本机编辑器服务要带 `slug`（就地写回编辑器记住的那个
+/// 主题 id），测试要换掉 RPC。
+pub(crate) fn import_package_via(
+    rpc: &dyn Fn(&str, &Value) -> Result<Value, String>,
+    path: &str,
+    slug: Option<&str>,
+    force: bool,
+) -> Result<ThemeImportResult, ThemeImportError> {
+    let mut params = json!({ "path": path, "force": force });
+    if let Some(s) = slug {
+        params["slug"] = json!(s);
+    }
+    let v = rpc("theme.importPackage", &params).map_err(classify_rpc_error)?;
     if v.get("conflict").and_then(Value::as_bool) == Some(true) {
         let msg = v
             .get("error")
@@ -246,10 +278,132 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// 下载 https 文本。**阻塞**，只能在工作线程里调（见 [`crate::net_task`]）；`cancel` 置位后
-/// 读取循环在下一个分块停下。
-pub fn download_https_text(url: &str, cancel: &AtomicBool) -> Result<String, ThemeImportError> {
+/// 主题链接下载的结果：单文件主题的原文，或已落盘、已预览过的主题包。
+#[derive(Debug)]
+pub enum ThemeDownload {
+    Text(String),
+    /// 包文件 drop 即删：要活到用户在确认框里拍板（见 `AppState::open_downloaded_theme_package`）。
+    Package(DownloadedPackage, ThemePreview),
+}
+
+/// 链接**看起来**指向主题包：路径（去掉查询串与片段）以 `.wtheme` 结尾，大小写不敏感。
+///
+/// 看起来像就直接走包下载、发请求前先验官方域；看起来不像的照文本下载，正文头是 zip
+/// 签名时再转包下载（见 [`download_theme`]）。
+pub fn is_package_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    path.len() >= 7
+        && path
+            .get(path.len() - 7..)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(".wtheme"))
+}
+
+/// 正文头是 zip 签名（本地文件头 / 空包的目录尾 / 分卷标记）。
+pub fn looks_like_zip(head: &[u8]) -> bool {
+    matches!(
+        head,
+        [b'P', b'K', 3, 4, ..] | [b'P', b'K', 5, 6, ..] | [b'P', b'K', 7, 8, ..]
+    )
+}
+
+/// 从流里读满 `buf`（或读到尾），返回读到的字节数。
+fn read_head(r: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
+/// 按官方域、逐跳校验下载主题包到私有临时文件。**阻塞**，只能在工作线程里调。
+///
+/// 下载规则照抄方案包（[`crate::schema_url_import`]）：只认官方域、每一跳重定向重查、
+/// 不降级到 http、限额流式落盘（O_EXCL 随机名，drop 即删）。
+pub fn download_theme_package(url: &str, cancel: &AtomicBool) -> Result<DownloadedPackage, String> {
+    use crate::schema_url_import as dl;
+    let agent = dl::download_agent();
+    let body = dl::fetch_official(url, THEME_PKG.label, |u| {
+        dl::http_fetch(&agent, u, THEME_PKG.label)
+    })?;
+    let dir = dl::download_dir()?;
+    dl::purge_stale(&dir, THEME_PKG.prefix);
+    dl::save_stream(&dir, body, &THEME_PKG, cancel)
+}
+
+/// 下载主题链接（`cancel` 置位后读取循环在下一个分块停下）：文本主题照旧（任意 https 域、2 MiB、UTF-8），主题包走官方域的包下载，
+/// 下完在工作线程里一并让 core 预览（预览失败时包随 drop 删掉）。**阻塞**。
+pub fn download_theme(url: &str, cancel: &AtomicBool) -> Result<ThemeDownload, ThemeImportError> {
+    let pkg = download_theme_with(
+        url,
+        cancel,
+        |u| fetch_text_body(u).map(|b| Box::new(b) as crate::schema_url_import::Body),
+        download_theme_package,
+    )?;
+    let pkg = match pkg {
+        Downloaded::Text(t) => return Ok(ThemeDownload::Text(t)),
+        Downloaded::Package(p) => p,
+    };
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ThemeImportError::Download("已取消下载".to_string()));
+    }
+    let preview = preview_package(&pkg.path().to_string_lossy())?;
+    Ok(ThemeDownload::Package(pkg, preview))
+}
+
+/// [`download_theme`] 预览之前的那一半。
+#[derive(Debug)]
+enum Downloaded {
+    Text(String),
+    Package(DownloadedPackage),
+}
+
+/// 判别与分流，网络两端注入（单测起不了 TLS）：`text_get` 是文本那条路的一次 GET（自动跟
+/// 重定向、任意 https 域，与原先一致），`pkg_get` 是官方域的包下载。
+fn download_theme_with(
+    url: &str,
+    cancel: &AtomicBool,
+    text_get: impl FnOnce(&str) -> Result<crate::schema_url_import::Body, ThemeImportError>,
+    pkg_get: impl FnOnce(&str, &AtomicBool) -> Result<DownloadedPackage, String>,
+) -> Result<Downloaded, ThemeImportError> {
     validate_https_url(url)?;
+    let pkg = |u: &str| {
+        pkg_get(u, cancel)
+            .map(Downloaded::Package)
+            .map_err(ThemeImportError::Download)
+    };
+    if is_package_url(url) {
+        return pkg(url);
+    }
+    let mut body = text_get(url)?;
+    let mut head = [0u8; 4];
+    let n = read_head(&mut body, &mut head)
+        .map_err(|e| ThemeImportError::Download(format!("读取主题响应失败：{e}")))?;
+    if looks_like_zip(&head[..n]) {
+        // 链接没带 `.wtheme` 但回的是包：丢掉这条连接，按包的规矩从头再下一次——文本那条路
+        // 自动跟了重定向、也不限域，它取回的字节不能当包装。非官方域在这里被拒。
+        drop(body);
+        return pkg(url);
+    }
+    let rest = std::io::Read::chain(&head[..n], body);
+    let bytes = read_limited(rest, MAX_THEME_BYTES, cancel).map_err(|e| {
+        ThemeImportError::Download(match e {
+            ReadError::TooLarge => "主题文件超过 2 MiB 限制".to_string(),
+            ReadError::Cancelled => "已取消下载".to_string(),
+            ReadError::Io(m) | ReadError::Write(m) => format!("读取主题响应失败：{m}"),
+        })
+    })?;
+    String::from_utf8(bytes)
+        .map(Downloaded::Text)
+        .map_err(|_| ThemeImportError::Download("主题文件不是有效 UTF-8 文本".to_string()))
+}
+
+/// 文本那条路的一次 GET：跟随至多 3 次重定向、不限域（链接导入文本主题一向如此）。
+fn fetch_text_body(url: &str) -> Result<impl std::io::Read + Send + 'static, ThemeImportError> {
     let response = ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(READ_TIMEOUT)
@@ -259,15 +413,7 @@ pub fn download_https_text(url: &str, cancel: &AtomicBool) -> Result<String, The
         .get(url)
         .call()
         .map_err(|e| ThemeImportError::Download(format!("下载主题失败：{e}")))?;
-    let bytes = read_limited(response.into_reader(), MAX_THEME_BYTES, cancel).map_err(|e| {
-        ThemeImportError::Download(match e {
-            ReadError::TooLarge => "主题文件超过 2 MiB 限制".to_string(),
-            ReadError::Cancelled => "已取消下载".to_string(),
-            ReadError::Io(m) | ReadError::Write(m) => format!("读取主题响应失败：{m}"),
-        })
-    })?;
-    String::from_utf8(bytes)
-        .map_err(|_| ThemeImportError::Download("主题文件不是有效 UTF-8 文本".to_string()))
+    Ok(response.into_reader())
 }
 
 pub fn read_local_toml(path: &Path) -> Result<String, ThemeImportError> {
@@ -423,9 +569,200 @@ mod tests {
     }
 
     #[test]
-    fn download_https_text_rejects_non_https_before_request() {
+    fn package_url_is_judged_by_path_extension() {
+        for yes in [
+            "https://api.windinput.com/api/v1/themes/1.wtheme",
+            "https://windinput.com/a/B.WTHEME",
+            "https://windinput.com/a.wtheme?v=2",
+            "https://windinput.com/a.wtheme#x",
+        ] {
+            assert!(is_package_url(yes), "{yes}");
+        }
+        for no in [
+            "https://windinput.com/a.toml",
+            "https://windinput.com/a.toml?f=b.wtheme",
+            "https://windinput.com/awtheme",
+            "https://windinput.com/a.wtheme/x",
+            "https://windinput.com/汉字",
+            "",
+        ] {
+            assert!(!is_package_url(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn zip_signature_sniffing() {
+        assert!(looks_like_zip(b"PK\x03\x04rest"));
+        assert!(looks_like_zip(b"PK\x05\x06"));
+        assert!(looks_like_zip(b"PK\x07\x08"));
+        assert!(!looks_like_zip(b"PK"), "不足 4 字节不算");
+        assert!(!looks_like_zip(b"[meta]"));
+        assert!(!looks_like_zip(b"PKG = 1"));
+        assert!(!looks_like_zip(b""));
+    }
+
+    fn body(bytes: &[u8]) -> Result<crate::schema_url_import::Body, ThemeImportError> {
+        Ok(Box::new(std::io::Cursor::new(bytes.to_vec())))
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "wind_setting_theme_dl_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 包下载的桩：记下被要的地址，落一个小包。
+    fn fake_pkg<'a>(
+        dir: &'a Path,
+        seen: &'a std::cell::RefCell<Vec<String>>,
+    ) -> impl FnOnce(&str, &AtomicBool) -> Result<DownloadedPackage, String> + 'a {
+        move |u, c| {
+            seen.borrow_mut().push(u.to_string());
+            crate::schema_url_import::save_stream(dir, &b"PK\x03\x04pkg"[..], &THEME_PKG, c)
+        }
+    }
+
+    /// `.wtheme` 链接直接走包下载，文本那条路一次都不请求。
+    #[test]
+    fn wtheme_link_goes_straight_to_package_download() {
+        let dir = scratch("direct");
+        let seen = Default::default();
+        let got = download_theme_with(
+            "https://api.windinput.com/t/1.wtheme",
+            &AtomicBool::new(false),
+            |_| panic!("包链接不该走文本下载"),
+            fake_pkg(&dir, &seen),
+        )
+        .unwrap();
+        assert!(matches!(got, Downloaded::Package(_)));
+        assert_eq!(*seen.borrow(), ["https://api.windinput.com/t/1.wtheme"]);
+        drop(got);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "drop 即删");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 文本主题行为不变：任意 https 域、原文原样回来，不碰包下载。
+    #[test]
+    fn text_link_stays_text() {
+        let text = "[meta]\nname = \"蓝\"\n";
+        let got = download_theme_with(
+            "https://example.com/blue.toml",
+            &AtomicBool::new(false),
+            |_| body(text.as_bytes()),
+            |_, _| panic!("文本不该走包下载"),
+        )
+        .unwrap();
+        assert!(matches!(got, Downloaded::Text(t) if t == text));
+        // 比签名还短的正文也照样是文本。
+        let got = download_theme_with(
+            "https://example.com/a.toml",
+            &AtomicBool::new(false),
+            |_| body(b"a"),
+            |_, _| panic!(),
+        )
+        .unwrap();
+        assert!(matches!(got, Downloaded::Text(t) if t == "a"));
+    }
+
+    /// 文本那条路的上限与 UTF-8 要求照旧。
+    #[test]
+    fn text_link_keeps_size_and_utf8_rules() {
+        let big = vec![b'a'; MAX_THEME_BYTES + 1];
+        let err = download_theme_with(
+            "https://example.com/a.toml",
+            &AtomicBool::new(false),
+            |_| body(&big),
+            |_, _| panic!(),
+        )
+        .unwrap_err();
+        assert!(err.user_message().contains("2 MiB"), "{err:?}");
+        let err = download_theme_with(
+            "https://example.com/a.toml",
+            &AtomicBool::new(false),
+            |_| body(&[0xff, 0xfe, b'a', b'b', b'c']),
+            |_, _| panic!(),
+        )
+        .unwrap_err();
+        assert!(err.user_message().contains("UTF-8"), "{err:?}");
+    }
+
+    /// 没带 `.wtheme` 但正文是 zip：按包的规矩从头重下（官方域逐跳校验）。
+    #[test]
+    fn zip_body_behind_plain_link_is_refetched_as_package() {
+        let dir = scratch("sniff");
+        let seen = Default::default();
+        let got = download_theme_with(
+            "https://api.windinput.com/t/1/download",
+            &AtomicBool::new(false),
+            |_| body(b"PK\x03\x04whatever"),
+            fake_pkg(&dir, &seen),
+        )
+        .unwrap();
+        assert!(matches!(got, Downloaded::Package(_)));
+        assert_eq!(*seen.borrow(), ["https://api.windinput.com/t/1/download"]);
+        drop(got);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 非官方域的包一律拒：`.wtheme` 链接在发请求前就拒；文本链接嗅出 zip 后也拒，
+    /// 不会因为第一跳是文本下载就把别处的包装上。
+    #[test]
+    fn foreign_package_links_are_rejected() {
+        let no = AtomicBool::new(false);
+        for url in [
+            "https://evil.com/a.wtheme",
+            "https://evil-windinput.com/a.wtheme",
+            "https://windinput.com@evil.com/a.wtheme",
+        ] {
+            let err = download_theme(url, &no).unwrap_err();
+            assert!(err.user_message().contains("官方域名"), "{url}: {err:?}");
+        }
+        let err = download_theme_with(
+            "https://evil.com/theme",
+            &no,
+            |_| body(b"PK\x03\x04"),
+            download_theme_package,
+        )
+        .unwrap_err();
+        assert!(err.user_message().contains("官方域名"), "{err:?}");
+    }
+
+    /// 包上限：64 MiB 解压总量再加 1 MiB 余量；超限的半截文件不留，报错说得出上限。
+    #[test]
+    fn package_limit_and_partial_cleanup() {
+        assert_eq!(MAX_THEME_PACKAGE_BYTES, 65 * 1024 * 1024);
+        let dir = scratch("limit");
+        let small = PkgKind {
+            max: 1000,
+            ..THEME_PKG
+        };
+        let big = vec![7u8; 4000];
+        let err =
+            crate::schema_url_import::save_stream(&dir, &big[..], &small, &AtomicBool::new(false))
+                .unwrap_err();
+        assert!(err.contains("64 MiB"), "{err}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 下载来的包落在随机名临时文件里，覆盖确认不该把那个名字念给用户听。
+    #[test]
+    fn downloaded_package_describes_itself_plainly() {
+        let p = std::env::temp_dir().join(format!("{}0123abcd.wtheme", THEME_PKG.prefix));
+        assert_eq!(
+            ThemeSource::Package(p.to_string_lossy().into_owned()).describe(),
+            "下载的主题包"
+        );
+    }
+
+    #[test]
+    fn download_theme_rejects_non_https_before_request() {
         assert!(matches!(
-            download_https_text("http://theme.windinput.com/a.toml", &AtomicBool::new(false)),
+            download_theme("http://theme.windinput.com/a.toml", &AtomicBool::new(false)),
             Err(ThemeImportError::InvalidUrl(_))
         ));
     }

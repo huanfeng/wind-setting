@@ -184,7 +184,7 @@ pub fn build_theme_import_picker(app_state: &Rc<RefCell<AppState>>) -> Element {
                         s_text.borrow().notify_err("请先粘贴主题原文");
                         return;
                     }
-                    // 与下载那条同一条闸（`download_https_text` 有 MAX_THEME_BYTES）：
+                    // 与下载那条同一条闸（`download_theme` 的文本分支有 MAX_THEME_BYTES）：
                     // 三条路汇到同一个 finish，只有一条有输入上限的话，粘错东西（比如
                     // 整个词库文件）要等 core 才报，而它说的是 TOML 解析失败，指不到
                     // 「你粘的东西太大了」。

@@ -666,6 +666,9 @@ pub struct AppState {
     /// 「确认之后装上的是上一次放弃掉的那个包」。现有入口（argv/协议分派、导入对话框选到
     /// `.wtheme`）都照做了。
     pub theme_pkg_confirm_path: Signal<String>,
+    /// 链接下载来的主题包（私有临时文件，drop 即删）。确认框与随后的覆盖确认都只记路径，
+    /// 文件得由这里撑到两个框都收起（见 [`Self::release_downloaded_theme_pkg_if_idle`]）。
+    theme_downloaded_pkg: RefCell<Option<crate::schema_url_import::DownloadedPackage>>,
     /// 待覆盖导入的**来源**：撞上同名主题时暂存于此，用户确认后以 `force=true` 重推。
     ///
     /// 文本来源存的是全文而不是地址——URL 导入重下要多一次网络往返，且拿到的可能已不是
@@ -1103,6 +1106,7 @@ impl AppState {
             theme_pkg_confirm_visible: signal(false),
             theme_pkg_confirm_msg: signal(String::new()),
             theme_pkg_confirm_path: signal(String::new()),
+            theme_downloaded_pkg: RefCell::new(None),
             theme_overwrite_source: signal(None),
             theme_overwrite_msg: signal(String::new()),
             theme_overwrite_visible: signal(false),
@@ -2047,6 +2051,9 @@ impl AppState {
 
     /// 后台下载主题链接，**不阻塞 UI**：点击立即返回，下载完成后在 UI 线程调 `on_text`。
     ///
+    /// 链接是主题包（`.wtheme` 或正文是 zip）时不进 `on_text`：收起发起的对话框，转主题包
+    /// 确认框（与双击 `.wtheme` 同一个框，带预览图），见 [`Self::open_downloaded_theme_package`]。
+    ///
     /// 对话框在下载期间被关掉（含 ESC）时结果直接丢弃——那是用户改了主意，不该再弹覆盖
     /// 确认或错误 toast。取消由各对话框挂的 `reactive_effect` 调 [`Self::cancel_theme_download`]。
     pub fn start_theme_download(
@@ -2065,7 +2072,7 @@ impl AppState {
         let net = st.net.clone();
         let app_done = app.clone();
         let task = net.spawn(
-            move |cancel| crate::theme_import::download_https_text(&url, cancel),
+            move |cancel| crate::theme_import::download_theme(&url, cancel),
             move |res| {
                 {
                     let st = app_done.borrow();
@@ -2076,7 +2083,17 @@ impl AppState {
                     return;
                 }
                 match res {
-                    Some(Ok(text)) => on_text(&app_done, text),
+                    Some(Ok(crate::theme_import::ThemeDownload::Text(text))) => {
+                        on_text(&app_done, text)
+                    }
+                    Some(Ok(crate::theme_import::ThemeDownload::Package(pkg, preview))) => {
+                        // 先收发起的框再弹确认框：包确认框在根 stack 里排在导入框之前，
+                        // 同时可见会落在它的遮罩底下（见 `theme_import_picker::import_picked_file`）。
+                        dialog_visible.set(false);
+                        app_done
+                            .borrow()
+                            .open_downloaded_theme_package(pkg, &preview);
+                    }
                     Some(Err(e)) => app_done.borrow().notify_err(e.user_message()),
                     None => app_done.borrow().notify_err("下载线程异常中断"),
                 }
@@ -2084,6 +2101,31 @@ impl AppState {
         );
         st.theme_download_task.set(Some((task, owner)));
         st.theme_download_idle.set(false);
+    }
+
+    /// 链接下载来的主题包进确认框：先写 path 再置 visible（`theme_pkg_confirm_path` 的约定），
+    /// 包文件交给 `theme_downloaded_pkg` 撑着。
+    pub fn open_downloaded_theme_package(
+        &self,
+        pkg: crate::schema_url_import::DownloadedPackage,
+        preview: &crate::theme_import::ThemePreview,
+    ) {
+        self.theme_pkg_confirm_msg.set(preview.confirm_text());
+        self.theme_pkg_confirm_path
+            .set(pkg.path().to_string_lossy().into_owned());
+        // 换下的旧包（上一个没拍板的下载）随 drop 删掉。
+        *self.theme_downloaded_pkg.borrow_mut() = Some(pkg);
+        self.theme_pkg_confirm_visible.set(true);
+    }
+
+    /// 主题包确认框与覆盖确认框都收起了，就删掉链接下载来的包。
+    ///
+    /// 两框接连出现（先确认装、撞名再确认覆盖），覆盖确认里存的也只是路径——只看第一个框
+    /// 就删的话，用户点「覆盖」时文件已经没了。
+    pub fn release_downloaded_theme_pkg_if_idle(&self) {
+        if !self.theme_pkg_confirm_visible.get() && !self.theme_overwrite_visible.get() {
+            self.theme_downloaded_pkg.borrow_mut().take();
+        }
     }
 
     /// 取消 `owner` 在途的主题下载（它的对话框关闭时调）。没有在途任务、或在途的是另一个
@@ -5026,7 +5068,7 @@ mod tests {
     }
 
     /// 主题下载走后台：点击只置「下载中」，结果回 UI 线程才进续体；失败走 toast 并恢复空闲。
-    /// 用 http:// 地址让 `download_https_text` 在发请求前就失败，测试不需要网络。
+    /// 用 http:// 地址让 `download_theme` 在发请求前就失败，测试不需要网络。
     #[test]
     fn theme_download_is_async_and_failure_restores_idle() {
         let (st, queue) = state_with_queue_sink();
@@ -5168,6 +5210,50 @@ mod tests {
         AppState::start_schema_download(&st, "https://windinput.com/b.zip".to_string());
         assert!(st.borrow().feedback.get().is_none(), "不该被拒");
         assert!(st.borrow().schema_download_visible.get());
+    }
+
+    /// 链接下载来的主题包进确认框；文件撑到确认框与覆盖确认**都**收起才删——覆盖确认里
+    /// 存的也只是路径，先删的话用户点「覆盖」时包已经没了。
+    #[test]
+    fn downloaded_theme_package_lives_until_both_dialogs_close() {
+        let dir = std::env::temp_dir().join(format!("wind_setting_dl_pkg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pkg = crate::schema_url_import::save_stream(
+            &dir,
+            &b"PK\x03\x04"[..],
+            &crate::theme_import::THEME_PKG,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let path = pkg.path().to_path_buf();
+        let preview = crate::theme_import::ThemePreview {
+            slug: String::new(),
+            display_name: "水墨".to_string(),
+            version: "1.0".to_string(),
+            author: "某人".to_string(),
+            asset_count: 3,
+        };
+
+        let st = AppState::empty();
+        st.open_downloaded_theme_package(pkg, &preview);
+        assert!(st.theme_pkg_confirm_visible.get());
+        assert_eq!(st.theme_pkg_confirm_path.get(), path.to_string_lossy());
+        assert!(st.theme_pkg_confirm_msg.get().contains("水墨"));
+
+        // 确认框开着：不删。
+        st.release_downloaded_theme_pkg_if_idle();
+        assert!(path.exists());
+        // 点了「导入」撞名，转覆盖确认：仍不删。
+        st.theme_pkg_confirm_visible.set(false);
+        st.theme_overwrite_visible.set(true);
+        st.release_downloaded_theme_pkg_if_idle();
+        assert!(path.exists(), "覆盖确认还要用这个文件");
+        // 覆盖确认也收起：删。
+        st.theme_overwrite_visible.set(false);
+        st.release_downloaded_theme_pkg_if_idle();
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 没撞名时不该弹任何框，结论直接交回调用方。

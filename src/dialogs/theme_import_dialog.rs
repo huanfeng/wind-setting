@@ -39,7 +39,8 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
         .child(Element::divider())
         .child(
             Element::label(
-                "即将从 HTTPS 链接下载 TOML 主题。请确认来源可信，导入前会先交给 core 校验。",
+                "即将从 HTTPS 链接下载主题。请确认来源可信，导入前会先交给 core 校验；\
+                 主题包（.wtheme）只接受 windinput.com 官方链接，装之前先给出预览。",
             )
             .font_size(12.0)
             .fg_role(Role::TextMuted)
@@ -95,7 +96,9 @@ pub fn build_theme_import_dialog(app_state: &Rc<RefCell<AppState>>) -> Element {
                                 import_state.borrow().notify_err(e.user_message());
                                 return;
                             }
-                            // 下载在后台线程跑，完成后才进下面的导入。直接下载 → 导入；
+                            // 下载在后台线程跑，完成后才进下面的导入。链接是主题包时不进
+                            // 下面的续体，转主题包确认框（见 `start_theme_download`）。
+                            // 文本主题直接下载 → 导入；
                             // import_text 内部（core）已做校验，无需再单独预览（core
                             // theme.preview 只支持按已安装 name 预览，不接受原始文本）。
                             //

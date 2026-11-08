@@ -270,6 +270,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(assoc_overwrite_dlg)
         .child(assoc_remove_dlg)
         .child(theme_pkg_confirm_dlg)
+        .child(downloaded_theme_pkg_release(app))
         .child(dialog)
         // 词库对话框已随词库页迁进独立窗（见 `dict_window::build_content`），不在这里挂。
         .child(theme_import_dialog)
@@ -1230,6 +1231,24 @@ fn build_theme_package_confirm_dialog(app: &Rc<RefCell<AppState>>) -> Element {
                 s.confirm_theme_package_import();
             }
             visible.set(false);
+        },
+    )
+}
+
+/// 链接下载来的主题包：确认框与覆盖确认都收起后删掉临时文件。挂在根上而不是框里——
+/// 两个框各自收起时都得查一次，而谁先谁后不定。
+fn downloaded_theme_pkg_release(app: &Rc<RefCell<AppState>>) -> Element {
+    let (pkg_visible, ov_visible) = {
+        let st = app.borrow();
+        (st.theme_pkg_confirm_visible, st.theme_overwrite_visible)
+    };
+    let app = app.clone();
+    crate::pages::dict::reactive::reactive_effect(
+        move || pkg_visible.version().wrapping_add(ov_visible.version()),
+        move || {
+            if let Ok(st) = app.try_borrow() {
+                st.release_downloaded_theme_pkg_if_idle();
+            }
         },
     )
 }
