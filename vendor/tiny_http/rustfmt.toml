@@ -1,0 +1,2 @@
+# 上游代码原样保留，不按本仓风格重排（方便与上游对比、升级时搬补丁）。
+disable_all_formatting = true
