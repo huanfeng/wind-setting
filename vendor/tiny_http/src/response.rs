@@ -372,8 +372,9 @@ where
                 Header::from_bytes(&b"Connection"[..], &b"upgrade"[..]).unwrap(),
             );
             transfer_encoding = None;
-        } else {
+        } else if self.status_code.0 >= 200 {
             // [wind-setting 补丁] 一连接一请求（见 client.rs），告诉客户端别复用连接。
+            // 1xx（100 Continue）是中间响应，不带。
             self.headers.insert(
                 0,
                 Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap(),

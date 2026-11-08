@@ -44,7 +44,9 @@ const LEGACY_ORIGINS: &[&str] = &["https://theme.windinput.com"];
 const PROD_ORIGINS: &[&str] = &["https://theme.windinput.com", "https://windinput.com"];
 
 /// 读 push / 收包请求体的总时限。每次读另有 tiny_http 的 30 秒读超时，但滴灌（隔一会儿
-/// 发几个字节）每次读都不超时，靠这一道收手。本机回环上 65 MiB 一秒都用不了。
+/// 发几个字节）每次读都不超时，靠这一道收手。截止时间只在两次读之间查，所以最坏情况是
+/// 总时限加一次读超时：约 60 + 30 = 90 秒（之后 tiny_http 丢弃余量最多再约 2 + 30 秒）。
+/// 本机回环上 65 MiB 一秒都用不了。
 const BODY_TIME_LIMIT: Duration = Duration::from_secs(60);
 
 /// 带总截止时间的读：过了截止时间，下一次读直接报超时。
@@ -149,6 +151,22 @@ enum Access {
     Paired,
     /// 没带 token，但 `Origin` 正好是线上编辑器（过渡，只对旧路由有效）。
     Legacy,
+}
+
+/// 过渡规则只放已发布编辑器用到的三条旧路由（白名单）：`GET /api/themes`、
+/// `GET /api/theme/:slug`（不含 `/package`）、`POST /api/theme/push`。以后加的路由默认只认 token。
+fn is_legacy_route(method: &str, url: &str, is_package: bool) -> bool {
+    match method {
+        "GET" => {
+            url == "/api/themes"
+                || (!is_package
+                    && url
+                        .strip_prefix("/api/theme/")
+                        .is_some_and(|slug| !slug.is_empty() && !slug.contains('/')))
+        }
+        "POST" => url == "/api/theme/push",
+        _ => false,
+    }
 }
 
 /// 认证：token 头优先（带了就必须对）；没带时只认线上编辑器的 `Origin`。
@@ -454,14 +472,10 @@ fn handle_request(req: tiny_http::Request, be: &Backend) {
         respond(req, unpaired_reply(allow_origin));
         return;
     };
-    // 收包 / 出包是新路由，只有带 token 的新编辑器会用：不给过渡。
-
     let package_slug = url
         .strip_prefix("/api/theme/")
         .and_then(|rest| rest.strip_suffix("/package"));
-    let package_route = (method == "POST" && url == "/api/theme/package")
-        || (method == "GET" && package_slug.is_some());
-    if package_route && access != Access::Paired {
+    if access == Access::Legacy && !is_legacy_route(&method, &url, package_slug.is_some()) {
         respond(req, unpaired_reply(allow_origin));
         return;
     }
@@ -1036,8 +1050,12 @@ mod route_tests {
         let port = server.server_addr().to_ip().unwrap().port();
         std::thread::scope(|s| {
             s.spawn(|| {
+                // 限时等：客户端那侧断言失败时请求不会来齐，死等会让用例挂死而不是变红。
                 for _ in 0..n {
-                    handle_request(server.recv().unwrap(), be);
+                    match server.recv_timeout(Duration::from_secs(10)) {
+                        Ok(Some(req)) => handle_request(req, be),
+                        _ => break,
+                    }
                 }
             });
             client(port);
@@ -1795,10 +1813,13 @@ mod route_tests {
                 body.len() + 4096
             )
             .unwrap();
-            s.write_all(&body).unwrap();
+            // 先收 403 再发请求体：服务端在读请求体前就回了，等它关连接时再发会被 RST，
+            // 而 Windows 收到 RST 可能把已到达、还没读的 403 一并丢掉。
             let r = read_reply(&mut s);
             assert_eq!(r.status, 403);
             assert_eq!(r.header("Connection").as_deref(), Some("close"));
+            // 服务端此刻正在丢弃余量：发过去的前 1 MiB 被丢掉，后面就是藏着的请求。
+            let _ = s.write_all(&body);
             // 连接随后被服务端关掉，读不到第二个响应。
             let mut rest = Vec::new();
             let _ = s.read_to_end(&mut rest);
@@ -1828,11 +1849,13 @@ mod route_tests {
             write!(
                 s,
                 "POST /api/theme/push HTTP/1.1\r\nHost: localhost:{port}\r\n\
-                 Origin: https://evil.com\r\nTransfer-Encoding: chunked\r\n\r\n{SMUGGLED}"
+                 Origin: https://evil.com\r\nTransfer-Encoding: chunked\r\n\r\n"
             )
             .unwrap();
+            // 先收 403 再发残留字节（理由同上一条）。
             let r = read_reply(&mut s);
             assert_eq!(r.status, 403);
+            let _ = s.write_all(SMUGGLED.as_bytes());
             let mut rest = Vec::new();
             let _ = s.read_to_end(&mut rest);
             assert!(
@@ -1845,13 +1868,81 @@ mod route_tests {
         assert!(calls.lock().unwrap().is_empty());
     }
 
-    /// 起一个线程每隔 `every` 往连接上滴一个字节，直到写失败或 `stop` 置位。
+    /// 滴灌最多持续这么久（看门狗）：修复失效时服务端会一直读下去，没有它用例会挂死
+    /// 而不是变红；有它则滴灌停下、读超时收尾，由耗时断言报红。
+    const TRICKLE_WATCHDOG: Duration = Duration::from_secs(8);
+
+    /// `Connection: close` 只加在最终响应上：`100 Continue` 是中间响应，带上它客户端会以为
+    /// 连接要关、不再发请求体。
+    #[test]
+    fn continue_response_does_not_say_close() {
+        let dir = scratch("expect100");
+        let rpc = |_: &str, _: &Value| Ok(json!({"ok": true, "slug": "a", "display_name": "A"}));
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &rpc,
+            tmp_dir: Some(&dir),
+        };
+        let pkg = fixture(4096);
+        serve(1, &be, |port| {
+            let mut s = connect(port);
+            write!(
+                s,
+                "POST /api/theme/package HTTP/1.1\r\nHost: localhost:{port}\r\n\
+                 X-Wind-Token: {TOKEN}\r\nExpect: 100-continue\r\n\
+                 Content-Length: {}\r\n\r\n",
+                pkg.len()
+            )
+            .unwrap();
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 100);
+            assert_eq!(r.header("Connection"), None);
+            s.write_all(&pkg).unwrap();
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 200);
+            assert_eq!(r.header("Connection").as_deref(), Some("close"));
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 不支持的 HTTP 版本：回 505 后关连接，后面跟着的请求不得被接着解析。版本检查在读请求头
+    /// 之前，所以紧跟请求行的那一行在「接着解析」时会被当成下一个请求行——藏的请求就放那里。
+    #[test]
+    fn unsupported_version_closes_the_connection() {
+        let calls = Calls::default();
+        let rpc = recording_rpc(&calls);
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &rpc,
+            tmp_dir: None,
+        };
+        let n = serve_counting(&be, |port| {
+            let mut s = connect(port);
+            write!(s, "POST /api/theme/push HTTP/2.0\r\n{SMUGGLED}").unwrap();
+            let r = read_reply(&mut s);
+            assert_eq!(r.status, 505);
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest);
+            assert!(
+                rest.is_empty(),
+                "不该有第二个响应：{}",
+                String::from_utf8_lossy(&rest)
+            );
+        });
+        assert_eq!(n, 0);
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// 起一个线程每隔 `every` 往连接上滴一个字节，直到写失败、`stop` 置位或看门狗到点。
     fn trickle(s: &TcpStream, every: Duration) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
         let mut w = s.try_clone().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let stop2 = stop.clone();
+        let started = std::time::Instant::now();
         let h = std::thread::spawn(move || {
-            while !stop2.load(Ordering::Relaxed) {
+            while !stop2.load(Ordering::Relaxed) && started.elapsed() < TRICKLE_WATCHDOG {
                 if w.write_all(b"x").is_err() {
                     break;
                 }
@@ -1923,6 +2014,105 @@ mod route_tests {
             h.join().unwrap();
         }
         assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    }
+
+    /// 过渡规则是白名单：线上编辑器的 Origin 不带 token，除三条旧路由外一律 401。
+    #[test]
+    fn legacy_origin_is_limited_to_the_three_old_routes() {
+        // 记录而不 panic：放行规则退化时这里照常回包，断言当场变红而不是让服务线程挂掉。
+        let calls = Calls::default();
+        let rpc = recording_rpc(&calls);
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &rpc,
+            tmp_dir: None,
+        };
+        let cases = [
+            ("GET", "/api/nope"),
+            ("GET", "/api/theme/"),
+            ("GET", "/api/theme/a/b"),
+            ("GET", "/api/theme/x/package"),
+            ("POST", "/api/themes"),
+            ("POST", "/api/theme/package"),
+            ("PUT", "/api/theme/push"),
+            ("DELETE", "/api/theme/x"),
+        ];
+        serve(cases.len(), &be, |port| {
+            for (m, path) in cases {
+                let r = request_raw(
+                    port,
+                    &format!(
+                        "{m} {path} HTTP/1.1\r\nHost: localhost:{{port}}\r\n\
+                         Origin: https://theme.windinput.com\r\nContent-Length: 0\r\n\
+                         Connection: close\r\n\r\n"
+                    ),
+                    b"",
+                );
+                assert_eq!(r.status, 401, "{m} {path}");
+            }
+        });
+        assert!(calls.lock().unwrap().is_empty(), "被拒的请求不得走到 RPC");
+        assert!(is_legacy_route("GET", "/api/themes", false));
+        assert!(is_legacy_route("GET", "/api/theme/水墨", false));
+        assert!(is_legacy_route("POST", "/api/theme/push", false));
+    }
+
+    /// 请求头上限：单行超 16 KiB、或超过 100 条，tiny_http 直接回 400 并关连接，请求到不了
+    /// 处理函数。
+    #[test]
+    fn oversized_request_head_is_rejected_before_routing() {
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &no_rpc,
+            tmp_dir: None,
+        };
+        let n = serve_counting(&be, |port| {
+            let long_line = format!(
+                "GET /api/themes HTTP/1.1\r\nHost: localhost:{port}\r\nX-Pad: {}\r\n\r\n",
+                "a".repeat(17 * 1024)
+            );
+            let long_target = format!(
+                "GET /api/themes?{} HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n",
+                "a".repeat(17 * 1024)
+            );
+            let many: String = (0..101).map(|i| format!("X-H{i}: v\r\n")).collect();
+            let many = format!("GET /api/themes HTTP/1.1\r\nHost: localhost:{port}\r\n{many}\r\n");
+            // 先只发到刚越过上限处，收到 400 再发剩下的（写失败不管）：服务端回完 400 就关
+            // 连接，那时接收缓冲里还有没读的字节会触发 RST，Windows 收到 RST 可能把已到达
+            // 的 400 一并丢掉（同走私用例）。
+            let over =
+                |head: &str, from: &str| head.find(from).unwrap() + from.len() + 16 * 1024 + 64;
+            let cuts = [
+                over(&long_line, "X-Pad: "),
+                over(&long_target, "?"),
+                // 第 101 条请求头的行尾：服务端读到这里就拒，末尾空行留到后面再发。
+                many.len() - 2,
+            ];
+            for (head, cut) in [long_line, long_target, many].iter().zip(cuts) {
+                let mut s = connect(port);
+                s.write_all(&head.as_bytes()[..cut]).unwrap();
+                let r = read_reply(&mut s);
+                assert_eq!(r.status, 400);
+                let _ = s.write_all(&head.as_bytes()[cut..]);
+                let mut rest = Vec::new();
+                let _ = s.read_to_end(&mut rest);
+                assert!(rest.is_empty(), "连接应已关闭");
+            }
+            // 正好 100 条的照常进来（到路由，因没 token 回 401）。
+            let ok: String = (0..98).map(|i| format!("X-H{i}: v\r\n")).collect();
+            let r = request_raw(
+                port,
+                &format!(
+                    "GET /api/themes HTTP/1.1\r\nHost: localhost:{{port}}\r\n{ok}\
+                     Connection: close\r\n\r\n"
+                ),
+                b"",
+            );
+            assert_eq!(r.status, 401);
+        });
+        assert_eq!(n, 1, "超限的三个请求都不该到处理函数");
     }
 }
 

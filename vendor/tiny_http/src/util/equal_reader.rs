@@ -69,7 +69,8 @@ where
     // 当成下一个请求：client.rs 已改成一连接一请求。见 vendor/tiny_http/PATCHES.md。
     fn drop(&mut self) {
         const DRAIN_BUDGET: usize = 1024 * 1024;
-        // 滴灌（隔一会儿发几个字节）每次读都不超时，靠总时限收手。
+        // 滴灌（隔一会儿发几个字节）每次读都不超时，靠总时限收手。时限只在两次读之间
+        // 查，最坏约 DRAIN_TIME + 一次读超时（缺省 30 秒）。
         const DRAIN_TIME: std::time::Duration = std::time::Duration::from_secs(2);
         let mut buf = [0u8; 8 * 1024];
         let mut budget = DRAIN_BUDGET;

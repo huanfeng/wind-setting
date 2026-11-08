@@ -44,6 +44,8 @@ enum ReadError {
     /// the client sent an unrecognized `Expect` header
     ExpectationFailed(HTTPVersion),
     ReadIoError(IoError),
+    /// [wind-setting 补丁] HTTP 版本高于 1.1。
+    UnsupportedVersion,
 }
 
 impl ClientConnection {
@@ -78,10 +80,16 @@ impl ClientConnection {
     /// Reads until `CRLF` is reached. The next read will start
     ///  at the first byte of the new line.
     fn read_next_line(&mut self) -> IoResult<AsciiString> {
+        // [wind-setting 补丁] 单行上限：原实现一直读到换行为止，不带换行的超长行会把
+        // 内存吃光。超了按格式错误回 400 并关连接（见 `read`）。
+        const MAX_LINE: usize = 16 * 1024;
         let mut buf = Vec::new();
         let mut prev_byte_was_cr = false;
 
         loop {
+            if buf.len() > MAX_LINE {
+                return Err(IoError::new(ErrorKind::InvalidData, "request line too long"));
+            }
             let byte = self.next_header_source.by_ref().bytes().next();
 
             let byte = match byte {
@@ -107,22 +115,46 @@ impl ClientConnection {
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
-                let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                let line = self.read_next_line().map_err(|e| {
+                    // [wind-setting 补丁] 行超长：回 400 并关连接。
+                    if e.kind() == ErrorKind::InvalidData {
+                        ReadError::WrongRequestLine
+                    } else {
+                        ReadError::ReadIoError(e)
+                    }
+                })?;
 
                 parse_request_line(
                     line.as_str().trim(), // TODO: remove this conversion
                 )?
             };
+            // [wind-setting 补丁] 版本检查提前到建 Request 之前：原实现在建好 Request（它已
+            // 占了这条连接的第一个响应写入器）之后才回 505，505 的写入器要排在它后面，
+            // 永远等不到——连接挂死。
+            if version > HTTPVersion(1, 1) {
+                return Err(ReadError::UnsupportedVersion);
+            }
 
             // getting all headers
             let headers = {
+                // [wind-setting 补丁] 请求头条数上限，超了与行超长一样回 400 并关连接。
+                const MAX_HEADERS: usize = 100;
                 let mut headers = Vec::new();
                 loop {
-                    let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                    let line = self.read_next_line().map_err(|e| {
+                        if e.kind() == ErrorKind::InvalidData {
+                            ReadError::WrongHeader(version.clone())
+                        } else {
+                            ReadError::ReadIoError(e)
+                        }
+                    })?;
 
                     if line.is_empty() {
                         break;
                     };
+                    if headers.len() >= MAX_HEADERS {
+                        return Err(ReadError::WrongHeader(version));
+                    }
                     headers.push(match FromStr::from_str(line.as_str().trim()) {
                         // TODO: remove this conversion
                         Ok(h) => h,
@@ -222,21 +254,22 @@ impl Iterator for ClientConnection {
 
                 Err(ReadError::ReadIoError(_)) => return None,
 
+                // [wind-setting 补丁] 回完 505 就关连接（原为 `continue` 接着在同一连接上
+                // 解析：没读的请求体会被当成下一个请求，同 no_more_requests 那段）。
+                Err(ReadError::UnsupportedVersion) => {
+                    let writer = self.sink.next().unwrap();
+                    let response = Response::from_string(
+                        "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
+                    )
+                    .with_status_code(StatusCode(505));
+                    response
+                        .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
+                        .ok();
+                    return None;
+                }
+
                 Ok(rq) => rq,
             };
-
-            // checking HTTP version
-            if *rq.http_version() > (1, 1) {
-                let writer = self.sink.next().unwrap();
-                let response = Response::from_string(
-                    "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
-                )
-                .with_status_code(StatusCode(505));
-                response
-                    .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                    .ok();
-                continue;
-            }
 
             // updating the status of the connection
             let connection_header = rq
