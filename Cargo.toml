@@ -21,6 +21,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
 toml = "0.8"
 ureq = "2"
+# 官方域校验与 ureq 必须用同一个 URL 解析器（ureq 底下就是它），见 `schema_url_import::parse_official_https`。
+url = "2.5"
 tiny_http = "0.12"
 # 升级版本比较：prerelease 与数字标识符的序由规范定义，不自行实现
 semver = "1"

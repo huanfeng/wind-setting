@@ -37,27 +37,27 @@ pub fn is_official_host(host: &str) -> bool {
     host == "windinput.com" || host.ends_with(".windinput.com")
 }
 
-/// 从 https URL 中提取 host（小写，去端口、去 userinfo）。非 https 或无 host 返回 None。
+/// 解析并校验一个官方 https 地址，返回解析后的 URL（请求时用它的规范串）。
 ///
-/// 手写解析（本仓无 url crate）：authority = `https://` 与首个 `/?#` 之间；
-/// 再剥掉 `user@` 前缀与 `:port` 后缀。IPv6 字面量带 `[]`，官方域用不到，直接判非法。
-pub fn https_host_of(url: &str) -> Option<String> {
-    let t = url.trim();
-    // `get(..8)`：位置 8 落在多字节字符中间时返回 None 而不是 panic——URL 来自
-    // 协议链接，是攻击者可控输入，绝不能因畸形串崩掉设置程序。
-    let rest = t
-        .get(..8)
-        .filter(|p| p.eq_ignore_ascii_case("https://"))
-        .map(|_| &t[8..])
-        .filter(|r| !r.is_empty())?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    // userinfo：@ 之后才是 host（`https://user@evil.com/` 不能把 user 当 host）。
-    let host_port = authority.rsplit('@').next()?;
-    if host_port.starts_with('[') {
-        return None;
+/// **校验与请求必须用同一个解析器**：ureq 底下是 `url` crate，它把 `\` 当路径分隔符，
+/// `https://evil.com\.windinput.com/a` 的 host 是 `evil.com`。此前手写的解析只认 `/`，
+/// 会把同一个串的 host 判成 `evil.com\.windinput.com`、放过官方域校验——两边对 host
+/// 的理解只要有一处不同，白名单就形同虚设。
+///
+/// 拒绝：非 https、带 userinfo（`user@` 本身就是伪装手法，官方链接用不到）、host 不是
+/// 域名（IP 字面量）或不在官方域。
+pub(crate) fn parse_official_https(url: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(url.trim()).map_err(|_| "链接必须是 https://".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("链接必须是 https://".to_string());
     }
-    let host = host_port.split(':').next()?;
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("链接不得带用户名或密码".to_string());
+    }
+    match parsed.host() {
+        Some(url::Host::Domain(host)) if is_official_host(host) => Ok(parsed),
+        _ => Err("链接必须来自 windinput.com 官方域名".to_string()),
+    }
 }
 
 /// 正文流。64 MB 的包不整块读进内存：边读边落盘，峰值只有一个分块。
@@ -71,29 +71,9 @@ pub(crate) enum Fetched {
 
 /// 第一跳的校验：https + 官方域。
 pub(crate) fn check_official_url(url: &str) -> Result<(), String> {
-    let host = https_host_of(url).ok_or_else(|| "方案包链接必须是 https://".to_string())?;
-    if !is_official_host(&host) {
-        return Err("方案包链接必须来自 windinput.com 官方域名".to_string());
-    }
-    Ok(())
-}
-
-/// 把 `Location` 解析成绝对地址：绝对 URL 原样、`//host/…` 补 https、`/path` 拼回当前
-/// 源站。相对路径（`a/b.zip`）官方源站用不到，不解析、按无效处理。
-fn resolve_location(current: &str, location: &str) -> Option<String> {
-    let loc = location.trim();
-    let scheme_len = loc.find("://").unwrap_or(0);
-    if scheme_len > 0 && loc[..scheme_len].bytes().all(|b| b.is_ascii_alphabetic()) {
-        return Some(loc.to_string());
-    }
-    if let Some(rest) = loc.strip_prefix("//") {
-        return Some(format!("https://{rest}"));
-    }
-    if loc.starts_with('/') {
-        let authority = current.get(8..)?.split(['/', '?', '#']).next()?;
-        return Some(format!("https://{authority}{loc}"));
-    }
-    None
+    parse_official_https(url)
+        .map(|_| ())
+        .map_err(|e| format!("方案包{e}"))
 }
 
 /// 按「每一跳先校验、再请求」的次序取方案包正文。`fetch` 只做一次往返、不跟随重定向。
@@ -103,18 +83,20 @@ pub(crate) fn fetch_official(
     url: &str,
     mut fetch: impl FnMut(&str) -> Result<Fetched, String>,
 ) -> Result<Body, String> {
-    check_official_url(url)?;
-    let mut current = url.to_string();
+    let mut current = parse_official_https(url).map_err(|e| format!("方案包{e}"))?;
     for _ in 0..=MAX_REDIRECTS {
-        match fetch(&current)? {
+        // 请求用解析后的规范串：发出去的就是校验过的那一个地址。
+        match fetch(current.as_str())? {
             Fetched::Body(body) => return Ok(body),
             Fetched::Redirect(location) => {
-                let next = resolve_location(&current, &location)
-                    .filter(|u| check_official_url(u).is_ok())
+                // 相对地址按当前地址补全（与浏览器 / ureq 同一套规则），补全后再整串重验。
+                current = current
+                    .join(location.trim())
+                    .ok()
+                    .and_then(|u| parse_official_https(u.as_str()).ok())
                     .ok_or_else(|| {
                         format!("方案包链接重定向到了非官方或非 https 地址，已拒绝：{location}")
                     })?;
-                current = next;
             }
         }
     }
@@ -322,39 +304,67 @@ mod tests {
         assert!(!is_official_host(""));
     }
 
-    #[test]
-    fn host_extraction_strips_port_userinfo_and_path() {
-        assert_eq!(
-            https_host_of("https://dl.windinput.com/pkg.zip").as_deref(),
-            Some("dl.windinput.com")
-        );
-        assert_eq!(
-            https_host_of("https://Windinput.Com:8443/a?b=c#d").as_deref(),
-            Some("windinput.com"),
-            "端口不参与域判定，host 归一为小写"
-        );
-        // userinfo 伪装：host 必须取 @ 之后的部分。
-        assert_eq!(
-            https_host_of("https://windinput.com@evil.com/pkg.zip").as_deref(),
-            Some("evil.com")
-        );
-        assert_eq!(https_host_of("http://windinput.com/a.zip"), None);
-        assert_eq!(https_host_of("https:///no-host"), None);
-        assert_eq!(https_host_of("https://[::1]/x"), None);
+    fn ok(url: &str) -> bool {
+        parse_official_https(url).is_ok()
     }
 
-    /// 畸形串不 panic：多字节字符跨越第 8 字节（`https:/汉` 的「汉」占字节 7..10）
-    /// 时按字节切片会崩——URL 是协议链接来的攻击者可控输入。
     #[test]
-    fn host_extraction_survives_multibyte_garbage() {
-        assert_eq!(https_host_of("https:/汉字"), None);
-        assert_eq!(https_host_of("汉https://x"), None);
-        assert_eq!(https_host_of("https://"), None);
-        // IDN 子域本身合法解析（是否官方域由 is_official_host 另判）。
+    fn official_https_accepts_ports_case_and_idn_subdomains() {
+        assert!(ok("https://dl.windinput.com/pkg.zip"));
+        assert!(ok("https://Windinput.Com:8443/a?b=c#d"), "端口不参与域判定");
+        assert!(ok("https://例子.windinput.com/x"), "IDN 子域按 punycode 判");
         assert_eq!(
-            https_host_of("https://例子.windinput.com/x").as_deref(),
-            Some("例子.windinput.com")
+            parse_official_https("HTTPS://CDN.WindInput.com/a b.zip")
+                .unwrap()
+                .as_str(),
+            "https://cdn.windinput.com/a%20b.zip",
+            "请求用的是规范串"
         );
+    }
+
+    /// 与 ureq（`url` crate）对 host 的理解必须一致：`\` 是路径分隔符，`\.windinput.com`
+    /// 与 `\@windinput.com` 都不能让 `evil.com` 混进来。
+    #[test]
+    fn official_https_rejects_parser_differential_tricks() {
+        for bad in [
+            "https://evil.com\\.windinput.com/a.wtheme",
+            "https://evil.com\\@windinput.com/a.zip",
+            "https://windinput.com@evil.com/pkg.zip",
+            "https://user:pw@windinput.com/pkg.zip",
+            "https://user@windinput.com/pkg.zip",
+            "https://evil.com%2F.windinput.com/a",
+            "https://evil.com#.windinput.com/a",
+            "https://evil.com?.windinput.com/a",
+            "http://windinput.com/a.zip",
+            "https:///no-host",
+            "https://[::1]/x",
+            "https://127.0.0.1/x",
+            "https:/汉字",
+            "汉https://x",
+            "https://",
+            "",
+        ] {
+            assert!(!ok(bad), "{bad} 不该通过");
+        }
+        // 解析出的 host 与 ureq 将要连接的一致
+        let u = url::Url::parse("https://evil.com\\.windinput.com/a").unwrap();
+        assert_eq!(u.host_str(), Some("evil.com"));
+    }
+
+    /// 协议链接里编码过的反斜杠：解码后照样被拒。
+    #[test]
+    fn protocol_link_with_encoded_backslash_is_rejected() {
+        let req = crate::protocol::parse_protocol_url(
+            "windinput://import/schema?url=https%3A%2F%2Fevil.com%5C.windinput.com%2Fa.zip",
+        )
+        .unwrap();
+        assert_eq!(req.url, "https://evil.com\\.windinput.com/a.zip");
+        assert!(check_official_url(&req.url).is_err());
+        let req = crate::protocol::parse_protocol_url(
+            "windinput://import/schema?url=https%3A%2F%2Fevil.com%5C%40windinput.com%2Fa.zip",
+        )
+        .unwrap();
+        assert!(check_official_url(&req.url).is_err());
     }
 
     fn read_all(mut body: Body) -> Vec<u8> {
@@ -457,11 +467,20 @@ mod tests {
                 "https://dl.windinput.com/a.zip",
                 Err("HTTPS://CDN.windinput.com/a.zip"),
             ),
-            ("HTTPS://CDN.windinput.com/a.zip", Ok("PK")),
+            ("https://cdn.windinput.com/a.zip", Ok("PK")),
         ];
         let body = fetch_official("https://windinput.com/s/a", scripted(&table, &seen));
         assert_eq!(read_all(body.unwrap()), b"PK");
         assert_eq!(seen.borrow().len(), 4);
+
+        // 相对地址按当前地址补全（与 ureq 同规则），补全后仍在官方域即放行。
+        let seen = Default::default();
+        let table = [
+            ("https://windinput.com/d/a", Err("b.zip")),
+            ("https://windinput.com/d/b.zip", Ok("PK")),
+        ];
+        let body = fetch_official("https://windinput.com/d/a", scripted(&table, &seen));
+        assert_eq!(read_all(body.unwrap()), b"PK");
     }
 
     /// 跨域与 https→http 降级的重定向必须拒绝，且**不向那个地址发请求**——
@@ -475,7 +494,8 @@ mod tests {
             "//evil.com/a.zip",
             "https://windinput.com@evil.com/a.zip",
             "ftp://windinput.com/a.zip",
-            "a.zip",
+            "https://evil.com\\.windinput.com/a.zip",
+            "/\\evil.com/a.zip",
         ] {
             let seen = std::cell::RefCell::new(Vec::new());
             let table = [("https://windinput.com/a", Err(bad))];

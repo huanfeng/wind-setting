@@ -3181,6 +3181,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ureq",
+ "url",
  "wind-config",
  "wind-ipc",
  "wind-punct",
