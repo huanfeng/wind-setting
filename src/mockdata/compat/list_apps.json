@@ -93,7 +93,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -285,7 +285,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -485,7 +485,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -679,7 +679,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -868,7 +868,7 @@
           "userValue": null,
           "value": true
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1057,7 +1057,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1246,7 +1246,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1441,7 +1441,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1631,7 +1631,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -1823,7 +1823,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -2024,7 +2024,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,
@@ -2216,7 +2216,7 @@
           "userValue": null,
           "value": false
         },
-        "ignore_host_ime_close": {
+        "ignore_host_ime_switch": {
           "source": "default",
           "systemValue": null,
           "userValue": null,

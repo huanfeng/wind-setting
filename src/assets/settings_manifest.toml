@@ -2723,12 +2723,12 @@ type = "toggle"
 label = "标点随中英文切换"
 hint = "切换到中文模式时自动切换中文标点"
 
-# 不常改的四项收进「中英文切换高级设置」对话框，卡片上只留一行入口。
+# 不常改的五项收进「中英文切换高级设置」对话框，卡片上只留一行入口。
 [[items]]
 key = "input.capslock.commit_upper"
 group = "keys"
 section = "中英文切换"
-# 不点名 Windows 专属的三项：Linux 上框里只有本项。
+# 不点名 Windows 专属的四项：Linux 上框里只有本项。
 dialog_hint = "CapsLock 切换时大写上屏等不常改的选项"
 dialog_title = "中英文切换高级设置"
 type = "toggle"
@@ -2780,6 +2780,18 @@ options = [
   { value = "english", label = "英文" },
   { value = "toggle", label = "照常切换" },
 ]
+
+[[items]]
+key = "input.ignore_host_ime_switch"
+group = "keys"
+section = "中英文切换"
+dialog_extra_for = "input.capslock.commit_upper"
+type = "toggle"
+label = "不跟随软件切换中英文"
+hint = "有的软件会自己把输入法切成中文或英文（点一下按钮就变英文，或切换焦点时变中文）。开启后不再跟着切，Ctrl+空格 照常可用。代价是 gvim 这类靠这个状态保存、恢复中英的软件会因此失灵，按应用锁定中英的外部工具（如 KBLSwitch、AutoHotkey 脚本）也会被一并忽略，更推荐只在应用兼容设置里对出问题的软件开启"
+# GH#312。落点是服务端对「宿主写 TSF compartment」的拒绝，Windows 专属；按应用覆盖是
+# compat.toml 的同名字段（应用兼容设置里的「软件切换中英」）。
+platform = "windows"
 
 # ── 候选词管理 ──
 [[items]]

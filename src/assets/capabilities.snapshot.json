@@ -1678,6 +1678,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "input.ignore_host_ime_switch",
+      "type": "bool"
+    },
+    {
       "default": "off",
       "key": "input.association.kind",
       "type": "enum",

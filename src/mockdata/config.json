@@ -147,6 +147,7 @@
   "english_case_cycle_key": "",
   "enter_behavior": "commit",
   "filter_mode": "smart",
+  "ignore_host_ime_switch": false,
   "numpad_behavior": "direct",
   "numpad_half_width": false,
   "password_force_english": true,
