@@ -11,6 +11,7 @@
 
 mod accent;
 mod add_word_window;
+mod appearance_preview;
 mod auto_encode;
 mod by_layout;
 mod capabilities;

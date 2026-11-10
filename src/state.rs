@@ -2820,6 +2820,15 @@ impl AppState {
         !self.unsaved_items_unguarded().is_empty()
     }
 
+    /// 草稿配置：`current_config` 的副本跑一遍全部写回器，即界面上此刻（含未保存改动）的配置。
+    pub fn draft_config(&self) -> Config {
+        let mut probe = self.current_config.clone();
+        for w in self.fields.writers.borrow().iter() {
+            w(&mut probe);
+        }
+        probe
+    }
+
     /// 实时按键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
     /// 分三个场景域各自检测——**跨域不算冲突**（同一物理键在不同场景分时复用是正常设计）：
     /// - 触发键域：无候选/闲时触发模式（临时拼音/英文、混合、特殊模式）。
@@ -2833,10 +2842,7 @@ impl AppState {
     /// 供 `conflict_watcher` 在渲染帧刷新——每次求值 clone 配置并跑全部写回器，
     /// 但渲染帧由交互/动画驱动（空闲不渲染），故非 60fps 常态开销。
     pub fn live_conflicts(&self) -> LiveConflicts {
-        let mut probe = self.current_config.clone();
-        for w in self.fields.writers.borrow().iter() {
-            w(&mut probe);
-        }
+        let probe = self.draft_config();
         let mut lines = Vec::new();
         let mut coexist = Vec::new();
         for (groups, scene) in [

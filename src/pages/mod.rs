@@ -57,7 +57,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         cards_tab_def("输入", input_page(state, &input), input),
         cards_tab_def("按键", keys_page(state, &keys), keys),
         cards_tab_def("主题", theme_page(app, state, &theme), theme),
-        cards_tab_def("外观", appearance_page(state, &ui), ui),
+        cards_tab_def("外观", appearance_page(app, state, &ui), ui),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
@@ -776,12 +776,20 @@ fn keys_page(state: &AppState, nav: &SubNav) -> Element {
 
 // ───────────────────────── 外观 ─────────────────────────
 
-fn appearance_page(state: &AppState, nav: &SubNav) -> Element {
-    sections_page(
-        "外观",
-        "自定义候选窗与工具栏的视觉呈现",
-        manifest_sections(state, "ui", nav),
-    )
+fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
+    // 页首「当前效果」：草稿配置出的候选窗预览，下面的设置不必保存就跟着变。定制版把本页的
+    // 设置项全藏了时它也不建——没有可调的项，预览只是一张不会变的图。
+    // 二级导航按登记顺序排，故先登记它、再建清单卡。
+    let mut secs = Vec::new();
+    if !state.manifest.sections_of("ui").is_empty() {
+        secs.push(nav.wrap(
+            crate::appearance_preview::SECTION_TITLE,
+            0,
+            crate::appearance_preview::build_card(app, state),
+        ));
+    }
+    secs.extend(manifest_sections(state, "ui", nav));
+    sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
 }
 
 // ───────────────────────── 主题 ─────────────────────────

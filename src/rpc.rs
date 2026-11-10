@@ -1344,7 +1344,12 @@ fn mock_word_code(text: &str) -> String {
 /// 用 default 那张；`no-such-theme` 回失败，离线也看得到占位格。
 fn mock_theme_preview(item: &Value) -> Value {
     use base64::Engine;
-    let png: &[u8] = match item.get("name").and_then(Value::as_str) {
+    // 草稿预览（`ui` 参数）不给 name 时按草稿里的主题出图，同 core。
+    let name = item
+        .get("name")
+        .or_else(|| item.pointer("/ui/theme/name"))
+        .and_then(Value::as_str);
+    let png: &[u8] = match name {
         Some("no-such-theme") => return json!({ "ok": false, "error": "找不到主题" }),
         Some("jade") => include_bytes!("mockdata/theme_previews/jade.png"),
         Some("mono") => include_bytes!("mockdata/theme_previews/mono.png"),

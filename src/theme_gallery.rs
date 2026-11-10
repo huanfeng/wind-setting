@@ -131,7 +131,7 @@ pub struct RawPng {
 }
 
 impl RawPng {
-    fn into_png(self, scale: f32) -> Png {
+    pub(crate) fn into_png(self, scale: f32) -> Png {
         Png {
             hash: self.hash,
             bytes: self.bytes.into(),
@@ -152,12 +152,12 @@ pub enum Receipt {
     Failed,
 }
 
-fn scale_pct(scale: f32) -> u32 {
+pub(crate) fn scale_pct(scale: f32) -> u32 {
     (scale * 100.0).round().max(1.0) as u32
 }
 
 /// 服务端接受的缩放区间是 0.5–4；探针还没画过时按 1。
-fn clamp_scale(scale: f32) -> f32 {
+pub(crate) fn clamp_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale.clamp(0.5, 4.0)
     } else {
