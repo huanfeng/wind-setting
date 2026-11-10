@@ -32,13 +32,13 @@ label = "按键"
 order = 3
 
 [[groups]]
-key = "ui"
-label = "外观"
+key = "theme"
+label = "主题"
 order = 4
 
 [[groups]]
-key = "theme"
-label = "主题"
+key = "ui"
+label = "外观"
 order = 5
 
 [[groups]]
@@ -3203,7 +3203,7 @@ hint = "在任意应用中一键切换到本输入法（Windows 只切当前应�
 platform = "windows, macos"
 
 # ═══════════════════════════ 主题 ═══════════════════════════
-# 独立成页（排在外观之后）：页内手写画廊接在这张卡之后，见 `pages::theme_page`。
+# 独立成页（排在外观之前）：页内手写画廊接在这张卡之后，见 `pages::theme_page`。
 # ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──
 [[items]]
 key = "ui.theme.name"

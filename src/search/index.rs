@@ -741,7 +741,7 @@ mod tests {
         let m = manifest();
         let idx = build_index(&m);
         for page in [
-            "schema", "input", "keys", "ui", "theme", "dict", "stats", "advanced", "about",
+            "schema", "input", "keys", "theme", "ui", "dict", "stats", "advanced", "about",
         ] {
             let tab = crate::cli::page_to_index(page).expect("页 id 应在 PAGES 里");
             assert!(

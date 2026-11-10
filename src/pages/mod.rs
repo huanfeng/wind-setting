@@ -41,12 +41,12 @@ pub struct TabDef {
 /// 认成别的页、二级导航整条不刷新。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
     let tab = |id: &str| SubNav::new(crate::cli::page_to_index(id).unwrap_or(0));
-    let (schema, input, keys, ui, theme, dict, stats_nav, advanced, about) = (
+    let (schema, input, keys, theme, ui, dict, stats_nav, advanced, about) = (
         tab("schema"),
         tab("input"),
         tab("keys"),
-        tab("ui"),
         tab("theme"),
+        tab("ui"),
         tab("dict"),
         tab("stats"),
         tab("advanced"),
@@ -56,8 +56,8 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         tab_def("方案", scheme_page(app, state, &schema), schema),
         cards_tab_def("输入", input_page(state, &input), input),
         cards_tab_def("按键", keys_page(state, &keys), keys),
-        cards_tab_def("外观", appearance_page(state, &ui), ui),
         cards_tab_def("主题", theme_page(app, state, &theme), theme),
+        cards_tab_def("外观", appearance_page(state, &ui), ui),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
