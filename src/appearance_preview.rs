@@ -5,7 +5,8 @@
 //! - **草稿**：与按键冲突检测同一取法——`current_config` 的副本跑一遍全部写回器
 //!   （[`AppState::draft_config`]），只取 [`DRAFT_SECTIONS`] 这几段。只在外观页可见时算。
 //! - **何时重取**：草稿那几段、缩放、主题列表（导入 / 删除 / 覆盖）、主题编辑器推送的改动、
-//!   活跃方案（方案级候选覆盖）任一变化。
+//!   活跃方案（方案级候选覆盖）任一变化；草稿明暗跟随系统时，系统切了明暗也算
+//!   （[`AppState::system_theme_flips`]）。
 //! - **防抖、只认最新**：一变就取消上一个还没回来的请求、重新计时 [`DEBOUNCE`]；取消的请求回执
 //!   直接丢掉（[`NetTasks::cancel`] 摘掉续体），屏上永远是最后一次的结果。
 //! - **失败不崩**：保留上一张图，下方一行简短原因。「忙 / 超时」隔 [`RETRY_DELAY`] 重试，至多
@@ -39,6 +40,14 @@ const MAX_RETRIES: u32 = 3;
 const AREA_MIN_H: i32 = 72;
 /// 草稿里影响候选窗外观的段（`ui.<段>`）；工具栏、状态提示等改了不重取。
 pub const DRAFT_SECTIONS: &[&str] = &["theme", "candidate", "font", "comment"];
+
+/// `ui.theme.style` 是不是「跟随系统」：同 core `ThemeStyle::from_config`，不是 light / dark 都算。
+pub fn follows_system(style: Option<&str>) -> bool {
+    !matches!(
+        style.map(|s| s.trim().to_lowercase()).as_deref(),
+        Some("light" | "dark")
+    )
+}
 
 /// 屏上显示的那一张。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -95,6 +104,8 @@ struct Key {
     themes_rev: u64,
     external_edits: u64,
     schema: String,
+    /// 草稿明暗跟随系统时的系统切换次数；不跟随时恒 0（系统切了也不重取）。
+    system_flips: u64,
 }
 
 /// 页内哨兵：每次更新时看外观页是否可见、输入是否变了，变了就重新计时取图；绘制时记下缩放。
@@ -105,6 +116,7 @@ struct Watcher {
     tab: Signal<usize>,
     page: usize,
     conn_failed: Signal<bool>,
+    system_flips: Signal<u64>,
     shown: Signal<Shown>,
     error: Signal<String>,
     /// 最近一次发出去的输入；`None` = 下一次更新必发。
@@ -206,6 +218,11 @@ impl Widget for Watcher {
                 .get_str("schema.active")
                 .unwrap_or_default()
                 .to_string(),
+            system_flips: if follows_system(draft.get_str("ui.theme.style")) {
+                self.system_flips.get()
+            } else {
+                0
+            },
         };
         let tick = self.retry_tick.get();
         let retrying = tick != self.sent_tick.get();
@@ -278,6 +295,7 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
             page: crate::cli::page_to_index("ui").unwrap_or(usize::MAX),
             gallery: state.theme_gallery.clone(),
             conn_failed: state.conn_failed,
+            system_flips: state.system_theme_flips,
             shown,
             error,
             sent: Rc::new(RefCell::new(None)),
@@ -378,6 +396,7 @@ mod tests {
             tab: s.tab,
             page: crate::cli::page_to_index("ui").unwrap(),
             conn_failed: s.conn_failed,
+            system_flips: s.system_theme_flips,
             shown: signal(Shown::Waiting),
             error: signal(String::new()),
             sent: Rc::new(RefCell::new(None)),
@@ -431,5 +450,56 @@ mod tests {
         assert_eq!(update(&mut w), Some(fourth));
         st.borrow().conn_failed.set(false);
         assert_ne!(update(&mut w), Some(fourth), "连接恢复重取");
+    }
+
+    /// 草稿明暗跟随系统（缺省即是）：系统切了明暗就重取；显式选了亮 / 暗不重取；不在本页时不取，
+    /// 切回来再取。
+    #[test]
+    fn system_theme_flip_refetches_only_when_following_system() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let mut w = watcher(&st);
+        let update = |w: &mut Watcher| {
+            windui::testing::run_with_ctx(|ctx| w.on_update(ctx));
+            w.task.get()
+        };
+        let ui_page = crate::cli::page_to_index("ui").unwrap();
+        st.borrow().tab.set(ui_page);
+        let first = update(&mut w).unwrap();
+        st.borrow().system_theme_flips.update(|n| *n += 1);
+        let second = update(&mut w).unwrap();
+        assert_ne!(second, first, "跟随系统：系统切了明暗要重取");
+        assert_eq!(update(&mut w), Some(second), "只取一次");
+
+        st.borrow().tab.set(0);
+        st.borrow().system_theme_flips.update(|n| *n += 1);
+        update(&mut w);
+        assert_eq!(w.task.get(), Some(second), "不在本页不取");
+        st.borrow().tab.set(ui_page);
+        let third = update(&mut w).unwrap();
+        assert_ne!(third, second, "切回本页补取");
+
+        st.borrow_mut()
+            .current_config
+            .set_path("ui.theme.style", json!("dark"));
+        let fourth = update(&mut w).unwrap();
+        assert_ne!(fourth, third, "改了明暗本身要重取");
+        st.borrow().system_theme_flips.update(|n| *n += 1);
+        assert_eq!(update(&mut w), Some(fourth), "显式暗色：系统切换不重取");
+    }
+
+    #[test]
+    fn follows_system_matches_core_parsing() {
+        for s in [
+            None,
+            Some(""),
+            Some("system"),
+            Some("auto"),
+            Some(" System "),
+        ] {
+            assert!(follows_system(s), "{s:?}");
+        }
+        for s in [Some("light"), Some(" Dark ")] {
+            assert!(!follows_system(s), "{s:?}");
+        }
     }
 }

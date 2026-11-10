@@ -629,6 +629,8 @@ pub struct AppState {
     data_loaded: bool,
     /// 正式模式下连接失败标志：true 时显示阻断对话框；mock 模式始终 false。
     pub conn_failed: Signal<bool>,
+    /// 系统在亮 / 暗之间切换的次数（系统主题回调里加一）：外观页「效果预览」的草稿明暗跟随系统时据此重取。
+    pub system_theme_flips: Signal<u64>,
     /// `ui.theme.name` 的取值列表（id/slug，异步加载后填充；画廊的选中索引下标进它）。
     /// 末尾可能多一项配置里写着、却没装的主题（[`Self::push_unlisted_theme`]）。
     pub theme_value_sig: Signal<Vec<String>>,
@@ -1085,6 +1087,7 @@ impl AppState {
             connected: false,
             data_loaded: false,
             conn_failed: signal(false),
+            system_theme_flips: signal(0),
             theme_value_sig: signal(vec![]),
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),

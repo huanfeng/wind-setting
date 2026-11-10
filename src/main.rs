@@ -696,15 +696,15 @@ fn main() {
             pages::memory::on_tick(&tick_state)
         });
     }
-    // 主题风格跟随系统时，系统明暗一变候选窗就换了一套颜色：主题页的缩略图跟着重取。
+    // 主题风格跟随系统时，系统明暗一变候选窗就换了一套颜色：主题页的缩略图按已生效的配置
+    // 判断要不要重取（画廊按 core 当前明暗出图），外观页「效果预览」按草稿自己判断。
     let theme_state = app_state.clone();
     app = app.on_system_theme_changed(move |_ctx, _dark| {
-        if let Ok(st) = theme_state.try_borrow()
-            && st
-                .current_config
-                .get_str("ui.theme.style")
-                .is_none_or(|s| s.is_empty() || s == "system")
-        {
+        let Ok(st) = theme_state.try_borrow() else {
+            return;
+        };
+        st.system_theme_flips.update(|n| *n += 1);
+        if appearance_preview::follows_system(st.current_config.get_str("ui.theme.style")) {
             st.theme_gallery.invalidate();
         }
     });
