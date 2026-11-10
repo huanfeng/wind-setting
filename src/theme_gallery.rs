@@ -766,6 +766,92 @@ impl CellCtx {
     }
 }
 
+/// `ui.theme.name` 此刻选中的主题的显示名，逐层退让：选中索引在取值表里查出 id，再在画廊
+/// 清单里换成显示名。显示名缺了退 id；索引/取值表拿不到（画廊没建、清单没到、越界）退配置值；
+/// 再没有退 `None`。
+pub(crate) fn display_name(
+    idx: Option<usize>,
+    values: &[String],
+    entries: &[GalleryEntry],
+    cfg: Option<&str>,
+) -> Option<String> {
+    let id = idx
+        .and_then(|i| values.get(i))
+        .map(String::as_str)
+        .or(cfg)?;
+    Some(
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.display.as_str())
+            .unwrap_or(id)
+            .to_string(),
+    )
+}
+
+/// 主题页顶部的「当前主题：〈显示名〉」一行。原是外观页预览卡头跳往主题页的链接
+/// （「主题选择：〈名〉」），2026-11 真机反馈后改成在主题页自己的标题区**展示**：
+/// 名字不再是跳转落点，外观页卡头的链接整个撤掉。
+fn current_theme_label(name: Option<&str>) -> String {
+    match name {
+        Some(n) if !n.is_empty() => format!("当前主题：{n}"),
+        _ => "当前主题".to_string(),
+    }
+}
+
+/// 主题页顶部标题行（返回文案信号供测试断言）。文案跟画廊选中走（点格即变、点「应用」
+/// 才落盘）：选中索引、取值表、画廊清单三个信号任一变化都重算——三个源没有组合派生信号的
+/// 现成机制（`Signal::map` 只跟单源），用 reactive_effect 把重算结果写进本地信号。这也是
+/// 外观页预览卡头原链接同款的做法。
+///
+/// 排版对齐 [`crate::widgets::page_header`] 的标题：17px 粗体、单行截断。
+pub(crate) fn current_theme_header(state: &AppState) -> (Signal<String>, Element) {
+    let label = signal("当前主题".to_string());
+    let idx = state
+        .fields
+        .select_indices
+        .borrow()
+        .get("ui.theme.name")
+        .copied();
+    let (values, entries) = (state.theme_value_sig, state.theme_gallery.entries);
+    // 画廊缺席时的退路：配置此刻的值（id）。签名在本地，不会自己变，读一次就够。
+    let cfg_name = state
+        .current_config
+        .get_str("ui.theme.name")
+        .map(str::to_string);
+    let apply = move || {
+        let name = display_name(
+            idx.map(|s| s.get()),
+            &values.get(),
+            &entries.get(),
+            cfg_name.as_deref(),
+        );
+        label.set(current_theme_label(name.as_deref()));
+    };
+    apply();
+    let version_of = move || {
+        // 三源无先后地混在一起，各乘一个奇素数再相加，避免「你加一我也加一」相抵。
+        idx.map_or(0, |s| s.version())
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(values.version().wrapping_mul(0xBF58_476D_1CE4_E5B9))
+            .wrapping_add(entries.version())
+    };
+    let eff = crate::pages::dict::reactive::reactive_effect(version_of, apply);
+    // eff 要一并挂树：dispatch_reactive_updates 只驱动**树里**的响应式节点。
+    let row = Element::row().width_match().child(eff).child(
+        Element::label_signal(label.clone())
+            .font_size(17.0)
+            .font_weight(700)
+            .fg_role(Role::Text)
+            .max_lines(1)
+            .height(24)
+            .weight(1.0)
+            .truncate(Truncate::End),
+    );
+    (label, row)
+}
+
+/// 画廊清单为空时的占位文字。
 fn placeholder_text(text: &str) -> Element {
     Element::label(text)
         .font_size(12.0)
@@ -1246,6 +1332,51 @@ mod tests {
         assert_eq!(m["default"], Thumb::Pending, "还要重试的不动");
     }
 
+    /// 显示名逐层退让：索引→id→显示名，每层缺了退上一层，全缺退 `None`。
+    /// 原在外观页预览卡头链接下（2026-11 反馈后该链接撤了），随「当前主题」展示一起搬来。
+    #[test]
+    fn display_name_falls_back_layer_by_layer() {
+        let entries = vec![
+            GalleryEntry {
+                id: "default".into(),
+                display: "清风".into(),
+                ..Default::default()
+            },
+            GalleryEntry {
+                id: "mono".into(),
+                display: "墨".into(),
+                ..Default::default()
+            },
+        ];
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 索引 → id → 显示名。
+        assert_eq!(
+            display_name(Some(1), &ids(&["default", "mono"]), &entries, None).as_deref(),
+            Some("墨")
+        );
+        // 清单里没有这个 id（清单没到/陌生取值）→ id 顶着。
+        assert_eq!(
+            display_name(Some(0), &ids(&["jade"]), &entries, None).as_deref(),
+            Some("jade")
+        );
+        // 索引拿不到（画廊没建/被藏）→ 配置值，且照样查显示名。
+        assert_eq!(
+            display_name(None, &ids(&["default"]), &entries, Some("mono")).as_deref(),
+            Some("墨")
+        );
+        // 索引越界（列表刚整份替换）→ 配置值；配置值也不在清单里 → 裸 id 顶着。
+        assert_eq!(
+            display_name(Some(9), &ids(&["default"]), &entries, Some("mono")).as_deref(),
+            Some("墨")
+        );
+        assert_eq!(
+            display_name(Some(9), &ids(&["default"]), &entries, Some("jade")).as_deref(),
+            Some("jade")
+        );
+        // 全没有 → 退 None（标题行只显示「当前主题」）。
+        assert_eq!(display_name(None, &[], &entries, None), None);
+    }
+
     #[test]
     fn png_equality_compares_hash_and_scale_not_bytes() {
         let a = raw("h").into_png(1.0);
@@ -1257,6 +1388,58 @@ mod tests {
         let c = raw("").into_png(1.0);
         assert_eq!(c, c.clone(), "无哈希时同一份字节相等");
         assert_ne!(c, raw("").into_png(1.0), "无哈希时不同份不相等");
+    }
+
+    #[test]
+    fn current_theme_label_carries_name() {
+        assert_eq!(current_theme_label(Some("墨")), "当前主题：墨");
+        assert_eq!(current_theme_label(None), "当前主题");
+        assert_eq!(current_theme_label(Some("")), "当前主题");
+    }
+
+    /// 反应式接线：选中索引一变，标题行文案跟着变。走真树 + `layout_root`——
+    /// `dispatch_reactive_updates` 是 reactive_effect 唯一的驱动点，只调闭包的话
+    /// 「有没有真挂上 `.reactive()`」这一半就没人管（同 auto_encode 的测法）。
+    #[test]
+    fn current_theme_header_follows_selection() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = AppState::empty();
+        st.theme_value_sig
+            .set(vec!["default".to_string(), "mono".to_string()]);
+        st.theme_gallery.entries.set(vec![
+            GalleryEntry {
+                id: "default".into(),
+                display: "清风".into(),
+                ..Default::default()
+            },
+            GalleryEntry {
+                id: "mono".into(),
+                display: "墨".into(),
+                ..Default::default()
+            },
+        ]);
+        let idx = signal(0usize);
+        st.fields
+            .select_indices
+            .borrow_mut()
+            .insert("ui.theme.name".to_string(), idx);
+        let (label, header) = current_theme_header(&st);
+        let mut tree = Tree::new();
+        let id = header.build(&mut tree);
+        tree.root = Some(id);
+        assert_eq!(label.get(), "当前主题：清风", "构建时即算出当前文案");
+        idx.set(1);
+        tree.layout_root(Size::new(600, 100), &mut windui::text::NullTextEngine);
+        assert_eq!(
+            label.get(),
+            "当前主题：墨",
+            "选中索引变化应经 reactive_effect 触达标题行文案"
+        );
     }
 
     #[test]

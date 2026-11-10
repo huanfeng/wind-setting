@@ -867,7 +867,11 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
     }
     // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
     // toast_sink，这里不需要（也不应该）再单独挂一份。
-    let page = sections_page("主题", "挑选、导入与管理候选窗和工具栏的主题", secs);
+    // 页首标题行：「当前主题：〈显示名〉」（原是外观页预览卡头的跳转链接，2026-11 真机
+    // 反馈挪到这里做纯展示）。排最前，先于画廊卡。
+    let mut page_secs = vec![crate::theme_gallery::current_theme_header(state).1];
+    page_secs.extend(secs);
+    let page = sections_page("主题", "挑选、导入与管理候选窗和工具栏的主题", page_secs);
     Element::stack()
         .fill()
         .child(page)

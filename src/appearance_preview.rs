@@ -11,9 +11,11 @@
 //!   直接丢掉（[`NetTasks::cancel`] 摘掉续体），屏上永远是最后一次的结果。
 //! - **失败不崩**：保留上一张图，下方一行简短原因。「忙 / 超时」隔 [`RETRY_DELAY`] 重试，至多
 //!   [`MAX_RETRIES`] 次；连不上服务端不原地重发，等切回本页或连接恢复再取。
-//! - **形态**：卡内分段控件在「候选窗 / 工具栏」间切换（`theme.renderPreview` 的 `kind`
-//!   参数，候选窗走协议缺省），选中段会话内记住、不落盘。换形态先回到「生成中」占位，
+//! - **形态**：卡头（标题行右侧）的分段控件在「候选窗 / 工具栏」间切换（`theme.renderPreview`
+//!   的 `kind` 参数，候选窗走协议缺省），选中段会话内记住、不落盘。换形态先回到「生成中」占位，
 //!   图画不出时落「无法生成」——不留另一个形态的旧图冒充新预览。
+//! - **fit 目标框**：请求带 `fit_w`/`fit_h`（图区内容区的逻辑尺寸，见 [`FIT_W`]），core 拿它
+//!   折算渲染倍率（clamp 1–3），预览图更能撑满图区。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -28,7 +30,7 @@ use windui::style::Style;
 
 use crate::net_task::{NetTasks, TaskId};
 use crate::state::AppState;
-use crate::theme_gallery::{GalleryEntry, Png, RawPng, Receipt, ThemeGallery};
+use crate::theme_gallery::{Png, RawPng, Receipt, ThemeGallery};
 
 /// 卡片标题（二级导航里也叫这个）。
 pub const SECTION_TITLE: &str = "效果预览";
@@ -44,6 +46,17 @@ const MAX_RETRIES: u32 = 3;
 const AREA_H: i32 = 200;
 // 2026-11 反馈的钉子：改回去必须有意识地改（布局测试钉的是这两条的外在表现，这里钉数值）。
 const _: () = assert!(AREA_H == 200);
+/// 图区内边距（水平、垂直同值）：`preview_area` 摆图用，fit 尺寸从外框推导时也扣它。
+const AREA_PAD: i32 = 8;
+/// fit 目标框：图区内容区的逻辑尺寸，随请求发给 core（`fit_w`/`fit_h`，正整数，core 拿它
+/// 折算渲染倍率、clamp 1–3；缺省不带 = 旧行为）。取常量是因为请求发出时布局还没跑，拿不到
+/// 实时尺寸；宽度没有可写的代码级推导链（窗口 − 主导航 − 二级导航 − 页边距 − 卡边距 − 图区
+/// 内边距，散在四个文件里），默认窗口下实测 588，由 `fit_consts_match_real_layout` 在真树上
+/// 钉住，布局一动这里跟着红。高度 = [`AREA_H`] − 上下内边距。
+pub(crate) const FIT_W: i32 = 588;
+pub(crate) const FIT_H: i32 = AREA_H - 2 * AREA_PAD;
+const _: () = assert!(FIT_H == 184);
+const _: () = assert!(FIT_W == 588);
 /// 草稿里影响候选窗外观的段（`ui.<段>`）；工具栏、状态提示等改了不重取。
 pub const DRAFT_SECTIONS: &[&str] = &["theme", "candidate", "font", "comment"];
 
@@ -84,12 +97,24 @@ pub fn draft_ui(draft: &crate::config::Config) -> Value {
     Value::Object(out)
 }
 
-/// 一次请求要带的参数：草稿 `ui` 子树 + 缩放 + 形态（候选窗为协议缺省、省略）。
-pub fn request_params(ui: &Value, scale: f32, kind: Option<&str>) -> Value {
-    match kind {
+/// 一次请求要带的参数：草稿 `ui` 子树 + 缩放 + 形态（候选窗为协议缺省、省略）+ fit 目标框。
+///
+/// `fit` 是图区内容区的逻辑尺寸 `(宽, 高)`。协议要求 `fit_w`/`fit_h` 为正整数、**可只给
+/// 一维**，对非法值整条报错；本函数对非正那一维省键不发（所以发出去的必是合法值）。
+/// 两维都不给 = 旧版请求的形状。
+pub fn request_params(ui: &Value, scale: f32, kind: Option<&str>, fit: (i32, i32)) -> Value {
+    let mut out = match kind {
         Some(k) => json!({ "ui": ui, "scale": scale, "inline": true, "kind": k }),
         None => json!({ "ui": ui, "scale": scale, "inline": true }),
+    };
+    let obj = out.as_object_mut().expect("刚 json! 出来的必是对象");
+    if fit.0 > 0 {
+        obj.insert("fit_w".into(), json!(fit.0));
     }
+    if fit.1 > 0 {
+        obj.insert("fit_h".into(), json!(fit.1));
+    }
+    out
 }
 
 /// 一次请求的结论。
@@ -183,7 +208,7 @@ impl Watcher {
             self.net.clone(),
             self.shown_kind.clone(),
         );
-        let params = request_params(&key.ui, scale, kind_param(key.kind));
+        let params = request_params(&key.ui, scale, kind_param(key.kind), (FIT_W, FIT_H));
         let kind = key.kind;
         let id = self.net.spawn(
             move |cancel| {
@@ -343,103 +368,10 @@ fn preview_area(shown: Signal<Shown>) -> Element {
     Element::stack()
         .width_match()
         .height(AREA_H)
-        .padding_xy(8, 8)
+        .padding_xy(AREA_PAD, AREA_PAD)
         .bg_role(Role::SurfaceAlt)
         .corner(6.0)
         .child(image.height_match().align(Align::Center))
-}
-
-/// 当前主题的显示名：选中索引在取值表里查出 id，再在画廊清单里换成显示名。
-/// 显示名缺了退 id；索引/取值表拿不到（画廊没建、清单没到、越界）退配置值；再没有退
-/// `None`（链接只显示「主题选择」）。
-fn display_name(
-    idx: Option<usize>,
-    values: &[String],
-    entries: &[GalleryEntry],
-    cfg: Option<&str>,
-) -> Option<String> {
-    let id = idx
-        .and_then(|i| values.get(i))
-        .map(String::as_str)
-        .or(cfg)?;
-    Some(
-        entries
-            .iter()
-            .find(|e| e.id == id)
-            .map(|e| e.display.as_str())
-            .unwrap_or(id)
-            .to_string(),
-    )
-}
-
-/// 链接文案：有名字带上，没有就只留「主题选择」。
-fn theme_link_label(name: Option<&str>) -> String {
-    match name {
-        Some(n) if !n.is_empty() => format!("主题选择：{n}"),
-        _ => "主题选择".to_string(),
-    }
-}
-
-/// 链接落点：主题页「主题选择」卡里 `ui.theme.name` 那一行（行锚点即清单 key）。
-///
-/// `pub(crate)` 是给 `search::anchor` 的守门测试用的：手写目标不经 `build_index`
-/// 派生，不入比对集就会在清单键改名时静默退化成「只切页、不滚不闪」。
-pub(crate) fn theme_link_target() -> crate::search::index::JumpTarget {
-    crate::search::index::JumpTarget::Row {
-        tab: crate::cli::page_to_index("theme").unwrap_or(usize::MAX),
-        anchor: "ui.theme.name".to_string(),
-    }
-}
-
-/// 卡头链接的反应式文案 + 驱动它的 reactive_effect 挂件（要一并挂树）。
-///
-/// 预览图跟的是草稿，草稿里的主题跟画廊选中走（点格即变、点「应用」才落盘），名字也
-/// 跟同一处走：选中索引、取值表、画廊清单三个信号任一变化都重算，预览与标题永远同一
-/// 张脸。三个源没有组合派生信号的现成机制（`Signal::map` 只跟单源），用 reactive_effect
-/// 把重算结果写进本地信号——这也是方案页启停等处同款的做法。
-fn theme_display(state: &AppState) -> (Signal<String>, Element) {
-    let label = signal("主题选择".to_string());
-    let idx = state
-        .fields
-        .select_indices
-        .borrow()
-        .get("ui.theme.name")
-        .copied();
-    let (values, entries) = (state.theme_value_sig, state.theme_gallery.entries);
-    // 画廊缺席时的退路：配置此刻的值（id）。签名在本地，不会自己变，读一次就够。
-    let cfg_name = state
-        .current_config
-        .get_str("ui.theme.name")
-        .map(str::to_string);
-    let apply = move || {
-        let name = display_name(
-            idx.map(|s| s.get()),
-            &values.get(),
-            &entries.get(),
-            cfg_name.as_deref(),
-        );
-        label.set(theme_link_label(name.as_deref()));
-    };
-    apply();
-    let version_of = move || {
-        // 三源无先后地混在一起，各乘一个奇素数再相加，避免「你加一我也加一」相抵。
-        idx.map_or(0, |s| s.version())
-            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            .wrapping_add(values.version().wrapping_mul(0xBF58_476D_1CE4_E5B9))
-            .wrapping_add(entries.version())
-    };
-    let eff = crate::pages::dict::reactive::reactive_effect(version_of, apply);
-    (label, eff)
-}
-
-/// 卡头右侧的「主题选择：〈当前主题名〉」链接：点击回主题页画廊（选中主题所在行）。
-/// `request_quiet`：人是自己点过去的，落定不闪。
-fn theme_link(label: Signal<String>, state: &AppState) -> Element {
-    let (tab, jump) = (state.tab, state.jump);
-    let target = theme_link_target();
-    Element::link(label)
-        .underline(false)
-        .on_click(move |_| crate::search::jump::request_quiet(tab, jump, target.clone()))
 }
 
 /// 「效果预览」卡片。
@@ -448,7 +380,6 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let error: Signal<String> = signal(String::new());
     // 形态选中段：会话内记住即可（页面状态，不落盘配置）。
     let kind: Signal<usize> = signal(0);
-    let switcher = Element::segmented(KIND_LABELS.iter().map(|s| (*s).to_string()).collect(), kind);
     let area = preview_area(shown);
     let note = Element::label_signal(error)
         .font_size(12.0)
@@ -486,18 +417,16 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         .padding_xy(0, 14)
         .spacing(8)
         .child(watcher)
-        .child(switcher)
         .child(area)
         .child(note);
-    // 卡头动作：反应式驱动挂件与链接同一处现建。section_impl 的三种标题写法各建一份，
-    // 互相独立但读同一批源信号，文案一致（同 manifest 头部「重置」按钮的现建模式）。
-    let make_link = || {
-        let (label, eff) = theme_display(state);
-        Element::stack().child(eff).child(theme_link(label, state))
-    };
+    // 卡头动作：形态分段控件（2026-11 真机反馈：从卡体顶部挪进卡头，不占图区上方的空间）。
+    // section_impl 的三种标题写法各建一份，互相独立但绑同一枚 kind 信号，选中段一致
+    // （同 manifest 头部「重置」按钮的现建模式）。
+    let make_switcher =
+        move || Element::segmented(KIND_LABELS.iter().map(|s| (*s).to_string()).collect(), kind);
     let card = crate::widgets::section_with_items_menu(
         SECTION_TITLE,
-        &make_link,
+        &make_switcher,
         vec![crate::widgets::CardItem::Bare(crate::widgets::card_pad(
             body,
         ))],
@@ -576,119 +505,59 @@ mod tests {
         assert_eq!(a, b, "换到自然宽不同的图不该挪动任何节点");
     }
 
-    /// 显示名逐层退让：索引→id→显示名，每层缺了退上一层，全缺退 `None`。
+    /// fit 常量对表真实布局：默认窗口尺寸下，图区内容区（图片/占位实际占的矩形）必须
+    /// 恰好是 [`FIT_W`]×[`FIT_H`]。宽度没有可写的代码级推导链（窗口 − 主导航 − 二级导航 −
+    /// 页边距 − 卡边距 − 图区内边距，散在四个文件里），在真树上量出来钉住；布局一动这里红。
     #[test]
-    fn display_name_falls_back_layer_by_layer() {
-        let entries = vec![
-            GalleryEntry {
-                id: "default".into(),
-                display: "清风".into(),
-                ..Default::default()
-            },
-            GalleryEntry {
-                id: "mono".into(),
-                display: "墨".into(),
-                ..Default::default()
-            },
-        ];
-        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // 索引 → id → 显示名。
-        assert_eq!(
-            display_name(Some(1), &ids(&["default", "mono"]), &entries, None).as_deref(),
-            Some("墨")
-        );
-        // 清单里没有这个 id（清单没到/陌生取值）→ id 顶着。
-        assert_eq!(
-            display_name(Some(0), &ids(&["jade"]), &entries, None).as_deref(),
-            Some("jade")
-        );
-        // 索引拿不到（画廊没建/被藏）→ 配置值，且照样查显示名。
-        assert_eq!(
-            display_name(None, &ids(&["default"]), &entries, Some("mono")).as_deref(),
-            Some("墨")
-        );
-        // 索引越界（列表刚整份替换）→ 配置值；配置值也不在清单里 → 裸 id 顶着。
-        assert_eq!(
-            display_name(Some(9), &ids(&["default"]), &entries, Some("mono")).as_deref(),
-            Some("墨")
-        );
-        assert_eq!(
-            display_name(Some(9), &ids(&["default"]), &entries, Some("jade")).as_deref(),
-            Some("jade")
-        );
-        // 全没有 → 只显示「主题选择」。
-        assert_eq!(display_name(None, &[], &entries, None), None);
-    }
-
-    #[test]
-    fn theme_link_label_carries_name() {
-        assert_eq!(theme_link_label(Some("墨")), "主题选择：墨");
-        assert_eq!(theme_link_label(None), "主题选择");
-        assert_eq!(theme_link_label(Some("")), "主题选择");
-    }
-
-    /// 链接落点 = 主题页「主题选择」卡里 `ui.theme.name` 那行（行锚点即清单 key，与
-    /// manifest 建行时挂的锚点同一把键）。
-    #[test]
-    fn theme_link_targets_the_gallery_row() {
-        match theme_link_target() {
-            crate::search::index::JumpTarget::Row { tab, anchor } => {
-                assert_eq!(tab, crate::cli::page_to_index("theme").unwrap());
-                assert_eq!(anchor, "ui.theme.name");
-            }
-            other => panic!("落点应是行锚点，实为 {other:?}"),
-        }
-    }
-
-    /// 反应式接线：选中索引一变，链接文案跟着变。走真树 + `layout_root`——
-    /// `dispatch_reactive_updates` 是 reactive_effect 唯一的驱动点，只调闭包的话
-    /// 「有没有真挂上 `.reactive()`」这一半就没人管（同 auto_encode 的测法）。
-    #[test]
-    fn theme_link_label_follows_selection() {
+    fn fit_consts_match_real_layout() {
         use windui::core::Tree;
         use windui::geometry::Size;
         let _g = crate::rpc::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
-        let st = AppState::empty();
-        st.theme_value_sig
-            .set(vec!["default".to_string(), "mono".to_string()]);
-        st.theme_gallery.entries.set(vec![
-            GalleryEntry {
-                id: "default".into(),
-                display: "清风".into(),
-                ..Default::default()
-            },
-            GalleryEntry {
-                id: "mono".into(),
-                display: "墨".into(),
-                ..Default::default()
-            },
-        ]);
-        let idx = signal(0usize);
-        st.fields
-            .select_indices
-            .borrow_mut()
-            .insert("ui.theme.name".to_string(), idx);
-        let (label, eff) = theme_display(&st);
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let ui_page = crate::cli::page_to_index("ui").unwrap();
         let mut tree = Tree::new();
-        let id = eff.build(&mut tree);
-        tree.root = Some(id);
-        assert_eq!(label.get(), "主题选择：清风", "构建时即算出当前文案");
-        idx.set(1);
-        tree.layout_root(Size::new(100, 100), &mut windui::text::NullTextEngine);
-        assert_eq!(
-            label.get(),
-            "主题选择：墨",
-            "选中索引变化应经 reactive_effect 触达链接文案"
+        let root = crate::shell::build(&app)
+            .width(crate::MAIN_W)
+            .height(crate::MAIN_H)
+            .build(&mut tree);
+        tree.root = Some(root);
+        app.borrow().tab.set(ui_page);
+        tree.layout_root(
+            Size::new(crate::MAIN_W, crate::MAIN_H),
+            &mut windui::text::NullTextEngine,
+        );
+        // 内容区矩形 = 图片/占位实际占的地方：全树找高恰好 FIT_H 的矩形。
+        let mut hits = Vec::new();
+        let mut stack = vec![tree.root.expect("已设根")];
+        while let Some(id) = stack.pop() {
+            let Some(n) = tree.get(id) else {
+                continue;
+            };
+            let b = tree.abs_bounds(id);
+            if b.w > 0 && b.h == FIT_H {
+                hits.push((b.w, b.h));
+            }
+            stack.extend(n.children.iter().copied());
+        }
+        assert!(
+            !hits.is_empty(),
+            "图区内容区没找到：高 = FIT_H 的矩形一处都没有"
+        );
+        assert!(
+            hits.iter().all(|&r| r == (FIT_W, FIT_H)),
+            "图区内容区尺寸应为 {FIT_W}×{FIT_H}，实测 {hits:?}"
         );
     }
 
     #[test]
     fn params_carry_draft_ui_inline() {
         let ui = json!({ "candidate": { "font_size": 20 } });
-        let p = request_params(&ui, 1.5, kind_param(0));
+        let p = request_params(&ui, 1.5, kind_param(0), (FIT_W, FIT_H));
+        assert_eq!(p["fit_w"], FIT_W);
+        assert_eq!(p["fit_h"], FIT_H);
         assert_eq!(p["ui"], ui);
         assert_eq!(p["scale"], 1.5);
         assert_eq!(p["inline"], true);
@@ -701,9 +570,29 @@ mod tests {
         let ui = json!({});
         assert_eq!(kind_param(0), None, "候选窗缺省");
         assert_eq!(kind_param(9), None, "越界按候选窗算");
-        let t = request_params(&ui, 1.0, kind_param(1));
+        let t = request_params(&ui, 1.0, kind_param(1), (FIT_W, FIT_H));
         assert_eq!(t["kind"], "toolbar");
         assert_eq!(t["inline"], true);
+    }
+
+    /// fit 目标框：两维都给、只给一维、都不给（= 旧版请求形状）三种形状都要对。
+    #[test]
+    fn params_carry_fit_only_when_positive() {
+        let ui = json!({});
+        let both = request_params(&ui, 1.0, None, (552, 184));
+        assert_eq!(both["fit_w"], 552);
+        assert_eq!(both["fit_h"], 184);
+        let w_only = request_params(&ui, 1.0, None, (552, 0));
+        assert_eq!(w_only["fit_w"], 552);
+        assert!(w_only.get("fit_h").is_none(), "非正 = 这一维缺省");
+        let h_only = request_params(&ui, 1.0, None, (0, 184));
+        assert_eq!(h_only["fit_h"], 184);
+        assert!(h_only.get("fit_w").is_none(), "非正 = 这一维缺省");
+        let none = request_params(&ui, 1.0, None, (0, 0));
+        assert!(
+            none.get("fit_w").is_none() && none.get("fit_h").is_none(),
+            "两维都缺省 = 旧版请求的形状"
+        );
     }
 
     #[test]
@@ -741,7 +630,7 @@ mod tests {
         let ui = json!({ "theme": { "name": "jade" } });
         let r = outcome(crate::rpc::call_core(
             "theme.renderPreview",
-            &request_params(&ui, 1.0, None),
+            &request_params(&ui, 1.0, None, (0, 0)),
         ));
         let jade = outcome(crate::rpc::call_core(
             "theme.renderPreview",
