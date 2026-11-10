@@ -36,8 +36,9 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// 「忙 / 超时」后隔多久重试、至多几次（同画廊）。
 const RETRY_DELAY: Duration = Duration::from_millis(1000);
 const MAX_RETRIES: u32 = 3;
-/// 图区最小高度：图还没来时卡片不至于塌成一条。
-const AREA_MIN_H: i32 = 72;
+/// 图区固定高度：加载与换图时布局不随之涨缩，进页不抖。160 与主题画廊导入预览的
+/// `IMPORT_PREVIEW_MAX_H`（theme_gallery.rs）一致。
+const AREA_H: i32 = 160;
 /// 草稿里影响候选窗外观的段（`ui.<段>`）；工具栏、状态提示等改了不重取。
 pub const DRAFT_SECTIONS: &[&str] = &["theme", "candidate", "font", "comment"];
 
@@ -261,14 +262,15 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let error: Signal<String> = signal(String::new());
     let image = Element::switcher(shown, |s: Shown| match s {
         Shown::Ready(png) => {
-            let (w, h) = crate::theme_gallery::natural_size(&png);
+            // 只取自然宽度作上界；`height_match()` 填充定高图区，布局不随图片高度变。
+            let (w, _) = crate::theme_gallery::natural_size(&png);
             Element::image_bytes(&png.bytes)
                 .fit(Fit::Contain)
                 .width_match()
                 .max_width(w.max(1))
-                .height(h.max(1))
+                .height_match()
         }
-        Shown::Waiting => Element::stack().width_match().height(AREA_MIN_H).child(
+        Shown::Waiting => Element::stack().width_match().height_match().child(
             Element::label("预览生成中…")
                 .font_size(12.0)
                 .fg_role(Role::TextSubtle)
@@ -278,10 +280,11 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     });
     let area = Element::stack()
         .width_match()
+        .height(AREA_H)
         .padding_xy(16, 16)
         .bg_role(Role::SurfaceAlt)
         .corner(6.0)
-        .child(image.align(Align::Center));
+        .child(image.height_match().align(Align::Center));
     let note = Element::label_signal(error)
         .font_size(12.0)
         .fg_role(Role::TextSubtle)
