@@ -629,9 +629,8 @@ pub struct AppState {
     data_loaded: bool,
     /// 正式模式下连接失败标志：true 时显示阻断对话框；mock 模式始终 false。
     pub conn_failed: Signal<bool>,
-    /// 主题下拉的响应式选项：显示名列表 + 对应 id/slug 值列表（异步加载后填充）。
-    /// 下拉构建于异步数据到达前，故必须经 Signal 驱动响应式下拉，数据到达即填充。
-    pub theme_label_sig: Signal<Vec<String>>,
+    /// `ui.theme.name` 的取值列表（id/slug，异步加载后填充；画廊的选中索引下标进它）。
+    /// 末尾可能多一项配置里写着、却没装的主题（[`Self::push_unlisted_theme`]）。
     pub theme_value_sig: Signal<Vec<String>>,
     /// 待删除主题的 id（删除确认对话框用）。
     pub theme_delete_id: Signal<String>,
@@ -1086,7 +1085,6 @@ impl AppState {
             connected: false,
             data_loaded: false,
             conn_failed: signal(false),
-            theme_label_sig: signal(vec![]),
             theme_value_sig: signal(vec![]),
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
@@ -2323,15 +2321,9 @@ impl AppState {
         }
     }
 
-    /// 依 `theme_entries` 刷新选项信号（显示名 / id）与画廊。
+    /// 依 `theme_entries` 刷新取值列表与画廊。
     fn apply_theme_entries(&self) {
-        let labels: Vec<String> = self
-            .theme_entries
-            .iter()
-            .map(|e| e.display.clone())
-            .collect();
         let values: Vec<String> = self.theme_entries.iter().map(|e| e.id.clone()).collect();
-        self.theme_label_sig.set(labels);
         self.theme_value_sig.set(values);
         self.theme_gallery.set_entries(self.theme_entries.clone());
         // 无条件重取：覆盖导入同名主题（id 不变、内容变了）、服务起来后重新加载都走这里，
@@ -2395,9 +2387,18 @@ impl AppState {
         self.override_summary.set(load_override_summary());
     }
 
-    /// 配置里的主题不在列表里时补进选项信号（画廊不列它：它不是一个装着的主题）。
+    /// 配置里的主题不在列表里时补进取值列表末尾（画廊不列它：它不是一个装着的主题，画廊
+    /// 上方另有一行「未安装」提示）。不补的话选中索引回落首项，点一次保存就换掉了用户的配置。
     fn push_unlisted_theme(&self, cur: &str) {
-        crate::manifest::push_unlisted_option(self.theme_value_sig, self.theme_label_sig, cur);
+        if !cur.is_empty() && !self.theme_value_sig.with(|v| v.iter().any(|x| x == cur)) {
+            self.theme_value_sig.update(|v| v.push(cur.to_string()));
+        }
+    }
+
+    /// 让选中项指向 `id`：它不在取值列表里就先补到末尾。
+    fn keep_theme_selected(&self, id: &str) {
+        self.push_unlisted_theme(id);
+        self.relocate_theme_index(Some(id));
     }
 
     /// 执行主题删除（删除确认对话框「删除」按钮触发）：调 `theme.delete`，成功后刷新列表并反馈。
@@ -2413,10 +2414,15 @@ impl AppState {
                 self.refresh_theme_names();
                 // 删的正是选中的那个：改选默认主题（同其它改动，点「应用」才落盘），
                 // 否则选中项就挂在一个已经不存在的主题上。
-                if was_selected && self.select_default_theme() {
+                if !was_selected {
+                    self.notify_ok("已删除主题");
+                } else if self.select_default_theme() {
                     self.notify_ok("已删除主题，已改选默认主题，应用后生效");
                 } else {
-                    self.notify_ok("已删除主题");
+                    // 默认主题也不在列表里：别让索引原地不动、悄悄落到相邻主题上——
+                    // 选中项留在被删的 id（画廊上方随之出「未安装」提示），由用户另选。
+                    self.keep_theme_selected(&id);
+                    self.notify_err("已删除主题；默认主题不可用，请另选一个主题");
                 }
             }
             Err(e) => self.notify_err(format!("删除主题失败：{e}")),
@@ -2631,7 +2637,7 @@ impl AppState {
 
     /// 后台数据就绪后在 UI 线程调用：更新非 Signal 字段，并通过 Signal 通知界面刷新。
     ///
-    /// 主题/字体下拉经响应式选项信号（theme_label_sig/font_sig 等）填充，异步数据到达即刷新；
+    /// 主题/字体下拉经响应式选项信号（theme_value_sig/font_sig 等）填充，异步数据到达即刷新；
     /// 其余 manifest 字段经已注册加载器回填 Signal。
     pub fn apply_loaded(&mut self, data: LoadedState) {
         let mut cfg = Config::from_value(data.config_value);
@@ -5753,8 +5759,6 @@ mod tests {
         // 重扫前：列表里只有两项，选中末项 mono。
         st.theme_value_sig
             .set(vec!["jade".to_string(), "mono".to_string()]);
-        st.theme_label_sig
-            .set(vec!["青玉".to_string(), "墨".to_string()]);
         let idx = signal(1);
         st.fields
             .select_indices
@@ -5786,13 +5790,13 @@ mod tests {
             ..Default::default()
         }];
         st.theme_value_sig.set(vec!["old".to_string()]);
-        st.theme_label_sig.set(vec!["旧主题".to_string()]);
 
         st.refresh_theme_names();
 
-        // 值 = id，label = 显示名（不再拼版本，版本改走徽章）。
+        // 值 = id，显示名随条目走（画廊卡片标题）。
         assert_eq!(st.theme_value_sig.get(), vec!["default", "jade", "mono"]);
-        assert_eq!(st.theme_label_sig.get(), vec!["清风·浅", "青玉", "墨"]);
+        let names: Vec<String> = st.theme_entries.iter().map(|e| e.display.clone()).collect();
+        assert_eq!(names, vec!["清风·浅", "青玉", "墨"]);
         // 条目携带版本与内置标记。
         assert_eq!(st.theme_entries[0].version, "3.2.1");
         assert!(st.theme_entries[0].builtin, "default 为内置");
@@ -5826,6 +5830,62 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 删选中的主题后跑一遍：选中 mono → 确认删除，返回选中项与反馈。
+    fn delete_selected_mono(st: &mut AppState) -> (String, Option<(ToastKind, String)>) {
+        st.refresh_theme_names();
+        let idx = signal(2usize);
+        st.fields
+            .select_indices
+            .borrow_mut()
+            .insert("ui.theme.name".to_string(), idx);
+        st.theme_delete_id.set("mono".to_string());
+        st.confirm_delete_theme();
+        let id = st.theme_value_sig.with(|v| v[idx.get()].clone());
+        (id, st.feedback.get())
+    }
+
+    /// 删的正是选中的主题：改选默认主题并说明。
+    #[test]
+    fn deleting_the_selected_theme_selects_the_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        let (id, fb) = delete_selected_mono(&mut st);
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert_eq!(id, "default");
+        assert!(fb.is_some_and(|(_, m)| m.contains("改选默认主题")));
+    }
+
+    /// 默认主题不在列表里时，选中项留在被删的主题上并提示另选，不悄悄落到相邻主题。
+    #[test]
+    fn deleting_the_selected_theme_without_a_default_keeps_it_and_says_so() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        st.capabilities
+            .entries
+            .get_mut("ui.theme.name")
+            .expect("能力表有 ui.theme.name")
+            .default = Value::String("not-installed".to_string());
+        // 选中一个列表末尾的外部主题 extra 并删掉：mock 的 theme.list 重拉后不再列它。
+        st.refresh_theme_names();
+        st.theme_value_sig.update(|v| v.push("extra".to_string()));
+        let idx = signal(3usize);
+        st.fields
+            .select_indices
+            .borrow_mut()
+            .insert("ui.theme.name".to_string(), idx);
+        st.theme_delete_id.set("extra".to_string());
+        st.confirm_delete_theme();
+        let id = st.theme_value_sig.with(|v| v.get(idx.get()).cloned());
+        let fb = st.feedback.get();
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+        assert_eq!(id.as_deref(), Some("extra"), "选中项不该挪到相邻主题");
+        let (kind, msg) = fb.expect("该有提示");
+        assert!(matches!(kind, ToastKind::Error), "{msg}");
+        assert!(msg.contains("请另选"), "{msg}");
+    }
+
     /// 配置里的主题已经不在列表里（外部主题被删 / 这一轮没扫到）时，它必须仍留在下拉里
     /// 被选中——否则打开设置页点一次保存，`ui.theme.name` 就被静默换成列表第一项，用户
     /// 只会说「我的主题怎么自己变了」。响应式路径的补项语义见
@@ -5845,10 +5905,6 @@ mod tests {
             values.last().map(String::as_str),
             Some("gone"),
             "被删的当前主题该补在列表末尾，实际: {values:?}"
-        );
-        assert!(
-            st.theme_label_sig.get().last().unwrap().contains("gone"),
-            "标签应能看出这是当前配置"
         );
         assert!(
             !st.theme_gallery

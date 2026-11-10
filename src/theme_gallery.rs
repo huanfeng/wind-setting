@@ -69,6 +69,11 @@ pub fn note_external_edit() {
     EXTERNAL_EDITS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// [`note_external_edit`] 的累计次数。
+pub fn external_edits() -> u64 {
+    EXTERNAL_EDITS.load(Ordering::Relaxed)
+}
+
 /// 一个已装主题（`theme.list` 的一项）。core 协议：`name` = slug/id，`display_name` = 显示名。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GalleryEntry {
@@ -529,6 +534,11 @@ impl ThemeGallery {
         }
     }
 
+    /// 标脏次数（主题列表换过、重试到点都会加一）：外观页预览据此知道主题可能变了像素。
+    pub fn revision(&self) -> u64 {
+        self.rev.get()
+    }
+
     /// 设置窗口所在屏的缩放（还没画过时为 1）。
     pub fn scale_cell(&self) -> Rc<Cell<f32>> {
         self.scale.clone()
@@ -602,6 +612,7 @@ impl Widget for Driver {
 /// 搜索、定制隐藏、能力覆盖照常认这个键。`vis` 为假（被用户藏掉）时不取图。
 pub fn build_selector(state: &AppState, key: &str, vis: Vis) -> Element {
     let gallery = state.theme_gallery.clone();
+    let entries = gallery.entries;
     let index = crate::manifest::register_reactive_select(
         state,
         key,
@@ -641,12 +652,67 @@ pub fn build_selector(state: &AppState, key: &str, vis: Vis) -> Element {
         .reactive()
         .width_match()
         .height(1);
-    Element::col()
+    // 清单 hint（「候选窗与工具栏的主题样式」）照留：画廊没有左侧标签行，说明放在网格上方。
+    let hint = state
+        .manifest
+        .get(key)
+        .and_then(|it| it.hint.clone())
+        .filter(|h| !h.is_empty())
+        .map(|h| {
+            Element::label(h)
+                .font_size(12.0)
+                .fg_role(Role::TextSubtle)
+                .max_lines(2)
+        });
+    // 选中的是一个没装的主题（配置里写着、列表里没有）：说一句，免得用户以为哪一格都没选中。
+    let missing = signal(missing_theme_note(index, state.theme_value_sig, entries));
+    let watch = {
+        let values = state.theme_value_sig;
+        crate::pages::dict::reactive::reactive_effect(
+            move || {
+                index
+                    .version()
+                    .wrapping_add(values.version())
+                    .wrapping_add(entries.version())
+            },
+            move || {
+                let note = missing_theme_note(index, values, entries);
+                if missing.with(|m| *m != note) {
+                    missing.set(note);
+                }
+            },
+        )
+    };
+    let note = Element::label_signal(missing)
+        .font_size(12.0)
+        .fg_role(Role::Warning)
+        .max_lines(2)
+        .visible_when(move || !missing.with(String::is_empty));
+    let mut col = Element::col()
         .width_match()
         .padding_xy(0, 6)
-        .spacing(4)
-        .child(driver)
-        .child(grid)
+        .spacing(6)
+        .child(driver);
+    if let Some(h) = hint {
+        col = col.child(h);
+    }
+    col.child(note).child(watch).child(grid)
+}
+
+/// 选中项不在已装主题里时的提示（空 = 无需提示）。
+fn missing_theme_note(
+    index: Signal<usize>,
+    values: Signal<Vec<String>>,
+    entries: Signal<Vec<GalleryEntry>>,
+) -> String {
+    let Some(id) = values.with(|v| v.get(index.get()).cloned()) else {
+        return String::new();
+    };
+    // 列表还没到（服务端未连上）时什么也不说：那时谁都「不在列表里」。
+    if id.is_empty() || entries.with(|e| e.is_empty() || e.iter().any(|x| x.id == id)) {
+        return String::new();
+    }
+    format!("当前配置的主题「{id}」未安装，输入法按默认主题显示；点选一个主题即可替换")
 }
 
 /// 每格要用的共享句柄。
@@ -709,6 +775,15 @@ fn placeholder_text(text: &str) -> Element {
 fn mix(a: Color, b: Color, t: f32) -> Color {
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     Color::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
+/// 版本号的显示：已带 `v` / `V` 前缀的原样用，否则补一个 `v`。
+pub fn version_text(v: &str) -> String {
+    if v.starts_with(['v', 'V']) {
+        v.to_string()
+    } else {
+        format!("v{v}")
+    }
 }
 
 /// 名字行右侧的小字（版本号、「内置」）。
@@ -778,7 +853,7 @@ fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
                 .weight(1.0),
         );
     if !e.version.is_empty() {
-        name = name.child(meta_text(format!("v{}", e.version)));
+        name = name.child(meta_text(version_text(&e.version)));
     }
     if e.builtin {
         name = name.child(meta_text("内置".into()));
@@ -889,7 +964,7 @@ pub fn info_rows(e: &GalleryEntry) -> Vec<(&'static str, String)> {
         ("目录", e.dir.clone()),
         ("继承自", e.base.clone()),
         ("异形皮肤", yes_no(e.skin)),
-        ("动画", yes_no(e.animated)),
+        ("皮肤动画", yes_no(e.animated)),
     ];
     rows.into_iter().filter(|(_, v)| !v.is_empty()).collect()
 }
@@ -1440,7 +1515,7 @@ mod tests {
         assert_eq!(get("目录"), Some("/u/themes/mono"));
         assert_eq!(get("继承自"), Some("_base"));
         assert_eq!(get("异形皮肤"), Some("有"));
-        assert_eq!(get("动画"), Some("无"));
+        assert_eq!(get("皮肤动画"), Some("无"));
         let builtin = info_rows(&GalleryEntry {
             id: "default".into(),
             display: "默认".into(),
@@ -1466,6 +1541,49 @@ mod tests {
         ctx.index.set(0);
         ctx.ask_delete(&mono());
         assert!(!st.theme_delete_msg.get().contains("默认主题"));
+    }
+
+    /// 点格子上的 ✕：弹删除确认，且不顺带把这一格选中（✕ 叠在可点的格子里）。
+    #[test]
+    fn clicking_the_delete_icon_asks_and_does_not_select() {
+        use windui::core::Tree;
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::{Point, Size};
+        let st = AppState::empty();
+        st.theme_value_sig.set(ids(&["default", "mono"]));
+        let idx = signal(0usize);
+        let ctx = test_ctx(&st, idx, None);
+        let mut tree = Tree::new();
+        let root = Element::col()
+            .width(300)
+            .child(cell(&ctx, mono()))
+            .build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(300, 600), &mut windui::text::NullTextEngine);
+        // ✕ 是格子里唯一 18×18 的节点。
+        let mut icon = None;
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if let Some(n) = tree.get(id) {
+                if n.bounds.w == 18 && n.bounds.h == 18 {
+                    icon = Some(id);
+                }
+                stack.extend(n.children.iter().copied());
+            }
+        }
+        let r = tree.abs_bounds(icon.expect("非内置主题的格子该有 ✕"));
+        let at = Point::new(r.x + r.w / 2, r.y + r.h / 2);
+        let (mut hover, mut capture) = (None, None);
+        for kind in [PointerKind::Down, PointerKind::Up] {
+            tree.dispatch_pointer(
+                PointerEvent::single(kind, at, MouseButton::Left),
+                &mut hover,
+                &mut capture,
+            );
+        }
+        assert!(st.theme_delete_visible.get(), "该弹删除确认");
+        assert_eq!(st.theme_delete_id.get(), "mono");
+        assert_eq!(idx.get(), 0, "点 ✕ 不该选中这一格");
     }
 
     /// 选中与否格子几何完全一致：外环恒占位、角标不进排版流。
