@@ -536,9 +536,15 @@ mod tests {
         let mounted = mounted_anchors();
 
         let idx = build_index(&crate::manifest::Manifest::from_embedded());
+        // 手写跳转目标（不经 build_index 派生的）也入比对集：清单键改名时索引与锚点
+        // 会一起换键、守门照常绿，唯独手写这边不会自己跟——漏了它，症状仍是
+        // 「点得到、页也切了，就是不滚不闪」。
+        let handwritten = [crate::appearance_preview::theme_link_target()];
         let missing: std::collections::BTreeSet<&str> = idx
             .iter()
-            .flat_map(|e| match &e.target {
+            .map(|e| &e.target)
+            .chain(handwritten.iter())
+            .flat_map(|t| match t {
                 // 页面上直接成行的项（manifest 派生的绝大多数条目都是这一类）。
                 // 曾经**不查**这一支——方案组那五十来个 key 从 `RowInDialog` 改成 `Row`
                 // 之后，等于整批脱离了「索引里的锚点界面上真的挂着」这条校验。

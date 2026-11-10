@@ -381,7 +381,10 @@ fn theme_link_label(name: Option<&str>) -> String {
 }
 
 /// 链接落点：主题页「主题选择」卡里 `ui.theme.name` 那一行（行锚点即清单 key）。
-fn theme_link_target() -> crate::search::index::JumpTarget {
+///
+/// `pub(crate)` 是给 `search::anchor` 的守门测试用的：手写目标不经 `build_index`
+/// 派生，不入比对集就会在清单键改名时静默退化成「只切页、不滚不闪」。
+pub(crate) fn theme_link_target() -> crate::search::index::JumpTarget {
     crate::search::index::JumpTarget::Row {
         tab: crate::cli::page_to_index("theme").unwrap_or(usize::MAX),
         anchor: "ui.theme.name".to_string(),
