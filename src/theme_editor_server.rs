@@ -481,7 +481,7 @@ fn handle_request(req: tiny_http::Request, be: &Backend) {
     }
     let reply = if method == "GET" && url == "/api/themes" {
         match (be.rpc)("theme.list", &serde_json::json!({})) {
-            Ok(v) => json_reply(200, &v.to_string(), allow_origin),
+            Ok(v) => json_reply(200, &editor_theme_list(v).to_string(), allow_origin),
             Err(e) => json_reply(
                 500,
                 &serde_json::json!({"ok":false,"error":e}).to_string(),
@@ -864,6 +864,28 @@ fn handle_export_package(
         }
         Err((status, msg)) => respond(req, error_reply(status, &msg, allow_origin)),
     }
+}
+
+/// `GET /api/themes` 的回包：`theme.list` 每项只留编辑器用到的字段（白名单）。这条是免 token
+/// 的过渡路由，core 给设置端自己界面加的字段（用户主题的本机目录 `dir` 等）不该经它交给网页。
+const EDITOR_THEME_FIELDS: &[&str] = &["name", "display_name", "author", "version", "builtin"];
+
+fn editor_theme_list(v: Value) -> Value {
+    let items = v.as_array().map_or(&[][..], Vec::as_slice);
+    Value::Array(
+        items
+            .iter()
+            .filter_map(Value::as_object)
+            .map(|o| {
+                Value::Object(
+                    o.iter()
+                        .filter(|(k, _)| EDITOR_THEME_FIELDS.contains(&k.as_str()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -1537,6 +1559,32 @@ mod route_tests {
         assert_eq!(query_param("/p", "slug"), None);
         assert_eq!(query_param("/p?slug=%zz", "slug"), Some(None));
         assert_eq!(query_param("/p?force", "force"), Some(Some(String::new())));
+    }
+
+    /// 回给网页的主题列表只留编辑器用的字段：用户主题的本机目录（`dir`）等不出本机。
+    #[test]
+    fn theme_list_for_editor_drops_local_fields() {
+        let v = editor_theme_list(json!([{
+            "name": "mono", "display_name": "墨", "author": "a", "version": "1",
+            "builtin": false, "dir": "/home/x/themes/mono", "base": "_base",
+            "skin": true, "animated": false,
+        }]));
+        let keys: Vec<&str> = v[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["author", "builtin", "display_name", "name", "version"]
+        );
+        assert!(v[0].get("dir").is_none());
+        assert_eq!(
+            editor_theme_list(json!({"x": 1})),
+            json!([]),
+            "不是数组就给空表"
+        );
     }
 
     fn themes_rpc(m: &str, _: &Value) -> Result<Value, String> {
