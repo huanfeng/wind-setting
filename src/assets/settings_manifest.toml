@@ -3203,13 +3203,13 @@ hint = "在任意应用中一键切换到本输入法（Windows 只切当前应�
 platform = "windows, macos"
 
 # ═══════════════════════════ 主题 ═══════════════════════════
-# 独立成页（排在外观之前）：页内手写画廊接在这张卡之后，见 `pages::theme_page`。
-# ── 主题（主题选择下拉：options_source=themes，显示主题名、保存 slug 到 ui.theme.name）──
+# 独立成页（排在外观之前），见 `pages::theme_page`。
+# ── 主题选择：已装主题的画廊（缩略图 + 名字，点格即选，保存 slug 到 ui.theme.name）──
 [[items]]
 key = "ui.theme.name"
 group = "theme"
-section = "主题"
-type = "select"
+section = "主题选择"
+type = "theme_gallery"
 options_source = "themes"
 label = "主题选择"
 hint = "候选窗与工具栏的主题样式"

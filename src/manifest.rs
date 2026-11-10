@@ -1097,6 +1097,7 @@ pub(crate) const RENDERABLE_CONTROL_TYPES: &[&str] = &[
     "log_privacy_warning",
     "open_misread_table",
     "comment_code_current",
+    "theme_gallery",
 ];
 
 /// 「去设置」：退役的编码来源开关原位只显示现状（[`crate::dialogs::comment_settings::build_code_current`]），
@@ -1194,6 +1195,12 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             el
         }
         "local_select" => build_local_select(state, key, item),
+        // 整宽画廊，不包设置行（见 `field_with`）。
+        "theme_gallery" => crate::theme_gallery::build_selector(
+            state,
+            key,
+            row_vis(state, key, &item.group, &item.section),
+        ),
         "open_misread_table" => crate::correction_ui::misread_table_button(state),
         "comment_code_current" => Element::row()
             .cross(Align::Center)
@@ -1325,6 +1332,10 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
     // setting_row 的标签/说明配色是固定的。
     if item.typ == "log_privacy_warning" {
         return build_log_privacy_warning(state, item);
+    }
+    // 主题画廊本身就是选择控件，整宽铺开，没有左侧标签。
+    if item.typ == "theme_gallery" {
+        return build_control(state, key, item, &state.current_config);
     }
     field_item(state, key, item, mode)
 }
@@ -2391,6 +2402,23 @@ fn build_select_reactive(
     val_sig: Signal<Vec<String>>,
     lab_sig: Signal<Vec<String>>,
 ) -> Element {
+    let sig = register_reactive_select(state, key, cfg, val_sig);
+    let el = Element::dropdown_signal(lab_sig, sig);
+    match item.width {
+        Some(w) => el.width(w as i32),
+        None => el.min_width(CTRL_W),
+    }
+}
+
+/// 响应式选项键（取值列表 `val_sig` 异步到达、会被整份替换）的选中索引与写回器 / 载入器 /
+/// 取值器登记，返回索引信号。下拉与主题画廊（`theme_gallery`）共用：控件长什么样与这个键
+/// 怎么读写无关。
+pub(crate) fn register_reactive_select(
+    state: &AppState,
+    key: &str,
+    cfg: &Config,
+    val_sig: Signal<Vec<String>>,
+) -> Signal<usize> {
     let def_str = state
         .capabilities
         .default_for(key)
@@ -2456,16 +2484,7 @@ fn build_select_reactive(
         }),
     );
 
-    // 主题下拉用富内容（版本徽章 + 外部主题删除图标）；其余动态源仍用纯文本响应式下拉。
-    let el = if item.options_source.as_deref() == Some("themes") {
-        Element::dropdown_items_signal(state.theme_items_sig, sig)
-    } else {
-        Element::dropdown_signal(lab_sig, sig)
-    };
-    match item.width {
-        Some(w) => el.width(w as i32),
-        None => el.min_width(CTRL_W),
-    }
+    sig
 }
 
 /// 离散数值下拉（int 键，如每页候选数）：options 的 value 为整数字符串，显示 label，写回整数。

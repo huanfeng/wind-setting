@@ -282,6 +282,9 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .child(build_reload_dialog(app, reload_confirm))
         .child(build_reset_dialog(app, reset_confirm))
         .child(build_theme_delete_dialog(app))
+        .child(crate::theme_gallery::info_dialog(
+            &app.borrow().theme_gallery,
+        ))
         .child(build_theme_overwrite_dialog(app))
         .child(build_update_dialog(app))
         .child(crate::dialogs::schema_download_dialog::build_schema_download_dialog(app))

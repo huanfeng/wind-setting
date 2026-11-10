@@ -42,19 +42,8 @@ pub struct SchemaInfo {
     pub hidden: bool,
 }
 
-/// 一个主题条目（theme.list 返回）。core 协议：`name`=slug/id，`display_name`=界面显示名，
-/// `version` 主题版本（可空），`builtin`=是否内置（内置不可删除，外部主题可删）。
-#[derive(Clone, Default)]
-pub struct ThemeEntry {
-    /// slug/id，保存到 `ui.theme.name`。
-    pub id: String,
-    /// 界面显示名。
-    pub display: String,
-    /// 版本号（下拉徽章展示，可空）。
-    pub version: String,
-    /// 是否内置主题（true 不可删除；false 为外部/用户主题，显示删除按钮）。
-    pub builtin: bool,
-}
+/// 一个主题条目（theme.list 返回），与画廊格子同一个类型。
+pub use crate::theme_gallery::GalleryEntry as ThemeEntry;
 
 /// 保存写回器：把某 Signal 值写回 Config。
 pub type FieldWriter = Box<dyn Fn(&mut Config)>;
@@ -644,8 +633,6 @@ pub struct AppState {
     /// 下拉构建于异步数据到达前，故必须经 Signal 驱动响应式下拉，数据到达即填充。
     pub theme_label_sig: Signal<Vec<String>>,
     pub theme_value_sig: Signal<Vec<String>>,
-    /// 主题下拉的富内容选项（版本徽章 + 外部主题的删除图标）；与 theme_value_sig 同序。
-    pub theme_items_sig: Signal<Vec<DropdownItem>>,
     /// 待删除主题的 id（删除确认对话框用）。
     pub theme_delete_id: Signal<String>,
     /// 删除确认对话框正文（含主题名）。
@@ -1101,7 +1088,6 @@ impl AppState {
             conn_failed: signal(false),
             theme_label_sig: signal(vec![]),
             theme_value_sig: signal(vec![]),
-            theme_items_sig: signal(vec![]),
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
             theme_delete_visible: signal(false),
@@ -2282,7 +2268,34 @@ impl AppState {
         self.invalidate_accent();
     }
 
-    /// 主题下拉此刻选中的那个 id（拿不到索引信号或越界时为 `None`）。
+    /// 选中默认主题（能力表里 `ui.theme.name` 的默认值）。列表里没有它时返回 false。
+    fn select_default_theme(&self) -> bool {
+        let def = self
+            .capabilities
+            .default_for("ui.theme.name")
+            .as_str()
+            .unwrap_or("default")
+            .to_string();
+        let sig = self
+            .fields
+            .select_indices
+            .borrow()
+            .get("ui.theme.name")
+            .copied();
+        match (
+            sig,
+            self.theme_value_sig
+                .with(|v| v.iter().position(|x| *x == def)),
+        ) {
+            (Some(sig), Some(i)) => {
+                sig.set(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 主题此刻选中的那个 id（拿不到索引信号或越界时为 `None`）。
     fn selected_theme_id(&self) -> Option<String> {
         let idx = self
             .fields
@@ -2310,8 +2323,7 @@ impl AppState {
         }
     }
 
-    /// 依 `theme_entries` 刷新三个下拉信号：显示名（label）、id（value）、富内容项（版本徽章 +
-    /// 外部主题删除图标）。删除图标点击 → 填充删除确认对话框的待删 id/正文并弹出。
+    /// 依 `theme_entries` 刷新选项信号（显示名 / id）与画廊。
     fn apply_theme_entries(&self) {
         let labels: Vec<String> = self
             .theme_entries
@@ -2319,25 +2331,9 @@ impl AppState {
             .map(|e| e.display.clone())
             .collect();
         let values: Vec<String> = self.theme_entries.iter().map(|e| e.id.clone()).collect();
-        let items = build_theme_items(
-            &self.theme_entries,
-            self.theme_delete_id,
-            self.theme_delete_msg,
-            self.theme_delete_visible,
-        );
         self.theme_label_sig.set(labels);
         self.theme_value_sig.set(values);
-        self.theme_items_sig.set(items);
-        self.theme_gallery.set_entries(
-            self.theme_entries
-                .iter()
-                .map(|e| crate::theme_gallery::GalleryEntry {
-                    id: e.id.clone(),
-                    display: e.display.clone(),
-                    builtin: e.builtin,
-                })
-                .collect(),
-        );
+        self.theme_gallery.set_entries(self.theme_entries.clone());
         // 无条件重取：覆盖导入同名主题（id 不变、内容变了）、服务起来后重新加载都走这里，
         // 列表相同也可能换了像素。
         self.theme_gallery.invalidate();
@@ -2399,19 +2395,9 @@ impl AppState {
         self.override_summary.set(load_override_summary());
     }
 
-    /// 主题下拉比其余三个多一份富内容信号（`theme_items_sig`，带版本徽章与删除图标），
-    /// 而索引↔取值的映射读的是 `theme_value_sig` —— 两者错位一项，下拉显示的就不是选中的
-    /// 那个主题。故补项必须同时补进去，且不带徽章、不带删除图标（它不是一个装着的主题）。
+    /// 配置里的主题不在列表里时补进选项信号（画廊不列它：它不是一个装着的主题）。
     fn push_unlisted_theme(&self, cur: &str) {
-        if !crate::manifest::push_unlisted_option(self.theme_value_sig, self.theme_label_sig, cur) {
-            return;
-        }
-        let label = self
-            .theme_label_sig
-            .with(|l| l.last().cloned())
-            .unwrap_or_default();
-        self.theme_items_sig
-            .update(|items| items.push(DropdownItem::new(label)));
+        crate::manifest::push_unlisted_option(self.theme_value_sig, self.theme_label_sig, cur);
     }
 
     /// 执行主题删除（删除确认对话框「删除」按钮触发）：调 `theme.delete`，成功后刷新列表并反馈。
@@ -2421,10 +2407,17 @@ impl AppState {
         if id.is_empty() {
             return;
         }
+        let was_selected = self.selected_theme_id().as_deref() == Some(id.as_str());
         match rpc::call_core("theme.delete", &serde_json::json!({ "name": id })) {
             Ok(_) => {
                 self.refresh_theme_names();
-                self.notify_ok("已删除主题");
+                // 删的正是选中的那个：改选默认主题（同其它改动，点「应用」才落盘），
+                // 否则选中项就挂在一个已经不存在的主题上。
+                if was_selected && self.select_default_theme() {
+                    self.notify_ok("已删除主题，已改选默认主题，应用后生效");
+                } else {
+                    self.notify_ok("已删除主题");
+                }
             }
             Err(e) => self.notify_err(format!("删除主题失败：{e}")),
         }
@@ -3817,11 +3810,19 @@ fn load_theme_entries() -> Vec<ThemeEntry> {
                         .unwrap_or("")
                         .to_string();
                     let builtin = t.get("builtin").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let text =
+                        |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let flag = |k: &str| t.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
                     Some(ThemeEntry {
                         id,
                         display,
                         version,
+                        author: text("author"),
                         builtin,
+                        dir: text("dir"),
+                        base: text("base"),
+                        skin: flag("skin"),
+                        animated: flag("animated"),
                     })
                 })
                 .collect()
@@ -3829,42 +3830,24 @@ fn load_theme_entries() -> Vec<ThemeEntry> {
         .unwrap_or_default()
 }
 
-/// 由主题条目构建下拉富内容项：版本号作尾随徽章（中性色），外部主题（`builtin==false`）追加
-/// 可点击的删除图标——点击只填充删除确认对话框的待删 id / 正文并弹出，不选中该项。
-fn build_theme_items(
-    entries: &[ThemeEntry],
-    del_id: Signal<String>,
-    del_msg: Signal<String>,
-    del_visible: Signal<bool>,
-) -> Vec<DropdownItem> {
-    entries
-        .iter()
-        .map(|e| {
-            let mut it = DropdownItem::new(e.display.clone());
-            if !e.version.is_empty() {
-                it = it.badge(format!("v{}", e.version), Intent::Neutral);
-            }
-            if !e.builtin {
-                let (id, disp) = (e.id.clone(), e.display.clone());
-                it = it.trailing_icon("✕", move |_ctx| {
-                    ask_delete_theme(del_id, del_msg, del_visible, &id, &disp)
-                });
-            }
-            it
-        })
-        .collect()
-}
-
-/// 弹删除主题的确认框（下拉的删除图标与画廊右键菜单共用）。
+/// 弹删除主题的确认框（画廊格子上的删除图标与右键菜单共用）。`current` = 删的是正选中的那个。
 pub fn ask_delete_theme(
     del_id: Signal<String>,
     del_msg: Signal<String>,
     del_visible: Signal<bool>,
     id: &str,
     display: &str,
+    current: bool,
 ) {
     del_id.set(id.to_string());
-    del_msg.set(format!("确定删除外部主题「{display}」？删除后不可恢复。"));
+    let tail = if current {
+        "它是当前选中的主题，删除后改选默认主题。"
+    } else {
+        ""
+    };
+    del_msg.set(format!(
+        "确定删除外部主题「{display}」？删除后不可恢复。{tail}"
+    ));
     del_visible.set(true);
 }
 
@@ -5814,21 +5797,19 @@ mod tests {
         assert_eq!(st.theme_entries[0].version, "3.2.1");
         assert!(st.theme_entries[0].builtin, "default 为内置");
         assert!(!st.theme_entries[2].builtin, "mono 为外部主题");
-        // 富内容项：版本作徽章；仅外部主题（mono）带删除图标。
-        let items = st.theme_items_sig.get();
-        assert_eq!(
-            items[0].badge.as_ref().map(|(t, _)| t.as_str()),
-            Some("v3.2.1")
-        );
-        assert!(items[0].trailing_icon.is_none(), "内置主题无删除图标");
-        assert!(items[2].trailing_icon.is_some(), "外部主题应有删除图标");
+        // 画廊拿到同一份条目（版本、来源随条目走）。
+        assert_eq!(st.theme_gallery.entries.get(), st.theme_entries);
 
-        // 点外部主题删除图标 → 填充删除确认对话框（待删 id + 正文）并弹出。
-        // 真的把图标回调跑一遍：ctx 由 `windui::testing` 借出（回调收 `&mut EventCtx`，
-        // 只有宿主造得出）。这样测的是回调**挂没挂对**，而不只是它调用的那个函数。
-        let on_delete = &items[2].trailing_icon.as_ref().unwrap().1;
-        windui::testing::run_with_ctx(|ctx| on_delete(ctx));
-        assert!(st.theme_delete_visible.get(), "点删除图标应弹出确认对话框");
+        // 删外部主题 → 填充删除确认对话框（待删 id + 正文）并弹出。
+        ask_delete_theme(
+            st.theme_delete_id,
+            st.theme_delete_msg,
+            st.theme_delete_visible,
+            "mono",
+            "墨",
+            false,
+        );
+        assert!(st.theme_delete_visible.get(), "应弹出确认对话框");
         assert_eq!(st.theme_delete_id.get(), "mono");
         assert!(st.theme_delete_msg.get().contains("墨"));
 
@@ -5869,12 +5850,11 @@ mod tests {
             st.theme_label_sig.get().last().unwrap().contains("gone"),
             "标签应能看出这是当前配置"
         );
-        // 富内容项与值列表错位一项，下拉显示的就不是选中的那个主题。
-        let items = st.theme_items_sig.get();
-        assert_eq!(items.len(), values.len(), "富内容项必须与值列表同序等长");
         assert!(
-            items.last().unwrap().trailing_icon.is_none(),
-            "补出来的那项不是装着的主题，不该给删除图标"
+            !st.theme_gallery
+                .entries
+                .with(|e| e.iter().any(|x| x.id == "gone")),
+            "补出来的那项不是装着的主题，画廊不列它"
         );
 
         // 列表里有的主题不补：补了会多出一个重复项。

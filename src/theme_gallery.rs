@@ -31,11 +31,11 @@ use windui::style::Style;
 
 use crate::net_task::{NetTasks, TaskId};
 use crate::pages::dict::reactive::Feedback;
-use crate::state::{AppState, FieldRegistry};
+use crate::state::AppState;
 use crate::widgets::Vis;
 
-/// 画廊卡片的标题（二级导航里也叫这个）。
-pub const SECTION_TITLE: &str = "已装主题";
+/// 画廊所在卡片的标题（清单里 `ui.theme.name` 的 section，二级导航里也叫这个）。
+pub const SECTION_TITLE: &str = "主题选择";
 
 /// 一格的目标宽度（逻辑 px）：列数按可用宽度取最接近这个宽度的那一档，各列等分。
 const CELL_W: i32 = 260;
@@ -43,8 +43,12 @@ const CELL_W: i32 = 260;
 const GAP: i32 = 12;
 /// 格内边距：图与名字都缩进这么多。
 const CELL_PAD: i32 = 10;
-/// 格子描边宽度（当前主题那格换成强调色）。
-const RING: i32 = 2;
+/// 选中外环的外圈宽度：未选中时透明占位，选中时与内圈连成一道强调色粗环。
+const RING_OUTER: i32 = 2;
+/// 外环的内圈宽度：未选中是 1 px 描边色，选中换成强调色。
+const RING_INNER: i32 = 1;
+/// 选中格的卡面：在卡面色上叠这么多强调色。
+const SELECTED_TINT: f32 = 0.12;
 /// 图区高度：固定，免得横排 / 竖排主题混排时一行格子高低不齐。
 const THUMB_H: i32 = 120;
 /// 防抖时长：标脏到真正发 RPC 之间至少隔这么久。
@@ -65,12 +69,25 @@ pub fn note_external_edit() {
     EXTERNAL_EDITS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// 画廊里的一个已装主题。
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// 一个已装主题（`theme.list` 的一项）。core 协议：`name` = slug/id，`display_name` = 显示名。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GalleryEntry {
+    /// slug/id，保存到 `ui.theme.name`。
     pub id: String,
+    /// 界面显示名。
     pub display: String,
+    /// 版本号（可空）。
+    pub version: String,
+    pub author: String,
+    /// 是否内置主题（内置不可删除，用户导入的可删）。
     pub builtin: bool,
+    /// 用户主题所在目录（内置为空）。
+    pub dir: String,
+    /// 主题文件里写的继承名（没写为空）。
+    pub base: String,
+    /// 带异形皮肤 / 皮肤装饰会动。
+    pub skin: bool,
+    pub animated: bool,
 }
 
 /// 一格的图。
@@ -372,6 +389,9 @@ pub struct ThemeGallery {
     retries: Rc<Cell<u32>>,
     /// 设置窗口所在屏的缩放（哨兵绘制时更新；导入框的预览也用它）。
     scale: Rc<Cell<f32>>,
+    /// 「主题信息」对话框：显示哪一个、开没开。
+    pub info: Signal<GalleryEntry>,
+    pub info_visible: Signal<bool>,
 }
 
 impl ThemeGallery {
@@ -386,6 +406,8 @@ impl ThemeGallery {
             pending: Rc::new(Cell::new(None)),
             retries: Rc::new(Cell::new(0)),
             scale: Rc::new(Cell::new(1.0)),
+            info: signal(GalleryEntry::default()),
+            info_visible: signal(false),
         }
     }
 
@@ -574,17 +596,28 @@ impl Widget for Driver {
     }
 }
 
-/// 画廊卡片：页内哨兵 + 网格。`vis` 为假（画廊被用户藏掉）时不取图。
-pub fn build_card(state: &AppState, vis: Vis) -> Element {
+/// 主题选择：清单里 `ui.theme.name`（`type = "theme_gallery"`）渲染成的整宽画廊——页内哨兵 +
+/// 网格。点一格即选中（未保存改动的口径与其它设置一致，点「应用」才落盘）；写回器、载入器、
+/// 取值器与选中索引按响应式下拉的同一套登记（[`crate::manifest::register_reactive_select`]），
+/// 搜索、定制隐藏、能力覆盖照常认这个键。`vis` 为假（被用户藏掉）时不取图。
+pub fn build_selector(state: &AppState, key: &str, vis: Vis) -> Element {
     let gallery = state.theme_gallery.clone();
+    let index = crate::manifest::register_reactive_select(
+        state,
+        key,
+        &state.current_config,
+        state.theme_value_sig,
+    );
     let ctx = CellCtx {
-        fields: state.fields.clone(),
+        index,
         values: state.theme_value_sig,
         thumbs: gallery.thumbs,
         feedback: state.feedback,
         del_id: state.theme_delete_id,
         del_msg: state.theme_delete_msg,
         del_visible: state.theme_delete_visible,
+        info: gallery.info,
+        info_visible: gallery.info_visible,
         // 导出跟着「主题导入导出」走：定制版藏了就不建，用户藏了就运行期不出。
         export: (!state.manifest.feature_hidden("theme_transfer"))
             .then(|| crate::manifest::feature_row_vis(state, "theme_transfer")),
@@ -608,60 +641,60 @@ pub fn build_card(state: &AppState, vis: Vis) -> Element {
         .reactive()
         .width_match()
         .height(1);
-    let body = Element::col()
+    Element::col()
         .width_match()
-        .padding_xy(0, 14)
+        .padding_xy(0, 6)
         .spacing(4)
         .child(driver)
-        .child(grid);
-    crate::widgets::section_items(
-        SECTION_TITLE,
-        vec![crate::widgets::CardItem::Bare(crate::widgets::card_pad(
-            body,
-        ))],
-    )
+        .child(grid)
 }
 
 /// 每格要用的共享句柄。
 #[derive(Clone)]
 struct CellCtx {
-    fields: Rc<FieldRegistry>,
+    /// `ui.theme.name` 的选中索引（下标进 `values`）。
+    index: Signal<usize>,
     values: Signal<Vec<String>>,
     thumbs: Signal<HashMap<String, Thumb>>,
     feedback: Feedback,
     del_id: Signal<String>,
     del_msg: Signal<String>,
     del_visible: Signal<bool>,
+    info: Signal<GalleryEntry>,
+    info_visible: Signal<bool>,
     /// 右键菜单里的「导出」此刻能不能出（`None` = 定制版藏了，永远不出）。
     export: Option<Vis>,
 }
 
 impl CellCtx {
-    /// 主题下拉此刻选中的 id。画廊与下拉共用 `ui.theme.name` 的那个索引信号，两处天然同步。
+    /// 此刻选中的 id。
     fn selected(&self) -> Option<String> {
-        let idx = self
-            .fields
-            .select_indices
-            .borrow()
-            .get("ui.theme.name")?
-            .get();
+        let idx = self.index.get();
         self.values.with(|v| v.get(idx).cloned())
     }
 
-    /// 选中某个主题：只写下拉的索引信号（未保存改动的口径与下拉一致，点「应用」才落盘）。
+    /// 选中某个主题：只写索引信号（点「应用」才落盘）。
     fn select(&self, id: &str) {
-        let Some(sig) = self
-            .fields
-            .select_indices
-            .borrow()
-            .get("ui.theme.name")
-            .copied()
-        else {
-            return;
-        };
         if let Some(i) = self.values.with(|v| v.iter().position(|x| x == id)) {
-            sig.set(i);
+            self.index.set(i);
         }
+    }
+
+    fn ask_delete(&self, e: &GalleryEntry) {
+        let current = self.selected().as_deref() == Some(e.id.as_str());
+        crate::state::ask_delete_theme(
+            self.del_id,
+            self.del_msg,
+            self.del_visible,
+            &e.id,
+            &e.display,
+            current,
+        );
+    }
+
+    fn show_info(&self, e: &GalleryEntry) {
+        self.info.set(e.clone());
+        self.info_visible.set(true);
     }
 }
 
@@ -672,6 +705,23 @@ fn placeholder_text(text: &str) -> Element {
         .max_lines(1)
 }
 
+/// `a` 上叠 `t` 份 `b`（不透明结果）。
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
+/// 名字行右侧的小字（版本号、「内置」）。
+fn meta_text(text: String) -> Element {
+    Element::label(text)
+        .font_size(11.0)
+        .fg_role(Role::TextSubtle)
+        .max_lines(1)
+}
+
+/// 一格。选中与否**几何完全一致**：外环两圈恒占位（未选中时外圈透明、内圈是 1 px 描边色），
+/// 「使用中」角标叠在缩略图右上角、不进排版流，名字行内容也与选中无关——点选时格子一像素
+/// 都不动，只换颜色。
 fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
     let id = e.id.clone();
     let thumb_key = ctx
@@ -690,25 +740,33 @@ fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
         Thumb::Pending => placeholder_text("预览生成中…"),
         Thumb::Failed => placeholder_text("暂无预览"),
     });
+
+    let sel = ctx.clone();
+    let id = e.id.clone();
+    let is_current = Rc::new(move || sel.selected().as_deref() == Some(id.as_str()));
+    let badge = {
+        let f = is_current.clone();
+        Element::label("✓ 使用中")
+            .font_size(11.0)
+            .font_weight(600)
+            .fg_role(Role::OnAccent)
+            .bg_role(Role::Accent)
+            .padding_xy(8, 3)
+            .corner(999.0)
+            .max_lines(1)
+            .margin(6)
+            .align_xy(Align::End, Align::Start)
+            .visible_when(move || f())
+    };
     let image_area = Element::stack()
         .width_match()
         .height(THUMB_H)
         .bg_role(Role::SurfaceAlt)
         .corner(6.0)
-        .child(thumb.align(Align::Center));
+        .child(thumb.align(Align::Center))
+        .child(badge);
 
-    let sel = ctx.clone();
-    let id = e.id.clone();
-    let is_current = move || sel.selected().as_deref() == Some(id.as_str());
-    let check = {
-        let f = is_current.clone();
-        Element::label("✓")
-            .font_size(13.0)
-            .font_weight(700)
-            .fg_role(Role::AccentText)
-            .visible_when(f)
-    };
-    let name = Element::row()
+    let mut name = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(6)
@@ -718,46 +776,81 @@ fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
                 .fg_role(Role::Text)
                 .max_lines(1)
                 .weight(1.0),
-        )
-        .child(check);
+        );
+    if !e.version.is_empty() {
+        name = name.child(meta_text(format!("v{}", e.version)));
+    }
+    if e.builtin {
+        name = name.child(meta_text("内置".into()));
+    } else {
+        // 没有悬停显隐，删除入口做成常驻的小号淡色图标；确认框照旧。
+        let (del, entry) = (ctx.clone(), e.clone());
+        name = name.child(
+            Element::icon_button("✕")
+                .size(18, 18)
+                .fg_role(Role::TextSubtle)
+                .tooltip("删除主题")
+                .on_click(move |_| del.ask_delete(&entry)),
+        );
+    }
 
-    // 描边做成一圈外框底色：没有按状态换边框的修饰符，而底色有（`bg_when`）。外框留
-    // `RING` 宽的内边距，里面那层再铺卡面色，露出来的一圈就是边框——当前主题用强调色。
+    let tint = is_current.clone();
     let body = Element::col()
         .width_match()
-        .padding(CELL_PAD - RING)
+        .padding(CELL_PAD - RING_OUTER - RING_INNER)
         .spacing(8)
-        .bg_role(Role::Surface)
-        .corner(10.0 - RING as f32)
+        .corner(10.0 - (RING_OUTER + RING_INNER) as f32)
+        .bg_when(move || {
+            let t = windui::theme::current();
+            let surface = Role::Surface.resolve(&t);
+            if tint() {
+                mix(surface, Role::Accent.resolve(&t), SELECTED_TINT)
+            } else {
+                surface
+            }
+        })
         .child(image_area)
         .child(name);
-    let ring = is_current.clone();
+    let inner = is_current.clone();
+    let ring = Element::col()
+        .width_match()
+        .padding(RING_INNER)
+        .corner(10.0 - RING_OUTER as f32)
+        .bg_when(move || {
+            let t = windui::theme::current();
+            if inner() { Role::Accent } else { Role::Border }.resolve(&t)
+        })
+        .child(body);
+    let outer = is_current.clone();
     let click = ctx.clone();
     let click_id = e.id.clone();
     let menu_ctx = ctx.clone();
     Element::col()
         .width_match()
-        .padding(RING)
+        .padding(RING_OUTER)
         .corner(10.0)
         .bg_when(move || {
-            let t = windui::theme::current();
-            if ring() { Role::Accent } else { Role::Border }.resolve(&t)
+            if outer() {
+                Role::Accent.resolve(&windui::theme::current())
+            } else {
+                Color::TRANSPARENT
+            }
         })
         .clickable()
         .tooltip(e.display.clone())
         .on_click(move |_| click.select(&click_id))
         .on_context_menu(move || cell_menu(&menu_ctx, &e))
-        .child(body)
+        .child(ring)
 }
 
-/// 每格的右键菜单：使用 / 导出 / 删除（内置主题不能删；导出跟着 `feature:theme_transfer`）。
+/// 每格的右键菜单：使用 / 主题信息 / 导出 / 删除（内置主题不能删；导出跟着 `feature:theme_transfer`）。
 fn cell_menu(ctx: &CellCtx, e: &GalleryEntry) -> Vec<MenuItem> {
     let (use_ctx, use_id) = (ctx.clone(), e.id.clone());
-    let mut items = vec![MenuItem::run(
-        "使用此主题",
-        move |_| use_ctx.select(&use_id),
-        false,
-    )];
+    let (info_ctx, info_entry) = (ctx.clone(), e.clone());
+    let mut items = vec![
+        MenuItem::run("使用此主题", move |_| use_ctx.select(&use_id), false),
+        MenuItem::run("主题信息…", move |_| info_ctx.show_info(&info_entry), false),
+    ];
     if ctx.export.as_ref().is_some_and(|v| v()) {
         let (export_id, feedback) = (e.id.clone(), ctx.feedback);
         items.push(MenuItem::run(
@@ -770,16 +863,96 @@ fn cell_menu(ctx: &CellCtx, e: &GalleryEntry) -> Vec<MenuItem> {
         ));
     }
     if !e.builtin {
-        let (id, disp) = (e.id.clone(), e.display.clone());
-        let (del_id, del_msg, del_visible) = (ctx.del_id, ctx.del_msg, ctx.del_visible);
+        let (del, entry) = (ctx.clone(), e.clone());
         items.push(MenuItem::separator());
         items.push(MenuItem::run(
             "删除主题…",
-            move |_| crate::state::ask_delete_theme(del_id, del_msg, del_visible, &id, &disp),
+            move |_| del.ask_delete(&entry),
             false,
         ));
     }
     items
+}
+
+/// 「主题信息」的各行（标签, 值）；值为空的行不列。
+pub fn info_rows(e: &GalleryEntry) -> Vec<(&'static str, String)> {
+    let yes_no = |b: bool| if b { "有" } else { "无" }.to_string();
+    let rows = [
+        ("名称", e.display.clone()),
+        ("ID", e.id.clone()),
+        ("版本", e.version.clone()),
+        ("作者", e.author.clone()),
+        (
+            "来源",
+            if e.builtin { "内置" } else { "用户导入" }.to_string(),
+        ),
+        ("目录", e.dir.clone()),
+        ("继承自", e.base.clone()),
+        ("异形皮肤", yes_no(e.skin)),
+        ("动画", yes_no(e.animated)),
+    ];
+    rows.into_iter().filter(|(_, v)| !v.is_empty()).collect()
+}
+
+/// 「主题信息」对话框（挂在窗口根上）。
+pub fn info_dialog(gallery: &ThemeGallery) -> Element {
+    let visible = gallery.info_visible;
+    let body = Element::switcher(gallery.info, |e: GalleryEntry| {
+        let mut col = Element::col().width_match().spacing(8).padding_xy(18, 16);
+        for (k, v) in info_rows(&e) {
+            col = col.child(
+                Element::row()
+                    .width_match()
+                    .spacing(12)
+                    .child(
+                        Element::label(k)
+                            .font_size(13.0)
+                            .fg_role(Role::TextMuted)
+                            .width(72),
+                    )
+                    .child(
+                        Element::label(v)
+                            .font_size(13.0)
+                            .fg_role(Role::Text)
+                            .max_lines(3)
+                            .weight(1.0),
+                    ),
+            );
+        }
+        col
+    })
+    .width_match();
+    let frame = Element::col()
+        .width(420)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label("主题信息")
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(1)
+                .padding_xy(18, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .padding_xy(16, 12)
+                .child(Element::leaf().weight(1.0))
+                .child(
+                    Element::button("关闭")
+                        .small()
+                        .outline_soft()
+                        .on_click(move |_| visible.set(false)),
+                ),
+        );
+    Element::dialog(visible, frame)
 }
 
 // ───────────────────────── 主题包导入框的预览 ─────────────────────────
@@ -1079,6 +1252,7 @@ mod tests {
                     id: id.to_string(),
                     display: id.to_string(),
                     builtin: true,
+                    ..Default::default()
                 })
                 .collect(),
         );
@@ -1194,21 +1368,8 @@ mod tests {
         let st = AppState::empty();
         st.theme_value_sig.set(ids(&["default", "jade", "mono"]));
         let idx = signal(0usize);
-        st.fields
-            .select_indices
-            .borrow_mut()
-            .insert("ui.theme.name".into(), idx);
         let before = st.current_config.get_path("ui.theme.name").cloned();
-        let ctx = CellCtx {
-            fields: st.fields.clone(),
-            values: st.theme_value_sig,
-            thumbs: st.theme_gallery.thumbs,
-            feedback: st.feedback,
-            del_id: st.theme_delete_id,
-            del_msg: st.theme_delete_msg,
-            del_visible: st.theme_delete_visible,
-            export: None,
-        };
+        let ctx = test_ctx(&st, idx, None);
         crate::rpc::take_mock_calls();
         ctx.select("jade");
         assert_eq!(idx.get(), 1);
@@ -1217,24 +1378,130 @@ mod tests {
         assert_eq!(st.current_config.get_path("ui.theme.name").cloned(), before);
     }
 
-    fn menu_labels(export: Option<Vis>) -> Vec<String> {
-        let st = AppState::empty();
-        let ctx = CellCtx {
-            fields: st.fields.clone(),
+    fn test_ctx(st: &AppState, index: Signal<usize>, export: Option<Vis>) -> CellCtx {
+        CellCtx {
+            index,
             values: st.theme_value_sig,
             thumbs: st.theme_gallery.thumbs,
             feedback: st.feedback,
             del_id: st.theme_delete_id,
             del_msg: st.theme_delete_msg,
             del_visible: st.theme_delete_visible,
+            info: st.theme_gallery.info,
+            info_visible: st.theme_gallery.info_visible,
             export,
-        };
-        let e = GalleryEntry {
+        }
+    }
+
+    fn mono() -> GalleryEntry {
+        GalleryEntry {
             id: "mono".into(),
             display: "墨".into(),
-            builtin: false,
+            version: "1.2".into(),
+            author: "某人".into(),
+            dir: "/u/themes/mono".into(),
+            base: "_base".into(),
+            skin: true,
+            ..Default::default()
+        }
+    }
+
+    fn menu_labels(export: Option<Vis>) -> Vec<String> {
+        let st = AppState::empty();
+        let ctx = test_ctx(&st, signal(0), export);
+        cell_menu(&ctx, &mono())
+            .into_iter()
+            .map(|m| m.label)
+            .collect()
+    }
+
+    #[test]
+    fn menu_offers_info_and_delete_for_user_theme() {
+        let l = menu_labels(None);
+        assert!(l.iter().any(|s| s == "主题信息…"));
+        let st = AppState::empty();
+        let ctx = test_ctx(&st, signal(0), None);
+        let builtin = GalleryEntry {
+            builtin: true,
+            ..mono()
         };
-        cell_menu(&ctx, &e).into_iter().map(|m| m.label).collect()
+        let l: Vec<String> = cell_menu(&ctx, &builtin)
+            .into_iter()
+            .map(|m| m.label)
+            .collect();
+        assert!(!l.iter().any(|s| s == "删除主题…"), "内置主题不能删");
+    }
+
+    #[test]
+    fn info_rows_list_source_dir_base_and_skin() {
+        let rows = info_rows(&mono());
+        let get = |k: &str| rows.iter().find(|(l, _)| *l == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("来源"), Some("用户导入"));
+        assert_eq!(get("目录"), Some("/u/themes/mono"));
+        assert_eq!(get("继承自"), Some("_base"));
+        assert_eq!(get("异形皮肤"), Some("有"));
+        assert_eq!(get("动画"), Some("无"));
+        let builtin = info_rows(&GalleryEntry {
+            id: "default".into(),
+            display: "默认".into(),
+            builtin: true,
+            ..Default::default()
+        });
+        assert!(builtin.iter().any(|(k, v)| *k == "来源" && v == "内置"));
+        assert!(
+            !builtin.iter().any(|(k, _)| *k == "目录" || *k == "版本"),
+            "空值不列"
+        );
+    }
+
+    /// 删除选中的那个主题时，确认框说明会改选默认主题。
+    #[test]
+    fn deleting_the_selected_theme_says_it_falls_back() {
+        let st = AppState::empty();
+        st.theme_value_sig.set(ids(&["default", "mono"]));
+        let ctx = test_ctx(&st, signal(1), None);
+        ctx.ask_delete(&mono());
+        assert!(st.theme_delete_visible.get());
+        assert!(st.theme_delete_msg.get().contains("默认主题"));
+        ctx.index.set(0);
+        ctx.ask_delete(&mono());
+        assert!(!st.theme_delete_msg.get().contains("默认主题"));
+    }
+
+    /// 选中与否格子几何完全一致：外环恒占位、角标不进排版流。
+    #[test]
+    fn selection_does_not_move_the_cell() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let st = AppState::empty();
+        st.theme_value_sig.set(ids(&["default", "mono"]));
+        let bounds = |selected: usize| {
+            let ctx = test_ctx(&st, signal(selected), None);
+            let mut tree = Tree::new();
+            let root = Element::col()
+                .width(300)
+                .child(cell(&ctx, mono()))
+                .build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(Size::new(300, 600), &mut windui::text::NullTextEngine);
+            let mut out = Vec::new();
+            let mut stack = vec![root];
+            while let Some(id) = stack.pop() {
+                if let Some(n) = tree.get(id) {
+                    out.push(n.bounds);
+                    stack.extend(n.children.iter().copied());
+                }
+            }
+            out
+        };
+        // 唯一的差别是选中格多出的「使用中」角标（不可见时零尺寸），其余每个节点原样不动。
+        let shown = |v: Vec<Rect>| -> Vec<Rect> { v.into_iter().filter(|r| r.w > 0).collect() };
+        let (plain, picked) = (shown(bounds(0)), shown(bounds(1)));
+        assert_eq!(picked.len(), plain.len() + 1, "{plain:?}\n{picked:?}");
+        assert!(
+            plain.iter().all(|r| picked.contains(r)),
+            "{plain:?}\n{picked:?}"
+        );
     }
 
     #[test]
@@ -1259,10 +1526,11 @@ mod tests {
             id: "default".into(),
             display: "默认".into(),
             builtin: true,
+            ..Default::default()
         }]);
         let shown = Rc::new(Cell::new(true));
         let s = shown.clone();
-        let card = build_card(&st, Rc::new(move || s.get()));
+        let card = build_selector(&st, "ui.theme.name", Rc::new(move || s.get()));
         let mut tree = Tree::new();
         let root = Element::col()
             .width(800)

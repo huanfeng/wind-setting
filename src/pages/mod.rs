@@ -795,21 +795,25 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
 // ───────────────────────── 主题 ─────────────────────────
 
 fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
-    // 「主题」卡手写：manifest 的三行（主题选择 / 主题风格 / 主题动画）之后直接接导入、导出
-    // 与市场入口——选主题与搬主题是同一件事的两半，隔开就得让用户满页找按钮。卡后是已装
-    // 主题的画廊（缩略图由服务端渲染，见 `theme_gallery`）。
+    // 页首「主题选择」卡就是清单里 `ui.theme.name` 那一项，渲染成已装主题的画廊（缩略图由
+    // 服务端渲染，见 `theme_gallery`）。其后的「主题」卡：清单两行（主题风格 / 主题动画）之后
+    // 直接接导入、导出与市场入口。
     //
     // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
     // "现在按钮是要做什么"和"现在连接是什么状态"。
     let transfer = !state.manifest.feature_hidden("theme_transfer");
     // 用户把 `feature:theme_transfer` 藏起来时，那三行**照建**、运行期隐显：这一卡里
-    // 还有主题选择的清单项要留着，不能整卡消失。
+    // 还有清单项要留着，不能整卡消失。
     let transfer_vis = crate::manifest::feature_row_vis(state, "theme_transfer");
     let mut theme_secs = state.manifest.sections_of("theme");
     // 「主题」卡的清单项全被定制版藏掉时 `sections_of` 不再给这一节，可三行手写入口没被藏
-    // 就不该跟着消失：补一张只有这三行的「主题」卡，排在原位（页首）。
+    // 就不该跟着消失：补一张只有这三行的「主题」卡，排在原位（画廊之后）。
     if transfer && !theme_secs.iter().any(|(s, _)| s == "主题") {
-        theme_secs.insert(0, ("主题".to_string(), Vec::new()));
+        let at = theme_secs
+            .iter()
+            .position(|(s, _)| s == crate::theme_gallery::SECTION_TITLE)
+            .map_or(0, |i| i + 1);
+        theme_secs.insert(at, ("主题".to_string(), Vec::new()));
     }
     let mut secs: Vec<Element> = Vec::new();
     for (sec, keys) in theme_secs {
@@ -838,16 +842,6 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
         };
         let vis = crate::manifest::section_vis(state, "theme", &sec);
         secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
-    }
-    // 画廊点一格就是改 `ui.theme.name`，跟着那一行走：定制版藏了它就不建（否则锁定主题的
-    // 定制等于没锁），用户藏了它就运行期一起藏。
-    if state.manifest.is_visible("ui.theme.name") {
-        let vis = crate::manifest::row_vis(state, "ui.theme.name", "theme", "主题");
-        let card = crate::theme_gallery::build_card(state, vis.clone()).visible_when({
-            let vis = vis.clone();
-            move || vis()
-        });
-        secs.push(nav.wrap_when(crate::theme_gallery::SECTION_TITLE, 0, card, move || vis()));
     }
     if !state.manifest.feature_hidden("theme_editor") {
         secs.push(nav_feature(
