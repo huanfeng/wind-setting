@@ -25,7 +25,7 @@ use windui::style::Style;
 
 use crate::net_task::{NetTasks, TaskId};
 use crate::state::AppState;
-use crate::theme_gallery::{Png, RawPng, Receipt, ThemeGallery};
+use crate::theme_gallery::{GalleryEntry, Png, RawPng, Receipt, ThemeGallery};
 
 /// 卡片标题（二级导航里也叫这个）。
 pub const SECTION_TITLE: &str = "效果预览";
@@ -36,9 +36,11 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// 「忙 / 超时」后隔多久重试、至多几次（同画廊）。
 const RETRY_DELAY: Duration = Duration::from_millis(1000);
 const MAX_RETRIES: u32 = 3;
-/// 图区固定高度：加载与换图时布局不随之涨缩，进页不抖。160 与主题画廊导入预览的
-/// `IMPORT_PREVIEW_MAX_H`（theme_gallery.rs）一致。
-const AREA_H: i32 = 160;
+/// 图区固定高度：加载与换图时布局不随之涨缩，进页不抖。先前 160（曾与主题画廊导入预览的
+/// `IMPORT_PREVIEW_MAX_H` 一致），用户嫌预览偏小提到 200，内边距收入 [`preview_area`]。
+const AREA_H: i32 = 200;
+// 2026-11 反馈的钉子：改回去必须有意识地改（布局测试钉的是这两条的外在表现，这里钉数值）。
+const _: () = assert!(AREA_H == 200);
 /// 草稿里影响候选窗外观的段（`ui.<段>`）；工具栏、状态提示等改了不重取。
 pub const DRAFT_SECTIONS: &[&str] = &["theme", "candidate", "font", "comment"];
 
@@ -256,20 +258,23 @@ impl Widget for Watcher {
     }
 }
 
-/// 「效果预览」卡片。
-pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
-    let shown: Signal<Shown> = signal(Shown::Waiting);
-    let error: Signal<String> = signal(String::new());
+/// 图区（switcher + 定高底板）。抽出来给单测共用：单测在这里的原样结构上钉「换图之时
+/// 没有任何节点挪动」。
+///
+/// 换图抖动的推理链（2026-11 真机反馈「改字体后预览往左抖一下」）：switcher 是**层叠
+/// 容器**，新旧内容交叠期按两者宽度取大者、旧内容**左对齐**（Frame 子缺省 `Start`）；
+/// 而 switcher 自己在底板里是居中摆放。曾给图片 `max_width(自然宽)`，旧图宽新图窄时
+/// 交叠期整框比落定状态宽，新图先出现在偏左的位置、旧图淡出那一刻整框收成新宽向中间
+/// 归位——于是「往左边抖一下，又回到正确位置」。修法是给两帧**恒定跨度**：全部
+/// `width_match().height_match()` 填满底板内容区，任意状态层叠出的都是同一矩形，抖动
+/// 无从谈起。代价是 `Fit::Contain` 会把小图放大（Contain 不区分缩小与放大，缓存
+/// `skia::draw_image`：`s = min(pw/iw, ph/ih)`），换来带装饰主题显示更大、居中恒定。
+fn preview_area(shown: Signal<Shown>) -> Element {
     let image = Element::switcher(shown, |s: Shown| match s {
-        Shown::Ready(png) => {
-            // 只取自然宽度作上界；`height_match()` 填充定高图区，布局不随图片高度变。
-            let (w, _) = crate::theme_gallery::natural_size(&png);
-            Element::image_bytes(&png.bytes)
-                .fit(Fit::Contain)
-                .width_match()
-                .max_width(w.max(1))
-                .height_match()
-        }
+        Shown::Ready(png) => Element::image_bytes(&png.bytes)
+            .fit(Fit::Contain)
+            .width_match()
+            .height_match(),
         Shown::Waiting => Element::stack().width_match().height_match().child(
             Element::label("预览生成中…")
                 .font_size(12.0)
@@ -278,13 +283,110 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
                 .align(Align::Center),
         ),
     });
-    let area = Element::stack()
+    Element::stack()
         .width_match()
         .height(AREA_H)
-        .padding_xy(16, 16)
+        .padding_xy(8, 8)
         .bg_role(Role::SurfaceAlt)
         .corner(6.0)
-        .child(image.height_match().align(Align::Center));
+        .child(image.height_match().align(Align::Center))
+}
+
+/// 当前主题的显示名：选中索引在取值表里查出 id，再在画廊清单里换成显示名。
+/// 显示名缺了退 id；索引/取值表拿不到（画廊没建、清单没到、越界）退配置值；再没有退
+/// `None`（链接只显示「主题选择」）。
+fn display_name(
+    idx: Option<usize>,
+    values: &[String],
+    entries: &[GalleryEntry],
+    cfg: Option<&str>,
+) -> Option<String> {
+    let id = idx
+        .and_then(|i| values.get(i))
+        .map(String::as_str)
+        .or(cfg)?;
+    Some(
+        entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.display.as_str())
+            .unwrap_or(id)
+            .to_string(),
+    )
+}
+
+/// 链接文案：有名字带上，没有就只留「主题选择」。
+fn theme_link_label(name: Option<&str>) -> String {
+    match name {
+        Some(n) if !n.is_empty() => format!("主题选择：{n}"),
+        _ => "主题选择".to_string(),
+    }
+}
+
+/// 链接落点：主题页「主题选择」卡里 `ui.theme.name` 那一行（行锚点即清单 key）。
+fn theme_link_target() -> crate::search::index::JumpTarget {
+    crate::search::index::JumpTarget::Row {
+        tab: crate::cli::page_to_index("theme").unwrap_or(usize::MAX),
+        anchor: "ui.theme.name".to_string(),
+    }
+}
+
+/// 卡头链接的反应式文案 + 驱动它的 reactive_effect 挂件（要一并挂树）。
+///
+/// 预览图跟的是草稿，草稿里的主题跟画廊选中走（点格即变、点「应用」才落盘），名字也
+/// 跟同一处走：选中索引、取值表、画廊清单三个信号任一变化都重算，预览与标题永远同一
+/// 张脸。三个源没有组合派生信号的现成机制（`Signal::map` 只跟单源），用 reactive_effect
+/// 把重算结果写进本地信号——这也是方案页启停等处同款的做法。
+fn theme_display(state: &AppState) -> (Signal<String>, Element) {
+    let label = signal("主题选择".to_string());
+    let idx = state
+        .fields
+        .select_indices
+        .borrow()
+        .get("ui.theme.name")
+        .copied();
+    let (values, entries) = (state.theme_value_sig, state.theme_gallery.entries);
+    // 画廊缺席时的退路：配置此刻的值（id）。签名在本地，不会自己变，读一次就够。
+    let cfg_name = state
+        .current_config
+        .get_str("ui.theme.name")
+        .map(str::to_string);
+    let apply = move || {
+        let name = display_name(
+            idx.map(|s| s.get()),
+            &values.get(),
+            &entries.get(),
+            cfg_name.as_deref(),
+        );
+        label.set(theme_link_label(name.as_deref()));
+    };
+    apply();
+    let version_of = move || {
+        // 三源无先后地混在一起，各乘一个奇素数再相加，避免「你加一我也加一」相抵。
+        idx.map_or(0, |s| s.version())
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(values.version().wrapping_mul(0xBF58_476D_1CE4_E5B9))
+            .wrapping_add(entries.version())
+    };
+    let eff = crate::pages::dict::reactive::reactive_effect(version_of, apply);
+    (label, eff)
+}
+
+/// 卡头右侧的「主题选择：〈当前主题名〉」链接：点击回主题页画廊（选中主题所在行）。
+/// `request_quiet`：人是自己点过去的，落定不闪。
+fn theme_link(label: Signal<String>, state: &AppState) -> Element {
+    let (tab, jump) = (state.tab, state.jump);
+    let target = theme_link_target();
+    Element::link(label)
+        .underline(false)
+        .on_click(move |_| crate::search::jump::request_quiet(tab, jump, target.clone()))
+}
+
+/// 「效果预览」卡片。
+pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+    let shown: Signal<Shown> = signal(Shown::Waiting);
+    let error: Signal<String> = signal(String::new());
+    let area = preview_area(shown);
     let note = Element::label_signal(error)
         .font_size(12.0)
         .fg_role(Role::TextSubtle)
@@ -321,11 +423,19 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         .child(watcher)
         .child(area)
         .child(note);
-    let card = crate::widgets::section_items(
+    // 卡头动作：反应式驱动挂件与链接同一处现建。section_impl 的三种标题写法各建一份，
+    // 互相独立但读同一批源信号，文案一致（同 manifest 头部「重置」按钮的现建模式）。
+    let make_link = || {
+        let (label, eff) = theme_display(state);
+        Element::stack().child(eff).child(theme_link(label, state))
+    };
+    let card = crate::widgets::section_with_items_menu(
         SECTION_TITLE,
+        &make_link,
         vec![crate::widgets::CardItem::Bare(crate::widgets::card_pad(
             body,
         ))],
+        &|el: Element| el,
     );
     crate::search::anchor::wrap(card, ANCHOR, state.jump)
 }
@@ -333,6 +443,181 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 布局坐标可测（见笔记）：在 [`preview_area`] 的原生结构上，把 `shown` 从一张图换到
+    /// 另一张自然宽不同的图，**所有节点的矩形逐个相同**——恒定跨度这条规矩由真布局钉住，
+    /// 不再靠上面那段推理链自证。
+    #[test]
+    fn swapping_images_moves_no_node() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let shown = signal(Shown::Waiting);
+        let mut tree = Tree::new();
+        // 真实卡片里图区坐在 body 列里、定高生效；直接做根会被 layout_root 拉伸到窗高，
+        // 测不出 200。同构地包一层列。
+        let root = Element::col()
+            .width_match()
+            .child(preview_area(shown))
+            .build(&mut tree);
+        tree.root = Some(root);
+        // 同一份 PNG 字节、两份独立分配的 `Vec`：哈希为空时按字节指针判等，指针不同才
+        // 会触发 switcher 换内容——正是要测的两帧。
+        let png = |w: u32| {
+            RawPng {
+                hash: String::new(),
+                bytes: include_bytes!("mockdata/theme_previews/default.png").to_vec(),
+                width: w,
+                height: 64,
+            }
+            .into_png(1.0)
+        };
+        let rects = |tree: &Tree| -> Vec<windui::geometry::Rect> {
+            let mut out = Vec::new();
+            let mut stack = vec![tree.root.expect("已设根")];
+            while let Some(id) = stack.pop() {
+                if let Some(n) = tree.get(id) {
+                    if n.bounds.w > 0 {
+                        out.push(n.bounds);
+                    }
+                    stack.extend(n.children.iter().copied());
+                }
+            }
+            out
+        };
+        let layout = |tree: &mut Tree| -> Vec<windui::geometry::Rect> {
+            tree.layout_root(Size::new(600, 400), &mut windui::text::NullTextEngine);
+            rects(tree)
+        };
+        let _waiting = layout(&mut tree);
+        shown.set(Shown::Ready(png(240)));
+        let a = layout(&mut tree);
+        // 外框占满定高、图填满内容区（600 宽下内容区 584×184，即内边距 8）：外框/内容两
+        // 个矩形都在，padding 与高度这两条就不只是数值断言，而是真布局的外在表现。
+        assert!(
+            a.iter().any(|r| r.h == AREA_H),
+            "图区外框应占满定高 {}（{:?}）",
+            AREA_H,
+            a
+        );
+        assert!(
+            a.iter().any(|r| r.h == AREA_H - 16 && r.w == 600 - 16),
+            "换图后的图没填满图区内容区（{:?}）",
+            a
+        );
+        shown.set(Shown::Ready(png(480)));
+        let b = layout(&mut tree);
+        assert_eq!(a, b, "换到自然宽不同的图不该挪动任何节点");
+    }
+
+    /// 显示名逐层退让：索引→id→显示名，每层缺了退上一层，全缺退 `None`。
+    #[test]
+    fn display_name_falls_back_layer_by_layer() {
+        let entries = vec![
+            GalleryEntry {
+                id: "default".into(),
+                display: "清风".into(),
+                ..Default::default()
+            },
+            GalleryEntry {
+                id: "mono".into(),
+                display: "墨".into(),
+                ..Default::default()
+            },
+        ];
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // 索引 → id → 显示名。
+        assert_eq!(
+            display_name(Some(1), &ids(&["default", "mono"]), &entries, None).as_deref(),
+            Some("墨")
+        );
+        // 清单里没有这个 id（清单没到/陌生取值）→ id 顶着。
+        assert_eq!(
+            display_name(Some(0), &ids(&["jade"]), &entries, None).as_deref(),
+            Some("jade")
+        );
+        // 索引拿不到（画廊没建/被藏）→ 配置值，且照样查显示名。
+        assert_eq!(
+            display_name(None, &ids(&["default"]), &entries, Some("mono")).as_deref(),
+            Some("墨")
+        );
+        // 索引越界（列表刚整份替换）→ 配置值；配置值也不在清单里 → 裸 id 顶着。
+        assert_eq!(
+            display_name(Some(9), &ids(&["default"]), &entries, Some("mono")).as_deref(),
+            Some("墨")
+        );
+        assert_eq!(
+            display_name(Some(9), &ids(&["default"]), &entries, Some("jade")).as_deref(),
+            Some("jade")
+        );
+        // 全没有 → 只显示「主题选择」。
+        assert_eq!(display_name(None, &[], &entries, None), None);
+    }
+
+    #[test]
+    fn theme_link_label_carries_name() {
+        assert_eq!(theme_link_label(Some("墨")), "主题选择：墨");
+        assert_eq!(theme_link_label(None), "主题选择");
+        assert_eq!(theme_link_label(Some("")), "主题选择");
+    }
+
+    /// 链接落点 = 主题页「主题选择」卡里 `ui.theme.name` 那行（行锚点即清单 key，与
+    /// manifest 建行时挂的锚点同一把键）。
+    #[test]
+    fn theme_link_targets_the_gallery_row() {
+        match theme_link_target() {
+            crate::search::index::JumpTarget::Row { tab, anchor } => {
+                assert_eq!(tab, crate::cli::page_to_index("theme").unwrap());
+                assert_eq!(anchor, "ui.theme.name");
+            }
+            other => panic!("落点应是行锚点，实为 {other:?}"),
+        }
+    }
+
+    /// 反应式接线：选中索引一变，链接文案跟着变。走真树 + `layout_root`——
+    /// `dispatch_reactive_updates` 是 reactive_effect 唯一的驱动点，只调闭包的话
+    /// 「有没有真挂上 `.reactive()`」这一半就没人管（同 auto_encode 的测法）。
+    #[test]
+    fn theme_link_label_follows_selection() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = AppState::empty();
+        st.theme_value_sig
+            .set(vec!["default".to_string(), "mono".to_string()]);
+        st.theme_gallery.entries.set(vec![
+            GalleryEntry {
+                id: "default".into(),
+                display: "清风".into(),
+                ..Default::default()
+            },
+            GalleryEntry {
+                id: "mono".into(),
+                display: "墨".into(),
+                ..Default::default()
+            },
+        ]);
+        let idx = signal(0usize);
+        st.fields
+            .select_indices
+            .borrow_mut()
+            .insert("ui.theme.name".to_string(), idx);
+        let (label, eff) = theme_display(&st);
+        let mut tree = Tree::new();
+        let id = eff.build(&mut tree);
+        tree.root = Some(id);
+        assert_eq!(label.get(), "主题选择：清风", "构建时即算出当前文案");
+        idx.set(1);
+        tree.layout_root(Size::new(100, 100), &mut windui::text::NullTextEngine);
+        assert_eq!(
+            label.get(),
+            "主题选择：墨",
+            "选中索引变化应经 reactive_effect 触达链接文案"
+        );
+    }
 
     #[test]
     fn params_carry_draft_ui_inline() {
