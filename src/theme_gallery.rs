@@ -36,6 +36,8 @@ use crate::widgets::Vis;
 
 /// 画廊所在卡片的标题（清单里 `ui.theme.name` 的 section，二级导航里也叫这个）。
 pub const SECTION_TITLE: &str = "主题选择";
+/// 主题页第二张卡（风格、动画、导入导出、市场）的标题，即清单里那一节的名字。
+pub const SETTINGS_SECTION: &str = "主题设置";
 
 /// 一格的目标宽度（逻辑 px）：列数按可用宽度取最接近这个宽度的那一档，各列等分。
 const CELL_W: i32 = 260;

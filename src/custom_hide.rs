@@ -539,7 +539,12 @@ mod tests {
     #[test]
     fn shared_cards_vanish_only_when_both_halves_are_hidden() {
         for (page, group, card, feature) in [
-            ("theme", "theme", "主题", "theme_transfer"),
+            (
+                "theme",
+                "theme",
+                crate::theme_gallery::SETTINGS_SECTION,
+                "theme_transfer",
+            ),
             ("schema", "schema", "双拼", "shuangpin_layout"),
             (
                 "advanced",

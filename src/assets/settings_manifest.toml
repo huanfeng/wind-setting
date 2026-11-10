@@ -3217,7 +3217,7 @@ hint = "候选窗与工具栏的主题样式"
 [[items]]
 key = "ui.theme.style"
 group = "theme"
-section = "主题"
+section = "主题设置"
 type = "select"
 label = "主题风格"
 hint = "选择亮色、暗色或跟随系统设置"
@@ -3230,7 +3230,7 @@ options = [
 [[items]]
 key = "ui.theme.animation"
 group = "theme"
-section = "主题"
+section = "主题设置"
 type = "toggle"
 label = "主题动画"
 hint = "主题里会动的装饰按输入切换动作；关掉后停在静止画面。系统关了动画效果时也不播放"

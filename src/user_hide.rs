@@ -83,6 +83,18 @@ pub enum HideRule {
 /// `section:` 规则按新分组解析，规范形态也随之写成新的。
 const MOVED_SECTIONS: &[(&str, &str, &str)] = &[("ui", "主题", "theme")];
 
+/// 已发布过的分区改了名：`(分组, 旧名, 新名)`。旧名的 `section:` 规则按新名解析（不写分组的
+/// 也按这张表认），规范形态也随之写成新的。
+const RENAMED_SECTIONS: &[(&str, &str, &str)] = &[("theme", "主题", "主题设置")];
+
+fn rename_section(group: Option<&str>, section: &str) -> String {
+    RENAMED_SECTIONS
+        .iter()
+        .find(|(g, s, _)| *s == section && group.is_none_or(|x| x == *g))
+        .map_or(section, |(_, _, to)| to)
+        .to_string()
+}
+
 fn relocate_group(group: &str, section: &str) -> String {
     MOVED_SECTIONS
         .iter()
@@ -107,9 +119,11 @@ impl HideRule {
                             "`{s}` 的分组/分区名不能为空。写成 `section:<分组>/<分区>`。"
                         ));
                     }
-                    (Some(relocate_group(g, sec)), sec.to_string())
+                    let g = relocate_group(g, sec);
+                    let sec = rename_section(Some(&g), sec);
+                    (Some(g), sec)
                 }
-                None => (None, body.to_string()),
+                None => (None, rename_section(None, body)),
             };
             if section.contains('*') {
                 return Err(format!("`{s}` 里的 `*` 不受支持：分区名请写完整。"));
@@ -606,14 +620,18 @@ mod tests {
         assert_eq!(one.as_selector(), "section:ui/候选字体");
     }
 
-    /// 「主题」卡从 ui 组搬到了 theme 组：发布版写下的 `section:ui/主题` 仍要藏住它，
-    /// 也能被「取消隐藏」按新写法删掉。
+    /// 「主题」卡从 ui 组搬到了 theme 组、又改名「主题设置」：发布版写下的 `section:ui/主题`
+    /// 仍要藏住它，也能被「取消隐藏」按新写法删掉。
     #[test]
     fn moved_theme_section_keeps_old_selector_working() {
         let old = HideRule::parse("section:ui/主题").unwrap();
-        assert!(old.matches_section("theme", "主题"));
+        assert!(old.matches_section("theme", "主题设置"));
         assert!(!old.matches_section("ui", "主题"));
-        assert_eq!(old.as_selector(), "section:theme/主题");
+        assert_eq!(old.as_selector(), "section:theme/主题设置");
+        assert_eq!(
+            HideRule::parse("section:主题").unwrap().as_selector(),
+            "section:主题设置"
+        );
         // 只认这一节：ui 组的其它分区不受影响。
         assert!(
             HideRule::parse("section:ui/候选字体")
@@ -626,16 +644,16 @@ mod tests {
             hide: vec!["section:ui/主题".into()],
             ..Default::default()
         });
-        assert!(s.hides_section("theme", "主题"));
+        assert!(s.hides_section("theme", "主题设置"));
         assert_eq!(
-            s.rule_hiding_section(Some("theme"), "主题").as_deref(),
-            Some("section:theme/主题")
+            s.rule_hiding_section(Some("theme"), "主题设置").as_deref(),
+            Some("section:theme/主题设置")
         );
         assert!(
-            s.remove("section:theme/主题").unwrap(),
+            s.remove("section:theme/主题设置").unwrap(),
             "旧写法按新规范形态可删"
         );
-        assert!(!s.hides_section("theme", "主题"));
+        assert!(!s.hides_section("theme", "主题设置"));
     }
 
     #[test]

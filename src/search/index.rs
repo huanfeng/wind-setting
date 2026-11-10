@@ -431,8 +431,8 @@ const HANDWRITTEN: &[Handwritten] = &[
     // ── 外观 ──
     Handwritten { id: "ui:appearance-preview", anchor: "ui:appearance-preview", page: "ui", title: "当前效果", section: "当前效果", keywords: "预览 候选窗 效果 实时", feature: "" },
     // ── 主题 ──
-    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "theme", title: "导入主题", section: "主题", keywords: "皮肤 toml 网址 安装", feature: "theme_transfer" },
-    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "theme", title: "导出主题", section: "主题", keywords: "皮肤 wtheme 主题包 分享 打包 备份", feature: "theme_transfer" },
+    Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "theme", title: "导入主题", section: "主题设置", keywords: "皮肤 toml 网址 安装", feature: "theme_transfer" },
+    Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "theme", title: "导出主题", section: "主题设置", keywords: "皮肤 wtheme 主题包 分享 打包 备份", feature: "theme_transfer" },
     Handwritten { id: "ui:theme-editor", anchor: "ui:theme-editor", page: "theme", title: "主题编辑器连接", section: "主题编辑器", keywords: "皮肤 在线 编辑 服务 端口", feature: "theme_editor" },
     // ── 应用兼容：规则本身的字段来自核心的元数据、运行时才知道，索引只收页级入口 ──
     Handwritten { id: "compat:main", anchor: "advanced:compat", page: "advanced", title: "应用兼容性与独立配置", section: "应用兼容性", keywords: "兼容性 软件 进程 候选窗 位置 飞书 微信 excel wps 规则 compat", feature: "compat" },

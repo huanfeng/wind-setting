@@ -796,7 +796,7 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
 
 fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     // 页首「主题选择」卡就是清单里 `ui.theme.name` 那一项，渲染成已装主题的画廊（缩略图由
-    // 服务端渲染，见 `theme_gallery`）。其后的「主题」卡：清单两行（主题风格 / 主题动画）之后
+    // 服务端渲染，见 `theme_gallery`）。其后的「主题设置」卡：清单两行（主题风格 / 主题动画）之后
     // 直接接导入、导出与市场入口。
     //
     // 主题编辑器仍是独立一张卡：那是面向进阶用户的**连接状态**管理，混进来会分不清
@@ -806,21 +806,22 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
     // 还有清单项要留着，不能整卡消失。
     let transfer_vis = crate::manifest::feature_row_vis(state, "theme_transfer");
     let mut theme_secs = state.manifest.sections_of("theme");
-    // 「主题」卡的清单项全被定制版藏掉时 `sections_of` 不再给这一节，可三行手写入口没被藏
-    // 就不该跟着消失：补一张只有这三行的「主题」卡，排在原位（画廊之后）。
-    if transfer && !theme_secs.iter().any(|(s, _)| s == "主题") {
+    // 「主题设置」卡的清单项全被定制版藏掉时 `sections_of` 不再给这一节，可三行手写入口没被藏
+    // 就不该跟着消失：补一张只有这三行的「主题设置」卡，排在原位（画廊之后）。
+    let settings_sec = crate::theme_gallery::SETTINGS_SECTION;
+    if transfer && !theme_secs.iter().any(|(s, _)| s == settings_sec) {
         let at = theme_secs
             .iter()
             .position(|(s, _)| s == crate::theme_gallery::SECTION_TITLE)
             .map_or(0, |i| i + 1);
-        theme_secs.insert(at, ("主题".to_string(), Vec::new()));
+        theme_secs.insert(at, (settings_sec.to_string(), Vec::new()));
     }
     let mut secs: Vec<Element> = Vec::new();
     for (sec, keys) in theme_secs {
         let (rows, head) = crate::manifest::section_rows_split(state, &keys);
         let mut rows: Vec<(Element, Option<crate::widgets::Vis>)> =
             rows.into_iter().map(|r| (r.el, r.vis)).collect();
-        if sec == "主题" && transfer {
+        if sec == settings_sec && transfer {
             rows.extend(
                 theme_transfer_rows(state)
                     .into_iter()
@@ -834,8 +835,8 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
             crate::manifest::section_menu(state, "theme", &sec),
         );
         let card = crate::manifest::wrap_section_runtime(state, "theme", &sec, card);
-        // 搜索锚点叫 ui:theme-import（导入相关词条指向它），落在「主题」卡上。
-        let card = if sec == "主题" {
+        // 搜索锚点叫 ui:theme-import（导入相关词条指向它），落在「主题设置」卡上。
+        let card = if sec == settings_sec {
             crate::search::anchor::wrap(card, "ui:theme-import", state.jump)
         } else {
             card
@@ -891,7 +892,7 @@ fn theme_editor_mode_effect(app: &Rc<RefCell<AppState>>) -> Element {
 
 /// 主题的「搬进搬出」三行：本地 TOML 导入 + 主题包导出 + 主题市场入口。
 ///
-/// 返回**行**而不是整张卡：它们接在 manifest「主题」卡的主题选择/风格之后，同卡呈现。
+/// 返回**行**而不是整张卡：它们接在 manifest「主题设置」卡的风格、动画之后，同卡呈现。
 /// 此前这是独立一张卡、且排在所有 ui 卡之后，与主题选择隔着十几张卡——用户选完主题想
 /// 导出，得一路滚到页尾才找得到按钮。
 ///
@@ -1517,9 +1518,9 @@ mod about_tests {
 
 #[cfg(test)]
 mod tests {
-    /// 守门：theme 组必须仍有一节叫「主题」。
+    /// 守门：theme 组必须仍有一节叫「主题设置」（`theme_gallery::SETTINGS_SECTION`）。
     ///
-    /// [`theme_page`] 拿 `sec == "主题"` 这个**字符串**判据往那张卡里追加「导入 /
+    /// [`theme_page`] 拿 `sec == SETTINGS_SECTION` 这个**字符串**判据往那张卡里追加「导入 /
     /// 导出 / 主题市场」三行。清单里把这一节改个名，三行就**整体从界面上消失**——页面
     /// 照常渲染、编译照常通过、别的测试照常全绿，只有拿眼睛看才发现主题卡上少了三个
     /// 按钮。同 `search/index.rs` 那张手写表的风险（「⚠ 编译器不管这张表」）。
@@ -1528,8 +1529,9 @@ mod tests {
         let m = crate::manifest::Manifest::from_embedded();
         let secs: Vec<String> = m.sections_of("theme").into_iter().map(|(s, _)| s).collect();
         assert!(
-            secs.iter().any(|s| s == "主题"),
-            "theme 组里没有「主题」这一节，theme_page 的导入/导出/市场三行与画廊会静默消失；\
+            secs.iter()
+                .any(|s| s == crate::theme_gallery::SETTINGS_SECTION),
+            "theme 组里没有「主题设置」这一节，theme_page 的导入/导出/市场三行会静默消失；\
              现有分节：{secs:?}"
         );
     }
