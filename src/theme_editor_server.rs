@@ -511,6 +511,8 @@ fn handle_request(req: tiny_http::Request, be: &Backend) {
                 ),
             }
         }
+    } else if method == "GET" && url == "/api/info" {
+        json_reply(200, &info_body(be).to_string(), allow_origin)
     } else if method == "POST" && url == "/api/theme/push" {
         handle_push(req, allow_origin, be);
         return;
@@ -521,6 +523,18 @@ fn handle_request(req: tiny_http::Request, be: &Backend) {
         json_reply(404, r#"{"ok":false,"error":"接口不存在"}"#, allow_origin)
     };
     respond(req, reply);
+}
+
+/// `GET /api/info` 的回包：编辑器据此比对预览引擎与输入法是否同一构建。
+/// 核心没起 / 老核心没有 `build` 时对应字段为 null，不算错。
+fn info_body(be: &Backend) -> Value {
+    let info = (be.rpc)("system.info", &serde_json::json!({})).unwrap_or(Value::Null);
+    let field = |k: &str| info.get(k).filter(|v| v.is_string()).cloned();
+    serde_json::json!({
+        "core_version": field("version"),
+        "core_build": field("build"),
+        "setting_version": env!("WIND_SETTING_VERSION"),
+    })
 }
 
 fn header_value(req: &tiny_http::Request, name: &str) -> Option<String> {
@@ -1619,6 +1633,51 @@ mod route_tests {
         assert_eq!(got[1].json()["slug"], "test-theme");
         assert_eq!(got[2].status, 401, "收包只认 token");
         assert_eq!(got[3].status, 401, "出包只认 token");
+    }
+
+    /// `/api/info`：要 token、不进 legacy；字段齐全，核心不可用时 core_* 为 null。
+    #[test]
+    fn info_route_needs_token_and_reports_core_fields() {
+        let rpc = |m: &str, _: &Value| {
+            assert_eq!(m, "system.info");
+            Ok(
+                json!({"version": "0.131.0", "build": "7b5ec94b-dirty", "dataDir": "/x", "variant": "dev"}),
+            )
+        };
+        let be = Backend {
+            token: TOKEN,
+            body_time: Duration::from_secs(60),
+            rpc: &rpc,
+            tmp_dir: None,
+        };
+        let req = |extra: &str| {
+            format!(
+                "GET /api/info HTTP/1.1\r\nHost: localhost:{{port}}\r\n{extra}\
+                 Connection: close\r\n\r\n"
+            )
+        };
+        serve(3, &be, |port| {
+            let legacy = request_raw(port, &req("Origin: https://theme.windinput.com\r\n"), b"");
+            assert_eq!(legacy.status, 401, "新路由不进 legacy");
+            assert_eq!(request_raw(port, &req(""), b"").status, 401);
+            let ok = request_raw(port, &req(&format!("{TOKEN_HEADER}: {TOKEN}\r\n")), b"");
+            assert_eq!(ok.status, 200);
+            let j = ok.json();
+            assert_eq!(j["core_version"], "0.131.0");
+            assert_eq!(j["core_build"], "7b5ec94b-dirty");
+            assert!(j["setting_version"].is_string());
+            let mut keys: Vec<_> = j.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            assert_eq!(keys, ["core_build", "core_version", "setting_version"]);
+        });
+        let down = |_: &str, _: &Value| Err("连接失败".to_string());
+        let be = Backend { rpc: &down, ..be };
+        serve(1, &be, |port| {
+            let r = request_raw(port, &req(&format!("{TOKEN_HEADER}: {TOKEN}\r\n")), b"");
+            assert_eq!(r.status, 200);
+            assert!(r.json()["core_version"].is_null());
+            assert!(r.json()["core_build"].is_null());
+        });
     }
 
     /// 预检不要 token，且放行 `X-Wind-Token` 头；反射 ACAO 时带 `Vary: Origin`。
