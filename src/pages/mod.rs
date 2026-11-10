@@ -777,7 +777,7 @@ fn keys_page(state: &AppState, nav: &SubNav) -> Element {
 // ───────────────────────── 外观 ─────────────────────────
 
 fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
-    // 页首「当前效果」：草稿配置出的候选窗预览，下面的设置不必保存就跟着变。定制版把本页的
+    // 页首「效果预览」：草稿配置出的候选窗预览，下面的设置不必保存就跟着变。定制版把本页的
     // 设置项全藏了时它也不建——没有可调的项，预览只是一张不会变的图。
     // 二级导航按登记顺序排，故先登记它、再建清单卡。
     let mut secs = Vec::new();

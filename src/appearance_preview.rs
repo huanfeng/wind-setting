@@ -1,4 +1,4 @@
-//! 外观页顶部的「当前效果」：草稿配置里影响候选窗的那几段 `ui` 子树交给 core 出一张候选窗
+//! 外观页顶部的「效果预览」：草稿配置里影响候选窗的那几段 `ui` 子树交给 core 出一张候选窗
 //! 预览（`theme.renderPreview` 的 `ui` 参数，协议见 WindInput `docs/design/wind-scene-extraction.md`
 //! §7.2），改了字号、字体、每页候选数这类设置，不必保存就能看到效果。
 //!
@@ -27,7 +27,7 @@ use crate::state::AppState;
 use crate::theme_gallery::{Png, RawPng, Receipt, ThemeGallery};
 
 /// 卡片标题（二级导航里也叫这个）。
-pub const SECTION_TITLE: &str = "当前效果";
+pub const SECTION_TITLE: &str = "效果预览";
 /// 搜索锚点。
 pub const ANCHOR: &str = "ui:appearance-preview";
 /// 草稿变化到发请求之间至少隔这么久。
@@ -238,7 +238,7 @@ impl Widget for Watcher {
     }
 }
 
-/// 「当前效果」卡片。
+/// 「效果预览」卡片。
 pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let shown: Signal<Shown> = signal(Shown::Waiting);
     let error: Signal<String> = signal(String::new());

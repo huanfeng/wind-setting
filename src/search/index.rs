@@ -429,7 +429,7 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表", feature: "" },
     Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零", feature: "" },
     // ── 外观 ──
-    Handwritten { id: "ui:appearance-preview", anchor: "ui:appearance-preview", page: "ui", title: "当前效果", section: "当前效果", keywords: "预览 候选窗 效果 实时", feature: "" },
+    Handwritten { id: "ui:appearance-preview", anchor: "ui:appearance-preview", page: "ui", title: "效果预览", section: "效果预览", keywords: "预览 候选窗 效果 实时", feature: "" },
     // ── 主题 ──
     Handwritten { id: "ui:theme-import", anchor: "ui:theme-import", page: "theme", title: "导入主题", section: "主题设置", keywords: "皮肤 toml 网址 安装", feature: "theme_transfer" },
     Handwritten { id: "ui:theme-export", anchor: "ui:theme-import", page: "theme", title: "导出主题", section: "主题设置", keywords: "皮肤 wtheme 主题包 分享 打包 备份", feature: "theme_transfer" },
