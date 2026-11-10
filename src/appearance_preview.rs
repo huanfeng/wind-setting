@@ -11,6 +11,9 @@
 //!   直接丢掉（[`NetTasks::cancel`] 摘掉续体），屏上永远是最后一次的结果。
 //! - **失败不崩**：保留上一张图，下方一行简短原因。「忙 / 超时」隔 [`RETRY_DELAY`] 重试，至多
 //!   [`MAX_RETRIES`] 次；连不上服务端不原地重发，等切回本页或连接恢复再取。
+//! - **形态**：卡内分段控件在「候选窗 / 工具栏」间切换（`theme.renderPreview` 的 `kind`
+//!   参数，候选窗走协议缺省），选中段会话内记住、不落盘。换形态先回到「生成中」占位，
+//!   图画不出时落「无法生成」——不留另一个形态的旧图冒充新预览。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -52,10 +55,21 @@ pub fn follows_system(style: Option<&str>) -> bool {
     )
 }
 
+/// 形态段标签（顺序即 `kind` 信号的索引）。
+pub const KIND_LABELS: &[&str] = &["候选窗", "工具栏"];
+
+/// 段索引 → 请求参数里的 `kind`：候选窗是协议缺省形态、参数里省略，工具栏显式带上；
+/// 越界按候选窗算。
+pub fn kind_param(idx: usize) -> Option<&'static str> {
+    (idx == 1).then_some("toolbar")
+}
+
 /// 屏上显示的那一张。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Shown {
     Waiting,
+    /// 形态对应的图没画出来、屏上又没有可保留的图：图区里的占位。
+    Failed,
     Ready(Png),
 }
 
@@ -70,9 +84,12 @@ pub fn draft_ui(draft: &crate::config::Config) -> Value {
     Value::Object(out)
 }
 
-/// 一次请求要带的参数：草稿 `ui` 子树 + 缩放。
-pub fn request_params(ui: &Value, scale: f32) -> Value {
-    json!({ "ui": ui, "scale": scale, "inline": true })
+/// 一次请求要带的参数：草稿 `ui` 子树 + 缩放 + 形态（候选窗为协议缺省、省略）。
+pub fn request_params(ui: &Value, scale: f32, kind: Option<&str>) -> Value {
+    match kind {
+        Some(k) => json!({ "ui": ui, "scale": scale, "inline": true, "kind": k }),
+        None => json!({ "ui": ui, "scale": scale, "inline": true }),
+    }
 }
 
 /// 一次请求的结论。
@@ -99,7 +116,8 @@ fn outcome(r: Result<Value, String>) -> Outcome {
     }
 }
 
-/// 一次取图要比对的全部输入：草稿那几段、缩放 ×100、主题列表版本、编辑器推送次数、活跃方案。
+/// 一次取图要比对的全部输入：草稿那几段、缩放 ×100、主题列表版本、编辑器推送次数、活跃方案、
+/// 预览形态。
 #[derive(Clone, Debug, PartialEq)]
 struct Key {
     ui: Value,
@@ -109,6 +127,17 @@ struct Key {
     schema: String,
     /// 草稿明暗跟随系统时的系统切换次数；不跟随时恒 0（系统切了也不重取）。
     system_flips: u64,
+    /// 预览形态（[`KIND_LABELS`] 的索引）。
+    kind: usize,
+}
+
+/// 失败（画不出 / 连不上）时图区显示什么：屏上已有**本形态**的图就保留它（同形态换设置后
+/// 失败的常态），否则落「无法生成」占位——`None` = 不动屏上的内容。
+fn shown_on_failure(current: &Shown, shown_kind: usize, kind: usize) -> Option<Shown> {
+    match current {
+        Shown::Ready(_) if shown_kind == kind => None,
+        _ => Some(Shown::Failed),
+    }
 }
 
 /// 页内哨兵：每次更新时看外观页是否可见、输入是否变了，变了就重新计时取图；绘制时记下缩放。
@@ -134,6 +163,11 @@ struct Watcher {
     was_conn_failed: Cell<bool>,
     task: Rc<Cell<Option<TaskId>>>,
     scale: Cell<f32>,
+    /// 预览形态（分段控件的选中段，与 [`build_card`] 共享同一信号）。
+    kind: Signal<usize>,
+    /// 屏上那张图属于哪个形态；刚清成「生成中 / 无法生成」时不算数，只认最近一次
+    /// `Ready` 时的形态。
+    shown_kind: Rc<Cell<usize>>,
 }
 
 impl Watcher {
@@ -142,13 +176,15 @@ impl Watcher {
             self.net.cancel(t);
         }
         let (shown, error, task) = (self.shown, self.error, self.task.clone());
-        let (retry_tick, retried, offline, net) = (
+        let (retry_tick, retried, offline, net, shown_kind) = (
             self.retry_tick,
             self.retried.clone(),
             self.offline.clone(),
             self.net.clone(),
+            self.shown_kind.clone(),
         );
-        let params = request_params(&key.ui, scale);
+        let params = request_params(&key.ui, scale, kind_param(key.kind));
+        let kind = key.kind;
         let id = self.net.spawn(
             move |cancel| {
                 crate::theme_gallery::after_debounce(cancel, DEBOUNCE, || {
@@ -159,9 +195,11 @@ impl Watcher {
                 task.set(None);
                 let Some(r) = r.flatten() else { return };
                 offline.set(r == Outcome::Offline);
+                let failed = matches!(r, Outcome::Failed | Outcome::Offline);
                 let msg = match r {
                     Outcome::Ready(raw) => {
                         retried.set(0);
+                        shown_kind.set(kind);
                         shown.set(Shown::Ready(raw.into_png(scale)));
                         String::new()
                     }
@@ -182,6 +220,13 @@ impl Watcher {
                         "暂时无法生成预览（输入法服务未连接），连接恢复后自动刷新".to_string()
                     }
                 };
+                if failed {
+                    if let Some(s) =
+                        shown_on_failure(&shown.with(Clone::clone), shown_kind.get(), kind)
+                    {
+                        shown.set(s);
+                    }
+                }
                 if error.with(|e| *e != msg) {
                     error.set(msg);
                 }
@@ -226,15 +271,21 @@ impl Widget for Watcher {
             } else {
                 0
             },
+            kind: self.kind.get(),
         };
         let tick = self.retry_tick.get();
         let retrying = tick != self.sent_tick.get();
+        let prev_kind = self.sent.borrow().as_ref().map(|k| k.kind);
         if self.sent.borrow().as_ref() == Some(&key) && !retrying {
             return;
         }
         if !retrying {
             // 输入真变了：重试计数从头算。
             self.retried.set(0);
+        }
+        if prev_kind != Some(key.kind) {
+            // 换形态：先回到「生成中」，不留另一个形态的旧图冒充新预览。
+            self.shown.set(Shown::Waiting);
         }
         self.sent_tick.set(tick);
         self.request(&key, scale);
@@ -269,19 +320,25 @@ impl Widget for Watcher {
 /// `width_match().height_match()` 填满底板内容区，任意状态层叠出的都是同一矩形，抖动
 /// 无从谈起。代价是 `Fit::Contain` 会把小图放大（Contain 不区分缩小与放大，缓存
 /// `skia::draw_image`：`s = min(pw/iw, ph/ih)`），换来带装饰主题显示更大、居中恒定。
+/// 图区里的居中占位文字（生成中 / 生成失败）。
+fn placeholder(text: &str) -> Element {
+    Element::stack().width_match().height_match().child(
+        Element::label(text.to_string())
+            .font_size(12.0)
+            .fg_role(Role::TextSubtle)
+            .max_lines(1)
+            .align(Align::Center),
+    )
+}
+
 fn preview_area(shown: Signal<Shown>) -> Element {
     let image = Element::switcher(shown, |s: Shown| match s {
         Shown::Ready(png) => Element::image_bytes(&png.bytes)
             .fit(Fit::Contain)
             .width_match()
             .height_match(),
-        Shown::Waiting => Element::stack().width_match().height_match().child(
-            Element::label("预览生成中…")
-                .font_size(12.0)
-                .fg_role(Role::TextSubtle)
-                .max_lines(1)
-                .align(Align::Center),
-        ),
+        Shown::Waiting => placeholder("预览生成中…"),
+        Shown::Failed => placeholder("无法生成预览"),
     });
     Element::stack()
         .width_match()
@@ -386,6 +443,9 @@ fn theme_link(label: Signal<String>, state: &AppState) -> Element {
 pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let shown: Signal<Shown> = signal(Shown::Waiting);
     let error: Signal<String> = signal(String::new());
+    // 形态选中段：会话内记住即可（页面状态，不落盘配置）。
+    let kind: Signal<usize> = signal(0);
+    let switcher = Element::segmented(KIND_LABELS.iter().map(|s| (*s).to_string()).collect(), kind);
     let area = preview_area(shown);
     let note = Element::label_signal(error)
         .font_size(12.0)
@@ -412,6 +472,8 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
             was_conn_failed: Cell::new(false),
             task: Rc::new(Cell::new(None)),
             scale: Cell::new(0.0),
+            kind,
+            shown_kind: Rc::new(Cell::new(0)),
         })
         .reactive()
         .width_match()
@@ -421,6 +483,7 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
         .padding_xy(0, 14)
         .spacing(8)
         .child(watcher)
+        .child(switcher)
         .child(area)
         .child(note);
     // 卡头动作：反应式驱动挂件与链接同一处现建。section_impl 的三种标题写法各建一份，
@@ -622,11 +685,22 @@ mod tests {
     #[test]
     fn params_carry_draft_ui_inline() {
         let ui = json!({ "candidate": { "font_size": 20 } });
-        let p = request_params(&ui, 1.5);
+        let p = request_params(&ui, 1.5, kind_param(0));
         assert_eq!(p["ui"], ui);
         assert_eq!(p["scale"], 1.5);
         assert_eq!(p["inline"], true);
+        assert!(p.get("kind").is_none(), "候选窗走协议缺省，不带 kind");
         assert!(p.get("name").is_none(), "主题取草稿里的 ui.theme.name");
+    }
+
+    #[test]
+    fn params_carry_kind_only_for_toolbar() {
+        let ui = json!({});
+        assert_eq!(kind_param(0), None, "候选窗缺省");
+        assert_eq!(kind_param(9), None, "越界按候选窗算");
+        let t = request_params(&ui, 1.0, kind_param(1));
+        assert_eq!(t["kind"], "toolbar");
+        assert_eq!(t["inline"], true);
     }
 
     #[test]
@@ -664,7 +738,7 @@ mod tests {
         let ui = json!({ "theme": { "name": "jade" } });
         let r = outcome(crate::rpc::call_core(
             "theme.renderPreview",
-            &request_params(&ui, 1.0),
+            &request_params(&ui, 1.0, None),
         ));
         let jade = outcome(crate::rpc::call_core(
             "theme.renderPreview",
@@ -696,6 +770,8 @@ mod tests {
             was_conn_failed: Cell::new(false),
             task: Rc::new(Cell::new(None)),
             scale: Cell::new(1.0),
+            kind: signal(0),
+            shown_kind: Rc::new(Cell::new(0)),
         }
     }
 
@@ -773,6 +849,64 @@ mod tests {
         assert_ne!(fourth, third, "改了明暗本身要重取");
         st.borrow().system_theme_flips.update(|n| *n += 1);
         assert_eq!(update(&mut w), Some(fourth), "显式暗色：系统切换不重取");
+    }
+
+    /// 换形态要重取，且图区先回到「生成中」——不留另一个形态的旧图冒充；换回候选窗同样重取。
+    #[test]
+    fn switching_kind_refetches_and_resets_shown() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let mut w = watcher(&st);
+        let update = |w: &mut Watcher| {
+            windui::testing::run_with_ctx(|ctx| w.on_update(ctx));
+            w.task.get()
+        };
+        let ui_page = crate::cli::page_to_index("ui").unwrap();
+        st.borrow().tab.set(ui_page);
+        let first = update(&mut w).unwrap();
+        // 模拟候选窗图已就绪：图区真从 Ready 出发，换形态的清屏才有东西可清。
+        w.shown_kind.set(0);
+        w.shown.set(Shown::Ready(
+            RawPng {
+                hash: String::new(),
+                bytes: include_bytes!("mockdata/theme_previews/default.png").to_vec(),
+                width: 240,
+                height: 64,
+            }
+            .into_png(1.0),
+        ));
+        w.kind.set(1);
+        let second = update(&mut w).unwrap();
+        assert_ne!(second, first, "换到工具栏要重取");
+        assert_eq!(
+            w.shown.get(),
+            Shown::Waiting,
+            "换形态先回到生成中，不留候选窗旧图"
+        );
+        w.kind.set(0);
+        let third = update(&mut w).unwrap();
+        assert_ne!(third, second, "换回候选窗也重取");
+        assert_eq!(update(&mut w), Some(third), "形态不变不重发");
+    }
+
+    /// 失败时图区显示什么：本形态已有图就保留，否则落「无法生成」占位——包括刚换形态清成
+    /// 「生成中」的情形，不许别的形态旧图或「生成中」占位卡死在屏上。
+    #[test]
+    fn failure_keeps_same_kind_image_otherwise_placeholder() {
+        let png = Shown::Ready(
+            RawPng {
+                hash: String::new(),
+                bytes: include_bytes!("mockdata/theme_previews/default.png").to_vec(),
+                width: 240,
+                height: 64,
+            }
+            .into_png(1.0),
+        );
+        // 本形态旧图在：保留（换设置后失败是常态）。
+        assert_eq!(shown_on_failure(&png, 0, 0), None);
+        // 别的形态旧图 / 生成中 / 已是占位：都落「无法生成」。
+        assert_eq!(shown_on_failure(&png, 0, 1), Some(Shown::Failed));
+        assert_eq!(shown_on_failure(&Shown::Waiting, 0, 0), Some(Shown::Failed));
+        assert_eq!(shown_on_failure(&Shown::Failed, 1, 1), Some(Shown::Failed));
     }
 
     #[test]
