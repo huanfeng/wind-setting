@@ -361,6 +361,20 @@ pub fn wrap(
         .child(content)
 }
 
+/// 同 [`wrap`],但**不**登记进守门集合(MOUNTED)——运行期动态键(如主题画廊每格的
+/// `ui.theme.name:<id>`)数量不定、键值依赖运行期数据,进不了手写静态清单的比对集;
+/// 手写静态键仍走 [`wrap`]。
+pub fn wrap_runtime(
+    content: Element,
+    key: impl Into<String>,
+    jump: Signal<Option<JumpRequest>>,
+) -> Element {
+    Element::stack()
+        .width_match()
+        .child(anchor(key.into(), jump))
+        .child(content)
+}
+
 // 测试期记录「界面上到底挂了哪些锚点」。
 //
 // 手写卡片的锚点键分散在各页的构建代码里，与 `search::index` 那张表是两份知识，
@@ -565,13 +579,13 @@ mod tests {
         let idx = build_index(&crate::manifest::Manifest::from_embedded());
         // 手写跳转目标（不经 build_index 派生的）也入比对集：清单键改名时索引与锚点
         // 会一起换键、守门照常绿，唯独手写这边不会自己跟——漏了它，症状仍是
-        // 「点得到、页也切了，就是不滚不闪」。当前一条：主题页画廊卡头「当前主题」链接的
-        // 落点（theme_gallery::theme_link_target）。
-        let handwritten = [crate::theme_gallery::theme_link_target()];
+        // 「点得到、页也切了，就是不滚不闪」。当前为空:画廊卡头「当前主题」链接的落点
+        // 改成了运行期动态键(选中格 ui.theme.name:<id>,wrap_runtime 挂,不进守门)。
+        let handwritten: Vec<&crate::search::index::JumpTarget> = Vec::new();
         let missing: std::collections::BTreeSet<&str> = idx
             .iter()
             .map(|e| &e.target)
-            .chain(handwritten.iter())
+            .chain(handwritten.iter().copied())
             .flat_map(|t| match t {
                 // 页面上直接成行的项（manifest 派生的绝大多数条目都是这一类）。
                 // 曾经**不查**这一支——方案组那五十来个 key 从 `RowInDialog` 改成 `Row`

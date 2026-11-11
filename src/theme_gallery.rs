@@ -634,6 +634,7 @@ pub fn build_selector(state: &AppState, key: &str, vis: Vis) -> Element {
         // 导出跟着「主题导入导出」走：定制版藏了就不建，用户藏了就运行期不出。
         export: (!state.manifest.feature_hidden("theme_transfer"))
             .then(|| crate::manifest::feature_row_vis(state, "theme_transfer")),
+        jump: state.jump,
     };
     let grid = Element::switcher(gallery.layout, move |(list, cols)| {
         if list.is_empty() {
@@ -732,6 +733,8 @@ struct CellCtx {
     info_visible: Signal<bool>,
     /// 右键菜单里的「导出」此刻能不能出（`None` = 定制版藏了，永远不出）。
     export: Option<Vis>,
+    /// 跳转请求信号：每格锚点（wrap_runtime）要挂它，「当前主题」链接也用它发请求。
+    jump: Signal<Option<crate::search::jump::JumpRequest>>,
 }
 
 impl CellCtx {
@@ -797,14 +800,23 @@ fn current_theme_label(name: Option<&str>) -> String {
     }
 }
 
-/// 链接落点：本页「主题选择」卡里 `ui.theme.name` 那一行（行锚点即清单 key）。
+/// 链接落点：**此刻选中格**的锚点键（运行期动态键，画廊每格一格，不进守门清单——
+/// 数量与键值依赖运行期数据；手写静态键仍走 anchor::wrap 进守门）。
 ///
-/// `pub(crate)` 是给 `search::anchor` 的守门测试用的：手写目标不经 `build_index`
-/// 派生，不入比对集就会在清单键改名时静默退化成「只切页、不滚不闪」。
-pub(crate) fn theme_link_target() -> crate::search::index::JumpTarget {
+/// 逐层退让：选中索引 → 取值表查 id；索引/取值表拿不到（画廊没建、清单没到）退配置值；
+/// 再没有退空串——空串键必然无人认领，请求挂起，等画廊到达后锚点认领再滚。
+pub(crate) fn theme_cell_target(
+    idx: Option<usize>,
+    values: &[String],
+    cfg: Option<&str>,
+) -> crate::search::index::JumpTarget {
+    let id = idx
+        .and_then(|i| values.get(i).cloned())
+        .or(cfg.map(str::to_string))
+        .unwrap_or_default();
     crate::search::index::JumpTarget::Row {
         tab: crate::cli::page_to_index("theme").unwrap_or(usize::MAX),
-        anchor: "ui.theme.name".to_string(),
+        anchor: format!("ui.theme.name:{id}"),
     }
 }
 
@@ -830,6 +842,8 @@ pub(crate) fn current_theme_header(state: &AppState) -> (Signal<String>, Element
         .current_config
         .get_str("ui.theme.name")
         .map(str::to_string);
+    // 链接闭包与 apply 各要一份退让用的配置值;apply 是 move 闭包,先克隆。
+    let cfg_for_link = cfg_name.clone();
     let apply = move || {
         let name = display_name(
             idx.map(|s| s.get()),
@@ -849,11 +863,15 @@ pub(crate) fn current_theme_header(state: &AppState) -> (Signal<String>, Element
     };
     let eff = crate::pages::dict::reactive::reactive_effect(version_of, apply);
     // eff 要一并挂树：dispatch_reactive_updates 只驱动**树里**的响应式节点。
+    // 点击**现算**落点:读此刻选中(索引→取值表→配置),拼选中格的锚点键。
     let (tab, jump) = (state.tab, state.jump);
-    let target = theme_link_target();
     let link = Element::link(label.clone())
         .underline(false)
-        .on_click(move |_| crate::search::jump::request_quiet(tab, jump, target.clone()));
+        .on_click(move |_| {
+            let target =
+                theme_cell_target(idx.map(|s| s.get()), &values.get(), cfg_for_link.as_deref());
+            crate::search::jump::request_quiet(tab, jump, target);
+        });
     (label, Element::stack().child(eff).child(link))
 }
 
@@ -994,7 +1012,8 @@ fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
     let click = ctx.clone();
     let click_id = e.id.clone();
     let menu_ctx = ctx.clone();
-    Element::col()
+    let cell_key = e.id.clone();
+    let cell = Element::col()
         .width_match()
         .padding(RING_OUTER)
         .corner(10.0)
@@ -1009,7 +1028,8 @@ fn cell(ctx: &CellCtx, e: GalleryEntry) -> Element {
         .tooltip(e.display.clone())
         .on_click(move |_| click.select(&click_id))
         .on_context_menu(move || cell_menu(&menu_ctx, &e))
-        .child(ring)
+        .child(ring);
+    crate::search::anchor::wrap_runtime(cell, format!("ui.theme.name:{}", cell_key), ctx.jump)
 }
 
 /// 每格的右键菜单：使用 / 主题信息 / 导出 / 删除（内置主题不能删；导出跟着 `feature:theme_transfer`）。
@@ -1448,16 +1468,28 @@ mod tests {
         );
     }
 
-    /// 链接落点 = 本页「主题选择」卡里 `ui.theme.name` 那行（行锚点即清单 key，与
-    /// manifest 建行时挂的锚点同一把键）。
+    /// 链接落点 = **此刻选中格**的锚点键(运行期动态键 ui.theme.name:<id>);索引/取值表
+    /// 拿不到时退配置值,再没有退空串(请求挂起等画廊到达)。
     #[test]
-    fn theme_link_targets_the_gallery_row() {
-        match theme_link_target() {
-            crate::search::index::JumpTarget::Row { tab, anchor } => {
+    fn theme_link_targets_the_selected_cell() {
+        use crate::search::index::JumpTarget;
+        let values = vec!["default".to_string(), "jade".to_string()];
+        match theme_cell_target(Some(1), &values, None) {
+            JumpTarget::Row { tab, anchor } => {
                 assert_eq!(tab, crate::cli::page_to_index("theme").unwrap());
-                assert_eq!(anchor, "ui.theme.name");
+                assert_eq!(anchor, "ui.theme.name:jade", "落点应是选中那格");
             }
-            other => panic!("落点应是行锚点，实为 {other:?}"),
+            other => panic!("落点应是行锚点,实为 {other:?}"),
+        }
+        // 索引/取值表拿不到 → 退配置值。
+        match theme_cell_target(None, &[], Some("mono")) {
+            JumpTarget::Row { anchor, .. } => assert_eq!(anchor, "ui.theme.name:mono"),
+            other => panic!("落点应是行锚点,实为 {other:?}"),
+        }
+        // 都拿不到 → 空串键,请求挂起。
+        match theme_cell_target(None, &[], None) {
+            JumpTarget::Row { anchor, .. } => assert_eq!(anchor, "ui.theme.name:"),
+            other => panic!("落点应是行锚点,实为 {other:?}"),
         }
     }
 
@@ -1669,6 +1701,7 @@ mod tests {
             info: st.theme_gallery.info,
             info_visible: st.theme_gallery.info_visible,
             export,
+            jump: st.jump,
         }
     }
 
@@ -1944,17 +1977,34 @@ mod tests {
             !fully_visible(before),
             "前置条件：滚到底后画廊行不应完整可见（行 {before:?} 视口 {vb:?}）"
         );
-        // 点「当前主题」链接 = 发跳转请求。
-        crate::search::jump::request_quiet(st.tab, st.jump, theme_link_target());
+        // 点「当前主题」链接 = 发跳转请求(现算目标 = 选中格)。
+        let target = theme_cell_target(
+            st.fields
+                .select_indices
+                .borrow()
+                .get("ui.theme.name")
+                .map(|s| s.get()),
+            &st.theme_value_sig.get(),
+            st.current_config.get_str("ui.theme.name"),
+        );
+        crate::search::jump::request_quiet(st.tab, st.jump, target.clone());
         // 置位帧 → 认领帧 → 滚动落地帧。
         for _ in 0..3 {
             layout(&mut tree);
         }
-        let after = tree.abs_bounds(aid);
+        // 断言口径 = **选中格**:锚点键是 target 里现算出的那把。
+        let crate::search::index::JumpTarget::Row {
+            anchor: cell_key, ..
+        } = &target
+        else {
+            panic!("落点应是行锚点");
+        };
+        let cell = crate::search::anchor::anchor_node_id(&tree, cell_key)
+            .expect("选中格锚点应已挂载并跑过帧");
+        let after = tree.abs_bounds(cell);
         assert!(
-            after.y >= vb.y + crate::search::anchor::SCROLL_MARGIN - 1
-                && after.bottom() <= vb.bottom(),
-            "跳转后画廊行应落在视口内、行顶≈视口顶+24；行 {after:?} vs 视口 {vb:?}"
+            fully_visible(after),
+            "跳转后选中格应完整落在视口内;格 {after:?} vs 视口 {vb:?}"
         );
     }
 
@@ -1980,6 +2030,10 @@ mod tests {
             .height(h)
             .build(&mut tree);
         tree.root = Some(root);
+        // 模拟真实场景:配置里已有当前主题(列表未到时现算目标要用它退让)。
+        app.borrow_mut()
+            .current_config
+            .set_path("ui.theme.name", serde_json::json!("default"));
         let st = app.borrow();
         st.tab.set(crate::cli::page_to_index("theme").unwrap());
         let layout = |t: &mut windui::core::Tree| {
@@ -2001,11 +2055,20 @@ mod tests {
             }
             found.expect("页面应有滚动容器")
         };
-        // 列表还空：滚到底后矮行也在视口外（主题页还有主题设置/编辑器等卡片撑高）。
+        // 列表还空:滚到底。
         tree.set_scroll_y(scroller, i32::MAX);
         layout(&mut tree);
         // 列表未到就点链接。
-        crate::search::jump::request_quiet(st.tab, st.jump, theme_link_target());
+        let target = theme_cell_target(
+            st.fields
+                .select_indices
+                .borrow()
+                .get("ui.theme.name")
+                .map(|s| s.get()),
+            &st.theme_value_sig.get(),
+            st.current_config.get_str("ui.theme.name"),
+        );
+        crate::search::jump::request_quiet(st.tab, st.jump, target.clone());
         for _ in 0..3 {
             layout(&mut tree);
         }
@@ -2016,7 +2079,15 @@ mod tests {
         for _ in 0..3 {
             layout(&mut tree);
         }
-        let b = tree.abs_bounds(aid);
+        let crate::search::index::JumpTarget::Row {
+            anchor: cell_key, ..
+        } = &target
+        else {
+            panic!("落点应是行锚点");
+        };
+        let cell = crate::search::anchor::anchor_node_id(&tree, cell_key)
+            .expect("选中格锚点应已挂载并跑过帧");
+        let b = tree.abs_bounds(cell);
         let n = tree.get(scroller).expect("滚动容器在树上");
         let abs = tree.abs_bounds(scroller);
         let vb = windui::geometry::Rect::new(
@@ -2027,7 +2098,7 @@ mod tests {
         );
         assert!(
             b.y >= vb.y - 1 && b.bottom() <= vb.bottom() + 1,
-            "列表到达后画廊行应完整落在视口内；行 {b:?} vs 视口 {vb:?}"
+            "列表到达后选中格应完整落在视口内;格 {b:?} vs 视口 {vb:?}"
         );
     }
 }
