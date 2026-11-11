@@ -1,6 +1,7 @@
-//! 外观页顶部的「效果预览」：草稿配置里影响候选窗的那几段 `ui` 子树交给 core 出一张候选窗
-//! 预览（`theme.renderPreview` 的 `ui` 参数，协议见 WindInput `docs/design/wind-scene-extraction.md`
-//! §7.2），改了字号、字体、每页候选数这类设置，不必保存就能看到效果。
+//! 外观页顶部的「效果预览」：草稿配置里影响候选窗与工具栏的那几段 `ui` 子树交给 core
+//! 出一张预览图（`theme.renderPreview` 的 `ui` 参数，协议见 WindInput
+//! `docs/design/wind-scene-extraction.md` §7.2），改了字号、字体、每页候选数、工具栏格子
+//! 这类设置，不必保存就能看到效果。
 //!
 //! - **草稿**：与按键冲突检测同一取法——`current_config` 的副本跑一遍全部写回器
 //!   （[`AppState::draft_config`]），只取 [`DRAFT_SECTIONS`] 这几段。只在外观页可见时算。
@@ -58,8 +59,10 @@ pub(crate) const FIT_W: i32 = 588;
 pub(crate) const FIT_H: i32 = AREA_H - 2 * AREA_PAD;
 const _: () = assert!(FIT_H == 184);
 const _: () = assert!(FIT_W == 588);
-/// 草稿里影响候选窗外观的段（`ui.<段>`）；工具栏、状态提示等改了不重取。
-pub const DRAFT_SECTIONS: &[&str] = &["theme", "candidate", "font", "comment"];
+/// 草稿里出预览要带上的段（`ui.<段>`）。工具栏预览（`kind = toolbar`）取 `ui.toolbar` 段
+/// 渲染（core 端 `candidate_preview_draft` 折算 `toolbar_items`），缺了它改工具栏设置
+/// 永远出的是生效配置的图、不反映草稿；状态提示等与预览无关的段不带。
+pub const DRAFT_SECTIONS: &[&str] = &["theme", "candidate", "font", "comment", "toolbar"];
 
 /// `ui.theme.style` 是不是「跟随系统」：同 core `ThemeStyle::from_config`，不是 light / dark 都算。
 pub fn follows_system(style: Option<&str>) -> bool {
@@ -717,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_ui_keeps_only_candidate_window_sections() {
+    fn draft_ui_keeps_candidate_and_toolbar_sections() {
         let cfg = crate::config::Config::from_value(json!({ "ui": {
             "candidate": { "font_size": 20 },
             "toolbar": { "visible": true },
@@ -726,7 +729,11 @@ mod tests {
         let ui = draft_ui(&cfg);
         assert_eq!(
             ui,
-            json!({ "candidate": { "font_size": 20 }, "comment": { "enabled": false } })
+            json!({
+                "candidate": { "font_size": 20 },
+                "comment": { "enabled": false },
+                "toolbar": { "visible": true },
+            })
         );
     }
 
@@ -831,6 +838,34 @@ mod tests {
 
     /// 草稿明暗跟随系统（缺省即是）：系统切了明暗就重取；显式选了亮 / 暗不重取；不在本页时不取，
     /// 切回来再取。
+    /// 改工具栏设置项（items / vertical 这类）要重取：草稿 `ui.toolbar` 段进 Key.ui，
+    /// 不再「改了不重取、应用设置才刷新」。改完回退，同样各重取一次。
+    #[test]
+    fn toolbar_draft_change_refetches() {
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let mut w = watcher(&st);
+        let update = |w: &mut Watcher| {
+            windui::testing::run_with_ctx(|ctx| w.on_update(ctx));
+            w.task.get()
+        };
+        let ui_page = crate::cli::page_to_index("ui").unwrap();
+        st.borrow().tab.set(ui_page);
+        let first = update(&mut w).unwrap();
+        assert_eq!(update(&mut w), Some(first), "输入没变不重发");
+        // 写 current_config 的对应字段（写回器最终写的就是这些字段），与真实链路同构。
+        st.borrow_mut()
+            .current_config
+            .set_path("ui.toolbar.vertical", json!(true));
+        let second = update(&mut w).unwrap();
+        assert_ne!(second, first, "改工具栏项要重取");
+        assert_eq!(update(&mut w), Some(second), "同一份输入不重发");
+        st.borrow_mut()
+            .current_config
+            .set_path("ui.toolbar.vertical", json!(false));
+        let third = update(&mut w).unwrap();
+        assert_ne!(third, second, "改回去也要重取");
+    }
+
     #[test]
     fn system_theme_flip_refetches_only_when_following_system() {
         let st = Rc::new(RefCell::new(AppState::empty()));
