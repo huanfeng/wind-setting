@@ -251,7 +251,10 @@ impl FieldRegistry {
 
     /// 开始一次页面构建的登记记账。与 [`Self::end_page_batch`] 成对使用:中间发生的
     /// 全部登记(区间增量与新增键)在 end 时圈成「本批」,供 [`Self::reset_page_batch`]
-    /// 只清这一批。
+    /// 只清这一批。**不可嵌套、不可重入**(嵌套 begin 会覆盖外层快照,内层 end 一 take,
+    /// 外层 end 的 expect 直接 panic);单线程成对使用。批内登记的 dialogs 只有开窗
+    /// take 时挂根一次,批清掉后没有重挂根通路——现有 manifest 的 ui 分组无 dialog
+    /// 类行,暂无触发面;将来若加,要先解决挂根再动。
     pub fn begin_page_batch(&self) {
         *self.batch_before.borrow_mut() = Some(BatchBefore {
             writers: self.writers.borrow().len(),

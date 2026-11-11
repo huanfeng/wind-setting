@@ -363,7 +363,8 @@ pub fn wrap(
 
 /// 同 [`wrap`],但**不**登记进守门集合(MOUNTED)——运行期动态键(如主题画廊每格的
 /// `ui.theme.name:<id>`)数量不定、键值依赖运行期数据,进不了手写静态清单的比对集;
-/// 手写静态键仍走 [`wrap`]。
+/// 手写静态键仍走 [`wrap`]。**静态键不许走此入口**——那是绕开守门比对的口子,
+/// 静态键从这里挂,守门 `handwritten_anchors_are_all_mounted` 就比不到了。
 pub fn wrap_runtime(
     content: Element,
     key: impl Into<String>,
