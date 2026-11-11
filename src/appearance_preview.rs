@@ -14,8 +14,9 @@
 //! - **形态**：卡头（标题行右侧）的分段控件在「候选窗 / 工具栏」间切换（`theme.renderPreview`
 //!   的 `kind` 参数，候选窗走协议缺省），选中段会话内记住、不落盘。换形态先回到「生成中」占位，
 //!   图画不出时落「无法生成」——不留另一个形态的旧图冒充新预览。
-//! - **fit 目标框**：请求带 `fit_w`/`fit_h`（图区内容区的逻辑尺寸，见 [`FIT_W`]），core 拿它
-//!   折算渲染倍率（clamp 1–3），预览图更能撑满图区。
+//! - **fit 目标框**：候选窗形态请求带 `fit_w`/`fit_h`（图区内容区的逻辑尺寸，见 [`FIT_W`]），
+//!   core 拿它折算渲染倍率（clamp 1–3），预览图更能撑满图区；工具栏形态不带（core 回到自然
+//!   逻辑尺寸渲染、显示端 1:1），预览贴近实际观感。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -75,6 +76,16 @@ pub const KIND_LABELS: &[&str] = &["候选窗", "工具栏"];
 /// 越界按候选窗算。
 pub fn kind_param(idx: usize) -> Option<&'static str> {
     (idx == 1).then_some("toolbar")
+}
+
+/// 段索引 → fit 目标框：候选窗带图区内容区尺寸（588×184，core 折算渲染倍率撑满图区）；
+/// 工具栏不带（两维省键，core 回到自然逻辑尺寸渲染、历史缓存键直接命中），显示端 1:1
+/// 居中、不放大。越界按候选窗算。
+pub(crate) fn kind_fit(idx: usize) -> (i32, i32) {
+    match idx {
+        1 => (0, 0),
+        _ => (FIT_W, FIT_H),
+    }
 }
 
 /// 屏上显示的那一张。
@@ -208,7 +219,7 @@ impl Watcher {
             self.net.clone(),
             self.shown_kind.clone(),
         );
-        let params = request_params(&key.ui, scale, kind_param(key.kind), (FIT_W, FIT_H));
+        let params = request_params(&key.ui, scale, kind_param(key.kind), kind_fit(key.kind));
         let kind = key.kind;
         let id = self.net.spawn(
             move |cancel| {
@@ -343,8 +354,13 @@ impl Widget for Watcher {
 /// 交叠期整框比落定状态宽，新图先出现在偏左的位置、旧图淡出那一刻整框收成新宽向中间
 /// 归位——于是「往左边抖一下，又回到正确位置」。修法是给两帧**恒定跨度**：全部
 /// `width_match().height_match()` 填满底板内容区，任意状态层叠出的都是同一矩形，抖动
-/// 无从谈起。代价是 `Fit::Contain` 会把小图放大（Contain 不区分缩小与放大，缓存
-/// `skia::draw_image`：`s = min(pw/iw, ph/ih)`），换来带装饰主题显示更大、居中恒定。
+/// 无从谈起。
+///
+/// 两种形态**同一结构**、只有 fit 不同（[`frame_fit`]）：候选窗 `Fit::Contain` 小图放大
+/// 撑满、居中恒定；工具栏 `Fit::None`——draw_image 对所有 fit 都在 dst 内居中，`None`
+/// 按 1 图片像素 = 1 物理 px 绘制（core 不带 fit 时按自然逻辑尺寸出图，回执尺寸即该
+/// DPI 下的物理像素），正合「预览 1:1、贴近实际观感」（2026-11 真机反馈：放大到 588 宽
+/// 后格子巨大，与实际使用的小横条差太远）。
 /// 图区里的居中占位文字（生成中 / 生成失败）。
 fn placeholder(text: &str) -> Element {
     Element::stack().width_match().height_match().child(
@@ -356,10 +372,18 @@ fn placeholder(text: &str) -> Element {
     )
 }
 
-fn preview_area(shown: Signal<Shown>) -> Element {
-    let image = Element::switcher(shown, |s: Shown| match s {
+/// 形态 → 显示帧的图片适配：候选窗 Contain 恒定填满；工具栏 None 1:1 居中不放大。
+fn frame_fit(kind: Signal<usize>) -> Fit {
+    match kind.get() {
+        1 => Fit::None,
+        _ => Fit::Contain,
+    }
+}
+
+fn preview_area(shown: Signal<Shown>, kind: Signal<usize>) -> Element {
+    let image = Element::switcher(shown, move |s: Shown| match s {
         Shown::Ready(png) => Element::image_bytes(&png.bytes)
-            .fit(Fit::Contain)
+            .fit(frame_fit(kind.clone()))
             .width_match()
             .height_match(),
         Shown::Waiting => placeholder("预览生成中…"),
@@ -380,7 +404,7 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     let error: Signal<String> = signal(String::new());
     // 形态选中段：会话内记住即可（页面状态，不落盘配置）。
     let kind: Signal<usize> = signal(0);
-    let area = preview_area(shown);
+    let area = preview_area(shown, kind.clone());
     let note = Element::label_signal(error)
         .font_size(12.0)
         .fg_role(Role::TextSubtle)
@@ -453,7 +477,7 @@ mod tests {
         // 测不出 200。同构地包一层列。
         let root = Element::col()
             .width_match()
-            .child(preview_area(shown))
+            .child(preview_area(shown, signal(0)))
             .build(&mut tree);
         tree.root = Some(root);
         // 同一份 PNG 字节、两份独立分配的 `Vec`：哈希为空时按字节指针判等，指针不同才
@@ -503,6 +527,66 @@ mod tests {
         shown.set(Shown::Ready(png(480)));
         let b = layout(&mut tree);
         assert_eq!(a, b, "换到自然宽不同的图不该挪动任何节点");
+    }
+
+    /// 工具栏形态：显示帧 1:1 不放大（[`frame_fit`] 给 `Fit::None`），且换图（不同自然宽）
+    /// 同样**不挪动任何节点**——两帧同一矩形这条防左抖的前提在工具栏形态下原样成立。
+    #[test]
+    fn toolbar_frame_is_fit_none_and_swapping_moves_no_node() {
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let (shown, kind) = (signal(Shown::Waiting), signal(1usize));
+        let mut tree = Tree::new();
+        let root = Element::col()
+            .width_match()
+            .child(preview_area(shown, kind))
+            .build(&mut tree);
+        tree.root = Some(root);
+        let png = |w: u32| {
+            RawPng {
+                hash: String::new(),
+                bytes: include_bytes!("mockdata/theme_previews/default.png").to_vec(),
+                width: w,
+                height: 64,
+            }
+            .into_png(1.0)
+        };
+        let rects = |tree: &Tree| -> Vec<windui::geometry::Rect> {
+            let mut out = Vec::new();
+            let mut stack = vec![tree.root.expect("已设根")];
+            while let Some(id) = stack.pop() {
+                if let Some(n) = tree.get(id) {
+                    if n.bounds.w > 0 {
+                        out.push(n.bounds);
+                    }
+                    stack.extend(n.children.iter().copied())
+                }
+            }
+            out
+        };
+        let layout = |tree: &mut Tree| -> Vec<windui::geometry::Rect> {
+            tree.layout_root(Size::new(600, 400), &mut windui::text::NullTextEngine);
+            rects(tree)
+        };
+        let _waiting = layout(&mut tree);
+        shown.set(Shown::Ready(png(240)));
+        let a = layout(&mut tree);
+        // 两形态同一结构：外框定高、帧填满内容区（584×184），工具栏不例外。
+        assert!(
+            a.iter().any(|r| r.h == AREA_H),
+            "图区外框应占满定高 {}（{:?}）",
+            AREA_H,
+            a
+        );
+        assert!(
+            a.iter().any(|r| r.h == AREA_H - 16 && r.w == 600 - 16),
+            "工具栏图帧没填满图区内容区（{:?}）",
+            a
+        );
+        shown.set(Shown::Ready(png(480)));
+        let b = layout(&mut tree);
+        assert_eq!(a, b, "工具栏形态换图同样不该挪动任何节点");
     }
 
     /// fit 常量对表真实布局：默认窗口尺寸下，图区内容区（图片/占位实际占的矩形）必须
@@ -570,9 +654,24 @@ mod tests {
         let ui = json!({});
         assert_eq!(kind_param(0), None, "候选窗缺省");
         assert_eq!(kind_param(9), None, "越界按候选窗算");
-        let t = request_params(&ui, 1.0, kind_param(1), (FIT_W, FIT_H));
+        let t = request_params(&ui, 1.0, kind_param(1), kind_fit(1));
         assert_eq!(t["kind"], "toolbar");
         assert_eq!(t["inline"], true);
+        assert!(
+            t.get("fit_w").is_none() && t.get("fit_h").is_none(),
+            "工具栏不带 fit 两维：core 回自然逻辑尺寸渲染"
+        );
+    }
+
+    /// fit 按形态切：候选窗带图区内容区尺寸、工具栏两维省键；越界按候选窗。
+    /// 显示帧的适配同款二分（Contain 恒定填满 / None 1:1 居中）。
+    #[test]
+    fn fit_split_by_kind_request_and_frame() {
+        assert_eq!(kind_fit(0), (FIT_W, FIT_H));
+        assert_eq!(kind_fit(1), (0, 0), "工具栏不带 fit 两维");
+        assert_eq!(kind_fit(9), (FIT_W, FIT_H), "越界按候选窗算");
+        assert_eq!(frame_fit(signal(0)), Fit::Contain);
+        assert_eq!(frame_fit(signal(1)), Fit::None, "工具栏 1:1 不放大");
     }
 
     /// fit 目标框：两维都给、只给一维、都不给（= 旧版请求形状）三种形状都要对。

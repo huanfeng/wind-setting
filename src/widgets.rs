@@ -1283,6 +1283,32 @@ pub fn section_vis_with_menu(
     )
 }
 
+/// [`section_vis_with_menu`] + 标题栏 action 位（右侧的链接 / 分段控件这类卡头动作）。
+/// 「当前主题」链接用：画廊卡是清单派生的卡，行带运行期可见性、标题栏带「隐藏这一节」
+/// 右键菜单，action 位不冲突。
+pub fn section_vis_with_menu_action(
+    title: &str,
+    action: &dyn Fn() -> Element,
+    rows: Vec<(Element, Option<Vis>)>,
+    head: Option<Element>,
+    menu: impl Fn() -> Vec<windui::event::MenuItem> + 'static,
+) -> Element {
+    let menu = Rc::new(menu);
+    let wrap = move |el: Element| {
+        let m = menu.clone();
+        el.on_context_menu(move || m())
+    };
+    section_impl(
+        title,
+        Some(action),
+        head,
+        rows_to_items_vis(rows),
+        None,
+        Some(&wrap),
+        None,
+    )
+}
+
 /// 全部 `section*` 的实现。「界面细节」试验 `section_header`：
 /// 卡内标题行（缺省）/ 卡外标题 / 卡内标题行、不带图标（`look::header`）。三种都建出来按信号显示。
 ///

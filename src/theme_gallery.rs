@@ -789,9 +789,7 @@ pub(crate) fn display_name(
     )
 }
 
-/// 主题页顶部的「当前主题：〈显示名〉」一行。原是外观页预览卡头跳往主题页的链接
-/// （「主题选择：〈名〉」），2026-11 真机反馈后改成在主题页自己的标题区**展示**：
-/// 名字不再是跳转落点，外观页卡头的链接整个撤掉。
+/// 链接文案：有名字带上，没有就只留「当前主题」。
 fn current_theme_label(name: Option<&str>) -> String {
     match name {
         Some(n) if !n.is_empty() => format!("当前主题：{n}"),
@@ -799,12 +797,25 @@ fn current_theme_label(name: Option<&str>) -> String {
     }
 }
 
-/// 主题页顶部标题行（返回文案信号供测试断言）。文案跟画廊选中走（点格即变、点「应用」
-/// 才落盘）：选中索引、取值表、画廊清单三个信号任一变化都重算——三个源没有组合派生信号的
-/// 现成机制（`Signal::map` 只跟单源），用 reactive_effect 把重算结果写进本地信号。这也是
-/// 外观页预览卡头原链接同款的做法。
+/// 链接落点：本页「主题选择」卡里 `ui.theme.name` 那一行（行锚点即清单 key）。
 ///
-/// 排版对齐 [`crate::widgets::page_header`] 的标题：17px 粗体、单行截断。
+/// `pub(crate)` 是给 `search::anchor` 的守门测试用的：手写目标不经 `build_index`
+/// 派生，不入比对集就会在清单键改名时静默退化成「只切页、不滚不闪」。
+pub(crate) fn theme_link_target() -> crate::search::index::JumpTarget {
+    crate::search::index::JumpTarget::Row {
+        tab: crate::cli::page_to_index("theme").unwrap_or(usize::MAX),
+        anchor: "ui.theme.name".to_string(),
+    }
+}
+
+/// 「当前主题：〈显示名〉」链接，坐在主题页「主题选择」卡（画廊）卡头 action 位（返回
+/// 文案信号供测试断言）。2026-11 真机反馈的两跳：原是外观页预览卡头跳往主题页的链接
+/// （「主题选择：〈名〉」），先改到主题页页首做纯展示，再改回**可点击**、落点就是
+/// 本页画廊行。
+///
+/// 文案跟画廊选中走（点格即变、点「应用」才落盘）：选中索引、取值表、画廊清单三个信号
+/// 任一变化都重算——三个源没有组合派生信号的现成机制（`Signal::map` 只跟单源），用
+/// reactive_effect 把重算结果写进本地信号。这也是外观页预览卡头原链接同款的做法。
 pub(crate) fn current_theme_header(state: &AppState) -> (Signal<String>, Element) {
     let label = signal("当前主题".to_string());
     let idx = state
@@ -838,17 +849,12 @@ pub(crate) fn current_theme_header(state: &AppState) -> (Signal<String>, Element
     };
     let eff = crate::pages::dict::reactive::reactive_effect(version_of, apply);
     // eff 要一并挂树：dispatch_reactive_updates 只驱动**树里**的响应式节点。
-    let row = Element::row().width_match().child(eff).child(
-        Element::label_signal(label.clone())
-            .font_size(17.0)
-            .font_weight(700)
-            .fg_role(Role::Text)
-            .max_lines(1)
-            .height(24)
-            .weight(1.0)
-            .truncate(Truncate::End),
-    );
-    (label, row)
+    let (tab, jump) = (state.tab, state.jump);
+    let target = theme_link_target();
+    let link = Element::link(label.clone())
+        .underline(false)
+        .on_click(move |_| crate::search::jump::request_quiet(tab, jump, target.clone()));
+    (label, Element::stack().child(eff).child(link))
 }
 
 /// 画廊清单为空时的占位文字。
@@ -1373,7 +1379,7 @@ mod tests {
             display_name(Some(9), &ids(&["default"]), &entries, Some("jade")).as_deref(),
             Some("jade")
         );
-        // 全没有 → 退 None（标题行只显示「当前主题」）。
+        // 全没有 → 退 None（链接只显示「当前主题」）。
         assert_eq!(display_name(None, &[], &entries, None), None);
     }
 
@@ -1397,7 +1403,7 @@ mod tests {
         assert_eq!(current_theme_label(Some("")), "当前主题");
     }
 
-    /// 反应式接线：选中索引一变，标题行文案跟着变。走真树 + `layout_root`——
+    /// 反应式接线：选中索引一变，链接文案跟着变。走真树 + `layout_root`——
     /// `dispatch_reactive_updates` 是 reactive_effect 唯一的驱动点，只调闭包的话
     /// 「有没有真挂上 `.reactive()`」这一半就没人管（同 auto_encode 的测法）。
     #[test]
@@ -1438,8 +1444,21 @@ mod tests {
         assert_eq!(
             label.get(),
             "当前主题：墨",
-            "选中索引变化应经 reactive_effect 触达标题行文案"
+            "选中索引变化应经 reactive_effect 触达链接文案"
         );
+    }
+
+    /// 链接落点 = 本页「主题选择」卡里 `ui.theme.name` 那行（行锚点即清单 key，与
+    /// manifest 建行时挂的锚点同一把键）。
+    #[test]
+    fn theme_link_targets_the_gallery_row() {
+        match theme_link_target() {
+            crate::search::index::JumpTarget::Row { tab, anchor } => {
+                assert_eq!(tab, crate::cli::page_to_index("theme").unwrap());
+                assert_eq!(anchor, "ui.theme.name");
+            }
+            other => panic!("落点应是行锚点，实为 {other:?}"),
+        }
     }
 
     #[test]

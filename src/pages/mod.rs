@@ -828,12 +828,20 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
                     .map(|el| (el, Some(transfer_vis.clone()))),
             );
         }
-        let card = section_vis_with_menu(
-            &sec,
-            rows,
-            head,
-            crate::manifest::section_menu(state, "theme", &sec),
-        );
+        let menu = crate::manifest::section_menu(state, "theme", &sec);
+        // 画廊卡头 action 位：「当前主题：〈名〉」链接（2026-11 真机反馈：页首纯展示的
+        // 那行挪进来，可点击跳本页画廊行）。
+        let card = if sec == crate::theme_gallery::SECTION_TITLE {
+            crate::widgets::section_vis_with_menu_action(
+                &sec,
+                &|| crate::theme_gallery::current_theme_header(state).1,
+                rows,
+                head,
+                menu,
+            )
+        } else {
+            section_vis_with_menu(&sec, rows, head, menu)
+        };
         let card = crate::manifest::wrap_section_runtime(state, "theme", &sec, card);
         // 搜索锚点叫 ui:theme-import（导入相关词条指向它），落在「主题设置」卡上。
         let card = if sec == settings_sec {
@@ -867,11 +875,9 @@ fn theme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> El
     }
     // 主题导入/编辑器连接的反馈走 AppState.feedback——shell::build 已挂了唯一的全局
     // toast_sink，这里不需要（也不应该）再单独挂一份。
-    // 页首标题行：「当前主题：〈显示名〉」（原是外观页预览卡头的跳转链接，2026-11 真机
-    // 反馈挪到这里做纯展示）。排最前，先于画廊卡。
-    let mut page_secs = vec![crate::theme_gallery::current_theme_header(state).1];
-    page_secs.extend(secs);
-    let page = sections_page("主题", "挑选、导入与管理候选窗和工具栏的主题", page_secs);
+    // 「当前主题：〈名〉」在「主题选择」卡（画廊）卡头 action 位（2026-11 真机反馈：先在页首
+    // 做纯展示、再挪进画廊卡头，可点击跳本页画廊行），见上面画廊节的特判。
+    let page = sections_page("主题", "挑选、导入与管理候选窗和工具栏的主题", secs);
     Element::stack()
         .fill()
         .child(page)

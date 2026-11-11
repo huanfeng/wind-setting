@@ -538,12 +538,9 @@ mod tests {
         let idx = build_index(&crate::manifest::Manifest::from_embedded());
         // 手写跳转目标（不经 build_index 派生的）也入比对集：清单键改名时索引与锚点
         // 会一起换键、守门照常绿，唯独手写这边不会自己跟——漏了它，症状仍是
-        // 「点得到、页也切了，就是不滚不闪」。
-        //
-        // 效果预览卡头的「主题选择」链接已撤（2026-11 真机反馈）：当前主题改为在主题页
-        // 顶部展示（theme_gallery::current_theme_header），不再是跳转落点。守门机制留着，
-        // 数组清空；下一枚手写落点出现时放回来。
-        let handwritten: [crate::search::index::JumpTarget; 0] = [];
+        // 「点得到、页也切了，就是不滚不闪」。当前一条：主题页画廊卡头「当前主题」链接的
+        // 落点（theme_gallery::theme_link_target）。
+        let handwritten = [crate::theme_gallery::theme_link_target()];
         let missing: std::collections::BTreeSet<&str> = idx
             .iter()
             .map(|e| &e.target)
