@@ -96,7 +96,7 @@ const FOLLOW_MS: u64 = 2000;
 /// `Tree::scroll_into_view` 是**最小滚动**：目标恰好擦着视口下沿（或上沿）就停。
 /// 那正是「刚冒个头」的观感——尤其目标是整张卡片时，用户只看得见它的标题。
 /// 多滚这一点点，目标就落在视口里而不是边界上。
-const SCROLL_MARGIN: i32 = 24;
+pub(crate) const SCROLL_MARGIN: i32 = 24;
 
 /// 最近的滚动祖先。
 fn scroll_ancestor(tree: &Tree, id: NodeId) -> Option<NodeId> {
@@ -205,6 +205,10 @@ impl Anchor {
 impl Widget for Anchor {
     fn on_update(&mut self, ctx: &mut EventCtx) {
         self.follow_layout(ctx);
+        // 测试期在 on_update 登记键 → 节点 id（幂等；重建后新 id 覆盖旧值），给
+        // 「跳转落点」类测试定位目标行锚点用，见模块尾部 IDS。
+        #[cfg(test)]
+        IDS.with(|m| m.borrow_mut().insert(self.key.clone(), ctx.id()));
         // 绝大多数帧都在这里返回：常态下只读一个信号，不做父链上溯。
         let Some(req) = self.jump.get() else {
             self.armed = false;
@@ -372,6 +376,29 @@ thread_local! {
 #[cfg(test)]
 pub fn mounted_anchors() -> std::collections::BTreeSet<String> {
     MOUNTED.with(|m| m.borrow().clone())
+}
+
+// 测试期记录「每个锚点键最新的节点 id」:`Anchor::on_update` 每帧登记(幂等,重建后新 id
+// 覆盖旧值)。给「跳转落点」类测试用——需要在真树里定位目标行的锚点节点、断言它落在
+// 视口内。跨测试污染靠读时校验兜底:树重建后旧 id 在新树里 `tree.get` 返回 None。
+#[cfg(test)]
+thread_local! {
+    static IDS: std::cell::RefCell<std::collections::HashMap<String, windui::core::NodeId>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// 清掉登记(测试开头调用,免得上一个测试的树串台)。
+#[cfg(test)]
+pub fn reset_anchor_ids() {
+    IDS.with(|m| m.borrow_mut().clear());
+}
+
+/// 键 → 当前树里仍有效的锚点节点 id。登记发生在锚点第一次 `on_update` 之后,
+/// 调用方先跑一帧布局再来取。
+#[cfg(test)]
+pub fn anchor_node_id(tree: &Tree, key: &str) -> Option<windui::core::NodeId> {
+    let id = IDS.with(|m| m.borrow().get(key).copied())?;
+    tree.get(id).is_some().then_some(id)
 }
 
 #[cfg(test)]

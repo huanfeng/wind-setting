@@ -1876,4 +1876,158 @@ mod tests {
         layout(&mut tree);
         assert!(matches!(st.theme_gallery.phase.get(), Phase::Debounce(_)));
     }
+
+    /// 「当前主题」链接的跳转落点：整窗真树 + 真布局。滚到底后点链接（发请求、跑帧让
+    /// 锚点认领、滚动落地），断言画廊行锚点回到视口内、且落点符合定位算法预期
+    /// （向上最小滚动 + 24 边距 → 行顶对齐视口顶 + 24）。
+    #[test]
+    fn current_theme_link_lands_on_gallery_row() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        // 真机窗口尺寸 + mock 主题列表（3 主题）：真机见到的画廊行高达数百 px。
+        // 填列表让画廊真渲染网格，「滚到底」才构得出「目标行在视口外」。
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        {
+            let mut m = app.borrow_mut();
+            m.refresh_theme_names();
+        }
+        let st = app.borrow();
+        st.tab.set(crate::cli::page_to_index("theme").unwrap());
+        let layout = |t: &mut windui::core::Tree| {
+            t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+        };
+        layout(&mut tree);
+        let aid = crate::search::anchor::anchor_node_id(&tree, "ui.theme.name")
+            .expect("画廊行锚点应已挂载并跑过帧");
+        // 页面滚动容器 = 锚点向上第一个 Scroll 先祖。
+        let mut cur = tree.get(aid).and_then(|n| n.parent);
+        let mut scroller = None;
+        while let Some(i) = cur {
+            let n = tree.get(i).expect("父链完整");
+            if matches!(n.layout, windui::core::Layout::Scroll) {
+                scroller = Some(i);
+                break;
+            }
+            cur = n.parent;
+        }
+        let scroller = scroller.expect("页面应有滚动容器");
+        // 滚到底：跳转前目标行完全在视口上方。
+        tree.set_scroll_y(scroller, i32::MAX);
+        layout(&mut tree);
+        let before = tree.abs_bounds(aid);
+        let vb = {
+            let n = tree.get(scroller).expect("滚动容器在树上");
+            let abs = tree.abs_bounds(scroller);
+            windui::geometry::Rect::new(
+                abs.x + n.padding.left,
+                abs.y + n.padding.top,
+                n.scroll_view().w,
+                n.scroll_view().h,
+            )
+        };
+        let fully_visible = |r: windui::geometry::Rect| r.y >= vb.y && r.bottom() <= vb.bottom();
+        assert!(
+            !fully_visible(before),
+            "前置条件：滚到底后画廊行不应完整可见（行 {before:?} 视口 {vb:?}）"
+        );
+        // 点「当前主题」链接 = 发跳转请求。
+        crate::search::jump::request_quiet(st.tab, st.jump, theme_link_target());
+        // 置位帧 → 认领帧 → 滚动落地帧。
+        for _ in 0..3 {
+            layout(&mut tree);
+        }
+        let after = tree.abs_bounds(aid);
+        assert!(
+            after.y >= vb.y + crate::search::anchor::SCROLL_MARGIN - 1
+                && after.bottom() <= vb.bottom(),
+            "跳转后画廊行应落在视口内、行顶≈视口顶+24；行 {after:?} vs 视口 {vb:?}"
+        );
+    }
+
+    /// 「当前主题」跳转 × 主题列表加载竞态：列表未到（画廊行矮）就点链接，锚点认领
+    /// 滚到矮行；列表到达后行变高，跟随窗口（FOLLOW_MS 内 content_h 一变就重新对准）
+    /// 必须把落点修正到高行的正确位置——真机「打开设置马上点链接」正是这个时序。
+    #[test]
+    fn jump_before_theme_list_arrives_still_lands_on_row() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        let st = app.borrow();
+        st.tab.set(crate::cli::page_to_index("theme").unwrap());
+        let layout = |t: &mut windui::core::Tree| {
+            t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+        };
+        layout(&mut tree);
+        let aid = crate::search::anchor::anchor_node_id(&tree, "ui.theme.name")
+            .expect("画廊行锚点应已挂载并跑过帧");
+        let scroller = {
+            let mut cur = tree.get(aid).and_then(|n| n.parent);
+            let mut found = None;
+            while let Some(i) = cur {
+                let n = tree.get(i).expect("父链完整");
+                if matches!(n.layout, windui::core::Layout::Scroll) {
+                    found = Some(i);
+                    break;
+                }
+                cur = n.parent;
+            }
+            found.expect("页面应有滚动容器")
+        };
+        // 列表还空：滚到底后矮行也在视口外（主题页还有主题设置/编辑器等卡片撑高）。
+        tree.set_scroll_y(scroller, i32::MAX);
+        layout(&mut tree);
+        // 列表未到就点链接。
+        crate::search::jump::request_quiet(st.tab, st.jump, theme_link_target());
+        for _ in 0..3 {
+            layout(&mut tree);
+        }
+        // 列表此刻到达：行变高。跟随窗口应当重新对准。
+        drop(st);
+        app.borrow_mut().refresh_theme_names();
+        // 重排帧 + 跟随重滚帧 + 落地帧。
+        for _ in 0..3 {
+            layout(&mut tree);
+        }
+        let b = tree.abs_bounds(aid);
+        let n = tree.get(scroller).expect("滚动容器在树上");
+        let abs = tree.abs_bounds(scroller);
+        let vb = windui::geometry::Rect::new(
+            abs.x + n.padding.left,
+            abs.y + n.padding.top,
+            n.scroll_view().w,
+            n.scroll_view().h,
+        );
+        assert!(
+            b.y >= vb.y - 1 && b.bottom() <= vb.bottom() + 1,
+            "列表到达后画廊行应完整落在视口内；行 {b:?} vs 视口 {vb:?}"
+        );
+    }
 }
