@@ -132,24 +132,42 @@ impl SubNav {
     ) -> Element {
         let visible = Rc::new(visible);
         let vis_row = visible.clone();
-        let idx = {
-            let mut tops = self.0.tops.borrow_mut();
-            tops.push(UNSET);
-            tops.len() - 1
-        };
         // 运行期重建(外观页图钉锁定切布局时随骨架重建清单卡)会再次 wrap 同名分块:
         // 条目按 label 替换而非追加,否则 section_count 每帧现求,翻一次图钉条目翻倍、
         // 「少于两块收起整栏」的判定跟着变形。
-        {
+        // 替换时**复用旧条目的 tops 槽位**并把槽位重置 UNSET:tops 若只增不清,「滚到底
+        // = 最后一块」(resolve 的 tops.len()-1)会落不存在条目、按位置解析会把旧槽值
+        // 扫进来,pinned 残留则钉错条目。pinned 指向被替换槽位时一并清掉。
+        let idx = {
             let mut items = self.0.items.borrow_mut();
-            items.retain(|it| it.label != label);
-            items.push(SubNavItem {
+            let old_pos = items.iter().position(|it| it.label == label);
+            let old_slot = old_pos.map(|p| items[p].section);
+            let mut tops = self.0.tops.borrow_mut();
+            let idx = match old_slot {
+                Some(slot) => {
+                    tops[slot] = UNSET;
+                    if self.0.pinned.get().is_some_and(|(i, _)| i == slot) {
+                        self.0.pinned.set(None);
+                    }
+                    slot
+                }
+                None => {
+                    tops.push(UNSET);
+                    tops.len() - 1
+                }
+            };
+            let item = SubNavItem {
                 label: label.to_string(),
                 depth,
-                section: idx,
+                section: old_slot.unwrap_or(idx),
                 visible: vis_row,
-            });
-        }
+            };
+            match old_pos {
+                Some(p) => items[p] = item,
+                None => items.push(item),
+            }
+            idx
+        };
         Element::stack()
             .width_match()
             .visible_when(move || visible())
@@ -536,6 +554,35 @@ mod tests {
         report_all(&nav, &[16, 300, 700], 0, 1000);
         nav.resolve();
         assert_eq!(nav.active().get(), 0);
+    }
+
+    /// 重建替换(同名 wrap 两次,模拟图钉翻转的骨架重建)必须**复用旧槽位**:tops 长度
+    /// 不变、被替换槽位重置 UNSET、指向该槽的 pinned 清掉——否则「滚到底=最后一块」落
+    /// 不存在条目,按位置解析扫进旧槽值,pinned 钉错条目。
+    #[test]
+    fn rebuild_reuses_slot_and_clears_stale_pin() {
+        let nav = nav_with(3);
+        nav.pin(0, 500);
+        // 同名 wrap 第二次:替换「s0」,复用它的槽位 0。
+        let _ = nav.wrap("s0", 0, Element::leaf());
+        let items = nav.items();
+        assert_eq!(items.len(), 3, "条目应替换而非翻倍");
+        assert_eq!(items[0].section, 0, "应复用旧槽位 0");
+        assert_eq!(items[0].label, "s0");
+        assert_eq!(items[1].section, 1);
+        assert_eq!(items[2].section, 2);
+        // 槽位重置 UNSET 后,位置解析照常(滚到底=最后一块的口径由 tops.len 决定)。
+        report_all(&nav, &[16, 300, 700], 0, 1000);
+        nav.resolve();
+        assert_eq!(nav.active().get(), 0, "槽位重置后按位置解析应正常");
+        // pinned 残留则钉住高亮:替换 s0 后钉子必须已清,滚到底应按位置解析认末项。
+        report_all(&nav, &[-800, -400, 200], 1000, 1000);
+        nav.resolve();
+        assert_eq!(
+            nav.active().get(),
+            2,
+            "被替换槽位的 pinned 必须已清,滚到底认末项"
+        );
     }
 
     /// 页尾那几张卡合起来不足一屏时，末块的顶端**永远**越不过判定线。
