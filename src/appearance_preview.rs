@@ -91,19 +91,6 @@ pub(crate) fn kind_fit(idx: usize) -> (i32, i32) {
     }
 }
 
-/// 段索引 → 请求 scale：工具栏固定 1.0。`Fit::None` 是「1 图片像素 = 1 逻辑 dp」，
-/// 显示物理 = PNG 像素 × 窗口 DPI——core 按 scale 出图，scale 带窗口 DPI 会出
-/// dpi 倍像素、屏上再乘一次 DPI，预览偏大 dpi²/dpi = dpi 倍（125% 屏大 25%）。
-/// 固定 1.0 后显示物理 = 自然逻辑 × DPI = 恰好实际工具栏的物理大小。副产物：
-/// 请求 Key 的 scale_pct 恒 100，跨屏拖动窗口不触发工具栏预览重取。
-/// 越界按候选窗算（取窗口 DPI）。
-pub(crate) fn kind_scale(idx: usize, dpi: f32) -> f32 {
-    match idx {
-        1 => 1.0,
-        _ => dpi,
-    }
-}
-
 /// 屏上显示的那一张。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Shown {
@@ -235,12 +222,7 @@ impl Watcher {
             self.net.clone(),
             self.shown_kind.clone(),
         );
-        let params = request_params(
-            &key.ui,
-            kind_scale(key.kind, scale),
-            kind_param(key.kind),
-            kind_fit(key.kind),
-        );
+        let params = request_params(&key.ui, scale, kind_param(key.kind), kind_fit(key.kind));
         let kind = key.kind;
         let id = self.net.spawn(
             move |cancel| {
@@ -378,10 +360,10 @@ impl Widget for Watcher {
 /// 无从谈起。
 ///
 /// 两种形态**同一结构**、只有 fit 与绘制适配不同（[`frame_fit`]）：候选窗 `Fit::Contain`
-/// 小图放大撑满、居中恒定；工具栏 `Fit::None`——draw_image 对所有 fit 都在 dst 内居中，
-/// `None` 是 1 图片像素 = 1 逻辑 dp（不是物理 px；见 [`kind_scale`]：配 scale=1.0 的请求，
-/// 屏上物理 = 自然逻辑 × DPI = 实际工具栏的物理大小）。（2026-11 真机反馈：放大到 588 宽
-/// 后格子巨大，与实际使用的小横条差太远。）
+/// 小图放大撑满、居中恒定；工具栏 `Fit::Physical`——1 图片像素 = 1 屏幕物理像素直出
+/// （windui 0.33；请求带窗口 DPI，出图像素与屏上物理一一对应，HiDPI 不再插值发糊、
+/// 大小也恰好与实际工具栏一致）。（2026-11 真机反馈：放大到 588 宽后格子巨大，与实际
+/// 使用的小横条差太远；压 scale 保大小的 1.0 旧法在 HiDPI 有插值糊。）
 /// 图区里的居中占位文字（生成中 / 生成失败）。
 fn placeholder(text: &str) -> Element {
     Element::stack().width_match().height_match().child(
@@ -396,7 +378,7 @@ fn placeholder(text: &str) -> Element {
 /// 形态 → 显示帧的图片适配：候选窗 Contain 恒定填满；工具栏 None 1:1 居中不放大。
 fn frame_fit(kind: Signal<usize>) -> Fit {
     match kind.get() {
-        1 => Fit::None,
+        1 => Fit::Physical,
         _ => Fit::Contain,
     }
 }
@@ -570,10 +552,10 @@ mod tests {
         assert_eq!(a, b, "换到自然宽不同的图不该挪动任何节点");
     }
 
-    /// 工具栏形态：显示帧 1:1 不放大（[`frame_fit`] 给 `Fit::None`），且换图（不同自然宽）
+    /// 工具栏形态：显示帧物理 1:1 直出（[`frame_fit`] 给 `Fit::Physical`），且换图（不同自然宽）
     /// 同样**不挪动任何节点**——两帧同一矩形这条防左抖的前提在工具栏形态下原样成立。
     #[test]
-    fn toolbar_frame_is_fit_none_and_swapping_moves_no_node() {
+    fn toolbar_frame_is_fit_physical_and_swapping_moves_no_node() {
         use windui::core::Tree;
         use windui::geometry::Size;
 
@@ -704,19 +686,16 @@ mod tests {
         );
     }
 
-    /// fit 与请求 scale 按形态切：候选窗带图区内容区尺寸 + 窗口 DPI，工具栏两维省键 +
-    /// scale 固定 1.0（Fit::None 是 1 图片像素 = 1 逻辑 dp，配 1.0 才与实际工具栏物理同大，
-    /// 详见 kind_scale 注释）；越界按候选窗。显示帧的适配同款二分（Contain / None）。
+    /// fit 按形态切：候选窗带图区内容区尺寸、工具栏两维省键；请求 scale 两形态统一取
+    /// 窗口 DPI（工具栏 Fit::Physical 是 1 图片像素 = 1 物理像素，出图即屏上 1:1 无插值）；
+    /// 越界按候选窗。显示帧的适配同款二分（Contain / Physical）。
     #[test]
     fn fit_split_by_kind_request_and_frame() {
         assert_eq!(kind_fit(0), (FIT_W, FIT_H));
         assert_eq!(kind_fit(1), (0, 0), "工具栏不带 fit 两维");
         assert_eq!(kind_fit(9), (FIT_W, FIT_H), "越界按候选窗算");
-        assert_eq!(kind_scale(0, 1.25), 1.25, "候选窗取窗口 DPI");
-        assert_eq!(kind_scale(1, 1.25), 1.0, "工具栏固定 1.0，见 kind_scale");
-        assert_eq!(kind_scale(9, 1.25), 1.25, "越界按候选窗算");
         assert_eq!(frame_fit(signal(0)), Fit::Contain);
-        assert_eq!(frame_fit(signal(1)), Fit::None, "工具栏 1:1 不放大");
+        assert_eq!(frame_fit(signal(1)), Fit::Physical, "工具栏物理 1:1 直出");
     }
 
     /// fit 目标框：两维都给、只给一维、都不给（= 旧版请求形状）三种形状都要对。
