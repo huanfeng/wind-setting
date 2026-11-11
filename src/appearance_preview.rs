@@ -418,13 +418,24 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState, locked: bool) -
         } else {
             Role::TextSubtle
         };
-        Element::row()
+        // 热区包大：裸图标 14×14 命中窄，包成 28 见方热区；
+        // tooltip 文案按锁定态二选一（分叉重建时闭包重跑，文案跟着换）。
+        Element::stack()
+            .size(28, 28)
             .clickable()
+            .tooltip(if locked {
+                "取消锁定"
+            } else {
+                "锁定预览"
+            })
             .on_click(move |_| {
                 let v = !app.borrow().appearance_locked();
                 app.borrow().set_appearance_pinned(v);
             })
-            .child(crate::icons::tinted_role(crate::icons::PIN, 14, role))
+            .child(
+                crate::icons::tinted_role(crate::icons::PIN, 14, role)
+                    .align_xy(Align::Center, Align::Center),
+            )
     };
     let area = preview_area(shown, kind.clone());
     let note = Element::label_signal(error)
@@ -959,6 +970,80 @@ mod tests {
     /// 图钉锁定的布局分叉(真树):未锁定 = 整页滚动(预览卡锚点向上第一个 Scroll 先祖
     /// 是页面滚动容器);锁定 = 预览卡不在任何滚动子树里(固定区),清单行锚点向上的
     /// 第一个 Scroll 是独立滚动容器、且不包含预览卡;解锁恢复原结构。
+    #[test]
+    fn pin_hit_target_is_at_least_24_square() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        use windui::spec::Dimension;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        let st = app.borrow();
+        st.tab.set(crate::cli::page_to_index("ui").unwrap());
+        let layout = |t: &mut windui::core::Tree| {
+            t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+        };
+        layout(&mut tree);
+
+        // 卡头三种标题样式(outside/inside_icon/inside_plain)各自建一份图钉副本,
+        // 非当前样式的副本不参与布局(bounds=0);取 bounds>0 的那份才是激活热区。
+        // wrap = stack[锚点叶子, 内容]:锚点叶子与内容是兄弟,遍历从 wrap 父层开始。
+        let find_hit = |t: &windui::core::Tree,
+                        root: windui::core::NodeId|
+         -> Option<windui::geometry::Rect> {
+            let mut stack = vec![root];
+            let mut hits: Vec<windui::geometry::Rect> = Vec::new();
+            while let Some(i) = stack.pop() {
+                if let Some(n) = t.get(i) {
+                    if n.width == Dimension::Px(28)
+                        && n.height == Dimension::Px(28)
+                        && n.bounds.w > 0
+                    {
+                        hits.push(n.bounds);
+                    }
+                    stack.extend(n.children.iter().copied());
+                }
+            }
+            hits.first().copied()
+        };
+        let aid = crate::search::anchor::anchor_node_id(&tree, "ui:appearance-preview")
+            .expect("预览卡锚点应已挂载");
+        let wrap_top = tree
+            .get(aid)
+            .and_then(|n| n.parent)
+            .expect("锚点叶子应有 wrap 父层");
+        let hit = find_hit(&tree, wrap_top).expect("pin 热区应存在");
+        assert!(hit.w >= 24 && hit.h >= 24, "热区应 >=24 见方: {hit:?}");
+
+        // 锁定帧(骨架重建)同样成立。
+        st.set_appearance_pinned(true);
+        layout(&mut tree);
+        layout(&mut tree);
+        let aid2 = crate::search::anchor::anchor_node_id(&tree, "ui:appearance-preview")
+            .expect("重建后预览卡锚点应重新登记");
+        let wrap_top2 = tree
+            .get(aid2)
+            .and_then(|n| n.parent)
+            .expect("锁定帧锚点叶子应有 wrap 父层");
+        let hit2 = find_hit(&tree, wrap_top2).expect("锁定帧 pin 热区应存在");
+        assert!(
+            hit2.w >= 24 && hit2.h >= 24,
+            "锁定帧热区应 >=24 见方: {hit2:?}"
+        );
+    }
+
     #[test]
     fn pin_lock_changes_scroll_layout_and_unlock_restores() {
         use std::cell::RefCell;
