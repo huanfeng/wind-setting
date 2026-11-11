@@ -66,7 +66,6 @@ pub type FieldLoader = Box<dyn Fn(&Config)>;
 struct RegistryBatch {
     /// Vec 类集合的登记区间 [start, end)。
     writers: (usize, usize),
-    dialogs: (usize, usize),
     global_flags: (usize, usize),
     log_level_probes: (usize, usize),
     side: (usize, usize),
@@ -85,6 +84,8 @@ struct RegistryBatch {
 #[derive(Default)]
 struct BatchBefore {
     writers: usize,
+    /// begin 时 `dialogs` 的长度：批内登记的对话框区间 [dialogs, len)，end 时整批
+    /// 移交 [`FieldRegistry::appearance_dialogs`]。
     dialogs: usize,
     global_flags: usize,
     log_level_probes: usize,
@@ -110,8 +111,7 @@ fn diff_keys<T>(
         .collect()
 }
 
-/// 区间两端钳到当前长度再 drain:registry 的 dialogs 在主窗 build 后会被外壳 take 走挂根,
-/// 记账区间自然失效——超界部分按「已被取走」处理,不当作错误。
+/// 区间两端钳到当前长度再 drain,超界部分按「集合被清过」处理,不当作错误。
 fn drain_clamped<T>(v: &RefCell<Vec<T>>, r: (usize, usize)) {
     let mut b = v.borrow_mut();
     let end = r.1.min(b.len());
@@ -155,7 +155,20 @@ pub struct FieldRegistry {
     /// dialog_button 的对话框主体。须挂到**根窗口** stack 才能正确全窗模态遮罩；
     /// 若内联在设置行的小 stack 内，`Element::dialog` 的遮罩只填满那一格，表现为
     /// 「显示在行下方」而非居中模态。构建页面时登记，由 `shell::build` 取出挂到根。
+    ///
+    /// 只装**批外**（其余八页与壳层自身）的对话框——它们的作用域永不回收，挂根一次
+    /// 终身有效。外观页批内的对话框在 [`Self::end_page_batch`] 移交进
+    /// [`Self::appearance_dialogs`]：外观页整代重建，挂根对话框的信号随旧代行回收
+    /// 就成了挂根节点里的死句柄（ModalScrim 的 `on_update` 一读即崩），必须由根层的
+    /// keyed 容器随代重挂（见 `shell::build`）。
     pub dialogs: RefCell<Vec<Element>>,
+    /// 外观页**当前代**批内的对话框（[`Self::end_page_batch`] 移交，整批替换）。
+    ///
+    /// 消费方是 shell 层按 [`AppState::appearance_pinned`] 分叉的 keyed 容器：代次一变
+    /// 重挂本批、旧代节点随旧层移除——旧代对话框的信号随旧代行回收，节点与句柄同刻
+    /// 消失，不会留死引用。`build` 消耗 `Element`，故这里每代现取现用（take 清空），
+    /// 不做二次挂载。
+    pub appearance_dialogs: RefCell<Vec<Element>>,
     /// 全局热键收集器：(功能短名, 是否全局 Signal)。支持全局的功能键各登记一项，
     /// 由 `register_global_hotkeys_collector` 汇总成 `keys.global_hotkeys` strlist 写回/回填
     /// （多个功能键写同一 key，故需单一收集器，模式同 checkbox_group）。
@@ -238,6 +251,7 @@ impl FieldRegistry {
         self.select_indices.borrow_mut().clear();
         self.loaders.borrow_mut().clear();
         self.dialogs.borrow_mut().clear();
+        self.appearance_dialogs.borrow_mut().clear();
         self.global_flags.borrow_mut().clear();
         self.side.borrow_mut().clear();
         self.log_level_probes.borrow_mut().clear();
@@ -252,9 +266,9 @@ impl FieldRegistry {
     /// 开始一次页面构建的登记记账。与 [`Self::end_page_batch`] 成对使用:中间发生的
     /// 全部登记(区间增量与新增键)在 end 时圈成「本批」,供 [`Self::reset_page_batch`]
     /// 只清这一批。**不可嵌套、不可重入**(嵌套 begin 会覆盖外层快照,内层 end 一 take,
-    /// 外层 end 的 expect 直接 panic);单线程成对使用。批内登记的 dialogs 只有开窗
-    /// take 时挂根一次,批清掉后没有重挂根通路——现有 manifest 的 ui 分组无 dialog
-    /// 类行,暂无触发面;将来若加,要先解决挂根再动。
+    /// 外层 end 的 expect 直接 panic);单线程成对使用。批内登记的对话框在 end 时整批
+    /// 移交给 [`Self::appearance_dialogs`],由 shell 层按代重挂——批内对话框的信号随
+    /// 旧代行回收,不能像八页对话框那样挂根一次终身有效。
     pub fn begin_page_batch(&self) {
         *self.batch_before.borrow_mut() = Some(BatchBefore {
             writers: self.writers.borrow().len(),
@@ -273,15 +287,26 @@ impl FieldRegistry {
     }
 
     /// 结束记账:begin 之后的登记圈成当前页批(快照差集),存下供重置。
+    ///
+    /// 批内登记的对话框**整批移交** [`Self::appearance_dialogs`](整批替换旧代):外观页
+    /// 整代重建,旧代对话框的信号随旧代行回收,挂在根层的旧节点必须随代重挂——见
+    /// [`Self::appearance_dialogs`] 与 `shell::build` 的 keyed 容器。
     pub fn end_page_batch(&self) {
         let before = self
             .batch_before
             .borrow_mut()
             .take()
             .expect("begin/end 必须成对");
+        // 批内的对话框移交给按代重挂的容器;`fields.dialogs` 只留批外(八页与壳层)。
+        let batch_dialogs: Vec<Element> = {
+            let mut b = self.dialogs.borrow_mut();
+            let end = before.dialogs.max(b.len());
+            let start = before.dialogs.min(end);
+            b.drain(start..end).collect()
+        };
+        *self.appearance_dialogs.borrow_mut() = batch_dialogs;
         let batch = RegistryBatch {
             writers: (before.writers, self.writers.borrow().len()),
-            dialogs: (before.dialogs, self.dialogs.borrow().len()),
             global_flags: (before.global_flags, self.global_flags.borrow().len()),
             log_level_probes: (
                 before.log_level_probes,
@@ -306,7 +331,6 @@ impl FieldRegistry {
             return;
         };
         drain_clamped(&self.writers, batch.writers);
-        drain_clamped(&self.dialogs, batch.dialogs);
         drain_clamped(&self.global_flags, batch.global_flags);
         drain_clamped(&self.log_level_probes, batch.log_level_probes);
         drain_clamped(&self.side, batch.side);

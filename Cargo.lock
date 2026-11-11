@@ -3175,6 +3175,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tiny-skia",
  "tiny_http",
  "toml 0.8.23",
  "tracing",

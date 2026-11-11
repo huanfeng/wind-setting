@@ -231,6 +231,13 @@ impl Watcher {
                 })
             },
             move |r: Option<Option<Outcome>>| {
+                // 迟到门禁：图钉翻转/切页会重建骨架、回收这些行作用域句柄；RPC 完成回调
+                // 可能在此之后才跑（真机 0xc0000409 崩溃根因；windui 侧配套加了 try_set/
+                // try_update 探活 API 与复现测试）。任何读写前先探活，旧页的收尾直接放弃
+                // （task 是普通 Cell 无险）。
+                if !shown.is_alive() {
+                    return;
+                }
                 task.set(None);
                 let Some(r) = r.flatten() else { return };
                 offline.set(r == Outcome::Offline);
@@ -248,7 +255,13 @@ impl Watcher {
                             |cancel| {
                                 crate::theme_gallery::after_debounce(cancel, RETRY_DELAY, || ())
                             },
-                            move |_: Option<Option<()>>| retry_tick.update(|t| *t += 1),
+                            // 二跳重试同样可能迟到（RETRY_DELAY 期间页面被翻转回收）。
+                            move |_: Option<Option<()>>| {
+                                if !retry_tick.is_alive() {
+                                    return;
+                                }
+                                retry_tick.update(|t| *t += 1)
+                            },
                         );
                         "预览生成忙，稍后自动重试…".to_string()
                     }
@@ -1042,6 +1055,187 @@ mod tests {
             hit2.w >= 24 && hit2.h >= 24,
             "锁定帧热区应 >=24 见方: {hit2:?}"
         );
+    }
+
+    /// **回归**：图钉翻转 → 骨架重建 → 旧行作用域句柄回收，此后迟到的 renderPreview
+    /// RPC 完成回调必须被门禁拦下（真机 0xc0000409 崩溃链）。不设门禁时，Ready 分支
+    /// 的 `shown.set` 会踩中 windui 的「signal 句柄已失效」debug 断言。
+    #[test]
+    fn late_preview_rpc_after_pin_flip_does_not_panic() {
+        use std::cell::RefCell;
+        use std::sync::Arc;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        // 兜底守卫：Off 档位是**全局**的，并行跑的其它测试会被波及（右键菜单 e2e 曾
+        // 因此全批翻红）——任何路径退出都恢复 Full。正常流程下 Off 只包住下面两次
+        // 同步 layout（无 sleep 的微秒级窗口），wait 的 300ms debounce 都在 Full 档。
+        windui::anim::set_motion_level(windui::anim::MotionLevel::Full);
+        struct RestoreMotion;
+        impl Drop for RestoreMotion {
+            fn drop(&mut self) {
+                windui::anim::set_motion_level(windui::anim::MotionLevel::Full);
+            }
+        }
+        let _motion = RestoreMotion;
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        // 任务收集端必须在任务发起前接好：spawn 的 NetDone 全部落进队列，由本测试
+        // 手动 on_done 派发（真机是 channel 回调派发，测试里没有帧循环）。
+        let queue: Arc<std::sync::Mutex<Vec<crate::net_task::NetDone>>> = Default::default();
+        let arrived = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let q = queue.clone();
+            let arrived = arrived.clone();
+            app.borrow().net.set_sink(move |m| {
+                arrived.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                q.lock().unwrap().push(m);
+            });
+        }
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        let st = app.borrow();
+        st.tab.set(crate::cli::page_to_index("ui").unwrap());
+        let layout = |t: &mut windui::core::Tree| {
+            t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+        };
+        layout(&mut tree);
+
+        // 等旧页的请求完成结果落进队列（mock 是同步快，但工作线程起线程要一拍）；
+        // 等待期间持续驱动帧，模拟真实事件循环（新注册的响应式节点靠 layout 帧拿到
+        // 首个 on_update）。判据用累计到达数而非队列长度——wait(1) 取走第一条后
+        // 队列已空，第二条到达时队列里只有它自己。
+        let wait = |n: usize, tree: &mut windui::core::Tree| {
+            for _ in 0..200 {
+                if arrived.load(std::sync::atomic::Ordering::Relaxed) >= n {
+                    return;
+                }
+                tree.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!(
+                "等 NetDone 超时：期望 {n} 条，实到 {}",
+                arrived.load(std::sync::atomic::Ordering::Relaxed)
+            );
+        };
+        wait(1, &mut tree);
+        let old = queue.lock().unwrap().remove(0);
+
+        // 图钉翻转 → 重建。先在 Full 动效档驱动两帧，钉住真机窗口：容器旧层若带
+        // switcher 默认的淡出残影，残影期里旧层节点仍被 dispatch on_update，读旧页
+        // 已回收的信号（词库对话框 reorder 宿主的 rows）即崩——旧层 Presence::none
+        // 让离场一帧收敛（见 shell.rs 容器注释），这两帧必须无 panic。
+        st.set_appearance_pinned(true);
+        layout(&mut tree);
+        layout(&mut tree);
+
+        // 再关动效让**页面** switcher 的旧行瞬时回收（测试没有渲染管线，残影进度在
+        // paint 推进、永远播不完）：翻转后的第一个 reconcile 标记离场、第二个即
+        // drop_row + scope.dispose。Off 只包住这两次同步 layout（无 sleep）。
+        windui::anim::set_motion_level(windui::anim::MotionLevel::Off);
+        layout(&mut tree);
+        layout(&mut tree);
+        windui::anim::set_motion_level(windui::anim::MotionLevel::Full);
+
+        // 迟到收尾：旧任务的完成回调此刻派发——门禁必须拦住，不许碰死句柄。
+        app.borrow().net.on_done(old);
+
+        // 新页自己的请求结果（翻转触发重取）同样派发：活句柄路径照常工作。
+        wait(2, &mut tree);
+        let msgs: Vec<_> = queue.lock().unwrap().drain(..).collect();
+        for m in msgs {
+            app.borrow().net.on_done(m);
+        }
+        layout(&mut tree);
+    }
+
+    /// **回归**（真机同款时序）：Full 动效、逐帧 layout + paint、真实时间流过淡出。
+    ///
+    /// 此前几轮修复都只在 `MotionLevel::Off` 下验证——Off 档离场一帧收敛，旧页面与它
+    /// 的信号同一帧消失；真机是 Full 档，旧页面作为淡出残影再活一段（进度只在 paint
+    /// 里推进），回收发生在**之后某一帧**的 reconcile 里。那一帧里谁还挂着、谁先跑，
+    /// 与 Off 档完全不同，Off 下的绿灯对真机没有证明力。本例不预设崩点，只忠实地
+    /// 模拟真机帧循环：翻转 → 播完淡出 → 翻回 → 再播完。任何死句柄读写都会在这里炸。
+    #[test]
+    fn pin_flip_survives_full_motion_frames() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        windui::anim::set_motion_level(windui::anim::MotionLevel::Full);
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        // 异步任务完成即派发（真机由 channel 回调派发，这里每帧手动泵一次）。
+        let queue: Rc<RefCell<Vec<crate::net_task::NetDone>>> = Default::default();
+        let inbox: std::sync::Arc<std::sync::Mutex<Vec<crate::net_task::NetDone>>> =
+            Default::default();
+        {
+            let q = inbox.clone();
+            app.borrow()
+                .net
+                .set_sink(move |m| q.lock().unwrap().push(m));
+        }
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        // 同 `apply_loaded`：配置到达后把全部 loader 跑一遍。不跑的话各行信号的版本号
+        // 停在 0，而死句柄的 `version()` 也返回 0——读死句柄的版本型 effect 看不出变化、
+        // 不会触发，崩溃链被静默绕过（这正是此前测试全绿、真机照崩的原因之一）。
+        {
+            let st = app.borrow();
+            let cfg = st.current_config.clone();
+            for l in st.fields.loaders.borrow().values() {
+                l(&cfg);
+            }
+        }
+        app.borrow()
+            .tab
+            .set(crate::cli::page_to_index("ui").unwrap());
+        let mut pm = tiny_skia::Pixmap::new(w as u32, h as u32).unwrap();
+        // 一帧 = 推进帧时钟 + 派发到达的异步完成 + layout + paint（同宿主的帧循环）。
+        // 时钟必须推：裸 Tree 没有宿主，时钟冻结时淡出永远播不完、旧代永不回收，
+        // 「淡出播完那一帧」——真机的崩点——根本不会出现。
+        let mut now_ms = 1_000u64;
+        let mut frame = |tree: &mut Tree| {
+            now_ms += 16;
+            windui::testing::set_frame_clock_ms(now_ms);
+            queue.borrow_mut().extend(inbox.lock().unwrap().drain(..));
+            for m in queue.borrow_mut().drain(..).collect::<Vec<_>>() {
+                app.borrow().net.on_done(m);
+            }
+            tree.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+            let mut canvas = windui::render::skia::SkiaCanvas::new(&mut pm);
+            tree.paint(&mut canvas);
+        };
+        // 跑 `n` 帧（16ms/帧）。60 帧≈1 秒，远长于淡出时长（主题 anim.fast），
+        // 保证旧代在其间被回收。
+        let mut run = |tree: &mut Tree, n: usize| {
+            for _ in 0..n {
+                frame(tree);
+            }
+        };
+        run(&mut tree, 10);
+        app.borrow().set_appearance_pinned(true);
+        run(&mut tree, 60);
+        app.borrow().set_appearance_pinned(false);
+        run(&mut tree, 60);
     }
 
     #[test]

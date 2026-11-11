@@ -45,6 +45,9 @@ wind-rpc = { path = "../WindInput/wind_input/crates/wind-rpc" }
 # 流水线漂移。漂移的表现是「不动也判脏」，没有堆栈、只能靠这条测试看见。
 wind-punct = { path = "../WindInput/wind_input/crates/wind-punct" }
 wind-transform = { path = "../WindInput/wind_input/crates/wind-transform" }
+# 测试里真画一遍树（`Tree::paint` 要 Canvas）：进出场过渡的进度只在 paint 里推进，
+# 不画就永远停在残影态，测不到真机 Full 动效下的回收时序。版本与 windui 对齐，不新增编译单元。
+tiny-skia = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

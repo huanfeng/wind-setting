@@ -1197,6 +1197,14 @@ pub fn package_preview(
                     .map(|v| parse_receipt(&v))
                 },
                 move |r: Option<Option<Receipt>>| {
+                    // 迟到门禁：thumb 是**每格**画廊格子的行作用域信号（图钉翻转/切页
+                    // 整代回收），缩略图 RPC 完成回调可能在此之后才跑——与外观预览
+                    // Watcher 的收尾门禁同一崩溃链（真机 0xc0000409：写死句柄踩
+                    // write_raw 的 debug 断言，Win32 回调栈内无法 unwind 直接 abort）。
+                    // 探活失败连 task_done 也不用清（普通 Cell，随格子同亡）。
+                    if !thumb.is_alive() {
+                        return;
+                    }
                     task_done.set(None);
                     if let Some(Receipt::Ready(raw)) = r.flatten() {
                         thumb.set(Thumb::Ready(raw.into_png(s)));

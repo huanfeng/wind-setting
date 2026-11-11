@@ -289,6 +289,30 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     for dlg in field_dialogs {
         root = root.child(dlg);
     }
+    // 外观页批内的对话框按代重挂：图钉翻转整代重建，旧代对话框的信号随旧代行回收，
+    // 「挂根一次终身有效」在这里会留下读死句柄的节点（ModalScrim 的 on_update 一读
+    // 即崩）。容器以代次为 key：代次一变重挂 fields.appearance_dialogs 里的当前批
+    // （end_page_batch 移交），旧代节点随旧层移除——节点与死句柄同刻消失。mapper
+    // 现取现用（build 消耗 Element），每代一批、用过即弃。容器必须排在九页之后：
+    // 同一帧里外观页 switcher 先重建并移交本代批，容器后跑才拿得到。
+    root = root.child({
+        let app2 = Rc::clone(app);
+        let pinned = app.borrow().appearance_pinned;
+        Element::switcher(pinned, move |_gen: u64| {
+            let batch = std::mem::take(&mut *app2.borrow().fields.appearance_dialogs.borrow_mut());
+            let mut layer = Element::stack()
+                // ⚠ 旧层**必须**离场瞬时（switcher 默认给旧内容淡出残影、播完才回收）：
+                // 残影期里旧层节点还活着、还被 dispatch on_update，而旧页行的信号已被
+                // 页面 switcher 先一步回收（词库对话框的 reorder 宿主即死于这个交叉
+                // 窗口，真机 Full 动效档下翻转后约 1 秒崩）。对话框平时不可见，层级
+                // 切换动画没有视觉价值，别恢复默认的 fade。
+                .transition(windui::ui::presence::Presence::none());
+            for dlg in batch {
+                layer = layer.child(dlg);
+            }
+            layer
+        })
+    });
     // 搜索结果浮层挂根：它要盖到内容区上，挂在侧栏里就只有 184 宽。
     // 捕获层必须在浮层**之前**（在其下层），否则点浮层里的项会先被它吃掉。
     let (search_scrim, search_overlay) =
@@ -329,8 +353,9 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
 }
 
 /// 重建设置树前的登记复位:`fields.reset()` + 重注册「不在页面构建里注册的那批」
-/// (方案页写回器与 SideCommitter)。`shell::build` 开窗与外观页图钉锁定(切换布局要
-/// 重建清单卡,见 `appearance_page`)共用,语义同 `build` 开头那段。
+/// (方案页写回器与 SideCommitter)。仅 `shell::build` 开窗使用;外观页图钉翻转走
+/// `set_appearance_pinned` → `reset_page_batch` 分桶清批 + 根层容器按代重挂(见
+/// `shell::build` 尾部),不动全量注册。
 pub(crate) fn reset_registrations(app: &Rc<RefCell<AppState>>) {
     let st = app.borrow();
     // 先清空上一棵设置树的登记项。不清的话,旧树那批 Signal 句柄会连同新的一起留在
