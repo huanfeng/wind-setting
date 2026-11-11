@@ -79,12 +79,25 @@ pub fn kind_param(idx: usize) -> Option<&'static str> {
 }
 
 /// 段索引 → fit 目标框：候选窗带图区内容区尺寸（588×184，core 折算渲染倍率撑满图区）；
-/// 工具栏不带（两维省键，core 回到自然逻辑尺寸渲染、历史缓存键直接命中），显示端 1:1
-/// 居中、不放大。越界按候选窗算。
+/// 工具栏不带（两维省键，core 回到自然逻辑尺寸渲染；省键的理由是协议只收正整数、
+/// 省键即旧版请求形状），显示端 1:1 居中、不放大。越界按候选窗算。
 pub(crate) fn kind_fit(idx: usize) -> (i32, i32) {
     match idx {
         1 => (0, 0),
         _ => (FIT_W, FIT_H),
+    }
+}
+
+/// 段索引 → 请求 scale：工具栏固定 1.0。`Fit::None` 是「1 图片像素 = 1 逻辑 dp」，
+/// 显示物理 = PNG 像素 × 窗口 DPI——core 按 scale 出图，scale 带窗口 DPI 会出
+/// dpi 倍像素、屏上再乘一次 DPI，预览偏大 dpi²/dpi = dpi 倍（125% 屏大 25%）。
+/// 固定 1.0 后显示物理 = 自然逻辑 × DPI = 恰好实际工具栏的物理大小。副产物：
+/// 请求 Key 的 scale_pct 恒 100，跨屏拖动窗口不触发工具栏预览重取。
+/// 越界按候选窗算（取窗口 DPI）。
+pub(crate) fn kind_scale(idx: usize, dpi: f32) -> f32 {
+    match idx {
+        1 => 1.0,
+        _ => dpi,
     }
 }
 
@@ -219,7 +232,12 @@ impl Watcher {
             self.net.clone(),
             self.shown_kind.clone(),
         );
-        let params = request_params(&key.ui, scale, kind_param(key.kind), kind_fit(key.kind));
+        let params = request_params(
+            &key.ui,
+            kind_scale(key.kind, scale),
+            kind_param(key.kind),
+            kind_fit(key.kind),
+        );
         let kind = key.kind;
         let id = self.net.spawn(
             move |cancel| {
@@ -356,11 +374,11 @@ impl Widget for Watcher {
 /// `width_match().height_match()` 填满底板内容区，任意状态层叠出的都是同一矩形，抖动
 /// 无从谈起。
 ///
-/// 两种形态**同一结构**、只有 fit 不同（[`frame_fit`]）：候选窗 `Fit::Contain` 小图放大
-/// 撑满、居中恒定；工具栏 `Fit::None`——draw_image 对所有 fit 都在 dst 内居中，`None`
-/// 按 1 图片像素 = 1 物理 px 绘制（core 不带 fit 时按自然逻辑尺寸出图，回执尺寸即该
-/// DPI 下的物理像素），正合「预览 1:1、贴近实际观感」（2026-11 真机反馈：放大到 588 宽
-/// 后格子巨大，与实际使用的小横条差太远）。
+/// 两种形态**同一结构**、只有 fit 与绘制适配不同（[`frame_fit`]）：候选窗 `Fit::Contain`
+/// 小图放大撑满、居中恒定；工具栏 `Fit::None`——draw_image 对所有 fit 都在 dst 内居中，
+/// `None` 是 1 图片像素 = 1 逻辑 dp（不是物理 px；见 [`kind_scale`]：配 scale=1.0 的请求，
+/// 屏上物理 = 自然逻辑 × DPI = 实际工具栏的物理大小）。（2026-11 真机反馈：放大到 588 宽
+/// 后格子巨大，与实际使用的小横条差太远。）
 /// 图区里的居中占位文字（生成中 / 生成失败）。
 fn placeholder(text: &str) -> Element {
     Element::stack().width_match().height_match().child(
@@ -663,13 +681,17 @@ mod tests {
         );
     }
 
-    /// fit 按形态切：候选窗带图区内容区尺寸、工具栏两维省键；越界按候选窗。
-    /// 显示帧的适配同款二分（Contain 恒定填满 / None 1:1 居中）。
+    /// fit 与请求 scale 按形态切：候选窗带图区内容区尺寸 + 窗口 DPI，工具栏两维省键 +
+    /// scale 固定 1.0（Fit::None 是 1 图片像素 = 1 逻辑 dp，配 1.0 才与实际工具栏物理同大，
+    /// 详见 kind_scale 注释）；越界按候选窗。显示帧的适配同款二分（Contain / None）。
     #[test]
     fn fit_split_by_kind_request_and_frame() {
         assert_eq!(kind_fit(0), (FIT_W, FIT_H));
         assert_eq!(kind_fit(1), (0, 0), "工具栏不带 fit 两维");
         assert_eq!(kind_fit(9), (FIT_W, FIT_H), "越界按候选窗算");
+        assert_eq!(kind_scale(0, 1.25), 1.25, "候选窗取窗口 DPI");
+        assert_eq!(kind_scale(1, 1.25), 1.0, "工具栏固定 1.0，见 kind_scale");
+        assert_eq!(kind_scale(9, 1.25), 1.25, "越界按候选窗算");
         assert_eq!(frame_fit(signal(0)), Fit::Contain);
         assert_eq!(frame_fit(signal(1)), Fit::None, "工具栏 1:1 不放大");
     }
