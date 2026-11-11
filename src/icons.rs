@@ -48,6 +48,8 @@ const CHECK: &str = include_str!("../res/icons/ui/check.svg");
 pub const SEARCH: &str = include_str!("../res/icons/ui/search.svg");
 /// 「在新窗口打开」提示角标（侧栏词库项右侧）。
 pub const EXTERNAL: &str = include_str!("../res/icons/ui/external.svg");
+/// 「效果预览」卡头图钉（锁定预览卡固定页顶）。两态共用一枚，状态色区分。
+pub const PIN: &str = include_str!("../res/icons/ui/pin.svg");
 
 /// 侧栏导航图标（Tab 名精确匹配；新 Tab 回退 sliders）。
 pub fn nav_icon(tab: &str) -> &'static str {

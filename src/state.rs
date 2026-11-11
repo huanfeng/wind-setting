@@ -631,6 +631,9 @@ pub struct AppState {
     pub conn_failed: Signal<bool>,
     /// 系统在亮 / 暗之间切换的次数（系统主题回调里加一）：外观页「效果预览」的草稿明暗跟随系统时据此重取。
     pub system_theme_flips: Signal<u64>,
+    /// 外观页「效果预览」图钉锁定:锁定 = 预览卡固定页顶、其余内容独立滚动。
+    /// 页面级状态,会话内记住、不落盘配置;布局分叉见 `appearance_page`。
+    pub appearance_pinned: Signal<bool>,
     /// `ui.theme.name` 的取值列表（id/slug，异步加载后填充；画廊的选中索引下标进它）。
     /// 末尾可能多一项配置里写着、却没装的主题（[`Self::push_unlisted_theme`]）。
     pub theme_value_sig: Signal<Vec<String>>,
@@ -1088,6 +1091,7 @@ impl AppState {
             data_loaded: false,
             conn_failed: signal(false),
             system_theme_flips: signal(0),
+            appearance_pinned: signal(false),
             theme_value_sig: signal(vec![]),
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
@@ -2240,6 +2244,16 @@ impl AppState {
             self.theme_import_url_display,
             self.theme_import_name_display,
         );
+    }
+
+    /// 翻转外观页图钉锁定。布局分叉(锁定/未锁定两套骨架)经 switcher 重建,旧布局子树的
+    /// 构建期信号在下一帧 dispatch 时随 keyed 作用域回收;registry 里指向它们的旧 writer /
+    /// loader 若不清,下一帧任何读 registry 的哨兵(`draft_config` / `live_conflicts`)都会
+    /// 读到回收信号 panic——实测如此。故翻转的**同一时刻**先清 registry,重建(mapper 里
+    /// `reset_registrations`)再重注册。测试与点击回调都走本方法,不直接 set 信号。
+    pub fn set_appearance_pinned(&self, v: bool) {
+        self.fields.reset();
+        self.appearance_pinned.set(v);
     }
 
     pub fn refresh_theme_names(&mut self) {

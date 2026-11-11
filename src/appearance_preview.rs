@@ -420,11 +420,30 @@ fn preview_area(shown: Signal<Shown>, kind: Signal<usize>) -> Element {
 }
 
 /// 「效果预览」卡片。
-pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
+pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState, pinned: Signal<bool>) -> Element {
     let shown: Signal<Shown> = signal(Shown::Waiting);
     let error: Signal<String> = signal(String::new());
     // 形态选中段：会话内记住即可（页面状态，不落盘配置）。
     let kind: Signal<usize> = signal(0);
+    // 图钉（锁定 = 预览卡固定页顶、其余内容单独滚动）：会话内记住、不落盘。
+    // 两态共用一枚 pin 图标，未锁定弱化色 / 锁定强调色，状态色区分。
+    // 翻转走 AppState::set_appearance_pinned(同一时刻清 fields registry,理由见其文档),
+    // 所以闭包捕获 app 而不是只拿信号句柄。
+    let make_pin = move || {
+        let app = app.clone();
+        let role = if pinned.get() {
+            Role::Accent
+        } else {
+            Role::TextSubtle
+        };
+        Element::row()
+            .clickable()
+            .on_click(move |_| {
+                let v = !pinned.get();
+                app.borrow().set_appearance_pinned(v);
+            })
+            .child(crate::icons::tinted_role(crate::icons::PIN, 14, role))
+    };
     let area = preview_area(shown, kind.clone());
     let note = Element::label_signal(error)
         .font_size(12.0)
@@ -469,8 +488,9 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState) -> Element {
     // （同 manifest 头部「重置」按钮的现建模式）。
     let make_switcher =
         move || Element::segmented(KIND_LABELS.iter().map(|s| (*s).to_string()).collect(), kind);
-    let card = crate::widgets::section_with_items_menu(
+    let card = crate::widgets::section_with_items_menu_after_title(
         SECTION_TITLE,
+        &make_pin,
         &make_switcher,
         vec![crate::widgets::CardItem::Bare(crate::widgets::card_pad(
             body,
@@ -955,6 +975,95 @@ mod tests {
         assert_eq!(shown_on_failure(&png, 0, 1), Some(Shown::Failed));
         assert_eq!(shown_on_failure(&Shown::Waiting, 0, 0), Some(Shown::Failed));
         assert_eq!(shown_on_failure(&Shown::Failed, 1, 1), Some(Shown::Failed));
+    }
+
+    /// 图钉锁定的布局分叉(真树):未锁定 = 整页滚动(预览卡锚点向上第一个 Scroll 先祖
+    /// 是页面滚动容器);锁定 = 预览卡不在任何滚动子树里(固定区),清单行锚点向上的
+    /// 第一个 Scroll 是独立滚动容器、且不包含预览卡;解锁恢复原结构。
+    #[test]
+    fn pin_lock_changes_scroll_layout_and_unlock_restores() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        let st = app.borrow();
+        st.tab.set(crate::cli::page_to_index("ui").unwrap());
+        let layout = |t: &mut windui::core::Tree| {
+            t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+        };
+        layout(&mut tree);
+        let aid = crate::search::anchor::anchor_node_id(&tree, "ui:appearance-preview")
+            .expect("预览卡锚点应已挂载");
+        let first_scroll =
+            |t: &windui::core::Tree, id: windui::core::NodeId| -> Option<windui::core::NodeId> {
+                let mut cur = t.get(id).and_then(|n| n.parent);
+                while let Some(i) = cur {
+                    let n = t.get(i)?;
+                    if matches!(n.layout, windui::core::Layout::Scroll) {
+                        return Some(i);
+                    }
+                    cur = n.parent;
+                }
+                None
+            };
+        let page_scroll = first_scroll(&tree, aid).expect("未锁定时预览卡应有滚动先祖");
+        let contains = |t: &windui::core::Tree,
+                        root: windui::core::NodeId,
+                        target: windui::core::NodeId|
+         -> bool {
+            let mut stack = vec![root];
+            while let Some(i) = stack.pop() {
+                if i == target {
+                    return true;
+                }
+                if let Some(n) = t.get(i) {
+                    stack.extend(n.children.iter().copied());
+                }
+            }
+            false
+        };
+        // 锁定:骨架重建(switcher),两帧让新子树落地。
+        st.set_appearance_pinned(true);
+        layout(&mut tree);
+        layout(&mut tree);
+        layout(&mut tree);
+        let aid2 = crate::search::anchor::anchor_node_id(&tree, "ui:appearance-preview")
+            .expect("重建后预览卡锚点应重新登记");
+        assert!(
+            first_scroll(&tree, aid2).is_none(),
+            "锁定后预览卡不应在任何滚动子树里"
+        );
+        let row_anchor = crate::search::anchor::anchor_node_id(&tree, "ui.toolbar.vertical")
+            .or_else(|| crate::search::anchor::anchor_node_id(&tree, "ui.candidate.font_size"))
+            .expect("外观页应有清单行锚点");
+        let inner = first_scroll(&tree, row_anchor).expect("锁定后清单行应有独立滚动容器");
+        assert_ne!(inner, page_scroll, "独立滚动容器应是新节点");
+        assert!(!contains(&tree, inner, aid2), "独立滚动容器不应包含预览卡");
+        // 解锁:恢复原结构。
+        st.set_appearance_pinned(false);
+        st.fields.reset();
+        layout(&mut tree);
+        layout(&mut tree);
+        let aid3 = crate::search::anchor::anchor_node_id(&tree, "ui:appearance-preview")
+            .expect("解锁后预览卡锚点应重新登记");
+        assert_eq!(
+            first_scroll(&tree, aid3),
+            Some(page_scroll),
+            "解锁后预览卡应回到原页面滚动容器"
+        );
     }
 
     #[test]

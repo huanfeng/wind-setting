@@ -111,11 +111,19 @@ pub fn flat_panel() -> Element {
 /// measure 收敛到文字紧贴宽，draw 再按该窄宽折行（见 ui/mod.rs 注释），导致明明有
 /// 空间也换行、甚至 2 字标题也折。给足整行宽度并锁单行即可根治。
 pub fn section_header(title: &str) -> Element {
-    section_header_note(title, None)
+    section_header_note(title, None, None)
 }
 
 /// [`section_header`]，标题后可跟一枚 info 图标（悬停显示说明）。
-pub fn section_header_note(title: &str, note: Option<Signal<String>>) -> Element {
+///
+/// `after_title`：标题文字**后面**的小控件（图钉这类内联状态控件），插在 title 与
+/// note 之间。给了它 title 就不再 `weight(1.0)` 撑满——否则会把小控件顶到行最右，
+/// 违背「紧随文字」的位置要求；剩余宽度交由 note（自带 weight）或 spacer 兜住。
+pub fn section_header_note(
+    title: &str,
+    note: Option<Signal<String>>,
+    after_title: Option<&dyn Fn() -> Element>,
+) -> Element {
     let svg = crate::icons::section_icon(title);
     let chip = Element::stack()
         .size(crate::icons::CHIP_PX, crate::icons::CHIP_PX)
@@ -125,15 +133,19 @@ pub fn section_header_note(title: &str, note: Option<Signal<String>>) -> Element
             crate::icons::tinted_role(svg, crate::icons::ICON_PX, Role::Accent)
                 .align(Align::Center),
         );
-    let row = Element::row()
+    let mut row = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(9)
         .margin_xy(2, 4)
         .child(chip)
-        .child(title_label(title, note.is_none()));
+        .child(title_label(title, note.is_none() && after_title.is_none()));
+    if let Some(make) = after_title {
+        row = row.child(make());
+    }
     match note {
         Some(n) => row.child(note_label(n)),
+        None if after_title.is_some() => row.child(Element::leaf().weight(1.0)),
         None => row,
     }
 }
@@ -1183,12 +1195,25 @@ pub fn dialog_section_items(
 /// 分组 = 分区标题 + 卡片（承载各设置行）。对齐 ime.rs 的 section 卡片观感。
 /// `rows` 为已构建好的设置行（如 `setting_row(...)` 或清单引擎 `field(...)`）。
 pub fn section(title: &str, rows: Vec<Element>) -> Element {
-    section_impl(title, None, None, rows_to_items(rows), None, None, None)
+    section_impl(
+        title,
+        None,
+        None,
+        rows_to_items(rows),
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
-/// [`section_with_items`] + **标题栏右键菜单**（见 [`section_vis_with_menu`]）。
-pub fn section_with_items_menu(
+/// [`section_with_items`] + **标题栏右键菜单** + 标题文字后面的内联小控件（`after_title`）。
+///
+/// 与 action（标题行**最右**的操作区）不同，after_title 紧随标题文字——「效果预览」
+/// 卡头那枚图钉（锁定 = 预览卡固定页顶、其余内容单独滚动）用这个位。
+pub fn section_with_items_menu_after_title(
     title: &str,
+    after_title: &dyn Fn() -> Element,
     action: &dyn Fn() -> Element,
     items: Vec<CardItem>,
     header_menu: &dyn Fn(Element) -> Element,
@@ -1201,10 +1226,12 @@ pub fn section_with_items_menu(
         None,
         Some(header_menu),
         None,
+        Some(after_title),
     )
 }
 
-/// [`section_with_items_menu`] + 标题后的一句弱化说明（方案页引擎卡的「此为全局…配置」）。
+/// [`section_with_items_menu_after_title`] 去掉 after_title、换成一句标题后弱化说明
+/// （方案页引擎卡的「此为全局…配置」）。
 pub fn section_with_items_menu_note(
     title: &str,
     note: Signal<String>,
@@ -1220,12 +1247,13 @@ pub fn section_with_items_menu_note(
         None,
         Some(header_menu),
         Some(note),
+        None,
     )
 }
 
 /// [`section`]，卡内是 [`CardItem`] 序列（含 [`CardItem::Bare`] 整块）。
 pub fn section_items(title: &str, items: Vec<CardItem>) -> Element {
-    section_impl(title, None, None, items, None, None, None)
+    section_impl(title, None, None, items, None, None, None, None)
 }
 
 /// [`section`] + 尾部挂件（toast 槽之类平时不占位的元素）。理由见
@@ -1237,6 +1265,7 @@ pub fn section_with_attachment(title: &str, rows: Vec<Element>, attachment: Elem
         None,
         rows_to_items(rows),
         Some(attachment),
+        None,
         None,
         None,
     )
@@ -1252,7 +1281,16 @@ pub fn section_vis(
     rows: Vec<(Element, Option<Vis>)>,
     head: Option<Element>,
 ) -> Element {
-    section_impl(title, None, head, rows_to_items_vis(rows), None, None, None)
+    section_impl(
+        title,
+        None,
+        head,
+        rows_to_items_vis(rows),
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 /// [`section_vis`] + **标题栏右键菜单**。
@@ -1280,6 +1318,7 @@ pub fn section_vis_with_menu(
         None,
         Some(&wrap),
         None,
+        None,
     )
 }
 
@@ -1306,6 +1345,7 @@ pub fn section_vis_with_menu_action(
         None,
         Some(&wrap),
         None,
+        None,
     )
 }
 
@@ -1314,6 +1354,7 @@ pub fn section_vis_with_menu_action(
 ///
 /// `header_menu`：把右键菜单包到**标题行**上（三种标题写法各包一次）。卡片正文不挂，
 /// 见 [`section_vis_with_menu`] 的说明。
+#[allow(clippy::too_many_arguments)]
 fn section_impl(
     title: &str,
     action: Option<&dyn Fn() -> Element>,
@@ -1322,6 +1363,7 @@ fn section_impl(
     tail: Option<Element>,
     header_menu: Option<&dyn Fn(Element) -> Element>,
     note: Option<Signal<String>>,
+    after_title: Option<&dyn Fn() -> Element>,
 ) -> Element {
     let sh = look().0[crate::look::SECTION_HEADER];
     let with_action = |row: Element| match action {
@@ -1332,20 +1374,24 @@ fn section_impl(
         Some(f) => f(row),
         None => row,
     };
-    let outside = with_menu(with_action(section_header_note(title, note)))
+    let outside = with_menu(with_action(section_header_note(title, note, after_title)))
         .visible_when(move || sh.get() == crate::look::header::OUTSIDE);
     let inside_icon = with_menu(with_action(
-        section_header_note(title, note).margin_xy(0, 0),
+        section_header_note(title, note, after_title).margin_xy(0, 0),
     ))
     .visible_when(move || sh.get() == crate::look::header::INSIDE);
     let inside_plain = with_menu(with_action({
-        let r = Element::row()
+        let mut r = Element::row()
             .width_match()
             .cross(Align::Center)
             .spacing(9)
-            .child(title_label(title, note.is_none()));
+            .child(title_label(title, note.is_none() && after_title.is_none()));
+        if let Some(make) = after_title {
+            r = r.child(make());
+        }
         match note {
             Some(n) => r.child(note_label(n)),
+            None if after_title.is_some() => r.child(Element::leaf().weight(1.0)),
             None => r,
         }
     }))

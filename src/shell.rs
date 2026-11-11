@@ -50,13 +50,7 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         // `dict_window` 与 `main::open_main_window`），本函数因此不再是"一辈子只跑一次"
         // ——不清的话，旧树那批 Signal 句柄会连同新的一起留在注册表里，而它们的槽位
         // 早已随上一个窗口的 `SignalScope` 回收、并被新信号复用。详见 `FieldRegistry::reset`。
-        st.fields.reset();
-        // reset 把**所有**登记项都清了，包括不在本函数里注册的那批（方案页的三个写回器
-        // 与 SideCommitter，原先只在 `AppState::empty()` 里登记一次）。不在这里补回来，
-        // 设置树一建好它们就永远缺席——症状是「别的设置能存、只有方案页存不了」：热键 /
-        // 引导键改动进不了 diff，保存时提示「没有变更」。
-        crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
-        crate::state::register_system_registrations(&st.fields);
+        reset_registrations(app);
         // 搜索态也要复位。它建在 `AppState` 上（进程级，早于任何窗口），所以句柄不会
         // 悬垂——但**值会整份带到新窗**：带着查询词、开着的浮层、或顶着一条方案级指示条
         // 关掉主窗，再开时新窗一亮就弹出上一次的结果、内容区顶上挂着上一次的指路；
@@ -332,6 +326,23 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     let root = root.child(crate::pages::dict::reactive::toast_sink(feedback));
     crate::memstat::mark("[build 出口]");
     root
+}
+
+/// 重建设置树前的登记复位:`fields.reset()` + 重注册「不在页面构建里注册的那批」
+/// (方案页写回器与 SideCommitter)。`shell::build` 开窗与外观页图钉锁定(切换布局要
+/// 重建清单卡,见 `appearance_page`)共用,语义同 `build` 开头那段。
+pub(crate) fn reset_registrations(app: &Rc<RefCell<AppState>>) {
+    let st = app.borrow();
+    // 先清空上一棵设置树的登记项。不清的话,旧树那批 Signal 句柄会连同新的一起留在
+    // 注册表里,而它们的槽位早已随上一个窗口的 `SignalScope` 回收、并被新信号复用。
+    // 详见 `FieldRegistry::reset`。
+    st.fields.reset();
+    // reset 把**所有**登记项都清了,包括不在本函数里注册的那批(方案页的三个写回器
+    // 与 SideCommitter,原先只在 `AppState::empty()` 里登记一次)。不在这里补回来,
+    // 设置树一建好它们就永远缺席——症状是「别的设置能存、只有方案页存不了」:热键 /
+    // 引导键改动进不了 diff,保存时提示「没有变更」。
+    crate::state::register_schema_registrations(&st.fields, &st.schema_mgr);
+    crate::state::register_system_registrations(&st.fields);
 }
 
 /// 一级导航栏宽度（逻辑 px）。搜索框与搜索浮层的捕获层都从它推出来，见 `search::ui`。

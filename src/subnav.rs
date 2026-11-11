@@ -137,12 +137,19 @@ impl SubNav {
             tops.push(UNSET);
             tops.len() - 1
         };
-        self.0.items.borrow_mut().push(SubNavItem {
-            label: label.to_string(),
-            depth,
-            section: idx,
-            visible: vis_row,
-        });
+        // 运行期重建(外观页图钉锁定切布局时随骨架重建清单卡)会再次 wrap 同名分块:
+        // 条目按 label 替换而非追加,否则 section_count 每帧现求,翻一次图钉条目翻倍、
+        // 「少于两块收起整栏」的判定跟着变形。
+        {
+            let mut items = self.0.items.borrow_mut();
+            items.retain(|it| it.label != label);
+            items.push(SubNavItem {
+                label: label.to_string(),
+                depth,
+                section: idx,
+                visible: vis_row,
+            });
+        }
         Element::stack()
             .width_match()
             .visible_when(move || visible())

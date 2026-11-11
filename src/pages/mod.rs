@@ -4,7 +4,7 @@
 //! 一张卡片，卡片次序为 section 首次出现序，行序为 manifest 原始序——key 永远与 core 一致，
 //! core 加字段自动出现，彻底消除硬编码 key 漂移。复杂页（方案管理/词库/统计/关于）手写。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use windui::core::EventCtx;
@@ -780,16 +780,70 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) 
     // 页首「效果预览」：草稿配置出的候选窗预览，下面的设置不必保存就跟着变。定制版把本页的
     // 设置项全藏了时它也不建——没有可调的项，预览只是一张不会变的图。
     // 二级导航按登记顺序排，故先登记它、再建清单卡。
-    let mut secs = Vec::new();
-    if !state.manifest.sections_of("ui").is_empty() {
-        secs.push(nav.wrap(
-            crate::appearance_preview::SECTION_TITLE,
-            0,
-            crate::appearance_preview::build_card(app, state),
-        ));
-    }
-    secs.extend(manifest_sections(state, "ui", nav));
-    sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
+    // 布局分叉：未锁定 = sections_page 现状（整页滚动）；锁定 = 预览卡固定页顶、其余内容
+    // 在独立滚动容器里单独滚（locked_appearance_layout）。分叉用 switcher 重建页面骨架，
+    // 清单卡随骨架重建：清一注册指向**当前**子树（loaders/getters 覆盖语义正好要这一点）,
+    // 旧子树的构建期信号随 keyed 作用域回收，旧注册不清的话保存时会读到回收信号——
+    // 故重建前 reset + 重注册系统批（同 shell::build 开窗）。
+    // switcher 的**首次**构建同步发生在建树流程里（all_tabs 内调 mapper），此刻 reset 会把
+    // 此前已建四页（方案/输入/按键/主题）的注册清掉，故首次跳过、运行期重建才 reset。
+    let first_build = Rc::new(Cell::new(true));
+    let app2 = app.clone();
+    let nav2 = nav.clone();
+    let pinned = {
+        let st = app.borrow();
+        st.appearance_pinned
+    };
+    Element::switcher(pinned, move |locked: bool| {
+        if !first_build.replace(false) {
+            crate::shell::reset_registrations(&app2);
+        }
+        let st = app2.borrow();
+        let mut secs = Vec::new();
+        if !st.manifest.sections_of("ui").is_empty() {
+            secs.push(nav2.wrap(
+                crate::appearance_preview::SECTION_TITLE,
+                0,
+                crate::appearance_preview::build_card(&app2, &st, st.appearance_pinned),
+            ));
+        }
+        secs.extend(manifest_sections(&st, "ui", &nav2));
+        if locked {
+            let header = if crate::widgets::PAGE_HEADER_ENABLED {
+                crate::widgets::page_header("外观", "自定义候选窗与工具栏的视觉呈现")
+            } else {
+                Element::leaf()
+            };
+            locked_appearance_layout(header, secs.remove(0), secs)
+        } else {
+            sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
+        }
+    })
+}
+
+/// 锁定布局：预览卡固定页顶（header + 预览卡不滚），清单卡在独立滚动容器里单独滚。
+/// 与未锁定布局共用同一批构建函数，间距/配色同 sections_page（页边距 20/16、卡间距 18）。
+fn locked_appearance_layout(
+    header: Element,
+    preview: Element,
+    manifest_cards: Vec<Element>,
+) -> Element {
+    let fixed = Element::col()
+        .width_match()
+        .padding_xy(20, 16)
+        .spacing(18)
+        .child(header)
+        .child(preview);
+    let rest = Element::col()
+        .width_match()
+        .padding_xy(20, 0)
+        .spacing(18)
+        .children(manifest_cards);
+    Element::col()
+        .width_match()
+        .fill()
+        .child(fixed)
+        .child(Element::scroll().fill().child(rest))
 }
 
 // ───────────────────────── 主题 ─────────────────────────
