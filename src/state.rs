@@ -56,6 +56,71 @@ pub type PunctCells = Rc<Vec<[Signal<String>; 4]>>;
 /// 供「重新加载」（从服务端配置回填）与「恢复本页」（空 Config→manifest 默认值）使用。
 pub type FieldLoader = Box<dyn Fn(&Config)>;
 
+/// 一次页面构建登记的「页面级注册」记账:各集合的登记区间与键差集。
+///
+/// 外观页 switcher 重建时,只有**上一批外观页构建**登记的注册失效——其余八页子树
+/// 始终挂在树上,它们的注册必须活着;进程级批(register_schema/system)与子树无关。
+/// 全量 reset 只属于主窗重建。这一批由 begin/end 快照差集自动圈出,不靠人工枚举,
+/// 枚举漏一项就是静默丢注册。
+#[derive(Default)]
+struct RegistryBatch {
+    /// Vec 类集合的登记区间 [start, end)。
+    writers: (usize, usize),
+    dialogs: (usize, usize),
+    global_flags: (usize, usize),
+    log_level_probes: (usize, usize),
+    side: (usize, usize),
+    /// HashMap 集合里**本批新增**的键。
+    getters: Vec<String>,
+    bool_signals: Vec<String>,
+    select_indices: Vec<String>,
+    loaders: Vec<String>,
+    dialog_opens: Vec<String>,
+    /// 本批是否置值了惰性共享项——它的信号归旧子树,重建要跟着清掉。
+    punct_cells: bool,
+    comment_ui: bool,
+}
+
+/// begin_page_batch 时记下的快照:end_page_batch 与它求差集。
+#[derive(Default)]
+struct BatchBefore {
+    writers: usize,
+    dialogs: usize,
+    global_flags: usize,
+    log_level_probes: usize,
+    side: usize,
+    getters_keys: std::collections::HashSet<String>,
+    bool_signals_keys: std::collections::HashSet<String>,
+    select_indices_keys: std::collections::HashSet<String>,
+    loaders_keys: std::collections::HashSet<String>,
+    dialog_opens_keys: std::collections::HashSet<String>,
+    punct_cells_was_none: bool,
+    comment_ui_was_none: bool,
+}
+
+/// HashMap 集合的批差集:end 时刻键集里 begin 快照下没有的键。
+fn diff_keys<T>(
+    before: &std::collections::HashSet<String>,
+    m: &RefCell<HashMap<String, T>>,
+) -> Vec<String> {
+    m.borrow()
+        .keys()
+        .filter(|k| !before.contains(*k))
+        .cloned()
+        .collect()
+}
+
+/// 区间两端钳到当前长度再 drain:registry 的 dialogs 在主窗 build 后会被外壳 take 走挂根,
+/// 记账区间自然失效——超界部分按「已被取走」处理,不当作错误。
+fn drain_clamped<T>(v: &RefCell<Vec<T>>, r: (usize, usize)) {
+    let mut b = v.borrow_mut();
+    let end = r.1.min(b.len());
+    let start = r.0.min(end);
+    if start < end {
+        b.drain(start..end);
+    }
+}
+
 /// 字段注册表 — 清单引擎登记的保存写回器、联动取值器与回填加载器。
 #[derive(Default)]
 pub struct FieldRegistry {
@@ -142,6 +207,10 @@ pub struct FieldRegistry {
     ///
     /// ⚠️ 与 `punct_cells` 同一条纪律：**必须**在 [`FieldRegistry::reset`] 里清空。
     pub comment_ui: RefCell<Option<crate::dialogs::comment_settings::CommentSettingsUi>>,
+    /// 上一批「页面级注册」的记账,见 [`RegistryBatch`]。None = 尚未记账。
+    page_batch: RefCell<Option<RegistryBatch>>,
+    /// begin_page_batch 的快照,end_page_batch 求差集用。
+    batch_before: RefCell<Option<BatchBefore>>,
 }
 
 impl FieldRegistry {
@@ -175,7 +244,90 @@ impl FieldRegistry {
         self.dialog_opens.borrow_mut().clear();
         *self.punct_cells.borrow_mut() = None;
         *self.comment_ui.borrow_mut() = None;
+        *self.page_batch.borrow_mut() = None;
+        *self.batch_before.borrow_mut() = None;
         // ⛔ 不清 `system_baseline`：见其字段注释。
+    }
+
+    /// 开始一次页面构建的登记记账。与 [`Self::end_page_batch`] 成对使用:中间发生的
+    /// 全部登记(区间增量与新增键)在 end 时圈成「本批」,供 [`Self::reset_page_batch`]
+    /// 只清这一批。
+    pub fn begin_page_batch(&self) {
+        *self.batch_before.borrow_mut() = Some(BatchBefore {
+            writers: self.writers.borrow().len(),
+            dialogs: self.dialogs.borrow().len(),
+            global_flags: self.global_flags.borrow().len(),
+            log_level_probes: self.log_level_probes.borrow().len(),
+            side: self.side.borrow().len(),
+            getters_keys: self.getters.borrow().keys().cloned().collect(),
+            bool_signals_keys: self.bool_signals.borrow().keys().cloned().collect(),
+            select_indices_keys: self.select_indices.borrow().keys().cloned().collect(),
+            loaders_keys: self.loaders.borrow().keys().cloned().collect(),
+            dialog_opens_keys: self.dialog_opens.borrow().keys().cloned().collect(),
+            punct_cells_was_none: self.punct_cells.borrow().is_none(),
+            comment_ui_was_none: self.comment_ui.borrow().is_none(),
+        });
+    }
+
+    /// 结束记账:begin 之后的登记圈成当前页批(快照差集),存下供重置。
+    pub fn end_page_batch(&self) {
+        let before = self
+            .batch_before
+            .borrow_mut()
+            .take()
+            .expect("begin/end 必须成对");
+        let batch = RegistryBatch {
+            writers: (before.writers, self.writers.borrow().len()),
+            dialogs: (before.dialogs, self.dialogs.borrow().len()),
+            global_flags: (before.global_flags, self.global_flags.borrow().len()),
+            log_level_probes: (
+                before.log_level_probes,
+                self.log_level_probes.borrow().len(),
+            ),
+            side: (before.side, self.side.borrow().len()),
+            getters: diff_keys(&before.getters_keys, &self.getters),
+            bool_signals: diff_keys(&before.bool_signals_keys, &self.bool_signals),
+            select_indices: diff_keys(&before.select_indices_keys, &self.select_indices),
+            loaders: diff_keys(&before.loaders_keys, &self.loaders),
+            dialog_opens: diff_keys(&before.dialog_opens_keys, &self.dialog_opens),
+            punct_cells: before.punct_cells_was_none && self.punct_cells.borrow().is_some(),
+            comment_ui: before.comment_ui_was_none && self.comment_ui.borrow().is_some(),
+        };
+        *self.page_batch.borrow_mut() = Some(batch);
+    }
+
+    /// 只清「上一批页面级注册」。外观页 switcher 重建用——其余八页的注册与进程级批
+    /// (register_schema/system)不受影响;全量清空仍走 [`Self::reset`]。
+    pub fn reset_page_batch(&self) {
+        let Some(batch) = self.page_batch.borrow_mut().take() else {
+            return;
+        };
+        drain_clamped(&self.writers, batch.writers);
+        drain_clamped(&self.dialogs, batch.dialogs);
+        drain_clamped(&self.global_flags, batch.global_flags);
+        drain_clamped(&self.log_level_probes, batch.log_level_probes);
+        drain_clamped(&self.side, batch.side);
+        for k in &batch.getters {
+            self.getters.borrow_mut().remove(k);
+        }
+        for k in &batch.bool_signals {
+            self.bool_signals.borrow_mut().remove(k);
+        }
+        for k in &batch.select_indices {
+            self.select_indices.borrow_mut().remove(k);
+        }
+        for k in &batch.loaders {
+            self.loaders.borrow_mut().remove(k);
+        }
+        for k in &batch.dialog_opens {
+            self.dialog_opens.borrow_mut().remove(k);
+        }
+        if batch.punct_cells {
+            *self.punct_cells.borrow_mut() = None;
+        }
+        if batch.comment_ui {
+            *self.comment_ui.borrow_mut() = None;
+        }
     }
 
     /// 播种 `system.*` 加载态基线。见 [`FieldRegistry::system_baseline`]。
@@ -631,9 +783,13 @@ pub struct AppState {
     pub conn_failed: Signal<bool>,
     /// 系统在亮 / 暗之间切换的次数（系统主题回调里加一）：外观页「效果预览」的草稿明暗跟随系统时据此重取。
     pub system_theme_flips: Signal<u64>,
-    /// 外观页「效果预览」图钉锁定:锁定 = 预览卡固定页顶、其余内容独立滚动。
+    /// 外观页「效果预览」图钉锁定代次(generation):值每翻转一次 +1,**奇数 = 锁定**、
+    /// 偶数 = 未锁定。不用裸 bool 的原因:switcher 的 KeyedList 会把「离场残影(gone 行)」
+    /// 当有效行复用(windui keyed 复用判定不跳过 gone 行),bool 在两态间往返时第二次
+    /// 翻转会命中残影 → mapper 不重建、registry 记账批不重挂。generation 单调递增,
+    /// key 永不相等 → 必走「新建行」→ mapper 必跑。
     /// 页面级状态,会话内记住、不落盘配置;布局分叉见 `appearance_page`。
-    pub appearance_pinned: Signal<bool>,
+    pub appearance_pinned: Signal<u64>,
     /// `ui.theme.name` 的取值列表（id/slug，异步加载后填充；画廊的选中索引下标进它）。
     /// 末尾可能多一项配置里写着、却没装的主题（[`Self::push_unlisted_theme`]）。
     pub theme_value_sig: Signal<Vec<String>>,
@@ -1091,7 +1247,7 @@ impl AppState {
             data_loaded: false,
             conn_failed: signal(false),
             system_theme_flips: signal(0),
-            appearance_pinned: signal(false),
+            appearance_pinned: signal(0u64),
             theme_value_sig: signal(vec![]),
             theme_delete_id: signal(String::new()),
             theme_delete_msg: signal(String::new()),
@@ -2246,14 +2402,25 @@ impl AppState {
         );
     }
 
-    /// 翻转外观页图钉锁定。布局分叉(锁定/未锁定两套骨架)经 switcher 重建,旧布局子树的
-    /// 构建期信号在下一帧 dispatch 时随 keyed 作用域回收;registry 里指向它们的旧 writer /
-    /// loader 若不清,下一帧任何读 registry 的哨兵(`draft_config` / `live_conflicts`)都会
-    /// 读到回收信号 panic——实测如此。故翻转的**同一时刻**先清 registry,重建(mapper 里
-    /// `reset_registrations`)再重注册。测试与点击回调都走本方法,不直接 set 信号。
-    pub fn set_appearance_pinned(&self, v: bool) {
-        self.fields.reset();
-        self.appearance_pinned.set(v);
+    /// 翻转图钉。重建帧内预览 Watcher 可能先于骨架重建跑(on_update 相位树序),读
+    /// registry 里**上一批**外观页条目会命中已回收信号——所以翻转的同一时刻先按分桶
+    /// 记账清上一批(reset_page_batch,只清外观页批;其余八页与进程级批不动),再翻转
+    /// 信号。重建帧 mapper 里 begin/end 记新账。测试与点击回调统一走本方法。
+    /// 此刻是否锁定(代次奇偶)。
+    pub fn appearance_locked(&self) -> bool {
+        self.appearance_pinned.get() % 2 == 1
+    }
+
+    /// 翻转图钉。重建帧内预览 Watcher 可能先于骨架重建跑(on_update 相位树序),读
+    /// registry 里**上一批**外观页条目会命中已回收信号——所以只在值真翻转时按分桶
+    /// 记账清上一批(reset_page_batch,只清外观页批;其余八页与进程级批不动),再递增
+    /// 代次。重建帧 mapper 里 begin/end 记新账。测试与点击回调统一走本方法。
+    pub fn set_appearance_pinned(&self, locked: bool) {
+        if self.appearance_locked() == locked {
+            return;
+        }
+        self.fields.reset_page_batch();
+        self.appearance_pinned.set(self.appearance_pinned.get() + 1);
     }
 
     pub fn refresh_theme_names(&mut self) {

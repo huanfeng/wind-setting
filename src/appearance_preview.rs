@@ -402,7 +402,7 @@ fn preview_area(shown: Signal<Shown>, kind: Signal<usize>) -> Element {
 }
 
 /// 「效果预览」卡片。
-pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState, pinned: Signal<bool>) -> Element {
+pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState, locked: bool) -> Element {
     let shown: Signal<Shown> = signal(Shown::Waiting);
     let error: Signal<String> = signal(String::new());
     // 形态选中段：会话内记住即可（页面状态，不落盘配置）。
@@ -413,7 +413,7 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState, pinned: Signal<
     // 所以闭包捕获 app 而不是只拿信号句柄。
     let make_pin = move || {
         let app = app.clone();
-        let role = if pinned.get() {
+        let role = if locked {
             Role::Accent
         } else {
             Role::TextSubtle
@@ -421,7 +421,7 @@ pub fn build_card(app: &Rc<RefCell<AppState>>, state: &AppState, pinned: Signal<
         Element::row()
             .clickable()
             .on_click(move |_| {
-                let v = !pinned.get();
+                let v = !app.borrow().appearance_locked();
                 app.borrow().set_appearance_pinned(v);
             })
             .child(crate::icons::tinted_role(crate::icons::PIN, 14, role))
@@ -1031,18 +1031,98 @@ mod tests {
         let inner = first_scroll(&tree, row_anchor).expect("锁定后清单行应有独立滚动容器");
         assert_ne!(inner, page_scroll, "独立滚动容器应是新节点");
         assert!(!contains(&tree, inner, aid2), "独立滚动容器不应包含预览卡");
-        // 解锁:恢复原结构。
+        // 解锁:恢复原结构。骨架按代次重建,滚动容器是**新节点**——断言恢复
+        // 「整页滚动形态」(预览卡重新有 Scroll 先祖),而不是同一节点。
         st.set_appearance_pinned(false);
-        st.fields.reset();
         layout(&mut tree);
         layout(&mut tree);
         let aid3 = crate::search::anchor::anchor_node_id(&tree, "ui:appearance-preview")
             .expect("解锁后预览卡锚点应重新登记");
-        assert_eq!(
-            first_scroll(&tree, aid3),
-            Some(page_scroll),
-            "解锁后预览卡应回到原页面滚动容器"
+        let back = first_scroll(&tree, aid3);
+        assert!(back.is_some(), "解锁后预览卡应回到整页滚动形态");
+        assert_ne!(back, Some(page_scroll), "骨架按代次重建,滚动容器是新的节点");
+    }
+    /// 分桶记账(RegistryBatch)的存活面:翻一次图钉后,批外注册必须全部活着——其余八页
+    /// 的清单注册(loaders/getters 键集)、热键收集器(global_flags)、对话框开框信号
+    /// (dialog_opens)、side committers、日志级别探针一个都不能少;外观页批等量替换
+    /// (writers 全跑不 panic)。
+    #[test]
+    fn page_batch_keeps_other_pages_registrations() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        let st = app.borrow();
+        st.tab.set(crate::cli::page_to_index("ui").unwrap());
+        let layout = |t: &mut windui::core::Tree| {
+            t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+        };
+        layout(&mut tree);
+
+        // 翻转前快照。
+        let before = (
+            st.fields.writers.borrow().len(),
+            st.fields.global_flags.borrow().len(),
+            st.fields.dialog_opens.borrow().len(),
+            st.fields.loaders.borrow().len(),
+            st.fields.getters.borrow().len(),
+            st.fields.side.borrow().len(),
+            st.fields.log_level_probes.borrow().len(),
         );
+        let snap_maps = |st: &AppState| -> (Vec<String>, Vec<String>) {
+            let mut ld: Vec<String> = st.fields.loaders.borrow().keys().cloned().collect();
+            let mut gt: Vec<String> = st.fields.getters.borrow().keys().cloned().collect();
+            ld.sort();
+            gt.sort();
+            (ld, gt)
+        };
+        let (loaders_before, getters_before) = snap_maps(&st);
+
+        // 翻一次图钉(锁定 → 解锁),每帧布局让重建与 dispatch 跑完。
+        st.set_appearance_pinned(true);
+        layout(&mut tree);
+        layout(&mut tree);
+        st.set_appearance_pinned(false);
+        layout(&mut tree);
+        layout(&mut tree);
+
+        // 批外注册一个都不能少。
+        let after = (
+            st.fields.writers.borrow().len(),
+            st.fields.global_flags.borrow().len(),
+            st.fields.dialog_opens.borrow().len(),
+            st.fields.loaders.borrow().len(),
+            st.fields.getters.borrow().len(),
+            st.fields.side.borrow().len(),
+            st.fields.log_level_probes.borrow().len(),
+        );
+        assert_eq!(after.1, before.1, "热键收集器(global_flags)不能被清掉");
+        assert_eq!(after.2, before.2, "对话框开框信号(dialog_opens)不能被清掉");
+        assert_eq!(after.5, before.5, "side committers 不能被清掉");
+        assert_eq!(after.6, before.6, "日志级别探针不能被清掉");
+        let (loaders_after, getters_after) = snap_maps(&st);
+        assert_eq!(loaders_after, loaders_before, "其他页 loader 键集不能变");
+        assert_eq!(getters_after, getters_before, "其他页 getter 键集不能变");
+        assert_eq!(after.0, before.0, "writers 应等量替换,总数不变");
+        // 批内读回收信号会当场红:loaders 按「空 Config 回落默认」的设计口径全部调用
+        // (「恢复本页」同款路径),任何残留旧批条目都会在这里炸出来。
+        let cfg = crate::config::Config::default();
+        for ld in st.fields.loaders.borrow().values() {
+            ld(&cfg);
+        }
     }
 
     #[test]

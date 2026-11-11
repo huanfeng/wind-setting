@@ -4,7 +4,7 @@
 //! 一张卡片，卡片次序为 section 首次出现序，行序为 manifest 原始序——key 永远与 core 一致，
 //! core 加字段自动出现，彻底消除硬编码 key 漂移。复杂页（方案管理/词库/统计/关于）手写。
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use windui::core::EventCtx;
@@ -57,7 +57,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         cards_tab_def("输入", input_page(state, &input), input),
         cards_tab_def("按键", keys_page(state, &keys), keys),
         cards_tab_def("主题", theme_page(app, state, &theme), theme),
-        cards_tab_def("外观", appearance_page(app, state, &ui), ui),
+        cards_tab_def("外观", appearance_page(app, &ui), ui),
         tab_def("统计", stats::build_page(state, &stats_nav), stats_nav),
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
@@ -776,38 +776,43 @@ fn keys_page(state: &AppState, nav: &SubNav) -> Element {
 
 // ───────────────────────── 外观 ─────────────────────────
 
-fn appearance_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
+fn appearance_page(app: &Rc<RefCell<AppState>>, nav: &SubNav) -> Element {
     // 页首「效果预览」：草稿配置出的候选窗预览，下面的设置不必保存就跟着变。定制版把本页的
     // 设置项全藏了时它也不建——没有可调的项，预览只是一张不会变的图。
     // 二级导航按登记顺序排，故先登记它、再建清单卡。
     // 布局分叉：未锁定 = sections_page 现状（整页滚动）；锁定 = 预览卡固定页顶、其余内容
     // 在独立滚动容器里单独滚（locked_appearance_layout）。分叉用 switcher 重建页面骨架，
-    // 清单卡随骨架重建：清一注册指向**当前**子树（loaders/getters 覆盖语义正好要这一点）,
-    // 旧子树的构建期信号随 keyed 作用域回收，旧注册不清的话保存时会读到回收信号——
-    // 故重建前 reset + 重注册系统批（同 shell::build 开窗）。
-    // switcher 的**首次**构建同步发生在建树流程里（all_tabs 内调 mapper），此刻 reset 会把
-    // 此前已建四页（方案/输入/按键/主题）的注册清掉，故首次跳过、运行期重建才 reset。
-    let first_build = Rc::new(Cell::new(true));
+    // 清单卡随骨架重建:旧子树构建期信号随 keyed 作用域回收,上一批外观页注册必须清——
+    // 但**只清这一批**:其余八页子树始终挂在树上,注册必须活着(全量 reset 会把它们静默
+    // 清掉——保存丢改动、热键汇总丢收集器、搜索打不开对话框);进程级批
+    // (register_schema/system)与子树无关,不重挂。分桶记账见 FieldRegistry 的
+    // RegistryBatch:重建帧 begin/end 差集圈出外观页批,reset_page_batch 只清它。
+    // switcher 的**首次**构建同步发生在建树流程里（all_tabs 内调 mapper）,分桶记账同样
+    // 适用于首次——此前已建四页的注册在 begin 快照里,不受影响。
     let app2 = app.clone();
     let nav2 = nav.clone();
     let pinned = {
         let st = app.borrow();
         st.appearance_pinned
     };
-    Element::switcher(pinned, move |locked: bool| {
-        if !first_build.replace(false) {
-            crate::shell::reset_registrations(&app2);
-        }
+    Element::switcher(pinned, move |generation: u64| {
+        let locked = generation % 2 == 1;
         let st = app2.borrow();
+        // 只清上一批**外观页**注册:begin 记快照 → 构建登记 → end 圈批,重建帧由
+        // reset_page_batch 按上一次的记账清。全量 reset 清的是九页+进程级批的全部注册,
+        // 被remove的只有外观页子树——其余八页注册必须活着,进程级批不重挂。
+        st.fields.reset_page_batch();
+        st.fields.begin_page_batch();
         let mut secs = Vec::new();
         if !st.manifest.sections_of("ui").is_empty() {
             secs.push(nav2.wrap(
                 crate::appearance_preview::SECTION_TITLE,
                 0,
-                crate::appearance_preview::build_card(&app2, &st, st.appearance_pinned),
+                crate::appearance_preview::build_card(&app2, &st, locked),
             ));
         }
         secs.extend(manifest_sections(&st, "ui", &nav2));
+        st.fields.end_page_batch();
         if locked {
             let header = if crate::widgets::PAGE_HEADER_ENABLED {
                 crate::widgets::page_header("外观", "自定义候选窗与工具栏的视觉呈现")
