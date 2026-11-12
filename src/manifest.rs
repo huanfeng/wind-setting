@@ -856,18 +856,27 @@ pub(crate) fn scheme_card_vis(
         .unwrap_or_default()
         .iter()
         .filter_map(|k| state.manifest.get(k))
-        .filter(|it| !it.hidden && !Manifest::lives_in_dialog(it))
+        .filter(|it| {
+            !it.hidden && !Manifest::lives_in_dialog(it) && !state.manifest.merged_into_gate(it)
+        })
         .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
         .collect();
+    let section_owned = section.to_string();
     let fuzzy_key = crate::search::index::FUZZY_MASTER;
     // 「双拼」卡的手写布局行也算「卡里还有可见的行」。
+    // 布局行只在有可改的双拼方案时才出（`page_layout_has_target`，与行本身的显隐同口径），
+    // 没有目标时它不成行，不能撑住整卡。
     let layout_row = section == DOUBLE_PINYIN_SECTION
         && !state.manifest.feature_hidden(SHUANGPIN_LAYOUT_FEATURE);
+    let has_target = state.schema_mgr.page_layout_has_target;
     std::rc::Rc::new(move || {
-        if with_fuzzy && !store.hides_key(fuzzy_key) {
+        // 模糊音入口行的显隐 = `row_vis(FUZZY_MASTER, "schema", section)`，整节规则也算。
+        if with_fuzzy
+            && !(store.hides_key(fuzzy_key) || store.hides_section("schema", &section_owned))
+        {
             return true;
         }
-        if layout_row && !store.hides_feature(SHUANGPIN_LAYOUT_FEATURE) {
+        if layout_row && has_target.get() && !store.hides_feature(SHUANGPIN_LAYOUT_FEATURE) {
             return true;
         }
         acts.iter()
@@ -9395,6 +9404,27 @@ mod scheme_card_vis_tests {
             .add(&format!("key:{}", crate::search::index::FUZZY_MASTER))
             .unwrap();
         assert!(!scheme_card_vis(&st, "候选行为", true)(), "模糊音也藏了");
+    }
+
+    /// 并进门控开关行的「设置」按钮不成独立行：用户把能成行的项藏光后，它们不能撑住整卡
+    /// （否则卡片只剩标题，见方案页「拼音」「双拼」）。
+    #[test]
+    fn merged_gate_buttons_do_not_keep_the_card_alive() {
+        let st = crate::state::AppState::empty();
+        st.user_hide_store.set_enabled(true).unwrap();
+        for (sec, fuzzy) in [("候选行为", false), ("双拼", false), ("上屏行为", false)] {
+            for k in all_keys(&st, "schema", sec) {
+                let it = st.manifest.get(&k).unwrap();
+                if st.manifest.merged_into_gate(it) {
+                    continue;
+                }
+                st.user_hide_store.add(&format!("key:{k}")).unwrap();
+            }
+            assert!(
+                !scheme_card_vis(&st, sec, fuzzy)(),
+                "「{sec}」成行的项都藏了，整卡应消失"
+            );
+        }
     }
 
     /// 逃生口打开时全部放回来（判据跟着 `hides_*` 走，不另立一套）。
