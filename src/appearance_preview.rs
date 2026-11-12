@@ -288,6 +288,19 @@ impl Watcher {
     }
 }
 
+/// 节点被移除（图钉翻转整代重建、主窗关闭）时取消在途请求：结果不再有人看，别白占
+/// 服务端的预览名额。只取消自己记着的那一个；Busy 重试的第二跳不记 id，靠收尾门禁兜底。
+///
+/// 时机安全：移除发生在 `on_update` 派发里（KeyedList 回收旧行），此时 `NetTasks`
+/// 的 pending 表没有被借用（`on_done` 先摘出续体、放掉借用再执行）。
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        if let Some(t) = self.task.take() {
+            self.net.cancel(t);
+        }
+    }
+}
+
 impl Widget for Watcher {
     fn on_update(&mut self, _ctx: &mut EventCtx) {
         let on_page = self.tab.get() == self.page;
@@ -816,6 +829,50 @@ mod tests {
             kind: signal(0),
             shown_kind: Rc::new(Cell::new(0)),
         }
+    }
+
+    /// Watcher 随节点移除（图钉翻转、主窗重建）时取消在途预览请求：结果送达也不再执行
+    /// 收尾。不取消的话旧一代白跑一次 renderPreview（占服务端名额），还要靠收尾门禁兜底。
+    #[test]
+    fn dropping_watcher_cancels_in_flight_preview() {
+        use std::sync::{Arc, Mutex};
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = Rc::new(RefCell::new(AppState::empty()));
+        let inbox: Arc<Mutex<Vec<crate::net_task::NetDone>>> = Default::default();
+        {
+            let q = inbox.clone();
+            st.borrow().net.set_sink(move |m| q.lock().unwrap().push(m));
+        }
+        st.borrow()
+            .tab
+            .set(crate::cli::page_to_index("ui").unwrap());
+        let mut w = watcher(&st);
+        windui::testing::run_with_ctx(|ctx| w.on_update(ctx));
+        assert!(w.task.get().is_some(), "前提：进本页即发出请求");
+        let shown = w.shown;
+
+        drop(w);
+
+        // 等工作线程把结果送回来（mock 很快，但前面有一段防抖）。取消后工作线程在防抖
+        // 循环里看到取消标志就提前结束，结果仍会作为 NetDone 送达，只是续体已被摘掉。
+        for _ in 0..300 {
+            if !inbox.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for m in inbox.lock().unwrap().drain(..).collect::<Vec<_>>() {
+            st.borrow().net.on_done(m);
+        }
+        assert!(
+            matches!(shown.get(), Shown::Waiting),
+            "Watcher 已移除，迟到的结果不应再写进预览"
+        );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 什么时候发请求：只在本页；输入不变不重发；主题列表变、重试计时到、连不上之后切回本页或
