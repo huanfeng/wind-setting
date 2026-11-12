@@ -1985,6 +1985,8 @@ impl AppState {
             "schema.configChanged" => {
                 self.theme_gallery.invalidate();
                 let id = ev.data.get("id").and_then(|v| v.as_str());
+                // 词库窗的分类词库清单：改的是当前域的成员（或整批变化）就重取。
+                self.dict_mgr.on_schema_config_changed(id);
                 let changed = self.schema_mgr.on_schema_config_changed(id);
                 if !changed.is_empty() {
                     ctx.toast(format!(
@@ -5771,6 +5773,37 @@ mod tests {
         };
         let res = windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev_off));
         assert!(res.toast.is_some(), "值真的变了才是外部改动，应提示");
+    }
+
+    /// `schema.configChanged` 也转给词库窗：改的是它当前域的成员就重取分类词库清单。
+    #[test]
+    fn schema_config_changed_refreshes_dict_categories() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mut st = AppState::empty();
+        *st.dict_mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "wubi86".into(),
+            name: "五笔".into(),
+            kind: "codetable".into(),
+            ..Default::default()
+        }];
+        st.dict_mgr
+            .domain
+            .set(crate::pages::dict::state::GLOBAL_DOMAINS);
+        let ev = |id: &str| crate::rpc::CoreEvent {
+            event: "schema.configChanged".to_string(),
+            data: serde_json::json!({ "id": id, "method": "schema.setDictEnabled" }),
+        };
+        crate::rpc::take_mock_calls();
+        windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev("pinyin")));
+        let fetched = |calls: Vec<(String, serde_json::Value)>| {
+            calls.iter().any(|(m, _)| m == "sysDict.categories")
+        };
+        assert!(!fetched(crate::rpc::take_mock_calls()), "别的方案不重取");
+        windui::testing::run_with_ctx(|ctx| st.on_core_event(ctx, &ev("wubi86")));
+        assert!(fetched(crate::rpc::take_mock_calls()), "当前域的方案重取");
+        assert!(!st.dict_mgr.cats.list.get().is_empty());
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 关窗守卫的判据：两个来源各自都要能把窗口拦下来。

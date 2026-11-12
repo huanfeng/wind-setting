@@ -330,7 +330,7 @@ impl DictManagerState {
 
     /// 读开关时以哪个方案为准：拼音族折叠成一个域时取成员里的活动方案（活动方案不在域内就
     /// 取代表方案）；不折叠的域就是它自己。条目与文件是成员共用的，只有开关按方案各存一份。
-    fn lib_switch_schema(&self) -> Option<String> {
+    pub(super) fn lib_switch_schema(&self) -> Option<String> {
         let rep = self.current_schema_id()?;
         let members = self.current_domain_members();
         if members.len() <= 1 {

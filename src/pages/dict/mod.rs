@@ -15,6 +15,7 @@ pub mod sidebar;
 pub mod spec;
 pub mod state;
 pub mod stats_dialog;
+pub mod sys_cats;
 pub mod user_libs;
 pub mod view;
 pub mod wordlist;

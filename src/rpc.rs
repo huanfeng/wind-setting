@@ -1076,6 +1076,51 @@ fn record_mock_dict_override(schema_id: String, dict_id: String, enabled: bool) 
     MOCK_DICT_OVERRIDES.with(|m| m.borrow_mut().insert((schema_id, dict_id), enabled));
 }
 
+/// `sysDict.categories` 的 mock：五笔各版给三个附加库（同 getConfig 那份），拼音族
+/// （`py` / `*sp` / 含 `pinyin`）给几张细胞库加一张放入目录的；其余（混输、测试里的 `wb`）
+/// 没有。开关套用会话内经 setDictEnabled 记下的值。
+fn mock_sys_dict_categories(params: &Value) -> Value {
+    let id = params.get("schema").and_then(|v| v.as_str()).unwrap_or("");
+    let mut v = if id.starts_with("wubi") && !id.contains("mixed") {
+        json!([
+            { "id": "wubi86_extra", "label": "扩展词库", "description": "新词、网络用语、生僻词等非常用词条",
+              "group": null, "enabled": true, "source": "bundled", "count": 1843 },
+            { "id": "wubi86_emoji", "label": "Emoji 表情", "description": "按五笔编码检索 emoji",
+              "group": null, "enabled": true, "source": "bundled", "count": 270 },
+            { "id": "wubi86_xzqy", "label": "行政区域", "description": "省市县区等地名词条",
+              "group": "人名地名", "enabled": false, "source": "bundled", "count": 3208 }
+        ])
+    } else if id == "py" || id.ends_with("sp") || id.contains("pinyin") {
+        json!([
+            { "id": "cell_exthot", "label": "网络热词", "description": "近年流行语与网络热词",
+              "group": "网络", "enabled": false, "source": "bundled", "count": 2087 },
+            { "id": "cell_idiom", "label": "成语", "description": "成语、俗语与古诗文名句",
+              "group": "文史", "enabled": false, "source": "bundled", "count": 48721 },
+            { "id": "cell_place", "label": "地名", "description": "地名与地铁站名",
+              "group": "人名地名", "enabled": true, "source": "bundled", "count": 6401 },
+            { "id": "cell_computer", "label": "计算机", "description": "计算机与互联网术语",
+              "group": "专业术语", "enabled": false, "source": "bundled", "count": 31 },
+            { "id": "dir:pinyin/ext/mine", "label": "我的行业词", "description": "自动识别：pinyin/ext/mine.dict.yaml",
+              "group": null, "enabled": false, "source": "dir", "count": null }
+        ])
+    } else {
+        json!([])
+    };
+    if let Some(arr) = v.as_array_mut() {
+        MOCK_DICT_OVERRIDES.with(|m| {
+            let map = m.borrow();
+            for d in arr.iter_mut() {
+                if let Some(did) = d.get("id").and_then(|x| x.as_str()).map(str::to_string)
+                    && let Some(&en) = map.get(&(id.to_string(), did))
+                {
+                    d["enabled"] = json!(en);
+                }
+            }
+        });
+    }
+    v
+}
+
 /// 把会话内记忆的开关套用到 getConfig 返回的 dictionaries[*].enabled 上。
 fn apply_mock_dict_overrides(schema_id: &str, cfg: &mut Value) {
     let Some(arr) = cfg.get_mut("dictionaries").and_then(|d| d.as_array_mut()) else {
@@ -1473,6 +1518,15 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
             (!mock_is_schema_text(text))
                 .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
+        }
+        // 分类词库开关：同下面的分库开关，`bad` 打头的方案报错。
+        "schema.setDictEnabled"
+            if params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id.starts_with("bad")) =>
+        {
+            Some("mock: 开关失败".to_string())
         }
         // 分库开关：方案 id 以 `bad` 打头时报错，供离线走通「折叠域成员改到一半失败 → 回滚」。
         "userDicts.setEnabled"
@@ -2495,6 +2549,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             record_mock_dict_override(id, dict_id, enabled);
             json!({ "ok": true, "live": true })
         }
+        "sysDict.categories" => mock_sys_dict_categories(params),
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "system.storageStatus" => json!({ "readonly": false, "issues": [] }),

@@ -266,10 +266,17 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(card)
         .child(pagination);
 
+    // 中栏点了「分类词库」时右栏换成分类清单（见 `sys_cats`），表格那一套整体收起。
+    let (cats_open, cats_open2) = (mgr.cats.open, mgr.cats.open);
+    let main_col = main_col.visible_when(move || !cats_open.get());
+    let cats_pane =
+        super::sys_cats::build_sys_cats_pane(&mgr).visible_when(move || cats_open2.get());
+
     // effect/toast 为不可见/浮层节点，叠在 stack 里避免占据 col 间距。
     Element::stack()
         .fill()
         .child(main_col)
+        .child(cats_pane)
         .child(effect)
         .child(search_effect)
         .child(temp_filter_effect)

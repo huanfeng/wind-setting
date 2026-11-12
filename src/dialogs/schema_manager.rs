@@ -1165,6 +1165,11 @@ fn overlay_layout_value(idx: usize) -> &'static str {
         .unwrap_or(OVERLAY_LAYOUTS[0])
 }
 
+/// 「扩展词库」一节的过渡提示：同一批开关已进词库窗（主仓设计
+/// `system-dict-patch-and-candidate-adjust.md` §8 第 14 条），这一节过几版再删。
+pub(crate) const EXT_DICTS_MOVED: &str =
+    "也可在「词库管理 → 系统词库 → 分类词库」里开关，那里拨动即生效";
+
 /// 扩展词库行（UI 响应式包装：每行一个开关信号 + 打开时的初始值）。
 /// 拨动只翻转 `on`（暂存），点「保存」时对比 `initial` 提交变更。
 #[derive(Clone)]
@@ -6206,7 +6211,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 .collect();
             let dirs = state.settings_dict_dirs.borrow().clone();
             if dirs.is_empty() {
-                return crate::widgets::dialog_section("扩展词库", rows);
+                return crate::widgets::dialog_section_hint("扩展词库", EXT_DICTS_MOVED, rows);
             }
             let mut rows = rows;
             if rows.is_empty() {
@@ -6249,7 +6254,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     })
                 }
             };
-            crate::widgets::dialog_section_full("扩展词库", None, Some(&action), rows)
+            crate::widgets::dialog_section_full(
+                "扩展词库",
+                Some(EXT_DICTS_MOVED),
+                Some(&action),
+                rows,
+            )
         }
         SettingsSection::Empty => Element::label("该方案除进入方式外没有其它可配置项。")
             .font_size(11.0)
