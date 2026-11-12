@@ -1238,6 +1238,97 @@ mod tests {
         run(&mut tree, 60);
     }
 
+    /// 锁定布局与未锁定布局**看起来一样**，只是滚动范围不同（真机反馈三点）：
+    /// ① 预览卡顶部位置不变（页头关闭时曾多塞一个空叶子，平白多出一档 18px 间距）；
+    /// ② 内容区底色不变（锁定骨架曾漏设 SurfaceAlt，露出更深的窗口底色）；
+    /// ③ 滚动区底边不越出内容区（曾用 `fill` 取父容器全高，被固定区往下推出窗口，
+    ///    最下面的卡片滚不到）。
+    #[test]
+    fn pinned_layout_keeps_unpinned_geometry_and_background() {
+        use std::cell::RefCell;
+        use windui::core::{Layout, NodeId, Tree};
+        use windui::geometry::Size;
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        windui::anim::set_motion_level(windui::anim::MotionLevel::Full);
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        app.borrow()
+            .tab
+            .set(crate::cli::page_to_index("ui").unwrap());
+        let mut pm = tiny_skia::Pixmap::new(w as u32, h as u32).unwrap();
+        // 推进帧时钟跑完切换淡出：残影还在时会盖住新骨架，取色与几何都不准。
+        let mut now_ms = 1_000u64;
+        let mut settle = |tree: &mut Tree, pm: &mut tiny_skia::Pixmap| {
+            for _ in 0..60 {
+                now_ms += 16;
+                windui::testing::set_frame_clock_ms(now_ms);
+                tree.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+                let mut canvas = windui::render::skia::SkiaCanvas::new(pm);
+                tree.paint(&mut canvas);
+            }
+        };
+        let scroll_of = |t: &Tree, id: NodeId| -> Option<NodeId> {
+            let mut cur = t.get(id).and_then(|n| n.parent);
+            while let Some(i) = cur {
+                let n = t.get(i)?;
+                if matches!(n.layout, Layout::Scroll) {
+                    return Some(i);
+                }
+                cur = n.parent;
+            }
+            None
+        };
+        let preview = |t: &Tree| {
+            let id = crate::search::anchor::anchor_node_id(t, "ui:appearance-preview")
+                .expect("预览卡锚点应已挂载");
+            (id, t.abs_bounds(id))
+        };
+        // 底色取样点：预览卡左侧的页边距里（x 落在左内边距 20 的中间），纵向取卡片中线。
+        let bg_at = |pm: &tiny_skia::Pixmap, r: windui::geometry::Rect| {
+            let p = pm
+                .pixel((r.x - 10) as u32, (r.y + r.h / 2) as u32)
+                .expect("取样点应在画布内");
+            (p.red(), p.green(), p.blue())
+        };
+
+        settle(&mut tree, &mut pm);
+        let (pid, before) = preview(&tree);
+        let page_scroll = scroll_of(&tree, pid).expect("未锁定时预览卡应在整页滚动里");
+        let content_bottom = tree.abs_bounds(page_scroll).bottom();
+        let bg_before = bg_at(&pm, before);
+
+        app.borrow().set_appearance_pinned(true);
+        settle(&mut tree, &mut pm);
+        let (_, after) = preview(&tree);
+        assert_eq!(after.y, before.y, "锁定后预览卡顶部应与未锁定时同高");
+        assert_eq!(after.x, before.x, "锁定后预览卡左边应不变");
+        assert_eq!(
+            bg_at(&pm, after),
+            bg_before,
+            "锁定后页边距底色应与未锁定时一致"
+        );
+        let row = crate::search::anchor::anchor_node_id(&tree, "ui.candidate.font_size")
+            .or_else(|| crate::search::anchor::anchor_node_id(&tree, "ui.toolbar.vertical"))
+            .expect("外观页应有清单行锚点");
+        let inner = scroll_of(&tree, row).expect("锁定后清单行应在独立滚动区里");
+        assert_eq!(
+            tree.abs_bounds(inner).bottom(),
+            content_bottom,
+            "锁定后滚动区底边应与内容区底边齐平——越出窗口就滚不到最下面"
+        );
+    }
+
     #[test]
     fn pin_lock_changes_scroll_layout_and_unlock_restores() {
         use std::cell::RefCell;

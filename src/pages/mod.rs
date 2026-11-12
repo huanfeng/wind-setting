@@ -814,11 +814,8 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, nav: &SubNav) -> Element {
         secs.extend(manifest_sections(&st, "ui", &nav2));
         st.fields.end_page_batch();
         if locked {
-            let header = if crate::widgets::PAGE_HEADER_ENABLED {
-                crate::widgets::page_header("外观", "自定义候选窗与工具栏的视觉呈现")
-            } else {
-                Element::leaf()
-            };
+            let header = crate::widgets::PAGE_HEADER_ENABLED
+                .then(|| crate::widgets::page_header("外观", "自定义候选窗与工具栏的视觉呈现"));
             locked_appearance_layout(header, secs.remove(0), secs)
         } else {
             sections_page("外观", "自定义候选窗与工具栏的视觉呈现", secs)
@@ -828,27 +825,40 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, nav: &SubNav) -> Element {
 
 /// 锁定布局：预览卡固定页顶（header + 预览卡不滚），清单卡在独立滚动容器里单独滚。
 /// 与未锁定布局共用同一批构建函数，间距/配色同 sections_page（页边距 20/16、卡间距 18）。
+///
+/// 目标是**看起来与未锁定时一样**，只是滚动范围不同（与 `widgets::page` 对齐）：
+/// - 页头关闭（`header = None`）时什么都不加。塞一个空叶子占位会在它与预览卡之间
+///   多出一档 `spacing`，预览卡被往下推 18px。
+/// - 外层设 `SurfaceAlt` 底色：未锁定时这层底色由 `page()` 的滚动容器给，锁定骨架
+///   没有那一层，漏设就露出更深的窗口底色。
+/// - 滚动区用 `weight(1.0)` 取**剩余**高度，不能用 `fill`：`fill` 取父容器全高，滚动
+///   视口被固定区往下推出窗口，最下面的卡片滚不到。
+/// - 留白对齐：固定区上 16、与第一张卡的间距 18（等于未锁定时的卡间距）；滚动区底部
+///   留 16，最后一张卡不贴底。
 fn locked_appearance_layout(
-    header: Element,
+    header: Option<Element>,
     preview: Element,
     manifest_cards: Vec<Element>,
 ) -> Element {
-    let fixed = Element::col()
+    let mut fixed = Element::col()
         .width_match()
-        .padding_xy(20, 16)
-        .spacing(18)
-        .child(header)
-        .child(preview);
+        .padding_edges(Insets::new(20, 16, 20, 18))
+        .spacing(18);
+    if let Some(header) = header {
+        fixed = fixed.child(header);
+    }
+    let fixed = fixed.child(preview);
     let rest = Element::col()
         .width_match()
-        .padding_xy(20, 0)
+        .padding_edges(Insets::new(20, 0, 20, 16))
         .spacing(18)
         .children(manifest_cards);
     Element::col()
         .width_match()
         .fill()
+        .bg_role(Role::SurfaceAlt)
         .child(fixed)
-        .child(Element::scroll().fill().child(rest))
+        .child(Element::scroll().width_match().weight(1.0).child(rest))
 }
 
 // ───────────────────────── 主题 ─────────────────────────
