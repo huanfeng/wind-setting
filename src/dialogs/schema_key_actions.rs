@@ -699,7 +699,13 @@ mod tests {
     #[test]
     fn verbs_requiring_modifier_match_core_classification() {
         // 用来「离开英文态」的动作：绑有字符键是单程票。
-        for v in ["toggle_mode", "switch_engine", "toggle_schema:english"] {
+        for v in [
+            "toggle_mode",
+            "switch_engine",
+            "set_mode:english",
+            "set_mode:chinese",
+            "toggle_schema:english",
+        ] {
             assert!(KeyActionFields::verb_requires_modifier(v), "{v} 应限修饰键");
         }
         // 只在中文态有意义的，有字符键可用。

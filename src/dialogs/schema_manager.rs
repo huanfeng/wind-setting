@@ -1972,6 +1972,11 @@ impl SchemaManagerState {
         // 激活 C++ 转发，不走 `dispatch_hotkey`，列出来就是个按了没反应的选项。
         for (value, label) in [
             ("toggle_mode", "中英文切换"),
+            // 定向切换（core `SetMode`）：置到目标态，已在目标态则无操作。限修饰键
+            // （`key_binding::verb_requires_modifier` 同步收了这两项），值与 core
+            // `DISPATCH_ACTIONS` 逐字一致。
+            ("set_mode:english", "切至英文"),
+            ("set_mode:chinese", "切至中文"),
             ("switch_engine", "循环切换方案"),
             ("toggle_full_width", "全角/半角切换"),
             ("toggle_punct", "中/英标点切换"),

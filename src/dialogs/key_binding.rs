@@ -161,7 +161,10 @@ pub fn key_shape(name: &str) -> KeyShape {
 pub fn verb_requires_modifier(value: &str) -> bool {
     value.starts_with("toggle_schema:")
         || value.starts_with("switch_schema:")
-        || matches!(value, "toggle_mode" | "switch_engine")
+        || matches!(
+            value,
+            "toggle_mode" | "switch_engine" | "set_mode:english" | "set_mode:chinese"
+        )
 }
 
 /// 这个功能能不能绑在这个键形态上（`Lead` 表用；`Session` 表没有此限制）。
@@ -528,7 +531,8 @@ pub fn categorize_lead_verbs(verbs: &[Verb]) -> Vec<VerbCategory> {
             "none" => &mut disable,
             "temp_pinyin" | "temp_english" | "aux_code" | "rare_char" | "reverse" => &mut modes,
             "toggle_mode" | "switch_engine" | "toggle_full_width" | "toggle_punct"
-            | "toggle_s2t" | "toggle_t2s" | "toggle_toolbar" => &mut states,
+            | "toggle_s2t" | "toggle_t2s" | "toggle_toolbar" | "set_mode:english"
+            | "set_mode:chinese" => &mut states,
             s if s == "comment_state" || s.starts_with("comment_state:") => &mut states,
             "open_settings" | "take_screenshot" | "softkeyboard" => &mut tools,
             s if s.starts_with("mix:") || s.starts_with("special:") => &mut modes,
@@ -2140,6 +2144,33 @@ mod tests {
         assert_eq!(other.items[0].value, "some_future_verb");
     }
 
+    /// 定向切换（`set_mode:*`）必须落「状态切换」类，不得落「其它」。
+    ///
+    /// 2026-11 新增的动词。分类漏收的表现：选择器里归进「其它」、seed 追加
+    /// 「目标可能已不存在」的假警告（softkeyboard 那次同款），且「状态切换」类
+    /// 不出现导致用户找不到这两项。
+    #[test]
+    fn set_mode_verbs_land_in_states_category() {
+        let vs = vec![
+            Verb {
+                value: "set_mode:english".to_string(),
+                label: "切至英文".to_string(),
+            },
+            Verb {
+                value: "set_mode:chinese".to_string(),
+                label: "切至中文".to_string(),
+            },
+        ];
+        let cats = categorize_lead_verbs(&vs);
+        let states = cats
+            .iter()
+            .find(|c| c.name == "状态切换")
+            .expect("应有「状态切换」类");
+        let names: Vec<&str> = states.items.iter().map(|v| v.value.as_str()).collect();
+        assert!(names.contains(&"set_mode:english"), "{names:?}");
+        assert!(names.contains(&"set_mode:chinese"), "{names:?}");
+        assert!(!cats.iter().any(|c| c.name == "其它"), "不该落「其它」");
+    }
     /// 空分类要被删掉：给用户一个点开只有空列表的分类，比不给更让人困惑。
     #[test]
     fn empty_categories_are_dropped() {
