@@ -28,6 +28,9 @@ pub(crate) const NODE_TITLE: &str = "分类词库";
 pub(crate) const OTHER_GROUP: &str = "其他";
 /// 发现目录（`dir:` 前缀）登记的库归这一组。
 pub(crate) const DIR_GROUP: &str = "我放入的";
+/// 随包分类库的组序（主仓设计 §8 第 14 条）。不靠方案文件里的块顺序排：拼音扩展层按块顺序
+/// 叠放、同权时前者在先，为了展示去重排块会改候选顺序。
+pub(crate) const GROUP_ORDER: [&str; 5] = ["人名地名", "文史", "网络", "专业术语", "体育棋类"];
 
 /// 一张分类词库（`sysDict.categories` 的一项）。
 #[derive(Clone, Debug, PartialEq)]
@@ -76,8 +79,9 @@ pub(crate) fn parse_cats(v: &Value) -> Vec<SysCat> {
         .collect()
 }
 
-/// 右栏清单：按组排好、按「只看已启用」与搜索词滤过。组按首次出现的顺序（即方案文件顺序），
-/// 「其他」与「我放入的」压到最后；滤空的组不出。搜索不分大小写，查名称与说明。
+/// 右栏清单：按组排好、按「只看已启用」与搜索词滤过。组序：[`GROUP_ORDER`] 里的按表，其余
+/// 按首次出现，「其他」与「我放入的」压到最后；组内保持方案文件顺序。滤空的组不出。搜索不分
+/// 大小写，查名称与说明。
 pub(crate) fn group_cats<'a>(
     cats: &'a [SysCat],
     only_enabled: bool,
@@ -101,9 +105,12 @@ pub(crate) fn group_cats<'a>(
         }
     }
     let rank = |g: &str| match g {
-        OTHER_GROUP => 1,
-        DIR_GROUP => 2,
-        _ => 0,
+        OTHER_GROUP => (2, 0),
+        DIR_GROUP => (3, 0),
+        _ => GROUP_ORDER
+            .iter()
+            .position(|k| *k == g)
+            .map_or((1, 0), |i| (0, i)),
     };
     out.sort_by_key(|(g, _)| rank(g)); // 稳定排序：同档保持首次出现的顺序
     out
@@ -124,9 +131,16 @@ pub struct SysCatsState {
     pub summary: Signal<String>,
     /// 右栏清单整体重建（清单、筛选或搜索变化时递增）。
     pub epoch: Signal<Vec<u64>>,
-    /// 清单是为哪个方案取的；与当前不同时 [`DictManagerState::reload`] 重取一次。
+    /// 清单是按哪个方案的开关取的（拼音族是活动成员，见 `lib_switch_schema`）；与当前不同时
+    /// [`DictManagerState::reload`] 重取一次。
     loaded_for: Rc<RefCell<Option<String>>>,
+    /// 本端最近一次写开关的时刻：之后不久收到的 `schema.setDictEnabled` 广播是自己的回声，
+    /// 写完已经重取过，不再重取。
+    last_write: Rc<std::cell::Cell<Option<std::time::Instant>>>,
 }
+
+/// 回声窗口：本端写开关后这么久之内的同类广播当回声。
+const ECHO_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl SysCatsState {
     pub fn new() -> Self {
@@ -138,6 +152,7 @@ impl SysCatsState {
             summary: signal(String::new()),
             epoch: signal(vec![0]),
             loaded_for: Rc::new(RefCell::new(None)),
+            last_write: Rc::new(std::cell::Cell::new(None)),
         }
     }
 
@@ -156,24 +171,27 @@ impl Default for SysCatsState {
 impl DictManagerState {
     /// 清单还不是为当前方案取的就取一次（[`Self::reload`] 开头调用）。
     pub(crate) fn ensure_sys_cats(&self) {
-        if *self.cats.loaded_for.borrow() != self.current_schema_id() {
+        if *self.cats.loaded_for.borrow() != self.sys_cats_scope() {
             self.refresh_sys_cats();
         }
+    }
+
+    /// 清单按哪个方案取：方案域里读开关的那个成员（拼音族取活动成员）；全局域为 `None`。
+    fn sys_cats_scope(&self) -> Option<String> {
+        self.current_schema_id()
+            .and_then(|_| self.lib_switch_schema())
     }
 
     /// 重取清单；有变化时重建中栏与右栏。不是方案域、或 core 不认这个方法（旧版）时为空，
     /// 中栏随之不出「系统词库」。
     pub fn refresh_sys_cats(&self) {
-        let scope = self.current_schema_id();
+        let scope = self.sys_cats_scope();
         *self.cats.loaded_for.borrow_mut() = scope.clone();
-        let list = match scope.and_then(|_| self.lib_switch_schema()) {
-            Some(id) => match rpc::call_core("sysDict.categories", &json!({ "schema": id })) {
-                Ok(v) => parse_cats(&v),
-                Err(e) => {
-                    tracing::debug!("取分类词库失败：{e}");
-                    Vec::new()
-                }
-            },
+        let list = match scope {
+            Some(id) => fetch_cats(&id).unwrap_or_else(|e| {
+                tracing::debug!("取分类词库失败：{e}");
+                Vec::new()
+            }),
             None => Vec::new(),
         };
         if list.is_empty() && self.cats.open.get() {
@@ -190,13 +208,23 @@ impl DictManagerState {
         }
     }
 
-    /// core 广播的方案配置变化：是当前域的成员（或不带 id 的整批变化）就重取清单。
-    /// 返回是否重取了。
-    pub fn on_schema_config_changed(&self, id: Option<&str>) -> bool {
-        let hit = match id {
-            Some(id) => self.current_domain_members().iter().any(|m| m == id),
-            None => self.current_schema_id().is_some(),
-        };
+    /// core 广播的方案配置变化：是当前域的成员（或不带 id 的整批变化）就重取清单。分库开关
+    /// （`userDicts.setEnabled`）动不到它，本端刚写的开关回声也不重取。返回是否重取了。
+    pub fn on_schema_config_changed(&self, id: Option<&str>, method: Option<&str>) -> bool {
+        if method == Some("userDicts.setEnabled") {
+            return false;
+        }
+        let echo = method == Some("schema.setDictEnabled")
+            && self
+                .cats
+                .last_write
+                .get()
+                .is_some_and(|t| t.elapsed() < ECHO_WINDOW);
+        let hit = !echo
+            && match id {
+                Some(id) => self.current_domain_members().iter().any(|m| m == id),
+                None => self.current_schema_id().is_some(),
+            };
         if hit {
             self.refresh_sys_cats();
         }
@@ -210,49 +238,71 @@ impl DictManagerState {
         }
     }
 
-    /// 开关一张分类词库，对域内每个成员方案都改（拼音族折叠时全拼、双拼各存一份开关）。任一
-    /// 成员失败就把已改的成员改回去并提示；返回是否成功（勾选框据此回滚）。
+    /// 开关一张分类词库，对域内**有这张库**的每个成员方案都改（拼音族折叠时全拼、双拼各存一份
+    /// 开关；第三方拼音方案可能没有随包细胞库，跳过不算失败）。任一成员写失败就把已改的成员
+    /// 改回各自原值并提示；返回是否成功（勾选框据此回滚）。
     pub fn set_sys_cat_enabled(&self, id: &str, enabled: bool) -> bool {
+        let ok = self.write_sys_cat(id, enabled);
+        self.cats.last_write.set(Some(std::time::Instant::now()));
+        self.refresh_sys_cats();
+        ok
+    }
+
+    fn write_sys_cat(&self, id: &str, enabled: bool) -> bool {
+        // 先按成员取清单，记下哪些成员有这张库、各自原值。
+        let mut targets: Vec<(String, bool)> = Vec::new();
+        for schema in self.current_domain_members() {
+            match fetch_cats(&schema) {
+                Ok(list) => {
+                    if let Some(c) = list.iter().find(|c| c.id == id) {
+                        targets.push((schema, c.enabled));
+                    }
+                }
+                Err(e) => {
+                    self.notify_err(&format!("切换失败：{e}"));
+                    return false;
+                }
+            }
+        }
+        if targets.is_empty() {
+            self.notify_err("切换失败：方案里没有这个词库");
+            return false;
+        }
         let call = |schema: &str, on: bool| {
             rpc::call_core(
                 "schema.setDictEnabled",
                 &json!({ "id": schema, "dictId": id, "enabled": on }),
             )
         };
-        let mut done: Vec<String> = Vec::new();
-        let mut failed = None;
-        for schema in self.current_domain_members() {
-            match call(&schema, enabled) {
-                Ok(_) => done.push(schema),
-                Err(e) => {
-                    failed = Some(e);
-                    break;
+        let mut done: Vec<&(String, bool)> = Vec::new();
+        for t in &targets {
+            if let Err(e) = call(&t.0, enabled) {
+                for (schema, orig) in done.iter().rev() {
+                    if let Err(e2) = call(schema, *orig) {
+                        tracing::warn!("分类词库开关回滚失败（{schema}）：{e2}");
+                    }
                 }
+                self.notify_err(&format!("切换失败：{e}"));
+                return false;
             }
+            done.push(t);
         }
-        if let Some(e) = &failed {
-            for schema in done.iter().rev() {
-                if let Err(e2) = call(schema, !enabled) {
-                    tracing::warn!("分类词库开关回滚失败（{schema}）：{e2}");
-                }
-            }
-            self.notify_err(&format!("切换失败：{e}"));
-        }
-        let ok = failed.is_none() && !done.is_empty();
-        if ok {
-            let label = self
-                .cats
-                .list
-                .get()
-                .into_iter()
-                .find(|c| c.id == id)
-                .map_or_else(|| id.to_string(), |c| c.label);
-            let verb = if enabled { "已启用" } else { "已停用" };
-            self.notify_ok(&format!("{verb}「{label}」"));
-        }
-        self.refresh_sys_cats();
-        ok
+        let label = self
+            .cats
+            .list
+            .get()
+            .into_iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| id.to_string(), |c| c.label);
+        let verb = if enabled { "已启用" } else { "已停用" };
+        self.notify_ok(&format!("{verb}「{label}」"));
+        true
     }
+}
+
+/// 取一个方案的分类词库清单。
+fn fetch_cats(schema: &str) -> Result<Vec<SysCat>, String> {
+    rpc::call_core("sysDict.categories", &json!({ "schema": schema })).map(|v| parse_cats(&v))
 }
 
 // ── 右栏 ─────────────────────────────────────────────────────
@@ -473,14 +523,22 @@ mod tests {
         assert!(parse_cats(&json!({"error": 1})).is_empty());
     }
 
+    /// 已知组按规格的顺序（不管方案文件里谁先出现），没见过的组在其后按出现顺序，「其他」
+    /// 与「我放入的」压最后；组内保持方案文件顺序。
     #[test]
-    fn groups_keep_file_order_and_push_other_and_dir_last() {
+    fn groups_follow_the_spec_order() {
+        // 随包拼音方案文件里的顺序与分组
         let l = [
-            cat("a", DIR_GROUP, true),
-            cat("b", "网络", false),
-            cat("c", OTHER_GROUP, true),
-            cat("d", "文史", true),
-            cat("e", "网络", true),
+            cat("exthot", "网络", false),
+            cat("idiom", "文史", false),
+            cat("place", "人名地名", false),
+            cat("mine", DIR_GROUP, true),
+            cat("history", "文史", false),
+            cat("name", "人名地名", false),
+            cat("x", "自定组", false),
+            cat("sport", "体育棋类", false),
+            cat("wb", OTHER_GROUP, true),
+            cat("computer", "专业术语", false),
         ];
         let g = group_cats(&l, false, "");
         let names: Vec<(&str, Vec<&str>)> = g
@@ -490,14 +548,18 @@ mod tests {
         assert_eq!(
             names,
             [
-                ("网络", vec!["b", "e"]),
-                ("文史", vec!["d"]),
-                (OTHER_GROUP, vec!["c"]),
-                (DIR_GROUP, vec!["a"]),
+                ("人名地名", vec!["place", "name"]),
+                ("文史", vec!["idiom", "history"]),
+                ("网络", vec!["exthot"]),
+                ("专业术语", vec!["computer"]),
+                ("体育棋类", vec!["sport"]),
+                ("自定组", vec!["x"]),
+                (OTHER_GROUP, vec!["wb"]),
+                (DIR_GROUP, vec!["mine"]),
             ]
         );
         let on = group_cats(&l, true, "");
-        assert_eq!(on[0].1.len(), 1, "只看已启用：网络组只剩 e");
+        assert_eq!(on.len(), 2, "只看已启用");
         assert!(on.iter().all(|(_, v)| v.iter().all(|c| c.enabled)));
     }
 
@@ -630,6 +692,98 @@ mod tests {
         });
     }
 
+    /// 拼音域三个成员：全拼 py、双拼 `sp`、第三个 `third`。
+    fn three_member_state(sp: &str, third: &str) -> DictManagerState {
+        let st = pinyin_state(sp);
+        st.schemas.borrow_mut().push(SchemaInfo {
+            id: third.into(),
+            name: "第三方拼音".into(),
+            kind: "pinyin".into(),
+            scheme: "full".into(),
+            ..Default::default()
+        });
+        st
+    }
+
+    /// 第三方拼音方案没有这张库（mock 的 `third_py` 清单为空）：跳过它，不算失败。
+    #[test]
+    fn member_without_the_dict_is_skipped() {
+        with_mock(|| {
+            let st = three_member_state("sp", "third_py");
+            crate::rpc::take_mock_calls();
+            assert!(st.set_sys_cat_enabled("cell_idiom", true));
+            assert_eq!(
+                calls_of("schema.setDictEnabled"),
+                vec![
+                    json!({"id": "py", "dictId": "cell_idiom", "enabled": true}),
+                    json!({"id": "sp", "dictId": "cell_idiom", "enabled": true}),
+                ]
+            );
+        });
+    }
+
+    /// 成员原本不一致（双拼已开、全拼没开）时中途失败：各自改回原值，而不是一律写反。
+    #[test]
+    fn rollback_restores_each_members_original_value() {
+        with_mock(|| {
+            let st = three_member_state("sp", "bad_sp");
+            crate::rpc::call_core(
+                "schema.setDictEnabled",
+                &json!({"id": "sp", "dictId": "cell_idiom", "enabled": true}),
+            )
+            .unwrap();
+            crate::rpc::take_mock_calls();
+            assert!(!st.set_sys_cat_enabled("cell_idiom", true));
+            assert_eq!(
+                calls_of("schema.setDictEnabled"),
+                vec![
+                    json!({"id": "py", "dictId": "cell_idiom", "enabled": true}),
+                    json!({"id": "sp", "dictId": "cell_idiom", "enabled": true}),
+                    json!({"id": "bad_sp", "dictId": "cell_idiom", "enabled": true}),
+                    json!({"id": "sp", "dictId": "cell_idiom", "enabled": true}),
+                    json!({"id": "py", "dictId": "cell_idiom", "enabled": false}),
+                ],
+                "双拼原本就开着，改回 true；全拼改回 false"
+            );
+        });
+    }
+
+    /// 读开关以活动方案为准：活动方案在域内换了，清单要重取。
+    #[test]
+    fn active_member_change_refetches() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            crate::rpc::take_mock_calls();
+            crate::rpc::force_mock_reply("schema.active", Some(json!({"id": "sp"})));
+            st.reload();
+            crate::rpc::force_mock_reply("schema.active", None);
+            assert_eq!(
+                calls_of("sysDict.categories"),
+                vec![json!({"schema": "sp"})],
+                "活动方案从代表换成双拼"
+            );
+        });
+    }
+
+    /// 分库开关的广播不重取分类清单；自己刚写的开关回声也不再重取。
+    #[test]
+    fn lib_toggles_and_own_echoes_do_not_refetch() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            crate::rpc::take_mock_calls();
+            assert!(!st.on_schema_config_changed(Some("py"), Some("userDicts.setEnabled")));
+            assert!(st.set_sys_cat_enabled("cell_idiom", true));
+            crate::rpc::take_mock_calls();
+            assert!(!st.on_schema_config_changed(Some("py"), Some("schema.setDictEnabled")));
+            assert!(!st.on_schema_config_changed(Some("sp"), Some("schema.setDictEnabled")));
+            assert!(calls_of("sysDict.categories").is_empty());
+            assert!(
+                st.on_schema_config_changed(Some("py"), Some("schema.saveConfig")),
+                "别的写法照常重取"
+            );
+        });
+    }
+
     /// 别处改了当前域成员的开关（方案页、命令直通车）：重取清单、重建中栏；别的方案不理。
     #[test]
     fn config_changed_of_a_member_refreshes() {
@@ -637,7 +791,10 @@ mod tests {
             let st = pinyin_state("sp");
             let nav0 = st.nav_epoch.get()[0];
             crate::rpc::take_mock_calls();
-            assert!(!st.on_schema_config_changed(Some("wubi86")), "别的方案不理");
+            assert!(
+                !st.on_schema_config_changed(Some("wubi86"), Some("schema.setDictEnabled")),
+                "别的方案不理"
+            );
             assert!(calls_of("sysDict.categories").is_empty());
 
             // 模拟在方案页开了全拼的成语库（mock 记下开关），广播里带的是另一个成员
@@ -646,7 +803,10 @@ mod tests {
                 &json!({"id": "py", "dictId": "cell_idiom", "enabled": true}),
             )
             .unwrap();
-            assert!(st.on_schema_config_changed(Some("sp")), "成员都算");
+            assert!(
+                st.on_schema_config_changed(Some("sp"), Some("schema.setDictEnabled")),
+                "成员都算"
+            );
             assert_eq!(calls_of("sysDict.categories").len(), 1);
             assert!(
                 st.cats
@@ -656,7 +816,10 @@ mod tests {
                     .any(|c| c.id == "cell_idiom" && c.enabled)
             );
             assert!(st.nav_epoch.get()[0] > nav0, "中栏重建");
-            assert!(st.on_schema_config_changed(None), "不带 id 按全部处理");
+            assert!(
+                st.on_schema_config_changed(None, Some("backup.restore")),
+                "不带 id 按全部处理"
+            );
         });
     }
 }

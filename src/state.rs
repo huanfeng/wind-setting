@@ -1986,7 +1986,8 @@ impl AppState {
                 self.theme_gallery.invalidate();
                 let id = ev.data.get("id").and_then(|v| v.as_str());
                 // 词库窗的分类词库清单：改的是当前域的成员（或整批变化）就重取。
-                self.dict_mgr.on_schema_config_changed(id);
+                let method = ev.data.get("method").and_then(|v| v.as_str());
+                self.dict_mgr.on_schema_config_changed(id, method);
                 let changed = self.schema_mgr.on_schema_config_changed(id);
                 if !changed.is_empty() {
                     ctx.toast(format!(
