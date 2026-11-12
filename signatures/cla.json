@@ -1,3 +1,12 @@
 {
-   "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "mystery4f",
+      "id": 40482524,
+      "comment_id": 6814276692,
+      "created_at": "2026-11-12T04:12:30Z",
+      "repoId": 1280200716,
+      "pullRequestNo": 1
+    }
+  ]
 }
