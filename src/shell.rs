@@ -298,8 +298,19 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
     root = root.child({
         let app2 = Rc::clone(app);
         let pinned = app.borrow().appearance_pinned;
-        Element::switcher(pinned, move |_gen: u64| {
-            let batch = std::mem::take(&mut *app2.borrow().fields.appearance_dialogs.borrow_mut());
+        Element::switcher(pinned, move |generation: u64| {
+            let st = app2.borrow();
+            // 顺序前提：同一派发轮里外观页 switcher 先重建并移交本代批，本容器后取。
+            // 若有人把页面改成惰性建树、把外观页挪进独立窗口、或给页面容器加了禁用条件
+            // （被禁用节点不派发 on_update），本容器会先跑、取到空批或上一代的批——对话框
+            // 挂错代，下一帧就读死句柄。代次对不上当场报出来，别让它静默。
+            debug_assert_eq!(
+                st.fields.appearance_dialogs_gen.get(),
+                generation,
+                "外观对话框批的代次与容器代次不符：页面 switcher 没有先于根层容器重建"
+            );
+            let batch = std::mem::take(&mut *st.fields.appearance_dialogs.borrow_mut());
+            drop(st);
             let mut layer = Element::stack()
                 // ⚠ 旧层**必须**离场瞬时（switcher 默认给旧内容淡出残影、播完才回收）：
                 // 残影期里旧层节点还活着、还被 dispatch on_update，而旧页行的信号已被

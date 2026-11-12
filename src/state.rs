@@ -169,6 +169,14 @@ pub struct FieldRegistry {
     /// 消失，不会留死引用。`build` 消耗 `Element`，故这里每代现取现用（take 清空），
     /// 不做二次挂载。
     pub appearance_dialogs: RefCell<Vec<Element>>,
+    /// 外观页翻转前的草稿（含未保存的改动），由 [`AppState::set_appearance_pinned`]
+    /// 暂存、重建帧 mapper 在 [`Self::end_page_batch`] 之后用 [`Self::reload_page_batch`]
+    /// 回灌新一代控件后取走。不暂存的话，新一代从**已保存**配置播种，改了没存的值随旧
+    /// 一代写回器一起消失，保存还提示「无变更」。
+    pub page_carry: RefCell<Option<Config>>,
+    /// [`Self::appearance_dialogs`] 当前这批属于外观页的哪一代（`appearance_pinned` 的值）。
+    /// 页面 mapper 移交时写，根层容器 mapper 取用时断言——两者代次必须一致。
+    pub appearance_dialogs_gen: std::cell::Cell<u64>,
     /// 全局热键收集器：(功能短名, 是否全局 Signal)。支持全局的功能键各登记一项，
     /// 由 `register_global_hotkeys_collector` 汇总成 `keys.global_hotkeys` strlist 写回/回填
     /// （多个功能键写同一 key，故需单一收集器，模式同 checkbox_group）。
@@ -252,6 +260,8 @@ impl FieldRegistry {
         self.loaders.borrow_mut().clear();
         self.dialogs.borrow_mut().clear();
         self.appearance_dialogs.borrow_mut().clear();
+        *self.page_carry.borrow_mut() = None;
+        self.appearance_dialogs_gen.set(0);
         self.global_flags.borrow_mut().clear();
         self.side.borrow_mut().clear();
         self.log_level_probes.borrow_mut().clear();
@@ -354,6 +364,24 @@ impl FieldRegistry {
         }
         if batch.comment_ui {
             *self.comment_ui.borrow_mut() = None;
+        }
+    }
+
+    /// 用 `cfg` 回灌**当前页批**登记的 loader（只动本批，其余八页不碰）。
+    ///
+    /// 外观页图钉翻转用：新一代控件建好、[`Self::end_page_batch`] 圈出本批之后，拿翻转
+    /// 前暂存的草稿（[`Self::page_carry`]）把未保存的改动灌回去。必须在 end 之后调——
+    /// 本批的键集合由 end 求出。
+    pub fn reload_page_batch(&self, cfg: &Config) {
+        let keys: Vec<String> = match self.page_batch.borrow().as_ref() {
+            Some(b) => b.loaders.clone(),
+            None => return,
+        };
+        let loaders = self.loaders.borrow();
+        for k in &keys {
+            if let Some(l) = loaders.get(k) {
+                l(cfg);
+            }
         }
     }
 
@@ -2429,10 +2457,6 @@ impl AppState {
         );
     }
 
-    /// 翻转图钉。重建帧内预览 Watcher 可能先于骨架重建跑(on_update 相位树序),读
-    /// registry 里**上一批**外观页条目会命中已回收信号——所以翻转的同一时刻先按分桶
-    /// 记账清上一批(reset_page_batch,只清外观页批;其余八页与进程级批不动),再翻转
-    /// 信号。重建帧 mapper 里 begin/end 记新账。测试与点击回调统一走本方法。
     /// 此刻是否锁定(代次奇偶)。
     pub fn appearance_locked(&self) -> bool {
         self.appearance_pinned.get() % 2 == 1
@@ -2442,10 +2466,14 @@ impl AppState {
     /// registry 里**上一批**外观页条目会命中已回收信号——所以只在值真翻转时按分桶
     /// 记账清上一批(reset_page_batch,只清外观页批;其余八页与进程级批不动),再递增
     /// 代次。重建帧 mapper 里 begin/end 记新账。测试与点击回调统一走本方法。
+    ///
+    /// 清批**之前**先暂存草稿：清掉的是旧一代写回器，之后就再也拿不到用户改了没存的
+    /// 值。mapper 建好新一代后用它回灌本批 loader（见 `FieldRegistry::page_carry`）。
     pub fn set_appearance_pinned(&self, locked: bool) {
         if self.appearance_locked() == locked {
             return;
         }
+        *self.fields.page_carry.borrow_mut() = Some(self.draft_config());
         self.fields.reset_page_batch();
         self.appearance_pinned.set(self.appearance_pinned.get() + 1);
     }

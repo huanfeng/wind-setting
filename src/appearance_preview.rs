@@ -1072,9 +1072,9 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         crate::search::anchor::reset_anchor_ids();
-        // 兜底守卫：Off 档位是**全局**的，并行跑的其它测试会被波及（右键菜单 e2e 曾
-        // 因此全批翻红）——任何路径退出都恢复 Full。正常流程下 Off 只包住下面两次
-        // 同步 layout（无 sleep 的微秒级窗口），wait 的 300ms debounce 都在 Full 档。
+        // 兜底守卫：动效档位是线程局部的（`anim::LEVEL` 为 thread_local），测试线程池
+        // 会复用线程，断言失败跳过了下面的手动恢复，就会把 Off 带进同线程的下一个用例。
+        // 任何路径退出都恢复 Full。
         windui::anim::set_motion_level(windui::anim::MotionLevel::Full);
         struct RestoreMotion;
         impl Drop for RestoreMotion {
@@ -1138,9 +1138,9 @@ mod tests {
         layout(&mut tree);
         layout(&mut tree);
 
-        // 再关动效让**页面** switcher 的旧行瞬时回收（测试没有渲染管线，残影进度在
-        // paint 推进、永远播不完）：翻转后的第一个 reconcile 标记离场、第二个即
-        // drop_row + scope.dispose。Off 只包住这两次同步 layout（无 sleep）。
+        // 再关动效让**页面** switcher 的旧行瞬时回收（本例不推进帧时钟，Full 档下残影
+        // 永远播不完；要测 Full 档的回收时序见 `pin_flip_survives_full_motion_frames`）：
+        // 翻转后的第一个 reconcile 标记离场、第二个即 drop_row + scope.dispose。
         windui::anim::set_motion_level(windui::anim::MotionLevel::Off);
         layout(&mut tree);
         layout(&mut tree);
@@ -1231,11 +1231,46 @@ mod tests {
                 frame(tree);
             }
         };
+        // 主题跟随值「刷新」：真机由 RPC 写入，测试里原值重写一次即可推进版本号。只看
+        // `tf_sig` 的「休眠型」effect 平时不动，只有这一下才会被唤醒。
+        let refresh_follow = |app: &Rc<RefCell<AppState>>| {
+            let st = app.borrow();
+            let tf = st.theme_follow.get();
+            st.theme_follow.set(tf);
+        };
+        let ui = crate::cli::page_to_index("ui").unwrap();
+        let other = crate::cli::page_to_index("input").unwrap();
+
         run(&mut tree, 10);
+        // ① 基本往返：翻转 → 淡出播完 → 翻回 → 播完。
         app.borrow().set_appearance_pinned(true);
         run(&mut tree, 60);
         app.borrow().set_appearance_pinned(false);
         run(&mut tree, 60);
+        // ② 淡出途中再翻一次（慢速双击）：两代残影同时在树上，各自在不同帧回收。
+        app.borrow().set_appearance_pinned(true);
+        run(&mut tree, 4);
+        app.borrow().set_appearance_pinned(false);
+        run(&mut tree, 3);
+        // ③ 残影期间主题跟随值刷新：所有跟随行的 effect 同时被唤醒，含残影里的。
+        refresh_follow(&app);
+        run(&mut tree, 60);
+        // ④ 淡出途中切走标签页：不可见的残影不 paint，淡出冻结、回收被推迟到切回之后。
+        app.borrow().set_appearance_pinned(true);
+        run(&mut tree, 3);
+        app.borrow().tab.set(other);
+        run(&mut tree, 20);
+        refresh_follow(&app);
+        run(&mut tree, 5);
+        app.borrow().tab.set(ui);
+        run(&mut tree, 60);
+        // ⑤ 稳态：此后所有节点都是运行期追加的（派发顺序与首建时不同）。
+        for locked in [false, true, false] {
+            app.borrow().set_appearance_pinned(locked);
+            run(&mut tree, 60);
+            refresh_follow(&app);
+            run(&mut tree, 2);
+        }
     }
 
     /// 锁定布局与未锁定布局**看起来一样**，只是滚动范围不同（真机反馈三点）：
@@ -1326,6 +1361,79 @@ mod tests {
             tree.abs_bounds(inner).bottom(),
             content_bottom,
             "锁定后滚动区底边应与内容区底边齐平——越出窗口就滚不到最下面"
+        );
+    }
+
+    /// **回归**：图钉翻转不得丢弃外观页尚未保存的改动。
+    ///
+    /// 翻转整代重建外观页：旧一代的写回器随批清掉，新一代控件若从**已保存**的
+    /// `current_config` 播种，改了没存的值就凭空消失——`draft_config` 里没有它，保存时
+    /// 还提示「无变更」。翻转前先暂存草稿、新一代建好后用它回灌本批 loader。
+    #[test]
+    fn pin_flip_keeps_unsaved_appearance_edits() {
+        use std::cell::RefCell;
+        use windui::core::Tree;
+        use windui::geometry::Size;
+        use windui::prelude::Signal;
+
+        const KEY: &str = "ui.candidate.hide_window";
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        crate::search::anchor::reset_anchor_ids();
+        let app = Rc::new(RefCell::new(AppState::empty()));
+        let mut tree = Tree::new();
+        let (w, h) = (crate::MAIN_W, crate::MAIN_H);
+        let root = crate::shell::build(&app)
+            .width(w)
+            .height(h)
+            .build(&mut tree);
+        tree.root = Some(root);
+        app.borrow()
+            .tab
+            .set(crate::cli::page_to_index("ui").unwrap());
+        let layout = |t: &mut Tree| {
+            for _ in 0..3 {
+                t.layout_root(Size::new(w, h), &mut windui::text::NullTextEngine);
+            }
+        };
+        layout(&mut tree);
+        let toggle = |app: &Rc<RefCell<AppState>>| -> Signal<bool> {
+            *app.borrow()
+                .fields
+                .bool_signals
+                .borrow()
+                .get(KEY)
+                .expect("外观页应登记该开关")
+        };
+        let draft =
+            |app: &Rc<RefCell<AppState>>| app.borrow().draft_config().get_path(KEY).cloned();
+
+        // 改一项、不保存。
+        let edited = !toggle(&app).get();
+        toggle(&app).set(edited);
+        assert_eq!(
+            draft(&app),
+            Some(serde_json::Value::Bool(edited)),
+            "前提：改动应进草稿"
+        );
+
+        app.borrow().set_appearance_pinned(true);
+        layout(&mut tree);
+        assert_eq!(
+            draft(&app),
+            Some(serde_json::Value::Bool(edited)),
+            "锁定后未保存的改动应仍在草稿里"
+        );
+        assert_eq!(toggle(&app).get(), edited, "新一代控件应显示改动后的值");
+
+        app.borrow().set_appearance_pinned(false);
+        layout(&mut tree);
+        assert_eq!(
+            draft(&app),
+            Some(serde_json::Value::Bool(edited)),
+            "解锁后未保存的改动应仍在草稿里"
         );
     }
 

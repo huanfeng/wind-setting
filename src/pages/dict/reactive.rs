@@ -15,10 +15,20 @@ struct ReactiveEffect {
     version_of: Box<dyn Fn() -> u64>,
     effect: Box<dyn FnMut()>,
     last: u64,
+    /// 作用域见证：构造时创建，落进**构造它的那个收集帧**（通常是某一行/某一代页面的
+    /// 作用域）。见证已死 = 构造它的作用域已回收 = 闭包捕获的信号多半也已回收。
+    witness: Signal<()>,
 }
 
 impl Widget for ReactiveEffect {
     fn on_update(&mut self, _ctx: &mut EventCtx) {
+        // 节点可能比构造它的作用域活得久：经 `register_dialog` 挂到根层的哨兵，所属页面
+        // 整代重建后仍在树上残留几帧。此时读死句柄的 `version()` 返回 0，与上次值不同，
+        // 会被误判成「有变化」而执行 effect，在 effect 里读写死句柄即崩（图钉翻转崩溃的
+        // 直接成因）。见证死了就整体停用，不再求版本、不再执行。
+        if !self.witness.is_alive() {
+            return;
+        }
         let cur = (self.version_of)();
         if cur != self.last {
             self.last = cur;
@@ -67,10 +77,82 @@ pub fn reactive_effect(
     effect: impl FnMut() + 'static,
 ) -> Element {
     let last = version_of();
+    // 必须在**构造时**创建：`KeyedList::build_row` 是 `scope.collect(|| row_fn(..))` 之后
+    // 才 `el.build(tree)`，build 已在收集帧之外，那时创建就归不到行作用域里了。
+    let witness = signal(());
     let w = ReactiveEffect {
         version_of: Box::new(version_of),
         effect: Box::new(effect),
         last,
+        witness,
     };
     Element::leaf().widget(w).reactive().width(0).height(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use windui::core::Tree;
+    use windui::geometry::Size;
+    use windui::signal::SignalScope;
+
+    fn frame(tree: &mut Tree) {
+        tree.layout_root(Size::new(10, 10), &mut windui::text::NullTextEngine);
+    }
+
+    /// 节点比构造它的作用域活得久时（挂根哨兵 + 所属页面整代重建），effect 必须停用：
+    /// 死句柄的 `version()` 返回 0，会被误判成「有变化」，effect 里一读死句柄就 panic。
+    #[test]
+    fn effect_outliving_its_scope_stops_instead_of_reading_dead_signals() {
+        let hits = Rc::new(Cell::new(0u32));
+        let mut scope = SignalScope::new();
+        let (src, el) = scope.collect(|| {
+            let src = signal(0u32);
+            let h = hits.clone();
+            let el = reactive_effect(
+                move || src.version(),
+                move || {
+                    h.set(h.get() + 1);
+                    // 真机崩点的同款动作：在 effect 里读写所监视的行作用域信号。
+                    let _ = src.get();
+                },
+            );
+            (src, el)
+        });
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        frame(&mut tree);
+        assert_eq!(hits.get(), 0, "构建帧以当前版本为基线，不应触发");
+
+        src.set(5);
+        frame(&mut tree);
+        assert_eq!(hits.get(), 1, "活着时信号变化应触发一次");
+
+        // 作用域回收，但节点仍在树上（挂在作用域之外）。
+        scope.dispose();
+        frame(&mut tree);
+        frame(&mut tree);
+        assert_eq!(hits.get(), 1, "作用域回收后 effect 应停用，不应再执行");
+    }
+
+    /// 不在任何收集帧里构造的 effect（窗口级哨兵）没有归属，见证永远活着，行为不变。
+    #[test]
+    fn effect_built_outside_any_scope_keeps_working() {
+        let hits = Rc::new(Cell::new(0u32));
+        let src = signal(0u32);
+        let h = hits.clone();
+        let el = reactive_effect(move || src.version(), move || h.set(h.get() + 1));
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        frame(&mut tree);
+        src.set(1);
+        frame(&mut tree);
+        src.set(2);
+        frame(&mut tree);
+        assert_eq!(hits.get(), 2);
+    }
 }

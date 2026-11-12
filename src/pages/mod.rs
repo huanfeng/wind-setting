@@ -813,6 +813,13 @@ fn appearance_page(app: &Rc<RefCell<AppState>>, nav: &SubNav) -> Element {
         }
         secs.extend(manifest_sections(&st, "ui", &nav2));
         st.fields.end_page_batch();
+        st.fields.appearance_dialogs_gen.set(generation);
+        // 翻转前暂存的草稿（含未保存改动）回灌新一代控件；首次构建没有暂存，跳过。
+        // 必须在 end 之后：本批 loader 的键集合由 end 圈出。
+        let carry = st.fields.page_carry.borrow_mut().take();
+        if let Some(draft) = carry {
+            st.fields.reload_page_batch(&draft);
+        }
         if locked {
             let header = crate::widgets::PAGE_HEADER_ENABLED
                 .then(|| crate::widgets::page_header("外观", "自定义候选窗与工具栏的视觉呈现"));
