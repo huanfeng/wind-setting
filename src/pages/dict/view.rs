@@ -197,7 +197,9 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
             Element::stack()
                 .fill()
                 .child(table_host)
-                .child(empty_overlay),
+                .child(empty_overlay)
+                // 量右栏宽：系统词库两张表窄时换少几列的版本（见 `spec::SYS_NARROW_BELOW`）
+                .child(super::sys_cats::build_width_probe(&mgr)),
         );
 
     // ── 仲裁规则说明（仅字符类 tab）──
@@ -659,12 +661,8 @@ fn build_table(mgr: &DictManagerState) -> Element {
 fn activate_row(mgr: &DictManagerState, disp: usize) {
     let spec = mgr.current_spec();
     match spec.category {
-        WordCategory::SysDicts => {
-            if let Some(r) = mgr.display_row(disp) {
-                mgr.enter_sys_dict(&r.code);
-            }
-            return;
-        }
+        // 一级表不靠点行进入，只用 [查看]（维护者定）
+        WordCategory::SysDicts => return,
         WordCategory::SysEntries => return mgr.add_sys_entry_to_user(disp),
         _ => {}
     }
@@ -1742,7 +1740,7 @@ mod tests {
     }
 
     /// 系统词库两级的右键菜单与双击：一级「查看词条 / 信息 / 启用」（主库的启用灰掉），二级
-    /// 「加进用户词库」+ 复制；一级双击进二级，二级双击加词。
+    /// 「加进用户词库」+ 复制；一级双击不进入（维护者定：只用 [查看]），二级双击加词。
     #[test]
     fn system_dict_menus_and_double_click() {
         let _g = crate::rpc::ENV_LOCK
@@ -1768,7 +1766,12 @@ mod tests {
         assert!(!main[2].enabled, "主库的启用灰掉");
         assert!(row_menu_items(&mgr, 1)[2].enabled);
         activate_row(&mgr, 2);
-        assert_eq!(mgr.cats.viewing.get().as_deref(), Some("cell_idiom"));
+        assert_eq!(
+            mgr.cats.viewing.get(),
+            None,
+            "一级表双击不进入，只用 [查看]"
+        );
+        mgr.enter_sys_dict("cell_idiom");
         assert_eq!(
             menu_labels(&row_menu_items(&mgr, 0)),
             ["加进用户词库…", "复制编码", "复制词条"]
@@ -1776,16 +1779,14 @@ mod tests {
         activate_row(&mgr, 1);
         assert!(mgr.edit_visible.get());
         assert_eq!(mgr.edit_text.get(), "词1");
-        // 表格与操作列建得出来（启用格是勾选框、操作列是按钮）
-        let mut tree = Tree::new();
-        let root = build_table(&mgr).build(&mut tree);
-        tree.root = Some(root);
-        tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
-        mgr.leave_sys_dict();
-        let mut tree = Tree::new();
-        let root = build_table(&mgr).build(&mut tree);
-        tree.root = Some(root);
-        tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
+        // 表格建得出来（启用格是勾选框、操作列是按钮）
+        for _ in 0..2 {
+            let mut tree = Tree::new();
+            let root = build_table(&mgr).build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
+            mgr.leave_sys_dict();
+        }
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 

@@ -22,7 +22,7 @@ use crate::weight::{parse_weight, weight_hint};
 
 use super::spec::{
     CategorySpec, LogicalTab, WordCategory, WordField, WordRow, common_label, spec_for,
-    sys_entries_spec,
+    sys_dicts_spec, sys_entries_spec,
 };
 
 /// 客户端排序（非分页类别）：数值字段按数值，其余按展示文本字符串序。稳定排序。
@@ -861,7 +861,10 @@ impl DictManagerState {
     pub fn current_spec(&self) -> &'static CategorySpec {
         match self.current_category() {
             // 词条表有没有「子表」列随正在看的库而变
-            WordCategory::SysEntries => sys_entries_spec(self.cats.has_tables()),
+            WordCategory::SysDicts => sys_dicts_spec(self.cats.narrow.get()),
+            WordCategory::SysEntries => {
+                sys_entries_spec(self.cats.has_tables(), self.cats.narrow.get())
+            }
             c => spec_for(c),
         }
     }
@@ -1304,9 +1307,8 @@ impl DictManagerState {
     /// 非分页类别客户端重排当前数据。
     pub fn on_sort_changed(&self) {
         if !self.sys_sort_supported() {
-            // 系统词条的「子表」列 core 不排：点了也不显示箭头
+            // 系统词条的「子表」列 core 不排：当作取消排序，回文件顺序第一页（往下照常重取）
             self.sort.set(None);
-            return;
         }
         if self.current_spec().paged {
             *self.offset.borrow_mut() = 0;

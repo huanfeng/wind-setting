@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use windui::prelude::*;
 
-use super::spec::{WordCategory, WordField, WordRow};
+use super::spec::{SYS_NARROW_BELOW, WordCategory, WordField, WordRow};
 use super::state::{DictManagerState, PAGE_SIZE};
 use crate::rpc;
 
@@ -280,6 +280,9 @@ pub struct SysCatsState {
     /// 本端最近一次写开关的时刻：之后不久收到的 `schema.setDictEnabled` 广播是自己的回声，
     /// 写完已经重取过，不再重取。
     last_write: Rc<Cell<Option<Instant>>>,
+    /// 右栏窄（见 `spec::SYS_NARROW_BELOW`）：两张表换少几列的版本。由 [`build_width_probe`]
+    /// 量出来写入。
+    pub narrow: Rc<Cell<bool>>,
 }
 
 /// 回声窗口：本端写开关后这么久之内的同类广播当回声。
@@ -300,6 +303,7 @@ impl SysCatsState {
             searched: Rc::new(RefCell::new(None)),
             loaded_for: Rc::new(RefCell::new(None)),
             last_write: Rc::new(Cell::new(None)),
+            narrow: Rc::new(Cell::new(false)),
         }
     }
 
@@ -343,30 +347,38 @@ impl DictManagerState {
     }
 
     /// 只取清单（右栏不是一级表时用）。取不到（core 忙、旧版不认）留着旧清单，`loaded_for`
-    /// 不动，下次 reload 见它与当前不同会再取。正在看的库不在新清单里就回一级。
-    fn fetch_sys_list(&self) {
+    /// 不动，下次 reload 见它与当前不同会再取。正在看的库不在新清单里就回一级，还在就重取
+    /// 头部（版本、子表可能变了）。返回是否收起了右栏。
+    fn fetch_sys_list(&self) -> bool {
         let scope = self.sys_cats_scope();
         let list = match &scope {
             Some(id) => match fetch_cats(id) {
                 Ok(l) => l,
                 Err(e) => {
                     tracing::debug!("取系统词库清单失败：{e}");
-                    return;
+                    return false;
                 }
             },
             None => Vec::new(),
         };
-        self.apply_sys_list(list, scope);
-        if let Some(id) = self.cats.viewing.get()
-            && !self.cats.list.get().iter().any(|c| c.id == id)
-        {
-            self.cats.viewing.set(None);
-            self.reset_table_view();
+        if self.apply_sys_list(list, scope) {
+            return true;
         }
+        if let Some(id) = self.cats.viewing.get() {
+            if self.cats.list.get().iter().any(|c| c.id == id) {
+                self.cats.header.set(self.load_sys_header(&id));
+            } else {
+                self.cats.viewing.set(None);
+                self.reset_table_view();
+            }
+        }
+        false
     }
 
-    /// 记下新清单；中栏只认「有没有」，有无变化时重建。方案没有可列的系统词库时收起右栏。
-    fn apply_sys_list(&self, list: Vec<SysCat>, scope: Option<String>) {
+    /// 记下新清单；中栏只认「有没有」，有无变化时重建。方案没有可列的系统词库时收起右栏，
+    /// 返回 true——右栏该换成用户词库的表，由调用方补一次 reload（`reload` 开头经
+    /// `ensure_sys_cats` 进来时它自己往下就取对了，不必再取）。
+    fn apply_sys_list(&self, list: Vec<SysCat>, scope: Option<String>) -> bool {
         *self.cats.loaded_for.borrow_mut() = scope;
         let had_nav = !self.cats.list.get().is_empty();
         if list != self.cats.list.get() {
@@ -379,7 +391,9 @@ impl DictManagerState {
         if !has_nav && self.cats.open.get() {
             self.cats.close();
             self.reset_table_view();
+            return true;
         }
+        false
     }
 
     /// 重取清单（开关写完、别处改了开关）；右栏开着就连表一起重取。
@@ -388,8 +402,7 @@ impl DictManagerState {
             // 一级表的 list RPC 就是清单
             WordCategory::SysDicts => self.reload(),
             _ => {
-                self.fetch_sys_list();
-                if self.cats.open.get() {
+                if self.fetch_sys_list() || self.cats.open.get() {
                     self.reload();
                 }
             }
@@ -543,8 +556,10 @@ impl DictManagerState {
 
     /// list RPC 成功、建表之后：一级表的返回同时是清单。
     pub(crate) fn after_sys_rows(&self, v: &Value) {
-        if self.current_category() == WordCategory::SysDicts {
-            self.apply_sys_list(parse_cats(v), self.sys_cats_scope());
+        if self.current_category() == WordCategory::SysDicts
+            && self.apply_sys_list(parse_cats(v), self.sys_cats_scope())
+        {
+            self.reload();
         }
     }
 
@@ -619,9 +634,35 @@ impl DictManagerState {
     /// 改回各自原值并提示；返回是否成功（勾选框据此回滚）。
     pub fn set_sys_cat_enabled(&self, id: &str, enabled: bool) -> bool {
         let ok = self.write_sys_cat(id, enabled);
-        self.cats.last_write.set(Some(Instant::now()));
+        // 只认写成功的回声；失败（含已回滚）时别处的广播照常重取
+        if ok {
+            self.cats.last_write.set(Some(Instant::now()));
+        }
         self.refresh_sys_cats();
         ok
+    }
+
+    /// 右栏宽窄变了：记下，正开着系统词库就换列重建。列下标随之变，排序按下标记的，
+    /// 一并取消（词条表回第一页重取）。
+    pub fn set_sys_narrow(&self, narrow: bool) {
+        if self.cats.narrow.replace(narrow) == narrow {
+            return;
+        }
+        let cat = self.current_category();
+        if !matches!(cat, WordCategory::SysDicts | WordCategory::SysEntries) {
+            return;
+        }
+        let sorted = self.sort.get().is_some();
+        if sorted {
+            self.sort.set(None);
+        }
+        self.bump_table_epoch();
+        if sorted && cat == WordCategory::SysEntries {
+            *self.offset.borrow_mut() = 0;
+            self.reload();
+        } else {
+            self.rebuild_list();
+        }
     }
 
     fn write_sys_cat(&self, id: &str, enabled: bool) -> bool {
@@ -747,6 +788,61 @@ impl windui::core::Widget for SearchDebounce {
             windui::anim::request_repaint_in_after(bounds, left.as_millis() as u64 + 1);
         }
     }
+}
+
+/// 量右栏宽度的叶子：绘制时记下宽度，跨过 [`SYS_NARROW_BELOW`] 就请求一帧，下一帧的
+/// `on_update` 里换表（不在绘制里改状态）。只在宽度变化时多一帧，平时什么也不做。
+struct WidthProbe {
+    width: Cell<i32>,
+    apply: Box<dyn Fn(bool)>,
+    narrow: Rc<Cell<bool>>,
+    witness: Signal<()>,
+}
+
+impl WidthProbe {
+    fn wants_narrow(&self) -> Option<bool> {
+        let w = self.width.get();
+        let narrow = w > 0 && w < SYS_NARROW_BELOW;
+        (w > 0 && narrow != self.narrow.get()).then_some(narrow)
+    }
+}
+
+impl windui::core::Widget for WidthProbe {
+    fn on_update(&mut self, _ctx: &mut windui::core::EventCtx) {
+        if !self.witness.is_alive() {
+            return;
+        }
+        if let Some(narrow) = self.wants_narrow() {
+            (self.apply)(narrow);
+        }
+    }
+
+    fn paint(
+        &self,
+        bounds: Rect,
+        _content: Rect,
+        _focused: bool,
+        _enabled: bool,
+        _canvas: &mut dyn windui::render::Canvas,
+        _style: &Style,
+    ) {
+        self.width.set(bounds.w);
+        if self.wants_narrow().is_some() {
+            windui::anim::request_relayout();
+        }
+    }
+}
+
+/// 右栏表格区的量宽叶子（叠在表格上，1 像素高、不画任何东西）。
+pub(crate) fn build_width_probe(mgr: &DictManagerState) -> Element {
+    let m = mgr.clone();
+    let w = WidthProbe {
+        width: Cell::new(0),
+        apply: Box::new(move |n| m.set_sys_narrow(n)),
+        narrow: mgr.cats.narrow.clone(),
+        witness: signal(()),
+    };
+    Element::leaf().widget(w).reactive().width_match().height(1)
 }
 
 /// 搜索框的防抖叶子：搜索框内容停手 `delay` 后调 [`DictManagerState::flush_sys_search`]。
@@ -1135,6 +1231,10 @@ mod tests {
                     .any(|c| c.id == "cell_idiom" && c.enabled),
                 "回滚后清单仍是关"
             );
+            assert!(
+                st.on_schema_config_changed(Some("py"), Some("schema.setDictEnabled")),
+                "写失败不算本端回声：别处的广播照常重取"
+            );
         });
     }
 
@@ -1353,7 +1453,7 @@ mod tests {
         });
     }
 
-    /// 跳页、表头排序（服务端 sort / order）、排序与分页组合；core 不排的子表列点了不发请求。
+    /// 跳页、表头排序（服务端 sort / order）、排序与分页组合；core 不排的子表列点了当作取消排序。
     #[test]
     fn page_jump_and_server_sort() {
         with_mock(|| {
@@ -1393,8 +1493,15 @@ mod tests {
                 order: SortOrder::Asc,
             }));
             st.on_sort_changed();
-            assert!(calls_of("sysDict.entries").is_empty(), "子表列不排");
+            // 子表列 core 不排：当作取消排序，回文件顺序第一页（表头、本页、翻页三者一致）
             assert_eq!(st.sort.get(), None);
+            assert_eq!(
+                calls_of("sysDict.entries"),
+                vec![json!({"schema": "py", "dictId": "pinyin_main", "offset": 0, "limit": 100})],
+                "子表列：取消排序并回第一页"
+            );
+            assert_eq!(texts(&st)[0], "词0");
+            assert_eq!(st.page_status.get(), "第 1-100 / 共 250 条");
         });
     }
 
@@ -1601,6 +1708,151 @@ mod tests {
             st.reload();
             crate::rpc::force_mock_reply("schema.active", None);
             assert!(st.cats.viewing.get().is_none());
+        });
+    }
+
+    fn headers(st: &DictManagerState) -> Vec<&'static str> {
+        st.current_spec().columns.iter().map(|c| c.header).collect()
+    }
+
+    /// 右栏窄：一级收起「分组」「优先级」、二级收起「子表」，表格换列重建；按下标记的排序取消。
+    #[test]
+    fn narrow_pane_drops_secondary_columns() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            assert_eq!(headers(&st), ["启用", "名称", "分组", "条数", "优先级"]);
+            st.sort.set(Some(SortKey {
+                column: 3,
+                order: SortOrder::Desc,
+            }));
+            st.on_sort_changed();
+            let epoch = st.table_epoch.get();
+            st.set_sys_narrow(true);
+            assert_eq!(headers(&st), ["", "名称", "条数"]);
+            assert_ne!(st.table_epoch.get(), epoch, "换列重建");
+            assert_eq!(st.sort.get(), None);
+            assert_eq!(st.table_rows.get()[0].len(), 3, "行也按新列取");
+            assert_eq!(st.table_rows.get()[0][1], "rime_frost", "回默认顺序");
+
+            st.enter_sys_dict("pinyin_main");
+            assert_eq!(headers(&st), ["编码", "词条", "权重"], "子表列收起");
+            st.sort.set(Some(SortKey {
+                column: 2,
+                order: SortOrder::Asc,
+            }));
+            st.on_sort_changed();
+            st.next_page();
+            crate::rpc::take_mock_calls();
+            st.set_sys_narrow(false);
+            assert_eq!(headers(&st), ["编码", "词条", "权重", "子表"]);
+            assert_eq!(
+                calls_of("sysDict.entries"),
+                vec![json!({"schema": "py", "dictId": "pinyin_main", "offset": 0, "limit": 100})],
+                "取消排序回第一页"
+            );
+            st.set_sys_narrow(false);
+            assert!(calls_of("sysDict.entries").is_empty(), "没变不重取");
+        });
+    }
+
+    /// 量宽叶子：宽度跨过阈值才换，宽窄没变不动。
+    #[test]
+    fn width_probe_switches_only_across_the_threshold() {
+        let narrow = Rc::new(Cell::new(false));
+        let seen = Rc::new(Cell::new(None));
+        let s2 = seen.clone();
+        let n2 = narrow.clone();
+        let mut p = WidthProbe {
+            width: Cell::new(0),
+            apply: Box::new(move |n| {
+                n2.set(n);
+                s2.set(Some(n));
+            }),
+            narrow: narrow.clone(),
+            witness: signal(()),
+        };
+        assert_eq!(p.wants_narrow(), None, "还没量到");
+        p.width.set(SYS_NARROW_BELOW + 50);
+        assert_eq!(p.wants_narrow(), None);
+        p.width.set(SYS_NARROW_BELOW - 1);
+        assert_eq!(p.wants_narrow(), Some(true));
+        windui::testing::run_with_ctx(|ctx| windui::core::Widget::on_update(&mut p, ctx));
+        assert_eq!(seen.get(), Some(true));
+        assert_eq!(p.wants_narrow(), None, "已换");
+    }
+
+    /// 拼音域加一个没有任何系统词库的第三方方案，并把它设成活动方案（mock 回复留着，调用方清）。
+    fn switch_to_third(st: &DictManagerState) {
+        st.schemas.borrow_mut().push(SchemaInfo {
+            id: "third_py".into(),
+            name: "第三方".into(),
+            kind: "pinyin".into(),
+            scheme: "full".into(),
+            ..Default::default()
+        });
+        crate::rpc::force_mock_reply("schema.active", Some(json!({"id": "third_py"})));
+    }
+
+    /// 一级表重取到空清单：收起右栏，并把右栏换成用户词库的表（不留着空的系统词库表）。
+    #[test]
+    fn empty_list_closes_the_pane_and_reloads() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            switch_to_third(&st);
+            crate::rpc::take_mock_calls();
+            st.reload();
+            let calls: Vec<String> = crate::rpc::take_mock_calls()
+                .into_iter()
+                .map(|(m, _)| m)
+                .collect();
+            crate::rpc::force_mock_reply("schema.active", None);
+            assert!(!st.cats.open.get());
+            assert_ne!(st.current_category(), WordCategory::SysDicts);
+            let list = st.current_spec().rpc.list;
+            let at = calls
+                .iter()
+                .rposition(|m| m == "sysDict.categories")
+                .unwrap();
+            assert!(
+                calls[at..].iter().any(|m| m == list),
+                "收起后补取用户词库：{calls:?}"
+            );
+        });
+    }
+
+    /// 二级时刷新清单发现库没了（右栏收起）：同样补取，不停在旧词条上。
+    #[test]
+    fn refresh_that_closes_the_pane_reloads() {
+        with_mock(|| {
+            let st = viewing("cell_idiom");
+            switch_to_third(&st);
+            crate::rpc::take_mock_calls();
+            st.refresh_sys_cats();
+            let calls: Vec<String> = crate::rpc::take_mock_calls()
+                .into_iter()
+                .map(|(m, _)| m)
+                .collect();
+            crate::rpc::force_mock_reply("schema.active", None);
+            assert!(!st.cats.open.get());
+            let list = st.current_spec().rpc.list;
+            assert!(calls.iter().any(|m| m == list), "{calls:?}");
+        });
+    }
+
+    /// 二级时重取清单、库还在：头部也重取（版本、子表可能变了）。
+    #[test]
+    fn refresh_while_viewing_refetches_the_header() {
+        with_mock(|| {
+            let st = viewing("pinyin_main");
+            crate::rpc::take_mock_calls();
+            st.refresh_sys_cats();
+            assert_eq!(
+                calls_of("sysDict.header"),
+                vec![json!({"schema": "py", "dictId": "pinyin_main"})]
+            );
+            assert_eq!(st.cats.viewing.get().as_deref(), Some("pinyin_main"));
         });
     }
 }

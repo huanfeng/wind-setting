@@ -1501,6 +1501,26 @@ const COLS_SYS_DICTS: &[ColumnSpec] = &[
     },
 ];
 
+/// 窄表（右栏窄于 [`SYS_NARROW_BELOW`]）的一级表：收起「分组」「优先级」，条数与操作列的
+/// [查看][信息] 留够宽（名称长的截断，全名在「信息」里）。默认仍按生效先后排，优先级只是
+/// 不单列。
+const COLS_SYS_DICTS_NARROW: &[ColumnSpec] = &[
+    // 只一列勾选框，表头不写字（窄到写「启用」也只剩「…」；页头那句「勾选即生效」说明了它）
+    ColumnSpec {
+        header: "",
+        weight: 0.7,
+        ..COLS_SYS_DICTS[0]
+    },
+    ColumnSpec {
+        weight: 1.4,
+        ..COLS_SYS_DICTS[1]
+    },
+    ColumnSpec {
+        weight: 1.2,
+        ..COLS_SYS_DICTS[3]
+    },
+];
+
 /// 一级表：一个方案十来本，整表一次取、客户端排序；默认按 core 给的生效先后。
 /// 开关不走通用的 `set_enabled` RPC：折叠的拼音族要对每个成员各写一次、失败回滚，
 /// 见 `DictManagerState::set_sys_cat_enabled`（`do_set_enabled` 按类别分派过去）。
@@ -1525,6 +1545,12 @@ const SPEC_SYS_DICTS: CategorySpec = CategorySpec {
     },
 };
 
+/// 同 [`SPEC_SYS_DICTS`]，窄表的列。
+const SPEC_SYS_DICTS_NARROW: CategorySpec = CategorySpec {
+    columns: COLS_SYS_DICTS_NARROW,
+    ..SPEC_SYS_DICTS
+};
+
 const COLS_SYS_ENTRIES: &[ColumnSpec] = &[
     ColumnSpec {
         header: "编码",
@@ -1533,7 +1559,7 @@ const COLS_SYS_ENTRIES: &[ColumnSpec] = &[
     },
     ColumnSpec {
         header: "词条",
-        weight: 2.0,
+        weight: 1.6,
         field: WordField::Text,
     },
     ColumnSpec {
@@ -1579,15 +1605,53 @@ const SPEC_SYS_ENTRIES: CategorySpec = CategorySpec {
     },
 };
 
+/// 窄表的词条列：不列子表，权重列放宽到装得下四位数。
+const COLS_SYS_ENTRIES_NARROW: &[ColumnSpec] = &[
+    ColumnSpec {
+        weight: 1.2,
+        ..COLS_SYS_ENTRIES[0]
+    },
+    ColumnSpec {
+        weight: 1.2,
+        ..COLS_SYS_ENTRIES[1]
+    },
+    ColumnSpec {
+        weight: 1.2,
+        ..COLS_SYS_ENTRIES[2]
+    },
+];
+
+/// 同 [`SPEC_SYS_ENTRIES`]，窄表的列。
+const SPEC_SYS_ENTRIES_NARROW: CategorySpec = CategorySpec {
+    columns: COLS_SYS_ENTRIES_NARROW,
+    ..SPEC_SYS_ENTRIES
+};
+
 /// 同 [`SPEC_SYS_ENTRIES`]，多一列子表（正在看的库展开了子表时用）。
 const SPEC_SYS_ENTRIES_TABLES: CategorySpec = CategorySpec {
     columns: COLS_SYS_ENTRIES_TABLES,
     ..SPEC_SYS_ENTRIES
 };
 
-/// 系统词条的规格：有没有子表列随库而变。
-pub fn sys_entries_spec(tables: bool) -> &'static CategorySpec {
-    if tables {
+/// 系统词库两张表的右栏宽度（表格外框内）低于它就换窄表的列：一级收起「分组」「优先级」，
+/// 二级收起「子表」。词库窗最小 760 宽时右栏只剩约 350，全列按比例压下去操作列的文字按钮
+/// 放不下、其余列只剩「…」；默认 990 宽约 575，全列都完整。
+pub const SYS_NARROW_BELOW: i32 = 520;
+
+/// 系统词库一级表的规格：窄表少两列。
+pub fn sys_dicts_spec(narrow: bool) -> &'static CategorySpec {
+    if narrow {
+        &SPEC_SYS_DICTS_NARROW
+    } else {
+        &SPEC_SYS_DICTS
+    }
+}
+
+/// 系统词条的规格：窄表一种；宽表有没有子表列随库而变。
+pub fn sys_entries_spec(tables: bool, narrow: bool) -> &'static CategorySpec {
+    if narrow {
+        &SPEC_SYS_ENTRIES_NARROW
+    } else if tables {
         &SPEC_SYS_ENTRIES_TABLES
     } else {
         &SPEC_SYS_ENTRIES
@@ -1654,10 +1718,11 @@ impl CategorySpec {
             // 只会截断。
             WordCategory::Charsets => 1.3,
             // 「查看」「信息」两枚，与 COLS_SYS_DICTS 的五个权重（合计 5.7）一组配比：990 宽的
-            // 默认窗里各列表头与两枚按钮都完整。
+            // 默认窗里各列表头与两枚按钮都完整；窄表（三列合计 3.3）在约 340 宽时操作列约 125。
             WordCategory::SysDicts => 2.0,
-            // 一枚「加进用户词库」（六个字），与 COLS_SYS_ENTRIES 一组配比。
-            WordCategory::SysEntries => 1.8,
+            // 一枚「加进用户词库」（六个字），与 COLS_SYS_ENTRIES 一组配比：窄表（三列合计 3.6）
+            // 在约 350 宽时操作列约 120，按钮刚好完整。
+            WordCategory::SysEntries => 2.0,
             _ => 1.5,
         }
     }
