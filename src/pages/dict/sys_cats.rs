@@ -298,11 +298,17 @@ pub struct SysCatsState {
     pub total: Signal<u64>,
     pub offset: Rc<Cell<u64>>,
     pub page_text: Signal<String>,
-    /// 搜索词与方式（0 编码前缀 / 1 词文本）。
+    /// 搜索框里的字与方式（0 编码前缀 / 1 词文本）。打字不发请求，回车或点「搜索」才生效。
     pub query: Signal<String>,
     pub mode: Signal<usize>,
+    /// 生效中的搜索（`None` = 按文件顺序浏览）：（去首尾空白的查询, 方式）。
+    searched: Rc<RefCell<Option<(String, usize)>>>,
+    /// 当前页里选中的行（显示下标）；换页、换库即清。工具栏「加进用户词库」据此可用。
+    pub selected: Signal<Option<usize>>,
     /// 二级词条表整表重建（换库时递增：有没有子表列随库而变）。
     pub entries_epoch: Signal<Vec<u64>>,
+    /// 头部卡片重建（头部数据或展开态变化）。与词条表分开：展开卡片不重建词条表。
+    pub card_epoch: Signal<Vec<u64>>,
     /// 清单是按哪个方案的开关取的（拼音族是活动成员，见 `lib_switch_schema`）；与当前不同时
     /// [`DictManagerState::reload`] 重取一次。
     loaded_for: Rc<RefCell<Option<String>>>,
@@ -332,7 +338,10 @@ impl SysCatsState {
             page_text: signal(String::new()),
             query: signal(String::new()),
             mode: signal(0),
+            searched: Rc::new(RefCell::new(None)),
+            selected: signal(None),
             entries_epoch: signal(vec![0]),
+            card_epoch: signal(vec![0]),
             loaded_for: Rc::new(RefCell::new(None)),
             last_write: Rc::new(Cell::new(None)),
         }
@@ -341,6 +350,11 @@ impl SysCatsState {
     fn bump_entries_epoch(&self) {
         let e = self.entries_epoch.get().first().copied().unwrap_or(0);
         self.entries_epoch.set(vec![e + 1]);
+    }
+
+    fn bump_card_epoch(&self) {
+        let e = self.card_epoch.get().first().copied().unwrap_or(0);
+        self.card_epoch.set(vec![e + 1]);
     }
 
     /// 正在看的库有没有子表（词条表据此多一列「子表」）。
@@ -387,14 +401,19 @@ impl DictManagerState {
     /// 中栏随之不出「系统词库」。正在看的库还在就重取二级，不在了回一级。
     pub fn refresh_sys_cats(&self) {
         let scope = self.sys_cats_scope();
-        *self.cats.loaded_for.borrow_mut() = scope.clone();
-        let list = match scope {
-            Some(id) => fetch_cats(&id).unwrap_or_else(|e| {
-                tracing::debug!("取系统词库清单失败：{e}");
-                Vec::new()
-            }),
+        let list = match &scope {
+            Some(id) => match fetch_cats(id) {
+                Ok(l) => l,
+                Err(e) => {
+                    // 取不到（core 忙、旧版不认）：留着旧清单，不把右栏清空；`loaded_for` 不动，
+                    // 下次 reload 见它与当前不同会再取
+                    tracing::debug!("取系统词库清单失败：{e}");
+                    return;
+                }
+            },
             None => Vec::new(),
         };
+        *self.cats.loaded_for.borrow_mut() = scope;
         if list.is_empty() && self.cats.open.get() {
             self.close_sys_cats();
         }
@@ -470,13 +489,13 @@ impl DictManagerState {
             return;
         }
         self.cats.offset.set(0);
-        // 先清搜索再进：搜索 effect 看见变化会再取一次首页，进入时只此一次无妨
         if !self.cats.query.get().is_empty() {
             self.cats.query.set(String::new());
         }
         if self.cats.mode.get() != 0 {
             self.cats.mode.set(0);
         }
+        *self.cats.searched.borrow_mut() = None;
         self.cats.viewing.set(Some(id.to_string()));
         self.load_sys_view();
         self.cats.bump_entries_epoch();
@@ -547,14 +566,9 @@ impl DictManagerState {
             "offset": self.cats.offset.get(),
             "limit": ENTRY_PAGE,
         });
-        let q = self.cats.query.get();
-        if !q.trim().is_empty() {
-            p["query"] = json!(q.trim());
-            p["mode"] = json!(if self.cats.mode.get() == 1 {
-                "text"
-            } else {
-                "code"
-            });
+        if let Some((q, mode)) = self.cats.searched.borrow().as_ref() {
+            p["query"] = json!(q);
+            p["mode"] = json!(if *mode == 1 { "text" } else { "code" });
         }
         Some(p)
     }
@@ -564,16 +578,27 @@ impl DictManagerState {
         let Some(p) = self.sys_entries_params() else {
             return;
         };
-        let (total, rows) = match rpc::call_core("sysDict.entries", &p) {
-            Ok(v) => parse_entries(&v),
+        let (total, rows, note) = match rpc::call_core("sysDict.entries", &p) {
+            Ok(v) => {
+                let (t, r) = parse_entries(&v);
+                (t, r, v["note"].as_str().map(str::to_string))
+            }
             Err(e) => {
                 self.notify_err(&format!("读取词条失败：{e}"));
-                (0, Vec::new())
+                (0, Vec::new(), None)
             }
         };
         let off = self.cats.offset.get();
-        let text = if total == 0 {
-            if self.cats.query.get().trim().is_empty() {
+        // 停在了末页之后（库变短了 / 搜索结果变少了）：跳到最后一页重取
+        if rows.is_empty() && total > 0 && off >= total {
+            self.cats.offset.set(last_page_offset(total));
+            return self.load_sys_page();
+        }
+        let text = if let Some(n) = note.filter(|_| total == 0) {
+            // 整库被加载器跳过（columns: 声明残缺）：说清为什么没有词条
+            n
+        } else if total == 0 {
+            if self.cats.searched.borrow().is_none() {
                 "没有词条".to_string()
             } else {
                 "没有匹配的词条".to_string()
@@ -589,15 +614,43 @@ impl DictManagerState {
         self.cats.total.set(total);
         self.cats.entry_rows.set(self.cats.entry_text_rows(&rows));
         *self.cats.entries.borrow_mut() = rows;
+        if self.cats.selected.get().is_some() {
+            self.cats.selected.set(None);
+        }
     }
 
-    /// 搜索词或方式变了：回首页重取。
-    pub fn on_sys_search_changed(&self) {
+    /// 回车或点「搜索」：按框里的字与方式搜，回首页。框是空的就回到浏览。
+    pub fn submit_sys_search(&self) {
         if self.cats.viewing.get().is_none() {
             return;
         }
+        let q = self.cats.query.get().trim().to_string();
+        *self.cats.searched.borrow_mut() = (!q.is_empty()).then(|| (q, self.cats.mode.get()));
         self.cats.offset.set(0);
         self.load_sys_page();
+    }
+
+    /// 切换搜索方式：已在搜索就按新方式重搜（一次点击一次请求），否则只记下。
+    pub fn on_sys_mode_changed(&self) {
+        if self.cats.searched.borrow().is_some() {
+            self.submit_sys_search();
+        }
+    }
+
+    /// ×：清空搜索框并回到浏览。
+    pub fn clear_sys_search(&self) {
+        if !self.cats.query.get().is_empty() {
+            self.cats.query.set(String::new());
+        }
+        if self.cats.searched.borrow_mut().take().is_some() {
+            self.cats.offset.set(0);
+            self.load_sys_page();
+        }
+    }
+
+    /// 有没有生效中的搜索（× 是否可用）。
+    pub(crate) fn sys_searching(&self) -> bool {
+        self.cats.searched.borrow().is_some()
     }
 
     pub(crate) fn sys_has_prev(&self) -> bool {
@@ -610,8 +663,7 @@ impl DictManagerState {
 
     /// 翻页：`to` 为目标偏移（夹到最后一页之内）。
     pub(crate) fn sys_goto(&self, to: u64) {
-        let last = self.cats.total.get().saturating_sub(1) / ENTRY_PAGE * ENTRY_PAGE;
-        let to = to.min(last);
+        let to = to.min(last_page_offset(self.cats.total.get()));
         if to != self.cats.offset.get() {
             self.cats.offset.set(to);
             self.load_sys_page();
@@ -697,6 +749,11 @@ impl DictManagerState {
     }
 }
 
+/// 最后一页的偏移。
+fn last_page_offset(total: u64) -> u64 {
+    total.saturating_sub(1) / ENTRY_PAGE * ENTRY_PAGE
+}
+
 /// 取一个方案的系统词库清单。
 fn fetch_cats(schema: &str) -> Result<Vec<SysCat>, String> {
     rpc::call_core("sysDict.categories", &json!({ "schema": schema })).map(|v| parse_cats(&v))
@@ -707,21 +764,10 @@ fn fetch_cats(schema: &str) -> Result<Vec<SysCat>, String> {
 /// 右栏：一级词库表与二级单库查看按 `viewing` 切换。
 pub fn build_sys_cats_pane(mgr: &DictManagerState) -> Element {
     let (v1, v2) = (mgr.cats.viewing, mgr.cats.viewing);
-    let (q_v, mode_v) = (mgr.cats.query, mgr.cats.mode);
-    let m_eff = mgr.clone();
-    let search_effect = super::reactive::reactive_effect(
-        move || {
-            q_v.version()
-                .wrapping_mul(1_000_003)
-                .wrapping_add(mode_v.version())
-        },
-        move || m_eff.on_sys_search_changed(),
-    );
     Element::stack()
         .fill()
         .child(build_list_level(mgr).visible_when(move || v1.get().is_none()))
         .child(build_view_level(mgr).visible_when(move || v2.get().is_some()))
-        .child(search_effect)
 }
 
 fn pane_col() -> Element {
@@ -942,7 +988,7 @@ fn build_view_level(mgr: &DictManagerState) -> Element {
     let m_card = mgr.clone();
     let (h_sig, co_sig) = (cats.header, cats.card_open);
     let card_body =
-        Element::host_signal(cats.entries_epoch, move |_| build_header_card(&m_card)).width_match();
+        Element::host_signal(cats.card_epoch, move |_| build_header_card(&m_card)).width_match();
     // 头部数据变了或展开态变了都重画卡片：挂在两个信号上
     let m_card2 = mgr.clone();
     let card_eff = super::reactive::reactive_effect(
@@ -952,29 +998,61 @@ fn build_view_level(mgr: &DictManagerState) -> Element {
                 .wrapping_mul(1_000_003)
                 .wrapping_add(co_sig.version())
         },
-        move || m_card2.cats.bump_entries_epoch(),
+        move || m_card2.cats.bump_card_epoch(),
     );
 
     let small_h = windui::theme::current().metrics.control_h_sm;
-    let (q_clr, q_en) = (cats.query, cats.query);
+    let (m_mode, m_submit, m_go, m_clr, m_clr_en) = (
+        mgr.clone(),
+        mgr.clone(),
+        mgr.clone(),
+        mgr.clone(),
+        mgr.clone(),
+    );
+    let (q_en, sel_en) = (cats.query, cats.selected);
+    let (m_add, m_add_en) = (mgr.clone(), mgr.clone());
     let search = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(6)
-        .child(Element::segmented(vec!["编码", "词"], cats.mode))
         .child(
-            Element::text_input(cats.query, "编码前缀或词…")
+            Element::segmented(vec!["编码", "词"], cats.mode)
+                .on_segment_change(move |_, _| m_mode.on_sys_mode_changed()),
+        )
+        .child(
+            Element::text_input(cats.query, "编码前缀或词，回车搜索")
+                .on_submit(move |_| m_submit.submit_sys_search())
                 .weight(1.0)
                 .max_width(260)
                 .height(small_h),
+        )
+        .child(
+            Element::button("搜索")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_go.submit_sys_search())
+                .enabled_when(move || !q_en.get().trim().is_empty()),
         )
         .child(
             Element::button("×")
                 .small()
                 .outline_soft()
                 .tooltip("清除搜索")
-                .on_click(move |_| q_clr.set(String::new()))
-                .enabled_when(move || !q_en.get().is_empty()),
+                .on_click(move |_| m_clr.clear_sys_search())
+                .enabled_when(move || m_clr_en.sys_searching()),
+        )
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("加进用户词库…")
+                .small()
+                .outline_soft()
+                .tooltip("把选中的词条加进用户词库（也可双击词条）")
+                .on_click(move |_| {
+                    if let Some(row) = sel_en.get() {
+                        m_add.add_sys_entry_to_user(row);
+                    }
+                })
+                .enabled_when(move || m_add_en.cats.selected.get().is_some()),
         );
 
     let m_tab = mgr.clone();
@@ -1106,6 +1184,7 @@ fn build_entries_table(mgr: &DictManagerState) -> Element {
     }
     let sort = mgr.cats.entry_sort;
     let (m_menu, m_dbl) = (mgr.clone(), mgr.clone());
+    let sel = mgr.cats.selected;
     Element::table_sortable_server(
         cols,
         mgr.cats.entry_rows,
@@ -1115,9 +1194,51 @@ fn build_entries_table(mgr: &DictManagerState) -> Element {
             sort.set(None);
         },
     )
+    .cell_render(move |row, _, text| Some(pick_cell(sel, row, text)))
     .on_row_activate(move |_, row| m_dbl.add_sys_entry_to_user(row))
     .on_row_context_menu(move |row| sys_entry_menu(&m_menu, row))
     .fill()
+}
+
+/// 词条单元格：文字同默认格，按下即选中这一行（选中行带强调底色）。
+fn pick_cell(sel: Signal<Option<usize>>, row: usize, text: &str) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .widget(RowPick { sel, row })
+        .bg_when(move || {
+            if sel.get() == Some(row) {
+                windui::theme::current().palette.accent.scale_alpha(0.18)
+            } else {
+                Color::TRANSPARENT
+            }
+        })
+        .child(
+            Element::label(text.to_string())
+                .font_size(windui::theme::current().metrics.font_sm)
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .weight(1.0),
+        )
+}
+
+/// 按下（左右键都算）即把所在行记为选中。**不吃事件**：双击仍冒泡到行上触发「加进用户
+/// 词库」，右键仍弹行菜单——表格只给了双击与右键两个行级钩子，单击选中只能挂在格上。
+struct RowPick {
+    sel: Signal<Option<usize>>,
+    row: usize,
+}
+
+impl windui::core::Widget for RowPick {
+    fn on_event(&mut self, _ctx: &mut windui::core::EventCtx, ev: &windui::event::Event) -> bool {
+        if let windui::event::Event::Pointer(p) = ev
+            && p.kind == windui::event::PointerKind::Down
+            && self.sel.get() != Some(self.row)
+        {
+            self.sel.set(Some(self.row));
+        }
+        false
+    }
 }
 
 /// 词条行右键：加进用户词库、复制词、复制编码。
@@ -1588,9 +1709,10 @@ mod tests {
             assert_eq!(st.cats.page_text.get(), "第 201-250 / 共 250 条");
             assert!(st.sys_has_prev() && !st.sys_has_next());
 
-            // 搜索：回首页，带上 query 与方式（测试里没有 effect，手动触发）
+            // 打字不发请求；回车 / 点「搜索」才搜：回首页，带上 query 与方式
             st.cats.query.set(" ma1 ".into());
-            st.on_sys_search_changed();
+            assert!(calls_of("sysDict.entries").is_empty(), "每键不请求");
+            st.submit_sys_search();
             assert_eq!(
                 calls_of("sysDict.entries"),
                 vec![
@@ -1599,15 +1721,45 @@ mod tests {
                 ]
             );
             assert_eq!(st.cats.total.get(), 111, "ma1 / ma10-19 / ma100-199");
-            st.cats.mode.set(1);
             st.cats.query.set("词24".into());
-            st.on_sys_search_changed();
+            st.cats.mode.set(1);
+            st.on_sys_mode_changed();
             let p = calls_of("sysDict.entries");
-            assert_eq!(p.last().unwrap()["mode"], "text");
+            assert_eq!(p.len(), 1, "已在搜索时切方式：重搜一次");
+            assert_eq!(
+                (&p[0]["mode"], &p[0]["query"]),
+                (&json!("text"), &json!("词24"))
+            );
             assert_eq!(st.cats.total.get(), 11);
             st.cats.query.set("无此".into());
-            st.on_sys_search_changed();
+            st.submit_sys_search();
             assert_eq!(st.cats.page_text.get(), "没有匹配的词条");
+
+            // ×：清框、回到浏览
+            crate::rpc::take_mock_calls();
+            st.clear_sys_search();
+            assert_eq!(st.cats.query.get(), "");
+            assert!(!st.sys_searching());
+            let p = calls_of("sysDict.entries");
+            assert_eq!(p.len(), 1);
+            assert!(p[0].get("query").is_none(), "回到浏览");
+            assert_eq!(st.cats.total.get(), 250);
+            st.clear_sys_search();
+            assert!(
+                calls_of("sysDict.entries").is_empty(),
+                "没在搜索时 × 不再请求"
+            );
+            // 框里只有空白：等于回到浏览
+            st.cats.query.set("  ".into());
+            st.submit_sys_search();
+            assert!(!st.sys_searching());
+            st.cats.mode.set(0);
+            crate::rpc::take_mock_calls();
+            st.on_sys_mode_changed();
+            assert!(
+                calls_of("sysDict.entries").is_empty(),
+                "没在搜索时切方式不请求"
+            );
 
             // 换一本库：搜索清空、回编码方式
             st.enter_sys_dict("cell_place");
@@ -1645,6 +1797,129 @@ mod tests {
             let menu = sys_entry_menu(&st, 0);
             assert_eq!(menu[0].label, "加进用户词库…");
             assert!(sys_entry_menu(&st, 999).is_empty(), "越界不弹");
+        });
+    }
+
+    /// core 说明整库不加载时，底栏显示这条说明而不是「没有词条」。
+    #[test]
+    fn unloadable_dict_shows_the_core_note() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            crate::rpc::force_mock_reply(
+                "sysDict.entries",
+                Some(
+                    json!({"total": 0, "rows": [], "note": "bad 的 columns: 声明缺 text 或 code 列"}),
+                ),
+            );
+            st.enter_sys_dict("cell_idiom");
+            crate::rpc::force_mock_reply("sysDict.entries", None);
+            assert!(st.cats.page_text.get().contains("columns"));
+        });
+    }
+
+    /// 停在末页之后（库变短 / 结果变少）：跳到最后一页。
+    #[test]
+    fn offset_past_the_end_jumps_to_the_last_page() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            st.enter_sys_dict("cell_idiom");
+            st.sys_goto(200);
+            // 搜索结果只有 111 条，偏移还在 200
+            *st.cats.searched.borrow_mut() = Some(("ma1".into(), 0));
+            crate::rpc::take_mock_calls();
+            st.load_sys_page();
+            let offs: Vec<Value> = calls_of("sysDict.entries")
+                .into_iter()
+                .map(|p| p["offset"].clone())
+                .collect();
+            assert_eq!(offs, [json!(200), json!(100)]);
+            assert_eq!(st.cats.offset.get(), 100);
+            assert_eq!(st.cats.page_text.get(), "第 101-111 / 共 111 条");
+        });
+    }
+
+    fn frame(tree: &mut windui::core::Tree) {
+        tree.layout_root(
+            windui::geometry::Size::new(800, 600),
+            &mut windui::text::NullTextEngine,
+        );
+    }
+
+    /// 单击某行即选中（工具栏「加进用户词库」据此可用），双击仍走行激活；换页清选中。
+    #[test]
+    fn click_selects_a_row_and_double_click_still_adds() {
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::Point;
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            st.enter_sys_dict("cell_idiom");
+            let mut tree = windui::core::Tree::new();
+            let root = build_entries_table(&st).build(&mut tree);
+            tree.root = Some(root);
+            frame(&mut tree);
+            frame(&mut tree);
+            assert_eq!(st.cats.selected.get(), None);
+            // 表头约 38px，首行之下第二行约在 y≈80
+            let at = Point::new(300, 82);
+            let (mut hover, mut capture) = (None, None);
+            for kind in [PointerKind::Down, PointerKind::Up] {
+                tree.dispatch_pointer(
+                    PointerEvent::single(kind, at, MouseButton::Left),
+                    &mut hover,
+                    &mut capture,
+                );
+            }
+            let row = st.cats.selected.get().expect("单击应选中一行");
+            assert!(row > 0, "点的是第二行起");
+            assert!(!st.edit_visible.get(), "单击不加词");
+            for kind in [PointerKind::Down, PointerKind::Up] {
+                let mut ev = PointerEvent::single(kind, at, MouseButton::Left);
+                ev.click_count = 2;
+                tree.dispatch_pointer(ev, &mut hover, &mut capture);
+            }
+            assert!(st.edit_visible.get(), "双击仍冒泡到行，打开加词");
+            assert_eq!(st.edit_text.get(), format!("词{row}"));
+            st.sys_goto(100);
+            assert_eq!(st.cats.selected.get(), None, "换页清选中");
+        });
+    }
+
+    /// 刷新清单失败：留着旧清单，不把右栏清空。
+    #[test]
+    fn failed_refresh_keeps_the_old_list() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            let before = st.cats.list.get();
+            assert!(!before.is_empty());
+            crate::rpc::force_mock_error("sysDict.categories", Some("core 忙"));
+            st.refresh_sys_cats();
+            crate::rpc::force_mock_error("sysDict.categories", None);
+            assert_eq!(st.cats.list.get(), before);
+            assert!(st.cats.open.get(), "右栏仍开着");
+        });
+    }
+
+    /// 展开 / 收起头部卡片只重建卡片，不重建词条表。
+    #[test]
+    fn card_toggle_does_not_rebuild_the_entries_table() {
+        with_mock(|| {
+            let st = pinyin_state("sp");
+            st.open_sys_cats();
+            st.enter_sys_dict("cell_idiom");
+            let mut tree = windui::core::Tree::new();
+            let root = build_view_level(&st).build(&mut tree);
+            tree.root = Some(root);
+            frame(&mut tree);
+            let e0 = st.cats.entries_epoch.get();
+            let c0 = st.cats.card_epoch.get();
+            st.cats.card_open.set(true);
+            frame(&mut tree);
+            assert_eq!(st.cats.entries_epoch.get(), e0, "词条表不重建");
+            assert_ne!(st.cats.card_epoch.get(), c0, "卡片重建");
         });
     }
 
