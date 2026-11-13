@@ -388,6 +388,11 @@ impl WordRow {
         }
     }
 
+    /// 候选调整里「屏蔽整词」行：编码为 `*` 的 delete 规则（拼音/英文方案的「屏蔽这个词」）。
+    pub fn is_all_codes(&self) -> bool {
+        self.kind == "delete" && self.code == ALL_CODES
+    }
+
     /// 从列表 RPC 返回解析出 (行集合, 总数)。
     /// 分页类返回 `{items,total}`；其余返回裸数组，total = 长度。
     pub fn parse_list(cat: WordCategory, paged: bool, v: &Value) -> (Vec<WordRow>, usize) {
@@ -457,6 +462,7 @@ impl WordRow {
             WordField::Enabled => if self.enabled { "是" } else { "否" }.to_string(),
             WordField::Group => self.group.clone(),
             WordField::Table => self.table.clone(),
+            WordField::Kind if self.is_all_codes() => ALL_CODES_KIND.to_string(),
             WordField::Kind => kind_label(&self.kind).to_string(),
             WordField::LastUsed => self.last_used.clone(),
             WordField::Sample => self.sample.clone(),
@@ -558,6 +564,13 @@ fn fmt_last_used(v: Option<&Value>) -> String {
         _ => String::new(),
     }
 }
+
+/// 候选调整里表示「所有编码」的编码值。
+pub const ALL_CODES: &str = "*";
+/// `*` 行的类型文案（区别于按编码的「删除」）。
+pub const ALL_CODES_KIND: &str = "屏蔽整词";
+/// `*` 的含义说明：提示行与编码单元格 tooltip 共用。
+pub const ALL_CODES_NOTE: &str = "「*」表示所有编码：该词在任何输入下都不再出现。";
 
 /// 「类型」列的中文标签。
 ///
@@ -890,20 +903,21 @@ const COLS_FREQ: &[ColumnSpec] = &[
     },
 ];
 
+// 编码与类型两列要容得下「*」行的「全部」徽标与「屏蔽整词」，权重是一组配比。
 const COLS_SHADOW: &[ColumnSpec] = &[
     ColumnSpec {
         header: "编码",
-        weight: 1.0,
+        weight: 1.5,
         field: WordField::Code,
     },
     ColumnSpec {
         header: "词",
-        weight: 2.0,
+        weight: 1.1,
         field: WordField::Text,
     },
     ColumnSpec {
         header: "类型",
-        weight: 0.8,
+        weight: 1.8,
         field: WordField::Kind,
     },
     ColumnSpec {
@@ -1835,6 +1849,25 @@ mod tests {
         let r2 = WordRow::from_json(WordCategory::Shadow, &del);
         assert_eq!(r2.kind, "delete");
         assert_eq!(kind_label(&r2.kind), "删除");
+    }
+
+    /// 编码为 `*` 的 delete 行是「屏蔽整词」：类型栏与按编码的「删除」区分开；
+    /// 编码栏仍是 `*`（核心给什么就显示什么）。
+    #[test]
+    fn shadow_star_delete_row_is_all_codes() {
+        let star = json!({ "code": "*", "word": "屏", "candId": null, "type": "delete" });
+        let r = WordRow::from_json(WordCategory::Shadow, &star);
+        assert_eq!(r.code, "*");
+        assert!(r.is_all_codes());
+        assert_eq!(r.cell_text(WordField::Code), "*");
+        assert_eq!(r.cell_text(WordField::Kind), "屏蔽整词");
+        // 按编码的 delete 与 `*` 的 pin 都不算
+        let by_code = json!({ "code": "cd", "word": "屏", "type": "delete" });
+        let r2 = WordRow::from_json(WordCategory::Shadow, &by_code);
+        assert!(!r2.is_all_codes());
+        assert_eq!(r2.cell_text(WordField::Kind), "删除");
+        let star_pin = json!({ "code": "*", "word": "屏", "type": "pin", "position": 0 });
+        assert!(!WordRow::from_json(WordCategory::Shadow, &star_pin).is_all_codes());
     }
 
     #[test]

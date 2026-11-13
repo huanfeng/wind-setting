@@ -15,7 +15,9 @@
 use windui::prelude::*;
 
 use super::reactive::{reactive_effect, toast_sink};
-use super::spec::{ColumnSpec, WordCategory, WordField, kind_label};
+use super::spec::{
+    ALL_CODES_KIND, ALL_CODES_NOTE, ColumnSpec, WordCategory, WordField, WordRow, kind_label,
+};
 #[cfg(test)]
 use super::state::{DOMAIN_PHRASE, DOMAIN_QUICK, GLOBAL_DOMAINS};
 use super::state::{DictManagerState, DomainKind};
@@ -240,6 +242,19 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         ))
         .child(hint_line("免词频与生僻模式按并集生效，不看优先级。"))
         .visible_when(move || hint_vis.current_category() == super::spec::WordCategory::Charsets);
+    // 「*」行说明：候选调整里拼音/英文方案的「屏蔽这个词」落成编码 `*` 的删除行，裸 `*`
+    // 看不懂。拼音/英文域恒显示；其它域只在表里真有 `*` 行时才显示。
+    let star_vis = mgr.clone();
+    let star_hint = hint_line(ALL_CODES_NOTE)
+        .width_match()
+        .visible_when(move || {
+            let _ = star_vis.table_rows.get(); // 行变化时重新求值
+            star_hint_visible(
+                star_vis.current_category(),
+                star_vis.domain_kind(),
+                &star_vis.display_rows.borrow(),
+            )
+        });
     let sys_vis = mgr.clone();
     let sys_hint = hint_line("勾选即生效；默认按生效先后排列，优先级只读。")
         .width_match()
@@ -272,6 +287,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(build_lib_notice(&mgr))
         .child(toolbar)
         .child(charset_hint)
+        .child(star_hint)
         .child(sys_hint)
         .child(card)
         .child(pagination);
@@ -710,6 +726,13 @@ fn activate_row(mgr: &DictManagerState, disp: usize) {
     }
 }
 
+/// 候选调整表上方「*」说明行的显隐：仅候选调整类别；拼音/英文域恒显示，其它域看表里有无 `*` 行。
+fn star_hint_visible(cat: WordCategory, kind: DomainKind, rows: &[WordRow]) -> bool {
+    cat == WordCategory::Shadow
+        && (matches!(kind, DomainKind::Pinyin | DomainKind::English)
+            || rows.iter().any(WordRow::is_all_codes))
+}
+
 /// 自定义单元格：编码列渲染为边框徽章、候选调整类型列渲染为彩色标签（置顶=强调色），
 /// 其余列返回 `None` 走默认文本渲染。排序仍按单元格文本。
 ///
@@ -758,6 +781,25 @@ fn render_cell(
                 .max_lines(1)
                 // 编码过长时末尾省略（编码前缀…），不再无差别硬裁。
                 .truncate(Truncate::End);
+            // 屏蔽整词行：编码仍显示 `*`，旁边补一枚「全部」徽标，tooltip 写明含义。
+            let badge = if mgr.display_row(row).is_some_and(|r| r.is_all_codes()) {
+                Element::row()
+                    .cross(Align::Center)
+                    .spacing(4)
+                    .child(badge)
+                    .child(
+                        Element::label("全部")
+                            .font_size(10.5)
+                            .fg_role(Role::Warning)
+                            .padding_xy(4, 1)
+                            .corner(3.0)
+                            .border_role(Role::Warning, 1)
+                            .max_lines(1),
+                    )
+                    .tooltip(ALL_CODES_NOTE)
+            } else {
+                badge
+            };
             // 多选类别：编码徽章前挂勾选框（t63）。挂在单元格里而不另起一列——表头
             // 不支持非数据列，另起一列会与排序列下标错位。
             if mgr.current_spec().ops.multi_select
@@ -800,6 +842,8 @@ fn render_cell(
             // 改文案时若只改 spec 那边，徽章会静默退成灰色（位置类规则不再被强调）。
             let role = if text == kind_label("pin") {
                 Role::Accent
+            } else if text == ALL_CODES_KIND {
+                Role::Warning
             } else {
                 Role::TextMuted
             };
@@ -809,7 +853,8 @@ fn render_cell(
                     .fg_role(role)
                     .padding_xy(6, 2)
                     .corner(4.0)
-                    .border_role(role, 1),
+                    .border_role(role, 1)
+                    .max_lines(1),
             )
         }
         // 常用性两列渲染成徽章。**颜色这个维度只承载一件事：这一行我改过没有**。
@@ -1459,6 +1504,40 @@ mod tests {
     use serde_json::json;
     use windui::core::Tree;
     use windui::geometry::Size;
+
+    /// 「*」说明行：只在候选调整出现；拼音/英文域恒显示，其它域看表里有无 `*` 行。
+    #[test]
+    fn star_hint_follows_category_domain_and_rows() {
+        let star = WordRow::from_json(
+            WordCategory::Shadow,
+            &json!({ "code": "*", "word": "屏", "type": "delete" }),
+        );
+        let plain = WordRow::from_json(
+            WordCategory::Shadow,
+            &json!({ "code": "ab", "word": "阿", "type": "delete" }),
+        );
+        let shadow = WordCategory::Shadow;
+        assert!(star_hint_visible(shadow, DomainKind::Pinyin, &[]));
+        assert!(star_hint_visible(
+            shadow,
+            DomainKind::English,
+            std::slice::from_ref(&plain)
+        ));
+        assert!(!star_hint_visible(
+            shadow,
+            DomainKind::Codetable,
+            std::slice::from_ref(&plain)
+        ));
+        assert!(star_hint_visible(
+            shadow,
+            DomainKind::Codetable,
+            &[plain, star.clone()]
+        ));
+        assert!(
+            !star_hint_visible(WordCategory::UserDict, DomainKind::Pinyin, &[star]),
+            "其它类别不显示"
+        );
+    }
 
     /// 工具栏一行：搜索框占剩余宽度、封顶 SEARCH_MAX_W，窗口窄时让位而不挤出可视区。
     #[test]
