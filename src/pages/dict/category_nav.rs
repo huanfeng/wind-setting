@@ -11,7 +11,7 @@
 //!
 //! 样式与主窗二级导航（`subnav`）一致：行高 30、12.5px、选中**不加粗**（只靠强调色、淡底
 //! 与竖条）；分组标题同左栏的「全局 / 输入方案」，不可点。「系统词库」与「用户词库」同款
-//! 是分组标题，其下缩进一级挂一个条目「词库列表」，点它打开右栏的词库表。
+//! 是分组标题，其下挂一个条目（不缩进，没有勾选框那一列）「词库列表」，点它打开右栏的词库表。
 
 use windui::prelude::*;
 
@@ -162,10 +162,10 @@ pub fn nav_entries(
     out
 }
 
-/// 「系统词库」分组标题 + 缩进一级的「词库列表」。
+/// 「系统词库」分组标题 + 其下的「词库列表」（没有勾选框那一列，不缩进，同「其他」下的类别）。
 fn push_sys_group(out: &mut Vec<NavEntry>) {
     out.push(NavEntry::plain(NavNode::SysGroup, SYS_TITLE, 0));
-    out.push(NavEntry::plain(NavNode::SysList, SYS_LIST_TITLE, 1));
+    out.push(NavEntry::plain(NavNode::SysList, SYS_LIST_TITLE, 0));
 }
 
 impl DictManagerState {
@@ -674,7 +674,7 @@ mod tests {
                 ("主词库".into(), 1),
                 ("成语".into(), 1),
                 ("系统词库".into(), 0),
-                ("词库列表".into(), 1),
+                ("词库列表".into(), 0),
                 ("其他".into(), 0),
                 ("临时词库".into(), 0),
             ]
@@ -706,7 +706,7 @@ mod tests {
             [
                 ("用户词库".into(), 0),
                 ("系统词库".into(), 0),
-                ("词库列表".into(), 1),
+                ("词库列表".into(), 0),
                 ("其他".into(), 0),
                 ("临时词库".into(), 0),
             ]
@@ -722,7 +722,7 @@ mod tests {
             [
                 ("用户词库".into(), 0),
                 ("系统词库".into(), 0),
-                ("词库列表".into(), 1)
+                ("词库列表".into(), 0)
             ]
         );
         let v = nav_entries(&[LogicalTab::Shadow], None, None, &[cat("a", false, None)]);
@@ -730,7 +730,7 @@ mod tests {
             titles(&v),
             [
                 ("系统词库".into(), 0),
-                ("词库列表".into(), 1),
+                ("词库列表".into(), 0),
                 ("其他".into(), 0),
                 ("候选调整".into(), 0)
             ]
