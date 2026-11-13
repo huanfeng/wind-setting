@@ -148,8 +148,10 @@ pub struct DictManagerState {
     pub domain_epoch: Signal<Vec<u64>>,
     /// 中栏版本（单元素）：切数据域、方案集或分库列表变化时递增，中栏整体重建。
     pub nav_epoch: Signal<Vec<u64>>,
-    /// 右栏标题（「用户词库 · 成语」「临时词库」…），每次重载时按当前类别重算。
+    /// 右栏标题的第一段（类别或分组名：「用户词库」「临时词库」「系统词库」…），每次重载时按当前类别重算。
     pub pane_title: Signal<String>,
+    /// 右栏标题的第二段（对象名），无对象时为空。
+    pub pane_subtitle: Signal<String>,
     /// 受控排序状态（None=无排序；表头点击循环切换，导航变化时重置）。
     pub sort: Signal<Option<SortKey>>,
     /// 空态提示文本（无数据/未连接/无方案）；有数据时为空串（视图据此显隐覆盖层）。
@@ -618,6 +620,7 @@ impl DictManagerState {
             domain_epoch: signal(vec![0]),
             nav_epoch: signal(vec![0]),
             pane_title: signal(String::new()),
+            pane_subtitle: signal(String::new()),
             sort: signal(None),
             empty_msg: signal(String::new()),
             search: signal(String::new()),
@@ -1366,9 +1369,12 @@ impl DictManagerState {
         }
         self.ensure_user_libs();
         self.ensure_sys_cats();
-        let title = self.pane_title_now();
+        let (title, subtitle) = self.pane_titles_now();
         if self.pane_title.get() != title {
             self.pane_title.set(title);
+        }
+        if self.pane_subtitle.get() != subtitle {
+            self.pane_subtitle.set(subtitle);
         }
         let spec = self.current_spec();
         // 按方案类别但无方案：空表 + 提示。

@@ -6,7 +6,7 @@
 use windui::prelude::*;
 
 use crate::auto_encode::auto_encode_node;
-use crate::widgets::{ENCODE_BTN_W, clear_text_button, flat_panel, paste_button};
+use crate::widgets::{ENCODE_BTN_W, clear_text_button, paste_button};
 
 use super::reactive::reactive_effect;
 use super::state::DictManagerState;
@@ -40,6 +40,84 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(super::charset_new::build_charset_create_dialog(mgr))
         .child(super::stats_dialog::build_stats_dialog(mgr))
         .child(super::sys_cats::build_sys_info_dialog(mgr))
+}
+
+/// 对话框标题：固定文案或随状态变化的信号。
+pub(crate) enum DialogTitle {
+    Fixed(String),
+    Live(Signal<String>),
+}
+
+impl From<&str> for DialogTitle {
+    fn from(s: &str) -> Self {
+        Self::Fixed(s.to_string())
+    }
+}
+
+impl From<Signal<String>> for DialogTitle {
+    fn from(s: Signal<String>) -> Self {
+        Self::Live(s)
+    }
+}
+
+/// 词库窗所有对话框共用的标题栏：15px 半粗、内边距 18×14，单行、过长截断。返回的是一行，
+/// 需要把按钮放在标题右侧时（词库统计）直接往里 `child`。标题文案统一为「动作或类别 · 对象」。
+pub(crate) fn dialog_header(title: impl Into<DialogTitle>) -> Element {
+    let label = match title.into() {
+        DialogTitle::Fixed(t) => Element::label(t),
+        DialogTitle::Live(s) => Element::label_signal(s),
+    };
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(8)
+        .padding_xy(18, 14)
+        .child(
+            label
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .weight(1.0),
+        )
+}
+
+/// 对话框正文的容器：内边距 18×12、行距 10。
+pub(crate) fn dialog_body() -> Element {
+    Element::col().width_match().padding_xy(18, 12).spacing(10)
+}
+
+/// 对话框按钮栏：内边距 16×12，按钮靠右（调用方先放一个 `weight(1.0)` 的空叶子）。
+pub(crate) fn dialog_footer() -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .padding_xy(16, 12)
+        .spacing(8)
+}
+
+/// 对话框外框：标题栏 / divider / 正文 /（有按钮栏时）divider / 按钮栏。圆角 12、边框、
+/// 阴影与词库窗里所有对话框一致，宽度由各自决定。
+pub(crate) fn dialog_frame(
+    width: i32,
+    header: Element,
+    body: Element,
+    footer: Option<Element>,
+) -> Element {
+    let mut frame = Element::col()
+        .width(width)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(header)
+        .child(Element::divider())
+        .child(body);
+    if let Some(footer) = footer {
+        frame = frame.child(Element::divider()).child(footer);
+    }
+    frame
 }
 
 /// 目标方案选择行（导入导出共用）：`verb` 为「导入到」/「导出自」。
@@ -191,19 +269,8 @@ fn io_type_row(mgr: &DictManagerState) -> Element {
 fn build_export_dialog(mgr: &DictManagerState) -> Element {
     let exp = mgr.clone();
     let cancel = mgr.clone();
-    let content = flat_panel()
-        .width(IO_DIALOG_W)
-        .padding(20)
+    let body = dialog_body()
         .spacing(12)
-        .child(
-            Element::label_signal(mgr.io_title)
-                .font_size(15.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .height(24)
-                .width_match(),
-        )
-        .child(Element::divider())
         .child(io_target_row(mgr, "导出自"))
         .child(io_note(mgr.io_scope_note, Role::TextMuted))
         .child(
@@ -221,25 +288,21 @@ fn build_export_dialog(mgr: &DictManagerState) -> Element {
                 .max_lines(1),
         )
         // 引擎标记的提示放在按钮正上方：这是点「导出到文件…」之前最后看到的一句。
-        .child(io_note(mgr.io_engine_note, Role::TextMuted))
+        .child(io_note(mgr.io_engine_note, Role::TextMuted));
+    let footer = dialog_footer()
+        .child(Element::leaf().weight(1.0))
         .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("关闭")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| cancel.cancel_export()),
-                )
-                .child(
-                    Element::button("导出到文件…")
-                        .small()
-                        .on_click(move |ctx| exp.do_export_io(ctx)),
-                ),
+            Element::button("关闭")
+                .small()
+                .outline_soft()
+                .on_click(move |_| cancel.cancel_export()),
+        )
+        .child(
+            Element::button("导出到文件…")
+                .small()
+                .on_click(move |ctx| exp.do_export_io(ctx)),
         );
+    let content = dialog_frame(IO_DIALOG_W, dialog_header(mgr.io_title), body, Some(footer));
     Element::dialog(mgr.export_visible, content)
 }
 
@@ -269,19 +332,8 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                 .weight(1.0)
                 .max_lines(1),
         );
-    let content = flat_panel()
-        .width(IO_DIALOG_W)
-        .padding(20)
+    let body = dialog_body()
         .spacing(12)
-        .child(
-            Element::label_signal(mgr.io_title)
-                .font_size(15.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .height(24)
-                .width_match(),
-        )
-        .child(Element::divider())
         .child(
             Element::label(
                 "从 WindDict / Rime / TSV / 纯词列表导入（按内容自动识别）。文件须为 UTF-8 编码。",
@@ -320,33 +372,29 @@ fn build_import_dialog(mgr: &DictManagerState) -> Element {
                                 .width_match(),
                         ),
                 ),
+        );
+    let footer = dialog_footer()
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("关闭")
+                .small()
+                .outline_soft()
+                .on_click(move |_| cancel.cancel_import()),
         )
         .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("关闭")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| cancel.cancel_import()),
-                )
-                .child(
-                    Element::button("替换导入")
-                        .small()
-                        .danger()
-                        .enabled_when(move || replace_ready.import_enabled())
-                        .on_click(move |_| replace.confirm_import("replace")),
-                )
-                .child(
-                    Element::button("合并导入")
-                        .small()
-                        .enabled_when(move || merge_ready.import_enabled())
-                        .on_click(move |_| merge.confirm_import("merge")),
-                ),
+            Element::button("替换导入")
+                .small()
+                .danger()
+                .enabled_when(move || replace_ready.import_enabled())
+                .on_click(move |_| replace.confirm_import("replace")),
+        )
+        .child(
+            Element::button("合并导入")
+                .small()
+                .enabled_when(move || merge_ready.import_enabled())
+                .on_click(move |_| merge.confirm_import("merge")),
         );
+    let content = dialog_frame(IO_DIALOG_W, dialog_header(mgr.io_title), body, Some(footer));
     Element::dialog(mgr.import_confirm_visible, content)
 }
 
@@ -481,10 +529,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         .child(paste_button(mgr.edit_text, false))
         .child(clear_text_button(mgr.edit_text));
 
-    let body = Element::col()
-        .width_match()
-        .padding_xy(18, 12)
-        .spacing(10)
+    let body = dialog_body()
         .child(field(mgr.edit_l_code, code_input))
         .child(field(mgr.edit_l_text, text_field))
         .child(labeled_field(
@@ -508,11 +553,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
         ))
         .child(position_field(mgr));
 
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(16, 12)
-        .spacing(8)
+    let footer = dialog_footer()
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("取消")
@@ -526,24 +567,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| submit.submit_word()),
         );
 
-    let frame = Element::col()
-        .width(420)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label_signal(mgr.edit_title)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(Element::divider())
-        .child(footer);
+    let frame = dialog_frame(420, dialog_header(mgr.edit_title), body, Some(footer));
     Element::dialog(mgr.edit_visible, frame)
 }
 
@@ -600,10 +624,7 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
             .child(input)
     };
 
-    let body = Element::col()
-        .width_match()
-        .padding_xy(18, 12)
-        .spacing(10)
+    let body = dialog_body()
         .child(field(
             "类别",
             // ⚠️ 选项走 `dropdown_signal`（绑信号）而**不是**在这里算好一个 Vec：对话框只
@@ -648,11 +669,7 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
                 .width_match(),
         );
 
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(16, 12)
-        .spacing(8)
+    let footer = dialog_footer()
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("取消")
@@ -666,24 +683,7 @@ fn build_quick_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| submit.submit_word()),
         );
 
-    let frame = Element::col()
-        .width(460)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label_signal(mgr.edit_title)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(Element::divider())
-        .child(footer);
+    let frame = dialog_frame(460, dialog_header(mgr.edit_title), body, Some(footer));
     Element::dialog(mgr.quick_edit_visible, frame)
 }
 
@@ -715,10 +715,7 @@ fn build_common_dialog(mgr: &DictManagerState) -> Element {
             .child(input)
     };
 
-    let body = Element::col()
-        .width_match()
-        .padding_xy(18, 12)
-        .spacing(10)
+    let body = dialog_body()
         .child(field(
             "字",
             Element::text_input(mgr.edit_text, "")
@@ -745,11 +742,7 @@ fn build_common_dialog(mgr: &DictManagerState) -> Element {
             .max_lines(4),
         );
 
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(16, 12)
-        .spacing(8)
+    let footer = dialog_footer()
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("取消")
@@ -763,24 +756,7 @@ fn build_common_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| submit.submit_word()),
         );
 
-    let frame = Element::col()
-        .width(420)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label_signal(mgr.edit_title)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(Element::divider())
-        .child(footer);
+    let frame = dialog_frame(420, dialog_header(mgr.edit_title), body, Some(footer));
     Element::dialog(mgr.common_edit_visible, frame)
 }
 
@@ -809,10 +785,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
             .child(input)
     };
 
-    let body = Element::col()
-        .width_match()
-        .padding_xy(18, 12)
-        .spacing(10)
+    let body = dialog_body()
         .child(field(
             "编码",
             Element::text_input(mgr.shadow_code, "")
@@ -841,11 +814,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
                 .on_submit(move |_| submit_pos.submit_shadow()),
         ));
 
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(16, 12)
-        .spacing(8)
+    let footer = dialog_footer()
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("取消")
@@ -859,24 +828,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| submit.submit_shadow()),
         );
 
-    let frame = Element::col()
-        .width(420)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label_signal(mgr.shadow_title)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(Element::divider())
-        .child(footer);
+    let frame = dialog_frame(420, dialog_header(mgr.shadow_title), body, Some(footer));
     Element::dialog(mgr.shadow_add_visible, frame)
 }
 
@@ -892,10 +844,7 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
     let cancel = mgr.clone();
     let claim = mgr.clone();
 
-    let body = Element::col()
-        .width_match()
-        .padding_xy(18, 12)
-        .spacing(10)
+    let body = dialog_body()
         .child(labeled_field(
             "编码",
             Element::text_input(mgr.view_code, "").weight(1.0),
@@ -923,11 +872,7 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
                 .child(position_hint()),
         );
 
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(16, 12)
-        .spacing(8)
+    let footer = dialog_footer()
         // 转为用户短语：原样复制归属后即可编辑（原条目从系统列表隐去）。左置以与「关闭」分区。
         .child(
             Element::button("转为用户短语")
@@ -943,24 +888,7 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| cancel.cancel_view()),
         );
 
-    let frame = Element::col()
-        .width(420)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label("查看系统短语")
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(Element::divider())
-        .child(footer);
+    let frame = dialog_frame(420, dialog_header("系统短语 · 查看"), body, Some(footer));
     Element::dialog(mgr.view_visible, frame)
 }
 
@@ -970,7 +898,8 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
 fn build_edit_session_dialog(mgr: &DictManagerState) -> Element {
     let m = mgr.clone();
     let body = Element::host_signal(mgr.edit_current, move |bar| edit_session_body(&m, bar));
-    let content = flat_panel().width(520).padding(20).spacing(12).child(body);
+    // 按钮随状态变（编辑中 / 有问题），与正文同在一个重建单元里
+    let content = dialog_frame(520, dialog_header("外部编辑"), body, None);
     Element::dialog(mgr.edit_dialog, content)
 }
 
@@ -983,23 +912,7 @@ fn edit_session_body(mgr: &DictManagerState, bar: super::file_edit::EditBar) -> 
             .max_lines(4)
     };
     let editing = bar.problem.is_none();
-    let mut col = Element::col()
-        .width_match()
-        .spacing(10)
-        .child(
-            Element::label(if editing {
-                "正在外部编辑"
-            } else {
-                "文件有问题"
-            })
-            .font_size(15.0)
-            .font_weight(600)
-            .fg_role(Role::Text)
-            .height(24)
-            .width_match(),
-        )
-        .child(text(bar.file.clone(), Role::TextMuted))
-        .child(Element::divider());
+    let mut col = dialog_body().child(text(bar.file.clone(), Role::TextMuted));
     col = match &bar.problem {
         None => col.child(text(
             "已用默认程序打开这个文件。在编辑器里改完并保存（保持 UTF-8 编码），再点「完成并加载」。\
@@ -1028,26 +941,26 @@ fn edit_session_body(mgr: &DictManagerState, bar: super::file_edit::EditBar) -> 
             .outline_soft()
             .on_click(move |_| m_done.dismiss_edit(&f_done))
     };
-    col.child(
-        Element::row()
-            .width_match()
-            .cross(Align::Center)
-            .spacing(8)
-            .child(
-                Element::button("打开所在文件夹")
-                    .small()
-                    .outline_soft()
-                    .on_click(move |_| m_dir.open_edit_folder(&b_dir)),
-            )
-            .child(
-                Element::button("再次打开文件")
-                    .small()
-                    .outline_soft()
-                    .on_click(move |_| m_again.reopen_edit(&f_again)),
-            )
-            .child(Element::leaf().weight(1.0))
-            .child(primary),
-    )
+    let footer = dialog_footer()
+        .child(
+            Element::button("打开所在文件夹")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_dir.open_edit_folder(&b_dir)),
+        )
+        .child(
+            Element::button("再次打开文件")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_again.reopen_edit(&f_again)),
+        )
+        .child(Element::leaf().weight(1.0))
+        .child(primary);
+    Element::col()
+        .width_match()
+        .child(col)
+        .child(Element::divider())
+        .child(footer)
 }
 
 /// 分库名字对话框：新建 / 重命名 / 从文件导入（多出文件、格式、权重三行）。名字即时校验。
@@ -1103,10 +1016,7 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
     let weight_row = io_weight_row(mgr, move || m_wl.lib_import_is_word_list());
 
     let (m_cancel, m_ok, m_ready) = (mgr.clone(), mgr.clone(), mgr.clone());
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(8)
+    let footer = dialog_footer()
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("取消")
@@ -1122,26 +1032,14 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
         );
     let (name_v, fmt_v) = (libs.name, libs.format);
     let (m_name, m_fmt) = (mgr.clone(), mgr.clone());
-    let content = flat_panel()
-        .width(IO_DIALOG_W)
-        .padding(20)
+    let body = dialog_body()
         .spacing(12)
-        .child(
-            Element::label_signal(libs.prompt_title)
-                .font_size(15.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .height(24)
-                .width_match(),
-        )
-        .child(Element::divider())
         .child(file_row)
         .child(name_row)
         .child(error)
         .child(format_row)
         .child(weight_row)
         .child(encoding_note)
-        .child(footer)
         .child(reactive_effect(
             move || name_v.version(),
             move || m_name.on_lib_name_changed(),
@@ -1150,6 +1048,12 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
             move || fmt_v.version(),
             move || m_fmt.on_lib_format_changed(),
         ));
+    let content = dialog_frame(
+        IO_DIALOG_W,
+        dialog_header(libs.prompt_title),
+        body,
+        Some(footer),
+    );
     Element::dialog(libs.prompt_visible, content)
 }
 
@@ -1157,45 +1061,28 @@ fn build_lib_prompt_dialog(mgr: &DictManagerState) -> Element {
 fn build_confirm_dialog(mgr: &DictManagerState) -> Element {
     let confirm = mgr.clone();
     let cancel = mgr.clone();
-    let content = flat_panel()
-        .width(380)
-        .padding(20)
-        .spacing(14)
+    let body = dialog_body().child(
+        Element::label_signal(mgr.confirm_msg)
+            .font_size(13.0)
+            .fg_role(Role::Text)
+            .width_match()
+            .max_lines(4),
+    );
+    let footer = dialog_footer()
+        .child(Element::leaf().weight(1.0))
         .child(
-            Element::label("确认操作")
-                .font_size(15.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .height(24)
-                .width_match(),
-        )
-        .child(Element::divider())
-        .child(
-            Element::label_signal(mgr.confirm_msg)
-                .font_size(13.0)
-                .fg_role(Role::Text)
-                .width_match()
-                .max_lines(4),
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| cancel.cancel_confirm()),
         )
         .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("取消")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| cancel.cancel_confirm()),
-                )
-                .child(
-                    Element::button("确定")
-                        .small()
-                        .danger()
-                        .on_click(move |_| confirm.confirm_pending()),
-                ),
+            Element::button("确定")
+                .small()
+                .danger()
+                .on_click(move |_| confirm.confirm_pending()),
         );
+    let content = dialog_frame(380, dialog_header("确认操作"), body, Some(footer));
     Element::dialog(mgr.confirm_visible, content)
 }
 

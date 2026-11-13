@@ -7,9 +7,9 @@
 use serde_json::json;
 use windui::prelude::*;
 
+use super::dialogs::{dialog_body, dialog_footer, dialog_frame, dialog_header};
 use super::state::DictManagerState;
 use crate::rpc;
-use crate::widgets::flat_panel;
 
 /// 默认判定下拉的选项，与 `charset.create` 的 `default` 一一对应。
 const DEFAULT_LABELS: [&str; 3] = ["不表态", "常用", "生僻"];
@@ -161,19 +161,8 @@ pub fn build_charset_create_dialog(mgr: &DictManagerState) -> Element {
     };
     let err = n.error;
     let (m_cancel, m_ok) = (mgr.clone(), mgr.clone());
-    let content = flat_panel()
-        .width(440)
-        .padding(20)
+    let body = dialog_body()
         .spacing(12)
-        .child(
-            Element::label("新建字符分类")
-                .font_size(15.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .height(24)
-                .width_match(),
-        )
-        .child(Element::divider())
         .child(field(
             "文件名",
             Element::text_input(n.key, "如 my_symbols，保存为 charsets/<文件名>.yaml"),
@@ -204,25 +193,21 @@ pub fn build_charset_create_dialog(mgr: &DictManagerState) -> Element {
                 .width_match()
                 .max_lines(2)
                 .visible_when(move || !err.get().is_empty()),
+        );
+    let footer = dialog_footer()
+        .child(Element::leaf().weight(1.0))
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m_cancel.cancel_charset_create()),
         )
         .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(8)
-                .child(Element::leaf().weight(1.0))
-                .child(
-                    Element::button("取消")
-                        .small()
-                        .outline_soft()
-                        .on_click(move |_| m_cancel.cancel_charset_create()),
-                )
-                .child(
-                    Element::button("确定")
-                        .small()
-                        .on_click(move |_| m_ok.submit_charset_create()),
-                ),
+            Element::button("确定")
+                .small()
+                .on_click(move |_| m_ok.submit_charset_create()),
         );
+    let content = dialog_frame(440, dialog_header("新建字符分类"), body, Some(footer));
     Element::dialog(n.visible, content)
 }
 

@@ -28,6 +28,7 @@ use std::rc::Rc;
 use serde_json::{Value, json};
 use windui::prelude::*;
 
+use super::dialogs::{dialog_body, dialog_frame, dialog_header};
 use super::state::DictManagerState;
 use crate::rpc;
 
@@ -955,12 +956,7 @@ fn build_body(d: &StatsDialog) -> Element {
     let any_charsets = cols
         .iter()
         .any(|m| m["charsets"].as_array().is_some_and(|a| !a.is_empty()));
-    let mut col = Element::col()
-        .width_match()
-        .spacing(10)
-        .padding_xy(18, 12)
-        .child(muted(status_line(v)))
-        .child(row);
+    let mut col = dialog_body().child(muted(status_line(v))).child(row);
     if any_charsets {
         let dd = d.clone();
         col = col.child(
@@ -989,19 +985,7 @@ fn build_body(d: &StatsDialog) -> Element {
 pub fn build_stats_dialog(mgr: &DictManagerState) -> Element {
     let d = mgr.stats.clone();
     let (d_refresh, d_busy, d_close, d_body) = (d.clone(), d.clone(), d.clone(), d.clone());
-    let header = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(8)
-        .padding_xy(18, 12)
-        .child(
-            Element::label(d.heading)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .max_lines(1)
-                .weight(1.0),
-        )
+    let header = dialog_header(d.heading)
         .child(
             Element::button("重新统计")
                 .small()
@@ -1016,20 +1000,11 @@ pub fn build_stats_dialog(mgr: &DictManagerState) -> Element {
                 .outline_soft()
                 .on_click(move |_| d_close.close()),
         );
-    let frame = Element::col()
-        .width(DIALOG_W)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(header)
-        .child(Element::divider())
-        .child(
-            Element::scroll()
-                .width_match()
-                .max_height(BODY_MAX_H)
-                .child(Element::host_signal(d.epoch, move |_| build_body(&d_body))),
-        );
+    let body = Element::scroll()
+        .width_match()
+        .max_height(BODY_MAX_H)
+        .child(Element::host_signal(d.epoch, move |_| build_body(&d_body)));
+    let frame = dialog_frame(DIALOG_W, header, body, None);
     Element::dialog(mgr.stats.visible, frame)
 }
 

@@ -134,7 +134,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .fg_role(Role::TextMuted)
         .max_lines(1)
         .visible_when(move || hint_vis.domain_kind() == DomainKind::Mixed);
-    // 系统词条表：「‹ 返回」回系统词库表（标题是「系统词库 / <名>」）。
+    // 系统词条表：「‹ 返回」回系统词库表（标题是「系统词库 · <名>」）。
     let (m_back, v_back) = (mgr.clone(), mgr.clone());
     let back = Element::button("‹ 返回")
         .small()
@@ -147,16 +147,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .cross(Align::Center)
         .spacing(8)
         .child(back)
-        .child(
-            Element::label_signal(mgr.pane_title)
-                .font_size(15.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .max_lines(1)
-                .truncate(Truncate::End)
-                // 标题占剩余宽度、长了自己截断：分库名长时不能把右边的按钮挤出可视区。
-                .weight(1.0),
-        )
+        .child(pane_heading(&mgr))
         .child(mixed_hint)
         .child(edit_file)
         .child(import_entry)
@@ -656,13 +647,51 @@ fn build_table(mgr: &DictManagerState) -> Element {
     .fill()
 }
 
+/// 右栏标题：主标题（类别或分组名，15px 半粗）+「 · 」+ 副标题（对象名，14px 常规、淡色）。
+/// 整块占标题行的剩余宽度；窄时主标题保持原样、副标题自己截断，右边的按钮不会被挤出可视区。
+/// 副标题为空（无对象的类别）时分隔点与副标题都不占位。
+fn pane_heading(mgr: &DictManagerState) -> Element {
+    let sub = mgr.pane_subtitle;
+    let has_sub = move || !sub.get().is_empty();
+    Element::row()
+        .cross(Align::Center)
+        .spacing(6)
+        .weight(1.0)
+        .child(
+            Element::label_signal(mgr.pane_title)
+                .font_size(15.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .max_lines(1),
+        )
+        .child(
+            Element::label("·")
+                .font_size(14.0)
+                .fg_role(Role::TextMuted)
+                .visible_when(has_sub),
+        )
+        .child(
+            Element::label_signal(sub)
+                .font_size(14.0)
+                .fg_role(Role::TextMuted)
+                .max_lines(1)
+                .truncate(Truncate::End)
+                .weight(1.0)
+                .visible_when(has_sub),
+        )
+}
+
 /// 双击整行的激活动作：可编辑类别进入编辑对话框（候选调整走 shadow 编辑，其余走 open_edit）。
 /// 行按显示下标从 `display_rows` 即时取（与操作列"编辑"按钮同一入口）。
 fn activate_row(mgr: &DictManagerState, disp: usize) {
     let spec = mgr.current_spec();
     match spec.category {
-        // 一级表不靠点行进入，只用 [查看]（维护者定）
-        WordCategory::SysDicts => return,
+        WordCategory::SysDicts => {
+            if let Some(r) = mgr.display_row(disp) {
+                mgr.enter_sys_dict(&r.code);
+            }
+            return;
+        }
         WordCategory::SysEntries => return mgr.add_sys_entry_to_user(disp),
         _ => {}
     }
@@ -1739,8 +1768,76 @@ mod tests {
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
+    /// 在表格第 `row` 行第 `col` 格上双击（Down cc=2 + Up，同真实点击分发）。
+    fn double_click_cell(tree: &mut Tree, row: usize, col: usize) {
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        let root = tree.root.unwrap();
+        let scroll = *tree.get(root).unwrap().children.last().unwrap();
+        let body = tree.get(scroll).unwrap().children[0];
+        let tr = tree
+            .get(tree.get(body).unwrap().children[row])
+            .unwrap()
+            .children[0];
+        let cell = tree.get(tr).unwrap().children[col];
+        let b = tree.abs_bounds(cell);
+        let at = windui::geometry::Point::new(b.x + b.w / 2, b.y + b.h / 2);
+        let (mut hover, mut capture) = (None, None);
+        let down = PointerEvent {
+            kind: PointerKind::Down,
+            pos: at,
+            button: MouseButton::Left,
+            click_count: 2,
+            mods: windui::event::Mods::default(),
+        };
+        tree.dispatch_pointer(down, &mut hover, &mut capture);
+        tree.dispatch_pointer(
+            PointerEvent::single(PointerKind::Up, at, MouseButton::Left),
+            &mut hover,
+            &mut capture,
+        );
+    }
+
+    /// 走真实点击分发：一级词库表双击某行进入该库的词条表，二级词条表双击某行打开加词对话框。
+    #[test]
+    fn double_clicking_system_dict_rows_dispatches() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "py".into(),
+            name: "全拼".into(),
+            kind: "pinyin".into(),
+            scheme: "full".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(GLOBAL_DOMAINS);
+        mgr.on_nav_changed();
+        mgr.open_sys_cats();
+        let layout = |mgr: &DictManagerState| {
+            let mut tree = Tree::new();
+            let root = build_table(mgr).build(&mut tree);
+            tree.root = Some(root);
+            tree.layout_root(Size::new(900, 600), &mut windui::text::NullTextEngine);
+            tree
+        };
+        // 一级：双击「名称」格（第 1 列）
+        let code = mgr.display_row(2).expect("一级表有第 3 行").code;
+        let mut tree = layout(&mgr);
+        double_click_cell(&mut tree, 2, 1);
+        assert_eq!(mgr.cats.viewing.get().as_deref(), Some(code.as_str()));
+        assert_eq!(mgr.current_category(), WordCategory::SysEntries);
+        // 二级：双击词条行 = 加进用户词库
+        let mut tree = layout(&mgr);
+        double_click_cell(&mut tree, 1, 1);
+        assert!(mgr.edit_visible.get(), "二级表双击仍是加进用户词库");
+        assert_eq!(mgr.edit_text.get(), "词1");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
     /// 系统词库两级的右键菜单与双击：一级「查看词条 / 信息 / 启用」（主库的启用灰掉），二级
-    /// 「加进用户词库」+ 复制；一级双击不进入（维护者定：只用 [查看]），二级双击加词。
+    /// 「加进用户词库」+ 复制；一级双击等同 [查看]，二级双击加词。
     #[test]
     fn system_dict_menus_and_double_click() {
         let _g = crate::rpc::ENV_LOCK
@@ -1767,11 +1864,10 @@ mod tests {
         assert!(row_menu_items(&mgr, 1)[2].enabled);
         activate_row(&mgr, 2);
         assert_eq!(
-            mgr.cats.viewing.get(),
-            None,
-            "一级表双击不进入，只用 [查看]"
+            mgr.cats.viewing.get().as_deref(),
+            Some("cell_idiom"),
+            "一级表双击进入该库，同 [查看]"
         );
-        mgr.enter_sys_dict("cell_idiom");
         assert_eq!(
             menu_labels(&row_menu_items(&mgr, 0)),
             ["加进用户词库…", "复制编码", "复制词条"]

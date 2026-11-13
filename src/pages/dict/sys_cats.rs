@@ -1,11 +1,12 @@
-//! 「系统词库」（主仓设计 `system-dict-patch-and-candidate-adjust.md` §6.1）：中栏一个分组标题，
+//! 「系统词库」（主仓设计 `system-dict-patch-and-candidate-adjust.md` §6.1）：中栏一个分组标题 + 一个条目，
 //! 右栏两级，都走词库窗的表格管线（`state::reload` → `table_sortable_server`）。
 //!
-//! - 中栏：用户词库分组下方一个可点的分组标题「系统词库」（无计数、无子项），见 `category_nav`。
+//! - 中栏：用户词库分组下方一个分组标题「系统词库」与其下的条目「词库列表」（无计数），见 `category_nav`。
 //! - 一级 [`WordCategory::SysDicts`]：词库表（主词库 + 分类 / 附加 / 我放入的库），列 启用 /
 //!   名称 / 分组 / 条数 / 优先级，默认按生效先后（core 给的 `order`），表头可客户端排序。启用列
-//!   勾选即生效，主库与写了 `default` 的库禁用。行操作「查看」进二级、「信息」弹头部信息。
-//! - 二级 [`WordCategory::SysEntries`]：「‹ 返回」+「系统词库 / <名>」+ 只读词条表（服务端分页、
+//!   勾选即生效，主库与写了 `default` 的库禁用。行操作「查看」进二级、「信息」弹头部信息；
+//!   双击行等同「查看」。
+//! - 二级 [`WordCategory::SysEntries`]：「‹ 返回」+「系统词库 · <名>」+ 只读词条表（服务端分页、
 //!   跳页、表头排序、单框搜索编码前缀或词子串），行操作「加进用户词库」复用加词对话框。
 //!
 //! 两级都不是子标签：不进导出，见 `state::tabs_for_kind` 的说明。
@@ -25,6 +26,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use windui::prelude::*;
 
+use super::dialogs::{dialog_body, dialog_footer, dialog_frame, dialog_header};
 use super::spec::{SYS_NARROW_BELOW, WordCategory, WordField, WordRow};
 use super::state::{DictManagerState, PAGE_SIZE};
 use crate::rpc;
@@ -873,38 +875,13 @@ pub(crate) fn build_sys_info_dialog(mgr: &DictManagerState) -> Element {
     let m = mgr.clone();
     let body = Element::host_signal(mgr.cats.info_epoch, move |_| info_body(&m));
     let close = mgr.cats.info_visible;
-    let footer = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .padding_xy(16, 12)
-        .spacing(8)
-        .child(Element::leaf().weight(1.0))
-        .child(
-            Element::button("关闭")
-                .small()
-                .outline_soft()
-                .on_click(move |_| close.set(false)),
-        );
-    let frame = Element::col()
-        .width(460)
-        .bg_role(Role::Surface)
-        .border_role(Role::Border, 1)
-        .corner(12.0)
-        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
-        .child(
-            Element::label_signal(mgr.cats.info_title)
-                .font_size(14.0)
-                .font_weight(600)
-                .fg_role(Role::Text)
-                .max_lines(1)
-                .truncate(Truncate::End)
-                .width_match()
-                .padding_xy(18, 14),
-        )
-        .child(Element::divider())
-        .child(body)
-        .child(Element::divider())
-        .child(footer);
+    let footer = dialog_footer().child(Element::leaf().weight(1.0)).child(
+        Element::button("关闭")
+            .small()
+            .outline_soft()
+            .on_click(move |_| close.set(false)),
+    );
+    let frame = dialog_frame(460, dialog_header(mgr.cats.info_title), body, Some(footer));
     Element::dialog(mgr.cats.info_visible, frame)
 }
 
@@ -924,7 +901,7 @@ fn info_body(mgr: &DictManagerState) -> Element {
             .child(small(k.to_string(), Role::TextMuted, 1).width(64))
             .child(v.weight(1.0))
     };
-    let mut col = Element::col().width_match().padding_xy(18, 12).spacing(6);
+    let mut col = dialog_body().spacing(6);
     if !h.error.is_empty() {
         col = col.child(small(h.error.clone(), Role::Warning, 3).width_match());
     }
@@ -1117,7 +1094,10 @@ mod tests {
                 "一级表的 list RPC 就是清单，只取一次"
             );
             assert_eq!(st.current_category(), WordCategory::SysDicts);
-            assert_eq!(st.pane_title.get(), SYS_TITLE);
+            assert_eq!(
+                (st.pane_title.get(), st.pane_subtitle.get()),
+                (SYS_TITLE.to_string(), "词库列表".to_string())
+            );
             let rows = st.table_rows.get();
             assert_eq!(rows.len(), 6);
             assert_eq!(rows[0], ["是", "rime_frost", "主词库", "250", "1"]);
@@ -1398,7 +1378,10 @@ mod tests {
                 vec![json!({"schema": "py", "dictId": "pinyin_main", "offset": 0, "limit": 100})]
             );
             assert_eq!(st.current_category(), WordCategory::SysEntries);
-            assert_eq!(st.pane_title.get(), "系统词库 / rime_frost");
+            assert_eq!(
+                (st.pane_title.get(), st.pane_subtitle.get()),
+                ("系统词库".to_string(), "rime_frost".to_string())
+            );
             let rows = st.table_rows.get();
             assert_eq!(rows.len(), 100);
             assert_eq!(
