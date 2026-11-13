@@ -1100,6 +1100,66 @@ mod tests {
         });
     }
 
+    /// 带目标打开：从别的域跳到方案所在域并选中「词库列表」；导航 effect（测试里手动补一次）
+    /// 跑完后不得把它收起。已在该域时没有 effect，直接落到列表。
+    #[test]
+    fn open_sys_list_of_selects_the_list_after_nav_effect() {
+        with_mock(|| {
+            let st = cats_state();
+            st.domain.set(super::super::state::DOMAIN_PHRASE);
+            st.on_nav_changed();
+            assert!(!st.cats.open.get());
+
+            assert!(st.open_sys_list_of("wubi86"));
+            assert_eq!(st.domain.get(), super::super::state::GLOBAL_DOMAINS);
+            st.on_nav_changed(); // 模拟 effect
+            assert!(st.cats.open.get(), "effect 不得收起词库列表");
+            assert_eq!(st.current_category(), WordCategory::SysDicts);
+            assert!(st.is_nav_selected(&NavNode::SysList));
+
+            // 再收起后在同域内重复调用：无 effect，直接打开
+            st.select_nav(&NavNode::Main(0));
+            assert!(!st.cats.open.get());
+            assert!(st.open_sys_list_of("wubi86"));
+            assert!(st.is_nav_selected(&NavNode::SysList));
+        });
+    }
+
+    /// 方案不在域列表里：什么都不动（只开窗）；域里没有系统词库（混输）：落在该域，不留挂起落点。
+    #[test]
+    fn open_sys_list_of_degrades_for_unknown_and_mixed() {
+        with_mock(|| {
+            let st = DictManagerState::new();
+            *st.schemas.borrow_mut() = vec![
+                SchemaInfo {
+                    id: "wubi86".into(),
+                    name: "五笔".into(),
+                    kind: "codetable".into(),
+                    ..Default::default()
+                },
+                SchemaInfo {
+                    id: "mixed".into(),
+                    name: "混输".into(),
+                    kind: "mixed".into(),
+                    ..Default::default()
+                },
+            ];
+            st.domain.set(super::super::state::DOMAIN_PHRASE);
+            st.on_nav_changed();
+
+            assert!(!st.open_sys_list_of("nope"), "未知/未启用方案不处理");
+            assert_eq!(st.domain.get(), super::super::state::DOMAIN_PHRASE);
+            st.on_nav_changed();
+            assert!(!st.cats.open.get(), "没有挂起的落点");
+
+            assert!(st.open_sys_list_of("mixed"));
+            st.on_nav_changed();
+            assert_eq!(st.domain_kind(), super::super::state::DomainKind::Mixed);
+            assert!(!st.cats.open.get(), "混输没有系统词库，退化为落在该域");
+            assert_eq!(st.current_category(), WordCategory::Shadow);
+        });
+    }
+
     #[test]
     fn group_and_file_menus() {
         with_mock(|| {

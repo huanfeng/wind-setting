@@ -131,6 +131,9 @@ pub struct DictManagerState {
     /// 中栏是为哪个数据域建的；重载时与当前域不同就重建。不借 `last_domain`：`navigate_to`
     /// 会预先对齐它，换域的跳转（导入后带过去、深链）就看不出换过域。
     nav_built_for: Rc<Cell<usize>>,
+    /// 「带目标打开」挂起的落点：导航 effect 下一帧跑 [`Self::on_nav_changed`] 时会把系统词库
+    /// 收起，于是定位要等它跑完再落到「系统词库 → 词库列表」。见 [`Self::open_sys_list_of`]。
+    pending_sys_list: Rc<Cell<bool>>,
 
     /// 当前类别原始行。
     pub rows: Rc<RefCell<Vec<WordRow>>>,
@@ -613,6 +616,7 @@ impl DictManagerState {
             sub_tab_memory: Rc::new(RefCell::new(HashMap::new())),
             last_domain: Rc::new(Cell::new(0)),
             nav_built_for: Rc::new(Cell::new(usize::MAX)),
+            pending_sys_list: Rc::new(Cell::new(false)),
             rows: Rc::new(RefCell::new(Vec::new())),
             table_rows: signal(vec![]),
             display_rows: Rc::new(RefCell::new(Vec::new())),
@@ -1499,7 +1503,11 @@ impl DictManagerState {
         let cur_domain = self.domain.get();
         let prev_domain = self.last_domain.replace(cur_domain);
         // 切了域或子标签（含深链、导入后落位）：右栏回到表格，系统词库收起。
-        self.cats.close();
+        // 带目标打开挂起了「词库列表」落点时不收起，收尾处改为直接打开它。
+        let to_sys_list = self.pending_sys_list.replace(false);
+        if !to_sys_list {
+            self.cats.close();
+        }
         if cur_domain != prev_domain {
             // 切域：记住旧域当前子标签（此刻 sub_tab 仍是旧域的值），恢复新域上次停留的子标签
             // （无记录则回第一个）。restored 与当前不同时 set 会再触发一次本 effect（回声）——
@@ -1534,7 +1542,31 @@ impl DictManagerState {
         self.sort.set(None);
         self.clear_selection();
         self.bump_table_epoch();
-        self.reload();
+        if to_sys_list {
+            self.open_sys_cats();
+        } else {
+            self.reload();
+        }
+    }
+
+    /// 带目标打开：定位到 `schema_id` 所在数据域的「系统词库 → 词库列表」。
+    ///
+    /// 返回 `false` = 方案不在域列表里（未启用等），什么都没动，调用方照常只开窗。域里没有可列的
+    /// 系统词库（如混输）时落在该域原有子标签上——`reload` 取到空清单会自行收起右栏。
+    ///
+    /// 域或子标签变了就挂起落点、等导航 effect 收尾；没变则 effect 不会触发，直接打开。
+    pub fn open_sys_list_of(&self, schema_id: &str) -> bool {
+        let Some(domain) = self.resolve_domain(schema_id) else {
+            return false;
+        };
+        let before = (self.domain.get(), self.sub_tab.get());
+        self.navigate_to(domain, None);
+        if (self.domain.get(), self.sub_tab.get()) == before {
+            self.open_sys_cats();
+        } else {
+            self.pending_sys_list.set(true);
+        }
+        true
     }
 
     /// 归零分页并重载当前搜索框内容，供输入即搜与清除调用。
@@ -5536,6 +5568,21 @@ mod tests {
             None,
             "严格匹配：拼错不猜，交由上层提示"
         );
+    }
+
+    /// 带目标打开：拼音族成员（含被折叠的双拼变体）都落到拼音域；挂起的落点只在域真的变了时才有。
+    #[test]
+    fn open_sys_list_of_maps_pinyin_family_to_folded_domain() {
+        let st = deep_link_fixture();
+        assert!(st.open_sys_list_of("ziranma"));
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1, "双拼变体落拼音域");
+        assert!(st.pending_sys_list.get(), "域变了，等 effect 收尾");
+        st.on_nav_changed();
+        assert!(!st.pending_sys_list.get(), "effect 消费掉挂起的落点");
+
+        assert!(!st.open_sys_list_of("nope"), "不在域列表里：退化");
+        assert_eq!(st.domain.get(), GLOBAL_DOMAINS + 1, "域不动");
+        assert!(!st.pending_sys_list.get());
     }
 
     /// 本次设计的核心风险点：view 侧那个监听 domain/sub_tab 的 effect 会在下一帧跑

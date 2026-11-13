@@ -1169,6 +1169,9 @@ fn overlay_layout_value(idx: usize) -> &'static str {
 /// `system-dict-patch-and-candidate-adjust.md` §8 第 14 条），这一节过几版再删。
 pub(crate) const EXT_DICTS_MOVED: &str = "也可在「词库管理 → 系统词库」里开关，那里拨动即生效";
 
+/// 过渡提示后面那个跳转链接的文案。
+pub(crate) const EXT_DICTS_LINK: &str = "前往设置";
+
 /// 扩展词库行（UI 响应式包装：每行一个开关信号 + 打开时的初始值）。
 /// 拨动只翻转 `on`（暂存），点「保存」时对比 `initial` 提交变更。
 #[derive(Clone)]
@@ -1197,6 +1200,25 @@ struct PendingSchemaEdit {
 }
 
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
+/// 「带目标打开词库窗」回调：参数为方案 id。
+pub type OpenDictAt = Rc<dyn Fn(&mut EventCtx, &str)>;
+
+impl SchemaManagerState {
+    /// 注入「带目标打开词库窗」入口（窗口层调用，可重复调用，后者覆盖前者）。
+    pub fn set_open_dict_at(&self, f: OpenDictAt) {
+        *self.open_dict_at.borrow_mut() = Some(f);
+    }
+
+    /// 在词库窗里定位到当前设置对话框方案的「系统词库 → 词库列表」。
+    pub fn open_dict_for_current(&self, ctx: &mut EventCtx) {
+        let f = self.open_dict_at.borrow().clone();
+        if let Some(f) = f {
+            let id = self.settings_schema_id.borrow().clone();
+            f(ctx, &id);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SchemaManagerState {
     /// 方案列表原始数据。
@@ -1263,6 +1285,9 @@ pub struct SchemaManagerState {
     pub settings_entry: Rc<RefCell<Option<SchemaEntry>>>,
     /// 设置对话框当前方案 ID（保存时用）。
     pub settings_schema_id: Rc<RefCell<String>>,
+    /// 「带目标打开词库窗」的入口，由窗口层在构建界面时注入（对话框自己拿不到 AppState）。
+    /// 参数是方案 id。未注入（测试、对话框单独构建）时点链接什么都不做。
+    pub open_dict_at: Rc<RefCell<Option<OpenDictAt>>>,
     /// 设置对话框打开时经 schema.getConfig 拉取的完整方案配置（保存时改写后回传）。
     pub settings_cfg: Rc<RefCell<Value>>,
     /// 对话框开着期间外部改了这个方案（`schema.configChanged`）后重拉到的配置。
@@ -1622,6 +1647,7 @@ impl SchemaManagerState {
             settings_visible: signal(false),
             settings_entry: Rc::new(RefCell::new(None)),
             settings_schema_id: Rc::new(RefCell::new(String::new())),
+            open_dict_at: Rc::new(RefCell::new(None)),
             settings_cfg: Rc::new(RefCell::new(Value::Null)),
             settings_cfg_fresh: Rc::new(RefCell::new(None)),
             settings_is_shuangpin: signal(false),
@@ -6208,9 +6234,20 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     )
                 })
                 .collect();
+            // 过渡提示后的跳转链接：打开词库窗并定位到本方案的「系统词库 → 词库列表」。
+            let link_state = state.clone();
+            let dict_link = crate::widgets::HintLink::new(EXT_DICTS_LINK, move |ctx| {
+                link_state.open_dict_for_current(ctx)
+            });
             let dirs = state.settings_dict_dirs.borrow().clone();
             if dirs.is_empty() {
-                return crate::widgets::dialog_section_hint("扩展词库", EXT_DICTS_MOVED, rows);
+                return crate::widgets::dialog_section_full_linked(
+                    "扩展词库",
+                    Some(EXT_DICTS_MOVED),
+                    Some(&dict_link),
+                    None,
+                    rows,
+                );
             }
             let mut rows = rows;
             if rows.is_empty() {
@@ -6253,9 +6290,10 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     })
                 }
             };
-            crate::widgets::dialog_section_full(
+            crate::widgets::dialog_section_full_linked(
                 "扩展词库",
                 Some(EXT_DICTS_MOVED),
+                Some(&dict_link),
                 Some(&action),
                 rows,
             )
@@ -8054,6 +8092,64 @@ mod section_build_tests {
         for &kind in SettingsSection::ALL {
             let _ = build_section(kind, &state);
         }
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 「扩展词库」过渡提示后的链接：点它把当前设置对话框的方案 id 交给注入的回调
+    /// （回调负责开词库窗并定位）。扫遍所有有面积的叶子逐个点，命中即止——不依赖布局细节。
+    #[test]
+    fn ext_dicts_link_calls_open_dict_with_current_schema() {
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::{Point, Size};
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = SchemaManagerState::new();
+        *state.settings_schema_id.borrow_mut() = "quanpin".to_string();
+        let got: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let g = got.clone();
+        state.set_open_dict_at(Rc::new(move |_ctx, id| g.borrow_mut().push(id.to_string())));
+
+        let mut tree = windui::core::Tree::new();
+        let root = build_section(SettingsSection::ExtensionDicts, &state)
+            .width(800)
+            .build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(800, 400), &mut windui::text::NullTextEngine);
+
+        let mut leaves = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let kids = tree.get(id).unwrap().children.clone();
+            if kids.is_empty() {
+                leaves.push(id);
+            }
+            stack.extend(kids);
+        }
+        for id in leaves {
+            let b = tree.abs_bounds(id);
+            if b.w <= 0 || b.h <= 0 {
+                continue;
+            }
+            let at = Point::new(b.x + b.w / 2, b.y + b.h / 2);
+            let (mut hover, mut capture) = (None, None);
+            for kind in [PointerKind::Down, PointerKind::Up] {
+                tree.dispatch_pointer(
+                    PointerEvent::single(kind, at, MouseButton::Left),
+                    &mut hover,
+                    &mut capture,
+                );
+            }
+            if !got.borrow().is_empty() {
+                break;
+            }
+        }
+        assert_eq!(
+            *got.borrow(),
+            vec!["quanpin".to_string()],
+            "链接应带当前方案 id 回调一次"
+        );
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 

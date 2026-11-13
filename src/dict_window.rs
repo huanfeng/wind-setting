@@ -89,6 +89,16 @@ pub fn open(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>) {
     );
 }
 
+/// 带目标打开词库窗：定位到 `schema_id` 所在数据域的「系统词库 → 词库列表」。
+///
+/// 窗已开着则激活到前台并切过去（`open` 的 `single`）；方案不在域列表里时退化为只开窗。
+/// 先定位再开窗：`open` 里的 `reload` 因此直接按目标域取数。
+pub fn open_at(ctx: &mut EventCtx, app: &Rc<RefCell<AppState>>, schema_id: &str) {
+    let mgr = app.borrow().dict_mgr.clone();
+    mgr.open_sys_list_of(schema_id);
+    open(ctx, app);
+}
+
 /// 窗内容：标题栏 + 三栏主体（数据域 | 类别 | 内容）+ 全部浮层对话框。
 ///
 /// 对话框挂在**本窗**的根 stack 上，不再是主窗那份（`shell::build` 里已摘掉）。挂错窗

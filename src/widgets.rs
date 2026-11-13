@@ -1120,6 +1120,33 @@ pub fn dialog_section_full(
     dialog_section_items(title, hint, action, rows_to_items(rows))
 }
 
+/// 节说明后面的一个可点链接（文案 + 点击回调）。
+#[derive(Clone)]
+pub struct HintLink {
+    pub label: String,
+    pub on_click: Rc<dyn Fn(&mut EventCtx)>,
+}
+
+impl HintLink {
+    pub fn new(label: &str, on_click: impl Fn(&mut EventCtx) + 'static) -> Self {
+        Self {
+            label: label.to_string(),
+            on_click: Rc::new(on_click),
+        }
+    }
+}
+
+/// [`dialog_section_full`]，节说明同一行末尾带一个链接。
+pub fn dialog_section_full_linked(
+    title: &str,
+    hint: Option<&str>,
+    link: Option<&HintLink>,
+    action: Option<&dyn Fn() -> Element>,
+    rows: Vec<Element>,
+) -> Element {
+    dialog_section_items_linked(title, hint, link, action, rows_to_items(rows))
+}
+
 /// [`dialog_section_full`]，卡内是 [`CardItem`] 序列（可含 [`CardItem::Bare`] 动态块）。
 ///
 /// 「界面细节」`section_header`（`look::header`）：卡外 = 小标题在卡片上方；卡内 / 卡内无图标 =
@@ -1130,14 +1157,45 @@ pub fn dialog_section_items(
     action: Option<&dyn Fn() -> Element>,
     items: Vec<CardItem>,
 ) -> Element {
+    dialog_section_items_linked(title, hint, None, action, items)
+}
+
+/// [`dialog_section_items`]，节说明同一行末尾可带一个链接（说明保持单行，放不下时说明被截、链接不动）。
+pub fn dialog_section_items_linked(
+    title: &str,
+    hint: Option<&str>,
+    link: Option<&HintLink>,
+    action: Option<&dyn Fn() -> Element>,
+    items: Vec<CardItem>,
+) -> Element {
     let sh = look().0[crate::look::SECTION_HEADER];
     let hint_label = |h: &str| {
-        Element::label(h)
-            .font_size(12.0)
-            .fg_role(Role::TextMuted)
+        let Some(link) = link else {
+            return Element::label(h)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(2)
+                .padding_xy(0, 2);
+        };
+        let on_click = link.on_click.clone();
+        Element::row()
             .width_match()
-            .max_lines(2)
+            .cross(Align::Center)
+            .spacing(6)
             .padding_xy(0, 2)
+            .child(
+                Element::label(h)
+                    .font_size(12.0)
+                    .fg_role(Role::TextMuted)
+                    .weight(1.0)
+                    .max_lines(1),
+            )
+            .child(
+                Element::link(link.label.clone())
+                    .font_size(12.0)
+                    .on_click(move |ctx| on_click(ctx)),
+            )
     };
     let outside_head: Element = match action {
         // 整宽 label 塞不进带按钮的行，故用不带 `width_match` 的 [`subheading_label`]。

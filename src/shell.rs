@@ -61,6 +61,14 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         // 注意：tabs_vec 必须先求值——all_tabs 构建各 dialog_button 时把对话框登记进
         // st.fields.dialogs，随后才能在本元组里 take 出来挂到根窗口（元组按从左到右求值）。
         let tabs_vec = pages::all_tabs(app, &st);
+        // 方案设置对话框里的「前往设置」链接：它自己拿不到 AppState，由这里注入开词库窗的入口。
+        // 用弱引用，避免 AppState → schema_mgr → 回调 → AppState 的环。
+        let weak_app = Rc::downgrade(app);
+        st.schema_mgr.set_open_dict_at(Rc::new(move |ctx, id| {
+            if let Some(app) = weak_app.upgrade() {
+                crate::dict_window::open_at(ctx, &app, id);
+            }
+        }));
         // all_tabs 后各「支持全局」的功能键已登记 global_flags，汇总为 keys.global_hotkeys 写回/回填。
         crate::manifest::register_global_hotkeys_collector(&st);
         let field_dialogs = std::mem::take(&mut *st.fields.dialogs.borrow_mut());
