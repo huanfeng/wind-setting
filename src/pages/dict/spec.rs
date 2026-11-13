@@ -57,6 +57,11 @@ pub enum WordCategory {
     ///
     /// 最后一行是「配了没反应」的现成来源，故列表要显示每个类被多少条逐条覆盖压着。
     Charsets,
+    /// 系统词库表（方案的主库与分类 / 附加 / 放入目录的库；开关 + 查看 + 信息）。不是子标签：
+    /// 中栏「系统词库」分组打开，见 `sys_cats`。
+    SysDicts,
+    /// 一本系统词库的只读词条（服务端分页 / 搜索 / 排序；行操作「加进用户词库」）。
+    SysEntries,
 }
 
 /// 导航子标签的逻辑单元：短语两级 + 方案内四类。映射到 (标题, 类别, 短语系统标志)。
@@ -258,6 +263,12 @@ pub struct WordRow {
     /// 字符集分类专用：**出厂类**（读 `builtin`）。出厂类不能删、范围只读，只能
     /// 「恢复默认」；反之是用户自建类，右键有「删除」。
     pub class_builtin: bool,
+    /// 系统词库：分组（已按来源归好；主库为「主词库」）。
+    pub group: String,
+    /// 系统词库：能不能关（主库与方案设为必选的不能）。
+    pub togglable: bool,
+    /// 系统词条：所在表（主表为文件名，`rime_pinyin` 子表为相对名）。
+    pub table: String,
 }
 
 impl WordRow {
@@ -348,6 +359,15 @@ impl WordRow {
                 class: s("class"),
                 ..Default::default()
             },
+            // 系统词库：`code` 存库 id，`text` 存名称，`position` 存生效先后，`count` 数不出为 -1。
+            WordCategory::SysDicts => super::sys_cats::cat_row(&super::sys_cats::parse_cat(v)),
+            WordCategory::SysEntries => WordRow {
+                code: s("code"),
+                text: s("text"),
+                weight: i("weight"),
+                table: s("table"),
+                ..Default::default()
+            },
             // 字符集分类：`text` 存显示名，`code` 存 key（写回 RPC 用的是 key）。
             WordCategory::Charsets => WordRow {
                 text: s("name"),
@@ -372,8 +392,14 @@ impl WordRow {
     /// 分页类返回 `{items,total}`；其余返回裸数组，total = 长度。
     pub fn parse_list(cat: WordCategory, paged: bool, v: &Value) -> (Vec<WordRow>, usize) {
         if paged {
+            // `sysDict.entries` 的行在 `rows` 里
+            let key = if cat == WordCategory::SysEntries {
+                "rows"
+            } else {
+                "items"
+            };
             let items = v
-                .get("items")
+                .get(key)
                 .and_then(|x| x.as_array())
                 .map(|arr| arr.iter().map(|it| WordRow::from_json(cat, it)).collect())
                 .unwrap_or_default();
@@ -425,9 +451,12 @@ impl WordRow {
             WordField::Code => self.code.clone(),
             WordField::Text => self.display_text(),
             WordField::Weight => self.weight.to_string(),
+            WordField::Count if self.count < 0 => "—".to_string(),
             WordField::Count => self.count.to_string(),
             WordField::Position => self.position.to_string(),
             WordField::Enabled => if self.enabled { "是" } else { "否" }.to_string(),
+            WordField::Group => self.group.clone(),
+            WordField::Table => self.table.clone(),
             WordField::Kind => kind_label(&self.kind).to_string(),
             WordField::LastUsed => self.last_used.clone(),
             WordField::Sample => self.sample.clone(),
@@ -594,6 +623,10 @@ pub enum WordField {
     ClassScope,
     /// 字符集分类：压在本类上的逐条覆盖数。
     ClassOverrides,
+    /// 系统词库：分组。
+    Group,
+    /// 系统词条：所在表。
+    Table,
 }
 
 impl WordField {
@@ -618,6 +651,8 @@ impl WordField {
             WordField::ClassScope => "memberCount",
             WordField::ClassFlags => "noFreq",
             WordField::ClassOverrides => "overrideCount",
+            WordField::Group => "group",
+            WordField::Table => "table",
         }
     }
 
@@ -682,6 +717,10 @@ pub struct OpFlags {
     ///
     /// [`DictManagerState::delete_call`]: super::state::DictManagerState::delete_call
     pub multi_select: bool,
+    /// 「信息」：弹出这一行的详情（系统词库的头部信息）。
+    pub info: bool,
+    /// 「加进用户词库」：把这一行预填进本域用户词库的加词对话框（系统词条）。
+    pub add_to_user: bool,
 }
 
 impl OpFlags {
@@ -704,6 +743,8 @@ impl OpFlags {
         reset_entry: false,
         share_text: false,
         multi_select: false,
+        info: false,
+        add_to_user: false,
     };
 }
 
@@ -1429,6 +1470,130 @@ const SPEC_COMMON: CategorySpec = CategorySpec {
     },
 };
 
+/// 系统词库表：启用开关是 `Enabled` 列（勾选即生效），行操作「查看」进词条表、「信息」弹头部。
+/// 没有「来源」列：随包库的分组、放入目录的「我放入的」、主库的「主词库」已经说清来源，
+/// 来源与路径在「信息」里。
+const COLS_SYS_DICTS: &[ColumnSpec] = &[
+    ColumnSpec {
+        header: "启用",
+        weight: 1.0,
+        field: WordField::Enabled,
+    },
+    ColumnSpec {
+        header: "名称",
+        weight: 1.4,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "分组",
+        weight: 1.1,
+        field: WordField::Group,
+    },
+    ColumnSpec {
+        header: "条数",
+        weight: 1.0,
+        field: WordField::Count,
+    },
+    ColumnSpec {
+        header: "优先级",
+        weight: 1.2,
+        field: WordField::Position,
+    },
+];
+
+/// 一级表：一个方案十来本，整表一次取、客户端排序；默认按 core 给的生效先后。
+/// 开关不走通用的 `set_enabled` RPC：折叠的拼音族要对每个成员各写一次、失败回滚，
+/// 见 `DictManagerState::set_sys_cat_enabled`（`do_set_enabled` 按类别分派过去）。
+const SPEC_SYS_DICTS: CategorySpec = CategorySpec {
+    category: WordCategory::SysDicts,
+    title: "系统词库",
+    scoped_by_schema: true,
+    paged: false,
+    searchable: false,
+    client_search: false,
+    columns: COLS_SYS_DICTS,
+    ops: OpFlags {
+        set_enabled: true,
+        view: true,
+        info: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "sysDict.categories",
+        set_enabled: "schema.setDictEnabled",
+        ..RpcNames::EMPTY
+    },
+};
+
+const COLS_SYS_ENTRIES: &[ColumnSpec] = &[
+    ColumnSpec {
+        header: "编码",
+        weight: 1.2,
+        field: WordField::Code,
+    },
+    ColumnSpec {
+        header: "词条",
+        weight: 2.0,
+        field: WordField::Text,
+    },
+    ColumnSpec {
+        header: "权重",
+        weight: 1.0,
+        field: WordField::Weight,
+    },
+];
+
+/// 拼音库展开了子表时多一列「子表」（不可排序，core 只按编码 / 词 / 权重排）。
+const COLS_SYS_ENTRIES_TABLES: &[ColumnSpec] = &[
+    COLS_SYS_ENTRIES[0],
+    COLS_SYS_ENTRIES[1],
+    COLS_SYS_ENTRIES[2],
+    ColumnSpec {
+        header: "子表",
+        weight: 1.2,
+        field: WordField::Table,
+    },
+];
+
+/// 系统词条：只读，服务端分页 / 搜索（编码前缀或词子串）/ 排序（`sysDict.entries` 的
+/// `sort` / `order`）。「加进用户词库」走加词对话框，故 `encode` 与 `add` RPC 同用户词库。
+const SPEC_SYS_ENTRIES: CategorySpec = CategorySpec {
+    category: WordCategory::SysEntries,
+    title: "系统词库",
+    scoped_by_schema: true,
+    paged: true,
+    searchable: true,
+    client_search: false,
+    columns: COLS_SYS_ENTRIES,
+    ops: OpFlags {
+        add_to_user: true,
+        encode: true,
+        ..OpFlags::NONE
+    },
+    rpc: RpcNames {
+        list: "sysDict.entries",
+        add: "dict.add",
+        update: "dict.update",
+        encode: "dict.encode",
+        ..RpcNames::EMPTY
+    },
+};
+
+/// 同 [`SPEC_SYS_ENTRIES`]，多一列子表（正在看的库展开了子表时用）。
+const SPEC_SYS_ENTRIES_TABLES: CategorySpec = CategorySpec {
+    columns: COLS_SYS_ENTRIES_TABLES,
+    ..SPEC_SYS_ENTRIES
+};
+
+/// 系统词条的规格：有没有子表列随库而变。
+pub fn sys_entries_spec(tables: bool) -> &'static CategorySpec {
+    if tables {
+        &SPEC_SYS_ENTRIES_TABLES
+    } else {
+        &SPEC_SYS_ENTRIES
+    }
+}
+
 /// 这一行实际可用的操作。
 ///
 /// ★ 存在的理由：快捷输入是本页第一个「同一类别里，两种行有不同权限」的域。
@@ -1453,6 +1618,11 @@ pub fn row_ops(cat: WordCategory, row: &WordRow) -> OpFlags {
         // 什么都不会发生。只对改过的行放行（`adjusted` 由 core 的 list 直接给出）。
         WordCategory::CommonChars => OpFlags {
             reset_entry: base.reset_entry && row.adjusted,
+            ..base
+        },
+        // 主库与方案设为必选的库：开关禁用。
+        WordCategory::SysDicts => OpFlags {
+            set_enabled: row.togglable,
             ..base
         },
         _ => base,
@@ -1483,6 +1653,11 @@ impl CategorySpec {
             // ⚠️ 要是哪天又往操作列里塞并排按钮，这个数得跟着回去——列不会自动加宽，
             // 只会截断。
             WordCategory::Charsets => 1.3,
+            // 「查看」「信息」两枚，与 COLS_SYS_DICTS 的五个权重（合计 5.7）一组配比：990 宽的
+            // 默认窗里各列表头与两枚按钮都完整。
+            WordCategory::SysDicts => 2.0,
+            // 一枚「加进用户词库」（六个字），与 COLS_SYS_ENTRIES 一组配比。
+            WordCategory::SysEntries => 1.8,
             _ => 1.5,
         }
     }
@@ -1504,6 +1679,8 @@ pub fn spec_for(cat: WordCategory) -> &'static CategorySpec {
         WordCategory::MailSuffix => &SPEC_MAIL_SUFFIX,
         WordCategory::UrlHistory => &SPEC_URL_HISTORY,
         WordCategory::QuickHistory => &SPEC_QUICK_HISTORY,
+        WordCategory::SysDicts => &SPEC_SYS_DICTS,
+        WordCategory::SysEntries => &SPEC_SYS_ENTRIES,
     }
 }
 

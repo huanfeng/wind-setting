@@ -247,7 +247,8 @@ impl Default for UserLibsState {
 impl DictManagerState {
     /// 当前选中的分库名：只在方案域的「用户词库」子标签上有；`None` = 主词库。
     pub(crate) fn selected_lib(&self) -> Option<String> {
-        if self.current_tab() != LogicalTab::UserDict {
+        // 右栏开着系统词库时表格不是用户词库（「加进用户词库」也只落主词库）
+        if self.cats.open.get() || self.current_tab() != LogicalTab::UserDict {
             return None;
         }
         let id = self.current_schema_id()?;
@@ -394,7 +395,7 @@ impl DictManagerState {
     }
 
     /// 换了一张表：归零分页、清状态文字、排序与勾选，整表重建（列集可能不同）。
-    fn reset_table_view(&self) {
+    pub(crate) fn reset_table_view(&self) {
         *self.offset.borrow_mut() = 0;
         self.status.set(String::new());
         self.sort.set(None);

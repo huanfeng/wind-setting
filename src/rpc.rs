@@ -1179,16 +1179,17 @@ fn mock_sys_dict_header(params: &Value) -> Result<Value, String> {
     }))
 }
 
-/// `sysDict.entries` 的 mock：每本 [`MOCK_SYS_ENTRIES`] 条（`ma{i}` / `词{i}`），按编码前缀或
-/// 词文本子串过滤后分页；拼音主库前 100 条标子表 `cn_dicts/8105`、其余 `cn_dicts/base`。
+/// `sysDict.entries` 的 mock：每本 [`MOCK_SYS_ENTRIES`] 条（`ma{i}` / `词{i}` / 权重 `1000-i`），
+/// 按编码前缀或词文本子串过滤（`mode` 缺省两者取并），按 `sort` / `order` 排序后分页；拼音主库
+/// 前 100 条标子表 `cn_dicts/8105`、其余 `cn_dicts/base`。
 fn mock_sys_dict_entries(params: &Value) -> Result<Value, String> {
     mock_sys_dict_header(params)?;
     let id = params.get("dictId").and_then(|v| v.as_str()).unwrap_or("");
     let q = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let text_mode = params.get("mode").and_then(|v| v.as_str()) == Some("text");
+    let mode = params.get("mode").and_then(|v| v.as_str());
     let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-    let all: Vec<Value> = (0..MOCK_SYS_ENTRIES)
+    let mut all: Vec<Value> = (0..MOCK_SYS_ENTRIES)
         .map(|i| {
             let table = if !mock_sys_has_tables(id) {
                 ""
@@ -1200,14 +1201,26 @@ fn mock_sys_dict_entries(params: &Value) -> Result<Value, String> {
             json!({ "code": format!("ma{i}"), "text": format!("词{i}"), "weight": 1000 - i as i64, "table": table })
         })
         .filter(|r| {
+            let by_code = || r["code"].as_str().is_some_and(|c| c.starts_with(q));
+            let by_text = || r["text"].as_str().is_some_and(|t| t.contains(q));
             q.is_empty()
-                || if text_mode {
-                    r["text"].as_str().is_some_and(|t| t.contains(q))
-                } else {
-                    r["code"].as_str().is_some_and(|c| c.starts_with(q))
+                || match mode {
+                    Some("code") => by_code(),
+                    Some("text") => by_text(),
+                    _ => by_code() || by_text(),
                 }
         })
         .collect();
+    if let Some(key) = params.get("sort").and_then(|v| v.as_str()) {
+        match key {
+            "weight" => all.sort_by_key(|r| r["weight"].as_i64()),
+            "code" | "text" => all.sort_by(|a, b| a[key].as_str().cmp(&b[key].as_str())),
+            other => return Err(format!("未知排序列: {other}")),
+        }
+        if params.get("order").and_then(|v| v.as_str()) == Some("desc") {
+            all.reverse();
+        }
+    }
     Ok(json!({
         "total": all.len(),
         "rows": all.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),
@@ -1612,8 +1625,9 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
             (!mock_is_schema_text(text))
                 .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
         }
-        // 系统词库查看：清单里没有的库报错（同 core 的「无系统词库」）。
-        "sysDict.header" | "sysDict.entries" => mock_sys_dict_header(params).err(),
+        // 系统词库查看：清单里没有的库报错（同 core 的「无系统词库」），词条另有未知排序列。
+        "sysDict.header" => mock_sys_dict_header(params).err(),
+        "sysDict.entries" => mock_sys_dict_entries(params).err(),
         // 系统词库开关：同下面的分库开关，`bad` 打头的方案报错。
         "schema.setDictEnabled"
             if params

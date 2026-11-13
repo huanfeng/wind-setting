@@ -15,7 +15,7 @@
 use windui::prelude::*;
 
 use super::reactive::{reactive_effect, toast_sink};
-use super::spec::{ColumnSpec, WordField, kind_label};
+use super::spec::{ColumnSpec, WordCategory, WordField, kind_label};
 #[cfg(test)]
 use super::state::{DOMAIN_PHRASE, DOMAIN_QUICK, GLOBAL_DOMAINS};
 use super::state::{DictManagerState, DomainKind};
@@ -134,17 +134,26 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .fg_role(Role::TextMuted)
         .max_lines(1)
         .visible_when(move || hint_vis.domain_kind() == DomainKind::Mixed);
+    // 系统词条表：「‹ 返回」回系统词库表（标题是「系统词库 / <名>」）。
+    let (m_back, v_back) = (mgr.clone(), mgr.clone());
+    let back = Element::button("‹ 返回")
+        .small()
+        .outline_soft()
+        .on_click(move |_| m_back.leave_sys_dict())
+        .visible_when(move || v_back.current_category() == WordCategory::SysEntries);
     let title_row = Element::row()
         .width_match()
         .height(30)
         .cross(Align::Center)
         .spacing(8)
+        .child(back)
         .child(
             Element::label_signal(mgr.pane_title)
                 .font_size(15.0)
                 .font_weight(600)
                 .fg_role(Role::Text)
                 .max_lines(1)
+                .truncate(Truncate::End)
                 // 标题占剩余宽度、长了自己截断：分库名长时不能把右边的按钮挤出可视区。
                 .weight(1.0),
         )
@@ -154,7 +163,10 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(export_entry);
 
     // ── 工具栏：批量操作（左）+ 搜索（右）──
-    let toolbar = build_toolbar(&mgr);
+    // 系统词库表既没有批量操作也不搜索：整行收起，不留一条空行。
+    let v_tb = mgr.clone();
+    let toolbar =
+        build_toolbar(&mgr).visible_when(move || v_tb.current_category() != WordCategory::SysDicts);
 
     // ── 表格（列集随类别变化，table_epoch 递增时整表重建；数据/排序变化由表格内部响应）──
     // host_signal 为非滚动宿主：表格自带正文滚动，weight 布局在其中能拿到确定高度。
@@ -235,6 +247,10 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         ))
         .child(hint_line("免词频与生僻模式按并集生效，不看优先级。"))
         .visible_when(move || hint_vis.current_category() == super::spec::WordCategory::Charsets);
+    let sys_vis = mgr.clone();
+    let sys_hint = hint_line("勾选即生效；默认按生效先后排列，优先级只读。")
+        .width_match()
+        .visible_when(move || sys_vis.current_category() == WordCategory::SysDicts);
 
     // ── 分页（仅分页类别显示）──
     let pagination = build_pagination(&mgr);
@@ -263,20 +279,14 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(build_lib_notice(&mgr))
         .child(toolbar)
         .child(charset_hint)
+        .child(sys_hint)
         .child(card)
         .child(pagination);
-
-    // 中栏点了「系统词库」时右栏换成系统词库（见 `sys_cats`），表格那一套整体收起。
-    let (cats_open, cats_open2) = (mgr.cats.open, mgr.cats.open);
-    let main_col = main_col.visible_when(move || !cats_open.get());
-    let cats_pane =
-        super::sys_cats::build_sys_cats_pane(&mgr).visible_when(move || cats_open2.get());
 
     // effect/toast 为不可见/浮层节点，叠在 stack 里避免占据 col 间距。
     Element::stack()
         .fill()
         .child(main_col)
-        .child(cats_pane)
         .child(effect)
         .child(search_effect)
         .child(temp_filter_effect)
@@ -424,6 +434,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
     let m_clr_s = mgr.clone();
     let e_clr_s = mgr.clone();
     let v_search = mgr.clone();
+    let m_sub_s = mgr.clone();
     // 搜索框占按钮之外的剩余宽度、封顶 SEARCH_MAX_W 并靠右：窗口窄时它让位而不是把按钮
     // 挤出去。外面套一层 stack 吃掉剩余宽度——row 里「弹簧 + 封顶的 weight 子节点」会把
     // 封顶后多出来的那截丢掉，搜索框就不靠右了。
@@ -435,6 +446,8 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .spacing(4)
         .child(
             Element::text_input(mgr.search, "搜索编码或词条…")
+                // 回车立即搜（系统词条平时停手才搜，见 `sys_cats::build_search_debounce`）
+                .on_submit(move |_| m_sub_s.flush_sys_search())
                 .weight(1.0)
                 .height(small_h),
         )
@@ -451,7 +464,14 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .visible_when(move || {
             v_search.current_spec().searchable || v_search.current_spec().client_search
         });
-    let search = Element::stack().weight(1.0).child(search_row);
+    // 防抖叶子铺在搜索框底下：打字的局部重绘一定画到它，它才约得上到点那一帧。
+    let search = Element::stack()
+        .weight(1.0)
+        .child(super::sys_cats::build_search_debounce(
+            mgr,
+            super::sys_cats::SEARCH_DEBOUNCE,
+        ))
+        .child(search_row);
 
     // 「只看已修改」：全表 8104 条里自己动过的那几个，靠翻页是找不到的。
     // ⚠️ `Element::checkbox` 只负责显示、自己不翻转，必须配 on_toggle。
@@ -619,8 +639,18 @@ fn build_table(mgr: &DictManagerState) -> Element {
     .on_row_activate(move |_ctx, disp| activate_row(&m_dbl, disp))
     // 右击整行：与操作列同源的菜单，外加复制与「转为用户短语」（列宽装不下的那几样）。
     .on_row_context_menu(move |disp| row_menu_items(&m_menu, disp))
-    // 系统词库等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。
-    .cell_lines(2)
+    // 系统短语等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。系统词库的两张表一行
+    // 截断：格都短，窄窗里折行只会把数字与子表名拆成两截。
+    .cell_lines(
+        if matches!(
+            spec.category,
+            WordCategory::SysDicts | WordCategory::SysEntries
+        ) {
+            1
+        } else {
+            2
+        },
+    )
     .fill()
 }
 
@@ -628,6 +658,16 @@ fn build_table(mgr: &DictManagerState) -> Element {
 /// 行按显示下标从 `display_rows` 即时取（与操作列"编辑"按钮同一入口）。
 fn activate_row(mgr: &DictManagerState, disp: usize) {
     let spec = mgr.current_spec();
+    match spec.category {
+        WordCategory::SysDicts => {
+            if let Some(r) = mgr.display_row(disp) {
+                mgr.enter_sys_dict(&r.code);
+            }
+            return;
+        }
+        WordCategory::SysEntries => return mgr.add_sys_entry_to_user(disp),
+        _ => {}
+    }
     if !spec.ops.edit {
         return;
     }
@@ -656,6 +696,30 @@ fn render_cell(
     text: &str,
 ) -> Option<Element> {
     match columns.get(col)?.field {
+        // 启用列：勾选即生效（系统词库表）；行级不可关的禁用并说明原因。
+        WordField::Enabled => {
+            let r = mgr.display_row(row)?;
+            let cat = mgr.current_category();
+            let sig = signal(r.enabled);
+            let cb = Element::checkbox("", sig).small();
+            if !super::spec::row_ops(cat, &r).set_enabled {
+                return Some(cb.enabled(false).tooltip(super::sys_cats::locked_tip(&r)));
+            }
+            let m = mgr.clone();
+            Some(cb.on_toggle(move |_| {
+                let next = !sig.get();
+                sig.set(next);
+                let ok = if cat == WordCategory::SysDicts {
+                    m.set_sys_cat_enabled(&r.code, next)
+                } else {
+                    m.do_set_enabled(&r, next);
+                    true
+                };
+                if !ok {
+                    sig.set(!next);
+                }
+            }))
+        }
         WordField::Code => {
             let badge = Element::label(text)
                 .font_size(12.5)
@@ -785,12 +849,35 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     // 操作组：**整组可能一项都不剩**（词频这类只有批量操作、无行级操作的类别），
     // 故用 `push_group` 装配——组空时连同它前面的分隔线一起省掉，不留一条孤线。
     let mut ops = Vec::new();
-    if spec.ops.view {
+    if spec.ops.view && spec.category == WordCategory::SysDicts {
+        let (m, id) = (mgr.clone(), row.code.clone());
+        ops.push(MenuItem::run(
+            "查看词条",
+            move |_ctx| m.enter_sys_dict(&id),
+            false,
+        ));
+    } else if spec.ops.view {
         let m = mgr.clone();
         let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
         ops.push(MenuItem::run(
             "查看…",
             move |_ctx| m.open_view(&c, &t, w, pos),
+            false,
+        ));
+    }
+    if spec.ops.info {
+        let (m, id) = (mgr.clone(), row.code.clone());
+        ops.push(MenuItem::run(
+            "信息…",
+            move |_ctx| m.open_sys_info(&id),
+            false,
+        ));
+    }
+    if spec.ops.add_to_user {
+        let m = mgr.clone();
+        ops.push(MenuItem::run(
+            "加进用户词库…",
+            move |_ctx| m.add_sys_entry_to_user(disp),
             false,
         ));
     }
@@ -935,11 +1022,10 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
         let (r, on) = (row.clone(), row.enabled);
         // 勾选态直接读行数据：菜单每次右击重建，取到的就是当刻的值。
         // 复选框那边还要维护 `enabled_sig` 是因为它常驻在行里、要跟着点击即时变。
-        ops.push(MenuItem::run(
-            "启用",
-            move |_ctx| m.do_set_enabled(&r, !on),
-            on,
-        ));
+        ops.push(
+            MenuItem::run("启用", move |_ctx| m.do_set_enabled(&r, !on), on)
+                .enabled(rops.set_enabled),
+        );
     }
     // 快捷输入的调序：置顶在菜单里（上移/下移在操作列，那里点着更顺手）。
     // 停用项不参与排序（它不在候选里），故置灰而不是让它点了没反应。
@@ -996,7 +1082,8 @@ fn row_menu_items(mgr: &DictManagerState, disp: usize) -> Vec<MenuItem> {
     //
     // 「复制编码」只在这一列真有内容时给。常用字表的键就是那个字、没有编码维度，
     // `row.code` 恒空——给了也是复制一个空串，属于点了不知道发生没发生的那类项。
-    if !row.code.is_empty() {
+    // 系统词库表的 `code` 存的是库 id，不是编码。
+    if !row.code.is_empty() && spec.category != WordCategory::SysDicts {
         copies.push(MenuItem::run(
             "复制编码",
             move |_ctx| copy_to_clipboard(&m_c, &copy_code),
@@ -1109,7 +1196,8 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
     // 逐行现建 signal：本生成器每次正文重建都会重跑，而 windui 0.12 起表格正文自持
     // `SignalScope`，重建时连同旧子节点一并回收这一批构建期信号，故不再需要本仓那个
     // 按显示下标复用的手工池（它反而会在回收后留下悬垂句柄，一读即 panic）。
-    if spec.ops.set_enabled {
+    // 有「启用」列的类别（系统词库表）开关在列里，不在操作列再放一个。
+    if spec.ops.set_enabled && !spec.columns.iter().any(|c| c.field == WordField::Enabled) {
         let sig = signal(row.enabled);
         let m = mgr.clone();
         let target = row.clone();
@@ -1152,8 +1240,17 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
             );
     }
 
-    // 只读查看（系统短语）。「转为用户短语」在该对话框内，不占操作列宽度。
-    if spec.ops.view {
+    // 系统词库表：「查看」进词条表、「信息」弹头部信息。
+    if spec.ops.view && spec.category == WordCategory::SysDicts {
+        let (m, id) = (mgr.clone(), row.code.clone());
+        r = r.child(
+            Element::button("查看")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.enter_sys_dict(&id)),
+        );
+    } else if spec.ops.view {
+        // 只读查看（系统短语）。「转为用户短语」在该对话框内，不占操作列宽度。
         let m = mgr.clone();
         let (c, t, w, pos) = (row.code.clone(), row.text.clone(), row.weight, row.position);
         r = r.child(
@@ -1161,6 +1258,25 @@ fn build_row_actions(mgr: &DictManagerState, disp: usize) -> Element {
                 .small()
                 .outline_soft()
                 .on_click(move |_| m.open_view(&c, &t, w, pos)),
+        );
+    }
+
+    if spec.ops.info {
+        let (m, id) = (mgr.clone(), row.code.clone());
+        r = r.child(
+            Element::button("信息")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.open_sys_info(&id)),
+        );
+    }
+    if spec.ops.add_to_user {
+        let m = mgr.clone();
+        r = r.child(
+            Element::button("加进用户词库")
+                .small()
+                .outline_soft()
+                .on_click(move |_| m.add_sys_entry_to_user(disp)),
         );
     }
 
@@ -1341,7 +1457,8 @@ mod tests {
             tree.layout_root(Size::new(w, 100), &mut windui::text::NullTextEngine);
             let row1 = tree.get(rid).unwrap().children[0];
             let holder = *tree.get(row1).unwrap().children.last().unwrap();
-            let search = tree.get(holder).unwrap().children[0];
+            // 第一个孩子是铺在底下的搜索防抖叶子，搜索行在其上
+            let search = *tree.get(holder).unwrap().children.last().unwrap();
             tree.abs_bounds(search)
         };
         let wide = search_bounds(900);
@@ -1621,6 +1738,54 @@ mod tests {
             // 「移动到」：mock 里这个方案有分库，主词库的词可以移过去。
             ["编辑…", "移动到", "复制编码", "复制词条", "删除"]
         );
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 系统词库两级的右键菜单与双击：一级「查看词条 / 信息 / 启用」（主库的启用灰掉），二级
+    /// 「加进用户词库」+ 复制；一级双击进二级，二级双击加词。
+    #[test]
+    fn system_dict_menus_and_double_click() {
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let mgr = DictManagerState::new();
+        *mgr.schemas.borrow_mut() = vec![SchemaInfo {
+            id: "py".into(),
+            name: "全拼".into(),
+            kind: "pinyin".into(),
+            scheme: "full".into(),
+            ..Default::default()
+        }];
+        mgr.domain.set(GLOBAL_DOMAINS);
+        mgr.on_nav_changed();
+        mgr.open_sys_cats();
+        let main = row_menu_items(&mgr, 0);
+        assert_eq!(
+            menu_labels(&main),
+            ["查看词条", "信息…", "启用", "复制词条"]
+        );
+        assert!(!main[2].enabled, "主库的启用灰掉");
+        assert!(row_menu_items(&mgr, 1)[2].enabled);
+        activate_row(&mgr, 2);
+        assert_eq!(mgr.cats.viewing.get().as_deref(), Some("cell_idiom"));
+        assert_eq!(
+            menu_labels(&row_menu_items(&mgr, 0)),
+            ["加进用户词库…", "复制编码", "复制词条"]
+        );
+        activate_row(&mgr, 1);
+        assert!(mgr.edit_visible.get());
+        assert_eq!(mgr.edit_text.get(), "词1");
+        // 表格与操作列建得出来（启用格是勾选框、操作列是按钮）
+        let mut tree = Tree::new();
+        let root = build_table(&mgr).build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
+        mgr.leave_sys_dict();
+        let mut tree = Tree::new();
+        let root = build_table(&mgr).build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(800, 600), &mut windui::text::NullTextEngine);
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 

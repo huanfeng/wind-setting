@@ -39,6 +39,7 @@ pub fn build_dict_dialogs(mgr: &DictManagerState) -> Element {
         .child(build_import_dialog(mgr))
         .child(super::charset_new::build_charset_create_dialog(mgr))
         .child(super::stats_dialog::build_stats_dialog(mgr))
+        .child(super::sys_cats::build_sys_info_dialog(mgr))
 }
 
 /// 目标方案选择行（导入导出共用）：`verb` 为「导入到」/「导出自」。

@@ -22,6 +22,7 @@ use crate::weight::{parse_weight, weight_hint};
 
 use super::spec::{
     CategorySpec, LogicalTab, WordCategory, WordField, WordRow, common_label, spec_for,
+    sys_entries_spec,
 };
 
 /// 客户端排序（非分页类别）：数值字段按数值，其余按展示文本字符串序。稳定排序。
@@ -840,8 +841,16 @@ impl DictManagerState {
         tabs[i]
     }
 
-    /// 当前类别（由 domain + sub_tab 解析；「用户词库」上选中了分库时是 `UserLib`）。
+    /// 当前类别（由 domain + sub_tab 解析；「用户词库」上选中了分库时是 `UserLib`；右栏开着
+    /// 系统词库时是它的一级表或词条表，见 `sys_cats`）。
     pub fn current_category(&self) -> WordCategory {
+        if self.cats.open.get() {
+            return if self.cats.viewing.get().is_some() {
+                WordCategory::SysEntries
+            } else {
+                WordCategory::SysDicts
+            };
+        }
         match self.current_tab().category() {
             WordCategory::UserDict if self.selected_lib().is_some() => WordCategory::UserLib,
             c => c,
@@ -850,7 +859,11 @@ impl DictManagerState {
 
     /// 当前类别描述。
     pub fn current_spec(&self) -> &'static CategorySpec {
-        spec_for(self.current_category())
+        match self.current_category() {
+            // 词条表有没有「子表」列随正在看的库而变
+            WordCategory::SysEntries => sys_entries_spec(self.cats.has_tables()),
+            c => spec_for(c),
+        }
     }
 
     /// 当前作用域方案 id（**两个全局域都返回 None**；拼音域返回代表方案 id）。
@@ -1146,6 +1159,11 @@ impl DictManagerState {
     /// 构建当前类别 list RPC 的参数（纯函数，便于单测）。
     pub fn build_list_params(&self) -> Value {
         let spec = self.current_spec();
+        match spec.category {
+            WordCategory::SysDicts => return self.sys_list_params(),
+            WordCategory::SysEntries => return self.sys_entries_params(),
+            _ => {}
+        }
         let mut p = self.scoped_params();
         if spec.searchable {
             let q = self.search.get();
@@ -1243,7 +1261,10 @@ impl DictManagerState {
         }
 
         // 分页/计数状态文字
-        let page_status = if spec.paged {
+        let page_status = if spec.category == WordCategory::SysDicts {
+            let on = rows.iter().filter(|r| r.enabled).count();
+            format!("共 {total} 本，已启用 {on} 本")
+        } else if spec.paged {
             let off = *self.offset.borrow();
             let start = if rows.is_empty() { 0 } else { off + 1 };
             let end = off + rows.len();
@@ -1282,6 +1303,11 @@ impl DictManagerState {
     /// 排序意图变化（点表头后由表格回调触发）：分页类别归零分页走服务端重拉，
     /// 非分页类别客户端重排当前数据。
     pub fn on_sort_changed(&self) {
+        if !self.sys_sort_supported() {
+            // 系统词条的「子表」列 core 不排：点了也不显示箭头
+            self.sort.set(None);
+            return;
+        }
         if self.current_spec().paged {
             *self.offset.borrow_mut() = 0;
             self.reload();
@@ -1292,6 +1318,10 @@ impl DictManagerState {
 
     /// 搜索框内容变化：分页类走服务端（归零分页+重载），非分页类走客户端重过滤。
     pub fn on_search_changed(&self) {
+        if self.current_category() == WordCategory::SysEntries {
+            // 系统词条每次搜索都要整扫词库：停手后再搜，见 `sys_cats::build_search_debounce`
+            return;
+        }
         if self.current_spec().paged {
             self.apply_search();
         } else {
@@ -1305,6 +1335,10 @@ impl DictManagerState {
     fn empty_hint(&self) -> String {
         if self.current_spec().scoped_by_schema && self.current_schema_id().is_none() {
             return "暂无已启用方案".to_string();
+        }
+        if let Some(note) = self.sys_entries_note() {
+            // 整库被加载器跳过（columns: 声明残缺）：说清为什么没有词条
+            return note;
         }
         let q = self.search.get();
         let q = q.trim();
@@ -1346,6 +1380,7 @@ impl DictManagerState {
         let params = self.build_list_params();
         match rpc::call_core(spec.rpc.list, &params) {
             Ok(v) => {
+                self.before_sys_rows(&params, &v);
                 // 分页越界回收：末页删空后 offset 超出有效范围时回退到末页再取一次。
                 if spec.paged {
                     let total = v.get("total").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
@@ -1364,6 +1399,7 @@ impl DictManagerState {
                 // 成功不动 status：保留调用方（写操作）设置的反馈文字。
                 self.apply_rows(&v);
                 self.sync_lib_count();
+                self.after_sys_rows(&v);
             }
             Err(e) => {
                 self.rows.borrow_mut().clear();
@@ -1454,9 +1490,9 @@ impl DictManagerState {
     pub fn on_nav_changed(&self) {
         let cur_domain = self.domain.get();
         let prev_domain = self.last_domain.replace(cur_domain);
+        // 切了域或子标签（含深链、导入后落位）：右栏回到表格，系统词库收起。
+        self.cats.close();
         if cur_domain != prev_domain {
-            // 换了数据域：右栏回到表格（系统词库是上一个方案的）。
-            self.close_sys_cats();
             // 切域：记住旧域当前子标签（此刻 sub_tab 仍是旧域的值），恢复新域上次停留的子标签
             // （无记录则回第一个）。restored 与当前不同时 set 会再触发一次本 effect（回声）——
             // 那次走"同域"分支，仅多做一次等价 reload，无副作用（换取逻辑简单、无抑制态可卡死）。
@@ -1610,6 +1646,10 @@ impl DictManagerState {
     /// 时不强制带 kind 前缀），跨类可能重名，故必须带上 kind。
     pub fn do_set_enabled(&self, row: &WordRow, enabled: bool) {
         let spec = self.current_spec();
+        if spec.category == WordCategory::SysDicts {
+            self.set_sys_cat_enabled(&row.code, enabled);
+            return;
+        }
         let mut p = self.scoped_params();
         if spec.category == WordCategory::QuickFormat {
             p.insert("kind".into(), json!(row.kind));
@@ -2731,7 +2771,11 @@ impl DictManagerState {
             .unwrap_or((0, 0));
 
         self.navigate_to(domain, Some(sub));
+        self.prefill_add_word(text, code);
+    }
 
+    /// 加词对话框预填词与编码（新增模式）并打开；不动导航。编码空着就当场出一次。
+    pub(crate) fn prefill_add_word(&self, text: &str, code: &str) {
         *self.editing_orig.borrow_mut() = None;
         // core 只给词条不给码时当场出一次：自动出码的叶子以构建时版本为基线、不管预填，
         // 少了这一步用户看到的就是「词条填好了、编码空着」。出不了码就留空。
@@ -2947,7 +2991,8 @@ impl DictManagerState {
         let text = escape_input_newlines(&text);
         let weight = parse_weight(&self.edit_weight.get())?;
         match cat {
-            WordCategory::UserDict | WordCategory::UserLib => {
+            // 系统词条的「加进用户词库」：落本域用户词库的主词库（`selected_lib` 此时为空）
+            WordCategory::UserDict | WordCategory::UserLib | WordCategory::SysEntries => {
                 if text.trim().is_empty() {
                     return Err("词条不能为空".into());
                 }
@@ -3299,7 +3344,11 @@ impl DictManagerState {
     /// 右栏标题行「导入/导出」按钮是否显示：方案域（有方案）或短语域；分库不显示（分库的
     /// 导入是中栏「从文件导入为分库」，导出就是它的文件本身）。
     pub fn io_entry_visible(&self) -> bool {
-        if self.current_category() == WordCategory::UserLib {
+        // 分库与系统词库都不走这套导入导出
+        if matches!(
+            self.current_category(),
+            WordCategory::UserLib | WordCategory::SysDicts | WordCategory::SysEntries
+        ) {
             return false;
         }
         match self.domain_kind() {
