@@ -426,7 +426,7 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "dict:import", anchor: "dict:manage", page: "dict", title: "导入词库", section: "词库", keywords: "文本 合并 覆盖", feature: "" },
     Handwritten { id: "dict:phrase-import", anchor: "dict:manage", page: "dict", title: "短语导入", section: "词库", keywords: "phrase 批量", feature: "" },
     // 方案设置里「扩展词库」那一节的开关，词库窗里也有（过渡期两处都在，见 schema_manager::EXT_DICTS_MOVED）。
-    Handwritten { id: "dict:categories", anchor: "dict:manage", page: "dict", title: "分类词库", section: "词库", keywords: "扩展词库 细胞词库 附加 启用 成语 地名 人名 网络热词", feature: "" },
+    Handwritten { id: "dict:system", anchor: "dict:manage", page: "dict", title: "系统词库", section: "词库", keywords: "主词库 扩展词库 细胞词库 分类词库 附加 启用 查看 词条 成语 地名 人名 网络热词", feature: "" },
     // ── 统计 ──
     Handwritten { id: "stats:overview", anchor: "stats:overview", page: "stats", title: "使用统计", section: "统计", keywords: "字数 击键 效率 图表", feature: "" },
     Handwritten { id: "stats:clear", anchor: "stats:settings", page: "stats", title: "清空统计数据", section: "统计设置", keywords: "重置 删除 归零", feature: "" },

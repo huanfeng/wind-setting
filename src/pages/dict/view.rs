@@ -266,7 +266,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(card)
         .child(pagination);
 
-    // 中栏点了「分类词库」时右栏换成分类清单（见 `sys_cats`），表格那一套整体收起。
+    // 中栏点了「系统词库」时右栏换成系统词库（见 `sys_cats`），表格那一套整体收起。
     let (cats_open, cats_open2) = (mgr.cats.open, mgr.cats.open);
     let main_col = main_col.visible_when(move || !cats_open.get());
     let cats_pane =
@@ -1069,7 +1069,7 @@ fn push_group(items: &mut Vec<MenuItem>, group: Vec<MenuItem>) {
 /// 走平台单例而非 `EventCtx::clipboard_set`：菜单项动作是无参 `Fn()`，没有 `ctx`。
 /// 剪贴板不同于原生文件对话框——它不起模态消息泵，在菜单项里同步调用是安全的，
 /// 不必绕 `defer_blocking`（windui 自己的 toast 右键「复制内容」也是这么做的）。
-fn copy_to_clipboard(mgr: &DictManagerState, s: &str) {
+pub(super) fn copy_to_clipboard(mgr: &DictManagerState, s: &str) {
     use windui::core::ClipboardProvider;
     if s.is_empty() {
         return;

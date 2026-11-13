@@ -178,7 +178,7 @@ pub struct DictManagerState {
     pub edit_dialog: Signal<bool>,
     /// 用户分库（中栏节点与名字对话框），见 [`super::user_libs`]。
     pub libs: super::user_libs::UserLibsState,
-    /// 「系统词库 → 分类词库」（中栏节点与右栏清单），见 [`super::sys_cats`]。
+    /// 「系统词库」（中栏节点与右栏一二级），见 [`super::sys_cats`]。
     pub cats: super::sys_cats::SysCatsState,
     /// 「词库统计」对话框（见 `stats_dialog`）。
     pub stats: super::stats_dialog::StatsDialog,
@@ -538,8 +538,8 @@ pub fn domain_slot(domain: usize) -> DomainSlot {
 /// **没有编译期约束**：只改这边而导出仍缺 Shadow，用户会在设置页看见规则、导出的文件里
 /// 却没有，直到还原时才发现丢了数据。
 ///
-/// 中栏的「系统词库 → 分类词库」**刻意不在**这份清单里：它是方案的词库开关、不是用户数据，
-/// 不占子标签、也不进导出（`default_dict_sections` 不必跟着加），右栏另画（见 `sys_cats`）。
+/// 中栏的「系统词库」**刻意不在**这份清单里：它是方案的系统词库（开关与只读查看）、不是
+/// 用户数据，不占子标签、也不进导出（`default_dict_sections` 不必跟着加），右栏另画（见 `sys_cats`）。
 pub fn tabs_for_kind(kind: DomainKind) -> Vec<LogicalTab> {
     use LogicalTab::*;
     match kind {
@@ -1455,10 +1455,8 @@ impl DictManagerState {
         let cur_domain = self.domain.get();
         let prev_domain = self.last_domain.replace(cur_domain);
         if cur_domain != prev_domain {
-            // 换了数据域：右栏回到表格（分类清单是上一个方案的）。
-            if self.cats.open.get() {
-                self.cats.open.set(false);
-            }
+            // 换了数据域：右栏回到表格（系统词库是上一个方案的）。
+            self.close_sys_cats();
             // 切域：记住旧域当前子标签（此刻 sub_tab 仍是旧域的值），恢复新域上次停留的子标签
             // （无记录则回第一个）。restored 与当前不同时 set 会再触发一次本 effect（回声）——
             // 那次走"同域"分支，仅多做一次等价 reload，无副作用（换取逻辑简单、无抑制态可卡死）。

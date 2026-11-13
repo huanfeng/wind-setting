@@ -1167,8 +1167,7 @@ fn overlay_layout_value(idx: usize) -> &'static str {
 
 /// 「扩展词库」一节的过渡提示：同一批开关已进词库窗（主仓设计
 /// `system-dict-patch-and-candidate-adjust.md` §8 第 14 条），这一节过几版再删。
-pub(crate) const EXT_DICTS_MOVED: &str =
-    "也可在「词库管理 → 系统词库 → 分类词库」里开关，那里拨动即生效";
+pub(crate) const EXT_DICTS_MOVED: &str = "也可在「词库管理 → 系统词库」里开关，那里拨动即生效";
 
 /// 扩展词库行（UI 响应式包装：每行一个开关信号 + 打开时的初始值）。
 /// 拨动只翻转 `on`（暂存），点「保存」时对比 `initial` 提交变更。

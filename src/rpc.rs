@@ -1076,32 +1076,46 @@ fn record_mock_dict_override(schema_id: String, dict_id: String, enabled: bool) 
     MOCK_DICT_OVERRIDES.with(|m| m.borrow_mut().insert((schema_id, dict_id), enabled));
 }
 
-/// `sysDict.categories` 的 mock：五笔各版给三个附加库（同 getConfig 那份），拼音族
-/// （`py` / `*sp` / 含 `pinyin`）给几张细胞库加一张放入目录的；其余（混输、测试里的 `wb`）
-/// 没有。开关套用会话内经 setDictEnabled 记下的值。
+/// `sysDict.categories` 的 mock：五笔各版给主词库加三个附加库（同 getConfig 那份），拼音族
+/// （`py` / `*sp` / 含 `pinyin`）给主词库（带子表）加几张细胞库与一张放入目录的；其余（混输、
+/// 测试里的 `wb`）没有。按生效先后排、带 `order`。开关套用会话内经 setDictEnabled 记下的值。
 fn mock_sys_dict_categories(params: &Value) -> Value {
     let id = params.get("schema").and_then(|v| v.as_str()).unwrap_or("");
     let mut v = if id.starts_with("wubi") && !id.contains("mixed") {
         json!([
+            { "id": "wubi86_main", "label": "wubi86_jidian", "description": "",
+              "group": null, "enabled": true, "source": "main", "count": MOCK_SYS_ENTRIES,
+              "order": 1, "togglable": false },
             { "id": "wubi86_extra", "label": "扩展词库", "description": "新词、网络用语、生僻词等非常用词条",
-              "group": null, "enabled": true, "source": "bundled", "count": 1843 },
+              "group": null, "enabled": true, "source": "bundled", "count": 1843,
+              "order": 2, "togglable": true },
             { "id": "wubi86_emoji", "label": "Emoji 表情", "description": "按五笔编码检索 emoji",
-              "group": null, "enabled": true, "source": "bundled", "count": 270 },
+              "group": null, "enabled": true, "source": "bundled", "count": 270,
+              "order": 3, "togglable": true },
             { "id": "wubi86_xzqy", "label": "行政区域", "description": "省市县区等地名词条",
-              "group": "人名地名", "enabled": false, "source": "bundled", "count": 3208 }
+              "group": "人名地名", "enabled": false, "source": "bundled", "count": 3208,
+              "order": 4, "togglable": true }
         ])
     } else if id == "py" || id.ends_with("sp") || id.contains("pinyin") {
         json!([
+            { "id": "pinyin_main", "label": "rime_frost", "description": "",
+              "group": null, "enabled": true, "source": "main", "count": MOCK_SYS_ENTRIES,
+              "order": 1, "togglable": false },
             { "id": "cell_exthot", "label": "网络热词", "description": "近年流行语与网络热词",
-              "group": "网络", "enabled": false, "source": "bundled", "count": 2087 },
+              "group": "网络", "enabled": false, "source": "bundled", "count": 2087,
+              "order": 2, "togglable": true },
             { "id": "cell_idiom", "label": "成语", "description": "成语、俗语与古诗文名句",
-              "group": "文史", "enabled": false, "source": "bundled", "count": 48721 },
+              "group": "文史", "enabled": false, "source": "bundled", "count": 48721,
+              "order": 3, "togglable": true },
             { "id": "cell_place", "label": "地名", "description": "地名与地铁站名",
-              "group": "人名地名", "enabled": true, "source": "bundled", "count": 6401 },
+              "group": "人名地名", "enabled": true, "source": "bundled", "count": 6401,
+              "order": 4, "togglable": true },
             { "id": "cell_computer", "label": "计算机", "description": "计算机与互联网术语",
-              "group": "专业术语", "enabled": false, "source": "bundled", "count": 31 },
+              "group": "专业术语", "enabled": false, "source": "bundled", "count": 31,
+              "order": 5, "togglable": true },
             { "id": "dir:pinyin/ext/mine", "label": "我的行业词", "description": "自动识别：pinyin/ext/mine.dict.yaml",
-              "group": null, "enabled": false, "source": "dir", "count": null }
+              "group": null, "enabled": false, "source": "dir", "count": null,
+              "order": 6, "togglable": true }
         ])
     } else {
         json!([])
@@ -1119,6 +1133,85 @@ fn mock_sys_dict_categories(params: &Value) -> Value {
         });
     }
     v
+}
+
+/// mock 系统词库的条数（每本都一样，够翻三页）。
+const MOCK_SYS_ENTRIES: u64 = 250;
+
+/// mock 词库是不是拼音主库（带两张子表）。
+fn mock_sys_has_tables(dict_id: &str) -> bool {
+    dict_id == "pinyin_main"
+}
+
+/// `sysDict.header` 的 mock：清单里有的库才给，拼音主库带子表。
+fn mock_sys_dict_header(params: &Value) -> Result<Value, String> {
+    let schema = params.get("schema").and_then(|v| v.as_str()).unwrap_or("");
+    let id = params.get("dictId").and_then(|v| v.as_str()).unwrap_or("");
+    let cats = mock_sys_dict_categories(&json!({ "schema": schema }));
+    let Some(c) = cats
+        .as_array()
+        .and_then(|a| a.iter().find(|c| c["id"] == id))
+    else {
+        return Err(format!("方案 {schema} 无系统词库 {id}"));
+    };
+    let tables = if mock_sys_has_tables(id) {
+        json!([
+            { "name": "cn_dicts/8105", "path": "/mock/pinyin/cn_dicts/8105.dict.yaml", "count": 100 },
+            { "name": "cn_dicts/base", "path": "/mock/pinyin/cn_dicts/base.dict.yaml", "count": 150 }
+        ])
+    } else {
+        json!([])
+    };
+    Ok(json!({
+        "id": id,
+        "label": c["label"],
+        "source": c["source"],
+        "name": c["label"],
+        "version": "2026-11-11",
+        "sort": "by_weight",
+        "columns": ["text", "code", "weight"],
+        "importTables": tables.as_array().map(|a| a.iter().map(|t| t["name"].clone()).collect::<Vec<_>>()),
+        "notes": "示例词库\n来源: mock",
+        "path": format!("/mock/schemas/{id}.dict.yaml"),
+        "mtimeMs": 1_762_000_000_000u64,
+        "count": c["count"],
+        "tables": tables,
+    }))
+}
+
+/// `sysDict.entries` 的 mock：每本 [`MOCK_SYS_ENTRIES`] 条（`ma{i}` / `词{i}`），按编码前缀或
+/// 词文本子串过滤后分页；拼音主库前 100 条标子表 `cn_dicts/8105`、其余 `cn_dicts/base`。
+fn mock_sys_dict_entries(params: &Value) -> Result<Value, String> {
+    mock_sys_dict_header(params)?;
+    let id = params.get("dictId").and_then(|v| v.as_str()).unwrap_or("");
+    let q = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    let text_mode = params.get("mode").and_then(|v| v.as_str()) == Some("text");
+    let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+    let all: Vec<Value> = (0..MOCK_SYS_ENTRIES)
+        .map(|i| {
+            let table = if !mock_sys_has_tables(id) {
+                ""
+            } else if i < 100 {
+                "cn_dicts/8105"
+            } else {
+                "cn_dicts/base"
+            };
+            json!({ "code": format!("ma{i}"), "text": format!("词{i}"), "weight": 1000 - i as i64, "table": table })
+        })
+        .filter(|r| {
+            q.is_empty()
+                || if text_mode {
+                    r["text"].as_str().is_some_and(|t| t.contains(q))
+                } else {
+                    r["code"].as_str().is_some_and(|c| c.starts_with(q))
+                }
+        })
+        .collect();
+    Ok(json!({
+        "total": all.len(),
+        "rows": all.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),
+    }))
 }
 
 /// 把会话内记忆的开关套用到 getConfig 返回的 dictionaries[*].enabled 上。
@@ -1519,7 +1612,9 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
             (!mock_is_schema_text(text))
                 .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
         }
-        // 分类词库开关：同下面的分库开关，`bad` 打头的方案报错。
+        // 系统词库查看：清单里没有的库报错（同 core 的「无系统词库」）。
+        "sysDict.header" | "sysDict.entries" => mock_sys_dict_header(params).err(),
+        // 系统词库开关：同下面的分库开关，`bad` 打头的方案报错。
         "schema.setDictEnabled"
             if params
                 .get("id")
@@ -2550,6 +2645,8 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             json!({ "ok": true, "live": true })
         }
         "sysDict.categories" => mock_sys_dict_categories(params),
+        "sysDict.header" => mock_sys_dict_header(params).unwrap_or(Value::Null),
+        "sysDict.entries" => mock_sys_dict_entries(params).unwrap_or(Value::Null),
         "schema.saveConfig" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "system.storageStatus" => json!({ "readonly": false, "issues": [] }),

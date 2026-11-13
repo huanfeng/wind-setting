@@ -1985,7 +1985,7 @@ impl AppState {
             "schema.configChanged" => {
                 self.theme_gallery.invalidate();
                 let id = ev.data.get("id").and_then(|v| v.as_str());
-                // 词库窗的分类词库清单：改的是当前域的成员（或整批变化）就重取。
+                // 词库窗的系统词库清单：改的是当前域的成员（或整批变化）就重取。
                 let method = ev.data.get("method").and_then(|v| v.as_str());
                 self.dict_mgr.on_schema_config_changed(id, method);
                 let changed = self.schema_mgr.on_schema_config_changed(id);
@@ -5776,7 +5776,7 @@ mod tests {
         assert!(res.toast.is_some(), "值真的变了才是外部改动，应提示");
     }
 
-    /// `schema.configChanged` 也转给词库窗：改的是它当前域的成员就重取分类词库清单。
+    /// `schema.configChanged` 也转给词库窗：改的是它当前域的成员就重取系统词库清单。
     #[test]
     fn schema_config_changed_refreshes_dict_categories() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
