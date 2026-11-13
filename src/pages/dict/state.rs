@@ -395,7 +395,10 @@ pub struct DictManagerState {
     pub shadow_word: Signal<String>,
     /// 0 = 固定位置(pin)，1 = 隐藏(hide)。
     pub shadow_type: Signal<usize>,
+    /// 目标位置，**从 1 起**（界面口径）；提交时减 1 换成核心的 0 基存储值。
     pub shadow_pos: Signal<String>,
+    /// 已提示过「该词已被 `*` 屏蔽」的词；与当前词相同时再次提交即放行（提示不强拦）。
+    pub shadow_mask_warned: Signal<String>,
     /// 候选调整编辑模式的原始键 (code, word)；None = 新增模式。
     shadow_orig: Rc<RefCell<Option<(String, String)>>>,
     /// 正在编辑的候选调整规则的稳定 id（短语规则才有；新增模式为空）。
@@ -708,7 +711,8 @@ impl DictManagerState {
             shadow_code: signal(String::new()),
             shadow_word: signal(String::new()),
             shadow_type: signal(0),
-            shadow_pos: signal("0".into()),
+            shadow_pos: signal("1".into()),
+            shadow_mask_warned: signal(String::new()),
         }
     }
 
@@ -3170,13 +3174,15 @@ impl DictManagerState {
         self.shadow_code.set(String::new());
         self.shadow_word.set(String::new());
         self.shadow_type.set(0);
-        self.shadow_pos.set("0".into());
+        self.shadow_pos.set("1".into());
+        self.shadow_mask_warned.set(String::new());
         *self.shadow_orig.borrow_mut() = None;
         self.shadow_cand_id.borrow_mut().clear(); // 手动新增没有候选实体，无稳定 id
         self.shadow_add_visible.set(true);
     }
 
     /// 打开候选调整编辑对话框（预填该行现值，记录原始键）。
+    /// `position` 是核心的 0 基存储值，对话框里回填为从 1 起的 `position + 1`。
     /// kind 为 "delete" 映射到隐藏(1)，其余（"pin"）映射到固定位置(0)。
     /// 提交走 `submit_shadow` → `shadow_save_calls`：键不变 addRule upsert 覆盖，
     /// 改了 code/word 则加新 + 删旧原子替换。
@@ -3195,7 +3201,8 @@ impl DictManagerState {
         self.shadow_code.set(code.into());
         self.shadow_word.set(word.into());
         self.shadow_type.set(if kind == "delete" { 1 } else { 0 });
-        self.shadow_pos.set(position.to_string());
+        self.shadow_pos.set((position + 1).to_string());
+        self.shadow_mask_warned.set(String::new());
         *self.shadow_orig.borrow_mut() = Some((code.into(), word.into()));
         *self.shadow_cand_id.borrow_mut() = cand_id.to_string();
         self.shadow_add_visible.set(true);
@@ -4400,14 +4407,17 @@ impl DictManagerState {
             p.insert("candId".into(), json!(cand_id));
         }
         if self.shadow_type.get() == 0 {
-            let pos: i64 = self
+            let shown: i64 = self
                 .shadow_pos
                 .get()
                 .trim()
                 .parse()
-                .map_err(|_| "位置需为整数")?;
+                .ok()
+                .filter(|n| *n >= 1)
+                .ok_or("位置需为不小于 1 的整数（第几位，从 1 起）")?;
             p.insert("type".into(), json!("pin"));
-            p.insert("position".into(), json!(pos));
+            // 界面从 1 起，核心存 0 基。
+            p.insert("position".into(), json!(shown - 1));
         } else {
             p.insert("type".into(), json!("hide"));
         }
@@ -4436,10 +4446,36 @@ impl DictManagerState {
         Ok((calls, msg))
     }
 
+    /// 固定位置规则的词是否已被 `*` 屏蔽（`list` 为 `shadow.list` 的全量数组）。
+    /// 屏蔽行在另一个组，不被 pin 清除，固定位置对它不生效。
+    pub fn shadow_pin_masked(&self, list: &Value) -> bool {
+        let word = self.shadow_word.get();
+        self.shadow_type.get() == 0
+            && list.as_array().is_some_and(|a| {
+                a.iter().any(|r| {
+                    r.get("code").and_then(Value::as_str) == Some("*")
+                        && r.get("type").and_then(Value::as_str) == Some("delete")
+                        && r.get("word").and_then(Value::as_str) == Some(word.as_str())
+                })
+            })
+    }
+
     /// 提交候选调整添加/编辑。
+    ///
+    /// 词已被 `*` 屏蔽时，第一次提交只亮提示、不写入；同一个词再点一次「确定」即照常提交。
     pub fn submit_shadow(&self) {
         match self.shadow_save_calls() {
             Ok((calls, msg)) => {
+                let word = self.shadow_word.get();
+                if self.shadow_mask_warned.get() != word
+                    && self.shadow_type.get() == 0
+                    && let Ok(list) =
+                        rpc::call_core("shadow.list", &Value::Object(self.scoped_params()))
+                    && self.shadow_pin_masked(&list)
+                {
+                    self.shadow_mask_warned.set(word);
+                    return;
+                }
                 self.shadow_add_visible.set(false);
                 self.run_calls(calls, msg);
             }
@@ -7612,7 +7648,7 @@ mod tests {
         st.shadow_code.set("wm".into());
         st.shadow_word.set("我们".into());
         st.shadow_type.set(0); // 固定位置
-        st.shadow_pos.set("2".into());
+        st.shadow_pos.set("3".into()); // 界面从 1 起：第 3 位 → 存 2
         let (m, p) = st.shadow_add_call().unwrap();
         assert_eq!(m, "shadow.addRule");
         assert_eq!(p["schemaId"], json!("wb"));
@@ -7620,6 +7656,67 @@ mod tests {
         assert_eq!(p["word"], json!("我们"));
         assert_eq!(p["type"], json!("pin"));
         assert_eq!(p["position"], json!(2));
+    }
+
+    /// 界面「第 1 位」存 0；0 / 负数 / 空 / 非数字一律拒绝，不发 RPC。
+    #[test]
+    fn shadow_add_call_position_is_one_based() {
+        let st = DictManagerState::new();
+        with_schemas(&st, vec![schema("wb", "五笔", "codetable")]);
+        st.domain.set(GLOBAL_DOMAINS);
+        st.sub_tab.set(3);
+        st.shadow_code.set("wm".into());
+        st.shadow_word.set("我们".into());
+        st.shadow_type.set(0);
+        st.shadow_pos.set(" 1 ".into());
+        assert_eq!(st.shadow_add_call().unwrap().1["position"], json!(0));
+        for bad in ["0", "-1", "", "  ", "abc", "1.5"] {
+            st.shadow_pos.set(bad.into());
+            assert!(st.shadow_add_call().is_err(), "应拒绝 {bad:?}");
+        }
+    }
+
+    /// 新增对话框默认「第 1 位」。
+    /// 位置列显示 +1 后，排序仍按存储数值（2 < 10，而不是字符串序的 "10" < "3"）。
+    #[test]
+    fn shadow_position_sorts_numerically() {
+        let mk = |pos: i64| WordRow {
+            kind: "pin".into(),
+            position: pos,
+            ..Default::default()
+        };
+        let mut rows = vec![mk(9), mk(1), mk(2)];
+        sort_rows(&mut rows, WordField::Position, SortOrder::Asc);
+        let got: Vec<i64> = rows.iter().map(|r| r.position).collect();
+        assert_eq!(got, vec![1, 2, 9]);
+    }
+
+    #[test]
+    fn open_shadow_add_defaults_to_first_place() {
+        let st = DictManagerState::new();
+        st.open_shadow_add();
+        assert_eq!(st.shadow_pos.get(), "1");
+    }
+
+    /// 屏蔽提示：只认编码为 `*` 的 delete 行且词相同；隐藏类型不提示。
+    #[test]
+    fn shadow_pin_masked_matches_star_delete_of_same_word() {
+        let st = DictManagerState::new();
+        let list = json!([
+            { "code": "*", "word": "屏", "type": "delete" },
+            { "code": "cd", "word": "删", "type": "delete" },
+            { "code": "*", "word": "钉", "type": "pin", "position": 0 },
+        ]);
+        st.shadow_type.set(0);
+        st.shadow_word.set("屏".into());
+        assert!(st.shadow_pin_masked(&list));
+        for w in ["删", "钉", "别的"] {
+            st.shadow_word.set(w.into());
+            assert!(!st.shadow_pin_masked(&list), "{w} 不应提示");
+        }
+        st.shadow_word.set("屏".into());
+        st.shadow_type.set(1);
+        assert!(!st.shadow_pin_masked(&list), "隐藏类型不提示");
     }
 
     #[test]
@@ -7657,7 +7754,7 @@ mod tests {
         st.shadow_code.set("wm".into());
         st.shadow_word.set("我们".into());
         st.shadow_type.set(0);
-        st.shadow_pos.set("2".into());
+        st.shadow_pos.set("3".into());
         let (calls, msg) = st.shadow_save_calls().unwrap();
         assert_eq!(msg, "已添加规则");
         assert_eq!(calls.len(), 1);
@@ -7672,12 +7769,12 @@ mod tests {
         st.domain.set(GLOBAL_DOMAINS);
         st.sub_tab.set(3);
         st.open_shadow_edit("wm", "我们", "pin", 2, "");
-        st.shadow_pos.set("5".into()); // 仅改位置，键不变
+        st.shadow_pos.set("5".into()); // 仅改位置，键不变（第 5 位 → 存 4）
         let (calls, msg) = st.shadow_save_calls().unwrap();
         assert_eq!(msg, "已更新规则");
         assert_eq!(calls.len(), 1, "键不变时 addRule upsert 覆盖即可");
         assert_eq!(calls[0].0, "shadow.addRule");
-        assert_eq!(calls[0].1["position"], json!(5));
+        assert_eq!(calls[0].1["position"], json!(4));
     }
 
     #[test]
@@ -7715,7 +7812,7 @@ mod tests {
 
         // 编辑一条短语规则：只改位置，文本不动。
         st.open_shadow_edit("date", "2026/07/30", "pin", 0, cid);
-        st.shadow_pos.set("2".into());
+        st.shadow_pos.set("3".into()); // 第 3 位 → 存 2
         let (calls, _) = st.shadow_save_calls().unwrap();
 
         assert_eq!(calls[0].0, "shadow.addRule");
@@ -7771,7 +7868,7 @@ mod tests {
         assert_eq!(st.shadow_code.get(), "ab");
         assert_eq!(st.shadow_word.get(), "阿");
         assert_eq!(st.shadow_type.get(), 0, "pin → 固定位置(0)");
-        assert_eq!(st.shadow_pos.get(), "2");
+        assert_eq!(st.shadow_pos.get(), "3", "存储 2 → 界面第 3 位");
         assert_eq!(st.shadow_title.get(), "编辑候选调整");
 
         // delete 类型 → 隐藏(1)

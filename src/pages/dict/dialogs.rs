@@ -770,6 +770,7 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
     let submit_code = mgr.clone();
     let submit_text = mgr.clone();
     let submit_pos = mgr.clone();
+    let mask_warn = mgr.clone();
 
     let field = |label: &str, input: Element| {
         Element::row()
@@ -808,11 +809,33 @@ fn build_shadow_dialog(mgr: &DictManagerState) -> Element {
         ))
         .child(field(
             "目标位置",
-            Element::text_input(mgr.shadow_pos, "")
-                .width(100)
-                .enabled_when(move || pos_enabled.shadow_type.get() == 0)
-                .on_submit(move |_| submit_pos.submit_shadow()),
-        ));
+            Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(
+                    Element::text_input(mgr.shadow_pos, "1")
+                        .width(100)
+                        .enabled_when(move || pos_enabled.shadow_type.get() == 0)
+                        .on_submit(move |_| submit_pos.submit_shadow()),
+                )
+                .child(
+                    Element::label("第几位（从 1 起）")
+                        .font_size(11.0)
+                        .fg_role(Role::TextMuted),
+                ),
+        ))
+        .child(
+            Element::label("该词已被屏蔽，固定位置不会生效（再点一次「确定」仍可提交）")
+                .font_size(11.5)
+                .fg_role(Role::Warning)
+                .width_match()
+                .padding_xy(72, 0)
+                .max_lines(2)
+                .visible_when(move || {
+                    let w = mask_warn.shadow_mask_warned.get();
+                    !w.is_empty() && w == mask_warn.shadow_word.get()
+                }),
+        );
 
     let footer = dialog_footer()
         .child(Element::leaf().weight(1.0))

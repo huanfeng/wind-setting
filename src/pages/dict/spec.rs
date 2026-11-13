@@ -458,6 +458,10 @@ impl WordRow {
             WordField::Weight => self.weight.to_string(),
             WordField::Count if self.count < 0 => "—".to_string(),
             WordField::Count => self.count.to_string(),
+            // 候选调整的位置从 1 起显示（存储仍 0 基）；隐藏规则没有位置。
+            // `kind` 的 pin/delete 只有候选调整用（快捷输入的 kind 是 date 等类别）。
+            WordField::Position if self.kind == "pin" => (self.position + 1).to_string(),
+            WordField::Position if self.kind == "delete" => "—".to_string(),
             WordField::Position => self.position.to_string(),
             WordField::Enabled => if self.enabled { "是" } else { "否" }.to_string(),
             WordField::Group => self.group.clone(),
@@ -917,12 +921,12 @@ const COLS_SHADOW: &[ColumnSpec] = &[
     },
     ColumnSpec {
         header: "类型",
-        weight: 1.8,
+        weight: 1.5,
         field: WordField::Kind,
     },
     ColumnSpec {
         header: "位置",
-        weight: 0.7,
+        weight: 1.2,
         field: WordField::Position,
     },
 ];
@@ -1868,6 +1872,24 @@ mod tests {
         assert_eq!(r2.cell_text(WordField::Kind), "删除");
         let star_pin = json!({ "code": "*", "word": "屏", "type": "pin", "position": 0 });
         assert!(!WordRow::from_json(WordCategory::Shadow, &star_pin).is_all_codes());
+    }
+
+    /// 位置列从 1 起显示（存储 0 基）；隐藏规则无位置；排序仍按存储数值。
+    #[test]
+    fn shadow_position_cell_is_one_based() {
+        let row = |t: &str, pos: i64| {
+            WordRow::from_json(
+                WordCategory::Shadow,
+                &json!({ "code": "a", "word": "w", "type": t, "position": pos }),
+            )
+        };
+        assert_eq!(row("pin", 0).cell_text(WordField::Position), "1");
+        assert_eq!(row("pin", 2).cell_text(WordField::Position), "3");
+        assert_eq!(row("pin", 2).position, 2, "存储值不变");
+        assert_eq!(row("delete", 0).cell_text(WordField::Position), "—");
+        // 非候选调整类别（短语次序）不受影响。
+        let ph = WordRow::from_json(WordCategory::PhraseUser, &json!({ "position": 2 }));
+        assert_eq!(ph.cell_text(WordField::Position), "2");
     }
 
     #[test]
