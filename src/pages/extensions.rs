@@ -33,7 +33,7 @@ use crate::widgets::{section, setting_row, setting_row_desc_signal};
 /// 搜索锚点（`search::index::HANDWRITTEN` 的 `advanced:extensions` 条目指向这里）。
 pub const ANCHOR: &str = "advanced:extensions";
 /// 分区名（二级导航 + 卡片标题）。
-pub const SECTION: &str = "扩展程序";
+pub const SECTION: &str = "扩展程序（实验性）";
 /// 定制版 `feature:` id。
 pub const FEATURE: &str = "extensions";
 /// 扩展程序 v1 只在 Windows 上可用（macOS 的进程绑定、Linux 的打包都还没做），别处不显示这张卡。
