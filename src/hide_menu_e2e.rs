@@ -163,7 +163,7 @@ fn ctrl_right_click_on_a_card_offers_only_section_actions() {
                 .any(|l| l == "隐藏这一项" || l == "取消隐藏这一项")
     })
     .expect("卡片空白处应弹出含整节隐藏的菜单");
-    assert_eq!(labels, vec!["隐藏这一节", "复制选择器"]);
+    assert_eq!(labels, vec!["复制选择器", "隐藏这一节"]);
 }
 
 /// 功能关闭时这一手势不存在：扫遍内容区也拿不到本功能的菜单。
@@ -289,7 +289,7 @@ fn section_hide_is_still_reachable_from_the_header() {
                 .any(|l| l == "隐藏这一项" || l == "取消隐藏这一项")
     })
     .expect("标题栏上应能藏整节");
-    assert_eq!(labels, vec!["隐藏这一节", "复制选择器"]);
+    assert_eq!(labels, vec!["复制选择器", "隐藏这一节"]);
 }
 
 /// 节级菜单只挂在**标题栏**，不挂整张卡片——这是用户报的「操作区边缘容易被划进整节」

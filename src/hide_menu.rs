@@ -105,18 +105,19 @@ fn build_items(store: &Rc<UserHideStore>, target: &Target) -> Vec<MenuItem> {
                 hide,
             ]
         }
+        // 三种目标统一「复制选择器在前、隐藏类在后」。
         Target::Section { group, section } => vec![
-            section_hide_item(store.clone(), group, section),
-            MenuItem::separator(),
             copy_item(
                 &format!("section:{group}/{section}"),
                 &format!("section:{group}/{section}"),
             ),
+            MenuItem::separator(),
+            section_hide_item(store.clone(), group, section),
         ],
         Target::Feature(id) => vec![
-            feature_hide_item(store.clone(), id),
-            MenuItem::separator(),
             copy_item(&format!("feature:{id}"), &format!("feature:{id}")),
+            MenuItem::separator(),
+            feature_hide_item(store.clone(), id),
         ],
     }
 }
@@ -268,17 +269,17 @@ mod tests {
                 section: "主题".into(),
             },
         );
-        assert_eq!(labels(&items), ["隐藏这一节", "复制选择器"]);
+        assert_eq!(labels(&items), ["复制选择器", "隐藏这一节"]);
     }
 
     /// 手写卡：没藏过给「隐藏」，藏过给「取消隐藏」。
     #[test]
     fn feature_item_toggles() {
         let items = build_items(&store(&[]), &Target::Feature("backup"));
-        assert_eq!(labels(&items), ["隐藏这一块", "复制选择器"]);
+        assert_eq!(labels(&items), ["复制选择器", "隐藏这一块"]);
 
         let items = build_items(&store(&["feature:backup"]), &Target::Feature("backup"));
-        assert_eq!(labels(&items), ["取消隐藏这一块", "复制选择器"]);
+        assert_eq!(labels(&items), ["复制选择器", "取消隐藏这一块"]);
     }
 
     /// 功能开关由配置决定；关闭时 `menu_for` 在入口处返回空表（windui 不弹空菜单）。
