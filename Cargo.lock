@@ -3108,6 +3108,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wind-hook"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "wind-ipc"
 version = "0.1.0"
 dependencies = [
@@ -3184,6 +3193,7 @@ dependencies = [
  "ureq",
  "url",
  "wind-config",
+ "wind-hook",
  "wind-ipc",
  "wind-punct",
  "wind-rpc",

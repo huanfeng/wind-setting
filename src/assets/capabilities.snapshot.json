@@ -2684,6 +2684,16 @@
       "type": "float"
     },
     {
+      "default": false,
+      "key": "extensions.enabled",
+      "type": "bool"
+    },
+    {
+      "default": [],
+      "key": "extensions.list",
+      "type": "structlist"
+    },
+    {
       "default": "info",
       "key": "debug.log_level",
       "type": "enum",

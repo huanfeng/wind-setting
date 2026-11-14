@@ -14,6 +14,7 @@ pub mod backup;
 pub mod compat;
 pub mod config_import;
 pub mod dict;
+pub mod extensions;
 pub mod integration;
 pub mod memory;
 pub mod phrase_import;
@@ -145,6 +146,7 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     //
     // 前三张是「这台机器上装好了没 / 搬进搬出」，属于状态与一次性动作；性能与诊断（常驻开关 +
     // 内存占用摘要）是取舍与自查；游戏兼容是少数人才开的兼容开关；日志设置只在排查时才动，压轴。
+    // 扩展程序接在应用兼容性之后：都是「输入法之外的东西」，且扩展要用户自己装，不常动。
     // BTreeMap 而非 HashMap：下面的"剩余分区"兜底会遍历它，HashMap 的顺序每次运行
     // 都不同，页面会莫名其妙地换序。
     let mut manifest_secs: std::collections::BTreeMap<String, Element> = state
@@ -299,6 +301,17 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             memory::SECTION.to_string(),
             Element::col().width_match().child(card).child(loader),
         );
+    }
+    if extensions::SUPPORTED && shown(extensions::FEATURE) {
+        secs.push(nav.wrap(
+            extensions::SECTION,
+            0,
+            crate::search::anchor::wrap(
+                extensions::build_section(app, state),
+                extensions::ANCHOR,
+                state.jump,
+            ),
+        ));
     }
     if let Some(card) = custom_hidden_section(app) {
         secs.push(nav.wrap("定制版", 0, card));

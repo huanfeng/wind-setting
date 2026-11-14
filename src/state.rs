@@ -1755,6 +1755,16 @@ impl AppState {
         self.save_ui_state(|ui| ui.wizard_dismissed = on);
     }
 
+    /// 持久化扩展程序隐私提示「已同意」。
+    pub fn save_extensions_consented(&mut self) {
+        // 单测不落盘，理由同 `save_wizard_dismissed`。
+        if cfg!(test) {
+            self.setting_config.ui.extensions_consented = true;
+            return;
+        }
+        self.save_ui_state(|ui| ui.extensions_consented = true);
+    }
+
     /// 持久化「打开设置时自动检查更新」开关。
     pub fn save_update_auto_check(&mut self, enabled: bool) {
         if self.setting_config.update.auto_check == enabled {

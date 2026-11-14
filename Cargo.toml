@@ -10,6 +10,8 @@ wind-ipc = { path = "../WindInput/wind_input/crates/wind-ipc" }
 # 定制版清单（`data_custom/custom.toml`）与 `[settings] hide` 选择器：与 core 同一份解析，
 # 页面树建成之前就要知道哪些设置项不建（见 `custom_hide.rs`），等不到 `system.info`。
 wind-config = { path = "../WindInput/wind_input/crates/wind-config" }
+# 扩展程序的选项声明与取值校验：与扩展宿主同一份（高级 → 扩展程序）。
+wind-hook = { path = "../WindInput/wind_input/crates/wind-hook" }
 serde = { version = "1", features = ["derive"] }
 # 用户配置/本机状态目录：与 core（wind-config）同一 crate 同一大版本，
 # 保证两边算出的目录在各平台上落到同一处。

@@ -329,6 +329,10 @@ mod tests {
         "schema.available",
         // ④ 非独立清单项：由各功能键的「全局」勾选经收集器汇总写回。
         "keys.global_hotkeys",
+        // ④' 扩展程序：总开关与扩展列表由手写的「高级 → 扩展程序」卡承载（pages::extensions）——
+        //     列表里每个扩展的选项是扩展清单声明的，运行时才知道，清单驱动的控件表达不了。
+        "extensions.enabled",
+        "extensions.list",
         // ⑤ 临时英文不再设独立启用开关（Shift+字母 始终可进入、触发键可留空）。
         "input.temp_english.enabled",
         // ⑥ 外观不支持 / 平台限制项，均由 core 维持默认值。

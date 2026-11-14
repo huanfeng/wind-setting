@@ -2237,6 +2237,28 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             ]
         }),
         "comment.library" => mock_comment_library(params),
+        // 扩展程序：一个正常的（带选项声明与运行状态）+ 一个清单坏了的，两种行都看得到。
+        // 选项声明的形状与 core `wind_hook::options::OptionSpec` 的序列化一致。
+        "extensions.inventory" => json!({
+            "dir": "C:\\Users\\me\\AppData\\Roaming\\WindInput\\extensions",
+            "extensions": [
+                { "id": "keysound", "name": "按键音", "want": ["key.detail"],
+                  "options": [
+                      { "key": "theme", "label": "音色", "type": "choice", "default": "keyboard",
+                        "choices": [
+                            { "value": "keyboard", "label": "键盘" },
+                            { "value": "typewriter", "label": "打字机" },
+                            { "value": "piano", "label": "钢琴" },
+                            { "value": "marimba", "label": "木琴" },
+                            { "value": "custom", "label": "自定义" }
+                        ] },
+                      { "key": "volume", "label": "音量", "type": "number", "default": 0.6,
+                        "min": 0.0, "max": 1.0, "step": 0.05 }
+                  ],
+                  "status": { "id": "keysound", "state": "running", "restarts": 0, "dropped": 0 } },
+                { "id": "broken", "error": "读 extension.toml 失败: 系统找不到指定的文件。" }
+            ]
+        }),
         // 与 core 的 EMOJI_MODULES 同序同出厂值，外加一个用户放置的文件。
         "emoji.modules" => json!({
             "userDir": "emoji",

@@ -308,6 +308,10 @@
    "weight": 0.5
   }
  },
+ "extensions": {
+  "enabled": false,
+  "list": []
+ },
  "schema": {
   "active": "wubi86",
   "available": [
