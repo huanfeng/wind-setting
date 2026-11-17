@@ -1489,7 +1489,7 @@ const SPEC_COMMON: CategorySpec = CategorySpec {
 };
 
 /// 系统词库表：启用开关是 `Enabled` 列（勾选即生效），行操作「查看」进词条表、「信息」弹头部。
-/// 没有「来源」列：随包库的分组、放入目录的「我放入的」、主库的「主词库」已经说清来源，
+/// 没有「来源」列：随包库的分组、放入目录的「扩展词库」、主库的「主词库」已经说清来源，
 /// 来源与路径在「信息」里。
 const COLS_SYS_DICTS: &[ColumnSpec] = &[
     ColumnSpec {

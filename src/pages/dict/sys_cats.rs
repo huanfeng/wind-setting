@@ -2,7 +2,7 @@
 //! 右栏两级，都走词库窗的表格管线（`state::reload` → `table_sortable_server`）。
 //!
 //! - 中栏：用户词库分组下方一个分组标题「系统词库」与其下的条目「词库列表」（无计数），见 `category_nav`。
-//! - 一级 [`WordCategory::SysDicts`]：词库表（主词库 + 分类 / 附加 / 我放入的库），列 启用 /
+//! - 一级 [`WordCategory::SysDicts`]：词库表（主词库 + 分类 / 附加 / 放入目录的库），列 启用 /
 //!   名称 / 分组 / 条数 / 优先级，默认按生效先后（core 给的 `order`），表头可客户端排序。启用列
 //!   勾选即生效，主库与写了 `default` 的库禁用。行操作「查看」进二级、「信息」弹头部信息；
 //!   双击行等同「查看」。
@@ -35,8 +35,8 @@ use crate::rpc;
 pub(crate) const SYS_TITLE: &str = "系统词库";
 /// 方案文件没写 `group` 的随包库归这一组。
 pub(crate) const OTHER_GROUP: &str = "其他";
-/// 发现目录（`dir:` 前缀）登记的库归这一组，也是它的来源名。
-pub(crate) const DIR_GROUP: &str = "我放入的";
+/// 发现目录（`dir:` 前缀）登记的库、词库头没写 `group:` 时归这一组，也是它的来源名。
+pub(crate) const DIR_GROUP: &str = "扩展词库";
 /// 系统词条搜索的防抖：停手这么久才发请求。
 pub(crate) const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -80,7 +80,7 @@ pub struct SysCat {
     pub id: String,
     pub label: String,
     pub description: String,
-    /// 展示用的分组名（已按来源归好：主库「主词库」、放入目录的「我放入的」、没写的「其他」）。
+    /// 展示用的分组名（已按来源归好：主库「主词库」、放入目录的库取词库头 `group:`、没写归「扩展词库」，随包库没写的「其他」）。
     pub group: String,
     pub enabled: bool,
     /// 条目数；core 数不出（文件或子表不在）为 `None`。
@@ -97,11 +97,11 @@ pub(crate) fn parse_cat(it: &Value) -> SysCat {
     let s = |k: &str| it.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let id = s("id");
     let source = SysSource::parse(&s("source"));
+    let own_group = Some(s("group")).filter(|g| !g.is_empty());
     let group = match source {
-        SysSource::Main | SysSource::Dir => source.label().to_string(),
-        SysSource::Bundled => Some(s("group"))
-            .filter(|g| !g.is_empty())
-            .unwrap_or_else(|| OTHER_GROUP.to_string()),
+        SysSource::Main => source.label().to_string(),
+        SysSource::Dir => own_group.unwrap_or_else(|| DIR_GROUP.to_string()),
+        SysSource::Bundled => own_group.unwrap_or_else(|| OTHER_GROUP.to_string()),
     };
     SysCat {
         label: Some(s("label"))
@@ -954,13 +954,21 @@ mod tests {
               "source": "bundled", "count": null, "order": 2, "togglable": true },
             { "id": "dir:pinyin/ext/mine", "label": "我的", "group": "文史", "enabled": false,
               "source": "dir", "count": 3, "order": 4, "togglable": true },
+            { "id": "dir:pinyin/ext/plain", "label": "无组", "group": null, "enabled": false,
+              "source": "dir", "count": 1, "order": 5, "togglable": true },
             { "label": "缺 id" }
         ]);
         let l = parse_cats(&v);
         let ids: Vec<&str> = l.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["main", "wb_extra", "cell_idiom", "dir:pinyin/ext/mine"],
+            [
+                "main",
+                "wb_extra",
+                "cell_idiom",
+                "dir:pinyin/ext/mine",
+                "dir:pinyin/ext/plain"
+            ],
             "按 order 排，缺 id 的丢弃"
         );
         assert_eq!((l[0].source, l[0].togglable), (SysSource::Main, false));
@@ -969,7 +977,8 @@ mod tests {
             ("wb_extra", OTHER_GROUP, None),
             "没名字用 id，没分组归「其他」，数不出为 None"
         );
-        assert_eq!(l[3].group, DIR_GROUP, "发现目录的不看 group");
+        assert_eq!(l[3].group, "文史", "发现目录的库取词库头写的 group");
+        assert_eq!(l[4].group, DIR_GROUP, "没写 group 归「扩展词库」");
         let spec = super::super::spec::spec_for(WordCategory::SysDicts);
         let cells: Vec<Vec<String>> = l
             .iter()
@@ -982,7 +991,8 @@ mod tests {
                 vec!["是", "rime_frost", "主词库", "654116", "1"],
                 vec!["否", "wb_extra", "其他", "—", "2"],
                 vec!["是", "成语", "文史", "48721", "3"],
-                vec!["否", "我的", "我放入的", "3", "4"],
+                vec!["否", "我的", "文史", "3", "4"],
+                vec!["否", "无组", "扩展词库", "1", "5"],
             ]
         );
         assert!(parse_cats(&json!({"error": 1})).is_empty());

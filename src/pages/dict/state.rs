@@ -155,6 +155,8 @@ pub struct DictManagerState {
     pub pane_title: Signal<String>,
     /// 右栏标题的第二段（对象名），无对象时为空。
     pub pane_subtitle: Signal<String>,
+    /// 折叠域的说明（「拼音」域里含哪些方案、哪些数据共用），不折叠的域为空。
+    pub domain_note: Signal<String>,
     /// 受控排序状态（None=无排序；表头点击循环切换，导航变化时重置）。
     pub sort: Signal<Option<SortKey>>,
     /// 空态提示文本（无数据/未连接/无方案）；有数据时为空串（视图据此显隐覆盖层）。
@@ -628,6 +630,7 @@ impl DictManagerState {
             nav_epoch: signal(vec![0]),
             pane_title: signal(String::new()),
             pane_subtitle: signal(String::new()),
+            domain_note: signal(String::new()),
             sort: signal(None),
             empty_msg: signal(String::new()),
             search: signal(String::new()),
@@ -893,6 +896,37 @@ impl DictManagerState {
         self.folded_domains()
             .get(i)
             .map(|e| e.rep_schema_id.clone())
+    }
+
+    /// 折叠域的说明文字：域里不止一个方案时列出成员方案名（方案名取方案列表里的 `name`，
+    /// 空则用 id），并交代哪些数据共用、哪些按方案各存；其余域为空。
+    pub(crate) fn domain_note_now(&self) -> String {
+        let members = self.current_domain_members();
+        if members.len() <= 1 {
+            return String::new();
+        }
+        let schemas = self.schemas.borrow();
+        let names: Vec<String> = members
+            .iter()
+            .map(|id| {
+                schemas
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .map(|s| {
+                        if s.name.is_empty() {
+                            id.clone()
+                        } else {
+                            s.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect();
+        format!(
+            "「拼音」包含 {} 个拼音类方案：{}。用户词库、词条共用；系统词库的启用开关各方案分别保存。",
+            names.len(),
+            names.join("、")
+        )
     }
 
     /// 当前方案域折进来的全部方案 id（全局域为空）。
@@ -1383,6 +1417,10 @@ impl DictManagerState {
         }
         if self.pane_subtitle.get() != subtitle {
             self.pane_subtitle.set(subtitle);
+        }
+        let note = self.domain_note_now();
+        if self.domain_note.get() != note {
+            self.domain_note.set(note);
         }
         let spec = self.current_spec();
         // 按方案类别但无方案：空表 + 提示。
@@ -5747,6 +5785,24 @@ mod tests {
         // domain 2 = 第二个方案
         st.domain.set(GLOBAL_DOMAINS + 1);
         assert_eq!(st.current_schema_id().as_deref(), Some("py"));
+    }
+
+    #[test]
+    fn folded_pinyin_domain_note_lists_member_schemas() {
+        let st = DictManagerState::new();
+        with_schemas(
+            &st,
+            vec![
+                schema("wb", "五笔86", "codetable"),
+                schema("py", "自定义_全拼", "pinyin"),
+                schema("sp", "双拼", "pinyin"),
+            ],
+        );
+        st.domain.set(GLOBAL_DOMAINS + 1);
+        let note = st.domain_note_now();
+        assert!(note.contains("自定义_全拼、双拼"), "{note}");
+        st.domain.set(GLOBAL_DOMAINS);
+        assert!(st.domain_note_now().is_empty(), "不折叠的域没有说明");
     }
 
     #[test]

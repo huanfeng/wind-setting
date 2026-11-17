@@ -255,6 +255,13 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
                 &star_vis.display_rows.borrow(),
             )
         });
+    let domain_note = mgr.domain_note;
+    let domain_note_line = Element::label_signal(domain_note)
+        .font_size(12.0)
+        .fg_role(Role::TextMuted)
+        .max_lines(2)
+        .width_match()
+        .visible_when(move || !domain_note.get().is_empty());
     let sys_vis = mgr.clone();
     let sys_hint = hint_line("勾选即生效；默认按生效先后排列，优先级只读。")
         .width_match()
@@ -289,6 +296,7 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .child(charset_hint)
         .child(star_hint)
         .child(sys_hint)
+        .child(domain_note_line)
         .child(card)
         .child(pagination);
 
