@@ -2876,6 +2876,28 @@ value = "tab"
 label = "Tab / Shift+Tab"
 
 [[items]]
+key = "keys.syllable_jump_keys"
+group = "keys"
+section = "候选操作"
+type = "checkbox_group"
+label = "按音节跳转"
+hint = "在编码区按分段跳转，向右循环。勾选的键组优先用于跳转"
+[[items.options]]
+value = "arrows"
+label = "方向键 ↑ ↓"
+[[items.options]]
+value = "tab"
+label = "Tab / Shift+Tab"
+
+[[items]]
+key = "keys.caret_scoped_candidates"
+group = "keys"
+section = "候选操作"
+type = "toggle"
+label = "光标移动重算候选"
+hint = "开启后，光标移到编码中间时只为光标前的编码出候选，选词上屏后保留余码。"
+
+[[items]]
 key = "keys.page_keys"
 group = "keys"
 section = "候选操作"
@@ -3053,9 +3075,8 @@ options = [
 
 # ── 自定义按键：两张表的完整逐键编辑入口 ──
 #
-# 与上面「候选操作」那四项勾选框的关系：那四项是**常用形态**（按组勾选），本节是**完整
-# 形态**（逐键指定）。两者在 core 侧合流——四项会被折算进 session_actions 同一张表，本表
-# 里显式配的键优先。故放在勾选项之后：先给常用的，再给需要时才展开的。
+# 上面「候选操作」按组勾选，本节逐键指定。两者在 core 侧合流，键组也折算进 session_actions。
+# 本表里显式配的键优先。故放在勾选项之后：先给常用的，再给需要时才展开的。
 #
 # ⚠️ 两项的分野**不是**「空闲时 vs 输入中」。`key_actions` 的三条通路（组合键热键、
 # 修饰键 keyup、单字符引导键）在输入中同样触发——「按 Shift 切中英文」走的正是第二条。

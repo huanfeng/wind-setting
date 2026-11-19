@@ -157,13 +157,14 @@ pub fn switch_key_note(enabled: bool, switch_key: &str, uses: &CtrlUses) -> Stri
 }
 
 /// 拼 [`CtrlUses`] 要的几张全局表（取不到的项不放，按 core 出厂值）。
-const KEYS_READ: [&str; 7] = [
+const KEYS_READ: [&str; 8] = [
     "toggle_mode_keys",
     "session_actions",
     "key_actions",
     "select_key_groups",
     "page_keys",
     "highlight_keys",
+    "syllable_jump_keys",
     "select_char_keys",
 ];
 

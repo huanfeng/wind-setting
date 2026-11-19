@@ -333,6 +333,7 @@ pub const CANDIDATE_FIELDS: &[(&str, &str)] = &[
     ("keys.select_key_groups", "次选/三选键"),
     ("keys.page_keys", "翻页键"),
     ("keys.highlight_keys", "高亮移动键"),
+    ("keys.syllable_jump_keys", "按音节跳转"),
     ("keys.select_char_keys", "以词定字"),
 ];
 
