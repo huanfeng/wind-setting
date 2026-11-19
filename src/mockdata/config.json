@@ -250,6 +250,7 @@
  "keys": {
   "activate_ime": "ctrl+shift+[",
   "add_word": "ctrl+equal",
+  "caret_scoped_candidates": false,
   "commit_on_switch": true,
   "ctrl_space_toggle": true,
   "delete_candidate": "ctrl+shift+number",
@@ -281,6 +282,7 @@
   "session_actions": {},
   "softkeyboard": "ctrl+shift+k",
   "switch_engine": "ctrl+shift+e",
+  "syllable_jump_keys": [],
   "take_screenshot": "ctrl+shift+f11",
   "toggle_full_width": "shift+space",
   "toggle_mode_keys": [

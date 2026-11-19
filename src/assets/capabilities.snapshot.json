@@ -1894,6 +1894,16 @@
     },
     {
       "default": [],
+      "key": "keys.syllable_jump_keys",
+      "type": "strlist"
+    },
+    {
+      "default": false,
+      "key": "keys.caret_scoped_candidates",
+      "type": "bool"
+    },
+    {
+      "default": [],
       "key": "keys.select_char_keys",
       "type": "strlist"
     },

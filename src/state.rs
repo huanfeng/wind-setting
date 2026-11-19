@@ -3083,7 +3083,7 @@ impl AppState {
     /// 实时按键冲突检测：跑写回器到 current 的副本上（反映编辑中的最新 Signal 值），
     /// 分三个场景域各自检测——**跨域不算冲突**（同一物理键在不同场景分时复用是正常设计）：
     /// - 触发键域：无候选/闲时触发模式（临时拼音/英文、混合、特殊模式）。
-    /// - 候选键域：有候选时操作候选（次选/翻页/高亮移动/以词定字）。
+    /// - 候选键域：有候选时操作候选（次选/翻页/高亮移动/音节跳转/以词定字）。
     /// - 快捷键域：功能组合键（切换方案/标点/工具栏…、置顶/删除词条），归一化后同键即冲突。
     ///
     /// 结果按**级别**分流，两者呈现方式不同（见 [`ConflictLevel`]）：
@@ -3546,8 +3546,13 @@ fn collect_candidate_key_groups(cfg: &Config) -> Vec<KeyGroup> {
         ),
         KeyGroup::new(
             "highlight_keys",
-            "高亮移动键",
+            "高亮移动按键",
             expand_strs(cfg.get_array("keys.highlight_keys")),
+        ),
+        KeyGroup::new(
+            "syllable_jump_keys",
+            "按音节跳转",
+            expand_strs(cfg.get_array("keys.syllable_jump_keys")),
         ),
         KeyGroup::new(
             "select_char",
@@ -4283,6 +4288,26 @@ mod trigger_conflict_tests {
             check_candidate_key_conflicts(&cfg3).is_none(),
             "候选域无内部重叠"
         );
+    }
+
+    #[test]
+    fn test_syllable_jump_candidate_key_conflicts() {
+        for (field, selected, jump, symbol, label) in [
+            ("highlight_keys", "arrows", "arrows", "↑", "高亮移动按键"),
+            ("highlight_keys", "tab", "tab", "Tab", "高亮移动按键"),
+            ("page_keys", "shift_tab", "tab", "Tab", "翻页键"),
+        ] {
+            let mut cfg = Config::from_value(json!({
+                "keys": { (field): [selected], "syllable_jump_keys": [jump] }
+            }));
+            let msg = check_candidate_key_conflicts(&cfg).expect("音节跳转键组应检出冲突");
+            assert!(msg.contains("候选键冲突"));
+            assert!(msg.contains(symbol));
+            assert!(msg.contains(label));
+            assert!(msg.contains("按音节跳转"));
+            cfg.set_path("keys.syllable_jump_keys", json!([]));
+            assert!(check_candidate_key_conflicts(&cfg).is_none());
+        }
     }
 
     #[test]
