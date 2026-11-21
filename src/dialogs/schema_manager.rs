@@ -6,7 +6,7 @@
 //! - 启用/禁用/排序变更**即时刷新列表**（Element::list_signal 驱动）
 //! - 「应用设置」时写入 schema.available（经 FieldRegistry writer）
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde_json::{Value, json};
@@ -4622,11 +4622,26 @@ fn build_compound_row(
     .border_role(Role::Border, 1);
 
     // ── 行内容：点击选中 ──
+    // 双击打开该方案的设置：windui 的可点击行没有双击回调，这里按系统双击时限
+    // 自己判（同一行相邻两次点击间隔 ≤ 系统双击间隔）。行随列表重建，状态不跨重建。
     let mgr_sel = mgr.clone();
     let sel_id = entry.id.clone();
+    let last_click: Cell<Option<std::time::Instant>> = Cell::new(None);
     let mut row = Element::row()
         .clickable()
-        .on_click(move |_| mgr_sel.select(&sel_id))
+        .on_click(move |_| {
+            mgr_sel.select(&sel_id);
+            let (ms, _) = windui::platform::double_click_thresholds();
+            let now = std::time::Instant::now();
+            let is_double = last_click
+                .get()
+                .is_some_and(|t| now.duration_since(t).as_millis() <= u128::from(ms));
+            // 触发后清零，避免三连击再触发一次。
+            last_click.set(if is_double { None } else { Some(now) });
+            if is_double {
+                mgr_sel.open_settings_at_id(&sel_id);
+            }
+        })
         .width_match()
         .cross(Align::Center)
         .padding_xy(10, 8)
@@ -9481,6 +9496,42 @@ mod row_menu_tests {
                 "x={x} 弹出的应是方案行菜单"
             );
         }
+    }
+
+    /// 双击行（时限内连点两次）打开该方案的设置，单击只选中。
+    #[test]
+    fn double_clicking_a_row_opens_its_settings() {
+        use windui::core::Tree;
+        use windui::event::{MouseButton, PointerEvent, PointerKind};
+        use windui::geometry::{Point, Size};
+
+        let _g = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let st = fixture();
+        let el = build_compound_row(entry("c", "user", false), true, &st, None);
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(Size::new(600, 200), &mut windui::text::NullTextEngine);
+        let click = |tree: &mut Tree| {
+            let (mut hover, mut capture) = (None, None);
+            let at = Point::new(200, 20);
+            for kind in [PointerKind::Down, PointerKind::Up] {
+                tree.dispatch_pointer(
+                    PointerEvent::single(kind, at, MouseButton::Left),
+                    &mut hover,
+                    &mut capture,
+                );
+            }
+        };
+        click(&mut tree);
+        assert!(!st.settings_visible.get(), "单击只选中，不开设置");
+        click(&mut tree);
+        assert!(st.settings_visible.get(), "时限内第二击应打开设置");
+        assert_eq!(*st.settings_schema_id.borrow(), "c");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 
     /// 列表级菜单：过滤项是粘滞的（点了菜单不关），且勾选态取自当前开关值。
