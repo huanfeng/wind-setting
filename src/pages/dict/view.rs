@@ -186,6 +186,8 @@ pub fn build_page_for(mgr: DictManagerState) -> Element {
         .width_match()
         .weight(1.0)
         .padding_xy(4, 2)
+        // 表头底色与斑马纹是直角的，贴着圆角卡片会盖出圆角与描边：按卡片外形裁子树。
+        .clip()
         .child(
             Element::stack()
                 .fill()
