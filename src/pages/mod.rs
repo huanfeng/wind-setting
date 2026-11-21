@@ -589,11 +589,9 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
     // 过滤行放在按钮行**下方、紧贴列表**：它描述的是「下面这个列表显示什么」，
     // 与列表相邻比与操作按钮相邻更说得通。
     // padding_xy(0,4) 给按钮 outline 边框与下方 divider 留出间距。
-    let st_refresh = mgr.clone();
     let (m_up, e_up) = (mgr.clone(), mgr.clone());
     let (m_dn, e_dn) = (mgr.clone(), mgr.clone());
     let (m_act, e_act) = (mgr.clone(), mgr.clone());
-    let (m_set, e_set) = (mgr.clone(), mgr.clone());
     let (m_del, e_del) = (mgr.clone(), mgr.clone());
     let (m_exp, e_exp) = (mgr.clone(), mgr.clone());
     let m_imp = mgr.clone();
@@ -639,16 +637,6 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
                 .on_click(move |_| m_act.set_active_selected()),
         )
         .child(
-            Element::button("设置")
-                .small()
-                .outline_soft()
-                .enabled_when(move || {
-                    e_set.sel_ver.get();
-                    e_set.selected_entry().is_some()
-                })
-                .on_click(move |_| m_set.open_settings_selected()),
-        )
-        .child(
             Element::button("删除")
                 .small()
                 .outline()
@@ -660,12 +648,6 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
                 .on_click(move |_| m_del.request_delete_selected()),
         )
         .child(Element::leaf().width(1).height(18).bg_role(Role::Divider))
-        .child(
-            Element::button("刷新")
-                .small()
-                .outline_soft()
-                .on_click(move |_| st_refresh.refresh()),
-        )
         .child(
             Element::button("导入")
                 .small()

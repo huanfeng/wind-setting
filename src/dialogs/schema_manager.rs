@@ -4651,6 +4651,18 @@ fn build_compound_row(
         );
     }
 
+    // ── 行尾「设置」：每行自带，点它先选中该行再打开该方案的设置 ──
+    let (m_set, id_set) = (mgr.clone(), entry.id.clone());
+    row = row.child(
+        Element::button("设置")
+            .small()
+            .outline_soft()
+            .on_click(move |_| {
+                m_set.select(&id_set);
+                m_set.open_settings_at_id(&id_set);
+            }),
+    );
+
     // ── 选中视觉：淡蓝底 + accent 整条描边（置于行下，行 clickable 吞命中不受影响）
     //    + 左缘指示条（无背景穿透容器包裹，垂直居中）。
     //    stack 子节点铺满须用 .align(Align::Stretch)（Frame 布局只认 align，
