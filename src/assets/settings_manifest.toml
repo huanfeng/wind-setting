@@ -780,7 +780,7 @@ section = "候选行为"
 dialog_group = "py_aux"
 type = "toggle"
 label = "直接辅助码"
-hint = "仅双拼：音节后直接敲字形码筛选，不按引导键（如 uidu 再敲 p → 释读）。全拼方案不生效"
+hint = "仅双拼：任一音节后直接敲字形码定字，长句中间也可以，不按引导键（如 go 后敲 k 再打 qk → 国情）。全拼方案不生效"
 enabled_when = "schema.pinyin.aux_code.enabled == true"
 
 # ── 英文候选：与混输/码表同名同义，只是作用于拼音方案 ──

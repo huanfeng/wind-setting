@@ -5734,7 +5734,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 crate::widgets::setting_row_override(
                     direct_over,
                     "本方案直接辅助码",
-                    Some("音节后直接敲字形码筛选，不按引导键"),
+                    Some("任一音节后直接敲字形码定字，不按引导键"),
                     "跟随全局",
                     Role::TextMuted,
                     crate::widgets::override_control(
