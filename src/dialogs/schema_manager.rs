@@ -4673,6 +4673,7 @@ fn build_compound_row(
     row = row.child(
         Element::stack()
             .size(28, 28)
+            .corner(6.0)
             .clickable()
             .tooltip("方案设置")
             .on_click(move |_| {
@@ -4680,7 +4681,7 @@ fn build_compound_row(
                 m_set.open_settings_at_id(&id_set);
             })
             .child(
-                crate::icons::tinted_role(crate::icons::GEAR, 16, Role::TextSubtle)
+                crate::icons::tinted_role(crate::icons::GEAR, 16, Role::TextMuted)
                     .align_xy(Align::Center, Align::Center),
             ),
     );
