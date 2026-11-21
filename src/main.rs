@@ -25,6 +25,8 @@ mod dict_window;
 mod dota2_compat;
 mod file_assoc;
 mod file_pick;
+#[cfg(target_os = "linux")]
+mod gnome_caret;
 mod hide_marker;
 mod hide_menu;
 #[cfg(test)]

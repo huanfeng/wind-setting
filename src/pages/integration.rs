@@ -49,6 +49,10 @@ pub struct IntegrationState {
     pub assoc_remove_confirm: Signal<bool>,
     /// 四个确认框共用的正文（含占用者命令行，由触发方填好再开框；同刻只开一个框）。
     pub confirm_msg: Signal<String>,
+    /// GNOME Wayland 候选窗定位扩展的状态文案（仅 Linux GNOME Wayland 会话用到）。
+    pub gnome_status: Signal<String>,
+    /// 「启用」是否可点。
+    pub gnome_can_enable: Signal<bool>,
     pub feedback: Feedback,
 }
 
@@ -73,10 +77,47 @@ impl IntegrationState {
             assoc_overwrite_confirm: signal(false),
             assoc_remove_confirm: signal(false),
             confirm_msg: signal(String::new()),
+            gnome_status: signal(String::new()),
+            gnome_can_enable: signal(false),
             feedback: signal(None),
         };
         s.refresh();
+        s.refresh_gnome();
         s
+    }
+
+    /// 现查 GNOME 扩展状态。要起 `gnome-shell` / `gnome-extensions` 子进程（后者是 gjs 脚本，
+    /// 数百毫秒），所以只在建卡片与点「启用」后各调一次，不进 [`Self::refresh`]。
+    #[cfg(target_os = "linux")]
+    pub fn refresh_gnome(&self) {
+        if !crate::gnome_caret::applies_here() {
+            return;
+        }
+        let dirs = crate::gnome_caret::default_dirs();
+        let dirs: Vec<&std::path::Path> = dirs.iter().map(|d| d.as_path()).collect();
+        let st = crate::gnome_caret::status(&crate::gnome_caret::SystemSh, &dirs);
+        self.gnome_status.set(st.text());
+        self.gnome_can_enable.set(st.can_enable());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn refresh_gnome(&self) {}
+
+    /// 「启用」按钮：按当前 Shell 版本选扩展并启用，成功后多半还需要重登。
+    #[cfg(target_os = "linux")]
+    pub fn on_gnome_enable_clicked(&self) {
+        match crate::gnome_caret::enable_for_current_shell(&crate::gnome_caret::SystemSh) {
+            Ok(()) => {
+                self.refresh_gnome();
+                self.feedback.set(Some((
+                    ToastKind::Success,
+                    "已启用候选窗定位扩展，注销并重新登录后生效".into(),
+                )));
+            }
+            Err(e) => self
+                .feedback
+                .set(Some((ToastKind::Error, format!("启用扩展失败：{e}")))),
+        }
     }
 
     /// 现读注册表并刷新展示信号（协议与 `.wpkg` 各读各的）。
@@ -336,6 +377,23 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
                 .on_click(move |_| s_unreg.on_unregister_clicked(&app_unreg)),
         );
 
+    // GNOME Wayland 专用行：只在该会话里建（别的桌面不需要，建出来只是噪音）。
+    #[cfg(target_os = "linux")]
+    let gnome_row: Option<Element> = crate::gnome_caret::applies_here().then(|| {
+        let s_en = s.clone();
+        setting_row_desc_signal(
+            "GNOME 候选窗定位扩展",
+            s.gnome_status,
+            Element::button("启用")
+                .small()
+                .outline_soft()
+                .enabled_signal(s.gnome_can_enable)
+                .on_click(move |_| s_en.on_gnome_enable_clicked()),
+        )
+    });
+    #[cfg(not(target_os = "linux"))]
+    let gnome_row: Option<Element> = None;
+
     // 每个扩展名一整行：两者的归属可以不同（别的软件可能只抢了 .wpkg），
     // 合成一行的话用户既看不出是哪个被抢了，也没法只修那一个。
     let assoc_rows: Vec<Element> = crate::file_assoc::ALL
@@ -373,13 +431,15 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
     // 下面多出一条紧贴卡片边框的分隔线。见 widgets::card_with_attachment。
     crate::widgets::section_with_attachment(
         "系统集成",
-        std::iter::once(setting_row_desc_signal(
-            "windinput:// 协议（一键导入）",
-            s.protocol_status,
-            buttons,
-        ))
-        .chain(assoc_rows)
-        .collect::<Vec<_>>(),
+        gnome_row
+            .into_iter()
+            .chain(std::iter::once(setting_row_desc_signal(
+                "windinput:// 协议（一键导入）",
+                s.protocol_status,
+                buttons,
+            )))
+            .chain(assoc_rows)
+            .collect::<Vec<_>>(),
         crate::pages::dict::reactive::toast_sink(s.feedback),
     )
 }
