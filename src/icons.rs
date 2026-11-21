@@ -51,6 +51,11 @@ pub const EXTERNAL: &str = include_str!("../res/icons/ui/external.svg");
 /// 「效果预览」卡头图钉（锁定预览卡固定页顶）。两态共用一枚，状态色区分。
 pub const PIN: &str = include_str!("../res/icons/ui/pin.svg");
 
+/// 齿轮（方案行尾「设置」按钮）。取自 Lucide `settings`（ISC 许可），保持其 24×24 原始网格，
+/// **不在** 18 网格约定之内：曲线图形没有轴对齐描边，无从套「奇数坐标」，
+/// 且按 16px 缩小渲染（同 [`INFO_THIN`]），故不进下面 `ALL` 的网格校验。
+pub const GEAR: &str = include_str!("../res/icons/ui/gear.svg");
+
 /// 侧栏导航图标（Tab 名精确匹配；新 Tab 回退 sliders）。
 pub fn nav_icon(tab: &str) -> &'static str {
     match tab {

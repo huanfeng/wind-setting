@@ -4666,16 +4666,23 @@ fn build_compound_row(
         );
     }
 
-    // ── 行尾「设置」：每行自带，点它先选中该行再打开该方案的设置 ──
+    // ── 行尾「设置」：齿轮图标，点它先选中该行再打开该方案的设置 ──
+    // 热区包成 28 见方（裸图标 16×16 命中太窄）；clickable 自带悬停/按下反馈，
+    // 与效果预览卡的图钉按钮同一做法。
     let (m_set, id_set) = (mgr.clone(), entry.id.clone());
     row = row.child(
-        Element::button("设置")
-            .small()
-            .outline_soft()
+        Element::stack()
+            .size(28, 28)
+            .clickable()
+            .tooltip("方案设置")
             .on_click(move |_| {
                 m_set.select(&id_set);
                 m_set.open_settings_at_id(&id_set);
-            }),
+            })
+            .child(
+                crate::icons::tinted_role(crate::icons::GEAR, 16, Role::TextSubtle)
+                    .align_xy(Align::Center, Align::Center),
+            ),
     );
 
     // ── 选中视觉：淡蓝底 + accent 整条描边（置于行下，行 clickable 吞命中不受影响）
