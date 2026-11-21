@@ -1649,6 +1649,11 @@
       "type": "bool"
     },
     {
+      "default": 0,
+      "key": "input.cmdbar.group_per_page",
+      "type": "int"
+    },
+    {
       "default": true,
       "key": "input.phrase.prefix_match",
       "type": "bool"

@@ -60,7 +60,8 @@
   "cmdbar": {
    "backspace_collapse_group": true,
    "candidate_prefix": "⚡",
-   "enabled": false
+   "enabled": false,
+   "group_per_page": 0
   },
   "commit_newline": "keep",
   "correction": {
