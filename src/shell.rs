@@ -214,6 +214,9 @@ pub fn build(app: &Rc<RefCell<AppState>>) -> Element {
         .weight(1.0)
         .child(crate::pages::degradation_bar(app.borrow().degradation))
         .child(crate::pages::conflict_bar(app.borrow().conflict))
+        .child(crate::pages::integration::gnome_bar(
+            &app.borrow().integration,
+        ))
         .child(crate::search::hint::build_hint_bar(search_state.hint))
         .child(pages_stack);
     // 二级导航栏 + 它与内容区之间的分隔线：两者同一个显隐条件，见 [`subnav_available`]。

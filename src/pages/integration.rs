@@ -19,6 +19,56 @@ use crate::protocol::{Facts, Registration};
 use crate::state::AppState;
 use crate::widgets::setting_row_desc_signal;
 
+/// 顶栏只在「用户能做点什么」时出现：未启用（给按钮）与已启用待重登（提醒重登）。
+/// 已生效、包里没带、版本不支持、查询失败都不打扰——后三者在系统集成卡里有一行说明。
+#[cfg(target_os = "linux")]
+fn bar_text(st: &crate::gnome_caret::Status) -> &'static str {
+    use crate::gnome_caret::Status;
+    match st {
+        Status::Disabled => {
+            "⚠ GNOME Wayland 下，候选窗需要启用「候选窗定位扩展」才会跟随光标；未启用时在未最大化的窗口里会偏离。"
+        }
+        Status::PendingRelogin => "候选窗定位扩展已启用，注销并重新登录后生效。",
+        _ => "",
+    }
+}
+
+/// GNOME 扩展顶栏：放在页面滚动区之外（与冲突条、降级条同一排），切页常驻。
+/// 「启用」只在未启用时出现；点完状态变成「待重登」，按钮随之消失。
+pub fn gnome_bar(s: &IntegrationState) -> Element {
+    let bar = s.gnome_bar;
+    let can = s.gnome_can_enable;
+    let s_en = s.clone();
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(12)
+        .padding_xy(16, 8)
+        .bg_role_alpha(Role::Warning, 0.14)
+        .border_role(Role::Divider, 1)
+        .child(
+            Element::label_signal(bar)
+                .font_size(12.5)
+                .font_weight(500)
+                .fg_role(Role::Warning)
+                .weight(1.0)
+                .max_lines(3),
+        )
+        .child(
+            Element::button("启用")
+                .small()
+                .outline_soft()
+                .visible_when(move || can.get())
+                .on_click(move |_| {
+                    #[cfg(target_os = "linux")]
+                    s_en.on_gnome_enable_clicked();
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = &s_en;
+                }),
+        )
+        .visible_when(move || !bar.get().is_empty())
+}
+
 /// 桌面集成状态（Signal 为 Copy，可直接 Clone 进闭包）。
 ///
 /// 只存**展示用**的派生值：注册表本身是唯一真相，这些信号是它在某一刻的投影。
@@ -53,6 +103,8 @@ pub struct IntegrationState {
     pub gnome_status: Signal<String>,
     /// 「启用」是否可点。
     pub gnome_can_enable: Signal<bool>,
+    /// 顶栏提示文案；空串 = 不需要提醒（已生效 / 不适用 / 无从处理）。
+    pub gnome_bar: Signal<String>,
     pub feedback: Feedback,
 }
 
@@ -79,6 +131,7 @@ impl IntegrationState {
             confirm_msg: signal(String::new()),
             gnome_status: signal(String::new()),
             gnome_can_enable: signal(false),
+            gnome_bar: signal(String::new()),
             feedback: signal(None),
         };
         s.refresh();
@@ -98,6 +151,7 @@ impl IntegrationState {
         let st = crate::gnome_caret::status(&crate::gnome_caret::SystemSh, &dirs);
         self.gnome_status.set(st.text());
         self.gnome_can_enable.set(st.can_enable());
+        self.gnome_bar.set(bar_text(&st).to_string());
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -447,6 +501,23 @@ pub fn build_integration_section(app: &Rc<RefCell<AppState>>, state: &AppState) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 顶栏只在用户能做点什么时出现；已生效或无从处理时不打扰。
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gnome_bar_only_nags_when_actionable() {
+        use crate::gnome_caret::Status;
+        assert!(!bar_text(&Status::Disabled).is_empty());
+        assert!(!bar_text(&Status::PendingRelogin).is_empty());
+        for quiet in [
+            Status::Active,
+            Status::NotInstalled,
+            Status::Unsupported("52".into()),
+            Status::Unknown("x".into()),
+        ] {
+            assert!(bar_text(&quiet).is_empty(), "{quiet:?} 不该出顶栏");
+        }
+    }
 
     /// 能管关联的平台（Windows 注册表 / Linux XDG）。macOS 由 .app 声明，界面只给一句说明。
     const MANAGED: bool = cfg!(any(windows, target_os = "linux"));
