@@ -164,6 +164,9 @@ impl EditorUi {
             self.can_delete.set(false);
             self.can_reset.set(false);
             self.editable.set(false);
+            drop(m);
+            self.selected.set(NONE);
+            self.sync_selection();
             return;
         };
         for (i, slot) in all_slot_names().iter().enumerate() {
@@ -201,8 +204,20 @@ impl EditorUi {
             .and_then(|slot| m.pages.get(self.page())?.key(slot).cloned());
         let user_created = m.pages.get(self.page()).is_some_and(|p| p.user_created);
         drop(m);
+        // ★ 编辑区三种状态（选中 / 未选中 / 键盘面）都占同样两行：对话框高度不随状态跳。
+        // 未选中时输入框置灰、清空，第二行换成操作提示。
         let Some(k) = key else {
-            self.sel_title.set(String::new());
+            self.sel_title.set("未选择".into());
+            self.sel_default.set(if self.editable.get() {
+                "点选上方任一键帽，在这里修改它输出的符号".into()
+            } else {
+                "这一面的键位不可修改".into()
+            });
+            self.sel_modified.set(false);
+            self.syncing.set(true);
+            self.edit_base.set(String::new());
+            self.edit_shift.set(String::new());
+            self.syncing.set(false);
             return;
         };
         self.sel_title
@@ -210,7 +225,7 @@ impl EditorUi {
         // 不给符号套括号：符号本身常常就是引号或括号，套上之后反而认不出来。
         let shown = |v: Option<&str>| v.unwrap_or("（空）").to_string();
         self.sel_default.set(if user_created {
-            String::new()
+            "自建面的键没有默认值；「清空」让它按下什么都不输出".into()
         } else {
             format!(
                 "默认：符号 {}　　Shift 符号 {}",
@@ -537,19 +552,28 @@ fn edit_area(ui: &EditorUi) -> Element {
                 .font_size(12.5)
                 .fg_role(Role::TextMuted),
         )
-        .child(Element::text_input(ui.edit_base, "空").width(120))
+        .child(
+            Element::text_input(ui.edit_base, "空")
+                .width(120)
+                .enabled_when(move || sel.get() != NONE),
+        )
         .child(
             Element::label("Shift 符号")
                 .font_size(12.5)
                 .fg_role(Role::TextMuted),
         )
-        .child(Element::text_input(ui.edit_shift, "空").width(120))
+        .child(
+            Element::text_input(ui.edit_shift, "空")
+                .width(120)
+                .enabled_when(move || sel.get() != NONE),
+        )
         .child(Element::leaf().weight(1.0))
         .child(
             Element::button("清空")
                 .small()
                 .outline_soft()
                 .tooltip("两层都设为空：按下这个键什么都不输出")
+                .enabled_when(move || sel.get() != NONE)
                 .on_click(move |_| u_clear.clear_selected_key()),
         )
         .child(
@@ -560,24 +584,17 @@ fn edit_area(ui: &EditorUi) -> Element {
                 .visible_when(move || !user_page.get())
                 .enabled_when(move || modded.get())
                 .on_click(move |_| u_reset.reset_selected_key()),
-        )
-        .visible_when(move || sel.get() != NONE);
+        );
     let default_line = Element::label_signal(ui.sel_default)
         .font_size(12.0)
         .fg_role(Role::TextSubtle)
-        .visible_when(move || sel.get() != NONE);
-    let editable = ui.editable;
-    let idle = Element::label("点选上方任一键帽，在这里修改它输出的符号")
-        .font_size(12.5)
-        .fg_role(Role::TextSubtle)
-        .visible_when(move || sel.get() == NONE && editable.get());
+        .max_lines(1);
     Element::col()
         .width_match()
         .spacing(6)
         .padding_xy(PAD, 12)
         .child(editing)
         .child(default_line)
-        .child(idle)
 }
 
 fn name_form(ui: &EditorUi) -> Element {
@@ -753,6 +770,7 @@ pub fn build_dialog(ui: &EditorUi) -> Element {
         .child(toolbar)
         .child(
             Element::label_signal(ui.page_info)
+                .max_lines(1)
                 .font_size(12.0)
                 .fg_role(Role::TextSubtle)
                 .width_match()
