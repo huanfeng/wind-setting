@@ -381,14 +381,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .enabled_when(move || e_clear.total.get() > 0)
         .visible_when(move || v_clear.current_spec().ops.clear);
 
-    // 多选（t63）：本页全选 / 删除选中。勾选框挂在编码列前（见 `render_cell`）。
-    let (m_sp, v_sp, e_sp) = (mgr.clone(), mgr.clone(), mgr.clone());
-    let select_page = Element::button("本页全选")
-        .small()
-        .outline_soft()
-        .on_click(move |_| m_sp.toggle_select_page())
-        .enabled_when(move || e_sp.total.get() > 0)
-        .visible_when(move || v_sp.current_spec().ops.multi_select);
+    // 多选（t63）：勾选在表格首列，表头复选框管本页全选；勾了才出删除选中。
     let (m_ds, v_ds, e_ds) = (mgr.clone(), mgr.clone(), mgr.clone());
     let delete_selected = Element::button("删除选中")
         .small()
@@ -525,7 +518,6 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .padding_xy(0, 2)
         .child(add)
         .child(promote_all)
-        .child(select_page)
         .child(batch)
         .child(delete_selected)
         .child(move_selected)
@@ -657,20 +649,34 @@ fn build_table(mgr: &DictManagerState) -> Element {
     let m_act = mgr.clone();
     let m_dbl = mgr.clone();
     let m_menu = mgr.clone();
-    Element::table_sortable_server(cols, mgr.table_rows, mgr.sort, move |_, _| {
-        m_sort.on_sort_changed()
-    })
-    .cell_render(move |row, col, text| render_cell(&m_cell, columns, row, col, text))
-    // 宽度按类别取：表格随类别整表重建（table_epoch 驱动），故这里读到的恒是当前类别。
-    .actions("操作", mgr.current_spec().actions_weight(), move |disp| {
-        build_row_actions(&m_act, disp)
-    })
-    // 双击整行进入编辑（仅支持编辑的类别；落点在操作列按钮上不触发）。
-    .on_row_activate(move |_ctx, disp| activate_row(&m_dbl, disp))
-    // 右击整行：与操作列同源的菜单，外加复制与「转为用户短语」（列宽装不下的那几样）。
-    .on_row_context_menu(move |disp| row_menu_items(&m_menu, disp))
-    .cell_lines(cell_lines_for(spec.category))
-    .fill()
+    // 多选类别：首列复选框 + 表头三态全选（只管本页），勾选并进跨页的勾选集。
+    let table = if spec.ops.multi_select {
+        let m_sel = mgr.clone();
+        Element::table_selectable_server(
+            cols,
+            mgr.table_rows,
+            mgr.page_sel,
+            mgr.sort,
+            move |_, _| m_sort.on_sort_changed(),
+            move |_, page| m_sel.on_page_select(page),
+        )
+    } else {
+        Element::table_sortable_server(cols, mgr.table_rows, mgr.sort, move |_, _| {
+            m_sort.on_sort_changed()
+        })
+    };
+    table
+        .cell_render(move |row, col, text| render_cell(&m_cell, columns, row, col, text))
+        // 宽度按类别取：表格随类别整表重建（table_epoch 驱动），故这里读到的恒是当前类别。
+        .actions("操作", mgr.current_spec().actions_weight(), move |disp| {
+            build_row_actions(&m_act, disp)
+        })
+        // 双击整行进入编辑（仅支持编辑的类别；落点在操作列按钮上不触发）。
+        .on_row_activate(move |_ctx, disp| activate_row(&m_dbl, disp))
+        // 右击整行：与操作列同源的菜单，外加复制与「转为用户短语」（列宽装不下的那几样）。
+        .on_row_context_menu(move |disp| row_menu_items(&m_menu, disp))
+        .cell_lines(cell_lines_for(spec.category))
+        .fill()
 }
 
 /// 右栏标题：主标题（类别或分组名，15px 半粗）+「 · 」+ 副标题（对象名，14px 常规、淡色）。
@@ -749,55 +755,6 @@ fn star_hint_visible(cat: WordCategory, kind: DomainKind, rows: &[WordRow]) -> b
 /// 编码列在**遮蔽了系统条目的用户短语**上追加一枚「覆盖」标签（`overrides_system`）：
 /// 那条系统短语已从系统短语列表隐去，不标注的话用户只会觉得系统短语莫名少了一条。
 fn render_cell(
-    mgr: &DictManagerState,
-    columns: &'static [ColumnSpec],
-    row: usize,
-    col: usize,
-    text: &str,
-) -> Option<Element> {
-    let content = render_cell_content(mgr, columns, row, col, text);
-    // 多选类别：首列前挂勾选框（t63）。挂在单元格里而不另起一列——表头不支持非数据列，
-    // 另起一列会与排序列下标错位。挂首列而不认编码列：补全历史、常用字、快捷输入都没有编码列。
-    if col != 0 || !mgr.current_spec().ops.multi_select {
-        return content;
-    }
-    let r = mgr.display_row(row)?;
-    // 首列本是默认文本格时，照表格默认文本格的样式补一个（字号、行数、末尾省略）；占满余宽
-    // 才会折行/省略。自定义的徽章不占满，否则底色边框会拉满整格。
-    let content = content.unwrap_or_else(|| {
-        let lines = cell_lines_for(mgr.current_category());
-        Element::label(text.to_string())
-            .font_size(windui::theme::current().metrics.font_sm)
-            .max_lines(lines)
-            .truncate(Truncate::End)
-            .weight(1.0)
-    });
-    let sig = signal(mgr.is_selected(&r));
-    let m = mgr.clone();
-    Some(
-        Element::row()
-            .cross(Align::Center)
-            .spacing(4)
-            .child(Element::checkbox("", sig).small().on_toggle(move |_| {
-                sig.set(!sig.get());
-                m.toggle_selected(&r);
-            }))
-            .child(content),
-    )
-}
-
-/// 默认文本格最多显示几行：系统词库两张表一行截断（格都短，窄窗里折行只会把数字与子表名
-/// 拆成两截），其余两行（系统短语等长条目）。
-fn cell_lines_for(cat: WordCategory) -> usize {
-    if matches!(cat, WordCategory::SysDicts | WordCategory::SysEntries) {
-        1
-    } else {
-        2
-    }
-}
-
-/// 单元格本身的自定义渲染（不含多选勾选框，见 [`render_cell`]）；`None` 走默认文本渲染。
-fn render_cell_content(
     mgr: &DictManagerState,
     columns: &'static [ColumnSpec],
     row: usize,
@@ -931,6 +888,16 @@ fn render_cell_content(
                 .border_role(Role::TextMuted, 1),
         ),
         _ => None,
+    }
+}
+
+/// 默认文本格最多显示几行：系统词库两张表一行截断（格都短，窄窗里折行只会把数字与子表名
+/// 拆成两截），其余两行（系统短语等长条目）。
+fn cell_lines_for(cat: WordCategory) -> usize {
+    if matches!(cat, WordCategory::SysDicts | WordCategory::SysEntries) {
+        1
+    } else {
+        2
     }
 }
 
@@ -1726,17 +1693,27 @@ mod tests {
     }
 
     /// (表头单元格数, 正文行数) —— 表格结构 col[header, divider, scroll[col(挂正文 widget)]]。
+    /// (表头列数, 正文行数)。表头列数 = 数据列 + 操作列：不数列宽拖动手柄（零宽节点），
+    /// 也不数多选表的全选列（那种表头是 `[全选列, 子行]`，列在子行里）。
     fn table_shape(tree: &Tree) -> (usize, usize) {
         let root = tree.root.unwrap();
         let table = tree.get(root).unwrap().children[0]; // host 容器的首子 = 表格
         let table = tree.get(table).unwrap().children[0]; // host_signal 内层（重建宿主的子）
-        let header = tree.get(table).unwrap().children[0];
+        let mut header = tree.get(table).unwrap().children[0];
         let scroll = *tree.get(table).unwrap().children.last().unwrap();
         let body = tree.get(scroll).unwrap().children[0];
-        (
-            tree.get(header).unwrap().children.len(),
-            tree.get(body).unwrap().children.len(),
-        )
+        let kids = &tree.get(header).unwrap().children;
+        if kids.len() == 2 && tree.get(kids[1]).unwrap().children.len() > 1 {
+            header = kids[1];
+        }
+        let cols = tree
+            .get(header)
+            .unwrap()
+            .children
+            .iter()
+            .filter(|&&c| tree.get(c).unwrap().bounds.w > 0)
+            .count();
+        (cols, tree.get(body).unwrap().children.len())
     }
 
     fn menu_labels(items: &[MenuItem]) -> Vec<String> {

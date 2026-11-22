@@ -139,6 +139,9 @@ pub struct DictManagerState {
     pub rows: Rc<RefCell<Vec<WordRow>>>,
     /// 当前显示页各行单元格文本（列与当前 spec.columns 对应），驱动表格正文。
     pub table_rows: Signal<Vec<Vec<String>>>,
+    /// 多选类别：当前页每行的勾选态（与 `table_rows` 同序），是跨页勾选集 `selected` 的投影，
+    /// 表格首列复选框与表头全选读写它（见 [`Self::on_page_select`]）。
+    pub page_sel: Signal<Vec<bool>>,
     /// 与 `table_rows` 顺序一致的行模型（过滤+排序后），操作列回调按显示下标取行。
     pub display_rows: Rc<RefCell<Vec<WordRow>>>,
     /// 表格结构版本（单元素，导航变化时递增）：列集随类别变，须整表重建。
@@ -626,6 +629,7 @@ impl DictManagerState {
             pending_sys_list: Rc::new(Cell::new(false)),
             rows: Rc::new(RefCell::new(Vec::new())),
             table_rows: signal(vec![]),
+            page_sel: signal(vec![]),
             display_rows: Rc::new(RefCell::new(Vec::new())),
             table_epoch: signal(vec![0]),
             domain_epoch: signal(vec![0]),
@@ -1343,6 +1347,8 @@ impl DictManagerState {
             .map(|r| spec.columns.iter().map(|c| r.cell_text(c.field)).collect())
             .collect();
         *self.display_rows.borrow_mut() = rows;
+        // 先填勾选向量再换行：表格重建行时按它定每行勾没勾。
+        self.sync_page_sel();
         self.table_rows.set(cells);
     }
 
@@ -2357,32 +2363,52 @@ impl DictManagerState {
     /// 勾选/取消一行。
     pub fn toggle_selected(&self, row: &WordRow) {
         let key = self.selection_key(row);
-        let mut sel = self.selected.borrow_mut();
-        if sel.remove(&key).is_none() {
-            sel.insert(key, row.clone());
-        }
-        let n = sel.len();
-        drop(sel);
-        self.selected_count.set(n);
-    }
-
-    /// 本页全选；本页已全选时改为取消本页。重建表格让行内勾选框跟上。
-    pub fn toggle_select_page(&self) {
-        let rows = self.display_rows.borrow().clone();
-        let all = !rows.is_empty() && rows.iter().all(|r| self.is_selected(r));
         {
             let mut sel = self.selected.borrow_mut();
-            for r in rows {
-                let key = self.selection_key(&r);
-                if all {
-                    sel.remove(&key);
+            if sel.remove(&key).is_none() {
+                sel.insert(key, row.clone());
+            }
+        }
+        self.after_selection_change();
+    }
+
+    /// 表格回报的当前页勾选态（用户点了行复选框或表头全选）：并进跨页勾选集。
+    pub fn on_page_select(&self, page: &[bool]) {
+        let rows = self.display_rows.borrow().clone();
+        {
+            let mut sel = self.selected.borrow_mut();
+            for (r, &on) in rows.iter().zip(page) {
+                let key = self.selection_key(r);
+                if on {
+                    sel.entry(key).or_insert_with(|| r.clone());
                 } else {
-                    sel.insert(key, r);
+                    sel.remove(&key);
                 }
             }
         }
-        self.selected_count.set(self.selected.borrow().len());
-        self.bump_table_epoch();
+        self.after_selection_change();
+    }
+
+    /// 勾选集变了：更新条数，把当前页的勾选向量同步给表格。
+    fn after_selection_change(&self) {
+        let n = self.selected.borrow().len();
+        if self.selected_count.get() != n {
+            self.selected_count.set(n);
+        }
+        self.sync_page_sel();
+    }
+
+    /// 按勾选集重算当前页的勾选向量；没变不写（写了表格会同步一遍复选框）。
+    fn sync_page_sel(&self) {
+        let v: Vec<bool> = self
+            .display_rows
+            .borrow()
+            .iter()
+            .map(|r| self.is_selected(r))
+            .collect();
+        if self.page_sel.get() != v {
+            self.page_sel.set(v);
+        }
     }
 
     /// 用新取回的行刷新勾选集里的快照：批量启停、改常用之后行的状态变了，批量菜单按快照判
@@ -2401,19 +2427,19 @@ impl DictManagerState {
 
     /// 把一行移出勾选集（它已被删掉或转走）。键见 [`Self::selection_key`]。
     pub(super) fn deselect(&self, code: &str, text: &str) {
-        let mut sel = self.selected.borrow_mut();
-        if sel.remove(&(code.to_string(), text.to_string())).is_some() {
-            let n = sel.len();
-            drop(sel);
-            self.selected_count.set(n);
+        let removed = self
+            .selected
+            .borrow_mut()
+            .remove(&(code.to_string(), text.to_string()))
+            .is_some();
+        if removed {
+            self.after_selection_change();
         }
     }
 
     pub(super) fn clear_selection(&self) {
         self.selected.borrow_mut().clear();
-        if self.selected_count.get() != 0 {
-            self.selected_count.set(0);
-        }
+        self.after_selection_change();
     }
 
     /// 勾选的行（按 (编码, 词) 序）。
@@ -6310,12 +6336,14 @@ mod tests {
         assert!(st.confirm_msg.get().contains("选中的 2 条"));
         st.cancel_confirm();
 
-        // 本页全选：已全选时再点即全不选。
+        // 表头全选回报整页：并进勾选集；再取消整页。勾选向量按当前页同步。
         *st.display_rows.borrow_mut() = vec![a.clone(), b.clone(), row("cc", "在")];
-        st.toggle_select_page();
+        st.on_page_select(&[true, true, true]);
         assert_eq!(st.selected_count.get(), 3);
-        st.toggle_select_page();
+        assert_eq!(st.page_sel.get(), vec![true, true, true]);
+        st.on_page_select(&[false, false, false]);
         assert_eq!(st.selected_count.get(), 0);
+        assert_eq!(st.page_sel.get(), vec![false, false, false]);
 
         st.toggle_selected(&a);
         st.sub_tab.set(0);

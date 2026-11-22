@@ -1247,7 +1247,9 @@ const SPEC_SHADOW: CategorySpec = CategorySpec {
 // 实际宽度 = 本列权重 / 总权重。动其中任何一个都会挤到其余所有列——操作列为装下
 // 用户条目的五个控件从 1.5 提到 2.9 时，类别列数值没变，占比却从 12.7% 掉到 10.1%，
 // 「年月」两个汉字就折行了。改任一列前先把四个数加起来算占比。
-// 现行配比合计 7.3：类别 14% / 格式 25% / 示例 25% / 操作 37%。
+// 现行配比合计 7.1：类别 14% / 格式 21% / 示例 21% / 操作 44%。多选的复选框列（固定 40px）
+// 落在表格最前，挤的是这组配比的总宽：之前 37% 时用户条目的「删除」已被裁掉一截，加了
+// 复选框列更甚，故格式 / 示例各让 0.3、操作列另加 0.2（这两列长了会折两行，不会截断）。
 const COLS_QUICK: &[ColumnSpec] = &[
     ColumnSpec {
         header: "类别",
@@ -1257,12 +1259,12 @@ const COLS_QUICK: &[ColumnSpec] = &[
     },
     ColumnSpec {
         header: "格式",
-        weight: 1.8,
+        weight: 1.5,
         field: WordField::Text,
     },
     ColumnSpec {
         header: "示例",
-        weight: 1.8,
+        weight: 1.5,
         field: WordField::Sample,
     },
 ];
@@ -1731,9 +1733,9 @@ impl CategorySpec {
     /// 必须按最宽的那种行算。
     pub fn actions_weight(&self) -> f32 {
         match self.category {
-            // 与 COLS_QUICK 的三个权重是一组配比（见那里的 ⚠️）：合计 7.3，
-            // 操作列占约 37%，恰好排下五个控件而不挤压类别列。
-            WordCategory::QuickFormat => 2.7,
+            // 与 COLS_QUICK 的三个权重是一组配比（见那里的 ⚠️）：合计 7.1，
+            // 操作列占约 44%，扣掉多选复选框列后仍排得下五个控件。
+            WordCategory::QuickFormat => 3.1,
             // 一枚「操作…」菜单按钮，与 COLS_CHARSETS 的五个权重是一组配比（合计 9.5）。
             //
             // ★ 曾是 3.5——那时操作列上并排着三枚小按钮（「常用」「生僻」「编辑」），
