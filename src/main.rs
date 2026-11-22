@@ -55,6 +55,7 @@ mod search;
 mod setting_config;
 mod shell;
 mod shortcuts;
+mod softkbd_editor;
 mod state;
 mod subnav;
 mod text_file;

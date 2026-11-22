@@ -816,6 +816,8 @@ pub struct AppState {
     pub memory: crate::pages::memory::MemoryDiag,
     /// 「应用兼容」窗的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
     pub compat_mgr: crate::pages::compat::CompatState,
+    /// 软键盘编辑器的工作副本（随「应用设置」经 SideCommitter 提交）。
+    pub softkbd: crate::softkbd_editor::SoftKbdData,
     /// 「重新加载」二次确认对话框可见标志。
     pub reload_confirm: Signal<bool>,
     /// 「恢复本页」（有未保存改动时）确认对话框可见标志。
@@ -1293,6 +1295,7 @@ impl AppState {
             stats_mgr: crate::pages::stats::StatsState::new(),
             memory: crate::pages::memory::MemoryDiag::new(),
             compat_mgr: crate::pages::compat::CompatState::new(),
+            softkbd: crate::softkbd_editor::SoftKbdData::default(),
             reload_confirm: signal(false),
             exit_confirm: signal(false),
             unsaved_note: signal(String::new()),
@@ -3205,6 +3208,8 @@ impl AppState {
         // 待提交的方案 override 同理——「重新加载」是明确的「丢弃未保存改动」，
         // 留着它们的话，下次点保存会把用户以为已丢弃的改动写下去。
         self.schema_mgr.clear_pending_edits();
+        // 软键盘编辑器的待提交操作同理（它也走 SideCommitter）。
+        self.softkbd.reload();
         self.base_config = cfg.clone();
         self.current_config = cfg;
         self.feedback
@@ -3291,7 +3296,8 @@ impl AppState {
         // ── 先提交 config.toml 之外的落点（方案 override、词库开关）──
         // 放在最前：它失败时 config.toml 还没动，用户重试不会重复写一遍配置。
         // 反过来先写 config 再失败，两个存储就分叉了。
-        let side_changed = reg.side_dirty();
+        let side_labels = reg.side_dirty_labels();
+        let side_changed = !side_labels.is_empty();
         if let Err(e) = reg.commit_side() {
             self.feedback.set(Some((ToastKind::Error, e)));
             return false;
@@ -3325,7 +3331,10 @@ impl AppState {
         if items.is_empty() {
             // side 有改动时不能说「没有变更」——方案配置刚刚才落盘。
             self.feedback.set(Some(if side_changed {
-                (ToastKind::Success, "已保存方案配置".to_string())
+                (
+                    ToastKind::Success,
+                    format!("已保存{}", side_labels.join("、")),
+                )
             } else {
                 (ToastKind::Info, "没有变更".to_string())
             }));

@@ -310,6 +310,8 @@ mod feature_id_tests {
             "backup",
             "compat",
             "memory",
+            // pages::input_page
+            "softkeyboard",
             // manifest::scheme_config_section
             "shuangpin_layout",
             // pages::appearance_page

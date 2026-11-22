@@ -448,6 +448,8 @@ const HANDWRITTEN: &[Handwritten] = &[
     Handwritten { id: "advanced:file-assoc", anchor: "advanced:integration", page: "advanced", title: "文件关联", section: "桌面集成", keywords: "wpkg 双击 打开方式", feature: "integration" },
     Handwritten { id: "advanced:import-export", anchor: "advanced:import-export", page: "advanced", title: "导入与导出", section: "导入与导出", keywords: "配置 迁移 剪贴板", feature: "config_import" },
     Handwritten { id: "advanced:backup", anchor: "advanced:backup", page: "advanced", title: "备份与还原", section: "备份与还原", keywords: "快照 恢复 存档", feature: "backup" },
+    // 锚点即 `softkbd_editor::ANCHOR`。
+    Handwritten { id: "input:softkeyboard", anchor: "input:softkeyboard", page: "input", title: "自定义软键盘", section: "软键盘", keywords: "软键盘 符号 键盘面 特殊符号 自定义 编辑 soft keyboard", feature: "softkeyboard" },
     // 锚点即 `pages::extensions::ANCHOR`；扩展自己的选项运行时才知道，索引只收卡片入口。
     Handwritten { id: "advanced:extensions", anchor: "advanced:extensions", page: "advanced", title: "扩展程序", section: "扩展程序（实验性）", keywords: "扩展程序 实验性 插件 按键音 音效 朗读 extension plugin", feature: "extensions" },
     // 两条都落在「内存占用」那一行（「诊断信息…」按钮所在行）；锚点即 `pages::memory::ANCHOR`。

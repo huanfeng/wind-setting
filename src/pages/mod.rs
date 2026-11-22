@@ -531,6 +531,30 @@ fn input_page(state: &AppState, nav: &SubNav) -> Element {
         let vis = crate::manifest::section_vis(state, "input", &sec);
         secs.push(nav.wrap_when(&sec, 0, card, move || vis()));
     }
+    // 软键盘编辑器：手写卡，排在清单分区之后。定制版藏掉的不建；用户精简清单藏的照建、
+    // 运行期隐藏（同高级页那几张手写卡）。
+    use crate::softkbd_editor as skb;
+    if !state.manifest.feature_hidden(skb::FEATURE) {
+        secs.push(nav_feature(
+            nav,
+            state,
+            skb::FEATURE,
+            skb::SECTION,
+            crate::search::anchor::wrap(
+                crate::manifest::wrap_feature_runtime(
+                    state,
+                    skb::FEATURE,
+                    crate::manifest::wrap_feature_menu(
+                        state,
+                        skb::FEATURE,
+                        skb::build_section(state),
+                    ),
+                ),
+                skb::ANCHOR,
+                state.jump,
+            ),
+        ));
+    }
     sections_page("输入", "调整输入行为与纠错策略", secs)
 }
 

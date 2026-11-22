@@ -2943,6 +2943,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         }),
         "shadow.addRule" | "shadow.removeRule" => json!({ "ok": true }),
         m if m.starts_with("compat.") => crate::pages::compat::mock::reply(m, params),
+        m if m.starts_with("softkeyboard.") => crate::softkbd_editor::mock::reply(m, params),
         _ => Value::Null,
     }
 }

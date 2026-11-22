@@ -461,6 +461,7 @@ mod tests {
                 ],
             ),
             ("memory", &["advanced:memory", "advanced:diagnostics"]),
+            ("softkeyboard", &["input:softkeyboard"]),
             ("update_check", &["about:update"]),
         ];
         for (feature, gone) in cases {
@@ -729,7 +730,15 @@ mod tests {
             )),
             ["主题"]
         );
-        assert_eq!(empty_tabs(&groups(&["input", "general"])), ["输入"]);
+        // 输入页还有手写的软键盘卡：清单项全藏了也不空，连它一并藏掉才空。
+        assert!(empty_tabs(&groups(&["input", "general"])).is_empty());
+        assert_eq!(
+            empty_tabs(&with(
+                groups(&["input", "general"]),
+                &["feature:softkeyboard"]
+            )),
+            ["输入"]
+        );
     }
 }
 
