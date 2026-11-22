@@ -1646,10 +1646,12 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
         {
             Some("mock: 开关失败".to_string())
         }
-        // 逐条删除中途失败：词条文本为此记号时 `*.remove` 报错，供离线走通「删到一半」那条路。
-        m if m.ends_with(".remove") => (params.get("text").and_then(|v| v.as_str())
-            == Some(MOCK_FAIL_TEXT))
-        .then(|| "mock: 删除失败".to_string()),
+        // 逐条删除 / 批量转正中途失败：词条文本为此记号时 `*.remove` / `*.promote` 报错，
+        // 供离线走通「做到一半」那条路。
+        m if m.ends_with(".remove") || m.ends_with(".promote") => {
+            (params.get("text").and_then(|v| v.as_str()) == Some(MOCK_FAIL_TEXT))
+                .then(|| "mock: 写入失败".to_string())
+        }
         // compat.*：进程名为此记号时写方法报错（形状照核心真实的补丁被拒信息），
         // 供离线走通「写失败 → toast 核心的中文报错」那条路。
         // compat.import：内容里带 MOCK_FAIL_TEXT 时预览 / 提交都报错（模拟核心断线 / 拒绝）。

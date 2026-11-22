@@ -397,9 +397,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .on_click(move |_| m_ds.request_delete_selected())
         // 有勾选才出现（而不是一直摆着置灰）：工具栏一行要放下搜索框，最窄窗口下按钮多一枚
         // 搜索框就没了。
-        .visible_when(move || {
-            v_ds.current_spec().ops.multi_select && e_ds.selected_count.get() > 0
-        });
+        .visible_when(move || e_ds.selected_count.get() > 0 && v_ds.can_delete_selected());
 
     // 移动到别的词库（主词库 ⇄ 分库）：勾选的词条，目标在下拉菜单里选。
     let (m_mv, v_mv, e_mv) = (mgr.clone(), mgr.clone(), mgr.clone());
@@ -411,6 +409,18 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
             ctx.show_dropdown_menu(ctx.bounds(), items);
         })
         .visible_when(move || e_mv.selected_count.get() > 0 && !v_mv.move_targets().is_empty());
+
+    // 批量操作（启停、转正、设常用 / 生僻、恢复默认）：哪几项由类别能力定，见 `batch.rs`。
+    // 文案用省略号不用 `▾`，理由同操作列的「操作…」。
+    let (m_bt, v_bt, e_bt) = (mgr.clone(), mgr.clone(), mgr.clone());
+    let batch = Element::button("批量操作…")
+        .small()
+        .outline_soft()
+        .on_click(move |ctx| {
+            let items = m_bt.batch_menu_items();
+            ctx.show_dropdown_menu(ctx.bounds(), items);
+        })
+        .visible_when(move || e_bt.selected_count.get() > 0 && !v_bt.batch_actions().is_empty());
 
     // 临时词库筛选（t63）：次数上限 + 闲置天数。筛选生效时「清空」只删筛选结果。
     let v_tf = mgr.clone();
@@ -516,6 +526,7 @@ fn build_toolbar(mgr: &DictManagerState) -> Element {
         .child(add)
         .child(promote_all)
         .child(select_page)
+        .child(batch)
         .child(delete_selected)
         .child(move_selected)
         .child(clear)
@@ -658,18 +669,7 @@ fn build_table(mgr: &DictManagerState) -> Element {
     .on_row_activate(move |_ctx, disp| activate_row(&m_dbl, disp))
     // 右击整行：与操作列同源的菜单，外加复制与「转为用户短语」（列宽装不下的那几样）。
     .on_row_context_menu(move |disp| row_menu_items(&m_menu, disp))
-    // 系统短语等长条目最多显示两行，超出裁切省略（不再溢出到下方行）。系统词库的两张表一行
-    // 截断：格都短，窄窗里折行只会把数字与子表名拆成两截。
-    .cell_lines(
-        if matches!(
-            spec.category,
-            WordCategory::SysDicts | WordCategory::SysEntries
-        ) {
-            1
-        } else {
-            2
-        },
-    )
+    .cell_lines(cell_lines_for(spec.category))
     .fill()
 }
 
@@ -755,6 +755,55 @@ fn render_cell(
     col: usize,
     text: &str,
 ) -> Option<Element> {
+    let content = render_cell_content(mgr, columns, row, col, text);
+    // 多选类别：首列前挂勾选框（t63）。挂在单元格里而不另起一列——表头不支持非数据列，
+    // 另起一列会与排序列下标错位。挂首列而不认编码列：补全历史、常用字、快捷输入都没有编码列。
+    if col != 0 || !mgr.current_spec().ops.multi_select {
+        return content;
+    }
+    let r = mgr.display_row(row)?;
+    // 首列本是默认文本格时，照表格默认文本格的样式补一个（字号、行数、末尾省略）；占满余宽
+    // 才会折行/省略。自定义的徽章不占满，否则底色边框会拉满整格。
+    let content = content.unwrap_or_else(|| {
+        let lines = cell_lines_for(mgr.current_category());
+        Element::label(text.to_string())
+            .font_size(windui::theme::current().metrics.font_sm)
+            .max_lines(lines)
+            .truncate(Truncate::End)
+            .weight(1.0)
+    });
+    let sig = signal(mgr.is_selected(&r));
+    let m = mgr.clone();
+    Some(
+        Element::row()
+            .cross(Align::Center)
+            .spacing(4)
+            .child(Element::checkbox("", sig).small().on_toggle(move |_| {
+                sig.set(!sig.get());
+                m.toggle_selected(&r);
+            }))
+            .child(content),
+    )
+}
+
+/// 默认文本格最多显示几行：系统词库两张表一行截断（格都短，窄窗里折行只会把数字与子表名
+/// 拆成两截），其余两行（系统短语等长条目）。
+fn cell_lines_for(cat: WordCategory) -> usize {
+    if matches!(cat, WordCategory::SysDicts | WordCategory::SysEntries) {
+        1
+    } else {
+        2
+    }
+}
+
+/// 单元格本身的自定义渲染（不含多选勾选框，见 [`render_cell`]）；`None` 走默认文本渲染。
+fn render_cell_content(
+    mgr: &DictManagerState,
+    columns: &'static [ColumnSpec],
+    row: usize,
+    col: usize,
+    text: &str,
+) -> Option<Element> {
     match columns.get(col)?.field {
         // 启用列：勾选即生效（系统词库表）；行级不可关的禁用并说明原因。
         WordField::Enabled => {
@@ -810,24 +859,6 @@ fn render_cell(
             } else {
                 badge
             };
-            // 多选类别：编码徽章前挂勾选框（t63）。挂在单元格里而不另起一列——表头
-            // 不支持非数据列，另起一列会与排序列下标错位。
-            if mgr.current_spec().ops.multi_select
-                && let Some(r) = mgr.display_row(row)
-            {
-                let sig = signal(mgr.is_selected(&r));
-                let m = mgr.clone();
-                return Some(
-                    Element::row()
-                        .cross(Align::Center)
-                        .spacing(4)
-                        .child(Element::checkbox("", sig).small().on_toggle(move |_| {
-                            sig.set(!sig.get());
-                            m.toggle_selected(&r);
-                        }))
-                        .child(badge),
-                );
-            }
             if !mgr.display_row(row).is_some_and(|r| r.overrides_system) {
                 return Some(badge);
             }

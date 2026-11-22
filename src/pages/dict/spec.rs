@@ -727,12 +727,11 @@ pub struct OpFlags {
     /// 与 `reset_default`（整类/整表恢复）分开：出厂条目改坏了，用户想恢复的通常是
     /// 手上这一条，而不是把整类的排序偏好全丢掉。
     pub reset_entry: bool,
-    /// 是否支持**多选删除**（t63）：编码列前挂勾选框，工具栏出「本页全选 / 删除选中」。
+    /// 是否支持**多选**（t63）：首列前挂勾选框，工具栏出「本页全选」。
     ///
-    /// 删除逐条走 [`DictManagerState::delete_call`]，与行内删除同一条路，故对任何
-    /// `remove` 可用的类别都成立；目前只给临时词库开（反馈就是冲它来的）。
-    ///
-    /// [`DictManagerState::delete_call`]: super::state::DictManagerState::delete_call
+    /// 只管「能不能勾」。勾了之后能做什么由本类别的其余能力决定：能删（`remove` /
+    /// `remove_rule`）才出「删除选中」，能启停、能转正等才在「批量操作」菜单里出对应项
+    /// （见 `DictManagerState::batch_menu_items`）。批量动作都是逐条调单条的 RPC。
     pub multi_select: bool,
     /// 「信息」：弹出这一行的详情（系统词库的头部信息）。
     pub info: bool,
@@ -945,6 +944,8 @@ const SPEC_PHRASE_SYSTEM: CategorySpec = CategorySpec {
         view: true,
         claim_as_user: true,
         share_text: true,
+        // 只为批量启停：系统短语没有删除，工具栏不出「删除选中」。
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1104,6 +1105,7 @@ const SPEC_FREQ: CategorySpec = CategorySpec {
 /// 补全学习数据的列（邮箱后缀 / 网址历史共用）。
 ///
 /// 没有「编码」列：这两类数据的 key 就是文本本身，core 那边也不返回 code 字段。
+/// 多选的勾选框挂在首列（「内容」）前，不依赖编码列。
 const COLS_COMPLETION: &[ColumnSpec] = &[
     ColumnSpec {
         header: "内容",
@@ -1140,6 +1142,7 @@ const SPEC_MAIL_SUFFIX: CategorySpec = CategorySpec {
     ops: OpFlags {
         remove: true,
         clear: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1163,6 +1166,7 @@ const SPEC_URL_HISTORY: CategorySpec = CategorySpec {
     ops: OpFlags {
         remove: true,
         clear: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1190,6 +1194,7 @@ const SPEC_QUICK_HISTORY: CategorySpec = CategorySpec {
     ops: OpFlags {
         remove: true,
         clear: true,
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1291,6 +1296,8 @@ const SPEC_QUICK: CategorySpec = CategorySpec {
         add: true,
         edit: true,
         remove: true,
+        // 批量启停、恢复默认；删除选中只删勾中的自建条目（见 `selected_delete_plan`）。
+        multi_select: true,
         ..OpFlags::NONE
     },
     rpc: RpcNames {
@@ -1469,6 +1476,8 @@ const SPEC_COMMON: CategorySpec = CategorySpec {
         reset_entry: true,
         // 整表恢复默认（清掉全部调整）。
         reset_default: true,
+        // 批量设常用 / 生僻、恢复默认（见 `batch.rs`）；没有删除。
+        multi_select: true,
         // 导入导出的是**用户调整**（那份稀疏覆盖），不是 8104 字全表：文件带到另一台机器
         // 上，全表快照会把对方默认里本就有的字也钉成显式覆盖，从此拿不到默认表升版。
         import: true,

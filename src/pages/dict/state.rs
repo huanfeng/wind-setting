@@ -199,7 +199,7 @@ pub struct DictManagerState {
     /// 确认对话框正文。
     pub confirm_msg: Signal<String>,
     /// 待确认的操作（确认后执行）。
-    pending: Rc<RefCell<Option<PendingAction>>>,
+    pub(super) pending: Rc<RefCell<Option<PendingAction>>>,
 
     // ── 词库导入对话框（格式说明 + 选文件 + 自动识别预览 + 合并/替换选择）──
     pub import_confirm_visible: Signal<bool>,
@@ -422,7 +422,7 @@ type QuickVarSection = (Vec<String>, Vec<(String, String)>);
 
 /// 带筛选/搜索的「清空」在确认时固定下来的范围（见 [`PendingAction::Clear`]）。
 #[derive(Clone)]
-struct ClearFilter {
+pub(super) struct ClearFilter {
     /// 完成提示里的名词：「搜索结果」或「筛选结果」。
     noun: &'static str,
     /// 非分页类别的命中行快照（分页类别为 `None`，执行时按固定的 `params` 向服务端取）。
@@ -433,7 +433,7 @@ struct ClearFilter {
 const TEMP_IDLE_DAYS_MAX: u64 = 36500;
 
 #[derive(Clone)]
-enum PendingAction {
+pub(super) enum PendingAction {
     /// 删除一行（code, text/word）。
     DeleteRow(String, String),
     /// 删除一条快捷输入的自定义格式（kind, id）。
@@ -453,6 +453,8 @@ enum PendingAction {
     },
     /// 删除多选勾中的行。
     DeleteSelected,
+    /// 对勾中的行做一个要确认的批量动作（如恢复默认），见 `batch.rs`。
+    Batch(super::batch::BatchAction),
     /// 删除一个用户分库（分库名）。
     DeleteUserLib(String),
     /// 删除一个方案的全部用户数据（方案 id）。
@@ -1257,6 +1259,7 @@ impl DictManagerState {
     pub fn apply_rows(&self, v: &Value) {
         let spec = self.current_spec();
         let (rows, total) = WordRow::parse_list(spec.category, spec.paged, v);
+        self.refresh_selected_snapshots(&rows);
         *self.rows.borrow_mut() = rows;
         self.total.set(total);
         self.rebuild_list();
@@ -1918,11 +1921,13 @@ impl DictManagerState {
 
     pub fn do_quick_delete(&self, kind: &str, id: &str) {
         let method = self.current_spec().rpc.remove;
-        self.write(
+        if self.write(
             method,
             json!({ "kind": kind, "id": id }),
             "已删除自定义格式",
-        );
+        ) {
+            self.deselect(kind, id);
+        }
     }
 
     /// 快捷输入的保存调用（新增 / 改模板）。抽成纯函数便于单测。
@@ -2333,15 +2338,25 @@ impl DictManagerState {
 
     // ── 多选删除（ops.multi_select）──────────────────────────
 
+    /// 勾选集的去重键。快捷输入按 `(kind, id)`：`text` 是用户可改的模板，格式 id 只在同类内
+    /// 唯一（同 [`Self::do_set_enabled`] 的主键）。其余类别按 `(code, text)`。
+    pub(crate) fn selection_key(&self, row: &WordRow) -> (String, String) {
+        if self.current_category() == WordCategory::QuickFormat {
+            (row.kind.clone(), row.code.clone())
+        } else {
+            (row.code.clone(), row.text.clone())
+        }
+    }
+
     pub fn is_selected(&self, row: &WordRow) -> bool {
         self.selected
             .borrow()
-            .contains_key(&(row.code.clone(), row.text.clone()))
+            .contains_key(&self.selection_key(row))
     }
 
     /// 勾选/取消一行。
     pub fn toggle_selected(&self, row: &WordRow) {
-        let key = (row.code.clone(), row.text.clone());
+        let key = self.selection_key(row);
         let mut sel = self.selected.borrow_mut();
         if sel.remove(&key).is_none() {
             sel.insert(key, row.clone());
@@ -2358,7 +2373,7 @@ impl DictManagerState {
         {
             let mut sel = self.selected.borrow_mut();
             for r in rows {
-                let key = (r.code.clone(), r.text.clone());
+                let key = self.selection_key(&r);
                 if all {
                     sel.remove(&key);
                 } else {
@@ -2370,7 +2385,21 @@ impl DictManagerState {
         self.bump_table_epoch();
     }
 
-    /// 把一行移出勾选集（它已被删掉或转走）。
+    /// 用新取回的行刷新勾选集里的快照：批量启停、改常用之后行的状态变了，批量菜单按快照判
+    /// 能不能点（如「恢复默认」看 `adjusted`）。不在本页的勾选行保留旧快照。
+    fn refresh_selected_snapshots(&self, rows: &[WordRow]) {
+        let mut sel = self.selected.borrow_mut();
+        if sel.is_empty() {
+            return;
+        }
+        for r in rows {
+            if let Some(v) = sel.get_mut(&self.selection_key(r)) {
+                *v = r.clone();
+            }
+        }
+    }
+
+    /// 把一行移出勾选集（它已被删掉或转走）。键见 [`Self::selection_key`]。
     pub(super) fn deselect(&self, code: &str, text: &str) {
         let mut sel = self.selected.borrow_mut();
         if sel.remove(&(code.to_string(), text.to_string())).is_some() {
@@ -2392,14 +2421,45 @@ impl DictManagerState {
         self.selected.borrow().values().cloned().collect()
     }
 
-    /// 删除选中要发出的调用（纯函数，便于单测）：逐条走与清空搜索结果同一份 [`Self::clear_calls`]。
+    /// 删除选中要发出的调用（纯函数，便于单测），与勾选键一一对应。
+    ///
+    /// 快捷输入只删**用户自建**的（出厂条目没有删除，见 `row_ops`），按 `(kind, id)` 删；
+    /// 其余逐条走与清空搜索结果同一份 [`Self::clear_calls`]。
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn selected_delete_plan(&self) -> Vec<((String, String), (&'static str, Value))> {
+        let rows = self.selected_rows();
+        if self.current_category() == WordCategory::QuickFormat {
+            let method = self.current_spec().rpc.remove;
+            return rows
+                .iter()
+                .filter(|r| r.user)
+                .map(|r| (self.selection_key(r), self.quick_call(method, r, &[])))
+                .collect();
+        }
+        let keys: Vec<_> = rows.iter().map(|r| self.selection_key(r)).collect();
+        keys.into_iter()
+            .zip(self.clear_calls(Some(&rows)))
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn selected_delete_calls(&self) -> Vec<(&'static str, Value)> {
-        let rows: Vec<WordRow> = self.selected.borrow().values().cloned().collect();
-        self.clear_calls(Some(&rows))
+        self.selected_delete_plan()
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect()
+    }
+
+    /// 「删除选中」出不出：能勾选、本类别能删，且勾中的行里有能删的（快捷输入的出厂条目不能删）。
+    pub fn can_delete_selected(&self) -> bool {
+        let ops = self.current_spec().ops;
+        ops.multi_select
+            && (ops.remove || ops.remove_rule)
+            && !self.selected_delete_plan().is_empty()
     }
 
     pub fn request_delete_selected(&self) {
-        let n = self.selected_count.get();
+        let n = self.selected_delete_plan().len();
         if n == 0 {
             return;
         }
@@ -2410,28 +2470,39 @@ impl DictManagerState {
     }
 
     fn do_delete_selected(&self) {
-        // 与 `selected_delete_calls` 同序（BTreeMap 的值序），前 k 条即已删掉的。
-        let keys: Vec<(String, String)> = self.selected.borrow().keys().cloned().collect();
-        let calls = self.selected_delete_calls();
+        let (keys, calls): (Vec<_>, Vec<_>) = self.selected_delete_plan().into_iter().unzip();
         let n = calls.len();
         let done = self.run_row_calls(calls, &format!("已删除 {n} 条"));
-        for (c, t) in &keys[..done] {
-            self.deselect(c, t);
+        for (a, b) in &keys[..done] {
+            self.deselect(a, b);
         }
     }
 
     /// 逐条执行删除调用，首错即停；无论成败都重载。返回已成功的条数。
     fn run_row_calls(&self, calls: Vec<(&'static str, Value)>, ok_msg: &str) -> usize {
+        self.run_calls_until_err(calls, "删", ok_msg)
+    }
+
+    /// 逐条执行调用，首错即停（报「已{verb} k/n 条后失败」）；无论成败都重载。返回已成功的条数。
+    /// `ok_msg` 为空 = 成功不弹提示。
+    pub(super) fn run_calls_until_err(
+        &self,
+        calls: Vec<(&'static str, Value)>,
+        verb: &str,
+        ok_msg: &str,
+    ) -> usize {
         let n = calls.len();
         for (k, (m, p)) in calls.into_iter().enumerate() {
             if let Err(e) = rpc::call_core(m, &p) {
-                self.notify_err(&format!("已删 {k}/{n} 条后失败: {e}"));
+                self.notify_err(&format!("已{verb} {k}/{n} 条后失败: {e}"));
                 self.reload();
                 return k;
             }
         }
         self.reload();
-        self.notify_ok(ok_msg);
+        if !ok_msg.is_empty() {
+            self.notify_ok(ok_msg);
+        }
         n
     }
 
@@ -2773,6 +2844,7 @@ impl DictManagerState {
             Some(PendingAction::DeleteQuickFormat { kind, id }) => self.do_quick_delete(&kind, &id),
             Some(PendingAction::Clear { params, filtered }) => self.do_clear(params, filtered),
             Some(PendingAction::DeleteSelected) => self.do_delete_selected(),
+            Some(PendingAction::Batch(act)) => self.run_batch(act),
             Some(PendingAction::DeleteUserLib(name)) => self.do_delete_user_lib(&name),
             Some(PendingAction::PurgeSchema(id)) => self.do_purge_schema(&id),
             Some(PendingAction::ResetDefault) => self.do_reset_default(),
@@ -6251,7 +6323,8 @@ mod tests {
         assert_eq!(st.selected_count.get(), 0, "切类别清空选择");
     }
 
-    /// 能删的类别都能多选（多选删除走各自的删除接口）；不能删的不开。
+    /// 能删的类别都能多选、都出「删除选中」（走各自的删除接口）。补全历史没有编码列，
+    /// 勾选框挂在首列。
     #[test]
     fn multi_select_follows_remove() {
         use super::super::spec::spec_for;
@@ -6262,6 +6335,9 @@ mod tests {
             WordCategory::Temp,
             WordCategory::Freq,
             WordCategory::Shadow,
+            WordCategory::MailSuffix,
+            WordCategory::UrlHistory,
+            WordCategory::QuickHistory,
         ] {
             let ops = spec_for(cat).ops;
             assert!(
@@ -6270,17 +6346,32 @@ mod tests {
             );
         }
         for cat in [
-            WordCategory::PhraseSystem,
-            WordCategory::QuickFormat,
-            WordCategory::CommonChars,
             WordCategory::Charsets,
-            // 输入补全的列里没有编码列，勾选框挂不上去：不开多选，免得「本页全选」看不见勾。
-            WordCategory::MailSuffix,
-            WordCategory::UrlHistory,
-            WordCategory::QuickHistory,
+            WordCategory::SysDicts,
+            WordCategory::SysEntries,
         ] {
             assert!(!spec_for(cat).ops.multi_select, "{cat:?}");
         }
+    }
+
+    /// 补全历史的删除选中按文本删（core 只读 `text`），不带方案。
+    #[test]
+    fn completion_delete_selected_by_text() {
+        let st = DictManagerState::new();
+        st.domain.set(DOMAIN_COMPLETION);
+        st.sub_tab.set(1);
+        assert_eq!(st.current_category(), WordCategory::UrlHistory);
+        let r = WordRow {
+            text: "github.com".into(),
+            ..Default::default()
+        };
+        st.toggle_selected(&r);
+        assert!(st.can_delete_selected());
+        let calls = st.selected_delete_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "urlHistory.delete");
+        assert_eq!(calls[0].1["text"], "github.com");
+        assert!(calls[0].1.get("schemaId").is_none());
     }
 
     fn temp_state_mock() -> DictManagerState {
@@ -6330,6 +6421,30 @@ mod tests {
             assert!(!st.is_selected(&a), "已删掉的移出勾选");
             assert!(st.is_selected(&bad) && st.is_selected(&c), "没删掉的留着");
             assert_eq!(st.selected_count.get(), 2);
+        });
+    }
+
+    /// 批量转正：逐条 temp.promote，转到一半失败时只把转成功的移出勾选；启停这类动作
+    /// 做完勾选留着。
+    #[test]
+    fn batch_promote_partial_failure_keeps_unpromoted() {
+        use super::super::batch::BatchAction;
+        with_mock(|| {
+            let st = temp_state_mock();
+            assert_eq!(st.batch_actions(), vec![BatchAction::Promote]);
+            let (a, bad) = (
+                temp_row("aa", "工"),
+                temp_row("bb", crate::rpc::MOCK_FAIL_TEXT),
+            );
+            st.toggle_selected(&a);
+            st.toggle_selected(&bad);
+            let plan = st.batch_plan(BatchAction::Promote);
+            assert_eq!(plan[0].1.0, "temp.promote");
+            assert_eq!(plan[0].1.1["schemaId"], "wb");
+            st.request_batch(BatchAction::Promote);
+            let (_, msg) = st.feedback.get().expect("应有提示");
+            assert!(msg.contains("已转正 1/2 条后失败"), "{msg}");
+            assert!(!st.is_selected(&a) && st.is_selected(&bad));
         });
     }
 
