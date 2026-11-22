@@ -297,6 +297,16 @@ fn outermost_app_bundle(exe: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// explorer `/select,` 的参数。路径里 `/` 与 `\` 混用（数据目录拼上方案里的相对路径）时
+/// explorer 认不出，会退回「此电脑」/桌面，所以统一成反斜杠。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn explorer_select_arg(path: &Path) -> String {
+    format!(
+        "/select,\"{}\"",
+        path.display().to_string().replace('/', "\\")
+    )
+}
+
 /// 在文件管理器里**选中**一个文件（而不是打开它）。Linux 没有通用的「选中」，打开所在目录。
 pub fn reveal(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
@@ -305,7 +315,7 @@ pub fn reveal(path: &Path) -> Result<(), String> {
         // explorer 要的是 `/select,"路径"` 这一整个参数；交给 std 加引号会包住 `/select,`
         // 一起，explorer 不认。
         std::process::Command::new("explorer.exe")
-            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .raw_arg(explorer_select_arg(path))
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -370,6 +380,17 @@ fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explorer_select_arg_uses_backslashes_only() {
+        let a = super::explorer_select_arg(std::path::Path::new(
+            "C:\\Program Files\\WindInput\\data\\schemas/flypy/11_fl.dict.yaml",
+        ));
+        assert_eq!(
+            a,
+            "/select,\"C:\\Program Files\\WindInput\\data\\schemas\\flypy\\11_fl.dict.yaml\""
+        );
+    }
+
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
