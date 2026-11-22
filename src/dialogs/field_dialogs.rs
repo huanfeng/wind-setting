@@ -803,6 +803,9 @@ pub fn build_group_dialog_shell(
 /// 控件，免得外壳再套一层滚动条）时按它算高度。
 pub const LARGE_SHELL_BODY_H: i32 = 460;
 
+/// [`build_group_dialog_shell_large`] 的宽度。别处要「设置里偏大的那档对话框」时引用它。
+pub const LARGE_SHELL_W: i32 = 620;
+
 /// 尺寸放大的变体，供内容分了 TAB、默认 460×380 装不下的浮层用。
 pub fn build_group_dialog_shell_large(
     visible: Signal<bool>,
@@ -815,7 +818,7 @@ pub fn build_group_dialog_shell_large(
         Element::label(title),
         content,
         bottom_leading,
-        620,
+        LARGE_SHELL_W,
         LARGE_SHELL_BODY_H,
     )
 }

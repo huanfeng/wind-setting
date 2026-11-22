@@ -15,6 +15,12 @@ use super::state::DictManagerState;
 /// 多行预览与提示，窄了会把每一条都挤成两三行，读起来全是折行。
 const IO_DIALOG_W: i32 = 540;
 
+/// 加/改词与系统短语查看的对话框宽度：取设置里偏大的那档，词条长、多行时不至于挤成窄条。
+const ENTRY_DIALOG_W: i32 = crate::dialogs::field_dialogs::LARGE_SHELL_W;
+
+/// 上面两个对话框里多行正文框的高度（约 12 行）。
+const ENTRY_TEXT_H: i32 = 240;
+
 /// 导入对话框里「提示 + 预览」区的固定视口高度。
 ///
 /// 刻意写死而非按内容自适应：这块的行数随目标方案与文件内容大幅波动（混输目标多两行
@@ -511,7 +517,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
     // 转义形态，见 `wind-webdata` 的 `ui_text`/`store_text` 一对）。
     //
     // 尾部「粘贴 / 清空」与编码行的「生成编码」等宽对齐（见 `widgets::ENCODE_BTN_W`）。
-    // 这一行顶对齐而非居中：正文框有 88 高，两个小按钮吊在正中间会离标签很远。
+    // 这一行顶对齐而非居中：正文框很高，两个小按钮吊在正中间会离标签很远。
     let text_field = Element::row()
         .weight(1.0)
         .cross(Align::Start)
@@ -520,7 +526,7 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
             Element::text_input(mgr.edit_text, "")
                 .multiline()
                 .wrap(true)
-                .height(88)
+                .height(ENTRY_TEXT_H)
                 .weight(1.0)
                 // 多行框里裸 Enter 是换行（正文本就允许多行，见上面那段），**Ctrl+Enter**
                 // 才是提交——那条臂由 windui 专门让出来给应用。
@@ -567,7 +573,12 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| submit.submit_word()),
         );
 
-    let frame = dialog_frame(420, dialog_header(mgr.edit_title), body, Some(footer));
+    let frame = dialog_frame(
+        ENTRY_DIALOG_W,
+        dialog_header(mgr.edit_title),
+        body,
+        Some(footer),
+    );
     Element::dialog(mgr.edit_visible, frame)
 }
 
@@ -877,7 +888,7 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
             Element::text_input(mgr.view_text, "")
                 .multiline()
                 .wrap(true)
-                .height(88)
+                .height(ENTRY_TEXT_H)
                 .weight(1.0),
         ))
         .child(labeled_field(
@@ -911,7 +922,12 @@ fn build_view_dialog(mgr: &DictManagerState) -> Element {
                 .on_click(move |_| cancel.cancel_view()),
         );
 
-    let frame = dialog_frame(420, dialog_header("系统短语 · 查看"), body, Some(footer));
+    let frame = dialog_frame(
+        ENTRY_DIALOG_W,
+        dialog_header("系统短语 · 查看"),
+        body,
+        Some(footer),
+    );
     Element::dialog(mgr.view_visible, frame)
 }
 
