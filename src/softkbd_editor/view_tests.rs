@@ -212,3 +212,26 @@ fn load_failure_is_shown_instead_of_an_empty_board() {
         ui.page_info.get()
     );
 }
+
+/// Esc 只把 `visible` 置假（不经任何按钮）：关窗 effect 要把它当取消处理。
+#[test]
+fn esc_close_reverts_like_cancel_but_confirm_keeps() {
+    let _m = MockGuard::new();
+    let (ui, data) = opened();
+    goto(&ui, &data, "punct");
+    ui.select(slot_index("w"));
+    ui.edit_base.set("X".into());
+    ui.on_edit(false);
+    ui.visible.set(false); // Esc
+    ui.on_visibility_change();
+    assert!(!data.is_dirty(), "Esc 等同取消");
+
+    ui.open();
+    goto(&ui, &data, "punct");
+    ui.select(slot_index("w"));
+    ui.edit_base.set("X".into());
+    ui.on_edit(false);
+    ui.confirm();
+    ui.on_visibility_change();
+    assert!(data.is_dirty(), "确认后编辑留着，等「应用设置」");
+}

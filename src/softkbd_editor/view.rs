@@ -108,7 +108,21 @@ impl EditorUi {
         self.visible.set(true);
     }
 
-    /// 取消：退回打开时的样子。
+    /// 确认：收下这次的编辑（仍待「应用设置」提交）。先丢快照再关——关窗 effect 据快照
+    /// 还在不在区分「确认」与 Esc（Esc 只置 `visible = false`，按取消处理）。
+    fn confirm(&self) {
+        self.snapshot.borrow_mut().take();
+        self.visible.set(false);
+    }
+
+    /// 关窗 effect：对话框被关掉而快照还在 ⇒ 不是经「确认」关的（Esc），按取消退回。
+    fn on_visibility_change(&self) {
+        if !self.visible.get() && self.snapshot.borrow().is_some() {
+            self.cancel();
+        }
+    }
+
+    /// 取消（底栏按钮、右上角 ×、Esc）：退回打开时的样子。
     fn cancel(&self) {
         if let Some(m) = self.snapshot.borrow_mut().take() {
             *self.data.model.borrow_mut() = m;
@@ -176,11 +190,11 @@ impl EditorUi {
             self.caps_mod[i].set(!p.user_created && k.is_some_and(|k| k.modified()));
         }
         self.page_info.set(if p.send_keys {
-            "键盘面：点击时发送真实按键，键位不可修改。要改，可「新建」并复制这一面".into()
+            "键盘面：点击发送真实按键，不可修改。新建时复制它，可得到一张能改的符号面".into()
         } else if p.user_created {
-            format!("自建面 · id {}", p.id)
+            format!("自建面（id：{}）", p.id)
         } else if p.modified() {
-            "预置面 · 已修改（带蓝框的键改过）".into()
+            "预置面 · 蓝框是改过的键".into()
         } else {
             "预置面".into()
         });
@@ -209,9 +223,9 @@ impl EditorUi {
         let Some(k) = key else {
             self.sel_title.set("未选择".into());
             self.sel_default.set(if self.editable.get() {
-                "点选上方任一键帽，在这里修改它输出的符号".into()
+                "点选上方的键帽进行修改。Shift 符号是按住 Shift 时输出的字符".into()
             } else {
-                "这一面的键位不可修改".into()
+                "这一面不可修改".into()
             });
             self.sel_modified.set(false);
             self.syncing.set(true);
@@ -225,7 +239,7 @@ impl EditorUi {
         // 不给符号套括号：符号本身常常就是引号或括号，套上之后反而认不出来。
         let shown = |v: Option<&str>| v.unwrap_or("（空）").to_string();
         self.sel_default.set(if user_created {
-            "自建面的键没有默认值；「清空」让它按下什么都不输出".into()
+            "自建面没有默认值；「清空」后按下这个键不输出任何字符".into()
         } else {
             format!(
                 "默认：符号 {}　　Shift 符号 {}",
@@ -669,6 +683,10 @@ pub fn build_dialog(ui: &EditorUi) -> Element {
     let (u_new, u_ren, u_del, u_rst, u_cancel) =
         (ui.clone(), ui.clone(), ui.clone(), ui.clone(), ui.clone());
     let (can_delete, can_reset) = (ui.can_delete, ui.can_reset);
+    let u_ok = ui.clone();
+    let uv = ui.clone();
+    let visible_effect =
+        reactive_effect(move || visible.version(), move || uv.on_visibility_change());
     let has_page = ui.page_names;
 
     let sel_page = ui.clone();
@@ -756,17 +774,6 @@ pub fn build_dialog(ui: &EditorUi) -> Element {
                 .padding_xy(18, 14),
         )
         .child(Element::divider())
-        .child(
-            Element::label(
-                "点选键帽修改它输出的符号，按住 Shift 时输出「Shift 符号」。\
-                 改动随底栏「应用设置」保存，保存后立即生效。",
-            )
-            .font_size(12.0)
-            .fg_role(Role::TextMuted)
-            .width_match()
-            .max_lines(3)
-            .padding_edges(Insets::new(PAD, 10, PAD, 0)),
-        )
         .child(toolbar)
         .child(
             Element::label_signal(ui.page_info)
@@ -790,6 +797,12 @@ pub fn build_dialog(ui: &EditorUi) -> Element {
                 .cross(Align::Center)
                 .padding_xy(16, 12)
                 .spacing(8)
+                .child(
+                    Element::label("改动随底栏「应用设置」保存，保存后立即生效")
+                        .font_size(12.0)
+                        .fg_role(Role::TextSubtle)
+                        .padding_xy(4, 0),
+                )
                 .child(Element::leaf().weight(1.0))
                 .child(
                     Element::button("取消")
@@ -800,15 +813,19 @@ pub fn build_dialog(ui: &EditorUi) -> Element {
                 .child(
                     Element::button("确认")
                         .small()
-                        .on_click(move |_| visible.set(false)),
+                        .on_click(move |_| u_ok.confirm()),
                 ),
         )
         .child(page_effect)
+        .child(visible_effect)
         .child(base_effect)
         .child(shift_effect);
 
+    let u_x = ui.clone();
     Element::stack()
-        .child(Element::dialog(visible, frame))
+        .child(Element::dialog_closable(visible, frame, move |_| {
+            u_x.cancel()
+        }))
         .child(name_form(ui))
 }
 
