@@ -4090,6 +4090,7 @@ fn load_theme_entries() -> Vec<ThemeEntry> {
                         base: text("base"),
                         skin: flag("skin"),
                         animated: flag("animated"),
+                        skin_known: t.get("skin").is_some(),
                     })
                 })
                 .collect()

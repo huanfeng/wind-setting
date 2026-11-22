@@ -92,9 +92,11 @@ pub struct GalleryEntry {
     pub dir: String,
     /// 主题文件里写的继承名（没写为空）。
     pub base: String,
-    /// 带异形皮肤 / 皮肤装饰会动。
+    /// 带异形皮肤 / 皮肤装饰会动。`theme.list` 默认不带这两项（core 要整份解析主题才算得出，
+    /// 拖慢启动），「主题信息」打开时才按需取，取到前 `skin_known` 为假、信息框不列这两行。
     pub skin: bool,
     pub animated: bool,
+    pub skin_known: bool,
 }
 
 /// 一格的图。
@@ -631,6 +633,7 @@ pub fn build_selector(state: &AppState, key: &str, vis: Vis) -> Element {
         del_visible: state.theme_delete_visible,
         info: gallery.info,
         info_visible: gallery.info_visible,
+        net: state.net.clone(),
         // 导出跟着「主题导入导出」走：定制版藏了就不建，用户藏了就运行期不出。
         export: (!state.manifest.feature_hidden("theme_transfer"))
             .then(|| crate::manifest::feature_row_vis(state, "theme_transfer")),
@@ -731,6 +734,7 @@ struct CellCtx {
     del_visible: Signal<bool>,
     info: Signal<GalleryEntry>,
     info_visible: Signal<bool>,
+    net: Rc<NetTasks>,
     /// 右键菜单里的「导出」此刻能不能出（`None` = 定制版藏了，永远不出）。
     export: Option<Vis>,
     /// 跳转请求信号：每格锚点（wrap_runtime）要挂它，「当前主题」链接也用它发请求。
@@ -766,6 +770,9 @@ impl CellCtx {
     fn show_info(&self, e: &GalleryEntry) {
         self.info.set(e.clone());
         self.info_visible.set(true);
+        if !e.skin_known {
+            fetch_skin_info(&self.net, self.info, e.id.clone());
+        }
     }
 }
 
@@ -1063,6 +1070,45 @@ fn cell_menu(ctx: &CellCtx, e: &GalleryEntry) -> Vec<MenuItem> {
     items
 }
 
+/// 从 `theme.list` 一项里读 `(skin, animated)`；core 没带这两键（旧版 / 失败）为 `None`。
+pub(crate) fn parse_skin_reply(v: &Value, id: &str) -> Option<(bool, bool)> {
+    let item = v
+        .as_array()?
+        .iter()
+        .find(|t| t.get("name").and_then(Value::as_str) == Some(id))?;
+    Some((
+        item.get("skin")?.as_bool()?,
+        item.get("animated")?.as_bool()?,
+    ))
+}
+
+/// 信息框打开后后台取该主题的皮肤概要，回来时框还停在同一个主题上才写入。
+fn fetch_skin_info(net: &NetTasks, info: Signal<GalleryEntry>, id: String) {
+    let want = id.clone();
+    net.spawn(
+        move |_cancel| {
+            crate::rpc::call_core("theme.list", &json!({ "id": id, "skin": true }))
+                .ok()
+                .and_then(|v| parse_skin_reply(&v, &id))
+        },
+        move |r: Option<Option<(bool, bool)>>| {
+            let Some(Some((skin, animated))) = r else {
+                return;
+            };
+            if !info.is_alive() {
+                return;
+            }
+            info.update(|e| {
+                if e.id == want {
+                    e.skin = skin;
+                    e.animated = animated;
+                    e.skin_known = true;
+                }
+            });
+        },
+    );
+}
+
 /// 「主题信息」的各行（标签, 值）；值为空的行不列。
 pub fn info_rows(e: &GalleryEntry) -> Vec<(&'static str, String)> {
     let yes_no = |b: bool| if b { "有" } else { "无" }.to_string();
@@ -1077,8 +1123,22 @@ pub fn info_rows(e: &GalleryEntry) -> Vec<(&'static str, String)> {
         ),
         ("目录", e.dir.clone()),
         ("继承自", e.base.clone()),
-        ("异形皮肤", yes_no(e.skin)),
-        ("皮肤动画", yes_no(e.animated)),
+        (
+            "异形皮肤",
+            if e.skin_known {
+                yes_no(e.skin)
+            } else {
+                String::new()
+            },
+        ),
+        (
+            "皮肤动画",
+            if e.skin_known {
+                yes_no(e.animated)
+            } else {
+                String::new()
+            },
+        ),
     ];
     rows.into_iter().filter(|(_, v)| !v.is_empty()).collect()
 }
@@ -1708,6 +1768,7 @@ mod tests {
             del_visible: st.theme_delete_visible,
             info: st.theme_gallery.info,
             info_visible: st.theme_gallery.info_visible,
+            net: st.net.clone(),
             export,
             jump: st.jump,
         }
@@ -1722,6 +1783,7 @@ mod tests {
             dir: "/u/themes/mono".into(),
             base: "_base".into(),
             skin: true,
+            skin_known: true,
             ..Default::default()
         }
     }
@@ -1750,6 +1812,35 @@ mod tests {
             .map(|m| m.label)
             .collect();
         assert!(!l.iter().any(|s| s == "删除主题…"), "内置主题不能删");
+    }
+
+    #[test]
+    fn skin_rows_wait_until_known() {
+        let rows = info_rows(&GalleryEntry {
+            skin_known: false,
+            ..mono()
+        });
+        assert!(
+            !rows
+                .iter()
+                .any(|(k, _)| *k == "异形皮肤" || *k == "皮肤动画")
+        );
+    }
+
+    #[test]
+    fn skin_reply_parses_matching_item_only() {
+        let v = json!([
+            { "name": "a", "skin": true, "animated": true },
+            { "name": "b", "skin": true, "animated": false },
+            { "name": "c" }
+        ]);
+        assert_eq!(parse_skin_reply(&v, "b"), Some((true, false)));
+        assert_eq!(
+            parse_skin_reply(&v, "c"),
+            None,
+            "没带皮肤键不当作「无皮肤」"
+        );
+        assert_eq!(parse_skin_reply(&v, "zzz"), None);
     }
 
     #[test]
