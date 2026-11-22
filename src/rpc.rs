@@ -1646,11 +1646,17 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
         {
             Some("mock: 开关失败".to_string())
         }
-        // 逐条删除 / 批量转正中途失败：词条文本为此记号时 `*.remove` / `*.promote` 报错，
-        // 供离线走通「做到一半」那条路。
+        // 删除 / 转正失败：词条文本（单条的 `text`，或批量 `items` 里任一条的 `text`）为此记号时
+        // `*.remove` / `*.promote` 报错，供离线走通失败那条路。
         m if m.ends_with(".remove") || m.ends_with(".promote") => {
-            (params.get("text").and_then(|v| v.as_str()) == Some(MOCK_FAIL_TEXT))
-                .then(|| "mock: 写入失败".to_string())
+            let is_fail =
+                |v: &Value| v.get("text").and_then(|t| t.as_str()) == Some(MOCK_FAIL_TEXT);
+            let hit = is_fail(params)
+                || params
+                    .get("items")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|a| a.iter().any(is_fail));
+            hit.then(|| "mock: 写入失败".to_string())
         }
         // compat.*：进程名为此记号时写方法报错（形状照核心真实的补丁被拒信息），
         // 供离线走通「写失败 → toast 核心的中文报错」那条路。

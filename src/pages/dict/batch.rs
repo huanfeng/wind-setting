@@ -1,8 +1,8 @@
 //! 多选的批量动作：工具栏「批量操作」菜单里的启用 / 停用、转正、设常用 / 生僻、恢复默认。
 //! 「删除选中」与「移动到…」各有独立按钮，不在这里（见 `state.rs` / `user_libs.rs`）。
 //!
-//! 每个动作都是**逐条调单条的 RPC**，与行内那一枚按钮同一个写端，core 不另设批量接口；
-//! 首错即停并报「已做 k/n 条」。
+//! 每个动作先按行生成与行内那一枚按钮相同的单条调用，执行时合成 core 的批量调用（原方法
+//! 带 `items`，见 `state::to_batch_calls`）：整批一次写入、一次重建，要么全成要么不动。
 //!
 //! 哪些行参与只按**不会变的属性**判（快捷输入的出厂 / 自建），不按启用、已修改这类状态：
 //! 勾选跨页保留，别的页上的勾选行快照不随重载刷新，按状态筛会漏掉它们。这几个动作对已经
@@ -34,17 +34,6 @@ impl BatchAction {
             Self::Promote => "转正到用户词库".into(),
             Self::SetCommon(c) => format!("设为{}字", common_label(c)),
             Self::ResetEntry => "恢复默认…".into(),
-        }
-    }
-
-    /// 失败提示「已{verb} k/n 条后失败」里的动词。
-    fn verb(self) -> &'static str {
-        match self {
-            Self::SetEnabled(true) => "启用",
-            Self::SetEnabled(false) => "停用",
-            Self::Promote => "转正",
-            Self::SetCommon(_) => "设置",
-            Self::ResetEntry => "恢复",
         }
     }
 
@@ -175,10 +164,10 @@ impl DictManagerState {
             // 转正写进主词库：中栏的主词库条目数要重取。
             self.invalidate_user_libs();
         }
-        let done = self.run_calls_until_err(calls, act.verb(), &act.done_msg(keys.len()));
+        let ok = self.run_batch_calls(calls, &act.done_msg(keys.len()));
         // 转正后这些行已不在临时词库里；其余动作行还在，勾选留着方便接着做别的。
-        if act == BatchAction::Promote {
-            for (a, b) in &keys[..done] {
+        if ok && act == BatchAction::Promote {
+            for (a, b) in &keys {
                 self.deselect(a, b);
             }
         }

@@ -432,6 +432,44 @@ pub(super) struct ClearFilter {
     rows: Option<Vec<WordRow>>,
 }
 
+/// 逐条调用里每条各不相同的参数键；合成批量时它们进 `items`，其余键（`schemaId`、`name`、
+/// `enabled`、`common` 等）留在顶层。
+const BATCH_ITEM_KEYS: &[&str] = &[
+    "code", "text", "word", "candId", "kind", "id", "char", "weight",
+];
+
+/// 把逐条调用合成 core 的批量调用：同一方法、顶层参数相同的并成一条 `{…顶层, items: [...]}`
+/// （core 整批一次写入、一次重建，要么全成要么不动）。顺序按各批首次出现的先后。
+pub(crate) fn to_batch_calls(calls: Vec<(&'static str, Value)>) -> Vec<(&'static str, Value)> {
+    let mut groups: Vec<(&'static str, serde_json::Map<String, Value>, Vec<Value>)> = Vec::new();
+    for (m, p) in calls {
+        let mut base = match p {
+            Value::Object(o) => o,
+            _ => serde_json::Map::new(),
+        };
+        let mut item = serde_json::Map::new();
+        for k in BATCH_ITEM_KEYS {
+            if let Some(v) = base.remove(*k) {
+                item.insert((*k).to_string(), v);
+            }
+        }
+        match groups
+            .iter_mut()
+            .find(|(gm, gb, _)| *gm == m && *gb == base)
+        {
+            Some((_, _, items)) => items.push(Value::Object(item)),
+            None => groups.push((m, base, vec![Value::Object(item)])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(m, mut base, items)| {
+            base.insert("items".into(), Value::Array(items));
+            (m, Value::Object(base))
+        })
+        .collect()
+}
+
 /// 临时词库「闲置 ≥ N 天」的上限（100 年）。
 const TEMP_IDLE_DAYS_MAX: u64 = 36500;
 
@@ -2498,38 +2536,30 @@ impl DictManagerState {
     fn do_delete_selected(&self) {
         let (keys, calls): (Vec<_>, Vec<_>) = self.selected_delete_plan().into_iter().unzip();
         let n = calls.len();
-        let done = self.run_row_calls(calls, &format!("已删除 {n} 条"));
-        for (a, b) in &keys[..done] {
-            self.deselect(a, b);
+        if self.run_batch_calls(calls, &format!("已删除 {n} 条")) {
+            for (a, b) in &keys {
+                self.deselect(a, b);
+            }
         }
     }
 
-    /// 逐条执行删除调用，首错即停；无论成败都重载。返回已成功的条数。
-    fn run_row_calls(&self, calls: Vec<(&'static str, Value)>, ok_msg: &str) -> usize {
-        self.run_calls_until_err(calls, "删", ok_msg)
-    }
-
-    /// 逐条执行调用，首错即停（报「已{verb} k/n 条后失败」）；无论成败都重载。返回已成功的条数。
-    /// `ok_msg` 为空 = 成功不弹提示。
-    pub(super) fn run_calls_until_err(
-        &self,
-        calls: Vec<(&'static str, Value)>,
-        verb: &str,
-        ok_msg: &str,
-    ) -> usize {
-        let n = calls.len();
-        for (k, (m, p)) in calls.into_iter().enumerate() {
+    /// 把逐条调用合成批量调用后执行（见 [`to_batch_calls`]）；无论成败都重载。
+    ///
+    /// core 的批量写整批要么全成要么不动，故失败时不必报「做了几条」。`ok_msg` 为空 =
+    /// 成功不弹提示。返回是否全部成功。
+    pub(super) fn run_batch_calls(&self, calls: Vec<(&'static str, Value)>, ok_msg: &str) -> bool {
+        for (m, p) in to_batch_calls(calls) {
             if let Err(e) = rpc::call_core(m, &p) {
-                self.notify_err(&format!("已{verb} {k}/{n} 条后失败: {e}"));
+                self.notify_err(&format!("操作失败: {e}"));
                 self.reload();
-                return k;
+                return false;
             }
         }
         self.reload();
         if !ok_msg.is_empty() {
             self.notify_ok(ok_msg);
         }
-        n
+        true
     }
 
     /// 取全部搜索命中行。分页类按 `params`（列表参数）拉取（`rows` 只有当前页）；
@@ -2599,9 +2629,10 @@ impl DictManagerState {
             };
             let calls = self.clear_calls(Some(&rows));
             let n = calls.len();
-            let done = self.run_row_calls(calls, &format!("已删除 {n} 条{noun}"));
-            for r in &rows[..done] {
-                self.deselect(&r.code, &r.text);
+            if self.run_batch_calls(calls, &format!("已删除 {n} 条{noun}")) {
+                for r in &rows {
+                    self.deselect(&r.code, &r.text);
+                }
             }
         } else if !spec.rpc.clear.is_empty() {
             for (m, p) in self.clear_calls(None) {
@@ -6196,7 +6227,12 @@ mod tests {
                     &crate::rpc::call_core(spec.rpc.list, &st.build_list_params()).unwrap(),
                 );
                 crate::rpc::take_mock_calls();
-                let removed = calls.iter().filter(|(m, _)| m == del).count();
+                // 命中行合成一条批量删除（`items`），条数与命中数一致。
+                let removed: usize = calls
+                    .iter()
+                    .filter(|(m, _)| m == del)
+                    .map(|(_, p)| p["items"].as_array().map_or(0, Vec::len))
+                    .sum();
                 assert_eq!(removed, hits.len(), "{:?}: 命中几条删几条", spec.category);
                 seen.insert(format!("{:?}", spec.category));
             }
@@ -6429,9 +6465,9 @@ mod tests {
         r
     }
 
-    /// 删选中删到一半失败：提示已删几条，勾选集只去掉真删掉的那几条。
+    /// 删除选中合成一条批量调用；整批失败时什么都没删，勾选原样留着。
     #[test]
-    fn delete_selected_partial_failure_keeps_undeleted() {
+    fn delete_selected_failure_keeps_whole_selection() {
         with_mock(|| {
             let st = temp_state_mock();
             let (a, bad, c) = (
@@ -6442,20 +6478,25 @@ mod tests {
             for r in [&a, &bad, &c] {
                 st.toggle_selected(r);
             }
+            crate::rpc::take_mock_calls();
             st.request_delete_selected();
             st.confirm_pending();
+            let removes: Vec<_> = crate::rpc::take_mock_calls()
+                .into_iter()
+                .filter(|(m, _)| m == "temp.remove")
+                .collect();
+            assert_eq!(removes.len(), 1, "三条合成一次调用");
+            assert_eq!(removes[0].1["items"].as_array().unwrap().len(), 3);
+            assert_eq!(removes[0].1["schemaId"], "wb");
             let (_, msg) = st.feedback.get().expect("应有提示");
-            assert!(msg.contains("已删 1/3 条后失败"), "{msg}");
-            assert!(!st.is_selected(&a), "已删掉的移出勾选");
-            assert!(st.is_selected(&bad) && st.is_selected(&c), "没删掉的留着");
-            assert_eq!(st.selected_count.get(), 2);
+            assert!(msg.contains("操作失败"), "{msg}");
+            assert_eq!(st.selected_count.get(), 3, "整批没删，勾选都留着");
         });
     }
 
-    /// 批量转正：逐条 temp.promote，转到一半失败时只把转成功的移出勾选；启停这类动作
-    /// 做完勾选留着。
+    /// 批量转正：一次 temp.promote（带 items）；成功移出勾选，失败全留着。
     #[test]
-    fn batch_promote_partial_failure_keeps_unpromoted() {
+    fn batch_promote_moves_out_of_selection_only_on_success() {
         use super::super::batch::BatchAction;
         with_mock(|| {
             let st = temp_state_mock();
@@ -6471,9 +6512,62 @@ mod tests {
             assert_eq!(plan[0].1.1["schemaId"], "wb");
             st.request_batch(BatchAction::Promote);
             let (_, msg) = st.feedback.get().expect("应有提示");
-            assert!(msg.contains("已转正 1/2 条后失败"), "{msg}");
-            assert!(!st.is_selected(&a) && st.is_selected(&bad));
+            assert!(msg.contains("操作失败"), "{msg}");
+            assert!(st.is_selected(&a) && st.is_selected(&bad), "失败时勾选不动");
+
+            st.toggle_selected(&bad);
+            crate::rpc::take_mock_calls();
+            st.request_batch(BatchAction::Promote);
+            let promotes: Vec<_> = crate::rpc::take_mock_calls()
+                .into_iter()
+                .filter(|(m, _)| m == "temp.promote")
+                .collect();
+            assert_eq!(promotes.len(), 1);
+            assert_eq!(
+                promotes[0].1["items"],
+                json!([{ "code": "aa", "text": "工" }])
+            );
+            assert!(!st.is_selected(&a), "转正成功移出勾选");
         });
+    }
+
+    /// 逐条调用合成批量：同方法同顶层参数并成一条，每条不同的键进 items；顶层不同的分开。
+    #[test]
+    fn to_batch_calls_groups_by_method_and_shared_params() {
+        let calls = vec![
+            (
+                "phrase.setEnabled",
+                json!({ "code": "a", "text": "甲", "enabled": false }),
+            ),
+            (
+                "phrase.setEnabled",
+                json!({ "code": "b", "text": "乙", "enabled": false }),
+            ),
+            ("quick.delete", json!({ "kind": "date", "id": "x" })),
+            (
+                "phrase.setEnabled",
+                json!({ "code": "c", "text": "丙", "enabled": true }),
+            ),
+        ];
+        assert_eq!(
+            to_batch_calls(calls),
+            vec![
+                (
+                    "phrase.setEnabled",
+                    json!({ "enabled": false, "items": [
+                        { "code": "a", "text": "甲" }, { "code": "b", "text": "乙" },
+                    ] })
+                ),
+                (
+                    "quick.delete",
+                    json!({ "items": [{ "kind": "date", "id": "x" }] })
+                ),
+                (
+                    "phrase.setEnabled",
+                    json!({ "enabled": true, "items": [{ "code": "c", "text": "丙" }] })
+                ),
+            ]
+        );
     }
 
     /// 取命中行一次拉完（limit = total），不按 PAGE_SIZE 反复翻页。

@@ -496,36 +496,39 @@ impl DictManagerState {
             .collect()
     }
 
-    /// 把这些词条移到 `to`（`label` 是提示里的名字）。逐条执行，首错即停并报已移了几条。
+    /// 把这些词条移到 `to`（`label` 是提示里的名字）：先整批加到目标，再整批从原处删。
+    ///
+    /// 两步各是一次批量调用（core 整批要么全成要么不动）：加失败则什么都没动；删失败则
+    /// 词条已在目标、原处也还在，两边各有一份，提示要说清楚。
     pub fn move_rows(&self, rows: Vec<super::spec::WordRow>, to: &MoveTarget, label: &str) {
-        let calls = self.move_calls(&rows, to);
-        let n = calls.len();
-        let mut done = 0;
-        'rows: for (i, pair) in calls.into_iter().enumerate() {
-            for (step, (m, p)) in pair.into_iter().enumerate() {
-                if let Err(e) = rpc::call_core(m, &p) {
-                    // 第二步（从原处删）失败时，这一条已经加进目标：两边各有一份，要说清楚。
-                    let extra = if step == 1 {
-                        format!("；「{}」已加到目标，但没从原处删掉", rows[i].text)
-                    } else {
-                        String::new()
-                    };
-                    self.notify_err(&format!("已移动 {done}/{n} 条后失败：{e}{extra}"));
-                    break 'rows;
-                }
+        let (adds, removes): (Vec<_>, Vec<_>) = self
+            .move_calls(&rows, to)
+            .into_iter()
+            .map(|[a, r]| (a, r))
+            .unzip();
+        let n = adds.len();
+        let step = |calls: Vec<(&'static str, Value)>| -> Result<(), String> {
+            for (m, p) in super::state::to_batch_calls(calls) {
+                rpc::call_core(m, &p)?;
             }
-            done += 1;
-        }
-        for r in &rows[..done] {
-            self.deselect(&r.code, &r.text);
-        }
-        if done == n {
-            let off = matches!(to, MoveTarget::Lib(name)
-                if self.libs.list.get().iter().any(|l| &l.name == name && !l.enabled));
-            // 菜单名里停用的分库已带「（已停用）」，挪到引号外。
-            let label = label.strip_suffix("（已停用）").unwrap_or(label);
-            let note = if off { "（已停用）" } else { "" };
-            self.notify_ok(&format!("已移动 {n} 条到「{label}」{note}"));
+            Ok(())
+        };
+        let result = step(adds)
+            .map_err(|e| format!("移动失败：{e}"))
+            .and_then(|()| step(removes).map_err(|e| format!("已加到目标，但没从原处删掉：{e}")));
+        match result {
+            Ok(()) => {
+                for r in &rows {
+                    self.deselect(&r.code, &r.text);
+                }
+                let off = matches!(to, MoveTarget::Lib(name)
+                    if self.libs.list.get().iter().any(|l| &l.name == name && !l.enabled));
+                // 菜单名里停用的分库已带「（已停用）」，挪到引号外。
+                let label = label.strip_suffix("（已停用）").unwrap_or(label);
+                let note = if off { "（已停用）" } else { "" };
+                self.notify_ok(&format!("已移动 {n} 条到「{label}」{note}"));
+            }
+            Err(msg) => self.notify_err(&msg),
         }
         // 两边的条目数都变了。
         self.reload_with_libs();
@@ -1189,19 +1192,24 @@ mod tests {
                 .into_iter()
                 .filter(|(m, _)| m == "userDicts.addEntry" || m == "dict.remove")
                 .collect();
+            // 两步各一次批量调用：先整批加到分库，再整批从主词库删。
             assert_eq!(
                 calls,
                 vec![
                     (
                         "userDicts.addEntry".into(),
-                        json!({"schemaId": "wb", "name": "成语", "code": "yzwg", "text": "一针见血", "weight": 5})
+                        json!({"schemaId": "wb", "name": "成语", "items": [
+                            {"code": "yzwg", "text": "一针见血", "weight": 5},
+                            {"code": "ggtt", "text": "一五一十"},
+                        ]})
                     ),
-                    ("dict.remove".into(), st.delete_call("yzwg", "一针见血").1),
                     (
-                        "userDicts.addEntry".into(),
-                        json!({"schemaId": "wb", "name": "成语", "code": "ggtt", "text": "一五一十"})
+                        "dict.remove".into(),
+                        json!({"schemaId": "wb", "items": [
+                            {"code": "yzwg", "text": "一针见血"},
+                            {"code": "ggtt", "text": "一五一十"},
+                        ]})
                     ),
-                    ("dict.remove".into(), st.delete_call("ggtt", "一五一十").1),
                 ]
             );
             let (_, msg) = st.feedback.get().unwrap();
@@ -1209,9 +1217,9 @@ mod tests {
         });
     }
 
-    /// 加到目标失败：原条目不删，报已移几条。
+    /// 加到目标失败：整批没加进去，原条目不删。
     #[test]
-    fn moving_stops_at_the_first_failure() {
+    fn moving_stops_when_adding_fails() {
         with_mock(|| {
             let st = state();
             let row = super::super::spec::WordRow {
@@ -1230,7 +1238,7 @@ mod tests {
                 "没加进去就不删"
             );
             let (_, msg) = st.feedback.get().unwrap();
-            assert_eq!(msg, "已移动 0/1 条后失败：正在外部编辑");
+            assert_eq!(msg, "移动失败：正在外部编辑");
         });
     }
 
