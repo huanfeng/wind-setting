@@ -3,6 +3,24 @@
 set -e
 ROOT="$(git rev-parse --show-toplevel)"
 
+# ── windui 必须按 crates.io 版本号依赖 ────────────────────────────────────
+# 临时联调本地 windui（Cargo.toml 的 path/git，或被 `--config patch` 改过的 Cargo.lock）
+# 不得提交。做法见 wind-ui-rust/AGENTS.md 的「联调本地 windui」。
+if git diff --cached --name-only | grep -qx 'Cargo.toml'; then
+    if git show :Cargo.toml | grep -Eq '^[[:space:]]*windui[[:space:]]*=.*(path|git)[[:space:]]*='; then
+        echo "❌ Cargo.toml 里 windui 指向了本地路径或 git：这是临时联调用的，不能提交。"
+        echo "   改回版本号依赖（如 windui = \"0.35\"）后再提交。"
+        exit 1
+    fi
+fi
+if git diff --cached --name-only | grep -qx 'Cargo.lock'; then
+    if ! git show :Cargo.lock | awk 'BEGIN{RS="";FS="\n"} $2=="name = \"windui\"" {f=1; if ($0 !~ /\nsource = /) bad=1} END{exit (f && !bad) ? 0 : (f ? 1 : 0)}'; then
+        echo "❌ Cargo.lock 里 windui 没有 source：像是用 --config patch 联调后留下的，不能提交。"
+        echo "   还原：git checkout -- Cargo.lock"
+        exit 1
+    fi
+fi
+
 echo "[pre-commit] cargo fmt check..."
 
 # ★ 只检查**本次暂存**的 .rs，不查整个工作区。

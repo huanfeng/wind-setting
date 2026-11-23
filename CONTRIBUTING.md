@@ -37,14 +37,17 @@
 ### 开发环境
 
 - Rust stable 工具链（edition 2024，含 `rustfmt` 与 `clippy` 组件）
-- 本项目依赖同级目录下的两个仓库，请按如下布局克隆：
+- 本项目以 path 依赖引用同级的 WindInput 仓库，请按如下布局克隆；`windui` 按版本号从
+  crates.io 获取，不需要克隆：
 
 ```
 <工作目录>/
 ├── wind-setting/      本仓库
-├── wind-ui-rust/      https://github.com/huanfeng/wind-ui-rust
 └── WindInput/         https://github.com/huanfeng/WindInput
 ```
+
+- windui 有新版本要用时，先在 wind-ui-rust 发版，再把本仓库 `Cargo.toml` 的版本号改成新的并刷新 `Cargo.lock`。
+  联调本地 windui 用 `--config` 临时覆盖、**不要提交**，做法见 wind-ui-rust 仓库 `AGENTS.md` 的「联调本地 windui」。
 
 ### 构建
 

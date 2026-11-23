@@ -47,19 +47,22 @@
 | 仓库 | 职责 |
 |------|------|
 | [WindInput](https://github.com/huanfeng/WindInput) | 核心服务与各平台输入法前端；本仓库经 path 依赖使用其中的 `wind-ipc` |
-| [wind-ui-rust](https://github.com/huanfeng/wind-ui-rust) | 跨平台轻量 GUI 库 `windui`，本仓库的界面基础（path 依赖） |
+| [wind-ui-rust](https://github.com/huanfeng/wind-ui-rust) | 跨平台轻量 GUI 库 `windui`，本仓库的界面基础（按版本号依赖 crates.io） |
 | **wind-setting**（本仓库） | 图形设置程序 |
 
 ## 从源码构建
 
-需要 Rust stable 工具链（edition 2024）。本仓库以 path 依赖引用两个同级仓库，请按如下布局克隆：
+需要 Rust stable 工具链（edition 2024）。本仓库以 path 依赖引用同级的 WindInput 仓库
+（`wind-ipc`、`wind-config`），请按如下布局克隆；`windui` 按版本号从 crates.io 获取，不需要克隆：
 
 ```
 <工作目录>/
 ├── wind-setting/      本仓库
-├── wind-ui-rust/      https://github.com/huanfeng/wind-ui-rust
 └── WindInput/         https://github.com/huanfeng/WindInput
 ```
+
+要联调本地的 [wind-ui-rust](https://github.com/huanfeng/wind-ui-rust)（临时、不提交），
+见该仓库 `AGENTS.md` 的「联调本地 windui」。
 
 ```sh
 cargo build            # debug 构建（opt-level=1，保证界面流畅）
