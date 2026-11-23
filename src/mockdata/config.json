@@ -4,6 +4,10 @@
   "log_max_files": 10,
   "log_max_size_mb": 10
  },
+ "extensions": {
+  "enabled": false,
+  "list": []
+ },
  "input": {
   "add_word": {
    "candidate_layout": "vertical"
@@ -33,6 +37,7 @@
     "《》",
     "〈〉"
    ],
+   "commit_via_composition": false,
    "english": false,
    "english_pairs": [
     "()",
@@ -308,10 +313,6 @@
    "model": "wanxiang-mini.gram",
    "weight": 0.5
   }
- },
- "extensions": {
-  "enabled": false,
-  "list": []
  },
  "schema": {
   "active": "wubi86",

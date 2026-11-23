@@ -333,6 +333,9 @@ mod tests {
         //     列表里每个扩展的选项是扩展清单声明的，运行时才知道，清单驱动的控件表达不了。
         "extensions.enabled",
         "extensions.list",
+        // ⑤' 配对插入改走 Unicode 按键注入：全局默认关，只给 AutoCAD 表格等丢字宿主按应用兼容
+        //     规则逐应用开（compat 的 pair_via_comp），不提供全局设置入口。
+        "input.auto_pair.commit_via_composition",
         // ⑤ 临时英文不再设独立启用开关（Shift+字母 始终可进入、触发键可留空）。
         "input.temp_english.enabled",
         // ⑥ 外观不支持 / 平台限制项，均由 core 维持默认值。

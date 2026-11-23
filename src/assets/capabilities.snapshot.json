@@ -1,5 +1,5 @@
 {
-  "appVersion": "0.127.0",
+  "appVersion": "0.132.0",
   "configKeys": [
     {
       "default": "wubi86",
@@ -1254,6 +1254,11 @@
       "default": 120,
       "key": "input.auto_pair.state_ttl_secs",
       "type": "int"
+    },
+    {
+      "default": false,
+      "key": "input.auto_pair.commit_via_composition",
+      "type": "bool"
     },
     {
       "default": true,
