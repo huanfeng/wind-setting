@@ -29,7 +29,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::UpdateError;
+use super::{PkgFormat, UpdateError};
 
 /// 标准安装才会释放的卸载器。
 const UNINSTALLER: &str = "uninstall.exe";
@@ -244,8 +244,8 @@ fn shell_execute(pkg: &Path, _args: &str) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Install(format!("拉起系统安装器失败：{e}")))
 }
 
-/// Linux 不走 `shell_execute`：安装要等 pkexec 授权与 apt 跑完才知道成败，由
-/// [`install_deb`] 在后台线程里同步执行。这里只是让非 Windows/mac 平台能编译过。
+/// Linux 不走 `shell_execute`：安装要等 pkexec 授权与包管理器跑完才知道成败，由
+/// [`install_package`] 在后台线程里同步执行。这里只是让非 Windows/mac 平台能编译过。
 #[cfg(not(any(windows, target_os = "macos")))]
 fn shell_execute(_exe: &Path, _args: &str) -> Result<(), UpdateError> {
     Err(UpdateError::Install("当前平台不支持该安装方式".to_string()))
@@ -253,11 +253,70 @@ fn shell_execute(_exe: &Path, _args: &str) -> Result<(), UpdateError> {
 
 /// Linux 安装结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DebInstall {
-    /// `apt-get` 已装完。
+pub enum PkgInstall {
+    /// 包管理器已装完。
     Installed,
-    /// 没有 pkexec，已把 `.deb` 交给桌面的软件安装器，成败未知。
+    /// 没有 pkexec，已把安装包交给桌面的软件安装器，成败未知。
     HandedOff,
+}
+
+/// rpm 系的安装工具，按 dnf → zypper → rpm 的顺序取本机有的第一个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpmTool {
+    Dnf,
+    Zypper,
+    Rpm,
+}
+
+impl RpmTool {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Dnf => "dnf",
+            Self::Zypper => "zypper",
+            Self::Rpm => "rpm",
+        }
+    }
+
+    /// 在 PATH 里找本机可用的那个（返回绝对路径，pkexec 授权框里显示的就是它）。
+    fn detect() -> Option<(Self, PathBuf)> {
+        [Self::Dnf, Self::Zypper, Self::Rpm]
+            .into_iter()
+            .find_map(|t| which(t.name()).map(|p| (t, p)))
+    }
+}
+
+/// 拼 rpm 系 `pkexec <工具> …` 的命令行（不含 `pkexec` 自身）。`tool_path` 是工具的绝对路径。
+///
+/// - **签名检查一律关掉**（dnf `--nogpgcheck`、zypper `--allow-unsigned-rpm`）：发布的 `.rpm`
+///   没有 GPG 签名，用户机器上也没有导入过我们的公钥，不关的话 dnf/zypper 会直接拒装本地文件。
+///   完整性已由下载后的 sha256 校验（元数据经 https 取得）把关。
+/// - `-y` / `--non-interactive`：pkexec 没有终端；同意安装的是用户点「立即安装」那一下。
+/// - 用 dnf / zypper 而非直接 `rpm -U`：前者会顺带解决依赖；都没有才退到 `rpm -U`。
+pub fn rpm_args(tool: RpmTool, tool_path: &Path, rpm: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    let mut a = vec![tool_path.as_os_str().to_owned()];
+    match tool {
+        RpmTool::Dnf => a.extend(["install", "-y", "--nogpgcheck"].map(OsString::from)),
+        RpmTool::Zypper => {
+            a.extend(["--non-interactive", "install", "--allow-unsigned-rpm"].map(OsString::from))
+        }
+        RpmTool::Rpm => a.push(OsString::from("-U")),
+    }
+    a.push(rpm.as_os_str().to_owned());
+    a
+}
+
+/// 用户可直接复制的手动安装命令。
+pub fn manual_command(format: PkgFormat, tool: Option<RpmTool>, pkg: &Path) -> String {
+    let p = pkg.display();
+    match (format, tool) {
+        (PkgFormat::Deb, _) => format!("sudo apt install {p}"),
+        (PkgFormat::Rpm, Some(RpmTool::Zypper)) => {
+            format!("sudo zypper install --allow-unsigned-rpm {p}")
+        }
+        (PkgFormat::Rpm, Some(RpmTool::Rpm)) => format!("sudo rpm -U {p}"),
+        (PkgFormat::Rpm, _) => format!("sudo dnf install --nogpgcheck {p}"),
+    }
 }
 
 /// 拼 `pkexec apt-get install` 的命令行（不含 `pkexec` 自身）。
@@ -283,7 +342,7 @@ pub fn apt_args(deb: &Path) -> Vec<std::ffi::OsString> {
 }
 
 /// 在 PATH 里找可执行文件。
-fn which(name: &str) -> Option<PathBuf> {
+pub(crate) fn which(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?
         .to_string_lossy()
         .split(':')
@@ -305,37 +364,57 @@ pub fn parse_status_line(line: &str) -> Option<(f32, String)> {
     Some(((pct / 100.0).clamp(0.0, 1.0), msg))
 }
 
-/// 取 stderr 的最后几行作错误说明（apt 的真正原因总在末尾）。
+/// 取 stderr 的最后几行作错误说明（包管理器的真正原因总在末尾）。
 fn tail_lines(bytes: &[u8], n: usize) -> String {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-/// 安装 `.deb`。**阻塞**，必须在后台线程调用。
+/// 安装已下载的 `.deb` / `.rpm`（格式按扩展名认）。**阻塞**，必须在后台线程调用。
 ///
-/// 有 `pkexec`：弹 polkit 授权框后以 root 跑 `apt-get install`，等它结束并据退出码报成败。
+/// 有 `pkexec`：弹 polkit 授权框后以 root 跑包管理器（deb：`apt-get install`；rpm：
+/// `dnf` / `zypper` / `rpm -U`），等它结束并据退出码报成败。
 /// 无 `pkexec`：退到 `xdg-open`，交给桌面的软件安装器（GNOME 软件 / Discover / 深度商店等），
 /// 此时只能说「已交出」。两者都没有则报错并给出手动命令。
 ///
 /// 与 Windows/mac 不同，这里**不需要让出窗口**：postinst 只结束输入法服务，不碰设置程序，
 /// Linux 上替换正在运行的二进制也不会出事。
-pub fn install_deb(
-    deb: &Path,
+pub fn install_package(
+    pkg: &Path,
     mut progress: impl FnMut(f32, &str),
-) -> Result<DebInstall, UpdateError> {
-    if !deb.is_absolute() || !deb.is_file() {
+) -> Result<PkgInstall, UpdateError> {
+    if !pkg.is_absolute() || !pkg.is_file() {
         return Err(UpdateError::Install(format!(
             "安装包不存在：{}",
-            deb.display()
+            pkg.display()
         )));
     }
-    let manual = format!("sudo apt install {}", deb.display());
+    let Some(format) = PkgFormat::from_path(pkg) else {
+        return Err(UpdateError::Install(format!(
+            "不认识的安装包格式：{}",
+            pkg.display()
+        )));
+    };
+    // 装哪个、用什么命令：deb 固定 apt-get；rpm 看本机有哪个工具
+    let rpm_tool = (format == PkgFormat::Rpm).then(RpmTool::detect).flatten();
+    let manual = manual_command(format, rpm_tool.as_ref().map(|t| t.0), pkg);
+    let (tool_label, args): (&str, Vec<std::ffi::OsString>) = match format {
+        PkgFormat::Deb => ("apt", apt_args(pkg)),
+        PkgFormat::Rpm => match &rpm_tool {
+            Some((t, path)) => (t.name(), rpm_args(*t, path, pkg)),
+            None => {
+                return Err(UpdateError::Install(format!(
+                    "找不到 dnf、zypper 或 rpm，请在终端手动执行：{manual}"
+                )));
+            }
+        },
+    };
 
     if let Some(pkexec) = which("pkexec") {
-        tracing::info!("pkexec 安装：{}", deb.display());
+        tracing::info!("pkexec 安装（{tool_label}）：{}", pkg.display());
         let mut cmd = std::process::Command::new(pkexec);
-        cmd.args(apt_args(deb))
+        cmd.args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -355,7 +434,7 @@ pub fn install_deb(
         let mut child = cmd
             .spawn()
             .map_err(|e| UpdateError::Install(format!("无法启动 pkexec：{e}")))?;
-        // stderr 另起线程读空，免得 apt 写满管道把自己堵住；末尾几行留作失败说明
+        // stderr 另起线程读空，免得包管理器写满管道把自己堵住；末尾几行留作失败说明
         let mut err_pipe = child.stderr.take();
         let err_thread = std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -365,6 +444,7 @@ pub fn install_deb(
             buf
         });
         if let Some(out) = child.stdout.take() {
+            // 只有 apt 会写 `pmstatus:` 进度行；rpm 系没有可解析的进度，界面停在授权后的文字上
             for line in std::io::BufRead::lines(std::io::BufReader::new(out)).map_while(Result::ok)
             {
                 if let Some((ratio, msg)) = parse_status_line(&line) {
@@ -377,7 +457,7 @@ pub fn install_deb(
             .map_err(|e| UpdateError::Install(format!("等待安装结束失败：{e}")))?;
         let stderr = err_thread.join().unwrap_or_default();
         return match status.code() {
-            Some(0) => Ok(DebInstall::Installed),
+            Some(0) => Ok(PkgInstall::Installed),
             // polkit：126 = 授权对话框被取消 / 认证失败，127 = 无法授权
             Some(126) | Some(127) => Err(UpdateError::Install(format!(
                 "未获得管理员授权，已取消安装。也可在终端手动执行：{manual}"
@@ -385,23 +465,23 @@ pub fn install_deb(
             _ => {
                 let detail = tail_lines(&stderr, 4);
                 Err(UpdateError::Install(format!(
-                    "apt 安装失败：{detail}\n可在终端手动执行：{manual}"
+                    "{tool_label} 安装失败：{detail}\n可在终端手动执行：{manual}"
                 )))
             }
         };
     }
 
     if let Some(xdg) = which("xdg-open") {
-        tracing::info!("无 pkexec，交给 xdg-open：{}", deb.display());
+        tracing::info!("无 pkexec，交给 xdg-open：{}", pkg.display());
         return std::process::Command::new(xdg)
-            .arg(deb)
+            .arg(pkg)
             .spawn()
             .map(|mut c| {
                 // 回收子进程，免得留僵尸直到设置程序退出
                 std::thread::spawn(move || {
                     let _ = c.wait();
                 });
-                DebInstall::HandedOff
+                PkgInstall::HandedOff
             })
             .map_err(|e| UpdateError::Install(format!("拉起系统安装器失败：{e}")));
     }
@@ -567,9 +647,83 @@ mod tests {
     }
 
     #[test]
-    fn install_deb_rejects_relative_or_missing_path() {
-        assert!(install_deb(Path::new("x.deb"), |_, _| {}).is_err());
-        assert!(install_deb(Path::new("/nonexistent/x.deb"), |_, _| {}).is_err());
+    fn install_package_rejects_relative_or_missing_path() {
+        assert!(install_package(Path::new("x.deb"), |_, _| {}).is_err());
+        assert!(install_package(Path::new("/nonexistent/x.deb"), |_, _| {}).is_err());
+        assert!(install_package(Path::new("/nonexistent/x.rpm"), |_, _| {}).is_err());
+    }
+
+    #[test]
+    fn install_package_rejects_unknown_extension() {
+        let d = temp_dir("unknown_ext");
+        let f = d.join("x.tar");
+        std::fs::write(&f, b"x").unwrap();
+        let e = install_package(&f, |_, _| {}).unwrap_err();
+        assert!(e.user_message().contains("不认识"), "{}", e.user_message());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn strs(v: Vec<std::ffi::OsString>) -> Vec<String> {
+        v.iter().map(|x| x.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn rpm_args_skip_signature_check_and_stay_noninteractive() {
+        let p = Path::new("/home/u/.cache/windinput/update/x.rpm");
+        assert_eq!(
+            strs(rpm_args(RpmTool::Dnf, Path::new("/usr/bin/dnf"), p)),
+            [
+                "/usr/bin/dnf",
+                "install",
+                "-y",
+                "--nogpgcheck",
+                "/home/u/.cache/windinput/update/x.rpm"
+            ]
+        );
+        assert_eq!(
+            strs(rpm_args(RpmTool::Zypper, Path::new("/usr/bin/zypper"), p)),
+            [
+                "/usr/bin/zypper",
+                "--non-interactive",
+                "install",
+                "--allow-unsigned-rpm",
+                "/home/u/.cache/windinput/update/x.rpm"
+            ]
+        );
+        assert_eq!(
+            strs(rpm_args(RpmTool::Rpm, Path::new("/usr/bin/rpm"), p)),
+            [
+                "/usr/bin/rpm",
+                "-U",
+                "/home/u/.cache/windinput/update/x.rpm"
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_command_matches_format_and_tool() {
+        let p = Path::new("/a/x.pkg");
+        assert_eq!(
+            manual_command(PkgFormat::Deb, None, p),
+            "sudo apt install /a/x.pkg"
+        );
+        assert_eq!(
+            manual_command(PkgFormat::Rpm, Some(RpmTool::Dnf), p),
+            "sudo dnf install --nogpgcheck /a/x.pkg"
+        );
+        assert_eq!(
+            manual_command(PkgFormat::Rpm, Some(RpmTool::Zypper), p),
+            "sudo zypper install --allow-unsigned-rpm /a/x.pkg"
+        );
+        assert_eq!(
+            manual_command(PkgFormat::Rpm, Some(RpmTool::Rpm), p),
+            "sudo rpm -U /a/x.pkg"
+        );
+        // 没找到工具时给最常见的 dnf
+        assert_eq!(
+            manual_command(PkgFormat::Rpm, None, p),
+            "sudo dnf install --nogpgcheck /a/x.pkg"
+        );
     }
 
     #[test]
@@ -579,14 +733,14 @@ mod tests {
         assert_eq!(tail_lines(b"", 3), "");
     }
 
-    /// 真机验证用：`WIND_TEST_DEB=/abs/x.deb cargo test install_deb_real -- --ignored --nocapture`。
+    /// 真机验证用：`WIND_TEST_PKG=/abs/x.deb|x.rpm cargo test install_package_real -- --ignored --nocapture`。
     /// 会弹 polkit 授权并真的装包，故默认忽略。
     #[test]
     #[ignore]
-    fn install_deb_real() {
-        let deb = std::env::var("WIND_TEST_DEB").expect("需要 WIND_TEST_DEB");
-        let r = install_deb(Path::new(&deb), |r, m| println!("{r:.2} {m}"));
-        println!("install_deb => {r:?}");
+    fn install_package_real() {
+        let pkg = std::env::var("WIND_TEST_PKG").expect("需要 WIND_TEST_PKG");
+        let r = install_package(Path::new(&pkg), |r, m| println!("{r:.2} {m}"));
+        println!("install_package => {r:?}");
         r.unwrap();
     }
 

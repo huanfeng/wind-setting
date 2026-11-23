@@ -1820,7 +1820,10 @@ impl AppState {
             let fallback = if cfg!(windows) {
                 "wind-update.exe"
             } else if cfg!(target_os = "linux") {
-                "wind-update.deb"
+                match crate::update::pkg_format() {
+                    crate::update::PkgFormat::Deb => "wind-update.deb",
+                    crate::update::PkgFormat::Rpm => "wind-update.rpm",
+                }
             } else {
                 "wind-update.pkg"
             };
@@ -1903,10 +1906,10 @@ impl AppState {
         }
     }
 
-    /// Linux：在后台线程里装 `.deb`（pkexec 授权 + apt 要等好几秒，不能卡 UI）。
+    /// Linux：在后台线程里装 `.deb` / `.rpm`（pkexec 授权 + 包管理器要等好几秒，不能卡 UI）。
     /// 结果经 [`UpdateMsg::InstallDone`] 回到 UI 线程。
     pub fn begin_linux_install(&self) {
-        let Some(deb) = self.update_installer.borrow().clone() else {
+        let Some(pkg) = self.update_installer.borrow().clone() else {
             self.fail_update("没有可安装的更新包");
             return;
         };
@@ -1928,12 +1931,12 @@ impl AppState {
                     text: text.to_string(),
                 });
             };
-            let msg = match crate::update::install::install_deb(&deb, progress) {
-                Ok(crate::update::install::DebInstall::Installed) => Ok(
+            let msg = match crate::update::install::install_package(&pkg, progress) {
+                Ok(crate::update::install::PkgInstall::Installed) => Ok(
                     "安装完成。新版本在重启 Fcitx5 后生效（终端执行 fcitx5 -rd，或注销重新登录），设置程序请重新打开。"
                         .to_string(),
                 ),
-                Ok(crate::update::install::DebInstall::HandedOff) => Ok(
+                Ok(crate::update::install::PkgInstall::HandedOff) => Ok(
                     "已交给系统软件安装器，请在其中完成安装；装好后重启 Fcitx5（fcitx5 -rd）生效。"
                         .to_string(),
                 ),

@@ -71,7 +71,7 @@ impl Channel {
     /// 两个变体各看各的文件，互不干扰。
     ///
     /// **平台也各看各的**：Windows 的 `latest.json` 描述 `Setup.exe`，macOS 的
-    /// `latest-mac.json` 描述 `.pkg`，Linux 的 `latest-linux.json` 按架构描述两个 `.deb`。
+    /// `latest-mac.json` 描述 `.pkg`，Linux 的 `latest-linux.json` 按架构描述 `.deb`（`debs`）与 `.rpm`（`rpms`）。
     /// 合不成一个文件 —— 版本号、大小、sha256 都是每平台一份，而在野的老 Windows 客户端
     /// 只认顶层的那一组字段，改不动。
     ///
@@ -136,9 +136,12 @@ pub enum Artifact {
     Exe,
     /// macOS 安装包，键 `pkgUrl`。
     Pkg,
-    /// Linux 安装包，键 `debs.<架构>`（`amd64` / `arm64`）。地址、sha256、大小都在架构
+    /// Linux 的 `.deb`，键 `debs.<架构>`（`amd64` / `arm64`）。地址、sha256、大小都在架构
     /// 那一项里，顶层没有。
     Deb(&'static str),
+    /// Linux 的 `.rpm`（Fedora / openSUSE），键 `rpms.<架构>`（`x86_64` / `aarch64`）。
+    /// 结构同 `debs`；老元数据没有这一项，缺失时按「缺少下载地址」报错。
+    Rpm(&'static str),
 }
 
 impl Artifact {
@@ -151,7 +154,15 @@ impl Artifact {
         match platform {
             Platform::Windows => Self::Exe,
             Platform::Mac => Self::Pkg,
-            Platform::Linux => Self::Deb(deb_arch()),
+            Platform::Linux => Self::for_pkg_format(pkg_format()),
+        }
+    }
+
+    /// Linux 上某种包格式对应的产物（架构取本机的）。
+    pub fn for_pkg_format(format: PkgFormat) -> Self {
+        match format {
+            PkgFormat::Deb => Self::Deb(deb_arch()),
+            PkgFormat::Rpm => Self::Rpm(rpm_arch()),
         }
     }
 
@@ -161,8 +172,85 @@ impl Artifact {
             Self::Exe => "exeUrl".to_string(),
             Self::Pkg => "pkgUrl".to_string(),
             Self::Deb(arch) => format!("debs.{arch}"),
+            Self::Rpm(arch) => format!("rpms.{arch}"),
         }
     }
+}
+
+/// Linux 安装包格式。决定取元数据里的哪一组、怎么装。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkgFormat {
+    Deb,
+    Rpm,
+}
+
+impl PkgFormat {
+    /// 文件扩展名（不含点）。
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Deb => "deb",
+            Self::Rpm => "rpm",
+        }
+    }
+
+    /// 按已下载文件的扩展名判断格式：安装时认文件本身，不再重新探测系统。
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        match path.extension()?.to_str()? {
+            "deb" => Some(Self::Deb),
+            "rpm" => Some(Self::Rpm),
+            _ => None,
+        }
+    }
+}
+
+/// 在「本机有 dpkg / 有 rpm」两个探测结果上选包格式（纯函数，便于单测）。
+///
+/// - 只有一边在：就是它。
+/// - 两边都在（Debian 上装了 `rpm` 工具、Fedora 上装了 `dpkg` 都常见）：看 `windinput`
+///   实际是被哪边的数据库装上的，`installed_by` 惰性取值，只在这个分歧点才去跑子进程。
+/// - 查不出（开发构建、手工解压运行）或两边都不在：保持升级功能一直以来的 deb 行为。
+///
+/// 不能只看「谁在 PATH 里」：那会让装了 `dpkg` 的 Fedora 用户拿到一个装不上的 `.deb`。
+pub fn pick_pkg_format(
+    has_dpkg: bool,
+    has_rpm: bool,
+    installed_by: impl FnOnce() -> Option<PkgFormat>,
+) -> PkgFormat {
+    match (has_dpkg, has_rpm) {
+        (false, true) => PkgFormat::Rpm,
+        (true, true) => installed_by().unwrap_or(PkgFormat::Deb),
+        _ => PkgFormat::Deb,
+    }
+}
+
+/// 本机的包格式（首次调用时探测，之后缓存）。探测会在两边都有时起 `rpm -q` / `dpkg -s`，
+/// 只在更新链路里调用，不在输入或启动路径上。
+pub fn pkg_format() -> PkgFormat {
+    static FORMAT: std::sync::OnceLock<PkgFormat> = std::sync::OnceLock::new();
+    *FORMAT.get_or_init(|| {
+        use std::path::Path;
+        let has_dpkg = install::which("dpkg").is_some() && Path::new("/var/lib/dpkg").is_dir();
+        let has_rpm = install::which("rpm").is_some()
+            && (Path::new("/var/lib/rpm").is_dir() || Path::new("/usr/lib/sysimage/rpm").is_dir());
+        pick_pkg_format(has_dpkg, has_rpm, || {
+            let ok = |cmd: &str, args: &[&str]| {
+                std::process::Command::new(cmd)
+                    .args(args)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            if ok("rpm", &["-q", "windinput"]) {
+                Some(PkgFormat::Rpm)
+            } else if ok("dpkg", &["-s", "windinput"]) {
+                Some(PkgFormat::Deb)
+            } else {
+                None
+            }
+        })
+    })
 }
 
 /// 本机对应的 Debian 架构名（与 `.deb` 文件名、元数据里的键一致）。
@@ -171,6 +259,15 @@ pub fn deb_arch() -> &'static str {
         "arm64"
     } else {
         "amd64"
+    }
+}
+
+/// 本机对应的 rpm 架构名（与 `.rpm` 文件名、元数据里的键一致）。
+pub fn rpm_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
     }
 }
 
@@ -244,7 +341,7 @@ pub enum UpdatePhase {
     Downloading,
     /// 已下载并校验通过，待安装。
     Ready,
-    /// 安装进行中（仅 Linux：等 pkexec / apt 跑完，期间不可关闭对话框）。
+    /// 安装进行中（仅 Linux：等 pkexec / 包管理器跑完，期间不可关闭对话框）。
     Installing,
     /// 安装已完成或已交给系统安装器（仅 Linux）。
     Installed,
@@ -277,7 +374,7 @@ pub enum UpdateMsg {
     DownloadCancelled,
     /// 安装线程结束（仅 Linux）。`Ok` 带给用户看的结果说明；`Err` 是可直接展示的中文错误。
     InstallDone(Result<String, String>),
-    /// 安装进度（仅 Linux）：`ratio` 为 0~1，`text` 是 apt 报告的当前步骤。
+    /// 安装进度（仅 Linux）：`ratio` 为 0~1，`text` 是包管理器报告的当前步骤。
     InstallProgress {
         ratio: f32,
         text: String,
@@ -325,7 +422,7 @@ impl UpdateError {
 /// 本平台是否具备自动升级通路。
 ///
 /// Windows（`Setup.exe` + `ShellExecuteW` 提权）、macOS（`.pkg` + `open` 交给
-/// Installer.app）与 Linux（`.deb` + `pkexec apt-get install`，无 pkexec 时退到
+/// Installer.app）与 Linux（`.deb` + `pkexec apt-get install` 或 `.rpm` + `pkexec dnf/zypper/rpm`，无 pkexec 时退到
 /// `xdg-open` 交给桌面的软件安装器）各有一条。
 ///
 /// 这道门不能省：版本号是各平台共用的，没有门就会在没有升级通路的平台上照常判定
@@ -462,6 +559,49 @@ fn decide(info: &ReleaseInfo, local_raw: &str) -> Result<CheckResult, UpdateErro
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pkg_format_follows_present_tools_and_owner() {
+        use super::{PkgFormat::*, pick_pkg_format};
+        // 只有一边：不必查谁装的
+        assert_eq!(pick_pkg_format(true, false, || panic!("不该查")), Deb);
+        assert_eq!(pick_pkg_format(false, true, || panic!("不该查")), Rpm);
+        // 两边都有：按 windinput 的装包来源
+        assert_eq!(pick_pkg_format(true, true, || Some(Rpm)), Rpm);
+        assert_eq!(pick_pkg_format(true, true, || Some(Deb)), Deb);
+        // 查不出来 / 两边都没有：保持原来的 deb
+        assert_eq!(pick_pkg_format(true, true, || None), Deb);
+        assert_eq!(pick_pkg_format(false, false, || panic!("不该查")), Deb);
+    }
+
+    #[test]
+    fn linux_artifact_keys_per_format() {
+        assert_eq!(Artifact::Deb("amd64").key(), "debs.amd64");
+        assert_eq!(Artifact::Rpm("x86_64").key(), "rpms.x86_64");
+        assert!(matches!(
+            Artifact::for_pkg_format(PkgFormat::Rpm),
+            Artifact::Rpm(a) if a == rpm_arch()
+        ));
+        assert!(matches!(
+            Artifact::for_pkg_format(PkgFormat::Deb),
+            Artifact::Deb(a) if a == deb_arch()
+        ));
+    }
+
+    #[test]
+    fn pkg_format_from_file_extension() {
+        use std::path::Path;
+        assert_eq!(
+            PkgFormat::from_path(Path::new("/a/x.deb")),
+            Some(PkgFormat::Deb)
+        );
+        assert_eq!(
+            PkgFormat::from_path(Path::new("/a/x.rpm")),
+            Some(PkgFormat::Rpm)
+        );
+        assert_eq!(PkgFormat::from_path(Path::new("/a/x.exe")), None);
+        assert_eq!(PkgFormat::from_path(Path::new("/a/noext")), None);
+    }
+
     use super::*;
 
     fn info(version: &str) -> ReleaseInfo {

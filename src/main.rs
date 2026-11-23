@@ -717,7 +717,7 @@ fn main() {
             // 借用不到说明正处在某个改状态的回调里，此时拦下反而更糟（用户会以为窗口卡死）。
             return true;
         };
-        // 正在装 .deb：进程一退，apt/dpkg 继承的输出管道就断了，写入即 SIGPIPE，
+        // 正在装 .deb / .rpm：进程一退，包管理器继承的输出管道就断了，写入即 SIGPIPE，
         // 包会停在半配置状态。等装完再关。
         if st.update_phase.get() == update::UpdatePhase::Installing {
             ctx.toast("正在安装更新，请等待完成后再关闭");

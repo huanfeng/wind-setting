@@ -44,9 +44,12 @@ struct LatestJson {
     /// Linux：按架构给出的安装包（`latest-linux.json`）。另两个平台没有这一项。
     #[serde(default)]
     debs: std::collections::HashMap<String, DebJson>,
+    /// Linux：按架构给出的 `.rpm`，结构同 `debs`。老元数据没有这一项。
+    #[serde(default)]
+    rpms: std::collections::HashMap<String, DebJson>,
 }
 
-/// `debs` 里的一项：一个架构的 `.deb`。
+/// `debs` / `rpms` 里的一项：一个架构的安装包。
 #[derive(Debug, Default, Deserialize)]
 struct DebJson {
     #[serde(default)]
@@ -94,13 +97,17 @@ pub fn parse_latest_json(
 
     // 按平台取各自的键。取不到（对端是另一平台的元数据，或字段拼错）会走同一条报错，
     // 且把键名带出来 —— 「缺 pkgUrl」比「下载地址无效」更能一眼看出是串档还是发布漏填。
-    // Linux 的地址、sha256、大小都在 `debs.<架构>` 里，顶层那两个字段不看。
+    // Linux 的地址、sha256、大小都在 `debs.<架构>` / `rpms.<架构>` 里，顶层那两个字段不看。
     let missing = DebJson::default();
     let (url, raw_sha256, size) = match artifact {
         Artifact::Exe => (&raw.exe_url, &raw.sha256, raw.size),
         Artifact::Pkg => (&raw.pkg_url, &raw.sha256, raw.size),
         Artifact::Deb(arch) => {
             let d = raw.debs.get(arch).unwrap_or(&missing);
+            (&d.url, &d.sha256, d.size)
+        }
+        Artifact::Rpm(arch) => {
+            let d = raw.rpms.get(arch).unwrap_or(&missing);
             (&d.url, &d.sha256, d.size)
         }
     };
@@ -497,6 +504,46 @@ mod tests {
             parse_latest_json(&only_amd, Channel::Stable, Artifact::Deb("arm64")).unwrap_err();
         assert!(
             err.user_message().contains("debs.arm64"),
+            "{}",
+            err.user_message()
+        );
+    }
+
+    /// `rpms.<arch>` 与 `debs` 并存时各取各的；老元数据没有 `rpms` 时 deb 照常、rpm 点名报缺。
+    #[test]
+    fn parses_rpm_metadata_and_tolerates_missing_rpms() {
+        let with_rpms = format!(
+            r#"{{
+              "version": "0.133.0", "tag": "v0.133.0", "channel": "stable",
+              "debs": {{ "amd64": {{ "url": "https://dl.windinput.com/a.deb", "sha256": "{a}", "size": 10 }} }},
+              "rpms": {{
+                "x86_64": {{ "url": "https://dl.windinput.com/WindInput-0.133.0-linux-x86_64.rpm",
+                            "sha256": "{b}", "size": 20 }},
+                "aarch64": {{ "url": "https://dl.windinput.com/WindInput-0.133.0-linux-aarch64.rpm",
+                             "sha256": "{b}", "size": 30 }}
+              }}
+            }}"#,
+            a = "a".repeat(64),
+            b = "b".repeat(64)
+        );
+        let x = parse_latest_json(&with_rpms, Channel::Stable, Artifact::Rpm("x86_64")).unwrap();
+        assert!(x.download_url.ends_with("-linux-x86_64.rpm"));
+        assert_eq!(x.size, 20);
+        let a = parse_latest_json(&with_rpms, Channel::Stable, Artifact::Rpm("aarch64")).unwrap();
+        assert_eq!(a.size, 30);
+        // deb 不受 rpms 影响
+        let d = parse_latest_json(&with_rpms, Channel::Stable, Artifact::Deb("amd64")).unwrap();
+        assert_eq!(d.size, 10);
+
+        let old = format!(
+            r#"{{ "version": "0.132.0", "channel": "stable",
+                 "debs": {{ "amd64": {{ "url": "https://x/a.deb", "sha256": "{}", "size": 1 }} }} }}"#,
+            "a".repeat(64)
+        );
+        assert!(parse_latest_json(&old, Channel::Stable, Artifact::Deb("amd64")).is_ok());
+        let err = parse_latest_json(&old, Channel::Stable, Artifact::Rpm("x86_64")).unwrap_err();
+        assert!(
+            err.user_message().contains("rpms.x86_64"),
             "{}",
             err.user_message()
         );
