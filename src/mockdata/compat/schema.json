@@ -337,6 +337,27 @@
       ]
     },
     {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "behavior",
+      "hosts": [
+        "acad.exe"
+      ],
+      "key": "pair_via_comp",
+      "kind": "tri_bool",
+      "label": "配对走按键提交",
+      "options": [],
+      "problem": "AutoCAD 表格在位编辑器会丢弃直写的 ASCII 却谎报成功，半角括号静默丢失；按键注入产生真实字符消息，宿主能收到。默认跟随全局（直写）。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "配对插入（括号/引号成对上屏）改用 Unicode 按键注入上屏，替代 TSF 直写。",
+      "triLabels": [
+        "跟随全局",
+        "开",
+        "关"
+      ]
+    },
+    {
       "advanced": false,
       "dependsOn": null,
       "group": "behavior",
@@ -516,6 +537,31 @@
         "跟随全局",
         "开",
         "关"
+      ]
+    },
+    {
+      "advanced": true,
+      "dependsOn": null,
+      "group": "host",
+      "hosts": [
+        "SearchHost.exe",
+        "searchapp.exe",
+        "startmenuexperiencehost.exe",
+        "textinputhost.exe",
+        "Microsoft.Notes.exe"
+      ],
+      "key": "launch_by_service",
+      "kind": "tri_bool",
+      "label": "由服务拉起程序",
+      "options": [],
+      "problem": "默认让当前软件去启动设置程序，这样窗口能稳稳地出现在最前面。但 Win11 开始菜单、便笺这类软件出于安全限制不会执行这个请求，表现为按了 Ctrl+Enter 加词窗口就消失、在开始菜单里打不开设置。改由服务直接启动即可。代价：服务不是前台进程，启动出来的窗口偶尔会停在后台，所以只对有问题的软件开启。",
+      "protocol": false,
+      "section": "apps",
+      "summary": "打开设置、加词编辑这类要启动外部程序的操作，改由输入法服务直接执行，不再交给当前软件。",
+      "triLabels": [
+        "默认",
+        "服务拉起",
+        "宿主拉起"
       ]
     },
     {
