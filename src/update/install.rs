@@ -43,24 +43,26 @@ pub struct InstallPlan {
     pub install_dir: PathBuf,
     /// 是否便携/非标准安装。
     pub portable: bool,
+    /// 便携标记文件确实存在。只有「明确是便携」才能原地更新；
+    /// 仅缺卸载器的「幽灵便携」形态判不准，仍交给向导由用户确认。
+    pub portable_marker: bool,
 }
 
 impl InstallPlan {
-    /// 是否走无人值守安装（安装器的 `--quiet`）。便携安装除外 —— 见 [`plan`] 的说明。
+    /// 是否走无人值守安装（安装器的 `--quiet`）。便携安装仅在有便携标记时才行 —— 见 [`plan`] 的说明。
     ///
     /// 刻意不叫 `silent`：安装器的 `--silent` 是**完全无界面**，而升级要的是
     /// 「跳过配置页但显示进度、装完自动退出」，对应的是 `--quiet`。
     pub fn unattended(&self) -> bool {
-        !self.portable
+        !self.portable || self.portable_marker
     }
 }
 
 /// 依当前进程位置推导安装计划。
 ///
-/// **便携安装不走静默升级。** wind-installer 的静默分支把 `InstallMode` 硬编码为
-/// `Standard`（`main.rs` 的 `run_install`），静默升级一个便携安装会把它变成标准安装 —— 写注册表、
-/// 注册 COM/TSF、建快捷方式，用户的安装形态被悄悄改掉。故此处改为拉起完整向导，
-/// 由用户自行确认路径与模式。
+/// **便携安装带 `--portable` 原地更新。** 安装器的 `--silent` 把模式写死为标准安装，
+/// 所以便携走 `--quiet --portable`，保持便携形态、不碰注册表和 COM。
+/// 仅缺卸载器、没有便携标记的「幽灵便携」判不准，仍拉起完整向导由用户确认。
 pub fn plan(installer: &Path) -> Result<InstallPlan, UpdateError> {
     let exe = std::env::current_exe()
         .map_err(|e| UpdateError::Install(format!("无法定位自身路径：{e}")))?;
@@ -88,6 +90,7 @@ pub fn plan(installer: &Path) -> Result<InstallPlan, UpdateError> {
     Ok(InstallPlan {
         installer: installer.to_path_buf(),
         portable,
+        portable_marker: has_marker,
         install_dir,
     })
 }
@@ -117,12 +120,16 @@ fn is_portable_install(install_dir: &Path) -> bool {
 
 /// 拼安装器命令行参数。
 ///
-/// 便携/非标准安装返回空串（拉起完整向导）—— 注意 wind-installer 的非静默分支
-/// **完全忽略 `--dir`**（`main.rs` 的 `run_install` 直接走 `run_install_wizard()`），
-/// 传了也没用，不如不传以免让人以为路径已被指定。
+/// 不能无人值守的形态（幽灵便携）返回空串，拉起完整向导。
 pub fn build_args(plan: &InstallPlan) -> String {
     if !plan.unattended() {
         return String::new();
+    }
+    if plan.portable {
+        return format!(
+            "--quiet --portable --dir \"{}\"",
+            plan.install_dir.display()
+        );
     }
     // `--quiet` 而非 `--silent`：升级要让用户看到安装进度，只是不再询问路径与模式。
     // 必须显式传 --dir：安装器拿不到目录就会用默认值，
@@ -420,6 +427,7 @@ mod tests {
             installer: dir.join("Setup.exe"),
             install_dir: dir.to_path_buf(),
             portable: is_portable_install(dir),
+            portable_marker: crate::mode::has_portable_marker_in(dir),
         }
     }
 
@@ -435,16 +443,13 @@ mod tests {
     }
 
     #[test]
-    fn portable_marker_forces_interactive_wizard() {
+    fn portable_marker_updates_in_place() {
         let dir = temp_dir("marker");
         std::fs::write(dir.join(UNINSTALLER), b"x").unwrap();
         std::fs::write(dir.join(crate::mode::PORTABLE_MARKER_NAME), b"portable=1\n").unwrap();
 
         assert!(is_portable_install(&dir));
-        assert!(
-            !plan_for(&dir).unattended(),
-            "便携安装无人值守升级会被转成标准安装，必须走向导"
-        );
+        assert!(plan_for(&dir).unattended(), "有便携标记应原地更新");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -467,6 +472,7 @@ mod tests {
             installer: PathBuf::from(r"C:\Temp\Setup.exe"),
             install_dir: PathBuf::from(r"D:\Program Files\WindInput"),
             portable: false,
+            portable_marker: false,
         };
         let args = build_args(&plan);
         // --quiet 而非 --silent：升级要显示进度界面，不是完全无界面
@@ -486,22 +492,34 @@ mod tests {
             installer: PathBuf::from("Setup.exe"),
             install_dir: PathBuf::from(r"C:\Custom\Path"),
             portable: false,
+            portable_marker: false,
         };
         assert!(build_args(&plan).contains("--dir"));
     }
 
     #[test]
-    fn portable_args_are_empty() {
+    fn portable_args_keep_portable_mode() {
+        let plan = InstallPlan {
+            installer: PathBuf::from("Setup.exe"),
+            install_dir: PathBuf::from(r"C:\Portable App"),
+            portable: true,
+            portable_marker: true,
+        };
+        assert_eq!(
+            build_args(&plan),
+            r#"--quiet --portable --dir "C:\Portable App""#
+        );
+    }
+
+    #[test]
+    fn ghost_portable_args_are_empty() {
         let plan = InstallPlan {
             installer: PathBuf::from("Setup.exe"),
             install_dir: PathBuf::from(r"C:\Portable"),
             portable: true,
+            portable_marker: false,
         };
-        assert_eq!(
-            build_args(&plan),
-            "",
-            "非静默分支忽略 --dir，传了只会让人误以为路径已指定"
-        );
+        assert_eq!(build_args(&plan), "", "判不准的形态交给向导");
     }
 
     #[test]
@@ -510,6 +528,7 @@ mod tests {
             installer: PathBuf::from(r"C:\definitely\not\here\Setup.exe"),
             install_dir: PathBuf::from(r"C:\x"),
             portable: false,
+            portable_marker: false,
         };
         let err = launch(&plan).unwrap_err();
         assert!(err.user_message().contains("不存在"));
