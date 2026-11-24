@@ -18,7 +18,7 @@ use windui::prelude::*;
 
 use crate::auto_encode::{AutoEncode, auto_encode_node};
 use crate::cli::AddWordParams;
-use crate::pages::dict::state::escape_input_newlines;
+use crate::pages::dict::state::input_to_wire;
 use crate::state::{SchemaInfo, load_schemas};
 use crate::theme_def::theme_for;
 use crate::weight::{parse_weight, weight_hint};
@@ -298,10 +298,8 @@ fn encode_text(schema_id: &str, text: &str) -> Result<Option<String>, String> {
     if t.is_empty() {
         return Ok(None);
     }
-    // 词条框是多行的，而 core 收的是**转义形态**（`store_text` 还原）。发真换行过去，
-    // core 那侧还原不动它，逐字反查会撞上一个不可读音的字符而整条出不了码——
-    // 表现是「词条明明填了，编码就是不出来」。同 `DictManagerState::encode_text`。
-    let t = escape_input_newlines(t);
+    // 词条框是原文，core 收的是转义形态，见 `input_to_wire`。
+    let t = input_to_wire(t);
     let v = crate::rpc::call_core("dict.encode", &json!({ "schemaId": schema_id, "text": t }))?;
     let c = v.as_str().unwrap_or_default().trim().to_string();
     Ok(if c.is_empty() { None } else { Some(c) })
@@ -320,8 +318,8 @@ fn submit(
     weight: Signal<String>,
     error: Signal<String>,
 ) -> bool {
-    // 多行框里敲下的真换行统一投影成字面 \n 再发 core（同词库页 `save_calls`）。
-    let t = escape_input_newlines(text.get().trim());
+    // 原文 → 转义形态再发 core（同词库页 `save_calls`）。
+    let t = input_to_wire(text.get().trim());
     let c = code.get().trim().to_string();
     if t.is_empty() {
         error.set("词条不能为空".to_string());

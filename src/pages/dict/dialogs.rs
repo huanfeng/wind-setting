@@ -513,8 +513,8 @@ fn build_edit_dialog(mgr: &DictManagerState) -> Element {
     // `multiline()` 是构建期属性，接不了信号，想按类别切就只能摆两份。两类都多行之后
     // 这个变通没有存在理由，整块收敛掉。
     //
-    // 框里敲下的真换行由 `save_calls` 统一投影成字面 `\n` 再发给 core（core 收的是
-    // 转义形态，见 `wind-webdata` 的 `ui_text`/`store_text` 一对）。
+    // 框里是原文（回车即换行、反斜杠即反斜杠），由 `save_calls` 换成转义形态再发 core，
+    // 见 `state::input_to_wire`。
     //
     // 尾部「粘贴 / 清空」与编码行的「生成编码」等宽对齐（见 `widgets::ENCODE_BTN_W`）。
     // 这一行顶对齐而非居中：正文框很高，两个小按钮吊在正中间会离标签很远。

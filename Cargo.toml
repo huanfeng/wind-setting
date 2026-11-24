@@ -12,6 +12,9 @@ wind-ipc = { path = "../WindInput/wind_input/crates/wind-ipc" }
 wind-config = { path = "../WindInput/wind_input/crates/wind-config" }
 # 扩展程序的选项声明与取值校验：与扩展宿主同一份（高级 → 扩展程序）。
 wind-hook = { path = "../WindInput/wind_input/crates/wind-hook" }
+# 词条正文的转义：对话框里是原文，RPC 上是转义形态，两边换算用 core 同一对函数
+# （`escape_text_field` / `unescape_text_field`，含命令栏语法判据）。
+wind-wdict = { path = "../WindInput/wind_input/crates/wind-wdict" }
 serde = { version = "1", features = ["derive"] }
 # 用户配置/本机状态目录：与 core（wind-config）同一 crate 同一大版本，
 # 保证两边算出的目录在各平台上落到同一处。

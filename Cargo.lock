@@ -1820,6 +1820,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3040,6 +3052,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wind-cmdbar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "regex",
+ "thiserror",
+ "tracing",
+ "uuid",
+ "wind-config",
+ "wind-quick-input",
+]
+
+[[package]]
 name = "wind-config"
 version = "0.1.0"
 dependencies = [
@@ -3130,6 +3157,14 @@ name = "wind-utils"
 version = "0.1.0"
 
 [[package]]
+name = "wind-wdict"
+version = "0.1.0"
+dependencies = [
+ "wind-cmdbar",
+ "wind-utils",
+]
+
+[[package]]
 name = "wind_setting"
 version = "0.1.0"
 dependencies = [
@@ -3157,6 +3192,7 @@ dependencies = [
  "wind-rpc",
  "wind-softkeyboard",
  "wind-transform",
+ "wind-wdict",
  "windows 0.62.2",
  "windui",
  "winreg",
