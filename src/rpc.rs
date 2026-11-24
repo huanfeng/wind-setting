@@ -2268,6 +2268,14 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             ]
         }),
         // 数据同步：形状同 core `apps/service/src/sync.rs`（状态、设置不含机密、命令回执）。
+        "sync.status" if std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("mass_delete") => {
+            json!({
+                "installed": true, "enabled": true, "running": true, "phase": "halted",
+                "last_ok": 1_795_000_000,
+                "last_error": "本机有 25/25 个文件看似被删除，为防误删已暂停。确认无误请点「继续同步」",
+                "pending": 0, "conflicts": 0, "has_secret": true, "joined": true
+            })
+        }
         "sync.status" => json!({
             "installed": true, "enabled": true, "running": true, "phase": "idle",
             "last_ok": 1_795_000_000, "last_error": null, "pending": 2, "conflicts": 2,

@@ -164,6 +164,116 @@ impl StatusView {
     pub fn error_text(&self) -> String {
         self.last_error.clone().unwrap_or_default()
     }
+
+    pub fn error_kind(&self) -> ErrorKind {
+        match &self.last_error {
+            Some(e) => classify_error(&self.phase, e),
+            None => ErrorKind::None,
+        }
+    }
+}
+
+/// core 同步进程里大批量删除护栏的标记（`runner.rs` 的 `MASS_MARK`）。
+const MASS_MARK: &str = "为防误删已暂停";
+/// 本地文件正被编辑时本轮跳过的提示后缀（`local.rs`）。
+const EDITING_MARK: &str = "正在被编辑，本轮暂不同步";
+/// 同步进程正忙时对命令的回绝（`runner.rs` 的 `BUSY_MSG`）。
+const BUSY_MSG: &str = "正在同步，请稍后再试";
+/// core 对非受信调用方的回绝（`wind-rpc` 的 `DENY_UNTRUSTED`）。
+const DENY_MSG: &str = "拒绝：调用方权限不足";
+
+/// `last_error` 在界面上的归类：故障（红）/ 自动重试的提示 / 等用户确认的大批量删除。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ErrorKind {
+    None,
+    Danger,
+    Notice,
+    MassDelete,
+}
+
+pub(crate) fn classify_error(phase: &str, err: &str) -> ErrorKind {
+    if err.is_empty() {
+        ErrorKind::None
+    } else if phase == "halted" && err.contains(MASS_MARK) {
+        ErrorKind::MassDelete
+    } else if phase == "error" && err.contains(EDITING_MARK) {
+        ErrorKind::Notice
+    } else {
+        ErrorKind::Danger
+    }
+}
+
+/// 命令 / 保存失败的文案与是否只是提示（非故障，不用红色）。
+pub(crate) fn failure_text(label: &str, e: &str) -> (String, bool) {
+    if e.contains(BUSY_MSG) {
+        (e.to_string(), true)
+    } else if e.contains(DENY_MSG) {
+        (
+            format!("{label}失败：{e}。请从清风输入法设置程序操作"),
+            false,
+        )
+    } else {
+        (format!("{label}失败：{e}"), false)
+    }
+}
+
+/// 存储位置（后端类型与定位字段）是否变了。core 在位置变化时会清掉已存的密码。
+/// 旧位置全空（首次配置）不算：本来就没有已存密码。
+pub(crate) fn backend_location_changed(old: &Form, new: &Form) -> bool {
+    if old.backend_blank() {
+        return false;
+    }
+    if old.s3 != new.s3 {
+        return true;
+    }
+    if new.s3 {
+        (
+            &old.s3_endpoint,
+            &old.s3_region,
+            &old.s3_bucket,
+            &old.s3_prefix,
+            &old.s3_access_key_id,
+        )
+            .ne(&(
+                &new.s3_endpoint,
+                &new.s3_region,
+                &new.s3_bucket,
+                &new.s3_prefix,
+                &new.s3_access_key_id,
+            ))
+    } else {
+        old.wd_url.trim() != new.wd_url.trim() || old.wd_user.trim() != new.wd_user.trim()
+    }
+}
+
+/// 一步 RPC：方法名 + 参数。
+pub(crate) type Step = (&'static str, Value);
+
+/// 保存的执行序列：**先 `sync.setSettings`，再 `set_secret` / `test_connection`**。
+/// core 在存储位置变化时会清掉已存密码，顺序反了新密码会被清掉。
+pub(crate) fn save_steps(settings: Value, cmds: Vec<(&'static str, Value)>) -> Vec<Step> {
+    let mut steps: Vec<Step> = vec![("sync.setSettings", json!({ "settings": settings }))];
+    steps.extend(
+        cmds.into_iter()
+            .map(|(op, args)| ("sync.command", json!({ "op": op, "args": args }))),
+    );
+    steps
+}
+
+/// 「确认大批量删除」的二次确认闸：先 arm（点按钮弹确认框），确认框里 take 才放行；取过即收回。
+#[derive(Clone, Default)]
+pub(crate) struct MassDeleteGuard(Rc<Cell<bool>>);
+
+impl MassDeleteGuard {
+    pub fn arm(&self) {
+        self.0.set(true);
+    }
+    pub fn disarm(&self) {
+        self.0.set(false);
+    }
+    pub fn take(&self) -> bool {
+        self.0.replace(false)
+    }
 }
 
 /// 设置表单的纯数据形态（与信号互转），对应 `wind_sync_ipc::SyncSettings`。
@@ -378,13 +488,17 @@ pub(crate) struct Outcome {
     pub toast: String,
     /// `export_key` 成功时的密钥串。
     pub key: Option<String>,
+    /// 失败但只是提示（如「正在同步，请稍后再试」），不用错误样式。
+    pub notice: bool,
 }
 
 pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
     let label = match op {
         "sync_now" => "立即同步",
         "test_connection" => "测试连接",
-        "set_secret" | "save" => "保存凭据",
+        "set_secret" => "保存凭据",
+        "save" => "保存",
+        "confirm_mass_delete" => "确认删除",
         "set_passphrase" => "设置口令",
         "import_key" => "导入密钥",
         "export_key" => "导出密钥",
@@ -392,11 +506,15 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         other => other,
     };
     match r {
-        Err(e) => Outcome {
-            ok: false,
-            toast: format!("{label}失败：{e}"),
-            key: None,
-        },
+        Err(e) => {
+            let (toast, notice) = failure_text(label, e);
+            Outcome {
+                ok: false,
+                toast,
+                key: None,
+                notice,
+            }
+        }
         Ok(v) => {
             let key = (op == "export_key")
                 .then(|| {
@@ -412,12 +530,14 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 "export_key" if key.is_none() => "同步进程没有返回密钥".to_string(),
                 "export_key" => "已导出密钥，请妥善保管".to_string(),
                 "reset_remote" => "远端已重置，将以本机数据为准重新上传".to_string(),
+                "confirm_mass_delete" => "已确认，将把这些删除同步到所有设备".to_string(),
                 _ => format!("{label}成功"),
             };
             Outcome {
                 ok: !(op == "export_key" && key.is_none()),
                 toast,
                 key,
+                notice: false,
             }
         }
     }
@@ -448,6 +568,14 @@ pub struct SyncUi {
     pending: Signal<String>,
     conflicts: Signal<String>,
     error: Signal<String>,
+    /// 自动重试类提示（非故障）。
+    notice: Signal<String>,
+    /// 大批量删除护栏的说明；非空即显示确认入口。
+    mass_text: Signal<String>,
+    mass_dialog: Signal<bool>,
+    mass_guard: MassDeleteGuard,
+    /// 最近一次从 core 读到 / 成功保存的表单，用来判断存储位置是否变了。
+    saved: Rc<RefCell<Form>>,
     /// 有命令在途：按钮置灰，避免重复点。
     busy: Signal<bool>,
 
@@ -503,6 +631,11 @@ impl SyncUi {
             pending: signal(String::new()),
             conflicts: signal(String::new()),
             error: signal(String::new()),
+            notice: signal(String::new()),
+            mass_text: signal(String::new()),
+            mass_dialog: signal(false),
+            mass_guard: MassDeleteGuard::default(),
+            saved: Rc::new(RefCell::new(Form::default())),
             busy: signal(false),
             enabled: signal(f.enabled),
             backend: signal(0),
@@ -569,14 +702,27 @@ impl SyncUi {
         self.installed.set(s.installed);
         self.has_secret.set(s.has_secret);
         self.joined.set(s.joined);
-        self.phase.set(phase_text(&s.phase));
+        let kind = s.error_kind();
+        self.phase.set(if kind == ErrorKind::Notice {
+            "稍后自动重试".to_string()
+        } else {
+            phase_text(&s.phase)
+        });
         self.last_ok.set(s.last_ok_text());
         self.pending.set(s.pending_text());
         self.conflicts.set(s.conflict_text());
-        self.error.set(s.error_text());
+        let text = s.error_text();
+        let pick = |k: ErrorKind, t: String| if kind == k { t } else { String::new() };
+        self.error.set(pick(ErrorKind::Danger, text.clone()));
+        self.notice.set(pick(
+            ErrorKind::Notice,
+            format!("{text}。会自动重试，无需处理"),
+        ));
+        self.mass_text.set(pick(ErrorKind::MassDelete, text));
     }
 
     fn apply_form(&self, f: &Form) {
+        *self.saved.borrow_mut() = f.clone();
         self.enabled.set(f.enabled);
         self.backend.set(usize::from(f.s3));
         self.wd_url.set(f.wd_url.clone());
@@ -632,6 +778,8 @@ impl SyncUi {
                 let o = outcome(&op, &result);
                 if o.ok {
                     ctx.toast_ok(o.toast);
+                } else if o.notice {
+                    ctx.toast_with(o.toast, ToastKind::Info, 3000);
                 } else {
                     ctx.toast_err(o.toast);
                 }
@@ -663,6 +811,15 @@ impl SyncUi {
 
     /// 后台依次发若干条命令，遇错即停；`op` 是最终回执的名字，回执取最后一条的结果。
     fn run(&self, op: &str, cmds: Vec<(&'static str, Value)>) {
+        let steps = cmds
+            .into_iter()
+            .map(|(name, args)| ("sync.command", json!({ "op": name, "args": args })))
+            .collect();
+        self.run_steps(op, steps);
+    }
+
+    /// 后台依次发若干步 RPC（方法 + 参数），遇错即停；`op` 是最终回执的名字。
+    fn run_steps(&self, op: &str, steps: Vec<Step>) {
         if self.busy.get() {
             return;
         }
@@ -673,8 +830,8 @@ impl SyncUi {
         let op = op.to_string();
         std::thread::spawn(move || {
             let mut result = Ok(Value::Null);
-            for (name, args) in cmds {
-                result = rpc::call_core("sync.command", &json!({ "op": name, "args": args }));
+            for (method, params) in steps {
+                result = rpc::call_core(method, &params);
                 if result.is_err() {
                     break;
                 }
@@ -694,11 +851,8 @@ impl SyncUi {
 
     /// 「保存」：设置 + 本次填了的机密。`test` 为真则随后测试连接。
     fn save(&self, ctx: &mut EventCtx, test: bool) {
-        if let Err(e) = self.save_settings() {
-            ctx.toast_err(format!("保存失败：{e}"));
-            return;
-        }
         let f = self.form();
+        let moved = backend_location_changed(&self.saved.borrow(), &f);
         let secrets = secret_commands(f.s3, &self.wd_password.get(), &self.s3_secret.get());
         // 机密一提交就从界面清掉，不留在信号里。
         self.wd_password.set(String::new());
@@ -711,10 +865,52 @@ impl SyncUi {
             secrets.into_iter().map(|a| ("set_secret", a)).collect()
         };
         if cmds.is_empty() {
-            ctx.toast_ok("已保存同步设置");
+            // 没有凭据要写：只提交设置（很快，同步做）。
+            if let Err(e) = self.save_settings() {
+                let (t, notice) = failure_text("保存", &e);
+                if notice {
+                    ctx.toast_with(t, ToastKind::Info, 3000);
+                } else {
+                    ctx.toast_err(t);
+                }
+                return;
+            }
+            *self.saved.borrow_mut() = f;
+            if moved {
+                ctx.toast_with("已更换存储位置，请重新填写密码", ToastKind::Info, 5000);
+            } else {
+                ctx.toast_ok("已保存同步设置");
+            }
             self.refresh();
         } else {
-            self.run(if test { "test_connection" } else { "save" }, cmds);
+            // 先 setSettings 再写密码：位置变化时 core 会清掉已存密码，顺序反了新密码就丢了。
+            *self.saved.borrow_mut() = f.clone();
+            let steps = save_steps(f.to_settings(), cmds);
+            self.run_steps(if test { "test_connection" } else { "save" }, steps);
+        }
+    }
+
+    /// 点「确认这些删除并继续同步」：先弹确认框并上闸，真正发命令要在框里再点一次。
+    fn request_mass_delete(&self) {
+        self.mass_guard.arm();
+        self.mass_dialog.set(true);
+    }
+
+    /// 确认框里点确认：已上闸才放行（并收回闸、关框）。
+    fn take_mass_confirm(&self) -> bool {
+        let ok = self.mass_guard.take();
+        if ok {
+            self.mass_dialog.set(false);
+        }
+        ok
+    }
+
+    fn confirm_mass_delete(&self) {
+        if self.take_mass_confirm() {
+            self.run(
+                "confirm_mass_delete",
+                vec![("confirm_mass_delete", json!({}))],
+            );
         }
     }
 
@@ -753,6 +949,8 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
 
     // ── 状态 ──
     let (conflicts, error) = (ui.conflicts, ui.error);
+    let (notice, mass_text) = (ui.notice, ui.mass_text);
+    let u_mass = ui.clone();
     let u = ui.clone();
     let sync_btn = Element::button("立即同步")
         .small()
@@ -787,6 +985,32 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
                 .max_lines(4)
                 .padding_xy(16, 8)
                 .visible_when(move || !error.get().is_empty()),
+            Element::label_signal(ui.notice)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(4)
+                .padding_xy(16, 8)
+                .visible_when(move || !notice.get().is_empty()),
+            Element::col()
+                .width_match()
+                .spacing(6)
+                .padding_xy(16, 8)
+                .child(
+                    Element::label_signal(ui.mass_text)
+                        .font_size(12.5)
+                        .fg_role(Role::Warning)
+                        .width_match()
+                        .max_lines(4),
+                )
+                .child(
+                    Element::button("确认这些删除并继续同步")
+                        .small()
+                        .danger()
+                        .enabled_when(can)
+                        .on_click(move |_| u_mass.request_mass_delete()),
+                )
+                .visible_when(move || !mass_text.get().is_empty()),
         ],
     );
 
@@ -1058,6 +1282,11 @@ fn ui_dialogs(ui: &SyncUi, state: &AppState) {
         .dialogs
         .borrow_mut()
         .push(passphrase_dialog(ui));
+    state
+        .fields
+        .dialogs
+        .borrow_mut()
+        .push(mass_delete_dialog(ui));
     state.fields.dialogs.borrow_mut().push(reset_dialog(ui));
 }
 
@@ -1144,6 +1373,39 @@ fn passphrase_dialog(ui: &SyncUi) -> Element {
                 .on_click(move |_| u.submit_passphrase()),
         );
     Element::dialog(visible, dialog_frame("同步口令", body, footer))
+}
+
+fn mass_delete_dialog(ui: &SyncUi) -> Element {
+    let visible = ui.mass_dialog;
+    let body = Element::col().width_match().padding_xy(18, 14).child(
+        Element::label(
+            "这些文件在本机看似被删除。确认后，这些删除会同步到所有设备，其他设备上对应的文件也会被删掉。请确认不是误操作。",
+        )
+        .font_size(12.5)
+        .fg_role(Role::Warning)
+        .width_match()
+        .max_lines(5),
+    );
+    let (u, busy, g) = (ui.clone(), ui.busy, ui.mass_guard.clone());
+    let footer = Element::row()
+        .spacing(8)
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| {
+                    g.disarm();
+                    visible.set(false);
+                }),
+        )
+        .child(
+            Element::button("确认删除并同步")
+                .small()
+                .danger()
+                .enabled_when(move || !busy.get())
+                .on_click(move |_| u.confirm_mass_delete()),
+        );
+    Element::dialog(visible, dialog_frame("确认大批量删除", body, footer))
 }
 
 fn reset_dialog(ui: &SyncUi) -> Element {
@@ -1402,5 +1664,105 @@ mod tests {
                 .toast
                 .starts_with("连接成功")
         );
+    }
+
+    fn status_with(phase: &str, err: &str) -> Value {
+        json!({ "installed": true, "phase": phase, "last_error": err })
+    }
+
+    const MASS_ERR: &str =
+        "本机有 25/25 个文件看似被删除，为防误删已暂停。确认无误请点「继续同步」";
+
+    #[test]
+    fn error_kinds_are_classified_by_phase_and_text() {
+        assert_eq!(classify_error("halted", MASS_ERR), ErrorKind::MassDelete);
+        assert_eq!(
+            classify_error("error", "a.toml 正在被编辑，本轮暂不同步"),
+            ErrorKind::Notice
+        );
+        assert_eq!(classify_error("error", "401"), ErrorKind::Danger);
+        assert_eq!(classify_error("halted", "别的原因"), ErrorKind::Danger);
+        assert_eq!(classify_error("idle", ""), ErrorKind::None);
+    }
+
+    #[test]
+    fn mass_delete_status_shows_confirm_not_error() {
+        let ui = SyncUi::new();
+        ui.apply_status(&status_with("halted", MASS_ERR));
+        assert_eq!(ui.mass_text.get(), MASS_ERR);
+        assert_eq!(ui.error.get(), "", "不用红色错误样式");
+        ui.apply_status(&status_with("idle", ""));
+        assert_eq!(ui.mass_text.get(), "", "恢复后确认入口消失");
+    }
+
+    #[test]
+    fn editing_error_is_a_notice_with_retry_hint() {
+        let ui = SyncUi::new();
+        ui.apply_status(&status_with("error", "a.toml 正在被编辑，本轮暂不同步"));
+        assert_eq!(ui.error.get(), "", "不走红色错误样式");
+        assert!(ui.notice.get().contains("会自动重试"));
+        assert_eq!(ui.phase.get(), "稍后自动重试");
+        ui.apply_status(&status_with("error", "401"));
+        assert_eq!(ui.error.get(), "401");
+        assert_eq!(ui.notice.get(), "");
+    }
+
+    #[test]
+    fn mass_delete_needs_second_confirmation() {
+        let ui = SyncUi::new();
+        assert!(!ui.take_mass_confirm(), "没点过入口不放行");
+        ui.request_mass_delete();
+        assert!(ui.mass_dialog.get(), "第一次点击只弹确认框");
+        assert!(ui.take_mass_confirm(), "框里确认才放行");
+        assert!(!ui.mass_dialog.get());
+        assert!(!ui.take_mass_confirm(), "确认只用一次");
+        ui.request_mass_delete();
+        ui.mass_guard.disarm();
+        assert!(!ui.take_mass_confirm(), "取消后收回");
+    }
+
+    #[test]
+    fn save_sets_settings_before_secret() {
+        let steps = save_steps(
+            json!({ "enabled": true }),
+            vec![("set_secret", json!({ "password": "p" }))],
+        );
+        assert_eq!(steps[0].0, "sync.setSettings");
+        assert_eq!(steps[1].0, "sync.command");
+        assert_eq!(steps[1].1["op"], "set_secret");
+        assert_eq!(steps.len(), 2);
+    }
+
+    #[test]
+    fn location_change_is_detected_only_for_locating_fields() {
+        let old = Form {
+            wd_url: "https://a/dav".into(),
+            wd_user: "u".into(),
+            ..Form::default()
+        };
+        let mut new = old.clone();
+        new.interval_min = 30;
+        new.scope[0] = false;
+        assert!(!backend_location_changed(&old, &new), "范围/间隔不算换位置");
+        new.wd_url = "https://b/dav".into();
+        assert!(backend_location_changed(&old, &new));
+        let first = Form::default();
+        assert!(!backend_location_changed(&first, &new), "首次配置无旧密码");
+        let mut s3 = old.clone();
+        s3.s3 = true;
+        s3.s3_bucket = "b".into();
+        assert!(backend_location_changed(&old, &s3), "换后端类型");
+    }
+
+    #[test]
+    fn failure_texts_split_notice_from_error() {
+        let (t, notice) = failure_text("立即同步", "正在同步，请稍后再试");
+        assert!(notice);
+        assert_eq!(t, "正在同步，请稍后再试");
+        let (t, notice) = failure_text("保存", "拒绝：调用方权限不足");
+        assert!(!notice);
+        assert!(t.contains("拒绝：调用方权限不足") && t.contains("请从清风输入法设置程序操作"));
+        assert!(outcome("sync_now", &Err("正在同步，请稍后再试".into())).notice);
+        assert!(!outcome("sync_now", &Err("x".into())).notice);
     }
 }
