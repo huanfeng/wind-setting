@@ -2287,7 +2287,8 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 "enabled": true,
                 "backend": { "type": "webdav", "url": "https://dav.example.com/dav/", "user": "me" },
                 "scope": { "config": true, "schemas": true, "themes": true, "dicts": true },
-                "interval_min": 15
+                "interval_min": 15,
+                "device_name": "书房台式机"
             },
             "installed": true, "has_secret": true
         }),
@@ -2295,6 +2296,18 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         "sync.command" => match params.get("op").and_then(Value::as_str) {
             Some("export_key") => {
                 json!({ "key": "bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=" })
+            }
+            // 设备名册：本机、一台 macOS、一台读不出的；remove_device 无状态，只回 ok。
+            Some("list_devices") => {
+                let now = chrono::Utc::now().timestamp();
+                json!({ "devices": [
+                    { "id": "d-self", "name": "书房台式机", "platform": "windows", "app_version": "0.132.0",
+                      "caps": ["files"], "last_seen": now, "is_self": true, "readable": true },
+                    { "id": "d-mac", "name": "MacBook Pro", "platform": "macos", "app_version": "0.131.0",
+                      "caps": ["files"], "last_seen": now - 86_400, "is_self": false, "readable": true },
+                    { "id": "d-unk", "name": "", "platform": "", "app_version": "",
+                      "caps": [], "last_seen": now - 9 * 86_400, "is_self": false, "readable": false }
+                ] })
             }
             _ => json!({ "ok": true }),
         },

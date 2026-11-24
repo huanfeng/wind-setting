@@ -293,6 +293,8 @@ pub(crate) struct Form {
     /// 配置 / 方案 / 主题 / 词库与短语。
     pub scope: [bool; 4],
     pub interval_min: u32,
+    /// 本机在「我的设备」里显示的名称；空 = 用计算机名。设备本地，不随同步传播。
+    pub device_name: String,
 }
 
 impl Default for Form {
@@ -310,6 +312,7 @@ impl Default for Form {
             s3_path_style: false,
             scope: [true; 4],
             interval_min: 15,
+            device_name: String::new(),
         }
     }
 }
@@ -337,6 +340,7 @@ impl Form {
                 .unwrap_or_default()
                 .to_string()
         };
+        f.device_name = str_of(s, "device_name");
         if let Some(sc) = s.get("scope") {
             for (i, k) in SCOPE_KEYS.iter().enumerate() {
                 f.scope[i] = sc.get(*k).and_then(Value::as_bool).unwrap_or(true);
@@ -387,6 +391,7 @@ impl Form {
             "enabled": self.enabled,
             "scope": scope,
             "interval_min": self.interval_min,
+            "device_name": self.device_name.trim(),
         });
         if self.enabled || !self.backend_blank() {
             out["backend"] = if self.s3 {
@@ -406,6 +411,139 @@ impl Form {
         out
     }
 }
+
+/// 设备名称上限（字符数，与 core 对齐）。
+pub(crate) const DEVICE_NAME_MAX: usize = 64;
+
+/// 校验并规整本机设备名：去首尾空白，超过 [`DEVICE_NAME_MAX`] 个字拒绝（不静默截断）。
+pub(crate) fn check_device_name(name: &str) -> Result<String, String> {
+    let n = name.trim();
+    if n.chars().count() > DEVICE_NAME_MAX {
+        Err(format!("设备名称不能超过 {DEVICE_NAME_MAX} 个字"))
+    } else {
+        Ok(n.to_string())
+    }
+}
+
+/// 平台的中文显示名；不认识的原样带出。
+pub(crate) fn platform_text(p: &str) -> String {
+    match p {
+        "windows" => "Windows".to_string(),
+        "macos" => "macOS".to_string(),
+        "linux" => "Linux".to_string(),
+        "android" => "Android".to_string(),
+        "" => "未知平台".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// 「最后在线」文案：今天 / 昨天带时分，更早显示日期；`ts <= 0` 视为未知。
+pub(crate) fn last_seen_text(ts: i64, today: chrono::NaiveDate) -> String {
+    let Some(t) = chrono::DateTime::from_timestamp(ts, 0).filter(|_| ts > 0) else {
+        return "最后在线未知".to_string();
+    };
+    let t = t.with_timezone(&chrono::Local);
+    let days = (today - t.date_naive()).num_days();
+    match days {
+        0 => format!("今天 {}", t.format("%H:%M")),
+        1 => format!("昨天 {}", t.format("%H:%M")),
+        _ => t.format("%Y-%m-%d").to_string(),
+    }
+}
+
+/// `sync.command{op:"list_devices"}` 的一项。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct DeviceView {
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    pub app_version: String,
+    pub last_seen: i64,
+    pub is_self: bool,
+    /// false = 设备信息解不开（别的密钥写的或已损坏），名称为空。
+    pub readable: bool,
+}
+
+impl DeviceView {
+    pub fn title(&self) -> String {
+        if self.readable && !self.name.trim().is_empty() {
+            self.name.clone()
+        } else {
+            "未知设备（无法解密）".to_string()
+        }
+    }
+
+    /// 副标题：平台 · 版本 · 最后在线；不可读的设备没有平台与版本。
+    pub fn detail(&self, today: chrono::NaiveDate) -> String {
+        let mut parts = Vec::new();
+        if self.readable {
+            parts.push(platform_text(&self.platform));
+            if !self.app_version.is_empty() {
+                parts.push(format!("v{}", self.app_version.trim_start_matches('v')));
+            }
+        }
+        parts.push(last_seen_text(self.last_seen, today));
+        parts.join(" · ")
+    }
+
+    /// 只有其他设备能移除。
+    pub fn removable(&self) -> bool {
+        !self.is_self
+    }
+}
+
+/// 解析 `list_devices` 应答；本机排最前，其余按最后在线从新到旧。
+pub(crate) fn parse_devices(v: &Value) -> Vec<DeviceView> {
+    let str_of = |o: &Value, k: &str| {
+        o.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut out: Vec<DeviceView> = v
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|d| DeviceView {
+                    id: str_of(d, "id"),
+                    name: str_of(d, "name"),
+                    platform: str_of(d, "platform"),
+                    app_version: str_of(d, "app_version"),
+                    last_seen: d.get("last_seen").and_then(Value::as_i64).unwrap_or(0),
+                    is_self: d.get("is_self").and_then(Value::as_bool).unwrap_or(false),
+                    readable: d.get("readable").and_then(Value::as_bool).unwrap_or(true),
+                })
+                .filter(|d| !d.id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| {
+        b.is_self
+            .cmp(&a.is_self)
+            .then(b.last_seen.cmp(&a.last_seen))
+    });
+    out
+}
+
+/// 移除设备的二次确认闸：点行内「移除」时记下目标并弹框，框里确认才放行；取过即收回。
+#[derive(Clone, Default)]
+pub(crate) struct RemoveGuard(Rc<RefCell<Option<String>>>);
+
+impl RemoveGuard {
+    pub fn arm(&self, dev: &str) {
+        *self.0.borrow_mut() = Some(dev.to_string());
+    }
+    pub fn disarm(&self) {
+        self.0.borrow_mut().take();
+    }
+    pub fn take(&self) -> Option<String> {
+        self.0.borrow_mut().take()
+    }
+}
+
+/// 移除前的确认文案。
+pub(crate) const REMOVE_DEVICE_WARN: &str = "移除后该设备的同步记录会从存储中删除。若该设备仍在使用，下次同步时会重新出现；要彻底阻止，请重置远端并更换口令。";
 
 /// 把输入框里的间隔数收成合法整数（1 分钟到 24 小时）。
 pub(crate) fn clamp_interval(v: f64) -> u32 {
@@ -503,6 +641,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "import_key" => "导入密钥",
         "export_key" => "导出密钥",
         "reset_remote" => "重置远端",
+        "remove_device" => "移除设备",
         other => other,
     };
     match r {
@@ -530,6 +669,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 "export_key" if key.is_none() => "同步进程没有返回密钥".to_string(),
                 "export_key" => "已导出密钥，请妥善保管".to_string(),
                 "reset_remote" => "远端已重置，将以本机数据为准重新上传".to_string(),
+                "remove_device" => "已移除该设备".to_string(),
                 "confirm_mass_delete" => "已确认，将把这些删除同步到所有设备".to_string(),
                 _ => format!("{label}成功"),
             };
@@ -551,6 +691,8 @@ pub enum SyncMsg {
     Settings(Result<Value, String>),
     /// `sync.status` 的应答。
     Status(Result<Value, String>),
+    /// `list_devices` 的回执。
+    Devices(Result<Value, String>),
     /// 一条（或一串）命令的最终回执，`op` 供 [`outcome`] 选文案。
     Command {
         op: String,
@@ -610,6 +752,16 @@ pub struct SyncUi {
     reset_ack: Signal<bool>,
     reset_guard: ResetGuard,
 
+    device_name: Signal<String>,
+    devices: Signal<Vec<DeviceView>>,
+    /// 设备区的读取失败说明；空 = 无。
+    devices_err: Signal<String>,
+    remove_dialog: Signal<bool>,
+    /// 确认框里显示的目标设备名。
+    remove_name: Signal<String>,
+    remove_guard: RemoveGuard,
+    devices_loaded: Rc<Cell<bool>>,
+
     loaded: Rc<Cell<bool>>,
     tx: Rc<RefCell<Option<Sender<SyncMsg>>>>,
 }
@@ -665,6 +817,13 @@ impl SyncUi {
             reset_dialog: signal(false),
             reset_ack: signal(false),
             reset_guard: ResetGuard::default(),
+            device_name: signal(String::new()),
+            devices: signal(Vec::new()),
+            devices_err: signal(String::new()),
+            remove_dialog: signal(false),
+            remove_name: signal(String::new()),
+            remove_guard: RemoveGuard::default(),
+            devices_loaded: Rc::new(Cell::new(false)),
             loaded: Rc::new(Cell::new(false)),
             tx: Rc::new(RefCell::new(None)),
         }
@@ -696,12 +855,53 @@ impl SyncUi {
         });
     }
 
+    /// 拉一次设备名册（后台线程，不占 busy）。
+    fn refresh_devices(&self) {
+        let Some(tx) = self.tx.borrow().clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let _ = tx.send(SyncMsg::Devices(rpc::call_core(
+                "sync.command",
+                &json!({ "op": "list_devices", "args": {} }),
+            )));
+        });
+    }
+
+    /// 点行内「移除」：记下目标并弹确认框，此时不发命令。
+    fn request_remove(&self, dev: &DeviceView) {
+        self.remove_guard.arm(&dev.id);
+        self.remove_name.set(dev.title());
+        self.remove_dialog.set(true);
+    }
+
+    /// 确认框里点确认：已上闸才放行并返回目标设备 id。
+    fn take_remove_confirm(&self) -> Option<String> {
+        let dev = self.remove_guard.take();
+        if dev.is_some() {
+            self.remove_dialog.set(false);
+        }
+        dev
+    }
+
+    fn confirm_remove(&self) {
+        if let Some(dev) = self.take_remove_confirm() {
+            self.run(
+                "remove_device",
+                vec![("remove_device", json!({ "dev": dev, "confirm": true }))],
+            );
+        }
+    }
+
     /// `sync.statusChanged` 事件（及 `sync.status` 应答）落到界面。
     pub fn apply_status(&self, v: &Value) {
         let s = StatusView::parse(v);
         self.installed.set(s.installed);
         self.has_secret.set(s.has_secret);
         self.joined.set(s.joined);
+        if s.installed && s.joined && !self.devices_loaded.replace(true) {
+            self.refresh_devices();
+        }
         let kind = s.error_kind();
         self.phase.set(if kind == ErrorKind::Notice {
             "稍后自动重试".to_string()
@@ -737,6 +937,7 @@ impl SyncUi {
             s.set(v);
         }
         self.interval.set(f.interval_min as f64);
+        self.device_name.set(f.device_name.clone());
     }
 
     fn form(&self) -> Form {
@@ -758,6 +959,7 @@ impl SyncUi {
                 self.scope[3].get(),
             ],
             interval_min: clamp_interval(self.interval.get()),
+            device_name: self.device_name.get(),
         }
     }
 
@@ -770,6 +972,14 @@ impl SyncUi {
                 self.apply_form(&Form::from_settings(&v));
             }
             SyncMsg::Status(Ok(v)) => self.apply_status(&v),
+            SyncMsg::Devices(Ok(v)) => {
+                self.devices_err.set(String::new());
+                self.devices.set(parse_devices(&v));
+            }
+            SyncMsg::Devices(Err(e)) => {
+                let (t, _) = failure_text("读取设备列表", &e);
+                self.devices_err.set(t);
+            }
             SyncMsg::Settings(Err(e)) | SyncMsg::Status(Err(e)) => {
                 self.phase.set(format!("无法连接输入法服务：{e}"));
             }
@@ -795,6 +1005,7 @@ impl SyncUi {
                             self.pass_dialog.set(false);
                         }
                         "import_key" => self.import_key.set(String::new()),
+                        "remove_device" => self.refresh_devices(),
                         "reset_remote" => {
                             self.reset_pass1.set(String::new());
                             self.reset_pass2.set(String::new());
@@ -842,6 +1053,7 @@ impl SyncUi {
 
     /// 同步提交设置（只是写一个本地文件，很快）。
     fn save_settings(&self) -> Result<(), String> {
+        check_device_name(&self.device_name.get())?;
         rpc::call_core(
             "sync.setSettings",
             &json!({ "settings": self.form().to_settings() }),
@@ -851,6 +1063,10 @@ impl SyncUi {
 
     /// 「保存」：设置 + 本次填了的机密。`test` 为真则随后测试连接。
     fn save(&self, ctx: &mut EventCtx, test: bool) {
+        if let Err(e) = check_device_name(&self.device_name.get()) {
+            ctx.toast_err(e);
+            return;
+        }
         let f = self.form();
         let moved = backend_location_changed(&self.saved.borrow(), &f);
         let secrets = secret_commands(f.s3, &self.wd_password.get(), &self.s3_secret.get());
@@ -1116,6 +1332,85 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
         ],
     );
 
+    // ── 我的设备 ──
+    let joined = ui.joined;
+    let ready = move || gate.get() && joined.get();
+    let (u_name, u_ref) = (ui.clone(), ui.clone());
+    let (devices, devices_err) = (ui.devices, ui.devices_err);
+    let u_list = ui.clone();
+    let devices_card = section(
+        "我的设备",
+        vec![
+            setting_row(
+                "本机名称",
+                Some("其他设备看到的本机名称；随同步设置保存在本机"),
+                Element::row()
+                    .cross(Align::Center)
+                    .spacing(6)
+                    .child(
+                        Element::text_input(ui.device_name, "留空使用计算机名")
+                            .width(220)
+                            .enabled_when(move || gate.get()),
+                    )
+                    .child(
+                        Element::button("保存名称")
+                            .small()
+                            .enabled_when(can)
+                            .on_click(move |ctx| match u_name.save_settings() {
+                                Ok(()) => {
+                                    ctx.toast_ok("已保存设备名称");
+                                    u_name.refresh_devices();
+                                }
+                                Err(e) => ctx.toast_err(format!("保存失败：{e}")),
+                            }),
+                    ),
+            ),
+            setting_row(
+                "设备列表",
+                Some("已加入同步的设备；移除只清理存储里的记录"),
+                Element::button("刷新")
+                    .small()
+                    .outline_soft()
+                    .enabled_when(ready)
+                    .on_click(move |_| u_ref.refresh_devices()),
+            ),
+            note(
+                "未加入同步（需先设置口令或导入密钥）时无法查看设备列表。",
+                Role::TextMuted,
+            )
+            .padding_xy(16, 8)
+            .visible_when(move || !ready()),
+            Element::label_signal(devices_err)
+                .font_size(12.5)
+                .fg_role(Role::Danger)
+                .width_match()
+                .max_lines(3)
+                .padding_xy(16, 8)
+                .visible_when(move || !devices_err.get().is_empty()),
+            Element::switcher(devices, move |list: Vec<DeviceView>| {
+                let today = chrono::Local::now().date_naive();
+                let mut col = Element::col().width_match();
+                for d in list {
+                    let control = if d.removable() {
+                        let (u, d2) = (u_list.clone(), d.clone());
+                        Element::button("移除")
+                            .small()
+                            .danger()
+                            .enabled_when(can)
+                            .on_click(move |_| u.request_remove(&d2))
+                    } else {
+                        Element::label("本机")
+                            .font_size(12.5)
+                            .fg_role(Role::AccentText)
+                    };
+                    col = col.child(setting_row(&d.title(), Some(&d.detail(today)), control));
+                }
+                col
+            })
+            .visible_when(ready),
+        ],
+    );
+
     // ── 范围 ──
     let u = ui.clone();
     let names = ["配置", "方案", "主题", "词库与短语"];
@@ -1271,6 +1566,7 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
         .spacing(12)
         .child(status_card)
         .child(backend_card)
+        .child(devices_card)
         .child(scope_card)
         .child(crypto_card)
 }
@@ -1288,6 +1584,11 @@ fn ui_dialogs(ui: &SyncUi, state: &AppState) {
         .borrow_mut()
         .push(mass_delete_dialog(ui));
     state.fields.dialogs.borrow_mut().push(reset_dialog(ui));
+    state
+        .fields
+        .dialogs
+        .borrow_mut()
+        .push(remove_device_dialog(ui));
 }
 
 fn dialog_frame(title: &str, body: Element, footer: Element) -> Element {
@@ -1406,6 +1707,48 @@ fn mass_delete_dialog(ui: &SyncUi) -> Element {
                 .on_click(move |_| u.confirm_mass_delete()),
         );
     Element::dialog(visible, dialog_frame("确认大批量删除", body, footer))
+}
+
+fn remove_device_dialog(ui: &SyncUi) -> Element {
+    let visible = ui.remove_dialog;
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 14)
+        .spacing(8)
+        .child(
+            Element::label_signal(ui.remove_name.map(|n| format!("移除设备：{n}")))
+                .font_size(13.0)
+                .fg_role(Role::Text)
+                .width_match()
+                .max_lines(2),
+        )
+        .child(
+            Element::label(REMOVE_DEVICE_WARN)
+                .font_size(12.5)
+                .fg_role(Role::Warning)
+                .width_match()
+                .max_lines(6),
+        );
+    let (u, busy, g) = (ui.clone(), ui.busy, ui.remove_guard.clone());
+    let footer = Element::row()
+        .spacing(8)
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| {
+                    g.disarm();
+                    visible.set(false);
+                }),
+        )
+        .child(
+            Element::button("移除")
+                .small()
+                .danger()
+                .enabled_when(move || !busy.get())
+                .on_click(move |_| u.confirm_remove()),
+        );
+    Element::dialog(visible, dialog_frame("移除设备", body, footer))
 }
 
 fn reset_dialog(ui: &SyncUi) -> Element {
@@ -1752,6 +2095,128 @@ mod tests {
         s3.s3 = true;
         s3.s3_bucket = "b".into();
         assert!(backend_location_changed(&old, &s3), "换后端类型");
+    }
+
+    fn dev(id: &str, self_: bool, readable: bool, ts: i64) -> DeviceView {
+        DeviceView {
+            id: id.into(),
+            name: if readable {
+                format!("n-{id}")
+            } else {
+                String::new()
+            },
+            platform: "macos".into(),
+            app_version: "0.132.0".into(),
+            last_seen: ts,
+            is_self: self_,
+            readable,
+        }
+    }
+
+    fn local_ts(y: i32, m: u32, d: u32, h: u32) -> i64 {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, m, d, h, 30, 0)
+            .unwrap()
+            .timestamp()
+    }
+
+    #[test]
+    fn platform_names_are_mapped() {
+        assert_eq!(platform_text("windows"), "Windows");
+        assert_eq!(platform_text("macos"), "macOS");
+        assert_eq!(platform_text("linux"), "Linux");
+        assert_eq!(platform_text("android"), "Android");
+        assert_eq!(platform_text("haiku"), "haiku");
+        assert_eq!(platform_text(""), "未知平台");
+    }
+
+    #[test]
+    fn last_seen_is_today_yesterday_or_date() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+        assert_eq!(
+            last_seen_text(local_ts(2026, 11, 24, 9), today),
+            "今天 09:30"
+        );
+        assert_eq!(
+            last_seen_text(local_ts(2026, 11, 23, 22), today),
+            "昨天 22:30"
+        );
+        assert_eq!(
+            last_seen_text(local_ts(2026, 11, 20, 8), today),
+            "2026-11-20"
+        );
+        assert_eq!(last_seen_text(0, today), "最后在线未知");
+    }
+
+    #[test]
+    fn self_device_has_no_remove_button() {
+        assert!(!dev("a", true, true, 1).removable());
+        assert!(dev("b", false, true, 1).removable());
+        assert!(dev("c", false, false, 1).removable(), "读不出的也能清理");
+    }
+
+    #[test]
+    fn remove_needs_second_confirmation() {
+        let ui = SyncUi::new();
+        assert_eq!(ui.take_remove_confirm(), None, "没点过入口不放行");
+        ui.request_remove(&dev("b", false, true, 1));
+        assert!(ui.remove_dialog.get(), "第一次点击只弹确认框");
+        assert_eq!(ui.remove_name.get(), "n-b");
+        assert_eq!(ui.take_remove_confirm().as_deref(), Some("b"));
+        assert!(!ui.remove_dialog.get());
+        assert_eq!(ui.take_remove_confirm(), None, "确认只用一次");
+        ui.request_remove(&dev("b", false, true, 1));
+        ui.remove_guard.disarm();
+        assert_eq!(ui.take_remove_confirm(), None, "取消后收回");
+        assert!(REMOVE_DEVICE_WARN.contains("重置远端并更换口令"));
+    }
+
+    #[test]
+    fn unreadable_device_shows_unknown() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 24).unwrap();
+        let d = dev("x", false, false, local_ts(2026, 11, 24, 9));
+        assert_eq!(d.title(), "未知设备（无法解密）");
+        assert_eq!(d.detail(today), "今天 09:30", "不显示平台与版本");
+        let ok = dev("y", false, true, local_ts(2026, 11, 24, 9));
+        assert_eq!(ok.detail(today), "macOS · v0.132.0 · 今天 09:30");
+    }
+
+    #[test]
+    fn devices_parse_self_first_then_recent() {
+        let v = json!({ "devices": [
+            { "id": "b", "name": "B", "last_seen": 10, "readable": true },
+            { "id": "a", "name": "A", "last_seen": 5, "is_self": true, "readable": true },
+            { "id": "c", "name": "", "last_seen": 20, "readable": false },
+            { "name": "no-id" }
+        ]});
+        let ids: Vec<_> = parse_devices(&v).into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, ["a", "c", "b"]);
+    }
+
+    #[test]
+    fn device_name_over_64_chars_is_rejected() {
+        assert_eq!(check_device_name("  我的电脑 ").unwrap(), "我的电脑");
+        assert_eq!(check_device_name("").unwrap(), "");
+        assert!(check_device_name(&"字".repeat(64)).is_ok());
+        assert!(check_device_name(&"字".repeat(65)).is_err());
+        let ui = SyncUi::new();
+        ui.device_name.set("a".repeat(65));
+        assert!(ui.save_settings().is_err(), "超长不发 RPC");
+    }
+
+    #[test]
+    fn device_name_round_trips_in_settings() {
+        let f = Form {
+            device_name: " 书房 ".into(),
+            ..Form::default()
+        };
+        let v = f.to_settings();
+        assert_eq!(v["device_name"], "书房");
+        assert_eq!(
+            Form::from_settings(&json!({ "settings": v })).device_name,
+            "书房"
+        );
     }
 
     #[test]
