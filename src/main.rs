@@ -583,6 +583,15 @@ fn main() {
     });
     app_state.borrow().memory.set_tx(memory_tx);
 
+    // 数据同步通道：`sync.*` 命令要等同步进程回执（口令派生、测试连接走网络），在后台线程
+    // 发，结果经此回 UI 线程（见 `pages::sync`）。
+    let sync_state = app_state.clone();
+    let sync_tx = app.channel::<pages::sync::SyncMsg>(move |ctx, msg| {
+        let ui = sync_state.borrow().sync.clone();
+        ui.on_msg(ctx, msg);
+    });
+    app_state.borrow().sync.set_tx(sync_tx);
+
     // 词库统计通道：`dict.systemStats` 要扫整份系统词库（拼音大词库一秒上下），在后台线程
     // 取，结果经此回 UI 线程写对话框（见 `pages::dict::stats_dialog`）。
     let stats_state = app_state.clone();

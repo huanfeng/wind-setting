@@ -814,6 +814,8 @@ pub struct AppState {
     pub stats_mgr: crate::pages::stats::StatsState,
     /// 高级页「性能与诊断」里的内存诊断（摘要行 + 诊断信息对话框）。
     pub memory: crate::pages::memory::MemoryDiag,
+    /// 高级页「数据同步」卡（设置、状态、口令与密钥对话框；全部经 `sync.*` RPC）。
+    pub sync: crate::pages::sync::SyncUi,
     /// 「应用兼容」窗的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
     pub compat_mgr: crate::pages::compat::CompatState,
     /// 软键盘编辑器的工作副本（随「应用设置」经 SideCommitter 提交）。
@@ -1294,6 +1296,7 @@ impl AppState {
             integration: crate::pages::integration::IntegrationState::new(),
             stats_mgr: crate::pages::stats::StatsState::new(),
             memory: crate::pages::memory::MemoryDiag::new(),
+            sync: crate::pages::sync::SyncUi::new(),
             compat_mgr: crate::pages::compat::CompatState::new(),
             softkbd: crate::softkbd_editor::SoftKbdData::default(),
             reload_confirm: signal(false),
@@ -1995,6 +1998,8 @@ impl AppState {
             // 兼容规则被改了（设置端自己写的会收到回声；右键菜单写的只能靠它得知）。
             // 回声无害：`CompatState::reload` 只在内容真的变了才动信号，不会因此重建界面。
             "compat.changed" => self.compat_mgr.request_refresh(),
+            // 同步进程上报的状态（阶段、上次成功、待传、冲突、错误）；载荷同 `sync.status`。
+            "sync.statusChanged" => self.sync.apply_status(&ev.data),
             // 方案配置被改了（命令直通开关扩展词库等）：开着的方案设置对话框与待提交队列
             // 都要对账。本端保存的回声按值相同滤掉，不提示。
             // 不带 id 的是可能动了多个方案的写入（导入方案包、整机还原），按全部处理。

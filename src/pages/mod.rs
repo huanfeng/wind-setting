@@ -19,6 +19,7 @@ pub mod integration;
 pub mod memory;
 pub mod phrase_import;
 pub mod stats;
+pub mod sync;
 
 use crate::dialogs::schema_manager::build_schema_inline_list;
 use crate::manifest::scheme_config_section;
@@ -311,6 +312,14 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
                 extensions::ANCHOR,
                 state.jump,
             ),
+        ));
+    }
+    // 不挂 `feature:` 门：id 须登记进 core 的 `wind_config::SETTINGS_FEATURES`，那是 core 仓的事。
+    {
+        secs.push(nav.wrap(
+            sync::SECTION,
+            0,
+            crate::search::anchor::wrap(sync::build_section(app, state), sync::ANCHOR, state.jump),
         ));
     }
     if let Some(card) = custom_hidden_section(app) {

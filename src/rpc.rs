@@ -2267,6 +2267,29 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 { "id": "broken", "error": "读 extension.toml 失败: 系统找不到指定的文件。" }
             ]
         }),
+        // 数据同步：形状同 core `apps/service/src/sync.rs`（状态、设置不含机密、命令回执）。
+        "sync.status" => json!({
+            "installed": true, "enabled": true, "running": true, "phase": "idle",
+            "last_ok": 1_795_000_000, "last_error": null, "pending": 2, "conflicts": 2,
+            "conflict_paths": ["themes/dark.conflict-laptop-2026-11-23.json", "data/phrases.dict.yaml.conflict-laptop-2026-11-22"],
+            "has_secret": true
+        }),
+        "sync.getSettings" => json!({
+            "settings": {
+                "enabled": true,
+                "backend": { "type": "webdav", "url": "https://dav.example.com/dav/", "user": "me" },
+                "scope": { "config": true, "schemas": true, "themes": true, "dicts": true },
+                "interval_min": 15
+            },
+            "installed": true, "has_secret": true
+        }),
+        "sync.setSettings" => json!({ "ok": true }),
+        "sync.command" => match params.get("op").and_then(Value::as_str) {
+            Some("export_key") => {
+                json!({ "key": "bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=" })
+            }
+            _ => json!({ "ok": true }),
+        },
         // 与 core 的 EMOJI_MODULES 同序同出厂值，外加一个用户放置的文件。
         "emoji.modules" => json!({
             "userDir": "emoji",
