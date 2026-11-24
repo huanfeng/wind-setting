@@ -438,8 +438,11 @@ pub fn build_text_rows_dialog_with(
 /// **实测被用户推翻**：灰掉的开关与正常开关差别太小、看不出来，点下去没反应
 /// 反而更像卡住了。改成受控点击——照常可点，越界时**明说为什么**。
 ///
-/// `on_toggle` 会接管翻转：设了它之后点击不再自动改 `sig`，得由本回调决定翻不翻。
-/// 这正是「先判断再决定」需要的形态，且渲染始终跟随 `sig`，零闪烁。
+/// ⚠️ **`Switch` 与 `CheckBox` 不同：`on_toggle` 不接管翻转**。开关一松手先自己翻 `sig`，
+/// 回调是翻完之后的旁路通知（windui 0.34 起生效，此前挂在开关上的回调被静默丢弃）。
+/// 所以守卫只能「事后回滚」：回调里读到的 `sig` 已是新值，越界（刚被关掉、剩下的开着
+/// 的又不够下限）就把它置回 `true`。**切勿**在这里再 `sig.set(!sig.get())`，那会把
+/// 开关翻回原状——表现为整屏开关点不动。
 ///
 /// 只拦「关掉最后几个」，已关掉的照常可以打开——否则用户会被锁死在当前组合里。
 ///
@@ -460,11 +463,11 @@ fn switch_with_floor(
         format!("至少要保留 {n} 个{}", f.noun)
     };
     Element::switch(sig).on_toggle(move |ctx| {
-        if sig.get() && all.iter().filter(|s| s.get()).count() <= n {
+        // 此刻 `sig` 已是翻转后的值：刚被关掉且开着的不足下限 ⇒ 回滚。
+        if !sig.get() && all.iter().filter(|s| s.get()).count() < n {
+            sig.set(true);
             ctx.toast_err(msg.clone());
-            return; // 不翻转
         }
-        sig.set(!sig.get());
     })
 }
 
@@ -1867,6 +1870,68 @@ mod font_rows_tests {
     }
 }
 
+/// 测试用：在无头 `Tree` 上点开关（`switch_with_floor` 两处回归共用）。
+#[cfg(test)]
+pub(crate) mod switch_click_util {
+    use windui::core::{NodeId, Tree};
+    use windui::event::{MouseButton, PointerEvent, PointerKind};
+    use windui::geometry::{Point, Size};
+    use windui::prelude::*;
+
+    /// 建树并布局，返回树。
+    pub fn build(el: Element, win: Size) -> Tree {
+        let mut tree = Tree::new();
+        let root = el.build(&mut tree);
+        tree.root = Some(root);
+        tree.layout_root(win, &mut windui::text::NullTextEngine);
+        tree
+    }
+
+    /// 树里全部 `Switch` 的中心点（按文档序，即自上而下的行序）。
+    pub fn switch_centers(tree: &mut Tree) -> Vec<Point> {
+        let mut ids = Vec::new();
+        let mut stack: Vec<NodeId> = tree.root.into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if let Some(n) = tree.get(id) {
+                stack.extend(n.children.iter().rev().copied());
+            }
+            ids.push(id);
+        }
+        let mut out = Vec::new();
+        for id in ids {
+            let is_switch = tree.get_mut(id).is_some_and(|n| {
+                n.widget
+                    .as_any_mut()
+                    .is_some_and(|a| a.is::<windui::ui::inputs::Switch>())
+            });
+            if is_switch {
+                // 节点自带的 bounds 是相对父级的；点击要用窗口坐标。
+                let b = tree.abs_bounds(id);
+                out.push(Point::new(b.x + b.w / 2, b.y + b.h / 2));
+            }
+        }
+        out.sort_by_key(|p| p.y);
+        out
+    }
+
+    /// 左键点一下，返回这一下弹出的 toast 文案（没有则 `None`）。
+    pub fn click(tree: &mut Tree, at: Point) -> Option<String> {
+        let (mut hover, mut capture) = (None, None);
+        let mut toast = None;
+        for kind in [PointerKind::Down, PointerKind::Up] {
+            let res = tree.dispatch_pointer(
+                PointerEvent::single(kind, at, MouseButton::Left),
+                &mut hover,
+                &mut capture,
+            );
+            if let Some(t) = res.toast {
+                toast = Some(t.text);
+            }
+        }
+        toast
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1925,6 +1990,57 @@ mod tests {
         tree.layout_root(win, &mut te);
         let hit = tree.hit_test(center).expect("窗口中央应命中表格里的节点");
         assert!(tree.node_enabled(hit), "勾选后表格必须能编辑");
+    }
+
+    /// 回归：`Switch` 的 `on_toggle` 是翻转之后的旁路通知，不是接管。守卫回调里若再手动
+    /// 翻一次，开关净效果为零——整屏开关点不动。
+    #[test]
+    fn floor_switch_actually_toggles_and_blocks_last_one() {
+        use super::switch_click_util::*;
+        use windui::geometry::Size;
+
+        let rows: Vec<ToggleRow> = (0..3)
+            .map(|i| ToggleRow {
+                value: format!("v{i}"),
+                label: format!("项{i}"),
+                desc: String::new(),
+                sig: signal(true),
+            })
+            .collect();
+        let sigs: Vec<Signal<bool>> = rows.iter().map(|r| r.sig).collect();
+        let order = signal((0..3).map(|i| format!("v{i}")).collect::<Vec<_>>());
+        let el = build_toggle_rows_dialog(
+            signal(true),
+            "测试",
+            "说明",
+            rows,
+            vec![],
+            order,
+            Some(MinEnabled {
+                count: 1,
+                noun: "项".into(),
+            }),
+        );
+        let mut tree = build(el, Size::new(900, 900));
+        let pts = switch_centers(&mut tree);
+        assert_eq!(pts.len(), 3, "应有三个开关，实得 {}", pts.len());
+
+        // 关掉第 0 个：必须真的关上。
+        assert!(click(&mut tree, pts[0]).is_none());
+        assert!(!sigs[0].get(), "点一下开关必须翻转（双翻会让它纹丝不动）");
+        // 关掉第 1 个：仍剩第 2 个，放行。
+        assert!(click(&mut tree, pts[1]).is_none());
+        assert!(!sigs[1].get());
+        // 再关最后一个：越界，回滚并弹 toast。
+        let toast = click(&mut tree, pts[2]);
+        assert!(sigs[2].get(), "最后一个关不掉");
+        assert!(
+            toast.is_some_and(|t| t.contains("至少要保留")),
+            "应弹下限提示"
+        );
+        // 已关的照常能重新打开。
+        assert!(click(&mut tree, pts[0]).is_none());
+        assert!(sigs[0].get(), "已关掉的必须能再打开");
     }
 
     #[test]

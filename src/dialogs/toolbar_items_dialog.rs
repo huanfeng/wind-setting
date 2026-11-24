@@ -364,22 +364,62 @@ fn switch_with_floor(sig: Signal<bool>, ui: &ToolbarItemsUi, min_enabled: usize)
         return Element::switch(sig);
     }
     let ui = ui.clone();
+    // ⚠️ `Switch` 的 `on_toggle` 不接管翻转：开关先自己翻 `sig`，回调是翻完之后的旁路
+    // 通知，读到的已是新值。所以守卫只能事后回滚；再 `sig.set(!sig.get())` 会翻回原状，
+    // 整屏开关就点不动了（见 `field_dialogs::switch_with_floor`）。
     Element::switch(sig).on_toggle(move |ctx| {
-        if sig.get() && ui.enabled_values().len() <= min_enabled {
+        if !sig.get() && ui.enabled_values().len() < min_enabled {
+            sig.set(true);
             ctx.toast_err(if min_enabled == 1 {
                 "至少要保留一项".to_string()
             } else {
                 format!("至少要保留 {min_enabled} 项")
             });
-            return;
         }
-        sig.set(!sig.get());
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归：「显示内容」里的开关必须点得动，且守住「至少留一项」。
+    /// （`Switch` 的 `on_toggle` 是旁路通知；守卫里再手动翻一次会让开关纹丝不动。）
+    #[test]
+    fn items_dialog_switches_toggle_and_keep_the_floor() {
+        use super::super::field_dialogs::switch_click_util::*;
+        use windui::geometry::Size;
+
+        let ui = ToolbarItemsUi {
+            visible: signal(true),
+            switches: Rc::new(RefCell::new(HashMap::new())),
+            buttons: signal(Vec::new()),
+            order: signal(vec!["a".to_string(), "b".to_string()]),
+            form: ButtonForm::new(),
+        };
+        let a = ui.switch_of("a", true);
+        let b = ui.switch_of("b", true);
+        let builtins = ["a", "b"]
+            .iter()
+            .map(|v| BuiltinRow {
+                value: v.to_string(),
+                label: v.to_string(),
+                desc: String::new(),
+            })
+            .collect();
+        let el = build_toolbar_items_dialog(&ui, "显示内容", "说明", builtins, vec![], 1);
+        let mut tree = build(el, Size::new(900, 900));
+        let pts = switch_centers(&mut tree);
+        assert_eq!(pts.len(), 2, "应有两行开关，实得 {}", pts.len());
+
+        assert!(click(&mut tree, pts[0]).is_none());
+        assert!(!a.get(), "点一下必须翻转");
+        let toast = click(&mut tree, pts[1]);
+        assert!(b.get(), "最后一项关不掉");
+        assert!(toast.is_some_and(|t| t.contains("至少要保留一项")));
+        assert!(click(&mut tree, pts[0]).is_none());
+        assert!(a.get(), "已关掉的必须能再打开");
+    }
 
     #[test]
     fn custom_value_round_trips() {
