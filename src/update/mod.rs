@@ -9,6 +9,7 @@
 //!
 //! 设计与分期见 `docs/online-update-plan.md`。
 
+pub mod changelog;
 pub mod download;
 pub mod install;
 pub mod notes;
@@ -526,7 +527,18 @@ pub fn check_update(notes_when_up_to_date: bool) -> Result<CheckResult, UpdateEr
     let local = test_override_local();
     let mut result = decide(&info, local.as_deref().unwrap_or(version::local_raw()))?;
     if result.has_update || notes_when_up_to_date {
-        result.release_notes = source::fetch_release_notes(&info.release_notes_url);
+        // 有更新时优先展示「当前 → 最新」跨版本记录；取不到再退回最新版单份说明。
+        let span = if result.has_update {
+            source::fetch_changelog_span(
+                channel,
+                local.as_deref().unwrap_or(version::local_raw()),
+                &info.version,
+            )
+        } else {
+            None
+        };
+        result.release_notes =
+            span.unwrap_or_else(|| source::fetch_release_notes(&info.release_notes_url));
     }
     Ok(result)
 }

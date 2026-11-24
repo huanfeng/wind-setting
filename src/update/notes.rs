@@ -32,7 +32,7 @@ pub fn clean(raw: &str) -> String {
 }
 
 /// markdown → 纯文本：去标题井号、统一列表符号、剥粗体/斜体/行内代码标记。
-fn to_plain_text(s: &str) -> String {
+pub(super) fn to_plain_text(s: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     for line in s.lines() {
         let t = line.trim_end();

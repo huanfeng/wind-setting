@@ -224,6 +224,31 @@ pub fn fetch_release_notes(url: &str) -> String {
     }
 }
 
+/// 跨版本更新记录的地址。文档站构建时从 `releases.json` 产出，只在主站根下有，
+/// dl 域名没有对应的重写规则，故不列备用源 —— 取不到就退回单版说明。
+const CHANGELOG_URL: &str = "https://windinput.com/changelog.json";
+const MAX_CHANGELOG_BYTES: usize = 1024 * 1024;
+
+/// 拉取 `(local, remote]` 区间内各版本的更新记录。**任何失败都返回 `None`**，由调用方
+/// 退回最新版单份说明。
+///
+/// 仅正式通道：dev 版不进文档站，没有这份数据。测试覆盖源生效时也跳过，免得单测去连公网。
+pub fn fetch_changelog_span(channel: Channel, local_raw: &str, remote: &str) -> Option<String> {
+    if channel != Channel::Stable || super::test_override_url().is_some() {
+        return None;
+    }
+    let local = super::version::parse(local_raw)?;
+    let remote = super::version::parse(remote)?;
+    let text = match http_get_text(CHANGELOG_URL, NOTES_TIMEOUT, MAX_CHANGELOG_BYTES) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("拉取跨版本更新记录失败，退回单版说明：{e}");
+            return None;
+        }
+    };
+    super::changelog::compose(&super::changelog::parse(&text), &local, &remote)
+}
+
 /// 带超时与大小上限的 HTTPS GET。仅允许 https。
 fn http_get_text(url: &str, timeout: Duration, max_bytes: usize) -> Result<String, String> {
     if !super::scheme_ok(url) {
