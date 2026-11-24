@@ -909,6 +909,11 @@
       "type": "strlist"
     },
     {
+      "default": false,
+      "key": "input.caret_scoped_candidates",
+      "type": "bool"
+    },
+    {
       "default": "smart",
       "key": "input.filter_mode",
       "type": "str"

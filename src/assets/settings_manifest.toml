@@ -2908,6 +2908,14 @@ value = "tab"
 label = "Tab / Shift+Tab"
 
 [[items]]
+key = "input.caret_scoped_candidates"
+group = "keys"
+section = "候选操作"
+type = "toggle"
+label = "按光标位置检索候选"
+hint = "光标在编码中间时，候选只按光标前的内容查询；选中后余码保留在编码栏。仅普通拼音（含双拼），默认关闭。"
+
+[[items]]
 key = "keys.page_keys"
 group = "keys"
 section = "候选操作"

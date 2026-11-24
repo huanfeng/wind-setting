@@ -62,6 +62,7 @@
    "special_via_composition": true,
    "temp_pinyin_via_composition": true
   },
+  "caret_scoped_candidates": false,
   "cmdbar": {
    "backspace_collapse_group": true,
    "candidate_prefix": "⚡",
