@@ -1421,7 +1421,11 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
     let scope_card = section(
         "同步范围",
         vec![
-            setting_row("同步内容", None, scope_row),
+            setting_row(
+                "同步内容",
+                Some("词库与短语、方案在所有设备间同步；配置与主题只在电脑之间同步，不影响手机"),
+                scope_row,
+            ),
             setting_row(
                 "同步间隔",
                 Some("分钟，1 到 1440；本机文件有改动时也会很快同步"),
