@@ -23,11 +23,12 @@
 //!
 //! | op | args | 回执 |
 //! |---|---|---|
-//! | `set_secret` | `{kind: "webdav_password" \| "s3_secret", value}` | |
-//! | `set_passphrase` | `{passphrase}` | |
+//! | `set_secret` | `{password}`（WebDAV 密码或 S3 secret，同时只有一个后端；null 清除） | |
+//! | `test_connection` | 可选 `{password}`（未保存的临时密码） | `{ok, remote_initialized, joined}` |
+//! | `set_passphrase` | `{passphrase}`；已加入时可带 `old_passphrase` | |
 //! | `import_key` | `{key}`（导出的 base64 串） | |
 //! | `export_key` | | `{key}` |
-//! | `reset_remote` | `{confirm: true}` | |
+//! | `reset_remote` | `{confirm: true, passphrase: <新口令>}` | |
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -45,24 +46,22 @@ pub const ANCHOR: &str = "advanced:sync";
 /// 分区名（二级导航 + 卡片标题）。
 pub const SECTION: &str = "数据同步";
 
-/// 设置了口令之后、需要用户处理的阶段（同步进程定义，见下 [`phase_text`]）。
-const PHASE_NEEDS_PASSPHRASE: &str = "needs_passphrase";
-
 // ───────────────────────────── 纯逻辑（可测） ─────────────────────────────
 
 /// 阶段的中文说明。阶段名由 core（`not_installed` / `disabled` / `starting` / `error`）与同步进程
-/// （其余）定义；不认识的原样带出，别吞掉。
+/// （`not_configured` / `needs_setup` / `idle` / `syncing` / `error` / `halted`）定义；
+/// 不认识的原样带出，别吞掉。
 pub(crate) fn phase_text(phase: &str) -> String {
     match phase {
         "not_installed" => "未安装同步组件".to_string(),
         "disabled" => "未启用".to_string(),
-        "unconfigured" | "not_configured" => "未配置存储后端".to_string(),
+        "not_configured" => "未配置存储后端".to_string(),
         "starting" => "同步进程启动中…".to_string(),
-        PHASE_NEEDS_PASSPHRASE | "need_passphrase" => "需要设置口令".to_string(),
+        "needs_setup" => "需要设置口令或导入密钥".to_string(),
         "idle" => "空闲，已是最新".to_string(),
         "syncing" => "同步中…".to_string(),
         "error" => "出错".to_string(),
-        "stopped" | "halted" | "needs_attention" => "已停止，需要处理".to_string(),
+        "halted" => "已停止，需要处理".to_string(),
         "" => "状态未知".to_string(),
         other => format!("状态：{other}"),
     }
@@ -81,6 +80,8 @@ pub(crate) struct StatusView {
     /// 冲突副本路径（相对用户目录，新到旧，core 最多给 50 条）；旧版 core 没有这个字段。
     pub conflict_paths: Vec<String>,
     pub has_secret: bool,
+    /// 本机已加入同步库（持有有效密钥）：决定口令按钮是「设置」还是「修改」。
+    pub joined: bool,
 }
 
 impl StatusView {
@@ -113,6 +114,7 @@ impl StatusView {
                 })
                 .unwrap_or_default(),
             has_secret: b("has_secret"),
+            joined: b("joined"),
         }
     }
 
@@ -304,17 +306,13 @@ pub(crate) fn clamp_interval(v: f64) -> u32 {
 }
 
 /// 本次要提交的机密命令。**空的不发**（留空 = 不修改，不能把已保存的覆盖成空串）；
-/// 只取当前选中后端的那一个。
+/// 同步进程同时只有一个后端，WebDAV 密码与 S3 secret 共用 `password` 字段，取当前选中后端的那个。
 pub(crate) fn secret_commands(s3: bool, webdav_password: &str, s3_secret: &str) -> Vec<Value> {
-    let (kind, value) = if s3 {
-        ("s3_secret", s3_secret)
-    } else {
-        ("webdav_password", webdav_password)
-    };
+    let value = if s3 { s3_secret } else { webdav_password };
     if value.is_empty() {
         Vec::new()
     } else {
-        vec![json!({ "kind": kind, "value": value })]
+        vec![json!({ "password": value })]
     }
 }
 
@@ -350,8 +348,26 @@ impl ResetGuard {
     pub fn disarm(&self) {
         self.0.set(false);
     }
-    pub fn take(&self) -> Option<Value> {
-        self.0.replace(false).then(|| json!({ "confirm": true }))
+    /// 须已 arm 且新口令合格；口令不合格时**不消耗**确认，留在框里让用户改。
+    pub fn take(&self, pass1: &str, pass2: &str) -> Result<Value, String> {
+        if !self.0.get() {
+            return Err("请先点「重置远端…」".to_string());
+        }
+        check_passphrase(pass1, pass2).map_err(String::from)?;
+        self.0.set(false);
+        Ok(json!({ "confirm": true, "passphrase": pass1 }))
+    }
+}
+
+/// 测试连接回执的提示。
+pub(crate) fn connection_text(v: &Value) -> String {
+    let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+    if !b("remote_initialized") {
+        "连接成功，远端尚未初始化，将以本机为准".to_string()
+    } else if b("joined") {
+        "连接成功，本机已加入".to_string()
+    } else {
+        "连接成功，远端已有同步数据，设置同一口令或导入密钥即可加入".to_string()
     }
 }
 
@@ -392,7 +408,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 .flatten();
             let toast = match op {
                 "sync_now" => "已开始同步".to_string(),
-                "test_connection" => "连接成功".to_string(),
+                "test_connection" => connection_text(v),
                 "export_key" if key.is_none() => "同步进程没有返回密钥".to_string(),
                 "export_key" => "已导出密钥，请妥善保管".to_string(),
                 "reset_remote" => "远端已重置，将以本机数据为准重新上传".to_string(),
@@ -455,6 +471,11 @@ pub struct SyncUi {
     pass1: Signal<String>,
     pass2: Signal<String>,
     pass_err: Signal<String>,
+    old_pass: Signal<String>,
+    joined: Signal<bool>,
+    reset_pass1: Signal<String>,
+    reset_pass2: Signal<String>,
+    reset_err: Signal<String>,
     import_key: Signal<String>,
     exported_key: Signal<String>,
     reset_dialog: Signal<bool>,
@@ -501,6 +522,11 @@ impl SyncUi {
             pass1: signal(String::new()),
             pass2: signal(String::new()),
             pass_err: signal(String::new()),
+            old_pass: signal(String::new()),
+            joined: signal(false),
+            reset_pass1: signal(String::new()),
+            reset_pass2: signal(String::new()),
+            reset_err: signal(String::new()),
             import_key: signal(String::new()),
             exported_key: signal(String::new()),
             reset_dialog: signal(false),
@@ -542,6 +568,7 @@ impl SyncUi {
         let s = StatusView::parse(v);
         self.installed.set(s.installed);
         self.has_secret.set(s.has_secret);
+        self.joined.set(s.joined);
         self.phase.set(phase_text(&s.phase));
         self.last_ok.set(s.last_ok_text());
         self.pending.set(s.pending_text());
@@ -616,10 +643,15 @@ impl SyncUi {
                         "set_passphrase" => {
                             self.pass1.set(String::new());
                             self.pass2.set(String::new());
+                            self.old_pass.set(String::new());
                             self.pass_dialog.set(false);
                         }
                         "import_key" => self.import_key.set(String::new()),
-                        "reset_remote" => self.reset_dialog.set(false),
+                        "reset_remote" => {
+                            self.reset_pass1.set(String::new());
+                            self.reset_pass2.set(String::new());
+                            self.reset_dialog.set(false);
+                        }
                         _ => {}
                     }
                 }
@@ -667,17 +699,17 @@ impl SyncUi {
             return;
         }
         let f = self.form();
-        let mut cmds: Vec<(&'static str, Value)> =
-            secret_commands(f.s3, &self.wd_password.get(), &self.s3_secret.get())
-                .into_iter()
-                .map(|a| ("set_secret", a))
-                .collect();
+        let secrets = secret_commands(f.s3, &self.wd_password.get(), &self.s3_secret.get());
         // 机密一提交就从界面清掉，不留在信号里。
         self.wd_password.set(String::new());
         self.s3_secret.set(String::new());
-        if test {
-            cmds.push(("test_connection", json!({})));
-        }
+        let cmds: Vec<(&'static str, Value)> = if test {
+            // 测试只带临时密码，不落盘：没填就用已保存的。
+            let args = secrets.into_iter().next().unwrap_or_else(|| json!({}));
+            vec![("test_connection", args)]
+        } else {
+            secrets.into_iter().map(|a| ("set_secret", a)).collect()
+        };
         if cmds.is_empty() {
             ctx.toast_ok("已保存同步设置");
             self.refresh();
@@ -691,7 +723,11 @@ impl SyncUi {
             Err(e) => self.pass_err.set(e.to_string()),
             Ok(()) => {
                 self.pass_err.set(String::new());
-                let args = json!({ "passphrase": self.pass1.get() });
+                let mut args = json!({ "passphrase": self.pass1.get() });
+                let old = self.old_pass.get();
+                if self.joined.get() && !old.is_empty() {
+                    args["old_passphrase"] = json!(old);
+                }
                 self.run("set_passphrase", vec![("set_passphrase", args)]);
             }
         }
@@ -906,14 +942,21 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
             ),
             setting_row(
                 "口令",
-                Some("首次启用先设置口令；已设置过可在这里修改（不影响已导出的密钥）"),
-                Element::button("设置口令…")
+                Some("未加入时设置口令（远端已有数据则用同一口令加入）；已加入可修改，不影响已导出的密钥"),
+                Element::switcher(ui.joined, move |joined| {
+                    let u = u_pass.clone();
+                    Element::button(if joined {
+                        "修改口令…"
+                    } else {
+                        "设置口令…"
+                    })
                     .small()
                     .enabled_when(can)
                     .on_click(move |_| {
-                        u_pass.pass_err.set(String::new());
-                        u_pass.pass_dialog.set(true);
-                    }),
+                        u.pass_err.set(String::new());
+                        u.pass_dialog.set(true);
+                    })
+                }),
             ),
             setting_row(
                 "导入密钥",
@@ -989,6 +1032,7 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
                     .enabled_when(can)
                     .on_click(move |_| {
                         u_reset.reset_ack.set(false);
+                        u_reset.reset_err.set(String::new());
                         u_reset.reset_guard.arm();
                         u_reset.reset_dialog.set(true);
                     }),
@@ -1048,6 +1092,7 @@ fn dialog_frame(title: &str, body: Element, footer: Element) -> Element {
 
 fn passphrase_dialog(ui: &SyncUi) -> Element {
     let visible = ui.pass_dialog;
+    let joined = ui.joined;
     let body = Element::col()
         .width_match()
         .padding_xy(18, 14)
@@ -1060,6 +1105,12 @@ fn passphrase_dialog(ui: &SyncUi) -> Element {
             .fg_role(Role::TextMuted)
             .width_match()
             .max_lines(4),
+        )
+        .child(
+            Element::text_input(ui.old_pass, "旧口令（可选，忘记可留空）")
+                .password()
+                .width_match()
+                .visible_when(move || joined.get()),
         )
         .child(
             Element::text_input(ui.pass1, "口令")
@@ -1092,7 +1143,7 @@ fn passphrase_dialog(ui: &SyncUi) -> Element {
                 .enabled_when(move || !busy.get())
                 .on_click(move |_| u.submit_passphrase()),
         );
-    Element::dialog(visible, dialog_frame("设置同步口令", body, footer))
+    Element::dialog(visible, dialog_frame("同步口令", body, footer))
 }
 
 fn reset_dialog(ui: &SyncUi) -> Element {
@@ -1111,14 +1162,32 @@ fn reset_dialog(ui: &SyncUi) -> Element {
             .width_match()
             .max_lines(5),
         )
+        .child(
+            Element::text_input(ui.reset_pass1, "新口令")
+                .password()
+                .width_match(),
+        )
+        .child(
+            Element::text_input(ui.reset_pass2, "再输入一次新口令")
+                .password()
+                .width_match(),
+        )
+        .child(
+            Element::label_signal(ui.reset_err)
+                .font_size(12.5)
+                .fg_role(Role::Danger)
+                .width_match(),
+        )
         .child(Element::checkbox("我了解后果，确认重置远端", ack));
     let (u, guard, busy) = (ui.clone(), ui.reset_guard.clone(), ui.busy);
     let footer = Element::row()
         .spacing(8)
         .child(Element::button("取消").small().outline_soft().on_click({
-            let guard = guard.clone();
+            let (guard, u2) = (guard.clone(), ui.clone());
             move |_| {
                 guard.disarm();
+                u2.reset_pass1.set(String::new());
+                u2.reset_pass2.set(String::new());
                 visible.set(false);
             }
         }))
@@ -1127,11 +1196,15 @@ fn reset_dialog(ui: &SyncUi) -> Element {
                 .small()
                 .danger()
                 .enabled_when(move || ack.get() && !busy.get())
-                .on_click(move |_| {
-                    if let Some(args) = guard.take() {
-                        u.run("reset_remote", vec![("reset_remote", args)]);
-                    }
-                }),
+                .on_click(
+                    move |_| match guard.take(&u.reset_pass1.get(), &u.reset_pass2.get()) {
+                        Ok(args) => {
+                            u.reset_err.set(String::new());
+                            u.run("reset_remote", vec![("reset_remote", args)]);
+                        }
+                        Err(e) => u.reset_err.set(e),
+                    },
+                ),
         );
     Element::dialog(visible, dialog_frame("重置远端", body, footer))
 }
@@ -1144,12 +1217,17 @@ mod tests {
     fn phase_maps_to_chinese_and_keeps_unknown() {
         assert_eq!(phase_text("not_installed"), "未安装同步组件");
         assert_eq!(phase_text("disabled"), "未启用");
-        assert_eq!(phase_text("unconfigured"), "未配置存储后端");
-        assert_eq!(phase_text("needs_passphrase"), "需要设置口令");
+        assert_eq!(phase_text("not_configured"), "未配置存储后端");
+        assert_eq!(phase_text("needs_setup"), "需要设置口令或导入密钥");
         assert_eq!(phase_text("idle"), "空闲，已是最新");
         assert_eq!(phase_text("syncing"), "同步中…");
         assert_eq!(phase_text("error"), "出错");
-        assert_eq!(phase_text("stopped"), "已停止，需要处理");
+        assert_eq!(phase_text("halted"), "已停止，需要处理");
+        assert_eq!(
+            phase_text("needs_passphrase"),
+            "状态：needs_passphrase",
+            "自拟阶段名不再认"
+        );
         assert_eq!(phase_text("weird"), "状态：weird", "不认识的阶段原样带出");
         assert_eq!(phase_text(""), "状态未知");
     }
@@ -1215,9 +1293,9 @@ mod tests {
             "留空不覆盖已保存的"
         );
         let c = secret_commands(false, "pw", "zzz");
-        assert_eq!(c, vec![json!({ "kind": "webdav_password", "value": "pw" })]);
+        assert_eq!(c, vec![json!({ "password": "pw" })]);
         let c = secret_commands(true, "pw", "sk");
-        assert_eq!(c, vec![json!({ "kind": "s3_secret", "value": "sk" })]);
+        assert_eq!(c, vec![json!({ "password": "sk" })]);
     }
 
     #[test]
@@ -1244,15 +1322,36 @@ mod tests {
     }
 
     #[test]
-    fn reset_requires_arming_and_is_single_use() {
+    fn reset_requires_arming_passphrase_and_is_single_use() {
         let g = ResetGuard::default();
-        assert_eq!(g.take(), None, "没点「重置远端…」就不给确认参数");
+        assert!(g.take("n", "n").is_err(), "没点「重置远端…」就不给确认参数");
         g.arm();
-        assert_eq!(g.take(), Some(json!({ "confirm": true })));
-        assert_eq!(g.take(), None, "确认只用一次");
+        assert!(g.take("", "").is_err(), "空口令不让提交");
+        assert!(g.take("a", "b").is_err(), "两次不一致不让提交");
+        assert_eq!(
+            g.take("new", "new"),
+            Ok(json!({ "confirm": true, "passphrase": "new" })),
+            "口令被拒不消耗确认"
+        );
+        assert!(g.take("new", "new").is_err(), "确认只用一次");
         g.arm();
         g.disarm();
-        assert_eq!(g.take(), None, "取消后收回");
+        assert!(g.take("new", "new").is_err(), "取消后收回");
+    }
+
+    #[test]
+    fn connection_text_follows_remote_state() {
+        assert!(
+            connection_text(&json!({"ok": true, "remote_initialized": false}))
+                .contains("以本机为准")
+        );
+        assert!(
+            connection_text(&json!({"remote_initialized": true, "joined": false})).contains("加入")
+        );
+        assert!(
+            connection_text(&json!({"remote_initialized": true, "joined": true}))
+                .contains("已加入")
+        );
     }
 
     #[test]
@@ -1298,6 +1397,10 @@ mod tests {
         let err = outcome("test_connection", &Err("401".into()));
         assert_eq!(err.toast, "测试连接失败：401");
         assert!(!err.ok);
-        assert_eq!(outcome("test_connection", &Ok(json!({}))).toast, "连接成功");
+        assert!(
+            outcome("test_connection", &Ok(json!({})))
+                .toast
+                .starts_with("连接成功")
+        );
     }
 }

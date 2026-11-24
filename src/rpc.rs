@@ -2272,7 +2272,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             "installed": true, "enabled": true, "running": true, "phase": "idle",
             "last_ok": 1_795_000_000, "last_error": null, "pending": 2, "conflicts": 2,
             "conflict_paths": ["themes/dark.conflict-laptop-2026-11-23.json", "data/phrases.dict.yaml.conflict-laptop-2026-11-22"],
-            "has_secret": true
+            "has_secret": true, "joined": true
         }),
         "sync.getSettings" => json!({
             "settings": {
