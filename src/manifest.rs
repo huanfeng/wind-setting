@@ -1204,7 +1204,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             el
         }
         "local_select" => build_local_select(state, key, item),
-        // 整宽画廊，不包设置行（见 `field_with`）。
+        // 整宽画廊，不包设置行（见 `field`）。
         "theme_gallery" => crate::theme_gallery::build_selector(
             state,
             key,
@@ -1220,7 +1220,7 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             .child(comment_assign_link(state)),
         "open_dirs" => build_open_dirs(),
         "log_archive" => build_log_archive(state),
-        // 走不到这里：`field_with` 已把它整行自绘并早退（见 build_log_privacy_warning）。
+        // 走不到这里：`field` 已把它整行自绘并早退（见 build_log_privacy_warning）。
         // 仍留一条分支——渲染名单与 match 脱节时 debug 会当场炸，那道守门不该有例外。
         "log_privacy_warning" => Element::leaf(),
         other => {
@@ -1232,48 +1232,6 @@ fn build_control(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Ele
             );
             Element::label(format!("[{other}?]")).fg_role(Role::TextMuted)
         }
-    }
-}
-
-/// 「可被方案覆盖」这条事实在一个容器里怎么呈现。见 [`schema_hint_mode`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaHintMode {
-    /// 逐行挂 ⓘ 角标（默认）。可覆盖的是少数时，角标标的是**例外**，有信息量。
-    PerRow,
-    /// 容器顶部统一说明一次，行内不再挂角标；反过来给**不可**覆盖的那几项标「仅全局」。
-    Header,
-}
-
-/// 判定一个容器该用哪种呈现。
-///
-/// ★ 判据是**这条事实在这个容器里有没有区分度**：可覆盖项占绝大多数时，逐行角标每行都
-/// 有、等于每行都没有——用户报的「一个对话框十几个提示」就是这个。占少数时才反过来，
-/// 角标标出的是例外，那才值得逐行挂。
-///
-/// 实测四个「全局方案配置」对话框的比例天差地别（码表 18/20、混输 0/9、拼音 2/14、
-/// 英文 0/8），所以**不能按容器硬编码**，也不能一刀切——现算。
-///
-/// 阈值 2/3 且至少 5 项：只有 3 项的容器里标 2 个角标算不上噪音，切模式反而多一行说明。
-/// 守门测试 `scheme_config_dialogs_pick_expected_hint_mode` 锁住当前四个对话框各落在哪一
-/// 档——core 增删可覆盖项跨过阈值时它会红，那正是需要人看一眼的时候。
-pub fn schema_hint_mode(state: &AppState, keys: &[String]) -> SchemaHintMode {
-    let (mut total, mut yes) = (0usize, 0usize);
-    for k in keys {
-        let Some(item) = state.manifest.get(k) else {
-            continue;
-        };
-        if item.hidden {
-            continue;
-        }
-        total += 1;
-        if schema_override_of(state, k).is_some() {
-            yes += 1;
-        }
-    }
-    if yes >= 5 && yes * 3 >= total * 2 {
-        SchemaHintMode::Header
-    } else {
-        SchemaHintMode::PerRow
     }
 }
 
@@ -1325,11 +1283,6 @@ fn schema_override_of<'a>(
 
 /// 清单缺失该 key 时返回占位行（便于发现 key 漂移）。
 pub fn field(state: &AppState, key: &str) -> Element {
-    field_with(state, key, SchemaHintMode::PerRow)
-}
-
-/// [`field`] 的带模式版本。`Header` 模式下行内不挂 ⓘ，改为给**不可**覆盖的项标「仅全局」。
-pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element {
     let Some(item) = state.manifest.get(key) else {
         return setting_row(
             key,
@@ -1346,11 +1299,11 @@ pub fn field_with(state: &AppState, key: &str, mode: SchemaHintMode) -> Element 
     if item.typ == "theme_gallery" {
         return build_control(state, key, item, &state.current_config);
     }
-    field_item(state, key, item, mode)
+    field_item(state, key, item)
 }
 
-/// [`field_with`] 的取项版：调用方手里已有（可能改过 `enabled_when` 的）条目副本时用。
-fn field_item(state: &AppState, key: &str, item: &MItem, mode: SchemaHintMode) -> Element {
+/// [`field`] 的取项版：调用方手里已有（可能改过 `enabled_when` 的）条目副本时用。
+fn field_item(state: &AppState, key: &str, item: &MItem) -> Element {
     let cfg = &state.current_config;
     if item.follow.as_deref() == Some("theme")
         && THEME_FOLLOW_ROW_TYPES.contains(&item.typ.as_str())
@@ -1363,24 +1316,14 @@ fn field_item(state: &AppState, key: &str, item: &MItem, mode: SchemaHintMode) -
         return build_theme_follow_row(state, key, item, cfg).0;
     }
     let control = build_control(state, key, item, cfg);
-    field_row(state, key, item, control, mode)
+    field_row(state, key, item, control)
 }
 
-/// [`field_with`] 的后半段：把控件包成设置行（方案覆盖角标、「仅全局」标记、`enabled_when`）。
+/// [`field`] 的后半段：把控件包成设置行（方案覆盖角标、`enabled_when`）。
 /// 拆出来给自建控件、但行的外观要与通用字段一致的专用 builder 用（候选注释的竖排模板）。
-fn field_row(
-    state: &AppState,
-    key: &str,
-    item: &MItem,
-    control: Element,
-    mode: SchemaHintMode,
-) -> Element {
-    // 「此项可被方案级配置覆盖」的角标。`Header` 模式下容器顶部已统一说过一次，行内不再挂。
-    let overridable = schema_override_of(state, key);
-    let schema_hint = match mode {
-        SchemaHintMode::PerRow => overridable,
-        SchemaHintMode::Header => None,
-    };
+fn field_row(state: &AppState, key: &str, item: &MItem, control: Element) -> Element {
+    // 「此项可被方案级配置覆盖」的角标。
+    let schema_hint = schema_override_of(state, key);
     // ⚠️ checkbox_group 分支**没有**角标形态。当前没有可覆盖的键是这个类型（实测：
     // toggle 11 / number 7 / select 3 / dialog_button 2 / number_select 1 / segmented 1
     // / string 1），故不是缺口；真出现了要给 setting_row_checks 也补上，否则那一行
@@ -1422,10 +1365,6 @@ fn field_row(
             }
         };
         setting_row_schema_hint(&item.label, item.hint.as_deref(), tip, on_click, control)
-    } else if mode == SchemaHintMode::Header && overridable.is_none() {
-        // 顶部那句「本页可被方案覆盖」对这一项不成立 ⇒ 必须标出来，否则统一说明就是
-        // 在传播错误信息。反向标记只在 Header 模式下出现，见 `setting_row_global_only`。
-        crate::widgets::setting_row_global_only(&item.label, item.hint.as_deref(), control)
     } else {
         setting_row(&item.label, item.hint.as_deref(), control)
     };
@@ -1620,24 +1559,12 @@ fn follow_labels(
 /// 成员经各自 field() 登记 writer/loader/getter（与独立成行时一致），随主保存提交。
 /// 宿主自身的 enabled_when 仍作用于整行（如 position_mode 随状态提示开关置灰）。
 fn build_dialog_group_row(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
-    build_dialog_group_row_with(state, key, item, cfg, SchemaHintMode::PerRow)
-}
-
-/// [`build_dialog_group_row`] 的带角标模式版：方案页引擎卡（[`scheme_config_section`]）
-/// 按整张卡的 [`SchemaHintMode`] 渲染宿主行，与卡内其余行的角标 / 「仅全局」标记一致。
-fn build_dialog_group_row_with(
-    state: &AppState,
-    key: &str,
-    item: &MItem,
-    cfg: &Config,
-    mode: SchemaHintMode,
-) -> Element {
     use crate::dialogs::field_dialogs::build_group_dialog;
     // 成员项（按 manifest 顺序；group id 约定全局唯一以免跨 section 误吸）→ field() 行 → 分组对话框。
     let member_keys = state.manifest.dialog_members(key);
     // 成员全被定制版藏掉：没有可点开的东西，退回普通的一行。
     if member_keys.is_empty() {
-        return field_with(state, key, mode);
+        return field(state, key);
     }
     // 宿主控件本体（与 field() 共用 build_control，避免分派漂移）。
     let control = build_control(state, key, item, cfg);
@@ -1666,7 +1593,7 @@ fn build_dialog_group_row_with(
                             host_clause.get_or_insert(d);
                             let mut it = it.clone();
                             it.enabled_when = rest;
-                            field_item(state, k, &it, SchemaHintMode::PerRow)
+                            field_item(state, k, &it)
                         }
                         None => field(state, k),
                     }
@@ -1706,7 +1633,7 @@ fn build_dialog_group_row_with(
         .child(control)
         .child(btn);
     // 宿主 enabled_when 作用于整行（含扩展按钮），由 field_row 一并挂上。
-    field_row(state, key, item, row_control, mode)
+    field_row(state, key, item, row_control)
 }
 
 fn build_toggle(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Element {
@@ -3494,13 +3421,9 @@ pub(crate) fn dialog_group_header(name: &str) -> Element {
         .padding_xy(0, 5)
 }
 
-/// 容器顶部那句「本页可被方案覆盖」的说明行（[`SchemaHintMode::Header`] 用）。
+/// 容器顶部的一行常驻说明（图标 + 文字），如「宿主未开启，以下设置暂不生效」。
 ///
-/// 图标 + 常驻文字，**不是悬停角标**：它说的是整个对话框的性质，用户不会想到去悬停一个
-/// 标题；而它替掉的是十几个角标，一行常驻文字换回来的空间绰绰有余。
-///
-/// 文案走 Signal（R8.6 起）：`Header` 模式下用它接住「其中 N 项已被方案覆盖」那句
-/// 追加计数——这是运行期数据，页面树建于数据到达之前，取不到 Signal 就定型不了。
+/// **不是悬停角标**：它说的是整个容器的状态，用户不会想到去悬停一个标题。
 pub(crate) fn dialog_notice_row(note: Signal<String>) -> Element {
     Element::row()
         .width_match()
@@ -3604,14 +3527,6 @@ pub fn scheme_config_section(
     // 小标题与行分开传（`CardItem`）：小标题的画法与它前后的分割线随「界面细节」选项变。
     let mut items: Vec<crate::widgets::CardItem> = Vec::new();
 
-    // 卡内第一行：先点明「这一整张卡是**全局**的」，再接上「可被方案覆盖」那句
-    // （几乎全可覆盖时统一说一次，见 `schema_hint_mode`）。
-    //
-    // 「全局」这半句是必说的。这四张卡从对话框铺回页面、导航里又不再收在「全局方案配置」
-    // 分组下之后，界面上再没有别的地方写着「全局」二字——用户看到的就是一张「码表方案
-    // 配置」，很容易读成「当前这个码表方案的配置」，改完发现另一个方案也变了。
-    // 故无论有没有覆盖说明，这一行都出。
-    let hint_mode = schema_hint_mode(state, &keys);
     // 按 subsection 分组，跳过 hidden 项；首次出现 subsection 时插入同级标题行。
     //
     // 每个小标题的可见性 = 「它下面那一组里至少还有一行可见」。用户把小节里的项目逐个
@@ -3767,21 +3682,18 @@ pub fn scheme_config_section(
             // 它一行都没产出时（项被跳过）走的是下面那个**没有锚点**的兜底。
             let merged = section_rows(state, std::slice::from_ref(k)).pop();
             let anchored = merged.is_some();
-            (
-                merged.unwrap_or_else(|| field_with(state, k, hint_mode)),
-                anchored,
-            )
+            (merged.unwrap_or_else(|| field(state, k)), anchored)
         } else if state.manifest.merged_into_gate(item) {
             // 与搜索索引同一个判据：那边据此把锚点归给门控开关，这边据此不渲染。
             continue;
         } else if item.opens_dialog.is_some() {
             // 主开关 + 「扩展设置」：参数收进对话框，卡片上只留这一行。
             (
-                build_dialog_group_row_with(state, k, item, &state.current_config, hint_mode),
+                build_dialog_group_row(state, k, item, &state.current_config),
                 false,
             )
         } else {
-            (field_with(state, k, hint_mode), false)
+            (field(state, k), false)
         };
         // 逐行挂锚点：搜索命中的正是这些项。键就是清单 key——这几节已经铺在页面上，
         // 不再有「框外入口行 / 框内那一行」两处同键的问题，故不加 `#in-dialog` 后缀。
@@ -8881,50 +8793,24 @@ mod tests {
         );
     }
 
-    /// ★★ 锁住四个「全局方案配置」对话框各落在哪种角标模式。
-    ///
-    /// 判据是现算的（`schema_hint_mode`），好处是 core 增删可覆盖项时界面自动适配，
-    /// 代价是**行为会随数据翻转**——某天跨过阈值，一个对话框从「十几个角标」变成
-    /// 「一句说明」，没人会注意到。本测试就是那个通知：它红的时候正是该人看一眼的时候。
-    ///
-    /// 实测比例（2026-08-31）：码表 18/20、混输 0/9、拼音 2/14、英文 0/8。差别这么大，
-    /// 所以既不能一刀切、也不能按对话框硬编码。
+    /// 引擎卡设的是方案自己的设置，卡里不该有任何一项还带「可被方案覆盖」的登记。
     #[test]
-    fn scheme_config_dialogs_pick_expected_hint_mode() {
+    fn scheme_engine_cards_have_no_schema_override_keys() {
         let _g = crate::rpc::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let st = crate::state::AppState::empty();
-        let keys_of = |sec: &str| -> Vec<String> {
-            st.manifest
+        for (_, sec, _) in crate::pages::SCHEME_ENGINE_CARDS {
+            let keys = st
+                .manifest
                 .sections_of("schema")
                 .into_iter()
                 .find(|(s, _)| s == sec)
                 .map(|(_, k)| k)
-                .unwrap_or_default()
-        };
-        for (sec, want, why) in [
-            (
-                "上屏行为",
-                SchemaHintMode::PerRow,
-                "引擎卡设的就是方案自己的设置，没有「可被方案覆盖」一说",
-            ),
-            ("混输行为", SchemaHintMode::PerRow, "0 项可覆盖，无标可加"),
-            ("候选行为", SchemaHintMode::PerRow, "同上"),
-            ("英文行为", SchemaHintMode::PerRow, "0 项可覆盖"),
-        ] {
-            let keys = keys_of(sec);
+                .unwrap_or_default();
             assert!(!keys.is_empty(), "section {sec:?} 在清单里没了");
-            assert_eq!(
-                schema_hint_mode(&st, &keys),
-                want,
-                "{sec} 的角标模式变了（{why}）。core 增删了可覆盖项跨过阈值 ⇒ 去看一眼                 那个对话框现在长什么样，确认新模式合适再改本断言"
-            );
-        }
-        // 五张卡里没有一项还带「可被方案覆盖」的登记。
-        for (_, sec, _) in crate::pages::SCHEME_ENGINE_CARDS {
-            for k in keys_of(sec) {
+            for k in keys {
                 assert!(schema_override_of(&st, &k).is_none(), "{k}");
             }
         }

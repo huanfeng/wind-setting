@@ -908,7 +908,7 @@ pub struct AppState {
     /// 「已被 N 个方案覆盖」（F9/R8.6）：`schema.overrideSummary` 的回包，
     /// `配置键 → 覆盖它的方案 id 列表`（只含可见方案，按方案列表序）。
     ///
-    /// 页面树早于数据建成，故走信号（同 [`Self::theme_follow`]）；`manifest::field_with`
+    /// 页面树早于数据建成，故走信号（同 [`Self::theme_follow`]）；`manifest::field`
     /// 用它现算角标文案（见 `manifest::override_badge_text`）。方案设置对话框保存
     /// （落 `schema_overrides/<id>.toml`）后由 [`Self::refresh_override_summary`] 重拉——
     /// 那一次保存正是这份汇总唯一会变的时刻。
