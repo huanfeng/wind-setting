@@ -1064,6 +1064,20 @@ mod tests {
 const MOCK_CAPABILITIES: &str = include_str!("assets/capabilities.snapshot.json");
 const MOCK_CONFIG: &str = include_str!("mockdata/config.json");
 
+/// 把一段嵌套配置摊平成 `前缀.a.b → 值`（叶子含数组），供 mock `schema.getSettings` 用。
+fn mock_flatten(prefix: &str, v: &Value, out: &mut serde_json::Map<String, Value>) {
+    match v.as_object() {
+        Some(obj) => {
+            for (k, child) in obj {
+                mock_flatten(&format!("{prefix}.{k}"), child, out);
+            }
+        }
+        None => {
+            out.insert(prefix.to_string(), v.clone());
+        }
+    }
+}
+
 thread_local! {
     /// Mock 会话内的扩展词库开关记忆：(方案 id, 词库 id) → enabled。
     /// 让离线 mock 下「setDictEnabled 保存 → getConfig 重开」能保留改动，仅用于 UI 自测。
@@ -2687,7 +2701,8 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             } else {
                 json!({
                     "engine": { "type": "pinyin", "pinyin": {
-                        "scheme": "shuangpin", "shuangpin": { "layout": "ziranma" }
+                        "scheme": if id == "pinyin_simp" { "full" } else { "shuangpin" },
+                        "shuangpin": { "layout": "ziranma" }
                     },
                         // 拼音族有辅助码表（对齐真实方案，如全拼配笔画、双拼配小鹤形码）——
                         // 给个非空 files 让 `has_aux_code_table` 判真，`SettingsSection::AuxCode`
@@ -2738,11 +2753,22 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         "schema.saveConfig" => json!({ "ok": true }),
         // 方案页引擎卡绑定方案的取值 / 写入。mock 不模拟各方案的差异：空表 ⇒ 卡片显示配置树
         // 里的值。
-        "schema.getSettings" => json!({
-            "id": params.get("id").cloned().unwrap_or(Value::Null),
-            "effective": {},
-            "default": {},
-        }),
+        // 方案默认值取 mock 系统预置里对应的类型段（core 的类型内置默认正是它），生效值同默认。
+        "schema.getSettings" => {
+            let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let prefix = match id {
+                "wubi_mixed" => "mix",
+                "pinyin_simp" | "double_pinyin" => "pinyin",
+                "english" => "english",
+                _ => "codetable",
+            };
+            let cfg: Value = serde_json::from_str(MOCK_CONFIG).unwrap_or_default();
+            let mut flat = serde_json::Map::new();
+            if let Some(sec) = cfg.pointer(&format!("/schema/{prefix}")) {
+                mock_flatten(&format!("schema.{prefix}"), sec, &mut flat);
+            }
+            json!({ "id": id, "effective": flat.clone(), "default": flat })
+        }
         "schema.setSettings" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "system.storageStatus" => json!({ "readonly": false, "issues": [] }),

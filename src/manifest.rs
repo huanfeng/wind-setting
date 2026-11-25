@@ -3521,55 +3521,6 @@ pub(crate) fn dialog_notice_row(note: Signal<String>) -> Element {
         )
 }
 
-/// [`SchemaHintMode::Header`] 那句统一说明的文案：取容器内出现最多的那条 `note`。
-///
-/// core 的 `SCHEMA_OVERRIDES` 按配置段给 note（`[engine.codetable]` / `[engine.codetable.frequency]` /
-/// `[engine.aux_code]` 各一句），措辞不同但语义一样。取众数而不是自己新写一句：**文案的权威在
-/// core**，这边新写一句就成了第二真相源，core 改了措辞这里不会跟着变。
-fn schema_hint_header_note(state: &AppState, keys: &[String]) -> Option<String> {
-    let mut tally: HashMap<&str, usize> = HashMap::new();
-    for k in keys {
-        if let Some(h) = schema_override_of(state, k) {
-            *tally.entry(h.note.as_str()).or_default() += 1;
-        }
-    }
-    tally
-        .into_iter()
-        .max_by_key(|(note, n)| (*n, note.len()))
-        .map(|(note, _)| note.split_whitespace().collect::<Vec<_>>().join(" "))
-}
-
-/// [`scheme_config_section`] 卡片顶部那句统一说明的完整文案（F9/R8.6）。
-///
-/// `Header` 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能因此从界面上凭空
-/// 消失——本函数把它折算成「其中 N 项已被方案覆盖」追加在统一说明之后。`PerRow` 模式
-/// 不追加：那些项各自的角标已经在说这件事，重复说一遍反而是本函数试图消除的那种噪音。
-///
-/// 抽成纯函数（而不是内联在 [`scheme_config_section`] 的 Signal 闭包里）好让它可以脱离
-/// `AppState` 单独测试——闭包本身只做「读两个 Signal、调这个函数」，没有分支要测。
-fn scheme_config_notice_text(
-    scope_note: &str,
-    header_note: &Option<String>,
-    hint_mode: SchemaHintMode,
-    keys: &[String],
-    ov: &HashMap<String, Vec<String>>,
-) -> String {
-    let mut s = match (hint_mode, header_note) {
-        (SchemaHintMode::Header, Some(note)) => format!("{scope_note}{note}"),
-        _ => scope_note.to_string(),
-    };
-    if hint_mode == SchemaHintMode::Header {
-        let overridden = keys
-            .iter()
-            .filter(|k| ov.get(*k).is_some_and(|v| !v.is_empty()))
-            .count();
-        if overridden > 0 {
-            s.push_str(&format!("其中 {overridden} 项已被方案覆盖。"));
-        }
-    }
-    s
-}
-
 /// 方案页引擎卡的清单 section 名 → 它是哪张卡。
 pub(crate) fn scheme_card_of(section: &str) -> Option<crate::scheme_cards::Card> {
     use crate::scheme_cards::Card;
@@ -8998,37 +8949,6 @@ mod tests {
         );
     }
 
-    /// Header 模式下逐行角标收起来了，「已被 N 项覆盖」不能因此从界面上消失——
-    /// 必须追加进卡片顶部那句统一说明里；PerRow 模式不追加，那些项各自的角标已经在
-    /// 说这件事。
-    #[test]
-    fn scheme_config_notice_appends_count_only_in_header_mode() {
-        let keys = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let ov = HashMap::from([("a".to_string(), vec!["wubi86".to_string()])]);
-        assert_eq!(
-            scheme_config_notice_text(
-                "此为全局码表方案配置。",
-                &Some("可被方案覆盖。".to_string()),
-                SchemaHintMode::Header,
-                &keys,
-                &ov,
-            ),
-            "此为全局码表方案配置。可被方案覆盖。其中 1 项已被方案覆盖。",
-            "Header 模式：统一说明后要追加计数"
-        );
-        assert_eq!(
-            scheme_config_notice_text(
-                "此为全局混输行为。",
-                &None,
-                SchemaHintMode::PerRow,
-                &keys,
-                &ov,
-            ),
-            "此为全局混输行为。",
-            "PerRow 模式：逐行角标已经说过，不重复"
-        );
-    }
-
     /// 对话框成员只摘掉「宿主开着」那一条，别的条件与「宿主关着才可用」原样保留。
     #[test]
     fn strip_host_clause_keeps_other_conditions() {
@@ -9088,22 +9008,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// 没有任何键被覆盖时不追加计数句子——「其中 0 项」不比什么都不说更有信息量。
-    #[test]
-    fn scheme_config_notice_omits_count_when_nothing_overridden() {
-        let keys = vec!["a".to_string()];
-        assert_eq!(
-            scheme_config_notice_text(
-                "此为全局码表方案配置。",
-                &Some("可被方案覆盖。".to_string()),
-                SchemaHintMode::Header,
-                &keys,
-                &HashMap::new(),
-            ),
-            "此为全局码表方案配置。可被方案覆盖。"
-        );
     }
 
     /// 只读组的「去哪儿改」从清单现算，不另写一份位置表。

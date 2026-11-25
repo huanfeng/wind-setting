@@ -535,10 +535,10 @@ const SCHEMA_LEVEL: &[SchemaLevelItem] = &[
     SchemaLevelItem { title: "切换到本方案按键", tab: "按键设置", section: "进入方式", keywords: "热键 直达 绑定" },
     // ── 辅助码 / 码表 / 方案覆盖 ──
     SchemaLevelItem { title: "辅助码", tab: "辅助码", section: "辅助码", keywords: "辅码 筛选 反查" },
-    SchemaLevelItem { title: "本方案启用辅助码", tab: "辅助码", section: "辅助码", keywords: "辅码 覆盖 跟随全局" },
-    SchemaLevelItem { title: "本方案直接辅助码", tab: "辅助码", section: "辅助码", keywords: "辅码 连续 双拼 引导键 跟随全局" },
+    SchemaLevelItem { title: "本方案启用辅助码", tab: "辅助码", section: "辅助码", keywords: "辅码 方案默认" },
+    SchemaLevelItem { title: "本方案直接辅助码", tab: "辅助码", section: "辅助码", keywords: "辅码 连续 双拼 引导键 方案默认" },
     SchemaLevelItem { title: "辅助码来源", tab: "辅助码", section: "辅助码", keywords: "辅码 码表 笔画 五笔 小鹤 自然码 跟随方案" },
-    SchemaLevelItem { title: "码表配置", tab: "方案覆盖", section: "码表配置", keywords: "覆盖 编码 上屏 恢复跟随" },
+    SchemaLevelItem { title: "输入行为", tab: "方案设置", section: "输入行为", keywords: "方案设置 码表 拼音 混输 英文 上屏 调频 恢复默认" },
     SchemaLevelItem { title: "启用整句输入", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 组句 连续输入 切分 实验性 sentence_input" },
     SchemaLevelItem { title: "整句显示条数", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 条数 备选 N-best sentence_count" },
     SchemaLevelItem { title: "整句备选条数", tab: "实验性功能", section: "整句输入（实验性）", keywords: "整句 条数 轮换 sentence_max_count" },

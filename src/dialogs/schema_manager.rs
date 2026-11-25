@@ -219,7 +219,7 @@ impl SettingsTab {
             Self::Keys => "按键设置",
             Self::Experimental => "实验性功能",
             Self::Behavior => "自定义行为",
-            Self::Overrides => "方案覆盖",
+            Self::Overrides => "方案设置",
             Self::Aux => "辅助码",
             Self::Special => "特殊模式",
         }
@@ -1197,7 +1197,13 @@ struct PendingSchemaEdit {
     base: Value,
     /// 词库开关变更 (dict_id, enabled)。只在与打开时不同才入队，故打开时的值恒为 `!enabled`。
     dicts: Vec<(String, bool)>,
+    /// 「方案设置」页的改动：`(写入的项, 恢复默认的项)`，原样交给 `schema.setSettings`。
+    /// 排在 `cfg` 之后提交：`saveConfig` 按打开时的快照整份重写设置文件，先写的会被它盖回去。
+    settings: Option<SchemeSettingsChange>,
 }
+
+/// `schema.setSettings` 的入参：`(写入的项, 恢复默认的项)`，键为 `schema.<类型>.<项>`。
+type SchemeSettingsChange = (Vec<(String, Value)>, Vec<String>);
 
 /// 方案管理状态（Signal 为 Copy，可直接 Clone 进闭包）。
 /// 「带目标打开词库窗」回调：参数为方案 id。
@@ -1530,11 +1536,13 @@ pub struct SchemaManagerState {
     /// 子对话框的渲染计划：对话框结构在选中方案**之前**就建好，信号要等播种，
     /// 中间靠这个信号驱动 `host_signal` 重建。
     pub settings_ct_plan: Signal<Vec<crate::dialogs::schema_codetable::CtGroup>>,
-    /// 用户按过「全部恢复跟随」。落盘时据此额外调 [`CtFields::reset`]——逐项 `apply`
+    /// 用户按过「全部恢复默认」。落盘时据此额外调 [`CtFields::reset`]——逐项 `apply`
     /// 够不着**隐藏项**（没控件就没信号），而 0.118 的「开总开关整段写实」会把
     /// `auto_commit_min_len` 写进 override。不带这个标志的话，那个键清不掉，用户按了
-    /// 「全部恢复跟随」仍有一项在偷偷生效。`seed` 时清零。
+    /// 「全部恢复默认」仍有一项在偷偷生效。`seed` 时清零。
     settings_ct_reset_all: Rc<std::cell::Cell<bool>>,
+    /// 本次打开的方案有没有「方案设置」页的数据（没有则保存时不碰它）。
+    settings_ct_seeded: Rc<std::cell::Cell<bool>>,
 
     /// 打开对话框那一刻的双拼布局索引。脏判定用——没有它就分不清「用户拨过」和
     /// 「本来就是这个值」，于是打开看一眼再关掉也会写一次盘。
@@ -1740,6 +1748,7 @@ impl SchemaManagerState {
             settings_ko_disp: signal(String::new()),
             settings_ct_plan: signal(vec![]),
             settings_ct_reset_all: Rc::new(std::cell::Cell::new(false)),
+            settings_ct_seeded: Rc::new(std::cell::Cell::new(false)),
             settings_layout_at_open: Rc::new(std::cell::Cell::new(0)),
             pending_edits: Rc::new(RefCell::new(std::collections::HashMap::new())),
         };
@@ -2614,7 +2623,7 @@ impl SchemaManagerState {
                 return;
             };
             let lost = reconcile_pending(edit, fresh);
-            if edit.cfg.is_none() && edit.dicts.is_empty() {
+            if edit.cfg.is_none() && edit.dicts.is_empty() && edit.settings.is_none() {
                 q.remove(id);
             }
             lost
@@ -3128,47 +3137,33 @@ impl SchemaManagerState {
                 }
             }
         }
-        // 码表配置：码表方案才有（含快符这类特殊方案——它们本质就是码表方案，
-        // 只是靠引导键进入）。混输方案暂不给：它的码表部分与拼音部分怎么分账是另一件事，
-        // core 侧 `effectiveCodetable` 也只对 codetable 类给出。
+        // 方案设置：码表 / 拼音 / 混输 / 英文方案各有自己的一组（含快符这类特殊方案——它们
+        // 本质就是码表方案）。数据走 `schema.getSettings`：生效值作控件初值，方案默认值供
+        // 「恢复默认」与候选列表显示。取不到（老 core）就不出这一页。
         {
             let cfg = self.settings_cfg.borrow();
-            let is_ct = cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable");
-            if is_ct {
-                // 四份数据各答一个问题，缺一项就有一类状态显示不出来：
-                // 生效值＝勾选时控件的初值；跟随值＝取消覆盖后变成什么（未勾选时显示它）；
-                // override 层＝这一项是不是用户改的；合并值＝配合 override 层判「方案自带」。
-                let eff = cfg.get("effectiveCodetable").cloned().unwrap_or(json!({}));
-                let followed = cfg.get("followedCodetable").cloned().unwrap_or(json!({}));
-                let ov = cfg.get("codetableOverride").cloned().unwrap_or(json!({}));
-                let merged = cfg
-                    .pointer("/engine/codetable")
-                    .cloned()
-                    .unwrap_or(json!({}));
-                // 特殊方案不继承全局（core `codetable_baseline`），文案跟着换，否则会写着
-                // 「跟随全局」而实际跟的是内置基线。
-                //
-                // ★ 判据是 **`[overlay]` 段存在**，不是 `[schema].hidden` ——两者正交：
-                // hidden 管「列不列进方案切换列表」，与折叠哪份基线无关。core 侧
-                // `codetable_baseline` 早已换成 overlay 判据，这里跟上（本行内摘要此前
-                // 一直用 hidden，对「hidden 但非 overlay 的小码表」会说反）。
-                let follow_label = if cfg.get("overlay").is_some_and(|v| v.is_object()) {
-                    "跟随基线"
-                } else {
-                    "跟随全局"
-                };
-                self.settings_ct.seed(
-                    &self.manifest.borrow(),
-                    &crate::dialogs::schema_codetable::CtSeed {
-                        effective: &eff,
-                        followed: &followed,
-                        overridden: &ov,
-                        merged: &merged,
-                        follow_label,
-                    },
-                );
+            let kind = crate::dialogs::schema_codetable::SchemeKind::of(
+                cfg.pointer("/engine/type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+                cfg.pointer("/engine/pinyin/scheme")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            );
+            let got = kind.and_then(|kind| {
+                let v = rpc::call_core("schema.getSettings", &json!({ "id": sid })).ok()?;
+                let map = |k: &str| v.get(k).and_then(|m| m.as_object()).cloned();
+                Some(crate::dialogs::schema_codetable::CtSeed {
+                    kind,
+                    effective: map("effective")?,
+                    default: map("default")?,
+                })
+            });
+            self.settings_ct_seeded.set(got.is_some());
+            if let Some(seed) = got {
+                self.settings_ct.seed(&self.manifest.borrow(), &seed);
                 self.settings_ct_plan.set(self.settings_ct.plan());
-                // 换方案要清：上一个方案按过「全部恢复跟随」，标志留着会把这个方案的
+                // 换方案要清：上一个方案按过「全部恢复默认」，标志留着会把这个方案的
                 // 隐藏项一起清掉，而用户在这个方案上什么都没按。
                 self.settings_ct_reset_all.set(false);
                 drop(cfg);
@@ -3397,29 +3392,17 @@ impl SchemaManagerState {
         }
         let mut cfg_changed = false;
 
-        if cfg.pointer("/engine/type").and_then(|v| v.as_str()) == Some("codetable") {
-            // 脏判定必须在 apply 之前：apply 会把每一项都写一遍（勾选的写值、没勾的写
-            // null），之后再比就永远是「有改动」。
-            //
-            // 三态之后脏判定只剩内容比对这一条——没有总开关，「勾/取消勾」本身就在
-            // `is_dirty` 里（勾选框的 version 计入 version_sum）。
+        // 方案设置页：不写进 cfg，单独走 `schema.setSettings`（见 `PendingSchemaEdit::settings`）。
+        // 没有总开关，「添加 / 移除一项」本身就在 `is_dirty` 里（勾选信号的 version 计入）。
+        let settings_change = {
             let reset_all = self.settings_ct_reset_all.get();
-            if self.settings_ct.is_dirty() || reset_all {
-                // 先 reset 后 apply，顺序不能反：reset 清的是**全集**（含隐藏项），
-                // apply 再把有控件的那些按勾选状态写一遍。反过来的话 reset 会把刚写好的
-                // 用户值又抹成 null——而用户可能是「全部恢复跟随后又勾了一两项」。
-                if reset_all {
-                    let user_hidden = |i: &crate::manifest::MItem| self.user_hidden_now(i);
-                    self.settings_ct
-                        .reset(&self.manifest.borrow(), &user_hidden, &mut cfg);
-                }
-                // 没勾的项写入 null——core 的 json_to_toml 跳过 null，于是 override 里不含
-                // 这些键；而 saveConfig 是拿**方案文件基线**与 cfg 做 diff，故取消覆盖后
-                // 该项回到方案作者的值，作者没写就回到全局。这是「取消覆盖」的落地方式。
-                self.settings_ct.apply(&mut cfg);
-                cfg_changed = true;
-            }
-        }
+            (self.settings_ct_seeded.get() && (self.settings_ct.is_dirty() || reset_all)).then(
+                || {
+                    let hidden = |key: &str| self.custom_hidden(key);
+                    self.settings_ct.changes(reset_all, &hidden)
+                },
+            )
+        };
 
         // 整句输入：同一份 cfg。写实值而不是三态——它没有全局基线可跟随；与方案文件
         // 相同时 core 的 `json_diff` 自会把它从 override 里摘掉。
@@ -3612,12 +3595,18 @@ impl SchemaManagerState {
             self.settings_ka.is_dirty(),
             self.settings_sa.is_dirty(),
         );
-        if dicts.is_empty() && !cfg_changed {
+        if dicts.is_empty() && !cfg_changed && settings_change.is_none() {
             return;
         }
         {
             let mut q = self.pending_edits.borrow_mut();
             merge_pending(&mut q, &id, cfg_changed.then_some(cfg), dicts);
+            // 与 cfg 同理：后一次是对话框此刻的完整状态，直接替换。
+            if settings_change.is_some()
+                && let Some(slot) = q.get_mut(&id)
+            {
+                slot.settings = settings_change;
+            }
             // base 是「队列里的 cfg 在哪份磁盘快照上改出来的」：已有就保留，别被队列自己的内容顶掉。
             if cfg_changed
                 && let Some(slot) = q.get_mut(&id)
@@ -3653,6 +3642,17 @@ impl SchemaManagerState {
             if let Some(cfg) = &edit.cfg {
                 rpc::call_core("schema.saveConfig", &json!({ "id": id, "cfg": cfg }))
                     .map_err(|e| format!("方案配置保存失败（{id}）: {e}"))?;
+            }
+            if let Some((sets, resets)) = &edit.settings {
+                let items: Vec<Value> = sets
+                    .iter()
+                    .map(|(k, v)| json!({ "key": k, "value": v }))
+                    .collect();
+                rpc::call_core(
+                    "schema.setSettings",
+                    &json!({ "id": id, "items": items, "reset": resets }),
+                )
+                .map_err(|e| format!("方案设置保存失败（{id}）: {e}"))?;
             }
             Ok(())
         })?;
@@ -4827,7 +4827,7 @@ fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
     let query = state.settings_ct_query;
     let any = state.settings_ct_pick_any;
     let picks = state.settings_ct_picks.clone();
-    for key in crate::dialogs::schema_codetable::visible_keys(&state.manifest.borrow()) {
+    for key in crate::dialogs::schema_codetable::all_visible_keys(&state.manifest.borrow()) {
         picks
             .borrow_mut()
             .entry(key)
@@ -5025,7 +5025,7 @@ fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
     let (add_ct, add_picks) = (ct.clone(), picks.clone());
     crate::dialogs::field_dialogs::build_confirm_dialog_shell_dims(
         visible,
-        signal("添加覆盖".to_string()),
+        signal("添加设置项".to_string()),
         body,
         any,
         move || {
@@ -5516,9 +5516,9 @@ fn merge_pending(
 /// 一句总括的摘要说不清，硬说就会说错。来源写在每一行自己的那一列。纯函数便于单测。
 fn ct_summary(custom: usize) -> String {
     if custom == 0 {
-        "全部跟随".to_string()
+        "全部默认".to_string()
     } else {
-        format!("已自定义 {custom} 项")
+        format!("已修改 {custom} 项")
     }
 }
 
@@ -5743,7 +5743,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 on_over,
                 "本方案启用辅助码",
                 Some("打出候选后按触发键，用字形码进一步筛选。触发键在「基本配置 → 按键设置」里配"),
-                "跟随全局",
+                "方案默认",
                 Role::TextMuted,
                 crate::widgets::override_control(
                     on_over,
@@ -5770,7 +5770,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                     direct_over,
                     "本方案直接辅助码",
                     Some("任一音节后直接敲字形码定字，不按引导键"),
-                    "跟随全局",
+                    "方案默认",
                     Role::TextMuted,
                     crate::widgets::override_control(
                         direct_over,
@@ -5788,7 +5788,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 len_over,
                 "辅助码最长词长",
                 Some("超过这个字数的词组不参与筛选；0 = 不限。单字始终参与"),
-                "跟随全局",
+                "方案默认",
                 Role::TextMuted,
                 crate::widgets::override_control(
                     len_over,
@@ -5860,14 +5860,14 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 src_ctl,
             );
 
-            // 「全部恢复跟随」：样式/交互照 `SettingsSection::CodeTable` 那个同名按钮
+            // 「全部恢复默认」（各行回到方案默认）：样式/交互照 `SettingsSection::CodeTable` 那个同名按钮
             // （柔和描边而不是实心主按钮——它是兜底动作，不该比同行的卡片标题抢眼）。
             // 与码表那边不同的是它挂在**卡片自己的**标题行里，不是外层节头：这一节只有
             // 一张卡片，两者是同一件事，不用再分层。
             let st = state.clone();
             let reset_btn = move || {
                 let st = st.clone();
-                Element::button("全部恢复跟随")
+                Element::button("全部恢复默认")
                     .small()
                     .outline_soft()
                     .on_click(move |_| {
@@ -5920,29 +5920,29 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let add_visible = state.settings_ct_add_visible;
             let ct_hint = state.settings_ct.clone();
             let empty_hint = Element::label(
-                "没有覆盖项。点右上角「添加覆盖」，选择要为本方案单独设置的项；其余都跟随全局。",
+                "都是方案默认值。点右上角「添加设置项」，挑出要改的项；移除一项即恢复它的默认值。",
             )
             .font_size(12.5)
             .fg_role(Role::TextMuted)
             .padding_xy(14, 12)
             .visible_when(move || !ct_hint.any_listed());
             crate::widgets::dialog_section_items(
-                "码表配置",
+                "输入行为",
                 None,
                 Some(&move || {
                     let (ct_reset, reset_flag) = (ct_reset.clone(), reset_flag.clone());
-                    // 「添加覆盖」是主操作，只此一个入口（点开弹框挑项）；「全部恢复跟随」是兜底，
+                    // 「添加设置项」是主操作，只此一个入口（点开弹框挑项）；「全部恢复默认」是兜底，
                     // 用柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮，免得比标题还抢眼。
                     Element::row()
                         .cross(Align::Center)
                         .spacing(8)
                         .child(
-                            Element::button("＋ 添加覆盖")
+                            Element::button("＋ 添加设置项")
                                 .small()
                                 .on_click(move |_| add_visible.set(true)),
                         )
                         .child(
-                            Element::button("全部恢复跟随")
+                            Element::button("全部恢复默认")
                                 .small()
                                 .outline_soft()
                                 .on_click(move |_| {
@@ -6832,9 +6832,9 @@ mod ext_dict_tests {
     /// 来源现在写在每一行自己那一列，由 `CtSeed::follow_label` + 「方案自带」给出。
     #[test]
     fn ct_summary_reports_the_number_of_overridden_items() {
-        assert_eq!(ct_summary(0), "全部跟随");
-        assert_eq!(ct_summary(1), "已自定义 1 项");
-        assert_eq!(ct_summary(7), "已自定义 7 项");
+        assert_eq!(ct_summary(0), "全部默认");
+        assert_eq!(ct_summary(1), "已修改 1 项");
+        assert_eq!(ct_summary(7), "已修改 7 项");
     }
 
     /// 每个方案一条，互不干扰——对话框复用同一组工作态信号，最容易写成
@@ -8082,7 +8082,7 @@ mod section_build_tests {
     fn sections_map_to_the_intended_tabs() {
         use SettingsSection::*;
         let idx = |t: SettingsTab| Some(t.index());
-        assert_eq!(SETTINGS_TABS[SettingsTab::Overrides.index()], "方案覆盖");
+        assert_eq!(SETTINGS_TABS[SettingsTab::Overrides.index()], "方案设置");
         assert_eq!(Behavior.tab(), idx(SettingsTab::Behavior));
         assert_eq!(CodeTable.tab(), idx(SettingsTab::Overrides));
         assert_eq!(Overlay.tab(), idx(SettingsTab::Special));
@@ -9288,6 +9288,7 @@ mod section_build_tests {
             cfg: Some(json!({ "engine": { "codetable": { "a": 2 } } })),
             base: base.clone(),
             dicts: vec![("x".into(), false), ("y".into(), true)],
+            settings: None,
         };
         let fresh = json!({
             "engine": { "codetable": { "a": 3 } },
@@ -9311,6 +9312,7 @@ mod section_build_tests {
                 cfg: Some(json!({ "engine": { "codetable": { "a": 2 } } })),
                 base,
                 dicts: vec![],
+                settings: None,
             },
         );
         state.reconcile_pending_of("wubi86", &fresh);
