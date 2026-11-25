@@ -609,17 +609,15 @@ pub(crate) fn random_passphrase(mut rng: impl FnMut() -> u32) -> String {
     out
 }
 
-/// 生产用的随机源；系统随机数不可用时退回时间戳（口令仍由用户可见、可改）。
-pub(crate) fn random_passphrase_os() -> String {
-    random_passphrase(|| {
+/// 生产用的随机口令；系统随机数不可用时返回 None（不退回可预测的种子），由界面报错。
+pub(crate) fn random_passphrase_os() -> Option<String> {
+    let mut ok = true;
+    let p = random_passphrase(|| {
         let mut b = [0u8; 4];
-        if getrandom::getrandom(&mut b).is_err() {
-            return std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.subsec_nanos());
-        }
+        ok &= getrandom::getrandom(&mut b).is_ok();
         u32::from_le_bytes(b)
-    })
+    });
+    ok.then_some(p)
 }
 
 /// 确认本机身份时可选的做法。
@@ -682,6 +680,7 @@ pub(crate) fn identity_options_for(
     opts.extend(
         group_devices(&same, "")
             .into_iter()
+            .filter(|g| !g.id.is_empty())
             .map(|g| IdentityChoice::Join(g.id)),
     );
     opts.push(IdentityChoice::NewGroup);
@@ -695,10 +694,8 @@ pub(crate) fn identity_commands(c: &IdentityChoice) -> Vec<(&'static str, Value)
         IdentityChoice::NewDevice | IdentityChoice::NewGroup => {
             vec![("confirm_identity", json!({}))]
         }
-        IdentityChoice::Join(g) => vec![
-            ("confirm_identity", json!({})),
-            ("join_group", json!({ "group": g, "mode": "theirs" })),
-        ],
+        // core 的 join_group 自己处理未确认的身份；先 confirm 会建出单人组，加入失败就卡住。
+        IdentityChoice::Join(g) => vec![("join_group", json!({ "group": g, "mode": "theirs" }))],
     }
 }
 
@@ -3311,6 +3308,23 @@ mod tests {
     }
 
     #[test]
+    fn identity_options_skip_empty_group_and_unreadable_self() {
+        let mut me = dev_in("me", "g1", "", "windows", 5);
+        me.readable = false;
+        let devs = vec![me, dev_in("w", "", "", "windows", 9)];
+        let (opts, def) = identity_options_for(PlatformClass::Desktop, "me", &devs);
+        assert_eq!(
+            opts,
+            [
+                IdentityChoice::Restore("w".into()),
+                IdentityChoice::NewGroup
+            ],
+            "我的号不可读时走其他设备分支；空组号不列 Join"
+        );
+        assert_eq!(def, IdentityChoice::NewGroup);
+    }
+
+    #[test]
     fn identity_commands_per_choice() {
         assert_eq!(
             identity_commands(&IdentityChoice::Restore("x".into())),
@@ -3322,10 +3336,7 @@ mod tests {
         );
         assert_eq!(
             identity_commands(&IdentityChoice::Join("g".into())),
-            vec![
-                ("confirm_identity", json!({})),
-                ("join_group", json!({ "group": "g", "mode": "theirs" }))
-            ]
+            vec![("join_group", json!({ "group": "g", "mode": "theirs" }))]
         );
         assert_eq!(
             identity_commands(&IdentityChoice::NewGroup),
