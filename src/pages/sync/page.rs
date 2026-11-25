@@ -1,4 +1,4 @@
-//! 同步页的卡片：未配置只有「数据同步」一张；已配置是状态、本机、设备、存储、安全五张与底部「停用同步」。
+//! 同步页的卡片：向导、状态、本机、设备、存储、安全六张恒在；未配置时除向导与状态卡的总开关外，各卡只有一行「配置同步后可用」。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,36 +17,83 @@ use crate::widgets::{
 /// 一张卡：`(二级导航名, 卡片, 何时显示)`；导航名为空的不进二级导航。
 pub type Card = (Option<&'static str>, Element, Vis);
 
+/// 二级导航与卡片标题，未配置也全部显示。
+pub(super) const NAV: [&str; 6] = ["向导", "状态", "本机", "设备", "存储", "安全"];
+/// 未配置时各卡唯一的一行。
+pub(super) const PLACEHOLDER: &str = "配置同步后可用";
+pub(super) const BTN_MODIFY: &str = "修改…";
+pub(super) const ROW_GROUP: &str = "同步组";
+
+/// 向导卡的说明与按钮，随是否已配置。
+pub(super) fn wizard_text(configured: bool) -> &'static str {
+    if configured {
+        "已配置；要换一个同步库可重新配置"
+    } else {
+        "用 WebDAV 或 S3 在多台设备间同步，数据先在本机加密"
+    }
+}
+
+pub(super) fn wizard_button(configured: bool) -> &'static str {
+    if configured {
+        "重新配置…"
+    } else {
+        "开始配置…"
+    }
+}
+
 /// 同步页的卡片。
 pub fn build_page(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<Card> {
     let ui = state.sync.clone();
     ui.load_once();
     super::dialogs::mount(&ui, state);
 
-    let cfg = ui.configured;
-    let on: Vis = Rc::new(move || cfg.get());
-    let off: Vis = Rc::new(move || !cfg.get());
-    vec![
-        (
-            Some("数据同步"),
-            anchor::wrap(setup_card(&ui), ANCHOR, state.jump),
-            off,
-        ),
-        (
-            Some("同步状态"),
-            anchor::wrap(status_card(&ui), ANCHOR, state.jump),
-            on.clone(),
-        ),
-        (Some("本机"), self_card(&ui), on.clone()),
-        (Some("设备"), devices_card(&ui), on.clone()),
-        (Some("存储"), storage_card(&ui), on.clone()),
-        (Some("安全"), security_card(&ui), on.clone()),
-        (None, disable_row(&ui), on),
-    ]
+    let always: Vis = Rc::new(|| true);
+    let cards = vec![
+        anchor::wrap(wizard_card(&ui), ANCHOR, state.jump),
+        status_card(&ui),
+        self_card(&ui),
+        devices_card(&ui),
+        storage_card(&ui),
+        security_card(&ui),
+    ];
+    NAV.iter()
+        .zip(cards)
+        .map(|(name, el)| (Some(*name), el, always.clone()))
+        .collect()
 }
 
 fn vis(f: impl Fn() -> bool + 'static) -> Vis {
     Rc::new(f)
+}
+
+/// 已配置才显示内容的卡：各行叠上「已配置」条件，另补一行未配置时的灰字。
+fn gated_section(ui: &SyncUi, title: &str, items: Vec<CardItem>) -> Element {
+    gated_section_with(ui, title, Vec::new(), items)
+}
+
+/// 同上，`head` 是恒显示的前导行（状态卡的总开关）。
+fn gated_section_with(
+    ui: &SyncUi,
+    title: &str,
+    head: Vec<CardItem>,
+    items: Vec<CardItem>,
+) -> Element {
+    let cfg = ui.configured;
+    let mut out: Vec<CardItem> = head;
+    out.extend(items.into_iter().map(|it| match it {
+        CardItem::Row(e) => CardItem::RowWhen(e, vis(move || cfg.get())),
+        CardItem::RowWhen(e, v) => CardItem::RowWhen(e, vis(move || cfg.get() && v())),
+        other => other,
+    }));
+    out.push(placeholder_row(cfg));
+    section_items(title, out)
+}
+
+fn placeholder_row(cfg: Signal<bool>) -> CardItem {
+    CardItem::RowWhen(
+        muted(PLACEHOLDER).padding_xy(0, 10),
+        vis(move || !cfg.get()),
+    )
 }
 
 /// 右侧的值文字（设备号、时间等）。
@@ -65,12 +112,11 @@ fn value_and(text: Signal<String>, button: Element) -> Element {
         .child(button)
 }
 
-/// 未配置：一句介绍 + 「开始配置…」。
-fn setup_card(ui: &SyncUi) -> Element {
-    let (installed, busy) = (ui.installed, ui.busy);
-    let u = ui.clone();
+/// 向导卡：未配置是一句介绍 + 「开始配置…」，已配置是「重新配置…」。
+fn wizard_card(ui: &SyncUi) -> Element {
+    let installed = ui.installed;
     section_items(
-        "数据同步",
+        NAV[0],
         vec![
             CardItem::RowWhen(
                 Element::label(
@@ -83,14 +129,24 @@ fn setup_card(ui: &SyncUi) -> Element {
                 .padding_xy(0, 10),
                 vis(move || !installed.get()),
             ),
-            CardItem::Row(setting_row(
-                "用 WebDAV 或 S3 在多台设备间同步配置、方案和词库",
-                Some("数据先在本机加密再上传"),
-                btn("开始配置…")
-                    .enabled_when(move || installed.get() && !busy.get())
-                    .on_click(move |_| u.open_wizard()),
-            )),
+            wizard_row(ui, false),
+            wizard_row(ui, true),
         ],
+    )
+}
+
+fn wizard_row(ui: &SyncUi, configured: bool) -> CardItem {
+    let (installed, busy, cfg) = (ui.installed, ui.busy, ui.configured);
+    let u = ui.clone();
+    CardItem::RowWhen(
+        setting_row(
+            wizard_text(configured),
+            None,
+            btn(wizard_button(configured))
+                .enabled_when(move || installed.get() && !busy.get())
+                .on_click(move |_| u.open_wizard()),
+        ),
+        vis(move || cfg.get() == configured),
     )
 }
 
@@ -108,8 +164,19 @@ fn status_card(ui: &SyncUi) -> Element {
         move || interval.version(),
         move || u_int.save_interval(),
     );
-    section_items(
-        "同步状态",
+    let (u_master, enabled, cfg) = (ui.clone(), ui.enabled, ui.configured);
+    // 首行总开关恒显示，未配置时置灰。
+    let master = CardItem::Row(setting_row(
+        "数据同步",
+        Some("关闭后暂停同步，配置都保留"),
+        Element::switch(enabled)
+            .enabled_when(move || cfg.get())
+            .on_switch_change(move |_ctx, on| u_master.set_master(on)),
+    ));
+    gated_section_with(
+        ui,
+        NAV[1],
+        vec![master],
         vec![
             CardItem::Row(setting_row_desc_signal(
                 "状态",
@@ -117,7 +184,7 @@ fn status_card(ui: &SyncUi) -> Element {
                 value_and(
                     ui.phase,
                     btn("立即同步")
-                        .enabled_when(move || can_sync.get() && !busy.get())
+                        .enabled_when(move || can_sync.get() && enabled.get() && !busy.get())
                         .on_click(move |_| u_now.sync_now()),
                 ),
             )),
@@ -196,7 +263,7 @@ fn status_card(ui: &SyncUi) -> Element {
     )
 }
 
-/// 本机卡：设备号、显示名称、所在组；改号与更换组走各自的对话框。
+/// 本机卡：设备号、显示名称、同步组；改号与更换组走各自的对话框。
 fn self_card(ui: &SyncUi) -> Element {
     let (u_rename, u_group, needs_identity) = (ui.clone(), ui.clone(), ui.needs_identity);
     let name = ui.device_name.map(|n| {
@@ -206,25 +273,34 @@ fn self_card(ui: &SyncUi) -> Element {
             n.clone()
         }
     });
-    section_items(
-        "本机",
+    let u_rename2 = u_rename.clone();
+    gated_section(
+        ui,
+        NAV[2],
         vec![
+            CardItem::Row(setting_row(
+                "显示名称",
+                None,
+                value_and(
+                    name,
+                    btn2(BTN_MODIFY).on_click(move |_| u_rename2.open_rename_dialog()),
+                ),
+            )),
             CardItem::Row(setting_row(
                 "设备号",
                 None,
                 value_and(
                     ui.device,
-                    btn2("改…").on_click(move |_| u_rename.open_rename_dialog()),
+                    btn2(BTN_MODIFY).on_click(move |_| u_rename.open_rename_dialog()),
                 ),
             )),
-            CardItem::Row(setting_row("显示名称", None, value(name))),
             CardItem::Row(setting_row(
-                "所在组",
+                ROW_GROUP,
                 None,
                 value_and(
                     ui.group_line,
                     // 身份未确认时 core 拒绝换组，先置灰
-                    btn2("更换组…")
+                    btn2(BTN_MODIFY)
                         .enabled_when(move || !needs_identity.get())
                         .on_click(move |_| u_group.open_group_dialog()),
                 ),
@@ -249,8 +325,11 @@ fn devices_card(ui: &SyncUi) -> Element {
         }
         col
     });
-    section_items(
-        "设备",
+    let cfg = ui.configured;
+    let list = list.visible_when(move || cfg.get());
+    gated_section(
+        ui,
+        NAV[3],
         vec![
             CardItem::RowWhen(
                 Element::label_signal(devices_err)
@@ -298,8 +377,9 @@ fn device_row(ui: &SyncUi, d: &DeviceView, today: chrono::NaiveDate) -> Element 
 
 fn storage_card(ui: &SyncUi) -> Element {
     let (u, busy) = (ui.clone(), ui.busy);
-    section_items(
-        "存储",
+    gated_section(
+        ui,
+        NAV[4],
         vec![CardItem::Row(setting_row_desc_signal(
             "存储位置",
             ui.storage_summary,
@@ -313,8 +393,9 @@ fn storage_card(ui: &SyncUi) -> Element {
 fn security_card(ui: &SyncUi) -> Element {
     let busy = ui.busy;
     let (u_pass, u_exp, u_reset) = (ui.clone(), ui.clone(), ui.clone());
-    section_items(
-        "安全",
+    gated_section(
+        ui,
+        NAV[5],
         vec![
             CardItem::Row(setting_row(
                 "同步口令",
@@ -341,19 +422,4 @@ fn security_card(ui: &SyncUi) -> Element {
             )),
         ],
     )
-}
-
-/// 页底「停用同步」：确认后只关开关，不删远端。
-fn disable_row(ui: &SyncUi) -> Element {
-    let (u, busy) = (ui.clone(), ui.busy);
-    Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(12)
-        .child(
-            btn2("停用同步")
-                .enabled_when(move || !busy.get())
-                .on_click(move |_| u.disable_dialog.set(true)),
-        )
-        .child(muted("本机不再同步，远端数据保留"))
 }

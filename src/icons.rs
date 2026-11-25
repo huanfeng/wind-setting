@@ -78,7 +78,7 @@ pub fn nav_icon(tab: &str) -> &'static str {
 /// 分区标题图标（section 名映射；未命中回退 sliders）。
 pub fn section_icon(title: &str) -> &'static str {
     match title {
-        "数据同步" | "同步状态" => SYNC,
+        "向导" | "状态" => SYNC,
         "本机" | "设备" => APPS,
         "存储" => LAYERS,
         "安全" => GEAR,

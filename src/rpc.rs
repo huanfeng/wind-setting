@@ -2311,6 +2311,13 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                     v["conflicts"] = json!(0);
                     v["conflict_paths"] = json!([]);
                 }
+                // 总开关关掉：配置都在，只是没启用。
+                Ok("disabled") => {
+                    v["enabled"] = json!(false);
+                    v["running"] = json!(false);
+                    v["phase"] = json!("disabled");
+                    v["pending"] = json!(0);
+                }
                 // 撞号：另一台设备在用本机的设备号。
                 Ok("dup_id") => {
                     v["phase"] = json!("error");

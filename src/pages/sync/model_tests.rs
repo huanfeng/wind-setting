@@ -346,7 +346,8 @@ fn status_parses_group_fields_and_configured() {
     let not_installed = StatusView::parse(&json!({ "enabled": true, "joined": true }));
     assert!(!not_installed.configured());
     let disabled = StatusView::parse(&json!({ "installed": true, "joined": true }));
-    assert!(!disabled.configured(), "停用后密钥还在，也回到未配置");
+    assert!(disabled.configured(), "总开关关掉后仍是已配置，只是没启用");
+    assert!(!disabled.enabled);
 }
 
 #[test]
@@ -523,12 +524,33 @@ fn webdav_form() -> Form {
 
 #[test]
 fn disable_only_turns_off_and_keeps_backend() {
-    let steps = disable_steps(&webdav_form());
+    let steps = master_switch_steps(&webdav_form(), false);
     assert_eq!(steps.len(), 1, "不删远端，不发其他命令");
     assert_eq!(steps[0].0, "sync.setSettings");
     let s = &steps[0].1["settings"];
     assert_eq!(s["enabled"], false);
     assert_eq!(s["backend"]["url"], "https://dav.example.com/dav/");
+}
+
+#[test]
+fn master_switch_off_keeps_backend_and_on_resumes() {
+    let off = master_switch_steps(&webdav_form(), false);
+    assert_eq!(off.len(), 1);
+    assert_eq!(off[0].0, "sync.setSettings");
+    assert_eq!(off[0].1["settings"]["enabled"], false);
+    let on = master_switch_steps(
+        &Form {
+            enabled: false,
+            ..webdav_form()
+        },
+        true,
+    );
+    assert_eq!(on.len(), 1, "已加入时只开开关，不发别的命令");
+    assert_eq!(on[0].1["settings"]["enabled"], true);
+    assert_eq!(
+        on[0].1["settings"]["backend"]["url"],
+        "https://dav.example.com/dav/"
+    );
 }
 
 #[test]

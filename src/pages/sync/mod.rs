@@ -87,8 +87,10 @@ pub struct SyncUi {
     has_secret: Signal<bool>,
     /// 存储密码框的占位文案，随 `has_secret` 与已存存储参数更新。
     secret_hint: Signal<&'static str>,
-    /// 已装、已启用、已加入：显示完整的同步页，否则只给「开始配置」。
+    /// 已装且已加入：各卡显示内容，否则只给「配置同步后可用」。
     configured: Signal<bool>,
+    /// 状态卡「数据同步」总开关的状态，随状态里的 `enabled`。
+    enabled: Signal<bool>,
     needs_identity: Signal<bool>,
     /// 撞号：另一台设备在用本机的设备号。
     dup_device: Signal<bool>,
@@ -170,7 +172,6 @@ pub struct SyncUi {
     storage_use_key: Signal<bool>,
     storage_err: Signal<String>,
     conflicts_dialog: Signal<bool>,
-    disable_dialog: Signal<bool>,
 
     /// 配置向导（见 [`wizard`]）。
     wizard: Signal<bool>,
@@ -240,6 +241,7 @@ impl SyncUi {
             has_secret: signal(false),
             secret_hint: signal(secret_placeholder(false, false)),
             configured: signal(false),
+            enabled: signal(false),
             needs_identity: signal(false),
             dup_device: signal(false),
             can_sync: signal(true),
@@ -300,7 +302,6 @@ impl SyncUi {
             storage_use_key: signal(false),
             storage_err: s(),
             conflicts_dialog: signal(false),
-            disable_dialog: signal(false),
             wizard: signal(false),
             wiz_step: signal(WizStep::Storage),
             wiz_test_ok: signal(false),
@@ -452,6 +453,7 @@ impl SyncUi {
         self.update_secret_hint();
         self.joined.set(s.joined);
         self.configured.set(s.configured());
+        self.enabled.set(s.enabled);
         self.needs_identity.set(s.needs_identity);
         self.dup_device.set(s.duplicate_device());
         self.can_sync.set(can_sync_now(&s));
@@ -610,14 +612,16 @@ impl SyncUi {
                             }
                             self.storage_dialog.set(false);
                         }
-                        "disable" => {
-                            self.saved.borrow_mut().enabled = false;
-                            self.disable_dialog.set(false);
-                        }
+                        "disable" => self.saved.borrow_mut().enabled = false,
+                        "enable" => self.saved.borrow_mut().enabled = true,
                         _ => {}
                     }
                 } else if op == "export_key" {
                     self.export_dialog.set(false);
+                }
+                if matches!(op.as_str(), "enable" | "disable") {
+                    // 失败时开关退回已保存的状态
+                    self.enabled.set(self.saved.borrow().enabled);
                 }
                 if self.interval_pending.get() {
                     self.save_interval();
@@ -754,11 +758,19 @@ impl SyncUi {
         self.reset_dialog.set(true);
     }
 
-    fn confirm_disable(&self) {
-        self.run_steps("disable", disable_steps(&self.saved.borrow()));
+    /// 总开关：关 → `enabled:false`，开 → `enabled:true`；与其他写入走同一条串行通道。
+    /// 没发出去（忙或未接通道）时开关退回已保存的状态。
+    fn set_master(&self, on: bool) {
+        let sent = !self.busy.get() && self.tx.borrow().is_some();
+        if sent {
+            let op = if on { "enable" } else { "disable" };
+            self.run_steps(op, master_switch_steps(&self.saved.borrow(), on));
+        } else {
+            self.enabled.set(self.saved.borrow().enabled);
+        }
     }
 
-    /// 「改…」「给本机改号…」：输入框带出当前设备号与已保存的显示名称。
+    /// 「修改…」「给本机改号…」：输入框带出当前设备号与已保存的显示名称。
     fn open_rename_dialog(&self) {
         self.rename_id.set(self.device.get());
         self.rename_name
@@ -792,7 +804,7 @@ impl SyncUi {
         }
     }
 
-    /// 「更换组…」：列出同类设备所在的其他组；没有可加入的就默认「新建独立组」。
+    /// 「修改…」（同步组）：列出同类设备所在的其他组；没有可加入的就默认「新建独立组」。
     fn open_group_dialog(&self) {
         let groups = joinable_groups(
             platform_class(std::env::consts::OS),

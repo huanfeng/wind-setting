@@ -477,7 +477,7 @@ const HANDWRITTEN: &[Handwritten] = &[
     // 锚点即 `pages::extensions::ANCHOR`；扩展自己的选项运行时才知道，索引只收卡片入口。
     Handwritten { id: "advanced:extensions", anchor: "advanced:extensions", page: "advanced", title: "扩展程序", section: "扩展程序（实验性）", keywords: "扩展程序 实验性 插件 按键音 音效 朗读 extension plugin", feature: "extensions" },
     // 锚点即 `pages::sync::ANCHOR`。
-    Handwritten { id: "sync", anchor: "sync", page: "sync", title: "数据同步", section: "同步状态", keywords: "同步 云同步 webdav s3 备份 多设备 口令 密钥 加密 sync", feature: "sync" },
+    Handwritten { id: "sync", anchor: "sync", page: "sync", title: "数据同步", section: "向导", keywords: "同步 云同步 webdav s3 备份 多设备 口令 密钥 加密 sync", feature: "sync" },
     // 两条都落在「内存占用」那一行（「诊断信息…」按钮所在行）；锚点即 `pages::memory::ANCHOR`。
     Handwritten { id: "advanced:memory", anchor: "advanced:memory", page: "advanced", title: "内存占用", section: "性能与诊断", keywords: "内存 诊断 复制 反馈 占用 方案 memory", feature: "memory" },
     Handwritten { id: "advanced:diagnostics", anchor: "advanced:memory", page: "advanced", title: "诊断信息", section: "性能与诊断", keywords: "内存 复制 反馈 自动刷新 排查 diagnostics", feature: "memory" },

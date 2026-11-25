@@ -51,10 +51,10 @@ pub(crate) struct StatusView {
 }
 
 impl StatusView {
-    /// 已装、已启用且已加入远端：此后才显示完整的同步页，否则只给「开始配置」。
-    /// 要看 `enabled`：停用后本机密钥仍在，`joined` 不会变。
+    /// 已装且已加入远端：各卡显示内容，否则只给「配置同步后可用」。
+    /// 总开关关掉（`enabled` 为假）仍算已配置，配置都保留。
     pub fn configured(&self) -> bool {
-        self.installed && self.enabled && self.joined
+        self.installed && self.joined
     }
 
     /// 撞号：另一台设备在用本机的设备号，需要给本机改号。
@@ -266,13 +266,14 @@ pub(crate) fn sync_now_steps() -> Vec<Step> {
     vec![("sync.now", json!({}))]
 }
 
-/// 「停用同步」：只关掉启用开关，存储设置、密钥与远端数据都保留。
-pub(crate) fn disable_steps(saved: &Form) -> Vec<Step> {
-    let off = Form {
-        enabled: false,
+/// 状态卡的「数据同步」总开关：只改启用开关，存储设置、密钥与远端数据都保留；
+/// 开回去时已加入的设备直接恢复同步。
+pub(crate) fn master_switch_steps(saved: &Form, on: bool) -> Vec<Step> {
+    let f = Form {
+        enabled: on,
         ..saved.clone()
     };
-    vec![("sync.setSettings", json!({ "settings": off.to_settings() }))]
+    vec![("sync.setSettings", json!({ "settings": f.to_settings() }))]
 }
 
 /// 存储卡的摘要：类型与地址。
@@ -933,9 +934,10 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "remove_device" => "移除设备",
         "storage" => "保存存储设置",
         "disable" => "停用同步",
+        "enable" => "启用同步",
         "interval" => "保存同步间隔",
         "rename" => "修改设备信息",
-        "group" => "更换组",
+        "group" => "修改同步组",
         other => other,
     };
     match r {
@@ -962,6 +964,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 "sync_now" | "interval" => String::new(),
                 "storage" => "已保存存储设置".to_string(),
                 "disable" => "已停用同步".to_string(),
+                "enable" => "已启用同步".to_string(),
                 "test_connection" => connection_text(v),
                 "export_key" if key.is_none() => "同步进程没有返回密钥".to_string(),
                 "export_key" => "已导出密钥，请妥善保管".to_string(),

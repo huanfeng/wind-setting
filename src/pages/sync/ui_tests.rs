@@ -96,8 +96,28 @@ fn status_drives_configured_identity_and_duplicate() {
     }));
     assert!(ui.configured.get() && ui.needs_identity.get() && ui.dup_device.get());
     ui.apply_status(&json!({ "installed": true, "enabled": false, "joined": true }));
-    assert!(!ui.configured.get(), "停用后回到未配置");
+    assert!(ui.configured.get(), "总开关关掉不等于未配置");
+    assert!(!ui.enabled.get(), "总开关跟着状态里的 enabled");
     assert!(!ui.dup_device.get());
+    ui.apply_status(&json!({ "installed": true, "enabled": false, "joined": false }));
+    assert!(!ui.configured.get());
+}
+
+#[test]
+fn layout_texts_follow_the_spec() {
+    use super::page::*;
+    assert_eq!(NAV, ["向导", "状态", "本机", "设备", "存储", "安全"]);
+    assert_eq!(PLACEHOLDER, "配置同步后可用");
+    assert_eq!((BTN_MODIFY, ROW_GROUP), ("修改…", "同步组"));
+    assert_eq!(
+        wizard_text(false),
+        "用 WebDAV 或 S3 在多台设备间同步，数据先在本机加密"
+    );
+    assert_eq!(wizard_text(true), "已配置；要换一个同步库可重新配置");
+    assert_eq!(
+        (wizard_button(false), wizard_button(true)),
+        ("开始配置…", "重新配置…")
+    );
 }
 
 #[test]

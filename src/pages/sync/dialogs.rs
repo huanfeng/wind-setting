@@ -14,7 +14,6 @@ pub(super) fn mount(ui: &SyncUi, state: &AppState) {
         export_dialog(ui),
         passphrase_dialog(ui),
         conflicts_dialog(ui),
-        disable_dialog(ui),
         mass_delete_dialog(ui),
         reset_dialog(ui),
         remove_device_dialog(ui),
@@ -231,7 +230,7 @@ fn rename_dialog(ui: &SyncUi) -> Element {
         );
     Element::dialog_closable(
         visible,
-        dialog_frame("修改设备号", body, footer),
+        dialog_frame("修改设备名称与设备号", body, footer),
         move |_| visible.set(false),
     )
 }
@@ -339,7 +338,7 @@ fn group_dialog(ui: &SyncUi) -> Element {
         );
     Element::dialog_closable(
         visible,
-        dialog_frame("更换组", body, footer),
+        dialog_frame("修改同步组", body, footer),
         move |_| visible.set(false),
     )
 }
@@ -638,22 +637,4 @@ fn conflicts_dialog(ui: &SyncUi) -> Element {
         }))
         .child(btn("关闭").on_click(move |_| visible.set(false)));
     Element::dialog(visible, dialog_frame("冲突副本", body, footer))
-}
-
-/// 「停用同步」确认：只关开关，不删远端。
-fn disable_dialog(ui: &SyncUi) -> Element {
-    let visible = ui.disable_dialog;
-    let body = Element::col().width_match().padding_xy(18, 14).child(muted(
-        "停用后本机不再同步。存储设置、口令和本机数据都会保留，远端存储里的数据不会被删除；之后可以随时重新开始配置。",
-    ));
-    let (u, busy) = (ui.clone(), ui.busy);
-    let footer = Element::row()
-        .spacing(8)
-        .child(btn2("取消").on_click(move |_| visible.set(false)))
-        .child(
-            btn("停用")
-                .enabled_when(move || !busy.get())
-                .on_click(move |_| u.confirm_disable()),
-        );
-    Element::dialog(visible, dialog_frame("停用同步", body, footer))
 }
