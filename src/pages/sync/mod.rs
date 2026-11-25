@@ -87,7 +87,7 @@ pub struct SyncUi {
     has_secret: Signal<bool>,
     /// 存储密码框的占位文案，随 `has_secret` 与已存存储参数更新。
     secret_hint: Signal<&'static str>,
-    /// 已装且已加入：各卡显示内容，否则只给「配置同步后可用」。
+    /// 已装且已加入：显示全部卡片，否则只有向导卡。
     configured: Signal<bool>,
     /// 状态卡「数据同步」总开关的状态，随状态里的 `enabled`。
     enabled: Signal<bool>,
@@ -772,7 +772,7 @@ impl SyncUi {
         }
     }
 
-    /// 开关的显示态：置灰（未配置）时一律显示为关，不管 `enabled` 是什么。
+    /// 开关的显示态：未配置时一律显示为关，不管 `enabled` 是什么。
     fn show_enabled(&self, enabled: bool) {
         self.enabled.set(enabled && self.configured.get());
     }

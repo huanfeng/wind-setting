@@ -51,7 +51,7 @@ pub(crate) struct StatusView {
 }
 
 impl StatusView {
-    /// 已装且已加入远端：各卡显示内容，否则只给「配置同步后可用」。
+    /// 已装且已加入远端：显示全部卡片，否则只有向导卡。
     /// 总开关关掉（`enabled` 为假）仍算已配置，配置都保留。
     pub fn configured(&self) -> bool {
         self.installed && self.joined
@@ -866,12 +866,16 @@ impl RemoveGuard {
 /// 移除前的确认文案。
 pub(crate) const REMOVE_DEVICE_WARN: &str = "移除后该设备的同步记录会从存储中删除。若该设备仍在使用，下次同步时会重新出现；要彻底阻止，请重置远端（会生成新的同步密钥）。";
 
+/// 同步间隔上限（分钟），与 core 的 `wind_sync_ipc::MAX_INTERVAL_MIN` 一致。
+pub(crate) const MAX_INTERVAL_MIN: u32 = 24 * 60;
+pub(crate) const INTERVAL_DESC: &str = "1 到 1440 分钟（24 小时）；本机有改动时会很快同步";
+
 /// 把输入框里的间隔数收成合法整数（1 分钟到 24 小时）。
 pub(crate) fn clamp_interval(v: f64) -> u32 {
     if !v.is_finite() {
         return 15;
     }
-    v.round().clamp(1.0, (24 * 60) as f64) as u32
+    v.round().clamp(1.0, MAX_INTERVAL_MIN as f64) as u32
 }
 
 /// 本次要提交的机密命令。**空的不发**（留空 = 不修改，不能把已保存的覆盖成空串）；

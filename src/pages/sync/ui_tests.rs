@@ -64,7 +64,6 @@ fn status_drives_configured_identity_and_duplicate() {
 fn layout_texts_follow_the_spec() {
     use super::page::*;
     assert_eq!(NAV, ["向导", "状态", "本机", "设备", "存储", "安全"]);
-    assert_eq!(PLACEHOLDER, "配置同步后可用");
     assert_eq!((BTN_MODIFY, ROW_GROUP), ("修改…", "同步组"));
     assert_eq!(
         wizard_text(false),
@@ -75,6 +74,15 @@ fn layout_texts_follow_the_spec() {
         (wizard_button(false), wizard_button(true)),
         ("开始配置…", "重新配置…")
     );
+}
+
+#[test]
+fn unconfigured_page_shows_only_the_wizard_card() {
+    use super::page::{NAV, card_shown};
+    let shown = |cfg| (0..NAV.len()).filter(|&i| card_shown(i, cfg)).count();
+    assert_eq!(shown(false), 1);
+    assert!(card_shown(0, false));
+    assert_eq!(shown(true), NAV.len());
 }
 
 #[test]
@@ -396,12 +404,12 @@ fn status_does_not_overwrite_switch_while_busy() {
 }
 
 #[test]
-fn greyed_switch_shows_off() {
+fn unconfigured_switch_shows_off() {
     let ui = SyncUi::new();
     ui.apply_status(&json!({ "installed": true, "enabled": true, "joined": false }));
     assert!(
         !ui.configured.get() && !ui.enabled.get(),
-        "未配置：置灰且显示为关"
+        "未配置：开关显示为关"
     );
 }
 
