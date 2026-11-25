@@ -29,7 +29,18 @@ pub fn open_wizard(app: &Rc<RefCell<AppState>>) {
                 .map(|l| (s.id.clone(), l.to_string()))
         })
         .collect();
-    let cur = model::Draft::from_current(&st.base_config, &st.schemas, current);
+    // 方案级的几项按别名读回主方案的值：整份配置里同名键只是类型内置默认。
+    let mut base = st.base_config.clone();
+    for key in model::SCHEME_KEYS {
+        if let Some(v) = crate::rpc::call_core("config.getItem", &serde_json::json!({ "key": key }))
+            .ok()
+            .and_then(|r| r.get("value").cloned())
+            .filter(|v| !v.is_null())
+        {
+            base.set_path(key, v);
+        }
+    }
+    let cur = model::Draft::from_current(&base, &st.schemas, current);
     *st.wizard.borrow_mut() = Some(WizardSession {
         draft: cur.clone(),
         cur,
@@ -125,6 +136,7 @@ pub(crate) fn finish_with(
             layout: model::layout_changed(&s.draft)
                 .then(|| (s.draft.active.clone(), s.draft.layout.clone())),
             active: (s.draft.active != s.cur.active).then(|| s.draft.active.clone()),
+            scheme_items: s.draft.scheme_items(&s.cur),
         }
     };
     let outcome = apply::apply_writes(core, &plan);

@@ -1,5 +1,6 @@
-//! 向导写入编排。顺序：全局键 → 双拼布局（方案级） → 默认方案。
-//! `schema.setActive` 要求目标方案已启用，而启用表随第一步的 setItems 落盘，所以它必须排在最后。
+//! 向导写入编排。顺序：全局键 → 双拼布局（方案级） → 默认方案 → 方案设置。
+//! `schema.setActive` 要求目标方案已启用，而启用表随第一步的 setItems 落盘，所以它排在全局键之后。
+//! 方案设置用旧键（别名）写，目标是 core 的当前方案（混输取其成员），所以排在切换默认方案之后。
 
 use serde_json::{Value, json};
 
@@ -24,6 +25,8 @@ pub struct Plan {
     /// (双拼主方案 id, 布局 id)：写到哪个方案上随主方案走，不写死 `shuangpin`。
     pub layout: Option<(String, String)>,
     pub active: Option<String>,
+    /// 主方案的设置（`schema.codetable.*` 等旧键），见模块说明。
+    pub scheme_items: Vec<ConfigItem>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,48 +48,8 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
         done: done.clone(),
     };
 
-    if !plan.items.is_empty() {
-        let items: Vec<Value> = plan
-            .items
-            .iter()
-            .map(|it| json!({"key": it.key, "value": it.value}))
-            .collect();
-        match core.call("config.setItems", &json!({ "items": items })) {
-            Ok(resp) => {
-                let skipped: Vec<String> = resp
-                    .get("skipped")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|it| it.get("key").and_then(|k| k.as_str()))
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if !skipped.is_empty() {
-                    // core 对被拒项只是跳过，合法项照样落盘（wind-rpc dispatch 的 setItems 回
-                    // applied + skipped）。有写进去的就得记成已完成，不能报「没有改动任何配置」。
-                    let applied = resp
-                        .get("applied")
-                        .and_then(|v| v.as_u64())
-                        .map(|n| n as usize)
-                        .unwrap_or(items.len().saturating_sub(skipped.len()));
-                    if applied > 0 {
-                        done.push(format!(
-                            "保存配置（{} 项被拒，其余 {applied} 项已写入）",
-                            skipped.len()
-                        ));
-                    }
-                    return fail(
-                        "保存配置",
-                        format!("服务端拒绝了 {} 项：{}", skipped.len(), skipped.join(", ")),
-                        &done,
-                    );
-                }
-            }
-            Err(e) => return fail("保存配置", e, &done),
-        }
-        done.push("保存配置".into());
+    if let Err(e) = set_items(core, &plan.items, "保存配置", &mut done) {
+        return e;
     }
 
     if let Some((schema, layout)) = &plan.layout {
@@ -114,7 +77,66 @@ pub fn apply_writes(core: &mut dyn CoreCalls, plan: &Plan) -> ApplyOutcome {
             Err(e) => return fail("切换默认方案", e, &done),
         }
     }
+
+    if let Err(e) = set_items(core, &plan.scheme_items, "方案设置", &mut done) {
+        return e;
+    }
     ApplyOutcome::Done
+}
+
+/// 一次 `config.setItems`；成功把 `step` 记进 `done`。空表不调。
+fn set_items(
+    core: &mut dyn CoreCalls,
+    items: &[ConfigItem],
+    step: &'static str,
+    done: &mut Vec<String>,
+) -> Result<(), ApplyOutcome> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let fail = |error: String, done: &Vec<String>| ApplyOutcome::Failed {
+        step,
+        error,
+        done: done.clone(),
+    };
+    let items: Vec<Value> = items
+        .iter()
+        .map(|it| json!({"key": it.key, "value": it.value}))
+        .collect();
+    let resp = core
+        .call("config.setItems", &json!({ "items": items }))
+        .map_err(|e| fail(e, done))?;
+    let skipped: Vec<String> = resp
+        .get("skipped")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|it| it.get("key").and_then(|k| k.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !skipped.is_empty() {
+        // core 对被拒项只是跳过，合法项照样落盘（wind-rpc dispatch 的 setItems 回
+        // applied + skipped）。有写进去的就得记成已完成，不能报「没有改动任何配置」。
+        let applied = resp
+            .get("applied")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(items.len().saturating_sub(skipped.len()));
+        if applied > 0 {
+            done.push(format!(
+                "{step}（{} 项被拒，其余 {applied} 项已写入）",
+                skipped.len()
+            ));
+        }
+        return Err(fail(
+            format!("服务端拒绝了 {} 项：{}", skipped.len(), skipped.join(", ")),
+            done,
+        ));
+    }
+    done.push(step.into());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -165,11 +187,15 @@ mod tests {
             }],
             layout: Some(("double_pinyin".into(), "ziranma".into())),
             active: Some("double_pinyin".into()),
+            scheme_items: vec![ConfigItem {
+                key: "schema.pinyin.shuangpin.allow_full_pinyin".into(),
+                value: json!(true),
+            }],
         }
     }
 
     #[test]
-    fn order_is_items_layout_active() {
+    fn order_is_items_layout_active_scheme_items() {
         let mut r = rec();
         assert_eq!(apply_writes(&mut r, &plan()), ApplyOutcome::Done);
         assert_eq!(
@@ -178,7 +204,8 @@ mod tests {
                 "config.setItems",
                 "schema.getConfig",
                 "schema.saveConfig",
-                "schema.setActive"
+                "schema.setActive",
+                "config.setItems",
             ]
         );
     }
@@ -198,6 +225,7 @@ mod tests {
             items: vec![],
             layout: None,
             active: None,
+            scheme_items: vec![],
         };
         assert_eq!(apply_writes(&mut r, &p), ApplyOutcome::Done);
         assert!(r.calls.is_empty());
@@ -268,6 +296,7 @@ mod tests {
             items: vec![],
             layout: None,
             active: Some("pinyin".into()),
+            scheme_items: vec![],
         };
         assert!(matches!(
             apply_writes(&mut NotOk, &p),

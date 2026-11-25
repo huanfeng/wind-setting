@@ -247,6 +247,14 @@ fn strs(v: Option<&Vec<Value>>) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// 向导涉及的方案级设置（旧的类型级键名，core 按别名转到主方案）。打开向导时按这些键
+/// 读回主方案的值，预填进基线配置。
+pub const SCHEME_KEYS: [&str; 3] = [
+    "schema.codetable.auto_commit_at_full",
+    "schema.codetable.clear_on_empty_max",
+    "schema.pinyin.shuangpin.allow_full_pinyin",
+];
+
 impl Draft {
     /// 按当前实际配置预填。`layouts` 是各双拼方案当前的布局（读不到的可缺）。
     pub fn from_current(
@@ -270,8 +278,8 @@ impl Draft {
             enabled,
             active,
             catalog,
-            auto_commit_at_full: b("schema.codetable.auto_commit_at_full"),
-            clear_on_empty_max: b("schema.codetable.clear_on_empty_max"),
+            auto_commit_at_full: b(SCHEME_KEYS[0]),
+            clear_on_empty_max: b(SCHEME_KEYS[1]),
             // 拼音反查 = 拼音或双拼类型的默认态在显示东西（出厂 none，见 core 设计 §13.6）；
             // inherit 跟随全局，全局出厂就是编码。
             code_hint: [PINYIN_CODE_CELL, SHUANGPIN_CODE_CELL]
@@ -280,7 +288,7 @@ impl Draft {
             emoji: b("input.emoji.enabled"),
             fuzzy: b("input.fuzzy.enabled"),
             fuzzy_pairs: FUZZY_PAIRS.map(|(k, _)| b(&format!("input.fuzzy.{k}"))),
-            allow_full_pinyin: b("schema.pinyin.shuangpin.allow_full_pinyin"),
+            allow_full_pinyin: b(SCHEME_KEYS[2]),
             quick: trigger_of(cfg, VERB_QUICK, QUICK_KEYS),
             slash_dun: slash_dun_of(cfg),
             temp_pinyin: cfg.get_bool("input.temp_pinyin.enabled").unwrap_or(true),
@@ -376,18 +384,6 @@ impl Draft {
         }
         match self.kind {
             Kind::Codetable => {
-                if self.auto_commit_at_full != cur.auto_commit_at_full {
-                    set(
-                        "schema.codetable.auto_commit_at_full",
-                        self.auto_commit_at_full.into(),
-                    );
-                }
-                if self.clear_on_empty_max != cur.clear_on_empty_max {
-                    set(
-                        "schema.codetable.clear_on_empty_max",
-                        self.clear_on_empty_max.into(),
-                    );
-                }
                 // 打开只补还是 none 的格，用户在注释分配里另选的模板不动；关闭两格都写 none。
                 if self.code_hint != cur.code_hint {
                     for k in [PINYIN_CODE_CELL, SHUANGPIN_CODE_CELL] {
@@ -415,12 +411,6 @@ impl Draft {
                         set(&format!("input.fuzzy.{k}"), self.fuzzy_pairs[i].into());
                     }
                 }
-                if self.is_shuangpin() && self.allow_full_pinyin != cur.allow_full_pinyin {
-                    set(
-                        "schema.pinyin.shuangpin.allow_full_pinyin",
-                        self.allow_full_pinyin.into(),
-                    );
-                }
             }
         }
         rebind(&mut t, VERB_QUICK, &self.quick, &cur.quick);
@@ -431,6 +421,45 @@ impl Draft {
             write_slash_dun(&mut t, self.slash_dun);
         }
         t
+    }
+
+    /// 主方案的设置：与打开时（`cur`）不同的项，键用旧的类型级键名。
+    ///
+    /// 不进 [`Self::items`]：整份配置里这几个键只是类型内置默认，不是方案的值；它们是别名，
+    /// 在切换默认方案之后写，落到新主方案（混输落到它的码表成员）上，见 `apply`。
+    pub fn scheme_items(&self, cur: &Draft) -> Vec<ConfigItem> {
+        let mut out = Vec::new();
+        let mut push = |key: &str, new: bool, old: bool| {
+            if new != old {
+                out.push(ConfigItem {
+                    key: key.into(),
+                    value: new.into(),
+                });
+            }
+        };
+        match self.kind {
+            Kind::Codetable => {
+                push(
+                    SCHEME_KEYS[0],
+                    self.auto_commit_at_full,
+                    cur.auto_commit_at_full,
+                );
+                push(
+                    SCHEME_KEYS[1],
+                    self.clear_on_empty_max,
+                    cur.clear_on_empty_max,
+                );
+            }
+            Kind::Pinyin if self.is_shuangpin() => {
+                push(
+                    SCHEME_KEYS[2],
+                    self.allow_full_pinyin,
+                    cur.allow_full_pinyin,
+                );
+            }
+            Kind::Pinyin => {}
+        }
+        out
     }
 
     /// `config.setItems` 的条目：与设置页保存同一个 diff。
@@ -1482,8 +1511,10 @@ mod tests {
         let id = |s: &str| s.to_string();
         let check = |name: &str, b: &Config, cur: &Draft, new: &Draft| {
             let sum_empty = summary(cur, new, &id, &id).is_empty();
-            let no_write =
-                new.items(b, ATOMIC).is_empty() && !layout_changed(new) && new.active == cur.active;
+            let no_write = new.items(b, ATOMIC).is_empty()
+                && new.scheme_items(cur).is_empty()
+                && !layout_changed(new)
+                && new.active == cur.active;
             assert_eq!(
                 sum_empty,
                 no_write,
@@ -1656,6 +1687,20 @@ mod tests {
         let mut wubi = cur.clone();
         wubi.layout = "ziranma".into();
         assert!(!layout_changed(&wubi));
+    }
+
+    /// 方案级几项只进 `scheme_items`（切换默认方案后按别名写），不进整份配置的 diff。
+    #[test]
+    fn scheme_level_changes_go_to_scheme_items_only() {
+        let b = base();
+        let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
+        let mut d = cur.clone();
+        d.auto_commit_at_full = !cur.auto_commit_at_full;
+        assert!(d.items(&b, ATOMIC).is_empty());
+        let items = d.scheme_items(&cur);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].key, SCHEME_KEYS[0]);
+        assert_eq!(items[0].value, json!(d.auto_commit_at_full));
     }
 
     #[test]
