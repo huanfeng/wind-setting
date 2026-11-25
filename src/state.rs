@@ -638,6 +638,9 @@ pub struct AppState {
     pub card_settings: crate::scheme_cards::CardSettings,
     /// 各卡所绑方案的显示名（卡标题用）；页面树早于数据建成，故走信号。没有绑定时为空串。
     pub card_scheme_names: std::collections::HashMap<crate::scheme_cards::Card, Signal<String>>,
+    /// 引擎卡各键的方案默认值（`CardSettings::default_patch`），「恢复默认」叠在出厂配置上。
+    /// 放共享单元：恢复按钮的闭包在建树时捕获，绑定换了方案也要读到新值。
+    pub card_defaults: Rc<RefCell<Vec<(String, Value)>>>,
     /// 当前编辑中的配置（保存时由写回器填充）。
     pub current_config: Config,
     /// 设置清单（内嵌清单，启动即就位；已按定制版 `[settings] hide` 与用户精简清单折叠，
@@ -1235,6 +1238,7 @@ impl AppState {
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
             card_settings: Default::default(),
+            card_defaults: Rc::default(),
             card_scheme_names: crate::scheme_cards::Card::ALL
                 .into_iter()
                 .map(|c| (c, signal(String::new())))
@@ -3176,7 +3180,7 @@ impl AppState {
         // 出厂经 L2 置开的项会被误关，而引导键类字段读的 `keys.key_actions` 恒为空
         // ⇒ 快捷输入的 `;` 一恢复就没了（清空即禁用）。见 [`core_defaults_config`]。
         let seed = crate::manifest::key_action_default_bindings(self);
-        let def = crate::manifest::core_defaults_config(&seed);
+        let def = crate::manifest::scheme_defaults_config(&seed, &self.card_defaults.borrow());
         let loaders = self.fields.loaders.borrow();
         let mut n = 0usize;
         for g in self.current_tab_groups() {
@@ -3211,6 +3215,7 @@ impl AppState {
         for (card, sig) in &self.card_scheme_names {
             sig.set(cards.schemes.name(*card).unwrap_or_default().to_string());
         }
+        *self.card_defaults.borrow_mut() = cards.default_patch();
         self.card_settings = cards;
     }
 

@@ -3823,14 +3823,20 @@ pub fn scheme_config_section(
         }
     }
     let seed = key_action_default_bindings(state);
+    let patch = state.card_defaults.clone();
     // 做成构造闭包：「界面细节」试验下标题有卡外 / 卡内两处，按钮各要一份。
     let make_reset = move || {
-        let (fields, reset_keys, seed) = (fields.clone(), reset_keys.clone(), seed.clone());
+        let (fields, reset_keys, seed, patch) = (
+            fields.clone(),
+            reset_keys.clone(),
+            seed.clone(),
+            patch.clone(),
+        );
         Element::button("恢复默认")
             .small()
             .outline_soft()
             .on_click(move |_| {
-                let def_cfg = core_defaults_config(&seed);
+                let def_cfg = scheme_defaults_config(&seed, &patch.borrow());
                 let ld = fields.loaders.borrow();
                 for k in &reset_keys {
                     if let Some(loader) = ld.get(k) {
@@ -4210,6 +4216,19 @@ pub(crate) fn core_defaults_config(seed: &[(String, String)]) -> Config {
     cfg
 }
 
+/// 「恢复默认」用的配置：出厂配置再叠上引擎卡所绑方案的默认值（`patch`，见
+/// `CardSettings::default_patch`）。方案设置的默认值在方案那边，不在出厂配置里。
+pub(crate) fn scheme_defaults_config(
+    seed: &[(String, String)],
+    patch: &[(String, Value)],
+) -> Config {
+    let mut cfg = core_defaults_config(seed);
+    for (key, value) in patch {
+        cfg.set_path(key, value.clone());
+    }
+    cfg
+}
+
 /// 引导键类项的**出厂绑定**（键名 → 动词），供 [`core_defaults_config`] 补进 `keys.key_actions`。
 ///
 /// ⛔ **这不是在重写 core 的折算规则**。设置端刻意不把 `wind-config` 作生产依赖
@@ -4249,8 +4268,9 @@ pub(crate) fn key_action_default_bindings_from(
 fn reset_to_core_defaults(state: &AppState, keys: Vec<String>) -> Box<dyn Fn() + 'static> {
     let fields = state.fields.clone();
     let seed = key_action_default_bindings(state);
+    let patch = state.card_defaults.clone();
     Box::new(move || {
-        let def_cfg = core_defaults_config(&seed);
+        let def_cfg = scheme_defaults_config(&seed, &patch.borrow());
         let ld = fields.loaders.borrow();
         for k in &keys {
             if let Some(loader) = ld.get(k) {

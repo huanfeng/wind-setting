@@ -121,6 +121,7 @@ fn overlay_only_takes_keys_belonging_to_the_card() {
                             "schema.pinyin.shuangpin.allow_full_pinyin": true })),
             ),
         ]),
+        ..Default::default()
     };
     let mut c = c0.clone();
     settings.overlay(&mut c);
@@ -172,4 +173,39 @@ fn split_routes_scheme_keys_to_their_scheme() {
         ["schema.pinyin.shuangpin.allow_full_pinyin"]
     );
     assert!(out.orphan.is_empty());
+}
+
+#[test]
+fn default_patch_takes_each_cards_scheme_defaults() {
+    let c0 = cfg(json!({ "schema": { "available": ["pinyin", "shuangpin"] } }));
+    let schemes = CardSchemes::resolve(&c0, &schemas());
+    let map = |v: Value| v.as_object().unwrap().clone();
+    let settings = CardSettings {
+        schemes,
+        default: HashMap::from([
+            (
+                "pinyin".to_string(),
+                map(json!({ "schema.pinyin.sentence_count": 1,
+                            "schema.pinyin.shuangpin.allow_full_pinyin": false })),
+            ),
+            (
+                "shuangpin".to_string(),
+                map(json!({ "schema.pinyin.sentence_count": 3,
+                            "schema.pinyin.shuangpin.allow_full_pinyin": true })),
+            ),
+        ]),
+        ..Default::default()
+    };
+    let mut patch = settings.default_patch();
+    patch.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        patch,
+        [
+            ("schema.pinyin.sentence_count".to_string(), json!(1)),
+            (
+                "schema.pinyin.shuangpin.allow_full_pinyin".to_string(),
+                json!(true)
+            ),
+        ]
+    );
 }

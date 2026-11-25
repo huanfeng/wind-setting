@@ -129,44 +129,69 @@ impl CardSchemes {
     }
 }
 
-/// 各卡所绑方案的设置（`schema.getSettings` 的 `effective`，键为配置键名）。
+/// 各卡所绑方案的设置（`schema.getSettings` 的 `effective` 与 `default`，键为配置键名）。
 #[derive(Debug, Clone, Default)]
 pub struct CardSettings {
     pub schemes: CardSchemes,
     pub effective: HashMap<String, serde_json::Map<String, Value>>,
+    /// 方案默认值：卡片「恢复默认」恢复到它，而不是 core 的出厂配置。
+    pub default: HashMap<String, serde_json::Map<String, Value>>,
 }
 
 impl CardSettings {
     /// 定各卡绑谁并取回它们的设置。取不到的方案（老 core、方案文件坏了）没有条目，
     /// 那张卡显示配置树里原有的值。
-    pub fn fetch(cfg: &Config, schemas: &[SchemaInfo]) -> Self {
-        let schemes = CardSchemes::resolve(cfg, schemas);
-        let effective = schemes
-            .ids()
-            .into_iter()
-            .filter_map(|id| {
-                let v =
-                    crate::rpc::call_core("schema.getSettings", &serde_json::json!({ "id": id }))
-                        .ok()?;
-                Some((id, v.get("effective")?.as_object()?.clone()))
-            })
-            .collect();
-        Self { schemes, effective }
-    }
-
-    /// 把各卡所绑方案的值盖进配置树。只盖归这张卡的键：双拼方案的 `sentence_count`
-    /// 不该出现在拼音卡上。
-    pub fn overlay(&self, cfg: &mut Config) {
-        for card in Card::ALL {
-            let Some(values) = self.schemes.id(card).and_then(|id| self.effective.get(id)) else {
+    pub fn fetch(cfg: &Config, schemes: &[SchemaInfo]) -> Self {
+        let schemes = CardSchemes::resolve(cfg, schemes);
+        let mut out = Self {
+            schemes,
+            ..Self::default()
+        };
+        for id in out.schemes.ids() {
+            let Ok(v) =
+                crate::rpc::call_core("schema.getSettings", &serde_json::json!({ "id": id }))
+            else {
                 continue;
             };
-            for (key, value) in values {
-                if Card::of_key(key) == Some(card) {
-                    cfg.set_path(key, value.clone());
-                }
+            let map = |k: &str| v.get(k).and_then(|m| m.as_object()).cloned();
+            if let Some(m) = map("effective") {
+                out.effective.insert(id.clone(), m);
+            }
+            if let Some(m) = map("default") {
+                out.default.insert(id, m);
             }
         }
+        out
+    }
+
+    /// 各卡所绑方案在 `of` 里的值，只取归这张卡的键：双拼方案的 `sentence_count`
+    /// 不该出现在拼音卡上。
+    fn card_values<'a>(
+        &'a self,
+        of: &'a HashMap<String, serde_json::Map<String, Value>>,
+    ) -> impl Iterator<Item = (&'a String, &'a Value)> + 'a {
+        Card::ALL.into_iter().flat_map(move |card| {
+            self.schemes
+                .id(card)
+                .and_then(|id| of.get(id))
+                .into_iter()
+                .flatten()
+                .filter(move |(key, _)| Card::of_key(key) == Some(card))
+        })
+    }
+
+    /// 把各卡所绑方案的值盖进配置树。
+    pub fn overlay(&self, cfg: &mut Config) {
+        for (key, value) in self.card_values(&self.effective) {
+            cfg.set_path(key, value.clone());
+        }
+    }
+
+    /// 各卡键的方案默认值，供「恢复默认」叠在出厂配置上。
+    pub fn default_patch(&self) -> Vec<(String, Value)> {
+        self.card_values(&self.default)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 
