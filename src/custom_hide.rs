@@ -462,6 +462,7 @@ mod tests {
             ),
             ("memory", &["advanced:memory", "advanced:diagnostics"]),
             ("softkeyboard", &["input:softkeyboard"]),
+            ("sync", &["sync"]),
             ("update_check", &["about:update"]),
         ];
         for (feature, gone) in cases {
@@ -739,6 +740,8 @@ mod tests {
             )),
             ["输入"]
         );
+        // 同步页整页由 `feature:sync` 控制：藏了就空页（侧栏无入口），没藏时不空。
+        assert_eq!(empty_tabs(&["feature:sync".to_string()]), ["同步"]);
     }
 }
 

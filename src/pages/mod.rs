@@ -65,7 +65,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
         tab_def("词库", dict_page(state), dict),
-        tab_def("同步", sync_page(app, state, &sync_nav), sync_nav),
+        cards_tab_def("同步", sync_page(app, state, &sync_nav), sync_nav),
         tab_def("高级", advanced_page(app, state, &advanced), advanced),
         tab_def("关于", about_page(app, state), about),
     ]
@@ -335,8 +335,15 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
 }
 
 /// 同步页：未配置与已配置两套卡片按状态切换，二级导航跟着只列可见的。
+///
+/// 定制版 `feature:sync` 藏掉时整页不建（不触发同步状态加载），页被标成空页，侧栏无入口。
 fn sync_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
-    let secs = sync::build_page(app, state)
+    let cards = if state.manifest.feature_hidden("sync") {
+        Vec::new()
+    } else {
+        sync::build_page(app, state)
+    };
+    let secs = cards
         .into_iter()
         .map(|(name, el, vis)| match name {
             Some(n) => nav.wrap_when(n, 0, el, move || vis()),
