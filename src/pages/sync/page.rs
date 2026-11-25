@@ -99,6 +99,7 @@ fn status_card(ui: &SyncUi) -> Element {
     let (u_now, u_id, u_dup, u_mass, u_conf) =
         (ui.clone(), ui.clone(), ui.clone(), ui.clone(), ui.clone());
     let (needs_identity, dup) = (ui.needs_identity, ui.dup_device);
+    let can_sync = ui.can_sync;
     let (error, notice, mass) = (ui.error, ui.notice, ui.mass_text);
     let conflicts = ui.conflict_summary;
     let u_int = ui.clone();
@@ -116,7 +117,7 @@ fn status_card(ui: &SyncUi) -> Element {
                 value_and(
                     ui.phase,
                     btn("立即同步")
-                        .enabled_when(move || !busy.get())
+                        .enabled_when(move || can_sync.get() && !busy.get())
                         .on_click(move |_| u_now.sync_now()),
                 ),
             )),

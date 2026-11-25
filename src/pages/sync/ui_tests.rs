@@ -159,3 +159,48 @@ fn device_name_over_64_chars_is_rejected() {
     assert!(check_device_name(&"字".repeat(64)).is_ok());
     assert!(check_device_name(&"字".repeat(65)).is_err());
 }
+
+#[test]
+fn status_drives_status_value_and_sync_now_gate() {
+    let ui = SyncUi::new();
+    let base = json!({ "installed": true, "enabled": true, "joined": true, "phase": "idle" });
+    ui.apply_status(&base);
+    assert_eq!(ui.phase.get(), "空闲，已是最新");
+    assert!(ui.can_sync.get());
+    let mut v = base.clone();
+    v["needs_identity"] = json!(true);
+    ui.apply_status(&v);
+    assert_eq!(ui.phase.get(), "需要确认本机身份");
+    assert!(!ui.can_sync.get(), "确认身份前 core 拒绝立即同步");
+    let mut v = base.clone();
+    v["last_error"] = json!("另一台设备在使用相同设备号（d1），请给本机改号");
+    ui.apply_status(&v);
+    assert_eq!(ui.phase.get(), "需要给本机改号");
+    assert!(!ui.can_sync.get());
+}
+
+#[test]
+fn late_exported_key_is_dropped_after_close() {
+    let ui = SyncUi::new();
+    windui::testing::run_with_ctx(|ctx| {
+        let key = || SyncMsg::Command {
+            op: "export_key".into(),
+            result: Ok(json!({ "key": "k" })),
+        };
+        ui.on_msg(ctx, key());
+        assert_eq!(ui.exported_key.get(), "", "框已关，迟到的密钥不留");
+        ui.export_dialog.set(true);
+        ui.on_msg(ctx, key());
+        assert_eq!(ui.exported_key.get(), "k");
+    });
+}
+
+#[test]
+fn interval_change_while_busy_is_deferred_not_sent() {
+    let ui = SyncUi::new();
+    ui.busy.set(true);
+    ui.interval.set(30.0);
+    ui.save_interval();
+    assert!(ui.interval_pending.get(), "等在途命令结束再发");
+    assert_eq!(ui.saved.borrow().interval_min, 15, "没发就不改已保存值");
+}

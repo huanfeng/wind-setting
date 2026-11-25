@@ -2343,7 +2343,8 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             Some("export_key") => {
                 json!({ "key": "bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=" })
             }
-            // 设备名册：本组三台（本机、macOS、读不出的）与另一组两台；remove_device 无状态，只回 ok。
+            // 设备名册：本组三台（本机、macOS、读不出的）、另一台电脑的组、手机自成一组
+            // （配置与主题只在同类设备间同步，core 的组按设备类别分）；remove_device 无状态，只回 ok。
             Some("list_devices") => {
                 let now = chrono::Utc::now().timestamp();
                 json!({ "devices": [
@@ -2361,7 +2362,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                       "group": "g-work", "group_name": "公司" },
                     { "id": "phone-4h6n", "name": "Pixel 8", "platform": "android", "app_version": "0.132.0",
                       "caps": ["files"], "last_seen": now - 2 * 86_400, "is_self": false, "readable": true,
-                      "group": "g-work", "group_name": "" }
+                      "group": "g-phone", "group_name": "" }
                 ] })
             }
             // 新存储（还没人初始化）时 remote_initialized 为 false。

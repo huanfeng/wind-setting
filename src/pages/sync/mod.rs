@@ -67,7 +67,7 @@ pub enum SyncMsg {
     },
 }
 
-/// 不占 busy 的后台保存（改间隔是随手调的，不该把按钮置灰）。
+/// 同步间隔的保存：与其他命令一样占 busy，保证 setSettings 一条接一条。
 const OP_INTERVAL: &str = "interval";
 
 #[derive(Clone)]
@@ -80,6 +80,8 @@ pub struct SyncUi {
     needs_identity: Signal<bool>,
     /// 撞号：另一台设备在用本机的设备号。
     dup_device: Signal<bool>,
+    /// 「立即同步」可点（确认身份前、撞号时不可）。
+    can_sync: Signal<bool>,
     phase: Signal<String>,
     last_ok: Signal<String>,
     pending: Signal<String>,
@@ -103,6 +105,10 @@ pub struct SyncUi {
     /// 最近一次从 core 读到 / 成功保存的表单：存储摘要、改间隔、停用都以它为准。
     saved: Rc<RefCell<Form>>,
     storage_summary: Signal<String>,
+    /// 间隔改了但有写入在途，等它结束再发最新值。
+    interval_pending: Rc<Cell<bool>>,
+    /// 在途的「更换存储」表单：成功后立即作为已保存值，免得随后的间隔保存带着旧存储设置。
+    storage_sent: Rc<RefCell<Option<Form>>>,
     /// 有命令在途：按钮置灰，避免重复点。
     busy: Signal<bool>,
 
@@ -186,6 +192,7 @@ impl SyncUi {
             configured: signal(false),
             needs_identity: signal(false),
             dup_device: signal(false),
+            can_sync: signal(true),
             phase: signal("读取中…".to_string()),
             last_ok: s(),
             pending: s(),
@@ -202,6 +209,8 @@ impl SyncUi {
             group_line: s(),
             saved: Rc::new(RefCell::new(Form::default())),
             storage_summary: signal(storage_summary(&f)),
+            interval_pending: Rc::new(Cell::new(false)),
+            storage_sent: Rc::new(RefCell::new(None)),
             busy: signal(false),
             backend: signal(0),
             wd_url: s(),
@@ -346,6 +355,7 @@ impl SyncUi {
         self.configured.set(s.configured());
         self.needs_identity.set(s.needs_identity);
         self.dup_device.set(s.duplicate_device());
+        self.can_sync.set(can_sync_now(&s));
         self.device.set(s.device.clone());
         self.group.set(s.group.clone());
         self.group_name.set(s.group_name.clone());
@@ -354,11 +364,7 @@ impl SyncUi {
             self.refresh_devices();
         }
         let kind = s.error_kind();
-        self.phase.set(if kind == ErrorKind::Notice {
-            "稍后自动重试".to_string()
-        } else {
-            phase_text(&s.phase)
-        });
+        self.phase.set(status_value(&s));
         self.last_ok.set(s.last_ok_text());
         self.pending.set(s.pending_text());
         self.conflicts.set(s.conflict_text());
@@ -436,6 +442,8 @@ impl SyncUi {
     /// 后台回到 UI 线程（channel 回调）。
     pub fn on_msg(&self, ctx: &mut EventCtx, msg: SyncMsg) {
         match msg {
+            // 有写入在途时读到的可能是写之前的值；命令结束后的刷新会再带来最新的。
+            SyncMsg::Settings(Ok(_)) if self.busy.get() => {}
             SyncMsg::Settings(Ok(v)) => {
                 self.installed
                     .set(v.get("installed").and_then(Value::as_bool).unwrap_or(true));
@@ -455,9 +463,12 @@ impl SyncUi {
                 self.phase.set(format!("无法连接输入法服务：{e}"));
             }
             SyncMsg::Command { op, result } => {
-                if op != OP_INTERVAL {
-                    self.busy.set(false);
-                }
+                self.busy.set(false);
+                let mut sent_storage = if op == "storage" {
+                    self.storage_sent.borrow_mut().take()
+                } else {
+                    None
+                };
                 let o = outcome(&op, &result);
                 match (o.toast.is_empty(), o.ok, o.notice) {
                     (true, ..) => {}
@@ -465,7 +476,8 @@ impl SyncUi {
                     (_, _, true) => ctx.toast_with(o.toast, ToastKind::Info, 3000),
                     _ => ctx.toast_err(o.toast),
                 }
-                if let Some(k) = o.key {
+                // 框已关才回来的密钥不留在界面上。
+                if let Some(k) = o.key.filter(|_| self.export_dialog.get()) {
                     self.exported_key.set(k);
                 }
                 if o.ok {
@@ -482,12 +494,24 @@ impl SyncUi {
                             self.reset_pass2.set(String::new());
                             self.reset_dialog.set(false);
                         }
-                        "storage" => self.storage_dialog.set(false),
-                        "disable" => self.disable_dialog.set(false),
+                        "storage" => {
+                            if let Some(f) = sent_storage.take() {
+                                self.storage_summary.set(storage_summary(&f));
+                                *self.saved.borrow_mut() = f;
+                            }
+                            self.storage_dialog.set(false);
+                        }
+                        "disable" => {
+                            self.saved.borrow_mut().enabled = false;
+                            self.disable_dialog.set(false);
+                        }
                         _ => {}
                     }
                 } else if op == "export_key" {
                     self.export_dialog.set(false);
+                }
+                if self.interval_pending.get() {
+                    self.save_interval();
                 }
                 // 命令常带来状态变化（has_secret、阶段），事件之外再拉一次兜底。
                 self.refresh();
@@ -506,17 +530,13 @@ impl SyncUi {
 
     /// 后台依次发若干步 RPC（方法 + 参数），遇错即停；`op` 是最终回执的名字。
     fn run_steps(&self, op: &str, steps: Vec<Step>) {
-        if self.busy.get() || self.tx.borrow().is_none() {
+        if self.busy.get() {
             return;
         }
-        self.busy.set(true);
-        self.spawn_steps(op, steps);
-    }
-
-    fn spawn_steps(&self, op: &str, steps: Vec<Step>) {
         let Some(tx) = self.tx.borrow().clone() else {
             return;
         };
+        self.busy.set(true);
         let op = op.to_string();
         std::thread::spawn(move || {
             let mut result = Ok(Value::Null);
@@ -534,14 +554,15 @@ impl SyncUi {
         self.run_steps("sync_now", sync_now_steps());
     }
 
-    /// 同步间隔改了即存（不占 busy、成功不提示）。
+    /// 同步间隔改了即存（成功不提示）；有写入在途就等它结束再发最新值。
     fn save_interval(&self) {
-        let Some(f) = interval_change(&self.saved.borrow(), self.interval.get()) else {
-            return;
-        };
-        let steps = vec![("sync.setSettings", json!({ "settings": f.to_settings() }))];
-        *self.saved.borrow_mut() = f;
-        self.spawn_steps(OP_INTERVAL, steps);
+        let step = interval_step(&self.saved.borrow(), self.interval.get(), self.busy.get());
+        self.interval_pending.set(step == IntervalStep::Defer);
+        if let IntervalStep::Send(f) = step {
+            let steps = vec![("sync.setSettings", json!({ "settings": f.to_settings() }))];
+            *self.saved.borrow_mut() = f;
+            self.run_steps(OP_INTERVAL, steps);
+        }
     }
 
     fn open_storage_dialog(&self) {
@@ -560,6 +581,9 @@ impl SyncUi {
 
     /// 「更换存储」对话框里点保存：先校验，再按 [`storage_change_steps`] 发送；机密随即清空。
     fn save_storage(&self) {
+        if self.busy.get() {
+            return;
+        }
         let new = self.storage_form();
         let secrets = secret_commands(new.s3, &self.wd_password.get(), &self.s3_secret.get());
         let unlock = unlock_command(
@@ -572,6 +596,7 @@ impl SyncUi {
             Ok(steps) => {
                 self.storage_err.set(String::new());
                 self.clear_secrets();
+                *self.storage_sent.borrow_mut() = Some(new);
                 self.run_steps("storage", steps);
             }
         }

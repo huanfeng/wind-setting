@@ -340,6 +340,41 @@ pub(crate) fn interval_change(saved: &Form, v: f64) -> Option<Form> {
     })
 }
 
+/// 状态行的值：等确认身份或撞号时 core 不同步，不能照阶段写「已是最新」。
+pub(crate) fn status_value(s: &StatusView) -> String {
+    if s.needs_identity {
+        "需要确认本机身份".to_string()
+    } else if s.duplicate_device() {
+        "需要给本机改号".to_string()
+    } else if s.error_kind() == ErrorKind::Notice {
+        "稍后自动重试".to_string()
+    } else {
+        phase_text(&s.phase)
+    }
+}
+
+/// 「立即同步」可点：确认身份前与撞号时 core 会拒绝。
+pub(crate) fn can_sync_now(s: &StatusView) -> bool {
+    !s.needs_identity && !s.duplicate_device()
+}
+
+/// 同步间隔这次该怎么办。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum IntervalStep {
+    Nothing,
+    /// 有写入在途：等它结束再发，免得两次 setSettings 乱序、或带着旧存储设置盖掉新的。
+    Defer,
+    Send(Form),
+}
+
+pub(crate) fn interval_step(saved: &Form, v: f64, busy: bool) -> IntervalStep {
+    match interval_change(saved, v) {
+        None => IntervalStep::Nothing,
+        Some(_) if busy => IntervalStep::Defer,
+        Some(f) => IntervalStep::Send(f),
+    }
+}
+
 /// 「确认大批量删除」的二次确认闸：先 arm（点按钮弹确认框），确认框里 take 才放行；取过即收回。
 #[derive(Clone, Default)]
 pub(crate) struct MassDeleteGuard(Rc<Cell<bool>>);

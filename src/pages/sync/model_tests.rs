@@ -637,3 +637,36 @@ fn group_line_names_group_and_counts_members() {
     assert_eq!(group_line("g1", "家里", &[]), "家里", "名册没到不写台数");
     assert_eq!(group_line("", "", &[]), "");
 }
+
+#[test]
+fn status_value_does_not_claim_up_to_date_when_blocked() {
+    let idle = json!({ "installed": true, "enabled": true, "joined": true, "phase": "idle" });
+    let s = StatusView::parse(&idle);
+    assert_eq!(status_value(&s), "空闲，已是最新");
+    assert!(can_sync_now(&s));
+    let mut v = idle.clone();
+    v["needs_identity"] = json!(true);
+    let s = StatusView::parse(&v);
+    assert_eq!(status_value(&s), "需要确认本机身份");
+    assert!(!can_sync_now(&s));
+    let mut v = idle.clone();
+    v["last_error"] = json!("另一台设备在使用相同设备号（d1），请给本机改号");
+    let s = StatusView::parse(&v);
+    assert_eq!(status_value(&s), "需要给本机改号");
+    assert!(!can_sync_now(&s));
+    let s =
+        StatusView::parse(&json!({ "phase": "error", "last_error": "a 正在被编辑，本轮暂不同步" }));
+    assert_eq!(status_value(&s), "稍后自动重试");
+}
+
+#[test]
+fn interval_waits_while_another_write_is_in_flight() {
+    let saved = Form::default();
+    assert_eq!(interval_step(&saved, 15.0, false), IntervalStep::Nothing);
+    assert_eq!(interval_step(&saved, 15.0, true), IntervalStep::Nothing);
+    assert_eq!(interval_step(&saved, 30.0, true), IntervalStep::Defer);
+    match interval_step(&saved, 30.0, false) {
+        IntervalStep::Send(f) => assert_eq!(f.interval_min, 30),
+        other => panic!("应发送：{other:?}"),
+    }
+}
