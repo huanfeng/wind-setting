@@ -891,7 +891,7 @@ unit = "个音节"
 
 # ── 模糊音（拼音对话框内由自定义紧凑网格渲染；列于此供「恢复本页」与覆盖守护）──
 [[items]]
-key = "schema.pinyin.fuzzy.enabled"
+key = "input.fuzzy.enabled"
 group = "schema"
 section = "模糊音"
 type = "toggle"
@@ -899,91 +899,91 @@ label = "模糊音"
 hint = "勾选下方拼音对，使其互不区分"
 
 [[items]]
-key = "schema.pinyin.fuzzy.zh_z"
+key = "input.fuzzy.zh_z"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "zh ↔ z"
 
 [[items]]
-key = "schema.pinyin.fuzzy.ch_c"
+key = "input.fuzzy.ch_c"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "ch ↔ c"
 
 [[items]]
-key = "schema.pinyin.fuzzy.sh_s"
+key = "input.fuzzy.sh_s"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "sh ↔ s"
 
 [[items]]
-key = "schema.pinyin.fuzzy.n_l"
+key = "input.fuzzy.n_l"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "n ↔ l"
 
 [[items]]
-key = "schema.pinyin.fuzzy.r_l"
+key = "input.fuzzy.r_l"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "r ↔ l"
 
 [[items]]
-key = "schema.pinyin.fuzzy.f_h"
+key = "input.fuzzy.f_h"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "f ↔ h"
 
 [[items]]
-key = "schema.pinyin.fuzzy.an_ang"
+key = "input.fuzzy.an_ang"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "an ↔ ang"
 
 [[items]]
-key = "schema.pinyin.fuzzy.en_eng"
+key = "input.fuzzy.en_eng"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "en ↔ eng"
 
 [[items]]
-key = "schema.pinyin.fuzzy.in_ing"
+key = "input.fuzzy.in_ing"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "in ↔ ing"
 
 [[items]]
-key = "schema.pinyin.fuzzy.ian_iang"
+key = "input.fuzzy.ian_iang"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "ian ↔ iang"
 
 [[items]]
-key = "schema.pinyin.fuzzy.uan_uang"
+key = "input.fuzzy.uan_uang"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "uan ↔ uang"
 
 [[items]]
-key = "schema.pinyin.fuzzy.un_ong"
+key = "input.fuzzy.un_ong"
 group = "schema"
 section = "模糊音"
 type = "toggle"
 label = "un ↔ ong"
 
 [[items]]
-key = "schema.pinyin.fuzzy.eng_ong"
+key = "input.fuzzy.eng_ong"
 group = "schema"
 section = "模糊音"
 type = "toggle"

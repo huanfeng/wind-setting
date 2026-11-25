@@ -2736,6 +2736,14 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         "sysDict.header" => mock_sys_dict_header(params).unwrap_or(Value::Null),
         "sysDict.entries" => mock_sys_dict_entries(params).unwrap_or(Value::Null),
         "schema.saveConfig" => json!({ "ok": true }),
+        // 方案页引擎卡绑定方案的取值 / 写入。mock 不模拟各方案的差异：空表 ⇒ 卡片显示配置树
+        // 里的值。
+        "schema.getSettings" => json!({
+            "id": params.get("id").cloned().unwrap_or(Value::Null),
+            "effective": {},
+            "default": {},
+        }),
+        "schema.setSettings" => json!({ "ok": true }),
         "system.status" => json!({ "running": true }),
         "system.storageStatus" => json!({ "readonly": false, "issues": [] }),
         // 外部编辑：文件名照参数推出来（方案域给 schemaId + kind）；路径里带 `bad` 的结束时报坏行，

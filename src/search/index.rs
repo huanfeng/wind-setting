@@ -144,7 +144,7 @@ pub fn page_anchor(key: &str) -> String {
 /// 每格只有一个 `zh ↔ z` 大小的方块，逐格挂锚点没有意义：闪一个小方块，
 /// 用户多半看不见。整块闪一次反而说得清「在这儿」。
 /// 模糊音网格的总开关：网格整块显隐以它为准，见 `manifest::scheme_config_section`。
-pub const FUZZY_MASTER: &str = "schema.pinyin.fuzzy.enabled";
+pub const FUZZY_MASTER: &str = "input.fuzzy.enabled";
 
 /// 拼写纠错的总开关：「纠错与提示」一节里那一行带「扩展设置」，规则网格与自定义规则在框里
 /// （`correction_ui::build_correction_row`）。
@@ -155,12 +155,12 @@ pub const HINT_SOURCES_ANCHOR: &str = "input.correction.hint.sources";
 
 /// 模糊音网格那一块的项（总开关也算，它的页面锚点同是块锚点）。
 fn in_fuzzy_grid(key: &str) -> bool {
-    key.starts_with("schema.pinyin.fuzzy.")
+    key.starts_with("input.fuzzy.")
 }
 
 fn block_anchor_of(key: &str) -> Option<&'static str> {
     if in_fuzzy_grid(key) {
-        return Some("schema.pinyin.fuzzy");
+        return Some("input.fuzzy");
     }
     if key.starts_with("input.correction.rules.") {
         return Some("input.correction.rules");
@@ -837,20 +837,20 @@ mod tests {
         let idx = build_index(&m);
         let pair = idx
             .iter()
-            .find(|e| e.id == "schema.pinyin.fuzzy.n_l")
+            .find(|e| e.id == "input.fuzzy.n_l")
             .expect("模糊音应有可索引项");
         assert_eq!(
             pair.target,
             JumpTarget::RowInDialog {
                 tab: crate::cli::page_to_index("schema").unwrap(),
-                host_anchor: "schema.pinyin.fuzzy".into(),
+                host_anchor: "input.fuzzy".into(),
                 dialog: FUZZY_MASTER.into(),
-                anchor: "schema.pinyin.fuzzy#in-dialog".into(),
+                anchor: "input.fuzzy#in-dialog".into(),
             }
         );
         let master = idx.iter().find(|e| e.id == FUZZY_MASTER).unwrap();
         match &master.target {
-            JumpTarget::Row { anchor, .. } => assert_eq!(anchor, "schema.pinyin.fuzzy"),
+            JumpTarget::Row { anchor, .. } => assert_eq!(anchor, "input.fuzzy"),
             other => panic!("模糊音总开关应落页面块锚点，实际 {other:?}"),
         }
     }
@@ -861,9 +861,9 @@ mod tests {
     fn correction_section_layout() {
         let m = manifest();
         for old in [
-            "schema.pinyin.fuzzy.hint",
-            "schema.pinyin.fuzzy.hint_scope",
-            "schema.pinyin.fuzzy.hint_tone",
+            "input.fuzzy.hint",
+            "input.fuzzy.hint_scope",
+            "input.fuzzy.hint_tone",
         ] {
             assert!(m.get(old).is_none(), "{old} 应已删除");
         }

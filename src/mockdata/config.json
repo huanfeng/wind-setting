@@ -153,6 +153,22 @@
   "english_case_cycle_key": "",
   "enter_behavior": "commit",
   "filter_mode": "smart",
+  "fuzzy": {
+   "an_ang": false,
+   "ch_c": false,
+   "en_eng": false,
+   "enabled": false,
+   "eng_ong": false,
+   "f_h": false,
+   "ian_iang": false,
+   "in_ing": false,
+   "n_l": false,
+   "r_l": false,
+   "sh_s": false,
+   "uan_uang": false,
+   "un_ong": false,
+   "zh_z": false
+  },
   "ignore_host_ime_switch": false,
   "numpad_behavior": "direct",
   "numpad_half_width": false,
@@ -186,6 +202,7 @@
    "variant": "s2t"
   },
   "scope_relax": {
+   "always_append": false,
    "page_end_key": true,
    "prefix": "·"
   },
@@ -476,22 +493,6 @@
     "promote_prefix": "single",
     "recency_peak": 0.0,
     "record_always": false
-   },
-   "fuzzy": {
-    "an_ang": false,
-    "ch_c": false,
-    "en_eng": false,
-    "enabled": false,
-    "eng_ong": false,
-    "f_h": false,
-    "ian_iang": false,
-    "in_ing": false,
-    "n_l": false,
-    "r_l": false,
-    "sh_s": false,
-    "uan_uang": false,
-    "un_ong": false,
-    "zh_z": false
    },
    "grammar": {
     "enabled": false,

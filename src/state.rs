@@ -634,6 +634,10 @@ pub enum ThemeDlOwner {
 pub struct AppState {
     /// 从 core 加载的原始配置（用于 diff 基线）。
     pub base_config: Config,
+    /// 方案页五张引擎卡各绑哪个方案、以及加载时取到的那些方案的设置。见 [`crate::scheme_cards`]。
+    pub card_settings: crate::scheme_cards::CardSettings,
+    /// 各卡所绑方案的显示名（卡标题用）；页面树早于数据建成，故走信号。没有绑定时为空串。
+    pub card_scheme_names: std::collections::HashMap<crate::scheme_cards::Card, Signal<String>>,
     /// 当前编辑中的配置（保存时由写回器填充）。
     pub current_config: Config,
     /// 设置清单（内嵌清单，启动即就位；已按定制版 `[settings] hide` 与用户精简清单折叠，
@@ -1230,6 +1234,11 @@ impl AppState {
 
         Self {
             base_config: Config::from_value(Value::Object(serde_json::Map::new())),
+            card_settings: Default::default(),
+            card_scheme_names: crate::scheme_cards::Card::ALL
+                .into_iter()
+                .map(|c| (c, signal(String::new())))
+                .collect(),
             current_config: Config::from_value(Value::Object(serde_json::Map::new())),
             manifest,
             manifest_show_all,
@@ -2904,6 +2913,9 @@ impl AppState {
     /// 其余 manifest 字段经已注册加载器回填 Signal。
     pub fn apply_loaded(&mut self, data: LoadedState) {
         let mut cfg = Config::from_value(data.config_value);
+        // 引擎卡显示的是所绑方案的值，不是配置树里那份类型默认值。
+        data.card_settings.overlay(&mut cfg);
+        self.set_card_settings(data.card_settings);
         // diff 基线必须与 writer 的输出同构：punct writer 有「全等内置默认即不落盘」的
         // 裁剪语义，而 core 会原样保留 config.toml 里显式写着默认值的映射行（Map 内部
         // 条目不在注册表，core 的剪枝够不着）。不归一则「什么都没改」也恒判脏，关窗
@@ -3194,11 +3206,22 @@ impl AppState {
         )));
     }
 
+    /// 记下引擎卡的绑定并刷新卡标题上的方案名。
+    fn set_card_settings(&mut self, cards: crate::scheme_cards::CardSettings) {
+        for (card, sig) in &self.card_scheme_names {
+            sig.set(cards.schemes.name(*card).unwrap_or_default().to_string());
+        }
+        self.card_settings = cards;
+    }
+
     /// 从服务端重新加载配置：丢弃未保存改动，重新读取并灌回所有 Signal。
     pub fn reload(&mut self) {
         let fresh = rpc::call_core("config.get", &serde_json::json!({}))
             .unwrap_or(Value::Object(serde_json::Map::new()));
         let mut cfg = Config::from_value(fresh);
+        let cards = crate::scheme_cards::CardSettings::fetch(&cfg, &self.schemas);
+        cards.overlay(&mut cfg);
+        self.set_card_settings(cards);
         // 与 `apply_loaded` 同一道归一：重新加载后基线同样要与 writer 同构，
         // 否则「重新加载」反而把设置页留在永久判脏的状态。
         crate::manifest::canonicalize_punct_baseline(&mut cfg);
@@ -3328,6 +3351,35 @@ impl AppState {
             &self.current_config,
             &self.capabilities.map_keys(),
         );
+        // 引擎卡上的项写进所绑方案，其余才是 config.toml 的。先写方案：与上面 side 落点同理，
+        // 它失败时 config.toml 还没动。写成功的项随即并入基线，后面失败重试时不会再发一遍。
+        let split = crate::scheme_cards::split_items(items, &self.card_settings.schemes);
+        if !split.orphan.is_empty() {
+            tracing::warn!(
+                "save: 这些方案设置项没有可写入的方案，已忽略: {:?}",
+                split.orphan
+            );
+        }
+        let mut scheme_saved = 0;
+        for (id, its) in &split.by_scheme {
+            let items_json: Vec<Value> = its
+                .iter()
+                .map(|it| serde_json::json!({ "key": it.key, "value": it.value }))
+                .collect();
+            let params = serde_json::json!({ "id": id, "items": items_json });
+            if let Err(e) = rpc::call_core("schema.setSettings", &params) {
+                self.feedback.set(Some((
+                    ToastKind::Error,
+                    format!("保存方案「{id}」的设置失败: {e}"),
+                )));
+                return false;
+            }
+            for it in its {
+                self.base_config.set_path(&it.key, it.value.clone());
+            }
+            scheme_saved += its.len();
+        }
+        let items = split.global;
         // 诊断：「没有变更」的最终判据就在这里。配合上面两条日志可定位到具体环节：
         // 内存表变了、writer 也写了，diff 却为空 ⇒ base_config 已经含有新值
         // （基线在保存前被刷新过），那是另一类 bug。
@@ -3338,7 +3390,9 @@ impl AppState {
         );
         if items.is_empty() {
             // side 有改动时不能说「没有变更」——方案配置刚刚才落盘。
-            self.feedback.set(Some(if side_changed {
+            self.feedback.set(Some(if scheme_saved > 0 {
+                (ToastKind::Success, format!("已保存 {scheme_saved} 项变更"))
+            } else if side_changed {
                 (
                     ToastKind::Success,
                     format!("已保存{}", side_labels.join("、")),
@@ -3380,8 +3434,16 @@ impl AppState {
                     }
                     self.feedback.set(Some((
                         ToastKind::Success,
-                        format!("已保存 {} 项变更", items_json.len()),
+                        format!("已保存 {} 项变更", items_json.len() + scheme_saved),
                     )));
+                    // 改了主方案或启用顺序，引擎卡可能换了绑定的方案：重新取值。此刻没有未保存的改动。
+                    if crate::scheme_cards::CardSchemes::resolve(
+                        &self.current_config,
+                        &self.schemas,
+                    ) != self.card_settings.schemes
+                    {
+                        self.reload();
+                    }
                     true
                 } else {
                     // 不更新 base_config：被拒项保持「未保存」状态，重试仍会带上。
@@ -3711,6 +3773,8 @@ pub struct LoadedState {
     pub theme_follow: Option<crate::theme_follow::ThemeFollow>,
     /// `schema.overrideSummary`；取不到时为空表（见 [`load_override_summary`]）。
     pub override_summary: HashMap<String, Vec<String>>,
+    /// 方案页引擎卡所绑方案的设置（[`crate::scheme_cards::CardSettings::fetch`]）。
+    pub card_settings: crate::scheme_cards::CardSettings,
     pub connected: bool,
 }
 
@@ -3764,6 +3828,12 @@ impl LoadedState {
         let config_value = config_res.unwrap_or_else(Self::empty_obj);
         let capabilities_value = caps_res.unwrap_or_else(Self::empty_obj);
 
+        // 依赖配置与方案列表两份结果，只能排在它们之后；每个被绑方案一次本机 RPC。
+        let card_settings = crate::scheme_cards::CardSettings::fetch(
+            &Config::from_value(config_value.clone()),
+            &schemas,
+        );
+
         tracing::info!(
             "LoadedState::fetch 完成 (connected={connected}, 并行耗时: {:?})",
             t0.elapsed()
@@ -3779,6 +3849,7 @@ impl LoadedState {
             fonts,
             theme_follow,
             override_summary,
+            card_settings,
             connected,
         }
     }
@@ -6515,6 +6586,7 @@ mod tests {
             fonts: vec![],
             theme_follow: None,
             override_summary: HashMap::new(),
+            card_settings: Default::default(),
             connected: false,
         };
         st.apply_loaded(data);
@@ -6555,6 +6627,7 @@ mod tests {
             fonts: vec![],
             theme_follow: None,
             override_summary: HashMap::new(),
+            card_settings: Default::default(),
             connected: true,
         };
         st.apply_loaded(data);
@@ -6712,6 +6785,7 @@ mod tests {
             fonts: vec![],
             theme_follow: None,
             override_summary: HashMap::new(),
+            card_settings: Default::default(),
             connected: false,
         };
         st.apply_loaded(data);

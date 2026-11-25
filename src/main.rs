@@ -50,6 +50,7 @@ mod pages;
 mod protocol;
 mod rpc;
 mod schema_url_import;
+mod scheme_cards;
 mod search;
 #[allow(dead_code)]
 mod setting_config;

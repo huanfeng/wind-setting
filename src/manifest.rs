@@ -3340,19 +3340,19 @@ pub(crate) fn register_dialog(state: &AppState, dlg: Element) {
 
 /// 模糊音的 13 组拼音对（清单 key, 网格里的标签）。
 const FUZZY_PAIRS: [(&str, &str); 13] = [
-    ("schema.pinyin.fuzzy.zh_z", "zh ↔ z"),
-    ("schema.pinyin.fuzzy.ch_c", "ch ↔ c"),
-    ("schema.pinyin.fuzzy.sh_s", "sh ↔ s"),
-    ("schema.pinyin.fuzzy.n_l", "n ↔ l"),
-    ("schema.pinyin.fuzzy.r_l", "r ↔ l"),
-    ("schema.pinyin.fuzzy.f_h", "f ↔ h"),
-    ("schema.pinyin.fuzzy.an_ang", "an ↔ ang"),
-    ("schema.pinyin.fuzzy.en_eng", "en ↔ eng"),
-    ("schema.pinyin.fuzzy.in_ing", "in ↔ ing"),
-    ("schema.pinyin.fuzzy.ian_iang", "ian ↔ iang"),
-    ("schema.pinyin.fuzzy.uan_uang", "uan ↔ uang"),
-    ("schema.pinyin.fuzzy.un_ong", "un ↔ ong"),
-    ("schema.pinyin.fuzzy.eng_ong", "eng ↔ ong"),
+    ("input.fuzzy.zh_z", "zh ↔ z"),
+    ("input.fuzzy.ch_c", "ch ↔ c"),
+    ("input.fuzzy.sh_s", "sh ↔ s"),
+    ("input.fuzzy.n_l", "n ↔ l"),
+    ("input.fuzzy.r_l", "r ↔ l"),
+    ("input.fuzzy.f_h", "f ↔ h"),
+    ("input.fuzzy.an_ang", "an ↔ ang"),
+    ("input.fuzzy.en_eng", "en ↔ eng"),
+    ("input.fuzzy.in_ing", "in ↔ ing"),
+    ("input.fuzzy.ian_iang", "ian ↔ iang"),
+    ("input.fuzzy.uan_uang", "uan ↔ uang"),
+    ("input.fuzzy.un_ong", "un ↔ ong"),
+    ("input.fuzzy.eng_ong", "eng ↔ ong"),
 ];
 
 /// 模糊音入口行的说明：开着时列出已勾选的组，让用户不点开也知道现在是什么状态。
@@ -3570,6 +3570,30 @@ fn scheme_config_notice_text(
     s
 }
 
+/// 方案页引擎卡的清单 section 名 → 它是哪张卡。
+pub(crate) fn scheme_card_of(section: &str) -> Option<crate::scheme_cards::Card> {
+    use crate::scheme_cards::Card;
+    match section {
+        "上屏行为" => Some(Card::Codetable),
+        "候选行为" => Some(Card::Pinyin),
+        DOUBLE_PINYIN_SECTION => Some(Card::Shuangpin),
+        "混输行为" => Some(Card::Mixed),
+        "英文行为" => Some(Card::English),
+        _ => None,
+    }
+}
+
+/// 引擎卡标题旁 info 图标的文案：这张卡设的是哪个方案、别的方案去哪里设。
+fn scheme_card_notice_text(label: &str, scheme_name: &str, which: &str) -> String {
+    if scheme_name.is_empty() {
+        return format!("没有可设置的{label}方案。");
+    }
+    format!(
+        "这里是方案「{scheme_name}」的设置，只对它生效。显示的是{which}；\
+         其它{label}方案在上方方案列表里点齿轮，进「方案设置」单独设。"
+    )
+}
+
 /// 对话框内小标题的字号。
 ///
 /// ★ **必须 ≥ 条目标题**（`FormTheme::label_size`，13.0）。原先是 11.5，比它管辖的条目
@@ -3612,7 +3636,7 @@ pub fn scheme_config_section(
         .map(|(_, k)| k)
         .unwrap_or_default();
     // 模糊音是手写网格、不逐格看 `hidden`：整块以总开关可见与否为准——定制版要藏就藏整块
-    // （`key:schema.pinyin.fuzzy.*`）。只藏其中一两格的写法在这里不生效。
+    // （`key:input.fuzzy.*`）。只藏其中一两格的写法在这里不生效。
     let with_fuzzy = with_fuzzy
         && state
             .manifest
@@ -3683,7 +3707,7 @@ pub fn scheme_config_section(
     // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
     // 没有小标题就放卡片最后。整行挂块锚点（见 `search::index::block_anchor_of`）。
     //
-    // 用户藏掉模糊音（`key:schema.pinyin.fuzzy.enabled`）时这一行也要消失：它不是
+    // 用户藏掉模糊音（`key:input.fuzzy.enabled`）时这一行也要消失：它不是
     // `keys` 里的项（是手写行），故单独挂判据。
     let mut fuzzy_row = with_fuzzy.then(|| {
         let row = crate::search::anchor::wrap(
@@ -3704,22 +3728,26 @@ pub fn scheme_config_section(
         )
     });
 
-    let scope_note = if section == DOUBLE_PINYIN_SECTION {
-        "双拼开关是全局配置；双拼布局属于方案，这里改的是启用顺序里的第一个双拼方案。".to_string()
-    } else {
-        format!("此为全局{label}方案配置。")
+    // 这张卡设的是一个具体方案（见 `scheme_cards`）：方案名写在标题后面，标题旁的 info 图标
+    // 说明是哪一个、别的方案去哪里设。方案名是运行期数据，页面树建于数据到达之前，故走信号。
+    let card = scheme_card_of(section);
+    let subject = card
+        .and_then(|c| state.card_scheme_names.get(&c).copied())
+        .unwrap_or_else(|| windui::signal::signal(String::new()));
+    let which = match card {
+        Some(crate::scheme_cards::Card::Codetable) => {
+            "主码表方案（没设主码表方案时是启用顺序里的第一个码表方案）"
+        }
+        Some(crate::scheme_cards::Card::Pinyin) => "启用顺序里的第一个全拼方案",
+        Some(crate::scheme_cards::Card::Shuangpin) => {
+            "双拼方案（主拼音方案是双拼时用它，否则是启用顺序里的第一个双拼方案）"
+        }
+        Some(crate::scheme_cards::Card::Mixed) => "启用顺序里的第一个混输方案",
+        Some(crate::scheme_cards::Card::English) => "英文方案（临时英文与混入的英文候选也用它）",
+        None => "",
     };
-    let header_note = schema_hint_header_note(state, &keys);
-    // Header 模式下逐行角标已经收起来了，「已被 N 项覆盖」这件事不能就此凭空消失——
-    // 追加进这句统一说明的计数里。计数走 Signal：覆盖汇总（`schema.overrideSummary`）
-    // 是运行期数据，页面树建于数据到达之前，定型的字符串接不住后到的数字。
-    let notice = {
-        let keys_for_count = keys.clone();
-        state.override_summary.map(move |ov| {
-            scheme_config_notice_text(&scope_note, &header_note, hint_mode, &keys_for_count, ov)
-        })
-    };
-    // 「这一整张卡是全局的」那句收进卡片标题旁的 info 图标（`notice` 传给标题栏），悬停显示。
+    let label_owned = label.to_string();
+    let notice = subject.map(move |name| scheme_card_notice_text(&label_owned, name, which));
 
     // 双拼布局排在卡内第一行。没有可改的双拼方案时这一行不出。
     if layout_row_on {
@@ -3838,7 +3866,7 @@ pub fn scheme_config_section(
     let mut reset_keys = keys.clone();
     if with_fuzzy {
         for k in state.manifest.order.iter() {
-            if k.starts_with("schema.pinyin.fuzzy.") {
+            if k.starts_with("input.fuzzy.") {
                 reset_keys.push(k.clone());
             }
         }
@@ -3872,6 +3900,7 @@ pub fn scheme_config_section(
     };
     Some(crate::widgets::section_with_items_menu_note(
         label,
+        subject,
         notice,
         &make_reset,
         items,
@@ -8907,15 +8936,11 @@ mod tests {
         for (sec, want, why) in [
             (
                 "上屏行为",
-                SchemaHintMode::Header,
-                "码表 18/20 可覆盖——逐行角标每行都有，等于每行都没有",
+                SchemaHintMode::PerRow,
+                "引擎卡设的就是方案自己的设置，没有「可被方案覆盖」一说",
             ),
             ("混输行为", SchemaHintMode::PerRow, "0 项可覆盖，无标可加"),
-            (
-                "候选行为",
-                SchemaHintMode::PerRow,
-                "拼音 2/14——这时角标标的是例外，有信息量",
-            ),
+            ("候选行为", SchemaHintMode::PerRow, "同上"),
             ("英文行为", SchemaHintMode::PerRow, "0 项可覆盖"),
         ] {
             let keys = keys_of(sec);
@@ -8926,12 +8951,12 @@ mod tests {
                 "{sec} 的角标模式变了（{why}）。core 增删了可覆盖项跨过阈值 ⇒ 去看一眼                 那个对话框现在长什么样，确认新模式合适再改本断言"
             );
         }
-        // Header 模式必须取得到统一说明文案，否则那一组既没角标也没说明 = 信息凭空消失。
-        let note = schema_hint_header_note(&st, &keys_of("上屏行为"));
-        assert!(
-            note.as_deref().is_some_and(|n| n.contains("覆盖")),
-            "Header 模式取不到 note：{note:?}"
-        );
+        // 五张卡里没有一项还带「可被方案覆盖」的登记。
+        for (_, sec, _) in crate::pages::SCHEME_ENGINE_CARDS {
+            for k in keys_of(sec) {
+                assert!(schema_override_of(&st, &k).is_none(), "{k}");
+            }
+        }
     }
 
     /// 「已被 N 个方案覆盖」角标文案（F9/R8.6）。三条用例对应 brief 的验收条件：

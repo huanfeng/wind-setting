@@ -187,7 +187,7 @@ pub struct Draft {
     pub temp_key: Trigger,
 }
 
-/// 模糊音分项的键名（`schema.pinyin.fuzzy.<名>`）与标签：与设置页（方案设置对话框）同一组
+/// 模糊音分项的键名（`input.fuzzy.<名>`）与标签：与设置页（方案设置对话框）同一组
 /// 13 对，取值、标签、次序与清单一致（由 `tests::fuzzy_pairs_match_manifest` 守护）。
 pub const FUZZY_PAIRS: [(&str, &str); FUZZY_N] = [
     ("zh_z", "zh ↔ z"),
@@ -278,8 +278,8 @@ impl Draft {
                 .iter()
                 .any(|k| cfg.get_str(k).is_some_and(|v| v != "none")),
             emoji: b("input.emoji.enabled"),
-            fuzzy: b("schema.pinyin.fuzzy.enabled"),
-            fuzzy_pairs: FUZZY_PAIRS.map(|(k, _)| b(&format!("schema.pinyin.fuzzy.{k}"))),
+            fuzzy: b("input.fuzzy.enabled"),
+            fuzzy_pairs: FUZZY_PAIRS.map(|(k, _)| b(&format!("input.fuzzy.{k}"))),
             allow_full_pinyin: b("schema.pinyin.shuangpin.allow_full_pinyin"),
             quick: trigger_of(cfg, VERB_QUICK, QUICK_KEYS),
             slash_dun: slash_dun_of(cfg),
@@ -407,15 +407,12 @@ impl Draft {
                     set("input.emoji.enabled", self.emoji.into());
                 }
                 if self.fuzzy != cur.fuzzy {
-                    set("schema.pinyin.fuzzy.enabled", self.fuzzy.into());
+                    set("input.fuzzy.enabled", self.fuzzy.into());
                 }
                 // 分项只在模糊音开着时可见；关着时不写，免得隐藏状态下改动用户的分项。
                 for (i, (k, _)) in FUZZY_PAIRS.iter().enumerate() {
                     if self.fuzzy && self.fuzzy_pairs[i] != cur.fuzzy_pairs[i] {
-                        set(
-                            &format!("schema.pinyin.fuzzy.{k}"),
-                            self.fuzzy_pairs[i].into(),
-                        );
+                        set(&format!("input.fuzzy.{k}"), self.fuzzy_pairs[i].into());
                     }
                 }
                 if self.is_shuangpin() && self.allow_full_pinyin != cur.allow_full_pinyin {
@@ -1006,12 +1003,10 @@ mod tests {
         let want: Vec<(String, String)> = m
             .order
             .iter()
-            .filter(|k| {
-                k.starts_with("schema.pinyin.fuzzy.") && *k != "schema.pinyin.fuzzy.enabled"
-            })
+            .filter(|k| k.starts_with("input.fuzzy.") && *k != "input.fuzzy.enabled")
             .map(|k| {
                 (
-                    k.trim_start_matches("schema.pinyin.fuzzy.").to_string(),
+                    k.trim_start_matches("input.fuzzy.").to_string(),
                     m.get(k).unwrap().label.clone(),
                 )
             })
@@ -1027,8 +1022,8 @@ mod tests {
     #[test]
     fn extra_fuzzy_pairs_are_read_and_written() {
         let b = cfg(
-            json!({"schema": {"active": "pinyin", "available": ["pinyin"],
-            "pinyin": {"fuzzy": {"enabled": true, "eng_ong": true}}}}),
+            json!({"schema": {"active": "pinyin", "available": ["pinyin"]},
+            "input": {"fuzzy": {"enabled": true, "eng_ong": true}}}),
         );
         let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
         assert!(cur.fuzzy_pairs[12], "读到 eng_ong");
@@ -1039,8 +1034,8 @@ mod tests {
         assert_eq!(
             keys,
             vec![
-                "schema.pinyin.fuzzy.eng_ong".to_string(),
-                "schema.pinyin.fuzzy.f_h".to_string()
+                "input.fuzzy.eng_ong".to_string(),
+                "input.fuzzy.f_h".to_string()
             ]
         );
     }
@@ -1183,10 +1178,10 @@ mod tests {
     fn base() -> Config {
         cfg(json!({
             "schema": {"active": "wubi86", "available": ["wubi86", "wubi86_pinyin", "my_table"],
-                       "codetable": {"auto_commit_at_full": false, "clear_on_empty_max": false},
-                       "pinyin": {"fuzzy": {"enabled": false}}},
+                       "codetable": {"auto_commit_at_full": false, "clear_on_empty_max": false}},
             "ui": {"comment": {"assign": {"type": {"pinyin": {"default_horizontal": "code"}}}}},
-            "input": {"emoji": {"enabled": false}, "temp_pinyin": {"enabled": true},
+            "input": {"fuzzy": {"enabled": false},
+                      "emoji": {"enabled": false}, "temp_pinyin": {"enabled": true},
                       "punct": {"custom_enabled": false, "custom_mappings": {}}},
             "keys": {"key_actions": {"semicolon": "mix:quick_mix", "backtick": "temp_pinyin",
                                      "backslash": "special:kf"}}
@@ -1383,15 +1378,15 @@ mod tests {
     #[test]
     fn hidden_fuzzy_pairs_are_neither_reset_nor_written() {
         let b = cfg(
-            json!({"schema": {"active": "pinyin", "available": ["pinyin"],
-            "pinyin": {"fuzzy": {"enabled": false, "zh_z": true, "n_l": true}}}}),
+            json!({"schema": {"active": "pinyin", "available": ["pinyin"]},
+            "input": {"fuzzy": {"enabled": false, "zh_z": true, "n_l": true}}}),
         );
         let cur = Draft::from_current(&b, &schemas(), BTreeMap::new());
         let fuzzy_keys = |d: &Draft| -> Vec<String> {
             d.items(&b, ATOMIC)
                 .into_iter()
                 .map(|i| i.key)
-                .filter(|k| k.starts_with("schema.pinyin.fuzzy."))
+                .filter(|k| k.starts_with("input.fuzzy."))
                 .collect()
         };
         let d = cur.with_preset(Kind::Pinyin);
@@ -1408,8 +1403,8 @@ mod tests {
         assert_eq!(
             fuzzy_keys(&d),
             vec![
-                "schema.pinyin.fuzzy.enabled".to_string(),
-                "schema.pinyin.fuzzy.zh_z".to_string()
+                "input.fuzzy.enabled".to_string(),
+                "input.fuzzy.zh_z".to_string()
             ]
         );
     }
@@ -1547,8 +1542,8 @@ mod tests {
         // 拼音
         run(
             cfg(
-                json!({"schema": {"active": "pinyin", "available": ["pinyin"],
-                "pinyin": {"fuzzy": {"enabled": false, "zh_z": true}}}}),
+                json!({"schema": {"active": "pinyin", "available": ["pinyin"]},
+            "input": {"fuzzy": {"enabled": false, "zh_z": true}}}),
             ),
             &[
                 ("未动", |_| {}),

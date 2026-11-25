@@ -237,7 +237,7 @@ mod tests {
             scheme_config_section(&st, "拼音", "候选行为", true).is_some(),
             "模糊音还在，卡片不能消失"
         );
-        pinyin.push("key:schema.pinyin.fuzzy.*".into());
+        pinyin.push("key:input.fuzzy.*".into());
         st.manifest = settings_manifest(&hide_owned(&pinyin), false);
         assert!(scheme_config_section(&st, "拼音", "候选行为", true).is_none());
     }
@@ -299,12 +299,12 @@ mod tests {
     /// 模糊音总开关被藏 ⇒ 整张网格不出，格子也不能留在搜索里。
     #[test]
     fn fuzzy_cells_leave_search_with_master() {
-        let m = settings_manifest(&hide(&["key:schema.pinyin.fuzzy.enabled"]), false);
+        let m = settings_manifest(&hide(&["key:input.fuzzy.enabled"]), false);
         let index = crate::search::index::build_index(&m);
         let leaked: Vec<&str> = index
             .iter()
             .map(|e| e.id.as_str())
-            .filter(|id| id.starts_with("schema.pinyin.fuzzy."))
+            .filter(|id| id.starts_with("input.fuzzy."))
             .collect();
         assert!(leaked.is_empty(), "{leaked:?}");
     }

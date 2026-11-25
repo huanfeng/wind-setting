@@ -42,325 +42,181 @@
     {
       "default": true,
       "key": "schema.codetable.top_code_commit",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.clear_on_empty_max",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.auto_commit_at_full",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.auto_commit_min_len",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "int"
     },
     {
       "default": true,
       "key": "schema.codetable.punct_commit",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": true,
       "key": "schema.codetable.show_code_hint",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.single_code_input",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": true,
       "key": "schema.codetable.single_code_complete",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.short_code_yield_level",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "int"
     },
     {
       "default": false,
       "key": "schema.codetable.single_char",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": true,
       "key": "schema.codetable.z_key_repeat",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.english_merge.enable",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "bool"
     },
     {
       "default": 3,
       "key": "schema.codetable.english_merge.min_length",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "int"
     },
     {
       "default": true,
       "key": "schema.codetable.english_merge.block_commit",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.english_merge.complete_min_length",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "int"
     },
     {
       "default": true,
       "key": "schema.codetable.english_merge.block_commit_on_word",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "bool"
     },
     {
       "default": 1,
       "key": "schema.codetable.english_merge.exact_position",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "int"
     },
     {
       "default": 2,
       "key": "schema.codetable.english_merge.complete_position",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "int"
     },
     {
       "default": 2,
       "key": "schema.codetable.english_merge.max_count",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的英文候选设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.english_merge]"
-      },
       "type": "int"
     },
     {
       "default": "",
       "key": "schema.codetable.z_key_action",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "str"
     },
     {
       "default": false,
       "key": "schema.codetable.wildcard",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": "z",
       "key": "schema.codetable.wildcard_key",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "str"
     },
     {
       "default": false,
       "key": "schema.codetable.wildcard_single_only",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "bool"
     },
     {
       "default": 1,
       "key": "schema.codetable.sentence_count",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "int"
     },
     {
       "default": 1,
       "key": "schema.codetable.sentence_max_count",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "int"
     },
     {
       "default": "",
       "key": "schema.codetable.sentence_cycle_key",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "str"
     },
     {
       "default": 0.5,
       "key": "schema.codetable.sentence_grammar_weight",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "float"
     },
     {
       "default": "",
       "key": "schema.codetable.input_chars",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "str"
     },
     {
       "default": "",
       "key": "schema.codetable.leading_chars",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable]"
-      },
       "type": "str"
     },
     {
       "default": false,
       "key": "schema.codetable.frequency.enabled",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "bool"
     },
     {
       "default": false,
       "key": "schema.codetable.frequency.record_always",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.codetable.frequency.protect_top_n",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "int"
     },
     {
       "default": 1,
       "key": "schema.codetable.frequency.protect_top_n_len1",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "int"
     },
     {
       "default": 1,
       "key": "schema.codetable.frequency.protect_top_n_len2",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "int"
     },
     {
       "default": 0,
       "key": "schema.codetable.frequency.protect_top_n_len3",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "int"
     },
     {
       "default": "top",
       "key": "schema.codetable.frequency.strategy",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "enum",
       "values": [
         "top",
@@ -371,10 +227,6 @@
     {
       "default": "all",
       "key": "schema.codetable.frequency.promote_prefix",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "enum",
       "values": [
         "none",
@@ -385,10 +237,6 @@
     {
       "default": 0.0,
       "key": "schema.codetable.frequency.half_life",
-      "schemaOverride": {
-        "note": "码表方案可逐项覆盖这里的调频设置；方案没写的项仍然用这里的值。",
-        "section": "[engine.codetable.frequency]"
-      },
       "type": "float"
     },
     {
@@ -592,72 +440,72 @@
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.enabled",
+      "key": "input.fuzzy.enabled",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.zh_z",
+      "key": "input.fuzzy.zh_z",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.ch_c",
+      "key": "input.fuzzy.ch_c",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.sh_s",
+      "key": "input.fuzzy.sh_s",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.n_l",
+      "key": "input.fuzzy.n_l",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.f_h",
+      "key": "input.fuzzy.f_h",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.r_l",
+      "key": "input.fuzzy.r_l",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.an_ang",
+      "key": "input.fuzzy.an_ang",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.en_eng",
+      "key": "input.fuzzy.en_eng",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.in_ing",
+      "key": "input.fuzzy.in_ing",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.ian_iang",
+      "key": "input.fuzzy.ian_iang",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.uan_uang",
+      "key": "input.fuzzy.uan_uang",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.un_ong",
+      "key": "input.fuzzy.un_ong",
       "type": "bool"
     },
     {
       "default": false,
-      "key": "schema.pinyin.fuzzy.eng_ong",
+      "key": "input.fuzzy.eng_ong",
       "type": "bool"
     },
     {
@@ -753,28 +601,16 @@
     {
       "default": false,
       "key": "schema.pinyin.aux_code.enabled",
-      "schemaOverride": {
-        "note": "方案可覆盖这一项；方案没写则用这里的值。",
-        "section": "[engine.aux_code]"
-      },
       "type": "bool"
     },
     {
       "default": 0,
       "key": "schema.pinyin.aux_code.max_phrase_len",
-      "schemaOverride": {
-        "note": "方案可覆盖这一项；方案没写则用这里的值。",
-        "section": "[engine.aux_code]"
-      },
       "type": "int"
     },
     {
       "default": false,
       "key": "schema.pinyin.aux_code.direct",
-      "schemaOverride": {
-        "note": "方案可覆盖这一项；方案没写则用这里的值。只对双拼方案生效。",
-        "section": "[engine.aux_code]"
-      },
       "type": "bool"
     },
     {
@@ -958,6 +794,11 @@
       "default": "·",
       "key": "input.scope_relax.prefix",
       "type": "str"
+    },
+    {
+      "default": false,
+      "key": "input.scope_relax.always_append",
+      "type": "bool"
     },
     {
       "default": true,

@@ -1289,14 +1289,30 @@ pub fn section_with_items_menu_after_title(
 }
 
 /// [`section_with_items_menu_after_title`] 去掉 after_title、换成一句标题后弱化说明
-/// （方案页引擎卡的「此为全局…配置」）。
+/// （方案页引擎卡：这张卡设的是哪个方案）。
 pub fn section_with_items_menu_note(
     title: &str,
+    subject: Signal<String>,
     note: Signal<String>,
     action: &dyn Fn() -> Element,
     items: Vec<CardItem>,
     header_menu: &dyn Fn(Element) -> Element,
 ) -> Element {
+    // `subject`：标题后面跟的对象名（方案页引擎卡写明这张卡设的是哪个方案，「码表 · 五笔」）。
+    // 空串时不显示。
+    let after = move || {
+        Element::label_signal(subject.map(|s| {
+            if s.is_empty() {
+                String::new()
+            } else {
+                format!("· {s}")
+            }
+        }))
+        .font_size(14.0)
+        .fg_role(Role::TextSubtle)
+        .max_lines(1)
+        .height(20)
+    };
     section_impl(
         title,
         Some(action),
@@ -1305,7 +1321,7 @@ pub fn section_with_items_menu_note(
         None,
         Some(header_menu),
         Some(note),
-        None,
+        Some(&after),
     )
 }
 
