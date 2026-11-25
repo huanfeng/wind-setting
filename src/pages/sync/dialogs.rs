@@ -11,8 +11,7 @@ pub(super) fn mount(ui: &SyncUi, state: &AppState) {
         super::wizard::wizard_dialog(ui),
         super::wizard::identity_dialog(ui),
         storage_dialog(ui),
-        export_dialog(ui),
-        passphrase_dialog(ui),
+        key_view_dialog(ui),
         conflicts_dialog(ui),
         mass_delete_dialog(ui),
         reset_dialog(ui),
@@ -54,66 +53,6 @@ pub(super) fn dialog_frame_w(width: i32, title: &str, body: Element, footer: Ele
                 .child(Element::leaf().weight(1.0))
                 .child(footer),
         )
-}
-
-fn passphrase_dialog(ui: &SyncUi) -> Element {
-    let joined = ui.joined;
-    let body = Element::col()
-        .width_match()
-        .padding_xy(18, 14)
-        .spacing(8)
-        .child(
-            Element::label(
-                "口令用于加密同步数据。请使用足够长的口令，并牢记；另可用「导出密钥」做备份。",
-            )
-            .font_size(12.5)
-            .fg_role(Role::TextMuted)
-            .width_match()
-            .max_lines(4),
-        )
-        .child(
-            Element::text_input(ui.old_pass, "旧口令（可选，忘记可留空）")
-                .password()
-                .width_match()
-                .visible_when(move || joined.get()),
-        )
-        .child(
-            Element::text_input(ui.pass1, "口令")
-                .password()
-                .width_match(),
-        )
-        .child(
-            Element::text_input(ui.pass2, "再输入一次")
-                .password()
-                .width_match(),
-        )
-        .child(
-            Element::label_signal(ui.pass_err)
-                .font_size(12.5)
-                .fg_role(Role::Danger)
-                .width_match(),
-        );
-    let (u, u2, busy, visible) = (ui.clone(), ui.clone(), ui.busy, ui.pass_dialog);
-    let footer = Element::row()
-        .spacing(8)
-        .child(
-            Element::button("取消")
-                .small()
-                .outline_soft()
-                .on_click(move |_| u2.close_passphrase_dialog()),
-        )
-        .child(
-            Element::button("确定")
-                .small()
-                .enabled_when(move || !busy.get())
-                .on_click(move |_| u.submit_passphrase()),
-        );
-    let u3 = ui.clone();
-    Element::dialog_closable(
-        visible,
-        dialog_frame("修改口令", body, footer),
-        move |_| u3.close_passphrase_dialog(),
-    )
 }
 
 fn mass_delete_dialog(ui: &SyncUi) -> Element {
@@ -343,67 +282,97 @@ fn group_dialog(ui: &SyncUi) -> Element {
     )
 }
 
+/// 「重置远端…」：先二次确认；成功后在同一个框里显示新的同步密钥，勾选已保存才能关。
 fn reset_dialog(ui: &SyncUi) -> Element {
-    let visible = ui.reset_dialog;
-    let ack = ui.reset_ack;
+    let (visible, ack, key, busy) = (ui.reset_dialog, ui.reset_ack, ui.new_key, ui.busy);
+    let confirm = Element::col()
+        .width_match()
+        .spacing(10)
+        .child(tone(
+            "这会删除远端存储里全部同步数据（含其他设备上传的内容），以本机当前数据重新上传，并生成新的同步密钥。其他设备需要用新密钥重新加入。此操作不可撤销。",
+            Role::Danger,
+        ))
+        .child(Element::checkbox("我了解后果，确认重置远端", ack))
+        .visible_when(move || key.get().is_empty());
+    let done = Element::col()
+        .width_match()
+        .spacing(10)
+        .child(tone(
+            "远端已重置，将以本机数据为准重新上传。新的同步密钥：",
+            Role::Success,
+        ))
+        .child(new_key_block(ui))
+        .visible_when(move || !key.get().is_empty());
     let body = Element::col()
         .width_match()
         .padding_xy(18, 14)
-        .spacing(10)
-        .child(
-            Element::label(
-                "这会删除远端存储里全部同步数据（含其他设备上传的内容），并以本机当前数据重新上传。其他设备需要重新加入同步。此操作不可撤销。",
-            )
-            .font_size(12.5)
-            .fg_role(Role::Danger)
-            .width_match()
-            .max_lines(5),
-        )
-        .child(
-            Element::text_input(ui.reset_pass1, "新口令")
-                .password()
-                .width_match(),
-        )
-        .child(
-            Element::text_input(ui.reset_pass2, "再输入一次新口令")
-                .password()
-                .width_match(),
-        )
-        .child(
-            Element::label_signal(ui.reset_err)
-                .font_size(12.5)
-                .fg_role(Role::Danger)
-                .width_match(),
-        )
-        .child(Element::checkbox("我了解后果，确认重置远端", ack));
-    let (u, guard, busy) = (ui.clone(), ui.reset_guard.clone(), ui.busy);
+        .child(confirm)
+        .child(done);
+    let (u, u2, u3) = (ui.clone(), ui.clone(), ui.clone());
+    let key_ack = ui.key_ack;
     let footer = Element::row()
         .spacing(8)
-        .child(Element::button("取消").small().outline_soft().on_click({
-            let (guard, u2) = (guard.clone(), ui.clone());
-            move |_| {
-                guard.disarm();
-                u2.reset_pass1.set(String::new());
-                u2.reset_pass2.set(String::new());
-                visible.set(false);
-            }
-        }))
+        .child(
+            btn2("取消")
+                .on_click(move |_| u2.close_reset_dialog())
+                .visible_when(move || key.get().is_empty()),
+        )
         .child(
             Element::button("重置远端")
                 .small()
                 .danger()
                 .enabled_when(move || ack.get() && !busy.get())
-                .on_click(
-                    move |_| match guard.take(&u.reset_pass1.get(), &u.reset_pass2.get()) {
-                        Ok(args) => {
-                            u.reset_err.set(String::new());
-                            u.run("reset_remote", vec![("reset_remote", args)]);
-                        }
-                        Err(e) => u.reset_err.set(e),
-                    },
-                ),
+                .on_click(move |_| u.confirm_reset())
+                .visible_when(move || key.get().is_empty()),
+        )
+        .child(
+            btn("完成")
+                .enabled_when(move || key_ack.get())
+                .on_click(move |_| u3.close_reset_dialog())
+                .visible_when(move || !key.get().is_empty()),
         );
     Element::dialog(visible, dialog_frame("重置远端", body, footer))
+}
+
+/// 显示同步密钥：等宽两行 + 「复制」（复制的是原串）。字体缺失时 windui 回退系统默认。
+pub(super) fn key_box(key: Signal<String>) -> Element {
+    Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(10)
+        .child(
+            Element::label_signal(key.map(|k| key_lines(k)))
+                .font_family("Consolas")
+                .font_size(14.0)
+                .fg_role(Role::Text)
+                .max_lines(2)
+                .bg_role(Role::InputBg)
+                .border_role(Role::InputBorder, 1)
+                .corner(6.0)
+                .padding_xy(12, 8)
+                .weight(1.0),
+        )
+        .child(btn2("复制").on_click(move |ctx| {
+            ctx.clipboard_set(&key.get());
+            ctx.toast_ok("已复制同步密钥");
+        }))
+}
+
+/// 刚生成的同步密钥：密钥框 + 生成后提示 + 「我已保存同步密钥」。
+pub(super) fn new_key_block(ui: &SyncUi) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(8)
+        .child(key_box(ui.new_key))
+        .child(tone(KEY_SAVED_HINT, Role::Warning))
+        .child(Element::checkbox(KEY_ACK, ui.key_ack))
+}
+
+/// 粘贴同步密钥的输入框（明文，便于核对）。
+pub(super) fn key_input(key: Signal<String>) -> Element {
+    Element::text_input(key, KEY_PLACEHOLDER)
+        .font_family("Consolas")
+        .width_match()
 }
 
 pub(super) fn muted(text: &str) -> Element {
@@ -505,51 +474,45 @@ pub(super) fn storage_fields(ui: &SyncUi) -> Element {
         )
 }
 
-/// 「更换存储…」：沿用存储表单；位置变了要重填密码，并用口令或导出的密钥重新解开数据。
+/// 「更换存储…」：先填存储参数并测试新位置；新位置没有同步库就给「在新位置创建同步库」并显示新密钥，
+/// 已有就粘贴同步密钥加入。
 fn storage_dialog(ui: &SyncUi) -> Element {
-    let use_key = ui.storage_use_key;
-    let pwd = |s: Signal<String>, ph: &str| Element::text_input(s, ph).password().width_match();
-    let unlock = Element::col()
+    let stage = ui.storage_stage;
+    let at = move |s: StorageStage| move || stage.get() == s;
+    let form = Element::col()
         .width_match()
-        .spacing(8)
-        .child(
-            Element::col()
-                .width_match()
-                .spacing(8)
-                .child(field("同步口令", pwd(ui.pass1, "新位置上同步数据的口令")))
-                .child(field("再输入一次", pwd(ui.pass2, "")))
-                .child(
-                    Element::link("改用导出的密钥")
-                        .font_size(12.5)
-                        .on_click(move |_| use_key.set(true)),
-                )
-                .visible_when(move || !use_key.get()),
-        )
-        .child(
-            Element::col()
-                .width_match()
-                .spacing(8)
-                .child(field(
-                    "密钥",
-                    pwd(ui.import_key, "粘贴在其他设备上导出的密钥"),
-                ))
-                .child(
-                    Element::link("改用口令")
-                        .font_size(12.5)
-                        .on_click(move |_| use_key.set(false)),
-                )
-                .visible_when(move || use_key.get()),
-        );
+        .spacing(14)
+        .child(muted(
+            "换到别的存储位置时要重填该位置的密码。保存后会检查新位置：还没有同步库就在那里新建，已有就粘贴它的同步密钥加入。原存储里的数据不会被删除。",
+        ))
+        .child(storage_fields(ui))
+        .visible_when(at(StorageStage::Form));
+    let create = muted(
+        "设置已保存。新位置还没有同步库：创建后本机的数据会上传到这里，并生成新的同步密钥，其他设备要用新密钥加入。",
+    )
+    .visible_when(at(StorageStage::Create));
+    let join = Element::col()
+        .width_match()
+        .spacing(10)
+        .child(muted(
+            "设置已保存。新位置已有同步库：粘贴它的同步密钥加入（可在已加入的设备上「安全」→「同步密钥」→「查看…」）。",
+        ))
+        .child(field("同步密钥", key_input(ui.import_key)))
+        .visible_when(at(StorageStage::Join));
+    let created = Element::col()
+        .width_match()
+        .spacing(10)
+        .child(tone("已在新位置创建同步库。新的同步密钥：", Role::Success))
+        .child(new_key_block(ui))
+        .visible_when(at(StorageStage::Created));
     let body = Element::col()
         .width_match()
         .padding_xy(20, 16)
         .spacing(14)
-        .child(muted(
-            "换到别的存储位置时，要重填该位置的密码，并用同步口令或导出的密钥解开那里的数据；新位置还没有数据时会用这个口令新建。只改密码则下面的口令可以不填。原存储里的数据不会被删除。",
-        ))
-        .child(storage_fields(ui))
-        .child(Element::divider())
-        .child(unlock)
+        .child(form)
+        .child(create)
+        .child(join)
+        .child(created)
         .child({
             let err = ui.storage_err;
             Element::label_signal(err)
@@ -561,14 +524,42 @@ fn storage_dialog(ui: &SyncUi) -> Element {
         });
     // S3 表单较高：小窗口里正文滚动，标题与按钮不出框。
     let body = Element::scroll().width_match().max_height(460).child(body);
-    let (u, u2, busy) = (ui.clone(), ui.clone(), ui.busy);
+    let (busy, ack) = (ui.busy, ui.key_ack);
+    let (u_save, u_create, u_join, u_cancel, u_done) =
+        (ui.clone(), ui.clone(), ui.clone(), ui.clone(), ui.clone());
+    let primary = |text: &str, s: StorageStage, f: Box<dyn Fn()>| {
+        btn(text)
+            .enabled_when(move || !busy.get())
+            .on_click(move |_| f())
+            .visible_when(at(s))
+    };
     let footer = Element::row()
         .spacing(8)
-        .child(btn2("取消").on_click(move |_| u2.close_storage_dialog()))
         .child(
-            btn("保存")
-                .enabled_when(move || !busy.get())
-                .on_click(move |_| u.save_storage()),
+            btn2("取消")
+                .on_click(move |_| u_cancel.close_storage_dialog())
+                .visible_when(move || stage.get() != StorageStage::Created),
+        )
+        .child(primary(
+            "保存",
+            StorageStage::Form,
+            Box::new(move || u_save.save_storage()),
+        ))
+        .child(primary(
+            "在新位置创建同步库",
+            StorageStage::Create,
+            Box::new(move || u_create.create_storage_library()),
+        ))
+        .child(primary(
+            "加入",
+            StorageStage::Join,
+            Box::new(move || u_join.join_storage()),
+        ))
+        .child(
+            btn("完成")
+                .enabled_when(move || ack.get())
+                .on_click(move |_| u_done.close_storage_dialog())
+                .visible_when(at(StorageStage::Created)),
         );
     let visible = ui.storage_dialog;
     let u3 = ui.clone();
@@ -579,29 +570,18 @@ fn storage_dialog(ui: &SyncUi) -> Element {
     )
 }
 
-/// 「导出密钥…」：密钥回来前显示「正在读取…」；关框即清掉。
-fn export_dialog(ui: &SyncUi) -> Element {
+/// 「查看…」：同步密钥回来前显示「正在读取…」；关框即清掉。
+fn key_view_dialog(ui: &SyncUi) -> Element {
     let key = ui.exported_key;
     let body = Element::col()
         .width_match()
         .padding_xy(18, 14)
         .spacing(10)
         .child(muted(
-            "这串密钥可以直接解开同步数据，作用等同口令。可用来在新设备上免输口令加入，或在忘记口令时找回数据。",
+            "其他设备加入同步时粘贴这串同步密钥。它能解开全部同步数据。",
         ))
         .child(muted("正在读取…").visible_when(move || key.get().is_empty()))
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(6)
-                .child(Element::text_input(key, "").read_only().weight(1.0))
-                .child(btn2("复制").on_click(move |ctx| {
-                    ctx.clipboard_set(&key.get());
-                    ctx.toast_ok("已复制密钥");
-                }))
-                .visible_when(move || !key.get().is_empty()),
-        )
+        .child(key_box(key).visible_when(move || !key.get().is_empty()))
         .child(tone(
             "请离线保存（如密码管理器），不要发到聊天或网盘。任何拿到它的人都能读取你的同步数据。",
             Role::Warning,
@@ -610,7 +590,7 @@ fn export_dialog(ui: &SyncUi) -> Element {
     Element::dialog_closable(
         ui.export_dialog,
         dialog_frame(
-            "导出密钥",
+            "同步密钥",
             body,
             btn("完成").on_click(move |_| u.close_export()),
         ),

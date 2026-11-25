@@ -2,58 +2,15 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn mismatched_passphrase_sends_no_command() {
-    let ui = SyncUi::new();
-    ui.pass1.set("a".into());
-    ui.pass2.set("b".into());
-    ui.submit_passphrase();
-    assert_eq!(ui.pass_err.get(), "两次输入的口令不一致");
-    assert!(!ui.busy.get(), "被拦下就不该发命令");
-}
-
-#[test]
 fn secret_inputs_are_cleared_after_storage_save_dispatch() {
     let ui = SyncUi::new();
     ui.wd_password.set("hunter2".into());
     ui.s3_secret.set("sk".into());
-    ui.pass1.set("口令".into());
-    ui.pass2.set("口令".into());
     // 单测无 tx，命令发不出去；提交动作本身必须已清掉输入。
     ui.save_storage();
     assert_eq!(ui.storage_err.get(), "");
     assert_eq!(ui.wd_password.get(), "");
     assert_eq!(ui.s3_secret.get(), "");
-    assert_eq!(
-        (ui.pass1.get(), ui.pass2.get()),
-        (String::new(), String::new())
-    );
-}
-
-#[test]
-fn storage_passphrase_mismatch_is_refused_and_keeps_inputs() {
-    let ui = SyncUi::new();
-    ui.wd_password.set("pw".into());
-    ui.pass1.set("a".into());
-    ui.pass2.set("b".into());
-    ui.save_storage();
-    assert_eq!(ui.storage_err.get(), "两次输入的口令不一致");
-    assert!(!ui.busy.get());
-    assert_eq!(ui.wd_password.get(), "pw", "没发出去就不清");
-}
-
-#[test]
-fn cancelling_passphrase_dialog_clears_inputs() {
-    let ui = SyncUi::new();
-    ui.open_passphrase_dialog();
-    ui.old_pass.set("o".into());
-    ui.pass1.set("a".into());
-    ui.pass2.set("a".into());
-    ui.close_passphrase_dialog();
-    assert!(!ui.pass_dialog.get());
-    assert_eq!(
-        (ui.old_pass.get(), ui.pass1.get(), ui.pass2.get()),
-        (String::new(), String::new(), String::new())
-    );
 }
 
 #[test]
@@ -71,7 +28,7 @@ fn secret_hint_follows_saved_backend_and_has_secret() {
 }
 
 #[test]
-fn storage_move_without_unlock_keeps_dialog_inputs() {
+fn storage_move_without_password_keeps_dialog_inputs() {
     let ui = SyncUi::new();
     *ui.saved.borrow_mut() = Form {
         enabled: true,
@@ -81,10 +38,10 @@ fn storage_move_without_unlock_keeps_dialog_inputs() {
     };
     ui.reset_storage_form();
     ui.wd_url.set("https://b/dav/".into());
-    ui.wd_password.set("pw".into());
+    ui.wd_user.set("u2".into());
     ui.save_storage();
-    assert!(ui.storage_err.get().contains("口令"));
-    assert_eq!(ui.wd_password.get(), "pw", "没发出去就不清，免得重填");
+    assert_eq!(ui.storage_err.get(), "更换了存储位置，请填写新位置的密码");
+    assert_eq!(ui.wd_user.get(), "u2", "没发出去就不清，免得重填");
 }
 
 #[test]
@@ -214,7 +171,8 @@ fn remove_needs_second_confirmation() {
     ui.request_remove(&dev("b", false, true, 1));
     ui.remove_guard.disarm();
     assert_eq!(ui.take_remove_confirm(), None, "取消后收回");
-    assert!(REMOVE_DEVICE_WARN.contains("重置远端并更换口令"));
+    assert!(REMOVE_DEVICE_WARN.contains("重置远端"));
+    assert!(!REMOVE_DEVICE_WARN.contains("口令"));
 }
 
 #[test]
@@ -445,4 +403,154 @@ fn greyed_switch_shows_off() {
         !ui.configured.get() && !ui.enabled.get(),
         "未配置：置灰且显示为关"
     );
+}
+
+// ───────────────────────────── 同步密钥 ─────────────────────────────
+
+const KEY: &str = "abcd-efgh-ijkl-mnop-qrst-uvwx-yz23-4567-abcd-efgh-ijkl-mnop-qrst";
+
+fn test_ok(init: bool, joined: bool) -> Result<Vec<Value>, (usize, String)> {
+    Ok(vec![
+        json!({ "ok": true }),
+        json!({ "ok": true }),
+        json!({ "ok": true, "remote_initialized": init, "joined": joined }),
+    ])
+}
+
+fn open_storage(ui: &SyncUi) {
+    ui.open_storage_dialog();
+    *ui.storage_sent.borrow_mut() = Some(Form {
+        wd_url: "https://b/dav/".into(),
+        wd_user: "u".into(),
+        ..Form::default()
+    });
+}
+
+#[test]
+fn storage_on_empty_location_offers_create_then_shows_key() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.on_wizard(WizOp::StorageSave, test_ok(false, false));
+    assert!(ui.storage_dialog.get());
+    assert_eq!(ui.storage_stage.get(), StorageStage::Create);
+    assert_eq!(
+        ui.saved.borrow().wd_url,
+        "https://b/dav/",
+        "设置已换到新位置"
+    );
+    ui.on_wizard(
+        WizOp::StorageCreate,
+        Ok(vec![json!({ "ok": true, "key": KEY }), json!({})]),
+    );
+    assert_eq!(ui.storage_stage.get(), StorageStage::Created);
+    assert_eq!(ui.new_key.get(), KEY);
+    ui.close_storage_dialog();
+    assert!(ui.storage_dialog.get(), "没勾「我已保存」不能关");
+    ui.key_ack.set(true);
+    ui.close_storage_dialog();
+    assert!(!ui.storage_dialog.get());
+    assert_eq!(ui.new_key.get(), "", "关框即清掉密钥");
+}
+
+#[test]
+fn storage_on_existing_library_asks_key_then_identity() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.on_wizard(WizOp::StorageSave, test_ok(true, false));
+    assert_eq!(ui.storage_stage.get(), StorageStage::Join);
+    ui.join_storage();
+    assert_eq!(ui.storage_err.get(), "请粘贴同步密钥", "没贴不发");
+    assert!(!ui.busy.get());
+    ui.import_key.set("bad".into());
+    ui.on_wizard(WizOp::StorageJoin, Err((0, "同步密钥不对".into())));
+    assert_eq!(ui.storage_err.get(), "同步密钥不对");
+    assert_eq!(ui.import_key.get(), "bad", "失败不清，免得重贴");
+    assert!(ui.storage_dialog.get());
+    ui.import_key.set(KEY.into());
+    ui.on_wizard(
+        WizOp::StorageJoin,
+        Ok(vec![
+            json!({ "ok": true }),
+            json!({ "installed": true, "joined": true, "needs_identity": true }),
+        ]),
+    );
+    assert!(!ui.storage_dialog.get());
+    assert_eq!(ui.import_key.get(), "");
+    assert!(ui.identity_dialog.get(), "加入后要确认身份");
+}
+
+#[test]
+fn storage_already_joined_location_just_closes() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.on_wizard(WizOp::StorageSave, test_ok(true, true));
+    assert!(!ui.storage_dialog.get());
+    assert!(!ui.identity_dialog.get());
+}
+
+#[test]
+fn storage_test_failure_stays_on_form_with_error() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.on_wizard(WizOp::StorageSave, Err((2, "超时".into())));
+    assert!(ui.storage_dialog.get());
+    assert_eq!(ui.storage_stage.get(), StorageStage::Form);
+    assert_eq!(ui.storage_err.get(), "设置已保存，但连接新位置失败：超时");
+}
+
+#[test]
+fn storage_dialog_reopens_on_form_without_key() {
+    let ui = SyncUi::new();
+    ui.storage_stage.set(StorageStage::Created);
+    ui.new_key.set(KEY.into());
+    ui.open_storage_dialog();
+    assert_eq!(ui.storage_stage.get(), StorageStage::Form);
+    assert_eq!(ui.new_key.get(), "");
+}
+
+#[test]
+fn key_view_is_cleared_on_close() {
+    let ui = SyncUi::new();
+    ui.export_dialog.set(true);
+    ui.exported_key.set(KEY.into());
+    ui.close_export();
+    assert_eq!(ui.exported_key.get(), "");
+}
+
+#[test]
+fn reset_shows_new_key_and_needs_ack_to_close() {
+    let ui = SyncUi::new();
+    ui.open_reset_dialog();
+    windui::testing::run_with_ctx(|ctx| {
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "reset_remote".into(),
+                result: Ok(json!({ "ok": true, "key": KEY })),
+            },
+        );
+    });
+    assert!(ui.reset_dialog.get(), "重置后留在框里显示新密钥");
+    assert_eq!(ui.new_key.get(), KEY);
+    ui.close_reset_dialog();
+    assert!(ui.reset_dialog.get(), "没勾「我已保存」不能关");
+    ui.key_ack.set(true);
+    ui.close_reset_dialog();
+    assert!(!ui.reset_dialog.get());
+    assert_eq!(ui.new_key.get(), "");
+}
+
+#[test]
+fn late_reset_key_is_dropped_after_close() {
+    let ui = SyncUi::new();
+    windui::testing::run_with_ctx(|ctx| {
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "reset_remote".into(),
+                result: Ok(json!({ "ok": true, "key": KEY })),
+            },
+        );
+    });
+    assert_eq!(ui.new_key.get(), "");
 }

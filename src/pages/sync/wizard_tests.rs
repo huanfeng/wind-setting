@@ -33,49 +33,24 @@ fn local_ts(d: u32, h: u32) -> i64 {
 fn steps_are_numbered_one_to_four() {
     assert_eq!(WizStep::Storage.number(), Some(1));
     assert_eq!(WizStep::Test.number(), Some(2));
-    assert_eq!(WizStep::Passphrase.number(), Some(3));
+    assert_eq!(WizStep::Key.number(), Some(3));
     assert_eq!(WizStep::Identity.number(), Some(4));
     assert_eq!(WizStep::Done.number(), None);
 }
 
 #[test]
-fn init_passphrase_skips_identity() {
+fn created_key_skips_identity_and_import_asks_it() {
+    assert_eq!(next_step(WizStep::Key, false, "init", false), WizStep::Done);
     assert_eq!(
-        next_step(WizStep::Passphrase, false, "init", false),
-        WizStep::Done
-    );
-}
-
-#[test]
-fn joining_always_asks_identity() {
-    for mode in ["join", "import"] {
-        assert_eq!(
-            next_step(WizStep::Passphrase, false, mode, false),
-            WizStep::Identity,
-            "{mode}"
-        );
-    }
-}
-
-#[test]
-fn change_mode_asks_identity_only_when_unconfirmed() {
-    assert_eq!(
-        next_step(WizStep::Passphrase, false, "change", true),
+        next_step(WizStep::Key, false, "import", false),
         WizStep::Identity
     );
-    assert_eq!(
-        next_step(WizStep::Passphrase, false, "change", false),
-        WizStep::Done
-    );
 }
 
 #[test]
-fn test_step_goes_to_passphrase_unless_already_joined() {
+fn test_step_goes_to_key_unless_already_joined() {
     assert_eq!(next_step(WizStep::Storage, false, "", false), WizStep::Test);
-    assert_eq!(
-        next_step(WizStep::Test, false, "", false),
-        WizStep::Passphrase
-    );
+    assert_eq!(next_step(WizStep::Test, false, "", false), WizStep::Key);
     assert_eq!(next_step(WizStep::Test, true, "", false), WizStep::Done);
     assert_eq!(next_step(WizStep::Test, true, "", true), WizStep::Identity);
     assert_eq!(
@@ -88,14 +63,14 @@ fn test_step_goes_to_passphrase_unless_already_joined() {
 fn back_only_returns_to_storage_before_unlocking() {
     assert_eq!(back_step(WizStep::Storage), None);
     assert_eq!(back_step(WizStep::Test), Some(WizStep::Storage));
-    assert_eq!(back_step(WizStep::Passphrase), Some(WizStep::Storage));
-    assert_eq!(back_step(WizStep::Identity), None, "口令已生效，回不去");
+    assert_eq!(back_step(WizStep::Key), Some(WizStep::Storage));
+    assert_eq!(back_step(WizStep::Identity), None, "同步密钥已生效，回不去");
     assert_eq!(back_step(WizStep::Done), None);
 }
 
 #[test]
 fn done_text_per_route() {
-    assert!(done_text(WizStep::Passphrase, "init").contains("第一台"));
+    assert!(done_text(WizStep::Key, "init").contains("第一台"));
     assert!(done_text(WizStep::Identity, "").contains("已确认"));
     assert!(done_text(WizStep::Test, "").contains("重新开启"));
 }
@@ -170,51 +145,23 @@ fn test_steps_without_new_secret_skip_set_secret() {
 }
 
 #[test]
-fn new_remote_passphrase_is_checked_twice() {
+fn fresh_remote_creates_key_existing_remote_imports() {
+    assert_eq!(wizard_key_steps(false, ""), Ok(create_key_steps()));
     assert_eq!(
-        wizard_unlock_steps(false, false, "a", "b", ""),
-        Err("两次输入的口令不一致")
+        wizard_key_steps(false, "zzzz"),
+        Ok(create_key_steps()),
+        "远端为空时不看输入框"
     );
-    let steps = wizard_unlock_steps(false, false, "pw", "pw", "").unwrap();
-    assert_eq!(
-        steps,
-        vec![
-            (
-                "sync.command",
-                json!({ "op": "set_passphrase", "args": { "passphrase": "pw" } })
-            ),
-            ("sync.status", json!({})),
-        ]
-    );
-}
-
-#[test]
-fn existing_remote_takes_passphrase_once_or_key() {
-    assert!(wizard_unlock_steps(true, false, "", "", "").is_err());
-    let p = wizard_unlock_steps(true, false, "pw", "", "").unwrap();
-    assert_eq!(p[0].1["op"], "set_passphrase");
-    assert!(wizard_unlock_steps(true, true, "", "", "  ").is_err());
-    let k = wizard_unlock_steps(true, true, "", "", " KEY ").unwrap();
+    assert_eq!(wizard_key_steps(true, " "), Err("请粘贴同步密钥"));
+    let k = wizard_key_steps(true, "abcd-efgh").unwrap();
     assert_eq!(
         k[0].1,
-        json!({ "op": "import_key", "args": { "key": "KEY" } })
+        json!({ "op": "import_key", "args": { "key": "abcd-efgh" } })
     );
     assert!(
-        p.iter()
-            .chain(k.iter())
-            .all(|(m, _)| *m != "sync.setSettings"),
-        "口令与密钥不经 sync.setSettings"
+        k.iter().all(|(m, _)| *m != "sync.setSettings"),
+        "同步密钥不经 sync.setSettings"
     );
-}
-
-#[test]
-fn unlock_mode_reads_reply_or_import() {
-    assert_eq!(
-        unlock_mode(false, &json!({ "ok": true, "mode": "init" })),
-        "init"
-    );
-    assert_eq!(unlock_mode(false, &json!({ "ok": true })), "join");
-    assert_eq!(unlock_mode(true, &json!({ "ok": true })), "import");
 }
 
 #[test]
@@ -337,71 +284,111 @@ fn test_failure_stays_with_inline_error() {
 }
 
 #[test]
-fn test_result_decides_passphrase_form() {
+fn test_result_decides_key_form() {
     let ui = SyncUi::new();
     ui.open_wizard();
     ui.wiz_step.set(WizStep::Test);
     ui.on_wizard(WizOp::Test, test_reply(false, false));
     assert!(ui.wiz_test_ok.get() && !ui.wiz_remote_init.get());
     ui.wizard_next();
-    assert_eq!(ui.wiz_step.get(), WizStep::Passphrase);
+    assert_eq!(ui.wiz_step.get(), WizStep::Key);
 }
 
+const KEY: &str = "abcd-efgh-ijkl-mnop-qrst-uvwx-yz23-4567-abcd-efgh-ijkl-mnop-qrst";
+
 #[test]
-fn init_passphrase_finishes_without_identity() {
+fn created_key_must_be_acked_before_finishing() {
     let ui = SyncUi::new();
     ui.open_wizard();
-    ui.wiz_step.set(WizStep::Passphrase);
-    ui.pass1.set("pw".into());
-    ui.pass2.set("pw".into());
+    ui.wiz_step.set(WizStep::Key);
     ui.on_wizard(
-        WizOp::Unlock { import: false },
-        Ok(vec![json!({ "ok": true, "mode": "init" }), json!({})]),
+        WizOp::CreateKey,
+        Ok(vec![json!({ "ok": true, "key": KEY }), json!({})]),
     );
+    assert_eq!(ui.wiz_step.get(), WizStep::Key, "先显示密钥，不直接完成");
+    assert_eq!(ui.new_key.get(), KEY);
+    assert!(!ui.key_ack.get());
+    ui.wizard_next();
+    assert_eq!(ui.wiz_step.get(), WizStep::Key, "没勾「我已保存」不能前进");
+    ui.close_wizard();
+    assert!(ui.wizard.get(), "没勾「我已保存」不能关");
+    ui.wizard_back();
+    assert_eq!(ui.wiz_step.get(), WizStep::Key, "密钥已生成，回不去");
+    ui.key_ack.set(true);
+    ui.wizard_next();
     assert_eq!(ui.wiz_step.get(), WizStep::Done);
-    assert_eq!(ui.pass1.get(), "", "口令用过即清");
+    assert!(ui.wiz_done.get().contains("第一台"));
+    ui.close_wizard();
+    assert!(!ui.wizard.get());
+    assert_eq!(ui.new_key.get(), "", "关向导即清掉密钥");
+    assert!(!ui.key_ack.get());
 }
 
 #[test]
-fn imported_key_goes_to_identity() {
+fn reopening_wizard_forgets_previous_key() {
+    let ui = SyncUi::new();
+    ui.new_key.set(KEY.into());
+    ui.key_ack.set(true);
+    ui.open_wizard();
+    assert_eq!(ui.new_key.get(), "");
+    assert!(!ui.key_ack.get());
+}
+
+#[test]
+fn create_key_on_existing_library_switches_to_paste() {
     let ui = SyncUi::new();
     ui.open_wizard();
-    ui.wiz_step.set(WizStep::Passphrase);
+    ui.wiz_step.set(WizStep::Key);
     ui.on_wizard(
-        WizOp::Unlock { import: true },
+        WizOp::CreateKey,
+        Err((0, "远端已有同步库，请粘贴同步密钥加入".into())),
+    );
+    assert_eq!(ui.wiz_step.get(), WizStep::Key);
+    assert!(ui.wiz_remote_init.get(), "改成粘贴形态");
+    assert_eq!(ui.wiz_err.get(), "远端已有同步库，请粘贴同步密钥加入");
+    assert_eq!(ui.new_key.get(), "");
+}
+
+#[test]
+fn imported_key_goes_to_identity_and_is_cleared() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.wiz_remote_init.set(true);
+    ui.import_key.set(KEY.into());
+    ui.on_wizard(
+        WizOp::ImportKey,
         Ok(vec![
             json!({ "ok": true }),
             json!({ "installed": true, "needs_identity": true }),
         ]),
     );
     assert_eq!(ui.wiz_step.get(), WizStep::Identity);
+    assert_eq!(ui.import_key.get(), "", "用过即清");
 }
 
 #[test]
-fn unlock_failure_keeps_inputs_and_shows_error() {
+fn wrong_key_says_so_and_keeps_input() {
     let ui = SyncUi::new();
     ui.open_wizard();
-    ui.wiz_step.set(WizStep::Passphrase);
-    ui.pass1.set("pw".into());
-    ui.pass2.set("pw".into());
-    ui.on_wizard(
-        WizOp::Unlock { import: false },
-        Err((0, "存储不可写".into())),
-    );
-    assert_eq!(ui.wiz_step.get(), WizStep::Passphrase);
-    assert_eq!(ui.wiz_err.get(), "设置口令失败：存储不可写");
-    assert_eq!(ui.pass1.get(), "pw", "失败不清，免得重输");
-    assert_eq!(ui.pass2.get(), "pw");
-}
-
-#[test]
-fn join_passphrase_failure_says_wrong_or_unverifiable() {
-    let ui = SyncUi::new();
-    ui.open_wizard();
-    ui.wiz_step.set(WizStep::Passphrase);
+    ui.wiz_step.set(WizStep::Key);
     ui.wiz_remote_init.set(true);
-    ui.on_wizard(WizOp::Unlock { import: false }, Err((0, "解密失败".into())));
-    assert_eq!(ui.wiz_err.get(), "口令不对或无法验证：解密失败");
+    ui.import_key.set("bad".into());
+    ui.on_wizard(WizOp::ImportKey, Err((0, "同步密钥不对".into())));
+    assert_eq!(ui.wiz_step.get(), WizStep::Key);
+    assert_eq!(ui.wiz_err.get(), "同步密钥不对");
+    assert_eq!(ui.import_key.get(), "bad", "失败不清，免得重贴");
+}
+
+#[test]
+fn empty_paste_is_refused_without_sending() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.wiz_remote_init.set(true);
+    ui.wizard_next();
+    assert_eq!(ui.wiz_err.get(), "请粘贴同步密钥");
+    assert!(!ui.busy.get());
 }
 
 #[test]
@@ -451,20 +438,6 @@ fn identity_view_takes_default_from_options() {
         today(),
     );
     assert_eq!((v.default_mode, v.default_sub), (0, 1));
-}
-
-#[test]
-fn generated_passphrase_fills_both_inputs() {
-    let ui = SyncUi::new();
-    ui.open_wizard();
-    ui.generate_passphrase();
-    let g = ui.wiz_generated.get();
-    assert_eq!(g.len(), 24);
-    assert_eq!(ui.pass1.get(), g);
-    assert_eq!(ui.pass2.get(), g);
-    ui.close_wizard();
-    assert_eq!(ui.wiz_generated.get(), "", "关向导即忘掉");
-    assert_eq!(ui.pass1.get(), "");
 }
 
 #[test]

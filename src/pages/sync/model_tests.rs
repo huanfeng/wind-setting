@@ -5,7 +5,7 @@ fn phase_maps_to_chinese_and_keeps_unknown() {
     assert_eq!(phase_text("not_installed"), "未安装同步组件");
     assert_eq!(phase_text("disabled"), "未启用");
     assert_eq!(phase_text("not_configured"), "未配置存储后端");
-    assert_eq!(phase_text("needs_setup"), "需要设置口令或导入密钥");
+    assert_eq!(phase_text("needs_setup"), "需要生成或粘贴同步密钥");
     assert_eq!(phase_text("idle"), "空闲，已是最新");
     assert_eq!(phase_text("syncing"), "同步中…");
     assert_eq!(phase_text("error"), "出错");
@@ -49,13 +49,6 @@ fn status_parses_and_summarises() {
 }
 
 #[test]
-fn passphrase_mismatch_and_empty_are_rejected() {
-    assert_eq!(check_passphrase("abc", "abd"), Err("两次输入的口令不一致"));
-    assert_eq!(check_passphrase("", ""), Err("口令不能为空"));
-    assert_eq!(check_passphrase("abc", "abc"), Ok(()));
-}
-
-#[test]
 fn secrets_never_enter_settings_and_empty_is_not_sent() {
     let f = Form {
         enabled: true,
@@ -87,30 +80,26 @@ fn secret_placeholder_reveals_only_presence() {
 }
 
 #[test]
-fn reset_requires_arming_passphrase_and_is_single_use() {
+fn reset_requires_arming_and_is_single_use() {
     let g = ResetGuard::default();
-    assert!(g.take("n", "n").is_err(), "没点「重置远端…」就不给确认参数");
+    assert_eq!(g.take(), None, "没点「重置远端…」就不给确认参数");
     g.arm();
-    assert!(g.take("", "").is_err(), "空口令不让提交");
-    assert!(g.take("a", "b").is_err(), "两次不一致不让提交");
-    assert_eq!(
-        g.take("new", "new"),
-        Ok(json!({ "confirm": true, "passphrase": "new" })),
-        "口令被拒不消耗确认"
-    );
-    assert!(g.take("new", "new").is_err(), "确认只用一次");
+    assert_eq!(g.take(), Some(json!({ "confirm": true })), "不再带口令");
+    assert_eq!(g.take(), None, "确认只用一次");
     g.arm();
     g.disarm();
-    assert!(g.take("new", "new").is_err(), "取消后收回");
+    assert_eq!(g.take(), None, "取消后收回");
 }
 
 #[test]
 fn connection_text_follows_remote_state() {
-    assert!(
-        connection_text(&json!({"ok": true, "remote_initialized": false})).contains("以本机为准")
+    assert_eq!(
+        connection_text(&json!({"ok": true, "remote_initialized": false})),
+        "连接成功，存储里还没有同步库，下一步生成同步密钥"
     );
-    assert!(
-        connection_text(&json!({"remote_initialized": true, "joined": false})).contains("加入")
+    assert_eq!(
+        connection_text(&json!({"remote_initialized": true, "joined": false})),
+        "连接成功，存储里已有同步库，下一步粘贴同步密钥加入"
     );
     assert!(
         connection_text(&json!({"remote_initialized": true, "joined": true})).contains("已加入")
@@ -151,11 +140,15 @@ fn interval_is_clamped() {
 
 #[test]
 fn outcome_texts_and_exported_key() {
-    let ok = outcome("export_key", &Ok(json!({ "key": "QUJD" })));
+    let ok = outcome("export_key", &Ok(json!({ "key": "abcd-efgh" })));
     assert!(ok.ok);
-    assert_eq!(ok.key.as_deref(), Some("QUJD"));
+    assert_eq!(ok.key.as_deref(), Some("abcd-efgh"));
+    assert_eq!(ok.toast, "", "查看密钥不弹提示");
     let empty = outcome("export_key", &Ok(json!({})));
     assert!(!empty.ok);
+    let reset = outcome("reset_remote", &Ok(json!({ "ok": true, "key": "k2" })));
+    assert!(reset.ok);
+    assert_eq!(reset.key.as_deref(), Some("k2"), "重置远端回执带新密钥");
     let err = outcome("test_connection", &Err("401".into()));
     assert_eq!(err.toast, "测试连接失败：401");
     assert!(!err.ok);
@@ -164,6 +157,62 @@ fn outcome_texts_and_exported_key() {
             .toast
             .starts_with("连接成功")
     );
+}
+
+#[test]
+fn key_texts_follow_the_spec() {
+    assert_eq!(
+        KEY_SAVED_HINT,
+        "请保存好同步密钥，其他设备加入时要用；丢失后无法解开已同步的数据"
+    );
+    assert_eq!(KEY_ACK, "我已保存同步密钥");
+    assert_eq!(KEY_PLACEHOLDER, "粘贴同步密钥");
+    assert_eq!(
+        RESET_DESC,
+        "清空远端全部同步数据并生成新的同步密钥，其他设备需要用新密钥重新加入"
+    );
+}
+
+#[test]
+fn wrong_key_error_is_shown_as_is() {
+    assert_eq!(key_error_text("加入同步库", "同步密钥不对"), "同步密钥不对");
+    assert_eq!(
+        key_error_text("加入同步库", "网络不可达"),
+        "加入同步库失败：网络不可达"
+    );
+}
+
+#[test]
+fn key_steps_carry_key_only_in_commands() {
+    assert_eq!(
+        create_key_steps(),
+        vec![
+            ("sync.command", json!({ "op": "create_key", "args": {} })),
+            ("sync.status", json!({})),
+        ]
+    );
+    assert_eq!(import_key_steps("  "), Err("请粘贴同步密钥"));
+    assert_eq!(
+        import_key_steps(" abcd-efgh ").unwrap(),
+        vec![
+            (
+                "sync.command",
+                json!({ "op": "import_key", "args": { "key": " abcd-efgh " } })
+            ),
+            ("sync.status", json!({})),
+        ],
+        "整理格式交给 core，原样转发"
+    );
+}
+
+#[test]
+fn key_from_reply_reads_key_field() {
+    assert_eq!(
+        key_from_reply(&json!({ "ok": true, "key": "k" })).as_deref(),
+        Some("k")
+    );
+    assert_eq!(key_from_reply(&json!({ "ok": true, "key": "" })), None);
+    assert_eq!(key_from_reply(&json!({ "ok": true })), None);
 }
 
 const MASS_ERR: &str = "本机有 25/25 个文件看似被删除，为防误删已暂停。确认无误请点「继续同步」";
@@ -393,24 +442,6 @@ fn groups_put_mine_first_self_first_and_others_by_recent() {
 }
 
 #[test]
-fn passphrase_has_five_groups_from_alphabet() {
-    let mut n = 0u32;
-    let p = random_passphrase(|| {
-        n += 1;
-        n - 1
-    });
-    assert_eq!(p, "2345-6789-abcd-efgh-jkmn");
-    assert_eq!(p.len(), 24);
-    assert_eq!(p.matches('-').count(), 4);
-    let q = random_passphrase(|| u32::MAX);
-    assert!(
-        q.chars()
-            .all(|c| c == '-' || "23456789abcdefghjkmnpqrstuvwxyz".contains(c))
-    );
-    assert_eq!(q.len(), 24);
-}
-
-#[test]
 fn identity_options_restore_self_when_remote_has_my_id() {
     let devs = vec![
         dev_in("me", "g1", "", "windows", 5),
@@ -567,107 +598,59 @@ fn storage_summary_per_backend() {
     assert_eq!(storage_summary(&Form::default()), "未设置");
 }
 
-/// 口令解锁一律带同值的 `old_passphrase`：core 在远端已有库时先用它验证，不会把远端口令改成未验证的输入。
-fn verified_unlock(p: &str) -> Value {
-    json!({ "op": "set_passphrase", "args": { "passphrase": p, "old_passphrase": p } })
-}
-
 #[test]
-fn storage_change_in_place_sends_unlock_only_when_filled() {
+fn storage_save_always_tests_the_location() {
     let old = webdav_form();
     let pw = || vec![json!({ "password": "p" })];
-    let steps = storage_change_steps(&old, &old, pw(), None).unwrap();
+    let steps = storage_change_steps(&old, &old, pw()).unwrap();
     let ops: Vec<_> = steps.iter().map(|(m, v)| (*m, v["op"].clone())).collect();
     assert_eq!(
         ops,
         vec![
             ("sync.setSettings", Value::Null),
-            ("sync.command", json!("set_secret"))
-        ]
+            ("sync.command", json!("set_secret")),
+            ("sync.command", json!("test_connection")),
+        ],
+        "先换位置再写密码，最后看新位置有没有同步库"
     );
-    let unlock = unlock_command(false, "口令", "口令", "").unwrap();
-    let steps = storage_change_steps(&old, &old, pw(), unlock).unwrap();
-    assert_eq!(steps[2].1, verified_unlock("口令"), "填了口令就照发");
+    let steps = storage_change_steps(&old, &old, vec![]).unwrap();
+    assert_eq!(steps.len(), 2, "只改间隔之外的参数、不填密码也测一次");
 }
 
 #[test]
-fn storage_move_needs_password_and_unlock() {
+fn storage_move_needs_password() {
     let old = webdav_form();
     let new = Form {
         wd_url: "https://other/dav/".into(),
         ..old.clone()
     };
-    let pw = || vec![json!({ "password": "p" })];
-    let x = || unlock_command(false, "x", "x", "").unwrap();
+    assert_eq!(
+        storage_change_steps(&old, &new, vec![]),
+        Err("更换了存储位置，请填写新位置的密码")
+    );
+    let steps = storage_change_steps(&old, &new, vec![json!({ "password": "p" })]).unwrap();
     assert!(
-        storage_change_steps(&old, &new, pw(), None).is_err(),
-        "要重填口令或密钥"
-    );
-    assert!(
-        storage_change_steps(&old, &new, vec![], x()).is_err(),
-        "位置变了已存密码会被清掉"
-    );
-    let steps = storage_change_steps(&old, &new, pw(), x()).unwrap();
-    assert_eq!(steps[0].0, "sync.setSettings", "先换位置再写密码");
-    assert_eq!(steps[1].1["op"], "set_secret");
-    assert_eq!(steps[2].1, verified_unlock("x"));
-    let unlock = unlock_command(true, "x", "", " k ").unwrap();
-    let steps = storage_change_steps(&old, &new, pw(), unlock).unwrap();
-    assert_eq!(
-        steps[2].1,
-        json!({ "op": "import_key", "args": { "key": "k" } })
-    );
-    assert_eq!(unlock_command(true, "x", "x", "  "), Ok(None));
-    assert_eq!(unlock_command(false, "", "", "k"), Ok(None));
-}
-
-#[test]
-fn storage_unlock_passphrase_must_be_typed_twice() {
-    assert_eq!(
-        unlock_command(false, "a", "b", ""),
-        Err("两次输入的口令不一致")
-    );
-    assert_eq!(
-        unlock_command(false, "a", "", ""),
-        Err("两次输入的口令不一致")
+        !steps[0].1.to_string().contains("\"p\""),
+        "密码不进 sync.setSettings"
     );
 }
 
 #[test]
-fn storage_retry_after_wrong_passphrase_still_unlocks() {
-    let old = webdav_form();
-    let new = Form {
-        wd_url: "https://other/dav/".into(),
-        ..old.clone()
-    };
-    let first = unlock_command(false, "错", "错", "").unwrap();
-    assert!(storage_change_steps(&old, &new, vec![json!({ "password": "p" })], first).is_ok());
-    // 第一次在 set_passphrase 失败：设置与密码已生效，刷新后 saved 已是新位置。
-    let saved = new.clone();
-    let again = unlock_command(false, "对", "对", "").unwrap();
-    let steps = storage_change_steps(&saved, &new, vec![], again).unwrap();
+fn storage_test_reply_decides_next_stage() {
+    let r = |init: bool, joined: bool| json!({ "ok": true, "remote_initialized": init, "joined": joined });
     assert_eq!(
-        steps.last().unwrap().1,
-        verified_unlock("对"),
-        "改对重试仍要发解锁"
+        storage_stage_after_test(&r(false, false)),
+        Some(StorageStage::Create)
     );
-}
-
-#[test]
-fn storage_steps_never_rewrite_remote_passphrase_unverified() {
-    let old = webdav_form();
-    let moved = Form {
-        wd_url: "https://other/dav/".into(),
-        ..old.clone()
-    };
-    for new in [&old, &moved] {
-        let unlock = unlock_command(false, "p", "p", "").unwrap();
-        let steps =
-            storage_change_steps(&old, new, vec![json!({ "password": "s" })], unlock).unwrap();
-        for (_, v) in steps.iter().filter(|(_, v)| v["op"] == "set_passphrase") {
-            assert_eq!(v["args"]["old_passphrase"], v["args"]["passphrase"]);
-        }
-    }
+    assert_eq!(
+        storage_stage_after_test(&r(true, false)),
+        Some(StorageStage::Join)
+    );
+    assert_eq!(
+        storage_stage_after_test(&r(true, true)),
+        None,
+        "已加入：直接完成"
+    );
 }
 
 #[test]
@@ -884,4 +867,15 @@ fn rename_partial_failure_says_id_already_changed() {
     );
     assert_eq!(step_failure("rename", 0, "撞号"), "撞号");
     assert_eq!(step_failure("group", 1, "x"), "x");
+}
+
+#[test]
+fn key_is_shown_in_two_lines_of_groups() {
+    let k = "rvzs-5yal-4xrm-gn2s-q42g-dxzq-g4da-2sqx-qq22-zhsg-xxd4-5tob-m73a";
+    assert_eq!(
+        key_lines(k),
+        "rvzs-5yal-4xrm-gn2s-q42g-dxzq-g4da\n2sqx-qq22-zhsg-xxd4-5tob-m73a"
+    );
+    assert_eq!(key_lines("abcd-efgh"), "abcd-efgh", "短的不拆");
+    assert_eq!(key_lines(""), "");
 }

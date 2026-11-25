@@ -6,18 +6,18 @@
 //! - `sync.getSettings` / `sync.setSettings`：后端、间隔、启用开关（不含任何机密）；
 //! - `sync.status` + 事件 `sync.statusChanged`：阶段、上次成功、待传数、冲突数、错误、身份；
 //! - `sync.now`：立即同步，结果由 core 弹提示；
-//! - `sync.command{op, args}`：`test_connection` / `set_secret` / `set_passphrase` /
+//! - `sync.command{op, args}`：`test_connection` / `set_secret` / `create_key` /
 //!   `import_key` / `export_key` / `reset_remote` 等，经 core 转给同步进程，**同步等回执**。
 //!
 //! # 机密只写不读
 //!
-//! WebDAV 密码、S3 secret、口令、导入的密钥都只存在于输入框信号里，提交后立刻清空；
+//! WebDAV 密码、S3 secret、粘贴的同步密钥都只存在于输入框信号里，提交后立刻清空；
 //! 界面上唯一的「是否已有」来源是状态里的 `has_secret`，据此把占位符写成「已保存」。
-//! 唯一会回到界面的机密是用户主动点「导出密钥」得到的那串，且只放在只读框里。
+//! 回到界面的机密只有同步密钥：刚生成（建库、重置远端）或用户点「查看…」时放在只读框里，关框即清。
 //!
 //! # 不在 UI 线程上等
 //!
-//! 命令要等同步进程回执（`set_passphrase` 跑 Argon2，`test_connection` 走网络），全部在后台线程
+//! 命令要等同步进程回执（建库、测试连接都走网络），全部在后台线程
 //! 发，结果经 `App::channel`（[`SyncUi::set_tx`]，`main` 注册）回 UI 线程。
 //!
 //! # 命令参数约定（与同步进程对齐）
@@ -26,10 +26,10 @@
 //! |---|---|---|
 //! | `set_secret` | `{password}`（WebDAV 密码或 S3 secret，同时只有一个后端；null 清除） | |
 //! | `test_connection` | 可选 `{password}`（未保存的临时密码） | `{ok, remote_initialized, joined}` |
-//! | `set_passphrase` | `{passphrase}`；已加入时可带 `old_passphrase` | |
-//! | `import_key` | `{key}`（导出的 base64 串） | |
+//! | `create_key` | | `{ok, key}`（远端已有同步库时报错） |
+//! | `import_key` | `{key}`（粘贴的同步密钥，原样转发） | |
 //! | `export_key` | | `{key}` |
-//! | `reset_remote` | `{confirm: true, passphrase: <新口令>}` | |
+//! | `reset_remote` | `{confirm: true}` | `{ok, key}`（新的同步密钥） |
 
 mod dialogs;
 pub(crate) mod model;
@@ -67,7 +67,7 @@ pub enum SyncMsg {
         op: String,
         result: Result<Value, String>,
     },
-    /// 向导与确认身份的命令：每一步的回执都带回（测试连接要看结果、口令要看 mode）。
+    /// 向导、确认身份与更换存储的命令：每一步的回执都带回（测试连接要看结果、建库要拿密钥）。
     Wizard {
         op: WizOp,
         result: Result<Vec<Value>, (usize, String)>,
@@ -114,7 +114,7 @@ pub struct SyncUi {
     device: Signal<String>,
     group: Signal<String>,
     group_name: Signal<String>,
-    /// 本机卡「所在组」的值（组名 · N 台设备）。
+    /// 本机卡「同步组」的值（组名 · N 台设备）。
     group_line: Signal<String>,
     /// 最近一次从 core 读到 / 成功保存的表单：存储摘要、改间隔、停用都以它为准。
     saved: Rc<RefCell<Form>>,
@@ -142,16 +142,13 @@ pub struct SyncUi {
     interval: Signal<f64>,
     device_name: Signal<String>,
 
-    pass_dialog: Signal<bool>,
-    pass1: Signal<String>,
-    pass2: Signal<String>,
-    pass_err: Signal<String>,
-    old_pass: Signal<String>,
-    joined: Signal<bool>,
-    reset_pass1: Signal<String>,
-    reset_pass2: Signal<String>,
-    reset_err: Signal<String>,
+    /// 粘贴的同步密钥（向导第 3 步与更换存储共用）。
     import_key: Signal<String>,
+    /// 刚生成的同步密钥（向导建库、更换存储建库、重置远端）；关框即清。
+    new_key: Signal<String>,
+    /// 「我已保存同步密钥」：显示新密钥时勾上才能前进或关框。
+    key_ack: Signal<bool>,
+    /// 「查看…」读到的同步密钥；关框即清。
     exported_key: Signal<String>,
     export_dialog: Signal<bool>,
     reset_dialog: Signal<bool>,
@@ -168,8 +165,7 @@ pub struct SyncUi {
     devices_loaded: Rc<Cell<bool>>,
 
     storage_dialog: Signal<bool>,
-    /// 更换存储时用导出的密钥代替口令。
-    storage_use_key: Signal<bool>,
+    storage_stage: Signal<StorageStage>,
     storage_err: Signal<String>,
     conflicts_dialog: Signal<bool>,
 
@@ -183,15 +179,11 @@ pub struct SyncUi {
     wiz_can_retry: Signal<bool>,
     /// 最近一次第 2 步发出的表单与其中 set_secret 的步号（重试用；不含机密）。
     wiz_sent: Rc<RefCell<Option<SentTest>>>,
-    /// 远端已初始化（决定第 3 步是设置口令还是输入口令）。
+    /// 远端已初始化（决定第 3 步是生成同步密钥还是粘贴同步密钥）。
     wiz_remote_init: Signal<bool>,
     /// 测试连接时本机已加入、尚待确认身份（重新开启同步的情形）。
     wiz_joined: Signal<bool>,
     wiz_needs_identity: Signal<bool>,
-    /// 第 3 步改用导出的密钥。
-    wiz_use_key: Signal<bool>,
-    /// 「随机生成」的口令（明文显示，关向导即清）。
-    wiz_generated: Signal<String>,
     wiz_err: Signal<String>,
     wiz_done: Signal<String>,
     /// 身份选择（向导第 4 步与独立的确认身份对话框共用）。
@@ -277,16 +269,9 @@ impl SyncUi {
             s3_path_style: signal(false),
             interval: signal(f.interval_min as f64),
             device_name: s(),
-            pass_dialog: signal(false),
-            pass1: s(),
-            pass2: s(),
-            pass_err: s(),
-            old_pass: s(),
-            joined: signal(false),
-            reset_pass1: s(),
-            reset_pass2: s(),
-            reset_err: s(),
             import_key: s(),
+            new_key: s(),
+            key_ack: signal(false),
             exported_key: s(),
             export_dialog: signal(false),
             reset_dialog: signal(false),
@@ -299,7 +284,7 @@ impl SyncUi {
             remove_guard: RemoveGuard::default(),
             devices_loaded: Rc::new(Cell::new(false)),
             storage_dialog: signal(false),
-            storage_use_key: signal(false),
+            storage_stage: signal(StorageStage::Form),
             storage_err: s(),
             conflicts_dialog: signal(false),
             wizard: signal(false),
@@ -311,8 +296,6 @@ impl SyncUi {
             wiz_remote_init: signal(false),
             wiz_joined: signal(false),
             wiz_needs_identity: signal(false),
-            wiz_use_key: signal(false),
-            wiz_generated: s(),
             wiz_err: s(),
             wiz_done: s(),
             id_view: signal(IdentityView::default()),
@@ -451,7 +434,6 @@ impl SyncUi {
         self.installed.set(s.installed);
         self.has_secret.set(s.has_secret);
         self.update_secret_hint();
-        self.joined.set(s.joined);
         self.configured.set(s.configured());
         // 有写入在途时状态可能是写之前的；开关等命令回执后的刷新再对齐。
         if !self.busy.get() {
@@ -529,9 +511,18 @@ impl SyncUi {
     fn clear_secrets(&self) {
         self.wd_password.set(String::new());
         self.s3_secret.set(String::new());
-        self.pass1.set(String::new());
-        self.pass2.set(String::new());
         self.import_key.set(String::new());
+    }
+
+    /// 忘掉刚生成的同步密钥与「我已保存」。
+    fn clear_new_key(&self) {
+        self.new_key.set(String::new());
+        self.key_ack.set(false);
+    }
+
+    /// 正显示新生成的同步密钥、还没勾「我已保存」：不让前进或关框。
+    fn key_unacked(&self) -> bool {
+        !self.new_key.get().is_empty() && !self.key_ack.get()
     }
 
     /// 存储表单 + 已保存的其余设置。
@@ -576,11 +567,6 @@ impl SyncUi {
             }
             SyncMsg::Command { op, result } => {
                 self.busy.set(false);
-                let mut sent_storage = if op == "storage" {
-                    self.storage_sent.borrow_mut().take()
-                } else {
-                    None
-                };
                 let o = outcome(&op, &result);
                 match (o.toast.is_empty(), o.ok, o.notice) {
                     (true, ..) => {}
@@ -589,31 +575,24 @@ impl SyncUi {
                     _ => ctx.toast_err(o.toast),
                 }
                 // 框已关才回来的密钥不留在界面上。
-                if let Some(k) = o.key.filter(|_| self.export_dialog.get()) {
-                    self.exported_key.set(k);
+                match op.as_str() {
+                    "export_key" if self.export_dialog.get() => {
+                        self.exported_key.set(o.key.clone().unwrap_or_default());
+                    }
+                    "reset_remote" if self.reset_dialog.get() => {
+                        self.key_ack.set(false);
+                        self.new_key.set(o.key.clone().unwrap_or_default());
+                    }
+                    _ => {}
                 }
                 if o.ok {
                     match op.as_str() {
-                        "set_passphrase" => {
-                            self.pass1.set(String::new());
-                            self.pass2.set(String::new());
-                            self.old_pass.set(String::new());
-                            self.pass_dialog.set(false);
-                        }
                         "remove_device" => self.refresh_devices(),
                         "rename" => self.rename_dialog.set(false),
                         "group" => self.group_dialog.set(false),
-                        "reset_remote" => {
-                            self.reset_pass1.set(String::new());
-                            self.reset_pass2.set(String::new());
+                        // 没拿到新密钥就不留框（可在「查看…」里看）。
+                        "reset_remote" if self.new_key.get().is_empty() => {
                             self.reset_dialog.set(false);
-                        }
-                        "storage" => {
-                            if let Some(f) = sent_storage.take() {
-                                self.storage_summary.set(storage_summary(&f));
-                                *self.saved.borrow_mut() = f;
-                            }
-                            self.storage_dialog.set(false);
                         }
                         "disable" => self.saved.borrow_mut().enabled = false,
                         "enable" => self.saved.borrow_mut().enabled = true,
@@ -621,6 +600,9 @@ impl SyncUi {
                     }
                 } else if op == "export_key" {
                     self.export_dialog.set(false);
+                } else if op == "reset_remote" && self.reset_dialog.get() {
+                    // 失败后框还开着：可以直接再点一次。
+                    self.reset_guard.arm();
                 }
                 if matches!(op.as_str(), "enable" | "disable") {
                     // 失败时开关退回已保存的状态
@@ -689,15 +671,21 @@ impl SyncUi {
     fn open_storage_dialog(&self) {
         self.reset_storage_form();
         self.clear_secrets();
-        self.storage_use_key.set(false);
+        self.clear_new_key();
+        self.storage_stage.set(StorageStage::Form);
         self.storage_err.set(String::new());
         self.storage_dialog.set(true);
     }
 
+    /// 关「更换存储」：新建的同步密钥没勾「我已保存」时不关。
     fn close_storage_dialog(&self) {
+        if self.key_unacked() {
+            return;
+        }
         self.storage_dialog.set(false);
         self.reset_storage_form();
         self.clear_secrets();
+        self.clear_new_key();
     }
 
     /// 「更换存储」对话框里点保存：先校验，再按 [`storage_change_steps`] 发送；机密随即清空。
@@ -707,26 +695,37 @@ impl SyncUi {
         }
         let new = self.storage_form();
         let secrets = secret_commands(new.s3, &self.wd_password.get(), &self.s3_secret.get());
-        let unlock = unlock_command(
-            self.storage_use_key.get(),
-            &self.pass1.get(),
-            &self.pass2.get(),
-            &self.import_key.get(),
-        );
-        let steps =
-            unlock.and_then(|u| storage_change_steps(&self.saved.borrow(), &new, secrets, u));
+        // 先放掉 saved 的借用：mock 下命令当场执行，回执会写 saved。
+        let steps = storage_change_steps(&self.saved.borrow(), &new, secrets);
         match steps {
             Err(e) => self.storage_err.set(e.to_string()),
             Ok(steps) => {
                 self.storage_err.set(String::new());
                 self.clear_secrets();
                 *self.storage_sent.borrow_mut() = Some(new);
-                self.run_steps("storage", steps);
+                self.spawn_wizard(WizOp::StorageSave, steps);
             }
         }
     }
 
-    /// 「导出密钥…」：先开框（显示「正在读取…」），密钥回来再填进去。
+    /// 新位置还没有同步库：「在新位置创建同步库」。
+    fn create_storage_library(&self) {
+        self.storage_err.set(String::new());
+        self.spawn_wizard(WizOp::StorageCreate, create_key_steps());
+    }
+
+    /// 新位置已有同步库：粘贴同步密钥加入。
+    fn join_storage(&self) {
+        match import_key_steps(&self.import_key.get()) {
+            Err(e) => self.storage_err.set(e.to_string()),
+            Ok(steps) => {
+                self.storage_err.set(String::new());
+                self.spawn_wizard(WizOp::StorageJoin, steps);
+            }
+        }
+    }
+
+    /// 「查看…」：先开框（显示「正在读取…」），密钥回来再填进去。
     fn open_export(&self) {
         self.exported_key.set(String::new());
         self.export_dialog.set(true);
@@ -738,28 +737,27 @@ impl SyncUi {
         self.exported_key.set(String::new());
     }
 
-    fn open_passphrase_dialog(&self) {
-        self.pass_err.set(String::new());
-        self.pass1.set(String::new());
-        self.pass2.set(String::new());
-        self.old_pass.set(String::new());
-        self.pass_dialog.set(true);
-    }
-
-    /// 关「修改口令」框：口令随即清掉，下次打开不带旧输入。
-    fn close_passphrase_dialog(&self) {
-        self.pass_dialog.set(false);
-        self.pass1.set(String::new());
-        self.pass2.set(String::new());
-        self.old_pass.set(String::new());
-        self.pass_err.set(String::new());
-    }
-
     fn open_reset_dialog(&self) {
         self.reset_ack.set(false);
-        self.reset_err.set(String::new());
+        self.clear_new_key();
         self.reset_guard.arm();
         self.reset_dialog.set(true);
+    }
+
+    /// 关「重置远端」：新密钥显示着而没勾「我已保存」时不关。
+    fn close_reset_dialog(&self) {
+        if self.key_unacked() {
+            return;
+        }
+        self.reset_guard.disarm();
+        self.reset_dialog.set(false);
+        self.clear_new_key();
+    }
+
+    fn confirm_reset(&self) {
+        if let Some(args) = self.reset_guard.take() {
+            self.run("reset_remote", vec![("reset_remote", args)]);
+        }
     }
 
     /// 总开关：关 → `enabled:false`，开 → `enabled:true`；与其他写入走同一条串行通道。
@@ -886,21 +884,6 @@ impl SyncUi {
                 "confirm_mass_delete",
                 vec![("confirm_mass_delete", json!({}))],
             );
-        }
-    }
-
-    fn submit_passphrase(&self) {
-        match check_passphrase(&self.pass1.get(), &self.pass2.get()) {
-            Err(e) => self.pass_err.set(e.to_string()),
-            Ok(()) => {
-                self.pass_err.set(String::new());
-                let mut args = json!({ "passphrase": self.pass1.get() });
-                let old = self.old_pass.get();
-                if self.joined.get() && !old.is_empty() {
-                    args["old_passphrase"] = json!(old);
-                }
-                self.run("set_passphrase", vec![("set_passphrase", args)]);
-            }
         }
     }
 }

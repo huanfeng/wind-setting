@@ -586,7 +586,7 @@ fn main() {
     });
     app_state.borrow().memory.set_tx(memory_tx);
 
-    // 数据同步通道：`sync.*` 命令要等同步进程回执（口令派生、测试连接走网络），在后台线程
+    // 数据同步通道：`sync.*` 命令要等同步进程回执（建库、测试连接走网络），在后台线程
     // 发，结果经此回 UI 线程（见 `pages::sync`）。
     let sync_state = app_state.clone();
     let sync_tx = app.channel::<pages::sync::SyncMsg>(move |ctx, msg| {

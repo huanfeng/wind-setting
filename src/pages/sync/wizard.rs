@@ -1,20 +1,20 @@
 //! 「开始配置…」向导与「确认本机身份」对话框（设计见 `sync-device-groups.md` §4.5、§7）。
 //!
-//! 四步：存储 → 测试连接 → 口令 → 本机身份，之后是完成页。每步的命令在后台线程依次发，
+//! 四步：存储 → 测试连接 → 同步密钥 → 本机身份，之后是完成页。每步的命令在后台线程依次发，
 //! 全部成功才前进，失败就地显示；关掉向导不回滚已完成的步骤（还没确认身份的话，
 //! 状态卡会给「确认身份…」，打开的对话框与第 4 步同一份内容）。
 //!
 //! - 第 2 步：先存设置（`enabled: true`），再 `set_secret`、`test_connection`（顺序见
-//!   [`save_steps`]），远端是否已初始化决定第 3 步是「设置口令」还是「输入口令 / 粘贴密钥」。
-//! - 第 3 步：设置口令即初始化远端，core 自动确认身份，跳过第 4 步；用口令加入或导入密钥
-//!   之后必须确认身份，core 在那之前不同步。
+//!   [`save_steps`]），远端是否已初始化决定第 3 步是「生成同步密钥」还是「粘贴同步密钥」。
+//! - 第 3 步：生成同步密钥即建库，core 自动确认身份；显示密钥、勾选「我已保存同步密钥」后直接完成。
+//!   粘贴同步密钥加入之后必须确认身份，core 在那之前不同步。
 //!
 //! 外框照首启设置向导（`src/wizard/view.rs`）：定宽定高，每步一个滚动容器按步骤显隐。
 
 use serde_json::{Value, json};
 use windui::prelude::*;
 
-use super::dialogs::{btn, btn2, field, muted, storage_fields, tone};
+use super::dialogs::{btn, btn2, field, key_input, muted, new_key_block, storage_fields};
 use super::*;
 
 const DIALOG_W: i32 = 600;
@@ -27,7 +27,7 @@ const DIALOG_H: i32 = 560;
 pub(crate) enum WizStep {
     Storage,
     Test,
-    Passphrase,
+    Key,
     Identity,
     Done,
 }
@@ -38,28 +38,36 @@ impl WizStep {
         match self {
             WizStep::Storage => Some(1),
             WizStep::Test => Some(2),
-            WizStep::Passphrase => Some(3),
+            WizStep::Key => Some(3),
             WizStep::Identity => Some(4),
             WizStep::Done => None,
         }
     }
 }
 
-/// 向导与确认身份对话框发出的命令。
+/// 向导、确认身份对话框与更换存储对话框发出的命令。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WizOp {
     /// 保存存储设置并测试连接。
     Test,
-    /// 设置 / 输入口令，或导入密钥。
-    Unlock { import: bool },
+    /// 远端为空：生成同步密钥并建库。
+    CreateKey,
+    /// 远端已有：粘贴同步密钥加入。
+    ImportKey,
+    /// 更换存储：保存并测试新位置。
+    StorageSave,
+    /// 更换存储：在新位置建库。
+    StorageCreate,
+    /// 更换存储：粘贴同步密钥加入新位置的同步库。
+    StorageJoin,
     /// 读设备名册（身份选项）。
     Devices,
     /// 按所选身份发命令。
     Confirm,
 }
 
-/// 当前步骤成功后去哪一步。`joined` 是测试连接时本机已加入（重新开启同步）；`mode` 是
-/// `set_passphrase` 回执的 mode，导入密钥记作 `"import"`；`needs_identity` 取自随后的状态。
+/// 当前步骤成功后去哪一步。`joined` 是测试连接时本机已加入（重新开启同步）；`mode` 是第 3 步的
+/// 做法：生成同步密钥为 `"init"`，粘贴加入为 `"import"`；`needs_identity` 取自随后的状态。
 pub(crate) fn next_step(step: WizStep, joined: bool, mode: &str, needs_identity: bool) -> WizStep {
     let identity_or_done = |needs: bool| {
         if needs {
@@ -71,20 +79,17 @@ pub(crate) fn next_step(step: WizStep, joined: bool, mode: &str, needs_identity:
     match step {
         WizStep::Storage => WizStep::Test,
         WizStep::Test if joined => identity_or_done(needs_identity),
-        WizStep::Test => WizStep::Passphrase,
-        WizStep::Passphrase => match mode {
-            "init" => WizStep::Done,
-            "change" => identity_or_done(needs_identity),
-            _ => WizStep::Identity,
-        },
+        WizStep::Test => WizStep::Key,
+        WizStep::Key if mode == "init" => WizStep::Done,
+        WizStep::Key => WizStep::Identity,
         WizStep::Identity | WizStep::Done => WizStep::Done,
     }
 }
 
-/// 「上一步」的去处：口令生效之后就回不去了。
+/// 「上一步」的去处：同步密钥生效之后就回不去了。
 pub(crate) fn back_step(step: WizStep) -> Option<WizStep> {
     match step {
-        WizStep::Test | WizStep::Passphrase => Some(WizStep::Storage),
+        WizStep::Test | WizStep::Key => Some(WizStep::Storage),
         _ => None,
     }
 }
@@ -92,12 +97,12 @@ pub(crate) fn back_step(step: WizStep) -> Option<WizStep> {
 /// 完成页的一句话，按从哪一步结束区分。
 pub(crate) fn done_text(from: WizStep, mode: &str) -> &'static str {
     match (from, mode) {
-        (WizStep::Passphrase, "init") => {
-            "同步已开启。本机是第一台设备，其他设备加入时输入同一个口令即可。"
+        (WizStep::Key, "init") => {
+            "同步已开启。本机是第一台设备，其他设备加入时粘贴刚才的同步密钥即可。"
         }
         (WizStep::Test, _) => "本机此前已加入，同步已重新开启。",
         (WizStep::Identity, _) => "已确认本机身份，同步会在后台开始。",
-        _ => "口令已确认，同步会在后台开始。",
+        _ => "已加入同步库，同步会在后台开始。",
     }
 }
 
@@ -137,43 +142,16 @@ pub(crate) fn wizard_test_steps(form: &Form, secrets: Vec<Value>) -> Vec<Step> {
     steps
 }
 
-/// 第 3 步：远端为空时两次输入的口令；远端已有时口令（输一次）或导出的密钥。之后读一次状态。
-pub(crate) fn wizard_unlock_steps(
+/// 第 3 步：远端为空时生成同步密钥（不看输入框），已有时粘贴同步密钥加入；之后读一次状态。
+pub(crate) fn wizard_key_steps(
     remote_initialized: bool,
-    use_key: bool,
-    pass1: &str,
-    pass2: &str,
     key: &str,
 ) -> Result<Vec<Step>, &'static str> {
-    let (op, args) = if !remote_initialized {
-        check_passphrase(pass1, pass2)?;
-        ("set_passphrase", json!({ "passphrase": pass1 }))
-    } else if use_key {
-        match key.trim() {
-            "" => return Err("请粘贴导出的密钥"),
-            k => ("import_key", json!({ "key": k })),
-        }
-    } else if pass1.is_empty() {
-        return Err("请输入口令");
+    if remote_initialized {
+        import_key_steps(key)
     } else {
-        ("set_passphrase", json!({ "passphrase": pass1 }))
-    };
-    Ok(vec![
-        ("sync.command", json!({ "op": op, "args": args })),
-        ("sync.status", json!({})),
-    ])
-}
-
-/// 第 3 步回执的 mode：导入密钥为 `"import"`；口令回执缺 mode 时按加入处理（要确认身份）。
-pub(crate) fn unlock_mode(import: bool, reply: &Value) -> String {
-    if import {
-        return "import".to_string();
+        Ok(create_key_steps())
     }
-    reply
-        .get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("join")
-        .to_string()
 }
 
 /// 测试连接失败后能否「重试」（不再带密码）：这次没发新密码，或 `set_secret`（第 `secret_step` 步）已成功。
@@ -300,7 +278,7 @@ impl SyncUi {
     pub(super) fn open_wizard(&self) {
         self.reset_storage_form();
         self.clear_secrets();
-        self.wiz_generated.set(String::new());
+        self.clear_new_key();
         self.wiz_step.set(WizStep::Storage);
         self.wiz_test_ok.set(false);
         self.wiz_test_text.set(String::new());
@@ -309,7 +287,6 @@ impl SyncUi {
         self.wiz_remote_init.set(false);
         self.wiz_joined.set(false);
         self.wiz_needs_identity.set(false);
-        self.wiz_use_key.set(false);
         self.wiz_err.set(String::new());
         self.wiz_done.set(String::new());
         self.reset_identity();
@@ -317,10 +294,14 @@ impl SyncUi {
     }
 
     /// 关向导（取消、×、ESC、完成）：已完成的步骤不回滚，输入的机密清掉。
+    /// 新生成的同步密钥还没勾「我已保存」时不关。
     pub(super) fn close_wizard(&self) {
+        if self.key_unacked() {
+            return;
+        }
         self.wizard.set(false);
         self.clear_secrets();
-        self.wiz_generated.set(String::new());
+        self.clear_new_key();
         self.reset_storage_form();
     }
 
@@ -385,20 +366,24 @@ impl SyncUi {
                 self.go(next, WizStep::Test, "");
             }
             WizStep::Test => {}
-            WizStep::Passphrase => {
+            // 已生成同步密钥：勾了「我已保存」才完成。
+            WizStep::Key if !self.new_key.get().is_empty() => {
+                if self.key_ack.get() {
+                    self.go(WizStep::Done, WizStep::Key, "init");
+                }
+            }
+            WizStep::Key => {
                 let remote = self.wiz_remote_init.get();
-                let use_key = remote && self.wiz_use_key.get();
-                match wizard_unlock_steps(
-                    remote,
-                    use_key,
-                    &self.pass1.get(),
-                    &self.pass2.get(),
-                    &self.import_key.get(),
-                ) {
+                match wizard_key_steps(remote, &self.import_key.get()) {
                     Err(e) => self.wiz_err.set(e.to_string()),
                     Ok(steps) => {
                         self.wiz_err.set(String::new());
-                        self.spawn_wizard(WizOp::Unlock { import: use_key }, steps);
+                        let op = if remote {
+                            WizOp::ImportKey
+                        } else {
+                            WizOp::CreateKey
+                        };
+                        self.spawn_wizard(op, steps);
                     }
                 }
             }
@@ -418,12 +403,13 @@ impl SyncUi {
         self.spawn_wizard(WizOp::Test, wizard_test_steps(&form, Vec::new()));
     }
 
-    fn wizard_back(&self) {
+    /// 「上一步」：同步密钥已生成就回不去了。
+    pub(super) fn wizard_back(&self) {
+        if !self.new_key.get().is_empty() {
+            return;
+        }
         if let Some(b) = back_step(self.wiz_step.get()) {
-            self.pass1.set(String::new());
-            self.pass2.set(String::new());
             self.import_key.set(String::new());
-            self.wiz_generated.set(String::new());
             self.go(b, self.wiz_step.get(), "");
         }
     }
@@ -459,21 +445,8 @@ impl SyncUi {
         }
     }
 
-    /// 「随机生成」：填进两个口令框并明文显示；系统随机数不可用就请用户自己输。
-    pub(super) fn generate_passphrase(&self) {
-        match random_passphrase_os() {
-            Some(p) => {
-                self.pass1.set(p.clone());
-                self.pass2.set(p.clone());
-                self.wiz_generated.set(p);
-                self.wiz_err.set(String::new());
-            }
-            None => self.wiz_err.set("无法生成随机口令，请自己输入".to_string()),
-        }
-    }
-
-    /// 后台依次发若干步，回执全部带回（测试连接要看结果、口令要看 mode）。
-    fn spawn_wizard(&self, op: WizOp, steps: Vec<Step>) {
+    /// 后台依次发若干步，回执全部带回（测试连接要看结果、建库要拿密钥）。
+    pub(super) fn spawn_wizard(&self, op: WizOp, steps: Vec<Step>) {
         if self.busy.get() {
             return;
         }
@@ -494,12 +467,18 @@ impl SyncUi {
         });
     }
 
-    /// 向导 / 确认身份的回执。框已关才回来的结果只刷新页面，不再动向导状态。
+    /// 向导 / 确认身份 / 更换存储的回执。框已关才回来的结果只刷新页面，不再动对话框状态。
     pub(super) fn on_wizard(&self, op: WizOp, result: Result<Vec<Value>, (usize, String)>) {
         self.busy.set(false);
+        if op == WizOp::StorageSave {
+            self.adopt_sent_storage(&result);
+        }
         let open = match op {
-            WizOp::Test | WizOp::Unlock { .. } => self.wizard.get(),
+            WizOp::Test | WizOp::CreateKey | WizOp::ImportKey => self.wizard.get(),
             WizOp::Devices | WizOp::Confirm => self.wizard.get() || self.identity_dialog.get(),
+            WizOp::StorageSave | WizOp::StorageCreate | WizOp::StorageJoin => {
+                self.storage_dialog.get()
+            }
         };
         if open {
             match result {
@@ -515,19 +494,29 @@ impl SyncUi {
         }
     }
 
+    /// 更换存储的保存回执：设置已写下（全部成功，或失败在设置之后）就把发出的表单当作已保存值，
+    /// 免得随后的间隔保存带着旧存储设置。
+    fn adopt_sent_storage(&self, result: &Result<Vec<Value>, (usize, String)>) {
+        let written = !matches!(result, Err((0, _)));
+        let sent = self.storage_sent.borrow_mut().take();
+        if let Some(f) = sent.filter(|_| written) {
+            self.storage_summary.set(storage_summary(&f));
+            *self.saved.borrow_mut() = f;
+        }
+    }
+
     fn wizard_failed(&self, op: WizOp, at: usize, e: &str) {
         let label = match op {
             WizOp::Test => "测试连接",
-            WizOp::Unlock { import: true } => "导入密钥",
-            WizOp::Unlock { import: false } => "设置口令",
+            WizOp::CreateKey | WizOp::StorageCreate => "生成同步密钥",
+            WizOp::ImportKey | WizOp::StorageJoin => "加入同步库",
+            WizOp::StorageSave => "保存存储设置",
             WizOp::Devices => "读取设备列表",
             WizOp::Confirm => "确认身份",
         };
-        let (mut text, notice) = failure_text(label, e);
-        // 远端已有数据时口令是拿来验证的：失败多半是口令不对。
-        if op == (WizOp::Unlock { import: false }) && self.wiz_remote_init.get() && !notice {
-            text = format!("口令不对或无法验证：{e}");
-        }
+        let text = key_error_text(label, e);
+        // 远端其实已有同步库（别的设备抢先建了）：改成粘贴形态。
+        let taken = e.contains("远端已有同步库");
         match op {
             WizOp::Test => {
                 let secret_step = self.wiz_sent.borrow().as_ref().and_then(|(_, i)| *i);
@@ -535,7 +524,26 @@ impl SyncUi {
                 self.wiz_can_retry.set(can_retry_test(secret_step, at));
                 self.wiz_err.set(text);
             }
-            WizOp::Unlock { .. } => self.wiz_err.set(text),
+            WizOp::CreateKey => {
+                if taken {
+                    self.wiz_remote_init.set(true);
+                }
+                self.wiz_err.set(if taken { e.to_string() } else { text });
+            }
+            WizOp::ImportKey => self.wiz_err.set(text),
+            // 测试连接是最后一步：失败在它上面时设置与密码已经存下。
+            WizOp::StorageSave if at > 0 => self
+                .storage_err
+                .set(format!("设置已保存，但连接新位置失败：{e}")),
+            WizOp::StorageSave => self.storage_err.set(text),
+            WizOp::StorageCreate => {
+                if taken {
+                    self.storage_stage.set(StorageStage::Join);
+                }
+                self.storage_err
+                    .set(if taken { e.to_string() } else { text });
+            }
+            WizOp::StorageJoin => self.storage_err.set(text),
             WizOp::Devices | WizOp::Confirm => self.id_err.set(text),
         }
     }
@@ -561,14 +569,48 @@ impl SyncUi {
                 self.wiz_can_retry.set(false);
                 self.wiz_test_ok.set(true);
             }
-            WizOp::Unlock { import } => {
-                let mode = unlock_mode(import, rs.first().unwrap_or(&Value::Null));
+            WizOp::CreateKey => {
+                self.apply_status(&status);
+                match rs.first().and_then(key_from_reply) {
+                    Some(k) => {
+                        self.key_ack.set(false);
+                        self.new_key.set(k);
+                    }
+                    // 库已建好但没拿到密钥：直接完成，可在「安全」里查看。
+                    None => self.go(WizStep::Done, WizStep::Key, "init"),
+                }
+            }
+            WizOp::ImportKey => {
                 self.apply_status(&status);
                 self.clear_secrets();
-                self.wiz_generated.set(String::new());
                 let needs = StatusView::parse(&status).needs_identity;
-                let next = next_step(WizStep::Passphrase, false, &mode, needs);
-                self.go(next, WizStep::Passphrase, &mode);
+                let next = next_step(WizStep::Key, false, "import", needs);
+                self.go(next, WizStep::Key, "import");
+            }
+            WizOp::StorageSave => {
+                let reply = rs.last().cloned().unwrap_or(Value::Null);
+                match storage_stage_after_test(&reply) {
+                    Some(stage) => self.storage_stage.set(stage),
+                    None => self.close_storage_dialog(),
+                }
+            }
+            WizOp::StorageCreate => {
+                self.apply_status(&status);
+                match rs.first().and_then(key_from_reply) {
+                    Some(k) => {
+                        self.key_ack.set(false);
+                        self.new_key.set(k);
+                        self.storage_stage.set(StorageStage::Created);
+                    }
+                    None => self.close_storage_dialog(),
+                }
+            }
+            WizOp::StorageJoin => {
+                self.apply_status(&status);
+                self.close_storage_dialog();
+                if StatusView::parse(&status).needs_identity {
+                    self.open_identity_dialog();
+                }
             }
             WizOp::Devices => {
                 let devs = parse_devices(rs.first().unwrap_or(&Value::Null));
@@ -592,48 +634,81 @@ impl SyncUi {
         }
     }
 
-    /// 截图核对用：`WIND_RPC_MOCK_SYNC_WIZ=<步骤>` 直接把向导开到某一步。只在 mock 下由
+    /// 截图核对用：`WIND_RPC_MOCK_SYNC_WIZ=<步骤>` 直接把向导或对话框开到某一步。只在 mock 下由
     /// `load_mock_now` 调用（真实构建读不到这个变量），命令当场执行，不走后台线程。
-    /// 取值：`storage` `test` `pass` `pass_random` `pass_key` `identity` `identity_restore` `identity_join` `done`
-    /// `identity_dialog`。
+    /// 向导：`storage` `test` `key` `key_created` `identity` `identity_restore` `identity_join` `done`；
+    /// 对话框：`identity_dialog` `key_view` `reset` `reset_done` `storage_dialog` `storage_next` `storage_created`。
+    /// 远端为空与否由 `WIND_RPC_MOCK_SYNC=fresh` 决定。
     pub(super) fn mock_wizard_jump(&self, to: &str) {
         self.inline_rpc.set(true);
-        if to == "identity_dialog" {
-            self.open_identity_dialog();
-        } else {
-            self.open_wizard();
-            self.wd_password.set("mock-password".into());
-            if to != "storage" {
-                self.wizard_next();
+        let mock_cmd = |op: &str| {
+            rpc::call_core(
+                "sync.command",
+                &json!({ "op": op, "args": { "confirm": true } }),
+            )
+            .ok()
+            .and_then(|v| key_from_reply(&v))
+            .unwrap_or_default()
+        };
+        match to {
+            "identity_dialog" => self.open_identity_dialog(),
+            "key_view" => {
+                self.export_dialog.set(true);
+                self.exported_key.set(mock_cmd("export_key"));
             }
-            if !matches!(to, "storage" | "test") {
-                self.wizard_next();
-            }
-            match to {
-                "pass_random" => self.generate_passphrase(),
-                "pass_key" => self.wiz_use_key.set(true),
-                "identity" | "done" => {
-                    self.pass1.set("mock-passphrase".into());
-                    self.pass2.set("mock-passphrase".into());
-                    self.wizard_next();
-                    if to == "done" && self.wiz_step.get() == WizStep::Identity {
-                        self.wizard_next();
-                    }
+            "reset" | "reset_done" => {
+                self.open_reset_dialog();
+                if to == "reset_done" {
+                    self.reset_guard.take();
+                    self.new_key.set(mock_cmd("reset_remote"));
                 }
-                // 展开「恢复为已有设备 / 加入已有组」的子列表（列表形态才有）。
-                "identity_restore" | "identity_join" => {
-                    self.import_key.set("mock-key".into());
-                    self.wiz_use_key.set(true);
-                    self.wizard_next();
-                    self.id_mode
-                        .set(if to == "identity_restore" { 0 } else { 1 });
-                }
-                _ => {}
             }
+            "storage_dialog" => self.open_storage_dialog(),
+            "storage_next" | "storage_created" => {
+                self.open_storage_dialog();
+                self.wd_password.set("mock-password".into());
+                self.save_storage();
+                if to == "storage_created" {
+                    self.create_storage_library();
+                }
+            }
+            _ => self.mock_wizard_steps(to),
         }
         self.inline_rpc.set(false);
     }
+
+    fn mock_wizard_steps(&self, to: &str) {
+        self.open_wizard();
+        self.wd_password.set("mock-password".into());
+        if to != "storage" {
+            self.wizard_next();
+        }
+        if !matches!(to, "storage" | "test") {
+            self.wizard_next();
+        }
+        if matches!(to, "key" | "storage" | "test") {
+            return;
+        }
+        // 远端已有时贴一串密钥加入，为空时生成。
+        self.import_key.set(MOCK_KEY.into());
+        self.wizard_next();
+        match to {
+            "done" => {
+                self.key_ack.set(true);
+                self.wizard_next();
+            }
+            // 展开「恢复为已有设备 / 加入已有组」的子列表（列表形态才有）。
+            "identity_restore" | "identity_join" => {
+                self.id_mode
+                    .set(if to == "identity_restore" { 0 } else { 1 });
+            }
+            _ => {}
+        }
+    }
 }
+
+/// mock 截图里粘贴的同步密钥（与 `rpc` mock 的格式相同：52 个 base32 字符，每 4 个一组）。
+const MOCK_KEY: &str = "4cra-v4aq-os7p-s5zw-tw6e-6a5a-mtfw-rhkv-cruv-cppg-6wam-jbo5-4rta";
 
 // ───────────────────────────── 界面 ─────────────────────────────
 
@@ -651,7 +726,7 @@ pub(super) fn wizard_dialog(ui: &SyncUi) -> Element {
         .weight(1.0)
         .child(page(storage_body(ui), WizStep::Storage))
         .child(page(test_body(ui), WizStep::Test))
-        .child(page(passphrase_body(ui), WizStep::Passphrase))
+        .child(page(key_body(ui), WizStep::Key))
         .child(page(identity_step_body(ui), WizStep::Identity))
         .child(page(done_body(ui), WizStep::Done));
     let frame = Element::col()
@@ -771,91 +846,46 @@ fn test_body(ui: &SyncUi) -> Element {
         )
 }
 
-fn passphrase_body(ui: &SyncUi) -> Element {
-    let remote = ui.wiz_remote_init;
-    let use_key = ui.wiz_use_key;
-    let (gen_sig, pass1) = (ui.wiz_generated, ui.pass1);
-    let pwd = |s: Signal<String>, ph: &str| Element::text_input(s, ph).password().width_match();
+/// 第 3 步：远端为空 → 「生成同步密钥」，生成后显示密钥并要求勾选已保存；远端已有 → 粘贴同步密钥。
+fn key_body(ui: &SyncUi) -> Element {
+    let (remote, key, busy) = (ui.wiz_remote_init, ui.new_key, ui.busy);
     let u = ui.clone();
-    let generated = Element::col()
-        .width_match()
-        .spacing(6)
-        .child(
-            Element::row()
-                .width_match()
-                .cross(Align::Center)
-                .spacing(6)
-                .child(Element::text_input(gen_sig, "").read_only().weight(1.0))
-                .child(btn2("复制").on_click(move |ctx| {
-                    ctx.clipboard_set(&gen_sig.get());
-                    ctx.toast_ok("已复制口令");
-                })),
-        )
-        .child(tone("请保存好，其他设备加入时要用", Role::Warning))
-        // 用户改了口令框，明文就不再是要用的口令，收起。
-        .visible_when(move || {
-            let g = gen_sig.get();
-            !g.is_empty() && g == pass1.get()
-        });
-    let new_remote = Element::col()
+    let create = Element::col()
         .width_match()
         .spacing(12)
         .child(head(
-            "设置口令",
-            "同步数据在本机用口令加密后才上传，存储服务看不到内容。",
+            "生成同步密钥",
+            "同步数据在本机用同步密钥加密后才上传，存储服务看不到内容。",
         ))
-        .child(field(
-            "口令",
-            Element::row()
+        .child(
+            Element::col()
                 .width_match()
-                .cross(Align::Center)
-                .spacing(6)
-                .child(Element::text_input(ui.pass1, "").password().weight(1.0))
-                .child(btn2("随机生成").on_click(move |_| u.generate_passphrase())),
-        ))
-        .child(generated)
-        .child(field("再输入一次", pwd(ui.pass2, "")))
-        .child(muted(
-            "忘记口令且没有导出密钥时，存储里的数据无法解开。完成后可在「安全」里导出密钥备份。",
-        ))
+                .spacing(12)
+                .child(muted(
+                    "存储里还没有同步库。生成同步密钥后，本机就是第一台设备；其他设备加入时粘贴这串密钥。",
+                ))
+                .child(
+                    Element::row().child(
+                        btn("生成同步密钥")
+                            .enabled_when(move || !busy.get())
+                            .on_click(move |_| u.wizard_next()),
+                    ),
+                )
+                .visible_when(move || key.get().is_empty()),
+        )
+        .child(new_key_block(ui).visible_when(move || !key.get().is_empty()))
         .visible_when(move || !remote.get());
     let join = Element::col()
         .width_match()
         .spacing(12)
         .child(head(
-            "输入口令",
-            "存储里已有同步数据。输入创建时设置的口令，或粘贴在其他设备上导出的密钥。",
+            "加入同步库",
+            "存储里已有同步库。粘贴在其他设备上看到的同步密钥（「安全」→「同步密钥」→「查看…」）。",
         ))
-        .child(
-            Element::col()
-                .width_match()
-                .spacing(8)
-                .child(field("口令", pwd(ui.pass1, "创建同步时设置的口令")))
-                .child(
-                    Element::link("改用导出的密钥")
-                        .font_size(12.5)
-                        .on_click(move |_| use_key.set(true)),
-                )
-                .visible_when(move || !use_key.get()),
-        )
-        .child(
-            Element::col()
-                .width_match()
-                .spacing(8)
-                .child(field(
-                    "密钥",
-                    pwd(ui.import_key, "粘贴在其他设备上导出的密钥"),
-                ))
-                .child(
-                    Element::link("改用口令")
-                        .font_size(12.5)
-                        .on_click(move |_| use_key.set(false)),
-                )
-                .visible_when(move || use_key.get()),
-        )
+        .child(field("同步密钥", key_input(ui.import_key)))
         .visible_when(move || remote.get());
     body()
-        .child(new_remote)
+        .child(create)
         .child(join)
         .child(error_line(ui.wiz_err))
 }
@@ -949,7 +979,7 @@ fn identity_options_el(
             .child(option(
                 &v.mine,
                 0,
-                "沿用这台设备原来的设备号和所在组，用组内设置替换本机",
+                "沿用这台设备原来的设备号和同步组，用组内设置替换本机",
             ))
             .child(option("作为新设备", 1, &new_cap));
     }
@@ -958,7 +988,7 @@ fn identity_options_el(
             option(
                 "恢复为已有设备",
                 0,
-                "沿用它的设备号和所在组，用组内设置替换本机",
+                "沿用它的设备号和同步组，用组内设置替换本机",
             )
             .child(sub(&v.devices, dev, 0)),
         );
@@ -972,6 +1002,7 @@ fn identity_options_el(
 
 fn wizard_footer(ui: &SyncUi) -> Element {
     let (step, busy, ok, loaded) = (ui.wiz_step, ui.busy, ui.wiz_test_ok, ui.id_loaded);
+    let (remote, key, ack) = (ui.wiz_remote_init, ui.new_key, ui.key_ack);
     let (u_cancel, u_back, u_next) = (ui.clone(), ui.clone(), ui.clone());
     let primary = step.map(|s| {
         match s {
@@ -989,14 +1020,14 @@ fn wizard_footer(ui: &SyncUi) -> Element {
         .child(
             btn2("取消")
                 .on_click(move |_| u_cancel.close_wizard())
-                .visible_when(move || step.get() != WizStep::Done),
+                .visible_when(move || step.get() != WizStep::Done && key.get().is_empty()),
         )
         .child(Element::leaf().weight(1.0))
         .child(
             btn2("上一步")
                 .enabled_when(move || !busy.get())
                 .on_click(move |_| u_back.wizard_back())
-                .visible_when(move || back_step(step.get()).is_some()),
+                .visible_when(move || back_step(step.get()).is_some() && key.get().is_empty()),
         )
         .child(Element::switcher(primary, move |text: String| {
             let u = u_next.clone();
@@ -1005,6 +1036,8 @@ fn wizard_footer(ui: &SyncUi) -> Element {
                     !busy.get()
                         && match step.get() {
                             WizStep::Test => ok.get(),
+                            // 远端为空：用正文的「生成同步密钥」，生成后勾了「我已保存」才能下一步。
+                            WizStep::Key if !remote.get() => !key.get().is_empty() && ack.get(),
                             WizStep::Identity => loaded.get(),
                             _ => true,
                         }

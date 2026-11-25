@@ -399,28 +399,21 @@ fn storage_card(ui: &SyncUi) -> Element {
 
 fn security_card(ui: &SyncUi) -> Element {
     let busy = ui.busy;
-    let (u_pass, u_exp, u_reset) = (ui.clone(), ui.clone(), ui.clone());
+    let (u_key, u_reset) = (ui.clone(), ui.clone());
     gated_section(
         ui,
         NAV[5],
         vec![
             CardItem::Row(setting_row(
-                "同步口令",
-                Some("其他设备加入时要输入；修改不影响已导出的密钥"),
-                btn2("修改口令…")
+                "同步密钥",
+                Some("其他设备加入时要粘贴它；请离线保存"),
+                btn2("查看…")
                     .enabled_when(move || !busy.get())
-                    .on_click(move |_| u_pass.open_passphrase_dialog()),
-            )),
-            CardItem::Row(setting_row(
-                "数据密钥",
-                Some("可代替口令加入新设备，也能在忘记口令时找回数据"),
-                btn2("导出密钥…")
-                    .enabled_when(move || !busy.get())
-                    .on_click(move |_| u_exp.open_export()),
+                    .on_click(move |_| u_key.open_export()),
             )),
             CardItem::Row(setting_row(
                 "重置远端",
-                Some("清空远端全部同步数据，以本机为准重新上传；其他设备需重新加入"),
+                Some(RESET_DESC),
                 Element::button("重置远端…")
                     .small()
                     .danger()

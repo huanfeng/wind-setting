@@ -1,4 +1,4 @@
-//! 同步页的纯逻辑（可测）：状态快照、表单、设备与分组、口令与身份选项、命令回执。
+//! 同步页的纯逻辑（可测）：状态快照、表单、设备与分组、同步密钥与身份选项、命令回执。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -16,7 +16,7 @@ pub(crate) fn phase_text(phase: &str) -> String {
         "disabled" => "未启用".to_string(),
         "not_configured" => "未配置存储后端".to_string(),
         "starting" => "同步进程启动中…".to_string(),
-        "needs_setup" => "需要设置口令或导入密钥".to_string(),
+        "needs_setup" => "需要生成或粘贴同步密钥".to_string(),
         "idle" => "空闲，已是最新".to_string(),
         "syncing" => "同步中…".to_string(),
         "error" => "出错".to_string(),
@@ -39,7 +39,7 @@ pub(crate) struct StatusView {
     /// 冲突副本路径（相对用户目录，新到旧，core 最多给 50 条）；旧版 core 没有这个字段。
     pub conflict_paths: Vec<String>,
     pub has_secret: bool,
-    /// 本机已加入同步库（持有有效密钥）：决定口令按钮是「设置」还是「修改」。
+    /// 本机已加入同步库（持有同步密钥）。
     pub joined: bool,
     /// 本机设备号。
     pub device: String,
@@ -295,49 +295,107 @@ pub(crate) fn storage_summary(f: &Form) -> String {
     }
 }
 
-/// 换存储后解开数据用的命令：口令或导出的密钥；没填返回 None。口令要输两次（远端为空时会用它新建库）。
-/// 口令带同值的 `old_passphrase`：远端已有库时 core 先用它解开验证，错了只报错，不会像持有同一密钥时
-/// 那样直接把远端口令改成这次未验证的输入；远端为空时 core 忽略它、用口令初始化。
-pub(crate) fn unlock_command(
-    use_key: bool,
-    pass1: &str,
-    pass2: &str,
-    key: &str,
-) -> Result<Option<(&'static str, Value)>, &'static str> {
-    if use_key {
-        let key = key.trim();
-        return Ok((!key.is_empty()).then(|| ("import_key", json!({ "key": key }))));
-    }
-    if pass1.is_empty() {
-        return Ok(None);
-    }
-    check_passphrase(pass1, pass2)?;
-    Ok(Some((
-        "set_passphrase",
-        json!({ "passphrase": pass1, "old_passphrase": pass1 }),
-    )))
-}
-
-/// 「更换存储」的执行序列。位置变了要重填存储密码（core 会清掉旧的），并用口令或密钥
-/// 重新解开新位置的数据；填了口令或密钥就照发，这样口令错一次后改对重试（此时设置已是新位置）仍会解锁。
+/// 「更换存储」的执行序列：存设置 → 存密码 → 测试连接。位置变了要重填存储密码（core 会清掉旧的）；
+/// 测试回执决定下一步是新建同步库、粘贴同步密钥加入，还是已加入直接完成（见 [`storage_stage_after_test`]）。
 pub(crate) fn storage_change_steps(
     saved: &Form,
     new: &Form,
     secrets: Vec<Value>,
-    unlock: Option<(&'static str, Value)>,
 ) -> Result<Vec<Step>, &'static str> {
-    let moved = backend_location_changed(saved, new);
-    if moved && secrets.is_empty() {
+    if backend_location_changed(saved, new) && secrets.is_empty() {
         return Err("更换了存储位置，请填写新位置的密码");
-    }
-    if moved && unlock.is_none() {
-        return Err("更换了存储位置，请填写同步口令或粘贴导出的密钥");
     }
     let mut cmds: Vec<(&'static str, Value)> =
         secrets.into_iter().map(|a| ("set_secret", a)).collect();
-    cmds.extend(unlock);
+    cmds.push(("test_connection", json!({})));
     Ok(save_steps(new.to_settings(), cmds))
 }
+
+/// 「更换存储」对话框所处的阶段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StorageStage {
+    /// 填存储参数。
+    Form,
+    /// 新位置还没有同步库：给「在新位置创建同步库」。
+    Create,
+    /// 新位置已有同步库：粘贴同步密钥加入。
+    Join,
+    /// 已在新位置建库：显示新密钥，勾选已保存才能关。
+    Created,
+}
+
+/// 测试连接回执 → 下一阶段；`None` = 本机已加入该位置的同步库，直接完成。
+pub(crate) fn storage_stage_after_test(reply: &Value) -> Option<StorageStage> {
+    let b = |k: &str| reply.get(k).and_then(Value::as_bool).unwrap_or(false);
+    if !b("remote_initialized") {
+        Some(StorageStage::Create)
+    } else if b("joined") {
+        None
+    } else {
+        Some(StorageStage::Join)
+    }
+}
+
+/// 生成同步密钥并建库，之后读一次状态。
+pub(crate) fn create_key_steps() -> Vec<Step> {
+    vec![
+        ("sync.command", json!({ "op": "create_key", "args": {} })),
+        ("sync.status", json!({})),
+    ]
+}
+
+/// 粘贴同步密钥加入，之后读一次状态（看是否待确认身份）。格式整理交给 core，原样转发。
+pub(crate) fn import_key_steps(key: &str) -> Result<Vec<Step>, &'static str> {
+    if key.trim().is_empty() {
+        return Err("请粘贴同步密钥");
+    }
+    Ok(vec![
+        (
+            "sync.command",
+            json!({ "op": "import_key", "args": { "key": key } }),
+        ),
+        ("sync.status", json!({})),
+    ])
+}
+
+/// 回执里的同步密钥；空串当作没有。
+pub(crate) fn key_from_reply(v: &Value) -> Option<String> {
+    v.get("key")
+        .and_then(Value::as_str)
+        .filter(|k| !k.is_empty())
+        .map(String::from)
+}
+
+/// 同步密钥相关的失败文案：密钥不对原样显示，其余带上动作名。
+pub(crate) fn key_error_text(label: &str, e: &str) -> String {
+    if e.contains(WRONG_KEY) {
+        WRONG_KEY.to_string()
+    } else {
+        failure_text(label, e).0
+    }
+}
+
+/// 同步密钥按组分两行显示（前 7 组一行），一行放不下整串。
+pub(crate) fn key_lines(key: &str) -> String {
+    let groups: Vec<&str> = key.split('-').collect();
+    if groups.len() <= 7 {
+        return key.to_string();
+    }
+    format!("{}\n{}", groups[..7].join("-"), groups[7..].join("-"))
+}
+
+/// core 对密钥不对的报错。
+const WRONG_KEY: &str = "同步密钥不对";
+/// 生成（或重置后）显示同步密钥时的提示。
+pub(crate) const KEY_SAVED_HINT: &str =
+    "请保存好同步密钥，其他设备加入时要用；丢失后无法解开已同步的数据";
+/// 生成后必须勾选的确认项。
+pub(crate) const KEY_ACK: &str = "我已保存同步密钥";
+/// 加入时输入框的占位。
+pub(crate) const KEY_PLACEHOLDER: &str = "粘贴同步密钥";
+/// 安全卡「重置远端」行的说明。
+pub(crate) const RESET_DESC: &str =
+    "清空远端全部同步数据并生成新的同步密钥，其他设备需要用新密钥重新加入";
 
 /// 同步间隔改了才要保存：返回带新间隔的设置，其余原样。
 pub(crate) fn interval_change(saved: &Form, v: f64) -> Option<Form> {
@@ -695,7 +753,7 @@ pub(crate) fn member_count(groups: &[GroupView], group: &str) -> usize {
         .map_or(0, |g| g.devices.len())
 }
 
-/// 本机卡「所在组」的值：组名（没有就用组号）· N 台设备；名册还没到时不写台数。
+/// 本机卡「同步组」的值：组名（没有就用组号）· N 台设备；名册还没到时不写台数。
 pub(crate) fn group_line(group: &str, group_name: &str, devs: &[DeviceView]) -> String {
     let name = if group_name.is_empty() {
         group
@@ -706,32 +764,6 @@ pub(crate) fn group_line(group: &str, group_name: &str, devs: &[DeviceView]) -> 
         0 => name.to_string(),
         n => format!("{name} · {n} 台设备"),
     }
-}
-
-const PASSPHRASE_ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
-
-/// 随机口令：5 组 × 4 字符，用去掉易混字符的字母表，`-` 连接。
-pub(crate) fn random_passphrase(mut rng: impl FnMut() -> u32) -> String {
-    let mut out = String::with_capacity(24);
-    for i in 0..20 {
-        if i > 0 && i % 4 == 0 {
-            out.push('-');
-        }
-        let k = rng() as usize % PASSPHRASE_ALPHABET.len();
-        out.push(PASSPHRASE_ALPHABET[k] as char);
-    }
-    out
-}
-
-/// 生产用的随机口令；系统随机数不可用时返回 None（不退回可预测的种子），由界面报错。
-pub(crate) fn random_passphrase_os() -> Option<String> {
-    let mut ok = true;
-    let p = random_passphrase(|| {
-        let mut b = [0u8; 4];
-        ok &= getrandom::getrandom(&mut b).is_ok();
-        u32::from_le_bytes(b)
-    });
-    ok.then_some(p)
 }
 
 /// 确认本机身份时可选的做法。
@@ -830,7 +862,7 @@ impl RemoveGuard {
 }
 
 /// 移除前的确认文案。
-pub(crate) const REMOVE_DEVICE_WARN: &str = "移除后该设备的同步记录会从存储中删除。若该设备仍在使用，下次同步时会重新出现；要彻底阻止，请重置远端并更换口令。";
+pub(crate) const REMOVE_DEVICE_WARN: &str = "移除后该设备的同步记录会从存储中删除。若该设备仍在使用，下次同步时会重新出现；要彻底阻止，请重置远端（会生成新的同步密钥）。";
 
 /// 把输入框里的间隔数收成合法整数（1 分钟到 24 小时）。
 pub(crate) fn clamp_interval(v: f64) -> u32 {
@@ -856,21 +888,10 @@ pub(crate) fn secret_placeholder(has_secret: bool, saved_backend: bool) -> &'sta
     if has_secret {
         "已保存（留空则不修改）"
     } else if saved_backend {
-        // 只存了密码、还没口令时 has_secret 也为假
+        // 只存了密码、还没同步密钥时 has_secret 也为假
         "如已保存过密码可留空"
     } else {
         "未设置"
-    }
-}
-
-/// 设口令的两次输入校验。
-pub(crate) fn check_passphrase(a: &str, b: &str) -> Result<(), &'static str> {
-    if a.is_empty() {
-        Err("口令不能为空")
-    } else if a != b {
-        Err("两次输入的口令不一致")
-    } else {
-        Ok(())
     }
 }
 
@@ -886,14 +907,9 @@ impl ResetGuard {
     pub fn disarm(&self) {
         self.0.set(false);
     }
-    /// 须已 arm 且新口令合格；口令不合格时**不消耗**确认，留在框里让用户改。
-    pub fn take(&self, pass1: &str, pass2: &str) -> Result<Value, String> {
-        if !self.0.get() {
-            return Err("请先点「重置远端…」".to_string());
-        }
-        check_passphrase(pass1, pass2).map_err(String::from)?;
-        self.0.set(false);
-        Ok(json!({ "confirm": true, "passphrase": pass1 }))
+    /// 须已 arm；取过即收回。新密钥由 core 生成并在回执里带回。
+    pub fn take(&self) -> Option<Value> {
+        self.0.replace(false).then(|| json!({ "confirm": true }))
     }
 }
 
@@ -901,11 +917,11 @@ impl ResetGuard {
 pub(crate) fn connection_text(v: &Value) -> String {
     let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
     if !b("remote_initialized") {
-        "连接成功，远端尚未初始化，将以本机为准".to_string()
+        "连接成功，存储里还没有同步库，下一步生成同步密钥".to_string()
     } else if b("joined") {
         "连接成功，本机已加入".to_string()
     } else {
-        "连接成功，远端已有同步数据，设置同一口令或导入密钥即可加入".to_string()
+        "连接成功，存储里已有同步库，下一步粘贴同步密钥加入".to_string()
     }
 }
 
@@ -914,7 +930,7 @@ pub(crate) fn connection_text(v: &Value) -> String {
 pub(crate) struct Outcome {
     pub ok: bool,
     pub toast: String,
-    /// `export_key` 成功时的密钥串。
+    /// `export_key` / `reset_remote` 成功时的同步密钥。
     pub key: Option<String>,
     /// 失败但只是提示（如「正在同步，请稍后再试」），不用错误样式。
     pub notice: bool,
@@ -927,12 +943,11 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "set_secret" => "保存凭据",
         "save" => "保存",
         "confirm_mass_delete" => "确认删除",
-        "set_passphrase" => "设置口令",
-        "import_key" => "导入密钥",
-        "export_key" => "导出密钥",
+        "create_key" => "生成同步密钥",
+        "import_key" => "加入同步库",
+        "export_key" => "读取同步密钥",
         "reset_remote" => "重置远端",
         "remove_device" => "移除设备",
-        "storage" => "保存存储设置",
         "disable" => "停用同步",
         "enable" => "启用同步",
         "interval" => "保存同步间隔",
@@ -951,23 +966,17 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
             }
         }
         Ok(v) => {
-            let key = (op == "export_key")
-                .then(|| {
-                    v.get("key")
-                        .and_then(Value::as_str)
-                        .or_else(|| v.as_str())
-                        .map(String::from)
-                })
+            let key = matches!(op, "export_key" | "reset_remote")
+                .then(|| key_from_reply(v))
                 .flatten();
             let toast = match op {
                 // 结果由 core 弹提示，页内不另报。
                 "sync_now" | "interval" => String::new(),
-                "storage" => "已保存存储设置".to_string(),
                 "disable" => "已停用同步".to_string(),
                 "enable" => "已启用同步".to_string(),
                 "test_connection" => connection_text(v),
-                "export_key" if key.is_none() => "同步进程没有返回密钥".to_string(),
-                "export_key" => "已导出密钥，请妥善保管".to_string(),
+                "export_key" if key.is_none() => "同步进程没有返回同步密钥".to_string(),
+                "export_key" => String::new(),
                 "reset_remote" => "远端已重置，将以本机数据为准重新上传".to_string(),
                 "remove_device" => "已移除该设备".to_string(),
                 "confirm_mass_delete" => "已确认，将把这些删除同步到所有设备".to_string(),

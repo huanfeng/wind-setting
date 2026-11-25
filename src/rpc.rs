@@ -1616,6 +1616,12 @@ const MOCK_LOCATABLE_ROOT_FILES: &[&str] = &[
     "pinyin_misread.yaml",
 ];
 
+/// mock 的同步密钥：形状同 core（52 个 base32 小写字符，每 4 个用 `-` 连）。
+const MOCK_SYNC_KEY: &str = "rvzs-5yal-4xrm-gn2s-q42g-dxzq-g4da-2sqx-qq22-zhsg-xxd4-5tob-m73a";
+/// mock 重置远端后的新密钥。
+const MOCK_SYNC_RESET_KEY: &str =
+    "irbl-k3kc-mrtv-7obb-2dtc-24bz-fdxd-3z3k-rbjw-pquj-q6ay-eoee-2qua";
+
 fn mock_error(method: &str, params: &Value) -> Option<String> {
     #[cfg(test)]
     if let Some(e) = FORCED_ERRORS.with(|f| {
@@ -1638,6 +1644,23 @@ fn mock_error(method: &str, params: &Value) -> Option<String> {
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
             (!mock_is_schema_text(text))
                 .then(|| "not_schema_text: 缺少 package.kind = \"schema_text\"".to_string())
+        }
+        // 同步：远端已有同步库时不能再建（`WIND_RPC_MOCK_SYNC=fresh` 时为空）；`wrong` 打头的密钥不对。
+        "sync.command" => {
+            let fresh = std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("fresh");
+            match params.get("op").and_then(|v| v.as_str()) {
+                Some("create_key") if !fresh => {
+                    Some("远端已有同步库，请粘贴同步密钥加入".to_string())
+                }
+                Some("import_key")
+                    if params["args"]["key"]
+                        .as_str()
+                        .is_some_and(|k| k.trim().starts_with("wrong")) =>
+                {
+                    Some("同步密钥不对".to_string())
+                }
+                _ => None,
+            }
         }
         // 系统词库查看：清单里没有的库报错（同 core 的「无系统词库」），词条另有未知排序列。
         "sysDict.header" => mock_sys_dict_header(params).err(),
@@ -2352,9 +2375,10 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
         "sync.setSettings" => json!({ "ok": true }),
         "sync.now" => json!({ "outcome": "requested" }),
         "sync.command" => match params.get("op").and_then(Value::as_str) {
-            Some("export_key") => {
-                json!({ "key": "bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=" })
-            }
+            Some("export_key") => json!({ "key": MOCK_SYNC_KEY }),
+            // 远端为空时建库回新密钥；已有同步库时报错见 `mock_error`。
+            Some("create_key") => json!({ "ok": true, "key": MOCK_SYNC_KEY }),
+            Some("reset_remote") => json!({ "ok": true, "key": MOCK_SYNC_RESET_KEY }),
             // 设备名册：本组三台（本机、macOS、读不出的）、另一台电脑的组、手机自成一组
             // （配置与主题只在同类设备间同步，core 的组按设备类别分）；remove_device 无状态，只回 ok。
             Some("list_devices") => {
@@ -2381,11 +2405,6 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             Some("test_connection") => {
                 let fresh = std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("fresh");
                 json!({ "ok": true, "remote_initialized": !fresh, "joined": false })
-            }
-            // 远端为空时设口令即初始化（身份自动确认），否则是用口令加入。
-            Some("set_passphrase") => {
-                let fresh = std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("fresh");
-                json!({ "ok": true, "mode": if fresh { "init" } else { "join" } })
             }
             _ => json!({ "ok": true }),
         },
