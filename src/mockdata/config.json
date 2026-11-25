@@ -482,7 +482,7 @@
     "complete_min_length": 0,
     "complete_position": 2,
     "enable": false,
-    "exact_position": 0,
+    "exact_position": 1,
     "max_count": 2,
     "min_length": 3
    },

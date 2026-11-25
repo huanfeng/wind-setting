@@ -424,7 +424,7 @@
       "type": "int"
     },
     {
-      "default": 0,
+      "default": 1,
       "key": "schema.pinyin.english_merge.exact_position",
       "type": "int"
     },

@@ -830,8 +830,8 @@ section = "候选行为"
 dialog_group = "py_english"
 type = "number"
 label = "英文单词最前位置"
-hint = "整串恰好是英文单词时，英文最靠前排在第几位；0 = 按方案自动：全拼 1、双拼 2。仍先让过开头的完整匹配中文，只会更靠后"
-min = 0
+hint = "整串恰好是英文单词时，英文最靠前排在第几位；出厂全拼 1、双拼 2。仍先让过开头的完整匹配中文，只会更靠后"
+min = 1
 max = 10
 enabled_when = "schema.pinyin.english_merge.enable == true"
 
