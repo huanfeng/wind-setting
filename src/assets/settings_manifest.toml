@@ -538,7 +538,7 @@ group = "schema"
 section = "候选行为"
 type = "comment_code_current"
 label = "编码提示"
-hint = "拼音、双拼方案下候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
+hint = "这张卡所绑全拼方案的候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
 
 [[items]]
 key = "schema.pinyin.use_smart_compose"
@@ -662,6 +662,14 @@ section = "双拼"
 type = "toggle"
 label = "双拼时允许全拼输入"
 hint = "双拼方案下也能按全拼打字，如 zaijian → 再见。对全拼方案无影响"
+
+[[items]]
+key = "local.comment_code_shuangpin"
+group = "schema"
+section = "双拼"
+type = "comment_code_current"
+label = "编码提示"
+hint = "这张卡所绑双拼方案的候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
 
 [[items]]
 key = "schema.pinyin.frequency.enabled"
@@ -1178,7 +1186,7 @@ section = "混输行为"
 subsection = "拼音相关"
 type = "comment_code_current"
 label = "拼音候选显示编码"
-hint = "混输方案下候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
+hint = "这张卡所绑混输方案的候选旁显示哪种编码；在 外观 › 候选注释 里统一设置"
 
 # 超码长仅查拼音（core 默认 true，主流混输行为）：隐藏，不对用户开放。
 [[items]]

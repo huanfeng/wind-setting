@@ -28,6 +28,7 @@ use windui::prelude::*;
 
 use crate::config::Config;
 use crate::dialogs::comment_dicts_dialog::CommentDictsUi;
+use crate::scheme_cards::Card;
 use crate::search::JumpTarget;
 use crate::state::AppState;
 
@@ -1027,23 +1028,43 @@ pub(crate) fn shared_ui(state: &AppState, cfg: &Config) -> CommentSettingsUi {
 
 // ───────────────────────────── 原位编码现状 ─────────────────────────────
 
-/// 退役的编码来源开关在原位置留一行「当前：…」，对应这些范围的默认态横排格；要改跳去分配框
-/// （core 仓设计 §13.6）。
-pub fn code_current_scopes(key: &str) -> Option<Vec<Scope>> {
-    let ty = |k: &str| Scope::Type(k.to_string());
-    let mode = |k: &str| Scope::Mode(k.to_string());
+/// 引擎卡上的「编码提示」行：卡类别与所绑方案的类型键。
+fn code_current_card(key: &str) -> Option<(Card, &'static str)> {
     Some(match key {
-        "local.comment_code_pinyin" => vec![ty("pinyin"), ty("shuangpin")],
-        "local.comment_code_mix" => vec![ty("mixed")],
+        "local.comment_code_pinyin" => (Card::Pinyin, "pinyin"),
+        "local.comment_code_shuangpin" => (Card::Shuangpin, "shuangpin"),
+        "local.comment_code_mix" => (Card::Mixed, "mixed"),
+        _ => return None,
+    })
+}
+
+/// 退役的编码来源开关在原位置留一行「当前：…」，对应这些格的默认态横排；要改跳去分配框
+/// （core 仓设计 §13.6）。每格是一条回落链，取第一个有结果的范围。
+///
+/// 引擎卡上的行看所绑方案（`bound`，空 = 没绑）：core 只给分配里出现过的方案出方案行，
+/// 没出现就是类型层的值，所以链是「方案 → 类型」。
+pub fn code_current_scopes(key: &str, bound: &str) -> Option<Vec<Vec<Scope>>> {
+    let mode = |k: &str| vec![Scope::Mode(k.to_string())];
+    if let Some((_, ty)) = code_current_card(key) {
+        let mut chain = Vec::new();
+        if !bound.is_empty() {
+            chain.push(Scope::Schema(bound.to_string()));
+        }
+        chain.push(Scope::Type(ty.to_string()));
+        return Some(vec![chain]);
+    }
+    Some(match key {
         "local.comment_code_temp_pinyin" => vec![mode("temp_pinyin"), mode("mix")],
         _ => return None,
     })
 }
 
-/// 各范围默认态横排的生效模板名；不一致（在分配里分别设过）时为「分别设置」。
-pub(super) fn code_current_label(lib: &LibraryInfo, scopes: &[Scope]) -> String {
-    let mut ids = scopes.iter().map(|s| {
-        lib.effective_of(s, Col::DefaultH)
+/// 各格默认态横排的生效模板名；不一致（在分配里分别设过）时为「分别设置」。
+pub(super) fn code_current_label(lib: &LibraryInfo, cells: &[Vec<Scope>]) -> String {
+    let mut ids = cells.iter().map(|chain| {
+        chain
+            .iter()
+            .find_map(|s| lib.effective_of(s, Col::DefaultH))
             .map_or("none", |(id, _)| id.as_str())
     });
     let first = ids.next().unwrap_or("none");
@@ -1055,20 +1076,37 @@ pub(super) fn code_current_label(lib: &LibraryInfo, scopes: &[Scope]) -> String 
     format!("当前：{name}")
 }
 
-/// 原位编码现状：与分配框共用草稿，分配框里改过即跟着刷新。
+/// 原位编码现状：与分配框共用草稿，分配框里改过、卡片换了所绑方案都跟着刷新。
 pub fn build_code_current(state: &AppState, cfg: &Config, key: &str) -> Element {
-    let Some(scopes) = code_current_scopes(key) else {
+    if code_current_scopes(key, "").is_none() {
         return Element::leaf();
+    }
+    let bound = code_current_card(key).and_then(|(c, _)| state.card_scheme_ids.get(&c).copied());
+    let bound_id = move || bound.map(|b| b.get()).unwrap_or_default();
+    let key = key.to_string();
+    let label = move |lib: &LibraryInfo| {
+        code_current_label(
+            lib,
+            &code_current_scopes(&key, &bound_id()).unwrap_or_default(),
+        )
     };
     let ui = shared_ui(state, cfg);
-    let text = signal(code_current_label(&ui.lib(), &scopes));
+    let text = signal(label(&ui.lib()));
     let u = ui.clone();
     let on_view = crate::pages::dict::reactive::reactive_effect(
-        move || u.view.version(),
         move || {
-            let t = code_current_label(&u.lib(), &scopes);
-            if text.with(|v| *v != t) {
-                text.set(t);
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bound_id().hash(&mut h);
+            u.view.version().wrapping_add(h.finish())
+        },
+        {
+            let u = ui.clone();
+            move || {
+                let t = label(&u.lib());
+                if text.with(|v| *v != t) {
+                    text.set(t);
+                }
             }
         },
     );
@@ -1506,12 +1544,57 @@ mod tests {
     /// 原位现状：两格一致时显示模板名，不一致时显示「分别设置」。
     #[test]
     fn code_current_reflects_assign_cells() {
-        let scopes = code_current_scopes("local.comment_code_pinyin").unwrap();
-        let label = |p: &str, sp: &str| code_current_label(&code_lib(p, sp), &scopes);
-        assert_eq!(label("code_rev", "code_rev"), "当前：码表编码");
-        assert_eq!(label("none", "none"), "当前：不显示");
-        assert_eq!(label("mine", "mine"), "当前：我的");
-        assert_eq!(label("code", "none"), "当前：分别设置");
+        let label = |key: &str, p: &str, sp: &str| {
+            code_current_label(&code_lib(p, sp), &code_current_scopes(key, "").unwrap())
+        };
+        assert_eq!(
+            label("local.comment_code_pinyin", "code_rev", "x"),
+            "当前：码表编码"
+        );
+        assert_eq!(
+            label("local.comment_code_pinyin", "none", "x"),
+            "当前：不显示"
+        );
+        assert_eq!(
+            label("local.comment_code_shuangpin", "x", "mine"),
+            "当前：我的"
+        );
+        let modes = code_current_scopes("local.comment_code_temp_pinyin", "").unwrap();
+        let lib = library_from_value(&json!({
+            "templates": [{ "id": "code", "name": "编码", "text": "x", "origin": "builtin" }],
+            "effective": [
+                { "scope": "mode:temp_pinyin", "state": "default", "vertical": false,
+                  "template_id": "code", "from_scope": "mode:temp_pinyin" },
+                { "scope": "mode:mix", "state": "default", "vertical": false,
+                  "template_id": "none", "from_scope": "mode:mix" }
+            ]
+        }));
+        assert_eq!(code_current_label(&lib, &modes), "当前：分别设置");
+    }
+
+    /// 引擎卡看所绑方案：分配里单独设过就显示它，没设过回落到类型层。
+    #[test]
+    fn code_current_follows_bound_scheme() {
+        let cell = |scope: &str, id: &str| {
+            json!({ "scope": scope, "state": "default", "vertical": false,
+                    "template_id": id, "from_scope": scope })
+        };
+        let lib = library_from_value(&json!({
+            "templates": [
+                { "id": "code", "name": "编码", "text": "x", "origin": "builtin" },
+                { "id": "mine", "name": "我的", "text": "x", "origin": "user" }
+            ],
+            "effective": [cell("type:shuangpin", "code"), cell("schema:xiaohe", "mine")]
+        }));
+        let label = |bound: &str| {
+            code_current_label(
+                &lib,
+                &code_current_scopes("local.comment_code_shuangpin", bound).unwrap(),
+            )
+        };
+        assert_eq!(label("xiaohe"), "当前：我的");
+        assert_eq!(label("ziranma"), "当前：编码");
+        assert_eq!(label(""), "当前：编码");
     }
 
     #[test]
