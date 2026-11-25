@@ -1022,6 +1022,15 @@ pub(crate) fn rename_steps(
     Ok(steps)
 }
 
+/// 多步命令中途失败时的说明：改号已成功而显示名称没存上，要让用户知道。
+pub(crate) fn step_failure(op: &str, index: usize, e: &str) -> String {
+    if op == "rename" && index > 0 {
+        format!("设备号已改，显示名称未保存（{e}）")
+    } else {
+        e.to_string()
+    }
+}
+
 /// 校验组名：去首尾空白，超过 [`GROUP_NAME_MAX`] 个字拒绝；`required` 时不能为空。
 pub(crate) fn check_group_name(name: &str, required: bool) -> Result<String, String> {
     let n = name.trim();

@@ -588,8 +588,8 @@ impl SyncUi {
         let op = op.to_string();
         std::thread::spawn(move || {
             let mut result = Ok(Value::Null);
-            for (method, params) in steps {
-                result = rpc::call_core(method, &params);
+            for (i, (method, params)) in steps.into_iter().enumerate() {
+                result = rpc::call_core(method, &params).map_err(|e| step_failure(&op, i, &e));
                 if result.is_err() {
                     break;
                 }
@@ -704,6 +704,11 @@ impl SyncUi {
         if self.busy.get() {
             return;
         }
+        if self.device.get().is_empty() {
+            self.rename_err
+                .set("还没读到本机设备号，请稍后再试".to_string());
+            return;
+        }
         let steps = rename_steps(
             &self.device.get(),
             &self.rename_id.get(),
@@ -741,11 +746,9 @@ impl SyncUi {
         self.group_dialog.set(true);
     }
 
-    fn save_group(&self) {
-        if self.busy.get() {
-            return;
-        }
-        let change = match self.group_mode.get() {
+    /// 对话框当前选择对应的更换组动作。
+    fn group_change(&self) -> Result<GroupChange, String> {
+        match self.group_mode.get() {
             0 => match self.group_choices.get().get(self.group_pick.get()) {
                 Some((g, _)) => Ok(GroupChange::Join {
                     group: g.clone(),
@@ -757,7 +760,14 @@ impl SyncUi {
                 .map(|name| GroupChange::NewGroup { name }),
             _ => check_group_name(&self.group_rename.get(), true)
                 .map(|name| GroupChange::Rename { name }),
-        };
+        }
+    }
+
+    fn save_group(&self) {
+        if self.busy.get() {
+            return;
+        }
+        let change = self.group_change();
         match change {
             Err(e) => self.group_err.set(e),
             Ok(c) => {

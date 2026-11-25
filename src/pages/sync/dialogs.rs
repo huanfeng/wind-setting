@@ -241,33 +241,52 @@ fn group_dialog(ui: &SyncUi) -> Element {
         ui.group_choices,
     );
     let err = ui.group_err;
+    let cap = |t: &str| muted(t).padding_xy(22, 0);
     let list = Element::switcher(choices, move |cs: Vec<(String, String)>| {
         let mut col = Element::col().width_match().spacing(6).padding_xy(22, 0);
-        if cs.is_empty() {
-            return col.child(muted("没有可加入的其他组"));
+        match cs.as_slice() {
+            [] => col.child(muted("没有可加入的其他组")),
+            [(_, label)] => col.child(
+                Element::label(format!("加入「{label}」"))
+                    .font_size(13.0)
+                    .fg_role(Role::Text),
+            ),
+            _ => {
+                for (i, (_, label)) in cs.iter().enumerate() {
+                    col = col.child(Element::radio(label.as_str(), pick, i));
+                }
+                col
+            }
         }
-        for (i, (_, label)) in cs.iter().enumerate() {
-            col = col.child(Element::radio(label.as_str(), pick, i));
-        }
-        col
     });
     let join = Element::col()
         .width_match()
-        .spacing(8)
+        .spacing(6)
+        .padding_xy(0, 2)
+        .child(cap("加入哪个组"))
         .child(list)
         .child(
             Element::col()
                 .width_match()
                 .spacing(6)
-                .padding_xy(22, 0)
-                .child(Element::radio("用组内设置替换本机", mine, 0))
-                .child(Element::radio("用本机设置替换组内", mine, 1))
+                .child(Element::leaf().height(6))
+                .child(cap("以哪边的设置为准"))
                 .child(
-                    Element::label_signal(mine.map(|m| join_confirm_text(*m == 0).to_string()))
-                        .font_size(12.5)
-                        .fg_role(Role::Warning)
+                    Element::col()
                         .width_match()
-                        .max_lines(3),
+                        .spacing(6)
+                        .padding_xy(22, 0)
+                        .child(Element::radio("用组内设置替换本机", mine, 0))
+                        .child(Element::radio("用本机设置替换组内", mine, 1))
+                        .child(
+                            Element::label_signal(
+                                mine.map(|m| join_confirm_text(*m == 0).to_string()),
+                            )
+                            .font_size(12.5)
+                            .fg_role(Role::Warning)
+                            .width_match()
+                            .max_lines(3),
+                        ),
                 )
                 .visible_when(move || !choices.get().is_empty()),
         )
@@ -275,19 +294,25 @@ fn group_dialog(ui: &SyncUi) -> Element {
     let body = Element::col()
         .width_match()
         .padding_xy(18, 14)
-        .spacing(10)
+        .spacing(12)
         .child(Element::radio("加入已有组", mode, 0))
         .child(join)
         .child(Element::radio("新建独立组", mode, 1))
         .child(
-            Element::text_input(ui.group_new_name, "组名（可不填）")
+            Element::col()
                 .width_match()
+                .spacing(4)
+                .child(Element::text_input(ui.group_new_name, "组名（可不填）").width_match())
+                .child(cap("本机退出当前组，单独成组"))
                 .visible_when(move || mode.get() == 1),
         )
         .child(Element::radio("重命名本组", mode, 2))
         .child(
-            Element::text_input(ui.group_rename, "新的组名")
+            Element::col()
                 .width_match()
+                .spacing(4)
+                .child(Element::text_input(ui.group_rename, "新的组名").width_match())
+                .child(cap("只改组的显示名，组内设备不变"))
                 .visible_when(move || mode.get() == 2),
         )
         .child(

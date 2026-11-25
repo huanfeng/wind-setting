@@ -276,3 +276,28 @@ fn group_dialog_lists_other_same_class_groups() {
         vec![("g2".to_string(), "公司 · 2 台".to_string())]
     );
 }
+
+#[test]
+fn group_mine_choice_maps_to_join_mode() {
+    let ui = SyncUi::new();
+    ui.group_choices
+        .set(vec![("g2".to_string(), "公司 · 2 台".to_string())]);
+    ui.group_mode.set(0);
+    let mode_of = |ui: &SyncUi| {
+        let c = group_change_commands(&ui.group_change().unwrap());
+        c[0].1["mode"].as_str().unwrap().to_string()
+    };
+    assert_eq!(mode_of(&ui), "theirs", "默认用组内设置");
+    ui.group_mine.set(1);
+    assert_eq!(mode_of(&ui), "mine");
+}
+
+#[test]
+fn rename_without_known_device_id_is_refused() {
+    let ui = SyncUi::new();
+    ui.open_rename_dialog();
+    ui.rename_id.set("d2".into());
+    ui.save_rename();
+    assert!(ui.rename_err.get().contains("设备号"));
+    assert!(ui.rename_dialog.get());
+}

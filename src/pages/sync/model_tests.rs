@@ -798,3 +798,13 @@ fn joinable_groups_are_other_same_class_groups() {
     assert_eq!(m.len(), 1);
     assert_eq!(m[0].id, "g3");
 }
+
+#[test]
+fn rename_partial_failure_says_id_already_changed() {
+    assert_eq!(
+        step_failure("rename", 1, "太长"),
+        "设备号已改，显示名称未保存（太长）"
+    );
+    assert_eq!(step_failure("rename", 0, "撞号"), "撞号");
+    assert_eq!(step_failure("group", 1, "x"), "x");
+}
