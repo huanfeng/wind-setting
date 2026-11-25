@@ -670,3 +670,131 @@ fn interval_waits_while_another_write_is_in_flight() {
         other => panic!("应发送：{other:?}"),
     }
 }
+
+#[test]
+fn device_id_rules() {
+    assert_eq!(check_device_id(" desk-1 ").unwrap(), "desk-1");
+    assert!(check_device_id("a").is_ok());
+    assert!(check_device_id(&"a".repeat(24)).is_ok());
+    assert!(check_device_id(&"a".repeat(25)).is_err(), "最长 24");
+    assert!(check_device_id("").is_err());
+    assert!(check_device_id("-a").is_err());
+    assert!(check_device_id("a-").is_err());
+    assert!(check_device_id("Desk").is_err(), "不收大写");
+    assert!(check_device_id("a_b").is_err());
+    assert!(check_device_id("书房").is_err());
+    assert!(check_device_id("a b").is_err());
+}
+
+fn saved_named(n: &str) -> Form {
+    Form {
+        enabled: true,
+        device_name: n.into(),
+        ..Form::default()
+    }
+}
+
+#[test]
+fn rename_steps_cover_four_combinations() {
+    let f = saved_named("旧名");
+    assert_eq!(rename_steps("d1", "d1", &f, "旧名").unwrap(), vec![]);
+    assert_eq!(
+        rename_steps("d1", "d2", &f, "旧名").unwrap(),
+        vec![(
+            "sync.command",
+            json!({ "op": "rename_device", "args": { "id": "d2" } })
+        )]
+    );
+    let only_name = rename_steps("d1", "d1", &f, " 新名 ").unwrap();
+    assert_eq!(only_name.len(), 1);
+    assert_eq!(only_name[0].0, "sync.setSettings");
+    assert_eq!(only_name[0].1["settings"]["device_name"], "新名");
+    assert_eq!(only_name[0].1["settings"]["enabled"], true, "其余设置原样");
+    let both = rename_steps("d1", "d2", &f, "新名").unwrap();
+    assert_eq!(both.len(), 2);
+    assert_eq!(both[0].1["op"], "rename_device", "先改号再改名");
+    assert_eq!(both[1].0, "sync.setSettings");
+}
+
+#[test]
+fn rename_steps_reject_bad_input_without_steps() {
+    let f = saved_named("");
+    assert!(rename_steps("d1", "Bad_", &f, "").is_err());
+    assert!(rename_steps("d1", "d1", &f, &"字".repeat(65)).is_err());
+}
+
+#[test]
+fn group_name_rules() {
+    assert_eq!(check_group_name(" 家里 ", true).unwrap(), "家里");
+    assert!(check_group_name("  ", true).is_err());
+    assert_eq!(check_group_name("", false).unwrap(), "");
+    assert!(check_group_name(&"字".repeat(64), true).is_ok());
+    assert!(check_group_name(&"字".repeat(65), false).is_err());
+}
+
+#[test]
+fn group_change_commands_per_kind() {
+    assert_eq!(
+        group_change_commands(&GroupChange::Join {
+            group: "g2".into(),
+            theirs: true
+        }),
+        vec![("join_group", json!({ "group": "g2", "mode": "theirs" }))]
+    );
+    assert_eq!(
+        group_change_commands(&GroupChange::Join {
+            group: "g2".into(),
+            theirs: false
+        }),
+        vec![("join_group", json!({ "group": "g2", "mode": "mine" }))]
+    );
+    assert_eq!(
+        group_change_commands(&GroupChange::NewGroup { name: "".into() }),
+        vec![("leave_group", json!({}))],
+        "没填组名就不带 name"
+    );
+    assert_eq!(
+        group_change_commands(&GroupChange::NewGroup {
+            name: "公司".into()
+        }),
+        vec![("leave_group", json!({ "name": "公司" }))]
+    );
+    assert_eq!(
+        group_change_commands(&GroupChange::Rename {
+            name: "新名".into()
+        }),
+        vec![("set_group_name", json!({ "name": "新名" }))]
+    );
+}
+
+#[test]
+fn join_confirm_text_follows_mode() {
+    assert_eq!(
+        join_confirm_text(true),
+        "本机设置将被组内设置替换（已备份）"
+    );
+    assert_eq!(join_confirm_text(false), "组内其他设备的设置将被本机替换");
+}
+
+#[test]
+fn joinable_groups_are_other_same_class_groups() {
+    let mut unreadable = dev_in("u", "g4", "", "windows", 1);
+    unreadable.readable = false;
+    let devs = vec![
+        dev_in("me", "g1", "家里", "windows", 9),
+        dev_in("w2", "g2", "公司", "linux", 8),
+        dev_in("w3", "g2", "公司", "windows", 7),
+        dev_in("ph", "g3", "", "android", 99),
+        dev_in("old", "", "", "windows", 5),
+        unreadable,
+    ];
+    let g = joinable_groups(PlatformClass::Desktop, "g1", &devs);
+    assert_eq!(g.len(), 1, "不含本组、手机组、无组号、不可读");
+    assert_eq!(
+        (g[0].id.as_str(), g[0].name.as_str(), g[0].devices.len()),
+        ("g2", "公司", 2)
+    );
+    let m = joinable_groups(PlatformClass::Mobile, "g1", &devs);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].id, "g3");
+}

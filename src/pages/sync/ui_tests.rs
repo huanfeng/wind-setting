@@ -204,3 +204,75 @@ fn interval_change_while_busy_is_deferred_not_sent() {
     assert!(ui.interval_pending.get(), "等在途命令结束再发");
     assert_eq!(ui.saved.borrow().interval_min, 15, "没发就不改已保存值");
 }
+
+#[test]
+fn rename_dialog_opens_with_current_values_and_rejects_bad_id() {
+    let ui = SyncUi::new();
+    ui.device.set("d1".into());
+    ui.saved.borrow_mut().device_name = "书房".into();
+    ui.open_rename_dialog();
+    assert_eq!(ui.rename_id.get(), "d1");
+    assert_eq!(ui.rename_name.get(), "书房");
+    ui.rename_id.set("Bad_".into());
+    ui.save_rename();
+    assert!(!ui.rename_err.get().is_empty());
+    assert!(ui.rename_dialog.get(), "校验失败框不关");
+}
+
+#[test]
+fn rename_with_nothing_changed_just_closes() {
+    let ui = SyncUi::new();
+    ui.device.set("d1".into());
+    ui.open_rename_dialog();
+    ui.save_rename();
+    assert!(!ui.rename_dialog.get());
+    assert_eq!(ui.rename_err.get(), "");
+}
+
+#[test]
+fn group_dialog_defaults_to_new_group_when_nothing_to_join() {
+    let ui = SyncUi::new();
+    ui.group.set("g1".into());
+    ui.group_name.set("家里".into());
+    ui.open_group_dialog();
+    assert_eq!(ui.group_mode.get(), 1);
+    assert_eq!(ui.group_rename.get(), "家里", "重命名预填当前组名");
+    ui.group_mode.set(2);
+    ui.group_rename.set("  ".into());
+    ui.save_group();
+    assert_eq!(ui.group_err.get(), "组名不能为空");
+}
+
+#[test]
+fn group_dialog_lists_other_same_class_groups() {
+    let ui = SyncUi::new();
+    let class = platform_class(std::env::consts::OS);
+    let p = if class == PlatformClass::Mobile {
+        "android"
+    } else {
+        "windows"
+    };
+    let mk = |id: &str, g: &str, n: &str| DeviceView {
+        id: id.into(),
+        name: id.into(),
+        platform: p.into(),
+        app_version: String::new(),
+        last_seen: 1,
+        is_self: false,
+        readable: true,
+        group: g.into(),
+        group_name: n.into(),
+    };
+    ui.devices.set(vec![
+        mk("a", "g1", "家里"),
+        mk("b", "g2", "公司"),
+        mk("c", "g2", "公司"),
+    ]);
+    ui.group.set("g1".into());
+    ui.open_group_dialog();
+    assert_eq!(ui.group_mode.get(), 0);
+    assert_eq!(
+        ui.group_choices.get(),
+        vec![("g2".to_string(), "公司 · 2 台".to_string())]
+    );
+}

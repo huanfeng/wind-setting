@@ -171,6 +171,20 @@ pub struct SyncUi {
     rename_dialog: Signal<bool>,
     group_dialog: Signal<bool>,
     identity_dialog: Signal<bool>,
+    /// 改号对话框的输入：设备号、显示名称与校验错误。
+    rename_id: Signal<String>,
+    rename_name: Signal<String>,
+    rename_err: Signal<String>,
+    /// 更换组对话框：0 加入已有组 / 1 新建独立组 / 2 重命名本组。
+    group_mode: Signal<usize>,
+    /// 可加入的组 `(组号, 「组名 · N 台」)` 与当前选中的下标。
+    group_choices: Signal<Vec<(String, String)>>,
+    group_pick: Signal<usize>,
+    /// 加入时：0 用组内设置替换本机 / 1 用本机设置替换组内。
+    group_mine: Signal<usize>,
+    group_new_name: Signal<String>,
+    group_rename: Signal<String>,
+    group_err: Signal<String>,
 
     loaded: Rc<Cell<bool>>,
     tx: Rc<RefCell<Option<Sender<SyncMsg>>>>,
@@ -258,6 +272,16 @@ impl SyncUi {
             rename_dialog: signal(false),
             group_dialog: signal(false),
             identity_dialog: signal(false),
+            rename_id: s(),
+            rename_name: s(),
+            rename_err: s(),
+            group_mode: signal(0),
+            group_choices: signal(Vec::new()),
+            group_pick: signal(0),
+            group_mine: signal(0),
+            group_new_name: s(),
+            group_rename: s(),
+            group_err: s(),
             loaded: Rc::new(Cell::new(false)),
             tx: Rc::new(RefCell::new(None)),
         }
@@ -305,6 +329,24 @@ impl SyncUi {
                 &json!({}),
             )));
             let _ = tx.send(SyncMsg::Status(rpc::call_core("sync.status", &json!({}))));
+        });
+    }
+
+    /// 改号、换组之后：同一个线程里按「设置、状态、名册」的顺序取，组标题不会和本机卡错位。
+    fn refresh_all(&self) {
+        let Some(tx) = self.tx.borrow().clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let _ = tx.send(SyncMsg::Settings(rpc::call_core(
+                "sync.getSettings",
+                &json!({}),
+            )));
+            let _ = tx.send(SyncMsg::Status(rpc::call_core("sync.status", &json!({}))));
+            let _ = tx.send(SyncMsg::Devices(rpc::call_core(
+                "sync.command",
+                &json!({ "op": "list_devices", "args": {} }),
+            )));
         });
     }
 
@@ -489,6 +531,8 @@ impl SyncUi {
                             self.pass_dialog.set(false);
                         }
                         "remove_device" => self.refresh_devices(),
+                        "rename" => self.rename_dialog.set(false),
+                        "group" => self.group_dialog.set(false),
                         "reset_remote" => {
                             self.reset_pass1.set(String::new());
                             self.reset_pass2.set(String::new());
@@ -514,7 +558,11 @@ impl SyncUi {
                     self.save_interval();
                 }
                 // 命令常带来状态变化（has_secret、阶段），事件之外再拉一次兜底。
-                self.refresh();
+                if matches!(op.as_str(), "rename" | "group") {
+                    self.refresh_all();
+                } else {
+                    self.refresh();
+                }
             }
         }
     }
@@ -643,14 +691,80 @@ impl SyncUi {
         self.wizard.set(true);
     }
 
-    /// 「给本机改号…」：改号对话框由 Task 3 挂到 `rename_dialog`。
+    /// 「改…」「给本机改号…」：输入框带出当前设备号与已保存的显示名称。
     fn open_rename_dialog(&self) {
+        self.rename_id.set(self.device.get());
+        self.rename_name
+            .set(self.saved.borrow().device_name.clone());
+        self.rename_err.set(String::new());
         self.rename_dialog.set(true);
     }
 
-    /// 「更换组…」：对话框由 Task 3 挂到 `group_dialog`。
+    fn save_rename(&self) {
+        if self.busy.get() {
+            return;
+        }
+        let steps = rename_steps(
+            &self.device.get(),
+            &self.rename_id.get(),
+            &self.saved.borrow(),
+            &self.rename_name.get(),
+        );
+        match steps {
+            Err(e) => self.rename_err.set(e),
+            Ok(steps) if steps.is_empty() => self.rename_dialog.set(false),
+            Ok(steps) => {
+                self.rename_err.set(String::new());
+                self.run_steps("rename", steps);
+            }
+        }
+    }
+
+    /// 「更换组…」：列出同类设备所在的其他组；没有可加入的就默认「新建独立组」。
     fn open_group_dialog(&self) {
+        let groups = joinable_groups(
+            platform_class(std::env::consts::OS),
+            &self.group.get(),
+            &self.devices.get(),
+        );
+        let choices: Vec<(String, String)> = groups
+            .iter()
+            .map(|g| (g.id.clone(), format!("{} · {} 台", g.name, g.devices.len())))
+            .collect();
+        self.group_mode.set(if choices.is_empty() { 1 } else { 0 });
+        self.group_choices.set(choices);
+        self.group_pick.set(0);
+        self.group_mine.set(0);
+        self.group_new_name.set(String::new());
+        self.group_rename.set(self.group_name.get());
+        self.group_err.set(String::new());
         self.group_dialog.set(true);
+    }
+
+    fn save_group(&self) {
+        if self.busy.get() {
+            return;
+        }
+        let change = match self.group_mode.get() {
+            0 => match self.group_choices.get().get(self.group_pick.get()) {
+                Some((g, _)) => Ok(GroupChange::Join {
+                    group: g.clone(),
+                    theirs: self.group_mine.get() == 0,
+                }),
+                None => Err("没有可加入的组".to_string()),
+            },
+            1 => check_group_name(&self.group_new_name.get(), false)
+                .map(|name| GroupChange::NewGroup { name }),
+            _ => check_group_name(&self.group_rename.get(), true)
+                .map(|name| GroupChange::Rename { name }),
+        };
+        match change {
+            Err(e) => self.group_err.set(e),
+            Ok(c) => {
+                self.group_err.set(String::new());
+                self.run("group", group_change_commands(&c));
+            }
+        }
     }
 
     /// 「确认身份…」：对话框由 Task 4 挂到 `identity_dialog`。

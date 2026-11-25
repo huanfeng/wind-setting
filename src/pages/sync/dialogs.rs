@@ -17,6 +17,8 @@ pub(super) fn mount(ui: &SyncUi, state: &AppState) {
         mass_delete_dialog(ui),
         reset_dialog(ui),
         remove_device_dialog(ui),
+        rename_dialog(ui),
+        group_dialog(ui),
     ];
     state.fields.dialogs.borrow_mut().extend(all);
 }
@@ -183,6 +185,133 @@ fn remove_device_dialog(ui: &SyncUi) -> Element {
                 .on_click(move |_| u.confirm_remove()),
         );
     Element::dialog(visible, dialog_frame("移除设备", body, footer))
+}
+
+/// 改号与显示名称：两项都不变时保存只关框。
+fn rename_dialog(ui: &SyncUi) -> Element {
+    let visible = ui.rename_dialog;
+    let err = ui.rename_err;
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 14)
+        .spacing(12)
+        .child(field(
+            "设备号",
+            Element::text_input(ui.rename_id, "小写字母、数字、短横线，最长 24 个字符")
+                .width_match(),
+        ))
+        .child(muted(
+            "设备号用来区分同一存储里的各台设备；与另一台设备撞号时，给本机换一个就行。",
+        ))
+        .child(field(
+            "显示名称",
+            Element::text_input(ui.rename_name, "其他设备上看到的名字").width_match(),
+        ))
+        .child(
+            Element::label_signal(err)
+                .font_size(12.5)
+                .fg_role(Role::Danger)
+                .width_match()
+                .max_lines(3)
+                .visible_when(move || !err.get().is_empty()),
+        );
+    let (u, busy) = (ui.clone(), ui.busy);
+    let footer = Element::row()
+        .spacing(8)
+        .child(btn2("取消").on_click(move |_| visible.set(false)))
+        .child(
+            btn("保存")
+                .enabled_when(move || !busy.get())
+                .on_click(move |_| u.save_rename()),
+        );
+    Element::dialog_closable(
+        visible,
+        dialog_frame("修改设备号", body, footer),
+        move |_| visible.set(false),
+    )
+}
+
+/// 更换组：加入已有组（带替换方向与确认文案）/ 新建独立组 / 重命名本组。
+fn group_dialog(ui: &SyncUi) -> Element {
+    let visible = ui.group_dialog;
+    let (mode, pick, mine, choices) = (
+        ui.group_mode,
+        ui.group_pick,
+        ui.group_mine,
+        ui.group_choices,
+    );
+    let err = ui.group_err;
+    let list = Element::switcher(choices, move |cs: Vec<(String, String)>| {
+        let mut col = Element::col().width_match().spacing(6).padding_xy(22, 0);
+        if cs.is_empty() {
+            return col.child(muted("没有可加入的其他组"));
+        }
+        for (i, (_, label)) in cs.iter().enumerate() {
+            col = col.child(Element::radio(label.as_str(), pick, i));
+        }
+        col
+    });
+    let join = Element::col()
+        .width_match()
+        .spacing(8)
+        .child(list)
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(6)
+                .padding_xy(22, 0)
+                .child(Element::radio("用组内设置替换本机", mine, 0))
+                .child(Element::radio("用本机设置替换组内", mine, 1))
+                .child(
+                    Element::label_signal(mine.map(|m| join_confirm_text(*m == 0).to_string()))
+                        .font_size(12.5)
+                        .fg_role(Role::Warning)
+                        .width_match()
+                        .max_lines(3),
+                )
+                .visible_when(move || !choices.get().is_empty()),
+        )
+        .visible_when(move || mode.get() == 0);
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 14)
+        .spacing(10)
+        .child(Element::radio("加入已有组", mode, 0))
+        .child(join)
+        .child(Element::radio("新建独立组", mode, 1))
+        .child(
+            Element::text_input(ui.group_new_name, "组名（可不填）")
+                .width_match()
+                .visible_when(move || mode.get() == 1),
+        )
+        .child(Element::radio("重命名本组", mode, 2))
+        .child(
+            Element::text_input(ui.group_rename, "新的组名")
+                .width_match()
+                .visible_when(move || mode.get() == 2),
+        )
+        .child(
+            Element::label_signal(err)
+                .font_size(12.5)
+                .fg_role(Role::Danger)
+                .width_match()
+                .max_lines(3)
+                .visible_when(move || !err.get().is_empty()),
+        );
+    let (u, busy) = (ui.clone(), ui.busy);
+    let footer = Element::row()
+        .spacing(8)
+        .child(btn2("取消").on_click(move |_| visible.set(false)))
+        .child(
+            btn("确定")
+                .enabled_when(move || !busy.get())
+                .on_click(move |_| u.save_group()),
+        );
+    Element::dialog_closable(
+        visible,
+        dialog_frame("更换组", body, footer),
+        move |_| visible.set(false),
+    )
 }
 
 fn reset_dialog(ui: &SyncUi) -> Element {

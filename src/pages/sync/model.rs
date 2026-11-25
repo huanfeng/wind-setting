@@ -924,6 +924,8 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "storage" => "保存存储设置",
         "disable" => "停用同步",
         "interval" => "保存同步间隔",
+        "rename" => "修改设备信息",
+        "group" => "更换组",
         other => other,
     };
     match r {
@@ -966,6 +968,126 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
             }
         }
     }
+}
+
+// ───────────────────────── 改号与更换组 ─────────────────────────
+
+/// 设备号长度上限（与 core 对齐）。
+pub(crate) const DEVICE_ID_MAX: usize = 24;
+/// 组名长度上限（与 core 对齐）。
+pub(crate) const GROUP_NAME_MAX: usize = 64;
+
+/// 校验设备号：`[a-z0-9-]`、1–24 个、不以 `-` 开头或结尾。
+pub(crate) fn check_device_id(id: &str) -> Result<String, String> {
+    let id = id.trim();
+    let n = id.chars().count();
+    if n == 0 || n > DEVICE_ID_MAX {
+        return Err(format!("设备号要 1 到 {DEVICE_ID_MAX} 个字符"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err("设备号只能用小写字母、数字和短横线".to_string());
+    }
+    if id.starts_with('-') || id.ends_with('-') {
+        return Err("设备号不能以短横线开头或结尾".to_string());
+    }
+    Ok(id.to_string())
+}
+
+/// 改号对话框保存的步骤：设备号变了先 `rename_device`，显示名称变了再 `sync.setSettings`；都没变为空。
+pub(crate) fn rename_steps(
+    cur_id: &str,
+    new_id: &str,
+    saved: &Form,
+    new_name: &str,
+) -> Result<Vec<Step>, String> {
+    let id = check_device_id(new_id)?;
+    let name = check_device_name(new_name)?;
+    let mut steps: Vec<Step> = Vec::new();
+    if id != cur_id {
+        steps.push((
+            "sync.command",
+            json!({ "op": "rename_device", "args": { "id": id } }),
+        ));
+    }
+    if name != saved.device_name.trim() {
+        let f = Form {
+            device_name: name,
+            ..saved.clone()
+        };
+        steps.push(("sync.setSettings", json!({ "settings": f.to_settings() })));
+    }
+    Ok(steps)
+}
+
+/// 校验组名：去首尾空白，超过 [`GROUP_NAME_MAX`] 个字拒绝；`required` 时不能为空。
+pub(crate) fn check_group_name(name: &str, required: bool) -> Result<String, String> {
+    let n = name.trim();
+    if required && n.is_empty() {
+        Err("组名不能为空".to_string())
+    } else if n.chars().count() > GROUP_NAME_MAX {
+        Err(format!("组名不能超过 {GROUP_NAME_MAX} 个字"))
+    } else {
+        Ok(n.to_string())
+    }
+}
+
+/// 更换组的三种做法。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupChange {
+    /// 加入已有组（组号）；`theirs` = 用组内设置替换本机，否则用本机替换组内。
+    Join {
+        group: String,
+        theirs: bool,
+    },
+    /// 退出成新的独立组，组名可空。
+    NewGroup {
+        name: String,
+    },
+    Rename {
+        name: String,
+    },
+}
+
+/// 更换组对应的 `sync.command` 序列。
+pub(crate) fn group_change_commands(c: &GroupChange) -> Vec<(&'static str, Value)> {
+    match c {
+        GroupChange::Join { group, theirs } => {
+            let mode = if *theirs { "theirs" } else { "mine" };
+            vec![("join_group", json!({ "group": group, "mode": mode }))]
+        }
+        GroupChange::NewGroup { name } if name.is_empty() => vec![("leave_group", json!({}))],
+        GroupChange::NewGroup { name } => vec![("leave_group", json!({ "name": name }))],
+        GroupChange::Rename { name } => vec![("set_group_name", json!({ "name": name }))],
+    }
+}
+
+/// 加入已有组前的确认文案。
+pub(crate) fn join_confirm_text(theirs: bool) -> &'static str {
+    if theirs {
+        "本机设置将被组内设置替换（已备份）"
+    } else {
+        "组内其他设备的设置将被本机替换"
+    }
+}
+
+/// 「加入已有组」可选的组：与本机同类设备所在的其他组（不含本组、无组号的）。
+pub(crate) fn joinable_groups(
+    class: PlatformClass,
+    my_group: &str,
+    devs: &[DeviceView],
+) -> Vec<GroupView> {
+    let same: Vec<DeviceView> = devs
+        .iter()
+        .filter(|d| d.readable && platform_class(&d.platform) == class)
+        .cloned()
+        .collect();
+    group_devices(&same, my_group)
+        .into_iter()
+        .filter(|g| !g.id.is_empty() && g.id != my_group)
+        .collect()
 }
 
 #[cfg(test)]

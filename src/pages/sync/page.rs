@@ -194,7 +194,7 @@ fn status_card(ui: &SyncUi) -> Element {
     )
 }
 
-/// 本机卡（Task 3 接上改号与更换组对话框）。
+/// 本机卡：设备号、显示名称、所在组；改号与更换组走各自的对话框。
 fn self_card(ui: &SyncUi) -> Element {
     let (u_rename, u_group) = (ui.clone(), ui.clone());
     let name = ui.device_name.map(|n| {
