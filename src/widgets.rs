@@ -794,6 +794,8 @@ pub enum CardItem {
     /// 不包 [`card_pad`]。块内的行要自己用 [`card_pad`] 包、行间用 [`row_divider`]，
     /// 「通栏」分割线才贴得到卡片边。
     Bare(Element),
+    /// 带运行期可见性的 [`CardItem::Bare`]：隐藏时前后分割线跟着走。
+    BareWhen(Element, Vis),
 }
 
 /// 运行期可见性判据。用于用户「设置项精简」这类**改完即时生效**的隐藏——与定制版的
@@ -807,14 +809,16 @@ impl CardItem {
         match self {
             CardItem::Row(e) | CardItem::RowWhen(e, _) => padded(e),
             CardItem::Heading(t) | CardItem::HeadingWhen(t, _) => card_heading(&t),
-            CardItem::Bare(e) => e,
+            CardItem::Bare(e) | CardItem::BareWhen(e, _) => e,
         }
     }
 
     /// 本项的运行期可见性；恒可见的项返回 `None`（省一次间接调用）。
     fn vis(&self) -> Option<Vis> {
         match self {
-            CardItem::RowWhen(_, v) | CardItem::HeadingWhen(_, v) => Some(v.clone()),
+            CardItem::RowWhen(_, v) | CardItem::HeadingWhen(_, v) | CardItem::BareWhen(_, v) => {
+                Some(v.clone())
+            }
             _ => None,
         }
     }

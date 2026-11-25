@@ -142,9 +142,13 @@ fn wizard_row(ui: &SyncUi, configured: bool) -> CardItem {
         setting_row(
             wizard_text(configured),
             None,
-            btn(wizard_button(configured))
-                .enabled_when(move || installed.get() && !busy.get())
-                .on_click(move |_| u.open_wizard()),
+            if configured {
+                btn2(wizard_button(true))
+            } else {
+                btn(wizard_button(false))
+            }
+            .enabled_when(move || installed.get() && !busy.get())
+            .on_click(move |_| u.open_wizard()),
         ),
         vis(move || cfg.get() == configured),
     )
@@ -326,7 +330,6 @@ fn devices_card(ui: &SyncUi) -> Element {
         col
     });
     let cfg = ui.configured;
-    let list = list.visible_when(move || cfg.get());
     gated_section(
         ui,
         NAV[3],
@@ -340,7 +343,7 @@ fn devices_card(ui: &SyncUi) -> Element {
                     .padding_xy(0, 10),
                 vis(move || !devices_err.get().is_empty()),
             ),
-            CardItem::Bare(list),
+            CardItem::BareWhen(list, vis(move || cfg.get())),
         ],
     )
 }
