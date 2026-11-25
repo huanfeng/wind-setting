@@ -1579,11 +1579,8 @@ impl AppState {
 
     /// 记录本次检查时间，用于 24h 节流。
     pub fn mark_update_checked(&mut self, now: i64) {
-        self.setting_config.update.last_check_at = now;
-        if let Err(e) = crate::setting_config::save(&self.setting_config) {
-            // 只影响节流精度，不该打断启动流程
-            tracing::warn!("保存检查更新时间失败：{e}");
-        }
+        // 写本机状态文件，不动会同步的 wind_setting.toml；失败只影响节流精度
+        crate::local_state::mark_update_checked(now);
     }
 
     /// 持久化界面状态（明暗 / 方案列表两个显示过滤）。

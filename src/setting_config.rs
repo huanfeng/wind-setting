@@ -134,8 +134,9 @@ pub struct UpdateConfig {
     /// 用户点「跳过此版本」记下的版本号；该版本不再提示。
     #[serde(default)]
     pub skipped_version: String,
-    /// 上次检查的 Unix 秒，用于节流。
-    #[serde(default)]
+    /// 旧版存在这里的上次检查 Unix 秒：只读不写，新值见 [`crate::local_state`]
+    /// （本机状态，不随设备组同步）。下次保存本文件时该键自然消失。
+    #[serde(default, skip_serializing)]
     pub last_check_at: i64,
 }
 
@@ -536,7 +537,7 @@ mod tests {
                 network_consent: true,
                 auto_check: false,
                 skipped_version: "0.107.0-dev.3".to_string(),
-                last_check_at: 1_750_000_000,
+                last_check_at: 0,
             },
             ui: UiStateConfig::default(),
             protocol: ProtocolConfig::default(),

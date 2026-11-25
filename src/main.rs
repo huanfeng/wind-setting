@@ -35,6 +35,7 @@ mod hide_menu_e2e;
 mod hide_menu_structure;
 mod icons;
 mod key_conflict;
+mod local_state;
 mod log_tools;
 mod logger;
 mod look;
@@ -647,7 +648,12 @@ fn main() {
             // 定制版藏了「检查更新」：开窗也不自动查、不弹升级框（同 `feature:wizard`）。
             false
         } else {
-            update::should_auto_check(cfg.network_consent, cfg.auto_check, cfg.last_check_at, now)
+            update::should_auto_check(
+                cfg.network_consent,
+                cfg.auto_check,
+                local_state::last_check_at(cfg.last_check_at),
+                now,
+            )
         };
         if forced && !cfg.network_consent {
             tracing::warn!("请求了强制检查更新，但用户尚未同意联网，已跳过");
