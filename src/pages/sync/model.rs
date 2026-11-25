@@ -294,22 +294,31 @@ pub(crate) fn storage_summary(f: &Form) -> String {
     }
 }
 
-/// 换存储后解开数据用的命令：口令或导出的密钥；没填返回 None。
+/// 换存储后解开数据用的命令：口令或导出的密钥；没填返回 None。口令要输两次（远端为空时会用它新建库）。
+/// 口令带同值的 `old_passphrase`：远端已有库时 core 先用它解开验证，错了只报错，不会像持有同一密钥时
+/// 那样直接把远端口令改成这次未验证的输入；远端为空时 core 忽略它、用口令初始化。
 pub(crate) fn unlock_command(
     use_key: bool,
-    passphrase: &str,
+    pass1: &str,
+    pass2: &str,
     key: &str,
-) -> Option<(&'static str, Value)> {
+) -> Result<Option<(&'static str, Value)>, &'static str> {
     if use_key {
         let key = key.trim();
-        (!key.is_empty()).then(|| ("import_key", json!({ "key": key })))
-    } else {
-        (!passphrase.is_empty()).then(|| ("set_passphrase", json!({ "passphrase": passphrase })))
+        return Ok((!key.is_empty()).then(|| ("import_key", json!({ "key": key }))));
     }
+    if pass1.is_empty() {
+        return Ok(None);
+    }
+    check_passphrase(pass1, pass2)?;
+    Ok(Some((
+        "set_passphrase",
+        json!({ "passphrase": pass1, "old_passphrase": pass1 }),
+    )))
 }
 
 /// 「更换存储」的执行序列。位置变了要重填存储密码（core 会清掉旧的），并用口令或密钥
-/// 重新解开新位置的数据；位置没变只更新设置与填了的密码。
+/// 重新解开新位置的数据；填了口令或密钥就照发，这样口令错一次后改对重试（此时设置已是新位置）仍会解锁。
 pub(crate) fn storage_change_steps(
     saved: &Form,
     new: &Form,
@@ -325,9 +334,7 @@ pub(crate) fn storage_change_steps(
     }
     let mut cmds: Vec<(&'static str, Value)> =
         secrets.into_iter().map(|a| ("set_secret", a)).collect();
-    if moved {
-        cmds.extend(unlock);
-    }
+    cmds.extend(unlock);
     Ok(save_steps(new.to_settings(), cmds))
 }
 
@@ -778,7 +785,7 @@ pub(crate) fn identity_options_for(
         .filter(|d| d.readable && platform_class(&d.platform) == class)
         .cloned()
         .collect();
-    same.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    same.sort_by_key(|d| std::cmp::Reverse(d.last_seen));
     let mut opts: Vec<IdentityChoice> = same
         .iter()
         .map(|d| IdentityChoice::Restore(d.id.clone()))
@@ -844,9 +851,12 @@ pub(crate) fn secret_commands(s3: bool, webdav_password: &str, s3_secret: &str) 
 }
 
 /// 机密输入框的占位文案：只反映「本机有没有」，从不带内容。
-pub(crate) fn secret_placeholder(has_secret: bool) -> &'static str {
+pub(crate) fn secret_placeholder(has_secret: bool, saved_backend: bool) -> &'static str {
     if has_secret {
         "已保存（留空则不修改）"
+    } else if saved_backend {
+        // 只存了密码、还没口令时 has_secret 也为假
+        "如已保存过密码可留空"
     } else {
         "未设置"
     }

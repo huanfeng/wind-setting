@@ -101,7 +101,8 @@ pub(crate) fn done_text(from: WizStep, mode: &str) -> &'static str {
     }
 }
 
-/// 第 1 步的校验：要有存储地址；本机没存过密码、或换了存储位置（core 会清掉旧密码）时要填密码。
+/// 第 1 步的校验：要有存储地址；换了存储位置（core 会清掉旧密码）、或此前没有存储参数又没存过机密时要填密码。
+/// 已有存储参数时可留空：core 有已存密码就继续，没有则测试连接报「尚未保存存储凭据」。
 pub(crate) fn check_wizard_storage(
     saved: &Form,
     new: &Form,
@@ -111,7 +112,8 @@ pub(crate) fn check_wizard_storage(
     if new.backend_blank() {
         return Err("请填写存储地址");
     }
-    if secret.is_empty() && (!has_secret || backend_location_changed(saved, new)) {
+    let need = backend_location_changed(saved, new) || (saved.backend_blank() && !has_secret);
+    if secret.is_empty() && need {
         return Err(if new.s3 {
             "请填写 Secret"
         } else {

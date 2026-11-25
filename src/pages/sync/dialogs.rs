@@ -58,7 +58,6 @@ pub(super) fn dialog_frame_w(width: i32, title: &str, body: Element, footer: Ele
 }
 
 fn passphrase_dialog(ui: &SyncUi) -> Element {
-    let visible = ui.pass_dialog;
     let joined = ui.joined;
     let body = Element::col()
         .width_match()
@@ -95,14 +94,14 @@ fn passphrase_dialog(ui: &SyncUi) -> Element {
                 .fg_role(Role::Danger)
                 .width_match(),
         );
-    let (u, busy) = (ui.clone(), ui.busy);
+    let (u, u2, busy, visible) = (ui.clone(), ui.clone(), ui.busy, ui.pass_dialog);
     let footer = Element::row()
         .spacing(8)
         .child(
             Element::button("取消")
                 .small()
                 .outline_soft()
-                .on_click(move |_| visible.set(false)),
+                .on_click(move |_| u2.close_passphrase_dialog()),
         )
         .child(
             Element::button("确定")
@@ -110,7 +109,12 @@ fn passphrase_dialog(ui: &SyncUi) -> Element {
                 .enabled_when(move || !busy.get())
                 .on_click(move |_| u.submit_passphrase()),
         );
-    Element::dialog(visible, dialog_frame("修改口令", body, footer))
+    let u3 = ui.clone();
+    Element::dialog_closable(
+        visible,
+        dialog_frame("修改口令", body, footer),
+        move |_| u3.close_passphrase_dialog(),
+    )
 }
 
 fn mass_delete_dialog(ui: &SyncUi) -> Element {
@@ -441,12 +445,10 @@ pub(super) fn storage_fields(ui: &SyncUi) -> Element {
     let is_wd = move || b.get() == 0;
     let is_s3 = move || b.get() == 1;
     let inp = |s: Signal<String>, ph: &str| Element::text_input(s, ph).width_match();
-    let has = ui.has_secret;
+    let hint = ui.secret_hint;
     let secret = move |s: Signal<String>| {
-        Element::switcher(has, move |h| {
-            Element::text_input(s, secret_placeholder(h))
-                .password()
-                .width_match()
+        Element::switcher(hint, move |h| {
+            Element::text_input(s, h).password().width_match()
         })
     };
     let two = |a: Element, b: Element| {
@@ -516,6 +518,7 @@ fn storage_dialog(ui: &SyncUi) -> Element {
                 .width_match()
                 .spacing(8)
                 .child(field("同步口令", pwd(ui.pass1, "新位置上同步数据的口令")))
+                .child(field("再输入一次", pwd(ui.pass2, "")))
                 .child(
                     Element::link("改用导出的密钥")
                         .font_size(12.5)
@@ -543,7 +546,7 @@ fn storage_dialog(ui: &SyncUi) -> Element {
         .padding_xy(20, 16)
         .spacing(14)
         .child(muted(
-            "换到别的存储位置时，要重填该位置的密码，并用同步口令或导出的密钥解开那里的数据；只改密码则下面的口令可以不填。原存储里的数据不会被删除。",
+            "换到别的存储位置时，要重填该位置的密码，并用同步口令或导出的密钥解开那里的数据；新位置还没有数据时会用这个口令新建。只改密码则下面的口令可以不填。原存储里的数据不会被删除。",
         ))
         .child(storage_fields(ui))
         .child(Element::divider())

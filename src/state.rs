@@ -821,7 +821,7 @@ pub struct AppState {
     pub stats_mgr: crate::pages::stats::StatsState,
     /// 高级页「性能与诊断」里的内存诊断（摘要行 + 诊断信息对话框）。
     pub memory: crate::pages::memory::MemoryDiag,
-    /// 高级页「数据同步」卡（设置、状态、口令与密钥对话框；全部经 `sync.*` RPC）。
+    /// 「同步」页状态（设置、状态、口令与密钥等对话框；全部经 `sync.*` RPC）。
     pub sync: crate::pages::sync::SyncUi,
     /// 「应用兼容」窗的状态（每次改动立即经 `compat.*` 落盘，不走 `FieldRegistry`）。
     pub compat_mgr: crate::pages::compat::CompatState,

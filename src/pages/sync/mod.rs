@@ -85,6 +85,8 @@ pub struct SyncUi {
     installed: Signal<bool>,
     /// 已有机密（凭据 / 密钥）。
     has_secret: Signal<bool>,
+    /// 存储密码框的占位文案，随 `has_secret` 与已存存储参数更新。
+    secret_hint: Signal<&'static str>,
     /// 已装、已启用、已加入：显示完整的同步页，否则只给「开始配置」。
     configured: Signal<bool>,
     needs_identity: Signal<bool>,
@@ -236,6 +238,7 @@ impl SyncUi {
         SyncUi {
             installed: signal(true),
             has_secret: signal(false),
+            secret_hint: signal(secret_placeholder(false, false)),
             configured: signal(false),
             needs_identity: signal(false),
             dup_device: signal(false),
@@ -446,6 +449,7 @@ impl SyncUi {
         let s = StatusView::parse(v);
         self.installed.set(s.installed);
         self.has_secret.set(s.has_secret);
+        self.update_secret_hint();
         self.joined.set(s.joined);
         self.configured.set(s.configured());
         self.needs_identity.set(s.needs_identity);
@@ -492,6 +496,13 @@ impl SyncUi {
         }
         self.interval.set(f.interval_min as f64);
         self.device_name.set(f.device_name.clone());
+        self.update_secret_hint();
+    }
+
+    fn update_secret_hint(&self) {
+        let saved_backend = !self.saved.borrow().backend_blank();
+        self.secret_hint
+            .set(secret_placeholder(self.has_secret.get(), saved_backend));
     }
 
     fn reset_storage_form(&self) {
@@ -691,9 +702,12 @@ impl SyncUi {
         let unlock = unlock_command(
             self.storage_use_key.get(),
             &self.pass1.get(),
+            &self.pass2.get(),
             &self.import_key.get(),
         );
-        match storage_change_steps(&self.saved.borrow(), &new, secrets, unlock) {
+        let steps =
+            unlock.and_then(|u| storage_change_steps(&self.saved.borrow(), &new, secrets, u));
+        match steps {
             Err(e) => self.storage_err.set(e.to_string()),
             Ok(steps) => {
                 self.storage_err.set(String::new());
@@ -722,6 +736,15 @@ impl SyncUi {
         self.pass2.set(String::new());
         self.old_pass.set(String::new());
         self.pass_dialog.set(true);
+    }
+
+    /// 关「修改口令」框：口令随即清掉，下次打开不带旧输入。
+    fn close_passphrase_dialog(&self) {
+        self.pass_dialog.set(false);
+        self.pass1.set(String::new());
+        self.pass2.set(String::new());
+        self.old_pass.set(String::new());
+        self.pass_err.set(String::new());
     }
 
     fn open_reset_dialog(&self) {

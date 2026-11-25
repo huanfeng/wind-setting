@@ -198,7 +198,7 @@ fn status_card(ui: &SyncUi) -> Element {
 
 /// 本机卡：设备号、显示名称、所在组；改号与更换组走各自的对话框。
 fn self_card(ui: &SyncUi) -> Element {
-    let (u_rename, u_group) = (ui.clone(), ui.clone());
+    let (u_rename, u_group, needs_identity) = (ui.clone(), ui.clone(), ui.needs_identity);
     let name = ui.device_name.map(|n| {
         if n.trim().is_empty() {
             "未设置".to_string()
@@ -223,7 +223,10 @@ fn self_card(ui: &SyncUi) -> Element {
                 None,
                 value_and(
                     ui.group_line,
-                    btn2("更换组…").on_click(move |_| u_group.open_group_dialog()),
+                    // 身份未确认时 core 拒绝换组，先置灰
+                    btn2("更换组…")
+                        .enabled_when(move || !needs_identity.get())
+                        .on_click(move |_| u_group.open_group_dialog()),
                 ),
             )),
         ],

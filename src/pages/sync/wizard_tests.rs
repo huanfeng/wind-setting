@@ -129,6 +129,11 @@ fn storage_check_needs_location_and_secret() {
         check_wizard_storage(&webdav(), &moved, true, "").is_err(),
         "换位置 core 会清掉旧密码"
     );
+    assert_eq!(
+        check_wizard_storage(&webdav(), &webdav(), false, ""),
+        Ok(()),
+        "已有存储参数可留空：core 有已存密码就继续，没有则测试连接报错"
+    );
 }
 
 #[test]

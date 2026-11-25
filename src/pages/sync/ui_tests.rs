@@ -17,12 +17,57 @@ fn secret_inputs_are_cleared_after_storage_save_dispatch() {
     ui.wd_password.set("hunter2".into());
     ui.s3_secret.set("sk".into());
     ui.pass1.set("口令".into());
+    ui.pass2.set("口令".into());
     // 单测无 tx，命令发不出去；提交动作本身必须已清掉输入。
     ui.save_storage();
     assert_eq!(ui.storage_err.get(), "");
     assert_eq!(ui.wd_password.get(), "");
     assert_eq!(ui.s3_secret.get(), "");
-    assert_eq!(ui.pass1.get(), "");
+    assert_eq!(
+        (ui.pass1.get(), ui.pass2.get()),
+        (String::new(), String::new())
+    );
+}
+
+#[test]
+fn storage_passphrase_mismatch_is_refused_and_keeps_inputs() {
+    let ui = SyncUi::new();
+    ui.wd_password.set("pw".into());
+    ui.pass1.set("a".into());
+    ui.pass2.set("b".into());
+    ui.save_storage();
+    assert_eq!(ui.storage_err.get(), "两次输入的口令不一致");
+    assert!(!ui.busy.get());
+    assert_eq!(ui.wd_password.get(), "pw", "没发出去就不清");
+}
+
+#[test]
+fn cancelling_passphrase_dialog_clears_inputs() {
+    let ui = SyncUi::new();
+    ui.open_passphrase_dialog();
+    ui.old_pass.set("o".into());
+    ui.pass1.set("a".into());
+    ui.pass2.set("a".into());
+    ui.close_passphrase_dialog();
+    assert!(!ui.pass_dialog.get());
+    assert_eq!(
+        (ui.old_pass.get(), ui.pass1.get(), ui.pass2.get()),
+        (String::new(), String::new(), String::new())
+    );
+}
+
+#[test]
+fn secret_hint_follows_saved_backend_and_has_secret() {
+    let ui = SyncUi::new();
+    assert_eq!(ui.secret_hint.get(), "未设置");
+    ui.apply_form(&Form {
+        wd_url: "https://a/dav/".into(),
+        wd_user: "u".into(),
+        ..Form::default()
+    });
+    assert_eq!(ui.secret_hint.get(), "如已保存过密码可留空");
+    ui.apply_status(&json!({ "installed": true, "has_secret": true }));
+    assert!(ui.secret_hint.get().starts_with("已保存"));
 }
 
 #[test]

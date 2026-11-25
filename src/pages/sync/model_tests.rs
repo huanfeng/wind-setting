@@ -77,8 +77,13 @@ fn secrets_never_enter_settings_and_empty_is_not_sent() {
 
 #[test]
 fn secret_placeholder_reveals_only_presence() {
-    assert!(secret_placeholder(true).starts_with("已保存"));
-    assert_eq!(secret_placeholder(false), "未设置");
+    assert!(secret_placeholder(true, true).starts_with("已保存"));
+    assert_eq!(secret_placeholder(false, false), "未设置");
+    assert_eq!(
+        secret_placeholder(false, true),
+        "如已保存过密码可留空",
+        "已有存储参数时 core 可能存着密码"
+    );
 }
 
 #[test]
@@ -546,11 +551,16 @@ fn storage_summary_per_backend() {
     assert_eq!(storage_summary(&Form::default()), "未设置");
 }
 
+/// 口令解锁一律带同值的 `old_passphrase`：core 在远端已有库时先用它验证，不会把远端口令改成未验证的输入。
+fn verified_unlock(p: &str) -> Value {
+    json!({ "op": "set_passphrase", "args": { "passphrase": p, "old_passphrase": p } })
+}
+
 #[test]
-fn storage_change_in_place_sends_no_unlock() {
+fn storage_change_in_place_sends_unlock_only_when_filled() {
     let old = webdav_form();
-    let unlock = unlock_command(false, "口令", "");
-    let steps = storage_change_steps(&old, &old, vec![json!({ "password": "p" })], unlock).unwrap();
+    let pw = || vec![json!({ "password": "p" })];
+    let steps = storage_change_steps(&old, &old, pw(), None).unwrap();
     let ops: Vec<_> = steps.iter().map(|(m, v)| (*m, v["op"].clone())).collect();
     assert_eq!(
         ops,
@@ -559,6 +569,9 @@ fn storage_change_in_place_sends_no_unlock() {
             ("sync.command", json!("set_secret"))
         ]
     );
+    let unlock = unlock_command(false, "口令", "口令", "").unwrap();
+    let steps = storage_change_steps(&old, &old, pw(), unlock).unwrap();
+    assert_eq!(steps[2].1, verified_unlock("口令"), "填了口令就照发");
 }
 
 #[test]
@@ -569,28 +582,76 @@ fn storage_move_needs_password_and_unlock() {
         ..old.clone()
     };
     let pw = || vec![json!({ "password": "p" })];
+    let x = || unlock_command(false, "x", "x", "").unwrap();
     assert!(
         storage_change_steps(&old, &new, pw(), None).is_err(),
         "要重填口令或密钥"
     );
     assert!(
-        storage_change_steps(&old, &new, vec![], unlock_command(false, "x", "")).is_err(),
+        storage_change_steps(&old, &new, vec![], x()).is_err(),
         "位置变了已存密码会被清掉"
     );
-    let steps = storage_change_steps(&old, &new, pw(), unlock_command(false, "x", "")).unwrap();
+    let steps = storage_change_steps(&old, &new, pw(), x()).unwrap();
     assert_eq!(steps[0].0, "sync.setSettings", "先换位置再写密码");
     assert_eq!(steps[1].1["op"], "set_secret");
-    assert_eq!(
-        steps[2].1,
-        json!({ "op": "set_passphrase", "args": { "passphrase": "x" } })
-    );
-    let steps = storage_change_steps(&old, &new, pw(), unlock_command(true, "x", " k ")).unwrap();
+    assert_eq!(steps[2].1, verified_unlock("x"));
+    let unlock = unlock_command(true, "x", "", " k ").unwrap();
+    let steps = storage_change_steps(&old, &new, pw(), unlock).unwrap();
     assert_eq!(
         steps[2].1,
         json!({ "op": "import_key", "args": { "key": "k" } })
     );
-    assert_eq!(unlock_command(true, "x", "  "), None);
-    assert_eq!(unlock_command(false, "", "k"), None);
+    assert_eq!(unlock_command(true, "x", "x", "  "), Ok(None));
+    assert_eq!(unlock_command(false, "", "", "k"), Ok(None));
+}
+
+#[test]
+fn storage_unlock_passphrase_must_be_typed_twice() {
+    assert_eq!(
+        unlock_command(false, "a", "b", ""),
+        Err("两次输入的口令不一致")
+    );
+    assert_eq!(
+        unlock_command(false, "a", "", ""),
+        Err("两次输入的口令不一致")
+    );
+}
+
+#[test]
+fn storage_retry_after_wrong_passphrase_still_unlocks() {
+    let old = webdav_form();
+    let new = Form {
+        wd_url: "https://other/dav/".into(),
+        ..old.clone()
+    };
+    let first = unlock_command(false, "错", "错", "").unwrap();
+    assert!(storage_change_steps(&old, &new, vec![json!({ "password": "p" })], first).is_ok());
+    // 第一次在 set_passphrase 失败：设置与密码已生效，刷新后 saved 已是新位置。
+    let saved = new.clone();
+    let again = unlock_command(false, "对", "对", "").unwrap();
+    let steps = storage_change_steps(&saved, &new, vec![], again).unwrap();
+    assert_eq!(
+        steps.last().unwrap().1,
+        verified_unlock("对"),
+        "改对重试仍要发解锁"
+    );
+}
+
+#[test]
+fn storage_steps_never_rewrite_remote_passphrase_unverified() {
+    let old = webdav_form();
+    let moved = Form {
+        wd_url: "https://other/dav/".into(),
+        ..old.clone()
+    };
+    for new in [&old, &moved] {
+        let unlock = unlock_command(false, "p", "p", "").unwrap();
+        let steps =
+            storage_change_steps(&old, new, vec![json!({ "password": "s" })], unlock).unwrap();
+        for (_, v) in steps.iter().filter(|(_, v)| v["op"] == "set_passphrase") {
+            assert_eq!(v["args"]["old_passphrase"], v["args"]["passphrase"]);
+        }
+    }
 }
 
 #[test]
