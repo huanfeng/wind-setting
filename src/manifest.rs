@@ -6551,39 +6551,6 @@ pub(crate) fn cond_matches(cur: &Value, c: &Cond) -> bool {
     if c.op == CondOp::Ne { !eq } else { eq }
 }
 
-/// 条件不满足时给用户看的一句原因（「需先开启「精确匹配模式」」）。
-///
-/// 住在本模块是因为 [`Cond`] 的 `op`/`value` 是私有字段——把它们开放出去，等于让每个
-/// 调用方各写一份「怎么把条件翻译成人话」，那种文案最容易各说各的。
-///
-/// ★ 用途是**替代置灰**：一行控件灰着而不说为什么，用户只能挨个试上游开关。把原因直接
-/// 写在控件位上，那一行就自己解释了自己。
-///
-/// 文案取 manifest 的 `label`（和下拉的选项 label），不给原始 key/value——用户在界面上
-/// 从没见过 `single_code_input` 这种东西。
-pub(crate) fn cond_reason(manifest: &Manifest, c: &Cond) -> String {
-    let label = manifest
-        .get(&c.key)
-        .map(|i| i.label.clone())
-        .unwrap_or_else(|| c.key.clone());
-    // 取值的显示名：下拉项报 label，其余原样。
-    let value_label = || {
-        manifest
-            .get(&c.key)
-            .and_then(|i| i.options.iter().find(|o| o.value == c.value))
-            .map(|o| o.label.clone())
-            .unwrap_or_else(|| c.value.clone())
-    };
-    match (c.op, c.value.as_str()) {
-        // 布尔四种组合合并成两句：`!= true` 与 `== false` 对用户是同一件事。
-        (CondOp::Eq, "true") | (CondOp::Ne, "false") => format!("需先开启「{label}」"),
-        (CondOp::Eq, "false") | (CondOp::Ne, "true") => format!("需先关闭「{label}」"),
-        (CondOp::Eq, _) => format!("需「{label}」为「{}」", value_label()),
-        (CondOp::Ne, _) => format!("「{label}」为「{}」时不可用", value_label()),
-        (CondOp::Contains, _) => format!("需「{label}」含「{}」", value_label()),
-    }
-}
-
 /// `enabled_when` 引用的项被**定制版**藏掉时，它没有控件、也就没有取值器，联动会退化成
 /// 「恒满足」——定制者在配置里关掉了总开关，从属项却一直可点，与实际是否生效不符。
 /// 补一个只读影子：按配置当前值播种、随 loader 刷新，**不登记 writer**（值不归设置页管）。

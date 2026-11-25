@@ -537,15 +537,16 @@ pub fn setting_row_override(
         .child(control)
 }
 
-/// [`setting_row_override`] 的「可移除」形态：没有行首勾选框，行尾一个 ✕ 把这一项从覆盖里去掉。
+/// 方案设置表单的一行：标签 + 「已修改」标记与恢复按钮 + 控件。
 ///
-/// 用于稀疏的覆盖列表：行存在就等于「已自定义」，所以不需要那个勾选框；来源列恒写「已自定义」。
-/// 控件区仍走 [`override_control`]（门控原因文字等），`over` 在行可见期间恒为真。
-pub fn setting_row_override_removable(
+/// 标记列定宽：改过与没改过的行，右侧控件列必须对齐。`modified` 每帧求值（读的是信号）。
+pub fn setting_row_scheme(
     label: &str,
     sub: Option<&str>,
     control: Element,
-    on_remove: impl Fn() + 'static,
+    modified: std::rc::Rc<dyn Fn() -> bool>,
+    reset_tip: &str,
+    on_reset: impl Fn() + 'static,
 ) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
@@ -568,6 +569,7 @@ pub fn setting_row_override_removable(
                 .truncate(Truncate::End),
         );
     }
+    let (m1, m2) = (modified.clone(), modified);
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -575,23 +577,33 @@ pub fn setting_row_override_removable(
         .spacing(f.gap(m))
         .child(left)
         .child(
-            Element::row().width(SOURCE_W).cross(Align::Center).child(
-                Element::label("已自定义")
-                    .font_size(f.desc_size(m))
-                    .fg_role(Role::Accent)
-                    .max_lines(1),
-            ),
+            Element::row()
+                .width(SCHEME_MARK_W)
+                .cross(Align::Center)
+                .spacing(2)
+                .child(Element::col().weight(1.0))
+                .child(
+                    Element::label("已修改")
+                        .font_size(f.desc_size(m))
+                        .fg_role(Role::Accent)
+                        .max_lines(1)
+                        .visible_when(move || m1()),
+                )
+                .child(
+                    Element::icon_button("\u{21BA}")
+                        .size(24, 24)
+                        .font_size(13.0)
+                        .fg_role(Role::TextMuted)
+                        .tooltip(reset_tip)
+                        .on_click(move |_| on_reset())
+                        .visible_when(move || m2()),
+                ),
         )
         .child(control)
-        .child(
-            Element::icon_button("\u{2715}")
-                .size(24, 24)
-                .font_size(11.0)
-                .fg_role(Role::TextMuted)
-                .tooltip("移除，恢复方案默认值")
-                .on_click(move |_| on_remove()),
-        )
 }
+
+/// [`setting_row_scheme`] 的标记列宽：放得下「已修改」加一个恢复按钮。
+const SCHEME_MARK_W: i32 = 76;
 
 /// 来源文案列宽。**定宽**：文案随勾选在「已自定义」「跟随全局」「方案自带」之间变，
 /// 不定宽的话右侧控件会跟着左右跳。
