@@ -231,8 +231,8 @@ fn identity_view_when_my_id_exists() {
         dev_in("me", "g1", "家里", "windows", local_ts(25, 9)),
         dev_in("o", "g2", "", "windows", 9),
     ];
-    let (opts, _) = identity_options_for(PlatformClass::Desktop, "me", &devs);
-    let v = identity_view(&opts, "me", &devs, today());
+    let (opts, def) = identity_options_for(PlatformClass::Desktop, "me", &devs);
+    let v = identity_view(&opts, &def, "me", &devs, today());
     assert_eq!(v.mine, "恢复为 me（上次活跃：今天 09:30）");
     assert_eq!(v.default_mode, 0);
     assert_eq!(
@@ -249,8 +249,8 @@ fn identity_view_lists_devices_and_groups_otherwise() {
         dev_in("w2", "g1", "家里", "linux", local_ts(25, 9)),
         dev_in("w3", "g2", "", "windows", local_ts(20, 9)),
     ];
-    let (opts, _) = identity_options_for(PlatformClass::Desktop, "mine", &devs);
-    let v = identity_view(&opts, "mine", &devs, today());
+    let (opts, def) = identity_options_for(PlatformClass::Desktop, "mine", &devs);
+    let v = identity_view(&opts, &def, "mine", &devs, today());
     assert_eq!(v.mine, "");
     assert_eq!(v.default_mode, 2, "默认新建独立组");
     let ids: Vec<&str> = v.devices.iter().map(|(id, _)| id.as_str()).collect();
@@ -277,8 +277,8 @@ fn identity_view_lists_devices_and_groups_otherwise() {
 
 #[test]
 fn identity_view_with_empty_roster_only_offers_new_group() {
-    let (opts, _) = identity_options_for(PlatformClass::Desktop, "mine", &[]);
-    let v = identity_view(&opts, "mine", &[], today());
+    let (opts, def) = identity_options_for(PlatformClass::Desktop, "mine", &[]);
+    let v = identity_view(&opts, &def, "mine", &[], today());
     assert!(v.devices.is_empty() && v.groups.is_empty());
     assert_eq!(
         identity_pick(&v, v.default_mode, 0, 0),
@@ -311,7 +311,7 @@ fn storage_step_advances_and_clears_secret_on_dispatch() {
     assert_eq!(ui.wd_password.get(), "");
 }
 
-fn test_reply(remote_initialized: bool, joined: bool) -> Result<Vec<Value>, String> {
+fn test_reply(remote_initialized: bool, joined: bool) -> Result<Vec<Value>, (usize, String)> {
     Ok(vec![
         json!({ "ok": true }),
         json!({ "ok": true, "remote_initialized": remote_initialized, "joined": joined }),
@@ -324,7 +324,7 @@ fn test_failure_stays_with_inline_error() {
     let ui = SyncUi::new();
     ui.open_wizard();
     ui.wiz_step.set(WizStep::Test);
-    ui.on_wizard(WizOp::Test, Err("401 Unauthorized".into()));
+    ui.on_wizard(WizOp::Test, Err((2, "401 Unauthorized".into())));
     assert!(!ui.wiz_test_ok.get());
     assert_eq!(ui.wiz_err.get(), "测试连接失败：401 Unauthorized");
     ui.wizard_next();
@@ -377,9 +377,75 @@ fn unlock_failure_keeps_inputs_and_shows_error() {
     let ui = SyncUi::new();
     ui.open_wizard();
     ui.wiz_step.set(WizStep::Passphrase);
-    ui.on_wizard(WizOp::Unlock { import: false }, Err("口令不对".into()));
+    ui.pass1.set("pw".into());
+    ui.pass2.set("pw".into());
+    ui.on_wizard(
+        WizOp::Unlock { import: false },
+        Err((0, "存储不可写".into())),
+    );
     assert_eq!(ui.wiz_step.get(), WizStep::Passphrase);
-    assert_eq!(ui.wiz_err.get(), "设置口令失败：口令不对");
+    assert_eq!(ui.wiz_err.get(), "设置口令失败：存储不可写");
+    assert_eq!(ui.pass1.get(), "pw", "失败不清，免得重输");
+    assert_eq!(ui.pass2.get(), "pw");
+}
+
+#[test]
+fn join_passphrase_failure_says_wrong_or_unverifiable() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Passphrase);
+    ui.wiz_remote_init.set(true);
+    ui.on_wizard(WizOp::Unlock { import: false }, Err((0, "解密失败".into())));
+    assert_eq!(ui.wiz_err.get(), "口令不对或无法验证：解密失败");
+}
+
+#[test]
+fn retry_allowed_only_when_password_already_stored() {
+    assert!(can_retry_test(None, 0), "没发新密码：重试照旧");
+    assert!(!can_retry_test(Some(1), 0), "设置都没存上");
+    assert!(!can_retry_test(Some(1), 1), "密码没存上，重试也没用");
+    assert!(can_retry_test(Some(1), 2), "密码已存，测试失败可重试");
+}
+
+#[test]
+fn test_retry_follows_failed_step() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wd_url.set("https://dav/".into());
+    ui.wd_user.set("u".into());
+    ui.wd_password.set("pw".into());
+    ui.wizard_next();
+    ui.on_wizard(WizOp::Test, Err((1, "写入凭据失败".into())));
+    assert!(!ui.wiz_can_retry.get());
+    ui.on_wizard(WizOp::Test, Err((2, "超时".into())));
+    assert!(ui.wiz_can_retry.get());
+    ui.on_wizard(WizOp::Test, test_reply(true, false));
+    assert!(!ui.wiz_can_retry.get(), "通过后不再出重试");
+}
+
+#[test]
+fn identity_view_takes_default_from_options() {
+    let devs = vec![
+        dev_in("w1", "g1", "家里", "windows", 5),
+        dev_in("w2", "g2", "", "windows", 9),
+    ];
+    let (opts, _) = identity_options_for(PlatformClass::Desktop, "mine", &devs);
+    let v = identity_view(
+        &opts,
+        &IdentityChoice::Join("g1".into()),
+        "mine",
+        &devs,
+        today(),
+    );
+    assert_eq!((v.default_mode, v.default_sub), (1, 1));
+    let v = identity_view(
+        &opts,
+        &IdentityChoice::Restore("w1".into()),
+        "mine",
+        &devs,
+        today(),
+    );
+    assert_eq!((v.default_mode, v.default_sub), (0, 1));
 }
 
 #[test]
@@ -423,7 +489,7 @@ fn confirming_identity_closes_dialog_or_finishes_wizard() {
 
     ui.open_wizard();
     ui.wiz_step.set(WizStep::Identity);
-    ui.on_wizard(WizOp::Confirm, Err("网络断了".into()));
+    ui.on_wizard(WizOp::Confirm, Err((0, "网络断了".into())));
     assert_eq!(ui.wiz_step.get(), WizStep::Identity);
     assert_eq!(ui.id_err.get(), "确认身份失败：网络断了");
     ui.on_wizard(WizOp::Confirm, Ok(vec![json!({ "ok": true })]));

@@ -70,12 +70,15 @@ pub enum SyncMsg {
     /// 向导与确认身份的命令：每一步的回执都带回（测试连接要看结果、口令要看 mode）。
     Wizard {
         op: WizOp,
-        result: Result<Vec<Value>, String>,
+        result: Result<Vec<Value>, (usize, String)>,
     },
 }
 
 /// 同步间隔的保存：与其他命令一样占 busy，保证 setSettings 一条接一条。
 const OP_INTERVAL: &str = "interval";
+
+/// 第 2 步发出的表单与其中 set_secret 的步号。
+type SentTest = (Form, Option<usize>);
 
 #[derive(Clone)]
 pub struct SyncUi {
@@ -173,6 +176,10 @@ pub struct SyncUi {
     /// 测试连接通过（第 2 步才能往下走）及其结果说明。
     wiz_test_ok: Signal<bool>,
     wiz_test_text: Signal<String>,
+    /// 测试失败但密码已存上：第 2 步给「重试」。
+    wiz_can_retry: Signal<bool>,
+    /// 最近一次第 2 步发出的表单与其中 set_secret 的步号（重试用；不含机密）。
+    wiz_sent: Rc<RefCell<Option<SentTest>>>,
     /// 远端已初始化（决定第 3 步是设置口令还是输入口令）。
     wiz_remote_init: Signal<bool>,
     /// 测试连接时本机已加入、尚待确认身份（重新开启同步的情形）。
@@ -295,6 +302,8 @@ impl SyncUi {
             wiz_step: signal(WizStep::Storage),
             wiz_test_ok: signal(false),
             wiz_test_text: s(),
+            wiz_can_retry: signal(false),
+            wiz_sent: Rc::new(RefCell::new(None)),
             wiz_remote_init: signal(false),
             wiz_joined: signal(false),
             wiz_needs_identity: signal(false),

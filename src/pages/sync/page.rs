@@ -125,7 +125,9 @@ fn status_card(ui: &SyncUi) -> Element {
                 setting_row(
                     "需要确认本机身份",
                     None,
-                    btn("确认身份…").on_click(move |_| u_id.open_identity_dialog()),
+                    btn("确认身份…")
+                        .enabled_when(move || !busy.get())
+                        .on_click(move |_| u_id.open_identity_dialog()),
                 ),
                 vis(move || needs_identity.get()),
             ),

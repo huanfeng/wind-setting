@@ -174,6 +174,11 @@ pub(crate) fn unlock_mode(import: bool, reply: &Value) -> String {
         .to_string()
 }
 
+/// 测试连接失败后能否「重试」（不再带密码）：这次没发新密码，或 `set_secret`（第 `secret_step` 步）已成功。
+pub(crate) fn can_retry_test(secret_step: Option<usize>, failed_at: usize) -> bool {
+    secret_step.is_none_or(|i| failed_at > i)
+}
+
 /// 所选身份对应的 RPC 步骤。
 pub(crate) fn identity_steps(c: &IdentityChoice) -> Vec<Step> {
     identity_commands(c)
@@ -193,11 +198,14 @@ pub(crate) struct IdentityView {
     pub groups: Vec<(String, String)>,
     /// 预选项：「本机」形态 0 = 恢复 / 1 = 作为新设备；列表形态 0 = 恢复 / 1 = 加入组 / 2 = 新建组。
     pub default_mode: usize,
+    /// 预选项落在子列表（设备或组）里时的下标。
+    pub default_sub: usize,
 }
 
 /// 把 [`identity_options`] 的结果整理成界面用的形态（文案、名册里的名字与台数）。
 pub(crate) fn identity_view(
     opts: &[IdentityChoice],
+    default: &IdentityChoice,
     my_id: &str,
     devs: &[DeviceView],
     today: chrono::NaiveDate,
@@ -213,8 +221,10 @@ pub(crate) fn identity_view(
             "恢复为 {my_id}（上次活跃：{}）",
             last_seen_text(seen, today)
         );
+        v.default_mode = usize::from(*default == IdentityChoice::NewDevice);
         return v;
     }
+    // 组的台数按名册里全部可读设备算（与设备卡一致），不只数同类设备：加入后同步的就是这一组。
     let readable: Vec<DeviceView> = devs.iter().filter(|d| d.readable).cloned().collect();
     let groups = group_devices(&readable, "");
     for o in opts {
@@ -235,7 +245,12 @@ pub(crate) fn identity_view(
             _ => {}
         }
     }
-    v.default_mode = 2;
+    let pos = |items: &[(String, String)], id: &str| items.iter().position(|(x, _)| x == id);
+    (v.default_mode, v.default_sub) = match default {
+        IdentityChoice::Restore(id) => (0, pos(&v.devices, id).unwrap_or(0)),
+        IdentityChoice::Join(g) => (1, pos(&v.groups, g).unwrap_or(0)),
+        _ => (2, 0),
+    };
     v
 }
 
@@ -267,11 +282,12 @@ pub(crate) fn identity_pick(
     }
 }
 
-/// 依次执行，遇错即停；成功时带回每一步的回执。
-fn run_all(steps: Vec<Step>) -> Result<Vec<Value>, String> {
+/// 依次执行，遇错即停；成功时带回每一步的回执，失败时带回出错的是第几步。
+fn run_all(steps: Vec<Step>) -> Result<Vec<Value>, (usize, String)> {
     steps
         .into_iter()
-        .map(|(method, params)| rpc::call_core(method, &params))
+        .enumerate()
+        .map(|(i, (method, params))| rpc::call_core(method, &params).map_err(|e| (i, e)))
         .collect()
 }
 
@@ -286,6 +302,8 @@ impl SyncUi {
         self.wiz_step.set(WizStep::Storage);
         self.wiz_test_ok.set(false);
         self.wiz_test_text.set(String::new());
+        self.wiz_can_retry.set(false);
+        *self.wiz_sent.borrow_mut() = None;
         self.wiz_remote_init.set(false);
         self.wiz_joined.set(false);
         self.wiz_needs_identity.set(false);
@@ -344,7 +362,11 @@ impl SyncUi {
                     self.wiz_err.set(e.to_string());
                     return;
                 }
-                let steps = wizard_test_steps(&new, secret_commands(new.s3, &wd, &s3));
+                let secrets = secret_commands(new.s3, &wd, &s3);
+                // wizard_test_steps 里 set_secret 紧跟在 setSettings 之后。
+                let secret_step = (!secrets.is_empty()).then_some(1);
+                let steps = wizard_test_steps(&new, secrets);
+                *self.wiz_sent.borrow_mut() = Some((new, secret_step));
                 self.clear_secrets();
                 self.wiz_test_ok.set(false);
                 self.wiz_test_text.set(String::new());
@@ -381,6 +403,17 @@ impl SyncUi {
             WizStep::Identity => self.confirm_identity(),
             WizStep::Done => self.close_wizard(),
         }
+    }
+
+    /// 第 2 步「重试」：密码已存上，只重发设置与测试，不再要密码。
+    fn retry_test(&self) {
+        let Some((form, _)) = self.wiz_sent.borrow().clone() else {
+            return;
+        };
+        *self.wiz_sent.borrow_mut() = Some((form.clone(), None));
+        self.wiz_err.set(String::new());
+        self.wiz_can_retry.set(false);
+        self.spawn_wizard(WizOp::Test, wizard_test_steps(&form, Vec::new()));
     }
 
     fn wizard_back(&self) {
@@ -460,7 +493,7 @@ impl SyncUi {
     }
 
     /// 向导 / 确认身份的回执。框已关才回来的结果只刷新页面，不再动向导状态。
-    pub(super) fn on_wizard(&self, op: WizOp, result: Result<Vec<Value>, String>) {
+    pub(super) fn on_wizard(&self, op: WizOp, result: Result<Vec<Value>, (usize, String)>) {
         self.busy.set(false);
         let open = match op {
             WizOp::Test | WizOp::Unlock { .. } => self.wizard.get(),
@@ -469,7 +502,7 @@ impl SyncUi {
         if open {
             match result {
                 Ok(rs) => self.wizard_ok(op, &rs),
-                Err(e) => self.wizard_failed(op, &e),
+                Err((at, e)) => self.wizard_failed(op, at, &e),
             }
         }
         if self.interval_pending.get() {
@@ -480,7 +513,7 @@ impl SyncUi {
         }
     }
 
-    fn wizard_failed(&self, op: WizOp, e: &str) {
+    fn wizard_failed(&self, op: WizOp, at: usize, e: &str) {
         let label = match op {
             WizOp::Test => "测试连接",
             WizOp::Unlock { import: true } => "导入密钥",
@@ -488,10 +521,16 @@ impl SyncUi {
             WizOp::Devices => "读取设备列表",
             WizOp::Confirm => "确认身份",
         };
-        let (text, _) = failure_text(label, e);
+        let (mut text, notice) = failure_text(label, e);
+        // 远端已有数据时口令是拿来验证的：失败多半是口令不对。
+        if op == (WizOp::Unlock { import: false }) && self.wiz_remote_init.get() && !notice {
+            text = format!("口令不对或无法验证：{e}");
+        }
         match op {
             WizOp::Test => {
+                let secret_step = self.wiz_sent.borrow().as_ref().and_then(|(_, i)| *i);
                 self.wiz_test_ok.set(false);
+                self.wiz_can_retry.set(can_retry_test(secret_step, at));
                 self.wiz_err.set(text);
             }
             WizOp::Unlock { .. } => self.wiz_err.set(text),
@@ -517,6 +556,7 @@ impl SyncUi {
                     .set(StatusView::parse(&status).needs_identity);
                 self.wiz_test_text.set(connection_text(&reply));
                 self.wiz_err.set(String::new());
+                self.wiz_can_retry.set(false);
                 self.wiz_test_ok.set(true);
             }
             WizOp::Unlock { import } => {
@@ -531,12 +571,12 @@ impl SyncUi {
             WizOp::Devices => {
                 let devs = parse_devices(rs.first().unwrap_or(&Value::Null));
                 let my = self.device.get();
-                let (opts, _) = identity_options(&my, &devs);
+                let (opts, default) = identity_options(&my, &devs);
                 let today = chrono::Local::now().date_naive();
-                let v = identity_view(&opts, &my, &devs, today);
+                let v = identity_view(&opts, &default, &my, &devs, today);
                 self.id_mode.set(v.default_mode);
-                self.id_dev_pick.set(0);
-                self.id_group_pick.set(0);
+                self.id_dev_pick.set(v.default_sub);
+                self.id_group_pick.set(v.default_sub);
                 self.id_view.set(v);
                 self.id_err.set(String::new());
                 self.id_loaded.set(true);
@@ -697,7 +737,8 @@ fn storage_body(ui: &SyncUi) -> Element {
 }
 
 fn test_body(ui: &SyncUi) -> Element {
-    let (busy, ok) = (ui.busy, ui.wiz_test_ok);
+    let (busy, ok, can_retry) = (ui.busy, ui.wiz_test_ok, ui.wiz_can_retry);
+    let u = ui.clone();
     body()
         .child(head(
             "测试连接",
@@ -714,7 +755,16 @@ fn test_body(ui: &SyncUi) -> Element {
         )
         .child(error_line(ui.wiz_err))
         .child(
-            muted("连不上时点「上一步」检查地址与密码。")
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(muted("连不上时点「上一步」检查地址与密码，或稍后重试。").weight(1.0))
+                .child(
+                    btn2("重试")
+                        .on_click(move |_| u.retry_test())
+                        .visible_when(move || can_retry.get()),
+                )
                 .visible_when(move || !busy.get() && !ok.get()),
         )
 }
