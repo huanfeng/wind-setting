@@ -2317,8 +2317,13 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                     v["last_error"] =
                         json!("另一台设备在使用相同设备号（desktop-7f3k），请给本机改号");
                 }
-                // 刚加入远端，等待确认本机身份。
-                Ok("identity") => {
+                // 刚加入远端，等待确认本机身份；identity_new 的设备号不在名册里（身份选项走列表形态）。
+                Ok(m @ ("identity" | "identity_new")) => {
+                    if m == "identity_new" {
+                        v["device"] = json!("desktop-n3w8");
+                        v["group"] = json!("desktop-n3w8");
+                        v["group_name"] = json!("");
+                    }
                     v["needs_identity"] = json!(true);
                     v["last_ok"] = json!(null);
                     v["conflicts"] = json!(0);
@@ -2369,6 +2374,11 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             Some("test_connection") => {
                 let fresh = std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("fresh");
                 json!({ "ok": true, "remote_initialized": !fresh, "joined": false })
+            }
+            // 远端为空时设口令即初始化（身份自动确认），否则是用口令加入。
+            Some("set_passphrase") => {
+                let fresh = std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("fresh");
+                json!({ "ok": true, "mode": if fresh { "init" } else { "join" } })
             }
             _ => json!({ "ok": true }),
         },

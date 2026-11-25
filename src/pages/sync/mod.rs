@@ -34,6 +34,7 @@
 mod dialogs;
 pub(crate) mod model;
 mod page;
+mod wizard;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -46,6 +47,7 @@ use crate::rpc;
 
 pub(crate) use model::*;
 pub use page::build_page;
+pub(crate) use wizard::{IdentityView, WizOp, WizStep};
 
 /// 搜索锚点（`search::index::HANDWRITTEN` 的 `sync` 条目指向这里）。
 pub const ANCHOR: &str = "sync";
@@ -64,6 +66,11 @@ pub enum SyncMsg {
     Command {
         op: String,
         result: Result<Value, String>,
+    },
+    /// 向导与确认身份的命令：每一步的回执都带回（测试连接要看结果、口令要看 mode）。
+    Wizard {
+        op: WizOp,
+        result: Result<Vec<Value>, String>,
     },
 }
 
@@ -160,13 +167,32 @@ pub struct SyncUi {
     conflicts_dialog: Signal<bool>,
     disable_dialog: Signal<bool>,
 
-    /// 配置向导（Task 4 重写）。
+    /// 配置向导（见 [`wizard`]）。
     wizard: Signal<bool>,
-    /// 0 存储 / 1 口令 / 2 内容。
-    wiz_step: Signal<usize>,
-    /// 0 未测 / 1 远端为空 / 2 远端已有数据。
-    wiz_remote: Signal<usize>,
+    wiz_step: Signal<WizStep>,
+    /// 测试连接通过（第 2 步才能往下走）及其结果说明。
+    wiz_test_ok: Signal<bool>,
+    wiz_test_text: Signal<String>,
+    /// 远端已初始化（决定第 3 步是设置口令还是输入口令）。
+    wiz_remote_init: Signal<bool>,
+    /// 测试连接时本机已加入、尚待确认身份（重新开启同步的情形）。
+    wiz_joined: Signal<bool>,
+    wiz_needs_identity: Signal<bool>,
+    /// 第 3 步改用导出的密钥。
     wiz_use_key: Signal<bool>,
+    /// 「随机生成」的口令（明文显示，关向导即清）。
+    wiz_generated: Signal<String>,
+    wiz_err: Signal<String>,
+    wiz_done: Signal<String>,
+    /// 身份选择（向导第 4 步与独立的确认身份对话框共用）。
+    id_view: Signal<IdentityView>,
+    id_loaded: Signal<bool>,
+    id_mode: Signal<usize>,
+    id_dev_pick: Signal<usize>,
+    id_group_pick: Signal<usize>,
+    id_err: Signal<String>,
+    /// 仅 mock 截图跳步用：命令当场执行，不走后台线程。
+    inline_rpc: Rc<Cell<bool>>,
     /// 打开钩子：改号（Task 3）、更换组（Task 3）、确认身份（Task 4）的对话框挂在这些信号上。
     rename_dialog: Signal<bool>,
     group_dialog: Signal<bool>,
@@ -266,9 +292,23 @@ impl SyncUi {
             conflicts_dialog: signal(false),
             disable_dialog: signal(false),
             wizard: signal(false),
-            wiz_step: signal(0),
-            wiz_remote: signal(0),
+            wiz_step: signal(WizStep::Storage),
+            wiz_test_ok: signal(false),
+            wiz_test_text: s(),
+            wiz_remote_init: signal(false),
+            wiz_joined: signal(false),
+            wiz_needs_identity: signal(false),
             wiz_use_key: signal(false),
+            wiz_generated: s(),
+            wiz_err: s(),
+            wiz_done: s(),
+            id_view: signal(IdentityView::default()),
+            id_loaded: signal(false),
+            id_mode: signal(0),
+            id_dev_pick: signal(0),
+            id_group_pick: signal(0),
+            id_err: s(),
+            inline_rpc: Rc::new(Cell::new(false)),
             rename_dialog: signal(false),
             group_dialog: signal(false),
             identity_dialog: signal(false),
@@ -316,6 +356,10 @@ impl SyncUi {
         if let Ok(v) = rpc::call_core("sync.command", &json!({ "op": "list_devices" })) {
             self.devices.set(parse_devices(&v));
             self.update_group_line();
+        }
+        // 截图核对用的跳步钩子：只在 mock 下读，真实构建走不到这里。
+        if let Ok(to) = std::env::var("WIND_RPC_MOCK_SYNC_WIZ") {
+            self.mock_wizard_jump(&to);
         }
     }
 
@@ -492,6 +536,7 @@ impl SyncUi {
                 self.apply_form(&Form::from_settings(&v));
             }
             SyncMsg::Status(Ok(v)) => self.apply_status(&v),
+            SyncMsg::Wizard { op, result } => self.on_wizard(op, result),
             SyncMsg::Devices(Ok(v)) => {
                 self.devices_err.set(String::new());
                 self.devices.set(parse_devices(&v));
@@ -681,16 +726,6 @@ impl SyncUi {
         self.run_steps("disable", disable_steps(&self.saved.borrow()));
     }
 
-    /// 「开始配置…」。
-    fn open_wizard(&self) {
-        self.reset_storage_form();
-        self.clear_secrets();
-        self.wiz_step.set(0);
-        self.wiz_remote.set(0);
-        self.wiz_use_key.set(false);
-        self.wizard.set(true);
-    }
-
     /// 「改…」「给本机改号…」：输入框带出当前设备号与已保存的显示名称。
     fn open_rename_dialog(&self) {
         self.rename_id.set(self.device.get());
@@ -775,11 +810,6 @@ impl SyncUi {
                 self.run("group", group_change_commands(&c));
             }
         }
-    }
-
-    /// 「确认身份…」：对话框由 Task 4 挂到 `identity_dialog`。
-    fn open_identity_dialog(&self) {
-        self.identity_dialog.set(true);
     }
 
     /// 点「确认删除…」：先弹确认框并上闸，真正发命令要在框里再点一次。

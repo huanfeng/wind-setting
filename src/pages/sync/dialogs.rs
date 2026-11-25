@@ -8,7 +8,8 @@ use crate::state::AppState;
 /// 本页全部对话框挂到字段注册表的 `dialogs`（同扩展程序卡），随页面生命周期。
 pub(super) fn mount(ui: &SyncUi, state: &AppState) {
     let all = [
-        wizard_dialog(ui),
+        super::wizard::wizard_dialog(ui),
+        super::wizard::identity_dialog(ui),
         storage_dialog(ui),
         export_dialog(ui),
         passphrase_dialog(ui),
@@ -27,7 +28,7 @@ fn dialog_frame(title: &str, body: Element, footer: Element) -> Element {
     dialog_frame_w(460, title, body, footer)
 }
 
-fn dialog_frame_w(width: i32, title: &str, body: Element, footer: Element) -> Element {
+pub(super) fn dialog_frame_w(width: i32, title: &str, body: Element, footer: Element) -> Element {
     Element::col()
         .width(width)
         .bg_role(Role::Surface)
@@ -434,52 +435,8 @@ pub(super) fn btn2(text: &str) -> Element {
     Element::button(text).small().outline_soft()
 }
 
-fn step_header(step: Signal<usize>) -> Element {
-    let names = ["连接存储", "加密口令", "同步内容"];
-    let mut row = Element::row().width_match().cross(Align::Center).spacing(8);
-    for (i, n) in names.iter().enumerate() {
-        if i > 0 {
-            row = row.child(Element::leaf().width(24).height(1).bg_role(Role::Divider));
-        }
-        let cur = move || step.get() == i;
-        let done = move || step.get() > i;
-        let dot = |role: Role, txt: String| {
-            Element::stack()
-                .size(20, 20)
-                .corner(10.0)
-                .bg_role(role)
-                .child(
-                    Element::label(txt)
-                        .font_size(11.5)
-                        .font_weight(600)
-                        .fg_role(Role::OnAccent)
-                        .align(Align::Center),
-                )
-        };
-        row = row
-            .child(dot(Role::Accent, format!("{}", i + 1)).visible_when(move || cur() || done()))
-            .child(
-                dot(Role::TextSubtle, format!("{}", i + 1)).visible_when(move || !cur() && !done()),
-            )
-            .child(
-                Element::label(*n)
-                    .font_size(12.5)
-                    .font_weight(600)
-                    .fg_role(Role::Text)
-                    .visible_when(cur),
-            )
-            .child(
-                Element::label(*n)
-                    .font_size(12.5)
-                    .fg_role(Role::TextMuted)
-                    .visible_when(move || !cur()),
-            );
-    }
-    row
-}
-
 /// 存储类型与参数（更换存储与向导共用）。
-fn storage_fields(ui: &SyncUi) -> Element {
+pub(super) fn storage_fields(ui: &SyncUi) -> Element {
     let b = ui.backend;
     let is_wd = move || b.get() == 0;
     let is_s3 = move || b.get() == 1;
@@ -696,95 +653,4 @@ fn disable_dialog(ui: &SyncUi) -> Element {
                 .on_click(move |_| u.confirm_disable()),
         );
     Element::dialog(visible, dialog_frame("停用同步", body, footer))
-}
-
-/// 配置向导的步骤与表单（占位：Task 4 接上测试连接、口令与身份确认）。
-fn wizard_dialog(ui: &SyncUi) -> Element {
-    let (step, remote, use_key) = (ui.wiz_step, ui.wiz_remote, ui.wiz_use_key);
-    let pwd = |s: Signal<String>, ph: &str| Element::text_input(s, ph).password().width_match();
-
-    let s1 = storage_fields(ui);
-
-    let s2_new = Element::col()
-        .width_match()
-        .spacing(12)
-        .child(muted(
-            "设置一个口令。同步数据在本机加密后才上传，存储服务看不到内容；其他设备加入时需要输入同一个口令。",
-        ))
-        .child(field("口令", pwd(ui.pass1, "")))
-        .child(field("再输入一次", pwd(ui.pass2, "")))
-        .child(tone(
-            "请牢记口令。忘记口令且没有备份密钥时，存储里的数据无法解开。设置完成后可在「安全」里导出密钥备份。",
-            Role::Warning,
-        ))
-        .visible_when(move || remote.get() != 2);
-    let s2_join = Element::col()
-        .width_match()
-        .spacing(12)
-        .child(muted("存储里已有同步数据，可以把本机加入进去。"))
-        .child(
-            Element::col()
-                .width_match()
-                .spacing(12)
-                .child(field("口令", pwd(ui.pass1, "创建同步库时设置的口令")))
-                .child(
-                    Element::link("没有口令？改用导出的密钥加入")
-                        .font_size(12.5)
-                        .on_click(move |_| use_key.set(true)),
-                )
-                .visible_when(move || !use_key.get()),
-        )
-        .child(
-            Element::col()
-                .width_match()
-                .spacing(12)
-                .child(field(
-                    "密钥",
-                    pwd(ui.import_key, "粘贴在其他设备上导出的密钥"),
-                ))
-                .child(
-                    Element::link("改用口令加入")
-                        .font_size(12.5)
-                        .on_click(move |_| use_key.set(false)),
-                )
-                .visible_when(move || use_key.get()),
-        )
-        .visible_when(move || remote.get() == 2);
-    let s2 = Element::col().width_match().child(s2_new).child(s2_join);
-
-    let s3 = Element::col().width_match().spacing(12).child(field(
-        "本机名称",
-        Element::text_input(ui.device_name, "其他设备上看到的名字").width_match(),
-    ));
-
-    let body = Element::col()
-        .width_match()
-        .padding_xy(20, 16)
-        .spacing(16)
-        .child(step_header(step))
-        .child(Element::divider())
-        .child(s1.visible_when(move || step.get() == 0))
-        .child(s2.visible_when(move || step.get() == 1))
-        .child(s3.visible_when(move || step.get() == 2));
-
-    let wiz = ui.wizard;
-    let footer = Element::row()
-        .spacing(8)
-        .child(btn2("取消").on_click(move |_| wiz.set(false)))
-        .child(
-            btn2("上一步")
-                .visible_when(move || step.get() > 0)
-                .on_click(move |_| step.set(step.get().saturating_sub(1))),
-        )
-        .child(
-            btn("下一步")
-                .visible_when(move || step.get() < 2)
-                .on_click(move |_| step.set(step.get() + 1)),
-        )
-        .child(
-            btn("完成")
-                .visible_when(move || step.get() == 2)
-                .on_click(move |_| wiz.set(false)),
-        );
-    Element::dialog(wiz, dialog_frame_w(560, "设置数据同步", body, footer))
 }

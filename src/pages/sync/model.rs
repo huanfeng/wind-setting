@@ -476,7 +476,7 @@ impl Form {
     }
 
     /// 选中后端的必填项是否全空：没启用时，全空的半成品不提交后端（core 校验会拒绝空地址）。
-    fn backend_blank(&self) -> bool {
+    pub(crate) fn backend_blank(&self) -> bool {
         if self.s3 {
             [&self.s3_endpoint, &self.s3_bucket, &self.s3_access_key_id]
                 .iter()
