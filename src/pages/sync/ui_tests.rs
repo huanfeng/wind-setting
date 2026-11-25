@@ -366,3 +366,83 @@ fn rename_without_known_device_id_is_refused() {
     assert!(ui.rename_err.get().contains("设备号"));
     assert!(ui.rename_dialog.get());
 }
+
+fn joined_ui(enabled: bool) -> SyncUi {
+    let ui = SyncUi::new();
+    ui.apply_status(&json!({ "installed": true, "enabled": enabled, "joined": true }));
+    *ui.saved.borrow_mut() = Form {
+        enabled,
+        ..Form::default()
+    };
+    ui
+}
+
+#[test]
+fn master_switch_reverts_when_nothing_is_sent() {
+    let ui = joined_ui(true);
+    ui.enabled.set(false);
+    ui.set_master(false);
+    assert!(ui.enabled.get(), "没接通道：退回已保存的开");
+    // windui 的 Sender 在测试里造不出来，busy 与无通道共用同一条退回分支。
+    ui.busy.set(true);
+    ui.enabled.set(false);
+    ui.set_master(false);
+    assert!(ui.enabled.get(), "有写入在途：退回已保存的开");
+}
+
+#[test]
+fn master_switch_reverts_on_failed_command_and_saves_on_success() {
+    let ui = joined_ui(true);
+    windui::testing::run_with_ctx(|ctx| {
+        ui.enabled.set(false);
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "disable".into(),
+                result: Err("boom".into()),
+            },
+        );
+        assert!(
+            ui.enabled.get() && ui.saved.borrow().enabled,
+            "失败：开关退回"
+        );
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "disable".into(),
+                result: Ok(json!({})),
+            },
+        );
+        assert!(!ui.saved.borrow().enabled, "回执写入 enabled=false");
+        assert!(!ui.enabled.get());
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "enable".into(),
+                result: Ok(json!({})),
+            },
+        );
+        assert!(ui.saved.borrow().enabled && ui.enabled.get());
+    });
+}
+
+#[test]
+fn status_does_not_overwrite_switch_while_busy() {
+    let ui = joined_ui(true);
+    ui.busy.set(true);
+    ui.apply_status(&json!({ "installed": true, "enabled": false, "joined": true }));
+    assert!(ui.enabled.get(), "写入在途时状态可能是旧的，不动开关");
+    ui.busy.set(false);
+    ui.apply_status(&json!({ "installed": true, "enabled": false, "joined": true }));
+    assert!(!ui.enabled.get());
+}
+
+#[test]
+fn greyed_switch_shows_off() {
+    let ui = SyncUi::new();
+    ui.apply_status(&json!({ "installed": true, "enabled": true, "joined": false }));
+    assert!(
+        !ui.configured.get() && !ui.enabled.get(),
+        "未配置：置灰且显示为关"
+    );
+}

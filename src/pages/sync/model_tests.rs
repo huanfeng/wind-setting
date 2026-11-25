@@ -523,19 +523,13 @@ fn webdav_form() -> Form {
 }
 
 #[test]
-fn disable_only_turns_off_and_keeps_backend() {
-    let steps = master_switch_steps(&webdav_form(), false);
-    assert_eq!(steps.len(), 1, "不删远端，不发其他命令");
-    assert_eq!(steps[0].0, "sync.setSettings");
-    let s = &steps[0].1["settings"];
-    assert_eq!(s["enabled"], false);
-    assert_eq!(s["backend"]["url"], "https://dav.example.com/dav/");
-}
-
-#[test]
 fn master_switch_off_keeps_backend_and_on_resumes() {
     let off = master_switch_steps(&webdav_form(), false);
-    assert_eq!(off.len(), 1);
+    assert_eq!(off.len(), 1, "不删远端，不发其他命令");
+    assert_eq!(
+        off[0].1["settings"]["backend"]["url"],
+        "https://dav.example.com/dav/"
+    );
     assert_eq!(off[0].0, "sync.setSettings");
     assert_eq!(off[0].1["settings"]["enabled"], false);
     let on = master_switch_steps(

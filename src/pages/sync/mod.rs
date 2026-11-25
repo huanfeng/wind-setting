@@ -453,7 +453,10 @@ impl SyncUi {
         self.update_secret_hint();
         self.joined.set(s.joined);
         self.configured.set(s.configured());
-        self.enabled.set(s.enabled);
+        // 有写入在途时状态可能是写之前的；开关等命令回执后的刷新再对齐。
+        if !self.busy.get() {
+            self.show_enabled(s.enabled);
+        }
         self.needs_identity.set(s.needs_identity);
         self.dup_device.set(s.duplicate_device());
         self.can_sync.set(can_sync_now(&s));
@@ -621,7 +624,8 @@ impl SyncUi {
                 }
                 if matches!(op.as_str(), "enable" | "disable") {
                     // 失败时开关退回已保存的状态
-                    self.enabled.set(self.saved.borrow().enabled);
+                    let saved = self.saved.borrow().enabled;
+                    self.show_enabled(saved);
                 }
                 if self.interval_pending.get() {
                     self.save_interval();
@@ -766,8 +770,13 @@ impl SyncUi {
             let op = if on { "enable" } else { "disable" };
             self.run_steps(op, master_switch_steps(&self.saved.borrow(), on));
         } else {
-            self.enabled.set(self.saved.borrow().enabled);
+            self.show_enabled(self.saved.borrow().enabled);
         }
+    }
+
+    /// 开关的显示态：置灰（未配置）时一律显示为关，不管 `enabled` 是什么。
+    fn show_enabled(&self, enabled: bool) {
+        self.enabled.set(enabled && self.configured.get());
     }
 
     /// 「修改…」「给本机改号…」：输入框带出当前设备号与已保存的显示名称。

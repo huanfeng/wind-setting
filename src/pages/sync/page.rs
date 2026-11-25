@@ -48,7 +48,8 @@ pub fn build_page(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<Card> {
     super::dialogs::mount(&ui, state);
 
     let always: Vis = Rc::new(|| true);
-    let cards = vec![
+    // 定长数组：卡数与 NAV 不一致时编译不过，zip 不会悄悄截断。
+    let cards: [Element; NAV.len()] = [
         anchor::wrap(wizard_card(&ui), ANCHOR, state.jump),
         status_card(&ui),
         self_card(&ui),
@@ -72,6 +73,9 @@ fn gated_section(ui: &SyncUi, title: &str, items: Vec<CardItem>) -> Element {
 }
 
 /// 同上，`head` 是恒显示的前导行（状态卡的总开关）。
+///
+/// 只有 `Row`/`RowWhen`/`BareWhen` 会叠上「已配置」条件；`Heading`/`Bare` 原样放行不受门控，
+/// 要门控的内容请用 `BareWhen` 或 `RowWhen`。
 fn gated_section_with(
     ui: &SyncUi,
     title: &str,
