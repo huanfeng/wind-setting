@@ -191,8 +191,14 @@ fn is_bulk_method(method: &str) -> bool {
 const RENDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 按方法取超时档。
+/// `sync.command` 的超时：core 等同步进程连上最多 5 秒、等回执最多 30 秒（建库、重置远端走网络），
+/// 客户端要比它长，否则会把已完成的重置报成失败、丢掉回执里的新密钥。
+const SYNC_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+
 fn timeout_for(method: &str) -> std::time::Duration {
-    if is_bulk_method(method) {
+    if method == "sync.command" {
+        SYNC_COMMAND_TIMEOUT
+    } else if is_bulk_method(method) {
         BULK_TIMEOUT
     } else if matches!(method, "theme.renderPreview" | "theme.renderPreviews") {
         RENDER_TIMEOUT
@@ -390,6 +396,13 @@ pub fn listen_events(mut on_event: impl FnMut(CoreEvent)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_command_outlasts_core_link_wait_and_command_timeout() {
+        // core 等同步进程连上最多 5 秒、等命令回执最多 30 秒；客户端先超时会把已完成的重置报成失败、丢掉新密钥。
+        assert!(timeout_for("sync.command") > std::time::Duration::from_secs(35));
+        assert_eq!(timeout_for("sync.status"), CALL_TIMEOUT, "其余 sync.* 不变");
+    }
 
     /// ★★ 超限的请求要在**写出任何字节之前**被拒。
     ///

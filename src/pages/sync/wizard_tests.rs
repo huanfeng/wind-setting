@@ -546,3 +546,14 @@ fn late_wizard_reply_after_close_is_ignored() {
     assert!(!ui.wiz_test_ok.get());
     assert!(!ui.busy.get());
 }
+
+#[test]
+fn switching_wizard_key_form_clears_pasted_key() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.wiz_remote_init.set(true);
+    ui.import_key.set("pasted".into());
+    ui.on_wizard(WizOp::ImportKey, Err((0, "远端还没有同步库".into())));
+    assert_eq!(ui.import_key.get(), "");
+}

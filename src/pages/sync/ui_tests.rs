@@ -618,3 +618,13 @@ fn reset_dialog_stays_open_while_reset_in_flight() {
     ui.close_reset_dialog();
     assert!(ui.reset_dialog.get(), "新密钥回来前关框会把它丢掉");
 }
+
+#[test]
+fn switching_storage_join_to_create_clears_pasted_key() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.storage_stage.set(StorageStage::Join);
+    ui.import_key.set("pasted".into());
+    ui.on_wizard(WizOp::StorageJoin, Err((0, "远端还没有同步库".into())));
+    assert_eq!(ui.import_key.get(), "");
+}

@@ -567,8 +567,9 @@ impl SyncUi {
         }
     }
 
-    /// 切到粘贴（`join`）或生成形态，并说明原因。
+    /// 切到粘贴（`join`）或生成形态，并说明原因；粘贴框清空。
     fn key_form(&self, storage: bool, join: bool, why: &str) {
+        self.import_key.set(String::new());
         if storage {
             self.storage_stage.set(if join {
                 StorageStage::Join
