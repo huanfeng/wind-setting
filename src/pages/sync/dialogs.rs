@@ -314,6 +314,7 @@ fn reset_dialog(ui: &SyncUi) -> Element {
         .spacing(8)
         .child(
             btn2("取消")
+                .enabled_when(move || !busy.get())
                 .on_click(move |_| u2.close_reset_dialog())
                 .visible_when(move || key.get().is_empty()),
         )

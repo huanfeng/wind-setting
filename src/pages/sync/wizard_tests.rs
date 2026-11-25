@@ -335,18 +335,80 @@ fn reopening_wizard_forgets_previous_key() {
 }
 
 #[test]
-fn create_key_on_existing_library_switches_to_paste() {
+fn create_key_failure_keeps_create_form() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.on_wizard(WizOp::CreateKey, Err((1, "x".into())));
+    assert!(!ui.wiz_remote_init.get(), "不切粘贴形态");
+    assert_eq!(ui.wiz_err.get(), "生成同步密钥失败：x");
+    ui.on_wizard(WizOp::CreateKey, Err((0, "core 无响应".into())));
+    assert!(!ui.wiz_remote_init.get());
+}
+
+#[test]
+fn create_key_reply_alone_shows_key() {
     let ui = SyncUi::new();
     ui.open_wizard();
     ui.wiz_step.set(WizStep::Key);
     ui.on_wizard(
         WizOp::CreateKey,
-        Err((0, "远端已有同步库，请粘贴同步密钥加入".into())),
+        Ok(vec![json!({ "ok": true, "key": KEY })]),
     );
-    assert_eq!(ui.wiz_step.get(), WizStep::Key);
+    assert_eq!(ui.new_key.get(), KEY);
+}
+
+const TAKEN: &str = "远端已有同步库，请粘贴同步密钥加入";
+
+#[test]
+fn already_exists_but_local_key_verifies_shows_exported_key() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.on_wizard(WizOp::CreateKey, Err((0, TAKEN.into())));
+    assert!(!ui.wiz_remote_init.get(), "先核对本机密钥，不急着切粘贴");
+    ui.on_wizard(
+        WizOp::Recover { storage: false },
+        Ok(vec![
+            json!({ "ok": true, "remote_initialized": true, "joined": true }),
+        ]),
+    );
+    ui.on_wizard(
+        WizOp::RecoverExport { storage: false },
+        Ok(vec![json!({ "key": KEY })]),
+    );
+    assert_eq!(ui.new_key.get(), KEY, "上次建库其实成功了：把密钥补给用户");
+    assert!(!ui.key_ack.get());
+    assert!(!ui.wiz_remote_init.get());
+    assert_eq!(ui.wiz_err.get(), "");
+}
+
+#[test]
+fn already_exists_and_not_ours_switches_to_paste() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.on_wizard(WizOp::CreateKey, Err((0, TAKEN.into())));
+    ui.on_wizard(
+        WizOp::Recover { storage: false },
+        Ok(vec![
+            json!({ "ok": true, "remote_initialized": true, "joined": false }),
+        ]),
+    );
     assert!(ui.wiz_remote_init.get(), "改成粘贴形态");
-    assert_eq!(ui.wiz_err.get(), "远端已有同步库，请粘贴同步密钥加入");
+    assert_eq!(ui.wiz_err.get(), TAKEN);
     assert_eq!(ui.new_key.get(), "");
+}
+
+#[test]
+fn import_on_empty_remote_switches_to_create() {
+    let ui = SyncUi::new();
+    ui.open_wizard();
+    ui.wiz_step.set(WizStep::Key);
+    ui.wiz_remote_init.set(true);
+    ui.on_wizard(WizOp::ImportKey, Err((0, "远端还没有同步库".into())));
+    assert!(!ui.wiz_remote_init.get(), "改成生成形态");
+    assert_eq!(ui.wiz_err.get(), "远端还没有同步库");
 }
 
 #[test]

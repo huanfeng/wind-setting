@@ -60,6 +60,11 @@ pub enum WizOp {
     StorageCreate,
     /// 更换存储：粘贴同步密钥加入新位置的同步库。
     StorageJoin,
+    /// 建库时报远端已有同步库：测一次连接，看本机密钥能不能解开它（上次建库其实成功了）。
+    /// `storage` 区分更换存储对话框与向导。
+    Recover { storage: bool },
+    /// 本机密钥能解开：取回同步密钥，补给用户确认保存。
+    RecoverExport { storage: bool },
     /// 读设备名册（身份选项）。
     Devices,
     /// 按所选身份发命令。
@@ -475,6 +480,13 @@ impl SyncUi {
         }
         let open = match op {
             WizOp::Test | WizOp::CreateKey | WizOp::ImportKey => self.wizard.get(),
+            WizOp::Recover { storage } | WizOp::RecoverExport { storage } => {
+                if storage {
+                    self.storage_dialog.get()
+                } else {
+                    self.wizard.get()
+                }
+            }
             WizOp::Devices | WizOp::Confirm => self.wizard.get() || self.identity_dialog.get(),
             WizOp::StorageSave | WizOp::StorageCreate | WizOp::StorageJoin => {
                 self.storage_dialog.get()
@@ -507,16 +519,15 @@ impl SyncUi {
 
     fn wizard_failed(&self, op: WizOp, at: usize, e: &str) {
         let label = match op {
-            WizOp::Test => "测试连接",
+            WizOp::Test | WizOp::Recover { .. } => "测试连接",
             WizOp::CreateKey | WizOp::StorageCreate => "生成同步密钥",
             WizOp::ImportKey | WizOp::StorageJoin => "加入同步库",
+            WizOp::RecoverExport { .. } => "读取同步密钥",
             WizOp::StorageSave => "保存存储设置",
             WizOp::Devices => "读取设备列表",
             WizOp::Confirm => "确认身份",
         };
         let text = key_error_text(label, e);
-        // 远端其实已有同步库（别的设备抢先建了）：改成粘贴形态。
-        let taken = e.contains("远端已有同步库");
         match op {
             WizOp::Test => {
                 let secret_step = self.wiz_sent.borrow().as_ref().and_then(|(_, i)| *i);
@@ -524,27 +535,62 @@ impl SyncUi {
                 self.wiz_can_retry.set(can_retry_test(secret_step, at));
                 self.wiz_err.set(text);
             }
-            WizOp::CreateKey => {
-                if taken {
-                    self.wiz_remote_init.set(true);
-                }
-                self.wiz_err.set(if taken { e.to_string() } else { text });
+            // 远端已有同步库：可能是上次建库其实成功了而回执丢了，先核对本机密钥。
+            WizOp::CreateKey | WizOp::StorageCreate if e.contains(REMOTE_TAKEN) => {
+                let storage = op == WizOp::StorageCreate;
+                self.spawn_wizard(
+                    WizOp::Recover { storage },
+                    vec![(
+                        "sync.command",
+                        json!({ "op": "test_connection", "args": {} }),
+                    )],
+                );
             }
-            WizOp::ImportKey => self.wiz_err.set(text),
+            // 远端其实是空的：改成生成形态。
+            WizOp::ImportKey | WizOp::StorageJoin if e.contains(REMOTE_EMPTY) => {
+                self.key_form(op == WizOp::StorageJoin, false, e);
+            }
+            // 本机密钥解不开或读不到：只能粘贴加入。
+            WizOp::RecoverExport { storage } => self.key_form(storage, true, REMOTE_TAKEN_MSG),
+            WizOp::CreateKey | WizOp::ImportKey | WizOp::Recover { storage: false } => {
+                self.wiz_err.set(text)
+            }
             // 测试连接是最后一步：失败在它上面时设置与密码已经存下。
             WizOp::StorageSave if at > 0 => self
                 .storage_err
                 .set(format!("设置已保存，但连接新位置失败：{e}")),
-            WizOp::StorageSave => self.storage_err.set(text),
-            WizOp::StorageCreate => {
-                if taken {
-                    self.storage_stage.set(StorageStage::Join);
-                }
-                self.storage_err
-                    .set(if taken { e.to_string() } else { text });
-            }
-            WizOp::StorageJoin => self.storage_err.set(text),
+            WizOp::StorageSave
+            | WizOp::StorageCreate
+            | WizOp::StorageJoin
+            | WizOp::Recover { storage: true } => self.storage_err.set(text),
             WizOp::Devices | WizOp::Confirm => self.id_err.set(text),
+        }
+    }
+
+    /// 切到粘贴（`join`）或生成形态，并说明原因。
+    fn key_form(&self, storage: bool, join: bool, why: &str) {
+        if storage {
+            self.storage_stage.set(if join {
+                StorageStage::Join
+            } else {
+                StorageStage::Create
+            });
+            self.storage_err.set(why.to_string());
+        } else {
+            self.wiz_remote_init.set(join);
+            self.wiz_err.set(why.to_string());
+        }
+    }
+
+    /// 显示刚生成（或取回）的同步密钥，等用户勾选已保存。
+    fn show_new_key(&self, storage: bool, key: String) {
+        self.key_ack.set(false);
+        self.new_key.set(key);
+        if storage {
+            self.storage_err.set(String::new());
+            self.storage_stage.set(StorageStage::Created);
+        } else {
+            self.wiz_err.set(String::new());
         }
     }
 
@@ -569,17 +615,30 @@ impl SyncUi {
                 self.wiz_can_retry.set(false);
                 self.wiz_test_ok.set(true);
             }
-            WizOp::CreateKey => {
-                self.apply_status(&status);
-                match rs.first().and_then(key_from_reply) {
-                    Some(k) => {
-                        self.key_ack.set(false);
-                        self.new_key.set(k);
-                    }
-                    // 库已建好但没拿到密钥：直接完成，可在「安全」里查看。
-                    None => self.go(WizStep::Done, WizStep::Key, "init"),
+            WizOp::CreateKey => match rs.first().and_then(key_from_reply) {
+                Some(k) => self.show_new_key(false, k),
+                // 库已建好但没拿到密钥：直接完成，可在「安全」里查看。
+                None => self.go(WizStep::Done, WizStep::Key, "init"),
+            },
+            WizOp::Recover { storage } => {
+                let joined = rs
+                    .first()
+                    .and_then(|v| v.get("joined"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if joined {
+                    self.spawn_wizard(
+                        WizOp::RecoverExport { storage },
+                        vec![("sync.command", json!({ "op": "export_key", "args": {} }))],
+                    );
+                } else {
+                    self.key_form(storage, true, REMOTE_TAKEN_MSG);
                 }
             }
+            WizOp::RecoverExport { storage } => match rs.first().and_then(key_from_reply) {
+                Some(k) => self.show_new_key(storage, k),
+                None => self.key_form(storage, true, REMOTE_TAKEN_MSG),
+            },
             WizOp::ImportKey => {
                 self.apply_status(&status);
                 self.clear_secrets();
@@ -594,17 +653,10 @@ impl SyncUi {
                     None => self.close_storage_dialog(),
                 }
             }
-            WizOp::StorageCreate => {
-                self.apply_status(&status);
-                match rs.first().and_then(key_from_reply) {
-                    Some(k) => {
-                        self.key_ack.set(false);
-                        self.new_key.set(k);
-                        self.storage_stage.set(StorageStage::Created);
-                    }
-                    None => self.close_storage_dialog(),
-                }
-            }
+            WizOp::StorageCreate => match rs.first().and_then(key_from_reply) {
+                Some(k) => self.show_new_key(true, k),
+                None => self.close_storage_dialog(),
+            },
             WizOp::StorageJoin => {
                 self.apply_status(&status);
                 self.close_storage_dialog();
@@ -641,26 +693,24 @@ impl SyncUi {
     /// 远端为空与否由 `WIND_RPC_MOCK_SYNC=fresh` 决定。
     pub(super) fn mock_wizard_jump(&self, to: &str) {
         self.inline_rpc.set(true);
-        let mock_cmd = |op: &str| {
-            rpc::call_core(
-                "sync.command",
-                &json!({ "op": op, "args": { "confirm": true } }),
-            )
-            .ok()
-            .and_then(|v| key_from_reply(&v))
-            .unwrap_or_default()
+        let mock_cmd = |op: &str, args: Value| {
+            rpc::call_core("sync.command", &json!({ "op": op, "args": args }))
+                .ok()
+                .and_then(|v| key_from_reply(&v))
+                .unwrap_or_default()
         };
         match to {
             "identity_dialog" => self.open_identity_dialog(),
             "key_view" => {
                 self.export_dialog.set(true);
-                self.exported_key.set(mock_cmd("export_key"));
+                self.exported_key.set(mock_cmd("export_key", json!({})));
             }
             "reset" | "reset_done" => {
                 self.open_reset_dialog();
                 if to == "reset_done" {
                     self.reset_guard.take();
-                    self.new_key.set(mock_cmd("reset_remote"));
+                    self.new_key
+                        .set(mock_cmd("reset_remote", json!({ "confirm": true })));
                 }
             }
             "storage_dialog" => self.open_storage_dialog(),

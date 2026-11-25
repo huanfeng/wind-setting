@@ -744,9 +744,9 @@ impl SyncUi {
         self.reset_dialog.set(true);
     }
 
-    /// 关「重置远端」：新密钥显示着而没勾「我已保存」时不关。
+    /// 关「重置远端」：重置在途（新密钥还没回来）或新密钥显示着而没勾「我已保存」时不关。
     fn close_reset_dialog(&self) {
-        if self.key_unacked() {
+        if self.busy.get() || self.key_unacked() {
             return;
         }
         self.reset_guard.disarm();

@@ -440,7 +440,7 @@ fn storage_on_empty_location_offers_create_then_shows_key() {
     );
     ui.on_wizard(
         WizOp::StorageCreate,
-        Ok(vec![json!({ "ok": true, "key": KEY }), json!({})]),
+        Ok(vec![json!({ "ok": true, "key": KEY })]),
     );
     assert_eq!(ui.storage_stage.get(), StorageStage::Created);
     assert_eq!(ui.new_key.get(), KEY);
@@ -553,4 +553,68 @@ fn late_reset_key_is_dropped_after_close() {
         );
     });
     assert_eq!(ui.new_key.get(), "");
+}
+
+#[test]
+fn storage_create_on_taken_location_recovers_own_key() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.storage_stage.set(StorageStage::Create);
+    ui.on_wizard(
+        WizOp::StorageCreate,
+        Err((0, "远端已有同步库，请粘贴同步密钥加入".into())),
+    );
+    assert_eq!(
+        ui.storage_stage.get(),
+        StorageStage::Create,
+        "先核对本机密钥"
+    );
+    ui.on_wizard(
+        WizOp::Recover { storage: true },
+        Ok(vec![
+            json!({ "ok": true, "remote_initialized": true, "joined": true }),
+        ]),
+    );
+    ui.on_wizard(
+        WizOp::RecoverExport { storage: true },
+        Ok(vec![json!({ "key": KEY })]),
+    );
+    assert_eq!(ui.storage_stage.get(), StorageStage::Created);
+    assert_eq!(ui.new_key.get(), KEY);
+}
+
+#[test]
+fn storage_create_on_foreign_library_switches_to_join() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.storage_stage.set(StorageStage::Create);
+    ui.on_wizard(
+        WizOp::StorageCreate,
+        Err((0, "远端已有同步库，请粘贴同步密钥加入".into())),
+    );
+    ui.on_wizard(
+        WizOp::Recover { storage: true },
+        Ok(vec![
+            json!({ "ok": true, "remote_initialized": true, "joined": false }),
+        ]),
+    );
+    assert_eq!(ui.storage_stage.get(), StorageStage::Join);
+}
+
+#[test]
+fn storage_join_on_empty_location_switches_to_create() {
+    let ui = SyncUi::new();
+    open_storage(&ui);
+    ui.storage_stage.set(StorageStage::Join);
+    ui.on_wizard(WizOp::StorageJoin, Err((0, "远端还没有同步库".into())));
+    assert_eq!(ui.storage_stage.get(), StorageStage::Create);
+}
+
+#[test]
+fn reset_dialog_stays_open_while_reset_in_flight() {
+    let ui = SyncUi::new();
+    ui.open_reset_dialog();
+    ui.busy.set(true);
+    ui.close_reset_dialog();
+    assert!(ui.reset_dialog.get(), "新密钥回来前关框会把它丢掉");
 }

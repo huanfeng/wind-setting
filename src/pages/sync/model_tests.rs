@@ -177,6 +177,11 @@ fn key_texts_follow_the_spec() {
 fn wrong_key_error_is_shown_as_is() {
     assert_eq!(key_error_text("加入同步库", "同步密钥不对"), "同步密钥不对");
     assert_eq!(
+        key_error_text("加入同步库", "远端数据无法解密：已损坏，或同步密钥不对"),
+        "加入同步库失败：远端数据无法解密：已损坏，或同步密钥不对",
+        "只认整句，别吞掉别的错误"
+    );
+    assert_eq!(
         key_error_text("加入同步库", "网络不可达"),
         "加入同步库失败：网络不可达"
     );
@@ -186,10 +191,8 @@ fn wrong_key_error_is_shown_as_is() {
 fn key_steps_carry_key_only_in_commands() {
     assert_eq!(
         create_key_steps(),
-        vec![
-            ("sync.command", json!({ "op": "create_key", "args": {} })),
-            ("sync.status", json!({})),
-        ]
+        vec![("sync.command", json!({ "op": "create_key", "args": {} }))],
+        "单发：读状态失败不能吞掉回执里的密钥"
     );
     assert_eq!(import_key_steps("  "), Err("请粘贴同步密钥"));
     assert_eq!(

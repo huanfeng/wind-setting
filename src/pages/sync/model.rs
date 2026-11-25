@@ -336,12 +336,9 @@ pub(crate) fn storage_stage_after_test(reply: &Value) -> Option<StorageStage> {
     }
 }
 
-/// 生成同步密钥并建库，之后读一次状态。
+/// 生成同步密钥并建库。单发：后面再带一步的话，那一步失败会连同回执里的密钥一起丢掉；状态由回执后的刷新带来。
 pub(crate) fn create_key_steps() -> Vec<Step> {
-    vec![
-        ("sync.command", json!({ "op": "create_key", "args": {} })),
-        ("sync.status", json!({})),
-    ]
+    vec![("sync.command", json!({ "op": "create_key", "args": {} }))]
 }
 
 /// 粘贴同步密钥加入，之后读一次状态（看是否待确认身份）。格式整理交给 core，原样转发。
@@ -368,7 +365,7 @@ pub(crate) fn key_from_reply(v: &Value) -> Option<String> {
 
 /// 同步密钥相关的失败文案：密钥不对原样显示，其余带上动作名。
 pub(crate) fn key_error_text(label: &str, e: &str) -> String {
-    if e.contains(WRONG_KEY) {
+    if e.trim() == WRONG_KEY {
         WRONG_KEY.to_string()
     } else {
         failure_text(label, e).0
@@ -384,6 +381,11 @@ pub(crate) fn key_lines(key: &str) -> String {
     format!("{}\n{}", groups[..7].join("-"), groups[7..].join("-"))
 }
 
+/// core 在建库时远端已有同步库的报错（片段与整句）。
+pub(crate) const REMOTE_TAKEN: &str = "远端已有同步库";
+pub(crate) const REMOTE_TAKEN_MSG: &str = "远端已有同步库，请粘贴同步密钥加入";
+/// core 在加入时远端还没有同步库的报错。
+pub(crate) const REMOTE_EMPTY: &str = "远端还没有同步库";
 /// core 对密钥不对的报错。
 const WRONG_KEY: &str = "同步密钥不对";
 /// 生成（或重置后）显示同步密钥时的提示。
