@@ -1435,6 +1435,20 @@ pub struct SchemaManagerState {
     /// 标点态：0=跟随全局 / 1=中文标点 / 2=英文标点（`[punct] mode`）。
     /// 「添加覆盖」弹框（码表配置）是否可见，及其候选（打开时与每次码表工作态变化时重算）。
     pub settings_ct_add_visible: Signal<bool>,
+    /// 本次播种的方案设置快照（已叠上队列里未提交的改动）。「复制到其它方案」的源。
+    settings_ct_source: Rc<RefCell<Option<crate::dialogs::schema_codetable::CtSeed>>>,
+    /// 「复制到其它方案」弹框。
+    settings_copy_visible: Signal<bool>,
+    /// 打开弹框那一刻的源：快照再叠上对话框里尚未入队的改动（复制的是用户眼前的值）。
+    settings_copy_src: Rc<RefCell<Option<crate::dialogs::schema_codetable::CtSeed>>>,
+    /// 可选的块名，与 `settings_copy_block_on` 按下标对应。
+    settings_copy_blocks: Signal<Vec<String>>,
+    settings_copy_block_on: Rc<Vec<Signal<bool>>>,
+    /// 可选的目标方案 `(id, 名称)`，与 `settings_copy_target_on` 按下标对应。
+    settings_copy_targets: Signal<Vec<(String, String)>>,
+    settings_copy_target_on: Rc<Vec<Signal<bool>>>,
+    /// 至少勾了一块、一个目标（「复制」按钮的可用判据）。
+    settings_copy_any: Signal<bool>,
     /// 弹框搜索框文本；按名称 / 说明过滤候选。
     settings_ct_query: Signal<String>,
     /// 弹框里各候选的勾选信号（按 manifest key，get-or-create：候选列表重建时勾选不丢）。
@@ -1696,6 +1710,16 @@ impl SchemaManagerState {
             settings_ov_show_all: signal(false),
             settings_ov_layout: signal(0),
             settings_ct_add_visible: signal(false),
+            settings_ct_source: Rc::new(RefCell::new(None)),
+            settings_copy_visible: signal(false),
+            settings_copy_src: Rc::new(RefCell::new(None)),
+            settings_copy_blocks: signal(Vec::new()),
+            settings_copy_block_on: Rc::new((0..COPY_BLOCK_SLOTS).map(|_| signal(false)).collect()),
+            settings_copy_targets: signal(Vec::new()),
+            settings_copy_target_on: Rc::new(
+                (0..COPY_TARGET_SLOTS).map(|_| signal(false)).collect(),
+            ),
+            settings_copy_any: signal(false),
             settings_ct_query: signal(String::new()),
             settings_ct_picks: Rc::new(RefCell::new(std::collections::HashMap::new())),
             settings_ct_pick_any: signal(false),
@@ -2807,6 +2831,104 @@ impl SchemaManagerState {
         self.feedback.set(Some((kind, msg.into())));
     }
 
+    /// 打开「复制到其它方案」：源取对话框眼前的值，目标为同类的其它已安装方案。
+    fn open_copy_dialog(&self) {
+        use crate::dialogs::schema_codetable::SchemeKind;
+        let Some(mut src) = self.settings_ct_source.borrow().clone() else {
+            return;
+        };
+        let hidden = |key: &str| self.custom_hidden(key);
+        let pending = self
+            .settings_ct
+            .changes(self.settings_ct_reset_all.get(), &hidden);
+        overlay_queued_settings(&mut src, &pending);
+        let blocks = crate::scheme_copy::blocks_present(src.kind, &src.effective);
+        let sid = self.settings_schema_id.borrow().clone();
+        let targets: Vec<(String, String)> = self
+            .schemas
+            .borrow()
+            .iter()
+            .filter(|e| e.id != sid && !e.overlay)
+            .filter(|e| {
+                SchemeKind::of(&e.engine_type, &e.scheme)
+                    .is_some_and(|k| crate::scheme_copy::same_family(k, src.kind))
+            })
+            .take(COPY_TARGET_SLOTS)
+            .map(|e| (e.id.clone(), e.name.clone()))
+            .collect();
+        for (i, sig) in self.settings_copy_block_on.iter().enumerate() {
+            sig.set(i < blocks.len());
+        }
+        for sig in self.settings_copy_target_on.iter() {
+            sig.set(false);
+        }
+        self.settings_copy_blocks.set(
+            blocks
+                .iter()
+                .take(COPY_BLOCK_SLOTS)
+                .map(|b| b.to_string())
+                .collect(),
+        );
+        self.settings_copy_targets.set(targets);
+        *self.settings_copy_src.borrow_mut() = Some(src);
+        self.settings_copy_visible.set(true);
+    }
+
+    /// 把所选块排进各目标方案的待提交改动，随主保存提交。
+    fn queue_copy(&self) {
+        use crate::dialogs::schema_codetable::SchemeKind;
+        let Some(src) = self.settings_copy_src.borrow().clone() else {
+            return;
+        };
+        let blocks: Vec<String> = self
+            .settings_copy_blocks
+            .get()
+            .into_iter()
+            .zip(self.settings_copy_block_on.iter())
+            .filter(|(_, on)| on.get())
+            .map(|(b, _)| b)
+            .collect();
+        let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
+        let chosen: Vec<String> = self
+            .settings_copy_targets
+            .get()
+            .into_iter()
+            .zip(self.settings_copy_target_on.iter())
+            .filter(|(_, on)| on.get())
+            .map(|((id, _), _)| id)
+            .collect();
+        let mut done = 0;
+        {
+            let schemas = self.schemas.borrow();
+            let mut q = self.pending_edits.borrow_mut();
+            for id in &chosen {
+                let Some(kind) = schemas
+                    .iter()
+                    .find(|e| e.id == *id)
+                    .and_then(|e| SchemeKind::of(&e.engine_type, &e.scheme))
+                else {
+                    continue;
+                };
+                let items = crate::scheme_copy::items_for(src.kind, &src.effective, &blocks, kind);
+                if items.is_empty() {
+                    continue;
+                }
+                let slot = q.entry(id.clone()).or_default();
+                slot.settings = Some(merge_settings_change(
+                    slot.settings.take(),
+                    (items, Vec::new()),
+                ));
+                done += 1;
+            }
+        }
+        if done > 0 {
+            self.notify(
+                ToastKind::Success,
+                format!("已复制到 {done} 个方案，保存后生效"),
+            );
+        }
+    }
+
     /// 拖拽重排：把已启用区第 `from` 行挪到第 `to` 位（下标都相对**已启用区**）。
     ///
     /// 不直接对 `enabled_order` 用下标——它可能是空的（表示"全部启用"），也可能含着
@@ -3159,7 +3281,19 @@ impl SchemaManagerState {
                     default: map("default")?,
                 })
             });
+            let got = got.map(|mut seed| {
+                let queued = self
+                    .pending_edits
+                    .borrow()
+                    .get(&sid)
+                    .and_then(|e| e.settings.clone());
+                if let Some(queued) = queued {
+                    overlay_queued_settings(&mut seed, &queued);
+                }
+                seed
+            });
             self.settings_ct_seeded.set(got.is_some());
+            *self.settings_ct_source.borrow_mut() = got.clone();
             if let Some(seed) = got {
                 self.settings_ct.seed(&self.manifest.borrow(), &seed);
                 self.settings_ct_plan.set(self.settings_ct.plan());
@@ -3602,10 +3736,10 @@ impl SchemaManagerState {
             let mut q = self.pending_edits.borrow_mut();
             merge_pending(&mut q, &id, cfg_changed.then_some(cfg), dicts);
             // 与 cfg 同理：后一次是对话框此刻的完整状态，直接替换。
-            if settings_change.is_some()
+            if let Some(change) = settings_change
                 && let Some(slot) = q.get_mut(&id)
             {
-                slot.settings = settings_change;
+                slot.settings = Some(merge_settings_change(slot.settings.take(), change));
             }
             // base 是「队列里的 cfg 在哪份磁盘快照上改出来的」：已有就保留，别被队列自己的内容顶掉。
             if cfg_changed
@@ -4812,10 +4946,114 @@ pub fn build_schema_manager_dialog(
         // 已叠成 stack），故整体排在这里即可，不必再拆一级。
         .child(punct_dlg)
         .child(ct_add_dlg)
+        .child(build_copy_dialog(state))
         // 按键选择浮层是**第四级**：从按键表里点「添加 / 修改」打开，故排在两张表之后。
         // 顺序反了的表现是点了没反应——浮层建出来了，被压在按键表下面。
         .child(state.settings_ka.build_picker())
         .child(state.settings_sa.build_picker())
+}
+
+/// 「复制到其它方案」弹框：勾块、勾目标方案，确认后排进目标方案的待提交改动。
+fn build_copy_dialog(state: &SchemaManagerState) -> Element {
+    let any = state.settings_copy_any;
+    let any_effect = {
+        let (blocks, targets) = (
+            state.settings_copy_block_on.clone(),
+            state.settings_copy_target_on.clone(),
+        );
+        let (b2, t2) = (blocks.clone(), targets.clone());
+        crate::pages::dict::reactive::reactive_effect(
+            move || {
+                b2.iter()
+                    .chain(t2.iter())
+                    .fold(0u64, |acc, s| acc.wrapping_add(s.version()))
+            },
+            move || any.set(blocks.iter().any(|s| s.get()) && targets.iter().any(|s| s.get())),
+        )
+    };
+    // host_signal 按元素逐个建子树，故先把名单转成带下标的行，下标对应预建的勾选槽位。
+    let checks =
+        |names: Signal<Vec<(usize, String)>>, slots: Rc<Vec<Signal<bool>>>, empty: &'static str| {
+            Element::col()
+                .width_match()
+                .child(
+                    Element::label(empty)
+                        .font_size(12.5)
+                        .fg_role(Role::TextMuted)
+                        .padding_xy(6, 6)
+                        .visible_when(move || names.get().is_empty()),
+                )
+                .child(Element::host_signal(names, move |(i, name)| {
+                    match slots.get(i) {
+                        Some(sig) => Element::checkbox(&name, *sig)
+                            .fg_role(Role::Text)
+                            .padding_xy(6, 4),
+                        None => Element::col(),
+                    }
+                }))
+        };
+    let block_rows = signal(Vec::<(usize, String)>::new());
+    let target_rows = signal(Vec::<(usize, String)>::new());
+    let (blocks, targets) = (state.settings_copy_blocks, state.settings_copy_targets);
+    let rows_sync = crate::pages::dict::reactive::reactive_effect(
+        move || blocks.version().wrapping_add(targets.version()),
+        move || {
+            block_rows.set(blocks.get().into_iter().enumerate().collect());
+            target_rows.set(
+                targets
+                    .get()
+                    .into_iter()
+                    .map(|(_, n)| n)
+                    .enumerate()
+                    .collect(),
+            );
+        },
+    );
+    let heading = |t: &str| {
+        Element::label(t)
+            .font_size(12.0)
+            .font_weight(600)
+            .fg_role(Role::TextMuted)
+            .padding_xy(4, 6)
+    };
+    let body = Element::col()
+        .width_match()
+        .spacing(6)
+        .padding_xy(12, 8)
+        .child(
+            Element::label(
+                "把本方案这几块设置的当前值一次性写进所选方案，之后两边各改各的。保存后生效。",
+            )
+            .font_size(12.5)
+            .fg_role(Role::TextMuted)
+            .width_match()
+            .max_lines(2),
+        )
+        .child(heading("复制哪些"))
+        .child(checks(
+            block_rows,
+            state.settings_copy_block_on.clone(),
+            "没有可复制的设置。",
+        ))
+        .child(heading("复制到"))
+        .child(Element::scroll().width_match().height(180).child(checks(
+            target_rows,
+            state.settings_copy_target_on.clone(),
+            "没有其它同类方案。",
+        )))
+        .child(any_effect)
+        .child(rows_sync);
+    let st = state.clone();
+    crate::dialogs::field_dialogs::build_confirm_dialog_shell_dims(
+        state.settings_copy_visible,
+        signal("复制到其它方案".to_string()),
+        body,
+        any,
+        move || st.queue_copy(),
+        "复制",
+        520,
+        520,
+    )
 }
 
 /// 码表配置的「添加覆盖」弹框：按分类列出还没覆盖的项，每项带说明与当前跟随值；
@@ -5507,6 +5745,60 @@ fn merge_pending(
     }
 }
 
+/// 「复制到其它方案」弹框的勾选槽位数。信号在建状态时一次建好、按下标复用：在列表重建的
+/// 闭包里建的信号会随那次重建被回收。块最多 8 个（拼音 7 个具名块 + 其余）。
+const COPY_BLOCK_SLOTS: usize = 8;
+const COPY_TARGET_SLOTS: usize = 32;
+
+/// 把新一轮方案设置改动并进队列里已有的那份：同一项以后者为准，没提到的项保留。
+///
+/// 不能整份替换：队列里可能有别处排进来的改动（从别的方案复制过来的），对话框这一轮只
+/// 报它自己动过的项。
+fn merge_settings_change(
+    old: Option<SchemeSettingsChange>,
+    new: SchemeSettingsChange,
+) -> SchemeSettingsChange {
+    let (mut sets, mut resets) = old.unwrap_or_default();
+    let (new_sets, new_resets) = new;
+    for (k, v) in new_sets {
+        resets.retain(|r| *r != k);
+        match sets.iter_mut().find(|(s, _)| *s == k) {
+            Some(e) => e.1 = v,
+            None => sets.push((k, v)),
+        }
+    }
+    for k in new_resets {
+        sets.retain(|(s, _)| *s != k);
+        if !resets.contains(&k) {
+            resets.push(k);
+        }
+    }
+    resets.sort();
+    (sets, resets)
+}
+
+/// 把队列里还没提交的方案设置改动叠到 `schema.getSettings` 的快照上，让对话框按「保存后
+/// 会是的样子」播种。恢复默认的项取默认值；默认值里没有的直接去掉。
+fn overlay_queued_settings(
+    seed: &mut crate::dialogs::schema_codetable::CtSeed,
+    queued: &SchemeSettingsChange,
+) {
+    let (sets, resets) = queued;
+    for (k, v) in sets {
+        seed.effective.insert(k.clone(), v.clone());
+    }
+    for k in resets {
+        match seed.default.get(k) {
+            Some(v) => {
+                seed.effective.insert(k.clone(), v.clone());
+            }
+            None => {
+                seed.effective.remove(k);
+            }
+        }
+    }
+}
+
 /// 码表配置行的摘要文案：**报数**，不报「开/关」。
 ///
 /// 逐项三态之后没有「整段自定义」这个状态了——用户可能只覆盖了一项。报数是这里唯一
@@ -5918,6 +6210,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 各分类同在一张卡片里、以卡内小标题分隔（与方案配置卡同一套写法），而不是
             // 每类一张小卡——那是本对话框里唯一一处自成一格的卡片样式。
             let add_visible = state.settings_ct_add_visible;
+            let copy_st = state.clone();
             let ct_hint = state.settings_ct.clone();
             let empty_hint = Element::label(
                 "都是方案默认值。点右上角「添加设置项」，挑出要改的项；移除一项即恢复它的默认值。",
@@ -5931,6 +6224,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                 None,
                 Some(&move || {
                     let (ct_reset, reset_flag) = (ct_reset.clone(), reset_flag.clone());
+                    let copy_st = copy_st.clone();
                     // 「添加设置项」是主操作，只此一个入口（点开弹框挑项）；「全部恢复默认」是兜底，
                     // 用柔和描边（灰边 + 意图色文字、透明底）而不是实心主按钮，免得比标题还抢眼。
                     Element::row()
@@ -5940,6 +6234,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                             Element::button("＋ 添加设置项")
                                 .small()
                                 .on_click(move |_| add_visible.set(true)),
+                        )
+                        .child(
+                            Element::button("复制到…")
+                                .small()
+                                .outline_soft()
+                                .on_click(move |_| copy_st.open_copy_dialog()),
                         )
                         .child(
                             Element::button("全部恢复默认")
@@ -8979,6 +9279,124 @@ mod section_build_tests {
         let keys = open(Some(folded(&[&format!("key:{key}")])));
         assert!(!keys.iter().any(|k| k == key), "{keys:?}");
         assert!(!keys.is_empty(), "同节别的项不受牵连");
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 后一轮改动并进队列：同一项以后者为准，写入与恢复默认互相抵消，没提到的项保留。
+    #[test]
+    fn settings_changes_merge_per_key() {
+        let k = |s: &str| s.to_string();
+        let old = (
+            vec![(k("a"), json!(1)), (k("b"), json!(2))],
+            vec![k("c"), k("d")],
+        );
+        let new = (vec![(k("a"), json!(9)), (k("c"), json!(3))], vec![k("b")]);
+        let (sets, resets) = merge_settings_change(Some(old), new);
+        assert_eq!(sets, [(k("a"), json!(9)), (k("c"), json!(3))]);
+        assert_eq!(resets, [k("b"), k("d")]);
+    }
+
+    /// 队列里的改动叠到快照上：写入取队列值，恢复默认取默认值。
+    #[test]
+    fn queued_settings_overlay_snapshot() {
+        let map = |v: Value| v.as_object().unwrap().clone();
+        let mut seed = crate::dialogs::schema_codetable::CtSeed {
+            kind: crate::dialogs::schema_codetable::SchemeKind::Codetable,
+            effective: map(json!({ "schema.codetable.a": 1, "schema.codetable.b": 5 })),
+            default: map(json!({ "schema.codetable.a": 1, "schema.codetable.b": 2 })),
+        };
+        overlay_queued_settings(
+            &mut seed,
+            &(
+                vec![("schema.codetable.a".into(), json!(7))],
+                vec!["schema.codetable.b".into()],
+            ),
+        );
+        assert_eq!(seed.effective["schema.codetable.a"], json!(7));
+        assert_eq!(seed.effective["schema.codetable.b"], json!(2));
+    }
+
+    fn copy_test_state() -> SchemaManagerState {
+        let state = SchemaManagerState::new();
+        let entry = |id: &str, ty: &str, scheme: &str, overlay: bool| SchemaEntry {
+            id: id.into(),
+            name: id.into(),
+            engine_type: ty.into(),
+            scheme: scheme.into(),
+            overlay,
+            ..Default::default()
+        };
+        *state.schemas.borrow_mut() = vec![
+            entry("wubi86", "codetable", "", false),
+            entry("wubi98", "codetable", "", false),
+            entry("pinyin_simp", "pinyin", "full", false),
+            entry("quick", "codetable", "", true),
+        ];
+        state
+    }
+
+    /// 复制只列同类、非 overlay 的其它方案；所选块排进目标方案的待提交改动。
+    #[test]
+    fn copy_queues_chosen_blocks_into_same_kind_targets() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = copy_test_state();
+        state.open_settings_at_id("wubi86");
+        state.open_copy_dialog();
+        let targets = state.settings_copy_targets.get();
+        assert_eq!(targets.len(), 1, "{targets:?}");
+        assert_eq!(targets[0].0, "wubi98");
+        let blocks = state.settings_copy_blocks.get();
+        assert!(blocks.iter().any(|b| b == "调频"), "{blocks:?}");
+        for (i, b) in blocks.iter().enumerate() {
+            state.settings_copy_block_on[i].set(b == "调频");
+        }
+        state.settings_copy_target_on[0].set(true);
+        state.queue_copy();
+        let (sets, resets) = state.pending_edits.borrow()["wubi98"]
+            .settings
+            .clone()
+            .expect("目标方案入队");
+        assert!(!sets.is_empty());
+        assert!(
+            sets.iter()
+                .all(|(k, _)| k.starts_with("schema.codetable.frequency.")),
+            "{sets:?}"
+        );
+        assert!(resets.is_empty());
+        assert!(!state.pending_edits.borrow().contains_key("pinyin_simp"));
+        unsafe { std::env::remove_var("WIND_RPC_MOCK") };
+    }
+
+    /// 重开一个已有排队改动的方案：按「保存后会是的样子」显示，且再入队不冲掉先前的项。
+    #[test]
+    fn reopening_scheme_shows_and_keeps_queued_settings() {
+        let _guard = crate::rpc::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
+        let state = copy_test_state();
+        let key = "schema.codetable.frequency.enabled";
+        state.open_settings_at_id("wubi98");
+        let default_on = state.settings_ct_source.borrow().as_ref().unwrap().default[key]
+            .as_bool()
+            .unwrap();
+        state
+            .pending_edits
+            .borrow_mut()
+            .entry("wubi98".into())
+            .or_default()
+            .settings = Some((vec![(key.into(), json!(!default_on))], Vec::new()));
+        state.open_settings_at_id("wubi98");
+        assert_eq!(state.settings_ct.custom_count(), 1, "排队的项显示为已修改");
+        state.stage_settings_edits();
+        let (sets, _) = state.pending_edits.borrow()["wubi98"]
+            .settings
+            .clone()
+            .unwrap();
+        assert!(sets.iter().any(|(k, _)| k == key), "{sets:?}");
         unsafe { std::env::remove_var("WIND_RPC_MOCK") };
     }
 

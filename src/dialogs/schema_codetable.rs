@@ -82,7 +82,7 @@ impl SchemeKind {
     }
 
     /// 这一页收不收这个键。辅助码在对话框里有自己的页；双拼专有项只给双拼方案。
-    fn accepts(self, key: &str) -> bool {
+    pub(crate) fn accepts(self, key: &str) -> bool {
         key.starts_with(self.prefix())
             && !key.starts_with("schema.pinyin.aux_code.")
             && (self == Self::Pinyin { shuangpin: true }
@@ -1151,7 +1151,6 @@ mod tests {
         // 生效值 2（用户改过），跟随值 3（方案作者写的）。
         let eff = json!({ "short_code_yield_level": 2 });
         let followed = json!({ "short_code_yield_level": 3 });
-        let ov = json!({ "short_code_yield_level": 2 });
         let f = CtFields::default();
         f.seed(&m, &seed_of(&eff, &followed));
         let key = "schema.codetable.short_code_yield_level";
