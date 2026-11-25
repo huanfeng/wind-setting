@@ -43,7 +43,7 @@ pub struct TabDef {
 /// 认成别的页、二级导航整条不刷新。
 pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
     let tab = |id: &str| SubNav::new(crate::cli::page_to_index(id).unwrap_or(0));
-    let (schema, input, keys, theme, ui, dict, stats_nav, advanced, about) = (
+    let (schema, input, keys, theme, ui, dict, stats_nav, sync_nav, advanced, about) = (
         tab("schema"),
         tab("input"),
         tab("keys"),
@@ -51,6 +51,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         tab("ui"),
         tab("dict"),
         tab("stats"),
+        tab("sync"),
         tab("advanced"),
         tab("about"),
     );
@@ -64,6 +65,7 @@ pub fn all_tabs(app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<TabDef> {
         // 「词库」是动作项（点了开独立窗、主窗不切页），故排在纯切页的那五格之后。
         // ⚠ 顺序必须与 `cli::PAGES` 逐格一致，见那里的说明。
         tab_def("词库", dict_page(state), dict),
+        tab_def("同步", sync_page(app, state, &sync_nav), sync_nav),
         tab_def("高级", advanced_page(app, state, &advanced), advanced),
         tab_def("关于", about_page(app, state), about),
     ]
@@ -314,14 +316,6 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
             ),
         ));
     }
-    // 不挂 `feature:` 门：id 须登记进 core 的 `wind_config::SETTINGS_FEATURES`，那是 core 仓的事。
-    {
-        secs.push(nav.wrap(
-            sync::SECTION,
-            0,
-            crate::search::anchor::wrap(sync::build_section(app, state), sync::ANCHOR, state.jump),
-        ));
-    }
     if let Some(card) = custom_hidden_section(app) {
         secs.push(nav.wrap("定制版", 0, card));
     }
@@ -338,6 +332,27 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
         secs.push(nav.wrap(&name, 0, el));
     }
     sections_page("高级", "服务与实验性功能", secs)
+}
+
+/// 同步页（spike）。
+fn sync_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
+    let secs = sync::build_page(app, state)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, el))| {
+            // 搜索锚点挂在第一张卡上。
+            let el = if i == 0 {
+                crate::search::anchor::wrap(el, sync::ANCHOR, state.jump)
+            } else {
+                el
+            };
+            match name {
+                Some(n) => nav.wrap(n, 0, el),
+                None => el,
+            }
+        })
+        .collect();
+    sections_page("同步", "在多台设备间同步词库、方案与设置", secs)
 }
 
 /// 「定制版」卡：一个「显示定制版隐藏的设置」开关。只在本机定制版的 `[settings] hide`

@@ -2282,46 +2282,86 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             ]
         }),
         // 数据同步：形状同 core `apps/service/src/sync.rs`（状态、设置不含机密、命令回执）。
-        "sync.status" if std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("mass_delete") => {
-            json!({
-                "installed": true, "enabled": true, "running": true, "phase": "halted",
-                "last_ok": 1_795_000_000,
-                "last_error": "本机有 25/25 个文件看似被删除，为防误删已暂停。确认无误请点「继续同步」",
-                "pending": 0, "conflicts": 0, "has_secret": true, "joined": true
-            })
+        "sync.status" => {
+            let mut v = json!({
+                "installed": true, "enabled": true, "running": true, "phase": "idle",
+                "last_ok": 1_795_000_000, "last_error": null, "pending": 2, "conflicts": 2,
+                "conflict_paths": ["themes/dark.conflict-laptop-2026-11-23.json", "data/phrases.dict.yaml.conflict-laptop-2026-11-22"],
+                "has_secret": true, "joined": true,
+                "device": "desktop-7f3k", "group": "g-home", "group_name": "家里", "needs_identity": false
+            });
+            match std::env::var("WIND_RPC_MOCK_SYNC").as_deref() {
+                Ok("mass_delete") => {
+                    v["phase"] = json!("halted");
+                    v["last_error"] = json!(
+                        "本机有 25/25 个文件看似被删除，为防误删已暂停。确认无误请点「继续同步」"
+                    );
+                    v["pending"] = json!(0);
+                    v["conflicts"] = json!(0);
+                    v["conflict_paths"] = json!([]);
+                }
+                // 已装未配置：没加入远端、没启用。
+                Ok("unset") => {
+                    v["enabled"] = json!(false);
+                    v["joined"] = json!(false);
+                    v["has_secret"] = json!(false);
+                    v["phase"] = json!("not_configured");
+                    v["last_ok"] = json!(null);
+                    v["pending"] = json!(0);
+                    v["conflicts"] = json!(0);
+                    v["conflict_paths"] = json!([]);
+                }
+                // 刚加入远端，等待确认本机身份。
+                Ok("identity") => {
+                    v["needs_identity"] = json!(true);
+                    v["last_ok"] = json!(null);
+                    v["conflicts"] = json!(0);
+                    v["conflict_paths"] = json!([]);
+                }
+                _ => {}
+            }
+            v
         }
-        "sync.status" => json!({
-            "installed": true, "enabled": true, "running": true, "phase": "idle",
-            "last_ok": 1_795_000_000, "last_error": null, "pending": 2, "conflicts": 2,
-            "conflict_paths": ["themes/dark.conflict-laptop-2026-11-23.json", "data/phrases.dict.yaml.conflict-laptop-2026-11-22"],
-            "has_secret": true, "joined": true
-        }),
         "sync.getSettings" => json!({
             "settings": {
                 "enabled": true,
                 "backend": { "type": "webdav", "url": "https://dav.example.com/dav/", "user": "me" },
-                "scope": { "config": true, "schemas": true, "themes": true, "dicts": true },
                 "interval_min": 15,
                 "device_name": "书房台式机"
             },
             "installed": true, "has_secret": true
         }),
         "sync.setSettings" => json!({ "ok": true }),
+        "sync.now" => json!({ "outcome": "requested" }),
         "sync.command" => match params.get("op").and_then(Value::as_str) {
             Some("export_key") => {
                 json!({ "key": "bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=" })
             }
-            // 设备名册：本机、一台 macOS、一台读不出的；remove_device 无状态，只回 ok。
+            // 设备名册：本组三台（本机、macOS、读不出的）与另一组两台；remove_device 无状态，只回 ok。
             Some("list_devices") => {
                 let now = chrono::Utc::now().timestamp();
                 json!({ "devices": [
-                    { "id": "d-self", "name": "书房台式机", "platform": "windows", "app_version": "0.132.0",
-                      "caps": ["files"], "last_seen": now, "is_self": true, "readable": true },
-                    { "id": "d-mac", "name": "MacBook Pro", "platform": "macos", "app_version": "0.131.0",
-                      "caps": ["files"], "last_seen": now - 86_400, "is_self": false, "readable": true },
+                    { "id": "desktop-7f3k", "name": "书房台式机", "platform": "windows", "app_version": "0.132.0",
+                      "caps": ["files"], "last_seen": now, "is_self": true, "readable": true,
+                      "group": "g-home", "group_name": "家里" },
+                    { "id": "mac-2m9q", "name": "MacBook Pro", "platform": "macos", "app_version": "0.131.0",
+                      "caps": ["files"], "last_seen": now - 86_400, "is_self": false, "readable": true,
+                      "group": "g-home", "group_name": "家里" },
                     { "id": "d-unk", "name": "", "platform": "", "app_version": "",
-                      "caps": [], "last_seen": now - 9 * 86_400, "is_self": false, "readable": false }
+                      "caps": [], "last_seen": now - 9 * 86_400, "is_self": false, "readable": false,
+                      "group": "g-home", "group_name": "家里" },
+                    { "id": "desktop-c8x2", "name": "公司电脑", "platform": "windows", "app_version": "0.132.0",
+                      "caps": ["files"], "last_seen": now - 3 * 86_400, "is_self": false, "readable": true,
+                      "group": "g-work", "group_name": "公司" },
+                    { "id": "phone-4h6n", "name": "Pixel 8", "platform": "android", "app_version": "0.132.0",
+                      "caps": ["files"], "last_seen": now - 2 * 86_400, "is_self": false, "readable": true,
+                      "group": "g-work", "group_name": "" }
                 ] })
+            }
+            // 新存储（还没人初始化）时 remote_initialized 为 false。
+            Some("test_connection") => {
+                let fresh = std::env::var("WIND_RPC_MOCK_SYNC").as_deref() == Ok("fresh");
+                json!({ "ok": true, "remote_initialized": !fresh, "joined": false })
             }
             _ => json!({ "ok": true }),
         },

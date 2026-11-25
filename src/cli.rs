@@ -10,7 +10,7 @@ use crate::pages::dict::spec::LogicalTab;
 /// 原页不动（见 `shell::build_nav` 里的 `is_action`）。把唯一一个「点了会跳出去」的
 /// 条目从配置页中间挪到末尾那组，前面五格就都是纯粹的「切页」，行为一致。
 const PAGES: &[&str] = &[
-    "schema", "input", "keys", "theme", "ui", "stats", "dict", "advanced", "about",
+    "schema", "input", "keys", "theme", "ui", "stats", "dict", "sync", "advanced", "about",
 ];
 
 /// 规范页 id → tab 索引。非法 id 返回 None(不兼容旧别名)。
@@ -252,8 +252,9 @@ mod tests {
             "应用兼容是独立窗，不是主窗的一页"
         );
         assert_eq!(page_to_index("dict"), Some(6));
-        assert_eq!(page_to_index("advanced"), Some(7));
-        assert_eq!(page_to_index("about"), Some(8));
+        assert_eq!(page_to_index("sync"), Some(7));
+        assert_eq!(page_to_index("advanced"), Some(8));
+        assert_eq!(page_to_index("about"), Some(9));
         assert_eq!(page_to_index("nope"), None);
         assert_eq!(page_to_index("general"), None); // 旧别名不再支持
     }
@@ -261,8 +262,8 @@ mod tests {
     #[test]
     fn parse_target_forms() {
         assert_eq!(parse_target(&a(&["exe", "--page", "input"])), Some(1));
-        assert_eq!(parse_target(&a(&["exe", "--page=about"])), Some(8));
-        assert_eq!(parse_target(&a(&["exe", "--about"])), Some(8));
+        assert_eq!(parse_target(&a(&["exe", "--page=about"])), Some(9));
+        assert_eq!(parse_target(&a(&["exe", "--about"])), Some(9));
         assert_eq!(parse_target(&a(&["exe", "--tab", "5"])), Some(5));
         assert_eq!(parse_target(&a(&["exe"])), None);
     }

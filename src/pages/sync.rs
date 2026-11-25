@@ -41,8 +41,8 @@ use crate::rpc;
 use crate::state::AppState;
 use crate::widgets::{section, setting_row, setting_row_desc_signal};
 
-/// 搜索锚点（`search::index::HANDWRITTEN` 的 `advanced:sync` 条目指向这里）。
-pub const ANCHOR: &str = "advanced:sync";
+/// 搜索锚点（`search::index::HANDWRITTEN` 的 `sync:page` 条目指向这里）。
+pub const ANCHOR: &str = "sync:page";
 /// 分区名（二级导航 + 卡片标题）。
 pub const SECTION: &str = "数据同步";
 
@@ -82,12 +82,30 @@ pub(crate) struct StatusView {
     pub has_secret: bool,
     /// 本机已加入同步库（持有有效密钥）：决定口令按钮是「设置」还是「修改」。
     pub joined: bool,
+    /// 本机设备号。
+    pub device: String,
+    /// 本机所在组号与组名（组名可空）。
+    pub group: String,
+    pub group_name: String,
+    /// 需要用户确认本机身份（首次加入远端后）。
+    pub needs_identity: bool,
 }
 
 impl StatusView {
+    /// 已装同步组件且已加入远端：此后才显示完整的同步页，否则只给「开始配置」。
+    pub fn configured(&self) -> bool {
+        self.installed && self.joined
+    }
+
     pub fn parse(v: &Value) -> Self {
         let b = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
         let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
         StatusView {
             installed: b("installed"),
             enabled: b("enabled"),
@@ -115,6 +133,10 @@ impl StatusView {
                 .unwrap_or_default(),
             has_secret: b("has_secret"),
             joined: b("joined"),
+            device: s("device"),
+            group: s("group"),
+            group_name: s("group_name"),
+            needs_identity: b("needs_identity"),
         }
     }
 
@@ -290,8 +312,6 @@ pub(crate) struct Form {
     pub s3_prefix: String,
     pub s3_access_key_id: String,
     pub s3_path_style: bool,
-    /// 配置 / 方案 / 主题 / 词库与短语。
-    pub scope: [bool; 4],
     pub interval_min: u32,
     /// 本机在「我的设备」里显示的名称；空 = 用计算机名。设备本地，不随同步传播。
     pub device_name: String,
@@ -310,7 +330,6 @@ impl Default for Form {
             s3_prefix: String::new(),
             s3_access_key_id: String::new(),
             s3_path_style: false,
-            scope: [true; 4],
             interval_min: 15,
             device_name: String::new(),
         }
@@ -319,8 +338,6 @@ impl Default for Form {
 
 /// 状态区最多列出几条冲突路径（其余折成「另有 N 个」）。
 const CONFLICT_SHOWN: usize = 8;
-
-const SCOPE_KEYS: [&str; 4] = ["config", "schemas", "themes", "dicts"];
 
 impl Form {
     /// 取 `sync.getSettings` 应答里的 `settings`。缺的字段按默认。
@@ -341,11 +358,6 @@ impl Form {
                 .to_string()
         };
         f.device_name = str_of(s, "device_name");
-        if let Some(sc) = s.get("scope") {
-            for (i, k) in SCOPE_KEYS.iter().enumerate() {
-                f.scope[i] = sc.get(*k).and_then(Value::as_bool).unwrap_or(true);
-            }
-        }
         if let Some(b) = s.get("backend") {
             match b.get("type").and_then(Value::as_str) {
                 Some("webdav") => {
@@ -383,13 +395,8 @@ impl Form {
 
     /// `sync.setSettings` 的 `settings`。**不含机密**。
     pub fn to_settings(&self) -> Value {
-        let mut scope = serde_json::Map::new();
-        for (i, k) in SCOPE_KEYS.iter().enumerate() {
-            scope.insert((*k).to_string(), json!(self.scope[i]));
-        }
         let mut out = json!({
             "enabled": self.enabled,
-            "scope": scope,
             "interval_min": self.interval_min,
             "device_name": self.device_name.trim(),
         });
@@ -432,6 +439,7 @@ pub(crate) fn platform_text(p: &str) -> String {
         "macos" => "macOS".to_string(),
         "linux" => "Linux".to_string(),
         "android" => "Android".to_string(),
+        "ios" => "iOS".to_string(),
         "" => "未知平台".to_string(),
         other => other.to_string(),
     }
@@ -462,6 +470,9 @@ pub(crate) struct DeviceView {
     pub is_self: bool,
     /// false = 设备信息解不开（别的密钥写的或已损坏），名称为空。
     pub readable: bool,
+    /// 所在组号与组名（旧数据可空）。
+    pub group: String,
+    pub group_name: String,
 }
 
 impl DeviceView {
@@ -513,6 +524,8 @@ pub(crate) fn parse_devices(v: &Value) -> Vec<DeviceView> {
                     last_seen: d.get("last_seen").and_then(Value::as_i64).unwrap_or(0),
                     is_self: d.get("is_self").and_then(Value::as_bool).unwrap_or(false),
                     readable: d.get("readable").and_then(Value::as_bool).unwrap_or(true),
+                    group: str_of(d, "group"),
+                    group_name: str_of(d, "group_name"),
                 })
                 .filter(|d| !d.id.is_empty())
                 .collect()
@@ -524,6 +537,169 @@ pub(crate) fn parse_devices(v: &Value) -> Vec<DeviceView> {
             .then(b.last_seen.cmp(&a.last_seen))
     });
     out
+}
+
+/// 设备列表里的一个组。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GroupView {
+    pub id: String,
+    /// 组内第一个非空组名；没有就用组号。
+    pub name: String,
+    pub devices: Vec<DeviceView>,
+    pub is_mine: bool,
+}
+
+/// 按组归并设备：本组在前，其余组按组内最近活跃从新到旧；组内本机在前，其余同样按最近活跃。
+pub(crate) fn group_devices(devs: &[DeviceView], my_group: &str) -> Vec<GroupView> {
+    let mut groups: Vec<GroupView> = Vec::new();
+    for d in devs {
+        let i = match groups.iter().position(|g| g.id == d.group) {
+            Some(i) => i,
+            None => {
+                groups.push(GroupView {
+                    id: d.group.clone(),
+                    name: String::new(),
+                    devices: Vec::new(),
+                    is_mine: d.group == my_group,
+                });
+                groups.len() - 1
+            }
+        };
+        let g = &mut groups[i];
+        if g.name.is_empty() && !d.group_name.is_empty() {
+            g.name = d.group_name.clone();
+        }
+        g.devices.push(d.clone());
+    }
+    let newest = |g: &GroupView| g.devices.iter().map(|d| d.last_seen).max().unwrap_or(0);
+    for g in &mut groups {
+        if g.name.is_empty() {
+            g.name = g.id.clone();
+        }
+        g.devices.sort_by(|a, b| {
+            b.is_self
+                .cmp(&a.is_self)
+                .then(b.last_seen.cmp(&a.last_seen))
+        });
+    }
+    groups.sort_by(|a, b| b.is_mine.cmp(&a.is_mine).then(newest(b).cmp(&newest(a))));
+    groups
+}
+
+/// 某组的设备数；不存在的组为 0。
+pub(crate) fn member_count(groups: &[GroupView], group: &str) -> usize {
+    groups
+        .iter()
+        .find(|g| g.id == group)
+        .map_or(0, |g| g.devices.len())
+}
+
+const PASSPHRASE_ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+
+/// 随机口令：5 组 × 4 字符，用去掉易混字符的字母表，`-` 连接。
+pub(crate) fn random_passphrase(mut rng: impl FnMut() -> u32) -> String {
+    let mut out = String::with_capacity(24);
+    for i in 0..20 {
+        if i > 0 && i % 4 == 0 {
+            out.push('-');
+        }
+        let k = rng() as usize % PASSPHRASE_ALPHABET.len();
+        out.push(PASSPHRASE_ALPHABET[k] as char);
+    }
+    out
+}
+
+/// 生产用的随机源；系统随机数不可用时退回时间戳（口令仍由用户可见、可改）。
+pub(crate) fn random_passphrase_os() -> String {
+    random_passphrase(|| {
+        let mut b = [0u8; 4];
+        if getrandom::getrandom(&mut b).is_err() {
+            return std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+        }
+        u32::from_le_bytes(b)
+    })
+}
+
+/// 确认本机身份时可选的做法。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum IdentityChoice {
+    /// 恢复为远端已有的某台设备（设备号）。
+    Restore(String),
+    NewDevice,
+    /// 加入已有的组（组号）。
+    Join(String),
+    NewGroup,
+}
+
+/// 设备类别：桌面（windows/macos/linux）与移动（android/ios）分开，
+/// 因为配置与主题只在同类设备间同步，恢复/加入到另一类的设备没有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlatformClass {
+    Desktop,
+    Mobile,
+    Other,
+}
+
+pub(crate) fn platform_class(p: &str) -> PlatformClass {
+    match p {
+        "windows" | "macos" | "linux" => PlatformClass::Desktop,
+        "android" | "ios" => PlatformClass::Mobile,
+        _ => PlatformClass::Other,
+    }
+}
+
+/// 身份步骤的选项与默认项（以本机平台类别过滤）。
+pub(crate) fn identity_options(
+    my_id: &str,
+    devs: &[DeviceView],
+) -> (Vec<IdentityChoice>, IdentityChoice) {
+    identity_options_for(platform_class(std::env::consts::OS), my_id, devs)
+}
+
+/// 远端已有本机设备号（同一台重装）→ 恢复或另作新设备，默认恢复；
+/// 否则列出同类设备可恢复、各组可加入、或新建组，默认新建组。
+pub(crate) fn identity_options_for(
+    class: PlatformClass,
+    my_id: &str,
+    devs: &[DeviceView],
+) -> (Vec<IdentityChoice>, IdentityChoice) {
+    if devs.iter().any(|d| d.readable && d.id == my_id) {
+        let restore = IdentityChoice::Restore(my_id.to_string());
+        return (vec![restore.clone(), IdentityChoice::NewDevice], restore);
+    }
+    let mut same: Vec<DeviceView> = devs
+        .iter()
+        .filter(|d| d.readable && platform_class(&d.platform) == class)
+        .cloned()
+        .collect();
+    same.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    let mut opts: Vec<IdentityChoice> = same
+        .iter()
+        .map(|d| IdentityChoice::Restore(d.id.clone()))
+        .collect();
+    opts.extend(
+        group_devices(&same, "")
+            .into_iter()
+            .map(|g| IdentityChoice::Join(g.id)),
+    );
+    opts.push(IdentityChoice::NewGroup);
+    (opts, IdentityChoice::NewGroup)
+}
+
+/// 选项对应的 `sync.command` 序列；撞号时 core 自动加后缀。
+pub(crate) fn identity_commands(c: &IdentityChoice) -> Vec<(&'static str, Value)> {
+    match c {
+        IdentityChoice::Restore(id) => vec![("claim_device", json!({ "dev": id }))],
+        IdentityChoice::NewDevice | IdentityChoice::NewGroup => {
+            vec![("confirm_identity", json!({}))]
+        }
+        IdentityChoice::Join(g) => vec![
+            ("confirm_identity", json!({})),
+            ("join_group", json!({ "group": g, "mode": "theirs" })),
+        ],
+    }
 }
 
 /// 移除设备的二次确认闸：点行内「移除」时记下目标并弹框，框里确认才放行；取过即收回。
@@ -734,7 +910,6 @@ pub struct SyncUi {
     s3_access_key_id: Signal<String>,
     s3_secret: Signal<String>,
     s3_path_style: Signal<bool>,
-    scope: [Signal<bool>; 4],
     interval: Signal<f64>,
 
     pass_dialog: Signal<bool>,
@@ -801,7 +976,6 @@ impl SyncUi {
             s3_access_key_id: signal(String::new()),
             s3_secret: signal(String::new()),
             s3_path_style: signal(false),
-            scope: [signal(true), signal(true), signal(true), signal(true)],
             interval: signal(f.interval_min as f64),
             pass_dialog: signal(false),
             pass1: signal(String::new()),
@@ -933,9 +1107,6 @@ impl SyncUi {
         self.s3_prefix.set(f.s3_prefix.clone());
         self.s3_access_key_id.set(f.s3_access_key_id.clone());
         self.s3_path_style.set(f.s3_path_style);
-        for (s, v) in self.scope.iter().zip(f.scope) {
-            s.set(v);
-        }
         self.interval.set(f.interval_min as f64);
         self.device_name.set(f.device_name.clone());
     }
@@ -952,12 +1123,6 @@ impl SyncUi {
             s3_prefix: self.s3_prefix.get(),
             s3_access_key_id: self.s3_access_key_id.get(),
             s3_path_style: self.s3_path_style.get(),
-            scope: [
-                self.scope[0].get(),
-                self.scope[1].get(),
-                self.scope[2].get(),
-                self.scope[3].get(),
-            ],
             interval_min: clamp_interval(self.interval.get()),
             device_name: self.device_name.get(),
         }
@@ -1413,19 +1578,9 @@ pub fn build_section(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Element 
 
     // ── 范围 ──
     let u = ui.clone();
-    let names = ["配置", "方案", "主题", "词库与短语"];
-    let scope_row = names.iter().zip(ui.scope).fold(
-        Element::row().cross(Align::Center).spacing(14),
-        |r, (n, s)| r.child(Element::checkbox(*n, s).enabled_when(move || gate.get())),
-    );
     let scope_card = section(
         "同步范围",
         vec![
-            setting_row(
-                "同步内容",
-                Some("词库与短语、方案在所有设备间同步；配置与主题只在电脑之间同步，不影响手机"),
-                scope_row,
-            ),
             setting_row(
                 "同步间隔",
                 Some("分钟，1 到 1440；本机文件有改动时也会很快同步"),
@@ -1818,6 +1973,786 @@ fn reset_dialog(ui: &SyncUi) -> Element {
     Element::dialog(visible, dialog_frame("重置远端", body, footer))
 }
 
+// ───────────────────────────── 同步页（spike，待定稿） ─────────────────────────────
+
+use crate::widgets::{CardItem, Vis, section_items};
+
+/// 截图用：`WIND_SPIKE_SYNC=unset` 强制显示未设置态；`WIND_SPIKE_DIALOG` 启动即开某个对话框。
+fn spike_env(k: &str) -> String {
+    std::env::var(k).unwrap_or_default()
+}
+
+fn muted(text: &str) -> Element {
+    Element::label(text)
+        .font_size(12.5)
+        .fg_role(Role::TextMuted)
+        .width_match()
+        .max_lines(5)
+}
+
+fn tone(text: &str, role: Role) -> Element {
+    Element::label(text)
+        .font_size(12.5)
+        .fg_role(role)
+        .width_match()
+        .max_lines(5)
+}
+
+fn field(label: &str, control: Element) -> Element {
+    Element::col()
+        .width_match()
+        .spacing(4)
+        .child(Element::label(label).font_size(12.5).fg_role(Role::Text))
+        .child(control)
+}
+
+fn btn(text: &str) -> Element {
+    Element::button(text).small()
+}
+
+fn btn2(text: &str) -> Element {
+    Element::button(text).small().outline_soft()
+}
+
+/// 页面级状态（spike 里临时放在这里）。
+#[derive(Clone)]
+struct PageUi {
+    configured: Signal<bool>,
+    wiz: Signal<bool>,
+    /// 0 存储 / 1 口令 / 2 内容
+    step: Signal<usize>,
+    /// 向导是「更换存储」（标题与提示不同）
+    rewire: Signal<bool>,
+    /// 0 未测 / 1 远端为空 / 2 远端已有数据
+    remote: Signal<usize>,
+    use_key: Signal<bool>,
+    rename: Signal<bool>,
+    export: Signal<bool>,
+    creds: Signal<bool>,
+    conflicts: Signal<bool>,
+    disable: Signal<bool>,
+}
+
+fn step_header(step: Signal<usize>) -> Element {
+    let names = ["连接存储", "加密口令", "同步内容"];
+    let mut row = Element::row().width_match().cross(Align::Center).spacing(8);
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            row = row.child(Element::leaf().width(24).height(1).bg_role(Role::Divider));
+        }
+        let cur = move || step.get() == i;
+        let done = move || step.get() > i;
+        let dot = |role: Role, txt: String| {
+            Element::stack()
+                .size(20, 20)
+                .corner(10.0)
+                .bg_role(role)
+                .child(
+                    Element::label(txt)
+                        .font_size(11.5)
+                        .font_weight(600)
+                        .fg_role(Role::OnAccent)
+                        .align(Align::Center),
+                )
+        };
+        row = row
+            .child(dot(Role::Accent, format!("{}", i + 1)).visible_when(move || cur() || done()))
+            .child(
+                dot(Role::TextSubtle, format!("{}", i + 1)).visible_when(move || !cur() && !done()),
+            )
+            .child(
+                Element::label(*n)
+                    .font_size(12.5)
+                    .font_weight(600)
+                    .fg_role(Role::Text)
+                    .visible_when(cur),
+            )
+            .child(
+                Element::label(*n)
+                    .font_size(12.5)
+                    .fg_role(Role::TextMuted)
+                    .visible_when(move || !cur()),
+            );
+    }
+    row
+}
+
+fn wizard_dialog(ui: &SyncUi, p: &PageUi) -> Element {
+    let (step, remote, use_key, rewire) = (p.step, p.remote, p.use_key, p.rewire);
+    let is_wd = {
+        let b = ui.backend;
+        move || b.get() == 0
+    };
+    let is_s3 = {
+        let b = ui.backend;
+        move || b.get() == 1
+    };
+    let inp = |s: Signal<String>, ph: &str| Element::text_input(s, ph).width_match();
+    let pwd = |s: Signal<String>, ph: &str| Element::text_input(s, ph).password().width_match();
+    let two = |a: Element, b: Element| {
+        Element::row()
+            .width_match()
+            .spacing(12)
+            .child(a.weight(1.0))
+            .child(b.weight(1.0))
+    };
+
+    // ── 第 1 步：存储 ──
+    let s1 = Element::col()
+        .width_match()
+        .spacing(12)
+        .child(
+            tone(
+                "更换存储位置相当于重新设置：本机会离开当前同步库，按下面的新位置重新连接和加入。原存储里的数据不会被删除。",
+                Role::Warning,
+            )
+            .visible_when(move || rewire.get()),
+        )
+        .child(field(
+            "存储类型",
+            Element::segmented(vec!["WebDAV", "S3 兼容存储"], ui.backend),
+        ))
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(12)
+                .child(field("WebDAV 地址", inp(ui.wd_url, "https://dav.example.com/dav/")))
+                .child(muted("坚果云等服务请填写其「第三方应用」里给出的地址，并使用应用专用密码。"))
+                .child(two(
+                    field("用户名", inp(ui.wd_user, "")),
+                    field("密码", pwd(ui.wd_password, "")),
+                ))
+                .visible_when(is_wd),
+        )
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(12)
+                .child(field("Endpoint", inp(ui.s3_endpoint, "https://s3.example.com")))
+                .child(two(
+                    field("Bucket", inp(ui.s3_bucket, "")),
+                    field("Region", inp(ui.s3_region, "auto")),
+                ))
+                .child(two(
+                    field("Access Key ID", inp(ui.s3_access_key_id, "")),
+                    field("Secret", pwd(ui.s3_secret, "")),
+                ))
+                .child(two(
+                    field("路径前缀（可留空）", inp(ui.s3_prefix, "windinput/")),
+                    field(
+                        "寻址方式",
+                        Element::checkbox("Path-style（MinIO 等自建服务）", ui.s3_path_style),
+                    ),
+                ))
+                .visible_when(is_s3),
+        );
+
+    // ── 第 2 步：口令 ──
+    let s2_new = Element::col()
+        .width_match()
+        .spacing(12)
+        .child(
+            Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::badge_intent("连接成功", Intent::Success))
+                .child(muted("这是一个新的同步库，本机将作为第一台设备。")),
+        )
+        .child(muted(
+            "设置一个口令。同步数据在本机加密后才上传，存储服务看不到内容；其他设备加入时需要输入同一个口令。",
+        ))
+        .child(field("口令", pwd(ui.pass1, "至少 8 个字符")))
+        .child(field("再输入一次", pwd(ui.pass2, "")))
+        .child(tone(
+            "请牢记口令。忘记口令且没有备份密钥时，存储里的数据无法解开。设置完成后可在「存储与安全」里导出密钥备份。",
+            Role::Warning,
+        ))
+        .visible_when(move || remote.get() != 2);
+    let s2_join = Element::col()
+        .width_match()
+        .spacing(12)
+        .child(
+            Element::row()
+                .cross(Align::Center)
+                .spacing(8)
+                .child(Element::badge_intent("连接成功", Intent::Success))
+                .child(muted("存储里已有同步数据，可以把本机加入进去。")),
+        )
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(12)
+                .child(field("口令", pwd(ui.pass1, "创建同步库时设置的口令")))
+                .child(
+                    Element::link("没有口令？改用导出的密钥加入")
+                        .font_size(12.5)
+                        .on_click(move |_| use_key.set(true)),
+                )
+                .visible_when(move || !use_key.get()),
+        )
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(12)
+                .child(field(
+                    "密钥",
+                    pwd(ui.import_key, "粘贴在其他设备上导出的密钥"),
+                ))
+                .child(
+                    Element::link("改用口令加入")
+                        .font_size(12.5)
+                        .on_click(move |_| use_key.set(false)),
+                )
+                .visible_when(move || use_key.get()),
+        )
+        .child(muted(
+            "加入后，本机与存储里的数据会合并；不会删除任何一边已有的词。",
+        ))
+        .visible_when(move || remote.get() == 2);
+    let s2 = Element::col().width_match().child(s2_new).child(s2_join);
+
+    // ── 第 3 步：内容 ──
+    let s3 = Element::col()
+        .width_match()
+        .spacing(12)
+        .child(field(
+            "本机名称",
+            inp(ui.device_name, "其他设备上看到的名字"),
+        ))
+        .child(field(
+            "自动同步间隔（分钟）",
+            Element::number_input(ui.interval, 1.0, 1440.0, 1.0),
+        ))
+        .child(muted("本机文件有改动时会很快同步，不必等到间隔。"));
+
+    let body = Element::col()
+        .width_match()
+        .padding_xy(20, 16)
+        .spacing(16)
+        .child(step_header(step))
+        .child(Element::divider())
+        .child(s1.visible_when(move || step.get() == 0))
+        .child(s2.visible_when(move || step.get() == 1))
+        .child(s3.visible_when(move || step.get() == 2));
+
+    let wiz = p.wiz;
+    let cfg = p.configured;
+    let footer = Element::row()
+        .spacing(8)
+        .child(btn2("取消").on_click(move |_| wiz.set(false)))
+        .child(
+            btn2("上一步")
+                .visible_when(move || step.get() > 0)
+                .on_click(move |_| step.set(step.get().saturating_sub(1))),
+        )
+        .child(
+            btn("测试连接并继续")
+                .visible_when(move || step.get() == 0)
+                .on_click(move |_| {
+                    step.set(1);
+                }),
+        )
+        .child(
+            btn("下一步")
+                .visible_when(move || step.get() == 1)
+                .on_click(move |_| step.set(2)),
+        )
+        .child(
+            btn("完成并开始同步")
+                .visible_when(move || step.get() == 2)
+                .on_click(move |_| {
+                    wiz.set(false);
+                    cfg.set(true);
+                }),
+        );
+    let title = rewire.map(|r| {
+        if *r {
+            "更换存储".to_string()
+        } else {
+            "设置数据同步".to_string()
+        }
+    });
+    let frame = Element::col()
+        .width(560)
+        .bg_role(Role::Surface)
+        .border_role(Role::Border, 1)
+        .corner(12.0)
+        .shadow(Shadow::new(0.0, 16.0, 40.0, Color::rgba(0, 0, 0, 130)))
+        .child(
+            Element::label_signal(title)
+                .font_size(14.0)
+                .font_weight(600)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(20, 14),
+        )
+        .child(Element::divider())
+        .child(body)
+        .child(Element::divider())
+        .child(
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(16, 12)
+                .child(Element::leaf().weight(1.0))
+                .child(footer),
+        );
+    Element::dialog(wiz, frame)
+}
+
+fn simple_dialog(visible: Signal<bool>, title: &str, body: Element, ok: Element) -> Element {
+    let footer = Element::row()
+        .spacing(8)
+        .child(btn2("取消").on_click(move |_| visible.set(false)))
+        .child(ok);
+    Element::dialog(
+        visible,
+        dialog_frame(title, body.padding_xy(18, 14), footer),
+    )
+}
+
+fn spike_dialogs(ui: &SyncUi, p: &PageUi) -> Vec<Element> {
+    let rename = p.rename;
+    let rename_d = simple_dialog(
+        rename,
+        "本机名称",
+        Element::col()
+            .width_match()
+            .spacing(8)
+            .child(muted(
+                "其他设备的「我的设备」里显示这个名字。只保存在本机，不随同步传播。",
+            ))
+            .child(Element::text_input(ui.device_name, "留空使用计算机名").width_match()),
+        btn("保存").on_click(move |_| rename.set(false)),
+    );
+    let export = p.export;
+    let key = ui.exported_key;
+    let export_d = Element::dialog(
+        export,
+        dialog_frame(
+            "导出密钥",
+            Element::col()
+                .width_match()
+                .padding_xy(18, 14)
+                .spacing(10)
+                .child(muted(
+                    "这串密钥可以直接解开同步数据，作用等同口令。可用来在新设备上免输口令加入，或在忘记口令时找回数据。",
+                ))
+                .child(
+                    Element::row()
+                        .width_match()
+                        .cross(Align::Center)
+                        .spacing(6)
+                        .child(Element::text_input(key, "").read_only().weight(1.0))
+                        .child(btn2("复制").on_click(move |ctx| {
+                            ctx.clipboard_set(&key.get());
+                            ctx.toast_ok("已复制密钥");
+                        })),
+                )
+                .child(tone(
+                    "请离线保存（如密码管理器），不要发到聊天或网盘。任何拿到它的人都能读取你的同步数据。",
+                    Role::Warning,
+                )),
+            btn("完成").on_click(move |_| export.set(false)),
+        ),
+    );
+    let creds = p.creds;
+    let creds_d = simple_dialog(
+        creds,
+        "更新存储密码",
+        Element::col()
+            .width_match()
+            .spacing(8)
+            .child(muted(
+                "存储服务那边改了密码或 Secret 时，在这里填入新的。保存前会先测试连接。",
+            ))
+            .child(
+                Element::text_input(ui.wd_password, "新密码")
+                    .password()
+                    .width_match(),
+            ),
+        btn("测试并保存").on_click(move |_| creds.set(false)),
+    );
+    let conflicts = p.conflicts;
+    let paths = [
+        "themes/dark.conflict-laptop-2026-11-23.json",
+        "data/phrases.dict.yaml.conflict-laptop-2026-11-22",
+    ];
+    let mut list = Element::col().width_match().spacing(6);
+    for x in paths {
+        list = list.child(
+            Element::label(x)
+                .font_size(12.5)
+                .fg_role(Role::Text)
+                .width_match()
+                .padding_xy(10, 6)
+                .bg_role(Role::SurfaceAlt)
+                .corner(6.0),
+        );
+    }
+    let conflicts_d = Element::dialog(
+        conflicts,
+        dialog_frame(
+            "冲突副本",
+            Element::col()
+                .width_match()
+                .padding_xy(18, 14)
+                .spacing(10)
+                .child(muted(
+                    "两台设备同时改了同一个文件。本机版本保留原名，另一台的版本另存为下面的副本。请比对后保留需要的内容，并删除副本。",
+                ))
+                .child(list),
+            Element::row()
+                .spacing(8)
+                .child(btn2("打开用户目录"))
+                .child(btn("关闭").on_click(move |_| conflicts.set(false))),
+        ),
+    );
+    let disable = p.disable;
+    let disable_d = simple_dialog(
+        disable,
+        "停用同步",
+        Element::col().width_match().spacing(8).child(muted(
+            "本机停止同步。存储设置、口令和存储里的数据都会保留，之后可以随时重新启用。",
+        )),
+        btn("停用").on_click(move |_| disable.set(false)),
+    );
+    vec![
+        wizard_dialog(ui, p),
+        rename_d,
+        export_d,
+        creds_d,
+        conflicts_d,
+        disable_d,
+    ]
+}
+
+/// 同步页的卡片：`(二级导航名, 卡片)`。
+pub fn build_page(
+    _app: &Rc<RefCell<AppState>>,
+    state: &AppState,
+) -> Vec<(Option<&'static str>, Element)> {
+    let ui = state.sync.clone();
+    ui.load_once();
+    let unset = spike_env("WIND_SPIKE_SYNC") == "unset";
+    let p = PageUi {
+        configured: signal(!unset),
+        wiz: signal(false),
+        step: signal(0),
+        rewire: signal(false),
+        remote: signal(0),
+        use_key: signal(false),
+        rename: signal(false),
+        export: signal(false),
+        creds: signal(false),
+        conflicts: signal(false),
+        disable: signal(false),
+    };
+    match spike_env("WIND_SPIKE_DIALOG").as_str() {
+        "wizard1" => {
+            p.wiz.set(true);
+            ui.wd_url.set(String::new());
+            ui.wd_user.set(String::new());
+            ui.device_name.set("书房台式机".into());
+        }
+        "wizard1s3" => {
+            p.wiz.set(true);
+            ui.backend.set(1);
+        }
+        "wizard2new" => {
+            p.wiz.set(true);
+            p.step.set(1);
+            p.remote.set(1);
+        }
+        "wizard2join" => {
+            p.wiz.set(true);
+            p.step.set(1);
+            p.remote.set(2);
+        }
+        "wizard2key" => {
+            p.wiz.set(true);
+            p.step.set(1);
+            p.remote.set(2);
+            p.use_key.set(true);
+        }
+        "wizard3" => {
+            p.wiz.set(true);
+            p.step.set(2);
+            ui.device_name.set("书房台式机".into());
+        }
+        "rewire" => {
+            p.wiz.set(true);
+            p.rewire.set(true);
+        }
+        "rename" => p.rename.set(true),
+        "export" => {
+            ui.exported_key
+                .set("bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=".into());
+            p.export.set(true);
+        }
+        "creds" => p.creds.set(true),
+        "conflicts" => p.conflicts.set(true),
+        "disable" => p.disable.set(true),
+        _ => {}
+    }
+    for d in spike_dialogs(&ui, &p) {
+        state.fields.dialogs.borrow_mut().push(d);
+    }
+
+    let cfg = p.configured;
+    let busy = ui.busy;
+    let can = move || !busy.get();
+
+    // ── 未设置：引导卡 ──
+    let (wiz, step, rewire) = (p.wiz, p.step, p.rewire);
+    let hero = section_items(
+        "数据同步",
+        vec![CardItem::Bare(
+            Element::col()
+                .width_match()
+                .padding_xy(20, 18)
+                .spacing(10)
+                .child(
+                    Element::label("把词库、短语、方案和设置同步到你的其他设备")
+                        .font_size(15.0)
+                        .font_weight(600)
+                        .fg_role(Role::Text)
+                        .width_match(),
+                )
+                .child(muted(
+                    "使用你自己的 WebDAV（如坚果云、Nextcloud）或 S3 兼容存储（如 Cloudflare R2、MinIO）。数据在本机加密后才上传，存储服务看不到内容。",
+                ))
+                .child(muted("已经在其他设备上设置过？用同一个存储和口令即可加入。"))
+                .child(
+                    Element::row().padding_xy(0, 6).child(btn("开始设置…").on_click(move |_| {
+                        rewire.set(false);
+                        step.set(0);
+                        wiz.set(true);
+                    })),
+                ),
+        )],
+    )
+    .visible_when(move || !cfg.get());
+
+    // ── 已设置：状态 ──
+    let u = ui.clone();
+    let phase = ui.phase;
+    let last_ok = ui.last_ok;
+    let status_desc = last_ok.map(|t| format!("上次成功 {t}"));
+    let conflicts_on: Vis = Rc::new({
+        let c = ui.conflicts;
+        move || !c.get().is_empty()
+    });
+    let err_on: Vis = Rc::new({
+        let e = ui.error;
+        move || !e.get().is_empty()
+    });
+    let mass_on: Vis = Rc::new({
+        let m = ui.mass_text;
+        move || !m.get().is_empty()
+    });
+    let pc = p.conflicts;
+    let u_mass = ui.clone();
+    let status = section_items(
+        "同步状态",
+        vec![
+            CardItem::Row(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(12)
+                    .padding_xy(0, 10)
+                    .child(
+                        Element::col()
+                            .weight(1.0)
+                            .spacing(3)
+                            .child(
+                                Element::label_signal(phase)
+                                    .font_size(14.0)
+                                    .font_weight(600)
+                                    .fg_role(Role::Text),
+                            )
+                            .child(
+                                Element::label_signal(status_desc)
+                                    .font_size(12.0)
+                                    .fg_role(Role::TextMuted),
+                            ),
+                    )
+                    .child(
+                        btn("立即同步")
+                            .enabled_when(can)
+                            .on_click(move |_| u.run("sync_now", vec![("sync_now", json!({}))])),
+                    ),
+            ),
+            CardItem::RowWhen(
+                setting_row(
+                    "有 2 个冲突副本",
+                    Some("两台设备同时改了同一个文件，需要你来决定保留哪份"),
+                    btn2("查看…").on_click(move |_| pc.set(true)),
+                ),
+                conflicts_on,
+            ),
+            CardItem::RowWhen(
+                Element::label_signal(ui.error)
+                    .font_size(12.5)
+                    .fg_role(Role::Danger)
+                    .width_match()
+                    .max_lines(4),
+                err_on,
+            ),
+            CardItem::RowWhen(
+                setting_row_desc_signal(
+                    "同步已暂停",
+                    ui.mass_text,
+                    Element::button("确认删除…")
+                        .small()
+                        .danger()
+                        .on_click(move |_| u_mass.request_mass_delete()),
+                ),
+                mass_on,
+            ),
+        ],
+    )
+    .visible_when(move || cfg.get());
+
+    // ── 我的设备 ──
+    let (rename, u_list) = (p.rename, ui.clone());
+    let devices = section_items(
+        "我的设备",
+        vec![CardItem::Bare(Element::switcher(
+            ui.devices,
+            move |list: Vec<DeviceView>| {
+                let today = chrono::Local::now().date_naive();
+                let mut col = Element::col().width_match();
+                for (i, d) in list.into_iter().enumerate() {
+                    if i > 0 {
+                        col = col.child(crate::widgets::row_divider());
+                    }
+                    let title = Element::row()
+                        .cross(Align::Center)
+                        .spacing(8)
+                        .child(
+                            Element::label(d.title())
+                                .font_size(13.5)
+                                .fg_role(Role::Text),
+                        )
+                        .child(Element::badge("本机").visible_when({
+                            let s = d.is_self;
+                            move || s
+                        }));
+                    let left = Element::col().weight(1.0).spacing(3).child(title).child(
+                        Element::label(d.detail(today))
+                            .font_size(12.0)
+                            .fg_role(Role::TextMuted),
+                    );
+                    let control = if d.is_self {
+                        btn2("改名…").on_click(move |_| rename.set(true))
+                    } else {
+                        let (u, d2) = (u_list.clone(), d.clone());
+                        btn2("移除…").on_click(move |_| u.request_remove(&d2))
+                    };
+                    col = col.child(crate::widgets::card_pad(
+                        Element::row()
+                            .width_match()
+                            .cross(Align::Center)
+                            .padding_xy(0, 10)
+                            .child(left)
+                            .child(control),
+                    ));
+                }
+                col
+            },
+        ))],
+    )
+    .visible_when(move || cfg.get());
+
+    // ── 同步选项（改了即存） ──
+    let options = section(
+        "同步选项",
+        vec![setting_row(
+            "自动同步间隔",
+            Some("分钟；本机文件有改动时会很快同步"),
+            Element::number_input(ui.interval, 1.0, 1440.0, 1.0),
+        )],
+    )
+    .visible_when(move || cfg.get());
+
+    // ── 存储与安全 ──
+    let (wd_url, wd_user) = (ui.wd_url, ui.wd_user);
+    let _ = wd_user;
+    let where_ = wd_url.map(|u| format!("WebDAV · {u} · 用户 me"));
+    let (wiz2, step2, rewire2) = (p.wiz, p.step, p.rewire);
+    let (creds, export, disable) = (p.creds, p.export, p.disable);
+    let (u_pass, u_exp, u_reset) = (ui.clone(), ui.clone(), ui.clone());
+    let security = section_items(
+        "存储与安全",
+        vec![
+            CardItem::Row(setting_row_desc_signal(
+                "存储位置",
+                where_,
+                btn2("更换…").on_click(move |_| {
+                    rewire2.set(true);
+                    step2.set(0);
+                    wiz2.set(true);
+                }),
+            )),
+            CardItem::Row(setting_row(
+                "存储密码",
+                Some("已保存在本机（加密存放）"),
+                btn2("更新…").on_click(move |_| creds.set(true)),
+            )),
+            CardItem::Row(setting_row(
+                "同步口令",
+                Some("其他设备加入时需要输入；修改不影响已导出的密钥"),
+                btn2("修改…").on_click(move |_| {
+                    u_pass.pass_err.set(String::new());
+                    u_pass.pass_dialog.set(true);
+                }),
+            )),
+            CardItem::Row(setting_row(
+                "备份密钥",
+                Some("可替代口令加入新设备，也能在忘记口令时找回数据"),
+                btn2("导出…").on_click(move |_| {
+                    u_exp
+                        .exported_key
+                        .set("bW9jay1kYXRhLWVuY3J5cHRpb24ta2V5LTAxMjM0NTY3ODk=".into());
+                    export.set(true);
+                }),
+            )),
+            CardItem::Heading("停用与重置".into()),
+            CardItem::Row(setting_row(
+                "停用同步",
+                Some("本机停止同步，保留设置与存储里的数据"),
+                btn2("停用…").on_click(move |_| disable.set(true)),
+            )),
+            CardItem::Row(setting_row(
+                "重置同步库",
+                Some("清空存储里的全部同步数据，以本机为准重新开始；其他设备需重新加入"),
+                Element::button("重置…")
+                    .small()
+                    .danger()
+                    .on_click(move |_| {
+                        u_reset.reset_ack.set(false);
+                        u_reset.reset_err.set(String::new());
+                        u_reset.reset_guard.arm();
+                        u_reset.reset_dialog.set(true);
+                    }),
+            )),
+        ],
+    )
+    .visible_when(move || cfg.get());
+
+    ui_dialogs(&ui, state);
+
+    vec![
+        (None, hero),
+        (Some("同步状态"), status),
+        (Some("我的设备"), devices),
+        (Some("同步选项"), options),
+        (Some("存储与安全"), security),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1974,7 +2909,6 @@ mod tests {
             s3_bucket: "b".into(),
             s3_access_key_id: "AK".into(),
             s3_path_style: true,
-            scope: [true, false, true, false],
             interval_min: 30,
             ..Form::default()
         };
@@ -1983,7 +2917,7 @@ mod tests {
         assert_eq!(v["backend"]["endpoint"], "https://s3.example.com");
         let back = Form::from_settings(&json!({ "settings": v }));
         assert_eq!(back.s3_endpoint, "https://s3.example.com");
-        assert_eq!(back.scope, [true, false, true, false]);
+        assert!(v.get("scope").is_none(), "同步范围已删除");
         assert_eq!(back.interval_min, 30);
         assert!(back.s3 && back.s3_path_style && back.enabled);
     }
@@ -2089,8 +3023,7 @@ mod tests {
         };
         let mut new = old.clone();
         new.interval_min = 30;
-        new.scope[0] = false;
-        assert!(!backend_location_changed(&old, &new), "范围/间隔不算换位置");
+        assert!(!backend_location_changed(&old, &new), "间隔不算换位置");
         new.wd_url = "https://b/dav".into();
         assert!(backend_location_changed(&old, &new));
         let first = Form::default();
@@ -2114,6 +3047,17 @@ mod tests {
             last_seen: ts,
             is_self: self_,
             readable,
+            group: "g1".into(),
+            group_name: String::new(),
+        }
+    }
+
+    fn dev_in(id: &str, group: &str, gname: &str, platform: &str, ts: i64) -> DeviceView {
+        DeviceView {
+            group: group.into(),
+            group_name: gname.into(),
+            platform: platform.into(),
+            ..dev(id, false, true, ts)
         }
     }
 
@@ -2233,5 +3177,159 @@ mod tests {
         assert!(t.contains("拒绝：调用方权限不足") && t.contains("请从清风输入法设置程序操作"));
         assert!(outcome("sync_now", &Err("正在同步，请稍后再试".into())).notice);
         assert!(!outcome("sync_now", &Err("x".into())).notice);
+    }
+
+    #[test]
+    fn status_parses_group_fields_and_configured() {
+        let s = StatusView::parse(&json!({
+            "installed": true, "joined": true, "device": "desktop-7f3k",
+            "group": "g-ab", "group_name": "家里", "needs_identity": true
+        }));
+        assert_eq!(s.device, "desktop-7f3k");
+        assert_eq!((s.group.as_str(), s.group_name.as_str()), ("g-ab", "家里"));
+        assert!(s.needs_identity && s.configured());
+        let none = StatusView::parse(&json!({}));
+        assert!(!none.needs_identity && !none.configured());
+        let not_joined = StatusView::parse(&json!({ "installed": true }));
+        assert!(!not_joined.configured(), "已装但没加入远端不算已配置");
+        let not_installed = StatusView::parse(&json!({ "joined": true }));
+        assert!(!not_installed.configured());
+    }
+
+    #[test]
+    fn settings_have_no_scope() {
+        let v = Form::default().to_settings();
+        assert!(v.get("scope").is_none());
+    }
+
+    #[test]
+    fn parse_devices_reads_group_fields() {
+        let d = parse_devices(&json!({ "devices": [
+            { "id": "a", "group": "g1", "group_name": "家里" },
+            { "id": "b" }
+        ]}));
+        let a = d.iter().find(|x| x.id == "a").unwrap();
+        assert_eq!((a.group.as_str(), a.group_name.as_str()), ("g1", "家里"));
+        let b = d.iter().find(|x| x.id == "b").unwrap();
+        assert_eq!((b.group.as_str(), b.group_name.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn groups_put_mine_first_self_first_and_others_by_recent() {
+        let mut me = dev_in("me", "g1", "", "windows", 100);
+        me.is_self = true;
+        let devs = vec![
+            dev_in("old", "g2", "", "linux", 10),
+            dev_in("m2", "g1", "", "android", 500),
+            me,
+            dev_in("new", "g3", "公司", "macos", 900),
+            dev_in("old2", "g2", "旧组", "linux", 20),
+        ];
+        let gs = group_devices(&devs, "g1");
+        let ids: Vec<&str> = gs.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, ["g1", "g3", "g2"], "本组在前，其余按最近活跃");
+        assert!(gs[0].is_mine && !gs[1].is_mine);
+        let mine: Vec<&str> = gs[0].devices.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(mine, ["me", "m2"], "本机在组内最前");
+        assert_eq!(gs[0].name, "g1", "没有组名用组号");
+        assert_eq!(gs[1].name, "公司");
+        assert_eq!(gs[2].name, "旧组", "取组内第一个非空组名");
+        assert_eq!(member_count(&gs, "g2"), 2);
+        assert_eq!(member_count(&gs, "nope"), 0);
+    }
+
+    #[test]
+    fn passphrase_has_five_groups_from_alphabet() {
+        let mut n = 0u32;
+        let p = random_passphrase(|| {
+            n += 1;
+            n - 1
+        });
+        assert_eq!(p, "2345-6789-abcd-efgh-jkmn");
+        assert_eq!(p.len(), 24);
+        assert_eq!(p.matches('-').count(), 4);
+        let q = random_passphrase(|| u32::MAX);
+        assert!(
+            q.chars()
+                .all(|c| c == '-' || "23456789abcdefghjkmnpqrstuvwxyz".contains(c))
+        );
+        assert_eq!(q.len(), 24);
+    }
+
+    #[test]
+    fn identity_options_restore_self_when_remote_has_my_id() {
+        let devs = vec![
+            dev_in("me", "g1", "", "windows", 5),
+            dev_in("o", "g2", "", "windows", 9),
+        ];
+        let (opts, def) = identity_options_for(PlatformClass::Desktop, "me", &devs);
+        assert_eq!(
+            opts,
+            [
+                IdentityChoice::Restore("me".into()),
+                IdentityChoice::NewDevice
+            ]
+        );
+        assert_eq!(def, IdentityChoice::Restore("me".into()));
+    }
+
+    #[test]
+    fn identity_options_otherwise_list_same_class_only() {
+        let mut unreadable = dev_in("u", "g2", "", "windows", 1);
+        unreadable.readable = false;
+        let devs = vec![
+            dev_in("w1", "g1", "家里", "windows", 5),
+            dev_in("w2", "g2", "", "linux", 9),
+            dev_in("ph", "g3", "", "android", 99),
+            unreadable,
+        ];
+        let (opts, def) = identity_options_for(PlatformClass::Desktop, "mine", &devs);
+        assert_eq!(
+            opts,
+            [
+                IdentityChoice::Restore("w2".into()),
+                IdentityChoice::Restore("w1".into()),
+                IdentityChoice::Join("g2".into()),
+                IdentityChoice::Join("g1".into()),
+                IdentityChoice::NewGroup,
+            ],
+            "不列手机与不可读设备；按最近活跃"
+        );
+        assert_eq!(def, IdentityChoice::NewGroup);
+        let (m, _) = identity_options_for(PlatformClass::Mobile, "mine", &devs);
+        assert_eq!(
+            m,
+            [
+                IdentityChoice::Restore("ph".into()),
+                IdentityChoice::Join("g3".into()),
+                IdentityChoice::NewGroup
+            ]
+        );
+        let (empty, d) = identity_options_for(PlatformClass::Desktop, "mine", &[]);
+        assert_eq!(empty, [IdentityChoice::NewGroup]);
+        assert_eq!(d, IdentityChoice::NewGroup);
+    }
+
+    #[test]
+    fn identity_commands_per_choice() {
+        assert_eq!(
+            identity_commands(&IdentityChoice::Restore("x".into())),
+            vec![("claim_device", json!({ "dev": "x" }))]
+        );
+        assert_eq!(
+            identity_commands(&IdentityChoice::NewDevice),
+            vec![("confirm_identity", json!({}))]
+        );
+        assert_eq!(
+            identity_commands(&IdentityChoice::Join("g".into())),
+            vec![
+                ("confirm_identity", json!({})),
+                ("join_group", json!({ "group": "g", "mode": "theirs" }))
+            ]
+        );
+        assert_eq!(
+            identity_commands(&IdentityChoice::NewGroup),
+            vec![("confirm_identity", json!({}))]
+        );
     }
 }

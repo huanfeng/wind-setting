@@ -55,6 +55,8 @@ pub const PIN: &str = include_str!("../res/icons/ui/pin.svg");
 /// **不在** 18 网格约定之内：曲线图形没有轴对齐描边，无从套「奇数坐标」，
 /// 且按 16px 缩小渲染（同 [`INFO_THIN`]），故不进下面 `ALL` 的网格校验。
 pub const GEAR: &str = include_str!("../res/icons/ui/gear.svg");
+/// 同步（两段弧箭头；曲线，同 GEAR 不进网格校验）。
+pub const SYNC: &str = include_str!("../res/icons/ui/sync.svg");
 
 /// 侧栏导航图标（Tab 名精确匹配；新 Tab 回退 sliders）。
 pub fn nav_icon(tab: &str) -> &'static str {
@@ -66,6 +68,7 @@ pub fn nav_icon(tab: &str) -> &'static str {
         "主题" => PALETTE,
         "应用兼容性" => APPS,
         "词库" => LAYERS,
+        "同步" => SYNC,
         "高级" => SLIDERS,
         "关于" => INFO,
         _ => SLIDERS,
@@ -75,6 +78,10 @@ pub fn nav_icon(tab: &str) -> &'static str {
 /// 分区标题图标（section 名映射；未命中回退 sliders）。
 pub fn section_icon(title: &str) -> &'static str {
     match title {
+        "数据同步" | "同步状态" => SYNC,
+        "我的设备" => APPS,
+        "存储与安全" => GEAR,
+        "同步选项" => LIST,
         "主方案设置" | "输入方案" | "码表" | "混输" => GRID,
         "拼音" | "临时拼音" => LIST,
         "英文" | "临时英文" => LINES,
