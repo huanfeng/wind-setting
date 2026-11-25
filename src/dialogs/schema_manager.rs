@@ -176,14 +176,14 @@ pub enum SettingsSection {
 /// 这里列的是**全集**：每个方案只显示其中分到了内容的那几个（空的整页隐藏，见
 /// `settings_sections`），顺序即显示顺序。方案类型 → TAB 集合没有单独的映射表，
 /// 由「该类型有哪些节 + [`SettingsSection::tab`]」自然决定：
-/// 全拼 / 双拼 = 基本 · 按键设置 · 自定义行为 · 辅助码；
-/// 码表 = 基本 · 按键设置 · 自定义行为 · 方案覆盖 · 特殊模式 · 实验性功能；
-/// 混输 = 基本 · 按键设置 · 自定义行为 · 实验性功能。
+/// 全拼 / 双拼 = 基本 · 按键设置 · 自定义行为 · 方案设置 · 辅助码；
+/// 码表 = 基本 · 按键设置 · 自定义行为 · 方案设置 · 特殊模式 · 实验性功能；
+/// 混输 = 基本 · 按键设置 · 自定义行为 · 方案设置 · 实验性功能；英文 = 基本 · 按键设置 · 方案设置。
 ///
-/// 「自定义行为」与「方案覆盖」是两回事：前者是对**公共配置**（候选窗 / 标点 / 输入）做方案级的
-/// 特殊处理，各项常驻列出；后者是覆盖**引擎类型的全局配置**（码表 / 混输 / 拼音……），
-/// 绝大多数方案一项都不改，所以走「添加覆盖」。目前只有码表有方案覆盖（core 对拼音 / 混输的
-/// 全局配置不提供方案级覆盖，见 `docs/redesign/schema-config-layering.md` §3.2 / §3.3）。
+/// 「自定义行为」与「方案设置」是两回事：前者是对**全局配置**（候选窗 / 标点 / 输入）做方案级的
+/// 特殊处理，各项常驻列出；后者是**方案自己的设置**（码表 / 拼音 / 混输 / 英文行为），
+/// 绝大多数方案一项都不改，所以只列改过的、其余走「添加设置项」。见
+/// `WindInput/docs/design/scheme-settings-flatten.md`。
 ///
 /// 设计见 `docs/design/schema-settings-vertical-tabs.md`。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -195,7 +195,7 @@ pub enum SettingsTab {
     Experimental,
     /// 自定义行为：候选窗 / 标点 / 输入的方案级特殊处理（`Behavior` 一节）。
     Behavior,
-    /// 方案覆盖：引擎类型全局配置的方案级覆盖（现仅码表：`CodeTable` 一节）。
+    /// 方案设置：本方案的码表 / 拼音 / 混输 / 英文行为（`CodeTable` 一节，名字是历史遗留）。
     Overrides,
     Aux,
     /// 特殊模式（overlay，码表方案专有）。
@@ -268,11 +268,11 @@ impl SettingsSection {
     /// 本节归到哪个 TAB。
     ///
     /// 分组判据是**用户想做什么**，不是数据落在哪个文件：基本 = 这个方案是什么、带哪些词库、
-    /// 双拼用哪套布局；按键设置 = 怎么切进来（配一次就不再看）；方案覆盖 = 要不要偏离全局；
-    /// 辅助码 / 整句输入 / 特殊模式 = 各自的功能区；码表配置归方案覆盖。
+    /// 双拼用哪套布局；按键设置 = 怎么切进来（配一次就不再看）；方案设置 = 引擎行为怎么调；
+    /// 辅助码 / 整句输入 / 特殊模式 = 各自的功能区。
     ///
-    /// 双拼布局归**基本**而不是方案覆盖：它是「这个方案是什么」的一部分（换一套布局等于换一种
-    /// 打法），不是「要不要偏离全局」。
+    /// 双拼布局归**基本**而不是方案设置：它是「这个方案是什么」的一部分（换一套布局等于换一种
+    /// 打法），不是行为偏好。
     ///
     /// `Divider` 不参与分组：原先那份扁平列表里的分隔线是按「相邻两节之间」插的，分完 TAB
     /// 后相邻关系全变了，故丢弃重插（见 `split_sections_by_tab`）。
@@ -1433,7 +1433,7 @@ pub struct SchemaManagerState {
     // 所有方案都有，无总开关：三项的「跟随全局」档本身就是关闭状态，再套一个开关
     // 等于两处表达同一件事。
     /// 标点态：0=跟随全局 / 1=中文标点 / 2=英文标点（`[punct] mode`）。
-    /// 「添加覆盖」弹框（码表配置）是否可见，及其候选（打开时与每次码表工作态变化时重算）。
+    /// 「添加设置项」弹框（方案设置）是否可见，及其候选（打开时与每次码表工作态变化时重算）。
     pub settings_ct_add_visible: Signal<bool>,
     /// 本次播种的方案设置快照（已叠上队列里未提交的改动）。「复制到其它方案」的源。
     settings_ct_source: Rc<RefCell<Option<crate::dialogs::schema_codetable::CtSeed>>>,
@@ -3303,8 +3303,8 @@ impl SchemaManagerState {
                 drop(cfg);
                 self.settings_ct_disp
                     .set(ct_summary(self.settings_ct.custom_count()));
-                // 定制版 / 用户把码表配置项全藏了 ⇒ 没有可覆盖的东西，整页（方案覆盖 TAB）都不出，
-                // 免得留一个只有标题和「添加覆盖」、点开却什么也没有的空页。
+                // 定制版 / 用户把这类方案的设置项全藏了 ⇒ 没有可设的东西，整页（方案设置 TAB）都不出，
+                // 免得留一个只有标题和「添加设置项」、点开却什么也没有的空页。
                 if !self.settings_ct.plan().is_empty() {
                     sections.push(SettingsSection::Divider);
                     sections.push(SettingsSection::CodeTable);
@@ -5056,7 +5056,7 @@ fn build_copy_dialog(state: &SchemaManagerState) -> Element {
     )
 }
 
-/// 码表配置的「添加覆盖」弹框：按分类列出还没覆盖的项，每项带说明与当前跟随值；
+/// 方案设置的「添加设置项」弹框：按分类列出还没改过的项，每项带说明与方案默认值；
 /// 可勾多项一次添加，上方搜索框按名称 / 说明过滤。形态照应用兼容页的「添加覆盖项」，
 /// 但码表项有几十个，所以单击即添加换成了勾选 + 「添加」。
 fn build_ct_add_dialog(state: &SchemaManagerState) -> Element {
@@ -6782,7 +6782,7 @@ fn build_schema_settings_dialog(state: &SchemaManagerState) -> Element {
             ct_count.refresh_group_summaries();
             // TAB 标签只打一个星号，不报数：数已经在节头和每张卡片上了，TAB 要回答的
             // 只是「这边有没有动过」——切在另一个 TAB 时也一眼看得见。星号打在各自所属的页：
-            // 码表配置 → 方案覆盖；本方案行为 → 自定义行为；辅助码 → 辅助码。
+            // 方案设置 → 方案设置；本方案行为 → 自定义行为；辅助码 → 辅助码。
             // ⚠️ 用 `SettingsTab` 而不是字面下标——TAB 的数量和顺序都变过。
             let mut ls: Vec<String> = SETTINGS_TABS.iter().map(|s| s.to_string()).collect();
             for (t, custom) in [
@@ -9481,7 +9481,7 @@ mod section_build_tests {
         );
     }
 
-    /// 码表配置项全被藏掉 ⇒ 没有「方案覆盖」页，而不是一个空页。
+    /// 设置项全被藏掉 ⇒ 没有「方案设置」页，而不是一个空页。
     #[test]
     fn codetable_override_page_dropped_when_all_items_hidden() {
         let _guard = crate::rpc::ENV_LOCK

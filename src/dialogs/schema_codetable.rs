@@ -228,7 +228,7 @@ impl CtItemState {
     }
 }
 
-/// 「添加覆盖」弹框里的一个候选项。
+/// 「添加设置项」弹框里的一个候选项。
 #[derive(Clone, Debug, PartialEq)]
 pub struct CtCandidate {
     pub key: String,
@@ -506,8 +506,8 @@ impl CtFields {
 
     /// 渲染一个分类：小标题 + 组内**已列出**的行；整组一行都没列出时连标题一起藏。
     ///
-    /// 方案覆盖是**稀疏**的：绝大多数方案一项都不改，所以默认只列「用户覆盖了的」（`over`）和
-    /// 「方案作者自己写了的」（来源为「方案自带」，不可移除）；其余项经节头的「添加覆盖」弹框挑出来。
+    /// 方案设置是**稀疏**的：绝大多数方案一项都不改，所以默认只列用户改过的项（`over`）；
+    /// 其余项经节头的「添加设置项」弹框挑出来。
     /// 行**预建、靠 `visible_when` 显隐**——工作态挂在 Element 上，重建会丢刚改的值。
     ///
     /// 「全部恢复默认」在这个 TAB 上是**整节**级别的动作，挂在外层节头（见
@@ -543,8 +543,8 @@ impl CtFields {
         col.visible_when(move || listed.iter().any(|over| over.get()))
     }
 
-    /// 「添加覆盖」弹框的候选：还没列出的项（用户没覆盖、方案文件也没写），按分类归拢，
-    /// 带说明与当前跟随值——只给一个标题挑不出东西。分类与顺序同 [`Self::plan`]。
+    /// 「添加设置项」弹框的候选：还没列出的项（用户没改过的），按分类归拢，
+    /// 带说明与方案默认值——只给一个标题挑不出东西。分类与顺序同 [`Self::plan`]。
     pub fn candidates(&self, manifest: &Manifest) -> Vec<(String, Vec<CtCandidate>)> {
         let items = self.items.borrow();
         self.plan()
