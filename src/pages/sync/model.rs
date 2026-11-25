@@ -51,9 +51,27 @@ pub(crate) struct StatusView {
 }
 
 impl StatusView {
-    /// 已装同步组件且已加入远端：此后才显示完整的同步页，否则只给「开始配置」。
+    /// 已装、已启用且已加入远端：此后才显示完整的同步页，否则只给「开始配置」。
+    /// 要看 `enabled`：停用后本机密钥仍在，`joined` 不会变。
     pub fn configured(&self) -> bool {
-        self.installed && self.joined
+        self.installed && self.enabled && self.joined
+    }
+
+    /// 撞号：另一台设备在用本机的设备号，需要给本机改号。
+    pub fn duplicate_device(&self) -> bool {
+        self.last_error
+            .as_deref()
+            .is_some_and(|e| e.contains(DUPLICATE_MARK))
+    }
+
+    /// 状态卡「冲突」行的值；没有冲突返回空串。
+    pub fn conflict_summary(&self) -> String {
+        let n = self.conflicts.max(self.conflict_paths.len() as u64);
+        if n == 0 {
+            String::new()
+        } else {
+            format!("{n} 个冲突副本")
+        }
     }
 
     pub fn parse(v: &Value) -> Self {
@@ -158,6 +176,8 @@ impl StatusView {
 const MASS_MARK: &str = "为防误删已暂停";
 /// 本地文件正被编辑时本轮跳过的提示后缀（`local.rs`）。
 const EDITING_MARK: &str = "正在被编辑，本轮暂不同步";
+/// 撞号错误里的标记（`wind-sync` 的 `error.rs`）。
+const DUPLICATE_MARK: &str = "相同设备号";
 /// 同步进程正忙时对命令的回绝（`runner.rs` 的 `BUSY_MSG`）。
 const BUSY_MSG: &str = "正在同步，请稍后再试";
 /// core 对非受信调用方的回绝（`wind-rpc` 的 `DENY_UNTRUSTED`）。
@@ -239,6 +259,85 @@ pub(crate) fn save_steps(settings: Value, cmds: Vec<(&'static str, Value)>) -> V
             .map(|(op, args)| ("sync.command", json!({ "op": op, "args": args }))),
     );
     steps
+}
+
+/// 「立即同步」走 core 的 `sync.now`：结果由 core 弹提示并经状态事件回到界面。
+pub(crate) fn sync_now_steps() -> Vec<Step> {
+    vec![("sync.now", json!({}))]
+}
+
+/// 「停用同步」：只关掉启用开关，存储设置、密钥与远端数据都保留。
+pub(crate) fn disable_steps(saved: &Form) -> Vec<Step> {
+    let off = Form {
+        enabled: false,
+        ..saved.clone()
+    };
+    vec![("sync.setSettings", json!({ "settings": off.to_settings() }))]
+}
+
+/// 存储卡的摘要：类型与地址。
+pub(crate) fn storage_summary(f: &Form) -> String {
+    if f.backend_blank() {
+        "未设置".to_string()
+    } else if f.s3 {
+        format!(
+            "S3 · {} · {}{}",
+            f.s3_endpoint.trim(),
+            f.s3_bucket.trim(),
+            match f.s3_prefix.trim() {
+                "" => String::new(),
+                p => format!("/{p}"),
+            }
+        )
+    } else {
+        format!("WebDAV · {} · 用户 {}", f.wd_url.trim(), f.wd_user.trim())
+    }
+}
+
+/// 换存储后解开数据用的命令：口令或导出的密钥；没填返回 None。
+pub(crate) fn unlock_command(
+    use_key: bool,
+    passphrase: &str,
+    key: &str,
+) -> Option<(&'static str, Value)> {
+    if use_key {
+        let key = key.trim();
+        (!key.is_empty()).then(|| ("import_key", json!({ "key": key })))
+    } else {
+        (!passphrase.is_empty()).then(|| ("set_passphrase", json!({ "passphrase": passphrase })))
+    }
+}
+
+/// 「更换存储」的执行序列。位置变了要重填存储密码（core 会清掉旧的），并用口令或密钥
+/// 重新解开新位置的数据；位置没变只更新设置与填了的密码。
+pub(crate) fn storage_change_steps(
+    saved: &Form,
+    new: &Form,
+    secrets: Vec<Value>,
+    unlock: Option<(&'static str, Value)>,
+) -> Result<Vec<Step>, &'static str> {
+    let moved = backend_location_changed(saved, new);
+    if moved && secrets.is_empty() {
+        return Err("更换了存储位置，请填写新位置的密码");
+    }
+    if moved && unlock.is_none() {
+        return Err("更换了存储位置，请填写同步口令或粘贴导出的密钥");
+    }
+    let mut cmds: Vec<(&'static str, Value)> =
+        secrets.into_iter().map(|a| ("set_secret", a)).collect();
+    if moved {
+        cmds.extend(unlock);
+    }
+    Ok(save_steps(new.to_settings(), cmds))
+}
+
+/// 同步间隔改了才要保存：返回带新间隔的设置，其余原样。
+pub(crate) fn interval_change(saved: &Form, v: f64) -> Option<Form> {
+    let n = clamp_interval(v);
+    (n != saved.interval_min).then(|| Form {
+        interval_min: n,
+        ..saved.clone()
+    })
 }
 
 /// 「确认大批量删除」的二次确认闸：先 arm（点按钮弹确认框），确认框里 take 才放行；取过即收回。
@@ -553,6 +652,19 @@ pub(crate) fn member_count(groups: &[GroupView], group: &str) -> usize {
         .map_or(0, |g| g.devices.len())
 }
 
+/// 本机卡「所在组」的值：组名（没有就用组号）· N 台设备；名册还没到时不写台数。
+pub(crate) fn group_line(group: &str, group_name: &str, devs: &[DeviceView]) -> String {
+    let name = if group_name.is_empty() {
+        group
+    } else {
+        group_name
+    };
+    match member_count(&group_devices(devs, group), group) {
+        0 => name.to_string(),
+        n => format!("{name} · {n} 台设备"),
+    }
+}
+
 const PASSPHRASE_ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
 
 /// 随机口令：5 组 × 4 字符，用去掉易混字符的字母表，`-` 连接。
@@ -774,6 +886,9 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "export_key" => "导出密钥",
         "reset_remote" => "重置远端",
         "remove_device" => "移除设备",
+        "storage" => "保存存储设置",
+        "disable" => "停用同步",
+        "interval" => "保存同步间隔",
         other => other,
     };
     match r {
@@ -796,7 +911,10 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 })
                 .flatten();
             let toast = match op {
-                "sync_now" => "已开始同步".to_string(),
+                // 结果由 core 弹提示，页内不另报。
+                "sync_now" | "interval" => String::new(),
+                "storage" => "已保存存储设置".to_string(),
+                "disable" => "已停用同步".to_string(),
                 "test_connection" => connection_text(v),
                 "export_key" if key.is_none() => "同步进程没有返回密钥".to_string(),
                 "export_key" => "已导出密钥，请妥善保管".to_string(),

@@ -1,12 +1,13 @@
-//! 「高级 → 数据同步」卡（设计见 `WindInput/docs/design/data-sync.md` §3.3、§5、§10 S5）。
+//! 「同步」页（设计见 `WindInput/docs/design/sync-device-groups.md` §7、`data-sync.md` §5）。
 //!
-//! 同步设置是设备本地的，**不进 config.toml**，也不走底栏「应用设置」：本卡的读写全部经
-//! core 的 `sync.*` RPC，改动由卡内按钮立即提交。
+//! 同步设置是设备本地的，**不进 config.toml**，也不走底栏「应用设置」：本页的读写全部经
+//! core 的 `sync.*` RPC，改动由页内按钮或对话框立即提交。
 //!
-//! - `sync.getSettings` / `sync.setSettings`：后端、范围、间隔、启用开关（不含任何机密）；
-//! - `sync.status` + 事件 `sync.statusChanged`：阶段、上次成功、待传数、冲突数、错误；
-//! - `sync.command{op, args}`：`sync_now` / `test_connection` / `set_secret` / `set_passphrase` /
-//!   `import_key` / `export_key` / `reset_remote`，经 core 转给同步进程，**同步等回执**。
+//! - `sync.getSettings` / `sync.setSettings`：后端、间隔、启用开关（不含任何机密）；
+//! - `sync.status` + 事件 `sync.statusChanged`：阶段、上次成功、待传数、冲突数、错误、身份；
+//! - `sync.now`：立即同步，结果由 core 弹提示；
+//! - `sync.command{op, args}`：`test_connection` / `set_secret` / `set_passphrase` /
+//!   `import_key` / `export_key` / `reset_remote` 等，经 core 转给同步进程，**同步等回执**。
 //!
 //! # 机密只写不读
 //!
@@ -46,10 +47,8 @@ use crate::rpc;
 pub(crate) use model::*;
 pub use page::build_page;
 
-/// 搜索锚点（`search::index::HANDWRITTEN` 的 `sync:page` 条目指向这里）。
-pub const ANCHOR: &str = "sync:page";
-/// 分区名（二级导航 + 卡片标题）。
-pub const SECTION: &str = "数据同步";
+/// 搜索锚点（`search::index::HANDWRITTEN` 的 `sync` 条目指向这里）。
+pub const ANCHOR: &str = "sync";
 
 // ───────────────────────────── 界面状态 ─────────────────────────────
 
@@ -68,15 +67,26 @@ pub enum SyncMsg {
     },
 }
 
+/// 不占 busy 的后台保存（改间隔是随手调的，不该把按钮置灰）。
+const OP_INTERVAL: &str = "interval";
+
 #[derive(Clone)]
 pub struct SyncUi {
     installed: Signal<bool>,
     /// 已有机密（凭据 / 密钥）。
     has_secret: Signal<bool>,
+    /// 已装、已启用、已加入：显示完整的同步页，否则只给「开始配置」。
+    configured: Signal<bool>,
+    needs_identity: Signal<bool>,
+    /// 撞号：另一台设备在用本机的设备号。
+    dup_device: Signal<bool>,
     phase: Signal<String>,
     last_ok: Signal<String>,
     pending: Signal<String>,
+    /// 冲突说明全文（含路径），冲突对话框里显示。
     conflicts: Signal<String>,
+    /// 「N 个冲突副本」；空 = 无冲突。
+    conflict_summary: Signal<String>,
     error: Signal<String>,
     /// 自动重试类提示（非故障）。
     notice: Signal<String>,
@@ -84,12 +94,19 @@ pub struct SyncUi {
     mass_text: Signal<String>,
     mass_dialog: Signal<bool>,
     mass_guard: MassDeleteGuard,
-    /// 最近一次从 core 读到 / 成功保存的表单，用来判断存储位置是否变了。
+    /// 本机设备号、所在组号与组名。
+    device: Signal<String>,
+    group: Signal<String>,
+    group_name: Signal<String>,
+    /// 本机卡「所在组」的值（组名 · N 台设备）。
+    group_line: Signal<String>,
+    /// 最近一次从 core 读到 / 成功保存的表单：存储摘要、改间隔、停用都以它为准。
     saved: Rc<RefCell<Form>>,
+    storage_summary: Signal<String>,
     /// 有命令在途：按钮置灰，避免重复点。
     busy: Signal<bool>,
 
-    enabled: Signal<bool>,
+    // 存储表单（更换存储对话框与向导共用）。
     /// 0 = WebDAV，1 = S3。
     backend: Signal<usize>,
     wd_url: Signal<String>,
@@ -103,6 +120,7 @@ pub struct SyncUi {
     s3_secret: Signal<String>,
     s3_path_style: Signal<bool>,
     interval: Signal<f64>,
+    device_name: Signal<String>,
 
     pass_dialog: Signal<bool>,
     pass1: Signal<String>,
@@ -115,11 +133,11 @@ pub struct SyncUi {
     reset_err: Signal<String>,
     import_key: Signal<String>,
     exported_key: Signal<String>,
+    export_dialog: Signal<bool>,
     reset_dialog: Signal<bool>,
     reset_ack: Signal<bool>,
     reset_guard: ResetGuard,
 
-    device_name: Signal<String>,
     devices: Signal<Vec<DeviceView>>,
     /// 设备区的读取失败说明；空 = 无。
     devices_err: Signal<String>,
@@ -128,6 +146,25 @@ pub struct SyncUi {
     remove_name: Signal<String>,
     remove_guard: RemoveGuard,
     devices_loaded: Rc<Cell<bool>>,
+
+    storage_dialog: Signal<bool>,
+    /// 更换存储时用导出的密钥代替口令。
+    storage_use_key: Signal<bool>,
+    storage_err: Signal<String>,
+    conflicts_dialog: Signal<bool>,
+    disable_dialog: Signal<bool>,
+
+    /// 配置向导（Task 4 重写）。
+    wizard: Signal<bool>,
+    /// 0 存储 / 1 口令 / 2 内容。
+    wiz_step: Signal<usize>,
+    /// 0 未测 / 1 远端为空 / 2 远端已有数据。
+    wiz_remote: Signal<usize>,
+    wiz_use_key: Signal<bool>,
+    /// 打开钩子：改号（Task 3）、更换组（Task 3）、确认身份（Task 4）的对话框挂在这些信号上。
+    rename_dialog: Signal<bool>,
+    group_dialog: Signal<bool>,
+    identity_dialog: Signal<bool>,
 
     loaded: Rc<Cell<bool>>,
     tx: Rc<RefCell<Option<Sender<SyncMsg>>>>,
@@ -142,54 +179,76 @@ impl Default for SyncUi {
 impl SyncUi {
     pub fn new() -> Self {
         let f = Form::default();
+        let s = || signal(String::new());
         SyncUi {
             installed: signal(true),
             has_secret: signal(false),
+            configured: signal(false),
+            needs_identity: signal(false),
+            dup_device: signal(false),
             phase: signal("读取中…".to_string()),
-            last_ok: signal(String::new()),
-            pending: signal(String::new()),
-            conflicts: signal(String::new()),
-            error: signal(String::new()),
-            notice: signal(String::new()),
-            mass_text: signal(String::new()),
+            last_ok: s(),
+            pending: s(),
+            conflicts: s(),
+            conflict_summary: s(),
+            error: s(),
+            notice: s(),
+            mass_text: s(),
             mass_dialog: signal(false),
             mass_guard: MassDeleteGuard::default(),
+            device: s(),
+            group: s(),
+            group_name: s(),
+            group_line: s(),
             saved: Rc::new(RefCell::new(Form::default())),
+            storage_summary: signal(storage_summary(&f)),
             busy: signal(false),
-            enabled: signal(f.enabled),
             backend: signal(0),
-            wd_url: signal(String::new()),
-            wd_user: signal(String::new()),
-            wd_password: signal(String::new()),
-            s3_endpoint: signal(String::new()),
-            s3_region: signal(String::new()),
-            s3_bucket: signal(String::new()),
-            s3_prefix: signal(String::new()),
-            s3_access_key_id: signal(String::new()),
-            s3_secret: signal(String::new()),
+            wd_url: s(),
+            wd_user: s(),
+            wd_password: s(),
+            s3_endpoint: s(),
+            s3_region: s(),
+            s3_bucket: s(),
+            s3_prefix: s(),
+            s3_access_key_id: s(),
+            s3_secret: s(),
             s3_path_style: signal(false),
             interval: signal(f.interval_min as f64),
+            device_name: s(),
             pass_dialog: signal(false),
-            pass1: signal(String::new()),
-            pass2: signal(String::new()),
-            pass_err: signal(String::new()),
-            old_pass: signal(String::new()),
+            pass1: s(),
+            pass2: s(),
+            pass_err: s(),
+            old_pass: s(),
             joined: signal(false),
-            reset_pass1: signal(String::new()),
-            reset_pass2: signal(String::new()),
-            reset_err: signal(String::new()),
-            import_key: signal(String::new()),
-            exported_key: signal(String::new()),
+            reset_pass1: s(),
+            reset_pass2: s(),
+            reset_err: s(),
+            import_key: s(),
+            exported_key: s(),
+            export_dialog: signal(false),
             reset_dialog: signal(false),
             reset_ack: signal(false),
             reset_guard: ResetGuard::default(),
-            device_name: signal(String::new()),
             devices: signal(Vec::new()),
-            devices_err: signal(String::new()),
+            devices_err: s(),
             remove_dialog: signal(false),
-            remove_name: signal(String::new()),
+            remove_name: s(),
             remove_guard: RemoveGuard::default(),
             devices_loaded: Rc::new(Cell::new(false)),
+            storage_dialog: signal(false),
+            storage_use_key: signal(false),
+            storage_err: s(),
+            conflicts_dialog: signal(false),
+            disable_dialog: signal(false),
+            wizard: signal(false),
+            wiz_step: signal(0),
+            wiz_remote: signal(0),
+            wiz_use_key: signal(false),
+            rename_dialog: signal(false),
+            group_dialog: signal(false),
+            identity_dialog: signal(false),
             loaded: Rc::new(Cell::new(false)),
             tx: Rc::new(RefCell::new(None)),
         }
@@ -205,7 +264,26 @@ impl SyncUi {
         if self.loaded.replace(true) {
             return;
         }
-        self.refresh();
+        if rpc::is_mock() {
+            self.load_mock_now();
+        } else {
+            self.refresh();
+        }
+    }
+
+    /// mock 下当场取齐：截图的合成点击发生在首几帧，要落在已加载好的页面上。
+    fn load_mock_now(&self) {
+        if let Ok(v) = rpc::call_core("sync.getSettings", &json!({})) {
+            self.apply_form(&Form::from_settings(&v));
+        }
+        if let Ok(v) = rpc::call_core("sync.status", &json!({})) {
+            self.devices_loaded.set(true);
+            self.apply_status(&v);
+        }
+        if let Ok(v) = rpc::call_core("sync.command", &json!({ "op": "list_devices" })) {
+            self.devices.set(parse_devices(&v));
+            self.update_group_line();
+        }
     }
 
     fn refresh(&self) {
@@ -265,6 +343,13 @@ impl SyncUi {
         self.installed.set(s.installed);
         self.has_secret.set(s.has_secret);
         self.joined.set(s.joined);
+        self.configured.set(s.configured());
+        self.needs_identity.set(s.needs_identity);
+        self.dup_device.set(s.duplicate_device());
+        self.device.set(s.device.clone());
+        self.group.set(s.group.clone());
+        self.group_name.set(s.group_name.clone());
+        self.update_group_line();
         if s.installed && s.joined && !self.devices_loaded.replace(true) {
             self.refresh_devices();
         }
@@ -277,6 +362,7 @@ impl SyncUi {
         self.last_ok.set(s.last_ok_text());
         self.pending.set(s.pending_text());
         self.conflicts.set(s.conflict_text());
+        self.conflict_summary.set(s.conflict_summary());
         let text = s.error_text();
         let pick = |k: ErrorKind, t: String| if kind == k { t } else { String::new() };
         self.error.set(pick(ErrorKind::Danger, text.clone()));
@@ -287,25 +373,53 @@ impl SyncUi {
         self.mass_text.set(pick(ErrorKind::MassDelete, text));
     }
 
+    fn update_group_line(&self) {
+        self.group_line.set(group_line(
+            &self.group.get(),
+            &self.group_name.get(),
+            &self.devices.get(),
+        ));
+    }
+
+    /// 已保存的设置落到界面。存储表单只在没人编辑时跟着回到已保存的样子：命令失败后的
+    /// 兜底刷新不能冲掉对话框里填了一半的内容。
     fn apply_form(&self, f: &Form) {
         *self.saved.borrow_mut() = f.clone();
-        self.enabled.set(f.enabled);
-        self.backend.set(usize::from(f.s3));
-        self.wd_url.set(f.wd_url.clone());
-        self.wd_user.set(f.wd_user.clone());
-        self.s3_endpoint.set(f.s3_endpoint.clone());
-        self.s3_region.set(f.s3_region.clone());
-        self.s3_bucket.set(f.s3_bucket.clone());
-        self.s3_prefix.set(f.s3_prefix.clone());
-        self.s3_access_key_id.set(f.s3_access_key_id.clone());
-        self.s3_path_style.set(f.s3_path_style);
+        self.storage_summary.set(storage_summary(f));
+        if !self.storage_dialog.get() && !self.wizard.get() {
+            self.reset_storage_form();
+        }
         self.interval.set(f.interval_min as f64);
         self.device_name.set(f.device_name.clone());
     }
 
-    fn form(&self) -> Form {
+    fn reset_storage_form(&self) {
+        let f = self.saved.borrow().clone();
+        self.backend.set(usize::from(f.s3));
+        self.wd_url.set(f.wd_url);
+        self.wd_user.set(f.wd_user);
+        self.s3_endpoint.set(f.s3_endpoint);
+        self.s3_region.set(f.s3_region);
+        self.s3_bucket.set(f.s3_bucket);
+        self.s3_prefix.set(f.s3_prefix);
+        self.s3_access_key_id.set(f.s3_access_key_id);
+        self.s3_path_style.set(f.s3_path_style);
+        self.wd_password.set(String::new());
+        self.s3_secret.set(String::new());
+    }
+
+    /// 机密一提交（或对话框一关）就从界面清掉，不留在信号里。
+    fn clear_secrets(&self) {
+        self.wd_password.set(String::new());
+        self.s3_secret.set(String::new());
+        self.pass1.set(String::new());
+        self.pass2.set(String::new());
+        self.import_key.set(String::new());
+    }
+
+    /// 存储表单 + 已保存的其余设置。
+    fn storage_form(&self) -> Form {
         Form {
-            enabled: self.enabled.get(),
             s3: self.backend.get() == 1,
             wd_url: self.wd_url.get(),
             wd_user: self.wd_user.get(),
@@ -315,8 +429,7 @@ impl SyncUi {
             s3_prefix: self.s3_prefix.get(),
             s3_access_key_id: self.s3_access_key_id.get(),
             s3_path_style: self.s3_path_style.get(),
-            interval_min: clamp_interval(self.interval.get()),
-            device_name: self.device_name.get(),
+            ..self.saved.borrow().clone()
         }
     }
 
@@ -332,6 +445,7 @@ impl SyncUi {
             SyncMsg::Devices(Ok(v)) => {
                 self.devices_err.set(String::new());
                 self.devices.set(parse_devices(&v));
+                self.update_group_line();
             }
             SyncMsg::Devices(Err(e)) => {
                 let (t, _) = failure_text("读取设备列表", &e);
@@ -341,14 +455,15 @@ impl SyncUi {
                 self.phase.set(format!("无法连接输入法服务：{e}"));
             }
             SyncMsg::Command { op, result } => {
-                self.busy.set(false);
+                if op != OP_INTERVAL {
+                    self.busy.set(false);
+                }
                 let o = outcome(&op, &result);
-                if o.ok {
-                    ctx.toast_ok(o.toast);
-                } else if o.notice {
-                    ctx.toast_with(o.toast, ToastKind::Info, 3000);
-                } else {
-                    ctx.toast_err(o.toast);
+                match (o.toast.is_empty(), o.ok, o.notice) {
+                    (true, ..) => {}
+                    (_, true, _) => ctx.toast_ok(o.toast),
+                    (_, _, true) => ctx.toast_with(o.toast, ToastKind::Info, 3000),
+                    _ => ctx.toast_err(o.toast),
                 }
                 if let Some(k) = o.key {
                     self.exported_key.set(k);
@@ -361,15 +476,18 @@ impl SyncUi {
                             self.old_pass.set(String::new());
                             self.pass_dialog.set(false);
                         }
-                        "import_key" => self.import_key.set(String::new()),
                         "remove_device" => self.refresh_devices(),
                         "reset_remote" => {
                             self.reset_pass1.set(String::new());
                             self.reset_pass2.set(String::new());
                             self.reset_dialog.set(false);
                         }
+                        "storage" => self.storage_dialog.set(false),
+                        "disable" => self.disable_dialog.set(false),
                         _ => {}
                     }
+                } else if op == "export_key" {
+                    self.export_dialog.set(false);
                 }
                 // 命令常带来状态变化（has_secret、阶段），事件之外再拉一次兜底。
                 self.refresh();
@@ -388,13 +506,17 @@ impl SyncUi {
 
     /// 后台依次发若干步 RPC（方法 + 参数），遇错即停；`op` 是最终回执的名字。
     fn run_steps(&self, op: &str, steps: Vec<Step>) {
-        if self.busy.get() {
+        if self.busy.get() || self.tx.borrow().is_none() {
             return;
         }
+        self.busy.set(true);
+        self.spawn_steps(op, steps);
+    }
+
+    fn spawn_steps(&self, op: &str, steps: Vec<Step>) {
         let Some(tx) = self.tx.borrow().clone() else {
             return;
         };
-        self.busy.set(true);
         let op = op.to_string();
         std::thread::spawn(move || {
             let mut result = Ok(Value::Null);
@@ -408,62 +530,110 @@ impl SyncUi {
         });
     }
 
-    /// 同步提交设置（只是写一个本地文件，很快）。
-    fn save_settings(&self) -> Result<(), String> {
-        check_device_name(&self.device_name.get())?;
-        rpc::call_core(
-            "sync.setSettings",
-            &json!({ "settings": self.form().to_settings() }),
-        )
-        .map(|_| ())
+    fn sync_now(&self) {
+        self.run_steps("sync_now", sync_now_steps());
     }
 
-    /// 「保存」：设置 + 本次填了的机密。`test` 为真则随后测试连接。
-    fn save(&self, ctx: &mut EventCtx, test: bool) {
-        if let Err(e) = check_device_name(&self.device_name.get()) {
-            ctx.toast_err(e);
+    /// 同步间隔改了即存（不占 busy、成功不提示）。
+    fn save_interval(&self) {
+        let Some(f) = interval_change(&self.saved.borrow(), self.interval.get()) else {
             return;
-        }
-        let f = self.form();
-        let moved = backend_location_changed(&self.saved.borrow(), &f);
-        let secrets = secret_commands(f.s3, &self.wd_password.get(), &self.s3_secret.get());
-        // 机密一提交就从界面清掉，不留在信号里。
-        self.wd_password.set(String::new());
-        self.s3_secret.set(String::new());
-        let cmds: Vec<(&'static str, Value)> = if test {
-            // 测试只带临时密码，不落盘：没填就用已保存的。
-            let args = secrets.into_iter().next().unwrap_or_else(|| json!({}));
-            vec![("test_connection", args)]
-        } else {
-            secrets.into_iter().map(|a| ("set_secret", a)).collect()
         };
-        if cmds.is_empty() {
-            // 没有凭据要写：只提交设置（很快，同步做）。
-            if let Err(e) = self.save_settings() {
-                let (t, notice) = failure_text("保存", &e);
-                if notice {
-                    ctx.toast_with(t, ToastKind::Info, 3000);
-                } else {
-                    ctx.toast_err(t);
-                }
-                return;
+        let steps = vec![("sync.setSettings", json!({ "settings": f.to_settings() }))];
+        *self.saved.borrow_mut() = f;
+        self.spawn_steps(OP_INTERVAL, steps);
+    }
+
+    fn open_storage_dialog(&self) {
+        self.reset_storage_form();
+        self.clear_secrets();
+        self.storage_use_key.set(false);
+        self.storage_err.set(String::new());
+        self.storage_dialog.set(true);
+    }
+
+    fn close_storage_dialog(&self) {
+        self.storage_dialog.set(false);
+        self.reset_storage_form();
+        self.clear_secrets();
+    }
+
+    /// 「更换存储」对话框里点保存：先校验，再按 [`storage_change_steps`] 发送；机密随即清空。
+    fn save_storage(&self) {
+        let new = self.storage_form();
+        let secrets = secret_commands(new.s3, &self.wd_password.get(), &self.s3_secret.get());
+        let unlock = unlock_command(
+            self.storage_use_key.get(),
+            &self.pass1.get(),
+            &self.import_key.get(),
+        );
+        match storage_change_steps(&self.saved.borrow(), &new, secrets, unlock) {
+            Err(e) => self.storage_err.set(e.to_string()),
+            Ok(steps) => {
+                self.storage_err.set(String::new());
+                self.clear_secrets();
+                self.run_steps("storage", steps);
             }
-            *self.saved.borrow_mut() = f;
-            if moved {
-                ctx.toast_with("已更换存储位置，请重新填写密码", ToastKind::Info, 5000);
-            } else {
-                ctx.toast_ok("已保存同步设置");
-            }
-            self.refresh();
-        } else {
-            // 先 setSettings 再写密码：位置变化时 core 会清掉已存密码，顺序反了新密码就丢了。
-            *self.saved.borrow_mut() = f.clone();
-            let steps = save_steps(f.to_settings(), cmds);
-            self.run_steps(if test { "test_connection" } else { "save" }, steps);
         }
     }
 
-    /// 点「确认这些删除并继续同步」：先弹确认框并上闸，真正发命令要在框里再点一次。
+    /// 「导出密钥…」：先开框（显示「正在读取…」），密钥回来再填进去。
+    fn open_export(&self) {
+        self.exported_key.set(String::new());
+        self.export_dialog.set(true);
+        self.run("export_key", vec![("export_key", json!({}))]);
+    }
+
+    fn close_export(&self) {
+        self.export_dialog.set(false);
+        self.exported_key.set(String::new());
+    }
+
+    fn open_passphrase_dialog(&self) {
+        self.pass_err.set(String::new());
+        self.pass1.set(String::new());
+        self.pass2.set(String::new());
+        self.old_pass.set(String::new());
+        self.pass_dialog.set(true);
+    }
+
+    fn open_reset_dialog(&self) {
+        self.reset_ack.set(false);
+        self.reset_err.set(String::new());
+        self.reset_guard.arm();
+        self.reset_dialog.set(true);
+    }
+
+    fn confirm_disable(&self) {
+        self.run_steps("disable", disable_steps(&self.saved.borrow()));
+    }
+
+    /// 「开始配置…」。
+    fn open_wizard(&self) {
+        self.reset_storage_form();
+        self.clear_secrets();
+        self.wiz_step.set(0);
+        self.wiz_remote.set(0);
+        self.wiz_use_key.set(false);
+        self.wizard.set(true);
+    }
+
+    /// 「给本机改号…」：改号对话框由 Task 3 挂到 `rename_dialog`。
+    fn open_rename_dialog(&self) {
+        self.rename_dialog.set(true);
+    }
+
+    /// 「更换组…」：对话框由 Task 3 挂到 `group_dialog`。
+    fn open_group_dialog(&self) {
+        self.group_dialog.set(true);
+    }
+
+    /// 「确认身份…」：对话框由 Task 4 挂到 `identity_dialog`。
+    fn open_identity_dialog(&self) {
+        self.identity_dialog.set(true);
+    }
+
+    /// 点「确认删除…」：先弹确认框并上闸，真正发命令要在框里再点一次。
     fn request_mass_delete(&self) {
         self.mass_guard.arm();
         self.mass_dialog.set(true);
@@ -501,25 +671,6 @@ impl SyncUi {
             }
         }
     }
-}
-
-/// 页面级状态（spike 里临时放在这里）。
-#[derive(Clone)]
-struct PageUi {
-    configured: Signal<bool>,
-    wiz: Signal<bool>,
-    /// 0 存储 / 1 口令 / 2 内容
-    step: Signal<usize>,
-    /// 向导是「更换存储」（标题与提示不同）
-    rewire: Signal<bool>,
-    /// 0 未测 / 1 远端为空 / 2 远端已有数据
-    remote: Signal<usize>,
-    use_key: Signal<bool>,
-    rename: Signal<bool>,
-    export: Signal<bool>,
-    creds: Signal<bool>,
-    conflicts: Signal<bool>,
-    disable: Signal<bool>,
 }
 
 #[cfg(test)]

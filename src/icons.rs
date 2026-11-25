@@ -79,9 +79,9 @@ pub fn nav_icon(tab: &str) -> &'static str {
 pub fn section_icon(title: &str) -> &'static str {
     match title {
         "数据同步" | "同步状态" => SYNC,
-        "我的设备" => APPS,
-        "存储与安全" => GEAR,
-        "同步选项" => LIST,
+        "本机" | "设备" => APPS,
+        "存储" => LAYERS,
+        "安全" => GEAR,
         "主方案设置" | "输入方案" | "码表" | "混输" => GRID,
         "拼音" | "临时拼音" => LIST,
         "英文" | "临时英文" => LINES,

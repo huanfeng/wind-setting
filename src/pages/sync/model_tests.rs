@@ -328,7 +328,7 @@ fn failure_texts_split_notice_from_error() {
 #[test]
 fn status_parses_group_fields_and_configured() {
     let s = StatusView::parse(&json!({
-        "installed": true, "joined": true, "device": "desktop-7f3k",
+        "installed": true, "enabled": true, "joined": true, "device": "desktop-7f3k",
         "group": "g-ab", "group_name": "家里", "needs_identity": true
     }));
     assert_eq!(s.device, "desktop-7f3k");
@@ -336,10 +336,12 @@ fn status_parses_group_fields_and_configured() {
     assert!(s.needs_identity && s.configured());
     let none = StatusView::parse(&json!({}));
     assert!(!none.needs_identity && !none.configured());
-    let not_joined = StatusView::parse(&json!({ "installed": true }));
+    let not_joined = StatusView::parse(&json!({ "installed": true, "enabled": true }));
     assert!(!not_joined.configured(), "已装但没加入远端不算已配置");
-    let not_installed = StatusView::parse(&json!({ "joined": true }));
+    let not_installed = StatusView::parse(&json!({ "enabled": true, "joined": true }));
     assert!(!not_installed.configured());
+    let disabled = StatusView::parse(&json!({ "installed": true, "joined": true }));
+    assert!(!disabled.configured(), "停用后密钥还在，也回到未配置");
 }
 
 #[test]
@@ -491,4 +493,147 @@ fn identity_commands_per_choice() {
         identity_commands(&IdentityChoice::NewGroup),
         vec![("confirm_identity", json!({}))]
     );
+}
+
+#[test]
+fn sync_now_goes_through_core_not_command() {
+    assert_eq!(sync_now_steps(), vec![("sync.now", json!({}))]);
+}
+
+#[test]
+fn sync_now_success_is_left_to_core_toast() {
+    let o = outcome("sync_now", &Ok(json!({ "outcome": "requested" })));
+    assert!(o.ok && o.toast.is_empty(), "结果由 core 弹，页内不另报");
+    assert!(!outcome("sync_now", &Err("连不上".into())).toast.is_empty());
+}
+
+fn webdav_form() -> Form {
+    Form {
+        enabled: true,
+        wd_url: "https://dav.example.com/dav/".into(),
+        wd_user: "me".into(),
+        ..Form::default()
+    }
+}
+
+#[test]
+fn disable_only_turns_off_and_keeps_backend() {
+    let steps = disable_steps(&webdav_form());
+    assert_eq!(steps.len(), 1, "不删远端，不发其他命令");
+    assert_eq!(steps[0].0, "sync.setSettings");
+    let s = &steps[0].1["settings"];
+    assert_eq!(s["enabled"], false);
+    assert_eq!(s["backend"]["url"], "https://dav.example.com/dav/");
+}
+
+#[test]
+fn storage_summary_per_backend() {
+    assert_eq!(
+        storage_summary(&webdav_form()),
+        "WebDAV · https://dav.example.com/dav/ · 用户 me"
+    );
+    let s3 = Form {
+        s3: true,
+        s3_endpoint: "https://s3.example.com".into(),
+        s3_bucket: "wind".into(),
+        s3_prefix: "a/".into(),
+        ..Form::default()
+    };
+    assert_eq!(
+        storage_summary(&s3),
+        "S3 · https://s3.example.com · wind/a/"
+    );
+    assert_eq!(storage_summary(&Form::default()), "未设置");
+}
+
+#[test]
+fn storage_change_in_place_sends_no_unlock() {
+    let old = webdav_form();
+    let unlock = unlock_command(false, "口令", "");
+    let steps = storage_change_steps(&old, &old, vec![json!({ "password": "p" })], unlock).unwrap();
+    let ops: Vec<_> = steps.iter().map(|(m, v)| (*m, v["op"].clone())).collect();
+    assert_eq!(
+        ops,
+        vec![
+            ("sync.setSettings", Value::Null),
+            ("sync.command", json!("set_secret"))
+        ]
+    );
+}
+
+#[test]
+fn storage_move_needs_password_and_unlock() {
+    let old = webdav_form();
+    let new = Form {
+        wd_url: "https://other/dav/".into(),
+        ..old.clone()
+    };
+    let pw = || vec![json!({ "password": "p" })];
+    assert!(
+        storage_change_steps(&old, &new, pw(), None).is_err(),
+        "要重填口令或密钥"
+    );
+    assert!(
+        storage_change_steps(&old, &new, vec![], unlock_command(false, "x", "")).is_err(),
+        "位置变了已存密码会被清掉"
+    );
+    let steps = storage_change_steps(&old, &new, pw(), unlock_command(false, "x", "")).unwrap();
+    assert_eq!(steps[0].0, "sync.setSettings", "先换位置再写密码");
+    assert_eq!(steps[1].1["op"], "set_secret");
+    assert_eq!(
+        steps[2].1,
+        json!({ "op": "set_passphrase", "args": { "passphrase": "x" } })
+    );
+    let steps = storage_change_steps(&old, &new, pw(), unlock_command(true, "x", " k ")).unwrap();
+    assert_eq!(
+        steps[2].1,
+        json!({ "op": "import_key", "args": { "key": "k" } })
+    );
+    assert_eq!(unlock_command(true, "x", "  "), None);
+    assert_eq!(unlock_command(false, "", "k"), None);
+}
+
+#[test]
+fn interval_saves_only_when_changed() {
+    let saved = webdav_form();
+    assert_eq!(interval_change(&saved, 15.0), None);
+    let f = interval_change(&saved, 30.4).unwrap();
+    assert_eq!(f.interval_min, 30);
+    assert_eq!(f.wd_url, saved.wd_url, "其余设置原样");
+}
+
+#[test]
+fn duplicate_device_error_is_detected() {
+    let s = StatusView::parse(&json!({
+        "phase": "error",
+        "last_error": "另一台设备在使用相同设备号（desktop-7f3k），请给本机改号"
+    }));
+    assert!(s.duplicate_device());
+    assert!(
+        !StatusView::parse(&json!({ "phase": "error", "last_error": "401" })).duplicate_device()
+    );
+}
+
+#[test]
+fn conflict_summary_counts_paths_too() {
+    let s = StatusView::parse(&json!({ "conflicts": 0, "conflict_paths": ["a", "b"] }));
+    assert_eq!(s.conflict_summary(), "2 个冲突副本");
+    assert_eq!(StatusView::parse(&json!({})).conflict_summary(), "");
+}
+
+#[test]
+fn group_line_names_group_and_counts_members() {
+    let devs = vec![
+        dev_in("a", "g1", "家里", "windows", 3),
+        dev_in("b", "g1", "", "macos", 2),
+        dev_in("c", "g2", "公司", "windows", 1),
+    ];
+    assert_eq!(group_line("g1", "家里", &devs), "家里 · 2 台设备");
+    assert_eq!(
+        group_line("g2", "", &devs),
+        "g2 · 1 台设备",
+        "没有组名用组号"
+    );
+    assert_eq!(group_line("g1", "家里", &[]), "家里", "名册没到不写台数");
+    assert_eq!(group_line("", "", &[]), "");
 }

@@ -453,7 +453,7 @@ const HANDWRITTEN: &[Handwritten] = &[
     // 锚点即 `pages::extensions::ANCHOR`；扩展自己的选项运行时才知道，索引只收卡片入口。
     Handwritten { id: "advanced:extensions", anchor: "advanced:extensions", page: "advanced", title: "扩展程序", section: "扩展程序（实验性）", keywords: "扩展程序 实验性 插件 按键音 音效 朗读 extension plugin", feature: "extensions" },
     // 锚点即 `pages::sync::ANCHOR`。
-    Handwritten { id: "sync:page", anchor: "sync:page", page: "sync", title: "数据同步", section: "同步状态", keywords: "同步 云同步 webdav s3 备份 多设备 口令 密钥 加密 sync", feature: "" },
+    Handwritten { id: "sync", anchor: "sync", page: "sync", title: "数据同步", section: "同步状态", keywords: "同步 云同步 webdav s3 备份 多设备 口令 密钥 加密 sync", feature: "" },
     // 两条都落在「内存占用」那一行（「诊断信息…」按钮所在行）；锚点即 `pages::memory::ANCHOR`。
     Handwritten { id: "advanced:memory", anchor: "advanced:memory", page: "advanced", title: "内存占用", section: "性能与诊断", keywords: "内存 诊断 复制 反馈 占用 方案 memory", feature: "memory" },
     Handwritten { id: "advanced:diagnostics", anchor: "advanced:memory", page: "advanced", title: "诊断信息", section: "性能与诊断", keywords: "内存 复制 反馈 自动刷新 排查 diagnostics", feature: "memory" },
@@ -472,6 +472,7 @@ fn page_label(page: &str) -> &'static str {
         "theme" => "主题",
         "dict" => "词库",
         "stats" => "统计",
+        "sync" => "同步",
         "advanced" => "高级",
         "about" => "关于",
         _ => "设置",
@@ -754,7 +755,7 @@ mod tests {
         let m = manifest();
         let idx = build_index(&m);
         for page in [
-            "schema", "input", "keys", "theme", "ui", "dict", "stats", "advanced", "about",
+            "schema", "input", "keys", "theme", "ui", "dict", "stats", "sync", "advanced", "about",
         ] {
             let tab = crate::cli::page_to_index(page).expect("页 id 应在 PAGES 里");
             assert!(
@@ -1076,5 +1077,21 @@ mod tests {
             chars.len()
         );
         assert!(chars.iter().all(|c| is_cjk(*c)));
+    }
+
+    /// 同步是独立页：条目落在 sync 页、锚点即 `pages::sync::ANCHOR`，面包屑写「同步」。
+    #[test]
+    fn sync_entry_points_to_sync_page() {
+        let idx = build_index(&manifest());
+        let e = idx.iter().find(|e| e.id == "sync").expect("应有同步条目");
+        assert_eq!(
+            e.target,
+            JumpTarget::Card {
+                tab: crate::cli::page_to_index("sync").unwrap(),
+                anchor: crate::pages::sync::ANCHOR.into(),
+            }
+        );
+        assert_eq!(crate::pages::sync::ANCHOR, "sync");
+        assert_eq!(e.path[0], "同步");
     }
 }

@@ -334,22 +334,13 @@ fn advanced_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) ->
     sections_page("高级", "服务与实验性功能", secs)
 }
 
-/// 同步页（spike）。
+/// 同步页：未配置与已配置两套卡片按状态切换，二级导航跟着只列可见的。
 fn sync_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
     let secs = sync::build_page(app, state)
         .into_iter()
-        .enumerate()
-        .map(|(i, (name, el))| {
-            // 搜索锚点挂在第一张卡上。
-            let el = if i == 0 {
-                crate::search::anchor::wrap(el, sync::ANCHOR, state.jump)
-            } else {
-                el
-            };
-            match name {
-                Some(n) => nav.wrap(n, 0, el),
-                None => el,
-            }
+        .map(|(name, el, vis)| match name {
+            Some(n) => nav.wrap_when(n, 0, el, move || vis()),
+            None => el.visible_when(move || vis()),
         })
         .collect();
     sections_page("同步", "在多台设备间同步词库、方案与设置", secs)

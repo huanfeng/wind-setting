@@ -2311,6 +2311,12 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                     v["conflicts"] = json!(0);
                     v["conflict_paths"] = json!([]);
                 }
+                // 撞号：另一台设备在用本机的设备号。
+                Ok("dup_id") => {
+                    v["phase"] = json!("error");
+                    v["last_error"] =
+                        json!("另一台设备在使用相同设备号（desktop-7f3k），请给本机改号");
+                }
                 // 刚加入远端，等待确认本机身份。
                 Ok("identity") => {
                     v["needs_identity"] = json!(true);
