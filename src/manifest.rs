@@ -112,7 +112,19 @@ pub struct MItem {
     /// 的照常置灰、不缩进——只有「主开关 + 紧随其后的几个细项」这种明确的从属关系才值得
     /// 缩进（如「记忆前次状态」下的三个初始状态），零散一两个依赖项缩进反而显得行没对齐。
     pub indent: bool,
+    /// 方案页引擎卡上放不放这一项。`false` 的项只在方案对话框的「方案设置」页里（那一页列出
+    /// 全部），引擎卡只放常用项。主开关带「扩展设置」的，参数跟着主开关走。
+    pub on_card: bool,
+    /// 全拼卡上的这一项也放到「双拼」卡上（双拼卡绑的是另一个方案，见 [`Self::mirror_of`]）。
+    pub shuangpin_card: bool,
+    /// 本项是「双拼」卡上的镜像：键是 `schema.shuangpin.*`，对应的真实设置键是这里的
+    /// `schema.pinyin.*`。两张卡各绑一个方案，同一个键在页面上要有两份值，只能换个键名，
+    /// 保存时再换回来（见 [`crate::scheme_cards`]）。
+    pub mirror_of: Option<String>,
 }
+
+/// 双拼卡镜像项的键前缀；真实键把它换回 `schema.pinyin.`。
+pub const SHUANGPIN_MIRROR_PREFIX: &str = "schema.shuangpin.";
 
 /// select 的一个选项（value 写回配置，label 展示）。
 #[derive(Clone)]
@@ -146,6 +158,53 @@ fn parse_options(v: Option<&Value>) -> Vec<MOption> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 给标了 `shuangpin_card` 的拼音项生成「双拼」卡上的镜像（连同收在它「扩展设置」里的参数）。
+///
+/// 镜像项归「双拼」section、键换成 `schema.shuangpin.*`，对话框 id 加 `sp_` 前缀；
+/// `enabled_when` / `gate_key` 引用的项若也有镜像，改指镜像。追加在清单末尾：「双拼」section
+/// 在清单里已经出现过，镜像排在该卡原有的项之后。
+fn add_shuangpin_mirrors(items: &mut HashMap<String, MItem>, order: &mut Vec<String>) {
+    let hosts: Vec<String> = order
+        .iter()
+        .filter_map(|k| items.get(k))
+        .filter(|it| it.shuangpin_card)
+        .filter_map(|it| it.opens_dialog.clone())
+        .collect();
+    let sources: Vec<String> = order
+        .iter()
+        .filter(|k| {
+            items.get(*k).is_some_and(|it| {
+                it.key.starts_with("schema.pinyin.")
+                    && (it.shuangpin_card
+                        || it.dialog_group.as_ref().is_some_and(|g| hosts.contains(g)))
+            })
+        })
+        .cloned()
+        .collect();
+    let mirror = |k: &str| format!("{SHUANGPIN_MIRROR_PREFIX}{}", &k["schema.pinyin.".len()..]);
+    let rewrite = |expr: &str| -> String {
+        let mut out = expr.to_string();
+        for src in &sources {
+            out = out.replace(src.as_str(), &mirror(src));
+        }
+        out
+    };
+    for src in &sources {
+        let mut it = items[src].clone();
+        it.key = mirror(src);
+        it.section = crate::manifest::DOUBLE_PINYIN_SECTION.to_string();
+        it.on_card = true;
+        it.shuangpin_card = false;
+        it.mirror_of = Some(src.clone());
+        it.opens_dialog = it.opens_dialog.map(|d| format!("sp_{d}"));
+        it.dialog_group = it.dialog_group.map(|d| format!("sp_{d}"));
+        it.enabled_when = it.enabled_when.as_deref().map(rewrite);
+        it.gate_key = it.gate_key.as_deref().map(rewrite);
+        order.push(it.key.clone());
+        items.insert(it.key.clone(), it);
+    }
 }
 
 /// 一个分组（→ Tab）。来自 manifest 的 `groups`，按 order 排序。
@@ -247,6 +306,12 @@ impl Manifest {
                     subsection: opt_str(it, "subsection"),
                     follow: opt_str(it, "follow"),
                     indent: it.get("indent").and_then(|x| x.as_bool()).unwrap_or(true),
+                    on_card: it.get("on_card").and_then(|x| x.as_bool()).unwrap_or(true),
+                    shuangpin_card: it
+                        .get("shuangpin_card")
+                        .and_then(|x| x.as_bool())
+                        .unwrap_or(false),
+                    mirror_of: None,
                     // platform 不匹配当前平台 = 隐藏。折进 hidden 而不是新开一条渲染判据：
                     // 「该项在本平台不存在」与「该项不对用户开放」的后果完全一致——不渲染、
                     // 不注册 writer/loader，配置文件里的原值原样留着不动。
@@ -263,6 +328,7 @@ impl Manifest {
                 order.push(key.to_string());
             }
         }
+        add_shuangpin_mirrors(&mut items, &mut order);
         Self {
             items,
             order,
@@ -294,7 +360,12 @@ impl Manifest {
             };
             let mut hit = false;
             for item in self.items.values_mut() {
-                if sel.matches_key(&item.key) {
+                // 双拼卡的镜像跟着它的真实键走：定制者写的是 `schema.pinyin.*`。
+                let mirror_hit = item
+                    .mirror_of
+                    .as_deref()
+                    .is_some_and(|k| sel.matches_key(k));
+                if sel.matches_key(&item.key) || mirror_hit {
                     item.hidden = true;
                     item.custom_hidden = true;
                     hit = true;
@@ -840,11 +911,7 @@ pub(crate) fn section_vis(state: &AppState, group: &str, section: &str) -> crate
 /// 与 [`section_vis`] 的差别：这四张卡没有「整节规则」可依——用户是把卡里的项目逐个
 /// 藏光的。故判据是「卡里还有没有任何一行可见」（模糊音入口行也算）。全藏光就整卡
 /// 消失，不留一个只剩标题的空壳。
-pub(crate) fn scheme_card_vis(
-    state: &AppState,
-    section: &str,
-    with_fuzzy: bool,
-) -> crate::widgets::Vis {
+pub(crate) fn scheme_card_vis(state: &AppState, section: &str) -> crate::widgets::Vis {
     let store = state.user_hide_store.clone();
     // 这张卡里的清单项（含运行时才被藏掉的：判据在运行期现求）。
     let acts: Vec<(String, String, String)> = state
@@ -857,12 +924,13 @@ pub(crate) fn scheme_card_vis(
         .iter()
         .filter_map(|k| state.manifest.get(k))
         .filter(|it| {
-            !it.hidden && !Manifest::lives_in_dialog(it) && !state.manifest.merged_into_gate(it)
+            !it.hidden
+                && it.on_card
+                && !Manifest::lives_in_dialog(it)
+                && !state.manifest.merged_into_gate(it)
         })
         .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
         .collect();
-    let section_owned = section.to_string();
-    let fuzzy_key = crate::search::index::FUZZY_MASTER;
     // 「双拼」卡的手写布局行也算「卡里还有可见的行」。
     // 布局行只在有可改的双拼方案时才出（`page_layout_has_target`，与行本身的显隐同口径），
     // 没有目标时它不成行，不能撑住整卡。
@@ -870,12 +938,6 @@ pub(crate) fn scheme_card_vis(
         && !state.manifest.feature_hidden(SHUANGPIN_LAYOUT_FEATURE);
     let has_target = state.schema_mgr.page_layout_has_target;
     std::rc::Rc::new(move || {
-        // 模糊音入口行的显隐 = `row_vis(FUZZY_MASTER, "schema", section)`，整节规则也算。
-        if with_fuzzy
-            && !(store.hides_key(fuzzy_key) || store.hides_section("schema", &section_owned))
-        {
-            return true;
-        }
         if layout_row && has_target.get() && !store.hides_feature(SHUANGPIN_LAYOUT_FEATURE) {
             return true;
         }
@@ -1276,8 +1338,7 @@ fn schema_override_of<'a>(
 ) -> Option<&'a crate::capabilities::SchemaOverrideHint> {
     state
         .capabilities
-        .entries
-        .get(key)
+        .entry(key)
         .and_then(|e| e.schema_override.as_ref())
 }
 
@@ -2506,11 +2567,7 @@ fn build_number(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> Elem
     // 不能猜——core 的 int 型字段严格校验，必须收整数；但 float 型字段（如 half_life、
     // font_size）取整数值时若也按整数写回，会跟 config.get 返回的 Float 变体在 Value
     // 层面判不相等，diff_config 就会把它当成一条虚假变更。
-    let is_int = state
-        .capabilities
-        .entries
-        .get(key)
-        .is_some_and(|e| e.ty == "int");
+    let is_int = state.capabilities.entry(key).is_some_and(|e| e.ty == "int");
     let kw = key.to_string();
     state
         .fields
@@ -2935,8 +2992,7 @@ fn build_segmented(state: &AppState, key: &str, item: &MItem, cfg: &Config) -> E
     // bool 键的分段控制器（两段映射 false/true，值 "false"/"true"）：用于「初始语言模式」等二态项。
     let cap_ty = state
         .capabilities
-        .entries
-        .get(key)
+        .entry(key)
         .map(|e| e.ty.as_str())
         .unwrap_or("");
     if cap_ty == "bool" {
@@ -3463,8 +3519,8 @@ fn scheme_card_notice_text(label: &str, scheme_name: &str, which: &str) -> Strin
         return format!("没有可设置的{label}方案。");
     }
     format!(
-        "这里是方案「{scheme_name}」的设置，只对它生效。显示的是{which}；\
-         其它{label}方案在上方方案列表里点齿轮，进「方案设置」单独设。"
+        "这里是方案「{scheme_name}」的常用设置，只对它生效。显示的是{which}。\
+         全部设置点右侧「完整设置」；其它{label}方案在上方方案列表里点齿轮，进「方案设置」单独设。"
     )
 }
 
@@ -3486,7 +3542,7 @@ pub(crate) const SHUANGPIN_LAYOUT_ANCHOR: &str = "schema:shuangpin-layout";
 /// 方案页某引擎（码表 / 拼音 / 混输 / 英文）的全局配置整张卡片。
 ///
 /// 卡内顶部插入 section 名称作为一级标题；subsection 作为二级标题。
-/// `with_fuzzy`=true 时加一行「模糊音」入口（拼音引擎用，见 [`build_fuzzy_row`]）。
+/// 只放常用项（清单 `on_card`），全部项在方案对话框里，标题旁「完整设置」通过去。
 ///
 /// 主开关带一串参数的（词频调整、自动造词、智能组词……）在清单里用 `opens_dialog` /
 /// `dialog_group` 收进「扩展设置」对话框，卡片上只留主开关那一行。铺开时这几组参数
@@ -3496,12 +3552,7 @@ pub(crate) const SHUANGPIN_LAYOUT_ANCHOR: &str = "schema:shuangpin-layout";
 /// 「码表方案配置 …… [设置]」。四台引擎、几十个开关就此在界面上完全不可见，用户
 /// 除了搜索没有别的办法遇到它们。改为页内铺开后，二级导航才有东西可指。
 /// 「恢复默认」从对话框底栏搬到卡片标题行右侧（见 `widgets::section_with_action`）。
-pub fn scheme_config_section(
-    state: &AppState,
-    label: &str,
-    section: &str,
-    with_fuzzy: bool,
-) -> Option<Element> {
+pub fn scheme_config_section(state: &AppState, label: &str, section: &str) -> Option<Element> {
     let keys: Vec<String> = state
         .manifest
         .sections_of("schema")
@@ -3509,18 +3560,12 @@ pub fn scheme_config_section(
         .find(|(s, _)| s == section)
         .map(|(_, k)| k)
         .unwrap_or_default();
-    // 模糊音是手写网格、不逐格看 `hidden`：整块以总开关可见与否为准——定制版要藏就藏整块
-    // （`key:input.fuzzy.*`）。只藏其中一两格的写法在这里不生效。
-    let with_fuzzy = with_fuzzy
-        && state
-            .manifest
-            .is_visible(crate::search::index::FUZZY_MASTER);
     // 整张卡的项都被隐藏了（定制版 `[settings] hide`）：不出一张只有标题和提示的空卡，
     // 调用方据此连二级导航那一条也不放。
     // 「双拼」卡的第一行是手写的布局下拉（不是配置键，隐藏走 `feature:shuangpin_layout`）。
     let layout_row_on = section == DOUBLE_PINYIN_SECTION
         && !state.manifest.feature_hidden(SHUANGPIN_LAYOUT_FEATURE);
-    if keys.is_empty() && !with_fuzzy && !layout_row_on {
+    if keys.is_empty() && !layout_row_on {
         return None;
     }
 
@@ -3540,7 +3585,10 @@ pub fn scheme_config_section(
             // 与下方成行的判断同口径：不成行的项（定制版隐藏、收进对话框、并入门控开关）
             // 不能拿来撑住小标题，否则它们之外的行藏光后标题还留着。
             .filter(|it| {
-                !it.hidden && !Manifest::lives_in_dialog(it) && !state.manifest.merged_into_gate(it)
+                !it.hidden
+                    && it.on_card
+                    && !Manifest::lives_in_dialog(it)
+                    && !state.manifest.merged_into_gate(it)
             })
             .map(|it| (it.key.clone(), it.group.clone(), it.section.clone()))
             .collect();
@@ -3561,38 +3609,13 @@ pub fn scheme_config_section(
             base
         }
     };
-    // 「双拼」卡暂时只有一组，卡片标题已经是「双拼」，再来一个同名小标题只是重复；
-    // 等以后有多个子分类再加回来。
+    // 「双拼」卡的标题已经是「双拼」，首组再来一个同名小标题只是重复。
     if section != DOUBLE_PINYIN_SECTION {
         items.push(crate::widgets::CardItem::HeadingWhen(
             section.to_string(),
             card_vis,
         ));
     }
-
-    // 模糊音入口行（拼音卡）：排在卡片顶部那组常用开关的末尾，即第一个小标题之前；
-    // 没有小标题就放卡片最后。整行挂块锚点（见 `search::index::block_anchor_of`）。
-    //
-    // 用户藏掉模糊音（`key:input.fuzzy.enabled`）时这一行也要消失：它不是
-    // `keys` 里的项（是手写行），故单独挂判据。
-    let mut fuzzy_row = with_fuzzy.then(|| {
-        let row = crate::search::anchor::wrap(
-            build_fuzzy_row(state, &state.current_config),
-            crate::search::index::page_anchor(crate::search::index::FUZZY_MASTER),
-            state.jump,
-        );
-        let row = mark_row(
-            state,
-            crate::search::index::FUZZY_MASTER,
-            "schema",
-            section,
-            row,
-        );
-        crate::widgets::CardItem::RowWhen(
-            row,
-            row_vis(state, crate::search::index::FUZZY_MASTER, "schema", section),
-        )
-    });
 
     // 这张卡设的是一个具体方案（见 `scheme_cards`）：方案名写在标题后面，标题旁的 info 图标
     // 说明是哪一个、别的方案去哪里设。方案名是运行期数据，页面树建于数据到达之前，故走信号。
@@ -3640,7 +3663,8 @@ pub fn scheme_config_section(
         let Some(item) = state.manifest.get(k) else {
             continue;
         };
-        if item.hidden {
+        // 不上卡的项只在方案对话框的「方案设置」页里，卡标题旁的「完整设置」通到那里。
+        if item.hidden || !item.on_card {
             continue;
         }
         // 收进「扩展设置」对话框的成员：由宿主行承载，不在卡片上成行，也不带出小标题。
@@ -3650,9 +3674,6 @@ pub fn scheme_config_section(
         let subsec = item.subsection.clone();
         if subsec != cur_subsec {
             if let Some(ref name) = subsec {
-                if let Some(row) = fuzzy_row.take() {
-                    items.push(row);
-                }
                 // 该小节下的全部项（含后面才出现的）：标题的显隐看它们。
                 let group: Vec<String> = keys
                     .iter()
@@ -3720,22 +3741,26 @@ pub fn scheme_config_section(
             row_vis(state, k, &item.group, &item.section),
         ));
     }
-    if let Some(row) = fuzzy_row {
-        items.push(row);
-    }
 
     // 恢复默认：取 core 权威出厂配置（含折算），灌回各字段 loader。见 [`core_defaults_config`]。
     let fields = state.fields.clone();
-    let mut reset_keys = keys.clone();
-    if with_fuzzy {
-        for k in state.manifest.order.iter() {
-            if k.starts_with("input.fuzzy.") {
-                reset_keys.push(k.clone());
-            }
-        }
-    }
+    let reset_keys = keys.clone();
     let seed = key_action_default_bindings(state);
     let patch = state.card_defaults.clone();
+    // 「完整设置」：打开所绑方案的方案对话框，停在「方案设置」页（这张卡只放常用项）。
+    let open_full: Option<Rc<dyn Fn()>> = card.and_then(|c| {
+        let id = state.card_scheme_ids.get(&c).copied()?;
+        let mgr = state.schema_mgr.clone();
+        Some(Rc::new(move || {
+            let id = id.get();
+            if !id.is_empty() {
+                mgr.open_settings_at_tab(
+                    &id,
+                    crate::dialogs::schema_manager::SettingsTab::Overrides,
+                );
+            }
+        }) as Rc<dyn Fn()>)
+    });
     // 做成构造闭包：「界面细节」试验下标题有卡外 / 卡内两处，按钮各要一份。
     let make_reset = move || {
         let (fields, reset_keys, seed, patch) = (
@@ -3744,18 +3769,30 @@ pub fn scheme_config_section(
             seed.clone(),
             patch.clone(),
         );
-        Element::button("恢复默认")
-            .small()
-            .outline_soft()
-            .on_click(move |_| {
-                let def_cfg = scheme_defaults_config(&seed, &patch.borrow());
-                let ld = fields.loaders.borrow();
-                for k in &reset_keys {
-                    if let Some(loader) = ld.get(k) {
-                        loader(&def_cfg);
+        let mut row = Element::row().cross(Align::Center).spacing(8);
+        if let Some(open) = open_full.clone() {
+            row = row.child(
+                Element::button("完整设置…")
+                    .small()
+                    .outline_soft()
+                    .tooltip("打开这个方案的设置，列出全部项")
+                    .on_click(move |_| open()),
+            );
+        }
+        row.child(
+            Element::button("恢复默认")
+                .small()
+                .outline_soft()
+                .on_click(move |_| {
+                    let def_cfg = scheme_defaults_config(&seed, &patch.borrow());
+                    let ld = fields.loaders.borrow();
+                    for k in &reset_keys {
+                        if let Some(loader) = ld.get(k) {
+                            loader(&def_cfg);
+                        }
                     }
-                }
-            })
+                }),
+        )
     };
 
     // 「隐藏这一节」只挂标题栏（见 `section_vis_with_menu` 的说明）：这几张卡里的
@@ -3776,6 +3813,34 @@ pub fn scheme_config_section(
         &wrap_menu,
     ))
 }
+
+/// 方案页「模糊音」卡：一行总开关 + 「扩展设置」（拼音对网格，见 [`build_fuzzy_row`]）。
+///
+/// 模糊音是全局项（`input.fuzzy.*`），不属于哪个方案，所以不放在全拼 / 双拼卡里。
+/// 网格是手写的、不逐格看 `hidden`：整块以总开关可见与否为准——定制版要藏就藏整块
+/// （`key:input.fuzzy.*`）。总开关被藏时返回 `None`。
+pub fn fuzzy_section(state: &AppState) -> Option<Element> {
+    use crate::search::index::FUZZY_MASTER;
+    if !state.manifest.is_visible(FUZZY_MASTER) {
+        return None;
+    }
+    let row = crate::search::anchor::wrap(
+        build_fuzzy_row(state, &state.current_config),
+        crate::search::index::page_anchor(FUZZY_MASTER),
+        state.jump,
+    );
+    let row = mark_row(state, FUZZY_MASTER, "schema", FUZZY_SECTION, row);
+    let vis = row_vis(state, FUZZY_MASTER, "schema", FUZZY_SECTION);
+    Some(crate::widgets::section_vis_with_menu(
+        FUZZY_SECTION,
+        vec![(row, Some(vis))],
+        None,
+        section_menu(state, "schema", FUZZY_SECTION),
+    ))
+}
+
+/// 模糊音那一节在清单里的 section 名，也是方案页上那张卡的标题。
+pub(crate) const FUZZY_SECTION: &str = "模糊音";
 
 /// 普通「设置」按钮（无门控）：点击打开 `visible` 绑定的对话框。outline 风格。
 fn open_dialog_button(visible: Signal<bool>) -> Element {
@@ -8768,7 +8833,7 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let st = crate::state::AppState::empty();
-        for (_, sec, _) in crate::pages::SCHEME_ENGINE_CARDS {
+        for (_, sec) in crate::pages::SCHEME_ENGINE_CARDS {
             let keys = st
                 .manifest
                 .sections_of("schema")
@@ -8863,7 +8928,7 @@ mod tests {
     #[test]
     fn scheme_card_rows_exclude_dialog_members() {
         let full = Manifest::from_embedded();
-        for (_, sec, _) in crate::pages::SCHEME_ENGINE_CARDS {
+        for (_, sec) in crate::pages::SCHEME_ENGINE_CARDS {
             let keys = full
                 .sections_of("schema")
                 .into_iter()
@@ -9142,7 +9207,7 @@ mod scheme_card_vis_tests {
         all_keys(st, group, section)
             .iter()
             .filter_map(|k| st.manifest.get(k))
-            .filter(|it| !it.hidden && !Manifest::lives_in_dialog(it))
+            .filter(|it| !it.hidden && it.on_card && !Manifest::lives_in_dialog(it))
             .map(|it| it.key.clone())
             .collect()
     }
@@ -9161,7 +9226,7 @@ mod scheme_card_vis_tests {
     fn card_stays_while_any_item_is_visible() {
         let st = crate::state::AppState::empty();
         st.user_hide_store.set_enabled(true).unwrap();
-        let vis = scheme_card_vis(&st, "上屏行为", false);
+        let vis = scheme_card_vis(&st, "上屏行为");
         assert!(vis(), "没有任何规则时整卡可见");
 
         // 只按「会独立成行的项」藏：收进对话框的成员本来就不在这张卡上成行，
@@ -9182,30 +9247,7 @@ mod scheme_card_vis_tests {
         for k in all_keys(&st, "schema", "上屏行为") {
             st.user_hide_store.add(&format!("key:{k}")).unwrap();
         }
-        assert!(!scheme_card_vis(&st, "上屏行为", false)());
-    }
-
-    /// 带模糊音的卡：模糊音入口行本身可见也算「卡里还有东西」。
-    #[test]
-    fn fuzzy_row_keeps_the_pinyin_card_alive() {
-        let st = crate::state::AppState::empty();
-        st.user_hide_store.set_enabled(true).unwrap();
-        for k in all_keys(&st, "schema", "候选行为") {
-            st.user_hide_store.add(&format!("key:{k}")).unwrap();
-        }
-        assert!(
-            scheme_card_vis(&st, "候选行为", true)(),
-            "模糊音入口行还看得见，整卡要留着"
-        );
-        assert!(
-            !scheme_card_vis(&st, "候选行为", false)(),
-            "不算模糊音时整卡应消失"
-        );
-
-        st.user_hide_store
-            .add(&format!("key:{}", crate::search::index::FUZZY_MASTER))
-            .unwrap();
-        assert!(!scheme_card_vis(&st, "候选行为", true)(), "模糊音也藏了");
+        assert!(!scheme_card_vis(&st, "上屏行为")());
     }
 
     /// 并进门控开关行的「设置」按钮不成独立行：用户把能成行的项藏光后，它们不能撑住整卡
@@ -9214,7 +9256,7 @@ mod scheme_card_vis_tests {
     fn merged_gate_buttons_do_not_keep_the_card_alive() {
         let st = crate::state::AppState::empty();
         st.user_hide_store.set_enabled(true).unwrap();
-        for (sec, fuzzy) in [("候选行为", false), ("双拼", false), ("上屏行为", false)] {
+        for sec in ["候选行为", "双拼", "上屏行为"] {
             for k in all_keys(&st, "schema", sec) {
                 let it = st.manifest.get(&k).unwrap();
                 if st.manifest.merged_into_gate(it) {
@@ -9223,7 +9265,7 @@ mod scheme_card_vis_tests {
                 st.user_hide_store.add(&format!("key:{k}")).unwrap();
             }
             assert!(
-                !scheme_card_vis(&st, sec, fuzzy)(),
+                !scheme_card_vis(&st, sec)(),
                 "「{sec}」成行的项都藏了，整卡应消失"
             );
         }
@@ -9237,9 +9279,9 @@ mod scheme_card_vis_tests {
         for k in all_keys(&st, "schema", "上屏行为") {
             st.user_hide_store.add(&format!("key:{k}")).unwrap();
         }
-        assert!(!scheme_card_vis(&st, "上屏行为", false)());
+        assert!(!scheme_card_vis(&st, "上屏行为")());
         st.user_hide_store.set_show_hidden(true).unwrap();
-        assert!(scheme_card_vis(&st, "上屏行为", false)(), "逃生口放回来了");
+        assert!(scheme_card_vis(&st, "上屏行为")(), "逃生口放回来了");
     }
 
     /// 标识判据只看「这一项被藏过」，**不看**逃生口与总开关——否则一打开逃生口

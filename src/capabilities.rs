@@ -87,9 +87,14 @@ impl Capabilities {
     }
 
     /// capability 默认值（core 权威）；未知 key 返回 Null。
-    pub fn default_for(&self, key: &str) -> Value {
+    /// 按清单键取快照条目；双拼卡的镜像键（`schema.shuangpin.*`）按它对应的真实键取。
+    pub fn entry(&self, key: &str) -> Option<&CapEntry> {
         self.entries
-            .get(key)
+            .get(crate::scheme_cards::real_key(key).as_str())
+    }
+
+    pub fn default_for(&self, key: &str) -> Value {
+        self.entry(key)
             .map(|e| e.default.clone())
             .unwrap_or(Value::Null)
     }
@@ -123,7 +128,9 @@ impl Capabilities {
             if is_local_key(key) {
                 continue;
             }
-            match self.entries.get(key) {
+            // 双拼卡镜像按真实键校验。
+            let key = &crate::scheme_cards::real_key(key);
+            match self.entries.get(key.as_str()) {
                 None => problems.push(format!("[缺失] 清单 key `{key}` 不在 capability 快照中")),
                 Some(entry) => {
                     if !control_type_compatible(&item.typ, &entry.ty) {

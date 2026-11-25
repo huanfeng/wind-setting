@@ -228,18 +228,16 @@ mod tests {
         let mut st = crate::state::AppState::empty();
 
         st.manifest = settings_manifest(&hide_owned(&selectors_of("混输行为")), false);
-        assert!(scheme_config_section(&st, "混输", "混输行为", false).is_none());
-        assert!(scheme_config_section(&st, "码表", "上屏行为", false).is_some());
+        assert!(scheme_config_section(&st, "混输", "混输行为").is_none());
+        assert!(scheme_config_section(&st, "码表", "上屏行为").is_some());
 
-        let mut pinyin = selectors_of("候选行为");
+        let pinyin = selectors_of("候选行为");
         st.manifest = settings_manifest(&hide_owned(&pinyin), false);
-        assert!(
-            scheme_config_section(&st, "拼音", "候选行为", true).is_some(),
-            "模糊音还在，卡片不能消失"
-        );
-        pinyin.push("key:input.fuzzy.*".into());
-        st.manifest = settings_manifest(&hide_owned(&pinyin), false);
-        assert!(scheme_config_section(&st, "拼音", "候选行为", true).is_none());
+        assert!(scheme_config_section(&st, "全拼", "候选行为").is_none());
+        // 模糊音是自己一张卡，藏它要藏总开关。
+        assert!(crate::manifest::fuzzy_section(&st).is_some());
+        st.manifest = settings_manifest(&hide_owned(&["key:input.fuzzy.*".into()]), false);
+        assert!(crate::manifest::fuzzy_section(&st).is_none());
     }
 
     fn hide_owned(raw: &[String]) -> SettingsHide {
@@ -664,7 +662,7 @@ mod tests {
         use crate::manifest::{scheme_config_section, section_rows_split};
         let engine_secs: Vec<&str> = crate::pages::SCHEME_ENGINE_CARDS
             .iter()
-            .map(|(_, sec, _)| *sec)
+            .map(|(_, sec)| *sec)
             .collect();
         let mut st = crate::state::AppState::empty();
         for (name, raw) in stress_hides() {
@@ -675,7 +673,7 @@ mod tests {
                 for (sec, keys) in st.manifest.sections_of(group) {
                     if group == "schema" && engine_secs.contains(&sec.as_str()) {
                         // 引擎卡手工拼，逐行跳过的判据相同；出卡与否由它自己按 keys 判。
-                        assert!(scheme_config_section(&st, &sec, &sec, false).is_some());
+                        assert!(scheme_config_section(&st, &sec, &sec).is_some());
                         continue;
                     }
                     let (rows, head) = section_rows_split(&st, &keys);

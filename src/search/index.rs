@@ -43,6 +43,9 @@ pub enum JumpTarget {
     Card { tab: usize, anchor: String },
     /// 方案级：跳到方案页，附指示条路径（「哪个方案」要用户自己选）。
     SchemaLevel { hint_path: Vec<String> },
+    /// 不在引擎卡上的方案设置项（清单 `on_card = false`）：打开那张卡所绑方案的方案对话框，
+    /// 停在 `tab` 页（`SettingsTab` 下标）。没有锚点可落，由跳转副作用汇直接执行。
+    SchemeForm { card: String, tab: usize },
     /// 打开词库窗。
     ///
     /// 词库**不是**主窗的一页：它早已迁进独立窗口，主窗那一格只剩个永不显示的占位
@@ -56,7 +59,7 @@ impl JumpTarget {
     pub fn tab(&self) -> usize {
         match self {
             Self::Row { tab, .. } | Self::RowInDialog { tab, .. } | Self::Card { tab, .. } => *tab,
-            Self::SchemaLevel { .. } => page_tab("schema"),
+            Self::SchemaLevel { .. } | Self::SchemeForm { .. } => page_tab("schema"),
             // 归属上算词库页（`every_page_has_entries` 据此计数），但**不会**被切过去：
             // `jump::request` 对本变体不动 tab。
             Self::DictWindow => page_tab("dict"),
@@ -170,24 +173,17 @@ fn block_anchor_of(key: &str) -> Option<&'static str> {
 
 /// (group, section) → 落点。返回 `None` = 未登记，由守门测试报出。
 fn placement_of(group: &str, section: &str) -> Option<Placement> {
-    // 方案页四张引擎卡：卡片名取 `pages::SCHEME_ENGINE_CARDS`，面包屑与界面同源。
-    // 「模糊音」那一节由拼音卡的入口行承载（`scheme_config_section(.., with_fuzzy=true)`）。
-    if group == "schema" {
-        let sec = if section == "模糊音" {
-            "候选行为"
-        } else {
-            section
-        };
-        if let Some((label, ..)) = crate::pages::SCHEME_ENGINE_CARDS
+    // 方案页五张引擎卡：卡片名取 `pages::SCHEME_ENGINE_CARDS`，面包屑与界面同源。
+    if group == "schema"
+        && let Some((label, _)) = crate::pages::SCHEME_ENGINE_CARDS
             .iter()
-            .find(|(_, s, _)| *s == sec)
-        {
-            return Some(Placement::SchemeCard { label });
-        }
+            .find(|(_, s)| *s == section)
+    {
+        return Some(Placement::SchemeCard { label });
     }
     let p = match (group, section) {
         // ── 方案组其余各节直接成行：主方案设置、临时拼音、临时英文 ──
-        ("schema", "主方案设置" | "临时拼音" | "临时英文") => {
+        ("schema", "主方案设置" | "模糊音" | "临时拼音" | "临时英文") => {
             Placement::Page("schema")
         }
         // ── 其余组：整组落在一页上 ──
@@ -297,7 +293,8 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
                             // 合并掉的 `dialog_button`（`gate_key`），卡片上那一行属于
                             // **开关**，锚点也就是开关的 key。指错了第一跳无人认领，
                             // 框永远不会开。
-                            host_anchor: row_anchor_of(manifest, h),
+                            // 再过一道 `page_anchor`：宿主行若是整块（模糊音），挂的是块锚点。
+                            host_anchor: page_anchor(&row_anchor_of(manifest, h)),
                             // 对话框注册表的键仍是宿主项自己的 key。
                             dialog: h.clone(),
                             anchor: in_dialog_anchor(key),
@@ -320,6 +317,28 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
             // 这四节 2026-09 起铺在方案页上（原先各在一个对话框里），主开关那一行是普通的
             // 页面行，一跳到位；收进「扩展设置」的参数才需要先滚到入口行、再开框。
             // 面包屑跟着界面走：「全局方案配置」那一层已经撤掉（见 `pages::scheme_page`）。
+            // 不上卡的项（或收在不上卡的主开关的「扩展设置」里）：只在方案对话框里。
+            Placement::SchemeCard { label }
+                if !item.on_card || host.as_ref().is_some_and(|h| !on_card(manifest, h)) =>
+            {
+                let aux = key.starts_with(crate::dialogs::schema_codetable::AUX_PREFIX);
+                let tab = if aux {
+                    crate::dialogs::schema_manager::SettingsTab::Aux
+                } else {
+                    crate::dialogs::schema_manager::SettingsTab::Overrides
+                };
+                (
+                    JumpTarget::SchemeForm {
+                        card: label.to_string(),
+                        tab: tab.index(),
+                    },
+                    vec![
+                        page_name.to_string(),
+                        label.to_string(),
+                        format!("完整设置 · {}", tab.label()),
+                    ],
+                )
+            }
             Placement::SchemeCard { label } => match &host {
                 Some(h) => (
                     JumpTarget::RowInDialog {
@@ -357,6 +376,11 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         });
     }
     out
+}
+
+/// 宿主项在不在引擎卡上。
+fn on_card(manifest: &Manifest, key: &str) -> bool {
+    manifest.get(key).is_none_or(|it| it.on_card)
 }
 
 /// 宿主项在**卡片上那一行**的锚点键。
@@ -816,18 +840,72 @@ mod tests {
         let idx = build_index(&m);
         let e = idx
             .iter()
-            .find(|e| e.id == "schema.codetable.frequency.strategy")
-            .expect("调频策略应可搜到");
+            .find(|e| e.id == "schema.pinyin.frequency.half_life")
+            .expect("热度半衰期应可搜到");
         assert_eq!(
             e.target,
             JumpTarget::RowInDialog {
                 tab: crate::cli::page_to_index("schema").unwrap(),
-                host_anchor: "schema.codetable.frequency.enabled".into(),
-                dialog: "schema.codetable.frequency.enabled".into(),
-                anchor: "schema.codetable.frequency.strategy#in-dialog".into(),
+                host_anchor: "schema.pinyin.frequency.enabled".into(),
+                dialog: "schema.pinyin.frequency.enabled".into(),
+                anchor: "schema.pinyin.frequency.half_life#in-dialog".into(),
             }
         );
-        assert_eq!(e.path, vec!["方案", "码表", "词频调整 · 扩展设置"]);
+        assert_eq!(e.path, vec!["方案", "全拼", "词频调整 · 扩展设置"]);
+        // 双拼卡上的镜像同样开它自己的框。
+        let e = idx
+            .iter()
+            .find(|e| e.id == "schema.shuangpin.frequency.half_life")
+            .expect("双拼卡的镜像应可搜到");
+        assert_eq!(
+            e.target,
+            JumpTarget::RowInDialog {
+                tab: crate::cli::page_to_index("schema").unwrap(),
+                host_anchor: "schema.shuangpin.frequency.enabled".into(),
+                dialog: "schema.shuangpin.frequency.enabled".into(),
+                anchor: "schema.shuangpin.frequency.half_life#in-dialog".into(),
+            }
+        );
+        assert_eq!(e.path, vec!["方案", "双拼", "词频调整 · 扩展设置"]);
+    }
+
+    /// 不上卡的项（及收在不上卡主开关里的参数）：打开那张卡所绑方案的方案对话框；
+    /// 辅助码项停在「辅助码」页，其余停在「方案设置」页。
+    #[test]
+    fn off_card_items_open_the_scheme_dialog() {
+        use crate::dialogs::schema_manager::SettingsTab;
+        let m = manifest();
+        let idx = build_index(&m);
+        let target = |id: &str| {
+            idx.iter()
+                .find(|e| e.id == id)
+                .unwrap_or_else(|| panic!("{id} 应可搜到"))
+                .clone()
+        };
+        let e = target("schema.codetable.frequency.strategy");
+        assert_eq!(
+            e.target,
+            JumpTarget::SchemeForm {
+                card: "码表".into(),
+                tab: SettingsTab::Overrides.index(),
+            }
+        );
+        assert_eq!(e.path, vec!["方案", "码表", "完整设置 · 方案设置"]);
+        assert!(matches!(
+            target("schema.codetable.short_code_yield_level").target,
+            JumpTarget::SchemeForm { .. }
+        ));
+        assert_eq!(
+            target("schema.pinyin.aux_code.direct").target,
+            JumpTarget::SchemeForm {
+                card: "全拼".into(),
+                tab: SettingsTab::Aux.index(),
+            }
+        );
+        assert!(matches!(
+            target("schema.codetable.top_code_commit").target,
+            JumpTarget::Row { .. }
+        ));
     }
 
     /// 模糊音那 13 个开关挤在对话框的一个网格里，索引须落到**整块**的锚点上而不是各自

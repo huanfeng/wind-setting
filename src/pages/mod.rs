@@ -612,14 +612,14 @@ fn build_list_view_menu(
     .width(132)
 }
 
-/// 方案页五张引擎卡：(卡片 / 导航名, 清单 section, 是否带模糊音入口)。
+/// 方案页五张引擎卡：(卡片 / 导航名, 清单 section)。
 /// 卡片名与搜索面包屑同源（`search::index::placement_of` 引用本表）。
-pub(crate) const SCHEME_ENGINE_CARDS: [(&str, &str, bool); 5] = [
-    ("码表", "上屏行为", false),
-    ("拼音", "候选行为", true),
-    ("双拼", "双拼", false),
-    ("混输", "混输行为", false),
-    ("英文", "英文行为", false),
+pub(crate) const SCHEME_ENGINE_CARDS: [(&str, &str); 5] = [
+    ("码表", "上屏行为"),
+    ("全拼", "候选行为"),
+    ("双拼", "双拼"),
+    ("混输", "混输行为"),
+    ("英文", "英文行为"),
 ];
 
 fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> Element {
@@ -769,11 +769,30 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
     //
     // 卡片名只写引擎名（「码表」而不是「码表方案配置」）：四张卡同处方案页，后缀在每一张上
     // 都一样、不提供区分度，导航里还把真正的区别挤到了最后两个字之前。
-    for (title, sec, with_fuzzy) in SCHEME_ENGINE_CARDS {
-        if let Some(card) = scheme_config_section(state, title, sec, with_fuzzy) {
+    // 搜索命中不上卡的项时，打开该卡所绑方案的方案对话框。
+    {
+        let ids = state.card_scheme_ids.clone();
+        let mgr = state.schema_mgr.clone();
+        *state.fields.scheme_form_open.borrow_mut() =
+            Some(Rc::new(move |card: &str, tab: usize| {
+                use crate::dialogs::schema_manager::SettingsTab;
+                let id = SCHEME_ENGINE_CARDS
+                    .iter()
+                    .find(|(t, _)| *t == card)
+                    .and_then(|(_, sec)| crate::manifest::scheme_card_of(sec))
+                    .and_then(|c| ids.get(&c))
+                    .map(|s| s.get())
+                    .unwrap_or_default();
+                if let (false, Some(tab)) = (id.is_empty(), SettingsTab::ALL.get(tab)) {
+                    mgr.open_settings_at_tab(&id, *tab);
+                }
+            }));
+    }
+    for (title, sec) in SCHEME_ENGINE_CARDS {
+        if let Some(card) = scheme_config_section(state, title, sec) {
             // 卡片级的运行期显隐：卡里每一项都被用户藏光时整卡消失。与 `section_vis`
             // 不同——这四张卡没有整节规则可依（用户是逐项藏的）。
-            let vis = crate::manifest::scheme_card_vis(state, sec, with_fuzzy);
+            let vis = crate::manifest::scheme_card_vis(state, sec);
             let vis_card = vis.clone();
             let card = card.visible_when(move || vis_card());
             secs.push(nav.wrap_when(title, 0, card, move || vis()));
@@ -799,6 +818,20 @@ fn scheme_page(app: &Rc<RefCell<AppState>>, state: &AppState, nav: &SubNav) -> E
             let card = crate::manifest::wrap_section_runtime(state, "schema", sec, card);
             let vis = crate::manifest::section_vis(state, "schema", sec);
             secs.push(nav.wrap_when(nav_label, 0, card, move || vis()));
+        }
+        // 模糊音紧跟主方案：它是全局项，全拼、双拼共用，不放在哪一张引擎卡里。
+        if sec == "主方案设置"
+            && let Some(card) = crate::manifest::fuzzy_section(state)
+        {
+            let fuzzy = crate::manifest::FUZZY_SECTION;
+            let card = crate::manifest::wrap_section_runtime(state, "schema", fuzzy, card);
+            let vis = crate::manifest::row_vis(
+                state,
+                crate::search::index::FUZZY_MASTER,
+                "schema",
+                fuzzy,
+            );
+            secs.push(nav.wrap_when(fuzzy, 0, card, move || vis()));
         }
     }
 

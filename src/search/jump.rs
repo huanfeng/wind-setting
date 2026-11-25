@@ -44,7 +44,9 @@ impl JumpRequest {
             } else {
                 host_anchor // 第一跳：先滚到卡片上的入口行
             }),
-            JumpTarget::SchemaLevel { .. } | JumpTarget::DictWindow => None,
+            JumpTarget::SchemaLevel { .. }
+            | JumpTarget::SchemeForm { .. }
+            | JumpTarget::DictWindow => None,
         }
     }
 }

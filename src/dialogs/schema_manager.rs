@@ -2877,6 +2877,15 @@ impl SchemaManagerState {
         true
     }
 
+    /// 打开指定方案的设置对话框并停在 `tab` 页（该页没有内容时停在首页）。方案页引擎卡的
+    /// 「完整设置」入口、搜索跳转用它。
+    pub fn open_settings_at_tab(&self, schema_id: &str, tab: SettingsTab) {
+        self.open_settings_at_id(schema_id);
+        if !self.settings_sections[tab.index()].get().is_empty() {
+            self.settings_tab.set(tab.index());
+        }
+    }
+
     /// 打开指定 ID 方案的设置对话框。双拼方案额外经 schema.getConfig 拉取
     /// 当前布局，展示「双拼布局」下拉（保存走 schema.saveConfig 稀疏 override）。
     pub fn open_settings_at_id(&self, schema_id: &str) {

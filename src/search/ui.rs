@@ -271,6 +271,14 @@ pub fn build_jump_sink(
                         vis.set(true);
                     }
                 }
+                JumpTarget::SchemeForm { card, tab } => {
+                    // 没有锚点会来认领：直接打开方案对话框，消费掉请求。
+                    let open = fields.scheme_form_open.borrow().clone();
+                    jmp.set(None);
+                    if let Some(open) = open {
+                        open(card, *tab);
+                    }
+                }
                 JumpTarget::DictWindow => {
                     // 同 SchemaLevel：没有锚点会来认领它（`pending_anchor` 返回 None），
                     // 开窗是 `dict_request` 哨兵的活。不在这儿消费掉的话，`jump` 信号会

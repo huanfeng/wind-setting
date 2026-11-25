@@ -211,6 +211,9 @@ pub struct FieldRegistry {
     /// 这些 `visible` 信号原本是各构建函数里的局部变量、只被按钮闭包捕获，外界拿不到；
     /// 登记一份出来，搜索命中框内项时才能替用户把框打开。
     pub dialog_opens: RefCell<HashMap<String, Signal<bool>>>,
+    /// 打开某张引擎卡所绑方案的方案对话框、停在第几页（`SettingsTab` 下标）。方案页建好时登记，
+    /// 搜索命中不上卡的项（清单 `on_card = false`）时用它。参数是卡片名（「码表」「全拼」…）。
+    pub scheme_form_open: RefCell<Option<std::rc::Rc<dyn Fn(&str, usize)>>>,
     /// 自定义标点表的单元格信号（每行 `[中半, 英全, 中全, 英半]`，行序同
     /// `manifest::PUNCT_DEFAULTS`），由 [`crate::manifest::punct_cells`] 惰性建好后共享。
     ///
@@ -638,6 +641,8 @@ pub struct AppState {
     pub card_settings: crate::scheme_cards::CardSettings,
     /// 各卡所绑方案的显示名（卡标题用）；页面树早于数据建成，故走信号。没有绑定时为空串。
     pub card_scheme_names: std::collections::HashMap<crate::scheme_cards::Card, Signal<String>>,
+    /// 各卡所绑方案的 id（卡标题旁「完整设置」打开它的方案对话框）；没有绑定时为空串。
+    pub card_scheme_ids: std::collections::HashMap<crate::scheme_cards::Card, Signal<String>>,
     /// 引擎卡各键的方案默认值（`CardSettings::default_patch`），「恢复默认」叠在出厂配置上。
     /// 放共享单元：恢复按钮的闭包在建树时捕获，绑定换了方案也要读到新值。
     pub card_defaults: Rc<RefCell<Vec<(String, Value)>>>,
@@ -1240,6 +1245,10 @@ impl AppState {
             card_settings: Default::default(),
             card_defaults: Rc::default(),
             card_scheme_names: crate::scheme_cards::Card::ALL
+                .into_iter()
+                .map(|c| (c, signal(String::new())))
+                .collect(),
+            card_scheme_ids: crate::scheme_cards::Card::ALL
                 .into_iter()
                 .map(|c| (c, signal(String::new())))
                 .collect(),
@@ -3212,6 +3221,9 @@ impl AppState {
         for (card, sig) in &self.card_scheme_names {
             sig.set(cards.schemes.name(*card).unwrap_or_default().to_string());
         }
+        for (card, sig) in &self.card_scheme_ids {
+            sig.set(cards.schemes.id(*card).unwrap_or_default().to_string());
+        }
         *self.card_defaults.borrow_mut() = cards.default_patch();
         self.card_settings = cards;
     }
@@ -3366,7 +3378,12 @@ impl AppState {
         for (id, its) in &split.by_scheme {
             let items_json: Vec<Value> = its
                 .iter()
-                .map(|it| serde_json::json!({ "key": it.key, "value": it.value }))
+                .map(|it| {
+                    serde_json::json!({
+                        "key": crate::scheme_cards::real_key(&it.key),
+                        "value": it.value,
+                    })
+                })
                 .collect();
             let params = serde_json::json!({ "id": id, "items": items_json });
             if let Err(e) = rpc::call_core("schema.setSettings", &params) {
