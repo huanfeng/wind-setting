@@ -804,6 +804,16 @@ label = "直接辅助码"
 hint = "仅双拼：任一音节后直接敲字形码定字，长句中间也可以，不按引导键（如 go 后敲 k 再打 qk → 国情）。全拼方案不生效"
 enabled_when = "schema.pinyin.aux_code.enabled == true"
 
+[[items]]
+key = "schema.pinyin.aux_code.continuous"
+group = "schema"
+section = "候选行为"
+dialog_group = "py_aux"
+type = "toggle"
+label = "连续辅助码"
+hint = "开：字形码可打在任一音节后，适合长句；关：只在整串末尾敲 1～2 位，词组任一字命中，适合单次打词组（uidu 后敲 pl → 释读）。需先开直接辅助码"
+enabled_when = "schema.pinyin.aux_code.direct == true"
+
 # ── 英文候选：与混输/码表同名同义，只是作用于拼音方案 ──
 # 本段没有「不自动上屏」一项：那一项否决的是满码上屏/顶码，拼音方案两者都没有。
 [[items]]

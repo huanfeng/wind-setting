@@ -470,6 +470,7 @@
     "promote_count": 0
    },
    "aux_code": {
+    "continuous": true,
     "direct": false,
     "enabled": false,
     "max_phrase_len": 0

@@ -3102,10 +3102,11 @@ impl SchemaManagerState {
                 let keys: Vec<String> = [
                     "schema.pinyin.aux_code.enabled",
                     "schema.pinyin.aux_code.direct",
+                    "schema.pinyin.aux_code.continuous",
                     "schema.pinyin.aux_code.max_phrase_len",
                 ]
                 .into_iter()
-                .filter(|k| is_sp || !k.ends_with(".direct"))
+                .filter(|k| is_sp || !(k.ends_with(".direct") || k.ends_with(".continuous")))
                 .filter(|k| manifest.get(k).is_some_and(|i| !i.hidden))
                 .map(String::from)
                 .collect();
@@ -5755,6 +5756,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let mut rows = Vec::new();
             rows.extend(row("schema.pinyin.aux_code.enabled"));
             rows.extend(row("schema.pinyin.aux_code.direct"));
+            rows.extend(row("schema.pinyin.aux_code.continuous"));
             // 来源跟着总开关隐显：藏了总开关就是不让用户碰辅助码。
             let src_vis = aux.shown("schema.pinyin.aux_code.enabled");
             rows.extend((!aux_rows_hidden(state).src).then_some((row_src, Some(src_vis))));
@@ -8608,7 +8610,7 @@ mod section_build_tests {
     }
 
     /// 队列里的改动叠到快照上：写入取队列值，恢复默认取默认值。
-    /// 辅助码页：双拼方案有启用 / 直接辅助码 / 最长词长三行，全拼方案没有直接辅助码；
+    /// 辅助码页：双拼方案有启用 / 直接辅助码 / 连续辅助码 / 最长词长四行，全拼方案没有后两个双拼专属项；
     /// 打开即关不入队。
     #[test]
     fn aux_rows_follow_scheme_kind_and_untouched_is_clean() {
@@ -8618,7 +8620,7 @@ mod section_build_tests {
         unsafe { std::env::set_var("WIND_RPC_MOCK", "1") };
         let m = crate::manifest::Manifest::from_embedded();
         let sp = open_mock_shuangpin();
-        for k in ["enabled", "direct", "max_phrase_len"] {
+        for k in ["enabled", "direct", "continuous", "max_phrase_len"] {
             let key = format!("schema.pinyin.aux_code.{k}");
             assert!(sp.settings_aux_ct.row_of(&m, &key).is_some(), "{key}");
         }
@@ -8630,6 +8632,12 @@ mod section_build_tests {
                 .row_of(&m, "schema.pinyin.aux_code.direct")
                 .is_none(),
             "直接辅助码只给双拼"
+        );
+        assert!(
+            full.settings_aux_ct
+                .row_of(&m, "schema.pinyin.aux_code.continuous")
+                .is_none(),
+            "连续辅助码只给双拼"
         );
         assert!(
             full.settings_ct
