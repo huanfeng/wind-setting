@@ -318,9 +318,46 @@ pub struct CtFields {
     over_at_seed: Rc<RefCell<Vec<String>>>,
     /// 「本方案预设」：方案文件改过、且在本页有控件的项。
     presets: Rc<RefCell<Vec<CtPreset>>>,
+    /// 用户精简清单（活配置）。注入后各行带 Ctrl+右键菜单并按**项级**规则运行期隐显。
+    user_hide: Rc<RefCell<Option<Rc<crate::user_hide::UserHideStore>>>>,
 }
 
 impl CtFields {
+    /// 注入用户精简清单。克隆共享同一份，注入一次即可。
+    pub fn set_user_hide(&self, store: Rc<crate::user_hide::UserHideStore>) {
+        *self.user_hide.borrow_mut() = Some(store);
+    }
+
+    /// 一行此刻是否显示。只认**项级**规则（含 `key:` 前缀）：整卡规则藏的是方案页上那张
+    /// 卡，不是这类设置本身——藏掉「全拼」卡不该让双拼方案的方案设置页整页变空。
+    fn row_shown(&self, key: &str) -> Rc<dyn Fn() -> bool> {
+        match self.user_hide.borrow().clone() {
+            Some(store) => {
+                let k = key.to_string();
+                Rc::new(move || !store.hides_key(&k))
+            }
+            None => Rc::new(|| true),
+        }
+    }
+
+    /// 给一行套上「已隐藏」描边与 Ctrl+右键菜单（复制 key / 隐藏这一项）。
+    fn decorate(&self, item: &MItem, row: Element) -> Element {
+        let Some(store) = self.user_hide.borrow().clone() else {
+            return row;
+        };
+        let k = item.key.clone();
+        let row =
+            crate::hide_marker::mark(store.clone(), move |s| s.rule_hiding_key(&k).is_some(), row);
+        row.on_context_menu(crate::hide_menu::menu_for(
+            store,
+            crate::hide_menu::Target::Key {
+                key: item.key.clone(),
+                group: item.group.clone(),
+                section: item.section.clone(),
+            },
+        ))
+    }
+
     /// 按该类方案「方案设置」页的全部可见项播种。
     pub fn seed(&self, manifest: &Manifest, seed: &CtSeed) {
         let keys = visible_keys_of(manifest, seed.kind);
@@ -514,31 +551,51 @@ impl CtFields {
     ///
     /// 「全部恢复默认」是**整页**级别的动作，挂在外层节头（见 `schema_manager.rs`）。
     pub fn card(&self, manifest: &Manifest, group: CtGroup) -> Element {
-        let mut col = Element::col().width_match().child({
-            let sum = self.group_summary(&group.title);
+        let keys: Vec<String> = group
+            .keys
+            .iter()
+            .filter(|k| self.items.borrow().contains_key(*k))
+            .cloned()
+            .collect();
+        let shown: Vec<Rc<dyn Fn() -> bool>> = keys.iter().map(|k| self.row_shown(k)).collect();
+        let any_shown = {
+            let shown = shown.clone();
+            move || shown.iter().any(|f| f())
+        };
+        let sum = self.group_summary(&group.title);
+        let mut col = Element::col().width_match().child(
             crate::widgets::list_heading_ext(
                 &group.title,
                 Some(&move || crate::widgets::summary_label(sum)),
                 group.first,
             )
-        });
-        for k in group.keys.iter() {
-            if !self.items.borrow().contains_key(k) {
-                continue;
-            }
-            col = col
-                .child(crate::widgets::row_divider())
-                .child(crate::widgets::card_pad(self.row(manifest, k)));
+            .visible_when(any_shown),
+        );
+        // 分隔线与行包在一起隐显：行藏了，它头上那条线也不该留着。
+        for (k, vis) in keys.iter().zip(shown) {
+            col = col.child(
+                Element::col()
+                    .width_match()
+                    .child(crate::widgets::row_divider())
+                    .child(crate::widgets::card_pad(self.row(manifest, k)))
+                    .visible_when(move || vis()),
+            );
         }
         col
     }
 
     /// 单独取某一项的行（辅助码页按自己的顺序排行）；本页没有这一项时为 `None`。
     pub fn row_of(&self, manifest: &Manifest, key: &str) -> Option<Element> {
-        self.items
-            .borrow()
-            .contains_key(key)
-            .then(|| self.row(manifest, key))
+        if !self.items.borrow().contains_key(key) {
+            return None;
+        }
+        let vis = self.row_shown(key);
+        Some(self.row(manifest, key).visible_when(move || vis()))
+    }
+
+    /// 某一项此刻是否显示（辅助码来源一行跟着总开关走）。
+    pub fn shown(&self, key: &str) -> Rc<dyn Fn() -> bool> {
+        self.row_shown(key)
     }
 
     /// 组内一行：控件 + 「已修改」标记与恢复按钮。
@@ -565,7 +622,7 @@ impl CtFields {
             .child(Element::col().weight(1.0))
             .child(build_editor(item, &st.val, width));
         let g = gate.clone();
-        crate::widgets::setting_row_scheme(
+        let row = crate::widgets::setting_row_scheme(
             &item.label,
             item.hint.as_deref(),
             control,
@@ -573,7 +630,8 @@ impl CtFields {
             &tip,
             move || st_reset.val.set_value(&st_reset.def),
         )
-        .enabled_when(move || g())
+        .enabled_when(move || g());
+        self.decorate(item, row)
     }
 
     /// 由 `enabled_when` 表达式构造联动闭包（取值来自本页信号）。
@@ -772,6 +830,49 @@ mod tests {
 
     fn modified(f: &CtFields, key: &str) -> bool {
         f.items.borrow()[key].modified()
+    }
+
+    /// 表单行只认**项级**隐藏规则：整卡规则（「码表」卡）藏的是方案页上那张卡，不能把
+    /// 方案设置页也清空。
+    #[test]
+    fn form_rows_follow_key_rules_but_not_card_rules() {
+        use crate::user_hide::{UserHideConfig, UserHideStore};
+        let m = manifest();
+        let f = CtFields::default();
+        f.seed(&m, &ct_seed(&m, json!({}), json!({})));
+        let card = m.get("schema.codetable.top_code_commit").unwrap();
+        f.set_user_hide(Rc::new(UserHideStore::in_memory(UserHideConfig {
+            enabled: true,
+            show_hidden: false,
+            hide: vec![
+                "key:schema.codetable.frequency.*".into(),
+                format!("section:{}/{}", card.group, card.section),
+            ],
+        })));
+        assert!(!f.shown("schema.codetable.frequency.enabled")());
+        assert!(!f.shown("schema.codetable.frequency.strategy")());
+        assert!(
+            f.shown("schema.codetable.top_code_commit")(),
+            "整卡规则不该藏表单行"
+        );
+    }
+
+    /// 双拼卡的镜像键按真实键判：在全拼那边藏一项，双拼卡的同一项也藏。
+    #[test]
+    fn mirror_keys_are_hidden_by_their_real_key() {
+        use crate::user_hide::{UserHideConfig, UserHideStore};
+        let store = UserHideStore::in_memory(UserHideConfig {
+            enabled: true,
+            show_hidden: false,
+            hide: vec!["key:schema.pinyin.abbrev.enabled".into()],
+        });
+        assert!(store.hides_key("schema.shuangpin.abbrev.enabled"));
+        assert!(
+            store
+                .rule_hiding_key("schema.shuangpin.abbrev.enabled")
+                .is_some()
+        );
+        assert!(!store.hides_key("schema.shuangpin.use_smart_compose"));
     }
 
     /// 初值必须来自生效值。用一个「与零值相反」的 effective 做输入：若实现退回了

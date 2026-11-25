@@ -363,7 +363,11 @@ impl UserHideStore {
     ///
     /// 直接读 `inner` 而不走 [`Self::plan`]：`visible_when` 每次布局都会为每一行调一次，
     /// `plan()` 每次克隆整个规则表，一页几百行就是几百次分配。
+    ///
+    /// 双拼卡的镜像键按真实键判：规则写的是 `schema.pinyin.*`，藏一项即各处都藏。
     pub fn hides_key(&self, key: &str) -> bool {
+        let key = crate::scheme_cards::real_key(key);
+        let key = key.as_str();
         let st = self.inner.borrow();
         st.cfg.enabled && !st.cfg.show_hidden && st.rules.iter().any(|r| r.matches_key(key))
     }
@@ -508,6 +512,8 @@ impl UserHideStore {
     /// 给「隐藏这一项」（再加一次，提示「已在清单里」），用户在专用模式里反而取消不掉。
     /// 功能总开关由菜单自己在入口处判定（见 [`crate::hide_menu::hiding_enabled`]）。
     pub fn rule_hiding_key(&self, key: &str) -> Option<String> {
+        let key = crate::scheme_cards::real_key(key);
+        let key = key.as_str();
         self.inner
             .borrow()
             .rules

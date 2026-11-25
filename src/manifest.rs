@@ -411,7 +411,12 @@ impl Manifest {
                 }
                 crate::user_hide::HideRule::Core(sel) => {
                     for item in self.items.values_mut() {
-                        if sel.matches_key(&item.key) {
+                        // 双拼卡的镜像跟着真实键走，同定制版那条路。
+                        let mirror_hit = item
+                            .mirror_of
+                            .as_deref()
+                            .is_some_and(|k| sel.matches_key(k));
+                        if sel.matches_key(&item.key) || mirror_hit {
                             item.user_hidden = true;
                             hit = true;
                         }
@@ -843,7 +848,8 @@ pub(crate) fn wrap_row_menu(state: &AppState, key: &str, row: Element) -> Elemen
     row.on_context_menu(crate::hide_menu::menu_for(
         state.user_hide_store.clone(),
         crate::hide_menu::Target::Key {
-            key: key.to_string(),
+            // 镜像行给出真实键：复制出的选择器要能直接写进 custom.toml。
+            key: crate::scheme_cards::real_key(key),
             group: item.group.clone(),
             section: item.section.clone(),
         },

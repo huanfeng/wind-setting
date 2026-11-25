@@ -191,12 +191,12 @@ pub enum SettingsTab {
     /// 方案信息 + 扩展词库（+ 双拼布局）。
     Basic,
     Keys,
-    /// 实验性功能：整句输入等尚在试验的能力，后续同类功能放这里。
-    Experimental,
     /// 自定义行为：候选窗 / 标点 / 输入的方案级特殊处理（`Behavior` 一节）。
     Behavior,
     /// 方案设置：本方案的码表 / 拼音 / 混输 / 英文行为（`CodeTable` 一节，名字是历史遗留）。
     Overrides,
+    /// 实验性功能：整句输入等尚在试验的能力，后续同类功能放这里；排在方案设置之后。
+    Experimental,
     Aux,
     /// 特殊模式（overlay，码表方案专有）。
     Special,
@@ -206,9 +206,9 @@ impl SettingsTab {
     pub const ALL: [SettingsTab; 7] = [
         Self::Basic,
         Self::Keys,
-        Self::Experimental,
         Self::Behavior,
         Self::Overrides,
+        Self::Experimental,
         Self::Aux,
         Self::Special,
     ];
@@ -234,9 +234,9 @@ impl SettingsTab {
 pub const SETTINGS_TABS: [&str; SettingsTab::ALL.len()] = [
     SettingsTab::Basic.label(),
     SettingsTab::Keys.label(),
-    SettingsTab::Experimental.label(),
     SettingsTab::Behavior.label(),
     SettingsTab::Overrides.label(),
+    SettingsTab::Experimental.label(),
     SettingsTab::Aux.label(),
     SettingsTab::Special.label(),
 ];
@@ -508,7 +508,7 @@ struct AuxRowsHidden {
 
 fn aux_rows_hidden(state: &SchemaManagerState) -> AuxRowsHidden {
     AuxRowsHidden {
-        src: state.custom_hidden("schema.pinyin.aux_code.enabled"),
+        src: state.form_key_hidden("schema.pinyin.aux_code.enabled"),
     }
 }
 
@@ -1438,7 +1438,21 @@ impl SchemaManagerState {
     /// 与 [`Self::set_manifest`] 的不同：清单是**快照**，用户 store 是**活配置**。
     /// 方案对话框打开时现读它，故窗口开着时新加的隐藏规则也能跟上。
     pub fn set_user_hide(&mut self, store: Rc<crate::user_hide::UserHideStore>) {
+        self.settings_ct.set_user_hide(store.clone());
+        self.settings_aux_ct.set_user_hide(store.clone());
         self.user_hide = Some(store);
+    }
+
+    /// 方案设置表单里某一项被藏了：定制版（清单快照）或用户的**项级**规则（现读）。
+    ///
+    /// 不看整卡规则，与表单行的隐显同口径（见 `CtFields::row_shown`）。
+    fn form_key_hidden(&self, key: &str) -> bool {
+        let custom = self
+            .manifest
+            .borrow()
+            .get(key)
+            .is_some_and(|i| i.custom_hidden);
+        custom || self.user_hide.as_ref().is_some_and(|s| s.hides_key(key))
     }
 
     /// 全局 `key` 被定制版 `[settings] hide` 或用户精简清单藏掉了。逃生口打开时清单没折，恒为假。
@@ -3359,7 +3373,7 @@ impl SchemaManagerState {
         if !self.settings_ct_seeded.get() {
             return None;
         }
-        let hidden = |key: &str| self.custom_hidden(key);
+        let hidden = |key: &str| self.form_key_hidden(key);
         let mut out: Option<SchemeSettingsChange> = None;
         for (ct, reset_all) in [
             (&self.settings_ct, self.settings_ct_reset_all.get()),
@@ -4806,27 +4820,7 @@ fn build_copy_dialog(state: &SchemaManagerState) -> Element {
             move || any.set(blocks.iter().any(|s| s.get()) && targets.iter().any(|s| s.get())),
         )
     };
-    // host_signal 按元素逐个建子树，故先把名单转成带下标的行，下标对应预建的勾选槽位。
-    let checks =
-        |names: Signal<Vec<(usize, String)>>, slots: Rc<Vec<Signal<bool>>>, empty: &'static str| {
-            Element::col()
-                .width_match()
-                .child(
-                    Element::label(empty)
-                        .font_size(12.5)
-                        .fg_role(Role::TextMuted)
-                        .padding_xy(6, 6)
-                        .visible_when(move || names.get().is_empty()),
-                )
-                .child(Element::host_signal(names, move |(i, name)| {
-                    match slots.get(i) {
-                        Some(sig) => Element::checkbox(&name, *sig)
-                            .fg_role(Role::Text)
-                            .padding_xy(6, 4),
-                        None => Element::col(),
-                    }
-                }))
-        };
+    // 名单转成带下标的行，下标对应预建的勾选槽位。
     let block_rows = signal(Vec::<(usize, String)>::new());
     let target_rows = signal(Vec::<(usize, String)>::new());
     let (blocks, targets) = (state.settings_copy_blocks, state.settings_copy_targets);
@@ -4865,15 +4859,17 @@ fn build_copy_dialog(state: &SchemaManagerState) -> Element {
             .max_lines(2),
         )
         .child(heading("复制哪些"))
-        .child(checks(
+        .child(check_grid(
             block_rows,
             state.settings_copy_block_on.clone(),
+            4,
             "没有可复制的设置。",
         ))
         .child(heading("复制到"))
-        .child(Element::scroll().width_match().height(180).child(checks(
+        .child(Element::scroll().width_match().height(64).child(check_grid(
             target_rows,
             state.settings_copy_target_on.clone(),
+            3,
             "没有其它同类方案。",
         )))
         .child(any_effect)
@@ -4887,8 +4883,46 @@ fn build_copy_dialog(state: &SchemaManagerState) -> Element {
         move || st.queue_copy(),
         "复制",
         520,
-        520,
+        240,
     )
+}
+
+/// 复制弹框的勾选网格：块最多八个、目标通常一两个，排成网格免得一列竖下去把弹框撑高。
+fn check_grid(
+    rows: Signal<Vec<(usize, String)>>,
+    slots: Rc<Vec<Signal<bool>>>,
+    cols: usize,
+    empty: &'static str,
+) -> Element {
+    // host_signal 按元素建子树；把整张名单包成单元素，网格就能随名单整体重建。
+    let whole = signal(Vec::<Vec<(usize, String)>>::new());
+    let sync = crate::pages::dict::reactive::reactive_effect(
+        move || rows.version(),
+        move || whole.set(vec![rows.get()]),
+    );
+    Element::col()
+        .width_match()
+        .child(
+            Element::label(empty)
+                .font_size(12.5)
+                .fg_role(Role::TextMuted)
+                .padding_xy(6, 6)
+                .visible_when(move || rows.get().is_empty()),
+        )
+        .child(Element::host_signal(whole, move |list| {
+            let cells = list
+                .into_iter()
+                .filter_map(|(i, name)| {
+                    slots.get(i).map(|sig| {
+                        Element::checkbox(&name, *sig)
+                            .fg_role(Role::Text)
+                            .padding_xy(6, 4)
+                    })
+                })
+                .collect();
+            Element::grid(cols, 4, cells).width_match()
+        }))
+        .child(sync)
 }
 
 /// 方案级按键功能表浮层（第三级）。内容由 `KeyActionFields` 自带响应式列表驱动，
@@ -5647,7 +5681,10 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             // 来源是方案属性，单独一行。
             let manifest = state.manifest.borrow().clone();
             let aux = state.settings_aux_ct.clone();
-            let row = |key: &str| aux.row_of(&manifest, key);
+            let row = |key: &str| {
+                aux.row_of(&manifest, key)
+                    .map(|el| (el, Some(aux.shown(key))))
+            };
 
             // 辅助码来源：下拉每项带徽章区分「输入方案 / 辅助码表」——同名的（如笔画方案与
             // 笔画码表）不看徽章分不出来。只读态（多条 / 下拉里没有的条目）控件位报出现状
@@ -5718,10 +5755,12 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
             let mut rows = Vec::new();
             rows.extend(row("schema.pinyin.aux_code.enabled"));
             rows.extend(row("schema.pinyin.aux_code.direct"));
-            rows.extend((!aux_rows_hidden(state).src).then_some(row_src));
+            // 来源跟着总开关隐显：藏了总开关就是不让用户碰辅助码。
+            let src_vis = aux.shown("schema.pinyin.aux_code.enabled");
+            rows.extend((!aux_rows_hidden(state).src).then_some((row_src, Some(src_vis))));
             rows.extend(row("schema.pinyin.aux_code.max_phrase_len"));
             let disp = state.settings_aux_disp;
-            crate::widgets::dialog_section_full(
+            crate::widgets::dialog_section_items(
                 "辅助码",
                 Some("打出候选后按触发键，用字形码进一步筛选。触发键在「按键设置」里配"),
                 Some(&|| {
@@ -5731,7 +5770,7 @@ fn build_section(kind: SettingsSection, state: &SchemaManagerState) -> Element {
                         .child(crate::widgets::summary_label(disp))
                         .child(reset_btn())
                 }),
-                rows,
+                crate::widgets::rows_to_items_vis(rows),
             )
         }
         SettingsSection::CodeTable => {
@@ -7776,8 +7815,15 @@ mod section_build_tests {
             Divider,
             ExtensionDicts,
         ];
-        let [basic, keys, _sentence, _behavior, overrides, _aux, special] =
-            split_sections_by_tab(&flat);
+        let [
+            basic,
+            keys,
+            _behavior,
+            overrides,
+            _experimental,
+            _aux,
+            special,
+        ] = split_sections_by_tab(&flat);
         assert_eq!(
             basic,
             vec![Header, ShuangpinLayout, Divider, ExtensionDicts],
