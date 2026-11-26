@@ -1,4 +1,4 @@
-//! 同步页的卡片：向导、状态、本机、设备、存储、安全；未配置时只有向导卡，其余连同二级导航一起隐藏。
+//! 同步页的卡片：向导、状态、本机、设备、内容、存储、安全；未配置时只有向导卡，其余连同二级导航一起隐藏。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -18,7 +18,7 @@ use crate::widgets::{
 pub type Card = (Option<&'static str>, Element, Vis);
 
 /// 二级导航与卡片标题；未配置时只显示第一项。
-pub(super) const NAV: [&str; 6] = ["向导", "状态", "本机", "设备", "存储", "安全"];
+pub(super) const NAV: [&str; 7] = ["向导", "状态", "本机", "设备", "内容", "存储", "安全"];
 pub(super) const BTN_MODIFY: &str = "修改…";
 pub(super) const ROW_GROUP: &str = "同步组";
 
@@ -57,6 +57,7 @@ pub fn build_page(_app: &Rc<RefCell<AppState>>, state: &AppState) -> Vec<Card> {
         status_card(&ui),
         self_card(&ui),
         devices_card(&ui),
+        content_card(&ui),
         storage_card(&ui),
         security_card(&ui),
     ];
@@ -288,6 +289,7 @@ fn self_card(ui: &SyncUi) -> Element {
 /// 设备卡：按组分列，本组在前；本机标「本机」，其他设备可移除（二次确认）。
 fn devices_card(ui: &SyncUi) -> Element {
     let (u, group, devices_err) = (ui.clone(), ui.group, ui.devices_err);
+    let (u_purge, purge_text, busy) = (ui.clone(), ui.purge_text, ui.busy);
     let list = Element::switcher(ui.devices, move |devs: Vec<DeviceView>| {
         let today = chrono::Local::now().date_naive();
         let mut col = Element::col().width_match();
@@ -314,6 +316,26 @@ fn devices_card(ui: &SyncUi) -> Element {
                 vis(move || !devices_err.get().is_empty()),
             ),
             CardItem::Bare(list),
+            CardItem::RowWhen(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(12)
+                    .padding_xy(0, 10)
+                    .child(
+                        Element::label_signal(purge_text)
+                            .font_size(13.0)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(1)
+                            .weight(1.0),
+                    )
+                    .child(
+                        btn2("清除…")
+                            .enabled_when(move || !busy.get())
+                            .on_click(move |_| u_purge.request_purge()),
+                    ),
+                vis(move || !purge_text.get().is_empty()),
+            ),
         ],
     )
 }
@@ -348,10 +370,38 @@ fn device_row(ui: &SyncUi, d: &DeviceView, today: chrono::NaiveDate) -> Element 
     row
 }
 
+/// 同步内容卡：三类内容各一个开关，改了即存。
+fn content_card(ui: &SyncUi) -> Element {
+    let (u1, u2, u3) = (ui.clone(), ui.clone(), ui.clone());
+    section_items(
+        NAV[4],
+        vec![
+            CardItem::Row(setting_row(
+                "学习数据",
+                Some("临时词、选词计数、联想历史"),
+                Element::switch(ui.content_learned)
+                    .on_switch_change(move |_ctx, on| u1.set_content(|c| c.learned = on)),
+            )),
+            CardItem::Row(setting_row(
+                "补全历史",
+                Some("邮箱后缀、网址、快捷输入历史"),
+                Element::switch(ui.content_completion)
+                    .on_switch_change(move |_ctx, on| u2.set_content(|c| c.completion = on)),
+            )),
+            CardItem::Row(setting_row(
+                "打字统计",
+                Some("本机统计上传、其他设备统计下载"),
+                Element::switch(ui.content_stats)
+                    .on_switch_change(move |_ctx, on| u3.set_content(|c| c.stats = on)),
+            )),
+        ],
+    )
+}
+
 fn storage_card(ui: &SyncUi) -> Element {
     let (u, busy) = (ui.clone(), ui.busy);
     section_items(
-        NAV[4],
+        NAV[5],
         vec![CardItem::Row(setting_row_desc_signal(
             "存储位置",
             ui.storage_summary,
@@ -366,7 +416,7 @@ fn security_card(ui: &SyncUi) -> Element {
     let busy = ui.busy;
     let (u_key, u_reset) = (ui.clone(), ui.clone());
     section_items(
-        NAV[5],
+        NAV[6],
         vec![
             CardItem::Row(setting_row(
                 "同步密钥",

@@ -48,6 +48,8 @@ pub(crate) struct StatusView {
     pub group_name: String,
     /// 需要用户确认本机身份（首次加入远端后）。
     pub needs_identity: bool,
+    /// 已移除（不在名册里）但远端仍有学习数据的设备号；旧版 core 没有这个字段。
+    pub removed_with_data: Vec<String>,
 }
 
 impl StatusView {
@@ -114,6 +116,15 @@ impl StatusView {
             group: s("group"),
             group_name: s("group_name"),
             needs_identity: b("needs_identity"),
+            removed_with_data: v
+                .get("removed_with_data")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -274,6 +285,34 @@ pub(crate) fn master_switch_steps(saved: &Form, on: bool) -> Vec<Step> {
         ..saved.clone()
     };
     vec![("sync.setSettings", json!({ "settings": f.to_settings() }))]
+}
+
+/// 同步内容开关改动：只改 `content`，其余设置原样（setSettings 是整份覆盖）。
+pub(crate) fn content_switch_steps(saved: &Form, content: Content) -> Vec<Step> {
+    let f = Form {
+        content,
+        ..saved.clone()
+    };
+    vec![("sync.setSettings", json!({ "settings": f.to_settings() }))]
+}
+
+/// 设备卡末行的值；没有已移除设备的数据返回空串（行隐藏）。
+pub(crate) fn purge_summary(devs: &[String]) -> String {
+    if devs.is_empty() {
+        String::new()
+    } else {
+        format!("已移除设备的数据：{} 台", devs.len())
+    }
+}
+
+/// 清除确认框的说明。
+pub(crate) const PURGE_WARN: &str = "清除后其他设备的次数会减去它们的部分，无法恢复";
+
+/// 逐个清除：每台设备一条 `purge_device`。
+pub(crate) fn purge_commands(devs: &[String]) -> Vec<(&'static str, Value)> {
+    devs.iter()
+        .map(|d| ("purge_device", json!({ "device": d })))
+        .collect()
 }
 
 /// 勾选「跳过证书验证」后的提示。
@@ -490,6 +529,42 @@ pub(crate) struct Form {
     pub interval_min: u32,
     /// 本机在「我的设备」里显示的名称；空 = 用计算机名。设备本地，不随同步传播。
     pub device_name: String,
+    /// 各类内容是否参与同步（同组设备共用）。
+    pub content: Content,
+}
+
+/// 同步内容开关，缺省全开。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Content {
+    pub learned: bool,
+    pub completion: bool,
+    pub stats: bool,
+}
+
+impl Default for Content {
+    fn default() -> Self {
+        Content {
+            learned: true,
+            completion: true,
+            stats: true,
+        }
+    }
+}
+
+impl Content {
+    fn from_settings(s: &Value) -> Content {
+        let c = s.get("content");
+        let b = |k: &str| {
+            c.and_then(|c| c.get(k))
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+        };
+        Content {
+            learned: b("learned"),
+            completion: b("completion"),
+            stats: b("stats"),
+        }
+    }
 }
 
 impl Default for Form {
@@ -508,6 +583,7 @@ impl Default for Form {
             skip_cert_verify: false,
             interval_min: 15,
             device_name: String::new(),
+            content: Content::default(),
         }
     }
 }
@@ -534,6 +610,7 @@ impl Form {
                 .to_string()
         };
         f.device_name = str_of(s, "device_name");
+        f.content = Content::from_settings(s);
         f.skip_cert_verify = s
             .get("skip_cert_verify")
             .and_then(Value::as_bool)
@@ -582,6 +659,14 @@ impl Form {
         });
         if self.skip_cert_verify {
             out["skip_cert_verify"] = json!(true);
+        }
+        // 全开是缺省，不写；core 反序列化缺省即全开。
+        if self.content != Content::default() {
+            out["content"] = json!({
+                "learned": self.content.learned,
+                "completion": self.content.completion,
+                "stats": self.content.stats,
+            });
         }
         if self.enabled || !self.backend_blank() {
             out["backend"] = if self.s3 {
@@ -890,7 +975,8 @@ pub(crate) const REMOVE_DEVICE_WARN: &str = "移除后该设备的同步记录�
 
 /// 同步间隔上限（分钟），与 core 的 `wind_sync_ipc::MAX_INTERVAL_MIN` 一致。
 pub(crate) const MAX_INTERVAL_MIN: u32 = 24 * 60;
-pub(crate) const INTERVAL_DESC: &str = "1 到 1440 分钟（24 小时）；本机有改动时会很快同步";
+pub(crate) const INTERVAL_DESC: &str =
+    "1 到 1440 分钟（24 小时）；本机有改动时会很快同步；学习数据最多每 30 分钟同步一次";
 
 /// 把输入框里的间隔数收成合法整数（1 分钟到 24 小时）。
 pub(crate) fn clamp_interval(v: f64) -> u32 {
@@ -981,6 +1067,8 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "interval" => "保存同步间隔",
         "rename" => "修改设备信息",
         "group" => "修改同步组",
+        "content" => "保存同步内容",
+        "purge_devices" => "清除已移除设备的数据",
         other => other,
     };
     match r {
@@ -999,7 +1087,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 .flatten();
             let toast = match op {
                 // 结果由 core 弹提示，页内不另报。
-                "sync_now" | "interval" => String::new(),
+                "sync_now" | "interval" | "content" => String::new(),
                 "disable" => "已停用同步".to_string(),
                 "enable" => "已启用同步".to_string(),
                 "test_connection" => connection_text(v),
@@ -1007,6 +1095,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
                 "export_key" => String::new(),
                 "reset_remote" => "远端已重置，将以本机数据为准重新上传".to_string(),
                 "remove_device" => "已移除该设备".to_string(),
+                "purge_devices" => "已清除".to_string(),
                 "confirm_mass_delete" => "已确认，将把这些删除同步到所有设备".to_string(),
                 _ => format!("{label}成功"),
             };

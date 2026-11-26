@@ -2364,6 +2364,10 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                     v["conflicts"] = json!(0);
                     v["conflict_paths"] = json!([]);
                 }
+                // 已移除设备在远端仍有学习数据。
+                Ok("removed_data") => {
+                    v["removed_with_data"] = json!(["laptop-old1", "phone-old2"]);
+                }
                 // 总开关关掉：配置都在，只是没启用。
                 Ok("disabled") => {
                     v["enabled"] = json!(false);

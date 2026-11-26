@@ -63,7 +63,10 @@ fn status_drives_configured_identity_and_duplicate() {
 #[test]
 fn layout_texts_follow_the_spec() {
     use super::page::*;
-    assert_eq!(NAV, ["向导", "状态", "本机", "设备", "存储", "安全"]);
+    assert_eq!(
+        NAV,
+        ["向导", "状态", "本机", "设备", "内容", "存储", "安全"]
+    );
     assert_eq!((BTN_MODIFY, ROW_GROUP), ("修改…", "同步组"));
     assert_eq!(
         wizard_text(false),
@@ -634,4 +637,91 @@ fn switching_storage_join_to_create_clears_pasted_key() {
     ui.import_key.set("pasted".into());
     ui.on_wizard(WizOp::StorageJoin, Err((0, "远端还没有同步库".into())));
     assert_eq!(ui.import_key.get(), "");
+}
+
+// ───────────────────────────── 同步内容与清除已移除设备 ─────────────────────────────
+
+#[test]
+fn content_card_hidden_when_unconfigured() {
+    use super::page::{NAV, card_shown};
+    let i = NAV
+        .iter()
+        .position(|n| *n == "内容")
+        .expect("导航里有「内容」");
+    assert!(!card_shown(i, false));
+    assert!(card_shown(i, true));
+    assert!(
+        i < NAV.iter().position(|n| *n == "存储").unwrap(),
+        "内容卡在存储卡之前"
+    );
+}
+
+#[test]
+fn content_card_toggles_persist() {
+    let ui = joined_ui(true);
+    // 设置里的开关值落到界面
+    ui.apply_form(&Form::from_settings(&json!({
+        "settings": { "content": { "learned": false } }
+    })));
+    assert!(!ui.content_learned.get() && ui.content_completion.get() && ui.content_stats.get());
+    // 没接通道：没发出去，开关退回已保存的值
+    ui.content_learned.set(true);
+    ui.set_content(|c| c.learned = true);
+    assert!(!ui.content_learned.get(), "没发出去：退回已保存");
+    // 回执成功：已保存值跟上开关；失败：开关退回
+    windui::testing::run_with_ctx(|ctx| {
+        ui.content_stats.set(false);
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "content".into(),
+                result: Err("boom".into()),
+            },
+        );
+        assert!(ui.content_stats.get() && ui.saved.borrow().content.stats);
+        ui.content_stats.set(false);
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "content".into(),
+                result: Ok(json!({})),
+            },
+        );
+        assert!(!ui.saved.borrow().content.stats);
+        assert!(!ui.content_stats.get());
+    });
+}
+
+#[test]
+fn purge_row_shows_count_and_confirms() {
+    let ui = joined_ui(true);
+    ui.apply_status(&json!({
+        "installed": true, "enabled": true, "joined": true,
+        "removed_with_data": ["old-a", "old-b"]
+    }));
+    assert_eq!(ui.purge_text.get(), "已移除设备的数据：2 台");
+    assert!(ui.take_purge_confirm().is_none(), "没点过入口不放行");
+    ui.request_purge();
+    assert!(ui.purge_dialog.get(), "第一次点击只弹确认框");
+    assert_eq!(
+        ui.take_purge_confirm(),
+        Some(vec!["old-a".to_string(), "old-b".to_string()])
+    );
+    assert!(!ui.purge_dialog.get());
+    assert!(ui.take_purge_confirm().is_none(), "确认只用一次");
+    ui.request_purge();
+    ui.purge_guard.disarm();
+    assert!(ui.take_purge_confirm().is_none(), "取消后收回");
+    assert!(PURGE_WARN.contains("无法恢复"));
+}
+
+#[test]
+fn purge_row_hidden_when_none() {
+    let ui = joined_ui(true);
+    ui.apply_status(&json!({
+        "installed": true, "enabled": true, "joined": true,
+        "removed_with_data": ["old-a"]
+    }));
+    ui.apply_status(&json!({ "installed": true, "enabled": true, "joined": true }));
+    assert!(ui.purge_text.get().is_empty(), "字段缺省：行隐藏");
 }

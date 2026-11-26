@@ -76,6 +76,8 @@ pub enum SyncMsg {
 
 /// 同步间隔的保存：与其他命令一样占 busy，保证 setSettings 一条接一条。
 const OP_INTERVAL: &str = "interval";
+/// 同步内容开关的保存，同样占 busy。
+const OP_CONTENT: &str = "content";
 
 /// 第 2 步发出的表单与其中 set_secret 的步号。
 type SentTest = (Form, Option<usize>);
@@ -142,6 +144,10 @@ pub struct SyncUi {
     skip_cert_verify: Signal<bool>,
     interval: Signal<f64>,
     device_name: Signal<String>,
+    /// 「同步内容」卡的三个开关。
+    content_learned: Signal<bool>,
+    content_completion: Signal<bool>,
+    content_stats: Signal<bool>,
 
     /// 粘贴的同步密钥（向导第 3 步与更换存储共用）。
     import_key: Signal<String>,
@@ -166,6 +172,12 @@ pub struct SyncUi {
     remove_name: Signal<String>,
     remove_guard: RemoveGuard,
     devices_loaded: Rc<Cell<bool>>,
+    /// 已移除设备但远端仍留着学习数据的设备号。
+    removed_with_data: Signal<Vec<String>>,
+    /// 设备卡末行的值；空 = 不显示该行。
+    purge_text: Signal<String>,
+    purge_dialog: Signal<bool>,
+    purge_guard: MassDeleteGuard,
 
     storage_dialog: Signal<bool>,
     storage_stage: Signal<StorageStage>,
@@ -273,6 +285,9 @@ impl SyncUi {
             skip_cert_verify: signal(false),
             interval: signal(f.interval_min as f64),
             device_name: s(),
+            content_learned: signal(true),
+            content_completion: signal(true),
+            content_stats: signal(true),
             import_key: s(),
             new_key: s(),
             key_ack: signal(false),
@@ -288,6 +303,10 @@ impl SyncUi {
             remove_name: s(),
             remove_guard: RemoveGuard::default(),
             devices_loaded: Rc::new(Cell::new(false)),
+            removed_with_data: signal(Vec::new()),
+            purge_text: s(),
+            purge_dialog: signal(false),
+            purge_guard: MassDeleteGuard::default(),
             storage_dialog: signal(false),
             storage_stage: signal(StorageStage::Form),
             storage_err: s(),
@@ -451,6 +470,8 @@ impl SyncUi {
         self.group.set(s.group.clone());
         self.group_name.set(s.group_name.clone());
         self.update_group_line();
+        self.purge_text.set(purge_summary(&s.removed_with_data));
+        self.removed_with_data.set(s.removed_with_data.clone());
         if s.installed && s.joined && !self.devices_loaded.replace(true) {
             self.refresh_devices();
         }
@@ -488,6 +509,9 @@ impl SyncUi {
         }
         self.interval.set(f.interval_min as f64);
         self.device_name.set(f.device_name.clone());
+        self.content_learned.set(f.content.learned);
+        self.content_completion.set(f.content.completion);
+        self.content_stats.set(f.content.stats);
         self.update_secret_hint();
     }
 
@@ -601,6 +625,14 @@ impl SyncUi {
                         "reset_remote" if self.new_key.get().is_empty() => {
                             self.reset_dialog.set(false);
                         }
+                        // 成功：开关当前显示的就是刚发出去的值。
+                        "content" => {
+                            self.saved.borrow_mut().content = Content {
+                                learned: self.content_learned.get(),
+                                completion: self.content_completion.get(),
+                                stats: self.content_stats.get(),
+                            };
+                        }
                         "disable" => self.saved.borrow_mut().enabled = false,
                         "enable" => self.saved.borrow_mut().enabled = true,
                         _ => {}
@@ -610,6 +642,10 @@ impl SyncUi {
                 } else if op == "reset_remote" && self.reset_dialog.get() {
                     // 失败后框还开着：可以直接再点一次。
                     self.reset_guard.arm();
+                }
+                if op == OP_CONTENT && !o.ok {
+                    // 失败：开关退回 core 里的值（刷新会带回）
+                    self.show_content(self.saved.borrow().content);
                 }
                 if matches!(op.as_str(), "enable" | "disable") {
                     // 失败时开关退回已保存的状态
@@ -672,6 +708,46 @@ impl SyncUi {
             let steps = vec![("sync.setSettings", json!({ "settings": f.to_settings() }))];
             *self.saved.borrow_mut() = f;
             self.run_steps(OP_INTERVAL, steps);
+        }
+    }
+
+    /// 同步内容开关：改了即存（成功不提示）。没发出去（忙或未接通道）时开关退回已保存的值。
+    fn set_content(&self, change: impl FnOnce(&mut Content)) {
+        let mut content = self.saved.borrow().content;
+        change(&mut content);
+        let sent = !self.busy.get() && self.tx.borrow().is_some();
+        if sent {
+            let steps = content_switch_steps(&self.saved.borrow(), content);
+            self.run_steps(OP_CONTENT, steps);
+        } else {
+            self.show_content(self.saved.borrow().content);
+        }
+    }
+
+    fn show_content(&self, c: Content) {
+        self.content_learned.set(c.learned);
+        self.content_completion.set(c.completion);
+        self.content_stats.set(c.stats);
+    }
+
+    /// 点「清除…」：先弹确认框并上闸，真正发命令要在框里再点一次。
+    fn request_purge(&self) {
+        self.purge_guard.arm();
+        self.purge_dialog.set(true);
+    }
+
+    /// 确认框里点确认：已上闸才放行并返回要清除的设备号。
+    fn take_purge_confirm(&self) -> Option<Vec<String>> {
+        if !self.purge_guard.take() {
+            return None;
+        }
+        self.purge_dialog.set(false);
+        Some(self.removed_with_data.get())
+    }
+
+    fn confirm_purge(&self) {
+        if let Some(devs) = self.take_purge_confirm().filter(|d| !d.is_empty()) {
+            self.run("purge_devices", purge_commands(&devs));
         }
     }
 

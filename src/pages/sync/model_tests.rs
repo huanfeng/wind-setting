@@ -900,3 +900,47 @@ fn key_is_shown_in_two_lines_of_groups() {
     assert_eq!(key_lines("abcd-efgh"), "abcd-efgh", "短的不拆");
     assert_eq!(key_lines(""), "");
 }
+
+#[test]
+fn content_defaults_on_and_is_omitted_when_all_on() {
+    let f = Form::from_settings(&json!({ "settings": {} }));
+    assert_eq!(f.content, Content::default());
+    assert!(f.to_settings().get("content").is_none(), "全开不写");
+    let off = Form {
+        content: Content {
+            stats: false,
+            ..Content::default()
+        },
+        ..Form::default()
+    };
+    let v = off.to_settings();
+    assert_eq!(v["content"]["stats"], false);
+    assert_eq!(v["content"]["learned"], true);
+    assert_eq!(Form::from_settings(&json!({ "settings": v })), off);
+}
+
+#[test]
+fn content_switch_keeps_other_settings() {
+    let steps = content_switch_steps(
+        &webdav_form(),
+        Content {
+            learned: false,
+            ..Content::default()
+        },
+    );
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].0, "sync.setSettings");
+    assert_eq!(steps[0].1["settings"]["content"]["learned"], false);
+    assert_eq!(
+        steps[0].1["settings"]["backend"]["url"],
+        "https://dav.example.com/dav/"
+    );
+}
+
+#[test]
+fn purge_commands_one_per_device() {
+    let cmds = purge_commands(&["a".to_string(), "b".to_string()]);
+    assert_eq!(cmds.len(), 2);
+    assert_eq!(cmds[1], ("purge_device", json!({ "device": "b" })));
+    assert_eq!(purge_summary(&[]), "");
+}

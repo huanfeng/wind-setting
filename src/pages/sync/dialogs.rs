@@ -16,6 +16,7 @@ pub(super) fn mount(ui: &SyncUi, state: &AppState) {
         mass_delete_dialog(ui),
         reset_dialog(ui),
         remove_device_dialog(ui),
+        purge_dialog(ui),
         rename_dialog(ui),
         group_dialog(ui),
     ];
@@ -128,6 +129,52 @@ fn remove_device_dialog(ui: &SyncUi) -> Element {
                 .on_click(move |_| u.confirm_remove()),
         );
     Element::dialog(visible, dialog_frame("移除设备", body, footer))
+}
+
+/// 清除已移除设备留在远端的学习数据：列出设备号，确认后逐个清除。
+fn purge_dialog(ui: &SyncUi) -> Element {
+    let visible = ui.purge_dialog;
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 14)
+        .spacing(8)
+        .child(
+            Element::label_signal(
+                ui.removed_with_data
+                    .map(|d| format!("设备：{}", d.join("、"))),
+            )
+            .font_size(13.0)
+            .fg_role(Role::Text)
+            .width_match()
+            .max_lines(4),
+        )
+        .child(
+            Element::label(PURGE_WARN)
+                .font_size(12.5)
+                .fg_role(Role::Warning)
+                .width_match()
+                .max_lines(4),
+        );
+    let (u, busy, g) = (ui.clone(), ui.busy, ui.purge_guard.clone());
+    let footer = Element::row()
+        .spacing(8)
+        .child(
+            Element::button("取消")
+                .small()
+                .outline_soft()
+                .on_click(move |_| {
+                    g.disarm();
+                    visible.set(false);
+                }),
+        )
+        .child(
+            Element::button("清除")
+                .small()
+                .danger()
+                .enabled_when(move || !busy.get())
+                .on_click(move |_| u.confirm_purge()),
+        );
+    Element::dialog(visible, dialog_frame("清除已移除设备的数据", body, footer))
 }
 
 /// 改号与显示名称：两项都不变时保存只关框。
