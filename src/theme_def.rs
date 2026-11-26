@@ -7,7 +7,10 @@ use windui::prelude::*;
 
 /// 设置行 hint 悬浮提示的换行宽度（逻辑 px）。设置窗口比库默认场景更宽，
 /// 稍微放宽避免过短说明也被强制拆成两三行。
-pub const TOOLTIP_MAX_W: f32 = 320.0;
+pub const TOOLTIP_MAX_W: f32 = 360.0;
+
+/// 悬浮提示的弹出延时（ms）。库默认 500，对「悬停看说明」太迟钝。
+pub const TOOLTIP_DELAY_MS: u64 = 120;
 
 /// 表单行排版（`Element::setting_row` / `setting_row_desc` / `field` 一并适用）。
 ///
@@ -63,6 +66,7 @@ pub fn light_theme() -> Theme {
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
+    t.tooltip.delay_ms = Some(TOOLTIP_DELAY_MS);
     apply_form_theme(&mut t);
     t
 }
@@ -102,6 +106,7 @@ pub fn dark_theme() -> Theme {
     t.metrics.border_width = Len::Physical { px: 1.0 };
     t.metrics.border_width_focus = Len::Physical { px: 2.0 };
     t.tooltip.max_width = Some(TOOLTIP_MAX_W);
+    t.tooltip.delay_ms = Some(TOOLTIP_DELAY_MS);
     apply_form_theme(&mut t);
     t
 }

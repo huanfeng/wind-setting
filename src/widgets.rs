@@ -211,9 +211,107 @@ pub fn page_header(title: &str, desc: &str) -> Element {
 /// 不限行会把行撑成三四行、整列高度参差。
 pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element {
     match sub {
-        Some(s) => Element::setting_row_desc(label, s, control),
+        Some(s) => {
+            let th = windui::theme::current();
+            let (f, m) = (&th.form, &th.metrics);
+            let left = row_left(
+                Element::label(label)
+                    .font_size(f.label_size(m))
+                    .font_weight(f.label_weight())
+                    .fg_role(Role::Text)
+                    .max_lines(1)
+                    .truncate(Truncate::End),
+                None,
+                Some(Desc::Text(s)),
+                f.desc_max_lines().unwrap_or(1),
+            );
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .padding_xy(0, f.row_pad_y(m))
+                .spacing(f.gap(m))
+                .child(left)
+                .child(control)
+        }
         None => Element::setting_row(label, control),
     }
+}
+
+/// 说明文字的来源：构建期静态串，或随数据变化的信号。
+enum Desc<'a> {
+    Text(&'a str),
+    Signal(Signal<String>),
+}
+
+/// 说明的 i 图标：悬停快显全文。静态串直接挂在图标上；信号走 [`info_badge`] 那条动态路。
+fn desc_badge(d: &Desc) -> Element {
+    match d {
+        Desc::Text(s) => Element::stack()
+            .size(14, 14)
+            .child(crate::icons::tinted_role(
+                crate::icons::INFO_THIN,
+                14,
+                Role::TextSubtle,
+            ))
+            .tooltip(*s),
+        Desc::Signal(sig) => info_badge(*sig, |_| {}),
+    }
+}
+
+/// 设置行左块：标题 + 说明。说明有两种呈现（「界面细节」的「选项说明」），两种都建出来、
+/// 按信号只显示一个，切换即时生效：行内——标题下方铺开 `max_lines` 行；悬浮提示——标题后一枚
+/// i 图标，悬停才显示。无说明时只有标题。
+///
+/// `label` 由调用方按各行型的字号/限行拼好，这里只管排。
+fn row_left(
+    label: Element,
+    badge: Option<Element>,
+    desc: Option<Desc>,
+    max_lines: usize,
+) -> Element {
+    let th = windui::theme::current();
+    let (f, m) = (&th.form, &th.metrics);
+    let Some(d) = desc else {
+        let col = Element::col().weight(1.0).spacing(2);
+        return match badge {
+            None => col.child(label.width_match()),
+            Some(b) => col.child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(5)
+                    .child(label)
+                    .child(b),
+            ),
+        };
+    };
+    let mode = look().0[crate::look::DESC_STYLE];
+    let body = match &d {
+        // 限行截断时 `tooltip` 兜底看全文（没真截断时库自动不弹）。
+        Desc::Text(s) => Element::label(*s).tooltip(*s),
+        Desc::Signal(sig) => Element::label_signal(*sig),
+    }
+    .font_size(f.desc_size(m))
+    .fg_role(Role::TextSubtle)
+    .width_match()
+    .max_lines(max_lines)
+    .truncate(Truncate::End)
+    .visible_when(move || mode.get() == crate::look::desc::INLINE);
+    let mut title = Element::row()
+        .width_match()
+        .cross(Align::Center)
+        .spacing(5)
+        .child(label);
+    if let Some(b) = badge {
+        title = title.child(b);
+    }
+    let title =
+        title.child(desc_badge(&d).visible_when(move || mode.get() == crate::look::desc::TOOLTIP));
+    Element::col()
+        .weight(1.0)
+        .spacing(2)
+        .child(title)
+        .child(body)
 }
 
 /// 悬停提示取自 `Signal` 的旁挂件。
@@ -367,32 +465,17 @@ pub fn setting_row_schema_hint(
 fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: Element) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    // 标签与角标同排；标签取 weight(1.0) 把角标推到文字右边而不是行尾。
-    let title = Element::row()
-        .width_match()
-        .cross(Align::Center)
-        .spacing(5)
-        .child(
-            Element::label(label)
-                .font_size(f.label_size(m))
-                .font_weight(f.label_weight())
-                .fg_role(Role::Text)
-                .max_lines(1)
-                .truncate(Truncate::End),
-        )
-        .child(badge);
-    let mut left = Element::col().weight(1.0).spacing(2).child(title);
-    if let Some(s) = sub {
-        left = left.child(
-            Element::label(s)
-                .font_size(f.desc_size(m))
-                .fg_role(Role::TextSubtle)
-                .width_match()
-                .max_lines(2)
-                .truncate(Truncate::End)
-                .tooltip(s),
-        );
-    }
+    let left = row_left(
+        Element::label(label)
+            .font_size(f.label_size(m))
+            .font_weight(f.label_weight())
+            .fg_role(Role::Text)
+            .max_lines(1)
+            .truncate(Truncate::End),
+        Some(badge),
+        sub.map(Desc::Text),
+        2,
+    );
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -417,26 +500,17 @@ fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: E
 pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Element) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let left = Element::col()
-        .weight(1.0)
-        .spacing(2)
-        .child(
-            Element::label(label)
-                .font_size(f.label_size(m))
-                .font_weight(f.label_weight())
-                .fg_role(Role::Text)
-                .width_match()
-                .max_lines(1)
-                .truncate(Truncate::End),
-        )
-        .child(
-            Element::label_signal(desc)
-                .font_size(f.desc_size(m))
-                .fg_role(Role::TextSubtle)
-                .width_match()
-                .max_lines(3)
-                .truncate(Truncate::End),
-        );
+    let left = row_left(
+        Element::label(label)
+            .font_size(f.label_size(m))
+            .font_weight(f.label_weight())
+            .fg_role(Role::Text)
+            .max_lines(1)
+            .truncate(Truncate::End),
+        None,
+        Some(Desc::Signal(desc)),
+        3,
+    );
     Element::row()
         .width_match()
         // Center 而非 Start：右侧是一组按钮，副标题一行时贴顶会让按钮与标签错位。
@@ -487,25 +561,17 @@ pub fn setting_row_override(
 ) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let mut left = Element::col().weight(1.0).spacing(2).child(
+    let left = row_left(
         Element::label(label)
             .font_size(f.label_size(m))
             .font_weight(f.label_weight())
             .fg_role(Role::Text)
-            .width_match()
             .max_lines(1)
             .truncate(Truncate::End),
+        None,
+        sub.map(Desc::Text),
+        2,
     );
-    if let Some(s) = sub {
-        left = left.child(
-            Element::label(s)
-                .font_size(f.desc_size(m))
-                .fg_role(Role::TextSubtle)
-                .width_match()
-                .max_lines(2)
-                .truncate(Truncate::End),
-        );
-    }
     Element::row()
         .width_match()
         .cross(Align::Center)
@@ -550,25 +616,17 @@ pub fn setting_row_scheme(
 ) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let mut left = Element::col().weight(1.0).spacing(2).child(
+    let left = row_left(
         Element::label(label)
             .font_size(f.label_size(m))
             .font_weight(f.label_weight())
             .fg_role(Role::Text)
-            .width_match()
             .max_lines(1)
             .truncate(Truncate::End),
+        None,
+        sub.map(Desc::Text),
+        2,
     );
-    if let Some(s) = sub {
-        left = left.child(
-            Element::label(s)
-                .font_size(f.desc_size(m))
-                .fg_role(Role::TextSubtle)
-                .width_match()
-                .max_lines(2)
-                .truncate(Truncate::End),
-        );
-    }
     let (m1, m2) = (modified.clone(), modified);
     Element::row()
         .width_match()
@@ -708,26 +766,17 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     // 限行取 2 而非跟随 `form.*_max_lines`：键组行的标签常是「候选翻页键（上一页/下一页）」
     // 这类长名，右侧又被 300px 网格占死，压成一行会把大半个名字吃掉；而本行型总共只有
     // 三五行，不像清单页那样需要严格等高。
-    let mut left = Element::col().weight(1.0).spacing(2).child(
+    let left = row_left(
         Element::label(label)
             .font_size(f.label_size(m))
             .font_weight(f.label_weight())
             .fg_role(Role::Text)
-            .width_match()
             .max_lines(2)
             .truncate(Truncate::End),
+        None,
+        sub.map(Desc::Text),
+        2,
     );
-    if let Some(s) = sub {
-        left = left.child(
-            Element::label(s)
-                .font_size(f.desc_size(m))
-                .fg_role(Role::TextSubtle)
-                .width_match()
-                .max_lines(2)
-                .truncate(Truncate::End)
-                .tooltip(s),
-        );
-    }
     Element::row()
         .width_match()
         .cross(Align::Start)
