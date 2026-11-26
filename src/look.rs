@@ -26,9 +26,11 @@ pub const ROW_DIVIDER: usize = 3;
 pub const SUBHEADING: usize = 4;
 pub const CARD_EDGE: usize = 5;
 pub const DESC_STYLE: usize = 6;
+pub const TITLE_SIZE: usize = 7;
+pub const TITLE_WEIGHT: usize = 8;
 
 /// 选项个数。
-pub const N: usize = 7;
+pub const N: usize = 9;
 
 /// 各选项的缺省下标（未写 `[ui.look]` 时用它）：各表第一项。
 pub const DEFAULT: [usize; N] = [0; N];
@@ -69,6 +71,19 @@ pub mod desc {
     /// 标题后一枚 i 图标，悬停才显示。
     pub const TOOLTIP: usize = 1;
 }
+/// 图标模式标题字号加量的下标；对应 [`TITLE_SIZE_BOOST`]。
+pub mod tsize {
+    pub const BASE: usize = 0;
+    pub const PLUS_HALF: usize = 1;
+    pub const PLUS_ONE: usize = 2;
+}
+/// 图标模式标题字重的下标。
+pub mod tweight {
+    pub const REGULAR: usize = 0;
+    pub const SEMIBOLD: usize = 1;
+}
+/// 与 [`tsize`] 下标一一对应的字号加量（px）。
+pub const TITLE_SIZE_BOOST: [f32; 3] = [0.0, 0.5, 1.0];
 /// 卡片边界的下标。
 pub mod edge {
     pub const BORDER_SHADOW: usize = 0;
@@ -113,6 +128,16 @@ pub const OPTIONS: [LookOption; N] = [
         values: &["inline", "tooltip"],
         labels: &["行内显示", "悬浮提示（i 图标）"],
     },
+    LookOption {
+        title: "图标模式标题字号",
+        values: &["base", "plus_half", "plus_one"],
+        labels: &["标准", "+0.5", "+1"],
+    },
+    LookOption {
+        title: "图标模式标题字重",
+        values: &["regular", "semibold"],
+        labels: &["常规", "半粗"],
+    },
 ];
 
 /// `[ui.look]`。字段用 `Option<String>` 而不是枚举：未知取值若让 serde 报错，整个
@@ -134,6 +159,10 @@ pub struct LookConfig {
     pub card_edge: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desc_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_weight: Option<String>,
 }
 
 impl LookConfig {
@@ -147,6 +176,8 @@ impl LookConfig {
             &self.subheading,
             &self.card_edge,
             &self.desc_style,
+            &self.title_size,
+            &self.title_weight,
         ]
     }
 
@@ -174,6 +205,8 @@ impl LookConfig {
             subheading: v(SUBHEADING),
             card_edge: v(CARD_EDGE),
             desc_style: v(DESC_STYLE),
+            title_size: v(TITLE_SIZE),
+            title_weight: v(TITLE_WEIGHT),
         }
     }
 
@@ -215,7 +248,7 @@ mod tests {
 
     #[test]
     fn indices_roundtrip_through_config_strings() {
-        let ix = [2, 1, 1, 2, 1, 2, 1];
+        let ix = [2, 1, 1, 2, 1, 2, 1, 2, 1];
         assert_eq!(LookConfig::from_indices(ix).indices(), ix);
     }
 
@@ -251,6 +284,12 @@ mod tests {
         assert_eq!(v(CARD_EDGE, edge::SHADOW), "shadow");
         assert_eq!(v(DESC_STYLE, desc::INLINE), "inline");
         assert_eq!(v(DESC_STYLE, desc::TOOLTIP), "tooltip");
+        assert_eq!(v(TITLE_SIZE, tsize::BASE), "base");
+        assert_eq!(v(TITLE_SIZE, tsize::PLUS_HALF), "plus_half");
+        assert_eq!(v(TITLE_SIZE, tsize::PLUS_ONE), "plus_one");
+        assert_eq!(v(TITLE_WEIGHT, tweight::REGULAR), "regular");
+        assert_eq!(v(TITLE_WEIGHT, tweight::SEMIBOLD), "semibold");
+        assert_eq!(TITLE_SIZE_BOOST.len(), OPTIONS[TITLE_SIZE].values.len());
     }
 
     /// 配置里存的是串不是下标：调顺序前写下的值读回来仍是同一种写法。

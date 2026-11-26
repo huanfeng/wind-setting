@@ -42,6 +42,8 @@ pub const INFO: &str = include_str!("../res/icons/ui/info.svg");
 /// ⚠️ 别拿它替换侧栏那个 [`INFO`]：那里是 1:1 渲染，1.4px 描边会在 150% 下摊成灰边。
 /// **两个尺寸各用各的**，这不是重复资源。
 pub const INFO_THIN: &str = include_str!("../res/icons/ui/info_thin.svg");
+/// 问号圆（同 [`INFO_THIN`] 的线宽与画布）：选项说明的提示图标。
+pub const HELP_THIN: &str = include_str!("../res/icons/ui/help_thin.svg");
 const LIST: &str = include_str!("../res/icons/ui/list.svg");
 const CHECK: &str = include_str!("../res/icons/ui/check.svg");
 /// 搜索框的前置放大镜（侧栏搜索框左侧）。

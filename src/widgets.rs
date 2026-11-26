@@ -215,12 +215,8 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
             let th = windui::theme::current();
             let (f, m) = (&th.form, &th.metrics);
             let left = row_left(
-                Element::label(label)
-                    .font_size(f.label_size(m))
-                    .font_weight(f.label_weight())
-                    .fg_role(Role::Text)
-                    .max_lines(1)
-                    .truncate(Truncate::End),
+                label,
+                1,
                 None,
                 Some(Desc::Text(s)),
                 f.desc_max_lines().unwrap_or(1),
@@ -228,12 +224,23 @@ pub fn setting_row(label: &str, sub: Option<&str>, control: Element) -> Element 
             Element::row()
                 .width_match()
                 .cross(Align::Center)
-                .padding_xy(0, f.row_pad_y(m))
+                .padding_xy(0, desc_row_pad(f, m))
                 .spacing(f.gap(m))
                 .child(left)
                 .child(control)
         }
-        None => Element::setting_row(label, control),
+        None => {
+            // 自己拼而不委托库：标题要随「选项说明」模式加大加重，库的行做不到。
+            let th = windui::theme::current();
+            let (f, m) = (&th.form, &th.metrics);
+            Element::row()
+                .width_match()
+                .cross(Align::Center)
+                .height(f.row_height())
+                .spacing(f.gap(m))
+                .child(row_left(label, 1, None, None, 1))
+                .child(control)
+        }
     }
 }
 
@@ -246,52 +253,117 @@ enum Desc<'a> {
 /// 说明 i 图标的边长。比角标（14）大一点、颜色深一档：说明收起后它是行里唯一的辅助信息。
 const DESC_ICON_PX: i32 = 16;
 
-/// 图标模式下每行额外的上下留白（px，各一份）：说明收起后行变矮，层次靠呼吸感撑住。
-const DESC_ICON_PAD: i32 = 4;
+/// 图标外圈（状态底色）的直径。
+const DESC_BADGE_PX: i32 = 22;
 
-/// 说明的 i 图标：悬停快显全文。静态串直接挂在图标上；信号走 [`info_badge`] 那条动态路。
-fn desc_badge(d: &Desc) -> Element {
-    match d {
-        Desc::Text(s) => Element::stack()
-            .size(DESC_ICON_PX, DESC_ICON_PX)
-            .child(crate::icons::tinted_role(
-                crate::icons::INFO_THIN,
-                DESC_ICON_PX,
-                Role::TextMuted,
-            ))
-            .tooltip(*s),
-        Desc::Signal(sig) => info_badge(*sig, |_| {}),
+/// 行内说明模式比图标模式多出的上下留白（px，各一份）：说明收起后行要紧凑些，
+/// 所以行外层的内边距按图标模式（`row_pad_y - 本值`）定，行内说明模式再补回来。
+const DESC_INLINE_PAD: i32 = 4;
+
+/// 图标模式下标题的「半粗」字重（字号加量见 [`crate::look::TITLE_SIZE_BOOST`]）。
+/// 两项都在「界面细节」里可调：Windows 下 DirectWrite 对中间字重不敏感，让真机对比着挑。
+const TITLE_SEMIBOLD: u16 = 600;
+
+/// 带说明行的外层上下内边距（图标模式的紧凑值）。
+fn desc_row_pad(f: &windui::theme::FormTheme, m: &windui::theme::Metrics) -> i32 {
+    (f.row_pad_y(m) - DESC_INLINE_PAD).max(0)
+}
+
+/// 说明的 i 图标：悬停弹出面板（贴在图标右侧），可移入选中复制，点击固定。
+/// 面板打开期间图标有圆形底色与加深的图标色，作为「正在看说明」的状态反馈。
+fn desc_badge(d: &Desc, title: &str) -> Element {
+    let open = signal(false);
+    let hint = match d {
+        Desc::Text(s) => Hint::text(*s),
+        Desc::Signal(sig) => Hint::signal(*sig),
     }
+    .title(title)
+    .open_signal(open);
+    let icon = |role: Role| {
+        crate::icons::tinted_role(crate::icons::HELP_THIN, DESC_ICON_PX, role).align(Align::Center)
+    };
+    Element::stack()
+        .size(DESC_BADGE_PX, DESC_BADGE_PX)
+        .child(
+            Element::leaf()
+                .size(DESC_BADGE_PX, DESC_BADGE_PX)
+                .corner(DESC_BADGE_PX as f32 / 2.0)
+                .bg_role_alpha(Role::Track, 0.35)
+                .visible_when(move || open.get()),
+        )
+        .child(icon(Role::TextSubtle).visible_when(move || !open.get()))
+        .child(icon(Role::Text).visible_when(move || open.get()))
+        .hint_with(hint)
 }
 
 /// 设置行左块：标题 + 说明。说明有两种呈现（「界面细节」的「选项说明」），两种都建出来、
 /// 按信号只显示一个，切换即时生效：行内——标题下方铺开 `max_lines` 行；悬浮提示——标题后一枚
-/// i 图标，悬停才显示。无说明时只有标题。
+/// i 图标，悬停才显示，标题同时加大加重。无说明时只有标题。
 ///
-/// `label` 由调用方按各行型的字号/限行拼好，这里只管排。
+/// 外层行的上下内边距由调用方取 [`desc_row_pad`]；行内说明模式（以及无说明的行）在这里用
+/// 上下各一块占位补回 [`DESC_INLINE_PAD`]，所以只有图标模式的有说明行会变紧凑。
 fn row_left(
-    label: Element,
+    label: &str,
+    label_lines: usize,
     badge: Option<Element>,
     desc: Option<Desc>,
     max_lines: usize,
 ) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let Some(d) = desc else {
-        let col = Element::col().weight(1.0).spacing(2);
-        return match badge {
-            None => col.child(label.width_match()),
-            Some(b) => col.child(
-                Element::row()
-                    .width_match()
-                    .cross(Align::Center)
-                    .spacing(5)
-                    .child(label)
-                    .child(b),
-            ),
-        };
-    };
     let mode = look().0[crate::look::DESC_STYLE];
+    let inline = move || mode.get() == crate::look::desc::INLINE;
+    let tip = move || mode.get() == crate::look::desc::TOOLTIP;
+    let mk_label = |boost_size: f32, weight: u16| {
+        Element::label(label)
+            .font_size(f.label_size(m) + boost_size)
+            .font_weight(weight)
+            .fg_role(Role::Text)
+            .max_lines(label_lines)
+            .truncate(Truncate::End)
+    };
+    let normal = mk_label(0.0, f.label_weight());
+    // 图标模式的标题：字号 × 字重 的全部组合都建出来，按「界面细节」里的两个选项显示一个。
+    let (ts, tw) = (
+        look().0[crate::look::TITLE_SIZE],
+        look().0[crate::look::TITLE_WEIGHT],
+    );
+    let tip_titles: Vec<Element> = (0..crate::look::TITLE_SIZE_BOOST.len())
+        .flat_map(|si| (0..2).map(move |wi| (si, wi)))
+        .map(|(si, wi)| {
+            let weight = if wi == crate::look::tweight::SEMIBOLD {
+                TITLE_SEMIBOLD
+            } else {
+                f.label_weight()
+            };
+            mk_label(crate::look::TITLE_SIZE_BOOST[si], weight)
+                .visible_when(move || tip() && ts.get() == si && tw.get() == wi)
+        })
+        .collect();
+    let pad = |show: Rc<dyn Fn() -> bool>| {
+        Element::col()
+            .size(1, DESC_INLINE_PAD)
+            .visible_when(move || show())
+    };
+    let Some(d) = desc else {
+        // 无说明：不随模式补占位，高度同图标模式外的老样子。
+        let always: Rc<dyn Fn() -> bool> = Rc::new(|| true);
+        let mut row = Element::row()
+            .width_match()
+            .cross(Align::Center)
+            .spacing(5)
+            .child(normal.visible_when(inline))
+            .children(tip_titles);
+        if let Some(b) = badge {
+            row = row.child(b);
+        }
+        return Element::col()
+            .weight(1.0)
+            .spacing(2)
+            .child(pad(always.clone()))
+            .child(row)
+            .child(pad(always));
+    };
     let body = match &d {
         // 限行截断时 `tooltip` 兜底看全文（没真截断时库自动不弹）。
         Desc::Text(s) => Element::label(*s).tooltip(*s),
@@ -302,29 +374,25 @@ fn row_left(
     .width_match()
     .max_lines(max_lines)
     .truncate(Truncate::End)
-    .visible_when(move || mode.get() == crate::look::desc::INLINE);
+    .visible_when(inline);
     let mut title = Element::row()
         .width_match()
         .cross(Align::Center)
         .spacing(6)
-        .child(label);
+        .child(normal.visible_when(inline))
+        .children(tip_titles);
     if let Some(b) = badge {
         title = title.child(b);
     }
-    let title =
-        title.child(desc_badge(&d).visible_when(move || mode.get() == crate::look::desc::TOOLTIP));
-    let pad = move || {
-        Element::col()
-            .size(1, DESC_ICON_PAD)
-            .visible_when(move || mode.get() == crate::look::desc::TOOLTIP)
-    };
+    let title = title.child(desc_badge(&d, label).visible_when(tip));
+    let inline_pad: Rc<dyn Fn() -> bool> = Rc::new(inline);
     Element::col()
         .weight(1.0)
         .spacing(2)
-        .child(pad())
+        .child(pad(inline_pad.clone()))
         .child(title)
         .child(body)
-        .child(pad())
+        .child(pad(inline_pad))
 }
 
 /// 悬停提示取自 `Signal` 的旁挂件。
@@ -478,21 +546,11 @@ pub fn setting_row_schema_hint(
 fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: Element) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let left = row_left(
-        Element::label(label)
-            .font_size(f.label_size(m))
-            .font_weight(f.label_weight())
-            .fg_role(Role::Text)
-            .max_lines(1)
-            .truncate(Truncate::End),
-        Some(badge),
-        sub.map(Desc::Text),
-        2,
-    );
+    let left = row_left(label, 1, Some(badge), sub.map(Desc::Text), 2);
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y(m))
+        .padding_xy(0, desc_row_pad(f, m))
         .spacing(f.gap(m))
         .child(left)
         .child(control)
@@ -513,22 +571,12 @@ fn setting_row_badged(label: &str, sub: Option<&str>, badge: Element, control: E
 pub fn setting_row_desc_signal(label: &str, desc: Signal<String>, control: Element) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let left = row_left(
-        Element::label(label)
-            .font_size(f.label_size(m))
-            .font_weight(f.label_weight())
-            .fg_role(Role::Text)
-            .max_lines(1)
-            .truncate(Truncate::End),
-        None,
-        Some(Desc::Signal(desc)),
-        3,
-    );
+    let left = row_left(label, 1, None, Some(Desc::Signal(desc)), 3);
     Element::row()
         .width_match()
         // Center 而非 Start：右侧是一组按钮，副标题一行时贴顶会让按钮与标签错位。
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y(m))
+        .padding_xy(0, desc_row_pad(f, m))
         .spacing(f.gap(m))
         .child(left)
         .child(control)
@@ -574,21 +622,11 @@ pub fn setting_row_override(
 ) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let left = row_left(
-        Element::label(label)
-            .font_size(f.label_size(m))
-            .font_weight(f.label_weight())
-            .fg_role(Role::Text)
-            .max_lines(1)
-            .truncate(Truncate::End),
-        None,
-        sub.map(Desc::Text),
-        2,
-    );
+    let left = row_left(label, 1, None, sub.map(Desc::Text), 2);
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y(m))
+        .padding_xy(0, desc_row_pad(f, m))
         .spacing(f.gap(m))
         // 空标签的勾选框：标签文字在左列，这里只要那个方框。
         .child(Element::checkbox("", over).small().fg_role(Role::Text))
@@ -629,22 +667,12 @@ pub fn setting_row_scheme(
 ) -> Element {
     let th = windui::theme::current();
     let (f, m) = (&th.form, &th.metrics);
-    let left = row_left(
-        Element::label(label)
-            .font_size(f.label_size(m))
-            .font_weight(f.label_weight())
-            .fg_role(Role::Text)
-            .max_lines(1)
-            .truncate(Truncate::End),
-        None,
-        sub.map(Desc::Text),
-        2,
-    );
+    let left = row_left(label, 1, None, sub.map(Desc::Text), 2);
     let (m1, m2) = (modified.clone(), modified);
     Element::row()
         .width_match()
         .cross(Align::Center)
-        .padding_xy(0, f.row_pad_y(m))
+        .padding_xy(0, desc_row_pad(f, m))
         .spacing(f.gap(m))
         .child(left)
         .child(
@@ -779,21 +807,11 @@ pub fn setting_row_checks(label: &str, sub: Option<&str>, grid: Element) -> Elem
     // 限行取 2 而非跟随 `form.*_max_lines`：键组行的标签常是「候选翻页键（上一页/下一页）」
     // 这类长名，右侧又被 300px 网格占死，压成一行会把大半个名字吃掉；而本行型总共只有
     // 三五行，不像清单页那样需要严格等高。
-    let left = row_left(
-        Element::label(label)
-            .font_size(f.label_size(m))
-            .font_weight(f.label_weight())
-            .fg_role(Role::Text)
-            .max_lines(2)
-            .truncate(Truncate::End),
-        None,
-        sub.map(Desc::Text),
-        2,
-    );
+    let left = row_left(label, 2, None, sub.map(Desc::Text), 2);
     Element::row()
         .width_match()
         .cross(Align::Start)
-        .padding_xy(0, f.row_pad_y(m))
+        .padding_xy(0, desc_row_pad(f, m))
         .spacing(f.gap(m))
         .child(left)
         .child(grid.width(300))
