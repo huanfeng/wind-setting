@@ -156,9 +156,12 @@ pub const CORRECTION_MASTER: &str = "input.correction.enabled";
 /// 「提示来源」那一行的锚点：三个来源勾选挤在同一行里（`correction_ui::build_hint_sources_row`）。
 pub const HINT_SOURCES_ANCHOR: &str = "input.correction.hint.sources";
 
+/// 模糊音卡上的「与精确拼音统一词频排序」：卡片上自己的一行，不在拼音对网格里。
+pub const FUZZY_EQUAL_RANK: &str = "input.fuzzy.equal_rank";
+
 /// 模糊音网格那一块的项（总开关也算，它的页面锚点同是块锚点）。
 fn in_fuzzy_grid(key: &str) -> bool {
-    key.starts_with("input.fuzzy.")
+    key.starts_with("input.fuzzy.") && key != FUZZY_EQUAL_RANK
 }
 
 fn block_anchor_of(key: &str) -> Option<&'static str> {
@@ -255,7 +258,7 @@ fn manifest_entries(manifest: &Manifest) -> Vec<SearchEntry> {
         }
         // 模糊音网格整块以总开关可见与否为准（`manifest::scheme_config_section`），
         // 总开关被定制版藏掉时格子虽未 hidden，界面上也没有那张网格可落。
-        if in_fuzzy_grid(key) && !manifest.is_visible(FUZZY_MASTER) {
+        if (in_fuzzy_grid(key) || key == FUZZY_EQUAL_RANK) && !manifest.is_visible(FUZZY_MASTER) {
             continue;
         }
         // 与门控开关合并成一行的「设置」按钮没有自己的落点，行锚点归开关；收进别人对话框的项
@@ -934,16 +937,16 @@ mod tests {
         }
     }
 
-    /// 「与精确拼音统一词频排序」放在模糊音的扩展设置对话框里，搜索也落到那个对话框。
+    /// 「与精确拼音统一词频排序」是模糊音卡上自己的一行，搜索落到那一行而不是对话框。
     #[test]
-    fn equal_rank_is_searchable_inside_the_fuzzy_dialog() {
+    fn equal_rank_is_a_row_on_the_fuzzy_card() {
         let idx = build_index(&manifest());
         let e = idx
             .iter()
             .find(|e| e.id == "input.fuzzy.equal_rank")
             .expect("统一词频开关应可搜索");
         assert!(
-            matches!(&e.target, JumpTarget::RowInDialog { dialog, .. } if dialog == FUZZY_MASTER),
+            matches!(&e.target, JumpTarget::Row { anchor, .. } if anchor == FUZZY_EQUAL_RANK),
             "{:?}",
             e.target
         );

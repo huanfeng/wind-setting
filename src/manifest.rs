@@ -3367,22 +3367,21 @@ fn fuzzy_summary(enabled: bool, on: &[&str]) -> String {
     }
 }
 
-/// 对话框里网格下方的「与精确拼音统一词频排序」开关。文案取自清单，清单里被藏掉就不出。
-fn equal_rank_row(state: &AppState, cfg: &Config) -> Option<Element> {
-    const KEY: &str = "input.fuzzy.equal_rank";
+/// 模糊音卡上总开关下面一行：「与精确拼音统一词频排序」。文案取自清单，清单里被藏掉就不出。
+fn equal_rank_row(state: &AppState, cfg: &Config) -> Option<(Element, crate::widgets::Vis)> {
+    use crate::search::index::FUZZY_EQUAL_RANK as KEY;
     if !state.manifest.is_visible(KEY) {
         return None;
     }
     let item = state.manifest.get(KEY)?;
     let sig = register_toggle(state, KEY, cfg);
-    Some(setting_row(
-        &item.label,
-        item.hint.as_deref(),
-        Element::switch(sig),
-    ))
+    let row = setting_row(&item.label, item.hint.as_deref(), Element::switch(sig));
+    let row = crate::search::anchor::wrap(row, crate::search::index::page_anchor(KEY), state.jump);
+    let row = mark_row(state, KEY, "schema", FUZZY_SECTION, row);
+    Some((row, row_vis(state, KEY, "schema", FUZZY_SECTION)))
 }
 
-/// 模糊音入口行：「模糊音 …… [开关][扩展设置]」，13 组拼音对收在对话框里。
+/// 模糊音入口行：「模糊音 …… [开关][设置]」，13 组拼音对收在对话框里。
 ///
 /// 13 对挤在卡片上占了半屏，而多数人只开一两组、开完就不再动——放进对话框后，
 /// 行副标题写出当前勾选了哪几组（[`fuzzy_summary`]），不点开也看得到状态。
@@ -3453,8 +3452,7 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .spacing(10)
         .child(host_off_notice("模糊音").visible_when(move || !en.get()))
         .child(select_all_box)
-        .child(grid)
-        .children(equal_rank_row(state, cfg));
+        .child(grid);
     let body = crate::search::anchor::wrap(
         body,
         crate::search::index::in_dialog_anchor(FUZZY_PAIRS[0].0),
@@ -3469,7 +3467,7 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .insert(crate::search::index::FUZZY_MASTER.to_string(), visible);
     register_dialog(
         state,
-        build_group_dialog(visible, "模糊音 · 扩展设置", vec![body], None),
+        build_group_dialog(visible, "模糊音 · 设置", vec![body], None),
     );
 
     let control = Element::row()
@@ -3477,7 +3475,7 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .spacing(10)
         .child(Element::switch(en))
         .child(
-            Element::button("扩展设置")
+            Element::button("设置")
                 .small()
                 .outline_soft()
                 .on_click(move |_| visible.set(true)),
@@ -3836,7 +3834,7 @@ pub fn scheme_config_section(state: &AppState, label: &str, section: &str) -> Op
     ))
 }
 
-/// 方案页「模糊音」卡：一行总开关 + 「扩展设置」（拼音对网格，见 [`build_fuzzy_row`]）。
+/// 方案页「模糊音」卡：一行总开关 + 「设置」（拼音对网格，见 [`build_fuzzy_row`]），下面是「统一词频排序」一行。
 ///
 /// 模糊音是全局项（`input.fuzzy.*`），不属于哪个方案，所以不放在全拼 / 双拼卡里。
 /// 网格是手写的、不逐格看 `hidden`：整块以总开关可见与否为准——定制版要藏就藏整块
@@ -3853,9 +3851,11 @@ pub fn fuzzy_section(state: &AppState) -> Option<Element> {
     );
     let row = mark_row(state, FUZZY_MASTER, "schema", FUZZY_SECTION, row);
     let vis = row_vis(state, FUZZY_MASTER, "schema", FUZZY_SECTION);
+    let mut rows = vec![(row, Some(vis))];
+    rows.extend(equal_rank_row(state, &state.current_config).map(|(row, vis)| (row, Some(vis))));
     Some(crate::widgets::section_vis_with_menu(
         FUZZY_SECTION,
-        vec![(row, Some(vis))],
+        rows,
         None,
         section_menu(state, "schema", FUZZY_SECTION),
     ))
