@@ -296,6 +296,24 @@ pub(crate) fn content_switch_steps(saved: &Form, content: Content) -> Vec<Step> 
     vec![("sync.setSettings", json!({ "settings": f.to_settings() }))]
 }
 
+/// 内容开关这次该怎么办。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContentDispatch {
+    Send,
+    /// 有写入在途：等它结束再按当前开关值重发。
+    Defer,
+    /// 没接通道，发不出去：开关退回。
+    Revert,
+}
+
+pub(crate) fn content_dispatch(busy: bool, has_tx: bool) -> ContentDispatch {
+    match (has_tx, busy) {
+        (false, _) => ContentDispatch::Revert,
+        (true, true) => ContentDispatch::Defer,
+        (true, false) => ContentDispatch::Send,
+    }
+}
+
 /// 设备卡末行的值；没有已移除设备的数据返回空串（行隐藏）。
 pub(crate) fn purge_summary(devs: &[String]) -> String {
     if devs.is_empty() {
@@ -1163,7 +1181,14 @@ pub(crate) fn rename_steps(
 
 /// 多步命令中途失败时的说明：改号已成功而显示名称没存上，要让用户知道。
 pub(crate) fn step_failure(op: &str, index: usize, e: &str) -> String {
-    if op == "rename" && index > 0 {
+    step_failure_for(op, index, None, e)
+}
+
+/// 同上；`dev` 是失败那一步的目标设备号（清除已移除设备时用）。
+pub(crate) fn step_failure_for(op: &str, index: usize, dev: Option<&str>, e: &str) -> String {
+    if op == "purge_devices" {
+        format!("已清除 {index} 台，{} 失败：{e}", dev.unwrap_or("?"))
+    } else if op == "rename" && index > 0 {
         format!("设备号已改，显示名称未保存（{e}）")
     } else {
         e.to_string()

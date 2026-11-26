@@ -944,3 +944,16 @@ fn purge_commands_one_per_device() {
     assert_eq!(cmds[1], ("purge_device", json!({ "device": "b" })));
     assert_eq!(purge_summary(&[]), "");
 }
+
+#[test]
+fn purge_partial_failure_names_done_count_and_device() {
+    assert_eq!(
+        step_failure_for("purge_devices", 1, Some("old-b"), "网络错误"),
+        "已清除 1 台，old-b 失败：网络错误"
+    );
+    assert_eq!(
+        step_failure_for("purge_devices", 0, Some("old-a"), "x"),
+        "已清除 0 台，old-a 失败：x"
+    );
+    assert_eq!(step_failure_for("group", 1, None, "x"), "x");
+}

@@ -123,6 +123,10 @@ pub struct SyncUi {
     storage_summary: Signal<String>,
     /// 间隔改了但有写入在途，等它结束再发最新值。
     interval_pending: Rc<Cell<bool>>,
+    /// 内容开关在途时又拨了开关：回执后按当前开关值重发。
+    content_pending: Rc<Cell<bool>>,
+    /// 在途的内容开关值，成功后成为已保存值。
+    content_sent: Rc<Cell<Option<Content>>>,
     /// 在途的「更换存储」表单：成功后立即作为已保存值，免得随后的间隔保存带着旧存储设置。
     storage_sent: Rc<RefCell<Option<Form>>>,
     /// 有命令在途：按钮置灰，避免重复点。
@@ -269,6 +273,8 @@ impl SyncUi {
             saved: Rc::new(RefCell::new(Form::default())),
             storage_summary: signal(storage_summary(&f)),
             interval_pending: Rc::new(Cell::new(false)),
+            content_pending: Rc::new(Cell::new(false)),
+            content_sent: Rc::new(Cell::new(None)),
             storage_sent: Rc::new(RefCell::new(None)),
             busy: signal(false),
             backend: signal(0),
@@ -625,13 +631,10 @@ impl SyncUi {
                         "reset_remote" if self.new_key.get().is_empty() => {
                             self.reset_dialog.set(false);
                         }
-                        // 成功：开关当前显示的就是刚发出去的值。
                         "content" => {
-                            self.saved.borrow_mut().content = Content {
-                                learned: self.content_learned.get(),
-                                completion: self.content_completion.get(),
-                                stats: self.content_stats.get(),
-                            };
+                            if let Some(c) = self.content_sent.take() {
+                                self.saved.borrow_mut().content = c;
+                            }
                         }
                         "disable" => self.saved.borrow_mut().enabled = false,
                         "enable" => self.saved.borrow_mut().enabled = true,
@@ -644,8 +647,13 @@ impl SyncUi {
                     self.reset_guard.arm();
                 }
                 if op == OP_CONTENT && !o.ok {
-                    // 失败：开关退回 core 里的值（刷新会带回）
+                    // 失败：开关退回已保存的值，在途的后续改动一并作废
+                    self.content_sent.set(None);
+                    self.content_pending.set(false);
                     self.show_content(self.saved.borrow().content);
+                }
+                if self.content_pending.replace(false) {
+                    self.send_content(self.content_now());
                 }
                 if matches!(op.as_str(), "enable" | "disable") {
                     // 失败时开关退回已保存的状态
@@ -687,7 +695,10 @@ impl SyncUi {
         std::thread::spawn(move || {
             let mut result = Ok(Value::Null);
             for (i, (method, params)) in steps.into_iter().enumerate() {
-                result = rpc::call_core(method, &params).map_err(|e| step_failure(&op, i, &e));
+                result = rpc::call_core(method, &params).map_err(|e| {
+                    let dev = params["args"]["device"].as_str();
+                    step_failure_for(&op, i, dev, &e)
+                });
                 if result.is_err() {
                     break;
                 }
@@ -711,17 +722,35 @@ impl SyncUi {
         }
     }
 
-    /// 同步内容开关：改了即存（成功不提示）。没发出去（忙或未接通道）时开关退回已保存的值。
+    /// 同步内容开关：改了即存（成功不提示）。有写入在途就等它结束再按当前开关值重发；
+    /// 没接通道时开关退回已保存的值。
     fn set_content(&self, change: impl FnOnce(&mut Content)) {
-        let mut content = self.saved.borrow().content;
-        change(&mut content);
-        let sent = !self.busy.get() && self.tx.borrow().is_some();
-        if sent {
-            let steps = content_switch_steps(&self.saved.borrow(), content);
-            self.run_steps(OP_CONTENT, steps);
-        } else {
-            self.show_content(self.saved.borrow().content);
+        let mut c = self.content_now();
+        change(&mut c);
+        self.show_content(c);
+        match content_dispatch(self.busy.get(), self.tx.borrow().is_some()) {
+            ContentDispatch::Send => self.send_content(c),
+            ContentDispatch::Defer => self.content_pending.set(true),
+            ContentDispatch::Revert => self.show_content(self.saved.borrow().content),
         }
+    }
+
+    fn content_now(&self) -> Content {
+        Content {
+            learned: self.content_learned.get(),
+            completion: self.content_completion.get(),
+            stats: self.content_stats.get(),
+        }
+    }
+
+    /// 与已保存值不同才发。
+    fn send_content(&self, c: Content) {
+        if c == self.saved.borrow().content {
+            return;
+        }
+        let steps = content_switch_steps(&self.saved.borrow(), c);
+        self.content_sent.set(Some(c));
+        self.run_steps(OP_CONTENT, steps);
     }
 
     fn show_content(&self, c: Content) {

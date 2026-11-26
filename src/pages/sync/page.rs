@@ -19,6 +19,8 @@ pub type Card = (Option<&'static str>, Element, Vis);
 
 /// 二级导航与卡片标题；未配置时只显示第一项。
 pub(super) const NAV: [&str; 7] = ["向导", "状态", "本机", "设备", "内容", "存储", "安全"];
+/// 内容卡标题；二级导航里叫「内容」。
+pub(super) const CONTENT_TITLE: &str = "同步内容";
 pub(super) const BTN_MODIFY: &str = "修改…";
 pub(super) const ROW_GROUP: &str = "同步组";
 
@@ -374,7 +376,7 @@ fn device_row(ui: &SyncUi, d: &DeviceView, today: chrono::NaiveDate) -> Element 
 fn content_card(ui: &SyncUi) -> Element {
     let (u1, u2, u3) = (ui.clone(), ui.clone(), ui.clone());
     section_items(
-        NAV[4],
+        CONTENT_TITLE,
         vec![
             CardItem::Row(setting_row(
                 "学习数据",

@@ -680,6 +680,7 @@ fn content_card_toggles_persist() {
         );
         assert!(ui.content_stats.get() && ui.saved.borrow().content.stats);
         ui.content_stats.set(false);
+        ui.content_sent.set(Some(ui.content_now()));
         ui.on_msg(
             ctx,
             SyncMsg::Command {
@@ -724,4 +725,83 @@ fn purge_row_hidden_when_none() {
     }));
     ui.apply_status(&json!({ "installed": true, "enabled": true, "joined": true }));
     assert!(ui.purge_text.get().is_empty(), "字段缺省：行隐藏");
+}
+
+#[test]
+fn content_card_title_differs_from_nav_name() {
+    use super::page::{CONTENT_TITLE, NAV};
+    assert_eq!(CONTENT_TITLE, "同步内容");
+    assert!(NAV.contains(&"内容"));
+}
+
+#[test]
+fn content_dispatch_defers_while_busy_instead_of_reverting() {
+    assert_eq!(content_dispatch(false, true), ContentDispatch::Send);
+    assert_eq!(content_dispatch(true, true), ContentDispatch::Defer);
+    assert_eq!(content_dispatch(false, false), ContentDispatch::Revert);
+    assert_eq!(content_dispatch(true, false), ContentDispatch::Revert);
+}
+
+#[test]
+fn content_toggle_in_flight_then_second_toggle_both_written() {
+    let ui = joined_ui(true);
+    // 第一个开关已发出（在途），用户又拨了第二个：signals 都是新值，pending 置位
+    ui.content_learned.set(false);
+    ui.content_sent.set(Some(Content {
+        learned: false,
+        ..Content::default()
+    }));
+    ui.content_stats.set(false);
+    ui.content_pending.set(true);
+    windui::testing::run_with_ctx(|ctx| {
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "content".into(),
+                result: Ok(json!({})),
+            },
+        );
+    });
+    assert_eq!(
+        ui.saved.borrow().content,
+        Content {
+            learned: false,
+            ..Content::default()
+        },
+        "第一次回执只落第一个开关"
+    );
+    assert!(!ui.content_pending.get(), "pending 已消费");
+    assert_eq!(
+        ui.content_sent.get(),
+        Some(Content {
+            learned: false,
+            completion: true,
+            stats: false
+        }),
+        "按当前开关值重发，两项都在里面"
+    );
+    assert!(!ui.content_stats.get(), "在途时不把开关退回");
+}
+
+#[test]
+fn content_failure_reverts_and_drops_pending() {
+    let ui = joined_ui(true);
+    ui.content_learned.set(false);
+    ui.content_stats.set(false);
+    ui.content_pending.set(true);
+    ui.content_sent.set(Some(Content {
+        learned: false,
+        ..Content::default()
+    }));
+    windui::testing::run_with_ctx(|ctx| {
+        ui.on_msg(
+            ctx,
+            SyncMsg::Command {
+                op: "content".into(),
+                result: Err("boom".into()),
+            },
+        );
+    });
+    assert_eq!(ui.content_now(), Content::default());
+    assert!(!ui.content_pending.get());
 }
