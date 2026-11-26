@@ -71,6 +71,19 @@ pub enum WizOp {
     Confirm,
 }
 
+impl WizOp {
+    /// 回执会带回新的同步密钥（或为取回密钥而发）：在途时不许关框。
+    pub(super) fn yields_key(self) -> bool {
+        matches!(
+            self,
+            WizOp::CreateKey
+                | WizOp::StorageCreate
+                | WizOp::Recover { .. }
+                | WizOp::RecoverExport { .. }
+        )
+    }
+}
+
 /// 当前步骤成功后去哪一步。`joined` 是测试连接时本机已加入（重新开启同步）；`mode` 是第 3 步的
 /// 做法：生成同步密钥为 `"init"`，粘贴加入为 `"import"`；`needs_identity` 取自随后的状态。
 pub(crate) fn next_step(step: WizStep, joined: bool, mode: &str, needs_identity: bool) -> WizStep {
@@ -457,6 +470,7 @@ impl SyncUi {
         }
         if self.inline_rpc.get() {
             self.busy.set(true);
+            self.key_pending.set(op.yields_key());
             self.on_wizard(op, run_all(steps));
             return;
         }
@@ -464,6 +478,7 @@ impl SyncUi {
             return;
         };
         self.busy.set(true);
+        self.key_pending.set(op.yields_key());
         std::thread::spawn(move || {
             let _ = tx.send(SyncMsg::Wizard {
                 op,
@@ -475,6 +490,7 @@ impl SyncUi {
     /// 向导 / 确认身份 / 更换存储的回执。框已关才回来的结果只刷新页面，不再动对话框状态。
     pub(super) fn on_wizard(&self, op: WizOp, result: Result<Vec<Value>, (usize, String)>) {
         self.busy.set(false);
+        self.key_pending.set(false);
         if op == WizOp::StorageSave {
             self.adopt_sent_storage(&result);
         }

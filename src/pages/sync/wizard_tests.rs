@@ -557,3 +557,43 @@ fn switching_wizard_key_form_clears_pasted_key() {
     ui.on_wizard(WizOp::ImportKey, Err((0, "远端还没有同步库".into())));
     assert_eq!(ui.import_key.get(), "");
 }
+
+// ───────────────────────────── 产出密钥的命令在途 ─────────────────────────────
+
+#[test]
+fn key_yielding_ops_are_the_ones_that_bring_back_a_key() {
+    for op in [
+        WizOp::CreateKey,
+        WizOp::StorageCreate,
+        WizOp::Recover { storage: false },
+        WizOp::RecoverExport { storage: true },
+    ] {
+        assert!(op.yields_key(), "{op:?}");
+    }
+    for op in [
+        WizOp::Test,
+        WizOp::ImportKey,
+        WizOp::StorageSave,
+        WizOp::StorageJoin,
+    ] {
+        assert!(!op.yields_key(), "{op:?}");
+    }
+}
+
+/// 生成密钥 / 建库在途时关框，回执里的新密钥会被丢掉、用户从没见过：在途期间不许关，回执一到就解除。
+#[test]
+fn dialogs_stay_open_while_a_key_is_on_its_way() {
+    let ui = SyncUi::new();
+    ui.wizard.set(true);
+    ui.storage_dialog.set(true);
+    ui.busy.set(true);
+    ui.key_pending.set(true);
+    ui.close_wizard();
+    ui.close_storage_dialog();
+    assert!(ui.wizard.get() && ui.storage_dialog.get(), "建库在途不关");
+    ui.on_wizard(WizOp::CreateKey, Err((0, "网络错误".into())));
+    assert!(!ui.key_pending.get(), "回执一到就解除");
+    ui.close_wizard();
+    ui.close_storage_dialog();
+    assert!(!ui.wizard.get() && !ui.storage_dialog.get());
+}

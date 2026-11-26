@@ -149,6 +149,8 @@ pub struct SyncUi {
     new_key: Signal<String>,
     /// 「我已保存同步密钥」：显示新密钥时勾上才能前进或关框。
     key_ack: Signal<bool>,
+    /// 会产出新密钥的命令在途（见 [`WizOp::yields_key`]）：回执回来前不许关框，否则密钥被丢、用户从没见过。
+    key_pending: Signal<bool>,
     /// 「查看…」读到的同步密钥；关框即清。
     exported_key: Signal<String>,
     export_dialog: Signal<bool>,
@@ -274,6 +276,7 @@ impl SyncUi {
             import_key: s(),
             new_key: s(),
             key_ack: signal(false),
+            key_pending: signal(false),
             exported_key: s(),
             export_dialog: signal(false),
             reset_dialog: signal(false),
@@ -525,7 +528,7 @@ impl SyncUi {
 
     /// 正显示新生成的同步密钥、还没勾「我已保存」：不让前进或关框。
     fn key_unacked(&self) -> bool {
-        !self.new_key.get().is_empty() && !self.key_ack.get()
+        self.key_pending.get() || (!self.new_key.get().is_empty() && !self.key_ack.get())
     }
 
     /// 存储表单 + 已保存的其余设置。
