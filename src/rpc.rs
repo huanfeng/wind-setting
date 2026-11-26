@@ -752,6 +752,17 @@ mod tests {
         );
     }
 
+    /// 守护：mock 的设备列表非空，且按设备取的 summary 与全部设备不同（离屏截图靠它看出切换）。
+    #[test]
+    fn mock_stats_devices_differ_per_device() {
+        let devs = super::mock_reply("stats.devices", &json!({}));
+        assert!(!devs.as_array().unwrap().is_empty());
+        let total = |dev: Value| {
+            super::mock_reply("stats.summary", &json!({ "device": dev }))["total_chars"].as_u64()
+        };
+        assert_ne!(total(json!("all")), total(json!("mac-2m9q")));
+    }
+
     #[test]
     fn test_mock_reply_shapes() {
         // 确保 mock 返回合理的 JSON 结构
@@ -1315,6 +1326,11 @@ fn mock_noise(seed: u64, salt: u64) -> u64 {
 /// 截图核对色阶与留白就失去意义。
 fn mock_stats_daily(params: &Value) -> Value {
     use chrono::Datelike;
+    // 按设备错开样例：同一设备恒定，「全部设备」（缺省）沿用原样例。
+    let dev_salt = match params.get("device").and_then(|v| v.as_str()) {
+        None | Some("all") | Some("") => 0,
+        Some(d) => d.bytes().fold(7u64, |a, b| a * 31 + b as u64),
+    };
     let get = |k: &str| params.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let parse = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok();
     let (Some(from), Some(to)) = (parse(get("from")), parse(get("to"))) else {
@@ -1324,7 +1340,7 @@ fn mock_stats_daily(params: &Value) -> Value {
     let mut out = Vec::new();
     let mut cur = from;
     while cur <= to {
-        let seed = cur.num_days_from_ce() as u64;
+        let seed = (cur.num_days_from_ce() as u64).wrapping_add(dev_salt.wrapping_mul(1_000_003));
         let weekday = cur.weekday().num_days_from_monday();
         // 8% 的日子整日无输入（休假/未开机）；周末产出约为工作日四成。
         let idle = mock_noise(seed, 1) % 100 < 8;
@@ -1418,13 +1434,14 @@ fn mock_stats_daily(params: &Value) -> Value {
 ///
 /// 由 `mock_stats_daily` 的同一份样例汇总而来——两个接口若各编各的，
 /// 页面上「今日输入」和热力图最后一格会对不上，离线核对反而误导。
-fn mock_stats_summary() -> Value {
+fn mock_stats_summary(params: &Value) -> Value {
     let today = chrono::Local::now();
     let from = (today - chrono::Duration::days(180))
         .format("%Y-%m-%d")
         .to_string();
     let to = today.format("%Y-%m-%d").to_string();
-    let days = mock_stats_daily(&json!({ "from": from, "to": to }));
+    let device = params.get("device").cloned().unwrap_or(Value::Null);
+    let days = mock_stats_daily(&json!({ "from": from, "to": to, "device": device }));
     let days = days.as_array().cloned().unwrap_or_default();
     let num = |d: &Value, k: &str| d.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
 
@@ -2937,7 +2954,9 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
             "ok": true, "imported": 2, "skipped": 0, "format": "rime", "rejected": 0
         }),
         "userDicts.setEnabled" => json!({ "ok": true, "live": true }),
-        "stats.summary" => mock_stats_summary(),
+        "stats.summary" => mock_stats_summary(params),
+        // 有他机统计的设备号；含一台名册里没有的（显示「已移除的设备」）。
+        "stats.devices" => json!(["desktop-c8x2", "mac-2m9q", "gone-1x2y"]),
         "stats.clear" => json!({ "ok": true }),
         "stats.pruneBefore" => json!({ "count": 0, "before": "" }),
         "dict.listPaged" => json!({ "items": [

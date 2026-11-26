@@ -284,12 +284,19 @@ pub fn heat_level(chars: u32) -> usize {
 ///
 /// 两个调用并行发起：本地 redb 查询很快，但管道往返各自独立，并行省一次 RTT。
 /// 任一失败即整体失败——半份数据画出来的图会误导，不如明确报错。
-pub fn fetch(days_back: i64) -> Result<StatsData, String> {
+///
+/// `device`：`"all"`（全部设备）/ `"self"`（本机）/ 某台设备的设备号，原样透传给 core。
+pub fn fetch(days_back: i64, device: &str) -> Result<StatsData, String> {
     let from = date_key_before(days_back);
     let to = today_key();
 
-    let h_summary = std::thread::spawn(|| rpc::call_core("stats.summary", &json!({})));
-    let daily_res = rpc::call_core("stats.daily", &json!({ "from": from, "to": to }));
+    let dev = device.to_string();
+    let h_summary =
+        std::thread::spawn(move || rpc::call_core("stats.summary", &json!({ "device": dev })));
+    let daily_res = rpc::call_core(
+        "stats.daily",
+        &json!({ "from": from, "to": to, "device": device }),
+    );
 
     let summary_val = h_summary
         .join()
@@ -302,6 +309,76 @@ pub fn fetch(days_back: i64) -> Result<StatsData, String> {
         serde_json::from_value(daily_val).map_err(|e| format!("每日统计解析失败: {e}"))?;
 
     Ok(StatsData { summary, days })
+}
+
+/// 设备下拉的一项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceOption {
+    /// 传给 core 的 `device` 参数。
+    pub value: String,
+    pub label: String,
+}
+
+/// 取有他机统计的设备号（`stats.devices`）；失败按「没有」处理，下拉随之隐藏。
+pub fn fetch_devices() -> Vec<String> {
+    rpc::call_core("stats.devices", &json!({}))
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+/// 组装设备下拉：全部设备、本机，其余按显示名排序。无他机统计时返回空（不显示下拉）。
+///
+/// `roster` 是同步设备名册 `(设备号, 名称)`：取不到（`None`）时显示设备号；
+/// 取到但没有该设备号的，标为已移除。
+pub fn device_options(ids: &[String], roster: Option<&[(String, String)]>) -> Vec<DeviceOption> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let mut peers: Vec<DeviceOption> = ids
+        .iter()
+        .map(|id| {
+            let label = match roster {
+                None => id.clone(),
+                Some(r) => match r.iter().find(|(rid, _)| rid == id) {
+                    Some((_, name)) if !name.trim().is_empty() => name.clone(),
+                    Some(_) => id.clone(),
+                    None => format!("已移除的设备（{id}）"),
+                },
+            };
+            DeviceOption {
+                value: id.clone(),
+                label,
+            }
+        })
+        .collect();
+    peers.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.value.cmp(&b.value)));
+    let mut out = vec![
+        DeviceOption {
+            value: "all".into(),
+            label: "全部设备".into(),
+        },
+        DeviceOption {
+            value: "self".into(),
+            label: "本机".into(),
+        },
+    ];
+    out.extend(peers);
+    out
+}
+
+/// 取同步设备名册 `(设备号, 名称)`；同步未启用或取不到时为 `None`。
+pub fn fetch_roster() -> Option<Vec<(String, String)>> {
+    let v = rpc::call_core("sync.command", &json!({ "op": "list_devices" })).ok()?;
+    Some(
+        crate::pages::sync::model::parse_devices(&v)
+            .into_iter()
+            .map(|d| {
+                let name = if d.readable { d.name } else { String::new() };
+                (d.id, name)
+            })
+            .collect(),
+    )
 }
 
 /// 清空全部统计数据。
@@ -392,6 +469,42 @@ mod tests {
         assert_eq!(bars[0].label, "pinyin");
         assert_eq!(bars[0].pct, 70);
         assert_eq!(bars[1].label, "五笔86");
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn device_options_empty_without_peers() {
+        assert!(device_options(&[], Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn device_options_orders_and_labels() {
+        let roster = vec![
+            ("b".to_string(), "Mac".to_string()),
+            ("a".to_string(), "公司电脑".to_string()),
+            ("n".to_string(), "".to_string()),
+        ];
+        let o = device_options(&ids(&["a", "b", "n", "x"]), Some(&roster));
+        let got: Vec<(&str, &str)> = o
+            .iter()
+            .map(|d| (d.value.as_str(), d.label.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("all", "全部设备"),
+                ("self", "本机"),
+                ("b", "Mac"),
+                ("n", "n"),
+                ("a", "公司电脑"),
+                ("x", "已移除的设备（x）"),
+            ]
+        );
+        let o = device_options(&ids(&["a"]), None);
+        assert_eq!(o[2].label, "a");
     }
 
     #[test]

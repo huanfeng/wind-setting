@@ -14,7 +14,7 @@
 pub mod charts;
 pub mod data;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use windui::core::EventCtx;
@@ -65,6 +65,14 @@ pub struct StatsState {
     confirm_msg: Signal<String>,
     pending: Rc<Cell<Pending>>,
     feedback: Feedback,
+    /// 设备下拉的显示名；空 = 没有他机统计，下拉隐藏。
+    device_labels: Signal<Vec<String>>,
+    /// 与 `device_labels` 一一对应的 `device` 参数值。
+    device_values: Rc<RefCell<Vec<String>>>,
+    /// 设备下拉选中项。不持久化：每次进页面回到「全部设备」。
+    device_idx: Signal<usize>,
+    /// 当前数据对应的设备下拉索引，用来区分「用户切换」与「重载时程序复位」。
+    fetched_idx: Rc<Cell<usize>>,
     /// 方案 `(id, 显示名)`，由 [`AppState::apply_loaded`] 填充。
     ///
     /// 用信号而非构建期快照：页面树在冷启动 RPC 回来之前就建好了，那时 `state.schemas`
@@ -88,6 +96,10 @@ impl StatsState {
             confirm_msg: signal(String::new()),
             pending: Rc::new(Cell::new(Pending::Idle)),
             feedback: signal(None),
+            device_labels: signal(Vec::new()),
+            device_values: Rc::new(RefCell::new(Vec::new())),
+            device_idx: signal(0),
+            fetched_idx: Rc::new(Cell::new(0)),
             schema_names: signal(Vec::new()),
         }
     }
@@ -113,9 +125,51 @@ impl StatsState {
     /// 供底栏的「刷新数据」按钮调用（见 `shell::build_footer`）。
     pub fn reload(&self) {
         self.loaded.set(true);
-        match data::fetch(data::DEFAULT_DAYS_BACK) {
+        let ids = data::fetch_devices();
+        let roster = if ids.is_empty() {
+            None
+        } else {
+            data::fetch_roster()
+        };
+        self.apply_devices(&ids, roster.as_deref());
+        self.refetch_with(|dev| data::fetch(data::DEFAULT_DAYS_BACK, dev));
+    }
+
+    /// 刷新设备下拉；原选中的设备不在了就回到「全部设备」。
+    fn apply_devices(&self, ids: &[String], roster: Option<&[(String, String)]>) {
+        let opts = data::device_options(ids, roster);
+        let keep = self
+            .device_values
+            .borrow()
+            .get(self.device_idx.get())
+            .and_then(|cur| opts.iter().position(|o| &o.value == cur))
+            .unwrap_or(0);
+        *self.device_values.borrow_mut() = opts.iter().map(|o| o.value.clone()).collect();
+        self.device_labels
+            .set(opts.into_iter().map(|o| o.label).collect());
+        self.device_idx.set(keep);
+    }
+
+    /// 按当前选中的设备取一次数据。`fetch` 注入便于测试。
+    fn refetch_with(&self, fetch: impl Fn(&str) -> Result<StatsData, String>) {
+        let idx = self.device_idx.get();
+        self.fetched_idx.set(idx);
+        let device = self
+            .device_values
+            .borrow()
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| "all".to_string());
+        match fetch(&device) {
             Ok(d) => self.view.set(vec![View::Ready(Rc::new(d))]),
             Err(e) => self.view.set(vec![View::Failed(e)]),
+        }
+    }
+
+    /// 下拉选中项变了才重取（不缓存跨设备结果）。
+    fn on_device_changed(&self) {
+        if self.device_idx.get() != self.fetched_idx.get() {
+            self.refetch_with(|dev| data::fetch(data::DEFAULT_DAYS_BACK, dev));
         }
     }
 
@@ -209,6 +263,11 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
 
     // 刷新入口在底栏（`shell::build_footer`，仅本页可见）：页内浮层要么挡内容、
     // 要么得在页尾留一块专供让位的空白，而底栏本就是全局操作区，天然常驻可点。
+    let top = Element::col()
+        .width_match()
+        .spacing(12)
+        .child(device_picker(&mgr))
+        .child(overview);
     let body = Element::col()
         .width_match()
         .spacing(18)
@@ -216,7 +275,7 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
         .child(nav.wrap(
             "概览",
             0,
-            crate::search::anchor::wrap(overview, "stats:overview", state.jump),
+            crate::search::anchor::wrap(top, "stats:overview", state.jump),
         ))
         // 数据不足一天时 `calendar_section` 返回 None（画不出格子），块内为空。
         .child(data_block(
@@ -236,6 +295,23 @@ pub fn build_page(state: &AppState, nav: &crate::subnav::SubNav) -> Element {
         .child(load_effect(state));
 
     page(body)
+}
+
+/// 顶部「设备」下拉：只在有他机统计时显示；切换即重取数据。
+fn device_picker(mgr: &StatsState) -> Element {
+    let labels = mgr.device_labels;
+    let m = mgr.clone();
+    let on_change = reactive_effect(move || m.device_idx.version(), {
+        let m = mgr.clone();
+        move || m.on_device_changed()
+    });
+    Element::row()
+        .cross(Align::Center)
+        .spacing(8)
+        .child(Element::label("设备").font_size(13.0).fg_role(Role::Text))
+        .child(Element::dropdown_signal(labels, mgr.device_idx).min_width(160))
+        .child(on_change)
+        .visible_when(move || labels.with(|l| !l.is_empty()))
 }
 
 /// 切到统计页时懒加载。
@@ -647,6 +723,57 @@ mod tests {
         s.request_prune();
         assert_eq!(s.pending.get(), Pending::ClearAll);
         assert!(s.confirm_msg.get().contains("全部"));
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn device_picker_hidden_without_devices() {
+        let s = StatsState::new();
+        s.apply_devices(&[], Some(&[]));
+        assert!(
+            s.device_labels.get().is_empty(),
+            "无他机统计时下拉应为空（隐藏）"
+        );
+        assert_eq!(s.device_idx.get(), 0);
+    }
+
+    #[test]
+    fn device_picker_lists_all_self_and_peers() {
+        let s = StatsState::new();
+        let roster = vec![("m1".to_string(), "Mac".to_string())];
+        s.apply_devices(&ids(&["m1", "gone"]), Some(&roster));
+        assert_eq!(
+            s.device_labels.get(),
+            vec!["全部设备", "本机", "Mac", "已移除的设备（gone）"]
+        );
+        assert_eq!(*s.device_values.borrow(), vec!["all", "self", "m1", "gone"]);
+        // 名册取不到：显示设备号。
+        s.apply_devices(&ids(&["m1"]), None);
+        assert_eq!(s.device_labels.get(), vec!["全部设备", "本机", "m1"]);
+    }
+
+    #[test]
+    fn switching_device_refetches() {
+        let s = StatsState::new();
+        s.apply_devices(&ids(&["m1"]), None);
+        let seen = RefCell::new(Vec::new());
+        let f = |dev: &str| {
+            seen.borrow_mut().push(dev.to_string());
+            Ok(StatsData::default())
+        };
+        s.refetch_with(f);
+        s.device_idx.set(2); // m1
+        s.refetch_with(f);
+        s.device_idx.set(1); // 本机
+        s.refetch_with(f);
+        assert_eq!(*seen.borrow(), vec!["all", "m1", "self"]);
+        // 重载时设备消失 → 复位到全部设备。
+        s.device_idx.set(2);
+        s.apply_devices(&ids(&["other"]), None);
+        assert_eq!(s.device_idx.get(), 0);
     }
 
     fn bar(label: &str, pct: u32) -> Bar {
