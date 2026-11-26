@@ -3367,6 +3367,21 @@ fn fuzzy_summary(enabled: bool, on: &[&str]) -> String {
     }
 }
 
+/// 对话框里网格下方的「与精确拼音统一词频排序」开关。文案取自清单，清单里被藏掉就不出。
+fn equal_rank_row(state: &AppState, cfg: &Config) -> Option<Element> {
+    const KEY: &str = "input.fuzzy.equal_rank";
+    if !state.manifest.is_visible(KEY) {
+        return None;
+    }
+    let item = state.manifest.get(KEY)?;
+    let sig = register_toggle(state, KEY, cfg);
+    Some(setting_row(
+        &item.label,
+        item.hint.as_deref(),
+        Element::switch(sig),
+    ))
+}
+
 /// 模糊音入口行：「模糊音 …… [开关][扩展设置]」，13 组拼音对收在对话框里。
 ///
 /// 13 对挤在卡片上占了半屏，而多数人只开一两组、开完就不再动——放进对话框后，
@@ -3438,7 +3453,8 @@ fn build_fuzzy_row(state: &AppState, cfg: &Config) -> Element {
         .spacing(10)
         .child(host_off_notice("模糊音").visible_when(move || !en.get()))
         .child(select_all_box)
-        .child(grid);
+        .child(grid)
+        .children(equal_rank_row(state, cfg));
     let body = crate::search::anchor::wrap(
         body,
         crate::search::index::in_dialog_anchor(FUZZY_PAIRS[0].0),

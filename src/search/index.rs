@@ -934,6 +934,21 @@ mod tests {
         }
     }
 
+    /// 「与精确拼音统一词频排序」放在模糊音的扩展设置对话框里，搜索也落到那个对话框。
+    #[test]
+    fn equal_rank_is_searchable_inside_the_fuzzy_dialog() {
+        let idx = build_index(&manifest());
+        let e = idx
+            .iter()
+            .find(|e| e.id == "input.fuzzy.equal_rank")
+            .expect("统一词频开关应可搜索");
+        assert!(
+            matches!(&e.target, JumpTarget::RowInDialog { dialog, .. } if dialog == FUZZY_MASTER),
+            "{:?}",
+            e.target
+        );
+    }
+
     /// 「纠错与提示」一节：行序照设计，规则与自定义规则在「拼写纠错」对话框里，
     /// 模糊音区不再有提示项。
     #[test]
