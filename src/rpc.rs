@@ -478,6 +478,15 @@ mod tests {
     }
 
     #[test]
+    fn mock_sync_status_has_usage() {
+        let v = mock_reply("sync.status");
+        let u = &v["usage"];
+        assert!(u["total"].as_u64().unwrap() > u["blobs"].as_u64().unwrap());
+        assert!(u["devices"].as_array().unwrap().len() >= 2);
+        assert!(u["provider"]["quota"].as_u64().is_some());
+    }
+
+    #[test]
     fn test_ctrl_endpoint_format() {
         let ep = ctrl_endpoint();
         assert!(ep.contains("wind_input"));
@@ -2341,7 +2350,19 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 "last_ok": 1_795_000_000, "last_error": null, "pending": 2, "conflicts": 2,
                 "conflict_paths": ["themes/dark.conflict-laptop-2026-11-23.json", "data/phrases.dict.yaml.conflict-laptop-2026-11-22"],
                 "has_secret": true, "joined": true,
-                "device": "desktop-7f3k", "group": "g-home", "group_name": "家里", "needs_identity": false
+                "device": "desktop-7f3k", "group": "g-home", "group_name": "家里", "needs_identity": false,
+                // 空间占用：本机、Mac、一台已移除的设备；网盘给了配额。
+                "usage": {
+                    "computed_at": chrono::Utc::now().timestamp() - 3 * 3600,
+                    "total": 12_897_485u64, "blobs": 10_485_760u64, "blobs_unreferenced": 524_288u64,
+                    "devices": [
+                        { "id": "desktop-7f3k", "learned": 1_258_291u64, "stats": 41_984u64 },
+                        { "id": "laptop-old1", "learned": 312_000u64, "stats": 0u64 },
+                        { "id": "mac-2m9q", "learned": 760_000u64, "stats": 18_500u64 }
+                    ],
+                    "other": 20_950u64,
+                    "provider": { "used": 3_435_973_837u64, "quota": 5_368_709_120u64 }
+                }
             });
             match std::env::var("WIND_RPC_MOCK_SYNC").as_deref() {
                 Ok("mass_delete") => {
@@ -2363,6 +2384,11 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                     v["pending"] = json!(0);
                     v["conflicts"] = json!(0);
                     v["conflict_paths"] = json!([]);
+                }
+                // 正在统计空间占用 / 从未统计过。
+                Ok("usage_busy") => v["usage_busy"] = json!(true),
+                Ok("usage_never") => {
+                    v.as_object_mut().unwrap().remove("usage");
                 }
                 // 已移除设备在远端仍有学习数据。
                 Ok("removed_data") => {

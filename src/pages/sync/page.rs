@@ -23,6 +23,7 @@ pub(super) const NAV: [&str; 7] = ["向导", "状态", "本机", "设备", "内�
 pub(super) const CONTENT_TITLE: &str = "同步内容";
 pub(super) const BTN_MODIFY: &str = "修改…";
 pub(super) const ROW_GROUP: &str = "同步组";
+pub(super) const ROW_USAGE: &str = "已用空间";
 
 /// 向导卡的说明与按钮，随是否已配置。
 pub(super) fn wizard_text(configured: bool) -> &'static str {
@@ -402,15 +403,37 @@ fn content_card(ui: &SyncUi) -> Element {
 
 fn storage_card(ui: &SyncUi) -> Element {
     let (u, busy) = (ui.clone(), ui.busy);
+    let (u_refresh, u_detail) = (ui.clone(), ui.clone());
+    let (usage_busy, ready) = (ui.usage_busy, ui.usage_ready);
     section_items(
         NAV[5],
-        vec![CardItem::Row(setting_row_desc_signal(
-            "存储位置",
-            ui.storage_summary,
-            btn2("更换存储…")
-                .enabled_when(move || !busy.get())
-                .on_click(move |_| u.open_storage_dialog()),
-        ))],
+        vec![
+            CardItem::Row(setting_row_desc_signal(
+                "存储位置",
+                ui.storage_summary,
+                btn2("更换存储…")
+                    .enabled_when(move || !busy.get())
+                    .on_click(move |_| u.open_storage_dialog()),
+            )),
+            CardItem::Row(setting_row_desc_signal(
+                ROW_USAGE,
+                ui.usage_desc,
+                Element::row()
+                    .cross(Align::Center)
+                    .spacing(12)
+                    .child(value(ui.usage_line))
+                    .child(
+                        btn2("刷新")
+                            .enabled_when(move || !busy.get() && !usage_busy.get())
+                            .on_click(move |_| u_refresh.refresh_usage()),
+                    )
+                    .child(
+                        btn2("明细…")
+                            .visible_when(move || ready.get())
+                            .on_click(move |_| u_detail.open_usage_dialog()),
+                    ),
+            )),
+        ],
     )
 }
 

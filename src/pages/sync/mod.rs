@@ -30,6 +30,7 @@
 //! | `import_key` | `{key}`（粘贴的同步密钥，原样转发） | |
 //! | `export_key` | | `{key}` |
 //! | `reset_remote` | `{confirm: true}` | `{ok, key}`（新的同步密钥） |
+//! | `refresh_usage` | | `{queued}`（后台重算空间占用，结果见状态里的 `usage`） |
 
 mod dialogs;
 pub(crate) mod model;
@@ -182,6 +183,18 @@ pub struct SyncUi {
     purge_text: Signal<String>,
     purge_dialog: Signal<bool>,
     purge_guard: MassDeleteGuard,
+    /// 存储卡「已用空间」行的值与说明。
+    usage_line: Signal<String>,
+    usage_desc: Signal<String>,
+    /// 正在统计：「刷新」置灰。
+    usage_busy: Signal<bool>,
+    /// 有统计结果：「明细…」可点。
+    usage_ready: Signal<bool>,
+    /// 最近一次状态里的用量；名册到了要重排设备名。
+    usage: Rc<RefCell<Option<UsageView>>>,
+    /// 明细对话框的各行 `(名称, 值)`。
+    usage_rows: Signal<Vec<(String, String)>>,
+    usage_dialog: Signal<bool>,
 
     storage_dialog: Signal<bool>,
     storage_stage: Signal<StorageStage>,
@@ -313,6 +326,13 @@ impl SyncUi {
             purge_text: s(),
             purge_dialog: signal(false),
             purge_guard: MassDeleteGuard::default(),
+            usage_line: signal(usage_line(&StatusView::default())),
+            usage_desc: s(),
+            usage_busy: signal(false),
+            usage_ready: signal(false),
+            usage: Rc::new(RefCell::new(None)),
+            usage_rows: signal(Vec::new()),
+            usage_dialog: signal(false),
             storage_dialog: signal(false),
             storage_stage: signal(StorageStage::Form),
             storage_err: s(),
@@ -382,6 +402,10 @@ impl SyncUi {
         if let Ok(v) = rpc::call_core("sync.command", &json!({ "op": "list_devices" })) {
             self.devices.set(parse_devices(&v));
             self.update_group_line();
+            self.update_usage_rows();
+        }
+        if std::env::var("WIND_RPC_MOCK_SYNC_USAGE").as_deref() == Ok("dialog") {
+            self.open_usage_dialog();
         }
         // 截图核对用的跳步钩子：只在 mock 下读，真实构建走不到这里。
         if let Ok(to) = std::env::var("WIND_RPC_MOCK_SYNC_WIZ") {
@@ -478,6 +502,13 @@ impl SyncUi {
         self.update_group_line();
         self.purge_text.set(purge_summary(&s.removed_with_data));
         self.removed_with_data.set(s.removed_with_data.clone());
+        self.usage_line.set(usage_line(&s));
+        self.usage_desc
+            .set(usage_desc(&s, chrono::Local::now().date_naive()));
+        self.usage_busy.set(s.usage_busy);
+        self.usage_ready.set(s.usage.is_some());
+        *self.usage.borrow_mut() = s.usage.clone();
+        self.update_usage_rows();
         if s.installed && s.joined && !self.devices_loaded.replace(true) {
             self.refresh_devices();
         }
@@ -495,6 +526,26 @@ impl SyncUi {
             format!("{text}。会自动重试，无需处理"),
         ));
         self.mass_text.set(pick(ErrorKind::MassDelete, text));
+    }
+
+    /// 明细各行；设备名取名册（名册没到时显示设备号）。
+    fn update_usage_rows(&self) {
+        let rows = self
+            .usage
+            .borrow()
+            .as_ref()
+            .map(|u| usage_rows(u, &self.devices.get()))
+            .unwrap_or_default();
+        self.usage_rows.set(rows);
+    }
+
+    /// 「刷新」：同步进程在后台重算，进度与结果随状态回来。
+    fn refresh_usage(&self) {
+        self.run("refresh_usage", vec![("refresh_usage", json!({}))]);
+    }
+
+    fn open_usage_dialog(&self) {
+        self.usage_dialog.set(true);
     }
 
     fn update_group_line(&self) {
@@ -594,6 +645,7 @@ impl SyncUi {
                 self.devices_err.set(String::new());
                 self.devices.set(parse_devices(&v));
                 self.update_group_line();
+                self.update_usage_rows();
             }
             SyncMsg::Devices(Err(e)) => {
                 let (t, _) = failure_text("读取设备列表", &e);

@@ -17,6 +17,7 @@ pub(super) fn mount(ui: &SyncUi, state: &AppState) {
         reset_dialog(ui),
         remove_device_dialog(ui),
         purge_dialog(ui),
+        usage_dialog(ui),
         rename_dialog(ui),
         group_dialog(ui),
     ];
@@ -175,6 +176,58 @@ fn purge_dialog(ui: &SyncUi) -> Element {
                 .on_click(move |_| u.confirm_purge()),
         );
     Element::dialog(visible, dialog_frame("清除已移除设备的数据", body, footer))
+}
+
+/// 空间占用明细：分类、各设备、存储服务给出的用量。
+fn usage_dialog(ui: &SyncUi) -> Element {
+    let visible = ui.usage_dialog;
+    let rows = Element::switcher(ui.usage_rows, |rows: Vec<(String, String)>| {
+        let mut col = Element::col().width_match().spacing(8);
+        for (label, value) in rows {
+            col = col.child(
+                Element::row()
+                    .width_match()
+                    .cross(Align::Center)
+                    .spacing(12)
+                    .child(
+                        Element::label(label)
+                            .font_size(12.5)
+                            .fg_role(Role::Text)
+                            .max_lines(1)
+                            .weight(1.0),
+                    )
+                    .child(
+                        Element::label(value)
+                            .font_size(12.5)
+                            .fg_role(Role::TextMuted)
+                            .max_lines(1),
+                    ),
+            );
+        }
+        col
+    });
+    let body = Element::col()
+        .width_match()
+        .padding_xy(18, 14)
+        .spacing(10)
+        .child(rows)
+        .child(
+            Element::label_signal(ui.usage_desc)
+                .font_size(12.0)
+                .fg_role(Role::TextMuted)
+                .width_match()
+                .max_lines(3),
+        )
+        .child(muted(USAGE_NOTE));
+    Element::dialog_closable(
+        visible,
+        dialog_frame(
+            "空间占用",
+            body,
+            btn("关闭").on_click(move |_| visible.set(false)),
+        ),
+        move |_| visible.set(false),
+    )
 }
 
 /// 改号与显示名称：两项都不变时保存只关框。

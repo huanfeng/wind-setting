@@ -50,6 +50,169 @@ pub(crate) struct StatusView {
     pub needs_identity: bool,
     /// 已移除（不在名册里）但远端仍有学习数据的设备号；旧版 core 没有这个字段。
     pub removed_with_data: Vec<String>,
+    /// 远端空间占用的缓存；从未统计过（或旧版 core）为 None。
+    pub usage: Option<UsageView>,
+    /// 正在统计空间占用。
+    pub usage_busy: bool,
+    /// 上次统计失败的原因。
+    pub usage_error: Option<String>,
+}
+
+/// 远端空间占用（core `sync.status` 的 `usage`），单位字节。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct UsageView {
+    pub computed_at: i64,
+    pub total: u64,
+    /// 文件数据：各设备共用、按内容去重。
+    pub blobs: u64,
+    /// 其中等待回收的旧版本。
+    pub blobs_unreferenced: u64,
+    pub devices: Vec<DeviceUsageView>,
+    /// 设备清单等小项。
+    pub other: u64,
+    /// 存储服务给出的 `(已用, 总容量)`。
+    pub provider: Option<(u64, Option<u64>)>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DeviceUsageView {
+    pub id: String,
+    pub learned: u64,
+    pub stats: u64,
+}
+
+impl UsageView {
+    fn parse(v: &Value) -> Option<Self> {
+        let o = v.as_object()?;
+        let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
+        Some(UsageView {
+            computed_at: v.get("computed_at").and_then(Value::as_i64).unwrap_or(0),
+            total: n(v, "total"),
+            blobs: n(v, "blobs"),
+            blobs_unreferenced: n(v, "blobs_unreferenced"),
+            devices: o
+                .get("devices")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .map(|d| DeviceUsageView {
+                            id: d
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            learned: n(d, "learned"),
+                            stats: n(d, "stats"),
+                        })
+                        .filter(|d| !d.id.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            other: n(v, "other"),
+            provider: o
+                .get("provider")
+                .filter(|p| p.is_object())
+                .map(|p| (n(p, "used"), p.get("quota").and_then(Value::as_u64))),
+        })
+    }
+
+    /// 存储服务的剩余空间；没有总容量为 None。
+    fn provider_free(&self) -> Option<u64> {
+        let (used, quota) = self.provider?;
+        Some(quota?.saturating_sub(used))
+    }
+}
+
+/// 明细对话框底部的说明。
+pub(crate) const USAGE_NOTE: &str =
+    "按加密后的大小统计。等待回收的旧版本超过 7 天会在同步时自动删除。";
+
+/// 空间大小：1024 进制，B 取整，KB 起一位小数。
+pub(crate) fn usage_size(n: u64) -> String {
+    const UNITS: [&str; 3] = ["KB", "MB", "GB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut v = n as f64 / 1024.0;
+    let mut i = 0;
+    while v >= 1024.0 && i + 1 < UNITS.len() {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{v:.1} {}", UNITS[i])
+}
+
+/// 存储卡「已用空间」行的值。
+pub(crate) fn usage_line(s: &StatusView) -> String {
+    if s.usage_busy {
+        return "统计中…".to_string();
+    }
+    let Some(u) = &s.usage else {
+        return "未统计".to_string();
+    };
+    let mut out = format!("已用 {}", usage_size(u.total));
+    if let Some(free) = u.provider_free() {
+        out.push_str(&format!(" · 网盘剩余 {}", usage_size(free)));
+    }
+    out
+}
+
+/// 「已用空间」行的说明：统计时间与上次失败原因。
+pub(crate) fn usage_desc(s: &StatusView, today: chrono::NaiveDate) -> String {
+    let mut parts = Vec::new();
+    if let Some(u) = &s.usage {
+        parts.push(format!("统计于{}", last_seen_text(u.computed_at, today)));
+    }
+    if let Some(e) = &s.usage_error {
+        parts.push(format!("上次统计失败：{e}"));
+    }
+    parts.join("；")
+}
+
+/// 明细里的设备名：名册显示名；名册没取到显示设备号；取到但没有它的标为已移除。
+pub(crate) fn device_usage_label(id: &str, roster: &[DeviceView]) -> String {
+    if roster.is_empty() {
+        return id.to_string();
+    }
+    match roster.iter().find(|d| d.id == id) {
+        Some(d) if d.readable && !d.name.trim().is_empty() => d.name.clone(),
+        Some(_) => id.to_string(),
+        None => format!("已移除的设备（{id}）"),
+    }
+}
+
+/// 明细对话框的各行 `(名称, 值)`。
+pub(crate) fn usage_rows(u: &UsageView, roster: &[DeviceView]) -> Vec<(String, String)> {
+    let mut rows = vec![
+        ("合计".to_string(), usage_size(u.total)),
+        (
+            "文件数据（全组共享、已去重）".to_string(),
+            usage_size(u.blobs),
+        ),
+        (
+            "其中等待回收的旧版本".to_string(),
+            usage_size(u.blobs_unreferenced),
+        ),
+    ];
+    for d in &u.devices {
+        rows.push((
+            device_usage_label(&d.id, roster),
+            format!(
+                "学习数据 {} · 打字统计 {}",
+                usage_size(d.learned),
+                usage_size(d.stats)
+            ),
+        ));
+    }
+    rows.push(("设备清单等".to_string(), usage_size(u.other)));
+    if let Some((used, quota)) = u.provider {
+        rows.push(("网盘已用".to_string(), usage_size(used)));
+        if let Some(q) = quota {
+            rows.push(("网盘总容量".to_string(), usage_size(q)));
+            rows.push(("网盘剩余".to_string(), usage_size(q.saturating_sub(used))));
+        }
+    }
+    rows
 }
 
 impl StatusView {
@@ -125,6 +288,13 @@ impl StatusView {
                         .collect()
                 })
                 .unwrap_or_default(),
+            usage: v.get("usage").and_then(UsageView::parse),
+            usage_busy: b("usage_busy"),
+            usage_error: v
+                .get("usage_error")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
         }
     }
 
@@ -746,7 +916,7 @@ pub(crate) fn last_seen_text(ts: i64, today: chrono::NaiveDate) -> String {
 }
 
 /// `sync.command{op:"list_devices"}` 的一项。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub(crate) struct DeviceView {
     pub id: String,
     pub name: String,
@@ -1087,6 +1257,7 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
         "group" => "修改同步组",
         "content" => "保存同步内容",
         "purge_devices" => "清除已移除设备的数据",
+        "refresh_usage" => "统计空间占用",
         other => other,
     };
     match r {
@@ -1106,6 +1277,8 @@ pub(crate) fn outcome(op: &str, r: &Result<Value, String>) -> Outcome {
             let toast = match op {
                 // 结果由 core 弹提示，页内不另报。
                 "sync_now" | "interval" | "content" => String::new(),
+                // 进度与结果都在「已用空间」行上
+                "refresh_usage" => String::new(),
                 "disable" => "已停用同步".to_string(),
                 "enable" => "已启用同步".to_string(),
                 "test_connection" => connection_text(v),

@@ -957,3 +957,139 @@ fn purge_partial_failure_names_done_count_and_device() {
     );
     assert_eq!(step_failure_for("group", 1, None, "x"), "x");
 }
+
+// ───────────────────────────── 空间占用 ─────────────────────────────
+
+fn usage_json() -> Value {
+    json!({
+        "computed_at": 1_795_000_000, "total": 12_897_485, "blobs": 10 * 1024 * 1024,
+        "blobs_unreferenced": 512 * 1024,
+        "devices": [
+            { "id": "desktop-7f3k", "learned": 1_200_000, "stats": 3_000 },
+            { "id": "old-pc", "learned": 900, "stats": 0 }
+        ],
+        "other": 20 * 1024,
+        "provider": { "used": 3 * 1024 * 1024 * 1024u64, "quota": 5 * 1024 * 1024 * 1024u64 }
+    })
+}
+
+#[test]
+fn usage_size_uses_1024_and_one_decimal() {
+    assert_eq!(usage_size(0), "0 B");
+    assert_eq!(usage_size(1023), "1023 B");
+    assert_eq!(usage_size(1536), "1.5 KB");
+    assert_eq!(usage_size(12_897_485), "12.3 MB");
+    assert_eq!(usage_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+}
+
+#[test]
+fn usage_parses_from_status() {
+    let s = StatusView::parse(&json!({ "usage": usage_json(), "usage_busy": true }));
+    let u = s.usage.clone().unwrap();
+    assert_eq!(u.total, 12_897_485);
+    assert_eq!(u.devices.len(), 2);
+    assert_eq!(u.devices[0].stats, 3_000);
+    assert_eq!(
+        u.provider,
+        Some((3 * 1024 * 1024 * 1024, Some(5 * 1024 * 1024 * 1024)))
+    );
+    assert!(s.usage_busy);
+    assert_eq!(
+        StatusView::parse(&json!({})).usage,
+        None,
+        "旧版 core 没有该字段"
+    );
+}
+
+#[test]
+fn usage_line_states() {
+    let mut s = StatusView::parse(&json!({ "usage": usage_json() }));
+    assert_eq!(usage_line(&s), "已用 12.3 MB · 网盘剩余 2.0 GB");
+    s.usage.as_mut().unwrap().provider = Some((10, None));
+    assert_eq!(usage_line(&s), "已用 12.3 MB", "没有总容量不报剩余");
+    s.usage_busy = true;
+    assert_eq!(usage_line(&s), "统计中…");
+    let never = StatusView::default();
+    assert_eq!(usage_line(&never), "未统计");
+}
+
+#[test]
+fn usage_desc_has_time_and_error() {
+    let today = chrono::DateTime::from_timestamp(1_795_000_000, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .date_naive();
+    let mut s = StatusView::parse(&json!({ "usage": usage_json() }));
+    assert!(
+        usage_desc(&s, today).starts_with("统计于今天 "),
+        "{}",
+        usage_desc(&s, today)
+    );
+    s.usage_error = Some("网络不可达".into());
+    assert!(usage_desc(&s, today).ends_with("上次统计失败：网络不可达"));
+    assert_eq!(usage_desc(&StatusView::default(), today), "");
+}
+
+#[test]
+fn device_usage_label_uses_roster() {
+    let roster = vec![DeviceView {
+        id: "desktop-7f3k".into(),
+        name: "书房台式机".into(),
+        readable: true,
+        ..Default::default()
+    }];
+    assert_eq!(device_usage_label("desktop-7f3k", &roster), "书房台式机");
+    assert_eq!(
+        device_usage_label("old-pc", &roster),
+        "已移除的设备（old-pc）"
+    );
+    assert_eq!(
+        device_usage_label("old-pc", &[]),
+        "old-pc",
+        "名册没取到显示设备号"
+    );
+    let blank = vec![DeviceView {
+        id: "x".into(),
+        readable: false,
+        ..Default::default()
+    }];
+    assert_eq!(device_usage_label("x", &blank), "x");
+}
+
+#[test]
+fn usage_rows_list_categories_devices_and_provider() {
+    let s = StatusView::parse(&json!({ "usage": usage_json() }));
+    let roster = vec![DeviceView {
+        id: "desktop-7f3k".into(),
+        name: "书房台式机".into(),
+        readable: true,
+        ..Default::default()
+    }];
+    let rows = usage_rows(s.usage.as_ref().unwrap(), &roster);
+    let labels: Vec<&str> = rows.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "合计",
+            "文件数据（全组共享、已去重）",
+            "其中等待回收的旧版本",
+            "书房台式机",
+            "已移除的设备（old-pc）",
+            "设备清单等",
+            "网盘已用",
+            "网盘总容量",
+            "网盘剩余",
+        ]
+    );
+    assert_eq!(rows[0].1, "12.3 MB");
+    assert_eq!(rows[3].1, "学习数据 1.1 MB · 打字统计 2.9 KB");
+    assert_eq!(rows[8].1, "2.0 GB");
+}
+
+#[test]
+fn refresh_usage_outcome_is_silent_on_success() {
+    let o = outcome("refresh_usage", &Ok(json!({ "queued": true })));
+    assert!(o.ok && o.toast.is_empty());
+    let o = outcome("refresh_usage", &Err("正在同步，请稍后再试".into()));
+    assert!(!o.ok && o.notice, "{o:?}");
+}

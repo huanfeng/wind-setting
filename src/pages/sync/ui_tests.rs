@@ -805,3 +805,48 @@ fn content_failure_reverts_and_drops_pending() {
     assert_eq!(ui.content_now(), Content::default());
     assert!(!ui.content_pending.get());
 }
+
+#[test]
+fn usage_row_follows_status() {
+    let ui = SyncUi::new();
+    ui.apply_status(&json!({ "installed": true, "joined": true }));
+    assert_eq!(ui.usage_line.get(), "未统计");
+    assert!(!ui.usage_ready.get(), "没统计过不给明细");
+    ui.apply_status(&json!({
+        "installed": true, "joined": true,
+        "usage": { "computed_at": 1_795_000_000, "total": 2048,
+                   "devices": [{ "id": "pc", "learned": 1024, "stats": 0 }] }
+    }));
+    assert_eq!(ui.usage_line.get(), "已用 2.0 KB");
+    assert!(ui.usage_desc.get().starts_with("统计于"));
+    assert!(ui.usage_ready.get());
+    assert!(ui.usage_rows.get().iter().any(|(l, _)| l == "pc"));
+    ui.apply_status(&json!({ "installed": true, "joined": true, "usage_busy": true }));
+    assert_eq!(ui.usage_line.get(), "统计中…");
+    assert!(ui.usage_busy.get());
+}
+
+#[test]
+fn usage_rows_use_roster_names_once_loaded() {
+    let ui = SyncUi::new();
+    ui.apply_status(&json!({
+        "installed": true, "joined": true,
+        "usage": { "computed_at": 1, "total": 1,
+                   "devices": [{ "id": "pc", "learned": 1, "stats": 0 },
+                               { "id": "gone", "learned": 1, "stats": 0 }] }
+    }));
+    ui.devices.set(vec![dev("pc", true, true, 1)]);
+    ui.update_usage_rows();
+    let labels: Vec<String> = ui.usage_rows.get().into_iter().map(|(l, _)| l).collect();
+    assert!(labels.contains(&"n-pc".to_string()), "{labels:?}");
+    assert!(labels.contains(&"已移除的设备（gone）".to_string()));
+}
+
+#[test]
+fn usage_dialog_opens_and_closes() {
+    let ui = SyncUi::new();
+    ui.open_usage_dialog();
+    assert!(ui.usage_dialog.get());
+    ui.usage_dialog.set(false);
+    assert_eq!(super::page::ROW_USAGE, "已用空间");
+}
