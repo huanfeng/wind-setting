@@ -824,6 +824,10 @@ fn usage_row_follows_status() {
     ui.apply_status(&json!({ "installed": true, "joined": true, "usage_busy": true }));
     assert_eq!(ui.usage_line.get(), "统计中…");
     assert!(ui.usage_busy.get());
+    ui.apply_status(&json!({ "installed": true, "joined": true, "phase": "syncing" }));
+    assert!(ui.syncing.get(), "同步中刷新置灰");
+    ui.apply_status(&json!({ "installed": true, "joined": true, "phase": "idle" }));
+    assert!(!ui.syncing.get());
 }
 
 #[test]

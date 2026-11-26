@@ -969,7 +969,7 @@ fn usage_json() -> Value {
             { "id": "old-pc", "learned": 900, "stats": 0 }
         ],
         "other": 20 * 1024,
-        "provider": { "used": 3 * 1024 * 1024 * 1024u64, "quota": 5 * 1024 * 1024 * 1024u64 }
+        "provider": { "used": 3 * 1024 * 1024 * 1024u64, "available": 2 * 1024 * 1024 * 1024u64 }
     })
 }
 
@@ -991,8 +991,13 @@ fn usage_parses_from_status() {
     assert_eq!(u.devices[0].stats, 3_000);
     assert_eq!(
         u.provider,
-        Some((3 * 1024 * 1024 * 1024, Some(5 * 1024 * 1024 * 1024)))
+        Some(ProviderView {
+            used: 3 * 1024 * 1024 * 1024,
+            available: Some(2 * 1024 * 1024 * 1024),
+            quota: None,
+        })
     );
+    assert_eq!(u.blobs_unreferenced, Some(512 * 1024));
     assert!(s.usage_busy);
     assert_eq!(
         StatusView::parse(&json!({})).usage,
@@ -1005,8 +1010,21 @@ fn usage_parses_from_status() {
 fn usage_line_states() {
     let mut s = StatusView::parse(&json!({ "usage": usage_json() }));
     assert_eq!(usage_line(&s), "已用 12.3 MB · 网盘剩余 2.0 GB");
-    s.usage.as_mut().unwrap().provider = Some((10, None));
-    assert_eq!(usage_line(&s), "已用 12.3 MB", "没有总容量不报剩余");
+    s.usage.as_mut().unwrap().provider = Some(ProviderView {
+        used: 10,
+        ..Default::default()
+    });
+    assert_eq!(usage_line(&s), "已用 12.3 MB", "没有剩余与总容量不报剩余");
+    s.usage.as_mut().unwrap().provider = Some(ProviderView {
+        used: 1024,
+        available: None,
+        quota: Some(3072),
+    });
+    assert_eq!(
+        usage_line(&s),
+        "已用 12.3 MB · 网盘剩余 2.0 KB",
+        "官方服务：总容量减已用"
+    );
     s.usage_busy = true;
     assert_eq!(usage_line(&s), "统计中…");
     let never = StatusView::default();
@@ -1076,14 +1094,25 @@ fn usage_rows_list_categories_devices_and_provider() {
             "书房台式机",
             "已移除的设备（old-pc）",
             "设备清单等",
-            "网盘已用",
-            "网盘总容量",
+            "此目录已用",
             "网盘剩余",
-        ]
+        ],
+        "WebDAV 不给总容量就不列"
     );
     assert_eq!(rows[0].1, "12.3 MB");
     assert_eq!(rows[3].1, "学习数据 1.1 MB · 打字统计 2.9 KB");
-    assert_eq!(rows[8].1, "2.0 GB");
+    assert_eq!(rows[7].1, "2.0 GB");
+
+    let mut u = s.usage.clone().unwrap();
+    u.provider = Some(ProviderView {
+        used: 1,
+        available: None,
+        quota: Some(1024),
+    });
+    u.blobs_unreferenced = None;
+    let rows = usage_rows(&u, &roster);
+    assert_eq!(rows[2].1, "无法确定（有设备清单解不开）");
+    assert_eq!(rows.last().unwrap().0, "总容量");
 }
 
 #[test]

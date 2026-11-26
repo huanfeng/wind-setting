@@ -483,7 +483,7 @@ mod tests {
         let u = &v["usage"];
         assert!(u["total"].as_u64().unwrap() > u["blobs"].as_u64().unwrap());
         assert!(u["devices"].as_array().unwrap().len() >= 2);
-        assert!(u["provider"]["quota"].as_u64().is_some());
+        assert!(u["provider"]["available"].as_u64().is_some());
     }
 
     #[test]
@@ -2351,7 +2351,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                 "conflict_paths": ["themes/dark.conflict-laptop-2026-11-23.json", "data/phrases.dict.yaml.conflict-laptop-2026-11-22"],
                 "has_secret": true, "joined": true,
                 "device": "desktop-7f3k", "group": "g-home", "group_name": "家里", "needs_identity": false,
-                // 空间占用：本机、Mac、一台已移除的设备；网盘给了配额。
+                // 空间占用：本机、Mac、一台已移除的设备；WebDAV 给了已用与剩余。
                 "usage": {
                     "computed_at": chrono::Utc::now().timestamp() - 3 * 3600,
                     "total": 12_897_485u64, "blobs": 10_485_760u64, "blobs_unreferenced": 524_288u64,
@@ -2361,7 +2361,7 @@ pub(crate) fn mock_reply(method: &str, params: &Value) -> Value {
                         { "id": "mac-2m9q", "learned": 760_000u64, "stats": 18_500u64 }
                     ],
                     "other": 20_950u64,
-                    "provider": { "used": 3_435_973_837u64, "quota": 5_368_709_120u64 }
+                    "provider": { "used": 3_435_973_837u64, "available": 1_932_735_283u64 }
                 }
             });
             match std::env::var("WIND_RPC_MOCK_SYNC").as_deref() {

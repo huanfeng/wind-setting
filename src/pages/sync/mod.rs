@@ -186,8 +186,9 @@ pub struct SyncUi {
     /// 存储卡「已用空间」行的值与说明。
     usage_line: Signal<String>,
     usage_desc: Signal<String>,
-    /// 正在统计：「刷新」置灰。
+    /// 正在统计或正在同步：「刷新」置灰（同步中 core 会拒绝）。
     usage_busy: Signal<bool>,
+    syncing: Signal<bool>,
     /// 有统计结果：「明细…」可点。
     usage_ready: Signal<bool>,
     /// 最近一次状态里的用量；名册到了要重排设备名。
@@ -329,6 +330,7 @@ impl SyncUi {
             usage_line: signal(usage_line(&StatusView::default())),
             usage_desc: s(),
             usage_busy: signal(false),
+            syncing: signal(false),
             usage_ready: signal(false),
             usage: Rc::new(RefCell::new(None)),
             usage_rows: signal(Vec::new()),
@@ -506,6 +508,7 @@ impl SyncUi {
         self.usage_desc
             .set(usage_desc(&s, chrono::Local::now().date_naive()));
         self.usage_busy.set(s.usage_busy);
+        self.syncing.set(s.phase == "syncing");
         self.usage_ready.set(s.usage.is_some());
         *self.usage.borrow_mut() = s.usage.clone();
         self.update_usage_rows();

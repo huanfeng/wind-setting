@@ -404,7 +404,7 @@ fn content_card(ui: &SyncUi) -> Element {
 fn storage_card(ui: &SyncUi) -> Element {
     let (u, busy) = (ui.clone(), ui.busy);
     let (u_refresh, u_detail) = (ui.clone(), ui.clone());
-    let (usage_busy, ready) = (ui.usage_busy, ui.usage_ready);
+    let (usage_busy, ready, syncing) = (ui.usage_busy, ui.usage_ready, ui.syncing);
     section_items(
         NAV[5],
         vec![
@@ -424,7 +424,9 @@ fn storage_card(ui: &SyncUi) -> Element {
                     .child(value(ui.usage_line))
                     .child(
                         btn2("刷新")
-                            .enabled_when(move || !busy.get() && !usage_busy.get())
+                            .enabled_when(move || {
+                                !busy.get() && !usage_busy.get() && !syncing.get()
+                            })
                             .on_click(move |_| u_refresh.refresh_usage()),
                     )
                     .child(

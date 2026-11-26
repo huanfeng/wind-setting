@@ -65,13 +65,21 @@ pub(crate) struct UsageView {
     pub total: u64,
     /// 文件数据：各设备共用、按内容去重。
     pub blobs: u64,
-    /// 其中等待回收的旧版本。
-    pub blobs_unreferenced: u64,
+    /// 其中等待回收的旧版本；有设备清单解不开时无法确定（None）。
+    pub blobs_unreferenced: Option<u64>,
     pub devices: Vec<DeviceUsageView>,
     /// 设备清单等小项。
     pub other: u64,
-    /// 存储服务给出的 `(已用, 总容量)`。
-    pub provider: Option<(u64, Option<u64>)>,
+    /// 存储服务给出的用量。
+    pub provider: Option<ProviderView>,
+}
+
+/// 存储服务口径：WebDAV 只有此目录已用与剩余，总容量只有官方服务给。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ProviderView {
+    pub used: u64,
+    pub available: Option<u64>,
+    pub quota: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -89,7 +97,7 @@ impl UsageView {
             computed_at: v.get("computed_at").and_then(Value::as_i64).unwrap_or(0),
             total: n(v, "total"),
             blobs: n(v, "blobs"),
-            blobs_unreferenced: n(v, "blobs_unreferenced"),
+            blobs_unreferenced: v.get("blobs_unreferenced").and_then(Value::as_u64),
             devices: o
                 .get("devices")
                 .and_then(Value::as_array)
@@ -112,20 +120,28 @@ impl UsageView {
             provider: o
                 .get("provider")
                 .filter(|p| p.is_object())
-                .map(|p| (n(p, "used"), p.get("quota").and_then(Value::as_u64))),
+                .map(|p| ProviderView {
+                    used: n(p, "used"),
+                    available: p.get("available").and_then(Value::as_u64),
+                    quota: p.get("quota").and_then(Value::as_u64),
+                }),
         })
     }
 
     /// 存储服务的剩余空间；没有总容量为 None。
     fn provider_free(&self) -> Option<u64> {
-        let (used, quota) = self.provider?;
-        Some(quota?.saturating_sub(used))
+        let p = self.provider?;
+        p.available
+            .or_else(|| p.quota.map(|q| q.saturating_sub(p.used)))
     }
 }
 
+/// 等待回收量无法确定时的显示。
+pub(crate) const UNREFERENCED_UNKNOWN: &str = "无法确定（有设备清单解不开）";
+
 /// 明细对话框底部的说明。
 pub(crate) const USAGE_NOTE: &str =
-    "按加密后的大小统计。等待回收的旧版本超过 7 天会在同步时自动删除。";
+    "按加密后的大小统计。等待回收的旧版本放满 7 天、且仍没有设备用到时，会在同步时自动删除。";
 
 /// 空间大小：1024 进制，B 取整，KB 起一位小数。
 pub(crate) fn usage_size(n: u64) -> String {
@@ -191,7 +207,8 @@ pub(crate) fn usage_rows(u: &UsageView, roster: &[DeviceView]) -> Vec<(String, S
         ),
         (
             "其中等待回收的旧版本".to_string(),
-            usage_size(u.blobs_unreferenced),
+            u.blobs_unreferenced
+                .map_or_else(|| UNREFERENCED_UNKNOWN.to_string(), usage_size),
         ),
     ];
     for d in &u.devices {
@@ -205,11 +222,13 @@ pub(crate) fn usage_rows(u: &UsageView, roster: &[DeviceView]) -> Vec<(String, S
         ));
     }
     rows.push(("设备清单等".to_string(), usage_size(u.other)));
-    if let Some((used, quota)) = u.provider {
-        rows.push(("网盘已用".to_string(), usage_size(used)));
-        if let Some(q) = quota {
-            rows.push(("网盘总容量".to_string(), usage_size(q)));
-            rows.push(("网盘剩余".to_string(), usage_size(q.saturating_sub(used))));
+    if let Some(p) = u.provider {
+        rows.push(("此目录已用".to_string(), usage_size(p.used)));
+        if let Some(free) = u.provider_free() {
+            rows.push(("网盘剩余".to_string(), usage_size(free)));
+        }
+        if let Some(q) = p.quota {
+            rows.push(("总容量".to_string(), usage_size(q)));
         }
     }
     rows
