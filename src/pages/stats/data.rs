@@ -397,12 +397,24 @@ pub fn clear() -> Result<(), String> {
 /// 清理 `days` 天前的数据，返回被删除的天数。
 pub fn prune_before(days: i64) -> Result<u64, String> {
     let v = rpc::call_core("stats.pruneBefore", &json!({ "days": days }))?;
-    Ok(v.get("count").and_then(|c| c.as_u64()).unwrap_or(0))
+    Ok(pruned_from_reply(&v))
+}
+
+/// `stats.pruneBefore` 应答里被删除的天数。
+fn pruned_from_reply(v: &serde_json::Value) -> u64 {
+    v.get("pruned").and_then(|c| c.as_u64()).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// core 返回 `{"pruned": n}`（wind-webdata `stats.pruneBefore`）。
+    #[test]
+    fn prune_reply_reads_pruned() {
+        assert_eq!(pruned_from_reply(&json!({ "pruned": 7 })), 7);
+        assert_eq!(pruned_from_reply(&json!({})), 0);
+    }
 
     fn day(date: &str, cc: u32, ec: u32) -> DailyItem {
         DailyItem {
