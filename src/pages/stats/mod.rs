@@ -776,6 +776,17 @@ mod tests {
         assert_eq!(s.device_idx.get(), 0);
     }
 
+    #[test]
+    fn unchanged_device_idx_does_not_refetch() {
+        let s = StatsState::new();
+        s.apply_devices(&ids(&["m1"]), None);
+        s.refetch_with(|_| Ok(StatsData::default()));
+        // 放一个哨兵：若 on_device_changed 误取数，view 会被覆盖成 Ready/Failed。
+        s.view.set(vec![View::Loading]);
+        s.on_device_changed();
+        assert!(matches!(s.view.get().first(), Some(View::Loading)));
+    }
+
     fn bar(label: &str, pct: u32) -> Bar {
         Bar {
             label: label.into(),

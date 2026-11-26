@@ -321,10 +321,13 @@ pub struct DeviceOption {
 
 /// 取有他机统计的设备号（`stats.devices`）；失败按「没有」处理，下拉随之隐藏。
 pub fn fetch_devices() -> Vec<String> {
-    rpc::call_core("stats.devices", &json!({}))
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default()
+    match rpc::call_core("stats.devices", &json!({})) {
+        Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+        Err(e) => {
+            tracing::debug!("stats.devices 失败，设备下拉隐藏：{e}");
+            Vec::new()
+        }
+    }
 }
 
 /// 组装设备下拉：全部设备、本机，其余按显示名排序。无他机统计时返回空（不显示下拉）。
@@ -367,18 +370,23 @@ pub fn device_options(ids: &[String], roster: Option<&[(String, String)]>) -> Ve
     out
 }
 
-/// 取同步设备名册 `(设备号, 名称)`；同步未启用或取不到时为 `None`。
+/// 取同步设备名册 `(设备号, 名称)`；同步未启用、取不到或名册为空时为 `None`。
 pub fn fetch_roster() -> Option<Vec<(String, String)>> {
     let v = rpc::call_core("sync.command", &json!({ "op": "list_devices" })).ok()?;
-    Some(
-        crate::pages::sync::model::parse_devices(&v)
-            .into_iter()
-            .map(|d| {
-                let name = if d.readable { d.name } else { String::new() };
-                (d.id, name)
-            })
-            .collect(),
-    )
+    roster_from_reply(&v)
+}
+
+/// 解析 `list_devices` 应答为名册；空名册为 `None`。
+fn roster_from_reply(v: &serde_json::Value) -> Option<Vec<(String, String)>> {
+    let roster: Vec<(String, String)> = crate::pages::sync::model::parse_devices(v)
+        .into_iter()
+        .map(|d| {
+            let name = if d.readable { d.name } else { String::new() };
+            (d.id, name)
+        })
+        .collect();
+    // 空名册等同没取到：否则每台设备都会被标成「已移除」。
+    (!roster.is_empty()).then_some(roster)
 }
 
 /// 清空全部统计数据。
@@ -473,6 +481,13 @@ mod tests {
 
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_roster_is_treated_as_missing() {
+        assert_eq!(roster_from_reply(&json!({ "devices": [] })), None);
+        let r = roster_from_reply(&json!({ "devices": [{ "id": "a", "name": "Mac" }] }));
+        assert_eq!(r, Some(vec![("a".to_string(), "Mac".to_string())]));
     }
 
     #[test]
