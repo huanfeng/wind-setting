@@ -16,6 +16,7 @@ pub mod data;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use windui::core::EventCtx;
 use windui::prelude::*;
@@ -43,6 +44,19 @@ enum View {
     /// `Rc` 承载：`host_signal` 每次重建都会 clone 载荷，180 天明细深拷贝不值当。
     Ready(Rc<StatsData>),
 }
+
+/// 后台 → UI 线程的消息（经 `main()` 注册的 `App::channel` 回投）。
+pub enum StatsMsg {
+    /// 同步设备名册取回：`ids` 是发起时的设备号，用来丢弃过期的应答。
+    Roster {
+        ids: Vec<String>,
+        roster: Option<Vec<(String, String)>>,
+    },
+}
+
+type RosterFn = fn() -> Option<Vec<(String, String)>>;
+/// 后台线程投递消息：生产里包 `App::channel` 的发送端，测试里换成普通通道。
+type Post = Arc<dyn Fn(StatsMsg) + Send + Sync>;
 
 /// 待确认的破坏性操作。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,6 +87,9 @@ pub struct StatsState {
     device_idx: Signal<usize>,
     /// 当前数据对应的设备下拉索引，用来区分「用户切换」与「重载时程序复位」。
     fetched_idx: Rc<Cell<usize>>,
+    /// 最近一次重载取到的他机设备号，名册应答据此判断是否过期。
+    device_ids: Rc<RefCell<Vec<String>>>,
+    post: Rc<RefCell<Option<Post>>>,
     /// 方案 `(id, 显示名)`，由 [`AppState::apply_loaded`] 填充。
     ///
     /// 用信号而非构建期快照：页面树在冷启动 RPC 回来之前就建好了，那时 `state.schemas`
@@ -100,7 +117,46 @@ impl StatsState {
             device_values: Rc::new(RefCell::new(Vec::new())),
             device_idx: signal(0),
             fetched_idx: Rc::new(Cell::new(0)),
+            device_ids: Rc::new(RefCell::new(Vec::new())),
+            post: Rc::new(RefCell::new(None)),
             schema_names: signal(Vec::new()),
+        }
+    }
+
+    /// 注入后台 → UI 的发送端（`main()` 在 App 构建期调用一次）。
+    pub fn set_tx(&self, tx: Sender<StatsMsg>) {
+        self.set_post(Arc::new(move |m| {
+            let _ = tx.send(m);
+        }));
+    }
+
+    fn set_post(&self, post: Post) {
+        *self.post.borrow_mut() = Some(post);
+    }
+
+    /// 后台消息落到界面（UI 线程）。
+    pub fn on_msg(&self, msg: StatsMsg) {
+        match msg {
+            StatsMsg::Roster { ids, roster } => {
+                if *self.device_ids.borrow() != ids {
+                    return;
+                }
+                let fetched = self
+                    .device_values
+                    .borrow()
+                    .get(self.fetched_idx.get())
+                    .cloned();
+                self.apply_devices(&ids, roster.as_deref());
+                // 名册只换标签与排序：选中的还是那台设备时同步改记索引，免得被当成用户切换而重取
+                let now = self
+                    .device_values
+                    .borrow()
+                    .get(self.device_idx.get())
+                    .cloned();
+                if now.is_some() && now == fetched {
+                    self.fetched_idx.set(self.device_idx.get());
+                }
+            }
         }
     }
 
@@ -118,21 +174,41 @@ impl StatsState {
 
     /// 重新拉取数据。
     ///
-    /// 同步调用：本地 redb 范围扫描 + 一次管道往返，180 天量级在毫秒档，
-    /// 且只在进页/手动刷新时发生，尚不值得为它引入后台线程 + `App::channel` 回投。
-    /// 若日后统计窗口拉长到卡顿可感，再改走 channel。
+    /// 统计数据同步取：本地 redb 范围扫描 + 一次管道往返，180 天量级在毫秒档。
+    /// 设备名册要等同步进程列远端（最慢几十秒），在后台线程取，回来经 [`Self::on_msg`] 换上设备名；
+    /// 在此之前下拉显示设备号。
     ///
     /// 供底栏的「刷新数据」按钮调用（见 `shell::build_footer`）。
     pub fn reload(&self) {
+        self.reload_with(
+            data::fetch_devices,
+            |dev| data::fetch(data::DEFAULT_DAYS_BACK, dev),
+            data::fetch_roster,
+        );
+    }
+
+    /// [`Self::reload`] 的可注入版本。
+    fn reload_with(
+        &self,
+        fetch_ids: impl FnOnce() -> Vec<String>,
+        fetch: impl Fn(&str) -> Result<StatsData, String>,
+        roster: RosterFn,
+    ) {
         self.loaded.set(true);
-        let ids = data::fetch_devices();
-        let roster = if ids.is_empty() {
-            None
-        } else {
-            data::fetch_roster()
-        };
-        self.apply_devices(&ids, roster.as_deref());
-        self.refetch_with(|dev| data::fetch(data::DEFAULT_DAYS_BACK, dev));
+        let ids = fetch_ids();
+        self.apply_devices(&ids, None);
+        *self.device_ids.borrow_mut() = ids.clone();
+        if !ids.is_empty()
+            && let Some(post) = self.post.borrow().clone()
+        {
+            std::thread::spawn(move || {
+                post(StatsMsg::Roster {
+                    ids,
+                    roster: roster(),
+                })
+            });
+        }
+        self.refetch_with(fetch);
     }
 
     /// 刷新设备下拉；原选中的设备不在了就回到「全部设备」。
@@ -774,6 +850,53 @@ mod tests {
         s.device_idx.set(2);
         s.apply_devices(&ids(&["other"]), None);
         assert_eq!(s.device_idx.get(), 0);
+    }
+
+    static ROSTER_THREAD: std::sync::Mutex<Option<std::thread::ThreadId>> =
+        std::sync::Mutex::new(None);
+
+    fn slow_roster() -> Option<Vec<(String, String)>> {
+        *ROSTER_THREAD.lock().unwrap() = Some(std::thread::current().id());
+        Some(vec![("m1".to_string(), "Mac".to_string())])
+    }
+
+    /// 名册走 `sync.command list_devices`，最慢几十秒：不能在 UI 线程同步取。
+    #[test]
+    fn reload_fetches_roster_in_background() {
+        let s = StatsState::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.set_post(Arc::new(move |m| {
+            let _ = tx.send(m);
+        }));
+        s.reload_with(|| ids(&["m1"]), |_| Ok(StatsData::default()), slow_roster);
+        // 下拉先用设备号显示，数据照常取。
+        assert_eq!(s.device_labels.get(), vec!["全部设备", "本机", "m1"]);
+        assert!(matches!(s.view.get().first(), Some(View::Ready(_))));
+        s.device_idx.set(2);
+        s.fetched_idx.set(2);
+
+        let msg = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_ne!(
+            *ROSTER_THREAD.lock().unwrap(),
+            Some(std::thread::current().id()),
+            "名册不能在 reload 所在线程取"
+        );
+        s.on_msg(msg);
+        assert_eq!(s.device_labels.get(), vec!["全部设备", "本机", "Mac"]);
+        assert_eq!(s.device_idx.get(), 2, "名册回来不改选中项");
+        assert_eq!(s.fetched_idx.get(), 2, "选中的设备没变，不该重取");
+    }
+
+    #[test]
+    fn stale_roster_is_ignored() {
+        let s = StatsState::new();
+        s.apply_devices(&ids(&["m2"]), None);
+        *s.device_ids.borrow_mut() = ids(&["m2"]);
+        s.on_msg(StatsMsg::Roster {
+            ids: ids(&["m1"]),
+            roster: Some(vec![("m1".to_string(), "Mac".to_string())]),
+        });
+        assert_eq!(s.device_labels.get(), vec!["全部设备", "本机", "m2"]);
     }
 
     #[test]

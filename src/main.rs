@@ -595,6 +595,15 @@ fn main() {
     });
     app_state.borrow().sync.set_tx(sync_tx);
 
+    // 打字统计通道：设备名册要等同步进程列远端，在后台线程取，结果经此回 UI 线程
+    // 换上设备名（见 `pages::stats`）。
+    let typing_stats_state = app_state.clone();
+    let typing_stats_tx = app.channel::<pages::stats::StatsMsg>(move |_ctx, msg| {
+        let stats = typing_stats_state.borrow().stats_mgr.clone();
+        stats.on_msg(msg);
+    });
+    app_state.borrow().stats_mgr.set_tx(typing_stats_tx);
+
     // 词库统计通道：`dict.systemStats` 要扫整份系统词库（拼音大词库一秒上下），在后台线程
     // 取，结果经此回 UI 线程写对话框（见 `pages::dict::stats_dialog`）。
     let stats_state = app_state.clone();
