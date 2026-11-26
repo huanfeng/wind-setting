@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-windui = "0.37"
+windui = "0.38"
 wind-ipc = { path = "../WindInput/wind_input/crates/wind-ipc" }
 # 定制版清单（`data_custom/custom.toml`）与 `[settings] hide` 选择器：与 core 同一份解析，
 # 页面树建成之前就要知道哪些设置项不建（见 `custom_hide.rs`），等不到 `system.info`。
