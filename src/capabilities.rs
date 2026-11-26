@@ -338,6 +338,8 @@ mod tests {
         "keys.global_hotkeys",
         // ⑥ 翻页展开时高亮下移一行：出厂开，不提供设置入口，仅留 config.toml 备用。
         "ui.candidate.grid_expand_advance",
+        // ⑥ 码长约束外追加候选：给没有翻页键的触屏端用，电脑端出厂关、不在设置页暴露。
+        "input.scope_relax.always_append",
         // ④' 扩展程序：总开关与扩展列表由手写的「高级 → 扩展程序」卡承载（pages::extensions）——
         //     列表里每个扩展的选项是扩展清单声明的，运行时才知道，清单驱动的控件表达不了。
         "extensions.enabled",
