@@ -1032,7 +1032,11 @@ mod tests {
         let want: Vec<(String, String)> = m
             .order
             .iter()
-            .filter(|k| k.starts_with("input.fuzzy.") && *k != "input.fuzzy.enabled")
+            .filter(|k| {
+                k.starts_with("input.fuzzy.")
+                    && *k != "input.fuzzy.enabled"
+                    && *k != "input.fuzzy.equal_rank" // 排序开关，不是音对
+            })
             .map(|k| {
                 (
                     k.trim_start_matches("input.fuzzy.").to_string(),

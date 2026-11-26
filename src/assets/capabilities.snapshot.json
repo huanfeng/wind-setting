@@ -509,6 +509,11 @@
       "type": "bool"
     },
     {
+      "default": false,
+      "key": "input.fuzzy.equal_rank",
+      "type": "bool"
+    },
+    {
       "default": true,
       "key": "schema.pinyin.frequency.enabled",
       "type": "bool"
@@ -1951,6 +1956,11 @@
     {
       "default": true,
       "key": "ui.candidate.grid_pageupdown_screen",
+      "type": "bool"
+    },
+    {
+      "default": true,
+      "key": "ui.candidate.grid_expand_advance",
       "type": "bool"
     },
     {

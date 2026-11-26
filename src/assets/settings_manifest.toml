@@ -1031,6 +1031,14 @@ section = "模糊音"
 type = "toggle"
 label = "eng ↔ ong"
 
+[[items]]
+key = "input.fuzzy.equal_rank"
+group = "schema"
+section = "模糊音"
+type = "toggle"
+label = "与精确拼音统一词频排序"
+hint = "开启后模糊音的候选不再被降权，与精确拼音按同一份词频排序，常用词不会被生僻的精确词挤到后面；关闭时精确拼音优先。纠错不受影响"
+
 # ── 混输行为（混输全局配置；全局唯一，无方案级 override）──
 #
 # ⚠️ 项序即渲染序，且 `subsection = None` **不会终止**前一个分组（对话框渲染只在
