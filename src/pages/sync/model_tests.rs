@@ -616,6 +616,29 @@ fn storage_save_always_tests_the_location() {
 }
 
 #[test]
+fn skip_cert_verify_round_trips_and_does_not_need_password() {
+    let old = webdav_form();
+    assert!(
+        old.to_settings().get("skip_cert_verify").is_none(),
+        "关着不写"
+    );
+    let new = Form {
+        skip_cert_verify: true,
+        ..old.clone()
+    };
+    let v = new.to_settings();
+    assert_eq!(v["skip_cert_verify"], true);
+    assert!(Form::from_settings(&json!({ "settings": v })).skip_cert_verify);
+    assert_eq!(
+        storage_summary(&new),
+        "WebDAV · https://dav.example.com/dav/ · 用户 me · 跳过证书验证"
+    );
+    let steps = storage_change_steps(&old, &new, vec![]).unwrap();
+    assert_eq!(steps[0].1["settings"]["skip_cert_verify"], true);
+    assert_eq!(steps.len(), 2, "同一位置只切换证书校验，不要求重填密码");
+}
+
+#[test]
 fn storage_move_needs_password() {
     let old = webdav_form();
     let new = Form {

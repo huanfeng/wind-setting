@@ -276,8 +276,20 @@ pub(crate) fn master_switch_steps(saved: &Form, on: bool) -> Vec<Step> {
     vec![("sync.setSettings", json!({ "settings": f.to_settings() }))]
 }
 
-/// 存储卡的摘要：类型与地址。
+/// 勾选「跳过证书验证」后的提示。
+pub(crate) const SKIP_CERT_WARN: &str = "跳过后无法确认连到的是不是你的服务器，存储密码可能被冒充者截获；同步内容仍在本机加密。只在自建服务用自签名证书时打开。";
+
+/// 存储卡的摘要：类型与地址；跳过证书验证时标出来。
 pub(crate) fn storage_summary(f: &Form) -> String {
+    let base = storage_location(f);
+    if f.skip_cert_verify && !f.backend_blank() {
+        format!("{base} · 跳过证书验证")
+    } else {
+        base
+    }
+}
+
+fn storage_location(f: &Form) -> String {
     if f.backend_blank() {
         "未设置".to_string()
     } else if f.s3 {
@@ -473,6 +485,8 @@ pub(crate) struct Form {
     pub s3_prefix: String,
     pub s3_access_key_id: String,
     pub s3_path_style: bool,
+    /// 不校验存储服务的 HTTPS 证书（自签名证书的自建服务）。不算换位置，不要求重填密码。
+    pub skip_cert_verify: bool,
     pub interval_min: u32,
     /// 本机在「我的设备」里显示的名称；空 = 用计算机名。设备本地，不随同步传播。
     pub device_name: String,
@@ -491,6 +505,7 @@ impl Default for Form {
             s3_prefix: String::new(),
             s3_access_key_id: String::new(),
             s3_path_style: false,
+            skip_cert_verify: false,
             interval_min: 15,
             device_name: String::new(),
         }
@@ -519,6 +534,10 @@ impl Form {
                 .to_string()
         };
         f.device_name = str_of(s, "device_name");
+        f.skip_cert_verify = s
+            .get("skip_cert_verify")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if let Some(b) = s.get("backend") {
             match b.get("type").and_then(Value::as_str) {
                 Some("webdav") => {
@@ -561,6 +580,9 @@ impl Form {
             "interval_min": self.interval_min,
             "device_name": self.device_name.trim(),
         });
+        if self.skip_cert_verify {
+            out["skip_cert_verify"] = json!(true);
+        }
         if self.enabled || !self.backend_blank() {
             out["backend"] = if self.s3 {
                 json!({

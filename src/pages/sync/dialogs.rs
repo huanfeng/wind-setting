@@ -415,6 +415,7 @@ pub(super) fn storage_fields(ui: &SyncUi) -> Element {
     let is_s3 = move || b.get() == 1;
     let inp = |s: Signal<String>, ph: &str| Element::text_input(s, ph).width_match();
     let hint = ui.secret_hint;
+    let skip = ui.skip_cert_verify;
     let secret = move |s: Signal<String>| {
         Element::switcher(hint, move |h| {
             Element::text_input(s, h).password().width_match()
@@ -472,6 +473,23 @@ pub(super) fn storage_fields(ui: &SyncUi) -> Element {
                     ),
                 ))
                 .visible_when(is_s3),
+        )
+        .child(
+            Element::col()
+                .width_match()
+                .spacing(6)
+                .child(Element::checkbox(
+                    "跳过证书验证（自签名证书的自建服务）",
+                    ui.skip_cert_verify,
+                ))
+                .child(
+                    Element::label(SKIP_CERT_WARN)
+                        .font_size(12.0)
+                        .fg_role(Role::Warning)
+                        .width_match()
+                        .max_lines(3)
+                        .visible_when(move || skip.get()),
+                ),
         )
 }
 

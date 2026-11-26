@@ -139,6 +139,7 @@ pub struct SyncUi {
     s3_access_key_id: Signal<String>,
     s3_secret: Signal<String>,
     s3_path_style: Signal<bool>,
+    skip_cert_verify: Signal<bool>,
     interval: Signal<f64>,
     device_name: Signal<String>,
 
@@ -267,6 +268,7 @@ impl SyncUi {
             s3_access_key_id: s(),
             s3_secret: s(),
             s3_path_style: signal(false),
+            skip_cert_verify: signal(false),
             interval: signal(f.interval_min as f64),
             device_name: s(),
             import_key: s(),
@@ -503,6 +505,7 @@ impl SyncUi {
         self.s3_prefix.set(f.s3_prefix);
         self.s3_access_key_id.set(f.s3_access_key_id);
         self.s3_path_style.set(f.s3_path_style);
+        self.skip_cert_verify.set(f.skip_cert_verify);
         self.wd_password.set(String::new());
         self.s3_secret.set(String::new());
     }
@@ -537,6 +540,7 @@ impl SyncUi {
             s3_prefix: self.s3_prefix.get(),
             s3_access_key_id: self.s3_access_key_id.get(),
             s3_path_style: self.s3_path_style.get(),
+            skip_cert_verify: self.skip_cert_verify.get(),
             ..self.saved.borrow().clone()
         }
     }
