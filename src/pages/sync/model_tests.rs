@@ -883,11 +883,11 @@ fn joinable_groups_are_other_same_class_groups() {
 #[test]
 fn rename_partial_failure_says_id_already_changed() {
     assert_eq!(
-        step_failure("rename", 1, "太长"),
+        step_failure_for("rename", 1, None, "太长"),
         "设备号已改，显示名称未保存（太长）"
     );
-    assert_eq!(step_failure("rename", 0, "撞号"), "撞号");
-    assert_eq!(step_failure("group", 1, "x"), "x");
+    assert_eq!(step_failure_for("rename", 0, None, "撞号"), "撞号");
+    assert_eq!(step_failure_for("group", 1, None, "x"), "x");
 }
 
 #[test]

@@ -547,7 +547,7 @@ pub(crate) struct Form {
     pub interval_min: u32,
     /// 本机在「我的设备」里显示的名称；空 = 用计算机名。设备本地，不随同步传播。
     pub device_name: String,
-    /// 各类内容是否参与同步（同组设备共用）。
+    /// 各类内容是否参与同步（本机设置，不随同步传播）。
     pub content: Content,
 }
 
@@ -1180,11 +1180,7 @@ pub(crate) fn rename_steps(
 }
 
 /// 多步命令中途失败时的说明：改号已成功而显示名称没存上，要让用户知道。
-pub(crate) fn step_failure(op: &str, index: usize, e: &str) -> String {
-    step_failure_for(op, index, None, e)
-}
-
-/// 同上；`dev` 是失败那一步的目标设备号（清除已移除设备时用）。
+/// `dev` 是失败那一步的目标设备号（清除已移除设备时用）。
 pub(crate) fn step_failure_for(op: &str, index: usize, dev: Option<&str>, e: &str) -> String {
     if op == "purge_devices" {
         format!("已清除 {index} 台，{} 失败：{e}", dev.unwrap_or("?"))
