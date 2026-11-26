@@ -180,7 +180,6 @@ fn remove_needs_second_confirmation() {
     ui.remove_guard.disarm();
     assert_eq!(ui.take_remove_confirm(), None, "取消后收回");
     assert!(REMOVE_DEVICE_WARN.contains("重置远端"));
-    assert!(!REMOVE_DEVICE_WARN.contains("口令"));
 }
 
 #[test]

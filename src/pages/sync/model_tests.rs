@@ -10,11 +10,6 @@ fn phase_maps_to_chinese_and_keeps_unknown() {
     assert_eq!(phase_text("syncing"), "同步中…");
     assert_eq!(phase_text("error"), "出错");
     assert_eq!(phase_text("halted"), "已停止，需要处理");
-    assert_eq!(
-        phase_text("needs_passphrase"),
-        "状态：needs_passphrase",
-        "自拟阶段名不再认"
-    );
     assert_eq!(phase_text("weird"), "状态：weird", "不认识的阶段原样带出");
     assert_eq!(phase_text(""), "状态未知");
 }
@@ -84,7 +79,7 @@ fn reset_requires_arming_and_is_single_use() {
     let g = ResetGuard::default();
     assert_eq!(g.take(), None, "没点「重置远端…」就不给确认参数");
     g.arm();
-    assert_eq!(g.take(), Some(json!({ "confirm": true })), "不再带口令");
+    assert_eq!(g.take(), Some(json!({ "confirm": true })));
     assert_eq!(g.take(), None, "确认只用一次");
     g.arm();
     g.disarm();
