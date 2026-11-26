@@ -243,15 +243,21 @@ enum Desc<'a> {
     Signal(Signal<String>),
 }
 
+/// 说明 i 图标的边长。比角标（14）大一点、颜色深一档：说明收起后它是行里唯一的辅助信息。
+const DESC_ICON_PX: i32 = 16;
+
+/// 图标模式下每行额外的上下留白（px，各一份）：说明收起后行变矮，层次靠呼吸感撑住。
+const DESC_ICON_PAD: i32 = 4;
+
 /// 说明的 i 图标：悬停快显全文。静态串直接挂在图标上；信号走 [`info_badge`] 那条动态路。
 fn desc_badge(d: &Desc) -> Element {
     match d {
         Desc::Text(s) => Element::stack()
-            .size(14, 14)
+            .size(DESC_ICON_PX, DESC_ICON_PX)
             .child(crate::icons::tinted_role(
                 crate::icons::INFO_THIN,
-                14,
-                Role::TextSubtle,
+                DESC_ICON_PX,
+                Role::TextMuted,
             ))
             .tooltip(*s),
         Desc::Signal(sig) => info_badge(*sig, |_| {}),
@@ -300,18 +306,25 @@ fn row_left(
     let mut title = Element::row()
         .width_match()
         .cross(Align::Center)
-        .spacing(5)
+        .spacing(6)
         .child(label);
     if let Some(b) = badge {
         title = title.child(b);
     }
     let title =
         title.child(desc_badge(&d).visible_when(move || mode.get() == crate::look::desc::TOOLTIP));
+    let pad = move || {
+        Element::col()
+            .size(1, DESC_ICON_PAD)
+            .visible_when(move || mode.get() == crate::look::desc::TOOLTIP)
+    };
     Element::col()
         .weight(1.0)
         .spacing(2)
+        .child(pad())
         .child(title)
         .child(body)
+        .child(pad())
 }
 
 /// 悬停提示取自 `Signal` 的旁挂件。
