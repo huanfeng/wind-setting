@@ -3534,9 +3534,9 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "windui"
-version = "0.35.0"
+version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adfaa10a69fc48c41fa5163845cdcffc6071e759953d8122282c5b7f6dfa301f"
+checksum = "02b645f437fd87a47597d7c2f8624b358c92a193c226ee53b4c0325c9c5c0176"
 dependencies = [
  "ab_glyph_rasterizer",
  "bytemuck",
