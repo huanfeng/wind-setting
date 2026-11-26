@@ -418,7 +418,10 @@ pub(super) fn storage_fields(ui: &SyncUi) -> Element {
     let skip = ui.skip_cert_verify;
     let secret = move |s: Signal<String>| {
         Element::switcher(hint, move |h| {
-            Element::text_input(s, h).password().width_match()
+            Element::text_input(s, h)
+                .password()
+                .reveal_toggle()
+                .width_match()
         })
     };
     let two = |a: Element, b: Element| {
